@@ -224,10 +224,20 @@ void repl(void) {
                 // Set exe_addr in hash table (match TempleOS PrsStmt.HC:172 or 183)
                 extern void **CompilerGetLastFuncAddr(void *cc);
                 void **func_exe_addr_ptr = CompilerGetLastFuncAddr(cc);
+                puts_uart("[func_exe_addr_ptr=");
+                print_hex((I64)func_exe_addr_ptr);
+                puts_uart("]\n");
                 if (func_exe_addr_ptr) {
                     *func_exe_addr_ptr = machine_code;
+                    puts_uart("[Set *");
+                    print_hex((I64)func_exe_addr_ptr);
+                    puts_uart(" = ");
+                    print_hex((I64)machine_code);
+                    puts_uart("]\n");
                     // Instruction cache coherency for function code
                     __asm__ volatile("fence.i" ::: "memory");
+                } else {
+                    puts_uart("[NULL ptr!]\n");
                 }
             }
         } else {
@@ -270,6 +280,10 @@ void repl(void) {
                 if (machine_code && code_size > 0) {
                     // Instruction cache coherency
                     __asm__ volatile("fence.i" ::: "memory");
+                    
+                    puts_uart("[Executing wrapper at ");
+                    print_hex((I64)machine_code);
+                    puts_uart("]\n");
                     
                     // TempleOS approach: Just cast compiled code to function and call it
                     // This is EXACTLY what LexStmt2Bin does (CMain.HC:15,32)

@@ -316,6 +316,12 @@ static bool ParsePrimary(Compiler *cc) {
         // Function found in hash table
         CHashFun *func = (CHashFun*)entry;
         if (func) {
+          // Debug: print the address we're storing
+          #ifndef BARE_METAL
+          fprintf(stderr, "[PARSE CALL: func=%p, &exe_addr=%p, exe_addr=%p]\n", 
+                  (void*)func, (void*)&func->exe_addr, func->exe_addr);
+          #endif
+          
           // Use IC_CALL_INDIRECT2 for REPL (exe_addr set after parsing)
           // ic_data = &func->exe_addr (address of field), so it loads at runtime
           ICAdd(cc, IC_CALL_INDIRECT2, (I64)&func->exe_addr, RT_I64);

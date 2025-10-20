@@ -569,16 +569,56 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           I64 *exe_addr_ptr = (I64*)ic->ic_data;
           I64 arg_count = cc->last_call_arg_cnt;
           
-          // Handle argument passing
-          if (arg_count >= 2) {
+          // Handle argument passing (RISC-V calling convention: a0-a7 registers, rest on stack)
+          if (arg_count > 8) {
+            // More than 8 args: first 8 in a0-a7, rest on stack
+            // Current state: last arg (arg 9+) is in a0, args 0-8+ are on stack
+            // Need to: push a0 to stack, then load a0-a7 from stack, clean up 8 args
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
+            RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (3<<12) | (RV_SP<<15) | (RV_A0<<20)); // sd a0, 0(sp)
+            // Now stack has: [arg9+, arg8, arg7, arg6, arg5, arg4, arg3, arg2, arg1, arg0] (top to bottom)
+            // Load a0-a7 from stack (skip top arg which stays on stack)
+            for (I64 i = 0; i < 8; i++) {
+              U8 reg = RV_A0 + i;
+              I64 offset = (8 - i) * 8; // a0 from sp+64, a1 from sp+56, etc.
+              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
+            }
+            // Clean up the 8 register args from stack
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((64 & 0xFFF)<<20)); // addi sp, sp, 64
+            // Remaining args (9+) stay on stack for callee
+            stack_depth_pass = stack_depth_pass - 8; // 8 args consumed, rest stay
+          } else if (arg_count == 8) {
+            // Exactly 8 args: all in registers
+            // Current: arg7 in a0, args 0-6 on stack
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A7<<7) | (RV_A0<<15)); // mv a7, a0
+            for (I64 i = 0; i < 7; i++) {
+              U8 reg = RV_A0 + i;
+              I64 offset = (7 - i - 1) * 8;
+              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
+            }
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((56 & 0xFFF)<<20)); // addi sp, sp, 56
+            stack_depth_pass -= 8;
+          } else if (arg_count >= 3) {
+            // 3-7 args: all in registers
+            // Current: last arg in a0, others on stack
+            U8 last_reg = RV_A0 + (arg_count - 1);
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (last_reg<<7) | (RV_A0<<15)); // mv aX, a0
+            for (I64 i = 0; i < arg_count - 1; i++) {
+              U8 reg = RV_A0 + i;
+              I64 offset = (arg_count - 2 - i) * 8;
+              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
+            }
+            I64 cleanup = (arg_count - 1) * 8;
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup & 0xFFF)<<20)); // addi sp, sp, cleanup
+            stack_depth_pass -= arg_count;
+          } else if (arg_count == 2) {
+            // 2 args: a1 in a0, a0 on stack
             RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A1<<7) | (RV_A0<<15)); // mv a1, a0
             RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
-            I64 cleanup = (arg_count - 1) * 8;
-            if (cleanup > 0 && cleanup < 2048) {
-              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup & 0xFFF)<<20));
-            }
-            stack_depth_pass = stack_depth_pass - arg_count;
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
+            stack_depth_pass -= 2;
           } else if (arg_count == 1) {
+            // 1 arg: already in a0
             stack_depth_pass--;
           }
           
@@ -647,11 +687,11 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   
   // After convergence, do one final pass with emission enabled
   if (pass_buf == NULL) {
-    pass_buf = buffer;
-    pass_ptr = buffer;
-    rip = 0;
-    ic = cc->ic_head;
-    I64 stack_depth_final = 0;
+  pass_buf = buffer;
+  pass_ptr = buffer;
+  rip = 0;
+  ic = cc->ic_head;
+  I64 stack_depth_final = 0;
     
     // Add prologue for expressions with calls (same as in multi-pass loop)
     if (has_call && !is_function) {
@@ -872,16 +912,48 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           I64 *exe_addr_ptr = (I64*)ic->ic_data;
           I64 arg_count = cc->last_call_arg_cnt;
           
-          // Handle argument passing
-          if (arg_count >= 2) {
+          // Handle argument passing (RISC-V calling convention: a0-a7 registers, rest on stack)
+          if (arg_count > 8) {
+            // More than 8 args: first 8 in a0-a7, rest on stack
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
+            RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (3<<12) | (RV_SP<<15) | (RV_A0<<20)); // sd a0, 0(sp)
+            for (I64 i = 0; i < 8; i++) {
+              U8 reg = RV_A0 + i;
+              I64 offset = (8 - i) * 8;
+              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
+            }
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((64 & 0xFFF)<<20)); // addi sp, sp, 64
+            stack_depth_final = stack_depth_final - 8;
+          } else if (arg_count == 8) {
+            // Exactly 8 args: all in registers
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A7<<7) | (RV_A0<<15)); // mv a7, a0
+            for (I64 i = 0; i < 7; i++) {
+              U8 reg = RV_A0 + i;
+              I64 offset = (7 - i - 1) * 8;
+              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
+            }
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((56 & 0xFFF)<<20)); // addi sp, sp, 56
+            stack_depth_final -= 8;
+          } else if (arg_count >= 3) {
+            // 3-7 args: all in registers
+            U8 last_reg = RV_A0 + (arg_count - 1);
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (last_reg<<7) | (RV_A0<<15)); // mv aX, a0
+            for (I64 i = 0; i < arg_count - 1; i++) {
+              U8 reg = RV_A0 + i;
+              I64 offset = (arg_count - 2 - i) * 8;
+              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
+            }
+            I64 cleanup = (arg_count - 1) * 8;
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup & 0xFFF)<<20)); // addi sp, sp, cleanup
+            stack_depth_final -= arg_count;
+          } else if (arg_count == 2) {
+            // 2 args: a1 in a0, a0 on stack
             RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A1<<7) | (RV_A0<<15)); // mv a1, a0
             RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
-            I64 cleanup = (arg_count - 1) * 8;
-            if (cleanup > 0 && cleanup < 2048) {
-              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup & 0xFFF)<<20));
-            }
-            stack_depth_final = stack_depth_final - arg_count;
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
+            stack_depth_final -= 2;
           } else if (arg_count == 1) {
+            // 1 arg: already in a0
             stack_depth_final--;
           }
           
@@ -945,7 +1017,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       
       ic = ic->next;
     }
-  }
+    }
   
   // Debug: show convergence
   // printf("Converged after %d passes, code_size=%lld\n", pass, rip);
@@ -1010,8 +1082,8 @@ U8 *CompileJIT(Compiler *cc, I64 *size_out) {
   
   // Allocate executable memory
   U8 *exec_mem = (U8 *)mmap(NULL, code_size,
-                            PROT_READ | PROT_WRITE | PROT_EXEC,
-                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                        PROT_READ | PROT_WRITE | PROT_EXEC,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   
   if (exec_mem == (U8 *)MAP_FAILED) {
     // fprintf(stderr, "Failed to allocate executable memory\n");
