@@ -1,4 +1,8 @@
 #ifdef HOLYC_STANDALONE
+#include <stdio.h>
+#include <stdlib.h>
+#include "holyc_compiler.h"
+
 int main(int argc, char **argv) {
   printf("═══════════════════════════════════════════════════════════\n");
   printf("HolyC to RISC-V Compiler (AOT/JIT)\n");

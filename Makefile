@@ -7,7 +7,7 @@ RISCV_OBJDUMP = riscv64-unknown-elf-objdump
 QEMU = qemu-riscv64
 
 # Compiler sources
-COMPILER_SOURCES = lexer.c parser.c compiler.c hash_table.c
+COMPILER_SOURCES = lexer.c parser.c compiler.c hash_table.c main_stub.c
 COMPILER_HEADERS = holyc_compiler.h
 COMPILER_BIN = cicl-riscv
 

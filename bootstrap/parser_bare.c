@@ -25,12 +25,6 @@ CIntermediateCode *ICNew(Compiler *cc, U8 opcode) {
   return ic;
 }
 
-void ICAdd(Compiler *cc, U8 opcode, I64 data, U8 type) {
-  CIntermediateCode *ic = ICNew(cc, opcode);
-  ic->ic_data = data;
-  ic->res.type.raw_type = type;
-  ic->res.type.mode = MDF_STK;  // Default: stack-based
-}
 
 void ICSetArg1(CIntermediateCode *ic, CICType type, I64 reg, I64 disp) {
   ic->arg1.type = type;

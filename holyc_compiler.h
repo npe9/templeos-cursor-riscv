@@ -435,6 +435,7 @@ typedef struct StringLiteral {
 // Lexer
 Compiler *CompilerNew(const char *source, const char *filename);
 void CompilerFree(Compiler *cc);
+Compiler *Compile(const char *source, const char *filename, bool aot);
 void LexNext(Compiler *cc);
 bool LexExpect(Compiler *cc, int token);
 

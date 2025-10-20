@@ -7,7 +7,7 @@ OBJCOPY = $(RISCV_PREFIX)objcopy
 OBJDUMP = $(RISCV_PREFIX)objdump
 
 # Host compiler
-HOLYC = ../holyc-riscv
+HOLYC = ./holyc-riscv
 
 ASFLAGS = -march=rv64imafdc -mabi=lp64d
 LDFLAGS = -T linker.ld -nostdlib --no-warn-mismatch

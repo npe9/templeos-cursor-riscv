@@ -286,6 +286,19 @@ static void RVU64(U8 *buf, U8 **ptr, I64 *rip, U64 val) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// IC GENERATION
+// ═══════════════════════════════════════════════════════════════
+
+void ICAdd(Compiler *cc, U8 opcode, I64 data, U8 type) {
+  CIntermediateCode *ic = ICNew(cc, opcode);
+  if (!ic) return;  // Allocation failed, skip
+  
+  ic->ic_data = data;
+  ic->res.type.raw_type = type;
+  ic->res.type.mode = MDF_STK;  // Default: stack-based
+}
+
+// ═══════════════════════════════════════════════════════════════
 // CODE GENERATION (AOT)
 // ═══════════════════════════════════════════════════════════════
 
@@ -299,6 +312,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     if (ic->ic_code == IC_CALL || ic->ic_code == IC_CALL_INDIRECT2) has_call = true;
     ic = ic->next;
   }
+  
   
   // Allocate buffer (estimate 16 bytes per IC operation)
   I64 estimated_size = 0;
@@ -328,19 +342,16 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     I64 stack_depth_pass = 0;  // Track stack depth for accurate sizing
     pass_ptr = buffer;  // Reset pointer each pass
     
-    // Check if we converged in previous pass
-    Bool is_final_pass = (pass > 1 && prev_size != 0 && rip == prev_size);
-    if (is_final_pass) {
-      pass_buf = buffer;  // Enable actual emission
-    } else {
-      pass_buf = NULL;    // Just count bytes
-    }
+    // Check if we converged in previous pass (and this is final emission pass)
+    Bool is_final_pass = (pass > 2 && prev_size == rip);  // rip is 0 here, will be updated during pass
+    // For now, always use NULL for sizing, we'll do final emission after loop
+    pass_buf = NULL;    // Just count bytes
     
     // Add prologue for expressions with calls
     if (has_call && !is_function) {
       RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF0<<20)); // addi sp, sp, -16
       RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (8<<7) | (3<<12) | (RV_SP<<15) | (RV_RA<<20)); // sd ra, 8(sp)
-      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_S0<<20) | (3<<12)); // sd s0, 0(sp)
+      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (0<<7) | (3<<12) | (RV_SP<<15) | (RV_S0<<20)); // sd s0, 0(sp)
       RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_S0<<7) | (RV_SP<<15) | (16<<20)); // addi s0, sp, 16
     }
     
@@ -363,7 +374,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           // addi sp, sp, -frame_size
           RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((-frame_size & 0xFFF)<<20));
           // sd ra, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (0<<12) | (RV_SP<<15) | (RV_RA<<20));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (3<<12) | (RV_SP<<15) | (RV_RA<<20));
           // sd s0, 8(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (8<<7) | (3<<12) | (RV_SP<<15) | (RV_S0<<20));
           // addi s0, sp, frame_size
@@ -642,6 +653,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     ic = cc->ic_head;
     I64 stack_depth_final = 0;
     
+    // Add prologue for expressions with calls (same as in multi-pass loop)
+    if (has_call && !is_function) {
+      RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF0<<20)); // addi sp, sp, -16
+      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (8<<7) | (3<<12) | (RV_SP<<15) | (RV_RA<<20)); // sd ra, 8(sp)
+      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (0<<7) | (3<<12) | (RV_SP<<15) | (RV_S0<<20)); // sd s0, 0(sp)
+      RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_S0<<7) | (RV_SP<<15) | (16<<20)); // addi s0, sp, 16
+    }
+    
     while (ic) {
       // Same unified switch, but now with pass_buf = buffer
       switch (ic->ic_code) {
@@ -655,7 +674,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           // addi sp, sp, -frame_size
           RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((-frame_size & 0xFFF)<<20));
           // sd ra, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (0<<12) | (RV_SP<<15) | (RV_RA<<20));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (3<<12) | (RV_SP<<15) | (RV_RA<<20));
           // sd s0, 8(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (8<<7) | (3<<12) | (RV_SP<<15) | (RV_S0<<20));
           // addi s0, sp, frame_size

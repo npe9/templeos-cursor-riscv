@@ -30,14 +30,6 @@ CIntermediateCode *ICNew(Compiler *cc, U8 opcode) {
   return ic;
 }
 
-void ICAdd(Compiler *cc, U8 opcode, I64 data, U8 type) {
-  CIntermediateCode *ic = ICNew(cc, opcode);
-  if (!ic) return;  // Allocation failed, skip
-  
-  ic->ic_data = data;
-  ic->res.type.raw_type = type;
-  ic->res.type.mode = MDF_STK;  // Default: stack-based
-}
 
 void ICSetArg1(CIntermediateCode *ic, CICType type, I64 reg, I64 disp) {
   ic->arg1.type = type;
@@ -329,6 +321,7 @@ static bool ParsePrimary(Compiler *cc) {
           ICAdd(cc, IC_CALL_INDIRECT2, (I64)&func->exe_addr, RT_I64);
           // Store arg_cnt for compiler to use
           cc->last_call_arg_cnt = func->arg_cnt;
+          
         } else {
           free(name);
           return false;
