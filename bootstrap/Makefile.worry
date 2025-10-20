@@ -1,0 +1,40 @@
+# Worry Dream Machine Build System
+
+RISCV_PREFIX = riscv64-unknown-elf-
+CC = $(RISCV_PREFIX)gcc
+LD = $(RISCV_PREFIX)ld
+OBJCOPY = $(RISCV_PREFIX)objcopy
+
+CFLAGS = -march=rv64imafdc -mabi=lp64d -mcmodel=medany -O2 -g
+CFLAGS += -nostdlib -ffreestanding -fno-builtin
+CFLAGS += -I..
+
+LDFLAGS = -T linker.ld -nostdlib --no-warn-mismatch
+
+# Compiler sources
+COMPILER_SRC = ../compiler.c ../lexer.c ../parser.c ../hash_table.c
+
+worry_dream.elf: startup.o worry_dream_full.o compiler_integrated.o
+	$(LD) $(LDFLAGS) -o $@ $^
+	@echo "✓ Built Worry Dream Machine"
+
+compiler_integrated.o: $(COMPILER_SRC)
+	$(CC) $(CFLAGS) -DBARE_METAL -c ../compiler.c -o compiler_main.o
+	$(CC) $(CFLAGS) -DBARE_METAL -c ../lexer.c -o lexer.o
+	$(CC) $(CFLAGS) -DBARE_METAL -c ../parser.c -o parser.o
+	$(CC) $(CFLAGS) -DBARE_METAL -c ../hash_table.c -o hash.o
+	$(LD) -r -o $@ compiler_main.o lexer.o parser.o hash.o
+
+worry_dream_full.o: worry_dream_full.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+startup.o: startup.s
+	$(CC) $(CFLAGS) -c $< -o $@
+
+run: worry_dream.elf
+	qemu-system-riscv64 -M virt -bios none -kernel worry_dream.elf -nographic
+
+clean:
+	rm -f *.o *.elf
+
+.PHONY: run clean

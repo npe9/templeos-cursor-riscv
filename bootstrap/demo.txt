@@ -1,0 +1,2 @@
+I64 GetFive() { return 5; }
+quit

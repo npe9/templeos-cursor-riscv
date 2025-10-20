@@ -1,0 +1,4 @@
+I64 Double(I64 x) { return x + x; }
+I64 Triple(I64 x) { return x + x + x; }
+U64 MaxU64() { return 0xFFFFFFFFFFFFFFFF; }
+quit

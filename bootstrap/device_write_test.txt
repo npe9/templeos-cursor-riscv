@@ -1,0 +1,2 @@
+I64 Main() { U8 *p; p = 0x80FF0000; *p = 0xAB; return 0x80FF0000; }
+

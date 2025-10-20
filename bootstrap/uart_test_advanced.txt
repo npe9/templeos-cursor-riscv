@@ -1,0 +1,16 @@
+# Advanced UART test with multiple locals
+I64 WriteMessage() {
+  U8 *uart;
+  I64 i;
+  uart = 0x10000000;
+  
+  *uart = 84;
+  *uart = 69;
+  *uart = 83;
+  *uart = 84;
+  *uart = 33;
+  *uart = 10;
+  
+  return 42;
+}
+WriteMessage();

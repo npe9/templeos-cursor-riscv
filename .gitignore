@@ -1,0 +1,48 @@
+# Build outputs
+*.o
+*.elf
+*.bin
+*.dSYM/
+a.out
+
+# Compiled binaries
+holyc-riscv
+cicl-riscv
+
+# Test executables
+test_*
+!test_*.hc
+!test_*.sh
+dump_*
+trace_*
+verify_*
+show_*
+debug_*
+check_*
+analyze_*
+
+# Backup files
+*.bak
+*.tmp
+*.tmp2
+*.orig
+*_clean.c
+*_working.c
+test_compiler.c
+
+# Documentation (keep main README only)
+docs/
+
+# MacOS
+.DS_Store
+
+# Editor
+*.swp
+*~
+.vscode/
+.idea/
+
+# Logs
+*.log
+/tmp/
+

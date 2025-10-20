@@ -1,0 +1,15 @@
+> 42;
+0x000000000000002a
+> 1+2+3;
+0x0000000000000006
+> 5*10;
+0x0000000000000032
+> 100/4;
+0x0000000000000019
+> ((10+20)*2)-5;
+0x0000000000000037
+> 0xDEADBEEF;
+0xffffffffdeadbeef
+> "TempleOS on RISC-V!";
+0x0000000080429200
+> qemu-system-riscv64: terminating on signal 15 from pid 57918 (<unknown process>)
