@@ -109,6 +109,7 @@ typedef bool      Bool;
 #define IC_RET           0x5B
 #define IC_CALL          0x5C
 #define IC_CALL_INDIRECT 0x5D
+#define IC_CALL_INDIRECT2 0x5E
 #define IC_PUSH          0x62
 #define IC_POP           0x63
 #define IC_BR_ZERO       0x85
@@ -414,6 +415,9 @@ typedef struct {
   
   // Last compiled function (for setting exe_addr after CompileAOT)
   CHashFun *last_compiled_func;
+  
+  // Last function call arg count (for IC_CALL_INDIRECT2 in compiler)
+  I64 last_call_arg_cnt;
   
 } Compiler;
 

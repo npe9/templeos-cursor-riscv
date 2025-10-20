@@ -290,13 +290,24 @@ static void RVU64(U8 *buf, U8 **ptr, I64 *rip, U64 val) {
 // ═══════════════════════════════════════════════════════════════
 
 U8 *CompileAOT(Compiler *cc, I64 *code_size) {
+  // Check if this is a function or expression
+  CIntermediateCode *ic = cc->ic_head;
+  Bool is_function = false;
+  Bool has_call = false;
+  while (ic) {
+    if (ic->ic_code == IC_ENTER) is_function = true;
+    if (ic->ic_code == IC_CALL || ic->ic_code == IC_CALL_INDIRECT2) has_call = true;
+    ic = ic->next;
+  }
+  
   // Allocate buffer (estimate 16 bytes per IC operation)
   I64 estimated_size = 0;
-  CIntermediateCode *ic = cc->ic_head;
+  ic = cc->ic_head;
   while (ic) {
     estimated_size += 16;
     ic = ic->next;
   }
+  if (has_call && !is_function) estimated_size += 64; // Extra for wrapper
   
   U8 *buffer = malloc(estimated_size);
   U8 *ptr = buffer;
@@ -323,6 +334,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       pass_buf = buffer;  // Enable actual emission
     } else {
       pass_buf = NULL;    // Just count bytes
+    }
+    
+    // Add prologue for expressions with calls
+    if (has_call && !is_function) {
+      RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF0<<20)); // addi sp, sp, -16
+      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (8<<7) | (3<<12) | (RV_SP<<15) | (RV_RA<<20)); // sd ra, 8(sp)
+      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_S0<<20) | (3<<12)); // sd s0, 0(sp)
+      RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_S0<<7) | (RV_SP<<15) | (16<<20)); // addi s0, sp, 16
     }
     
     while (ic) {
@@ -532,46 +551,49 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_S0<<15) | ((ic->ic_data & 0xFFF)<<20));
         stack_depth_pass++;
         break;
-      case IC_CALL:
+      case IC_CALL_INDIRECT2:
         {
-          // Function call - TempleOS approach
-          CHashFun *func = (CHashFun*)ic->ic_data;
-          if (func && func->exe_addr) {
-            I64 arg_count = func->arg_cnt;
-            
-            // Handle argument passing (RISC-V calling convention)
-            if (arg_count >= 2) {
-              // mv a1, a0
-              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A1<<7) | (RV_A0<<15));
-              // ld a0, 0(sp)
-              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
-              // addi sp, sp, 8 (or more for additional args)
-              I64 cleanup = (arg_count - 1) * 8;
-              if (cleanup > 0 && cleanup < 2048) {
-                RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup & 0xFFF)<<20));
-              }
-              stack_depth_pass = stack_depth_pass - arg_count;
-            } else if (arg_count == 1) {
-              stack_depth_pass--;
+          // Indirect call - load exe_addr at runtime
+          // ic_data = &func->exe_addr (pointer to the field)
+          I64 *exe_addr_ptr = (I64*)ic->ic_data;
+          I64 arg_count = cc->last_call_arg_cnt;
+          
+          // Handle argument passing
+          if (arg_count >= 2) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A1<<7) | (RV_A0<<15)); // mv a1, a0
+            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
+            I64 cleanup = (arg_count - 1) * 8;
+            if (cleanup > 0 && cleanup < 2048) {
+              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup & 0xFFF)<<20));
             }
-            
-            // Load function address and call (absolute addressing)
-            I64 target = func->exe_addr;
-            U32 hi = (target >> 12) & 0xFFFFF;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | (hi<<12)); // lui t0, hi
-            I64 lo = target & 0xFFF;
-            if (lo) {
-              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_T0<<15) | ((lo & 0xFFF)<<20)); // addi t0, t0, lo
-            }
-            // Clear sign extension if needed
-            if (target & 0x80000000) {
-              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (1<<12) | (RV_T0<<15) | (32<<20)); // slli t0, t0, 32
-              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (5<<12) | (RV_T0<<15) | (32<<20)); // srli t0, t0, 32
-            }
-            RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15)); // jalr ra, t0
+            stack_depth_pass = stack_depth_pass - arg_count;
+          } else if (arg_count == 1) {
+            stack_depth_pass--;
           }
+          
+          // Load exe_addr from memory (indirect)
+          // exe_addr_ptr points to the exe_addr field in CHashFun struct
+          I64 addr = (I64)exe_addr_ptr;
+          
+          
+          U32 hi = (addr >> 12) & 0xFFFFF;
+          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | (hi<<12)); // lui t0, hi
+          I64 lo = addr & 0xFFF;
+          if (lo) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_T0<<15) | ((lo & 0xFFF)<<20)); // addi t0, t0, lo
+          }
+          if (addr & 0x80000000) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (1<<12) | (RV_T0<<15) | (32<<20)); // slli
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (5<<12) | (RV_T0<<15) | (32<<20)); // srli
+          }
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_T0<<15)); // ld t0, 0(t0)
+          RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15)); // jalr ra, t0
           stack_depth_pass++;
         }
+        break;
+      case IC_CALL:
+        // Not used in REPL - functions use IC_CALL_INDIRECT2
+        stack_depth_pass++;
         break;
       case IC_END_EXP:
         stack_depth_pass = 0;
@@ -591,21 +613,15 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         // No code generated
         break;
       case IC_RET:
-        // Generate ret instruction ONLY for expressions (not functions with IC_LEAVE)
-        // Check if IC chain has IC_LEAVE
-        {
-          Bool has_leave = false;
-          CIntermediateCode *check = cc->ic_head;
-          while (check) {
-            if (check->ic_code == IC_LEAVE) {
-              has_leave = true;
-              break;
-            }
-            check = check->next;
+        // Generate ret instruction with epilogue for expressions
+        if (!is_function) {
+          if (has_call) {
+            // Epilogue: restore ra/s0
+            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_RA<<7) | (3<<12) | (RV_SP<<15) | (8<<20)); // ld ra, 8(sp)
+            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_S0<<7) | (3<<12) | (RV_SP<<15)); // ld s0, 0(sp)
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (16<<20)); // addi sp, sp, 16
           }
-          if (!has_leave) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x00008067); // ret
-          }
+          RVU32(pass_buf, &pass_ptr, &rip, 0x00008067); // ret
         }
         break;
       default:
@@ -830,46 +846,49 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_S0<<15) | ((ic->ic_data & 0xFFF)<<20));
         stack_depth_final++;
         break;
-      case IC_CALL:
+      case IC_CALL_INDIRECT2:
         {
-          // Function call - TempleOS approach
-          CHashFun *func = (CHashFun*)ic->ic_data;
-          if (func && func->exe_addr) {
-            I64 arg_count = func->arg_cnt;
-            
-            // Handle argument passing (RISC-V calling convention)
-            if (arg_count >= 2) {
-              // mv a1, a0
-              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A1<<7) | (RV_A0<<15));
-              // ld a0, 0(sp)
-              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
-              // addi sp, sp, 8 (or more for additional args)
-              I64 cleanup = (arg_count - 1) * 8;
-              if (cleanup > 0 && cleanup < 2048) {
-                RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup & 0xFFF)<<20));
-              }
-              stack_depth_final = stack_depth_final - arg_count;
-            } else if (arg_count == 1) {
-              stack_depth_final--;
+          // Indirect call - load exe_addr at runtime
+          // ic_data = &func->exe_addr (pointer to the field)
+          I64 *exe_addr_ptr = (I64*)ic->ic_data;
+          I64 arg_count = cc->last_call_arg_cnt;
+          
+          // Handle argument passing
+          if (arg_count >= 2) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A1<<7) | (RV_A0<<15)); // mv a1, a0
+            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
+            I64 cleanup = (arg_count - 1) * 8;
+            if (cleanup > 0 && cleanup < 2048) {
+              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup & 0xFFF)<<20));
             }
-            
-            // Load function address and call (absolute addressing)
-            I64 target = func->exe_addr;
-            U32 hi = (target >> 12) & 0xFFFFF;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | (hi<<12)); // lui t0, hi
-            I64 lo = target & 0xFFF;
-            if (lo) {
-              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_T0<<15) | ((lo & 0xFFF)<<20)); // addi t0, t0, lo
-            }
-            // Clear sign extension if needed
-            if (target & 0x80000000) {
-              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (1<<12) | (RV_T0<<15) | (32<<20)); // slli t0, t0, 32
-              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (5<<12) | (RV_T0<<15) | (32<<20)); // srli t0, t0, 32
-            }
-            RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15)); // jalr ra, t0
+            stack_depth_final = stack_depth_final - arg_count;
+          } else if (arg_count == 1) {
+            stack_depth_final--;
           }
+          
+          // Load exe_addr from memory (indirect)
+          // exe_addr_ptr points to the exe_addr field in CHashFun struct
+          I64 addr = (I64)exe_addr_ptr;
+          
+          
+          U32 hi = (addr >> 12) & 0xFFFFF;
+          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | (hi<<12)); // lui t0, hi
+          I64 lo = addr & 0xFFF;
+          if (lo) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_T0<<15) | ((lo & 0xFFF)<<20)); // addi t0, t0, lo
+          }
+          if (addr & 0x80000000) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (1<<12) | (RV_T0<<15) | (32<<20)); // slli
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (5<<12) | (RV_T0<<15) | (32<<20)); // srli
+          }
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_T0<<15)); // ld t0, 0(t0)
+          RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15)); // jalr ra, t0
           stack_depth_final++;
         }
+        break;
+      case IC_CALL:
+        // Not used in REPL - functions use IC_CALL_INDIRECT2
+        stack_depth_final++;
         break;
       case IC_END_EXP:
         stack_depth_final = 0;
@@ -889,21 +908,15 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         // No code generated
         break;
       case IC_RET:
-        // Generate ret instruction ONLY for expressions (not functions with IC_LEAVE)
-        // Check if IC chain has IC_LEAVE
-        {
-          Bool has_leave = false;
-          CIntermediateCode *check = cc->ic_head;
-          while (check) {
-            if (check->ic_code == IC_LEAVE) {
-              has_leave = true;
-              break;
-            }
-            check = check->next;
+        // Generate ret instruction with epilogue for expressions
+        if (!is_function) {
+          if (has_call) {
+            // Epilogue: restore ra/s0
+            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_RA<<7) | (3<<12) | (RV_SP<<15) | (8<<20)); // ld ra, 8(sp)
+            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_S0<<7) | (3<<12) | (RV_SP<<15)); // ld s0, 0(sp)
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (16<<20)); // addi sp, sp, 16
           }
-          if (!has_leave) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x00008067); // ret
-          }
+          RVU32(pass_buf, &pass_ptr, &rip, 0x00008067); // ret
         }
         break;
       default:
@@ -950,7 +963,7 @@ U8 *CompileExpression(Compiler *cc, I64 *size_out) {
   Bool has_call = false;
   ic = cc->ic_head;
   while (ic) {
-    if (ic->ic_code == IC_CALL) {
+    if (ic->ic_code == IC_CALL || ic->ic_code == IC_CALL_INDIRECT2) {
       has_call = true;
       break;
     }
@@ -962,8 +975,12 @@ U8 *CompileExpression(Compiler *cc, I64 *size_out) {
     return CompileAOT(cc, size_out);
   }
   
-  // Has calls - need prologue/epilogue
-  // Compile with CompileAOT which handles everything
+  // Has calls - need wrapper with prologue/epilogue
+  // Prepend IC_ENTER and append proper IC_LEAVE
+  // Actually, just use CompileAOT which already handles IC_RET
+  // The issue is we need to save ra for the call
+  // TempleOS does this by having COCCompile add the wrapper
+  // For now, CompileAOT should handle it via IC_RET
   return CompileAOT(cc, size_out);
 }
 

@@ -226,6 +226,9 @@ void repl(void) {
                 extern void **CompilerGetLastFuncAddr(void *cc);
                 void **func_exe_addr_ptr = CompilerGetLastFuncAddr(cc);
                 if (func_exe_addr_ptr) {
+                    puts_uart("[SET exe_addr=");
+                    print_hex((U64)machine_code);
+                    puts_uart("]\n");
                     *func_exe_addr_ptr = machine_code;
                     // Instruction cache coherency for function code
                     __asm__ volatile("fence.i" ::: "memory");

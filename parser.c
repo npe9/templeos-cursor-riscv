@@ -324,7 +324,11 @@ static bool ParsePrimary(Compiler *cc) {
         // Function found in hash table
         CHashFun *func = (CHashFun*)entry;
         if (func) {
-          ICAdd(cc, IC_CALL, (I64)func, RT_I64);
+          // Use IC_CALL_INDIRECT2 for REPL (exe_addr set after parsing)
+          // ic_data = &func->exe_addr (address of field), so it loads at runtime
+          ICAdd(cc, IC_CALL_INDIRECT2, (I64)&func->exe_addr, RT_I64);
+          // Store arg_cnt for compiler to use
+          cc->last_call_arg_cnt = func->arg_cnt;
         } else {
           free(name);
           return false;
