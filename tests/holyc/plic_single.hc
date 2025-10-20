@@ -1,0 +1,7 @@
+// Single variable PLIC test
+I64 Main() {
+  U8 *plic;
+  plic = 0x0C000004;
+  *plic = 7;
+  return 0x0C000004;
+}
