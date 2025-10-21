@@ -2489,8 +2489,9 @@ bool ParseFunction(Compiler *cc) {
   __asm__ volatile("fence.i" ::: "memory");
   #endif
   
-  // Don't add duplicate hash entry - already added earlier at line 2204
-  // The REPL will update exe_addr via CompilerGetLastFuncAddr
+  // Update exe_addr in the hash entry (for recursion support)
+  // Hash entry was added at line 2204, now update it with compiled address
+  func_hash->exe_addr = (I64)compiled_code;
   
   free(name);
   return true;

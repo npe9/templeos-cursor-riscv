@@ -221,14 +221,9 @@ void repl(void) {
             I64 code_size = 0;
             U8 *machine_code = CompileAOT(cc, &code_size);
             if (machine_code && code_size > 0) {
-                // Set exe_addr in hash table (match TempleOS PrsStmt.HC:172 or 183)
-                extern void **CompilerGetLastFuncAddr(void *cc);
-                void **func_exe_addr_ptr = CompilerGetLastFuncAddr(cc);
-                if (func_exe_addr_ptr) {
-                    *func_exe_addr_ptr = machine_code;
-                    // Instruction cache coherency for function code
-                    __asm__ volatile("fence.i" ::: "memory");
-                }
+                // exe_addr is already set by ParseFunction for recursion support
+                // Just ensure instruction cache coherency
+                __asm__ volatile("fence.i" ::: "memory");
             }
         } else {
             // Expression/statement - parse, compile, execute immediately
