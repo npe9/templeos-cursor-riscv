@@ -439,18 +439,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           // sd a0, 0(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
         }
-        if (ic->ic_data >= -2048 && ic->ic_data <= 2047) {
-          // addi a0, zero, imm
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | ((ic->ic_data & 0xFFF)<<20));
-        } else {
-          // LUI + ADDI for large values
+        // ALWAYS use LUI+ADDI to ensure fixed code size (no conditionals!)
+        // This fixes infinite loop in multi-pass when loading addresses
+        {
           I64 hi = (ic->ic_data + 0x800) >> 12;
           I64 lo = ic->ic_data & 0xFFF;
           if (lo & 0x800) lo |= 0xFFFFFFFFFFFFF000LL;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_A0<<7) | ((hi & 0xFFFFF)<<12));
-          if (lo) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20));
-          }
+          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_A0<<7) | ((hi & 0xFFFFF)<<12)); // lui
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20)); // addi (ALWAYS)
         }
         stack_depth_pass++;
         break;
@@ -630,16 +626,12 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           I64 addr = (I64)exe_addr_ptr;
           
           
+          // Load 64-bit address into t0 with FIXED instruction count (no conditionals!)
+          // This ensures the code size doesn't change between multi-pass iterations
           U32 hi = (addr >> 12) & 0xFFFFF;
           RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | (hi<<12)); // lui t0, hi
           I64 lo = addr & 0xFFF;
-          if (lo) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_T0<<15) | ((lo & 0xFFF)<<20)); // addi t0, t0, lo
-          }
-          if (addr & 0x80000000) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (1<<12) | (RV_T0<<15) | (32<<20)); // slli
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (5<<12) | (RV_T0<<15) | (32<<20)); // srli
-          }
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_T0<<15) | ((lo & 0xFFF)<<20)); // addi t0, t0, lo (ALWAYS)
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_T0<<15)); // ld t0, 0(t0)
           RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15)); // jalr ra, t0
           
@@ -791,18 +783,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           // sd a0, 0(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
         }
-        if (ic->ic_data >= -2048 && ic->ic_data <= 2047) {
-          // addi a0, zero, imm
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | ((ic->ic_data & 0xFFF)<<20));
-        } else {
-          // LUI + ADDI for large values
+        // ALWAYS use LUI+ADDI to ensure fixed code size (no conditionals!)
+        // This fixes infinite loop in multi-pass when loading addresses
+        {
           I64 hi = (ic->ic_data + 0x800) >> 12;
           I64 lo = ic->ic_data & 0xFFF;
           if (lo & 0x800) lo |= 0xFFFFFFFFFFFFF000LL;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_A0<<7) | ((hi & 0xFFFFF)<<12));
-          if (lo) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20));
-          }
+          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_A0<<7) | ((hi & 0xFFFFF)<<12)); // lui
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20)); // addi (ALWAYS)
         }
         stack_depth_final++;
         break;
@@ -975,16 +963,12 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           I64 addr = (I64)exe_addr_ptr;
           
           
+          // Load 64-bit address into t0 with FIXED instruction count (no conditionals!)
+          // This ensures the code size doesn't change between multi-pass iterations
           U32 hi = (addr >> 12) & 0xFFFFF;
           RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | (hi<<12)); // lui t0, hi
           I64 lo = addr & 0xFFF;
-          if (lo) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_T0<<15) | ((lo & 0xFFF)<<20)); // addi t0, t0, lo
-          }
-          if (addr & 0x80000000) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (1<<12) | (RV_T0<<15) | (32<<20)); // slli
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (5<<12) | (RV_T0<<15) | (32<<20)); // srli
-          }
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_T0<<15) | ((lo & 0xFFF)<<20)); // addi t0, t0, lo (ALWAYS)
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_T0<<15)); // ld t0, 0(t0)
           RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15)); // jalr ra, t0
           
