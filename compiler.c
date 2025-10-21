@@ -639,6 +639,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           }
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_T0<<15)); // ld t0, 0(t0)
           RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15)); // jalr ra, t0
+          
+          // After call returns, clean up remaining stack arguments (for >8 params)
+          if (arg_count > 8) {
+            I64 stack_args = arg_count - 8;
+            I64 cleanup_bytes = stack_args * 8;
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup_bytes & 0xFFF)<<20)); // addi sp, sp, cleanup_bytes
+          }
+          
           stack_depth_pass++;
         }
         break;
@@ -974,6 +982,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           }
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_T0<<15)); // ld t0, 0(t0)
           RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15)); // jalr ra, t0
+          
+          // After call returns, clean up remaining stack arguments (for >8 params)
+          if (arg_count > 8) {
+            I64 stack_args = arg_count - 8;
+            I64 cleanup_bytes = stack_args * 8;
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup_bytes & 0xFFF)<<20)); // addi sp, sp, cleanup_bytes
+          }
+          
           stack_depth_final++;
         }
         break;
