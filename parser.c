@@ -2194,7 +2194,7 @@ bool ParseFunction(Compiler *cc) {
   CHashFun *func_hash = calloc(1, sizeof(CHashFun));
   func_hash->str = strdup(name);
   func_hash->type = HTT_FUN;
-  func_hash->exe_addr = (I64)func_label;  // Function entry point (label)
+  func_hash->exe_addr = 0;  // Will be set by REPL after compilation
   func_hash->return_class = NULL;  // TODO: proper type
   func_hash->arg_cnt = 0;  // Will be set below
   
