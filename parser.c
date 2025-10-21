@@ -2149,9 +2149,7 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
 // ═══════════════════════════════════════════════════════════════
 
 bool ParseFunction(Compiler *cc) {
-  // Save IC chain state (for multi-function AOT compilation)
-  CIntermediateCode *saved_ic_head = cc->ic_head;
-  CIntermediateCode *saved_ic_tail = cc->ic_tail;
+  // Clear IC chain for this function (TempleOS does this per-function)
   cc->ic_head = NULL;
   cc->ic_tail = NULL;
   
@@ -2169,16 +2167,12 @@ bool ParseFunction(Compiler *cc) {
     return_type = RT_I64;
   } else {
     Error(cc, "Expected type");
-    cc->ic_head = saved_ic_head;
-    cc->ic_tail = saved_ic_tail;
     return false;
   }
   
   // Parse function name
   if (cc->lex.token != TK_IDENT) {
     Error(cc, "Expected function name");
-    cc->ic_head = saved_ic_head;
-    cc->ic_tail = saved_ic_tail;
     return false;
   }
   
@@ -2209,8 +2203,6 @@ bool ParseFunction(Compiler *cc) {
   
   if (!LexExpect(cc, '(')) {
     free(name);
-    cc->ic_head = saved_ic_head;
-    cc->ic_tail = saved_ic_tail;
     return false;
   }
   
@@ -2368,9 +2360,7 @@ bool ParseFunction(Compiler *cc) {
   // For now, just mark the position
   CIntermediateCode *enter_ic = ICNew(cc, IC_ENTER);
   enter_ic->ic_data = param_count;  // Will be updated after parsing body
-  if (!cc->ic_head) cc->ic_head = enter_ic;
-  if (cc->ic_tail) cc->ic_tail->next = enter_ic;
-  cc->ic_tail = enter_ic;
+  // ICNew already linked it into the chain, no manual linking needed!
   
   I64 saved_locals = cc->locals_size;
   cc->locals_size = 0;
@@ -2501,9 +2491,7 @@ bool ParseFunction(Compiler *cc) {
   // Hash entry was added at line 2204, now update it with compiled address
   func_hash->exe_addr = (I64)compiled_code;
   
-  // Restore IC chain state (for multi-function AOT compilation)
-  cc->ic_head = saved_ic_head;
-  cc->ic_tail = saved_ic_tail;
+  // IC chain is already consumed by CompileAOT, will be cleared for next function
   
   free(name);
   return true;

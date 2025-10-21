@@ -439,14 +439,26 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           // sd a0, 0(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
         }
-        // ALWAYS use LUI+ADDI to ensure fixed code size (no conditionals!)
-        // This fixes infinite loop in multi-pass when loading addresses
+        // Load 64-bit immediate with FIXED instruction count
+        // For full 64-bit values, we need to load in parts
         {
-          I64 hi = (ic->ic_data + 0x800) >> 12;
-          I64 lo = ic->ic_data & 0xFFF;
+          // Lower 32 bits: LUI + ADDI
+          I64 val = ic->ic_data;
+          I64 lo32 = val & 0xFFFFFFFF;
+          I64 hi32 = (val >> 32) & 0xFFFFFFFF;
+          
+          I64 hi = (lo32 + 0x800) >> 12;
+          I64 lo = lo32 & 0xFFF;
           if (lo & 0x800) lo |= 0xFFFFFFFFFFFFF000LL;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_A0<<7) | ((hi & 0xFFFFF)<<12)); // lui
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20)); // addi (ALWAYS)
+          
+          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_A0<<7) | ((hi & 0xFFFFF)<<12)); // lui a0, hi
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20)); // addi a0, a0, lo
+          
+          // Upper 32 bits (if non-zero, load into t0 and combine)
+          // ALWAYS emit these instructions for fixed code size!
+          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | ((hi32 & 0xFFFFF)<<12)); // lui t0, hi32
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (1<<12) | (RV_T0<<15) | (32<<20)); // slli t0, t0, 32
+          RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_A0<<15) | (RV_T0<<20)); // add a0, a0, t0
         }
         stack_depth_pass++;
         break;
@@ -783,14 +795,26 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           // sd a0, 0(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
         }
-        // ALWAYS use LUI+ADDI to ensure fixed code size (no conditionals!)
-        // This fixes infinite loop in multi-pass when loading addresses
+        // Load 64-bit immediate with FIXED instruction count
+        // For full 64-bit values, we need to load in parts
         {
-          I64 hi = (ic->ic_data + 0x800) >> 12;
-          I64 lo = ic->ic_data & 0xFFF;
+          // Lower 32 bits: LUI + ADDI
+          I64 val = ic->ic_data;
+          I64 lo32 = val & 0xFFFFFFFF;
+          I64 hi32 = (val >> 32) & 0xFFFFFFFF;
+          
+          I64 hi = (lo32 + 0x800) >> 12;
+          I64 lo = lo32 & 0xFFF;
           if (lo & 0x800) lo |= 0xFFFFFFFFFFFFF000LL;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_A0<<7) | ((hi & 0xFFFFF)<<12)); // lui
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20)); // addi (ALWAYS)
+          
+          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_A0<<7) | ((hi & 0xFFFFF)<<12)); // lui a0, hi
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20)); // addi a0, a0, lo
+          
+          // Upper 32 bits (if non-zero, load into t0 and combine)
+          // ALWAYS emit these instructions for fixed code size!
+          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | ((hi32 & 0xFFFFF)<<12)); // lui t0, hi32
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (1<<12) | (RV_T0<<15) | (32<<20)); // slli t0, t0, 32
+          RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_A0<<15) | (RV_T0<<20)); // add a0, a0, t0
         }
         stack_depth_final++;
         break;
