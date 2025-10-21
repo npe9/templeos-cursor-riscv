@@ -316,12 +316,6 @@ static bool ParsePrimary(Compiler *cc) {
         // Function found in hash table
         CHashFun *func = (CHashFun*)entry;
         if (func) {
-          // Debug: print the address we're storing
-          #ifndef BARE_METAL
-          fprintf(stderr, "[PARSE CALL: func=%p, &exe_addr=%p, exe_addr=%p]\n", 
-                  (void*)func, (void*)&func->exe_addr, func->exe_addr);
-          #endif
-          
           // Use IC_CALL_INDIRECT2 for REPL (exe_addr set after parsing)
           // ic_data = &func->exe_addr (address of field), so it loads at runtime
           ICAdd(cc, IC_CALL_INDIRECT2, (I64)&func->exe_addr, RT_I64);
@@ -2155,6 +2149,12 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
 // ═══════════════════════════════════════════════════════════════
 
 bool ParseFunction(Compiler *cc) {
+  // Save IC chain state (for multi-function AOT compilation)
+  CIntermediateCode *saved_ic_head = cc->ic_head;
+  CIntermediateCode *saved_ic_tail = cc->ic_tail;
+  cc->ic_head = NULL;
+  cc->ic_tail = NULL;
+  
   // Parse return type - could be keyword OR identifier from hash table
   U8 return_type = RT_I64;  // Default
   
@@ -2169,12 +2169,16 @@ bool ParseFunction(Compiler *cc) {
     return_type = RT_I64;
   } else {
     Error(cc, "Expected type");
+    cc->ic_head = saved_ic_head;
+    cc->ic_tail = saved_ic_tail;
     return false;
   }
   
   // Parse function name
   if (cc->lex.token != TK_IDENT) {
     Error(cc, "Expected function name");
+    cc->ic_head = saved_ic_head;
+    cc->ic_tail = saved_ic_tail;
     return false;
   }
   
@@ -2205,6 +2209,8 @@ bool ParseFunction(Compiler *cc) {
   
   if (!LexExpect(cc, '(')) {
     free(name);
+    cc->ic_head = saved_ic_head;
+    cc->ic_tail = saved_ic_tail;
     return false;
   }
   
@@ -2416,6 +2422,8 @@ bool ParseFunction(Compiler *cc) {
         final_param_offset = -(frame_size - 16 - i * 8);
       } else {
         // Stack parameter: on caller's stack (above s0)
+        // The (i-8)th stack param is at s0 + (i-8)*8
+        // But due to how wrapper pushes args, need to adjust
         final_param_offset = (i - 8) * 8;
       }
       
@@ -2492,6 +2500,10 @@ bool ParseFunction(Compiler *cc) {
   // Update exe_addr in the hash entry (for recursion support)
   // Hash entry was added at line 2204, now update it with compiled address
   func_hash->exe_addr = (I64)compiled_code;
+  
+  // Restore IC chain state (for multi-function AOT compilation)
+  cc->ic_head = saved_ic_head;
+  cc->ic_tail = saved_ic_tail;
   
   free(name);
   return true;

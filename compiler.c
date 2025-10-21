@@ -368,7 +368,8 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         {
           I64 param_cnt = ic->ic_data & 0xFFFFFFFF;
           I64 locals_size = ic->ic_data >> 32;
-          I64 param_size = param_cnt * 8;
+          I64 reg_param_cnt = param_cnt > 8 ? 8 : param_cnt; // Only first 8 in frame
+          I64 param_size = reg_param_cnt * 8;
           I64 frame_size = 16 + param_size + locals_size;
           
           // addi sp, sp, -frame_size
@@ -394,7 +395,8 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         {
           I64 param_cnt_leave = ic->ic_data & 0xFFFFFFFF;
           I64 locals_size_leave = ic->ic_data >> 32;
-          I64 frame_size_leave = 16 + (param_cnt_leave * 8) + locals_size_leave;
+          I64 reg_param_cnt_leave = param_cnt_leave > 8 ? 8 : param_cnt_leave;
+          I64 frame_size_leave = 16 + (reg_param_cnt_leave * 8) + locals_size_leave;
           
           // ld ra, 0(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_RA<<7) | (3<<12) | (RV_SP<<15));
@@ -717,7 +719,8 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         {
           I64 param_cnt = ic->ic_data & 0xFFFFFFFF;
           I64 locals_size = ic->ic_data >> 32;
-          I64 param_size = param_cnt * 8;
+          I64 reg_param_cnt = param_cnt > 8 ? 8 : param_cnt; // Only first 8 in frame
+          I64 param_size = reg_param_cnt * 8;
           I64 frame_size = 16 + param_size + locals_size;
           
           // addi sp, sp, -frame_size
@@ -742,7 +745,8 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         {
           I64 param_cnt_leave = ic->ic_data & 0xFFFFFFFF;
           I64 locals_size_leave = ic->ic_data >> 32;
-          I64 frame_size_leave = 16 + (param_cnt_leave * 8) + locals_size_leave;
+          I64 reg_param_cnt_leave = param_cnt_leave > 8 ? 8 : param_cnt_leave;
+          I64 frame_size_leave = 16 + (reg_param_cnt_leave * 8) + locals_size_leave;
           
           // ld ra, 0(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_RA<<7) | (3<<12) | (RV_SP<<15));
