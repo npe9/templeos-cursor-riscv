@@ -2411,8 +2411,9 @@ bool ParseFunction(Compiler *cc) {
       I64 final_param_offset;
       
       if (i < 8) {
-        // Register parameter: saved in our frame
-        final_param_offset = -(frame_size - cc->locals_size - i * 8);
+        // Register parameter: saved at sp+16+i*8, s0=sp+frame_size
+        // Offset from s0 = (sp+16+i*8) - (sp+frame_size) = 16+i*8-frame_size
+        final_param_offset = -(frame_size - 16 - i * 8);
       } else {
         // Stack parameter: on caller's stack (above s0)
         final_param_offset = (i - 8) * 8;
