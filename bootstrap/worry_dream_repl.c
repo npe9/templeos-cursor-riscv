@@ -3,9 +3,16 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include "../holyc_compiler.h"
 
 #define UART_BASE 0x10000000
+#define NULL ((void*)0)
+
+typedef long long I64;
+typedef unsigned char U8;
+typedef unsigned int U32;
+typedef unsigned long long U64;
+typedef int bool;
+typedef int Bool;
 #define true 1
 #define false 0
 
@@ -123,6 +130,9 @@ long long atoll(const char *s) {
     while (isdigit(*s)) v = v * 10 + (*s++ - '0');
     return neg ? -v : v;
 }
+int printf(const char *fmt, ...) { return 0; }
+int fprintf(void *f, const char *fmt, ...) { return 0; }
+int snprintf(char *s, size_t n, const char *fmt, ...) { return 0; }
 void *memset(void *s, int c, size_t n) {
     U8 *p = s;
     while (n--) *p++ = c;
@@ -134,17 +144,25 @@ void *memcpy(void *d, const void *s, size_t n) {
     while (n--) *pd++ = *ps++;
     return d;
 }
-long long strtoll(const char *s, char **end, int base) { return atoll(s); }
-double atof(const char *s) { return 0.0; }
-const char _ctype_[256] = {0};
+typedef struct { int dummy; } FILE;
 FILE *fopen(const char *p, const char *m) { return NULL; }
 int fclose(FILE *f) { return 0; }
 size_t fread(void *ptr, size_t size, size_t n, FILE *f) { return 0; }
 size_t fwrite(const void *ptr, size_t size, size_t n, FILE *f) { return 0; }
 int fseek(FILE *f, long offset, int whence) { return 0; }
 long ftell(FILE *f) { return 0; }
+long long strtoll(const char *s, char **end, int base) { return atoll(s); }
+double atof(const char *s) { return 0.0; }
+const char _ctype_[256] = {0};
+void *_impure_ptr = NULL;
+void *stdin = NULL;
+void *stdout = NULL;
+void *stderr = NULL;
 
-// Compiler interface - now provided by holyc_compiler.h
+// Compiler interface
+typedef struct Compiler Compiler;
+extern Compiler *CompilerNew(const char *src, const char *fn);
+extern void CompilerFree(Compiler *cc);
 extern Bool ParseProgram(Compiler *cc);
 extern U8 *CompileAOT(Compiler *cc, I64 *size);
 
@@ -159,9 +177,9 @@ void repl(void) {
     int pos;
     char c;
     
-    // Create compiler once and reuse across REPL iterations
-    // This ensures the hash table persists across inputs
-    Compiler *cc = CompilerNew("", "repl");
+    // Note: We don't create a hash table here.
+    // CompilerNew() creates and manages the global persistent hash table (g_persistent_hash_table)
+    // This ensures ALL compiler instances share the SAME hash table across REPL iterations
     
     while (1) {
         puts_uart("> ");
@@ -190,26 +208,9 @@ void repl(void) {
         
         if (pos == 0) continue;
         
-        // Reinitialize lexer and compiler state for new input (keep hash table)
-        if (cc->lex.src) free(cc->lex.src);
-        cc->lex.src = strdup(input);
-        cc->lex.ptr = cc->lex.src;
-        cc->lex.line = 1;
-        cc->lex.col = 1;
-        cc->lex.hash_entry = NULL;
-        
-        // Reset IC chain for new statement
-        cc->ic_head = NULL;
-        cc->ic_tail = NULL;
-        cc->labels = NULL;
-        cc->label_counter = 0;
-        cc->locals_size = 0;
-        
+        // Compile and execute like TempleOS LexStmt2Bin
+        Compiler *cc = CompilerNew(input, "repl");
         if (!cc) continue;
-        
-        // Get first token
-        extern void LexNext(Compiler *cc);
-        LexNext(cc);
         
         // Try ParseFunction first (for function definitions)
         extern Bool ParseFunction(Compiler *cc);
@@ -224,46 +225,29 @@ void repl(void) {
                 // Set exe_addr in hash table (match TempleOS PrsStmt.HC:172 or 183)
                 extern void **CompilerGetLastFuncAddr(void *cc);
                 void **func_exe_addr_ptr = CompilerGetLastFuncAddr(cc);
-                puts_uart("[func_exe_addr_ptr=");
-                print_hex((I64)func_exe_addr_ptr);
-                puts_uart("]\n");
                 if (func_exe_addr_ptr) {
-                    *func_exe_addr_ptr = machine_code;
-                    puts_uart("[Set *");
-                    print_hex((I64)func_exe_addr_ptr);
-                    puts_uart(" = ");
-                    print_hex((I64)machine_code);
+                    puts_uart("[SET exe_addr=");
+                    print_hex((U64)machine_code);
                     puts_uart("]\n");
+                    *func_exe_addr_ptr = machine_code;
                     // Instruction cache coherency for function code
                     __asm__ volatile("fence.i" ::: "memory");
-                } else {
-                    puts_uart("[NULL ptr!]\n");
                 }
             }
         } else {
             // Expression/statement - parse, compile, execute immediately
             // Match TempleOS LexStmt2Bin flow (CMain.HC:1-33)
-            
-            // Reset lexer since ParseFunction consumed input
-            cc->lex.ptr = cc->lex.src;
-            cc->lex.line = 1;
-            cc->lex.col = 1;
-            
-            // Reset IC chain since ParseFunction may have added some ICs
-            cc->ic_head = NULL;
-            cc->ic_tail = NULL;
-            cc->labels = NULL;
-            cc->label_counter = 0;
-            cc->locals_size = 0;
+            CompilerFree(cc);
+            cc = CompilerNew(input, "repl");
+            if (!cc) continue;
             
             // Parse statement (like TempleOS PrsStmt)
-            // Get first token after lexer reset
-            LexNext(cc);
             extern Bool ParseStatement(Compiler *cc);
             Bool parsed = ParseStatement(cc);
             
             if (parsed) {
                 // Add return (match TempleOS LexStmt2Bin:13-14)
+                extern void ICAdd(void *cc, int code, long arg1, int arg2);
                 ICAdd(cc, 0x09, 0, 0);  // IC_RETURN_VAL2
                 ICAdd(cc, 0x5B, 0, 0);  // IC_RET
                 
@@ -281,10 +265,6 @@ void repl(void) {
                     // Instruction cache coherency
                     __asm__ volatile("fence.i" ::: "memory");
                     
-                    puts_uart("[Executing wrapper at ");
-                    print_hex((I64)machine_code);
-                    puts_uart("]\n");
-                    
                     // TempleOS approach: Just cast compiled code to function and call it
                     // This is EXACTLY what LexStmt2Bin does (CMain.HC:15,32)
                     typedef I64 (*FuncPtr)();
@@ -299,7 +279,7 @@ void repl(void) {
             }
         }
         
-        // Don't free the compiler - reuse it for the next iteration
+        CompilerFree(cc);
     }
 }
 

@@ -2488,16 +2488,8 @@ bool ParseFunction(Compiler *cc) {
   __asm__ volatile("fence.i" ::: "memory");
   #endif
   
-  // Add function to hash table (like HolyC PrsStmt.HC:151-156)
-  CHashFun *func_entry = malloc(sizeof(CHashFun));
-  func_entry->type = HTT_FUN;
-  func_entry->str = strdup(name);  // name, not func_name
-  func_entry->exe_addr = (I64)compiled_code;  // Set to compiled code (PrsStmt.HC:183)
-  func_entry->arg_cnt = param_count;
-  func_entry->return_class = NULL;  // Simplified for now
-  
-  // Add to hash table
-  HashAdd((CHashEntry*)func_entry, cc->hash_table);
+  // Don't add duplicate hash entry - already added earlier at line 2204
+  // The REPL will update exe_addr via CompilerGetLastFuncAddr
   
   free(name);
   return true;
