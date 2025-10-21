@@ -576,11 +576,12 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
             // Need to: push a0 to stack, then load a0-a7 from stack, clean up 8 args
             RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
             RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (3<<12) | (RV_SP<<15) | (RV_A0<<20)); // sd a0, 0(sp)
-            // Now stack has: [arg9+, arg8, arg7, arg6, arg5, arg4, arg3, arg2, arg1, arg0] (top to bottom)
-            // Load a0-a7 from stack (skip top arg which stays on stack)
+            // Stack layout after pushing all args: [argN-1, argN-2, ..., arg1, arg0] (last pushed on top)
+            // For 9 args: [arg8=9, arg7=8, arg6=7, arg5=6, arg4=5, arg3=4, arg2=3, arg1=2, arg0=1]
+            // Load a0-a7 from stack (arg0-arg7, skip remaining stack args arg8+)
             for (I64 i = 0; i < 8; i++) {
               U8 reg = RV_A0 + i;
-              I64 offset = (8 - i) * 8; // a0 from sp+64, a1 from sp+56, etc.
+              I64 offset = (arg_count - 1 - i) * 8; // ai=argi from sp+(N-1-i)*8
               RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
             }
             // Clean up the 8 register args from stack
