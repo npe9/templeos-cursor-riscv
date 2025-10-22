@@ -86,43 +86,43 @@ Disassembly of section .text:
     800000d4:	00113023          	sd	ra,0(sp)
     800000d8:	00813423          	sd	s0,8(sp)
     800000dc:	01010413          	addi	s0,sp,16
-    800000e0:	3f6082b7          	lui	t0,0x3f608
-    800000e4:	40828293          	addi	t0,t0,1032 # 3f608408 <_binary_compiler_bin_size+0x3f608358>
+    800000e0:	1f7062b7          	lui	t0,0x1f706
+    800000e4:	8a828293          	addi	t0,t0,-1880 # 1f7058a8 <_binary_compiler_bin_size+0x1f7057f8>
     800000e8:	0002b283          	ld	t0,0(t0)
     800000ec:	000280e7          	jalr	t0
-    800000f0:	3f6082b7          	lui	t0,0x3f608
-    800000f4:	40828293          	addi	t0,t0,1032 # 3f608408 <_binary_compiler_bin_size+0x3f608358>
+    800000f0:	1f7062b7          	lui	t0,0x1f706
+    800000f4:	8a828293          	addi	t0,t0,-1880 # 1f7058a8 <_binary_compiler_bin_size+0x1f7057f8>
     800000f8:	0002b283          	ld	t0,0(t0)
     800000fc:	000280e7          	jalr	t0
-    80000100:	3f6082b7          	lui	t0,0x3f608
-    80000104:	40828293          	addi	t0,t0,1032 # 3f608408 <_binary_compiler_bin_size+0x3f608358>
+    80000100:	1f7062b7          	lui	t0,0x1f706
+    80000104:	8a828293          	addi	t0,t0,-1880 # 1f7058a8 <_binary_compiler_bin_size+0x1f7057f8>
     80000108:	0002b283          	ld	t0,0(t0)
     8000010c:	000280e7          	jalr	t0
-    80000110:	3f6082b7          	lui	t0,0x3f608
-    80000114:	40828293          	addi	t0,t0,1032 # 3f608408 <_binary_compiler_bin_size+0x3f608358>
+    80000110:	1f7062b7          	lui	t0,0x1f706
+    80000114:	8a828293          	addi	t0,t0,-1880 # 1f7058a8 <_binary_compiler_bin_size+0x1f7057f8>
     80000118:	0002b283          	ld	t0,0(t0)
     8000011c:	000280e7          	jalr	t0
-    80000120:	3f6082b7          	lui	t0,0x3f608
-    80000124:	40828293          	addi	t0,t0,1032 # 3f608408 <_binary_compiler_bin_size+0x3f608358>
+    80000120:	1f7062b7          	lui	t0,0x1f706
+    80000124:	8a828293          	addi	t0,t0,-1880 # 1f7058a8 <_binary_compiler_bin_size+0x1f7057f8>
     80000128:	0002b283          	ld	t0,0(t0)
     8000012c:	000280e7          	jalr	t0
-    80000130:	3f6082b7          	lui	t0,0x3f608
-    80000134:	40828293          	addi	t0,t0,1032 # 3f608408 <_binary_compiler_bin_size+0x3f608358>
+    80000130:	1f7062b7          	lui	t0,0x1f706
+    80000134:	8a828293          	addi	t0,t0,-1880 # 1f7058a8 <_binary_compiler_bin_size+0x1f7057f8>
     80000138:	0002b283          	ld	t0,0(t0)
     8000013c:	000280e7          	jalr	t0
-    80000140:	3f6082b7          	lui	t0,0x3f608
-    80000144:	40828293          	addi	t0,t0,1032 # 3f608408 <_binary_compiler_bin_size+0x3f608358>
+    80000140:	1f7062b7          	lui	t0,0x1f706
+    80000144:	8a828293          	addi	t0,t0,-1880 # 1f7058a8 <_binary_compiler_bin_size+0x1f7057f8>
     80000148:	0002b283          	ld	t0,0(t0)
     8000014c:	000280e7          	jalr	t0
-    80000150:	3f6082b7          	lui	t0,0x3f608
-    80000154:	40828293          	addi	t0,t0,1032 # 3f608408 <_binary_compiler_bin_size+0x3f608358>
+    80000150:	1f7062b7          	lui	t0,0x1f706
+    80000154:	8a828293          	addi	t0,t0,-1880 # 1f7058a8 <_binary_compiler_bin_size+0x1f7057f8>
     80000158:	0002b283          	ld	t0,0(t0)
     8000015c:	000280e7          	jalr	t0
-    80000160:	3f6082b7          	lui	t0,0x3f608
-    80000164:	40828293          	addi	t0,t0,1032 # 3f608408 <_binary_compiler_bin_size+0x3f608358>
+    80000160:	1f7062b7          	lui	t0,0x1f706
+    80000164:	8a828293          	addi	t0,t0,-1880 # 1f7058a8 <_binary_compiler_bin_size+0x1f7057f8>
     80000168:	0002b283          	ld	t0,0(t0)
     8000016c:	000280e7          	jalr	t0
-    80000170:	3f6082b7          	lui	t0,0x3f608
-    80000174:	40828293          	addi	t0,t0,1032 # 3f608408 <_binary_compiler_bin_size+0x3f608358>
+    80000170:	1f7062b7          	lui	t0,0x1f706
+    80000174:	8a828293          	addi	t0,t0,-1880 # 1f7058a8 <_binary_compiler_bin_size+0x1f7057f8>
     80000178:	0002b283          	ld	t0,0(t0)
     8000017c:	000280e7          	jalr	t0

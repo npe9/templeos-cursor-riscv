@@ -218,8 +218,10 @@ void repl(void) {
         if (is_function) {
             // Function definition - compile and store in hash table
             extern U8 *CompileAOT(Compiler *cc, I64 *size_out);
+            puts_uart("REPL: about to compile function");
             I64 code_size = 0;
             U8 *machine_code = CompileAOT(cc, &code_size);
+            puts_uart("REPL: function compiled");
             if (machine_code && code_size > 0) {
                 // exe_addr is already set by ParseFunction for recursion support
                 // Just ensure instruction cache coherency

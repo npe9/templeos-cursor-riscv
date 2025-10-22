@@ -2388,10 +2388,16 @@ bool ParseFunction(Compiler *cc) {
   CLabel *saved_exit_label = cc->current_function_exit;
   cc->current_function_exit = func_exit_label;
   
+  #ifdef BARE_METAL
+  #endif
+  
   if (!ParseBlock(cc)) {
     free(name);
     return false;
   }
+  
+  #ifdef BARE_METAL
+  #endif
   
   // Update ENTER with actual locals size
   // ic_data low 32 bits = param_count, high 32 bits = locals_size
