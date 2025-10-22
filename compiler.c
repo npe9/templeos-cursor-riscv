@@ -652,13 +652,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_T0<<15)); // ld t0, 0(t0)
           RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15)); // jalr ra, t0
           
-          // Clean up stack after call
-          if (arg_count > 8) {
-            // For >8 params, we pushed arg9+ to stack, so clean up arg_count * 8 bytes
-            I64 cleanup_bytes = arg_count * 8;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup_bytes & 0xFFF)<<20)); // addi sp, sp, cleanup_bytes
-            stack_depth_pass -= arg_count;
-          }
+          // Don't clean up here - IC_END_EXP will reset stack_depth
           
           stack_depth_pass++;
         }
