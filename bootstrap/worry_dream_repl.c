@@ -218,14 +218,19 @@ void repl(void) {
         if (is_function) {
             // Function definition - compile and store in hash table
             extern U8 *CompileAOT(Compiler *cc, I64 *size_out);
-            puts_uart("REPL: about to compile function");
             I64 code_size = 0;
             U8 *machine_code = CompileAOT(cc, &code_size);
-            puts_uart("REPL: function compiled");
             if (machine_code && code_size > 0) {
+                puts_uart("Compiled function: ");
+                print_hex((U64)machine_code);
+                puts_uart(" size=");
+                print_hex(code_size);
+                puts_uart("\n");
                 // exe_addr is already set by ParseFunction for recursion support
                 // Just ensure instruction cache coherency
                 __asm__ volatile("fence.i" ::: "memory");
+            } else {
+                puts_uart("ERROR: Compilation failed\n");
             }
         } else {
             // Expression/statement - parse, compile, execute immediately
@@ -268,12 +273,17 @@ void repl(void) {
                     // Instruction cache coherency
                     __asm__ volatile("fence.i" ::: "memory");
                     
+                    puts_uart("Calling code at: ");
+                    print_hex((U64)machine_code);
+                    puts_uart("\n");
+                    
                     // TempleOS approach: Just cast compiled code to function and call it
                     // This is EXACTLY what LexStmt2Bin does (CMain.HC:15,32)
                     typedef I64 (*FuncPtr)();
                     FuncPtr func_ptr = (FuncPtr)machine_code;
                     I64 result = func_ptr();
                     
+                    puts_uart("Returned from call\n");
                     // Store and display result (match TempleOS Fs->answer)
                     g_answer = result;
                     print_hex(result);

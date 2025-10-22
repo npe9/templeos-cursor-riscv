@@ -725,6 +725,12 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     }
     
     while (ic) {
+      // Set label addresses in final pass too
+      if (ic->ic_code == IC_LABEL) {
+        CLabel *lb = (CLabel*)ic->ic_data;
+        lb->addr = rip;
+      }
+      
       // Same unified switch, but now with pass_buf = buffer
       switch (ic->ic_code) {
       case IC_ENTER:
