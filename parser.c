@@ -2431,7 +2431,7 @@ bool ParseFunction(Compiler *cc) {
         // For i=8 (arg9): s0 + 0 = s0
         // For i=9 (arg10): s0 + 8
         // For i=10 (arg11): s0 + 16
-        final_param_offset = (i - 8) * 8;
+        final_param_offset = (i - 9) * 8;
       }
       
       // Patch IC chain: find IC_LEA with old marker, update to new offset
