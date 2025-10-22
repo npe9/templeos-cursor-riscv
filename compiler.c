@@ -547,7 +547,8 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           U32 imm_4_1 = (offset >> 1) & 0xF;
           U32 imm_11 = (offset >> 11) & 0x1;
           RVU32(pass_buf, &pass_ptr, &rip, 0x63 | (imm_11<<7) | (imm_4_1<<8) | (RV_A0<<15) | (RV_ZERO<<20) | (imm_10_5<<25) | (imm_12<<31));
-          if (stack_depth_pass > 0) stack_depth_pass--;
+          // Branch consumes condition - reset stack depth for both paths
+          stack_depth_pass = 0;
         }
         break;
       case IC_JMP:
@@ -680,6 +681,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         // Markers for function call boundaries
         break;
       case IC_LABEL:
+        // Reset stack depth at labels for control flow
+        stack_depth_pass = 0;
+        // Only stack_depth_pass exists in sizing pass
+        break;
       case IC_NOP1:
       case IC_NOP2:
       case IC_RETURN_VAL:
@@ -908,7 +913,9 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           U32 imm_4_1 = (offset >> 1) & 0xF;
           U32 imm_11 = (offset >> 11) & 0x1;
           RVU32(pass_buf, &pass_ptr, &rip, 0x63 | (imm_11<<7) | (imm_4_1<<8) | (RV_A0<<15) | (RV_ZERO<<20) | (imm_10_5<<25) | (imm_12<<31));
-          if (stack_depth_final > 0) stack_depth_final--;
+          // Branch consumes condition but a0 value is gone after this
+          // Reset stack depth for both paths
+          stack_depth_final = 0;
         }
         break;
       case IC_JMP:
@@ -1032,6 +1039,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         // Markers for function call boundaries
         break;
       case IC_LABEL:
+        // Reset stack depth at labels for control flow
+        // Only stack_depth_final exists in final pass
+        stack_depth_final = 0;
+        break;
       case IC_NOP1:
       case IC_NOP2:
       case IC_RETURN_VAL:

@@ -221,16 +221,9 @@ void repl(void) {
             I64 code_size = 0;
             U8 *machine_code = CompileAOT(cc, &code_size);
             if (machine_code && code_size > 0) {
-                puts_uart("Compiled function: ");
-                print_hex((U64)machine_code);
-                puts_uart(" size=");
-                print_hex(code_size);
-                puts_uart("\n");
                 // exe_addr is already set by ParseFunction for recursion support
                 // Just ensure instruction cache coherency
                 __asm__ volatile("fence.i" ::: "memory");
-            } else {
-                puts_uart("ERROR: Compilation failed\n");
             }
         } else {
             // Expression/statement - parse, compile, execute immediately
