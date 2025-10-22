@@ -296,6 +296,17 @@ void ICAdd(Compiler *cc, U8 opcode, I64 data, U8 type) {
   ic->ic_data = data;
   ic->res.type.raw_type = type;
   ic->res.type.mode = MDF_STK;  // Default: stack-based
+  
+  // Link into IC chain (TempleOS does this in ICAdd, not ICNew)
+  ic->last = cc->ic_tail;
+  ic->next = NULL;
+  
+  if (cc->ic_tail) {
+    cc->ic_tail->next = ic;
+            } else {
+    cc->ic_head = ic;
+  }
+  cc->ic_tail = ic;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -454,9 +465,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_A0<<7) | ((hi & 0xFFFFF)<<12)); // lui a0, hi
           RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20)); // addi a0, a0, lo
           
-          // Upper 32 bits (if non-zero, load into t0 and combine)
+          // Upper 32 bits: load and shift into position, then combine
           // ALWAYS emit these instructions for fixed code size!
-          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | ((hi32 & 0xFFFFF)<<12)); // lui t0, hi32
+          I64 hi_upper = (hi32 + 0x800) >> 12;
+          I64 lo_upper = hi32 & 0xFFF;
+          if (lo_upper & 0x800) lo_upper |= 0xFFFFFFFFFFFFF000LL;
+          
+          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | ((hi_upper & 0xFFFFF)<<12)); // lui t0, hi_upper
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_T0<<15) | ((lo_upper & 0xFFF)<<20)); // addi t0, t0, lo_upper
           RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (1<<12) | (RV_T0<<15) | (32<<20)); // slli t0, t0, 32
           RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_A0<<15) | (RV_T0<<20)); // add a0, a0, t0
         }
@@ -810,9 +826,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_A0<<7) | ((hi & 0xFFFFF)<<12)); // lui a0, hi
           RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20)); // addi a0, a0, lo
           
-          // Upper 32 bits (if non-zero, load into t0 and combine)
+          // Upper 32 bits: load and shift into position, then combine
           // ALWAYS emit these instructions for fixed code size!
-          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | ((hi32 & 0xFFFFF)<<12)); // lui t0, hi32
+          I64 hi_upper = (hi32 + 0x800) >> 12;
+          I64 lo_upper = hi32 & 0xFFF;
+          if (lo_upper & 0x800) lo_upper |= 0xFFFFFFFFFFFFF000LL;
+          
+          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | ((hi_upper & 0xFFFFF)<<12)); // lui t0, hi_upper
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_T0<<15) | ((lo_upper & 0xFFF)<<20)); // addi t0, t0, lo_upper
           RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (1<<12) | (RV_T0<<15) | (32<<20)); // slli t0, t0, 32
           RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_A0<<15) | (RV_T0<<20)); // add a0, a0, t0
         }

@@ -15,17 +15,11 @@ CIntermediateCode *ICNew(Compiler *cc, U8 opcode) {
   
   ic->ic_code = opcode;
   ic->ic_cnt = 0;
-  
-  // Link into list
-  ic->last = cc->ic_tail;
+  ic->last = NULL;
   ic->next = NULL;
   
-  if (cc->ic_tail) {
-    cc->ic_tail->next = ic;
-  } else {
-    cc->ic_head = ic;
-  }
-  cc->ic_tail = ic;
+  // TempleOS ICNew does NOT auto-link! The caller must link it.
+  // This allows manual control over IC chain construction.
   
   return ic;
 }
@@ -372,6 +366,11 @@ static bool ParsePrimary(Compiler *cc) {
         CIntermediateCode *ic = ICNew(cc, IC_IMM_I64);
         ic->ic_data = (I64)global->data_addr;
         
+        // Link into IC chain
+        if (cc->ic_tail) cc->ic_tail->next = ic;
+        else cc->ic_head = ic;
+        cc->ic_tail = ic;
+        
         free(name);
         return true;
       }
@@ -460,6 +459,11 @@ static bool ParseUnary(Compiler *cc) {
     ic->res.type.mode = MDF_STK;
     ic->arg1_type_pointed_to = deref_type;
     
+    // Link into IC chain
+    if (cc->ic_tail) cc->ic_tail->next = ic;
+    else cc->ic_head = ic;
+    cc->ic_tail = ic;
+    
     // Clear last_var_symbol since we consumed it
     cc->last_var_symbol = NULL;
     
@@ -488,6 +492,11 @@ static bool ParsePostfix(Compiler *cc) {
     // Auto-deref loads the VARIABLE itself, not what it points to
     // Always use data_type (RT_I64 for pointers, actual type for non-pointers)
     ic->arg1_type_pointed_to = cc->last_var_symbol->data_type;
+    
+    // Link into IC chain
+    if (cc->ic_tail) cc->ic_tail->next = ic;
+    else cc->ic_head = ic;
+    cc->ic_tail = ic;
   }
   
   // Handle postfix operators (array subscript, member access)
@@ -911,6 +920,11 @@ static bool ParseAssignment(Compiler *cc) {
     ic->res.type.raw_type = RT_I64;
     ic->res.type.mode = MDF_STK;
     ic->arg1_type_pointed_to = store_type;  // Type to store
+    
+    // Link into IC chain
+    if (cc->ic_tail) cc->ic_tail->next = ic;
+    else cc->ic_head = ic;
+    cc->ic_tail = ic;
     
     return true;
   }
@@ -2360,7 +2374,11 @@ bool ParseFunction(Compiler *cc) {
   // For now, just mark the position
   CIntermediateCode *enter_ic = ICNew(cc, IC_ENTER);
   enter_ic->ic_data = param_count;  // Will be updated after parsing body
-  // ICNew already linked it into the chain, no manual linking needed!
+  
+  // Manual linking (ICNew doesn't auto-link in TempleOS)
+  if (!cc->ic_head) cc->ic_head = enter_ic;
+  if (cc->ic_tail) cc->ic_tail->next = enter_ic;
+  cc->ic_tail = enter_ic;
   
   I64 saved_locals = cc->locals_size;
   cc->locals_size = 0;
