@@ -1430,7 +1430,8 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
     if (cc->lex.token == '=') {
       LexNext(cc);
       
-      // Skip the initializer
+      // TODO: Implement proper initialization
+      // For now, skip the initializer
       int depth = 0;
       while (cc->lex.token != ';' && cc->lex.token != ',' && cc->lex.token != TK_EOF) {
         if (cc->lex.token == '{') depth++;
@@ -2357,14 +2358,7 @@ bool ParseFunction(Compiler *cc) {
   // Store param_count in cc for local variable offset calculation
   cc->current_function_param_count = param_count;
   
-  // Fix offsets - will be updated again after locals are known
-  for (int i = 0; i < param_count; i++) {
-    if (params[i]) {
-      // Temporary: offset relative to start of params area
-      // Will be fixed later when we know locals_size
-      params[i]->offset = 16 + i * 8;  // Positive = sp-relative
-    }
-  }
+  // Keep temporary markers for now - they will be patched after parsing the function body
   
   // Function body - emit label first
   ICAdd(cc, IC_LABEL, (I64)func_label, RT_I64);
@@ -2421,7 +2415,7 @@ bool ParseFunction(Compiler *cc) {
   // Params 8+: on caller's stack at s0+0, s0+8, ... → offset from s0 is +(i-8)*8
   for (int i = 0; i < param_count; i++) {
     if (params[i]) {
-      I64 old_param_marker = params[i]->offset;
+      I64 old_param_marker = params[i]->offset;  // Use current offset (still the temporary marker)
       I64 final_param_offset;
       
       if (i < 8) {
@@ -2429,9 +2423,14 @@ bool ParseFunction(Compiler *cc) {
         // Offset from s0 = (sp+16+i*8) - (sp+frame_size) = 16+i*8-frame_size
         final_param_offset = -(frame_size - 16 - i * 8);
       } else {
-        // Stack parameter: on caller's stack (above s0)
-        // The (i-8)th stack param is at s0 + (i-8)*8
-        // But due to how wrapper pushes args, need to adjust
+        // Stack parameter: on caller's stack (no cleanup before call)
+        // Before call: arg9 at sp+0, arg10 at sp+8, arg11 at sp+16, ...
+        // After prologue: s0 = old_sp (the sp before prologue)
+        // So arg9 is at old_sp+0 = s0+0, arg10 at old_sp+8 = s0+8, arg11 at old_sp+16 = s0+16, ...
+        // General: arg[i] is at s0 + (i - 8) * 8
+        // For i=8 (arg9): s0 + 0 = s0
+        // For i=9 (arg10): s0 + 8
+        // For i=10 (arg11): s0 + 16
         final_param_offset = (i - 8) * 8;
       }
       

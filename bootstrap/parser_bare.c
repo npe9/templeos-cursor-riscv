@@ -2103,7 +2103,10 @@ bool ParseFunction(Compiler *cc) {
       // Define parameter as local variable
       Symbol *param = SymbolDefine(cc, param_name, SYM_VAR);
       param->data_type = param_type;
-      param->offset = 16 + (param_count * 8);  // Args on stack above return address
+      
+      // Temporary marker - will be fixed after parsing all params and knowing frame_size
+      param->offset = -1000 - param_count;
+      
       param->has_default = has_default;
       param->default_val = default_val;
       
@@ -2131,6 +2134,45 @@ bool ParseFunction(Compiler *cc) {
   if (!ParseBlock(cc)) {
     free(name);
     return false;
+  }
+  
+  // Calculate frame size (only first 8 params are saved to frame)
+  I64 reg_param_cnt = param_count;
+  if (reg_param_cnt > 8) reg_param_cnt = 8;
+  I64 frame_size = 16 + reg_param_cnt * 8 + cc->locals_size;
+  
+  // Patch parameter offsets now that we know frame_size
+  for (int i = 0; i < param_count; i++) {
+    if (params[i]) {
+      I64 old_param_marker = params[i]->offset;
+      I64 final_param_offset;
+      
+      if (i < 8) {
+        // Register parameter: saved at sp+16+i*8, s0=sp+frame_size
+        final_param_offset = -(frame_size - 16 - i * 8);
+      } else {
+        // Stack parameter: on caller's stack (no cleanup before call)
+        // Before call: arg9 at sp+0, arg10 at sp+8, arg11 at sp+16, ...
+        // After prologue: s0 = old_sp (the sp before prologue)
+        // So arg9 is at old_sp+0 = s0+0, arg10 at old_sp+8 = s0+8, arg11 at old_sp+16 = s0+16, ...
+        // General: arg[i] is at s0 + (i - 8) * 8
+        // For i=8 (arg9): s0 + 0 = s0
+        // For i=9 (arg10): s0 + 8
+        // For i=10 (arg11): s0 + 16
+        final_param_offset = (i - 8) * 8;
+      }
+      
+      // Patch IC chain
+      CIntermediateCode *ic_scan = cc->ic_head;
+      while (ic_scan) {
+        if (ic_scan->ic_code == IC_LEA && ic_scan->ic_data == (I64)old_param_marker) {
+          ic_scan->ic_data = (I64)final_param_offset;
+        }
+        ic_scan = ic_scan->next;
+      }
+      
+      params[i]->offset = final_param_offset;
+    }
   }
   
   // Update ENTER with actual locals size

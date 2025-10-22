@@ -266,17 +266,12 @@ void repl(void) {
                     // Instruction cache coherency
                     __asm__ volatile("fence.i" ::: "memory");
                     
-                    puts_uart("Calling code at: ");
-                    print_hex((U64)machine_code);
-                    puts_uart("\n");
-                    
                     // TempleOS approach: Just cast compiled code to function and call it
                     // This is EXACTLY what LexStmt2Bin does (CMain.HC:15,32)
                     typedef I64 (*FuncPtr)();
                     FuncPtr func_ptr = (FuncPtr)machine_code;
                     I64 result = func_ptr();
                     
-                    puts_uart("Returned from call\n");
                     // Store and display result (match TempleOS Fs->answer)
                     g_answer = result;
                     print_hex(result);
