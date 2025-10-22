@@ -1,0 +1,46 @@
+# Simple REPL Makefile
+
+CC = riscv64-unknown-elf-gcc
+CFLAGS = -march=rv64imafdc_zifencei -mabi=lp64d -mcmodel=medany -O0 -g -nostdlib -ffreestanding -fno-builtin -I.. -DBARE_METAL
+LDFLAGS = -T linker.ld -nostdlib
+
+# Object files
+OBJS = startup.o simple_repl.o compiler.o
+
+# Default target
+all: simple_repl.elf
+
+# Compile object files
+startup.o: startup.S
+	$(CC) $(CFLAGS) -c startup.S -o startup.o
+
+simple_repl.o: simple_repl.c
+	$(CC) $(CFLAGS) -c simple_repl.c -o simple_repl.o
+
+compiler.o: compiler_main.o lexer.o parser.o hash.o compiler_helper.o
+	riscv64-unknown-elf-ld -r -o compiler.o compiler_main.o lexer.o parser.o hash.o compiler_helper.o
+
+compiler_main.o: ../compiler.c
+	$(CC) $(CFLAGS) -c ../compiler.c -o compiler_main.o
+
+lexer.o: ../lexer.c
+	$(CC) $(CFLAGS) -c ../lexer.c -o lexer.o
+
+parser.o: ../parser.c
+	$(CC) $(CFLAGS) -c ../parser.c -o parser.o
+
+hash.o: ../hash_table.c
+	$(CC) $(CFLAGS) -c ../hash_table.c -o hash.o
+
+compiler_helper.o: ../compiler_helper.c
+	$(CC) $(CFLAGS) -c ../compiler_helper.c -o compiler_helper.o
+
+# Link final binary
+simple_repl.elf: $(OBJS)
+	$(CC) $(LDFLAGS) -o simple_repl.elf $(OBJS)
+
+# Clean
+clean:
+	rm -f *.o *.elf *.bin *.dis
+
+.PHONY: all clean

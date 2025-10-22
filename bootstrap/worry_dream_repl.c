@@ -190,8 +190,6 @@ void repl(void) {
         
         if (pos == 0) continue;
         
-        puts_uart("Processing new input...\n");
-        
         // Reinitialize lexer and compiler state for new input (keep hash table)
         if (cc->lex.src) free(cc->lex.src);
         cc->lex.src = strdup(input);
@@ -219,12 +217,9 @@ void repl(void) {
         
         if (is_function) {
             // Function definition - compile and store in hash table
-            puts_uart("Starting function compilation...\n");
             extern U8 *CompileAOT(Compiler *cc, I64 *size_out);
             I64 code_size = 0;
-            puts_uart("Calling CompileAOT...\n");
             U8 *machine_code = CompileAOT(cc, &code_size);
-            puts_uart("CompileAOT returned\n");
             if (machine_code && code_size > 0) {
                 // exe_addr is already set by ParseFunction for recursion support
                 // Just ensure instruction cache coherency
@@ -235,7 +230,6 @@ void repl(void) {
             } else {
                 puts_uart("Function compilation failed\n");
             }
-            puts_uart("Function definition complete, continuing loop...\n");
         } else {
             // Expression/statement - parse, compile, execute immediately
             // Match TempleOS LexStmt2Bin flow (CMain.HC:1-33)
