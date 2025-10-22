@@ -2427,10 +2427,11 @@ bool ParseFunction(Compiler *cc) {
         // Before call: arg9 at sp+0, arg10 at sp+8, arg11 at sp+16, ...
         // After prologue: s0 = old_sp (the sp before prologue)
         // So arg9 is at old_sp+0 = s0+0, arg10 at old_sp+8 = s0+8, arg11 at old_sp+16 = s0+16, ...
-        // General: arg[i] is at s0 + (param_count - 1 - i) * 8
+        // General: arg[i] is at s0 + (i - 8) * 8
         // For 9 params: arg9 at s0+0, arg8 at s0+8, ..., arg1 at s0+64
         // For 10 params: arg10 at s0+0, arg9 at s0+8, ..., arg1 at s0+72
-        final_param_offset = (param_count - 1 - i) * 8;
+        // For 11 params: arg11 at s0+16, arg10 at s0+8, arg9 at s0+0
+        final_param_offset = (i - 8) * 8;
       }
       
       // Patch IC chain: find IC_LEA with old marker, update to new offset

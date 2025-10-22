@@ -590,11 +590,11 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
             RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
             stack_depth_pass++;
             
-            // Now all args are on stack: arg9 at sp+0, arg8 at sp+8, ..., arg1 at sp+64
+            // Now all args are on stack: arg1 at sp+0, arg2 at sp+8, ..., arg8 at sp+56, arg9+ at sp+64+
             // Load a0-a7 from stack (arg1-arg8)
             for (I64 i = 0; i < 8; i++) {
               U8 reg = RV_A0 + i;
-              I64 offset = (8 - i) * 8; // arg1 at sp+64, arg2 at sp+56, ..., arg8 at sp+8
+              I64 offset = i * 8; // arg1 at sp+0, arg2 at sp+8, ..., arg8 at sp+56
               RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
             }
             // Don't clean up yet - all args stay on stack for callee to access
@@ -652,7 +652,13 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_T0<<15)); // ld t0, 0(t0)
           RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15)); // jalr ra, t0
           
-          // Don't clean up here - IC_END_EXP will reset stack_depth
+          // Clean up stack after call
+          if (arg_count > 8) {
+            // For >8 params, we pushed arg9+ to stack, so clean up arg_count * 8 bytes
+            I64 cleanup_bytes = arg_count * 8;
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup_bytes & 0xFFF)<<20)); // addi sp, sp, cleanup_bytes
+            stack_depth_pass -= arg_count;
+          }
           
           stack_depth_pass++;
         }
@@ -937,11 +943,11 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
             RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
             stack_depth_final++;
             
-            // Now all args are on stack: arg9 at sp+0, arg8 at sp+8, ..., arg1 at sp+64
+            // Now all args are on stack: arg1 at sp+0, arg2 at sp+8, ..., arg8 at sp+56, arg9+ at sp+64+
             // Load a0-a7 from stack (arg1-arg8)
             for (I64 i = 0; i < 8; i++) {
               U8 reg = RV_A0 + i;
-              I64 offset = (8 - i) * 8; // arg1 at sp+64, arg2 at sp+56, ..., arg8 at sp+8
+              I64 offset = i * 8; // arg1 at sp+0, arg2 at sp+8, ..., arg8 at sp+56
               RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
             }
             // Don't clean up yet - all args stay on stack for callee to access
@@ -997,7 +1003,13 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_T0<<15)); // ld t0, 0(t0)
           RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15)); // jalr ra, t0
           
-          // Don't clean up here - IC_END_EXP will reset stack_depth
+          // Clean up stack after call
+          if (arg_count > 8) {
+            // For >8 params, we pushed arg9+ to stack, so clean up arg_count * 8 bytes
+            I64 cleanup_bytes = arg_count * 8;
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup_bytes & 0xFFF)<<20)); // addi sp, sp, cleanup_bytes
+            stack_depth_final -= arg_count;
+          }
           
           stack_depth_final++;
         }
