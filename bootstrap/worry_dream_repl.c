@@ -221,15 +221,19 @@ void repl(void) {
             I64 code_size = 0;
             U8 *machine_code = CompileAOT(cc, &code_size);
             if (machine_code && code_size > 0) {
-                // exe_addr is already set by ParseFunction for recursion support
+                // Update exe_addr in hash table for function calls
+                if (cc->last_compiled_func) {
+                    cc->last_compiled_func->exe_addr = (I64)machine_code;
+                }
                 // Just ensure instruction cache coherency
                 __asm__ volatile("fence.i" ::: "memory");
                 puts_uart("Function compiled successfully\n");
-                // Free the allocated buffer to prevent memory leak
-                free(machine_code);
+                // Don't free machine_code - it's needed for function calls
             } else {
                 puts_uart("Function compilation failed\n");
             }
+            
+            // Note: Hash table is preserved for function calls
         } else {
             // Expression/statement - parse, compile, execute immediately
             // Match TempleOS LexStmt2Bin flow (CMain.HC:1-33)

@@ -142,6 +142,7 @@ typedef struct CHashGlblVar {
 
 // Hash table functions
 CHashTable *HashTableNew(I64 size);
+void HashTableClear(CHashTable *table);
 void HashTableFree(CHashTable *table);
 void HashAdd(CHashEntry *entry, CHashTable *table);
 CHashEntry *HashFind(const char *str, CHashTable *table, I64 type_mask);

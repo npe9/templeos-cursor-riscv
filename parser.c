@@ -2227,6 +2227,8 @@ bool ParseFunction(Compiler *cc) {
   func_hash->member_lst = NULL;  // Parameter list
   HashAdd((CHashEntry*)func_hash, cc->hash_table);
   
+  // Debug: verify function was added
+  
   if (!LexExpect(cc, '(')) {
     free(name);
     return false;

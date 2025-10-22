@@ -125,3 +125,13 @@ void HashInitInternalTypes(CHashTable *table) {
   }
 }
 
+void HashTableClear(CHashTable *table) {
+  if (!table || !table->body) return;
+  
+  // Clear all buckets
+  I64 size = table->mask + 1;  // mask is size - 1
+  for (I64 i = 0; i < size; i++) {
+    table->body[i] = NULL;
+  }
+}
+
