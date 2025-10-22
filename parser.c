@@ -2207,7 +2207,16 @@ bool ParseFunction(Compiler *cc) {
   
   // Add function to hash table (match original)
   CHashFun *func_hash = calloc(1, sizeof(CHashFun));
+  if (!func_hash) {
+    free(name);
+    return false;
+  }
   func_hash->str = strdup(name);
+  if (!func_hash->str) {
+    free(func_hash);
+    free(name);
+    return false;
+  }
   func_hash->type = HTT_FUN;
   func_hash->exe_addr = 0;  // Will be set by REPL after compilation
   func_hash->return_class = NULL;  // TODO: proper type
