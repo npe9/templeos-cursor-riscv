@@ -224,6 +224,9 @@ void repl(void) {
                 // exe_addr is already set by ParseFunction for recursion support
                 // Just ensure instruction cache coherency
                 __asm__ volatile("fence.i" ::: "memory");
+                puts_uart("Function compiled successfully\n");
+            } else {
+                puts_uart("Function compilation failed\n");
             }
         } else {
             // Expression/statement - parse, compile, execute immediately
@@ -246,6 +249,7 @@ void repl(void) {
             LexNext(cc);
             extern Bool ParseStatement(Compiler *cc);
             Bool parsed = ParseStatement(cc);
+            
             
             if (parsed) {
                 // Add return (match TempleOS LexStmt2Bin:13-14)

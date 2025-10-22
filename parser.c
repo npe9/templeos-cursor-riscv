@@ -313,8 +313,9 @@ static bool ParsePrimary(Compiler *cc) {
           // Use IC_CALL_INDIRECT2 for REPL (exe_addr set after parsing)
           // ic_data = &func->exe_addr (address of field), so it loads at runtime
           ICAdd(cc, IC_CALL_INDIRECT2, (I64)&func->exe_addr, RT_I64);
-          // Store arg_cnt for compiler to use
-          cc->last_call_arg_cnt = func->arg_cnt;
+          // Store actual arg_cnt for compiler to use (not func->arg_cnt)
+          cc->last_call_arg_cnt = arg_count;
+          
           
         } else {
           free(name);
@@ -324,6 +325,7 @@ static bool ParsePrimary(Compiler *cc) {
         // Function not found - skip IC_CALL, still generate valid code
         // Don't add IC_CALL, just return 0
         ICAdd(cc, IC_IMM_I64, 0, RT_I64);
+        
       }
       
       ICAdd(cc, IC_CALL_END, 0, RT_I64);
