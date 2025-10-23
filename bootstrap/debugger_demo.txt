@@ -1,0 +1,10 @@
+I64 Add(I64 a, I64 b) { return a + b; }
+I64 Factorial(I64 n) { if (n <= 1) return 1; return n * Factorial(n-1); }
+I64 Fibonacci(I64 n) { if (n <= 1) return n; return Fibonacci(n-1) + Fibonacci(n-2); }
+Add(5, 3);
+Factorial(5);
+Fibonacci(8);
+U(0x80400000, 5);
+D(0x80400000, 64);
+Dr();
+quit

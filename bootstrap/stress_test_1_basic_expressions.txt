@@ -1,0 +1,44 @@
+# Stress Test 1: Basic Expressions and Arithmetic
+# Test all basic arithmetic operations, logical operations, and type conversions
+
+# Basic arithmetic
+42;
+1 + 2 + 3;
+10 * 5;
+100 / 4;
+15 - 7;
+((10 + 20) * 2) - 5;
+
+# Bitwise operations
+0x1234 & 0x5678;
+0x1234 | 0x5678;
+0x1234 ^ 0x5678;
+~0x1234;
+0x1234 << 4;
+0x1234 >> 4;
+
+# Logical operations
+1 && 0;
+1 || 0;
+!1;
+!0;
+
+# Comparison operations
+5 > 3;
+5 < 3;
+5 >= 5;
+5 <= 5;
+5 == 5;
+5 != 3;
+
+# Hex and decimal literals
+0xDEADBEEF;
+0x123456789ABCDEF;
+999999999;
+
+# Negative numbers
+-42;
+-0x1234;
+-(-42);
+
+quit

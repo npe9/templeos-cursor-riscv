@@ -504,6 +504,16 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           stack_depth_pass--;
         }
         break;
+      case IC_PUSH_ARG:
+        // Push argument to stack
+        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
+        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (0<<7) | (3<<12) | (RV_SP<<15) | (RV_A0<<20) | (0<<25)); // sd a0, 0(sp)
+        break;
+      case IC_POP_ARG:
+        // Pop argument from stack
+        RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15) | (0<<20)); // ld a0, 0(sp)
+        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
+        break;
       case IC_LESS:
       case IC_GREATER:
       case IC_LESS_EQU:
@@ -856,6 +866,16 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_T0<<15) | (RV_A0<<20) | (3<<12));
           stack_depth_final--;
         }
+        break;
+      case IC_PUSH_ARG:
+        // Push argument to stack
+        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
+        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (0<<7) | (3<<12) | (RV_SP<<15) | (RV_A0<<20) | (0<<25)); // sd a0, 0(sp)
+        break;
+      case IC_POP_ARG:
+        // Pop argument from stack
+        RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15) | (0<<20)); // ld a0, 0(sp)
+        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
         break;
       case IC_LESS:
       case IC_GREATER:

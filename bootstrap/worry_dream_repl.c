@@ -224,9 +224,19 @@ void repl(void) {
                 // Update exe_addr in hash table for function calls
                 if (cc->last_compiled_func) {
                     cc->last_compiled_func->exe_addr = (I64)machine_code;
+                    // Debug: print the function address
+                    puts_uart("Function address stored: 0x");
+                    print_hex((U64)machine_code);
+                    puts_uart("\n");
+                    puts_uart("Hash table entry address: 0x");
+                    print_hex((U64)cc->last_compiled_func);
+                    puts_uart("\n");
+                    puts_uart("exe_addr field address: 0x");
+                    print_hex((U64)&cc->last_compiled_func->exe_addr);
+                    puts_uart("\n");
                 }
                 // Just ensure instruction cache coherency
-                __asm__ volatile("fence.i" ::: "memory");
+                // __asm__ volatile("fence.i" ::: "memory"); // Not supported in this RISC-V implementation
                 puts_uart("Function compiled successfully\n");
                 // Don't free machine_code - it's needed for function calls
             } else {
@@ -274,7 +284,7 @@ void repl(void) {
                 
                 if (machine_code && code_size > 0) {
                     // Instruction cache coherency
-                    __asm__ volatile("fence.i" ::: "memory");
+                    // __asm__ volatile("fence.i" ::: "memory"); // Not supported in this RISC-V implementation
                     
                     // TempleOS approach: Just cast compiled code to function and call it
                     // This is EXACTLY what LexStmt2Bin does (CMain.HC:15,32)

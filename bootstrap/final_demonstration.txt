@@ -1,0 +1,47 @@
+# Final Comprehensive Demonstration
+# Show all working features of the TempleOS RISC-V compiler
+
+# Basic arithmetic
+42;
+1 + 2 + 3;
+10 * 5;
+100 / 4;
+
+# Bitwise operations
+0x1234 & 0x5678;
+0x1234 | 0x5678;
+0x1234 ^ 0x5678;
+
+# Logical operations
+1 && 0;
+1 || 0;
+!1;
+!0;
+
+# Comparison operations
+5 > 3;
+5 < 3;
+5 == 5;
+5 != 3;
+
+# Function definitions
+I64 GetAnswer() { return 42; }
+I64 Square(I64 x) { return x * x; }
+I64 Add(I64 a, I64 b) { return a + b; }
+
+# Function calls
+GetAnswer();
+Square(5);
+Square(10);
+Add(3, 7);
+Add(100, 200);
+
+# Complex expressions
+((10 + 20) * 2) - 5;
+Square(Add(3, 4));
+
+# Hex literals
+0xDEADBEEF;
+0x123456789ABCDEF;
+
+quit

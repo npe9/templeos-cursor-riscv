@@ -1,0 +1,83 @@
+# Stress Test 5: Complex Programs
+# Test complex programs combining multiple features
+
+# Fibonacci sequence
+I64 Fibonacci(I64 n) {
+    if (n <= 1) return n;
+    return Fibonacci(n - 1) + Fibonacci(n - 2);
+}
+Fibonacci(10);
+
+# Prime number checker
+I64 IsPrime(I64 n) {
+    if (n < 2) return 0;
+    for (I64 i = 2; i * i <= n; i = i + 1) {
+        if (n % i == 0) return 0;
+    }
+    return 1;
+}
+IsPrime(17);
+IsPrime(15);
+
+# Greatest Common Divisor
+I64 GCD(I64 a, I64 b) {
+    while (b != 0) {
+        I64 temp = b;
+        b = a % b;
+        a = temp;
+    }
+    return a;
+}
+GCD(48, 18);
+
+# Binary search (if arrays work)
+I64 BinarySearch(I64 arr[10], I64 target) {
+    I64 left = 0;
+    I64 right = 9;
+    
+    while (left <= right) {
+        I64 mid = (left + right) / 2;
+        if (arr[mid] == target) return mid;
+        if (arr[mid] < target) left = mid + 1;
+        else right = mid - 1;
+    }
+    return -1;
+}
+
+# Complex mathematical function
+I64 ComplexMath(I64 x, I64 y, I64 z) {
+    I64 result = 0;
+    
+    // Nested function calls
+    result = result + Fibonacci(x);
+    result = result + GCD(y, z);
+    
+    // Conditional logic
+    if (IsPrime(x)) {
+        result = result * 2;
+    }
+    
+    // Loop with function calls
+    for (I64 i = 0; i < 5; i = i + 1) {
+        result = result + Fibonacci(i);
+    }
+    
+    return result;
+}
+ComplexMath(5, 12, 8);
+
+# Stress test with many function calls
+I64 StressTest(I64 n) {
+    I64 sum = 0;
+    for (I64 i = 0; i < n; i = i + 1) {
+        sum = sum + Fibonacci(i % 10);
+        sum = sum + GCD(i, n - i);
+        if (IsPrime(i)) {
+            sum = sum + i;
+        }
+    }
+    return sum;
+}
+StressTest(20);
+
+quit

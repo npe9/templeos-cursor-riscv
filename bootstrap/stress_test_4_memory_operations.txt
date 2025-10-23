@@ -1,0 +1,60 @@
+# Stress Test 4: Memory Operations and Arrays
+# Test arrays, pointers, and memory allocation
+
+# Array operations
+I64 ArraySum(I64 arr[5]) {
+    I64 sum = 0;
+    for (I64 i = 0; i < 5; i = i + 1) {
+        sum = sum + arr[i];
+    }
+    return sum;
+}
+
+# Test with array literal (if supported)
+I64 TestArray() {
+    I64 arr[5];
+    arr[0] = 1;
+    arr[1] = 2;
+    arr[2] = 3;
+    arr[3] = 4;
+    arr[4] = 5;
+    return ArraySum(arr);
+}
+TestArray();
+
+# Pointer operations
+I64 PointerTest(I64 x) {
+    I64 *ptr = &x;
+    return *ptr * 2;
+}
+PointerTest(21);
+
+# Memory allocation (if malloc is available)
+I64 MemoryTest() {
+    I64 *arr = malloc(5 * sizeof(I64));
+    if (arr == 0) return -1;
+    
+    for (I64 i = 0; i < 5; i = i + 1) {
+        arr[i] = i * i;
+    }
+    
+    I64 sum = 0;
+    for (I64 i = 0; i < 5; i = i + 1) {
+        sum = sum + arr[i];
+    }
+    
+    free(arr);
+    return sum;
+}
+MemoryTest();
+
+# String operations (if supported)
+I64 StringLength(char *str) {
+    I64 len = 0;
+    while (str[len] != 0) {
+        len = len + 1;
+    }
+    return len;
+}
+
+quit

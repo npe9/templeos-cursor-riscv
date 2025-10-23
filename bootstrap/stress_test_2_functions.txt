@@ -1,0 +1,43 @@
+# Stress Test 2: Function Definitions and Calls
+# Test functions with various parameter counts and return types
+
+# Simple function with no parameters
+I64 GetAnswer() { return 42; }
+GetAnswer();
+
+# Function with one parameter
+I64 Square(I64 x) { return x * x; }
+Square(5);
+Square(10);
+
+# Function with multiple parameters
+I64 Add(I64 a, I64 b) { return a + b; }
+Add(3, 7);
+Add(100, 200);
+
+# Function with many parameters (test calling convention)
+I64 SumMany(I64 a, I64 b, I64 c, I64 d, I64 e, I64 f, I64 g, I64 h, I64 i, I64 j) { 
+    return a + b + c + d + e + f + g + h + i + j; 
+}
+SumMany(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+
+# Function with more than 8 parameters (test stack-based parameters)
+I64 SumManyMore(I64 a, I64 b, I64 c, I64 d, I64 e, I64 f, I64 g, I64 h, I64 i, I64 j, I64 k, I64 l) { 
+    return a + b + c + d + e + f + g + h + i + j + k + l; 
+}
+SumManyMore(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
+
+# Recursive function
+I64 Factorial(I64 n) { 
+    if (n <= 1) return 1; 
+    return n * Factorial(n - 1); 
+}
+Factorial(5);
+
+# Function calling other functions
+I64 Double(I64 x) { return x * 2; }
+I64 Triple(I64 x) { return x * 3; }
+I64 Combined(I64 x) { return Double(x) + Triple(x); }
+Combined(10);
+
+quit

@@ -121,7 +121,10 @@ typedef bool      Bool;
 #define IC_BR_LESS       0x8B
 #define IC_BR_GREATER_EQU 0x8C
 #define IC_BR_GREATER    0x8D
-#define IC_BR_LESS_EQU   0x8E
+
+#define IC_BR_LESS_EQU    0x8E
+#define IC_PUSH_ARG       0x8F
+#define IC_POP_ARG        0x90
 
 // Raw types
 #define RT_I0    0

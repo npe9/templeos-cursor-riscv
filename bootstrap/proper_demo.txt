@@ -1,0 +1,4 @@
+I64 Test() { return 42; }
+Test();
+U(0x80400000, 5);
+quit

@@ -1,0 +1,16 @@
+I64 Add(I64 a, I64 b) { return a + b; }
+start
+s
+s
+s
+s
+Dr()
+pc
+s
+s
+s
+s
+Dr()
+pc
+stop
+quit

@@ -1,0 +1,66 @@
+# Stress Test 3: Control Flow Statements
+# Test if/else, loops, and switch statements
+
+# If/else statements
+I64 TestIf(I64 x) {
+    if (x > 10) {
+        return 100;
+    } else if (x > 5) {
+        return 50;
+    } else {
+        return 0;
+    }
+}
+TestIf(15);
+TestIf(8);
+TestIf(3);
+
+# While loops
+I64 SumToN(I64 n) {
+    I64 sum = 0;
+    I64 i = 1;
+    while (i <= n) {
+        sum = sum + i;
+        i = i + 1;
+    }
+    return sum;
+}
+SumToN(10);
+
+# For loops (if supported)
+I64 SumToNFor(I64 n) {
+    I64 sum = 0;
+    for (I64 i = 1; i <= n; i = i + 1) {
+        sum = sum + i;
+    }
+    return sum;
+}
+SumToNFor(10);
+
+# Nested loops
+I64 NestedSum(I64 n) {
+    I64 total = 0;
+    for (I64 i = 1; i <= n; i = i + 1) {
+        for (I64 j = 1; j <= i; j = j + 1) {
+            total = total + j;
+        }
+    }
+    return total;
+}
+NestedSum(5);
+
+# Switch statements (if supported)
+I64 SwitchTest(I64 x) {
+    switch (x) {
+        case 1: return 10;
+        case 2: return 20;
+        case 3: return 30;
+        default: return 0;
+    }
+}
+SwitchTest(1);
+SwitchTest(2);
+SwitchTest(3);
+SwitchTest(4);
+
+quit

@@ -1,0 +1,11 @@
+I64 Test() { return 42; }
+start
+s
+s
+s
+s
+s
+Dr()
+pc
+stop
+quit

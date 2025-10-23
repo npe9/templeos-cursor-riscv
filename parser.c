@@ -2514,7 +2514,7 @@ bool ParseFunction(Compiler *cc) {
   
   // Flush instruction cache (RISC-V fence.i)
   #ifdef BARE_METAL
-  __asm__ volatile("fence.i" ::: "memory");
+  // __asm__ volatile("fence.i" ::: "memory"); // Not supported in this RISC-V implementation
   #endif
   
   // Update exe_addr in the hash entry (for recursion support)
