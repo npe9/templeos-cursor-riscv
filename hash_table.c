@@ -118,7 +118,7 @@ void HashInitInternalTypes(CHashTable *table) {
     {10, 8, "F64"},                 // RT_F64=10
   };
   
-  for (int i = 0; i < sizeof(types)/sizeof(types[0]); i++) {
+  for (size_t i = 0; i < sizeof(types)/sizeof(types[0]); i++) {
     CHashClass *cls = HashClassNew(types[i].name, types[i].type, types[i].size);
     cls->type = HTT_INTERNAL_TYPE;
     HashAdd((CHashEntry*)cls, table);
