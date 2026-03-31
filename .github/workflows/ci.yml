@@ -1,0 +1,30 @@
+# Host HolyC→RISC-V compiler: compile compliance + QEMU execution oracles.
+name: CI
+
+on:
+  push:
+    branches: [archive, main, master]
+  pull_request:
+    branches: [archive, main, master]
+
+jobs:
+  compliance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            gcc-riscv64-unknown-elf \
+            binutils-riscv64-unknown-elf \
+            qemu-system-riscv64
+
+      - name: Build holyc-riscv
+        run: make
+
+      - name: Compliance (compile + exec oracles)
+        run: make compliance-exec

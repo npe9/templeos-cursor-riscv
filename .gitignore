@@ -59,3 +59,11 @@ bootstrap/final_property_test.txt
 bootstrap/focused_property_test.txt
 bootstrap/simple_property_test.txt
 
+# Bootstrap: ephemeral session / agent notes (not product docs)
+bootstrap/FINAL_TEST_RESULTS.md
+bootstrap/FIX_*_PLAN.md
+bootstrap/GDB_DEBUGGING_SUMMARY.md
+bootstrap/REPL_*.md
+bootstrap/*_BEHAVIOR_ANALYSIS.md
+bootstrap/RISC_V_ABI_COMPLIANCE_REPORT.md
+
