@@ -91,6 +91,8 @@ Get11th(1,2,3,4,5,6,7,8,9,10,11);
 
 ## Testing
 
+Layout of compliance files and scripts: [tests/README.md](tests/README.md).
+
 ```bash
 make test                    # Minimal AOT smoke (build/smoke.hc → build/simple.bin)
 make ci                      # Full gate: compliance + qemu-integration (same as GitHub CI)
