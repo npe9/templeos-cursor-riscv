@@ -12,7 +12,7 @@
 
 - Pushes and PRs that change **only** Markdown (`*.md` anywhere) **do not** run CI (`paths-ignore`), to save time on doc edits. Use **Actions → CI → Run workflow** when you need a full run after doc-only changes.
 - **`concurrency: cancel-in-progress`** stops the previous run when a new push lands; an older commit may show **cancelled** even though the tip commit is green.
-- The **`shellcheck`** job runs **`make syntax-sh`** first (**`bash -n`** on every **`tests/scripts/*.sh`**), then installs **ShellCheck** and lints the four primary scripts (faster failure on parse errors).
+- **`syntax-sh`** and **`shellcheck`** are separate jobs (run in parallel with **`compile-compliance`**). **`qemu-integration`** waits for all three. **`syntax-sh`** is **`make syntax-sh`** only; **`shellcheck`** installs **ShellCheck** and lints the four primary scripts.
 
 ## Implementation status
 

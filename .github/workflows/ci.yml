@@ -26,15 +26,20 @@ env:
   DEBIAN_FRONTEND: noninteractive
 
 jobs:
+  syntax-sh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: bash -n on all tests/scripts/*.sh
+        run: make syntax-sh
+
   shellcheck:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
-
-      # Fast parse check first (no apt); fails before ShellCheck install on broken scripts.
-      - name: Syntax-check all tests/scripts (make syntax-sh)
-        run: make syntax-sh
 
       - name: Install ShellCheck
         run: |
@@ -71,7 +76,7 @@ jobs:
 
   qemu-integration:
     runs-on: ubuntu-24.04
-    needs: [compile-compliance, shellcheck]
+    needs: [compile-compliance, shellcheck, syntax-sh]
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
