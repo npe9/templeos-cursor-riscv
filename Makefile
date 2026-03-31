@@ -6,22 +6,44 @@ RISCV_CC = riscv64-unknown-elf-gcc
 RISCV_OBJDUMP = riscv64-unknown-elf-objdump
 QEMU = qemu-riscv64
 
-# Compiler sources
-COMPILER_SOURCES = lexer.c parser.c compiler.c hash_table.c main_stub.c
-COMPILER_HEADERS = holyc_compiler.h
-COMPILER_BIN = cicl-riscv
+# Compiler sources (compiler_helper.c provides StrPrintF for lexer/preprocessor)
+COMPILER_SOURCES = lexer.c parser.c compiler.c hash_table.c compiler_helper.c main_stub.c
+COMPILER_HEADERS = holyc_compiler.h holy_api.h
+COMPILER_BIN = holyc-riscv
 
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test validator help
+.PHONY: all clean test validator help cicl-riscv compliance exec-oracle templeos-riscv templeos-smoke
 
-all: $(COMPILER_BIN) validator
+all: $(COMPILER_BIN) cicl-riscv
+
+# Backward-compatible name for scripts that still invoke cicl-riscv
+cicl-riscv: $(COMPILER_BIN)
+	@ln -sf $(COMPILER_BIN) cicl-riscv
 
 # Build the compiler
 $(COMPILER_BIN): $(COMPILER_SOURCES) $(COMPILER_HEADERS)
 	$(CC) $(CFLAGS) -DHOLYC_STANDALONE $(COMPILER_SOURCES) -o $(COMPILER_BIN)
-	@echo "✓ Built Cicl→RISC-V compiler"
+	@echo "✓ Built HolyC→RISC-V compiler ($(COMPILER_BIN))"
+
+compliance: $(COMPILER_BIN)
+	@tests/scripts/run_holyc_compliance.sh --suite all
+
+compliance-exec: $(COMPILER_BIN)
+	@tests/scripts/run_holyc_compliance.sh --suite all --exec
+
+exec-oracle: $(COMPILER_BIN)
+	@chmod +x tests/scripts/run_exec_oracles.sh
+	@tests/scripts/run_exec_oracles.sh
+
+# TempleOS/RISC-V OS tree (separate from compiler sources; see templeos-riscv/README.md)
+templeos-riscv: $(COMPILER_BIN)
+	@$(MAKE) -C templeos-riscv image
+
+templeos-smoke: $(COMPILER_BIN)
+	@chmod +x tests/scripts/run_templeos_smoke.sh
+	@tests/scripts/run_templeos_smoke.sh
 
 # Build the validator
 validator: validator.c
@@ -41,18 +63,18 @@ validate: validator
 
 # Test the compiler
 test: $(COMPILER_BIN)
-	@echo "Testing Cicl→RISC-V compiler..."
-	@mkdir -p tests build
-	@echo "I64 main() { return 42; }" > tests/simple.hc
-	./$(COMPILER_BIN) tests/simple.hc -o build/simple.bin
+	@echo "Testing HolyC→RISC-V compiler..."
+	@mkdir -p build
+	@echo 'I64 main() { return 42; }' > build/smoke.hc
+	./$(COMPILER_BIN) build/smoke.hc -o build/simple.bin
 	@if [ -f build/simple.bin ]; then \
-		echo "✓ Compiled tests/simple.hc"; \
+		echo "✓ Compiled build/smoke.hc → build/simple.bin"; \
 		$(RISCV_OBJDUMP) -D -b binary -m riscv:rv64 build/simple.bin 2>/dev/null || echo "  (install riscv-objdump to see disassembly)"; \
 	fi
 
 # Clean build artifacts
 clean:
-	rm -f $(COMPILER_BIN) validator
+	rm -f $(COMPILER_BIN) cicl-riscv validator
 	rm -f validator.c
 	rm -f *.bin *.o *.out
 	rm -rf build/
@@ -60,20 +82,27 @@ clean:
 
 # Help
 help:
-	@echo "Cicl→RISC-V Compiler - Build System"
+	@echo "HolyC→RISC-V Compiler - Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all        - Build compiler and validator"
-	@echo "  validator  - Build the instruction encoder validator"
-	@echo "  validate   - Run validator and show disassembly"
-	@echo "  test       - Run compiler tests"
-	@echo "  clean      - Clean build artifacts"
+	@echo "  all         - Build holyc-riscv host compiler"
+	@echo "  cicl-riscv  - Symlink to holyc-riscv (legacy name)"
+	@echo "  compliance      - Compile-only compliance (manifests)"
+	@echo "  compliance-exec - Compliance + execution oracle tests (QEMU)"
+	@echo "  exec-oracle     - Execution oracle tests only"
+	@echo "  templeos-riscv  - Build TempleOS/RISC-V kernel + default HolyC guest"
+	@echo "  templeos-smoke  - QEMU smoke (ORACLE) for default + selfhost images"
+	@echo "  validator   - Build the instruction encoder validator (needs validator.c)"
+	@echo "  validate    - Run validator and show disassembly"
+	@echo "  test        - Quick compile smoke test"
+	@echo "  clean       - Clean build artifacts"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make                        # Build everything"
-	@echo "  make validate               # Validate RISC-V encoding"
-	@echo "  make test                   # Test compiler"
-	@echo "  ./cicl-riscv program.hc    # Compile program"
+	@echo "  make                         # Build holyc-riscv"
+	@echo "  make compliance              # Full compliance tests"
+	@echo "  make validate                # Validate RISC-V encoding"
+	@echo "  make test                    # Test compiler"
+	@echo "  ./holyc-riscv program.hc    # Compile program"
 	@echo ""
 	@echo "Requirements:"
 	@echo "  - GCC or Clang"

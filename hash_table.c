@@ -75,6 +75,31 @@ CHashEntry *HashFind(const char *str, CHashTable *table, I64 type_mask) {
   return NULL;
 }
 
+CHashEntry *HashRemove(CHashTable *table, const char *str, I64 type_mask) {
+  if (!table || !str) return NULL;
+
+  U64 hash = HashStr(str);
+  I64 index = hash & table->mask;
+
+  CHashEntry *prev = NULL;
+  CHashEntry *entry = table->body[index];
+  while (entry) {
+    if (strcmp(entry->str, str) == 0 && (entry->type & type_mask)) {
+      if (prev) {
+        prev->next = entry->next;
+      } else {
+        table->body[index] = entry->next;
+      }
+      entry->next = NULL;
+      return entry;
+    }
+    prev = entry;
+    entry = entry->next;
+  }
+
+  return NULL;
+}
+
 CHashClass *HashClassNew(const char *name, I64 raw_type, I64 size) {
   // Allocate 6 entries (for 0-5 pointer levels)
   CHashClass *entries = calloc(6, sizeof(CHashClass));

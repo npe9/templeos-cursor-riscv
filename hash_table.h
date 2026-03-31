@@ -26,6 +26,7 @@ typedef double F64;
 #define HTT_FILE              0x800
 #define HTT_MODULE            0x1000
 #define HTT_EXPORT_SYS_SYM    0x2000
+#define HTT_ENUM              0x4000
 
 // Hash Table
 typedef struct CHashTable {
@@ -85,6 +86,7 @@ typedef struct CHashFun {
   I64 arg_cnt;              // Argument count
   struct CHashClass *return_class;   // Return type
   struct CMemberLst *member_lst;     // Parameters
+  void *entry_label;        // CLabel* — stable for forward decl + unified AOT (PC-rel IC_CALL)
 } CHashFun;
 
 // Hash entry for keywords
@@ -109,6 +111,16 @@ typedef struct CHashDefine {
   int param_count;          // Number of parameters (0 for simple defines)
 } CHashDefine;
 
+// Enum value entry
+typedef struct CHashEnumValue {
+  struct CHashEntry *next;
+  char *str;
+  I64 type;                  // HTT_ENUM
+  I64 use_cnt;
+
+  I64 value;                 // Enumerated value
+} CHashEnumValue;
+
 // Array dimensions (forward declaration for global variables)
 typedef struct CArrayDim {
   struct CArrayDim *next;
@@ -128,6 +140,12 @@ typedef struct CHashGlblVar {
   CHashClass *var_class;    // Variable type
   I64 size;                 // Size in bytes
   I64 flags;                // GVF_* flags
+  bool is_function_pointer;
+  U8 function_return_type;
+  int func_ptr_param_count;
+  I64 element_size;
+  U8 raw_type;
+  U8 pointed_to_type;
   CArrayDim dim;            // Array dimensions
   struct CHashFun *fun_ptr; // If it's a function pointer variable
 } CHashGlblVar;
@@ -146,6 +164,7 @@ void HashTableClear(CHashTable *table);
 void HashTableFree(CHashTable *table);
 void HashAdd(CHashEntry *entry, CHashTable *table);
 CHashEntry *HashFind(const char *str, CHashTable *table, I64 type_mask);
+CHashEntry *HashRemove(CHashTable *table, const char *str, I64 type_mask);
 U64 HashStr(const char *str);
 
 // Type functions

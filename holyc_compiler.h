@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "hash_table.h"
+#include "holy_api.h"
 
 // ═══════════════════════════════════════════════════════════════
 // BASIC TYPES (TempleOS compatible)
@@ -125,6 +126,7 @@ typedef bool      Bool;
 #define IC_BR_LESS_EQU    0x8E
 #define IC_PUSH_ARG       0x8F
 #define IC_POP_ARG        0x90
+#define IC_EVAL_DROP      0x92 /* addi sp,sp,ic_data (drop eval slots); signed ic_data */
 
 // Raw types
 #define RT_I0    0
@@ -255,6 +257,7 @@ typedef struct CSwitchCase {
 #define KW_CATCH    328
 #define KW_THROW    329
 #define KW_ASM      330
+#define KW_ENUM     331
 #define KW_I0       308
 #define KW_U0       309
 #define KW_I8       310
@@ -339,6 +342,11 @@ typedef struct Symbol {
   
   // Pointer information
   U8 pointed_to_type; // For pointers: RT_U8, RT_U32, RT_I64, etc. (0 if not pointer)
+
+  // Function pointer metadata
+  bool is_function_pointer;
+  U8 function_return_type;
+  int func_ptr_param_count;
   
   // Default parameter value
   bool has_default;
@@ -349,6 +357,14 @@ typedef struct SymTable {
   Symbol *symbols;
   struct SymTable *parent;
 } SymTable;
+
+// Deferred per-function IC chains (stitched into one CompileAOT pass for multi-function AOT blobs)
+typedef struct AOTFnICChunk {
+  CIntermediateCode *head;
+  CIntermediateCode *tail;
+  CHashFun *fun;
+  struct AOTFnICChunk *next;
+} AOTFnICChunk;
 
 // ═══════════════════════════════════════════════════════════════
 // COMPILER STATE
@@ -385,6 +401,8 @@ typedef struct {
   // Expression type tracking
   Symbol *last_var_symbol;  // Last variable referenced (for array subscripting)
   CHashClass *last_expr_class;  // Last expression's class (for member access)
+  CHashClass *last_type_class;  // Most recently parsed type's class (for decls)
+  struct CHashGlblVar *last_global_var;  // Last global variable referenced
   U8 last_pointed_to_type;  // For pointer declarations (RT_U8, RT_U32, etc.)
   
   // Compiler flags (match original CCF_* flags)
@@ -418,10 +436,17 @@ typedef struct {
   
   // Last compiled function (for setting exe_addr after CompileAOT)
   CHashFun *last_compiled_func;
+  // Entry label of the function currently being parsed (for direct PC-rel self-calls)
+  CLabel *current_function_entry_label;
   
   // Last function call arg count (for IC_CALL_INDIRECT2 in compiler)
   I64 last_call_arg_cnt;
-  
+
+  // Multi-function AOT: defer CompileAOT until all functions parsed; stitch IC chains in order
+  Bool defer_aot_compile;
+  AOTFnICChunk *aot_fn_ic_head;
+  AOTFnICChunk *aot_fn_ic_tail;
+
 } Compiler;
 
 // String literal for target code

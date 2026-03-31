@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "holy_api.h"
 
 typedef uint64_t U64;
 typedef uint32_t U32;
@@ -104,24 +105,24 @@ static U8* disasm_instruction(U8* rip, char* buf, size_t buf_size) {
     switch (r->opcode) {
         case 0x37: // LUI
             opcode_name = "lui";
-            snprintf(buf, buf_size, "%-8s %s,0x%x", opcode_name, reg_names[r->rd], u->imm_31_12 << 12);
+            StrPrintF(buf, buf_size, "%-8s %s,0x%x", opcode_name, reg_names[r->rd], u->imm_31_12 << 12);
             break;
             
         case 0x17: // AUIPC
             opcode_name = "auipc";
-            snprintf(buf, buf_size, "%-8s %s,0x%x", opcode_name, reg_names[r->rd], u->imm_31_12 << 12);
+            StrPrintF(buf, buf_size, "%-8s %s,0x%x", opcode_name, reg_names[r->rd], u->imm_31_12 << 12);
             break;
             
         case 0x6F: // JAL
             opcode_name = "jal";
             imm = sign_extend_21((j->imm_20 << 20) | (j->imm_19_12 << 12) | (j->imm_11 << 11) | (j->imm_10_1 << 1));
-            snprintf(buf, buf_size, "%-8s %s,0x%lx", opcode_name, reg_names[r->rd], (U64)(rip + imm));
+            StrPrintF(buf, buf_size, "%-8s %s,0x%lx", opcode_name, reg_names[r->rd], (U64)(rip + imm));
             break;
             
         case 0x67: // JALR
             opcode_name = "jalr";
             imm = sign_extend_12(i->imm);
-            snprintf(buf, buf_size, "%-8s %s,%ld(%s)", opcode_name, reg_names[r->rd], imm, reg_names[i->rs1]);
+            StrPrintF(buf, buf_size, "%-8s %s,%ld(%s)", opcode_name, reg_names[r->rd], imm, reg_names[i->rs1]);
             break;
             
         case 0x63: // Branch
@@ -134,7 +135,7 @@ static U8* disasm_instruction(U8* rip, char* buf, size_t buf_size) {
                 case 6: opcode_name = "bltu"; break;
                 case 7: opcode_name = "bgeu"; break;
             }
-            snprintf(buf, buf_size, "%-8s %s,%s,0x%lx", opcode_name, reg_names[b->rs1], reg_names[b->rs2], (U64)(rip + imm));
+            StrPrintF(buf, buf_size, "%-8s %s,%s,0x%lx", opcode_name, reg_names[b->rs1], reg_names[b->rs2], (U64)(rip + imm));
             break;
             
         case 0x03: // Load
@@ -148,7 +149,7 @@ static U8* disasm_instruction(U8* rip, char* buf, size_t buf_size) {
                 case 5: opcode_name = "lhu"; break;
                 case 6: opcode_name = "lwu"; break;
             }
-            snprintf(buf, buf_size, "%-8s %s,%ld(%s)", opcode_name, reg_names[r->rd], imm, reg_names[i->rs1]);
+            StrPrintF(buf, buf_size, "%-8s %s,%ld(%s)", opcode_name, reg_names[r->rd], imm, reg_names[i->rs1]);
             break;
             
         case 0x23: // Store
@@ -159,7 +160,7 @@ static U8* disasm_instruction(U8* rip, char* buf, size_t buf_size) {
                 case 2: opcode_name = "sw"; break;
                 case 3: opcode_name = "sd"; break;
             }
-            snprintf(buf, buf_size, "%-8s %s,%ld(%s)", opcode_name, reg_names[s->rs2], imm, reg_names[s->rs1]);
+            StrPrintF(buf, buf_size, "%-8s %s,%ld(%s)", opcode_name, reg_names[s->rs2], imm, reg_names[s->rs1]);
             break;
             
         case 0x13: // Immediate
@@ -177,7 +178,7 @@ static U8* disasm_instruction(U8* rip, char* buf, size_t buf_size) {
                 case 6: opcode_name = "ori"; break;
                 case 7: opcode_name = "andi"; break;
             }
-            snprintf(buf, buf_size, "%-8s %s,%s,%ld", opcode_name, reg_names[r->rd], reg_names[i->rs1], imm);
+            StrPrintF(buf, buf_size, "%-8s %s,%s,%ld", opcode_name, reg_names[r->rd], reg_names[i->rs1], imm);
             break;
             
         case 0x33: // Register
@@ -217,16 +218,16 @@ static U8* disasm_instruction(U8* rip, char* buf, size_t buf_size) {
                     else if (r->funct7 == 1) opcode_name = "remu";
                     break;
             }
-            snprintf(buf, buf_size, "%-8s %s,%s,%s", opcode_name, reg_names[r->rd], reg_names[r->rs1], reg_names[r->rs2]);
+            StrPrintF(buf, buf_size, "%-8s %s,%s,%s", opcode_name, reg_names[r->rd], reg_names[r->rs1], reg_names[r->rs2]);
             break;
             
         case 0x0F: // Fence
             if (r->funct3 == 0) {
                 opcode_name = "fence";
-                snprintf(buf, buf_size, "%-8s %s,%s", opcode_name, reg_names[r->rd], reg_names[r->rs1]);
+                StrPrintF(buf, buf_size, "%-8s %s,%s", opcode_name, reg_names[r->rd], reg_names[r->rs1]);
             } else if (r->funct3 == 1) {
                 opcode_name = "fence.i";
-                snprintf(buf, buf_size, "%-8s", opcode_name);
+                StrPrintF(buf, buf_size, "%-8s", opcode_name);
             }
             break;
             
@@ -235,11 +236,11 @@ static U8* disasm_instruction(U8* rip, char* buf, size_t buf_size) {
                 if (r->funct7 == 0) opcode_name = "ecall";
                 else if (r->funct7 == 8) opcode_name = "ebreak";
             }
-            snprintf(buf, buf_size, "%-8s", opcode_name);
+            StrPrintF(buf, buf_size, "%-8s", opcode_name);
             break;
             
         default:
-            snprintf(buf, buf_size, "%-8s 0x%08x", opcode_name, inst);
+            StrPrintF(buf, buf_size, "%-8s 0x%08x", opcode_name, inst);
             break;
     }
     

@@ -6,6 +6,6 @@ echo ""
 
 for file in Demo/NullCase.HC Demo/OnceDemo.HC Demo/ParenWarn.HC Demo/Print.HC; do
     echo "=== Testing: $file ==="
-    timeout 5 ./cicl-riscv "$file" 2>&1 | head -20
+    timeout 5 ./holyc-riscv "$file" 2>&1 | head -20
     echo ""
 done
