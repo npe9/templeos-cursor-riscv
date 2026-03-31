@@ -96,7 +96,7 @@ make exec-oracle             # Optional oracle runs (see tests/scripts/)
 make templeos-smoke          # TempleOS tree smoke (see tests/scripts/)
 ```
 
-On GitHub, CI runs **`make compliance`** first, then **`make exec-oracle`** (RISC-V + QEMU). You can also trigger a run manually via the Actions tab (`workflow_dispatch`). See `.github/workflows/ci.yml`.
+On GitHub, CI runs **`make compliance`**, then in parallel **`make exec-oracle`** and **`make templeos-smoke`** (each job installs RISC-V QEMU tooling). Trigger manually from the Actions tab (`workflow_dispatch`). Dependabot opens weekly PRs for Action bumps (`.github/dependabot.yml`). See `.github/workflows/ci.yml`.
 
 Compile a single file:
 

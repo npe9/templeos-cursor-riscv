@@ -88,8 +88,8 @@ help:
 	@echo "  all         - Build holyc-riscv host compiler"
 	@echo "  cicl-riscv  - Symlink to holyc-riscv (legacy name)"
 	@echo "  compliance      - Compile-only compliance (manifests)"
-	@echo "  compliance-exec - Compliance + execution oracle tests (QEMU)"
-	@echo "  exec-oracle     - Execution oracle tests only"
+	@echo "  compliance-exec - make compliance then make exec-oracle (full local gate)"
+	@echo "  exec-oracle     - UART oracle tests only (tests/exec; needs RISC-V + qemu-system)"
 	@echo "  templeos-riscv  - Build TempleOS/RISC-V kernel + default HolyC guest"
 	@echo "  templeos-smoke  - QEMU smoke (ORACLE) for default + selfhost images"
 	@echo "  validator   - Build the instruction encoder validator (needs validator.c)"
@@ -107,5 +107,5 @@ help:
 	@echo "Requirements:"
 	@echo "  - GCC or Clang"
 	@echo "  - riscv64-unknown-elf-gcc (optional, for verification)"
-	@echo "  - qemu-riscv64 (optional, for execution)"
+	@echo "  - qemu-system-riscv64 (optional, for exec-oracle / templeos-smoke)"
 

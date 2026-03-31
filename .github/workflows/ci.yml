@@ -1,4 +1,4 @@
-# Host HolyC→RISC-V compiler: compile compliance, then QEMU execution oracles.
+# Host HolyC→RISC-V compiler: compile compliance, then QEMU tests (oracles + OS smoke).
 name: CI
 
 on:
@@ -48,3 +48,23 @@ jobs:
 
       - name: Build and run UART execution oracles
         run: make && make exec-oracle
+
+  templeos-smoke:
+    runs-on: ubuntu-24.04
+    needs: compile-compliance
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install RISC-V toolchain, QEMU, and Python (templeos-riscv image build)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            gcc-riscv64-unknown-elf \
+            binutils-riscv64-unknown-elf \
+            qemu-system-riscv64 \
+            python3
+
+      - name: Build HolyC compiler and run TempleOS/RISC-V QEMU smoke
+        run: make && make templeos-smoke
