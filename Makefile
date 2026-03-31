@@ -14,7 +14,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test validator help cicl-riscv compliance exec-oracle templeos-riscv templeos-smoke
+.PHONY: all clean test validator help cicl-riscv compliance compliance-exec exec-oracle qemu-integration templeos-riscv templeos-smoke
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -44,6 +44,11 @@ templeos-riscv: $(COMPILER_BIN)
 templeos-smoke: $(COMPILER_BIN)
 	@chmod +x tests/scripts/run_templeos_smoke.sh
 	@tests/scripts/run_templeos_smoke.sh
+
+# UART oracles (tests/exec) then TempleOS/RISC-V QEMU smoke — same as CI after compile-compliance
+qemu-integration: $(COMPILER_BIN)
+	@$(MAKE) exec-oracle
+	@$(MAKE) templeos-smoke
 
 # Build the validator
 validator: validator.c
@@ -90,6 +95,7 @@ help:
 	@echo "  compliance      - Compile-only compliance (manifests)"
 	@echo "  compliance-exec - make compliance then make exec-oracle (full local gate)"
 	@echo "  exec-oracle     - UART oracle tests only (tests/exec; needs RISC-V + qemu-system)"
+	@echo "  qemu-integration - exec-oracle then templeos-smoke (CI parity after compliance)"
 	@echo "  templeos-riscv  - Build TempleOS/RISC-V kernel + default HolyC guest"
 	@echo "  templeos-smoke  - QEMU smoke (ORACLE) for default + selfhost images"
 	@echo "  validator   - Build the instruction encoder validator (needs validator.c)"

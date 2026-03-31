@@ -93,10 +93,11 @@ make test                    # Minimal AOT smoke (build/smoke.hc → build/simpl
 make compliance              # TempleOS curated + parity compile suite
 make compliance-exec         # Parity + exec where implemented
 make exec-oracle             # Optional oracle runs (see tests/scripts/)
+make qemu-integration        # exec-oracle + templeos-smoke (matches CI QEMU job)
 make templeos-smoke          # TempleOS tree smoke (see tests/scripts/)
 ```
 
-On GitHub, CI runs **`make compliance`**, then in parallel **`make exec-oracle`** and **`make templeos-smoke`** (each job installs RISC-V QEMU tooling). Trigger manually from the Actions tab (`workflow_dispatch`). Dependabot opens weekly PRs for Action bumps (`.github/dependabot.yml`). See `.github/workflows/ci.yml`.
+On GitHub, CI runs **`make compliance`**, then **`make qemu-integration`** (one runner: RISC-V toolchain, QEMU, Python, then exec oracles + TempleOS smoke). Trigger manually from the Actions tab (`workflow_dispatch`). Dependabot opens weekly PRs for Action bumps (`.github/dependabot.yml`). See `.github/workflows/ci.yml`.
 
 Compile a single file:
 
