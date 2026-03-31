@@ -1,6 +1,10 @@
 # TempleOS HolyC to RISC-V Compiler
 
+[![CI](https://github.com/npe9/templeos-cursor-riscv/actions/workflows/ci.yml/badge.svg?branch=archive)](https://github.com/npe9/templeos-cursor-riscv/actions/workflows/ci.yml?query=branch%3Aarchive)
+
 HolyC front end and RISC-V code generator, with optional bare-metal REPL and a separate TempleOS/RISC-V tree under `templeos-riscv/`.
+
+**Remotes:** This clone may use `origin` as a local path mirror; **`github`** points at [npe9/templeos-cursor-riscv](https://github.com/npe9/templeos-cursor-riscv). Use `git push github archive` if `origin` rejects pushes (non-bare repo with `archive` checked out).
 
 ## Project status
 
@@ -92,7 +96,7 @@ make exec-oracle             # Optional oracle runs (see tests/scripts/)
 make templeos-smoke          # TempleOS tree smoke (see tests/scripts/)
 ```
 
-On GitHub, pushes and pull requests to `archive`, `main`, or `master` run the same checks as `make compliance-exec` (see `.github/workflows/ci.yml`).
+On GitHub, CI runs **`make compliance`** first, then **`make exec-oracle`** (RISC-V + QEMU). You can also trigger a run manually via the Actions tab (`workflow_dispatch`). See `.github/workflows/ci.yml`.
 
 Compile a single file:
 
