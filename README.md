@@ -32,7 +32,10 @@ HolyC front end and RISC-V code generator, with optional bare-metal REPL and a s
 
 - RISC-V toolchain (`riscv64-unknown-elf-gcc`, `riscv64-unknown-elf-objdump`) for disassembly and some tests
 - QEMU with RISC-V support (`qemu-riscv64` / `qemu-system-riscv64`)
+- Python 3 (for `templeos-riscv` image steps used by `make templeos-smoke` / `make ci`)
 - Make
+
+See [AGENTS.md](AGENTS.md) for a short contributor / coding-agent orientation (layout, `make ci`, remotes).
 
 ### Building
 

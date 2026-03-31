@@ -121,4 +121,5 @@ help:
 	@echo "  - GCC or Clang"
 	@echo "  - riscv64-unknown-elf-gcc (optional, for verification)"
 	@echo "  - qemu-system-riscv64 (optional, for exec-oracle / templeos-smoke)"
+	@echo "  - python3 (optional, for templeos-riscv image build in templeos-smoke / make ci)"
 
