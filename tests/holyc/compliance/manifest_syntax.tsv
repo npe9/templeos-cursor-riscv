@@ -1,0 +1,42 @@
+# path (from repo root)	category	expect	min_code_bytes
+tests/holyc/compliance/c010_types_integers.hc	types	pass	
+tests/holyc/compliance/c011_types_bool_void_f64_decl.hc	types	pass	
+tests/holyc/compliance/c012_f64_arithmetic.hc	types	pass	
+tests/holyc/compliance/c020_arithmetic.hc	expressions	pass	
+tests/holyc/compliance/c021_modulo.hc	expressions	pass	
+tests/holyc/compliance/c030_bitwise.hc	expressions	pass	
+tests/holyc/compliance/c031_shifts.hc	expressions	pass	
+tests/holyc/compliance/c040_compare.hc	expressions	pass	
+tests/holyc/compliance/c041_logical_ops.hc	expressions	pass	
+tests/holyc/compliance/c050_if_else_chain.hc	statements	pass	
+tests/holyc/compliance/c051_while_sum.hc	statements	pass	
+tests/holyc/compliance/c052_for_loop.hc	statements	pass	
+tests/holyc/compliance/c053_do_while.hc	statements	pass	
+tests/holyc/compliance/c054_switch.hc	statements	pass	
+tests/holyc/compliance/c055_break_continue.hc	statements	pass	
+tests/holyc/compliance/c056_goto.hc	statements	pass	
+tests/holyc/compliance/c060_forward_decl.hc	functions	pass	
+tests/holyc/compliance/c061_many_parameters.hc	functions	pass	
+tests/holyc/compliance/c062_recursion_fib.hc	functions	pass	
+tests/holyc/compliance/c070_struct_class.hc	aggregate	pass	
+tests/holyc/compliance/c071_union.hc	aggregate	pass	
+tests/holyc/compliance/c072_enum.hc	aggregate	pass	
+tests/holyc/compliance/c073_class_method.hc	aggregate	pass	
+tests/holyc/compliance/c080_pointer.hc	memory	pass	
+tests/holyc/compliance/c081_array_local.hc	memory	pass	
+tests/holyc/compliance/c082_array_multidim.hc	memory	pass	8
+tests/holyc/compliance/c083_function_pointer.hc	memory	pass	
+tests/holyc/compliance/c090_static_global.hc	globals	pass	8
+tests/holyc/compliance/c091_sizeof.hc	operators	pass	
+tests/holyc/compliance/c100_compound_assign.hc	operators	pass	
+tests/holyc/compliance/c110_preprocessor_define.hc	preprocessor	pass	
+tests/holyc/compliance/c111_preprocessor_ifdef.hc	preprocessor	pass	
+tests/holyc/compliance/c112_preprocessor_macro.hc	preprocessor	pass	
+tests/holyc/compliance/c120_try_catch.hc	exceptions	pass	
+tests/holyc/compliance/c121_asm_nop.hc	asm	pass	
+tests/holyc/compliance/c122_throw_stmt.hc	exceptions	pass	
+tests/holyc/compliance/c130_string_literal.hc	strings	pass	
+tests/holyc/compliance/c140_incdec.hc	operators	pass	
+tests/holyc/compliance/c150_help_index.hc	templeos_meta	pass	
+tests/holyc/compliance/c160_include_local.hc	preprocessor	pass	
+tests/holyc/compliance/c900_templeos_leap_year.hc	templeos_idiom	pass	
