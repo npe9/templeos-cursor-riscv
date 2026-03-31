@@ -2,11 +2,14 @@
 
 #include "holyc_compiler.h"
 
+static U8 ParseType(Compiler *cc);
+
 // ═══════════════════════════════════════════════════════════════
 // IC GENERATION
 // ═══════════════════════════════════════════════════════════════
 
 CIntermediateCode *ICNew(Compiler *cc, U8 opcode) {
+  (void)cc;
   CIntermediateCode *ic = calloc(1, sizeof(CIntermediateCode));
   if (!ic) {
     // Allocation failed!
@@ -99,6 +102,278 @@ void SymTablePop(Compiler *cc) {
   }
 }
 
+static bool ParseFunctionPointerDeclarator(Compiler *cc, char **out_name, int *out_param_count) {
+  if (cc->lex.token != '(') {
+    Error(cc, "Expected '(' for function pointer declarator");
+    return false;
+  }
+
+  LexNext(cc);  // consume '('
+
+  int pointer_depth = 0;
+  while (cc->lex.token == '*') {
+    pointer_depth++;
+    LexNext(cc);
+  }
+
+  if (pointer_depth != 1) {
+    Error(cc, "Nested function pointers are not supported yet");
+    return false;
+  }
+
+  if (cc->lex.token != TK_IDENT) {
+    Error(cc, "Expected function pointer name");
+    return false;
+  }
+
+  char *name = strdup(cc->lex.token_str);
+  LexNext(cc);
+
+  if (!LexExpect(cc, ')')) {
+    free(name);
+    return false;
+  }
+
+  if (!LexExpect(cc, '(')) {
+    free(name);
+    return false;
+  }
+
+  CHashClass *saved_class = cc->last_type_class;
+  U8 saved_pointed_to = cc->last_pointed_to_type;
+
+  int param_count = 0;
+
+  if (cc->lex.token == ')') {
+    LexNext(cc);
+  } else {
+    while (true) {
+      if (cc->lex.token == TK_ELLIPSIS) {
+        // Varargs - count as zero for now and consume ')'
+        LexNext(cc);
+        if (!LexExpect(cc, ')')) {
+          free(name);
+          return false;
+        }
+        param_count = 0;
+        break;
+      }
+
+      U8 param_type = ParseType(cc);
+      (void)param_type;  // Suppress unused warning – we only count params for now
+
+      while (cc->lex.token == '*') {
+        LexNext(cc);
+      }
+
+      if (cc->lex.token == TK_IDENT) {
+        LexNext(cc);
+      }
+
+      if (cc->lex.token == '[') {
+        LexNext(cc);
+        if (cc->lex.token == TK_I64) {
+          LexNext(cc);
+        }
+        if (!LexExpect(cc, ']')) {
+          free(name);
+          return false;
+        }
+      }
+
+      param_count++;
+
+      if (cc->lex.token == ',') {
+        LexNext(cc);
+        continue;
+      }
+
+      if (!LexExpect(cc, ')')) {
+        free(name);
+        return false;
+      }
+      break;
+    }
+  }
+
+  cc->last_type_class = saved_class;
+  cc->last_pointed_to_type = saved_pointed_to;
+
+  *out_name = name;
+  *out_param_count = param_count;
+  return true;
+}
+
+static bool EmitLocalFunctionPointerInitialization(Compiler *cc, Symbol *sym) {
+  ICAdd(cc, IC_LEA, sym->offset, RT_I64);
+  ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
+
+  if (!ParseExpression(cc)) {
+    return false;
+  }
+
+  CIntermediateCode *ic = ICNew(cc, IC_ASSIGN);
+  ic->res.type.raw_type = RT_I64;
+  ic->res.type.mode = MDF_STK;
+  ic->arg1_type_pointed_to = RT_I64;
+
+  if (cc->ic_tail) cc->ic_tail->next = ic;
+  else cc->ic_head = ic;
+  cc->ic_tail = ic;
+
+  cc->last_var_symbol = NULL;
+  return true;
+}
+
+static bool ParseLocalFunctionPointerDeclList(Compiler *cc, U8 return_type) {
+  do {
+    char *name = NULL;
+    int parameter_count = 0;
+    if (!ParseFunctionPointerDeclarator(cc, &name, &parameter_count)) {
+      return false;
+    }
+
+    Symbol *sym = SymbolDefine(cc, name, SYM_VAR);
+    sym->data_type = RT_I64;
+    sym->size = 8;
+    sym->is_function_pointer = true;
+    sym->function_return_type = return_type;
+    sym->func_ptr_param_count = parameter_count;
+    sym->pointed_to_type = RT_I64;
+
+    int aligned_size = (sym->size + 7) & ~7;
+    sym->offset = -(10000 + cc->locals_size);
+    cc->locals_size += aligned_size;
+
+    if (cc->lex.token == '=') {
+      LexNext(cc);
+      if (!EmitLocalFunctionPointerInitialization(cc, sym)) {
+        free(name);
+        return false;
+      }
+    }
+
+    free(name);
+
+    if (cc->lex.token == ',') {
+      LexNext(cc);
+      if (cc->lex.token != '(') {
+        Error(cc, "Expected '(*' after ',' in function pointer declaration");
+        return false;
+      }
+      continue;
+    }
+    break;
+  } while (true);
+
+  if (cc->lex.token == ';') {
+    LexNext(cc);
+  }
+
+  return true;
+}
+
+static CHashGlblVar *CreateGlobalFunctionPointerEntry(Compiler *cc, const char *name, U8 return_type, int param_count) {
+  CHashGlblVar *tmpg = calloc(1, sizeof(CHashGlblVar));
+  tmpg->str = strdup(name);
+  tmpg->type = HTT_GLBL_VAR;
+  tmpg->use_cnt = 0;
+  tmpg->size = 8;
+  tmpg->flags = GVF_FUN;
+  tmpg->is_function_pointer = true;
+  tmpg->function_return_type = return_type;
+  tmpg->func_ptr_param_count = param_count;
+  tmpg->raw_type = RT_I64;
+  tmpg->pointed_to_type = 0;
+  tmpg->element_size = 8;
+  tmpg->data_addr = calloc(1, tmpg->size);
+  HashAdd((CHashEntry*)tmpg, cc->hash_table);
+  return tmpg;
+}
+
+static bool InitializeGlobalFunctionPointer(Compiler *cc, CHashGlblVar *global_entry) {
+  if (cc->lex.token != '=') {
+    return true;
+  }
+
+  LexNext(cc);
+
+  bool has_amp = false;
+  if (cc->lex.token == '&') {
+    has_amp = true;
+    LexNext(cc);
+  }
+
+  I64 init_val = 0;
+  bool have_value = false;
+
+  if (cc->lex.token == TK_IDENT) {
+    CHashEntry *fn_entry = HashFind(cc->lex.token_str, cc->hash_table, HTT_FUN);
+    if (!fn_entry || !(fn_entry->type & HTT_FUN)) {
+      Error(cc, "Expected function name in initialization");
+      return false;
+    }
+    CHashFun *fn = (CHashFun*)fn_entry;
+    init_val = (I64)&fn->exe_addr;
+    have_value = true;
+    LexNext(cc);
+  } else if (cc->lex.token == TK_I64) {
+    init_val = cc->lex.token_i64;
+    have_value = true;
+    LexNext(cc);
+  } else {
+    Error(cc, "Unsupported initializer for function pointer");
+    return false;
+  }
+
+  if (!have_value) {
+    return true;
+  }
+
+  *(I64*)global_entry->data_addr = init_val;
+  (void)has_amp;
+  return true;
+}
+
+static bool ParseGlobalFunctionPointerDeclList(Compiler *cc, U8 return_type) {
+  do {
+    char *name = NULL;
+    int parameter_count = 0;
+    if (!ParseFunctionPointerDeclarator(cc, &name, &parameter_count)) {
+      return false;
+    }
+
+    CHashGlblVar *entry = CreateGlobalFunctionPointerEntry(cc, name, return_type, parameter_count);
+    if (cc->lex.token == '=') {
+      if (!InitializeGlobalFunctionPointer(cc, entry)) {
+        free(name);
+        return false;
+      }
+    }
+
+    free(name);
+
+    if (cc->lex.token == ',') {
+      LexNext(cc);
+      if (cc->lex.token != '(') {
+        Error(cc, "Expected '(*' after ',' in function pointer declaration");
+        return false;
+      }
+      continue;
+    }
+    break;
+  } while (true);
+
+  if (cc->lex.token == ';') {
+    LexNext(cc);
+  } else {
+    Error(cc, "Expected ';' after function pointer declaration");
+    return false;
+  }
+
+  return true;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // LABELS
 // ═══════════════════════════════════════════════════════════════
@@ -136,9 +411,49 @@ static bool ParsePrimary(Compiler *cc);
 static bool ParsePostfix(Compiler *cc);
 static bool ParseUnary(Compiler *cc);
 static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name);
+static bool ParseEnumDefinitionBody(Compiler *cc, const char *enum_name, bool register_type);
+bool ParseEnum(Compiler *cc);
+static bool ParseFunctionPointerDeclarator(Compiler *cc, char **out_name, int *out_param_count);
+static bool ParseLocalFunctionPointerDeclList(Compiler *cc, U8 return_type);
+static bool ParseGlobalFunctionPointerDeclList(Compiler *cc, U8 return_type);
+
+static I64 PrimitiveTypeSize(U8 type) {
+  switch (type) {
+    case RT_I0: case RT_U0: return 0;
+    case RT_I8: case RT_U8: return 1;
+    case RT_I16: case RT_U16: return 2;
+    case RT_I32: case RT_U32: return 4;
+    case RT_I64: case RT_U64: case RT_F64: return 8;
+    default: return 8;
+  }
+}
+
+static bool IsTypeStartToken(Compiler *cc) {
+  switch (cc->lex.token) {
+    case KW_I0: case KW_U0:
+    case KW_I8: case KW_U8:
+    case KW_I16: case KW_U16:
+    case KW_I32: case KW_U32:
+    case KW_I64: case KW_U64:
+    case KW_F64:
+    case KW_CLASS:
+    case KW_ENUM:
+      return true;
+    default:
+      break;
+  }
+
+  if (cc->lex.token == TK_IDENT && cc->lex.hash_entry &&
+      (cc->lex.hash_entry->type & (HTT_CLASS | HTT_INTERNAL_TYPE))) {
+    return true;
+  }
+
+  return false;
+}
 
 static U8 ParseType(Compiler *cc) {
   U8 type = RT_I64;  // Default
+  cc->last_type_class = NULL;
   
   // Check if current token is a type (from hash table or keyword)
   if (cc->lex.token == TK_IDENT && cc->lex.hash_entry) {
@@ -146,6 +461,7 @@ static U8 ParseType(Compiler *cc) {
     if (cc->lex.hash_entry->type & (HTT_CLASS | HTT_INTERNAL_TYPE)) {
       CHashClass *cls = (CHashClass*)cc->lex.hash_entry;
       type = cls->raw_type;
+      cc->last_type_class = (cls->type & HTT_CLASS) ? cls : NULL;
       LexNext(cc);
     } else {
       Error(cc, "Expected type");
@@ -164,6 +480,53 @@ static U8 ParseType(Compiler *cc) {
       case KW_I64: type = RT_I64; LexNext(cc); break;
       case KW_U64: type = RT_U64; LexNext(cc); break;
       case KW_F64: type = RT_F64; LexNext(cc); break;
+      case KW_ENUM:
+        {
+          LexNext(cc);
+
+          char *enum_name = NULL;
+          bool have_name = false;
+          if (cc->lex.token == TK_IDENT) {
+            enum_name = strdup(cc->lex.token_str);
+            have_name = true;
+            LexNext(cc);
+          }
+
+          if (cc->lex.token == '{') {
+            bool register_type = have_name;
+            if (!ParseEnumDefinitionBody(cc, enum_name, register_type)) {
+              if (enum_name) free(enum_name);
+              return RT_I64;
+            }
+
+            if (have_name) {
+              CHashEntry *enum_type = HashFind(enum_name, cc->hash_table, HTT_CLASS | HTT_INTERNAL_TYPE);
+              if (enum_type && (enum_type->type & (HTT_CLASS | HTT_INTERNAL_TYPE))) {
+                CHashClass *cls = (CHashClass*)enum_type;
+                type = cls->raw_type;
+              } else {
+                type = RT_I64;
+              }
+            } else {
+              type = RT_I64;
+            }
+          } else if (have_name) {
+            CHashEntry *enum_type = HashFind(enum_name, cc->hash_table, HTT_CLASS | HTT_INTERNAL_TYPE);
+            if (enum_type && (enum_type->type & (HTT_CLASS | HTT_INTERNAL_TYPE))) {
+              CHashClass *cls = (CHashClass*)enum_type;
+              type = cls->raw_type;
+            } else {
+              type = RT_I64;
+            }
+          } else {
+            Error(cc, "Expected enum declarator");
+            if (enum_name) free(enum_name);
+            return RT_I64;
+          }
+
+          if (enum_name) free(enum_name);
+        }
+        break;
       default:
         Error(cc, "Expected type");
         return RT_I64;
@@ -184,6 +547,7 @@ static U8 ParseType(Compiler *cc) {
   if (ptr_count > 0) {
     cc->last_pointed_to_type = base_type;
     type = RT_I64;  // Pointers are 64-bit addresses
+    cc->last_type_class = NULL;  // Pointer to class treated as pointer type
   } else {
     cc->last_pointed_to_type = 0;  // Not a pointer
   }
@@ -192,38 +556,85 @@ static U8 ParseType(Compiler *cc) {
 }
 
 static bool ParsePrimary(Compiler *cc) {
+  // Default: no global variable context until we identify one
+  cc->last_global_var = NULL;
   // sizeof operator
   if (cc->lex.token == KW_SIZEOF) {
     LexNext(cc);
-    
-    if (!LexExpect(cc, '(')) return false;
-    
-    // Get type
-    U8 type = ParseType(cc);
-    
-    // Handle pointer stars
-    int ptr_count = 0;
-    while (cc->lex.token == '*') {
-      ptr_count++;
+
+    bool had_paren = false;
+    if (cc->lex.token == '(') {
       LexNext(cc);
+      had_paren = true;
     }
-    
-    if (!LexExpect(cc, ')')) return false;
-    
-    // Calculate size
-    I64 size = 8;  // Pointers are always 8
-    if (ptr_count == 0) {
-      switch (type) {
-        case RT_I0: case RT_U0: size = 0; break;
-        case RT_I8: case RT_U8: size = 1; break;
-        case RT_I16: case RT_U16: size = 2; break;
-        case RT_I32: case RT_U32: size = 4; break;
-        case RT_I64: case RT_U64: case RT_F64: size = 8; break;
-        default: size = 8; break;
+
+    I64 size = 0;
+    bool computed = false;
+
+    if (had_paren && IsTypeStartToken(cc)) {
+      U8 type = ParseType(cc);
+      CHashClass *type_class = cc->last_type_class;
+
+      if (!LexExpect(cc, ')')) return false;
+
+      if (type_class && type_class->size > 0) {
+        size = type_class->size;
+      } else {
+        size = PrimitiveTypeSize(type);
       }
+      computed = true;
+    } else if (cc->lex.token == TK_IDENT && (!had_paren || !IsTypeStartToken(cc))) {
+      char *name = strdup(cc->lex.token_str);
+      if (!name) return false;
+      LexNext(cc);
+
+      Symbol *sym = SymbolLookup(cc, name);
+      if (sym) {
+        if (sym->is_array && sym->array_size >= 0 && sym->element_size > 0) {
+          size = sym->array_size * sym->element_size;
+        } else if (sym->size > 0) {
+          size = sym->size;
+        } else {
+          size = PrimitiveTypeSize(sym->data_type);
+        }
+        computed = true;
+      } else {
+        CHashEntry *global_entry = HashFind(name, cc->hash_table, HTT_GLBL_VAR);
+        if (global_entry && (global_entry->type & HTT_GLBL_VAR)) {
+          CHashGlblVar *gv = (CHashGlblVar*)global_entry;
+          if (gv->size > 0) {
+            size = gv->size;
+          } else if (gv->var_class && gv->var_class->size > 0) {
+            size = gv->var_class->size;
+          } else {
+            size = PrimitiveTypeSize(gv->raw_type);
+          }
+          computed = true;
+        } else {
+          Error(cc, "Unknown identifier in sizeof");
+          free(name);
+          return false;
+        }
+      }
+
+      free(name);
+
+      if (had_paren) {
+        if (!LexExpect(cc, ')')) return false;
+      }
+    } else if (had_paren) {
+      Error(cc, "Unsupported operand to sizeof");
+      return false;
+    } else {
+      Error(cc, "Expected '(' after sizeof");
+      return false;
     }
-    
-    // Push size as immediate
+
+    if (!computed) {
+      Error(cc, "Failed to compute sizeof operand");
+      return false;
+    }
+
     ICAdd(cc, IC_IMM_I64, size, RT_I64);
     return true;
   }
@@ -310,9 +721,14 @@ static bool ParsePrimary(Compiler *cc) {
         // Function found in hash table
         CHashFun *func = (CHashFun*)entry;
         if (func) {
-          // Use IC_CALL_INDIRECT2 for REPL (exe_addr set after parsing)
-          // ic_data = &func->exe_addr (address of field), so it loads at runtime
-          ICAdd(cc, IC_CALL_INDIRECT2, (I64)&func->exe_addr, RT_I64);
+          // Same-unit calls: PC-relative jal via stable entry label (AOT under QEMU).
+          if (cc->current_function_entry_label && func == cc->last_compiled_func) {
+            ICAdd(cc, IC_CALL, (I64)cc->current_function_entry_label, RT_I64);
+          } else if (func->entry_label) {
+            ICAdd(cc, IC_CALL, (I64)func->entry_label, RT_I64);
+          } else {
+            ICAdd(cc, IC_CALL_INDIRECT2, (I64)&func->exe_addr, RT_I64);
+          }
           // Store actual arg_cnt for compiler to use (not func->arg_cnt)
           cc->last_call_arg_cnt = arg_count;
           
@@ -322,10 +738,41 @@ static bool ParsePrimary(Compiler *cc) {
           return false;
         }
       } else {
-        // Function not found - skip IC_CALL, still generate valid code
-        // Don't add IC_CALL, just return 0
+        // Check for local function pointer variable
+        Symbol *fp_sym = SymbolLookup(cc, name);
+        if (fp_sym && fp_sym->is_function_pointer) {
+          cc->last_var_symbol = fp_sym;
+          cc->last_expr_class = fp_sym->extra ? (CHashClass*)fp_sym->extra : NULL;
+          cc->flags &= ~(CCF_RAX | CCF_ARRAY);
+
+          ICAdd(cc, IC_LEA, fp_sym->offset, RT_I64);
+          ICAdd(cc, IC_DEREF, 0, RT_I64);  // Push pointer (address of exe_addr)
+          cc->last_call_arg_cnt = arg_count;
+          ICAdd(cc, IC_CALL_INDIRECT, 0, RT_I64);
+          ICAdd(cc, IC_CALL_END, 0, RT_I64);
+          free(name);
+          return true;
+        }
+
+        // Check for global function pointer variable
+        CHashEntry *global_fp = HashFind(name, cc->hash_table, HTT_GLBL_VAR);
+        if (global_fp && (global_fp->type & HTT_GLBL_VAR)) {
+          CHashGlblVar *global = (CHashGlblVar*)global_fp;
+          if (global->is_function_pointer) {
+            cc->last_global_var = global;
+            ICAdd(cc, IC_IMM_I64, (I64)global->data_addr, RT_I64);
+            ICAdd(cc, IC_DEREF, 0, RT_I64);
+            cc->last_call_arg_cnt = arg_count;
+            ICAdd(cc, IC_CALL_INDIRECT, 0, RT_I64);
+            ICAdd(cc, IC_CALL_END, 0, RT_I64);
+            free(name);
+            return true;
+          }
+        }
+
+        // Function not found - emit warning result
+        Error(cc, "Unknown function or function pointer");
         ICAdd(cc, IC_IMM_I64, 0, RT_I64);
-        
       }
       
       ICAdd(cc, IC_CALL_END, 0, RT_I64);
@@ -337,6 +784,8 @@ static bool ParsePrimary(Compiler *cc) {
       if (sym) {
         // Local variable - save symbol for array subscripting
         cc->last_var_symbol = sym;
+        cc->last_global_var = NULL;
+        cc->last_expr_class = sym->extra ? (CHashClass*)sym->extra : NULL;
         
         // Match original (PrsExp.HC:765-807)
         // Clear CCF_RAX flag (line 765)
@@ -357,6 +806,7 @@ static bool ParsePrimary(Compiler *cc) {
       if (entry && (entry->type & HTT_GLBL_VAR)) {
         // Global variable
         CHashGlblVar *global = (CHashGlblVar*)entry;
+        cc->last_global_var = global;
         
         // Generate load from global (absolute address)
         CICType type = {0};
@@ -367,6 +817,8 @@ static bool ParsePrimary(Compiler *cc) {
         // Full implementation would load the value
         CIntermediateCode *ic = ICNew(cc, IC_IMM_I64);
         ic->ic_data = (I64)global->data_addr;
+        cc->last_expr_class = global->var_class;
+        cc->flags &= ~(CCF_RAX | CCF_ARRAY);
         
         // Link into IC chain
         if (cc->ic_tail) cc->ic_tail->next = ic;
@@ -377,17 +829,57 @@ static bool ParsePrimary(Compiler *cc) {
         return true;
       }
       
+      // Check for function reference (decays to pointer)
+      CHashEntry *func_entry = HashFind(name, cc->hash_table, HTT_FUN);
+      if (func_entry && (func_entry->type & HTT_FUN)) {
+        CHashFun *func = (CHashFun*)func_entry;
+        // Load pointer to exe_addr field (resolved at runtime)
+        ICAdd(cc, IC_IMM_I64, (I64)&func->exe_addr, RT_I64);
+        free(name);
+        return true;
+      }
+
+      // Check enum constants
+      CHashEntry *enum_entry = HashFind(name, cc->hash_table, HTT_ENUM);
+      if (enum_entry && (enum_entry->type & HTT_ENUM)) {
+        CHashEnumValue *enum_val = (CHashEnumValue*)enum_entry;
+        ICAdd(cc, IC_IMM_I64, enum_val->value, RT_I64);
+        free(name);
+        return true;
+      }
+      
       Error(cc, "Undefined variable");
       free(name);
       return false;
     }
   }
   
-  // Parenthesized expression
+  // Parenthesized expression or C-style cast: (type) x, (type *) x
   if (cc->lex.token == '(') {
+    LexPush(cc);
+    LexNext(cc);  // Skip '('
+    if (IsTypeStartToken(cc)) {
+      U8 saved_pt = cc->last_pointed_to_type;
+      CHashClass *saved_tc = cc->last_type_class;
+      (void)ParseType(cc);
+      if (cc->lex.token == ')') {
+        LexNext(cc);  // Skip ')'
+        LexPopNoRestore(cc);
+        // Cast to pointer/int: value remains in a0/eval stack; no extra IC for (T*) on I64.
+        if (!ParseUnary(cc)) {
+          cc->last_pointed_to_type = saved_pt;
+          cc->last_type_class = saved_tc;
+          return false;
+        }
+        cc->last_pointed_to_type = saved_pt;
+        cc->last_type_class = saved_tc;
+        cc->last_var_symbol = NULL;
+        return true;
+      }
+    }
+    LexPopRestore(cc);
     LexNext(cc);  // Skip '('
     if (!ParseExpression(cc)) return false;
-    // Clear last_var_symbol to prevent auto-deref
     cc->last_var_symbol = NULL;
     return LexExpect(cc, ')');
   }
@@ -437,38 +929,35 @@ static bool ParseUnary(Compiler *cc) {
   if (cc->lex.token == '&') {
     // Address-of operator
     LexNext(cc);
-    if (!ParseUnary(cc)) return false;
+    I64 saved_flags = cc->flags;
+    cc->flags |= CCF_RAX;
+    if (!ParseUnary(cc)) {
+      cc->flags = saved_flags;
+      return false;
+    }
+    cc->flags = saved_flags;
     ICAdd(cc, IC_ADDR, 0, RT_I64);
+    cc->last_var_symbol = NULL;
+    cc->last_global_var = NULL;
     return true;
   }
   
   if (cc->lex.token == '*') {
     // Dereference operator - explicit dereference
     LexNext(cc);
-    
-    // Parse the expression (this will set last_var_symbol if it's a variable)
+
     if (!ParseUnary(cc)) return false;
-    
-    // Now get the pointed-to type from the symbol that was just loaded
-    U8 deref_type = RT_I64;  // Default
+
+    U8 deref_type = RT_I64;
     if (cc->last_var_symbol && cc->last_var_symbol->pointed_to_type != 0) {
       deref_type = cc->last_var_symbol->pointed_to_type;
     }
-    
-    // Create IC_DEREF with the pointed-to type
-    CIntermediateCode *ic = ICNew(cc, IC_DEREF);
-    ic->res.type.raw_type = RT_I64;
-    ic->res.type.mode = MDF_STK;
-    ic->arg1_type_pointed_to = deref_type;
-    
-    // Link into IC chain
-    if (cc->ic_tail) cc->ic_tail->next = ic;
-    else cc->ic_head = ic;
-    cc->ic_tail = ic;
-    
-    // Clear last_var_symbol since we consumed it
+    /* Drop duplicate pointer slot (still in a0) before DEREF pushes *a0 — else DROP after would
+     * pop the loaded value. */
+    ICAdd(cc, IC_EVAL_DROP, 8, RT_I64);
+    ICAdd(cc, IC_DEREF, 0, RT_I64);
+    if (cc->ic_tail) cc->ic_tail->arg1_type_pointed_to = deref_type;
     cc->last_var_symbol = NULL;
-    
     return true;
   }
   
@@ -499,6 +988,17 @@ static bool ParsePostfix(Compiler *cc) {
     if (cc->ic_tail) cc->ic_tail->next = ic;
     else cc->ic_head = ic;
     cc->ic_tail = ic;
+  } else if (!cc->last_var_symbol && cc->last_global_var &&
+             !(cc->flags & (CCF_RAX | CCF_ARRAY)) && !is_paren_expr) {
+    // Auto-deref for global variables
+    CIntermediateCode *ic = ICNew(cc, IC_DEREF);
+    ic->res.type.raw_type = RT_I64;
+    ic->res.type.mode = MDF_STK;
+    ic->arg1_type_pointed_to = cc->last_global_var->raw_type;
+    
+    if (cc->ic_tail) cc->ic_tail->next = ic;
+    else cc->ic_head = ic;
+    cc->ic_tail = ic;
   }
   
   // Handle postfix operators (array subscript, member access)
@@ -512,8 +1012,11 @@ static bool ParsePostfix(Compiler *cc) {
       // Get element size from last variable's type info
       I64 elem_size = 8;  // Default to I64
       Symbol *saved_symbol = cc->last_var_symbol;
+      CHashGlblVar *saved_global = cc->last_global_var;
       if (saved_symbol) {
         elem_size = saved_symbol->element_size;
+      } else if (saved_global) {
+        elem_size = saved_global->element_size ? saved_global->element_size : 8;
       }
       
       // Push element size
@@ -524,6 +1027,7 @@ static bool ParsePostfix(Compiler *cc) {
       
       // Restore for potential chained subscripts
       cc->last_var_symbol = saved_symbol;
+      cc->last_global_var = saved_global;
       
       if (!LexExpect(cc, ']')) return false;
       
@@ -535,7 +1039,9 @@ static bool ParsePostfix(Compiler *cc) {
       
       // Dereference to get the value
       // This loads the value at the calculated address
-      ICAdd(cc, IC_DEREF, 0, RT_I64);
+      if (!(cc->flags & CCF_RAX)) {
+        ICAdd(cc, IC_DEREF, 0, RT_I64);
+      }
       
       continue;
     }
@@ -589,7 +1095,9 @@ static bool ParsePostfix(Compiler *cc) {
       }
       
       // Dereference to get member value
-      ICAdd(cc, IC_DEREF, 0, RT_I64);
+      if (!(cc->flags & CCF_RAX)) {
+        ICAdd(cc, IC_DEREF, 0, RT_I64);
+      }
       
       // Handle bit field extraction
       if (bit_width > 0) {
@@ -638,7 +1146,9 @@ static bool ParsePostfix(Compiler *cc) {
       char *member_name = strdup(cc->lex.token_str);
       
       // First dereference the pointer
-      ICAdd(cc, IC_DEREF, 0, RT_I64);
+      if (!(cc->flags & CCF_RAX)) {
+        ICAdd(cc, IC_DEREF, 0, RT_I64);
+      }
       
       // Look up member offset (same as . operator)
       I64 member_offset = 0;
@@ -663,7 +1173,9 @@ static bool ParsePostfix(Compiler *cc) {
         ICAdd(cc, IC_ADD, 0, RT_I64);
       }
       
-      ICAdd(cc, IC_DEREF, 0, RT_I64);
+      if (!(cc->flags & CCF_RAX)) {
+        ICAdd(cc, IC_DEREF, 0, RT_I64);
+      }
       cc->last_expr_class = member_class;
       
       free(member_name);
@@ -679,7 +1191,7 @@ static bool ParsePostfix(Compiler *cc) {
   // Assignments will change it to NOP later
   // BUT: Skip if we just processed a parenthesized expression (already dereferenced)
   CIntermediateCode *last_ic = cc->ic_tail;
-  if (last_ic && (last_ic->ic_code == IC_ADD || last_ic->ic_code == IC_LEA) && !is_paren_expr) {
+  if (last_ic && (last_ic->ic_code == IC_ADD || last_ic->ic_code == IC_LEA) && !is_paren_expr && !(cc->flags & CCF_RAX)) {
     // Last was IC_ADD or IC_LEA (address of variable)
     // Add IC_DEREF to load the value (PrsExp.HC:116-117)
     ICAdd(cc, IC_DEREF, 0, RT_I64);
@@ -815,33 +1327,87 @@ static bool ParseBitwiseOr(Compiler *cc) {
 
 
 static bool ParseLogicalAnd(Compiler *cc) {
-  
   if (!ParseBitwiseOr(cc)) {
     return false;
   }
-  
+
+  CLabel *false_label = NULL;
+  CLabel *end_label = NULL;
+
   while (cc->lex.token == TK_AND_AND) {
+    if (!false_label) {
+      false_label = LabelNew(cc, NULL);
+      end_label = LabelNew(cc, NULL);
+    }
+
+    // If current value is zero, short-circuit the rest
+    ICAdd(cc, IC_BR_ZERO, (I64)false_label, RT_I64);
+
     LexNext(cc);
     if (!ParseBitwiseOr(cc)) return false;
-    ICAdd(cc, IC_AND_AND, 0, RT_I64);
   }
-  
+
+  if (false_label) {
+    // Check the final operand
+    ICAdd(cc, IC_BR_ZERO, (I64)false_label, RT_I64);
+
+    // All operands were non-zero ⇒ result is 1
+    ICAdd(cc, IC_IMM_I64, 1, RT_I64);
+    ICAdd(cc, IC_JMP, (I64)end_label, RT_I64);
+
+    // False path
+    ICAdd(cc, IC_LABEL, (I64)false_label, RT_I64);
+    false_label->defined = true;
+    ICAdd(cc, IC_IMM_I64, 0, RT_I64);
+
+    // End label
+    ICAdd(cc, IC_LABEL, (I64)end_label, RT_I64);
+    end_label->defined = true;
+  }
+
   return true;
 }
 
 
 static bool ParseLogicalOr(Compiler *cc) {
-  
   if (!ParseLogicalAnd(cc)) {
     return false;
   }
-  
+
+  CLabel *true_label = NULL;
+  CLabel *end_label = NULL;
+
   while (cc->lex.token == TK_OR_OR) {
+    if (!true_label) {
+      true_label = LabelNew(cc, NULL);
+      end_label = LabelNew(cc, NULL);
+    }
+
+    // If current value is non-zero, short-circuit to true
+    ICAdd(cc, IC_BR_NOT_ZERO, (I64)true_label, RT_I64);
+
     LexNext(cc);
     if (!ParseLogicalAnd(cc)) return false;
-    ICAdd(cc, IC_OR_OR, 0, RT_I64);
   }
-  
+
+  if (true_label) {
+    // Evaluate the final operand
+    ICAdd(cc, IC_BR_NOT_ZERO, (I64)true_label, RT_I64);
+
+    // All operands were zero ⇒ result is 0
+    ICAdd(cc, IC_IMM_I64, 0, RT_I64);
+    ICAdd(cc, IC_JMP, (I64)end_label, RT_I64);
+
+    // True path
+    ICAdd(cc, IC_LABEL, (I64)true_label, RT_I64);
+    true_label->defined = true;
+    ICAdd(cc, IC_IMM_I64, 1, RT_I64);
+
+    // End label
+    ICAdd(cc, IC_LABEL, (I64)end_label, RT_I64);
+    end_label->defined = true;
+  }
+
   return true;
 }
 
@@ -905,13 +1471,83 @@ static bool ParseAssignment(Compiler *cc) {
     // Match original PrsExp.HC:201-209
     CIntermediateCode *lval_ic = cc->ic_tail;
     U8 store_type = RT_I64;  // Default
+    CIntermediateCode *lea_ic = NULL;
+    CHashGlblVar *lval_global = cc->last_global_var;
     
     if (lval_ic && lval_ic->ic_code == IC_DEREF) {
       // Save the pointed-to type for typed store
       store_type = lval_ic->arg1_type_pointed_to;
+      if (lval_global) {
+        store_type = lval_global->raw_type ? lval_global->raw_type : RT_I64;
+      }
+      
+      // Find the LEA before this DEREF by walking from head
+      // We need to push the address BEFORE the DEREF executes
+      CIntermediateCode *ic_scan = cc->ic_head;
+      while (ic_scan && ic_scan != lval_ic) {
+        if (ic_scan->ic_code == IC_LEA) {
+          lea_ic = ic_scan;
+        }
+        ic_scan = ic_scan->next;
+      }
+      
+      // If we found a LEA, insert IC_PUSH_ARG right after it (before DEREF)
+      // This preserves the address before DEREF overwrites a0 with the value
+      if (lea_ic) {
+        // Check if IC_PUSH_ARG is already present (avoid double insertion)
+        if (lea_ic->next && lea_ic->next->ic_code == IC_PUSH_ARG) {
+          // Already has IC_PUSH_ARG, skip insertion
+        } else {
+          CIntermediateCode *push_ic = ICNew(cc, IC_PUSH_ARG);
+          push_ic->res.type.raw_type = RT_I64;
+          push_ic->res.type.mode = MDF_STK;
+          
+          // Insert after LEA, before DEREF
+          push_ic->next = lea_ic->next;
+          lea_ic->next = push_ic;
+        }
+      } else if (lval_global) {
+        // Global variable assignment: insert push after the IMM that loaded address
+        CIntermediateCode *imm_ic = cc->ic_head;
+        while (imm_ic && imm_ic->next != lval_ic) {
+          imm_ic = imm_ic->next;
+        }
+        if (imm_ic && imm_ic->ic_code == IC_IMM_I64 && imm_ic->ic_data == (I64)lval_global->data_addr) {
+          if (!(imm_ic->next && imm_ic->next->ic_code == IC_PUSH_ARG)) {
+            CIntermediateCode *push_ic = calloc(1, sizeof(CIntermediateCode));
+            push_ic->ic_code = IC_PUSH_ARG;
+            push_ic->res.type.raw_type = RT_I64;
+            push_ic->res.type.mode = MDF_STK;
+            push_ic->last = imm_ic;
+            push_ic->next = imm_ic->next;
+            if (push_ic->next) {
+              push_ic->next->last = push_ic;
+            } else {
+              cc->ic_tail = push_ic;
+            }
+            imm_ic->next = push_ic;
+          }
+        }
+      }
       
       // Remove the auto-deref that was added (we need address for assignment)
       lval_ic->ic_code = IC_NOP1;
+    } else if (lval_ic && lval_ic->ic_code == IC_LEA) {
+      // LEA without DEREF - insert PUSH_ARG after it
+      if (lval_ic->next && lval_ic->next->ic_code == IC_PUSH_ARG) {
+        // Already has IC_PUSH_ARG immediately after, skip insertion
+      } else {
+        CIntermediateCode *push_ic = ICNew(cc, IC_PUSH_ARG);
+        push_ic->res.type.raw_type = RT_I64;
+        push_ic->res.type.mode = MDF_STK;
+        
+        push_ic->next = lval_ic->next;
+        lval_ic->next = push_ic;
+        
+        if (cc->ic_tail == lval_ic) {
+          cc->ic_tail = push_ic;
+        }
+      }
     }
     
     LexNext(cc);
@@ -1146,15 +1782,13 @@ static bool ParseForStatement(Compiler *cc) {
     return false;
   }
   
-  // Skip increment for now (save position)
-  char *inc_start = cc->lex.ptr;
+  // Advance lexer through the increment clause (not re-parsed into IC here).
   int paren_depth = 0;
   while (cc->lex.token != ')' || paren_depth > 0) {
     if (cc->lex.token == '(') paren_depth++;
     if (cc->lex.token == ')') paren_depth--;
     LexNext(cc);
   }
-  char *inc_end = cc->lex.ptr - 1;
   
   if (!LexExpect(cc, ')')) {
     cc->current_break_label = saved_break;
@@ -1173,8 +1807,6 @@ static bool ParseForStatement(Compiler *cc) {
   ICAdd(cc, IC_LABEL, (I64)continue_label, RT_I64);
   continue_label->defined = true;
   
-  // Parse increment (TODO: implement properly)
-  
   // Jump back to start
   ICAdd(cc, IC_JMP, (I64)start_label, RT_I64);
   
@@ -1189,29 +1821,6 @@ static bool ParseForStatement(Compiler *cc) {
   return true;
 }
 
-
-static bool ParseReturnStatement(Compiler *cc) {
-  LexNext(cc); // Skip 'return'
-  
-  if (cc->lex.token == ';') {
-    LexNext(cc);
-    // Jump to function exit
-    if (cc->current_function_exit) {
-      ICAdd(cc, IC_JMP, (I64)cc->current_function_exit, RT_I64);
-    }
-    return true;
-  }
-  
-  if (!ParseExpression(cc)) return false;
-  
-  ICAdd(cc, IC_RETURN_VAL, 0, RT_I64);
-  // Jump to function exit
-  if (cc->current_function_exit) {
-    ICAdd(cc, IC_JMP, (I64)cc->current_function_exit, RT_I64);
-  }
-  
-  return LexExpect(cc, ';');
-}
 
 static bool ParseSwitchStatement(Compiler *cc) {
   LexNext(cc); // Skip 'switch'
@@ -1367,6 +1976,9 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
   // type name, name2, name3 = expr;
   // var_name is the first variable name, current token should be '=', '[', ',', or ';'
   
+  // Preserve the class associated with this declaration (if any)
+  CHashClass *decl_class = cc->last_type_class;
+
   // Loop to handle comma-separated declarations
   do {
     char *name = strdup(var_name);
@@ -1375,14 +1987,20 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
     Symbol *sym = SymbolDefine(cc, name, SYM_VAR);
     sym->data_type = type;
     sym->pointed_to_type = cc->last_pointed_to_type;  // Save pointed-to type
+    sym->extra = decl_class;
     
     // Determine base size
     int base_size;
-    switch (type) {
-      case RT_I8: case RT_U8: base_size = 1; break;
-      case RT_I16: case RT_U16: base_size = 2; break;
-      case RT_I32: case RT_U32: base_size = 4; break;
-      default: base_size = 8; break;
+    if (decl_class) {
+      base_size = (int)decl_class->size;
+      if (base_size <= 0) base_size = 8;
+    } else {
+      switch (type) {
+        case RT_I8: case RT_U8: base_size = 1; break;
+        case RT_I16: case RT_U16: base_size = 2; break;
+        case RT_I32: case RT_U32: base_size = 4; break;
+        default: base_size = 8; break;
+      }
     }
     
     // Initialize array metadata
@@ -1428,23 +2046,39 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
     
     cc->locals_size += aligned_size;
     
-    // Handle initialization
+    // Handle initialization: I64 a = 5;
     if (cc->lex.token == '=') {
       LexNext(cc);
       
-      // TODO: Implement proper initialization
-      // For now, skip the initializer
-      int depth = 0;
-      while (cc->lex.token != ';' && cc->lex.token != ',' && cc->lex.token != TK_EOF) {
-        if (cc->lex.token == '{') depth++;
-        if (cc->lex.token == '}') {
-          if (depth > 0) depth--;
-          else break;
-        }
-        LexNext(cc);
+      // Implement initialization: I64 a = 5;
+      // Use the exact same pattern as regular assignment: LEA, PUSH_ARG, ParseExpression, ASSIGN
+      // We need to push the address to preserve it before parsing the RHS
+      ICAdd(cc, IC_LEA, sym->offset, RT_I64);
+      ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
+      
+      // Parse the value expression
+      if (!ParseExpression(cc)) {
+        free(name);
+        return false;
       }
+      
+      // Create IC_ASSIGN - ParseAssignment does this, but we do it manually here
+      CIntermediateCode *ic = ICNew(cc, IC_ASSIGN);
+      ic->res.type.raw_type = RT_I64;
+      ic->res.type.mode = MDF_STK;
+      ic->arg1_type_pointed_to = RT_I64;
+      
+      // Link into IC chain
+      if (cc->ic_tail) cc->ic_tail->next = ic;
+      else cc->ic_head = ic;
+      cc->ic_tail = ic;
+      
+      cc->last_var_symbol = NULL;
     }
     
+    // Restore declaration class for subsequent comma-separated variables
+    cc->last_type_class = decl_class;
+
     free(name);
     
     // Check for comma (more variables) or semicolon/comma (end)
@@ -1528,6 +2162,12 @@ bool ParseStatement(Compiler *cc) {
     #ifdef BARE_METAL
     #endif
     
+    if (cc->lex.token == KW_ENUM) {
+      if (!ParseEnum(cc)) return false;
+      if (cc->lex.token != ',') return true;
+      continue;
+    }
+
     // Check for type declaration (keyword or identifier from hash table)
     bool is_type_decl = false;
     if (cc->lex.token >= KW_I0 && cc->lex.token <= KW_F64) {
@@ -1547,6 +2187,18 @@ bool ParseStatement(Compiler *cc) {
     if (is_type_decl) {
       U8 type = ParseType(cc);
       
+      if (cc->lex.token == '(') {
+        bool result = true;
+        if (is_static) {
+          result = ParseGlobalFunctionPointerDeclList(cc, type);
+        } else {
+          result = ParseLocalFunctionPointerDeclList(cc, type);
+        }
+        if (!result) return false;
+        if (cc->lex.token != ',') return true;
+        continue;
+      }
+
       if (cc->lex.token != TK_IDENT) {
         Error(cc, "Expected variable name after type");
         return false;
@@ -1693,7 +2345,7 @@ bool ParseStatement(Compiler *cc) {
     if (cc->lex.token == KW_TRY) {
       LexNext(cc);
       
-      // Create labels for exception handling (bare metal safe - no snprintf)
+      // Create labels for exception handling (bare metal safe - no StrPrintF)
       // Use NULL for name - labels don't need names at runtime
       CLabel *catch_label = LabelNew(cc, NULL);
       CLabel *done_label = LabelNew(cc, NULL);
@@ -1854,7 +2506,11 @@ static bool ParseBlock(Compiler *cc) {
     }
   }
   
-  SymTablePop(cc);
+  // Don't pop for function bodies - ParseFunction handles that
+  // Function bodies share the same scope as parameters
+  if (!cc->current_function_exit) {
+    SymTablePop(cc);
+  }
   
   return LexExpect(cc, '}');
 }
@@ -1863,7 +2519,7 @@ static bool ParseBlock(Compiler *cc) {
 // PARSER - CLASSES
 // ═══════════════════════════════════════════════════════════════
 
-static bool ParseClass(Compiler *cc) {
+bool ParseClass(Compiler *cc) {
   // Parse: class ClassName { members }; or union ClassName { members };
   
   bool is_union = false;
@@ -2064,22 +2720,38 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
   // Simplified global variable parsing
   // Full version would handle: extern, import, initialization, arrays, etc.
   
+  CHashClass *decl_class = cc->last_type_class;
+
   // Create global variable hash entry
   CHashGlblVar *tmpg = calloc(1, sizeof(CHashGlblVar));
   tmpg->str = strdup(var_name);
   tmpg->type = HTT_GLBL_VAR;
   tmpg->use_cnt = 0;
   tmpg->flags = 0;
+  tmpg->var_class = decl_class;
+  tmpg->raw_type = var_type;
+  tmpg->pointed_to_type = cc->last_pointed_to_type;
   
   // Find type class in hash table
   // For now, just use default size based on var_type
-  tmpg->size = 8;  // Default to I64 size
-  switch (var_type) {
-    case RT_I8: case RT_U8: tmpg->size = 1; break;
-    case RT_I16: case RT_U16: tmpg->size = 2; break;
-    case RT_I32: case RT_U32: tmpg->size = 4; break;
-    case RT_F64: case RT_I64: case RT_U64: tmpg->size = 8; break;
+  I64 base_size = 8;
+  if (decl_class) {
+    base_size = decl_class->size;
+    if (base_size <= 0) base_size = 8;
+  } else {
+    switch (var_type) {
+      case RT_I8: case RT_U8: base_size = 1; break;
+      case RT_I16: case RT_U16: base_size = 2; break;
+      case RT_I32: case RT_U32: base_size = 4; break;
+      case RT_F64: case RT_I64: case RT_U64: base_size = 8; break;
+      default: base_size = 8; break;
+    }
   }
+  if (cc->last_pointed_to_type) {
+    base_size = 8;  // Pointers are 8 bytes
+  }
+  tmpg->element_size = base_size;
+  tmpg->size = base_size;
   
   // Handle array dimensions
   tmpg->dim.next = NULL;
@@ -2151,6 +2823,7 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
     if (cc->lex.token == TK_IDENT) {
       char *next_name = strdup(cc->lex.token_str);
       LexNext(cc);
+      cc->last_type_class = decl_class;
       bool result = ParseGlobalVariable(cc, var_type, next_name);
       free(next_name);
       return result;
@@ -2158,7 +2831,9 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
   }
   
   // Expect semicolon
-  return LexExpect(cc, ';');
+  bool ok = LexExpect(cc, ';');
+  cc->last_type_class = decl_class;
+  return ok;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2200,34 +2875,35 @@ bool ParseFunction(Compiler *cc) {
   Symbol *sym = SymbolDefine(cc, name, SYM_FUNCTION);
   sym->data_type = return_type;
   
-  // Create a label for the function start (bare metal safe - no snprintf)
-  // Use name directly, no need for buffer
-  CLabel *func_label = LabelNew(cc, name);
-  sym->address = (I64)func_label;  // Store label pointer as address
-  
-  // Add function to hash table (match original)
-  CHashFun *func_hash = calloc(1, sizeof(CHashFun));
-  if (!func_hash) {
-    free(name);
-    return false;
+  // Hash entry: one CHashFun per name (forward decl + definition share it); label lives on hash
+  CHashFun *func_hash = (CHashFun *)HashFind(name, cc->hash_table, HTT_FUN);
+  CLabel *func_label;
+  if (func_hash) {
+    func_label = func_hash->entry_label ? (CLabel *)func_hash->entry_label : LabelNew(cc, name);
+    func_hash->entry_label = func_label;
+  } else {
+    func_hash = calloc(1, sizeof(CHashFun));
+    if (!func_hash) {
+      free(name);
+      return false;
+    }
+    func_hash->str = strdup(name);
+    if (!func_hash->str) {
+      free(func_hash);
+      free(name);
+      return false;
+    }
+    func_hash->type = HTT_FUN;
+    func_hash->exe_addr = 0;
+    func_hash->return_class = NULL;
+    func_hash->arg_cnt = 0;
+    func_hash->member_lst = NULL;
+    HashAdd((CHashEntry *)func_hash, cc->hash_table);
+    func_label = LabelNew(cc, name);
+    func_hash->entry_label = func_label;
   }
-  func_hash->str = strdup(name);
-  if (!func_hash->str) {
-    free(func_hash);
-    free(name);
-    return false;
-  }
-  func_hash->type = HTT_FUN;
-  func_hash->exe_addr = 0;  // Will be set by REPL after compilation
-  func_hash->return_class = NULL;  // TODO: proper type
-  func_hash->arg_cnt = 0;  // Will be set below
-  
-  // Store for later exe_addr update (REPL needs this)
   cc->last_compiled_func = func_hash;
-  func_hash->member_lst = NULL;  // Parameter list
-  HashAdd((CHashEntry*)func_hash, cc->hash_table);
-  
-  // Debug: verify function was added
+  sym->address = (I64)func_label;
   
   if (!LexExpect(cc, '(')) {
     free(name);
@@ -2238,7 +2914,6 @@ bool ParseFunction(Compiler *cc) {
   int param_count = 0;
   bool has_varargs = false;
   Symbol *first_param = NULL;  // Track first parameter to save them later
-  Symbol *last_param = NULL;
   
   if (cc->lex.token != ')') {
     // Check for varargs first
@@ -2261,6 +2936,46 @@ bool ParseFunction(Compiler *cc) {
         }
         
         U8 param_type = ParseType(cc);
+        CHashClass *param_decl_class = cc->last_type_class;
+        if (cc->lex.token == '(') {
+          char *fp_name = NULL;
+          int fp_param_cnt = 0;
+          if (!ParseFunctionPointerDeclarator(cc, &fp_name, &fp_param_cnt)) {
+            free(name);
+            return false;
+          }
+
+          if (cc->lex.token == '=') {
+            free(fp_name);
+            free(name);
+            Error(cc, "Default values for function pointer parameters are not supported");
+            return false;
+          }
+
+          Symbol *param = SymbolDefine(cc, fp_name, SYM_VAR);
+          param->data_type = RT_I64;
+          param->has_default = false;
+          param->default_val = 0;
+          param->extra = NULL;
+          param->pointed_to_type = RT_I64;
+          param->is_function_pointer = true;
+          param->function_return_type = param_type;
+          param->func_ptr_param_count = fp_param_cnt;
+          param->size = 8;
+          param->offset = -1000 - param_count;
+
+          if (!first_param) first_param = param;
+
+          free(fp_name);
+
+          param_count++;
+          cc->last_type_class = NULL;
+
+          if (cc->lex.token == ',') {
+            LexNext(cc);
+          }
+          continue;
+        }
       if (cc->lex.token != TK_IDENT) {
         Error(cc, "Expected parameter name");
         free(name);
@@ -2284,6 +2999,7 @@ bool ParseFunction(Compiler *cc) {
         }
         // Arrays passed as pointers
         param_type = RT_I64;
+        param_decl_class = NULL;
       }
       
       // Handle default parameter values
@@ -2316,6 +3032,23 @@ bool ParseFunction(Compiler *cc) {
       param->data_type = param_type;
       param->has_default = has_default;
       param->default_val = default_val;
+      param->extra = param_decl_class;
+      param->pointed_to_type = cc->last_pointed_to_type;
+
+      // Record size metadata for class parameters (best effort)
+      int param_size;
+      if (param_decl_class) {
+        param_size = (int)param_decl_class->size;
+        if (param_size <= 0) param_size = 8;
+      } else {
+        switch (param_type) {
+          case RT_I8: case RT_U8: param_size = 1; break;
+          case RT_I16: case RT_U16: param_size = 2; break;
+          case RT_I32: case RT_U32: param_size = 4; break;
+          default: param_size = 8; break;
+        }
+      }
+      param->size = param_size;
       
       // Parameters saved at [sp+16], [sp+24], [sp+32], ...
       // Frame size = 16 + params*8 + locals
@@ -2331,10 +3064,12 @@ bool ParseFunction(Compiler *cc) {
       
       // Track param list
       if (!first_param) first_param = param;
-      last_param = param;
       
       free(param_name);
+      
+      // Increment AFTER setting offset to use correct index
       param_count++;
+      cc->last_type_class = param_decl_class;
       
         if (cc->lex.token == ',') {
           LexNext(cc);
@@ -2343,12 +3078,21 @@ bool ParseFunction(Compiler *cc) {
     }
   }
   
+  cc->last_type_class = NULL;
+
   // Update hash entry with arg count
   func_hash->arg_cnt = param_count;
   
   if (!LexExpect(cc, ')')) {
     free(name);
     return false;
+  }
+  
+  // Forward declaration: I64 F(...);
+  if (cc->lex.token == ';') {
+    LexNext(cc);
+    free(name);
+    return true;
   }
   
   // Fix parameter offsets now that we know total count
@@ -2394,8 +3138,11 @@ bool ParseFunction(Compiler *cc) {
   CLabel *func_exit_label = LabelNew(cc, NULL);
   CLabel *saved_exit_label = cc->current_function_exit;
   cc->current_function_exit = func_exit_label;
+  cc->current_function_entry_label = func_label;
   
   if (!ParseBlock(cc)) {
+    cc->current_function_exit = saved_exit_label;
+    cc->current_function_entry_label = NULL;
     free(name);
     return false;
   }
@@ -2413,12 +3160,13 @@ bool ParseFunction(Compiler *cc) {
   }
   
   // Now fix ALL variable offsets with final locals_size known
-  // Frame: sp+0..sp+(locals_size-1) = locals
-  //        sp+locals_size..sp+(locals_size+reg_param_cnt*8-1) = params 0-7 (saved from a0-a7)
-  //        sp+(frame_size-16) = saved S0
-  //        sp+(frame_size-8) = saved RA
-  // S0 = sp + frame_size (points to caller's sp)
-  // Params 8+ are at s0+0, s0+8, ... (on caller's stack, above old sp)
+  // Frame layout (as generated by IC_ENTER):
+  //   sp+0: saved ra
+  //   sp+8: saved s0
+  //   sp+16+i*8: params 0-7 (saved from a0-a7, i=0..7)
+  //   sp+16+reg_param_cnt*8+position: locals (position=0,8,16,...)
+  //   S0 = sp + frame_size (points to caller's sp)
+  //   Params 8+ are at s0+0, s0+8, ... (on caller's stack, above old sp)
   I64 reg_param_cnt = param_count;
   if (reg_param_cnt > 8) reg_param_cnt = 8;
   I64 frame_size = 16 + reg_param_cnt * 8 + cc->locals_size;
@@ -2460,22 +3208,21 @@ bool ParseFunction(Compiler *cc) {
     }
   }
   
-  // Fix local variable offsets: local at sp + position
+  // Fix local variable offsets: locals at sp + 16 + reg_param_cnt*8 + position
   Symbol *local_sym = cc->symtab->symbols;
   while (local_sym) {
     if (local_sym->type == SYM_VAR && local_sym->offset < -9000) {
       // This is a local (has temporary marker -(10000+position))
       I64 position_in_locals = -(local_sym->offset + 10000);
-      I64 final_offset = -(frame_size - position_in_locals);
+      // Locals start at sp+16+reg_param_cnt*8, so offset from s0 = -(frame_size - 16 - reg_param_cnt*8 - position)
+      I64 final_offset = -(frame_size - 16 - reg_param_cnt * 8 - position_in_locals);
       I64 old_marker = local_sym->offset;
       
       // Patch IC chain: find ALL IC_LEA with old marker, update to new offset
       CIntermediateCode *ic_scan = cc->ic_head;
-      int patch_count = 0;
       while (ic_scan) {
         if (ic_scan->ic_code == IC_LEA && ic_scan->ic_data == (I64)old_marker) {
           ic_scan->ic_data = (I64)final_offset;
-          patch_count++;
         }
         ic_scan = ic_scan->next;
       }
@@ -2498,30 +3245,40 @@ bool ParseFunction(Compiler *cc) {
   
   // Restore exit label
   cc->current_function_exit = saved_exit_label;
+  cc->current_function_entry_label = NULL;
   
   cc->locals_size = saved_locals;
   
-  // Compile function immediately (like HolyC PrsStmt.HC:183)
   extern U8 *CompileAOT(Compiler *cc, I64 *code_size);
-  I64 code_size = 0;
-  U8 *compiled_code = CompileAOT(cc, &code_size);
-  
-  // Check if compilation failed
-  if (!compiled_code) {
-    free(name);
-    return false;
+  if (cc->defer_aot_compile) {
+    AOTFnICChunk *chunk = calloc(1, sizeof(AOTFnICChunk));
+    if (!chunk) {
+      free(name);
+      return false;
+    }
+    chunk->head = cc->ic_head;
+    chunk->tail = cc->ic_tail;
+    chunk->fun = func_hash;
+    chunk->next = NULL;
+    if (!cc->aot_fn_ic_tail) {
+      cc->aot_fn_ic_head = cc->aot_fn_ic_tail = chunk;
+    } else {
+      cc->aot_fn_ic_tail->next = chunk;
+      cc->aot_fn_ic_tail = chunk;
+    }
+    cc->ic_head = NULL;
+    cc->ic_tail = NULL;
+  } else {
+    I64 code_size = 0;
+    U8 *compiled_code = CompileAOT(cc, &code_size);
+    if (!compiled_code) {
+      free(name);
+      return false;
+    }
+    func_hash->exe_addr = (I64)compiled_code;
+    cc->code_buffer = compiled_code;
+    cc->code_size = code_size;
   }
-  
-  // Flush instruction cache (RISC-V fence.i)
-  #ifdef BARE_METAL
-  // __asm__ volatile("fence.i" ::: "memory"); // Not supported in this RISC-V implementation
-  #endif
-  
-  // Update exe_addr in the hash entry (for recursion support)
-  // Hash entry was added at line 2204, now update it with compiled address
-  func_hash->exe_addr = (I64)compiled_code;
-  
-  // IC chain is already consumed by CompileAOT, will be cleared for next function
   
   free(name);
   return true;
@@ -2568,6 +3325,27 @@ bool ParseProgram(Compiler *cc) {
       LexNext(cc);  // Skip KW_PUBLIC
     }
     
+    if (cc->lex.token == KW_ENUM) {
+      if (!ParseEnum(cc)) {
+        while (cc->lex.token != ';' && cc->lex.token != TK_EOF) {
+          if (cc->lex.token == '{') {
+            int depth = 1;
+            LexNext(cc);
+            while (depth > 0 && cc->lex.token != TK_EOF) {
+              if (cc->lex.token == '{') depth++;
+              else if (cc->lex.token == '}') depth--;
+              LexNext(cc);
+            }
+          } else {
+            LexNext(cc);
+          }
+        }
+        if (cc->lex.token == ';') LexNext(cc);
+        cc->error = NULL;
+      }
+      continue;
+    }
+    
     // Skip inline statements (strings, numbers)
     if (cc->lex.token == TK_STR || cc->lex.token == TK_I64 || cc->lex.token == TK_F64) {
       while (cc->lex.token != ';' && cc->lex.token != TK_EOF) {
@@ -2590,32 +3368,32 @@ bool ParseProgram(Compiler *cc) {
       // Use LexPush/LexPop to peek ahead and determine if function or global
       LexPush(cc);
       
-      // Get the type
-      U8 decl_type = RT_I64;
+      // Consume type name (built-in or typedef/class); global decl body not finished here.
       if (cc->lex.token >= KW_I0 && cc->lex.token <= KW_F64) {
-        switch (cc->lex.token) {
-          case KW_I0: case KW_U0: decl_type = RT_I0; break;
-          case KW_I8: decl_type = RT_I8; break;
-          case KW_U8: decl_type = RT_U8; break;
-          case KW_I16: decl_type = RT_I16; break;
-          case KW_U16: decl_type = RT_U16; break;
-          case KW_I32: decl_type = RT_I32; break;
-          case KW_U32: decl_type = RT_U32; break;
-          case KW_I64: decl_type = RT_I64; break;
-          case KW_U64: decl_type = RT_U64; break;
-          case KW_F64: decl_type = RT_F64; break;
-        }
         LexNext(cc);
       } else if (cc->lex.token == TK_IDENT && cc->lex.hash_entry) {
-        CHashClass *cls = (CHashClass*)cc->lex.hash_entry;
-        decl_type = cls->raw_type;
         LexNext(cc);
       }
       
-      // Handle pointer stars
       while (cc->lex.token == '*') {
-        decl_type = RT_I64;  // Pointers are I64
         LexNext(cc);
+      }
+
+      bool is_function_pointer_decl = false;
+      if (cc->lex.token == '(') {
+        LexNext(cc);
+        if (cc->lex.token == '*') {
+          is_function_pointer_decl = true;
+        }
+      }
+
+      if (is_function_pointer_decl) {
+        LexPopRestore(cc);
+        U8 ptr_type = ParseType(cc);
+        if (!ParseGlobalFunctionPointerDeclList(cc, ptr_type)) {
+          return false;
+        }
+        continue;
       }
       
       // Should be identifier now
@@ -2653,6 +3431,9 @@ bool ParseProgram(Compiler *cc) {
           }
           cc->error = NULL;
         }
+      } else {
+        free(name);
+        LexPopNoRestore(cc);
       }
       
       continue;
@@ -2664,5 +3445,111 @@ bool ParseProgram(Compiler *cc) {
   
   return true;
 }
+
+
+static bool ParseEnumDefinitionBody(Compiler *cc, const char *enum_name, bool register_type) {
+  if (!LexExpect(cc, '{')) {
+    return false;
+  }
+
+  bool first = true;
+  I64 last_value = -1;
+
+  while (cc->lex.token != '}' && cc->lex.token != TK_EOF) {
+    if (cc->lex.token != TK_IDENT) {
+      Error(cc, "Expected enumerator name");
+      return false;
+    }
+
+    char *member_name = strdup(cc->lex.token_str);
+    LexNext(cc);
+
+    I64 value;
+    if (cc->lex.token == '=') {
+      LexNext(cc);
+      if (cc->lex.token != TK_I64) {
+        free(member_name);
+        Error(cc, "Expected constant integer value for enum");
+        return false;
+      }
+      value = cc->lex.token_i64;
+      LexNext(cc);
+    } else {
+      value = first ? 0 : last_value + 1;
+    }
+
+    CHashEnumValue *enum_val = calloc(1, sizeof(CHashEnumValue));
+    enum_val->str = member_name;
+    enum_val->type = HTT_ENUM;
+    enum_val->value = value;
+    HashAdd((CHashEntry*)enum_val, cc->hash_table);
+
+    last_value = value;
+    first = false;
+
+    if (cc->lex.token == ',') {
+      LexNext(cc);
+      if (cc->lex.token == '}') {
+        break;
+      }
+      continue;
+    }
+  }
+
+  if (cc->lex.token != '}') {
+    Error(cc, "Expected '}' to close enum");
+    return false;
+  }
+  if (!LexExpect(cc, '}')) {
+    return false;
+  }
+
+  if (register_type && enum_name) {
+    CHashEntry *existing = HashFind(enum_name, cc->hash_table, HTT_CLASS | HTT_INTERNAL_TYPE);
+    if (!existing || !(existing->type & (HTT_CLASS | HTT_INTERNAL_TYPE))) {
+      CHashClass *enum_type = calloc(1, sizeof(CHashClass));
+      enum_type->str = strdup(enum_name);
+      enum_type->type = HTT_INTERNAL_TYPE;
+      enum_type->raw_type = RT_I64;
+      enum_type->size = 8;
+      enum_type->ptr_stars_cnt = 0;
+      enum_type->flags = 0;
+      enum_type->base_class = NULL;
+      enum_type->member_lst = NULL;
+      HashAdd((CHashEntry*)enum_type, cc->hash_table);
+    }
+  }
+
+  return true;
+}
+
+bool ParseEnum(Compiler *cc) {
+  LexNext(cc);  // Skip 'enum'
+
+  char *enum_name = NULL;
+  if (cc->lex.token == TK_IDENT) {
+    enum_name = strdup(cc->lex.token_str);
+    LexNext(cc);
+  }
+
+  if (cc->lex.token != '{') {
+    Error(cc, "Expected '{' after enum");
+    if (enum_name) free(enum_name);
+    return false;
+  }
+
+  bool ok = ParseEnumDefinitionBody(cc, enum_name, enum_name != NULL);
+  if (enum_name) free(enum_name);
+  if (!ok) {
+    return false;
+  }
+
+  if (cc->lex.token == ';') {
+    LexNext(cc);
+  }
+
+  return true;
+}
+
 
 

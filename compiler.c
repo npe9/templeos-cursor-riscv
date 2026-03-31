@@ -73,7 +73,7 @@ Compiler *CompilerNew(const char *source, const char *filename) {
   const struct { const char *name; int code; } keywords[] = {
     {"if", KW_IF}, {"else", KW_ELSE}, {"while", KW_WHILE},
     {"for", KW_FOR}, {"return", KW_RETURN}, {"break", KW_BREAK},
-    {"class", KW_CLASS}, {"public", KW_PUBLIC},
+    {"class", KW_CLASS}, {"enum", KW_ENUM}, {"public", KW_PUBLIC},
     {"goto", KW_GOTO}, {"continue", KW_CONTINUE},
     {"switch", KW_SWITCH}, {"case", KW_CASE}, {"default", KW_DEFAULT},
     {"sizeof", KW_SIZEOF}, {"union", KW_UNION}, {"static", KW_STATIC},
@@ -92,6 +92,10 @@ Compiler *CompilerNew(const char *source, const char *filename) {
   // Labels
   cc->labels = NULL;
   cc->label_counter = 0;
+  cc->current_function_entry_label = NULL;
+  cc->defer_aot_compile = FALSE;
+  cc->aot_fn_ic_head = NULL;
+  cc->aot_fn_ic_tail = NULL;
   
   // Loop context
   cc->current_break_label = NULL;
@@ -100,6 +104,9 @@ Compiler *CompilerNew(const char *source, const char *filename) {
   // Expression type tracking
   cc->last_var_symbol = NULL;
   cc->last_expr_class = NULL;
+  cc->last_type_class = NULL;
+  cc->last_global_var = NULL;
+  cc->last_pointed_to_type = 0;
   
   // Compiler flags
   cc->flags = 0;
@@ -115,6 +122,16 @@ Compiler *CompilerNew(const char *source, const char *filename) {
   LexNext(cc);
   
   return cc;
+}
+
+static void FreeDeferredFnICChunks(Compiler *cc) {
+  AOTFnICChunk *n = cc->aot_fn_ic_head;
+  while (n) {
+    AOTFnICChunk *nx = n->next;
+    free(n);
+    n = nx;
+  }
+  cc->aot_fn_ic_head = cc->aot_fn_ic_tail = NULL;
 }
 
 void CompilerFree(Compiler *cc) {
@@ -136,6 +153,8 @@ void CompilerFree(Compiler *cc) {
     ic = next;
   }
   
+  FreeDeferredFnICChunks(cc);
+  
   // Free code buffer if allocated
   if (cc->code_buffer) free(cc->code_buffer);
   
@@ -149,92 +168,13 @@ void CompilerFree(Compiler *cc) {
 // Minimal RISC-V backend integration
 // (Full backend is in Back*_RV.HC, this is simplified version)
 
-static void EmitU32(U8 **buf, U32 val) {
-  **(U32**)buf = val;
-  *buf += 4;
-}
-
-static void EmitRISCVAdd(U8 **buf, U8 rd, U8 rs1, U8 rs2) {
-  U32 inst = 0x33 | (rd<<7) | (0<<12) | (rs1<<15) | (rs2<<20) | (0<<25);
-  EmitU32(buf, inst);
-}
-
-static void EmitRISCVAddi(U8 **buf, U8 rd, U8 rs1, I64 imm) {
-  U32 inst = 0x13 | (rd<<7) | (0<<12) | (rs1<<15) | ((imm&0xFFF)<<20);
-  EmitU32(buf, inst);
-}
-
-static void EmitRISCVSub(U8 **buf, U8 rd, U8 rs1, U8 rs2) {
-  U32 inst = 0x33 | (rd<<7) | (0<<12) | (rs1<<15) | (rs2<<20) | (0x20<<25);
-  EmitU32(buf, inst);
-}
-
-static void EmitRISCVMul(U8 **buf, U8 rd, U8 rs1, U8 rs2) {
-  U32 inst = 0x33 | (rd<<7) | (0<<12) | (rs1<<15) | (rs2<<20) | (0x01<<25);
-  EmitU32(buf, inst);
-}
-
-static void EmitRISCVAnd(U8 **buf, U8 rd, U8 rs1, U8 rs2) {
-  U32 inst = 0x33 | (rd<<7) | (7<<12) | (rs1<<15) | (rs2<<20);  // AND funct3=7
-  EmitU32(buf, inst);
-}
-
-static void EmitRISCVOr(U8 **buf, U8 rd, U8 rs1, U8 rs2) {
-  U32 inst = 0x33 | (rd<<7) | (6<<12) | (rs1<<15) | (rs2<<20);  // OR funct3=6
-  EmitU32(buf, inst);
-}
-
-static void EmitRISCVXor(U8 **buf, U8 rd, U8 rs1, U8 rs2) {
-  U32 inst = 0x33 | (rd<<7) | (4<<12) | (rs1<<15) | (rs2<<20);  // XOR funct3=4
-  EmitU32(buf, inst);
-}
-
-static void EmitRISCVLd(U8 **buf, U8 rd, U8 rs1, I64 offset) {
-  U32 inst = 0x03 | (rd<<7) | (3<<12) | (rs1<<15) | ((offset&0xFFF)<<20);
-  EmitU32(buf, inst);
-}
-
-static void EmitRISCVSd(U8 **buf, U8 rs2, U8 rs1, I64 offset) {
-  U32 imm_low = offset & 0x1F;
-  U32 imm_high = (offset >> 5) & 0x7F;
-  U32 inst = 0x23 | (imm_low<<7) | (3<<12) | (rs1<<15) | (rs2<<20) | (imm_high<<25);
-  EmitU32(buf, inst);
-}
-
-static void EmitRISCVRet(U8 **buf) {
-  // RET = JALR x0, 0(ra) = JALR rd=0, rs1=1 (ra), imm=0
-  U32 inst = 0x67 | (0<<7) | (0<<12) | (1<<15) | (0<<20);
-  EmitU32(buf, inst);
-}
-
-static void EmitRISCVJal(U8 **buf, U8 rd, I64 offset) {
-  // Simplified - full version in BackLib_RV.HC
-  U32 imm_20 = (offset >> 20) & 0x1;
-  U32 imm_10_1 = (offset >> 1) & 0x3FF;
-  U32 imm_11 = (offset >> 11) & 0x1;
-  U32 imm_19_12 = (offset >> 12) & 0xFF;
-  U32 inst = 0x6F | (rd<<7) | (imm_19_12<<12) | (imm_11<<20) | 
-             (imm_10_1<<21) | (imm_20<<31);
-  EmitU32(buf, inst);
-}
-
-static void EmitRISCVBeq(U8 **buf, U8 rs1, U8 rs2, I64 offset) {
-  // Simplified branch encoding
-  U32 imm_11 = (offset >> 11) & 0x1;
-  U32 imm_4_1 = (offset >> 1) & 0xF;
-  U32 imm_10_5 = (offset >> 5) & 0x3F;
-  U32 imm_12 = (offset >> 12) & 0x1;
-  U32 inst = 0x63 | (imm_11<<7) | (imm_4_1<<8) | (0<<12) | 
-             (rs1<<15) | (rs2<<20) | (imm_10_5<<25) | (imm_12<<31);
-  EmitU32(buf, inst);
-}
-
 // RISC-V register definitions
 #define RV_ZERO 0
 #define RV_RA   1
 #define RV_SP   2
 #define RV_T0   5
 #define RV_T1   6
+#define RV_T2   7
 #define RV_S0   8
 #define RV_A0   10
 #define RV_A1   11
@@ -253,22 +193,6 @@ static void EmitRISCVBeq(U8 **buf, U8 rs1, U8 rs2, I64 offset) {
 // - If buf==NULL: only count bytes (for sizing passes)
 // - If buf!=NULL: emit bytes and count (for final emission pass)
 
-static void RVU8(U8 *buf, U8 **ptr, I64 *rip, U8 val) {
-  if (buf && ptr) {
-    **ptr = val;
-    (*ptr)++;
-  }
-  (*rip)++;
-}
-
-static void RVU16(U8 *buf, U8 **ptr, I64 *rip, U16 val) {
-  if (buf && ptr) {
-    *(U16*)(*ptr) = val;
-    (*ptr) += 2;
-  }
-  (*rip) += 2;
-}
-
 static void RVU32(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
   if (buf && ptr) {
     *(U32*)(*ptr) = val;
@@ -277,12 +201,131 @@ static void RVU32(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
   (*rip) += 4;
 }
 
-static void RVU64(U8 *buf, U8 **ptr, I64 *rip, U64 val) {
-  if (buf && ptr) {
-    *(U64*)(*ptr) = val;
-    (*ptr) += 8;
+/* IC_DEREF: load *rs1 into a0; width from arg1_type_pointed_to (U32* → lwu, not ld). */
+static U32 DerefLoadFromRs1(U8 pointed_to, U8 rs1) {
+  switch (pointed_to) {
+  case RT_I8:
+    return 0x03 | (RV_A0 << 7) | (0 << 12) | (rs1 << 15); /* lb */
+  case RT_U8:
+    return 0x03 | (RV_A0 << 7) | (4 << 12) | (rs1 << 15); /* lbu */
+  case RT_I16:
+    return 0x03 | (RV_A0 << 7) | (1 << 12) | (rs1 << 15); /* lh */
+  case RT_U16:
+    return 0x03 | (RV_A0 << 7) | (5 << 12) | (rs1 << 15); /* lhu */
+  case RT_I32:
+    return 0x03 | (RV_A0 << 7) | (2 << 12) | (rs1 << 15); /* lw */
+  case RT_U32:
+    return 0x03 | (RV_A0 << 7) | (6 << 12) | (rs1 << 15); /* lwu */
+  default:
+    return 0x03 | (RV_A0 << 7) | (3 << 12) | (rs1 << 15); /* ld */
   }
-  (*rip) += 8;
+}
+
+// PC-relative call: jal rd, target (or auipc+jalr if out of ±1 MiB range)
+static void EmitJalToLabel(U8 *pass_buf, U8 **pass_ptr, I64 *rip, CLabel *lb, U8 rd) {
+  I64 offset = lb->addr - *rip;
+  if (offset >= -(1 << 20) && offset < (1 << 20) && ((offset & 1) == 0)) {
+    U32 imm_20 = (U32)(offset >> 20) & 1u;
+    U32 imm_10_1 = (U32)(offset >> 1) & 0x3FFu;
+    U32 imm_11 = (U32)(offset >> 11) & 1u;
+    U32 imm_19_12 = (U32)(offset >> 12) & 0xFFu;
+    RVU32(pass_buf, pass_ptr, rip,
+          0x6Fu | ((U32)rd << 7) | (imm_19_12 << 12) | (imm_11 << 20) | (imm_10_1 << 21) | (imm_20 << 31));
+  } else {
+    I64 pc = *rip;
+    I64 target = lb->addr;
+    I64 rel = target - pc;
+    I64 hi = (rel + 0x800) >> 12;
+    I64 lo = rel - (hi << 12);
+    RVU32(pass_buf, pass_ptr, rip, 0x17u | ((U32)rd << 7) | (((U32)hi & 0xFFFFFu) << 12));
+    RVU32(pass_buf, pass_ptr, rip,
+          0x67u | ((U32)rd << 7) | ((U32)rd << 15) | (((U32)lo & 0xFFFu) << 20));
+  }
+}
+
+// Eval stack: arg1 pushed first … argN at sp (N<=8). RISC-V: a0=arg1 … a_{N-1}=argN.
+static void EmitLoadArgsFromEvalStack(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth,
+                                      I64 arg_count) {
+  if (arg_count < 2 || arg_count > 8) return;
+  for (I64 k = 0; k < arg_count; k++) {
+    U8 reg = RV_A0 + (U8)k;
+    I64 offset = (arg_count - 1 - k) * 8;
+    RVU32(pass_buf, pass_ptr, rip,
+          0x03 | (reg << 7) | (3 << 12) | (RV_SP << 15) | ((offset & 0xFFF) << 20));
+  }
+  I64 cleanup = arg_count * 8;
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | ((cleanup & 0xFFF) << 20));
+  *stack_depth -= arg_count;
+}
+
+// N>8: eval stack has arg1..argN (argN at sp). Load a0..a7; lay out stack args so arg9 is at 0(sp), arg10 at 8(sp), … (matches parser IC_ENTER stack-param offsets).
+static void EmitPrepareGt8CallArgs(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 N) {
+  if (N <= 8) return;
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T2 << 7) | (RV_SP << 15)); // mv t2, sp
+  for (I64 k = 0; k < 8; k++) {
+    U8 reg = RV_A0 + (U8)k;
+    I64 offset = (N - 1 - k) * 8;
+    RVU32(pass_buf, pass_ptr, rip,
+          0x03 | (reg << 7) | (3 << 12) | (RV_T2 << 15) | ((offset & 0xFFF) << 20));
+  }
+  I64 out_sz = (N - 8) * 8;
+  RVU32(pass_buf, pass_ptr, rip,
+        0x13 | (RV_SP << 7) | (RV_SP << 15) | (((-out_sz) & 0xFFF) << 20)); // addi sp, sp, -out_sz
+  for (I64 j = 9; j <= N; j++) {
+    I64 src = (N - j) * 8;
+    I64 dst = (j - 9) * 8;
+    RVU32(pass_buf, pass_ptr, rip,
+          0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T2 << 15) | ((src & 0xFFF) << 20));
+    RVU32(pass_buf, pass_ptr, rip,
+          0x23 | ((dst & 0x1F) << 7) | (3 << 12) | (RV_SP << 15) | (RV_T0 << 20) | ((dst >> 5) << 25));
+  }
+}
+
+// Shared: argument shuffle for IC_CALL / IC_CALL_INDIRECT2, then PC-rel or host-indirect tail.
+static void EmitCallArgsAndInvoke(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth,
+                                  Compiler *cc, CLabel *pc_target, I64 *exe_addr_host_ptr) {
+  I64 arg_count = cc->last_call_arg_cnt;
+
+  if (arg_count > 8) {
+    EmitPrepareGt8CallArgs(pass_buf, pass_ptr, rip, arg_count);
+  } else if (arg_count >= 2 && arg_count <= 8) {
+    EmitLoadArgsFromEvalStack(pass_buf, pass_ptr, rip, stack_depth, arg_count);
+  } else if (arg_count == 1) {
+    // IC_IMM_I64 leaves a duplicate on the eval stack; arg is already in a0 — drop slot only.
+    RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
+    (*stack_depth)--;
+  }
+
+  if (pc_target) {
+    EmitJalToLabel(pass_buf, pass_ptr, rip, pc_target, RV_RA);
+  } else {
+    I64 addr = (I64)exe_addr_host_ptr;
+    U32 hi = (U32)((addr >> 12) & 0xFFFFF);
+    RVU32(pass_buf, pass_ptr, rip, 0x37 | (RV_T0 << 7) | (hi << 12));
+    I64 lo = addr & 0xFFF;
+    if (lo) {
+      RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (RV_T0 << 15) | ((lo & 0xFFF) << 20));
+    }
+    if (addr & 0x80000000) {
+      RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (1 << 12) | (RV_T0 << 15) | (32 << 20));
+      RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (5 << 12) | (RV_T0 << 15) | (32 << 20));
+    }
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T0 << 15));
+    RVU32(pass_buf, pass_ptr, rip, 0x67 | (RV_RA << 7) | (RV_T0 << 15));
+  }
+
+  if (arg_count > 8) {
+    I64 out_sz = (arg_count - 8) * 8;
+    RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | ((out_sz & 0xFFF) << 20));
+    I64 eval_sz = arg_count * 8;
+    RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | ((eval_sz & 0xFFF) << 20));
+    *stack_depth -= arg_count;
+  }
+
+  // Return value is in a0; match the virtual eval stack (IC_RETURN_VAL / binary ops pop from sp).
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (3 << 12));
+  (*stack_depth)++;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -320,43 +363,29 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   Bool has_call = false;
   while (ic) {
     if (ic->ic_code == IC_ENTER) is_function = true;
-    if (ic->ic_code == IC_CALL || ic->ic_code == IC_CALL_INDIRECT2) has_call = true;
+    if (ic->ic_code == IC_CALL || ic->ic_code == IC_CALL_INDIRECT || ic->ic_code == IC_CALL_INDIRECT2) has_call = true;
     ic = ic->next;
   }
-  
-  
-  // Allocate buffer (estimate 16 bytes per IC operation)
-  I64 estimated_size = 0;
-  ic = cc->ic_head;
-  while (ic) {
-    estimated_size += 16;
-    ic = ic->next;
-  }
-  if (has_call && !is_function) estimated_size += 64; // Extra for wrapper
-  
-  U8 *buffer = malloc(estimated_size);
-  U8 *ptr = buffer;
-  
-  // Multi-pass until convergence (TempleOS OptPass789A.HC approach)
+  // Multi-pass until convergence (TempleOS OptPass789A.HC approach).
+  // Sizing uses pass_buf == NULL so rip is the true code size. Do not malloc
+  // from IC_count*16 — IC_ENTER and friends emit many words per IC; a small
+  // buffer corrupts the heap and truncates the guest blob.
   I64 prev_size = 0;
   I64 rip = 0;
   int pass = 0;
-  U8 *pass_buf = NULL;  // NULL for sizing passes, buffer for final pass
+  U8 *pass_buf = NULL;
   U8 *pass_ptr = NULL;
-  
+
   do {
     prev_size = rip;
     rip = 0;
     pass++;
-    
+
     ic = cc->ic_head;
-    I64 stack_depth_pass = 0;  // Track stack depth for accurate sizing
-    pass_ptr = buffer;  // Reset pointer each pass
-    
-    // Check if we converged in previous pass (and this is final emission pass)
-    Bool is_final_pass = (pass > 2 && prev_size == rip);  // rip is 0 here, will be updated during pass
-    // For now, always use NULL for sizing, we'll do final emission after loop
-    pass_buf = NULL;    // Just count bytes
+    I64 stack_depth_pass = 0;
+    pass_ptr = NULL;
+
+    pass_buf = NULL;
     
     // Add prologue for expressions with calls
     if (has_call && !is_function) {
@@ -452,7 +481,6 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         break;
         
       case IC_IMM_I64:
-        // Don't push - IC_LEA should handle it
         // Load immediate into a0
         if (ic->ic_data >= -2048 && ic->ic_data <= 2047) {
           // addi a0, zero, imm
@@ -467,7 +495,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
             RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20));
           }
         }
-        // Don't modify stack_depth - value is in a0, not on stack
+        // Push value to stack so binary ops find it
+        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
+        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
+        stack_depth_pass++;
         break;
       case IC_ADD:
       case IC_SUB:
@@ -475,36 +506,83 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_DIV:
       case IC_MOD:
         if (stack_depth_pass >= 2) {
-          // ld t0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
-          // addi sp, sp, 8
+          // Pop right operand into t1
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
           RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          // op a0, t0, a0
-          if (ic->ic_code == IC_ADD) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20));
-          } else if (ic->ic_code == IC_SUB) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20) | (0x20<<25));
-          } else if (ic->ic_code == IC_MUL) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20) | (1<<25));
-          } else if (ic->ic_code == IC_DIV) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (4<<12) | (RV_T0<<15) | (RV_A0<<20) | (1<<25));
-          } else if (ic->ic_code == IC_MOD) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (6<<12) | (RV_T0<<15) | (RV_A0<<20) | (1<<25));
-          }
           stack_depth_pass--;
-          // Push result if stack_depth becomes 1 (we consumed 2 operands, produced 1 result)
-          // This preserves the result for use in comparisons/other operations
-          if (stack_depth_pass == 1) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-            RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
+          // Pop left operand into t0
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          stack_depth_pass--;
+          // Compute result (result stays in a0)
+          if (ic->ic_code == IC_ADD) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20));
+          } else if (ic->ic_code == IC_SUB) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
+          } else if (ic->ic_code == IC_MUL) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
+          } else if (ic->ic_code == IC_DIV) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (4<<12) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
+          } else if (ic->ic_code == IC_MOD) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (6<<12) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
+          }
+          // Push result back
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          stack_depth_pass++;
+        }
+        break;
+      case IC_AND:
+      case IC_OR:
+      case IC_XOR:
+      case IC_SHL:
+      case IC_SHR:
+        if (stack_depth_pass == 1) {
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
+          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
+          stack_depth_pass++;
+        }
+        if (stack_depth_pass >= 2) {
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          stack_depth_pass--;
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          stack_depth_pass--;
+          U32 inst = 0;
+          if (ic->ic_code == IC_AND) {
+            inst = 0x33 | (RV_A0<<7) | (0x7<<12) | (RV_T0<<15) | (RV_T1<<20);
+          } else if (ic->ic_code == IC_OR) {
+            inst = 0x33 | (RV_A0<<7) | (0x6<<12) | (RV_T0<<15) | (RV_T1<<20);
+          } else if (ic->ic_code == IC_XOR) {
+            inst = 0x33 | (RV_A0<<7) | (0x4<<12) | (RV_T0<<15) | (RV_T1<<20);
+          } else if (ic->ic_code == IC_SHL) {
+            inst = 0x33 | (RV_A0<<7) | (0x1<<12) | (RV_T0<<15) | (RV_T1<<20);
+          } else if (ic->ic_code == IC_SHR) {
+            inst = 0x33 | (RV_A0<<7) | (0x5<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25);
+          }
+          if (inst) {
+            RVU32(pass_buf, &pass_ptr, &rip, inst);
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
             stack_depth_pass++;
           }
         }
         break;
+      case IC_EVAL_DROP:
+        {
+          I64 adj = ic->ic_data;
+          if (adj != 0) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((adj & 0xFFF)<<20));
+            if (adj > 0)
+              stack_depth_pass -= adj / 8;
+            else
+              stack_depth_pass += (-adj) / 8;
+          }
+        }
+        break;
       case IC_DEREF:
-        // ld a0, 0(a0) - load value from address
-        RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_A0<<15));
-        // Always push the loaded value (for binary operations and consistency)
+        RVU32(pass_buf, &pass_ptr, &rip, DerefLoadFromRs1(ic->arg1_type_pointed_to, RV_A0));
         RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
         RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
         stack_depth_pass++;
@@ -553,63 +631,49 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_GREATER_EQU:
       case IC_EQU_EQU:
       case IC_NOT_EQU:
-        if (stack_depth_pass >= 2) {
-          // ld t0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
-          // addi sp, sp, 8
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          // Comparison operations
-          if (ic->ic_code == IC_LESS) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_T0<<15) | (RV_A0<<20)); // slt a0, t0, a0
-          } else if (ic->ic_code == IC_GREATER) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_A0<<15) | (RV_T0<<20)); // slt a0, a0, t0
-          } else if (ic->ic_code == IC_LESS_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_A0<<15) | (RV_T0<<20)); // slt a0, a0, t0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20)); // xori a0, a0, 1
-          } else if (ic->ic_code == IC_GREATER_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_T0<<15) | (RV_A0<<20)); // slt a0, t0, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20)); // xori a0, a0, 1
-          } else if (ic->ic_code == IC_EQU_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20) | (0x20<<25)); // sub a0, t0, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (3<<12) | (RV_A0<<15) | (1<<20)); // sltiu a0, a0, 1
-          } else if (ic->ic_code == IC_NOT_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20) | (0x20<<25)); // sub a0, t0, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (3<<12) | (RV_ZERO<<15) | (RV_A0<<20)); // sltu a0, zero, a0
-          }
-          stack_depth_pass = 0;  // Comparisons consume both values, produce result in a0
-        } else if (stack_depth_pass == 1) {
-          // One value on stack, one in a0 - push a0, then pop both and compare
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
+        if (stack_depth_pass == 1) {
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
           stack_depth_pass++;
-          // Now both values are on stack, depth is 2 - handle as depth >= 2
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15)); // ld t0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
-          // Comparison operations
+        }
+        if (stack_depth_pass >= 2) {
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          stack_depth_pass--;
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          stack_depth_pass--;
           if (ic->ic_code == IC_LESS) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_T0<<15) | (RV_A0<<20)); // slt a0, t0, a0
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T0<<15) | (RV_T1<<20));
           } else if (ic->ic_code == IC_GREATER) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_A0<<15) | (RV_T0<<20)); // slt a0, a0, t0
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T1<<15) | (RV_T0<<20));
           } else if (ic->ic_code == IC_LESS_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_A0<<15) | (RV_T0<<20)); // slt a0, a0, t0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20)); // xori a0, a0, 1
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T1<<15) | (RV_T0<<20));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20));
           } else if (ic->ic_code == IC_GREATER_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_T0<<15) | (RV_A0<<20)); // slt a0, t0, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20)); // xori a0, a0, 1
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T0<<15) | (RV_T1<<20));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20));
           } else if (ic->ic_code == IC_EQU_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20) | (0x20<<25)); // sub a0, t0, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (3<<12) | (RV_A0<<15) | (1<<20)); // sltiu a0, a0, 1
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x0<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (3<<12) | (RV_A0<<15) | (1<<20));
           } else if (ic->ic_code == IC_NOT_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20) | (0x20<<25)); // sub a0, t0, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (3<<12) | (RV_ZERO<<15) | (RV_A0<<20)); // sltu a0, zero, a0
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x0<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x3<<12) | (RV_ZERO<<15) | (RV_A0<<20));
           }
-          stack_depth_pass = 0;  // Both values consumed, result in a0
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          stack_depth_pass++;
         }
         break;
       case IC_BR_ZERO:
         {
+          if (stack_depth_pass > 0) {
+            // Pop value from stack into a0
+            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+            stack_depth_pass--;
+          }
+
           CLabel *lb = (CLabel*)ic->ic_data;
           I64 offset = lb->addr - rip;
           // beq a0, zero, offset
@@ -618,8 +682,25 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           U32 imm_4_1 = (offset >> 1) & 0xF;
           U32 imm_11 = (offset >> 11) & 0x1;
           RVU32(pass_buf, &pass_ptr, &rip, 0x63 | (imm_11<<7) | (imm_4_1<<8) | (RV_A0<<15) | (RV_ZERO<<20) | (imm_10_5<<25) | (imm_12<<31));
-          // BR_ZERO uses value in a0 but doesn't push/pop, so stack_depth stays the same
-          // The value in a0 is consumed by the branch decision, so depth should be 0
+          stack_depth_pass = 0;
+        }
+        break;
+      case IC_BR_NOT_ZERO:
+        {
+          if (stack_depth_pass > 0) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+            stack_depth_pass--;
+          }
+
+          CLabel *lb = (CLabel*)ic->ic_data;
+          I64 offset = lb->addr - rip;
+          // bne a0, zero, offset
+          U32 imm_12 = (offset >> 12) & 0x1;
+          U32 imm_10_5 = (offset >> 5) & 0x3F;
+          U32 imm_4_1 = (offset >> 1) & 0xF;
+          U32 imm_11 = (offset >> 11) & 0x1;
+          RVU32(pass_buf, &pass_ptr, &rip, 0x63 | (1<<12) | (imm_11<<7) | (imm_4_1<<8) | (RV_A0<<15) | (RV_ZERO<<20) | (imm_10_5<<25) | (imm_12<<31));
           stack_depth_pass = 0;
         }
         break;
@@ -651,98 +732,42 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_S0<<15) | ((ic->ic_data & 0xFFF)<<20));
         stack_depth_pass++;
         break;
-      case IC_CALL_INDIRECT2:
+      case IC_CALL_INDIRECT:
         {
-          // Indirect call - load exe_addr at runtime
-          // ic_data = &func->exe_addr (pointer to the field)
-          I64 *exe_addr_ptr = (I64*)ic->ic_data;
           I64 arg_count = cc->last_call_arg_cnt;
-          
-          // Handle argument passing (RISC-V calling convention: a0-a7 registers, rest on stack)
+
+          // Pop pointer to exe_addr field into t1 (t0/t2 used by arg shuffle)
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          stack_depth_pass--;
+
           if (arg_count > 8) {
-            // More than 8 args: first 8 in a0-a7, rest on stack
-            // Current state: arg9+ in a0, args 1-8 on stack
-            // Need to push a0 (arg9+) to stack first
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-            RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
-            stack_depth_pass++;
-            
-            // Now all args are on stack: arg1 at sp+0, arg2 at sp+8, ..., arg8 at sp+56, arg9+ at sp+64+
-            // Load a0-a7 from stack (arg1-arg8)
-            for (I64 i = 0; i < 8; i++) {
-              U8 reg = RV_A0 + i;
-              I64 offset = i * 8; // arg1 at sp+0, arg2 at sp+8, ..., arg8 at sp+56
-              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
-            }
-            // Don't clean up yet - all args stay on stack for callee to access
-          } else if (arg_count == 8) {
-            // Exactly 8 args: all in registers
-            // Current: arg7 in a0, args 0-6 on stack
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A7<<7) | (RV_A0<<15)); // mv a7, a0
-            for (I64 i = 0; i < 7; i++) {
-              U8 reg = RV_A0 + i;
-              I64 offset = (7 - i - 1) * 8;
-              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
-            }
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((56 & 0xFFF)<<20)); // addi sp, sp, 56
-            stack_depth_pass -= 8;
-          } else if (arg_count >= 3) {
-            // 3-7 args: all in registers
-            // Current: last arg in a0, others on stack
-            U8 last_reg = RV_A0 + (arg_count - 1);
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (last_reg<<7) | (RV_A0<<15)); // mv aX, a0
-            for (I64 i = 0; i < arg_count - 1; i++) {
-              U8 reg = RV_A0 + i;
-              I64 offset = (arg_count - 2 - i) * 8;
-              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
-            }
-            I64 cleanup = (arg_count - 1) * 8;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup & 0xFFF)<<20)); // addi sp, sp, cleanup
-            stack_depth_pass -= arg_count;
-          } else if (arg_count == 2) {
-            // 2 args: a1 in a0, a0 on stack
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A1<<7) | (RV_A0<<15)); // mv a1, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
-            stack_depth_pass -= 2;
+            EmitPrepareGt8CallArgs(pass_buf, &pass_ptr, &rip, arg_count);
+          } else if (arg_count >= 2 && arg_count <= 8) {
+            EmitLoadArgsFromEvalStack(pass_buf, &pass_ptr, &rip, &stack_depth_pass, arg_count);
           } else if (arg_count == 1) {
-            // 1 arg: already in a0
             stack_depth_pass--;
           }
-          
-          // Load exe_addr from memory (indirect)
-          // exe_addr_ptr points to the exe_addr field in CHashFun struct
-          I64 addr = (I64)exe_addr_ptr;
-          
-          
-          // Load address into t0 (TempleOS approach with conditionals)
-          U32 hi = (addr >> 12) & 0xFFFFF;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | (hi<<12)); // lui t0, hi
-          I64 lo = addr & 0xFFF;
-          if (lo) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_T0<<15) | ((lo & 0xFFF)<<20)); // addi t0, t0, lo
-          }
-          if (addr & 0x80000000) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (1<<12) | (RV_T0<<15) | (32<<20)); // slli
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (5<<12) | (RV_T0<<15) | (32<<20)); // srli
-          }
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_T0<<15)); // ld t0, 0(t0)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15)); // jalr ra, t0
-          
-          // Clean up stack after call
+
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_T1<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15));
+
           if (arg_count > 8) {
-            // For >8 params, we pushed arg9+ to stack, so clean up arg_count * 8 bytes
-            I64 cleanup_bytes = arg_count * 8;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup_bytes & 0xFFF)<<20)); // addi sp, sp, cleanup_bytes
+            I64 out_sz = (arg_count - 8) * 8;
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((out_sz & 0xFFF)<<20));
+            I64 eval_sz = arg_count * 8;
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((eval_sz & 0xFFF)<<20));
             stack_depth_pass -= arg_count;
           }
-          
+
           stack_depth_pass++;
         }
         break;
+      case IC_CALL_INDIRECT2:
+        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_pass, cc, NULL, (I64 *)ic->ic_data);
+        break;
       case IC_CALL:
-        // Not used in REPL - functions use IC_CALL_INDIRECT2
-        stack_depth_pass++;
+        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_pass, cc, (CLabel *)ic->ic_data, NULL);
         break;
       case IC_END_EXP:
         stack_depth_pass = 0;
@@ -795,7 +820,12 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   }
   
   } while (rip != prev_size && pass < 10);  // Iterate until convergence
-  
+
+  I64 buf_sz = rip + 256;
+  if (buf_sz < 64) buf_sz = 64;
+  U8 *buffer = malloc((size_t)buf_sz);
+  if (!buffer) return NULL;
+
   // After convergence, do one final pass with emission enabled
   if (pass_buf == NULL) {
   pass_buf = buffer;
@@ -893,7 +923,6 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         break;
         
       case IC_IMM_I64:
-        // Don't push - IC_LEA should handle it
         // Load immediate into a0
         if (ic->ic_data >= -2048 && ic->ic_data <= 2047) {
           // addi a0, zero, imm
@@ -908,7 +937,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
             RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20));
           }
         }
-        // Don't modify stack_depth - value is in a0, not on stack
+        // Push value to stack so binary ops find it
+        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
+        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
+        stack_depth_final++;
         break;
         
       case IC_ADD:
@@ -917,37 +949,84 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_DIV:
       case IC_MOD:
         if (stack_depth_final >= 2) {
-          // ld t0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
-          // addi sp, sp, 8
+          // Pop right operand into t1
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
           RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          // op a0, t0, a0
-          if (ic->ic_code == IC_ADD) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20));
-          } else if (ic->ic_code == IC_SUB) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20) | (0x20<<25));
-          } else if (ic->ic_code == IC_MUL) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20) | (1<<25));
-          } else if (ic->ic_code == IC_DIV) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (4<<12) | (RV_T0<<15) | (RV_A0<<20) | (1<<25));
-          } else if (ic->ic_code == IC_MOD) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (6<<12) | (RV_T0<<15) | (RV_A0<<20) | (1<<25));
-          }
           stack_depth_final--;
-          // Push result if stack_depth becomes 1 (we consumed 2 operands, produced 1 result)
-          // This preserves the result for use in comparisons/other operations
-          if (stack_depth_final == 1) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-            RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
+          // Pop left operand into t0
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          stack_depth_final--;
+          // Compute result (result stays in a0)
+          if (ic->ic_code == IC_ADD) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20));
+          } else if (ic->ic_code == IC_SUB) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
+          } else if (ic->ic_code == IC_MUL) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
+          } else if (ic->ic_code == IC_DIV) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (4<<12) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
+          } else if (ic->ic_code == IC_MOD) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (6<<12) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
+          }
+          // Push result back
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          stack_depth_final++;
+        }
+        break;
+      case IC_AND:
+      case IC_OR:
+      case IC_XOR:
+      case IC_SHL:
+      case IC_SHR:
+        if (stack_depth_final == 1) {
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          stack_depth_final++;
+        }
+        if (stack_depth_final >= 2) {
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          stack_depth_final--;
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          stack_depth_final--;
+          U32 inst = 0;
+          if (ic->ic_code == IC_AND) {
+            inst = 0x33 | (RV_A0<<7) | (0x7<<12) | (RV_T0<<15) | (RV_T1<<20);
+          } else if (ic->ic_code == IC_OR) {
+            inst = 0x33 | (RV_A0<<7) | (0x6<<12) | (RV_T0<<15) | (RV_T1<<20);
+          } else if (ic->ic_code == IC_XOR) {
+            inst = 0x33 | (RV_A0<<7) | (0x4<<12) | (RV_T0<<15) | (RV_T1<<20);
+          } else if (ic->ic_code == IC_SHL) {
+            inst = 0x33 | (RV_A0<<7) | (0x1<<12) | (RV_T0<<15) | (RV_T1<<20);
+          } else if (ic->ic_code == IC_SHR) {
+            inst = 0x33 | (RV_A0<<7) | (0x5<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25);
+          }
+          if (inst) {
+            RVU32(pass_buf, &pass_ptr, &rip, inst);
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
             stack_depth_final++;
           }
         }
         break;
         
+      case IC_EVAL_DROP:
+        {
+          I64 adj = ic->ic_data;
+          if (adj != 0) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((adj & 0xFFF)<<20));
+            if (adj > 0)
+              stack_depth_final -= adj / 8;
+            else
+              stack_depth_final += (-adj) / 8;
+          }
+        }
+        break;
       case IC_DEREF:
-        // ld a0, 0(a0) - load value from address
-        RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_A0<<15));
-        // Always push the loaded value (for binary operations and consistency)
+        RVU32(pass_buf, &pass_ptr, &rip, DerefLoadFromRs1(ic->arg1_type_pointed_to, RV_A0));
         RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
         RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
         stack_depth_final++;
@@ -991,63 +1070,48 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_GREATER_EQU:
       case IC_EQU_EQU:
       case IC_NOT_EQU:
-        if (stack_depth_final >= 2) {
-          // ld t0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
-          // addi sp, sp, 8
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          // Comparison operations
-          if (ic->ic_code == IC_LESS) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_T0<<15) | (RV_A0<<20)); // slt a0, t0, a0
-          } else if (ic->ic_code == IC_GREATER) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_A0<<15) | (RV_T0<<20)); // slt a0, a0, t0
-          } else if (ic->ic_code == IC_LESS_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_A0<<15) | (RV_T0<<20)); // slt a0, a0, t0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20)); // xori a0, a0, 1
-          } else if (ic->ic_code == IC_GREATER_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_T0<<15) | (RV_A0<<20)); // slt a0, t0, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20)); // xori a0, a0, 1
-          } else if (ic->ic_code == IC_EQU_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20) | (0x20<<25)); // sub a0, t0, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (3<<12) | (RV_A0<<15) | (1<<20)); // sltiu a0, a0, 1
-          } else if (ic->ic_code == IC_NOT_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20) | (0x20<<25)); // sub a0, t0, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (3<<12) | (RV_ZERO<<15) | (RV_A0<<20)); // sltu a0, zero, a0
-          }
-          stack_depth_final = 0;  // Comparisons consume both values, produce result in a0
-        } else if (stack_depth_final == 1) {
-          // One value on stack, one in a0 - push a0, then pop both and compare
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
+        if (stack_depth_final == 1) {
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
           stack_depth_final++;
-          // Now both values are on stack, depth is 2 - handle as depth >= 2
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15)); // ld t0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
-          // Comparison operations
+        }
+        if (stack_depth_final >= 2) {
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          stack_depth_final--;
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          stack_depth_final--;
           if (ic->ic_code == IC_LESS) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_T0<<15) | (RV_A0<<20)); // slt a0, t0, a0
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T0<<15) | (RV_T1<<20));
           } else if (ic->ic_code == IC_GREATER) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_A0<<15) | (RV_T0<<20)); // slt a0, a0, t0
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T1<<15) | (RV_T0<<20));
           } else if (ic->ic_code == IC_LESS_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_A0<<15) | (RV_T0<<20)); // slt a0, a0, t0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20)); // xori a0, a0, 1
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T1<<15) | (RV_T0<<20));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20));
           } else if (ic->ic_code == IC_GREATER_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (2<<12) | (RV_T0<<15) | (RV_A0<<20)); // slt a0, t0, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20)); // xori a0, a0, 1
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T0<<15) | (RV_T1<<20));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20));
           } else if (ic->ic_code == IC_EQU_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20) | (0x20<<25)); // sub a0, t0, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (3<<12) | (RV_A0<<15) | (1<<20)); // sltiu a0, a0, 1
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x0<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (3<<12) | (RV_A0<<15) | (1<<20));
           } else if (ic->ic_code == IC_NOT_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_A0<<20) | (0x20<<25)); // sub a0, t0, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (3<<12) | (RV_ZERO<<15) | (RV_A0<<20)); // sltu a0, zero, a0
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x0<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x3<<12) | (RV_ZERO<<15) | (RV_A0<<20));
           }
-          stack_depth_final = 0;  // Both values consumed, result in a0
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          stack_depth_final++;
         }
         break;
       case IC_BR_ZERO:
         {
+          if (stack_depth_final > 0) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+            stack_depth_final--;
+          }
+
           CLabel *lb = (CLabel*)ic->ic_data;
           I64 offset = lb->addr - rip;
           // beq a0, zero, offset
@@ -1056,8 +1120,25 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           U32 imm_4_1 = (offset >> 1) & 0xF;
           U32 imm_11 = (offset >> 11) & 0x1;
           RVU32(pass_buf, &pass_ptr, &rip, 0x63 | (imm_11<<7) | (imm_4_1<<8) | (RV_A0<<15) | (RV_ZERO<<20) | (imm_10_5<<25) | (imm_12<<31));
-          // BR_ZERO uses value in a0 but doesn't push/pop, so stack_depth stays the same
-          // The value in a0 is consumed by the branch decision, so depth should be 0
+          stack_depth_final = 0;
+        }
+        break;
+      case IC_BR_NOT_ZERO:
+        {
+          if (stack_depth_final > 0) {
+            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+            stack_depth_final--;
+          }
+
+          CLabel *lb = (CLabel*)ic->ic_data;
+          I64 offset = lb->addr - rip;
+          // bne a0, zero, offset
+          U32 imm_12 = (offset >> 12) & 0x1;
+          U32 imm_10_5 = (offset >> 5) & 0x3F;
+          U32 imm_4_1 = (offset >> 1) & 0xF;
+          U32 imm_11 = (offset >> 11) & 0x1;
+          RVU32(pass_buf, &pass_ptr, &rip, 0x63 | (1<<12) | (imm_11<<7) | (imm_4_1<<8) | (RV_A0<<15) | (RV_ZERO<<20) | (imm_10_5<<25) | (imm_12<<31));
           stack_depth_final = 0;
         }
         break;
@@ -1089,96 +1170,41 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_S0<<15) | ((ic->ic_data & 0xFFF)<<20));
         stack_depth_final++;
         break;
-      case IC_CALL_INDIRECT2:
+      case IC_CALL_INDIRECT:
         {
-          // Indirect call - load exe_addr at runtime
-          // ic_data = &func->exe_addr (pointer to the field)
-          I64 *exe_addr_ptr = (I64*)ic->ic_data;
           I64 arg_count = cc->last_call_arg_cnt;
-          
-          // Handle argument passing (RISC-V calling convention: a0-a7 registers, rest on stack)
+
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          stack_depth_final--;
+
           if (arg_count > 8) {
-            // More than 8 args: first 8 in a0-a7, rest on stack
-            // Current state: arg9+ in a0, args 1-8 on stack
-            // Need to push a0 (arg9+) to stack first
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-            RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
-            stack_depth_final++;
-            
-            // Now all args are on stack: arg1 at sp+0, arg2 at sp+8, ..., arg8 at sp+56, arg9+ at sp+64+
-            // Load a0-a7 from stack (arg1-arg8)
-            for (I64 i = 0; i < 8; i++) {
-              U8 reg = RV_A0 + i;
-              I64 offset = i * 8; // arg1 at sp+0, arg2 at sp+8, ..., arg8 at sp+56
-              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
-            }
-            // Don't clean up yet - all args stay on stack for callee to access
-          } else if (arg_count == 8) {
-            // Exactly 8 args: all in registers
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A7<<7) | (RV_A0<<15)); // mv a7, a0
-            for (I64 i = 0; i < 7; i++) {
-              U8 reg = RV_A0 + i;
-              I64 offset = (7 - i - 1) * 8;
-              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
-            }
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((56 & 0xFFF)<<20)); // addi sp, sp, 56
-            stack_depth_final -= 8;
-          } else if (arg_count >= 3) {
-            // 3-7 args: all in registers
-            U8 last_reg = RV_A0 + (arg_count - 1);
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (last_reg<<7) | (RV_A0<<15)); // mv aX, a0
-            for (I64 i = 0; i < arg_count - 1; i++) {
-              U8 reg = RV_A0 + i;
-              I64 offset = (arg_count - 2 - i) * 8;
-              RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (reg<<7) | (3<<12) | (RV_SP<<15) | ((offset & 0xFFF)<<20)); // ld aX, offset(sp)
-            }
-            I64 cleanup = (arg_count - 1) * 8;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup & 0xFFF)<<20)); // addi sp, sp, cleanup
-            stack_depth_final -= arg_count;
-          } else if (arg_count == 2) {
-            // 2 args: a1 in a0, a0 on stack
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A1<<7) | (RV_A0<<15)); // mv a1, a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
-            stack_depth_final -= 2;
+            EmitPrepareGt8CallArgs(pass_buf, &pass_ptr, &rip, arg_count);
+          } else if (arg_count >= 2 && arg_count <= 8) {
+            EmitLoadArgsFromEvalStack(pass_buf, &pass_ptr, &rip, &stack_depth_final, arg_count);
           } else if (arg_count == 1) {
-            // 1 arg: already in a0
             stack_depth_final--;
           }
-          
-          // Load exe_addr from memory (indirect)
-          // exe_addr_ptr points to the exe_addr field in CHashFun struct
-          I64 addr = (I64)exe_addr_ptr;
-          
-          
-          // Load address into t0 (TempleOS approach with conditionals)
-          U32 hi = (addr >> 12) & 0xFFFFF;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_T0<<7) | (hi<<12)); // lui t0, hi
-          I64 lo = addr & 0xFFF;
-          if (lo) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_T0<<15) | ((lo & 0xFFF)<<20)); // addi t0, t0, lo
-          }
-          if (addr & 0x80000000) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (1<<12) | (RV_T0<<15) | (32<<20)); // slli
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (5<<12) | (RV_T0<<15) | (32<<20)); // srli
-          }
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_T0<<15)); // ld t0, 0(t0)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15)); // jalr ra, t0
-          
-          // Clean up stack after call
+
+          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_T1<<15));
+          RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T0<<15));
+
           if (arg_count > 8) {
-            // For >8 params, we pushed arg9+ to stack, so clean up arg_count * 8 bytes
-            I64 cleanup_bytes = arg_count * 8;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((cleanup_bytes & 0xFFF)<<20)); // addi sp, sp, cleanup_bytes
+            I64 out_sz = (arg_count - 8) * 8;
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((out_sz & 0xFFF)<<20));
+            I64 eval_sz = arg_count * 8;
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((eval_sz & 0xFFF)<<20));
             stack_depth_final -= arg_count;
           }
-          
+
           stack_depth_final++;
         }
         break;
+      case IC_CALL_INDIRECT2:
+        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_final, cc, NULL, (I64 *)ic->ic_data);
+        break;
       case IC_CALL:
-        // Not used in REPL - functions use IC_CALL_INDIRECT2
-        stack_depth_final++;
+        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_final, cc, (CLabel *)ic->ic_data, NULL);
         break;
       case IC_END_EXP:
         stack_depth_final = 0;
@@ -1266,7 +1292,7 @@ U8 *CompileExpression(Compiler *cc, I64 *size_out) {
   Bool has_call = false;
   ic = cc->ic_head;
   while (ic) {
-    if (ic->ic_code == IC_CALL || ic->ic_code == IC_CALL_INDIRECT2) {
+    if (ic->ic_code == IC_CALL || ic->ic_code == IC_CALL_INDIRECT || ic->ic_code == IC_CALL_INDIRECT2) {
       has_call = true;
       break;
     }
@@ -1324,6 +1350,7 @@ I64 ExecuteJIT(void *code) {
 Compiler *Compile(const char *source, const char *filename, bool aot) {
   Compiler *cc = CompilerNew(source, filename);
   cc->aot_mode = aot;
+  cc->defer_aot_compile = TRUE;
   
   // Parse the program
   if (!ParseProgram(cc)) {
@@ -1332,11 +1359,42 @@ Compiler *Compile(const char *source, const char *filename, bool aot) {
     return cc;
   }
   
-  // Generate code
+  // Stitch deferred per-function IC chains (source order) then single AOT pass
+  AOTFnICChunk *stitched = NULL;
+  if (cc->defer_aot_compile && cc->aot_fn_ic_head) {
+    stitched = cc->aot_fn_ic_head;
+    AOTFnICChunk *ch = stitched;
+    while (ch->next) {
+      ch->tail->next = ch->next->head;
+      ch = ch->next;
+    }
+    cc->ic_head = stitched->head;
+    cc->ic_tail = ch->tail;
+  }
+  
+  // Generate code (AOT malloc blob or JIT RWX mmap — same label offsets)
   if (aot) {
     cc->code_buffer = CompileAOT(cc, &cc->code_size);
   } else {
     cc->code_buffer = CompileJIT(cc, &cc->code_size);
+  }
+  if (cc->code_buffer && stitched) {
+    for (AOTFnICChunk *ch = stitched; ch; ch = ch->next) {
+      if (ch->fun && ch->fun->entry_label) {
+        CLabel *lb = (CLabel *)ch->fun->entry_label;
+        ch->fun->exe_addr = (I64)(cc->code_buffer + lb->addr);
+      }
+    }
+  }
+  
+  if (stitched) {
+    AOTFnICChunk *n = stitched;
+    while (n) {
+      AOTFnICChunk *nx = n->next;
+      free(n);
+      n = nx;
+    }
+    cc->aot_fn_ic_head = cc->aot_fn_ic_tail = NULL;
   }
   
   return cc;

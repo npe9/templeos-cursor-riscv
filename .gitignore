@@ -1,4 +1,5 @@
 # Build outputs
+build/
 *.o
 *.elf
 *.bin
@@ -45,4 +46,13 @@ docs/
 # Logs
 *.log
 /tmp/
+
+# Bootstrap: generated/local test dumps (keep tracked .sh / .c / Makefiles)
+bootstrap/property_*.txt
+bootstrap/*property_test*.txt
+bootstrap/abi_compliance_test.txt
+bootstrap/comprehensive_property_test.txt
+bootstrap/final_property_test.txt
+bootstrap/focused_property_test.txt
+bootstrap/simple_property_test.txt
 

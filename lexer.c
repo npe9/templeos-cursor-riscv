@@ -3,6 +3,188 @@
 #include "holyc_compiler.h"
 #include <ctype.h>
 
+#define IS_ALPHA_CHAR(c) (((c) >= 'a' && (c) <= 'z') || ((c) >= 'A' && (c) <= 'Z'))
+#define IS_DIGIT_CHAR(c) ((c) >= '0' && (c) <= '9')
+#define IS_ALNUM_CHAR(c) (IS_ALPHA_CHAR(c) || IS_DIGIT_CHAR(c) || (c) == '_')
+
+#define MAX_INCLUDE_PATH 1024
+
+static bool EndsWith(const char *str, const char *suffix) {
+  if (!str || !suffix) return false;
+  size_t str_len = strlen(str);
+  size_t suffix_len = strlen(suffix);
+  if (suffix_len > str_len) return false;
+  return strcmp(str + str_len - suffix_len, suffix) == 0;
+}
+
+static bool ReadEntireFile(const char *path, char **out_src) {
+  if (!path || !out_src) return false;
+
+  FILE *f = fopen(path, "rb");
+  if (!f) return false;
+
+  if (fseek(f, 0, SEEK_END) != 0) {
+    fclose(f);
+    return false;
+  }
+  long fsize = ftell(f);
+  if (fsize < 0) {
+    fclose(f);
+    return false;
+  }
+  if (fseek(f, 0, SEEK_SET) != 0) {
+    fclose(f);
+    return false;
+  }
+
+  char *buffer = malloc((size_t)fsize + 1);
+  if (!buffer) {
+    fclose(f);
+    return false;
+  }
+
+  size_t read = fread(buffer, 1, (size_t)fsize, f);
+  fclose(f);
+  if (read != (size_t)fsize) {
+    free(buffer);
+    return false;
+  }
+
+  buffer[fsize] = '\0';
+  *out_src = buffer;
+  return true;
+}
+
+static void ExtractDirectory(const char *path, char *out_dir, size_t out_size) {
+  if (!out_dir || out_size == 0) return;
+  out_dir[0] = '\0';
+  if (!path || !path[0] || path[0] == '<') return;
+
+  const char *last_forward = strrchr(path, '/');
+  const char *last_back = strrchr(path, '\\');
+  const char *slash = last_forward;
+  if (last_back && (!slash || last_back > slash)) {
+    slash = last_back;
+  }
+  if (!slash) return;
+
+  size_t dir_len = (size_t)(slash - path);
+  if (dir_len >= out_size) {
+    dir_len = out_size - 1;
+  }
+  memcpy(out_dir, path, dir_len);
+  out_dir[dir_len] = '\0';
+}
+
+static bool NeedsSeparator(const char *dir) {
+  if (!dir || !dir[0]) return false;
+  size_t len = strlen(dir);
+  char last = dir[len - 1];
+  return !(last == '/' || last == '\\');
+}
+
+static bool TryIncludeInDirectory(const char *dir,
+                                  const char *filename,
+                                  char *resolved,
+                                  size_t resolved_size,
+                                  char **out_src) {
+  if (!filename || !resolved || !out_src) return false;
+
+  char candidate[MAX_INCLUDE_PATH];
+  int written;
+  if (dir && dir[0]) {
+    written = StrPrintF(candidate,
+                       sizeof(candidate),
+                       NeedsSeparator(dir) ? "%s/%s" : "%s%s",
+                       dir,
+                       filename);
+  } else {
+    written = StrPrintF(candidate, sizeof(candidate), "%s", filename);
+  }
+
+  if (written < 0 || written >= (int)sizeof(candidate)) {
+    return false;
+  }
+
+  if (ReadEntireFile(candidate, out_src)) {
+    StrPrintF(resolved, resolved_size, "%s", candidate);
+    return true;
+  }
+
+  if (!EndsWith(filename, ".HC")) {
+    if (dir && dir[0]) {
+      written = StrPrintF(candidate,
+                         sizeof(candidate),
+                         NeedsSeparator(dir) ? "%s/%s.HC" : "%s%s.HC",
+                         dir,
+                         filename);
+    } else {
+      written = StrPrintF(candidate, sizeof(candidate), "%s.HC", filename);
+    }
+
+    if (written < 0 || written >= (int)sizeof(candidate)) {
+      return false;
+    }
+
+    if (ReadEntireFile(candidate, out_src)) {
+      StrPrintF(resolved, resolved_size, "%s", candidate);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+static bool IsAbsolutePath(const char *path) {
+  if (!path || !path[0]) return false;
+#ifdef _WIN32
+  if (path[0] == '/' || path[0] == '\\') return true;
+  if (strlen(path) > 1 && path[1] == ':') return true;
+  return false;
+#else
+  return path[0] == '/';
+#endif
+}
+
+static bool LoadIncludeFile(Compiler *cc,
+                            const char *filename,
+                            char **out_src,
+                            char *resolved_path,
+                            size_t resolved_size) {
+  if (!filename || !out_src || !resolved_path) return false;
+
+  if (IsAbsolutePath(filename)) {
+    if (TryIncludeInDirectory(NULL, filename, resolved_path, resolved_size, out_src)) {
+      return true;
+    }
+    if (!EndsWith(filename, ".HC")) {
+      char tmp[MAX_INCLUDE_PATH];
+      int written = StrPrintF(tmp, sizeof(tmp), "%s.HC", filename);
+      if (written >= 0 && written < (int)sizeof(tmp)) {
+        if (TryIncludeInDirectory(NULL, tmp, resolved_path, resolved_size, out_src)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  char current_dir[MAX_INCLUDE_PATH];
+  ExtractDirectory(cc->lex.filename, current_dir, sizeof(current_dir));
+
+  if (current_dir[0]) {
+    if (TryIncludeInDirectory(current_dir, filename, resolved_path, resolved_size, out_src)) {
+      return true;
+    }
+  }
+
+  if (TryIncludeInDirectory(NULL, filename, resolved_path, resolved_size, out_src)) {
+    return true;
+  }
+
+  return false;
+}
+
 static const struct {
   const char *name;
   int token;
@@ -14,6 +196,7 @@ static const struct {
   {"return", KW_RETURN},
   {"break", KW_BREAK},
   {"class", KW_CLASS},
+  {"enum", KW_ENUM},
   {"public", KW_PUBLIC},
   {"I0", KW_I0},
   {"U0", KW_U0},
@@ -28,6 +211,19 @@ static const struct {
   {"F64", KW_F64},
   {NULL, 0}
 };
+
+static void FreeDefine(CHashDefine *def) {
+  if (!def) return;
+  if (def->data) free(def->data);
+  if (def->param_names) {
+    for (int i = 0; i < def->param_count; i++) {
+      if (def->param_names[i]) free(def->param_names[i]);
+    }
+    free(def->param_names);
+  }
+  if (def->str) free(def->str);
+  free(def);
+}
 
 static void SkipWhitespace(Lexer *lex) {
   while (*lex->ptr && (*lex->ptr == ' ' || *lex->ptr == '\t' || *lex->ptr == '\n' || *lex->ptr == '\r')) {
@@ -107,36 +303,94 @@ static void HandlePreprocessor(Compiler *cc) {
   // Get directive name
   char directive[64];
   int i = 0;
-  while (isalpha(*lex->ptr) && i < 63) {
+  while (IS_ALPHA_CHAR(*lex->ptr) && i < 63) {
     directive[i++] = *lex->ptr++;
     lex->col++;
   }
   directive[i] = '\0';
   
   if (strcmp(directive, "define") == 0) {
-    // Parse #define NAME VALUE
-    
+    // Parse #define NAME VALUE or #define NAME(params) VALUE
+
     // Skip whitespace
     while (*lex->ptr == ' ' || *lex->ptr == '\t') {
       lex->ptr++;
       lex->col++;
     }
-    
+
     // Get macro name
     char name[256];
     i = 0;
-    while ((isalnum(*lex->ptr) || *lex->ptr == '_') && i < 255) {
+    while ((IS_ALNUM_CHAR(*lex->ptr)) && i < 255) {
       name[i++] = *lex->ptr++;
       lex->col++;
     }
     name[i] = '\0';
-    
-    // Skip whitespace
-    while (*lex->ptr == ' ' || *lex->ptr == '\t') {
+
+    // Parse parameter list if present immediately after the name
+    char *param_names_buf[16];
+    int param_count = 0;
+
+    if (*lex->ptr == '(') {
       lex->ptr++;
       lex->col++;
+
+      while (*lex->ptr && *lex->ptr != ')') {
+        while (*lex->ptr == ' ' || *lex->ptr == '\t') {
+          lex->ptr++;
+          lex->col++;
+        }
+
+        if (*lex->ptr == ')') break;  // Allow trailing whitespace before ')'
+
+        char param[256];
+        int pj = 0;
+        while ((IS_ALNUM_CHAR(*lex->ptr)) && pj < 255) {
+          param[pj++] = *lex->ptr++;
+          lex->col++;
+        }
+        param[pj] = '\0';
+
+        if (pj == 0) {
+          // Unsupported token (like variadic); treat as empty and break
+          break;
+        }
+
+        if (param_count < 16) {
+          param_names_buf[param_count++] = strdup(param);
+        }
+
+        while (*lex->ptr == ' ' || *lex->ptr == '\t') {
+          lex->ptr++;
+          lex->col++;
+        }
+
+        if (*lex->ptr == ',') {
+          lex->ptr++;
+          lex->col++;
+          continue;
+        }
+        break;
+      }
+
+      if (*lex->ptr == ')') {
+        lex->ptr++;
+        lex->col++;
+      }
+
+      // Skip whitespace between parameter list and replacement
+      while (*lex->ptr == ' ' || *lex->ptr == '\t') {
+        lex->ptr++;
+        lex->col++;
+      }
+    } else {
+      // No parameters: skip whitespace before replacement
+      while (*lex->ptr == ' ' || *lex->ptr == '\t') {
+        lex->ptr++;
+        lex->col++;
+      }
     }
-    
+
     // Get replacement text (rest of line)
     char value[1024];
     i = 0;
@@ -152,10 +406,25 @@ static void HandlePreprocessor(Compiler *cc) {
     }
     
     // Add to define table
+    CHashEntry *existing = HashRemove(cc->define_table, name, HTT_DEFINE_STR);
+    if (existing && (existing->type & HTT_DEFINE_STR)) {
+      FreeDefine((CHashDefine*)existing);
+    }
+
     CHashDefine *def = calloc(1, sizeof(CHashDefine));
     def->str = strdup(name);
     def->type = HTT_DEFINE_STR;
     def->data = strdup(value);
+    if (param_count > 0) {
+      def->param_count = param_count;
+      def->param_names = calloc(param_count, sizeof(char*));
+      for (int idx = 0; idx < param_count; idx++) {
+        def->param_names[idx] = param_names_buf[idx];
+      }
+    } else {
+      def->param_count = 0;
+      def->param_names = NULL;
+    }
     HashAdd((CHashEntry*)def, cc->define_table);
   } else if (strcmp(directive, "include") == 0) {
     // Parse #include "filename"
@@ -188,45 +457,31 @@ static void HandlePreprocessor(Compiler *cc) {
       lex->col++;
     }
     
-    // Read the file
-    FILE *f = fopen(filename, "r");
-    if (!f) {
-      // Try adding .HC extension (no snprintf like HolyC)
-      // In bare metal, #include not supported
-      f = NULL;
+    char resolved_path[MAX_INCLUDE_PATH];
+    char *include_src = NULL;
+    if (!LoadIncludeFile(cc, filename, &include_src, resolved_path, sizeof(resolved_path))) {
+      char err_msg[256];
+      StrPrintF(err_msg, sizeof(err_msg), "Unable to open include file '%s'", filename);
+      Error(cc, err_msg);
+      goto skip_line;
     }
-    
-    if (f) {
-      // Get file size
-      fseek(f, 0, SEEK_END);
-      long fsize = ftell(f);
-      fseek(f, 0, SEEK_SET);
-      
-      // Read file
-      char *include_src = malloc(fsize + 1);
-      fread(include_src, 1, fsize, f);
-      include_src[fsize] = '\0';
-      fclose(f);
-      
-      // Push current file onto include stack
-      IncludeFile *inc = calloc(1, sizeof(IncludeFile));
-      inc->src = lex->src;
-      inc->ptr = lex->ptr;
-      inc->filename = lex->filename;
-      inc->line = lex->line;
-      inc->col = lex->col;
-      inc->next = lex->include_stack;
-      lex->include_stack = inc;
-      
-      // Switch to included file
-      lex->src = include_src;
-      lex->ptr = include_src;
-      lex->filename = strdup(filename);
-      lex->line = 1;
-      lex->col = 1;
-      
-      return;  // Don't skip to next line
-    }
+
+    IncludeFile *inc = calloc(1, sizeof(IncludeFile));
+    inc->src = lex->src;
+    inc->ptr = lex->ptr;
+    inc->filename = lex->filename;
+    inc->line = lex->line;
+    inc->col = lex->col;
+    inc->next = lex->include_stack;
+    lex->include_stack = inc;
+
+    lex->src = include_src;
+    lex->ptr = include_src;
+    lex->filename = strdup(resolved_path);
+    lex->line = 1;
+    lex->col = 1;
+
+    return;  // Don't skip to next line
   } else if (strcmp(directive, "ifdef") == 0 || strcmp(directive, "ifndef") == 0) {
     // #ifdef or #ifndef
     bool is_ifndef = (strcmp(directive, "ifndef") == 0);
@@ -239,7 +494,7 @@ static void HandlePreprocessor(Compiler *cc) {
     
     char name[256];
     i = 0;
-    while ((isalnum(*lex->ptr) || *lex->ptr == '_') && i < 255) {
+  while ((IS_ALNUM_CHAR(*lex->ptr)) && i < 255) {
       name[i++] = *lex->ptr++;
       lex->col++;
     }
@@ -316,22 +571,16 @@ static void HandlePreprocessor(Compiler *cc) {
     // Get macro name
     char name[256];
     i = 0;
-    while ((isalnum(*lex->ptr) || *lex->ptr == '_') && i < 255) {
+  while ((IS_ALNUM_CHAR(*lex->ptr)) && i < 255) {
       name[i++] = *lex->ptr++;
       lex->col++;
     }
     name[i] = '\0';
     
     // Remove from define table
-    CHashEntry *entry = HashFind(name, cc->define_table, HTT_DEFINE_STR);
-    if (entry) {
-      // TODO: Proper hash table removal
-      // For now, just mark it as removed by clearing the data
-      CHashDefine *def = (CHashDefine*)entry;
-      if (def->data) {
-        free(def->data);
-        def->data = strdup("");
-      }
+    CHashEntry *removed = HashRemove(cc->define_table, name, HTT_DEFINE_STR);
+    if (removed && (removed->type & HTT_DEFINE_STR)) {
+      FreeDefine((CHashDefine*)removed);
     }
   }
 
@@ -455,13 +704,13 @@ static int LexIdentifier(Compiler *cc) {
         
         while (*body && exp_len < 1023) {
           // Check for # (stringification)
-          if (*body == '#' && (isalpha(body[1]) || body[1] == '_')) {
+          if (*body == '#' && (IS_ALPHA_CHAR(body[1]) || body[1] == '_')) {
             body++;  // Skip '#'
             
             // Get parameter name
             char param_name[64];
             int pn_len = 0;
-            while ((isalnum(*body) || *body == '_') && pn_len < 63) {
+            while ((IS_ALNUM_CHAR(*body) || *body == '_') && pn_len < 63) {
               param_name[pn_len++] = *body++;
             }
             param_name[pn_len] = '\0';
@@ -509,13 +758,13 @@ static int LexIdentifier(Compiler *cc) {
           // Check if this is a parameter name
           bool found_param = false;
           
-          if (isalpha(*body) || *body == '_') {
+          if (IS_ALPHA_CHAR(*body) || *body == '_') {
             // Possible parameter name
             char param_name[64];
             int pn_len = 0;
             char *temp = body;
             
-            while ((isalnum(*temp) || *temp == '_') && pn_len < 63) {
+            while ((IS_ALNUM_CHAR(*temp) || *temp == '_') && pn_len < 63) {
               param_name[pn_len++] = *temp++;
             }
             param_name[pn_len] = '\0';
@@ -574,20 +823,24 @@ static int LexIdentifier(Compiler *cc) {
       }
     } else {
       // Simple (non-parameterized) macro
-      if (lex->token_str) free(lex->token_str);
-      lex->token_str = strdup(def->data);
-      
-      // Try to parse the macro value as a number
-      char *endptr;
-      I64 ival = strtoll(def->data, &endptr, 0);
-      if (*endptr == '\0') {
-        // It's a number
-        lex->token_i64 = ival;
-        return TK_I64;
-      }
-      
-      // Otherwise return as identifier (will be looked up again)
-      return TK_IDENT;
+      IncludeFile *inc = calloc(1, sizeof(IncludeFile));
+      inc->src = lex->src;
+      inc->ptr = lex->ptr;
+      inc->filename = lex->filename;
+      inc->line = lex->line;
+      inc->col = lex->col;
+      inc->next = lex->include_stack;
+      lex->include_stack = inc;
+
+      const char *replacement = def->data ? def->data : "";
+      lex->src = strdup(replacement);
+      lex->ptr = lex->src;
+      lex->filename = strdup("<macro expansion>");
+      lex->line = 1;
+      lex->col = 1;
+
+      LexNext(cc);
+      return cc->lex.token;
     }
   }
   
@@ -610,11 +863,9 @@ static int LexIdentifier(Compiler *cc) {
 
 static int LexNumber(Lexer *lex) {
   I64 value = 0;
-  bool is_hex = false;
   
   // Check for 0x prefix
   if (lex->ptr[0] == '0' && (lex->ptr[1] == 'x' || lex->ptr[1] == 'X')) {
-    is_hex = true;
     lex->ptr += 2; // Skip '0x'
     lex->col += 2;
     
