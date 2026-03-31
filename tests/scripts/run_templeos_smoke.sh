@@ -6,9 +6,11 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TOS="$ROOT/templeos-riscv"
 QEMU="${QEMU_SYSTEM_RISCV:-qemu-system-riscv64}"
 TIMEOUT_CMD=""
-command -v timeout >/dev/null 2>&1 && TIMEOUT_CMD=timeout
-command -v gtimeout >/dev/null 2>&1 && TIMEOUT_CMD=gtimeout
-if [ -z "$TIMEOUT_CMD" ]; then
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_CMD="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_CMD="gtimeout"
+else
   echo "error: need timeout or gtimeout" >&2
   exit 2
 fi

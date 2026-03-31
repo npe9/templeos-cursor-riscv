@@ -17,6 +17,28 @@ permissions:
   contents: read
 
 jobs:
+  shellcheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Lint Makefile/CI shell scripts
+        run: |
+          set -euo pipefail
+          for f in \
+            tests/scripts/run_holyc_compliance.sh \
+            tests/scripts/run_exec_oracles.sh \
+            tests/scripts/run_templeos_smoke.sh \
+            tests/scripts/gen_compliance_candidates.sh; do
+            shellcheck -S error -x "$f"
+          done
+
   compile-compliance:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -36,7 +58,7 @@ jobs:
 
   qemu-integration:
     runs-on: ubuntu-24.04
-    needs: compile-compliance
+    needs: [compile-compliance, shellcheck]
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4

@@ -16,4 +16,6 @@
 
 `tests/scripts/` contains additional TempleOS batch runners and utilities; the table above lists the paths wired into the root `Makefile` and CI.
 
+GitHub Actions runs **ShellCheck** (`-S error`) on the four scripts in the table’s “script” column (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) job `shellcheck`).
+
 Repo orientation: [AGENTS.md](../AGENTS.md).
