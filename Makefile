@@ -1,7 +1,8 @@
 # Makefile for Cicl→RISC-V Compiler
 
 CC = gcc
-CFLAGS = -std=c11 -Wall -Wextra -O2 -g
+# glibc: strdup and other POSIX.1-2008 APIs need a feature macro under -std=c11 (fixes Linux CI).
+CFLAGS = -std=c11 -Wall -Wextra -O2 -g -D_DEFAULT_SOURCE
 RISCV_CC = riscv64-unknown-elf-gcc
 RISCV_OBJDUMP = riscv64-unknown-elf-objdump
 QEMU = qemu-riscv64
