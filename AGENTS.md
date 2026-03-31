@@ -6,6 +6,11 @@
 - **`make test`** — quick AOT smoke (`build/smoke.hc`).
 - **`make ci`** — same stages as [`.github/workflows/ci.yml`](.github/workflows/ci.yml): **`make compliance`** then **`make qemu-integration`**. Requires a RISC-V bare-metal toolchain (`riscv64-unknown-elf-gcc`), **`qemu-system-riscv64`**, and **Python 3** (TempleOS image helper).
 
+## CI (GitHub Actions)
+
+- Pushes and PRs that change **only** Markdown (`*.md` anywhere) **do not** run CI (`paths-ignore`), to save time on doc edits. Use **Actions → CI → Run workflow** when you need a full run after doc-only changes.
+- **`concurrency: cancel-in-progress`** stops the previous run when a new push lands; an older commit may show **cancelled** even though the tip commit is green.
+
 ## Implementation status
 
 - Feature-level notes: [HOLYC_IMPLEMENTATION_STATUS.md](HOLYC_IMPLEMENTATION_STATUS.md).

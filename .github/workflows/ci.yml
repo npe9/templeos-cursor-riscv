@@ -5,8 +5,14 @@ name: CI
 on:
   push:
     branches: [archive, main, master]
+    paths-ignore:
+      - "*.md"
+      - "**/*.md"
   pull_request:
     branches: [archive, main, master]
+    paths-ignore:
+      - "*.md"
+      - "**/*.md"
   workflow_dispatch:
 
 concurrency:
