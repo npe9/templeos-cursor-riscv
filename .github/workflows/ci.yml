@@ -32,6 +32,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Fast parse check first (no apt); fails before ShellCheck install on broken scripts.
+      - name: Syntax-check all tests/scripts (make syntax-sh)
+        run: make syntax-sh
+
       - name: Install ShellCheck
         run: |
           sudo apt-get update -y -o Acquire::Retries=5
@@ -47,9 +51,6 @@ jobs:
             tests/scripts/gen_compliance_candidates.sh; do
             shellcheck -S error -x "$f"
           done
-
-      - name: Syntax-check all tests/scripts (make syntax-sh)
-        run: make syntax-sh
 
   compile-compliance:
     runs-on: ubuntu-24.04

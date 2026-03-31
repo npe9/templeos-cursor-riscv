@@ -16,6 +16,6 @@
 
 `tests/scripts/` contains additional TempleOS batch runners and utilities; the table above lists the paths wired into the root `Makefile` and CI.
 
-The **`shellcheck`** CI job runs **ShellCheck** (`-S error`) on the four scripts in the table’s “script” column, then **`make syntax-sh`** (**`bash -n`** on all **`tests/scripts/*.sh`**). See [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). Locally: **`make lint-sh`**, **`make syntax-sh`**.
+The **`shellcheck`** CI job runs **`make syntax-sh`** first, then **ShellCheck** (`-S error`) on the four scripts in the table’s “script” column. See [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). Locally: **`make syntax-sh`**, **`make lint-sh`**.
 
 **Doc-only pushes** (commits that change only `*.md` files) **skip** CI to save runners; use **Actions → CI → Run workflow** for a manual full run. Contributor notes: [AGENTS.md](../AGENTS.md).
