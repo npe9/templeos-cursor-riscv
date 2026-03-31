@@ -85,12 +85,14 @@ Get11th(1,2,3,4,5,6,7,8,9,10,11);
 ## Testing
 
 ```bash
-make test                    # Minimal AOT smoke (writes build/simple.bin)
+make test                    # Minimal AOT smoke (build/smoke.hc → build/simple.bin)
 make compliance              # TempleOS curated + parity compile suite
 make compliance-exec         # Parity + exec where implemented
 make exec-oracle             # Optional oracle runs (see tests/scripts/)
 make templeos-smoke          # TempleOS tree smoke (see tests/scripts/)
 ```
+
+On GitHub, pushes and pull requests to `archive`, `main`, or `master` run the same checks as `make compliance-exec` (see `.github/workflows/ci.yml`).
 
 Compile a single file:
 
