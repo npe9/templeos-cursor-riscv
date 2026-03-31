@@ -15,7 +15,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle qemu-integration templeos-riscv templeos-smoke
+.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh qemu-integration templeos-riscv templeos-smoke
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -55,6 +55,18 @@ templeos-smoke: $(COMPILER_BIN)
 qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) exec-oracle
 	@$(MAKE) templeos-smoke
+
+# ShellCheck on the same four scripts as the CI shellcheck job (requires shellcheck on PATH).
+lint-sh:
+	@command -v shellcheck >/dev/null 2>&1 || { echo 'error: install shellcheck (e.g. brew install shellcheck)' >&2; exit 1; }
+	@set -e; for f in \
+	  tests/scripts/run_holyc_compliance.sh \
+	  tests/scripts/run_exec_oracles.sh \
+	  tests/scripts/run_templeos_smoke.sh \
+	  tests/scripts/gen_compliance_candidates.sh; do \
+	  shellcheck -S error -x "$$f"; \
+	done
+	@echo '✓ shellcheck (CI scripts)'
 
 # Build the validator
 validator: validator.c
@@ -103,6 +115,7 @@ help:
 	@echo "  compliance-exec - run_holyc_compliance.sh --exec (suites + exec oracles; no templeos-smoke)"
 	@echo "  exec-oracle     - UART oracle tests only (tests/exec; needs RISC-V + qemu-system)"
 	@echo "  qemu-integration - exec-oracle then templeos-smoke (CI job after compile-compliance)"
+	@echo "  lint-sh       - ShellCheck CI shell scripts (needs shellcheck on PATH)"
 	@echo "  templeos-riscv  - Build TempleOS/RISC-V kernel + default HolyC guest"
 	@echo "  templeos-smoke  - QEMU smoke (ORACLE) for default + selfhost images"
 	@echo "  validator   - Build instruction encoder validator (optional; not in tree by default)"
@@ -123,4 +136,5 @@ help:
 	@echo "  - riscv64-unknown-elf-gcc (optional, for verification)"
 	@echo "  - qemu-system-riscv64 (optional, for exec-oracle / templeos-smoke)"
 	@echo "  - python3 (optional, for templeos-riscv image build in templeos-smoke / make ci)"
+	@echo "  - shellcheck (optional, for make lint-sh)"
 
