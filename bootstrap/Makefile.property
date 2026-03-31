@@ -1,0 +1,54 @@
+# Makefile for Property-Based Testing Framework
+
+CC = gcc
+CFLAGS = -Wall -Wextra -std=c99 -O2
+TARGET = property_based_tester
+REPL_TARGET = property_based_repl
+
+# Object files
+OBJS = property_based_tester.o
+REPL_OBJS = property_based_repl.o
+
+# Default target
+all: $(TARGET) $(REPL_TARGET)
+
+# Property-based tester (standalone)
+$(TARGET): property_based_tester.o
+	$(CC) $(CFLAGS) -o $(TARGET) property_based_tester.o
+
+property_based_tester.o: property_based_tester.c
+	$(CC) $(CFLAGS) -c property_based_tester.c
+
+# Property-based REPL tester (integrates with HolyC compiler)
+$(REPL_TARGET): property_based_repl.o
+	$(CC) $(CFLAGS) -o $(REPL_TARGET) property_based_repl.o
+
+property_based_repl.o: property_based_repl.c
+	$(CC) $(CFLAGS) -c property_based_repl.c
+
+# Run property-based tests
+test: $(TARGET)
+	./$(TARGET)
+
+# Run REPL-based property tests
+test-repl: $(REPL_TARGET)
+	./$(REPL_TARGET)
+
+# Clean up
+clean:
+	rm -f $(TARGET) $(REPL_TARGET) *.o property_based_test_suite.txt temp_test.hc temp_output.txt
+
+# Install dependencies (if needed)
+install-deps:
+	@echo "Installing dependencies for property-based testing..."
+	@echo "Make sure QEMU and RISC-V toolchain are installed"
+
+.PHONY: all test test-repl clean install-deps
+
+
+
+
+
+
+
+

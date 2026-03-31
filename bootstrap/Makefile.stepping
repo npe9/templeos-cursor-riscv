@@ -1,0 +1,34 @@
+RISCV_PREFIX = riscv64-unknown-elf-
+CC = $(RISCV_PREFIX)gcc
+LD = $(RISCV_PREFIX)ld
+
+CFLAGS = -march=rv64imafdc_zifencei -mabi=lp64d -mcmodel=medany -O0 -g
+CFLAGS += -nostdlib -ffreestanding -fno-builtin -I..
+
+LDFLAGS = -T linker.ld -nostdlib --no-warn-mismatch
+
+stepping_debugger.elf: startup.o stepping_debugger.o compiler.o
+	$(LD) $(LDFLAGS) -o $@ $^
+	@echo "✓ Built Stepping Debugger"
+
+compiler.o: ../compiler.c ../lexer.c ../parser.c ../hash_table.c ../compiler_helper.c
+	$(CC) $(CFLAGS) -DBARE_METAL -c ../compiler.c -o compiler_main.o
+	$(CC) $(CFLAGS) -DBARE_METAL -c ../lexer.c -o lexer.o
+	$(CC) $(CFLAGS) -DBARE_METAL -c ../parser.c -o parser.o
+	$(CC) $(CFLAGS) -DBARE_METAL -c ../hash_table.c -o hash.o
+	$(CC) $(CFLAGS) -DBARE_METAL -c ../compiler_helper.c -o compiler_helper.o
+	$(LD) -r -o $@ compiler_main.o lexer.o parser.o hash.o compiler_helper.o
+
+stepping_debugger.o: stepping_debugger.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+startup.o: startup.s
+	$(CC) $(CFLAGS) -c $< -o $@
+
+run: stepping_debugger.elf
+	qemu-system-riscv64 -machine virt -bios none -device loader,file=stepping_debugger.elf,addr=0x80000000 -monitor none -serial mon:stdio -nographic
+
+clean:
+	rm -f *.o *.elf
+
+.PHONY: run clean
