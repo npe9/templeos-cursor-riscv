@@ -101,6 +101,8 @@ make qemu-integration        # exec-oracle + templeos-smoke (needs RISC-V + qemu
 make compliance-exec         # All compile suites then exec oracles via one script (no TempleOS smoke)
 make exec-oracle             # UART oracle runs only (tests/exec/)
 make templeos-smoke          # TempleOS/RISC-V QEMU smoke only
+make lint-sh                 # ShellCheck on the four CI scripts (needs shellcheck)
+make syntax-sh               # bash -n on all tests/scripts/*.sh (no extra installs)
 ```
 
 On GitHub, CI runs the same two stages as **`make ci`** (compile compliance, then QEMU integration). Trigger manually from the Actions tab (`workflow_dispatch`). Dependabot opens weekly PRs for Action bumps (`.github/dependabot.yml`). See `.github/workflows/ci.yml`.

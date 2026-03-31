@@ -15,7 +15,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh qemu-integration templeos-riscv templeos-smoke
+.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration templeos-riscv templeos-smoke
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -68,6 +68,11 @@ lint-sh:
 	done
 	@echo '✓ shellcheck (CI scripts)'
 
+# Parse-check every script under tests/scripts (no extra tools; weaker than ShellCheck).
+syntax-sh:
+	@set -e; for f in tests/scripts/*.sh; do bash -n "$$f"; done
+	@echo '✓ bash -n (tests/scripts/*.sh)'
+
 # Build the validator
 validator: validator.c
 	$(CC) $(CFLAGS) validator.c -o validator
@@ -116,6 +121,7 @@ help:
 	@echo "  exec-oracle     - UART oracle tests only (tests/exec; needs RISC-V + qemu-system)"
 	@echo "  qemu-integration - exec-oracle then templeos-smoke (CI job after compile-compliance)"
 	@echo "  lint-sh       - ShellCheck CI shell scripts (needs shellcheck on PATH)"
+	@echo "  syntax-sh     - bash -n on all tests/scripts/*.sh (no dependencies)"
 	@echo "  templeos-riscv  - Build TempleOS/RISC-V kernel + default HolyC guest"
 	@echo "  templeos-smoke  - QEMU smoke (ORACLE) for default + selfhost images"
 	@echo "  validator   - Build instruction encoder validator (optional; not in tree by default)"
