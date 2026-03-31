@@ -18,4 +18,4 @@
 
 GitHub Actions runs **ShellCheck** (`-S error`) on the four scripts in the table’s “script” column (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) job `shellcheck`).
 
-Repo orientation: [AGENTS.md](../AGENTS.md).
+**Doc-only pushes** (commits that change only `*.md` files) **skip** CI to save runners; use **Actions → CI → Run workflow** for a manual full run. Contributor notes: [AGENTS.md](../AGENTS.md).
