@@ -105,7 +105,7 @@ make lint-sh                 # ShellCheck on the four CI scripts (needs shellche
 make syntax-sh               # bash -n on all tests/scripts/*.sh (no extra installs)
 ```
 
-On GitHub, CI runs the same two stages as **`make ci`** (compile compliance, then QEMU integration). Trigger manually from the Actions tab (`workflow_dispatch`). Dependabot opens weekly PRs for Action bumps (`.github/dependabot.yml`). See `.github/workflows/ci.yml`.
+On GitHub, CI runs four jobs: **`syntax-sh`**, **`shellcheck`**, and **`compile-compliance`** in parallel, then **`qemu-integration`** after all three succeed (same end state as **`make ci`**, plus shell script checks). Doc-only commits (`*.md` only) skip CI (`paths-ignore`); use **Actions → CI → Run workflow** when needed. Dependabot groups weekly Action updates (`.github/dependabot.yml`). See `.github/workflows/ci.yml`.
 
 Compile a single file:
 
