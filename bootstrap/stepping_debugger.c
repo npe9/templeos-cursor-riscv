@@ -16,7 +16,10 @@ static void putc_uart(char c) {
 }
 
 static char getc_uart(void) {
-    while (!(*(volatile U8*)(UART_BASE + 5) & 0x01));
+    // Non-blocking UART read - return 0 if no data available
+    if (!(*(volatile U8*)(UART_BASE + 5) & 0x01)) {
+        return 0;  // No data available
+    }
     return *(volatile U8*)UART_BASE;
 }
 
@@ -35,8 +38,27 @@ static void print_hex(uint64_t val) {
     }
 }
 
+static void print_compiler_error(Compiler *cc) {
+    if (!cc || !cc->error) {
+        return;
+    }
+    puts_uart("  reason: ");
+    puts_uart(cc->error);
+    puts_uart(" (line=");
+    print_hex((uint64_t)cc->error_line);
+    puts_uart(")\n");
+}
+
+static void print_hex32(uint32_t val) {
+    putc_uart('0'); putc_uart('x');
+    for (int i = 7; i >= 0; i--) {
+        int d = (val >> (i*4)) & 0xF;
+        putc_uart(d < 10 ? '0' + d : 'a' + d - 10);
+    }
+}
+
 // Memory management
-static U8 heap_mem[12*1024*1024];
+static U8 heap_mem[512*1024];  // 512KB heap
 static size_t heap_pos = 0;
 
 void *malloc(size_t sz) { 
@@ -44,7 +66,7 @@ void *malloc(size_t sz) {
     size_t aligned = (sz + 7) & ~7;
     if (heap_pos + aligned > sizeof(heap_mem)) {
         puts_uart("[FATAL] Out of heap memory!\n");
-        return NULL;  // Don't wrap - return NULL instead
+        return NULL;
     }
     void *p = &heap_mem[heap_pos];
     heap_pos += aligned;
@@ -200,7 +222,7 @@ static I64 sign_extend_20(I64 imm) {
 }
 
 static I64 sign_extend_21(I64 imm) {
-    return (imm & 0x100000) ? (imm | 0xFFE00000) : imm;
+    return (imm & 0x100000) ? (imm | 0xFFFFFFFFFFFFFFFFLL << 21) : imm;
 }
 
 // Simple string formatting for UART
@@ -532,7 +554,7 @@ U8* U(U8* rip, I64 cnt, I64 seg_size) {
         U32 inst = *(U32*)rip;
         print_hex((U64)rip);
         puts_uart(": ");
-        print_hex((U64)inst);
+        print_hex32(inst);
         puts_uart(" ");
         rip = disasm_instruction(rip, buf, sizeof(buf));
         puts_uart(buf);
@@ -745,6 +767,12 @@ void stepping_debug_repl(void) {
         return;
     }
     
+    // Accumulation buffer for multi-line inputs (functions/blocks)
+    static char accum[4096];
+    int accum_len = 0;
+    int brace_depth = 0;
+    int paren_depth = 0;
+
     while (1) {
         puts_uart("> ");
         pos = 0;
@@ -752,6 +780,10 @@ void stepping_debug_repl(void) {
         // Read line
         while (1) {
             c = getc_uart();
+            if (c == 0) {
+                // No data available, continue waiting
+                continue;
+            }
             if (c == '\r' || c == '\n') {
                 input[pos] = '\0';
                 puts_uart("\n");
@@ -771,6 +803,77 @@ void stepping_debug_repl(void) {
         }
         
         if (pos == 0) continue;
+
+        // Check for quit/exit command immediately (before accumulation)
+        // Trim whitespace for comparison
+        int i_start = 0;
+        while (i_start < pos && (input[i_start] == ' ' || input[i_start] == '\t')) i_start++;
+        int i_end = pos;
+        while (i_end > i_start && (input[i_end-1] == ' ' || input[i_end-1] == '\t' || input[i_end-1] == '\r' || input[i_end-1] == '\n')) i_end--;
+        if (i_end > i_start) {
+            char cmd[512];
+            int cmd_len = i_end - i_start;
+            if (cmd_len < (int)sizeof(cmd)) {
+                for (int i = 0; i < cmd_len; i++) cmd[i] = input[i_start + i];
+                cmd[cmd_len] = '\0';
+                if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0) {
+                    puts_uart("Goodbye!\n");
+                    return;
+                }
+            }
+        }
+
+        // Append this line to accumulation buffer (with a newline)
+        if (accum_len + pos + 2 < (int)sizeof(accum)) {
+            for (int i = 0; i < pos; i++) accum[accum_len++] = input[i];
+            accum[accum_len++] = '\n';
+            accum[accum_len] = '\0';
+        } else {
+            puts_uart("[ERROR] Input too long\n");
+            accum_len = 0; brace_depth = 0; paren_depth = 0;
+            continue;
+        }
+
+        // Track simple brace/paren depth to detect statement/function completion
+        for (int i = 0; i < pos; i++) {
+            char ch = input[i];
+            if (ch == '{') brace_depth++;
+            else if (ch == '}') { if (brace_depth > 0) brace_depth--; }
+            else if (ch == '(') paren_depth++;
+            else if (ch == ')') { if (paren_depth > 0) paren_depth--; }
+        }
+
+        // Determine if we should attempt to parse now
+        int should_parse = 0;
+        // If in a block, wait until braces balance back to zero
+        if (brace_depth == 0) {
+            int i_start = 0;
+            while (i_start < pos && (input[i_start] == ' ' || input[i_start] == '\t')) i_start++;
+            if (i_start < pos && input[i_start] == '#') {
+                should_parse = 1;
+            }
+            // If not in parens and line ends with ';', treat as complete statement/expression
+            if (paren_depth == 0) {
+                if (pos > 0 && input[pos-1] == ';') should_parse = 1;
+                // Or if this line closed a block '}'
+                if (pos > 0 && input[pos-1] == '}') should_parse = 1;
+            }
+            // Also parse if we're in parens and line ends with ';' (function call)
+            else if (pos > 0 && input[pos-1] == ';') {
+                should_parse = 1;
+            }
+        }
+
+        if (!should_parse) {
+            // Prompt for more lines
+            continue;
+        }
+        
+        // Check for quit command first
+        if (strcmp(input, "quit") == 0 || strcmp(input, "exit") == 0) {
+            puts_uart("Goodbye!\n");
+            return;
+        }
         
         // Check for stepping commands
         if (strcmp(input, "s") == 0 || strcmp(input, "step") == 0 ||
@@ -802,16 +905,17 @@ void stepping_debug_repl(void) {
             continue;
         }
         
-        // Regular HolyC processing
+        // Regular HolyC processing on accumulated input
         if (cc->lex.src) free(cc->lex.src);
-        cc->lex.src = strdup(input);
+        cc->lex.src = strdup(accum);
         cc->lex.ptr = cc->lex.src;
         cc->lex.line = 1;
         cc->lex.col = 1;
         cc->lex.hash_entry = NULL;
         
-        // Debug: Check if hash table has entries
-        if (cc->hash_table && cc->hash_table->body) {
+        // Debug: Check if hash table has entries (disabled for performance)
+        static int show_hash_debug = 0;
+        if (show_hash_debug && cc->hash_table && cc->hash_table->body) {
             puts_uart("[DEBUG] Hash table exists, checking for TestFunc\n");
             CHashEntry *test_entry = HashFind("TestFunc", cc->hash_table, HTT_FUN);
             if (test_entry && (test_entry->type & HTT_FUN)) {
@@ -834,6 +938,11 @@ void stepping_debug_repl(void) {
         cc->label_counter = 0;
         cc->locals_size = 0;
         
+        // Reset accumulation after capturing into lexer
+        accum_len = 0;
+        brace_depth = 0;
+        paren_depth = 0;
+
         // Get first token
         extern void LexNext(Compiler *cc);
         LexNext(cc);
@@ -843,51 +952,68 @@ void stepping_debug_repl(void) {
         Bool is_function = ParseFunction(cc);
         
         if (is_function) {
-            extern U8 *CompileAOT(Compiler *cc, I64 *size_out);
-            I64 code_size = 0;
-            U8 *machine_code = CompileAOT(cc, &code_size);
+            // ParseFunction already compiled the function and stored it in cc->code_buffer
+            U8 *machine_code = cc->code_buffer;
+            I64 code_size = cc->code_size;
             
-            if (machine_code && code_size > 0) {
-                puts_uart("Function compiled at: ");
-                print_hex((U64)machine_code);
-                puts_uart("\n");
+            // Forward declarations have no code, just hash entry
+            if (!machine_code || code_size == 0) {
+                puts_uart("Forward declaration registered\n");
+            } else if (machine_code && code_size > 0) {
+                static int show_func_compile = 0;
+                if (show_func_compile) {
+                    puts_uart("Function compiled at: ");
+                    print_hex((U64)machine_code);
+                    puts_uart("\n");
+                }
                 
                 // Set up for stepping
                 debug_state.code_start = machine_code;
                 debug_state.code_end = machine_code + code_size;
                 debug_state.current_pc = machine_code;
                 
-                // Show disassembly
-                U(machine_code, code_size/4, 0);
-                
-                // Update exe_addr
-                if (cc->last_compiled_func) {
-                    cc->last_compiled_func->exe_addr = (I64)machine_code;
-                    // Debug: print the function address
-                    puts_uart("Function address stored: 0x");
-                    print_hex((U64)machine_code);
-                    puts_uart("\n");
-                    puts_uart("Hash table entry address: 0x");
-                    print_hex((U64)cc->last_compiled_func);
-                    puts_uart("\n");
-                    puts_uart("exe_addr field address: 0x");
-                    print_hex((U64)&cc->last_compiled_func->exe_addr);
-                    puts_uart("\n");
-                    // Verify the value was written
-                    puts_uart("exe_addr value after write: 0x");
-                    print_hex((U64)cc->last_compiled_func->exe_addr);
-                    puts_uart("\n");
-                    // Check what's actually in memory at that address
-                    puts_uart("Memory at exe_addr field: 0x");
-                    print_hex(*(U64*)&cc->last_compiled_func->exe_addr);
+                // Optional: disassemble after compile (disabled by default to keep tests fast)
+                // Enable by setting show_disasm to non-zero
+                static int show_disasm = 0;  // Disabled for performance
+                if (show_disasm) {
+                    puts_uart("Disassembly:\n");
+                    U(machine_code, code_size/4, 0);
                     puts_uart("\n");
                 }
                 
-                // __asm__ volatile("fence.i" ::: "memory"); // Not supported in this RISC-V implementation
-                // Use fence instruction to ensure memory writes are visible
+                // Update exe_addr
+                static int show_func_addr_debug = 0;
+                if (cc->last_compiled_func) {
+                    cc->last_compiled_func->exe_addr = (I64)machine_code;
+                    // Debug: print the function address (disabled for performance)
+                    if (show_func_addr_debug) {
+                        puts_uart("Function address stored: 0x");
+                        print_hex((U64)machine_code);
+                        puts_uart("\n");
+                        puts_uart("Hash table entry address: 0x");
+                        print_hex((U64)cc->last_compiled_func);
+                        puts_uart("\n");
+                        puts_uart("exe_addr field address: 0x");
+                        print_hex((U64)&cc->last_compiled_func->exe_addr);
+                        puts_uart("\n");
+                        // Verify the value was written
+                        puts_uart("exe_addr value after write: 0x");
+                        print_hex((U64)cc->last_compiled_func->exe_addr);
+                        puts_uart("\n");
+                        // Check what's actually in memory at that address
+                        puts_uart("Memory at exe_addr field: 0x");
+                        print_hex(*(U64*)&cc->last_compiled_func->exe_addr);
+                        puts_uart("\n");
+                    }
+                }
+                
+                // Ensure memory writes are visible and flush i-cache after AOT compile
                 __asm__ volatile("fence rw,rw" ::: "memory");
+                __asm__ volatile("fence.i" ::: "memory");
                 puts_uart("Function compiled successfully\n");
-                puts_uart("Use 'start' to begin stepping through this function\n");
+                // Do not auto-execute compiled functions here; many have parameters.
+                // Use explicit call statements or stepping commands instead.
+                puts_uart("Use 'start' to begin stepping through this function or call it by name.\n");
             } else {
                 puts_uart("Function compilation failed\n");
             }
@@ -904,10 +1030,38 @@ void stepping_debug_repl(void) {
             cc->label_counter = 0;
             cc->locals_size = 0;
             
-            // Parse statement
-            LexNext(cc);
-            extern Bool ParseStatement(Compiler *cc);
-            Bool parsed = ParseStatement(cc);
+        // Parse statement or top-level class/union definition
+        LexNext(cc);
+
+        if (cc->lex.token == TK_EOF) {
+            continue;
+        }
+
+            if (cc->lex.token == KW_CLASS || cc->lex.token == KW_UNION) {
+            extern Bool ParseClass(Compiler *cc);
+            Bool class_ok = ParseClass(cc);
+            if (!class_ok) {
+                puts_uart("Parse failed\n");
+                    print_compiler_error(cc);
+            } else {
+                puts_uart("Class definition registered\n");
+            }
+            continue;
+        }
+        if (cc->lex.token == KW_ENUM) {
+            extern Bool ParseEnum(Compiler *cc);
+            Bool enum_ok = ParseEnum(cc);
+            if (!enum_ok) {
+                puts_uart("Parse failed\n");
+                    print_compiler_error(cc);
+            } else {
+                puts_uart("Enum definition registered\n");
+            }
+            continue;
+        }
+
+        extern Bool ParseStatement(Compiler *cc);
+        Bool parsed = ParseStatement(cc);
             
             if (parsed) {
                 // Add return
@@ -920,55 +1074,67 @@ void stepping_debug_repl(void) {
                 U8 *machine_code = CompileExpression(cc, &code_size);
                 
                 if (machine_code && code_size > 0) {
-                    puts_uart("Expression compiled at: ");
-                    print_hex((U64)machine_code);
-                    puts_uart("\n");
+                    // Verbose output disabled for performance
+                    static int show_verbose = 0;
+                    if (show_verbose) {
+                        puts_uart("Expression compiled at: ");
+                        print_hex((U64)machine_code);
+                        puts_uart("\n");
+                    }
                     
                     // Set up for stepping
                     debug_state.code_start = machine_code;
                     debug_state.code_end = machine_code + code_size;
                     debug_state.current_pc = machine_code;
                     
-                    // Show disassembly
-                    U(machine_code, code_size/4, 0);
-                    
-                    // __asm__ volatile("fence.i" ::: "memory"); // Not supported in this RISC-V implementation
-                    // Ensure all memory writes are visible before execution
-                    __asm__ volatile("fence rw,rw" ::: "memory");
-                    
-                    // Debug: Check hash table one more time before execution
-                    CHashEntry *final_check = HashFind("Answer", cc->hash_table, HTT_FUN);
-                    if (final_check && (final_check->type & HTT_FUN)) {
-                        CHashFun *final_func = (CHashFun*)final_check;
-                        puts_uart("[FINAL CHECK] exe_addr before execution: 0x");
-                        print_hex((U64)final_func->exe_addr);
-                        puts_uart("\n");
-                        puts_uart("[FINAL CHECK] Memory at 0x80412700: 0x");
-                        print_hex(*(U64*)0x80412700);
+                    // Optional disassembly (disabled for performance in stress tests)
+                    static int show_disasm2 = 0;  // Disabled to speed up tests
+                    if (show_disasm2) {
+                        puts_uart("Expression disassembly:\n");
+                        U(machine_code, code_size/4, 0);
                         puts_uart("\n");
                     }
                     
-                    // Execute normally for now
+                    // Ensure all memory writes are visible before execution and flush i-cache
+                    __asm__ volatile("fence rw,rw" ::: "memory");
+                    __asm__ volatile("fence.i" ::: "memory");
+                    
+                    // AUTO-EXECUTE: Cast compiled code to function and call it
                     typedef I64 (*FuncPtr)();
                     FuncPtr func_ptr = (FuncPtr)machine_code;
                     I64 result = func_ptr();
                     
+                    // Display result
                     print_hex(result);
                     puts_uart("\n");
                     
-                    puts_uart("Use 'start' to begin stepping through this expression\n");
+                    // Free the allocated buffer
                     free(machine_code);
                 } else {
                     puts_uart("Expression compilation failed\n");
+                    print_compiler_error(cc);
                 }
             } else {
                 puts_uart("Parse failed\n");
+                print_compiler_error(cc);
             }
         }
     }
 }
 
 int main(void) {
+    // Early output to verify we reach main
+    putc_uart('M');
+    putc_uart('A');
+    putc_uart('I');
+    putc_uart('N');
+    putc_uart('\n');
+    
+    puts_uart("Starting debugger...\n");
     stepping_debug_repl();
+    // REPL returned (quit was processed)
+    // Note: In bare metal, we can't actually exit QEMU from the program.
+    // The expect script will detect "Goodbye!" and kill QEMU.
+    // Just halt cleanly here.
     while (1) __asm__ volatile ("wfi");
 }

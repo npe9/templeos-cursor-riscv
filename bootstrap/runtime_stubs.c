@@ -77,11 +77,6 @@ long long strtoll(const char *nptr, char **endptr, int base) {
     return 0;  // Stub
 }
 
-int snprintf(char *str, size_t size, const char *format, ...) {
-    (void)str; (void)size; (void)format;
-    return 0;  // Stub
-}
-
 // ctype stub
 const char _ctype_[256] = {0};
 

@@ -70,6 +70,8 @@ Compiler *CompilerNew(const char *source, const char *filename) {
   // Expression type tracking
   cc->last_var_symbol = NULL;
   cc->last_expr_class = NULL;
+  cc->last_type_class = NULL;
+  cc->last_global_var = NULL;
   
   // Locals
   cc->locals_size = 0;
@@ -190,6 +192,16 @@ static void EmitRISCVBeq(U8 **buf, U8 rs1, U8 rs2, I64 offset) {
   EmitU32(buf, inst);
 }
 
+static void EmitRISCVBne(U8 **buf, U8 rs1, U8 rs2, I64 offset) {
+  U32 imm_11 = (offset >> 11) & 0x1;
+  U32 imm_4_1 = (offset >> 1) & 0xF;
+  U32 imm_10_5 = (offset >> 5) & 0x3F;
+  U32 imm_12 = (offset >> 12) & 0x1;
+  U32 inst = 0x63 | (imm_11<<7) | (imm_4_1<<8) | (1<<12) |
+             (rs1<<15) | (rs2<<20) | (imm_10_5<<25) | (imm_12<<31);
+  EmitU32(buf, inst);
+}
+
 // RISC-V register definitions
 #define RV_ZERO 0
 #define RV_RA   1
@@ -198,6 +210,25 @@ static void EmitRISCVBeq(U8 **buf, U8 rs1, U8 rs2, I64 offset) {
 #define RV_T1   6
 #define RV_S0   8
 #define RV_A0   10
+
+static U32 DerefLoadFromRs1(U8 pointed_to, U8 rs1) {
+  switch (pointed_to) {
+  case RT_I8:
+    return 0x03 | (RV_A0 << 7) | (0 << 12) | (rs1 << 15);
+  case RT_U8:
+    return 0x03 | (RV_A0 << 7) | (4 << 12) | (rs1 << 15);
+  case RT_I16:
+    return 0x03 | (RV_A0 << 7) | (1 << 12) | (rs1 << 15);
+  case RT_U16:
+    return 0x03 | (RV_A0 << 7) | (5 << 12) | (rs1 << 15);
+  case RT_I32:
+    return 0x03 | (RV_A0 << 7) | (2 << 12) | (rs1 << 15);
+  case RT_U32:
+    return 0x03 | (RV_A0 << 7) | (6 << 12) | (rs1 << 15);
+  default:
+    return 0x03 | (RV_A0 << 7) | (3 << 12) | (rs1 << 15);
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════
 // CODE GENERATION (AOT)
@@ -256,6 +287,12 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_BR_ZERO:
       case IC_BR_NOT_ZERO:
         rip += 4;
+        break;
+      case IC_EVAL_DROP:
+        rip += 4;
+        break;
+      case IC_DEREF:
+        rip += 12;
         break;
       default:
         rip += 4;
@@ -351,10 +388,30 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         }
         break;
         
+      case IC_BR_NOT_ZERO:
+        {
+          CLabel *lb = (CLabel*)ic->ic_data;
+          I64 offset = lb->addr - (ptr - buffer);
+          EmitRISCVBne(&ptr, RV_A0, RV_ZERO, offset);
+        }
+        break;
+        
       case IC_END_EXP:
       case IC_CALL_START:
       case IC_CALL_END:
         // Markers, no code
+        break;
+
+      case IC_EVAL_DROP:
+        if (ic->ic_data != 0) {
+          EmitRISCVAddi(&ptr, RV_SP, RV_SP, (I64)(ic->ic_data & 0xFFF));
+        }
+        break;
+
+      case IC_DEREF:
+        EmitU32(&ptr, DerefLoadFromRs1(ic->arg1_type_pointed_to, RV_A0));
+        EmitRISCVAddi(&ptr, RV_SP, RV_SP, -8);
+        EmitRISCVSd(&ptr, RV_A0, RV_SP, 0);
         break;
         
       default:

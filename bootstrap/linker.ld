@@ -46,13 +46,11 @@ SECTIONS
     /* Global pointer */
     __global_pointer$ = MIN(_data_start + 0x800, MAX(_data_start + 0x800, _bss_end - 0x800));
     
-    /* Stack (grows downward) */
+    /* Stack (grows downward) - just set a reasonable top */
     . = ALIGN(0x1000);
     _stack_top = .;
-    . = . + 0x400000; /* 4MB stack */
     
-    /* Heap starts after stack */
-    . = ALIGN(0x1000);
+    /* Heap starts here */
     _heap_start = .;
     
     /* End of image */

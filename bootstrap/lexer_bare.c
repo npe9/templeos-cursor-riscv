@@ -29,6 +29,19 @@ static const struct {
   {NULL, 0}
 };
 
+static void FreeDefine(CHashDefine *def) {
+  if (!def) return;
+  if (def->data) free(def->data);
+  if (def->param_names) {
+    for (int i = 0; i < def->param_count; i++) {
+      if (def->param_names[i]) free(def->param_names[i]);
+    }
+    free(def->param_names);
+  }
+  if (def->str) free(def->str);
+  free(def);
+}
+
 static void SkipWhitespace(Lexer *lex) {
   while (*lex->ptr && isspace(*lex->ptr)) {
     if (*lex->ptr == '\n') {
@@ -114,14 +127,14 @@ static void HandlePreprocessor(Compiler *cc) {
   directive[i] = '\0';
   
   if (strcmp(directive, "define") == 0) {
-    // Parse #define NAME VALUE
-    
+    // Parse #define NAME VALUE or NAME(args) VALUE
+
     // Skip whitespace
     while (*lex->ptr == ' ' || *lex->ptr == '\t') {
       lex->ptr++;
       lex->col++;
     }
-    
+
     // Get macro name
     char name[256];
     i = 0;
@@ -130,13 +143,67 @@ static void HandlePreprocessor(Compiler *cc) {
       lex->col++;
     }
     name[i] = '\0';
-    
-    // Skip whitespace
-    while (*lex->ptr == ' ' || *lex->ptr == '\t') {
+
+    char *param_names_buf[16];
+    int param_count = 0;
+
+    if (*lex->ptr == '(') {
       lex->ptr++;
       lex->col++;
+
+      while (*lex->ptr && *lex->ptr != ')') {
+        while (*lex->ptr == ' ' || *lex->ptr == '\t') {
+          lex->ptr++;
+          lex->col++;
+        }
+
+        if (*lex->ptr == ')') break;
+
+        char param[256];
+        int pj = 0;
+        while ((isalnum(*lex->ptr) || *lex->ptr == '_') && pj < 255) {
+          param[pj++] = *lex->ptr++;
+          lex->col++;
+        }
+        param[pj] = '\0';
+
+        if (pj == 0) {
+          break;
+        }
+
+        if (param_count < 16) {
+          param_names_buf[param_count++] = strdup(param);
+        }
+
+        while (*lex->ptr == ' ' || *lex->ptr == '\t') {
+          lex->ptr++;
+          lex->col++;
+        }
+
+        if (*lex->ptr == ',') {
+          lex->ptr++;
+          lex->col++;
+          continue;
+        }
+        break;
+      }
+
+      if (*lex->ptr == ')') {
+        lex->ptr++;
+        lex->col++;
+      }
+
+      while (*lex->ptr == ' ' || *lex->ptr == '\t') {
+        lex->ptr++;
+        lex->col++;
+      }
+    } else {
+      while (*lex->ptr == ' ' || *lex->ptr == '\t') {
+        lex->ptr++;
+        lex->col++;
+      }
     }
-    
+
     // Get replacement text (rest of line)
     char value[1024];
     i = 0;
@@ -152,10 +219,25 @@ static void HandlePreprocessor(Compiler *cc) {
     }
     
     // Add to define table
+    CHashEntry *existing = HashRemove(cc->define_table, name, HTT_DEFINE_STR);
+    if (existing && (existing->type & HTT_DEFINE_STR)) {
+      FreeDefine((CHashDefine*)existing);
+    }
+
     CHashDefine *def = calloc(1, sizeof(CHashDefine));
     def->str = strdup(name);
     def->type = HTT_DEFINE_STR;
     def->data = strdup(value);
+    if (param_count > 0) {
+      def->param_count = param_count;
+      def->param_names = calloc(param_count, sizeof(char*));
+      for (int idx = 0; idx < param_count; idx++) {
+        def->param_names[idx] = param_names_buf[idx];
+      }
+    } else {
+      def->param_count = 0;
+      def->param_names = NULL;
+    }
     HashAdd((CHashEntry*)def, cc->define_table);
   } else if (strcmp(directive, "include") == 0) {
     // Parse #include "filename"
@@ -193,7 +275,7 @@ static void HandlePreprocessor(Compiler *cc) {
     if (!f) {
       // Try adding .HC extension
       char filename_hc[520];
-      snprintf(filename_hc, sizeof(filename_hc), "%s.HC", filename);
+      StrPrintF(filename_hc, sizeof(filename_hc), "%s.HC", filename);
       f = fopen(filename_hc, "r");
     }
     
@@ -324,15 +406,9 @@ static void HandlePreprocessor(Compiler *cc) {
     name[i] = '\0';
     
     // Remove from define table
-    CHashEntry *entry = HashFind(name, cc->define_table, HTT_DEFINE_STR);
-    if (entry) {
-      // TODO: Proper hash table removal
-      // For now, just mark it as removed by clearing the data
-      CHashDefine *def = (CHashDefine*)entry;
-      if (def->data) {
-        free(def->data);
-        def->data = strdup("");
-      }
+    CHashEntry *removed = HashRemove(cc->define_table, name, HTT_DEFINE_STR);
+    if (removed && (removed->type & HTT_DEFINE_STR)) {
+      FreeDefine((CHashDefine*)removed);
     }
   }
 
@@ -569,21 +645,24 @@ static int LexIdentifier(Compiler *cc) {
         lex->col = saved_col;
       }
     } else {
-      // Simple (non-parameterized) macro
-      if (lex->token_str) free(lex->token_str);
-      lex->token_str = strdup(def->data);
-      
-      // Try to parse the macro value as a number
-      char *endptr;
-      I64 ival = strtoll(def->data, &endptr, 0);
-      if (*endptr == '\0') {
-        // It's a number
-        lex->token_i64 = ival;
-        return TK_I64;
-      }
-      
-      // Otherwise return as identifier (will be looked up again)
-      return TK_IDENT;
+      IncludeFile *inc = calloc(1, sizeof(IncludeFile));
+      inc->src = lex->src;
+      inc->ptr = lex->ptr;
+      inc->filename = lex->filename;
+      inc->line = lex->line;
+      inc->col = lex->col;
+      inc->next = lex->include_stack;
+      lex->include_stack = inc;
+
+      const char *replacement = def->data ? def->data : "";
+      lex->src = strdup(replacement);
+      lex->ptr = lex->src;
+      lex->filename = strdup("<macro expansion>");
+      lex->line = 1;
+      lex->col = 1;
+
+      LexNext(cc);
+      return cc->lex.token;
     }
   }
   
@@ -931,7 +1010,7 @@ void LexNext(Compiler *cc) {
 bool LexExpect(Compiler *cc, int token) {
   if (cc->lex.token != token) {
     char buf[256];
-    snprintf(buf, sizeof(buf), "Expected token %d, got %d at line %d", 
+    StrPrintF(buf, sizeof(buf), "Expected token %d, got %d at line %d", 
              token, cc->lex.token, cc->lex.line);
     Error(cc, buf);
     return false;

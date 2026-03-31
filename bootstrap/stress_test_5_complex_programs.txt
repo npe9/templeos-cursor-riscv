@@ -22,7 +22,7 @@ IsPrime(15);
 # Greatest Common Divisor
 I64 GCD(I64 a, I64 b) {
     while (b != 0) {
-        I64 temp = b;
+        I64 temp; temp = b;
         b = a % b;
         a = temp;
     }

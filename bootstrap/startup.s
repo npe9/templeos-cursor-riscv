@@ -38,6 +38,11 @@ clear_bss_done:
     # This is needed for functions that save/restore s0
     mv s0, sp
     
+    # Debug: output 'S' before calling main
+    li a0, 0x10000000  # UART_BASE
+    li t0, 'S'
+    sb t0, 0(a0)  # Send 'S' to UART (no wait, just test)
+    
     # Jump to main
     call main
     
@@ -55,14 +60,9 @@ _trap_handler:
 
 .section .bss
 .align 12
-    .space 0x400000  # 4MB stack
+    .space 0x100000  # 1MB stack (reduced from 4MB)
 _stack_top:
 
-.section .data
-_bss_start:
-    .quad 0
-
-_bss_end:
-    .quad 0
+# Remove duplicate symbol definitions - linker script provides these
 
 

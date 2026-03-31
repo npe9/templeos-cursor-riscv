@@ -1,6 +1,7 @@
 // Worry Dream Machine - Full REPL with Compiler Integration
 #include <stdint.h>
 #include <stddef.h>
+#include "holy_api.h"
 
 #define UART_BASE 0x10000000
 
@@ -98,7 +99,7 @@ long long atoll(const char *s) {
 
 int printf(const char *fmt, ...) { puts_uart(fmt); return 0; }
 int fprintf(void *f, const char *fmt, ...) { puts_uart(fmt); return 0; }
-int snprintf(char *s, size_t n, const char *fmt, ...) { return 0; }
+int StrPrintF(char *s, size_t n, const char *fmt, ...) { return 0; }
 void *memset(void *s, int c, size_t n) {
     U8 *p = s;
     while (n--) *p++ = c;

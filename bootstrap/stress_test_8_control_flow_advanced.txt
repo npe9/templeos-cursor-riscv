@@ -1,0 +1,91 @@
+# Stress Test 8: Advanced Control Flow
+# Validate nested while/for loops, switch statements, goto, break/continue, and ternary operations
+
+I64 WhileAccumulator(I64 limit) {
+  I64 acc = 0;
+  I64 i = 0;
+  while (i < limit) {
+    acc = acc + i;
+    i = i + 1;
+  }
+  return acc;
+}
+WhileAccumulator(5);
+
+I64 SwitchTest(I64 value) {
+  switch (value) {
+    case 0: return 100;
+    case 1:
+    case 2: return 200;
+    case 3: return 300;
+    default: return -1;
+  }
+}
+SwitchTest(0);
+SwitchTest(2);
+SwitchTest(5);
+
+I64 GotoTest(I64 start) {
+  I64 count = start;
+start_label:
+  count = count + 1;
+  if (count < 5) goto start_label;
+  return count;
+}
+GotoTest(1);
+
+I64 ContinueBreakTest() {
+  I64 total = 0;
+  for (I64 i = 0; i < 10; i = i + 1) {
+    if ((i % 2) == 0) continue;
+    if (i > 7) break;
+    total = total + i;
+  }
+  return total;
+}
+ContinueBreakTest();
+
+I64 TernaryTest(I64 a, I64 b) {
+  return (a > b) ? a : b;
+}
+TernaryTest(12, 5);
+TernaryTest(3, 8);
+
+I64 g_and_counter = 0;
+I64 g_or_counter = 0;
+
+I64 TestShortCircuitAndFalse() {
+  g_and_counter = 0;
+  if (0 && (g_and_counter = 1)) {
+    return -1;
+  }
+  return g_and_counter;
+}
+TestShortCircuitAndFalse();
+
+I64 TestShortCircuitAndTrue() {
+  g_and_counter = 0;
+  if ((g_and_counter = 2) && 1) {
+    return g_and_counter;
+  }
+  return -2;
+}
+TestShortCircuitAndTrue();
+
+I64 TestShortCircuitOrTrue() {
+  g_or_counter = 0;
+  if (1 || (g_or_counter = 1)) {
+    return g_or_counter;
+  }
+  return -3;
+}
+TestShortCircuitOrTrue();
+
+I64 TestShortCircuitOrEval() {
+  g_or_counter = 0;
+  if (0 || (g_or_counter = 5)) {
+    return g_or_counter;
+  }
+  return -4;
+}
+TestShortCircuitOrEval();

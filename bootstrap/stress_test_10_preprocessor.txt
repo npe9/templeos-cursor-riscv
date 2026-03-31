@@ -1,0 +1,46 @@
+# Stress Test 10: Scoping and Shadowing
+# Exercise block scope, nested loops, and temporary variables
+
+#define TEN 10
+#define DOUBLE(x) ((x) + (x))
+#define EMPTY
+
+I64 macro_const = TEN;
+macro_const;
+
+I64 macro_double = DOUBLE(7);
+macro_double;
+
+I64 empty_macro_result = EMPTY 123;
+empty_macro_result;
+
+EMPTY
+
+I64 ScopeTest(I64 base) {
+  I64 result = base;
+  if (base > 0) {
+    I64 result = base * 2;
+    result = result + 1; // inner shadowed result
+  }
+  {
+    I64 inner = base + 5;
+    result = result + inner;
+  }
+  for (I64 i = 0; i < 3; i = i + 1) {
+    I64 temp = i * base;
+    result = result + temp;
+  }
+  return result;
+}
+ScopeTest(4);
+
+I64 NestedBlocks() {
+  I64 sum = 0;
+  for (I64 i = 0; i < 3; i = i + 1) {
+    for (I64 j = 0; j < 3; j = j + 1) {
+      sum = sum + (i * j);
+    }
+  }
+  return sum;
+}
+NestedBlocks();

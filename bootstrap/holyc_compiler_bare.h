@@ -7,8 +7,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-
-
+#include "holy_api.h"
 
 #include "hash_table_bare.h"
 
@@ -119,6 +118,7 @@ typedef bool      Bool;
 #define IC_BR_GREATER_EQU 0x8C
 #define IC_BR_GREATER    0x8D
 #define IC_BR_LESS_EQU   0x8E
+#define IC_EVAL_DROP     0x92 /* addi sp,sp,ic_data — drop eval slots (signed ic_data, bytes) */
 
 // Raw types
 #define RT_I0    0
@@ -331,6 +331,14 @@ typedef struct Symbol {
   I64 array_size;    // Number of elements
   I64 element_size;  // Size of each element in bytes
   
+  // Pointer information
+  U8 pointed_to_type; // For pointers: RT_U8, RT_U32, RT_I64, etc. (0 if not pointer)
+  
+  // Function pointer metadata
+  bool is_function_pointer;
+  U8 function_return_type;
+  int func_ptr_param_count;
+  
   // Default parameter value
   bool has_default;
   I64 default_val;
@@ -370,6 +378,9 @@ typedef struct {
   // Expression type tracking
   Symbol *last_var_symbol;  // Last variable referenced (for array subscripting)
   CHashClass *last_expr_class;  // Last expression's class (for member access)
+  CHashClass *last_type_class;
+  CHashGlblVar *last_global_var;
+  U8 last_pointed_to_type;
   
   // Macro definitions (#define)
   CHashTable *define_table;

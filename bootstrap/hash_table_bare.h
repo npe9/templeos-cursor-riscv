@@ -86,6 +86,7 @@ typedef struct CHashFun {
   I64 arg_cnt;              // Argument count
   struct CHashClass *return_class;   // Return type
   struct CMemberLst *member_lst;     // Parameters
+  void *entry_label;
 } CHashFun;
 
 // Hash entry for keywords
@@ -129,6 +130,12 @@ typedef struct CHashGlblVar {
   CHashClass *var_class;    // Variable type
   I64 size;                 // Size in bytes
   I64 flags;                // GVF_* flags
+  bool is_function_pointer;
+  U8 function_return_type;
+  int func_ptr_param_count;
+  I64 element_size;
+  U8 raw_type;
+  U8 pointed_to_type;
   CArrayDim dim;            // Array dimensions
   struct CHashFun *fun_ptr; // If it's a function pointer variable
 } CHashGlblVar;
@@ -146,6 +153,7 @@ CHashTable *HashTableNew(I64 size);
 void HashTableFree(CHashTable *table);
 void HashAdd(CHashEntry *entry, CHashTable *table);
 CHashEntry *HashFind(const char *str, CHashTable *table, I64 type_mask);
+CHashEntry *HashRemove(CHashTable *table, const char *str, I64 type_mask);
 U64 HashStr(const char *str);
 
 // Type functions

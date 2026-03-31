@@ -2,6 +2,8 @@
 
 #include "holyc_compiler_bare.h"
 
+static U8 ParseType(Compiler *cc);
+
 // ═══════════════════════════════════════════════════════════════
 // IC GENERATION
 // ═══════════════════════════════════════════════════════════════
@@ -100,6 +102,271 @@ void SymTablePop(Compiler *cc) {
   }
 }
 
+static bool ParseFunctionPointerDeclarator(Compiler *cc, char **out_name, int *out_param_count) {
+  if (cc->lex.token != '(') {
+    Error(cc, "Expected '(' for function pointer declarator");
+    return false;
+  }
+
+  LexNext(cc);
+
+  int pointer_depth = 0;
+  while (cc->lex.token == '*') {
+    pointer_depth++;
+    LexNext(cc);
+  }
+
+  if (pointer_depth != 1) {
+    Error(cc, "Nested function pointers are not supported yet");
+    return false;
+  }
+
+  if (cc->lex.token != TK_IDENT) {
+    Error(cc, "Expected function pointer name");
+    return false;
+  }
+
+  char *name = strdup(cc->lex.token_str);
+  LexNext(cc);
+
+  if (!LexExpect(cc, ')')) {
+    free(name);
+    return false;
+  }
+
+  if (!LexExpect(cc, '(')) {
+    free(name);
+    return false;
+  }
+
+  CHashClass *saved_class = cc->last_type_class;
+  U8 saved_pointed_to = cc->last_pointed_to_type;
+
+  int param_count = 0;
+
+  if (cc->lex.token == ')') {
+    LexNext(cc);
+  } else {
+    while (true) {
+      if (cc->lex.token == TK_ELLIPSIS) {
+        LexNext(cc);
+        if (!LexExpect(cc, ')')) {
+          free(name);
+          return false;
+        }
+        param_count = 0;
+        break;
+      }
+
+      U8 param_type = ParseType(cc);
+      (void)param_type;
+
+      while (cc->lex.token == '*') {
+        LexNext(cc);
+      }
+
+      if (cc->lex.token == TK_IDENT) {
+        LexNext(cc);
+      }
+
+      if (cc->lex.token == '[') {
+        LexNext(cc);
+        if (cc->lex.token == TK_I64) {
+          LexNext(cc);
+        }
+        if (!LexExpect(cc, ']')) {
+          free(name);
+          return false;
+        }
+      }
+
+      param_count++;
+
+      if (cc->lex.token == ',') {
+        LexNext(cc);
+        continue;
+      }
+
+      if (!LexExpect(cc, ')')) {
+        free(name);
+        return false;
+      }
+      break;
+    }
+  }
+
+  cc->last_type_class = saved_class;
+  cc->last_pointed_to_type = saved_pointed_to;
+
+  *out_name = name;
+  *out_param_count = param_count;
+  return true;
+}
+
+static bool EmitLocalFunctionPointerInitialization(Compiler *cc, Symbol *sym) {
+  ICAdd(cc, IC_LEA, sym->offset, RT_I64);
+  ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
+
+  if (!ParseExpression(cc)) {
+    return false;
+  }
+
+  CIntermediateCode *ic = ICNew(cc, IC_ASSIGN);
+  ic->res.type.raw_type = RT_I64;
+  ic->res.type.mode = MDF_STK;
+  ic->arg1_type_pointed_to = RT_I64;
+
+  if (cc->ic_tail) cc->ic_tail->next = ic;
+  else cc->ic_head = ic;
+  cc->ic_tail = ic;
+
+  cc->last_var_symbol = NULL;
+  return true;
+}
+
+static bool ParseLocalFunctionPointerDeclList(Compiler *cc, U8 return_type) {
+  do {
+    char *name = NULL;
+    int parameter_count = 0;
+    if (!ParseFunctionPointerDeclarator(cc, &name, &parameter_count)) {
+      return false;
+    }
+
+    Symbol *sym = SymbolDefine(cc, name, SYM_VAR);
+    sym->data_type = RT_I64;
+    sym->size = 8;
+    sym->is_function_pointer = true;
+    sym->function_return_type = return_type;
+    sym->func_ptr_param_count = parameter_count;
+    sym->pointed_to_type = RT_I64;
+
+    int aligned_size = (sym->size + 7) & ~7;
+    sym->offset = -(10000 + cc->locals_size);
+    cc->locals_size += aligned_size;
+
+    if (cc->lex.token == '=') {
+      LexNext(cc);
+      if (!EmitLocalFunctionPointerInitialization(cc, sym)) {
+        free(name);
+        return false;
+      }
+    }
+
+    free(name);
+
+    if (cc->lex.token == ',') {
+      LexNext(cc);
+      if (cc->lex.token != '(') {
+        Error(cc, "Expected '(*' after ',' in function pointer declaration");
+        return false;
+      }
+      continue;
+    }
+    break;
+  } while (true);
+
+  if (cc->lex.token == ';') {
+    LexNext(cc);
+  }
+
+  return true;
+}
+
+static CHashGlblVar *CreateGlobalFunctionPointerEntry(Compiler *cc, const char *name, U8 return_type, int param_count) {
+  CHashGlblVar *tmpg = calloc(1, sizeof(CHashGlblVar));
+  tmpg->str = strdup(name);
+  tmpg->type = HTT_GLBL_VAR;
+  tmpg->use_cnt = 0;
+  tmpg->size = 8;
+  tmpg->flags = GVF_FUN;
+  tmpg->is_function_pointer = true;
+  tmpg->function_return_type = return_type;
+  tmpg->func_ptr_param_count = param_count;
+  tmpg->raw_type = RT_I64;
+  tmpg->pointed_to_type = 0;
+  tmpg->element_size = 8;
+  tmpg->data_addr = calloc(1, tmpg->size);
+  HashAdd((CHashEntry*)tmpg, cc->hash_table);
+  return tmpg;
+}
+
+static bool InitializeGlobalFunctionPointer(Compiler *cc, CHashGlblVar *global_entry) {
+  if (cc->lex.token != '=') {
+    return true;
+  }
+
+  LexNext(cc);
+
+  if (cc->lex.token == '&') {
+    LexNext(cc);
+  }
+
+  I64 init_val = 0;
+  bool have_value = false;
+
+  if (cc->lex.token == TK_IDENT) {
+    CHashEntry *fn_entry = HashFind(cc->lex.token_str, cc->hash_table, HTT_FUN);
+    if (!fn_entry || !(fn_entry->type & HTT_FUN)) {
+      Error(cc, "Expected function name in initialization");
+      return false;
+    }
+    CHashFun *fn = (CHashFun*)fn_entry;
+    init_val = (I64)&fn->exe_addr;
+    have_value = true;
+    LexNext(cc);
+  } else if (cc->lex.token == TK_I64) {
+    init_val = cc->lex.token_i64;
+    have_value = true;
+    LexNext(cc);
+  } else {
+    Error(cc, "Unsupported initializer for function pointer");
+    return false;
+  }
+
+  if (have_value) {
+    *(I64*)global_entry->data_addr = init_val;
+  }
+
+  return true;
+}
+
+static bool ParseGlobalFunctionPointerDeclList(Compiler *cc, U8 return_type) {
+  do {
+    char *name = NULL;
+    int parameter_count = 0;
+    if (!ParseFunctionPointerDeclarator(cc, &name, &parameter_count)) {
+      return false;
+    }
+
+    CHashGlblVar *entry = CreateGlobalFunctionPointerEntry(cc, name, return_type, parameter_count);
+    if (!InitializeGlobalFunctionPointer(cc, entry)) {
+      free(name);
+      return false;
+    }
+
+    free(name);
+
+    if (cc->lex.token == ',') {
+      LexNext(cc);
+      if (cc->lex.token != '(') {
+        Error(cc, "Expected '(*' after ',' in function pointer declaration");
+        return false;
+      }
+      continue;
+    }
+    break;
+  } while (true);
+
+  if (cc->lex.token == ';') {
+    LexNext(cc);
+  } else {
+    Error(cc, "Expected ';' after function pointer declaration");
+    return false;
+  }
+
+  return true;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // LABELS
 // ═══════════════════════════════════════════════════════════════
@@ -133,13 +400,52 @@ CLabel *LabelFind(Compiler *cc, const char *name) {
 // ═══════════════════════════════════════════════════════════════
 
 // Forward declarations for expression parsing
+static U8 ParseType(Compiler *cc);
 static bool ParsePrimary(Compiler *cc);
 static bool ParsePostfix(Compiler *cc);
 static bool ParseUnary(Compiler *cc);
 static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name);
+static bool ParseFunctionPointerDeclarator(Compiler *cc, char **out_name, int *out_param_count);
+static bool ParseLocalFunctionPointerDeclList(Compiler *cc, U8 return_type);
+static bool ParseGlobalFunctionPointerDeclList(Compiler *cc, U8 return_type);
+
+static I64 PrimitiveTypeSize(U8 type) {
+  switch (type) {
+    case RT_I0: case RT_U0: return 0;
+    case RT_I8: case RT_U8: return 1;
+    case RT_I16: case RT_U16: return 2;
+    case RT_I32: case RT_U32: return 4;
+    case RT_I64: case RT_U64: case RT_F64: return 8;
+    default: return 8;
+  }
+}
+
+static bool IsTypeStartToken(Compiler *cc) {
+  switch (cc->lex.token) {
+    case KW_I0: case KW_U0:
+    case KW_I8: case KW_U8:
+    case KW_I16: case KW_U16:
+    case KW_I32: case KW_U32:
+    case KW_I64: case KW_U64:
+    case KW_F64:
+    case KW_CLASS:
+    case KW_ENUM:
+      return true;
+    default:
+      break;
+  }
+
+  if (cc->lex.token == TK_IDENT && cc->lex.hash_entry &&
+      (cc->lex.hash_entry->type & (HTT_CLASS | HTT_INTERNAL_TYPE))) {
+    return true;
+  }
+
+  return false;
+}
 
 static U8 ParseType(Compiler *cc) {
   U8 type = RT_I64;  // Default
+  cc->last_type_class = NULL;
   
   // Check if current token is a type (from hash table or keyword)
   if (cc->lex.token == TK_IDENT && cc->lex.hash_entry) {
@@ -147,6 +453,7 @@ static U8 ParseType(Compiler *cc) {
     if (cc->lex.hash_entry->type & (HTT_CLASS | HTT_INTERNAL_TYPE)) {
       CHashClass *cls = (CHashClass*)cc->lex.hash_entry;
       type = cls->raw_type;
+       cc->last_type_class = (cls->type & HTT_CLASS) ? cls : NULL;
       LexNext(cc);
     } else {
       Error(cc, "Expected type");
@@ -171,11 +478,21 @@ static U8 ParseType(Compiler *cc) {
     }
   }
   
+  U8 base_type = type;
   // Handle pointer stars
+  int ptr_count = 0;
   while (cc->lex.token == '*') {
     LexNext(cc);
     // For now, treat pointers as I64 (addresses are 64-bit)
     type = RT_I64;
+    ptr_count++;
+  }
+
+  if (ptr_count > 0) {
+    cc->last_type_class = NULL;
+    cc->last_pointed_to_type = base_type;
+  } else {
+    cc->last_pointed_to_type = 0;
   }
   
   return type;
@@ -185,35 +502,80 @@ static bool ParsePrimary(Compiler *cc) {
   // sizeof operator
   if (cc->lex.token == KW_SIZEOF) {
     LexNext(cc);
-    
-    if (!LexExpect(cc, '(')) return false;
-    
-    // Get type
-    U8 type = ParseType(cc);
-    
-    // Handle pointer stars
-    int ptr_count = 0;
-    while (cc->lex.token == '*') {
-      ptr_count++;
+
+    bool had_paren = false;
+    if (cc->lex.token == '(') {
       LexNext(cc);
+      had_paren = true;
     }
-    
-    if (!LexExpect(cc, ')')) return false;
-    
-    // Calculate size
-    I64 size = 8;  // Pointers are always 8
-    if (ptr_count == 0) {
-      switch (type) {
-        case RT_I0: case RT_U0: size = 0; break;
-        case RT_I8: case RT_U8: size = 1; break;
-        case RT_I16: case RT_U16: size = 2; break;
-        case RT_I32: case RT_U32: size = 4; break;
-        case RT_I64: case RT_U64: case RT_F64: size = 8; break;
-        default: size = 8; break;
+
+    I64 size = 0;
+    bool computed = false;
+
+    if (had_paren && IsTypeStartToken(cc)) {
+      U8 type = ParseType(cc);
+      CHashClass *type_class = cc->last_type_class;
+
+      if (!LexExpect(cc, ')')) return false;
+
+      if (type_class && type_class->size > 0) {
+        size = type_class->size;
+      } else {
+        size = PrimitiveTypeSize(type);
       }
+      computed = true;
+    } else if (cc->lex.token == TK_IDENT && (!had_paren || !IsTypeStartToken(cc))) {
+      char *name = strdup(cc->lex.token_str);
+      if (!name) return false;
+      LexNext(cc);
+
+      Symbol *sym = SymbolLookup(cc, name);
+      if (sym) {
+        if (sym->is_array && sym->array_size >= 0 && sym->element_size > 0) {
+          size = sym->array_size * sym->element_size;
+        } else if (sym->size > 0) {
+          size = sym->size;
+        } else {
+          size = PrimitiveTypeSize(sym->data_type);
+        }
+        computed = true;
+      } else {
+        CHashEntry *global_entry = HashFind(name, cc->hash_table, HTT_GLBL_VAR);
+        if (global_entry && (global_entry->type & HTT_GLBL_VAR)) {
+          CHashGlblVar *gv = (CHashGlblVar*)global_entry;
+          if (gv->size > 0) {
+            size = gv->size;
+          } else if (gv->var_class && gv->var_class->size > 0) {
+            size = gv->var_class->size;
+          } else {
+            size = PrimitiveTypeSize(gv->raw_type);
+          }
+          computed = true;
+        } else {
+          Error(cc, "Unknown identifier in sizeof");
+          free(name);
+          return false;
+        }
+      }
+
+      free(name);
+
+      if (had_paren) {
+        if (!LexExpect(cc, ')')) return false;
+      }
+    } else if (had_paren) {
+      Error(cc, "Unsupported operand to sizeof");
+      return false;
+    } else {
+      Error(cc, "Expected '(' after sizeof");
+      return false;
     }
-    
-    // Push size as immediate
+
+    if (!computed) {
+      Error(cc, "Failed to compute sizeof operand");
+      return false;
+    }
+
     ICAdd(cc, IC_IMM_I64, size, RT_I64);
     return true;
   }
@@ -436,10 +798,16 @@ static bool ParseUnary(Compiler *cc) {
   }
   
   if (cc->lex.token == '*') {
-    // Dereference operator
     LexNext(cc);
     if (!ParseUnary(cc)) return false;
+    U8 deref_type = RT_I64;
+    if (cc->last_var_symbol && cc->last_var_symbol->pointed_to_type != 0) {
+      deref_type = cc->last_var_symbol->pointed_to_type;
+    }
+    ICAdd(cc, IC_EVAL_DROP, 8, RT_I64);
     ICAdd(cc, IC_DEREF, 0, RT_I64);
+    if (cc->ic_tail) cc->ic_tail->arg1_type_pointed_to = deref_type;
+    cc->last_var_symbol = NULL;
     return true;
   }
   
@@ -746,25 +1114,69 @@ static bool ParseBitwiseOr(Compiler *cc) {
 
 static bool ParseLogicalAnd(Compiler *cc) {
   if (!ParseBitwiseOr(cc)) return false;
-  
+
+  CLabel *false_label = NULL;
+  CLabel *end_label = NULL;
+
   while (cc->lex.token == TK_AND_AND) {
+    if (!false_label) {
+      false_label = LabelNew(cc, NULL);
+      end_label = LabelNew(cc, NULL);
+    }
+
+    ICAdd(cc, IC_BR_ZERO, (I64)false_label, RT_I64);
+
     LexNext(cc);
     if (!ParseBitwiseOr(cc)) return false;
-    ICAdd(cc, IC_AND_AND, 0, RT_I64);
   }
-  
+
+  if (false_label) {
+    ICAdd(cc, IC_BR_ZERO, (I64)false_label, RT_I64);
+    ICAdd(cc, IC_IMM_I64, 1, RT_I64);
+    ICAdd(cc, IC_JMP, (I64)end_label, RT_I64);
+
+    ICAdd(cc, IC_LABEL, (I64)false_label, RT_I64);
+    false_label->defined = true;
+    ICAdd(cc, IC_IMM_I64, 0, RT_I64);
+
+    ICAdd(cc, IC_LABEL, (I64)end_label, RT_I64);
+    end_label->defined = true;
+  }
+
   return true;
 }
 
 static bool ParseLogicalOr(Compiler *cc) {
   if (!ParseLogicalAnd(cc)) return false;
-  
+
+  CLabel *true_label = NULL;
+  CLabel *end_label = NULL;
+
   while (cc->lex.token == TK_OR_OR) {
+    if (!true_label) {
+      true_label = LabelNew(cc, NULL);
+      end_label = LabelNew(cc, NULL);
+    }
+
+    ICAdd(cc, IC_BR_NOT_ZERO, (I64)true_label, RT_I64);
+
     LexNext(cc);
     if (!ParseLogicalAnd(cc)) return false;
-    ICAdd(cc, IC_OR_OR, 0, RT_I64);
   }
-  
+
+  if (true_label) {
+    ICAdd(cc, IC_BR_NOT_ZERO, (I64)true_label, RT_I64);
+    ICAdd(cc, IC_IMM_I64, 0, RT_I64);
+    ICAdd(cc, IC_JMP, (I64)end_label, RT_I64);
+
+    ICAdd(cc, IC_LABEL, (I64)true_label, RT_I64);
+    true_label->defined = true;
+    ICAdd(cc, IC_IMM_I64, 1, RT_I64);
+
+    ICAdd(cc, IC_LABEL, (I64)end_label, RT_I64);
+    end_label->defined = true;
+  }
+
   return true;
 }
 
@@ -1523,13 +1935,13 @@ bool ParseStatement(Compiler *cc) {
       
       // Create labels for exception handling
       char label_buf[64];
-      snprintf(label_buf, sizeof(label_buf), "_catch_%d", cc->label_counter++);
+      StrPrintF(label_buf, sizeof(label_buf), "_catch_%d", cc->label_counter++);
       CLabel *catch_label = LabelNew(cc, label_buf);
       
-      snprintf(label_buf, sizeof(label_buf), "_done_%d", cc->label_counter++);
+      StrPrintF(label_buf, sizeof(label_buf), "_done_%d", cc->label_counter++);
       CLabel *done_label = LabelNew(cc, label_buf);
       
-      snprintf(label_buf, sizeof(label_buf), "_untry_%d", cc->label_counter++);
+      StrPrintF(label_buf, sizeof(label_buf), "_untry_%d", cc->label_counter++);
       CLabel *untry_label = LabelNew(cc, label_buf);
       
       // Setup try: push catch and untry labels as exception handler
@@ -1895,16 +2307,20 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
   tmpg->type = HTT_GLBL_VAR;
   tmpg->use_cnt = 0;
   tmpg->flags = 0;
+  tmpg->raw_type = var_type;
+  tmpg->pointed_to_type = 0;
   
   // Find type class in hash table
   // For now, just use default size based on var_type
-  tmpg->size = 8;  // Default to I64 size
+  I64 base_size = 8;  // Default to I64 size
   switch (var_type) {
-    case RT_I8: case RT_U8: tmpg->size = 1; break;
-    case RT_I16: case RT_U16: tmpg->size = 2; break;
-    case RT_I32: case RT_U32: tmpg->size = 4; break;
-    case RT_F64: case RT_I64: case RT_U64: tmpg->size = 8; break;
+    case RT_I8: case RT_U8: base_size = 1; break;
+    case RT_I16: case RT_U16: base_size = 2; break;
+    case RT_I32: case RT_U32: base_size = 4; break;
+    case RT_F64: case RT_I64: case RT_U64: base_size = 8; break;
   }
+  tmpg->element_size = base_size;
+  tmpg->size = base_size;
   
   // Handle array dimensions
   tmpg->dim.next = NULL;

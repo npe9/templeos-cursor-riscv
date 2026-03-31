@@ -1,0 +1,14 @@
+#!/usr/bin/expect -f
+set timeout 60
+log_file -noappend /tmp/templeos_uart.log
+spawn qemu-system-riscv64 -machine virt -bios none -nographic -monitor none -serial mon:stdio -kernel stepping_debugger.elf
+expect {
+    "TempleOS RISC-V Stepping Debugger" {}
+}
+expect "> "
+send "#include \"../Demo/SubSwitch.HC\"\r"
+expect "> "
+send "SubSwitch();\r"
+expect "> "
+send "\001x"
+expect eof

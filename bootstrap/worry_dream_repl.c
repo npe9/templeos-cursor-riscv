@@ -16,7 +16,10 @@ static void putc_uart(char c) {
 }
 
 static char getc_uart(void) {
-    while (!(*(volatile U8*)(UART_BASE + 5) & 0x01));
+    // Non-blocking: return 0 if no data available
+    if (!(*(volatile U8*)(UART_BASE + 5) & 0x01)) {
+        return 0;
+    }
     return *(volatile U8*)UART_BASE;
 }
 
@@ -163,6 +166,12 @@ void repl(void) {
     // This ensures the hash table persists across inputs
     Compiler *cc = CompilerNew("", "repl");
     
+    // Accumulation buffer for multi-line inputs (functions/blocks)
+    static char accum[4096];
+    int accum_len = 0;
+    int brace_depth = 0;
+    int paren_depth = 0;
+    
     while (1) {
         puts_uart("> ");
         pos = 0;
@@ -170,6 +179,10 @@ void repl(void) {
         // Read line
         while (1) {
             c = getc_uart();
+            if (c == 0) {
+                // No data available, continue waiting
+                continue;
+            }
             if (c == '\r' || c == '\n') {
                 input[pos] = '\0';
                 puts_uart("\n");
@@ -190,9 +203,54 @@ void repl(void) {
         
         if (pos == 0) continue;
         
-        // Reinitialize lexer and compiler state for new input (keep hash table)
+        // Skip comment-only lines starting with '#'
+        int i_start = 0;
+        while (i_start < pos && (input[i_start] == ' ' || input[i_start] == '\t')) i_start++;
+        if (i_start < pos && input[i_start] == '#') {
+            // Ignore comment line
+            continue;
+        }
+        
+        // Append this line to accumulation buffer (with a newline)
+        if (accum_len + pos + 2 < (int)sizeof(accum)) {
+            for (int i = 0; i < pos; i++) accum[accum_len++] = input[i];
+            accum[accum_len++] = '\n';
+            accum[accum_len] = '\0';
+        } else {
+            puts_uart("[ERROR] Input too long\n");
+            accum_len = 0; brace_depth = 0; paren_depth = 0;
+            continue;
+        }
+        
+        // Track simple brace/paren depth to detect statement/function completion
+        for (int i = 0; i < pos; i++) {
+            char ch = input[i];
+            if (ch == '{') brace_depth++;
+            else if (ch == '}') { if (brace_depth > 0) brace_depth--; }
+            else if (ch == '(') paren_depth++;
+            else if (ch == ')') { if (paren_depth > 0) paren_depth--; }
+        }
+        
+        // Determine if we should attempt to parse now
+        int should_parse = 0;
+        // If in a block, wait until braces balance back to zero
+        if (brace_depth == 0) {
+            // If not in parens and line ends with ';', treat as complete statement/expression
+            if (paren_depth == 0) {
+                if (pos > 0 && input[pos-1] == ';') should_parse = 1;
+                // Or if this line closed a block '}'
+                if (pos > 0 && input[pos-1] == '}') should_parse = 1;
+            }
+        }
+        
+        if (!should_parse) {
+            // Prompt for more lines
+            continue;
+        }
+        
+        // Reinitialize lexer and compiler state for accumulated input (keep hash table)
         if (cc->lex.src) free(cc->lex.src);
-        cc->lex.src = strdup(input);
+        cc->lex.src = strdup(accum);
         cc->lex.ptr = cc->lex.src;
         cc->lex.line = 1;
         cc->lex.col = 1;
@@ -204,6 +262,11 @@ void repl(void) {
         cc->labels = NULL;
         cc->label_counter = 0;
         cc->locals_size = 0;
+        
+        // Reset accumulation after capturing into lexer
+        accum_len = 0;
+        brace_depth = 0;
+        paren_depth = 0;
         
         if (!cc) continue;
         

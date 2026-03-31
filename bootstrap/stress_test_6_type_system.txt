@@ -1,0 +1,29 @@
+# Stress Test 6: Numeric Edge Cases and Pointer Arithmetic
+# Validate signed/unsigned arithmetic, shifts, pointer math, and sizeof results
+
+I8 small_neg = -5;
+U8 small_u = 250;
+I16 big_i16 = 32000;
+U16 big_u16 = 65000;
+I64 mix_total = small_neg + small_u + big_i16 + big_u16;
+mix_total;
+
+I64 shift_left = 1 << 12;
+shift_left;
+I64 shift_right = (-1024) >> 4;
+shift_right;
+
+I64 arr[4];
+arr[0] = 10;
+arr[1] = 20;
+arr[2] = 30;
+arr[3] = 40;
+I64 *ptr = arr;
+*(ptr + 2);
+*(ptr + 3);
+
+I64 distance = (I64)((ptr + 3) - ptr);
+distance;
+
+I64 total_size = sizeof(I8) + sizeof(I16) + sizeof(I32) + sizeof(I64);
+total_size;

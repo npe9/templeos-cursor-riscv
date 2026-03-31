@@ -1,0 +1,62 @@
+# Stress Test 7: Structs, Enums, and Unions
+# Validate user-defined aggregates, member access, and enum comparisons
+
+enum Color { COLOR_RED = 1, COLOR_GREEN, COLOR_BLUE };
+I64 favorite = COLOR_GREEN;
+favorite;
+
+Color current_color = COLOR_RED;
+current_color;
+current_color = COLOR_BLUE;
+(current_color == COLOR_BLUE);
+(current_color != COLOR_RED);
+
+class Vec3 {
+  I64 x;
+  I64 y;
+  I64 z;
+};
+
+I64 LengthSquared(Vec3 *v) {
+  return v->x * v->x + v->y * v->y + v->z * v->z;
+}
+
+Vec3 v;
+v.x = 3;
+v.y = 4;
+v.z = 12;
+LengthSquared(&v);
+
+Vec3 w;
+w.x = v.x + 1;
+w.y = v.y + 2;
+w.z = v.z + 3;
+LengthSquared(&w);
+
+Vec3 *ptr = &v;
+ptr->x = ptr->x + 10;
+LengthSquared(ptr);
+
+union Number {
+  I64 i;
+  U64 u;
+};
+
+Number n;
+n.i = 123456789;
+n.i;
+n.u;
+
+class Gadget {
+  Vec3 pos;
+  I64 tint;
+};
+
+Gadget g;
+g.pos.x = v.x;
+g.pos.y = v.y;
+g.pos.z = v.z;
+g.tint = COLOR_BLUE;
+LengthSquared(&g.pos);
+(g.tint == COLOR_BLUE);
+(g.tint == COLOR_RED);

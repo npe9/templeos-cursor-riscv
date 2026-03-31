@@ -71,7 +71,6 @@ typedef void FILE;
 typedef long off_t;
 #define printf(...) ((void)0)
 #define fprintf(...) ((void)0)
-#define snprintf(buf, size, fmt, ...) (buf[0]='\0', 0)
 #define fopen(path, mode) ((FILE*)NULL)
 #define fclose(f) 0
 #define fread(ptr, size, nmemb, stream) 0

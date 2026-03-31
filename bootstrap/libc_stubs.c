@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdarg.h>
+#include "holy_api.h"
 
 // External functions from kernel
 extern void* malloc(size_t size);
@@ -128,16 +130,13 @@ bool isxdigit(int c) {
     return isdigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
-// Printf family (minimal implementation)
+// Printf family (route through Holy API)
 int snprintf(char *str, size_t size, const char *format, ...) {
-    // Very simplified - just copy format string
-    int i = 0;
-    while (format[i] && i < (int)size - 1) {
-        str[i] = format[i];
-        i++;
-    }
-    str[i] = '\0';
-    return i;
+    va_list ap;
+    va_start(ap, format);
+    int result = StrPrintFV(str, size, format, ap);
+    va_end(ap);
+    return result;
 }
 
 int printf(const char *format, ...) {

@@ -1,0 +1,42 @@
+# Stress Test 9: Function Pointers and Indirect Calls
+# Validate storing, passing, and invoking function pointers
+
+I64 Add(I64 a, I64 b) { return a + b; }
+I64 Sub(I64 a, I64 b) { return a - b; }
+I64 Mul(I64 a, I64 b) { return a * b; }
+
+I64 (*op)(I64, I64);
+op = Add;
+op(7, 5);
+op = Sub;
+op(9, 12);
+op = Mul;
+op(3, 4);
+
+I64 Invoke(I64 (*fn)(I64, I64), I64 x, I64 y) {
+  return fn(x, y);
+}
+Invoke(Add, 10, 20);
+Invoke(op, 6, 2);
+
+I64 ApplySequence(I64 (*fn)(I64, I64)) {
+  I64 total = 0;
+  total = total + fn(3, 1);
+  total = total + fn(4, 2);
+  return total;
+}
+ApplySequence(Add);
+ApplySequence(op);
+
+I64 UseLocalPointer(I64 x) {
+  I64 (*local)(I64, I64);
+  local = Mul;
+  return local(x, 2);
+}
+UseLocalPointer(5);
+
+I64 (*chooser)(I64, I64);
+chooser = Add;
+chooser(11, 5);
+chooser = Sub;
+chooser(20, 7);
