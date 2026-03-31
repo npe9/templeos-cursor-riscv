@@ -14,7 +14,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test validator help cicl-riscv compliance compliance-exec exec-oracle qemu-integration templeos-riscv templeos-smoke
+.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle qemu-integration templeos-riscv templeos-smoke
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -29,6 +29,11 @@ $(COMPILER_BIN): $(COMPILER_SOURCES) $(COMPILER_HEADERS)
 
 compliance: $(COMPILER_BIN)
 	@tests/scripts/run_holyc_compliance.sh --suite all
+
+# Same stages as GitHub Actions: compile compliance, then QEMU (exec oracles + TempleOS smoke).
+ci: $(COMPILER_BIN)
+	@$(MAKE) compliance
+	@$(MAKE) qemu-integration
 
 compliance-exec: $(COMPILER_BIN)
 	@tests/scripts/run_holyc_compliance.sh --suite all --exec
@@ -93,9 +98,10 @@ help:
 	@echo "  all         - Build holyc-riscv host compiler"
 	@echo "  cicl-riscv  - Symlink to holyc-riscv (legacy name)"
 	@echo "  compliance      - Compile-only compliance (manifests)"
-	@echo "  compliance-exec - make compliance then make exec-oracle (full local gate)"
+	@echo "  ci              - compliance then qemu-integration (full local mirror of GitHub CI)"
+	@echo "  compliance-exec - run_holyc_compliance.sh --exec (suites + exec oracles; no templeos-smoke)"
 	@echo "  exec-oracle     - UART oracle tests only (tests/exec; needs RISC-V + qemu-system)"
-	@echo "  qemu-integration - exec-oracle then templeos-smoke (CI parity after compliance)"
+	@echo "  qemu-integration - exec-oracle then templeos-smoke (CI job after compile-compliance)"
 	@echo "  templeos-riscv  - Build TempleOS/RISC-V kernel + default HolyC guest"
 	@echo "  templeos-smoke  - QEMU smoke (ORACLE) for default + selfhost images"
 	@echo "  validator   - Build the instruction encoder validator (needs validator.c)"
@@ -105,6 +111,7 @@ help:
 	@echo ""
 	@echo "Usage:"
 	@echo "  make                         # Build holyc-riscv"
+	@echo "  make ci                      # Full compliance + QEMU (like GitHub Actions)"
 	@echo "  make compliance              # Full compliance tests"
 	@echo "  make validate                # Validate RISC-V encoding"
 	@echo "  make test                    # Test compiler"

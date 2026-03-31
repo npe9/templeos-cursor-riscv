@@ -1,3 +1,4 @@
+# Mirrors local: `make compliance` then `make qemu-integration` (or `make ci` for both).
 # Host HolyC→RISC-V compiler: compile compliance, then one QEMU job (oracles + OS smoke).
 name: CI
 

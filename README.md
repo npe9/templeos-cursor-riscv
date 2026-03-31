@@ -90,14 +90,15 @@ Get11th(1,2,3,4,5,6,7,8,9,10,11);
 
 ```bash
 make test                    # Minimal AOT smoke (build/smoke.hc → build/simple.bin)
+make ci                      # Full gate: compliance + qemu-integration (same as GitHub CI)
 make compliance              # TempleOS curated + parity compile suite
-make compliance-exec         # Parity + exec where implemented
-make exec-oracle             # Optional oracle runs (see tests/scripts/)
-make qemu-integration        # exec-oracle + templeos-smoke (matches CI QEMU job)
-make templeos-smoke          # TempleOS tree smoke (see tests/scripts/)
+make qemu-integration        # exec-oracle + templeos-smoke (needs RISC-V + qemu-system + python3)
+make compliance-exec         # All compile suites then exec oracles via one script (no TempleOS smoke)
+make exec-oracle             # UART oracle runs only (tests/exec/)
+make templeos-smoke          # TempleOS/RISC-V QEMU smoke only
 ```
 
-On GitHub, CI runs **`make compliance`**, then **`make qemu-integration`** (one runner: RISC-V toolchain, QEMU, Python, then exec oracles + TempleOS smoke). Trigger manually from the Actions tab (`workflow_dispatch`). Dependabot opens weekly PRs for Action bumps (`.github/dependabot.yml`). See `.github/workflows/ci.yml`.
+On GitHub, CI runs the same two stages as **`make ci`** (compile compliance, then QEMU integration). Trigger manually from the Actions tab (`workflow_dispatch`). Dependabot opens weekly PRs for Action bumps (`.github/dependabot.yml`). See `.github/workflows/ci.yml`.
 
 Compile a single file:
 
