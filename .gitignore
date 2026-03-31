@@ -10,6 +10,9 @@ a.out
 holyc-riscv
 cicl-riscv
 
+# Local HolyC scratch (historically created by older make test targets)
+tests/simple.hc
+
 # Test executables
 test_*
 !test_*.hc
