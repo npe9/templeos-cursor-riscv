@@ -48,6 +48,9 @@ jobs:
             shellcheck -S error -x "$f"
           done
 
+      - name: Syntax-check all tests/scripts (make syntax-sh)
+        run: make syntax-sh
+
   compile-compliance:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

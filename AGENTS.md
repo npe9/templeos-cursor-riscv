@@ -12,6 +12,7 @@
 
 - Pushes and PRs that change **only** Markdown (`*.md` anywhere) **do not** run CI (`paths-ignore`), to save time on doc edits. Use **Actions → CI → Run workflow** when you need a full run after doc-only changes.
 - **`concurrency: cancel-in-progress`** stops the previous run when a new push lands; an older commit may show **cancelled** even though the tip commit is green.
+- The **`shellcheck`** job runs **ShellCheck** on the four primary scripts, then **`make syntax-sh`** (**`bash -n`** on every **`tests/scripts/*.sh`**).
 
 ## Implementation status
 
