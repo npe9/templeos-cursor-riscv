@@ -7,7 +7,8 @@ This is a comprehensive status report of what's implemented and what's missing i
 ### Automated compile checks
 
 - `make compliance` — curated TempleOS `.HC` tree (expected XFAILs marked in the script) plus **52** HolyC-style parity files under `tests/holyc/compliance/parity/`; last green run: all required cases pass.
-- `make compliance-exec` — same as above, plus runs parity binaries under QEMU where the harness supports it, and runs UART **execution oracles** in `tests/exec/` (`make exec-oracle`; 14 cases in `oracle_manifest.tsv`).
+- `make ci` — **`make compliance`** then **`make qemu-integration`** (UART **execution oracles** in `tests/exec/`, 14 cases in `oracle_manifest.tsv`, plus **TempleOS/RISC-V QEMU smoke**). Matches [GitHub Actions](.github/workflows/ci.yml). Needs RISC-V toolchain, `qemu-system-riscv64`, and Python 3. See [AGENTS.md](AGENTS.md).
+- `make compliance-exec` — runs `run_holyc_compliance.sh --suite all --exec`: all manifest compile checks again, then embedded **`make exec-oracle`** path. Does **not** run **`make templeos-smoke`** (use **`make ci`** for full CI parity).
 
 ---
 
