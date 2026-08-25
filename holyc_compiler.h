@@ -126,6 +126,18 @@ typedef bool      Bool;
 #define IC_BR_LESS_EQU    0x8E
 #define IC_PUSH_ARG       0x8F
 #define IC_POP_ARG        0x90
+// F64 flavours (operands/results travel as raw 64-bit patterns on the eval stack)
+#define IC_FADD          0x93
+#define IC_FSUB          0x94
+#define IC_FMUL          0x95
+#define IC_FDIV          0x96
+#define IC_FLESS         0x97
+#define IC_FLESS_EQU     0x98
+#define IC_FGREATER      0x99
+#define IC_FGREATER_EQU  0x9A
+#define IC_FEQU_EQU      0x9B
+#define IC_FNOT_EQU      0x9C
+#define IC_FNEG          0x9D
 #define IC_EVAL_DROP      0x92 /* addi sp,sp,ic_data (drop eval slots); signed ic_data */
 
 // Raw types
@@ -198,6 +210,7 @@ typedef struct CLabel {
 typedef struct CSwitchCase {
   struct CSwitchCase *next;
   I64 value;
+  I64 hi;      // case value...hi (== value for a single case)
   CLabel *label;
 } CSwitchCase;
 
@@ -258,6 +271,7 @@ typedef struct CSwitchCase {
 #define KW_THROW    329
 #define KW_ASM      330
 #define KW_ENUM     331
+#define KW_DO       332
 #define KW_I0       308
 #define KW_U0       309
 #define KW_I8       310
@@ -283,6 +297,7 @@ typedef struct IncludeFile {
 } IncludeFile;
 
 // Lexer state stack for LexPush/LexPop
+struct IncludeFile;
 typedef struct LexerStack {
   struct LexerStack *next;
   char *ptr;         // Saved position in source
@@ -293,6 +308,9 @@ typedef struct LexerStack {
   F64 token_f64;     // Saved float value
   char *token_str;   // Saved string (owned by this struct)
   CHashEntry *hash_entry;  // Saved hash entry
+  char *src;               // Saved source buffer (a macro expansion may have been entered since)
+  char *filename;
+  struct IncludeFile *include_stack;  // Saved include/expansion depth
 } LexerStack;
 
 typedef struct {
@@ -339,6 +357,8 @@ typedef struct Symbol {
   bool is_array;
   I64 array_size;    // Number of elements
   I64 element_size;  // Size of each element in bytes
+  int ndims;          // 0/1 = flat; >1 = multi-dimensional (dim_stride per subscript level)
+  I64 dim_stride[4];  // bytes advanced by one step of subscript k
   
   // Pointer information
   U8 pointed_to_type; // For pointers: RT_U8, RT_U32, RT_I64, etc. (0 if not pointer)
@@ -446,6 +466,16 @@ typedef struct {
   Bool defer_aot_compile;
   AOTFnICChunk *aot_fn_ic_head;
   AOTFnICChunk *aot_fn_ic_tail;
+  // Top-level statements (HolyC runs them in source order): collected by ParseProgram into
+  // the entry chunk that Compile() places first in the blob.
+  struct CIntermediateCode *aot_main_head;
+  struct CIntermediateCode *aot_main_tail;
+  // Parse errors are recovered from (skip to the end of the item) but never dropped silently.
+  const char *first_error;
+  I64 error_count;
+  int subscript_level;   // consecutive [ ] applied to the current array reference
+  U8 last_expr_type;     // RT_F64 when the expression just parsed yields an F64, else RT_I64
+  U8 current_fn_ret_type;
 
 } Compiler;
 
@@ -472,6 +502,7 @@ bool ParseExpression(Compiler *cc);
 bool ParseStatement(Compiler *cc);
 bool ParseFunction(Compiler *cc);
 bool ParseProgram(Compiler *cc);
+bool ParseTopLevel(Compiler *cc);
 bool ParseREPLStatement(Compiler *cc);  // For REPL: parse one statement
 
 // IC Generation

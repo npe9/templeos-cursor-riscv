@@ -893,6 +893,27 @@ static int LexNumber(Lexer *lex) {
     }
   }
   
+  // Floating literal: digits '.' digits [e[+-]digits]  (decimal only; 0x... never gets here)
+  if (*lex->ptr == '.' && lex->ptr[1] >= '0' && lex->ptr[1] <= '9') {
+    F64 f = (F64)value, scale = 0.1;
+    lex->ptr++; lex->col++;
+    while (*lex->ptr >= '0' && *lex->ptr <= '9') {
+      f += (F64)(*lex->ptr - '0') * scale;
+      scale /= 10.0;
+      lex->ptr++; lex->col++;
+    }
+    if ((*lex->ptr == 'e' || *lex->ptr == 'E') &&
+        ((lex->ptr[1] >= '0' && lex->ptr[1] <= '9') ||
+         ((lex->ptr[1] == '+' || lex->ptr[1] == '-') && lex->ptr[2] >= '0' && lex->ptr[2] <= '9'))) {
+      lex->ptr++; lex->col++;
+      int neg = 0, e = 0;
+      if (*lex->ptr == '+' || *lex->ptr == '-') { neg = (*lex->ptr == '-'); lex->ptr++; lex->col++; }
+      while (*lex->ptr >= '0' && *lex->ptr <= '9') { e = e * 10 + (*lex->ptr - '0'); lex->ptr++; lex->col++; }
+      while (e-- > 0) f = neg ? f / 10.0 : f * 10.0;
+    }
+    lex->token_f64 = f;
+    return TK_F64;
+  }
   lex->token_i64 = value;
   return TK_I64;
 }
@@ -960,6 +981,12 @@ static int LexString(Lexer *lex) {
   buf[len] = '\0';
   if (lex->token_str) free(lex->token_str);
   lex->token_str = strdup(buf);
+  if (quote == '\'') {
+    // HolyC char literal: up to 8 chars packed little-endian into an I64 ('AB' == 0x4241).
+    lex->token_i64 = 0;
+    for (int i = 0; i < len && i < 8; i++) lex->token_i64 |= (I64)(U8)buf[i] << (8 * i);
+    return TK_I64;
+  }
   return TK_STR;
 }
 
@@ -1007,9 +1034,8 @@ void LexNext(Compiler *cc) {
       IncludeFile *inc = lex->include_stack;
       lex->include_stack = inc->next;
       
-      // Free included file
-      free(lex->src);
-      free(lex->filename);
+      // The finished buffer is intentionally not freed: a LexPush taken inside it may still
+      // be restored after the lookahead ran past its end.
       
       // Restore previous file
       lex->src = inc->src;
@@ -1243,6 +1269,9 @@ void LexPush(Compiler *cc) {
   
   
   saved->hash_entry = cc->lex.hash_entry;
+  saved->src = cc->lex.src;
+  saved->filename = cc->lex.filename;
+  saved->include_stack = cc->lex.include_stack;
   
   
   // Push onto stack
@@ -1257,6 +1286,21 @@ void LexPopRestore(Compiler *cc) {
   
   LexerStack *saved = cc->lex.stack;
   
+  // Unwind any #include / macro-expansion frames entered during the lookahead, so that
+  // src/ptr describe the same buffer again (a macro used inside parentheses hits this).
+  IncludeFile *f = cc->lex.include_stack;
+  while (f && f != saved->include_stack) f = f->next;
+  if (f == saved->include_stack) {
+    while (cc->lex.include_stack != saved->include_stack) {
+      IncludeFile *inc = cc->lex.include_stack;
+      cc->lex.include_stack = inc->next;
+      cc->lex.src = inc->src;
+      cc->lex.filename = inc->filename;
+      free(inc);
+    }
+    cc->lex.src = saved->src;
+    cc->lex.filename = saved->filename;
+  }
   // Restore state
   cc->lex.ptr = saved->ptr;
   cc->lex.line = saved->line;
