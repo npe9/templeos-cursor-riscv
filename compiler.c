@@ -94,6 +94,22 @@ Compiler *CompilerNew(const char *source, const char *filename) {
   cc->label_counter = 0;
   cc->current_function_entry_label = NULL;
   cc->defer_aot_compile = FALSE;
+  // Runtime globals the generated code needs: the handler-context stack top and the last
+  // throw's code (HolyC's Fs->except_ch). Ordinary globals: absolute in the REPL, data section in AOT.
+  {
+    const char *names[2] = { "__try_top", "except_ch" };
+    for (int i = 0; i < 2; i++) {
+      CHashGlblVar *g = calloc(1, sizeof(CHashGlblVar));
+      g->str = strdup(names[i]);
+      g->type = HTT_GLBL_VAR;
+      g->size = 8;
+      g->element_size = 8;
+      g->raw_type = RT_I64;
+      g->data_addr = calloc(1, 8);
+      HashAdd((CHashEntry *)g, cc->hash_table);
+      if (i == 0) cc->try_top_var = g; else cc->except_ch_var = g;
+    }
+  }
   cc->aot_fn_ic_head = NULL;
   cc->aot_fn_ic_tail = NULL;
   
@@ -437,6 +453,114 @@ static void EmitF64Convert(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 slot, Bool
   if (slot) RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_A0 << 7) | (3 << 12) | (RV_SP << 15));           // ld a0, 0(sp)
 }
 
+// ---- AOT data section for globals -------------------------------------------------------
+// Lay every HTT_GLBL_VAR out after code+strings (offset in data_addr_rip); global-address
+// immediates then become auipc-relative and the initial values are copied into the blob.
+static void AOTLayoutGlobals(Compiler *cc) {
+  I64 off = 0;
+  if (!cc->hash_table) return;
+  for (I64 i = 0; i <= cc->hash_table->mask; i++) {
+    for (CHashEntry *e = cc->hash_table->body[i]; e; e = e->next) {
+      if (!(e->type & HTT_GLBL_VAR)) continue;
+      CHashGlblVar *g = (CHashGlblVar *)e;
+      I64 sz = g->size > 0 ? g->size : 8;
+      g->data_addr_rip = off;
+      off += (sz + 7) & ~7LL;
+    }
+  }
+  cc->aot_data_size = off;
+  cc->aot_data_layout = TRUE;
+}
+static CHashGlblVar *AOTGlobalByAddr(Compiler *cc, I64 addr) {
+  if (!cc->hash_table) return NULL;
+  for (I64 i = 0; i <= cc->hash_table->mask; i++)
+    for (CHashEntry *e = cc->hash_table->body[i]; e; e = e->next)
+      if ((e->type & HTT_GLBL_VAR) && (I64)((CHashGlblVar *)e)->data_addr == addr) return (CHashGlblVar *)e;
+  return NULL;
+}
+// Address of a global into rd: auipc-relative into the data section (AOT) or absolute (REPL).
+static void EmitGlobalAddr(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *cc, U8 rd, CHashGlblVar *g, I64 data_base) {
+  if (cc->aot_data_layout && g) {
+    I64 rel = pass_buf ? (data_base + g->data_addr_rip - *rip) : 0;
+    I64 hi = (rel + 0x800) >> 12, lo = rel - (hi << 12);
+    RVU32(pass_buf, pass_ptr, rip, 0x17 | (rd << 7) | (((U32)hi & 0xFFFFF) << 12));           // auipc
+    RVU32(pass_buf, pass_ptr, rip, 0x13 | (rd << 7) | (rd << 15) | (((U32)lo & 0xFFF) << 20));  // addi
+  } else {
+    EmitLoadImm64(pass_buf, pass_ptr, rip, rd, g ? (I64)g->data_addr : 0);
+  }
+}
+// ---- unsigned integer ops ---------------------------------------------------------------
+static void EmitUnsignedOp(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, U8 ic_code) {
+  if (*stack_depth < 2) {   // mirror the integer ops: a0 holds the right operand not yet pushed
+    RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
+    RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20));
+    (*stack_depth)++;
+  }
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (3 << 12) | (RV_SP << 15));
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
+  *stack_depth -= 2;
+  #define RTYPE(f7, f3, rd, r1, r2) ((f7) | ((rd) << 7) | ((f3) << 12) | ((r1) << 15) | ((r2) << 20) | 0x33u)
+  switch (ic_code) {
+  case IC_UDIV: RVU32(pass_buf, pass_ptr, rip, RTYPE(0x02000000u, 5, RV_A0, RV_T0, RV_T1)); break;   // divu
+  case IC_UMOD: RVU32(pass_buf, pass_ptr, rip, RTYPE(0x02000000u, 7, RV_A0, RV_T0, RV_T1)); break;   // remu
+  case IC_USHR: RVU32(pass_buf, pass_ptr, rip, RTYPE(0, 5, RV_A0, RV_T0, RV_T1)); break;             // srl
+  case IC_ULESS:        RVU32(pass_buf, pass_ptr, rip, RTYPE(0, 3, RV_A0, RV_T0, RV_T1)); break;     // sltu
+  case IC_UGREATER:     RVU32(pass_buf, pass_ptr, rip, RTYPE(0, 3, RV_A0, RV_T1, RV_T0)); break;
+  case IC_ULESS_EQU:    RVU32(pass_buf, pass_ptr, rip, RTYPE(0, 3, RV_A0, RV_T1, RV_T0));
+                        RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A0 << 7) | (4 << 12) | (RV_A0 << 15) | (1 << 20)); break;
+  case IC_UGREATER_EQU: RVU32(pass_buf, pass_ptr, rip, RTYPE(0, 3, RV_A0, RV_T0, RV_T1));
+                        RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A0 << 7) | (4 << 12) | (RV_A0 << 15) | (1 << 20)); break;
+  default: break;
+  }
+  #undef RTYPE
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20));
+  (*stack_depth)++;
+}
+// ---- try/catch/throw --------------------------------------------------------------------
+// Handler context (32 bytes, a compiler temp in the try's frame): {prev, sp, s0, catch pc}.
+static void EmitTryEnter(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *cc, CLabel *catch_lb, I64 data_base) {
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T2 << 7) | (RV_A0 << 15));                                   // mv t2, a0 (ctx)
+  EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->try_top_var, data_base);                        // t1 = &__try_top
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T1 << 15));                       // ld t0, 0(t1)
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T2 << 15) | (RV_T0 << 20));                      // sd t0, 0(t2)  prev
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T2 << 15) | (RV_SP << 20) | (8 << 7));           // sd sp, 8(t2)
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T2 << 15) | (RV_S0 << 20) | (16 << 7));          // sd s0, 16(t2)
+  I64 rel = pass_buf ? (catch_lb->addr - *rip) : 0;
+  I64 hi = (rel + 0x800) >> 12, lo = rel - (hi << 12);
+  RVU32(pass_buf, pass_ptr, rip, 0x17 | (RV_T0 << 7) | (((U32)hi & 0xFFFFF) << 12));                    // auipc t0, catch
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (RV_T0 << 15) | (((U32)lo & 0xFFF) << 20));
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T2 << 15) | (RV_T0 << 20) | (24 << 7));          // sd t0, 24(t2)
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T1 << 15) | (RV_T2 << 20));                      // __try_top = ctx
+}
+static void EmitTryLeave(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *cc, I64 data_base) {
+  EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->try_top_var, data_base);
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (3 << 12) | (RV_T1 << 15));                       // ld t2, 0(t1)  ctx
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T2 << 15));                       // ld t0, 0(t2)  prev
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T1 << 15) | (RV_T0 << 20));                      // __try_top = prev
+}
+static void EmitThrow(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, Compiler *cc, I64 data_base) {
+  if (*stack_depth > 0) {                                                                                 // value -> a0
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_A0 << 7) | (3 << 12) | (RV_SP << 15));
+    RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
+    (*stack_depth)--;
+  }
+  EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->except_ch_var, data_base);
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T1 << 15) | (RV_A0 << 20));                      // except_ch = a0
+  EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->try_top_var, data_base);
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (3 << 12) | (RV_T1 << 15));                       // ld t2, 0(t1)
+  RVU32(pass_buf, pass_ptr, rip, 0x63 | (1 << 12) | (RV_T2 << 15) | (4 << 8));                           // bnez t2, +8
+  RVU32(pass_buf, pass_ptr, rip, 0x00100073);                                                            // ebreak: no handler
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T2 << 15));                       // ld t0, 0(t2) prev
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T1 << 15) | (RV_T0 << 20));                      // __try_top = prev
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_SP << 7) | (3 << 12) | (RV_T2 << 15) | (8 << 20));           // ld sp, 8(t2)
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_S0 << 7) | (3 << 12) | (RV_T2 << 15) | (16 << 20));          // ld s0, 16(t2)
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T2 << 15) | (24 << 20));          // ld t0, 24(t2)
+  RVU32(pass_buf, pass_ptr, rip, 0x67 | (RV_T0 << 15));                                                  // jr t0
+}
+
 // ++/-- : IC_PP_/IC_MM_ (pre) and IC__PP/IC__MM (post). The operand address is in a0 (IC_LEA
 // leaves it there without pushing; the parser retracts any auto-deref). Result value goes to a0
 // and onto the eval stack, like IC_DEREF.
@@ -656,8 +780,12 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         
       case IC_IMM_I64:
       case IC_IMM_F64:  // F64 travels as its raw 64-bit pattern in integer registers / eval stack
-        // Load immediate into a0 (full 64-bit; see EmitLoadImm64)
-        EmitLoadImm64(pass_buf, &pass_ptr, &rip, RV_A0, ic->ic_data);
+        if (ic->ic_flags == ICF_GLBL_ADDR && cc->aot_data_layout) {
+          EmitGlobalAddr(pass_buf, &pass_ptr, &rip, cc, RV_A0, AOTGlobalByAddr(cc, ic->ic_data), 0 /* sizing pass: length only */);
+        } else {
+          // Load immediate into a0 (full 64-bit; see EmitLoadImm64)
+          EmitLoadImm64(pass_buf, &pass_ptr, &rip, RV_A0, ic->ic_data);
+        }
         // Push value to stack so binary ops find it
         RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
         RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
@@ -967,6 +1095,13 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         break;
       case IC_TO_F64: EmitF64Convert(pass_buf, &pass_ptr, &rip, ic->ic_data, TRUE);  break;
       case IC_TO_I64: EmitF64Convert(pass_buf, &pass_ptr, &rip, ic->ic_data, FALSE); break;
+      case IC_UDIV: case IC_UMOD: case IC_USHR:
+      case IC_ULESS: case IC_ULESS_EQU: case IC_UGREATER: case IC_UGREATER_EQU:
+        EmitUnsignedOp(pass_buf, &pass_ptr, &rip, &stack_depth_pass, ic->ic_code);
+        break;
+      case IC_TRY_ENTER: EmitTryEnter(pass_buf, &pass_ptr, &rip, cc, (CLabel *)ic->ic_data, 0); break;
+      case IC_TRY_LEAVE: EmitTryLeave(pass_buf, &pass_ptr, &rip, cc, 0); break;
+      case IC_THROW:     EmitThrow(pass_buf, &pass_ptr, &rip, &stack_depth_pass, cc, 0); break;
       case IC_STR_CONST: {
         // PC-relative address of the literal; the bytes are appended after the code.
         StringLiteral *sl = (StringLiteral *)ic->ic_data;
@@ -1051,7 +1186,9 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     sl->offset = str_base + str_total;
     str_total += len + 1;
   }
-  I64 buf_sz = str_base + str_total + 256;
+  I64 data_base = (str_base + str_total + 7) & ~7LL;
+  I64 data_total = cc->aot_data_layout ? cc->aot_data_size : 0;
+  I64 buf_sz = data_base + data_total + 256;
   if (buf_sz < 64) buf_sz = 64;
   U8 *buffer = malloc((size_t)buf_sz);
   if (!buffer) return NULL;
@@ -1157,8 +1294,12 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         
       case IC_IMM_I64:
       case IC_IMM_F64:  // F64 travels as its raw 64-bit pattern in integer registers / eval stack
-        // Load immediate into a0 (full 64-bit; see EmitLoadImm64)
-        EmitLoadImm64(pass_buf, &pass_ptr, &rip, RV_A0, ic->ic_data);
+        if (ic->ic_flags == ICF_GLBL_ADDR && cc->aot_data_layout) {
+          EmitGlobalAddr(pass_buf, &pass_ptr, &rip, cc, RV_A0, AOTGlobalByAddr(cc, ic->ic_data), data_base);
+        } else {
+          // Load immediate into a0 (full 64-bit; see EmitLoadImm64)
+          EmitLoadImm64(pass_buf, &pass_ptr, &rip, RV_A0, ic->ic_data);
+        }
         // Push value to stack so binary ops find it
         RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
         RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
@@ -1463,6 +1604,13 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         break;
       case IC_TO_F64: EmitF64Convert(pass_buf, &pass_ptr, &rip, ic->ic_data, TRUE);  break;
       case IC_TO_I64: EmitF64Convert(pass_buf, &pass_ptr, &rip, ic->ic_data, FALSE); break;
+      case IC_UDIV: case IC_UMOD: case IC_USHR:
+      case IC_ULESS: case IC_ULESS_EQU: case IC_UGREATER: case IC_UGREATER_EQU:
+        EmitUnsignedOp(pass_buf, &pass_ptr, &rip, &stack_depth_final, ic->ic_code);
+        break;
+      case IC_TRY_ENTER: EmitTryEnter(pass_buf, &pass_ptr, &rip, cc, (CLabel *)ic->ic_data, data_base); break;
+      case IC_TRY_LEAVE: EmitTryLeave(pass_buf, &pass_ptr, &rip, cc, data_base); break;
+      case IC_THROW:     EmitThrow(pass_buf, &pass_ptr, &rip, &stack_depth_final, cc, data_base); break;
       case IC_STR_CONST: {
         // PC-relative address of the literal; the bytes are appended after the code.
         StringLiteral *sl = (StringLiteral *)ic->ic_data;
@@ -1551,6 +1699,19 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     }
     rip = str_base + str_total;
     cc->strings = NULL;  // consumed by this unit
+  }
+  // AOT: globals' initial values into the data section (their addresses are auipc-relative).
+  if (data_total && cc->hash_table) {
+    for (I64 i = 0; i <= cc->hash_table->mask; i++) {
+      for (CHashEntry *e = cc->hash_table->body[i]; e; e = e->next) {
+        if (!(e->type & HTT_GLBL_VAR)) continue;
+        CHashGlblVar *g = (CHashGlblVar *)e;
+        I64 sz = g->size > 0 ? g->size : 8;
+        U8 *src = g->data_addr, *dst = buffer + data_base + g->data_addr_rip;
+        for (I64 k = 0; k < sz; k++) dst[k] = src ? src[k] : 0;
+      }
+    }
+    rip = data_base + data_total;
   }
   // Set output code size
   if (code_size) *code_size = rip;
@@ -1682,6 +1843,7 @@ Compiler *Compile(const char *source, const char *filename, bool aot) {
   }
   
   // Generate code (AOT malloc blob or JIT RWX mmap — same label offsets)
+  if (aot) AOTLayoutGlobals(cc);
   if (aot) {
     cc->code_buffer = CompileAOT(cc, &cc->code_size);
   } else {

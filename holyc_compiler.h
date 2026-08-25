@@ -138,6 +138,17 @@ typedef bool      Bool;
 #define IC_FEQU_EQU      0x9B
 #define IC_FNOT_EQU      0x9C
 #define IC_FNEG          0x9D
+#define IC_UDIV          0x9E
+#define IC_UMOD          0x9F
+#define IC_ULESS         0xA0
+#define IC_ULESS_EQU     0xA1
+#define IC_UGREATER      0xA2
+#define IC_UGREATER_EQU  0xA3
+#define IC_USHR          0xA4
+#define IC_TRY_ENTER     0xA5   // ic_data = catch CLabel*; a0 = handler context (32 bytes)
+#define IC_TRY_LEAVE     0xA6
+#define IC_THROW         0xA7   // value on eval stack/a0
+#define ICF_GLBL_ADDR    1      // ic_flags on IC_IMM_I64: ic_data is a global's data_addr (AOT: data section)
 #define IC_EVAL_DROP      0x92 /* addi sp,sp,ic_data (drop eval slots); signed ic_data */
 
 // Raw types
@@ -474,7 +485,13 @@ typedef struct {
   const char *first_error;
   I64 error_count;
   int subscript_level;   // consecutive [ ] applied to the current array reference
-  U8 last_expr_type;     // RT_F64 when the expression just parsed yields an F64, else RT_I64
+  U8 last_expr_type;     // RT_F64 / RT_U64 (unsigned) / RT_I64 for the expression just parsed
+  // AOT data section: globals laid out after code+strings (data_addr_rip = offset)
+  Bool aot_data_layout;
+  I64 aot_data_size;
+  struct CHashGlblVar *try_top_var;    // __try_top: innermost handler context
+  struct CHashGlblVar *except_ch_var;  // except_ch: code of the last throw
+  I64 try_depth;                       // open try blocks in the function being parsed
   U8 current_fn_ret_type;
 
 } Compiler;

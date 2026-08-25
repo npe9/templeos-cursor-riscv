@@ -781,6 +781,17 @@ static bool ParsePrimary(Compiler *cc) {
         // Function found in hash table
         CHashFun *func = (CHashFun*)entry;
         if (func) {
+          // Fill in trailing default arguments; too few without defaults is an error.
+          while (arg_count < func->param_cnt && arg_count < 16 && func->param_has_default[arg_count]) {
+            ICAdd(cc, IC_IMM_I64, func->param_default[arg_count], RT_I64);
+            ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
+            arg_count++;
+          }
+          if (func->param_cnt && arg_count < func->param_cnt) {
+            Error(cc, "Too few arguments in call");
+            free(name);
+            return false;
+          }
           // Same-unit calls: PC-relative jal via stable entry label (AOT under QEMU).
           if (cc->current_function_entry_label && func == cc->last_compiled_func) {
             ICAdd(cc, IC_CALL, (I64)cc->current_function_entry_label, RT_I64);
@@ -833,6 +844,7 @@ static bool ParsePrimary(Compiler *cc) {
           if (global->is_function_pointer) {
             cc->last_global_var = global;
             ICAdd(cc, IC_IMM_I64, (I64)global->data_addr, RT_I64);
+            cc->ic_tail->ic_flags = ICF_GLBL_ADDR;
             ICAdd(cc, IC_EVAL_DROP, 8, RT_I64);   // keep only the pointer value above the args
             ICAdd(cc, IC_DEREF, 0, RT_I64);
             cc->last_call_arg_cnt = arg_count;
@@ -870,7 +882,9 @@ static bool ParsePrimary(Compiler *cc) {
         // Local variable - save symbol for array subscripting
         cc->last_var_symbol = sym;
         cc->subscript_level = 0;
-        cc->last_expr_type = (sym->data_type == RT_F64 && !sym->pointed_to_type) ? RT_F64 : RT_I64;
+        cc->last_expr_type = (sym->data_type == RT_F64 && !sym->pointed_to_type) ? RT_F64 :
+                             (sym->pointed_to_type || sym->data_type == RT_U8 || sym->data_type == RT_U16 ||
+                              sym->data_type == RT_U32 || sym->data_type == RT_U64) ? RT_U64 : RT_I64;
         cc->last_global_var = NULL;
         cc->last_expr_class = sym->extra ? (CHashClass*)sym->extra : NULL;
         
@@ -895,7 +909,9 @@ static bool ParsePrimary(Compiler *cc) {
         CHashGlblVar *global = (CHashGlblVar*)entry;
         cc->last_global_var = global;
         cc->last_var_symbol = NULL;  // stale local from an earlier statement would suppress the auto-deref
-        cc->last_expr_type = (global->raw_type == RT_F64 && !global->pointed_to_type) ? RT_F64 : RT_I64;
+        cc->last_expr_type = (global->raw_type == RT_F64 && !global->pointed_to_type) ? RT_F64 :
+                             (global->pointed_to_type || global->raw_type == RT_U8 || global->raw_type == RT_U16 ||
+                              global->raw_type == RT_U32 || global->raw_type == RT_U64) ? RT_U64 : RT_I64;
         
         // Generate load from global (absolute address)
         CICType type = {0};
@@ -906,6 +922,7 @@ static bool ParsePrimary(Compiler *cc) {
         // Full implementation would load the value
         CIntermediateCode *ic = ICNew(cc, IC_IMM_I64);
         ic->ic_data = (I64)global->data_addr;
+        ic->ic_flags = ICF_GLBL_ADDR;
         cc->last_expr_class = global->var_class;
         cc->flags &= ~(CCF_RAX | CCF_ARRAY);
         
@@ -981,7 +998,7 @@ static bool ParsePrimary(Compiler *cc) {
           cc->last_expr_type = RT_F64;
         } else {
           if (cc->last_expr_type == RT_F64) ICAdd(cc, IC_TO_I64, 0, RT_I64);
-          cc->last_expr_type = RT_I64;
+          cc->last_expr_type = (cast_type == RT_U8 || cast_type == RT_U16 || cast_type == RT_U32 || cast_type == RT_U64) ? RT_U64 : RT_I64;
           I64 bits = (cast_type == RT_I8 || cast_type == RT_U8) ? 8 :
                      (cast_type == RT_I16 || cast_type == RT_U16) ? 16 :
                      (cast_type == RT_I32 || cast_type == RT_U32) ? 32 : 0;
@@ -1391,6 +1408,13 @@ static void EmitBinaryOp(Compiler *cc, U8 iop, U8 fop, U8 lt, U8 rt, bool result
     if (rt != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
     ICAdd(cc, fop, 0, RT_F64);
     cc->last_expr_type = result_is_bool ? RT_I64 : RT_F64;
+  } else if (lt == RT_U64 || rt == RT_U64) {
+    // HolyC: an unsigned operand makes the operation unsigned (divu/remu/sltu/srl).
+    U8 uop = iop == IC_DIV ? IC_UDIV : iop == IC_MOD ? IC_UMOD : iop == IC_LESS ? IC_ULESS :
+             iop == IC_LESS_EQU ? IC_ULESS_EQU : iop == IC_GREATER ? IC_UGREATER :
+             iop == IC_GREATER_EQU ? IC_UGREATER_EQU : iop == IC_SHR ? IC_USHR : iop;
+    ICAdd(cc, uop, 0, RT_I64);
+    cc->last_expr_type = result_is_bool ? RT_I64 : RT_U64;
   } else {
     ICAdd(cc, iop, 0, RT_I64);
     cc->last_expr_type = RT_I64;
@@ -1408,7 +1432,7 @@ static bool ParseMul(Compiler *cc) {
     U8 rt = cc->last_expr_type;
     if (op == '*') EmitBinaryOp(cc, IC_MUL, IC_FMUL, lt, rt, false);
     else if (op == '/') EmitBinaryOp(cc, IC_DIV, IC_FDIV, lt, rt, false);
-    else { ICAdd(cc, IC_MOD, 0, RT_I64); cc->last_expr_type = RT_I64; }
+    else EmitBinaryOp(cc, IC_MOD, IC_MOD, lt, rt, false);
   }
   
   return true;
@@ -1436,11 +1460,11 @@ static bool ParseShift(Compiler *cc) {
   
   while (cc->lex.token == TK_SHL || cc->lex.token == TK_SHR) {
     int op = cc->lex.token;
+    U8 lt = cc->last_expr_type;
     LexNext(cc);
     if (!ParseAdd(cc)) return false;
-    
-    if (op == TK_SHL) ICAdd(cc, IC_SHL, 0, RT_I64);
-    else ICAdd(cc, IC_SHR, 0, RT_I64);
+    if (op == TK_SHL) { ICAdd(cc, IC_SHL, 0, RT_I64); cc->last_expr_type = lt == RT_U64 ? RT_U64 : RT_I64; }
+    else { ICAdd(cc, lt == RT_U64 ? IC_USHR : IC_SHR, 0, RT_I64); cc->last_expr_type = lt == RT_U64 ? RT_U64 : RT_I64; }
   }
   
   return true;
@@ -2519,6 +2543,8 @@ bool ParseStatement(Compiler *cc) {
         ICAdd(cc, IC_RETURN_VAL, 0, RT_I64);
       }
       
+      // Leaving open try blocks by return: pop their handler contexts first.
+      for (I64 td = 0; td < cc->try_depth; td++) ICAdd(cc, IC_TRY_LEAVE, 0, RT_I64);
       // Jump to function exit label
       if (cc->current_function_exit) {
         ICAdd(cc, IC_JMP, (I64)cc->current_function_exit, RT_I64);
@@ -2604,62 +2630,38 @@ bool ParseStatement(Compiler *cc) {
     
     // Try/catch block (following original PrsTryBlk from PrsStmt.HC:842-902)
     if (cc->lex.token == KW_TRY) {
+      // try { } catch { }: push a handler context {prev, sp, s0, catch pc} kept in a compiler
+      // temp of this frame onto __try_top; throw unwinds to the innermost one (any depth).
+      if (!cc->current_function_exit) {
+        Error(cc, "try outside a function is not supported yet");
+        return false;
+      }
       LexNext(cc);
-      
-      // Create labels for exception handling (bare metal safe - no StrPrintF)
-      // Use NULL for name - labels don't need names at runtime
       CLabel *catch_label = LabelNew(cc, NULL);
       CLabel *done_label = LabelNew(cc, NULL);
-      CLabel *untry_label = LabelNew(cc, NULL);
-      
-      // Setup try: push catch and untry labels as exception handler
-      // IC_CALL_START marks beginning of call sequence
-      ICAdd(cc, IC_CALL_START, 0, RT_I64);
-      
-      // Push untry and catch label addresses as function arguments
-      ICAdd(cc, IC_IMM_I64, (I64)untry_label, RT_I64);
-      ICAdd(cc, IC_IMM_I64, (I64)catch_label, RT_I64);
-      
-      // TODO: Call SysTry(catch_label, untry_label) - system function to register exception handler
-      // For now, just mark the call setup
-      ICAdd(cc, IC_CALL_END, 0, RT_I64);
-      
-      // Parse try block (PrsStmt.HC:877)
-      if (!ParseStatement(cc)) return false;
-      
-      // Untry label: cleanup exception handler (PrsStmt.HC:879-890)
-      ICAdd(cc, IC_LABEL, (I64)untry_label, RT_I64);
-      ICAdd(cc, IC_CALL_START, 0, RT_I64);
-      // TODO: Call SysUntry() - system function to unregister exception handler
-      ICAdd(cc, IC_CALL_END, 0, RT_I64);
-      
-      // Jump past catch block (PrsStmt.HC:892)
+      I64 ctx_marker = -(10000 + cc->locals_size);
+      cc->locals_size += 32;
+      ICAdd(cc, IC_LEA, ctx_marker, RT_I64);
+      ICAdd(cc, IC_TRY_ENTER, (I64)catch_label, RT_I64);
+      cc->try_depth++;
+      bool body_ok = ParseStatement(cc);
+      cc->try_depth--;
+      if (!body_ok) return false;
+      ICAdd(cc, IC_TRY_LEAVE, 0, RT_I64);
       ICAdd(cc, IC_JMP, (I64)done_label, RT_I64);
-      
-      // Expect catch keyword (PrsStmt.HC:894-895)
       if (cc->lex.token != KW_CATCH) {
         Error(cc, "Expected 'catch' after 'try' block");
         return false;
       }
       LexNext(cc);  // Skip 'catch'
-      
-      // Catch label: where exceptions jump to (PrsStmt.HC:898)
       ICAdd(cc, IC_LABEL, (I64)catch_label, RT_I64);
-      
-      // Parse catch block (PrsStmt.HC:899)
+      catch_label->defined = true;
       if (!ParseStatement(cc)) return false;
-      
-      // Return from catch (PrsStmt.HC:900)
-      ICAdd(cc, IC_IMM_I64, 0, RT_I64);
-      ICAdd(cc, IC_RET, 0, RT_I64);
-      
-      // Done label (PrsStmt.HC:901)
       ICAdd(cc, IC_LABEL, (I64)done_label, RT_I64);
-      
+      done_label->defined = true;
       if (cc->lex.token != ',') return true;
       continue;
     }
-    
     // Throw statement
     if (cc->lex.token == KW_THROW) {
       LexNext(cc);
@@ -2671,11 +2673,7 @@ bool ParseStatement(Compiler *cc) {
         // Default exception code
         ICAdd(cc, IC_IMM_I64, -1, RT_I64);
       }
-      
-      // TODO: Generate exception throw IC (calls Throw() which jumps to registered catch handler)
-      // For now, treat as forced return with error code
-      ICAdd(cc, IC_RET, 0, RT_I64);
-      
+      ICAdd(cc, IC_THROW, 0, RT_I64);  // except_ch = value; unwind to __try_top's catch
       LexExpect(cc, ';');
       if (cc->lex.token != ',') return true;
       continue;
@@ -3072,6 +3070,7 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
       return true;
     }
     ICAdd(cc, IC_IMM_I64, (I64)tmpg->data_addr, RT_I64);
+    cc->ic_tail->ic_flags = ICF_GLBL_ADDR;
     ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
     if (!ParseAssignment(cc)) return false;
     {
@@ -3391,6 +3390,12 @@ bool ParseFunction(Compiler *cc) {
   }
   // Store param_count in cc for local variable offset calculation
   cc->current_function_param_count = param_count;
+  // Remember per-parameter defaults on the function entry (parameter symbols die with the scope).
+  func_hash->param_cnt = param_count;
+  for (int i = 0; i < param_count && i < 16; i++) {
+    func_hash->param_has_default[i] = params[i] ? (U8)params[i]->has_default : 0;
+    func_hash->param_default[i] = params[i] ? params[i]->default_val : 0;
+  }
   
   // Keep temporary markers for now - they will be patched after parsing the function body
   

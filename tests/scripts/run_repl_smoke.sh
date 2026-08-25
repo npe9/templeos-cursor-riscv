@@ -92,6 +92,14 @@ add_case '(U8)(-1) + (I8)200 + (I64)2.9;' 00000000000000c9
 add_case 'I64 F42() { return 42; } F42 + 1;' 000000000000002b
 add_case 'I64 Sq(I64 v) { return v * v; } I64 (*fp)(I64) = &Sq; fp(3);' 0000000000000009
 add_case 'I64 ga = 3; I64 gb = 4; ga * gb + ga;' 000000000000000f
+# Default arguments, unsigned arithmetic, try/catch/throw (incl. across a call and nested).
+add_case 'I64 Dflt(I64 a, I64 b = 3) { return a + b; } Dflt(2) * 10 + Dflt(2, 4);' 0000000000000038
+add_case 'U64 ubig = -1; (ubig > 0) + (ubig / 2 == 0x7FFFFFFFFFFFFFFF) + ((U32)(-1) >> 4 == 0x0FFFFFFF);' 0000000000000003
+add_case 'I64 Boom() { throw(7); return 1; }'
+add_case 'I64 Try2() { try { Boom(); return 99; } catch { return except_ch + 100; } }'
+add_case 'Try2();' 000000000000006b
+add_case 'I64 Try5() { try { try { throw(1); } catch { throw(2); } } catch { return except_ch * 10; } return 0; } Try5();' 0000000000000014
+add_case 'I64 Try3() { try { return 5; } catch { return 6; } } Try3() + Try2() - 107;' 0000000000000005
 for ((i = 1; i <= CALLS; i++)); do
   add_case "Add($i,1);" "$(printf '%016x' $((i + 1)))"
 done
@@ -127,5 +135,5 @@ if ! echo "$out" | grep -q '^40 + 2 = 42$'; then
   exit 1
 fi
 n=$(echo "$got" | wc -l | tr -d ' ')
-echo "OK   REPL: define/call, redefine, Fib(10), 11 args, loops/++/+=/arrays/pointers/static, Print/strings, switch/do/goto, class, 2-D, macros, F64, casts, fn ptrs, $CALLS calls ($n answers)"
+echo "OK   REPL: define/call, redefine, Fib(10), 11 args, loops/++/+=/arrays/pointers/static, Print/strings, switch/do/goto, class, 2-D, macros, F64, casts, fn ptrs, defaults, unsigned, try/catch, $CALLS calls ($n answers)"
 echo "REPL smoke: OK"

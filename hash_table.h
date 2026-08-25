@@ -87,6 +87,9 @@ typedef struct CHashFun {
   struct CHashClass *return_class;   // Return type
   struct CMemberLst *member_lst;     // Parameters
   void *entry_label;        // CLabel* — stable for forward decl + unified AOT (PC-rel IC_CALL)
+  I64 param_cnt;            // declared parameters (0 for runtime-registered functions: unchecked)
+  U8 param_has_default[16];
+  I64 param_default[16];
 } CHashFun;
 
 // Hash entry for keywords

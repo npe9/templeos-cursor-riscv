@@ -9,16 +9,19 @@ table is what actually **runs correctly** under QEMU — the bare-metal REPL ove
 
 | Runs correctly | Missing / known wrong |
 |---|---|
-| Top level is program level in the REPL: functions, `class`/`union`, `enum`, globals (any initializer), `#define` (parameterized, nested, inside parentheses), statements | AOT globals/statics: host addresses are baked into the blob (no data section) — REPL only |
-| `if/else` ladders, ternary, `while`, `do…while`, `for` (incl. `i++` step), `goto`/labels, `switch` incl. `case a...b`, fallthrough, `default` | `switch` at top level (outside a function) |
-| `&&`/`||`/`!`, `++`/`--`, all compound assignments, chained `a = b = 3`, unary `-`/`~`, shifts, comparisons | unsigned `/`, `%`, compares are signed |
-| **F64**: literals, `+ - * /`, compares, unary `-`, I64↔F64 promotion in mixed expressions / assignment / `return`, `(F64)`/`(I64)` casts, `Print("%f")` | default arguments, `try/catch/throw` (parse only) |
-| casts: `(U8)`/`(U16)`/`(U32)` mask, `(I8)`/`(I16)`/`(I32)` sign-extend, pointer casts | class member functions (not HolyC; `c073`/`p028` are xfail) |
-| I64/I32/U8 locals, params (own scope), globals (also in expressions with other globals), `static` locals (init-once), typed sub-word loads/stores | the rest of the kernel API (the TempleOS-tree compliance rows are xfail for that reason) |
-| pointers (`&x`, `*p`, `p[i]` with pointee-sized typed elements, pointer params), local arrays incl. N-dimensional, class members `s.x` / `p->x` | AOT has no runtime, so `Print` etc. are unavailable to `holyc-riscv` output |
+| Top level is program level in the REPL: functions, `class`/`union`, `enum`, globals (any initializer), `#define` (parameterized, nested, inside parentheses), statements | `switch` and `try` at top level (outside a function) |
+| `if/else` ladders, ternary, `while`, `do…while`, `for` (incl. `i++` step), `goto`/labels, `switch` incl. `case a...b`, fallthrough, `default` | class member functions (not HolyC; `c073`/`p028` are xfail) |
+| `&&`/`||`/`!`, `++`/`--`, all compound assignments, chained `a = b = 3`, unary `-`/`~`, shifts, comparisons | the rest of the kernel API (the TempleOS-tree compliance rows are xfail for that reason) |
+| **unsigned**: an unsigned operand (U8…U64, pointers) makes `/ % < <= > >= >>` unsigned | AOT has no runtime, so `Print` etc. are unavailable to `holyc-riscv` output |
+| **F64**: literals, `+ - * /`, compares, unary `-`, I64↔F64 promotion in mixed expressions / assignment / `return`, `(F64)`/`(I64)` casts, `Print("%f")` | `Fs->except_ch` spelling (the code is the global `except_ch`); `break`/`goto` out of a `try` does not pop the handler (`return` does) |
+| casts: `(U8)`/`(U16)`/`(U32)` mask, `(I8)`/`(I16)`/`(I32)` sign-extend, pointer casts | omitted middle arguments `f(,2)` |
+| I64/I32/U8 locals, params (own scope), globals (also in expressions with other globals), `static` locals (init-once), typed sub-word loads/stores | |
+| **AOT data section**: globals and statics work in `holyc-riscv` output (laid out after code+strings, addressed PC-relative) | |
+| pointers (`&x`, `*p`, `p[i]` with pointee-sized typed elements, pointer params), local arrays incl. N-dimensional, class members `s.x` / `p->x` | |
 | string literals (PC-relative, appended to the unit's code), char literals (`'AB'` packs), `"fmt", args;` ≡ `Print(...)` | |
 | REPL runtime: `Print` (`%d %u %x %X %s %c %p %f %%`, width/zero-pad), `PutChars`, `MAlloc`/`Free`, `StrLen`/`StrCpy`/`StrCmp` | |
-| calls: `Fn(args)`, HolyC `Fn;` (no parens), `&Fn`, function pointers (global and local), same-input define+call, recursion, >8 args, per-call argument counts; calling a declared-but-undefined function is a compile error | |
+| calls: `Fn(args)`, HolyC `Fn;` (no parens), `&Fn`, function pointers (global and local), **default arguments** (trailing), same-input define+call, recursion, >8 args, per-call argument counts; declared-but-undefined or too-few-arguments calls are compile errors | |
+| **`try`/`catch`/`throw`**: handler-context stack (`__try_top`), unwinds across calls and nested tries, `except_ch` holds the thrown code, `return` inside `try` pops the handler | |
 | AOT: top-level statements run first (entry chunk; last value → `ORACLE`), parse errors fail the build, FPU enabled in the harness | |
 
 ## Overview
