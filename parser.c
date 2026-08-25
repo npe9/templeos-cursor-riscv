@@ -2,6 +2,9 @@
 
 #include "holyc_compiler.h"
 static bool EmitFnAddress(Compiler *cc, CHashFun *fn);
+static void SkipRegQualifier(Compiler *cc);
+static bool ParseAssignment(Compiler *cc);
+static I64 CEPostfixCast(Compiler *cc, I64 v);
 #ifndef BARE_METAL
 #include <stdio.h>
 #include <stdlib.h>
@@ -693,16 +696,16 @@ static U8 ParseType(Compiler *cc) {
 
 // Apply a cast to the value on the eval stack (prefix `(T)x` and HolyC postfix `x(T)`).
 static void ApplyCast(Compiler *cc, U8 cast_type, bool cast_ptr, CHashClass *cls) {
-  // Apply the cast to the value on the eval stack: F64<->I64 convert, sub-word narrow
-  // (unsigned: mask; signed: shift-extend); pointer/I64/U64 casts are no-ops.
+  // HolyC casts relabel; they never convert ("To typecast int or F64, use ToI64()/ToF64()",
+  // Doc/HolyC.DD). So `0x7FF0000000000000(F64)` is inf and `i(F64)` reads i's bits as a double.
+  // Sub-word integer casts narrow (mask / sign-extend), as x86 MOVZX/MOVSX would.
+  if (!cast_ptr && cc->ic_tail && cc->ic_tail->ic_code == IC_IMM_I64 && cast_type == RT_F64) cc->ic_tail->ic_code = IC_IMM_F64;
+  if (!cast_ptr && cc->ic_tail && cc->ic_tail->ic_code == IC_IMM_F64 && cast_type != RT_F64) cc->ic_tail->ic_code = IC_IMM_I64;
   if (cast_ptr) {
-    if (cc->last_expr_type == RT_F64) ICAdd(cc, IC_TO_I64, 0, RT_I64);
     cc->last_expr_type = RT_I64;
   } else if (cast_type == RT_F64) {
-    if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
     cc->last_expr_type = RT_F64;
   } else {
-    if (cc->last_expr_type == RT_F64) ICAdd(cc, IC_TO_I64, 0, RT_I64);
     cc->last_expr_type = (cast_type == RT_U8 || cast_type == RT_U16 || cast_type == RT_U32 || cast_type == RT_U64) ? RT_U64 : RT_I64;
     I64 bits = (cast_type == RT_I8 || cast_type == RT_U8) ? 8 :
                (cast_type == RT_I16 || cast_type == RT_U16) ? 16 :
@@ -725,6 +728,20 @@ static void ApplyCast(Compiler *cc, U8 cast_type, bool cast_ptr, CHashClass *cls
   if (cast_ptr && cls && (cls->type & HTT_CLASS) && !(cls->type & HTT_INTERNAL_TYPE)) cc->last_expr_class = cls;
 }
 
+// `I64 reg RSI *dst, reg R13 c, noreg x`: register-allocation hints in declarators (x86 register
+// names) — skipped here.
+static void SkipRegQualifier(Compiler *cc) {
+  if (cc->lex.token != KW_REG && cc->lex.token != KW_NOREG) return;
+  LexNext(cc);
+  if (cc->lex.token == TK_IDENT && (!cc->lex.hash_entry || (cc->lex.hash_entry->type & HTT_REG))) {   // an x86 register name, if a declarator follows it
+    LexPush(cc);
+    LexNext(cc);
+    bool decl_follows = (cc->lex.token == '*' || cc->lex.token == TK_IDENT);
+    LexPopRestore(cc);
+    if (decl_follows) LexNext(cc);
+  }
+}
+
 // Declared (or merely called) but not defined here: calls go through an import slot the
 // loader fills by name (`__imp_<name>`).
 static void MakeImportSlot(Compiler *cc, CHashFun *f) {
@@ -743,13 +760,45 @@ static void MakeImportSlot(Compiler *cc, CHashFun *f) {
   f->is_extern = TRUE;
 }
 
+// Push parameter i's default: a constant, or its source expression read again here — in the
+// caller's context, as HolyC does (`CDC *dc=gr.dc`). The current token is held back meanwhile.
+static bool EmitDefaultArg(Compiler *cc, CHashFun *fn, I64 i) {
+  bool want_f64 = fn->param_typed && i < 16 && ((fn->param_f64_mask >> i) & 1);
+  if (i < 16 && fn->param_default_src[i]) {
+    size_t n = strlen(fn->param_default_src[i]);
+    char *text = malloc(n + 3);
+    memcpy(text, fn->param_default_src[i], n);
+    text[n] = '\n'; text[n + 1] = ')'; text[n + 2] = 0;   // ')' ends the expression, then the held token returns
+#ifndef BARE_METAL
+    if (getenv("HOLYC_TRACE")) fprintf(stderr, "[trace] default arg %s[%lld] = <%s> at %s:%d\n", fn->str ? fn->str : "?", (long long)i, fn->param_default_src[i], cc->lex.filename ? cc->lex.filename : "?", cc->lex.line);
+#endif
+    LexPushStringPending(cc, text);
+    free(text);
+    if (!ParseAssignment(cc)) {
+#ifndef BARE_METAL
+      if (getenv("HOLYC_TRACE")) fprintf(stderr, "[trace] default arg expression failed: %s\n", cc->error ? cc->error : "(none)");
+#endif
+      LexAbandonPendingString(cc); return false;
+    }
+    if (!LexExpect(cc, ')')) { Error(cc, "Bad default argument expression"); LexAbandonPendingString(cc); return false; }
+    if (want_f64 && cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
+    else if (!want_f64 && cc->last_expr_type == RT_F64) ICAdd(cc, IC_TO_I64, 0, RT_I64);
+    cc->last_var_symbol = NULL;
+    cc->last_global_var = NULL;
+    return true;
+  }
+  ICAdd(cc, IC_IMM_I64, i < 16 ? fn->param_default[i] : 0, RT_I64);
+  if (want_f64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
+  return true;
+}
+
 // `IsDbgMode`, `ProgressBarsRst;`: HolyC calls a function named without parentheses.
 static bool EmitNoParenCall(Compiler *cc, CHashFun *func) {
   ICAdd(cc, IC_CALL_START, 0, RT_I64);
   int arg_count = 0;
   I64 fixed = func->is_varargs ? func->param_cnt - 2 : func->param_cnt;
   while (arg_count < fixed && arg_count < 16 && func->param_has_default[arg_count]) {
-    ICAdd(cc, IC_IMM_I64, func->param_default[arg_count], RT_I64);
+    if (!EmitDefaultArg(cc, func, arg_count)) return false;
     ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
     arg_count++;
   }
@@ -791,10 +840,27 @@ static bool ParsePrimary(Compiler *cc) {
     if (had_paren && IsTypeStartToken(cc)) {
       U8 type = ParseType(cc);
       CHashClass *type_class = cc->last_type_class;
+      I64 msize = -1;
+      while (cc->lex.token == '.' && type_class) {   // sizeof(Class.member)
+        LexNext(cc);
+        CMemberLst *m = type_class->member_lst;
+        while (m && !(cc->lex.token_str && strcmp(m->str, cc->lex.token_str) == 0)) m = m->next;
+        if (!m) {
+#ifndef BARE_METAL
+          if (getenv("HOLYC_TRACE")) { fprintf(stderr, "[trace] sizeof: class '%s' members:", type_class->str ? type_class->str : "?"); for (CMemberLst *q = type_class->member_lst; q; q = q->next) fprintf(stderr, " %s", q->str); fprintf(stderr, " (wanted '%s')\n", cc->lex.token_str ? cc->lex.token_str : ""); }
+#endif
+          Error(cc, "sizeof: unknown member"); return false;
+        }
+        msize = m->size;
+        type_class = m->member_class;
+        LexNext(cc);
+      }
 
       if (!LexExpect(cc, ')')) return false;
 
-      if (type_class && type_class->size > 0) {
+      if (msize >= 0) {
+        size = msize;
+      } else if (type_class && type_class->size > 0) {
         size = type_class->size;
       } else {
         size = PrimitiveTypeSize(type);
@@ -806,6 +872,7 @@ static bool ParsePrimary(Compiler *cc) {
       LexNext(cc);
 
       Symbol *sym = SymbolLookup(cc, name);
+      CHashClass *szcls = NULL;   // for `sizeof(var.member)`
       if (sym) {
         if (sym->is_array && sym->array_size >= 0 && sym->element_size > 0) {
           size = sym->array_size * sym->element_size;
@@ -814,6 +881,7 @@ static bool ParsePrimary(Compiler *cc) {
         } else {
           size = PrimitiveTypeSize(sym->data_type);
         }
+        szcls = (CHashClass *)sym->extra;
         computed = true;
       } else {
         CHashEntry *global_entry = HashFind(name, cc->hash_table, HTT_GLBL_VAR);
@@ -826,12 +894,22 @@ static bool ParsePrimary(Compiler *cc) {
           } else {
             size = PrimitiveTypeSize(gv->raw_type);
           }
+          szcls = gv->var_class;
           computed = true;
         } else {
           Error(cc, "Unknown identifier in sizeof");
           free(name);
           return false;
         }
+      }
+      while (cc->lex.token == '.' && szcls) {   // sizeof(doldoc.dft_de_flags)
+        LexNext(cc);
+        CMemberLst *m = szcls->member_lst;
+        while (m && !(cc->lex.token_str && strcmp(m->str, cc->lex.token_str) == 0)) m = m->next;
+        if (!m) { Error(cc, "sizeof: unknown member"); free(name); return false; }
+        size = m->size;
+        szcls = m->member_class;
+        LexNext(cc);
       }
 
       free(name);
@@ -917,6 +995,28 @@ static bool ParsePrimary(Compiler *cc) {
     cc->last_var_symbol = NULL;
     cc->last_global_var = NULL;
     return true;
+  }
+
+  // `ToI64(x)`, `ToF64(x)`, `ToBool(x)`: the conversions (casts only relabel in HolyC).
+  if (cc->lex.token == TK_IDENT && cc->lex.token_str &&
+      (!strcmp(cc->lex.token_str, "ToI64") || !strcmp(cc->lex.token_str, "ToF64") || !strcmp(cc->lex.token_str, "ToBool"))) {
+    char which = cc->lex.token_str[2];   // 'I', 'F', 'B'
+    LexPush(cc);
+    LexNext(cc);
+    if (cc->lex.token == '(') {
+      LexPopNoRestore(cc);
+      LexNext(cc);
+      if (!ParseExpression(cc)) return false;
+      if (!LexExpect(cc, ')')) return false;
+      if (which == 'F') { if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64); cc->last_expr_type = RT_F64; }
+      else if (which == 'I') { if (cc->last_expr_type == RT_F64) ICAdd(cc, IC_TO_I64, 0, RT_I64); cc->last_expr_type = RT_I64; }
+      else { if (cc->last_expr_type == RT_F64) ICAdd(cc, IC_TO_I64, 0, RT_I64); ICAdd(cc, IC_NOT, 0, RT_I64); ICAdd(cc, IC_NOT, 0, RT_I64); cc->last_expr_type = RT_I64; }
+      cc->last_var_symbol = NULL;
+      cc->last_global_var = NULL;
+      cc->last_member = NULL;
+      return true;
+    }
+    LexPopRestore(cc);
   }
 
   // `offset(Class.member[.sub…])`: constant member offset.
@@ -1036,7 +1136,7 @@ static bool ParsePrimary(Compiler *cc) {
               free(name);
               return false;
             }
-            ICAdd(cc, IC_IMM_I64, pre_fn->param_default[arg_count], RT_I64);
+            if (!EmitDefaultArg(cc, pre_fn, arg_count)) { free(name); return false; }
           } else if (va_fixed >= 0 && arg_count >= va_fixed) {
             // Extra argument of a varargs function: store it in the caller's argv temp.
             if (va_base < 0) va_base = cc->locals_size;
@@ -1085,7 +1185,7 @@ static bool ParsePrimary(Compiler *cc) {
       if (va_fixed >= 0) {
         // Fill the fixed parameters' defaults, then pass argc and argv.
         while (arg_count < va_fixed && arg_count < 16 && pre_fn->param_has_default[arg_count]) {
-          ICAdd(cc, IC_IMM_I64, pre_fn->param_default[arg_count], RT_I64);
+          if (!EmitDefaultArg(cc, pre_fn, arg_count)) { free(name); return false; }
           ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
           arg_count++;
         }
@@ -1115,7 +1215,7 @@ static bool ParsePrimary(Compiler *cc) {
         if (func) {
           // Fill in trailing default arguments; too few without defaults is an error.
           while (arg_count < func->param_cnt && arg_count < 16 && func->param_has_default[arg_count]) {
-            ICAdd(cc, IC_IMM_I64, func->param_default[arg_count], RT_I64);
+            if (!EmitDefaultArg(cc, func, arg_count)) { free(name); return false; }
             ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
             arg_count++;
           }
@@ -1347,6 +1447,10 @@ static bool ParsePrimary(Compiler *cc) {
           LexNext(cc);
         }
         ind_call = (depth == 0 && cc->lex.token == '(');
+        if (ind_call) {   // `(*p)(I64)` is a deref with a postfix cast, not a call
+          LexNext(cc);
+          if (IsTypeStartToken(cc)) ind_call = false;
+        }
       }
       LexPopRestore(cc);
     }
@@ -1658,7 +1762,7 @@ static bool ParsePostfix(Compiler *cc) {
       // Member access: struct.member
       LexNext(cc);  // Skip '.'
       
-      if (cc->lex.token != TK_IDENT) {
+      if (cc->lex.token != TK_IDENT && !(cc->lex.token >= 300 && cc->lex.token_str)) {   // `.reg`: keywords are member names too
         Error(cc, "Expected member name after '.'");
         return false;
       }
@@ -1763,7 +1867,7 @@ static bool ParsePostfix(Compiler *cc) {
     if (cc->lex.token == TK_ARROW) {
       LexNext(cc);
       
-      if (cc->lex.token != TK_IDENT) {
+      if (cc->lex.token != TK_IDENT && !(cc->lex.token >= 300 && cc->lex.token_str)) {   // `->reg`
         Error(cc, "Expected member name after '->'");
         return false;
       }
@@ -1957,7 +2061,7 @@ static bool ParseComparison(Compiler *cc) {
       if (chain) ICAdd(cc, IC_AND, 0, RT_I64);
     }
     chain = chain || more;
-    cc->last_expr_type = RT_I64;
+    cc->last_expr_type = more ? rt : RT_I64;   // the kept middle operand is the next link's left side
   }
   
   return true;
@@ -2062,8 +2166,22 @@ static bool ParseLogicalAnd(Compiler *cc) {
 }
 
 
+// `a ^^ b`: HolyC logical xor (no short circuit); operands normalized to 0/1.
+static bool ParseLogicalXor(Compiler *cc) {
+  if (!ParseLogicalAnd(cc)) return false;
+  while (cc->lex.token == TK_XOR_XOR) {
+    ICAdd(cc, IC_NOT, 0, RT_I64); ICAdd(cc, IC_NOT, 0, RT_I64);
+    LexNext(cc);
+    if (!ParseLogicalAnd(cc)) return false;
+    ICAdd(cc, IC_NOT, 0, RT_I64); ICAdd(cc, IC_NOT, 0, RT_I64);
+    ICAdd(cc, IC_XOR, 0, RT_I64);
+    cc->last_expr_type = RT_I64;
+  }
+  return true;
+}
+
 static bool ParseLogicalOr(Compiler *cc) {
-  if (!ParseLogicalAnd(cc)) {
+  if (!ParseLogicalXor(cc)) {
     return false;
   }
 
@@ -2080,7 +2198,7 @@ static bool ParseLogicalOr(Compiler *cc) {
     ICAdd(cc, IC_BR_NOT_ZERO, (I64)true_label, RT_I64);
 
     LexNext(cc);
-    if (!ParseLogicalAnd(cc)) return false;
+    if (!ParseLogicalXor(cc)) return false;
   }
 
   if (true_label) {
@@ -2946,6 +3064,7 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
       LexNext(cc);
       
       // Check if it's another variable or end of statement (`U8 *src=_src,*dst=_src;`)
+      SkipRegQualifier(cc);
       cc->last_pointed_to_type = 0;
       while (cc->lex.token == '*') {
         cc->last_pointed_to_type = type;
@@ -2975,6 +3094,9 @@ static bool ParseExpressionStatement(Compiler *cc) {
   
   // Parse expression (includes assignment now)
   if (!ParseExpression(cc)) {
+#ifndef BARE_METAL
+    if (getenv("HOLYC_TRACE")) fprintf(stderr, "[trace] expression statement failed at token=%d ('%s') line=%d err=%s\n", cc->lex.token, cc->lex.token_str ? cc->lex.token_str : "", cc->lex.line, cc->error ? cc->error : "(none)");
+#endif
     return false;
   }
   
@@ -3040,7 +3162,27 @@ bool ParseStatement(Compiler *cc) {
         if (cc->lex.token == ';') LexNext(cc);
         return true;
       }
-      else if (!strcmp(cc->lex.token_str, "INT")) {   // `INT I_DBG`: software interrupt
+      else if (cc->lex.token_str[0] >= 'A' && cc->lex.token_str[0] <= 'Z' && strcmp(cc->lex.token_str, "INT")) {
+        // An x86 instruction written bare in HolyC code (`MOV U64 [RSI],R13`): an unknown
+        // all-uppercase name at statement start; the instruction runs to the end of its line.
+        bool upper = true;
+        for (const char *q = cc->lex.token_str; *q; q++)
+          if (!((*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '_')) { upper = false; break; }
+        if (upper) {
+          LexPush(cc);
+          LexNext(cc);
+          bool operand = (cc->lex.token != '(' && cc->lex.token != '=' && cc->lex.token != ';' && cc->lex.token != '.' &&
+                          cc->lex.token != TK_ARROW && cc->lex.token != ',' && cc->lex.token != ')');
+          LexPopRestore(cc);
+          if (operand) {
+            int start_line = cc->lex.line;
+            while (cc->lex.token != TK_EOF && cc->lex.line == start_line) LexNext(cc);
+            cc->asm_blocks_skipped++;
+            return true;
+          }
+        }
+      }
+      if (!strcmp(cc->lex.token_str, "INT")) {   // `INT I_DBG`: software interrupt
         LexNext(cc);
         bool oki = true;
         I64 n = CEOr(cc, 0, &oki);
@@ -3108,6 +3250,11 @@ bool ParseStatement(Compiler *cc) {
         continue;
       }
 
+      SkipRegQualifier(cc);
+      while (cc->lex.token == '*') {   // `U8 reg *dst`: stars after the qualifier
+        cc->last_pointed_to_type = type;
+        LexNext(cc);
+      }
       if (cc->lex.token != TK_IDENT) {
         Error(cc, "Expected variable name after type");
         return false;
@@ -3367,6 +3514,7 @@ bool ParseStatement(Compiler *cc) {
         ICAdd(cc, IC_LABEL, (I64)label, RT_I64);
         label->defined = true;
         label->flags = cc->try_depth;   // for goto: how many try blocks enclose the label
+        if (cc->lex.token == '}') return true;   // `me_done: }` — a label may end a block
         continue;
       }
     }
@@ -3480,6 +3628,16 @@ static I64 CEPrimary(Compiler *cc, I64 dollar, bool *ok) {
     if (IsTypeStartToken(cc)) {
       U8 t = ParseType(cc);
       sz = cc->last_pointed_to_type ? 8 : (cc->last_type_class && cc->last_type_class->size > 0 ? cc->last_type_class->size : PrimitiveTypeSize(t));
+      CHashClass *mc = cc->last_type_class;
+      while (cc->lex.token == '.' && mc) {   // sizeof(Class.member)
+        LexNext(cc);
+        CMemberLst *m = mc->member_lst;
+        while (m && !(cc->lex.token_str && strcmp(m->str, cc->lex.token_str) == 0)) m = m->next;
+        if (!m) { *ok = false; break; }
+        sz = m->size;
+        mc = m->member_class;
+        LexNext(cc);
+      }
     } else { *ok = false; }
     if (paren && !LexExpect(cc, ')')) *ok = false;
     return sz;
@@ -3491,9 +3649,9 @@ static I64 CEPrimary(Compiler *cc, I64 dollar, bool *ok) {
   return 0;
 }
 static I64 CEMul(Compiler *cc, I64 d, bool *ok) {
-  I64 v = CEPrimary(cc, d, ok);
+  I64 v = CEPostfixCast(cc, CEPrimary(cc, d, ok));
   while (cc->lex.token == '*' || cc->lex.token == '/' || cc->lex.token == '%') {
-    int op = cc->lex.token; LexNext(cc); I64 r = CEPrimary(cc, d, ok);
+    int op = cc->lex.token; LexNext(cc); I64 r = CEPostfixCast(cc, CEPrimary(cc, d, ok));
     v = op == '*' ? v * r : (r ? (op == '/' ? v / r : v % r) : 0);
   }
   return v;
@@ -3510,6 +3668,25 @@ static I64 CEShift(Compiler *cc, I64 d, bool *ok) {
 }
 static I64 CEAnd(Compiler *cc, I64 d, bool *ok) { I64 v = CEShift(cc, d, ok); while (cc->lex.token == '&') { LexNext(cc); v &= CEShift(cc, d, ok); } return v; }
 static I64 CEXor(Compiler *cc, I64 d, bool *ok) { I64 v = CEAnd(cc, d, ok); while (cc->lex.token == '^') { LexNext(cc); v ^= CEAnd(cc, d, ok); } return v; }
+// `0x7FEFFFFFFFFFFFFF(F64)` (F64_MAX, inf): a postfix cast on a constant keeps the bits.
+static I64 CEPostfixCast(Compiler *cc, I64 v) {
+  while (cc->lex.token == '(') {
+    LexPush(cc);
+    LexNext(cc);
+    if (IsTypeStartToken(cc)) {
+      U8 saved_pt = cc->last_pointed_to_type;
+      CHashClass *saved_tc = cc->last_type_class;
+      ParseType(cc);
+      while (cc->lex.token == '*') LexNext(cc);
+      cc->last_pointed_to_type = saved_pt;
+      cc->last_type_class = saved_tc;
+      if (cc->lex.token == ')') { LexNext(cc); LexPopNoRestore(cc); continue; }
+    }
+    LexPopRestore(cc);
+    break;
+  }
+  return v;
+}
 static I64 CEOr(Compiler *cc, I64 d, bool *ok) { I64 v = CEXor(cc, d, ok); while (cc->lex.token == '|') { LexNext(cc); v |= CEXor(cc, d, ok); } return v; }
 // Array dimension `[expr]` (after the '['): constant expression up to ']'.
 static bool ParseConstDim(Compiler *cc, I64 *out) {
@@ -3572,7 +3749,7 @@ static bool ParseClassMembers(Compiler *cc, CHashClass *tmpc, bool is_union, I64
       if (cc->lex.token == '(') {                     // T (*name)(params), T (**name)(...)
         LexNext(cc);
         while (cc->lex.token == '*') LexNext(cc);
-        if (cc->lex.token != TK_IDENT) { Error(cc, "Expected member name"); return false; }
+        if (cc->lex.token != TK_IDENT && !(cc->lex.token >= 300 && cc->lex.token_str)) { Error(cc, "Expected member name"); return false; }
         member_name = strdup(cc->lex.token_str);
         LexNext(cc);
         if (!LexExpect(cc, ')')) return false;
@@ -3624,6 +3801,11 @@ static bool ParseClassMembers(Compiler *cc, CHashClass *tmpc, bool is_union, I64
       else { m->offset = cur; cur += m->size; }
       if (last) last->next = m; else tmpc->member_lst = m;
       last = m;
+      // `U8 name[STR_LEN] format "$$DA-P,…$$";` — DolDoc form meta-data on a member: skipped.
+      if (cc->lex.token == TK_IDENT && cc->lex.token_str && !strcmp(cc->lex.token_str, "format")) {
+        LexNext(cc);
+        if (cc->lex.token == TK_STR) LexNext(cc);
+      }
       if (cc->lex.token == ',') { LexNext(cc); continue; }
       break;
     }
@@ -3655,6 +3837,7 @@ bool ParseClass(Compiler *cc) {
   
   char *class_name = strdup(cc->lex.token_str);
   LexNext(cc);
+  cc->class_decl_follows = false;
   if (cc->lex.token == ';') {
     // Forward declaration (`extern class CDoc;`): register an empty class so pointers to it parse.
     if (!HashFind(class_name, cc->hash_table, HTT_CLASS)) {
@@ -3739,12 +3922,14 @@ bool ParseClass(Compiler *cc) {
   
   free(class_name);
   
-  // `class X {…} a, *b[N];` — leave the declarators to the caller (ParseTopLevel).
+  // `class X {…} a, *b[N];` — leave the declarators to the caller (ParseTopLevel). After a
+  // consumed ';' nothing follows: the caller must not mistake the next statement's first
+  // identifier (a global's name) for a declarator.
   cc->last_type_class = tmpc;
   cc->last_pointed_to_type = 0;
   if (cc->lex.token == '*' ||
       (cc->lex.token == TK_IDENT && !(cc->lex.hash_entry &&
-       (cc->lex.hash_entry->type & (HTT_CLASS | HTT_INTERNAL_TYPE | HTT_FUN))))) return true;
+       (cc->lex.hash_entry->type & (HTT_CLASS | HTT_INTERNAL_TYPE | HTT_FUN))))) { cc->class_decl_follows = true; return true; }
   return LexExpect(cc, ';');
 }
 
@@ -3781,7 +3966,20 @@ static bool InitAggregateElement(Compiler *cc, U8 *dst, CHashClass *cls, U8 raw_
     LexNext(cc);
     for (CMemberLst *m = cls->member_lst; m && cc->lex.token != '}'; m = m->next) {
       CHashClass *mcls = (!m->pointed_to_type && !m->is_array) ? m->member_class : NULL;
-      if (!InitAggregateElement(cc, dst + m->offset, mcls, m->raw_type, m->size, m->pointed_to_type != 0)) return false;
+      I64 esz = m->elem_size > 0 ? m->elem_size : 8;
+      if (m->is_array && !(cc->lex.token == TK_STR && !m->pointed_to_type && esz == 1) && m->size > esz) {
+        // An array member takes its extent's worth of consecutive elements (`pad[3]` <- 0,0,0),
+        // or its own braced list (`{0,2,3,5,7,8,10}`).
+        bool sub = (cc->lex.token == '{');
+        if (sub) LexNext(cc);
+        I64 cnt = m->size / esz;
+        CHashClass *ecls = (!m->pointed_to_type) ? m->member_class : NULL;
+        for (I64 k = 0; k < cnt && cc->lex.token != '}'; k++) {
+          if (!InitAggregateElement(cc, dst + m->offset + k * esz, ecls, m->raw_type, esz, m->pointed_to_type != 0)) return false;
+          if (k + 1 < cnt) { if (cc->lex.token == ',') LexNext(cc); else break; }
+        }
+        if (sub && !LexExpect(cc, '}')) return false;
+      } else if (!InitAggregateElement(cc, dst + m->offset, mcls, m->raw_type, m->size, m->pointed_to_type != 0)) return false;
       if (cc->lex.token == ',') LexNext(cc); else break;
     }
     return LexExpect(cc, '}');
@@ -3822,6 +4020,7 @@ static bool InitAggregateElement(Compiler *cc, U8 *dst, CHashClass *cls, U8 raw_
 }
 static bool ParseGlobalAggregateInit(Compiler *cc, CHashGlblVar *g, U8 var_type) {
   bool is_arr = (g->flags & GVF_ARRAY) != 0;
+  bool braced = (cc->lex.token == '{');   // `T a[N]= v1,v2,…;` — HolyC allows no braces
   if (is_arr && g->dim.cnt == 0) {                       // `T a[] = {…}`: size from the initializer
     I64 n = CountAggregateElements(cc);
     g->dim.cnt = g->dim.total_cnt = n;
@@ -3831,15 +4030,16 @@ static bool ParseGlobalAggregateInit(Compiler *cc, CHashGlblVar *g, U8 var_type)
   I64 elem_size = is_arr ? g->element_size : g->size;
   CHashClass *cls = g->pointed_to_type ? NULL : g->var_class;
   if (!is_arr) return InitAggregateElement(cc, g->data_addr, cls, var_type, g->size, g->pointed_to_type != 0);
-  LexNext(cc);  // '{'
+  if (braced) LexNext(cc);  // '{'
   I64 idx = 0;
-  while (cc->lex.token != '}' && cc->lex.token != TK_EOF) {
+  while (cc->lex.token != (braced ? '}' : ';') && cc->lex.token != TK_EOF) {
     if (idx >= g->dim.cnt) { Error(cc, "Too many initializers"); return false; }
     if (!InitAggregateElement(cc, g->data_addr + idx * elem_size, cls, var_type, elem_size, g->pointed_to_type != 0)) return false;
     idx++;
     if (cc->lex.token == ',') LexNext(cc); else break;
   }
-  return LexExpect(cc, '}');
+  if (!braced && cc->lex.token == '}') LexNext(cc);   // TempleOS: `= v1,v2,…};` (stray brace)
+  return braced ? LexExpect(cc, '}') : true;
 }
 
 static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
@@ -3911,7 +4111,7 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
   if (!existing) HashAdd((CHashEntry*)tmpg, cc->hash_table);
   if (cc->lex.token == '=') {
     LexNext(cc);
-    if (cc->lex.token == '{') {
+    if (cc->lex.token == '{' || ((tmpg->flags & GVF_ARRAY) && cc->lex.token != TK_STR && tmpg->dim.cnt > 0)) {
       if (!ParseGlobalAggregateInit(cc, tmpg, var_type)) return false;
       goto after_init;
     }
@@ -4018,7 +4218,7 @@ bool ParseFunction(Compiler *cc) {
     return_type = RT_I64;
   } else {
     Error(cc, "Expected type");
-    return false;
+    { PF_TRACE(__LINE__); return false; }
   }
   
   // Parse function name
@@ -4045,7 +4245,7 @@ bool ParseFunction(Compiler *cc) {
   }
   if (cc->lex.token != TK_IDENT) {
     Error(cc, "Expected function name");
-    return false;
+    { PF_TRACE(__LINE__); return false; }
   }
   
   char *name = strdup(cc->lex.token_str);
@@ -4216,7 +4416,9 @@ bool ParseFunction(Compiler *cc) {
       bool has_default = false;
       I64 default_val = 0;
       
+      char *default_src = NULL;
       if (cc->lex.token == '=') {
+        const char *dflt_start = cc->lex.ptr;   // the default's source text begins after '='
         LexNext(cc);
         
         // Constant-expression defaults (`=0x80`, `=I64_MIN`, `=1<<JOBf_X`, `=-1`); `lastclass` → 0
@@ -4224,20 +4426,38 @@ bool ParseFunction(Compiler *cc) {
           has_default = true;
           default_val = 0;
           LexNext(cc);
-        } else if (cc->lex.token == TK_I64 || cc->lex.token == '-' || cc->lex.token == '(' || cc->lex.token == '~' ||
-                   (cc->lex.token == TK_IDENT && cc->lex.hash_entry && (cc->lex.hash_entry->type & HTT_ENUM))) {
-          bool okc = true;
-          I64 v = CEOr(cc, 0, &okc);
-          has_default = true;
-          default_val = okc ? v : 0;
         } else {
-          // Complex default - skip for now
-          int paren_depth = 0;
-          while (cc->lex.token != ',' && cc->lex.token != ')' && cc->lex.token != TK_EOF) {
-            if (cc->lex.token == '(') paren_depth++;
-            if (cc->lex.token == ')' && paren_depth > 0) paren_depth--;
-            else if (cc->lex.token == ')') break;
-            LexNext(cc);
+          bool okc = false;
+          I64 v = 0;
+          if (cc->lex.token == TK_I64 || cc->lex.token == '-' || cc->lex.token == '(' || cc->lex.token == '~' ||
+              (cc->lex.token == TK_IDENT && cc->lex.hash_entry && (cc->lex.hash_entry->type & HTT_ENUM))) {
+            LexPush(cc);   // a failed constant evaluation must not leave tokens consumed
+            okc = true;
+            v = CEOr(cc, 0, &okc);
+            if (okc && cc->lex.token != ',' && cc->lex.token != ')' && cc->lex.token != ';') okc = false;
+            if (okc) LexPopNoRestore(cc); else LexPopRestore(cc);
+          }
+          has_default = true;
+          if (okc && param_type != RT_F64) {
+            default_val = v;
+          } else {
+            // Anything else (`=gr.dc`, `=2.75`, `=-π`): HolyC evaluates the default at each
+            // call site, in the caller's context — keep its source text for that.
+            int paren_depth = 0;
+            while (cc->lex.token != TK_EOF &&
+                   !(paren_depth == 0 && (cc->lex.token == ',' || cc->lex.token == ')' || cc->lex.token == ';'))) {
+              if (cc->lex.token == '(' || cc->lex.token == '[') paren_depth++;
+              else if (cc->lex.token == ')' || cc->lex.token == ']') paren_depth--;
+              LexNext(cc);
+            }
+            const char *dflt_end = cc->lex.ptr - 1;   // the one-char terminator was just lexed
+            if (dflt_end > dflt_start) {
+              size_t n = (size_t)(dflt_end - dflt_start);
+              default_src = malloc(n + 1);
+              memcpy(default_src, dflt_start, n);
+              default_src[n] = 0;
+            }
+            default_val = 0;
           }
         }
       }
@@ -4248,6 +4468,7 @@ bool ParseFunction(Compiler *cc) {
       param->data_type = param_type;
       param->has_default = has_default;
       param->default_val = default_val;
+      param->default_src = default_src;
       param->extra = param_decl_class;
       param->pointed_to_type = cc->last_pointed_to_type;
       if (cc->last_pointed_to_type) param->data_type = RT_I64;
@@ -4299,6 +4520,7 @@ bool ParseFunction(Compiler *cc) {
 
   // Update hash entry with arg count
   func_hash->arg_cnt = param_count;
+  func_hash->raw_type = return_type;   // call sites type the result from this (F64 results)
   
   if (!LexExpect(cc, ')')) {
     free(name);
@@ -4327,10 +4549,14 @@ bool ParseFunction(Compiler *cc) {
   for (int i = 0; i < param_count && i < 16; i++) {
     func_hash->param_has_default[i] = params[i] ? (U8)params[i]->has_default : 0;
     func_hash->param_default[i] = params[i] ? params[i]->default_val : 0;
+    func_hash->param_default_src[i] = params[i] ? params[i]->default_src : NULL;
   }
-  // Forward declaration: I64 F(...);
-  if (cc->lex.token == ';') {
-    LexNext(cc);
+  // Forward declaration: I64 F(...);  (TempleOS also writes prototypes without the ';')
+  if (cc->lex.token == ';' || cc->lex.token != '{') {
+#ifndef BARE_METAL
+    if (getenv("HOLYC_TRACE")) fprintf(stderr, "[trace] prototype %s ends at token=%d ('%s') %s:%d\n", name, cc->lex.token, cc->lex.token_str ? cc->lex.token_str : "", cc->lex.filename ? cc->lex.filename : "?", cc->lex.line);
+#endif
+    if (cc->lex.token == ';') LexNext(cc);
     free(name);
     { SymTablePopTo(cc, fn_scope); return true; }
   }
@@ -4654,9 +4880,7 @@ static bool ParseTopLevelInner(Compiler *cc) {
     if (typed_class) {
       cc->class_base_type = ParseType(cc);
       if (!ParseClass(cc)) return false;
-      bool declarator = (cc->lex.token == '*') ||
-                        (cc->lex.token == TK_IDENT && !(cc->lex.hash_entry &&
-                         (cc->lex.hash_entry->type & (HTT_CLASS | HTT_INTERNAL_TYPE | HTT_FUN))));
+      bool declarator = cc->class_decl_follows;
       if (declarator) return ParseGlobalDeclListTyped(cc, RT_I64);
       return true;
     }
@@ -4665,13 +4889,15 @@ static bool ParseTopLevelInner(Compiler *cc) {
     if (!ParseClass(cc)) return false;
     // `class X {…} a, *b;` — a declarator follows. (Type names like `I64` also lex as
     // identifiers with a hash entry: those start the next item, not a declarator.)
-    bool declarator = (cc->lex.token == '*') ||
-                      (cc->lex.token == TK_IDENT && !(cc->lex.hash_entry &&
-                       (cc->lex.hash_entry->type & (HTT_CLASS | HTT_INTERNAL_TYPE | HTT_FUN))));
+    bool declarator = cc->class_decl_follows;
     if (declarator) return ParseGlobalDeclListTyped(cc, RT_I64);
     return true;
   }
   if (cc->lex.token == KW_ENUM) return ParseEnum(cc);
+#ifndef BARE_METAL
+  if (getenv("HOLYC_TRACE") && cc->lex.token == TK_IDENT && cc->lex.hash_entry)
+    fprintf(stderr, "[trace] top-level ident '%s' entry type=0x%llx (entry str '%s') typestart=%d\n", cc->lex.token_str ? cc->lex.token_str : "", (long long)cc->lex.hash_entry->type, cc->lex.hash_entry->str ? cc->lex.hash_entry->str : "", (int)IsTypeStartToken(cc));
+#endif
   if (IsTypeStartToken(cc)) {
     // Peek past `type * name` to see what follows: '(' → function, `(*` → fn-pointer global,
     // anything else → global variable(s).

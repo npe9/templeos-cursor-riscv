@@ -37,7 +37,9 @@ U64 SYS_GDT[1];
 U64 SYS_ENTER_LONG_MODE[1];
 U8 MEM_E820[1024];   // CMemE820 table
 U8 SYS_GDT_PTR[16];
-U8 _RET[4];          // x86 `RET` label the debugger compares task->rip against
+U8 _RET[4];
+U8 COREAP_16BIT_INIT[1];
+U8 COREAP_16BIT_INIT_END[1];          // x86 `RET` label the debugger compares task->rip against
 // Keyboard.HC scan-code tables (asm data in the x86 file)
 U8 NORMAL_KEY_SCAN_DECODE_TABLE[256];
 U8 SHIFT_KEY_SCAN_DECODE_TABLE[256];

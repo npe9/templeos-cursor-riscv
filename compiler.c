@@ -148,6 +148,18 @@ Compiler *CompilerNew(const char *source, const char *filename) {
     cpu->type = HTT_CLASS;
     cpu->raw_type = RT_I64;
     HashAdd((CHashEntry *)cpu, cc->hash_table);
+    // F64 limits are compiler built-ins in TempleOS as well; as text so they lex as F64.
+    struct { const char *n; const char *v; } fdefs[] = {
+      { "F64_MAX", "(0x7FEFFFFFFFFFFFFF(F64))" }, { "F64_MIN", "(0xFFEFFFFFFFFFFFFF(F64))" }, { "F64_EPSILON", "(0x3CB0000000000000(F64))" },   // as Kernel/KernelA.HH
+    };
+    for (size_t fi = 0; fi < sizeof(fdefs) / sizeof(fdefs[0]); fi++) {
+      CHashDefine *def = calloc(1, sizeof(CHashDefine));
+      def->str = strdup(fdefs[fi].n);
+      def->type = HTT_DEFINE_STR;
+      def->data = strdup(fdefs[fi].v);
+      def->param_count = 0;
+      HashAdd((CHashEntry *)def, cc->define_table);
+    }
     const char *names[4] = { "__try_top", "__task", "Fs", "Gs" };
     for (int i = 0; i < 4; i++) {
       CHashGlblVar *g = calloc(1, sizeof(CHashGlblVar));

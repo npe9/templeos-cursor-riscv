@@ -153,6 +153,7 @@ static bool LoadIncludeFile(Compiler *cc,
                             size_t resolved_size) {
   if (!filename || !out_src || !resolved_path) return false;
 
+  if (filename[0] == ':' && filename[1] == ':' && filename[2] == '/') filename += 2;   // `::/Adam/…`: the boot drive's root
   if (IsAbsolutePath(filename)) {
     // TempleOS paths are rooted at the distribution ("/Kernel/KernelA.HH"): HOLYC_INCLUDE_ROOT
     // names that directory on the host (the exec scripts point it at the repo root).
@@ -626,8 +627,11 @@ static void HandlePreprocessor(Compiler *cc) {
 
 skip_line:
   
-  // Skip to end of line for all directives
-  while (*lex->ptr && *lex->ptr != '\n') {
+  // Skip to end of line for all directives (a backslash continues the line: `#help_index "…"\`)
+  while (*lex->ptr) {
+    if (lex->ptr[0] == '\\' && lex->ptr[1] == '\n') { lex->ptr += 2; lex->line++; continue; }
+    if (lex->ptr[0] == '\\' && lex->ptr[1] == '\r' && lex->ptr[2] == '\n') { lex->ptr += 3; lex->line++; continue; }
+    if (*lex->ptr == '\n') break;
     lex->ptr++;
   }
   if (*lex->ptr == '\n') {
@@ -984,7 +988,14 @@ static int LexNumber(Lexer *lex) {
       int neg = 0, e = 0;
       if (*lex->ptr == '+' || *lex->ptr == '-') { neg = (*lex->ptr == '-'); lex->ptr++; lex->col++; }
       while (*lex->ptr >= '0' && *lex->ptr <= '9') { e = e * 10 + (*lex->ptr - '0'); lex->ptr++; lex->col++; }
-      while (e-- > 0) f = neg ? f / 10.0 : f * 10.0;
+      // Scale by 10^e with exact powers up to 1e22 and as few roundings as possible.
+      static const double p10[] = { 1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
+                                    1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22 };
+      double scale10 = 1.0;
+      int ee = e;
+      while (ee > 22) { scale10 *= 1e22; ee -= 22; }
+      scale10 *= p10[ee];
+      f = neg ? f / scale10 : f * scale10;
     }
     lex->token_f64 = f;
     return TK_F64;
@@ -1077,6 +1088,44 @@ static int LexString(Lexer *lex) {
 }
 
 static void LexNextInner(Compiler *cc);
+// Read `text` as the next tokens, holding the current token back until the text is exhausted
+// (default arguments are expressions evaluated at each call site).
+void LexPushStringPending(Compiler *cc, const char *text) {
+  Lexer *lex = &cc->lex;
+  IncludeFile *inc = calloc(1, sizeof(IncludeFile));
+  inc->src = lex->src; inc->ptr = lex->ptr; inc->filename = lex->filename; inc->line = lex->line; inc->col = lex->col;
+  inc->has_pending = true;
+  inc->p_token = lex->token; inc->p_i64 = lex->token_i64; inc->p_f64 = lex->token_f64;
+  inc->p_is_char = lex->token_is_char; inc->p_str_len = lex->token_str_len; inc->p_hash = lex->hash_entry;
+  inc->p_str = lex->token_str; lex->token_str = NULL;
+  inc->next = lex->include_stack;
+  lex->include_stack = inc;
+  lex->src = strdup(text);
+  lex->ptr = lex->src;
+  lex->filename = strdup("<default argument>");
+  lex->line = 1; lex->col = 1;
+  LexNext(cc);
+}
+// Drop a pushed default-argument string after a parse error inside it, so the next item
+// resumes at the token that was held back.
+void LexAbandonPendingString(Compiler *cc) {
+  Lexer *lex = &cc->lex;
+  while (lex->include_stack) {
+    IncludeFile *inc = lex->include_stack;
+    bool pend = inc->has_pending;
+    lex->include_stack = inc->next;
+    lex->src = inc->src; lex->ptr = inc->ptr; lex->filename = inc->filename; lex->line = inc->line; lex->col = inc->col;
+    if (pend) {
+      lex->token = inc->p_token; lex->token_i64 = inc->p_i64; lex->token_f64 = inc->p_f64;
+      lex->token_is_char = inc->p_is_char; lex->token_str_len = inc->p_str_len; lex->hash_entry = inc->p_hash;
+      if (lex->token_str) free(lex->token_str);
+      lex->token_str = inc->p_str; inc->p_str = NULL;
+      free(inc);
+      return;
+    }
+    free(inc);
+  }
+}
 void LexNext(Compiler *cc) {
   LexNextInner(cc);
 #ifndef BARE_METAL
@@ -1102,7 +1151,17 @@ static void LexNextInner(Compiler *cc) {
       // `$$` in code: the current address (`Fs->rip=$$;`) or, in a class body, the offset.
       lex->ptr += 2; lex->col += 2; lex->token = TK_DOLLAR; return;
     } else if (lex->ptr[0] == '$' && lex->ptr[1] >= 'A' && lex->ptr[1] <= 'Z') {
-      SkipDolDoc(lex);   // `$LK,"…",A="…"$` etc. in comments-as-code positions
+      // A DolDoc command in code. `$IB,"…",BI=n$` embeds binary data (a sprite) and is an
+      // expression: NULL here, the data is not carried. Others (`$SP…$` definitions) vanish.
+      bool is_ib = (lex->ptr[1] == 'I' && lex->ptr[2] == 'B');
+      SkipDolDoc(lex);
+      if (is_ib) {
+        lex->token = TK_I64; lex->token_i64 = 0; lex->token_is_char = false;
+        if (lex->token_str) free(lex->token_str);
+        lex->token_str = strdup(""); lex->token_str_len = 0;
+        cc->asm_blocks_skipped++;
+        return;
+      }
     } else if (*lex->ptr == '#') {
       HandlePreprocessor(cc);
     } else {
@@ -1146,6 +1205,14 @@ static void LexNextInner(Compiler *cc) {
       lex->filename = inc->filename;
       lex->line = inc->line;
       lex->col = inc->col;
+      if (inc->has_pending) {   // a pushed string ended: resume with the token held back
+        lex->token = inc->p_token; lex->token_i64 = inc->p_i64; lex->token_f64 = inc->p_f64;
+        lex->token_is_char = inc->p_is_char; lex->token_str_len = inc->p_str_len; lex->hash_entry = inc->p_hash;
+        if (lex->token_str) free(lex->token_str);
+        lex->token_str = inc->p_str; inc->p_str = NULL; inc->has_pending = false;
+        if (!lex->stack) free(inc);
+        return;
+      }
       // Keep the frame while a lookahead is pending: LexPopRestore re-links it if the
       // LexPush was taken inside this buffer (a macro's last token, `_intern IC_BT Bool …`).
 #ifndef BARE_METAL
@@ -1164,8 +1231,9 @@ static void LexNextInner(Compiler *cc) {
   
   // Identifier or keyword
   if ((*lex->ptr >= 'a' && *lex->ptr <= 'z') || (*lex->ptr >= 'A' && *lex->ptr <= 'Z') || *lex->ptr == '_' ||
-      ((unsigned char)*lex->ptr >= 128 && (unsigned char)*lex->ptr != 0xEC &&
-       !((unsigned char)lex->ptr[0] == 0xE2 && (unsigned char)lex->ptr[1] == 0x88))) {   // `µs`: TempleOS charset
+      ((unsigned char)*lex->ptr >= 128 && (unsigned char)*lex->ptr != 0xEC && (unsigned char)*lex->ptr != 0xE3 &&
+       !((unsigned char)lex->ptr[0] == 0xE2 && (unsigned char)lex->ptr[1] == 0x88) &&
+       !((unsigned char)lex->ptr[0] == 0xCF && (unsigned char)lex->ptr[1] == 0x80))) {   // `µs`: TempleOS charset
     lex->token = LexIdentifier(cc);
     return;
   }
@@ -1328,6 +1396,15 @@ static void LexNextInner(Compiler *cc) {
     return;
   }
   
+  // `π` (TempleOS char 0xE3, or UTF-8 CF 80): F64 pi literal
+  if ((unsigned char)lex->ptr[0] == 0xE3 ||
+      ((unsigned char)lex->ptr[0] == 0xCF && (unsigned char)lex->ptr[1] == 0x80)) {
+    lex->ptr += ((unsigned char)lex->ptr[0] == 0xE3) ? 1 : 2;
+    lex->col++;
+    lex->token = TK_F64;
+    lex->token_f64 = 3.141592653589793;
+    return;
+  }
   // `∞` (TempleOS char 0xEC, or UTF-8 on the host): F64 infinity literal
   if ((unsigned char)lex->ptr[0] == 0xEC ||
       ((unsigned char)lex->ptr[0] == 0xE2 && (unsigned char)lex->ptr[1] == 0x88 && (unsigned char)lex->ptr[2] == 0x9E)) {

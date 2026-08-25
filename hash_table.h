@@ -101,6 +101,7 @@ typedef struct CHashFun {
   bool is_varargs;          // `...`: hidden argc/argv parameters follow the fixed ones
   bool param_typed;         // parameter types known: convert call arguments per the mask
   unsigned param_f64_mask;  // bit i: parameter i is F64
+  char *param_default_src[16];  // expression defaults (source text) evaluated at each call site
 } CHashFun;
 
 // Hash entry for keywords

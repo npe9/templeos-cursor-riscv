@@ -1,0 +1,7 @@
+// Adam on top of the RISC-V kernel project (TempleOS compiles Adam against the live kernel).
+// Compile-time DefinePrint() values the RV build cannot execute (Adam/Gr/GrGlbls.HC):
+#define TEXT_ROWS 48
+#define TEXT_COLS 80
+#define ST_BIBLE_LINES 100000   // Adam/God/GodBible.HC counts the Bible file at compile time
+#include "/Kernel/Kernel_RV.PRJ"
+#include "/Adam/MakeAdam"

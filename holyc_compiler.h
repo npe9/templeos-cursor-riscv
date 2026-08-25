@@ -338,6 +338,10 @@ typedef struct IncludeFile {
   char *filename;    // Filename
   int line;          // Line number in this file
   int col;           // Column number
+  // A token held while a pushed string (default-argument text) is read; returned when the
+  // string is exhausted instead of lexing on from ptr.
+  bool has_pending;
+  int p_token; I64 p_i64; F64 p_f64; char *p_str; int p_str_len; bool p_is_char; CHashEntry *p_hash;
 } IncludeFile;
 
 // Lexer state stack for LexPush/LexPop
@@ -420,6 +424,7 @@ typedef struct Symbol {
   // Default parameter value
   bool has_default;
   I64 default_val;
+  char *default_src;   // default that is an expression: source text, re-lexed at call sites
 } Symbol;
 
 typedef struct SymTable {
@@ -498,7 +503,8 @@ typedef struct {
   char *error_file;
   U8 cast_elem_type;       // pointee type after a pointer cast (`s(U8 *)[i]`), 0 = none
   CHashClass *cast_elem_class;
-  bool addr_of_ident;      // `&name` pending: a function name here is an address, not a call        // File where the first pending error was raised
+  bool addr_of_ident;      // `&name` pending: a function name here is an address, not a call
+  bool class_decl_follows; // ParseClass returned at `class X {…} a`: the caller parses declarators        // File where the first pending error was raised
   
   // Output
   U8 *code_buffer;
@@ -561,6 +567,8 @@ typedef struct StringLiteral {
 
 // Lexer
 Compiler *CompilerNew(const char *source, const char *filename);
+void LexPushStringPending(Compiler *cc, const char *text);
+void LexAbandonPendingString(Compiler *cc);
 void CompilerFree(Compiler *cc);
 Compiler *Compile(const char *source, const char *filename, bool aot);
 void LexNext(Compiler *cc);

@@ -88,7 +88,7 @@ add_case 'I64 Sl(U8 *t) { I64 n = 0; while (t[n]) n++; return n; } Sl("hello!");
 add_case 'F64 fa = 7.5; I64 fn = 3; I64 fr = fa / 2.5 + fn * 1.5; fr;' 0000000000000007
 add_case '2.5 * 4.0 + 1.0 > 10.0;' 0000000000000001
 add_case 'I64 Half(F64 v) { return v / 2.0; } Half(9.0);' 0000000000000004
-add_case '(U8)(-1) + (I8)200 + (I64)2.9;' 00000000000000c9
+add_case '(U8)(-1) + (I8)200 + ToI64(2.9);' 00000000000000c9
 add_case 'I64 F42() { return 42; } F42 + 1;' 000000000000002b
 add_case 'I64 Sq(I64 v) { return v * v; } I64 (*fp)(I64) = &Sq; fp(3);' 0000000000000009
 add_case 'I64 ga = 3; I64 gb = 4; ga * gb + ga;' 000000000000000f
@@ -103,6 +103,8 @@ add_case 'I64 Ad3(I64 a,I64 b){ return a+b; } I64 Cl(){ I64 (*fp)(I64,I64)=&Ad3;
 add_case 'I64 Sw(I64 x){ switch [x] { case -1: return 2; case 97: return 3; case 1...3: return 4; } return 0; } I64 Kk(I64 a,I64){ a>>=2; a<<=1; a%=7; lock a++; return a; } Sw(-1)*1000+Sw(97)*100+Sw(2)*10+Kk(40,9);' 000000000000092b
 add_case 'I64 Sv(I64 d=7){ return d; } class CQz {I64 a; U8 b; I64 c;}; I64 Qq(){ I64 x=Sv; return x*100+offset(CQz.c)+0b101+0o10+0d3; } Qq();' 00000000000002d5
 add_case 'I64 Pc(){ I64 a=$$; I64 b=$$; return b>a; } Pc();' 0000000000000001
+add_case 'I64 gq=2; I64 Fq(I64 a,I64 b=gq*2){ return a+b; } F64 K(){ return 2.5; } F64 Dm(F64 hi=F64_MAX){ return hi; } I64 Tq(){ return Fq(2)*100+(K()==2.5)*10+(Dm>1e300); } Tq();' 0000000000000263
+add_case 'I64 Rq(){ I64 reg RSI a=4, reg R13 b=5; return a+b; } class CE { U8 t[8] format "$$DA-P,", u[4]; I64 n; }; Rq()*100+sizeof(CE.u)*10+(1^^0)+(3.0<=4.0<=5.0);' 00000000000003ae
 add_case 'I64 Boom() { throw(7); return 1; }'
 add_case 'I64 Try2() { try { Boom(); return 99; } catch { return Fs->except_ch + 100; } }'
 add_case 'Try2();' 000000000000006b

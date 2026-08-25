@@ -7,7 +7,7 @@ HOLYC="$ROOT/holyc-riscv"
 [ -x "$HOLYC" ] || make -C "$ROOT" holyc-riscv >/dev/null
 # Project-mode builds first (how TempleOS actually compiles): all errors, tallied.
 export HOLYC_INCLUDE_ROOT="$ROOT" HOLYC_ALL_ERRORS=1
-for prj in Kernel/Kernel_RV.PRJ Kernel/Kernel.PRJ Adam/MakeAdam.HC Compiler/Compiler.PRJ; do
+for prj in Kernel/Kernel_RV.PRJ Compiler/Compiler.PRJ Adam/MakeAdam_RV.PRJ Kernel/Kernel.PRJ Adam/MakeAdam.HC; do
   [ -f "$ROOT/$prj" ] || continue
   out="$(cd "$ROOT" && timeout 120 "$HOLYC" "$prj" -o /dev/null 2>&1 >/dev/null)"
   n="$(echo "$out" | grep -o '([0-9]* error' | grep -o '[0-9]*')"
