@@ -230,6 +230,8 @@ typedef struct CLabel {
   I64 addr;
   I64 flags;
   bool defined;
+  I64 sd;         // compile-time eval-stack depth at this label (branches into `&&`/`||`/?: mid-expression)
+  bool sd_set;    // a branch/jump has recorded sd (else the label is reached only by fall-through)
 } CLabel;
 
 // Switch case entry

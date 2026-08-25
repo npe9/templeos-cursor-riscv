@@ -1192,7 +1192,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
 
           CLabel *lb = (CLabel*)ic->ic_data;
           EmitCondBranch(pass_buf, &pass_ptr, &rip, true, lb);
-          stack_depth_pass = 0;
+          lb->sd = stack_depth_pass; lb->sd_set = true;   // the taken path reaches lb at this depth; fall-through keeps it
         }
         break;
       case IC_BR_NOT_ZERO:
@@ -1205,16 +1205,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
 
           CLabel *lb = (CLabel*)ic->ic_data;
           EmitCondBranch(pass_buf, &pass_ptr, &rip, false, lb);
-          stack_depth_pass = 0;
+          lb->sd = stack_depth_pass; lb->sd_set = true;
         }
         break;
       case IC_JMP:
         {
           CLabel *lb = (CLabel*)ic->ic_data;
+          lb->sd = stack_depth_pass; lb->sd_set = true;   // the jump reaches lb at this depth
           EmitJump(pass_buf, &pass_ptr, &rip, lb);
-          // Jump targets (like loop starts or epilogue) should have clean stack
-          // Reset stack depth to 0 at jump targets (don't adjust sp - epilogue expects it at frame_base)
-          stack_depth_pass = 0;
         }
         break;
       case IC_MOV:
@@ -1357,6 +1355,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         // Markers for function call boundaries
         break;
       case IC_LABEL:
+        { CLabel *lb = (CLabel*)ic->ic_data; if (lb->sd_set) stack_depth_pass = lb->sd; }
         break;
       case IC_NOP1:
       case IC_NOP2:
@@ -1729,7 +1728,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
 
           CLabel *lb = (CLabel*)ic->ic_data;
           EmitCondBranch(pass_buf, &pass_ptr, &rip, true, lb);
-          stack_depth_final = 0;
+          lb->sd = stack_depth_final; lb->sd_set = true;   // the taken path reaches lb at this depth; fall-through keeps it
         }
         break;
       case IC_BR_NOT_ZERO:
@@ -1742,16 +1741,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
 
           CLabel *lb = (CLabel*)ic->ic_data;
           EmitCondBranch(pass_buf, &pass_ptr, &rip, false, lb);
-          stack_depth_final = 0;
+          lb->sd = stack_depth_final; lb->sd_set = true;
         }
         break;
       case IC_JMP:
         {
           CLabel *lb = (CLabel*)ic->ic_data;
+          lb->sd = stack_depth_final; lb->sd_set = true;   // the jump reaches lb at this depth
           EmitJump(pass_buf, &pass_ptr, &rip, lb);
-          // Jump targets (like loop starts or epilogue) should have clean stack
-          // Reset stack depth to 0 at jump targets (don't adjust sp - epilogue expects it at frame_base)
-          stack_depth_final = 0;
         }
         break;
       case IC_MOV:
@@ -1893,6 +1890,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         // Markers for function call boundaries
         break;
       case IC_LABEL:
+        { CLabel *lb = (CLabel*)ic->ic_data; if (lb->sd_set) stack_depth_final = lb->sd; }
         break;
       case IC_NOP1:
       case IC_NOP2:
