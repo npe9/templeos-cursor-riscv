@@ -1,5 +1,26 @@
 # HolyC Implementation Status
 
+## Execution-verified status (2026-08-24)
+
+The sections below this one describe what *parses/compiles*; `make compliance` cannot see whether
+the generated code is right (it now fails on parse errors instead of silently truncating). This
+table is what actually **runs correctly** under QEMU — the bare-metal REPL over the UART
+(`make repl-smoke`) and the AOT exec harness (`tests/exec/`) — from probing each feature end to end.
+
+| Runs correctly | Missing / known wrong |
+|---|---|
+| Top level is program level in the REPL: functions, `class`/`union`, `enum`, globals (any initializer), `#define` (parameterized, nested, inside parentheses), statements | AOT globals/statics: host addresses are baked into the blob (no data section) — REPL only |
+| `if/else` ladders, ternary, `while`, `do…while`, `for` (incl. `i++` step), `goto`/labels, `switch` incl. `case a...b`, fallthrough, `default` | `switch` at top level (outside a function) |
+| `&&`/`||`/`!`, `++`/`--`, all compound assignments, chained `a = b = 3`, unary `-`/`~`, shifts, comparisons | unsigned `/`, `%`, compares are signed |
+| **F64**: literals, `+ - * /`, compares, unary `-`, I64↔F64 promotion in mixed expressions / assignment / `return`, `(F64)`/`(I64)` casts, `Print("%f")` | default arguments, `try/catch/throw` (parse only) |
+| casts: `(U8)`/`(U16)`/`(U32)` mask, `(I8)`/`(I16)`/`(I32)` sign-extend, pointer casts | class member functions (not HolyC; `c073`/`p028` are xfail) |
+| I64/I32/U8 locals, params (own scope), globals (also in expressions with other globals), `static` locals (init-once), typed sub-word loads/stores | the rest of the kernel API (the TempleOS-tree compliance rows are xfail for that reason) |
+| pointers (`&x`, `*p`, `p[i]` with pointee-sized typed elements, pointer params), local arrays incl. N-dimensional, class members `s.x` / `p->x` | AOT has no runtime, so `Print` etc. are unavailable to `holyc-riscv` output |
+| string literals (PC-relative, appended to the unit's code), char literals (`'AB'` packs), `"fmt", args;` ≡ `Print(...)` | |
+| REPL runtime: `Print` (`%d %u %x %X %s %c %p %f %%`, width/zero-pad), `PutChars`, `MAlloc`/`Free`, `StrLen`/`StrCpy`/`StrCmp` | |
+| calls: `Fn(args)`, HolyC `Fn;` (no parens), `&Fn`, function pointers (global and local), same-input define+call, recursion, >8 args, per-call argument counts; calling a declared-but-undefined function is a compile error | |
+| AOT: top-level statements run first (entry chunk; last value → `ORACLE`), parse errors fail the build, FPU enabled in the harness | |
+
 ## Overview
 
 This is a comprehensive status report of what's implemented and what's missing in the TempleOS RISC-V HolyC compiler.

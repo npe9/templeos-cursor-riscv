@@ -14,3 +14,5 @@ tests/exec/cases/e_fib6.hc	000000000000000d
 tests/exec/cases/e_call_two_arg.hc	000000000000001e
 tests/exec/cases/e_call_three_arg.hc	0000000000000006
 tests/exec/cases/e_sum12.hc	000000000000004e
+tests/exec/cases/e_f64_mul_cmp.hc	0000000000000001
+tests/exec/cases/e_f64_to_i64.hc	0000000000000007

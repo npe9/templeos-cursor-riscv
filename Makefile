@@ -15,7 +15,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration templeos-riscv templeos-smoke
+.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke templeos-riscv templeos-smoke
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -51,18 +51,25 @@ templeos-smoke: $(COMPILER_BIN)
 	@chmod +x tests/scripts/run_templeos_smoke.sh
 	@tests/scripts/run_templeos_smoke.sh
 
-# UART oracles (tests/exec) then TempleOS/RISC-V QEMU smoke — same as CI after compile-compliance
+# Bare-metal REPL (bootstrap/Makefile.repl) under QEMU: function calls across statements etc.
+repl-smoke:
+	@chmod +x tests/scripts/run_repl_smoke.sh
+	@tests/scripts/run_repl_smoke.sh
+
+# UART oracles (tests/exec), TempleOS/RISC-V QEMU smoke, REPL smoke — same as CI after compile-compliance
 qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) exec-oracle
 	@$(MAKE) templeos-smoke
+	@$(MAKE) repl-smoke
 
-# ShellCheck on the same four scripts as the CI shellcheck job (requires shellcheck on PATH).
+# ShellCheck on the same five scripts as the CI shellcheck job (requires shellcheck on PATH).
 lint-sh:
 	@command -v shellcheck >/dev/null 2>&1 || { echo 'error: install shellcheck (e.g. brew install shellcheck)' >&2; exit 1; }
 	@set -e; for f in \
 	  tests/scripts/run_holyc_compliance.sh \
 	  tests/scripts/run_exec_oracles.sh \
 	  tests/scripts/run_templeos_smoke.sh \
+	  tests/scripts/run_repl_smoke.sh \
 	  tests/scripts/gen_compliance_candidates.sh; do \
 	  shellcheck -S error -x "$$f"; \
 	done

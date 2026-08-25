@@ -1,6 +1,6 @@
 # Jobs: syntax-sh | shellcheck | compile-compliance (parallel) → qemu-integration.
 # Mirrors local: `make compliance` then `make qemu-integration` (or `make ci` for both).
-# Host HolyC→RISC-V compiler: compile compliance, then one QEMU job (oracles + OS smoke).
+# Host HolyC→RISC-V compiler: compile compliance, then one QEMU job (oracles + OS smoke + REPL smoke).
 name: CI
 
 on:
@@ -54,6 +54,7 @@ jobs:
             tests/scripts/run_holyc_compliance.sh \
             tests/scripts/run_exec_oracles.sh \
             tests/scripts/run_templeos_smoke.sh \
+            tests/scripts/run_repl_smoke.sh \
             tests/scripts/gen_compliance_candidates.sh; do
             shellcheck -S error -x "$f"
           done
@@ -92,5 +93,5 @@ jobs:
             qemu-system-riscv64 \
             python3
 
-      - name: Exec oracles + TempleOS/RISC-V smoke (matches make qemu-integration)
+      - name: Exec oracles + TempleOS/RISC-V smoke + REPL smoke (matches make qemu-integration)
         run: make && make qemu-integration

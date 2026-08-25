@@ -21,7 +21,7 @@ tests/holyc/compliance/c062_recursion_fib.hc	functions	pass
 tests/holyc/compliance/c070_struct_class.hc	aggregate	pass	
 tests/holyc/compliance/c071_union.hc	aggregate	pass	
 tests/holyc/compliance/c072_enum.hc	aggregate	pass	
-tests/holyc/compliance/c073_class_method.hc	aggregate	pass	
+tests/holyc/compliance/c073_class_method.hc	aggregate	xfail	member functions are not HolyC (class holds data + fn pointers)
 tests/holyc/compliance/c080_pointer.hc	memory	pass	
 tests/holyc/compliance/c081_array_local.hc	memory	pass	
 tests/holyc/compliance/c082_array_multidim.hc	memory	pass	8

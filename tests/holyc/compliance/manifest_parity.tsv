@@ -28,7 +28,7 @@ tests/holyc/compliance/parity/p024_enum_explicit.hc	aggregate	pass_any
 tests/holyc/compliance/parity/p025_forward_mutual.hc	functions	pass_any	
 tests/holyc/compliance/parity/p026_U0_and_helpers.hc	functions	pass_any	
 tests/holyc/compliance/parity/p027_funptr_higher_order.hc	memory	pass_any	
-tests/holyc/compliance/parity/p028_class_two_methods.hc	aggregate	pass_any	
+tests/holyc/compliance/parity/p028_class_two_methods.hc	aggregate	xfail	member functions are not HolyC
 tests/holyc/compliance/parity/p029_f64_basic.hc	types	pass_any	
 tests/holyc/compliance/parity/p030_preproc_define_expr.hc	preprocessor	pass_any	
 tests/holyc/compliance/parity/p031_preproc_ifdef_else.hc	preprocessor	pass_any	

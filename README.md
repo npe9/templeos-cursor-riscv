@@ -22,7 +22,7 @@ HolyC front end and RISC-V code generator, with optional bare-metal REPL and a s
 
 ### Known rough edges
 
-- **Bare-metal REPL / stress:** Reports of hangs or corruption after many calls or heavy use; needs reproducible traces (QEMU, stepping debugger).
+- **Bare-metal REPL:** Function definition + call across statements, redefinition, recursion, >8 args and long runs of calls are covered by `make repl-smoke` (QEMU). Older reports of hangs after a call / corruption after heavy use were a stale cross-buffer `jal` plus an 8-byte stack leak per statement, both fixed; anything beyond that scope is unverified.
 - **Host vs bare split:** Logic exists in both top-level `*.c` and `bootstrap/*_bare.c`; fixes may need to be applied in both places.
 - **Runtime:** Simple AOT snippets (e.g. `make test`) work for smoke testing; full OS images and `templeos-riscv` are separate targets.
 
@@ -65,6 +65,8 @@ make clean && make -f Makefile.repl
 qemu-system-riscv64 -M virt -bios none -kernel repl.elf -nographic
 ```
 
+Type HolyC at the `>` prompt; the input has the same grammar as a source file (functions, classes, globals, `#define`, statements). Statements are compiled and run on the spot and the answer is printed in hex (`I64 Add(I64 a, I64 b) { return a + b; }` then `Add(40,2);` → `0x2a`); `"x=%d\n", 42;` prints through the built-in `Print`. The REPL image carries a small runtime (`Print`, `PutChars`, `MAlloc`/`Free`, `StrLen`/`StrCpy`/`StrCmp`). `make repl-smoke` runs all of this end to end under QEMU; [HOLYC_IMPLEMENTATION_STATUS.md](HOLYC_IMPLEMENTATION_STATUS.md) lists what is execution-verified.
+
 ### Example (HolyC)
 
 ```holyc
@@ -97,11 +99,12 @@ Layout of compliance files and scripts: [tests/README.md](tests/README.md).
 make test                    # Minimal AOT smoke (build/smoke.hc → build/simple.bin)
 make ci                      # Full gate: compliance + qemu-integration (same as GitHub CI)
 make compliance              # TempleOS curated + parity compile suite
-make qemu-integration        # exec-oracle + templeos-smoke (needs RISC-V + qemu-system + python3)
+make qemu-integration        # exec-oracle + templeos-smoke + repl-smoke (needs RISC-V + qemu-system + python3)
 make compliance-exec         # All compile suites then exec oracles via one script (no TempleOS smoke)
 make exec-oracle             # UART oracle runs only (tests/exec/)
 make templeos-smoke          # TempleOS/RISC-V QEMU smoke only
-make lint-sh                 # ShellCheck on the four CI scripts (needs shellcheck)
+make repl-smoke              # Bare-metal REPL under QEMU: compile+run over UART (bootstrap/repl.elf)
+make lint-sh                 # ShellCheck on the five CI scripts (needs shellcheck)
 make syntax-sh               # bash -n on all tests/scripts/*.sh (no extra installs)
 ```
 

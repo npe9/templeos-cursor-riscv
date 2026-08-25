@@ -4,15 +4,15 @@
 
 - **`make`** — host compiler `holyc-riscv`. The root `Makefile` passes **`-D_DEFAULT_SOURCE`** so glibc exposes `strdup` and related APIs under **`-std=c11`** (required for correct Linux builds / GitHub Actions).
 - **`make test`** — quick AOT smoke (`build/smoke.hc`).
-- **`make ci`** — same stages as [`.github/workflows/ci.yml`](.github/workflows/ci.yml): **`make compliance`** then **`make qemu-integration`**. Requires a RISC-V bare-metal toolchain (`riscv64-unknown-elf-gcc`), **`qemu-system-riscv64`**, and **Python 3** (TempleOS image helper).
-- **`make lint-sh`** — runs **ShellCheck** (`-S error -x`) on the four CI shell scripts; requires **`shellcheck`** on `PATH` (same checks as the **`shellcheck`** CI job).
+- **`make ci`** — same stages as [`.github/workflows/ci.yml`](.github/workflows/ci.yml): **`make compliance`** then **`make qemu-integration`** (exec oracles, TempleOS smoke, and **`make repl-smoke`** — the bare-metal REPL compiling and running statements over the UART). Requires a RISC-V bare-metal toolchain (`riscv64-unknown-elf-gcc`), **`qemu-system-riscv64`**, and **Python 3** (TempleOS image helper).
+- **`make lint-sh`** — runs **ShellCheck** (`-S error -x`) on the five CI shell scripts; requires **`shellcheck`** on `PATH` (same checks as the **`shellcheck`** CI job).
 - **`make syntax-sh`** — **`bash -n`** on every **`tests/scripts/*.sh`**; no extra tools (quick syntax smoke for scripts not covered by **`lint-sh`**).
 
 ## CI (GitHub Actions)
 
 - Pushes and PRs that change **only** Markdown (`*.md` anywhere) **do not** run CI (`paths-ignore`), to save time on doc edits. Use **Actions → CI → Run workflow** when you need a full run after doc-only changes.
 - **`concurrency: cancel-in-progress`** stops the previous run when a new push lands; an older commit may show **cancelled** even though the tip commit is green.
-- **`syntax-sh`** and **`shellcheck`** are separate jobs (run in parallel with **`compile-compliance`**). **`qemu-integration`** waits for all three. **`syntax-sh`** is **`make syntax-sh`** only; **`shellcheck`** installs **ShellCheck** and lints the four primary scripts.
+- **`syntax-sh`** and **`shellcheck`** are separate jobs (run in parallel with **`compile-compliance`**). **`qemu-integration`** waits for all three. **`syntax-sh`** is **`make syntax-sh`** only; **`shellcheck`** installs **ShellCheck** and lints the five primary scripts.
 - **Branch protection (optional):** if you require status checks on `archive`, include all four job names: **`syntax-sh`**, **`shellcheck`**, **`compile-compliance`**, **`qemu-integration`**.
 
 ## Implementation status

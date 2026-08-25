@@ -3,6 +3,8 @@
 .global _start
 
 _start:
+    li t0, (1 << 13)          # mstatus.FS = Initial: F64 code traps otherwise
+    csrs mstatus, t0
     la sp, __stack_top
     mv s0, sp
 
