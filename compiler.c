@@ -713,6 +713,21 @@ static void EmitAddImm(U8 *pass_buf, U8 **pass_ptr, I64 *rip, int rd, int rs, I6
   if (lo) RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (RV_T0 << 15) | (((U32)lo & 0xFFF) << 20)); // addi t0, t0, lo
   RVU32(pass_buf, pass_ptr, rip, 0x33 | ((U32)rd << 7) | ((U32)rs << 15) | (RV_T0 << 20));               // add rd, rs, t0
 }
+// Unconditional jump to a label: `jal zero` reaches ±1 MB; a farther target uses auipc+jalr
+// through t0 (t0 is caller-saved and free at a jump point).
+static void EmitJump(U8 *pass_buf, U8 **pass_ptr, I64 *rip, CLabel *lb) {
+  I64 offset = lb->addr - *rip;
+  if (offset >= -(1 << 20) && offset < (1 << 20)) {
+    RVU32(pass_buf, pass_ptr, rip, 0x6F | (((U32)(offset >> 12) & 0xFF) << 12) | (((U32)(offset >> 11) & 1) << 20) |
+          (((U32)(offset >> 1) & 0x3FF) << 21) | (((U32)(offset >> 20) & 1) << 31));
+    return;
+  }
+  I64 rel = lb->addr - *rip;
+  I64 hi = (rel + 0x800) >> 12, lo = rel - (hi << 12);
+  RVU32(pass_buf, pass_ptr, rip, 0x17 | (RV_T0 << 7) | (((U32)hi & 0xFFFFF) << 12));                 // auipc t0, hi
+  RVU32(pass_buf, pass_ptr, rip, 0x67 | (RV_ZERO << 7) | (RV_T0 << 15) | (((U32)lo & 0xFFF) << 20)); // jalr zero, lo(t0)
+}
+
 // Conditional branch on a0 to a label, relaxed for range: a B-type beq/bne reaches ±4 KB; a
 // larger target uses the inverse branch over a `jal zero,target` (±1 MB). `br_zero` picks beq.
 static void EmitCondBranch(U8 *pass_buf, U8 **pass_ptr, I64 *rip, bool br_zero, CLabel *lb) {
@@ -1196,13 +1211,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_JMP:
         {
           CLabel *lb = (CLabel*)ic->ic_data;
-          I64 offset = lb->addr - rip;
-          // jal zero, offset
-          U32 imm_20 = (offset >> 20) & 0x1;
-          U32 imm_10_1 = (offset >> 1) & 0x3FF;
-          U32 imm_11 = (offset >> 11) & 0x1;
-          U32 imm_19_12 = (offset >> 12) & 0xFF;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x6F | (imm_19_12<<12) | (imm_11<<20) | (imm_10_1<<21) | (imm_20<<31));
+          EmitJump(pass_buf, &pass_ptr, &rip, lb);
           // Jump targets (like loop starts or epilogue) should have clean stack
           // Reset stack depth to 0 at jump targets (don't adjust sp - epilogue expects it at frame_base)
           stack_depth_pass = 0;
@@ -1739,13 +1748,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_JMP:
         {
           CLabel *lb = (CLabel*)ic->ic_data;
-          I64 offset = lb->addr - rip;
-          // jal zero, offset
-          U32 imm_20 = (offset >> 20) & 0x1;
-          U32 imm_10_1 = (offset >> 1) & 0x3FF;
-          U32 imm_11 = (offset >> 11) & 0x1;
-          U32 imm_19_12 = (offset >> 12) & 0xFF;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x6F | (imm_19_12<<12) | (imm_11<<20) | (imm_10_1<<21) | (imm_20<<31));
+          EmitJump(pass_buf, &pass_ptr, &rip, lb);
           // Jump targets (like loop starts or epilogue) should have clean stack
           // Reset stack depth to 0 at jump targets (don't adjust sp - epilogue expects it at frame_base)
           stack_depth_final = 0;
@@ -2144,7 +2147,10 @@ Compiler *Compile(const char *source, const char *filename, bool aot) {
   
   // Stitch deferred per-function IC chains (source order) then single AOT pass
   AOTFnICChunk *stitched = NULL;
-  CHashEntry *main_e = (cc->defer_aot_compile && !cc->aot_main_head && cc->hash_table) ? HashFind("main", cc->hash_table, HTT_FUN) : NULL;
+  // Run top-level statements (globals' initializers, `#exe`) first; if a main() is defined here,
+  // call it after them and its return is the program's result.
+  CHashEntry *main_e = (cc->defer_aot_compile && cc->hash_table) ? HashFind("main", cc->hash_table, HTT_FUN) : NULL;
+  if (main_e && !((CHashFun *)main_e)->entry_label_defined) main_e = NULL;
   if (cc->defer_aot_compile && (cc->aot_main_head || main_e)) {
     // Entry chunk, placed first: `Fs = &__task`, then the top-level statements (HolyC runs
     // them in source order) — or, when there are none, a call to main() for C-style files.
@@ -2181,7 +2187,8 @@ Compiler *Compile(const char *source, const char *filename, bool aot) {
       cc->ic_tail->next = stmts_head;
       stmts_head->last = cc->ic_tail;
       cc->ic_tail = stmts_tail;
-    } else {
+    }
+    if (main_e) {   // call main() after the initializers; its return is the result
       CHashFun *mf = (CHashFun *)main_e;
       ICAdd(cc, IC_CALL_START, 0, RT_I64);
       ICAdd(cc, IC_CALL, (I64)mf->entry_label, RT_I64);

@@ -285,7 +285,11 @@ static HRT_I64 HolyHashRemDel(HolyHash *e, HolyHashTable *t, HRT_I64 mask) {
   return 0;
 }
 static HRT_I64 HolyStrNCmp(char *a, char *b, HRT_I64 n) { for (HRT_I64 i = 0; i < n; i++) { if (a[i] != b[i]) return (HRT_U8)a[i] - (HRT_U8)b[i]; if (!a[i]) return 0; } return 0; }
-static HRT_I64 HolyModU64(HRT_I64 a, HRT_I64 b) { return b ? (HRT_I64)((HRT_U64)a % (HRT_U64)b) : 0; }
+/* ModU64(&q, d): divide *q by d in place, return the remainder (KernelB.HH IC_MOD_U64). */
+static HRT_I64 HolyModU64(HRT_U64 *q, HRT_I64 d) {
+  if (!d) return 0;
+  HRT_U64 v = *q; *q = v / (HRT_U64)d; return (HRT_I64)(v % (HRT_U64)d);
+}
 static HRT_I64 HolyLBEqu(HRT_U8 *bf, HRT_I64 n, HRT_I64 val) { return HolyBEqu(bf, n, val); }
 static HRT_I64 HolyBFieldExtU32(HRT_U8 *bf, HRT_I64 lo, HRT_I64 hi) { HRT_I64 r = 0; for (HRT_I64 i = hi; i >= lo; i--) r = (r << 1) | HolyBt(bf, i); return r; }
 static HRT_I64 HolyRepInU16(HRT_U8 *buf, HRT_I64 cnt, HRT_I64 port) { (void)port; for (HRT_I64 i = 0; i < cnt * 2; i++) buf[i] = 0; return 0; }

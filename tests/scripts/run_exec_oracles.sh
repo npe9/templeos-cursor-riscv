@@ -95,7 +95,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     continue
   fi
 
-  if ! "$HOLYC" "$fpath" -o "$OUTDIR/blob.bin" >/dev/null 2>&1; then
+  if ! HOLYC_INCLUDE_ROOT="$ROOT" "$HOLYC" "$fpath" -o "$OUTDIR/blob.bin" >/dev/null 2>&1; then
     echo "FAIL $src — compile error"
     fail=$((fail + 1))
     continue
