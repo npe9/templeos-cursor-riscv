@@ -9,5 +9,5 @@
   X(StrLen, 1) X(StrCpy, 2) X(StrCmp, 2) X(StrCat, 2) X(StrNew, 1) \
   X(MemCpy, 3) X(MemSet, 3) X(MemCmp, 3) X(MemSetI64, 3) \
   X(AbsI64, 1) X(MaxI64, 2) X(MinI64, 2) X(ToUpper, 1) X(ToLower, 1) \
-  X(RandU16, 0) X(RandI64, 0) X(Seed, 1) X(YorN, 0)
+  X(RandU16, 0) X(RandI64, 0) X(Seed, 1) X(YorN, 0) X(tS, 0) X(D, 2)
 #endif

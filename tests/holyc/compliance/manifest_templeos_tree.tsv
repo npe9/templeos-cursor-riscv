@@ -4,7 +4,7 @@
 Demo/DateTime.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
 Demo/Print.HC	demo	pass_any	
 Demo/Exceptions.HC	demo	pass_any	
-Demo/GlblVars.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
+Demo/GlblVars.HC	demo	pass_any	
 Demo/RadixSort.HC	demo	pass_any	
 Demo/NullCase.HC	demo	pass_any	
 Demo/Carry.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet

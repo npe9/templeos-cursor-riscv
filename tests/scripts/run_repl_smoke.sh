@@ -106,6 +106,11 @@ add_case 'try { throw(5); } catch { "caught %d\n", Fs->except_ch; } Fs->except_c
 add_case 'I64 Om(I64 a = 1, I64 b = 2, I64 c = 3) { return a * 100 + b * 10 + c; } Om(,5) - Om(7,,9);' fffffffffffffdc0
 add_case 'I64 Tb() { I64 i; for (i = 0; i < 3; i++) { try { if (i == 1) break; } catch { return 99; } } try { throw(4); } catch { return Fs->except_ch; } } Tb();' 0000000000000004
 add_case 'U8 *cat = MAlloc(16); StrCpy(cat, "ab"); StrCat(cat, "cd"); StrLen(cat) + MaxI64(3, 9) + ToUpper(0x61) - 0x41 + AbsI64(-2);' 000000000000000f
+# Aggregate initializers, F64 %, sub_switch, Free reuse, goto out of try.
+add_case 'class Agg { I32 t; U8 name[8]; }; Agg ag[] = { {10, "one"}, {20, "two"}, {30, "three"} }; ag[2].t * 100 + ag[0].t + sizeof(ag) + StrLen(ag[1].name);' 0000000000000be9
+add_case 'I64 agi[] = {1, 2, 3}; agi[2] + sizeof(agi) + (7.5 % 2.0 == 1.5);' 000000000000001c
+add_case 'U8 *fa = MAlloc(32); Free(fa); U8 *fb = MAlloc(32); fa == fb;' 0000000000000001
+add_case 'I64 Gt2() { I64 n = 0; again: n++; try { if (n < 2) goto again; throw(n); } catch { return Fs->except_ch * 10; } } Gt2();' 0000000000000014
 for ((i = 1; i <= CALLS; i++)); do
   add_case "Add($i,1);" "$(printf '%016x' $((i + 1)))"
 done
@@ -122,12 +127,15 @@ add_file Demo/Print.HC
 expect_text '123,456,789'
 expect_text 'yyyyyyyyyyyyyyyyyyyyyyyyy'
 add_file Demo/SubSwitch.HC
-expect_text 'Zero'
+expect_text 'Zero [One] Two [Three] Four [Five]'
 add_file Demo/RadixSort.HC
 expect_text 'Output'
 expect_text '15:'
 add_file Demo/Exceptions.HC
 expect_text 'D1'
+add_file Demo/GlblVars.HC
+expect_text 'Time 2:'
+expect_text 'Static3'
 # Sentinel: the REPL never exits (it spins on the UART after EOF), so stop QEMU as soon as
 # the last answer is printed; the timeout only bounds a hung/crashed REPL.
 add_case '4919;' 0000000000001337
@@ -179,5 +187,5 @@ for t in "${EXPECT_TEXT[@]}"; do
   fi
 done
 n=$(echo "$got" | wc -l | tr -d ' ')
-echo "OK   REPL: define/call, redefine, Fib(10), 11 args, loops/++/+=/arrays/pointers/static, Print/strings, switch/do/goto, class, 2-D, macros, F64, casts, fn ptrs, defaults, unsigned, try/catch, top-level switch/try, Fs, TempleOS demos, $CALLS calls ($n answers)"
+echo "OK   REPL: define/call, redefine, Fib(10), 11 args, loops/++/+=/arrays/pointers/static, Print/strings, switch/do/goto, class, 2-D, macros, F64, casts, fn ptrs, defaults, unsigned, try/catch, top-level switch/try, Fs, aggregates, sub_switch, TempleOS demos, $CALLS calls ($n answers)"
 echo "REPL smoke: OK"

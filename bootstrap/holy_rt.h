@@ -93,14 +93,28 @@ static HRT_I64 HolyPrint(char *fmt, ...) {
 }
 static HRT_I64 HolyPutS(char *s) { rt_puts(s); return 0; }
 static HRT_I64 HolyPutChars(HRT_I64 ch) { while (ch) { HOLY_RT_PUTC((char)(ch & 0xFF)); ch >>= 8; } return 0; }
-static HRT_I64 HolyMAlloc(HRT_I64 sz) { return (HRT_I64)HOLY_RT_MALLOC((size_t)(sz > 0 ? sz : 1)); }
-static HRT_I64 HolyCAlloc(HRT_I64 sz) { HRT_U8 *p = (HRT_U8 *)HOLY_RT_MALLOC((size_t)(sz > 0 ? sz : 1)); for (HRT_I64 i = 0; i < sz; i++) p[i] = 0; return (HRT_I64)p; }
-static HRT_I64 HolyFree(HRT_I64 p) { (void)p; return 0; }
+/* MAlloc/Free: 16-byte header {size, next}; freed blocks go on a first-fit free list, fresh
+ * blocks come from the host allocator (never returned to it). */
+typedef struct HolyBlk { HRT_I64 size; struct HolyBlk *next; } HolyBlk;
+static HolyBlk *rt_free_list;
+static HRT_I64 HolyMAlloc(HRT_I64 sz) {
+  if (sz <= 0) sz = 1;
+  sz = (sz + 15) & ~(HRT_I64)15;
+  for (HolyBlk **pp = &rt_free_list; *pp; pp = &(*pp)->next) {
+    if ((*pp)->size >= sz) { HolyBlk *b = *pp; *pp = b->next; b->next = 0; return (HRT_I64)(b + 1); }
+  }
+  HolyBlk *b = (HolyBlk *)HOLY_RT_MALLOC(sizeof(HolyBlk) + (size_t)sz);
+  if (!b) return 0;
+  b->size = sz; b->next = 0;
+  return (HRT_I64)(b + 1);
+}
+static HRT_I64 HolyCAlloc(HRT_I64 sz) { HRT_U8 *p = (HRT_U8 *)HolyMAlloc(sz); if (p) for (HRT_I64 i = 0; i < sz; i++) p[i] = 0; return (HRT_I64)p; }
+static HRT_I64 HolyFree(HRT_I64 p) { if (!p) return 0; HolyBlk *b = (HolyBlk *)p - 1; b->next = rt_free_list; rt_free_list = b; return 0; }
 static HRT_I64 HolyStrLen(char *s) { return rt_strlen(s); }
 static HRT_I64 HolyStrCpy(char *d, char *s) { rt_strcpy(d, s); return (HRT_I64)d; }
 static HRT_I64 HolyStrCmp(char *a, char *b) { while (*a && *a == *b) { a++; b++; } return (HRT_I64)(HRT_U8)*a - (HRT_I64)(HRT_U8)*b; }
 static HRT_I64 HolyStrCat(char *d, char *s) { rt_strcpy(d + rt_strlen(d), s); return (HRT_I64)d; }
-static HRT_I64 HolyStrNew(char *s) { char *d = (char *)HOLY_RT_MALLOC((size_t)rt_strlen(s) + 1); rt_strcpy(d, s); return (HRT_I64)d; }
+static HRT_I64 HolyStrNew(char *s) { char *d = (char *)HolyMAlloc(rt_strlen(s) + 1); rt_strcpy(d, s); return (HRT_I64)d; }
 static HRT_I64 HolyMemCpy(HRT_U8 *d, HRT_U8 *s, HRT_I64 n) { for (HRT_I64 i = 0; i < n; i++) d[i] = s[i]; return (HRT_I64)d; }
 static HRT_I64 HolyMemSet(HRT_U8 *d, HRT_I64 c, HRT_I64 n) { for (HRT_I64 i = 0; i < n; i++) d[i] = (HRT_U8)c; return (HRT_I64)d; }
 static HRT_I64 HolyMemCmp(HRT_U8 *a, HRT_U8 *b, HRT_I64 n) { for (HRT_I64 i = 0; i < n; i++) if (a[i] != b[i]) return (HRT_I64)a[i] - (HRT_I64)b[i]; return 0; }
@@ -114,6 +128,29 @@ static HRT_U64 rt_rand_state = 0x9E3779B97F4A7C15ULL;
 static HRT_I64 HolyRandI64(void) { HRT_U64 x = rt_rand_state; x ^= x << 13; x ^= x >> 7; x ^= x << 17; rt_rand_state = x; return (HRT_I64)x; }
 static HRT_I64 HolyRandU16(void) { return (HRT_I64)((HRT_U64)HolyRandI64() >> 48); }
 static HRT_I64 HolyYorN(void) { return 0; }   /* no keyboard: answer "no" */
+/* tS: seconds since boot as F64 (returned as raw bits; the compiler types it F64) */
+static HRT_I64 HolytS(void) {
+  HRT_U64 t;
+  __asm__ volatile("rdtime %0" : "=r"(t));
+  double s = (double)t / 10000000.0;   /* QEMU virt timebase 10 MHz */
+  HRT_I64 bits; HRT_U8 *sp = (HRT_U8 *)&s, *bp = (HRT_U8 *)&bits;
+  for (int i = 0; i < 8; i++) bp[i] = sp[i];
+  return bits;
+}
+/* D: hex dump `n` bytes at `p`, 16 per line with ASCII */
+static HRT_I64 HolyD(HRT_U8 *p, HRT_I64 n) {
+  for (HRT_I64 off = 0; off < n; off += 16) {
+    rt_putnum((HRT_U64)off, 16, 1, 0, 4, '0', 0); HOLY_RT_PUTC(':');
+    for (HRT_I64 i = 0; i < 16; i++) {
+      HOLY_RT_PUTC(' ');
+      if (off + i < n) rt_putnum(p[off + i], 16, 1, 0, 2, '0', 0); else rt_puts("  ");
+    }
+    HOLY_RT_PUTC(' ');
+    for (HRT_I64 i = 0; i < 16 && off + i < n; i++) { HRT_U8 c = p[off + i]; HOLY_RT_PUTC((c >= 32 && c < 127) ? (char)c : '.'); }
+    HOLY_RT_PUTC('\n');
+  }
+  return 0;
+}
 static HRT_I64 HolySeed(HRT_I64 s) { rt_rand_state = (HRT_U64)s ? (HRT_U64)s : 1; return 0; }
 
 typedef struct { const char *name; void *fn; HRT_I64 argc; } HolyRtEntry;

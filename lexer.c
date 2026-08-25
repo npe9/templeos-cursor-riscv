@@ -511,6 +511,13 @@ static void HandlePreprocessor(Compiler *cc) {
     if (should_skip) {
       cc->preprocessor_skip = true;
     }
+  } else if (strcmp(directive, "ifjit") == 0 || strcmp(directive, "ifaot") == 0) {
+    // TempleOS build-mode conditionals: this compiler is always the AOT side.
+    if (strcmp(directive, "ifjit") == 0) cc->preprocessor_skip = true;
+    cc->ifdef_depth++;
+  } else if (strcmp(directive, "exe") == 0) {
+    // #exe { … } runs code at compile time in TempleOS; nothing to run here — skip the line.
+    while (*lex->ptr && *lex->ptr != '\n') { lex->ptr++; lex->col++; }
   } else if (strcmp(directive, "if") == 0) {
     // #if - simplified: only support #if 0 and #if 1
     while (*lex->ptr == ' ' || *lex->ptr == '\t') {

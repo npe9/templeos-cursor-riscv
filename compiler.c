@@ -469,6 +469,13 @@ static void EmitF64Op(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, U
     case IC_FSUB: RVU32(pass_buf, pass_ptr, rip, RV_FOP(0x0A000053u, RV_FA0, RV_FA0, RV_FA1)); RVU32(pass_buf, pass_ptr, rip, RV_FMV_X_D(RV_A0, RV_FA0)); break;
     case IC_FMUL: RVU32(pass_buf, pass_ptr, rip, RV_FOP(0x12000053u, RV_FA0, RV_FA0, RV_FA1)); RVU32(pass_buf, pass_ptr, rip, RV_FMV_X_D(RV_A0, RV_FA0)); break;
     case IC_FDIV: RVU32(pass_buf, pass_ptr, rip, RV_FOP(0x1A000053u, RV_FA0, RV_FA0, RV_FA1)); RVU32(pass_buf, pass_ptr, rip, RV_FMV_X_D(RV_A0, RV_FA0)); break;
+    case IC_FMOD:  // a - trunc(a/b)*b
+      RVU32(pass_buf, pass_ptr, rip, RV_FOP(0x1A000053u, 12, RV_FA0, RV_FA1));        // fdiv.d fa2, fa0, fa1
+      RVU32(pass_buf, pass_ptr, rip, RV_FCVT_L_D(RV_T2, 12));                          // fcvt.l.d (rtz) t2, fa2
+      RVU32(pass_buf, pass_ptr, rip, RV_FCVT_D_L(12, RV_T2));                          // fcvt.d.l fa2, t2
+      RVU32(pass_buf, pass_ptr, rip, RV_FOP(0x12000053u, 12, 12, RV_FA1));             // fmul.d fa2, fa2, fa1
+      RVU32(pass_buf, pass_ptr, rip, RV_FOP(0x0A000053u, RV_FA0, RV_FA0, 12));         // fsub.d fa0, fa0, fa2
+      RVU32(pass_buf, pass_ptr, rip, RV_FMV_X_D(RV_A0, RV_FA0)); break;
     case IC_FLESS:        RVU32(pass_buf, pass_ptr, rip, RV_FCMP(1, RV_A0, RV_FA0, RV_FA1)); break;
     case IC_FLESS_EQU:    RVU32(pass_buf, pass_ptr, rip, RV_FCMP(0, RV_A0, RV_FA0, RV_FA1)); break;
     case IC_FGREATER:     RVU32(pass_buf, pass_ptr, rip, RV_FCMP(1, RV_A0, RV_FA1, RV_FA0)); break;
@@ -520,18 +527,26 @@ static CHashGlblVar *AOTGlobalByAddr(Compiler *cc, I64 addr) {
   if (!cc->hash_table) return NULL;
   for (I64 i = 0; i <= cc->hash_table->mask; i++)
     for (CHashEntry *e = cc->hash_table->body[i]; e; e = e->next)
-      if ((e->type & HTT_GLBL_VAR) && (I64)((CHashGlblVar *)e)->data_addr == addr) return (CHashGlblVar *)e;
+      if ((e->type & HTT_GLBL_VAR)) {
+        CHashGlblVar *g = (CHashGlblVar *)e;
+        I64 base = (I64)g->data_addr, sz = g->size > 0 ? g->size : 8;
+        if (addr >= base && addr < base + sz) return g;   // interior addresses: aggregate elements/members
+      }
   return NULL;
 }
 // Address of a global into rd: auipc-relative into the data section (AOT) or absolute (REPL).
+static void EmitGlobalAddrOff(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *cc, U8 rd, CHashGlblVar *g, I64 data_base, I64 off);
 static void EmitGlobalAddr(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *cc, U8 rd, CHashGlblVar *g, I64 data_base) {
+  EmitGlobalAddrOff(pass_buf, pass_ptr, rip, cc, rd, g, data_base, 0);
+}
+static void EmitGlobalAddrOff(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *cc, U8 rd, CHashGlblVar *g, I64 data_base, I64 off) {
   if (cc->aot_data_layout && g) {
-    I64 rel = pass_buf ? (data_base + g->data_addr_rip - *rip) : 0;
+    I64 rel = pass_buf ? (data_base + g->data_addr_rip + off - *rip) : 0;
     I64 hi = (rel + 0x800) >> 12, lo = rel - (hi << 12);
     RVU32(pass_buf, pass_ptr, rip, 0x17 | (rd << 7) | (((U32)hi & 0xFFFFF) << 12));           // auipc
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (rd << 7) | (rd << 15) | (((U32)lo & 0xFFF) << 20));  // addi
   } else {
-    EmitLoadImm64(pass_buf, pass_ptr, rip, rd, g ? (I64)g->data_addr : 0);
+    EmitLoadImm64(pass_buf, pass_ptr, rip, rd, (g ? (I64)g->data_addr : 0) + off);
   }
 }
 // ---- unsigned integer ops ---------------------------------------------------------------
@@ -832,7 +847,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_IMM_I64:
       case IC_IMM_F64:  // F64 travels as its raw 64-bit pattern in integer registers / eval stack
         if (ic->ic_flags == ICF_GLBL_ADDR && cc->aot_data_layout) {
-          EmitGlobalAddr(pass_buf, &pass_ptr, &rip, cc, RV_A0, AOTGlobalByAddr(cc, ic->ic_data), 0 /* sizing pass: length only */);
+          {
+            CHashGlblVar *g = AOTGlobalByAddr(cc, ic->ic_data);
+            EmitGlobalAddrOff(pass_buf, &pass_ptr, &rip, cc, RV_A0, g, 0, g ? ic->ic_data - (I64)g->data_addr : 0);
+          }
         } else {
           // Load immediate into a0 (full 64-bit; see EmitLoadImm64)
           EmitLoadImm64(pass_buf, &pass_ptr, &rip, RV_A0, ic->ic_data);
@@ -1141,7 +1159,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_XOR_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_XOR); break;
       case IC_FADD: case IC_FSUB: case IC_FMUL: case IC_FDIV:
       case IC_FLESS: case IC_FLESS_EQU: case IC_FGREATER: case IC_FGREATER_EQU:
-      case IC_FEQU_EQU: case IC_FNOT_EQU: case IC_FNEG:
+      case IC_FEQU_EQU: case IC_FNOT_EQU: case IC_FNEG: case IC_FMOD:
         EmitF64Op(pass_buf, &pass_ptr, &rip, &stack_depth_pass, ic->ic_code);
         break;
       case IC_TO_F64: EmitF64Convert(pass_buf, &pass_ptr, &rip, ic->ic_data, TRUE);  break;
@@ -1356,7 +1374,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_IMM_I64:
       case IC_IMM_F64:  // F64 travels as its raw 64-bit pattern in integer registers / eval stack
         if (ic->ic_flags == ICF_GLBL_ADDR && cc->aot_data_layout) {
-          EmitGlobalAddr(pass_buf, &pass_ptr, &rip, cc, RV_A0, AOTGlobalByAddr(cc, ic->ic_data), data_base);
+          {
+            CHashGlblVar *g = AOTGlobalByAddr(cc, ic->ic_data);
+            EmitGlobalAddrOff(pass_buf, &pass_ptr, &rip, cc, RV_A0, g, data_base, g ? ic->ic_data - (I64)g->data_addr : 0);
+          }
         } else {
           // Load immediate into a0 (full 64-bit; see EmitLoadImm64)
           EmitLoadImm64(pass_buf, &pass_ptr, &rip, RV_A0, ic->ic_data);
@@ -1660,7 +1681,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_XOR_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_XOR); break;
       case IC_FADD: case IC_FSUB: case IC_FMUL: case IC_FDIV:
       case IC_FLESS: case IC_FLESS_EQU: case IC_FGREATER: case IC_FGREATER_EQU:
-      case IC_FEQU_EQU: case IC_FNOT_EQU: case IC_FNEG:
+      case IC_FEQU_EQU: case IC_FNOT_EQU: case IC_FNEG: case IC_FMOD:
         EmitF64Op(pass_buf, &pass_ptr, &rip, &stack_depth_final, ic->ic_code);
         break;
       case IC_TO_F64: EmitF64Convert(pass_buf, &pass_ptr, &rip, ic->ic_data, TRUE);  break;
@@ -1905,7 +1926,7 @@ void RuntimeDeclare(Compiler *cc) {
     CHashFun *f = calloc(1, sizeof(CHashFun));
     f->str = strdup(names[i].name);
     f->type = HTT_FUN;
-    f->raw_type = RT_I64;
+    f->raw_type = (names[i].name[0] == 't' && names[i].name[1] == 'S' && !names[i].name[2]) ? RT_F64 : RT_I64;
     f->arg_cnt = names[i].argc;
     f->is_extern = TRUE;
     f->import_var = slot;

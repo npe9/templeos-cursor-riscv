@@ -138,6 +138,7 @@ typedef bool      Bool;
 #define IC_FEQU_EQU      0x9B
 #define IC_FNOT_EQU      0x9C
 #define IC_FNEG          0x9D
+#define IC_FMOD          0xA8
 #define IC_UDIV          0x9E
 #define IC_UMOD          0x9F
 #define IC_ULESS         0xA0
@@ -222,6 +223,8 @@ typedef struct CSwitchCase {
   struct CSwitchCase *next;
   I64 value;
   I64 hi;      // case value...hi (== value for a single case)
+  struct CLabel *via;   // sub_switch: outer dispatch enters here (the start: block) instead of label
+  int group;            // sub_switch group index (-1 = none)
   CLabel *label;
 } CSwitchCase;
 
@@ -497,6 +500,7 @@ typedef struct {
   I64 loop_try_depth;                  // try depth at the innermost loop/switch entry (break/continue unwind to it)
   struct CHashGlblVar *fs_var;         // Fs: pointer to the task block (__task); Fs->except_ch
   struct CMemberLst *last_member;      // member just accessed by . or -> (typing for [ ] and *)
+  U8 call_ret_type;                    // raw_type of the function just called (F64 → F64 result)
   U8 current_fn_ret_type;
 
 } Compiler;

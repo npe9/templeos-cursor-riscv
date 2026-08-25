@@ -832,6 +832,7 @@ static bool ParsePrimary(Compiler *cc) {
             free(name);
             return false;
           }
+          cc->call_ret_type = (U8)func->raw_type;
           // Store actual arg_cnt for compiler to use (not func->arg_cnt)
           cc->last_call_arg_cnt = arg_count;
           SetCallArgCnt(cc, arg_count);
@@ -893,7 +894,7 @@ static bool ParsePrimary(Compiler *cc) {
       
       cc->last_var_symbol = NULL;  // a call result is a value; args may have set this
       
-      cc->last_expr_type = RT_I64;
+      cc->last_expr_type = (cc->call_ret_type == RT_F64) ? RT_F64 : RT_I64;
       
       cc->last_global_var = NULL;
       
@@ -1497,7 +1498,7 @@ static bool ParseMul(Compiler *cc) {
     U8 rt = cc->last_expr_type;
     if (op == '*') EmitBinaryOp(cc, IC_MUL, IC_FMUL, lt, rt, false);
     else if (op == '/') EmitBinaryOp(cc, IC_DIV, IC_FDIV, lt, rt, false);
-    else EmitBinaryOp(cc, IC_MOD, IC_MOD, lt, rt, false);
+    else EmitBinaryOp(cc, IC_MOD, IC_FMOD, lt, rt, false);
   }
   
   return true;
@@ -2123,6 +2124,42 @@ static bool ParseForStatement(Compiler *cc) {
 }
 
 
+// sub_switch markers inside a switch body: `start:` (1) / `end:` (2), else 0. Peeks past the ':'.
+static int PeekSubMarker(Compiler *cc) {
+  if (cc->lex.token != TK_IDENT || !cc->lex.token_str) return 0;
+  int kind = strcmp(cc->lex.token_str, "start") == 0 ? 1 : strcmp(cc->lex.token_str, "end") == 0 ? 2 : 0;
+  if (!kind) return 0;
+  LexPush(cc);
+  LexNext(cc);
+  bool colon = (cc->lex.token == ':');
+  LexPopRestore(cc);
+  return colon ? kind : 0;
+}
+// One case test against the switch temp: branch to `target` when it matches.
+static void EmitCaseTest(Compiler *cc, I64 tmp_marker, CSwitchCase *sc, CLabel *target) {
+  if (sc->hi == sc->value) {
+    ICAdd(cc, IC_LEA, tmp_marker, RT_I64);
+    ICAdd(cc, IC_DEREF, 0, RT_I64);
+    ICAdd(cc, IC_IMM_I64, sc->value, RT_I64);
+    ICAdd(cc, IC_EQU_EQU, 0, RT_I64);
+    ICAdd(cc, IC_BR_NOT_ZERO, (I64)target, RT_I64);
+  } else {
+    CLabel *skip = LabelNew(cc, NULL);
+    ICAdd(cc, IC_LEA, tmp_marker, RT_I64);
+    ICAdd(cc, IC_DEREF, 0, RT_I64);
+    ICAdd(cc, IC_IMM_I64, sc->value, RT_I64);
+    ICAdd(cc, IC_GREATER_EQU, 0, RT_I64);
+    ICAdd(cc, IC_BR_ZERO, (I64)skip, RT_I64);
+    ICAdd(cc, IC_LEA, tmp_marker, RT_I64);
+    ICAdd(cc, IC_DEREF, 0, RT_I64);
+    ICAdd(cc, IC_IMM_I64, sc->hi, RT_I64);
+    ICAdd(cc, IC_LESS_EQU, 0, RT_I64);
+    ICAdd(cc, IC_BR_NOT_ZERO, (I64)target, RT_I64);
+    ICAdd(cc, IC_LABEL, (I64)skip, RT_I64);
+    skip->defined = true;
+  }
+}
+
 static bool ParseSwitchStatement(Compiler *cc) {
   LexNext(cc); // Skip 'switch'
   if (!LexExpect(cc, '(')) return false;
@@ -2148,6 +2185,9 @@ static bool ParseSwitchStatement(Compiler *cc) {
   
   I64 min_val = 0x7FFFFFFFFFFFFFFFLL;  // I64_MAX
   I64 last_case_val = -1;
+  // sub_switch groups: start: block runs before any of its cases, end: block after (on break)
+  CLabel *sub_start[8], *sub_dispatch[8], *sub_end[8];
+  int sub_n = 0, cur_sub = -1;
   I64 max_val = -0x8000000000000000LL; // I64_MIN
   
   // Save break context
@@ -2158,6 +2198,45 @@ static bool ParseSwitchStatement(Compiler *cc) {
   
   // Parse cases
   while (cc->lex.token != '}' && cc->lex.token != TK_EOF) {
+    int mk = PeekSubMarker(cc);
+    if (mk && sub_n < 8) {
+      LexNext(cc);  // start / end
+      LexNext(cc);  // ':'
+      if (mk == 1) {
+        cur_sub = sub_n++;
+        sub_start[cur_sub] = LabelNew(cc, NULL);
+        sub_dispatch[cur_sub] = LabelNew(cc, NULL);
+        sub_end[cur_sub] = LabelNew(cc, NULL);
+        ICAdd(cc, IC_LABEL, (I64)sub_start[cur_sub], RT_I64);
+        sub_start[cur_sub]->defined = true;
+        cc->current_break_label = sub_end[cur_sub];
+        while (cc->lex.token != KW_CASE && cc->lex.token != KW_DEFAULT &&
+               cc->lex.token != '}' && cc->lex.token != TK_EOF && !PeekSubMarker(cc)) {
+          if (!ParseStatement(cc)) {
+            cc->current_break_label = saved_break;
+            cc->loop_try_depth = saved_ltd;
+            return false;
+          }
+        }
+        ICAdd(cc, IC_JMP, (I64)sub_dispatch[cur_sub], RT_I64);   // then pick the actual case
+      } else {
+        if (cur_sub >= 0) {
+          ICAdd(cc, IC_LABEL, (I64)sub_end[cur_sub], RT_I64);
+          sub_end[cur_sub]->defined = true;
+        }
+        cc->current_break_label = end_label;
+        cur_sub = -1;
+        while (cc->lex.token != KW_CASE && cc->lex.token != KW_DEFAULT &&
+               cc->lex.token != '}' && cc->lex.token != TK_EOF && !PeekSubMarker(cc)) {
+          if (!ParseStatement(cc)) {
+            cc->current_break_label = saved_break;
+            cc->loop_try_depth = saved_ltd;
+            return false;
+          }
+        }
+      }
+      continue;
+    }
     if (cc->lex.token == KW_CASE) {
       LexNext(cc);
       
@@ -2199,6 +2278,8 @@ static bool ParseSwitchStatement(Compiler *cc) {
       sc->value = case_val;
       sc->hi = case_hi;
       last_case_val = case_hi;
+      sc->via = cur_sub >= 0 ? sub_start[cur_sub] : NULL;
+      sc->group = cur_sub;
       sc->label = LabelNew(cc, NULL);
       sc->next = NULL;
       
@@ -2219,7 +2300,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
       
       // Parse statements until next case/default/}
       while (cc->lex.token != KW_CASE && cc->lex.token != KW_DEFAULT && 
-             cc->lex.token != '}' && cc->lex.token != TK_EOF) {
+             cc->lex.token != '}' && cc->lex.token != TK_EOF && !PeekSubMarker(cc)) {
         if (!ParseStatement(cc)) {
           cc->current_break_label = saved_break;
           cc->loop_try_depth = saved_ltd;
@@ -2245,7 +2326,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
       default_label->defined = true;
       
       // Parse statements until next case or }
-      while (cc->lex.token != KW_CASE && cc->lex.token != '}' && cc->lex.token != TK_EOF) {
+      while (cc->lex.token != KW_CASE && cc->lex.token != '}' && cc->lex.token != TK_EOF && !PeekSubMarker(cc)) {
         if (!ParseStatement(cc)) {
           cc->current_break_label = saved_break;
           cc->loop_try_depth = saved_ltd;
@@ -2274,27 +2355,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
   dispatch_label->defined = true;
   CSwitchCase *sc = cases;
   while (sc) {
-    if (sc->hi == sc->value) {
-      ICAdd(cc, IC_LEA, tmp_marker, RT_I64);
-      ICAdd(cc, IC_DEREF, 0, RT_I64);
-      ICAdd(cc, IC_IMM_I64, sc->value, RT_I64);
-      ICAdd(cc, IC_EQU_EQU, 0, RT_I64);
-      ICAdd(cc, IC_BR_NOT_ZERO, (I64)sc->label, RT_I64);
-    } else {
-      CLabel *skip = LabelNew(cc, NULL);
-      ICAdd(cc, IC_LEA, tmp_marker, RT_I64);
-      ICAdd(cc, IC_DEREF, 0, RT_I64);
-      ICAdd(cc, IC_IMM_I64, sc->value, RT_I64);
-      ICAdd(cc, IC_GREATER_EQU, 0, RT_I64);
-      ICAdd(cc, IC_BR_ZERO, (I64)skip, RT_I64);
-      ICAdd(cc, IC_LEA, tmp_marker, RT_I64);
-      ICAdd(cc, IC_DEREF, 0, RT_I64);
-      ICAdd(cc, IC_IMM_I64, sc->hi, RT_I64);
-      ICAdd(cc, IC_LESS_EQU, 0, RT_I64);
-      ICAdd(cc, IC_BR_NOT_ZERO, (I64)sc->label, RT_I64);
-      ICAdd(cc, IC_LABEL, (I64)skip, RT_I64);
-      skip->defined = true;
-    }
+    EmitCaseTest(cc, tmp_marker, sc, sc->via ? sc->via : sc->label);
     sc = sc->next;
   }
   
@@ -2302,6 +2363,14 @@ static bool ParseSwitchStatement(Compiler *cc) {
   if (default_label) {
     ICAdd(cc, IC_JMP, (I64)default_label, RT_I64);
   } else {
+    ICAdd(cc, IC_JMP, (I64)end_label, RT_I64);
+  }
+  // sub_switch groups: after the start: block, pick the actual case.
+  for (int g = 0; g < sub_n; g++) {
+    ICAdd(cc, IC_LABEL, (I64)sub_dispatch[g], RT_I64);
+    sub_dispatch[g]->defined = true;
+    for (sc = cases; sc; sc = sc->next)
+      if (sc->group == g) EmitCaseTest(cc, tmp_marker, sc, sc->label);
     ICAdd(cc, IC_JMP, (I64)end_label, RT_I64);
   }
   
@@ -2714,6 +2783,9 @@ bool ParseStatement(Compiler *cc) {
       if (!label) {
         label = LabelNew(cc, label_name);
       }
+      // Backward goto out of try blocks: pop the handler contexts being left.
+      if (label->defined)
+        for (I64 td = label->flags; td < cc->try_depth; td++) ICAdd(cc, IC_TRY_LEAVE, 0, RT_I64);
       
       // Generate jump to label
       ICAdd(cc, IC_JMP, (I64)label, RT_I64);
@@ -2816,6 +2888,7 @@ bool ParseStatement(Compiler *cc) {
         LexNext(cc);  // ':'
         ICAdd(cc, IC_LABEL, (I64)label, RT_I64);
         label->defined = true;
+        label->flags = cc->try_depth;   // for goto: how many try blocks enclose the label
         continue;
       }
     }
@@ -3097,6 +3170,96 @@ bool ParseClass(Compiler *cc) {
 // PARSER - GLOBAL VARIABLES
 // ═══════════════════════════════════════════════════════════════
 
+// ---- aggregate initializers: `T a[] = {…}`, `Cls c = {…}`, `Cls arr[] = {{…},{…}}` ----
+// Literals (numbers, strings into U8 arrays) are stored into the global's memory at parse time;
+// anything else becomes a runtime assignment statement to that address.
+static I64 CountAggregateElements(Compiler *cc) {   // at '{': number of top-level elements
+  I64 count = 0, depth = 0; bool any = false;
+  LexPush(cc);
+  LexNext(cc);
+  while (cc->lex.token != TK_EOF) {
+    if (cc->lex.token == '{') depth++;
+    else if (cc->lex.token == '}') { if (depth == 0) break; depth--; }
+    else if (cc->lex.token == ',' && depth == 0) count++;
+    if (cc->lex.token != ',' || depth) any = true;
+    LexNext(cc);
+  }
+  LexPopRestore(cc);
+  return any ? count + 1 : 0;
+}
+static void StoreTyped(U8 *dst, U8 raw_type, I64 size, I64 v, F64 f, bool is_f64) {
+  if (raw_type == RT_F64) { F64 x = is_f64 ? f : (F64)v; for (int i = 0; i < 8; i++) dst[i] = ((U8 *)&x)[i]; return; }
+  if (is_f64) v = (I64)f;
+  I64 n = size >= 8 ? 8 : size;
+  for (I64 i = 0; i < n; i++) dst[i] = (U8)(v >> (8 * i));
+}
+static bool InitAggregateElement(Compiler *cc, U8 *dst, CHashClass *cls, U8 raw_type, I64 size, bool is_ptr) {
+  if (cc->lex.token == '{') {
+    if (!cls) { Error(cc, "Nested initializer for a non-class element"); return false; }
+    LexNext(cc);
+    for (CMemberLst *m = cls->member_lst; m && cc->lex.token != '}'; m = m->next) {
+      CHashClass *mcls = (!m->pointed_to_type && !m->is_array) ? m->member_class : NULL;
+      if (!InitAggregateElement(cc, dst + m->offset, mcls, m->raw_type, m->size, m->pointed_to_type != 0)) return false;
+      if (cc->lex.token == ',') LexNext(cc); else break;
+    }
+    return LexExpect(cc, '}');
+  }
+  // Literal followed by ',' or '}' → store now.
+  if (cc->lex.token == TK_STR || cc->lex.token == TK_I64 || cc->lex.token == TK_F64) {
+    LexPush(cc);
+    LexNext(cc);
+    bool simple = (cc->lex.token == ',' || cc->lex.token == '}');
+    LexPopRestore(cc);
+    if (simple) {
+      if (cc->lex.token == TK_STR && !is_ptr) {           // string into a U8 array
+        const char *s = cc->lex.token_str ? cc->lex.token_str : "";
+        I64 i = 0;
+        for (; s[i] && i < size - 1; i++) dst[i] = (U8)s[i];
+        if (size > 0) dst[i] = 0;
+        LexNext(cc);
+        return true;
+      }
+      if (cc->lex.token != TK_STR) {
+        StoreTyped(dst, raw_type, size, cc->lex.token_i64, cc->lex.token_f64, cc->lex.token == TK_F64);
+        LexNext(cc);
+        return true;
+      }
+    }
+  }
+  // Expression: assign at run time.
+  ICAdd(cc, IC_IMM_I64, (I64)dst, RT_I64);
+  cc->ic_tail->ic_flags = ICF_GLBL_ADDR;
+  ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
+  if (!ParseAssignment(cc)) return false;
+  if (raw_type == RT_F64 && cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
+  else if (raw_type != RT_F64 && cc->last_expr_type == RT_F64) ICAdd(cc, IC_TO_I64, 0, RT_I64);
+  ICAdd(cc, IC_ASSIGN, 0, RT_I64);
+  cc->ic_tail->arg1_type_pointed_to = raw_type;
+  ICAdd(cc, IC_END_EXP, 0, RT_I64);
+  return true;
+}
+static bool ParseGlobalAggregateInit(Compiler *cc, CHashGlblVar *g, U8 var_type) {
+  bool is_arr = (g->flags & GVF_ARRAY) != 0;
+  if (is_arr && g->dim.cnt == 0) {                       // `T a[] = {…}`: size from the initializer
+    I64 n = CountAggregateElements(cc);
+    g->dim.cnt = g->dim.total_cnt = n;
+    g->size = g->element_size * n;
+    g->data_addr = calloc(1, (size_t)(g->size > 0 ? g->size : 8));
+  }
+  I64 elem_size = is_arr ? g->element_size : g->size;
+  CHashClass *cls = g->pointed_to_type ? NULL : g->var_class;
+  if (!is_arr) return InitAggregateElement(cc, g->data_addr, cls, var_type, g->size, g->pointed_to_type != 0);
+  LexNext(cc);  // '{'
+  I64 idx = 0;
+  while (cc->lex.token != '}' && cc->lex.token != TK_EOF) {
+    if (idx >= g->dim.cnt) { Error(cc, "Too many initializers"); return false; }
+    if (!InitAggregateElement(cc, g->data_addr + idx * elem_size, cls, var_type, elem_size, g->pointed_to_type != 0)) return false;
+    idx++;
+    if (cc->lex.token == ',') LexNext(cc); else break;
+  }
+  return LexExpect(cc, '}');
+}
+
 static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
   // Simplified global variable parsing
   // Full version would handle: extern, import, initialization, arrays, etc.
@@ -3167,6 +3330,10 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
   HashAdd((CHashEntry*)tmpg, cc->hash_table);
   if (cc->lex.token == '=') {
     LexNext(cc);
+    if (cc->lex.token == '{') {
+      if (!ParseGlobalAggregateInit(cc, tmpg, var_type)) return false;
+      goto after_init;
+    }
     // Plain literal initializer: store it now (init-once — matters for `static` locals, whose
     // declaration is re-executed on every call).
     bool literal = false;
@@ -3206,6 +3373,7 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
     if (cc->ic_tail) cc->ic_tail->arg1_type_pointed_to = (tmpg->flags & GVF_ARRAY) ? RT_I64 : var_type;
     ICAdd(cc, IC_END_EXP, 0, RT_I64);
   }
+after_init:
   
   // Handle comma-separated declarations (`T a, *b, c[4]`: each declarator has its own stars)
   if (cc->lex.token == ',') {
