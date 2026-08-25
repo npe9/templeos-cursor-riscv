@@ -713,6 +713,23 @@ static void EmitAddImm(U8 *pass_buf, U8 **pass_ptr, I64 *rip, int rd, int rs, I6
   if (lo) RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (RV_T0 << 15) | (((U32)lo & 0xFFF) << 20)); // addi t0, t0, lo
   RVU32(pass_buf, pass_ptr, rip, 0x33 | ((U32)rd << 7) | ((U32)rs << 15) | (RV_T0 << 20));               // add rd, rs, t0
 }
+// Conditional branch on a0 to a label, relaxed for range: a B-type beq/bne reaches ±4 KB; a
+// larger target uses the inverse branch over a `jal zero,target` (±1 MB). `br_zero` picks beq.
+static void EmitCondBranch(U8 *pass_buf, U8 **pass_ptr, I64 *rip, bool br_zero, CLabel *lb) {
+  I64 offset = lb->addr - *rip;
+  if (offset >= -4096 && offset <= 4094) {
+    U32 f3 = br_zero ? 0u : (1u << 12);
+    RVU32(pass_buf, pass_ptr, rip, 0x63 | f3 | (((U32)(offset >> 11) & 1) << 7) | (((U32)(offset >> 1) & 0xF) << 8) |
+          (RV_A0 << 15) | (RV_ZERO << 20) | (((U32)(offset >> 5) & 0x3F) << 25) | (((U32)(offset >> 12) & 1) << 31));
+    return;
+  }
+  // Inverse short branch over the long jump: `b{ne,eq} a0,zero,+8; jal zero,target`.
+  U32 inv = br_zero ? (1u << 12) : 0u;   // BR_ZERO → skip when a0 != 0
+  RVU32(pass_buf, pass_ptr, rip, 0x63 | inv | (0 << 7) | (4 << 8) | (RV_A0 << 15) | (RV_ZERO << 20));  // to +8 (imm=8)
+  I64 joff = lb->addr - *rip;
+  RVU32(pass_buf, pass_ptr, rip, 0x6F | (((U32)(joff >> 12) & 0xFF) << 12) | (((U32)(joff >> 11) & 1) << 20) |
+        (((U32)(joff >> 1) & 0x3FF) << 21) | (((U32)(joff >> 20) & 1) << 31));  // jal zero, target
+}
 static void EmitTryLeave(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *cc, I64 data_base) {
   EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->try_top_var, data_base);
   RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (3 << 12) | (RV_T1 << 15));                       // ld t2, 0(t1)  ctx
@@ -1159,13 +1176,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           }
 
           CLabel *lb = (CLabel*)ic->ic_data;
-          I64 offset = lb->addr - rip;
-          // beq a0, zero, offset
-          U32 imm_12 = (offset >> 12) & 0x1;
-          U32 imm_10_5 = (offset >> 5) & 0x3F;
-          U32 imm_4_1 = (offset >> 1) & 0xF;
-          U32 imm_11 = (offset >> 11) & 0x1;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x63 | (imm_11<<7) | (imm_4_1<<8) | (RV_A0<<15) | (RV_ZERO<<20) | (imm_10_5<<25) | (imm_12<<31));
+          EmitCondBranch(pass_buf, &pass_ptr, &rip, true, lb);
           stack_depth_pass = 0;
         }
         break;
@@ -1178,13 +1189,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           }
 
           CLabel *lb = (CLabel*)ic->ic_data;
-          I64 offset = lb->addr - rip;
-          // bne a0, zero, offset
-          U32 imm_12 = (offset >> 12) & 0x1;
-          U32 imm_10_5 = (offset >> 5) & 0x3F;
-          U32 imm_4_1 = (offset >> 1) & 0xF;
-          U32 imm_11 = (offset >> 11) & 0x1;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x63 | (1<<12) | (imm_11<<7) | (imm_4_1<<8) | (RV_A0<<15) | (RV_ZERO<<20) | (imm_10_5<<25) | (imm_12<<31));
+          EmitCondBranch(pass_buf, &pass_ptr, &rip, false, lb);
           stack_depth_pass = 0;
         }
         break;
@@ -1384,6 +1389,18 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   }
   
   } while (rip != prev_size && pass < 10);  // Iterate until convergence
+#ifndef BARE_METAL
+  if (getenv("HOLYC_TRACE")) {
+    // A branch to a label whose IC_LABEL was never emitted keeps a stale addr → wrong target.
+    for (CIntermediateCode *jc = cc->ic_head; jc; jc = jc->next) {
+      if (jc->ic_code == IC_JMP || jc->ic_code == IC_BR_ZERO || jc->ic_code == IC_BR_NOT_ZERO) {
+        CLabel *tl = (CLabel *)jc->ic_data;
+        if (tl && !tl->defined)
+          fprintf(stderr, "[trace] branch (ic %#x) to UNDEFINED label %p '%s' addr=%#llx\n", jc->ic_code, (void *)tl, tl->name ? tl->name : "(anon)", (long long)tl->addr);
+      }
+    }
+  }
+#endif
 
   // Lay out this unit's string literals right after the code (8-aligned).
   I64 str_base = (rip + 7) & ~7LL, str_total = 0;
@@ -1702,13 +1719,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           }
 
           CLabel *lb = (CLabel*)ic->ic_data;
-          I64 offset = lb->addr - rip;
-          // beq a0, zero, offset
-          U32 imm_12 = (offset >> 12) & 0x1;
-          U32 imm_10_5 = (offset >> 5) & 0x3F;
-          U32 imm_4_1 = (offset >> 1) & 0xF;
-          U32 imm_11 = (offset >> 11) & 0x1;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x63 | (imm_11<<7) | (imm_4_1<<8) | (RV_A0<<15) | (RV_ZERO<<20) | (imm_10_5<<25) | (imm_12<<31));
+          EmitCondBranch(pass_buf, &pass_ptr, &rip, true, lb);
           stack_depth_final = 0;
         }
         break;
@@ -1721,13 +1732,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           }
 
           CLabel *lb = (CLabel*)ic->ic_data;
-          I64 offset = lb->addr - rip;
-          // bne a0, zero, offset
-          U32 imm_12 = (offset >> 12) & 0x1;
-          U32 imm_10_5 = (offset >> 5) & 0x3F;
-          U32 imm_4_1 = (offset >> 1) & 0xF;
-          U32 imm_11 = (offset >> 11) & 0x1;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x63 | (1<<12) | (imm_11<<7) | (imm_4_1<<8) | (RV_A0<<15) | (RV_ZERO<<20) | (imm_10_5<<25) | (imm_12<<31));
+          EmitCondBranch(pass_buf, &pass_ptr, &rip, false, lb);
           stack_depth_final = 0;
         }
         break;

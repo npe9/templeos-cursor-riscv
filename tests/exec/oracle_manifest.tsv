@@ -32,3 +32,4 @@ tests/exec/cases/e_no_paren_call.hc	00000000000002d5
 tests/exec/cases/e_default_expr.hc	00000000000005e7
 tests/exec/cases/e_big_frame.hc	000000000000103f
 tests/exec/cases/e_frame_markers.hc	000000000000535d
+tests/exec/cases/e_branch_relax.hc	00000000000003e7

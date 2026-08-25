@@ -600,9 +600,6 @@ static U8 ParseType(Compiler *cc) {
       cc->last_type_class = (cls->type & HTT_CLASS) ? cls : NULL;
       LexNext(cc);
     } else {
-#ifndef BARE_METAL
-      if (getenv("HOLYC_TRACE")) fprintf(stderr, "[trace] ParseType: '%s' has hash entry type 0x%llx ('%s')\n", cc->lex.token_str ? cc->lex.token_str : "", (long long)cc->lex.hash_entry->type, cc->lex.hash_entry->str ? cc->lex.hash_entry->str : "");
-#endif
       Error(cc, "Expected type");
       return RT_I64;
     }
@@ -771,15 +768,9 @@ static bool EmitDefaultArg(Compiler *cc, CHashFun *fn, I64 i) {
     char *text = malloc(n + 3);
     memcpy(text, fn->param_default_src[i], n);
     text[n] = '\n'; text[n + 1] = ')'; text[n + 2] = 0;   // ')' ends the expression, then the held token returns
-#ifndef BARE_METAL
-    if (getenv("HOLYC_TRACE")) fprintf(stderr, "[trace] default arg %s[%lld] = <%s> at %s:%d\n", fn->str ? fn->str : "?", (long long)i, fn->param_default_src[i], cc->lex.filename ? cc->lex.filename : "?", cc->lex.line);
-#endif
     LexPushStringPending(cc, text);
     free(text);
     if (!ParseAssignment(cc)) {
-#ifndef BARE_METAL
-      if (getenv("HOLYC_TRACE")) fprintf(stderr, "[trace] default arg expression failed: %s\n", cc->error ? cc->error : "(none)");
-#endif
       LexAbandonPendingString(cc); return false;
     }
     if (!LexExpect(cc, ')')) { Error(cc, "Bad default argument expression"); LexAbandonPendingString(cc); return false; }
@@ -848,9 +839,6 @@ static bool ParsePrimary(Compiler *cc) {
         CMemberLst *m = type_class->member_lst;
         while (m && !(cc->lex.token_str && strcmp(m->str, cc->lex.token_str) == 0)) m = m->next;
         if (!m) {
-#ifndef BARE_METAL
-          if (getenv("HOLYC_TRACE")) { fprintf(stderr, "[trace] sizeof: class '%s' members:", type_class->str ? type_class->str : "?"); for (CMemberLst *q = type_class->member_lst; q; q = q->next) fprintf(stderr, " %s", q->str); fprintf(stderr, " (wanted '%s')\n", cc->lex.token_str ? cc->lex.token_str : ""); }
-#endif
           Error(cc, "sizeof: unknown member"); return false;
         }
         msize = m->size;
@@ -1731,9 +1719,6 @@ static bool ParsePostfix(Compiler *cc) {
         cc->cast_elem_type = 0;
       }
       
-#ifndef BARE_METAL
-      if (getenv("HOLYC_TRACE")) fprintf(stderr, "[trace] subscript: sym=%p glbl=%p member=%p cast_elem=%d -> elem_size=%lld elem_type=%d\n", (void*)saved_symbol, (void*)saved_global, (void*)cc->last_member, (int)cc->cast_elem_type, (long long)elem_size, (int)elem_type);
-#endif
       // An array's base is its address, not its first element: retract the auto-deref, and
       // push the base so the index math below cannot clobber it in a0.
       if (saved_symbol && saved_symbol->is_array) EnsureLvalueAddressPushed(cc);
@@ -3131,9 +3116,6 @@ static bool ParseExpressionStatement(Compiler *cc) {
   
   // Parse expression (includes assignment now)
   if (!ParseExpression(cc)) {
-#ifndef BARE_METAL
-    if (getenv("HOLYC_TRACE")) fprintf(stderr, "[trace] expression statement failed at token=%d ('%s') line=%d err=%s\n", cc->lex.token, cc->lex.token_str ? cc->lex.token_str : "", cc->lex.line, cc->error ? cc->error : "(none)");
-#endif
     return false;
   }
   
@@ -4597,9 +4579,6 @@ bool ParseFunction(Compiler *cc) {
   }
   // Forward declaration: I64 F(...);  (TempleOS also writes prototypes without the ';')
   if (cc->lex.token == ';' || cc->lex.token != '{') {
-#ifndef BARE_METAL
-    if (getenv("HOLYC_TRACE")) fprintf(stderr, "[trace] prototype %s ends at token=%d ('%s') %s:%d\n", name, cc->lex.token, cc->lex.token_str ? cc->lex.token_str : "", cc->lex.filename ? cc->lex.filename : "?", cc->lex.line);
-#endif
     if (cc->lex.token == ';') LexNext(cc);
     free(name);
     { SymTablePopTo(cc, fn_scope); return true; }
@@ -4647,9 +4626,6 @@ bool ParseFunction(Compiler *cc) {
     { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
   }
   
-#ifndef BARE_METAL
-  if (getenv("HOLYC_TRACE")) fprintf(stderr, "[trace] function %s: locals_size=%lld params=%d\n", name, (long long)cc->locals_size, param_count);
-#endif
   // Update ENTER with actual locals size
   // ic_data low 32 bits = param_count, high 32 bits = locals_size
   CIntermediateCode *ic_enter = cc->ic_head;
@@ -4878,9 +4854,6 @@ bool ParseTopLevel(Compiler *cc) {
   return ok;
 }
 static bool ParseTopLevelInner(Compiler *cc) {
-#ifndef BARE_METAL
-  if (getenv("HOLYC_TRACE") && cc->lex.stack) fprintf(stderr, "[trace] pending lookahead at top-level item %s:%d\n", cc->lex.filename ? cc->lex.filename : "?", cc->lex.line);
-#endif
   cc->lex.brace_depth = 0;   // every top-level item starts outside any body
   while (cc->lex.token == ',' || cc->lex.token == ';') LexNext(cc);
   if (cc->lex.token == TK_EOF) return true;
@@ -4941,10 +4914,6 @@ static bool ParseTopLevelInner(Compiler *cc) {
     return true;
   }
   if (cc->lex.token == KW_ENUM) return ParseEnum(cc);
-#ifndef BARE_METAL
-  if (getenv("HOLYC_TRACE") && cc->lex.token == TK_IDENT && cc->lex.hash_entry)
-    fprintf(stderr, "[trace] top-level ident '%s' entry type=0x%llx (entry str '%s') typestart=%d\n", cc->lex.token_str ? cc->lex.token_str : "", (long long)cc->lex.hash_entry->type, cc->lex.hash_entry->str ? cc->lex.hash_entry->str : "", (int)IsTypeStartToken(cc));
-#endif
   if (IsTypeStartToken(cc)) {
     // Peek past `type * name` to see what follows: '(' → function, `(*` → fn-pointer global,
     // anything else → global variable(s).
