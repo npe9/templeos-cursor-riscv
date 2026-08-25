@@ -34,6 +34,11 @@ clear_bss_done:
     la t0, _trap_handler
     csrw mtvec, t0
     
+    # Enable the FPU: mstatus.FS = Initial (01). The compiler is built -mabi=lp64d and touches
+    # doubles (lexer token_f64), and any F64 code we emit needs it too; FS=Off traps on the first
+    # floating-point instruction (illegal instruction, mcause 2).
+    li t0, (1 << 13)
+    csrs mstatus, t0
     # Initialize frame pointer (s0) to match stack pointer
     # This is needed for functions that save/restore s0
     mv s0, sp

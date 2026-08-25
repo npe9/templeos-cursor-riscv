@@ -157,6 +157,88 @@ static U8 *code_area = (U8*)0x80200000;
 // Global answer variable (like TempleOS Fs->answer)
 static I64 g_answer = 0;
 
+// ---- Minimal HolyC runtime for the bare-metal REPL --------------------------------------
+// Registered in the compiler's hash table as ordinary functions (exe_addr = the C entry point),
+// so compiled HolyC calls them through the normal RISC-V calling convention. `"fmt", args;`
+// statements compile to Print("fmt", args).
+#include <stdarg.h>
+
+static void rt_putnum(U64 v, int base, int upper, int neg, int width, char pad) {
+    char b[32];
+    int n = 0;
+    if (v == 0) b[n++] = '0';
+    while (v) {
+        U64 d = v % (U64)base;
+        b[n++] = (char)(d < 10 ? '0' + d : (upper ? 'A' : 'a') + d - 10);
+        v /= (U64)base;
+    }
+    if (neg) b[n++] = '-';
+    while (n < width) b[n++] = pad;
+    while (n) putc_uart(b[--n]);
+}
+
+I64 HolyPrint(char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    for (const char *p = fmt; *p; p++) {
+        if (*p != '%') { putc_uart(*p); continue; }
+        p++;
+        char pad = ' ';
+        int width = 0, left = 0;
+        if (*p == '-') { left = 1; p++; }
+        if (*p == '0') { pad = '0'; p++; }
+        while (*p >= '0' && *p <= '9') { width = width * 10 + (*p - '0'); p++; }
+        (void)left;
+        switch (*p) {
+        case 'd': { I64 v = va_arg(ap, I64); rt_putnum(v < 0 ? (U64)(-v) : (U64)v, 10, 0, v < 0, width, pad); break; }
+        case 'u': rt_putnum(va_arg(ap, U64), 10, 0, 0, width, pad); break;
+        case 'x': rt_putnum(va_arg(ap, U64), 16, 0, 0, width, pad); break;
+        case 'X': rt_putnum(va_arg(ap, U64), 16, 1, 0, width, pad); break;
+        case 'p': puts_uart("0x"); rt_putnum(va_arg(ap, U64), 16, 0, 0, 16, '0'); break;
+        case 's': { char *sv = va_arg(ap, char *); puts_uart(sv ? sv : "(null)"); break; }
+        case 'c': { I64 cv = va_arg(ap, I64); while (cv) { putc_uart((char)(cv & 0xFF)); cv >>= 8; } break; }
+        case 'f': case 'n': {  // F64 arrives as raw bits (variadic F64 goes in integer regs on RISC-V)
+            I64 bits = va_arg(ap, I64); F64 fv; memcpy(&fv, &bits, 8);
+            if (fv < 0) { putc_uart('-'); fv = -fv; }
+            U64 ip = (U64)fv; F64 frac = fv - (F64)ip;
+            rt_putnum(ip, 10, 0, 0, 0, ' '); putc_uart('.');
+            U64 fr = (U64)(frac * 1000.0 + 0.5); if (fr >= 1000) { fr = 999; }
+            rt_putnum(fr, 10, 0, 0, 3, '0');
+            break; }
+        case '%': putc_uart('%'); break;
+        case 0: va_end(ap); return 0;
+        default: putc_uart('%'); putc_uart(*p); break;
+        }
+    }
+    va_end(ap);
+    return 0;
+}
+I64 HolyPutChars(I64 ch) { while (ch) { putc_uart((char)(ch & 0xFF)); ch >>= 8; } return 0; }
+I64 HolyMAlloc(I64 sz) { return (I64)malloc((size_t)sz); }
+I64 HolyFree(I64 p) { free((void *)p); return 0; }
+I64 HolyStrLen(char *s) { return (I64)strlen(s); }
+I64 HolyStrCpy(char *d, char *s) { strcpy(d, s); return (I64)d; }
+I64 HolyStrCmp(char *a, char *b) { return strcmp(a, b); }
+
+static void RuntimeRegister(Compiler *cc, const char *name, void *fn, I64 argc) {
+    CHashFun *f = calloc(1, sizeof(CHashFun));
+    f->str = strdup(name);
+    f->type = HTT_FUN;
+    f->raw_type = RT_I64;
+    f->exe_addr = (I64)fn;
+    f->arg_cnt = argc;
+    HashAdd((CHashEntry *)f, cc->hash_table);
+}
+static void RuntimeInit(Compiler *cc) {
+    RuntimeRegister(cc, "Print", (void *)HolyPrint, 1);
+    RuntimeRegister(cc, "PutChars", (void *)HolyPutChars, 1);
+    RuntimeRegister(cc, "MAlloc", (void *)HolyMAlloc, 1);
+    RuntimeRegister(cc, "Free", (void *)HolyFree, 1);
+    RuntimeRegister(cc, "StrLen", (void *)HolyStrLen, 1);
+    RuntimeRegister(cc, "StrCpy", (void *)HolyStrCpy, 2);
+    RuntimeRegister(cc, "StrCmp", (void *)HolyStrCmp, 2);
+}
+
 void repl(void) {
     char input[512];
     int pos;
@@ -165,6 +247,7 @@ void repl(void) {
     // Create compiler once and reuse across REPL iterations
     // This ensures the hash table persists across inputs
     Compiler *cc = CompilerNew("", "repl");
+    RuntimeInit(cc);
     
     // Accumulation buffer for multi-line inputs (functions/blocks)
     static char accum[4096];
@@ -206,8 +289,12 @@ void repl(void) {
         // Skip comment-only lines starting with '#'
         int i_start = 0;
         while (i_start < pos && (input[i_start] == ' ' || input[i_start] == '\t')) i_start++;
-        if (i_start < pos && input[i_start] == '#') {
-            // Ignore comment line
+        // '#' + letter is a preprocessor directive (#define, #include, …) and goes to the
+        // lexer as its own line; anything else starting with '#' is treated as a comment.
+        int is_directive = (i_start + 1 < pos && input[i_start] == '#' &&
+                            ((input[i_start+1] >= 'a' && input[i_start+1] <= 'z') ||
+                             (input[i_start+1] >= 'A' && input[i_start+1] <= 'Z')));
+        if (i_start < pos && input[i_start] == '#' && !is_directive) {
             continue;
         }
         
@@ -243,6 +330,7 @@ void repl(void) {
             }
         }
         
+        if (is_directive && brace_depth == 0 && paren_depth == 0) should_parse = 1;
         if (!should_parse) {
             // Prompt for more lines
             continue;
@@ -270,100 +358,58 @@ void repl(void) {
         
         if (!cc) continue;
         
-        // Get first token
+        // Parse the input as top-level HolyC (same grammar as a source file): definitions
+        // register themselves (functions are compiled by the parser and get an exe_addr);
+        // plain statements leave IC behind, which we compile and run right away.
         extern void LexNext(Compiler *cc);
+        extern Bool ParseTopLevel(Compiler *cc);
+        extern U8 *CompileExpression(Compiler *cc, I64 *size_out);
         LexNext(cc);
-        
-        // Try ParseFunction first (for function definitions)
-        extern Bool ParseFunction(Compiler *cc);
-        Bool is_function = ParseFunction(cc);
-        
-        if (is_function) {
-            // Function definition - compile and store in hash table
-            extern U8 *CompileAOT(Compiler *cc, I64 *size_out);
-            I64 code_size = 0;
-            U8 *machine_code = CompileAOT(cc, &code_size);
-            if (machine_code && code_size > 0) {
-                // Update exe_addr in hash table for function calls
-                if (cc->last_compiled_func) {
-                    cc->last_compiled_func->exe_addr = (I64)machine_code;
-                    // Debug: print the function address
-                    puts_uart("Function address stored: 0x");
-                    print_hex((U64)machine_code);
-                    puts_uart("\n");
-                    puts_uart("Hash table entry address: 0x");
-                    print_hex((U64)cc->last_compiled_func);
-                    puts_uart("\n");
-                    puts_uart("exe_addr field address: 0x");
-                    print_hex((U64)&cc->last_compiled_func->exe_addr);
-                    puts_uart("\n");
-                }
-                // Just ensure instruction cache coherency
-                // __asm__ volatile("fence.i" ::: "memory"); // Not supported in this RISC-V implementation
-                puts_uart("Function compiled successfully\n");
-                // Don't free machine_code - it's needed for function calls
-            } else {
-                puts_uart("Function compilation failed\n");
+        Bool ok = true;
+        int defined_fn = 0;
+        while (ok && cc->lex.token != TK_EOF) {
+            CHashFun *fn_before = cc->last_compiled_func;
+            I64 addr_before = fn_before ? fn_before->exe_addr : 0;
+            ok = ParseTopLevel(cc);
+            if (ok && cc->last_compiled_func &&
+                (cc->last_compiled_func != fn_before || cc->last_compiled_func->exe_addr != addr_before) &&
+                cc->last_compiled_func->exe_addr) {
+                defined_fn++;
             }
-            
-            // Note: Hash table is preserved for function calls
-        } else {
-            // Expression/statement - parse, compile, execute immediately
-            // Match TempleOS LexStmt2Bin flow (CMain.HC:1-33)
-            
-            // Reset lexer since ParseFunction consumed input
-            cc->lex.ptr = cc->lex.src;
-            cc->lex.line = 1;
-            cc->lex.col = 1;
-            
-            // Reset IC chain since ParseFunction may have added some ICs
+        }
+        // Everything compiled above (functions, statement) is fresh code: order the I-side.
+        __asm__ volatile("fence.i" ::: "memory");
+        if (!ok) {
+            puts_uart("[ERROR] ");
+            puts_uart(cc->error ? cc->error : "parse error");
+            puts_uart("\n");
+            cc->error = NULL;
             cc->ic_head = NULL;
             cc->ic_tail = NULL;
-            cc->labels = NULL;
-            cc->label_counter = 0;
-            cc->locals_size = 0;
-            
-            // Parse statement (like TempleOS PrsStmt)
-            // Get first token after lexer reset
-            LexNext(cc);
-            extern Bool ParseStatement(Compiler *cc);
-            Bool parsed = ParseStatement(cc);
-            
-            
-            if (parsed) {
-                // Add return (match TempleOS LexStmt2Bin:13-14)
-                ICAdd(cc, 0x09, 0, 0);  // IC_RETURN_VAL2
-                ICAdd(cc, 0x5B, 0, 0);  // IC_RET
-                
-                // Compile and execute (match TempleOS COCCompile)
-                extern U8 *CompileExpression(Compiler *cc, I64 *size_out);
-                I64 code_size = 0;
-                U8 *machine_code = CompileExpression(cc, &code_size);
-                
-                if (!machine_code) {
-                    puts_uart("[COMPILE FAILED]\n");
-                    continue;
-                }
-                
-                if (machine_code && code_size > 0) {
-                    // Instruction cache coherency
-                    // __asm__ volatile("fence.i" ::: "memory"); // Not supported in this RISC-V implementation
-                    
-                    // TempleOS approach: Just cast compiled code to function and call it
-                    // This is EXACTLY what LexStmt2Bin does (CMain.HC:15,32)
-                    typedef I64 (*FuncPtr)();
-                    FuncPtr func_ptr = (FuncPtr)machine_code;
-                    I64 result = func_ptr();
-                    
-                    // Store and display result (match TempleOS Fs->answer)
-                    g_answer = result;
-                    print_hex(result);
-                    puts_uart("\n");
-                    
-                    // Free the allocated buffer to prevent memory leak
-                    free(machine_code);
-                }
+            continue;
+        }
+        if (defined_fn) puts_uart("Function compiled successfully\n");
+        if (cc->ic_head) {
+            // Statement: return its value (match TempleOS LexStmt2Bin:13-14)
+            ICAdd(cc, 0x09, 0, 0);  // IC_RETURN_VAL2
+            ICAdd(cc, 0x5B, 0, 0);  // IC_RET
+            I64 code_size = 0;
+            U8 *machine_code = CompileExpression(cc, &code_size);
+            cc->ic_head = NULL;
+            cc->ic_tail = NULL;
+            if (!machine_code || code_size <= 0) {
+                puts_uart("[COMPILE FAILED]\n");
+                continue;
             }
+            __asm__ volatile("fence.i" ::: "memory");
+            // TempleOS approach: cast the compiled code to a function and call it (CMain.HC:15,32)
+            typedef I64 (*FuncPtr)();
+            FuncPtr func_ptr = (FuncPtr)machine_code;
+            I64 result = func_ptr();
+            g_answer = result;
+            print_hex(result);
+            puts_uart("\n");
+            free(machine_code);
         }
         
         // Don't free the compiler - reuse it for the next iteration
