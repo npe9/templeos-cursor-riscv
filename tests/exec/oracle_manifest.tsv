@@ -35,3 +35,4 @@ tests/exec/cases/e_frame_markers.hc	000000000000535d
 tests/exec/cases/e_branch_relax.hc	00000000000003e7
 tests/exec/cases/e_kernel_strprint.hc	000000000000003f
 tests/exec/cases/e_kernel_funcs.hc	000000000000003f
+tests/exec/cases/e_qsort_partition.hc	000000000000003f

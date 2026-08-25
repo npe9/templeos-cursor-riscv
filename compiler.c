@@ -777,7 +777,12 @@ static void EmitThrow(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, C
 static void EmitIncDec(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, I64 delta, Bool post) {
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (RV_A0 << 15));                          // mv t0, a0
   RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (3 << 12) | (RV_T0 << 15));              // ld t1, 0(t0)
-  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T2 << 7) | (RV_T1 << 15) | ((delta & 0xFFF) << 20)); // addi t2, t1, delta
+  if (delta >= -2048 && delta <= 2047) {
+    RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T2 << 7) | (RV_T1 << 15) | ((delta & 0xFFF) << 20)); // addi t2, t1, delta
+  } else {   // pointer step of a large struct: build the constant, then add
+    EmitLoadImm64(pass_buf, pass_ptr, rip, RV_T2, delta);
+    RVU32(pass_buf, pass_ptr, rip, 0x33 | (RV_T2 << 7) | (RV_T1 << 15) | (RV_T2 << 20));         // add t2, t1, t2
+  }
   RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T0 << 15) | (RV_T2 << 20));             // sd t2, 0(t0)
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A0 << 7) | ((post ? RV_T1 : RV_T2) << 15));         // mv a0, old/new
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));          // addi sp, sp, -8
@@ -1333,10 +1338,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         stack_depth_pass++;
         break;
       }
-      case IC_PP_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass,  1, FALSE); break;
-      case IC_MM_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass, -1, FALSE); break;
-      case IC__PP:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass,  1, TRUE);  break;
-      case IC__MM:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass, -1, TRUE);  break;
+      case IC_PP_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass,  (ic->ic_data ? ic->ic_data : 1), FALSE); break;
+      case IC_MM_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass, -(ic->ic_data ? ic->ic_data : 1), FALSE); break;
+      case IC__PP:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass,  (ic->ic_data ? ic->ic_data : 1), TRUE);  break;
+      case IC__MM:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass, -(ic->ic_data ? ic->ic_data : 1), TRUE);  break;
       case IC_END_EXP:
         // End of expression statement: discard residual eval-stack slots so sp is back at
         // the frame base (the epilogue/ret loads are sp-relative). Keep the top value in a0
@@ -1868,10 +1873,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         stack_depth_final++;
         break;
       }
-      case IC_PP_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final,  1, FALSE); break;
-      case IC_MM_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final, -1, FALSE); break;
-      case IC__PP:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final,  1, TRUE);  break;
-      case IC__MM:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final, -1, TRUE);  break;
+      case IC_PP_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final,  (ic->ic_data ? ic->ic_data : 1), FALSE); break;
+      case IC_MM_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final, -(ic->ic_data ? ic->ic_data : 1), FALSE); break;
+      case IC__PP:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final,  (ic->ic_data ? ic->ic_data : 1), TRUE);  break;
+      case IC__MM:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final, -(ic->ic_data ? ic->ic_data : 1), TRUE);  break;
       case IC_END_EXP:
         // End of expression statement: discard residual eval-stack slots so sp is back at
         // the frame base (the epilogue/ret loads are sp-relative). Keep the top value in a0

@@ -4,6 +4,7 @@
 static bool EmitFnAddress(Compiler *cc, CHashFun *fn);
 static void SkipRegQualifier(Compiler *cc);
 static bool ParseAssignment(Compiler *cc);
+static I64 PtrElemInfo(Compiler *cc, U8 *pointee, I64 *depth);
 static I64 CEPostfixCast(Compiler *cc, I64 v);
 #ifndef BARE_METAL
 #include <stdio.h>
@@ -1501,7 +1502,7 @@ static bool ParseUnary(Compiler *cc) {
     if (!ParseUnary(cc)) return false;
     // Operand must stay an address: retract the auto-deref ParsePostfix appended.
     if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->ic_code = IC_NOP1;
-    ICAdd(cc, IC_PP_, 0, RT_I64);  // IC_PP_ is pre-increment
+    { U8 pe; I64 pd; I64 step = PtrElemInfo(cc, &pe, &pd); ICAdd(cc, IC_PP_, step > 1 ? step : 0, RT_I64); }  // pre-increment (scaled for pointers)
     return true;
   }
   
@@ -1511,7 +1512,7 @@ static bool ParseUnary(Compiler *cc) {
     if (!ParseUnary(cc)) return false;
     // Operand must stay an address: retract the auto-deref ParsePostfix appended.
     if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->ic_code = IC_NOP1;
-    ICAdd(cc, IC_MM_, 0, RT_I64);  // IC_MM_ is pre-decrement
+    { U8 pe; I64 pd; I64 step = PtrElemInfo(cc, &pe, &pd); ICAdd(cc, IC_MM_, step > 1 ? step : 0, RT_I64); }  // pre-decrement
     return true;
   }
   
@@ -1770,6 +1771,9 @@ static bool ParsePostfix(Compiler *cc) {
           cc->last_var_symbol = NULL; cc->last_global_var = NULL; cc->last_member = NULL;
           cc->expr_ptr_depth = (U8)(sdepth - 1); cc->expr_pointee = spointee;
         } else {
+          // A subscript yielded a scalar value: it is no longer the container variable, so pointer
+          // arithmetic and member-container logic must not see the array/pointer symbol.
+          cc->last_var_symbol = NULL; cc->last_global_var = NULL; cc->last_member = NULL;
           cc->expr_ptr_depth = 0;
         }
       }
@@ -1868,7 +1872,7 @@ static bool ParsePostfix(Compiler *cc) {
       // Operand must stay an address: retract the early auto-deref (first reference of a
       // variable in an expression gets one before this loop runs).
       if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->ic_code = IC_NOP1;
-      ICAdd(cc, IC__PP, 0, RT_I64);  // IC__PP is post-increment
+      { U8 pe; I64 pd; I64 step = PtrElemInfo(cc, &pe, &pd); ICAdd(cc, IC__PP, step > 1 ? step : 0, RT_I64); }  // post-increment (scaled)
       continue;
     }
     
@@ -1878,7 +1882,7 @@ static bool ParsePostfix(Compiler *cc) {
       // Operand must stay an address: retract the early auto-deref (first reference of a
       // variable in an expression gets one before this loop runs).
       if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->ic_code = IC_NOP1;
-      ICAdd(cc, IC__MM, 0, RT_I64);  // IC__MM is post-decrement
+      { U8 pe; I64 pd; I64 step = PtrElemInfo(cc, &pe, &pd); ICAdd(cc, IC__MM, step > 1 ? step : 0, RT_I64); }  // post-decrement
       continue;
     }
     
@@ -2019,18 +2023,84 @@ static bool ParseMul(Compiler *cc) {
 }
 
 
+// Element size (bytes) of the current expression if it is a pointer/array, else 0; sets *pointee
+// to the pointee type and *depth to the pointer level. Used to scale pointer arithmetic (`p+1`).
+static I64 PtrElemInfo(Compiler *cc, U8 *pointee, I64 *depth) {
+  *pointee = 0; *depth = 0;
+  Symbol *s = cc->last_var_symbol;
+  if (s) {
+    if (s->is_array) { *pointee = s->data_type; *depth = 1; return s->element_size > 0 ? s->element_size : 8; }
+    if (s->pointed_to_type) {
+      *pointee = s->pointed_to_type; *depth = s->ptr_depth ? s->ptr_depth : 1;
+      if (*depth > 1) return 8;
+      CHashClass *pc = (CHashClass *)s->extra;
+      if (pc && (pc->type & HTT_CLASS) && !(pc->type & HTT_INTERNAL_TYPE) && pc->size > 0) return pc->size;
+      return PrimitiveTypeSize(s->pointed_to_type);
+    }
+    return 0;
+  }
+  CHashGlblVar *g = cc->last_global_var;
+  if (g) {
+    if (g->flags & GVF_ARRAY) { *pointee = (U8)g->raw_type; *depth = 1; return g->element_size > 0 ? g->element_size : 8; }
+    if (g->pointed_to_type) {
+      *pointee = g->pointed_to_type; *depth = g->ptr_depth ? g->ptr_depth : 1;
+      if (*depth > 1) return 8;
+      CHashClass *pc = g->var_class;
+      if (pc && (pc->type & HTT_CLASS) && !(pc->type & HTT_INTERNAL_TYPE) && pc->size > 0) return pc->size;
+      return PrimitiveTypeSize(g->pointed_to_type);
+    }
+    return 0;
+  }
+  CMemberLst *m = cc->last_member;
+  if (m) {
+    if (m->is_array) { *pointee = m->raw_type; *depth = 1; return m->elem_size > 0 ? m->elem_size : 8; }
+    if (m->pointed_to_type) {
+      *pointee = m->pointed_to_type; *depth = m->ptr_depth ? m->ptr_depth : 1;
+      if (*depth > 1) return 8;
+      if (m->member_class && m->member_class->size > 0) return m->member_class->size;
+      return PrimitiveTypeSize(m->pointed_to_type);
+    }
+    return 0;
+  }
+  if (cc->expr_ptr_depth) {
+    *pointee = cc->expr_pointee; *depth = cc->expr_ptr_depth;
+    if (cc->expr_ptr_depth > 1) return 8;
+    return PrimitiveTypeSize(cc->expr_pointee ? cc->expr_pointee : RT_I64);
+  }
+  return 0;
+}
+
 static bool ParseAdd(Compiler *cc) {
   if (!ParseMul(cc)) return false;
-  
   while (cc->lex.token == '+' || cc->lex.token == '-') {
     int op = cc->lex.token;
     U8 lt = cc->last_expr_type;
+    U8 lpointee = 0; I64 ldepth = 0;
+    I64 lsz = PtrElemInfo(cc, &lpointee, &ldepth);
+    // Clear stale pointer-tracking so PtrElemInfo(right) reflects only the right operand
+    // (an integer literal sets none of these, so it must not inherit the left's pointer state).
+    cc->last_var_symbol = NULL; cc->last_global_var = NULL; cc->last_member = NULL; cc->expr_ptr_depth = 0;
     LexNext(cc);
     if (!ParseMul(cc)) return false;
     U8 rt = cc->last_expr_type;
-    EmitBinaryOp(cc, op == '+' ? IC_ADD : IC_SUB, op == '+' ? IC_FADD : IC_FSUB, lt, rt, false);
+    U8 rpointee = 0; I64 rdepth = 0;
+    I64 rsz = PtrElemInfo(cc, &rpointee, &rdepth);
+    if (lsz > 0 && rsz == 0 && lt != RT_F64 && rt != RT_F64) {
+      if (lsz > 1) { ICAdd(cc, IC_IMM_I64, lsz, RT_I64); ICAdd(cc, IC_MUL, 0, RT_I64); }
+      ICAdd(cc, op == '+' ? IC_ADD : IC_SUB, 0, RT_I64);
+      cc->last_var_symbol = NULL; cc->last_global_var = NULL; cc->last_member = NULL;
+      cc->expr_ptr_depth = (U8)ldepth; cc->expr_pointee = lpointee;
+      cc->last_expr_type = RT_I64;
+    } else if (lsz > 0 && rsz > 0 && op == '-' && lt != RT_F64 && rt != RT_F64) {
+      ICAdd(cc, IC_SUB, 0, RT_I64);
+      if (lsz > 1) { ICAdd(cc, IC_IMM_I64, lsz, RT_I64); ICAdd(cc, IC_DIV, 0, RT_I64); }
+      cc->last_var_symbol = NULL; cc->last_global_var = NULL; cc->last_member = NULL;
+      cc->expr_ptr_depth = 0; cc->last_expr_type = RT_I64;
+    } else {
+      EmitBinaryOp(cc, op == '+' ? IC_ADD : IC_SUB, op == '+' ? IC_FADD : IC_FSUB, lt, rt, false);
+      if (lsz == 0 && rsz > 0 && op == '+') { cc->expr_ptr_depth = (U8)rdepth; cc->expr_pointee = rpointee; }
+    }
   }
-  
   return true;
 }
 
