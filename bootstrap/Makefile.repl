@@ -11,7 +11,7 @@ repl.elf: startup.o worry_dream_repl.o compiler.o
 	$(LD) $(LDFLAGS) -o $@ $^
 	@echo "✓ Built Worry Dream REPL"
 
-compiler.o: ../compiler.c ../lexer.c ../parser.c ../hash_table.c ../compiler_helper.c
+compiler.o: ../compiler.c ../lexer.c ../parser.c ../hash_table.c ../compiler_helper.c ../holyc_compiler.h ../hash_table.h holy_rt.h holy_rt_names.h
 	$(CC) $(CFLAGS) -DBARE_METAL -c ../compiler.c -o compiler_main.o
 	$(CC) $(CFLAGS) -DBARE_METAL -c ../lexer.c -o lexer.o
 	$(CC) $(CFLAGS) -DBARE_METAL -c ../parser.c -o parser.o
@@ -19,7 +19,7 @@ compiler.o: ../compiler.c ../lexer.c ../parser.c ../hash_table.c ../compiler_hel
 	$(CC) $(CFLAGS) -DBARE_METAL -c ../compiler_helper.c -o compiler_helper.o
 	$(LD) -r -o $@ compiler_main.o lexer.o parser.o hash.o compiler_helper.o
 
-worry_dream_repl.o: worry_dream_repl.c
+worry_dream_repl.o: worry_dream_repl.c ../holyc_compiler.h ../hash_table.h holy_rt.h holy_rt_names.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 startup.o: startup.s

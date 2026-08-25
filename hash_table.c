@@ -141,6 +141,9 @@ void HashInitInternalTypes(CHashTable *table) {
     {3, 4, "I32"},  {8, 4, "U32"},  // RT_I32=3, RT_U32=8 ← FIXED!
     {4, 8, "I64"},  {9, 8, "U64"},  // RT_I64=4, RT_U64=9
     {10, 8, "F64"},                 // RT_F64=10
+    // "internal" fixed-width names used by the kernel's own U16/I32/… union definitions
+    {1, 1, "I8i"},  {6, 1, "U8i"},  {2, 2, "I16i"}, {7, 2, "U16i"},
+    {3, 4, "I32i"}, {8, 4, "U32i"}, {4, 8, "I64i"}, {9, 8, "U64i"}, {10, 8, "F64i"},
   };
   
   for (size_t i = 0; i < sizeof(types)/sizeof(types[0]); i++) {

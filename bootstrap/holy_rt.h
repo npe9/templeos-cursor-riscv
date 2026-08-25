@@ -137,6 +137,77 @@ static HRT_I64 HolytS(void) {
   for (int i = 0; i < 8; i++) bp[i] = sp[i];
   return bits;
 }
+/* F64 math (no libm on bare metal): values cross the call boundary as raw bit patterns. */
+static double rt_b2f(HRT_I64 b) { double f; HRT_U8 *s = (HRT_U8 *)&b, *d = (HRT_U8 *)&f; for (int i = 0; i < 8; i++) d[i] = s[i]; return f; }
+static HRT_I64 rt_f2b(double f) { HRT_I64 b; HRT_U8 *s = (HRT_U8 *)&f, *d = (HRT_U8 *)&b; for (int i = 0; i < 8; i++) d[i] = s[i]; return b; }
+static double rt_sqrt(double x) { double r; __asm__("fsqrt.d %0, %1" : "=f"(r) : "f"(x)); return r; }
+#define RT_LN2 0.6931471805599453
+#define RT_PI 3.141592653589793
+static double rt_ln(double x) {
+  if (x <= 0) return x == 0 ? -(1.0 / 0.0) : (0.0 / 0.0);
+  int e = 0;
+  while (x >= 2.0) { x *= 0.5; e++; }
+  while (x < 1.0) { x *= 2.0; e--; }
+  double t = (x - 1) / (x + 1), t2 = t * t, s = 0, p = t;   /* x in [1,2): atanh series */
+  for (int k = 1; k < 60; k += 2) { s += p / k; p *= t2; }
+  return 2 * s + e * RT_LN2;
+}
+static double rt_exp(double x) {
+  if (x > 709) return 1.0 / 0.0;
+  if (x < -745) return 0;
+  int k = (int)(x / RT_LN2 + (x >= 0 ? 0.5 : -0.5));
+  double r = x - k * RT_LN2, s = 1, term = 1;
+  for (int i = 1; i < 30; i++) { term *= r / i; s += term; }
+  while (k > 0) { s *= 2; k--; }
+  while (k < 0) { s *= 0.5; k++; }
+  return s;
+}
+static double rt_pow(double a, double b) {
+  if (b == 0) return 1;
+  if (a == 0) return b > 0 ? 0 : 1.0 / 0.0;
+  if (b == (double)(HRT_I64)b && b > -1024 && b < 1024) {
+    HRT_I64 n = (HRT_I64)b; int neg = n < 0; if (neg) n = -n;
+    double r = 1, base = a;
+    while (n) { if (n & 1) r *= base; base *= base; n >>= 1; }
+    return neg ? 1 / r : r;
+  }
+  if (a < 0) return 0.0 / 0.0;
+  return rt_exp(b * rt_ln(a));
+}
+static double rt_sin(double x) {
+  x = x - 2 * RT_PI * (double)(HRT_I64)(x / (2 * RT_PI));
+  if (x > RT_PI) x -= 2 * RT_PI;
+  if (x < -RT_PI) x += 2 * RT_PI;
+  double t = x, s = x, x2 = x * x;
+  for (int i = 1; i < 12; i++) { t *= -x2 / ((2 * i) * (2 * i + 1)); s += t; }
+  return s;
+}
+static double rt_cos(double x) { return rt_sin(x + RT_PI / 2); }
+static double rt_atan(double x) {
+  if (x > 1) return RT_PI / 2 - rt_atan(1 / x);
+  if (x < -1) return -RT_PI / 2 - rt_atan(1 / x);
+  double y = x / (1 + rt_sqrt(1 + x * x)), y2 = y * y, t = y, s = y;   /* atan x = 2 atan y */
+  for (int i = 1; i < 40; i++) { t *= -y2; s += t / (2 * i + 1); }
+  return 2 * s;
+}
+static double rt_floor(double x) { double f = (double)(HRT_I64)x; if (f > x) f -= 1; return f; }
+static double rt_ceil(double x) { double f = (double)(HRT_I64)x; if (f < x) f += 1; return f; }
+static HRT_I64 HolyPow(HRT_I64 a, HRT_I64 b) { return rt_f2b(rt_pow(rt_b2f(a), rt_b2f(b))); }
+static HRT_I64 HolySqrt(HRT_I64 a) { return rt_f2b(rt_sqrt(rt_b2f(a))); }
+static HRT_I64 HolyExp(HRT_I64 a) { return rt_f2b(rt_exp(rt_b2f(a))); }
+static HRT_I64 HolyLn(HRT_I64 a) { return rt_f2b(rt_ln(rt_b2f(a))); }
+static HRT_I64 HolyLog10(HRT_I64 a) { return rt_f2b(rt_ln(rt_b2f(a)) / 2.302585092994046); }
+static HRT_I64 HolyLog2(HRT_I64 a) { return rt_f2b(rt_ln(rt_b2f(a)) / RT_LN2); }
+static HRT_I64 HolyFloor(HRT_I64 a) { return rt_f2b(rt_floor(rt_b2f(a))); }
+static HRT_I64 HolyCeil(HRT_I64 a) { return rt_f2b(rt_ceil(rt_b2f(a))); }
+static HRT_I64 HolyRound(HRT_I64 a) { double x = rt_b2f(a); return rt_f2b(x >= 0 ? (double)(HRT_I64)(x + 0.5) : -(double)(HRT_I64)(-x + 0.5)); }
+static HRT_I64 HolyTrunc(HRT_I64 a) { return rt_f2b((double)(HRT_I64)rt_b2f(a)); }
+static HRT_I64 HolySin(HRT_I64 a) { return rt_f2b(rt_sin(rt_b2f(a))); }
+static HRT_I64 HolyCos(HRT_I64 a) { return rt_f2b(rt_cos(rt_b2f(a))); }
+static HRT_I64 HolyTan(HRT_I64 a) { double x = rt_b2f(a); return rt_f2b(rt_sin(x) / rt_cos(x)); }
+static HRT_I64 HolyATan(HRT_I64 a) { return rt_f2b(rt_atan(rt_b2f(a))); }
+static HRT_I64 HolyAbs(HRT_I64 a) { double x = rt_b2f(a); return rt_f2b(x < 0 ? -x : x); }
+static HRT_I64 HolySign(HRT_I64 a) { double x = rt_b2f(a); return x > 0 ? 1 : x < 0 ? -1 : 0; }
 /* D: hex dump `n` bytes at `p`, 16 per line with ASCII */
 static HRT_I64 HolyD(HRT_U8 *p, HRT_I64 n) {
   for (HRT_I64 off = 0; off < n; off += 16) {
@@ -161,6 +232,7 @@ static const HolyRtEntry holy_rt_table[] = { HOLY_RT_NAMES(HOLY_RT_ENTRY) };
 /* AOT blobs end with an import directory: entries {u64 slot_offset; char name[24]} ×count,
  * then u64 count, u64 magic. Fill each slot with the runtime entry point of that name. */
 #define HOLY_IMPORT_MAGIC 0x31504D4959464F48ULL  /* "HOFYIMP1" little-endian bytes */
+static HRT_I64 holy_unresolved_import(void) { rt_puts("[unresolved import]\n"); return 0; }
 static HRT_I64 holy_resolve_imports(HRT_U8 *blob_start, HRT_U8 *blob_end) {
   if (blob_end - blob_start < 16) return 0;
   HRT_U64 magic, count;
@@ -172,6 +244,8 @@ static HRT_I64 holy_resolve_imports(HRT_U8 *blob_start, HRT_U8 *blob_end) {
   for (HRT_U64 k = 0; k < count; k++, ent += 32) {
     HRT_U64 slot; HRT_U8 *sp = (HRT_U8 *)&slot; for (int i = 0; i < 8; i++) sp[i] = ent[i];
     const char *name = (const char *)ent + 8;
+    { HRT_U64 fn = (HRT_U64)holy_unresolved_import; HRT_U8 *fp = (HRT_U8 *)&fn;
+      for (int i = 0; i < 8; i++) blob_start[slot + (HRT_U64)i] = fp[i]; }   /* default: diagnostic stub */
     for (HRT_I64 j = 0; j < HOLY_RT_COUNT; j++) {
       const char *a = holy_rt_table[j].name, *b = name;
       while (*a && *a == *b) { a++; b++; }

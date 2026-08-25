@@ -166,7 +166,9 @@ static void RuntimeRegister(Compiler *cc, const char *name, void *fn, I64 argc) 
     CHashFun *f = calloc(1, sizeof(CHashFun));
     f->str = strdup(name);
     f->type = HTT_FUN;
-    f->raw_type = (name[0] == 't' && name[1] == 'S' && !name[2]) ? RT_F64 : RT_I64;
+    f->raw_type = HolyRtRetF64(name) ? RT_F64 : RT_I64;
+    f->param_typed = true;
+    f->param_f64_mask = HolyRtF64Mask(name);
     f->exe_addr = (I64)fn;
     f->arg_cnt = argc;
     HashAdd((CHashEntry *)f, cc->hash_table);

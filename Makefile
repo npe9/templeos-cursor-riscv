@@ -15,7 +15,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke templeos-riscv templeos-smoke
+.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke coverage templeos-riscv templeos-smoke
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -50,6 +50,11 @@ templeos-riscv: $(COMPILER_BIN)
 templeos-smoke: $(COMPILER_BIN)
 	@chmod +x tests/scripts/run_templeos_smoke.sh
 	@tests/scripts/run_templeos_smoke.sh
+
+# How much of the TempleOS tree compiles (project builds with all errors, then per file)
+coverage: $(COMPILER_BIN)
+	@chmod +x tests/scripts/coverage_templeos.sh
+	@tests/scripts/coverage_templeos.sh
 
 # Bare-metal REPL (bootstrap/Makefile.repl) under QEMU: function calls across statements etc.
 repl-smoke:

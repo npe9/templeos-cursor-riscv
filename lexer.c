@@ -154,6 +154,23 @@ static bool LoadIncludeFile(Compiler *cc,
   if (!filename || !out_src || !resolved_path) return false;
 
   if (IsAbsolutePath(filename)) {
+    // TempleOS paths are rooted at the distribution ("/Kernel/KernelA.HH"): HOLYC_INCLUDE_ROOT
+    // names that directory on the host (the exec scripts point it at the repo root).
+#ifndef BARE_METAL
+    const char *root = getenv("HOLYC_INCLUDE_ROOT");
+    if (root && *root) {
+      char rooted[MAX_INCLUDE_PATH];
+      int w = StrPrintF(rooted, sizeof(rooted), "%s%s", root, filename);
+      if (w > 0 && w < (int)sizeof(rooted)) {
+        if (TryIncludeInDirectory(NULL, rooted, resolved_path, resolved_size, out_src)) return true;
+        if (!EndsWith(filename, ".HC") && !EndsWith(filename, ".HH")) {
+          char tmp2[MAX_INCLUDE_PATH];
+          int w2 = StrPrintF(tmp2, sizeof(tmp2), "%s.HC", rooted);
+          if (w2 > 0 && w2 < (int)sizeof(tmp2) && TryIncludeInDirectory(NULL, tmp2, resolved_path, resolved_size, out_src)) return true;
+        }
+      }
+    }
+#endif
     if (TryIncludeInDirectory(NULL, filename, resolved_path, resolved_size, out_src)) {
       return true;
     }
@@ -175,6 +192,12 @@ static bool LoadIncludeFile(Compiler *cc,
   if (current_dir[0]) {
     if (TryIncludeInDirectory(current_dir, filename, resolved_path, resolved_size, out_src)) {
       return true;
+    }
+    if (!EndsWith(filename, ".HC") && !EndsWith(filename, ".HH")) {   // `#include "KStart16"` → KStart16.HC
+      char tmp[MAX_INCLUDE_PATH];
+      int written = StrPrintF(tmp, sizeof(tmp), "%s.HC", filename);
+      if (written > 0 && written < (int)sizeof(tmp) &&
+          TryIncludeInDirectory(current_dir, tmp, resolved_path, resolved_size, out_src)) return true;
     }
   }
 
@@ -261,27 +284,18 @@ static void SkipComment(Lexer *lex) {
 }
 
 static void SkipDolDoc(Lexer *lex) {
-  // Skip DolDoc formatting sequences: $$...$$
-  if (lex->ptr[0] == '$' && lex->ptr[1] == '$') {
-    lex->ptr += 2;
-    lex->col += 2;
-    
-    // Skip until we find the closing $$
-    while (*lex->ptr && !(lex->ptr[0] == '$' && lex->ptr[1] == '$')) {
-      if (*lex->ptr == '\n') {
-        lex->line++;
-        lex->col = 1;
-      } else {
-        lex->col++;
-      }
-      lex->ptr++;
+  // Skip a DolDoc command in source text: `$XX,...$` (single dollars on disk; `$$` inside
+  // is an escaped '$'). Called with ptr at the opening '$'.
+  lex->ptr++;
+  lex->col++;
+  while (*lex->ptr) {
+    if (lex->ptr[0] == '$') {
+      if (lex->ptr[1] == '$') { lex->ptr += 2; lex->col += 2; continue; }   // escaped
+      lex->ptr++; lex->col++;                                               // closing
+      return;
     }
-    
-    // Skip the closing $$
-    if (lex->ptr[0] == '$' && lex->ptr[1] == '$') {
-      lex->ptr += 2;
-      lex->col += 2;
-    }
+    if (*lex->ptr == '\n') { lex->line++; lex->col = 1; } else lex->col++;
+    lex->ptr++;
   }
 }
 
@@ -392,9 +406,17 @@ static void HandlePreprocessor(Compiler *cc) {
     }
 
     // Get replacement text (rest of line)
-    char value[1024];
+    char value[8192];
     i = 0;
-    while (*lex->ptr && *lex->ptr != '\n' && i < 1023) {
+    while (*lex->ptr && *lex->ptr != '\n' && i < (int)sizeof(value) - 1) {
+      if (*lex->ptr == '\\' && (lex->ptr[1] == '\n' || (lex->ptr[1] == '\r' && lex->ptr[2] == '\n'))) {
+        // backslash-newline: the definition continues on the next line
+        lex->ptr += (lex->ptr[1] == '\r') ? 3 : 2;
+        lex->line++;
+        lex->col = 1;
+        value[i++] = ' ';
+        continue;
+      }
       value[i++] = *lex->ptr++;
       lex->col++;
     }
@@ -516,7 +538,18 @@ static void HandlePreprocessor(Compiler *cc) {
     if (strcmp(directive, "ifjit") == 0) cc->preprocessor_skip = true;
     cc->ifdef_depth++;
   } else if (strcmp(directive, "exe") == 0) {
-    // #exe { … } runs code at compile time in TempleOS; nothing to run here — skip the line.
+    // #exe { … } runs code at compile time in TempleOS; nothing to run here — skip the block
+    // (it may span lines), then the rest of the line.
+    while (*lex->ptr == ' ' || *lex->ptr == '\t') { lex->ptr++; lex->col++; }
+    if (*lex->ptr == '{') {
+      int depth = 0;
+      do {
+        if (*lex->ptr == '{') depth++;
+        else if (*lex->ptr == '}') depth--;
+        else if (*lex->ptr == '\n') { lex->line++; lex->col = 0; }
+        lex->ptr++; lex->col++;
+      } while (*lex->ptr && depth > 0);
+    }
     while (*lex->ptr && *lex->ptr != '\n') { lex->ptr++; lex->col++; }
   } else if (strcmp(directive, "if") == 0) {
     // #if - simplified: only support #if 0 and #if 1
@@ -891,6 +924,36 @@ static int LexNumber(Lexer *lex) {
       lex->ptr++;
       lex->col++;
     }
+  } else if (lex->ptr[0] == '0' && (lex->ptr[1] == 'b' || lex->ptr[1] == 'B') &&
+             (lex->ptr[2] == '0' || lex->ptr[2] == '1')) {
+    // 0b binary (HolyC LexGetNumber)
+    lex->ptr += 2;
+    lex->col += 2;
+    while (*lex->ptr == '0' || *lex->ptr == '1') {
+      value = value * 2 + (*lex->ptr - '0');
+      lex->ptr++;
+      lex->col++;
+    }
+  } else if (lex->ptr[0] == '0' && (lex->ptr[1] == 'd' || lex->ptr[1] == 'D') &&
+             (lex->ptr[2] >= '0' && lex->ptr[2] <= '9')) {
+    // 0d decimal
+    lex->ptr += 2;
+    lex->col += 2;
+    while (*lex->ptr >= '0' && *lex->ptr <= '9') {
+      value = value * 10 + (*lex->ptr - '0');
+      lex->ptr++;
+      lex->col++;
+    }
+  } else if (lex->ptr[0] == '0' && (lex->ptr[1] == 'o' || lex->ptr[1] == 'O') &&
+             (lex->ptr[2] >= '0' && lex->ptr[2] <= '7')) {
+    // 0o octal
+    lex->ptr += 2;
+    lex->col += 2;
+    while (*lex->ptr >= '0' && *lex->ptr <= '7') {
+      value = value * 8 + (*lex->ptr - '0');
+      lex->ptr++;
+      lex->col++;
+    }
   } else {
     // Parse decimal digits manually (no atoll in bare metal)
     while (*lex->ptr >= '0' && *lex->ptr <= '9') {
@@ -900,14 +963,19 @@ static int LexNumber(Lexer *lex) {
     }
   }
   
-  // Floating literal: digits '.' digits [e[+-]digits]  (decimal only; 0x... never gets here)
-  if (*lex->ptr == '.' && lex->ptr[1] >= '0' && lex->ptr[1] <= '9') {
+  // Floating literal: digits ['.' digits] [e[+-]digits]  (decimal only; 0x... never gets here)
+  bool exp_follows = (*lex->ptr == 'e' || *lex->ptr == 'E') &&
+                     ((lex->ptr[1] >= '0' && lex->ptr[1] <= '9') ||
+                      ((lex->ptr[1] == '+' || lex->ptr[1] == '-') && lex->ptr[2] >= '0' && lex->ptr[2] <= '9'));
+  if ((*lex->ptr == '.' && lex->ptr[1] >= '0' && lex->ptr[1] <= '9') || exp_follows) {
     F64 f = (F64)value, scale = 0.1;
-    lex->ptr++; lex->col++;
-    while (*lex->ptr >= '0' && *lex->ptr <= '9') {
-      f += (F64)(*lex->ptr - '0') * scale;
-      scale /= 10.0;
+    if (*lex->ptr == '.') {
       lex->ptr++; lex->col++;
+      while (*lex->ptr >= '0' && *lex->ptr <= '9') {
+        f += (F64)(*lex->ptr - '0') * scale;
+        scale /= 10.0;
+        lex->ptr++; lex->col++;
+      }
     }
     if ((*lex->ptr == 'e' || *lex->ptr == 'E') &&
         ((lex->ptr[1] >= '0' && lex->ptr[1] <= '9') ||
@@ -926,11 +994,12 @@ static int LexNumber(Lexer *lex) {
 }
 
 static int LexString(Lexer *lex) {
-  char buf[1024];
+  static char buf[65536];   // TempleOS strings (DolDoc text) run long; static: not on the stack
   int len = 0;
   char quote = *lex->ptr++;
   lex->col++;
   
+  for (;;) {
   while (*lex->ptr && *lex->ptr != quote) {
     if (*lex->ptr == '\\') {
       lex->ptr++;
@@ -942,38 +1011,32 @@ static int LexString(Lexer *lex) {
         case '\\': buf[len++] = '\\'; break;
         case '"': buf[len++] = '"'; break;
         case '\'': buf[len++] = '\''; break;
-        case 'd': // \d = $$ (DolDoc escape)
-          buf[len++] = '$';
+        case 'd': // \d = '$' (DolDoc escape)
           buf[len++] = '$';
           break;
         default: buf[len++] = *lex->ptr;
       }
       lex->ptr++;
       lex->col++;
+    } else if (*lex->ptr == '$' && lex->ptr[1] >= 'A' && lex->ptr[1] <= 'Z') {
+      // A DolDoc command inside a string (`$TX,"512Meg",D="…"$`): quotes inside it do not end
+      // the literal. Copied verbatim; the UART runtime shows it as-is.
+      buf[len++] = *lex->ptr++; lex->col++;
+      while (*lex->ptr) {
+        if (lex->ptr[0] == '$') {
+          if (lex->ptr[1] == '$') { buf[len++] = '$'; lex->ptr += 2; lex->col += 2; continue; }
+          buf[len++] = *lex->ptr++; lex->col++;
+          break;
+        }
+        if (*lex->ptr == '\n') { lex->line++; lex->col = 1; } else lex->col++;
+        buf[len++] = *lex->ptr++;
+      }
     } else if (*lex->ptr == '$' && lex->ptr[1] == '$') {
-      // DolDoc formatting sequence: $$...$$
-      // Skip the opening $$
+      // `$$` is a literal '$' in HolyC source (DolDoc escape); "$$FG,RED$$" carries a DolDoc
+      // command to the console, which the UART runtime strips at print time.
+      buf[len++] = '$';
       lex->ptr += 2;
       lex->col += 2;
-      
-      // Skip until we find the closing $$
-      while (*lex->ptr && !(*lex->ptr == '$' && lex->ptr[1] == '$')) {
-        if (*lex->ptr == '\n') {
-          lex->line++;
-          lex->col = 1;
-        } else {
-          lex->col++;
-        }
-        lex->ptr++;
-      }
-      
-      // Skip the closing $$
-      if (*lex->ptr == '$' && lex->ptr[1] == '$') {
-        lex->ptr += 2;
-        lex->col += 2;
-      }
-      
-      // Don't add DolDoc content to the string - just skip it
     } else {
       buf[len++] = *lex->ptr++;
       lex->col++;
@@ -984,10 +1047,25 @@ static int LexString(Lexer *lex) {
     lex->ptr++;
     lex->col++;
   }
+  if (quote == '"') {
+    // Adjacent literals concatenate ("a" "b", also across lines and comments).
+    char *p = lex->ptr; int line = lex->line, col = lex->col;
+    for (;;) {
+      while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') { if (*p == '\n') { line++; col = 1; } else col++; p++; }
+      if (p[0] == '/' && p[1] == '/') { while (*p && *p != '\n') p++; continue; }
+      if (p[0] == '/' && p[1] == '*') { p += 2; while (*p && !(p[0] == '*' && p[1] == '/')) { if (*p == '\n') line++; p++; } if (*p) p += 2; continue; }
+      break;
+    }
+    if (*p == '"') { lex->ptr = p + 1; lex->line = line; lex->col = col + 1; continue; }
+  }
+  break;
+  }
   
   buf[len] = '\0';
   if (lex->token_str) free(lex->token_str);
-  lex->token_str = strdup(buf);
+  lex->token_str = malloc(len + 1);
+  memcpy(lex->token_str, buf, len + 1);
+  lex->token_str_len = len;
   if (quote == '\'') {
     // HolyC char literal: up to 8 chars packed little-endian into an I64 ('AB' == 0x4241).
     lex->token_i64 = 0;
@@ -998,7 +1076,20 @@ static int LexString(Lexer *lex) {
   return TK_STR;
 }
 
+static void LexNextInner(Compiler *cc);
 void LexNext(Compiler *cc) {
+  LexNextInner(cc);
+#ifndef BARE_METAL
+  {
+    static const char *tf = NULL; static int inited = 0;
+    if (!inited) { tf = getenv("HOLYC_TOKTRACE"); inited = 1; }
+    if (tf && cc->lex.filename && strstr(cc->lex.filename, tf))
+      fprintf(stderr, "[tok] %s:%d tok=%d '%s' depth=%d\n", cc->lex.filename, cc->lex.line, cc->lex.token,
+              (cc->lex.token == TK_IDENT || cc->lex.token == TK_STR) && cc->lex.token_str ? cc->lex.token_str : "", cc->lex.brace_depth);
+  }
+#endif
+}
+static void LexNextInner(Compiler *cc) {
   Lexer *lex = &cc->lex;
   lex->token_is_char = false;
   
@@ -1008,7 +1099,10 @@ void LexNext(Compiler *cc) {
     if (lex->ptr[0] == '/' && (lex->ptr[1] == '/' || lex->ptr[1] == '*')) {
       SkipComment(lex);
     } else if (lex->ptr[0] == '$' && lex->ptr[1] == '$') {
-      SkipDolDoc(lex);
+      // `$$` in code: the current address (`Fs->rip=$$;`) or, in a class body, the offset.
+      lex->ptr += 2; lex->col += 2; lex->token = TK_DOLLAR; return;
+    } else if (lex->ptr[0] == '$' && lex->ptr[1] >= 'A' && lex->ptr[1] <= 'Z') {
+      SkipDolDoc(lex);   // `$LK,"…",A="…"$` etc. in comments-as-code positions
     } else if (*lex->ptr == '#') {
       HandlePreprocessor(cc);
     } else {
@@ -1052,8 +1146,12 @@ void LexNext(Compiler *cc) {
       lex->filename = inc->filename;
       lex->line = inc->line;
       lex->col = inc->col;
-      
-      free(inc);
+      // Keep the frame while a lookahead is pending: LexPopRestore re-links it if the
+      // LexPush was taken inside this buffer (a macro's last token, `_intern IC_BT Bool …`).
+#ifndef BARE_METAL
+      if (getenv("HOLYC_TRACE") && lex->stack) fprintf(stderr, "[trace] frame pop with pending lookahead: back to %s:%d\n", lex->filename ? lex->filename : "?", lex->line);
+#endif
+      if (!lex->stack) free(inc);
       
       // Continue lexing from restored position
       return LexNext(cc);
@@ -1065,7 +1163,9 @@ void LexNext(Compiler *cc) {
   }
   
   // Identifier or keyword
-  if ((*lex->ptr >= 'a' && *lex->ptr <= 'z') || (*lex->ptr >= 'A' && *lex->ptr <= 'Z') || *lex->ptr == '_') {
+  if ((*lex->ptr >= 'a' && *lex->ptr <= 'z') || (*lex->ptr >= 'A' && *lex->ptr <= 'Z') || *lex->ptr == '_' ||
+      ((unsigned char)*lex->ptr >= 128 && (unsigned char)*lex->ptr != 0xEC &&
+       !((unsigned char)lex->ptr[0] == 0xE2 && (unsigned char)lex->ptr[1] == 0x88))) {   // `µs`: TempleOS charset
     lex->token = LexIdentifier(cc);
     return;
   }
@@ -1103,6 +1203,24 @@ void LexNext(Compiler *cc) {
   }
   if (lex->ptr[0] == '>' && lex->ptr[1] == '=') {
     lex->token = TK_GREATER_EQU;
+    lex->ptr += 2;
+    lex->col += 2;
+    return;
+  }
+  if (lex->ptr[0] == '<' && lex->ptr[1] == '<' && lex->ptr[2] == '=') {
+    lex->token = TK_SHL_EQU;
+    lex->ptr += 3;
+    lex->col += 3;
+    return;
+  }
+  if (lex->ptr[0] == '>' && lex->ptr[1] == '>' && lex->ptr[2] == '=') {
+    lex->token = TK_SHR_EQU;
+    lex->ptr += 3;
+    lex->col += 3;
+    return;
+  }
+  if (lex->ptr[0] == '%' && lex->ptr[1] == '=') {
+    lex->token = TK_MOD_EQU;
     lex->ptr += 2;
     lex->col += 2;
     return;
@@ -1210,9 +1328,20 @@ void LexNext(Compiler *cc) {
     return;
   }
   
+  // `∞` (TempleOS char 0xEC, or UTF-8 on the host): F64 infinity literal
+  if ((unsigned char)lex->ptr[0] == 0xEC ||
+      ((unsigned char)lex->ptr[0] == 0xE2 && (unsigned char)lex->ptr[1] == 0x88 && (unsigned char)lex->ptr[2] == 0x9E)) {
+    lex->ptr += ((unsigned char)lex->ptr[0] == 0xEC) ? 1 : 3;
+    lex->col++;
+    lex->token = TK_F64;
+    lex->token_f64 = __builtin_inf();
+    return;
+  }
   // Single character
   lex->token = *lex->ptr++;
   lex->col++;
+  if (lex->token == '{') lex->brace_depth++;
+  else if (lex->token == '}') lex->brace_depth--;
 }
 
 bool LexExpect(Compiler *cc, int token) {
@@ -1237,6 +1366,7 @@ void Error(Compiler *cc, const char *msg) {
   if (!cc->error) {
     cc->error = strdup(msg);
     cc->error_line = cc->lex.line;
+    cc->error_file = cc->lex.filename;
   }
   // No fprintf - HolyC doesn't use stdio
 }
@@ -1274,7 +1404,13 @@ void LexPush(Compiler *cc) {
   saved->token_f64 = cc->lex.token_f64;
   
   
-  saved->token_str = cc->lex.token_str ? strdup(cc->lex.token_str) : NULL;
+  if (cc->lex.token_str) {
+    size_t n = (cc->lex.token == TK_STR) ? (size_t)cc->lex.token_str_len : strlen(cc->lex.token_str);
+    saved->token_str = malloc(n + 1);
+    memcpy(saved->token_str, cc->lex.token_str, n + 1);
+  } else saved->token_str = NULL;
+  saved->token_str_len = cc->lex.token_str_len;
+  saved->brace_depth = cc->lex.brace_depth;
   
   
   saved->hash_entry = cc->lex.hash_entry;
@@ -1309,6 +1445,12 @@ void LexPopRestore(Compiler *cc) {
     }
     cc->lex.src = saved->src;
     cc->lex.filename = saved->filename;
+  } else {
+    // Frames finished during the lookahead were popped (kept alive above): re-link them so
+    // the saved buffer resumes and then returns to the outer file where it left off.
+    cc->lex.include_stack = saved->include_stack;
+    cc->lex.src = saved->src;
+    cc->lex.filename = saved->filename;
   }
   // Restore state
   cc->lex.ptr = saved->ptr;
@@ -1321,6 +1463,8 @@ void LexPopRestore(Compiler *cc) {
   // Free old token_str and restore saved one
   if (cc->lex.token_str) free(cc->lex.token_str);
   cc->lex.token_str = saved->token_str;  // Transfer ownership
+  cc->lex.token_str_len = saved->token_str_len;
+  cc->lex.brace_depth = saved->brace_depth;
   
   cc->lex.hash_entry = saved->hash_entry;
   

@@ -35,11 +35,18 @@ int main(int argc, char **argv) {
   free(src);
   
   if (cc->error) {
-    fprintf(stderr, "Error: %s\n", cc->error);
+    fprintf(stderr, "Error: %s (%lld error(s))\n", cc->error, (long long)cc->error_count);
+    if (getenv("HOLYC_ALL_ERRORS")) {
+      I64 n = cc->error_count < 256 ? cc->error_count : 256;
+      for (I64 i = 0; i < n; i++)
+        fprintf(stderr, "  %s:%lld: %s\n", cc->errors[i].file ? cc->errors[i].file : input, (long long)cc->errors[i].line, cc->errors[i].msg);
+      if (cc->error_count > 256) fprintf(stderr, "  ... %lld more\n", (long long)(cc->error_count - 256));
+    }
     return 1;
   }
   
   printf("✓ Compiled successfully (AOT mode)\n");
+  if (cc->asm_blocks_skipped) printf("  (%lld x86 asm block(s) skipped)\n", (long long)cc->asm_blocks_skipped);
   printf("Code size: %lld bytes\n", cc->code_size);
   
   f = fopen(output, "wb");

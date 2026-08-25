@@ -95,6 +95,14 @@ add_case 'I64 ga = 3; I64 gb = 4; ga * gb + ga;' 000000000000000f
 # Default arguments, unsigned arithmetic, try/catch/throw (incl. across a call and nested).
 add_case 'I64 Dflt(I64 a, I64 b = 3) { return a + b; } Dflt(2) * 10 + Dflt(2, 4);' 0000000000000038
 add_case 'U64 ubig = -1; (ubig > 0) + (ubig / 2 == 0x7FFFFFFFFFFFFFFF) + ((U32)(-1) >> 4 == 0x0FFFFFFF);' 0000000000000003
+add_case 'I64 Fc(I64 r){ return (2<=r<=36)+10*(1<r<5<9)+100*(48<=r<=57); } Fc(3)+Fc(50)*1000;' 00000000000186ab
+add_case 'I64 Sum(I64 n,...){ I64 i,s=n; for (i=0;i<argc;i++) s+=argv[i]; return s; } Sum(1,2,3)*10+Sum(4);' 0000000000000040
+add_case 'U8 Hx(I64 n){ return "0123456789ABCDEF"(U8 *)[n&15]; } I64 Vx(){ I64 vv=5; return Hx(11)*256+vv(U8)+(&vv)(U8 *)[0]; } Vx();' 000000000000420a
+add_case 'I64 Mth(){ return Sign(2.0`10.0-1023.5)+Sign(Sqrt(16.0)-3.9)+Sign(Exp(Ln(8.0))-7.9)+(Floor(2.7)==2.0)+(Round(2.5)==3.0); } Mth();' 0000000000000005
+add_case 'I64 Ad3(I64 a,I64 b){ return a+b; } I64 Cl(){ I64 (*fp)(I64,I64)=&Ad3; return (*fp)(3,4); } Cl();' 0000000000000007
+add_case 'I64 Sw(I64 x){ switch [x] { case -1: return 2; case 97: return 3; case 1...3: return 4; } return 0; } I64 Kk(I64 a,I64){ a>>=2; a<<=1; a%=7; lock a++; return a; } Sw(-1)*1000+Sw(97)*100+Sw(2)*10+Kk(40,9);' 000000000000092b
+add_case 'I64 Sv(I64 d=7){ return d; } class CQz {I64 a; U8 b; I64 c;}; I64 Qq(){ I64 x=Sv; return x*100+offset(CQz.c)+0b101+0o10+0d3; } Qq();' 00000000000002d5
+add_case 'I64 Pc(){ I64 a=$$; I64 b=$$; return b>a; } Pc();' 0000000000000001
 add_case 'I64 Boom() { throw(7); return 1; }'
 add_case 'I64 Try2() { try { Boom(); return 99; } catch { return Fs->except_ch + 100; } }'
 add_case 'Try2();' 000000000000006b

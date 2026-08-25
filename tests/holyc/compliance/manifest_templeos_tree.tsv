@@ -17,10 +17,10 @@ Demo/DolDoc/Form.HC	dol_doc	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/D
 Demo/DolDoc/FileRead.HC	dol_doc	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
 Demo/DolDoc/MenuBttn.HC	dol_doc	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
 Demo/DolDoc/ClickCallBack.HC	dol_doc	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
-Demo/Asm/MulByHand.HC	asm	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
+Demo/Asm/MulByHand.HC	asm	pass_any	
 Demo/Asm/AsmAndC3.HC	asm	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
 Demo/RevFileDemo/Rev.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
 Demo/AcctExample/TOS/TOSBlog.HC	acct	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
 Adam/ADefine.HC	adam	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
-Kernel/KStart16.HC	kernel	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
+Kernel/KStart16.HC	kernel	pass_any	
 Demo/PhoneNumWords.HC	demo	xfail	

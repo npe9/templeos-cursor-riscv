@@ -54,6 +54,7 @@ build_harness_objs() {
 if [ ! -f "$OUTDIR/crt0.o" ] || [ ! -f "$OUTDIR/oracle_out.o" ]; then
   build_harness_objs
 elif [ "$HARNESS/crt0.S" -nt "$OUTDIR/crt0.o" ] || [ "$HARNESS/oracle_out.c" -nt "$OUTDIR/oracle_out.o" ] || \
+     [ "$ROOT/bootstrap/holy_rt.h" -nt "$OUTDIR/oracle_out.o" ] || [ "$ROOT/bootstrap/holy_rt_names.h" -nt "$OUTDIR/oracle_out.o" ] || \
      [ "$HARNESS/link_exec.ld" -nt "$OUTDIR/crt0.o" ]; then
   build_harness_objs
 fi

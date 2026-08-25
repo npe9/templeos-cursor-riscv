@@ -139,6 +139,20 @@ typedef bool      Bool;
 #define IC_FNOT_EQU      0x9C
 #define IC_FNEG          0x9D
 #define IC_FMOD          0xA8
+#define IC_CLI           0xA9   // HolyC bare-statement intrinsics: mstatus.MIE on RISC-V
+#define IC_STI           0xAA
+#define IC_PUSHFD        0xAB   // push mstatus / pop mstatus
+#define IC_POPFD         0xAC
+#define IC_SHL_EQU       0xAD
+#define IC_SHR_EQU       0xAE
+#define IC_MOD_EQU       0xAF
+#define IC_PAUSE         0xB0   // spin-loop hint: nop
+#define IC_CHAIN_CMP     0xB1   // chained compare `a<b<c`: [a,b] -> [(a op b), b]; ic_data = compare IC
+#define IC_CHAIN_AND     0xB2   // [x,y,z] -> [x&y, z]
+#define IC_HLT           0xB3   // `HLT` statement: wfi
+#define IC_INT           0xB4   // `INT n` statement: ebreak (debugger entry)
+#define IC_PC            0xB5   // `$$` in code: the current address (auipc)
+#define IC_FN_ADDR       0xB6   // ic_data = CLabel*: a function's address as a value (auipc/addi)
 #define IC_UDIV          0x9E
 #define IC_UMOD          0x9F
 #define IC_ULESS         0xA0
@@ -261,6 +275,10 @@ typedef struct CSwitchCase {
 #define TK_MINUS_MINUS  280  // --
 #define TK_ARROW        281  // ->
 #define TK_ELLIPSIS     282  // ...
+#define TK_DOLLAR       283  // $$ inside a class body: the current member offset
+#define TK_SHL_EQU      284  // <<=
+#define TK_SHR_EQU      285  // >>=
+#define TK_MOD_EQU      286  // %=
 
 // Keywords
 #define KW_IF       300
@@ -286,6 +304,18 @@ typedef struct CSwitchCase {
 #define KW_ASM      330
 #define KW_ENUM     331
 #define KW_DO       332
+#define KW_EXTERN   333
+#define KW__EXTERN  334
+#define KW__INTERN  335
+#define KW_IMPORT   336
+#define KW__IMPORT  337
+#define KW_INTERRUPT 338
+#define KW_HASERRCODE 339
+#define KW_ARGPOP   340
+#define KW_NOREG    341
+#define KW_REG      342
+#define KW_NO_WARN  343
+#define KW_LASTCLASS 344
 #define KW_I0       308
 #define KW_U0       309
 #define KW_I8       310
@@ -321,6 +351,8 @@ typedef struct LexerStack {
   I64 token_i64;     // Saved integer value
   F64 token_f64;     // Saved float value
   char *token_str;   // Saved string (owned by this struct)
+  int token_str_len; // Saved string length (TK_STR may hold NULs)
+  int brace_depth;
   CHashEntry *hash_entry;  // Saved hash entry
   char *src;               // Saved source buffer (a macro expansion may have been entered since)
   char *filename;
@@ -344,7 +376,9 @@ typedef struct {
   
   LexerStack *stack;  // Stack for LexPush/LexPop
   IncludeFile *include_stack;  // Stack for #include files
-  bool token_is_char;          // TK_I64 came from a char literal ('x' statements call PutChars)
+  bool token_is_char;
+  int token_str_len;   // TK_STR: byte length (may contain NULs)
+  int brace_depth;     // { } nesting of the token stream (error recovery)          // TK_I64 came from a char literal ('x' statements call PutChars)
 } Lexer;
 
 // ═══════════════════════════════════════════════════════════════
@@ -461,6 +495,10 @@ typedef struct {
   // Error handling
   char *error;
   int error_line;
+  char *error_file;
+  U8 cast_elem_type;       // pointee type after a pointer cast (`s(U8 *)[i]`), 0 = none
+  CHashClass *cast_elem_class;
+  bool addr_of_ident;      // `&name` pending: a function name here is an address, not a call        // File where the first pending error was raised
   
   // Output
   U8 *code_buffer;
@@ -488,6 +526,7 @@ typedef struct {
   // Parse errors are recovered from (skip to the end of the item) but never dropped silently.
   const char *first_error;
   I64 error_count;
+  struct { I64 line; const char *file; const char *msg; } errors[256];   // first 64 (HOLYC_ALL_ERRORS)
   int subscript_level;   // consecutive [ ] applied to the current array reference
   U8 last_expr_type;     // RT_F64 / RT_U64 (unsigned) / RT_I64 for the expression just parsed
   // AOT data section: globals laid out after code+strings (data_addr_rip = offset)
@@ -501,6 +540,9 @@ typedef struct {
   struct CHashGlblVar *fs_var;         // Fs: pointer to the task block (__task); Fs->except_ch
   struct CMemberLst *last_member;      // member just accessed by . or -> (typing for [ ] and *)
   U8 call_ret_type;                    // raw_type of the function just called (F64 → F64 result)
+  I64 asm_blocks_skipped;              // x86 asm {} blocks parsed and dropped
+  U8 class_base_type;                  // `I64 class X {…}`: the class is that scalar; members overlay it
+  int in_class_body;                   // `$$` lexes as TK_DOLLAR (current offset) while > 0
   U8 current_fn_ret_type;
 
 } Compiler;
@@ -508,6 +550,7 @@ typedef struct {
 // String literal for target code
 typedef struct StringLiteral {
   char *str;
+  I64 len;     // bytes (literals may contain \0)
   I64 offset;  // Offset in final binary
   struct StringLiteral *next;
 } StringLiteral;

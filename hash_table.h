@@ -93,10 +93,14 @@ typedef struct CHashFun {
   struct CMemberLst *member_lst;     // Parameters
   void *entry_label;        // CLabel* — stable for forward decl + unified AOT (PC-rel IC_CALL)
   bool is_extern;           // runtime function: call through import_var's slot (AOT: data section)
+  int entry_label_defined;  // a body was parsed (extern declarations before it do not make it an import)
   struct CHashGlblVar *import_var;
   I64 param_cnt;            // declared parameters (0 for runtime-registered functions: unchecked)
   U8 param_has_default[16];
   I64 param_default[16];
+  bool is_varargs;          // `...`: hidden argc/argv parameters follow the fixed ones
+  bool param_typed;         // parameter types known: convert call arguments per the mask
+  unsigned param_f64_mask;  // bit i: parameter i is F64
 } CHashFun;
 
 // Hash entry for keywords
