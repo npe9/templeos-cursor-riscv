@@ -97,17 +97,34 @@ Compiler *CompilerNew(const char *source, const char *filename) {
   // Runtime globals the generated code needs: the handler-context stack top and the last
   // throw's code (HolyC's Fs->except_ch). Ordinary globals: absolute in the REPL, data section in AOT.
   {
-    const char *names[2] = { "__try_top", "except_ch" };
-    for (int i = 0; i < 2; i++) {
+    // class CTask { I64 except_ch; }; __task is one of those; Fs points at it (HolyC's
+    // Fs->except_ch). The REPL sets Fs at init; AOT does it first thing in the entry chunk.
+    CHashClass *task = calloc(1, sizeof(CHashClass));
+    task->str = strdup("CTask");
+    task->type = HTT_CLASS;
+    task->raw_type = RT_I64;
+    task->size = 16;
+    CMemberLst *m = calloc(1, sizeof(CMemberLst));
+    m->str = strdup("except_ch");
+    m->offset = 0;
+    m->size = 8;
+    task->member_lst = m;
+    HashAdd((CHashEntry *)task, cc->hash_table);
+    const char *names[3] = { "__try_top", "__task", "Fs" };
+    for (int i = 0; i < 3; i++) {
       CHashGlblVar *g = calloc(1, sizeof(CHashGlblVar));
       g->str = strdup(names[i]);
       g->type = HTT_GLBL_VAR;
-      g->size = 8;
+      g->size = i == 1 ? 16 : 8;
       g->element_size = 8;
       g->raw_type = RT_I64;
-      g->data_addr = calloc(1, 8);
+      if (i == 1) g->var_class = task;
+      if (i == 2) { g->var_class = task; g->pointed_to_type = RT_I64; }
+      g->data_addr = calloc(1, (size_t)g->size);
       HashAdd((CHashEntry *)g, cc->hash_table);
-      if (i == 0) cc->try_top_var = g; else cc->except_ch_var = g;
+      if (i == 0) cc->try_top_var = g;
+      else if (i == 1) cc->except_ch_var = g;   // except_ch is the task block's first field
+      else cc->fs_var = g;
     }
   }
   cc->aot_fn_ic_head = NULL;
@@ -1814,21 +1831,34 @@ Compiler *Compile(const char *source, const char *filename, bool aot) {
   
   // Stitch deferred per-function IC chains (source order) then single AOT pass
   AOTFnICChunk *stitched = NULL;
-  if (cc->defer_aot_compile && cc->aot_main_head) {
-    // Top-level statements run first, in a frame of their own; the last statement's value is
-    // left in a0 (same answer semantics as the REPL; the exec harness prints it as ORACLE).
-    CIntermediateCode *ent = calloc(1, sizeof(CIntermediateCode));
-    CIntermediateCode *rv = calloc(1, sizeof(CIntermediateCode));
-    CIntermediateCode *lv = calloc(1, sizeof(CIntermediateCode));
-    AOTFnICChunk *mainch = calloc(1, sizeof(AOTFnICChunk));
-    if (ent && rv && lv && mainch) {
-      ent->ic_code = IC_ENTER;  ent->ic_data = 0;  ent->next = cc->aot_main_head;
-      rv->ic_code = IC_RETURN_VAL2;
-      lv->ic_code = IC_LEAVE;   lv->ic_data = 0;
-      cc->aot_main_tail->next = rv;  rv->next = lv;
-      mainch->head = ent;  mainch->tail = lv;  mainch->fun = NULL;  mainch->next = cc->aot_fn_ic_head;
-      stitched = mainch;
+  CHashEntry *main_e = (cc->defer_aot_compile && !cc->aot_main_head && cc->hash_table) ? HashFind("main", cc->hash_table, HTT_FUN) : NULL;
+  if (cc->defer_aot_compile && (cc->aot_main_head || main_e)) {
+    // Entry chunk, placed first: `Fs = &__task`, then the top-level statements (HolyC runs
+    // them in source order) — or, when there are none, a call to main() for C-style files.
+    // The last value is left in a0 (the REPL's answer; the exec harness prints it as ORACLE).
+    CIntermediateCode *stmts_head = cc->aot_main_head, *stmts_tail = cc->aot_main_tail;
+    cc->ic_head = cc->ic_tail = NULL;
+    ICAdd(cc, IC_IMM_I64, (I64)cc->fs_var->data_addr, RT_I64);      cc->ic_tail->ic_flags = ICF_GLBL_ADDR;
+    ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
+    ICAdd(cc, IC_IMM_I64, (I64)cc->except_ch_var->data_addr, RT_I64); cc->ic_tail->ic_flags = ICF_GLBL_ADDR;
+    ICAdd(cc, IC_ASSIGN, 0, RT_I64);
+    ICAdd(cc, IC_END_EXP, 0, RT_I64);
+    if (stmts_head) {
+      cc->ic_tail->next = stmts_head;
+      stmts_head->last = cc->ic_tail;
+      cc->ic_tail = stmts_tail;
+    } else {
+      CHashFun *mf = (CHashFun *)main_e;
+      ICAdd(cc, IC_CALL_START, 0, RT_I64);
+      ICAdd(cc, IC_CALL, (I64)mf->entry_label, RT_I64);
+      cc->ic_tail->ic_flags = 0;
+      ICAdd(cc, IC_CALL_END, 0, RT_I64);
     }
+    WrapStatementsAsFrame(cc);
+    AOTFnICChunk *mainch = calloc(1, sizeof(AOTFnICChunk));
+    mainch->head = cc->ic_head;  mainch->tail = cc->ic_tail;  mainch->fun = NULL;  mainch->next = cc->aot_fn_ic_head;
+    cc->ic_head = cc->ic_tail = NULL;
+    stitched = mainch;
   } else if (cc->defer_aot_compile && cc->aot_fn_ic_head) {
     stitched = cc->aot_fn_ic_head;
   }

@@ -96,10 +96,16 @@ add_case 'I64 ga = 3; I64 gb = 4; ga * gb + ga;' 000000000000000f
 add_case 'I64 Dflt(I64 a, I64 b = 3) { return a + b; } Dflt(2) * 10 + Dflt(2, 4);' 0000000000000038
 add_case 'U64 ubig = -1; (ubig > 0) + (ubig / 2 == 0x7FFFFFFFFFFFFFFF) + ((U32)(-1) >> 4 == 0x0FFFFFFF);' 0000000000000003
 add_case 'I64 Boom() { throw(7); return 1; }'
-add_case 'I64 Try2() { try { Boom(); return 99; } catch { return except_ch + 100; } }'
+add_case 'I64 Try2() { try { Boom(); return 99; } catch { return Fs->except_ch + 100; } }'
 add_case 'Try2();' 000000000000006b
-add_case 'I64 Try5() { try { try { throw(1); } catch { throw(2); } } catch { return except_ch * 10; } return 0; } Try5();' 0000000000000014
+add_case 'I64 Try5() { try { try { throw(1); } catch { throw(2); } } catch { return Fs->except_ch * 10; } return 0; } Try5();' 0000000000000014
 add_case 'I64 Try3() { try { return 5; } catch { return 6; } } Try3() + Try2() - 107;' 0000000000000005
+# Top-level switch/try, omitted arguments, Fs->except_ch as a call argument, runtime breadth.
+add_case 'I64 tv = 2; switch (tv) { case 2: "two\n"; break; default: "other\n"; } tv * 3;' 0000000000000006
+add_case 'try { throw(5); } catch { "caught %d\n", Fs->except_ch; } Fs->except_ch + 100;' 0000000000000069
+add_case 'I64 Om(I64 a = 1, I64 b = 2, I64 c = 3) { return a * 100 + b * 10 + c; } Om(,5) - Om(7,,9);' fffffffffffffdc0
+add_case 'I64 Tb() { I64 i; for (i = 0; i < 3; i++) { try { if (i == 1) break; } catch { return 99; } } try { throw(4); } catch { return Fs->except_ch; } } Tb();' 0000000000000004
+add_case 'U8 *cat = MAlloc(16); StrCpy(cat, "ab"); StrCat(cat, "cd"); StrLen(cat) + MaxI64(3, 9) + ToUpper(0x61) - 0x41 + AbsI64(-2);' 000000000000000f
 for ((i = 1; i <= CALLS; i++)); do
   add_case "Add($i,1);" "$(printf '%016x' $((i + 1)))"
 done
@@ -129,11 +135,11 @@ if [ "$got" != "${expected%$'\n'}" ]; then
   echo "$out" >&2
   exit 1
 fi
-if ! echo "$out" | grep -q '^40 + 2 = 42$'; then
+if ! echo "$out" | grep -q '^40 + 2 = 42$' || ! echo "$out" | grep -q '^caught 5$'; then
   echo "FAIL REPL smoke — Print output missing (expected '40 + 2 = 42')" >&2
   echo "$out" >&2
   exit 1
 fi
 n=$(echo "$got" | wc -l | tr -d ' ')
-echo "OK   REPL: define/call, redefine, Fib(10), 11 args, loops/++/+=/arrays/pointers/static, Print/strings, switch/do/goto, class, 2-D, macros, F64, casts, fn ptrs, defaults, unsigned, try/catch, $CALLS calls ($n answers)"
+echo "OK   REPL: define/call, redefine, Fib(10), 11 args, loops/++/+=/arrays/pointers/static, Print/strings, switch/do/goto, class, 2-D, macros, F64, casts, fn ptrs, defaults, unsigned, try/catch, top-level switch/try, Fs, $CALLS calls ($n answers)"
 echo "REPL smoke: OK"

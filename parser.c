@@ -413,8 +413,8 @@ static void EnsureLvalueAddressPushed(Compiler *cc);
 // IC_IMM_I64) left on the eval stack; drop it first so [ ] . -> reads leave exactly one value.
 static void DerefDroppingAddressSlot(Compiler *cc) {
   CIntermediateCode *t = cc->ic_tail;
-  if (t && (t->ic_code == IC_ADD || t->ic_code == IC_PUSH_ARG || t->ic_code == IC_IMM_I64))
-    ICAdd(cc, IC_EVAL_DROP, 8, RT_I64);
+  if (t && (t->ic_code == IC_ADD || t->ic_code == IC_PUSH_ARG || t->ic_code == IC_IMM_I64 || t->ic_code == IC_DEREF))
+    ICAdd(cc, IC_EVAL_DROP, 8, RT_I64);   // IC_DEREF: `p->m` at offset 0 — the pointer value's slot
   ICAdd(cc, IC_DEREF, 0, RT_I64);
 }
 
@@ -744,7 +744,12 @@ static bool ParsePrimary(Compiler *cc) {
       
       ICAdd(cc, IC_CALL_START, 0, RT_I64);
       
-      // Parse arguments
+      // Parse arguments. An empty slot (`f(,2)`, `f(1,)`) takes that parameter's default.
+      CHashFun *pre_fn = NULL;
+      {
+        CHashEntry *pe = cc->hash_table ? HashFind(name, cc->hash_table, HTT_FUN) : NULL;
+        if (pe && (pe->type & HTT_FUN)) pre_fn = (CHashFun *)pe;
+      }
       int arg_count = 0;
       if (cc->lex.token != ')') {
         do {
@@ -754,7 +759,14 @@ static bool ParsePrimary(Compiler *cc) {
               return false;
             }
           }
-          if (!ParseExpression(cc)) {
+          if (cc->lex.token == ',' || cc->lex.token == ')') {
+            if (!pre_fn || arg_count >= pre_fn->param_cnt || arg_count >= 16 || !pre_fn->param_has_default[arg_count]) {
+              Error(cc, "Omitted argument has no default value");
+              free(name);
+              return false;
+            }
+            ICAdd(cc, IC_IMM_I64, pre_fn->param_default[arg_count], RT_I64);
+          } else if (!ParseExpression(cc)) {
             free(name);
             return false;
           }
@@ -1861,6 +1873,8 @@ static bool ParseDoStatement(Compiler *cc) {
   CLabel *saved_break = cc->current_break_label;
   CLabel *saved_continue = cc->current_continue_label;
   cc->current_break_label = end_label;
+  I64 saved_ltd = cc->loop_try_depth;
+  cc->loop_try_depth = cc->try_depth;
   cc->current_continue_label = cond_label;
   ICAdd(cc, IC_LABEL, (I64)start_label, RT_I64);
   start_label->defined = true;
@@ -1879,6 +1893,7 @@ static bool ParseDoStatement(Compiler *cc) {
     if (cc->lex.token == ';') LexNext(cc);
   }
   cc->current_break_label = saved_break;
+  cc->loop_try_depth = saved_ltd;
   cc->current_continue_label = saved_continue;
   return ok;
 }
@@ -1895,6 +1910,8 @@ static bool ParseWhileStatement(Compiler *cc) {
   
   // Set new loop context
   cc->current_break_label = end_label;
+  I64 saved_ltd = cc->loop_try_depth;
+  cc->loop_try_depth = cc->try_depth;
   cc->current_continue_label = start_label;
   
   // Start label
@@ -1903,16 +1920,19 @@ static bool ParseWhileStatement(Compiler *cc) {
   
   if (!LexExpect(cc, '(')) {
     cc->current_break_label = saved_break;
+    cc->loop_try_depth = saved_ltd;
     cc->current_continue_label = saved_continue;
     return false;
   }
   if (!ParseExpression(cc)) {
     cc->current_break_label = saved_break;
+    cc->loop_try_depth = saved_ltd;
     cc->current_continue_label = saved_continue;
     return false;
   }
   if (!LexExpect(cc, ')')) {
     cc->current_break_label = saved_break;
+    cc->loop_try_depth = saved_ltd;
     cc->current_continue_label = saved_continue;
     return false;
   }
@@ -1923,6 +1943,7 @@ static bool ParseWhileStatement(Compiler *cc) {
   // Loop body
   if (!ParseStatement(cc)) {
     cc->current_break_label = saved_break;
+    cc->loop_try_depth = saved_ltd;
     cc->current_continue_label = saved_continue;
     return false;
   }
@@ -1936,6 +1957,7 @@ static bool ParseWhileStatement(Compiler *cc) {
   
   // Restore loop context
   cc->current_break_label = saved_break;
+  cc->loop_try_depth = saved_ltd;
   cc->current_continue_label = saved_continue;
   
   return true;
@@ -1964,6 +1986,8 @@ static bool ParseForStatement(Compiler *cc) {
   
   // Set new loop context
   cc->current_break_label = end_label;
+  I64 saved_ltd = cc->loop_try_depth;
+  cc->loop_try_depth = cc->try_depth;
   cc->current_continue_label = continue_label;
   
   // Start label
@@ -1974,6 +1998,7 @@ static bool ParseForStatement(Compiler *cc) {
   if (cc->lex.token != ';') {
     if (!ParseExpression(cc)) {
       cc->current_break_label = saved_break;
+      cc->loop_try_depth = saved_ltd;
       cc->current_continue_label = saved_continue;
       return false;
     }
@@ -1982,6 +2007,7 @@ static bool ParseForStatement(Compiler *cc) {
   
   if (!LexExpect(cc, ';')) {
     cc->current_break_label = saved_break;
+    cc->loop_try_depth = saved_ltd;
     cc->current_continue_label = saved_continue;
     return false;
   }
@@ -1998,6 +2024,7 @@ static bool ParseForStatement(Compiler *cc) {
     cc->ic_head = saved_head; cc->ic_tail = saved_tail;
     if (!ok) {
       cc->current_break_label = saved_break;
+      cc->loop_try_depth = saved_ltd;
       cc->current_continue_label = saved_continue;
       return false;
     }
@@ -2005,6 +2032,7 @@ static bool ParseForStatement(Compiler *cc) {
   
   if (!LexExpect(cc, ')')) {
     cc->current_break_label = saved_break;
+    cc->loop_try_depth = saved_ltd;
     cc->current_continue_label = saved_continue;
     return false;
   }
@@ -2012,6 +2040,7 @@ static bool ParseForStatement(Compiler *cc) {
   // Body
   if (!ParseStatement(cc)) {
     cc->current_break_label = saved_break;
+    cc->loop_try_depth = saved_ltd;
     cc->current_continue_label = saved_continue;
     return false;
   }
@@ -2034,6 +2063,7 @@ static bool ParseForStatement(Compiler *cc) {
   
   // Restore loop context
   cc->current_break_label = saved_break;
+  cc->loop_try_depth = saved_ltd;
   cc->current_continue_label = saved_continue;
   
   return true;
@@ -2042,10 +2072,6 @@ static bool ParseForStatement(Compiler *cc) {
 
 static bool ParseSwitchStatement(Compiler *cc) {
   LexNext(cc); // Skip 'switch'
-  if (!cc->current_function_exit) {
-    Error(cc, "switch outside a function is not supported yet");
-    return false;
-  }
   if (!LexExpect(cc, '(')) return false;
   // Keep the switch value in a compiler temp local (patched to a real slot like any local),
   // so the dispatch block can compare it against every case without re-evaluating it.
@@ -2073,6 +2099,8 @@ static bool ParseSwitchStatement(Compiler *cc) {
   // Save break context
   CLabel *saved_break = cc->current_break_label;
   cc->current_break_label = end_label;
+  I64 saved_ltd = cc->loop_try_depth;
+  cc->loop_try_depth = cc->try_depth;
   
   // Parse cases
   while (cc->lex.token != '}' && cc->lex.token != TK_EOF) {
@@ -2083,6 +2111,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
       if (cc->lex.token != TK_I64) {
         Error(cc, "Expected integer constant in case");
         cc->current_break_label = saved_break;
+        cc->loop_try_depth = saved_ltd;
         return false;
       }
       
@@ -2094,6 +2123,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
         if (cc->lex.token != TK_I64) {
           Error(cc, "Expected integer constant after '...'");
           cc->current_break_label = saved_break;
+          cc->loop_try_depth = saved_ltd;
           return false;
         }
         case_hi = cc->lex.token_i64;
@@ -2102,6 +2132,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
       
       if (!LexExpect(cc, ':')) {
         cc->current_break_label = saved_break;
+        cc->loop_try_depth = saved_ltd;
         return false;
       }
       
@@ -2132,6 +2163,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
              cc->lex.token != '}' && cc->lex.token != TK_EOF) {
         if (!ParseStatement(cc)) {
           cc->current_break_label = saved_break;
+          cc->loop_try_depth = saved_ltd;
           return false;
         }
       }
@@ -2144,6 +2176,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
       
       if (!LexExpect(cc, ':')) {
         cc->current_break_label = saved_break;
+        cc->loop_try_depth = saved_ltd;
         return false;
       }
       
@@ -2156,6 +2189,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
       while (cc->lex.token != KW_CASE && cc->lex.token != '}' && cc->lex.token != TK_EOF) {
         if (!ParseStatement(cc)) {
           cc->current_break_label = saved_break;
+          cc->loop_try_depth = saved_ltd;
           return false;
         }
       }
@@ -2169,6 +2203,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
   
   if (!LexExpect(cc, '}')) {
     cc->current_break_label = saved_break;
+    cc->loop_try_depth = saved_ltd;
     return false;
   }
   
@@ -2217,6 +2252,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
   
   // Restore break context
   cc->current_break_label = saved_break;
+  cc->loop_try_depth = saved_ltd;
   
   // Free case list
   while (cases) {
@@ -2573,6 +2609,8 @@ bool ParseStatement(Compiler *cc) {
         return false;
       }
       
+      // Leaving try blocks opened inside the loop: pop their handler contexts first.
+      for (I64 td = cc->loop_try_depth; td < cc->try_depth; td++) ICAdd(cc, IC_TRY_LEAVE, 0, RT_I64);
       // Generate jump to loop end label
       ICAdd(cc, IC_JMP, (I64)cc->current_break_label, RT_I64);
       
@@ -2590,6 +2628,7 @@ bool ParseStatement(Compiler *cc) {
         return false;
       }
       
+      for (I64 td = cc->loop_try_depth; td < cc->try_depth; td++) ICAdd(cc, IC_TRY_LEAVE, 0, RT_I64);
       // Generate jump to loop continue label
       ICAdd(cc, IC_JMP, (I64)cc->current_continue_label, RT_I64);
       
@@ -2632,10 +2671,6 @@ bool ParseStatement(Compiler *cc) {
     if (cc->lex.token == KW_TRY) {
       // try { } catch { }: push a handler context {prev, sp, s0, catch pc} kept in a compiler
       // temp of this frame onto __try_top; throw unwinds to the innermost one (any depth).
-      if (!cc->current_function_exit) {
-        Error(cc, "try outside a function is not supported yet");
-        return false;
-      }
       LexNext(cc);
       CLabel *catch_label = LabelNew(cc, NULL);
       CLabel *done_label = LabelNew(cc, NULL);
@@ -3617,6 +3652,31 @@ static bool ParseGlobalDeclList(Compiler *cc) {
 // Definitions (function/class/enum/global) register themselves in the hash table; a plain
 // statement leaves its IC on cc->ic_head for the caller to run (REPL) or collect (AOT entry).
 // Returns false with cc->error set.
+// Turn cc->ic_head (top-level statements) into a function body: IC_ENTER … IC_RETURN_VAL2,
+// IC_LEAVE, with the -(10000+pos) local markers (switch/try temps, block locals) patched to a
+// real frame. Used for REPL statements and the AOT entry chunk; the last statement's value is
+// left in a0.
+void WrapStatementsAsFrame(Compiler *cc) {
+  I64 locals = cc->locals_size;
+  I64 frame_size = 16 + locals;
+  CIntermediateCode *ent = calloc(1, sizeof(CIntermediateCode));
+  ent->ic_code = IC_ENTER;
+  ent->ic_data = (locals << 32);
+  ent->next = cc->ic_head;
+  if (cc->ic_head) cc->ic_head->last = ent;
+  cc->ic_head = ent;
+  if (!cc->ic_tail) cc->ic_tail = ent;
+  ICAdd(cc, IC_RETURN_VAL2, 0, RT_I64);
+  ICAdd(cc, IC_LEAVE, (locals << 32), RT_I64);
+  for (CIntermediateCode *ic = cc->ic_head; ic; ic = ic->next) {
+    if (ic->ic_code == IC_LEA && ic->ic_data <= -10000) {
+      I64 pos = -(ic->ic_data + 10000);
+      ic->ic_data = -(frame_size - 16 - pos);
+    }
+  }
+  cc->locals_size = 0;
+}
+
 bool ParseTopLevel(Compiler *cc) {
   while (cc->lex.token == ',' || cc->lex.token == ';') LexNext(cc);
   if (cc->lex.token == TK_EOF) return true;

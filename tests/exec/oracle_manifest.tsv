@@ -19,3 +19,6 @@ tests/exec/cases/e_f64_to_i64.hc	0000000000000007
 tests/exec/cases/e_global_data.hc	000000000000002a
 tests/exec/cases/e_static_local.hc	0000000000000002
 tests/exec/cases/e_try_catch.hc	0000000000000007
+tests/exec/cases/e_try_toplevel.hc	0000000000000069
+tests/exec/cases/e_default_args.hc	0000000000000372
+tests/exec/cases/e_unsigned.hc	0000000000000003

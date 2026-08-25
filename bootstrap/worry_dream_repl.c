@@ -219,6 +219,17 @@ I64 HolyFree(I64 p) { free((void *)p); return 0; }
 I64 HolyStrLen(char *s) { return (I64)strlen(s); }
 I64 HolyStrCpy(char *d, char *s) { strcpy(d, s); return (I64)d; }
 I64 HolyStrCmp(char *a, char *b) { return strcmp(a, b); }
+I64 HolyPutS(char *s) { puts_uart(s); return 0; }
+I64 HolyStrCat(char *d, char *s) { strcpy(d + strlen(d), s); return (I64)d; }
+I64 HolyStrNew(char *s) { char *d = malloc(strlen(s) + 1); strcpy(d, s); return (I64)d; }
+I64 HolyMemCpy(U8 *d, U8 *s, I64 n) { memcpy(d, s, (size_t)n); return (I64)d; }
+I64 HolyMemSet(U8 *d, I64 c, I64 n) { memset(d, (int)c, (size_t)n); return (I64)d; }
+I64 HolyMemCmp(U8 *a, U8 *b, I64 n) { for (I64 i = 0; i < n; i++) if (a[i] != b[i]) return a[i] - b[i]; return 0; }
+I64 HolyAbsI64(I64 v) { return v < 0 ? -v : v; }
+I64 HolyMaxI64(I64 a, I64 b) { return a > b ? a : b; }
+I64 HolyMinI64(I64 a, I64 b) { return a < b ? a : b; }
+I64 HolyToUpper(I64 c) { return (c >= 'a' && c <= 'z') ? c - 32 : c; }
+I64 HolyToLower(I64 c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
 
 static void RuntimeRegister(Compiler *cc, const char *name, void *fn, I64 argc) {
     CHashFun *f = calloc(1, sizeof(CHashFun));
@@ -230,6 +241,8 @@ static void RuntimeRegister(Compiler *cc, const char *name, void *fn, I64 argc) 
     HashAdd((CHashEntry *)f, cc->hash_table);
 }
 static void RuntimeInit(Compiler *cc) {
+    // Fs -> the task block (Fs->except_ch)
+    if (cc->fs_var && cc->except_ch_var) *(I64 *)cc->fs_var->data_addr = (I64)cc->except_ch_var->data_addr;
     RuntimeRegister(cc, "Print", (void *)HolyPrint, 1);
     RuntimeRegister(cc, "PutChars", (void *)HolyPutChars, 1);
     RuntimeRegister(cc, "MAlloc", (void *)HolyMAlloc, 1);
@@ -237,6 +250,17 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "StrLen", (void *)HolyStrLen, 1);
     RuntimeRegister(cc, "StrCpy", (void *)HolyStrCpy, 2);
     RuntimeRegister(cc, "StrCmp", (void *)HolyStrCmp, 2);
+    RuntimeRegister(cc, "PutS", (void *)HolyPutS, 1);
+    RuntimeRegister(cc, "StrCat", (void *)HolyStrCat, 2);
+    RuntimeRegister(cc, "StrNew", (void *)HolyStrNew, 1);
+    RuntimeRegister(cc, "MemCpy", (void *)HolyMemCpy, 3);
+    RuntimeRegister(cc, "MemSet", (void *)HolyMemSet, 3);
+    RuntimeRegister(cc, "MemCmp", (void *)HolyMemCmp, 3);
+    RuntimeRegister(cc, "AbsI64", (void *)HolyAbsI64, 1);
+    RuntimeRegister(cc, "MaxI64", (void *)HolyMaxI64, 2);
+    RuntimeRegister(cc, "MinI64", (void *)HolyMinI64, 2);
+    RuntimeRegister(cc, "ToUpper", (void *)HolyToUpper, 1);
+    RuntimeRegister(cc, "ToLower", (void *)HolyToLower, 1);
 }
 
 void repl(void) {
@@ -390,11 +414,13 @@ void repl(void) {
         }
         if (defined_fn) puts_uart("Function compiled successfully\n");
         if (cc->ic_head) {
-            // Statement: return its value (match TempleOS LexStmt2Bin:13-14)
-            ICAdd(cc, 0x09, 0, 0);  // IC_RETURN_VAL2
-            ICAdd(cc, 0x5B, 0, 0);  // IC_RET
+            // Statement: compile it as a frame of its own (switch/try temps get real slots);
+            // the last value is the answer (match TempleOS LexStmt2Bin:13-14).
+            extern void WrapStatementsAsFrame(Compiler *cc);
+            extern U8 *CompileAOT(Compiler *cc, I64 *size_out);
+            WrapStatementsAsFrame(cc);
             I64 code_size = 0;
-            U8 *machine_code = CompileExpression(cc, &code_size);
+            U8 *machine_code = CompileAOT(cc, &code_size);
             cc->ic_head = NULL;
             cc->ic_tail = NULL;
             if (!machine_code || code_size <= 0) {

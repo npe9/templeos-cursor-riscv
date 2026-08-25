@@ -492,6 +492,8 @@ typedef struct {
   struct CHashGlblVar *try_top_var;    // __try_top: innermost handler context
   struct CHashGlblVar *except_ch_var;  // except_ch: code of the last throw
   I64 try_depth;                       // open try blocks in the function being parsed
+  I64 loop_try_depth;                  // try depth at the innermost loop/switch entry (break/continue unwind to it)
+  struct CHashGlblVar *fs_var;         // Fs: pointer to the task block (__task); Fs->except_ch
   U8 current_fn_ret_type;
 
 } Compiler;
@@ -520,6 +522,7 @@ bool ParseStatement(Compiler *cc);
 bool ParseFunction(Compiler *cc);
 bool ParseProgram(Compiler *cc);
 bool ParseTopLevel(Compiler *cc);
+void WrapStatementsAsFrame(Compiler *cc);
 bool ParseREPLStatement(Compiler *cc);  // For REPL: parse one statement
 
 // IC Generation
