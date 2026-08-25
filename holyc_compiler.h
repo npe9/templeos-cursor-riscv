@@ -341,6 +341,7 @@ typedef struct {
   
   LexerStack *stack;  // Stack for LexPush/LexPop
   IncludeFile *include_stack;  // Stack for #include files
+  bool token_is_char;          // TK_I64 came from a char literal ('x' statements call PutChars)
 } Lexer;
 
 // ═══════════════════════════════════════════════════════════════
@@ -488,12 +489,14 @@ typedef struct {
   U8 last_expr_type;     // RT_F64 / RT_U64 (unsigned) / RT_I64 for the expression just parsed
   // AOT data section: globals laid out after code+strings (data_addr_rip = offset)
   Bool aot_data_layout;
+  I64 aot_data_base;     // data section offset in the blob (set for the emit pass)
   I64 aot_data_size;
   struct CHashGlblVar *try_top_var;    // __try_top: innermost handler context
   struct CHashGlblVar *except_ch_var;  // except_ch: code of the last throw
   I64 try_depth;                       // open try blocks in the function being parsed
   I64 loop_try_depth;                  // try depth at the innermost loop/switch entry (break/continue unwind to it)
   struct CHashGlblVar *fs_var;         // Fs: pointer to the task block (__task); Fs->except_ch
+  struct CMemberLst *last_member;      // member just accessed by . or -> (typing for [ ] and *)
   U8 current_fn_ret_type;
 
 } Compiler;

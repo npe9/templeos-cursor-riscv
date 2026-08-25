@@ -7,6 +7,7 @@ _start:
     csrs mstatus, t0
     la sp, __stack_top
     mv s0, sp
+    call resolve_imports       # fill the blob's runtime import slots (bootstrap/holy_rt.h)
 
     la ra, after_user
     la t0, _binary_blob_bin_start

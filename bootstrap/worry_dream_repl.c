@@ -157,79 +157,10 @@ static U8 *code_area = (U8*)0x80200000;
 // Global answer variable (like TempleOS Fs->answer)
 static I64 g_answer = 0;
 
-// ---- Minimal HolyC runtime for the bare-metal REPL --------------------------------------
-// Registered in the compiler's hash table as ordinary functions (exe_addr = the C entry point),
-// so compiled HolyC calls them through the normal RISC-V calling convention. `"fmt", args;`
-// statements compile to Print("fmt", args).
-#include <stdarg.h>
-
-static void rt_putnum(U64 v, int base, int upper, int neg, int width, char pad) {
-    char b[32];
-    int n = 0;
-    if (v == 0) b[n++] = '0';
-    while (v) {
-        U64 d = v % (U64)base;
-        b[n++] = (char)(d < 10 ? '0' + d : (upper ? 'A' : 'a') + d - 10);
-        v /= (U64)base;
-    }
-    if (neg) b[n++] = '-';
-    while (n < width) b[n++] = pad;
-    while (n) putc_uart(b[--n]);
-}
-
-I64 HolyPrint(char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    for (const char *p = fmt; *p; p++) {
-        if (*p != '%') { putc_uart(*p); continue; }
-        p++;
-        char pad = ' ';
-        int width = 0, left = 0;
-        if (*p == '-') { left = 1; p++; }
-        if (*p == '0') { pad = '0'; p++; }
-        while (*p >= '0' && *p <= '9') { width = width * 10 + (*p - '0'); p++; }
-        (void)left;
-        switch (*p) {
-        case 'd': { I64 v = va_arg(ap, I64); rt_putnum(v < 0 ? (U64)(-v) : (U64)v, 10, 0, v < 0, width, pad); break; }
-        case 'u': rt_putnum(va_arg(ap, U64), 10, 0, 0, width, pad); break;
-        case 'x': rt_putnum(va_arg(ap, U64), 16, 0, 0, width, pad); break;
-        case 'X': rt_putnum(va_arg(ap, U64), 16, 1, 0, width, pad); break;
-        case 'p': puts_uart("0x"); rt_putnum(va_arg(ap, U64), 16, 0, 0, 16, '0'); break;
-        case 's': { char *sv = va_arg(ap, char *); puts_uart(sv ? sv : "(null)"); break; }
-        case 'c': { I64 cv = va_arg(ap, I64); while (cv) { putc_uart((char)(cv & 0xFF)); cv >>= 8; } break; }
-        case 'f': case 'n': {  // F64 arrives as raw bits (variadic F64 goes in integer regs on RISC-V)
-            I64 bits = va_arg(ap, I64); F64 fv; memcpy(&fv, &bits, 8);
-            if (fv < 0) { putc_uart('-'); fv = -fv; }
-            U64 ip = (U64)fv; F64 frac = fv - (F64)ip;
-            rt_putnum(ip, 10, 0, 0, 0, ' '); putc_uart('.');
-            U64 fr = (U64)(frac * 1000.0 + 0.5); if (fr >= 1000) { fr = 999; }
-            rt_putnum(fr, 10, 0, 0, 3, '0');
-            break; }
-        case '%': putc_uart('%'); break;
-        case 0: va_end(ap); return 0;
-        default: putc_uart('%'); putc_uart(*p); break;
-        }
-    }
-    va_end(ap);
-    return 0;
-}
-I64 HolyPutChars(I64 ch) { while (ch) { putc_uart((char)(ch & 0xFF)); ch >>= 8; } return 0; }
-I64 HolyMAlloc(I64 sz) { return (I64)malloc((size_t)sz); }
-I64 HolyFree(I64 p) { free((void *)p); return 0; }
-I64 HolyStrLen(char *s) { return (I64)strlen(s); }
-I64 HolyStrCpy(char *d, char *s) { strcpy(d, s); return (I64)d; }
-I64 HolyStrCmp(char *a, char *b) { return strcmp(a, b); }
-I64 HolyPutS(char *s) { puts_uart(s); return 0; }
-I64 HolyStrCat(char *d, char *s) { strcpy(d + strlen(d), s); return (I64)d; }
-I64 HolyStrNew(char *s) { char *d = malloc(strlen(s) + 1); strcpy(d, s); return (I64)d; }
-I64 HolyMemCpy(U8 *d, U8 *s, I64 n) { memcpy(d, s, (size_t)n); return (I64)d; }
-I64 HolyMemSet(U8 *d, I64 c, I64 n) { memset(d, (int)c, (size_t)n); return (I64)d; }
-I64 HolyMemCmp(U8 *a, U8 *b, I64 n) { for (I64 i = 0; i < n; i++) if (a[i] != b[i]) return a[i] - b[i]; return 0; }
-I64 HolyAbsI64(I64 v) { return v < 0 ? -v : v; }
-I64 HolyMaxI64(I64 a, I64 b) { return a > b ? a : b; }
-I64 HolyMinI64(I64 a, I64 b) { return a < b ? a : b; }
-I64 HolyToUpper(I64 c) { return (c >= 'a' && c <= 'z') ? c - 32 : c; }
-I64 HolyToLower(I64 c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+// ---- HolyC runtime (shared with the exec harness: bootstrap/holy_rt.h) -------------------
+#define HOLY_RT_PUTC(c) putc_uart(c)
+#define HOLY_RT_MALLOC(sz) malloc(sz)
+#include "holy_rt.h"
 
 static void RuntimeRegister(Compiler *cc, const char *name, void *fn, I64 argc) {
     CHashFun *f = calloc(1, sizeof(CHashFun));
@@ -243,24 +174,8 @@ static void RuntimeRegister(Compiler *cc, const char *name, void *fn, I64 argc) 
 static void RuntimeInit(Compiler *cc) {
     // Fs -> the task block (Fs->except_ch)
     if (cc->fs_var && cc->except_ch_var) *(I64 *)cc->fs_var->data_addr = (I64)cc->except_ch_var->data_addr;
-    RuntimeRegister(cc, "Print", (void *)HolyPrint, 1);
-    RuntimeRegister(cc, "PutChars", (void *)HolyPutChars, 1);
-    RuntimeRegister(cc, "MAlloc", (void *)HolyMAlloc, 1);
-    RuntimeRegister(cc, "Free", (void *)HolyFree, 1);
-    RuntimeRegister(cc, "StrLen", (void *)HolyStrLen, 1);
-    RuntimeRegister(cc, "StrCpy", (void *)HolyStrCpy, 2);
-    RuntimeRegister(cc, "StrCmp", (void *)HolyStrCmp, 2);
-    RuntimeRegister(cc, "PutS", (void *)HolyPutS, 1);
-    RuntimeRegister(cc, "StrCat", (void *)HolyStrCat, 2);
-    RuntimeRegister(cc, "StrNew", (void *)HolyStrNew, 1);
-    RuntimeRegister(cc, "MemCpy", (void *)HolyMemCpy, 3);
-    RuntimeRegister(cc, "MemSet", (void *)HolyMemSet, 3);
-    RuntimeRegister(cc, "MemCmp", (void *)HolyMemCmp, 3);
-    RuntimeRegister(cc, "AbsI64", (void *)HolyAbsI64, 1);
-    RuntimeRegister(cc, "MaxI64", (void *)HolyMaxI64, 2);
-    RuntimeRegister(cc, "MinI64", (void *)HolyMinI64, 2);
-    RuntimeRegister(cc, "ToUpper", (void *)HolyToUpper, 1);
-    RuntimeRegister(cc, "ToLower", (void *)HolyToLower, 1);
+    for (HRT_I64 i = 0; i < HOLY_RT_COUNT; i++)
+        RuntimeRegister(cc, holy_rt_table[i].name, holy_rt_table[i].fn, holy_rt_table[i].argc);
 }
 
 void repl(void) {
@@ -305,6 +220,9 @@ void repl(void) {
             if (pos < 511 && c >= 32 && c < 127) {
                 input[pos++] = c;
                 putc_uart(c);
+            } else if (c == '\t' && pos < 511) {   // TABs (common in TempleOS sources) become a space
+                input[pos++] = ' ';
+                putc_uart(' ');
             }
         }
         
@@ -406,6 +324,10 @@ void repl(void) {
         if (!ok) {
             puts_uart("[ERROR] ");
             puts_uart(cc->error ? cc->error : "parse error");
+            puts_uart(" near '");
+            puts_uart(cc->lex.token_str ? cc->lex.token_str : "");
+            puts_uart("' line ");
+            print_hex((U64)cc->lex.line);
             puts_uart("\n");
             cc->error = NULL;
             cc->ic_head = NULL;

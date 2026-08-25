@@ -1,6 +1,16 @@
 /* HolyC Parser - Generates Intermediate Code */
 
 #include "holyc_compiler.h"
+#ifndef BARE_METAL
+#include <stdio.h>
+#include <stdlib.h>
+#endif
+#ifndef BARE_METAL
+#define PF_TRACE(line) do { if (getenv("HOLYC_TRACE")) fprintf(stderr, "[trace] ParseFunction fail at parser.c:%d token=%d ('%s')\n", (line), cc->lex.token, cc->lex.token_str ? cc->lex.token_str : ""); } while (0)
+#else
+#define PF_TRACE(line) do {} while (0)
+#endif
+
 
 static U8 ParseType(Compiler *cc);
 
@@ -427,14 +437,16 @@ static void SetCallArgCnt(Compiler *cc, I64 argc) {
   if (call) call->ic_flags = argc;
 }
 
-// Emit a call to a named function whose `argc` arguments are already on the eval stack.
-static bool EmitCallByName(Compiler *cc, const char *name, I64 argc) {
-  CHashEntry *e = cc->hash_table ? HashFind(name, cc->hash_table, HTT_FUN) : NULL;
-  if (!e || !(e->type & HTT_FUN)) {
-    Error(cc, "Unknown function (Print is not available in this build)");
-    return false;
+// Emit the call itself for `fn` (arguments already on the eval stack): PC-relative jal within
+// the unit, else through the function's exe_addr slot; runtime externs go through their import
+// slot (a global: absolute in the REPL, data-section relative in AOT).
+static bool EmitCallDispatch(Compiler *cc, CHashFun *fn) {
+  if (fn->is_extern && fn->import_var) {
+    ICAdd(cc, IC_CALL_INDIRECT2, (I64)fn->import_var->data_addr, RT_I64);
+    cc->ic_tail->ic_class = fn->import_var;
+    fn->import_var->use_cnt++;
+    return true;
   }
-  CHashFun *fn = (CHashFun *)e;
   if (cc->current_function_entry_label && fn == cc->last_compiled_func) {
     ICAdd(cc, IC_CALL, (I64)cc->current_function_entry_label, RT_I64);
   } else if (fn->entry_label && LabelInUnit(cc, (CLabel *)fn->entry_label)) {
@@ -443,6 +455,18 @@ static bool EmitCallByName(Compiler *cc, const char *name, I64 argc) {
     if (!fn->exe_addr) { Error(cc, "Function declared but not defined"); return false; }
     ICAdd(cc, IC_CALL_INDIRECT2, (I64)&fn->exe_addr, RT_I64);
   }
+  return true;
+}
+
+// Emit a call to a named function whose `argc` arguments are already on the eval stack.
+static bool EmitCallByName(Compiler *cc, const char *name, I64 argc) {
+  CHashEntry *e = cc->hash_table ? HashFind(name, cc->hash_table, HTT_FUN) : NULL;
+  if (!e || !(e->type & HTT_FUN)) {
+    Error(cc, "Unknown function (Print is not available in this build)");
+    return false;
+  }
+  CHashFun *fn = (CHashFun *)e;
+  if (!EmitCallDispatch(cc, fn)) return false;
   cc->last_call_arg_cnt = argc;
   SetCallArgCnt(cc, argc);
   return true;
@@ -604,7 +628,7 @@ static U8 ParseType(Compiler *cc) {
   if (ptr_count > 0) {
     cc->last_pointed_to_type = base_type;
     type = RT_I64;  // Pointers are 64-bit addresses
-    cc->last_type_class = NULL;  // Pointer to class treated as pointer type
+    // last_type_class stays: a pointer-to-class variable needs its class for p->member.
   } else {
     cc->last_pointed_to_type = 0;  // Not a pointer
   }
@@ -804,19 +828,9 @@ static bool ParsePrimary(Compiler *cc) {
             free(name);
             return false;
           }
-          // Same-unit calls: PC-relative jal via stable entry label (AOT under QEMU).
-          if (cc->current_function_entry_label && func == cc->last_compiled_func) {
-            ICAdd(cc, IC_CALL, (I64)cc->current_function_entry_label, RT_I64);
-          } else if (func->entry_label && LabelInUnit(cc, (CLabel *)func->entry_label)) {
-            ICAdd(cc, IC_CALL, (I64)func->entry_label, RT_I64);
-          } else {
-            // Other unit (REPL: earlier statement) — go through exe_addr at run time.
-            if (!func->exe_addr) {
-              Error(cc, "Function declared but not defined");
-              free(name);
-              return false;
-            }
-            ICAdd(cc, IC_CALL_INDIRECT2, (I64)&func->exe_addr, RT_I64);
+          if (!EmitCallDispatch(cc, func)) {
+            free(name);
+            return false;
           }
           // Store actual arg_cnt for compiler to use (not func->arg_cnt)
           cc->last_call_arg_cnt = arg_count;
@@ -893,6 +907,7 @@ static bool ParsePrimary(Compiler *cc) {
       if (sym) {
         // Local variable - save symbol for array subscripting
         cc->last_var_symbol = sym;
+        cc->last_member = NULL;
         cc->subscript_level = 0;
         cc->last_expr_type = (sym->data_type == RT_F64 && !sym->pointed_to_type) ? RT_F64 :
                              (sym->pointed_to_type || sym->data_type == RT_U8 || sym->data_type == RT_U16 ||
@@ -908,6 +923,12 @@ static bool ParsePrimary(Compiler *cc) {
         // Generate address of variable: addi a0, s0, offset
         // Use IC_LEA (Load Effective Address) with offset
         ICAdd(cc, IC_LEA, sym->offset, RT_I64);
+        if (sym->is_array) {
+          // An array is its address: no auto-deref; push it so it is a proper eval-stack value
+          // (call argument, assignment source). `[` sees the pushed base and adds no second push.
+          cc->flags |= CCF_ARRAY;
+          ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
+        }
         // PE_DEREFERENCE will add IC_DEREF if !(CCF_RAX|CCF_ARRAY)
         
         free(name);
@@ -920,6 +941,7 @@ static bool ParsePrimary(Compiler *cc) {
         // Global variable
         CHashGlblVar *global = (CHashGlblVar*)entry;
         cc->last_global_var = global;
+        cc->last_member = NULL;
         cc->last_var_symbol = NULL;  // stale local from an earlier statement would suppress the auto-deref
         cc->last_expr_type = (global->raw_type == RT_F64 && !global->pointed_to_type) ? RT_F64 :
                              (global->pointed_to_type || global->raw_type == RT_U8 || global->raw_type == RT_U16 ||
@@ -937,6 +959,7 @@ static bool ParsePrimary(Compiler *cc) {
         ic->ic_flags = ICF_GLBL_ADDR;
         cc->last_expr_class = global->var_class;
         cc->flags &= ~(CCF_RAX | CCF_ARRAY);
+        if (global->flags & GVF_ARRAY) cc->flags |= CCF_ARRAY;   // array = its (already pushed) address
         
         // Link into IC chain
         if (cc->ic_tail) cc->ic_tail->next = ic;
@@ -1114,6 +1137,10 @@ static bool ParseUnary(Compiler *cc) {
     U8 deref_type = RT_I64;
     if (cc->last_var_symbol && cc->last_var_symbol->pointed_to_type != 0) {
       deref_type = cc->last_var_symbol->pointed_to_type;
+    } else if (!cc->last_var_symbol && cc->last_global_var && cc->last_global_var->pointed_to_type) {
+      deref_type = cc->last_global_var->pointed_to_type;
+    } else if (!cc->last_var_symbol && !cc->last_global_var && cc->last_member && cc->last_member->pointed_to_type) {
+      deref_type = cc->last_member->pointed_to_type;
     }
     /* Drop duplicate pointer slot (still in a0) before DEREF pushes *a0 — else DROP after would
      * pop the loaded value. */
@@ -1193,6 +1220,12 @@ static bool ParsePostfix(Compiler *cc) {
         }
         if (saved_symbol->ndims > 1 && cc->subscript_level < saved_symbol->ndims - 1)
           elem_size = saved_symbol->dim_stride[cc->subscript_level];
+      } else if (!saved_symbol && !saved_global && cc->last_member) {
+        CMemberLst *mb = cc->last_member;
+        elem_type = mb->pointed_to_type ? mb->pointed_to_type : mb->raw_type;
+        elem_size = mb->elem_size > 0 ? mb->elem_size : PrimitiveTypeSize(elem_type);
+        if (!mb->is_array && !mb->pointed_to_type && mb->member_class && mb->member_class->size > 0) elem_size = mb->member_class->size;
+        if (elem_size <= 0) elem_size = 8;
       } else if (saved_global) {
         if (saved_global->pointed_to_type && !(saved_global->flags & GVF_ARRAY)) {
           elem_type = saved_global->pointed_to_type;
@@ -1208,16 +1241,19 @@ static bool ParsePostfix(Compiler *cc) {
       // An array's base is its address, not its first element: retract the auto-deref, and
       // push the base so the index math below cannot clobber it in a0.
       if (saved_symbol && saved_symbol->is_array) EnsureLvalueAddressPushed(cc);
+      else if (saved_global && (saved_global->flags & GVF_ARRAY)) EnsureLvalueAddressPushed(cc);
       // Push element size
       ICAdd(cc, IC_IMM_I64, elem_size, RT_I64);
       
       int saved_level = cc->subscript_level;  // the index expression may reference variables
+      CHashClass *saved_class = cc->last_expr_class;  // …and would clobber the element's class
       // Parse index expression (will clobber last_var_symbol, save it)
       if (!ParseExpression(cc)) return false;
       
       // Restore for potential chained subscripts
       cc->last_var_symbol = saved_symbol;
       cc->subscript_level = saved_level;
+      cc->last_expr_class = saved_class;
       cc->last_global_var = saved_global;
       
       if (!LexExpect(cc, ']')) return false;
@@ -1259,6 +1295,7 @@ static bool ParsePostfix(Compiler *cc) {
       // Look up member in class definition
       I64 member_offset = 0;
       CHashClass *member_class = NULL;
+      CMemberLst *found = NULL;
       I64 bit_width = 0;
       I64 bit_offset = 0;
       
@@ -1275,6 +1312,7 @@ static bool ParsePostfix(Compiler *cc) {
           while (member) {
             if (strcmp(member->str, member_name) == 0) {
               member_offset = member->offset;
+              found = member;
               member_class = member->member_class;
               bit_width = member->bit_width;
               bit_offset = member->bit_offset;
@@ -1295,9 +1333,16 @@ static bool ParsePostfix(Compiler *cc) {
         ICAdd(cc, IC_ADD, 0, RT_I64);
       }
       
-      // Dereference to get member value
-      if (!(cc->flags & CCF_RAX)) {
+      // Dereference to get member value (typed); an array member is its address instead.
+      cc->last_var_symbol = NULL;
+      cc->last_global_var = NULL;
+      cc->last_member = found;
+      if (found && found->is_array) {
+        cc->flags |= CCF_ARRAY;
+        if (cc->ic_tail && cc->ic_tail->ic_code == IC_PUSH_ARG) { /* offset 0: base already pushed */ }
+      } else if (!(cc->flags & CCF_RAX)) {
         DerefDroppingAddressSlot(cc);
+        if (found && cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->arg1_type_pointed_to = found->raw_type;
       }
       
       // Handle bit field extraction
@@ -1360,12 +1405,14 @@ static bool ParsePostfix(Compiler *cc) {
       // Look up member offset (same as . operator)
       I64 member_offset = 0;
       CHashClass *member_class = NULL;
+      CMemberLst *found = NULL;
       
       if (cc->last_expr_class) {
         CMemberLst *member = cc->last_expr_class->member_lst;
         while (member) {
           if (strcmp(member->str, member_name) == 0) {
             member_offset = member->offset;
+            found = member;
             member_class = member->member_class;
             break;
           }
@@ -1380,8 +1427,14 @@ static bool ParsePostfix(Compiler *cc) {
         ICAdd(cc, IC_ADD, 0, RT_I64);
       }
       
-      if (!(cc->flags & CCF_RAX)) {
+      cc->last_var_symbol = NULL;
+      cc->last_global_var = NULL;
+      cc->last_member = found;
+      if (found && found->is_array) {
+        cc->flags |= CCF_ARRAY;
+      } else if (!(cc->flags & CCF_RAX)) {
         DerefDroppingAddressSlot(cc);
+        if (found && cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->arg1_type_pointed_to = found->raw_type;
       }
       cc->last_expr_class = member_class;
       
@@ -1398,7 +1451,7 @@ static bool ParsePostfix(Compiler *cc) {
   // Assignments will change it to NOP later
   // BUT: Skip if we just processed a parenthesized expression (already dereferenced)
   CIntermediateCode *last_ic = cc->ic_tail;
-  if (last_ic && (last_ic->ic_code == IC_ADD || last_ic->ic_code == IC_LEA) && !is_paren_expr && !(cc->flags & CCF_RAX)) {
+  if (last_ic && (last_ic->ic_code == IC_ADD || last_ic->ic_code == IC_LEA) && !is_paren_expr && !(cc->flags & (CCF_RAX | CCF_ARRAY))) {
     // Last was IC_ADD or IC_LEA (address of variable)
     // Add IC_DEREF to load the value (PrsExp.HC:116-117)
     ICAdd(cc, IC_DEREF, 0, RT_I64);
@@ -2094,6 +2147,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
   CLabel *end_label = LabelNew(cc, NULL);
   
   I64 min_val = 0x7FFFFFFFFFFFFFFFLL;  // I64_MAX
+  I64 last_case_val = -1;
   I64 max_val = -0x8000000000000000LL; // I64_MIN
   
   // Save break context
@@ -2107,16 +2161,20 @@ static bool ParseSwitchStatement(Compiler *cc) {
     if (cc->lex.token == KW_CASE) {
       LexNext(cc);
       
-      // Get case value
-      if (cc->lex.token != TK_I64) {
-        Error(cc, "Expected integer constant in case");
-        cc->current_break_label = saved_break;
-        cc->loop_try_depth = saved_ltd;
-        return false;
+      // Get case value; `case:` (no value) means one more than the previous case (0 first).
+      I64 case_val;
+      if (cc->lex.token == ':') {
+        case_val = last_case_val + 1;
+      } else {
+        if (cc->lex.token != TK_I64) {
+          Error(cc, "Expected integer constant in case");
+          cc->current_break_label = saved_break;
+          cc->loop_try_depth = saved_ltd;
+          return false;
+        }
+        case_val = cc->lex.token_i64;
+        LexNext(cc);
       }
-      
-      I64 case_val = cc->lex.token_i64;
-      LexNext(cc);
       I64 case_hi = case_val;
       if (cc->lex.token == TK_ELLIPSIS) {   // case lo...hi:
         LexNext(cc);
@@ -2140,6 +2198,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
       CSwitchCase *sc = calloc(1, sizeof(CSwitchCase));
       sc->value = case_val;
       sc->hi = case_hi;
+      last_case_val = case_hi;
       sc->label = LabelNew(cc, NULL);
       sc->next = NULL;
       
@@ -2300,6 +2359,7 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
       }
     }
     
+    if (cc->last_pointed_to_type) base_size = 8;   // the variable itself is a pointer
     // Initialize array metadata
     sym->is_array = false;
     sym->array_size = 0;
@@ -2759,6 +2819,23 @@ bool ParseStatement(Compiler *cc) {
         continue;
       }
     }
+    // Char literal as statement: `'ab\n';` ≡ PutChars('ab\n');
+    if (cc->lex.token == TK_I64 && cc->lex.token_is_char) {
+      LexPush(cc);
+      LexNext(cc);
+      bool whole = (cc->lex.token == ';');
+      LexPopRestore(cc);
+      if (whole) {
+        ICAdd(cc, IC_CALL_START, 0, RT_I64);
+        if (!ParsePrimary(cc)) return false;
+        ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
+        if (!EmitCallByName(cc, "PutChars", 1)) return false;
+        ICAdd(cc, IC_CALL_END, 0, RT_I64);
+        ICAdd(cc, IC_END_EXP, 0, RT_I64);
+        if (cc->lex.token == ';') LexNext(cc);
+        return true;
+      }
+    }
     // String literal as statement — HolyC's implicit print: `"fmt", args…;` ≡ Print("fmt", args…);
     if (cc->lex.token == TK_STR) {
       ICAdd(cc, IC_CALL_START, 0, RT_I64);
@@ -2821,12 +2898,12 @@ bool ParseClass(Compiler *cc) {
   } else if (cc->lex.token == KW_CLASS) {
     LexNext(cc);
   } else {
-    return false;
+    { PF_TRACE(__LINE__); return false; }
   }
   
   if (cc->lex.token != TK_IDENT) {
     Error(cc, "Expected class name");
-    return false;
+    { PF_TRACE(__LINE__); return false; }
   }
   
   char *class_name = strdup(cc->lex.token_str);
@@ -2841,6 +2918,9 @@ bool ParseClass(Compiler *cc) {
   tmpc->ptr_stars_cnt = 0;
   tmpc->base_class = NULL;
   tmpc->member_lst = NULL;
+  // Register now so members may refer to the class itself (`class Lst { Lst *next; }`);
+  // size is filled in below. Error paths leave the entry in place (never freed).
+  if (!HashFind(class_name, cc->hash_table, HTT_CLASS)) HashAdd((CHashEntry*)tmpc, cc->hash_table);
   
   // Handle inheritance: class Name : BaseClass
   if (cc->lex.token == ':') {
@@ -2848,9 +2928,8 @@ bool ParseClass(Compiler *cc) {
     if (cc->lex.token != TK_IDENT) {
       Error(cc, "Expected base class name");
       free(class_name);
-      free(tmpc->str);
-      free(tmpc);
-      return false;
+      /* tmpc stays registered */
+      { PF_TRACE(__LINE__); return false; }
     }
     
     // Look up base class
@@ -2865,9 +2944,8 @@ bool ParseClass(Compiler *cc) {
   
   if (!LexExpect(cc, '{')) {
     free(class_name);
-    free(tmpc->str);
-    free(tmpc);
-    return false;
+    /* tmpc stays registered */
+    { PF_TRACE(__LINE__); return false; }
   }
   
   // Parse members
@@ -2901,8 +2979,12 @@ bool ParseClass(Compiler *cc) {
     }
     
     // Handle arrays
+    bool member_is_array = false;
+    I64 member_elem_size = member_size;
+    U8 member_ptr_type = cc->last_pointed_to_type;
     if (cc->lex.token == '[') {
       LexNext(cc);
+      member_is_array = true;
       if (cc->lex.token == TK_I64) {
         I64 array_size = cc->lex.token_i64;
         member_size *= array_size;
@@ -2917,6 +2999,10 @@ bool ParseClass(Compiler *cc) {
     // Create member
     CMemberLst *member = calloc(1, sizeof(CMemberLst));
     member->str = member_name;
+    member->raw_type = member_type;
+    member->pointed_to_type = member_ptr_type;
+    member->is_array = member_is_array;
+    member->elem_size = member_ptr_type ? PrimitiveTypeSize(member_ptr_type) : member_elem_size;
     
     if (is_union) {
       // Union: all members at offset 0, size is max of all members
@@ -2941,7 +3027,7 @@ bool ParseClass(Compiler *cc) {
       // Parse bit width
       if (cc->lex.token != TK_I64) {
         Error(cc, "Expected bit field width");
-        return false;
+        { PF_TRACE(__LINE__); return false; }
       }
       
       member->bit_width = cc->lex.token_i64;
@@ -2990,17 +3076,20 @@ bool ParseClass(Compiler *cc) {
   
   if (!LexExpect(cc, '}')) {
     free(class_name);
-    free(tmpc->str);
-    free(tmpc);
-    return false;
+    /* tmpc stays registered */
+    { PF_TRACE(__LINE__); return false; }
   }
   
-  // Add class to hash table
-  HashAdd((CHashEntry*)tmpc, cc->hash_table);
+  // (already in the hash table — registered before the members)
   
   free(class_name);
   
-  // Expect semicolon after class definition
+  // `class X {…} a, *b[N];` — leave the declarators to the caller (ParseTopLevel).
+  cc->last_type_class = tmpc;
+  cc->last_pointed_to_type = 0;
+  if (cc->lex.token == '*' ||
+      (cc->lex.token == TK_IDENT && !(cc->lex.hash_entry &&
+       (cc->lex.hash_entry->type & (HTT_CLASS | HTT_INTERNAL_TYPE | HTT_FUN))))) return true;
   return LexExpect(cc, ';');
 }
 
@@ -3061,7 +3150,7 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
     if (!LexExpect(cc, ']')) {
       free(tmpg->str);
       free(tmpg);
-      return false;
+      { PF_TRACE(__LINE__); return false; }
     }
     
     tmpg->dim.cnt = array_size;
@@ -3118,9 +3207,14 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
     ICAdd(cc, IC_END_EXP, 0, RT_I64);
   }
   
-  // Handle comma-separated declarations
+  // Handle comma-separated declarations (`T a, *b, c[4]`: each declarator has its own stars)
   if (cc->lex.token == ',') {
     LexNext(cc);
+    cc->last_pointed_to_type = 0;
+    while (cc->lex.token == '*') {
+      cc->last_pointed_to_type = var_type;
+      LexNext(cc);
+    }
     if (cc->lex.token == TK_IDENT) {
       char *next_name = strdup(cc->lex.token_str);
       LexNext(cc);
@@ -3192,13 +3286,13 @@ bool ParseFunction(Compiler *cc) {
     func_hash = calloc(1, sizeof(CHashFun));
     if (!func_hash) {
       free(name);
-      { SymTablePopTo(cc, fn_scope); return false; }
+      { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
     }
     func_hash->str = strdup(name);
     if (!func_hash->str) {
       free(func_hash);
       free(name);
-      { SymTablePopTo(cc, fn_scope); return false; }
+      { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
     }
     func_hash->type = HTT_FUN;
     func_hash->exe_addr = 0;
@@ -3217,7 +3311,7 @@ bool ParseFunction(Compiler *cc) {
   
   if (!LexExpect(cc, '(')) {
     free(name);
-    { SymTablePopTo(cc, fn_scope); return false; }
+    { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
   }
   
   // Track parameters for saving in prologue
@@ -3234,7 +3328,7 @@ bool ParseFunction(Compiler *cc) {
       if (cc->lex.token != ')') {
         Error(cc, "... must be last parameter");
         free(name);
-        { SymTablePopTo(cc, fn_scope); return false; }
+        { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
       }
     } else {
       do {
@@ -3252,14 +3346,14 @@ bool ParseFunction(Compiler *cc) {
           int fp_param_cnt = 0;
           if (!ParseFunctionPointerDeclarator(cc, &fp_name, &fp_param_cnt)) {
             free(name);
-            { SymTablePopTo(cc, fn_scope); return false; }
+            { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
           }
 
           if (cc->lex.token == '=') {
             free(fp_name);
             free(name);
             Error(cc, "Default values for function pointer parameters are not supported");
-            { SymTablePopTo(cc, fn_scope); return false; }
+            { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
           }
 
           Symbol *param = SymbolDefine(cc, fp_name, SYM_VAR);
@@ -3289,7 +3383,7 @@ bool ParseFunction(Compiler *cc) {
       if (cc->lex.token != TK_IDENT) {
         Error(cc, "Expected parameter name");
         free(name);
-        { SymTablePopTo(cc, fn_scope); return false; }
+        { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
       }
       
       char *param_name = strdup(cc->lex.token_str);
@@ -3305,7 +3399,7 @@ bool ParseFunction(Compiler *cc) {
         if (!LexExpect(cc, ']')) {
           free(param_name);
           free(name);
-          { SymTablePopTo(cc, fn_scope); return false; }
+          { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
         }
         // Arrays passed as pointers
         param_type = RT_I64;
@@ -3396,7 +3490,7 @@ bool ParseFunction(Compiler *cc) {
   
   if (!LexExpect(cc, ')')) {
     free(name);
-    { SymTablePopTo(cc, fn_scope); return false; }
+    { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
   }
   
   // Forward declaration: I64 F(...);
@@ -3461,7 +3555,7 @@ bool ParseFunction(Compiler *cc) {
     cc->current_function_exit = saved_exit_label;
     cc->current_function_entry_label = NULL;
     free(name);
-    { SymTablePopTo(cc, fn_scope); return false; }
+    { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
   }
   
   // Update ENTER with actual locals size
@@ -3581,7 +3675,7 @@ bool ParseFunction(Compiler *cc) {
     AOTFnICChunk *chunk = calloc(1, sizeof(AOTFnICChunk));
     if (!chunk) {
       free(name);
-      { SymTablePopTo(cc, fn_scope); return false; }
+      { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
     }
     chunk->head = cc->ic_head;
     chunk->tail = cc->ic_tail;
@@ -3600,7 +3694,7 @@ bool ParseFunction(Compiler *cc) {
     U8 *compiled_code = CompileAOT(cc, &code_size);
     if (!compiled_code) {
       free(name);
-      { SymTablePopTo(cc, fn_scope); return false; }
+      { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
     }
     func_hash->exe_addr = (I64)compiled_code;
     cc->code_buffer = compiled_code;
@@ -3621,10 +3715,7 @@ bool ParseFunction(Compiler *cc) {
 
 // Global declaration list at top level: `T *a, b[4] = 1, c;` — HolyC top-level variables
 // are globals, never locals.
-static bool ParseGlobalDeclList(Compiler *cc) {
-  cc->last_pointed_to_type = 0;
-  U8 type = ParseType(cc);
-  if (cc->error) return false;
+static bool ParseGlobalDeclListTyped(Compiler *cc, U8 type) {
   for (;;) {
     U8 saved_ptr_type = cc->last_pointed_to_type;
     while (cc->lex.token == '*') {
@@ -3633,7 +3724,7 @@ static bool ParseGlobalDeclList(Compiler *cc) {
     }
     if (cc->lex.token != TK_IDENT) {
       Error(cc, "Expected variable name in global declaration");
-      return false;
+      { PF_TRACE(__LINE__); return false; }
     }
     char *name = strdup(cc->lex.token_str);
     LexNext(cc);
@@ -3646,6 +3737,13 @@ static bool ParseGlobalDeclList(Compiler *cc) {
   }
   if (cc->lex.token == ';') LexNext(cc);
   return true;
+}
+
+static bool ParseGlobalDeclList(Compiler *cc) {
+  cc->last_pointed_to_type = 0;
+  U8 type = ParseType(cc);
+  if (cc->error) return false;
+  return ParseGlobalDeclListTyped(cc, type);
 }
 
 // One top-level item — the same grammar for a source file (ParseProgram) and a REPL line.
@@ -3677,11 +3775,30 @@ void WrapStatementsAsFrame(Compiler *cc) {
   cc->locals_size = 0;
 }
 
+static bool ParseTopLevelInner(Compiler *cc);
 bool ParseTopLevel(Compiler *cc) {
+  bool ok = ParseTopLevelInner(cc);
+#ifndef BARE_METAL
+  if (!ok && getenv("HOLYC_TRACE"))
+    fprintf(stderr, "[trace] ParseTopLevel failed: token=%d ('%s') line=%d error=%s\n",
+            cc->lex.token, cc->lex.token_str ? cc->lex.token_str : "", cc->lex.line, cc->error ? cc->error : "(none)");
+#endif
+  return ok;
+}
+static bool ParseTopLevelInner(Compiler *cc) {
   while (cc->lex.token == ',' || cc->lex.token == ';') LexNext(cc);
   if (cc->lex.token == TK_EOF) return true;
   while (cc->lex.token == KW_PUBLIC) LexNext(cc);
-  if (cc->lex.token == KW_CLASS || cc->lex.token == KW_UNION) return ParseClass(cc);
+  if (cc->lex.token == KW_CLASS || cc->lex.token == KW_UNION) {
+    if (!ParseClass(cc)) return false;
+    // `class X {…} a, *b;` — a declarator follows. (Type names like `I64` also lex as
+    // identifiers with a hash entry: those start the next item, not a declarator.)
+    bool declarator = (cc->lex.token == '*') ||
+                      (cc->lex.token == TK_IDENT && !(cc->lex.hash_entry &&
+                       (cc->lex.hash_entry->type & (HTT_CLASS | HTT_INTERNAL_TYPE | HTT_FUN))));
+    if (declarator) return ParseGlobalDeclListTyped(cc, RT_I64);
+    return true;
+  }
   if (cc->lex.token == KW_ENUM) return ParseEnum(cc);
   if (IsTypeStartToken(cc)) {
     // Peek past `type * name` to see what follows: '(' → function, `(*` → fn-pointer global,

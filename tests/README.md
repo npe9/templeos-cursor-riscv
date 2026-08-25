@@ -5,9 +5,9 @@
 | Area | Location | Make / script |
 |------|----------|----------------|
 | Compile compliance (TempleOS tree + parity `.hc`) | `tests/holyc/compliance/` | `make compliance` → `tests/scripts/run_holyc_compliance.sh` |
-| UART execution oracles | `tests/exec/` | `make exec-oracle` → `tests/scripts/run_exec_oracles.sh` |
+| UART execution oracles (the harness links the shared runtime `bootstrap/holy_rt.h` and resolves the blob's import directory) | `tests/exec/` | `make exec-oracle` → `tests/scripts/run_exec_oracles.sh` |
 | TempleOS/RISC-V QEMU smoke | (builds `templeos-riscv/`) | `make templeos-smoke` → `tests/scripts/run_templeos_smoke.sh` |
-| Bare-metal REPL over UART (QEMU) | (builds `bootstrap/repl.elf`) | `make repl-smoke` → `tests/scripts/run_repl_smoke.sh` |
+| Bare-metal REPL over UART (QEMU) — incl. whole TempleOS demo files with expected output | (builds `bootstrap/repl.elf`) | `make repl-smoke` → `tests/scripts/run_repl_smoke.sh` |
 
 **Full gate (matches [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):** `make ci` — compliance, then `qemu-integration` (exec oracles + TempleOS smoke + REPL smoke).
 

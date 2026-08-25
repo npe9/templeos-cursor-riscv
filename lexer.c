@@ -985,6 +985,7 @@ static int LexString(Lexer *lex) {
     // HolyC char literal: up to 8 chars packed little-endian into an I64 ('AB' == 0x4241).
     lex->token_i64 = 0;
     for (int i = 0; i < len && i < 8; i++) lex->token_i64 |= (I64)(U8)buf[i] << (8 * i);
+    lex->token_is_char = true;
     return TK_I64;
   }
   return TK_STR;
@@ -992,6 +993,7 @@ static int LexString(Lexer *lex) {
 
 void LexNext(Compiler *cc) {
   Lexer *lex = &cc->lex;
+  lex->token_is_char = false;
   
   // Skip whitespace, comments, DolDoc, and preprocessor directives
   while (true) {
@@ -1062,7 +1064,7 @@ void LexNext(Compiler *cc) {
   }
   
   // Number
-  if (*lex->ptr >= '0' && *lex->ptr <= '9') {
+  if ((*lex->ptr >= '0' && *lex->ptr <= '9') || (*lex->ptr == '.' && lex->ptr[1] >= '0' && lex->ptr[1] <= '9')) {
     lex->token = LexNumber(lex);
     return;
   }

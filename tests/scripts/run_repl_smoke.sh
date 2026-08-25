@@ -81,7 +81,7 @@ add_case '#define TWICE(x) ((x) + (x))'
 add_case 'TWICE(0x41) + 1;' 0000000000000083
 add_case 'I64 gv = 40;'
 add_case 'gv += 2; gv;' 000000000000002a
-add_case "'AB';" 0000000000004241
+add_case "'AB' + 0;" 0000000000004241
 add_case 'I64 Id(I64 v) { return v; } Id(Id(6));' 0000000000000006
 add_case 'I64 Sl(U8 *t) { I64 n = 0; while (t[n]) n++; return n; } Sl("hello!");' 0000000000000006
 # F64, casts, HolyC call forms, function pointers, globals in expressions.
@@ -110,6 +110,24 @@ for ((i = 1; i <= CALLS; i++)); do
   add_case "Add($i,1);" "$(printf '%016x' $((i + 1)))"
 done
 
+# Whole TempleOS demo files (second QEMU run, below), fed line by line like a user would; their
+# printed output is checked for expected fragments.
+EXPECT_TEXT=()
+demo_input=""
+add_file() { demo_input+="$(cat "$ROOT/$1")"$'\n'; }
+expect_text() { EXPECT_TEXT+=("$1"); }
+add_file Demo/NullCase.HC
+expect_text 'Eleven'
+add_file Demo/Print.HC
+expect_text '123,456,789'
+expect_text 'yyyyyyyyyyyyyyyyyyyyyyyyy'
+add_file Demo/SubSwitch.HC
+expect_text 'Zero'
+add_file Demo/RadixSort.HC
+expect_text 'Output'
+expect_text '15:'
+add_file Demo/Exceptions.HC
+expect_text 'D1'
 # Sentinel: the REPL never exits (it spins on the UART after EOF), so stop QEMU as soon as
 # the last answer is printed; the timeout only bounds a hung/crashed REPL.
 add_case '4919;' 0000000000001337
@@ -140,6 +158,26 @@ if ! echo "$out" | grep -q '^40 + 2 = 42$' || ! echo "$out" | grep -q '^caught 5
   echo "$out" >&2
   exit 1
 fi
+# Second run: the demo files.
+demo_input+='4919;'$'\n'
+: >"$log"
+printf '%s' "$demo_input" | $TIMEOUT_CMD 60 "$QEMU" -M virt -bios none -kernel "$BOOT/repl.elf" -nographic >"$log" 2>&1 &
+qpid=$!
+for ((t = 0; t < 600; t++)); do
+  if grep -q '^0x0000000000001337' "$log" 2>/dev/null; then break; fi
+  kill -0 "$qpid" 2>/dev/null || break
+  sleep 0.1
+done
+kill "$qpid" 2>/dev/null || true
+wait "$qpid" 2>/dev/null || true
+demo_out="$(tr -d '\r' <"$log")"
+for t in "${EXPECT_TEXT[@]}"; do
+  if ! echo "$demo_out" | grep -qF -- "$t"; then
+    echo "FAIL REPL smoke — demo output missing: $t" >&2
+    echo "$demo_out" >&2
+    exit 1
+  fi
+done
 n=$(echo "$got" | wc -l | tr -d ' ')
-echo "OK   REPL: define/call, redefine, Fib(10), 11 args, loops/++/+=/arrays/pointers/static, Print/strings, switch/do/goto, class, 2-D, macros, F64, casts, fn ptrs, defaults, unsigned, try/catch, top-level switch/try, Fs, $CALLS calls ($n answers)"
+echo "OK   REPL: define/call, redefine, Fib(10), 11 args, loops/++/+=/arrays/pointers/static, Print/strings, switch/do/goto, class, 2-D, macros, F64, casts, fn ptrs, defaults, unsigned, try/catch, top-level switch/try, Fs, TempleOS demos, $CALLS calls ($n answers)"
 echo "REPL smoke: OK"

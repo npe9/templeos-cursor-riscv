@@ -53,6 +53,11 @@ typedef struct CMemberLst {
   // Bit field support
   I64 bit_offset;           // Bit offset within the byte
   I64 bit_width;            // Width in bits (0 = not a bit field)
+  // Type info for typed loads/stores and pointer/array members
+  U8 raw_type;              // RT_* of the member (RT_I64 for pointers)
+  U8 pointed_to_type;       // pointee type for pointer members (0 = not a pointer)
+  bool is_array;            // `U8 name[8]`: the member is its address
+  I64 elem_size;            // element size for array/pointer members
 } CMemberLst;
 
 // Hash entry for classes/types
@@ -87,6 +92,8 @@ typedef struct CHashFun {
   struct CHashClass *return_class;   // Return type
   struct CMemberLst *member_lst;     // Parameters
   void *entry_label;        // CLabel* — stable for forward decl + unified AOT (PC-rel IC_CALL)
+  bool is_extern;           // runtime function: call through import_var's slot (AOT: data section)
+  struct CHashGlblVar *import_var;
   I64 param_cnt;            // declared parameters (0 for runtime-registered functions: unchecked)
   U8 param_has_default[16];
   I64 param_default[16];

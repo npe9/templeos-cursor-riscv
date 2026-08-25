@@ -9,20 +9,21 @@ table is what actually **runs correctly** under QEMU — the bare-metal REPL ove
 
 | Runs correctly | Missing / known wrong |
 |---|---|
-| Top level is program level in the REPL: functions, `class`/`union`, `enum`, globals (any initializer), `#define` (parameterized, nested, inside parentheses), statements — compiled as a frame of their own, so `switch`/`try`/block locals work there too | |
-| `if/else` ladders, ternary, `while`, `do…while`, `for` (incl. `i++` step), `goto`/labels, `switch` incl. `case a...b`, fallthrough, `default` | class member functions (not HolyC; `c073`/`p028` are xfail) |
-| `&&`/`||`/`!`, `++`/`--`, all compound assignments, chained `a = b = 3`, unary `-`/`~`, shifts, comparisons | the rest of the kernel API (the TempleOS-tree compliance rows are xfail for that reason) |
-| **unsigned**: an unsigned operand (U8…U64, pointers) makes `/ % < <= > >= >>` unsigned | AOT has no runtime, so `Print` etc. are unavailable to `holyc-riscv` output |
-| **F64**: literals, `+ - * /`, compares, unary `-`, I64↔F64 promotion in mixed expressions / assignment / `return`, `(F64)`/`(I64)` casts, `Print("%f")` | `goto` out of a `try` does not pop the handler (`return`/`break`/`continue` do) |
-| casts: `(U8)`/`(U16)`/`(U32)` mask, `(I8)`/`(I16)`/`(I32)` sign-extend, pointer casts | |
-| I64/I32/U8 locals, params (own scope), globals (also in expressions with other globals), `static` locals (init-once), typed sub-word loads/stores | |
+| **Real TempleOS demos on the bare-metal REPL** (`make repl-smoke` feeds the files and checks their output): `Demo/Print.HC`, `Demo/NullCase.HC`, `Demo/SubSwitch.HC` (no `start:/end:` bracketing yet), `Demo/RadixSort.HC` (sorts correctly), `Demo/Exceptions.HC` | `Demo/GlblVars.HC` (aggregate initializers `{…}`), `Demo/Carry.HC` (x86 carry flag), `Demo/Define.HC` (`DefineLoad` API), DolDoc/graphics/file demos |
+| Top level is program level (REPL and AOT): functions, `class`/`union` (incl. `class X {…} a, *b[N];`, self-referential members), `enum`, globals (any initializer), `#define` (parameterized, nested, inside parentheses, TABs), statements — compiled as a frame of their own, so `switch`/`try`/block locals work there too | `sub_switch` `start:`/`end:` semantics |
+| `if/else` ladders, ternary, `while`, `do…while`, `for`, `goto`/labels, `switch` incl. `case a...b`, `case:` (auto-increment), fallthrough, `default` | `goto` out of a `try` does not pop the handler (`return`/`break`/`continue` do) |
+| `&&`/`||`/`!`, `++`/`--`, all compound assignments, chained `a = b = 3`, unary `-`/`~`, shifts, comparisons; unsigned `/ % < <= > >= >>` when an operand is unsigned | class member functions (not HolyC; `c073`/`p028` are xfail) |
+| **F64**: literals (incl. `.5`), `+ - * /`, compares, unary `-`, I64↔F64 promotion in mixed expressions / assignment / `return`, casts, `Print("%f")` | |
+| casts: `(U8)`/`(U16)`/`(U32)` mask, `(I8)`/`(I16)`/`(I32)` sign-extend, pointer and F64 casts | |
+| locals, params (own scope), globals (also in expressions with other globals), `static` locals (init-once), typed sub-word loads/stores; arrays (local, global, N-dimensional) decay to their address as values | |
 | **AOT data section**: globals and statics work in `holyc-riscv` output (laid out after code+strings, addressed PC-relative) | |
-| pointers (`&x`, `*p`, `p[i]` with pointee-sized typed elements, pointer params), local arrays incl. N-dimensional, class members `s.x` / `p->x` | |
-| string literals (PC-relative, appended to the unit's code), char literals (`'AB'` packs), `"fmt", args;` ≡ `Print(...)` | |
-| REPL runtime: `Print` (`%d %u %x %X %s %c %p %f %%`, width/zero-pad), `PutS`, `PutChars`, `MAlloc`/`Free`, `StrLen`/`StrCpy`/`StrCmp`/`StrCat`/`StrNew`, `MemCpy`/`MemSet`/`MemCmp`, `AbsI64`/`MaxI64`/`MinI64`, `ToUpper`/`ToLower` | |
-| calls: `Fn(args)`, HolyC `Fn;` (no parens), `&Fn`, function pointers (global and local), **default arguments** (trailing and omitted `f(,2)`), same-input define+call, recursion, >8 args, per-call argument counts; declared-but-undefined or too-few-arguments calls are compile errors | |
-| **`try`/`catch`/`throw`**: handler-context stack (`__try_top`), unwinds across calls and nested tries, `Fs->except_ch` holds the thrown code (`class CTask` + `Fs` are built in), `return`/`break`/`continue` out of `try` pop the handler | |
-| AOT: entry chunk sets `Fs`, then runs the top-level statements (or calls `main()` when there are none); last value → `ORACLE`; parse errors fail the build; FPU enabled in the harness | |
+| pointers (`&x`, `*p`, `p[i]` with pointee-sized typed elements), **typed class members** (`U8` fields, pointer members `*p->a`, array members `s.name[i]`, `StrCpy(s.name, …)`), `s.x` / `p->x` / `a[i].m` / `a[i].p->m` chains | |
+| string literals (PC-relative), char literals (`'AB'` packs; `'ab\n';` statements call `PutChars`), adjacent literals, `"fmt", args;` ≡ `Print(...)`; predefined `NULL TRUE FALSE ON OFF I64_MAX …` | |
+| **Runtime, shared by REPL and AOT** (`bootstrap/holy_rt.h`): `Print` (`%d %u %x %X %s %c %p %P %f %n %%`, width/precision, `,` flag, `h<n>`/`h*` repeat), `PutS`, `PutChars`, `MAlloc`/`CAlloc`/`Free`, `StrLen`/`StrCpy`/`StrCmp`/`StrCat`/`StrNew`, `MemCpy`/`MemSet`/`MemCmp`/`MemSetI64`, `AbsI64`/`MaxI64`/`MinI64`, `ToUpper`/`ToLower`, `RandU16`/`RandI64`/`Seed`, `YorN` (answers no) | `Free` is a no-op (bump allocator) |
+| **AOT calls the runtime too**: externs go through import slots in the data section; the blob ends with a name directory that the exec harness resolves at load (`holy_resolve_imports`) | |
+| calls: `Fn(args)`, HolyC `Fn;`, `&Fn`, function pointers, default arguments (trailing and omitted `f(,2)`), same-input define+call, recursion, >8 args; declared-but-undefined or too-few-arguments calls are compile errors | |
+| `try`/`catch`/`throw` across calls and nested tries; `Fs->except_ch`, `Fs->catch_except`, `Fs->except_callers[]` exist (`class CTask` + `Fs` are built in) | |
+| AOT: entry chunk sets `Fs`, runs the top-level statements (or calls `main()` when there are none); last value → `ORACLE`; parse errors fail the build; REPL errors report the token and line | |
 
 ## Overview
 

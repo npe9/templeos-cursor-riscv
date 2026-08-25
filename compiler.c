@@ -103,19 +103,47 @@ Compiler *CompilerNew(const char *source, const char *filename) {
     task->str = strdup("CTask");
     task->type = HTT_CLASS;
     task->raw_type = RT_I64;
-    task->size = 16;
     CMemberLst *m = calloc(1, sizeof(CMemberLst));
     m->str = strdup("except_ch");
     m->offset = 0;
     m->size = 8;
+    CMemberLst *m2 = calloc(1, sizeof(CMemberLst));
+    m2->str = strdup("catch_except");
+    m2->offset = 8;
+    m2->size = 8;
+    m2->raw_type = RT_I64;
+    CMemberLst *m3 = calloc(1, sizeof(CMemberLst));   // I64 except_callers[8]
+    m3->str = strdup("except_callers");
+    m3->offset = 16;
+    m3->size = 64;
+    m3->raw_type = RT_I64;
+    m3->is_array = true;
+    m3->elem_size = 8;
+    m->raw_type = RT_I64;
+    m->next = m2;
+    m2->next = m3;
     task->member_lst = m;
+    task->size = 80;
     HashAdd((CHashEntry *)task, cc->hash_table);
+    // HolyC predefined constants
+    struct { const char *n; I64 v; } consts[] = {
+      { "NULL", 0 }, { "TRUE", 1 }, { "FALSE", 0 }, { "ON", 1 }, { "OFF", 0 },
+      { "I64_MAX", 0x7FFFFFFFFFFFFFFFLL }, { "I64_MIN", (I64)0x8000000000000000ULL },
+      { "U8_MAX", 255 }, { "U16_MAX", 65535 }, { "U32_MAX", 0xFFFFFFFFLL }, { "I32_MAX", 0x7FFFFFFF }, { "I32_MIN", -0x80000000LL },
+    };
+    for (size_t ci = 0; ci < sizeof(consts) / sizeof(consts[0]); ci++) {
+      CHashEnumValue *ev = calloc(1, sizeof(CHashEnumValue));
+      ev->str = strdup(consts[ci].n);
+      ev->type = HTT_ENUM;
+      ev->value = consts[ci].v;
+      HashAdd((CHashEntry *)ev, cc->hash_table);
+    }
     const char *names[3] = { "__try_top", "__task", "Fs" };
     for (int i = 0; i < 3; i++) {
       CHashGlblVar *g = calloc(1, sizeof(CHashGlblVar));
       g->str = strdup(names[i]);
       g->type = HTT_GLBL_VAR;
-      g->size = i == 1 ? 16 : 8;
+      g->size = i == 1 ? 80 : 8;   // __task: CTask (except_ch, catch_except, except_callers[8])
       g->element_size = 8;
       g->raw_type = RT_I64;
       if (i == 1) g->var_class = task;
@@ -592,10 +620,11 @@ static void EmitIncDec(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, 
   (*stack_depth)++;
 }
 
+static void EmitGlobalAddr(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *cc, U8 rd, CHashGlblVar *g, I64 data_base);
 // Shared: argument shuffle for IC_CALL / IC_CALL_INDIRECT2, then PC-rel or host-indirect tail.
 static void EmitCallArgsAndInvoke(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth,
-                                  Compiler *cc, CLabel *pc_target, I64 *exe_addr_host_ptr, I64 arg_count) {
-  (void)cc;
+                                  Compiler *cc, CLabel *pc_target, I64 *exe_addr_host_ptr, I64 arg_count,
+                                  CHashGlblVar *import_var) {
 
   if (arg_count > 8) {
     EmitPrepareGt8CallArgs(pass_buf, pass_ptr, rip, arg_count);
@@ -609,6 +638,11 @@ static void EmitCallArgsAndInvoke(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *st
 
   if (pc_target) {
     EmitJalToLabel(pass_buf, pass_ptr, rip, pc_target, RV_RA);
+  } else if (import_var && cc->aot_data_layout) {
+    // Runtime import: the slot lives in the data section; the loader fills it by name.
+    EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T0, import_var, cc->aot_data_base);
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T0 << 15));
+    RVU32(pass_buf, pass_ptr, rip, 0x67 | (RV_RA << 7) | (RV_T0 << 15));
   } else {
     I64 addr = (I64)exe_addr_host_ptr;
     // addi sign-extends its 12-bit immediate: round hi up when lo >= 0x800.
@@ -1084,10 +1118,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         }
         break;
       case IC_CALL_INDIRECT2:
-        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_pass, cc, NULL, (I64 *)ic->ic_data, ic->ic_flags);
+        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_pass, cc, NULL, (I64 *)ic->ic_data, ic->ic_flags, (CHashGlblVar *)ic->ic_class);
         break;
       case IC_CALL:
-        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_pass, cc, (CLabel *)ic->ic_data, NULL, ic->ic_flags);
+        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_pass, cc, (CLabel *)ic->ic_data, NULL, ic->ic_flags, NULL);
         break;
       case IC_UNARY_MINUS: EmitUnaryOp(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_UNARY_MINUS); break;
       case IC_NOT:         EmitUnaryOp(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_LOGICAL_NOT); break;
@@ -1205,7 +1239,17 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   }
   I64 data_base = (str_base + str_total + 7) & ~7LL;
   I64 data_total = cc->aot_data_layout ? cc->aot_data_size : 0;
-  I64 buf_sz = data_base + data_total + 256;
+  cc->aot_data_base = data_base;
+  // Import directory trailer: {slot, name[24]} per used runtime import + {count, magic}.
+  I64 import_cnt = 0;
+  if (cc->aot_data_layout && cc->hash_table) {
+    for (I64 i = 0; i <= cc->hash_table->mask; i++)
+      for (CHashEntry *e = cc->hash_table->body[i]; e; e = e->next)
+        if ((e->type & HTT_GLBL_VAR) && e->str && e->str[0] == '_' && e->str[1] == '_' && e->str[2] == 'i' && e->str[3] == 'm' && e->str[4] == 'p' && e->use_cnt > 0)
+          import_cnt++;
+  }
+  I64 dir_total = import_cnt ? import_cnt * 32 + 16 : 0;
+  I64 buf_sz = data_base + data_total + dir_total + 256;
   if (buf_sz < 64) buf_sz = 64;
   U8 *buffer = malloc((size_t)buf_sz);
   if (!buffer) return NULL;
@@ -1593,10 +1637,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         }
         break;
       case IC_CALL_INDIRECT2:
-        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_final, cc, NULL, (I64 *)ic->ic_data, ic->ic_flags);
+        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_final, cc, NULL, (I64 *)ic->ic_data, ic->ic_flags, (CHashGlblVar *)ic->ic_class);
         break;
       case IC_CALL:
-        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_final, cc, (CLabel *)ic->ic_data, NULL, ic->ic_flags);
+        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_final, cc, (CLabel *)ic->ic_data, NULL, ic->ic_flags, NULL);
         break;
       case IC_UNARY_MINUS: EmitUnaryOp(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_UNARY_MINUS); break;
       case IC_NOT:         EmitUnaryOp(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_LOGICAL_NOT); break;
@@ -1729,6 +1773,23 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       }
     }
     rip = data_base + data_total;
+    if (import_cnt) {
+      U8 *dp = buffer + rip;
+      for (I64 i = 0; i <= cc->hash_table->mask; i++) {
+        for (CHashEntry *e = cc->hash_table->body[i]; e; e = e->next) {
+          if (!((e->type & HTT_GLBL_VAR) && e->str && e->str[0] == '_' && e->str[1] == '_' && e->str[2] == 'i' && e->str[3] == 'm' && e->str[4] == 'p' && e->use_cnt > 0)) continue;
+          CHashGlblVar *g = (CHashGlblVar *)e;
+          U64 slot = (U64)(data_base + g->data_addr_rip);
+          for (int k = 0; k < 8; k++) dp[k] = (U8)(slot >> (8 * k));
+          const char *nm = e->str + 6;   /* skip "__imp_" */
+          for (int k = 0; k < 24; k++) { dp[8 + k] = (U8)(*nm ? *nm : 0); if (*nm) nm++; }
+          dp += 32;
+        }
+      }
+      U64 cnt = (U64)import_cnt, magic = 0x31504D4959464F48ULL;
+      for (int k = 0; k < 8; k++) { dp[k] = (U8)(cnt >> (8 * k)); dp[8 + k] = (U8)(magic >> (8 * k)); }
+      rip += dir_total;
+    }
   }
   // Set output code size
   if (code_size) *code_size = rip;
@@ -1817,10 +1878,46 @@ I64 ExecuteJIT(void *code) {
 // MAIN COMPILER INTERFACE
 // ═══════════════════════════════════════════════════════════════
 
+// AOT: declare the runtime as externs; each gets an import slot global (`__imp_<name>`) that the
+// loader fills by name (see bootstrap/holy_rt.h, holy_resolve_imports).
+#include "bootstrap/holy_rt_names.h"
+void RuntimeDeclare(Compiler *cc) {
+  struct { const char *name; I64 argc; } names[] = {
+#define HOLY_RT_DECL(n, a) { #n, a },
+    HOLY_RT_NAMES(HOLY_RT_DECL)
+#undef HOLY_RT_DECL
+  };
+  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+    if (HashFind(names[i].name, cc->hash_table, HTT_FUN)) continue;
+    CHashGlblVar *slot = calloc(1, sizeof(CHashGlblVar));
+    char nm[64];
+    {  /* "__imp_" + name (no snprintf on bare metal) */
+      const char *pre = "__imp_"; int k = 0;
+      while (*pre && k < 60) nm[k++] = *pre++;
+      for (const char *q = names[i].name; *q && k < 62; q++) nm[k++] = *q;
+      nm[k] = 0;
+    }
+    slot->str = strdup(nm);
+    slot->type = HTT_GLBL_VAR;
+    slot->size = 8; slot->element_size = 8; slot->raw_type = RT_I64;
+    slot->data_addr = calloc(1, 8);
+    HashAdd((CHashEntry *)slot, cc->hash_table);
+    CHashFun *f = calloc(1, sizeof(CHashFun));
+    f->str = strdup(names[i].name);
+    f->type = HTT_FUN;
+    f->raw_type = RT_I64;
+    f->arg_cnt = names[i].argc;
+    f->is_extern = TRUE;
+    f->import_var = slot;
+    HashAdd((CHashEntry *)f, cc->hash_table);
+  }
+}
+
 Compiler *Compile(const char *source, const char *filename, bool aot) {
   Compiler *cc = CompilerNew(source, filename);
   cc->aot_mode = aot;
   cc->defer_aot_compile = TRUE;
+  if (aot) RuntimeDeclare(cc);
   
   // Parse the program
   if (!ParseProgram(cc)) {

@@ -2,13 +2,13 @@
 # expect: pass (min size), pass_any (compile only), xfail (expected compile failure)
 # Add rows as you lock in more of the TempleOS tree; goal is 1:1 compile coverage with stock .HC sources.
 Demo/DateTime.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
-Demo/Print.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
-Demo/Exceptions.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
+Demo/Print.HC	demo	pass_any	
+Demo/Exceptions.HC	demo	pass_any	
 Demo/GlblVars.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
-Demo/RadixSort.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
-Demo/NullCase.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
+Demo/RadixSort.HC	demo	pass_any	
+Demo/NullCase.HC	demo	pass_any	
 Demo/Carry.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
-Demo/SubSwitch.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
+Demo/SubSwitch.HC	demo	pass_any	
 Demo/MagicPairs.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
 Demo/Define.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet
 Demo/TimeIns.HC	demo	xfail	needs TempleOS kernel API (Print/MAlloc/Str*/DolDoc) — no runtime yet

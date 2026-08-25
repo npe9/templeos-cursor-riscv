@@ -32,7 +32,7 @@ SECTIONS {
   } > RAM
 
   /* HolyC AOT machine code from objcopy -I binary (lives in .data of blob_in.o) */
-  .user_blob 0x80100000 : {
+  .user_blob 0x80800000 : {
     blob_in.o(.data)
   } > RAM
 
