@@ -274,7 +274,7 @@ static bool ParseLocalFunctionPointerDeclList(Compiler *cc, U8 return_type) {
     sym->pointed_to_type = RT_I64;
 
     int aligned_size = (sym->size + 7) & ~7;
-    sym->offset = -(10000 + cc->locals_size);
+    sym->offset = HOLY_LOCAL_MARKER(cc->locals_size);
     cc->locals_size += aligned_size;
 
     if (cc->lex.token == '=') {
@@ -685,10 +685,12 @@ static U8 ParseType(Compiler *cc) {
   // Store pointed-to type in compiler context for next variable declaration
   if (ptr_count > 0) {
     cc->last_pointed_to_type = base_type;
+    cc->last_ptr_depth = (U8)ptr_count;
     type = RT_I64;  // Pointers are 64-bit addresses
     // last_type_class stays: a pointer-to-class variable needs its class for p->member.
   } else {
     cc->last_pointed_to_type = 0;  // Not a pointer
+    cc->last_ptr_depth = 0;
   }
   
   return type;
@@ -744,7 +746,7 @@ static void SkipRegQualifier(Compiler *cc) {
 
 // Declared (or merely called) but not defined here: calls go through an import slot the
 // loader fills by name (`__imp_<name>`).
-static void MakeImportSlot(Compiler *cc, CHashFun *f) {
+void MakeImportSlot(Compiler *cc, CHashFun *f) {
   CHashGlblVar *slot = calloc(1, sizeof(CHashGlblVar));
   char nm[80]; int k = 0;
   const char *pre = "__imp_";
@@ -1140,7 +1142,7 @@ static bool ParsePrimary(Compiler *cc) {
           } else if (va_fixed >= 0 && arg_count >= va_fixed) {
             // Extra argument of a varargs function: store it in the caller's argv temp.
             if (va_base < 0) va_base = cc->locals_size;
-            I64 marker = -(10000 + va_base + 8 * va_cnt);
+            I64 marker = HOLY_LOCAL_MARKER(va_base + 8 * va_cnt);
             cc->locals_size += 8;
             ICAdd(cc, IC_LEA, marker, RT_I64);
             ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
@@ -1192,7 +1194,7 @@ static bool ParsePrimary(Compiler *cc) {
         ICAdd(cc, IC_IMM_I64, va_cnt, RT_I64);
         ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
         if (va_cnt > 0) {
-          ICAdd(cc, IC_LEA, -(10000 + va_base), RT_I64);
+          ICAdd(cc, IC_LEA, HOLY_LOCAL_MARKER(va_base), RT_I64);
           ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
         } else {
           ICAdd(cc, IC_IMM_I64, 0, RT_I64);
@@ -1455,7 +1457,7 @@ static bool ParsePrimary(Compiler *cc) {
       LexPopRestore(cc);
     }
     if (ind_call) {
-      I64 marker = -(10000 + cc->locals_size);   // the pointer, kept in a frame temp
+      I64 marker = HOLY_LOCAL_MARKER(cc->locals_size);   // the pointer, kept in a frame temp
       cc->locals_size += 8;
       ICAdd(cc, IC_LEA, marker, RT_I64);
       ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
@@ -1573,19 +1575,27 @@ static bool ParseUnary(Compiler *cc) {
     if (!ParseUnary(cc)) return false;
 
     U8 deref_type = RT_I64;
+    U8 depth = 0, pointee = 0;
     if (cc->last_var_symbol && cc->last_var_symbol->pointed_to_type != 0) {
-      deref_type = cc->last_var_symbol->pointed_to_type;
+      pointee = cc->last_var_symbol->pointed_to_type; depth = cc->last_var_symbol->ptr_depth;
     } else if (!cc->last_var_symbol && cc->last_global_var && cc->last_global_var->pointed_to_type) {
-      deref_type = cc->last_global_var->pointed_to_type;
+      pointee = cc->last_global_var->pointed_to_type; depth = cc->last_global_var->ptr_depth;
     } else if (!cc->last_var_symbol && !cc->last_global_var && cc->last_member && cc->last_member->pointed_to_type) {
-      deref_type = cc->last_member->pointed_to_type;
+      pointee = cc->last_member->pointed_to_type; depth = cc->last_member->ptr_depth;
+    } else if (cc->expr_ptr_depth) {   // `**pp`: the inner deref left a pointer
+      pointee = cc->expr_pointee; depth = cc->expr_ptr_depth;
     }
+    if (depth < 1) depth = 1;
+    deref_type = (depth > 1 || !pointee) ? RT_I64 : pointee;   // through a `T **`, load the pointer
     /* Drop duplicate pointer slot (still in a0) before DEREF pushes *a0 — else DROP after would
      * pop the loaded value. */
     ICAdd(cc, IC_EVAL_DROP, 8, RT_I64);
     ICAdd(cc, IC_DEREF, 0, RT_I64);
     if (cc->ic_tail) cc->ic_tail->arg1_type_pointed_to = deref_type;
     cc->last_var_symbol = NULL;
+    if (depth > 1) { cc->last_global_var = NULL; cc->last_member = NULL; }
+    cc->expr_ptr_depth = (U8)(depth - 1);
+    cc->expr_pointee = pointee;
     return true;
   }
   
@@ -1633,6 +1643,7 @@ static bool ParsePostfix(Compiler *cc) {
   
   // Handle postfix operators (array subscript, member access)
   cc->cast_elem_type = 0;
+  if (!is_paren_expr) cc->expr_ptr_depth = 0;   // `(**ppb)[i]` keeps the depth the parens computed
   while (true) {
     if (cc->lex.token == '(') {
       // HolyC postfix cast: expr(type) / expr(type *), e.g. "0123456789ABCDEF"(U8 *)[i].
@@ -1681,6 +1692,7 @@ static bool ParsePostfix(Compiler *cc) {
           elem_type = saved_symbol->pointed_to_type;
           CHashClass *pc = (CHashClass *)saved_symbol->extra;
           elem_size = pc && pc->size > 0 ? pc->size : PrimitiveTypeSize(elem_type);
+          if (saved_symbol->ptr_depth > 1) { elem_type = RT_I64; elem_size = 8; }   // `argv[i]` of `U8 **argv`
           if (elem_size <= 0) elem_size = 8;
         } else {
           elem_size = saved_symbol->element_size ? saved_symbol->element_size : 8;
@@ -1692,6 +1704,7 @@ static bool ParsePostfix(Compiler *cc) {
         CMemberLst *mb = cc->last_member;
         elem_type = mb->pointed_to_type ? mb->pointed_to_type : mb->raw_type;
         elem_size = mb->elem_size > 0 ? mb->elem_size : PrimitiveTypeSize(elem_type);
+        if (mb->pointed_to_type && mb->ptr_depth > 1 && !mb->is_array) { elem_type = RT_I64; elem_size = 8; }
         if (!mb->is_array && !mb->pointed_to_type && mb->member_class && mb->member_class->size > 0) elem_size = mb->member_class->size;
         if (elem_size <= 0) elem_size = 8;
       } else if (saved_global) {
@@ -1699,11 +1712,17 @@ static bool ParsePostfix(Compiler *cc) {
           elem_type = saved_global->pointed_to_type;
           CHashClass *pc = saved_global->var_class;
           elem_size = pc && pc->size > 0 ? pc->size : PrimitiveTypeSize(elem_type);
+          if (saved_global->ptr_depth > 1) { elem_type = RT_I64; elem_size = 8; }
           if (elem_size <= 0) elem_size = 8;
         } else {
           elem_size = saved_global->element_size ? saved_global->element_size : 8;
           elem_type = (U8)saved_global->raw_type;
         }
+      } else if (!saved_symbol && !saved_global && !cc->last_member && cc->expr_ptr_depth) {
+        // `(**ppb)[i]`, `argv[1][0]`: the base is a pointer value whose depth a deref/subscript left
+        elem_type = (cc->expr_ptr_depth > 1) ? RT_I64 : cc->expr_pointee;
+        elem_size = PrimitiveTypeSize(elem_type);
+        if (elem_size <= 0) elem_size = 8;
       } else if (cc->cast_elem_type) {
         elem_type = cc->cast_elem_type;
         CHashClass *pc = cc->cast_elem_class;
@@ -1753,6 +1772,21 @@ static bool ParsePostfix(Compiler *cc) {
       if (!(cc->flags & CCF_RAX)) {
         DerefDroppingAddressSlot(cc);
         if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->arg1_type_pointed_to = elem_type;
+      }
+      // Through a multi-level pointer the element is itself a pointer: the next `[` or `*`
+      // continues one level down (`argv[1][0]`).
+      {
+        U8 sdepth = 0, spointee = 0;
+        if (saved_symbol && saved_symbol->pointed_to_type && !saved_symbol->is_array) { sdepth = saved_symbol->ptr_depth; spointee = saved_symbol->pointed_to_type; }
+        else if (saved_global && saved_global->pointed_to_type && !(saved_global->flags & GVF_ARRAY)) { sdepth = saved_global->ptr_depth; spointee = saved_global->pointed_to_type; }
+        else if (!saved_symbol && !saved_global && cc->last_member && cc->last_member->pointed_to_type && !cc->last_member->is_array) { sdepth = cc->last_member->ptr_depth; spointee = cc->last_member->pointed_to_type; }
+        else if (cc->expr_ptr_depth) { sdepth = cc->expr_ptr_depth; spointee = cc->expr_pointee; }
+        if (sdepth > 1) {
+          cc->last_var_symbol = NULL; cc->last_global_var = NULL; cc->last_member = NULL;
+          cc->expr_ptr_depth = (U8)(sdepth - 1); cc->expr_pointee = spointee;
+        } else {
+          cc->expr_ptr_depth = 0;
+        }
       }
       
       continue;
@@ -2702,7 +2736,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
   else if (!LexExpect(cc, '(')) return false;
   // Keep the switch value in a compiler temp local (patched to a real slot like any local),
   // so the dispatch block can compare it against every case without re-evaluating it.
-  I64 tmp_marker = -(10000 + cc->locals_size);
+  I64 tmp_marker = HOLY_LOCAL_MARKER(cc->locals_size);
   cc->locals_size += 8;
   ICAdd(cc, IC_LEA, tmp_marker, RT_I64);
   ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
@@ -2948,6 +2982,7 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
     Symbol *sym = SymbolDefine(cc, name, SYM_VAR);
     sym->data_type = type;
     sym->pointed_to_type = cc->last_pointed_to_type;  // Save pointed-to type
+    sym->ptr_depth = cc->last_ptr_depth;
     if (cc->last_pointed_to_type) sym->data_type = RT_I64;  // the variable itself is a pointer: 8-byte loads/stores
     sym->extra = decl_class;
     
@@ -3017,7 +3052,7 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
     
     // Mark the position in the locals area (before incrementing locals_size)
     // Use NEGATIVE marker to avoid collision with real values
-    sym->offset = -(10000 + cc->locals_size);  // Temporary: -10000-position marker
+    sym->offset = HOLY_LOCAL_MARKER(cc->locals_size);  // Temporary: -10000-position marker
     
     cc->locals_size += aligned_size;
     
@@ -3066,8 +3101,10 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
       // Check if it's another variable or end of statement (`U8 *src=_src,*dst=_src;`)
       SkipRegQualifier(cc);
       cc->last_pointed_to_type = 0;
+      cc->last_ptr_depth = 0;
       while (cc->lex.token == '*') {
         cc->last_pointed_to_type = type;
+        cc->last_ptr_depth++;
         LexNext(cc);
       }
       if (cc->lex.token == TK_IDENT) {
@@ -3253,6 +3290,7 @@ bool ParseStatement(Compiler *cc) {
       SkipRegQualifier(cc);
       while (cc->lex.token == '*') {   // `U8 reg *dst`: stars after the qualifier
         cc->last_pointed_to_type = type;
+        cc->last_ptr_depth++;
         LexNext(cc);
       }
       if (cc->lex.token != TK_IDENT) {
@@ -3285,7 +3323,9 @@ bool ParseStatement(Compiler *cc) {
           if (!r2) return false;
         }
       } else {
-        bool result = ParseVariableDeclWithName(cc, type, var_name);
+        // `U8 *ptr,buf[N]`: later declarators start from the base type, not the pointer.
+        U8 base_type = cc->last_pointed_to_type ? cc->last_pointed_to_type : type;
+        bool result = ParseVariableDeclWithName(cc, base_type, var_name);
         free(var_name);
         if (!result) return false;
       }
@@ -3430,7 +3470,7 @@ bool ParseStatement(Compiler *cc) {
       LexNext(cc);
       CLabel *catch_label = LabelNew(cc, NULL);
       CLabel *done_label = LabelNew(cc, NULL);
-      I64 ctx_marker = -(10000 + cc->locals_size);
+      I64 ctx_marker = HOLY_LOCAL_MARKER(cc->locals_size);
       cc->locals_size += 32;
       ICAdd(cc, IC_LEA, ctx_marker, RT_I64);
       ICAdd(cc, IC_TRY_ENTER, (I64)catch_label, RT_I64);
@@ -3743,7 +3783,8 @@ static bool ParseClassMembers(Compiler *cc, CHashClass *tmpc, bool is_union, I64
     if (cc->error) return false;
     for (;;) {
       U8 ptr = base_ptr;
-      while (cc->lex.token == '*') { ptr = member_type ? member_type : RT_I64; LexNext(cc); }
+      U8 mdepth = base_ptr ? cc->last_ptr_depth : 0;
+      while (cc->lex.token == '*') { ptr = member_type ? member_type : RT_I64; mdepth++; LexNext(cc); }
       char *member_name = NULL;
       bool is_fnptr = false;
       if (cc->lex.token == '(') {                     // T (*name)(params), T (**name)(...)
@@ -3786,6 +3827,7 @@ static bool ParseClassMembers(Compiler *cc, CHashClass *tmpc, bool is_union, I64
       m->str = member_name;
       m->raw_type = (ptr || is_fnptr) ? RT_I64 : member_type;
       m->pointed_to_type = ptr;
+      m->ptr_depth = ptr ? (mdepth ? mdepth : 1) : 0;
       m->is_array = is_array;
       m->elem_size = ptr ? PrimitiveTypeSize(ptr) : elem_size;
       m->member_class = (ptr || is_array) ? mcls : mcls;
@@ -4059,6 +4101,7 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
   tmpg->var_class = decl_class;
   tmpg->raw_type = var_type;
   tmpg->pointed_to_type = cc->last_pointed_to_type;
+  tmpg->ptr_depth = cc->last_ptr_depth;
   if (cc->last_pointed_to_type) tmpg->raw_type = RT_I64;  // the variable itself is a pointer: 8-byte loads/stores
   
   // Find type class in hash table
@@ -4471,6 +4514,7 @@ bool ParseFunction(Compiler *cc) {
       param->default_src = default_src;
       param->extra = param_decl_class;
       param->pointed_to_type = cc->last_pointed_to_type;
+      param->ptr_depth = cc->last_ptr_depth;
       if (cc->last_pointed_to_type) param->data_type = RT_I64;
 
       // Record size metadata for class parameters (best effort)
@@ -4603,6 +4647,9 @@ bool ParseFunction(Compiler *cc) {
     { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
   }
   
+#ifndef BARE_METAL
+  if (getenv("HOLYC_TRACE")) fprintf(stderr, "[trace] function %s: locals_size=%lld params=%d\n", name, (long long)cc->locals_size, param_count);
+#endif
   // Update ENTER with actual locals size
   // ic_data low 32 bits = param_count, high 32 bits = locals_size
   CIntermediateCode *ic_enter = cc->ic_head;
@@ -4670,16 +4717,16 @@ bool ParseFunction(Compiler *cc) {
   // sees function-level symbols and every other local would keep its -(10000+pos) marker and
   // be addressed 10KB below the frame.
   for (CIntermediateCode *ic_scan = cc->ic_head; ic_scan; ic_scan = ic_scan->next) {
-    if (ic_scan->ic_code == IC_LEA && ic_scan->ic_data <= -10000) {
-      I64 position_in_locals = -(ic_scan->ic_data + 10000);
+    if (ic_scan->ic_code == IC_LEA && HOLY_IS_LOCAL_MARKER(ic_scan->ic_data)) {
+      I64 position_in_locals = HOLY_LOCAL_MARKER_POS(ic_scan->ic_data);
       ic_scan->ic_data = -(frame_size - 16 - reg_param_cnt * 8 - position_in_locals);
     }
   }
   Symbol *local_sym = cc->symtab->symbols;
   while (local_sym) {
-    if (local_sym->type == SYM_VAR && local_sym->offset < -9000) {
+    if (local_sym->type == SYM_VAR && HOLY_IS_LOCAL_MARKER(local_sym->offset)) {
       // This is a local (has temporary marker -(10000+position))
-      I64 position_in_locals = -(local_sym->offset + 10000);
+      I64 position_in_locals = HOLY_LOCAL_MARKER_POS(local_sym->offset);
       // Locals start at sp+16+reg_param_cnt*8, so offset from s0 = -(frame_size - 16 - reg_param_cnt*8 - position)
       I64 final_offset = -(frame_size - 16 - reg_param_cnt * 8 - position_in_locals);
       I64 old_marker = local_sym->offset;
@@ -4812,8 +4859,8 @@ void WrapStatementsAsFrame(Compiler *cc) {
   ICAdd(cc, IC_RETURN_VAL2, 0, RT_I64);
   ICAdd(cc, IC_LEAVE, (locals << 32), RT_I64);
   for (CIntermediateCode *ic = cc->ic_head; ic; ic = ic->next) {
-    if (ic->ic_code == IC_LEA && ic->ic_data <= -10000) {
-      I64 pos = -(ic->ic_data + 10000);
+    if (ic->ic_code == IC_LEA && HOLY_IS_LOCAL_MARKER(ic->ic_data)) {
+      I64 pos = HOLY_LOCAL_MARKER_POS(ic->ic_data);
       ic->ic_data = -(frame_size - 16 - pos);
     }
   }

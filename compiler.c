@@ -702,6 +702,17 @@ static void EmitLabelAddr(U8 *pass_buf, U8 **pass_ptr, I64 *rip, CLabel *lb, U8 
   RVU32(pass_buf, pass_ptr, rip, 0x17u | ((U32)rd << 7) | (((U32)hi & 0xFFFFFu) << 12));          // auipc rd, hi
   RVU32(pass_buf, pass_ptr, rip, 0x13u | ((U32)rd << 7) | ((U32)rd << 15) | (((U32)lo & 0xFFFu) << 20)); // addi rd, rd, lo
 }
+// rd = rs + imm for any 32-bit imm (frames beyond the 12-bit addi range use lui/addi/add via t0).
+static void EmitAddImm(U8 *pass_buf, U8 **pass_ptr, I64 *rip, int rd, int rs, I64 imm) {
+  if (imm >= -2048 && imm <= 2047) {
+    RVU32(pass_buf, pass_ptr, rip, 0x13 | ((U32)rd << 7) | ((U32)rs << 15) | (((U32)imm & 0xFFF) << 20));
+    return;
+  }
+  I64 hi = (imm + 0x800) >> 12, lo = imm - (hi << 12);
+  RVU32(pass_buf, pass_ptr, rip, 0x37 | (RV_T0 << 7) | (((U32)hi & 0xFFFFF) << 12));                    // lui t0, hi
+  if (lo) RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (RV_T0 << 15) | (((U32)lo & 0xFFF) << 20)); // addi t0, t0, lo
+  RVU32(pass_buf, pass_ptr, rip, 0x33 | ((U32)rd << 7) | ((U32)rs << 15) | (RV_T0 << 20));               // add rd, rs, t0
+}
 static void EmitTryLeave(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *cc, I64 data_base) {
   EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->try_top_var, data_base);
   RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (3 << 12) | (RV_T1 << 15));                       // ld t2, 0(t1)  ctx
@@ -881,13 +892,13 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           I64 frame_size = 16 + param_size + locals_size;
           
           // addi sp, sp, -frame_size
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((-frame_size & 0xFFF)<<20));
+          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_SP, -frame_size);
           // sd ra, 0(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (3<<12) | (RV_SP<<15) | (RV_RA<<20));
           // sd s0, 8(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (8<<7) | (3<<12) | (RV_SP<<15) | (RV_S0<<20));
           // addi s0, sp, frame_size
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_S0<<7) | (RV_SP<<15) | ((frame_size & 0xFFF)<<20));
+          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_S0, RV_SP, frame_size);
           
           // Save register parameters (only first 8, args 9+ stay on original stack)
           for (I64 i = 0; i < reg_param_cnt; i++) {
@@ -907,13 +918,13 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           
           // addi sp, s0, -frame_size — sp from the frame pointer, so eval-stack residue cannot
           // shift the restores below.
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_S0<<15) | ((-frame_size_leave & 0xFFF)<<20));
+          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_S0, -frame_size_leave);
           // ld ra, 0(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_RA<<7) | (3<<12) | (RV_SP<<15));
           // ld s0, 8(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_S0<<7) | (3<<12) | (RV_SP<<15) | (8<<20));
           // addi sp, sp, frame_size
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((frame_size_leave & 0xFFF)<<20));
+          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_SP, frame_size_leave);
           // ret (jalr x0, 0(ra))
           RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<15));
         }
@@ -1390,7 +1401,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   if (cc->aot_data_layout && cc->hash_table) {
     for (I64 i = 0; i <= cc->hash_table->mask; i++)
       for (CHashEntry *e = cc->hash_table->body[i]; e; e = e->next)
-        if ((e->type & HTT_GLBL_VAR) && e->str && e->str[0] == '_' && e->str[1] == '_' && e->str[2] == 'i' && e->str[3] == 'm' && e->str[4] == 'p' && e->use_cnt > 0)
+        if ((e->type & HTT_GLBL_VAR) && e->str && e->str[0] == '_' && e->str[1] == '_' && e->str[2] == 'i' && e->str[3] == 'm' && e->str[4] == 'p' && e->use_cnt > 0 && !((CHashGlblVar *)e)->self_resolved)
           import_cnt++;
   }
   I64 dir_total = import_cnt ? import_cnt * 32 + 16 : 0;
@@ -1427,13 +1438,13 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           I64 frame_size = 16 + param_size + locals_size;
           
           // addi sp, sp, -frame_size
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((-frame_size & 0xFFF)<<20));
+          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_SP, -frame_size);
           // sd ra, 0(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (3<<12) | (RV_SP<<15) | (RV_RA<<20));
           // sd s0, 8(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (8<<7) | (3<<12) | (RV_SP<<15) | (RV_S0<<20));
           // addi s0, sp, frame_size
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_S0<<7) | (RV_SP<<15) | ((frame_size & 0xFFF)<<20));
+          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_S0, RV_SP, frame_size);
           
           // Save register parameters (only first 8, args 9+ stay on original stack)
           for (I64 i = 0; i < reg_param_cnt; i++) {
@@ -1452,13 +1463,13 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           
           // addi sp, s0, -frame_size — sp from the frame pointer, so eval-stack residue cannot
           // shift the restores below.
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_S0<<15) | ((-frame_size_leave & 0xFFF)<<20));
+          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_S0, -frame_size_leave);
           // ld ra, 0(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_RA<<7) | (3<<12) | (RV_SP<<15));
           // ld s0, 8(sp)
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_S0<<7) | (3<<12) | (RV_SP<<15) | (8<<20));
           // addi sp, sp, frame_size
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((frame_size_leave & 0xFFF)<<20));
+          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_SP, frame_size_leave);
           // ret (jalr x0, 0(ra))
           RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<15));
         }
@@ -1947,7 +1958,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       U8 *dp = buffer + rip;
       for (I64 i = 0; i <= cc->hash_table->mask; i++) {
         for (CHashEntry *e = cc->hash_table->body[i]; e; e = e->next) {
-          if (!((e->type & HTT_GLBL_VAR) && e->str && e->str[0] == '_' && e->str[1] == '_' && e->str[2] == 'i' && e->str[3] == 'm' && e->str[4] == 'p' && e->use_cnt > 0)) continue;
+          if (!((e->type & HTT_GLBL_VAR) && e->str && e->str[0] == '_' && e->str[1] == '_' && e->str[2] == 'i' && e->str[3] == 'm' && e->str[4] == 'p' && e->use_cnt > 0 && !((CHashGlblVar *)e)->self_resolved)) continue;
           CHashGlblVar *g = (CHashGlblVar *)e;
           U64 slot = (U64)(data_base + g->data_addr_rip);
           for (int k = 0; k < 8; k++) dp[k] = (U8)(slot >> (8 * k));
@@ -1963,6 +1974,34 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   }
   // Set output code size
   if (code_size) *code_size = rip;
+#ifndef BARE_METAL
+  // HOLYC_MAP=file: "offset name" per function in this unit (fault addresses -> functions).
+  if (getenv("HOLYC_MAP") && cc->hash_table) {
+    FILE *mf = fopen(getenv("HOLYC_MAP"), "w");
+    if (mf) {
+      for (I64 i = 0; i <= cc->hash_table->mask; i++) {
+        for (CHashEntry *e = cc->hash_table->body[i]; e; e = e->next) {
+          if (!(e->type & HTT_FUN)) continue;
+          CHashFun *f = (CHashFun *)e;
+          if (!f->entry_label || !f->entry_label_defined) continue;
+          bool in_unit = false;
+          for (CLabel *l = cc->labels; l; l = l->next) if (l == (CLabel *)f->entry_label) { in_unit = true; break; }
+          if (in_unit) fprintf(mf, "%08llx %s\n", (long long)((CLabel *)f->entry_label)->addr, f->str ? f->str : "?");
+        }
+      }
+      if (cc->aot_data_layout) {   // data symbols too (globals, `__imp_` slots): "offset name"
+        for (I64 i = 0; i <= cc->hash_table->mask; i++) {
+          for (CHashEntry *e = cc->hash_table->body[i]; e; e = e->next) {
+            if (!(e->type & HTT_GLBL_VAR)) continue;
+            CHashGlblVar *g = (CHashGlblVar *)e;
+            fprintf(mf, "%08llx %s\n", (long long)(cc->aot_data_base + g->data_addr_rip), g->str ? g->str : "?");
+          }
+        }
+      }
+      fclose(mf);
+    }
+  }
+#endif
   return buffer;
 }
 
@@ -2112,6 +2151,27 @@ Compiler *Compile(const char *source, const char *filename, bool aot) {
     ICAdd(cc, IC_IMM_I64, (I64)cc->except_ch_var->data_addr, RT_I64); cc->ic_tail->ic_flags = ICF_GLBL_ADDR;
     ICAdd(cc, IC_ASSIGN, 0, RT_I64);
     ICAdd(cc, IC_END_EXP, 0, RT_I64);
+    // Imports of functions this unit defines after their first use (`extern` in a header, the
+    // body later): store the definition's address into the slot here, PC-relative; the loader
+    // directory skips them.
+    if (cc->hash_table) {
+      for (I64 bi = 0; bi <= cc->hash_table->mask; bi++) {
+        for (CHashEntry *e = cc->hash_table->body[bi]; e; e = e->next) {
+          if (!(e->type & HTT_FUN)) continue;
+          CHashFun *f = (CHashFun *)e;
+          if (!f->import_var || !f->entry_label_defined || !f->entry_label) continue;
+          bool in_unit = false;
+          for (CLabel *l = cc->labels; l; l = l->next) if (l == (CLabel *)f->entry_label) { in_unit = true; break; }
+          if (!in_unit) continue;
+          ICAdd(cc, IC_IMM_I64, (I64)f->import_var->data_addr, RT_I64); cc->ic_tail->ic_flags = ICF_GLBL_ADDR;
+          ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
+          ICAdd(cc, IC_FN_ADDR, (I64)f->entry_label, RT_I64);
+          ICAdd(cc, IC_ASSIGN, 0, RT_I64);
+          ICAdd(cc, IC_END_EXP, 0, RT_I64);
+          f->import_var->self_resolved = true;
+        }
+      }
+    }
     if (stmts_head) {
       cc->ic_tail->next = stmts_head;
       stmts_head->last = cc->ic_tail;
@@ -2141,6 +2201,30 @@ Compiler *Compile(const char *source, const char *filename, bool aot) {
     cc->ic_tail = ch->tail;
   }
   
+  // Functions declared (prototype) but never defined in this unit: their labels would resolve
+  // to 0. Call them through import slots resolved by name at load instead (an unresolved one
+  // reaches the loader's diagnostic stub, not address 0).
+  if (aot && cc->hash_table) {
+    for (I64 i = 0; i <= cc->hash_table->mask; i++) {
+      for (CHashEntry *e = cc->hash_table->body[i]; e; e = e->next) {
+        if (!(e->type & HTT_FUN)) continue;
+        CHashFun *f = (CHashFun *)e;
+        if (!f->entry_label || f->entry_label_defined || f->import_var || f->exe_addr) continue;
+        bool in_unit = false;
+        for (CLabel *l = cc->labels; l; l = l->next) if (l == (CLabel *)f->entry_label) { in_unit = true; break; }
+        if (!in_unit) continue;
+        MakeImportSlot(cc, f);
+        for (CIntermediateCode *ic = cc->ic_head; ic; ic = ic->next) {
+          if (ic->ic_code == IC_CALL && ic->ic_data == (I64)f->entry_label) {
+            ic->ic_code = IC_CALL_INDIRECT2;
+            ic->ic_data = (I64)f->import_var->data_addr;
+            ic->ic_class = f->import_var;
+            f->import_var->use_cnt++;
+          }
+        }
+      }
+    }
+  }
   // Generate code (AOT malloc blob or JIT RWX mmap — same label offsets)
   if (aot) AOTLayoutGlobals(cc);
   if (aot) {

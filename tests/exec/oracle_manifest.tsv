@@ -30,3 +30,5 @@ tests/exec/cases/e_indirect_call.hc	0000000000000049
 tests/exec/cases/e_misc_syntax.hc	000000000000092b
 tests/exec/cases/e_no_paren_call.hc	00000000000002d5
 tests/exec/cases/e_default_expr.hc	00000000000005e7
+tests/exec/cases/e_big_frame.hc	000000000000103f
+tests/exec/cases/e_frame_markers.hc	000000000000535d

@@ -10,6 +10,7 @@
 #include "holy_rt_names.h"
 typedef long long HRT_I64;
 typedef unsigned long long HRT_U64;
+typedef unsigned int HRT_U32;
 typedef unsigned char HRT_U8;
 
 static HRT_I64 rt_strlen(const char *s) { HRT_I64 n = 0; while (s[n]) n++; return n; }
@@ -208,6 +209,92 @@ static HRT_I64 HolyTan(HRT_I64 a) { double x = rt_b2f(a); return rt_f2b(rt_sin(x
 static HRT_I64 HolyATan(HRT_I64 a) { return rt_f2b(rt_atan(rt_b2f(a))); }
 static HRT_I64 HolyAbs(HRT_I64 a) { double x = rt_b2f(a); return rt_f2b(x < 0 ? -x : x); }
 static HRT_I64 HolySign(HRT_I64 a) { double x = rt_b2f(a); return x > 0 ? 1 : x < 0 ? -1 : 0; }
+/* x86 intrinsics the kernel declares `_intern`/`_extern` (KernelB.HH, KUtils.HC asm):
+ * bit tests on bit arrays, queues (CQue {next,last}), port I/O (no port space here: no-ops),
+ * register/flag accessors (0), time stamp (rdtime), string matching. */
+static HRT_I64 HolyBt(HRT_U8 *bf, HRT_I64 n) { return (bf[n >> 3] >> (n & 7)) & 1; }
+static HRT_I64 HolyBts(HRT_U8 *bf, HRT_I64 n) { HRT_I64 o = (bf[n >> 3] >> (n & 7)) & 1; bf[n >> 3] |= (HRT_U8)(1 << (n & 7)); return o; }
+static HRT_I64 HolyBtr(HRT_U8 *bf, HRT_I64 n) { HRT_I64 o = (bf[n >> 3] >> (n & 7)) & 1; bf[n >> 3] &= (HRT_U8)~(1 << (n & 7)); return o; }
+static HRT_I64 HolyBtc(HRT_U8 *bf, HRT_I64 n) { HRT_I64 o = (bf[n >> 3] >> (n & 7)) & 1; bf[n >> 3] ^= (HRT_U8)(1 << (n & 7)); return o; }
+static HRT_I64 HolyLBts(HRT_U8 *bf, HRT_I64 n) { return HolyBts(bf, n); }
+static HRT_I64 HolyLBtr(HRT_U8 *bf, HRT_I64 n) { return HolyBtr(bf, n); }
+static HRT_I64 HolyLBtc(HRT_U8 *bf, HRT_I64 n) { return HolyBtc(bf, n); }
+static HRT_I64 HolyBsf(HRT_I64 v) { if (!v) return -1; HRT_I64 i = 0; while (!((HRT_U64)v >> i & 1)) i++; return i; }
+static HRT_I64 HolyBsr(HRT_I64 v) { if (!v) return -1; HRT_I64 i = 63; while (!((HRT_U64)v >> i & 1)) i--; return i; }
+static HRT_I64 HolyBEqu(HRT_U8 *bf, HRT_I64 n, HRT_I64 val) { if (val) HolyBts(bf, n); else HolyBtr(bf, n); return val; }
+static HRT_I64 HolyBFieldOrU32(HRT_U8 *bf, HRT_I64 lo, HRT_I64 hi) { for (HRT_I64 i = lo; i <= hi; i++) HolyBts(bf, i); return 0; }
+static HRT_I64 HolySwapI64(HRT_I64 *a, HRT_I64 *b) { HRT_I64 t = *a; *a = *b; *b = t; return 0; }
+static HRT_I64 HolyLXchgI64(HRT_I64 *d, HRT_I64 v) { HRT_I64 o = *d; *d = v; return o; }
+static HRT_I64 HolySqrI64(HRT_I64 x) { return x * x; }
+static HRT_I64 HolyClampI64(HRT_I64 x, HRT_I64 lo, HRT_I64 hi) { return x < lo ? lo : x > hi ? hi : x; }
+static HRT_I64 HolyMSize(HRT_U8 *p) { return p ? ((HolyBlk *)p - 1)->size : 0; }
+static HRT_I64 HolyMSize2(HRT_U8 *p) { return HolyMSize(p); }
+static HRT_I64 HolyInU8(HRT_I64 port) { (void)port; return 0; }
+static HRT_I64 HolyOutU8(HRT_I64 port, HRT_I64 v) { (void)port; (void)v; return 0; }
+static HRT_I64 HolyInU16(HRT_I64 port) { (void)port; return 0; }
+static HRT_I64 HolyOutU16(HRT_I64 port, HRT_I64 v) { (void)port; (void)v; return 0; }
+static HRT_I64 HolyInU32(HRT_I64 port) { (void)port; return 0; }
+static HRT_I64 HolyOutU32(HRT_I64 port, HRT_I64 v) { (void)port; (void)v; return 0; }
+static HRT_I64 HolyRepInU32(HRT_U8 *buf, HRT_I64 cnt, HRT_I64 port) { (void)port; for (HRT_I64 i = 0; i < cnt * 4; i++) buf[i] = 0; return 0; }
+static HRT_I64 HolyRepOutU32(HRT_U8 *buf, HRT_I64 cnt, HRT_I64 port) { (void)buf; (void)cnt; (void)port; return 0; }
+static HRT_I64 HolyGetRAX(void) { return 0; }
+static HRT_I64 HolyGetRBP(void) { HRT_I64 v; __asm__ volatile("mv %0, s0" : "=r"(v)); return v; }
+static HRT_I64 HolyGetRFlags(void) { return 0; }
+static HRT_I64 HolySetRFlags(HRT_I64 f) { (void)f; return 0; }
+static HRT_I64 HolyCPUId(HRT_I64 rax, HRT_U8 *res) { (void)rax; for (int i = 0; i < 32; i++) res[i] = 0; return 0; }
+static HRT_I64 HolyInvlPg(HRT_U8 *a) { (void)a; return 0; }
+static HRT_I64 HolySysHlt(void) { __asm__ volatile("wfi"); return 0; }
+static HRT_I64 HolyGetTSC(void) { HRT_U64 t; __asm__ volatile("rdtime %0" : "=r"(t)); return (HRT_I64)t; }
+static HRT_I64 HolyCaller(HRT_I64 n) { (void)n; return 0; }
+typedef struct HolyQue { struct HolyQue *next, *last; } HolyQue;
+static HRT_I64 HolyQueInit(HolyQue *h) { h->next = h->last = h; return 0; }
+static HRT_I64 HolyQueIns(HolyQue *e, HolyQue *h) { e->last = h->last; e->next = h; h->last->next = e; h->last = e; return 0; }
+static HRT_I64 HolyQueInsRev(HolyQue *e, HolyQue *h) { e->next = h->next; e->last = h; h->next->last = e; h->next = e; return 0; }
+static HRT_I64 HolyQueRem(HolyQue *e) { e->last->next = e->next; e->next->last = e->last; return 0; }
+static int rt_lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+static HRT_I64 HolyStrMatch(char *needle, char *hay, HRT_I64 flags) { (void)flags; if (!needle || !hay) return 0; for (char *h = hay; *h; h++) { char *a = needle, *b = h; while (*a && *a == *b) { a++; b++; } if (!*a) return (HRT_I64)h; } return 0; }
+static HRT_I64 HolyStrIMatch(char *needle, char *hay, HRT_I64 flags) { (void)flags; if (!needle || !hay) return 0; for (char *h = hay; *h; h++) { char *a = needle, *b = h; while (*a && rt_lc(*a) == rt_lc(*b)) { a++; b++; } if (!*a) return (HRT_I64)h; } return 0; }
+static HRT_I64 HolyStrICmp(char *a, char *b) { while (*a && rt_lc(*a) == rt_lc(*b)) { a++; b++; } return rt_lc(*a) - rt_lc(*b); }
+static HRT_I64 HolyPow10(HRT_I64 x) { return rt_f2b(rt_exp(rt_b2f(x) * 2.302585092994046)); }
+/* KHashA.HC asm: CHash {next, str, U32 type, U32 use_cnt}; CHashTable {next, mask, locked_flags, body}. */
+typedef struct HolyHash { struct HolyHash *next; char *str; HRT_U32 type, use_cnt; } HolyHash;
+typedef struct HolyHashTable { struct HolyHashTable *next; HRT_I64 mask, locked_flags; HolyHash **body; } HolyHashTable;
+static HRT_I64 HolyHashStr(char *st) { HRT_U64 h = 0; while (*st) { h = (h << 5) + h + (HRT_U8)*st++; } return (HRT_I64)h; }
+static HRT_I64 HolyHashSingleTableFind(char *needle, HolyHashTable *t, HRT_I64 mask) {
+  if (!needle || !t) return 0;
+  for (HolyHash *e = t->body[(HRT_U64)HolyHashStr(needle) & (HRT_U64)t->mask]; e; e = e->next) {
+    if ((e->type & mask) && e->str) { char *a = e->str, *b = needle; while (*a && *a == *b) { a++; b++; } if (!*a && !*b) return (HRT_I64)e; }
+  }
+  return 0;
+}
+static HRT_I64 HolyHashFind(char *needle, HolyHashTable *t, HRT_I64 mask) {
+  for (; t; t = t->next) { HRT_I64 r = HolyHashSingleTableFind(needle, t, mask); if (r) return r; }
+  return 0;
+}
+static HRT_I64 HolyHashAdd(HolyHash *e, HolyHashTable *t) {
+  if (!e || !t) return 0;
+  HRT_U64 i = (HRT_U64)HolyHashStr(e->str) & (HRT_U64)t->mask;
+  e->next = t->body[i]; t->body[i] = e;
+  return 0;
+}
+static HRT_I64 HolyHashRemDel(HolyHash *e, HolyHashTable *t, HRT_I64 mask) {
+  (void)mask;
+  if (!e || !t) return 0;
+  HRT_U64 i = (HRT_U64)HolyHashStr(e->str) & (HRT_U64)t->mask;
+  for (HolyHash **pp = &t->body[i]; *pp; pp = &(*pp)->next) if (*pp == e) { *pp = e->next; return 1; }
+  return 0;
+}
+static HRT_I64 HolyStrNCmp(char *a, char *b, HRT_I64 n) { for (HRT_I64 i = 0; i < n; i++) { if (a[i] != b[i]) return (HRT_U8)a[i] - (HRT_U8)b[i]; if (!a[i]) return 0; } return 0; }
+static HRT_I64 HolyModU64(HRT_I64 a, HRT_I64 b) { return b ? (HRT_I64)((HRT_U64)a % (HRT_U64)b) : 0; }
+static HRT_I64 HolyLBEqu(HRT_U8 *bf, HRT_I64 n, HRT_I64 val) { return HolyBEqu(bf, n, val); }
+static HRT_I64 HolyBFieldExtU32(HRT_U8 *bf, HRT_I64 lo, HRT_I64 hi) { HRT_I64 r = 0; for (HRT_I64 i = hi; i >= lo; i--) r = (r << 1) | HolyBt(bf, i); return r; }
+static HRT_I64 HolyRepInU16(HRT_U8 *buf, HRT_I64 cnt, HRT_I64 port) { (void)port; for (HRT_I64 i = 0; i < cnt * 2; i++) buf[i] = 0; return 0; }
+static HRT_I64 HolyGetRSP(void) { HRT_I64 v; __asm__ volatile("mv %0, sp" : "=r"(v)); return v; }
+static HRT_I64 HolySaveExceptRegs(void) { return 0; }
+static HRT_I64 HolyCall(HRT_I64 addr) { return addr ? ((HRT_I64 (*)(void))addr)() : 0; }
+static HRT_I64 HolyFarCall32(HRT_I64 a, HRT_I64 b, HRT_I64 c, HRT_I64 d) { (void)a; (void)b; (void)c; (void)d; return 0; }
+static HRT_I64 HolyYield(void) { return 0; }   /* single task until the RISC-V scheduler (phase 2) */
+static HRT_I64 HolyTaskEndNow(void) { rt_puts("[TaskEndNow]\n"); for (;;) __asm__ volatile("wfi"); }
 /* D: hex dump `n` bytes at `p`, 16 per line with ASCII */
 static HRT_I64 HolyD(HRT_U8 *p, HRT_I64 n) {
   for (HRT_I64 off = 0; off < n; off += 16) {
@@ -246,6 +333,7 @@ static HRT_I64 holy_resolve_imports(HRT_U8 *blob_start, HRT_U8 *blob_end) {
     const char *name = (const char *)ent + 8;
     { HRT_U64 fn = (HRT_U64)holy_unresolved_import; HRT_U8 *fp = (HRT_U8 *)&fn;
       for (int i = 0; i < 8; i++) blob_start[slot + (HRT_U64)i] = fp[i]; }   /* default: diagnostic stub */
+    int found = 0;
     for (HRT_I64 j = 0; j < HOLY_RT_COUNT; j++) {
       const char *a = holy_rt_table[j].name, *b = name;
       while (*a && *a == *b) { a++; b++; }
@@ -253,9 +341,11 @@ static HRT_I64 holy_resolve_imports(HRT_U8 *blob_start, HRT_U8 *blob_end) {
         HRT_U64 fn = (HRT_U64)holy_rt_table[j].fn; HRT_U8 *fp = (HRT_U8 *)&fn;
         for (int i = 0; i < 8; i++) blob_start[slot + (HRT_U64)i] = fp[i];
         resolved++;
+        found = 1;
         break;
       }
     }
+    if (!found) { rt_puts("[import unresolved: "); rt_puts(name); rt_puts("]\n"); }   /* named once, at load */
   }
   return resolved;
 }

@@ -415,6 +415,7 @@ typedef struct Symbol {
   
   // Pointer information
   U8 pointed_to_type; // For pointers: RT_U8, RT_U32, RT_I64, etc. (0 if not pointer)
+  U8 ptr_depth;       // pointer levels: `U8 **p` is 2 (a deref of depth > 1 loads a pointer)
 
   // Function pointer metadata
   bool is_function_pointer;
@@ -478,6 +479,9 @@ typedef struct {
   CHashClass *last_type_class;  // Most recently parsed type's class (for decls)
   struct CHashGlblVar *last_global_var;  // Last global variable referenced
   U8 last_pointed_to_type;  // For pointer declarations (RT_U8, RT_U32, etc.)
+  U8 last_ptr_depth;        // stars seen by the last ParseType / declarator
+  U8 expr_ptr_depth;        // after a deref: remaining pointer levels of the value (0 = none known)
+  U8 expr_pointee;          // …and its base type
   
   // Compiler flags (match original CCF_* flags)
   I64 flags;  // CCF_RAX, CCF_ARRAY, CCF_PAREN, etc.
@@ -554,6 +558,14 @@ typedef struct {
 } Compiler;
 
 // String literal for target code
+// Frame-slot markers: a local's IC_LEA carries HOLY_LOCAL_MARKER(position) until the function's
+// frame size is known, then it is patched to the real s0-relative offset. The marker space sits
+// far below any real offset, so a patched offset can never be mistaken for a marker again.
+#define HOLY_LOCAL_MARKER_BASE   (-(1LL << 40))
+#define HOLY_LOCAL_MARKER(pos)   (HOLY_LOCAL_MARKER_BASE - (I64)(pos))
+#define HOLY_IS_LOCAL_MARKER(v)  ((I64)(v) <= HOLY_LOCAL_MARKER_BASE)
+#define HOLY_LOCAL_MARKER_POS(v) (HOLY_LOCAL_MARKER_BASE - (I64)(v))
+
 typedef struct StringLiteral {
   char *str;
   I64 len;     // bytes (literals may contain \0)
@@ -569,6 +581,7 @@ typedef struct StringLiteral {
 Compiler *CompilerNew(const char *source, const char *filename);
 void LexPushStringPending(Compiler *cc, const char *text);
 void LexAbandonPendingString(Compiler *cc);
+void MakeImportSlot(Compiler *cc, CHashFun *f);   // parser.c: `__imp_<name>` slot, calls go through it
 void CompilerFree(Compiler *cc);
 Compiler *Compile(const char *source, const char *filename, bool aot);
 void LexNext(Compiler *cc);

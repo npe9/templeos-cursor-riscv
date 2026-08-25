@@ -56,6 +56,7 @@ typedef struct CMemberLst {
   // Type info for typed loads/stores and pointer/array members
   U8 raw_type;              // RT_* of the member (RT_I64 for pointers)
   U8 pointed_to_type;       // pointee type for pointer members (0 = not a pointer)
+  U8 ptr_depth;             // pointer levels
   bool is_array;            // `U8 name[8]`: the member is its address
   I64 elem_size;            // element size for array/pointer members
 } CMemberLst;
@@ -160,9 +161,11 @@ typedef struct CHashGlblVar {
   int func_ptr_param_count;
   I64 element_size;
   U8 raw_type;
+  U8 ptr_depth;             // pointer levels (`U8 **argv` is 2)
   U8 pointed_to_type;
   CArrayDim dim;            // Array dimensions
   struct CHashFun *fun_ptr; // If it's a function pointer variable
+  bool self_resolved;       // import slot filled by this unit's own entry chunk (not in the loader directory)
 } CHashGlblVar;
 
 // Global variable flags
