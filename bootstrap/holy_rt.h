@@ -356,6 +356,130 @@ static HRT_I64 HolyRVTimerArm(HRT_I64 interval) {
 }
 static HRT_I64 HolyRVGetTicks(void) { return holy_ticks; }
 
+
+/* --- Preemptive scheduler (timer-driven full-context switch) --------------------------------------
+ * Distinct from the cooperative RVTaskSwitch: here a machine-timer interrupt saves the ENTIRE
+ * interrupted context (x1..x31 + mepc) to the running task's 32-word slot, the picker round-robins
+ * to the next runnable task, and mret resumes it at its saved mepc. mscratch always points at the
+ * running task's save slot. Layout: word i = x(i+1) for i in 0..30, word 31 = mepc. */
+#define HOLY_PMAX 8
+static HRT_I64 holy_pctx[HOLY_PMAX*32];
+static HRT_I64 holy_pdone[HOLY_PMAX];
+static int holy_pn = 1, holy_pcur = 0;
+
+__attribute__((used)) static void *HolyPreemptPick(void *cur) {
+  (void)cur;
+  HRT_I64 mcause; __asm__ volatile("csrr %0, mcause" : "=r"(mcause));
+  if (mcause == (HRT_I64)0x8000000000000007ULL) {
+    holy_ticks++;
+    volatile HRT_I64 *mtime=(volatile HRT_I64*)0x0200BFF8, *mtimecmp=(volatile HRT_I64*)0x02004000;
+    *mtimecmp = *mtime + holy_timer_interval;
+  }
+  for (int i=0;i<holy_pn;i++) { holy_pcur=(holy_pcur+1)%holy_pn; if(!holy_pdone[holy_pcur]) break; }
+  return &holy_pctx[holy_pcur*32];
+}
+
+__attribute__((naked, aligned(4))) static void HolyPreemptVector(void) {
+  __asm__ volatile(
+    "csrrw t0, mscratch, t0\n"
+    "sd x1,0(t0)\n"
+    "sd x2,8(t0)\n"
+    "sd x3,16(t0)\n"
+    "sd x4,24(t0)\n"
+    "sd x6,40(t0)\n"
+    "csrr x6, mscratch\n"
+    "sd x6,32(t0)\n"
+    "sd x7,48(t0)\n"
+    "sd x8,56(t0)\n"
+    "sd x9,64(t0)\n"
+    "sd x10,72(t0)\n"
+    "sd x11,80(t0)\n"
+    "sd x12,88(t0)\n"
+    "sd x13,96(t0)\n"
+    "sd x14,104(t0)\n"
+    "sd x15,112(t0)\n"
+    "sd x16,120(t0)\n"
+    "sd x17,128(t0)\n"
+    "sd x18,136(t0)\n"
+    "sd x19,144(t0)\n"
+    "sd x20,152(t0)\n"
+    "sd x21,160(t0)\n"
+    "sd x22,168(t0)\n"
+    "sd x23,176(t0)\n"
+    "sd x24,184(t0)\n"
+    "sd x25,192(t0)\n"
+    "sd x26,200(t0)\n"
+    "sd x27,208(t0)\n"
+    "sd x28,216(t0)\n"
+    "sd x29,224(t0)\n"
+    "sd x30,232(t0)\n"
+    "sd x31,240(t0)\n"
+    "csrr x6, mepc\n"
+    "sd x6,248(t0)\n"
+    "mv a0, t0\n"
+    "call HolyPreemptPick\n"
+    "mv t0, a0\n"
+    "csrw mscratch, t0\n"
+    "ld x6, 248(t0)\n" "csrw mepc, x6\n"
+    "ld x1,0(t0)\n"
+    "ld x2,8(t0)\n"
+    "ld x3,16(t0)\n"
+    "ld x4,24(t0)\n"
+    "ld x6,40(t0)\n"
+    "ld x7,48(t0)\n"
+    "ld x8,56(t0)\n"
+    "ld x9,64(t0)\n"
+    "ld x10,72(t0)\n"
+    "ld x11,80(t0)\n"
+    "ld x12,88(t0)\n"
+    "ld x13,96(t0)\n"
+    "ld x14,104(t0)\n"
+    "ld x15,112(t0)\n"
+    "ld x16,120(t0)\n"
+    "ld x17,128(t0)\n"
+    "ld x18,136(t0)\n"
+    "ld x19,144(t0)\n"
+    "ld x20,152(t0)\n"
+    "ld x21,160(t0)\n"
+    "ld x22,168(t0)\n"
+    "ld x23,176(t0)\n"
+    "ld x24,184(t0)\n"
+    "ld x25,192(t0)\n"
+    "ld x26,200(t0)\n"
+    "ld x27,208(t0)\n"
+    "ld x28,216(t0)\n"
+    "ld x29,224(t0)\n"
+    "ld x30,232(t0)\n"
+    "ld x31,240(t0)\n"
+    "ld x5,32(t0)\n"
+    "mret\n"
+  );
+}
+
+static HRT_I64 HolyRVPreemptInit(HRT_I64 interval) {
+  holy_pn = 1; holy_pcur = 0; holy_pdone[0] = 0;
+  holy_timer_interval = interval;
+  __asm__ volatile("csrw mscratch, %0" :: "r"(&holy_pctx[0]));   /* main = slot 0 */
+  __asm__ volatile("csrw mtvec, %0" :: "r"(&HolyPreemptVector));
+  __asm__ volatile("csrs mstatus, %0" :: "r"((HRT_I64)(1<<3))); /* MIE */
+  volatile HRT_I64 *mtime=(volatile HRT_I64*)0x0200BFF8, *mtimecmp=(volatile HRT_I64*)0x02004000;
+  *mtimecmp = *mtime + interval;
+  __asm__ volatile("csrs mie, %0" :: "r"((HRT_I64)(1<<7)));     /* MTIE last */
+  return 0;
+}
+static HRT_I64 HolyRVPreemptSpawn(void *fn, void *stack_top) {
+  if (holy_pn >= HOLY_PMAX) return -1;
+  int s = holy_pn;
+  for (int i=0;i<32;i++) holy_pctx[s*32+i]=0;
+  holy_pctx[s*32+1] = (HRT_I64)stack_top;   /* x2 = sp */
+  holy_pctx[s*32+31] = (HRT_I64)fn;         /* mepc = entry */
+  holy_pdone[s] = 0;
+  holy_pn++;
+  return s;
+}
+static HRT_I64 HolyRVPreemptExit(void) { holy_pdone[holy_pcur]=1; for(;;){} }
+
+
 /* Cooperative context switch: save the current callee-saved regs + sp + ra into *save (a 14-word
  * HolyTaskCtx: ra, sp, s0..s11), load them from *load, and `ret` into load's saved ra. A task
  * spawned with ra=entry and sp=fresh-stack-top starts there on its first switch-in. */
