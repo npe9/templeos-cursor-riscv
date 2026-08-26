@@ -711,6 +711,13 @@ static void ApplyCast(Compiler *cc, U8 cast_type, bool cast_ptr, CHashClass *cls
   // HolyC casts relabel; they never convert ("To typecast int or F64, use ToI64()/ToF64()",
   // Doc/HolyC.DD). So `0x7FF0000000000000(F64)` is inf and `i(F64)` reads i's bits as a double.
   // Sub-word integer casts narrow (mask / sign-extend), as x86 MOVZX/MOVSX would.
+  // A postfix cast on a deref lvalue reinterprets the memory location's WIDTH: `b[i](I64)` is
+  // `*(I64*)&b[i]` — 8 bytes, not b[i]'s declared U8. Retype the pending DEREF (captured before
+  // any sub-word mask/shift below changes ic_tail) so a following store — and the load itself —
+  // uses the cast's width, not the element's. Without this, `tmp_buf[0](I64)=ch` (StrPrint's %c)
+  // stored a single byte and left the previous specifier's bytes trailing.
+  CIntermediateCode *cast_deref = (!cast_ptr && cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) ? cc->ic_tail : NULL;
+  if (cast_deref) cast_deref->arg1_type_pointed_to = cast_type;
   if (!cast_ptr && cc->ic_tail && cc->ic_tail->ic_code == IC_IMM_I64 && cast_type == RT_F64) cc->ic_tail->ic_code = IC_IMM_F64;
   if (!cast_ptr && cc->ic_tail && cc->ic_tail->ic_code == IC_IMM_F64 && cast_type != RT_F64) cc->ic_tail->ic_code = IC_IMM_I64;
   if (cast_ptr) {
