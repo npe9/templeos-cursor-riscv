@@ -15,7 +15,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke coverage templeos-riscv templeos-smoke
+.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke coverage templeos-riscv templeos-smoke
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -68,6 +68,7 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) kernel-print-smoke
 	@$(MAKE) kernel-puts-smoke
 	@$(MAKE) kernel-boot-smoke
+	@$(MAKE) kernel-calc-smoke
 	@$(MAKE) repl-smoke
 
 # Compile a program that #includes the real kernel, formats with its StrPrintJoin, and prints
@@ -85,6 +86,11 @@ kernel-puts-smoke:
 kernel-boot-smoke:
 	@chmod +x tests/scripts/run_kernel_boot_smoke.sh
 	@tests/scripts/run_kernel_boot_smoke.sh
+
+# Interactive kernel console: feed numbers over the UART, parse with Str2I64, print results.
+kernel-calc-smoke:
+	@chmod +x tests/scripts/run_kernel_calc_smoke.sh
+	@tests/scripts/run_kernel_calc_smoke.sh
 
 # ShellCheck on the same five scripts as the CI shellcheck job (requires shellcheck on PATH).
 lint-sh:

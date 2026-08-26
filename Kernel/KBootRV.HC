@@ -39,3 +39,43 @@ U0 RVKernelInit()
   Fs->display_flags=0;
   kbd.scan_code=0;
 }
+
+// --- UART input (QEMU virt 16550) --------------------------------------------------------------
+// The kernel's own GetKey() blocks via the scheduler (phase 2). Until that exists, these polling
+// helpers give a program interactive input over the same UART the console writes to.
+#define RV_UART_BASE  0x10000000
+#define RV_UART_LSR   0x10000005   // line status register; bit0 = data ready
+
+Bool RVUartDataReady()
+{
+  U8 *lsr=RV_UART_LSR;
+  return (*lsr & 1) != 0;
+}
+
+I64 RVUartGetC()
+{//Block (poll) until a byte arrives on the UART, then return it.
+  U8 *rbr=RV_UART_BASE;
+  while (!RVUartDataReady())
+    ;
+  return *rbr;
+}
+
+I64 RVUartGetLine(U8 *buf,I64 max)
+{//Read a line into buf (up to max-1 chars), echoing as we go. Returns the length. Stops on \n or \r.
+  I64 n=0,ch;
+  while (n<max-1) {
+    ch=RVUartGetC;
+    if (ch=='\r' || ch=='\n') {
+      RVUartPutS("\n");
+      break;
+    }
+    if (ch==8 || ch==127) {          // backspace / delete
+      if (n>0) { n--; RVUartPutS("\b \b"); }
+      continue;
+    }
+    buf[n++]=ch;
+    U8 e[2]; e[0]=ch; e[1]=0; RVUartPutS(e);   // echo
+  }
+  buf[n]=0;
+  return n;
+}
