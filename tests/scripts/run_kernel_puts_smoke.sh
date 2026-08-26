@@ -11,6 +11,7 @@ OUTDIR="$ROOT/build/exec"
 COMPILER="$ROOT/holyc-riscv"
 SRC="$ROOT/tests/exec/cases/kernel_puts_demo.hc"
 EXPECT="TempleOS/RISC-V kernel PutS over UART"
+EXPECT2="kernel Print: 2 + 40 = 42"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
@@ -43,7 +44,7 @@ fi
   >/dev/null 2>&1 || { echo "FAIL kernel-puts smoke — link error" >&2; exit 1; }
 
 out="$($TIMEOUT 20 "$QEMU" -M virt -bios none -kernel "$T/kp.elf" -nographic </dev/null 2>&1 | tr -d '\r')"
-if printf '%s\n' "$out" | grep -qF "$EXPECT"; then
+if printf '%s\n' "$out" | grep -qF "$EXPECT" && printf '%s\n' "$out" | grep -qF "$EXPECT2"; then
   echo "Kernel-puts smoke: OK"
   exit 0
 fi
