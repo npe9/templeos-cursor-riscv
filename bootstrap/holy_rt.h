@@ -479,6 +479,19 @@ static HRT_I64 HolyRVPreemptSpawn(void *fn, void *stack_top) {
 }
 static HRT_I64 HolyRVPreemptExit(void) { holy_pdone[holy_pcur]=1; for(;;){} }
 
+/* Critical section for the preemptive scheduler: disable/restore the machine interrupt-enable so a
+ * read-modify-write on shared state can't be split by a timer preemption. Nesting-safe — Enter
+ * returns the previous MIE state, Leave takes it back. Single-core; not an SMP lock. */
+static HRT_I64 HolyRVCritEnter(void) {
+  HRT_I64 old;
+  __asm__ volatile("csrrci %0, mstatus, 8" : "=r"(old));   /* clear MIE (bit 3), return old mstatus */
+  return old & 8;                                          /* nonzero if interrupts were enabled */
+}
+static HRT_I64 HolyRVCritLeave(HRT_I64 was_enabled) {
+  if (was_enabled) __asm__ volatile("csrsi mstatus, 8");   /* re-enable MIE */
+  return 0;
+}
+
 
 /* Cooperative context switch: save the current callee-saved regs + sp + ra into *save (a 14-word
  * HolyTaskCtx: ra, sp, s0..s11), load them from *load, and `ret` into load's saved ra. A task
