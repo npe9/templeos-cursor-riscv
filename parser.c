@@ -1306,7 +1306,7 @@ static bool ParsePrimary(Compiler *cc) {
         cc->last_var_symbol = sym;
         cc->last_member = NULL;
         cc->subscript_level = 0;
-        cc->last_expr_type = (sym->data_type == RT_F64 && !sym->pointed_to_type) ? RT_F64 :
+        cc->last_expr_type = (sym->data_type == RT_F64 && !sym->pointed_to_type && !sym->is_array) ? RT_F64 :
                              (sym->pointed_to_type || sym->data_type == RT_U8 || sym->data_type == RT_U16 ||
                               sym->data_type == RT_U32 || sym->data_type == RT_U64) ? RT_U64 : RT_I64;
         cc->last_global_var = NULL;
@@ -1340,7 +1340,7 @@ static bool ParsePrimary(Compiler *cc) {
         cc->last_global_var = global;
         cc->last_member = NULL;
         cc->last_var_symbol = NULL;  // stale local from an earlier statement would suppress the auto-deref
-        cc->last_expr_type = (global->raw_type == RT_F64 && !global->pointed_to_type) ? RT_F64 :
+        cc->last_expr_type = (global->raw_type == RT_F64 && !global->pointed_to_type && !(global->flags & GVF_ARRAY)) ? RT_F64 :
                              (global->pointed_to_type || global->raw_type == RT_U8 || global->raw_type == RT_U16 ||
                               global->raw_type == RT_U32 || global->raw_type == RT_U64) ? RT_U64 : RT_I64;
         
