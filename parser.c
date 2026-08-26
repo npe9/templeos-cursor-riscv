@@ -1561,8 +1561,16 @@ static bool ParseUnary(Compiler *cc) {
     // ParsePrimary clears CCF_RAX, so the auto-deref still fired: retract it and make sure the
     // address is on the eval stack (that is the whole of `&`).
     EnsureLvalueAddressPushed(cc);
+    U8 addr_pointee = RT_I64;
+    if (cc->last_var_symbol) addr_pointee = cc->last_var_symbol->pointed_to_type ? RT_I64 : cc->last_var_symbol->data_type;
+    else if (cc->last_global_var) addr_pointee = cc->last_global_var->pointed_to_type ? RT_I64 : (U8)cc->last_global_var->raw_type;
+    else if (cc->last_member) addr_pointee = cc->last_member->pointed_to_type ? RT_I64 : cc->last_member->raw_type;
+    cc->last_expr_type = RT_I64;   // `&x` is a pointer (address), never F64 — else `I64 a=&x` converts it
+    cc->expr_ptr_depth = 1;
+    cc->expr_pointee = addr_pointee;
     cc->last_var_symbol = NULL;
     cc->last_global_var = NULL;
+    cc->last_member = NULL;
     return true;
   }
   
@@ -1590,6 +1598,8 @@ static bool ParseUnary(Compiler *cc) {
     ICAdd(cc, IC_EVAL_DROP, 8, RT_I64);
     ICAdd(cc, IC_DEREF, 0, RT_I64);
     if (cc->ic_tail) cc->ic_tail->arg1_type_pointed_to = deref_type;
+    cc->last_expr_type = (deref_type == RT_F64) ? RT_F64 :
+      (deref_type == RT_U8 || deref_type == RT_U16 || deref_type == RT_U32 || deref_type == RT_U64) ? RT_U64 : RT_I64;
     cc->last_var_symbol = NULL;
     if (depth > 1) { cc->last_global_var = NULL; cc->last_member = NULL; }
     cc->expr_ptr_depth = (U8)(depth - 1);
@@ -1767,6 +1777,10 @@ static bool ParsePostfix(Compiler *cc) {
       if (!(cc->flags & CCF_RAX)) {
         DerefDroppingAddressSlot(cc);
         if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->arg1_type_pointed_to = elem_type;
+        // The loaded element carries its type: an F64 element must stay F64 (else `a[i]*2.0` or
+        // `ToI64(a[i])` would treat the raw bits as an integer).
+        cc->last_expr_type = (elem_type == RT_F64) ? RT_F64 :
+          (elem_type == RT_U8 || elem_type == RT_U16 || elem_type == RT_U32 || elem_type == RT_U64) ? RT_U64 : RT_I64;
       }
       // Through a multi-level pointer the element is itself a pointer: the next `[` or `*`
       // continues one level down (`argv[1][0]`).
@@ -1852,6 +1866,8 @@ static bool ParsePostfix(Compiler *cc) {
       } else if (!(cc->flags & CCF_RAX)) {
         DerefDroppingAddressSlot(cc);
         if (found && cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->arg1_type_pointed_to = found->raw_type;
+        if (found && !found->pointed_to_type) cc->last_expr_type = (found->raw_type == RT_F64) ? RT_F64 :
+          (found->raw_type == RT_U8 || found->raw_type == RT_U16 || found->raw_type == RT_U32 || found->raw_type == RT_U64) ? RT_U64 : RT_I64;
       }
       
       // Handle bit field extraction
@@ -1944,6 +1960,8 @@ static bool ParsePostfix(Compiler *cc) {
       } else if (!(cc->flags & CCF_RAX)) {
         DerefDroppingAddressSlot(cc);
         if (found && cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->arg1_type_pointed_to = found->raw_type;
+        if (found && !found->pointed_to_type) cc->last_expr_type = (found->raw_type == RT_F64) ? RT_F64 :
+          (found->raw_type == RT_U8 || found->raw_type == RT_U16 || found->raw_type == RT_U32 || found->raw_type == RT_U64) ? RT_U64 : RT_I64;
       }
       cc->last_expr_class = member_class;
       

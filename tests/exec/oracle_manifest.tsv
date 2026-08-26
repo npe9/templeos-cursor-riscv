@@ -41,3 +41,5 @@ tests/exec/cases/e_kernel_hash.hc	000000000000000b
 tests/exec/cases/e_kernel_malloc.hc	0000000000000007
 tests/exec/cases/e_precedence.hc	000000000000003f
 tests/exec/cases/e_kernel_hexprint.hc	000000000000003f
+tests/exec/cases/e_f64_array.hc	000000000000003f
+tests/exec/cases/e_f64_ptr.hc	000000000000003f
