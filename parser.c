@@ -4213,11 +4213,29 @@ static bool ParseGlobalAggregateInit(Compiler *cc, CHashGlblVar *g, U8 var_type)
   CHashClass *cls = g->pointed_to_type ? NULL : g->var_class;
   if (!is_arr) return InitAggregateElement(cc, g->data_addr, cls, var_type, g->size, g->pointed_to_type != 0);
   if (braced) LexNext(cc);  // '{'
+  I64 total = g->dim.total_cnt > 0 ? g->dim.total_cnt : g->dim.cnt;
+  // Row width for a nested-brace multi-dim initializer `{{…},{…}}`: elements per outermost group.
+  I64 row = (g->ndims > 1 && elem_size > 0) ? g->dim_stride[0] / elem_size : 0;
   I64 idx = 0;
   while (cc->lex.token != (braced ? '}' : ';') && cc->lex.token != TK_EOF) {
-    if (idx >= (g->dim.total_cnt > 0 ? g->dim.total_cnt : g->dim.cnt)) { Error(cc, "Too many initializers"); return false; }
-    if (!InitAggregateElement(cc, g->data_addr + idx * elem_size, cls, var_type, elem_size, g->pointed_to_type != 0)) return false;
-    idx++;
+    if (g->ndims > 1 && cc->lex.token == '{' && row > 0) {
+      // A braced row: fill up to `row` flat elements, then skip to the next row boundary (short
+      // rows zero-pad). Inner arrays deeper than 2-D must use the flat form.
+      LexNext(cc);  // '{'
+      I64 rstart = idx;
+      while (cc->lex.token != '}' && cc->lex.token != TK_EOF && idx < rstart + row) {
+        if (idx >= total) { Error(cc, "Too many initializers"); return false; }
+        if (!InitAggregateElement(cc, g->data_addr + idx * elem_size, cls, var_type, elem_size, g->pointed_to_type != 0)) return false;
+        idx++;
+        if (cc->lex.token == ',') LexNext(cc); else break;
+      }
+      if (!LexExpect(cc, '}')) return false;
+      idx = rstart + row;   // align to the next row
+    } else {
+      if (idx >= total) { Error(cc, "Too many initializers"); return false; }
+      if (!InitAggregateElement(cc, g->data_addr + idx * elem_size, cls, var_type, elem_size, g->pointed_to_type != 0)) return false;
+      idx++;
+    }
     if (cc->lex.token == ',') LexNext(cc); else break;
   }
   if (!braced && cc->lex.token == '}') LexNext(cc);   // TempleOS: `= v1,v2,…};` (stray brace)
