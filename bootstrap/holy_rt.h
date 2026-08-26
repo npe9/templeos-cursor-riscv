@@ -248,8 +248,9 @@ static HRT_I64 HolyGetTSC(void) { HRT_U64 t; __asm__ volatile("rdtime %0" : "=r"
 static HRT_I64 HolyCaller(HRT_I64 n) { (void)n; return 0; }
 typedef struct HolyQue { struct HolyQue *next, *last; } HolyQue;
 static HRT_I64 HolyQueInit(HolyQue *h) { h->next = h->last = h; return 0; }
-static HRT_I64 HolyQueIns(HolyQue *e, HolyQue *h) { e->last = h->last; e->next = h; h->last->next = e; h->last = e; return 0; }
-static HRT_I64 HolyQueInsRev(HolyQue *e, HolyQue *h) { e->next = h->next; e->last = h; h->next->last = e; h->next = e; return 0; }
+/* QueIns(entry, pred): insert entry AFTER pred (KernelB.HH). QueInsRev(entry, succ): before succ. */
+static HRT_I64 HolyQueIns(HolyQue *e, HolyQue *pred) { e->next = pred->next; e->last = pred; pred->next->last = e; pred->next = e; return 0; }
+static HRT_I64 HolyQueInsRev(HolyQue *e, HolyQue *succ) { e->last = succ->last; e->next = succ; succ->last->next = e; succ->last = e; return 0; }
 static HRT_I64 HolyQueRem(HolyQue *e) { e->last->next = e->next; e->next->last = e->last; return 0; }
 static int rt_lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
 static HRT_I64 HolyStrMatch(char *needle, char *hay, HRT_I64 flags) { (void)flags; if (!needle || !hay) return 0; for (char *h = hay; *h; h++) { char *a = needle, *b = h; while (*a && *a == *b) { a++; b++; } if (!*a) return (HRT_I64)h; } return 0; }
