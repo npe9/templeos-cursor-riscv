@@ -11,6 +11,7 @@
 typedef long long HRT_I64;
 typedef unsigned long long HRT_U64;
 typedef unsigned int HRT_U32;
+typedef unsigned short HRT_U16;
 typedef unsigned char HRT_U8;
 
 static HRT_I64 rt_strlen(const char *s) { HRT_I64 n = 0; while (s[n]) n++; return n; }
@@ -529,6 +530,67 @@ static HRT_I64 HolyRVUartGetBuffered(void) {
   if (holy_urx_head == holy_urx_tail) return -1;
   char c = holy_urx[holy_urx_tail]; holy_urx_tail = (holy_urx_tail + 1) & 255; return (HRT_U8)c;
 }
+
+/* --- virtio-blk (legacy virtio-mmio v1) storage driver -------------------------------------------
+ * QEMU virt exposes 8 virtio-mmio slots at 0x10001000..0x10008000; a -device virtio-blk-device lands
+ * in one with DeviceID 2. Legacy setup uses one page-aligned queue region (descriptors+avail, then
+ * the used ring at QueueAlign) addressed by QueuePFN. A block request is a 3-descriptor chain:
+ * header (type+sector), the 512-byte data buffer, and a status byte. We submit on the avail ring,
+ * notify, and poll the used ring for completion (no IRQ needed). */
+#define VBLK_QSIZE 8
+typedef struct { HRT_U64 addr; HRT_U32 len; HRT_U16 flags; HRT_U16 next; } HolyVqDesc;
+typedef struct { HRT_U32 type; HRT_U32 reserved; HRT_U64 sector; } HolyVblkReq;
+static char holy_virtq[8192] __attribute__((aligned(4096)));
+static volatile HRT_U32 *holy_vblk = 0;
+static HolyVblkReq holy_vhdr;
+static volatile HRT_U8 holy_vstatus;
+
+static HRT_I64 HolyRVBlkInit(void) {
+  for (int slot=1; slot<=8; slot++) {
+    volatile HRT_U32 *b = (volatile HRT_U32 *)(0x10000000 + slot*0x1000);
+    if (b[0]==0x74726976 && b[2]==2) { holy_vblk = b; break; }
+  }
+  if (!holy_vblk) return -1;
+  volatile HRT_U32 *b = holy_vblk;
+  b[0x70/4] = 0;                 /* reset */
+  b[0x70/4] = b[0x70/4] | 1;     /* ACKNOWLEDGE */
+  b[0x70/4] = b[0x70/4] | 2;     /* DRIVER */
+  b[0x14/4] = 0; (void)b[0x10/4];/* features sel 0 */
+  b[0x24/4] = 0; b[0x20/4] = 0;  /* accept no optional features */
+  b[0x28/4] = 4096;              /* guest page size */
+  b[0x30/4] = 0;                 /* queue sel 0 */
+  b[0x38/4] = VBLK_QSIZE;        /* queue num */
+  b[0x3c/4] = 4096;              /* queue align */
+  for (int i=0;i<8192;i++) holy_virtq[i]=0;
+  b[0x40/4] = (HRT_U32)(((HRT_U64)holy_virtq) / 4096);  /* queue PFN */
+  b[0x70/4] = b[0x70/4] | 4;     /* DRIVER_OK */
+  return 0;
+}
+
+static HRT_I64 HolyBlkOp(HRT_I64 sector, void *buf, int write) {
+  if (!holy_vblk) return -1;
+  volatile HRT_U32 *b = holy_vblk;
+  HolyVqDesc *desc = (HolyVqDesc *)holy_virtq;
+  volatile HRT_U16 *avail = (volatile HRT_U16 *)(holy_virtq + VBLK_QSIZE*16);
+  volatile HRT_U16 *used  = (volatile HRT_U16 *)(holy_virtq + 4096);
+  holy_vhdr.type = write ? 1 : 0; holy_vhdr.reserved = 0; holy_vhdr.sector = (HRT_U64)sector;
+  holy_vstatus = 0xff;
+  desc[0].addr=(HRT_U64)&holy_vhdr;   desc[0].len=16;  desc[0].flags=1;               desc[0].next=1; /* NEXT */
+  desc[1].addr=(HRT_U64)buf;          desc[1].len=512; desc[1].flags=1|(write?0:2);   desc[1].next=2; /* NEXT|WRITE? */
+  desc[2].addr=(HRT_U64)&holy_vstatus;desc[2].len=1;   desc[2].flags=2;               desc[2].next=0; /* WRITE */
+  HRT_U16 uidx = used[1];
+  HRT_U16 aidx = avail[1];
+  avail[2 + (aidx % VBLK_QSIZE)] = 0;             /* ring[idx] = head descriptor 0 */
+  __asm__ volatile("fence" ::: "memory");
+  avail[1] = aidx + 1;
+  __asm__ volatile("fence" ::: "memory");
+  b[0x50/4] = 0;                                  /* QueueNotify = queue 0 */
+  while (used[1] == uidx) { __asm__ volatile("fence" ::: "memory"); }
+  b[0x64/4] = b[0x60/4];                          /* InterruptACK */
+  return holy_vstatus;                            /* 0 = VIRTIO_BLK_S_OK */
+}
+static HRT_I64 HolyRVBlkRead(HRT_I64 sector, void *buf)  { return HolyBlkOp(sector, buf, 0); }
+static HRT_I64 HolyRVBlkWrite(HRT_I64 sector, void *buf) { return HolyBlkOp(sector, buf, 1); }
 
 /* Critical section for the preemptive scheduler: disable/restore the machine interrupt-enable so a
  * read-modify-write on shared state can't be split by a timer preemption. Nesting-safe — Enter
