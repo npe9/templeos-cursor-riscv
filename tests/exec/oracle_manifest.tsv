@@ -51,3 +51,4 @@ tests/exec/cases/e_postfix_cast_store.hc	000000000000007f
 tests/exec/cases/e_kernel_scalar_union.hc	0000000000000007
 tests/exec/cases/e_kernel_queue.hc	0000000000000007
 tests/exec/cases/e_struct_copy.hc	000000000000000f
+tests/exec/cases/e_global_2d_array.hc	00000000000000ff

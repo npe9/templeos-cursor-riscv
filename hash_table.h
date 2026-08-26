@@ -164,6 +164,8 @@ typedef struct CHashGlblVar {
   U8 ptr_depth;             // pointer levels (`U8 **argv` is 2)
   U8 pointed_to_type;
   CArrayDim dim;            // Array dimensions
+  int ndims;                // >1 = multi-dimensional (dim_stride per subscript level)
+  I64 dim_stride[4];        // bytes advanced by one step of subscript k
   struct CHashFun *fun_ptr; // If it's a function pointer variable
   bool self_resolved;       // import slot filled by this unit's own entry chunk (not in the loader directory)
 } CHashGlblVar;

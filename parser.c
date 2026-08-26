@@ -1748,6 +1748,8 @@ static bool ParsePostfix(Compiler *cc) {
           elem_size = saved_global->element_size ? saved_global->element_size : 8;
           elem_type = ScalarTypeForSize((U8)saved_global->raw_type, elem_size);
         }
+        if (saved_global->ndims > 1 && cc->subscript_level < saved_global->ndims - 1)
+          elem_size = saved_global->dim_stride[cc->subscript_level];
       } else if (!saved_symbol && !saved_global && !cc->last_member && cc->expr_ptr_depth) {
         // `(**ppb)[i]`, `argv[1][0]`: the base is a pointer value whose depth a deref/subscript left
         elem_type = (cc->expr_ptr_depth > 1) ? RT_I64 : cc->expr_pointee;
@@ -1790,6 +1792,10 @@ static bool ParsePostfix(Compiler *cc) {
       // Inner subscript of a multi-dimensional array: the result is a sub-array address —
       // keep it for the next '[' instead of loading through it.
       if (saved_symbol && saved_symbol->ndims > 1 && cc->subscript_level < saved_symbol->ndims - 1) {
+        cc->subscript_level++;
+        continue;
+      }
+      if (saved_global && saved_global->ndims > 1 && cc->subscript_level < saved_global->ndims - 1) {
         cc->subscript_level++;
         continue;
       }
@@ -4209,7 +4215,7 @@ static bool ParseGlobalAggregateInit(Compiler *cc, CHashGlblVar *g, U8 var_type)
   if (braced) LexNext(cc);  // '{'
   I64 idx = 0;
   while (cc->lex.token != (braced ? '}' : ';') && cc->lex.token != TK_EOF) {
-    if (idx >= g->dim.cnt) { Error(cc, "Too many initializers"); return false; }
+    if (idx >= (g->dim.total_cnt > 0 ? g->dim.total_cnt : g->dim.cnt)) { Error(cc, "Too many initializers"); return false; }
     if (!InitAggregateElement(cc, g->data_addr + idx * elem_size, cls, var_type, elem_size, g->pointed_to_type != 0)) return false;
     idx++;
     if (cc->lex.token == ',') LexNext(cc); else break;
@@ -4265,18 +4271,24 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
   tmpg->dim.total_cnt = 1;
   
   if (cc->lex.token == '[') {
-    LexNext(cc);
-    I64 array_size = 0;   // `[]`: sized by the aggregate initializer
-    if (cc->lex.token != ']' && !ParseConstDim(cc, &array_size)) {
-      { PF_TRACE(__LINE__); return false; }
+    // `T name[N][M]…`: flat storage; subscript k advances by dim_stride[k] bytes (mirrors locals).
+    I64 dims[4]; int nd = 0; I64 first = 0;
+    while (cc->lex.token == '[') {
+      LexNext(cc);
+      I64 dimv = 0;   // `[]` on the first dimension: sized by the aggregate initializer
+      if (cc->lex.token != ']' && !ParseConstDim(cc, &dimv)) { PF_TRACE(__LINE__); return false; }
+      if (!LexExpect(cc, ']')) { PF_TRACE(__LINE__); return false; }
+      if (nd == 0) first = dimv;
+      if (nd < 4) dims[nd] = dimv;
+      nd++;
     }
-    if (!LexExpect(cc, ']')) {
-      { PF_TRACE(__LINE__); return false; }
-    }
-    
-    tmpg->dim.cnt = array_size;
-    tmpg->dim.total_cnt = array_size;
-    tmpg->size *= array_size;
+    if (nd > 4) { Error(cc, "Too many array dimensions (max 4)"); return false; }
+    I64 total = 1; for (int k = 0; k < nd; k++) total *= dims[k];
+    tmpg->dim.cnt = first;              // first dimension count (for `[]`-init sizing)
+    tmpg->dim.total_cnt = total;
+    tmpg->ndims = nd;
+    for (int k = 0; k < nd; k++) { I64 st = base_size; for (int j = k+1; j < nd; j++) st *= dims[j]; tmpg->dim_stride[k] = st; }
+    tmpg->size *= total;
     tmpg->flags |= GVF_ARRAY;
   }
   
