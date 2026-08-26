@@ -15,7 +15,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke coverage templeos-riscv templeos-smoke
+.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke kernel-print-smoke coverage templeos-riscv templeos-smoke
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -65,7 +65,14 @@ repl-smoke:
 qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) exec-oracle
 	@$(MAKE) templeos-smoke
+	@$(MAKE) kernel-print-smoke
 	@$(MAKE) repl-smoke
+
+# Compile a program that #includes the real kernel, formats with its StrPrintJoin, and prints
+# over the UART under QEMU — proves compiled kernel code runs and outputs on RISC-V.
+kernel-print-smoke:
+	@chmod +x tests/scripts/run_kernel_print_smoke.sh
+	@tests/scripts/run_kernel_print_smoke.sh
 
 # ShellCheck on the same five scripts as the CI shellcheck job (requires shellcheck on PATH).
 lint-sh:

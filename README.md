@@ -10,6 +10,11 @@ HolyC front end and RISC-V code generator, with optional bare-metal REPL and a s
 
 **AOT compiler:** Builds as `holyc-riscv` (symlink `cicl-riscv` for older scripts). The repository includes automated **compile-time** checks over curated TempleOS `.HC` samples and a 52-case HolyC-style parity suite (`make compliance`), execution oracles under QEMU (`make exec-oracle`, 29 cases), and a project-mode coverage tally over the real TempleOS sources (`make coverage`): **`Kernel/Kernel_RV.PRJ`** — the kernel minus its x86 files, with `Kernel/KStartRV.HC` standing in for them — compiles with 0 errors, as do `Compiler/Compiler.PRJ` and `Adam/MakeAdam_RV.PRJ` (Adam on top of the kernel). The port plan is in [docs/RISCV_PORT_PLAN.md](docs/RISCV_PORT_PLAN.md).
 
+**Kernel code runs on RISC-V:** `make kernel-print-smoke` compiles a program that `#include`s the real
+TempleOS kernel, formats a string with the kernel's own 900-line `StrPrintJoin`, and prints it over the
+QEMU `virt` UART. `make exec-oracle` also runs the kernel's `QSort`, `Str2I64`, `StrPrintHex`, `Str*`,
+hash table and heap allocator and checks their results.
+
 **What is verified vs not:** `make compliance` checks that sources compile to RISC-V machine code. It does not prove that every program behaves correctly when linked with a full runtime or run under QEMU bare metal. Treat REPL and long-running bare-metal execution as a separate stability surface.
 
 ### Working (high level)
