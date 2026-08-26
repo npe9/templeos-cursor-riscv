@@ -468,10 +468,13 @@ static void DerefDroppingAddressSlot(Compiler *cc) {
 // Record the argument count on the call IC just emitted (the compiler reads ic_flags there; a
 // single Compiler-wide counter would be clobbered by nested calls like Print("%d", Add(1, 2))).
 static void SetCallArgCnt(Compiler *cc, I64 argc) {
-  CIntermediateCode *call = NULL;
-  for (CIntermediateCode *ic = cc->ic_head; ic; ic = ic->next)
-    if (ic->ic_code == IC_CALL || ic->ic_code == IC_CALL_INDIRECT || ic->ic_code == IC_CALL_INDIRECT2) call = ic;
-  if (call) call->ic_flags = argc;
+  // Stamp only the just-emitted call IC (the tail). Walking back to the *last* call in the whole
+  // list clobbered an earlier sibling call: `(*p->put_s)(st)` then `(*p->put_key)(ch,0)` in an
+  // if/else made put_key's count (2) land on put_s's already-emitted CALL_INDIRECT, so put_s
+  // loaded two args. A pre-emit SetCallArgCnt (tail is IC_DEREF, not a call) is now a safe no-op.
+  CIntermediateCode *ic = cc->ic_tail;
+  if (ic && (ic->ic_code == IC_CALL || ic->ic_code == IC_CALL_INDIRECT || ic->ic_code == IC_CALL_INDIRECT2))
+    ic->ic_flags = argc;
 }
 
 // Emit the call itself for `fn` (arguments already on the eval stack): PC-relative jal within
