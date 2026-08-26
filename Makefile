@@ -15,7 +15,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke coverage templeos-riscv templeos-smoke
+.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke coverage templeos-riscv templeos-smoke
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -73,6 +73,7 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) kernel-timer-smoke
 	@$(MAKE) kernel-preempt-smoke
 	@$(MAKE) kernel-crit-smoke
+	@$(MAKE) kernel-sleep-smoke
 	@$(MAKE) repl-smoke
 
 # Compile a program that #includes the real kernel, formats with its StrPrintJoin, and prints
@@ -115,6 +116,11 @@ kernel-preempt-smoke:
 kernel-crit-smoke:
 	@chmod +x tests/scripts/run_kernel_crit_smoke.sh
 	@tests/scripts/run_kernel_crit_smoke.sh
+
+# RVSleep: tasks wait N timer ticks without busy-spinning; three sleep concurrently and all wake.
+kernel-sleep-smoke:
+	@chmod +x tests/scripts/run_kernel_sleep_smoke.sh
+	@tests/scripts/run_kernel_sleep_smoke.sh
 
 # ShellCheck on the same five scripts as the CI shellcheck job (requires shellcheck on PATH).
 lint-sh:

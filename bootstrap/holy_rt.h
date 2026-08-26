@@ -365,6 +365,7 @@ static HRT_I64 HolyRVGetTicks(void) { return holy_ticks; }
 #define HOLY_PMAX 8
 static HRT_I64 holy_pctx[HOLY_PMAX*32];
 static HRT_I64 holy_pdone[HOLY_PMAX];
+static HRT_I64 holy_pwake[HOLY_PMAX];   /* tick at which a sleeping task becomes runnable */
 static int holy_pn = 1, holy_pcur = 0;
 
 __attribute__((used)) static void *HolyPreemptPick(void *cur) {
@@ -375,7 +376,7 @@ __attribute__((used)) static void *HolyPreemptPick(void *cur) {
     volatile HRT_I64 *mtime=(volatile HRT_I64*)0x0200BFF8, *mtimecmp=(volatile HRT_I64*)0x02004000;
     *mtimecmp = *mtime + holy_timer_interval;
   }
-  for (int i=0;i<holy_pn;i++) { holy_pcur=(holy_pcur+1)%holy_pn; if(!holy_pdone[holy_pcur]) break; }
+  for (int i=0;i<holy_pn;i++) { holy_pcur=(holy_pcur+1)%holy_pn; if(!holy_pdone[holy_pcur] && holy_pwake[holy_pcur] <= holy_ticks) break; }
   return &holy_pctx[holy_pcur*32];
 }
 
@@ -457,7 +458,7 @@ __attribute__((naked, aligned(4))) static void HolyPreemptVector(void) {
 }
 
 static HRT_I64 HolyRVPreemptInit(HRT_I64 interval) {
-  holy_pn = 1; holy_pcur = 0; holy_pdone[0] = 0;
+  holy_pn = 1; holy_pcur = 0; holy_pdone[0] = 0; holy_pwake[0] = 0;
   holy_timer_interval = interval;
   __asm__ volatile("csrw mscratch, %0" :: "r"(&holy_pctx[0]));   /* main = slot 0 */
   __asm__ volatile("csrw mtvec, %0" :: "r"(&HolyPreemptVector));
@@ -474,10 +475,17 @@ static HRT_I64 HolyRVPreemptSpawn(void *fn, void *stack_top) {
   holy_pctx[s*32+1] = (HRT_I64)stack_top;   /* x2 = sp */
   holy_pctx[s*32+31] = (HRT_I64)fn;         /* mepc = entry */
   holy_pdone[s] = 0;
+  holy_pwake[s] = 0;
   holy_pn++;
   return s;
 }
 static HRT_I64 HolyRVPreemptExit(void) { holy_pdone[holy_pcur]=1; for(;;){} }
+static HRT_I64 HolyRVSleep(HRT_I64 ticks) {
+  HRT_I64 wake = holy_ticks + (ticks > 0 ? ticks : 1);
+  holy_pwake[holy_pcur] = wake;         /* the picker skips this slot until holy_ticks reaches wake */
+  while (holy_ticks < wake) { }          /* spins only until the next preemption deschedules us */
+  return 0;
+}
 
 /* Critical section for the preemptive scheduler: disable/restore the machine interrupt-enable so a
  * read-modify-write on shared state can't be split by a timer preemption. Nesting-safe — Enter
