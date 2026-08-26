@@ -818,6 +818,7 @@ static bool EmitNoParenCall(Compiler *cc, CHashFun *func) {
   cc->last_var_symbol = NULL;
   cc->last_expr_type = (cc->call_ret_type == RT_F64) ? RT_F64 : RT_I64;
   cc->last_global_var = NULL;
+  cc->last_member = NULL; cc->expr_ptr_depth = 0;  // call result is the callee's return type, not an argument's
   ICAdd(cc, IC_CALL_END, 0, RT_I64);
   return true;
 }
@@ -1293,6 +1294,7 @@ static bool ParsePrimary(Compiler *cc) {
       cc->last_expr_type = (cc->call_ret_type == RT_F64) ? RT_F64 : RT_I64;
       
       cc->last_global_var = NULL;
+      cc->last_member = NULL; cc->expr_ptr_depth = 0;  // call result is the callee's return type, not an argument's
       
       ICAdd(cc, IC_CALL_END, 0, RT_I64);
       free(name);
