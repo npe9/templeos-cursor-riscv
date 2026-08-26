@@ -298,6 +298,64 @@ static HRT_I64 HolyGetRSP(void) { HRT_I64 v; __asm__ volatile("mv %0, sp" : "=r"
 static HRT_I64 HolySaveExceptRegs(void) { return 0; }
 static HRT_I64 HolyCall(HRT_I64 addr) { return addr ? ((HRT_I64 (*)(void))addr)() : 0; }
 static HRT_I64 HolyFarCall32(HRT_I64 a, HRT_I64 b, HRT_I64 c, HRT_I64 d) { (void)a; (void)b; (void)c; (void)d; return 0; }
+/* --- RISC-V machine-mode traps + CLINT timer (QEMU virt) -----------------------------------------
+ * A trap vector that saves the caller-saved registers, calls a C dispatcher, restores, and mrets.
+ * The dispatcher counts machine-timer interrupts and re-arms mtimecmp; this is the interrupt-driven
+ * foundation a preemptive scheduler needs. CLINT: mtime @ 0x0200BFF8, mtimecmp[hart0] @ 0x02004000. */
+static volatile HRT_I64 holy_ticks = 0;
+static HRT_I64 holy_timer_interval = 0;
+
+__attribute__((used)) static HRT_I64 HolyTrapDispatch(void) {
+  HRT_I64 mcause;
+  __asm__ volatile("csrr %0, mcause" : "=r"(mcause));
+  if (mcause == (HRT_I64)0x8000000000000007ULL) {          /* machine timer interrupt */
+    holy_ticks++;
+    volatile HRT_I64 *mtime    = (volatile HRT_I64 *)0x0200BFF8;
+    volatile HRT_I64 *mtimecmp = (volatile HRT_I64 *)0x02004000;
+    *mtimecmp = *mtime + holy_timer_interval;              /* re-arm */
+  } else if (mcause >= 0) {                                 /* synchronous exception: skip it (best effort) */
+    HRT_I64 mepc;
+    __asm__ volatile("csrr %0, mepc" : "=r"(mepc));
+    __asm__ volatile("csrw mepc, %0" :: "r"(mepc + 4));
+  }
+  return 0;
+}
+
+__attribute__((naked, aligned(4))) static void HolyTrapVector(void) {
+  __asm__ volatile(
+    "addi sp,sp,-128\n"
+    "sd ra,0(sp)\n sd t0,8(sp)\n sd t1,16(sp)\n sd t2,24(sp)\n"
+    "sd t3,32(sp)\n sd t4,40(sp)\n sd t5,48(sp)\n sd t6,56(sp)\n"
+    "sd a0,64(sp)\n sd a1,72(sp)\n sd a2,80(sp)\n sd a3,88(sp)\n"
+    "sd a4,96(sp)\n sd a5,104(sp)\n sd a6,112(sp)\n sd a7,120(sp)\n"
+    "call HolyTrapDispatch\n"
+    "ld ra,0(sp)\n ld t0,8(sp)\n ld t1,16(sp)\n ld t2,24(sp)\n"
+    "ld t3,32(sp)\n ld t4,40(sp)\n ld t5,48(sp)\n ld t6,56(sp)\n"
+    "ld a0,64(sp)\n ld a1,72(sp)\n ld a2,80(sp)\n ld a3,88(sp)\n"
+    "ld a4,96(sp)\n ld a5,104(sp)\n ld a6,112(sp)\n ld a7,120(sp)\n"
+    "addi sp,sp,128\n"
+    "mret\n"
+  );
+}
+
+static HRT_I64 HolyRVTrapInit(void) {
+  /* Set the vector and enable interrupts globally, but NOT the timer source: mtimecmp still reads 0
+   * here, so enabling MTIE now would fire an immediate, self-perpetuating timer interrupt. MTIE is
+   * turned on by RVTimerArm once mtimecmp points at a future time. */
+  __asm__ volatile("csrw mtvec, %0" :: "r"(&HolyTrapVector));   /* direct mode (aligned, low bits 0) */
+  __asm__ volatile("csrs mstatus, %0" :: "r"((HRT_I64)(1<<3))); /* MIE: global machine interrupt enable */
+  return 0;
+}
+static HRT_I64 HolyRVTimerArm(HRT_I64 interval) {
+  holy_timer_interval = interval;
+  volatile HRT_I64 *mtime    = (volatile HRT_I64 *)0x0200BFF8;
+  volatile HRT_I64 *mtimecmp = (volatile HRT_I64 *)0x02004000;
+  *mtimecmp = *mtime + interval;                                /* future deadline first */
+  __asm__ volatile("csrs mie, %0" :: "r"((HRT_I64)(1<<7)));     /* then enable MTIE */
+  return 0;
+}
+static HRT_I64 HolyRVGetTicks(void) { return holy_ticks; }
+
 /* Cooperative context switch: save the current callee-saved regs + sp + ra into *save (a 14-word
  * HolyTaskCtx: ra, sp, s0..s11), load them from *load, and `ret` into load's saved ra. A task
  * spawned with ra=entry and sp=fresh-stack-top starts there on its first switch-in. */

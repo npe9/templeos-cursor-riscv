@@ -15,7 +15,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke coverage templeos-riscv templeos-smoke
+.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke coverage templeos-riscv templeos-smoke
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -70,6 +70,7 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) kernel-boot-smoke
 	@$(MAKE) kernel-calc-smoke
 	@$(MAKE) kernel-sched-smoke
+	@$(MAKE) kernel-timer-smoke
 	@$(MAKE) repl-smoke
 
 # Compile a program that #includes the real kernel, formats with its StrPrintJoin, and prints
@@ -97,6 +98,11 @@ kernel-calc-smoke:
 kernel-sched-smoke:
 	@chmod +x tests/scripts/run_kernel_sched_smoke.sh
 	@tests/scripts/run_kernel_sched_smoke.sh
+
+# Machine-timer interrupts via a trap vector + CLINT: prove interrupt-driven execution on RISC-V.
+kernel-timer-smoke:
+	@chmod +x tests/scripts/run_kernel_timer_smoke.sh
+	@tests/scripts/run_kernel_timer_smoke.sh
 
 # ShellCheck on the same five scripts as the CI shellcheck job (requires shellcheck on PATH).
 lint-sh:
