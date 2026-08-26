@@ -233,6 +233,15 @@ static const struct {
   {"I64", KW_I64},
   {"U64", KW_U64},
   {"F64", KW_F64},
+  // The kernel's actual fixed-width primitives are the `*i`-suffixed names; U8/U16/... are
+  // scalar-typed unions overlaying them (KernelA.HH: `U16i union U16 {…}`). Alias each to the
+  // same keyword so `U16i union U16` records U16i as the union's scalar base type.
+  {"I0i", KW_I0}, {"U0i", KW_U0},
+  {"I8i", KW_I8}, {"U8i", KW_U8},
+  {"I16i", KW_I16}, {"U16i", KW_U16},
+  {"I32i", KW_I32}, {"U32i", KW_U32},
+  {"I64i", KW_I64}, {"U64i", KW_U64},
+  {"F64i", KW_F64},
   {NULL, 0}
 };
 
