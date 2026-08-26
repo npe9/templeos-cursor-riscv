@@ -298,6 +298,20 @@ static HRT_I64 HolyGetRSP(void) { HRT_I64 v; __asm__ volatile("mv %0, sp" : "=r"
 static HRT_I64 HolySaveExceptRegs(void) { return 0; }
 static HRT_I64 HolyCall(HRT_I64 addr) { return addr ? ((HRT_I64 (*)(void))addr)() : 0; }
 static HRT_I64 HolyFarCall32(HRT_I64 a, HRT_I64 b, HRT_I64 c, HRT_I64 d) { (void)a; (void)b; (void)c; (void)d; return 0; }
+/* Cooperative context switch: save the current callee-saved regs + sp + ra into *save (a 14-word
+ * HolyTaskCtx: ra, sp, s0..s11), load them from *load, and `ret` into load's saved ra. A task
+ * spawned with ra=entry and sp=fresh-stack-top starts there on its first switch-in. */
+__attribute__((naked)) static HRT_I64 HolyRVTaskSwitch(void *save, void *load) {
+  __asm__ volatile(
+    "sd ra,0(a0)\n sd sp,8(a0)\n"
+    "sd s0,16(a0)\n sd s1,24(a0)\n sd s2,32(a0)\n sd s3,40(a0)\n sd s4,48(a0)\n sd s5,56(a0)\n"
+    "sd s6,64(a0)\n sd s7,72(a0)\n sd s8,80(a0)\n sd s9,88(a0)\n sd s10,96(a0)\n sd s11,104(a0)\n"
+    "ld ra,0(a1)\n ld sp,8(a1)\n"
+    "ld s0,16(a1)\n ld s1,24(a1)\n ld s2,32(a1)\n ld s3,40(a1)\n ld s4,48(a1)\n ld s5,56(a1)\n"
+    "ld s6,64(a1)\n ld s7,72(a1)\n ld s8,80(a1)\n ld s9,88(a1)\n ld s10,96(a1)\n ld s11,104(a1)\n"
+    "ret\n"
+  );
+}
 static HRT_I64 HolyYield(void) { return 0; }   /* single task until the RISC-V scheduler (phase 2) */
 static HRT_I64 HolyTaskEndNow(void) { rt_puts("[TaskEndNow]\n"); for (;;) __asm__ volatile("wfi"); }
 /* D: hex dump `n` bytes at `p`, 16 per line with ASCII */

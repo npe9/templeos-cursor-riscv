@@ -79,3 +79,43 @@ I64 RVUartGetLine(U8 *buf,I64 max)
   buf[n]=0;
   return n;
 }
+
+// --- Minimal cooperative scheduler --------------------------------------------------------------
+// A round-robin over fixed task slots, built on the RVTaskSwitch context-switch primitive. This is
+// NOT the kernel's CTask scheduler (KTask.HC/Sched.HC, phase 2) — it is a small cooperative runtime
+// so a RISC-V program can Spawn tasks that Yield to each other. Slot 0 is the caller ("main").
+#define RV_MAX_TASKS  8
+#define RV_CTX_WORDS  14      // ra, sp, s0..s11
+I64  rv_sched_ctx[RV_MAX_TASKS*RV_CTX_WORDS];
+Bool rv_sched_done[RV_MAX_TASKS];
+I64  rv_sched_n=1, rv_sched_cur=0;    // n starts at 1: slot 0 is the caller
+
+U0 RVYield()
+{//Cooperatively hand the CPU to the next runnable task (round-robin).
+  I64 prev=rv_sched_cur, start=rv_sched_cur;
+  while (TRUE) {
+    rv_sched_cur=(rv_sched_cur+1)%rv_sched_n;
+    if (!rv_sched_done[rv_sched_cur] || rv_sched_cur==prev || rv_sched_cur==start)
+      break;
+  }
+  RVTaskSwitch(&rv_sched_ctx[prev*RV_CTX_WORDS], &rv_sched_ctx[rv_sched_cur*RV_CTX_WORDS]);
+}
+
+U0 RVTaskExit()
+{//Mark the current task finished and yield away for good (never returns).
+  rv_sched_done[rv_sched_cur]=TRUE;
+  RVYield();
+}
+
+I64 RVSpawn(U0 (*fn)())
+{//Create a task that begins at fn on a fresh 16 KB stack. Returns its slot, or -1 if full.
+  if (rv_sched_n>=RV_MAX_TASKS)
+    return -1;
+  U8 *stk=CAlloc(16384);
+  I64 slot=rv_sched_n;
+  rv_sched_ctx[slot*RV_CTX_WORDS+0]=fn;                 // ra -> entry
+  rv_sched_ctx[slot*RV_CTX_WORDS+1]=(stk+16384-16)&(~15); // sp -> aligned stack top
+  rv_sched_done[slot]=FALSE;
+  rv_sched_n++;
+  return slot;
+}
