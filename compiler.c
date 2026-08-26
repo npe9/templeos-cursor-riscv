@@ -353,6 +353,31 @@ static U32 StoreA0ToRs1(U8 pointed_to, U8 rs1) {
   return 0x23 | (f3 << 12) | (rs1 << 15) | (RV_A0 << 20);
 }
 
+// Struct copy for `b = a` (same class, size>8): eval stack holds [dst, src] with src on top and
+// ic_data = the byte count. Pops both, copies n bytes (8-byte words then a byte tail), and leaves
+// the dst address (assignment is an expression). Offsets are unrolled, so n is capped by the
+// caller to fit the 12-bit load/store immediate.
+static void EmitBlockCopy(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, I64 n) {
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));              // ld t1, 0(sp)  (src)
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));              // addi sp,sp,8
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));              // ld t0, 0(sp)  (dst)
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));              // addi sp,sp,8
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A5<<7) | (RV_T0<<15));                        // mv a5, t0 (save dst)
+  I64 off = 0;
+  for (; off + 8 <= n; off += 8) {
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2<<7) | (3<<12) | (RV_T1<<15) | (((U32)(off & 0xFFF))<<20));                       // ld t2, off(t1)
+    RVU32(pass_buf, pass_ptr, rip, 0x23 | (((U32)(off & 0x1F))<<7) | (3<<12) | (RV_T0<<15) | (RV_T2<<20) | (((U32)((off>>5)&0x7F))<<25)); // sd t2, off(t0)
+  }
+  for (; off < n; off++) {
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2<<7) | (0<<12) | (RV_T1<<15) | (((U32)(off & 0xFFF))<<20));                       // lb t2, off(t1)
+    RVU32(pass_buf, pass_ptr, rip, 0x23 | (((U32)(off & 0x1F))<<7) | (0<<12) | (RV_T0<<15) | (RV_T2<<20) | (((U32)((off>>5)&0x7F))<<25)); // sb t2, off(t0)
+  }
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A0<<7) | (RV_A5<<15));                        // mv a0, a5 (result = dst)
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));          // addi sp,sp,-8
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));             // sd a0, 0(sp)
+  *stack_depth -= 1;   // popped 2 (dst,src), pushed 1 (result)
+}
+
 // PC-relative call: jal rd, target (or auipc+jalr if out of ±1 MiB range)
 static void EmitJalToLabel(U8 *pass_buf, U8 **pass_ptr, I64 *rip, CLabel *lb, U8 rd) {
   I64 offset = lb->addr - *rip;
@@ -1126,6 +1151,9 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
         stack_depth_pass++;
         break;
+      case IC_BLOCK_COPY:
+        EmitBlockCopy(pass_buf, &pass_ptr, &rip, &stack_depth_pass, ic->ic_data);
+        break;
       case IC_ASSIGN:
         if (stack_depth_pass >= 1) {
           // If both value and address are on the stack, pop value first and move to a0
@@ -1668,6 +1696,9 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
         RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
         stack_depth_final++;
+        break;
+      case IC_BLOCK_COPY:
+        EmitBlockCopy(pass_buf, &pass_ptr, &rip, &stack_depth_final, ic->ic_data);
         break;
       case IC_ASSIGN:
         if (stack_depth_final >= 1) {

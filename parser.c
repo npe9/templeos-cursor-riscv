@@ -2434,6 +2434,27 @@ static bool ParseAssignment(Compiler *cc) {
   
   // Check for assignment operators (right-associative)
   if (cc->lex.token == '=') {
+    // Whole-struct assignment `b = a`: a class INSTANCE (not a pointer/array) larger than one word
+    // copies all its bytes, not just the first. Detect it from the LHS before the address is pushed.
+    {
+      CHashClass *lc = cc->last_expr_class;
+      bool lhs_struct_inst =
+        lc && (lc->type & HTT_CLASS) && !(lc->type & HTT_INTERNAL_TYPE) && lc->size > 8 && lc->size <= 2040 &&
+        ((cc->last_var_symbol && !cc->last_var_symbol->pointed_to_type && !cc->last_var_symbol->is_array) ||
+         (cc->last_global_var && !cc->last_global_var->pointed_to_type && !(cc->last_global_var->flags & GVF_ARRAY)));
+      if (lhs_struct_inst) {
+        I64 nbytes = lc->size;
+        EnsureLvalueAddressPushed(cc);         // dst address on the eval stack
+        LexNext(cc);                            // '='
+        if (!ParseTernary(cc)) return false;    // RHS: the source struct instance
+        EnsureLvalueAddressPushed(cc);         // src address on the eval stack (retract its auto-deref)
+        CIntermediateCode *bc = ICNew(cc, IC_BLOCK_COPY);
+        bc->ic_data = nbytes;
+        if (cc->ic_tail) cc->ic_tail->next = bc; else cc->ic_head = bc;
+        cc->ic_tail = bc;
+        return true;
+      }
+    }
     // SET CCF_RAX to indicate lvalue (address needed, not value)
     // Match original PrsExp.HC:201-209
     CIntermediateCode *lval_ic = cc->ic_tail;

@@ -157,6 +157,7 @@ typedef bool      Bool;
 #define IC_INT           0xB4   // `INT n` statement: ebreak (debugger entry)
 #define IC_PC            0xB5   // `$$` in code: the current address (auipc)
 #define IC_FN_ADDR       0xB6   // ic_data = CLabel*: a function's address as a value (auipc/addi)
+#define IC_BLOCK_COPY    0xBB   // struct copy: eval stack [dst,src] (src top), ic_data = byte count; copies then leaves dst
 #define IC_UDIV          0x9E
 #define IC_UMOD          0x9F
 #define IC_ULESS         0xA0
