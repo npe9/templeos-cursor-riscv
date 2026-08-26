@@ -5,6 +5,15 @@ static bool EmitFnAddress(Compiler *cc, CHashFun *fn);
 static void SkipRegQualifier(Compiler *cc);
 static bool ParseAssignment(Compiler *cc);
 static I64 PtrElemInfo(Compiler *cc, U8 *pointee, I64 *depth);
+static bool ParseExp(Compiler *cc);
+static bool ParseMul(Compiler *cc);
+static bool ParseBitwiseAnd(Compiler *cc);
+static bool ParseBitwiseXor(Compiler *cc);
+static bool ParseBitwiseOr(Compiler *cc);
+static bool ParseAdd(Compiler *cc);
+static bool ParseComparison(Compiler *cc);
+static bool ParseEquality(Compiler *cc);
+static bool ParseLogicalAnd(Compiler *cc);
 static I64 CEPostfixCast(Compiler *cc, I64 v);
 #ifndef BARE_METAL
 #include <stdio.h>
@@ -1987,32 +1996,44 @@ static void EmitBinaryOp(Compiler *cc, U8 iop, U8 fop, U8 lt, U8 rt, bool result
 }
 
 // `a`b`: HolyC's power operator (F64), through the runtime's Pow.
-static bool ParsePower(Compiler *cc) {
+// PREC_EXP (tightest binary level in HolyC): `a`b` (power, F64) and `a<<b`/`a>>b` (shifts).
+// Binds tighter than `*` `/`, and far tighter than `+` `&` — see Compiler/CInit.HC binary_ops.
+static bool ParseExp(Compiler *cc) {
   if (!ParseUnary(cc)) return false;
-  while (cc->lex.token == '`') {
-    if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
-    ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
-    LexNext(cc);
-    if (!ParseUnary(cc)) return false;
-    if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
-    ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
-    if (!EmitCallByName(cc, "Pow", 2)) return false;
-    ICAdd(cc, IC_CALL_END, 0, RT_I64);
-    cc->last_expr_type = RT_F64;
-    cc->last_var_symbol = NULL;
-    cc->last_global_var = NULL;
+  while (cc->lex.token == '`' || cc->lex.token == TK_SHL || cc->lex.token == TK_SHR) {
+    int op = cc->lex.token;
+    U8 lt = cc->last_expr_type;
+    if (op == '`') {
+      if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
+      ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
+      LexNext(cc);
+      if (!ParseUnary(cc)) return false;
+      if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
+      ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
+      if (!EmitCallByName(cc, "Pow", 2)) return false;
+      ICAdd(cc, IC_CALL_END, 0, RT_I64);
+      cc->last_expr_type = RT_F64;
+      cc->last_var_symbol = NULL;
+      cc->last_global_var = NULL;
+    } else {
+      LexNext(cc);
+      if (!ParseUnary(cc)) return false;
+      if (op == TK_SHL) { ICAdd(cc, IC_SHL, 0, RT_I64); }
+      else { ICAdd(cc, lt == RT_U64 ? IC_USHR : IC_SHR, 0, RT_I64); }
+      cc->last_expr_type = lt == RT_U64 ? RT_U64 : RT_I64;
+    }
   }
   return true;
 }
 
 static bool ParseMul(Compiler *cc) {
-  if (!ParsePower(cc)) return false;
+  if (!ParseExp(cc)) return false;
   
   while (cc->lex.token == '*' || cc->lex.token == '/' || cc->lex.token == '%') {
     int op = cc->lex.token;
     U8 lt = cc->last_expr_type;
     LexNext(cc);
-    if (!ParsePower(cc)) return false;
+    if (!ParseExp(cc)) return false;
     U8 rt = cc->last_expr_type;
     if (op == '*') EmitBinaryOp(cc, IC_MUL, IC_FMUL, lt, rt, false);
     else if (op == '/') EmitBinaryOp(cc, IC_DIV, IC_FDIV, lt, rt, false);
@@ -2071,7 +2092,7 @@ static I64 PtrElemInfo(Compiler *cc, U8 *pointee, I64 *depth) {
 }
 
 static bool ParseAdd(Compiler *cc) {
-  if (!ParseMul(cc)) return false;
+  if (!ParseBitwiseOr(cc)) return false;
   while (cc->lex.token == '+' || cc->lex.token == '-') {
     int op = cc->lex.token;
     U8 lt = cc->last_expr_type;
@@ -2081,7 +2102,7 @@ static bool ParseAdd(Compiler *cc) {
     // (an integer literal sets none of these, so it must not inherit the left's pointer state).
     cc->last_var_symbol = NULL; cc->last_global_var = NULL; cc->last_member = NULL; cc->expr_ptr_depth = 0;
     LexNext(cc);
-    if (!ParseMul(cc)) return false;
+    if (!ParseBitwiseOr(cc)) return false;
     U8 rt = cc->last_expr_type;
     U8 rpointee = 0; I64 rdepth = 0;
     I64 rsz = PtrElemInfo(cc, &rpointee, &rdepth);
@@ -2105,24 +2126,8 @@ static bool ParseAdd(Compiler *cc) {
 }
 
 
-static bool ParseShift(Compiler *cc) {
-  if (!ParseAdd(cc)) return false;
-  
-  while (cc->lex.token == TK_SHL || cc->lex.token == TK_SHR) {
-    int op = cc->lex.token;
-    U8 lt = cc->last_expr_type;
-    LexNext(cc);
-    if (!ParseAdd(cc)) return false;
-    if (op == TK_SHL) { ICAdd(cc, IC_SHL, 0, RT_I64); cc->last_expr_type = lt == RT_U64 ? RT_U64 : RT_I64; }
-    else { ICAdd(cc, lt == RT_U64 ? IC_USHR : IC_SHR, 0, RT_I64); cc->last_expr_type = lt == RT_U64 ? RT_U64 : RT_I64; }
-  }
-  
-  return true;
-}
-
-
 static bool ParseComparison(Compiler *cc) {
-  if (!ParseShift(cc)) return false;
+  if (!ParseAdd(cc)) return false;
   
   // HolyC chains relations: `2<=radix<=36` is `2<=radix && radix<=36` with `radix`
   // evaluated once (IC_CHAIN_CMP keeps the middle operand on the stack).
@@ -2132,7 +2137,7 @@ static bool ParseComparison(Compiler *cc) {
     int op = cc->lex.token;
     U8 lt = cc->last_expr_type;
     LexNext(cc);
-    if (!ParseShift(cc)) return false;
+    if (!ParseAdd(cc)) return false;
     U8 rt = cc->last_expr_type;
     bool more = (cc->lex.token == '<' || cc->lex.token == '>' ||
                  cc->lex.token == TK_LESS_EQU || cc->lex.token == TK_GREATER_EQU);
@@ -2174,11 +2179,11 @@ static bool ParseEquality(Compiler *cc) {
 
 
 static bool ParseBitwiseAnd(Compiler *cc) {
-  if (!ParseEquality(cc)) return false;
+  if (!ParseMul(cc)) return false;
   
   while (cc->lex.token == '&') {
     LexNext(cc);
-    if (!ParseEquality(cc)) return false;
+    if (!ParseMul(cc)) return false;
     ICAdd(cc, IC_AND, 0, RT_I64);
   }
   
@@ -2213,7 +2218,7 @@ static bool ParseBitwiseOr(Compiler *cc) {
 
 
 static bool ParseLogicalAnd(Compiler *cc) {
-  if (!ParseBitwiseOr(cc)) {
+  if (!ParseEquality(cc)) {
     return false;
   }
 
@@ -2230,7 +2235,7 @@ static bool ParseLogicalAnd(Compiler *cc) {
     ICAdd(cc, IC_BR_ZERO, (I64)false_label, RT_I64);
 
     LexNext(cc);
-    if (!ParseBitwiseOr(cc)) return false;
+    if (!ParseEquality(cc)) return false;
   }
 
   if (false_label) {
