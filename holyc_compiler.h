@@ -147,6 +147,10 @@ typedef bool      Bool;
 #define IC_SHR_EQU       0xAE
 #define IC_MOD_EQU       0xAF
 #define IC_PAUSE         0xB0   // spin-loop hint: nop
+#define IC_FADD_EQU      0xB7   // F64 compound assign: *addr = *addr op rhs (fld/F64op/fsd)
+#define IC_FSUB_EQU      0xB8
+#define IC_FMUL_EQU      0xB9
+#define IC_FDIV_EQU      0xBA
 #define IC_CHAIN_CMP     0xB1   // chained compare `a<b<c`: [a,b] -> [(a op b), b]; ic_data = compare IC
 #define IC_CHAIN_AND     0xB2   // [x,y,z] -> [x&y, z]
 #define IC_HLT           0xB3   // `HLT` statement: wfi

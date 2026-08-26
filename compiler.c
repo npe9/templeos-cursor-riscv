@@ -471,6 +471,30 @@ static void EmitCompoundAssign(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack
 #define RV_FCVT_L_D(rd, fs)     (0xC2000053u | ((rd) << 7) | (1u << 12) | ((fs) << 15) | (2u << 20)) /* rtz */
 #define RV_FOP(f7, fd, f1, f2)  ((f7) | ((fd) << 7) | (7u << 12) | ((f1) << 15) | ((f2) << 20))
 #define RV_FCMP(f3, rd, f1, f2) (0xA2000053u | ((rd) << 7) | ((f3) << 12) | ((f1) << 15) | ((f2) << 20))
+// F64 compound assignment (`d *= 2.0`): load *addr and the rhs as doubles, F64-op, store back.
+static void EmitF64CompoundAssign(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, U8 ic_code) {
+  if (*stack_depth >= 2) {
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (3 << 12) | (RV_SP << 15));            // ld t1, 0(sp)  rhs bits
+    RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
+    (*stack_depth)--;
+  } else {
+    RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T1 << 7) | (RV_A0 << 15));                        // mv t1, a0
+  }
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));              // ld t0, 0(sp)  addr
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
+  if (*stack_depth > 0) (*stack_depth)--;
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (3 << 12) | (RV_T0 << 15));              // ld t2, 0(t0)  *addr bits
+  RVU32(pass_buf, pass_ptr, rip, RV_FMV_D_X(RV_FA0, RV_T2));
+  RVU32(pass_buf, pass_ptr, rip, RV_FMV_D_X(RV_FA1, RV_T1));
+  U32 fop = ic_code == IC_FADD_EQU ? 0x02000053u : ic_code == IC_FSUB_EQU ? 0x0A000053u :
+            ic_code == IC_FMUL_EQU ? 0x12000053u : 0x1A000053u;
+  RVU32(pass_buf, pass_ptr, rip, RV_FOP(fop, RV_FA0, RV_FA0, RV_FA1));
+  RVU32(pass_buf, pass_ptr, rip, RV_FMV_X_D(RV_A0, RV_FA0));
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T0 << 15) | (RV_A0 << 20));             // sd a0, 0(t0)
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20));
+  (*stack_depth)++;
+}
 static void EmitF64Op(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, U8 ic_code) {
   if (ic_code == IC_FNEG) {
     if (*stack_depth > 0) {
@@ -1294,6 +1318,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_SHL_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_SLL); break;
       case IC_SHR_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_SRA); break;
       case IC_MOD_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_REM); break;
+      case IC_FADD_EQU: case IC_FSUB_EQU: case IC_FMUL_EQU: case IC_FDIV_EQU: EmitF64CompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, ic->ic_code); break;
       case IC_PAUSE:   RVU32(pass_buf, &pass_ptr, &rip, 0x13); break;
       case IC_FN_ADDR:
         EmitLabelAddr(pass_buf, &pass_ptr, &rip, (CLabel *)ic->ic_data, RV_A0);
@@ -1829,6 +1854,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_SHL_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_SLL); break;
       case IC_SHR_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_SRA); break;
       case IC_MOD_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_REM); break;
+      case IC_FADD_EQU: case IC_FSUB_EQU: case IC_FMUL_EQU: case IC_FDIV_EQU: EmitF64CompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, ic->ic_code); break;
       case IC_PAUSE:   RVU32(pass_buf, &pass_ptr, &rip, 0x13); break;
       case IC_FN_ADDR:
         EmitLabelAddr(pass_buf, &pass_ptr, &rip, (CLabel *)ic->ic_data, RV_A0);

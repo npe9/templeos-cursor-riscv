@@ -43,3 +43,4 @@ tests/exec/cases/e_precedence.hc	000000000000003f
 tests/exec/cases/e_kernel_hexprint.hc	000000000000003f
 tests/exec/cases/e_f64_array.hc	000000000000003f
 tests/exec/cases/e_f64_ptr.hc	000000000000003f
+tests/exec/cases/e_f64_compound.hc	000000000000003f

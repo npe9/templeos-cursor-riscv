@@ -2443,33 +2443,41 @@ static bool ParseAssignment(Compiler *cc) {
     return true;
   }
   if (cc->lex.token == TK_ADD_EQU) {
+    bool f64 = (cc->last_expr_type == RT_F64);
     LexNext(cc);
     EnsureLvalueAddressPushed(cc);
     if (!ParseAssignment(cc)) return false;
-    ICAdd(cc, IC_ADD_EQU, 0, RT_I64);
+    if (f64) { if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64); ICAdd(cc, IC_FADD_EQU, 0, RT_F64); cc->last_expr_type = RT_F64; }
+    else ICAdd(cc, IC_ADD_EQU, 0, RT_I64);
     return true;
   }
   
   if (cc->lex.token == TK_SUB_EQU) {
+    bool f64 = (cc->last_expr_type == RT_F64);
     LexNext(cc);
     EnsureLvalueAddressPushed(cc);
     if (!ParseAssignment(cc)) return false;
-    ICAdd(cc, IC_SUB_EQU, 0, RT_I64);
+    if (f64) { if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64); ICAdd(cc, IC_FSUB_EQU, 0, RT_F64); cc->last_expr_type = RT_F64; }
+    else ICAdd(cc, IC_SUB_EQU, 0, RT_I64);
     return true;
   }
   
   if (cc->lex.token == TK_MUL_EQU) {
+    bool f64 = (cc->last_expr_type == RT_F64);
     LexNext(cc);
     EnsureLvalueAddressPushed(cc);
     if (!ParseAssignment(cc)) return false;
+    if (f64) { if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64); ICAdd(cc, IC_FMUL_EQU, 0, RT_F64); cc->last_expr_type = RT_F64; return true; }
     ICAdd(cc, IC_MUL_EQU, 0, RT_I64);
     return true;
   }
   
   if (cc->lex.token == TK_DIV_EQU) {
+    bool f64 = (cc->last_expr_type == RT_F64);
     LexNext(cc);
     EnsureLvalueAddressPushed(cc);
     if (!ParseAssignment(cc)) return false;
+    if (f64) { if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64); ICAdd(cc, IC_FDIV_EQU, 0, RT_F64); cc->last_expr_type = RT_F64; return true; }
     ICAdd(cc, IC_DIV_EQU, 0, RT_I64);
     return true;
   }
