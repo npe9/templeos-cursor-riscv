@@ -37,3 +37,5 @@ tests/exec/cases/e_kernel_strprint.hc	000000000000003f
 tests/exec/cases/e_kernel_funcs.hc	000000000000003f
 tests/exec/cases/e_qsort_partition.hc	000000000000003f
 tests/exec/cases/e_kernel_qsort.hc	000000000000003f
+tests/exec/cases/e_kernel_hash.hc	000000000000000b
+tests/exec/cases/e_kernel_malloc.hc	0000000000000007
