@@ -19,7 +19,7 @@
   X(GetRAX, 0) X(GetRBP, 0) X(GetRFlags, 0) X(SetRFlags, 1) X(CPUId, 2) X(InvlPg, 1) X(SysHlt, 0) X(GetTSC, 0) X(Caller, 1) \
   X(QueInit, 1) X(QueIns, 2) X(QueInsRev, 2) X(QueRem, 1) X(StrMatch, 3) X(StrIMatch, 3) X(StrICmp, 2) X(Pow10, 1) \
   X(HashStr, 1) X(HashFind, 3) X(HashSingleTableFind, 3) X(HashAdd, 2) X(HashRemDel, 3) X(StrNCmp, 3) X(ModU64, 2) X(LBEqu, 3) \
-  X(BFieldExtU32, 3) X(RepInU16, 3) X(GetRSP, 0) X(SaveExceptRegs, 0) X(Call, 1) X(FarCall32, 4) X(Yield, 0) X(TaskEndNow, 0) X(RVTaskSwitch, 2) X(RVTrapInit, 0) X(RVTimerArm, 1) X(RVGetTicks, 0) X(RVPreemptInit, 1) X(RVPreemptSpawn, 2) X(RVPreemptExit, 0) X(RVCritEnter, 0) X(RVCritLeave, 1) X(RVSleep, 1)
+  X(BFieldExtU32, 3) X(RepInU16, 3) X(GetRSP, 0) X(SaveExceptRegs, 0) X(Call, 1) X(FarCall32, 4) X(Yield, 0) X(TaskEndNow, 0) X(RVTaskSwitch, 2) X(RVTrapInit, 0) X(RVTimerArm, 1) X(RVGetTicks, 0) X(RVPreemptInit, 1) X(RVPreemptSpawn, 2) X(RVPreemptExit, 0) X(RVCritEnter, 0) X(RVCritLeave, 1) X(RVSleep, 1) X(RVUartIrqInit, 0) X(RVUartHasInput, 0) X(RVUartGetBuffered, 0)
 
 /* F64 typing of the runtime (arguments and results travel as raw 64-bit patterns): the
  * compiler converts call arguments per the mask and types the result. */

@@ -302,6 +302,7 @@ static HRT_I64 HolyFarCall32(HRT_I64 a, HRT_I64 b, HRT_I64 c, HRT_I64 d) { (void
  * A trap vector that saves the caller-saved registers, calls a C dispatcher, restores, and mrets.
  * The dispatcher counts machine-timer interrupts and re-arms mtimecmp; this is the interrupt-driven
  * foundation a preemptive scheduler needs. CLINT: mtime @ 0x0200BFF8, mtimecmp[hart0] @ 0x02004000. */
+static void HolyServiceExternal(void);
 static volatile HRT_I64 holy_ticks = 0;
 static HRT_I64 holy_timer_interval = 0;
 
@@ -313,6 +314,8 @@ __attribute__((used)) static HRT_I64 HolyTrapDispatch(void) {
     volatile HRT_I64 *mtime    = (volatile HRT_I64 *)0x0200BFF8;
     volatile HRT_I64 *mtimecmp = (volatile HRT_I64 *)0x02004000;
     *mtimecmp = *mtime + holy_timer_interval;              /* re-arm */
+  } else if (mcause == (HRT_I64)0x800000000000000BULL) {    /* machine external (PLIC) interrupt */
+    HolyServiceExternal();
   } else if (mcause >= 0) {                                 /* synchronous exception: skip it (best effort) */
     HRT_I64 mepc;
     __asm__ volatile("csrr %0, mepc" : "=r"(mepc));
@@ -375,6 +378,8 @@ __attribute__((used)) static void *HolyPreemptPick(void *cur) {
     holy_ticks++;
     volatile HRT_I64 *mtime=(volatile HRT_I64*)0x0200BFF8, *mtimecmp=(volatile HRT_I64*)0x02004000;
     *mtimecmp = *mtime + holy_timer_interval;
+  } else if (mcause == (HRT_I64)0x800000000000000BULL) {
+    HolyServiceExternal();
   }
   for (int i=0;i<holy_pn;i++) { holy_pcur=(holy_pcur+1)%holy_pn; if(!holy_pdone[holy_pcur] && holy_pwake[holy_pcur] <= holy_ticks) break; }
   return &holy_pctx[holy_pcur*32];
@@ -485,6 +490,44 @@ static HRT_I64 HolyRVSleep(HRT_I64 ticks) {
   holy_pwake[holy_pcur] = wake;         /* the picker skips this slot until holy_ticks reaches wake */
   while (holy_ticks < wake) { }          /* spins only until the next preemption deschedules us */
   return 0;
+}
+
+/* --- Interrupt-driven UART input (QEMU virt 16550 + PLIC) -----------------------------------------
+ * A machine external interrupt (PLIC) fires when the UART has a received byte; the handler claims it,
+ * drains the RX FIFO into a ring buffer, and completes. A task can then wait on RVUartHasInput while
+ * the scheduler runs others, instead of polling the device. UART IRQ is 10 on the virt PLIC. */
+#define HOLY_PLIC       0x0C000000
+#define HOLY_UART_IRQ   10
+static char holy_urx[256];
+static int  holy_urx_head = 0, holy_urx_tail = 0;
+
+static void HolyServiceExternal(void) {
+  volatile HRT_U32 *claim = (volatile HRT_U32 *)(HOLY_PLIC + 0x200004);   /* context 0 claim/complete */
+  HRT_U32 irq = *claim;
+  if (irq == HOLY_UART_IRQ) {
+    volatile HRT_U8 *rbr = (volatile HRT_U8 *)0x10000000;
+    volatile HRT_U8 *lsr = (volatile HRT_U8 *)0x10000005;
+    while (*lsr & 1) {                                                     /* drain the RX FIFO */
+      char c = (char)*rbr;
+      int nh = (holy_urx_head + 1) & 255;
+      if (nh != holy_urx_tail) { holy_urx[holy_urx_head] = c; holy_urx_head = nh; }
+    }
+  }
+  if (irq) *claim = irq;                                                   /* complete */
+}
+
+static HRT_I64 HolyRVUartIrqInit(void) {
+  *(volatile HRT_U8 *)0x10000001 = 1;                                      /* UART IER: RX-data interrupt */
+  *(volatile HRT_U32 *)(HOLY_PLIC + HOLY_UART_IRQ*4) = 1;                  /* PLIC priority[irq] = 1 */
+  *(volatile HRT_U32 *)(HOLY_PLIC + 0x2000) |= (1u << HOLY_UART_IRQ);      /* PLIC enable for context 0 */
+  *(volatile HRT_U32 *)(HOLY_PLIC + 0x200000) = 0;                         /* PLIC threshold 0 */
+  __asm__ volatile("csrs mie, %0" :: "r"((HRT_I64)(1<<11)));              /* MEIE: machine external int */
+  return 0;
+}
+static HRT_I64 HolyRVUartHasInput(void) { return holy_urx_head != holy_urx_tail; }
+static HRT_I64 HolyRVUartGetBuffered(void) {
+  if (holy_urx_head == holy_urx_tail) return -1;
+  char c = holy_urx[holy_urx_tail]; holy_urx_tail = (holy_urx_tail + 1) & 255; return (HRT_U8)c;
 }
 
 /* Critical section for the preemptive scheduler: disable/restore the machine interrupt-enable so a
