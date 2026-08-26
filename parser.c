@@ -453,6 +453,15 @@ Bool LabelInUnit(Compiler *cc, CLabel *lb) {
   return false;
 }
 
+// A scalar-typed union (`U16i union U16`, `U32i union U32`, …) records its base type as RT_I64
+// but keeps a sub-word size; trust the size for the element load/store width so `arr[i]`
+// accesses `size` bytes, not 8. (The kernel declares its date tables and char bitmaps this way.)
+static U8 ScalarTypeForSize(U8 t, I64 size) {
+  if (t == RT_I64 && (size == 1 || size == 2 || size == 4))
+    return size == 1 ? RT_U8 : size == 2 ? RT_U16 : RT_U32;
+  return t;
+}
+
 static void EnsureLvalueAddressPushed(Compiler *cc);
 static bool ParseConstDim(Compiler *cc, I64 *out);
 
@@ -1716,7 +1725,7 @@ static bool ParsePostfix(Compiler *cc) {
           if (elem_size <= 0) elem_size = 8;
         } else {
           elem_size = saved_symbol->element_size ? saved_symbol->element_size : 8;
-          elem_type = saved_symbol->data_type;
+          elem_type = ScalarTypeForSize(saved_symbol->data_type, elem_size);
         }
         if (saved_symbol->ndims > 1 && cc->subscript_level < saved_symbol->ndims - 1)
           elem_size = saved_symbol->dim_stride[cc->subscript_level];
@@ -1724,6 +1733,7 @@ static bool ParsePostfix(Compiler *cc) {
         CMemberLst *mb = cc->last_member;
         elem_type = mb->pointed_to_type ? mb->pointed_to_type : mb->raw_type;
         elem_size = mb->elem_size > 0 ? mb->elem_size : PrimitiveTypeSize(elem_type);
+        if (!mb->pointed_to_type) elem_type = ScalarTypeForSize(elem_type, elem_size);
         if (mb->pointed_to_type && mb->ptr_depth > 1 && !mb->is_array) { elem_type = RT_I64; elem_size = 8; }
         if (!mb->is_array && !mb->pointed_to_type && mb->member_class && mb->member_class->size > 0) elem_size = mb->member_class->size;
         if (elem_size <= 0) elem_size = 8;
@@ -1736,7 +1746,7 @@ static bool ParsePostfix(Compiler *cc) {
           if (elem_size <= 0) elem_size = 8;
         } else {
           elem_size = saved_global->element_size ? saved_global->element_size : 8;
-          elem_type = (U8)saved_global->raw_type;
+          elem_type = ScalarTypeForSize((U8)saved_global->raw_type, elem_size);
         }
       } else if (!saved_symbol && !saved_global && !cc->last_member && cc->expr_ptr_depth) {
         // `(**ppb)[i]`, `argv[1][0]`: the base is a pointer value whose depth a deref/subscript left
@@ -1877,9 +1887,13 @@ static bool ParsePostfix(Compiler *cc) {
         if (cc->ic_tail && cc->ic_tail->ic_code == IC_PUSH_ARG) { /* offset 0: base already pushed */ }
       } else if (!(cc->flags & CCF_RAX)) {
         DerefDroppingAddressSlot(cc);
-        if (found && cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->arg1_type_pointed_to = found->raw_type;
-        if (found && !found->pointed_to_type) cc->last_expr_type = (found->raw_type == RT_F64) ? RT_F64 :
-          (found->raw_type == RT_U8 || found->raw_type == RT_U16 || found->raw_type == RT_U32 || found->raw_type == RT_U64) ? RT_U64 : RT_I64;
+        // A scalar-union member (`U32 time;` where U32 is `U32i union U32`) records raw_type=I64 with
+        // a sub-word size; use the size for the load/store width so `s.time` is 4 bytes, not 8 (an
+        // 8-byte store to a 4-byte field at a struct's tail overruns it — CDate's date/time did).
+        U8 mtype = found ? ScalarTypeForSize(found->raw_type, found->size) : RT_I64;
+        if (found && cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->arg1_type_pointed_to = mtype;
+        if (found && !found->pointed_to_type) cc->last_expr_type = (mtype == RT_F64) ? RT_F64 :
+          (mtype == RT_U8 || mtype == RT_U16 || mtype == RT_U32 || mtype == RT_U64) ? RT_U64 : RT_I64;
       }
       
       // Handle bit field extraction
@@ -1971,9 +1985,13 @@ static bool ParsePostfix(Compiler *cc) {
         cc->flags |= CCF_ARRAY;
       } else if (!(cc->flags & CCF_RAX)) {
         DerefDroppingAddressSlot(cc);
-        if (found && cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->arg1_type_pointed_to = found->raw_type;
-        if (found && !found->pointed_to_type) cc->last_expr_type = (found->raw_type == RT_F64) ? RT_F64 :
-          (found->raw_type == RT_U8 || found->raw_type == RT_U16 || found->raw_type == RT_U32 || found->raw_type == RT_U64) ? RT_U64 : RT_I64;
+        // A scalar-union member (`U32 time;` where U32 is `U32i union U32`) records raw_type=I64 with
+        // a sub-word size; use the size for the load/store width so `s.time` is 4 bytes, not 8 (an
+        // 8-byte store to a 4-byte field at a struct's tail overruns it — CDate's date/time did).
+        U8 mtype = found ? ScalarTypeForSize(found->raw_type, found->size) : RT_I64;
+        if (found && cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->arg1_type_pointed_to = mtype;
+        if (found && !found->pointed_to_type) cc->last_expr_type = (mtype == RT_F64) ? RT_F64 :
+          (mtype == RT_U8 || mtype == RT_U16 || mtype == RT_U32 || mtype == RT_U64) ? RT_U64 : RT_I64;
       }
       cc->last_expr_class = member_class;
       

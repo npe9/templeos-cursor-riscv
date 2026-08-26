@@ -48,3 +48,4 @@ tests/exec/cases/e_kernel_float.hc	000000000000003f
 tests/exec/cases/e_f64_array_decay.hc	000000000000003f
 tests/exec/cases/e_indirect_sibling_args.hc	000000000000001f
 tests/exec/cases/e_postfix_cast_store.hc	000000000000007f
+tests/exec/cases/e_kernel_scalar_union.hc	0000000000000007
