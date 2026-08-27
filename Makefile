@@ -15,7 +15,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke coverage templeos-riscv templeos-smoke
+.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke coverage templeos-riscv templeos-smoke
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -83,6 +83,7 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) kernel-heap-smoke
 	@$(MAKE) kernel-spawn-smoke
 	@$(MAKE) kernel-ctask-preempt-smoke
+	@$(MAKE) kernel-ctask-sleep-smoke
 	@$(MAKE) repl-smoke
 
 # Compile a program that #includes the real kernel, formats with its StrPrintJoin, and prints
@@ -175,6 +176,12 @@ kernel-spawn-smoke:
 kernel-ctask-preempt-smoke:
 	@chmod +x tests/scripts/run_kernel_ctask_preempt_smoke.sh
 	@tests/scripts/run_kernel_ctask_preempt_smoke.sh
+
+# Cooperative sleep on real CTasks: tasks set CTask.wake_jiffy and the kernel's own Yield() skips
+# them until the (mtime-derived) jiffy clock reaches their wake time; all-asleep -> scheduler idles.
+kernel-ctask-sleep-smoke:
+	@chmod +x tests/scripts/run_kernel_ctask_sleep_smoke.sh
+	@tests/scripts/run_kernel_ctask_sleep_smoke.sh
 
 # ShellCheck on the same five scripts as the CI shellcheck job (requires shellcheck on PATH).
 lint-sh:

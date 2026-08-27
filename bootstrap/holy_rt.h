@@ -668,22 +668,67 @@ __attribute__((naked)) static HRT_I64 HolyRVTaskSwitch(void *save, void *load) {
  * single-task code runs unchanged. */
 static HRT_I64 HolyRVCtxSw(void *from_rsp_slot, void *to_rsp_slot);
 static void **holy_fs_slot = 0;              /* &Fs : points at the current-CTask pointer */
+#define HOLY_CTASK_WAKE   16                 /* offset(CTask.wake_jiffy) */
+#define HOLY_CTASK_FLAGS  24                 /* offset(CTask.task_flags) */
 #define HOLY_CTASK_NEXT   128                /* offset(CTask.next_task) */
 #define HOLY_CTASK_RSP    296                /* offset(CTask.rsp) */
-#define HOLY_CTASK_FLAGS  24                 /* offset(CTask.task_flags) */
-#define HOLY_TASKf_KILL   1                  /* TASKf_KILL_TASK bit */
+#define HOLY_TASKf_KILL         1            /* TASKf_KILL_TASK bit */
+#define HOLY_TASKf_SUSPENDED    2            /* TASKf_SUSPENDED bit */
+#define HOLY_TASKf_AWAITING_MSG 9            /* TASKf_AWAITING_MSG bit */
 static HRT_I64 HolyRVYieldInit(void *fs_slot) { holy_fs_slot = (void **)fs_slot; return 0; }
+
+/* Jiffy clock, derived from the machine timer (mtime) so it advances whether we are polling from a
+ * cooperative Yield or spinning in the idle path — no dependency on the timer ISR re-entering. Set
+ * holy_jiffy_div to the number of mtime ticks per jiffy (QEMU virt mtime is 10 MHz, so 10000 -> a
+ * 1 ms / ~1000 Hz jiffy, matching TempleOS's JIFFY_FREQ). 0 disables wake_jiffy checks entirely. */
+static HRT_I64 holy_jiffy_div = 0;
+static HRT_I64 HolyRVJiffies(void) {
+  if (!holy_jiffy_div) return 0;
+  volatile HRT_I64 *mt = (volatile HRT_I64 *)0x0200BFF8;
+  return *mt / holy_jiffy_div;
+}
+static HRT_I64 HolyRVJiffiesInit(HRT_I64 mtime_ticks_per_jiffy) {
+  holy_jiffy_div = mtime_ticks_per_jiffy;
+  return 0;
+}
+
+/* Is a task eligible to run right now? Mirrors Sched.HC RESTORE_RSI_TASK's skip conditions: killed,
+ * suspended and awaiting-message tasks are passed over, and a task sleeping via wake_jiffy is not
+ * runnable until the jiffy clock reaches its wake time. */
+static int HolyTaskRunnable(char *t) {
+  HRT_I64 fl = *(HRT_I64 *)(t + HOLY_CTASK_FLAGS);
+  if (fl & ((1 << HOLY_TASKf_KILL) | (1 << HOLY_TASKf_SUSPENDED) | (1 << HOLY_TASKf_AWAITING_MSG)))
+    return 0;
+  if (holy_jiffy_div && *(HRT_I64 *)(t + HOLY_CTASK_WAKE) > HolyRVJiffies())
+    return 0;
+  return 1;
+}
+
 static HRT_I64 HolyYield(void) {
   if (!holy_fs_slot || !*holy_fs_slot) return 0;      /* not wired yet -> single task */
   char *cur = (char *)*holy_fs_slot;
-  char *nxt = *(char **)(cur + HOLY_CTASK_NEXT);
-  while (nxt != cur && (*(HRT_I64 *)(nxt + HOLY_CTASK_FLAGS) & (1 << HOLY_TASKf_KILL)))
-    nxt = *(char **)(nxt + HOLY_CTASK_NEXT);
-  if (nxt == cur) return 0;
+  char *nxt;
+  /* Round-robin scan for the next runnable task (Sched.HC's next_task walk). If none but cur is
+   * runnable, keep running cur. If NOBODY is runnable (every task sleeping/suspended), idle: mask
+   * interrupts and poll mtime so the jiffy clock still advances, then rescan — TempleOS's idle-task
+   * STI;HLT;rescan loop, made deterministic by reading time rather than waiting for the ISR. */
+  for (;;) {
+    nxt = *(char **)(cur + HOLY_CTASK_NEXT);
+    while (nxt != cur && !HolyTaskRunnable(nxt))
+      nxt = *(char **)(nxt + HOLY_CTASK_NEXT);
+    if (nxt != cur) break;                            /* found another runnable task */
+    if (HolyTaskRunnable(cur)) {                      /* only cur runnable -> resume it */
+      __asm__ volatile("csrs mstatus, %0" :: "r"((HRT_I64)(1 << 3)));
+      return 0;
+    }
+    __asm__ volatile("csrc mstatus, %0" :: "r"((HRT_I64)(1 << 3)));   /* idle: mask interrupts */
+    { volatile HRT_I64 *mt = (volatile HRT_I64 *)0x0200BFF8; HRT_I64 t0 = *mt; while (*mt - t0 < 1000) {} }
+  }
   *holy_fs_slot = nxt;                                /* Fs = next task */
-  /* When Yield is reached from inside the timer ISR (mstatus.MIE cleared on trap entry), the task we
-   * switch to must run with interrupts ENABLED or it can never be preempted; re-enable them here. */
-  __asm__ volatile("csrs mstatus, %0" :: "r"((HRT_I64)(1<<3)));
+  /* The task we switch to must run with interrupts ENABLED: reached from the timer ISR, mstatus.MIE
+   * was cleared on trap entry, and reached from the idle path we just masked it — either way an
+   * incoming task that never yields could not otherwise be preempted. */
+  __asm__ volatile("csrs mstatus, %0" :: "r"((HRT_I64)(1 << 3)));
   HolyRVCtxSw(cur + HOLY_CTASK_RSP, nxt + HOLY_CTASK_RSP);
   return 0;
 }
