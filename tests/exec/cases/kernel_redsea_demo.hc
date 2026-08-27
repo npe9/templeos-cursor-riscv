@@ -8,15 +8,16 @@
 // scaffolding (heap + Adam) is the usual RISC-V setup. Supersedes the Phase-1 kernel_fs_demo.hc,
 // which used a hand-rolled superblock rather than the real RedSea code.
 //
-// Read here goes through RedSeaFileRead directly (the exact FSt_REDSEA case FileRead dispatches to).
-// The generic FileRead/Load wrapper additionally runs FileNameAbs->DirNameAbs, whose drive-letter
-// handling still needs work under this minimal hand-mount — that is the next step (it gates Load).
+// Read goes through the kernel's generic FileRead — FileNameAbs -> DirContextNew -> RedSeaFileFind
+// -> RedSeaFileRead, the very path Load/ExeFile take — so this exercises the whole top-level file
+// API, not just the RedSea leaf functions.
 #include "/Kernel/Kernel_RV.PRJ"
 U0 UartS(U8 *s){ U8 *u=0x10000000; while(*s)*u=*s++; }
 Bool CheckFile(U8 *name,U8 *want)
-{//Read `name` back with the kernel's own RedSea read and compare to `want`.
+{//Read `name` back with the kernel's own generic FileRead (FileNameAbs->DirContextNew->
+ //RedSeaFileRead — the same path Load/ExeFile take) and compare to `want`.
   I64 size=0,attr=0;
-  U8 *back=RedSeaFileRead(Fs->cur_dv,"/",name,&size,&attr);
+  U8 *back=FileRead(name,&size,&attr);
   return back && size==StrLen(want) && !StrNCmp(back,want,StrLen(want));
 }
 I64 main(){
@@ -52,7 +53,7 @@ I64 main(){
   I64 w1=FileWrite("A:/HELLO.TXT",m1,StrLen(m1));
   I64 w2=FileWrite("A:/SECOND.TXT",m2,StrLen(m2));
   UartS("wrote A:/HELLO.TXT and A:/SECOND.TXT\n");
-  Bool ok = w1>0 && w2>0 && CheckFile("HELLO.TXT",m1) && CheckFile("SECOND.TXT",m2);
+  Bool ok = w1>0 && w2>0 && CheckFile("A:/HELLO.TXT",m1) && CheckFile("A:/SECOND.TXT",m2);
   U8 line[128];
   StrPrint(line,"redsea test: files=2 read-back-both-match=%d %s\n", ok, ok?"OK":"BAD");
   UartS(line);
