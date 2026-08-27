@@ -181,6 +181,30 @@ U0 RVBootTask()
   Yield();
 }
 
+I64 rv_boot_spins=0;
+U0 RVBootTask2()
+{//A second task that NEVER yields inside its work loop. Only the machine-timer preemption Adam arms
+ //lets Adam and the other task keep running while this one spins — so its progress is proof the
+ //self-booted kernel PREEMPTS, not merely cooperates. Yields once at the end only to leave for good.
+  I64 target=rv_boot_spins+2000000;
+  while (rv_boot_spins<target)
+    rv_boot_spins++;
+  Bts(&Fs->task_flags,TASKf_KILL_TASK);
+  Yield();
+}
+
+// Spawn a task with the kernel's own Spawn(), then re-seed its first on-stack switch frame for the
+// RISC-V calling convention and link it into Adam's next_task ring — the boot's Spawn boilerplate.
+CTask *RVKSpawn(U0 (*entry)(),U8 *name,CTask *adam)
+{
+  CTask *t=Spawn(entry,NULL,name,-1,adam,0,0);
+  I64 top=t->rsp+16, *frame=(top-104)&(~15), i;
+  for (i=0;i<12;i++) frame[i]=0;
+  frame[12]=t->rip; t->rsp=frame;
+  t->next_task=adam->next_task; t->last_task=adam; adam->next_task->last_task=t; adam->next_task=t;
+  return t;
+}
+
 U0 RVKMain()
 {
   // KMain()'s first act is adam_task=Fs. Adam is the root CTask; establish it and Fs before anything
@@ -218,17 +242,20 @@ U0 RVKMain()
   // phase 3: BlkDevsInitAll / DskChg(':') / HomeSet — bring up block devices and mount the file system.
   // phase 3: Load("/Compiler/Compiler") / ExeFile("StartOS") / SrvTaskCont — load the compiler and enter the Adam server loop.
 
-  Print("RVKMain: spawning Adam's first task via the kernel's own Spawn()...\n");
-  CTask *t=Spawn(&RVBootTask,NULL,"Boot Task",-1,adam,0,0);
-  // RISC-V initial-frame fixup (as in the Spawn path): Spawn seeds an x86 return frame; re-seed the
-  // on-stack callee-saved switch frame {s0..s11=0, ra=entry} that RVCtxSw pops on the first switch.
-  I64 top=t->rsp+16; I64 *frame=(top-104)&(~15); I64 i;
-  for (i=0;i<12;i++) frame[i]=0; frame[12]=t->rip; t->rsp=frame;
-  t->next_task=adam->next_task; t->last_task=adam; adam->next_task->last_task=t; adam->next_task=t;
+  // Arm the machine-timer preemption (the RISC-V analogue of IntInit2/IntsInit installing the timer
+  // ISR) BEFORE spawning, so a task that never yields is forced to share the CPU. Without this the
+  // self-booted kernel would be cooperative-only — one runaway task would hang Adam forever, which is
+  // not a scheduler TempleOS's real workload could run on.
+  RVPreemptReal(400000);
 
-  // Schedule: Adam yields until its child has run and exited. The kernel's Yield() skips the killed
-  // child on the next lap, so this loop ends once the boot task has set TASKf_KILL_TASK.
-  while (!(t->task_flags & (1<<TASKf_KILL_TASK)))
+  Print("RVKMain: spawning Adam's tasks via the kernel's own Spawn()...\n");
+  CTask *t =RVKSpawn(&RVBootTask, "Boot Task",  adam);   // yields + exits
+  CTask *t2=RVKSpawn(&RVBootTask2,"Spin Task",  adam);   // never yields -> only preemption runs the rest
+
+  // Schedule: Adam yields until BOTH children have run and exited. The kernel's Yield() skips a killed
+  // child on the next lap; the spin task advances only in the slices the timer preempts it out of.
+  while (!(t->task_flags & (1<<TASKf_KILL_TASK)) || !(t2->task_flags & (1<<TASKf_KILL_TASK)))
     Yield();
-  Print("RVKMain: boot task finished; Adam is scheduling.\n");
+  Print("RVKMain: tasks finished; Adam is scheduling (spin task preempted over %d iterations).\n",
+	rv_boot_spins);
 }
