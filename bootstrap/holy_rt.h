@@ -681,7 +681,69 @@ static HRT_I64 HolyYield(void) {
     nxt = *(char **)(nxt + HOLY_CTASK_NEXT);
   if (nxt == cur) return 0;
   *holy_fs_slot = nxt;                                /* Fs = next task */
+  /* When Yield is reached from inside the timer ISR (mstatus.MIE cleared on trap entry), the task we
+   * switch to must run with interrupts ENABLED or it can never be preempted; re-enable them here. */
+  __asm__ volatile("csrs mstatus, %0" :: "r"((HRT_I64)(1<<3)));
   HolyRVCtxSw(cur + HOLY_CTASK_RSP, nxt + HOLY_CTASK_RSP);
+  return 0;
+}
+
+/* --- Real-CTask timer preemption --------------------------------------------------------------- */
+__attribute__((used)) static void HolyTimerReArm(void) {
+  volatile HRT_I64 *mtime=(volatile HRT_I64*)0x0200BFF8, *mtimecmp=(volatile HRT_I64*)0x02004000;
+  *mtimecmp = *mtime + holy_timer_interval;
+}
+__attribute__((naked, aligned(4))) static void HolyRealPreemptVector(void) {
+  __asm__ volatile(
+    "addi sp,sp,-144\n"
+    "sd ra,0(sp)\n"
+    "sd t0,8(sp)\n"
+    "sd t1,16(sp)\n"
+    "sd t2,24(sp)\n"
+    "sd a0,32(sp)\n"
+    "sd a1,40(sp)\n"
+    "sd a2,48(sp)\n"
+    "sd a3,56(sp)\n"
+    "sd a4,64(sp)\n"
+    "sd a5,72(sp)\n"
+    "sd a6,80(sp)\n"
+    "sd a7,88(sp)\n"
+    "sd t3,96(sp)\n"
+    "sd t4,104(sp)\n"
+    "sd t5,112(sp)\n"
+    "sd t6,120(sp)\n"
+    "csrr t0, mepc\n" "sd t0,128(sp)\n"
+    "csrr t0, mstatus\n" "sd t0,136(sp)\n"
+    "call HolyTimerReArm\n"
+    "call HolyYield\n"
+    "ld t0,136(sp)\n" "csrw mstatus, t0\n"
+    "ld t0,128(sp)\n" "csrw mepc, t0\n"
+    "ld ra,0(sp)\n"
+    "ld t0,8(sp)\n"
+    "ld t1,16(sp)\n"
+    "ld t2,24(sp)\n"
+    "ld a0,32(sp)\n"
+    "ld a1,40(sp)\n"
+    "ld a2,48(sp)\n"
+    "ld a3,56(sp)\n"
+    "ld a4,64(sp)\n"
+    "ld a5,72(sp)\n"
+    "ld a6,80(sp)\n"
+    "ld a7,88(sp)\n"
+    "ld t3,96(sp)\n"
+    "ld t4,104(sp)\n"
+    "ld t5,112(sp)\n"
+    "ld t6,120(sp)\n"
+    "addi sp,sp,144\n" "mret\n"
+  );
+}
+static HRT_I64 HolyRVPreemptReal(HRT_I64 interval) {
+  holy_timer_interval = interval;
+  __asm__ volatile("csrw mtvec, %0" :: "r"(&HolyRealPreemptVector));
+  __asm__ volatile("csrs mstatus, %0" :: "r"((HRT_I64)(1<<3)));
+  volatile HRT_I64 *mtime=(volatile HRT_I64*)0x0200BFF8, *mtimecmp=(volatile HRT_I64*)0x02004000;
+  *mtimecmp = *mtime + interval;
+  __asm__ volatile("csrs mie, %0" :: "r"((HRT_I64)(1<<7)));
   return 0;
 }
 static HRT_I64 HolyTaskEndNow(void) { rt_puts("[TaskEndNow]\n"); for (;;) __asm__ volatile("wfi"); }
