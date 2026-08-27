@@ -1,7 +1,7 @@
 // A small interactive shell on RISC-V that ties the whole OS stack together: it reads command
 // lines over the UART via the receive INTERRUPT, runs a preemptively-scheduled background clock
 // task the whole time, and stores files on the virtio-blk device through the simple filesystem.
-// Commands: ls | cat <f> | write <f> <text> | uptime | help | q. All in HolyC over the runtime.
+// Commands: ls | cat <f> | write <f> <text> | rm <f> | uptime | help | q. All in HolyC over the runtime.
 #include "/Kernel/Kernel_RV.PRJ"
 class FSEntry { U8 name[24]; U32 start_blk; U32 size; };
 class FSSuper { U32 magic, count, next_free, pad; FSEntry ent[15]; };
@@ -26,6 +26,14 @@ I64 FSRead(U8 *name, U8 *buf){
 }
 U0 FSList(){ FSSuper *s=CAlloc(512,NULL); RVBlkRead(0,s); I64 i; Print("%d file(s):\n", s->count);
   for (i=0;i<s->count;i++) Print("  %s  %d bytes\n", s->ent[i].name, s->ent[i].size); }
+I64 FSDelete(U8 *name){
+  FSSuper *s=CAlloc(512,NULL); RVBlkRead(0,s); I64 i;
+  for (i=0;i<s->count;i++) if (StrCmp(s->ent[i].name,name)==0){
+    I64 j; for (j=i;j<s->count-1;j++) MemCpy(&s->ent[j],&s->ent[j+1],sizeof(FSEntry));  // compact directory
+    s->count--; RVBlkWrite(0,s); return 0;
+  }
+  return -1;
+}
 
 I64 ticks_bg=0;
 U0 clock_task(){ while (TRUE){ ticks_bg++; I64 s=0; while(s<40000)s++; } }
@@ -51,14 +59,14 @@ I64 main(){
   RVPreemptInit(300000);
   RVPreemptSpawn(&clock_task,(bgstk+16384-16)&(~15));
   RVUartIrqInit();
-  Print("RISC-V/HolyC shell. commands: ls | cat <f> | write <f> <text> | uptime | help | q\n");
+  Print("RISC-V/HolyC shell. commands: ls | cat <f> | write <f> <text> | rm <f> | uptime | help | q\n");
   U8 line[128], *buf=CAlloc(2048,NULL);
   while (TRUE){
     Print("$ ");
     ReadLine(line,128);
     if (line[0]==0) continue;
     if (StrCmp(line,"q")==0){ Print("bye\n"); break; }
-    if (StrCmp(line,"help")==0){ Print("ls, cat <f>, write <f> <text>, uptime, help, q\n"); continue; }
+    if (StrCmp(line,"help")==0){ Print("ls, cat <f>, write <f> <text>, rm <f>, uptime, help, q\n"); continue; }
     if (StrCmp(line,"ls")==0){ FSList(); continue; }
     if (StrCmp(line,"uptime")==0){ Print("background ticks=%d\n", ticks_bg); continue; }
     if (StrNCmp(line,"cat ",4)==0){ I64 n=FSRead(line+4,buf); if (n<0) Print("no such file\n"); else { buf[n]=0; Print("%s\n", buf); } continue; }
@@ -69,6 +77,7 @@ I64 main(){
       else Print("usage: write <f> <text>\n");
       continue;
     }
+    if (StrNCmp(line,"rm ",3)==0){ if (FSDelete(line+3)==0) Print("removed %s\n", line+3); else Print("no such file\n"); continue; }
     Print("unknown command: %s\n", line);
   }
   return 0;

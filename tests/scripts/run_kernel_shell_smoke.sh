@@ -19,8 +19,8 @@ T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then echo "FAIL shell smoke — compile" >&2; exit 1; fi
 ( cd "$T" && "$OBJCOPY" -I binary -O elf64-littleriscv blob.bin blob_in.o && "$LD" -T "$HARNESS/link_exec.ld" -nostdlib --no-warn-mismatch -o s.elf "$OUTDIR/crt0.o" "$OUTDIR/oracle_out.o" blob_in.o ) >/dev/null 2>&1 || { echo "FAIL shell smoke — link" >&2; exit 1; }
 python3 -c "open('$T/disk.img','wb').write(b'\x00'*(512*128))"
-out="$( { printf 'write greet hello-riscv-world\n'; sleep 0.4; printf 'ls\n'; sleep 0.4; printf 'cat greet\n'; sleep 0.4; printf 'uptime\n'; sleep 0.4; printf 'q\n'; } | $TIMEOUT 25 "$QEMU" -M virt -bios none -kernel "$T/s.elf" -nographic -drive file=$T/disk.img,format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0 2>&1 | tr -d '\r')"
-if printf '%s\n' "$out" | grep -qF "wrote greet" && printf '%s\n' "$out" | grep -qF "hello-riscv-world" && printf '%s\n' "$out" | grep -qE "background ticks=[1-9]"; then
+out="$( { printf 'write greet hello-riscv-world\n'; sleep 0.4; printf 'write tmp junk\n'; sleep 0.4; printf 'rm tmp\n'; sleep 0.4; printf 'ls\n'; sleep 0.4; printf 'cat greet\n'; sleep 0.4; printf 'uptime\n'; sleep 0.4; printf 'q\n'; } | $TIMEOUT 25 "$QEMU" -M virt -bios none -kernel "$T/s.elf" -nographic -drive file=$T/disk.img,format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0 2>&1 | tr -d '\r')"
+if printf '%s\n' "$out" | grep -qF "wrote greet" && printf '%s\n' "$out" | grep -qF "removed tmp" && printf '%s\n' "$out" | grep -qF "hello-riscv-world" && printf '%s\n' "$out" | grep -qE "background ticks=[1-9]"; then
   echo "Kernel-shell smoke: OK"; exit 0
 fi
 echo "FAIL shell smoke — shell session did not behave as expected:" >&2
