@@ -592,6 +592,48 @@ static HRT_I64 HolyBlkOp(HRT_I64 sector, void *buf, int write) {
 static HRT_I64 HolyRVBlkRead(HRT_I64 sector, void *buf)  { return HolyBlkOp(sector, buf, 0); }
 static HRT_I64 HolyRVBlkWrite(HRT_I64 sector, void *buf) { return HolyBlkOp(sector, buf, 1); }
 
+/* --- Authentic TempleOS-style context switch --------------------------------------------------
+ * Save the RISC-V callee-saved registers (s0..s11) + ra onto the CURRENT task's stack, store the new
+ * sp into *from_rsp_slot (that is `&CTask.rsp`), then load *to_rsp_slot into sp and pop — resuming the
+ * target task where it last yielded, or, for a freshly spawned task whose stack was pre-loaded with a
+ * {zeroed s0..s11, ra=entry} frame, jumping straight to its entry. Mirrors how TempleOS saves the
+ * register frame on the task's own stack with CTask.rsp pointing at it (Sched.HC TASK_CONTEXT_*). */
+__attribute__((naked)) static HRT_I64 HolyRVCtxSw(void *from_rsp_slot, void *to_rsp_slot) {
+  __asm__ volatile(
+    "addi sp,sp,-104\n"
+    "sd s0,0(sp)\n"
+    "sd s1,8(sp)\n"
+    "sd s2,16(sp)\n"
+    "sd s3,24(sp)\n"
+    "sd s4,32(sp)\n"
+    "sd s5,40(sp)\n"
+    "sd s6,48(sp)\n"
+    "sd s7,56(sp)\n"
+    "sd s8,64(sp)\n"
+    "sd s9,72(sp)\n"
+    "sd s10,80(sp)\n"
+    "sd s11,88(sp)\n"
+    "sd ra,96(sp)\n"
+    "sd sp,0(a0)\n"
+    "ld sp,0(a1)\n"
+    "ld s0,0(sp)\n"
+    "ld s1,8(sp)\n"
+    "ld s2,16(sp)\n"
+    "ld s3,24(sp)\n"
+    "ld s4,32(sp)\n"
+    "ld s5,40(sp)\n"
+    "ld s6,48(sp)\n"
+    "ld s7,56(sp)\n"
+    "ld s8,64(sp)\n"
+    "ld s9,72(sp)\n"
+    "ld s10,80(sp)\n"
+    "ld s11,88(sp)\n"
+    "ld ra,96(sp)\n"
+    "addi sp,sp,104\n"
+    "ret\n"
+  );
+}
+
 /* Critical section for the preemptive scheduler: disable/restore the machine interrupt-enable so a
  * read-modify-write on shared state can't be split by a timer preemption. Nesting-safe — Enter
  * returns the previous MIE state, Leave takes it back. Single-core; not an SMP lock. */
