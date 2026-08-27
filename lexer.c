@@ -333,6 +333,16 @@ static void HandlePreprocessor(Compiler *cc) {
   }
   directive[i] = '\0';
   
+  // While skipping a false conditional block, only the conditional directives manage the skip/nesting
+  // state; every other directive (#define, #include, #undef, …) must be ignored, not executed. (Fixes
+  // `#ifndef X` guards: the guarded #define was being run even when X was already defined.)
+  if (cc->preprocessor_skip &&
+      strcmp(directive, "ifdef") && strcmp(directive, "ifndef") && strcmp(directive, "if") &&
+      strcmp(directive, "ifjit") && strcmp(directive, "ifaot") && strcmp(directive, "else") &&
+      strcmp(directive, "elif") && strcmp(directive, "endif")) {
+    goto skip_line;
+  }
+  
   if (strcmp(directive, "define") == 0) {
     // Parse #define NAME VALUE or #define NAME(params) VALUE
 

@@ -3410,7 +3410,9 @@ public class CCPU //The Gs segment reg points to current CCPU.
 #help_index "Memory/Page Tables"
 #define MEM_MIN_MEG		512 //512 Meg minimum.
 
-#define SYS_FIXED_AREA		0x100000
+#ifndef SYS_FIXED_AREA
+#define SYS_FIXED_AREA		0x100000	//RISC-V port overrides this (x86 phys addr) to RAM
+#endif
 #define SYS_16MEG_AREA_LIMIT	0x1000000
 public class CSysFixedArea
 {
