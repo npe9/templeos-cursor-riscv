@@ -53,3 +53,4 @@ tests/exec/cases/e_kernel_queue.hc	0000000000000007
 tests/exec/cases/e_struct_copy.hc	000000000000000f
 tests/exec/cases/e_global_2d_array.hc	00000000000003ff
 tests/exec/cases/e_preproc_ifndef.hc	000000000004a3cb
+tests/exec/cases/e_deref_array_store.hc	0000000099112233

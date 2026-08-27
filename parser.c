@@ -1605,6 +1605,12 @@ static bool ParseUnary(Compiler *cc) {
     U8 depth = 0, pointee = 0;
     if (cc->last_var_symbol && cc->last_var_symbol->pointed_to_type != 0) {
       pointee = cc->last_var_symbol->pointed_to_type; depth = cc->last_var_symbol->ptr_depth;
+    } else if (cc->last_var_symbol && cc->last_var_symbol->is_array) {
+      // `*arr` on a plain array: the array decays to element*, so the deref loads/stores ONE
+      // element, whose width is the element type — not RT_I64. Without this, deref_type stayed
+      // RT_I64 and `*arr = v` emitted an 8-byte store that zeroed the next 7 bytes of the array
+      // (e.g. DirNameAbs's `U8 drv[3]; *drv=Drv2Let;` lost the ':' it put in drv[1], hanging Load).
+      pointee = cc->last_var_symbol->data_type; depth = 1;
     } else if (!cc->last_var_symbol && cc->last_global_var && cc->last_global_var->pointed_to_type) {
       pointee = cc->last_global_var->pointed_to_type; depth = cc->last_global_var->ptr_depth;
     } else if (!cc->last_var_symbol && !cc->last_global_var && cc->last_member && cc->last_member->pointed_to_type) {
