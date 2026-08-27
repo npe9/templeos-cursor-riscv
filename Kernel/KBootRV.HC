@@ -187,7 +187,6 @@ U0 RVKMain()
   // allocates, because the real ACAlloc/CAlloc used during heap setup allocate against adam_task.
   CTask *adam=0x86900000;
   MemSet(adam,0,sizeof(CTask));
-  adam->addr=adam; adam->next_task=adam; adam->last_task=adam;
   Fs=adam; adam_task=adam;
 
   // Bring up the linear arena the RISC-V MAlloc carves from, plus the kernel's own block pool and
@@ -198,6 +197,14 @@ U0 RVKMain()
   CHeapCtrl *ah=HeapCtrlInit(NULL,NULL,bp);
   adam->code_heap=ah; adam->data_heap=ah;
   MemSet(SYS_FIXED_AREA,0,8192);        // TaskInit reads the init FPU state from here (see PRJ note)
+
+  // Create Adam through the kernel's OWN TaskInit — the very call KStart64.HC makes for adam. It
+  // fills in task_num, rflags, the code/data-heap free-list queues, the FPU save area, the hash
+  // table, a real stack (setting rsp), the window fields, and seeds the self-looped next_task/
+  // last_task ring. Adam's rsp is re-established at the first context switch away from RVKMain, so
+  // the fresh stack TaskInit allocates is only a placeholder here. Everything TaskInit touches is
+  // the kernel's own code; only MAlloc and SYS_FIXED_AREA underneath it are RISC-V ports.
+  TaskInit(adam,0);
 
   // Per-CPU block (Gs): the scheduler reads Gs->seth_task. KMain sets this up via Core0Init.
   CCPU *gs=0x86A00000; MemSet(gs,0,sizeof(CCPU)); gs->seth_task=adam; adam->gs=gs; Gs=gs;
