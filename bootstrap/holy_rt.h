@@ -662,7 +662,28 @@ __attribute__((naked)) static HRT_I64 HolyRVTaskSwitch(void *save, void *load) {
     "ret\n"
   );
 }
-static HRT_I64 HolyYield(void) { return 0; }   /* single task until the RISC-V scheduler (phase 2) */
+/* Authentic kernel Yield: walk Fs->next_task (the real CTask list), skip TASKf_KILL_TASK tasks, and
+ * context-switch on the real CTask.rsp — the same shape as Sched.HC _YIELD. The runtime learns where
+ * Fs lives (a CTask** slot) and the CTask field offsets via RVYieldInit; before that it is a no-op so
+ * single-task code runs unchanged. */
+static HRT_I64 HolyRVCtxSw(void *from_rsp_slot, void *to_rsp_slot);
+static void **holy_fs_slot = 0;              /* &Fs : points at the current-CTask pointer */
+#define HOLY_CTASK_NEXT   128                /* offset(CTask.next_task) */
+#define HOLY_CTASK_RSP    296                /* offset(CTask.rsp) */
+#define HOLY_CTASK_FLAGS  24                 /* offset(CTask.task_flags) */
+#define HOLY_TASKf_KILL   1                  /* TASKf_KILL_TASK bit */
+static HRT_I64 HolyRVYieldInit(void *fs_slot) { holy_fs_slot = (void **)fs_slot; return 0; }
+static HRT_I64 HolyYield(void) {
+  if (!holy_fs_slot || !*holy_fs_slot) return 0;      /* not wired yet -> single task */
+  char *cur = (char *)*holy_fs_slot;
+  char *nxt = *(char **)(cur + HOLY_CTASK_NEXT);
+  while (nxt != cur && (*(HRT_I64 *)(nxt + HOLY_CTASK_FLAGS) & (1 << HOLY_TASKf_KILL)))
+    nxt = *(char **)(nxt + HOLY_CTASK_NEXT);
+  if (nxt == cur) return 0;
+  *holy_fs_slot = nxt;                                /* Fs = next task */
+  HolyRVCtxSw(cur + HOLY_CTASK_RSP, nxt + HOLY_CTASK_RSP);
+  return 0;
+}
 static HRT_I64 HolyTaskEndNow(void) { rt_puts("[TaskEndNow]\n"); for (;;) __asm__ volatile("wfi"); }
 /* D: hex dump `n` bytes at `p`, 16 per line with ASCII */
 static HRT_I64 HolyD(HRT_U8 *p, HRT_I64 n) {

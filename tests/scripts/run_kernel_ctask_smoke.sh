@@ -10,7 +10,7 @@ HARNESS="$ROOT/tests/exec/harness"
 OUTDIR="$ROOT/build/exec"
 COMPILER="$ROOT/holyc-riscv"
 SRC="$ROOT/tests/exec/cases/kernel_ctask_demo.hc"
-EXPECT="all tasks done (via real CTask Yield)"
+EXPECT="all done via the kernel's own Yield()"
 EXPECT2="B0 A0"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
