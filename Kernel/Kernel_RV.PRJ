@@ -12,6 +12,13 @@
   kernel_cfg=KCfgNew;
 };
 
+// SYS_FIXED_AREA is an x86 fixed physical address (0x100000) that is unmapped on RISC-V; TaskInit
+// reads the initial FPU state out of it, so on the QEMU virt machine it must name real RAM. Default
+// it to a high RAM page here (guarded, so a program may still override it before the include). RVKMain
+// zeroes that page at boot. See Kernel/KernelA.HH where the x86 default lives behind the same #ifndef.
+#ifndef SYS_FIXED_AREA
+#define SYS_FIXED_AREA 0x87000000
+#endif
 #include "KernelA.HH"
 #include "KStartRV"   // RISC-V stand-in for KStart16/32/64, KInts, MultiProc, FunSeg (needs KernelA.HH types)
 #include "KMathA"

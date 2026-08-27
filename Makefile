@@ -15,7 +15,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke coverage templeos-riscv templeos-smoke
+.PHONY: all clean test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke kernel-selfboot-smoke coverage templeos-riscv templeos-smoke
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -84,6 +84,7 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) kernel-spawn-smoke
 	@$(MAKE) kernel-ctask-preempt-smoke
 	@$(MAKE) kernel-ctask-sleep-smoke
+	@$(MAKE) kernel-selfboot-smoke
 	@$(MAKE) repl-smoke
 
 # Compile a program that #includes the real kernel, formats with its StrPrintJoin, and prints
@@ -182,6 +183,12 @@ kernel-ctask-preempt-smoke:
 kernel-ctask-sleep-smoke:
 	@chmod +x tests/scripts/run_kernel_ctask_sleep_smoke.sh
 	@tests/scripts/run_kernel_ctask_sleep_smoke.sh
+
+# The kernel booting itself: RVKMain() (Kernel/KBootRV.HC) sets up the heap, creates Adam, and
+# Spawns + schedules the first task with the kernel's own code. The demo's main() is only RVKMain().
+kernel-selfboot-smoke:
+	@chmod +x tests/scripts/run_kernel_selfboot_smoke.sh
+	@tests/scripts/run_kernel_selfboot_smoke.sh
 
 # ShellCheck on the same five scripts as the CI shellcheck job (requires shellcheck on PATH).
 lint-sh:

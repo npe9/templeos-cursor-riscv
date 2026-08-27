@@ -119,3 +119,109 @@ I64 RVSpawn(U0 (*fn)())
   rv_sched_n++;
   return slot;
 }
+
+// --- RISC-V port of the x86 _MALLOC/_FREE primitives (Kernel/Mem/MAllocFree.HC) -----------------
+// MAlloc and Free are the only two allocator functions the kernel writes in x86 assembly; every
+// layer above them — CAlloc, ACAlloc, MAllocAligned, MSize, HeapCtrlInit, the block pool — is the
+// kernel's own HolyC and runs on RISC-V unchanged. This is their stand-in: a first-fit free list
+// over a linear arena that carves the exact CMemUsed header the kernel expects (hc + size + start),
+// so the real CAlloc/MAllocAligned/TaskInit/Spawn allocate against it. the_heap must be set up (by
+// RVKMain, or a demo that drives the task subsystem directly) before the first allocation.
+CHeapCtrl *the_heap = 0x82000000;
+U8 *heap_next = 0x82000400, *heap_end = 0x86000000;
+U8 *MAlloc(I64 size, CTask *mem_task=NULL)
+{
+  I64 need=(size+offset(CMemUsed.start)+15)&(~15);
+  CMemUnused *f=the_heap->malloc_free_lst,*prev=NULL;
+  while (f && f->size<need) { prev=f; f=f->next; }
+  U8 *chunk; I64 usize;
+  if (f) { if (prev) prev->next=f->next; else the_heap->malloc_free_lst=f->next; chunk=f; usize=f->size; }
+  else   { if (heap_next+need>heap_end) return NULL; chunk=heap_next; heap_next+=need; usize=need; }
+  CMemUsed *u=chunk; u->hc=the_heap; u->size=usize; the_heap->used_u8s+=usize;
+  return chunk+offset(CMemUsed.start);
+}
+U0 Free(U8 *ptr)
+{
+  if (!ptr) return;
+  CMemUsed *u=ptr-offset(CMemUsed.start);
+  CMemUnused *fu=u; fu->size=u->size; fu->next=the_heap->malloc_free_lst; the_heap->malloc_free_lst=fu;
+}
+// MSize / MSize2 are the other two x86-asm allocator primitives (_MSIZE / _MSIZE2 in MAllocFree.HC);
+// their RISC-V port must read the same CMemUsed header this MAlloc writes, or the kernel's MSize-using
+// code (and CAlloc, which zeroes MSize() bytes) sees garbage sizes. Mirrors _MSIZE exactly: the chunk
+// size lives in CMemUsed.size; MAllocAligned marks aligned chunks with a NEGATIVE size that points back
+// to the real header, so follow it. MSize returns the usable size (chunk minus header); MSize2 the
+// internal size (whole chunk).
+I64 MSize2(U8 *src)
+{
+  if (!src) return 0;
+  CMemUsed *u=src-offset(CMemUsed.start);
+  I64 sz=u->size;
+  if (sz<0) { u=(src+sz)-offset(CMemUsed.start); sz=u->size; }
+  return sz;
+}
+I64 MSize(U8 *src)
+{
+  if (!src) return 0;
+  return MSize2(src)-offset(CMemUsed.start);
+}
+
+// --- RVKMain: the RISC-V analogue of KMain() (bucket 1: tables + Adam + first Spawn) ------------
+// A from-scratch boot: the kernel brings ITSELF up and schedules its first task, instead of a demo
+// hand-wiring adam. Only the portable "bucket 1" of KMain() runs here — set up the heap, create
+// Adam, and Spawn the first task, then schedule it with the kernel's own Yield(). The display,
+// block-device, file-system, compiler and StartOS buckets, and the x86 timer/interrupt/MP buckets,
+// are named in the //x86: and //phase 3: comments below the way Kernel_RV.PRJ comments out KInts/
+// MultiProc/FunSeg — the gap is auditable, not hidden. Uses the proven Spawn()+RISC-V frame path.
+U0 RVBootTask()
+{//The first task Adam spawns: prints a boot banner and exits. Its line proves the kernel scheduled a
+ //real CTask that its OWN Spawn() created — i.e. it booted itself, not that a demo set adam up.
+  Print("TempleOS/RISC-V: Adam booted and scheduled its first task.\n");
+  Bts(&Fs->task_flags,TASKf_KILL_TASK);
+  Yield();
+}
+
+U0 RVKMain()
+{
+  // KMain()'s first act is adam_task=Fs. Adam is the root CTask; establish it and Fs before anything
+  // allocates, because the real ACAlloc/CAlloc used during heap setup allocate against adam_task.
+  CTask *adam=0x86900000;
+  MemSet(adam,0,sizeof(CTask));
+  adam->addr=adam; adam->next_task=adam; adam->last_task=adam;
+  Fs=adam; adam_task=adam;
+
+  // Bring up the linear arena the RISC-V MAlloc carves from, plus the kernel's own block pool and
+  // heap-control (BlkPoolInit/HeapCtrlInit run unchanged). KMain does this via BlkPoolsInit.
+  MemSet(the_heap,0,sizeof(CHeapCtrl));
+  heap_next=0x82000400; heap_end=0x86000000;
+  CBlkPool *bp=0x86800000; BlkPoolInit(bp,0x2000); sys_code_bp=bp;
+  CHeapCtrl *ah=HeapCtrlInit(NULL,NULL,bp);
+  adam->code_heap=ah; adam->data_heap=ah;
+  MemSet(SYS_FIXED_AREA,0,8192);        // TaskInit reads the init FPU state from here (see PRJ note)
+
+  // Per-CPU block (Gs): the scheduler reads Gs->seth_task. KMain sets this up via Core0Init.
+  CCPU *gs=0x86A00000; MemSet(gs,0,sizeof(CCPU)); gs->seth_task=adam; adam->gs=gs; Gs=gs;
+
+  RVYieldInit(&Fs);            // wire the kernel's Yield() to &Fs
+  RVJiffiesInit(10000);        // 1 ms jiffy on QEMU virt's 10 MHz mtime (a platform fact, not a knob)
+  RVKernelInit();              // portable tables + UART console (needs Fs valid and the heap up)
+
+  // x86: SysGlblsInit / Mem32DevInit / UncachedAliasAlloc / LoadKernel / SysGrInit — VGA display + kernel image relocation.
+  // x86: TimersInit / IntsInit / IntInit1 / IntInit2 / SetRFlags — the PIT/HPET timers and the 8259/APIC interrupt controllers.
+  // phase 3: BlkDevsInitAll / DskChg(':') / HomeSet — bring up block devices and mount the file system.
+  // phase 3: Load("/Compiler/Compiler") / ExeFile("StartOS") / SrvTaskCont — load the compiler and enter the Adam server loop.
+
+  Print("RVKMain: spawning Adam's first task via the kernel's own Spawn()...\n");
+  CTask *t=Spawn(&RVBootTask,NULL,"Boot Task",-1,adam,0,0);
+  // RISC-V initial-frame fixup (as in the Spawn path): Spawn seeds an x86 return frame; re-seed the
+  // on-stack callee-saved switch frame {s0..s11=0, ra=entry} that RVCtxSw pops on the first switch.
+  I64 top=t->rsp+16; I64 *frame=(top-104)&(~15); I64 i;
+  for (i=0;i<12;i++) frame[i]=0; frame[12]=t->rip; t->rsp=frame;
+  t->next_task=adam->next_task; t->last_task=adam; adam->next_task->last_task=t; adam->next_task=t;
+
+  // Schedule: Adam yields until its child has run and exited. The kernel's Yield() skips the killed
+  // child on the next lap, so this loop ends once the boot task has set TASKf_KILL_TASK.
+  while (!(t->task_flags & (1<<TASKf_KILL_TASK)))
+    Yield();
+  Print("RVKMain: boot task finished; Adam is scheduling.\n");
+}
