@@ -556,3 +556,36 @@ GetTSC::
 	rdtime	a0
 	ret
 }
+// CPU status/introspection -> RISC-V CSR equivalents (replacing x86 RFLAGS/CPUID/INVLPG).
+// GetRFlags/SetRFlags read/write mstatus (the M-mode status register, RISC-V's flags analog).
+asm {
+GetRFlags::
+	csrr	a0,0x300
+	ret
+}
+asm {
+SetRFlags::
+	csrw	0x300,a0
+	ret
+}
+// InvlPg(a): flush the TLB entry for address a (sfence.vma). Legal in M-mode; a no-op with no MMU.
+asm {
+InvlPg::
+	sfencevma	a0
+	ret
+}
+// CPUId(func,res): x86 CPUID has no RISC-V analog; fill the 32-byte res buffer with the RISC-V
+// identity CSRs mvendorid/marchid/mimpid/misa (func in a0 is ignored, as in the runtime stub).
+asm {
+CPUId::
+	csrr	t0,0xF11
+	sd	t0,0(a1)
+	csrr	t0,0xF12
+	sd	t0,8(a1)
+	csrr	t0,0xF13
+	sd	t0,16(a1)
+	csrr	t0,0x301
+	sd	t0,24(a1)
+	li	a0,0
+	ret
+}

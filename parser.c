@@ -3428,6 +3428,17 @@ static bool TryAssembleRiscV(Compiler *cc) {
     if (!strcmp(w,"rdtime")) {                                   // rd  (csrrs rd, time, x0)
       I->rd=RvRegTok(cc); if (I->rd<0) return false; nins++; continue;
     }
+    if (!strcmp(w,"csrr")) {                                     // rd, csr  (csrrs rd, csr, x0)
+      I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); if(!RvImmTok(cc,&I->imm)) return false;
+      if (I->rd<0) return false; nins++; continue;
+    }
+    if (!strcmp(w,"csrw")) {                                     // csr, rs  (csrrw x0, csr, rs)
+      if(!RvImmTok(cc,&I->imm)) return false; if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc);
+      if (I->rs1<0) return false; nins++; continue;
+    }
+    if (!strcmp(w,"sfencevma")) {                                // rs1  (sfence.vma rs1, x0)
+      I->rs1=RvRegTok(cc); if (I->rs1<0) return false; nins++; continue;
+    }
     if (!strcmp(w,"fsqrtd")) {                                   // fd, fs  (both float)
       I->rd=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvFRegTok(cc);
       if (I->rd<0||I->rs1<0) return false; nins++; continue;
@@ -3530,6 +3541,9 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"fcvtld_rmm")) word = 0xC2000053u | (I->rd<<7)  | (4u<<12) | (I->rs1<<15) | (2u<<20);
     else if (!strcmp(m,"fcvtdl"))     word = 0xD2000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (2u<<20);
     else if (!strcmp(m,"rdtime"))     word = 0xC0102073u | (I->rd<<7);
+    else if (!strcmp(m,"csrr"))       word = 0x00002073u | (I->rd<<7)  | (((U32)I->imm & 0xFFF)<<20);
+    else if (!strcmp(m,"csrw"))       word = 0x00001073u | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
+    else if (!strcmp(m,"sfencevma"))  word = 0x12000073u | (I->rs1<<15);
     ICAdd(cc, IC_RAW_RV, (I64)word, RT_I64);
   }
   #undef RV_LBL
