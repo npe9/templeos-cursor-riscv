@@ -19,6 +19,9 @@
 #ifndef SYS_FIXED_AREA
 #define SYS_FIXED_AREA 0x87000000
 #endif
+// Marks the QEMU virt RISC-V build: selects MMIO device paths over x86 port I/O (e.g. KDate's
+// NowDateTimeStruct reads the Goldfish RTC at 0x101000 instead of the CMOS ports 0x70/0x71).
+#define RISCV_VIRT 1
 #include "KernelA.HH"
 #include "KStartRV"   // RISC-V stand-in for KStart16/32/64, KInts, MultiProc, FunSeg (needs KernelA.HH types)
 #include "KMathA"

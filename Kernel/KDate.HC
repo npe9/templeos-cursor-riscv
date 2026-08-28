@@ -132,6 +132,28 @@ I64 Bcd2Bin(U64 b)
 
 U0 NowDateTimeStruct(CDateStruct *_ds)
 {
+#ifdef RISCV_VIRT
+  // RISC-V: read the QEMU virt Goldfish RTC (MMIO at 0x101000) instead of the x86 CMOS ports
+  // 0x70/0x71 (which don't exist here). TIME_LOW@0 latches TIME_HIGH@4 -> ns since the Unix epoch.
+  // Date fields come from the tested Date2Struct; h/m/s are filled directly from the seconds-of-day.
+  U32 *rtc=0x101000;
+  U64 lo,hi,ns,secs;
+  I64 days,sod;
+  CDate cdt;
+  MemSet(_ds,0,sizeof(CDateStruct));
+  lo=InU32(&rtc[0]);
+  hi=InU32(&rtc[1]);
+  ns=lo|(hi<<32);
+  secs=ns/1000000000;
+  days=secs/86400;
+  sod=secs%86400;
+  cdt.date=YearStartDate(1970)+days;
+  cdt.time=0;
+  Date2Struct(_ds,cdt);          // year / mon / day_of_mon / day_of_week (time = midnight)
+  _ds->hour=sod/3600;
+  _ds->min=sod%3600/60;
+  _ds->sec=sod%60;
+#else
   I64 i;
   U8 *b=_ds;
   Bool is_bcd;
@@ -186,6 +208,7 @@ U0 NowDateTimeStruct(CDateStruct *_ds)
   if (_ds->hour>23)	_ds->hour=23;
   if (_ds->min>59)	_ds->min=59;
   if (_ds->sec>59)	_ds->sec=59;
+#endif
 }
 
 CDate Now()

@@ -589,3 +589,136 @@ CPUId::
 	li	a0,0
 	ret
 }
+// Port I/O -> MMIO. RISC-V has no separate I/O port space; device registers are memory-mapped, so
+// In*/Out* become plain loads/stores at the (address) operand and Rep* are count loops. The compiled
+// x86 drivers (ATA/VGA/8259 PIC/i8042/CMOS) address legacy ports below 64KB, which map to NO device
+// on QEMU virt, so accesses in that range are inert (a load returns 0, a store is dropped) -- the
+// correct RISC-V behavior for an absent device -- while real MMIO addresses (Goldfish RTC 0x101000,
+// etc.) do genuine load/store. Threshold 0x10000 = 1<<16 (x86 ports max at 0xFFFF; virt MMIO >=0x101000).
+asm {
+InU8::
+	li	t0,1
+	slli	t0,t0,16
+	bltu	a0,t0,inu8_none
+	lbu	a0,0(a0)
+	ret
+inu8_none:
+	li	a0,0
+	ret
+}
+asm {
+InU16::
+	li	t0,1
+	slli	t0,t0,16
+	bltu	a0,t0,inu16_none
+	lhu	a0,0(a0)
+	ret
+inu16_none:
+	li	a0,0
+	ret
+}
+asm {
+InU32::
+	li	t0,1
+	slli	t0,t0,16
+	bltu	a0,t0,inu32_none
+	lwu	a0,0(a0)
+	ret
+inu32_none:
+	li	a0,0
+	ret
+}
+asm {
+OutU8::
+	li	t0,1
+	slli	t0,t0,16
+	bltu	a0,t0,outu8_none
+	sb	a1,0(a0)
+outu8_none:
+	li	a0,0
+	ret
+}
+asm {
+OutU16::
+	li	t0,1
+	slli	t0,t0,16
+	bltu	a0,t0,outu16_none
+	sh	a1,0(a0)
+outu16_none:
+	li	a0,0
+	ret
+}
+asm {
+OutU32::
+	li	t0,1
+	slli	t0,t0,16
+	bltu	a0,t0,outu32_none
+	sw	a1,0(a0)
+outu32_none:
+	li	a0,0
+	ret
+}
+// RepInU16(buf,cnt,port): read cnt U16s from the MMIO port into buf (port fixed, buf advances);
+// a legacy port (<64KB) zero-fills buf, matching the runtime stub.
+asm {
+RepInU16::
+	li	t1,1
+	slli	t1,t1,16
+	bltu	a2,t1,ri16_zero
+ri16_loop:
+	beq	a1,zero,ri16_done
+	lhu	t0,0(a2)
+	sh	t0,0(a0)
+	addi	a0,a0,2
+	addi	a1,a1,-1
+	j	ri16_loop
+ri16_zero:
+	beq	a1,zero,ri16_done
+	sh	zero,0(a0)
+	addi	a0,a0,2
+	addi	a1,a1,-1
+	j	ri16_zero
+ri16_done:
+	li	a0,0
+	ret
+}
+asm {
+RepInU32::
+	li	t1,1
+	slli	t1,t1,16
+	bltu	a2,t1,ri32_zero
+ri32_loop:
+	beq	a1,zero,ri32_done
+	lwu	t0,0(a2)
+	sw	t0,0(a0)
+	addi	a0,a0,4
+	addi	a1,a1,-1
+	j	ri32_loop
+ri32_zero:
+	beq	a1,zero,ri32_done
+	sw	zero,0(a0)
+	addi	a0,a0,4
+	addi	a1,a1,-1
+	j	ri32_zero
+ri32_done:
+	li	a0,0
+	ret
+}
+// RepOutU32(buf,cnt,port): write cnt U32s from buf to the MMIO port (buf advances, port fixed);
+// a legacy port (<64KB) drops the writes, matching the runtime stub.
+asm {
+RepOutU32::
+	li	t1,1
+	slli	t1,t1,16
+	bltu	a2,t1,ro32_done
+ro32_loop:
+	beq	a1,zero,ro32_done
+	lwu	t0,0(a0)
+	sw	t0,0(a2)
+	addi	a0,a0,4
+	addi	a1,a1,-1
+	j	ro32_loop
+ro32_done:
+	li	a0,0
+	ret
+}
