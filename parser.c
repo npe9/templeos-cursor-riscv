@@ -28,9 +28,9 @@ static I64 CEPostfixCast(Compiler *cc, I64 v);
 
 static U8 ParseType(Compiler *cc);
 
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 // IC GENERATION
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 
 CIntermediateCode *ICNew(Compiler *cc, U8 opcode) {
   (void)cc;
@@ -70,9 +70,9 @@ void ICSetRes(CIntermediateCode *ic, CICType type, I64 reg, I64 disp) {
   ic->res.disp = disp;
 }
 
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 // SYMBOL TABLE
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 
 Symbol *SymbolLookup(Compiler *cc, const char *name) {
   SymTable *st = cc->symtab;
@@ -427,9 +427,9 @@ static bool ParseGlobalFunctionPointerDeclList(Compiler *cc, U8 return_type) {
   return true;
 }
 
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 // LABELS
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 
 CLabel *LabelNew(Compiler *cc, const char *name) {
   CLabel *lb = calloc(1, sizeof(CLabel));
@@ -559,9 +559,9 @@ CLabel *LabelFind(Compiler *cc, const char *name) {
   return NULL;
 }
 
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 // PARSER - EXPRESSIONS
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 
 // Forward declarations for expression parsing
 static bool ParsePrimary(Compiler *cc);
@@ -2581,9 +2581,9 @@ bool ParseExpression(Compiler *cc) {
   return result;
 }
 
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 // PARSER - STATEMENTS
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 
 static bool ParseBlock(Compiler *cc);
 
@@ -3298,6 +3298,169 @@ static bool ParseExpressionStatement(Compiler *cc) {
 }
 
 
+// ----------------------------------------------------------------------------------------------
+// x86 -> RISC-V translation of asm{} functions (integer subset). TempleOS writes its low-level
+// primitives (MemSet, MemCpy, …) as x86 asm functions using the x86 stack calling convention
+// (args at SF_ARGn[RBP]); we translate the opcodes to RISC-V and synthesize a prologue that spills
+// the RISC-V argument registers a0..a7 into the SF_ARG slots so the body finds them. Anything not
+// yet supported makes TryTranslateAsm return false and the caller falls back to skipping the block
+// (the function then resolves to its runtime override by name — the safe baseline).
+// ----------------------------------------------------------------------------------------------
+// x86 GP reg name -> RISC-V reg number. RAX=t0 RCX=t1 RDX=t2 RBX=t3 RSI=t4 RDI=t5 RBP=s1 RSP=sp,
+// R8..R15 -> s2..s9. s1/s2..s9 are callee-saved: the prologue saves the ones the function uses.
+static int AsmX86Reg(const char *n) {
+  static const char *nm[16] = {"RAX","RCX","RDX","RBX","RSI","RDI","RBP","RSP","R8","R9","R10","R11","R12","R13","R14","R15"};
+  static const int   rv[16] = {  5,   6,   7,  28,  29,  30,   9,   2,  18, 19, 20, 21, 22, 23, 24, 25};
+  if (!n) return -1;
+  for (int i = 0; i < 16; i++) if (!strcmp(n, nm[i])) return rv[i];
+  return -1;
+}
+static bool AsmRegSaved(int rv) { return rv == 9 || (rv >= 18 && rv <= 25); }   // s1, s2..s9
+static U32 RvAddi(int rd, int rs, int imm) { return 0x13u | (rd<<7) | (rs<<15) | (((U32)imm & 0xFFF)<<20); }
+static U32 RvLd(int rd, int off, int rs)   { return 0x03u | (rd<<7) | (3u<<12) | (rs<<15) | (((U32)off & 0xFFF)<<20); }
+static U32 RvSd(int rs2, int off, int rs1) { return 0x23u | (((U32)off & 0x1F)<<7) | (3u<<12) | (rs1<<15) | (rs2<<20) | ((((U32)off>>5)&0x7F)<<25); }
+static U32 RvSb(int rs2, int off, int rs1) { return 0x23u | (((U32)off & 0x1F)<<7) | (0u<<12) | (rs1<<15) | (rs2<<20) | ((((U32)off>>5)&0x7F)<<25); }
+static U32 RvMv(int rd, int rs)            { return RvAddi(rd, rs, 0); }
+static U32 RvBeqz(int rs, int off) {   // beq rs,x0,off  (B-type, off in bytes, multiple of 2)
+  return 0x63u | (((U32)(off>>11)&1)<<7) | (((U32)(off>>1)&0xF)<<8) | (0u<<12) | (rs<<15) | (0<<20) |
+         (((U32)(off>>5)&0x3F)<<25) | (((U32)(off>>12)&1)<<31);
+}
+static U32 RvJal(int rd, int off) {    // jal rd,off (J-type)
+  return 0x6Fu | (rd<<7) | (((U32)(off>>12)&0xFF)<<12) | (((U32)(off>>11)&1)<<20) |
+         (((U32)(off>>1)&0x3FF)<<21) | (((U32)(off>>20)&1)<<31);
+}
+static U32 RvRet(void) { return 0x67u | (0<<7) | (1<<15); }   // jalr x0,0(ra)
+
+#define ASM_EMIT(w) ICAdd(cc, IC_RAW_RV, (I64)(U32)(w), RT_I64)
+
+// One translated instruction (parsed from the token stream) before emission.
+typedef struct { char op[24]; int dst, src; int imm; int mem_off; int is_load, is_imm; } AsmInsn;
+
+// Try to translate a single labeled asm function. Positioned at the label IDENT. Returns true and
+// emits it (registering the label as a callable/self-resolving function) or false to fall back.
+static bool TryTranslateAsm(Compiler *cc) {
+  if (cc->lex.token != TK_IDENT) return false;
+  char label[128]; { const char *_s=cc->lex.token_str; int _i=0; for(;_s[_i]&&_i<127;_i++) label[_i]=_s[_i]; label[_i]=0; }
+  LexNext(cc);
+  if (cc->lex.token != TK_DBL_COLON) return false;
+  LexNext(cc);
+
+  AsmInsn ins[128]; int nins = 0;
+  unsigned used_saved = 0;               // bitmask over reg numbers 9,18..25 actually used
+  int rax = AsmX86Reg("RAX");
+  // Parse instructions until the closing brace or an unsupported construct.
+  while (cc->lex.token != '}' && cc->lex.token != TK_EOF) {
+    if (cc->lex.token != TK_IDENT) return false;
+    char mn[24]; { const char *_s=cc->lex.token_str; int _i=0; for(;_s[_i]&&_i<23;_i++) mn[_i]=_s[_i]; mn[_i]=0; }
+
+    // Standard x86 prologue/epilogue: consumed, not translated (we synthesize our own frame).
+    if (!strcmp(mn, "PUSH") || !strcmp(mn, "POP")) {                 // PUSH/POP <reg>  (frame bookkeeping)
+      LexNext(cc); if (cc->lex.token != TK_IDENT || AsmX86Reg(cc->lex.token_str) < 0) return false;
+      LexNext(cc); continue;
+    }
+    if (!strcmp(mn, "CLD") || !strcmp(mn, "STD") || !strcmp(mn, "NOP")) { LexNext(cc); continue; }
+    if (!strcmp(mn, "MOV") && (LexNext(cc), 1)) {                    // MOV dst, [size] SF_ARGn[RBP] | reg | imm
+      if (cc->lex.token != TK_IDENT) return false;
+      int dst = AsmX86Reg(cc->lex.token_str); if (dst < 0) return false;
+      // RBP,RSP standard-prologue MOV (MOV RBP,RSP): frame setup, consume.
+      if (!strcmp(cc->lex.token_str, "RBP")) { LexNext(cc); if (cc->lex.token==',') LexNext(cc);
+        if (cc->lex.token==TK_IDENT && !strcmp(cc->lex.token_str,"RSP")) { LexNext(cc); continue; } return false; }
+      LexNext(cc); if (cc->lex.token != ',') return false; LexNext(cc);
+      // optional size hint (U64/U32/...) then either SF_ARGn[RBP] (a load) or a register.
+      if (cc->lex.token == TK_IDENT && (cc->lex.token_str[0]=='U' || cc->lex.token_str[0]=='I') &&
+          (!strcmp(cc->lex.token_str,"U64")||!strcmp(cc->lex.token_str,"I64")||!strcmp(cc->lex.token_str,"U32")||
+           !strcmp(cc->lex.token_str,"I32")||!strcmp(cc->lex.token_str,"U16")||!strcmp(cc->lex.token_str,"U8")))
+        LexNext(cc);
+      if (cc->lex.token != TK_IDENT) return false;
+      int off = -1;
+      if (!strcmp(cc->lex.token_str,"SF_ARG1")) off = 16;
+      else if (!strcmp(cc->lex.token_str,"SF_ARG2")) off = 24;
+      else if (!strcmp(cc->lex.token_str,"SF_ARG3")) off = 32;
+      if (off >= 0) {                                               // MOV dst, SF_ARGn[RBP]  -> load
+        LexNext(cc); if (cc->lex.token != '[') return false; LexNext(cc);
+        if (cc->lex.token != TK_IDENT || strcmp(cc->lex.token_str,"RBP")) return false; LexNext(cc);
+        if (cc->lex.token != ']') return false; LexNext(cc);
+        AsmInsn *I=&ins[nins++]; strcpy(I->op,"LDARG"); I->dst=dst; I->mem_off=off; I->is_load=1; I->is_imm=0;
+      } else {                                                      // MOV dst, srcreg
+        int src = AsmX86Reg(cc->lex.token_str); if (src < 0) return false; LexNext(cc);
+        AsmInsn *I=&ins[nins++]; strcpy(I->op,"MOVR"); I->dst=dst; I->src=src; I->is_load=0; I->is_imm=0;
+      }
+      if (AsmRegSaved(dst)) used_saved |= 1u<<dst;
+      continue;
+    }
+    if (!strcmp(mn, "REP_STOSB")) {                                 // while(RCX--) [RDI]=AL; RDI++
+      LexNext(cc); AsmInsn *I=&ins[nins++]; strcpy(I->op,"REPSTOSB"); continue;
+    }
+    if (!strcmp(mn, "RET1") || !strcmp(mn, "RET")) {                // epilogue: return RAX
+      LexNext(cc); if (cc->lex.token == TK_I64) LexNext(cc);        // RET1 N (arg-pop count, irrelevant on RISC-V)
+      AsmInsn *I=&ins[nins++]; strcpy(I->op,"RET"); break;
+    }
+    return false;                                                   // unsupported mnemonic -> fall back
+  }
+  if (nins == 0 || strcmp(ins[nins-1].op, "RET")) return false;
+  if (cc->lex.token != '}') return false;   // first version: only single-function asm blocks
+
+  // Register the label as a self-resolving function so calls by name reach the translated code.
+  CHashEntry *e = cc->hash_table ? HashFind(label, cc->hash_table, HTT_FUN) : NULL;
+  CHashFun *fn;
+  if (e && (e->type & HTT_FUN)) fn = (CHashFun *)e;
+  else { fn = calloc(1, sizeof(CHashFun)); fn->str = strdup(label); fn->type = HTT_FUN; fn->raw_type = RT_I64;
+         if (cc->hash_table) HashAdd((CHashEntry *)fn, cc->hash_table); }
+  CLabel *entry = LabelNew(cc, label);
+  fn->entry_label = entry; fn->entry_label_defined = 1;
+  // Emit into a fresh IC chain and defer it as its own function (like ParseFunction) — NOT inline in
+  // the current top-level stream, or the function's `ret` would return out of the entry chunk.
+  CIntermediateCode *asm_prev_head = cc->ic_head, *asm_prev_tail = cc->ic_tail;
+  cc->ic_head = cc->ic_tail = NULL;
+  ICAdd(cc, IC_LABEL, (I64)entry, RT_I64);
+  entry->defined = true;
+
+  // Synthesized prologue: frame of 256, save ra + used callee-saved regs at the top, RBP=sp+128,
+  // spill a0..a7 into SF_ARG slots (RBP+16..RBP+72).
+  int RBP = AsmX86Reg("RBP");
+  ASM_EMIT(RvAddi(2, 2, -256));                 // addi sp,sp,-256
+  ASM_EMIT(RvSd(1, 248, 2));                    // sd ra,248(sp)
+  ASM_EMIT(RvSd(RBP, 240, 2));                  // sd s1(RBP),240(sp)
+  int save_off = 232;
+  for (int r = 18; r <= 25; r++) if (used_saved & (1u<<r)) { ASM_EMIT(RvSd(r, save_off, 2)); save_off -= 8; }
+  ASM_EMIT(RvAddi(RBP, 2, 128));                // addi RBP,sp,128
+  for (int a = 0; a < 8; a++) ASM_EMIT(RvSd(10 + a, 16 + a*8, RBP));   // sd a<a>, (16+a*8)(RBP)
+
+  // Body.
+  for (int i = 0; i < nins; i++) {
+    AsmInsn *I = &ins[i];
+    if (!strcmp(I->op, "LDARG"))      ASM_EMIT(RvLd(I->dst, I->mem_off, RBP));
+    else if (!strcmp(I->op, "MOVR"))  ASM_EMIT(RvMv(I->dst, I->src));
+    else if (!strcmp(I->op, "REPSTOSB")) {
+      int RCX=AsmX86Reg("RCX"), RDI=AsmX86Reg("RDI"), RAX=AsmX86Reg("RAX");
+      ASM_EMIT(RvBeqz(RCX, 20));                // beq RCX,x0,+20 (skip 4 instrs to loop end)
+      ASM_EMIT(RvSb(RAX, 0, RDI));              // sb AL,0(RDI)
+      ASM_EMIT(RvAddi(RDI, RDI, 1));            // addi RDI,RDI,1
+      ASM_EMIT(RvAddi(RCX, RCX, -1));           // addi RCX,RCX,-1
+      ASM_EMIT(RvJal(0, -16));                  // j loop (back 4 instrs)
+    }
+    else if (!strcmp(I->op, "RET")) {
+      ASM_EMIT(RvMv(10, rax));                  // mv a0,RAX (return value)
+      save_off = 232;
+      for (int r = 18; r <= 25; r++) if (used_saved & (1u<<r)) { ASM_EMIT(RvLd(r, save_off, 2)); save_off -= 8; }
+      ASM_EMIT(RvLd(RBP, 240, 2));              // ld s1(RBP),240(sp)
+      ASM_EMIT(RvLd(1, 248, 2));                // ld ra,248(sp)
+      ASM_EMIT(RvAddi(2, 2, 256));              // addi sp,sp,256
+      ASM_EMIT(RvRet());
+    }
+  }
+  // Defer this function's IC chain, then restore the top-level stream.
+  if (cc->defer_aot_compile) {
+    AOTFnICChunk *chunk = calloc(1, sizeof(AOTFnICChunk));
+    chunk->head = cc->ic_head; chunk->tail = cc->ic_tail; chunk->fun = fn; chunk->next = NULL;
+    if (!cc->aot_fn_ic_tail) cc->aot_fn_ic_head = cc->aot_fn_ic_tail = chunk;
+    else { cc->aot_fn_ic_tail->next = chunk; cc->aot_fn_ic_tail = chunk; }
+  }
+  cc->ic_head = asm_prev_head; cc->ic_tail = asm_prev_tail;
+  cc->asm_funcs_translated++;
+  return true;
+}
+
 bool ParseStatement(Compiler *cc) {
   // Match original PrsStmt.HC structure with while(TRUE) loop
   while (true) {
@@ -3663,20 +3826,26 @@ bool ParseStatement(Compiler *cc) {
       // Expect opening brace
       if (!LexExpect(cc, '{')) return false;
       
-      // Skip asm block contents (architecture-specific)
-      // For RISC-V port, we skip x86-64 assembly
-      int brace_count = 1;
-      while (brace_count > 0 && cc->lex.token != TK_EOF) {
-        if (cc->lex.token == '{') brace_count++;
-        if (cc->lex.token == '}') brace_count--;
-        if (brace_count > 0) LexNext(cc);
+      // Try to translate the x86 asm to RISC-V (integer subset, single-function blocks). On any
+      // unsupported construct, roll back to the saved IC tail and skip the block — the function then
+      // resolves to its runtime override by name, the safe baseline.
+      CIntermediateCode *asm_saved_tail = cc->ic_tail;
+      bool asm_translated = TryTranslateAsm(cc) && cc->lex.token == '}';
+      if (!asm_translated) {
+        if (asm_saved_tail) { asm_saved_tail->next = NULL; cc->ic_tail = asm_saved_tail; }
+        else { cc->ic_head = cc->ic_tail = NULL; }
+        int brace_count = 1;
+        while (brace_count > 0 && cc->lex.token != TK_EOF) {
+          if (cc->lex.token == '{') brace_count++;
+          if (cc->lex.token == '}') brace_count--;
+          if (brace_count > 0) LexNext(cc);
+        }
+        cc->asm_blocks_skipped++;
       }
-      
       // Skip closing brace
       if (cc->lex.token == '}') {
         LexNext(cc);
       }
-      cc->asm_blocks_skipped++;
       
       if (cc->lex.token != ',') return true;
       continue;
@@ -3831,9 +4000,9 @@ static bool ParseBlock(Compiler *cc) {
   return LexExpect(cc, '}');
 }
 
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 // PARSER - CLASSES
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 
 
 // ---- compile-time constant expressions (array sizes, `$$=` in class bodies) ----
@@ -4161,9 +4330,9 @@ bool ParseClass(Compiler *cc) {
   return LexExpect(cc, ';');
 }
 
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 // PARSER - GLOBAL VARIABLES
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 
 // ---- aggregate initializers: `T a[] = {…}`, `Cls c = {…}`, `Cls arr[] = {{…},{…}}` ----
 // Literals (numbers, strings into U8 arrays) are stored into the global's memory at parse time;
@@ -4433,9 +4602,9 @@ after_init:
   return ok;
 }
 
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 // PARSER - FUNCTIONS
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 
 // `...`: HolyC passes the extra arguments as hidden `argc` and `I64 *argv` parameters after
 // the fixed ones (the caller builds the array; see the varargs call site in ParsePrimary).
@@ -5005,9 +5174,9 @@ bool ParseFunction(Compiler *cc) {
 }
 
 
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 // PARSER - TOP LEVEL
-// ═══════════════════════════════════════════════════════════════
+// ----------------------------------------------------------------------------------------------
 
 // Global declaration list at top level: `T *a, b[4] = 1, c;` — HolyC top-level variables
 // are globals, never locals.

@@ -158,6 +158,7 @@ typedef bool      Bool;
 #define IC_PC            0xB5   // `$$` in code: the current address (auipc)
 #define IC_FN_ADDR       0xB6   // ic_data = CLabel*: a function's address as a value (auipc/addi)
 #define IC_BLOCK_COPY    0xBB   // struct copy: eval stack [dst,src] (src top), ic_data = byte count; copies then leaves dst
+#define IC_RAW_RV        0xBC   // emit ic_data as one raw 32-bit RISC-V instruction word (x86-asm translation)
 #define IC_UDIV          0x9E
 #define IC_UMOD          0x9F
 #define IC_ULESS         0xA0
@@ -558,6 +559,7 @@ typedef struct {
   struct CMemberLst *last_member;      // member just accessed by . or -> (typing for [ ] and *)
   U8 call_ret_type;                    // raw_type of the function just called (F64 → F64 result)
   I64 asm_blocks_skipped;              // x86 asm {} blocks parsed and dropped
+  I64 asm_funcs_translated;            // x86 asm functions translated to RISC-V
   U8 class_base_type;                  // `I64 class X {…}`: the class is that scalar; members overlay it
   int in_class_body;                   // `$$` lexes as TK_DOLLAR (current offset) while > 0
   U8 current_fn_ret_type;

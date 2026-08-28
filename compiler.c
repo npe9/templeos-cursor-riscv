@@ -1419,6 +1419,9 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_NOP2:
         // Explicit no-op – leave stack depth unchanged
         break;
+      case IC_RAW_RV:
+        RVU32(pass_buf, &pass_ptr, &rip, (U32)ic->ic_data);   // pre-assembled RISC-V word (x86 translation)
+        break;
       case IC_RETURN_VAL:
       case IC_RETURN_VAL2:
         // Return value should be in a0
@@ -1957,6 +1960,9 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_NOP1:
       case IC_NOP2:
         // Explicit no-op – leave stack depth unchanged
+        break;
+      case IC_RAW_RV:
+        RVU32(pass_buf, &pass_ptr, &rip, (U32)ic->ic_data);   // pre-assembled RISC-V word (x86 translation)
         break;
       case IC_RETURN_VAL:
       case IC_RETURN_VAL2:
