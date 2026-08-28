@@ -2,19 +2,22 @@
 // over the UART (RVUartGetLine), runs as a real CTask that Adam's Spawn() created and the kernel
 // schedules, and stores/reads files and directories through the kernel's own RedSea filesystem on a
 // RAM disk (DirMk / FilesFind / Cd / FileWrite / FileRead — Kernel/BlkDev/*.HC, no device driver).
-// Commands: dir | mkdir <d> | cd <d> | write <f> <text> | cat <f> | exit. This ties the whole
-// authentic stack together — boot, scheduler, filesystem — into a TempleOS-like prompt, and it
-// depends on every compiler fix this port needed (array-deref store, implicit-print varargs, and
+// Commands: dir | mkdir <d> | cd <d> | write <f> <text> | cat <f> | run <f> | exit. `run` loads a
+// program blob off the disk and executes it (FileRead + RVRunBlob) — a precompiled program
+// (prog_hello.hc) is staged at A:/HELLO.PRG at startup. This ties the whole authentic stack together
+// — boot, scheduler, filesystem, and running a program from disk — into a TempleOS-like prompt, and
+// it depends on every compiler fix this port needed (array-deref store, implicit-print varargs, and
 // the U0 zero-size-marker layout). Distinct from kernel_shell_demo.hc, the Phase-1 parallel-runtime
 // shell over virtio-blk + a hand-rolled FS.
 #include "/Kernel/Kernel_RV.PRJ"
+#include "/build/exec/prog_arr.hc"   // generated at test time: prog_blob[], prog_blob_size (prog_hello.hc)
 U0 Sh(U8 *s){ U8 *u=0x10000000; while(*s)*u=*s++; }
 // Return the index of the first space in s, or -1.
 I64 SpaceAt(U8 *s){ I64 i=0; while(s[i]){ if(s[i]==' ') return i; i++; } return -1; }
 U0 ShellTask()
 {
   U8 line[160];
-  Sh("TempleOS/RISC-V shell. Commands: dir mkdir cd write cat exit\n");
+  Sh("TempleOS/RISC-V shell. Commands: dir mkdir cd write cat run exit\n");
   while (TRUE) {
     Sh(Fs->cur_dir); Sh("> ");
     RVUartGetLine(line,160);
@@ -36,6 +39,11 @@ U0 ShellTask()
       if (sp<0) Sh("usage: write <file> <text>\n");
       else { rest[sp]=0; U8 *fn=rest,*txt=rest+sp+1; FileWrite(fn,txt,StrLen(txt)); Sh("wrote "); Sh(fn); Sh("\n"); }
     }
+    else if (!StrNCmp(line,"run ",4)) {   // load a program blob off the FS and execute it
+      I64 sz=0; U8 *code=FileRead(line+4,&sz,NULL);
+      if (!code) Sh("no such program\n");
+      else { I64 r=RVRunBlob(code,sz); U8 rb[40]; StrPrint(rb,"[exit %d]\n",r); Sh(rb); }
+    }
     else { Sh("? unknown command\n"); }
   }
   Bts(&Fs->task_flags,TASKf_KILL_TASK); Yield();
@@ -52,6 +60,9 @@ I64 main()
   RVYieldInit(&Fs); RVKernelInit();
   RVMountRAMDisk('A',4096);
   HomeSet("A:/");
+  // Pre-stage a runnable program on the disk so the shell's `run` command has something to load: a
+  // precompiled position-independent blob (prog_hello.hc), written as a file the shell can execute.
+  FileWrite("A:/HELLO.PRG",prog_blob,prog_blob_size);
   // Run the shell as a real CTask that the kernel's own Spawn() created and Yield() schedules.
   CTask *t=RVKSpawn(&ShellTask,"Shell",adam);
   while (!(t->task_flags & (1<<TASKf_KILL_TASK))) Yield();

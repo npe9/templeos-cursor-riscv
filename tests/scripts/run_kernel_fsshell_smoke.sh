@@ -10,8 +10,8 @@ HARNESS="$ROOT/tests/exec/harness"
 OUTDIR="$ROOT/build/exec"
 COMPILER="$ROOT/holyc-riscv"
 SRC="$ROOT/tests/exec/cases/kernel_fsshell_demo.hc"
-EXPECT="inside docs"
-EXPECT2="now in /DOCS"
+EXPECT="loaded off the RedSea disk"
+EXPECT2="[exit 55]"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
@@ -36,6 +36,17 @@ fi
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 
+# The shell demo #includes a precompiled program blob for its `run` command; build it at test time.
+PROG="$ROOT/tests/exec/cases/prog_hello.hc"
+if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$PROG" -o "$OUTDIR/prog.bin" >/dev/null 2>&1; then
+  echo "FAIL kernel-fsshell smoke — program compile error" >&2; exit 1
+fi
+python3 - "$OUTDIR/prog.bin" "$OUTDIR/prog_arr.hc" <<'PYEOF'
+import sys
+d=open(sys.argv[1],"rb").read()
+open(sys.argv[2],"w").write("U8 prog_blob[%d]={%s};\nI64 prog_blob_size=%d;\n"%(len(d),",".join(map(str,d)),len(d)))
+PYEOF
+
 if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then
   echo "FAIL kernel-fsshell smoke — compile error" >&2; exit 1
 fi
@@ -43,7 +54,7 @@ fi
   "$LD" -T "$HARNESS/link_exec.ld" -nostdlib --no-warn-mismatch -o kp.elf "$OUTDIR/crt0.o" "$OUTDIR/oracle_out.o" blob_in.o ) \
   >/dev/null 2>&1 || { echo "FAIL kernel-fsshell smoke — link error" >&2; exit 1; }
 
-out="$(printf 'mkdir DOCS\nwrite HELLO.TXT hello world\ndir\ncat HELLO.TXT\ncd DOCS\nwrite NOTE.TXT inside docs\ncat NOTE.TXT\nexit\n' | $TIMEOUT 30 "$QEMU" -M virt -bios none -kernel "$T/kp.elf" -nographic 2>&1 | tr -d '\r')"
+out="$(printf 'mkdir DOCS\nwrite HELLO.TXT hello world\ndir\ncat HELLO.TXT\ncd DOCS\nwrite NOTE.TXT inside docs\ncat NOTE.TXT\nrun HELLO.PRG\nexit\n' | $TIMEOUT 30 "$QEMU" -M virt -bios none -kernel "$T/kp.elf" -nographic 2>&1 | tr -d '\r')"
 if printf '%s\n' "$out" | grep -qF "$EXPECT" && printf '%s\n' "$out" | grep -qF "$EXPECT2"; then
   echo "Kernel-fsshell smoke: OK"
   exit 0
