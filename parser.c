@@ -3748,7 +3748,45 @@ bool ParseStatement(Compiler *cc) {
         LexNext(cc);
         if (!ParseAssignment(cc)) return false;
       } else if (!ParsePrimary(cc)) return false;   // IC_STR_CONST: address in a0 + eval-stack slot
-      ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
+      ICAdd(cc, IC_PUSH_RES, 0, RT_I64);             // fmt (fixed arg 0)
+      // Print may be the kernel's HolyC VARARGS Print (`U0 Print(U8*fmt,...)`, ABI = fmt,argc,argv:
+      // the caller collects the args into a frame temp `argv` and passes a count+pointer), or a
+      // C-variadic runtime stub in a bare program (args in the arg registers). Match the general
+      // call path (see the varargs handling in ParsePrimary): for a varargs Print, store each arg
+      // into argv and pass argc/argv; otherwise push them directly. Without this the string-statement
+      // form fed the kernel Print its args from the wrong place — %d/%s printed garbage / hung.
+      CHashEntry *pe_print = cc->hash_table ? HashFind("Print", cc->hash_table, HTT_FUN) : NULL;
+      CHashFun *pfn_print = (pe_print && (pe_print->type & HTT_FUN)) ? (CHashFun *)pe_print : NULL;
+      if (pfn_print && pfn_print->is_varargs) {
+        int va_cnt = 0; I64 va_base = -1;
+        while (cc->lex.token == ',') {
+          LexNext(cc);
+          if (va_base < 0) va_base = cc->locals_size;
+          I64 marker = HOLY_LOCAL_MARKER(va_base + 8 * va_cnt);
+          cc->locals_size += 8;
+          ICAdd(cc, IC_LEA, marker, RT_I64);
+          ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
+          if (!ParseAssignment(cc)) return false;
+          CIntermediateCode *aic = ICNew(cc, IC_ASSIGN);
+          aic->res.type.raw_type = RT_I64;
+          aic->res.type.mode = MDF_STK;
+          aic->arg1_type_pointed_to = RT_I64;
+          if (cc->ic_tail) cc->ic_tail->next = aic; else cc->ic_head = aic;
+          cc->ic_tail = aic;
+          ICAdd(cc, IC_EVAL_DROP, 8, RT_I64);
+          va_cnt++;
+        }
+        ICAdd(cc, IC_IMM_I64, va_cnt, RT_I64);
+        ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
+        if (va_cnt > 0) {
+          ICAdd(cc, IC_LEA, HOLY_LOCAL_MARKER(va_base), RT_I64);
+          ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
+        } else {
+          ICAdd(cc, IC_IMM_I64, 0, RT_I64);
+        }
+        ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
+        if (!EmitCallByName(cc, "Print", pfn_print->param_cnt)) return false;  // fmt + argc + argv
+      } else {
       I64 argc = 1;
       while (cc->lex.token == ',') {
         LexNext(cc);
@@ -3757,6 +3795,7 @@ bool ParseStatement(Compiler *cc) {
         argc++;
       }
       if (!EmitCallByName(cc, "Print", argc)) return false;
+      }
       ICAdd(cc, IC_CALL_END, 0, RT_I64);
       ICAdd(cc, IC_END_EXP, 0, RT_I64);
       if (cc->lex.token == ';') LexNext(cc);
