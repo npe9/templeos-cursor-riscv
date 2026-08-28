@@ -425,3 +425,24 @@ bfo_done:
 	li	a0,0
 	ret
 }
+// GetRSP/GetRBP: return the current stack / frame pointer. On RISC-V these are sp / fp(s0)
+// directly (no x86 register file); used by KTask/KExcept to capture task context.
+asm {
+GetRSP::
+	mv	a0,sp
+	ret
+}
+asm {
+GetRBP::
+	mv	a0,fp
+	ret
+}
+// LXchgI64(d,v): swap *d with v, return the old value. The runtime impl is a plain (non-atomic)
+// load/store; QEMU virt boots single-core, so ld/sd is a faithful port.
+asm {
+LXchgI64::
+	ld	t0,0(a0)
+	sd	a1,0(a0)
+	mv	a0,t0
+	ret
+}
