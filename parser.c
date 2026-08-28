@@ -3408,7 +3408,7 @@ static bool TryAssembleRiscV(Compiler *cc) {
       if (I->rs1<0) return false; nins++; continue;
     }
     // R-type: rd, rs1, rs2   |   I-type arith: rd, rs1, imm
-    if (!strcmp(w,"add")||!strcmp(w,"sub")||!strcmp(w,"and")||!strcmp(w,"or")||!strcmp(w,"xor")||!strcmp(w,"sll")||!strcmp(w,"srl")||!strcmp(w,"sra")||!strcmp(w,"slt")||!strcmp(w,"sltu")||!strcmp(w,"mul")||!strcmp(w,"div")||!strcmp(w,"rem")||
+    if (!strcmp(w,"add")||!strcmp(w,"sub")||!strcmp(w,"and")||!strcmp(w,"or")||!strcmp(w,"xor")||!strcmp(w,"sll")||!strcmp(w,"srl")||!strcmp(w,"sra")||!strcmp(w,"slt")||!strcmp(w,"sltu")||!strcmp(w,"mul")||!strcmp(w,"div")||!strcmp(w,"rem")||!strcmp(w,"divu")||!strcmp(w,"remu")||
         !strcmp(w,"addi")||!strcmp(w,"andi")||!strcmp(w,"ori")||!strcmp(w,"xori")||!strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai")||!strcmp(w,"slti")) {
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
       int _wl=0; while(w[_wl]) _wl++; bool imm_form = (_wl>0 && w[_wl-1]=='i' && strcmp(w,"jalr")) || !strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai");
@@ -3488,6 +3488,8 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"mul"))  word = RvR(1,0,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"div"))  word = RvR(1,4,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"rem"))  word = RvR(1,6,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"divu")) word = RvR(1,5,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"remu")) word = RvR(1,7,I->rd,I->rs1,I->rs2);
     ICAdd(cc, IC_RAW_RV, (I64)word, RT_I64);
   }
   #undef RV_LBL

@@ -371,3 +371,57 @@ QueRem::
 	li	a0,0
 	ret
 }
+// ModU64(q,d): unsigned divmod in place — *q = *q/d, return *q%d (0 if d==0).
+asm {
+ModU64::
+	beq	a1,zero,mu_z
+	ld	t0,0(a0)
+	divu	t1,t0,a1
+	sd	t1,0(a0)
+	remu	a0,t0,a1
+	ret
+mu_z:
+	li	a0,0
+	ret
+}
+// BFieldExtU32(bf,lo,hi): extract bits [lo..hi] of byte array bf as an integer (bit lo = LSB).
+asm {
+BFieldExtU32::
+	li	a3,0
+	mv	a4,a2
+bfe_loop:
+	blt	a4,a1,bfe_done
+	srai	t0,a4,3
+	add	t0,a0,t0
+	lbu	t1,0(t0)
+	andi	t2,a4,7
+	srl	t1,t1,t2
+	andi	t1,t1,1
+	slli	a3,a3,1
+	or	a3,a3,t1
+	addi	a4,a4,-1
+	j	bfe_loop
+bfe_done:
+	mv	a0,a3
+	ret
+}
+// BFieldOrU32(bf,lo,hi): set bits [lo..hi] of byte array bf.
+asm {
+BFieldOrU32::
+	mv	a4,a1
+bfo_loop:
+	blt	a2,a4,bfo_done
+	srai	t0,a4,3
+	add	t0,a0,t0
+	lbu	t1,0(t0)
+	andi	t2,a4,7
+	li	t3,1
+	sll	t3,t3,t2
+	or	t1,t1,t3
+	sb	t1,0(t0)
+	addi	a4,a4,1
+	j	bfo_loop
+bfo_done:
+	li	a0,0
+	ret
+}
