@@ -3319,7 +3319,7 @@ static int RvRegNum(const char *n) {
 }
 static U32 RvR(U32 f7,U32 f3,int rd,int rs1,int rs2){ return 0x33u|(rd<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|(f7<<25); }
 static U32 RvI(U32 f3,int rd,int rs1,int imm){ return 0x13u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
-static U32 RvIsh(U32 f6,int rd,int rs1,int sh){ return 0x13u|(rd<<7)|(1u<<12)|(rs1<<15)|(((U32)sh&0x3F)<<20)|(f6<<26)|((f6==0x10?1u:0u)<<30); }
+static U32 RvShift(U32 f3,U32 hi6,int rd,int rs1,int sh){ return 0x13u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)sh&0x3F)<<20)|(hi6<<26); }
 static U32 RvLoad(U32 f3,int rd,int imm,int rs1){ return 0x03u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
 static U32 RvStore(U32 f3,int rs2,int imm,int rs1){ return 0x23u|(((U32)imm&0x1F)<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|((((U32)imm>>5)&0x7F)<<25); }
 static U32 RvBr(U32 f3,int rs1,int rs2,int off){ return 0x63u|(((U32)(off>>11)&1)<<7)|(((U32)(off>>1)&0xF)<<8)|(f3<<12)|(rs1<<15)|(rs2<<20)|(((U32)(off>>5)&0x3F)<<25)|(((U32)(off>>12)&1)<<31); }
@@ -3472,9 +3472,9 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"ori"))  word = RvI(6,I->rd,I->rs1,I->imm);
     else if (!strcmp(m,"xori")) word = RvI(4,I->rd,I->rs1,I->imm);
     else if (!strcmp(m,"slti")) word = RvI(2,I->rd,I->rs1,I->imm);
-    else if (!strcmp(m,"slli")) word = RvIsh(0,I->rd,I->rs1,I->imm);
-    else if (!strcmp(m,"srli")) word = RvIsh(0,I->rd,I->rs1,I->imm) | (0u<<30);
-    else if (!strcmp(m,"srai")) word = (RvIsh(0,I->rd,I->rs1,I->imm)) | (0x40000000u);
+    else if (!strcmp(m,"slli")) word = RvShift(1,0,I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"srli")) word = RvShift(5,0,I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"srai")) word = RvShift(5,0x10,I->rd,I->rs1,I->imm);
     else if (!strcmp(m,"add"))  word = RvR(0,0,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"sub"))  word = RvR(0x20,0,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"and"))  word = RvR(0,7,I->rd,I->rs1,I->rs2);

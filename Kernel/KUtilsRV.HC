@@ -105,3 +105,110 @@ msi_loop:
 msi_done:
 	ret
 }
+// Bit-field ops on a byte array: bit n is bit (n&7) of byte n>>3. Bt tests, Bts sets, Btr resets;
+// each returns the OLD bit. LBts/LBtr are the locked variants (single core here -> identical).
+asm {
+Bt::
+	srai	t0,a1,3
+	add	t0,a0,t0
+	lbu	t1,0(t0)
+	andi	t2,a1,7
+	srl	t1,t1,t2
+	andi	a0,t1,1
+	ret
+}
+asm {
+Bts::
+	srai	t0,a1,3
+	add	t0,a0,t0
+	lbu	t1,0(t0)
+	andi	t2,a1,7
+	srl	t3,t1,t2
+	andi	t3,t3,1
+	li	t4,1
+	sll	t4,t4,t2
+	or	t1,t1,t4
+	sb	t1,0(t0)
+	mv	a0,t3
+	ret
+}
+asm {
+Btr::
+	srai	t0,a1,3
+	add	t0,a0,t0
+	lbu	t1,0(t0)
+	andi	t2,a1,7
+	srl	t3,t1,t2
+	andi	t3,t3,1
+	li	t4,1
+	sll	t4,t4,t2
+	not	t4,t4
+	and	t1,t1,t4
+	sb	t1,0(t0)
+	mv	a0,t3
+	ret
+}
+asm {
+LBts::
+	srai	t0,a1,3
+	add	t0,a0,t0
+	lbu	t1,0(t0)
+	andi	t2,a1,7
+	srl	t3,t1,t2
+	andi	t3,t3,1
+	li	t4,1
+	sll	t4,t4,t2
+	or	t1,t1,t4
+	sb	t1,0(t0)
+	mv	a0,t3
+	ret
+}
+asm {
+LBtr::
+	srai	t0,a1,3
+	add	t0,a0,t0
+	lbu	t1,0(t0)
+	andi	t2,a1,7
+	srl	t3,t1,t2
+	andi	t3,t3,1
+	li	t4,1
+	sll	t4,t4,t2
+	not	t4,t4
+	and	t1,t1,t4
+	sb	t1,0(t0)
+	mv	a0,t3
+	ret
+}
+// I64 Bsf(I64 v): index of the lowest set bit, or -1 if v==0.  Bsr: the highest set bit.
+asm {
+Bsf::
+	beq	a0,zero,bsf_zero
+	mv	t0,a0
+	li	a0,0
+bsf_loop:
+	andi	t1,t0,1
+	bne	t1,zero,bsf_done
+	srli	t0,t0,1
+	addi	a0,a0,1
+	j	bsf_loop
+bsf_zero:
+	li	a0,-1
+bsf_done:
+	ret
+}
+asm {
+Bsr::
+	beq	a0,zero,bsr_zero
+	mv	t0,a0
+	li	a0,63
+bsr_loop:
+	srl	t1,t0,a0
+	andi	t1,t1,1
+	bne	t1,zero,bsr_done
+	addi	a0,a0,-1
+	j	bsr_loop
+bsr_zero:
+	li	a0,-1
+bsr_done:
+	ret
+}
