@@ -549,3 +549,10 @@ Round::
 	fmvxd	a0,fa0
 	ret
 }
+// GetTSC: read the RISC-V time CSR (rdtime = csrrs a0,time,x0), replacing x86 RDTSC. Used for
+// timestamps/unique ids (FileSysRedSea unique_id, Mouse/Keyboard timing).
+asm {
+GetTSC::
+	rdtime	a0
+	ret
+}

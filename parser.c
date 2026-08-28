@@ -3425,6 +3425,9 @@ static bool TryAssembleRiscV(Compiler *cc) {
     // RV64D float ops (dot-free mnemonics; F64 travels as raw bits in an integer reg, so these
     // bracket fsqrt/fcvt with fmvdx/fmvxd). fsqrtd fd,fs | fmvdx fd,rs | fmvxd rd,fs |
     // fcvtld_{rtz,rdn,rmm} rd,fs | fcvtdl fd,rs.
+    if (!strcmp(w,"rdtime")) {                                   // rd  (csrrs rd, time, x0)
+      I->rd=RvRegTok(cc); if (I->rd<0) return false; nins++; continue;
+    }
     if (!strcmp(w,"fsqrtd")) {                                   // fd, fs  (both float)
       I->rd=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvFRegTok(cc);
       if (I->rd<0||I->rs1<0) return false; nins++; continue;
@@ -3526,6 +3529,7 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"fcvtld_rdn")) word = 0xC2000053u | (I->rd<<7)  | (2u<<12) | (I->rs1<<15) | (2u<<20);
     else if (!strcmp(m,"fcvtld_rmm")) word = 0xC2000053u | (I->rd<<7)  | (4u<<12) | (I->rs1<<15) | (2u<<20);
     else if (!strcmp(m,"fcvtdl"))     word = 0xD2000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (2u<<20);
+    else if (!strcmp(m,"rdtime"))     word = 0xC0102073u | (I->rd<<7);
     ICAdd(cc, IC_RAW_RV, (I64)word, RT_I64);
   }
   #undef RV_LBL
