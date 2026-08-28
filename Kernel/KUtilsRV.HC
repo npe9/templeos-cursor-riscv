@@ -212,3 +212,124 @@ bsr_zero:
 bsr_done:
 	ret
 }
+// I64 ToUpper(I64 c): 'a'..'z' -> 'A'..'Z', else unchanged.
+asm {
+ToUpper::
+	li	t0,97
+	blt	a0,t0,tu_done
+	li	t1,122
+	blt	t1,a0,tu_done
+	addi	a0,a0,-32
+tu_done:
+	ret
+}
+// I64 AbsI64(I64 v); MaxI64(a,b); ClampI64(x,lo,hi); SqrI64(x); SwapI64(*a,*b).
+asm {
+AbsI64::
+	bge	a0,zero,abs_done
+	neg	a0,a0
+abs_done:
+	ret
+}
+asm {
+MaxI64::
+	blt	a0,a1,max_b
+	ret
+max_b:
+	mv	a0,a1
+	ret
+}
+asm {
+ClampI64::
+	blt	a0,a1,clamp_lo
+	blt	a2,a0,clamp_hi
+	ret
+clamp_lo:
+	mv	a0,a1
+	ret
+clamp_hi:
+	mv	a0,a2
+	ret
+}
+asm {
+SqrI64::
+	mul	a0,a0,a0
+	ret
+}
+asm {
+SwapI64::
+	ld	t0,0(a0)
+	ld	t1,0(a1)
+	sd	t1,0(a0)
+	sd	t0,0(a1)
+	li	a0,0
+	ret
+}
+// BEqu(bf,n,val): set bit n to val (Bts if val, Btr if not); returns val. LBEqu is the locked variant.
+asm {
+BEqu::
+	srai	t0,a1,3
+	add	t0,a0,t0
+	lbu	t1,0(t0)
+	andi	t2,a1,7
+	li	t4,1
+	sll	t4,t4,t2
+	beq	a2,zero,beq_clr
+	or	t1,t1,t4
+	j	beq_st
+beq_clr:
+	not	t4,t4
+	and	t1,t1,t4
+beq_st:
+	sb	t1,0(t0)
+	mv	a0,a2
+	ret
+}
+asm {
+LBEqu::
+	srai	t0,a1,3
+	add	t0,a0,t0
+	lbu	t1,0(t0)
+	andi	t2,a1,7
+	li	t4,1
+	sll	t4,t4,t2
+	beq	a2,zero,lbeq_clr
+	or	t1,t1,t4
+	j	lbeq_st
+lbeq_clr:
+	not	t4,t4
+	and	t1,t1,t4
+lbeq_st:
+	sb	t1,0(t0)
+	mv	a0,a2
+	ret
+}
+// I64 StrICmp(U8 *a, U8 *b): case-insensitive compare (lower both), 0 if equal.
+asm {
+StrICmp::
+sic_loop:
+	lbu	t0,0(a0)
+	lbu	t1,0(a1)
+	mv	t2,t0
+	li	t4,65
+	blt	t2,t4,sic_b
+	li	t4,90
+	blt	t4,t2,sic_b
+	addi	t2,t2,32
+sic_b:
+	mv	t3,t1
+	li	t4,65
+	blt	t3,t4,sic_cmp
+	li	t4,90
+	blt	t4,t3,sic_cmp
+	addi	t3,t3,32
+sic_cmp:
+	bne	t2,t3,sic_done
+	beq	t0,zero,sic_done
+	addi	a0,a0,1
+	addi	a1,a1,1
+	j	sic_loop
+sic_done:
+	sub	a0,t2,t3
+	ret
+}
