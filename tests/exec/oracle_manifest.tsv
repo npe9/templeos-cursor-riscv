@@ -60,3 +60,4 @@ tests/exec/cases/e_asm_fill.hc	0000000000414100
 tests/exec/cases/e_native_str.hc	000000000000005f
 tests/exec/cases/e_native_bits.hc	0000000000000fff
 tests/exec/cases/e_native_misc.hc	00000000000003ff
+tests/exec/cases/e_native_que.hc	000000000000003f

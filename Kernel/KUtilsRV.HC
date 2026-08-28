@@ -333,3 +333,41 @@ sic_done:
 	sub	a0,t2,t3
 	ret
 }
+// Doubly-linked circular queue ops on CQue {next@0, last@8}. QueIns(e,pred) inserts e after pred;
+// QueInsRev(e,succ) before succ; QueRem(e) unlinks e; QueInit(h) makes an empty ring.
+asm {
+QueInit::
+	sd	a0,0(a0)
+	sd	a0,8(a0)
+	li	a0,0
+	ret
+}
+asm {
+QueIns::
+	ld	t0,0(a1)
+	sd	t0,0(a0)
+	sd	a1,8(a0)
+	sd	a0,8(t0)
+	sd	a0,0(a1)
+	li	a0,0
+	ret
+}
+asm {
+QueInsRev::
+	ld	t0,8(a1)
+	sd	t0,8(a0)
+	sd	a1,0(a0)
+	sd	a0,0(t0)
+	sd	a0,8(a1)
+	li	a0,0
+	ret
+}
+asm {
+QueRem::
+	ld	t0,8(a0)
+	ld	t1,0(a0)
+	sd	t1,0(t0)
+	sd	t0,8(t1)
+	li	a0,0
+	ret
+}
