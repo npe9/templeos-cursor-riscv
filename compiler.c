@@ -378,26 +378,22 @@ static void EmitBlockCopy(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_dept
   *stack_depth -= 1;   // popped 2 (dst,src), pushed 1 (result)
 }
 
-// PC-relative call: jal rd, target (or auipc+jalr if out of ±1 MiB range)
+// PC-relative call: always auipc+jalr (full ±2 GiB range, fixed 2-word size).
+// A jal fast path (1 word, ±1 MiB) was tempting but unsafe here: choosing jal vs auipc+jalr per call
+// changes the instruction count, and the address passes don't re-converge, so a call sitting near the
+// ±1 MiB boundary is sized in one pass and emitted in another -> a truncated jal target and an
+// immediate trap. Blobs are now routinely >1 MiB (many native primitives), so that boundary is hit in
+// practice (it silently broke the spawn demo). A fixed 2-word encoding keeps every address stable
+// regardless of distance; the one extra instruction per call is worth the guaranteed correctness.
 static void EmitJalToLabel(U8 *pass_buf, U8 **pass_ptr, I64 *rip, CLabel *lb, U8 rd) {
-  I64 offset = lb->addr - *rip;
-  if (offset >= -(1 << 20) && offset < (1 << 20) && ((offset & 1) == 0)) {
-    U32 imm_20 = (U32)(offset >> 20) & 1u;
-    U32 imm_10_1 = (U32)(offset >> 1) & 0x3FFu;
-    U32 imm_11 = (U32)(offset >> 11) & 1u;
-    U32 imm_19_12 = (U32)(offset >> 12) & 0xFFu;
-    RVU32(pass_buf, pass_ptr, rip,
-          0x6Fu | ((U32)rd << 7) | (imm_19_12 << 12) | (imm_11 << 20) | (imm_10_1 << 21) | (imm_20 << 31));
-  } else {
-    I64 pc = *rip;
-    I64 target = lb->addr;
-    I64 rel = target - pc;
-    I64 hi = (rel + 0x800) >> 12;
-    I64 lo = rel - (hi << 12);
-    RVU32(pass_buf, pass_ptr, rip, 0x17u | ((U32)rd << 7) | (((U32)hi & 0xFFFFFu) << 12));
-    RVU32(pass_buf, pass_ptr, rip,
-          0x67u | ((U32)rd << 7) | ((U32)rd << 15) | (((U32)lo & 0xFFFu) << 20));
-  }
+  I64 pc = *rip;
+  I64 target = lb->addr;
+  I64 rel = target - pc;
+  I64 hi = (rel + 0x800) >> 12;
+  I64 lo = rel - (hi << 12);
+  RVU32(pass_buf, pass_ptr, rip, 0x17u | ((U32)rd << 7) | (((U32)hi & 0xFFFFFu) << 12));       // auipc rd, hi
+  RVU32(pass_buf, pass_ptr, rip,
+        0x67u | ((U32)rd << 7) | ((U32)rd << 15) | (((U32)lo & 0xFFFu) << 20));                 // jalr  rd, lo(rd)
 }
 
 // Eval stack: arg1 pushed first … argN at sp (N<=8). RISC-V: a0=arg1 … a_{N-1}=argN.
