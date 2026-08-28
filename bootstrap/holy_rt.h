@@ -782,6 +782,32 @@ __attribute__((naked, aligned(4))) static void HolyRealPreemptVector(void) {
     "addi sp,sp,144\n" "mret\n"
   );
 }
+/* --- Diagnostic trap handler: prints mcause/mepc/mtval to the UART and halts. Temporary; used to
+ * decide whether a "hang" is actually a synchronous fault. Install with HolyRVTrapDiag(). --------- */
+__attribute__((used)) static void HolyTrapDiagBody(void) {
+  HRT_I64 mcause, mepc, mtval;
+  __asm__ volatile("csrr %0, mcause" : "=r"(mcause));
+  __asm__ volatile("csrr %0, mepc"   : "=r"(mepc));
+  __asm__ volatile("csrr %0, mtval"  : "=r"(mtval));
+  volatile char *u = (volatile char *)0x10000000;
+  const char *hx = "0123456789abcdef";
+  const char *lbl = "\nTRAP mcause="; while (*lbl) *u = *lbl++;
+  for (int i = 60; i >= 0; i -= 4) *u = hx[(mcause >> i) & 0xF];
+  lbl = " mepc="; while (*lbl) *u = *lbl++;
+  for (int i = 60; i >= 0; i -= 4) *u = hx[(mepc >> i) & 0xF];
+  lbl = " mtval="; while (*lbl) *u = *lbl++;
+  for (int i = 60; i >= 0; i -= 4) *u = hx[(mtval >> i) & 0xF];
+  *u = '\n';
+  for (;;) __asm__ volatile("wfi");
+}
+__attribute__((naked, aligned(4))) static void HolyTrapDiagVector(void) {
+  __asm__ volatile("call HolyTrapDiagBody");
+}
+static HRT_I64 HolyRVTrapDiag(void) {
+  __asm__ volatile("csrw mtvec, %0" :: "r"(&HolyTrapDiagVector));
+  return 0;
+}
+
 static HRT_I64 HolyRVPreemptReal(HRT_I64 interval) {
   holy_timer_interval = interval;
   __asm__ volatile("csrw mtvec, %0" :: "r"(&HolyRealPreemptVector));
