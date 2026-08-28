@@ -67,3 +67,4 @@ bootstrap/REPL_*.md
 bootstrap/*_BEHAVIOR_ANALYSIS.md
 bootstrap/RISC_V_ABI_COMPLIANCE_REPORT.md
 
+build/exec/prog_arr.hc

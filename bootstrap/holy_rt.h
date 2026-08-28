@@ -834,6 +834,7 @@ static HRT_I64 HolyD(HRT_U8 *p, HRT_I64 n) {
 }
 static HRT_I64 HolySeed(HRT_I64 s) { rt_rand_state = (HRT_U64)s ? (HRT_U64)s : 1; return 0; }
 
+static HRT_I64 HolyRVRunBlob(HRT_I64 addr, HRT_I64 size);   /* defined after holy_resolve_imports */
 typedef struct { const char *name; void *fn; HRT_I64 argc; } HolyRtEntry;
 #define HOLY_RT_ENTRY(n, a) { #n, (void *)Holy##n, a },
 static const HolyRtEntry holy_rt_table[] = { HOLY_RT_NAMES(HOLY_RT_ENTRY) };
@@ -871,5 +872,15 @@ static HRT_I64 holy_resolve_imports(HRT_U8 *blob_start, HRT_U8 *blob_end) {
     if (!found) { rt_puts("[import unresolved: "); rt_puts(name); rt_puts("]\n"); }   /* named once, at load */
   }
   return resolved;
+}
+
+/* Run a blob loaded at an arbitrary address: resolve its import trailer in place (holy_resolve_imports
+ * writes the runtime function addresses into the blob's own import slots), then enter at byte 0 — the
+ * first function, main() for a single-unit program. AOT code is PC-relative for its own code/data, so
+ * a blob runs wherever it is placed once its imports are filled. Returns the blob's return value. */
+static HRT_I64 HolyRVRunBlob(HRT_I64 addr, HRT_I64 size) {
+  holy_resolve_imports((HRT_U8 *)addr, (HRT_U8 *)(addr + size));
+  HRT_I64 (*fn)(void) = (HRT_I64 (*)(void))addr;
+  return fn();
 }
 #endif
