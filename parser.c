@@ -3317,6 +3317,15 @@ static int RvRegNum(const char *n) {
   if (n[0]=='x') { int k=RvDigits(n+1); if (k>=0&&k<=31) return k; }
   return -1;
 }
+// Float register names (RV64D ABI): ft0-7=f0-7, fs0-1=f8-9, fa0-7=f10-17, fs2-11=f18-27, ft8-11=f28-31, fN raw.
+static int RvFRegNum(const char *n) {
+  if (!n || n[0]!='f') return -1;
+  if (n[1]=='a') { int k=RvDigits(n+2); if (k>=0&&k<=7) return 10+k; }
+  if (n[1]=='t') { int k=RvDigits(n+2); if (k>=0&&k<=7) return k; if (k>=8&&k<=11) return 28+(k-8); }
+  if (n[1]=='s') { int k=RvDigits(n+2); if (k>=0&&k<=1) return 8+k; if (k>=2&&k<=11) return 16+k; }
+  { int k=RvDigits(n+1); if (k>=0&&k<=31) return k; }
+  return -1;
+}
 static U32 RvR(U32 f7,U32 f3,int rd,int rs1,int rs2){ return 0x33u|(rd<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|(f7<<25); }
 static U32 RvI(U32 f3,int rd,int rs1,int imm){ return 0x13u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
 static U32 RvShift(U32 f3,U32 hi6,int rd,int rs1,int sh){ return 0x13u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)sh&0x3F)<<20)|(hi6<<26); }
@@ -3332,6 +3341,11 @@ typedef struct { char mn[12]; int rd,rs1,rs2,imm; char label[48]; int kind; } Rv
 static int RvRegTok(Compiler *cc) {
   if (cc->lex.token != TK_IDENT) return -1;
   int r = RvRegNum(cc->lex.token_str); LexNext(cc); return r;
+}
+// Parse one float register token; returns 0-31 or -1.
+static int RvFRegTok(Compiler *cc) {
+  if (cc->lex.token != TK_IDENT) return -1;
+  int r = RvFRegNum(cc->lex.token_str); LexNext(cc); return r;
 }
 // Parse an immediate (optional '-' then number). Returns 1 on success.
 static int RvImmTok(Compiler *cc, int *out) {
@@ -3408,6 +3422,21 @@ static bool TryAssembleRiscV(Compiler *cc) {
       if (I->rs1<0) return false; nins++; continue;
     }
     // R-type: rd, rs1, rs2   |   I-type arith: rd, rs1, imm
+    // RV64D float ops (dot-free mnemonics; F64 travels as raw bits in an integer reg, so these
+    // bracket fsqrt/fcvt with fmvdx/fmvxd). fsqrtd fd,fs | fmvdx fd,rs | fmvxd rd,fs |
+    // fcvtld_{rtz,rdn,rmm} rd,fs | fcvtdl fd,rs.
+    if (!strcmp(w,"fsqrtd")) {                                   // fd, fs  (both float)
+      I->rd=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvFRegTok(cc);
+      if (I->rd<0||I->rs1<0) return false; nins++; continue;
+    }
+    if (!strcmp(w,"fmvdx")||!strcmp(w,"fcvtdl")) {               // fd(float), rs(int)
+      I->rd=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc);
+      if (I->rd<0||I->rs1<0) return false; nins++; continue;
+    }
+    if (!strcmp(w,"fmvxd")||!strcmp(w,"fcvtld_rtz")||!strcmp(w,"fcvtld_rdn")||!strcmp(w,"fcvtld_rmm")) { // rd(int), fs(float)
+      I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvFRegTok(cc);
+      if (I->rd<0||I->rs1<0) return false; nins++; continue;
+    }
     if (!strcmp(w,"add")||!strcmp(w,"sub")||!strcmp(w,"and")||!strcmp(w,"or")||!strcmp(w,"xor")||!strcmp(w,"sll")||!strcmp(w,"srl")||!strcmp(w,"sra")||!strcmp(w,"slt")||!strcmp(w,"sltu")||!strcmp(w,"mul")||!strcmp(w,"div")||!strcmp(w,"rem")||!strcmp(w,"divu")||!strcmp(w,"remu")||
         !strcmp(w,"addi")||!strcmp(w,"andi")||!strcmp(w,"ori")||!strcmp(w,"xori")||!strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai")||!strcmp(w,"slti")) {
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
@@ -3490,6 +3519,13 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"rem"))  word = RvR(1,6,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"divu")) word = RvR(1,5,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"remu")) word = RvR(1,7,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"fsqrtd"))     word = 0x5A000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15);
+    else if (!strcmp(m,"fmvdx"))      word = 0xF2000053u | (I->rd<<7)  | (I->rs1<<15);
+    else if (!strcmp(m,"fmvxd"))      word = 0xE2000053u | (I->rd<<7)  | (I->rs1<<15);
+    else if (!strcmp(m,"fcvtld_rtz")) word = 0xC2000053u | (I->rd<<7)  | (1u<<12) | (I->rs1<<15) | (2u<<20);
+    else if (!strcmp(m,"fcvtld_rdn")) word = 0xC2000053u | (I->rd<<7)  | (2u<<12) | (I->rs1<<15) | (2u<<20);
+    else if (!strcmp(m,"fcvtld_rmm")) word = 0xC2000053u | (I->rd<<7)  | (4u<<12) | (I->rs1<<15) | (2u<<20);
+    else if (!strcmp(m,"fcvtdl"))     word = 0xD2000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (2u<<20);
     ICAdd(cc, IC_RAW_RV, (I64)word, RT_I64);
   }
   #undef RV_LBL

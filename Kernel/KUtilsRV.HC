@@ -513,3 +513,39 @@ si_fail:
 	li	a0,0
 	ret
 }
+// RV64D float math (native RISC-V, replacing the x87 FPU asm of original TempleOS). F64 args/returns
+// travel as raw bits in a0, so each moves bits->fa0, computes, moves fa0->a0.
+asm {
+Sqrt::
+	fmvdx	fa0,a0
+	fsqrtd	fa0,fa0
+	fmvxd	a0,fa0
+	ret
+}
+// Floor: round toward -inf (fcvt.l.d rdn), then back to double.
+asm {
+Floor::
+	fmvdx	fa0,a0
+	fcvtld_rdn	t0,fa0
+	fcvtdl	fa0,t0
+	fmvxd	a0,fa0
+	ret
+}
+// Trunc: round toward zero (rtz).
+asm {
+Trunc::
+	fmvdx	fa0,a0
+	fcvtld_rtz	t0,fa0
+	fcvtdl	fa0,t0
+	fmvxd	a0,fa0
+	ret
+}
+// Round: nearest, ties away from zero (rmm) — matches HolyRound's symmetric x>=0?(I64)(x+.5):-(I64)(-x+.5).
+asm {
+Round::
+	fmvdx	fa0,a0
+	fcvtld_rmm	t0,fa0
+	fcvtdl	fa0,t0
+	fmvxd	a0,fa0
+	ret
+}

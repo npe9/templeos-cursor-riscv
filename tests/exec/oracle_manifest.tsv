@@ -64,3 +64,4 @@ tests/exec/cases/e_native_que.hc	000000000000003f
 tests/exec/cases/e_native_bfield.hc	000000000000007f
 tests/exec/cases/e_native_reg.hc	000000000000001f
 tests/exec/cases/e_native_match.hc	000000000000003f
+tests/exec/cases/e_native_float.hc	00000000000003ff
