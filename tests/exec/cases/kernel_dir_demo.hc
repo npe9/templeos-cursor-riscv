@@ -4,8 +4,6 @@
 // list. All of Kernel/BlkDev/*.HC — no asm, no device driver (BDT_RAM). Reuses RVMountRAMDisk
 // (Kernel/KBootRV.HC). Depends on BOTH compiler fixes this milestone needed: the array-deref store
 // width (DirNameAbs/Cd) and the implicit-print varargs ABI (DirMk's "Make Directory:%s" print).
-// KNOWN LIMITATION: writing a file INTO a subdirectory (RedSeaFileWrite with a non-root cur_dir ->
-// RedSeaDirNew) still hangs and is a separate follow-up; this demo writes files in the root only.
 #include "/Kernel/Kernel_RV.PRJ"
 U0 UartS(U8 *s){ U8 *u=0x10000000; while(*s)*u=*s++; }
 I64 main()
@@ -27,6 +25,10 @@ I64 main()
   U8 *h="a file in the root", *r="another root file";
   FileWrite("A:/HELLO.TXT",h,StrLen(h));
   FileWrite("A:/READ.ME",r,StrLen(r));
+  // Write a file INTO a subdirectory and read it back (RedSeaFileWrite/RedSeaFileRead with a
+  // non-root cur_dir), then list the subdir.
+  U8 *sub="a file inside A:/DOCS";
+  FileWrite("A:/DOCS/NOTE.TXT",sub,StrLen(sub));
 
   // List the root with the kernel's own FilesFind; count our entries.
   I64 want=0, n=0;
@@ -38,14 +40,16 @@ I64 main()
     e=e->next;
   }
 
-  // Cd into a subdirectory (relative resolution works even if writing into it does not yet).
+  // Cd into the subdirectory and read the file we wrote there back.
   Bool cd=Cd("A:/DOCS");
   Bool in_docs = !StrCmp(Fs->cur_dir,"/DOCS");
+  I64 ssz=0; U8 *sback=FileRead("A:/DOCS/NOTE.TXT",&ssz,NULL);
+  Bool sub_ok = sback && ssz==StrLen(sub) && !StrNCmp(sback,sub,StrLen(sub));
 
   U8 line[128];
-  Bool ok = md1 && md2 && want==4 && cd && in_docs;
-  StrPrint(line,"dir test: mkdir2=%d entries=%d want4=%d cd=%d in_docs=%d %s\n",
-	md1&&md2, n, want, cd, in_docs, ok?"OK":"BAD");
+  Bool ok = md1 && md2 && want==4 && cd && in_docs && sub_ok;
+  StrPrint(line,"dir test: mkdir2=%d entries=%d want4=%d cd=%d in_docs=%d subwrite=%d %s\n",
+	md1&&md2, n, want, cd, in_docs, sub_ok, ok?"OK":"BAD");
   UartS(line);
   return 0;
 }

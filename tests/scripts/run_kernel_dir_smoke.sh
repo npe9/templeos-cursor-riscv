@@ -11,7 +11,7 @@ OUTDIR="$ROOT/build/exec"
 COMPILER="$ROOT/holyc-riscv"
 SRC="$ROOT/tests/exec/cases/kernel_dir_demo.hc"
 EXPECT="want4=4"
-EXPECT2="in_docs=1 OK"
+EXPECT2="subwrite=1 OK"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
