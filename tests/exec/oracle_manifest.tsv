@@ -57,3 +57,4 @@ tests/exec/cases/e_deref_array_store.hc	0000000099112233
 tests/exec/cases/e_u0_marker_size.hc	0000000000000090
 tests/exec/cases/e_asm_arg.hc	000000000000002a
 tests/exec/cases/e_asm_fill.hc	0000000000414100
+tests/exec/cases/e_native_str.hc	000000000000005f
