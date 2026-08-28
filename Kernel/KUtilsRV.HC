@@ -446,3 +446,70 @@ LXchgI64::
 	mv	a0,t0
 	ret
 }
+// StrMatch(needle,hay,flags): return a pointer to the first occurrence of needle in hay, or 0.
+// (flags is accepted for signature compatibility but unused, matching the runtime.)
+asm {
+StrMatch::
+	mv	t0,a1
+sm_outer:
+	lbu	t1,0(t0)
+	beq	t1,zero,sm_fail
+	mv	t2,a0
+	mv	t3,t0
+sm_inner:
+	lbu	t4,0(t2)
+	beq	t4,zero,sm_hit
+	lbu	t5,0(t3)
+	bne	t4,t5,sm_next
+	addi	t2,t2,1
+	addi	t3,t3,1
+	j	sm_inner
+sm_next:
+	addi	t0,t0,1
+	j	sm_outer
+sm_hit:
+	mv	a0,t0
+	ret
+sm_fail:
+	li	a0,0
+	ret
+}
+// StrIMatch(needle,hay,flags): case-insensitive StrMatch (ASCII A-Z folded to lower before compare).
+asm {
+StrIMatch::
+	mv	t0,a1
+si_outer:
+	lbu	t1,0(t0)
+	beq	t1,zero,si_fail
+	mv	t2,a0
+	mv	t3,t0
+si_inner:
+	lbu	t4,0(t2)
+	beq	t4,zero,si_hit
+	lbu	t5,0(t3)
+	li	t6,65
+	blt	t4,t6,si_a_ok
+	li	t6,90
+	blt	t6,t4,si_a_ok
+	addi	t4,t4,32
+si_a_ok:
+	li	t6,65
+	blt	t5,t6,si_b_ok
+	li	t6,90
+	blt	t6,t5,si_b_ok
+	addi	t5,t5,32
+si_b_ok:
+	bne	t4,t5,si_next
+	addi	t2,t2,1
+	addi	t3,t3,1
+	j	si_inner
+si_next:
+	addi	t0,t0,1
+	j	si_outer
+si_hit:
+	mv	a0,t0
+	ret
+si_fail:
+	li	a0,0
+	ret
+}
