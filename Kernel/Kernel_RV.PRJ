@@ -64,6 +64,7 @@
 #include "BlkDev/MakeBlkDev"
 //x86: #include "FunSeg"
 #include "KMain"
+#include "KUtilsRV"   // native RISC-V ports of KUtils.HC low-level primitives (MemSet/MemCpy)
 #include "KBootRV"   // RISC-V portable boot init (tables + UART console)
 
 #exe {KCfgDel(kernel_cfg);};
