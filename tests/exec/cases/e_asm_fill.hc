@@ -1,23 +1,20 @@
-// Regression for x86->RISC-V asm translation of the _MEMSET shape: PUSH/MOV/CLD/REP_STOSB/POP/RET1.
-// AsmFill(dst,val,cnt) fills cnt bytes with val and returns dst+cnt (like MemSet). We fill 5 bytes.
-U8 *AsmFill(U8 *p, I64 v, I64 n);
+// Native RISC-V asm: a byte-fill loop with local labels and a branch, assembled directly to RV64.
+// RvFill(dst,val,cnt) writes cnt copies of val at dst (RISC-V calling convention).
+U8 *RvFill(U8 *p, I64 v, I64 n);
 asm {
-AsmFill::
-	PUSH	RBP
-	MOV	RBP,RSP
-	PUSH	RDI
-	CLD
-	MOV	RDI,U64 SF_ARG1[RBP]
-	MOV	RAX,U64 SF_ARG2[RBP]
-	MOV	RCX,U64 SF_ARG3[RBP]
-	REP_STOSB
-	MOV	RAX,RDI
-	POP	RDI
-	POP	RBP
-	RET1	24
+RvFill::
+	mv	t0,a0
+loop:
+	beq	a2,zero,done
+	sb	a1,0(t0)
+	addi	t0,t0,1
+	addi	a2,a2,-1
+	j	loop
+done:
+	ret
 }
 I64 main() {
   U8 buf[8]; I64 i; for (i=0;i<8;i++) buf[i]=0;
-  AsmFill(buf, 'A', 5);
-  return buf[0]<<16 | buf[4]<<8 | buf[5];   // 0x41<<16 | 0x41<<8 | 0 = 0x414100
+  RvFill(buf, 'A', 5);
+  return buf[0]<<16 | buf[4]<<8 | buf[5];   // 0x414100
 }

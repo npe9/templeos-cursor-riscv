@@ -3299,108 +3299,132 @@ static bool ParseExpressionStatement(Compiler *cc) {
 
 
 // ----------------------------------------------------------------------------------------------
-// x86 -> RISC-V translation of asm{} functions (integer subset). TempleOS writes its low-level
-// primitives (MemSet, MemCpy, …) as x86 asm functions using the x86 stack calling convention
-// (args at SF_ARGn[RBP]); we translate the opcodes to RISC-V and synthesize a prologue that spills
-// the RISC-V argument registers a0..a7 into the SF_ARG slots so the body finds them. Anything not
-// yet supported makes TryTranslateAsm return false and the caller falls back to skipping the block
-// (the function then resolves to its runtime override by name — the safe baseline).
+// Native RISC-V assembler for asm{} blocks. The kernel's low-level primitives are written directly
+// in RISC-V opcodes (native RV64, the ordinary calling convention: args in a0..a7, return in a0) and
+// assembled here — NOT translated from x86. Supports a labeled function per block: register/mnemonic
+// operands, local labels, branches/jumps resolved to PC-relative offsets. Anything unsupported makes
+// TryAssembleRiscV return false and the caller skips the block (falling back to the runtime override).
 // ----------------------------------------------------------------------------------------------
-// x86 GP reg name -> RISC-V reg number. RAX=t0 RCX=t1 RDX=t2 RBX=t3 RSI=t4 RDI=t5 RBP=s1 RSP=sp,
-// R8..R15 -> s2..s9. s1/s2..s9 are callee-saved: the prologue saves the ones the function uses.
-static int AsmX86Reg(const char *n) {
-  static const char *nm[16] = {"RAX","RCX","RDX","RBX","RSI","RDI","RBP","RSP","R8","R9","R10","R11","R12","R13","R14","R15"};
-  static const int   rv[16] = {  5,   6,   7,  28,  29,  30,   9,   2,  18, 19, 20, 21, 22, 23, 24, 25};
+static int RvDigits(const char *p) { int v=0; if(!*p) return -1; for(;*p;p++){ if(*p<'0'||*p>'9') return -1; v=v*10+(*p-'0'); } return v; }
+static int RvRegNum(const char *n) {
   if (!n) return -1;
-  for (int i = 0; i < 16; i++) if (!strcmp(n, nm[i])) return rv[i];
+  if (!strcmp(n,"zero")||!strcmp(n,"x0")) return 0;
+  if (!strcmp(n,"ra")) return 1;   if (!strcmp(n,"sp")) return 2;   if (!strcmp(n,"gp")) return 3;
+  if (!strcmp(n,"tp")) return 4;   if (!strcmp(n,"fp")||!strcmp(n,"s0")) return 8;   if (!strcmp(n,"s1")) return 9;
+  if (n[0]=='t') { int k=RvDigits(n+1); if (k>=0&&k<=2) return 5+k; if (k>=3&&k<=6) return 28+(k-3); }
+  if (n[0]=='a' && n[1]) { int k=RvDigits(n+1); if (k>=0&&k<=7) return 10+k; }
+  if (n[0]=='s' && n[1]) { int k=RvDigits(n+1); if (k>=2&&k<=11) return 16+k; }   // s2..s11 = x18..x27
+  if (n[0]=='x') { int k=RvDigits(n+1); if (k>=0&&k<=31) return k; }
   return -1;
 }
-static bool AsmRegSaved(int rv) { return rv == 9 || (rv >= 18 && rv <= 25); }   // s1, s2..s9
-static U32 RvAddi(int rd, int rs, int imm) { return 0x13u | (rd<<7) | (rs<<15) | (((U32)imm & 0xFFF)<<20); }
-static U32 RvLd(int rd, int off, int rs)   { return 0x03u | (rd<<7) | (3u<<12) | (rs<<15) | (((U32)off & 0xFFF)<<20); }
-static U32 RvSd(int rs2, int off, int rs1) { return 0x23u | (((U32)off & 0x1F)<<7) | (3u<<12) | (rs1<<15) | (rs2<<20) | ((((U32)off>>5)&0x7F)<<25); }
-static U32 RvSb(int rs2, int off, int rs1) { return 0x23u | (((U32)off & 0x1F)<<7) | (0u<<12) | (rs1<<15) | (rs2<<20) | ((((U32)off>>5)&0x7F)<<25); }
-static U32 RvMv(int rd, int rs)            { return RvAddi(rd, rs, 0); }
-static U32 RvBeqz(int rs, int off) {   // beq rs,x0,off  (B-type, off in bytes, multiple of 2)
-  return 0x63u | (((U32)(off>>11)&1)<<7) | (((U32)(off>>1)&0xF)<<8) | (0u<<12) | (rs<<15) | (0<<20) |
-         (((U32)(off>>5)&0x3F)<<25) | (((U32)(off>>12)&1)<<31);
+static U32 RvR(U32 f7,U32 f3,int rd,int rs1,int rs2){ return 0x33u|(rd<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|(f7<<25); }
+static U32 RvI(U32 f3,int rd,int rs1,int imm){ return 0x13u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
+static U32 RvIsh(U32 f6,int rd,int rs1,int sh){ return 0x13u|(rd<<7)|(1u<<12)|(rs1<<15)|(((U32)sh&0x3F)<<20)|(f6<<26)|((f6==0x10?1u:0u)<<30); }
+static U32 RvLoad(U32 f3,int rd,int imm,int rs1){ return 0x03u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
+static U32 RvStore(U32 f3,int rs2,int imm,int rs1){ return 0x23u|(((U32)imm&0x1F)<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|((((U32)imm>>5)&0x7F)<<25); }
+static U32 RvBr(U32 f3,int rs1,int rs2,int off){ return 0x63u|(((U32)(off>>11)&1)<<7)|(((U32)(off>>1)&0xF)<<8)|(f3<<12)|(rs1<<15)|(rs2<<20)|(((U32)(off>>5)&0x3F)<<25)|(((U32)(off>>12)&1)<<31); }
+static U32 RvJ(int rd,int off){ return 0x6Fu|(rd<<7)|(((U32)(off>>12)&0xFF)<<12)|(((U32)(off>>11)&1)<<20)|(((U32)(off>>1)&0x3FF)<<21)|(((U32)(off>>20)&1)<<31); }
+static U32 RvJalr(int rd,int rs1,int imm){ return 0x67u|(rd<<7)|(0u<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
+
+typedef struct { char mn[12]; int rd,rs1,rs2,imm; char label[48]; int kind; } RvI2;  // kind: 0 none,1 branch,2 jump
+
+// Parse one register token (IDENT); returns reg num or -1.
+static int RvRegTok(Compiler *cc) {
+  if (cc->lex.token != TK_IDENT) return -1;
+  int r = RvRegNum(cc->lex.token_str); LexNext(cc); return r;
 }
-static U32 RvJal(int rd, int off) {    // jal rd,off (J-type)
-  return 0x6Fu | (rd<<7) | (((U32)(off>>12)&0xFF)<<12) | (((U32)(off>>11)&1)<<20) |
-         (((U32)(off>>1)&0x3FF)<<21) | (((U32)(off>>20)&1)<<31);
+// Parse an immediate (optional '-' then number). Returns 1 on success.
+static int RvImmTok(Compiler *cc, int *out) {
+  int neg = 0; if (cc->lex.token=='-'){ neg=1; LexNext(cc);} if (cc->lex.token!=TK_I64) return 0;
+  *out = (int)(neg ? -cc->lex.token_i64 : cc->lex.token_i64); LexNext(cc); return 1;
 }
-static U32 RvRet(void) { return 0x67u | (0<<7) | (1<<15); }   // jalr x0,0(ra)
 
-#define ASM_EMIT(w) ICAdd(cc, IC_RAW_RV, (I64)(U32)(w), RT_I64)
-
-// One translated instruction (parsed from the token stream) before emission.
-typedef struct { char op[24]; int dst, src; int imm; int mem_off; int is_load, is_imm; } AsmInsn;
-
-// Try to translate a single labeled asm function. Positioned at the label IDENT. Returns true and
-// emits it (registering the label as a callable/self-resolving function) or false to fall back.
-static bool TryTranslateAsm(Compiler *cc) {
+static bool TryAssembleRiscV(Compiler *cc) {
   if (cc->lex.token != TK_IDENT) return false;
   char label[128]; { const char *_s=cc->lex.token_str; int _i=0; for(;_s[_i]&&_i<127;_i++) label[_i]=_s[_i]; label[_i]=0; }
   LexNext(cc);
   if (cc->lex.token != TK_DBL_COLON) return false;
   LexNext(cc);
 
-  AsmInsn ins[128]; int nins = 0;
-  unsigned used_saved = 0;               // bitmask over reg numbers 9,18..25 actually used
-  int rax = AsmX86Reg("RAX");
-  // Parse instructions until the closing brace or an unsupported construct.
+  RvI2 ins[256]; int nins = 0;
+  struct { char name[48]; int idx; } labs[64]; int nlabs = 0;
+
   while (cc->lex.token != '}' && cc->lex.token != TK_EOF) {
     if (cc->lex.token != TK_IDENT) return false;
-    char mn[24]; { const char *_s=cc->lex.token_str; int _i=0; for(;_s[_i]&&_i<23;_i++) mn[_i]=_s[_i]; mn[_i]=0; }
-
-    // Standard x86 prologue/epilogue: consumed, not translated (we synthesize our own frame).
-    if (!strcmp(mn, "PUSH") || !strcmp(mn, "POP")) {                 // PUSH/POP <reg>  (frame bookkeeping)
-      LexNext(cc); if (cc->lex.token != TK_IDENT || AsmX86Reg(cc->lex.token_str) < 0) return false;
-      LexNext(cc); continue;
-    }
-    if (!strcmp(mn, "CLD") || !strcmp(mn, "STD") || !strcmp(mn, "NOP")) { LexNext(cc); continue; }
-    if (!strcmp(mn, "MOV") && (LexNext(cc), 1)) {                    // MOV dst, [size] SF_ARGn[RBP] | reg | imm
-      if (cc->lex.token != TK_IDENT) return false;
-      int dst = AsmX86Reg(cc->lex.token_str); if (dst < 0) return false;
-      // RBP,RSP standard-prologue MOV (MOV RBP,RSP): frame setup, consume.
-      if (!strcmp(cc->lex.token_str, "RBP")) { LexNext(cc); if (cc->lex.token==',') LexNext(cc);
-        if (cc->lex.token==TK_IDENT && !strcmp(cc->lex.token_str,"RSP")) { LexNext(cc); continue; } return false; }
-      LexNext(cc); if (cc->lex.token != ',') return false; LexNext(cc);
-      // optional size hint (U64/U32/...) then either SF_ARGn[RBP] (a load) or a register.
-      if (cc->lex.token == TK_IDENT && (cc->lex.token_str[0]=='U' || cc->lex.token_str[0]=='I') &&
-          (!strcmp(cc->lex.token_str,"U64")||!strcmp(cc->lex.token_str,"I64")||!strcmp(cc->lex.token_str,"U32")||
-           !strcmp(cc->lex.token_str,"I32")||!strcmp(cc->lex.token_str,"U16")||!strcmp(cc->lex.token_str,"U8")))
-        LexNext(cc);
-      if (cc->lex.token != TK_IDENT) return false;
-      int off = -1;
-      if (!strcmp(cc->lex.token_str,"SF_ARG1")) off = 16;
-      else if (!strcmp(cc->lex.token_str,"SF_ARG2")) off = 24;
-      else if (!strcmp(cc->lex.token_str,"SF_ARG3")) off = 32;
-      if (off >= 0) {                                               // MOV dst, SF_ARGn[RBP]  -> load
-        LexNext(cc); if (cc->lex.token != '[') return false; LexNext(cc);
-        if (cc->lex.token != TK_IDENT || strcmp(cc->lex.token_str,"RBP")) return false; LexNext(cc);
-        if (cc->lex.token != ']') return false; LexNext(cc);
-        AsmInsn *I=&ins[nins++]; strcpy(I->op,"LDARG"); I->dst=dst; I->mem_off=off; I->is_load=1; I->is_imm=0;
-      } else {                                                      // MOV dst, srcreg
-        int src = AsmX86Reg(cc->lex.token_str); if (src < 0) return false; LexNext(cc);
-        AsmInsn *I=&ins[nins++]; strcpy(I->op,"MOVR"); I->dst=dst; I->src=src; I->is_load=0; I->is_imm=0;
-      }
-      if (AsmRegSaved(dst)) used_saved |= 1u<<dst;
+    char w[48]; { const char *_s=cc->lex.token_str; int _i=0; for(;_s[_i]&&_i<47;_i++) w[_i]=_s[_i]; w[_i]=0; }
+    // Local label?  `name:` or `name::`
+    LexPush(cc); LexNext(cc);
+    int is_lab = (cc->lex.token == ':' || cc->lex.token == TK_DBL_COLON);
+    LexPopRestore(cc);
+    if (is_lab) {
+      LexNext(cc); LexNext(cc);   // consume name and ':'/'::'
+      if (nlabs < 64) { int _i=0; for(;w[_i]&&_i<47;_i++) labs[nlabs].name[_i]=w[_i]; labs[nlabs].name[_i]=0; labs[nlabs].idx=nins; nlabs++; }
       continue;
     }
-    if (!strcmp(mn, "REP_STOSB")) {                                 // while(RCX--) [RDI]=AL; RDI++
-      LexNext(cc); AsmInsn *I=&ins[nins++]; strcpy(I->op,"REPSTOSB"); continue;
-    }
-    if (!strcmp(mn, "RET1") || !strcmp(mn, "RET")) {                // epilogue: return RAX
-      LexNext(cc); if (cc->lex.token == TK_I64) LexNext(cc);        // RET1 N (arg-pop count, irrelevant on RISC-V)
-      AsmInsn *I=&ins[nins++]; strcpy(I->op,"RET"); break;
-    }
-    return false;                                                   // unsupported mnemonic -> fall back
-  }
-  if (nins == 0 || strcmp(ins[nins-1].op, "RET")) return false;
-  if (cc->lex.token != '}') return false;   // first version: only single-function asm blocks
+    LexNext(cc);   // consume mnemonic
+    if (nins >= 256) return false;
+    RvI2 *I = &ins[nins]; { RvI2 _z; { char *_p=(char*)&_z; for(unsigned _j=0;_j<sizeof(_z);_j++) _p[_j]=0; } *I=_z; } { int _i=0; for(;w[_i]&&_i<11;_i++) I->mn[_i]=w[_i]; I->mn[_i]=0; }
 
-  // Register the label as a self-resolving function so calls by name reach the translated code.
+    // Pseudo & real mnemonics.
+    if (!strcmp(w,"ret") || !strcmp(w,"nop")) { nins++; continue; }
+    if (!strcmp(w,"mv") || !strcmp(w,"not") || !strcmp(w,"neg")) {          // rd, rs
+      I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc);
+      if (I->rd<0||I->rs1<0) return false; nins++; continue;
+    }
+    if (!strcmp(w,"li")) {                                                  // rd, imm
+      I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); if(!RvImmTok(cc,&I->imm)) return false;
+      if (I->rd<0) return false; nins++; continue;
+    }
+    if (!strcmp(w,"j")) {                                                   // j label
+      if (cc->lex.token!=TK_IDENT) return false; { int _i=0; for(;cc->lex.token_str[_i]&&_i<47;_i++) I->label[_i]=cc->lex.token_str[_i]; I->label[_i]=0; }
+      LexNext(cc); I->kind=2; I->rd=0; nins++; continue;
+    }
+    if (!strcmp(w,"beqz") || !strcmp(w,"bnez")) {                           // rs, label
+      I->rs1=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      if (cc->lex.token!=TK_IDENT) return false; { int _i=0; for(;cc->lex.token_str[_i]&&_i<47;_i++) I->label[_i]=cc->lex.token_str[_i]; I->label[_i]=0; }
+      LexNext(cc); I->kind=1; I->rs2=0; if (I->rs1<0) return false; nins++; continue;
+    }
+    if (!strcmp(w,"beq")||!strcmp(w,"bne")||!strcmp(w,"blt")||!strcmp(w,"bge")||!strcmp(w,"bltu")||!strcmp(w,"bgeu")) {
+      I->rs1=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      I->rs2=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      if (cc->lex.token!=TK_IDENT) return false; { int _i=0; for(;cc->lex.token_str[_i]&&_i<47;_i++) I->label[_i]=cc->lex.token_str[_i]; I->label[_i]=0; }
+      LexNext(cc); I->kind=1; if (I->rs1<0||I->rs2<0) return false; nins++; continue;
+    }
+    // Loads: rd, imm(rs1)   Stores: rs2, imm(rs1)
+    if (!strcmp(w,"ld")||!strcmp(w,"lw")||!strcmp(w,"lwu")||!strcmp(w,"lh")||!strcmp(w,"lhu")||!strcmp(w,"lb")||!strcmp(w,"lbu")||
+        !strcmp(w,"sd")||!strcmp(w,"sw")||!strcmp(w,"sh")||!strcmp(w,"sb")) {
+      int first=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      if(!RvImmTok(cc,&I->imm)) I->imm=0; if (cc->lex.token!='(') return false; LexNext(cc);
+      I->rs1=RvRegTok(cc); if (cc->lex.token!=')') return false; LexNext(cc);
+      if (first<0||I->rs1<0) return false;
+      if (w[0]=='s') I->rs2=first; else I->rd=first;   // store: first is rs2; load: first is rd
+      nins++; continue;
+    }
+    // jalr rd, imm(rs1)  |  jalr rs1
+    if (!strcmp(w,"jalr")) {
+      int r1=RvRegTok(cc);
+      if (cc->lex.token==',') { LexNext(cc); if(!RvImmTok(cc,&I->imm)) I->imm=0; if (cc->lex.token!='(') return false; LexNext(cc); I->rs1=RvRegTok(cc); if (cc->lex.token!=')') return false; LexNext(cc); I->rd=r1; }
+      else { I->rd=1; I->rs1=r1; I->imm=0; }
+      if (I->rs1<0) return false; nins++; continue;
+    }
+    // R-type: rd, rs1, rs2   |   I-type arith: rd, rs1, imm
+    if (!strcmp(w,"add")||!strcmp(w,"sub")||!strcmp(w,"and")||!strcmp(w,"or")||!strcmp(w,"xor")||!strcmp(w,"sll")||!strcmp(w,"srl")||!strcmp(w,"sra")||!strcmp(w,"slt")||!strcmp(w,"sltu")||!strcmp(w,"mul")||!strcmp(w,"div")||!strcmp(w,"rem")||
+        !strcmp(w,"addi")||!strcmp(w,"andi")||!strcmp(w,"ori")||!strcmp(w,"xori")||!strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai")||!strcmp(w,"slti")) {
+      I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      int _wl=0; while(w[_wl]) _wl++; bool imm_form = (_wl>0 && w[_wl-1]=='i' && strcmp(w,"jalr")) || !strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai");
+      if (imm_form) { if(!RvImmTok(cc,&I->imm)) return false; }
+      else { I->rs2=RvRegTok(cc); if (I->rs2<0) return false; }
+      if (I->rd<0||I->rs1<0) return false; nins++; continue;
+    }
+    return false;   // unsupported mnemonic
+  }
+  if (cc->lex.token != '}') return false;   // single-function block for now
+  if (nins == 0) return false;
+
+  // Resolve a label name to instruction index.
+  #define RV_LBL(nm) ({ int _r=-1; for(int _k=0;_k<nlabs;_k++) if(!strcmp(labs[_k].name,nm)){_r=labs[_k].idx;break;} _r; })
+
+  // Register + emit into a deferred function chain (like ParseFunction).
   CHashEntry *e = cc->hash_table ? HashFind(label, cc->hash_table, HTT_FUN) : NULL;
   CHashFun *fn;
   if (e && (e->type & HTT_FUN)) fn = (CHashFun *)e;
@@ -3408,48 +3432,66 @@ static bool TryTranslateAsm(Compiler *cc) {
          if (cc->hash_table) HashAdd((CHashEntry *)fn, cc->hash_table); }
   CLabel *entry = LabelNew(cc, label);
   fn->entry_label = entry; fn->entry_label_defined = 1;
-  // Emit into a fresh IC chain and defer it as its own function (like ParseFunction) — NOT inline in
-  // the current top-level stream, or the function's `ret` would return out of the entry chunk.
   CIntermediateCode *asm_prev_head = cc->ic_head, *asm_prev_tail = cc->ic_tail;
   cc->ic_head = cc->ic_tail = NULL;
-  ICAdd(cc, IC_LABEL, (I64)entry, RT_I64);
-  entry->defined = true;
+  ICAdd(cc, IC_LABEL, (I64)entry, RT_I64); entry->defined = true;
 
-  // Synthesized prologue: frame of 256, save ra + used callee-saved regs at the top, RBP=sp+128,
-  // spill a0..a7 into SF_ARG slots (RBP+16..RBP+72).
-  int RBP = AsmX86Reg("RBP");
-  ASM_EMIT(RvAddi(2, 2, -256));                 // addi sp,sp,-256
-  ASM_EMIT(RvSd(1, 248, 2));                    // sd ra,248(sp)
-  ASM_EMIT(RvSd(RBP, 240, 2));                  // sd s1(RBP),240(sp)
-  int save_off = 232;
-  for (int r = 18; r <= 25; r++) if (used_saved & (1u<<r)) { ASM_EMIT(RvSd(r, save_off, 2)); save_off -= 8; }
-  ASM_EMIT(RvAddi(RBP, 2, 128));                // addi RBP,sp,128
-  for (int a = 0; a < 8; a++) ASM_EMIT(RvSd(10 + a, 16 + a*8, RBP));   // sd a<a>, (16+a*8)(RBP)
-
-  // Body.
   for (int i = 0; i < nins; i++) {
-    AsmInsn *I = &ins[i];
-    if (!strcmp(I->op, "LDARG"))      ASM_EMIT(RvLd(I->dst, I->mem_off, RBP));
-    else if (!strcmp(I->op, "MOVR"))  ASM_EMIT(RvMv(I->dst, I->src));
-    else if (!strcmp(I->op, "REPSTOSB")) {
-      int RCX=AsmX86Reg("RCX"), RDI=AsmX86Reg("RDI"), RAX=AsmX86Reg("RAX");
-      ASM_EMIT(RvBeqz(RCX, 20));                // beq RCX,x0,+20 (skip 4 instrs to loop end)
-      ASM_EMIT(RvSb(RAX, 0, RDI));              // sb AL,0(RDI)
-      ASM_EMIT(RvAddi(RDI, RDI, 1));            // addi RDI,RDI,1
-      ASM_EMIT(RvAddi(RCX, RCX, -1));           // addi RCX,RCX,-1
-      ASM_EMIT(RvJal(0, -16));                  // j loop (back 4 instrs)
-    }
-    else if (!strcmp(I->op, "RET")) {
-      ASM_EMIT(RvMv(10, rax));                  // mv a0,RAX (return value)
-      save_off = 232;
-      for (int r = 18; r <= 25; r++) if (used_saved & (1u<<r)) { ASM_EMIT(RvLd(r, save_off, 2)); save_off -= 8; }
-      ASM_EMIT(RvLd(RBP, 240, 2));              // ld s1(RBP),240(sp)
-      ASM_EMIT(RvLd(1, 248, 2));                // ld ra,248(sp)
-      ASM_EMIT(RvAddi(2, 2, 256));              // addi sp,sp,256
-      ASM_EMIT(RvRet());
-    }
+    RvI2 *I = &ins[i]; const char *m = I->mn; U32 word = 0x00000013;  // default nop
+    int boff = 0;
+    if (I->kind == 1 || I->kind == 2) { int t = RV_LBL(I->label); if (t < 0) { cc->ic_head=asm_prev_head; cc->ic_tail=asm_prev_tail; return false; } boff = (t - i) * 4; }
+    if (!strcmp(m,"ret"))       word = RvJalr(0,1,0);
+    else if (!strcmp(m,"nop"))  word = RvI(0,0,0,0);
+    else if (!strcmp(m,"mv"))   word = RvI(0,I->rd,I->rs1,0);
+    else if (!strcmp(m,"not"))  word = RvI(4,I->rd,I->rs1,-1);
+    else if (!strcmp(m,"neg"))  word = RvR(0x20,0,I->rd,0,I->rs1);
+    else if (!strcmp(m,"li"))   word = RvI(0,I->rd,0,I->imm);
+    else if (!strcmp(m,"j"))    word = RvJ(0,boff);
+    else if (!strcmp(m,"beqz")) word = RvBr(0,I->rs1,0,boff);
+    else if (!strcmp(m,"bnez")) word = RvBr(1,I->rs1,0,boff);
+    else if (!strcmp(m,"beq"))  word = RvBr(0,I->rs1,I->rs2,boff);
+    else if (!strcmp(m,"bne"))  word = RvBr(1,I->rs1,I->rs2,boff);
+    else if (!strcmp(m,"blt"))  word = RvBr(4,I->rs1,I->rs2,boff);
+    else if (!strcmp(m,"bge"))  word = RvBr(5,I->rs1,I->rs2,boff);
+    else if (!strcmp(m,"bltu")) word = RvBr(6,I->rs1,I->rs2,boff);
+    else if (!strcmp(m,"bgeu")) word = RvBr(7,I->rs1,I->rs2,boff);
+    else if (!strcmp(m,"ld"))   word = RvLoad(3,I->rd,I->imm,I->rs1);
+    else if (!strcmp(m,"lw"))   word = RvLoad(2,I->rd,I->imm,I->rs1);
+    else if (!strcmp(m,"lwu"))  word = RvLoad(6,I->rd,I->imm,I->rs1);
+    else if (!strcmp(m,"lh"))   word = RvLoad(1,I->rd,I->imm,I->rs1);
+    else if (!strcmp(m,"lhu"))  word = RvLoad(5,I->rd,I->imm,I->rs1);
+    else if (!strcmp(m,"lb"))   word = RvLoad(0,I->rd,I->imm,I->rs1);
+    else if (!strcmp(m,"lbu"))  word = RvLoad(4,I->rd,I->imm,I->rs1);
+    else if (!strcmp(m,"sd"))   word = RvStore(3,I->rs2,I->imm,I->rs1);
+    else if (!strcmp(m,"sw"))   word = RvStore(2,I->rs2,I->imm,I->rs1);
+    else if (!strcmp(m,"sh"))   word = RvStore(1,I->rs2,I->imm,I->rs1);
+    else if (!strcmp(m,"sb"))   word = RvStore(0,I->rs2,I->imm,I->rs1);
+    else if (!strcmp(m,"jalr")) word = RvJalr(I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"addi")) word = RvI(0,I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"andi")) word = RvI(7,I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"ori"))  word = RvI(6,I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"xori")) word = RvI(4,I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"slti")) word = RvI(2,I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"slli")) word = RvIsh(0,I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"srli")) word = RvIsh(0,I->rd,I->rs1,I->imm) | (0u<<30);
+    else if (!strcmp(m,"srai")) word = (RvIsh(0,I->rd,I->rs1,I->imm)) | (0x40000000u);
+    else if (!strcmp(m,"add"))  word = RvR(0,0,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"sub"))  word = RvR(0x20,0,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"and"))  word = RvR(0,7,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"or"))   word = RvR(0,6,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"xor"))  word = RvR(0,4,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"sll"))  word = RvR(0,1,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"srl"))  word = RvR(0,5,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"sra"))  word = RvR(0x20,5,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"slt"))  word = RvR(0,2,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"sltu")) word = RvR(0,3,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"mul"))  word = RvR(1,0,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"div"))  word = RvR(1,4,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"rem"))  word = RvR(1,6,I->rd,I->rs1,I->rs2);
+    ICAdd(cc, IC_RAW_RV, (I64)word, RT_I64);
   }
-  // Defer this function's IC chain, then restore the top-level stream.
+  #undef RV_LBL
+
   if (cc->defer_aot_compile) {
     AOTFnICChunk *chunk = calloc(1, sizeof(AOTFnICChunk));
     chunk->head = cc->ic_head; chunk->tail = cc->ic_tail; chunk->fun = fn; chunk->next = NULL;
@@ -3460,6 +3502,7 @@ static bool TryTranslateAsm(Compiler *cc) {
   cc->asm_funcs_translated++;
   return true;
 }
+
 
 bool ParseStatement(Compiler *cc) {
   // Match original PrsStmt.HC structure with while(TRUE) loop
@@ -3830,7 +3873,7 @@ bool ParseStatement(Compiler *cc) {
       // unsupported construct, roll back to the saved IC tail and skip the block — the function then
       // resolves to its runtime override by name, the safe baseline.
       CIntermediateCode *asm_saved_tail = cc->ic_tail;
-      bool asm_translated = TryTranslateAsm(cc) && cc->lex.token == '}';
+      bool asm_translated = TryAssembleRiscV(cc) && cc->lex.token == (char)0x7d;
       if (!asm_translated) {
         if (asm_saved_tail) { asm_saved_tail->next = NULL; cc->ic_tail = asm_saved_tail; }
         else { cc->ic_head = cc->ic_tail = NULL; }
