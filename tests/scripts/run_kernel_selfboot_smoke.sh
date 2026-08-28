@@ -11,7 +11,7 @@ OUTDIR="$ROOT/build/exec"
 COMPILER="$ROOT/holyc-riscv"
 SRC="$ROOT/tests/exec/cases/kernel_selfboot_demo.hc"
 EXPECT="Adam booted and scheduled its first task"
-EXPECT2="Adam is scheduling"
+EXPECT2="A:/BOOT.TXT back OK"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"

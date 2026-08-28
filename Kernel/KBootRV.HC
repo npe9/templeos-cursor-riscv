@@ -193,6 +193,26 @@ U0 RVBootTask2()
   Yield();
 }
 
+// Mount a RAM disk as drive `drv_let` and bring up the kernel's own RedSea filesystem on it — the
+// RISC-V stand-in for KMain()'s BlkDevsInitAll / DskChg. Everything below BlkDevAdd is the kernel's
+// own Kernel/BlkDev/*.HC: BlkDevInit auto-formats a blank RAM disk with RedSeaFmt, Drv() selects it.
+// The x86 boot uses a physical ATA disk; on QEMU virt a BDT_RAM disk needs no device driver at all
+// (BlkRead/BlkWrite MemCpy to/from the buffer). blocks*512 bytes are allocated from the heap.
+U0 RVMountRAMDisk(U8 drv_let,I64 blocks)
+{
+  // The runtime half of BlkDevsInitAll (its #exe half would emit the x86 MountIDEAuto): allocate the
+  // block-device and drive tables and wire the drive-letter map. Guard against a second call.
+  if (!blkdev.blkdevs) {
+    blkdev.blkdevs=CAlloc(sizeof(CBlkDev)*BLKDEVS_NUM);
+    blkdev.drvs=CAlloc(sizeof(CDrv)*DRVS_NUM);
+    I64 i; for (i=0;i<DRVS_NUM;i++) blkdev.let_to_drv[i]=&blkdev.drvs[i];
+  }
+  CBlkDev *bd=BlkDevNextFreeSlot(drv_let,BDT_RAM);
+  bd->unit=0; bd->RAM_dsk=0; bd->max_blk=blocks-1;   // RAM_dsk=0 -> BlkDevInit AMAllocs blocks*512 B
+  BlkDevAdd(bd,I64_MIN,FALSE,TRUE);                   // -> BlkDevInit -> RedSeaFmt on a blank disk
+  Drv(drv_let);                                       // sets Fs->cur_dv, Fs->cur_dir="/"
+}
+
 // Spawn a task with the kernel's own Spawn(), then re-seed its first on-stack switch frame for the
 // RISC-V calling convention and link it into Adam's next_task ring — the boot's Spawn boilerplate.
 CTask *RVKSpawn(U0 (*entry)(),U8 *name,CTask *adam)
@@ -239,7 +259,19 @@ U0 RVKMain()
 
   // x86: SysGlblsInit / Mem32DevInit / UncachedAliasAlloc / LoadKernel / SysGrInit — VGA display + kernel image relocation.
   // x86: TimersInit / IntsInit / IntInit1 / IntInit2 / SetRFlags — the PIT/HPET timers and the 8259/APIC interrupt controllers.
-  // phase 3: BlkDevsInitAll / DskChg(':') / HomeSet — bring up block devices and mount the file system.
+
+  // Bring up storage and mount the file system (KMain's BlkDevsInitAll / DskChg). On the QEMU virt
+  // machine this is a RAM disk auto-formatted with the kernel's own RedSea — a real, mounted drive A.
+  RVMountRAMDisk('A',4096);           // 2 MB RedSea disk on drive 'A'; Drv('A') set Adam's cur_dv/cur_dir
+  // Prove the booted kernel has a working filesystem: write a file and read it back through the
+  // kernel's own FileWrite/FileRead (the Load/ExeFile path). Runs as Adam, whose cur_dv the mount set.
+  { U8 *msg="booted with a mounted RedSea filesystem";
+    FileWrite("A:/BOOT.TXT",msg,StrLen(msg));
+    I64 sz=0; U8 *back=FileRead("A:/BOOT.TXT",&sz,NULL);
+    if (back && sz==StrLen(msg) && !StrNCmp(back,msg,StrLen(msg)))
+      Print("RVKMain: mounted RedSea on A:, wrote and read A:/BOOT.TXT back OK (%d bytes).\n",sz);
+  }
+
   // phase 3: Load("/Compiler/Compiler") / ExeFile("StartOS") / SrvTaskCont — load the compiler and enter the Adam server loop.
 
   // Arm the machine-timer preemption (the RISC-V analogue of IntInit2/IntsInit installing the timer
