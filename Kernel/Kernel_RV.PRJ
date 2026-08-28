@@ -68,6 +68,7 @@
 //x86: #include "FunSeg"
 #include "KMain"
 #include "KUtilsRV"   // native RISC-V ports of KUtils.HC low-level primitives (MemSet/MemCpy)
+#include "BlkDev/DskVirtioRV"   // native RISC-V legacy virtio-mmio block driver (translates x86 DskATA)
 #include "KBootRV"   // RISC-V portable boot init (tables + UART console)
 
 #exe {KCfgDel(kernel_cfg);};
