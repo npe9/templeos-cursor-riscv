@@ -3347,6 +3347,15 @@ static int RvFRegTok(Compiler *cc) {
   if (cc->lex.token != TK_IDENT) return -1;
   int r = RvFRegNum(cc->lex.token_str); LexNext(cc); return r;
 }
+// Append one assembled instruction entry (used by the lifp macro expansion). Returns false if full.
+static bool RvPushI(RvI2 *ins, int *nins, const char *mn, int rd, int rs1, int imm) {
+  if (*nins >= 256) return false;
+  RvI2 *I = &ins[*nins];
+  { char *_p=(char*)I; for(unsigned _j=0;_j<sizeof(RvI2);_j++) _p[_j]=0; }
+  { int _i=0; for(;mn[_i]&&_i<11;_i++) I->mn[_i]=mn[_i]; I->mn[_i]=0; }
+  I->rd=rd; I->rs1=rs1; I->imm=imm;
+  (*nins)++; return true;
+}
 // Parse an immediate (optional '-' then number). Returns 1 on success.
 static int RvImmTok(Compiler *cc, int *out) {
   int neg = 0; if (cc->lex.token=='-'){ neg=1; LexNext(cc);} if (cc->lex.token!=TK_I64) return 0;
@@ -3428,6 +3437,21 @@ static bool TryAssembleRiscV(Compiler *cc) {
     if (!strcmp(w,"rdtime")) {                                   // rd  (csrrs rd, time, x0)
       I->rd=RvRegTok(cc); if (I->rd<0) return false; nins++; continue;
     }
+    if (!strcmp(w,"lifp")) {   // rd, imm64 -> materialize a full 64-bit constant (for F64 bit patterns):
+      // li rd,bits[63:55]; then 5x (slli rd,rd,11; addi rd,rd,<11-bit chunk>). 11 one-word entries.
+      int rd=RvRegTok(cc); if (rd<0) return false;
+      if (cc->lex.token!=',') return false; LexNext(cc);
+      { int neg=0; if (cc->lex.token=='-'){ neg=1; LexNext(cc);} if (cc->lex.token!=TK_I64) return false;
+        U64 v=(U64)cc->lex.token_i64; if (neg) v=(U64)(-(I64)v); LexNext(cc);
+        int sh[5]={44,33,22,11,0};
+        if (!RvPushI(ins,&nins,"li",rd,0,(int)((v>>55)&0x1FF))) return false;
+        for (int ci=0; ci<5; ci++) {
+          if (!RvPushI(ins,&nins,"slli",rd,rd,11)) return false;
+          if (!RvPushI(ins,&nins,"addi",rd,rd,(int)((v>>sh[ci])&0x7FF))) return false;
+        }
+      }
+      continue;
+    }
     if (!strcmp(w,"csrr")) {                                     // rd, csr  (csrrs rd, csr, x0)
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); if(!RvImmTok(cc,&I->imm)) return false;
       if (I->rd<0) return false; nins++; continue;
@@ -3442,6 +3466,16 @@ static bool TryAssembleRiscV(Compiler *cc) {
     if (!strcmp(w,"fsqrtd")) {                                   // fd, fs  (both float)
       I->rd=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvFRegTok(cc);
       if (I->rd<0||I->rs1<0) return false; nins++; continue;
+    }
+    if (!strcmp(w,"faddd")||!strcmp(w,"fsubd")||!strcmp(w,"fmuld")||!strcmp(w,"fdivd")) { // fd, fs1, fs2 (all float)
+      I->rd=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      I->rs1=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs2=RvFRegTok(cc);
+      if (I->rd<0||I->rs1<0||I->rs2<0) return false; nins++; continue;
+    }
+    if (!strcmp(w,"fled")||!strcmp(w,"fltd")||!strcmp(w,"feqd")) { // rd(int), fs1, fs2 (float) -> 0/1
+      I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      I->rs1=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs2=RvFRegTok(cc);
+      if (I->rd<0||I->rs1<0||I->rs2<0) return false; nins++; continue;
     }
     if (!strcmp(w,"fmvdx")||!strcmp(w,"fcvtdl")) {               // fd(float), rs(int)
       I->rd=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc);
@@ -3534,6 +3568,13 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"divu")) word = RvR(1,5,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"remu")) word = RvR(1,7,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"fsqrtd"))     word = 0x5A000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15);
+    else if (!strcmp(m,"faddd"))      word = 0x02000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fsubd"))      word = 0x0A000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fmuld"))      word = 0x12000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fdivd"))      word = 0x1A000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fled"))       word = 0xA2000053u | (I->rd<<7)  | (0u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fltd"))       word = 0xA2000053u | (I->rd<<7)  | (1u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"feqd"))       word = 0xA2000053u | (I->rd<<7)  | (2u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fmvdx"))      word = 0xF2000053u | (I->rd<<7)  | (I->rs1<<15);
     else if (!strcmp(m,"fmvxd"))      word = 0xE2000053u | (I->rd<<7)  | (I->rs1<<15);
     else if (!strcmp(m,"fcvtld_rtz")) word = 0xC2000053u | (I->rd<<7)  | (1u<<12) | (I->rs1<<15) | (2u<<20);

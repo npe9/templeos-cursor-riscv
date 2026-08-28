@@ -722,3 +722,160 @@ ro32_done:
 	li	a0,0
 	ret
 }
+// RV64D transcendentals (native FPU, per "use the fpu for the float library"). RISC-V has no hardware
+// ln/exp, so Ln/Exp port rt_ln/rt_exp (holy_rt.h) loop-for-loop on the FPU; 64-bit F64 constants come
+// from the lifp macro. Exp(x): range-reduce by ln2, 30-term Taylor, scale by 2^k. (was x87 in TempleOS)
+asm {
+Exp::
+	fmvdx	ft0,a0
+	lifp	t0,0x4086280000000000
+	fmvdx	ft7,t0
+	fltd	t0,ft7,ft0
+	beq	t0,zero,exp_nohi
+	lifp	a0,0x7FF0000000000000
+	ret
+exp_nohi:
+	lifp	t0,0xC087480000000000
+	fmvdx	ft7,t0
+	fltd	t0,ft0,ft7
+	beq	t0,zero,exp_nolo
+	li	a0,0
+	ret
+exp_nolo:
+	lifp	t0,0x3FE62E42FEFA39EF
+	fmvdx	ft1,t0
+	lifp	t0,0x4000000000000000
+	fmvdx	ft3,t0
+	li	t0,0
+	fmvdx	ft8,t0
+	lifp	t0,0x3FE0000000000000
+	fmvdx	ft9,t0
+	fdivd	ft4,ft0,ft1
+	fled	t2,ft8,ft0
+	beq	t2,zero,exp_negb
+	faddd	ft4,ft4,ft9
+	j	exp_bdone
+exp_negb:
+	lifp	t2,0xBFE0000000000000
+	fmvdx	ft7,t2
+	faddd	ft4,ft4,ft7
+exp_bdone:
+	fcvtld_rtz	t0,ft4
+	fcvtdl	ft5,t0
+	fmuld	ft5,ft5,ft1
+	fsubd	ft4,ft0,ft5
+	lifp	t2,0x3FF0000000000000
+	fmvdx	ft5,t2
+	fmvdx	ft6,t2
+	li	t1,1
+exp_loop:
+	li	t2,30
+	bge	t1,t2,exp_scale
+	fcvtdl	ft7,t1
+	fdivd	ft7,ft4,ft7
+	fmuld	ft6,ft6,ft7
+	faddd	ft5,ft5,ft6
+	addi	t1,t1,1
+	j	exp_loop
+exp_scale:
+exp_up:
+	bge	zero,t0,exp_updone
+	fmuld	ft5,ft5,ft3
+	addi	t0,t0,-1
+	j	exp_up
+exp_updone:
+exp_dn:
+	bge	t0,zero,exp_dndone
+	fmuld	ft5,ft5,ft9
+	addi	t0,t0,1
+	j	exp_dn
+exp_dndone:
+	fmvxd	a0,ft5
+	ret
+}
+// Ln(x): range-reduce to [1,2) tracking the power of 2, atanh series (60 terms), + e*ln2. Ports rt_ln.
+asm {
+Ln::
+	fmvdx	ft0,a0
+	li	t0,0
+	fmvdx	ft9,t0
+	fled	t0,ft0,ft9
+	beq	t0,zero,ln_pos
+	feqd	t0,ft0,ft9
+	beq	t0,zero,ln_nan
+	lifp	a0,0xFFF0000000000000
+	ret
+ln_nan:
+	lifp	a0,0x7FF8000000000000
+	ret
+ln_pos:
+	lifp	t0,0x3FF0000000000000
+	fmvdx	ft1,t0
+	lifp	t0,0x4000000000000000
+	fmvdx	ft2,t0
+	lifp	t0,0x3FE0000000000000
+	fmvdx	ft3,t0
+	lifp	t0,0x3FE62E42FEFA39EF
+	fmvdx	ft4,t0
+	li	t0,0
+ln_up:
+	fled	t2,ft2,ft0
+	beq	t2,zero,ln_updone
+	fmuld	ft0,ft0,ft3
+	addi	t0,t0,1
+	j	ln_up
+ln_updone:
+ln_dn:
+	fltd	t2,ft0,ft1
+	beq	t2,zero,ln_dndone
+	fmuld	ft0,ft0,ft2
+	addi	t0,t0,-1
+	j	ln_dn
+ln_dndone:
+	fsubd	ft5,ft0,ft1
+	faddd	ft9,ft0,ft1
+	fdivd	ft5,ft5,ft9
+	fmuld	ft6,ft5,ft5
+	li	t2,0
+	fmvdx	ft7,t2
+	fmuld	ft8,ft5,ft1
+	li	t1,1
+ln_loop:
+	li	t2,60
+	bge	t1,t2,ln_sdone
+	fcvtdl	ft9,t1
+	fdivd	ft10,ft8,ft9
+	faddd	ft7,ft7,ft10
+	fmuld	ft8,ft8,ft6
+	addi	t1,t1,2
+	j	ln_loop
+ln_sdone:
+	fmuld	ft7,ft7,ft2
+	fcvtdl	ft9,t0
+	fmuld	ft9,ft9,ft4
+	faddd	ft7,ft7,ft9
+	fmvxd	a0,ft7
+	ret
+}
+// Float-library compositions over the native FPU Ln/Exp (these compile to native RISC-V fmul/fdiv).
+F64 Log2(F64 x)  { return Ln(x) / 0.6931471805599453; }
+F64 Log10(F64 x) { return Ln(x) / 2.302585092994046; }
+F64 Pow10(F64 x) { return Exp(x * 2.302585092994046); }
+F64 Pow(F64 a, F64 b)
+{ // Port of rt_pow: exact integer-exponent fast path, else Exp(b*Ln(a)).
+  F64 r, base, bf;
+  I64 n, neg, bi;
+  if (b == 0.0) return 1.0;
+  if (a == 0.0) { if (b > 0.0) return 0.0; else return 1.0 / (b - b); }
+  bi = b; bf = bi;
+  if (b == bf && b > -1024.0 && b < 1024.0) {
+    n = bi; neg = 0;
+    if (n < 0) { neg = 1; n = -n; }
+    r = 1.0; base = a;
+    while (n) { if (n & 1) r = r * base; base = base * base; n = n >> 1; }
+    if (neg) return 1.0 / r;
+    return r;
+  }
+  if (a < 0.0) return (a - a) / (a - a);   // nan
+  return Exp(b * Ln(a));
+}
