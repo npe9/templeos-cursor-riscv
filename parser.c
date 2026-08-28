@@ -3999,6 +3999,7 @@ static bool ParseClassMembers(Compiler *cc, CHashClass *tmpc, bool is_union, I64
       I64 member_size;
       if (ptr || is_fnptr) member_size = 8;
       else if (mcls && mcls->size > 0) member_size = mcls->size;
+      else if (member_type == RT_U0 || member_type == RT_I0) member_size = 0;   // zero-size position marker (e.g. CDirEntry.start, CMemUsed.start) — must not consume a slot
       else { member_size = PrimitiveTypeSize(member_type); if (member_size <= 0) member_size = 8; }
       I64 elem_size = member_size;
       bool is_array = false;
