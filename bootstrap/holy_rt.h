@@ -502,6 +502,8 @@ static HRT_I64 HolyRVSleep(HRT_I64 ticks) {
 static char holy_urx[256];
 static int  holy_urx_head = 0, holy_urx_tail = 0;
 
+static volatile HRT_I64 holy_virtio_irqs = 0;   /* count of serviced virtio-mmio completion interrupts */
+
 static void HolyServiceExternal(void) {
   volatile HRT_U32 *claim = (volatile HRT_U32 *)(HOLY_PLIC + 0x200004);   /* context 0 claim/complete */
   HRT_U32 irq = *claim;
@@ -513,9 +515,18 @@ static void HolyServiceExternal(void) {
       int nh = (holy_urx_head + 1) & 255;
       if (nh != holy_urx_tail) { holy_urx[holy_urx_head] = c; holy_urx_head = nh; }
     }
+  } else if (irq >= 1 && irq <= 8) {
+    /* virtio-mmio slot (0x10001000..0x10008000 map to PLIC IRQ 1..8). The device keeps asserting
+     * the line until its InterruptStatus is acknowledged, so completing the PLIC claim WITHOUT this
+     * ack would re-fire forever. Read InterruptStatus (0x60), write it back to InterruptACK (0x64). */
+    volatile HRT_U32 *isr  = (volatile HRT_U32 *)(0x10000000 + (HRT_I64)irq*0x1000 + 0x60);
+    volatile HRT_U32 *iack = (volatile HRT_U32 *)(0x10000000 + (HRT_I64)irq*0x1000 + 0x64);
+    *iack = *isr;
+    holy_virtio_irqs++;
   }
   if (irq) *claim = irq;                                                   /* complete */
 }
+static HRT_I64 HolyRVVirtioIrqs(void) { return holy_virtio_irqs; }
 
 static HRT_I64 HolyRVUartIrqInit(void) {
   *(volatile HRT_U8 *)0x10000001 = 1;                                      /* UART IER: RX-data interrupt */

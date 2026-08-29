@@ -155,3 +155,27 @@ U0 RVMountVirtioDisk(U8 drv_let)
   BlkDevAdd(bd,I64_MIN,FALSE,TRUE);
   Drv(drv_let);
 }
+
+// Enable machine external interrupts (mie.MEIE, bit 11). 0x800 exceeds addi's 12-bit range, so build
+// it with li+slli; csrs mie sets the bit without disturbing the rest. Global MIE comes from RVTrapInit.
+asm {
+RvSetMEIE::
+	li	t0,1
+	slli	t0,t0,11
+	csrs	0x304,t0
+	ret
+}
+
+// Route the virtio-blk device's completion interrupt through the PLIC to this hart (context 0). The
+// device's PLIC IRQ is its slot index (base 0x1000X000 -> IRQ X). After this, a used-ring update
+// raises a machine external interrupt that HolyServiceExternal acknowledges. Requires RVTrapInit first.
+U0 VirtioBlkIrqInit()
+{
+  I64 irq;
+  if (!virtio_blk_base) return;
+  irq=(virtio_blk_base-0x10000000)>>12;                   // 0x10008000 -> IRQ 8
+  OutU32(0x0C000000+irq*4, 1);                            // PLIC priority[irq] = 1
+  OutU32(0x0C002000, InU32(0x0C002000)|(1<<irq));         // PLIC enable[irq] for context 0
+  OutU32(0x0C200000, 0);                                  // PLIC threshold 0
+  RvSetMEIE();                                            // mie.MEIE
+}
