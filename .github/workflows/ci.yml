@@ -93,5 +93,5 @@ jobs:
             qemu-system-riscv64 \
             python3
 
-      - name: Exec oracles + TempleOS/RISC-V smoke + kernel-print + kernel-puts + kernel-boot + kernel-calc + kernel-sched + kernel-timer + kernel-preempt + kernel-crit + kernel-sleep + kernel-uartirq + kernel-monitor + kernel-blk + kernel-fs + kernel-shell + kernel-ctask + kernel-heap + kernel-spawn + kernel-ctask-preempt + kernel-ctask-sleep + kernel-selfboot + kernel-redsea + kernel-strprint + kernel-dir + kernel-fsshell + kernel-load + kernel-virtio + kernel-virtiofs + kernel-virtioirq + REPL smoke (matches make qemu-integration)
+      - name: Exec oracles + TempleOS/RISC-V smoke + kernel-print + kernel-puts + kernel-boot + kernel-calc + kernel-sched + kernel-timer + kernel-preempt + kernel-crit + kernel-sleep + kernel-uartirq + kernel-monitor + kernel-blk + kernel-fs + kernel-shell + kernel-ctask + kernel-heap + kernel-spawn + kernel-ctask-preempt + kernel-ctask-sleep + kernel-selfboot + kernel-redsea + kernel-strprint + kernel-dir + kernel-fsshell + kernel-load + kernel-virtio + kernel-virtiofs + kernel-virtioirq + kernel-virtioasync + REPL smoke (matches make qemu-integration)
         run: make && make qemu-integration

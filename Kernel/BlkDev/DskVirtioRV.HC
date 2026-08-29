@@ -51,7 +51,9 @@ class CVioUsedElem { U32 id; U32 len; };
 class CVioUsed     { U16 flags; U16 idx; CVioUsedElem ring[VBLK_QSZ]; U16 avail_ev; };
 class CVioBlkReq   { U32 type; U32 rsvd; U64 sector; };                    // virtio-blk request header
 
-I64 virtio_blk_base;   // device MMIO base, 0 until VirtioBlkInit succeeds
+I64 virtio_blk_base;        // device MMIO base, 0 until VirtioBlkInit succeeds
+I64 virtio_blk_wait_yield;  // if set, VirtioBlkReq yields to the scheduler while the device works
+                            // (needs a running scheduler); else it polls the used ring inline
 
 // Scan the virtio-mmio slots for a block device; return its base or 0.
 I64 VirtioBlkFind()
@@ -115,8 +117,13 @@ I64 VirtioBlkReq(I64 type, I64 sector, U8 *buf)
   avail->ring[0]=0;
   avail->idx=avail->idx+1;
   OutU32(r+VMR_QUEUE_NOTIFY,0);                          // kick queue 0
-  for (spin=0; spin<200000000; spin++)                  // poll used ring (no IRQ path here)
-    if (used->idx!=uidx0) break;
+  if (virtio_blk_wait_yield) {                          // async: let other tasks run while the device
+    while (used->idx==uidx0)                            // works; the completion IRQ (see VirtioBlkIrqInit)
+      Yield;                                            // wakes the idle task if everything else blocks
+  } else {
+    for (spin=0; spin<200000000; spin++)               // inline poll (no scheduler required)
+      if (used->idx!=uidx0) break;
+  }
   return *statp;
 }
 
