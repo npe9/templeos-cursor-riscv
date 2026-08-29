@@ -197,11 +197,201 @@ static void RuntimeRegister(Compiler *cc, const char *name, void *fn, I64 argc) 
     f->arg_cnt = argc;
     HashAdd((CHashEntry *)f, cc->hash_table);
 }
+// Read one line from the UART into buf (dumb serial: no cursor, backspace-aware). Returns length.
+static int repl_read_line(char *buf, int max) {
+    int i = 0; char c;
+    while (1) {
+        c = getc_uart();
+        if (c == 0) continue;
+        if (c == '\r' || c == '\n') { putc_uart('\r'); putc_uart('\n'); break; }
+        if ((c == 127 || c == 8) && i > 0) { i--; puts_uart("\b \b"); continue; }
+        if (i < max - 1 && c >= 32 && c < 127) { buf[i++] = c; putc_uart(c); }
+    }
+    buf[i] = 0;
+    return i;
+}
+// ---- In-memory filesystem (REPL-only, RAM-backed) ----------------------------------------
+// Fixed slots with a fixed per-file capacity: free() is a no-op here, so we never realloc --
+// a file's storage is claimed once and rewritten in place. HolyC-callable: Dir/Cat/Del/Ed and
+// the programmatic FileWrite/FileRead.
+#define MEMFS_MAX_FILES 32
+#define MEMFS_FILE_CAP  8192
+typedef struct { int used; char name[32]; char data[MEMFS_FILE_CAP]; int len; } MemFile;
+static MemFile memfs[MEMFS_MAX_FILES];
+
+static MemFile *memfs_find(const char *name) {
+    for (int i = 0; i < MEMFS_MAX_FILES; i++)
+        if (memfs[i].used && !strcmp(memfs[i].name, name)) return &memfs[i];
+    return NULL;
+}
+static MemFile *memfs_create(const char *name) {
+    MemFile *f = memfs_find(name);
+    if (f) return f;
+    for (int i = 0; i < MEMFS_MAX_FILES; i++) if (!memfs[i].used) {
+        MemFile *n = &memfs[i];
+        n->used = 1; n->len = 0; n->data[0] = 0;
+        int j = 0; while (name[j] && j < 31) { n->name[j] = name[j]; j++; } n->name[j] = 0;
+        return n;
+    }
+    return NULL;  // table full
+}
+
+// Dir() / Ls() -- list every file with its byte count.
+static HRT_I64 Dir(void) {
+    int count = 0;
+    for (int i = 0; i < MEMFS_MAX_FILES; i++) if (memfs[i].used) {
+        puts_uart("  "); puts_uart(memfs[i].name);
+        puts_uart("  "); print_udec(memfs[i].len); puts_uart(" bytes\n");
+        count++;
+    }
+    if (!count) puts_uart("  (no files)\n");
+    return count;
+}
+// Cat("name") -- dump a file to the console.
+static HRT_I64 Cat(char *name) {
+    MemFile *f = memfs_find(name);
+    if (!f) { puts_uart("Cat: no such file: "); puts_uart(name); puts_uart("\n"); return -1; }
+    for (int i = 0; i < f->len; i++) putc_uart(f->data[i]);
+    if (f->len && f->data[f->len - 1] != '\n') putc_uart('\n');
+    return f->len;
+}
+// Del("name") -- free a slot.
+static HRT_I64 Del(char *name) {
+    MemFile *f = memfs_find(name);
+    if (!f) { puts_uart("Del: no such file\n"); return -1; }
+    f->used = 0; f->len = 0; f->name[0] = 0;
+    return 0;
+}
+// FileWrite("name", buf, len) -- overwrite a file from a HolyC buffer (creating it if needed).
+static HRT_I64 FileWrite(char *name, char *data, HRT_I64 len) {
+    MemFile *f = memfs_create(name);
+    if (!f) { puts_uart("FileWrite: fs full\n"); return -1; }
+    if (len < 0) len = 0;
+    if (len > MEMFS_FILE_CAP - 1) len = MEMFS_FILE_CAP - 1;
+    for (HRT_I64 i = 0; i < len; i++) f->data[i] = data[i];
+    f->data[len] = 0; f->len = (int)len;
+    return len;
+}
+// FileRead("name") -- pointer to the file's (NUL-terminated) bytes, or 0 if missing.
+static HRT_I64 FileRead(char *name) {
+    MemFile *f = memfs_find(name);
+    return f ? (HRT_I64)f->data : 0;
+}
+
+// ---- ed(1)-style line editor over the serial console -------------------------------------
+// A classic ed subset: addresses . $ N  N,M  , %  and commands a i d p n w q =.
+// Line buffer is a fixed 2-D array (no per-line alloc -> nothing to leak).
+#define ED_MAX_LINES 512
+#define ED_LINE_CAP  256
+static char ed_lines[ED_MAX_LINES][ED_LINE_CAP];
+static int  ed_n;     // line count
+static int  ed_cur;   // current line, 1-based (0 = empty buffer)
+
+static void ed_insert_at(int pos, const char *text) {  // insert one line at 0-based index pos
+    if (ed_n >= ED_MAX_LINES) { puts_uart("ed: buffer full\n"); return; }
+    for (int k = ed_n; k > pos; k--) memcpy(ed_lines[k], ed_lines[k - 1], ED_LINE_CAP);
+    int j = 0; while (text[j] && j < ED_LINE_CAP - 1) { ed_lines[pos][j] = text[j]; j++; }
+    ed_lines[pos][j] = 0;
+    ed_n++;
+}
+static void ed_delete_range(int a, int b) {  // 1-based inclusive
+    if (a < 1) a = 1; if (b > ed_n) b = ed_n; if (a > b) return;
+    int cnt = b - a + 1;
+    for (int k = a - 1; k + cnt < ed_n; k++) memcpy(ed_lines[k], ed_lines[k + cnt], ED_LINE_CAP);
+    ed_n -= cnt;
+}
+static void ed_input_block(int at) {  // read lines until "." ; each goes in at index `at`, `at`+1, ...
+    char line[ED_LINE_CAP];
+    while (1) {
+        int len = repl_read_line(line, sizeof(line));
+        if (len == 1 && line[0] == '.') break;
+        ed_insert_at(at, line);
+        at++;
+    }
+    ed_cur = at;  // current = last line inserted
+}
+static int ed_parse_addr(const char *s, int *pp, int *have) {
+    int p = *pp, v = -1; *have = 0;
+    while (s[p] == ' ') p++;
+    if      (s[p] == '.') { v = ed_cur; *have = 1; p++; }
+    else if (s[p] == '$') { v = ed_n;   *have = 1; p++; }
+    else if (s[p] >= '0' && s[p] <= '9') { v = 0; while (s[p] >= '0' && s[p] <= '9') v = v * 10 + (s[p++] - '0'); *have = 1; }
+    *pp = p;
+    return v;
+}
+// Ed("name") -- edit (or create) a file. Returns 0.
+static HRT_I64 Ed(char *name) {
+    MemFile *f = memfs_create(name);
+    if (!f) { puts_uart("Ed: fs full\n"); return -1; }
+    // load the file into the line buffer, splitting on '\n'
+    ed_n = 0;
+    { int i = 0; while (i < f->len && ed_n < ED_MAX_LINES) {
+        int j = 0;
+        while (i < f->len && f->data[i] != '\n' && j < ED_LINE_CAP - 1) ed_lines[ed_n][j++] = f->data[i++];
+        ed_lines[ed_n][j] = 0;
+        while (i < f->len && f->data[i] != '\n') i++;   // drop any overlong tail
+        if (i < f->len && f->data[i] == '\n') i++;
+        ed_n++;
+    } }
+    ed_cur = ed_n;
+    puts_uart("ed "); puts_uart(name); puts_uart(": "); print_udec(ed_n);
+    puts_uart(" lines. cmds: a i d p n w q =  ('.' ends input)\n");
+    char cmd[ED_LINE_CAP];
+    while (1) {
+        repl_read_line(cmd, sizeof(cmd));
+        int p = 0; while (cmd[p] == ' ') p++;
+        int a1 = -1, a2 = -1, have1 = 0, have2 = 0;
+        if (cmd[p] == ',' || cmd[p] == '%') { a1 = 1; a2 = ed_n; have1 = have2 = 1; p++; }
+        else {
+            a1 = ed_parse_addr(cmd, &p, &have1);
+            if (cmd[p] == ',') { p++; a2 = ed_parse_addr(cmd, &p, &have2); }
+        }
+        char c = cmd[p];
+        switch (c) {
+        case 'a': { int at = have1 ? a1 : ed_cur; if (at < 0) at = 0; if (at > ed_n) at = ed_n; ed_input_block(at); break; }
+        case 'i': { int at = (have1 ? a1 : ed_cur) - 1; if (at < 0) at = 0; if (at > ed_n) at = ed_n; ed_input_block(at); break; }
+        case 'd': { int lo = have1 ? a1 : ed_cur, hi = have2 ? a2 : lo; ed_delete_range(lo, hi);
+                    if (ed_cur > ed_n) ed_cur = ed_n; break; }
+        case 'p':
+        case 'n': { int lo = have1 ? a1 : ed_cur, hi = have2 ? a2 : lo;
+                    if (lo < 1) lo = 1; if (hi > ed_n) hi = ed_n;
+                    for (int k = lo; k <= hi; k++) {
+                        if (c == 'n') { print_udec(k); putc_uart('\t'); }
+                        puts_uart(ed_lines[k - 1]); putc_uart('\n');
+                    }
+                    if (hi >= 1) ed_cur = hi; break; }
+        case 'w': { int off = 0;
+                    for (int k = 0; k < ed_n; k++) {
+                        int j = 0;
+                        while (ed_lines[k][j] && off < MEMFS_FILE_CAP - 1) f->data[off++] = ed_lines[k][j++];
+                        if (off < MEMFS_FILE_CAP - 1) f->data[off++] = '\n';
+                    }
+                    f->data[off] = 0; f->len = off;
+                    puts_uart("wrote "); puts_uart(name); puts_uart(" (");
+                    print_udec(off); puts_uart(" bytes)\n"); break; }
+        case 'q': putc_uart('\n'); return 0;
+        case '=': { print_udec(have1 ? a1 : ed_cur); putc_uart('\n'); break; }
+        case 0:   // bare address prints that line; bare Enter advances one line
+            if (have1) { if (a1 >= 1 && a1 <= ed_n) { ed_cur = a1; puts_uart(ed_lines[a1 - 1]); putc_uart('\n'); } }
+            else if (ed_cur < ed_n) { ed_cur++; puts_uart(ed_lines[ed_cur - 1]); putc_uart('\n'); }
+            break;
+        default: puts_uart("?\n"); break;
+        }
+    }
+}
 static void RuntimeInit(Compiler *cc) {
     // Fs -> the task block (Fs->except_ch)
     if (cc->fs_var && cc->except_ch_var) *(I64 *)cc->fs_var->data_addr = (I64)cc->except_ch_var->data_addr;
     for (HRT_I64 i = 0; i < HOLY_RT_COUNT; i++)
         RuntimeRegister(cc, holy_rt_table[i].name, holy_rt_table[i].fn, holy_rt_table[i].argc);
+    // In-memory filesystem + editor (REPL-native, HolyC-callable)
+    RuntimeRegister(cc, "Dir",       (void*)Dir,       0);
+    RuntimeRegister(cc, "Ls",        (void*)Dir,       0);
+    RuntimeRegister(cc, "Cat",       (void*)Cat,       1);
+    RuntimeRegister(cc, "Del",       (void*)Del,       1);
+    RuntimeRegister(cc, "FileWrite", (void*)FileWrite, 3);
+    RuntimeRegister(cc, "FileRead",  (void*)FileRead,  1);
+    RuntimeRegister(cc, "Ed",        (void*)Ed,        1);
 }
 
 void repl(void) {

@@ -146,6 +146,14 @@ expect_text 'D1'
 add_file Demo/GlblVars.HC
 expect_text 'Time 2:'
 expect_text 'Static3'
+# In-memory filesystem + ed editor: create a file, append a line, write, then list and cat it
+# back -- exercises the nested UART reader (a registered C fn reading its own lines while called
+# from JIT'd HolyC), the fixed-slot memfs, and Ed's a/w/q + Dir/Cat.
+demo_input+=$'Ed("smoke.hc");\na\nEditor line one\nEditor line two\n.\nw\nq\nDir;\nCat("smoke.hc");\n'
+expect_text 'ed smoke.hc:'
+expect_text 'wrote smoke.hc'
+expect_text 'smoke.hc  '
+expect_text 'Editor line two'
 # Sentinel: the REPL never exits (it spins on the UART after EOF), so stop QEMU as soon as
 # the last answer is printed; the timeout only bounds a hung/crashed REPL.
 add_case '4919;' 0000000000001337
