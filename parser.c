@@ -1617,6 +1617,8 @@ static bool ParseUnary(Compiler *cc) {
       pointee = cc->last_member->pointed_to_type; depth = cc->last_member->ptr_depth;
     } else if (cc->expr_ptr_depth) {   // `**pp`: the inner deref left a pointer
       pointee = cc->expr_pointee; depth = cc->expr_ptr_depth;
+    } else if (cc->cast_elem_type) {   // `*(U32*)p`: a preceding pointer cast set the element width
+      pointee = cc->cast_elem_type; depth = 1;
     }
     if (depth < 1) depth = 1;
     deref_type = (depth > 1 || !pointee) ? RT_I64 : pointee;   // through a `T **`, load the pointer
@@ -1677,6 +1679,10 @@ static bool ParsePostfix(Compiler *cc) {
   }
   
   // Handle postfix operators (array subscript, member access)
+  // Save a prefix pointer-cast's element width (e.g. `(U32*)p`) before resetting for the postfix loop:
+  // if no postfix operator ([]/./-> or a postfix cast) consumes it, it must survive so an OUTER deref
+  // `*(U32*)p` stores/loads by that width instead of defaulting to 8 bytes.
+  U8 primary_ptr_cast = cc->cast_elem_type;
   cc->cast_elem_type = 0;
   if (!is_paren_expr) cc->expr_ptr_depth = 0;   // `(**ppb)[i]` keeps the depth the parens computed
   while (true) {
@@ -2029,7 +2035,9 @@ static bool ParsePostfix(Compiler *cc) {
     if (last_ic->ic_code == IC_LEA && cc->last_var_symbol)
       cc->ic_tail->arg1_type_pointed_to = cc->last_var_symbol->data_type;
   }
-  
+
+  // No postfix operator consumed it: let a prefix pointer-cast's width reach an outer deref.
+  if (cc->cast_elem_type == 0) cc->cast_elem_type = primary_ptr_cast;
   return true;
 }
 
@@ -2473,7 +2481,13 @@ static bool ParseAssignment(Compiler *cc) {
     U8 store_type = RT_I64;
     if (lval_ic && lval_ic->ic_code == IC_DEREF) {
       store_type = lval_ic->arg1_type_pointed_to;
-      if (cc->last_global_var) store_type = cc->last_global_var->raw_type ? cc->last_global_var->raw_type : RT_I64;
+      // Fall back to a global's own width ONLY when the deref carries no explicit pointed-to type
+      // (a bare global array element). A typed-pointer deref — `*(U32*)p`, or `*r` for `U32 *r` —
+      // already knows the width; the pointer variable is still in last_global_var here, and using
+      // ITS raw_type (RT_I64 for any pointer) stored 8 bytes, clobbering the next 4-7 bytes and
+      // faulting width-strict MMIO (e.g. the SiFive test finisher, which only takes 4-byte writes).
+      if ((store_type == 0 || store_type == RT_I64) && cc->last_global_var)
+        store_type = cc->last_global_var->raw_type ? cc->last_global_var->raw_type : RT_I64;
     }
     EnsureLvalueAddressPushed(cc);
     
