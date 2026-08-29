@@ -2,10 +2,38 @@ RISCV_PREFIX = riscv64-unknown-elf-
 CC = $(RISCV_PREFIX)gcc
 LD = $(RISCV_PREFIX)ld
 
-CFLAGS = -march=rv64imafdc_zifencei -mabi=lp64d -mcmodel=medany -O0 -g
-CFLAGS += -nostdlib -ffreestanding -fno-builtin -I..
+# ---- Platform address map -----------------------------------------------------------------
+# Select a target board with PLATFORM=<name> (default: qemu-virt). Each row sets the RAM/link
+# base and the 16550 UART base; LOAD_BASE flows to the linker (--defsym) and UART_BASE to both
+# the C REPL (-DUART_BASE) and the linker. To retarget, add a row -- nothing else is platform-
+# specific: startup.s uses only linker symbols and every other MMIO address (CLINT/PLIC/virtio)
+# is the RISC-V-standard layout QEMU virt and most SoCs share.
+#
+# NOTE: `-bios none` makes QEMU's reset ROM jump to 0x80000000 unconditionally, so a non-default
+# LOAD_BASE build links correctly but is NOT bootable via `-kernel` on qemu-virt -- it targets a
+# board whose loader jumps to that base. Verify such builds with objdump, not QEMU.
+PLATFORM ?= qemu-virt
 
-LDFLAGS = -T linker.ld -nostdlib --no-warn-mismatch
+ifeq ($(PLATFORM),qemu-virt)
+  PLAT_LOAD_BASE := 0x80000000
+  PLAT_UART_BASE := 0x10000000
+# ---- template: copy this block, rename, and set the board's addresses --------------------
+# else ifeq ($(PLATFORM),my-board)
+#   PLAT_LOAD_BASE := 0x........
+#   PLAT_UART_BASE := 0x........
+else
+  $(error Unknown PLATFORM '$(PLATFORM)' -- add a row to Makefile.repl, or pass LOAD_BASE=/UART_BASE= directly)
+endif
+
+# A direct LOAD_BASE=/UART_BASE= on the command line overrides the platform row.
+LOAD_BASE ?= $(PLAT_LOAD_BASE)
+UART_BASE ?= $(PLAT_UART_BASE)
+
+CFLAGS = -march=rv64imafdc_zifencei -mabi=lp64d -mcmodel=medany -O0 -g
+CFLAGS += -nostdlib -ffreestanding -fno-builtin -I.. -DUART_BASE=$(UART_BASE)
+
+LDFLAGS = -T linker.ld -nostdlib --no-warn-mismatch \
+          --defsym LOAD_BASE=$(LOAD_BASE)
 
 repl.elf: startup.o worry_dream_repl.o compiler.o
 	$(LD) $(LDFLAGS) -o $@ $^

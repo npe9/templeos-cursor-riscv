@@ -42,12 +42,11 @@ clear_bss_done:
     # Initialize frame pointer (s0) to match stack pointer
     # This is needed for functions that save/restore s0
     mv s0, sp
-    
-    # Debug: output 'S' before calling main
-    li a0, 0x10000000  # UART_BASE
-    li t0, 'S'
-    sb t0, 0(a0)  # Send 'S' to UART (no wait, just test)
-    
+
+    # (No hardcoded UART poke here: startup uses only linker-defined symbols, so it is
+    #  platform-agnostic. The REPL prints its own "> " prompt once main runs, and the UART
+    #  base for actual I/O is set per platform via -DUART_BASE in worry_dream_repl.c.)
+
     # Jump to main
     call main
     

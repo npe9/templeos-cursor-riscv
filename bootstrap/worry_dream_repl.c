@@ -5,7 +5,11 @@
 #include <stddef.h>
 #include "../holyc_compiler.h"
 
+/* 16550 UART base. Per-platform: overridden with -DUART_BASE=0x... from the Makefile PLATFORM
+ * table (default is QEMU virt's UART). */
+#ifndef UART_BASE
 #define UART_BASE 0x10000000
+#endif
 #define true 1
 #define false 0
 
