@@ -122,3 +122,36 @@ I64 VirtioBlkReq(I64 type, I64 sector, U8 *buf)
 
 I64 VirtioBlkRead(I64 sector, U8 *buf)  { return VirtioBlkReq(VBLK_T_IN, sector, buf); }
 I64 VirtioBlkWrite(I64 sector, U8 *buf) { return VirtioBlkReq(VBLK_T_OUT, sector, buf); }
+
+// Disk capacity in 512-byte sectors (virtio-blk config space, legacy offset 0x100).
+I64 VirtioBlkCapacity()
+{
+  U8 *r=virtio_blk_base;
+  U64 lo, hi;
+  if (!virtio_blk_base) return 0;
+  lo=InU32(r+0x100);
+  hi=InU32(r+0x104);
+  return lo|(hi<<32);
+}
+
+// Mount the virtio-blk device as a RedSea drive (BDT_VIRTIO) -- the RISC-V translation of the x86
+// MountIDEAuto/RVMountRAMDisk path, but backed by a REAL disk: RedSea's BlkRead/BlkWrite now dispatch
+// to VirtioBlkRead/VirtioBlkWrite. BlkDevAdd formats a blank disk (RedSeaFmt) or mounts an existing one.
+U0 RVMountVirtioDisk(U8 drv_let)
+{
+  CBlkDev *bd;
+  I64 cap;
+  if (!blkdev.blkdevs) {
+    blkdev.blkdevs=CAlloc(sizeof(CBlkDev)*BLKDEVS_NUM);
+    blkdev.drvs=CAlloc(sizeof(CDrv)*DRVS_NUM);
+    I64 i; for (i=0;i<DRVS_NUM;i++) blkdev.let_to_drv[i]=&blkdev.drvs[i];
+  }
+  if (VirtioBlkInit()) return;                              // no device -> leave the drive unmounted
+  cap=VirtioBlkCapacity();
+  bd=BlkDevNextFreeSlot(drv_let,Let2BlkDevType(drv_let));   // pass the letter's native type, then
+  bd->type=BDT_VIRTIO;                                      // override to virtio (reuses the RAM slot setup)
+  bd->flags&=~BDF_READ_CACHE;
+  bd->unit=0; bd->max_blk=cap-1;
+  BlkDevAdd(bd,I64_MIN,FALSE,TRUE);
+  Drv(drv_let);
+}

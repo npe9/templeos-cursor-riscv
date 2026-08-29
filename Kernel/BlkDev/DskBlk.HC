@@ -55,6 +55,12 @@ Bool BlkRead(CDrv *dv,U8 *buf, I64 blk, I64 cnt)
 	case BDT_ATAPI:
 	  res=ATARBlks(dv,buf,blk,cnt);
 	  break;
+#ifdef RISCV_VIRT
+	case BDT_VIRTIO:
+	  { I64 vi; for (vi=0;vi<cnt;vi++)
+	      if (VirtioBlkRead(blk+vi,buf+(vi<<BLK_SIZE_BITS))) { res=FALSE; break; } }
+	  break;
+#endif
       }
       bd->last_time=tS;
       if (bd->flags & BDF_READ_CACHE)
@@ -95,6 +101,12 @@ Bool BlkWrite(CDrv *dv,U8 *buf, I64 blk, I64 cnt)
 	case BDT_ATAPI:
 	  res=ATAWBlks(dv,buf,blk,cnt);
 	  break;
+#ifdef RISCV_VIRT
+	case BDT_VIRTIO:
+	  { I64 vi; for (vi=0;vi<cnt;vi++)
+	      if (VirtioBlkWrite(blk+vi,buf+(vi<<BLK_SIZE_BITS))) { res=FALSE; break; } }
+	  break;
+#endif
       }
       bd->last_time=tS;
       if (bd->flags & BDF_READ_CACHE)

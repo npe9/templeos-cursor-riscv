@@ -90,6 +90,17 @@ Bool BlkDevInit(CBlkDev *bd)
 	bd->max_writes=1;
 	res=ATAInit(bd);
 	break;
+#ifdef RISCV_VIRT
+      case BDT_VIRTIO:   // real disk over virtio-mmio; no RAM buffer -- RedSea rides BlkRead/BlkWrite
+	dv->fs_type=FSt_REDSEA;
+	dv->size=bd->max_blk+1-bd->drv_offset;
+	if (RedSeaValidate(bd->first_drv_let))
+	  RedSeaInit(dv);
+	else
+	  RedSeaFmt(bd->first_drv_let);
+	res=TRUE;
+	break;
+#endif
       case BDT_ATAPI:
 //0xFFFF*4 is too big for my taste
 	bd->max_reads=0x800*4;

@@ -269,6 +269,9 @@ Bool Drv(U8 drv_let)
     if (bd->flags & BDF_REMOVABLE && !(bd->flags & BDF_INITIALIZED))
       DskChg(Drv2Let(dv));
     if (bd->type==BDT_RAM ||
+#ifdef RISCV_VIRT
+	bd->type==BDT_VIRTIO ||
+#endif
 	bd->type==BDT_ISO_FILE_READ || bd->type==BDT_ISO_FILE_WRITE)
       BlkDevInit(bd);
   }

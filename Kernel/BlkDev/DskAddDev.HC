@@ -60,6 +60,17 @@ I64 BlkDevAdd(CBlkDev *bd,I64 prt_num=I64_MIN,
       else
 	dv->dv_signature=0;
       break;
+#ifdef RISCV_VIRT
+    case BDT_VIRTIO:   // real virtio-blk disk: validate the drive and RedSea-init/format it
+      dv->dv_signature=DRV_SIGNATURE_VAL;
+      dv->prt_num=num;
+      dv->fs_type=FSt_REDSEA;
+      if (BlkDevInit(bd))
+	res++;
+      else
+	dv->dv_signature=0;
+      break;
+#endif
     case BDT_ATA:
       dv->dv_signature=DRV_SIGNATURE_VAL; //Temporarily validate
       if (!BlkDevInit(bd))
