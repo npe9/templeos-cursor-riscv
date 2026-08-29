@@ -29,6 +29,13 @@ static int HolyRtRetF64(const char *n) {
   for (int i = 0; f64[i]; i++) if (holy_rt_streq(n, f64[i])) return 1;
   return 0;
 }
+// U0 (void) runtime functions: the command line shows no "ans=" for a statement whose value is void
+// (matches TempleOS CmdLinePmt, which only echoes when answer_type != RT_I0).
+static int HolyRtRetVoid(const char *n) {
+  static const char *v[] = { "Print", "PrintErr", "PutChars", "PutS", "Puts", 0 };
+  for (int i = 0; v[i]; i++) if (holy_rt_streq(n, v[i])) return 1;
+  return 0;
+}
 static unsigned HolyRtF64Mask(const char *n) {
   if (holy_rt_streq(n, "Pow")) return 3;
   static const char *one[] = { "Sqrt", "Exp", "Ln", "Log10", "Log2", "Floor", "Ceil", "Round", "Trunc", "Sin", "Cos", "Tan", "ATan", "Abs", "Sign", "Pow10", 0 };

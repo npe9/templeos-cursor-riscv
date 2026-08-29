@@ -45,6 +45,30 @@ static void print_hex_byte(unsigned char val) {
     putc_uart(lo < 10 ? '0' + lo : 'a' + lo - 10);
 }
 
+// TempleOS CmdLinePmt-style command-line echo helpers: unsigned/signed decimal, execution time
+// (%8.6fs), and a simple F64 decimal.
+static void print_udec(U64 v) {
+    char b[24]; int i = 0;
+    if (!v) { putc_uart('0'); return; }
+    while (v) { b[i++] = '0' + v % 10; v /= 10; }
+    while (i--) putc_uart(b[i]);
+}
+static void print_dec(I64 v) { if (v < 0) { putc_uart('-'); v = -v; } print_udec((U64)v); }
+static void print_time(U64 ticks) {   // QEMU virt timebase is 10 MHz -> 10 ticks per microsecond
+    U64 us = ticks / 10, sec = us / 1000000, frac = us % 1000000, d = 100000;
+    print_udec(sec); putc_uart('.');
+    while (d) { putc_uart('0' + (frac / d) % 10); d /= 10; }
+    putc_uart('s');
+}
+static void print_f64(U64 bits) {
+    union { U64 b; double d; } u; u.b = bits;
+    double v = u.d;
+    if (v < 0) { putc_uart('-'); v = -v; }
+    U64 ip = (U64)v; double fp = v - (double)ip;
+    print_udec(ip); putc_uart('.');
+    for (int i = 0; i < 6; i++) { fp *= 10; int dg = (int)fp; putc_uart('0' + dg); fp -= dg; }
+}
+
 // Separate code and heap areas to prevent overwriting  
 static U8 code_mem[4*1024*1024];   // 4MB for compiled code (never reused)
 static size_t code_pos = 0;
@@ -166,7 +190,7 @@ static void RuntimeRegister(Compiler *cc, const char *name, void *fn, I64 argc) 
     CHashFun *f = calloc(1, sizeof(CHashFun));
     f->str = strdup(name);
     f->type = HTT_FUN;
-    f->raw_type = HolyRtRetF64(name) ? RT_F64 : RT_I64;
+    f->raw_type = HolyRtRetVoid(name) ? RT_I0 : (HolyRtRetF64(name) ? RT_F64 : RT_I64);
     f->param_typed = true;
     f->param_f64_mask = HolyRtF64Mask(name);
     f->exe_addr = (I64)fn;
@@ -321,6 +345,8 @@ void repl(void) {
                 defined_fn++;
             }
         }
+        // The last statement's value type is the command-line "answer type" (RT_I0 = void).
+        U8 ans_ty = cc->last_expr_type;
         // Everything compiled above (functions, statement) is fresh code: order the I-side.
         __asm__ volatile("fence.i" ::: "memory");
         if (!ok) {
@@ -336,7 +362,7 @@ void repl(void) {
             cc->ic_tail = NULL;
             continue;
         }
-        if (defined_fn) puts_uart("Function compiled successfully\n");
+        (void)defined_fn;   // TempleOS is silent on a successful definition
         if (cc->ic_head) {
             // Statement: compile it as a frame of its own (switch/try temps get real slots);
             // the last value is the answer (match TempleOS LexStmt2Bin:13-14).
@@ -355,10 +381,19 @@ void repl(void) {
             // TempleOS approach: cast the compiled code to a function and call it (CMain.HC:15,32)
             typedef I64 (*FuncPtr)();
             FuncPtr func_ptr = (FuncPtr)machine_code;
+            U64 t0, t1;
+            __asm__ volatile("rdtime %0" : "=r"(t0));
             I64 result = func_ptr();
+            __asm__ volatile("rdtime %0" : "=r"(t1));
             g_answer = result;
-            print_hex(result);
-            puts_uart("\n");
+            print_time(t1 - t0);                       // TempleOS CmdLinePmt: "%8.6fs ans=0x%08X=%d"
+            if (ans_ty == RT_I0) {
+                puts_uart("\n");                        // void statement: timing only, no ans=
+            } else if (ans_ty == RT_F64) {
+                puts_uart(" ansf="); print_f64((U64)result); puts_uart("\n");
+            } else {
+                puts_uart(" ans="); print_hex(result); putc_uart('='); print_dec(result); puts_uart("\n");
+            }
             free(machine_code);
         }
         

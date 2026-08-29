@@ -1,6 +1,6 @@
 #!/bin/bash
 # Smoke-test the bare-metal REPL (bootstrap/repl.elf) under QEMU: feed statements over the
-# UART, compare the printed answers (one "0x..." line per statement) with the expected sequence.
+# UART, compare the printed answers (TempleOS-style "ans=0x..=.." per non-void statement) with the expected sequence.
 # Covers cross-statement function calls (exe_addr indirection), redefinition, recursion, >8
 # args, and a run of consecutive calls (catches per-statement stack drift).
 set -euo pipefail
@@ -60,7 +60,7 @@ add_case 'I64 Cnt() { static I64 c = 0; c++; return c; }'
 add_case 'Cnt();' 0000000000000001
 add_case 'Cnt();' 0000000000000002
 # Top-level grammar, runtime, control flow, aggregates (all execution-checked).
-add_case '"%d + %d = %d\n", 40, 2, 42;' 0000000000000000
+add_case '"%d + %d = %d\n", 40, 2, 42;'   # implicit-print statement: void, no ans= (text checked below)
 add_case 'U8 *s = MAlloc(16); StrCpy(s, "abc"); StrLen(s);' 0000000000000003
 add_case 'I64 Sw(I64 v) { switch (v) { case 1...5: return 99; case 7: return 70; default: return 0; } }'
 add_case 'Sw(3);' 0000000000000063
@@ -155,14 +155,14 @@ trap 'rm -f "$log"' EXIT
 printf '%s' "$input" | $TIMEOUT_CMD 60 "$QEMU" -M virt -bios none -kernel "$BOOT/repl.elf" -nographic >"$log" 2>&1 &
 qpid=$!
 for ((t = 0; t < 600; t++)); do
-  if grep -q '^0x0000000000001337' "$log" 2>/dev/null; then break; fi
+  if grep -q 'ans=0x0000000000001337' "$log" 2>/dev/null; then break; fi
   kill -0 "$qpid" 2>/dev/null || break
   sleep 0.1
 done
 kill "$qpid" 2>/dev/null || true
 wait "$qpid" 2>/dev/null || true
 out="$(tr -d '\r' <"$log")"
-got="$(echo "$out" | grep -o '^0x[0-9a-f]\{16\}' | sed 's/^0x//' || true)"
+got="$(echo "$out" | grep -oE 'ans=0x[0-9a-f]{16}' | sed 's/ans=0x//' || true)"
 
 if [ "$got" != "${expected%$'\n'}" ]; then
   echo "FAIL REPL smoke — answer sequence mismatch" >&2
@@ -182,7 +182,7 @@ demo_input+='4919;'$'\n'
 printf '%s' "$demo_input" | $TIMEOUT_CMD 60 "$QEMU" -M virt -bios none -kernel "$BOOT/repl.elf" -nographic >"$log" 2>&1 &
 qpid=$!
 for ((t = 0; t < 600; t++)); do
-  if grep -q '^0x0000000000001337' "$log" 2>/dev/null; then break; fi
+  if grep -q 'ans=0x0000000000001337' "$log" 2>/dev/null; then break; fi
   kill -0 "$qpid" 2>/dev/null || break
   sleep 0.1
 done
