@@ -210,16 +210,18 @@ U0 DisasmC(I64 addr, I64 w) {
   else { ".chalf "; DiImm(w & 0xFFFF); }
   "\n";
 }
-// DisasmAt(addr) -- disassemble a 28-instruction window from a raw address.
-U0 DisasmAt(I64 addr) {
+// DisasmAt(addr, max=2000) -- disassemble from addr until the function's ret (0x8067 or the
+// compressed c.ret 0x8082), capped at max instructions. The default cap makes Disasm("Name")
+// cover a whole function; pass a small max for a fixed window (DisasmAt(a, 28)).
+U0 DisasmAt(I64 addr, I64 max=2000) {
   I64 i, lo, w, k;
   for (k = 0; k < 32; k++) KOk[k] = 0;
-  "; disassembly window @ 0x%08X\n", addr;
+  "; disassembly @ 0x%08X\n", addr;
   i = 0;
-  while (i < 28) {
+  while (i < max) {
     lo = *(U16 *)addr;
     "0x%08X:  ", addr;
-    if ((lo & 3) != 3) { DisasmC(addr, lo); addr += 2; for (k = 0; k < 32; k++) KOk[k] = 0; }
+    if ((lo & 3) != 3) { DisasmC(addr, lo); if (lo == 0x8082) return; addr += 2; for (k = 0; k < 32; k++) KOk[k] = 0; }
     else { w = *(U32 *)addr; DisasmOne(addr, w); if (w == 0x00008067) return; addr += 4; }
     i++;
   }

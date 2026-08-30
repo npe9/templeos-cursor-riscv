@@ -1116,6 +1116,17 @@ void repl(void) {
                 if (pos > 0 && input[pos-1] == ';') should_parse = 1;
                 // Or if this line closed a block '}'
                 if (pos > 0 && input[pos-1] == '}') should_parse = 1;
+                // BCPL style: a balanced, complete-looking line ends the statement at the
+                // newline -- supply the ';' implicitly. A trailing ',' means continuation, and a
+                // directive (#define/#include) must NOT gain a ';' -- it would join the macro body.
+                if (!should_parse && !is_directive && pos > 0 && input[pos-1] != ',') {
+                    if (accum_len + 1 < (int)sizeof(accum)) {
+                        accum[accum_len - 1] = ';';       // overwrite the '\n' we appended
+                        accum[accum_len++] = '\n';
+                        accum[accum_len] = '\0';
+                    }
+                    should_parse = 1;
+                }
             }
         }
         
