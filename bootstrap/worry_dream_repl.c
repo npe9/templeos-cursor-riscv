@@ -282,6 +282,33 @@ static HRT_I64 FileRead(char *name) {
     return f ? (HRT_I64)f->data : 0;
 }
 
+// ---- Seed files: kernel primitives shipped as editable HolyC source ----------------------
+// These land in the in-memory FS at boot, so the "system" you edit is HolyC from the first
+// prompt: `Dir` shows them, `Run("uart.hc")` compiles a primitive into the live symbol table,
+// and editing + re-Running it changes the driver in place (callers resolve through the table,
+// so redefining UartPut alone also changes UartStr). This is the seam the whole-kernel move
+// grows from -- add primitives here (or load them off a disk) and they become redefinable.
+static const struct { const char *name; const char *body; } memfs_seed_files[] = {
+  { "uart.hc",
+    "// UART 16550 driver -- a live-editable kernel primitive (QEMU virt @ 0x10000000).\n"
+    "// Edit a body, Run(\"uart.hc\") again, and the change is live -- no reboot.\n"
+    "U0 UartPut(I64 ch) {\n"
+    "  while (!(*(U8 *)0x10000005 & 0x20)) ;   // LSR bit 5: THR empty\n"
+    "  *(U8 *)0x10000000 = ch;                  // write the byte\n"
+    "}\n"
+    "U0 UartStr(U8 *s) { while (*s) UartPut(*s++); }\n"
+  },
+};
+static void memfs_seed(void) {
+    for (unsigned i = 0; i < sizeof(memfs_seed_files) / sizeof(memfs_seed_files[0]); i++) {
+        MemFile *f = memfs_create(memfs_seed_files[i].name);
+        if (!f) continue;
+        const char *b = memfs_seed_files[i].body;
+        int n = 0; while (b[n] && n < MEMFS_FILE_CAP - 1) { f->data[n] = b[n]; n++; }
+        f->data[n] = 0; f->len = n;
+    }
+}
+
 // ---- ed(1)-style line editor over the serial console -------------------------------------
 // A classic ed subset: addresses . $ N  N,M  , %  and commands a i d p n w q =.
 // Line buffer is a fixed 2-D array (no per-line alloc -> nothing to leak).
@@ -670,6 +697,7 @@ void repl(void) {
     g_cc = CompilerNew("", "repl");
     Compiler *cc = g_cc;
     RuntimeInit(cc);
+    memfs_seed();   // ship the editable kernel primitives into the FS
     
     // Accumulation buffer for multi-line inputs (functions/blocks)
     static char accum[4096];

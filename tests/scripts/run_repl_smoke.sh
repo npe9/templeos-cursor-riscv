@@ -166,6 +166,11 @@ expect_text 'ans=0x000000000000006f'   # Trip() == 111, defined in the Run() fil
 # TrapInit()/SetIsr(), then Ecall() to fire a synchronous trap into the HolyC handler.
 demo_input+=$'Ed("isr.hc");\na\nI64 Zap(I64 c,I64 e,I64 t){ "ZAP-HIT "; return 0; }\n.\nw\nq\nRun("isr.hc");\nTrapInit();\nSetIsr("Zap");\nEcall();\n'
 expect_text 'ZAP-HIT'
+# Editable kernel primitive: the seeded uart.hc driver, Run() then edited in place (insert an
+# uppercase step into UartPut) and re-Run -- the same UartStr call changes behavior live.
+demo_input+=$'Run("uart.hc");\nUartStr("livedrv ");\nEd("uart.hc");\n3a\n  if (ch>=97 && ch<=122) ch -= 32;\n.\nw\nq\nRun("uart.hc");\nUartStr("livedrv ");\n'
+expect_text 'livedrv '   # before the edit: lowercase
+expect_text 'LIVEDRV '   # after the live edit: uppercase, same call site
 # Sentinel: the REPL never exits (it spins on the UART after EOF), so stop QEMU as soon as
 # the last answer is printed; the timeout only bounds a hung/crashed REPL.
 add_case '4919;' 0000000000001337
