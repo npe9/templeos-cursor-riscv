@@ -917,7 +917,60 @@ void ICAdd(Compiler *cc, U8 opcode, I64 data, U8 type) {
 // CODE GENERATION (AOT)
 // ═══════════════════════════════════════════════════════════════
 
+// ---- Optimization passes on the IC stream (safe: the emitter re-resolves labels each pass) ----
+// Tier 2: constant folding + algebraic identities. IC_IMM_I64 auto-pushes, so `2+3` is the node
+// sequence IMM(2), IMM(3), ADD -- fold adjacent IMM;IMM;binop to one IMM, and drop identity ops
+// (x+0, x*1, ...). Only sign-agnostic ops are folded (ADD/SUB/MUL keep the same low 64 bits for
+// signed and unsigned; AND/OR/XOR are bitwise) -- DIV/MOD/shifts are left alone to avoid a
+// signedness mistake. Gated on cc->optimize.
+static int IcFoldBinop(U8 op, I64 a, I64 b, int *ok) {
+  *ok = 1;
+  switch (op) {
+    case IC_ADD: return a + b;
+    case IC_SUB: return a - b;
+    case IC_MUL: return a * b;
+    case IC_AND: return a & b;
+    case IC_OR:  return a | b;
+    case IC_XOR: return a ^ b;
+    default: *ok = 0; return 0;
+  }
+}
+static void IcOptimize(Compiler *cc) {
+  if (!cc->optimize) return;
+  int changed = 1;
+  while (changed) {
+    changed = 0;
+    for (CIntermediateCode *ic = cc->ic_head; ic; ic = ic->next) {
+      CIntermediateCode *n1 = ic->next, *n2 = n1 ? n1->next : (CIntermediateCode *)0;
+      // Constant fold: IMM(a); IMM(b); binop -> IMM(a op b)
+      if (ic->ic_code == IC_IMM_I64 && !(ic->ic_flags & ICF_GLBL_ADDR) &&
+          n1 && n1->ic_code == IC_IMM_I64 && !(n1->ic_flags & ICF_GLBL_ADDR) && n2) {
+        int ok; I64 r = IcFoldBinop(n2->ic_code, ic->ic_data, n1->ic_data, &ok);
+        if (ok) {
+          ic->ic_data = r;                       // ic becomes IMM(r); splice out n1 and n2
+          ic->next = n2->next;
+          if (n2->next) n2->next->last = ic; else cc->ic_tail = ic;
+          changed = 1; break;
+        }
+      }
+      // Algebraic identity: IMM(id); binop -> drop both (the left operand stays pushed). x+0,
+      // x-0, x|0, x^0 (id 0); x*1, x/1 (id 1) -- all identities for signed AND unsigned.
+      if (ic->ic_code == IC_IMM_I64 && !(ic->ic_flags & ICF_GLBL_ADDR) && n1 && ic->last) {
+        U8 op = n1->ic_code; I64 v = ic->ic_data; int drop = 0;
+        if ((op == IC_ADD || op == IC_SUB || op == IC_OR || op == IC_XOR) && v == 0) drop = 1;
+        else if ((op == IC_MUL || op == IC_DIV) && v == 1) drop = 1;
+        if (drop) {
+          ic->last->next = n1->next;
+          if (n1->next) n1->next->last = ic->last; else cc->ic_tail = ic->last;
+          changed = 1; break;
+        }
+      }
+    }
+  }
+}
+
 U8 *CompileAOT(Compiler *cc, I64 *code_size) {
+  IcOptimize(cc);
   // Check if this is a function or expression
   CIntermediateCode *ic = cc->ic_head;
   Bool is_function = false;
