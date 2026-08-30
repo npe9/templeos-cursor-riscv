@@ -37,7 +37,10 @@ U8 *MmN(I64 a) {
 U0 Sym(I64 addr) {
   U8 *nm; I64 base;
   nm = SymName(addr);
-  if (nm) { base = SymBase(addr); " <%s+", nm; DiImm(addr - base); PutCh('>'); }
+  if (!nm) return;
+  base = SymBase(addr);
+  if (addr - base >= 0x4000) return;   // too far past any entry: a heap buffer, not this function
+  " <%s+", nm; DiImm(addr - base); PutCh('>');
 }
 // " <REGION>" for an upper-immediate that names a known MMIO base.
 U0 MmTag(I64 a) { U8 *m; m = MmN(a); if (m) { " <%s>", m; } }
@@ -47,6 +50,12 @@ U0 MmTag(I64 a) { U8 *m; m = MmN(a); if (m) { " <%s>", m; } }
 // hold if it came from a tracked constant chain; any other write clears it. DisasmAt resets per
 // window and clears everything on a compressed insn (C code; HolyC JIT output is all 32-bit).
 I64 KV[32], KOk[32];
+// Furthest forward intra-function control-flow target seen during a DisasmAt walk. A ret only
+// ends the function if nothing seen so far branches past it -- handles multiple rets (early
+// returns in C builtins or hand asm; the JIT itself is single-exit, early returns jump to one
+// epilogue). Only intra-function flow updates it: conditional branches, jal zero (goto), c.j,
+// c.beqz/c.bnez. jal ra / jalr are calls and don't count.
+I64 DisHi;
 
 U0 DisasmOne(I64 addr, I64 w) {
   I64 op, rd, f3, rs1, rs2, f7, immI, immS, csr, jt;
@@ -66,6 +75,7 @@ U0 DisasmOne(I64 addr, I64 w) {
     jt = (((w>>31)&1)<<20) | (((w>>12)&0xFF)<<12) | (((w>>20)&1)<<11) | (((w>>21)&0x3FF)<<1);
     if (jt & 0x100000) jt |= ~0x1FFFFF;
     "jal %s, 0x%08X", RN[rd], addr + jt; Sym(addr + jt);
+    if (rd == 0 && addr + jt > DisHi) DisHi = addr + jt;
   }
   else if (op == 0x67) { "jalr %s, ", RN[rd]; DiImm(immI); "(%s)", RN[rs1]; if (KOk[rs1]) Sym(KV[rs1] + immI); }
   else if (op == 0x13) {
@@ -95,6 +105,7 @@ U0 DisasmOne(I64 addr, I64 w) {
     jt = (((w>>31)&1)<<12) | (((w>>25)&0x3F)<<5) | (((w>>8)&0xF)<<1) | (((w>>7)&1)<<11);
     if (jt & 0x1000) jt |= ~0x1FFF;
     "%s %s, %s, 0x%08X", mn, RN[rs1], RN[rs2], addr + jt; Sym(addr + jt);
+    if (addr + jt > DisHi) DisHi = addr + jt;
   }
   else if (op == 0x73) {
     if (f3==1) mn="csrrw"; else if (f3==2) mn="csrrs"; else if (f3==3) mn="csrrc"; else mn="";
@@ -185,12 +196,13 @@ U0 DisasmC(I64 addr, I64 w) {
     }
     else if (f3==5) {
       jt = (((w>>12)&1)<<11)|(((w>>11)&1)<<4)|(((w>>9)&3)<<8)|(((w>>8)&1)<<10)|(((w>>7)&1)<<6)|(((w>>6)&1)<<7)|(((w>>3)&7)<<1)|(((w>>2)&1)<<5);
-      if (jt & 0x800) jt |= ~0xFFF; "c.j 0x%08X", addr + jt;
+      if (jt & 0x800) jt |= ~0xFFF; "c.j 0x%08X", addr + jt; if (addr + jt > DisHi) DisHi = addr + jt;
     }
     else {
       jt = (((w>>12)&1)<<8)|(((w>>10)&3)<<3)|(((w>>5)&3)<<6)|(((w>>3)&3)<<1)|(((w>>2)&1)<<5);
       if (jt & 0x100) jt |= ~0x1FF;
       if (f3==6) { "c.beqz %s, 0x%08X", RN[rs1p], addr + jt; } else { "c.bnez %s, 0x%08X", RN[rs1p], addr + jt; }
+      if (addr + jt > DisHi) DisHi = addr + jt;
     }
   }
   else if (op == 2) {
@@ -216,13 +228,21 @@ U0 DisasmC(I64 addr, I64 w) {
 U0 DisasmAt(I64 addr, I64 max=2000) {
   I64 i, lo, w, k;
   for (k = 0; k < 32; k++) KOk[k] = 0;
+  DisHi = 0;
   "; disassembly @ 0x%08X\n", addr;
   i = 0;
   while (i < max) {
     lo = *(U16 *)addr;
     "0x%08X:  ", addr;
-    if ((lo & 3) != 3) { DisasmC(addr, lo); if (lo == 0x8082) return; addr += 2; for (k = 0; k < 32; k++) KOk[k] = 0; }
-    else { w = *(U32 *)addr; DisasmOne(addr, w); if (w == 0x00008067) return; addr += 4; }
+    if ((lo & 3) != 3) {
+      DisasmC(addr, lo);
+      if (lo == 0x8082 && addr >= DisHi) return;      // c.ret ends the fn unless a branch jumps past it
+      addr += 2; for (k = 0; k < 32; k++) KOk[k] = 0;
+    } else {
+      w = *(U32 *)addr; DisasmOne(addr, w);
+      if (w == 0x00008067 && addr >= DisHi) return;   // ret ends the fn unless a branch jumps past it
+      addr += 4;
+    }
     i++;
   }
 }
