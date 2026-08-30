@@ -169,6 +169,9 @@ expect_text 'fadd.d'                    # a float op decoded
 expect_text 'c.sdsp'                    # a compressed op decoded (from Src("Cat") above)
 demo_input+=$'Disasm("UartPut");\n'
 expect_text '<UART0>'                   # lui of an MMIO base gets its memory-map name
+# vim-lite: insert a line, save with :wq, run the file (raw keys: i..., ESC, :wq, Enter)
+demo_input+=$'Vi("vf.hc");\niUartStr("vsmoke ");\x1b:wq\rRun("vf.hc");\n'
+expect_text 'vsmoke '
 # Inspection + in-editor exec
 demo_input+=$'MemMap();\nRegs();\nEd("q.hc");\n!6*7;\nq\n'
 expect_text 'code_mem'
