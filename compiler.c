@@ -277,12 +277,50 @@ void CompilerFree(Compiler *cc) {
 // - If buf==NULL: only count bytes (for sizing passes)
 // - If buf!=NULL: emit bytes and count (for final emission pass)
 
+// ---- Tier 1 peephole: cancel an adjacent eval-stack push/pop -------------------------------
+// The codegen bakes stack traffic into each op's emit (IMM auto-pushes, consumers pop), so the
+// dominant redundancy is `addi sp,-8; sd rX,0(sp); ld rX,0(sp); addi sp,+8` -- push a value and
+// immediately pop it back into the SAME register, which is pure waste (the value is still in rX).
+// RVU32 keeps the last three emitted words; when a fourth completes the pattern it rewinds rip by
+// three words and drops the fourth. It runs identically in the sizing (buf==NULL) and emit passes
+// -- rip is adjusted the same way in both -- so the relaxation loop still converges.
+//
+// CAUTION: CompileAOT has TWO emit loops -- the do-while sizing loop AND a separate final-emission
+// pass. The window (g_pp_n) must be reset at the START of each and at EVERY IC_LABEL in BOTH, or
+// the two passes cancel differently: mismatched sizes, and push/pops wrongly cancelled across a
+// branch target (which silently miscompiles every loop). We only cancel when rX==rY -- the pop
+// target equals the push source -- which is unambiguously safe; the rX!=rY (-> `mv rY,rX`) case is
+// left on the table. Gated by g_pp_on (= cc->optimize).
+static U32 g_pp[3];
+static int g_pp_n;
+static int g_pp_on;
+static int RvIsAddi(U32 w, int rd, int rs1, int imm) {
+  return (w & 0x7F) == 0x13 && ((w >> 12) & 7) == 0 && (int)((w >> 7) & 0x1F) == rd &&
+         (int)((w >> 15) & 0x1F) == rs1 && (((I32)w) >> 20) == imm;
+}
 static void RVU32(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
-  if (buf && ptr) {
-    *(U32*)(*ptr) = val;
-    (*ptr) += 4;
+  if (g_pp_on && g_pp_n >= 3) {
+    U32 w0 = g_pp[0], w1 = g_pp[1], w2 = g_pp[2];
+    int isDec = RvIsAddi(w0, 2, 2, -8);                                                   // addi sp,sp,-8
+    int isSd  = (w1 & 0x7F) == 0x23 && ((w1 >> 12) & 7) == 3 && ((w1 >> 15) & 0x1F) == 2 &&
+                (int)(((w1 >> 7) & 0x1F) | (((w1 >> 25) & 0x7F) << 5)) == 0;              // sd rX,0(sp)
+    int isLd  = (w2 & 0x7F) == 0x03 && ((w2 >> 12) & 7) == 3 && ((w2 >> 15) & 0x1F) == 2 &&
+                (int)((w2 >> 20) & 0xFFF) == 0;                                           // ld rY,0(sp)
+    int isInc = RvIsAddi(val, 2, 2, 8);                                                   // addi sp,sp,+8
+    int rX = (w1 >> 20) & 0x1F, rY = (w2 >> 7) & 0x1F;
+    if (isDec && isSd && isLd && isInc && rX == rY) {  // push rX; pop rX -> nothing (value already in rX)
+      if (buf && ptr) *ptr -= 12;                      // drop the three buffered words
+      *rip -= 12;
+      g_pp_n = 0;
+      return;                                          // the fourth word (addi sp,+8) is cancelled too
+    }
   }
+  if (buf && ptr) { *(U32 *)(*ptr) = val; (*ptr) += 4; }
   (*rip) += 4;
+  if (g_pp_on) {
+    if (g_pp_n < 3) g_pp[g_pp_n++] = val;
+    else { g_pp[0] = g_pp[1]; g_pp[1] = g_pp[2]; g_pp[2] = val; }
+  }
 }
 
 /* IC_DEREF: load *rs1 into a0; width from arg1_type_pointed_to (U32* → lwu, not ld). */
@@ -971,6 +1009,7 @@ static void IcOptimize(Compiler *cc) {
 
 U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   IcOptimize(cc);
+  g_pp_on = cc->optimize;   // Tier 1 push/pop peephole in RVU32
   // Check if this is a function or expression
   CIntermediateCode *ic = cc->ic_head;
   Bool is_function = false;
@@ -1000,6 +1039,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     pass_ptr = NULL;
 
     pass_buf = NULL;
+    g_pp_n = 0;   // reset the push/pop peephole window each pass
     
     // Add prologue for expressions with calls
     if (has_call && !is_function) {
@@ -1014,6 +1054,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       if (ic->ic_code == IC_LABEL) {
         CLabel *lb = (CLabel*)ic->ic_data;
         lb->addr = rip;
+        g_pp_n = 0;   // don't cancel a push/pop across a branch target
       }
       
       // Use SAME logic for sizing and emission (TempleOS 1:1)
@@ -1550,6 +1591,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   pass_buf = buffer;
   pass_ptr = buffer;
   rip = 0;
+  g_pp_n = 0;   // the final emission pass is a second emit loop -- reset its peephole window too
   ic = cc->ic_head;
   I64 stack_depth_final = 0;
     
@@ -2005,6 +2047,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         break;
       case IC_LABEL:
         { CLabel *lb = (CLabel*)ic->ic_data; if (lb->sd_set) stack_depth_final = lb->sd; }
+        g_pp_n = 0;   // don't cancel a push/pop across a branch target (matches the sizing pass)
         break;
       case IC_NOP1:
       case IC_NOP2:
