@@ -12,6 +12,42 @@ U8 *FRN[32] = {"ft0","ft1","ft2","ft3","ft4","ft5","ft6","ft7","fs0","fs1","fa0"
 U0 Pm(U8 *s) { "%s", s; }
 U0 DiImm(I64 v) { if (v < 0) { PutCh('-'); v = -v; } "0x%X", v; }
 
+// CSR number -> ABI name (the M-mode set we actually touch), or 0 if unknown.
+U8 *CsrN(I64 c) {
+  if (c == 0x300) return "mstatus";  if (c == 0x301) return "misa";     if (c == 0x304) return "mie";
+  if (c == 0x305) return "mtvec";    if (c == 0x340) return "mscratch"; if (c == 0x341) return "mepc";
+  if (c == 0x342) return "mcause";   if (c == 0x343) return "mtval";    if (c == 0x344) return "mip";
+  if (c == 0x180) return "satp";     if (c == 0xF14) return "mhartid";
+  if (c == 0xB00) return "mcycle";   if (c == 0xB02) return "minstret";
+  if (c == 0xC00) return "cycle";    if (c == 0xC01) return "time";     if (c == 0xC02) return "instret";
+  if (c == 0xF11) return "mvendorid";if (c == 0xF12) return "marchid";  if (c == 0xF13) return "mimpid";
+  return 0;
+}
+U0 PCsr(I64 c) { U8 *n; n = CsrN(c); if (n) Pm(n); else DiImm(c); }
+
+// MMIO base -> region name (the QEMU virt map), or 0.
+U8 *MmN(I64 a) {
+  if (a == 0x02000000) return "CLINT";  if (a == 0x0C000000) return "PLIC";
+  if (a == 0x10000000) return "UART0";  if (a == 0x10001000) return "VIRTIO";
+  if (a == 0x80000000) return "DRAM";   if (a == 0x00001000) return "BOOTROM";
+  return 0;
+}
+
+// " <Name+0xoff>" for a code address that lands in a known function (reverse hash-table lookup).
+U0 Sym(I64 addr) {
+  U8 *nm; I64 base;
+  nm = SymName(addr);
+  if (nm) { base = SymBase(addr); " <%s+", nm; DiImm(addr - base); PutCh('>'); }
+}
+// " <REGION>" for an upper-immediate that names a known MMIO base.
+U0 MmTag(I64 a) { U8 *m; m = MmN(a); if (m) { " <%s>", m; } }
+
+// Known-constant tracking: HolyC calls are `jalr ra, 0(t0)` with t0 built by lui/addi/slli/ori,
+// so symbolizing calls means simulating those chains. KV[r]/KOk[r] = the value register r would
+// hold if it came from a tracked constant chain; any other write clears it. DisasmAt resets per
+// window and clears everything on a compressed insn (C code; HolyC JIT output is all 32-bit).
+I64 KV[32], KOk[32];
+
 U0 DisasmOne(I64 addr, I64 w) {
   I64 op, rd, f3, rs1, rs2, f7, immI, immS, csr, jt;
   U8 *mn;
@@ -24,21 +60,21 @@ U0 DisasmOne(I64 addr, I64 w) {
   else if (w == 0x10500073) Pm("wfi");
   else if (w == 0x0000100F) Pm("fence.i");
   else if (w == 0x00008067) Pm("ret");
-  else if (op == 0x37) { "lui %s, ", RN[rd]; DiImm(w & 0xFFFFF000); }
+  else if (op == 0x37) { "lui %s, ", RN[rd]; DiImm(w & 0xFFFFF000); MmTag(w & 0xFFFFF000); }
   else if (op == 0x17) { "auipc %s, ", RN[rd]; DiImm(w & 0xFFFFF000); }
   else if (op == 0x6F) {
     jt = (((w>>31)&1)<<20) | (((w>>12)&0xFF)<<12) | (((w>>20)&1)<<11) | (((w>>21)&0x3FF)<<1);
     if (jt & 0x100000) jt |= ~0x1FFFFF;
-    "jal %s, 0x%08X", RN[rd], addr + jt;
+    "jal %s, 0x%08X", RN[rd], addr + jt; Sym(addr + jt);
   }
-  else if (op == 0x67) { "jalr %s, ", RN[rd]; DiImm(immI); "(%s)", RN[rs1]; }
+  else if (op == 0x67) { "jalr %s, ", RN[rd]; DiImm(immI); "(%s)", RN[rs1]; if (KOk[rs1]) Sym(KV[rs1] + immI); }
   else if (op == 0x13) {
     if (f3 == 0 && rs1 == 0) { "li %s, ", RN[rd]; DiImm(immI); }
     else {
       if (f3==0) mn = "addi"; else if (f3==1) mn = "slli"; else if (f3==2) mn = "slti";
       else if (f3==4) mn = "xori"; else if (f3==5) { if (f7 & 0x20) mn = "srai"; else mn = "srli"; }
       else if (f3==6) mn = "ori"; else mn = "andi";
-      "%s %s, %s, ", mn, RN[rd], RN[rs1]; if (f3==1 || f3==5) DiImm(rs2); else DiImm(immI);
+      "%s %s, %s, ", mn, RN[rd], RN[rs1]; if (f3==1 || f3==5) DiImm((w >> 20) & 0x3F); else DiImm(immI);
     }
   }
   else if (op == 0x1B) { if (f3==0) mn="addiw"; else if (f3==1) mn="slliw"; else mn="srliw"; "%s %s, %s, ", mn, RN[rd], RN[rs1]; if (f3==0) DiImm(immI); else DiImm(rs2); }
@@ -58,11 +94,11 @@ U0 DisasmOne(I64 addr, I64 w) {
     if (f3==0) mn="beq"; else if (f3==1) mn="bne"; else if (f3==4) mn="blt"; else if (f3==5) mn="bge"; else if (f3==6) mn="bltu"; else mn="bgeu";
     jt = (((w>>31)&1)<<12) | (((w>>25)&0x3F)<<5) | (((w>>8)&0xF)<<1) | (((w>>7)&1)<<11);
     if (jt & 0x1000) jt |= ~0x1FFF;
-    "%s %s, %s, 0x%08X", mn, RN[rs1], RN[rs2], addr + jt;
+    "%s %s, %s, 0x%08X", mn, RN[rs1], RN[rs2], addr + jt; Sym(addr + jt);
   }
   else if (op == 0x73) {
     if (f3==1) mn="csrrw"; else if (f3==2) mn="csrrs"; else if (f3==3) mn="csrrc"; else mn="";
-    if (mn[0]) { "%s %s, ", mn, RN[rd]; DiImm(csr); ", %s", RN[rs1]; }
+    if (mn[0]) { "%s %s, ", mn, RN[rd]; PCsr(csr); ", %s", RN[rs1]; }
     else { if (w==0x73) Pm("ecall"); else Pm("system"); }
   }
   else if (op == 0x07 && f3==3) { "fld %s, ", FRN[rd]; DiImm(immI); "(%s)", RN[rs1]; }
@@ -86,6 +122,31 @@ U0 DisasmOne(I64 addr, I64 w) {
     else { "fp.op f7="; DiImm(f7); " raw="; DiImm(w & 0xFFFFFFFF); }
   }
   else { ".word "; DiImm(w & 0xFFFFFFFF); }
+  // Track constant chains for jalr symbolization (see KV/KOk above). lui/auipc sign-extend bit 31.
+  if (rd) {
+    if (op == 0x37) { KV[rd] = w & 0xFFFFF000; if (KV[rd] & 0x80000000) KV[rd] |= 0xFFFFFFFF00000000; KOk[rd] = 1; }
+    else if (op == 0x17) { jt = w & 0xFFFFF000; if (jt & 0x80000000) jt |= 0xFFFFFFFF00000000; KV[rd] = addr + jt; KOk[rd] = 1; }
+    else if (op == 0x13 && f3 == 0) {
+      if (rs1 == 0) { KV[rd] = immI; KOk[rd] = 1; }
+      else if (KOk[rs1]) { KV[rd] = KV[rs1] + immI; KOk[rd] = 1; }
+      else KOk[rd] = 0;
+    }
+    else if (op == 0x13 && f3 == 1) { if (KOk[rs1]) { KV[rd] = KV[rs1] << ((w >> 20) & 0x3F); KOk[rd] = 1; } else KOk[rd] = 0; }
+    else if (op == 0x13 && f3 == 5 && !(f7 & 0x20)) {
+      // srli is a LOGICAL shift but HolyC >> on I64 is arithmetic -- mask off the smeared sign bits.
+      if (KOk[rs1]) { jt = (w >> 20) & 0x3F; KV[rd] = KV[rs1] >> jt; if (jt) KV[rd] &= (1 << (64 - jt)) - 1; KOk[rd] = 1; }
+      else KOk[rd] = 0;
+    }
+    else if (op == 0x03 && f3 == 3) {
+      // ld from a tracked address: we are IN the live system, so peek the actual memory -- this is
+      // how a call through an import slot (`ld t0,0(t0); jalr ra,0(t0)`) gets its real target name.
+      if (KOk[rs1] && KV[rs1] + immI >= 0x80000000 && KV[rs1] + immI < 0x88000000) { KV[rd] = *(I64 *)(KV[rs1] + immI); KOk[rd] = 1; }
+      else KOk[rd] = 0;
+    }
+    else if (op == 0x13 && f3 == 6) { if (KOk[rs1]) { KV[rd] = KV[rs1] | (immI & 0xFFF); KOk[rd] = 1; } else KOk[rd] = 0; }
+    else if (op == 0x23 || op == 0x63 || op == 0x27) {}   // stores/branches: rd bits are immediate, no write
+    else KOk[rd] = 0;                                     // anything else that writes rd kills the chain
+  }
   "\n";
 }
 U0 DisasmC(I64 addr, I64 w) {
@@ -151,13 +212,14 @@ U0 DisasmC(I64 addr, I64 w) {
 }
 // DisasmAt(addr) -- disassemble a 28-instruction window from a raw address.
 U0 DisasmAt(I64 addr) {
-  I64 i, lo, w;
+  I64 i, lo, w, k;
+  for (k = 0; k < 32; k++) KOk[k] = 0;
   "; disassembly window @ 0x%08X\n", addr;
   i = 0;
   while (i < 28) {
     lo = *(U16 *)addr;
     "0x%08X:  ", addr;
-    if ((lo & 3) != 3) { DisasmC(addr, lo); addr += 2; }
+    if ((lo & 3) != 3) { DisasmC(addr, lo); addr += 2; for (k = 0; k < 32; k++) KOk[k] = 0; }
     else { w = *(U32 *)addr; DisasmOne(addr, w); if (w == 0x00008067) return; addr += 4; }
     i++;
   }

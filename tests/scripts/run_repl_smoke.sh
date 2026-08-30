@@ -167,6 +167,8 @@ expect_text 'disassembling'       # the disassembler ran
 demo_input+=$'F64 Fa(F64 a,F64 b){return a+b;}\nDisasm("Fa");\n'
 expect_text 'fadd.d'                    # a float op decoded
 expect_text 'c.sdsp'                    # a compressed op decoded (from Src("Cat") above)
+demo_input+=$'Disasm("UartPut");\n'
+expect_text '<UART0>'                   # lui of an MMIO base gets its memory-map name
 # Inspection + in-editor exec
 demo_input+=$'MemMap();\nRegs();\nEd("q.hc");\n!6*7;\nq\n'
 expect_text 'code_mem'

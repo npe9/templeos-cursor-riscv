@@ -856,8 +856,77 @@ static HRT_I64 MemMap(void) {
     return 0;
 }
 static void reg_line(const char *name, I64 v) { puts_uart("  "); puts_uart(name); puts_uart(" = "); print_hex((U64)v); putc_uart('\n'); }
-static HRT_I64 Regs(void) {
+// Regs: dump EVERY GPR as it was at the call site, plus the M-mode CSRs. A C body can't do the
+// GPRs -- the prologue has already clobbered the caller-saved ones -- so a naked stub snapshots
+// x1..x31 to the fixed block 0x87000300 (x_n at 0x300+8n) before any C runs, then tail-calls the
+// printer (ra is untouched, so the printer returns straight to the REPL). t6 is bounced through
+// sscratch: mscratch belongs to the task scheduler, and sscratch is unused by this M-mode kernel
+// and never written by hardware, so an interrupt mid-stub can't lose it (the trampoline
+// saves/restores GPRs, and sscratch survives).
+#define REGS_SNAP_BASE 0x87000300UL
+__asm__(
+    ".text\n"
+    ".globl regs_snap_stub\n"
+    "regs_snap_stub:\n"
+    "  csrw sscratch, t6\n"
+    "  lui  t6, 0x10E00\n"      /* lui 0x87000 would sign-extend bit 31 (-> 0xFFFFFFFF87000000); */
+    "  slli t6, t6, 3\n"        /* build 0x87000000 as 0x10E00000 << 3 instead                  */
+    "sd x1, 0x308(t6)\n"
+    "sd x2, 0x310(t6)\n"
+    "sd x3, 0x318(t6)\n"
+    "sd x4, 0x320(t6)\n"
+    "sd x5, 0x328(t6)\n"
+    "sd x6, 0x330(t6)\n"
+    "sd x7, 0x338(t6)\n"
+    "sd x8, 0x340(t6)\n"
+    "sd x9, 0x348(t6)\n"
+    "sd x10, 0x350(t6)\n"
+    "sd x11, 0x358(t6)\n"
+    "sd x12, 0x360(t6)\n"
+    "sd x13, 0x368(t6)\n"
+    "sd x14, 0x370(t6)\n"
+    "sd x15, 0x378(t6)\n"
+    "sd x16, 0x380(t6)\n"
+    "sd x17, 0x388(t6)\n"
+    "sd x18, 0x390(t6)\n"
+    "sd x19, 0x398(t6)\n"
+    "sd x20, 0x3A0(t6)\n"
+    "sd x21, 0x3A8(t6)\n"
+    "sd x22, 0x3B0(t6)\n"
+    "sd x23, 0x3B8(t6)\n"
+    "sd x24, 0x3C0(t6)\n"
+    "sd x25, 0x3C8(t6)\n"
+    "sd x26, 0x3D0(t6)\n"
+    "sd x27, 0x3D8(t6)\n"
+    "sd x28, 0x3E0(t6)\n"
+    "sd x29, 0x3E8(t6)\n"
+    "sd x30, 0x3F0(t6)\n"
+    "  csrr t5, sscratch\n"
+    "  sd t5, 0x3F8(t6)\n"      /* original t6 (x31) */
+    "  ld t5, 0x3F0(t6)\n"      /* restore t5 */
+    "  csrr t6, sscratch\n"     /* restore t6 */
+    "  j regs_dump_c\n"
+);
+HRT_I64 regs_snap_stub(void);
+__attribute__((used)) static HRT_I64 regs_dump_c(void) {
+    static const char *rn[32] = {"zero","ra","sp","gp","tp","t0","t1","t2","s0","s1",
+        "a0","a1","a2","a3","a4","a5","a6","a7","s2","s3","s4","s5","s6","s7","s8","s9",
+        "s10","s11","t3","t4","t5","t6"};
+    volatile U64 *r = (volatile U64 *)REGS_SNAP_BASE;
     I64 v;
+    char pad[12];
+    puts_uart("GPRs at the Regs() call site (xN / ABI name):\n");
+    for (int i = 1; i < 32; i++) {
+        int k = 0;
+        pad[k++] = 'x';                                   /* "x10 a0  " -- number and ABI name */
+        if (i >= 10) pad[k++] = (char)('0' + i / 10);
+        pad[k++] = (char)('0' + i % 10);
+        while (k < 4) pad[k++] = ' ';
+        for (int j = 0; rn[i][j]; j++) pad[k++] = rn[i][j];
+        while (k < 8) pad[k++] = ' ';
+        pad[k] = 0;
+        reg_line(pad, (I64)r[i]);
+    }
     puts_uart("M-mode CSRs (the real machine state):\n");
     __asm__ volatile("csrr %0, mstatus"  : "=r"(v)); reg_line("mstatus ", v);
     __asm__ volatile("csrr %0, misa"     : "=r"(v)); reg_line("misa    ", v);
@@ -870,10 +939,6 @@ static HRT_I64 Regs(void) {
     __asm__ volatile("csrr %0, mscratch" : "=r"(v)); reg_line("mscratch", v);
     __asm__ volatile("csrr %0, mhartid"  : "=r"(v)); reg_line("mhartid ", v);
     reg_line("mtime   ", *(volatile I64 *)0x0200BFF8);
-    puts_uart("GPRs (this call's frame -- for a trapped context use a breakpoint):\n");
-    __asm__ volatile("mv %0, sp" : "=r"(v)); reg_line("sp      ", v);
-    __asm__ volatile("mv %0, gp" : "=r"(v)); reg_line("gp      ", v);
-    __asm__ volatile("mv %0, ra" : "=r"(v)); reg_line("ra      ", v);
     return 0;
 }
 // Exec("holyc") -- compile and run one HolyC statement/definition, echoing its answer. Lets the
@@ -890,6 +955,28 @@ static HRT_I64 FnAddr(char *name) {
     CHashFun *f = g_cc ? (CHashFun *)HashFind(name, g_cc->hash_table, HTT_FUN) : 0;
     return f ? (HRT_I64)f->exe_addr : 0;
 }
+
+// The reverse of FnAddr: addr -> the function that contains it. There is no per-entry size in the
+// hash table, so we symbolize by nearest-below -- the function with the greatest exe_addr <= addr.
+// SymBase returns that entry's exe_addr (0 if none below), so HolyC's disassembler can print
+// `<Name+0xoff>` with off = addr - SymBase(addr). SymName returns the name pointer (0 if none).
+// Both walk the same HTT_FUN entries Funs() lists.
+static CHashFun *SymNearest(HRT_I64 addr) {
+    if (!g_cc || !g_cc->hash_table) return 0;
+    CHashTable *h = g_cc->hash_table;
+    CHashFun *best = 0;
+    for (I64 b = 0; b <= h->mask; b++)
+        for (CHashEntry *e = h->body[b]; e; e = e->next)
+            if ((e->type & HTT_FUN)) {
+                CHashFun *f = (CHashFun *)e;
+                if (f->exe_addr && (I64)f->exe_addr <= (I64)addr &&
+                    (!best || (I64)f->exe_addr > (I64)best->exe_addr))
+                    best = f;
+            }
+    return best;
+}
+static HRT_I64 SymBase(HRT_I64 addr) { CHashFun *f = SymNearest(addr); return f ? (HRT_I64)f->exe_addr : 0; }
+static HRT_I64 SymName(HRT_I64 addr) { CHashFun *f = SymNearest(addr); return f && f->str ? (HRT_I64)f->str : 0; }
 
 static void RuntimeInit(Compiler *cc) {
     // Fs -> the task block (Fs->except_ch)
@@ -920,9 +1007,11 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "Src",       (void*)Src,       1);
     RuntimeRegister(cc, "Funs",      (void*)Funs,      0);
     RuntimeRegister(cc, "MemMap",    (void*)MemMap,    0);
-    RuntimeRegister(cc, "Regs",      (void*)Regs,      0);
+    RuntimeRegister(cc, "Regs",      (void*)regs_snap_stub, 0);
     RuntimeRegister(cc, "Exec",      (void*)Exec,      1);
     RuntimeRegister(cc, "FnAddr",    (void*)FnAddr,    1);
+    RuntimeRegister(cc, "SymBase",   (void*)SymBase,   1);   // addr -> exe_addr of nearest-below fn
+    RuntimeRegister(cc, "SymName",   (void*)SymName,   1);   // addr -> name string of that fn (0 if none)
     RuntimeRegister(cc, "SetIsr",    (void*)SetIsr,    1);
     RuntimeRegister(cc, "TrapInit",  (void*)TrapInit,  0);
     RuntimeRegister(cc, "Ecall",     (void*)Ecall,     0);
