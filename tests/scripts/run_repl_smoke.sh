@@ -159,6 +159,13 @@ expect_text 'Editor line two'
 demo_input+=$'Edit("scr.hc");\nVisual editor works\017\030Cat("scr.hc");\n'
 expect_text 'wrote scr.hc'
 expect_text 'Visual editor works'
+# Self-hosting: author a file with Ed, Run() it (compile+execute in place), call what it defined.
+demo_input+=$'Ed("run.hc");\na\nI64 Trip(){ return 111; }\n.\nw\nq\nRun("run.hc");\nTrip();\n'
+expect_text 'ans=0x000000000000006f'   # Trip() == 111, defined in the Run() file
+# Edit + compile + install an interrupt handler in place: define an ISR in a file, Run it,
+# TrapInit()/SetIsr(), then Ecall() to fire a synchronous trap into the HolyC handler.
+demo_input+=$'Ed("isr.hc");\na\nI64 Zap(I64 c,I64 e,I64 t){ "ZAP-HIT "; return 0; }\n.\nw\nq\nRun("isr.hc");\nTrapInit();\nSetIsr("Zap");\nEcall();\n'
+expect_text 'ZAP-HIT'
 # Sentinel: the REPL never exits (it spins on the UART after EOF), so stop QEMU as soon as
 # the last answer is printed; the timeout only bounds a hung/crashed REPL.
 add_case '4919;' 0000000000001337

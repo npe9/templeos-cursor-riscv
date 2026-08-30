@@ -504,6 +504,140 @@ static HRT_I64 Edit(char *name) {
     puts_uart("\x1b[2J\x1b[H");   // leave a clean screen for the REPL prompt
     return 0;
 }
+// ---- Shared compile+run path (typed statements AND Run("file")) --------------------------
+// The single compiler instance, reused across statements and files so definitions accumulate
+// (functions keep their exe_addr, the hash table persists). Promoted to a global so Run() and
+// the trap dispatcher -- both reached from JIT'd code -- can see it.
+static Compiler *g_cc = 0;
+
+// Compile one source buffer as top-level HolyC and run any trailing statement. echo=1 prints
+// the TempleOS-style "<time>s ans=..." line (the REPL prompt); echo=0 is silent (Run/scripts).
+// Safe to call re-entrantly from a registered C function: cc->lex is re-seeded on every call,
+// free() is a no-op here, and definitions only append to code_mem / the hash table.
+static void repl_eval(const char *src, int echo) {
+    Compiler *cc = g_cc;
+    if (!cc) return;
+    if (cc->lex.src) free(cc->lex.src);
+    cc->lex.src = strdup(src);
+    cc->lex.ptr = cc->lex.src;
+    cc->lex.line = 1; cc->lex.col = 1; cc->lex.hash_entry = NULL;
+    cc->ic_head = NULL; cc->ic_tail = NULL; cc->labels = NULL;
+    cc->label_counter = 0; cc->locals_size = 0;
+    extern void LexNext(Compiler *cc);
+    extern Bool ParseTopLevel(Compiler *cc);
+    LexNext(cc);
+    Bool ok = true;
+    while (ok && cc->lex.token != TK_EOF) ok = ParseTopLevel(cc);
+    U8 ans_ty = cc->last_expr_type;
+    __asm__ volatile("fence.i" ::: "memory");   // definitions are fresh code: order the I-side
+    if (!ok) {
+        puts_uart("[ERROR] "); puts_uart(cc->error ? cc->error : "parse error");
+        puts_uart(" near '"); puts_uart(cc->lex.token_str ? cc->lex.token_str : "");
+        puts_uart("' line "); print_hex((U64)cc->lex.line); puts_uart("\n");
+        cc->error = NULL; cc->ic_head = NULL; cc->ic_tail = NULL; return;
+    }
+    if (cc->ic_head) {
+        extern void WrapStatementsAsFrame(Compiler *cc);
+        extern U8 *CompileAOT(Compiler *cc, I64 *size_out);
+        WrapStatementsAsFrame(cc);
+        I64 code_size = 0;
+        U8 *machine_code = CompileAOT(cc, &code_size);
+        cc->ic_head = NULL; cc->ic_tail = NULL;
+        if (!machine_code || code_size <= 0) { if (echo) puts_uart("[COMPILE FAILED]\n"); return; }
+        __asm__ volatile("fence.i" ::: "memory");
+        typedef I64 (*FuncPtr)();
+        FuncPtr func_ptr = (FuncPtr)machine_code;
+        U64 t0, t1;
+        __asm__ volatile("rdtime %0" : "=r"(t0));
+        I64 result = func_ptr();
+        __asm__ volatile("rdtime %0" : "=r"(t1));
+        g_answer = result;
+        if (echo) {
+            print_time(t1 - t0);
+            if (ans_ty == RT_I0)      puts_uart("\n");
+            else if (ans_ty == RT_F64){ puts_uart(" ansf="); print_f64((U64)result); puts_uart("\n"); }
+            else { puts_uart(" ans="); print_hex(result); putc_uart('='); print_dec(result); puts_uart("\n"); }
+        }
+        free(machine_code);
+    }
+}
+// Run("name") -- compile and execute an in-memory file as a HolyC source (silent: definitions
+// register, a trailing statement runs, but no ans= echo). This closes the self-hosting loop:
+// edit a file with Ed/Edit, then Run it.
+static HRT_I64 Run(char *name) {
+    MemFile *f = memfs_find(name);
+    if (!f) { puts_uart("Run: no such file: "); puts_uart(name); puts_uart("\n"); return -1; }
+    f->data[f->len] = 0;
+    repl_eval(f->data, 0);
+    return 0;
+}
+
+// ---- Live interrupt handling: install a HolyC ISR you can edit + recompile in place --------
+// mtvec points at a FIXED trampoline (the register-save frame and mret can't be hot-swapped).
+// The trampoline dispatches to whatever HolyC function name is currently registered, resolved
+// afresh on every trap -- so editing the handler and Run()-ing it takes effect immediately, no
+// reinstall. Handler signature:  I64 MyIsr(I64 cause, I64 epc, I64 tval);  a nonzero return is
+// the address to resume at (else: skip a synchronous exception, retry an interrupt).
+static char g_isr_name[32];
+
+__attribute__((used)) static void repl_trap_dispatch(void) {
+    I64 cause, epc, tval;
+    __asm__ volatile("csrr %0, mcause" : "=r"(cause));
+    __asm__ volatile("csrr %0, mepc"   : "=r"(epc));
+    __asm__ volatile("csrr %0, mtval"  : "=r"(tval));
+    I64 resume = 0;
+    CHashFun *f = g_isr_name[0] && g_cc ? (CHashFun *)HashFind(g_isr_name, g_cc->hash_table, HTT_FUN) : 0;
+    if (f && f->exe_addr) {
+        typedef I64 (*Isr)(I64, I64, I64);
+        resume = ((Isr)f->exe_addr)(cause, epc, tval);
+    } else {
+        puts_uart("[trap cause="); print_hex((U64)cause);
+        puts_uart(" epc=");        print_hex((U64)epc);
+        puts_uart(" tval=");       print_hex((U64)tval); puts_uart("]\n");
+    }
+    if (!resume) resume = (cause >= 0) ? epc + 4 : epc;   // exception: skip; interrupt: retry
+    __asm__ volatile("csrw mepc, %0" :: "r"(resume));
+}
+__attribute__((used, naked, aligned(4))) static void repl_trap_vector(void) {
+    __asm__ volatile(
+        "addi sp,sp,-128\n"
+        "sd ra,0(sp)\n sd t0,8(sp)\n sd t1,16(sp)\n sd t2,24(sp)\n"
+        "sd t3,32(sp)\n sd t4,40(sp)\n sd t5,48(sp)\n sd t6,56(sp)\n"
+        "sd a0,64(sp)\n sd a1,72(sp)\n sd a2,80(sp)\n sd a3,88(sp)\n"
+        "sd a4,96(sp)\n sd a5,104(sp)\n sd a6,112(sp)\n sd a7,120(sp)\n"
+        "call repl_trap_dispatch\n"
+        "ld ra,0(sp)\n ld t0,8(sp)\n ld t1,16(sp)\n ld t2,24(sp)\n"
+        "ld t3,32(sp)\n ld t4,40(sp)\n ld t5,48(sp)\n ld t6,56(sp)\n"
+        "ld a0,64(sp)\n ld a1,72(sp)\n ld a2,80(sp)\n ld a3,88(sp)\n"
+        "ld a4,96(sp)\n ld a5,104(sp)\n ld a6,112(sp)\n ld a7,120(sp)\n"
+        "addi sp,sp,128\n"
+        "mret\n"
+    );
+}
+// SetIsr("name") -- route traps to the HolyC function of that name (resolved live per trap).
+static HRT_I64 SetIsr(char *name) {
+    int i = 0; while (name[i] && i < 31) { g_isr_name[i] = name[i]; i++; } g_isr_name[i] = 0;
+    return 0;
+}
+// TrapInit() -- install the trampoline and enable machine interrupts. Opt-in: until you call
+// this, a fault still hangs (startup's halt vector), which is the behavior debugging relies on.
+static HRT_I64 TrapInit(void) {
+    __asm__ volatile("csrw mtvec, %0" :: "r"(&repl_trap_vector));
+    __asm__ volatile("csrs mstatus, %0" :: "r"((HRT_I64)(1 << 3)));   // MIE: global interrupt enable
+    return 0;
+}
+// Ecall() -- raise a synchronous trap (mcause=11, env-call-from-M) so you can watch your ISR run.
+static HRT_I64 Ecall(void) { __asm__ volatile("ecall"); return 0; }
+// TimerArm(interval) -- arm the CLINT machine timer to fire the ISR every `interval` mtime ticks
+// (async, mcause bit63|7). Pass a large interval so ticks are occasional, not a flood.
+static HRT_I64 TimerArm(HRT_I64 interval) {
+    volatile HRT_I64 *mtime    = (volatile HRT_I64 *)0x0200BFF8;
+    volatile HRT_I64 *mtimecmp = (volatile HRT_I64 *)0x02004000;
+    *mtimecmp = *mtime + interval;
+    __asm__ volatile("csrs mie, %0" :: "r"((HRT_I64)(1 << 7)));       // MTIE
+    return 0;
+}
+
 static void RuntimeInit(Compiler *cc) {
     // Fs -> the task block (Fs->except_ch)
     if (cc->fs_var && cc->except_ch_var) *(I64 *)cc->fs_var->data_addr = (I64)cc->except_ch_var->data_addr;
@@ -518,6 +652,12 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "FileRead",  (void*)FileRead,  1);
     RuntimeRegister(cc, "Ed",        (void*)Ed,        1);
     RuntimeRegister(cc, "Edit",      (void*)Edit,      1);
+    // Self-hosting: compile+run a file, and edit/compile/install an interrupt handler in place
+    RuntimeRegister(cc, "Run",       (void*)Run,       1);
+    RuntimeRegister(cc, "SetIsr",    (void*)SetIsr,    1);
+    RuntimeRegister(cc, "TrapInit",  (void*)TrapInit,  0);
+    RuntimeRegister(cc, "Ecall",     (void*)Ecall,     0);
+    RuntimeRegister(cc, "TimerArm",  (void*)TimerArm,  1);
 }
 
 void repl(void) {
@@ -527,7 +667,8 @@ void repl(void) {
     
     // Create compiler once and reuse across REPL iterations
     // This ensures the hash table persists across inputs
-    Compiler *cc = CompilerNew("", "repl");
+    g_cc = CompilerNew("", "repl");
+    Compiler *cc = g_cc;
     RuntimeInit(cc);
     
     // Accumulation buffer for multi-line inputs (functions/blocks)
@@ -620,99 +761,13 @@ void repl(void) {
             continue;
         }
         
-        // Reinitialize lexer and compiler state for accumulated input (keep hash table)
-        if (cc->lex.src) free(cc->lex.src);
-        cc->lex.src = strdup(accum);
-        cc->lex.ptr = cc->lex.src;
-        cc->lex.line = 1;
-        cc->lex.col = 1;
-        cc->lex.hash_entry = NULL;
-        
-        // Reset IC chain for new statement
-        cc->ic_head = NULL;
-        cc->ic_tail = NULL;
-        cc->labels = NULL;
-        cc->label_counter = 0;
-        cc->locals_size = 0;
-        
-        // Reset accumulation after capturing into lexer
+        // Compile and run the accumulated input, echoing the TempleOS-style answer line.
+        // The same path serves Run("file") (with echo off) -- see repl_eval() above.
+        repl_eval(accum, 1);
         accum_len = 0;
         brace_depth = 0;
         paren_depth = 0;
-        
-        if (!cc) continue;
-        
-        // Parse the input as top-level HolyC (same grammar as a source file): definitions
-        // register themselves (functions are compiled by the parser and get an exe_addr);
-        // plain statements leave IC behind, which we compile and run right away.
-        extern void LexNext(Compiler *cc);
-        extern Bool ParseTopLevel(Compiler *cc);
-        extern U8 *CompileExpression(Compiler *cc, I64 *size_out);
-        LexNext(cc);
-        Bool ok = true;
-        int defined_fn = 0;
-        while (ok && cc->lex.token != TK_EOF) {
-            CHashFun *fn_before = cc->last_compiled_func;
-            I64 addr_before = fn_before ? fn_before->exe_addr : 0;
-            ok = ParseTopLevel(cc);
-            if (ok && cc->last_compiled_func &&
-                (cc->last_compiled_func != fn_before || cc->last_compiled_func->exe_addr != addr_before) &&
-                cc->last_compiled_func->exe_addr) {
-                defined_fn++;
-            }
-        }
-        // The last statement's value type is the command-line "answer type" (RT_I0 = void).
-        U8 ans_ty = cc->last_expr_type;
-        // Everything compiled above (functions, statement) is fresh code: order the I-side.
-        __asm__ volatile("fence.i" ::: "memory");
-        if (!ok) {
-            puts_uart("[ERROR] ");
-            puts_uart(cc->error ? cc->error : "parse error");
-            puts_uart(" near '");
-            puts_uart(cc->lex.token_str ? cc->lex.token_str : "");
-            puts_uart("' line ");
-            print_hex((U64)cc->lex.line);
-            puts_uart("\n");
-            cc->error = NULL;
-            cc->ic_head = NULL;
-            cc->ic_tail = NULL;
-            continue;
-        }
-        (void)defined_fn;   // TempleOS is silent on a successful definition
-        if (cc->ic_head) {
-            // Statement: compile it as a frame of its own (switch/try temps get real slots);
-            // the last value is the answer (match TempleOS LexStmt2Bin:13-14).
-            extern void WrapStatementsAsFrame(Compiler *cc);
-            extern U8 *CompileAOT(Compiler *cc, I64 *size_out);
-            WrapStatementsAsFrame(cc);
-            I64 code_size = 0;
-            U8 *machine_code = CompileAOT(cc, &code_size);
-            cc->ic_head = NULL;
-            cc->ic_tail = NULL;
-            if (!machine_code || code_size <= 0) {
-                puts_uart("[COMPILE FAILED]\n");
-                continue;
-            }
-            __asm__ volatile("fence.i" ::: "memory");
-            // TempleOS approach: cast the compiled code to a function and call it (CMain.HC:15,32)
-            typedef I64 (*FuncPtr)();
-            FuncPtr func_ptr = (FuncPtr)machine_code;
-            U64 t0, t1;
-            __asm__ volatile("rdtime %0" : "=r"(t0));
-            I64 result = func_ptr();
-            __asm__ volatile("rdtime %0" : "=r"(t1));
-            g_answer = result;
-            print_time(t1 - t0);                       // TempleOS CmdLinePmt: "%8.6fs ans=0x%08X=%d"
-            if (ans_ty == RT_I0) {
-                puts_uart("\n");                        // void statement: timing only, no ans=
-            } else if (ans_ty == RT_F64) {
-                puts_uart(" ansf="); print_f64((U64)result); puts_uart("\n");
-            } else {
-                puts_uart(" ans="); print_hex(result); putc_uart('='); print_dec(result); puts_uart("\n");
-            }
-            free(machine_code);
-        }
-        
+
         // Don't free the compiler - reuse it for the next iteration
     }
 }
