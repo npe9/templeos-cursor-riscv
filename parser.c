@@ -1801,15 +1801,18 @@ static bool ParsePostfix(Compiler *cc) {
       // Add offset to base address
       ICAdd(cc, IC_ADD, 0, RT_I64);
       
-      // Inner subscript of a multi-dimensional array: the result is a sub-array address —
-      // keep it for the next '[' instead of loading through it.
+      // Inner subscript of a multi-dimensional array: the result is a sub-array address. If
+      // another '[' follows, keep it for that subscript. If NOT (a bare partial subscript like
+      // `m[i]` on `m[8][16]`), the row ADDRESS is the result -- a pointer, not a load: keep a0
+      // (CCF_RAX skips the deref below) and type it as a pointer. Without this, the bare partial
+      // subscript fell through inconsistently and decayed to a wrong pointer (esp. a variable
+      // index) -- e.g. `EdLn[k]` passed as an argument.
       if (saved_symbol && saved_symbol->ndims > 1 && cc->subscript_level < saved_symbol->ndims - 1) {
-        cc->subscript_level++;
-        continue;
-      }
-      if (saved_global && saved_global->ndims > 1 && cc->subscript_level < saved_global->ndims - 1) {
-        cc->subscript_level++;
-        continue;
+        if (cc->lex.token == '[') { cc->subscript_level++; continue; }
+        cc->flags |= CCF_RAX; cc->last_expr_type = RT_I64;
+      } else if (saved_global && saved_global->ndims > 1 && cc->subscript_level < saved_global->ndims - 1) {
+        if (cc->lex.token == '[') { cc->subscript_level++; continue; }
+        cc->flags |= CCF_RAX; cc->last_expr_type = RT_I64;
       }
       cc->subscript_level = 0;
       // Dereference to get the value
