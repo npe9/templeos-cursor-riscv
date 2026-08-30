@@ -25,7 +25,7 @@ I64 EdReadLine(U8 *buf, I64 max) {
 U0 EdInsertAt(I64 pos, U8 *text) {
   I64 k;
   if (EdN >= 256) { "ed: buffer full\n"; return; }
-  for (k = EdN; k > pos; k--) EdSetLine(k, EdLn[k - 1]);
+  for (k = EdN; k > pos; k--) EdSetLine(k, &EdLn[k - 1][0]);
   EdSetLine(pos, text);
   EdN++;
 }
@@ -35,7 +35,7 @@ U0 EdDeleteRange(I64 a, I64 b) {
   if (b > EdN) b = EdN;
   if (a > b) return;
   cnt = b - a + 1;
-  for (k = a - 1; k + cnt < EdN; k++) EdSetLine(k, EdLn[k + cnt]);
+  for (k = a - 1; k + cnt < EdN; k++) EdSetLine(k, &EdLn[k + cnt][0]);
   EdN -= cnt;
 }
 U0 EdInputBlock(I64 at) {
@@ -98,7 +98,7 @@ U0 Ed(U8 *name) {
     else if (c == 'p' || c == 'n') {
       lo = h1 ? a1 : EdCur; hi = h2 ? a2 : lo;
       if (lo < 1) lo = 1; if (hi > EdN) hi = EdN;
-      for (k = lo; k <= hi; k++) { if (c == 'n') { "%d", k; PutCh('\t'); } "%s", EdLn[k - 1]; PutCh('\n'); }
+      for (k = lo; k <= hi; k++) { if (c == 'n') { "%d", k; PutCh('\t'); } "%s", &EdLn[k - 1][0]; PutCh('\n'); }
       if (hi >= 1) EdCur = hi;
     }
     else if (c == 'w') {
@@ -115,8 +115,8 @@ U0 Ed(U8 *name) {
     else if (c == 'q') { "\n"; return; }
     else if (c == '=') { "%d\n", h1 ? a1 : EdCur; }
     else if (c == 0) {
-      if (h1) { if (a1 >= 1 && a1 <= EdN) { EdCur = a1; "%s", EdLn[a1 - 1]; PutCh('\n'); } }
-      else if (EdCur < EdN) { EdCur++; "%s", EdLn[EdCur - 1]; PutCh('\n'); }
+      if (h1) { if (a1 >= 1 && a1 <= EdN) { EdCur = a1; "%s", &EdLn[a1 - 1][0]; PutCh('\n'); } }
+      else if (EdCur < EdN) { EdCur++; "%s", &EdLn[EdCur - 1][0]; PutCh('\n'); }
     }
     else "?\n";
   }
