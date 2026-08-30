@@ -219,7 +219,7 @@ static int repl_read_line(char *buf, int max) {
 // a file's storage is claimed once and rewritten in place. HolyC-callable: Dir/Cat/Del/Ed and
 // the programmatic FileWrite/FileRead.
 #define MEMFS_MAX_FILES 32
-#define MEMFS_FILE_CAP  8192
+#define MEMFS_FILE_CAP  16384
 typedef struct { int used; char name[32]; char data[MEMFS_FILE_CAP]; int len; } MemFile;
 static MemFile memfs[MEMFS_MAX_FILES];
 
@@ -549,17 +549,22 @@ static Compiler *g_cc = 0;
 // ---- Per-function source map: TempleOS keeps a source link on every symbol so you can bring
 // its definition up in the editor. We do the same -- as each function is compiled, its defining
 // source unit is stashed here by name, and Src("Name") brings it back up in Edit and recompiles.
-#define SRCMAP_MAX 64
-#define SRCMAP_SRC 4096   /* per-function source cap; editor functions run ~2KB */
-static struct { int used; char name[32]; char src[SRCMAP_SRC]; } srcmap[SRCMAP_MAX];
+#define SRCMAP_MAX 128
+static struct { int used; char name[32]; char *src; } srcmap[SRCMAP_MAX];
 static void srcmap_put(const char *name, const char *src) {
     int slot = -1;
     for (int i = 0; i < SRCMAP_MAX; i++) if (srcmap[i].used && !strcmp(srcmap[i].name, name)) { slot = i; break; }
     if (slot < 0) for (int i = 0; i < SRCMAP_MAX; i++) if (!srcmap[i].used) { slot = i; break; }
     if (slot < 0) return;   // table full: leave earlier entries intact
+    // Store the whole source, whatever its size -- no fixed cap. free() is a no-op, so a redefine
+    // simply allocates a fresh copy (the old one is abandoned on the 12MB heap).
+    size_t n = strlen(src);
+    char *buf = (char *)malloc(n + 1);
+    if (!buf) return;
+    for (size_t i = 0; i <= n; i++) buf[i] = src[i];
     srcmap[slot].used = 1;
+    srcmap[slot].src = buf;
     int j = 0; while (name[j] && j < 31) { srcmap[slot].name[j] = name[j]; j++; } srcmap[slot].name[j] = 0;
-    int k = 0; while (src[k] && k < SRCMAP_SRC - 1) { srcmap[slot].src[k] = src[k]; k++; } srcmap[slot].src[k] = 0;
 }
 static const char *srcmap_get(const char *name) {
     for (int i = 0; i < SRCMAP_MAX; i++) if (srcmap[i].used && !strcmp(srcmap[i].name, name)) return srcmap[i].src;
@@ -676,21 +681,31 @@ static HRT_I64 Run(char *name) {
 // (the C built-ins like Ed/Dir/Edit have no HolyC source until they are reimplemented as such).
 static HRT_I64 Src(char *name) {
     const char *s = srcmap_get(name);
-    if (!s) {
-        puts_uart("Src: no HolyC source for "); puts_uart(name);
-        puts_uart(" (a C built-in, or not defined in HolyC yet)\n");
-        return -1;
+    if (s) {
+        // A HolyC function: materialize its (arbitrary-size) source into <name>.hc, edit, recompile.
+        char fn[36];
+        int j = 0; while (name[j] && j < 31) { fn[j] = name[j]; j++; }
+        fn[j] = '.'; fn[j+1] = 'h'; fn[j+2] = 'c'; fn[j+3] = 0;
+        MemFile *f = memfs_create(fn);
+        if (!f) { puts_uart("Src: fs full\n"); return -1; }
+        int n = 0; while (s[n] && n < MEMFS_FILE_CAP - 1) { f->data[n] = s[n]; n++; }
+        f->data[n] = 0; f->len = n;
+        Edit(fn); Run(fn);
+        return 0;
     }
-    char fn[36];
-    int j = 0; while (name[j] && j < 31) { fn[j] = name[j]; j++; }
-    fn[j] = '.'; fn[j+1] = 'h'; fn[j+2] = 'c'; fn[j+3] = 0;
-    MemFile *f = memfs_create(fn);
-    if (!f) { puts_uart("Src: fs full\n"); return -1; }
-    int n = 0; while (s[n] && n < MEMFS_FILE_CAP - 1) { f->data[n] = s[n]; n++; }
-    f->data[n] = 0; f->len = n;
-    Edit(fn);   // default to the full-screen editor
-    Run(fn);    // recompile on exit -> the edited source is the live definition
-    return 0;
+    // Not a known function: maybe it's a file itself -- the boot script, a driver source, a data
+    // file. Edit "name" (or "name.hc") in place and Run it, so you can edit the boot process too.
+    MemFile *f = memfs_find(name);
+    if (!f) {
+        char fn[36];
+        int j = 0; while (name[j] && j < 31) { fn[j] = name[j]; j++; }
+        fn[j] = '.'; fn[j+1] = 'h'; fn[j+2] = 'c'; fn[j+3] = 0;
+        f = memfs_find(fn);
+    }
+    if (f) { Edit(f->name); Run(f->name); return 0; }
+    puts_uart("Src: no source for "); puts_uart(name);
+    puts_uart(" (not a HolyC function or a file)\n");
+    return -1;
 }
 // Funs() -- list every function in the symbol table (the hash table): name, entry address,
 // return type, and [src] if it has HolyC source you can Src()/edit. This is the "what can I
