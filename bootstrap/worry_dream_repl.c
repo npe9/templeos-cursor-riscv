@@ -295,6 +295,7 @@ static HRT_I64 FileSize(HRT_I64 idx) {
     int k = 0; for (int i = 0; i < MEMFS_MAX_FILES; i++) if (memfs[i].used) { if (k == idx) return memfs[i].len; k++; }
     return 0;
 }
+static HRT_I64 FileLen(char *name) { MemFile *f = memfs_find(name); return f ? f->len : -1; }
 
 // ---- Seed files: kernel primitives shipped as editable HolyC source ----------------------
 // These land in the in-memory FS at boot, so the "system" you edit is HolyC from the first
@@ -302,47 +303,7 @@ static HRT_I64 FileSize(HRT_I64 idx) {
 // and editing + re-Running it changes the driver in place (callers resolve through the table,
 // so redefining UartPut alone also changes UartStr). This is the seam the whole-kernel move
 // grows from -- add primitives here (or load them off a disk) and they become redefinable.
-static const struct { const char *name; const char *body; } memfs_seed_files[] = {
-  { "uart.hc",
-    "// UART 16550 driver -- a live-editable kernel primitive (QEMU virt @ 0x10000000).\n"
-    "// Edit a body, Run(\"uart.hc\") again, and the change is live -- no reboot.\n"
-    "U0 UartPut(I64 ch) {\n"
-    "  while (!(*(U8 *)0x10000005 & 0x20)) ;   // LSR bit 5: THR empty\n"
-    "  *(U8 *)0x10000000 = ch;                  // write the byte\n"
-    "}\n"
-    "U0 UartStr(U8 *s) { while (*s) UartPut(*s++); }\n"
-  },
-  { "timer.hc",
-    "// CLINT machine-timer primitive + an editable tick handler (QEMU virt).\n"
-    "// Run(\"timer.hc\"); SetIsr(\"OnTick\"); TrapInit(); TimerArm(1000000);  then Ticks().\n"
-    "// Edit OnTick, Run(\"timer.hc\") again, and the next tick uses the new body.\n"
-    "I64 tick_count;\n"
-    "I64 OnTick(I64 cause, I64 epc, I64 tval) {\n"
-    "  tick_count++;\n"
-    "  *(U64 *)0x02004000 = *(U64 *)0x0200BFF8 + 1000000;    // re-arm mtimecmp (~0.1s @ 10MHz)\n"
-    "  return 0;\n"
-    "}\n"
-    "I64 Ticks() { return tick_count; }\n"
-  },
-  { "dir.hc",
-    "// Dir() reimplemented in HolyC -- redefines the C built-in, so the directory listing is\n"
-    "// itself editable: Src(\"Dir\") brings this up. Uses FileCount/FileName/FileSize.\n"
-    "U0 Dir() {\n"
-    "  I64 i, n = FileCount();\n"
-    "  if (!n) { \"  (no files)\\n\"; return; }\n"
-    "  for (i = 0; i < n; i++)\n"
-    "    \"  %s  %d bytes\\n\", FileName(i), FileSize(i);\n"
-    "}\n"
-  },
-  { "boot.hc",
-    "// boot.hc -- the editable boot script, auto-Run at startup. Edit it and reboot (or\n"
-    "// Run(\"boot.hc\")) to change what the system brings up. Each line runs before the next\n"
-    "// compiles, so you can load a driver and then use it (on a LATER line, not the same one).\n"
-    "Run(\"uart.hc\");\n"
-    "Run(\"dir.hc\");\n"
-    "UartStr(\"[boot] HolyC primitives loaded. Dir; to list, Run/Edit to change them live.\\n\");\n"
-  },
-};
+#include "seed_files.h"
 static void memfs_seed(void) {
     for (unsigned i = 0; i < sizeof(memfs_seed_files) / sizeof(memfs_seed_files[0]); i++) {
         MemFile *f = memfs_create(memfs_seed_files[i].name);
@@ -465,6 +426,10 @@ static HRT_I64 Ed(char *name) {
 #define TEXT_ROWS  (SCR_ROWS - 2)   // rows 1..22 text, 23 status (reverse video), 24 message
 
 static char getc_block(void) { char c; do { c = getc_uart(); } while (c == 0); return c; }
+// Char I/O exposed to HolyC so the editors can be written in HolyC: GetCh() blocks for one byte,
+// PutCh(ch) writes one raw byte (ANSI escapes and control chars included).
+static HRT_I64 GetCh(void) { return (HRT_I64)(unsigned char)getc_block(); }
+static HRT_I64 PutCh(HRT_I64 ch) { putc_uart((char)ch); return 0; }
 static int  ed_line_len(int i) { int n = 0; while (ed_lines[i][n]) n++; return n; }
 
 static void scr_goto(int row, int col) {  // 1-based
@@ -831,8 +796,15 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "FileCount", (void*)FileCount, 0);
     RuntimeRegister(cc, "FileName",  (void*)FileName,  1);
     RuntimeRegister(cc, "FileSize",  (void*)FileSize,  1);
+    RuntimeRegister(cc, "FileLen",   (void*)FileLen,   1);
+    RuntimeRegister(cc, "GetCh",     (void*)GetCh,     0);
+    RuntimeRegister(cc, "PutCh",     (void*)PutCh,     1);
     RuntimeRegister(cc, "Ed",        (void*)Ed,        1);
     RuntimeRegister(cc, "Edit",      (void*)Edit,      1);
+    // C escape hatches: always-available editors under fixed names, so a broken HolyC ed.hc/
+    // edit.hc (which redefine Ed/Edit) can still be repaired -- EdC/EditC can't be shadowed.
+    RuntimeRegister(cc, "EdC",       (void*)Ed,        1);
+    RuntimeRegister(cc, "EditC",     (void*)Edit,      1);
     // Self-hosting: compile+run a file, and edit/compile/install an interrupt handler in place
     RuntimeRegister(cc, "Run",       (void*)Run,       1);
     RuntimeRegister(cc, "Src",       (void*)Src,       1);

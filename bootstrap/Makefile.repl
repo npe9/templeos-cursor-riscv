@@ -47,7 +47,12 @@ compiler.o: ../compiler.c ../lexer.c ../parser.c ../hash_table.c ../compiler_hel
 	$(CC) $(CFLAGS) -DBARE_METAL -c ../compiler_helper.c -o compiler_helper.o
 	$(LD) -r -o $@ compiler_main.o lexer.o parser.o hash.o compiler_helper.o
 
-worry_dream_repl.o: worry_dream_repl.c ../holyc_compiler.h ../hash_table.h holy_rt.h holy_rt_names.h
+# The editable HolyC primitives/editors are real files under seed/; this bakes them into a C
+# table so memfs_seed() ships them. Editing a seed/*.hc regenerates the header and rebuilds.
+seed_files.h: $(wildcard seed/*.hc) gen_seeds.py
+	python3 gen_seeds.py seed seed_files.h
+
+worry_dream_repl.o: worry_dream_repl.c ../holyc_compiler.h ../hash_table.h holy_rt.h holy_rt_names.h seed_files.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 startup.o: startup.s
