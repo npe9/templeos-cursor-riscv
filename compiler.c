@@ -2407,6 +2407,11 @@ Compiler *Compile(const char *source, const char *filename, bool aot) {
       if (ch->fun && ch->fun->entry_label) {
         CLabel *lb = (CLabel *)ch->fun->entry_label;
         ch->fun->exe_addr = (I64)(cc->code_buffer + lb->addr);
+        // TempleOS idiom: record the size too -- up to the next chunk's entry, else end of blob.
+        I64 fn_end = cc->code_size;
+        for (AOTFnICChunk *nx = ch->next; nx; nx = nx->next)
+          if (nx->fun && nx->fun->entry_label) { fn_end = ((CLabel *)nx->fun->entry_label)->addr; break; }
+        ch->fun->size = fn_end - lb->addr;
       }
     }
   }

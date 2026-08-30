@@ -708,7 +708,8 @@ static HRT_I64 Src(char *name) {
       CHashFun *dis = g_cc ? (CHashFun *)HashFind("DisasmAt", g_cc->hash_table, HTT_FUN) : 0;
       if (fn && fn->exe_addr && dis && dis->exe_addr) {
           puts_uart("Src: no source for "); puts_uart(name); puts_uart(" -- disassembling:\n");
-          ((void (*)(HRT_I64))dis->exe_addr)((HRT_I64)fn->exe_addr);   // the HolyC Disasm (disasm.hc)
+          // C callers don't evaluate HolyC default args -- pass max/end explicitly.
+          ((void (*)(HRT_I64, HRT_I64, HRT_I64))dis->exe_addr)((HRT_I64)fn->exe_addr, 2000, 0);   // the HolyC DisasmAt (disasm.hc)
           return 0; } }
     puts_uart("Src: no source for "); puts_uart(name);
     puts_uart(" (not a HolyC function or a file)\n");
@@ -955,6 +956,12 @@ static HRT_I64 FnAddr(char *name) {
     CHashFun *f = g_cc ? (CHashFun *)HashFind(name, g_cc->hash_table, HTT_FUN) : 0;
     return f ? (HRT_I64)f->exe_addr : 0;
 }
+// FnSize("name") -- the function's code size from its hash entry (TempleOS records it; 0 for a
+// C builtin, whose size the compiler never saw -- Uf falls back to the ret heuristic there).
+static HRT_I64 FnSize(char *name) {
+    CHashFun *f = g_cc ? (CHashFun *)HashFind(name, g_cc->hash_table, HTT_FUN) : 0;
+    return f ? (HRT_I64)f->size : 0;
+}
 
 // The reverse of FnAddr: addr -> the function that contains it. There is no per-entry size in the
 // hash table, so we symbolize by nearest-below -- the function with the greatest exe_addr <= addr.
@@ -1010,6 +1017,7 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "Regs",      (void*)regs_snap_stub, 0);
     RuntimeRegister(cc, "Exec",      (void*)Exec,      1);
     RuntimeRegister(cc, "FnAddr",    (void*)FnAddr,    1);
+    RuntimeRegister(cc, "FnSize",    (void*)FnSize,    1);   // code size from the hash entry (0 = C builtin)
     RuntimeRegister(cc, "SymBase",   (void*)SymBase,   1);   // addr -> exe_addr of nearest-below fn
     RuntimeRegister(cc, "SymName",   (void*)SymName,   1);   // addr -> name string of that fn (0 if none)
     RuntimeRegister(cc, "SetIsr",    (void*)SetIsr,    1);

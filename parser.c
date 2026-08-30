@@ -3638,7 +3638,7 @@ static bool TryAssembleRiscV(Compiler *cc) {
     extern U8 *CompileAOT(Compiler *cc, I64 *size_out);
     I64 asm_code_size = 0;
     U8 *asm_code = CompileAOT(cc, &asm_code_size);
-    if (asm_code) { fn->exe_addr = (I64)asm_code; cc->code_buffer = asm_code; cc->code_size = asm_code_size; }
+    if (asm_code) { fn->exe_addr = (I64)asm_code; fn->size = asm_code_size; cc->code_buffer = asm_code; cc->code_size = asm_code_size; }
   }
   cc->ic_head = asm_prev_head; cc->ic_tail = asm_prev_tail;
   cc->asm_funcs_translated++;
@@ -5348,6 +5348,7 @@ bool ParseFunction(Compiler *cc) {
       { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
     }
     func_hash->exe_addr = (I64)compiled_code;
+    func_hash->size = code_size;      // TempleOS idiom: the hash entry knows the code size (Uf)
     cc->code_buffer = compiled_code;
     cc->code_size = code_size;
     cc->ic_head = NULL;   // consumed: the caller must not run/collect the body as a statement

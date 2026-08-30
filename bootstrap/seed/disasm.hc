@@ -225,13 +225,14 @@ U0 DisasmC(I64 addr, I64 w) {
 // DisasmAt(addr, max=2000) -- disassemble from addr until the function's ret (0x8067 or the
 // compressed c.ret 0x8082), capped at max instructions. The default cap makes Disasm("Name")
 // cover a whole function; pass a small max for a fixed window (DisasmAt(a, 28)).
-U0 DisasmAt(I64 addr, I64 max=2000) {
+U0 DisasmAt(I64 addr, I64 max=2000, I64 end=0) {
   I64 i, lo, w, k;
   for (k = 0; k < 32; k++) KOk[k] = 0;
   DisHi = 0;
   "; disassembly @ 0x%08X\n", addr;
   i = 0;
   while (i < max) {
+    if (end && addr >= end) return;   // exact bound (Uf: the hash entry's recorded size)
     lo = *(U16 *)addr;
     "0x%08X:  ", addr;
     if ((lo & 3) != 3) {
@@ -246,11 +247,16 @@ U0 DisasmAt(I64 addr, I64 max=2000) {
     i++;
   }
 }
-// Disasm("Name") -- disassemble a function by name (resolves via FnAddr).
-U0 Disasm(U8 *name) {
-  I64 a;
+// Uf("Name") -- unassemble a function, TempleOS style: the hash entry records the code size, so
+// the walk is exact. A C builtin has size 0 (the compiler never saw it); fall back to the
+// ret-stop heuristic there. U(addr, n=28) is the raw-address window. Disasm stays as an alias.
+U0 Uf(U8 *name) {
+  I64 a, n;
   a = FnAddr(name);
-  if (!a) { "Disasm: no such function: %s\n", name; return; }
-  "; %s:\n", name;
-  DisasmAt(a);
+  if (!a) { "Uf: no such function: %s\n", name; return; }
+  n = FnSize(name);
+  if (n) { "; %s (%d bytes):\n", name, n; DisasmAt(a, 100000, a + n); }
+  else   { "; %s:\n", name; DisasmAt(a); }
 }
+U0 U(I64 addr, I64 n=28) { DisasmAt(addr, n); }
+U0 Disasm(U8 *name) { Uf(name); }
