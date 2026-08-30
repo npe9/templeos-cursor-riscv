@@ -78,7 +78,8 @@ U0 DisasmC(I64 addr, I64 w) {
   U8 *mn;
   op = w & 3; f3 = (w >> 13) & 7; rd = (w >> 7) & 0x1F; rs2 = (w >> 2) & 0x1F;
   rdp = ((w >> 2) & 7) + 8; rs1p = ((w >> 7) & 7) + 8;
-  if (w == 0x0001)      Pm("c.nop");
+  if (w == 0x0000)      Pm("illegal");
+  else if (w == 0x0001) Pm("c.nop");
   else if (w == 0x9002) Pm("c.ebreak");
   else if (op == 0) {
     if (f3==0) { u = ((w>>7)&0x30)|((w>>1)&0x3C0)|((w>>4)&4)|((w>>2)&8); "c.addi4spn %s, sp, ", RN[rdp]; DiImm(u); }
@@ -124,7 +125,8 @@ U0 DisasmC(I64 addr, I64 w) {
   else Pm(".chalf");
   "\n";
 }
-U0 Disasm(I64 addr) {
+// DisasmAt(addr) -- disassemble a 28-instruction window from a raw address.
+U0 DisasmAt(I64 addr) {
   I64 i, lo, w;
   "; disassembly window @ 0x%08X\n", addr;
   i = 0;
@@ -135,4 +137,12 @@ U0 Disasm(I64 addr) {
     else { w = *(U32 *)addr; DisasmOne(addr, w); if (w == 0x00008067) return; addr += 4; }
     i++;
   }
+}
+// Disasm("Name") -- disassemble a function by name (resolves via FnAddr).
+U0 Disasm(U8 *name) {
+  I64 a;
+  a = FnAddr(name);
+  if (!a) { "Disasm: no such function: %s\n", name; return; }
+  "; %s:\n", name;
+  DisasmAt(a);
 }

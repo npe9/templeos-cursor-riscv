@@ -164,7 +164,7 @@ expect_text 'Src-editable'        # Funs() summary line
 expect_text 'no source for Cat'   # Cat is C: Src falls back to disassembling it
 expect_text 'disassembling'       # the disassembler ran
 # HolyC disassembler decodes floats and compressed instructions
-demo_input+=$'F64 Fa(F64 a,F64 b){return a+b;}\nDisasm(&Fa);\n'
+demo_input+=$'F64 Fa(F64 a,F64 b){return a+b;}\nDisasm("Fa");\n'
 expect_text 'fadd.d'                    # a float op decoded
 expect_text 'c.sdsp'                    # a compressed op decoded (from Src("Cat") above)
 # Inspection + in-editor exec

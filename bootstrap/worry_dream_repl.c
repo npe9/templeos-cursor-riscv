@@ -705,7 +705,7 @@ static HRT_I64 Src(char *name) {
     if (f) { Edit(f->name); Run(f->name); return 0; }
     // No HolyC source and no file: if it's a function (a C built-in, say), disassemble it instead.
     { CHashFun *fn = g_cc ? (CHashFun *)HashFind(name, g_cc->hash_table, HTT_FUN) : 0;
-      CHashFun *dis = g_cc ? (CHashFun *)HashFind("Disasm", g_cc->hash_table, HTT_FUN) : 0;
+      CHashFun *dis = g_cc ? (CHashFun *)HashFind("DisasmAt", g_cc->hash_table, HTT_FUN) : 0;
       if (fn && fn->exe_addr && dis && dis->exe_addr) {
           puts_uart("Src: no source for "); puts_uart(name); puts_uart(" -- disassembling:\n");
           ((void (*)(HRT_I64))dis->exe_addr)((HRT_I64)fn->exe_addr);   // the HolyC Disasm (disasm.hc)
@@ -883,6 +883,13 @@ static HRT_I64 Exec(char *src) {
     repl_eval(src, 1);
     return 0;
 }
+// FnAddr("name") -- resolve a function name to its entry address. The one bit of reflection that
+// must touch the compiler's hash table (there is no HolyC nameof); everything HolyC-side that
+// wants an address by name goes through this (e.g. Disasm("Foo") in disasm.hc).
+static HRT_I64 FnAddr(char *name) {
+    CHashFun *f = g_cc ? (CHashFun *)HashFind(name, g_cc->hash_table, HTT_FUN) : 0;
+    return f ? (HRT_I64)f->exe_addr : 0;
+}
 
 static void RuntimeInit(Compiler *cc) {
     // Fs -> the task block (Fs->except_ch)
@@ -915,6 +922,7 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "MemMap",    (void*)MemMap,    0);
     RuntimeRegister(cc, "Regs",      (void*)Regs,      0);
     RuntimeRegister(cc, "Exec",      (void*)Exec,      1);
+    RuntimeRegister(cc, "FnAddr",    (void*)FnAddr,    1);
     RuntimeRegister(cc, "SetIsr",    (void*)SetIsr,    1);
     RuntimeRegister(cc, "TrapInit",  (void*)TrapInit,  0);
     RuntimeRegister(cc, "Ecall",     (void*)Ecall,     0);
