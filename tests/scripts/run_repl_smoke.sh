@@ -154,6 +154,11 @@ expect_text 'ed smoke.hc:'
 expect_text 'wrote smoke.hc'
 expect_text 'smoke.hc  '
 expect_text 'Editor line two'
+# Full-screen editor (Edit): type a line, ^O (\017) to save, ^X (\030) to exit, then cat it
+# back. Exercises the ANSI render loop, the blocking key reader, and the save path.
+demo_input+=$'Edit("scr.hc");\nVisual editor works\017\030Cat("scr.hc");\n'
+expect_text 'wrote scr.hc'
+expect_text 'Visual editor works'
 # Sentinel: the REPL never exits (it spins on the UART after EOF), so stop QEMU as soon as
 # the last answer is printed; the timeout only bounds a hung/crashed REPL.
 add_case '4919;' 0000000000001337

@@ -383,6 +383,127 @@ static HRT_I64 Ed(char *name) {
         }
     }
 }
+
+// ---- Edit("name"): a basic full-screen terminal editor (ANSI) ----------------------------
+// Nano-style and modeless: type to insert, arrow keys move, Enter splits a line, Backspace
+// deletes (joining lines at column 0), ^O writes, ^X exits. Reuses the memfs and the ed_lines
+// buffer. Assumes an 80x24 ANSI terminal (QEMU -nographic puts the host TTY in raw mode, so
+// single keys and escape sequences arrive as-is).
+#define SCR_ROWS   24
+#define SCR_COLS   80
+#define TEXT_ROWS  (SCR_ROWS - 2)   // rows 1..22 text, 23 status (reverse video), 24 message
+
+static char getc_block(void) { char c; do { c = getc_uart(); } while (c == 0); return c; }
+static int  ed_line_len(int i) { int n = 0; while (ed_lines[i][n]) n++; return n; }
+
+static void scr_goto(int row, int col) {  // 1-based
+    puts_uart("\x1b["); print_udec(row); putc_uart(';'); print_udec(col); putc_uart('H');
+}
+static void edit_render(const char *name, int top, int cx, int cy, const char *msg) {
+    puts_uart("\x1b[H");
+    for (int r = 0; r < TEXT_ROWS; r++) {
+        scr_goto(r + 1, 1); puts_uart("\x1b[2K");
+        int li = top + r;
+        if (li < ed_n) { for (int j = 0; ed_lines[li][j] && j < SCR_COLS; j++) putc_uart(ed_lines[li][j]); }
+        else putc_uart('~');
+    }
+    scr_goto(SCR_ROWS - 1, 1); puts_uart("\x1b[7m\x1b[2K ");   // status bar, reverse video
+    puts_uart(name);
+    puts_uart("  ln "); print_udec(cy + 1); putc_uart('/'); print_udec(ed_n);
+    puts_uart("  col "); print_udec(cx + 1);
+    puts_uart("   ^O save  ^X exit"); puts_uart("\x1b[0m");
+    scr_goto(SCR_ROWS, 1); puts_uart("\x1b[2K"); if (msg && msg[0]) puts_uart(msg);
+    scr_goto(cy - top + 1, cx + 1);                            // place the cursor
+}
+static int edit_save(MemFile *f, const char *name, char *msgbuf) {  // returns bytes written
+    int off = 0;
+    for (int k = 0; k < ed_n; k++) {
+        int j = 0;
+        while (ed_lines[k][j] && off < MEMFS_FILE_CAP - 1) f->data[off++] = ed_lines[k][j++];
+        if (off < MEMFS_FILE_CAP - 1) f->data[off++] = '\n';
+    }
+    f->data[off] = 0; f->len = off;
+    // msgbuf: "wrote <name> (<off> bytes)"
+    char *p = msgbuf; const char *s = "wrote "; while (*s) *p++ = *s++;
+    while (*name) *p++ = *name++;
+    *p++ = ' '; *p++ = '(';
+    char num[16]; int ni = 0, v = off; if (v == 0) num[ni++] = '0';
+    while (v) { num[ni++] = '0' + v % 10; v /= 10; }
+    while (ni) *p++ = num[--ni];
+    s = " bytes)"; while (*s) *p++ = *s++; *p = 0;
+    return off;
+}
+static HRT_I64 Edit(char *name) {
+    MemFile *f = memfs_create(name);
+    if (!f) { puts_uart("Edit: fs full\n"); return -1; }
+    // load the file into ed_lines, splitting on '\n'
+    ed_n = 0;
+    { int i = 0; while (i < f->len && ed_n < ED_MAX_LINES) {
+        int j = 0;
+        while (i < f->len && f->data[i] != '\n' && j < ED_LINE_CAP - 1) ed_lines[ed_n][j++] = f->data[i++];
+        ed_lines[ed_n][j] = 0;
+        while (i < f->len && f->data[i] != '\n') i++;
+        if (i < f->len && f->data[i] == '\n') i++;
+        ed_n++;
+    } }
+    if (ed_n == 0) { ed_lines[0][0] = 0; ed_n = 1; }   // always at least one line to edit
+    int top = 0, cx = 0, cy = 0, dirty = 0;
+    char msgbuf[64]; const char *msg = "";
+    puts_uart("\x1b[2J");
+    edit_render(name, top, cx, cy, msg);
+    while (1) {
+        char c = getc_block();
+        msg = "";
+        if (c == 24) {                                  // ^X exit
+            if (dirty) { msg = "modified -- ^O to save, or ^X again to discard"; dirty = 0;
+                         edit_render(name, top, cx, cy, msg); continue; }
+            break;
+        } else if (c == 15) {                           // ^O save
+            edit_save(f, name, msgbuf); msg = msgbuf; dirty = 0;
+        } else if (c == 27) {                           // ESC: arrow keys ESC [ A/B/C/D
+            char b1 = getc_block();
+            if (b1 == '[') {
+                char b2 = getc_block();
+                int len = ed_line_len(cy);
+                if (b2 == 'A') { if (cy > 0) { cy--; if (cx > ed_line_len(cy)) cx = ed_line_len(cy); } }
+                else if (b2 == 'B') { if (cy < ed_n - 1) { cy++; if (cx > ed_line_len(cy)) cx = ed_line_len(cy); } }
+                else if (b2 == 'C') { if (cx < len) cx++; else if (cy < ed_n - 1) { cy++; cx = 0; } }
+                else if (b2 == 'D') { if (cx > 0) cx--; else if (cy > 0) { cy--; cx = ed_line_len(cy); } }
+                else if (b2 == '3') { getc_block();       // Delete key: ESC [ 3 ~
+                    if (cx < len) { for (int j = cx; ed_lines[cy][j]; j++) ed_lines[cy][j] = ed_lines[cy][j + 1]; dirty = 1; }
+                }
+            }
+        } else if (c == '\r' || c == '\n') {            // split line at cursor
+            if (ed_n < ED_MAX_LINES) {
+                ed_insert_at(cy + 1, &ed_lines[cy][cx]);
+                ed_lines[cy][cx] = 0; cy++; cx = 0; dirty = 1;
+            }
+        } else if (c == 127 || c == 8) {                // backspace
+            if (cx > 0) {
+                for (int j = cx - 1; ed_lines[cy][j]; j++) ed_lines[cy][j] = ed_lines[cy][j + 1];
+                cx--; dirty = 1;
+            } else if (cy > 0) {                        // join with previous line
+                int pl = ed_line_len(cy - 1), j = 0;
+                while (ed_lines[cy][j] && pl + j < ED_LINE_CAP - 1) { ed_lines[cy - 1][pl + j] = ed_lines[cy][j]; j++; }
+                ed_lines[cy - 1][pl + j] = 0;
+                ed_delete_range(cy + 1, cy + 1);        // remove the (now-merged) current line
+                cy--; cx = pl; dirty = 1;
+            }
+        } else if (c >= 32 && c < 127) {                // printable: insert at cursor
+            int len = ed_line_len(cy);
+            if (len < ED_LINE_CAP - 1) {
+                for (int j = len; j >= cx; j--) ed_lines[cy][j + 1] = ed_lines[cy][j];
+                ed_lines[cy][cx] = c; cx++; dirty = 1;
+            }
+        }
+        // keep the cursor on-screen (vertical scroll)
+        if (cy < top) top = cy;
+        if (cy >= top + TEXT_ROWS) top = cy - TEXT_ROWS + 1;
+        edit_render(name, top, cx, cy, msg);
+    }
+    puts_uart("\x1b[2J\x1b[H");   // leave a clean screen for the REPL prompt
+    return 0;
+}
 static void RuntimeInit(Compiler *cc) {
     // Fs -> the task block (Fs->except_ch)
     if (cc->fs_var && cc->except_ch_var) *(I64 *)cc->fs_var->data_addr = (I64)cc->except_ch_var->data_addr;
@@ -396,6 +517,7 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "FileWrite", (void*)FileWrite, 3);
     RuntimeRegister(cc, "FileRead",  (void*)FileRead,  1);
     RuntimeRegister(cc, "Ed",        (void*)Ed,        1);
+    RuntimeRegister(cc, "Edit",      (void*)Edit,      1);
 }
 
 void repl(void) {

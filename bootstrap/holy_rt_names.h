@@ -33,7 +33,7 @@ static int HolyRtRetF64(const char *n) {
 // (matches TempleOS CmdLinePmt, which only echoes when answer_type != RT_I0).
 static int HolyRtRetVoid(const char *n) {
   static const char *v[] = { "Print", "PrintErr", "PutChars", "PutS", "Puts",
-                             "Dir", "Ls", "Cat", "Del", "Ed", 0 };
+                             "Dir", "Ls", "Cat", "Del", "Ed", "Edit", 0 };
   for (int i = 0; v[i]; i++) if (holy_rt_streq(n, v[i])) return 1;
   return 0;
 }
