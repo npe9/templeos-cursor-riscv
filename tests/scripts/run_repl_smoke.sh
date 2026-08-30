@@ -151,6 +151,10 @@ expect_text 'Static3'
 demo_input+=$'UartStr("autoboot-live ");\n'
 expect_text '[boot] HolyC primitives loaded'
 expect_text 'autoboot-live '
+# Incremental Run: a file that Run()s a driver AND uses it (on a later line) -- each unit runs
+# before the next compiles, so this no longer hangs (regression guard for run_source).
+demo_input+=$'Ed("df.hc");\na\nRun("uart.hc");\nUartStr("df-same ");\n.\nw\nq\nRun("df.hc");\n'
+expect_text 'df-same '
 # In-memory filesystem + ed editor: create a file, append a line, write, then list and cat it
 # back -- exercises the nested UART reader (a registered C fn reading its own lines while called
 # from JIT'd HolyC), the fixed-slot memfs, and Ed's a/w/q + Dir/Cat.

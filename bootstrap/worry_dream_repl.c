@@ -312,11 +312,10 @@ static const struct { const char *name; const char *body; } memfs_seed_files[] =
   },
   { "boot.hc",
     "// boot.hc -- the editable boot script, auto-Run at startup. Edit it and reboot (or\n"
-    "// Run(\"boot.hc\")) to change what the system brings up. NOTE: a file that Run()s a\n"
-    "// driver cannot also CALL it in the same file (the file compiles before it runs) --\n"
-    "// load here, call from the prompt or a later Run.\n"
+    "// Run(\"boot.hc\")) to change what the system brings up. Each line runs before the next\n"
+    "// compiles, so you can load a driver and then use it (on a LATER line, not the same one).\n"
     "Run(\"uart.hc\");\n"
-    "\"[boot] HolyC primitives loaded. Dir; to list, Run/Edit to change them live.\\n\";\n"
+    "UartStr(\"[boot] HolyC primitives loaded. Dir; to list, Run/Edit to change them live.\\n\");\n"
   },
 };
 static void memfs_seed(void) {
@@ -608,14 +607,50 @@ static void repl_eval(const char *src, int echo) {
         free(machine_code);
     }
 }
-// Run("name") -- compile and execute an in-memory file as a HolyC source (silent: definitions
-// register, a trailing statement runs, but no ans= echo). This closes the self-hosting loop:
-// edit a file with Ed/Edit, then Run it.
+// Feed a source string through the SAME incremental boundaries the REPL uses for typed input:
+// accumulate lines until braces/parens balance and the unit ends in ';' or '}', then compile
+// and run that unit before parsing the next. Because each top-level unit runs before the next
+// compiles (and top-level declarations are globals that persist), a file can define something
+// -- or Run() another file -- on one line and use it on the next. echo=0 (silent, for scripts).
+static void run_source(const char *src) {
+    static char acc[4096];
+    int acc_len = 0, brace = 0, paren = 0;
+    const char *p = src;
+    char line[512];
+    while (*p) {
+        int n = 0;
+        while (*p && *p != '\n' && n < 511) line[n++] = *p++;
+        if (*p == '\n') p++;
+        line[n] = 0;
+        int s = 0; while (s < n && (line[s] == ' ' || line[s] == '\t')) s++;
+        int is_dir = (s + 1 < n && line[s] == '#' &&
+                      ((line[s+1] >= 'a' && line[s+1] <= 'z') || (line[s+1] >= 'A' && line[s+1] <= 'Z')));
+        if (s < n && line[s] == '#' && !is_dir) continue;   // whole-line '#' comment
+        if (acc_len + n + 2 >= (int)sizeof(acc)) { acc_len = 0; brace = 0; paren = 0; continue; }
+        for (int i = 0; i < n; i++) acc[acc_len++] = line[i];
+        acc[acc_len++] = '\n'; acc[acc_len] = 0;
+        for (int i = 0; i < n; i++) { char c = line[i];
+            if (c == '{') brace++; else if (c == '}') { if (brace > 0) brace--; }
+            else if (c == '(') paren++; else if (c == ')') { if (paren > 0) paren--; } }
+        int go = 0;
+        if (brace == 0 && paren == 0) {
+            if (n > 0 && line[n-1] == ';') go = 1;
+            if (n > 0 && line[n-1] == '}') go = 1;
+        }
+        if (is_dir && brace == 0 && paren == 0) go = 1;
+        if (!go) continue;
+        repl_eval(acc, 0);
+        acc_len = 0; brace = 0; paren = 0;
+    }
+    if (acc_len > 0) repl_eval(acc, 0);   // flush any unterminated tail
+}
+// Run("name") -- compile and execute an in-memory file, unit by unit (see run_source). Closes
+// the self-hosting loop: edit a file with Ed/Edit, then Run it.
 static HRT_I64 Run(char *name) {
     MemFile *f = memfs_find(name);
     if (!f) { puts_uart("Run: no such file: "); puts_uart(name); puts_uart("\n"); return -1; }
     f->data[f->len] = 0;
-    repl_eval(f->data, 0);
+    run_source(f->data);
     return 0;
 }
 
@@ -721,7 +756,7 @@ void repl(void) {
     // The system boots its own HolyC: auto-Run boot.hc (loads drivers, prints a banner).
     // Silent (echo off) except boot.hc's own output. Edit boot.hc to change startup.
     { MemFile *bf = memfs_find("boot.hc");
-      if (bf) { bf->data[bf->len] = 0; repl_eval(bf->data, 0); } }
+      if (bf) { bf->data[bf->len] = 0; run_source(bf->data); } }
     
     // Accumulation buffer for multi-line inputs (functions/blocks)
     static char accum[4096];
