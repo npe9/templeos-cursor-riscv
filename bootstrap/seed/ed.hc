@@ -79,7 +79,7 @@ U0 Ed(U8 *name) {
     }
   }
   EdCur = EdN;
-  "ed %s: %d lines. cmds: a i d p n w q =  ('.' ends input)\n", name, EdN;
+  "ed %s: %d lines. cmds: a i d p n w q = !  (! runs HolyC; '.' ends input)\n", name, EdN;
   while (1) {
     I64 p, a1, a2, h1, h2, at, lo, hi, k, off, m;
     U8 c;
@@ -113,6 +113,7 @@ U0 Ed(U8 *name) {
       "wrote %s (%d bytes)\n", name, off;
     }
     else if (c == 'q') { "\n"; return; }
+    else if (c == '!') { Exec(&cmd[p + 1]); }   // !<holyc> : run a HolyC command in place
     else if (c == '=') { "%d\n", h1 ? a1 : EdCur; }
     else if (c == 0) {
       if (h1) { if (a1 >= 1 && a1 <= EdN) { EdCur = a1; "%s", &EdLn[a1 - 1][0]; PutCh('\n'); } }

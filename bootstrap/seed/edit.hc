@@ -27,7 +27,7 @@ U0 EvRender(U8 *name, U8 *msg) {
   PutCh(' '); UartStr(name);
   UartStr("  ln "); "%d", EvCy + 1; PutCh('/'); "%d", EdN;
   UartStr("  col "); "%d", EvCx + 1;
-  UartStr("   ^O save  ^X exit");
+  UartStr("   ^O save  ^E run  ^X exit");
   PutCh(27); PutCh('['); PutCh('0'); PutCh('m');
   EvGoto(24, 1); EvClrLine();
   if (msg[0]) UartStr(msg);
@@ -87,6 +87,13 @@ U0 Edit(U8 *name) {
       break;
     }
     else if (c == 15) { EvSave(name); msg = EvMsg; dirty = 0; }      // ^O save
+    else if (c == 5) {                                               // ^E: run a HolyC command
+      U8 cbuf[128];
+      PutCh(27); PutCh('['); PutCh('2'); PutCh('J'); PutCh(27); PutCh('['); PutCh('H');
+      UartStr("HolyC> "); EdReadLine(cbuf, 128); Exec(cbuf);
+      UartStr("-- press a key --"); GetCh();
+      EvRender(name, msg);
+    }
     else if (c == 27) {                                   // ESC [ A/B/C/D , ESC [ 3 ~
       b1 = GetCh();
       if (b1 == '[') {

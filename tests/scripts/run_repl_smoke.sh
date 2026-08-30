@@ -163,6 +163,11 @@ demo_input+=$'Funs();\nSrc("Cat");\n'
 expect_text 'Src-editable'        # Funs() summary line
 expect_text 'no source for Cat'   # Cat is C: Src falls back to disassembling it
 expect_text 'disassembling'       # the disassembler ran
+# Inspection + in-editor exec
+demo_input+=$'MemMap();\nRegs();\nEd("q.hc");\n!6*7;\nq\n'
+expect_text 'code_mem'
+expect_text 'mstatus'
+expect_text 'ans=0x000000000000002a'   # !6*7; ran HolyC from inside Ed
 # In-memory filesystem + ed editor: create a file, append a line, write, then list and cat it
 # back -- exercises the nested UART reader (a registered C fn reading its own lines while called
 # from JIT'd HolyC), the fixed-slot memfs, and Ed's a/w/q + Dir/Cat.

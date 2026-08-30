@@ -901,6 +901,50 @@ static HRT_I64 Reset(void) {
     return 0;
 }
 
+// ---- Inspection: memory map and machine registers -----------------------------------------
+static HRT_I64 MemMap(void) {
+    puts_uart("Memory map (RISC-V QEMU virt; [plat]=platform constant, [live]=measured now):\n");
+    puts_uart("  RAM          0x80000000  +128M                       [plat]\n");
+    puts_uart("  code_mem   @ "); print_hex((U64)&code_mem[0]); puts_uart("  ");
+        print_udec(code_pos); putc_uart('/'); print_udec(sizeof(code_mem)); puts_uart(" B used   [live JIT code]\n");
+    puts_uart("  heap_mem   @ "); print_hex((U64)&heap_mem[0]); puts_uart("  ");
+        print_udec(heap_pos); putc_uart('/'); print_udec(sizeof(heap_mem)); puts_uart(" B used   [live]\n");
+    puts_uart("  UART 16550   0x10000000                              [plat]\n");
+    puts_uart("  CLINT        0x02000000  mtime .0BFF8 mtimecmp .04000 [plat]\n");
+    puts_uart("  PLIC         0x0C000000                              [plat]\n");
+    puts_uart("  virtio-mmio  0x10001000 .. 0x10008000                [plat]\n");
+    puts_uart("  SiFive test  0x00100000  (0x5555 off, 0x7777 reboot) [plat]\n");
+    return 0;
+}
+static void reg_line(const char *name, I64 v) { puts_uart("  "); puts_uart(name); puts_uart(" = "); print_hex((U64)v); putc_uart('\n'); }
+static HRT_I64 Regs(void) {
+    I64 v;
+    puts_uart("M-mode CSRs (the real machine state):\n");
+    __asm__ volatile("csrr %0, mstatus"  : "=r"(v)); reg_line("mstatus ", v);
+    __asm__ volatile("csrr %0, misa"     : "=r"(v)); reg_line("misa    ", v);
+    __asm__ volatile("csrr %0, mtvec"    : "=r"(v)); reg_line("mtvec   ", v);
+    __asm__ volatile("csrr %0, mie"      : "=r"(v)); reg_line("mie     ", v);
+    __asm__ volatile("csrr %0, mip"      : "=r"(v)); reg_line("mip     ", v);
+    __asm__ volatile("csrr %0, mepc"     : "=r"(v)); reg_line("mepc    ", v);
+    __asm__ volatile("csrr %0, mcause"   : "=r"(v)); reg_line("mcause  ", v);
+    __asm__ volatile("csrr %0, mtval"    : "=r"(v)); reg_line("mtval   ", v);
+    __asm__ volatile("csrr %0, mscratch" : "=r"(v)); reg_line("mscratch", v);
+    __asm__ volatile("csrr %0, mhartid"  : "=r"(v)); reg_line("mhartid ", v);
+    reg_line("mtime   ", *(volatile I64 *)0x0200BFF8);
+    puts_uart("GPRs (this call's frame -- for a trapped context use a breakpoint):\n");
+    __asm__ volatile("mv %0, sp" : "=r"(v)); reg_line("sp      ", v);
+    __asm__ volatile("mv %0, gp" : "=r"(v)); reg_line("gp      ", v);
+    __asm__ volatile("mv %0, ra" : "=r"(v)); reg_line("ra      ", v);
+    return 0;
+}
+// Exec("holyc") -- compile and run one HolyC statement/definition, echoing its answer. Lets the
+// editors call HolyC in place (Ed's `!`, Edit's `^E`): test the function you're editing, poke a
+// register, call anything. Re-entrant (the editor is itself JIT'd code calling back in).
+static HRT_I64 Exec(char *src) {
+    repl_eval(src, 1);
+    return 0;
+}
+
 static void RuntimeInit(Compiler *cc) {
     // Fs -> the task block (Fs->except_ch)
     if (cc->fs_var && cc->except_ch_var) *(I64 *)cc->fs_var->data_addr = (I64)cc->except_ch_var->data_addr;
@@ -930,6 +974,9 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "Src",       (void*)Src,       1);
     RuntimeRegister(cc, "Funs",      (void*)Funs,      0);
     RuntimeRegister(cc, "Disasm",    (void*)Disasm,    1);
+    RuntimeRegister(cc, "MemMap",    (void*)MemMap,    0);
+    RuntimeRegister(cc, "Regs",      (void*)Regs,      0);
+    RuntimeRegister(cc, "Exec",      (void*)Exec,      1);
     RuntimeRegister(cc, "SetIsr",    (void*)SetIsr,    1);
     RuntimeRegister(cc, "TrapInit",  (void*)TrapInit,  0);
     RuntimeRegister(cc, "Ecall",     (void*)Ecall,     0);
