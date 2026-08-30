@@ -550,7 +550,7 @@ static Compiler *g_cc = 0;
 // its definition up in the editor. We do the same -- as each function is compiled, its defining
 // source unit is stashed here by name, and Src("Name") brings it back up in Edit and recompiles.
 #define SRCMAP_MAX 64
-#define SRCMAP_SRC 1024
+#define SRCMAP_SRC 4096   /* per-function source cap; editor functions run ~2KB */
 static struct { int used; char name[32]; char src[SRCMAP_SRC]; } srcmap[SRCMAP_MAX];
 static void srcmap_put(const char *name, const char *src) {
     int slot = -1;
