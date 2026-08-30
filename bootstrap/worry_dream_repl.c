@@ -556,6 +556,26 @@ static HRT_I64 Edit(char *name) {
 // the trap dispatcher -- both reached from JIT'd code -- can see it.
 static Compiler *g_cc = 0;
 
+// ---- Per-function source map: TempleOS keeps a source link on every symbol so you can bring
+// its definition up in the editor. We do the same -- as each function is compiled, its defining
+// source unit is stashed here by name, and Src("Name") brings it back up in Edit and recompiles.
+#define SRCMAP_MAX 64
+#define SRCMAP_SRC 1024
+static struct { int used; char name[32]; char src[SRCMAP_SRC]; } srcmap[SRCMAP_MAX];
+static void srcmap_put(const char *name, const char *src) {
+    int slot = -1;
+    for (int i = 0; i < SRCMAP_MAX; i++) if (srcmap[i].used && !strcmp(srcmap[i].name, name)) { slot = i; break; }
+    if (slot < 0) for (int i = 0; i < SRCMAP_MAX; i++) if (!srcmap[i].used) { slot = i; break; }
+    if (slot < 0) return;   // table full: leave earlier entries intact
+    srcmap[slot].used = 1;
+    int j = 0; while (name[j] && j < 31) { srcmap[slot].name[j] = name[j]; j++; } srcmap[slot].name[j] = 0;
+    int k = 0; while (src[k] && k < SRCMAP_SRC - 1) { srcmap[slot].src[k] = src[k]; k++; } srcmap[slot].src[k] = 0;
+}
+static const char *srcmap_get(const char *name) {
+    for (int i = 0; i < SRCMAP_MAX; i++) if (srcmap[i].used && !strcmp(srcmap[i].name, name)) return srcmap[i].src;
+    return 0;
+}
+
 // Compile one source buffer as top-level HolyC and run any trailing statement. echo=1 prints
 // the TempleOS-style "<time>s ans=..." line (the REPL prompt); echo=0 is silent (Run/scripts).
 // Safe to call re-entrantly from a registered C function: cc->lex is re-seeded on every call,
@@ -573,7 +593,14 @@ static void repl_eval(const char *src, int echo) {
     extern Bool ParseTopLevel(Compiler *cc);
     LexNext(cc);
     Bool ok = true;
-    while (ok && cc->lex.token != TK_EOF) ok = ParseTopLevel(cc);
+    while (ok && cc->lex.token != TK_EOF) {
+        CHashFun *fn_before = cc->last_compiled_func;
+        ok = ParseTopLevel(cc);
+        // A newly-compiled function: remember the source unit that defined it, so Src() can
+        // bring it back up. (run_source feeds one unit per function, so this is that function.)
+        if (ok && cc->last_compiled_func && cc->last_compiled_func != fn_before && cc->last_compiled_func->str)
+            srcmap_put(cc->last_compiled_func->str, src);
+    }
     U8 ans_ty = cc->last_expr_type;
     __asm__ volatile("fence.i" ::: "memory");   // definitions are fresh code: order the I-side
     if (!ok) {
@@ -652,6 +679,50 @@ static HRT_I64 Run(char *name) {
     f->data[f->len] = 0;
     run_source(f->data);
     return 0;
+}
+// Src("Name") -- bring up a HolyC function's source in the editor (TempleOS goto-definition),
+// then recompile it: writes the remembered source to "Name.hc", opens Edit, and Run()s it on
+// exit, so what you edit becomes the live definition. Only works for functions defined in HolyC
+// (the C built-ins like Ed/Dir/Edit have no HolyC source until they are reimplemented as such).
+static HRT_I64 Src(char *name) {
+    const char *s = srcmap_get(name);
+    if (!s) {
+        puts_uart("Src: no HolyC source for "); puts_uart(name);
+        puts_uart(" (a C built-in, or not defined in HolyC yet)\n");
+        return -1;
+    }
+    char fn[36];
+    int j = 0; while (name[j] && j < 31) { fn[j] = name[j]; j++; }
+    fn[j] = '.'; fn[j+1] = 'h'; fn[j+2] = 'c'; fn[j+3] = 0;
+    MemFile *f = memfs_create(fn);
+    if (!f) { puts_uart("Src: fs full\n"); return -1; }
+    int n = 0; while (s[n] && n < MEMFS_FILE_CAP - 1) { f->data[n] = s[n]; n++; }
+    f->data[n] = 0; f->len = n;
+    Edit(fn);   // default to the full-screen editor
+    Run(fn);    // recompile on exit -> the edited source is the live definition
+    return 0;
+}
+// Funs() -- list every function in the symbol table (the hash table): name, entry address,
+// return type, and [src] if it has HolyC source you can Src()/edit. This is the "what can I
+// call or edit" view -- TempleOS keeps the same symbol table you browse for autocomplete.
+static HRT_I64 Funs(void) {
+    if (!g_cc || !g_cc->hash_table) { puts_uart("(no symbol table)\n"); return 0; }
+    CHashTable *h = g_cc->hash_table;
+    int n = 0;
+    for (I64 b = 0; b <= h->mask; b++) {
+        for (CHashEntry *e = h->body[b]; e; e = e->next) {
+            if (!(e->type & HTT_FUN)) continue;
+            CHashFun *f = (CHashFun *)e;
+            puts_uart("  "); puts_uart(e->str ? e->str : "?");
+            puts_uart("  @"); print_hex((U64)f->exe_addr);
+            puts_uart(" rt="); print_udec((U64)f->raw_type);
+            if (srcmap_get(e->str)) puts_uart("  [src]");
+            puts_uart("\n");
+            n++;
+        }
+    }
+    puts_uart("("); print_udec(n); puts_uart(" functions)\n");
+    return n;
 }
 
 // ---- Live interrupt handling: install a HolyC ISR you can edit + recompile in place --------
@@ -736,6 +807,8 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "Edit",      (void*)Edit,      1);
     // Self-hosting: compile+run a file, and edit/compile/install an interrupt handler in place
     RuntimeRegister(cc, "Run",       (void*)Run,       1);
+    RuntimeRegister(cc, "Src",       (void*)Src,       1);
+    RuntimeRegister(cc, "Funs",      (void*)Funs,      0);
     RuntimeRegister(cc, "SetIsr",    (void*)SetIsr,    1);
     RuntimeRegister(cc, "TrapInit",  (void*)TrapInit,  0);
     RuntimeRegister(cc, "Ecall",     (void*)Ecall,     0);

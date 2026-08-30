@@ -61,6 +61,8 @@ add_case 'Cnt();' 0000000000000001
 add_case 'Cnt();' 0000000000000002
 # Top-level grammar, runtime, control flow, aggregates (all execution-checked).
 add_case '"%d + %d = %d\n", 40, 2, 42;'   # implicit-print statement: void, no ans= (text checked below)
+add_case 'U0 Vd(I64 a) { I64 z = a + 1; }'  # U0 definition: silent
+add_case 'Vd(5);'                           # U0 call: void -> NO ans= (guards the RT_U0 void fix)
 add_case 'U8 *s = MAlloc(16); StrCpy(s, "abc"); StrLen(s);' 0000000000000003
 add_case 'I64 Sw(I64 v) { switch (v) { case 1...5: return 99; case 7: return 70; default: return 0; } }'
 add_case 'Sw(3);' 0000000000000063
@@ -155,6 +157,11 @@ expect_text 'autoboot-live '
 # before the next compiles, so this no longer hangs (regression guard for run_source).
 demo_input+=$'Ed("df.hc");\na\nRun("uart.hc");\nUartStr("df-same ");\n.\nw\nq\nRun("df.hc");\n'
 expect_text 'df-same '
+# Funs() lists the symbol table; Src() on a C built-in reports no HolyC source. Also guards the
+# U0/RT_U0 void-echo fix: a user U0 call prints no "ans=" (checked via the answer-sequence phase).
+demo_input+=$'Funs();\nSrc("Dir");\n'
+expect_text 'functions)'
+expect_text 'no HolyC source for Dir'
 # In-memory filesystem + ed editor: create a file, append a line, write, then list and cat it
 # back -- exercises the nested UART reader (a registered C fn reading its own lines while called
 # from JIT'd HolyC), the fixed-slot memfs, and Ed's a/w/q + Dir/Cat.
