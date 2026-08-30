@@ -281,6 +281,20 @@ static HRT_I64 FileRead(char *name) {
     MemFile *f = memfs_find(name);
     return f ? (HRT_I64)f->data : 0;
 }
+// Directory iteration exposed to HolyC, so Dir can be written (and edited) in HolyC. Files are
+// enumerated in used-slot order: FileCount() files, FileName(i)/FileSize(i) for each.
+static HRT_I64 FileCount(void) {
+    int n = 0; for (int i = 0; i < MEMFS_MAX_FILES; i++) if (memfs[i].used) n++;
+    return n;
+}
+static HRT_I64 FileName(HRT_I64 idx) {
+    int k = 0; for (int i = 0; i < MEMFS_MAX_FILES; i++) if (memfs[i].used) { if (k == idx) return (HRT_I64)memfs[i].name; k++; }
+    return 0;
+}
+static HRT_I64 FileSize(HRT_I64 idx) {
+    int k = 0; for (int i = 0; i < MEMFS_MAX_FILES; i++) if (memfs[i].used) { if (k == idx) return memfs[i].len; k++; }
+    return 0;
+}
 
 // ---- Seed files: kernel primitives shipped as editable HolyC source ----------------------
 // These land in the in-memory FS at boot, so the "system" you edit is HolyC from the first
@@ -310,11 +324,22 @@ static const struct { const char *name; const char *body; } memfs_seed_files[] =
     "}\n"
     "I64 Ticks() { return tick_count; }\n"
   },
+  { "dir.hc",
+    "// Dir() reimplemented in HolyC -- redefines the C built-in, so the directory listing is\n"
+    "// itself editable: Src(\"Dir\") brings this up. Uses FileCount/FileName/FileSize.\n"
+    "U0 Dir() {\n"
+    "  I64 i, n = FileCount();\n"
+    "  if (!n) { \"  (no files)\\n\"; return; }\n"
+    "  for (i = 0; i < n; i++)\n"
+    "    \"  %s  %d bytes\\n\", FileName(i), FileSize(i);\n"
+    "}\n"
+  },
   { "boot.hc",
     "// boot.hc -- the editable boot script, auto-Run at startup. Edit it and reboot (or\n"
     "// Run(\"boot.hc\")) to change what the system brings up. Each line runs before the next\n"
     "// compiles, so you can load a driver and then use it (on a LATER line, not the same one).\n"
     "Run(\"uart.hc\");\n"
+    "Run(\"dir.hc\");\n"
     "UartStr(\"[boot] HolyC primitives loaded. Dir; to list, Run/Edit to change them live.\\n\");\n"
   },
 };
@@ -803,6 +828,9 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "Del",       (void*)Del,       1);
     RuntimeRegister(cc, "FileWrite", (void*)FileWrite, 3);
     RuntimeRegister(cc, "FileRead",  (void*)FileRead,  1);
+    RuntimeRegister(cc, "FileCount", (void*)FileCount, 0);
+    RuntimeRegister(cc, "FileName",  (void*)FileName,  1);
+    RuntimeRegister(cc, "FileSize",  (void*)FileSize,  1);
     RuntimeRegister(cc, "Ed",        (void*)Ed,        1);
     RuntimeRegister(cc, "Edit",      (void*)Edit,      1);
     // Self-hosting: compile+run a file, and edit/compile/install an interrupt handler in place
