@@ -796,6 +796,27 @@ static HRT_I64 TimerArm(HRT_I64 interval) {
     return 0;
 }
 
+// ---- Soft reset: run edited boot assembly and restart --------------------------------------
+// The boot code (start.hc: `asm { Boot:: ... }`) is native RISC-V you edit and JIT-assemble to
+// RAM. Reset() drops the re-entry address in a fixed slot Boot reads, then jumps into Boot,
+// which re-initializes M-mode (CSRs, a fresh stack) and jumps back here to restart the REPL --
+// a soft processor reset that runs YOUR edited boot. (A hardware reset via the SiFive test
+// device would instead re-run the fixed ROM startup, not the edited code.)
+void repl(void);
+static void repl_reentry(void) {
+    puts_uart("\n[reboot] boot code ran; restarting REPL\n");
+    repl();
+    while (1) __asm__ volatile("wfi");
+}
+static HRT_I64 Reset(void) {
+    CHashFun *f = g_cc ? (CHashFun *)HashFind("Boot", g_cc->hash_table, HTT_FUN) : 0;
+    if (!f || !f->exe_addr) { puts_uart("Reset: no Boot() -- Run(\"start.hc\") first\n"); return -1; }
+    *(volatile U64 *)0x87000000 = (U64)&repl_reentry;   // Boot reads the re-entry from this slot
+    __asm__ volatile("fence.i" ::: "memory");
+    ((void (*)(void))f->exe_addr)();                    // into the edited boot code (never returns)
+    return 0;
+}
+
 static void RuntimeInit(Compiler *cc) {
     // Fs -> the task block (Fs->except_ch)
     if (cc->fs_var && cc->except_ch_var) *(I64 *)cc->fs_var->data_addr = (I64)cc->except_ch_var->data_addr;
@@ -828,6 +849,7 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "TrapInit",  (void*)TrapInit,  0);
     RuntimeRegister(cc, "Ecall",     (void*)Ecall,     0);
     RuntimeRegister(cc, "TimerArm",  (void*)TimerArm,  1);
+    RuntimeRegister(cc, "Reset",     (void*)Reset,     0);
 }
 
 void repl(void) {

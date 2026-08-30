@@ -35,7 +35,7 @@ static int HolyRtRetVoid(const char *n) {
   static const char *v[] = { "Print", "PrintErr", "PutChars", "PutS", "Puts",
                              "Dir", "Ls", "Cat", "Del", "Ed", "Edit", "EdC", "EditC",
                              "Run", "SetIsr", "TrapInit", "Ecall", "TimerArm", "Src", "Funs",
-                             "PutCh", 0 };
+                             "PutCh", "Reset", 0 };
   for (int i = 0; v[i]; i++) if (holy_rt_streq(n, v[i])) return 1;
   return 0;
 }

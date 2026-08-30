@@ -3614,6 +3614,15 @@ static bool TryAssembleRiscV(Compiler *cc) {
     chunk->head = cc->ic_head; chunk->tail = cc->ic_tail; chunk->fun = fn; chunk->next = NULL;
     if (!cc->aot_fn_ic_tail) cc->aot_fn_ic_head = cc->aot_fn_ic_tail = chunk;
     else { cc->aot_fn_ic_tail->next = chunk; cc->aot_fn_ic_tail = chunk; }
+  } else {
+    // JIT (REPL): assemble the block's words into executable memory now and bind exe_addr, the
+    // same way ParseFunction materializes a normal function. Without this the label symbol exists
+    // but exe_addr stays 0 ("declared but not defined" at the call site). This is what makes
+    // asm{}-defined functions -- e.g. editable boot assembly -- callable from the live REPL.
+    extern U8 *CompileAOT(Compiler *cc, I64 *size_out);
+    I64 asm_code_size = 0;
+    U8 *asm_code = CompileAOT(cc, &asm_code_size);
+    if (asm_code) { fn->exe_addr = (I64)asm_code; cc->code_buffer = asm_code; cc->code_size = asm_code_size; }
   }
   cc->ic_head = asm_prev_head; cc->ic_tail = asm_prev_tail;
   cc->asm_funcs_translated++;
