@@ -3406,7 +3406,7 @@ static bool TryAssembleRiscV(Compiler *cc) {
     RvI2 *I = &ins[nins]; { RvI2 _z; { char *_p=(char*)&_z; for(unsigned _j=0;_j<sizeof(_z);_j++) _p[_j]=0; } *I=_z; } { int _i=0; for(;w[_i]&&_i<11;_i++) I->mn[_i]=w[_i]; I->mn[_i]=0; }
 
     // Pseudo & real mnemonics.
-    if (!strcmp(w,"ret") || !strcmp(w,"nop") || !strcmp(w,"wfi")) { nins++; continue; }
+    if (!strcmp(w,"ret") || !strcmp(w,"nop") || !strcmp(w,"wfi") || !strcmp(w,"fencei")) { nins++; continue; }
     if (!strcmp(w,"mv") || !strcmp(w,"not") || !strcmp(w,"neg")) {          // rd, rs
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc);
       if (I->rd<0||I->rs1<0) return false; nins++; continue;
@@ -3608,6 +3608,7 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"csrs"))       word = 0x00002073u | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
     else if (!strcmp(m,"sfencevma"))  word = 0x12000073u | (I->rs1<<15);
     else if (!strcmp(m,"wfi"))        word = 0x10500073u;
+    else if (!strcmp(m,"fencei"))     word = 0x0000100Fu;
     ICAdd(cc, IC_RAW_RV, (I64)word, RT_I64);
   }
   #undef RV_LBL

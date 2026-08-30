@@ -822,16 +822,23 @@ static HRT_I64 Funs(void) {
 // the address to resume at (else: skip a synchronous exception, retry an interrupt).
 static char g_isr_name[32];
 
-__attribute__((used)) static void repl_trap_dispatch(void) {
+// The saved-register frame is published on EVERY trap to a FIXED address (0x87000100) so a HolyC
+// handler -- the debugger's breakpoint ISR -- can read the trapped registers with a plain
+// *(U64*)... peek, no C primitive needed. Layout at 0x87000100 (U64 each): [0]=ra, [1..7]=t0..t6,
+// [8..15]=a0..a7, [16]=trapped sp. frame[] from repl_trap_vector matches [0..15].
+__attribute__((used)) static void repl_trap_dispatch(U64 *frame) {
     I64 cause, epc, tval;
     __asm__ volatile("csrr %0, mcause" : "=r"(cause));
     __asm__ volatile("csrr %0, mepc"   : "=r"(epc));
     __asm__ volatile("csrr %0, mtval"  : "=r"(tval));
+    volatile U64 *dbg = (volatile U64 *)0x87000100;
+    for (int k = 0; k < 16; k++) dbg[k] = frame[k];        // publish the trapped registers for HolyC
+    dbg[16] = (U64)frame + 128;                            // trapped sp
     I64 resume = 0;
     CHashFun *f = g_isr_name[0] && g_cc ? (CHashFun *)HashFind(g_isr_name, g_cc->hash_table, HTT_FUN) : 0;
     if (f && f->exe_addr) {
         typedef I64 (*Isr)(I64, I64, I64);
-        resume = ((Isr)f->exe_addr)(cause, epc, tval);
+        resume = ((Isr)f->exe_addr)(cause, epc, tval);   // e.g. the HolyC debugger's DbgTrap
     } else {
         puts_uart("[trap cause="); print_hex((U64)cause);
         puts_uart(" epc=");        print_hex((U64)epc);
@@ -847,6 +854,7 @@ __attribute__((used, naked, aligned(4))) static void repl_trap_vector(void) {
         "sd t3,32(sp)\n sd t4,40(sp)\n sd t5,48(sp)\n sd t6,56(sp)\n"
         "sd a0,64(sp)\n sd a1,72(sp)\n sd a2,80(sp)\n sd a3,88(sp)\n"
         "sd a4,96(sp)\n sd a5,104(sp)\n sd a6,112(sp)\n sd a7,120(sp)\n"
+        "mv a0,sp\n"                     /* pass the saved-register frame to the dispatcher */
         "call repl_trap_dispatch\n"
         "ld ra,0(sp)\n ld t0,8(sp)\n ld t1,16(sp)\n ld t2,24(sp)\n"
         "ld t3,32(sp)\n ld t4,40(sp)\n ld t5,48(sp)\n ld t6,56(sp)\n"

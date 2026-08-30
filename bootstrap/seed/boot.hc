@@ -6,4 +6,5 @@ Run("dir.hc");
 Run("ed.hc");
 Run("edit.hc");
 Run("start.hc");
+Run("debug.hc");
 UartStr("[boot] HolyC primitives loaded. Dir; to list, Run/Edit to change them live.\n");

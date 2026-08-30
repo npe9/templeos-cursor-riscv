@@ -168,6 +168,11 @@ demo_input+=$'MemMap();\nRegs();\nEd("q.hc");\n!6*7;\nq\n'
 expect_text 'code_mem'
 expect_text 'mstatus'
 expect_text 'ans=0x000000000000002a'   # !6*7; ran HolyC from inside Ed
+# HolyC debugger: break on a function, confirm the args are reported, execution continues.
+demo_input+=$'I64 Dg(I64 x,I64 y){return x+y;}\nBp(&Dg);\nDg(11,22);\n'
+expect_text 'breakpoint @'
+expect_text 'a0=0xB'                    # x=11 at the break
+expect_text 'ans=0x0000000000000021'   # Dg still returns 33
 # In-memory filesystem + ed editor: create a file, append a line, write, then list and cat it
 # back -- exercises the nested UART reader (a registered C fn reading its own lines while called
 # from JIT'd HolyC), the fixed-slot memfs, and Ed's a/w/q + Dir/Cat.
