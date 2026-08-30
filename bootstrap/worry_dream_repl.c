@@ -298,6 +298,26 @@ static const struct { const char *name; const char *body; } memfs_seed_files[] =
     "}\n"
     "U0 UartStr(U8 *s) { while (*s) UartPut(*s++); }\n"
   },
+  { "timer.hc",
+    "// CLINT machine-timer primitive + an editable tick handler (QEMU virt).\n"
+    "// Run(\"timer.hc\"); SetIsr(\"OnTick\"); TrapInit(); TimerArm(1000000);  then Ticks().\n"
+    "// Edit OnTick, Run(\"timer.hc\") again, and the next tick uses the new body.\n"
+    "I64 tick_count;\n"
+    "I64 OnTick(I64 cause, I64 epc, I64 tval) {\n"
+    "  tick_count++;\n"
+    "  *(U64 *)0x02004000 = *(U64 *)0x0200BFF8 + 1000000;    // re-arm mtimecmp (~0.1s @ 10MHz)\n"
+    "  return 0;\n"
+    "}\n"
+    "I64 Ticks() { return tick_count; }\n"
+  },
+  { "boot.hc",
+    "// boot.hc -- the editable boot script, auto-Run at startup. Edit it and reboot (or\n"
+    "// Run(\"boot.hc\")) to change what the system brings up. NOTE: a file that Run()s a\n"
+    "// driver cannot also CALL it in the same file (the file compiles before it runs) --\n"
+    "// load here, call from the prompt or a later Run.\n"
+    "Run(\"uart.hc\");\n"
+    "\"[boot] HolyC primitives loaded. Dir; to list, Run/Edit to change them live.\\n\";\n"
+  },
 };
 static void memfs_seed(void) {
     for (unsigned i = 0; i < sizeof(memfs_seed_files) / sizeof(memfs_seed_files[0]); i++) {
@@ -698,6 +718,10 @@ void repl(void) {
     Compiler *cc = g_cc;
     RuntimeInit(cc);
     memfs_seed();   // ship the editable kernel primitives into the FS
+    // The system boots its own HolyC: auto-Run boot.hc (loads drivers, prints a banner).
+    // Silent (echo off) except boot.hc's own output. Edit boot.hc to change startup.
+    { MemFile *bf = memfs_find("boot.hc");
+      if (bf) { bf->data[bf->len] = 0; repl_eval(bf->data, 0); } }
     
     // Accumulation buffer for multi-line inputs (functions/blocks)
     static char accum[4096];
