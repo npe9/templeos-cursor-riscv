@@ -1,8 +1,9 @@
-// disasm.hc -- a RISC-V disassembler in HolyC. Disasm(addr) prints a 28-instruction window from
-// a function entry; Src() falls back to it for a function with no source. Decodes base RV64IM,
-// the D-extension floats the compiler emits, and RVC (compressed). Edit it: Src("DisasmOne").
-// HolyC won't accept a bare no-arg "str"; as an if-body, so Pm(s) prints a mnemonic and the
-// mnemonic otherwise goes into a variable printed once with args.
+// disasm.hc -- a RISC-V disassembler in HolyC. Disasm("Name") (or DisasmAt(addr)) prints a
+// 28-instruction window; Src() falls back to it for a function with no source. Decodes base
+// RV64IM, D-extension floats (incl. fsgnj/fmin/fmax and the RVC float loads/stores), and RVC,
+// resolves jal/branch targets from the PC, and shows the raw bytes of anything it can't decode.
+// Edit it: Src("DisasmOne"). HolyC won't take a bare no-arg "str"; as an if-body, so Pm(s) prints
+// a mnemonic and otherwise the mnemonic goes into a variable printed once with args.
 U8 *RN[32]  = {"zero","ra","sp","gp","tp","t0","t1","t2","s0","s1","a0","a1","a2","a3","a4","a5",
                "a6","a7","s2","s3","s4","s5","s6","s7","s8","s9","s10","s11","t3","t4","t5","t6"};
 U8 *FRN[32] = {"ft0","ft1","ft2","ft3","ft4","ft5","ft6","ft7","fs0","fs1","fa0","fa1","fa2","fa3","fa4","fa5",
@@ -12,7 +13,7 @@ U0 Pm(U8 *s) { "%s", s; }
 U0 DiImm(I64 v) { if (v < 0) { PutCh('-'); v = -v; } "0x%X", v; }
 
 U0 DisasmOne(I64 addr, I64 w) {
-  I64 op, rd, f3, rs1, rs2, f7, immI, immS, csr;
+  I64 op, rd, f3, rs1, rs2, f7, immI, immS, csr, jt;
   U8 *mn;
   op = w & 0x7F; rd = (w >> 7) & 0x1F; f3 = (w >> 12) & 7;
   rs1 = (w >> 15) & 0x1F; rs2 = (w >> 20) & 0x1F; f7 = (w >> 25) & 0x7F; csr = (w >> 20) & 0xFFF;
@@ -25,7 +26,11 @@ U0 DisasmOne(I64 addr, I64 w) {
   else if (w == 0x00008067) Pm("ret");
   else if (op == 0x37) { "lui %s, ", RN[rd]; DiImm(w & 0xFFFFF000); }
   else if (op == 0x17) { "auipc %s, ", RN[rd]; DiImm(w & 0xFFFFF000); }
-  else if (op == 0x6F) { "jal %s", RN[rd]; }
+  else if (op == 0x6F) {
+    jt = (((w>>31)&1)<<20) | (((w>>12)&0xFF)<<12) | (((w>>20)&1)<<11) | (((w>>21)&0x3FF)<<1);
+    if (jt & 0x100000) jt |= ~0x1FFFFF;
+    "jal %s, 0x%08X", RN[rd], addr + jt;
+  }
   else if (op == 0x67) { "jalr %s, ", RN[rd]; DiImm(immI); "(%s)", RN[rs1]; }
   else if (op == 0x13) {
     if (f3 == 0 && rs1 == 0) { "li %s, ", RN[rd]; DiImm(immI); }
@@ -49,7 +54,12 @@ U0 DisasmOne(I64 addr, I64 w) {
     "%s %s, ", mn, RN[rd]; DiImm(immI); "(%s)", RN[rs1];
   }
   else if (op == 0x23) { if (f3==0) mn="sb"; else if (f3==1) mn="sh"; else if (f3==2) mn="sw"; else mn="sd"; "%s %s, ", mn, RN[rs2]; DiImm(immS); "(%s)", RN[rs1]; }
-  else if (op == 0x63) { if (f3==0) mn="beq"; else if (f3==1) mn="bne"; else if (f3==4) mn="blt"; else if (f3==5) mn="bge"; else if (f3==6) mn="bltu"; else mn="bgeu"; "%s %s, %s", mn, RN[rs1], RN[rs2]; }
+  else if (op == 0x63) {
+    if (f3==0) mn="beq"; else if (f3==1) mn="bne"; else if (f3==4) mn="blt"; else if (f3==5) mn="bge"; else if (f3==6) mn="bltu"; else mn="bgeu";
+    jt = (((w>>31)&1)<<12) | (((w>>25)&0x3F)<<5) | (((w>>8)&0xF)<<1) | (((w>>7)&1)<<11);
+    if (jt & 0x1000) jt |= ~0x1FFF;
+    "%s %s, %s, 0x%08X", mn, RN[rs1], RN[rs2], addr + jt;
+  }
   else if (op == 0x73) {
     if (f3==1) mn="csrrw"; else if (f3==2) mn="csrrs"; else if (f3==3) mn="csrrc"; else mn="";
     if (mn[0]) { "%s %s, ", mn, RN[rd]; DiImm(csr); ", %s", RN[rs1]; }
@@ -63,18 +73,23 @@ U0 DisasmOne(I64 addr, I64 w) {
     else if (f7==0x09) { "fmul.d %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2]; }
     else if (f7==0x0D) { "fdiv.d %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2]; }
     else if (f7==0x2D) { "fsqrt.d %s, %s", FRN[rd], FRN[rs1]; }
+    else if (f7==0x11) {
+      if (rs1==rs2) { if (f3==0) mn="fmv.d"; else if (f3==1) mn="fneg.d"; else mn="fabs.d"; "%s %s, %s", mn, FRN[rd], FRN[rs1]; }
+      else { if (f3==0) mn="fsgnj.d"; else if (f3==1) mn="fsgnjn.d"; else mn="fsgnjx.d"; "%s %s, %s, %s", mn, FRN[rd], FRN[rs1], FRN[rs2]; }
+    }
+    else if (f7==0x15) { if (f3==0) mn="fmin.d"; else mn="fmax.d"; "%s %s, %s, %s", mn, FRN[rd], FRN[rs1], FRN[rs2]; }
     else if (f7==0x51) { if (f3==0) mn="fle.d"; else if (f3==1) mn="flt.d"; else mn="feq.d"; "%s %s, %s, %s", mn, RN[rd], FRN[rs1], FRN[rs2]; }
     else if (f7==0x79) { "fmv.d.x %s, %s", FRN[rd], RN[rs1]; }
     else if (f7==0x71) { if (f3==0) mn="fmv.x.d"; else mn="fclass.d"; "%s %s, %s", mn, RN[rd], FRN[rs1]; }
     else if (f7==0x61) { if (rs2==2) mn="fcvt.l.d"; else if (rs2==3) mn="fcvt.lu.d"; else if (rs2==0) mn="fcvt.w.d"; else mn="fcvt.wu.d"; "%s %s, %s", mn, RN[rd], FRN[rs1]; }
     else if (f7==0x69) { if (rs2==2) mn="fcvt.d.l"; else if (rs2==3) mn="fcvt.d.lu"; else if (rs2==0) mn="fcvt.d.w"; else mn="fcvt.d.wu"; "%s %s, %s", mn, FRN[rd], RN[rs1]; }
-    else { Pm("fp f7="); DiImm(f7); }
+    else { "fp.op f7="; DiImm(f7); " raw="; DiImm(w & 0xFFFFFFFF); }
   }
-  else Pm(".word");
+  else { ".word "; DiImm(w & 0xFFFFFFFF); }
   "\n";
 }
 U0 DisasmC(I64 addr, I64 w) {
-  I64 op, f3, rd, rs2, rdp, rs1p, imm, u, sh, f2, ff, b12;
+  I64 op, f3, rd, rs2, rdp, rs1p, imm, u, sh, f2, ff, b12, jt;
   U8 *mn;
   op = w & 3; f3 = (w >> 13) & 7; rd = (w >> 7) & 0x1F; rs2 = (w >> 2) & 0x1F;
   rdp = ((w >> 2) & 7) + 8; rs1p = ((w >> 7) & 7) + 8;
@@ -83,11 +98,13 @@ U0 DisasmC(I64 addr, I64 w) {
   else if (w == 0x9002) Pm("c.ebreak");
   else if (op == 0) {
     if (f3==0) { u = ((w>>7)&0x30)|((w>>1)&0x3C0)|((w>>4)&4)|((w>>2)&8); "c.addi4spn %s, sp, ", RN[rdp]; DiImm(u); }
+    else if (f3==1) { u = ((w>>7)&0x38)|((w<<1)&0xC0); "c.fld %s, ", FRN[rdp]; DiImm(u); "(%s)", RN[rs1p]; }
     else if (f3==2) { u = ((w>>7)&0x38)|((w<<1)&0x40)|((w>>4)&4); "c.lw %s, ", RN[rdp]; DiImm(u); "(%s)", RN[rs1p]; }
     else if (f3==3) { u = ((w>>7)&0x38)|((w<<1)&0xC0); "c.ld %s, ", RN[rdp]; DiImm(u); "(%s)", RN[rs1p]; }
+    else if (f3==5) { u = ((w>>7)&0x38)|((w<<1)&0xC0); "c.fsd %s, ", FRN[rdp]; DiImm(u); "(%s)", RN[rs1p]; }
     else if (f3==6) { u = ((w>>7)&0x38)|((w<<1)&0x40)|((w>>4)&4); "c.sw %s, ", RN[rdp]; DiImm(u); "(%s)", RN[rs1p]; }
     else if (f3==7) { u = ((w>>7)&0x38)|((w<<1)&0xC0); "c.sd %s, ", RN[rdp]; DiImm(u); "(%s)", RN[rs1p]; }
-    else Pm(".chalf");
+    else { ".chalf "; DiImm(w & 0xFFFF); }
   }
   else if (op == 1) {
     imm = ((w>>2)&0x1F)|((w>>7)&0x20); if (imm & 0x20) imm |= ~0x3F;
@@ -95,7 +112,7 @@ U0 DisasmC(I64 addr, I64 w) {
     else if (f3==1) { "c.addiw %s, ", RN[rd]; DiImm(imm); }
     else if (f3==2) { "c.li %s, ", RN[rd]; DiImm(imm); }
     else if (f3==3) {
-      if (rd==2) { imm = ((w>>3)&0x200)|((w<<4)&0x180)|((w<<1)&0x40)|((w<<3)&0x20)|((w>>2)&0x10); if (imm & 0x200) imm |= ~0x3FF; Pm("c.addi16sp sp, "); DiImm(imm); }
+      if (rd==2) { imm = ((w>>3)&0x200)|((w<<4)&0x180)|((w<<1)&0x40)|((w<<3)&0x20)|((w>>2)&0x10); if (imm & 0x200) imm |= ~0x3FF; "c.addi16sp sp, "; DiImm(imm); }
       else { imm = (((w>>2)&0x1F)<<12)|(((w>>12)&1)<<17); if (imm & 0x20000) imm |= ~0x3FFFF; "c.lui %s, ", RN[rd]; DiImm(imm); }
     }
     else if (f3==4) {
@@ -105,12 +122,19 @@ U0 DisasmC(I64 addr, I64 w) {
       else if (f2==2) { imm = sh; if (imm & 0x20) imm |= ~0x3F; "c.andi %s, ", RN[rs1p]; DiImm(imm); }
       else { ff = (w>>5)&3; if ((w>>12)&1) { if (ff==0) mn="c.subw"; else mn="c.addw"; } else { if (ff==0) mn="c.sub"; else if (ff==1) mn="c.xor"; else if (ff==2) mn="c.or"; else mn="c.and"; } "%s %s, %s", mn, RN[rs1p], RN[rdp]; }
     }
-    else if (f3==5) Pm("c.j");
-    else if (f3==6) { "c.beqz %s", RN[rs1p]; }
-    else { "c.bnez %s", RN[rs1p]; }
+    else if (f3==5) {
+      jt = (((w>>12)&1)<<11)|(((w>>11)&1)<<4)|(((w>>9)&3)<<8)|(((w>>8)&1)<<10)|(((w>>7)&1)<<6)|(((w>>6)&1)<<7)|(((w>>3)&7)<<1)|(((w>>2)&1)<<5);
+      if (jt & 0x800) jt |= ~0xFFF; "c.j 0x%08X", addr + jt;
+    }
+    else {
+      jt = (((w>>12)&1)<<8)|(((w>>10)&3)<<3)|(((w>>5)&3)<<6)|(((w>>3)&3)<<1)|(((w>>2)&1)<<5);
+      if (jt & 0x100) jt |= ~0x1FF;
+      if (f3==6) { "c.beqz %s, 0x%08X", RN[rs1p], addr + jt; } else { "c.bnez %s, 0x%08X", RN[rs1p], addr + jt; }
+    }
   }
   else if (op == 2) {
     if (f3==0) { sh = ((w>>2)&0x1F)|((w>>7)&0x20); "c.slli %s, ", RN[rd]; DiImm(sh); }
+    else if (f3==1) { u = ((w>>7)&0x20)|((w>>2)&0x18)|((w<<4)&0x1C0); "c.fldsp %s, ", FRN[rd]; DiImm(u); "(sp)"; }
     else if (f3==2) { u = ((w>>7)&0x20)|((w>>2)&0x1C)|((w<<4)&0xC0); "c.lwsp %s, ", RN[rd]; DiImm(u); "(sp)"; }
     else if (f3==3) { u = ((w>>7)&0x20)|((w>>2)&0x18)|((w<<4)&0x1C0); "c.ldsp %s, ", RN[rd]; DiImm(u); "(sp)"; }
     else if (f3==4) {
@@ -118,11 +142,11 @@ U0 DisasmC(I64 addr, I64 w) {
       if (!b12) { if (rs2==0) { "c.jr %s", RN[rd]; } else { "c.mv %s, %s", RN[rd], RN[rs2]; } }
       else { if (rd==0 && rs2==0) Pm("c.ebreak"); else if (rs2==0) { "c.jalr %s", RN[rd]; } else { "c.add %s, %s", RN[rd], RN[rs2]; } }
     }
+    else if (f3==5) { u = ((w>>7)&0x38)|((w>>1)&0x1C0); "c.fsdsp %s, ", FRN[rs2]; DiImm(u); "(sp)"; }
     else if (f3==6) { u = ((w>>7)&0x3C)|((w>>1)&0xC0); "c.swsp %s, ", RN[rs2]; DiImm(u); "(sp)"; }
-    else if (f3==7) { u = ((w>>7)&0x38)|((w>>1)&0x1C0); "c.sdsp %s, ", RN[rs2]; DiImm(u); "(sp)"; }
-    else Pm(".chalf");
+    else { u = ((w>>7)&0x38)|((w>>1)&0x1C0); "c.sdsp %s, ", RN[rs2]; DiImm(u); "(sp)"; }
   }
-  else Pm(".chalf");
+  else { ".chalf "; DiImm(w & 0xFFFF); }
   "\n";
 }
 // DisasmAt(addr) -- disassemble a 28-instruction window from a raw address.
