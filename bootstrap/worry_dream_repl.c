@@ -710,23 +710,31 @@ static HRT_I64 Src(char *name) {
 // Funs() -- list every function in the symbol table (the hash table): name, entry address,
 // return type, and [src] if it has HolyC source you can Src()/edit. This is the "what can I
 // call or edit" view -- TempleOS keeps the same symbol table you browse for autocomplete.
+// Funs() -- list every function in the symbol table, sorted, with [src] marking the ones you
+// can Src()/edit. This is the "what can I call or edit" view.
+static CHashFun *funs_buf[1024];
 static HRT_I64 Funs(void) {
     if (!g_cc || !g_cc->hash_table) { puts_uart("(no symbol table)\n"); return 0; }
     CHashTable *h = g_cc->hash_table;
     int n = 0;
-    for (I64 b = 0; b <= h->mask; b++) {
-        for (CHashEntry *e = h->body[b]; e; e = e->next) {
-            if (!(e->type & HTT_FUN)) continue;
-            CHashFun *f = (CHashFun *)e;
-            puts_uart("  "); puts_uart(e->str ? e->str : "?");
-            puts_uart("  @"); print_hex((U64)f->exe_addr);
-            puts_uart(" rt="); print_udec((U64)f->raw_type);
-            if (srcmap_get(e->str)) puts_uart("  [src]");
-            puts_uart("\n");
-            n++;
+    for (I64 b = 0; b <= h->mask && n < 1024; b++)
+        for (CHashEntry *e = h->body[b]; e && n < 1024; e = e->next)
+            if (e->type & HTT_FUN) funs_buf[n++] = (CHashFun *)e;
+    for (int i = 1; i < n; i++) {   // insertion sort by name (alphabetical, easy to scan)
+        CHashFun *key = funs_buf[i]; int j = i - 1;
+        while (j >= 0 && strcmp(funs_buf[j]->str ? funs_buf[j]->str : "", key->str ? key->str : "") > 0) {
+            funs_buf[j + 1] = funs_buf[j]; j--;
         }
+        funs_buf[j + 1] = key;
     }
-    puts_uart("("); print_udec(n); puts_uart(" functions)\n");
+    int editable = 0;
+    for (int i = 0; i < n; i++) {
+        puts_uart("  "); puts_uart(funs_buf[i]->str ? funs_buf[i]->str : "?");
+        if (srcmap_get(funs_buf[i]->str)) { puts_uart("  [src]"); editable++; }
+        puts_uart("\n");
+    }
+    puts_uart("("); print_udec(n); puts_uart(" functions, ");
+    print_udec(editable); puts_uart(" Src-editable [src])\n");
     return n;
 }
 
