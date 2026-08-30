@@ -753,6 +753,12 @@ static void ApplyCast(Compiler *cc, U8 cast_type, bool cast_ptr, CHashClass *cls
   }
   cc->cast_elem_type = cast_ptr ? cast_type : 0;
   cc->cast_elem_class = cast_ptr ? cls : NULL;
+  // The cast also overrides the expression's POINTER identity: `*(U32 *)(b+4)` must deref by the
+  // cast width, but pointer arithmetic (b+4) leaves expr_ptr_depth/expr_pointee set to b's own
+  // pointee (U8), and the deref-type chain consults those before the cast. A pointer cast makes
+  // this a pointer-to-cast_type; a value cast makes it not a pointer at all.
+  cc->expr_ptr_depth = cast_ptr ? 1 : 0;
+  cc->expr_pointee = cast_ptr ? cast_type : 0;
   if (cast_ptr && cls && (cls->type & HTT_CLASS) && !(cls->type & HTT_INTERNAL_TYPE)) cc->last_expr_class = cls;
 }
 
@@ -1449,7 +1455,12 @@ static bool ParsePrimary(Compiler *cc) {
         ApplyCast(cc, cast_type, cast_ptr, cast_cls);
         cc->last_pointed_to_type = saved_pt;
         cc->last_type_class = saved_tc;
+        // A cast erases the operand's variable identity: `*(U32 *)b = v` must take its store
+        // width from the CAST, and the deref-type chain checks var/global/member pointees first
+        // -- a surviving last_global_var made it store by b's own pointee (1 byte for U8 *b).
         cc->last_var_symbol = NULL;
+        cc->last_global_var = NULL;
+        cc->last_member = NULL;
         return true;
       }
     }
@@ -1619,6 +1630,7 @@ static bool ParseUnary(Compiler *cc) {
       pointee = cc->expr_pointee; depth = cc->expr_ptr_depth;
     } else if (cc->cast_elem_type) {   // `*(U32*)p`: a preceding pointer cast set the element width
       pointee = cc->cast_elem_type; depth = 1;
+      cc->cast_elem_type = 0;          // consumed -- must not leak into a later deref in the expression
     }
     if (depth < 1) depth = 1;
     deref_type = (depth > 1 || !pointee) ? RT_I64 : pointee;   // through a `T **`, load the pointer
