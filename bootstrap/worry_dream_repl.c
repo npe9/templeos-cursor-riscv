@@ -785,6 +785,67 @@ static void trap_sym(U64 a) {   // " (Foo+0x12)" if a lands in a known function
     if (f->size == 0 && off >= 0x4000) return;   // a size-unknown C builtin claims everything above it -- don't trust a huge offset
     puts_uart(" ("); puts_uart(f->str); puts_uart("+"); print_hex(off); puts_uart(")");
 }
+// ---- Fault recovery: catch a synchronous fault, print a symbolic stack dump, and longjmp back
+// to the REPL prompt instead of running on past corrupt state. Minimal bare-metal setjmp: the
+// callee-saved set (ra, sp, s0-s11) is all C code at -O0 needs.
+static U64 g_repl_jb[16];
+static int g_repl_jb_ok;
+I64 repl_setjmp(U64 *jb);
+void repl_longjmp(U64 *jb) __attribute__((noreturn));
+__asm__(
+    ".text\n.globl repl_setjmp\nrepl_setjmp:\n"
+    " sd ra,0(a0)\n sd sp,8(a0)\n sd s0,16(a0)\n sd s1,24(a0)\n sd s2,32(a0)\n sd s3,40(a0)\n"
+    " sd s4,48(a0)\n sd s5,56(a0)\n sd s6,64(a0)\n sd s7,72(a0)\n sd s8,80(a0)\n sd s9,88(a0)\n"
+    " sd s10,96(a0)\n sd s11,104(a0)\n li a0,0\n ret\n"
+    ".globl repl_longjmp\nrepl_longjmp:\n"
+    " ld ra,0(a0)\n ld sp,8(a0)\n ld s0,16(a0)\n ld s1,24(a0)\n ld s2,32(a0)\n ld s3,40(a0)\n"
+    " ld s4,48(a0)\n ld s5,56(a0)\n ld s6,64(a0)\n ld s7,72(a0)\n ld s8,80(a0)\n ld s9,88(a0)\n"
+    " ld s10,96(a0)\n ld s11,104(a0)\n li a0,1\n ret\n"
+);
+// The JIT prologue is `addi sp,sp,-N; sd ra,0(sp); sd s0,8(sp); addi s0,sp,N` -- decode N from the
+// entry instruction so the walker can find the saved pair at s0-N / s0-N+8. Returns 0 if the entry
+// isn't the simple form (big frames use a multi-instruction sequence; the walk just stops there).
+static I64 jit_frame_size(U64 entry) {
+    if (entry < 0x80000000UL || entry >= 0x88000000UL) return 0;
+    U32 w = *(U32 *)entry;
+    if ((w & 0xFFFFF) != 0x10113) return 0;    /* addi sp, sp, imm */
+    I64 imm = ((I32)w) >> 20;
+    return imm < 0 ? -imm : 0;
+}
+#define STK_IN_RAM(a) ((U64)(a) >= 0x80000000UL && (U64)(a) < 0x88000000UL)
+static void stk_rep(U64 pc, U64 s0) {
+    puts_uart("  stack:\n");
+    for (int i = 0; i < 16; i++) {
+        puts_uart("    #"); print_udec(i); puts_uart(" "); print_hex(pc); trap_sym(pc); puts_uart("\n");
+        CHashFun *f = SymNearest((HRT_I64)pc);
+        if (!f || !STK_IN_RAM(s0)) break;
+        U64 ra, ps0;
+        if (f->size > 0) {                      /* JIT frame: saved pair at s0-N */
+            I64 N = jit_frame_size((U64)f->exe_addr);
+            if (!N || !STK_IN_RAM(s0 - N)) break;
+            ra = *(U64 *)(s0 - N); ps0 = *(U64 *)(s0 - N + 8);
+        } else {                                /* C frame (gcc): ra at s0-8, s0 at s0-16 */
+            if (!STK_IN_RAM(s0 - 16)) break;
+            ra = *(U64 *)(s0 - 8); ps0 = *(U64 *)(s0 - 16);
+        }
+        if (!STK_IN_RAM(ra) || ra == pc) break;
+        pc = ra; s0 = ps0;
+    }
+}
+// mret target after a caught fault: normal machine state (mret restored MIE), then abandon the
+// wrecked evaluation and longjmp to the prompt.
+__attribute__((used)) static void repl_fault_recover(void) {
+    puts_uart("-- eval aborted, back to the REPL --\n");
+    repl_longjmp(g_repl_jb);
+}
+// StkRep; -- symbolic backtrace from the current point (TempleOS's stack report).
+static HRT_I64 StkRep(void) {
+    U64 s0, ra;
+    __asm__ volatile("mv %0, s0" : "=r"(s0));
+    __asm__ volatile("mv %0, ra" : "=r"(ra));
+    stk_rep(ra, STK_IN_RAM(s0 - 16) ? *(U64 *)(s0 - 16) : s0);   /* start at the caller */
+    return 0;
+}
 __attribute__((used)) static void repl_trap_dispatch(U64 *frame) {
     I64 cause, epc, tval;
     __asm__ volatile("csrr %0, mcause" : "=r"(cause));
@@ -792,7 +853,8 @@ __attribute__((used)) static void repl_trap_dispatch(U64 *frame) {
     __asm__ volatile("csrr %0, mtval"  : "=r"(tval));
     volatile U64 *dbg = (volatile U64 *)0x87000100;
     for (int k = 0; k < 16; k++) dbg[k] = frame[k];        // publish the trapped registers for HolyC
-    dbg[16] = (U64)frame + 128;                            // trapped sp
+    dbg[16] = (U64)frame + 144;                            // trapped sp
+    dbg[17] = frame[16];                                   // trapped s0 (frame pointer)
     I64 resume = 0;
     CHashFun *f = g_isr_name[0] && g_cc ? (CHashFun *)HashFind(g_isr_name, g_cc->hash_table, HTT_FUN) : 0;
     if (f && f->exe_addr) {
@@ -804,25 +866,34 @@ __attribute__((used)) static void repl_trap_dispatch(U64 *frame) {
         puts_uart("  tval=");    print_hex((U64)tval);
         puts_uart("\n  pc  = "); print_hex((U64)epc);  trap_sym((U64)epc);
         puts_uart("\n  ra  = "); print_hex(frame[0]);  trap_sym(frame[0]);
-        puts_uart("\n  (Uf the function, or U(pc-16); Dr; for registers)\n");
+        puts_uart("\n");
+        stk_rep((U64)epc, frame[16]);
+        puts_uart("  (Uf the function, or U(pc-16); Dr; for registers)\n");
+        // A synchronous fault leaves the evaluation wrecked -- don't run past it. mret into the
+        // recovery stub (restores MIE properly), which longjmps to the REPL prompt. ecall keeps
+        // its skip semantics; interrupts retry; before the first prompt (boot) fall through.
+        if (cause >= 0 && cause != 8 && cause != 9 && cause != 11 && g_repl_jb_ok)
+            resume = (I64)repl_fault_recover;
     }
     if (!resume) resume = (cause >= 0) ? epc + 4 : epc;   // exception: skip; interrupt: retry
     __asm__ volatile("csrw mepc, %0" :: "r"(resume));
 }
 __attribute__((used, naked, aligned(4))) static void repl_trap_vector(void) {
     __asm__ volatile(
-        "addi sp,sp,-128\n"
+        "addi sp,sp,-144\n"
         "sd ra,0(sp)\n sd t0,8(sp)\n sd t1,16(sp)\n sd t2,24(sp)\n"
         "sd t3,32(sp)\n sd t4,40(sp)\n sd t5,48(sp)\n sd t6,56(sp)\n"
         "sd a0,64(sp)\n sd a1,72(sp)\n sd a2,80(sp)\n sd a3,88(sp)\n"
         "sd a4,96(sp)\n sd a5,104(sp)\n sd a6,112(sp)\n sd a7,120(sp)\n"
+        "sd s0,128(sp)\n"               /* the trapped frame pointer -- the stack walker starts here */
         "mv a0,sp\n"                     /* pass the saved-register frame to the dispatcher */
         "call repl_trap_dispatch\n"
         "ld ra,0(sp)\n ld t0,8(sp)\n ld t1,16(sp)\n ld t2,24(sp)\n"
         "ld t3,32(sp)\n ld t4,40(sp)\n ld t5,48(sp)\n ld t6,56(sp)\n"
         "ld a0,64(sp)\n ld a1,72(sp)\n ld a2,80(sp)\n ld a3,88(sp)\n"
         "ld a4,96(sp)\n ld a5,104(sp)\n ld a6,112(sp)\n ld a7,120(sp)\n"
-        "addi sp,sp,128\n"
+        "ld s0,128(sp)\n"
+        "addi sp,sp,144\n"
         "mret\n"
     );
 }
@@ -1063,6 +1134,7 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "FnSize",    (void*)FnSize,    1);   // code size from the hash entry (0 = C builtin)
     RuntimeRegister(cc, "FunSegFind",(void*)FunSegFind,2);   // addr -> "Foo" (+off through the pointer)
     RuntimeRegister(cc, "SrcText",   (void*)SrcText,   1);   // defining source unit (Man reads its doc header)
+    RuntimeRegister(cc, "StkRep",    (void*)StkRep,    0);   // symbolic backtrace from here
     RuntimeRegister(cc, "SymBase",   (void*)SymBase,   1);   // addr -> exe_addr of nearest-below fn
     RuntimeRegister(cc, "SymName",   (void*)SymName,   1);   // addr -> name string of that fn (0 if none)
     RuntimeRegister(cc, "SetIsr",    (void*)SetIsr,    1);
@@ -1191,6 +1263,13 @@ void repl(void) {
         
         // Compile and run the accumulated input, echoing the TempleOS-style answer line.
         // The same path serves Run("file") (with echo off) -- see repl_eval() above.
+        // Arm the fault-recovery point: a caught synchronous fault longjmps back here with 1,
+        // the wrecked evaluation is dropped, and the prompt returns.
+        g_repl_jb_ok = 1;
+        if (repl_setjmp(g_repl_jb)) {
+            accum_len = 0; brace_depth = 0; paren_depth = 0;
+            continue;
+        }
         repl_eval(accum, 1);
         accum_len = 0;
         brace_depth = 0;
