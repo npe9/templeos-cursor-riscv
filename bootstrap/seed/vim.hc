@@ -167,3 +167,8 @@ U0 Vi(U8 *name) {
   VEsc("[2J"); VGoto(1, 1);
 }
 U0 Vim(U8 *name) { Vi(name); }
+
+// Default editor: SetEd("Vi") or SetEd("Ed"); E("file") opens with whichever is set.
+U8 EdDflt = 'E';
+U0 SetEd(U8 *name) { EdDflt = name[0]; "default editor: %s\n", name; }
+U0 E(U8 *f) { if (EdDflt == 'V' || EdDflt == 'v') Vi(f); else Ed(f); }

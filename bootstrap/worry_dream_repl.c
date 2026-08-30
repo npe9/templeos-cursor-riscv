@@ -758,6 +758,33 @@ static char g_isr_name[32];
 // handler -- the debugger's breakpoint ISR -- can read the trapped registers with a plain
 // *(U64*)... peek, no C primitive needed. Layout at 0x87000100 (U64 each): [0]=ra, [1..7]=t0..t6,
 // [8..15]=a0..a7, [16]=trapped sp. frame[] from repl_trap_vector matches [0..15].
+static CHashFun *SymNearest(HRT_I64 addr);
+// mcause -> what you actually did wrong. tval is the bad address for access faults and the
+// offending opcode for illegal instruction.
+static const char *trap_cause_name(I64 cause) {
+    if (cause < 0) {
+        switch (cause & 0xFF) {
+        case 3: return "software interrupt"; case 7: return "timer interrupt";
+        case 11: return "external interrupt"; }
+        return "interrupt";
+    }
+    switch (cause) {
+    case 0: return "instruction misaligned"; case 1: return "instruction access fault";
+    case 2: return "illegal instruction";    case 3: return "breakpoint";
+    case 4: return "load misaligned";        case 5: return "load access fault (bad address)";
+    case 6: return "store misaligned";       case 7: return "store access fault (bad address)";
+    case 8: case 9: case 11: return "ecall";
+    case 12: return "instruction page fault"; case 13: return "load page fault";
+    case 15: return "store page fault"; }
+    return "trap";
+}
+static void trap_sym(U64 a) {   // " (Foo+0x12)" if a lands in a known function
+    CHashFun *f = SymNearest((HRT_I64)a);
+    if (!f || !f->str) return;
+    U64 off = (U64)a - (U64)f->exe_addr;
+    if (f->size == 0 && off >= 0x4000) return;   // a size-unknown C builtin claims everything above it -- don't trust a huge offset
+    puts_uart(" ("); puts_uart(f->str); puts_uart("+"); print_hex(off); puts_uart(")");
+}
 __attribute__((used)) static void repl_trap_dispatch(U64 *frame) {
     I64 cause, epc, tval;
     __asm__ volatile("csrr %0, mcause" : "=r"(cause));
@@ -772,9 +799,12 @@ __attribute__((used)) static void repl_trap_dispatch(U64 *frame) {
         typedef I64 (*Isr)(I64, I64, I64);
         resume = ((Isr)f->exe_addr)(cause, epc, tval);   // e.g. the HolyC debugger's DbgTrap
     } else {
-        puts_uart("[trap cause="); print_hex((U64)cause);
-        puts_uart(" epc=");        print_hex((U64)epc);
-        puts_uart(" tval=");       print_hex((U64)tval); puts_uart("]\n");
+        puts_uart("\n*** FAULT: "); puts_uart(trap_cause_name(cause));
+        puts_uart("\n  cause="); print_hex((U64)cause);
+        puts_uart("  tval=");    print_hex((U64)tval);
+        puts_uart("\n  pc  = "); print_hex((U64)epc);  trap_sym((U64)epc);
+        puts_uart("\n  ra  = "); print_hex(frame[0]);  trap_sym(frame[0]);
+        puts_uart("\n  (Uf the function, or U(pc-16); Dr; for registers)\n");
     }
     if (!resume) resume = (cause >= 0) ? epc + 4 : epc;   // exception: skip; interrupt: retry
     __asm__ volatile("csrw mepc, %0" :: "r"(resume));
@@ -977,6 +1007,7 @@ static CHashFun *SymNearest(HRT_I64 addr) {
             if ((e->type & HTT_FUN)) {
                 CHashFun *f = (CHashFun *)e;
                 if (f->exe_addr && (I64)f->exe_addr <= (I64)addr &&
+                    (f->size == 0 || (I64)addr < (I64)f->exe_addr + f->size) &&   // sized: must contain addr
                     (!best || (I64)f->exe_addr > (I64)best->exe_addr))
                     best = f;
             }
@@ -984,6 +1015,18 @@ static CHashFun *SymNearest(HRT_I64 addr) {
 }
 static HRT_I64 SymBase(HRT_I64 addr) { CHashFun *f = SymNearest(addr); return f ? (HRT_I64)f->exe_addr : 0; }
 static HRT_I64 SymName(HRT_I64 addr) { CHashFun *f = SymNearest(addr); return f && f->str ? (HRT_I64)f->str : 0; }
+// FunSegFind(addr, &off) -- TempleOS's reverse map: name of the symbol containing addr, offset
+// written through the pointer. THE debugging primitive: faults, backtraces, and Da() all print
+// Foo+0x34 through this instead of raw PCs.
+static HRT_I64 FunSegFind(HRT_I64 addr, HRT_I64 off_p) {
+    CHashFun *f = SymNearest(addr);
+    if (!f) { if (off_p) *(I64 *)off_p = 0; return 0; }
+    if (off_p) *(I64 *)off_p = (I64)addr - (I64)f->exe_addr;
+    return f->str ? (HRT_I64)f->str : 0;
+}
+// SrcText("name") -- the source unit that defined a function (0 for a C builtin). Man() reads the
+// leading comment block out of this: the seed files' doc headers ARE the man pages.
+static HRT_I64 SrcText(char *name) { return (HRT_I64)srcmap_get(name); }
 
 static void RuntimeInit(Compiler *cc) {
     // Fs -> the task block (Fs->except_ch)
@@ -1018,6 +1061,8 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "Exec",      (void*)Exec,      1);
     RuntimeRegister(cc, "FnAddr",    (void*)FnAddr,    1);
     RuntimeRegister(cc, "FnSize",    (void*)FnSize,    1);   // code size from the hash entry (0 = C builtin)
+    RuntimeRegister(cc, "FunSegFind",(void*)FunSegFind,2);   // addr -> "Foo" (+off through the pointer)
+    RuntimeRegister(cc, "SrcText",   (void*)SrcText,   1);   // defining source unit (Man reads its doc header)
     RuntimeRegister(cc, "SymBase",   (void*)SymBase,   1);   // addr -> exe_addr of nearest-below fn
     RuntimeRegister(cc, "SymName",   (void*)SymName,   1);   // addr -> name string of that fn (0 if none)
     RuntimeRegister(cc, "SetIsr",    (void*)SetIsr,    1);

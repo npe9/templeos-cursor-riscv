@@ -9,4 +9,5 @@ Run("start.hc");
 Run("debug.hc");
 Run("disasm.hc");
 Run("vim.hc");
+Run("man.hc");
 UartStr("[boot] HolyC primitives loaded. Dir; to list, Run/Edit to change them live.\n");

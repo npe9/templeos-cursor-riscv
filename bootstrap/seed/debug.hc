@@ -63,3 +63,27 @@ U0 BpClr(I64 addr) {
   }
   "BpClr: no active breakpoint @ 0x%08X\n", addr;
 }
+
+// ---- TempleOS-style inspection: Dr (registers), Dm/D (hex dump), Da (symbolic slot dump) ----
+U0 Dr() { Regs; }
+U0 Dm(I64 a, I64 n=64) {   // hex + ASCII, 16 bytes a row
+  I64 r, c, b;
+  for (r = 0; r < n; r += 16) {
+    "%08X: ", a + r;
+    for (c = 0; c < 16; c++) { if (r + c < n) { "%02X ", *(U8 *)(a + r + c); } else { "   "; } }
+    " ";
+    for (c = 0; c < 16 && r + c < n; c++) { b = *(U8 *)(a + r + c); if (b >= 32 && b < 127) PutCh(b); else PutCh('.'); }
+    "\n";
+  }
+}
+U0 D(I64 a, I64 n=64) { Dm(a, n); }
+U0 Da(I64 a, I64 n=8) {    // n I64 slots; each value symbolized if it lands in a function
+  I64 i, v, base; U8 *nm;
+  for (i = 0; i < n; i++) {
+    v = *(I64 *)(a + i * 8);
+    "%08X: %016X", a + i * 8, v;
+    nm = SymName(v);
+    if (nm) { base = SymBase(v); "  %s+0x%X", nm, v - base; }
+    "\n";
+  }
+}
