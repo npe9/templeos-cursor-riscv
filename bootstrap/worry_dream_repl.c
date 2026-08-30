@@ -76,7 +76,7 @@ static void print_f64(U64 bits) {
 // Separate code and heap areas to prevent overwriting  
 static U8 code_mem[4*1024*1024];   // 4MB for compiled code (never reused)
 static size_t code_pos = 0;
-static U8 heap_mem[12*1024*1024];  // 12MB heap for compiler structures (reusable)
+static U8 heap_mem[32*1024*1024];  // 32MB heap (JIT code + IC live here; free() is a no-op)
 static size_t heap_pos = 0;
 
 // Special malloc for CODE - never freed, never reused
@@ -635,7 +635,7 @@ static void repl_eval(const char *src, int echo) {
 // compiles (and top-level declarations are globals that persist), a file can define something
 // -- or Run() another file -- on one line and use it on the next. echo=0 (silent, for scripts).
 static void run_source(const char *src) {
-    static char acc[4096];
+    static char acc[16384];
     int acc_len = 0, brace = 0, paren = 0;
     const char *p = src;
     char line[512];
@@ -679,78 +679,6 @@ static HRT_I64 Run(char *name) {
 // then recompile it: writes the remembered source to "Name.hc", opens Edit, and Run()s it on
 // exit, so what you edit becomes the live definition. Only works for functions defined in HolyC
 // (the C built-ins like Ed/Dir/Edit have no HolyC source until they are reimplemented as such).
-// ---- A small RISC-V disassembler, so Src() can show a function that has no HolyC source -----
-static const char *rv_reg(int r) {
-    static const char *n[32] = { "zero","ra","sp","gp","tp","t0","t1","t2","s0","s1","a0","a1",
-        "a2","a3","a4","a5","a6","a7","s2","s3","s4","s5","s6","s7","s8","s9","s10","s11","t3","t4","t5","t6" };
-    return (r >= 0 && r < 32) ? n[r] : "?";
-}
-static void di_reg(int r) { puts_uart(rv_reg(r)); }
-// print a small hex without the leading 16 zeros
-static void print_hex_word_min(U64 v) { char b[16]; int i = 0; if (!v) { putc_uart('0'); return; }
-    while (v) { int d = v & 0xF; b[i++] = d < 10 ? '0' + d : 'a' + d - 10; v >>= 4; } while (i--) putc_uart(b[i]); }
-static void di_imm(I64 v) { if (v < 0) { putc_uart('-'); v = -v; } puts_uart("0x"); print_hex_word_min((U64)v); }
-static void disasm_one(U64 addr, U32 w) {
-    print_hex(addr); puts_uart(":  ");
-    { char b[8]; for (int i = 7; i >= 0; i--) { int d = (w >> (i*4)) & 0xF; b[7-i] = d < 10 ? '0'+d : 'a'+d-10; } for (int i=0;i<8;i++) putc_uart(b[i]); }
-    puts_uart("  ");
-    int op = w & 0x7F, rd = (w>>7)&0x1F, f3 = (w>>12)&7, rs1 = (w>>15)&0x1F, rs2 = (w>>20)&0x1F, f7 = (w>>25)&0x7F;
-    I64 immI = ((I64)(I32)w) >> 20;
-    I64 immS = (((I64)(I32)w >> 25) << 5) | ((w >> 7) & 0x1F);
-    U32 csr = (w >> 20) & 0xFFF;
-    if (w == 0x00000013) { puts_uart("nop"); }
-    else if (w == 0x30200073) { puts_uart("mret"); }
-    else if (w == 0x10500073) { puts_uart("wfi"); }
-    else if (w == 0x00008067) { puts_uart("ret"); }
-    else if (op == 0x13) { const char *m = f3==0?"addi":f3==1?"slli":f3==2?"slti":f3==4?"xori":f3==5?(f7&0x20?"srai":"srli"):f3==6?"ori":f3==7?"andi":"op-imm";
-        if (f3==0 && rs1==0) { puts_uart("li "); di_reg(rd); puts_uart(", "); di_imm(immI); }
-        else { puts_uart(m); putc_uart(' '); di_reg(rd); puts_uart(", "); di_reg(rs1); puts_uart(", "); di_imm(f3==1||f3==5?rs2:immI); } }
-    else if (op == 0x33) { const char *m = f7==0x20?(f3==0?"sub":"sra"):f7==1?(f3==0?"mul":f3==4?"div":f3==5?"divu":f3==6?"rem":"remu"):
-            f3==0?"add":f3==1?"sll":f3==2?"slt":f3==3?"sltu":f3==4?"xor":f3==5?"srl":f3==6?"or":"and";
-        puts_uart(m); putc_uart(' '); di_reg(rd); puts_uart(", "); di_reg(rs1); puts_uart(", "); di_reg(rs2); }
-    else if (op == 0x03) { const char *m = f3==0?"lb":f3==1?"lh":f3==2?"lw":f3==3?"ld":f3==4?"lbu":f3==5?"lhu":f3==6?"lwu":"load";
-        puts_uart(m); putc_uart(' '); di_reg(rd); puts_uart(", "); di_imm(immI); putc_uart('('); di_reg(rs1); putc_uart(')'); }
-    else if (op == 0x23) { const char *m = f3==0?"sb":f3==1?"sh":f3==2?"sw":f3==3?"sd":"store";
-        puts_uart(m); putc_uart(' '); di_reg(rs2); puts_uart(", "); di_imm(immS); putc_uart('('); di_reg(rs1); putc_uart(')'); }
-    else if (op == 0x37) { puts_uart("lui "); di_reg(rd); puts_uart(", "); di_imm((I64)(I32)(w & 0xFFFFF000)); }
-    else if (op == 0x17) { puts_uart("auipc "); di_reg(rd); puts_uart(", "); di_imm((I64)(I32)(w & 0xFFFFF000)); }
-    else if (op == 0x67) { puts_uart("jalr "); di_reg(rd); puts_uart(", "); di_imm(immI); putc_uart('('); di_reg(rs1); putc_uart(')'); }
-    else if (op == 0x6F) { puts_uart("jal "); di_reg(rd); }
-    else if (op == 0x63) { const char *m = f3==0?"beq":f3==1?"bne":f3==4?"blt":f3==5?"bge":f3==6?"bltu":"bgeu";
-        puts_uart(m); putc_uart(' '); di_reg(rs1); puts_uart(", "); di_reg(rs2); }
-    else if (op == 0x73) { if (f3==1) { puts_uart("csrrw "); di_reg(rd); puts_uart(", "); di_imm(csr); puts_uart(", "); di_reg(rs1); }
-        else if (f3==2) { puts_uart("csrrs "); di_reg(rd); puts_uart(", "); di_imm(csr); puts_uart(", "); di_reg(rs1); }
-        else if (f3==3) { puts_uart("csrrc "); di_reg(rd); puts_uart(", "); di_imm(csr); puts_uart(", "); di_reg(rs1); }
-        else if (w==0x73) puts_uart("ecall"); else puts_uart("system"); }
-    else if (op == 0x53) { puts_uart("<fp-op>"); }
-    else { puts_uart(".word"); }
-    putc_uart('\n');
-}
-// Disassemble a window of `n` instructions from a function's entry.
-static HRT_I64 Disasm(char *name) {
-    CHashFun *f = g_cc ? (CHashFun *)HashFind(name, g_cc->hash_table, HTT_FUN) : 0;
-    if (!f || !f->exe_addr) { puts_uart("Disasm: no such function: "); puts_uart(name); puts_uart("\n"); return -1; }
-    puts_uart("; "); puts_uart(name); puts_uart("  (disassembly window @ "); print_hex((U64)f->exe_addr); puts_uart(")\n");
-    // Step by instruction width: RVC (compressed) is 16-bit when the low 2 bits != 11. Byte reads
-    // keep it aligned across mixed 16/32-bit code (C built-ins use RVC; JIT/asm code is all 32-bit).
-    U8 *b = (U8 *)f->exe_addr;
-    U64 off = 0;
-    for (int i = 0; i < 28; i++) {
-        U64 a = (U64)b + off;
-        U16 lo = (U16)(b[off] | (b[off+1] << 8));
-        if ((lo & 3) != 3) {
-            print_hex(a); puts_uart(":      "); print_hex_word_min(lo); puts_uart("  c.insn (compressed)\n");
-            off += 2;
-        } else {
-            U32 w = (U32)lo | ((U32)b[off+2] << 16) | ((U32)b[off+3] << 24);
-            disasm_one(a, w);
-            if (w == 0x00008067) break;   // ret
-            off += 4;
-        }
-    }
-    return 0;
-}
-
 static HRT_I64 Src(char *name) {
     const char *s = srcmap_get(name);
     if (s) {
@@ -777,8 +705,11 @@ static HRT_I64 Src(char *name) {
     if (f) { Edit(f->name); Run(f->name); return 0; }
     // No HolyC source and no file: if it's a function (a C built-in, say), disassemble it instead.
     { CHashFun *fn = g_cc ? (CHashFun *)HashFind(name, g_cc->hash_table, HTT_FUN) : 0;
-      if (fn && fn->exe_addr) { puts_uart("Src: no source for "); puts_uart(name);
-          puts_uart(" -- disassembling:\n"); return Disasm(name); } }
+      CHashFun *dis = g_cc ? (CHashFun *)HashFind("Disasm", g_cc->hash_table, HTT_FUN) : 0;
+      if (fn && fn->exe_addr && dis && dis->exe_addr) {
+          puts_uart("Src: no source for "); puts_uart(name); puts_uart(" -- disassembling:\n");
+          ((void (*)(HRT_I64))dis->exe_addr)((HRT_I64)fn->exe_addr);   // the HolyC Disasm (disasm.hc)
+          return 0; } }
     puts_uart("Src: no source for "); puts_uart(name);
     puts_uart(" (not a HolyC function or a file)\n");
     return -1;
@@ -981,7 +912,6 @@ static void RuntimeInit(Compiler *cc) {
     RuntimeRegister(cc, "Run",       (void*)Run,       1);
     RuntimeRegister(cc, "Src",       (void*)Src,       1);
     RuntimeRegister(cc, "Funs",      (void*)Funs,      0);
-    RuntimeRegister(cc, "Disasm",    (void*)Disasm,    1);
     RuntimeRegister(cc, "MemMap",    (void*)MemMap,    0);
     RuntimeRegister(cc, "Regs",      (void*)Regs,      0);
     RuntimeRegister(cc, "Exec",      (void*)Exec,      1);
@@ -1009,7 +939,7 @@ void repl(void) {
       if (bf) { bf->data[bf->len] = 0; run_source(bf->data); } }
     
     // Accumulation buffer for multi-line inputs (functions/blocks)
-    static char accum[4096];
+    static char accum[16384];
     int accum_len = 0;
     int brace_depth = 0;
     int paren_depth = 0;
