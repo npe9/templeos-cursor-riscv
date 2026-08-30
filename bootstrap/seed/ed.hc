@@ -3,7 +3,7 @@
 // ('.' alone ends an a/i input block). Edits in-memory files via FileRead/FileLen/FileWrite.
 U8  EdLn[256][128];
 I64 EdN, EdCur;
-U8  EdOut[8192];
+U8  EdOut[16384];
 
 I64 EdLineLen(I64 i) { I64 n = 0; while (EdLn[i][n]) n++; return n; }
 U0 EdSetLine(I64 i, U8 *s) { I64 j = 0; while (s[j] && j < 127) { EdLn[i][j] = s[j]; j++; } EdLn[i][j] = 0; }
@@ -105,8 +105,8 @@ U0 Ed(U8 *name) {
       off = 0;
       for (k = 0; k < EdN; k++) {
         m = 0;
-        while (EdLn[k][m] && off < 8191) { EdOut[off] = EdLn[k][m]; off++; m++; }
-        if (off < 8191) { EdOut[off] = '\n'; off++; }
+        while (EdLn[k][m] && off < 16383) { EdOut[off] = EdLn[k][m]; off++; m++; }
+        if (off < 16383) { EdOut[off] = '\n'; off++; }
       }
       EdOut[off] = 0;
       FileWrite(name, EdOut, off);
