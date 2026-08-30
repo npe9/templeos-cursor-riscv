@@ -160,8 +160,9 @@ expect_text 'df-same '
 # Funs() lists the symbol table; Src() on a C built-in reports no HolyC source. Also guards the
 # U0/RT_U0 void-echo fix: a user U0 call prints no "ans=" (checked via the answer-sequence phase).
 demo_input+=$'Funs();\nSrc("Cat");\n'
-expect_text 'functions)'
-expect_text 'no source for Cat'   # Cat is C and has no file; Ed/Dir are HolyC (Src-editable)
+expect_text 'Src-editable'        # Funs() summary line
+expect_text 'no source for Cat'   # Cat is C: Src falls back to disassembling it
+expect_text 'disassembling'       # the disassembler ran
 # In-memory filesystem + ed editor: create a file, append a line, write, then list and cat it
 # back -- exercises the nested UART reader (a registered C fn reading its own lines while called
 # from JIT'd HolyC), the fixed-slot memfs, and Ed's a/w/q + Dir/Cat.
