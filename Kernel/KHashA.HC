@@ -251,6 +251,8 @@ _HASH_REM_DEL::
 	RET1	24
 }
 
+#ifndef KERNEL_HASH_RV
+// x86: asm above. RISC-V Kernel_RV.PRJ sets KERNEL_HASH_RV and includes KHashRV.HC instead.
 _extern _HASH_STR I64 HashStr(U8 *st); //Hash a string.
 _extern _HASH_FIND CHash *HashFind(U8 *needle_str,CHashTable *haystack_table,
 	I64 mask,I64 instance=1);//Find string in hash table.
@@ -263,3 +265,4 @@ _extern _HASH_ADD U0 HashAdd(CHash *tmph,
 	CHashTable *table); //Add entry to hash table.
 _extern _HASH_REM_DEL Bool HashRemDel(CHash *tmph,CHashTable *table,
 	I64 instance=1);//Remove hash entry and del. Instance must match.
+#endif

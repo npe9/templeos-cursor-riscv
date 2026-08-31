@@ -126,7 +126,9 @@ pe_check_binary_ops1:
 	  } else if (paren_prec<=PREC_UNARY_PRE+ASSOC_MASK)
 	    ParenWarning(cc);
 	}
-	cur_op=cmp.binary_ops[cc->token];
+	// Do not introduce mid-case locals here — host AOT mishandles them and
+	// corrupts the load of cmp.binary_ops (traps on "40+2").
+	cur_op=CmpGetU32(g_cmp_binary_ops,cc->token);
 
       case PE_CHECK_BINARY_OPS2:
 pe_check_binary_ops2:
@@ -275,15 +277,8 @@ Bool PrsExpression(CCmpCtrl *cc,I64 *_max_prec,Bool end_exp,CPrsStk *_ps=NULL)
   }
   PrsPush(ps,0); //terminate
   PrsPush(ps,0); //terminate
-  try
-//try catch causes noreg vars in function
-	  PrsExpression2(cc,_max_prec,ps);
-  catch {
-    if (Fs->except_ch=='Compiler') {
-      res=FALSE;
-      Fs->catch_except=TRUE;
-    }
-  }
+  // RV smoke: skip try/catch wrapper (host AOT try vs TempleOS throw mismatch risk).
+  PrsExpression2(cc,_max_prec,ps);
   if (!_ps) {
     if (ps->ptr)
       LexExcept(cc,"Compiler Parse Error at ");

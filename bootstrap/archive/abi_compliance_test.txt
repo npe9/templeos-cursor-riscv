@@ -1,0 +1,82 @@
+// RISC-V ABI Compliance Test
+// This test verifies that our HolyC compiler follows the RISC-V System V ABI
+
+// Test 1: Stack alignment (16-byte aligned)
+I64 TestStackAlignment() {
+    I64 local1 = 1;
+    I64 local2 = 2;
+    I64 local3 = 3;
+    I64 local4 = 4;
+    return local1 + local2 + local3 + local4;
+}
+
+// Test 2: Callee-saved register preservation
+I64 TestCalleeSaved(I64 a, I64 b, I64 c, I64 d, I64 e, I64 f, I64 g, I64 h) {
+    I64 s0_val = 100;
+    I64 s1_val = 200;
+    I64 s2_val = 300;
+    return a + b + c + d + e + f + g + h + s0_val + s1_val + s2_val;
+}
+
+// Test 3: Argument passing (a0-a7)
+I64 TestArgPassing(I64 a, I64 b, I64 c, I64 d, I64 e, I64 f, I64 g, I64 h) {
+    return a + b + c + d + e + f + g + h;
+}
+
+// Test 4: Stack spill for >8 arguments
+I64 TestManyArgs(I64 a, I64 b, I64 c, I64 d, I64 e, I64 f, I64 g, I64 h, I64 i, I64 j, I64 k, I64 l) {
+    return a + b + c + d + e + f + g + h + i + j + k + l;
+}
+
+// Test 5: Return value in a0
+I64 TestReturnValue(I64 x) {
+    return x * 2;
+}
+
+// Test 6: Function calls with proper prologue/epilogue
+I64 TestFunctionCalls(I64 x) {
+    I64 result1 = TestReturnValue(x);
+    I64 result2 = TestReturnValue(x + 1);
+    return result1 + result2;
+}
+
+// Test 7: Nested function calls
+I64 TestNestedCalls(I64 a, I64 b) {
+    I64 temp1 = TestArgPassing(a, b, 1, 2, 3, 4, 5, 6);
+    I64 temp2 = TestArgPassing(b, a, 7, 8, 9, 10, 11, 12);
+    return temp1 + temp2;
+}
+
+// Test 8: Leaf function optimization
+I64 TestLeafFunction(I64 x, I64 y) {
+    return x + y;
+}
+
+// Test 9: Complex expression with function calls
+I64 TestComplexExpression(I64 a, I64 b, I64 c, I64 d) {
+    return TestArgPassing(a, b, c, d, 1, 2, 3, 4) + TestArgPassing(d, c, b, a, 5, 6, 7, 8);
+}
+
+// Test 10: Edge case - function with no parameters
+I64 TestNoParams() {
+    return 42;
+}
+
+// Execute tests
+TestStackAlignment();
+TestArgPassing(1, 2, 3, 4, 5, 6, 7, 8);
+TestManyArgs(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
+TestReturnValue(21);
+TestFunctionCalls(5);
+TestNestedCalls(10, 20);
+TestLeafFunction(3, 7);
+TestComplexExpression(1, 2, 3, 4);
+TestNoParams();
+
+
+
+
+
+
+
+

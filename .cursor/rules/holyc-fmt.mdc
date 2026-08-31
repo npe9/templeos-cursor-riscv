@@ -1,0 +1,40 @@
+---
+description: HolyC must be formatted with holyc-riscv --fmt (gofmt-style)
+globs: "**/*.{hc,HC,HH,hh}"
+alwaysApply: false
+---
+
+# HolyC formatting (`holyc-riscv --fmt`)
+
+Treat formatting like **gofmt**: the AST formatter is canonical. Do not hand-fight style.
+
+## Required
+
+- After editing HolyC (`.hc` / `.HC` / `.HH` / `.hh`) under the **enforced roots**, run:
+  - `make fmt` (tree), or `./holyc-riscv --fmt path/to/file.hc` (files you touched)
+- Never reindent / restyle by hand to please review — change code, then fmt
+- `make fmt-check` / CI must stay green (same idea as `gofmt -l`)
+
+## Enforced roots (expand over time)
+
+Documented in `tests/scripts/holyc_fmt_paths.sh`:
+
+- `bootstrap/seed/`, `bootstrap/hc_repl/`
+- `Kernel/**/*RV*` + `Kernel/Drv/`
+- `Compiler/**/*RV*`, `Adam/*RV*` (HolyC)
+- `tests/exec/cases/`, `tests/fmt/golden/`
+
+**Not** required yet: unreformed TempleOS x86 corpus, `tests/scratch/`, `tests/fmt/cases/` (ugly golden inputs).
+
+## Exceptions
+
+- Intentional unformattable / non-idempotent fixtures stay on the basename denylist in `holyc_fmt_paths.sh` (e.g. `e_misc_syntax.hc`, mid-line `//` cases, `DskVirtioRV.HC` until `holyc_fmt.c` is fixed)
+- Avoid huge drive-by fmt of files another agent owns in the same PR; still fmt anything **you** change
+
+## Checks
+
+```bash
+make fmt-test    # goldens + idempotency (tests/fmt/)
+make fmt         # rewrite enforced roots
+make fmt-check   # fail if any enforced file differs (CI)
+```

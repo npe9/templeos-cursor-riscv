@@ -7,7 +7,7 @@ TOTAL=0
 echo "Testing all TempleOS .HC files..."
 echo ""
 
-for file in $(find Demo Adam Kernel Apps -name "*.HC" -type f 2>/dev/null | head -100); do
+for file in $(find Demo Adam Kernel tos/Apps -name "*.HC" -type f 2>/dev/null | head -100); do
   TOTAL=$((TOTAL + 1))
   [ $((TOTAL % 20)) -eq 0 ] && echo "$TOTAL files tested..."
   

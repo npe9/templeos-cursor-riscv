@@ -913,6 +913,9 @@ U0 PrsAsmBlk(CCmpCtrl *cc,I64 cmp_flags)
 
   aotc->seg_size=64;
   cc->flags|=CCF_ASM_EXPRESSIONS;
+#ifdef CMP_RV_ASM
+  g_rv_asm_exports=0;
+#endif
   if (!(cmp_flags&CMPF_ONE_ASM_INS)) {
     if (cc->token!='{')
       LexExcept(cc,"Expecting '{' at ");
@@ -1060,9 +1063,18 @@ U0 PrsAsmBlk(CCmpCtrl *cc,I64 cmp_flags)
 	  Lex(cc);
 	} else
 	  LexExcept(cc,"Redefinition at ");
+#ifdef CMP_RV_ASM
+      } else if (PrsAsmRVIns(cc)) {
+	// RISC-V mnemonic (hash_entry was something else / unused)
+#endif
       } else
 	LexExcept(cc,"Syntax error at ");
     } else if (cc->token==TK_IDENT) {
+#ifdef CMP_RV_ASM
+      if (PrsAsmRVIns(cc)) {
+	// RISC-V insn with no prior hash_entry (e.g. addi)
+      } else {
+#endif
       tmpex=CAlloc(sizeof(CHashExport));
       tmpex->str=cc->cur_str;
       cc->cur_str=0;
@@ -1096,9 +1108,15 @@ U0 PrsAsmBlk(CCmpCtrl *cc,I64 cmp_flags)
 
 	  AOTLocalsResolve(cc);
 	  aotc->last_label=tmpex->str;
+#ifdef CMP_RV_ASM
+	  g_rv_asm_exports++;
+#endif
 	}
 	Lex(cc);
       }
+#ifdef CMP_RV_ASM
+      }
+#endif
     } else if (cc->token==';')
       Lex(cc);
     else

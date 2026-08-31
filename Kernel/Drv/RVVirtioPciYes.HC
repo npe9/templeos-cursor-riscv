@@ -1,0 +1,4 @@
+Bool RVVirtioPciEnabled()
+{
+  return TRUE;
+}

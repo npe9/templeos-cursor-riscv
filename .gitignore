@@ -1,4 +1,4 @@
-# Build outputs
+# Build outputs (local; never commit)
 build/
 *.o
 *.elf
@@ -6,17 +6,33 @@ build/
 *.dSYM/
 a.out
 
-# Compiled binaries
-holyc-riscv
-cicl-riscv
+# Host compiler + tool binaries (produced by `make` / packers)
+/holyc-riscv
+/holyc-riscv-dbg
+/cicl-riscv
+/validator
+host/holyc-riscv
+/tools/pack_tosb
 
 # Local HolyC scratch (historically created by older make test targets)
 tests/simple.hc
 
-# Test executables
+# Accidental root/test dump binaries (sources live under tests/scratch/)
+/test_*
+!/test_*.hc
+!/test_*.sh
+/dump_*
+/trace_*
+/verify_*
+/show_*
+/debug_*
+/check_*
+/analyze_*
+# Same prefixes elsewhere (harness leftovers)
 test_*
 !test_*.hc
 !test_*.sh
+!tests/scratch/**/*.hc
 dump_*
 trace_*
 verify_*
@@ -25,7 +41,7 @@ debug_*
 check_*
 analyze_*
 
-# Backup files
+# Backup / editor junk
 *.bak
 *.tmp
 *.tmp2
@@ -33,39 +49,51 @@ analyze_*
 *_clean.c
 *_working.c
 test_compiler.c
-
-# Documentation (keep main README only)
-docs/
-
-# MacOS
+backup/
 .DS_Store
-
-# Editor
 *.swp
 *~
 .vscode/
 .idea/
 
+# Documentation: product docs under docs/; session archive is local-only
+docs/archive/
+
+# Stray root junk (agent dumps, accidental files, old status notes)
+/1
+/[0-9]
+/[0-9][0-9]
+/[0-9][0-9][0-9]
+a.bin
+fb_guest50.bin
+/STATUS.md
+/FUNCTION_CALLS_WORKING.md
+/HOLYC_IMPLEMENTATION_STATUS.md
+/*_STATUS.md
+/*_STATUS_REPORT.md
+/*_ANALYSIS.md
+/*_FIXED.md
+/*ANSWER*.md
+/*REPORT*.md
+
 # Logs
 *.log
 /tmp/
 
-# Bootstrap: generated/local test dumps (keep tracked .sh / .c / Makefiles)
-bootstrap/property_*.txt
-bootstrap/*property_test*.txt
-bootstrap/abi_compliance_test.txt
-bootstrap/comprehensive_property_test.txt
-bootstrap/final_property_test.txt
-bootstrap/focused_property_test.txt
-bootstrap/simple_property_test.txt
-
-# Bootstrap: ephemeral session / agent notes (not product docs)
-bootstrap/FINAL_TEST_RESULTS.md
-bootstrap/FIX_*_PLAN.md
-bootstrap/GDB_DEBUGGING_SUMMARY.md
-bootstrap/REPL_*.md
-bootstrap/*_BEHAVIOR_ANALYSIS.md
-bootstrap/RISC_V_ABI_COMPLIANCE_REPORT.md
+# Bootstrap: generated / local dumps
+bootstrap/seed_files.h
+bootstrap/boot_blob_embed.h
+bootstrap/boot_runtime.hc
+bootstrap/boot_runtime.bin
+bootstrap/hc_repl/seed_embed.hc
+bootstrap/repl.elf
+bootstrap/archive/**/*.o
+bootstrap/archive/**/*.elf
+bootstrap/archive/**/*.bin
+bootstrap/archive/**/*.log
 
 build/exec/prog_arr.hc
-bootstrap/seed_files.h
+
+# Kconfig local state (regenerated; defconfigs are tracked)
+templeos-riscv/.config
+templeos-riscv/.config.old

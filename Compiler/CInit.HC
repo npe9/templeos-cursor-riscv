@@ -236,6 +236,24 @@ U0 CmpLoadDefines()
   DefineLstLoad("ST_FSTK_REGS","ST0\0ST1\0ST2\0ST3\0ST4\0ST5\0ST6\0ST7\0");
 }
 
+
+U0 CmpSetU32(U32 *p, I64 i, U32 v)
+{// Same U8 indexing pattern as the demo probe that worked.
+  U8 *q=p(U8 *);
+  I64 o=i*4;
+  q[o]=v&0xFF;
+  q[o+1]=v>>8&0xFF;
+  q[o+2]=v>>16&0xFF;
+  q[o+3]=v>>24&0xFF;
+}
+
+U32 CmpGetU32(U32 *p, I64 i)
+{
+  U8 *q=p(U8 *);
+  I64 o=i*4;
+  return q[o]|q[o+1]<<8|q[o+2]<<16|q[o+3]<<24;
+}
+
 U0 CmpFillTables()
 {
   I64 i;
@@ -255,7 +273,7 @@ U0 CmpFillTables()
     if (Bt(&cmp.non_ptr_vars_mask,i))
       cmp.non_ptr_vars_map[cmp.num_non_ptr_vars++]=i;
 
-  cmp.dual_U16_tokens1=d=CAlloc(sizeof(U32)*TK_TKS_NUM);
+  cmp.dual_U16_tokens1=d=CAlloc(8*TK_TKS_NUM);
   d['!']=TK_NOT_EQU<<16+'=';
   d['&']=TK_AND_AND<<16+'&';
   d['*']=TK_MUL_EQU<<16+'=';
@@ -270,7 +288,7 @@ U0 CmpFillTables()
   d['|']=TK_OR_OR<<16+'|';
   d['%']=TK_MOD_EQU<<16+'=';
 
-  cmp.dual_U16_tokens2=d=CAlloc(sizeof(U32)*TK_TKS_NUM);
+  cmp.dual_U16_tokens2=d=CAlloc(8*TK_TKS_NUM);
   d['&']=TK_AND_EQU<<16+'=';
   d['+']=TK_ADD_EQU<<16+'=';
   d['-']=TK_MINUS_MINUS<<16+'-';
@@ -281,50 +299,42 @@ U0 CmpFillTables()
   d['|']=TK_OR_EQU<<16+'=';
 
   cmp.dual_U16_tokens3=d=CAlloc(sizeof(U32)*TK_TKS_NUM);
-  d['-']=TK_SUB_EQU<<16+'=';
-  d['/']=TK_DIV_EQU<<16+'=';
+  CmpSetU32(d,'-',(TK_SUB_EQU<<16)+'=');
+  CmpSetU32(d,'/',(TK_DIV_EQU<<16)+'=');
 
-  cmp.binary_ops=d=CAlloc(sizeof(U32)*TK_TKS_NUM);
-  d['`']   =(PREC_EXP+ASSOCF_RIGHT)<<16+IC_POWER;
-  d[TK_SHL]=(PREC_EXP+ASSOCF_LEFT)<<16+IC_SHL;
-  d[TK_SHR]=(PREC_EXP+ASSOCF_LEFT)<<16+IC_SHR;
-
-  d['*']=PREC_MUL<<16+IC_MUL;
-  d['/']=(PREC_MUL+ASSOCF_LEFT)<<16+IC_DIV;
-  d['%']=(PREC_MUL+ASSOCF_LEFT)<<16+IC_MOD;
-
-  d['&']=PREC_AND<<16+IC_AND;
-
-  d['^']=PREC_XOR<<16+IC_XOR;
-
-  d['|']=PREC_OR<<16+IC_OR;
-
-  d['+']=PREC_ADD<<16+IC_ADD;
-  d['-']=(PREC_ADD+ASSOCF_LEFT)<<16+IC_SUB;
-
-  d['<']		=PREC_CMP<<16+IC_LESS;
-  d['>']		=PREC_CMP<<16+IC_GREATER;
-  d[TK_LESS_EQU]	=PREC_CMP<<16+IC_LESS_EQU;
-  d[TK_GREATER_EQU]	=PREC_CMP<<16+IC_GREATER_EQU;
-
-  d[TK_EQU_EQU]	=PREC_CMP2<<16+IC_EQU_EQU;
-  d[TK_NOT_EQU]	=PREC_CMP2<<16+IC_NOT_EQU;
-
-  d[TK_AND_AND]	=PREC_AND_AND<<16+IC_AND_AND;
-
-  d[TK_XOR_XOR]	=PREC_XOR_XOR<<16+IC_XOR_XOR;
-
-  d[TK_OR_OR]	=PREC_OR_OR<<16+IC_OR_OR;
-
-  d['=']	 =(PREC_ASSIGN+ASSOCF_RIGHT)<<16+IC_ASSIGN;
-  d[TK_SHL_EQU]=(PREC_ASSIGN+ASSOCF_RIGHT)<<16+IC_SHL_EQU;
-  d[TK_SHR_EQU]=(PREC_ASSIGN+ASSOCF_RIGHT)<<16+IC_SHR_EQU;
-  d[TK_MUL_EQU]=(PREC_ASSIGN+ASSOCF_RIGHT)<<16+IC_MUL_EQU;
-  d[TK_DIV_EQU]=(PREC_ASSIGN+ASSOCF_RIGHT)<<16+IC_DIV_EQU;
-  d[TK_MOD_EQU]=(PREC_ASSIGN+ASSOCF_RIGHT)<<16+IC_MOD_EQU;
-  d[TK_AND_EQU]=(PREC_ASSIGN+ASSOCF_RIGHT)<<16+IC_AND_EQU;
-  d[TK_OR_EQU] =(PREC_ASSIGN+ASSOCF_RIGHT)<<16+IC_OR_EQU;
-  d[TK_XOR_EQU]=(PREC_ASSIGN+ASSOCF_RIGHT)<<16+IC_XOR_EQU;
-  d[TK_ADD_EQU]=(PREC_ASSIGN+ASSOCF_RIGHT)<<16+IC_ADD_EQU;
-  d[TK_SUB_EQU]=(PREC_ASSIGN+ASSOCF_RIGHT)<<16+IC_SUB_EQU;
+  d=CAlloc(sizeof(U32)*TK_TKS_NUM);
+  cmp.binary_ops=d;
+  g_cmp_binary_ops=d;
+  CmpSetU32(d,'`',((PREC_EXP+ASSOCF_RIGHT)<<16)+IC_POWER);
+  CmpSetU32(d,TK_SHL,((PREC_EXP+ASSOCF_LEFT)<<16)+IC_SHL);
+  CmpSetU32(d,TK_SHR,((PREC_EXP+ASSOCF_LEFT)<<16)+IC_SHR);
+  CmpSetU32(d,'*',(PREC_MUL<<16)+IC_MUL);
+  CmpSetU32(d,'/',((PREC_MUL+ASSOCF_LEFT)<<16)+IC_DIV);
+  CmpSetU32(d,'%',((PREC_MUL+ASSOCF_LEFT)<<16)+IC_MOD);
+  CmpSetU32(d,'&',(PREC_AND<<16)+IC_AND);
+  CmpSetU32(d,'^',(PREC_XOR<<16)+IC_XOR);
+  CmpSetU32(d,'|',(PREC_OR<<16)+IC_OR);
+  CmpSetU32(d,'+',(PREC_ADD<<16)+IC_ADD);
+  CmpSetU32(d,'-',((PREC_ADD+ASSOCF_LEFT)<<16)+IC_SUB);
+  CmpSetU32(d,'<',(PREC_CMP<<16)+IC_LESS);
+  CmpSetU32(d,'>',(PREC_CMP<<16)+IC_GREATER);
+  CmpSetU32(d,TK_LESS_EQU,(PREC_CMP<<16)+IC_LESS_EQU);
+  CmpSetU32(d,TK_GREATER_EQU,(PREC_CMP<<16)+IC_GREATER_EQU);
+  CmpSetU32(d,TK_EQU_EQU,(PREC_CMP2<<16)+IC_EQU_EQU);
+  CmpSetU32(d,TK_NOT_EQU,(PREC_CMP2<<16)+IC_NOT_EQU);
+  CmpSetU32(d,TK_AND_AND,(PREC_AND_AND<<16)+IC_AND_AND);
+  CmpSetU32(d,TK_XOR_XOR,(PREC_XOR_XOR<<16)+IC_XOR_XOR);
+  CmpSetU32(d,TK_OR_OR,(PREC_OR_OR<<16)+IC_OR_OR);
+  CmpSetU32(d,'=',((PREC_ASSIGN+ASSOCF_RIGHT)<<16)+IC_ASSIGN);
+  CmpSetU32(d,TK_SHL_EQU,((PREC_ASSIGN+ASSOCF_RIGHT)<<16)+IC_SHL_EQU);
+  CmpSetU32(d,TK_SHR_EQU,((PREC_ASSIGN+ASSOCF_RIGHT)<<16)+IC_SHR_EQU);
+  CmpSetU32(d,TK_MUL_EQU,((PREC_ASSIGN+ASSOCF_RIGHT)<<16)+IC_MUL_EQU);
+  CmpSetU32(d,TK_DIV_EQU,((PREC_ASSIGN+ASSOCF_RIGHT)<<16)+IC_DIV_EQU);
+  CmpSetU32(d,TK_MOD_EQU,((PREC_ASSIGN+ASSOCF_RIGHT)<<16)+IC_MOD_EQU);
+  CmpSetU32(d,TK_AND_EQU,((PREC_ASSIGN+ASSOCF_RIGHT)<<16)+IC_AND_EQU);
+  CmpSetU32(d,TK_OR_EQU,((PREC_ASSIGN+ASSOCF_RIGHT)<<16)+IC_OR_EQU);
+  CmpSetU32(d,TK_XOR_EQU,((PREC_ASSIGN+ASSOCF_RIGHT)<<16)+IC_XOR_EQU);
+  CmpSetU32(d,TK_ADD_EQU,((PREC_ASSIGN+ASSOCF_RIGHT)<<16)+IC_ADD_EQU);
+  CmpSetU32(d,TK_SUB_EQU,((PREC_ASSIGN+ASSOCF_RIGHT)<<16)+IC_SUB_EQU);
 }
+

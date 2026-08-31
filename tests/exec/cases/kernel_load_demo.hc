@@ -7,22 +7,48 @@
 // AOT code, the RedSea FS, and import resolution; no CBinFile/relocation machinery.
 #include "/Kernel/Kernel_RV.PRJ"
 #include "/build/exec/prog_arr.hc"
-U0 Sh(U8 *s){ U8 *u=0x10000000; while(*s)*u=*s++; }
+#define MEM_UART 0x10000000
+U0 Sh(U8 *s)
+{
+  U8 *u = MEM_UART;
+  while (*s)
+    *u = *s++;
+}
+
 I64 main()
 {
-  CTask *adam=0x86900000; MemSet(adam,0,sizeof(CTask)); Fs=adam; adam_task=adam;
-  MemSet(the_heap,0,sizeof(CHeapCtrl)); heap_next=0x82000400; heap_end=0x86000000;
-  CBlkPool *bp=0x86800000; BlkPoolInit(bp,0x2000); sys_code_bp=bp;
-  CHeapCtrl *ah=HeapCtrlInit(NULL,NULL,bp); adam->code_heap=ah; adam->data_heap=ah;
-  MemSet(SYS_FIXED_AREA,0,8192); TaskInit(adam,0);
-  CCPU *gs=0x86A00000; MemSet(gs,0,sizeof(CCPU)); gs->seth_task=adam; adam->gs=gs; Gs=gs;
-  RVYieldInit(&Fs); RVKernelInit();
-  RVMountRAMDisk('A',4096);
+  CTask *adam = 0x86900000;
+  MemSet(adam, 0, sizeof(CTask));
+  Fs = adam;
+  adam_task = adam;
+  MemSet(the_heap, 0, sizeof(CHeapCtrl));
+  heap_next = 0x82000400;
+  heap_end = 0x86000000;
+  CBlkPool *bp = 0x86800000;
+  BlkPoolInit(bp, 0x2000);
+  sys_code_bp = bp;
+  CHeapCtrl *ah = HeapCtrlInit(NULL, NULL, bp);
+  adam->code_heap = ah;
+  adam->data_heap = ah;
+  MemSet(SYS_FIXED_AREA, 0, 8192);
+  TaskInit(adam, 0);
+  CCPU *gs = 0x86A00000;
+  MemSet(gs, 0, sizeof(CCPU));
+  gs->seth_task = adam;
+  adam->gs = gs;
+  Gs = gs;
+  RVYieldInit(&Fs);
+  RVKernelInit();
+  RVMountRAMDisk('A', 4096);
   Sh("writing program to A:/HELLO.PRG...\n");
-  FileWrite("A:/HELLO.PRG",prog_blob,prog_blob_size);
-  I64 sz=0; U8 *code=FileRead("A:/HELLO.PRG",&sz,NULL);
-  U8 lb[64]; StrPrint(lb,"read %d bytes back; running it...\n",sz); Sh(lb);
-  I64 r=RVRunBlob(code,sz);
-  StrPrint(lb,"loaded program returned %d (want 55)\n",r); Sh(lb);
+  FileWrite("A:/HELLO.PRG", prog_blob, prog_blob_size);
+  I64 sz = 0;
+  U8 *code = FileRead("A:/HELLO.PRG", &sz, NULL);
+  U8 lb[64];
+  StrPrint(lb, "read %d bytes back; running it...\n", sz);
+  Sh(lb);
+  I64 r = RVRunBlob(code, sz);
+  StrPrint(lb, "loaded program returned %d (want 55)\n", r);
+  Sh(lb);
   return 0;
 }

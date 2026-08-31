@@ -1,0 +1,115 @@
+#
+# QEMU -M machines from qemu-system-riscv64 / riscv32 -M help (QEMU 10.x).
+# Excludes empty "none". Aliases are not listed separately.
+#
+# Inventory (QEMU 10.1):
+#   riscv64: virt, sifive_u, sifive_e, spike, shakti_c,
+#            microchip-icicle-kit, xiangshan-kunminghu,
+#            amd-microblaze-v-generic
+#   riscv32: virt, sifive_u, sifive_e, spike, opentitan,
+#            amd-microblaze-v-generic
+#   host: not present in QEMU 10.x -M help; kept as legacy stub.
+#
+
+choice
+	prompt "Target machine / board"
+	default PLATFORM_VIRT
+
+config PLATFORM_VIRT
+	bool "QEMU virt (default — CI)"
+	help
+	  RISC-V VirtIO board. UART 16550 @ 0x10000000, CLINT, PLIC, fw_cfg,
+	  ramfb, virtio-mmio/PCI. This is the supported default; all kernel-*-smoke
+	  targets use -M virt.
+
+config PLATFORM_SIFIVE_U
+	bool "QEMU sifive_u (SiFive FU540 / HiFive Unleashed)"
+	help
+	  SiFive UART0 @ 0x10010000, CLINT/PLIC same as virt, DRAM @ 0x80000000.
+	  HolyC interface: Kernel/Drv/RVSifivePlat (RVSifiveYes). No ramfb/virtio
+	  by default. Second supported bring-up target (plat smoke).
+
+config PLATFORM_SIFIVE_E
+	bool "QEMU sifive_e (SiFive FE310 — experimental)"
+	help
+	  Small DTIM (~16 KiB) @ 0x80000000, SiFive UART @ 0x10013000.
+	  Same RVSifivePlat API as sifive_u. Current TempleOS/RV images do not
+	  fit; drivers are for address constants / tiny demos. Marked experimental.
+
+config PLATFORM_SPIKE
+	bool "QEMU spike (experimental)"
+	help
+	  Spike bare board: CLINT + HTIF console, no 16550, no PLIC, no virtio.
+	  Experimental HTIF UART driver; not CI.
+
+config PLATFORM_SHAKTI_C
+	bool "QEMU shakti_c (tentative)"
+	help
+	  Shakti C-class: DRAM @ 0x80000000, CLINT/PLIC virt-like, Shakti UART
+	  @ 0x11300 (no HolyC driver yet — UART stub). Tentative port.
+
+config PLATFORM_MICROCHIP_ICICLE
+	bool "QEMU microchip-icicle-kit (tentative)"
+	help
+	  PolarFire SoC Icicle Kit. Needs HSS firmware (hss.bin); bare -bios none
+	  typically fails. MMUART0 @ 0x20000000 (16550-ish best-guess). Tentative.
+
+config PLATFORM_XIANGSHAN
+	bool "QEMU xiangshan-kunminghu (tentative)"
+	help
+	  Xiangshan Kunminghu FPGA prototype. 16550 @ 0x310B0000 (regshift 2),
+	  ACLINT @ 0x38000000, APLIC/IMSIC (no SiFive PLIC). Tentative.
+
+config PLATFORM_AMD_MICROBLAZE_V
+	bool "QEMU amd-microblaze-v-generic (tentative)"
+	help
+	  AMD MicroBlaze-V generic: DDR @ 0x80000000, UARTLite (serial0) +
+	  16550 @ 0x44A11000 (serial1, regshift 2), AXI INTC (no PLIC/CLINT).
+	  Tentative — use -serial null -serial mon:stdio for 16550 console.
+
+config PLATFORM_OPENTITAN
+	bool "QEMU opentitan (tentative, riscv32)"
+	help
+	  OpenTitan Earlgrey (qemu-system-riscv32 only). RAM 128 KiB @
+	  0x10000000, Ibex UART @ 0x40000000 (stub — no HolyC driver), PLIC @
+	  0x48000000, no CLINT. Full TempleOS/RV images do not fit. Tentative.
+
+config PLATFORM_HOST
+	bool "QEMU host (legacy stub)"
+	help
+	  Not a bare-metal board. Absent from QEMU 10.x -M help; retained as a
+	  legacy/completeness stub. Do not use for TempleOS/RV smokes.
+
+config PLATFORM_CUSTOM
+	bool "Custom (edit addresses below)"
+	help
+	  Start from virt-like defaults and override UART/CLINT/PLIC/link in menu.
+
+endchoice
+
+config PLATFORM_EXPERIMENTAL
+	bool
+	default y if PLATFORM_SIFIVE_E
+	default y if PLATFORM_SPIKE
+	default y if PLATFORM_SHAKTI_C
+	default y if PLATFORM_MICROCHIP_ICICLE
+	default y if PLATFORM_XIANGSHAN
+	default y if PLATFORM_AMD_MICROBLAZE_V
+	default y if PLATFORM_OPENTITAN
+	default y if PLATFORM_HOST
+	default n
+
+config PLATFORM_NAME
+	string
+	default "virt" if PLATFORM_VIRT
+	default "sifive_u" if PLATFORM_SIFIVE_U
+	default "sifive_e" if PLATFORM_SIFIVE_E
+	default "spike" if PLATFORM_SPIKE
+	default "shakti_c" if PLATFORM_SHAKTI_C
+	default "microchip-icicle-kit" if PLATFORM_MICROCHIP_ICICLE
+	default "xiangshan-kunminghu" if PLATFORM_XIANGSHAN
+	default "amd-microblaze-v-generic" if PLATFORM_AMD_MICROBLAZE_V
+	default "opentitan" if PLATFORM_OPENTITAN
+	default "host" if PLATFORM_HOST
+	default "custom" if PLATFORM_CUSTOM
+	default "virt"

@@ -154,30 +154,44 @@ U0 AOTGlblsResolve(CCmpCtrl *cc,CAOT *tmpaot)
 	  LexExcept(cc);
 	}
 	if (tmpex->type & HTF_RESOLVE) {
-	  tmpf=tmpex;
+	  tmpf=tmpex(CHashFun *);
 	  tmpeu=tmpf->ext_lst;
 	  while (tmpeu) {
 	    tmpeu8=tmpeu->next;
-	    j=tmpf->exe_addr-(tmpeu->rip+4);
-	    AOTStoreCodeU8At(cc,tmpeu->rip,j.u8[0],j.u8[1],j.u8[2],j.u8[3]);
+	    // RV: tmpeu->rip = module offset of JAL word (OptPass_RV IC_CALL_EXTERN).
+	    // Patch full J-type imm; x86 used REL32 bytes after E8 (rip+4).
+	    if (tmpeu->rip>=0 && tmpf->exe_addr!=INVALID_PTR) {
+	      j=tmpf->exe_addr-tmpeu->rip;
+	      i=0x6F+(1<<7)+ // JAL ra
+		    (((j>>12)&0xFF)<<12)+(((j>>11)&1)<<20)+
+		    (((j>>1)&0x3FF)<<21)+(((j>>20)&1)<<31);
+	      AOTStoreCodeU8At(cc,tmpeu->rip,i.u8[0],i.u8[1],i.u8[2],i.u8[3]);
+	    }
 	    Free(tmpeu);
 	    tmpeu=tmpeu8;
 	  }
+	  tmpf->ext_lst=NULL;
 	}
 	if (tmpex->type & HTF_EXPORT) {
 	  tmpie=CAlloc(sizeof(CAOTImportExport));
+	  // Patch-table offset is always U32 (LoadPass1); REL32/REL64 both add module_base.
+	  // Use REL32 (TempleOS default) — REL64 was marked "Not implemented" historically.
 	  tmpie->type=IET_REL32_EXPORT;
-	  if (tmpex->type & HTT_FUN)
+	  if (tmpex->type & HTT_FUN) {
+	    tmpf=tmpex(CHashFun *);
 	    tmpie->rip=tmpf->exe_addr;
-	  else if (tmpex->type & HTT_GLBL_VAR)
+	  } else if (tmpex->type & HTT_GLBL_VAR)
 	    tmpie->rip=tmpex(CHashGlblVar *)->data_addr_rip;
 	  else
-	    tmpie->rip=tmpex->val;
+	    tmpie->rip=tmpex(CHashExport *)->val;
 	  tmpie->aot=cc->aot;
 	  if (tmpex->type & HTF_IMM)
-	    tmpie->type++;
+	    tmpie->type=IET_IMM32_EXPORT;
 	  tmpie->str=StrNew(tmpex->str);
-	  tmpie->src_link=StrNew(tmpex->src_link);
+	  if (tmpex(CHashSrcSym *)->src_link)
+	    tmpie->src_link=StrNew(tmpex(CHashSrcSym *)->src_link);
+	  else
+	    tmpie->src_link=NULL;
 	  QueIns(tmpie,tmpaot->last_ie);
 	}
       }

@@ -18,7 +18,7 @@ TEST_FILES=(
   "Demo/AcctExample/HomeWrappers.HC"
   "Adam/ADefine.HC"
   "Adam/AMath.HC"
-  "Apps/Span/Span.HC"
+  "tos/Apps/Span/Span.HC"
 )
 
 for file in "${TEST_FILES[@]}"; do

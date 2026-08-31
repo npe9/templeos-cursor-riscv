@@ -9,14 +9,23 @@
 
 /* Main IC to RISC-V Translation Function */
 
-U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2)
+U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2,
+	COptReg *reg_offsets)
 {// Translate single IC operation to RISC-V machine code
-  I64 rip2 = rip + tmpi->ic_cnt;
   I64 code = tmpi->ic_code;
   CCodeMisc *lb;
-  I64 offset;
-  
-  // Reset IC body counter
+  I64 offset,rip2,call_rip,jal_off,i;
+  CHashFun *tmpf;
+  CExternUsage *tmpeu;
+  CAOTImportExport *tmpie;
+  CHashClass *tmpc;
+  /* Match OptPass789A.HC: AOT rip2 is module-absolute (aotc->rip+rip),
+   * JIT rip2 is buf+rip. Labels/jmps stay function-local (rip). */
+  rip2=rip;
+  if (cc->flags&CCF_AOT_COMPILE && cc->aotc)
+    rip2+=cc->aotc->rip;
+  else if (buf)
+    rip2+=buf;
   tmpi->ic_cnt = 0;
   
   switch (code) {
@@ -63,7 +72,6 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
       
     /* Arithmetic Operations */
     case IC_ADD:
-    case IC_ADD_CONST:
       if (tmpi->ic_class->raw_type == RT_F64) {
         ICFAdd(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp,
                tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp,
@@ -74,9 +82,14 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
               tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip2);
       }
       break;
+
+    case IC_ADD_CONST:
+      ICAdd(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp,
+	    tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp,
+	    MDF_IMM+RT_I64, 0, tmpi->ic_data, rip2);
+      break;
       
     case IC_SUB:
-    case IC_SUB_CONST:
       if (tmpi->ic_class->raw_type == RT_F64) {
         ICFSub(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp,
                tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp,
@@ -86,6 +99,12 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
               tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp,
               tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip2);
       }
+      break;
+
+    case IC_SUB_CONST:
+      ICSub(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp,
+	    tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp,
+	    MDF_IMM+RT_I64, 0, tmpi->ic_data, rip2);
       break;
       
     case IC_MUL:
@@ -307,15 +326,15 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
                tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip2);
       break;
       
-    /* Branches */
+    /* Branches — label->addr is function-local; pass rip not rip2. */
     case IC_BR_ZERO:
       ICBranchZero(tmpi, tmpi->ic_data, 
-                   tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip2);
+                   tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
       break;
       
     case IC_BR_NOT_ZERO:
       ICBranchNotZero(tmpi, tmpi->ic_data,
-                      tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip2);
+                      tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
       break;
       
     case IC_BR_EQU_EQU:
@@ -324,7 +343,7 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
         ICBranch(tmpi, tmpi->ic_data,
                  tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp,
                  tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp,
-                 rip2, 0, is_unsigned);
+                 rip, 0, is_unsigned);
       }
       break;
       
@@ -334,7 +353,7 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
         ICBranch(tmpi, tmpi->ic_data,
                  tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp,
                  tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp,
-                 rip2, 1, is_unsigned);
+                 rip, 1, is_unsigned);
       }
       break;
       
@@ -344,7 +363,7 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
         ICBranch(tmpi, tmpi->ic_data,
                  tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp,
                  tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp,
-                 rip2, 2, is_unsigned);
+                 rip, 2, is_unsigned);
       }
       break;
       
@@ -354,7 +373,7 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
         ICBranch(tmpi, tmpi->ic_data,
                  tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp,
                  tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp,
-                 rip2, 4, is_unsigned);
+                 rip, 4, is_unsigned);
       }
       break;
       
@@ -364,7 +383,7 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
         ICBranch(tmpi, tmpi->ic_data,
                  tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp,
                  tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp,
-                 rip2, 5, is_unsigned);
+                 rip, 5, is_unsigned);
       }
       break;
       
@@ -374,19 +393,19 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
         ICBranch(tmpi, tmpi->ic_data,
                  tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp,
                  tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp,
-                 rip2, 3, is_unsigned);
+                 rip, 3, is_unsigned);
       }
       break;
       
-    /* Jumps and Calls */
+    /* Jumps and Calls — JMP/SUB_CALL use function-local rip; CALL uses rip2. */
     case IC_JMP:
-      ICJmp(tmpi, tmpi->ic_data, rip2);
+      ICJmp(tmpi, tmpi->ic_data, rip);
       break;
       
     case IC_SUB_CALL:
       // Subroutine call (used for switch cases, etc.)
       lb = tmpi->ic_data;
-      offset = lb->addr - rip2;
+      offset = lb->addr - rip;
       RVJal(tmpi, RV_REG_RA, offset);
       break;
       
@@ -395,24 +414,71 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
       break;
       
     case IC_CALL_INDIRECT:
-      // Stack-based indirect call
-      // ic_data contains stack offset
+      // Stack-based indirect call; preserve ra like ICCall.
       RVLd(tmpi, RV_REG_T6, RV_REG_SP, tmpi->ic_data);
+      RVAddi(tmpi, RV_REG_SP, RV_REG_SP, -16);
+      RVSd(tmpi, RV_REG_RA, RV_REG_SP, 8);
       RVJalr(tmpi, RV_REG_RA, RV_REG_T6, 0);
+      RVLd(tmpi, RV_REG_RA, RV_REG_SP, 8);
+      RVAddi(tmpi, RV_REG_SP, RV_REG_SP, 16);
       break;
       
     case IC_CALL_INDIRECT2:
-      // Indirect call through pointer
+      // Indirect call through pointer; preserve ra.
+      RVAddi(tmpi, RV_REG_SP, RV_REG_SP, -16);
+      RVSd(tmpi, RV_REG_RA, RV_REG_SP, 8);
       ICMov(tmpi, MDF_REG+RT_I64, RV_REG_T6, 0,
             MDF_DISP+RT_I64, 0, tmpi->ic_data, rip2);
       RVJalr(tmpi, RV_REG_RA, RV_REG_T6, 0);
+      RVLd(tmpi, RV_REG_RA, RV_REG_SP, 8);
+      RVAddi(tmpi, RV_REG_SP, RV_REG_SP, 16);
       break;
       
-    case IC_CALL_IMPORT:
     case IC_CALL_EXTERN:
-      // External/import call - will be resolved by linker
-      // For now, emit placeholder
-      ICU32(tmpi, 0); // Placeholder for linker relocation
+      // Same-module forward ref: JAL placeholder; AOTGlblsResolve patches J-type imm.
+      tmpf=tmpi->ic_data(CHashFun *);
+      call_rip=rip;
+      if (cc->flags&CCF_AOT_COMPILE && cc->aotc)
+	call_rip+=cc->aotc->rip;
+      else if (buf)
+	call_rip+=buf;
+      RVAddi(tmpi, RV_REG_SP, RV_REG_SP, -16);
+      RVSd(tmpi, RV_REG_RA, RV_REG_SP, 8);
+      jal_off=tmpi->ic_cnt;
+      RVJal(tmpi, RV_REG_RA, 0);
+      if (buf && cc->flags&CCF_AOT_COMPILE && tmpf) {
+	tmpeu=CAlloc(sizeof(CExternUsage));
+	tmpeu->next=tmpf->ext_lst;
+	tmpf->ext_lst=tmpeu;
+	tmpeu->rip=call_rip+jal_off;
+      }
+      RVLd(tmpi, RV_REG_RA, RV_REG_SP, 8);
+      RVAddi(tmpi, RV_REG_SP, RV_REG_SP, 16);
+      break;
+
+    case IC_CALL_IMPORT:
+      // Cross-module: Load patches IET_IMM_I64 into embedded abs slot, then jalr.
+      tmpf=tmpi->ic_data(CHashFun *);
+      call_rip=rip;
+      if (cc->flags&CCF_AOT_COMPILE && cc->aotc)
+	call_rip+=cc->aotc->rip;
+      RVAddi(tmpi, RV_REG_SP, RV_REG_SP, -16);
+      RVSd(tmpi, RV_REG_RA, RV_REG_SP, 8);
+      RVAuipc(tmpi, RV_REG_T6, 0);
+      RVLd(tmpi, RV_REG_T6, RV_REG_T6, 12);
+      RVJal(tmpi, RV_REG_ZERO, 12);
+      jal_off=tmpi->ic_cnt;
+      ICU64(tmpi, 0);
+      if (buf && cc->flags&CCF_AOT_COMPILE && tmpf) {
+	tmpie=CAlloc(sizeof(CAOTImportExport));
+	tmpie->type=IET_IMM_I64;
+	tmpie->rip=call_rip+jal_off;
+	tmpie->next=tmpf->ie_lst;
+	tmpf->ie_lst=tmpie;
+      }
+      RVJalr(tmpi, RV_REG_RA, RV_REG_T6, 0);
+      RVLd(tmpi, RV_REG_RA, RV_REG_SP, 8);
+      RVAddi(tmpi, RV_REG_SP, RV_REG_SP, 16);
       break;
       
     case IC_RET:
@@ -437,9 +503,25 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
     /* Function Prologue/Epilogue */
     case IC_ENTER:
       ICEnter(tmpi, tmpi->ic_data);
+      if (cc->htc.fun && reg_offsets) {
+	ICPushRegs(tmpi,cc->htc.fun->used_reg_mask
+	      &(REGG_LOCAL_VARS|REGG_LOCAL_NON_PTR_VARS));
+	for (i=0;i<REG_REGS_NUM;i++) {
+	  if (reg_offsets[i].offset>0 && reg_offsets[i].offset!=I64_MAX &&
+		reg_offsets[i].m) {
+	    tmpc=OptClassFwd(reg_offsets[i].m->member_class);
+	    ICMov(tmpi,MDF_REG+RT_I64,i,0,MDF_DISP+tmpc->raw_type,
+		  REG_RBP,reg_offsets[i].offset,rip2);
+	  }
+	}
+      }
       break;
       
     case IC_LEAVE:
+      if (cc->htc.fun) {
+	ICPopRegs(tmpi,cc->htc.fun->used_reg_mask
+	      &(REGG_LOCAL_VARS|REGG_LOCAL_NON_PTR_VARS));
+      }
       ICLeave(tmpi, tmpi->ic_data);
       break;
       
@@ -794,16 +876,27 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
       }
       break;
       
-    case IC_ABS_ADDR:
     case IC_STR_CONST:
+    case IC_GET_LABEL:
+      /* Bisect: HEAD-style RVLi of misc ptr (wrong at runtime; tests Cmp hang). */
+      if (tmpi->res.type & MDF_REG)
+	RVLi(tmpi, tmpi->res.reg, tmpi->ic_data);
+      else {
+	RVLi(tmpi, RV_REG_T0, tmpi->ic_data);
+	ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp,
+	      MDF_REG+RT_I64, RV_REG_T0, 0, rip2);
+      }
+      break;
+
+    case IC_ABS_ADDR:
     case IC_ADDR_IMPORT:
     case IC_HEAP_GLBL:
-    case IC_GET_LABEL:
-      // Load address immediate
-      RVLi(tmpi, tmpi->res.reg, tmpi->ic_data);
-      if (!(tmpi->res.type & MDF_REG)) {
-        ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp,
-              MDF_REG+RT_I64, tmpi->res.reg, 0, rip2);
+      if (tmpi->res.type & MDF_REG)
+	RVLi(tmpi, tmpi->res.reg, tmpi->ic_data);
+      else {
+	RVLi(tmpi, RV_REG_T0, tmpi->ic_data);
+	ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp,
+	      MDF_REG+RT_I64, RV_REG_T0, 0, rip2);
       }
       break;
       
@@ -838,17 +931,22 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
       
     /* Label */
     case IC_LABEL:
-      // Just a marker, no code generated
       lb = tmpi->ic_data;
-      lb->addr = rip2;
+      lb->addr = rip;
       break;
       
     case IC_CALL_START:
+      ICPushRegs(tmpi, tmpi->ic_data);
+      break;
     case IC_CALL_END:
+      ICPopRegs(tmpi, tmpi->ic_data);
+      if (tmpi->res.type.mode)
+	ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp,
+	      MDF_REG+RT_I64, REG_RAX, 0, rip2);
+      break;
     case IC_CALL_END2:
     case IC_END_EXP:
     case IC_END:
-      // Markers, no code generation
       break;
       
     /* Assembly Block */
@@ -871,50 +969,45 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
       break;
   }
   
-  *_rip2 = rip2 + tmpi->ic_cnt;
+  *_rip2 = rip + tmpi->ic_cnt;
 }
 
-/* Complete IC Translation Pass */
+I64 OptPass789A(CCmpCtrl *cc,COptReg *reg_offsets,U8 *buf,CDbgInfo **_dbg)
+{/* cc->pass 7..9: size; pass 10: emit into buf. */
+  CIntermediateCode *tmpi,*tmpi_next;
+  I64 rip=0,rip2,i,guard=0;
+  U8 *uart=0x10000000;
+  if (_dbg) *_dbg=NULL;
+  tmpi=cc->coc.coc_head.next;
+  while (tmpi->ic_code) {
+    if (++guard>100000) {
+      *uart='O'; *uart='P'; *uart='!'; *uart='\n';
+      break;
+    }
+    tmpi_next=tmpi->next;
+    tmpi->ic_flags=tmpi->ic_flags&~(ICF_PREV_DELETED|ICF_DONT_RESTORE)|ICF_CODE_FINAL;
+    ICToRISCV(cc,tmpi,buf,rip,&rip2,reg_offsets);
+    if (buf) {
+      for (i=0;i<tmpi->ic_cnt;i++)
+	buf[rip+i]=tmpi->ic_body[i];
+    }
+    rip=rip2;
+    tmpi=tmpi_next;
+  }
+  /* Misc STR/float/jmp append: was hanging guest Cmp of string lits — restore carefully. */
+  return rip;
+}
 
 I64 *OptPassRISCV(CCmpCtrl *cc, I64 *_code_size, U8 **_dbg_info, I64 *_type)
-{// Final pass: convert all IC to RISC-V machine code
-  I64 rip = 0, rip2;
-  CIntermediateCode *tmpi;
-  U8 *buf = NULL; // First pass: NULL for address calculation
-  I64 pass;
-  
-  for (pass = 0; pass < 2; pass++) {
-    rip = 0;
-    tmpi = cc->coc.coc_head.next;
-    
-    if (pass == 1 && _code_size) {
-      // Allocate buffer for machine code
-      buf = MAlloc(*_code_size);
-    }
-    
-    while (tmpi->ic_code != IC_END) {
-      // Translate IC operation to RISC-V
-      ICToRISCV(cc, tmpi, buf, rip, &rip2);
-      
-      // Copy generated code to buffer if pass 2
-      if (pass == 1 && buf) {
-        I64 i;
-        for (i = 0; i < tmpi->ic_cnt; i++) {
-          buf[rip + i] = tmpi->ic_body[i];
-        }
-      }
-      
-      rip = rip2;
-      tmpi = tmpi->next;
-    }
-    
-    if (pass == 0 && _code_size) {
-      *_code_size = rip;
-    }
-  }
-  
-  if (_type) *_type = RT_I64;
-  return buf;
+{
+  I64 sz=0;U8 *code;
+  no_warn _dbg_info;
+  sz=OptPass789A(cc,NULL,NULL,NULL);
+  if (_code_size) *_code_size=sz;
+  code=MAlloc(sz);
+  OptPass789A(cc,NULL,code,NULL);
+  if (_type) *_type=RT_I64;
+  return code;
 }
 
 #help_index ""

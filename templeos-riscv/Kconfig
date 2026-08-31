@@ -1,0 +1,350 @@
+#
+# TempleOS/RISC-V — platform / QEMU machine configuration
+#
+# Usage (from repo root or templeos-riscv/):
+#   make -C templeos-riscv menuconfig
+#   make -C templeos-riscv defconfig              # virt (default)
+#   make -C templeos-riscv defconfig-sifive_u
+#
+# Generates: .config, include/generated/autoconf.h, ../Kernel/RVAutoConf.HH
+#
+
+mainmenu "TempleOS/RISC-V Platform Configuration"
+
+source "Kconfig.machines"
+
+menu "Memory map / link"
+
+config DRAM_BASE
+	hex "DRAM base (physical)"
+	default 0x10000000 if PLATFORM_OPENTITAN
+	default 0x80000000
+	help
+	  Physical base of main RAM. Most QEMU boards use 0x80000000;
+	  OpenTitan uses 0x10000000 (128 KiB SRAM).
+
+config DRAM_SIZE
+	hex "DRAM size (bytes)"
+	default 0x00020000 if PLATFORM_OPENTITAN
+	default 0x00004000 if PLATFORM_SIFIVE_E
+	default 0x08000000
+	help
+	  Size of main RAM region for linker scripts (default 128 MiB for virt smokes;
+	  sifive_e / opentitan are tiny — full images do not fit).
+
+config KERNEL_ENTRY
+	hex "Kernel entry / -kernel load address"
+	default 0x10000000 if PLATFORM_OPENTITAN
+	default 0x80000000
+	help
+	  Address QEMU jumps to with -bios none -kernel. Must match linker ORIGIN.
+
+config KERNEL_LINK_ADDR
+	hex "Kernel link / VMA base"
+	default 0x10000000 if PLATFORM_OPENTITAN
+	default 0x80000000
+	help
+	  Linker VMA for .text (usually same as KERNEL_ENTRY on bare metal).
+
+config GUEST_BLOB_ADDR
+	hex "HolyC guest blob VMA (templeos-riscv)"
+	default 0x10010000 if PLATFORM_OPENTITAN
+	default 0x80100000
+
+config COMPILER_SLOT_ADDR
+	hex "Compiler slot VMA"
+	default 0x10018000 if PLATFORM_OPENTITAN
+	default 0x80200000
+
+config TOS_API_ADDR
+	hex "TosApi VMA"
+	default 0x1001C000 if PLATFORM_OPENTITAN
+	default 0x80300000
+
+config SYS_FIXED_AREA
+	hex "SYS_FIXED_AREA (HolyC FPU save page)"
+	default 0x1001F000 if PLATFORM_OPENTITAN
+	default 0x87000000
+	help
+	  RISC-V stand-in for x86 SYS_FIXED_AREA; must be real RAM.
+
+config FB_SOFT_BASE
+	hex "Software framebuffer base (RVFb soft buffer)"
+	default 0x1001E000 if PLATFORM_OPENTITAN
+	default 0x86100000
+	depends on FB_PRESENT_RAMFB || FB_PRESENT_SIMPLEFB || FB_PRESENT_NONE
+
+endmenu
+
+menu "UART console"
+
+choice
+	prompt "UART driver"
+	default UART_16550 if PLATFORM_VIRT
+	default UART_16550 if PLATFORM_XIANGSHAN
+	default UART_16550 if PLATFORM_AMD_MICROBLAZE_V
+	default UART_16550 if PLATFORM_MICROCHIP_ICICLE
+	default UART_SIFIVE if PLATFORM_SIFIVE_U
+	default UART_SIFIVE if PLATFORM_SIFIVE_E
+	default UART_HTIF if PLATFORM_SPIKE
+	default UART_STUB
+
+config UART_16550
+	bool "NS16550A (QEMU virt / best-guess)"
+	help
+	  Byte-wide 16550 at UART_BASE. virt: 0x10000000. Boards with regshift=2
+	  (xiangshan, amd-microblaze 16550) may need a spaced driver for RX;
+	  TX-to-base often still works for tentative hello.
+
+config UART_SIFIVE
+	bool "SiFive UART0"
+	help
+	  Word-wide SiFive UART (sifive_u: 0x10010000, sifive_e: 0x10013000).
+
+config UART_HTIF
+	bool "Spike HTIF console (experimental)"
+	help
+	  Character I/O via Spike/QEMU HTIF. Experimental — not used by CI.
+
+config UART_STUB
+	bool "Stub (no console hardware)"
+	help
+	  Compiles; putc is a no-op. For boards without a known console yet
+	  (Shakti UART, Ibex UART, UARTLite primary, etc.).
+
+endchoice
+
+config UART_BASE
+	hex "UART MMIO base"
+	default 0x10000000 if UART_16550 && PLATFORM_VIRT
+	default 0x310B0000 if UART_16550 && PLATFORM_XIANGSHAN
+	default 0x44A11000 if UART_16550 && PLATFORM_AMD_MICROBLAZE_V
+	default 0x20000000 if UART_16550 && PLATFORM_MICROCHIP_ICICLE
+	default 0x10000000 if UART_16550
+	default 0x10010000 if UART_SIFIVE && PLATFORM_SIFIVE_U
+	default 0x10013000 if UART_SIFIVE && PLATFORM_SIFIVE_E
+	default 0x01000000 if UART_HTIF
+	default 0x00011300 if PLATFORM_SHAKTI_C
+	default 0x40000000 if PLATFORM_OPENTITAN
+	default 0x00000000
+
+config UART_IRQ
+	int "UART PLIC IRQ number"
+	default 10 if PLATFORM_VIRT || PLATFORM_XIANGSHAN
+	default 4 if PLATFORM_SIFIVE_U || PLATFORM_AMD_MICROBLAZE_V
+	default 3 if PLATFORM_SIFIVE_E
+	default 0
+
+endmenu
+
+menu "Timer / interrupt controller"
+
+config CLINT_BASE
+	hex "CLINT base"
+	default 0x38000000 if PLATFORM_XIANGSHAN
+	default 0x02000000 if PLATFORM_MICROCHIP_ICICLE
+	default 0x02000000
+	help
+	  SiFive CLINT: mtime @ +0xBFF8, mtimecmp hart0 @ +0x4000.
+	  Xiangshan uses ACLINT @ 0x38000000 (mtime layout may differ — tentative).
+	  OpenTitan / amd-microblaze-v have no SiFive CLINT.
+
+config CLINT_MTIME_OFF
+	hex "mtime offset from CLINT"
+	default 0xBFF8
+
+config CLINT_MTIMECMP_OFF
+	hex "mtimecmp hart0 offset from CLINT"
+	default 0x4000
+
+config HAS_PLIC
+	bool "Platform has a PLIC"
+	default y if PLATFORM_VIRT
+	default y if PLATFORM_SIFIVE_U
+	default y if PLATFORM_SIFIVE_E
+	default y if PLATFORM_SHAKTI_C
+	default y if PLATFORM_MICROCHIP_ICICLE
+	default y if PLATFORM_OPENTITAN
+	default n
+	help
+	  SiFive-style PLIC. Xiangshan uses APLIC/IMSIC; amd-microblaze-v uses
+	  AXI INTC — leave off and use PLIC stub.
+
+config PLIC_BASE
+	hex "PLIC base"
+	default 0x48000000 if PLATFORM_OPENTITAN
+	default 0x0C000000
+	depends on HAS_PLIC
+
+config PLIC_ENABLE_OFF
+	hex "PLIC context-0 enable offset"
+	default 0x2000
+	depends on HAS_PLIC
+
+config PLIC_THRESHOLD_OFF
+	hex "PLIC context-0 threshold offset"
+	default 0x200000
+	depends on HAS_PLIC
+
+config PLIC_CLAIM_OFF
+	hex "PLIC context-0 claim/complete offset"
+	default 0x200004
+	depends on HAS_PLIC
+
+config TIMEBASE_FREQ
+	int "Timer timebase frequency (Hz)"
+	default 10000000 if PLATFORM_VIRT
+	default 1000000 if PLATFORM_SIFIVE_U || PLATFORM_SIFIVE_E || PLATFORM_XIANGSHAN
+	default 10000000
+
+endmenu
+
+menu "VirtIO / storage"
+
+config HAS_VIRTIO_MMIO
+	bool "VirtIO MMIO slots present"
+	default y if PLATFORM_VIRT
+	default n
+	help
+	  QEMU virt maps virtio-mmio at 0x10001000 + n*0x1000.
+
+config VIRTIO_MMIO_BASE
+	hex "First virtio-mmio base"
+	default 0x10001000
+	depends on HAS_VIRTIO_MMIO
+
+config VIRTIO_MMIO_STRIDE
+	hex "virtio-mmio slot stride"
+	default 0x1000
+	depends on HAS_VIRTIO_MMIO
+
+config VIRTIO_MMIO_COUNT
+	int "Number of virtio-mmio slots to scan"
+	default 8
+	depends on HAS_VIRTIO_MMIO
+
+config HAS_VIRTIO_PCI
+	bool "VirtIO PCI (ECAM) present"
+	default y if PLATFORM_VIRT
+	default n
+	help
+	  QEMU virt PCI ECAM + virtio-pci. Other machines: usually n.
+
+endmenu
+
+menu "Framebuffer present"
+
+choice
+	prompt "FB present backend"
+	default FB_PRESENT_RAMFB if PLATFORM_VIRT
+	default FB_PRESENT_NONE
+
+config FB_PRESENT_RAMFB
+	bool "QEMU ramfb via fw_cfg"
+	depends on HAS_FW_CFG
+	help
+	  Default on virt. Needs -device ramfb. See BOARD_FB.md.
+
+config FB_PRESENT_SIMPLEFB
+	bool "simple-framebuffer bind hook"
+	help
+	  Board calls RVFbSimpleFbBind after firmware leaves XR24 scanout.
+
+config FB_PRESENT_NONE
+	bool "None (soft buffer / UART-only)"
+	help
+	  No hardware present; RVFb draws to soft buffer only.
+
+endchoice
+
+config HAS_FW_CFG
+	bool "QEMU fw_cfg MMIO present"
+	default y if PLATFORM_VIRT
+	default n
+
+config FW_CFG_BASE
+	hex "fw_cfg MMIO base"
+	default 0x10100000
+	depends on HAS_FW_CFG
+
+config HAS_GOLDFISH_RTC
+	bool "Goldfish RTC present"
+	default y if PLATFORM_VIRT
+	default n
+
+config RTC_BASE
+	hex "Goldfish RTC base"
+	default 0x00101000
+	depends on HAS_GOLDFISH_RTC
+
+endmenu
+
+menu "Editors"
+
+choice
+	prompt "Default Src / DirEd / FunEd editor"
+	default EDITOR_VI
+	help
+	  Sets the HolyC `editor` function pointer used by Src(), DirEd(), FunEd(),
+	  and Activate. Generated into Kernel/RVAutoConf.HH and
+	  bootstrap/seed/RVEditorSelected.hc (REPL boot). Override live with
+	  editor=&Vi; / editor=&EditHoly; / editor=&EdHoly;
+
+config EDITOR_VI
+	bool "Vi (modal vim-lite)"
+	help
+	  Default. HolyC Vi — Tab indents with 2 spaces (holyc_fmt); :w/:q.
+
+config EDITOR_EDIT
+	bool "Edit (full-screen / nano-style)"
+	help
+	  HolyC EditHoly — type to insert, ^O save, ^X exit.
+
+config EDITOR_ED
+	bool "Ed (line editor)"
+	help
+	  HolyC EdHoly — classic ed addresses and a/i/d/p/w/q.
+
+endchoice
+
+endmenu
+
+menu "QEMU run helpers"
+
+config QEMU_SYSTEM
+	string "QEMU system binary"
+	default "qemu-system-riscv32" if PLATFORM_OPENTITAN
+	default "qemu-system-riscv64"
+	help
+	  OpenTitan is riscv32-only. All other in-tree ports use riscv64.
+
+config QEMU_MACHINE
+	string "QEMU -M machine name"
+	default "virt" if PLATFORM_VIRT
+	default "sifive_u" if PLATFORM_SIFIVE_U
+	default "sifive_e" if PLATFORM_SIFIVE_E
+	default "spike" if PLATFORM_SPIKE
+	default "shakti_c" if PLATFORM_SHAKTI_C
+	default "microchip-icicle-kit" if PLATFORM_MICROCHIP_ICICLE
+	default "xiangshan-kunminghu" if PLATFORM_XIANGSHAN
+	default "amd-microblaze-v-generic" if PLATFORM_AMD_MICROBLAZE_V
+	default "opentitan" if PLATFORM_OPENTITAN
+	default "host" if PLATFORM_HOST
+	default "virt"
+
+config QEMU_EXTRA_ARGS
+	string "Extra QEMU args (documentation / scripts)"
+	default "-serial null -serial mon:stdio -bios none" if PLATFORM_AMD_MICROBLAZE_V
+	default "-bios none" if PLATFORM_VIRT
+	default "-bios none" if PLATFORM_SIFIVE_U
+	default "-bios none" if PLATFORM_SIFIVE_E
+	default "-bios none" if PLATFORM_SPIKE
+	default "-bios none" if PLATFORM_SHAKTI_C
+	default "-bios none" if PLATFORM_XIANGSHAN
+	default "-bios none" if PLATFORM_OPENTITAN
+	default ""
+	help
+	  microchip-icicle-kit needs HSS (hss.bin) — leave empty and supply firmware.
+	  amd-microblaze-v: serial0 is UARTLite; serial1 is 16550 — mux for 16550 console.
+
+endmenu

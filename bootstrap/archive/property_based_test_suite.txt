@@ -1,0 +1,1386 @@
+// PROPERTY-BASED TEST SUITE
+// Generated 10 test cases with truly random functions
+// Passed: 0, Failed: 10
+
+// ========== TEST CASE 1 ==========
+// Property-based test case - randomly generated functions
+// Generated 12 functions with random complexity
+
+I64 Execute0Work() {
+    I64 var0 = 37;
+    return Execute0Work();
+}
+
+I64 Check1Job() {
+    I64 var0 = 18;
+    I64 sum6 = 0;
+    for (I64 j = 0; j < 7; j = j + 1) {
+        sum6 = sum6 + j;
+    }
+    return sum6;
+}
+
+I64 Process2Work() {
+    I64 var0 = 79;
+    I64 var1 = 47;
+    I64 var2 = 26;
+    if (Process2Work()) {
+        return ((Execute0Work()) + ((Process2Work()) && (Check1Job()))) && (((Execute0Work()) - (Check1Job())) || ((71) ? (79) : (Process2Work())));
+    } else {
+        return (((Check1Job()) != (81)) * ((Execute0Work()) ? (Process2Work()) : (Execute0Work()))) | (Process2Work());
+    }
+}
+
+I64 Calculate3Job() {
+    I64 var0 = 40;
+    I64 var1 = 43;
+    if ((((Process2Work()) || (Execute0Work())) ? ((18) == (40)) : ((21) ? (Calculate3Job()) : (Execute0Work()))) || (((29) > (Calculate3Job())) ? (Check1Job()) : ((Check1Job()) && (20)))) {
+        return Execute0Work();
+    } else {
+        return ((Process2Work()) >> ((Calculate3Job()) ^ (Execute0Work()))) >> (((70) ? (Calculate3Job()) : (Check1Job())) ? ((Check1Job()) & (Check1Job())) : ((Check1Job()) << (33)));
+    }
+}
+
+I64 Func4Work(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 27;
+    I64 var1 = 2;
+    I64 i1 = 0;
+    while (i1 < 10) {
+        i1 = i1 + 2;
+    }
+    return i1;
+}
+
+I64 Handle5Result(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 24;
+    I64 sum7 = 0;
+    for (I64 j = 0; j < 8; j = j + 1) {
+        sum7 = sum7 + j;
+    }
+    return sum7;
+}
+
+I64 Func6Sum(I64 p0) {
+    I64 var0 = 2;
+    I64 var1 = 97;
+    I64 i2 = 0;
+    while (i2 < 3) {
+        i2 = i2 + 3;
+    }
+    return i2;
+}
+
+I64 Process7Job(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 65;
+    I64 sum7 = 0;
+    for (I64 j = 0; j < 9; j = j + 1) {
+        sum7 = sum7 + j;
+    }
+    return sum7;
+}
+
+I64 Execute8Work(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 7;
+    I64 var1 = 50;
+    I64 var2 = 95;
+    I64 var3 = 95;
+    I64 result0 = 0;
+    result0 = result0 + Process7Job(43, 16);
+    result0 = result0 + Process7Job(48, 49);
+    return result0;
+}
+
+I64 Handle9Item(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 37;
+    return (Execute0Work()) ? (((Process2Work()) / (p2)) % ((Handle5Result(2, 38, 43)) && (p2))) : (Check1Job());
+}
+
+I64 Get10Sum(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 99;
+    I64 var1 = 86;
+    I64 i2 = 0;
+    while (i2 < 3) {
+        i2 = i2 + 2;
+    }
+    return i2;
+}
+
+I64 Execute11Result(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4) {
+    I64 var0 = 8;
+    I64 var1 = 78;
+    I64 sum7 = 0;
+    for (I64 j = 0; j < 8; j = j + 1) {
+        sum7 = sum7 + j;
+    }
+    return sum7;
+}
+
+// Test expressions
+Process7Job(4, 92, 35);
+Process7Job(57, 89, 53);
+(Calculate3Job()) | ((((Execute8Work(9, 26, 68)) && (37)) ? ((89) >> (36)) : ((Handle9Item(52, 64, 16)) / (46))) >= ((Execute0Work()) < ((Process7Job(58, 20, 96)) >> (Execute8Work(80, 97, 35)))));
+(Execute8Work(56, 25, 17)) + ((71) + (Execute8Work(7, 87, 83)));
+((((Func6Sum(31)) ? (Func6Sum(80)) : (Execute8Work(1, 86, 75))) - ((Calculate3Job()) ? (15) : (91))) << (((Check1Job()) >= (Execute0Work())) & ((Calculate3Job()) || (Calculate3Job())))) >> ((((Execute0Work()) >> (Execute0Work())) * ((94) || (Calculate3Job()))) ? ((Execute0Work()) >> ((Execute8Work(96, 34, 1)) ? (Func6Sum(65)) : (80))) : (((Check1Job()) & (17)) != ((Process2Work()) >= (Calculate3Job()))));
+Execute11Result(3, 99, 89);
+Handle5Result(27, 66, 8);
+((((Func4Work(56, 1, 79)) || (65)) ^ ((Execute0Work()) || (Execute11Result(86, 18, 58)))) < (((Execute11Result(61, 57, 92)) + (15)) && ((39) ? (Execute8Work(60, 41, 8)) : (Func4Work(30, 42, 50))))) > (Get10Sum(53, 59, 81));
+Process2Work();
+Execute0Work();
+((Process2Work()) && (Execute8Work(92, 86, 89))) | ((Handle9Item(13, 61, 25)) || (Calculate3Job()));
+((Execute11Result(50, 61, 17)) || (Execute0Work())) % ((Handle5Result(58, 47, 78)) && (Execute0Work()));
+Execute8Work(28, 30, 60);
+Execute0Work();
+(Handle9Item(48, 67, 88)) ? ((((93) <= (Execute0Work())) & (Func4Work(58, 15, 21))) ? (((Calculate3Job()) ? (Execute0Work()) : (Handle9Item(3, 43, 96))) >> ((63) || (Execute0Work()))) : (Handle9Item(61, 88, 1))) : ((((72) && (91)) || ((Execute11Result(42, 84, 25)) ? (27) : (Execute8Work(25, 88, 79)))) / (Process2Work()));
+(((Handle5Result(44, 41, 30)) && (Handle9Item(64, 97, 89))) ? ((Process7Job(51, 97, 27)) - ((Handle9Item(87, 80, 88)) ? (55) : (Process2Work()))) : (Func4Work(92, 64, 81))) < (((Handle9Item(87, 30, 21)) & ((Check1Job()) << (Get10Sum(28, 55, 24)))) || (Func4Work(18, 70, 30)));
+Execute11Result(100, 29, 70);
+Handle5Result(26, 52, 75);
+Get10Sum(15, 10, 97);
+(((Execute8Work(46, 83, 98)) + ((33) | (Func6Sum(98)))) < (((Handle5Result(30, 75, 14)) ? (26) : (Handle9Item(71, 29, 84))) != ((Execute11Result(68, 87, 57)) >> (68)))) && ((((Get10Sum(50, 38, 98)) <= (Check1Job())) ^ ((Check1Job()) >= (32))) || (((80) && (16)) != ((54) && (Execute8Work(39, 41, 72)))));
+(Process7Job(50, 1, 39)) % ((Check1Job()) && (Get10Sum(65, 24, 40)));
+((95) ? (62) : (8)) ? (Execute11Result(17, 47, 36)) : ((Process7Job(53, 41, 70)) < (Check1Job()));
+Calculate3Job();
+((((Func4Work(53, 58, 21)) || (Get10Sum(42, 2, 73))) & ((67) % (Execute8Work(34, 52, 92)))) == (((19) << (Func4Work(74, 28, 87))) && ((30) >= (Handle9Item(8, 62, 42))))) <= (Process7Job(60, 84, 22));
+((95) && (9)) + ((Handle9Item(36, 62, 84)) || (92));
+(((Execute8Work(93, 68, 70)) && (Process2Work())) ^ (((Execute0Work()) ? (Handle5Result(22, 18, 6)) : (42)) ? ((77) & (Process7Job(66, 77, 70))) : ((Execute11Result(32, 95, 27)) ? (Func6Sum(77)) : (Check1Job())))) < (((Func6Sum(32)) ? (Execute11Result(60, 92, 93)) : ((64) || (Handle9Item(72, 89, 48)))) && (((Process2Work()) || (Execute8Work(49, 90, 94))) / ((23) ? (Func4Work(72, 22, 73)) : (70))));
+((45) << (86)) ? ((Execute11Result(41, 37, 49)) ? (Handle5Result(46, 41, 7)) : (45)) : ((Check1Job()) - (Execute8Work(65, 93, 83)));
+((((Get10Sum(72, 48, 15)) != (Check1Job())) & ((9) ? (Process2Work()) : (Func6Sum(18)))) ? (((Process7Job(70, 61, 40)) | (Calculate3Job())) ? ((Check1Job()) ? (Func6Sum(6)) : (33)) : (Execute11Result(80, 81, 52))) : ((Get10Sum(92, 29, 39)) || ((32) & (42)))) ^ ((((37) >= (Func6Sum(51))) ? (Calculate3Job()) : ((Execute11Result(60, 69, 68)) == (Execute11Result(12, 32, 19)))) <= (Calculate3Job()));
+Execute8Work(97, 46, 91);
+((((Process7Job(45, 33, 59)) ? (Func6Sum(72)) : (76)) || (Execute11Result(44, 84, 84))) != (((63) << (Execute0Work())) ? ((Execute8Work(84, 29, 28)) || (74)) : ((Process7Job(15, 5, 26)) | (30)))) && ((((Calculate3Job()) ? (Handle5Result(43, 23, 2)) : (Execute8Work(40, 79, 99))) || ((Func6Sum(39)) & (2))) < (((Check1Job()) ? (Handle9Item(88, 19, 77)) : (Handle9Item(17, 27, 3))) || ((12) + (Check1Job()))));
+Execute0Work();
+((Func6Sum(36)) ? (9) : (Process7Job(75, 6, 46))) && ((51) || (Process7Job(72, 34, 94)));
+// End of test case
+
+// ========== TEST CASE 2 ==========
+// Property-based test case - randomly generated functions
+// Generated 12 functions with random complexity
+
+I64 Calculate0Stuff(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 74;
+    I64 var1 = 73;
+    if ((Calculate0Stuff(58, 46, 77)) && (((Calculate0Stuff(82, 82, 74)) <= (p3)) * ((p4) ? (Calculate0Stuff(14, 79, 63)) : (Calculate0Stuff(89, 75, 31))))) {
+        return (Calculate0Stuff(31, 8, 89)) || (((84) > (p1)) <= ((p2) <= (Calculate0Stuff(18, 32, 20))));
+    } else {
+        return (Calculate0Stuff(41, 57, 24)) > (((Calculate0Stuff(64, 20, 46)) && (p0)) + ((p5) || (Calculate0Stuff(32, 25, 53))));
+    }
+}
+
+I64 Calculate1Sum(I64 p0) {
+    I64 var0 = 100;
+    I64 var1 = 91;
+    I64 var2 = 5;
+    I64 var3 = 100;
+    I64 sum5 = 0;
+    for (I64 j = 0; j < 8; j = j + 1) {
+        sum5 = sum5 + j;
+    }
+    return sum5;
+}
+
+I64 Check2Result(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 35;
+    I64 var1 = 37;
+    return (Calculate1Sum(27)) << (((Calculate0Stuff(3, 38, 45)) >= (p3)) ? ((24) && (84)) : ((Calculate1Sum(7)) | (p0)));
+}
+
+I64 Test3Result(I64 p0, I64 p1) {
+    I64 var0 = 15;
+    I64 var1 = 39;
+    I64 var2 = 87;
+    I64 var3 = 91;
+    return ((Calculate1Sum(90)) ? ((p0) > (57)) : (Calculate0Stuff(91, 98, 54))) | (((Calculate0Stuff(66, 92, 97)) ? (38) : (p0)) & ((43) & (p1)));
+}
+
+I64 Do4State(I64 p0) {
+    I64 var0 = 17;
+    I64 var1 = 27;
+    I64 var2 = 14;
+    I64 var3 = 20;
+    if ((((79) && (Test3Result(17, 7))) ? (Test3Result(21, 47)) : ((p0) || (36))) | (((Calculate0Stuff(72, 38, 99)) << (p0)) && ((p0) - (47)))) {
+        return ((Check2Result(20, 1, 35)) % ((p0) && (Calculate0Stuff(33, 72, 70)))) ? (((15) ? (p0) : (p0)) - ((p0) || (p0))) : (((Calculate0Stuff(57, 47, 30)) == (Check2Result(47, 31, 5))) && ((98) ? (p0) : (p0)));
+    } else {
+        return (((85) | (Check2Result(63, 21, 99))) << ((63) | (17))) != ((Calculate1Sum(70)) && (Calculate1Sum(70)));
+    }
+}
+
+I64 Func5State(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 22;
+    return (((Calculate0Stuff(12, 63, 92)) - (Calculate0Stuff(18, 65, 63))) >> ((p2) != (78))) / (((p2) ? (Calculate1Sum(10)) : (61)) <= ((p1) + (87)));
+}
+
+I64 Find6Count(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 52;
+    I64 var1 = 89;
+    I64 var2 = 18;
+    if ((((Find6Count(79, 84, 79)) * (57)) & ((Func5State(12, 12, 63)) ^ (Func5State(93, 30, 51)))) || ((Func5State(33, 6, 57)) | (Calculate1Sum(4)))) {
+        return ((Check2Result(55, 76, 17)) << ((29) > (p3))) == (((Find6Count(38, 17, 81)) || (48)) > (Calculate1Sum(41)));
+    } else {
+        return (((Calculate1Sum(11)) && (Calculate1Sum(45))) >= ((69) < (Calculate1Sum(64)))) ? (((Check2Result(12, 46, 13)) | (p1)) | ((p5) % (p1))) : (((p1) & (85)) || ((Find6Count(13, 12, 4)) == (66)));
+    }
+}
+
+I64 Create7Sum(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 5;
+    I64 var1 = 35;
+    I64 var2 = 91;
+    if (((Calculate0Stuff(31, 44, 7)) > ((81) >> (Func5State(76, 3, 71)))) ? (((p0) ^ (Calculate0Stuff(71, 11, 36))) >= ((Func5State(68, 85, 59)) | (p1))) : (Create7Sum(45, 72, 80))) {
+        return Create7Sum(89, 94, 43);
+    } else {
+        return (((p3) - (20)) != ((p0) * (Test3Result(96, 9)))) < ((Do4State(73)) ? ((p1) * (p1)) : ((Find6Count(29, 81, 86)) / (39)));
+    }
+}
+
+I64 Do8Thing(I64 p0, I64 p1) {
+    I64 var0 = 72;
+    I64 var1 = 72;
+    return (((p1) * (97)) | ((p1) || (Check2Result(55, 37, 5)))) || (((p1) + (65)) && ((Check2Result(89, 5, 42)) | (Test3Result(92, 84))));
+}
+
+I64 Func9State(I64 p0) {
+    I64 var0 = 76;
+    I64 var1 = 88;
+    return (((p0) >> (p0)) && ((p0) >= (Do4State(13)))) <= (((80) - (18)) | ((46) % (10)));
+}
+
+I64 Find10Sum(I64 p0, I64 p1) {
+    I64 var0 = 21;
+    I64 var1 = 59;
+    I64 var2 = 96;
+    if ((((Func5State(8, 21, 57)) * (Do4State(45))) && (Do4State(66))) || (((38) * (66)) & ((p0) || (Find6Count(75, 25, 57))))) {
+        return (Test3Result(45, 68)) * (Func5State(14, 85, 67));
+    } else {
+        return (Do4State(79)) ? (((71) & (Calculate1Sum(86))) || ((69) & (Find10Sum(72, 94)))) : (((Calculate1Sum(48)) % (27)) != (Do4State(45)));
+    }
+}
+
+I64 Get11Sum(I64 p0) {
+    I64 var0 = 97;
+    I64 var1 = 45;
+    I64 var2 = 100;
+    return ((Test3Result(90, 91)) + ((47) ^ (p0))) && (((Func9State(59)) * (74)) >= ((p0) >> (49)));
+}
+
+// Test expressions
+Get11Sum(99);
+((41) + (61)) || ((8) && (Check2Result(98, 90, 30)));
+((89) ? (74) : (Calculate1Sum(61))) ? ((52) >> (Func9State(58))) : ((Find6Count(43, 3, 46)) ? (Do4State(44)) : (Func9State(61)));
+Calculate1Sum(93);
+((83) <= (Calculate0Stuff(53, 15, 85))) << ((21) | (Calculate0Stuff(87, 14, 55)));
+Find10Sum(32, 58);
+((((Test3Result(96, 73)) - (16)) ? ((Find6Count(31, 52, 8)) ? (46) : (Calculate1Sum(13))) : ((Create7Sum(27, 57, 55)) || (Calculate1Sum(31)))) << (((Find10Sum(96, 13)) / (Get11Sum(35))) && ((Do4State(87)) && (Test3Result(12, 42))))) || ((((79) || (66)) ? ((Check2Result(8, 11, 53)) % (Get11Sum(31))) : ((Calculate1Sum(48)) < (95))) + (((Do8Thing(35, 3)) & (Check2Result(95, 44, 45))) != ((23) && (Do4State(75)))));
+((((Do8Thing(57, 55)) <= (Get11Sum(2))) && (Calculate1Sum(92))) || ((Func9State(91)) << ((41) || (48)))) * (Calculate1Sum(56));
+(Calculate0Stuff(77, 90, 34)) && ((78) ? (Do4State(43)) : (Func9State(38)));
+((Find6Count(33, 68, 96)) || (Calculate1Sum(68))) < ((Test3Result(57, 21)) == (Calculate0Stuff(19, 74, 33)));
+Get11Sum(75);
+Do8Thing(63, 27);
+((((Do4State(75)) * (Func9State(10))) << ((Func9State(78)) >> (Test3Result(73, 80)))) >= (Get11Sum(63))) | (((Do8Thing(4, 82)) > ((Calculate1Sum(75)) < (Create7Sum(64, 5, 47)))) / (Create7Sum(6, 94, 96)));
+((((5) >= (Calculate1Sum(96))) < ((Func9State(98)) >> (24))) ? (((Do4State(75)) ? (Func9State(10)) : (Do4State(55))) || ((Func5State(29, 88, 26)) | (35))) : (Check2Result(40, 53, 30))) - (Check2Result(11, 64, 94));
+Calculate1Sum(60);
+Find10Sum(89, 56);
+Do8Thing(23, 27);
+((((Calculate1Sum(12)) && (Get11Sum(11))) ^ ((95) == (Get11Sum(72)))) || (((Calculate1Sum(35)) << (Do8Thing(73, 31))) * ((Find10Sum(91, 97)) ^ (Get11Sum(7))))) * ((((87) | (67)) % ((24) || (19))) == (Calculate0Stuff(4, 11, 3)));
+(((Find6Count(82, 55, 71)) >> ((12) + (Func5State(23, 93, 92)))) > (Find10Sum(48, 51))) - ((((Find6Count(31, 23, 5)) ? (74) : (Func9State(63))) >= (Do8Thing(25, 41))) >> (((Get11Sum(44)) - (Find10Sum(81, 76))) << ((Func9State(22)) || (Do8Thing(94, 56)))));
+((Calculate1Sum(42)) + (((Check2Result(52, 79, 79)) >= (100)) * ((Get11Sum(5)) << (Find10Sum(22, 6))))) ? ((((Test3Result(19, 74)) ? (Test3Result(11, 90)) : (Func9State(55))) - ((Check2Result(59, 40, 63)) % (Do8Thing(5, 5)))) <= ((Test3Result(60, 32)) % ((45) != (97)))) : (((Test3Result(45, 98)) && ((Get11Sum(74)) || (Calculate0Stuff(99, 20, 50)))) ^ (Func5State(39, 86, 99)));
+((((3) ? (39) : (Func9State(67))) <= ((8) % (Test3Result(16, 20)))) >> (((Find6Count(54, 87, 19)) || (Do4State(19))) ? (Check2Result(90, 20, 42)) : ((Calculate1Sum(3)) ? (81) : (Test3Result(17, 20))))) ? ((((Create7Sum(23, 63, 39)) ? (Test3Result(90, 46)) : (81)) << ((Get11Sum(83)) == (Calculate1Sum(58)))) ? (((Do8Thing(75, 85)) || (Find10Sum(57, 81))) || ((Test3Result(88, 35)) >> (Func9State(74)))) : (((51) || (Create7Sum(20, 49, 28))) && ((Find10Sum(69, 99)) && (38)))) : ((((35) && (Func5State(83, 74, 60))) ? ((Find6Count(12, 90, 60)) ? (Create7Sum(5, 73, 40)) : (Find10Sum(11, 33))) : (Create7Sum(70, 49, 89))) != (Get11Sum(73)));
+((Do4State(39)) + (37)) && ((Do4State(19)) * (24));
+((71) ? (Func9State(87)) : (39)) == ((Func5State(81, 16, 66)) == (Test3Result(82, 38)));
+Do8Thing(90, 74);
+Find10Sum(39, 7);
+((Find6Count(22, 68, 97)) || (83)) != ((Find10Sum(59, 26)) * (Find6Count(29, 89, 70)));
+Create7Sum(45, 90, 72);
+// End of test case
+
+// ========== TEST CASE 3 ==========
+// Property-based test case - randomly generated functions
+// Generated 8 functions with random complexity
+
+I64 Calculate0Count() {
+    I64 var0 = 30;
+    I64 sum4 = 0;
+    for (I64 j = 0; j < 10; j = j + 1) {
+        sum4 = sum4 + j;
+    }
+    return sum4;
+}
+
+I64 Find1Value(I64 p0, I64 p1) {
+    I64 var0 = 7;
+    I64 var1 = 11;
+    I64 var2 = 1;
+    I64 var3 = 87;
+    I64 sum1 = 0;
+    for (I64 j = 0; j < 9; j = j + 1) {
+        sum1 = sum1 + j;
+    }
+    return sum1;
+}
+
+I64 Create2Min(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 42;
+    I64 var1 = 78;
+    I64 var2 = 38;
+    if ((((100) && (Create2Min(52, 99, 53))) ? ((p3) <= (p2)) : ((Calculate0Count()) >> (Find1Value(21, 31)))) ? (((60) || (p0)) - ((Find1Value(80, 89)) % (Calculate0Count()))) : ((Create2Min(16, 22, 46)) / (Find1Value(44, 35)))) {
+        return (((69) - (22)) <= ((Create2Min(63, 13, 18)) ? (81) : (Find1Value(53, 86)))) == ((Create2Min(41, 27, 77)) <= ((Find1Value(39, 14)) ? (Find1Value(8, 46)) : (Find1Value(26, 47))));
+    } else {
+        return (((Calculate0Count()) ? (p1) : (Calculate0Count())) & ((Create2Min(77, 93, 56)) && (Find1Value(13, 42)))) | (((15) > (p1)) % ((p3) < (43)));
+    }
+}
+
+I64 Run3Data(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 71;
+    I64 var1 = 56;
+    if ((((Find1Value(46, 46)) <= (p1)) || ((p1) ^ (32))) ? (((p0) >= (Calculate0Count())) >= ((Run3Data(17, 54, 33)) > (63))) : (((p0) && (p1)) - ((74) > (Find1Value(16, 13))))) {
+        return ((Create2Min(20, 42, 6)) ^ (Find1Value(33, 3))) - (((Calculate0Count()) + (88)) >= ((p1) ? (Calculate0Count()) : (p0)));
+    } else {
+        return (((Calculate0Count()) && (Calculate0Count())) ^ ((p0) ^ (Run3Data(72, 4, 35)))) ? (((Run3Data(73, 91, 25)) || (p1)) && ((Create2Min(73, 56, 98)) - (90))) : ((Create2Min(64, 1, 12)) / ((61) ? (p0) : (p0)));
+    }
+}
+
+I64 Set4Min(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4) {
+    I64 var0 = 1;
+    I64 var1 = 94;
+    I64 result1 = 0;
+    result1 = result1 + Create2Min(5, 43);
+    result1 = result1 + Set4Min(20, 17);
+    result1 = result1 + Run3Data(28, 38);
+    result1 = result1 + Run3Data(1, 11);
+    return result1;
+}
+
+I64 Check5Value(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 10;
+    if ((Check5Value(25, 30, 1)) * ((Create2Min(39, 38, 24)) - ((p4) + (p1)))) {
+        return (((22) >= (Find1Value(6, 46))) / ((88) || (92))) >> (Calculate0Count());
+    } else {
+        return (((Set4Min(74, 23, 30)) ? (p3) : (p4)) ^ ((p1) ? (Set4Min(25, 60, 41)) : (p3))) + (((33) << (p3)) | ((p0) ? (Find1Value(28, 63)) : (26)));
+    }
+}
+
+I64 Handle6Min(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 54;
+    I64 i8 = 0;
+    while (i8 < 4) {
+        i8 = i8 + 2;
+    }
+    return i8;
+}
+
+I64 Check7Task(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 36;
+    I64 var1 = 89;
+    I64 var2 = 49;
+    I64 var3 = 93;
+    return (Create2Min(13, 2, 100)) != (((Find1Value(57, 46)) > (93)) && ((p3) ? (p3) : (Set4Min(72, 99, 4))));
+}
+
+// Test expressions
+Handle6Min(48, 16, 5);
+(Create2Min(33, 72, 100)) < ((Check7Task(40, 11, 88)) <= (99));
+Check5Value(3, 93, 36);
+((((Handle6Min(96, 33, 78)) ? (36) : (Create2Min(95, 13, 98))) % ((3) != (Find1Value(17, 61)))) || ((Run3Data(92, 79, 58)) + ((Check7Task(64, 10, 69)) || (Handle6Min(9, 3, 40))))) % ((((Set4Min(62, 84, 100)) ? (65) : (Set4Min(34, 31, 3))) * ((Set4Min(34, 23, 4)) ? (Handle6Min(82, 7, 88)) : (Check5Value(22, 88, 41)))) || (((Check7Task(92, 66, 88)) ? (12) : (85)) > ((Check7Task(17, 36, 67)) ? (Calculate0Count()) : (Set4Min(80, 89, 59)))));
+Set4Min(82, 98, 71);
+((Find1Value(80, 8)) ? (Create2Min(75, 53, 56)) : (Find1Value(34, 10))) <= ((Create2Min(49, 46, 86)) <= (15));
+Find1Value(94, 91);
+Calculate0Count();
+Run3Data(97, 22, 23);
+Check5Value(72, 96, 7);
+Run3Data(73, 84, 79);
+Find1Value(38, 51);
+Check7Task(48, 62, 93);
+Handle6Min(1, 68, 70);
+Check5Value(87, 13, 93);
+(Calculate0Count()) ? ((Find1Value(89, 82)) < (((31) | (75)) & ((85) > (Set4Min(45, 83, 3))))) : ((((Run3Data(60, 53, 55)) < (Handle6Min(29, 47, 27))) < ((16) ? (Run3Data(91, 38, 85)) : (Find1Value(20, 61)))) ? (((73) / (Check7Task(16, 92, 89))) || (Set4Min(95, 16, 9))) : (((Handle6Min(14, 92, 32)) ? (Find1Value(64, 60)) : (Run3Data(43, 63, 44))) ? ((45) <= (Find1Value(2, 54))) : ((Check7Task(58, 60, 98)) ? (Set4Min(43, 39, 70)) : (Check5Value(91, 83, 45)))));
+((Handle6Min(55, 92, 76)) * (Run3Data(56, 95, 30))) + ((67) || (Check5Value(37, 47, 96)));
+((((Create2Min(22, 58, 22)) && (Find1Value(73, 86))) % (Create2Min(91, 74, 11))) && (((Run3Data(90, 34, 26)) ? (Set4Min(34, 10, 78)) : (Run3Data(77, 1, 33))) ? ((Create2Min(63, 12, 58)) + (Set4Min(14, 52, 16))) : ((Run3Data(87, 27, 9)) * (79)))) && ((((Calculate0Count()) == (Find1Value(13, 89))) ? ((97) + (4)) : ((Check7Task(33, 4, 9)) ? (2) : (Calculate0Count()))) && (((Create2Min(71, 92, 1)) / (31)) + ((Check5Value(81, 4, 72)) <= (91))));
+((((13) > (49)) >= ((Set4Min(34, 29, 29)) <= (44))) || (Create2Min(85, 33, 47))) ? ((Create2Min(47, 80, 23)) == (((Set4Min(56, 100, 85)) >= (75)) % ((Calculate0Count()) ? (58) : (12)))) : ((((Calculate0Count()) + (Find1Value(64, 52))) || ((53) && (65))) >> ((Calculate0Count()) * ((Check7Task(89, 74, 64)) && (3))));
+Create2Min(80, 31, 3);
+((Run3Data(61, 53, 68)) | (Check5Value(79, 38, 32))) || ((Calculate0Count()) >> (Check5Value(67, 85, 54)));
+((((Find1Value(85, 5)) >= (Set4Min(8, 30, 96))) << ((77) % (Create2Min(61, 12, 69)))) ^ (((Calculate0Count()) % (Find1Value(64, 55))) ^ ((68) >> (Set4Min(94, 20, 17))))) % ((Run3Data(27, 61, 59)) ? ((Set4Min(54, 65, 47)) ? (Create2Min(99, 21, 18)) : ((98) && (Run3Data(20, 8, 25)))) : (((Check5Value(36, 60, 67)) ? (Handle6Min(25, 24, 86)) : (31)) || ((Run3Data(37, 76, 60)) && (74))));
+((79) & (Find1Value(31, 73))) >> ((Set4Min(89, 81, 35)) ? (4) : (84));
+(Find1Value(44, 35)) > ((Run3Data(1, 26, 57)) + (((50) >= (41)) / ((Check5Value(8, 78, 84)) ? (Calculate0Count()) : (41))));
+(Check5Value(41, 76, 37)) || (Calculate0Count());
+Calculate0Count();
+Set4Min(96, 13, 98);
+(((Calculate0Count()) ? ((Calculate0Count()) || (Calculate0Count())) : ((Create2Min(54, 17, 59)) / (1))) / ((Run3Data(39, 88, 95)) | ((Check7Task(34, 11, 64)) ^ (68)))) % (Find1Value(2, 33));
+Check7Task(82, 21, 17);
+Set4Min(29, 89, 43);
+Check7Task(36, 33, 45);
+// End of test case
+
+// ========== TEST CASE 4 ==========
+// Property-based test case - randomly generated functions
+// Generated 7 functions with random complexity
+
+I64 Process0Info(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4) {
+    I64 var0 = 70;
+    I64 var1 = 34;
+    return ((Process0Info(5, 39, 99)) && ((84) & (67))) ? (Process0Info(91, 11, 45)) : (((80) >= (p2)) * ((Process0Info(78, 32, 87)) % (95)));
+}
+
+I64 Eval1Value(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 95;
+    I64 var1 = 17;
+    I64 var2 = 83;
+    I64 var3 = 83;
+    I64 i8 = 0;
+    while (i8 < 6) {
+        i8 = i8 + 2;
+    }
+    return i8;
+}
+
+I64 Do2Job(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 6;
+    I64 var1 = 9;
+    I64 var2 = 64;
+    I64 var3 = 22;
+    return Process0Info(67, 78, 71);
+}
+
+I64 Handle3Value(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 68;
+    I64 var1 = 60;
+    I64 var2 = 75;
+    I64 sum3 = 0;
+    for (I64 j = 0; j < 4; j = j + 1) {
+        sum3 = sum3 + j;
+    }
+    return sum3;
+}
+
+I64 Compute4Work(I64 p0) {
+    I64 var0 = 100;
+    I64 var1 = 27;
+    I64 result5 = 0;
+    result5 = result5 + Process0Info(40, 46);
+    result5 = result5 + Compute4Work(1);
+    result5 = result5 + Process0Info(41, 28);
+    return result5;
+}
+
+I64 Run5Result(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 47;
+    I64 sum1 = 0;
+    for (I64 j = 0; j < 3; j = j + 1) {
+        sum1 = sum1 + j;
+    }
+    return sum1;
+}
+
+I64 Eval6Data(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 67;
+    I64 var1 = 8;
+    I64 var2 = 30;
+    return (((p2) >= (38)) ? ((4) || (30)) : (Run5Result(2, 77, 17))) ? (((Eval1Value(2, 53, 29)) << (96)) && ((3) ^ (14))) : (((Compute4Work(22)) || (Eval6Data(46, 99, 9))) ? ((7) ^ (Run5Result(31, 53, 55))) : ((p1) != (Handle3Value(12, 1, 12))));
+}
+
+// Test expressions
+(Do2Job(43, 60, 52)) / ((Eval1Value(29, 95, 82)) || (Run5Result(100, 95, 12)));
+((11) ? (99) : (Do2Job(29, 5, 53))) / ((Run5Result(90, 24, 80)) << (Handle3Value(85, 79, 72)));
+Process0Info(25, 9, 82);
+(Do2Job(9, 47, 34)) && (((Process0Info(87, 20, 77)) <= ((Process0Info(55, 97, 47)) * (81))) != (((Eval6Data(31, 50, 52)) & (Compute4Work(37))) && ((30) == (Run5Result(84, 34, 99)))));
+((35) | (Do2Job(44, 37, 20))) + ((3) >> (Eval1Value(61, 62, 26)));
+((13) ? (Run5Result(29, 86, 28)) : (Run5Result(34, 66, 67))) == ((Eval1Value(41, 73, 40)) ? (71) : (Do2Job(34, 99, 73)));
+Process0Info(14, 76, 55);
+Run5Result(67, 22, 56);
+Compute4Work(77);
+Run5Result(52, 69, 36);
+Compute4Work(83);
+Eval1Value(40, 58, 40);
+Do2Job(69, 85, 72);
+Compute4Work(54);
+Handle3Value(84, 10, 99);
+(Eval6Data(81, 93, 14)) ? ((((97) | (48)) << ((25) | (Eval1Value(7, 97, 43)))) ? (((59) && (28)) < (Process0Info(68, 69, 77))) : (Eval6Data(5, 67, 8))) : ((((Eval6Data(11, 54, 75)) / (58)) ? ((Process0Info(37, 29, 45)) && (Eval6Data(54, 41, 96))) : ((Eval6Data(43, 48, 88)) ? (2) : (Eval6Data(39, 69, 74)))) ^ (((13) ? (Run5Result(33, 55, 10)) : (Do2Job(4, 74, 13))) ? ((Run5Result(100, 79, 44)) / (Compute4Work(74))) : ((Compute4Work(85)) > (21))));
+Eval6Data(77, 85, 5);
+((98) || (Eval1Value(65, 58, 7))) || ((Eval6Data(51, 50, 64)) * (73));
+Eval6Data(53, 11, 61);
+Compute4Work(39);
+Handle3Value(10, 69, 84);
+((Process0Info(24, 41, 79)) ^ (((80) != (37)) ? ((72) * (Handle3Value(76, 20, 3))) : (Do2Job(76, 94, 89)))) | (((Process0Info(23, 87, 41)) <= ((Do2Job(87, 95, 69)) < (Compute4Work(46)))) ? (Do2Job(45, 89, 38)) : (((Eval6Data(92, 88, 74)) >> (Eval6Data(71, 24, 23))) != ((Compute4Work(95)) && (Do2Job(72, 47, 33)))));
+((((8) <= (Eval6Data(87, 81, 54))) * ((Handle3Value(19, 87, 48)) != (Run5Result(11, 31, 41)))) ? (Eval6Data(16, 81, 28)) : ((Do2Job(53, 71, 20)) == ((Handle3Value(39, 72, 95)) && (Run5Result(33, 74, 34))))) ? (Process0Info(53, 5, 64)) : ((((Compute4Work(81)) / (Do2Job(94, 72, 79))) >= ((Do2Job(20, 15, 70)) | (Run5Result(59, 70, 14)))) != ((Handle3Value(70, 45, 11)) ? ((Handle3Value(30, 63, 97)) < (Do2Job(56, 26, 61))) : ((71) >= (Do2Job(95, 68, 69)))));
+Eval6Data(67, 73, 5);
+((38) || (Run5Result(80, 38, 79))) ? ((Compute4Work(21)) >> (44)) : (Run5Result(36, 9, 1));
+((Eval6Data(84, 67, 7)) - (52)) << ((Eval6Data(33, 11, 16)) ? (Process0Info(44, 87, 87)) : (Compute4Work(97)));
+(Handle3Value(99, 50, 71)) ? ((((Eval6Data(9, 78, 96)) - (Run5Result(20, 68, 22))) || ((Run5Result(6, 53, 13)) || (Do2Job(17, 43, 65)))) % (((Eval1Value(56, 25, 25)) ? (2) : (Handle3Value(11, 89, 52))) / ((Do2Job(58, 19, 83)) < (Do2Job(92, 57, 38))))) : (Eval6Data(87, 21, 4));
+((Run5Result(42, 71, 61)) | (Run5Result(47, 14, 50))) + ((((Run5Result(26, 64, 46)) - (Compute4Work(74))) != (Process0Info(46, 69, 71))) > (((77) | (Process0Info(42, 23, 4))) ^ ((54) / (Compute4Work(74)))));
+Run5Result(40, 61, 26);
+((((46) - (30)) * ((Run5Result(54, 73, 32)) ? (Eval1Value(16, 71, 10)) : (46))) * (((Do2Job(92, 48, 64)) & (Eval6Data(90, 31, 99))) * ((Handle3Value(50, 24, 41)) + (Process0Info(57, 65, 5))))) && ((((Eval1Value(7, 64, 52)) - (Process0Info(56, 25, 83))) || ((Do2Job(89, 75, 22)) ? (38) : (Process0Info(78, 70, 16)))) - (((58) / (Do2Job(86, 7, 35))) && ((Handle3Value(43, 76, 53)) < (Do2Job(5, 8, 43)))));
+((52) % (Run5Result(86, 75, 83))) || ((Handle3Value(56, 76, 98)) || (47));
+((((62) / (Eval1Value(61, 75, 72))) < ((78) <= (Process0Info(84, 26, 24)))) <= (((91) | (3)) & ((Compute4Work(65)) - (Run5Result(12, 31, 34))))) >> (((Process0Info(50, 3, 89)) - ((Eval6Data(74, 27, 57)) | (Run5Result(44, 32, 92)))) + ((Run5Result(78, 69, 48)) ? ((Eval1Value(65, 85, 29)) && (Handle3Value(68, 11, 48))) : ((Compute4Work(65)) & (53))));
+Run5Result(67, 73, 2);
+Compute4Work(13);
+(((Process0Info(73, 2, 27)) || (Compute4Work(55))) || (((Process0Info(96, 1, 83)) && (53)) >= (Run5Result(64, 62, 41)))) >> ((((24) ? (13) : (Process0Info(83, 45, 48))) ? ((Compute4Work(69)) * (Run5Result(62, 53, 77))) : ((100) ? (Do2Job(78, 90, 71)) : (Run5Result(64, 86, 92)))) % (((66) / (25)) ? ((Handle3Value(13, 62, 68)) | (Compute4Work(3))) : (Do2Job(12, 42, 52))));
+Eval6Data(57, 36, 32);
+Do2Job(23, 52, 47);
+(Do2Job(63, 95, 91)) * ((Handle3Value(89, 4, 18)) <= (Handle3Value(72, 95, 68)));
+Eval1Value(68, 20, 69);
+((3) != (37)) || ((29) <= (Process0Info(64, 43, 9)));
+((Handle3Value(43, 85, 67)) / (58)) | ((28) | (27));
+Do2Job(9, 92, 89);
+Handle3Value(34, 85, 40);
+((Eval6Data(70, 2, 11)) % (((Eval6Data(18, 5, 40)) || (17)) > ((Compute4Work(33)) | (Eval1Value(25, 54, 56))))) && ((((96) >> (Run5Result(50, 27, 39))) ? ((43) || (Eval6Data(73, 34, 28))) : ((Compute4Work(49)) >> (Process0Info(76, 28, 38)))) >> (((Compute4Work(76)) == (62)) / (Eval1Value(31, 30, 82))));
+((Do2Job(75, 46, 14)) + (Eval1Value(67, 17, 14))) || ((83) || (74));
+((((Handle3Value(23, 64, 91)) != (Run5Result(62, 44, 59))) ? ((Eval1Value(68, 27, 92)) && (Eval1Value(83, 93, 73))) : ((Eval6Data(55, 83, 4)) < (98))) ? (Run5Result(29, 100, 1)) : ((Handle3Value(42, 26, 54)) << (Handle3Value(68, 9, 43)))) | ((((Do2Job(57, 76, 26)) << (Handle3Value(86, 48, 1))) && ((Do2Job(57, 31, 88)) ? (Process0Info(77, 23, 8)) : (Eval1Value(93, 27, 21)))) <= (((2) ? (Compute4Work(54)) : (Compute4Work(53))) && (Run5Result(25, 9, 57))));
+Eval1Value(2, 53, 95);
+((Do2Job(62, 48, 22)) % (8)) % ((Compute4Work(21)) << (Compute4Work(41)));
+((((Process0Info(30, 52, 87)) <= (Run5Result(41, 29, 20))) >> ((70) ? (Eval1Value(86, 65, 11)) : (13))) << (((Eval1Value(2, 21, 75)) ? (Do2Job(72, 88, 60)) : (77)) * ((1) || (24)))) << ((((Run5Result(66, 29, 78)) / (57)) % ((Process0Info(18, 16, 89)) | (71))) & (((Eval6Data(32, 63, 86)) == (Handle3Value(81, 69, 3))) | ((5) / (27))));
+// End of test case
+
+// ========== TEST CASE 5 ==========
+// Property-based test case - randomly generated functions
+// Generated 11 functions with random complexity
+
+I64 Set0Value(I64 p0) {
+    I64 var0 = 76;
+    if ((((17) + (Set0Value(74))) ? (Set0Value(67)) : ((27) < (75))) ? (((p0) * (Set0Value(6))) + (Set0Value(72))) : (((Set0Value(13)) >= (Set0Value(27))) * ((Set0Value(8)) & (26)))) {
+        return (((8) ^ (p0)) ^ (Set0Value(8))) && (((p0) ? (p0) : (p0)) != ((Set0Value(25)) - (p0)));
+    } else {
+        return (((Set0Value(63)) != (Set0Value(43))) || ((p0) % (18))) % (((p0) / (Set0Value(77))) | ((p0) && (p0)));
+    }
+}
+
+I64 Create1Info(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4) {
+    I64 var0 = 68;
+    I64 var1 = 62;
+    I64 var2 = 34;
+    if ((((p1) ? (19) : (Set0Value(95))) ? ((Set0Value(70)) <= (Set0Value(15))) : ((Set0Value(52)) != (Set0Value(38)))) || (Create1Info(65, 98, 88))) {
+        return (((85) % (10)) & (Create1Info(89, 89, 60))) & (((Create1Info(80, 11, 53)) * (Create1Info(39, 78, 22))) % ((69) ? (p3) : (34)));
+    } else {
+        return (Set0Value(33)) * (Create1Info(31, 67, 87));
+    }
+}
+
+I64 Eval2Work(I64 p0) {
+    I64 var0 = 71;
+    I64 var1 = 44;
+    I64 i5 = 0;
+    while (i5 < 3) {
+        i5 = i5 + 1;
+    }
+    return i5;
+}
+
+I64 Check3Max(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4) {
+    I64 var0 = 30;
+    I64 var1 = 34;
+    return (Set0Value(23)) && ((Eval2Work(78)) ? (Create1Info(81, 33, 94)) : ((85) | (72)));
+}
+
+I64 Get4Stuff() {
+    I64 var0 = 11;
+    I64 result4 = 0;
+    result4 = result4 + Check3Max(50, 33);
+    result4 = result4 + Eval2Work(33);
+    result4 = result4 + Set0Value(48);
+    return result4;
+}
+
+I64 Create5Data(I64 p0) {
+    I64 var0 = 24;
+    I64 var1 = 61;
+    if ((Create5Data(93)) | (((88) + (Check3Max(20, 9, 65))) ? ((88) > (p0)) : (Set0Value(64)))) {
+        return (((Eval2Work(23)) ? (43) : (48)) > ((p0) || (Eval2Work(10)))) << ((Create1Info(17, 60, 72)) ^ ((9) || (47)));
+    } else {
+        return (((23) % (p0)) ^ ((p0) == (Create1Info(98, 95, 59)))) | (((40) ? (Create1Info(95, 39, 34)) : (p0)) == ((84) >= (Set0Value(27))));
+    }
+}
+
+I64 Check6Data(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 43;
+    I64 var1 = 35;
+    I64 var2 = 28;
+    I64 var3 = 90;
+    I64 sum4 = 0;
+    for (I64 j = 0; j < 9; j = j + 1) {
+        sum4 = sum4 + j;
+    }
+    return sum4;
+}
+
+I64 Func7Job(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 84;
+    I64 var1 = 18;
+    I64 var2 = 52;
+    I64 i2 = 0;
+    while (i2 < 2) {
+        i2 = i2 + 1;
+    }
+    return i2;
+}
+
+I64 Do8Info(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 45;
+    I64 var1 = 46;
+    I64 var2 = 11;
+    I64 result1 = 0;
+    result1 = result1 + Func7Job(21, 28);
+    result1 = result1 + Get4Stuff();
+    return result1;
+}
+
+I64 Compute9Value(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 66;
+    I64 result6 = 0;
+    result6 = result6 + Get4Stuff();
+    result6 = result6 + Check3Max(6, 47);
+    result6 = result6 + Do8Info(23, 15);
+    return result6;
+}
+
+I64 Compute10Task(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 88;
+    I64 var1 = 100;
+    I64 var2 = 59;
+    return (((48) ? (p3) : (36)) - ((Eval2Work(80)) ? (30) : (p3))) > ((Eval2Work(39)) >= ((Eval2Work(1)) ? (77) : (79)));
+}
+
+// Test expressions
+((10) >> (60)) ? ((87) - (Create1Info(49, 58, 8))) : ((Compute10Task(3, 60, 31)) ^ (29));
+((Create5Data(16)) - (((67) % (82)) > ((Compute9Value(87, 61, 38)) ? (Create5Data(69)) : (Eval2Work(87))))) * (Check6Data(17, 69, 95));
+((Create1Info(79, 93, 90)) * (42)) << ((Compute10Task(88, 6, 45)) ^ (Check3Max(73, 15, 17)));
+((Func7Job(20, 57, 93)) != (Eval2Work(3))) || ((Func7Job(39, 67, 98)) >= (Compute10Task(82, 77, 38)));
+((10) && (Compute9Value(44, 15, 57))) ^ ((54) * (70));
+Get4Stuff();
+(Set0Value(47)) >> ((Create5Data(56)) < (((88) >> (Create5Data(58))) * ((4) >= (Func7Job(16, 45, 59)))));
+((Get4Stuff()) || (78)) >= ((49) || (Check3Max(89, 12, 24)));
+((Create1Info(4, 35, 11)) & (Eval2Work(52))) && (Create1Info(35, 31, 66));
+((((23) - (Set0Value(18))) % ((Compute10Task(52, 78, 72)) != (Compute10Task(41, 19, 75)))) && (((Eval2Work(26)) || (Check3Max(99, 11, 49))) > ((49) / (Compute9Value(65, 80, 55))))) >> (Compute10Task(50, 41, 98));
+Compute9Value(53, 13, 41);
+Do8Info(64, 100, 75);
+((55) || (Check3Max(23, 67, 91))) ^ ((26) || (Create5Data(14)));
+(((Get4Stuff()) ? (Get4Stuff()) : ((Create1Info(55, 23, 27)) ? (Set0Value(10)) : (Check6Data(83, 93, 54)))) ? (((20) || (16)) <= ((Set0Value(27)) < (Create5Data(56)))) : (((Set0Value(75)) && (Set0Value(46))) >= (Compute9Value(34, 2, 54)))) ? ((((Eval2Work(28)) % (Set0Value(63))) & ((Set0Value(37)) > (Do8Info(35, 65, 61)))) ? (((97) >= (Create1Info(40, 38, 29))) / ((66) % (Create1Info(98, 51, 73)))) : (Compute9Value(50, 1, 85))) : ((((Eval2Work(27)) || (18)) && ((Compute9Value(97, 14, 65)) & (Set0Value(77)))) < (((Compute10Task(21, 73, 17)) || (Check6Data(61, 30, 16))) ? ((3) >= (Get4Stuff())) : (Func7Job(51, 86, 16))));
+((((82) != (4)) / ((Create5Data(11)) ? (Check6Data(78, 42, 89)) : (Func7Job(52, 20, 95)))) ? (((7) >= (Compute10Task(97, 29, 31))) << ((Func7Job(67, 1, 71)) && (Do8Info(86, 58, 69)))) : (Check6Data(16, 70, 92))) || ((((Do8Info(42, 11, 40)) ? (78) : (Do8Info(14, 8, 53))) >> (Get4Stuff())) - (Func7Job(65, 12, 16)));
+(Compute9Value(11, 80, 43)) && ((((71) || (38)) >= ((37) * (Compute10Task(53, 87, 22)))) | (((Func7Job(35, 83, 52)) / (Get4Stuff())) + ((Set0Value(2)) || (Check3Max(11, 48, 81)))));
+((92) || (Eval2Work(20))) || ((Check3Max(60, 99, 94)) && (Compute10Task(32, 88, 18)));
+((((Set0Value(26)) % (Create5Data(21))) - ((Func7Job(71, 24, 25)) * (Do8Info(8, 95, 41)))) > (((Do8Info(81, 100, 63)) * (Set0Value(38))) || ((60) / (Compute10Task(67, 86, 28))))) && (Create5Data(24));
+(((Compute9Value(38, 76, 72)) ? ((Compute9Value(67, 91, 28)) >= (Do8Info(44, 84, 51))) : ((Func7Job(92, 85, 43)) || (Create5Data(58)))) & (((Compute9Value(69, 87, 92)) || (Check3Max(86, 37, 55))) || ((Get4Stuff()) ? (Check3Max(91, 78, 96)) : (Check3Max(36, 73, 87))))) - ((Func7Job(75, 45, 47)) ? (((Func7Job(11, 10, 5)) >> (33)) >> ((Set0Value(70)) << (Get4Stuff()))) : (Create5Data(69)));
+(Create1Info(86, 90, 13)) >= ((((Set0Value(57)) ? (Compute10Task(4, 5, 5)) : (Create1Info(69, 35, 52))) % ((Get4Stuff()) && (26))) + (((Create5Data(19)) || (Create1Info(28, 37, 94))) ? ((Create1Info(7, 32, 19)) || (Set0Value(68))) : ((Do8Info(16, 29, 89)) < (36))));
+((((Do8Info(41, 16, 99)) | (Compute9Value(17, 5, 15))) >= ((91) ? (Set0Value(48)) : (19))) < (((Check3Max(89, 44, 91)) / (28)) % ((Compute10Task(91, 44, 34)) >> (89)))) << (((Func7Job(82, 87, 51)) ? ((Compute10Task(4, 33, 59)) * (91)) : ((Compute9Value(25, 77, 37)) && (Create1Info(11, 73, 66)))) ? (((Do8Info(99, 77, 90)) >> (10)) ? ((39) || (99)) : ((Create1Info(15, 6, 8)) ^ (Set0Value(97)))) : (Create1Info(78, 76, 52)));
+Eval2Work(60);
+((Check3Max(54, 73, 62)) || (99)) || (Compute9Value(81, 18, 27));
+((Compute9Value(97, 4, 32)) * (Compute10Task(40, 19, 72))) ? ((100) + (33)) : ((14) / (Check6Data(76, 6, 72)));
+((((Create5Data(18)) && (50)) >> (Create1Info(72, 59, 25))) * (((Eval2Work(23)) && (Check6Data(65, 98, 24))) ? ((9) >= (Do8Info(77, 20, 12))) : ((Check6Data(99, 92, 78)) * (Set0Value(3))))) ? ((((Create5Data(87)) ? (Do8Info(49, 21, 18)) : (Get4Stuff())) | ((Create5Data(74)) & (Do8Info(48, 46, 52)))) & ((Create5Data(83)) & ((Compute10Task(91, 41, 65)) <= (Compute10Task(10, 99, 85))))) : ((((52) ? (Check3Max(85, 2, 31)) : (Eval2Work(45))) == ((24) * (Compute10Task(67, 80, 14)))) == (Check3Max(69, 22, 11)));
+((Create5Data(26)) / (Compute10Task(38, 100, 68))) << ((47) < (Eval2Work(63)));
+Check6Data(38, 24, 79);
+((Create5Data(13)) >= (Create1Info(18, 96, 19))) > ((Check3Max(65, 65, 38)) == (Create5Data(91)));
+((Check6Data(63, 29, 10)) ? (86) : (Compute9Value(46, 41, 99))) >> ((Get4Stuff()) ? (18) : (49));
+((((Get4Stuff()) ? (95) : (Func7Job(68, 18, 11))) <= ((87) <= (Get4Stuff()))) | (((82) ? (13) : (72)) ? ((85) ? (Set0Value(3)) : (49)) : ((Set0Value(56)) % (Check3Max(52, 85, 42))))) ? (Eval2Work(53)) : ((((87) >> (Create5Data(7))) != ((Eval2Work(19)) % (61))) && (((28) << (98)) != ((Do8Info(35, 17, 53)) >> (Get4Stuff()))));
+Create5Data(34);
+Eval2Work(73);
+// End of test case
+
+// ========== TEST CASE 6 ==========
+// Property-based test case - randomly generated functions
+// Generated 12 functions with random complexity
+
+I64 Find0Info() {
+    I64 var0 = 46;
+    I64 var1 = 65;
+    if ((((Find0Info()) << (Find0Info())) - ((Find0Info()) ? (Find0Info()) : (Find0Info()))) || ((Find0Info()) ? ((Find0Info()) >> (Find0Info())) : ((Find0Info()) || (Find0Info())))) {
+        return ((Find0Info()) <= ((61) ? (53) : (Find0Info()))) > (((32) == (Find0Info())) >= ((Find0Info()) || (Find0Info())));
+    } else {
+        return Find0Info();
+    }
+}
+
+I64 Run1State(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4) {
+    I64 var0 = 57;
+    I64 var1 = 42;
+    I64 var2 = 13;
+    I64 var3 = 36;
+    if ((((56) && (81)) && ((3) & (Run1State(67, 47, 1)))) > (((p3) ? (Run1State(62, 88, 20)) : (p1)) - (Find0Info()))) {
+        return (((23) || (Run1State(51, 99, 79))) ? ((33) + (Run1State(71, 75, 26))) : (Find0Info())) / (((81) < (56)) & ((Find0Info()) <= (p3)));
+    } else {
+        return (((70) == (Run1State(54, 77, 42))) == ((Run1State(78, 90, 20)) ? (p0) : (54))) ^ (Find0Info());
+    }
+}
+
+I64 Check2Item(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 16;
+    I64 var1 = 86;
+    I64 var2 = 63;
+    I64 var3 = 97;
+    I64 result4 = 0;
+    result4 = result4 + Run1State(5, 43);
+    result4 = result4 + Run1State(42, 21);
+    result4 = result4 + Check2Item(42, 27);
+    result4 = result4 + Run1State(19, 45);
+    return result4;
+}
+
+I64 Test3Sum(I64 p0, I64 p1) {
+    I64 var0 = 13;
+    I64 i5 = 0;
+    while (i5 < 4) {
+        i5 = i5 + 2;
+    }
+    return i5;
+}
+
+I64 Do4Min(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 87;
+    if ((Check2Item(38, 88, 81)) % (Check2Item(43, 86, 40))) {
+        return (((p0) || (Find0Info())) >> (Do4Min(69, 20, 48))) >= (((p4) | (Run1State(6, 8, 64))) || (Run1State(37, 18, 97)));
+    } else {
+        return (Find0Info()) / (((Test3Sum(97, 41)) > (27)) / ((65) && (30)));
+    }
+}
+
+I64 Process5Product(I64 p0, I64 p1) {
+    I64 var0 = 49;
+    I64 var1 = 75;
+    I64 var2 = 14;
+    I64 var3 = 53;
+    I64 result5 = 0;
+    result5 = result5 + Test3Sum(37, 5);
+    result5 = result5 + Check2Item(34, 9);
+    result5 = result5 + Find0Info();
+    result5 = result5 + Find0Info();
+    return result5;
+}
+
+I64 Find6Stuff(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 86;
+    I64 result8 = 0;
+    result8 = result8 + Find6Stuff(28, 46);
+    result8 = result8 + Process5Product(7, 19);
+    result8 = result8 + Process5Product(27, 1);
+    result8 = result8 + Find6Stuff(18, 20);
+    return result8;
+}
+
+I64 Set7Max(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 39;
+    I64 var1 = 7;
+    I64 result2 = 0;
+    result2 = result2 + Set7Max(16, 36);
+    result2 = result2 + Find6Stuff(16, 49);
+    return result2;
+}
+
+I64 Test8Data(I64 p0) {
+    I64 var0 = 91;
+    I64 var1 = 81;
+    I64 var2 = 29;
+    I64 var3 = 1;
+    if (((Do4Min(9, 49, 61)) % (Test3Sum(79, 4))) * (Do4Min(76, 16, 60))) {
+        return (((41) ? (p0) : (Test8Data(84))) | ((p0) ? (Do4Min(18, 19, 57)) : (59))) == (((p0) ? (69) : (Set7Max(46, 11, 47))) == ((Run1State(73, 76, 16)) < (p0)));
+    } else {
+        return (Test3Sum(60, 62)) || (((55) ? (Find0Info()) : (p0)) & ((p0) >= (98)));
+    }
+}
+
+I64 Process9Task(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 61;
+    I64 var1 = 24;
+    if ((((1) - (p2)) ? ((p1) ? (Set7Max(47, 27, 91)) : (33)) : ((p2) ? (Process9Task(45, 26, 91)) : (p3))) || (((p0) & (73)) != ((Process9Task(63, 62, 57)) != (1)))) {
+        return (((p3) && (Run1State(43, 69, 33))) + ((p1) > (28))) ? (((p1) == (p2)) + ((39) ? (p1) : (p1))) : (((67) ? (p2) : (11)) ? (Find0Info()) : ((p0) && (p0)));
+    } else {
+        return (((p2) >> (Test3Sum(76, 80))) > ((23) ? (73) : (24))) ? (((Process9Task(14, 83, 27)) >= (7)) ? ((p3) != (11)) : ((Set7Max(55, 13, 82)) <= (68))) : (((48) << (p1)) || ((p3) ? (Run1State(72, 65, 26)) : (p2)));
+    }
+}
+
+I64 Execute10State() {
+    I64 var0 = 15;
+    I64 i7 = 0;
+    while (i7 < 7) {
+        i7 = i7 + 1;
+    }
+    return i7;
+}
+
+I64 Handle11Result(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4) {
+    I64 var0 = 79;
+    I64 var1 = 68;
+    I64 var2 = 52;
+    I64 sum5 = 0;
+    for (I64 j = 0; j < 4; j = j + 1) {
+        sum5 = sum5 + j;
+    }
+    return sum5;
+}
+
+// Test expressions
+((((15) ? (46) : (82)) ? ((Process9Task(49, 24, 18)) - (Execute10State())) : ((Handle11Result(14, 18, 19)) ? (Process5Product(36, 30)) : (Test8Data(53)))) ? (((33) << (Handle11Result(29, 2, 78))) && ((Find6Stuff(60, 58, 59)) != (Test3Sum(23, 64)))) : ((Process5Product(74, 100)) ? ((Process9Task(25, 38, 89)) ? (Set7Max(9, 33, 68)) : (Do4Min(69, 80, 29))) : ((Process9Task(70, 90, 9)) ? (1) : (100)))) ? ((((Run1State(13, 53, 52)) > (Test8Data(94))) ^ ((Process9Task(65, 90, 94)) % (Run1State(9, 31, 94)))) && ((Run1State(38, 81, 23)) == ((Set7Max(50, 15, 57)) % (Check2Item(74, 35, 70))))) : (((Execute10State()) % ((Run1State(4, 27, 27)) || (Find6Stuff(31, 6, 82)))) ? (((Check2Item(92, 31, 38)) / (99)) ^ ((Test8Data(80)) && (Handle11Result(38, 2, 43)))) : (((44) > (63)) ? ((Check2Item(45, 39, 14)) && (Execute10State())) : ((Find0Info()) <= (63))));
+Test3Sum(21, 83);
+Find0Info();
+((((Process9Task(88, 59, 14)) && (Check2Item(96, 61, 29))) == ((Process5Product(35, 65)) && (Test3Sum(91, 70)))) && (((Check2Item(49, 92, 47)) != (93)) * ((Test3Sum(4, 29)) <= (Run1State(81, 4, 38))))) ^ ((((Set7Max(89, 65, 87)) * (Test8Data(89))) ^ ((Find0Info()) || (Test3Sum(85, 45)))) > ((Find0Info()) <= ((Check2Item(59, 35, 18)) ^ (Run1State(70, 72, 15)))));
+Process5Product(37, 8);
+(Find0Info()) > ((50) && (23));
+(Find6Stuff(87, 32, 21)) && (Test8Data(88));
+((((Check2Item(96, 47, 63)) % (Find6Stuff(24, 36, 67))) ? (Process9Task(18, 91, 77)) : ((Test3Sum(6, 23)) >= (Test3Sum(8, 21)))) ? (((Execute10State()) - (29)) && ((Execute10State()) & (52))) : (((Process9Task(79, 5, 89)) ? (Process5Product(78, 81)) : (Process5Product(78, 23))) ? ((Execute10State()) > (22)) : (Process9Task(60, 68, 10)))) != ((((Test8Data(33)) * (Find0Info())) % (Test3Sum(22, 3))) & (((70) ^ (Check2Item(37, 38, 33))) ? ((58) >= (7)) : ((Find6Stuff(79, 44, 65)) && (Handle11Result(42, 97, 12)))));
+(Test3Sum(75, 38)) ? ((91) <= (24)) : ((20) ? (Run1State(61, 20, 82)) : (79));
+((Handle11Result(29, 12, 48)) >= (Handle11Result(65, 38, 75))) < ((Check2Item(9, 77, 32)) && (Find0Info()));
+Process5Product(18, 97);
+((Execute10State()) << (((86) <= (Test8Data(58))) - ((28) || (Run1State(16, 96, 31))))) << ((Run1State(78, 66, 15)) || (((Find0Info()) - (62)) ? (Handle11Result(87, 64, 7)) : (Set7Max(62, 32, 97))));
+Set7Max(17, 53, 85);
+Do4Min(78, 83, 77);
+Execute10State();
+Do4Min(66, 98, 3);
+(Check2Item(85, 1, 58)) & ((((Check2Item(77, 34, 65)) | (23)) != (Test3Sum(35, 96))) | (((60) ? (Run1State(60, 90, 48)) : (41)) % (Do4Min(100, 12, 18))));
+Handle11Result(21, 53, 29);
+((((Test3Sum(4, 71)) && (98)) ? (Test8Data(56)) : ((65) >> (28))) > (Test8Data(15))) || ((((Find0Info()) >= (Set7Max(64, 47, 11))) | ((Handle11Result(93, 89, 100)) % (54))) ? ((Do4Min(38, 15, 75)) ? (Find6Stuff(50, 78, 75)) : ((7) / (87))) : (((Handle11Result(3, 16, 8)) >> (Process5Product(27, 99))) < ((Check2Item(1, 38, 6)) ? (Execute10State()) : (84))));
+((Execute10State()) || (((Check2Item(52, 82, 63)) > (Execute10State())) || ((Process9Task(80, 77, 77)) || (Handle11Result(84, 1, 59))))) ? ((((36) >= (Do4Min(90, 85, 52))) ? ((21) ? (Test8Data(30)) : (37)) : ((Test3Sum(63, 91)) != (70))) != ((Execute10State()) >> ((27) == (Check2Item(25, 78, 10))))) : ((((38) * (47)) >> ((43) ^ (Process5Product(71, 91)))) < (((Test8Data(62)) == (Find0Info())) ^ (Do4Min(22, 59, 67))));
+((Process9Task(87, 10, 5)) << (30)) <= (Process9Task(100, 76, 20));
+Do4Min(2, 58, 22);
+Set7Max(18, 22, 1);
+Find6Stuff(28, 89, 30);
+Handle11Result(67, 47, 42);
+((Process9Task(2, 95, 65)) / (90)) >> ((Run1State(58, 52, 21)) ? (81) : (67));
+(Handle11Result(78, 3, 85)) ? ((((74) & (Test3Sum(55, 34))) ? ((Find6Stuff(91, 54, 31)) && (48)) : ((97) << (Execute10State()))) > (((Set7Max(62, 48, 4)) && (Check2Item(88, 50, 91))) + ((Find6Stuff(65, 76, 85)) || (21)))) : ((((Test3Sum(44, 88)) - (Test8Data(75))) ? ((Set7Max(69, 40, 11)) || (Check2Item(4, 79, 66))) : ((29) | (Find0Info()))) >> (((Test3Sum(27, 19)) > (Handle11Result(70, 21, 11))) == ((Do4Min(100, 9, 42)) ? (15) : (9))));
+((100) << (Find6Stuff(53, 32, 61))) ? ((Test8Data(22)) && (48)) : ((97) ? (Execute10State()) : (Test3Sum(22, 81)));
+Test8Data(20);
+((((Find6Stuff(82, 34, 48)) % (Run1State(53, 47, 32))) <= (Test3Sum(6, 17))) & (((51) > (Handle11Result(23, 97, 28))) - (Find0Info()))) < ((Check2Item(10, 27, 60)) << ((Run1State(80, 27, 45)) / ((39) >> (28))));
+Process9Task(15, 97, 48);
+Execute10State();
+Handle11Result(22, 34, 29);
+(Process9Task(39, 87, 95)) - ((Test8Data(39)) ? (87) : (41));
+Check2Item(56, 17, 75);
+((Test8Data(18)) || (Execute10State())) - ((Set7Max(96, 12, 76)) != (Do4Min(68, 98, 84)));
+Find0Info();
+(((Execute10State()) != ((50) ^ (Check2Item(24, 18, 99)))) >> (((Execute10State()) + (Set7Max(54, 51, 62))) || ((Check2Item(73, 100, 69)) && (Test3Sum(99, 90))))) == ((((Test3Sum(69, 12)) ^ (Run1State(69, 75, 31))) ? (Find6Stuff(38, 57, 63)) : ((Do4Min(9, 2, 95)) || (94))) || (Check2Item(66, 74, 65)));
+((57) * (Run1State(9, 49, 92))) ? ((Set7Max(71, 26, 33)) < (Set7Max(33, 10, 26))) : ((17) != (Find0Info()));
+(Find6Stuff(40, 71, 56)) || ((Run1State(95, 98, 65)) && (Find6Stuff(48, 41, 75)));
+Find0Info();
+Process5Product(35, 45);
+((Find0Info()) ^ (Test3Sum(93, 68))) ? ((84) || (26)) : ((69) & (Do4Min(6, 32, 52)));
+((Process5Product(5, 95)) == (Find6Stuff(88, 60, 73))) && ((Test8Data(16)) <= (Run1State(59, 76, 92)));
+((Do4Min(54, 82, 32)) / (66)) - ((62) < (Process5Product(61, 18)));
+((((Run1State(6, 38, 73)) < (Find0Info())) >= ((Execute10State()) * (Execute10State()))) << (((Test3Sum(5, 39)) ^ (Execute10State())) ^ ((Test8Data(7)) || (Do4Min(71, 3, 28))))) >= ((Process9Task(73, 44, 3)) != ((Find0Info()) && (Do4Min(97, 94, 2))));
+((40) << (82)) >= ((52) <= (21));
+Handle11Result(85, 35, 27);
+((((55) - (Set7Max(79, 27, 87))) % ((Set7Max(5, 58, 37)) << (Run1State(85, 64, 54)))) && (Process9Task(57, 41, 43))) && ((Check2Item(63, 33, 39)) && (Test3Sum(74, 19)));
+Handle11Result(17, 74, 80);
+// End of test case
+
+// ========== TEST CASE 7 ==========
+// Property-based test case - randomly generated functions
+// Generated 12 functions with random complexity
+
+I64 Test0Result(I64 p0) {
+    I64 var0 = 2;
+    I64 var1 = 63;
+    I64 result7 = 0;
+    result7 = result7 + Test0Result(46);
+    result7 = result7 + Test0Result(9);
+    result7 = result7 + Test0Result(28);
+    return result7;
+}
+
+I64 Eval1Task(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 55;
+    I64 var1 = 100;
+    I64 sum9 = 0;
+    for (I64 j = 0; j < 10; j = j + 1) {
+        sum9 = sum9 + j;
+    }
+    return sum9;
+}
+
+I64 Process2Value(I64 p0, I64 p1) {
+    I64 var0 = 93;
+    I64 var1 = 48;
+    I64 var2 = 52;
+    return (((Eval1Task(90, 46, 66)) & (82)) << ((78) + (85))) - ((Eval1Task(78, 34, 59)) * ((Process2Value(65, 41)) - (Test0Result(27))));
+}
+
+I64 Do3Info() {
+    I64 var0 = 93;
+    if (((Eval1Task(30, 67, 4)) ? (Eval1Task(32, 75, 6)) : ((8) - (Test0Result(30)))) >= (Process2Value(36, 94))) {
+        return Do3Info();
+    } else {
+        return ((Eval1Task(29, 67, 86)) ? ((21) / (Test0Result(3))) : (Do3Info())) ? (((Eval1Task(74, 97, 35)) ? (Do3Info()) : (Do3Info())) / ((Process2Value(56, 67)) ? (73) : (29))) : (((Test0Result(75)) ? (Do3Info()) : (Process2Value(7, 63))) - ((99) - (Process2Value(31, 80))));
+    }
+}
+
+I64 Handle4Item(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 29;
+    I64 var1 = 63;
+    if ((((p2) + (p2)) + ((Process2Value(97, 9)) & (Do3Info()))) ? (((89) + (p2)) || ((p0) <= (Do3Info()))) : (((84) ? (Process2Value(21, 43)) : (p0)) && ((Do3Info()) ^ (p3)))) {
+        return (((p0) || (49)) ^ ((9) ? (Process2Value(64, 5)) : (Handle4Item(76, 81, 1)))) && (((27) ? (Do3Info()) : (Handle4Item(5, 8, 38))) ^ ((p0) == (Handle4Item(37, 41, 56))));
+    } else {
+        return (((11) || (p2)) ? ((45) << (54)) : ((18) && (6))) ? ((Process2Value(21, 43)) == ((Do3Info()) > (90))) : (((p1) ? (p3) : (p3)) || ((45) || (p4)));
+    }
+}
+
+I64 Find5Item(I64 p0, I64 p1) {
+    I64 var0 = 88;
+    I64 var1 = 12;
+    I64 var2 = 57;
+    return Process2Value(13, 42);
+}
+
+I64 Func6Value(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 19;
+    I64 var1 = 25;
+    I64 var2 = 74;
+    I64 result6 = 0;
+    result6 = result6 + Process2Value(5, 40);
+    result6 = result6 + Find5Item(36, 5);
+    result6 = result6 + Process2Value(40, 35);
+    result6 = result6 + Handle4Item(16, 21);
+    return result6;
+}
+
+I64 Test7Value(I64 p0) {
+    I64 var0 = 57;
+    return (((Handle4Item(32, 87, 86)) || (p0)) ? ((43) + (Process2Value(27, 90))) : (Func6Value(16, 5, 42))) ? (((10) > (71)) != ((6) % (p0))) : (((74) + (82)) ? ((p0) && (p0)) : ((38) <= (Handle4Item(59, 41, 53))));
+}
+
+I64 Run8Data(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 42;
+    return ((Process2Value(3, 62)) ? ((p0) || (73)) : ((29) | (p2))) >> (((Func6Value(49, 99, 6)) % (68)) ? ((Test7Value(76)) >= (p0)) : ((50) << (86)));
+}
+
+I64 Set9Sum(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 42;
+    I64 var1 = 77;
+    I64 var2 = 47;
+    I64 sum0 = 0;
+    for (I64 j = 0; j < 8; j = j + 1) {
+        sum0 = sum0 + j;
+    }
+    return sum0;
+}
+
+I64 Execute10State(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 74;
+    if ((((Execute10State(44, 24, 68)) || (4)) > ((65) ? (Eval1Task(61, 28, 39)) : (78))) + (((Test0Result(87)) && (Test7Value(37))) && ((p3) ? (p1) : (p3)))) {
+        return (((p1) ? (p0) : (p1)) ? ((Eval1Task(73, 62, 28)) && (Run8Data(100, 42, 18))) : ((p1) == (89))) || (((p3) / (p2)) ? ((55) >> (81)) : ((14) ? (12) : (p3)));
+    } else {
+        return Func6Value(92, 32, 56);
+    }
+}
+
+I64 Set11Task(I64 p0) {
+    I64 var0 = 67;
+    I64 var1 = 35;
+    I64 var2 = 77;
+    I64 i7 = 0;
+    while (i7 < 5) {
+        i7 = i7 + 2;
+    }
+    return i7;
+}
+
+// Test expressions
+((Find5Item(14, 30)) || (((26) > (Process2Value(66, 17))) && ((11) >> (28)))) % ((((81) % (Find5Item(27, 56))) <= ((Execute10State(44, 88, 25)) || (Do3Info()))) ? ((Set9Sum(17, 54, 81)) ? ((Process2Value(58, 22)) > (Func6Value(44, 60, 47))) : ((Handle4Item(86, 76, 23)) && (Func6Value(86, 54, 41)))) : (Set11Task(12)));
+Eval1Task(14, 16, 44);
+Do3Info();
+Execute10State(4, 100, 81);
+Handle4Item(75, 15, 41);
+((Handle4Item(25, 65, 71)) >= (Eval1Task(5, 75, 53))) == ((Execute10State(10, 80, 72)) / (Execute10State(64, 84, 38)));
+(Handle4Item(39, 16, 35)) ? ((((Test7Value(73)) ? (Process2Value(100, 43)) : (Process2Value(56, 7))) && ((Do3Info()) ^ (Run8Data(82, 91, 37)))) ? (((26) < (Run8Data(80, 86, 49))) ? ((Find5Item(31, 77)) != (63)) : ((Process2Value(59, 36)) << (Run8Data(30, 46, 92)))) : (((88) || (Do3Info())) * ((Execute10State(8, 91, 95)) ^ (34)))) : ((((2) << (Test7Value(37))) & ((Eval1Task(80, 18, 28)) || (Set9Sum(39, 83, 14)))) < (((79) ? (71) : (Do3Info())) || ((65) ? (41) : (60))));
+((((Set9Sum(42, 38, 7)) >> (Set11Task(2))) % ((21) && (Do3Info()))) > (((Set9Sum(2, 96, 64)) ? (3) : (Run8Data(9, 98, 48))) ? (Do3Info()) : ((Do3Info()) ? (Test7Value(82)) : (98)))) >> ((((Process2Value(48, 67)) | (Func6Value(54, 85, 68))) / ((Run8Data(30, 58, 36)) * (96))) && (Test7Value(52)));
+((59) >> (42)) | ((Do3Info()) >= (Func6Value(30, 32, 19)));
+Find5Item(78, 78);
+Func6Value(9, 58, 93);
+((90) << (Func6Value(20, 78, 30))) ? ((63) >> (100)) : ((43) << (24));
+Handle4Item(46, 13, 1);
+((Run8Data(89, 55, 47)) >> (((Handle4Item(89, 17, 57)) / (Func6Value(47, 51, 22))) <= ((51) ? (67) : (Test0Result(10))))) | ((((Run8Data(18, 25, 85)) ? (Func6Value(36, 26, 24)) : (Find5Item(89, 73))) || ((Execute10State(98, 94, 32)) || (94))) && ((Test0Result(86)) >> ((87) ? (95) : (Set9Sum(31, 100, 57)))));
+((((Set9Sum(8, 44, 15)) | (Test7Value(97))) ? ((19) + (Do3Info())) : ((Execute10State(3, 24, 52)) ? (62) : (Test0Result(31)))) <= (((Execute10State(60, 32, 16)) < (Run8Data(34, 14, 16))) >> ((Func6Value(85, 14, 74)) != (81)))) | (Test7Value(4));
+Eval1Task(26, 24, 41);
+Handle4Item(75, 81, 4);
+Test7Value(88);
+((Test7Value(27)) / (Execute10State(44, 47, 2))) * ((Process2Value(23, 52)) ? (Find5Item(6, 19)) : (Handle4Item(79, 95, 27)));
+((Do3Info()) || (1)) + ((61) <= (Test0Result(86)));
+((Process2Value(91, 55)) < (Process2Value(71, 13))) || ((Find5Item(21, 85)) ? (39) : (Find5Item(52, 57)));
+Test0Result(92);
+((((Set9Sum(16, 5, 5)) >> (Do3Info())) ? ((Process2Value(84, 57)) ? (8) : (Do3Info())) : ((Do3Info()) || (Func6Value(87, 95, 38)))) | (Set11Task(71))) || ((((79) << (35)) ? ((Set11Task(3)) & (Set11Task(28))) : ((28) >= (Func6Value(75, 98, 78)))) + (Process2Value(86, 53)));
+// End of test case
+
+// ========== TEST CASE 8 ==========
+// Property-based test case - randomly generated functions
+// Generated 5 functions with random complexity
+
+I64 Create0Task(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 9;
+    I64 var1 = 70;
+    I64 var2 = 2;
+    I64 var3 = 79;
+    I64 sum7 = 0;
+    for (I64 j = 0; j < 6; j = j + 1) {
+        sum7 = sum7 + j;
+    }
+    return sum7;
+}
+
+I64 Calculate1Stuff(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 51;
+    I64 var1 = 4;
+    return (((p3) / (p0)) || ((19) <= (p1))) && (((p3) | (3)) == ((p1) ^ (p3)));
+}
+
+I64 Handle2Value(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 20;
+    I64 var1 = 87;
+    return (((64) < (11)) > ((61) ? (Calculate1Stuff(82, 28, 4)) : (Create0Task(21, 97, 11)))) % (Create0Task(20, 6, 10));
+}
+
+I64 Make3Data(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4) {
+    I64 var0 = 27;
+    I64 var1 = 100;
+    I64 var2 = 99;
+    I64 var3 = 70;
+    I64 result2 = 0;
+    result2 = result2 + Create0Task(22, 38);
+    result2 = result2 + Create0Task(39, 19);
+    return result2;
+}
+
+I64 Make4Product(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 39;
+    I64 var1 = 7;
+    return (Handle2Value(54, 79, 48)) * (((72) ? (p0) : (Handle2Value(29, 12, 73))) ? (Calculate1Stuff(19, 34, 31)) : ((33) % (Handle2Value(88, 79, 41))));
+}
+
+// Test expressions
+Create0Task(3, 78, 49);
+Handle2Value(37, 43, 53);
+((30) || (Make4Product(97, 85, 9))) ? ((Create0Task(1, 88, 37)) ? (68) : (1)) : ((Make4Product(2, 97, 82)) + (77));
+Make4Product(61, 78, 46);
+Create0Task(51, 59, 87);
+Make3Data(20, 72, 70);
+Create0Task(38, 98, 44);
+Handle2Value(53, 45, 54);
+((Make3Data(49, 81, 83)) & (Calculate1Stuff(49, 31, 77))) ? ((Create0Task(8, 11, 4)) ? (((Handle2Value(20, 20, 7)) | (Create0Task(80, 10, 83))) >= ((9) % (Create0Task(97, 19, 54)))) : (((Create0Task(3, 67, 7)) % (Create0Task(16, 74, 83))) ^ ((9) && (70)))) : ((((Create0Task(93, 20, 93)) == (14)) ^ ((53) ^ (Handle2Value(63, 72, 95)))) && (((Calculate1Stuff(84, 9, 5)) ? (Handle2Value(61, 100, 56)) : (Make3Data(48, 100, 61))) == ((66) == (Create0Task(97, 27, 8)))));
+Make3Data(39, 99, 49);
+((Create0Task(81, 72, 84)) && (71)) == ((Handle2Value(4, 69, 41)) > (Create0Task(29, 44, 47)));
+((((100) | (Handle2Value(26, 89, 17))) && ((Make3Data(15, 35, 58)) % (Handle2Value(89, 91, 83)))) || ((Create0Task(77, 58, 5)) > ((2) > (Handle2Value(67, 40, 74))))) << ((((Calculate1Stuff(28, 20, 23)) >> (Create0Task(42, 26, 2))) < (Make3Data(2, 57, 93))) % ((Calculate1Stuff(7, 76, 28)) >= ((Create0Task(77, 82, 90)) && (83))));
+Create0Task(64, 91, 76);
+(Create0Task(42, 12, 74)) * (((Calculate1Stuff(36, 46, 15)) >= ((97) ? (Create0Task(32, 21, 38)) : (Make3Data(34, 78, 3)))) && (((Calculate1Stuff(32, 20, 35)) % (Make3Data(33, 7, 76))) > ((Handle2Value(88, 39, 35)) < (Create0Task(65, 42, 84)))));
+Calculate1Stuff(58, 28, 18);
+((Make3Data(38, 1, 23)) > (((Create0Task(24, 84, 88)) - (48)) << ((Make4Product(70, 47, 83)) != (Make4Product(13, 87, 60))))) && (((Calculate1Stuff(31, 13, 63)) || ((20) & (93))) && (Make3Data(13, 26, 4)));
+Calculate1Stuff(14, 91, 68);
+Make4Product(99, 31, 52);
+((Handle2Value(88, 43, 89)) >= (Handle2Value(16, 46, 59))) >= ((39) % (Make3Data(19, 37, 37)));
+Calculate1Stuff(53, 10, 18);
+Make3Data(69, 90, 68);
+Make3Data(15, 70, 80);
+Make3Data(37, 53, 10);
+Make3Data(3, 55, 96);
+Make4Product(2, 51, 11);
+((((Make3Data(32, 9, 23)) <= (Make3Data(60, 72, 4))) || ((32) < (Make4Product(82, 43, 20)))) || (((Handle2Value(81, 37, 50)) || (13)) == (Make4Product(50, 32, 45)))) || (Handle2Value(23, 86, 31));
+Make4Product(46, 89, 54);
+Make4Product(11, 3, 67);
+Calculate1Stuff(23, 9, 54);
+(Calculate1Stuff(53, 28, 97)) % ((45) == (56));
+Calculate1Stuff(51, 76, 4);
+((Create0Task(19, 50, 76)) & (75)) >> ((Calculate1Stuff(10, 92, 14)) ? (Create0Task(62, 46, 82)) : (Make3Data(55, 45, 27)));
+(((Create0Task(72, 93, 42)) - ((96) / (Make4Product(100, 22, 70)))) <= (((51) && (Make3Data(69, 40, 55))) && ((Make4Product(68, 19, 42)) & (Create0Task(33, 7, 32))))) && ((((Create0Task(69, 27, 97)) == (Make3Data(54, 6, 6))) + ((91) < (Calculate1Stuff(80, 77, 15)))) + (((Make4Product(39, 64, 52)) / (Handle2Value(74, 70, 5))) * ((72) < (21))));
+Handle2Value(63, 88, 93);
+((96) < (Handle2Value(92, 49, 53))) ? ((70) ? (49) : (Make3Data(19, 3, 22))) : ((Make4Product(7, 88, 73)) && (Make4Product(84, 72, 89)));
+Make4Product(15, 34, 30);
+Make3Data(1, 83, 71);
+Make4Product(94, 45, 48);
+Create0Task(96, 72, 48);
+Make4Product(52, 43, 21);
+((Make3Data(70, 82, 56)) || (Create0Task(43, 41, 50))) >= (Handle2Value(38, 65, 97));
+Make3Data(69, 23, 19);
+(((Handle2Value(54, 80, 74)) % ((14) >> (67))) >= (Create0Task(91, 86, 57))) || ((((Make4Product(62, 47, 15)) << (Make4Product(61, 75, 56))) << ((Create0Task(81, 77, 45)) << (81))) && (((60) << (39)) || ((26) && (82))));
+((Make3Data(79, 3, 15)) == (97)) >= ((Make4Product(85, 31, 67)) >= (Handle2Value(93, 80, 23)));
+((Make3Data(27, 3, 26)) ? (4) : (Calculate1Stuff(19, 17, 78))) ? ((5) & (Handle2Value(91, 40, 37))) : ((Create0Task(77, 45, 4)) && (Handle2Value(58, 64, 92)));
+((((Make4Product(89, 17, 8)) << (49)) + ((36) * (Make4Product(31, 5, 95)))) || (((19) && (Create0Task(61, 62, 92))) || ((Make4Product(44, 58, 13)) << (Handle2Value(78, 69, 19))))) ? ((Make3Data(92, 76, 5)) | (Handle2Value(7, 52, 45))) : ((((Calculate1Stuff(45, 76, 2)) ^ (Handle2Value(25, 9, 3))) & ((65) >> (58))) % (((58) / (Handle2Value(45, 43, 100))) || (Calculate1Stuff(3, 92, 76))));
+((((Calculate1Stuff(14, 21, 73)) << (Create0Task(46, 23, 75))) && ((18) >> (Make4Product(3, 54, 82)))) > (((Make4Product(50, 100, 25)) ? (Calculate1Stuff(9, 98, 79)) : (Calculate1Stuff(83, 81, 50))) != ((Calculate1Stuff(81, 48, 13)) ? (60) : (Make3Data(38, 14, 16))))) ^ ((((Handle2Value(49, 23, 25)) * (Handle2Value(86, 78, 70))) >> ((Handle2Value(21, 27, 90)) % (66))) + (((Calculate1Stuff(68, 63, 51)) < (10)) && (Handle2Value(37, 34, 15))));
+((Create0Task(80, 26, 91)) ? (Calculate1Stuff(90, 36, 23)) : (Calculate1Stuff(29, 86, 89))) && ((Calculate1Stuff(40, 68, 33)) && (Handle2Value(37, 51, 25)));
+(Handle2Value(77, 95, 32)) == ((Make3Data(93, 2, 48)) ? (68) : (23));
+// End of test case
+
+// ========== TEST CASE 9 ==========
+// Property-based test case - randomly generated functions
+// Generated 10 functions with random complexity
+
+I64 Eval0Value(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 98;
+    I64 var1 = 87;
+    I64 sum8 = 0;
+    for (I64 j = 0; j < 7; j = j + 1) {
+        sum8 = sum8 + j;
+    }
+    return sum8;
+}
+
+I64 Set1Min(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4) {
+    I64 var0 = 25;
+    if (((Eval0Value(35, 39, 87)) + ((Eval0Value(97, 10, 91)) && (p1))) == (Eval0Value(39, 34, 89))) {
+        return (((p0) + (Set1Min(52, 100, 84))) && ((p1) / (p4))) && (((p1) ^ (Set1Min(14, 23, 50))) ? ((32) << (p2)) : ((18) || (Set1Min(66, 51, 72))));
+    } else {
+        return (((p1) >= (Eval0Value(74, 73, 55))) <= ((p0) ? (37) : (9))) || (((p4) % (8)) ? ((p3) ? (98) : (14)) : ((p3) && (p4)));
+    }
+}
+
+I64 Do2Thing(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 76;
+    I64 var1 = 3;
+    if ((((66) || (30)) < ((p3) && (p2))) << ((Eval0Value(48, 98, 12)) || ((Set1Min(34, 18, 100)) && (p2)))) {
+        return (((63) && (Set1Min(97, 97, 13))) ? (Do2Thing(90, 77, 94)) : ((p4) == (p3))) > ((Eval0Value(89, 37, 33)) % ((19) >= (45)));
+    } else {
+        return (((p4) != (p3)) ? ((100) - (p5)) : ((66) + (p3))) / (((5) | (p3)) / ((Eval0Value(4, 38, 94)) + (p1)));
+    }
+}
+
+I64 Run3Task(I64 p0) {
+    I64 var0 = 6;
+    I64 result2 = 0;
+    result2 = result2 + Eval0Value(10, 40);
+    result2 = result2 + Run3Task(48);
+    result2 = result2 + Eval0Value(41, 41);
+    return result2;
+}
+
+I64 Eval4Work(I64 p0, I64 p1, I64 p2, I64 p3) {
+    I64 var0 = 5;
+    I64 var1 = 70;
+    I64 var2 = 30;
+    I64 var3 = 54;
+    return (((Run3Task(66)) >> (80)) ? ((22) ? (Eval4Work(8, 46, 82)) : (40)) : ((86) && (p0))) ? (((Run3Task(17)) << (p2)) ? ((Do2Thing(100, 2, 49)) && (35)) : ((Set1Min(5, 22, 17)) / (p3))) : (((5) ? (18) : (Set1Min(80, 72, 77))) && ((p3) > (p1)));
+}
+
+I64 Create5Max() {
+    I64 var0 = 27;
+    return (((16) + (22)) + ((Eval0Value(13, 7, 36)) - (Create5Max()))) ? (Eval4Work(96, 38, 63)) : (Create5Max());
+}
+
+I64 Get6Result(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 92;
+    I64 i6 = 0;
+    while (i6 < 4) {
+        i6 = i6 + 1;
+    }
+    return i6;
+}
+
+I64 Execute7Data(I64 p0) {
+    I64 var0 = 37;
+    I64 result3 = 0;
+    result3 = result3 + Set1Min(14, 8);
+    result3 = result3 + Get6Result(38, 9);
+    result3 = result3 + Do2Thing(42, 13);
+    result3 = result3 + Get6Result(36, 17);
+    return result3;
+}
+
+I64 Process8Task(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4) {
+    I64 var0 = 37;
+    I64 sum4 = 0;
+    for (I64 j = 0; j < 8; j = j + 1) {
+        sum4 = sum4 + j;
+    }
+    return sum4;
+}
+
+I64 Find9Item(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 64;
+    I64 var1 = 5;
+    I64 var2 = 90;
+    I64 var3 = 60;
+    I64 sum3 = 0;
+    for (I64 j = 0; j < 3; j = j + 1) {
+        sum3 = sum3 + j;
+    }
+    return sum3;
+}
+
+// Test expressions
+Eval4Work(34, 39, 28);
+Eval4Work(8, 49, 74);
+((46) ? (Eval4Work(46, 29, 20)) : (1)) + ((17) >> (Get6Result(76, 12, 54)));
+(Find9Item(79, 100, 27)) * ((((Eval0Value(84, 67, 16)) <= (16)) ? ((91) & (16)) : ((Do2Thing(12, 97, 32)) && (33))) < (((Execute7Data(59)) >= (Eval0Value(11, 48, 76))) && ((Do2Thing(90, 86, 71)) * (Do2Thing(1, 29, 47)))));
+((Do2Thing(62, 31, 75)) ? (60) : (Eval0Value(78, 54, 49))) || ((Run3Task(19)) < (50));
+((Get6Result(30, 72, 12)) && (Do2Thing(55, 58, 61))) - ((Eval4Work(85, 73, 2)) ? (84) : (Find9Item(100, 4, 46)));
+((77) ? (Process8Task(82, 18, 46)) : (Run3Task(23))) + (Eval4Work(86, 70, 76));
+Find9Item(13, 54, 10);
+((((9) > (1)) ? ((54) > (Execute7Data(30))) : (Process8Task(1, 36, 66))) - (((Eval0Value(44, 6, 9)) < (Get6Result(16, 10, 55))) < (Eval4Work(78, 97, 49)))) || ((((Run3Task(26)) || (35)) || ((Do2Thing(25, 34, 20)) < (58))) > (((Eval0Value(21, 94, 92)) >> (Get6Result(46, 19, 23))) <= ((Find9Item(8, 51, 97)) & (Set1Min(8, 89, 20)))));
+((Eval0Value(71, 27, 70)) >> (93)) < ((74) << (4));
+(Find9Item(8, 42, 93)) ? (Eval4Work(51, 80, 55)) : ((49) || (Execute7Data(27)));
+((((Set1Min(97, 7, 21)) == (Execute7Data(85))) || ((37) ^ (Eval4Work(94, 83, 92)))) < (((Run3Task(53)) == (Do2Thing(85, 88, 70))) % ((Do2Thing(49, 20, 32)) - (51)))) - ((((Eval4Work(24, 15, 65)) <= (Do2Thing(100, 92, 86))) ^ ((Get6Result(91, 14, 85)) * (Execute7Data(96)))) ? (((65) ? (Set1Min(76, 83, 75)) : (46)) * ((87) && (Process8Task(24, 70, 29)))) : (((Do2Thing(87, 22, 19)) && (Create5Max())) & ((Find9Item(80, 13, 62)) ^ (Process8Task(84, 30, 14)))));
+(Eval4Work(42, 36, 1)) >> ((72) + (74));
+(Run3Task(57)) || (Find9Item(89, 21, 26));
+Get6Result(8, 33, 25);
+Set1Min(9, 82, 40);
+(((Run3Task(31)) >> ((79) ? (63) : (Execute7Data(1)))) ? (((94) % (12)) + ((19) & (72))) : (((Set1Min(95, 40, 51)) ^ (Get6Result(65, 23, 83))) <= ((5) & (41)))) / ((((Create5Max()) / (Process8Task(39, 29, 75))) && ((Run3Task(87)) >> (55))) || (((Do2Thing(25, 96, 2)) | (Create5Max())) ? ((18) << (53)) : ((82) * (Run3Task(3)))));
+Process8Task(63, 70, 62);
+Eval0Value(5, 26, 22);
+Eval0Value(28, 84, 39);
+(Set1Min(49, 82, 22)) && (Eval0Value(16, 21, 94));
+((((Execute7Data(79)) || (Create5Max())) >= ((47) ^ (2))) ? (((Get6Result(87, 66, 78)) | (21)) ? ((47) && (69)) : (Eval4Work(99, 60, 30))) : ((Eval0Value(87, 18, 81)) ? (Create5Max()) : ((Set1Min(29, 88, 55)) - (85)))) ? ((((26) % (Eval4Work(26, 91, 7))) >= (Execute7Data(11))) != (((Run3Task(31)) >= (Do2Thing(32, 6, 52))) % ((Eval4Work(49, 63, 46)) / (Do2Thing(65, 88, 13))))) : (((Execute7Data(26)) < ((Execute7Data(17)) || (Do2Thing(36, 88, 18)))) && (Execute7Data(20)));
+((23) || (92)) != ((Do2Thing(62, 60, 58)) >> (Create5Max()));
+((92) ? (Do2Thing(67, 53, 3)) : (2)) & ((Create5Max()) > (Find9Item(88, 24, 20)));
+((((2) - (50)) ^ (Get6Result(81, 71, 27))) && ((Get6Result(29, 13, 24)) | ((Process8Task(5, 78, 39)) << (10)))) ? ((((Eval4Work(39, 71, 30)) && (Execute7Data(79))) <= ((50) >= (Process8Task(47, 79, 15)))) | (Eval4Work(33, 63, 16))) : ((((82) != (33)) || ((Get6Result(26, 73, 49)) % (Create5Max()))) == (((Set1Min(38, 34, 9)) <= (97)) <= ((Get6Result(94, 24, 77)) || (Create5Max()))));
+((((23) ^ (Get6Result(96, 91, 85))) || ((Do2Thing(31, 59, 82)) >> (89))) == (((Run3Task(7)) > (Get6Result(53, 46, 28))) + ((Execute7Data(32)) || (Do2Thing(14, 29, 38))))) | ((((Eval4Work(13, 70, 87)) << (Run3Task(53))) && ((Get6Result(38, 89, 22)) ? (67) : (Find9Item(84, 56, 51)))) || (((Get6Result(78, 66, 19)) || (Get6Result(46, 19, 70))) || ((6) & (63))));
+Eval4Work(22, 76, 48);
+((Process8Task(83, 4, 54)) && (Eval0Value(83, 77, 87))) * ((86) <= (73));
+// End of test case
+
+// ========== TEST CASE 10 ==========
+// Property-based test case - randomly generated functions
+// Generated 13 functions with random complexity
+
+I64 Handle0Stuff(I64 p0) {
+    I64 var0 = 38;
+    I64 var1 = 31;
+    I64 var2 = 78;
+    return (((Handle0Stuff(55)) ? (64) : (Handle0Stuff(3))) + ((p0) - (75))) == (((p0) || (p0)) || ((Handle0Stuff(38)) << (79)));
+}
+
+I64 Func1Task(I64 p0, I64 p1) {
+    I64 var0 = 69;
+    I64 var1 = 2;
+    return (((Handle0Stuff(56)) | (p1)) + ((p1) ? (6) : (p0))) != (((71) ? (Func1Task(67, 89)) : (p1)) - (Handle0Stuff(91)));
+}
+
+I64 Process2State(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 90;
+    I64 var1 = 11;
+    I64 var2 = 38;
+    return (((25) || (p0)) >> (Process2State(45, 44, 79))) >= ((Func1Task(89, 41)) ? ((17) && (96)) : ((39) ? (95) : (p0)));
+}
+
+I64 Make3Sum() {
+    I64 var0 = 46;
+    I64 var1 = 69;
+    I64 var2 = 11;
+    I64 sum1 = 0;
+    for (I64 j = 0; j < 3; j = j + 1) {
+        sum1 = sum1 + j;
+    }
+    return sum1;
+}
+
+I64 Eval4Job(I64 p0, I64 p1) {
+    I64 var0 = 93;
+    I64 var1 = 54;
+    return (Make3Sum()) != (((Func1Task(26, 100)) << (Eval4Job(2, 81))) ? ((Handle0Stuff(71)) && (Handle0Stuff(72))) : ((Func1Task(79, 8)) > (15)));
+}
+
+I64 Test5Product(I64 p0, I64 p1, I64 p2) {
+    I64 var0 = 30;
+    I64 var1 = 93;
+    I64 var2 = 74;
+    I64 var3 = 40;
+    I64 result6 = 0;
+    result6 = result6 + Test5Product(40, 28);
+    result6 = result6 + Handle0Stuff(43);
+    result6 = result6 + Func1Task(21, 50);
+    result6 = result6 + Make3Sum();
+    return result6;
+}
+
+I64 Set6Result(I64 p0) {
+    I64 var0 = 83;
+    I64 sum0 = 0;
+    for (I64 j = 0; j < 4; j = j + 1) {
+        sum0 = sum0 + j;
+    }
+    return sum0;
+}
+
+I64 Compute7Item() {
+    I64 var0 = 22;
+    I64 var1 = 54;
+    I64 result2 = 0;
+    result2 = result2 + Eval4Job(40, 41);
+    result2 = result2 + Eval4Job(33, 36);
+    result2 = result2 + Handle0Stuff(18);
+    return result2;
+}
+
+I64 Handle8Max() {
+    I64 var0 = 25;
+    I64 var1 = 5;
+    I64 result4 = 0;
+    result4 = result4 + Eval4Job(2, 26);
+    result4 = result4 + Compute7Item();
+    result4 = result4 + Handle8Max();
+    return result4;
+}
+
+I64 Calculate9Data(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4, I64 p5) {
+    I64 var0 = 38;
+    I64 var1 = 82;
+    I64 var2 = 29;
+    I64 var3 = 91;
+    I64 i3 = 0;
+    while (i3 < 5) {
+        i3 = i3 + 3;
+    }
+    return i3;
+}
+
+I64 Make10Sum(I64 p0) {
+    I64 var0 = 27;
+    I64 sum3 = 0;
+    for (I64 j = 0; j < 2; j = j + 1) {
+        sum3 = sum3 + j;
+    }
+    return sum3;
+}
+
+I64 Eval11Task() {
+    I64 var0 = 81;
+    I64 var1 = 38;
+    I64 var2 = 73;
+    I64 var3 = 45;
+    I64 i8 = 0;
+    while (i8 < 10) {
+        i8 = i8 + 1;
+    }
+    return i8;
+}
+
+I64 Handle12State(I64 p0, I64 p1, I64 p2, I64 p3, I64 p4) {
+    I64 var0 = 36;
+    I64 var1 = 71;
+    I64 result4 = 0;
+    result4 = result4 + Handle12State(18, 14);
+    result4 = result4 + Process2State(30, 31);
+    result4 = result4 + Handle0Stuff(35);
+    result4 = result4 + Eval4Job(21, 32);
+    return result4;
+}
+
+// Test expressions
+Set6Result(15);
+((((Make10Sum(65)) ? (8) : (89)) >= ((Process2State(74, 28, 82)) + (96))) / ((Func1Task(38, 65)) >= ((Compute7Item()) + (54)))) >= ((((Func1Task(34, 31)) > (Eval4Job(53, 7))) == ((93) + (5))) ? (((Handle12State(35, 9, 98)) + (12)) & (Compute7Item())) : (((Process2State(27, 7, 19)) * (Compute7Item())) >= ((Handle8Max()) * (7))));
+((87) ? (62) : (Make10Sum(45))) - ((Make10Sum(88)) & (Func1Task(30, 13)));
+Test5Product(91, 92, 73);
+Compute7Item();
+(Make3Sum()) || ((((Handle0Stuff(53)) > (Make10Sum(38))) ? ((55) == (76)) : ((Eval11Task()) * (53))) % (((Handle0Stuff(71)) >> (68)) ? (Test5Product(86, 53, 7)) : (Process2State(10, 88, 24))));
+(Calculate9Data(98, 50, 69)) % ((((Calculate9Data(86, 24, 52)) | (51)) * ((Make10Sum(15)) ? (Eval4Job(22, 84)) : (13))) + (((Set6Result(7)) + (Handle12State(72, 38, 69))) ? ((Handle12State(36, 22, 4)) == (Eval4Job(75, 1))) : ((Eval4Job(30, 6)) ? (Set6Result(81)) : (Eval11Task()))));
+Process2State(1, 19, 89);
+Set6Result(24);
+((((58) % (Process2State(2, 63, 80))) ^ ((Calculate9Data(42, 45, 67)) + (Calculate9Data(4, 47, 62)))) << (((84) != (31)) ? (Handle0Stuff(84)) : ((Test5Product(14, 50, 48)) * (95)))) || (((Test5Product(87, 26, 61)) ? ((71) && (Process2State(11, 97, 75))) : ((Handle12State(26, 32, 28)) * (99))) - ((Handle0Stuff(30)) ? ((Test5Product(10, 55, 23)) >> (Compute7Item())) : ((Calculate9Data(100, 31, 10)) > (57))));
+((Make3Sum()) <= (((Eval11Task()) << (Compute7Item())) % ((Make3Sum()) / (Process2State(44, 82, 82))))) <= ((((9) < (Calculate9Data(64, 40, 45))) ? ((Eval4Job(14, 90)) << (Make3Sum())) : ((Compute7Item()) ^ (Calculate9Data(41, 78, 66)))) >> (Eval4Job(24, 27)));
+(Handle8Max()) > ((Handle0Stuff(63)) || (Func1Task(15, 10)));
+Process2State(47, 50, 23);
+((((62) ? (Eval4Job(65, 30)) : (43)) || ((Handle0Stuff(42)) > (84))) % ((Handle0Stuff(4)) * ((Calculate9Data(46, 16, 75)) == (74)))) + ((((Process2State(18, 10, 77)) + (52)) >> ((52) & (10))) ? (((36) ? (Test5Product(14, 74, 64)) : (89)) ? ((45) & (Make3Sum())) : ((56) & (Handle8Max()))) : (((Handle0Stuff(80)) ? (Test5Product(80, 47, 15)) : (9)) ? ((48) >> (44)) : ((Test5Product(36, 45, 8)) << (Test5Product(99, 83, 48)))));
+Make10Sum(15);
+Handle12State(30, 42, 57);
+((((38) % (Set6Result(51))) % ((Make3Sum()) == (45))) == (((Eval11Task()) >> (Handle0Stuff(69))) << ((34) || (22)))) ? ((((Eval11Task()) && (Func1Task(17, 80))) % ((9) >= (64))) ? (Compute7Item()) : (((Eval4Job(33, 88)) == (Handle8Max())) && (Eval11Task()))) : ((((26) >= (5)) ^ ((Handle12State(74, 2, 44)) << (10))) == (((Eval11Task()) * (53)) - ((Eval4Job(71, 75)) == (Calculate9Data(15, 38, 69)))));
+((((39) % (Make3Sum())) - ((Set6Result(71)) ? (Eval4Job(35, 45)) : (Calculate9Data(33, 62, 33)))) < (((Calculate9Data(99, 81, 12)) + (Eval11Task())) % ((Set6Result(51)) > (Compute7Item())))) || ((((Handle8Max()) && (Test5Product(30, 37, 78))) * ((Calculate9Data(12, 62, 29)) ? (Handle12State(44, 89, 53)) : (87))) != (((Make3Sum()) >> (Handle12State(2, 28, 43))) > ((Eval11Task()) ? (Process2State(100, 13, 43)) : (17))));
+Func1Task(3, 22);
+Func1Task(35, 59);
+((37) / (30)) << ((Make10Sum(66)) % (Handle8Max()));
+Calculate9Data(41, 35, 61);
+(Set6Result(5)) == (((Make10Sum(26)) << ((Make10Sum(69)) << (21))) < (Make10Sum(95)));
+Handle8Max();
+Make3Sum();
+Calculate9Data(5, 36, 20);
+Make3Sum();
+Calculate9Data(98, 20, 25);
+Eval4Job(44, 82);
+Set6Result(27);
+Handle12State(31, 73, 74);
+Func1Task(26, 17);
+((((21) || (98)) && ((Eval4Job(53, 72)) - (83))) >> (((Handle8Max()) ? (Eval11Task()) : (Func1Task(60, 32))) << (Calculate9Data(94, 35, 1)))) - ((((Eval4Job(6, 33)) << (50)) & ((Eval4Job(81, 27)) >> (37))) ? (((Process2State(80, 77, 76)) >> (Handle8Max())) == ((Compute7Item()) ? (Process2State(49, 30, 11)) : (Compute7Item()))) : (Handle0Stuff(60)));
+Process2State(81, 28, 34);
+((((Set6Result(1)) ? (Set6Result(80)) : (Compute7Item())) << ((74) && (Handle12State(90, 34, 49)))) ? (((79) * (Handle8Max())) && (Make10Sum(54))) : (((78) >> (Eval4Job(44, 38))) + ((Func1Task(19, 10)) + (81)))) ? ((Make3Sum()) >= (Compute7Item())) : ((((Handle12State(94, 69, 86)) + (Eval4Job(89, 65))) && (Set6Result(98))) == (((Handle8Max()) > (Handle0Stuff(44))) || (Handle0Stuff(64))));
+((Eval11Task()) + (Compute7Item())) && ((Test5Product(83, 11, 35)) ? (Make3Sum()) : (Handle0Stuff(68)));
+((((Eval4Job(27, 24)) | (Func1Task(77, 25))) ? ((Handle0Stuff(23)) * (Compute7Item())) : (Eval11Task())) || (((Func1Task(47, 56)) > (Set6Result(8))) >> ((Compute7Item()) ? (60) : (Eval4Job(58, 28))))) && ((((21) + (Handle12State(84, 19, 45))) >= ((Set6Result(93)) <= (Compute7Item()))) ? (((73) >= (Compute7Item())) != ((Handle0Stuff(16)) * (10))) : ((Make3Sum()) * ((Eval11Task()) ? (97) : (Set6Result(54)))));
+((((29) || (8)) % ((Set6Result(12)) & (38))) / (((Calculate9Data(53, 58, 95)) ^ (Make3Sum())) & ((58) * (38)))) * (Test5Product(91, 24, 91));
+Make10Sum(63);
+Eval4Job(82, 71);
+(Compute7Item()) + ((Calculate9Data(8, 65, 98)) > (Test5Product(76, 52, 4)));
+((Eval11Task()) / (Eval11Task())) || ((34) % (Compute7Item()));
+(Eval11Task()) < (Func1Task(23, 26));
+// End of test case
+

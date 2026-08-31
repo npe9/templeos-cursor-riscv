@@ -23,8 +23,9 @@ U8 *LexStmt2Bin(CCmpCtrl *cc,I64 *_type,I64 cmp_flags=0)
 	}
       }
     } //TODO: else del misc?
-  } else //TODO: too dangerous to del Misc?
+  } else {//TODO: too dangerous to del Misc?
     QueDel(&cc->coc.coc_head.next);
+  }
   if (cc->aot_depth==2) {
     tmpcbh=COCPopNoFree(cc);
     COCAppend(cc,tmpcbh);
@@ -416,6 +417,20 @@ U0 CmpFixUpAOTAsm(CCmpCtrl *cc,CAOT *tmpaot)
   }
 }
 
+// Host AOT: `*ptr(U32 *)++` advances by 8 on RV (pointer width), not 4.
+// Same bug LoadU32 documents in KLoad.HC — patch-table writes must MemCpy+add.
+U8 *CmpStoreU32(U8 *ptr,I64 v)
+{
+  U32 u=v;
+  MemCpy(ptr,&u,4);
+  return ptr+4;
+}
+U8 *CmpStoreI64(U8 *ptr,I64 v)
+{
+  MemCpy(ptr,&v,8);
+  return ptr+8;
+}
+
 I64 Cmp(U8 *filename,U8 *map_name=NULL,U8 *out_name=NULL,U8 mapfile_drv_let=0)
 {//AOT Compile HC or PRJ file a and output BIN file. Returns err_cnt.
   U8 *ptr,*fbuf=NULL,*fbuf2=NULL,*fbuf3=NULL,
@@ -446,13 +461,13 @@ I64 Cmp(U8 *filename,U8 *map_name=NULL,U8 *out_name=NULL,U8 mapfile_drv_let=0)
     }
     if (cnt) {
       *ptr++=IET_ABS_ADDR;
-      *ptr(U32 *)++=cnt;
+      ptr=CmpStoreU32(ptr,cnt);
       *ptr++=0;
       tmpa=tmpaot->abss;
       while (tmpa) {
 	tmpa1=tmpa->next;
 	if (!(tmpa->type&IEF_IMM_NOT_REL))
-	  *ptr(U32 *)++ =tmpa->rip;
+	  ptr=CmpStoreU32(ptr,tmpa->rip);
 	Free(tmpa);
 	tmpa=tmpa1;
       }
@@ -468,7 +483,7 @@ I64 Cmp(U8 *filename,U8 *map_name=NULL,U8 *out_name=NULL,U8 mapfile_drv_let=0)
       }
       if (cnt) {
 	*ptr++=IET_DATA_HEAP;
-	*ptr(U32 *)++=cnt;
+	ptr=CmpStoreU32(ptr,cnt);
 	if (tmphg->str) {
 	  i=StrLen(tmphg->str);
 	  MemCpy(ptr,tmphg->str,i+1);
@@ -476,11 +491,11 @@ I64 Cmp(U8 *filename,U8 *map_name=NULL,U8 *out_name=NULL,U8 mapfile_drv_let=0)
 	  ptr+=i+1;
 	} else
 	  *ptr++=0;
-	*ptr(I64 *)++=tmphg->size;
+	ptr=CmpStoreI64(ptr,tmphg->size);
 	tmphgr=tmphg->references;
 	while (tmphgr) {
 	  tmphgr1=tmphgr->next;
-	  *ptr(U32 *)++=tmphgr->rip;
+	  ptr=CmpStoreU32(ptr,tmphgr->rip);
 	  Free(tmphgr);
 	  tmphgr=tmphgr1;
 	}
@@ -489,14 +504,15 @@ I64 Cmp(U8 *filename,U8 *map_name=NULL,U8 *out_name=NULL,U8 mapfile_drv_let=0)
       tmphg=tmphg1;
     }
 
-    //Do exports first
+    //Do exports first (host AOT breaks HolyC chained compares — use &&)
     tmpie=tmpaot->next_ie;
     while (tmpie!=&tmpaot->next_ie) {
       tmpie1=tmpie->next;
-      if (!tmpie->type || IET_REL32_EXPORT<=tmpie->type<=IET_IMM64_EXPORT) {
+      if (!tmpie->type ||
+	    (IET_REL32_EXPORT<=tmpie->type && tmpie->type<=IET_IMM64_EXPORT)) {
 	QueRem(tmpie);
 	*ptr++=tmpie->type;
-	*ptr(U32 *)++=tmpie->rip;
+	ptr=CmpStoreU32(ptr,tmpie->rip);
 	if (tmpie->str) {
 	  i=StrLen(tmpie->str);
 	  MemCpy(ptr,tmpie->str,i+1);
@@ -518,7 +534,7 @@ I64 Cmp(U8 *filename,U8 *map_name=NULL,U8 *out_name=NULL,U8 mapfile_drv_let=0)
       *ptr++=tmpie->type;
       if (tmpie->aot)
 	tmpie->rip+=tmpie->aot->rip2;
-      *ptr(U32 *)++=tmpie->rip;
+      ptr=CmpStoreU32(ptr,tmpie->rip);
       if (tmpie->str) {
 	i=StrLen(tmpie->str);
 	MemCpy(ptr,tmpie->str,i+1);
@@ -571,9 +587,11 @@ I64 Cmp(U8 *filename,U8 *map_name=NULL,U8 *out_name=NULL,U8 mapfile_drv_let=0)
 I64 ExePutS(U8 *buf,U8 *filename=NULL,
 	I64 ccf_flags=0,CLexHashTableContext *htc=NULL)
 {//JIT Compile and execute text from a puts("").
-  I64 res;
+  I64 res,type;
   Bool okay=TRUE;
   CCmpCtrl *cc;
+  U8 *machine_code;
+  F64 t0;
   if (!filename)
     filename=blkdev.tmp_filename;
   cc=CmpCtrlNew(buf,ccf_flags|CCF_DONT_FREE_BUF,filename);
@@ -588,7 +606,28 @@ I64 ExePutS(U8 *buf,U8 *filename=NULL,
   QueIns(cc,Fs->last_cc);
   try {
     Lex(cc);
-    res=ExeCmdLine(cc);
+    /* Inline ExeCmdLine core so Load()'d Compiler uses its own LexStmt2Bin
+     * (kernel ExeCmdLine is linked to in-image Body). Stop on empty stmt so a
+     * leftover non-EOF token cannot spin forever. */
+    res=0;
+    while (cc->token &&
+	  (cc->token!='}' || !(cc->flags & CCF_EXE_BLK)) ) {
+      cc->flags&=~CCF_HAS_MISC_DATA;
+      machine_code=LexStmt2Bin(cc,&type);
+      if (machine_code==INVALID_PTR)
+	break;
+      if (!(cc->flags&CCF_JUST_LOAD)) {
+	t0=tS;
+	res=Call(machine_code);
+	Fs->answer=res;
+	Fs->answer_type=type;
+	Fs->answer_time=tS-t0;
+	Fs->new_answer=TRUE;
+	cc->pmt_line=0;
+      }
+      if (!(cc->flags&CCF_HAS_MISC_DATA))
+	Free(machine_code);
+    }
   } catch {
     if (Fs->except_ch=='Compiler' || Fs->except_ch=='Break') {
       Fs->catch_except=TRUE;
@@ -693,10 +732,12 @@ U0 CInit()
   CmpLoadDefines;
   CmpFillTables;
   QueInit(&cmp.ic_nop);
-  cmp.ic_nop.ic_class=cmp.internal_types[RT_I64];
   cmp.ic_nop.ic_code=IC_NOP1;
   AsmHashLoad;
+  if (cmp.internal_types[RT_I64])
+    cmp.ic_nop.ic_class=cmp.internal_types[RT_I64];
   UAsmHashLoad;
 }
 
-CInit;
+// Call CInit() after Adam/heap exist (Load Compiler / ExePutS smoke). Do not auto-run at
+// AOT image entry — host AOT stitches top-level statements before main and would MAlloc too early.

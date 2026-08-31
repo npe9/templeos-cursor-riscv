@@ -24,7 +24,7 @@ U0 D2()
     if (Prompt(4)) throw('Point4');
   } catch {
     "D2 hndlr\n"
-	  "Ch:%c:%P\n",Fs->except_ch,Fs->except_callers[0];
+          "Ch:%c:%P\n",Fs->except_ch,Fs->except_callers[0];
     if (Fs->except_ch=='Point1') {
       "Caught in D2\n";
       Fs->catch_except=TRUE;
@@ -39,7 +39,7 @@ U0 Demo()
     if (Prompt(3)) throw('Point3');
   } catch {
     "Demo hndlr\n"
-	  "Ch:%c:%P\n",Fs->except_ch,Fs->except_callers[0];
+          "Ch:%c:%P\n",Fs->except_ch,Fs->except_callers[0];
     Fs->catch_except=TRUE;
   }
 }

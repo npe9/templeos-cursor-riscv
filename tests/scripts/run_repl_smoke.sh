@@ -118,11 +118,24 @@ add_case 'try { throw(5); } catch { "caught %d\n", Fs->except_ch; } Fs->except_c
 add_case 'I64 Om(I64 a = 1, I64 b = 2, I64 c = 3) { return a * 100 + b * 10 + c; } Om(,5) - Om(7,,9);' fffffffffffffdc0
 add_case 'I64 Tb() { I64 i; for (i = 0; i < 3; i++) { try { if (i == 1) break; } catch { return 99; } } try { throw(4); } catch { return Fs->except_ch; } } Tb();' 0000000000000004
 add_case 'U8 *cat = MAlloc(16); StrCpy(cat, "ab"); StrCat(cat, "cd"); StrLen(cat) + MaxI64(3, 9) + ToUpper(0x61) - 0x41 + AbsI64(-2);' 000000000000000f
+# TempleOS Str2I64 / Atoi (seed str.hc): decimal, signs, 0x/0b prefixes.
+add_case 'Atoi("123");' 000000000000007b
+add_case 'Atoi("-42");' ffffffffffffffd6
+add_case 'Atoi("0x10");' 0000000000000010
+add_case 'Str2I64("0b1010");' 000000000000000a
+add_case 'Str2I64("  +99xyz",10);' 0000000000000063
 # Aggregate initializers, F64 %, sub_switch, Free reuse, goto out of try.
 add_case 'class Agg { I32 t; U8 name[8]; }; Agg ag[] = { {10, "one"}, {20, "two"}, {30, "three"} }; ag[2].t * 100 + ag[0].t + sizeof(ag) + StrLen(ag[1].name);' 0000000000000be9
 add_case 'I64 agi[] = {1, 2, 3}; agi[2] + sizeof(agi) + (7.5 % 2.0 == 1.5);' 000000000000001c
 add_case 'U8 *fa = MAlloc(32); Free(fa); U8 *fb = MAlloc(32); fa == fb;' 0000000000000001
 add_case 'I64 Gt2() { I64 n = 0; again: n++; try { if (n < 2) goto again; throw(n); } catch { return Fs->except_ch * 10; } } Gt2();' 0000000000000014
+# Terminal geometry is HolyC-owned (seed/term.hc g_term_*). Piped UART has no emulator
+# reply so TermProbe keeps 80x24; TermSetSize must stick in HolyC state (Vi/EditHoly read it).
+add_case 'TermRows();' 0000000000000018
+add_case 'TermCols();' 0000000000000050
+add_case 'KEY_UP;' 0000000000000100
+add_case 'TermSetSize(40,100); TermRows()*1000+TermCols();' 0000000000009ca4
+add_case 'TermSetSize(24,80); TermRows()*1000+TermCols();' 0000000000005e10
 for ((i = 1; i <= CALLS; i++)); do
   add_case "Add($i,1);" "$(printf '%016x' $((i + 1)))"
 done
@@ -153,28 +166,54 @@ expect_text 'Static3'
 demo_input+=$'UartStr("autoboot-live ");\n'
 expect_text '[boot] HolyC primitives loaded'
 expect_text 'autoboot-live '
+demo_input+=$'"term %d x %d\\n", TermRows(), TermCols();\n'
+expect_text 'term 24 x 80'
 # Incremental Run: a file that Run()s a driver AND uses it (on a later line) -- each unit runs
 # before the next compiles, so this no longer hangs (regression guard for run_source).
 demo_input+=$'Ed("df.hc");\na\nRun("uart.hc");\nUartStr("df-same ");\n.\nw\nq\nRun("df.hc");\n'
 expect_text 'df-same '
-# Funs() lists the symbol table; Src() on a C built-in reports no HolyC source. Also guards the
-# U0/RT_U0 void-echo fix: a user U0 call prints no "ans=" (checked via the answer-sequence phase).
-demo_input+=$'Funs();\nSrc("Cat");\n'
+# Funs() lists the symbol table; Man/SrcFile cover HolyC Cat (files.hc) and remaining C docs.
+# Disasm("Cat") covers HolyC JIT prologues (Cat is no longer a compressed C builtin).
+demo_input+=$'Funs();\nMan("Cat");\n"SrcFile Cat=%s\\n", SrcFile("Cat");\nDisasm("Cat");\n'
 expect_text 'Src-editable'        # Funs() summary line
-expect_text 'no source for Cat'   # Cat is C: Src falls back to disassembling it
-expect_text 'disassembling'       # the disassembler ran
+expect_text '(HolyC)'             # Man("Cat") header
+expect_text 'Reads name from the memfs'  # Man("Cat") DESCRIPTION from files.hc
+expect_text 'SrcFile Cat=files.hc'
+expect_text 'addi sp'             # HolyC frame setup from Disasm("Cat")
+# FunsSec(n) filters by manual section; FunSec maps names; Sections prints the legend.
+# (Avoid full FunsS() here -- hundreds of lines flood the QEMU UART capture.)
+demo_input+=$'FunsSec(3);\n"FunSec Dir=%d UartPut=%d MAlloc=%d\\n", FunSec("Dir"), FunSec("UartPut"), FunSec("MAlloc");\nSections();\n'
+expect_text '--- 3 terminal ---'
+expect_text 'in section 3'
+expect_text 'FunSec Dir=2 UartPut=3 MAlloc=9'
+expect_text 'Manual sections'
+# FunCount/FunName feed FunPick; FunWrite dumps .funlist (picker itself is interactive).
+demo_input+=$'FunWrite();\nCat(".funlist");\n'
+expect_text 'wrote .funlist'
+expect_text 'FunPick'             # FunPick itself is in the symbol list after boot
 # HolyC disassembler decodes floats and compressed instructions
 demo_input+=$'F64 Fa(F64 a,F64 b){return a+b;}\nDisasm("Fa");\n'
 expect_text 'fadd.d'                    # a float op decoded
-expect_text 'c.sdsp'                    # a compressed op decoded (from Src("Cat") above)
 demo_input+=$'Disasm("UartPut");\n'
 expect_text '<UART0>'                   # lui of an MMIO base gets its memory-map name
+# Man/SrcFile for HolyC Print + seeds (FnSize checks after MemMap — keeps Vi early)
+demo_input+=$'Man("Print");\n"SrcFile Print=%s\\n", SrcFile("Print");\n"SrcFile StrLen=%s\\n", SrcFile("StrLen");\n"SrcFile MAlloc=%s\\n", SrcFile("MAlloc");\n"SrcFile Dir=%s\\n", SrcFile("Dir");\n'
+expect_text 'formatted print'
+expect_text 'SrcFile Print=print.hc'
+expect_text 'SrcFile StrLen=str.hc'
+expect_text 'SrcFile MAlloc=mem.hc'
+expect_text 'SrcFile Dir=dir.hc'
 # vim-lite: insert a line, save with :wq, run the file (raw keys: i..., ESC, :wq, Enter)
 demo_input+=$'Vi("vf.hc");\niUartStr("vsmoke ");\x1b:wq\rRun("vf.hc");\n'
 expect_text 'vsmoke '
-# Inspection + in-editor exec
-demo_input+=$'MemMap();\nRegs();\nEd("q.hc");\n!6*7;\nq\n'
+# Inspection + in-editor exec + HolyC FnSize proofs
+demo_input+=$'MemMap();\nRegs();\n"FnSize Print=%d\\n", FnSize("Print");\n"FnSize StrLen=%d\\n", FnSize("StrLen");\n"FnSize MAlloc=%d\\n", FnSize("MAlloc");\n"FnSize Run=%d\\n", FnSize("Run");\n"FnSize TermKeyGet=%d\\n", FnSize("TermKeyGet");\nEd("q.hc");\n!6*7;\nq\n'
 expect_text 'code_mem'
+expect_text 'FnSize Print='
+expect_text 'FnSize StrLen='
+expect_text 'FnSize MAlloc='
+expect_text 'FnSize Run='
+expect_text 'FnSize TermKeyGet='
 expect_text 'mstatus'
 expect_text 'ans=0x000000000000002a'   # !6*7; ran HolyC from inside Ed
 # HolyC debugger: break on a function, confirm the args are reported, execution continues.
@@ -190,6 +229,15 @@ expect_text 'ed smoke.hc:'
 expect_text 'wrote smoke.hc'
 expect_text 'smoke.hc  '
 expect_text 'Editor line two'
+# Format-on-save (HolyFmtSrc AST/CST): Ed w rewrites messy .hc (2-space; Allman fn; spaced if).
+demo_input+=$'Ed("fmtme.hc");\na\nU0 Foo(I64 x)\n  {\nif(x){\nreturn;\n}\n}\n.\nw\nq\nCat("fmtme.hc");\n'
+expect_text 'wrote fmtme.hc (45 bytes)'
+expect_text $'U0 Foo(I64 x)\n{\n  if (x) {\n    return;\n  }\n}'
+# Explicit Fmt("…"): FileWrite is raw; Fmt must change bytes and print confirmation.
+demo_input+=$'FileWrite("fmt_raw.hc","I64 Z(){return 1;}",18);\nCat("fmt_raw.hc");\nFmt("fmt_raw.hc");\nCat("fmt_raw.hc");\n'
+expect_text 'I64 Z(){return 1;}'
+expect_text 'Fmt: fmt_raw.hc (24 bytes, rewritten)'
+expect_text $'I64 Z()\n{\n  return 1;\n}'
 # Full-screen editor (Edit): type a line, ^O (\017) to save, ^X (\030) to exit, then cat it
 # back. Exercises the ANSI render loop, the blocking key reader, and the save path.
 demo_input+=$'Edit("scr.hc");\nVisual editor works\017\030Cat("scr.hc");\n'
@@ -198,15 +246,48 @@ expect_text 'Visual editor works'
 # Self-hosting: author a file with Ed, Run() it (compile+execute in place), call what it defined.
 demo_input+=$'Ed("run.hc");\na\nI64 Trip(){ return 111; }\n.\nw\nq\nRun("run.hc");\nTrip();\n'
 expect_text 'ans=0x000000000000006f'   # Trip() == 111, defined in the Run() file
-# Edit + compile + install an interrupt handler in place: define an ISR in a file, Run it,
-# TrapInit()/SetIsr(), then Ecall() to fire a synchronous trap into the HolyC handler.
-demo_input+=$'Ed("isr.hc");\na\nI64 Zap(I64 c,I64 e,I64 t){ "ZAP-HIT "; return 0; }\n.\nw\nq\nRun("isr.hc");\nTrapInit();\nSetIsr("Zap");\nEcall();\n'
+# Cd / Copy / Find / DirMk -- cwd-aware memfs, TempleOS command-line file ops.
+demo_input+=$'DirMk("T");\nEd("T/hi.hc");\na\nUartStr("hi-act ");\n.\nw\nq\nCd("T");\nPwd();\nFileFind("hi.hc");\nCd("..");\nCopy("T/hi.hc","T/hi2.hc");\nFind("hi-act","*.hc");\n'
+expect_text 'cwd: /T/'
+expect_text '/T/'
+expect_text 'hi.hc ('
+expect_text 'copied T/hi.hc -> T/hi2.hc'
+expect_text 'T/hi.hc:'
+# Enter-to-activate (DolDoc): Dir listing in Vi, Enter Cds into T/, next Enter nests hi.hc.
+# :q pops the nested file; second :q leaves Vi. Dir must list hi.hc (Cd stuck).
+demo_input+=$'Ed(".dirlist");\na\nT/\n.\nw\nq\nVi(".dirlist");\n\rj\r:q\r:q\rDir;\nCd("/");\n'
+expect_text '  hi.hc  '
+# Edit + compile + install a trap handler in place: define one in a file, Run it,
+# TrapInit()/SetTrap(), then Ecall() to fire a synchronous trap into the HolyC handler.
+demo_input+=$'Ed("ontrap.hc");\na\nI64 Zap(I64 c,I64 e,I64 t){ "ZAP-HIT "; return 0; }\n.\nw\nq\nRun("ontrap.hc");\nTrapInit();\nSetTrap("Zap");\nEcall();\n'
 expect_text 'ZAP-HIT'
+# Sync fault with a SetTrap handler installed (Zap returns 0): dump, abort the eval, next statement runs.
+demo_input+=$'*(U8 *)1=7;\n"after-fault\\n";\n'
+expect_text 'store access fault'
+expect_text 'eval aborted'
+expect_text 'after-fault'
 # Editable kernel primitive: the seeded uart.hc driver, Run() then edited in place (insert an
 # uppercase step into UartPut) and re-Run -- the same UartStr call changes behavior live.
-demo_input+=$'Run("uart.hc");\nUartStr("livedrv ");\nEd("uart.hc");\n3a\n  if (ch>=97 && ch<=122) ch -= 32;\n.\nw\nq\nRun("uart.hc");\nUartStr("livedrv ");\n'
+# Line 27 is the lone `;` of `while (LSR)\n    ;` after --fmt; `27a` inserts before the THR store.
+demo_input+=$'Run("uart.hc");\nUartStr("livedrv ");\nEd("uart.hc");\n27a\n  if (ch>=97 && ch<=122) ch -= 32;\n.\nw\nq\nRun("uart.hc");\nUartStr("livedrv ");\n'
 expect_text 'livedrv '   # before the edit: lowercase
 expect_text 'LIVEDRV '   # after the live edit: uppercase, same call site
+# Jump-to-definition: SrcFile → nested Vi/EditHoly session; :q/^X pops back to prior buffer.
+# jmp.hc's first token is UartPut.
+demo_input+=$'"SrcFile UartPut: %s\\n", SrcFile("UartPut");\n"SrcFile Dir: %s\\n", SrcFile("Dir");\n"SrcFile TrapVec: %s\\n", SrcFile("TrapVec");\n'
+expect_text 'SRCFILE UARTPUT: UART.HC'   # UartPut still uppercases after livedrv
+expect_text 'SRCFILE DIR: DIR.HC'
+expect_text 'SRCFILE TRAPVEC: TRAP.HC'
+demo_input+=$'Ed("jmp.hc");\na\nUartPut(65);\n.\nw\nq\nVi("jmp.hc");\ngd:q\r:q\r'
+expect_text '-- NORMAL -- UART.HC'     # nested session status (uppercased by livedrv)
+expect_text '-- NORMAL -- JMP.HC'      # after :q, parent session restored
+demo_input+=$'Edit("jmp.hc");\n\x1d\x18\x18'
+expect_text 'UART.HC LN '              # EditHoly ^] nests; first ^X pops
+# Reverse xref: A calls B; Callers("B") lists A (JIT exe_addr-slot scan).
+demo_input+=$'I64 B(){return 7;}\nI64 A(){return B();}\nA();\nCallers("B");\n'
+expect_text 'ans=0x0000000000000007'
+expect_text ') A'
+expect_text 'callers of B'
 # Sentinel: the REPL never exits (it spins on the UART after EOF), so stop QEMU as soon as
 # the last answer is printed; the timeout only bounds a hung/crashed REPL.
 add_case '4919;' 0000000000001337
@@ -240,9 +321,9 @@ fi
 # Second run: the demo files.
 demo_input+='4919;'$'\n'
 : >"$log"
-printf '%s' "$demo_input" | $TIMEOUT_CMD 60 "$QEMU" -M virt -bios none -kernel "$BOOT/repl.elf" -nographic >"$log" 2>&1 &
+printf '%s' "$demo_input" | $TIMEOUT_CMD 300 "$QEMU" -M virt -bios none -kernel "$BOOT/repl.elf" -nographic >"$log" 2>&1 &
 qpid=$!
-for ((t = 0; t < 600; t++)); do
+for ((t = 0; t < 3000; t++)); do
   if grep -q 'ans=0x0000000000001337' "$log" 2>/dev/null; then break; fi
   kill -0 "$qpid" 2>/dev/null || break
   sleep 0.1
@@ -251,7 +332,7 @@ kill "$qpid" 2>/dev/null || true
 wait "$qpid" 2>/dev/null || true
 demo_out="$(tr -d '\r' <"$log")"
 for t in "${EXPECT_TEXT[@]}"; do
-  if ! echo "$demo_out" | grep -qF -- "$t"; then
+  if ! grep -qF -- "$t" "$log"; then
     echo "FAIL REPL smoke — demo output missing: $t" >&2
     echo "$demo_out" >&2
     exit 1

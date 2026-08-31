@@ -3,6 +3,7 @@
 # formats a string with the kernel's own StrPrintJoin, and writes it to the QEMU virt UART. Then
 # run it under qemu-system-riscv64 and check the expected line appears. This proves real kernel
 # code (not just the front end) executes and produces output on RISC-V.
+#
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -43,7 +44,9 @@ fi
   "$LD" -T "$HARNESS/link_exec.ld" -nostdlib --no-warn-mismatch -o kp.elf "$OUTDIR/crt0.o" "$OUTDIR/oracle_out.o" blob_in.o ) \
   >/dev/null 2>&1 || { echo "FAIL kernel-selfboot smoke — link error" >&2; exit 1; }
 
-out="$($TIMEOUT 30 "$QEMU" -M virt -bios none -kernel "$T/kp.elf" -nographic </dev/null 2>&1 | tr -d '\r')"
+cp "$T/kp.elf" "$OUTDIR/kp.elf"
+
+out="$($TIMEOUT 30 "$QEMU" -M virt -m 128M -bios none -kernel "$T/kp.elf" -nographic </dev/null 2>&1 | tr -d '\r')"
 if printf '%s\n' "$out" | grep -qF "$EXPECT" && printf '%s\n' "$out" | grep -qF "$EXPECT2"; then
   echo "Kernel-selfboot smoke: OK"
   exit 0

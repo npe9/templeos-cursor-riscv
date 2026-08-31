@@ -1,36 +1,52 @@
 # Notes for contributors and coding agents
 
+Lean cheat sheet. Tutorials and status live under **[docs/](docs/README.md)**.
+
+This is a **RISC-V TempleOS / HolyC** port (Kconfig boards, SiFive, …). Emulator smokes
+(`qemu-integration`) are the CI harness — not the product story. Prefer board / `MEM_*` /
+HolyC driver language in user-facing text.
+
 ## Build and test
 
-- **`make`** — host compiler `holyc-riscv`. The root `Makefile` passes **`-D_DEFAULT_SOURCE`** so glibc exposes `strdup` and related APIs under **`-std=c11`** (required for correct Linux builds / GitHub Actions).
-- **`make test`** — quick AOT smoke (`build/smoke.hc`).
-- **`make ci`** — same stages as [`.github/workflows/ci.yml`](.github/workflows/ci.yml): **`make compliance`** then **`make qemu-integration`** (exec oracles, TempleOS smoke, and **`make repl-smoke`** — the bare-metal REPL compiling and running statements over the UART). Requires a RISC-V bare-metal toolchain (`riscv64-unknown-elf-gcc`), **`qemu-system-riscv64`**, and **Python 3** (TempleOS image helper).
-- **`make lint-sh`** — runs **ShellCheck** (`-S error -x`) on the five CI shell scripts; requires **`shellcheck`** on `PATH` (same checks as the **`shellcheck`** CI job).
-- **`make syntax-sh`** — **`bash -n`** on every **`tests/scripts/*.sh`**; no extra tools (quick syntax smoke for scripts not covered by **`lint-sh`**).
-- **`make kernel-print-smoke`** — compiles `tests/exec/cases/kernel_print_demo.hc` (which `#include`s `Kernel/Kernel_RV.PRJ`), formats a string with the kernel's own `StrPrintJoin`, and prints it over the QEMU `virt` UART; part of `make qemu-integration`.
-- **`make coverage`** — project-mode compiles of `Kernel/Kernel_RV.PRJ` (0 errors), `Kernel/Kernel.PRJ`, `Adam/MakeAdam.HC`, `Compiler/Compiler.PRJ` with an all-errors tally (`HOLYC_ALL_ERRORS=1 HOLYC_INCLUDE_ROOT=$PWD ./holyc-riscv <prj>` prints every `file:line: msg`). `Kernel/KStartRV.HC` is the RISC-V stand-in for the excluded x86 files (data labels + stub functions) — keep it in sync with what phase 2 implements.
-- Debug env (host build only): `HOLYC_TRACE=1` (parser failure traces), `HOLYC_TOKTRACE=<substr>` (every token from files whose name contains the substring, with brace depth). `bootstrap/Makefile.repl` and `tests/scripts/run_exec_oracles.sh` rebuild when `holyc_compiler.h` / `bootstrap/holy_rt*.h` change — a stale `repl.elf` or harness object shows up as REPL cases that all "CRASH" or runtime calls that hang.
+| Command | Purpose |
+|---------|---------|
+| `make` | Host compiler `holyc-riscv` (`-D_DEFAULT_SOURCE` for glibc/`strdup` under `-std=c11`) |
+| `make test` | Tiny AOT smoke + `fmt-test` |
+| `make fmt` / `make fmt-check` | Rewrite / gate HolyC under enforced roots (`holyc-riscv --fmt`, like gofmt) |
+| `make ci` | `compliance` + `fmt-test` + `fmt-check` + `qemu-integration` (mirrors Actions after shell jobs) |
+| `make syntax-sh` / `make lint-sh` | `bash -n` all scripts / ShellCheck primary scripts |
+| `make repl-smoke` / `make repl-regression` | REPL UART smoke / honesty gate — [tests/REGRESSION.md](tests/REGRESSION.md) |
+| `make kernel-plat-smoke` | HolyC Kconfig UART+CLINT on CI default board (in `qemu-integration`) |
+| `make kernel-phase3-smoke` | Guest Compiler_RV + StartOS subset — [COMPILER_RV.md](templeos-riscv/COMPILER_RV.md) |
+| `make hc-repl` / `hc-repl-smoke` | Transitional Mac-AOT guest — **do not grow `jit.hc`** |
+| `make coverage` | Project-mode compile tally (local; not CI) |
+| `make menuconfig-rv` | Platform Kconfig — [KCONFIG.md](templeos-riscv/KCONFIG.md) |
 
-## CI (GitHub Actions)
+Formatter (gofmt-style): `holyc-riscv --fmt` on edited `.hc`/`.HC`/`.HH` — do not hand-fight style. Roots: `tests/scripts/holyc_fmt_paths.sh`. Goldens: `make fmt-test`. Rule: `.cursor/rules/holyc-fmt.mdc`.
 
-- Pushes and PRs that change **only** Markdown (`*.md` anywhere) **do not** run CI (`paths-ignore`), to save time on doc edits. Use **Actions → CI → Run workflow** when you need a full run after doc-only changes.
-- **`concurrency: cancel-in-progress`** stops the previous run when a new push lands; an older commit may show **cancelled** even though the tip commit is green.
-- **`syntax-sh`** and **`shellcheck`** are separate jobs (run in parallel with **`compile-compliance`**). **`qemu-integration`** waits for all three. **`syntax-sh`** is **`make syntax-sh`** only; **`shellcheck`** installs **ShellCheck** and lints the five primary scripts.
-- **Branch protection (optional):** if you require status checks on `archive`, include all four job names: **`syntax-sh`**, **`shellcheck`**, **`compile-compliance`**, **`qemu-integration`**.
+Debug (host build): `HOLYC_TRACE=1`, `HOLYC_TOKTRACE=<substr>`. Stale `repl.elf` / harness objects often look like universal CRASH/hang — rebuild after `host/holyc_compiler.h` / `bootstrap/holy_rt*.h` changes.
 
-## Implementation status
+Kernel FB/Gr/Win interactive (macOS): see [BOARD_FB.md](templeos-riscv/BOARD_FB.md). Codegen bisect: `HOLYC_NO_OPT=1` / `HOLYC_NO_TIER2=1` / `HOLYC_NO_PROMOTE=1` / `HOLYC_O1_MODE`.
 
-- Feature-level notes: [HOLYC_IMPLEMENTATION_STATUS.md](HOLYC_IMPLEMENTATION_STATUS.md).
+## CI
 
-## Layout
+- Jobs: `syntax-sh` ‖ `shellcheck` ‖ `compile-compliance` → `qemu-integration`. Details: [docs/CI.md](docs/CI.md), matrix: [tests/README.md](tests/README.md).
+- **Markdown-only** pushes skip CI (`paths-ignore`); use **Actions → CI → Run workflow** to force a run.
+- `concurrency: cancel-in-progress` — an older run may show **cancelled** while tip is green.
 
-- Compiler: `lexer.c`, `parser.c`, `compiler.c`, `hash_table.c`, `compiler_helper.c`, `main_stub.c`; headers `holyc_compiler.h`, `holy_api.h`.
-- Test layout: [tests/README.md](tests/README.md).
-- Compliance: `tests/holyc/compliance/` and `tests/scripts/run_holyc_compliance.sh`.
-- QEMU UART oracles: `tests/exec/` and `tests/scripts/run_exec_oracles.sh`.
-- Bare-metal REPL: `bootstrap/` (e.g. `Makefile.repl` builds with `../parser.c`).
-- OS scaffold: `templeos-riscv/`.
+## Docs and layout
 
-## Git remotes
+| Doc | Topic |
+|-----|--------|
+| [docs/LAYOUT.md](docs/LAYOUT.md) | Source-tree map (`host/` / `tos/` / TempleOS) |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System map / self-host |
+| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Norms |
+| [docs/REPL.md](docs/REPL.md) | Interactive HolyC |
+| [docs/HOLYC_IMPLEMENTATION_STATUS.md](docs/HOLYC_IMPLEMENTATION_STATUS.md) | Language surface |
+| [templeos-riscv/PLATFORM.md](templeos-riscv/PLATFORM.md) | Board ports + CI emulator targets (virt, sifive_u, …) |
 
-This clone may use **`origin`** as a local path mirror. **`github`** points at the GitHub repo; use **`git push github archive`** if `origin` rejects pushes (non-bare checkout of `archive`).
+Host compiler: `host/` (`lexer.c`, `parser.c`, …). TempleOS port trees: `Kernel/`, `Compiler/`, `Adam/`, `Demo/` (do not rename). ISO/home reference: `tos/` (`StartOS`, `Apps`, `Doc`, …). Scratch: `tests/scratch/`. Session notes: `docs/archive/` (ignored).
+
+## Remotes
+
+`origin` may be a local path mirror; **`github`** → GitHub. Prefer `git push github archive` if `origin` rejects pushes.

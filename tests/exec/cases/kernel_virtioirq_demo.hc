@@ -5,20 +5,34 @@
 // routes the device IRQ and sets MEIE. The requests here still complete by polling -- this test only
 // proves the interrupt fires and is acknowledged cleanly (no storm), via RVVirtioIrqs().
 #include "/Kernel/Kernel_RV.PRJ"
-U0 Sh(U8 *s){ U8 *u=0x10000000; while(*s)*u=*s++; }
+#define MEM_UART 0x10000000
+U0 Sh(U8 *s)
+{
+  U8 *u = MEM_UART;
+  while (*s)
+    *u = *s++;
+}
+
 I64 main()
 {
-  U8 *buf=0x88030000;
+  U8 *buf = 0x88030000;
   I64 i;
   RVTrapInit();
-  if (VirtioBlkInit()) { Sh("no virtio-blk device\n"); return 0; }
+  if (VirtioBlkInit()) {
+    Sh("no virtio-blk device\n");
+    return 0;
+  }
   VirtioBlkIrqInit();
-  for (i=0;i<512;i++) buf[i]=0x77;
-  VirtioBlkWrite(20,buf);
-  for (i=0;i<512;i++) buf[i]=0;
-  VirtioBlkRead(20,buf);
-  I64 irqs=RVVirtioIrqs();
-  if (irqs>0 && buf[0]==0x77) Sh("virtio IRQ serviced OK\n");
-  else Sh("virtio IRQ FAILED\n");
+  for (i = 0; i < 512; i++)
+    buf[i] = 0x77;
+  VirtioBlkWrite(20, buf);
+  for (i = 0; i < 512; i++)
+    buf[i] = 0;
+  VirtioBlkRead(20, buf);
+  I64 irqs = RVVirtioIrqs();
+  if (irqs > 0 && buf[0] == 0x77)
+    Sh("virtio IRQ serviced OK\n");
+  else
+    Sh("virtio IRQ FAILED\n");
   return irqs;
 }

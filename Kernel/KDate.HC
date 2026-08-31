@@ -133,10 +133,8 @@ I64 Bcd2Bin(U64 b)
 U0 NowDateTimeStruct(CDateStruct *_ds)
 {
 #ifdef RISCV_VIRT
-  // RISC-V: read the QEMU virt Goldfish RTC (MMIO at 0x101000) instead of the x86 CMOS ports
-  // 0x70/0x71 (which don't exist here). TIME_LOW@0 latches TIME_HIGH@4 -> ns since the Unix epoch.
-  // Date fields come from the tested Date2Struct; h/m/s are filled directly from the seconds-of-day.
-  U32 *rtc=0x101000;
+  // RISC-V virt: Goldfish RTC (Kconfig CONFIG_RTC_BASE) instead of x86 CMOS 0x70/0x71.
+  U32 *rtc=CONFIG_RTC_BASE;
   U64 lo,hi,ns,secs;
   I64 days,sod;
   CDate cdt;

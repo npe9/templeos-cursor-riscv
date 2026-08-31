@@ -90,8 +90,9 @@ U0 LexExcept(CCmpCtrl *cc,U8 *str=NULL)
   LexPutPos(cc);
   cc->error_cnt++;
   FlushMsgs;
-  if (!Bt(&sys_run_level,RLf_ADAM_SERVER))
-    Dbg("Type \"Fix;\"");
+  if (!Bt(&sys_run_level,RLf_ADAM_SERVER)) {
+    // Stock TempleOS drops into Dbg here; on RV early boot that hangs. Throw instead.
+  }
   throw('Compiler');
 }
 

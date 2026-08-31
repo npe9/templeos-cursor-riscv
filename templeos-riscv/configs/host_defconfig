@@ -1,0 +1,5 @@
+# QEMU host — LEGACY STUB (not in QEMU 10.x -M help; not a bare-metal board)
+CONFIG_PLATFORM_HOST=y
+# CONFIG_PLATFORM_VIRT is not set
+CONFIG_UART_STUB=y
+CONFIG_FB_PRESENT_NONE=y

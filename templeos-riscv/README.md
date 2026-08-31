@@ -1,15 +1,24 @@
 # TempleOS for RISC-V
 
-This directory is the **operating-system personality** for this project: boot, UART, and a fixed link layout for HolyC AOT blobs. It is intentionally **separate** from the HolyC compiler sources under the repository root (`lexer.c`, `parser.c`, `compiler.c`, `holyc-riscv`).
+This directory is the **C guest-loader / image** personality: boot, traps, console putc,
+and a fixed link layout for HolyC AOT blobs. It is intentionally **separate** from the host
+HolyC compiler at the repo root (`holyc-riscv`) and from the **HolyC OS** under `../Kernel/`.
+
+Repo-wide map: [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md). Emulator `make qemu*`
+targets here are the **CI/dev harness** for loading the ELF — not the product story.
+Board selection: [PLATFORM.md](PLATFORM.md), [KCONFIG.md](KCONFIG.md).
 
 ## Layout
 
 | Path | Role |
 |------|------|
-| `kernel/` | `boot.S`, **S-mode traps** (`trap_entry.S`), UART, compiler-slot probe, guest call |
+| `kernel/` | `boot.S`, **S-mode traps** (`trap_entry.S`), virt-oriented console putc, guest call |
+| `Kconfig` + `configs/` | Machine + memory-map menu → `Kernel/RVAutoConf.HH` — **[KCONFIG.md](KCONFIG.md)** |
 | `guest/` | Default HolyC `main` linked at **`0x80100000`** |
 | `selfhost/` | HolyC self-host **seed** (`toy_eval.hc`) |
 | `link/kernel.ld` | Guest **`0x80100000`**, compiler slot **`0x80200000`**, **`TosApi` @ `0x80300000`** (`kernel/tos_api.h`) |
+
+**Multi-machine OS drivers are HolyC** (`Kernel/Drv/*` + Kconfig) — [PLATFORM.md](PLATFORM.md), tutorial [KCONFIG.md](KCONFIG.md). This C tree is **not** a parallel device-driver stack.
 
 ## Builds
 
@@ -58,6 +67,51 @@ qemu-system-riscv64 -M virt -bios none -global virtio-mmio.force-legacy=off \
 
 If a modern MMIO block device is present, Phase E prefers it over PCI (`virtio-blk MMIO @ ...` then the same RedSea lines).
 
+## Framebuffer (Phase F — not VGA)
+
+Native **32-bpp XRGB8888** linear FB in `Kernel/RVFb.HC` (put-pixel / fill / blit / 8×8 `sys_font_std` glyphs). Thin **Gr*/CDC** + soft terminal in `Kernel/RVGr.HC`. TempleOS-style **text_base WinMgr** in `Kernel/RVWinMgr.HC` (borders, wallpaper, titles, z-order, optional `draw_it` → `RVFbPresent`). **`RVSysWinInit`** (from `RVKMain`) brings up the windowed desktop when QEMU **ramfb** is present or a board has called **`RVFbSimpleFbBind`**; under UART-only `-nographic` (no ramfb) it is a no-op so CI stays green.
+
+Present backends (`RVFbSetPresent`):
+
+| Kind | Constant | When |
+|------|----------|------|
+| soft only | `RV_FB_PRESENT_NONE` | draw + hash; no scanout |
+| QEMU ramfb | `RV_FB_PRESENT_RAMFB` (default on virt) | fw_cfg `etc/ramfb` |
+| DT/firmware linear FB | `RV_FB_PRESENT_SIMPLEFB` | after `RVFbSimpleFbBind(base,w,h,…)` |
+
+```bash
+# Headless smokes (UART hash oracle; part of make qemu-integration)
+# These use -display none — you will NOT see a window.
+make kernel-fb-smoke
+make kernel-gr-smoke
+make kernel-win-smoke
+
+# --- Visible pixels (macOS: cocoa; do NOT pass -nographic or -display none) ---
+# Color bars + "Hello from TempleOS/RV":
+make kernel-fb-smoke   # also writes build/exec/fb.elf
+qemu-system-riscv64 -M virt -m 128M -bios none -kernel build/exec/fb.elf \
+  -device ramfb -display cocoa -serial stdio
+
+# Soft term + Gr* demo:
+make kernel-gr-smoke
+qemu-system-riscv64 -M virt -m 128M -bios none -kernel build/exec/gr.elf \
+  -device ramfb -display cocoa -serial stdio
+
+# TempleOS-style bordered windows (Adam + Demo/Graphics):
+make kernel-win-smoke
+qemu-system-riscv64 -M virt -m 128M -bios none -kernel build/exec/win.elf \
+  -device ramfb -display cocoa -serial stdio
+
+# Self-boot with WinMgr desktop when ramfb is present:
+make kernel-selfboot-smoke   # writes build/exec/kp.elf (default host O1; bisect with HOLYC_NO_OPT=1)
+qemu-system-riscv64 -M virt -m 128M -bios none -kernel build/exec/kp.elf \
+  -device ramfb -display cocoa -serial stdio
+# Gate: rv_sys_gr_force=-1 never; =1 force soft path. Auto (0) probes ramfb / bound simplefb.
+# On Linux hosts, use -display sdl or gtk instead of cocoa if available.
+```
+
+See **[BOARD_FB.md](BOARD_FB.md)** for VisionFive / Milk-V / MangoPi bring-up notes (simplefb vs vendor DRM — honest). Full Adam `DolDoc` / mouse grab / 8-bit VGA `GrBitMap` is not on RV; WinMgr keeps the text_base model and presents via 32-bpp.
+
 From the **repository root**:
 
 ```bash
@@ -71,10 +125,13 @@ Requires `riscv64-unknown-elf-{gcc,ld,objcopy}`, `qemu-system-riscv64` (same as 
 
 See **[TOS_X86_PARITY.md](TOS_X86_PARITY.md)** for an apples-to-apples map (boot, compiler load, Adam, scheduler, disk, display, multicore) from original TempleOS to this RISC-V kernel, plus phased milestones.
 
-## Self-hosting roadmap
+## Self-hosting
 
-1. **Now**: C kernel + HolyC guest; `selfhost/toy_eval.hc` parses a constant string with `+` and `*` (recursive descent) — proves HolyC code runs as the “user” under this kernel.
-2. **Next**: Grow `selfhost/` into a real lexer/parser/codegen for RV64 (or emit to the existing binary format the kernel loads).
-3. **End state**: `holyc` built from HolyC, running on TempleOS/RISC-V, while the C compiler at repo root remains the bootstrap for the host.
+Language / boot destination is **guest `Compiler_RV` + `ExePutS` / `Cmp`**, not growing
+`bootstrap/hc_repl/jit.hc`. Host `holyc-riscv` remains the transitional AOT bootstrap.
+Plan and gates: **[COMPILER_RV.md](COMPILER_RV.md)**. Architecture summary: [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md). Doc index: [../docs/README.md](../docs/README.md).
 
-The **bootstrap compiler** always lives outside `templeos-riscv/`; this tree never needs to include `lexer.c` / `parser.c` to build the OS image.
+`selfhost/toy_eval.hc` is an early seed under this C loader; the live Cmp path lives in
+`Kernel/` + `Compiler/` phase3 smokes (`make kernel-phase3-smoke` from repo root).
+
+The **bootstrap compiler** always lives outside `templeos-riscv/` (`../host/`); this tree never needs to include those sources to build the OS image.

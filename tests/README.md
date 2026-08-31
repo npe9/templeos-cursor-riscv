@@ -1,22 +1,64 @@
 # Tests
 
-## Primary harnesses (used by CI)
+**Doc index:** [../docs/README.md](../docs/README.md) · **CI how-to:** [../docs/CI.md](../docs/CI.md)
+
+## Test matrix (what runs where)
+
+| Area | Location / target | CI job | Notes |
+|------|-------------------|--------|-------|
+| `bash -n` all scripts | `make syntax-sh` | **syntax-sh** | No extra tools |
+| ShellCheck primary scripts | `make lint-sh` | **shellcheck** | Needs `shellcheck` |
+| Host build | `make` → `holyc-riscv` | **compile-compliance** | |
+| Compile compliance | `make compliance` | **compile-compliance** | TempleOS tree + parity |
+| Formatter goldens | `make fmt-test` | **compile-compliance** | `tests/fmt/` |
+| HolyC fmt-check | `make fmt-check` | **compile-compliance** | Enforced roots (`holyc_fmt_paths.sh`) |
+| Exec oracles | `make exec-oracle` | **qemu-integration** | `tests/exec/` |
+| C-image TempleOS smoke | `make templeos-smoke` | **qemu-integration** | `templeos-riscv/` |
+| Kernel UART smokes | `kernel-*-smoke` (print…virtioshell) | **qemu-integration** | See Makefile list |
+| FB / Gr / Win | `kernel-fb/gr/win-smoke` | **qemu-integration** | Headless UART hash |
+| Guest ExePutS / fundef | `kernel-exepubs*-smoke` | **qemu-integration** | |
+| Phase3 (Compiler_RV + StartOS) | `kernel-phase3-smoke` | **qemu-integration** | [COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md) |
+| Plat virt UART/CLINT | `kernel-plat-smoke` | **qemu-integration** | Kconfig HolyC drivers |
+| Plat sifive_u | `kernel-plat-sifive-u-smoke` | **local only** | Restores virt defconfig after |
+| Mac-AOT `hc_repl` | `hc-repl-smoke` | **qemu-integration** | Transitional bridge |
+| REPL language smoke | `repl-smoke` | **qemu-integration** | |
+| REPL honesty | `repl-regression` | **qemu-integration** | [REGRESSION.md](REGRESSION.md) |
+| Term geometry PTY | `term-probe-pty` | **qemu-integration** | |
+| Project coverage tally | `make coverage` | **local only** | Heavy; not a merge gate |
+
+**Full local gate:** `make ci` (= compliance + fmt-test + fmt-check + qemu-integration).
+
+**Note:** `make compliance-exec` = suites + exec oracles in one script; it does **not** run TempleOS smoke or the full `qemu-integration` list.
+
+## Primary harnesses
 
 | Area | Location | Make / script |
 |------|----------|----------------|
-| Compile compliance (TempleOS tree + parity `.hc`) | `tests/holyc/compliance/` | `make compliance` → `tests/scripts/run_holyc_compliance.sh` |
-| UART execution oracles (the harness links the shared runtime `bootstrap/holy_rt.h` and resolves the blob's import directory) | `tests/exec/` | `make exec-oracle` → `tests/scripts/run_exec_oracles.sh` |
-| TempleOS/RISC-V QEMU smoke | (builds `templeos-riscv/`) | `make templeos-smoke` → `tests/scripts/run_templeos_smoke.sh` |
-| Bare-metal REPL over UART (QEMU) — incl. whole TempleOS demo files with expected output | (builds `bootstrap/repl.elf`) | `make repl-smoke` → `tests/scripts/run_repl_smoke.sh` |
+| Compile compliance | `tests/holyc/compliance/` | `make compliance` → `tests/scripts/run_holyc_compliance.sh` |
+| Formatter goldens | `tests/fmt/` | `make fmt-test` → `tests/scripts/run_fmt_test.sh` |
+| HolyC tree fmt | enforced roots | `make fmt` / `make fmt-check` → `tests/scripts/run_fmt.sh` (paths: `holyc_fmt_paths.sh`) |
+| UART execution oracles | `tests/exec/` | `make exec-oracle` → `tests/scripts/run_exec_oracles.sh` |
+| TempleOS/RISC-V QEMU smoke | `templeos-riscv/` | `make templeos-smoke` |
+| Bare-metal REPL | `bootstrap/repl.elf` | `make repl-smoke` / `repl-regression` |
 
-**Full gate (matches [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):** `make ci` — compliance, then `qemu-integration` (exec oracles + TempleOS smoke + REPL smoke).
+## Kernel / platform smokes (selected)
 
-**Note:** `make compliance-exec` runs `run_holyc_compliance.sh --exec` (compile suites + exec oracles in one script); it does **not** run TempleOS smoke.
+| Make target | Purpose | In CI? |
+|-------------|---------|--------|
+| `kernel-print-smoke` | `Kernel_RV` `StrPrintJoin` → UART | yes |
+| `kernel-plat-smoke` | Kconfig HolyC UART+CLINT on `-M virt` | yes |
+| `kernel-plat-sifive-u-smoke` | Same on `-M sifive_u` | **no** (local) |
+| `kernel-fb-smoke` / `gr` / `win` | FB / Gr* / text_base WinMgr | yes |
+| `kernel-exepubs-smoke` / `phase3-smoke` | Guest `ExePutS` / Cmp / StartOS | yes |
 
-## Other scripts
+Platform tutorial: [../templeos-riscv/KCONFIG.md](../templeos-riscv/KCONFIG.md). Machines: [PLATFORM.md](../templeos-riscv/PLATFORM.md) (virt, sifive_u, amd_microblaze_v, opentitan, …).
 
-`tests/scripts/` contains additional TempleOS batch runners and utilities; the table above lists the paths wired into the root `Makefile` and CI.
+## Scratch / legacy
 
-CI runs a **`syntax-sh`** job (**`make syntax-sh`**) and a **`shellcheck`** job (**ShellCheck** `-S error` on the five scripts in the table) in parallel with **`compile-compliance`**; **`qemu-integration`** requires all three. See [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). Locally: **`make syntax-sh`**, **`make lint-sh`**.
+`tests/scratch/legacy/` holds old root-level `test_*.hc` snippets — **not** CI. New cases go in `tests/exec/cases/` or compliance manifests.
 
-**Doc-only pushes** (commits that change only `*.md` files) **skip** CI to save runners; use **Actions → CI → Run workflow** for a manual full run. Contributor notes: [AGENTS.md](../AGENTS.md).
+## Shell hygiene
+
+CI runs **syntax-sh** and **shellcheck** in parallel with **compile-compliance**; **qemu-integration** needs all three. Locally: `make syntax-sh`, `make lint-sh`.
+
+**Doc-only pushes** (only `*.md`) **skip** CI; use **Actions → CI → Run workflow**. Contributor notes: [../AGENTS.md](../AGENTS.md), [../docs/CONTRIBUTING.md](../docs/CONTRIBUTING.md).

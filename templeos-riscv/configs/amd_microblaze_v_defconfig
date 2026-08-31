@@ -1,0 +1,15 @@
+# QEMU amd-microblaze-v-generic — TENTATIVE
+# DDR @ 0x80000000; UARTLite serial0 + 16550 @ 0x44A11000 serial1 (regshift 2).
+# No SiFive PLIC/CLINT (AXI INTC). Use: -serial null -serial mon:stdio
+CONFIG_PLATFORM_AMD_MICROBLAZE_V=y
+# CONFIG_PLATFORM_VIRT is not set
+CONFIG_UART_16550=y
+# CONFIG_UART_SIFIVE is not set
+# CONFIG_UART_HTIF is not set
+# CONFIG_UART_STUB is not set
+CONFIG_UART_BASE=0x44A11000
+# CONFIG_HAS_PLIC is not set
+# CONFIG_HAS_VIRTIO_MMIO is not set
+# CONFIG_HAS_VIRTIO_PCI is not set
+# CONFIG_HAS_FW_CFG is not set
+CONFIG_FB_PRESENT_NONE=y

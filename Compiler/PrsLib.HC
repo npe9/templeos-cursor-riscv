@@ -246,6 +246,7 @@ U0 COCHeaderPut(CCmpCtrl *cc,I64 pass,Bool put)
   cc->pass=pass;
 }
 
+
 U8 *COCCompile(CCmpCtrl *cc,I64 *_code_size,CDbgInfo **_dbg,I64 *_type)
 {
   U8 *res;

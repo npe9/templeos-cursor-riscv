@@ -48,8 +48,54 @@ static void rt_putf64(double fv, int prec, int width) {
   while (n) HOLY_RT_PUTC(b[--n]);
 }
 
-/* Print: %[flags][width][.prec][h<n>|h*|h?]<conv>. Conversions: d u x X c s p P n f %.
- * HolyC extras: ',' thousands separators; h<n>/h* repeat count for %c; h? ignored. */
+/* PrintJoin: same conversions as Print, but argc/argv (HolyC varargs ABI). Registered as
+ * StrPrintJoin so seed print.hc can implement Print without a dual __boot_* hash name. */
+static HRT_I64 HolyPrintJoin(char *fmt, HRT_I64 argc, HRT_I64 *argv) {
+  HRT_I64 ai = 0;
+  if (!fmt) return 0;
+  for (const char *p = fmt; *p; p++) {
+    if (*p != '%') { HOLY_RT_PUTC(*p); continue; }
+    p++;
+    char pad = ' '; int width = 0, prec = -1, commas = 0, rep = 1;
+    for (;;) {
+      if (*p == '-') p++;
+      else if (*p == '0') { pad = '0'; p++; }
+      else if (*p == ',') { commas = 1; p++; }
+      else break;
+    }
+    while (*p >= '0' && *p <= '9') width = width * 10 + (*p++ - '0');
+    if (*p == ',') { commas = 1; p++; }
+    if (*p == '.') { p++; prec = 0; while (*p >= '0' && *p <= '9') prec = prec * 10 + (*p++ - '0'); }
+    while (*p == 'h') {
+      p++;
+      if (*p == '?') p++;
+      else if (*p == '*') { rep = (int)(ai < argc ? argv[ai++] : 0); p++; }
+      else if (*p == '-') { p++; while (*p >= '0' && *p <= '9') p++; }
+      else { int v = 0; while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0'); rep = v ? v : 1; }
+    }
+    #define PJ_ARG() (ai < argc ? argv[ai++] : 0)
+    switch (*p) {
+    case 'd': { HRT_I64 v = PJ_ARG(); rt_putnum(v < 0 ? (HRT_U64)(-v) : (HRT_U64)v, 10, 0, v < 0, width, pad, commas); break; }
+    case 'u': rt_putnum((HRT_U64)PJ_ARG(), 10, 0, 0, width, pad, commas); break;
+    case 'x': rt_putnum((HRT_U64)PJ_ARG(), 16, 0, 0, width, pad, 0); break;
+    case 'X': rt_putnum((HRT_U64)PJ_ARG(), 16, 1, 0, width, pad, 0); break;
+    case 'p': case 'P': rt_puts("0x"); rt_putnum((HRT_U64)PJ_ARG(), 16, 0, 0, 16, '0', 0); break;
+    case 's': { char *sv = (char *)PJ_ARG(); HRT_I64 l = sv ? rt_strlen(sv) : 6; for (HRT_I64 i = l; i < width; i++) HOLY_RT_PUTC(' '); rt_puts(sv ? sv : "(null)"); break; }
+    case 'c': { HRT_I64 cv = PJ_ARG();
+                for (int r = 0; r < rep; r++) { HRT_I64 c = cv; while (c) { HOLY_RT_PUTC((char)(c & 0xFF)); c >>= 8; } }
+                break; }
+    case 'f': case 'n': { HRT_I64 bits = PJ_ARG(); double fv; HRT_U8 *bp = (HRT_U8 *)&bits, *fp = (HRT_U8 *)&fv;
+                          for (int i = 0; i < 8; i++) fp[i] = bp[i];
+                          rt_putf64(fv, prec < 0 ? 3 : prec, width); break; }
+    case '%': HOLY_RT_PUTC('%'); break;
+    case 0: return 0;
+    default: HOLY_RT_PUTC('%'); HOLY_RT_PUTC(*p); break;
+    }
+    #undef PJ_ARG
+  }
+  return 0;
+}
+/* Print: %[flags][width][.prec][h<n>|h*|h?]<conv>. C-varargs path for AOT import table. */
 static HRT_I64 HolyPrint(char *fmt, ...) {
   va_list ap; va_start(ap, fmt);
   for (const char *p = fmt; *p; p++) {
@@ -261,7 +307,17 @@ static HRT_I64 HolyPow10(HRT_I64 x) { return rt_f2b(rt_exp(rt_b2f(x) * 2.3025850
 /* KHashA.HC asm: CHash {next, str, U32 type, U32 use_cnt}; CHashTable {next, mask, locked_flags, body}. */
 typedef struct HolyHash { struct HolyHash *next; char *str; HRT_U32 type, use_cnt; } HolyHash;
 typedef struct HolyHashTable { struct HolyHashTable *next; HRT_I64 mask, locked_flags; HolyHash **body; } HolyHashTable;
-static HRT_I64 HolyHashStr(char *st) { HRT_U64 h = 0; while (*st) { h = (h << 5) + h + (HRT_U8)*st++; } return (HRT_I64)h; }
+/* TempleOS SYS_HASH_STR (KHashA / KHashRV) — must match guest HashStr or HashAdd/Find diverge. */
+static HRT_I64 HolyHashStr(char *st) {
+  HRT_U64 h = 0, c, carry;
+  if (!st) return 0;
+  while ((c = (HRT_U8)*st++)) {
+    carry = h >> 63;
+    h = (h << 1) + c + carry;
+  }
+  carry = (h >> 15) & 1;
+  return (HRT_I64)(h + (h >> 16) + carry);
+}
 static HRT_I64 HolyHashSingleTableFind(char *needle, HolyHashTable *t, HRT_I64 mask) {
   if (!needle || !t) return 0;
   for (HolyHash *e = t->body[(HRT_U64)HolyHashStr(needle) & (HRT_U64)t->mask]; e; e = e->next) {
@@ -302,7 +358,30 @@ static HRT_I64 HolyFarCall32(HRT_I64 a, HRT_I64 b, HRT_I64 c, HRT_I64 d) { (void
 /* --- RISC-V machine-mode traps + CLINT timer (QEMU virt) -----------------------------------------
  * A trap vector that saves the caller-saved registers, calls a C dispatcher, restores, and mrets.
  * The dispatcher counts machine-timer interrupts and re-arms mtimecmp; this is the interrupt-driven
- * foundation a preemptive scheduler needs. CLINT: mtime @ 0x0200BFF8, mtimecmp[hart0] @ 0x02004000. */
+ * foundation a preemptive scheduler needs. */
+#ifndef HOLY_UART_BASE
+#define HOLY_UART_BASE       0x10000000ULL
+#endif
+#ifndef HOLY_CLINT_BASE
+#define HOLY_CLINT_BASE      0x02000000ULL
+#endif
+#ifndef HOLY_CLINT_MTIME_OFF
+#define HOLY_CLINT_MTIME_OFF 0xBFF8ULL
+#endif
+#ifndef HOLY_CLINT_MTIMECMP_OFF
+#define HOLY_CLINT_MTIMECMP_OFF 0x4000ULL
+#endif
+#define HOLY_MTIME           (HOLY_CLINT_BASE + HOLY_CLINT_MTIME_OFF)
+#define HOLY_MTIMECMP        (HOLY_CLINT_BASE + HOLY_CLINT_MTIMECMP_OFF)
+#ifndef HOLY_VIRTIO_MMIO_BASE
+#define HOLY_VIRTIO_MMIO_BASE 0x10001000ULL
+#endif
+#ifndef HOLY_VIRTIO_MMIO_STRIDE
+#define HOLY_VIRTIO_MMIO_STRIDE 0x1000ULL
+#endif
+/* Slot-0 window (UART on virt); virtio IRQ N maps to HOLY_UART_BASE + N*STRIDE. */
+#define HOLY_VIRTIO_SLOT0_BASE (HOLY_VIRTIO_MMIO_BASE - HOLY_VIRTIO_MMIO_STRIDE)
+
 static void HolyServiceExternal(void);
 static volatile HRT_I64 holy_ticks = 0;
 static HRT_I64 holy_timer_interval = 0;
@@ -312,8 +391,8 @@ __attribute__((used)) static HRT_I64 HolyTrapDispatch(void) {
   __asm__ volatile("csrr %0, mcause" : "=r"(mcause));
   if (mcause == (HRT_I64)0x8000000000000007ULL) {          /* machine timer interrupt */
     holy_ticks++;
-    volatile HRT_I64 *mtime    = (volatile HRT_I64 *)0x0200BFF8;
-    volatile HRT_I64 *mtimecmp = (volatile HRT_I64 *)0x02004000;
+    volatile HRT_I64 *mtime    = (volatile HRT_I64 *)HOLY_MTIME;
+    volatile HRT_I64 *mtimecmp = (volatile HRT_I64 *)HOLY_MTIMECMP;
     *mtimecmp = *mtime + holy_timer_interval;              /* re-arm */
   } else if (mcause == (HRT_I64)0x800000000000000BULL) {    /* machine external (PLIC) interrupt */
     HolyServiceExternal();
@@ -352,8 +431,8 @@ static HRT_I64 HolyRVTrapInit(void) {
 }
 static HRT_I64 HolyRVTimerArm(HRT_I64 interval) {
   holy_timer_interval = interval;
-  volatile HRT_I64 *mtime    = (volatile HRT_I64 *)0x0200BFF8;
-  volatile HRT_I64 *mtimecmp = (volatile HRT_I64 *)0x02004000;
+  volatile HRT_I64 *mtime    = (volatile HRT_I64 *)HOLY_MTIME;
+  volatile HRT_I64 *mtimecmp = (volatile HRT_I64 *)HOLY_MTIMECMP;
   *mtimecmp = *mtime + interval;                                /* future deadline first */
   __asm__ volatile("csrs mie, %0" :: "r"((HRT_I64)(1<<7)));     /* then enable MTIE */
   return 0;
@@ -377,7 +456,7 @@ __attribute__((used)) static void *HolyPreemptPick(void *cur) {
   HRT_I64 mcause; __asm__ volatile("csrr %0, mcause" : "=r"(mcause));
   if (mcause == (HRT_I64)0x8000000000000007ULL) {
     holy_ticks++;
-    volatile HRT_I64 *mtime=(volatile HRT_I64*)0x0200BFF8, *mtimecmp=(volatile HRT_I64*)0x02004000;
+    volatile HRT_I64 *mtime=(volatile HRT_I64*)HOLY_MTIME, *mtimecmp=(volatile HRT_I64*)HOLY_MTIMECMP;
     *mtimecmp = *mtime + holy_timer_interval;
   } else if (mcause == (HRT_I64)0x800000000000000BULL) {
     HolyServiceExternal();
@@ -469,7 +548,7 @@ static HRT_I64 HolyRVPreemptInit(HRT_I64 interval) {
   __asm__ volatile("csrw mscratch, %0" :: "r"(&holy_pctx[0]));   /* main = slot 0 */
   __asm__ volatile("csrw mtvec, %0" :: "r"(&HolyPreemptVector));
   __asm__ volatile("csrs mstatus, %0" :: "r"((HRT_I64)(1<<3))); /* MIE */
-  volatile HRT_I64 *mtime=(volatile HRT_I64*)0x0200BFF8, *mtimecmp=(volatile HRT_I64*)0x02004000;
+  volatile HRT_I64 *mtime=(volatile HRT_I64*)HOLY_MTIME, *mtimecmp=(volatile HRT_I64*)HOLY_MTIMECMP;
   *mtimecmp = *mtime + interval;
   __asm__ volatile("csrs mie, %0" :: "r"((HRT_I64)(1<<7)));     /* MTIE last */
   return 0;
@@ -497,7 +576,18 @@ static HRT_I64 HolyRVSleep(HRT_I64 ticks) {
  * A machine external interrupt (PLIC) fires when the UART has a received byte; the handler claims it,
  * drains the RX FIFO into a ring buffer, and completes. A task can then wait on RVUartHasInput while
  * the scheduler runs others, instead of polling the device. UART IRQ is 10 on the virt PLIC. */
+#ifndef HOLY_PLIC
 #define HOLY_PLIC       0x0C000000
+#endif
+#ifndef HOLY_PLIC_ENABLE_OFF
+#define HOLY_PLIC_ENABLE_OFF     0x2000
+#endif
+#ifndef HOLY_PLIC_THRESHOLD_OFF
+#define HOLY_PLIC_THRESHOLD_OFF  0x200000
+#endif
+#ifndef HOLY_PLIC_CLAIM_OFF
+#define HOLY_PLIC_CLAIM_OFF      0x200004
+#endif
 #define HOLY_UART_IRQ   10
 static char holy_urx[256];
 static int  holy_urx_head = 0, holy_urx_tail = 0;
@@ -505,22 +595,22 @@ static int  holy_urx_head = 0, holy_urx_tail = 0;
 static volatile HRT_I64 holy_virtio_irqs = 0;   /* count of serviced virtio-mmio completion interrupts */
 
 static void HolyServiceExternal(void) {
-  volatile HRT_U32 *claim = (volatile HRT_U32 *)(HOLY_PLIC + 0x200004);   /* context 0 claim/complete */
+  volatile HRT_U32 *claim = (volatile HRT_U32 *)(HOLY_PLIC + HOLY_PLIC_CLAIM_OFF);
   HRT_U32 irq = *claim;
   if (irq == HOLY_UART_IRQ) {
-    volatile HRT_U8 *rbr = (volatile HRT_U8 *)0x10000000;
-    volatile HRT_U8 *lsr = (volatile HRT_U8 *)0x10000005;
+    volatile HRT_U8 *rbr = (volatile HRT_U8 *)HOLY_UART_BASE;
+    volatile HRT_U8 *lsr = (volatile HRT_U8 *)(HOLY_UART_BASE + 5);
     while (*lsr & 1) {                                                     /* drain the RX FIFO */
       char c = (char)*rbr;
       int nh = (holy_urx_head + 1) & 255;
       if (nh != holy_urx_tail) { holy_urx[holy_urx_head] = c; holy_urx_head = nh; }
     }
   } else if (irq >= 1 && irq <= 8) {
-    /* virtio-mmio slot (0x10001000..0x10008000 map to PLIC IRQ 1..8). The device keeps asserting
+    /* virtio-mmio slot (HOLY_VIRTIO_MMIO_BASE.. map to PLIC IRQ 1..8). The device keeps asserting
      * the line until its InterruptStatus is acknowledged, so completing the PLIC claim WITHOUT this
      * ack would re-fire forever. Read InterruptStatus (0x60), write it back to InterruptACK (0x64). */
-    volatile HRT_U32 *isr  = (volatile HRT_U32 *)(0x10000000 + (HRT_I64)irq*0x1000 + 0x60);
-    volatile HRT_U32 *iack = (volatile HRT_U32 *)(0x10000000 + (HRT_I64)irq*0x1000 + 0x64);
+    volatile HRT_U32 *isr  = (volatile HRT_U32 *)(HOLY_VIRTIO_SLOT0_BASE + (HRT_I64)irq*HOLY_VIRTIO_MMIO_STRIDE + 0x60);
+    volatile HRT_U32 *iack = (volatile HRT_U32 *)(HOLY_VIRTIO_SLOT0_BASE + (HRT_I64)irq*HOLY_VIRTIO_MMIO_STRIDE + 0x64);
     *iack = *isr;
     holy_virtio_irqs++;
   }
@@ -529,10 +619,10 @@ static void HolyServiceExternal(void) {
 static HRT_I64 HolyRVVirtioIrqs(void) { return holy_virtio_irqs; }
 
 static HRT_I64 HolyRVUartIrqInit(void) {
-  *(volatile HRT_U8 *)0x10000001 = 1;                                      /* UART IER: RX-data interrupt */
+  *(volatile HRT_U8 *)(HOLY_UART_BASE + 1) = 1;                                      /* UART IER: RX-data interrupt */
   *(volatile HRT_U32 *)(HOLY_PLIC + HOLY_UART_IRQ*4) = 1;                  /* PLIC priority[irq] = 1 */
-  *(volatile HRT_U32 *)(HOLY_PLIC + 0x2000) |= (1u << HOLY_UART_IRQ);      /* PLIC enable for context 0 */
-  *(volatile HRT_U32 *)(HOLY_PLIC + 0x200000) = 0;                         /* PLIC threshold 0 */
+  *(volatile HRT_U32 *)(HOLY_PLIC + HOLY_PLIC_ENABLE_OFF) |= (1u << HOLY_UART_IRQ);
+  *(volatile HRT_U32 *)(HOLY_PLIC + HOLY_PLIC_THRESHOLD_OFF) = 0;
   __asm__ volatile("csrs mie, %0" :: "r"((HRT_I64)(1<<11)));              /* MEIE: machine external int */
   return 0;
 }
@@ -543,7 +633,7 @@ static HRT_I64 HolyRVUartGetBuffered(void) {
 }
 
 /* --- virtio-blk (legacy virtio-mmio v1) storage driver -------------------------------------------
- * QEMU virt exposes 8 virtio-mmio slots at 0x10001000..0x10008000; a -device virtio-blk-device lands
+ * QEMU virt exposes 8 virtio-mmio slots at HOLY_VIRTIO_MMIO_BASE..; a -device virtio-blk-device lands
  * in one with DeviceID 2. Legacy setup uses one page-aligned queue region (descriptors+avail, then
  * the used ring at QueueAlign) addressed by QueuePFN. A block request is a 3-descriptor chain:
  * header (type+sector), the 512-byte data buffer, and a status byte. We submit on the avail ring,
@@ -558,7 +648,7 @@ static volatile HRT_U8 holy_vstatus;
 
 static HRT_I64 HolyRVBlkInit(void) {
   for (int slot=1; slot<=8; slot++) {
-    volatile HRT_U32 *b = (volatile HRT_U32 *)(0x10000000 + slot*0x1000);
+    volatile HRT_U32 *b = (volatile HRT_U32 *)(HOLY_VIRTIO_SLOT0_BASE + slot*HOLY_VIRTIO_MMIO_STRIDE);
     if (b[0]==0x74726976 && b[2]==2) { holy_vblk = b; break; }
   }
   if (!holy_vblk) return -1;
@@ -689,13 +779,14 @@ static void **holy_fs_slot = 0;              /* &Fs : points at the current-CTas
 static HRT_I64 HolyRVYieldInit(void *fs_slot) { holy_fs_slot = (void **)fs_slot; return 0; }
 
 /* Jiffy clock, derived from the machine timer (mtime) so it advances whether we are polling from a
- * cooperative Yield or spinning in the idle path — no dependency on the timer ISR re-entering. Set
+ * cooperative Yield or spinning in the idle path — no dependency on the timer trap handler
+ * re-entering. Set
  * holy_jiffy_div to the number of mtime ticks per jiffy (QEMU virt mtime is 10 MHz, so 10000 -> a
  * 1 ms / ~1000 Hz jiffy, matching TempleOS's JIFFY_FREQ). 0 disables wake_jiffy checks entirely. */
 static HRT_I64 holy_jiffy_div = 0;
 static HRT_I64 HolyRVJiffies(void) {
   if (!holy_jiffy_div) return 0;
-  volatile HRT_I64 *mt = (volatile HRT_I64 *)0x0200BFF8;
+  volatile HRT_I64 *mt = (volatile HRT_I64 *)HOLY_MTIME;
   return *mt / holy_jiffy_div;
 }
 static HRT_I64 HolyRVJiffiesInit(HRT_I64 mtime_ticks_per_jiffy) {
@@ -721,8 +812,8 @@ static HRT_I64 HolyYield(void) {
   char *nxt;
   /* Round-robin scan for the next runnable task (Sched.HC's next_task walk). If none but cur is
    * runnable, keep running cur. If NOBODY is runnable (every task sleeping/suspended), idle: mask
-   * interrupts and poll mtime so the jiffy clock still advances, then rescan — TempleOS's idle-task
-   * STI;HLT;rescan loop, made deterministic by reading time rather than waiting for the ISR. */
+   * interrupts and poll mtime so the jiffy clock still advances, then rescan — TempleOS x86 idle
+   * used STI;HLT;rescan; here we poll mtime instead of waiting for a timer trap. */
   for (;;) {
     nxt = *(char **)(cur + HOLY_CTASK_NEXT);
     while (nxt != cur && !HolyTaskRunnable(nxt))
@@ -733,12 +824,12 @@ static HRT_I64 HolyYield(void) {
       return 0;
     }
     __asm__ volatile("csrc mstatus, %0" :: "r"((HRT_I64)(1 << 3)));   /* idle: mask interrupts */
-    { volatile HRT_I64 *mt = (volatile HRT_I64 *)0x0200BFF8; HRT_I64 t0 = *mt; while (*mt - t0 < 1000) {} }
+    { volatile HRT_I64 *mt = (volatile HRT_I64 *)HOLY_MTIME; HRT_I64 t0 = *mt; while (*mt - t0 < 1000) {} }
   }
   *holy_fs_slot = nxt;                                /* Fs = next task */
-  /* The task we switch to must run with interrupts ENABLED: reached from the timer ISR, mstatus.MIE
-   * was cleared on trap entry, and reached from the idle path we just masked it — either way an
-   * incoming task that never yields could not otherwise be preempted. */
+  /* The task we switch to must run with interrupts ENABLED: reached from the timer trap handler,
+   * mstatus.MIE was cleared on trap entry, and reached from the idle path we just masked it —
+   * either way an incoming task that never yields could not otherwise be preempted. */
   __asm__ volatile("csrs mstatus, %0" :: "r"((HRT_I64)(1 << 3)));
   HolyRVCtxSw(cur + HOLY_CTASK_RSP, nxt + HOLY_CTASK_RSP);
   return 0;
@@ -746,7 +837,7 @@ static HRT_I64 HolyYield(void) {
 
 /* --- Real-CTask timer preemption --------------------------------------------------------------- */
 __attribute__((used)) static void HolyTimerReArm(void) {
-  volatile HRT_I64 *mtime=(volatile HRT_I64*)0x0200BFF8, *mtimecmp=(volatile HRT_I64*)0x02004000;
+  volatile HRT_I64 *mtime=(volatile HRT_I64*)HOLY_MTIME, *mtimecmp=(volatile HRT_I64*)HOLY_MTIMECMP;
   *mtimecmp = *mtime + holy_timer_interval;
 }
 __attribute__((naked, aligned(4))) static void HolyRealPreemptVector(void) {
@@ -800,7 +891,7 @@ __attribute__((used)) static void HolyTrapDiagBody(void) {
   __asm__ volatile("csrr %0, mcause" : "=r"(mcause));
   __asm__ volatile("csrr %0, mepc"   : "=r"(mepc));
   __asm__ volatile("csrr %0, mtval"  : "=r"(mtval));
-  volatile char *u = (volatile char *)0x10000000;
+  volatile char *u = (volatile char *)HOLY_UART_BASE;
   const char *hx = "0123456789abcdef";
   const char *lbl = "\nTRAP mcause="; while (*lbl) *u = *lbl++;
   for (int i = 60; i >= 0; i -= 4) *u = hx[(mcause >> i) & 0xF];
@@ -823,7 +914,7 @@ static HRT_I64 HolyRVPreemptReal(HRT_I64 interval) {
   holy_timer_interval = interval;
   __asm__ volatile("csrw mtvec, %0" :: "r"(&HolyRealPreemptVector));
   __asm__ volatile("csrs mstatus, %0" :: "r"((HRT_I64)(1<<3)));
-  volatile HRT_I64 *mtime=(volatile HRT_I64*)0x0200BFF8, *mtimecmp=(volatile HRT_I64*)0x02004000;
+  volatile HRT_I64 *mtime=(volatile HRT_I64*)HOLY_MTIME, *mtimecmp=(volatile HRT_I64*)HOLY_MTIMECMP;
   *mtimecmp = *mtime + interval;
   __asm__ volatile("csrs mie, %0" :: "r"((HRT_I64)(1<<7)));
   return 0;

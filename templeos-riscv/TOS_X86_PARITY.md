@@ -1,17 +1,17 @@
 # TempleOS x86 vs RISC-V kernel — apples-to-apples plan
 
-This document maps **original x86 TempleOS** (in-repo `Doc/*.DD`, `Kernel/*.HC`, Terry’s design) to what **`templeos-riscv/`** should implement for **the same roles**. Hardware differs; **subsystem jobs** should align.
+This document maps **original x86 TempleOS** (in-repo `tos/Doc/*.DD`, `Kernel/*.HC`, Terry’s design) to what **`templeos-riscv/`** should implement for **the same roles**. Hardware differs; **subsystem jobs** should align.
 
 ## Status (this repo)
 
 | Phase | State |
 |-------|--------|
 | **A** | **Done:** S-mode `stvec` + dedicated trap stack (`sscratch` swap), `rv_s_trap_fatal()` prints `scause` / `sepc` / `stval` on UART. See `kernel/boot.S`, `kernel/trap_entry.S`, `kernel/kernel.c`. |
-| **B (start)** | **Done:** Linker region **`.compiler_blob` @ `0x80200000`**, 8-byte placeholder (`COMP` magic + `ret`). Kernel probes magic and calls stub at `+4`. Real `Compiler.BIN` replaces `build/compiler_slot.bin` path later. |
+| **B (start)** | **Done:** Linker region **`.compiler_blob` @ `0x80200000`**, 8-byte placeholder (`COMP` magic + `ret`). Kernel probes magic and calls stub at `+4`. **Next:** AOT `Compiler/Compiler_RV.PRJ` (RV Back*/OptPass789A) into that slot — see [`COMPILER_RV.md`](COMPILER_RV.md). |
 | **C (start)** | **Done:** Same TosApi layout as above. **Guest:** `guest/kmain.hc` probes magic at **`0x80300000`** via **`(U32 *)`** and returns **42** on match; host **`holyc-riscv`** emits full AOT (buffer sizing, casts, unary `*` / **`IC_EVAL_DROP`**). See `guest/tosapi_probe.hc` for the same pattern. |
 | **D (start)** | **Done:** **`tos_api_yield()`** bumps **`g_yield_count`** (no task switch). Kernel prints count after guest returns. |
 | **E (start)** | **Started:** **virtio-mmio** (modern v2) + **PCI virtio-blk**; **RedSea** **`redsea_read_contiguous`**, root scan (all non-dir files). QEMU MMIO: **`-global virtio-mmio.force-legacy=off`**. Smoke: **`make redsea-smoke-img`**. |
-| **F–H** | Not started. |
+| **F (start)** | **Started:** `Kernel/RVFb.HC` + `Kernel/RVGr.HC` + `Kernel/RVWinMgr.HC` — 32-bpp FB, thin Gr*/CDC, soft term, TempleOS-style text_base WinMgr. Board: `BOARD_FB.md`. Graphics boot still needs phase-3 **Compiler load + StartOS/Adam** on that FB ([`COMPILER_RV.md`](COMPILER_RV.md)). |
 
 **QEMU `virt` with `-bios none -kernel`:** Bring-up assumes **supervisor mode** at ELF entry (matches `stvec` / `scause`). If a platform enters **M-mode** only, add `mtvec` + delegation or an M-mode trampoline.
 
@@ -22,7 +22,7 @@ This document maps **original x86 TempleOS** (in-repo `Doc/*.DD`, `Kernel/*.HC`,
 | Area | x86 TempleOS |
 |------|----------------|
 | **Boot** | BIOS loads a tiny boot sector → loads **`/Kernel/Kernel.BIN.C`** (fits ~640K) → **16→32→64** → kernel pulls up the rest (`Doc/Boot.DD`). |
-| **Early bring-up** | Kernel loads **`/Compiler/Compiler.BIN`**, runs **`/StartOS.HC`** (often `.Z`), compiles/loads Adam/Home into the **Adam task** (`Doc/Boot.DD`). |
+| **Early bring-up** | Kernel loads **`/Compiler/Compiler.BIN`**, runs **`/StartOS.HC`** (often `.Z`), compiles/loads Adam/Home into the **Adam task** (`tos/Doc/Boot.DD` on disk; `::/Doc/Boot.DD` at runtime). |
 | **Privilege / memory** | **Ring 0 only**; **identity map** (VA = PA); paging present but effectively flat (`Doc/Strategy.DD`). |
 | **Code model** | **No object files / linker** in normal workflow; **JIT** + whole-file compile; AOT for kernel/boot (`Doc/Strategy.DD`). |
 | **CPU / IRQ** | x86_64; **IDT**; IRQs; disk often **polled ATA** (no IRQ) for compatibility (`Doc/Strategy.DD`). |
@@ -34,7 +34,7 @@ This document maps **original x86 TempleOS** (in-repo `Doc/*.DD`, `Kernel/*.HC`,
 | **Multicore** | **Master/slave**, not symmetric SMP (`Doc/Strategy.DD`; `Kernel/MultiProc.HC`). |
 | **Exceptions** | **`try`/`catch`** tied to kernel path (`Kernel/KExcept.HC`). |
 
-**Current RISC-V tree** (`templeos-riscv/`): bare entry, **UART**, one **HolyC blob @ `0x80100000`**, no staged compiler load, no tasks, no FS, no trap story beyond a stub.
+**Current RISC-V tree:** C bootstrap under `templeos-riscv/` (traps, UART, guest/compiler slots) plus HolyC `Kernel/` (tasks, virtio/RedSea, FB/WinMgr) and guest `Compiler_RV` / phase3 Cmp path. Still not full x86 Adam/DolDoc/mouse — see status table above and [COMPILER_RV.md](COMPILER_RV.md). Architecture: [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
 
 ---
 
@@ -52,7 +52,7 @@ This document maps **original x86 TempleOS** (in-repo `Doc/*.DD`, `Kernel/*.HC`,
 | **ATA polling** | **virtio-blk** polled (or IRQ + Yield) | Simple block path; avoid “IRQ disk matrix” early. |
 | **RedSea / FAT** | Same **formats**, read via virtio-blk | Whole-file load, optional `.Z` compression policy. |
 | **PS/2** | **UART** first; later **virtio-input** | Parity at **Kbd/Mouse API**, not wire-level PS/2. |
-| **VGA 640×480** | **virtio-gpu** or **framebuffer** + 8×8 font / 16-color policy in software | One compositor model. |
+| **VGA 640×480** | **32-bpp linear FB** (`Kernel/RVFb.HC`) + thin **Gr*/CDC** (`Kernel/RVGr.HC`) + **text_base WinMgr** (`Kernel/RVWinMgr.HC`); QEMU **ramfb**, **simplefb** bind stub for boards (`BOARD_FB.md`) | One compositor model; no VGA ports. Full Adam DolDoc / mouse still pending. |
 | **Master/slave cores** | **SBI HSM** or **IPI + WFI**; per-hart Seth queues | Explicit job handoff, not Linux SMP. |
 | **`try`/`catch` / faults** | **Trap handler** + unwind / handler tables | RV encodes exceptions differently; semantics can still match HolyC. |
 
@@ -85,7 +85,7 @@ This document maps **original x86 TempleOS** (in-repo `Doc/*.DD`, `Kernel/*.HC`,
 
 ## 5. Repo pointers
 
-- x86 docs: `Doc/Boot.DD`, `Doc/Strategy.DD`
+- x86 docs: `tos/Doc/Boot.DD`, `tos/Doc/Strategy.DD`
 - x86 kernel modules: `Kernel/*.HC`, especially `Sched.HC`, `KGlbls.HC`, `KExcept.HC`, `Mem/*`, `BlkDev/*`, `SerialDev/*`, `Display.HC`, `MultiProc.HC`
 - RISC-V bring-up: `templeos-riscv/kernel/`, `templeos-riscv/link/`
 - Host compiler (not part of OS tree): repo root `holyc-riscv`

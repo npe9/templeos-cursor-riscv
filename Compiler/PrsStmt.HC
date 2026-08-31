@@ -926,11 +926,13 @@ Bool PrsStmt(CCmpCtrl *cc,I64 try_cnt=0,
 	  PrsStmt(cc,try_cnt,lb_break);
 	if (cc->lex_include_stk==cc->fun_lex_file)
 	  cc->max_line=cc->lex_include_stk->line_num;
-	if (Lex(cc)!=',') goto sm_done;
+	if (Lex(cc)!=',') return fsp_flags&FSF_ASM;
       } else if (cc->token==';') {
 	if (cmp_flags&CMPF_PRS_SEMICOLON)
 	  Lex(cc);
-	if (cc->token!=',') goto sm_done;
+	// Host AOT: goto sm_done from this arm can hang; return like expr path.
+	if (cc->token!=',')
+	  return fsp_flags&FSF_ASM;
       } else {
 	if (cc->token==TK_IDENT) {
 	  if (tmpex=cc->hash_entry) {
@@ -953,8 +955,15 @@ Bool PrsStmt(CCmpCtrl *cc,I64 try_cnt=0,
 			if (cc->flags&CCF_AOT_COMPILE && cc->aot_depth==1)
 			  Lex(cc); //Skip '}' of asm{}
 		      } else {
-			if (tmpaot=CmpJoin(cc,CMPF_ASM_BLK))
+			if (tmpaot=CmpJoin(cc,CMPF_ASM_BLK)) {
 			  CmpFixUpJITAsm(cc,tmpaot);
+#ifdef CMP_RV_ASM
+			  // Unlabeled top-level asm{}: run the blob (host REPL parity).
+			  // Skip Call when :: exports were defined (definition-only).
+			  if (tmpaot->buf && tmpaot->aot_U8s && !g_rv_asm_exports)
+			    Call(tmpaot->buf);
+#endif
+			}
 			Lex(cc); //Skip '}' of asm{}
 		      }
 		      fsp_flags=FSF_ASM;
@@ -987,7 +996,7 @@ Bool PrsStmt(CCmpCtrl *cc,I64 try_cnt=0,
 		      break;
 		  end:
 		end:
-		  if (cc->token!=',') goto sm_done;
+		  if (cc->token!=',') return fsp_flags&FSF_ASM;
 		  break;
 		start:
 		  if (cc->htc.fun)
@@ -1161,7 +1170,7 @@ sm_not_keyword_afterall:
 		    PrsVarLst(cc,cc->htc.fun,PRS0_NULL|PRS1_STATIC_LOCAL_VAR);
 		  else
 		    PrsVarLst(cc,cc->htc.fun,PRS0_NULL|PRS1_LOCAL_VAR);
-		  if (cc->token=='}') goto sm_done;
+		  if (cc->token=='}') return fsp_flags&FSF_ASM;
 		} else {
 		  Lex(cc);
 		  PrsGlblVarLst(cc,PRS0_NULL|PRS1_NULL,tmpex,0,fsp_flags);
@@ -1173,7 +1182,7 @@ sm_not_keyword_afterall:
 		      ICAdd(cc,IC_ASM,tmpaot,0);
 		  } else
 		    LexExcept(cc,"Use Asm Blk at ");
-		  if (cc->token!=',') goto sm_done;
+		  if (cc->token!=',') return fsp_flags&FSF_ASM;
 		} else
 		  goto sm_prs_exp;
 	      }
@@ -1196,7 +1205,7 @@ sm_not_keyword_afterall:
 	      LexExcept(cc,"Undefined identifier at ");
 	    if (!cc->htc.fun)
 	      LexExcept(cc,"No global labels at ");
-	    if (cc->token!=',') goto sm_done;
+	    if (cc->token!=',') return fsp_flags&FSF_ASM;
 	  }
 	} else if (cc->token==TK_STR||cc->token==TK_CHAR_CONST) {
 	  PrsFunCall(cc,NULL,FALSE,NULL);
@@ -1206,15 +1215,17 @@ sm_prs_exp:
 	  if (!PrsExpression(cc,NULL,TRUE))
 	    throw('Compiler');
 sm_semicolon:
+	  // No mid-case locals — host AOT corrupts cc->token if we declare here.
 	  if (cmp_flags&CMPF_PRS_SEMICOLON) {
 	    if (cc->token==';')
 	      Lex(cc);
 	    else if (cc->token!=',')
 	      LexExcept(cc,"Missing ';' at");
 	  }
-	  if (cc->token!=',') goto sm_done;
+	  // Return directly — goto sm_done may skip local setup under host AOT.
+	  return fsp_flags&FSF_ASM;
 	} else
-	  goto sm_done; //TK_EOF
+	  return fsp_flags&FSF_ASM; //TK_EOF
       }
     }
 sm_done:

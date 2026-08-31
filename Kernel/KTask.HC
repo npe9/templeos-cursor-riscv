@@ -301,44 +301,31 @@ U0 TaskDerivedValsUpdate(CTask *task=NULL,Bool update_z_buf=TRUE)
 
 I64 ExeCmdLine(CCmpCtrl *cc)
 {//Terminal JIT-compile-and-execute loop for CCmpCtrl.
-  I64 res=0,type,old_title_src=Fs->title_src;
-  U8 *ptr,*ptr2,*ptr3,*machine_code,*old_task_title=StrNew(Fs->task_title);
+  I64 res=0,type,old_title_src;
+  U8 *machine_code,*old_task_title;
   F64 t0;
-  CDocEntry *doc_e;
-  CDoc *doc;
+  CHashExport *tmpex;
+  U8 *(*lsb)(CCmpCtrl *cc,I64 *_type,I64 cmp_flags);
+  // After Load(full Compiler.BIN), prefer exported LexStmt2Bin over in-image Body.
+  tmpex=HashFind("LexStmt2Bin",Fs->hash_table,HTT_EXPORT_SYS_SYM);
+  lsb=NULL;
+  if (tmpex) lsb=tmpex->val;
+  old_title_src=Fs->title_src;
+  old_task_title=StrNew(Fs->task_title);
   if (Fs->title_src!=TTS_LOCKED_CONST)
     Fs->title_src=TTS_CUR_LEX;
   while (cc->token &&
 	(cc->token!='}' || !(cc->flags & CCF_EXE_BLK)) ) {
-    if (Fs->title_src==TTS_CUR_LEX) {
-      ptr2=&Fs->task_title;
-      ptr3=ptr2+STR_LEN-1;
-      if (cc->lex_include_stk->flags & LFSF_DOC) {
-	doc_e=cc->lex_include_stk->cur_entry;
-	doc=cc->lex_include_stk->doc;
-	while (doc_e!=doc && ptr2<ptr3) {
-	  switch (doc_e->type_u8) {
-	    case DOCT_TEXT:
-	      ptr=doc_e->tag;
-	      while (*ptr && ptr2<ptr3)
-		*ptr2++=*ptr++;
-	      break;
-	    case DOCT_TAB:
-	    case DOCT_NEW_LINE:
-	      *ptr2++='.';
-	      break;
-	  }
-	  doc_e=doc_e->next;
-	}
-	if (ptr2<ptr3) *ptr2=0;
-      } else
-	if ((ptr=cc->lex_include_stk->line_start) && *ptr)
-	  MemCpy(ptr2,ptr,STR_LEN-1);
-    }
+    // Skip TTS_CUR_LEX title rewrite for string JIT (line_start may be a short
+    // literal; TempleOS MemCpy(STR_LEN) over-reads). Title is cosmetic.
     cc->flags&=~CCF_HAS_MISC_DATA;
-    machine_code=LexStmt2Bin(cc,&type);
-    if (machine_code!=INVALID_PTR) {
-      if (!(cc->flags&CCF_JUST_LOAD)) {
+    if (lsb)
+      machine_code=(*lsb)(cc,&type,0);
+    else
+      machine_code=LexStmt2Bin(cc,&type);
+    if (machine_code==INVALID_PTR)
+      break;
+    if (!(cc->flags&CCF_JUST_LOAD)) {
 	t0=tS;
 	res=Call(machine_code);
 	Fs->answer=res;
@@ -346,14 +333,14 @@ I64 ExeCmdLine(CCmpCtrl *cc)
 	Fs->answer_time=tS-t0;
 	Fs->new_answer=TRUE;
 	cc->pmt_line=0;
-      }
-      if (!(cc->flags&CCF_HAS_MISC_DATA))
-	Free(machine_code);
     }
+    if (!(cc->flags&CCF_HAS_MISC_DATA))
+	Free(machine_code);
   }
   if (Fs->title_src!=TTS_LOCKED_CONST) {
     Fs->title_src=old_title_src;
-    StrCpy(Fs->task_title,old_task_title);
+    if (old_task_title)
+      StrCpy(Fs->task_title,old_task_title);
   }
   Free(old_task_title);
   if (cc->flags&CCF_JUST_LOAD) {

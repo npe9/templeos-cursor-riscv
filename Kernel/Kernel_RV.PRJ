@@ -12,16 +12,18 @@
   kernel_cfg=KCfgNew;
 };
 
+// Platform Kconfig → templeos-riscv/.config → RVAutoConf.HH (UART/CLINT/PLIC/virtio/FB/entry).
+// Regenerate: make -C templeos-riscv defconfig | menuconfig. Default is QEMU virt (CI).
+#include "RVAutoConf.HH"
+
 // SYS_FIXED_AREA is an x86 fixed physical address (0x100000) that is unmapped on RISC-V; TaskInit
 // reads the initial FPU state out of it, so on the QEMU virt machine it must name real RAM. Default
 // it to a high RAM page here (guarded, so a program may still override it before the include). RVKMain
 // zeroes that page at boot. See Kernel/KernelA.HH where the x86 default lives behind the same #ifndef.
 #ifndef SYS_FIXED_AREA
-#define SYS_FIXED_AREA 0x87000000
+#define SYS_FIXED_AREA CONFIG_SYS_FIXED_AREA
 #endif
-// Marks the QEMU virt RISC-V build: selects MMIO device paths over x86 port I/O (e.g. KDate's
-// NowDateTimeStruct reads the Goldfish RTC at 0x101000 instead of the CMOS ports 0x70/0x71).
-#define RISCV_VIRT 1
+// RISCV_VIRT is set by RVAutoConf on PLATFORM_VIRT (Goldfish RTC path in KDate, etc.).
 #include "KernelA.HH"
 #include "KStartRV"   // RISC-V stand-in for KStart16/32/64, KInts, MultiProc, FunSeg (needs KernelA.HH types)
 #include "KMathA"
@@ -42,11 +44,13 @@
 #include "FontStd"
 #include "FontCyrillic"
 #include "StrB"
+#define KERNEL_HASH_RV 1
 #include "KHashA"
 //x86: #include "KInts"
 #include "KDataTypes"
 #include "Compress"
 #include "KHashB"
+#include "KHashRV" // RV HolyC HashStr/HashAdd/HashFind (KHashA asm skipped)
 #include "KLoad"
 #include "KDate"
 #include "StrPrint"
@@ -68,7 +72,21 @@
 //x86: #include "FunSeg"
 #include "KMain"
 #include "KUtilsRV"   // native RISC-V ports of KUtils.HC low-level primitives (MemSet/MemCpy)
+#include "KCmpStubsRV" // HashAddAfter/CallExt*/Doc* stubs for Compiler_RV ExePutS
+#include "Drv/RVSifivePlat.HC" // SiFive UART/CLINT/PLIC facade (Yes on sifive_u/e)
+#include "Drv/RVUart.HC"       // Kconfig UART (16550 / SiFive / HTIF stub)
+#include "Drv/RVTimer.HC"      // CLINT mtime/mtimecmp
+#include "Drv/RVPlic.HC"       // PLIC enable/claim (no-op without CONFIG_HAS_PLIC)
+#include "Drv/RVVirtioPlat.HC" // virtio-mmio base/count from Kconfig
 #include "BlkDev/DskVirtioRV"   // native RISC-V legacy virtio-mmio block driver (translates x86 DskATA)
 #include "KBootRV"   // RISC-V portable boot init (tables + UART console)
+#include "RVFb"      // Native 32-bpp linear FB + ramfb/simplefb present (not VGA)
+#include "Drv/RVFbPlat.HC"     // apply Kconfig FB present kind → RVFbSetPresent
+#include "Drv/RVMemMap.HC"     // MMIO region ↔ driver legend (Kconfig)
+#include "RVGr"      // Thin Gr*/CDC + soft term + RVSysGrInit (32-bpp; not full Adam)
+#include "RVWinMgr"  // TempleOS-style text_base WinMgr → rv_fb present (no VGA/DolDoc)
+#include "RVTextBase" // TextChar/TextPrint portable (DocRecalc / draw_it)
+#include "RVPhase3.HH"  // phase-3 forward decls (bodies after Compiler_RV_Body in phase3 demo)
+#include "RVKMain"   // RVKMain last — may call RVSysGrInit / RVSysWinInit
 
 #exe {KCfgDel(kernel_cfg);};

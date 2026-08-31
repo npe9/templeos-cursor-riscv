@@ -14,7 +14,7 @@ echo "╚═══════════════════════�
 echo ""
 
 # Find all .HC files (exclude Compiler/)
-HC_FILES=$(find Demo Adam Kernel Apps -name "*.HC" -type f 2>/dev/null | sort)
+HC_FILES=$(find Demo Adam Kernel tos/Apps -name "*.HC" -type f 2>/dev/null | sort)
 TOTAL=$(echo "$HC_FILES" | wc -l | tr -d ' ')
 
 echo "Found $TOTAL HolyC files"

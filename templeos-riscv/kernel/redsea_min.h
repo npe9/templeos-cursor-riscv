@@ -1,4 +1,4 @@
-/* Minimal RedSea (TempleOS) on-disk layout — see Doc/RedSea.DD, Kernel/KernelA.HH CRedSeaBoot. */
+/* Minimal RedSea (TempleOS) on-disk layout — see tos/Doc/RedSea.DD, Kernel/KernelA.HH CRedSeaBoot. */
 #ifndef TEMPLEOS_REDSEA_MIN_H
 #define TEMPLEOS_REDSEA_MIN_H
 

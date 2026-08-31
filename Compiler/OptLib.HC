@@ -1,8 +1,11 @@
 CCodeMisc *OptLabelFwd(CCodeMisc *lb)
 {
   CCodeMisc *lb1;
-  while (lb1=lb->fwd)
+  I64 guard=64;
+  while (lb1=lb->fwd) {
     lb=lb1;
+    if (--guard<=0) break; // RV: corrupt fwd cycle must not hang OptPass
+  }
   return lb;
 }
 
@@ -39,33 +42,39 @@ CIntermediateCode *OptFree(CIntermediateCode *tmpi)
 
 CIntermediateCode *OptLag(CIntermediateCode *tmpi)
 {
+  I64 guard=256;
   do {
     if (!tmpi->ic_code)
       return NULL;
     else
       tmpi=tmpi->last;
+    if (--guard<=0) return NULL;
   } while (tmpi->ic_code<=IC_END_EXP);
   return tmpi;
 }
 
 CIntermediateCode *OptLag1(CIntermediateCode *tmpi)
 {
+  I64 guard=256;
   do {
     if (!tmpi->ic_code)
       return NULL;
     else
       tmpi=tmpi->last;
+    if (--guard<=0) return NULL; // RV: broken last links
   } while (tmpi->ic_code==IC_NOP1||tmpi->ic_code==IC_NOP2);
   return tmpi;
 }
 
 CIntermediateCode *OptLag2(CIntermediateCode *tmpi)
 {
+  I64 guard=256;
   do {
     if (!tmpi->ic_code)
       return NULL;
     else
       tmpi=tmpi->last;
+    if (--guard<=0) return NULL; // RV: broken last links
   } while (tmpi->ic_code<IC_END_EXP);
   return tmpi;
 }

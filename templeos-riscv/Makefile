@@ -1,5 +1,11 @@
 # TempleOS/RISC-V — OS image (separate from repo-root HolyC compiler sources).
 # Prerequisites: ../holyc-riscv (make -C .. holyc-riscv), riscv64-unknown-elf-*.
+#
+# Platform Kconfig (HolyC OS drivers use Kernel/RVAutoConf.HH):
+#   make defconfig | defconfig-<machine> | menuconfig | syncconfig | list-defconfigs
+# Machines: virt sifive_u sifive_e spike shakti_c microchip_icicle
+#           xiangshan amd_microblaze_v opentitan host  (see PLATFORM.md)
+# Multi-machine device drivers are HolyC (Kernel/Drv/*), not C.
 
 PREFIX ?= riscv64-unknown-elf-
 CC := $(PREFIX)gcc
@@ -8,17 +14,20 @@ OBJCOPY := $(PREFIX)objcopy
 
 HOLYC ?= ../holyc-riscv
 QEMU ?= qemu-system-riscv64
+PYTHON ?= python3
+KCONFIG := $(PYTHON) scripts/kconfig.py
 
 MARCH ?= rv64imafdc
 MABI ?= lp64d
 
 CFLAGS := -march=$(MARCH) -mabi=$(MABI) -mcmodel=medany -O2 -g \
 	-nostdlib -ffreestanding -fno-builtin -Wall -Wextra \
-	-Ikernel
+	-Ikernel -Iinclude
 
 BUILD := build
 LINK := link/kernel.ld
 LINK_SELFHOST := link/kernel_selfhost.ld
+AUTOCONF := include/generated/autoconf.h
 
 KERNEL_C := kernel/kernel.c
 GUEST_CALL_C := kernel/guest_call.c
@@ -29,9 +38,43 @@ REDSEA_C := kernel/redsea_min.c
 BOOT_S := kernel/boot.S
 TRAP_S := kernel/trap_entry.S
 
-.PHONY: all image guest selfhost qemu qemu-selfhost clean check-holyc redsea-smoke-img
+DEFCONFIGS := virt sifive_u sifive_e spike shakti_c microchip_icicle \
+	xiangshan amd_microblaze_v opentitan host
+
+.PHONY: all image guest selfhost qemu qemu-selfhost clean check-holyc redsea-smoke-img \
+	defconfig defconfig-virt menuconfig syncconfig qemu-args list-defconfigs help \
+	$(foreach m,$(DEFCONFIGS),defconfig-$(m))
 
 all: image
+
+# --- Kconfig -----------------------------------------------------------------
+$(AUTOCONF) ../Kernel/RVAutoConf.HH: .config scripts/kconfig.py Kconfig Kconfig.machines
+	@$(KCONFIG) sync
+
+.config:
+	@$(KCONFIG) defconfig virt
+
+# Explicit rules — GNU Make 3.81 drops pattern recipes when targets are in .PHONY.
+define DEFCONFIG_template
+.PHONY: defconfig-$(1)
+defconfig-$(1):
+	$$(KCONFIG) defconfig $(1)
+endef
+$(foreach m,$(DEFCONFIGS),$(eval $(call DEFCONFIG_template,$(m))))
+
+defconfig: defconfig-virt
+
+list-defconfigs:
+	@$(KCONFIG) list-defconfigs
+
+menuconfig:
+	$(KCONFIG) menuconfig
+
+syncconfig:
+	$(KCONFIG) sync
+
+qemu-args:
+	@$(KCONFIG) qemu-args
 
 check-holyc:
 	@if [ ! -x "$(HOLYC)" ] && [ ! -f "$(HOLYC)" ]; then \
@@ -67,11 +110,11 @@ $(BUILD)/compiler_blob_in.o: $(BUILD)/compiler_slot.bin
 		--rename-section .data=.data,alloc,load,readonly,contents \
 		$< $@
 
-$(BUILD)/boot.o: $(BOOT_S)
+$(BUILD)/boot.o: $(BOOT_S) $(AUTOCONF)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $(BOOT_S) -o $@
 
-$(BUILD)/kernel.o: $(KERNEL_C)
+$(BUILD)/kernel.o: $(KERNEL_C) $(AUTOCONF)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $(KERNEL_C) -o $@
 
@@ -79,7 +122,7 @@ $(BUILD)/guest_call.o: $(GUEST_CALL_C)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -O0 -c $(GUEST_CALL_C) -o $@
 
-$(BUILD)/virtio_mmio.o: $(VIRTIO_C)
+$(BUILD)/virtio_mmio.o: $(VIRTIO_C) $(AUTOCONF)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $(VIRTIO_C) -o $@
 
@@ -100,13 +143,19 @@ $(BUILD)/trap_entry.o: $(TRAP_S)
 	$(CC) $(CFLAGS) -c $(TRAP_S) -o $@
 
 # Link from $(BUILD) so kernel.ld can name inputs blob_in.o (matches tests/exec harness).
-$(BUILD)/tos-rv.elf: $(BUILD)/boot.o $(BUILD)/trap_entry.o $(BUILD)/kernel.o $(BUILD)/guest_call.o $(BUILD)/virtio_mmio.o $(BUILD)/virtio_mmio_blk.o $(BUILD)/virtio_blk_pci.o $(BUILD)/redsea_min.o $(BUILD)/blob_in.o $(BUILD)/compiler_blob_in.o $(LINK)
+$(BUILD)/tos-rv.elf: $(BUILD)/boot.o $(BUILD)/trap_entry.o $(BUILD)/kernel.o $(BUILD)/guest_call.o \
+		$(BUILD)/virtio_mmio.o $(BUILD)/virtio_mmio_blk.o $(BUILD)/virtio_blk_pci.o $(BUILD)/redsea_min.o \
+		$(BUILD)/blob_in.o $(BUILD)/compiler_blob_in.o $(LINK)
 	cd $(BUILD) && $(LD) -T ../$(LINK) -nostdlib --no-warn-mismatch -o tos-rv.elf \
-		boot.o trap_entry.o kernel.o guest_call.o virtio_mmio.o virtio_mmio_blk.o virtio_blk_pci.o redsea_min.o blob_in.o compiler_blob_in.o
+		boot.o trap_entry.o kernel.o guest_call.o virtio_mmio.o virtio_mmio_blk.o virtio_blk_pci.o \
+		redsea_min.o blob_in.o compiler_blob_in.o
 
-$(BUILD)/tos-rv-selfhost.elf: $(BUILD)/boot.o $(BUILD)/trap_entry.o $(BUILD)/kernel.o $(BUILD)/guest_call.o $(BUILD)/virtio_mmio.o $(BUILD)/virtio_mmio_blk.o $(BUILD)/virtio_blk_pci.o $(BUILD)/redsea_min.o $(BUILD)/blob_selfhost_in.o $(BUILD)/compiler_blob_in.o $(LINK_SELFHOST)
+$(BUILD)/tos-rv-selfhost.elf: $(BUILD)/boot.o $(BUILD)/trap_entry.o $(BUILD)/kernel.o $(BUILD)/guest_call.o \
+		$(BUILD)/virtio_mmio.o $(BUILD)/virtio_mmio_blk.o $(BUILD)/virtio_blk_pci.o $(BUILD)/redsea_min.o \
+		$(BUILD)/blob_selfhost_in.o $(BUILD)/compiler_blob_in.o $(LINK_SELFHOST)
 	cd $(BUILD) && $(LD) -T ../$(LINK_SELFHOST) -nostdlib --no-warn-mismatch -o tos-rv-selfhost.elf \
-		boot.o trap_entry.o kernel.o guest_call.o virtio_mmio.o virtio_mmio_blk.o virtio_blk_pci.o redsea_min.o blob_selfhost_in.o compiler_blob_in.o
+		boot.o trap_entry.o kernel.o guest_call.o virtio_mmio.o virtio_mmio_blk.o virtio_blk_pci.o \
+		redsea_min.o blob_selfhost_in.o compiler_blob_in.o
 
 redsea-smoke-img:
 	@mkdir -p $(BUILD)
@@ -117,10 +166,20 @@ image: $(BUILD)/tos-rv.elf
 selfhost: $(BUILD)/tos-rv-selfhost.elf
 
 qemu: $(BUILD)/tos-rv.elf
-	$(QEMU) -M virt -bios none -kernel $(BUILD)/tos-rv.elf -nographic </dev/null
+	@args=`$(KCONFIG) qemu-args`; \
+	$(QEMU) $$args -kernel $(BUILD)/tos-rv.elf -nographic </dev/null
 
 qemu-selfhost: $(BUILD)/tos-rv-selfhost.elf
-	$(QEMU) -M virt -bios none -kernel $(BUILD)/tos-rv-selfhost.elf -nographic </dev/null
+	@args=`$(KCONFIG) qemu-args`; \
+	$(QEMU) $$args -kernel $(BUILD)/tos-rv-selfhost.elf -nographic </dev/null
 
 clean:
 	rm -rf $(BUILD)
+
+help:
+	@echo "TempleOS/RISC-V image + platform Kconfig"
+	@echo "  defconfig / defconfig-<machine> / list-defconfigs / menuconfig"
+	@echo "  image / qemu            - C bootstrap + HolyC guest (virt-oriented console)"
+	@echo "  Multi-machine OS drivers: Kernel/Drv/* + make kernel-plat-smoke (repo root)"
+	@echo "Machines: $(DEFCONFIGS)"
+	@echo "See PLATFORM.md"

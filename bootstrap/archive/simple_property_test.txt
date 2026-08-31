@@ -1,0 +1,60 @@
+// SIMPLE PROPERTY-BASED TEST
+// Testing basic function compositions that should work
+
+// Test 1: Simple functions
+I64 Add(I64 a, I64 b) { return a + b; }
+I64 Mul(I64 a, I64 b) { return a * b; }
+I64 Max(I64 a, I64 b) { return a > b ? a : b; }
+
+// Test 2: Function calls
+Add(5, 10);
+Mul(3, 7);
+Max(10, 20);
+
+// Test 3: Nested function calls
+Add(Add(1, 2), Add(3, 4));
+Mul(Mul(2, 3), Mul(4, 5));
+Max(Max(10, 20), Max(30, 40));
+
+// Test 4: More complex functions
+I64 Factorial(I64 n) { I64 result = 1; for (I64 i = 1; i <= n; i = i + 1) result = result * i; return result; }
+I64 SumTo(I64 n) { I64 sum = 0; for (I64 i = 1; i <= n; i = i + 1) sum = sum + i; return sum; }
+
+// Test 5: More function calls
+Factorial(5);
+SumTo(10);
+Add(Factorial(3), SumTo(5));
+
+// Test 6: Control flow functions
+I64 Abs(I64 x) { if (x < 0) return -x; else return x; }
+I64 IsEven(I64 x) { return x % 2 == 0 ? 1 : 0; }
+
+// Test 7: More calls
+Abs(5);
+Abs(-5);
+IsEven(10);
+IsEven(7);
+
+// Test 8: Complex expressions
+(5 + 3) * (10 - 4);
+(100 / 5) + (200 * 2);
+(5 > 3) && (10 < 20) ? 100 : 200;
+
+// Test 9: More nested calls
+Add(Mul(2, 3), Mul(4, 5));
+Max(Abs(-10), Abs(5));
+Factorial(Add(2, 3));
+
+// Test 10: Edge cases
+0x7FFFFFFFFFFFFFFF;
+0x8000000000000000;
+5 / 1;
+0 / 1;
+
+
+
+
+
+
+
+

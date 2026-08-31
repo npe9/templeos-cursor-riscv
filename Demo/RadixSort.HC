@@ -1,5 +1,5 @@
-#define RADIX	256
-#define N	16
+#define RADIX   256
+#define N       16
 
 U8 a[N];
 

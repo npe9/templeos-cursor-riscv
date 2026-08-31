@@ -27,6 +27,10 @@ tests/exec/cases/e_chain_cmp.hc	00000000000186ab
 tests/exec/cases/e_postfix_cast.hc	000000000000420a
 tests/exec/cases/e_math_pow.hc	0000000000000005
 tests/exec/cases/e_indirect_call.hc	0000000000000049
+tests/exec/cases/e_ptr_truth.hc	0000000000000000
+tests/exec/cases/e_nested_deref.hc	0000000000000000
+tests/exec/cases/e_cast_deref.hc	0000000000000000
+tests/exec/cases/e_slot_once_call.hc	0000000000000031
 tests/exec/cases/e_misc_syntax.hc	000000000000092b
 tests/exec/cases/e_no_paren_call.hc	00000000000002d5
 tests/exec/cases/e_default_expr.hc	00000000000005e7
@@ -57,6 +61,7 @@ tests/exec/cases/e_deref_array_store.hc	0000000099112233
 tests/exec/cases/e_u0_marker_size.hc	0000000000000090
 tests/exec/cases/e_asm_arg.hc	000000000000002a
 tests/exec/cases/e_asm_fill.hc	0000000000414100
+tests/exec/cases/e_asm_inline.hc	0000000000000040
 tests/exec/cases/e_native_str.hc	000000000000005f
 tests/exec/cases/e_native_bits.hc	0000000000000fff
 tests/exec/cases/e_native_misc.hc	00000000000003ff

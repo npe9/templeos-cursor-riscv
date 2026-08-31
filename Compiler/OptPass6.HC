@@ -104,7 +104,7 @@ U0 OptPass6(CCmpCtrl *cc)
     reg_stk_size=0;
   else
     reg_stk_size=1;
-#assert REGG_STK_TMP==1<<9
+#assert REGG_STK_TMP==(1<<RV_REG_T4) || REGG_STK_TMP==(1<<9)
   tmpi=cc->coc.coc_head.next;
   old_tmpil2=NULL;
   tmpil1=tmpil2=&cmp.ic_nop;

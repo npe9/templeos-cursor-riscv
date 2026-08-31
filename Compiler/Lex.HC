@@ -299,6 +299,9 @@ U0 LexIncludeStr(CCmpCtrl *cc,U8 *abs_filename,U8 *src,Bool actual_file)
   else
     tmpf->full_name=StrNew(blkdev.tmp_filename);
   tmpf->line_num=1;
+  tmpf->last_U16=0;
+  if (!src)
+    src=CAlloc(1);
   tmpf->buf=tmpf->buf_ptr=tmpf->line_start=cc->cur_buf_ptr=src;
 }
 
@@ -444,6 +447,7 @@ I64 Lex(CCmpCtrl *cc)
   CHash *tmph;
   Bool str_done,in_str,neg_e;
   U8 *fbuf,*buf2,*buf3,buf[STR_LEN];
+  U8 *inc_src; // RV: keep out of mid-case blocks (host AOT corrupts locals there)
   cc->last_line_num=cc->lex_include_stk->line_num;
   while (TRUE) {
 lex_cont:
@@ -701,10 +705,17 @@ lex_float_start:
 	    fbuf=ExtDft(cc->cur_str,"HC.Z");
 	    buf2=FileNameAbs(fbuf);
 	    Free(fbuf);
-	    if (Bt(&sys_run_level,RLf_DOC))
+	    // RV: never LexIncludeStr(NULL) — CurBufPtr walks hang. FileRead already
+	    // tries ToggleZorNotZ (.HC <-> .HC.Z). Empty file → CAlloc(1).
+	    // Locals must stay function-scoped (host AOT mid-case corruption).
+	    inc_src=FileRead(buf2);
+	    if (!inc_src)
+	      inc_src=CAlloc(1);
+	    if (Bt(&sys_run_level,RLf_DOC)) {
+	      Free(inc_src);
 	      LexAttachDoc(cc,,,buf2);
-	    else
-	      LexIncludeStr(cc,buf2,FileRead(buf2),TRUE);
+	    } else
+	      LexIncludeStr(cc,buf2,inc_src,TRUE);
 	    Free(buf2);
 	    break;
 	  case KW_DEFINE:

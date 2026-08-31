@@ -4,7 +4,7 @@ PASS=0
 FAIL=0
 TIMEOUT=0
 
-for file in $(find Demo Adam Kernel Apps -name "*.HC" -type f 2>/dev/null | sort); do
+for file in $(find Demo Adam Kernel tos/Apps -name "*.HC" -type f 2>/dev/null | sort); do
   if timeout 1s ./holyc-riscv "$file" -o /dev/null 2>&1; then
     PASS=$((PASS + 1))
   else

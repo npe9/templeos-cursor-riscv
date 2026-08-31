@@ -1,6 +1,6 @@
 #!/bin/bash
 PASS=0; FAIL=0; TOTAL=0
-for file in $(find Demo Adam Kernel Apps -name "*.HC" -type f 2>/dev/null); do
+for file in $(find Demo Adam Kernel tos/Apps -name "*.HC" -type f 2>/dev/null); do
   TOTAL=$((TOTAL + 1))
   [ $((TOTAL % 50)) -eq 0 ] && echo "$TOTAL files tested..."
   timeout 1s ./holyc-riscv "$file" -o /dev/null 2>/dev/null && PASS=$((PASS + 1)) || FAIL=$((FAIL + 1))

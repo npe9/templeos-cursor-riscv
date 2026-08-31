@@ -55,11 +55,9 @@ _halt:
     wfi
     j _halt
 
-# Simple trap handler (just halt for now)
+# Pre-main halt stub. TrapInit() installs C TrapVec→TrapCtxSave→trapvec→TrapCtxRestore.
 .align 4
 _trap_handler:
-    # Save context if needed
-    # For now, just halt
     j _halt
 
 .section .bss

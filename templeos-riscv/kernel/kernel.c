@@ -1,5 +1,9 @@
 /*
- * TempleOS/RISC-V kernel — UART, traps, compiler slot, TosApi (Phase C), yield hook (Phase D stub).
+ * TempleOS/RISC-V C bootstrap (guest loader / TosApi). Not the OS driver stack:
+ * UART/timer/PLIC/FB/virtio for real OS work are HolyC under Kernel/Drv/*, selected by
+ * Kconfig → Kernel/RVAutoConf.HH. This file keeps a virt-style 16550 putc at
+ * CONFIG_UART_BASE for the C personality (default machine: virt). Other QEMU -M
+ * targets are exercised via HolyC plat smokes, not this image.
  */
 #include <stdint.h>
 #include "tos_api.h"
@@ -7,6 +11,7 @@
 #include "virtio_mmio_blk.h"
 #include "virtio_blk_pci.h"
 #include "redsea_min.h"
+#include "generated/autoconf.h"
 
 typedef int (*phase_e_blk_read_t)(void *ctx, void *buf, size_t len, uint64_t lba);
 
@@ -19,20 +24,20 @@ static int phase_e_read_mmio(void *ctx, void *buf, size_t len, uint64_t lba) {
   return virtio_mmio_blk_read_lba((uintptr_t)ctx, buf, len, lba);
 }
 
-volatile unsigned char *const uart_reg = (volatile unsigned char *)0x10000000UL;
-#define UART_LSR  (*(volatile unsigned char *)0x10000005UL)
-
-#define GUEST_VMA       0x80100000UL
-#define COMPILER_VMA    0x80200000UL
+#define GUEST_VMA       ((unsigned long)CONFIG_GUEST_BLOB_ADDR)
+#define COMPILER_VMA    ((unsigned long)CONFIG_COMPILER_SLOT_ADDR)
 #define COMPILER_MAGIC  0x504d4f43UL
 
-/* Placed at 0x80300000 — see link/kernel.ld */
+/* Placed at CONFIG_TOS_API_ADDR — see link/kernel.ld */
 __attribute__((section(".tos_api"), aligned(8))) struct TosApi g_tos_api;
 
 volatile uint64_t g_yield_count;
 
+static volatile uint8_t *const uart_reg = (volatile uint8_t *)(uintptr_t)CONFIG_UART_BASE;
+#define UART_LSR (*(volatile uint8_t *)(uintptr_t)(CONFIG_UART_BASE + 5))
+
 static void uart_putc(int c) {
-  *uart_reg = (unsigned char)c;
+  *uart_reg = (uint8_t)c;
 }
 
 static void uart_puts(const char *s) {
@@ -232,6 +237,7 @@ static void phase_e_virtio_disk_report(const char *tag, phase_e_blk_read_t rb, v
 
 static void phase_e_storage_report(void) {
   uintptr_t mmio_base = 0;
+#ifdef CONFIG_HAS_VIRTIO_MMIO
   if (virtio_mmio_find_blk(&mmio_base) == 0) {
     uart_puts("kernel: Phase E — virtio-blk MMIO @ 0x");
     put_hex_u64((uint64_t)mmio_base);
@@ -239,13 +245,19 @@ static void phase_e_storage_report(void) {
     phase_e_virtio_disk_report("MMIO", phase_e_read_mmio, (void *)mmio_base);
     return;
   }
-
+#endif
+#ifdef CONFIG_HAS_VIRTIO_PCI
   phase_e_virtio_disk_report("PCI", phase_e_read_pci, NULL);
+#else
+  uart_puts("kernel: Phase E — no virtio on this platform\r\n");
+#endif
 }
 
 static void try_compiler_slot(void) {
   volatile uint32_t *magic = (volatile uint32_t *)COMPILER_VMA;
-  uart_puts("kernel: compiler slot @ 0x80200000\r\n");
+  uart_puts("kernel: compiler slot @ 0x");
+  put_hex_u64((uint64_t)COMPILER_VMA);
+  uart_puts("\r\n");
   if (*magic != (uint32_t)COMPILER_MAGIC) {
     uart_puts("kernel: compiler slot — no COMP magic (stub not linked)\r\n");
     return;
@@ -266,7 +278,9 @@ static void tos_api_init(void) {
 
 void kernel_main(void) {
   uart_puts("\r\n*** TempleOS/RISC-V ***\r\n");
-  uart_puts("kernel: Phase A/B traps+compiler, Phase C TosApi @ 0x80300000, Phase D yield stub\r\n");
+  uart_puts("kernel: platform=");
+  uart_puts(CONFIG_PLATFORM_NAME);
+  uart_puts(" Phase A/B traps+compiler, Phase C TosApi, Phase D yield stub\r\n");
 
   tos_api_init();
   /* Prove TosApi vtable from C before running the HolyC guest. */
@@ -274,7 +288,9 @@ void kernel_main(void) {
   g_tos_api.putchar('O');
   g_tos_api.putchar('S');
   g_tos_api.putchar(':');
-  uart_puts("\r\nkernel: HolyC guest @ 0x80100000\r\n");
+  uart_puts("\r\nkernel: HolyC guest @ 0x");
+  put_hex_u64((uint64_t)GUEST_VMA);
+  uart_puts("\r\n");
 
   long r = templeos_invoke_guest((uintptr_t)GUEST_VMA);
   oracle_report((unsigned long)r);

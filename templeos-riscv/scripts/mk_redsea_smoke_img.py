@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tiny RedSea-shaped image for Phase E kernel probe (Doc/RedSea.DD, Kernel/KernelA.HH)."""
+"""Tiny RedSea-shaped image for Phase E kernel probe (tos/Doc/RedSea.DD, Kernel/KernelA.HH)."""
 import struct
 import sys
 

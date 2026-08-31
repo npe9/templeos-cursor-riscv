@@ -2,6 +2,11 @@ RISCV_PREFIX = riscv64-unknown-elf-
 CC = $(RISCV_PREFIX)gcc
 LD = $(RISCV_PREFIX)ld
 
+# Host HolyC→RISC-V compiler sources (repo host/)
+HOST = ../host
+# Repo root on -I path so host/compiler.c can #include "bootstrap/holy_rt_names.h"
+ROOT = ..
+
 # ---- Platform address map -----------------------------------------------------------------
 # Select a target board with PLATFORM=<name> (default: qemu-virt). Each row sets the RAM/link
 # base and the 16550 UART base; LOAD_BASE flows to the linker (--defsym) and UART_BASE to both
@@ -30,29 +35,51 @@ LOAD_BASE ?= $(PLAT_LOAD_BASE)
 UART_BASE ?= $(PLAT_UART_BASE)
 
 CFLAGS = -march=rv64imafdc_zifencei -mabi=lp64d -mcmodel=medany -O0 -g
-CFLAGS += -nostdlib -ffreestanding -fno-builtin -I.. -DUART_BASE=$(UART_BASE)
+CFLAGS += -nostdlib -ffreestanding -fno-builtin -I$(ROOT) -I$(HOST) -DUART_BASE=$(UART_BASE)
 
 LDFLAGS = -T linker.ld -nostdlib --no-warn-mismatch \
           --defsym LOAD_BASE=$(LOAD_BASE)
 
+# DEPRECATED guest path: still C-dependent (worry_dream_repl.c + holy_rt + 0x87001xxx host
+# slots). Prefer make hc-repl (no guest C) or kernel+Compiler_RV. Remaining C deps in seeds:
+#   compile/run, UART ring+drain+get, Ed/Edit repair, Fmt, srcmap/hash/call_editor,
+#   Callers*/MemMap/Regs/StkRep, trap dispatch/reentry.
+# HolyC-owned: Term geometry + TermKeyGet (interactive), memfs arena at 0x85000000 (seed/fs.hc).
+# C memfs/Term* slots remain as deprecated bridges for EdC/EditC/seed boot only.
 repl.elf: startup.o worry_dream_repl.o compiler.o
 	$(LD) $(LDFLAGS) -o $@ $^
-	@echo "✓ Built Worry Dream REPL"
+	@echo "✓ Built Worry Dream REPL (DEPRECATED: C guest + host slots — see comment above)"
 
-compiler.o: ../compiler.c ../lexer.c ../parser.c ../hash_table.c ../compiler_helper.c ../holyc_compiler.h ../hash_table.h holy_rt.h holy_rt_names.h
-	$(CC) $(CFLAGS) -DBARE_METAL -c ../compiler.c -o compiler_main.o
-	$(CC) $(CFLAGS) -DBARE_METAL -c ../lexer.c -o lexer.o
-	$(CC) $(CFLAGS) -DBARE_METAL -c ../parser.c -o parser.o
-	$(CC) $(CFLAGS) -DBARE_METAL -c ../hash_table.c -o hash.o
-	$(CC) $(CFLAGS) -DBARE_METAL -c ../compiler_helper.c -o compiler_helper.o
-	$(LD) -r -o $@ compiler_main.o lexer.o parser.o hash.o compiler_helper.o
+compiler.o: $(HOST)/compiler.c $(HOST)/lexer.c $(HOST)/parser.c $(HOST)/hash_table.c \
+		$(HOST)/compiler_helper.c $(HOST)/holyc_fmt.c $(HOST)/holyc_compiler.h \
+		$(HOST)/hash_table.h $(HOST)/holyc_fmt.h holy_rt.h holy_rt_names.h
+	$(CC) $(CFLAGS) -DBARE_METAL -c $(HOST)/compiler.c -o compiler_main.o
+	$(CC) $(CFLAGS) -DBARE_METAL -c $(HOST)/lexer.c -o lexer.o
+	$(CC) $(CFLAGS) -DBARE_METAL -c $(HOST)/parser.c -o parser.o
+	$(CC) $(CFLAGS) -DBARE_METAL -c $(HOST)/hash_table.c -o hash.o
+	$(CC) $(CFLAGS) -DBARE_METAL -c $(HOST)/compiler_helper.c -o compiler_helper.o
+	$(CC) $(CFLAGS) -DBARE_METAL -c $(HOST)/holyc_fmt.c -o holyc_fmt.o
+	$(LD) -r -o $@ compiler_main.o lexer.o parser.o hash.o compiler_helper.o holyc_fmt.o
 
 # The editable HolyC primitives/editors are real files under seed/; this bakes them into a C
 # table so memfs_seed() ships them. Editing a seed/*.hc regenerates the header and rebuilds.
 seed_files.h: $(wildcard seed/*.hc) gen_seeds.py
 	python3 gen_seeds.py seed seed_files.h
 
-worry_dream_repl.o: worry_dream_repl.c ../holyc_compiler.h ../hash_table.h holy_rt.h holy_rt_names.h seed_files.h
+# Prebuilt boot runtime snapshot (concatenated seeds). Rebuild after editing seeds:
+#   make -C bootstrap -f Makefile.repl boot_blob_embed.h
+# or from repo root: make repl-blob
+# Validates with host holyc-riscv AOT when ../holyc-riscv exists.
+HOLYC_HOST ?= ../holyc-riscv
+boot_blob_embed.h: $(wildcard seed/*.hc) gen_boot_blob.py
+	@if [ -x "$(HOLYC_HOST)" ]; then \
+	  python3 gen_boot_blob.py seed $@ $(HOLYC_HOST) boot_runtime.bin; \
+	else \
+	  python3 gen_boot_blob.py seed $@; \
+	fi
+
+worry_dream_repl.o: worry_dream_repl.c $(HOST)/holyc_compiler.h $(HOST)/hash_table.h \
+		holy_rt.h holy_rt_names.h seed_files.h boot_blob_embed.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 startup.o: startup.s
@@ -62,6 +89,6 @@ run: repl.elf
 	qemu-system-riscv64 -M virt -bios none -kernel repl.elf -nographic
 
 clean:
-	rm -f *.o *.elf
+	rm -f *.o *.elf seed_files.h boot_blob_embed.h boot_runtime.hc boot_runtime.bin
 
 .PHONY: run clean

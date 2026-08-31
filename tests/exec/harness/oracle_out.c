@@ -1,11 +1,17 @@
 #include <stdint.h>
 #include <stddef.h>
-volatile unsigned char *const uart = (volatile unsigned char *)0x10000000UL;
+#ifndef UART_BASE
+#define UART_BASE 0x10000000UL
+#endif
+volatile unsigned char *const uart = (volatile unsigned char *)UART_BASE;
 static void putc_uart(int c) {
   *uart = (unsigned char)c;
 }
 /* Bump heap for the runtime's MAlloc (the blob's own data lives in .user_blob). */
-static unsigned char rt_heap[1024 * 1024];
+/* Bump heap for imported MAlloc — Kernel boot + Compiler_RV CInit need far more than 1MB
+ * (AsmHashLoad HashTableNew + defines). Prefer guest Kernel MAlloc once self-resolved. */
+/* Bump arena only for leftovers; Kernel MAlloc/CAlloc/Free are guest-owned (not imported). */
+static unsigned char rt_heap[256 * 1024];
 static size_t rt_heap_pos;
 static void *rt_malloc(size_t sz) {
   sz = (sz + 15) & ~(size_t)15;

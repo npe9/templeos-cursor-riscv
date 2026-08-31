@@ -1,0 +1,43 @@
+// Compiler_RV_Body.PRJ — TempleOS compiler sources for in-image link with Kernel_RV.
+// Include AFTER Kernel_RV.PRJ and RISCVRegs.HH. Does not re-include KernelA/B/C.
+// Define CMP_NO_AUTO_INIT before including so CInit runs after heap/Adam exist.
+//
+// Include order matches Compiler.PRJ (PrsLib before OptPass*). Host AOT rewrites
+// forward `__imp_*` calls when the body is defined (see RewriteForwardImportCalls).
+#exe { Cd(__DIR__);; }
+#define CMP_NO_AUTO_INIT 1
+#define CMP_RV_ASM 1
+#include "Templates"
+#include "CExts_RV"
+CCmpGlbls	cmp;
+U32 *g_cmp_binary_ops; // RV: host AOT mishandles cmp.binary_ops field; ExePutS uses this.
+#include "CInit"
+#include "CExcept"
+#include "LexLib"
+#include "Lex"
+CUAsmGlbls	uasm;
+#include "CHash"
+#include "UAsm"
+#include "PrsLib"
+#include "AsmLib"
+#include "AsmResolve"
+#include "Asm_RV"
+#include "AsmInit"
+#include "Asm"
+#include "OptLib"
+#include "PrsExp"
+#include "PrsVar"
+#include "CMisc"
+#include "CMain"
+#include "PrsStmt"
+#include "OptPass012"
+#include "OptPass3"
+#include "OptPass4"
+#include "OptPass5"
+#include "OptPass6"
+#include "BackLib_RV"
+#include "BackF_RV"
+#include "BackA_RV"
+#include "BackB_RV"
+#include "BackC_RV"
+#include "OptPass_RV"

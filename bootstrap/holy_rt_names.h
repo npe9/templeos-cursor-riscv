@@ -5,7 +5,6 @@
 #define HOLY_RT_NAMES_H
 #define HOLY_RT_NAMES(X) \
   X(Print, 1) X(PutS, 1) X(PutChars, 1) \
-  X(MAlloc, 1) X(CAlloc, 1) X(Free, 1) \
   X(StrLen, 1) X(StrCpy, 2) X(StrCmp, 2) X(StrCat, 2) X(StrNew, 1) \
   X(MemCpy, 3) X(MemSet, 3) X(MemCmp, 3) X(MemSetI64, 3) \
   X(AbsI64, 1) X(MaxI64, 2) X(MinI64, 2) X(ToUpper, 1) X(ToLower, 1) \
@@ -18,8 +17,9 @@
   X(InU8, 1) X(OutU8, 2) X(InU16, 1) X(OutU16, 2) X(InU32, 1) X(OutU32, 2) X(RepInU32, 3) X(RepOutU32, 3) \
   X(GetRAX, 0) X(GetRBP, 0) X(GetRFlags, 0) X(SetRFlags, 1) X(CPUId, 2) X(InvlPg, 1) X(SysHlt, 0) X(GetTSC, 0) X(Caller, 1) \
   X(QueInit, 1) X(QueIns, 2) X(QueInsRev, 2) X(QueRem, 1) X(StrMatch, 3) X(StrIMatch, 3) X(StrICmp, 2) X(Pow10, 1) \
-  X(HashStr, 1) X(HashFind, 3) X(HashSingleTableFind, 3) X(HashAdd, 2) X(HashRemDel, 3) X(StrNCmp, 3) X(ModU64, 2) X(LBEqu, 3) \
+  X(StrNCmp, 3) X(ModU64, 2) X(LBEqu, 3) \
   X(BFieldExtU32, 3) X(RepInU16, 3) X(GetRSP, 0) X(SaveExceptRegs, 0) X(Call, 1) X(FarCall32, 4) X(Yield, 0) X(TaskEndNow, 0) X(RVTaskSwitch, 2) X(RVTrapInit, 0) X(RVTimerArm, 1) X(RVGetTicks, 0) X(RVPreemptInit, 1) X(RVPreemptSpawn, 2) X(RVPreemptExit, 0) X(RVCritEnter, 0) X(RVCritLeave, 1) X(RVSleep, 1) X(RVUartIrqInit, 0) X(RVUartHasInput, 0) X(RVUartGetBuffered, 0) X(RVBlkInit, 0) X(RVBlkRead, 2) X(RVBlkWrite, 2) X(RVCtxSw, 2) X(RVYieldInit, 1) X(RVPreemptReal, 1) X(RVJiffies, 0) X(RVJiffiesInit, 1) X(RVTrapDiag, 0) X(RVRunBlob, 2) X(RVVirtioIrqs, 0)
+/* HashStr/HashFind/HashAdd/HashRemDel: guest Kernel KHashRV (TempleOS hash). Not imported. */
 
 /* F64 typing of the runtime (arguments and results travel as raw 64-bit patterns): the
  * compiler converts call arguments per the mask and types the result. */
@@ -34,9 +34,25 @@ static int HolyRtRetF64(const char *n) {
 static int HolyRtRetVoid(const char *n) {
   static const char *v[] = { "Print", "PrintErr", "PutChars", "PutS", "Puts",
                              "Dir", "Ls", "Cat", "Del", "Ed", "Edit", "EdC", "EditC",
-                             "Run", "SetIsr", "TrapInit", "Ecall", "TimerArm", "Src", "Funs",
-                             "PutCh", "Reset", "MemMap", "Regs", "Exec", "StkRep", 0 };
+                             "Run", "SetTrap", "TrapInit", "Ecall", "TimerArm", "Src", "Funs",
+                             "FunsS", "FunsSec", "Sections", "FunWrite",
+                             "Callers", "WhoCalls", "CallersGo",
+                             "PutCh", "TermGoto", "TermClear", "TermClearEol", "TermSetSize",
+                             "TermHideCursor", "TermShowCursor", "TermPoll", "TermProbe", "Free",
+                             "Reset", "MemMap", "MemMapDrv", "Regs", "Exec", "StkRep", "Cd", "Pwd", "DirMk", "DirDel",
+                             "RegHelp", "CpuRep", "CSRSet",
+                             "StrPrintJoin", "UartRxDrain", 0 };
   for (int i = 0; v[i]; i++) if (holy_rt_streq(n, v[i])) return 1;
+  return 0;
+}
+/* REPL: do not register these TempleOS names from C — seeds define them in HolyC. */
+static int HolyRtSeedOwned(const char *n) {
+  static const char *o[] = {
+    "Print", "PutS", "PutChars", "CAlloc", "MSize2",
+    "StrLen", "StrCpy", "StrCmp", "StrCat", "StrNew", "StrNCmp", "StrICmp",
+    "MemCpy", "MemSet", "MemCmp", "MemSetI64",
+    "AbsI64", "MaxI64", "MinI64", "ToUpper", "ToLower", "SqrI64", "ClampI64", 0 };
+  for (int i = 0; o[i]; i++) if (holy_rt_streq(n, o[i])) return 1;
   return 0;
 }
 static unsigned HolyRtF64Mask(const char *n) {
