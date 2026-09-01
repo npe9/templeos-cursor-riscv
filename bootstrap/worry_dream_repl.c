@@ -43,7 +43,16 @@ static volatile int g_break_pending;
 static volatile int g_break_armed;
 static int g_break_interactive;
 
+/* Drain 16550 RX into uart_rx. Mask mstatus.MIE for the whole loop — not just mie.MEIE.
+ * With global MIE on, any IRQ (UART *or* the break-poll timer) can nest between LSR.DR
+ * and RBR, empty the FIFO in a nested uart_hw_drain, and the outer read then sees the
+ * stale last RBR value and enqueues a duplicate (interactive typing → "aa" per key).
+ * Masking only MEIE left MTIE free to re-enter drain during break-armed eval / UartPut.
+ * Ctrl-C still works: UART IRQ or timer poll runs after MIE is restored. */
 static void uart_hw_drain(void) {
+    I64 mstatus;
+    __asm__ volatile("csrr %0, mstatus" : "=r"(mstatus));
+    __asm__ volatile("csrc mstatus, %0" :: "r"((I64)(1 << 3))); /* MIE */
     while (*(volatile U8 *)(UART_BASE + 5) & 0x01) {
         U8 ch = *(volatile U8 *)UART_BASE;
         if (ch == CH_CTRLC) {
@@ -52,10 +61,12 @@ static void uart_hw_drain(void) {
             if (g_break_armed) continue;
         }
         I64 n = (uart_rh + 1) & (UART_RX_CAP - 1);
-        if (n == uart_rt) return;   /* ring full: leave byte in HW so QEMU keeps it */
+        if (n == uart_rt) break;   /* ring full: byte already taken from HW — drop */
         uart_rx[uart_rh] = ch;
         uart_rh = n;
     }
+    if (mstatus & (1 << 3))
+        __asm__ volatile("csrs mstatus, %0" :: "r"((I64)(1 << 3)));
 }
 /* If the next queued RX byte is Ctrl-C, consume it and set g_break_pending.
  * Do NOT scan past other bytes — that would steal a break meant for a later line
@@ -160,7 +171,11 @@ static void print_f64(U64 bits) {
     for (int i = 0; i < 6; i++) { fp *= 10; int dg = (int)fp; putc_uart('0' + dg); fp -= dg; }
 }
 
-// Separate code and heap areas to prevent overwriting  
+// Separate code and heap areas to prevent overwriting
+/* Fixed memfs arena (seed/fs.hc). Fits in QEMU virt default 128MiB (RAM ends 0x88000000):
+ * after C BSS / HolyC heap / 0x87001xxx slots, before MEM_STACK @0x87F00000.
+ * 0x85000000 overlapped heap BSS; 0x88000000 needs -m >128M and hung bare `-nographic`. */
+#define MEMFS_PHYS_BASE 0x87800000ULL
 static U8 code_mem[8*1024*1024];   // 8MB for compiled code (never reused)
 static size_t code_pos = 0;
 static U8 heap_mem[96*1024*1024];  // 96MB heap (IC/parse; free() is a no-op; large seeds e.g. vim.hc)
@@ -187,7 +202,10 @@ void *code_malloc(size_t sz) {
 void *malloc(size_t sz) { 
     if (sz == 0) return NULL;
     size_t aligned = (sz + 7) & ~7;
-    if (heap_pos + aligned > sizeof(heap_mem)) {
+    /* Never grow into the fixed memfs arena (fs.hc / MEM_FS), even if BSS layout shifts. */
+    int oom = (heap_pos + aligned > sizeof(heap_mem)) ||
+              ((uintptr_t)heap_mem + heap_pos + aligned > (uintptr_t)MEMFS_PHYS_BASE);
+    if (oom) {
         puts_uart("[malloc: OUT OF MEMORY! sz=");
         print_hex(sz);
         puts_uart(" pos=");
@@ -321,33 +339,23 @@ static I64 g_answer = 0;
 
 static char g_fmt_buf[65536];
 
-static void RuntimeRegister(Compiler *cc, const char *name, void *fn, I64 argc) {
-    CHashFun *f = calloc(1, sizeof(CHashFun));
-    f->str = strdup(name);
-    f->type = HTT_FUN;
-    f->raw_type = HolyRtRetVoid(name) ? RT_I0 : (HolyRtRetF64(name) ? RT_F64 : RT_I64);
-    f->param_typed = true;
-    f->param_f64_mask = HolyRtF64Mask(name);
-    f->exe_addr = (I64)fn;
-    f->arg_cnt = argc;
-    HashAdd((CHashEntry *)f, cc->hash_table);
-}
 static HRT_I64 TermPoll(void);
 static HRT_I64 TermKeyGet(void);
 static HRT_I64 TermClearEol(void);
 static HRT_I64 Exec(char *src);
 static char getc_uart(void);
 // Line editor: history + Tab completion for the REPL prompt; ed uses plain mode.
-enum { RL_HIST = 1, RL_COMPLETE = 2 };
-static int repl_read_line_ex(char *buf, int max, int flags);
+enum { RL_HIST = 1, RL_COMPLETE = 2, RL_NO_AUTO_HIST = 4 };
+#define RL_MULTILINE_RECALL (-2)
+static int repl_read_line_ex(char *buf, int max, int flags, const char *prompt);
+static void repl_set_prefill(const char *line);
 static int repl_read_line(char *buf, int max);   /* plain (smart Tab) — for ed */
 static int rl_pathchar(int c);
 static int rl_complete_core(char *buf, int max, int *len, int *cur, int list_ok);
 // ---- In-memory filesystem (REPL-only, RAM-backed) ----------------------------------------
 // HolyC owns the arena at MEMFS_PHYS_BASE (seed/fs.hc); C seed boot + EdC/EditC share it so
 // there is one source of truth. Layout/stride must match HolyC MEMFS_* (65608).
-#define MEMFS_PHYS_BASE 0x85000000ULL
-#define MEMFS_MAX_FILES 64
+#define MEMFS_MAX_FILES 96
 #define MEMFS_FILE_CAP  65536
 #define MEMFS_STRIDE    65608
 #define MEMFS_CWD_OFF   (MEMFS_MAX_FILES * MEMFS_STRIDE)
@@ -1226,7 +1234,7 @@ static Compiler *g_cc = 0;
 static char g_run_file[64];   // set while Run("file") compiles, so srcmap remembers the origin file
 static char g_err_file[64];
 static I64 g_err_line, g_err_col;
-static int g_err_have;
+static I64 g_err_have; /* published via HC_SLOT_ERR_*; HolyC ErrGo reads these */
 
 static struct { int used; char name[32]; char file[64]; char *src; } srcmap[SRCMAP_MAX];
 static void srcmap_put(const char *name, const char *src) {
@@ -1256,6 +1264,26 @@ static const char *srcmap_get(const char *name) {
 static void name_dot_hc(const char *name, char *fn) {
     int j = 0; while (name[j] && j < 31) { fn[j] = name[j]; j++; }
     fn[j] = '.'; fn[j+1] = 'h'; fn[j+2] = 'c'; fn[j+3] = 0;
+}
+
+/* Stash symbol into HolyC JumpIdent[] so Vi/EditHoly seek+center on open (Src / gd). */
+static void src_jump_set(const char *name) {
+    CHashGlblVar *ji = g_cc ? (CHashGlblVar *)HashFind("JumpIdent", g_cc->hash_table, HTT_GLBL_VAR) : 0;
+    if (!ji || !ji->data_addr) return;
+    char *buf = (char *)ji->data_addr;
+    if (!name || !name[0]) { buf[0] = 0; return; }
+    int i = 0;
+    while (name[i] && i < 63) { buf[i] = name[i]; i++; }
+    buf[i] = 0;
+}
+
+static const char *srcmap_file_of(const char *name) {
+    for (int i = 0; i < SRCMAP_MAX; i++)
+        if (srcmap[i].used && !strcmp(srcmap[i].name, name) && srcmap[i].file[0]) {
+            MemFile *f = memfs_find(srcmap[i].file);
+            if (f) return f->name;
+        }
+    return 0;
 }
 
 // Seed comment files may hold optional `// Name --` Man blocks when there is no HolyC
@@ -1528,41 +1556,42 @@ static void call_editor(char *name) {
     Edit(name);
 }
 // Src("Name") -- bring up a HolyC function's source in the preferred editor (TempleOS
-// goto-definition), then recompile it: writes the remembered source to "Name.hc", opens via
-// `editor`, and Run()s it on exit. Only works for functions defined in HolyC (the C built-ins
-// like Ed/Dir/Edit have no HolyC source until they are reimplemented as such).
+// goto-definition). Prefer originating seed file + JumpIdent seek; fall back to Name.hc.
 static HRT_I64 Src(char *name) {
+    if (!name || !name[0]) { puts_uart("Src: no source\n"); return -1; }
+    src_jump_set(0);
+    const char *ofile = srcmap_file_of(name);
+    if (ofile) {
+        src_jump_set(name);
+        call_editor((char *)ofile);
+        return 0;  /* view+seek only — do not Run whole seed */
+    }
     const char *s = srcmap_get(name);
     if (s) {
-        // A HolyC function: materialize its (arbitrary-size) source into <name>.hc, edit, recompile.
         char fn[36];
         name_dot_hc(name, fn);
         MemFile *f = memfs_create(fn);
         if (!f) { puts_uart("Src: fs full\n"); return -1; }
         int n = 0; while (s[n] && n < MEMFS_FILE_CAP - 1) { f->data[n] = s[n]; n++; }
         f->data[n] = 0; f->len = n;
+        src_jump_set(name);
         call_editor(fn); Run(fn);
         return 0;
     }
-    // Not a known function: maybe it's a file itself -- the boot script, a driver source, a data
-    // file. Open "name" (or "name.hc") via editor and Run it, so you can edit the boot process too.
     MemFile *f = memfs_find(name);
     if (!f) {
         char fn[36];
         name_dot_hc(name, fn);
         f = memfs_find(fn);
     }
-    if (f) { call_editor(f->name); Run(f->name); return 0; }
-    // Optional comment-only Man page (DOC_FILES); currently none — open nothing special.
+    if (f) { call_editor(f->name); return 0; }
     { const char *df = doc_file_for(name);
-      if (df) { call_editor((char *)df); return 0; } }
-    // No HolyC source and no doc file: if it's a function (a C built-in, say), disassemble it.
+      if (df) { src_jump_set(name); call_editor((char *)df); return 0; } }
     { CHashFun *fn = g_cc ? (CHashFun *)HashFind(name, g_cc->hash_table, HTT_FUN) : 0;
       CHashFun *dis = g_cc ? (CHashFun *)HashFind("DisasmAt", g_cc->hash_table, HTT_FUN) : 0;
       if (fn && fn->exe_addr && dis && dis->exe_addr) {
           puts_uart("Src: no source for "); puts_uart(name); puts_uart(" -- disassembling:\n");
-          // C callers don't evaluate HolyC default args -- pass max/end explicitly.
-          ((void (*)(HRT_I64, HRT_I64, HRT_I64))dis->exe_addr)((HRT_I64)fn->exe_addr, 2000, 0);   // the HolyC DisasmAt (disasm.hc)
+          ((void (*)(HRT_I64, HRT_I64, HRT_I64))dis->exe_addr)((HRT_I64)fn->exe_addr, 2000, 0);
           return 0; } }
     puts_uart("Src: no source for "); puts_uart(name);
     puts_uart(" (not a HolyC function or a file)\n");
@@ -1654,7 +1683,9 @@ static int fun_sec_from_file(const char *file) {
     if (fun_name_eq(b, "ed.hc") || fun_name_eq(b, "edit.hc") || fun_name_eq(b, "vim.hc")) return 4;
     if (fun_name_eq(b, "debug.hc") || fun_name_eq(b, "disasm.hc") ||
         fun_name_eq(b, "start.hc") || fun_name_eq(b, "trap.hc") || fun_name_eq(b, "timer.hc") ||
-        fun_name_eq(b, "csr.hc") || fun_name_eq(b, "man_topics.hc"))
+        fun_name_eq(b, "csr.hc") || fun_name_eq(b, "MemMapSelected.hc") ||
+        fun_name_eq(b, "man_topics.hc") ||
+        fun_name_eq(b, "ds.hc") || fun_name_pfx(b, "ds_"))
         return 5;
     if (fun_name_eq(b, "mem.hc")) return 9;
     return 0;   // unknown .hc -- caller treats as user shell (1)
@@ -1704,17 +1735,11 @@ static int fun_sec_from_name(const char *name) {
         fun_name_eq(name, "GetSScratch") || fun_name_eq(name, "SetSScratch") ||
         fun_name_eq(name, "CSRGet") || fun_name_eq(name, "CSRSet") ||
         fun_name_eq(name, "GetRFlags") || fun_name_eq(name, "SetRFlags") ||
-        fun_name_eq(name, "GetMTime") ||
+        fun_name_eq(name, "GetMTime") || fun_name_pfx(name, "Ds") ||
+        fun_name_eq(name, "Bits") ||
         (name[0] == 'D' && !name[1]))
         return 5;
     return 9;   // holy_rt / RV* / everything else
-}
-static const char *srcmap_file_of(const char *name) {
-    if (!name) return 0;
-    for (int i = 0; i < SRCMAP_MAX; i++)
-        if (srcmap[i].used && !strcmp(srcmap[i].name, name) && srcmap[i].file[0])
-            return srcmap[i].file;
-    return 0;
 }
 static int fun_sec_of(const char *name) {
     const char *file = srcmap_file_of(name);
@@ -2093,12 +2118,22 @@ static HRT_I64 StkRep(void) {
     stk_rep(ra, STK_IN_RAM(s0 - 16) ? *(U64 *)(s0 - 16) : s0);   /* start at the caller */
     return 0;
 }
+/* HolyC global `pc` (TempleOS _RIP analogue) — last trap mepc for U(pc-16). */
+static I64 *g_hc_pc;
+static void hc_pc_publish(I64 epc) {
+    if (!g_hc_pc && g_cc) {
+        CHashGlblVar *pg = (CHashGlblVar *)HashFind("pc", g_cc->hash_table, HTT_GLBL_VAR);
+        if (pg && pg->data_addr) g_hc_pc = (I64 *)pg->data_addr;
+    }
+    if (g_hc_pc) *g_hc_pc = epc;
+}
 /* C trapvec — named policy/dispatch. Called from TrapCtxSave with a0 = GPR frame. */
 __attribute__((used)) static void trapvec(U64 *frame) {
     I64 cause, epc, tval;
     __asm__ volatile("csrr %0, mcause" : "=r"(cause));
     __asm__ volatile("csrr %0, mepc"   : "=r"(epc));
     __asm__ volatile("csrr %0, mtval"  : "=r"(tval));
+    hc_pc_publish(epc);                                   // before resume overwrites mepc
     volatile U64 *dbg = (volatile U64 *)0x87000100;
     for (int k = 0; k < 16; k++) dbg[k] = frame[k];        // publish the trapped registers for HolyC
     dbg[16] = (U64)frame + 144;                            // trapped sp
@@ -2273,14 +2308,14 @@ static HRT_I64 Reset(void) {
 static HRT_I64 MemMap(void) {
     /* Columns: MEM_* | base | note | driver (Kernel/Drv or seed). Virt profile. */
     puts_uart("Memory map (RISC-V QEMU virt; MEM_* in csr.hc; last col = HolyC driver):\n");
-    puts_uart("  MEM_RAM        0x80000000  +128M                       [plat DRAM]\n");
+    puts_uart("  MEM_RAM        0x80000000  +128M default (memfs @0x87800000)\n");
     puts_uart("  MEM_CODE     @ "); print_hex((U64)&code_mem[0]); puts_uart("  ");
         print_udec(code_pos); putc_uart('/'); print_udec(sizeof(code_mem));
         puts_uart(" B used   [live JIT code_mem]\n");
     puts_uart("  MEM_JIT_HEAP @ "); print_hex((U64)&heap_mem[0]); puts_uart("  ");
         print_udec(heap_pos); putc_uart('/'); print_udec(sizeof(heap_mem));
         puts_uart(" B used   [live C heap_mem]\n");
-    puts_uart("  MEM_FS         0x85000000  HolyC memfs arena           fs.hc\n");
+    puts_uart("  MEM_FS         0x87800000  HolyC memfs arena           fs.hc\n");
     puts_uart("  MEM_HEAP       0x86000000  HolyC MAlloc arena          mem.hc\n");
     puts_uart("  MEM_FB         0x86100000  soft FB (ramfb)             RVFb / ramfb\n");
     puts_uart("  MEM_FIXED      0x87000000  trap/regs + host slots      [plat]\n");
@@ -2431,35 +2466,63 @@ typedef struct {
     const char *name; int csr; const char *desc; int writable; const char *api;
 } CsrInfo;
 static const CsrInfo csr_tab[] = {
-    {"mstatus",  0x300, "machine status (MIE/FS/...)", 1, "GetMStatus/SetMStatus"},
-    {"misa",     0x301, "ISA / extension bitmap (WARL)", 1, "GetMIsa/SetMIsa"},
-    {"mie",      0x304, "machine interrupt enable", 1, "GetMie/SetMie"},
-    {"mtvec",    0x305, "trap vector base", 1, "GetMtvec/SetMtvec"},
-    {"mscratch", 0x340, "scratch for M-mode trap/sched", 1, "GetMScratch/SetMScratch"},
-    {"mepc",     0x341, "exception PC (mret target)", 1, "GetMepc/SetMepc"},
-    {"mcause",   0x342, "trap cause (interrupt|code)", 1, "GetMcause/SetMcause"},
-    {"mtval",    0x343, "bad addr / faulting insn", 1, "GetMtval/SetMtval"},
-    {"mip",      0x344, "machine interrupt pending", 1, "GetMip/SetMip"},
-    {"satp",     0x180, "supervisor addr xlate / ASID", 1, "GetSatp/SetSatp"},
-    {"sscratch", 0x140, "S-mode scratch (Regs snap uses)", 1, "GetSScratch/SetSScratch"},
-    {"mhartid",  0xF14, "hardware thread id (RO)", 0, "GetMHartId (RO)"},
+    {"sstatus",    0x100, "supervisor status", 1, "GetSStatus/SetSStatus"},
+    {"sie",        0x104, "supervisor interrupt enable", 1, "GetSie/SetSie"},
+    {"stvec",      0x105, "supervisor trap vector", 1, "GetStvec/SetStvec"},
+    {"sscratch",   0x140, "S-mode scratch (Regs snap uses)", 1, "GetSScratch/SetSScratch"},
+    {"sepc",       0x141, "supervisor exception PC", 1, "GetSepc/SetSepc"},
+    {"scause",     0x142, "supervisor trap cause", 1, "GetScause/SetScause"},
+    {"stval",      0x143, "supervisor bad addr / insn", 1, "GetStval/SetStval"},
+    {"sip",        0x144, "supervisor interrupt pending", 1, "GetSip/SetSip"},
+    {"satp",       0x180, "supervisor addr xlate / ASID", 1, "GetSatp/SetSatp"},
+    {"mstatus",    0x300, "machine status (MIE/FS/...)", 1, "GetMStatus/SetMStatus"},
+    {"misa",       0x301, "ISA / extension bitmap (WARL)", 1, "GetMIsa/SetMIsa"},
+    {"medeleg",    0x302, "machine exception delegation", 1, "GetMedeleg/SetMedeleg"},
+    {"mideleg",    0x303, "machine interrupt delegation", 1, "GetMideleg/SetMideleg"},
+    {"mie",        0x304, "machine interrupt enable", 1, "GetMie/SetMie"},
+    {"mtvec",      0x305, "trap vector base", 1, "GetMtvec/SetMtvec"},
+    {"mcounteren", 0x306, "counter access for lower priv", 1, "GetMCounterEn/SetMCounterEn"},
+    {"mscratch",   0x340, "scratch for M-mode trap/sched", 1, "GetMScratch/SetMScratch"},
+    {"mepc",       0x341, "exception PC (mret target)", 1, "GetMepc/SetMepc"},
+    {"mcause",     0x342, "trap cause (interrupt|code)", 1, "GetMcause/SetMcause"},
+    {"mtval",      0x343, "bad addr / faulting insn", 1, "GetMtval/SetMtval"},
+    {"mip",        0x344, "machine interrupt pending", 1, "GetMip/SetMip"},
+    {"mcycle",     0xB00, "cycle counter (M-mode)", 0, "GetMCycle (RO)"},
+    {"minstret",   0xB02, "retired instructions (M-mode)", 0, "GetMInstret (RO)"},
+    {"cycle",      0xC00, "cycle (needs mcounteren)", 0, "GetCycle (RO)"},
+    {"instret",    0xC02, "instret (needs mcounteren)", 0, "GetInstret (RO)"},
+    {"mhartid",    0xF14, "hardware thread id (RO)", 0, "GetMHartId (RO)"},
     {0, 0, 0, 0, 0}
 };
 static I64 csr_read_by_num(int csr) {
     I64 v = 0;
     switch (csr) {
-    case 0x300: __asm__ volatile("csrr %0, mstatus"  : "=r"(v)); break;
-    case 0x301: __asm__ volatile("csrr %0, misa"     : "=r"(v)); break;
-    case 0x304: __asm__ volatile("csrr %0, mie"      : "=r"(v)); break;
-    case 0x305: __asm__ volatile("csrr %0, mtvec"    : "=r"(v)); break;
-    case 0x340: __asm__ volatile("csrr %0, mscratch" : "=r"(v)); break;
-    case 0x341: __asm__ volatile("csrr %0, mepc"     : "=r"(v)); break;
-    case 0x342: __asm__ volatile("csrr %0, mcause"   : "=r"(v)); break;
-    case 0x343: __asm__ volatile("csrr %0, mtval"    : "=r"(v)); break;
-    case 0x344: __asm__ volatile("csrr %0, mip"      : "=r"(v)); break;
-    case 0x180: __asm__ volatile("csrr %0, satp"     : "=r"(v)); break;
-    case 0x140: __asm__ volatile("csrr %0, sscratch" : "=r"(v)); break;
-    case 0xF14: __asm__ volatile("csrr %0, mhartid"  : "=r"(v)); break;
+    case 0x100: __asm__ volatile("csrr %0, sstatus"    : "=r"(v)); break;
+    case 0x104: __asm__ volatile("csrr %0, sie"        : "=r"(v)); break;
+    case 0x105: __asm__ volatile("csrr %0, stvec"      : "=r"(v)); break;
+    case 0x140: __asm__ volatile("csrr %0, sscratch"   : "=r"(v)); break;
+    case 0x141: __asm__ volatile("csrr %0, sepc"       : "=r"(v)); break;
+    case 0x142: __asm__ volatile("csrr %0, scause"     : "=r"(v)); break;
+    case 0x143: __asm__ volatile("csrr %0, stval"      : "=r"(v)); break;
+    case 0x144: __asm__ volatile("csrr %0, sip"        : "=r"(v)); break;
+    case 0x180: __asm__ volatile("csrr %0, satp"       : "=r"(v)); break;
+    case 0x300: __asm__ volatile("csrr %0, mstatus"    : "=r"(v)); break;
+    case 0x301: __asm__ volatile("csrr %0, misa"       : "=r"(v)); break;
+    case 0x302: __asm__ volatile("csrr %0, medeleg"    : "=r"(v)); break;
+    case 0x303: __asm__ volatile("csrr %0, mideleg"    : "=r"(v)); break;
+    case 0x304: __asm__ volatile("csrr %0, mie"        : "=r"(v)); break;
+    case 0x305: __asm__ volatile("csrr %0, mtvec"      : "=r"(v)); break;
+    case 0x306: __asm__ volatile("csrr %0, mcounteren" : "=r"(v)); break;
+    case 0x340: __asm__ volatile("csrr %0, mscratch"   : "=r"(v)); break;
+    case 0x341: __asm__ volatile("csrr %0, mepc"       : "=r"(v)); break;
+    case 0x342: __asm__ volatile("csrr %0, mcause"     : "=r"(v)); break;
+    case 0x343: __asm__ volatile("csrr %0, mtval"      : "=r"(v)); break;
+    case 0x344: __asm__ volatile("csrr %0, mip"        : "=r"(v)); break;
+    case 0xB00: __asm__ volatile("csrr %0, mcycle"     : "=r"(v)); break;
+    case 0xB02: __asm__ volatile("csrr %0, minstret"   : "=r"(v)); break;
+    case 0xC00: __asm__ volatile("csrr %0, cycle"      : "=r"(v)); break;
+    case 0xC02: __asm__ volatile("csrr %0, instret"    : "=r"(v)); break;
+    case 0xF14: __asm__ volatile("csrr %0, mhartid"    : "=r"(v)); break;
     default: return 0;
     }
     return v;
@@ -2619,12 +2682,11 @@ static HRT_I64 SrcText(char *name) {
 
 /* Host ABI slots at 0x87001000 — NOT hash-table builtins. HolyC reads these; the only
  * host services are the bootstrap compiler entry (HcCompileSrc) and published pointers
- * into bootstrap state (memfs, UART ring, hash table, srcmap, trap name). */
+ * into bootstrap state (UART ring, hash table, srcmap, err metadata, trap name). */
 #define HC_SLOT_BASE        0x87001000UL
 #define HC_SLOT_COMPILE     (HC_SLOT_BASE + 0x00)
 #define HC_SLOT_RUN_FILE    (HC_SLOT_BASE + 0x08)  /* char g_run_file[64] */
-#define HC_SLOT_MEMFS       (HC_SLOT_BASE + 0x10)
-#define HC_SLOT_CWD         (HC_SLOT_BASE + 0x18)
+/* 0x10 / 0x18: retired MEMFS/CWD publishes — HolyC owns arena at MEMFS_PHYS_BASE */
 #define HC_SLOT_UART_RX     (HC_SLOT_BASE + 0x20)
 #define HC_SLOT_UART_RH     (HC_SLOT_BASE + 0x28)
 #define HC_SLOT_UART_RT     (HC_SLOT_BASE + 0x30)
@@ -2638,19 +2700,16 @@ static HRT_I64 SrcText(char *name) {
 #define HC_SLOT_HASH        (HC_SLOT_BASE + 0x70)
 #define HC_SLOT_CALL_ED     (HC_SLOT_BASE + 0x78)
 #define HC_SLOT_REENTRY     (HC_SLOT_BASE + 0x80)
-#define HC_SLOT_UART_DRAIN  (HC_SLOT_BASE + 0x88)  /* void (*)(void) — C uart_hw_drain */
-#define HC_SLOT_UART_GET    (HC_SLOT_BASE + 0xB0)  /* U8 (*)(void) — blocking C UartGet (after trap name buf @+0x90) */
+#define HC_SLOT_UART_DRAIN  (HC_SLOT_BASE + 0x88)  /* unused — HolyC UartRxDrain */
+#define HC_SLOT_UART_GET    (HC_SLOT_BASE + 0xB0)  /* unused — HolyC HcUartGet */
 #define HC_SLOT_ED          (HC_SLOT_BASE + 0xB8)  /* HRT_I64 (*)(char*) — C Ed (HolyC loads once, then calls) */
 #define HC_SLOT_FMT         (HC_SLOT_BASE + 0xC0)  /* I64 (*)(char *src) — HolyFmtSrc into g_fmt_buf */
 #define HC_SLOT_FMT_BUF     (HC_SLOT_BASE + 0xC8)  /* char g_fmt_buf[65536] */
 #define HC_SLOT_FMT_FILE    (HC_SLOT_BASE + 0xD8)  /* I64 (*)(char *name) — format memfs file in place */
-#define HC_SLOT_TERM_KEYGET (HC_SLOT_BASE + 0xD0)  /* HRT_I64 (*)(void) — C TermKeyGet */
+#define HC_SLOT_TERM_KEYGET (HC_SLOT_BASE + 0xD0)  /* HRT_I64 (*)(void) — C TermKeyGet repair hatch */
 #define HC_SLOT_EDIT        (HC_SLOT_BASE + 0xE0)  /* HRT_I64 (*)(char*) — C Edit */
 #define HC_SLOT_CALLERS     (HC_SLOT_BASE + 0xE8)  /* HRT_I64 (*)(char*) — C CallersScan */
-#define HC_SLOT_TERM_PROBE  (HC_SLOT_BASE + 0xF0)  /* HRT_I64 (*)(void) — C TermProbe */
-#define HC_SLOT_TERM_ROWS   (HC_SLOT_BASE + 0xF8)  /* HRT_I64 (*)(void) — C TermRows */
-#define HC_SLOT_TERM_COLS   (HC_SLOT_BASE + 0x100) /* HRT_I64 (*)(void) — C TermCols */
-#define HC_SLOT_TERM_FLAGS  (HC_SLOT_BASE + 0x108) /* HRT_I64 (*)(void) — C TermFlags */
+/* 0xF0..0x108: retired TERM_PROBE/ROWS/COLS/FLAGS — HolyC term.hc owns geometry */
 #define HC_SLOT_TERM_SETSZ  (HC_SLOT_BASE + 0x110) /* HRT_I64 (*)(I64,I64) — C TermSetSize */
 /* Inspection APIs kept in C (live JIT sizes / GPR snap / callers_buf). HolyC once-indirects. */
 #define HC_SLOT_CALLER_NAME (HC_SLOT_BASE + 0x118) /* HRT_I64 (*)(I64) — C CallerName → char* */
@@ -2658,6 +2717,13 @@ static HRT_I64 SrcText(char *name) {
 #define HC_SLOT_MEMMAP      (HC_SLOT_BASE + 0x128) /* HRT_I64 (*)(void) — C MemMap */
 #define HC_SLOT_REGS        (HC_SLOT_BASE + 0x130) /* HRT_I64 (*)(void) — regs_snap_stub */
 #define HC_SLOT_STKREP      (HC_SLOT_BASE + 0x138) /* HRT_I64 (*)(void) — C StkRep */
+/* ErrGo metadata — HolyC ErrGo reads these; no RuntimeRegister */
+#define HC_SLOT_ERR_FILE    (HC_SLOT_BASE + 0x158) /* char * → g_err_file */
+#define HC_SLOT_ERR_LINE    (HC_SLOT_BASE + 0x160) /* I64 * → g_err_line */
+#define HC_SLOT_ERR_COL     (HC_SLOT_BASE + 0x168) /* I64 * → g_err_col */
+#define HC_SLOT_ERR_HAVE    (HC_SLOT_BASE + 0x170) /* I64 * → g_err_have */
+/* #define table (HTT_DEFINE_STR) — Tab completes MEM_* / UART_* / … from live macros */
+#define HC_SLOT_DEFINE      (HC_SLOT_BASE + 0x178) /* CHashTable * → cc->define_table */
 /* HC_SLOT_CODE_BASE / HEAP_BASE / REG_ONE: see MemMap section (0x140/0x148/0x150) */
 
 static HRT_I64 HcCompileSrc(char *src) {
@@ -2675,9 +2741,6 @@ static HRT_I64 HcFmtSrc(char *src) {
 static void HostSlotsInstall(Compiler *cc) {
     *(volatile U64 *)HC_SLOT_COMPILE    = (U64)&HcCompileSrc;
     *(volatile U64 *)HC_SLOT_RUN_FILE   = (U64)&g_run_file[0];
-    /* Deprecated slots: still point at HolyC arena for any leftover slot readers. */
-    *(volatile U64 *)HC_SLOT_MEMFS      = (U64)MEMFS_PHYS_BASE;
-    *(volatile U64 *)HC_SLOT_CWD        = (U64)(MEMFS_PHYS_BASE + MEMFS_CWD_OFF);
     *(volatile U64 *)HC_SLOT_UART_RX    = (U64)&uart_rx[0];
     *(volatile U64 *)HC_SLOT_UART_RH    = (U64)&uart_rh;
     *(volatile U64 *)HC_SLOT_UART_RT    = (U64)&uart_rt;
@@ -2689,6 +2752,7 @@ static void HostSlotsInstall(Compiler *cc) {
     *(volatile U64 *)HC_SLOT_TRAP_DISP  = (U64)&trapvec;
     *(volatile U64 *)HC_SLOT_TRAP_VEC   = (U64)&TrapVec;
     *(volatile U64 *)HC_SLOT_HASH       = cc && cc->hash_table ? (U64)cc->hash_table : 0;
+    *(volatile U64 *)HC_SLOT_DEFINE     = cc && cc->define_table ? (U64)cc->define_table : 0;
     *(volatile U64 *)HC_SLOT_CALL_ED    = (U64)&call_editor;
     *(volatile U64 *)HC_SLOT_REENTRY    = (U64)&repl_reentry;
     *(volatile U64 *)HC_SLOT_UART_DRAIN = (U64)&uart_hw_drain;
@@ -2700,16 +2764,16 @@ static void HostSlotsInstall(Compiler *cc) {
     *(volatile U64 *)HC_SLOT_TERM_KEYGET = (U64)&TermKeyGet;
     *(volatile U64 *)HC_SLOT_EDIT        = (U64)&Edit;
     *(volatile U64 *)HC_SLOT_CALLERS     = (U64)&CallersScan;
-    *(volatile U64 *)HC_SLOT_TERM_PROBE  = (U64)&TermProbe;
-    *(volatile U64 *)HC_SLOT_TERM_ROWS   = (U64)&TermRows;
-    *(volatile U64 *)HC_SLOT_TERM_COLS   = (U64)&TermCols;
-    *(volatile U64 *)HC_SLOT_TERM_FLAGS  = (U64)&TermFlags;
     *(volatile U64 *)HC_SLOT_TERM_SETSZ  = (U64)&TermSetSize;
     *(volatile U64 *)HC_SLOT_CALLER_NAME = (U64)&CallerName;
     *(volatile U64 *)HC_SLOT_CALLER_CNT  = (U64)&CallerCnt;
     *(volatile U64 *)HC_SLOT_MEMMAP      = (U64)&MemMap;
     *(volatile U64 *)HC_SLOT_REGS        = (U64)&regs_snap_stub;
     *(volatile U64 *)HC_SLOT_STKREP      = (U64)&StkRep;
+    *(volatile U64 *)HC_SLOT_ERR_FILE    = (U64)&g_err_file[0];
+    *(volatile U64 *)HC_SLOT_ERR_LINE    = (U64)&g_err_line;
+    *(volatile U64 *)HC_SLOT_ERR_COL     = (U64)&g_err_col;
+    *(volatile U64 *)HC_SLOT_ERR_HAVE    = (U64)&g_err_have;
     *(volatile U64 *)HC_SLOT_CODE_BASE   = (U64)&code_mem[0];
     *(volatile U64 *)HC_SLOT_HEAP_BASE   = (U64)&heap_mem[0];
     *(volatile U64 *)HC_SLOT_REG_ONE     = (U64)&reg_one_stub;
@@ -2725,48 +2789,113 @@ static void RuntimeInit(Compiler *cc) {
  * Per-seed Run() so SrcFile / FunSec map to real seed names (blob boot collapses to boot_blob.hc). */
 static void BootHolyCRuntime(void) {
     static const char *order[] = {
+        "MemMapSelected.hc", /* Kconfig MEM_*; must precede uart.hc / csr.hc */
         "uart.hc", "mem.hc", "print.hc", "str.hc", "fs.hc", "run.hc",
-        "math.hc", "term.hc", "sym.hc", "csr.hc", "fmt.hc",
-        "dir.hc", "complete.hc", "ed.hc", "edit.hc", "start.hc", "trap.hc",
+        "math.hc", "term.hc", "sym.hc", "csr.hc",
+        "ds.hc", "ds_csr.hc", "ds_uart.hc", "ds_clint.hc", "ds_plic.hc",
+        "fmt.hc",
+        "dir.hc", "asm_complete.hc", "complete.hc", "ed.hc", "edit.hc", "start.hc", "trap.hc",
         "debug.hc", "disasm.hc", "vim.hc", "RVEditorSelected.hc",
         "man.hc", "files.hc", "funs.hc", "callers.hc", "boot.hc",
         0
     };
     int i;
     for (i = 0; order[i]; i++) {
-        HostSlotsInstall(g_cc); /* refresh hash pointer after Compiler grows */
+        HostSlotsInstall(g_cc); /* refresh hash/define pointers after Compiler grows */
         if (g_cc && g_cc->hash_table)
             *(volatile U64 *)HC_SLOT_HASH = (U64)g_cc->hash_table;
+        if (g_cc && g_cc->define_table)
+            *(volatile U64 *)HC_SLOT_DEFINE = (U64)g_cc->define_table;
         Run((char *)order[i]);
     }
     (void)repl_boot_blob; /* keep embed linked for make repl-blob */
 }
 
-/* ErrGo; — open the preferred editor on the last jumpable compile error. */
-static HRT_I64 ErrGo(void) {
-    if (!g_err_have || !g_err_file[0]) {
-        puts_uart("ErrGo: no error\n");
-        return -1;
-    }
-    puts_uart("ErrGo "); puts_uart(g_err_file); putc_uart(':');
-    print_dec(g_err_line); putc_uart(':'); print_dec(g_err_col); puts_uart("\n");
-    call_editor(g_err_file);
-    return 0;
-}
-
 // ---- REPL line editor: history (Up/Down) + Tab completion --------------------------------
-// History records each non-empty line submitted with Enter (continuation lines included; the
-// brace/paren accumulator is unchanged). Up/Down walk the ring; any edit leaves history browse
-// mode but keeps the recalled text. Tab completes the token before the cursor: path-like
+// History records each completed compile unit (full accum buffer — multi-line functions as one
+// entry with embedded newlines). Up/Down walk the ring; any edit leaves history browse mode
+// but keeps the recalled text. Tab completes the token before the cursor: path-like
 // tokens (contain '.' or '/', or follow '"') against memfs names (cwd-relative); otherwise
-// against HTT_FUN|HTT_GLBL_VAR (case-insensitive). One match fills with canonical casing;
+// against HTT_FUN|HTT_GLBL_VAR plus #defines (HTT_DEFINE_STR: MEM_*, UART_*, …) from the
+// live define_table (case-insensitive). Inside asm{}: opcodes / GPRs / CSR names
+// (tables mirror bootstrap/seed/asm_complete.hc). One match fills with canonical casing;
 // several share a common prefix (also CI) or are listed.
 #define HIST_MAX 48
-#define HIST_CAP 512
+#define HIST_LINE_CAP 512
+#define HIST_UNIT_CAP 4096
+#define HIST_CAP HIST_LINE_CAP
 #define COMP_MAX 64
+#define RL_ASM_OP 0
+#define RL_ASM_REG 1
+#define RL_ASM_CSR 2
+#define RL_ASM_NONE 3
 
-static char hist_ring[HIST_MAX][HIST_CAP];
+static char hist_ring[HIST_MAX][HIST_UNIT_CAP];
 static int hist_n, hist_head;   /* n entries; head = next write slot */
+static int g_rl_hist_age = -1;  /* Up/Down browse index; persists across read_line calls */
+static const char *g_rl_hist_recall_unit; /* multiline Up: full entry for repl() */
+static const char *g_rl_prefill;          /* optional line prefill before read */
+static int g_rl_ctrlc_hit;
+static int g_rl_hist_accum_clear; /* Down/single-line recall: drop partial multiline accum */
+static char g_rl_hist_lastline[HIST_LINE_CAP];
+static const char *g_rl_accum;
+static int g_rl_accum_len;
+
+static void rl_set_accum_ctx(const char *acc, int len) {
+    g_rl_accum = acc;
+    g_rl_accum_len = len > 0 ? len : 0;
+}
+
+/* Keep in sync with bootstrap/seed/asm_complete.hc AsmCompOps / Regs / Csrs. */
+static const char *const rl_asm_ops[] = {
+    "add","addi","and","andi","or","ori","xor","xori",
+    "sub","sll","slli","srl","srli","sra","srai","slt","slti","sltu",
+    "mul","div","divu","rem","remu",
+    "lui","auipc","li","mv","not","neg",
+    "ld","lw","lwu","lh","lhu","lb","lbu","sd","sw","sh","sb",
+    "jalr","j","call","beq","bne","blt","bge","bltu","bgeu","beqz","bnez",
+    "ret","nop","wfi","mret","sret","ecall","ebreak","fencei","fence.i",
+    "csrr","csrw","csrs","csrrw","csrrs","csrrc",
+    "csrrwi","csrrsi","csrrci","csrwi","csrsi","csrci",
+    "rdtime","sfencevma","lifp",
+    "lr.d","lr.w","lrd","lrw","sc.d","sc.w","scd","scw",
+    "amoswap.d","amoadd.d","amoxor.d","amoand.d","amoor.d",
+    "amomin.d","amomax.d","amominu.d","amomaxu.d",
+    "amoswap.w","amoadd.w","amoxor.w","amoand.w","amoor.w",
+    "amomin.w","amomax.w","amominu.w","amomaxu.w",
+    "amoswapd","amoaddd","amoxord","amoandd","amoord",
+    "amomind","amomaxd","amominud","amomaxud",
+    "amoswapw","amoaddw","amoxorw","amoandw","amoorw",
+    "amominw","amomaxw","amominuw","amomaxuw",
+    "fsqrtd","faddd","fsubd","fmuld","fdivd","fled","fltd","feqd",
+    "fmvdx","fmvxd","fcvtdl","fcvtld_rtz","fcvtld_rdn","fcvtld_rmm",
+    0
+};
+static const char *const rl_asm_regs[] = {
+    "zero","ra","sp","gp","tp","fp",
+    "t0","t1","t2","t3","t4","t5","t6",
+    "s0","s1","s2","s3","s4","s5","s6","s7","s8","s9","s10","s11",
+    "a0","a1","a2","a3","a4","a5","a6","a7",
+    "x0","x1","x2","x3","x4","x5","x6","x7","x8","x9",
+    "x10","x11","x12","x13","x14","x15","x16","x17",
+    "x18","x19","x20","x21","x22","x23","x24","x25",
+    "x26","x27","x28","x29","x30","x31",
+    "ft0","ft1","ft2","ft3","ft4","ft5","ft6","ft7","ft8","ft9","ft10","ft11",
+    "fs0","fs1","fs2","fs3","fs4","fs5","fs6","fs7","fs8","fs9","fs10","fs11",
+    "fa0","fa1","fa2","fa3","fa4","fa5","fa6","fa7",
+    "f0","f1","f2","f3","f4","f5","f6","f7","f8","f9",
+    "f10","f11","f12","f13","f14","f15","f16","f17",
+    "f18","f19","f20","f21","f22","f23","f24","f25",
+    "f26","f27","f28","f29","f30","f31",
+    0
+};
+static const char *const rl_asm_csrs[] = {
+    "mstatus","misa","medeleg","mideleg","mie","mtvec","mcounteren",
+    "mscratch","mepc","mcause","mtval","mip",
+    "mcycle","minstret","cycle","time","instret","mhartid",
+    "sstatus","sie","stvec","sscratch","sepc","scause","stval","sip","satp",
+    0
+};
 
 static void hist_push(const char *line) {
     int i = 0;
@@ -2775,10 +2904,101 @@ static void hist_push(const char *line) {
         int prev = hist_head ? hist_head - 1 : HIST_MAX - 1;
         if (!strcmp(hist_ring[prev], line)) return;
     }
-    while (line[i] && i < HIST_CAP - 1) { hist_ring[hist_head][i] = line[i]; i++; }
+    while (line[i] && i < HIST_UNIT_CAP - 1) { hist_ring[hist_head][i] = line[i]; i++; }
     hist_ring[hist_head][i] = 0;
     hist_head = (hist_head + 1) % HIST_MAX;
     if (hist_n < HIST_MAX) hist_n++;
+}
+static void hist_push_unit(const char *unit, int ulen) {
+    int s = 0, e = ulen - 1;
+    if (!unit || ulen <= 0) return;
+    while (s < ulen && (unit[s] == ' ' || unit[s] == '\t' || unit[s] == '\n')) s++;
+    while (e >= s && (unit[e] == ' ' || unit[e] == '\t' || unit[e] == '\n')) e--;
+    if (e < s) return;
+    {
+        char norm[HIST_UNIT_CAP];
+        int n = e - s + 1;
+        if (n >= HIST_UNIT_CAP) n = HIST_UNIT_CAP - 1;
+        for (int i = 0; i < n; i++) norm[i] = unit[s + i];
+        norm[n] = 0;
+        hist_push(norm);
+    }
+}
+static void repl_set_prefill(const char *line) { g_rl_prefill = line; }
+static void repl_scan_depths(const char *text, int n, int *bd, int *pd) {
+    int brace = 0, paren = 0;
+    for (int i = 0; i < n; i++) {
+        char ch = text[i];
+        if (ch == '"' || ch == '\'') {
+            char q = ch;
+            i++;
+            while (i < n && text[i] != q) {
+                if (text[i] == '\\' && i + 1 < n) i++;
+                i++;
+            }
+            continue;
+        }
+        if (ch == '{') brace++;
+        else if (ch == '}') { if (brace > 0) brace--; }
+        else if (ch == '(') paren++;
+        else if (ch == ')') { if (paren > 0) paren--; }
+    }
+    *bd = brace; *pd = paren;
+}
+/* Multiline Up: replay prefix lines, return last line length in input (for editing). */
+static int repl_hist_recall_multiline(const char *unit, char *input, int input_max,
+                                      char *accum, int accum_max, int *accum_len,
+                                      int *bd, int *pd) {
+    const char *last_nl = 0, *p = unit;
+    int ulen = 0;
+    if (!unit) return 0;
+    while (unit[ulen]) ulen++;
+    repl_scan_depths(unit, ulen, bd, pd);
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        if (!nl) break;
+        last_nl = nl;
+        p = nl + 1;
+    }
+    if (!last_nl) {
+        int i = 0;
+        while (unit[i] && i < input_max - 1) { input[i] = unit[i]; i++; }
+        input[i] = 0;
+        *accum_len = 0;
+        return i;
+    }
+    {
+        int prefix = (int)(last_nl - unit) + 1;
+        if (prefix >= accum_max) prefix = accum_max - 1;
+        for (int i = 0; i < prefix; i++) accum[i] = unit[i];
+        accum[prefix] = 0;
+        *accum_len = prefix;
+    }
+    p = unit;
+    puts_uart("\n");
+    {
+        int first = 1;
+        while (p <= last_nl) {
+            const char *nl = strchr(p, '\n');
+            if (!nl || nl > last_nl) break;
+            if (first) { puts_uart("> "); first = 0; }
+            else puts_uart("... ");
+            for (const char *q = p; q < nl; q++) putc_uart(*q);
+            puts_uart("\n");
+            p = nl + 1;
+        }
+    }
+    {
+        const char *last = last_nl + 1;
+        int llen = 0;
+        while (last[llen] && last[llen] != '\n') llen++;
+        if (llen >= input_max) llen = input_max - 1;
+        for (int i = 0; i < llen; i++) input[i] = last[i];
+        input[llen] = 0;
+        for (int i = 0; i < llen && i < HIST_LINE_CAP - 1; i++) g_rl_hist_lastline[i] = last[i];
+        g_rl_hist_lastline[llen < HIST_LINE_CAP ? llen : HIST_LINE_CAP - 1] = 0;
+        return llen;
+    }
 }
 static const char *hist_get(int age) {   /* 0 = most recent */
     if (age < 0 || age >= hist_n) return 0;
@@ -2845,14 +3065,140 @@ static void rl_add_match(const char **out, int *n, const char *s, const char *pf
     for (i = 0; i < *n; i++) if (!strcmp(out[i], s)) return;
     out[(*n)++] = s;
 }
+static int rl_str_eq_i(const char *a, const char *b) {
+    int i = 0;
+    if (!a || !b) return 0;
+    while (a[i] || b[i]) {
+        if (!rl_ch_eq_i((unsigned char)a[i], (unsigned char)b[i])) return 0;
+        i++;
+    }
+    return 1;
+}
+static int rl_asm_csr_opnd(const char *mn) {
+    if (rl_str_eq_i(mn, "csrw") || rl_str_eq_i(mn, "csrs") ||
+        rl_str_eq_i(mn, "csrwi") || rl_str_eq_i(mn, "csrsi") ||
+        rl_str_eq_i(mn, "csrci")) return 0;
+    if (rl_str_eq_i(mn, "csrr") || rl_str_eq_i(mn, "csrrw") ||
+        rl_str_eq_i(mn, "csrrs") || rl_str_eq_i(mn, "csrrc") ||
+        rl_str_eq_i(mn, "csrrwi") || rl_str_eq_i(mn, "csrrsi") ||
+        rl_str_eq_i(mn, "csrrci")) return 1;
+    return -1;
+}
+static int rl_asm_imm_opnd(const char *mn) {
+    if (rl_str_eq_i(mn, "li") || rl_str_eq_i(mn, "lui") ||
+        rl_str_eq_i(mn, "auipc") || rl_str_eq_i(mn, "lifp")) return 1;
+    if (rl_str_eq_i(mn, "addi") || rl_str_eq_i(mn, "andi") ||
+        rl_str_eq_i(mn, "ori") || rl_str_eq_i(mn, "xori") ||
+        rl_str_eq_i(mn, "slti") || rl_str_eq_i(mn, "slli") ||
+        rl_str_eq_i(mn, "srli") || rl_str_eq_i(mn, "srai")) return 2;
+    if (rl_str_eq_i(mn, "csrrwi") || rl_str_eq_i(mn, "csrrsi") ||
+        rl_str_eq_i(mn, "csrrci")) return 2;
+    if (rl_str_eq_i(mn, "csrwi") || rl_str_eq_i(mn, "csrsi") ||
+        rl_str_eq_i(mn, "csrci")) return 1;
+    return -1;
+}
+static int rl_asm_tokchar(int c) {
+    return rl_ident(c) || c == '.' || c == '-' || c == '+';
+}
+static int rl_asm_inside(const char *pre, int npre, const char *buf, int cur) {
+    int st = 0, depth = 0, i, c, q;
+    const char *chunks[2];
+    int lens[2];
+    int ci;
+    chunks[0] = pre; lens[0] = npre;
+    chunks[1] = buf; lens[1] = cur;
+    for (ci = 0; ci < 2; ci++) {
+        const char *s = chunks[ci];
+        int n = lens[ci];
+        if (!s || n <= 0) continue;
+        for (i = 0; i < n; i++) {
+            c = (unsigned char)s[i];
+            if (c == '"' || c == '\'') {
+                q = c; i++;
+                while (i < n && (unsigned char)s[i] != q) {
+                    if (s[i] == '\\' && i + 1 < n) i++;
+                    i++;
+                }
+                if (st == 1) st = 0;
+                continue;
+            }
+            if (st == 0 && rl_ident(c) && (i == 0 || !rl_ident((unsigned char)s[i - 1]))) {
+                if ((c == 'a' || c == 'A') && i + 2 < n &&
+                    rl_ch_eq_i((unsigned char)s[i + 1], 's') &&
+                    rl_ch_eq_i((unsigned char)s[i + 2], 'm') &&
+                    (i + 3 >= n || !rl_ident((unsigned char)s[i + 3]))) {
+                    st = 1; i += 2; continue;
+                }
+            }
+            if (st == 1) {
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r') continue;
+                if (c == '{') { st = 2; depth = 1; continue; }
+                st = 0;
+            }
+            if (st == 2) {
+                if (c == '{') depth++;
+                else if (c == '}') {
+                    if (depth > 0) depth--;
+                    if (depth == 0) st = 0;
+                }
+            }
+        }
+    }
+    return st == 2 && depth > 0;
+}
+static int rl_asm_kind(const char *buf, int cur) {
+    int i = cur, start, t0, commas = 0, opnd, csr_i, imm_i, j;
+    char mn[48];
+    while (i > 0 && rl_asm_tokchar((unsigned char)buf[i - 1])) i--;
+    start = i;
+    while (start > 0) {
+        char c = buf[start - 1];
+        if (c == '{' || c == ';' || c == '\n') break;
+        start--;
+    }
+    while (start < i && (buf[start] == ' ' || buf[start] == '\t')) start++;
+    t0 = start;
+    while (t0 < i && rl_asm_tokchar((unsigned char)buf[t0])) t0++;
+    if (t0 == i) return RL_ASM_OP;
+    j = 0;
+    while (start + j < t0 && j < 47) { mn[j] = buf[start + j]; j++; }
+    mn[j] = 0;
+    while (t0 < i) { if (buf[t0] == ',') commas++; t0++; }
+    opnd = commas;
+    csr_i = rl_asm_csr_opnd(mn);
+    if (csr_i >= 0 && opnd == csr_i) return RL_ASM_CSR;
+    imm_i = rl_asm_imm_opnd(mn);
+    if (imm_i >= 0 && opnd == imm_i) return RL_ASM_NONE;
+    return RL_ASM_REG;
+}
+static int rl_collect_asm(const char **out, int kind, const char *pfx, int plen) {
+    int n = 0, i;
+    const char *const *list;
+    if (kind == RL_ASM_NONE) return 0;
+    if (kind == RL_ASM_OP) list = rl_asm_ops;
+    else if (kind == RL_ASM_CSR) list = rl_asm_csrs;
+    else list = rl_asm_regs;
+    for (i = 0; list[i]; i++) rl_add_match(out, &n, list[i], pfx, plen);
+    return n;
+}
 static int rl_collect_syms(const char **out, const char *pfx, int plen) {
     int n = 0;
-    if (!g_cc || !g_cc->hash_table) return 0;
-    CHashTable *h = g_cc->hash_table;
-    for (I64 b = 0; b <= h->mask && n < COMP_MAX; b++)
-        for (CHashEntry *e = h->body[b]; e && n < COMP_MAX; e = e->next)
-            if ((e->type & (HTT_FUN | HTT_GLBL_VAR)) && e->str)
-                rl_add_match(out, &n, e->str, pfx, plen);
+    if (!g_cc) return 0;
+    if (g_cc->hash_table) {
+        CHashTable *h = g_cc->hash_table;
+        for (I64 b = 0; b <= h->mask && n < COMP_MAX; b++)
+            for (CHashEntry *e = h->body[b]; e && n < COMP_MAX; e = e->next)
+                if ((e->type & (HTT_FUN | HTT_GLBL_VAR)) && e->str)
+                    rl_add_match(out, &n, e->str, pfx, plen);
+    }
+    /* Live #defines (csr.hc MEM_*, UART_*, VIRTIO_*, …) — same table the lexer expands. */
+    if (g_cc->define_table) {
+        CHashTable *d = g_cc->define_table;
+        for (I64 b = 0; b <= d->mask && n < COMP_MAX; b++)
+            for (CHashEntry *e = d->body[b]; e && n < COMP_MAX; e = e->next)
+                if ((e->type & HTT_DEFINE_STR) && e->str)
+                    rl_add_match(out, &n, e->str, pfx, plen);
+    }
     return n;
 }
 static int rl_collect_files(const char **out, const char *pfx, int plen) {
@@ -2888,7 +3234,7 @@ static void rl_set_from(char *buf, int max, int *len, int *cur, const char *src)
 }
 
 static int rl_complete_core(char *buf, int max, int *len, int *cur, int list_ok) {
-    int end = *cur, start = end, pathish = 0, nm = 0, fill, i, old, delta, need;
+    int end = *cur, start = end, pathish = 0, nm = 0, fill, i, old, delta, need, in_asm, akind;
     const char *matches[COMP_MAX];
     char pfx[HIST_CAP];
     if (end > 0 && (buf[end - 1] == '"' || buf[end - 1] == '\'')) return 0;
@@ -2901,7 +3247,12 @@ static int rl_complete_core(char *buf, int max, int *len, int *cur, int list_ok)
     if (end - start >= HIST_CAP) return 0;
     for (i = 0; i < end - start; i++) pfx[i] = buf[start + i];
     pfx[i] = 0;
-    if (pathish) nm = rl_collect_files(matches, pfx, end - start);
+    in_asm = rl_asm_inside(g_rl_accum, g_rl_accum_len, buf, end);
+    if (in_asm && !pathish) {
+        akind = rl_asm_kind(buf, end);
+        nm = rl_collect_asm(matches, akind, pfx, end - start);
+        if (!nm) return 0;
+    } else if (pathish) nm = rl_collect_files(matches, pfx, end - start);
     else {
         nm = rl_collect_syms(matches, pfx, end - start);
         if (!nm) nm = rl_collect_files(matches, pfx, end - start);
@@ -2960,17 +3311,23 @@ static void rl_smart_tab(char *buf, int max, int *len, int *cur, const char *pro
     }
 }
 
-// Read one line via TermKeyGet. flags: RL_HIST / RL_COMPLETE. Returns length.
-static int repl_read_line_ex(char *buf, int max, int flags) {
-    int len = 0, cur = 0, hist_age = -1;
-    char draft[HIST_CAP];
-    const char *prompt = "> ";
+// Read one line via TermKeyGet. flags: RL_HIST / RL_COMPLETE / RL_NO_AUTO_HIST. Returns length,
+// or RL_MULTILINE_RECALL when Up selects a multiline history entry (see g_rl_hist_recall_unit).
+static int repl_read_line_ex(char *buf, int max, int flags, const char *prompt) {
+    int len = 0, cur = 0;
+    char draft[HIST_LINE_CAP];
+    if (!prompt) prompt = "> ";
     draft[0] = 0;
     buf[0] = 0;
-    if (max > HIST_CAP) max = HIST_CAP;
+    if (max > HIST_LINE_CAP) max = HIST_LINE_CAP;
+    if (g_rl_prefill) {
+        rl_set_from(buf, max, &len, &cur, g_rl_prefill);
+        g_rl_prefill = NULL;
+    }
     /* Abandon half-parsed ESC/CSI left by a prior full-screen redraw timeout. */
     term.state = TS_GROUND;
     term.esc_at = 0;
+    rl_redraw(prompt, buf, len, cur);
 
     while (1) {
         I64 k = TermKeyGet();
@@ -2978,21 +3335,40 @@ static int repl_read_line_ex(char *buf, int max, int flags) {
 
         if ((flags & RL_HIST) && (k == KEY_UP || k == KEY_DOWN)) {
             if (k == KEY_UP) {
-                if (hist_age + 1 >= hist_n) continue;
-                if (hist_age < 0) {
-                    int i = 0; while (i < len && i < HIST_CAP - 1) { draft[i] = buf[i]; i++; }
+                if (g_rl_hist_age + 1 >= hist_n) continue;
+                if (g_rl_hist_age < 0) {
+                    int i = 0; while (i < len && i < HIST_LINE_CAP - 1) { draft[i] = buf[i]; i++; }
                     draft[i] = 0;
                 }
-                hist_age++;
-                rl_set_from(buf, max, &len, &cur, hist_get(hist_age));
+                g_rl_hist_age++;
+                {
+                    const char *ent = hist_get(g_rl_hist_age);
+                    if (ent && strchr(ent, '\n')) {
+                        g_rl_hist_recall_unit = ent;
+                        buf[0] = 0;
+                        return RL_MULTILINE_RECALL;
+                    }
+                    rl_set_from(buf, max, &len, &cur, ent);
+                }
                 rl_redraw(prompt, buf, len, cur);
                 continue;
             }
             /* KEY_DOWN */
-            if (hist_age < 0) continue;
-            hist_age--;
-            if (hist_age < 0) rl_set_from(buf, max, &len, &cur, draft);
-            else rl_set_from(buf, max, &len, &cur, hist_get(hist_age));
+            if (g_rl_hist_age < 0) continue;
+            g_rl_hist_age--;
+            if (g_rl_hist_age < 0) {
+                rl_set_from(buf, max, &len, &cur, draft);
+                g_rl_hist_accum_clear = 1;
+            } else {
+                const char *ent = hist_get(g_rl_hist_age);
+                if (ent && strchr(ent, '\n')) {
+                    g_rl_hist_recall_unit = ent;
+                    buf[0] = 0;
+                    return RL_MULTILINE_RECALL;
+                }
+                rl_set_from(buf, max, &len, &cur, ent);
+                g_rl_hist_accum_clear = 1;
+            }
             rl_redraw(prompt, buf, len, cur);
             continue;
         }
@@ -3015,7 +3391,7 @@ static int repl_read_line_ex(char *buf, int max, int flags) {
         }
         if (k == KEY_DELETE) {
             if (cur < len) {
-                hist_age = -1;
+                g_rl_hist_age = -1;
                 for (int i = cur; i < len; i++) buf[i] = buf[i + 1];
                 len--; buf[len] = 0;
                 rl_redraw(prompt, buf, len, cur);
@@ -3030,17 +3406,19 @@ static int repl_read_line_ex(char *buf, int max, int flags) {
             puts_uart("^C\nInterrupted\n");
             buf[0] = 0;
             g_break_pending = 0;
+            g_rl_ctrlc_hit = 1;
             return 0;
         }
         if (c == '\r' || c == '\n') {
             buf[len] = 0;
             puts_uart("\n");
-            if ((flags & RL_HIST) && len > 0) hist_push(buf);
+            if ((flags & RL_HIST) && !(flags & RL_NO_AUTO_HIST) && len > 0) hist_push(buf);
+            g_rl_hist_age = -1;
             return len;
         }
         if (c == 127 || c == 8) {   /* Backspace */
             if (cur > 0) {
-                hist_age = -1;
+                g_rl_hist_age = -1;
                 for (int i = cur - 1; i < len; i++) buf[i] = buf[i + 1];
                 len--; cur--; buf[len] = 0;
                 rl_redraw(prompt, buf, len, cur);
@@ -3049,17 +3427,17 @@ static int repl_read_line_ex(char *buf, int max, int flags) {
         }
         if (c == '\t') {
             if (flags & RL_COMPLETE) {
-                hist_age = -1;
+                g_rl_hist_age = -1;
                 rl_do_complete(buf, max, &len, &cur, prompt);
             } else {
                 /* Ed input / plain: mid-token → CI complete; else 2-space indent */
-                hist_age = -1;
+                g_rl_hist_age = -1;
                 rl_smart_tab(buf, max, &len, &cur, prompt);
             }
             continue;
         }
         if (c >= 32 && c < 127 && len < max - 1) {
-            hist_age = -1;
+            g_rl_hist_age = -1;
             for (int i = len; i >= cur; i--) buf[i + 1] = buf[i];
             buf[cur++] = c; len++; buf[len] = 0;
             /* fast path when appending at end */
@@ -3070,7 +3448,31 @@ static int repl_read_line_ex(char *buf, int max, int flags) {
 }
 
 static int repl_read_line(char *buf, int max) {
-    return repl_read_line_ex(buf, max, 0);
+    return repl_read_line_ex(buf, max, 0, 0);
+}
+
+// BCPL-style implicit ';' after a balanced line must not split `U32 f(...)` from `{` — the
+// body would compile as a bare block and lose parameters (dot_prod: undefined `n` in for cond).
+static int repl_defer_bcpl_semi(const char *line, int n) {
+    int s = 0, e = n - 1;
+    while (s < n && (line[s] == ' ' || line[s] == '\t')) s++;
+    while (e >= s && (line[e] == ' ' || line[e] == '\t')) e--;
+    if (e < s || line[e] != ')') return 0;
+    for (int i = s; i <= e; i++)
+        if (line[i] == '{') return 0;
+    static const char *types[] = {
+        "I0", "U0", "I8", "U8", "I16", "U16", "I32", "U32", "I64", "U64", "F64", "Bool", 0
+    };
+    for (int t = 0; types[t]; t++) {
+        const char *ty = types[t];
+        int tl = 0; while (ty[tl]) tl++;
+        if (e - s + 1 <= tl) continue;
+        if (memcmp(line + s, ty, (size_t)tl) != 0) continue;
+        char c = line[s + tl];
+        if (c != ' ' && c != '\t' && c != '*') continue;
+        return 1;
+    }
+    return 0;
 }
 
 void repl(void) {
@@ -3083,6 +3485,8 @@ void repl(void) {
     Compiler *cc = g_cc;
     /* Arena is outside BSS — zero before seed so unused slots read as free. */
     memset((void *)(uintptr_t)MEMFS_PHYS_BASE, 0, (size_t)MEMFS_CWD_OFF + 96);
+    /* `lock` stmt AMO word (HOLYC_STMT_LOCK_ADDR) — outside BSS, start unlocked. */
+    *(volatile U64 *)0x87001F00ULL = 0;
     memfs_seed();   // ship editable HolyC seeds into the shared HolyC arena
     RuntimeInit(cc); /* Fs + host slots only — zero RuntimeRegister */
     // C TrapVec→TrapCtxSave→trapvec until HolyC trap.hc installs its thin TrapVec.
@@ -3092,8 +3496,13 @@ void repl(void) {
         puts_uart("-- boot aborted, back to the REPL --\n");
     else
         BootHolyCRuntime();
-    if (g_cc) RuntimeRegister(g_cc, "ErrGo", (void *)ErrGo, 0);
     TrapInit();   /* refresh mtvec if HolyC TrapInit ran */
+    /* Seed pc to a real code addr so `pc;` / U(pc-16) work before any fault. */
+    {
+        CHashFun *ufn = g_cc ? (CHashFun *)HashFind("U", g_cc->hash_table, HTT_FUN) : 0;
+        if (ufn && ufn->exe_addr) hc_pc_publish((I64)ufn->exe_addr);
+        else hc_pc_publish((I64)(uintptr_t)(void *)&TrapVec);
+    }
     g_break_interactive = 1;  /* Ctrl-C armed for prompt eval / Run from here on */
     hist_seed();  /* Up recalls Help;, Man, MemMap, asm demos, … */
 
@@ -3104,10 +3513,31 @@ void repl(void) {
     int paren_depth = 0;
     
     while (1) {
-        puts_uart("> ");
-        pos = repl_read_line_ex(input, (int)sizeof(input), RL_HIST | RL_COMPLETE);
-        
-        if (pos == 0) continue;
+        const char *prompt = (accum_len > 0 || brace_depth > 0 || paren_depth > 0) ? "... " : "> ";
+        rl_set_accum_ctx(accum, accum_len);
+        pos = repl_read_line_ex(input, (int)sizeof(input),
+                                RL_HIST | RL_COMPLETE | RL_NO_AUTO_HIST, prompt);
+
+        if (pos == RL_MULTILINE_RECALL && g_rl_hist_recall_unit) {
+            repl_hist_recall_multiline(g_rl_hist_recall_unit, input, (int)sizeof(input),
+                                       accum, (int)sizeof(accum), &accum_len,
+                                       &brace_depth, &paren_depth);
+            repl_set_prefill(g_rl_hist_lastline);
+            g_rl_hist_recall_unit = 0;
+            continue;
+        } else if (pos == 0) {
+            if (g_rl_ctrlc_hit) {
+                accum_len = 0; brace_depth = 0; paren_depth = 0;
+                g_rl_ctrlc_hit = 0;
+                g_rl_hist_accum_clear = 0;
+            }
+            continue;
+        }
+
+        if (g_rl_hist_accum_clear) {
+            accum_len = 0; brace_depth = 0; paren_depth = 0;
+            g_rl_hist_accum_clear = 0;
+        }
         
         // Skip comment-only lines starting with '#'
         int i_start = 0;
@@ -3167,7 +3597,8 @@ void repl(void) {
                 // BCPL style: a balanced, complete-looking line ends the statement at the
                 // newline -- supply the ';' implicitly. A trailing ',' means continuation, and a
                 // directive (#define/#include) must NOT gain a ';' -- it would join the macro body.
-                if (!should_parse && !is_directive && pos > 0 && input[pos-1] != ',') {
+                if (!should_parse && !is_directive && pos > 0 && input[pos-1] != ',' &&
+                    !repl_defer_bcpl_semi(input, pos)) {
                     if (accum_len + 1 < (int)sizeof(accum)) {
                         accum[accum_len - 1] = ';';       // overwrite the '\n' we appended
                         accum[accum_len++] = '\n';
@@ -3194,6 +3625,7 @@ void repl(void) {
             continue;
         }
         repl_eval(accum, 1, 1);
+        hist_push_unit(accum, accum_len);
         accum_len = 0;
         brace_depth = 0;
         paren_depth = 0;
