@@ -74,6 +74,46 @@ config FB_SOFT_BASE
 	default 0x86100000
 	depends on FB_PRESENT_RAMFB || FB_PRESENT_SIMPLEFB || FB_PRESENT_NONE
 
+config HEAP_BASE
+	hex "HolyC soft heap base (REPL / seed MEM_HEAP)"
+	default 0x1001A000 if PLATFORM_OPENTITAN
+	default 0x86000000
+	help
+	  Soft heap arena used by REPL seed mem.hc. Must be inside DRAM.
+
+config MEMFS_BASE
+	hex "HolyC memfs arena base (seed MEM_FS)"
+	default 0x1001B000 if PLATFORM_OPENTITAN
+	default 0x87800000
+	help
+	  In-RAM memfs for FileRead/FileWrite. Needs DRAM large enough
+	  (virt default 128 MiB reaches 0x87800000).
+
+config HOST_SLOTS_BASE
+	hex "Transitional REPL host-slots page (seed MEM_HOST_SLOTS)"
+	default 0x87001000
+	help
+	  Fixed page for Mac-AOT REPL C↔HolyC ABI (compile/run funptrs,
+	  UART ring metadata, trapvec, editors). This is NOT board MMIO —
+	  it must stay stable while worry_dream_repl publishes slots. Board
+	  ports that drop the transitional REPL can ignore it; Kernel OS
+	  paths prefer CONFIG_* / Hash over slots.
+
+config SMP_MAILBOX_BASE
+	hex "Multi-hart SMP mailbox base (RVSmp / crt0_smp)"
+	default 0x87001E00
+	help
+	  Shared mailbox near SYS_FIXED_AREA: entry/arg/done/alive.
+	  Must match tests/exec/harness/crt0_smp.S .equ values.
+
+config STACK_BASE
+	hex "Initial stack top hint (seed MEM_STACK)"
+	default 0x1001F800 if PLATFORM_OPENTITAN
+	default 0x87F00000
+	help
+	  Documentation / MemMap legend for early stack; linker scripts
+	  own the real stack symbol.
+
 endmenu
 
 menu "UART console"
@@ -123,10 +163,13 @@ config UART_BASE
 	default 0x10000000 if UART_16550
 	default 0x10010000 if UART_SIFIVE && PLATFORM_SIFIVE_U
 	default 0x10013000 if UART_SIFIVE && PLATFORM_SIFIVE_E
-	default 0x01000000 if UART_HTIF
+	default 0x807FF000 if UART_HTIF
 	default 0x00011300 if PLATFORM_SHAKTI_C
 	default 0x40000000 if PLATFORM_OPENTITAN
 	default 0x00000000
+	help
+	  Spike HTIF: absolute address of ELF `tohost` (must match harness
+	  link_exec.ld /.tohost @ 0x807FF000; QEMU parses the symbol).
 
 config UART_IRQ
 	int "UART PLIC IRQ number"
@@ -134,6 +177,45 @@ config UART_IRQ
 	default 4 if PLATFORM_SIFIVE_U || PLATFORM_AMD_MICROBLAZE_V
 	default 3 if PLATFORM_SIFIVE_E
 	default 0
+
+endmenu
+
+menu "SiFive reset / power (RVSifivePlat)"
+
+config SIFIVE_TEST_BASE
+	hex "SiFive test finisher base (0 = absent)"
+	default 0x00100000 if PLATFORM_VIRT
+	default 0
+	help
+	  SiFive test-finisher MMIO (U32 poke): 0x7777 reset, 0x5555 pass/off,
+	  0x3333 fail. Present on the virt harness map at 0x100000 — not on
+	  sifive_u / sifive_e (those use GPIO or AON below). Real FU540/FE310
+	  silicon does not implement this device.
+
+config SIFIVE_AON_BASE
+	hex "SiFive AON base (0 = absent)"
+	default 0x10000000 if PLATFORM_SIFIVE_E
+	default 0
+	help
+	  Always-On block (WDT + PMU). FE310 / sifive_e: 0x10000000.
+	  sifive_u must leave this 0 — that address is PRCI on FU540 maps, not AON.
+	  RVSifiveReset uses AON WDT (key 0x51F15E, RSTEN) when non-zero.
+
+config SIFIVE_GPIO_BASE
+	hex "SiFive GPIO base (0 = absent)"
+	default 0x10060000 if PLATFORM_SIFIVE_U
+	default 0x10012000 if PLATFORM_SIFIVE_E
+	default 0
+	help
+	  SiFive GPIO MMIO. sifive_u: 0x10060000. FE310: 0x10012000.
+
+config SIFIVE_GPIO_RESET_PIN
+	int "GPIO active-low board-reset pin (32 = none)"
+	default 10 if PLATFORM_SIFIVE_U
+	default 32
+	help
+	  Pin driven low to request board reset. sifive_u (HiFive Unleashed style)
+	  wires GPIO 10 as active-low restart. 32 disables the GPIO reset path.
 
 endmenu
 
@@ -223,12 +305,59 @@ config VIRTIO_MMIO_COUNT
 	default 8
 	depends on HAS_VIRTIO_MMIO
 
+config VIRTIO_MMIO_IRQ_BASE
+	hex "Address base for virtio-mmio → PLIC IRQ derivation"
+	default 0x10000000
+	depends on HAS_VIRTIO_MMIO
+	help
+	  On QEMU virt, IRQ = (mmio_slot_base - VIRTIO_MMIO_IRQ_BASE) >> 12
+	  (e.g. 0x10008000 → IRQ 8). Used by VirtioBlkIrqInit / VirtioNetIrqNum.
+
+config VIRTIO_DRV_RAM_BASE
+	hex "Virtio HolyC driver scratch RAM base"
+	default 0x88000000
+	depends on HAS_VIRTIO_MMIO
+	help
+	  Descriptor rings + bounce buffers for DskVirtioRV / VirtioNet /
+	  VirtioInput. Needs QEMU -m >= 256M so 0x88000000 is backed on virt.
+	  Layout: blk @ +0, net @ +0x100000, input @ +0x200000, 9p @ +0x300000.
+
 config HAS_VIRTIO_PCI
 	bool "VirtIO PCI (ECAM) present"
 	default y if PLATFORM_VIRT
 	default n
 	help
 	  QEMU virt PCI ECAM + virtio-pci. Other machines: usually n.
+	  HolyC still drives virtio-blk over MMIO; PCI present is a Kconfig flag
+	  only (no HolyC virtio-PCI blk driver yet).
+
+config HAS_VIRTIO_NET
+	bool "HolyC virtio-mmio net driver (VirtioNet.HC)"
+	depends on HAS_VIRTIO_MMIO
+	default y if PLATFORM_VIRT
+	default n
+	help
+	  Include Kernel/Drv/VirtioNet.HC TX/RX. Needs a virtio-net-device
+	  attached on a virtio-mmio slot (e.g. harness -device virtio-net-device).
+
+config HAS_VIRTIO_INPUT
+	bool "HolyC virtio-mmio input driver (VirtioInput.HC)"
+	depends on HAS_VIRTIO_MMIO
+	default y if PLATFORM_VIRT
+	default n
+	help
+	  Include Kernel/Drv/VirtioInput.HC event poll. Attach
+	  virtio-keyboard-device / virtio-mouse-device on virtio-mmio.
+
+config HAS_VIRTIO_9P
+	bool "HolyC virtio-mmio 9p client (Virtio9p.HC)"
+	depends on HAS_VIRTIO_MMIO
+	default y if PLATFORM_VIRT
+	default n
+	help
+	  Include Kernel/Drv/Virtio9p.HC 9P2000.L client. Attach QEMU
+	  -virtfs / -fsdev with virtio-9p-device (mount host dir into guest).
+	  Guest-as-9p-server export is not implemented yet.
 
 endmenu
 
@@ -249,6 +378,8 @@ config FB_PRESENT_SIMPLEFB
 	bool "simple-framebuffer bind hook"
 	help
 	  Board calls RVFbSimpleFbBind after firmware leaves XR24 scanout.
+	  Optional SIMPLEFB_* constants below auto-bind at boot when non-zero.
+	  virtio-gpu / SoC DRM are deferred — see BOARD_FB.md.
 
 config FB_PRESENT_NONE
 	bool "None (soft buffer / UART-only)"
@@ -256,6 +387,29 @@ config FB_PRESENT_NONE
 	  No hardware present; RVFb draws to soft buffer only.
 
 endchoice
+
+config SIMPLEFB_BASE
+	hex "Board simplefb phys base (0 = manual RVFbSimpleFbBind only)"
+	depends on FB_PRESENT_SIMPLEFB
+	default 0x0
+	help
+	  Identity-mapped XR24 scanout left by firmware/U-Boot. 0 disables
+	  RVFbSimpleFbTryBoard auto-bind.
+
+config SIMPLEFB_WIDTH
+	int "Board simplefb width"
+	depends on FB_PRESENT_SIMPLEFB
+	default 0
+
+config SIMPLEFB_HEIGHT
+	int "Board simplefb height"
+	depends on FB_PRESENT_SIMPLEFB
+	default 0
+
+config SIMPLEFB_STRIDE
+	int "Board simplefb stride (bytes; 0 = width*4)"
+	depends on FB_PRESENT_SIMPLEFB
+	default 0
 
 config HAS_FW_CFG
 	bool "QEMU fw_cfg MMIO present"
@@ -309,6 +463,47 @@ endchoice
 
 endmenu
 
+menu "Boot / kernel output"
+
+choice
+	prompt "Kernel output format"
+	default OUTPUT_FORMAT_ELF
+	help
+	  Select the primary boot artifact for kernel / plat builds.
+	  ELF is the CI default (-bios none -kernel plat.elf). Firmware wraps
+	  the same RAM-linked payload in a flash head for pflash / -bios.
+
+config OUTPUT_FORMAT_ELF
+	bool "ELF (-kernel load)"
+	help
+	  Normal RAM-linked ELF loaded by QEMU -bios none -kernel or the
+	  exec harness link_exec.ld path. Default for all CI smokes.
+
+config OUTPUT_FORMAT_FIRMWARE
+	bool "Firmware ROM image (pflash / -bios)"
+	help
+	  Package the RAM payload in a flash-resident stub (bootstrap/
+	  Makefile.firmware). Produces a padded .bin at FLASH_BASE for
+	  QEMU -drive if=pflash or -bios. plat.elf is still built for debug.
+
+endchoice
+
+config FLASH_BASE
+	hex "Flash image base (physical)"
+	default 0x20000000
+	depends on OUTPUT_FORMAT_FIRMWARE
+	help
+	  Physical base of the firmware image (QEMU virt CFI pflash0 @ 0x20000000).
+
+config PFLASH_SIZE
+	hex "Pflash partition size (bytes)"
+	default 0x02000000
+	depends on OUTPUT_FORMAT_FIRMWARE
+	help
+	  Raw .bin is zero-padded to this size (virt pflash0 is 32 MiB).
+
+endmenu
+
 menu "QEMU run helpers"
 
 config QEMU_SYSTEM
@@ -329,6 +524,7 @@ config QEMU_MACHINE
 	default "xiangshan-kunminghu" if PLATFORM_XIANGSHAN
 	default "amd-microblaze-v-generic" if PLATFORM_AMD_MICROBLAZE_V
 	default "opentitan" if PLATFORM_OPENTITAN
+	default "none" if PLATFORM_NONE
 	default "host" if PLATFORM_HOST
 	default "virt"
 
@@ -346,5 +542,6 @@ config QEMU_EXTRA_ARGS
 	help
 	  microchip-icicle-kit needs HSS (hss.bin) — leave empty and supply firmware.
 	  amd-microblaze-v: serial0 is UARTLite; serial1 is 16550 — mux for 16550 console.
+	  none / host: no useful bare-metal argv.
 
 endmenu

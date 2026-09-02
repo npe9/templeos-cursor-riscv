@@ -18,7 +18,9 @@ Kconfig answers: *which platform am I targeting, and what MMIO / drivers does th
 | Console | UART kind + base + IRQ |
 | Timer / IRQ | CLINT offsets, PLIC (or stub), timebase Hz |
 | Storage / FB | virtio-mmio/PCI, fw_cfg/ramfb vs simplefb vs none |
-| Link map | DRAM base/size, kernel entry, soft FB base, `SYS_FIXED_AREA` |
+| Link map | DRAM base/size, kernel entry, soft FB, heap, memfs, host-slots, SMP mailbox |
+| Boot output | ELF (`-kernel`) vs firmware ROM (pflash / `-bios`) — `OUTPUT_FORMAT_*` |
+| Virtio scratch | `VIRTIO_DRV_RAM_BASE`, `VIRTIO_MMIO_IRQ_BASE` |
 | Editors | Default `Src` / `DirEd` / `FunEd` editor (`Vi` / `Edit` / `Ed`) |
 
 `CONFIG_QEMU_MACHINE` / `make qemu-args` exist so CI can print harness argv — they are
@@ -37,10 +39,13 @@ not the product API. Drivers speak `MEM_*` / `CONFIG_*` / `RV_*`.
 | `templeos-riscv/configs/*_defconfig` | Board / profile presets (partial `.config` fragments) |
 | `templeos-riscv/.config` | Resolved symbol values (generated; do not hand-edit long-term) |
 | `templeos-riscv/include/generated/autoconf.h` | C `#define`s for the bootstrap image only |
+| `templeos-riscv/include/generated/kconfig.mk` | Make variables (`OUTPUT_FORMAT`, `FLASH_BASE`, …) |
 | `Kernel/RVAutoConf.HH` | HolyC `#define`s — included first by `Kernel/Kernel_RV.PRJ` |
 | `Kernel/Drv/*Selected.HH` | File-level driver pick (`#include` one `.HC` implementation) |
 | `bootstrap/seed/RVEditorSelected.hc` | REPL `editor=&Vi;` (etc.) |
+| `bootstrap/seed/MemMapSelected.hc` | REPL `MEM_*` / `MEMMAP_DRV_*` (same bases as `RVAutoConf.HH`) |
 | `templeos-riscv/scripts/kconfig.py` | Parser + `defconfig` / `menuconfig` / `sync` / `qemu-args` |
+| `templeos-riscv/scripts/menuconfig_tui.py` | Linux-style interactive menuconfig TUI |
 
 ```
 Kconfig + Kconfig.machines + configs/foo_defconfig
@@ -48,12 +53,26 @@ Kconfig + Kconfig.machines + configs/foo_defconfig
         ▼
    scripts/kconfig.py  (defconfig | menuconfig | sync)
         │
-        ├── templeos-riscv/.config
+        ├── templeos-riscv/.config          (active tree — one at a time)
         ├── include/generated/autoconf.h     (C bootstrap)
+        ├── include/generated/kconfig.mk     (Make: OUTPUT_FORMAT, FLASH_BASE, …)
         ├── Kernel/RVAutoConf.HH             (HolyC OS)
         ├── Kernel/Drv/*Selected.HH
-        └── bootstrap/seed/RVEditorSelected.hc
+        ├── bootstrap/seed/RVEditorSelected.hc
+        └── bootstrap/seed/MemMapSelected.hc
+
+make kernel-<machine> / make kernels
+        │
+        ▼
+   build/kernels/<machine>/plat.elf + .config + RVAutoConf.HH snapshots
+   build/exec/<machine>_plat.elf
 ```
+
+**Multi-kernel:** HolyC still compiles against the active `Kernel/RVAutoConf.HH`, but
+`tests/scripts/build_kernel_plat.sh` applies each defconfig, links a named ELF, snapshots
+headers into `build/kernels/<machine>/`, then restores the previous `.config`. Several
+board images coexist; flipping menuconfig no longer destroys the only artifact.
+See [PLATFORM.md](PLATFORM.md) § Multi-kernel layout.
 
 ## 3. Workflow
 
@@ -71,20 +90,58 @@ make defconfig-virt
 make defconfig-sifive_u
 make defconfig-spike               # experimental HTIF
 make defconfig-sifive_e            # experimental (tiny DTIM)
-make menuconfig                    # interactive TUI (stdin)
-make syncconfig                    # re-resolve .config → headers + Selected.HH
-make qemu-args                     # print suggested harness -M / extra args
+make menuconfig                    # interactive TUI (Linux menuconfig-style; needs TTY)
+make syncconfig                    # re-resolve .config → headers + Selected.HH + MemMapSelected.hc
+make qemu-args                     # print suggested harness -M / extra args (.config)
+make qemu-args-sifive_u            # same from defconfig — does **not** write .config
 ```
 
 Makefile wrappers cover the common boards. Any `configs/*_defconfig` also works via:
 
 ```bash
 python3 scripts/kconfig.py defconfig shakti_c
+python3 scripts/kconfig.py qemu-args shakti_c   # resolve without write
 python3 scripts/kconfig.py list-defconfigs
 ```
 
 `defconfig` / `menuconfig` / `sync` all rewrite `.config` **and** the generated headers.
 If `.config` is missing, the Makefile rule and `sync` fall back to **virt**.
+
+### Interactive menuconfig (Linux-style TUI)
+
+`make menuconfig` runs `scripts/menuconfig_tui.py` (invoked from `scripts/kconfig.py`).
+It needs an **interactive terminal** (TTY). In CI or pipes it prints the root menu and exits.
+
+| Key | Action |
+|-----|--------|
+| ↑ / ↓ | Move highlight |
+| Enter / → | Open submenu, edit hex/int/string, or toggle bool |
+| Space | Toggle bool; select choice member |
+| Y / N | Enable / disable bool |
+| ← / Esc | Back to parent menu |
+| `/` | Search symbol names and prompts |
+| `?` | Help (current item or general keys) |
+| S | Save `.config` + `RVAutoConf.HH` + driver selects |
+| Q | Quit (prompts if not saved since last S) |
+
+Display matches familiar Kconfig notation: `[*]` / `[ ]` bools, `(*)` / `( )` choice
+members, `(0x…)` hex, ` --->` submenus. Options with unmet `depends on` show as
+`-   [ ]` and cannot be toggled.
+
+Non-interactive sanity check:
+
+```bash
+python3 scripts/kconfig.py menuconfig-test
+```
+
+From the **repo root**, package durable per-machine ELFs (restores `.config` after each):
+
+```bash
+make list-kernels
+make kernel-virt
+make kernel-sifive_u
+make kernels
+```
 
 ### How choices reach HolyC
 
@@ -104,6 +161,34 @@ If `.config` is missing, the Makefile rule and `sync` fall back to **virt**.
    `*Selected.HH` shim. `Kernel_RV.PRJ` pulls in `Drv/RV*.HC` after `RVAutoConf.HH`.
 
 3. **Editor seed** — Editors choice → `CONFIG_EDITOR_*` plus `RVEditorSelected.hc` for REPL boot.
+
+4. **REPL MemMap seed** — Same board hex bases as `RVAutoConf.HH` `MEM_*`, written as
+   concrete `#define`s in `bootstrap/seed/MemMapSelected.hc` (Tab completion / datasheet /
+   `uart.hc`). Rebuild `repl.elf` after `defconfig-*` / `syncconfig` if you need the REPL
+   to match a non-default board.
+
+### Boot / kernel output format
+
+Menu **Boot / kernel output** → **Kernel output format**:
+
+| Choice | Artifact | Deploy |
+|--------|----------|--------|
+| **ELF** (default) | `build/kernels/<m>/plat.elf` | RAM: OpenOCD `load_image` / `-bios none -kernel plat.elf`; also `make baremetal-plat` → `build/baremetal/plat.*` |
+| **Firmware ROM image** | `plat.elf` + `plat.bin` (+ `plat-fw.elf`) | Flash @ `CONFIG_FLASH_BASE`: OpenOCD program `plat.bin`, or QEMU `-drive if=pflash,file=plat.bin` with `-bios none` |
+
+**REPL** bare-metal RAM artifacts (`make baremetal`) are always ELF+bin @ `LOAD_BASE`
+independent of this choice. See [docs/BAREMETAL.md](../docs/BAREMETAL.md) for the full
+artifact matrix (RAM vs flash, OpenOCD, QEMU).
+
+Firmware mode wraps the same RAM-linked payload with `bootstrap/Makefile.firmware`
+(flash stub @ `CONFIG_FLASH_BASE`, padded to `CONFIG_PFLASH_SIZE`). CI defconfigs
+stay on ELF; select firmware in `menuconfig` when you want a pflash/flash-program image.
+
+**Do not** pass the flash `.bin` to QEMU `-bios` — QEMU loads `-bios` into DRAM @
+`0x80000000` while the image is linked for `FLASH_BASE`. Use RAM ELF/bin or pflash.
+
+`syncconfig` writes `include/generated/kconfig.mk` (`OUTPUT_FORMAT`, `FLASH_BASE`,
+`RAM_BASE`, `PFLASH_SIZE`) for `make firmware` and `build_kernel_plat.sh`.
 
 ### Typical edit loop
 
@@ -138,23 +223,29 @@ Assume a platform you can already boot (board firmware or CI harness with `-bios
    new `Kernel/Drv/RVUart*.HC` (etc.) **and** a branch in `write_drv_selecteds()` in
    `scripts/kconfig.py`. Prefer new files over `#ifdef` around function bodies.
    SiFive boards share **`RVSifivePlat`** (`RVSifiveYes` when `UART_SIFIVE` /
-   `PLATFORM_SIFIVE_*`) — named UART/CLINT/PLIC API; `RVUartSifive` thin-wraps it.
+   `PLATFORM_SIFIVE_*`) — named UART/CLINT/PLIC API plus `RVSifiveReset` /
+   `Halt` / `Fault` (GPIO / AON / optional test finisher; see `Man("SiFive")`).
    `Man("SiFive")` / MemMap column `RVSifivePlat`.
 
-6. **Smoke** — extend `tests/scripts/run_kernel_plat_smoke.sh` (today: `virt` | `sifive_u`)
-   and/or add a root `Makefile` target. Keep **virt** as the restored default after non-default runs.
+6. **Smoke** — extend `tests/scripts/run_kernel_plat_smoke.sh` (`virt` | `sifive_u` | `spike`
+   runnable; others SKIP with reason) and/or `make kernel-plat-matrix`. Non-virt builds
+   restore the prior `.config` via `build_kernel_plat.sh`.
 
 7. **Docs** — add a row to [PLATFORM.md](PLATFORM.md); label **board port** vs **emulator (CI)**; link here for the mechanism.
 
 Tentative / stub boards (`shakti_c`, `microchip_icicle`, …) already follow this pattern with
 UART stub + FB none — useful as templates before a real console driver exists.
 
-## 5. How smokes use it
+## 5. How smokes / multi-kernel builds use it
 
 | Target | What it does |
 |--------|----------------|
-| `make kernel-plat-smoke` | `defconfig-virt`, compile `tests/exec/cases/kernel_plat_demo.hc`, load on CI default map, expect `plat-smoke: PASS` |
-| `make kernel-plat-sifive-u-smoke` | Same with `defconfig-sifive_u`; **restores virt** on exit |
+| `make kernel-<machine>` | `build_kernel_plat.sh` → `build/kernels/<m>/plat.elf` + config snapshot; restores prior `.config` |
+| `make kernels` / `list-kernels` | Build all `KERNEL_BUILD_MACHINES`; list on-disk artifacts |
+| `make kernel-plat-smoke` | Build/refresh virt ELF, load on `-M virt`, expect `plat-smoke: PASS` |
+| `make kernel-plat-sifive-u-smoke` | Same for sifive_u |
+| `make kernel-plat-spike-smoke` | HTIF + CLINT on `-M spike` |
+| `make kernel-plat-matrix` | Every known QEMU `-M`: OK or SKIP+why (not in default CI) |
 
 The demo includes `RVAutoConf.HH` + `Drv/RVSifivePlat.HC` + `Drv/RVUart.HC` +
 `Drv/RVTimer.HC` (not full `Kernel_RV.PRJ`). It prints `CONFIG_PLATFORM_NAME`,
@@ -162,17 +253,16 @@ touches CLINT `mtime`, and on SiFive also exercises `RVSifiveUart*` /
 `RVSifiveClint*`.
 
 Other kernel `*-smoke` targets assume the **default virt-style** addresses and devices unless they run the
-plat script. After experimenting with another defconfig, always:
+plat script. Multi-kernel builds restore the previous `.config` automatically; after hand
+`defconfig-*` experiments in the active tree, restore with:
 
 ```bash
 make -C templeos-riscv defconfig
 ```
 
-so CI-oriented builds see the default profile again.
-
 `make -C templeos-riscv qemu` uses `qemu-args` from the current `.config` for the C
 bootstrap ELF — still a harness path; multi-machine proof for the **OS**
-is the HolyC plat smoke path above.
+is the HolyC plat smoke / `build/kernels/` path above.
 
 ## 6. What host C does *not* do
 
@@ -188,11 +278,18 @@ is the HolyC plat smoke path above.
 # Interactive
 make menuconfig-rv
 
-# CI default profile
-make -C templeos-riscv defconfig
+# Multi-kernel (coexisting ELFs)
+make list-kernels
+make kernels
+make kernel-sifive_u
 
-# Second machine (board port)
+# CI default profile / smoke
+make -C templeos-riscv defconfig
+make kernel-plat-smoke
 make kernel-plat-sifive-u-smoke
+
+# Harness argv without rewriting .config
+make -C templeos-riscv qemu-args-sifive_u
 
 # After hand-editing .config
 make -C templeos-riscv syncconfig

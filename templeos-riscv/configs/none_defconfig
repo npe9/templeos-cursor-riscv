@@ -1,0 +1,10 @@
+# QEMU none — empty machine (inventory only; no CPU/RAM until you add devices)
+CONFIG_PLATFORM_NONE=y
+# CONFIG_PLATFORM_VIRT is not set
+CONFIG_UART_STUB=y
+# CONFIG_UART_16550 is not set
+# CONFIG_HAS_PLIC is not set
+# CONFIG_HAS_VIRTIO_MMIO is not set
+# CONFIG_HAS_VIRTIO_PCI is not set
+# CONFIG_HAS_FW_CFG is not set
+CONFIG_FB_PRESENT_NONE=y

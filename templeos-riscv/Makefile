@@ -28,6 +28,8 @@ BUILD := build
 LINK := link/kernel.ld
 LINK_SELFHOST := link/kernel_selfhost.ld
 AUTOCONF := include/generated/autoconf.h
+KCONFIG_MK := include/generated/kconfig.mk
+-include $(KCONFIG_MK)
 
 KERNEL_C := kernel/kernel.c
 GUEST_CALL_C := kernel/guest_call.c
@@ -39,16 +41,20 @@ BOOT_S := kernel/boot.S
 TRAP_S := kernel/trap_entry.S
 
 DEFCONFIGS := virt sifive_u sifive_e spike shakti_c microchip_icicle \
-	xiangshan amd_microblaze_v opentitan host
+	xiangshan amd_microblaze_v opentitan host none
 
 .PHONY: all image guest selfhost qemu qemu-selfhost clean check-holyc redsea-smoke-img \
 	defconfig defconfig-virt menuconfig syncconfig qemu-args list-defconfigs help \
-	$(foreach m,$(DEFCONFIGS),defconfig-$(m))
+	$(foreach m,$(DEFCONFIGS),defconfig-$(m)) \
+	$(foreach m,$(DEFCONFIGS),qemu-args-$(m))
 
 all: image
 
 # --- Kconfig -----------------------------------------------------------------
 $(AUTOCONF) ../Kernel/RVAutoConf.HH: .config scripts/kconfig.py Kconfig Kconfig.machines
+	@$(KCONFIG) sync
+
+$(KCONFIG_MK): .config scripts/kconfig.py Kconfig Kconfig.machines
 	@$(KCONFIG) sync
 
 .config:
@@ -75,6 +81,14 @@ syncconfig:
 
 qemu-args:
 	@$(KCONFIG) qemu-args
+
+# Resolve harness argv for a machine without rewriting global .config / RVAutoConf.HH
+define QEMU_ARGS_template
+.PHONY: qemu-args-$(1)
+qemu-args-$(1):
+	$$(KCONFIG) qemu-args $(1)
+endef
+$(foreach m,$(DEFCONFIGS),$(eval $(call QEMU_ARGS_template,$(m))))
 
 check-holyc:
 	@if [ ! -x "$(HOLYC)" ] && [ ! -f "$(HOLYC)" ]; then \
@@ -179,7 +193,9 @@ clean:
 help:
 	@echo "TempleOS/RISC-V image + platform Kconfig"
 	@echo "  defconfig / defconfig-<machine> / list-defconfigs / menuconfig"
+	@echo "  qemu-args / qemu-args-<machine>  (machine form does not write .config)"
 	@echo "  image / qemu            - C bootstrap + HolyC guest (virt-oriented console)"
+	@echo "  Multi-kernel (repo root): make kernel-<machine> / kernels / list-kernels"
 	@echo "  Multi-machine OS drivers: Kernel/Drv/* + make kernel-plat-smoke (repo root)"
 	@echo "Machines: $(DEFCONFIGS)"
 	@echo "See PLATFORM.md"
