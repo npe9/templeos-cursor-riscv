@@ -2,10 +2,11 @@
 # Kernel WinMgr smoke: TempleOS-style text_base windows on 32-bpp FB → QEMU ramfb.
 # CI uses -display none + UART hash; no host window required.
 #
-# Interactive (macOS — you should see bordered TempleOS windows):
+# Interactive (macOS — bordered TempleOS windows + keyboard/tablet):
 #   qemu-system-riscv64 -M virt -m 128M -bios none -kernel build/exec/win.elf \
-#     -device ramfb -display cocoa -serial stdio
-set -u
+#     -device ramfb -display cocoa -serial stdio \
+#     -device virtio-keyboard-device -device virtio-tablet-device
+# CI uses -display none + UART hash; no host window required.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HARNESS="$ROOT/tests/exec/harness"
@@ -13,9 +14,9 @@ OUTDIR="$ROOT/build/exec"
 COMPILER="$ROOT/holyc-riscv"
 SRC="$ROOT/tests/exec/cases/kernel_win_demo.hc"
 EXPECT_PREFIX="RVWinMgr smoke hash="
-# Word-wise FNV-1a for kernel_win_demo.hc (640×480). Override with RVWIN_EXPECT_HASH.
+# Word-wise FNV-1a for kernel_win_demo.hc (800×600). Override with RVWIN_EXPECT_HASH.
 # 0x00000000 = calibrate mode (print hash, write build/exec/win_expect_hash.txt).
-PINNED_HASH="0xB42FDB14"
+PINNED_HASH="0xEDE200CB"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
@@ -40,9 +41,9 @@ fi
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 
-if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then
+if ! HOLYC_NO_TIER2="${HOLYC_NO_TIER2:-1}" HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then
   echo "FAIL kernel-win smoke — compile error" >&2
-  HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >&2 || true
+  HOLYC_NO_TIER2="${HOLYC_NO_TIER2:-1}" HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >&2 || true
   exit 1
 fi
 ( cd "$T" && "$OBJCOPY" -I binary -O elf64-littleriscv blob.bin blob_in.o && \

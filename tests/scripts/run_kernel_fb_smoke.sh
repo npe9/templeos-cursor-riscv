@@ -14,7 +14,7 @@ COMPILER="$ROOT/holyc-riscv"
 SRC="$ROOT/tests/exec/cases/kernel_fb_demo.hc"
 EXPECT_PREFIX="RVFb smoke hash="
 # Word-wise FNV-1a for tests/exec/cases/kernel_fb_demo.hc (800×600). Override with RVFB_EXPECT_HASH.
-PINNED_HASH="0x184143B1"
+PINNED_HASH="0x28921CB5"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
@@ -39,7 +39,7 @@ fi
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 
-if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then
+if ! HOLYC_NO_TIER2="${HOLYC_NO_TIER2:-1}" HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then
   echo "FAIL kernel-fb smoke — compile error" >&2
   exit 1
 fi
@@ -85,5 +85,10 @@ if [ "$hash" != "$want" ]; then
 fi
 
 # Prefer present=1 (ramfb configured); still pass on soft-only if hash matches (old QEMU).
+if ! printf '%s\n' "$out" | grep -qF "RVFb simplefb OK"; then
+  echo "FAIL kernel-fb smoke — simplefb bind/present missing:" >&2
+  printf '%s\n' "$out" | grep -i simplefb | head -5 | sed 's/^/  got: /' >&2
+  exit 1
+fi
 echo "Kernel-fb smoke: OK ($line)"
 exit 0

@@ -78,6 +78,8 @@
 #include "Drv/RVTimer.HC"      // CLINT mtime/mtimecmp
 #include "Drv/RVPlic.HC"       // PLIC enable/claim (no-op without CONFIG_HAS_PLIC)
 #include "Drv/RVVirtioPlat.HC" // virtio-mmio base/count from Kconfig
+#include "Drv/VirtioInput.HC"  // virtio-mmio input (DeviceID 18)
+#include "Drv/Virtio9p.HC"     // virtio-mmio 9p client (DeviceID 9)
 #include "BlkDev/DskVirtioRV"   // native RISC-V legacy virtio-mmio block driver (translates x86 DskATA)
 #include "KBootRV"   // RISC-V portable boot init (tables + UART console)
 #include "RVFb"      // Native 32-bpp linear FB + ramfb/simplefb present (not VGA)

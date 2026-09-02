@@ -85,7 +85,15 @@ U0 RVKMain()
   // never yields -> only preemption runs the rest
   // Schedule: Adam yields until BOTH children have run and exited. The kernel's Yield() skips a killed
   // child on the next lap; the spin task advances only in the slices the timer preempts it out of.
-  while (!(t->task_flags & (1 << TASKf_KILL_TASK)) || !(t2->task_flags & (1 << TASKf_KILL_TASK)))
-    Yield();
+  while (!(t->task_flags & (1 << TASKf_KILL_TASK)) || !(t2->task_flags & (1 << TASKf_KILL_TASK))) {
+    // Keep WinMgr interactive while Boot/Spin run (virtio-keyboard / tablet when present).
+    if (rv_winmgr.ready)
+      RVWinMgrPumpInput(16);
+    Yield;
+  }
   Print("RVKMain: tasks finished; Adam is scheduling (spin task preempted over %d iterations).\n", rv_boot_spins);
+  // Interactive hosts: call RVWinMgrRun(0) from a demo, or pass virtio-keyboard and
+  // invoke Run after boot. Do not block here — headless selfboot smoke must exit.
+  if (rv_winmgr.ready)
+    RVWinMgrPumpInput(8);
 }

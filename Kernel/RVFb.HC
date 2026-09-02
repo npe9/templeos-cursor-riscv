@@ -37,8 +37,7 @@ class CRVFb
   // TRUE after a backend accepted the buffer
   I64 backend;
   // RV_FB_PRESENT_* that last succeeded
-}
-;
+};
 CRVFb rv_fb;
 I64 rv_fb_present_kind = RV_FB_PRESENT_RAMFB;
 // overridden by RVFbPlatApplyPresent() from Kconfig
@@ -55,8 +54,7 @@ class CRVSimpleFb
   I64 fourcc;
   // prefer RV_FB_FOURCC_XR24
   Bool bound;
-}
-;
+};
 CRVSimpleFb rv_simplefb;
 U0 RVFbSetPresent(I64 kind)
 {
@@ -66,14 +64,25 @@ U0 RVFbSetPresent(I64 kind)
 
 Bool RVFbSimpleFbBind(U32 *base, I64 width, I64 height, I64 stride = 0, I64 fourcc = RV_FB_FOURCC_XR24)
 {
-  //Portable board hook: bind a firmware/DT linear FB. Does not draw yet — RVSysGrInit / RVFbInit.
+  //Portable board hook: bind a firmware/DT linear XR24 FB. Does not draw yet — RVSysGrInit / RVFbInit.
   // stride=0 ⇒ tightly packed 32-bpp. Returns FALSE if args are unusable.
-  if (!base || width <= 0 || height <= 0)
+  // No DRM/virtio-gpu — firmware must leave a linear scanout; see BOARD_FB.md.
+  if (!base || width < 16 || height < 16)
     return FALSE;
+  if (width > 4096 || height > 4096)
+    return FALSE;
+  if (fourcc && fourcc != RV_FB_FOURCC_XR24)
+    return FALSE;
+  // XR24 only in this stub (r5g6b5 / AB24 need an explicit convert path later)
+  if (!fourcc)
+    fourcc = RV_FB_FOURCC_XR24;
   if (!stride)
     stride = width * (RV_FB_BPP / 8);
   if (stride < width * (RV_FB_BPP / 8))
     return FALSE;
+  if (stride & 3)
+    return FALSE;
+  // row bytes must be U32-aligned for XRGB stores
   rv_simplefb.base = base;
   rv_simplefb.width = width;
   rv_simplefb.height = height;
@@ -82,6 +91,31 @@ Bool RVFbSimpleFbBind(U32 *base, I64 width, I64 height, I64 stride = 0, I64 four
   rv_simplefb.bound = TRUE;
   RVFbSetPresent(RV_FB_PRESENT_SIMPLEFB);
   return TRUE;
+}
+
+Bool RVFbSimpleFbBound()
+{
+  //TRUE after a successful RVFbSimpleFbBind (board / smoke).
+  return rv_simplefb.bound && rv_simplefb.base != NULL;
+}
+#ifndef CONFIG_SIMPLEFB_BASE
+#define CONFIG_SIMPLEFB_BASE 0
+#endif
+#ifndef CONFIG_SIMPLEFB_WIDTH
+#define CONFIG_SIMPLEFB_WIDTH 0
+#endif
+#ifndef CONFIG_SIMPLEFB_HEIGHT
+#define CONFIG_SIMPLEFB_HEIGHT 0
+#endif
+#ifndef CONFIG_SIMPLEFB_STRIDE
+#define CONFIG_SIMPLEFB_STRIDE 0
+#endif
+Bool RVFbSimpleFbTryBoard()
+{
+  //Auto-bind when Kconfig SIMPLEFB_* is non-zero (board defconfig). Else manual bind.
+  if (!CONFIG_SIMPLEFB_BASE || CONFIG_SIMPLEFB_WIDTH <= 0 || CONFIG_SIMPLEFB_HEIGHT <= 0)
+    return FALSE;
+  return RVFbSimpleFbBind ((U32 *)CONFIG_SIMPLEFB_BASE, CONFIG_SIMPLEFB_WIDTH, CONFIG_SIMPLEFB_HEIGHT, CONFIG_SIMPLEFB_STRIDE, RV_FB_FOURCC_XR24);
 }
 
 U0 RVFwCfgDma(U32 control, U32 len, U8 *buf)
@@ -100,10 +134,14 @@ U0 RVFwCfgDma(U32 control, U32 len, U8 *buf)
   // Trigger: write BE phys addr of descriptor to DMA register (hi then lo).
   OutU32(RV_FWCFG_DMA_HI, EndianU32(phys.u32[1]));
   OutU32(RV_FWCFG_DMA_LO, EndianU32(phys.u32[0]));
+  I64 spins = 0;
   while (dma[0]) {
     if (EndianU32(dma[0]) & 1)
       break;
-    // error sticky
+    spins++;
+    if (spins > 1000000)
+      break;
+    Yield;
   }
 }
 
@@ -310,13 +348,14 @@ U0 RVFbBlit(I64 dx, I64 dy, U32 *src, I64 sw, I64 sh, I64 sstride_px = 0)
 
 U0 RVFbPutChar(I64 x, I64 y, U32 color, I64 ch)
 {
-  //8×8 glyph from sys_font_std (FontStd.HC). MSB of each row is the leftmost pixel.
+  //8×8 glyph from sys_font_std (FontStd.HC). LSB of each row is the leftmost pixel
+  // (TempleOS gr.to_8_bits / GrRopEquU8NoClipping convention).
   U8 *glyph = (&sys_font_std[ch & 255])(U8 *);
   I64 row, col;
   for (row = 0; row < FONT_HEIGHT; row++) {
     U8 bits = glyph[row];
     for (col = 0; col < FONT_WIDTH; col++)
-      if (bits & (0x80 >> col))
+      if (bits & (1 << col))
         RVFbPutPixel(x + col, y + row, color);
   }
 }
