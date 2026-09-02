@@ -13,14 +13,18 @@ HolyC driver language in user-facing text.
 | `make` | Host compiler `holyc-riscv` (`-D_DEFAULT_SOURCE` for glibc/`strdup` under `-std=c11`) |
 | `make test` | Tiny AOT smoke + `fmt-test` |
 | `make fmt` / `make fmt-check` | Rewrite / gate HolyC under enforced roots (`holyc-riscv --fmt`, like gofmt) |
-| `make ci` | `compliance` + `fmt-test` + `fmt-check` + `qemu-integration` (mirrors Actions after shell jobs) |
+| `make asm-stress` / `compiler-stress` / `stress` | Assembler encodings + curated codegen oracles — [tests/asm/](tests/asm/README.md), [tests/compiler/](tests/compiler/README.md) |
+| `make ci` | `compliance` + `fmt-test` + `fmt-check` + `asm-stress` + `asm-prop` + `qemu-integration` (mirrors Actions after shell jobs) |
 | `make syntax-sh` / `make lint-sh` | `bash -n` all scripts / ShellCheck primary scripts |
 | `make repl-smoke` / `make repl-regression` | REPL UART smoke / honesty gate — [tests/REGRESSION.md](tests/REGRESSION.md) |
 | `make kernel-plat-smoke` | HolyC Kconfig UART+CLINT on CI default board (in `qemu-integration`) |
+| `make kernels` / `list-kernels` | Multi-kernel: `build/kernels/<machine>/plat.elf` per defconfig |
 | `make kernel-phase3-smoke` | Guest Compiler_RV + StartOS subset — [COMPILER_RV.md](templeos-riscv/COMPILER_RV.md) |
 | `make hc-repl` / `hc-repl-smoke` | Transitional Mac-AOT guest — **do not grow `jit.hc`** |
 | `make coverage` | Project-mode compile tally (local; not CI) |
 | `make menuconfig-rv` | Platform Kconfig — [KCONFIG.md](templeos-riscv/KCONFIG.md) |
+| `make baremetal` / `make baremetal-smoke` | RAM `build/baremetal/repl.{elf,bin}` — OpenOCD / `-kernel` — [docs/BAREMETAL.md](docs/BAREMETAL.md) |
+| `make firmware` / `make firmware-smoke` | Flash ROM @ `0x20000000` + BIOS copies — [docs/BAREMETAL.md](docs/BAREMETAL.md) |
 
 Formatter (gofmt-style): `holyc-riscv --fmt` on edited `.hc`/`.HC`/`.HH` — do not hand-fight style. Roots: `tests/scripts/holyc_fmt_paths.sh`. Goldens: `make fmt-test`. Rule: `.cursor/rules/holyc-fmt.mdc`.
 

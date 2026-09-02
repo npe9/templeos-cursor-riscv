@@ -31,7 +31,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test fmt fmt-check fmt-test validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke repl-blob repl-regression hc-repl hc-repl-smoke term-probe-pty kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke kernel-selfboot-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-fb-smoke kernel-gr-smoke kernel-win-smoke kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-exepubs-smoke kernel-phase3-smoke coverage templeos-riscv templeos-smoke menuconfig-rv
+.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke repl-blob repl-regression hc-repl hc-repl-smoke term-probe-pty repl-uart-echo-pty baremetal baremetal-plat baremetal-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke kernel-selfboot-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-win-smoke kernel-win-interactive kernel-win-run kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-smp-smoke kernel-exepubs-smoke kernel-phase3-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -62,11 +62,40 @@ fmt-check: $(COMPILER_BIN)
 	@chmod +x tests/scripts/holyc_fmt_paths.sh tests/scripts/run_fmt.sh
 	@tests/scripts/run_fmt.sh --check
 
+# Host assembler semantics (TryAssembleRiscV encodings vs goldens; optional gas cross-check).
+asm-stress: $(COMPILER_BIN)
+	@chmod +x tests/scripts/run_asm_stress.sh
+	@tests/scripts/run_asm_stress.sh
+
+# Property-based assembler semantics (random RV64I vs Python oracle; tests/asm/).
+asm-prop: $(COMPILER_BIN)
+	@chmod +x tests/scripts/run_asm_prop.sh
+	@tests/scripts/run_asm_prop.sh
+
+# Host HolyC→RISC-V codegen semantics (curated exec oracles + negatives + soft patterns).
+compiler-stress: $(COMPILER_BIN)
+	@chmod +x tests/scripts/run_compiler_stress.sh
+	@tests/scripts/run_compiler_stress.sh
+
+# Property-based compiler semantics: random HolyC vs opt-tier equivalence (QEMU).
+compiler-prop: $(COMPILER_BIN)
+	@chmod +x tests/scripts/run_compiler_prop.sh
+	@tests/scripts/run_compiler_prop.sh
+
+# Assembler + compiler stress suites (see tests/asm/, tests/compiler/).
+stress: $(COMPILER_BIN)
+	@$(MAKE) asm-stress
+	@$(MAKE) asm-prop
+	@$(MAKE) compiler-stress
+	@$(MAKE) compiler-prop
+
 # Same stages as GitHub Actions: compile compliance, then QEMU (exec oracles + TempleOS smoke).
 ci: $(COMPILER_BIN)
 	@$(MAKE) compliance
 	@$(MAKE) fmt-test
 	@$(MAKE) fmt-check
+	@$(MAKE) asm-stress
+	@$(MAKE) asm-prop
 	@$(MAKE) qemu-integration
 
 compliance-exec: $(COMPILER_BIN)
@@ -93,6 +122,37 @@ coverage: $(COMPILER_BIN)
 	@chmod +x tests/scripts/coverage_templeos.sh
 	@tests/scripts/coverage_templeos.sh
 
+# Firmware / BIOS image: flash head @ 0x20000000 copies REPL (or plat) payload to RAM;
+# also emits templeos-bios.elf for qemu -bios (RAM-loaded payload).
+# See bootstrap/Makefile.firmware and templeos-riscv/PLATFORM.md § Firmware.
+# When templeos-riscv/.config selects OUTPUT_FORMAT_FIRMWARE, pass FLASH_BASE/RAM_BASE.
+firmware bios:
+	@kcfg="$(CURDIR)/templeos-riscv/include/generated/kconfig.mk"; \
+	extra=; \
+	if [ -f "$$kcfg" ]; then . "$$kcfg"; \
+	  extra="FLASH_BASE=$${FLASH_BASE:-0x20000000} RAM_BASE=$${RAM_BASE:-0x80000000} PFLASH_SIZE=$${PFLASH_SIZE:-0x02000000}"; \
+	fi; \
+	$(MAKE) -C bootstrap -f Makefile.firmware firmware $$extra
+
+firmware-smoke:
+	@chmod +x tests/scripts/run_firmware_smoke.sh
+	@tests/scripts/run_firmware_smoke.sh
+
+bios-smoke:
+	@chmod +x tests/scripts/run_bios_smoke.sh
+	@tests/scripts/run_bios_smoke.sh
+
+# RAM-linked bare-metal install dir (FPGA OpenOCD / qemu -bios none -kernel). See docs/BAREMETAL.md.
+baremetal:
+	$(MAKE) -C bootstrap -f Makefile.baremetal baremetal
+
+baremetal-plat:
+	$(MAKE) -C bootstrap -f Makefile.baremetal baremetal PAYLOAD=plat
+
+baremetal-smoke:
+	@chmod +x tests/scripts/run_baremetal_smoke.sh
+	@tests/scripts/run_baremetal_smoke.sh
+
 # Bare-metal REPL (bootstrap/Makefile.repl) under QEMU: function calls across statements etc.
 repl-smoke:
 	@chmod +x tests/scripts/run_repl_smoke.sh
@@ -107,6 +167,11 @@ repl-blob: $(COMPILER_BIN)
 # Mac-built HolyC AOT REPL (no C guest runtime / no host slots). See bootstrap/hc_repl/README.md.
 hc-repl:
 	@$(MAKE) -C bootstrap/hc_repl all
+
+# Same image as hc-repl; name mirrors legacy bootstrap/repl.elf for the HolyC-only path.
+repl-holyc: hc-repl
+
+repl-holyc-smoke: hc-repl-smoke
 
 hc-repl-smoke:
 	@chmod +x tests/scripts/run_hc_repl_smoke.sh
@@ -123,8 +188,16 @@ term-probe-pty:
 	@chmod +x tests/scripts/run_term_probe_pty.sh
 	@tests/scripts/run_term_probe_pty.sh
 
+# Paced PTY typing: one keystroke → one echo (16550 LSR/RBR × nested-IRQ race in uart_hw_drain).
+repl-uart-echo-pty:
+	@chmod +x tests/scripts/run_repl_uart_echo_pty.sh
+	@tests/scripts/run_repl_uart_echo_pty.sh
+
 # UART oracles (tests/exec), TempleOS/RISC-V QEMU smoke, REPL smoke — same as CI after compile-compliance
 qemu-integration: $(COMPILER_BIN)
+	@$(MAKE) asm-stress
+	@$(MAKE) compiler-stress
+	@$(MAKE) compiler-prop
 	@$(MAKE) exec-oracle
 	@$(MAKE) templeos-smoke
 	@$(MAKE) kernel-print-smoke
@@ -159,9 +232,13 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) kernel-virtiopersist-smoke
 	@$(MAKE) kernel-virtioexec-smoke
 	@$(MAKE) kernel-virtioshell-smoke
+	@$(MAKE) kernel-virtio-net-smoke
+	@$(MAKE) kernel-virtio-input-smoke
+	@$(MAKE) kernel-virtio-9p-smoke
 	@$(MAKE) kernel-fb-smoke
 	@$(MAKE) kernel-gr-smoke
 	@$(MAKE) kernel-win-smoke
+	@$(MAKE) kernel-win-interactive
 	@$(MAKE) kernel-plat-smoke
 	@$(MAKE) kernel-exepubs-smoke
 	@$(MAKE) kernel-exepubs-fundef-smoke
@@ -169,7 +246,9 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) hc-repl-smoke
 	@$(MAKE) repl-smoke
 	@$(MAKE) repl-regression
+	@$(MAKE) repl-9p-smoke
 	@$(MAKE) term-probe-pty
+	@$(MAKE) repl-uart-echo-pty
 
 # Compile a program that #includes the real kernel, formats with its StrPrintJoin, and prints
 # over the UART under QEMU — proves compiled kernel code runs and outputs on RISC-V.
@@ -332,6 +411,22 @@ kernel-virtioshell-smoke:
 	@chmod +x tests/scripts/run_kernel_virtioshell_smoke.sh
 	@tests/scripts/run_kernel_virtioshell_smoke.sh
 
+kernel-virtio-net-smoke:
+	@chmod +x tests/scripts/run_kernel_virtio_net_smoke.sh
+	@tests/scripts/run_kernel_virtio_net_smoke.sh
+
+kernel-virtio-input-smoke:
+	@chmod +x tests/scripts/run_kernel_virtio_input_smoke.sh
+	@tests/scripts/run_kernel_virtio_input_smoke.sh
+
+kernel-virtio-9p-smoke:
+	@chmod +x tests/scripts/run_kernel_virtio_9p_smoke.sh
+	@tests/scripts/run_kernel_virtio_9p_smoke.sh
+
+repl-9p-smoke:
+	@chmod +x tests/scripts/run_repl_9p_smoke.sh
+	@tests/scripts/run_repl_9p_smoke.sh
+
 # Native 32-bpp FB + QEMU ramfb (UART hash oracle; does not require a display window).
 kernel-fb-smoke:
 	@chmod +x tests/scripts/run_kernel_fb_smoke.sh
@@ -347,7 +442,69 @@ kernel-win-smoke:
 	@chmod +x tests/scripts/run_kernel_win_smoke.sh
 	@tests/scripts/run_kernel_win_smoke.sh
 
-# Kconfig platform UART/CLINT smoke (default virt; optional sifive_u).
+# Interactive WinMgr ELF + headless UART proof (paint + virtio-input).
+# Human cocoa: make kernel-win-run
+kernel-win-interactive:
+	@chmod +x tests/scripts/run_kernel_win_interactive.sh
+	@tests/scripts/run_kernel_win_interactive.sh
+
+# One-command interactive desktop (cocoa on macOS / sdl elsewhere; ESC quits).
+kernel-win-run:
+	@chmod +x tests/scripts/run_kernel_win_interactive.sh
+	@RVWIN_HOLD=1 RVWIN_DISPLAY=auto tests/scripts/run_kernel_win_interactive.sh
+
+# Multi-kernel: one plat-demo ELF (+ config snapshot) per Kconfig machine.
+# Artifacts: build/kernels/<machine>/plat.elf and build/exec/<machine>_plat.elf
+# Global .config / RVAutoConf.HH is restored after each build (see build_kernel_plat.sh).
+KERNEL_BUILD_MACHINES := virt sifive_u spike shakti_c sifive_e \
+	microchip_icicle xiangshan amd_microblaze_v
+# opentitan / none / host: SKIP in build script (rv32 / empty / stub).
+
+define KERNEL_MACHINE_template
+.PHONY: kernel-$(1)
+kernel-$(1):
+	@chmod +x tests/scripts/build_kernel_plat.sh
+	@tests/scripts/build_kernel_plat.sh $(1)
+endef
+$(foreach m,$(KERNEL_BUILD_MACHINES),$(eval $(call KERNEL_MACHINE_template,$(m))))
+
+.PHONY: kernels list-kernels
+kernels:
+	@chmod +x tests/scripts/build_kernel_plat.sh
+	@set -e; for m in $(KERNEL_BUILD_MACHINES); do \
+	  echo "=== building kernel-$$m ==="; \
+	  tests/scripts/build_kernel_plat.sh $$m; \
+	done
+	@$(MAKE) list-kernels
+
+list-kernels:
+	@echo "Kconfig machines → multi-kernel layout (build/kernels/<machine>/)"
+	@echo "Build:  make kernel-<machine> | make kernels"
+	@echo "Smoke:  make kernel-plat-smoke | kernel-plat-sifive-u-smoke | kernel-plat-matrix"
+	@echo ""
+	@printf '%-22s %-10s %s\n' "machine" "artifact" "notes"
+	@printf '%-22s %-10s %s\n' "-------" "--------" "-----"
+	@for m in $(KERNEL_BUILD_MACHINES); do \
+	  if [ -f build/kernels/$$m/plat.elf ]; then st=OK; else st=missing; fi; \
+	  case $$m in \
+	    virt) note="CI smoke (-M virt)" ;; \
+	    sifive_u) note="board smoke (-M sifive_u)" ;; \
+	    spike) note="HTIF smoke (-M spike)" ;; \
+	    sifive_e) note="build-only (DTIM too small to run)" ;; \
+	    shakti_c) note="build-only (UART stub; smoke SKIP)" ;; \
+	    microchip_icicle) note="build-only (needs hss.bin; smoke SKIP)" ;; \
+	    xiangshan) note="build-only (tentative; smoke SKIP)" ;; \
+	    amd_microblaze_v) note="build-only (tentative; smoke SKIP)" ;; \
+	    *) note="" ;; \
+	  esac; \
+	  printf '%-22s %-10s %s\n' "$$m" "$$st" "$$note"; \
+	done
+	@printf '%-22s %-10s %s\n' "opentitan" "SKIP" "RV32 profile — see RV32.md"
+	@printf '%-22s %-10s %s\n' "none / host" "SKIP" "not buildable plat kernels"
+	@echo ""
+	@echo "Also: make -C templeos-riscv qemu-args-<machine>  # no .config write"
+
+# Kconfig platform UART/CLINT smoke (default virt; sifive_u / spike extras).
 kernel-plat-smoke:
 	@chmod +x tests/scripts/run_kernel_plat_smoke.sh
 	@tests/scripts/run_kernel_plat_smoke.sh virt
@@ -355,6 +512,20 @@ kernel-plat-smoke:
 kernel-plat-sifive-u-smoke:
 	@chmod +x tests/scripts/run_kernel_plat_smoke.sh
 	@tests/scripts/run_kernel_plat_smoke.sh sifive_u
+
+kernel-plat-spike-smoke:
+	@chmod +x tests/scripts/run_kernel_plat_smoke.sh
+	@tests/scripts/run_kernel_plat_smoke.sh spike
+
+# Honesty matrix: every known QEMU -M (OK / SKIP+why). Not in default qemu-integration.
+kernel-plat-matrix:
+	@chmod +x tests/scripts/run_kernel_plat_matrix.sh
+	@tests/scripts/run_kernel_plat_matrix.sh
+
+# Optional Phase G multi-hart smoke (virt -smp 2). Not in default qemu-integration.
+kernel-smp-smoke:
+	@chmod +x tests/scripts/run_kernel_smp_smoke.sh
+	@tests/scripts/run_kernel_smp_smoke.sh
 
 # Guest ExePutS: Kernel_RV + Compiler_RV_Body → Add(40,2) under QEMU (COMPILER_RV.md).
 kernel-exepubs-smoke:
@@ -405,7 +576,10 @@ lint-sh:
 	  tests/scripts/run_fmt_test.sh \
 	  tests/scripts/run_fmt.sh \
 	  tests/scripts/holyc_fmt_paths.sh \
-	  tests/scripts/gen_compliance_candidates.sh; do \
+	  tests/scripts/gen_compliance_candidates.sh \
+	  tests/scripts/run_asm_stress.sh \
+	  tests/scripts/run_compiler_stress.sh \
+	  tests/scripts/run_compiler_prop.sh; do \
 	  shellcheck -S error -x "$$f"; \
 	done
 	@echo '✓ shellcheck (CI scripts)'
@@ -451,6 +625,8 @@ clean:
 	rm -rf *.dSYM
 	rm -f tools/pack_tosb
 	@$(MAKE) -C bootstrap -f Makefile.repl clean
+	@$(MAKE) -C bootstrap -f Makefile.firmware clean
+	@$(MAKE) -C bootstrap -f Makefile.baremetal clean
 	rm -f $(HOST_DIR)/*.o
 	rm -rf build/
 	@echo "✓ Cleaned"
@@ -465,20 +641,36 @@ help:
 	@echo "  fmt             - Rewrite HolyC under enforced roots (holyc-riscv --fmt; like gofmt)"
 	@echo "  fmt-check       - Fail if enforced HolyC differs from --fmt (like gofmt -l; CI)"
 	@echo "  fmt-test        - Golden + idempotency for holyc-riscv --fmt (tests/fmt/)"
+	@echo "  asm-stress      - Assembler semantics (TryAssembleRiscV encodings; tests/asm/)"
+	@echo "  asm-prop        - Property-based assembler (random RV64I vs oracle; tests/asm/)"
+	@echo "  compiler-stress - HolyC codegen semantics (curated oracles; tests/compiler/)"
+	@echo "  compiler-prop   - Property-based compiler (opt-tier equivalence; tests/compiler/)"
+	@echo "  stress          - asm-stress + asm-prop + compiler-stress + compiler-prop"
 	@echo "  compliance      - Compile-only compliance (manifests)"
-	@echo "  ci              - compliance, fmt-test, fmt-check, then qemu-integration (local mirror of GitHub CI)"
+	@echo "  ci              - compliance, fmt-test, fmt-check, asm-stress, asm-prop, then qemu-integration"
 	@echo "  compliance-exec - run_holyc_compliance.sh --exec (suites + exec oracles; no templeos-smoke)"
 	@echo "  exec-oracle     - UART oracle tests only (tests/exec; needs RISC-V + qemu-system)"
-	@echo "  qemu-integration - oracles + templeos + kernel smokes + plat-virt + phase3 + REPL (see docs/CI.md)"
+	@echo "  qemu-integration - asm/compiler-stress + oracles + templeos + kernel smokes + plat-virt + phase3 + REPL"
 	@echo "  repl-smoke        - bare-metal REPL language/demo smoke under QEMU (C guest + JIT)"
 	@echo "  hc-repl / hc-repl-smoke - Mac-built HolyC AOT REPL ELF (no C guest runtime)"
 	@echo "  repl-regression   - hard Src/Man/FnSize/trap/editor gate (see tests/REGRESSION.md)"
 	@echo "  term-probe-pty    - PTY + mock CPR: TermProbe updates TermRows/TermCols"
+	@echo "  repl-uart-echo-pty - paced PTY: single-echo keys + Ctrl-C (uart_hw_drain race)"
 	@echo "  kernel-fb-smoke   - 32-bpp FB + QEMU ramfb (UART hash; optional display via -device ramfb)"
 	@echo "  kernel-gr-smoke   - Gr*/CDC + soft term on FB (UART hash; RVGrRefresh/present)"
 	@echo "  kernel-win-smoke  - TempleOS-style WinMgr windows on FB (UART hash; bordered desktop)"
+	@echo "  kernel-win-interactive - win_i.elf + headless UART proof (ramfb + virtio-kbd/tablet)"
+	@echo "  kernel-win-run    - one-command cocoa/sdl DocTerm desktop until ESC"
 	@echo "  kernel-plat-smoke - HolyC Kconfig UART/CLINT smoke on -M virt"
+	@echo "  kernel-smp-smoke  - optional multi-hart (-smp 2) Seth-style wake smoke (Phase G)"
+	@echo "  kernel-virtio-net-smoke - HolyC VirtioNet TX+RX smoke (virtio-mmio)"
+	@echo "  kernel-virtio-input-smoke - HolyC VirtioInput init smoke (virtio-mmio)"
+	@echo "  kernel-virtio-9p-smoke - HolyC Virtio9p host virtfs read smoke (virtio-mmio)"
 	@echo "  kernel-plat-sifive-u-smoke - HolyC plat smoke on -M sifive_u (PLATFORM.md)"
+	@echo "  kernel-plat-spike-smoke - HolyC plat smoke on -M spike"
+	@echo "  kernel-plat-matrix - every known -M: OK or SKIP+why"
+	@echo "  kernels / list-kernels - multi-kernel: build/kernels/<machine>/plat.elf per defconfig"
+	@echo "  kernel-<machine>  - one plat kernel (virt|sifive_u|spike|…); see list-kernels"
 	@echo "  kernel-exepubs-smoke - Guest ExePutS Add(40,2) (Compiler_RV; see COMPILER_RV.md)"
 	@echo "  kernel-phase3-smoke  - RVKMain phase 3: Compiler_RV + StartOS subset (UART)"
 	@echo "  menuconfig-rv   - Kconfig: QEMU machine / map → Kernel/RVAutoConf.HH (templeos-riscv/KCONFIG.md)"

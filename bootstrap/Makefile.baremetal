@@ -1,0 +1,77 @@
+# Bare-metal RAM artifacts for FPGA OpenOCD and QEMU -bios none -kernel.
+#
+# Outputs (repo-root build/baremetal/):
+#   repl.elf / repl.bin   — default REPL payload @ LOAD_BASE (0x80000000 virt)
+#   plat.elf / plat.bin   — kernel plat demo (PAYLOAD=plat MACHINE=virt)
+#
+# These are the same RAM-linked images as bootstrap/repl.elf or build/kernels/*/plat.elf,
+# copied into a stable install dir with a flat .bin for OpenOCD load_image / QEMU -kernel.
+#
+# Flash packaging (FPGA BRAM/flash boot @ FLASH_BASE) stays on make firmware — see
+# bootstrap/Makefile.firmware and docs/BAREMETAL.md.
+
+RISCV_PREFIX = riscv64-unknown-elf-
+OBJCOPY = $(RISCV_PREFIX)objcopy
+
+ROOT     := ..
+BMD_DIR  := $(ROOT)/build/baremetal
+REPL_MK  := Makefile.repl
+KCFG     := $(ROOT)/templeos-riscv/include/generated/kconfig.mk
+
+# Optional Kconfig bases (KERNEL_LINK_ADDR / DRAM_BASE from syncconfig).
+ifneq ($(wildcard $(KCFG)),)
+  include $(KCFG)
+endif
+
+LOAD_BASE ?= $(RAM_BASE)
+ifeq ($(LOAD_BASE),)
+  LOAD_BASE := 0x80000000
+endif
+
+PAYLOAD  ?= repl
+MACHINE  ?= virt
+
+ifeq ($(PAYLOAD),repl)
+  SRC_ELF   := repl.elf
+  OUT_STEM  := repl
+  BUILD_CMD := $(MAKE) -f $(REPL_MK) LOAD_BASE=$(LOAD_BASE) repl.elf
+else ifeq ($(PAYLOAD),plat)
+  SRC_ELF   := $(ROOT)/build/kernels/$(MACHINE)/plat.elf
+  OUT_STEM  := plat
+  BUILD_CMD := $(ROOT)/tests/scripts/build_kernel_plat.sh $(MACHINE)
+else
+  $(error Set PAYLOAD=repl|plat)
+endif
+
+OUT_ELF := $(BMD_DIR)/$(OUT_STEM).elf
+OUT_BIN := $(BMD_DIR)/$(OUT_STEM).bin
+
+.PHONY: all baremetal clean qemu-args
+
+all baremetal: $(OUT_BIN) $(OUT_ELF)
+	@echo "✓ Bare-metal RAM @ $(LOAD_BASE):"
+	@echo "  ELF: $(OUT_ELF)  (OpenOCD/gdb, qemu -kernel)"
+	@echo "  BIN: $(OUT_BIN)  (OpenOCD binary load, qemu -kernel)"
+	@echo "  QEMU: $(QEMU_ARGS)"
+
+$(BMD_DIR):
+	@mkdir -p $@
+
+$(SRC_ELF):
+	@$(BUILD_CMD)
+
+$(OUT_ELF): $(SRC_ELF) | $(BMD_DIR)
+	cp $< $@
+
+$(OUT_BIN): $(OUT_ELF)
+	$(OBJCOPY) -O binary $< $@
+
+QEMU ?= qemu-system-riscv64
+QEMU_ARGS = $(QEMU) -M virt -m 128M -bios none -kernel $(OUT_BIN) -nographic
+
+qemu-args:
+	@echo "$(QEMU_ARGS)"
+
+clean:
+	rm -f $(BMD_DIR)/repl.elf $(BMD_DIR)/repl.bin \
+	      $(BMD_DIR)/plat.elf $(BMD_DIR)/plat.bin

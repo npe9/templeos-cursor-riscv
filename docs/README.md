@@ -11,6 +11,7 @@ see [CI.md](CI.md) and [PLATFORM.md](../templeos-riscv/PLATFORM.md).
 | Doc | Topic |
 |-----|--------|
 | [../README.md](../README.md) | Project entry, honest status, quick start |
+| [tutorials/README.md](tutorials/README.md) | **Tutorial curriculum** (executable HolyC labs: ISA → CSAPP → Beck) |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Host compiler, REPL, Kernel, guest Cmp, self-host |
 | [LAYOUT.md](LAYOUT.md) | **Source-tree map** (host / bootstrap / TempleOS / `tos/`) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Build / test norms |
@@ -22,11 +23,17 @@ see [CI.md](CI.md) and [PLATFORM.md](../templeos-riscv/PLATFORM.md).
 
 | Topic | Canonical doc |
 |-------|----------------|
+| Tutorials (SF-style HolyC labs: ISA / CSAPP / Beck) | [tutorials/README.md](tutorials/README.md) |
 | Interactive REPL / Src / Vi / Fmt | [REPL.md](REPL.md) |
+| Datasheet bitfield decode (`DsDecode`) | [DATASHEET.md](DATASHEET.md) |
+| IDE expected behaviors (Vi / Edit / Src / Man) | [IDE.md](IDE.md) |
 | REPL honesty gate | [../tests/REGRESSION.md](../tests/REGRESSION.md) |
 | Language / feature surface | [HOLYC_IMPLEMENTATION_STATUS.md](HOLYC_IMPLEMENTATION_STATUS.md) |
 | Platform Kconfig tutorial | [../templeos-riscv/KCONFIG.md](../templeos-riscv/KCONFIG.md) |
 | Board ports + CI emulator targets | [../templeos-riscv/PLATFORM.md](../templeos-riscv/PLATFORM.md) |
+| FPGA OpenOCD + bare QEMU boot | [BAREMETAL.md](BAREMETAL.md) |
+| RV32 / ILP32 port plan | [../templeos-riscv/RV32.md](../templeos-riscv/RV32.md) |
+| Multi-arch port plan (ARM / PPC / …) | [MULTIARCH.md](MULTIARCH.md) |
 | Framebuffer / boards | [../templeos-riscv/BOARD_FB.md](../templeos-riscv/BOARD_FB.md) |
 | Guest `Compiler_RV` / phase3 | [../templeos-riscv/COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md) |
 | x86 ↔ RV subsystem map | [../templeos-riscv/TOS_X86_PARITY.md](../templeos-riscv/TOS_X86_PARITY.md) |

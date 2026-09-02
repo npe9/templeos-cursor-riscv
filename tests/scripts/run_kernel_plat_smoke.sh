@@ -1,69 +1,79 @@
 #!/bin/bash
 # HolyC platform smoke: Kernel/Drv UART+CLINT via Kconfig (RVAutoConf.HH).
-# Usage: run_kernel_plat_smoke.sh [virt|sifive_u]
-# Compiles tests/exec/cases/kernel_plat_demo.hc after switching defconfig; restores virt after.
+# Usage: run_kernel_plat_smoke.sh [virt|sifive_u|spike|…]
+#
+# Builds (or refreshes) build/kernels/<machine>/plat.elf via build_kernel_plat.sh,
+# then loads it with matching QEMU -M. Machines that cannot bare-boot print SKIP.
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TOS="$ROOT/templeos-riscv"
-HARNESS="$ROOT/tests/exec/harness"
-OUTDIR="$ROOT/build/exec"
-COMPILER="$ROOT/holyc-riscv"
-SRC="$ROOT/tests/exec/cases/kernel_plat_demo.hc"
+BUILD_SH="$SCRIPT_DIR/build_kernel_plat.sh"
 MACHINE="${1:-virt}"
 QEMU="${QEMU_SYSTEM:-qemu-system-riscv64}"
-GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
-OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
-LD="${RISCV_LD:-riscv64-unknown-elf-ld}"
 TIMEOUT="timeout"; command -v gtimeout >/dev/null 2>&1 && TIMEOUT="gtimeout"
 
-for t in "$GCC" "$OBJCOPY" "$LD" "$QEMU"; do
-  command -v "$t" >/dev/null 2>&1 || { echo "SKIP plat smoke — missing $t" >&2; exit 0; }
-done
-[ -f "$COMPILER" ] || [ -x "$COMPILER" ] || make -C "$ROOT" holyc-riscv >/dev/null
+command -v "$QEMU" >/dev/null 2>&1 || { echo "SKIP plat smoke — missing $QEMU" >&2; exit 0; }
 
-restore_virt() {
-  if [ "$MACHINE" != "virt" ]; then
-    make -C "$TOS" defconfig-virt >/dev/null
-  fi
-}
-trap restore_virt EXIT
-
+# Map friendly arg → defconfig stem + QEMU -M (+ SKIP reason for run).
+DEFCONFIG=""
+QEMU_M=""
+QEMU_EXTRA=(-bios none)
 case "$MACHINE" in
-  virt) make -C "$TOS" defconfig-virt >/dev/null ;;
-  sifive_u) make -C "$TOS" defconfig-sifive_u >/dev/null ;;
-  *) echo "usage: $0 [virt|sifive_u]" >&2; exit 2 ;;
+  virt)
+    DEFCONFIG=virt; QEMU_M=virt ;;
+  sifive_u)
+    DEFCONFIG=sifive_u; QEMU_M=sifive_u ;;
+  spike)
+    DEFCONFIG=spike; QEMU_M=spike ;;
+  shakti_c)
+    echo "SKIP plat smoke (shakti_c) — Shakti UART @ 0x11300 has no HolyC driver (UART stub)" >&2
+    exit 0 ;;
+  sifive_e)
+    echo "SKIP plat smoke (sifive_e) — DTIM ~16 KiB; TempleOS/RV image does not fit" >&2
+    exit 0 ;;
+  microchip_icicle|microchip-icicle-kit)
+    echo "SKIP plat smoke (microchip-icicle-kit) — needs HSS firmware (hss.bin); bare -bios none fails" >&2
+    exit 0 ;;
+  xiangshan|xiangshan-kunminghu)
+    echo "SKIP plat smoke (xiangshan-kunminghu) — tentative ACLINT/APLIC; 16550 regshift=2 RX unproven" >&2
+    exit 0 ;;
+  amd_microblaze_v|amd-microblaze-v-generic)
+    echo "SKIP plat smoke (amd-microblaze-v-generic) — no CLINT; UARTLite primary / 16550 secondary only" >&2
+    exit 0 ;;
+  opentitan)
+    echo "SKIP plat smoke (opentitan) — riscv32 + 128 KiB DRAM; Ibex UART stub; see RV32.md" >&2
+    exit 0 ;;
+  none)
+    echo "SKIP plat smoke (none) — QEMU empty machine; no CPU/RAM/devices" >&2
+    exit 0 ;;
+  host)
+    echo "SKIP plat smoke (host) — legacy stub; not in QEMU -M help" >&2
+    exit 0 ;;
+  *)
+    echo "usage: $0 [virt|sifive_u|spike|shakti_c|sifive_e|microchip_icicle|xiangshan|amd_microblaze_v|opentitan|none|host]" >&2
+    exit 2 ;;
 esac
 
-mkdir -p "$OUTDIR"
-if [ ! -f "$OUTDIR/crt0.o" ] || [ ! -f "$OUTDIR/oracle_out.o" ] || \
-   [ "$HARNESS/crt0.S" -nt "$OUTDIR/crt0.o" ] || [ "$HARNESS/oracle_out.c" -nt "$OUTDIR/oracle_out.o" ] || \
-   [ "$ROOT/bootstrap/holy_rt.h" -nt "$OUTDIR/oracle_out.o" ]; then
-  "$GCC" -march=rv64imafdc -mabi=lp64d -mcmodel=medany -O2 -g -nostdlib -ffreestanding -fno-builtin \
-    -c "$HARNESS/oracle_out.c" -o "$OUTDIR/oracle_out.o" || { echo "FAIL plat smoke — harness compile" >&2; exit 1; }
-  "$GCC" -march=rv64imafdc -mabi=lp64d -mcmodel=medany -O2 -g -nostdlib -ffreestanding -fno-builtin \
-    -c "$HARNESS/crt0.S" -o "$OUTDIR/crt0.o" || { echo "FAIL plat smoke — crt0" >&2; exit 1; }
-fi
-
-T="$(mktemp -d)"
-trap 'rm -rf "$T"; restore_virt' EXIT
-
-if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then
-  echo "FAIL plat smoke — HolyC compile error ($MACHINE)" >&2
-  HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" 2>&1 | tail -20 >&2
+chmod +x "$BUILD_SH"
+if ! out="$("$BUILD_SH" "$DEFCONFIG" 2>&1)"; then
+  printf '%s\n' "$out" >&2
   exit 1
 fi
-( cd "$T" && "$OBJCOPY" -I binary -O elf64-littleriscv blob.bin blob_in.o && \
-  "$LD" -T "$HARNESS/link_exec.ld" -nostdlib --no-warn-mismatch -o plat.elf \
-    "$OUTDIR/crt0.o" "$OUTDIR/oracle_out.o" blob_in.o ) \
-  >/dev/null 2>&1 || { echo "FAIL plat smoke — link error" >&2; exit 1; }
-
-cp "$T/plat.elf" "$OUTDIR/plat-$MACHINE.elf"
-out="$($TIMEOUT 20 "$QEMU" -M "$MACHINE" -bios none -kernel "$T/plat.elf" -nographic </dev/null 2>&1 | tr -d '\r')"
-if printf '%s\n' "$out" | grep -qF "plat-smoke: PASS"; then
-  echo "Plat smoke ($MACHINE): OK"
+# build script may SKIP (exit 0) for opentitan/none/host — treat as smoke SKIP
+if printf '%s\n' "$out" | grep -q '^SKIP '; then
+  printf '%s\n' "$out"
   exit 0
 fi
-echo "FAIL plat smoke ($MACHINE) — expected plat-smoke: PASS" >&2
+printf '%s\n' "$out"
+
+ELF="$ROOT/build/kernels/$DEFCONFIG/plat.elf"
+[ -f "$ELF" ] || { echo "FAIL plat smoke — missing $ELF" >&2; exit 1; }
+
+out="$($TIMEOUT 20 "$QEMU" -M "$QEMU_M" "${QEMU_EXTRA[@]}" -kernel "$ELF" -nographic </dev/null 2>&1 | tr -d '\r')"
+if printf '%s\n' "$out" | grep -qF "plat-smoke: PASS"; then
+  echo "Plat smoke ($DEFCONFIG): OK"
+  exit 0
+fi
+echo "FAIL plat smoke ($DEFCONFIG) — expected plat-smoke: PASS" >&2
 printf '%s\n' "$out" | grep -v 'import unresolved' | head -25 | sed 's/^/  got: /' >&2
 exit 1

@@ -1,0 +1,130 @@
+# TempleOS/RISC-V firmware image (BIOS / pflash) for QEMU virt and flash boards.
+#
+# Wraps a normal RAM-linked ELF (REPL or kernel plat) in a flash-resident head that
+# copies the flat payload to RAM_BASE and jumps to _start.
+#
+# Outputs (repo-root build/firmware/):
+#   templeos-fw.elf   — flash-linked ELF (objdump / debug)
+#   templeos-fw.bin   — raw pflash image (-bios none -drive if=pflash,...)
+#   templeos-bios.elf — RAM-linked payload ELF (qemu -bios)
+#   templeos-bios.bin — flat payload @ RAM_BASE (qemu -bios)
+#
+# Payload selection:
+#   PAYLOAD=repl  (default) — bootstrap/repl.elf
+#   PAYLOAD=plat            — build/kernels/virt/plat.elf (run build_kernel_plat.sh first)
+#   PAYLOAD_ELF=/path       — explicit ELF override
+
+RISCV_PREFIX = riscv64-unknown-elf-
+CC  = $(RISCV_PREFIX)gcc
+LD  = $(RISCV_PREFIX)ld
+OBJCOPY = $(RISCV_PREFIX)objcopy
+
+ROOT     := ..
+FW_DIR   := $(ROOT)/build/firmware
+REPL_MK  := Makefile.repl
+
+FLASH_BASE ?= 0x20000000
+RAM_BASE   ?= 0x80000000
+
+CFLAGS = -march=rv64imafdc_zifencei -mabi=lp64d -mcmodel=medany -O2 -g \
+         -nostdlib -ffreestanding -fno-builtin -DRAM_BASE=$(RAM_BASE)
+
+LDFLAGS = -T firmware.ld -nostdlib --no-warn-mismatch \
+          --defsym FLASH_BASE=$(FLASH_BASE) \
+          --defsym RAM_BASE=$(RAM_BASE)
+
+PAYLOAD ?= repl
+
+ifeq ($(PAYLOAD),repl)
+  PAYLOAD_ELF ?= repl.elf
+  PAYLOAD_BUILD := $(MAKE) -f $(REPL_MK) repl.elf
+else ifeq ($(PAYLOAD),plat)
+  PAYLOAD_ELF ?= $(ROOT)/build/kernels/virt/plat.elf
+  PAYLOAD_BUILD := $(ROOT)/tests/scripts/build_kernel_plat.sh virt
+else ifndef PAYLOAD_ELF
+  $(error Set PAYLOAD=repl|plat or PAYLOAD_ELF=/path/to/image.elf)
+endif
+
+FW_ELF     := $(FW_DIR)/templeos-fw.elf
+FW_BIN     := $(FW_DIR)/templeos-fw.bin
+BIOS_ELF   := $(FW_DIR)/templeos-bios.elf
+BIOS_BIN   := $(FW_DIR)/templeos-bios.bin
+PAYLOAD_BIN := $(FW_DIR)/payload.bin
+
+.PHONY: all firmware bios clean run-firmware run-bios qemu-args qemu-args-bios qemu-args-pflash
+
+all: firmware
+
+firmware bios: $(FW_BIN) $(BIOS_ELF) $(BIOS_BIN)
+	@echo "✓ Flash ROM:  $(FW_BIN)"
+	@echo "  QEMU pflash: $(QEMU_ARGS_PFLASH)"
+	@echo "✓ RAM BIOS:   $(BIOS_ELF)"
+	@echo "  QEMU -bios:  $(QEMU_ARGS_BIOS)"
+
+$(FW_DIR):
+	@mkdir -p $(FW_DIR)
+
+$(PAYLOAD_ELF):
+	@$(PAYLOAD_BUILD)
+
+$(PAYLOAD_BIN): $(PAYLOAD_ELF) | $(FW_DIR)
+	$(OBJCOPY) -O binary $< $@
+	@# Pad to 8-byte boundary so the copy loop in firmware_stub.S is exact.
+	@sz=$$(stat -f%z "$@" 2>/dev/null || stat -c%s "$@"); \
+	  pad=$$(( (8 - sz % 8) % 8 )); \
+	  if [ "$$pad" -ne 0 ]; then dd if=/dev/zero bs=1 count=$$pad >> "$@" 2>/dev/null; fi
+
+$(FW_DIR)/payload.o: $(PAYLOAD_BIN)
+	$(OBJCOPY) -I binary -O elf64-littleriscv -B riscv \
+		--rename-section .data=.fw_payload,alloc,load,readonly,contents \
+		$< $@
+
+firmware_stub.o: firmware_stub.S
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(FW_ELF): firmware_stub.o $(FW_DIR)/payload.o firmware.ld
+	$(LD) $(LDFLAGS) -o $@ firmware_stub.o $(FW_DIR)/payload.o
+
+# QEMU virt CFI pflash0 is 32 MiB (see virt DT flash@20000000).
+PFLASH_SIZE ?= 0x2000000
+
+$(FW_BIN): $(FW_ELF)
+	$(OBJCOPY) -O binary $< $@
+	@sz=$$(stat -f%z "$@" 2>/dev/null || stat -c%s "$@"); \
+	  want=$$(printf '%d' $(PFLASH_SIZE)); \
+	  if [ "$$sz" -gt "$$want" ]; then \
+	    echo "error: firmware $$sz bytes exceeds pflash $$want" >&2; exit 1; \
+	  fi; \
+	  pad=$$((want - sz)); \
+	  if [ "$$pad" -ne 0 ]; then dd if=/dev/zero bs=1 count=$$pad >> "$@" 2>/dev/null; fi
+	@ls -la $@
+
+# RAM-linked payload for qemu -bios (loads to RAM_BASE, reset jumps there in M-mode).
+$(BIOS_ELF): $(PAYLOAD_ELF) | $(FW_DIR)
+	cp $< $@
+
+$(BIOS_BIN): $(PAYLOAD_ELF) | $(FW_DIR)
+	$(OBJCOPY) -O binary $< $@
+
+QEMU ?= qemu-system-riscv64
+QEMU_ARGS_PFLASH = $(QEMU) -M virt -m 128M -bios none \
+	-drive if=pflash,format=raw,file=$(FW_BIN) -nographic
+QEMU_ARGS_BIOS = $(QEMU) -M virt -m 128M -bios $(BIOS_ELF) -nographic
+
+qemu-args: qemu-args-pflash
+
+qemu-args-pflash:
+	@echo "$(QEMU_ARGS_PFLASH)"
+
+qemu-args-bios:
+	@echo "$(QEMU_ARGS_BIOS)"
+
+run-firmware: $(FW_BIN)
+	$(QEMU_ARGS_PFLASH)
+
+run-bios: $(BIOS_ELF)
+	$(QEMU_ARGS_BIOS)
+
+clean:
+	rm -f firmware_stub.o $(FW_DIR)/payload.o $(FW_DIR)/payload.bin \
+	      $(FW_ELF) $(FW_BIN) $(BIOS_ELF) $(BIOS_BIN)
