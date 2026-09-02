@@ -1,0 +1,41 @@
+{"name":"imm_addi_max","insns":["addi a0, a1, 2047"],"mode":"match"}
+{"name":"imm_addi_min","insns":["addi a0, a1, -2048"],"mode":"match"}
+{"name":"imm_ld_max","insns":["ld a0, 2047(a1)"],"mode":"match"}
+{"name":"imm_ld_min","insns":["ld a0, -2048(a1)"],"mode":"match"}
+{"name":"imm_sd_max","insns":["sd a0, 2047(sp)"],"mode":"match"}
+{"name":"imm_sd_min","insns":["sd a0, -2048(sp)"],"mode":"match"}
+{"name":"imm_lui_zero","insns":["lui a0, 0"],"mode":"match"}
+{"name":"imm_lui_max_field","insns":["lui a0, 0xFFFFF"],"mode":"match"}
+{"name":"imm_lui_signed_neg","insns":["lui a0, -1"],"mode":"match","gas":"lui a0, 0xFFFFF"}
+{"name":"imm_auipc_zero","insns":["auipc a0, 0"],"mode":"match"}
+{"name":"imm_jalr_max","insns":["jalr ra, 2047(a0)"],"mode":"match"}
+{"name":"imm_jalr_min","insns":["jalr ra, -2048(a0)"],"mode":"match"}
+{"name":"imm_xori_neg1","insns":["xori a0, a1, -1"],"mode":"match"}
+{"name":"imm_slti_zero","insns":["slti a0, a1, 0"],"mode":"match"}
+{"name":"pseudo_mv_xn","insns":["mv x10, x11"],"mode":"match"}
+{"name":"pseudo_not_xn","insns":["not x10, x11"],"mode":"match"}
+{"name":"pseudo_neg_xn","insns":["neg x10, x11"],"mode":"match"}
+{"name":"pseudo_ret","insns":["ret"],"mode":"match"}
+{"name":"pseudo_jalr_short","insns":["jalr a0"],"mode":"match","gas":"jalr ra, 0(a0)"}
+{"name":"pseudo_zero_x0","insns":["addi zero, zero, 0"],"mode":"match","gas":"addi x0, x0, 0"}
+{"name":"pseudo_zero_x0_mv","insns":["mv zero, a0"],"mode":"match","gas":"addi x0, a0, 0"}
+{"name":"li_edge_2047","insns":["li a0, 2047"],"mode":"match"}
+{"name":"li_edge_m2048","insns":["li a0, -2048"],"mode":"match"}
+{"name":"li_edge_0","insns":["li a0, 0"],"mode":"match"}
+{"name":"li_edge_m1","insns":["li a0, -1"],"mode":"match"}
+{"name":"branch_beqz_fwd","insns":["beqz a0, L","nop","L:","nop"],"mode":"match","gas":"beqz a0, 1f\nnop\n1:\nnop"}
+{"name":"branch_bnez_back","insns":["L:","nop","bnez a0, L"],"mode":"match","gas":"1:\nnop\nbnez a0, 1b"}
+{"name":"branch_j_fwd","insns":["j L","nop","L:","nop"],"mode":"match","gas":"j 1f\nnop\n1:\nnop"}
+{"name":"branch_j_back","insns":["L:","nop","j L"],"mode":"match","gas":"1:\nnop\nj 1b"}
+{"name":"branch_blt_fwd","insns":["blt a0, a1, L","nop","L:","nop"],"mode":"match","gas":"blt a0, a1, 1f\nnop\n1:\nnop"}
+{"name":"pseudo_seqz","insns":["seqz a0, a1"],"mode":"match"}
+{"name":"pseudo_snez","insns":["snez a0, a1"],"mode":"match"}
+{"name":"pseudo_jr","insns":["jr a0"],"mode":"match"}
+{"name":"reject_addi_oor_hi","insns":["addi a0, a0, 2048"],"mode":"both_reject"}
+{"name":"reject_addi_oor_lo","insns":["addi a0, a0, -2049"],"mode":"both_reject"}
+{"name":"reject_ld_oor","insns":["ld a0, 4096(sp)"],"mode":"both_reject"}
+{"name":"reject_slli_64","insns":["slli a0, a1, 64"],"mode":"both_reject"}
+{"name":"reject_lui_full_addr","insns":["lui a0, 0x81397000"],"mode":"both_reject","why":"full-address lui rejected by HolyC and GNU gas"}
+{"name":"reject_jal_bare","insns":["jal L"],"mode":"holyc_reject","why":"bare jal unsupported; gas accepts undefined label as offset 0"}
+{"name":"reject_la","insns":["la a0, L"],"mode":"holyc_reject","why":"la/%hi/%lo not supported"}
+{"name":"wide_li_2048","insns":["li a0, 2048"],"mode":"match"}

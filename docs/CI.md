@@ -11,16 +11,18 @@ not because TempleOS/RV is “a QEMU OS.” Product docs and REPL Help stay boar
 |-----|------|----------------|
 | **syntax-sh** | `bash -n` on every `tests/scripts/*.sh` | `make syntax-sh` |
 | **shellcheck** | ShellCheck on primary scripts | `make lint-sh` (needs `shellcheck`) |
-| **compile-compliance** | Build `holyc-riscv`, `make compliance`, `make fmt-test`, `make fmt-check` | `make` && `make compliance` && `make fmt-test` && `make fmt-check` |
-| **qemu-integration** | Needs the three jobs above; runs `make qemu-integration` | `make qemu-integration` |
+| **compile-compliance** | Build `holyc-riscv`, `make compliance`, `make fmt-test`, `make fmt-check`, `make asm-stress`, `make asm-prop` | `make` && `make compliance` && `make fmt-test` && `make fmt-check` && `make asm-stress` && `make asm-prop` |
+| **qemu-integration** | Needs the three jobs above; runs `make qemu-integration` (`asm-stress`, `compiler-stress`, `compiler-prop`, then kernel smokes) | `make qemu-integration` |
 
-**Full local gate:** `make ci` (= compliance + fmt-test + fmt-check + qemu-integration). Shellcheck/syntax are separate locally (`make lint-sh` / `make syntax-sh`).
+**Full local gate:** `make ci` (= compliance + fmt-test + fmt-check + asm-stress + asm-prop + qemu-integration). Shellcheck/syntax are separate locally (`make lint-sh` / `make syntax-sh`).
+
+Semantics stress only: `make stress` (= `asm-stress` + `asm-prop` + `compiler-stress` + `compiler-prop`). See [tests/asm/](../tests/asm/README.md) and [tests/compiler/](../tests/compiler/README.md).
 
 `fmt-check` enforces `holyc-riscv --fmt` on port-owned roots listed in [`tests/scripts/holyc_fmt_paths.sh`](../tests/scripts/holyc_fmt_paths.sh) (gofmt-style). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## What `qemu-integration` covers
 
-Exec oracles, TempleOS C-image smoke, the long `kernel-*-smoke` list (print → virtio → FB/Gr/Win → ExePutS → **phase3**), **`kernel-plat-smoke`** (default-board Kconfig UART/CLINT), **`hc-repl-smoke`**, **`repl-smoke`**, **`repl-regression`**, **`term-probe-pty`**.
+Exec oracles, TempleOS C-image smoke, the long `kernel-*-smoke` list (print → virtio → FB/Gr/Win → ExePutS → **phase3**), **`kernel-plat-smoke`** (default-board Kconfig UART/CLINT), **`hc-repl-smoke`**, **`repl-smoke`**, **`repl-regression`**, **`repl-9p-smoke`**, **`term-probe-pty`**. It begins with **`asm-stress`**, **`compiler-stress`**, and **`compiler-prop`** ([tests/asm/](../tests/asm/README.md), [tests/compiler/](../tests/compiler/README.md)).
 
 CI’s default machine profile is **virt** (typical virt memory map). That is an emulator
 target for automation — board ports are separate ([PLATFORM.md](../templeos-riscv/PLATFORM.md)).

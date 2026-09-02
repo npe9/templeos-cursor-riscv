@@ -3405,14 +3405,17 @@ static int RvFRegNum(const char *n) {
 }
 static U32 RvR(U32 f7,U32 f3,int rd,int rs1,int rs2){ return 0x33u|(rd<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|(f7<<25); }
 static U32 RvI(U32 f3,int rd,int rs1,int imm){ return 0x13u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
+static U32 RvIw(U32 f3,int rd,int rs1,int imm){ return 0x1Bu|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
 static U32 RvShift(U32 f3,U32 hi6,int rd,int rs1,int sh){ return 0x13u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)sh&0x3F)<<20)|(hi6<<26); }
 static U32 RvLoad(U32 f3,int rd,int imm,int rs1){ return 0x03u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
 static U32 RvStore(U32 f3,int rs2,int imm,int rs1){ return 0x23u|(((U32)imm&0x1F)<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|((((U32)imm>>5)&0x7F)<<25); }
 static U32 RvBr(U32 f3,int rs1,int rs2,int off){ return 0x63u|(((U32)(off>>11)&1)<<7)|(((U32)(off>>1)&0xF)<<8)|(f3<<12)|(rs1<<15)|(rs2<<20)|(((U32)(off>>5)&0x3F)<<25)|(((U32)(off>>12)&1)<<31); }
 static U32 RvJ(int rd,int off){ return 0x6Fu|(rd<<7)|(((U32)(off>>12)&0xFF)<<12)|(((U32)(off>>11)&1)<<20)|(((U32)(off>>1)&0x3FF)<<21)|(((U32)(off>>20)&1)<<31); }
 static U32 RvJalr(int rd,int rs1,int imm){ return 0x67u|(rd<<7)|(0u<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
+static U32 RvU(U32 opc,int rd,int imm20){ return opc|(rd<<7)|(((U32)imm20&0xFFFFFu)<<12); }
+static U32 RvA(U32 f5,U32 aqrl,U32 f3,int rd,int rs1,int rs2){ return 0x2Fu|(rd<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|(aqrl<<25)|(f5<<27); }
 
-typedef struct { char mn[12]; int rd,rs1,rs2,imm; char label[48]; int kind; } RvI2;  // kind: 0 none,1 branch,2 jump
+typedef struct { char mn[16]; int rd,rs1,rs2,imm; char label[48]; int kind; } RvI2;  // kind: 0 none,1 branch,2 jump
 
 // Parse one register token (IDENT); returns reg num or -1. Case-insensitive ABI names.
 static int RvRegTok(Compiler *cc) {
@@ -3426,19 +3429,156 @@ static int RvFRegTok(Compiler *cc) {
   char buf[16]; RvLowerCopy(buf, cc->lex.token_str, 16);
   int r = RvFRegNum(buf); LexNext(cc); return r;
 }
-// Append one assembled instruction entry (used by the lifp macro expansion). Returns false if full.
+// Append one assembled instruction entry (used by the lifp / wide-li expansion). Returns false if full.
 static bool RvPushI(RvI2 *ins, int *nins, const char *mn, int rd, int rs1, int imm) {
   if (*nins >= 256) return false;
   RvI2 *I = &ins[*nins];
   { char *_p=(char*)I; for(unsigned _j=0;_j<sizeof(RvI2);_j++) _p[_j]=0; }
-  { int _i=0; for(;mn[_i]&&_i<11;_i++) I->mn[_i]=mn[_i]; I->mn[_i]=0; }
+  { int _i=0; for(;mn[_i]&&_i<15;_i++) I->mn[_i]=mn[_i]; I->mn[_i]=0; }
   I->rd=rd; I->rs1=rs1; I->imm=imm;
   (*nins)++; return true;
 }
-// Parse an immediate (optional '-' then number). Returns 1 on success.
+static bool RvPushR(RvI2 *ins, int *nins, const char *mn, int rd, int rs1, int rs2) {
+  if (*nins >= 256) return false;
+  RvI2 *I = &ins[*nins];
+  { char *_p=(char*)I; for(unsigned _j=0;_j<sizeof(RvI2);_j++) _p[_j]=0; }
+  { int _i=0; for(;mn[_i]&&_i<15;_i++) I->mn[_i]=mn[_i]; I->mn[_i]=0; }
+  I->rd=rd; I->rs1=rs1; I->rs2=rs2;
+  (*nins)++; return true;
+}
+// Expand li rd,imm outside ±2047. 32-bit values follow GNU as (lui+addiw / specials); wider
+// constants use EmitLoadImm64-style lui+addi (+ slli/srli zext when U32 bit31 set).
+static bool RvExpandLi64(RvI2 *ins, int *nins, int rd, I64 v) {
+  I64 lo32 = (I64)(I32)(U32)(v & 0xFFFFFFFF);
+  I64 hi32 = (v - lo32) >> 32;
+  if (hi32 == 0 && lo32 < 0) hi32 = 0;   /* positive U32 with bit31 */
+  Bool fits_i32 = (v == lo32);
+  Bool fits_u32 = (v >= 0 && v <= 0xFFFFFFFFLL);
+  if (!fits_i32 && !fits_u32) {
+    int scratch = 5; /* t0 */
+    if (rd == scratch) scratch = 6; /* t1 */
+    I64 hi = (I64)(I32)(U32)((v >> 32) & 0xFFFFFFFF);
+    I64 hh = (hi + 0x800) >> 12, hl = hi - (hh << 12);
+    if (!RvPushI(ins, nins, "lui", rd, 0, (int)(hh & 0xFFFFF))) return false;
+    if (hl && !RvPushI(ins, nins, "addi", rd, rd, (int)hl)) return false;
+    if (!RvPushI(ins, nins, "slli", rd, rd, 32)) return false;
+    I64 lh = (lo32 + 0x800) >> 12, ll = lo32 - (lh << 12);
+    if (!RvPushI(ins, nins, "lui", scratch, 0, (int)(lh & 0xFFFFF))) return false;
+    if (ll && !RvPushI(ins, nins, "addi", scratch, scratch, (int)ll)) return false;
+    if (lo32 < 0) {
+      if (!RvPushI(ins, nins, "slli", scratch, scratch, 32)) return false;
+      if (!RvPushI(ins, nins, "srli", scratch, scratch, 32)) return false;
+    }
+    return RvPushR(ins, nins, "add", rd, rd, scratch);
+  }
+  {
+    I64 hi = (lo32 + 0x800) >> 12, lo = lo32 - (hi << 12);
+    if (!RvPushI(ins, nins, "lui", rd, 0, (int)(hi & 0xFFFFF))) return false;
+    if (lo && !RvPushI(ins, nins, "addi", rd, rd, (int)lo)) return false;
+    if (!fits_i32) {
+      if (!RvPushI(ins, nins, "slli", rd, rd, 32)) return false;
+      if (!RvPushI(ins, nins, "srli", rd, rd, 32)) return false;
+    }
+  }
+  return true;
+}
+static bool RvExpandLiGas32(RvI2 *ins, int *nins, int rd, I64 v) {
+  I64 hi, lo;
+  if (v == (1LL << 31)) {
+    if (!RvPushI(ins, nins, "addiw", rd, 0, 1)) return false;
+    return RvPushI(ins, nins, "slli", rd, rd, 31);
+  }
+  if (v == (I64)(I32)0x80000000)
+    return RvPushI(ins, nins, "lui", rd, 0, 0x80000);
+  if (v == 4294967295LL || v == (I64)(U32)0xFFFFFFFF) {
+    if (!RvPushI(ins, nins, "addiw", rd, 0, 1)) return false;
+    if (!RvPushI(ins, nins, "slli", rd, rd, 32)) return false;
+    return RvPushI(ins, nins, "addiw", rd, rd, -1);
+  }
+  if (v < -2147483648LL || v > 2147483647LL)
+    return false;
+  hi = (v + 0x800) >> 12;
+  lo = v - (hi << 12);
+  if (lo == 0)
+    return RvPushI(ins, nins, "lui", rd, 0, (int)(hi & 0xFFFFF));
+  if (!RvPushI(ins, nins, "lui", rd, 0, (int)(hi & 0xFFFFF))) return false;
+  return RvPushI(ins, nins, "addiw", rd, rd, (int)lo);
+}
+static bool RvExpandLi(RvI2 *ins, int *nins, int rd, I64 v) {
+  if (RvExpandLiGas32(ins, nins, rd, v))
+    return true;
+  return RvExpandLi64(ins, nins, rd, v);
+}
+static int RvCsrNum(const char *n) {
+  if (!n) return -1;
+  if (!strcmp(n,"sstatus")) return 0x100;
+  if (!strcmp(n,"sie")) return 0x104;
+  if (!strcmp(n,"stvec")) return 0x105;
+  if (!strcmp(n,"sscratch")) return 0x140;
+  if (!strcmp(n,"sepc")) return 0x141;
+  if (!strcmp(n,"scause")) return 0x142;
+  if (!strcmp(n,"stval")) return 0x143;
+  if (!strcmp(n,"sip")) return 0x144;
+  if (!strcmp(n,"satp")) return 0x180;
+  if (!strcmp(n,"mstatus")) return 0x300;
+  if (!strcmp(n,"misa")) return 0x301;
+  if (!strcmp(n,"medeleg")) return 0x302;
+  if (!strcmp(n,"mideleg")) return 0x303;
+  if (!strcmp(n,"mie")) return 0x304;
+  if (!strcmp(n,"mtvec")) return 0x305;
+  if (!strcmp(n,"mcounteren")) return 0x306;
+  if (!strcmp(n,"mscratch")) return 0x340;
+  if (!strcmp(n,"mepc")) return 0x341;
+  if (!strcmp(n,"mcause")) return 0x342;
+  if (!strcmp(n,"mtval")) return 0x343;
+  if (!strcmp(n,"mip")) return 0x344;
+  if (!strcmp(n,"mcycle")) return 0xB00;
+  if (!strcmp(n,"minstret")) return 0xB02;
+  if (!strcmp(n,"cycle")) return 0xC00;
+  if (!strcmp(n,"time")) return 0xC01;
+  if (!strcmp(n,"instret")) return 0xC02;
+  if (!strcmp(n,"mhartid")) return 0xF14;
+  return -1;
+}
+// Parse an immediate (optional '-' then number, or a CSR name). Returns 1 on success.
 static int RvImmTok(Compiler *cc, int *out) {
-  int neg = 0; if (cc->lex.token=='-'){ neg=1; LexNext(cc);} if (cc->lex.token!=TK_I64) return 0;
-  *out = (int)(neg ? -cc->lex.token_i64 : cc->lex.token_i64); LexNext(cc); return 1;
+  int neg = 0; if (cc->lex.token=='-'){ neg=1; LexNext(cc);}
+  if (cc->lex.token==TK_I64) {
+    *out = (int)(neg ? -cc->lex.token_i64 : cc->lex.token_i64); LexNext(cc); return 1;
+  }
+  if (!neg && cc->lex.token==TK_IDENT) {
+    char buf[24]; RvLowerCopy(buf, cc->lex.token_str, 24);
+    int c = RvCsrNum(buf);
+    if (c >= 0) { *out = c; LexNext(cc); return 1; }
+  }
+  return 0;
+}
+// Hard-fail OOR immediates instead of silently masking into the instruction field.
+static bool RvCheckSimm12(Compiler *cc, int imm) {
+  if (imm >= -2048 && imm <= 2047) return true;
+  Error(cc, "immediate out of range for 12-bit signed field (need -2048..2047; use li for constants)");
+  return false;
+}
+static bool RvCheckShamt(Compiler *cc, int sh) {
+  if (sh >= 0 && sh <= 63) return true;
+  Error(cc, "shift amount out of range (need 0..63)");
+  return false;
+}
+static bool RvCheckUimm20(Compiler *cc, int imm) {
+  // gas: 20-bit U-type field; accept unsigned 0..0xFFFFF or sign-extended -0x80000..-1.
+  if ((imm >= 0 && imm <= 0xFFFFF) || (imm >= -0x80000 && imm < 0)) return true;
+  Error(cc, "lui/auipc immediate out of range (need 20-bit field 0..0xFFFFF; prefer li)");
+  return false;
+}
+static bool RvCheckCsrImm(Compiler *cc, int imm) {
+  if (imm >= 0 && imm <= 0xFFF) return true;
+  Error(cc, "CSR immediate out of range (need 0..0xFFF)");
+  return false;
+}
+static bool RvCheckZimm5(Compiler *cc, int z) {
+  if (z >= 0 && z <= 31) return true;
+  Error(cc, "CSR zimm out of range (need 0..31)");
+  return false;
 }
 
 static bool TryAssembleRiscV(Compiler *cc) {
@@ -3490,21 +3630,45 @@ static bool TryAssembleRiscV(Compiler *cc) {
       continue;
     }
     LexNext(cc);   // consume mnemonic
+    // Dotted A-ext / fence forms: lr.d, amoswap.w, fence.i (lexer splits on '.')
+    if (cc->lex.token == '.') {
+      LexNext(cc);
+      if (cc->lex.token == TK_IDENT) {
+        char suf[8]; RvLowerCopy(suf, cc->lex.token_str, 8);
+        int wl = 0, sl = 0; while (w[wl] && wl < 40) wl++; while (suf[sl] && sl < 7) sl++;
+        if (wl + 1 + sl < 47) {
+          w[wl++] = '.';
+          for (int si = 0; suf[si] && wl < 47; si++) w[wl++] = suf[si];
+          w[wl] = 0;
+        }
+        LexNext(cc);
+      }
+    }
     if (nins >= 256) return false;
-    RvI2 *I = &ins[nins]; { RvI2 _z; { char *_p=(char*)&_z; for(unsigned _j=0;_j<sizeof(_z);_j++) _p[_j]=0; } *I=_z; } { int _i=0; for(;w[_i]&&_i<11;_i++) I->mn[_i]=w[_i]; I->mn[_i]=0; }
+    RvI2 *I = &ins[nins]; { RvI2 _z; { char *_p=(char*)&_z; for(unsigned _j=0;_j<sizeof(_z);_j++) _p[_j]=0; } *I=_z; } { int _i=0; for(;w[_i]&&_i<15;_i++) I->mn[_i]=w[_i]; I->mn[_i]=0; }
 
     // Pseudo & real mnemonics.
     if (!strcmp(w,"ret") || !strcmp(w,"nop") || !strcmp(w,"wfi") || !strcmp(w,"fencei") ||
         !strcmp(w,"mret") || !strcmp(w,"sret") || !strcmp(w,"ecall") || !strcmp(w,"ebreak")) {
       nins++; continue;
     }
-    if (!strcmp(w,"mv") || !strcmp(w,"not") || !strcmp(w,"neg")) {          // rd, rs
+    if (!strcmp(w,"mv") || !strcmp(w,"not") || !strcmp(w,"neg") ||
+        !strcmp(w,"seqz") || !strcmp(w,"snez")) {                            // rd, rs
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc);
       if (I->rd<0||I->rs1<0) return false; nins++; continue;
     }
-    if (!strcmp(w,"li")) {                                                  // rd, imm
-      I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); if(!RvImmTok(cc,&I->imm)) return false;
-      if (I->rd<0) return false; nins++; continue;
+    if (!strcmp(w,"jr")) {                                                  // rs  (jalr zero, 0(rs))
+      I->rs1=RvRegTok(cc); if (I->rs1<0) return false; nins++; continue;
+    }
+    if (!strcmp(w,"li")) {                                                  // rd, imm (wide → lui+addi[+zext])
+      int rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      { int neg=0; if (cc->lex.token=='-'){ neg=1; LexNext(cc);} if (cc->lex.token!=TK_I64) return false;
+        I64 v=neg ? -cc->lex.token_i64 : cc->lex.token_i64; LexNext(cc);
+        if (rd<0) return false;
+        if (v >= -2048 && v <= 2047) { I->rd=rd; I->imm=(int)v; nins++; continue; }
+        if (!RvExpandLi(ins,&nins,rd,v)) return false;
+      }
+      continue;
     }
     if (!strcmp(w,"j")) {                                                   // j label
       if (cc->lex.token!=TK_IDENT) return false; { int _i=0; for(;cc->lex.token_str[_i]&&_i<47;_i++) I->label[_i]=cc->lex.token_str[_i]; I->label[_i]=0; }
@@ -3534,6 +3698,7 @@ static bool TryAssembleRiscV(Compiler *cc) {
       if(!RvImmTok(cc,&I->imm)) I->imm=0; if (cc->lex.token!='(') return false; LexNext(cc);
       I->rs1=RvRegTok(cc); if (cc->lex.token!=')') return false; LexNext(cc);
       if (first<0||I->rs1<0) return false;
+      if (!RvCheckSimm12(cc, I->imm)) return false;
       if (w[0]=='s') I->rs2=first; else I->rd=first;   // store: first is rs2; load: first is rd
       nins++; continue;
     }
@@ -3542,7 +3707,9 @@ static bool TryAssembleRiscV(Compiler *cc) {
       int r1=RvRegTok(cc);
       if (cc->lex.token==',') { LexNext(cc); if(!RvImmTok(cc,&I->imm)) I->imm=0; if (cc->lex.token!='(') return false; LexNext(cc); I->rs1=RvRegTok(cc); if (cc->lex.token!=')') return false; LexNext(cc); I->rd=r1; }
       else { I->rd=1; I->rs1=r1; I->imm=0; }
-      if (I->rs1<0) return false; nins++; continue;
+      if (I->rs1<0) return false;
+      if (!RvCheckSimm12(cc, I->imm)) return false;
+      nins++; continue;
     }
     // R-type: rd, rs1, rs2   |   I-type arith: rd, rs1, imm
     // RV64D float ops (dot-free mnemonics; F64 travels as raw bits in an integer reg, so these
@@ -3568,21 +3735,35 @@ static bool TryAssembleRiscV(Compiler *cc) {
     }
     if (!strcmp(w,"csrr")) {                                     // rd, csr  (csrrs rd, csr, x0)
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); if(!RvImmTok(cc,&I->imm)) return false;
-      if (I->rd<0) return false; nins++; continue;
+      if (I->rd<0) return false;
+      if (!RvCheckCsrImm(cc, I->imm)) return false;
+      nins++; continue;
     }
     if (!strcmp(w,"csrw")) {                                     // csr, rs  (csrrw x0, csr, rs)
       if(!RvImmTok(cc,&I->imm)) return false; if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc);
-      if (I->rs1<0) return false; nins++; continue;
+      if (I->rs1<0) return false;
+      if (!RvCheckCsrImm(cc, I->imm)) return false;
+      nins++; continue;
     }
     if (!strcmp(w,"csrs")) {                                     // csr, rs  (csrrs x0, csr, rs) -- set bits
       if(!RvImmTok(cc,&I->imm)) return false; if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc);
-      if (I->rs1<0) return false; nins++; continue;
+      if (I->rs1<0) return false;
+      if (!RvCheckCsrImm(cc, I->imm)) return false;
+      nins++; continue;
+    }
+    if (!strcmp(w,"csrc")) {                                     // csr, rs  (csrrc x0, csr, rs) -- clear bits
+      if(!RvImmTok(cc,&I->imm)) return false; if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc);
+      if (I->rs1<0) return false;
+      if (!RvCheckCsrImm(cc, I->imm)) return false;
+      nins++; continue;
     }
     // Full CSR forms: csrrw/csrrs/csrrc rd, csr, rs1
     if (!strcmp(w,"csrrw") || !strcmp(w,"csrrs") || !strcmp(w,"csrrc")) {
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
       if (!RvImmTok(cc,&I->imm)) return false; if (cc->lex.token!=',') return false; LexNext(cc);
-      I->rs1=RvRegTok(cc); if (I->rd<0||I->rs1<0) return false; nins++; continue;
+      I->rs1=RvRegTok(cc); if (I->rd<0||I->rs1<0) return false;
+      if (!RvCheckCsrImm(cc, I->imm)) return false;
+      nins++; continue;
     }
     // No invented subi (not a standard gas mnemonic). Point at addi / sub rd,rs1,rs2.
     if (!strcmp(w,"subi")) {
@@ -3615,10 +3796,15 @@ static bool TryAssembleRiscV(Compiler *cc) {
       if (I->rd<0||I->rs1<0) return false; nins++; continue;
     }
     if (!strcmp(w,"add")||!strcmp(w,"sub")||!strcmp(w,"and")||!strcmp(w,"or")||!strcmp(w,"xor")||!strcmp(w,"sll")||!strcmp(w,"srl")||!strcmp(w,"sra")||!strcmp(w,"slt")||!strcmp(w,"sltu")||!strcmp(w,"mul")||!strcmp(w,"div")||!strcmp(w,"rem")||!strcmp(w,"divu")||!strcmp(w,"remu")||
-        !strcmp(w,"addi")||!strcmp(w,"andi")||!strcmp(w,"ori")||!strcmp(w,"xori")||!strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai")||!strcmp(w,"slti")) {
+        !strcmp(w,"addi")||!strcmp(w,"addiw")||!strcmp(w,"andi")||!strcmp(w,"ori")||!strcmp(w,"xori")||!strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai")||!strcmp(w,"slti")) {
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
-      int _wl=0; while(w[_wl]) _wl++; bool imm_form = (_wl>0 && w[_wl-1]=='i' && strcmp(w,"jalr")) || !strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai");
-      if (imm_form) { if(!RvImmTok(cc,&I->imm)) return false; }
+      int _wl=0; while(w[_wl]) _wl++; bool imm_form = !strcmp(w,"addiw") || (_wl>0 && w[_wl-1]=='i' && strcmp(w,"jalr")) || !strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai");
+      if (imm_form) {
+        if(!RvImmTok(cc,&I->imm)) return false;
+        if (!strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai")) {
+          if (!RvCheckShamt(cc, I->imm)) return false;
+        } else if (!RvCheckSimm12(cc, I->imm)) return false;
+      }
       else if (cc->lex.token==TK_I64 || cc->lex.token=='-') {
         // sub/add/and/… are R-type only — do not invent immediates.
         if (!strcmp(w,"sub"))
@@ -3631,6 +3817,54 @@ static bool TryAssembleRiscV(Compiler *cc) {
       }
       else { I->rs2=RvRegTok(cc); if (I->rs2<0) return false; }
       if (I->rd<0||I->rs1<0) return false; nins++; continue;
+    }
+    // U-type: lui/auipc rd, imm20 — imm is the *20-bit field* placed at bits[31:12] (gas-compatible).
+    // Example: `lui a0, 0x81397` → rd gets 0x81397000 sign-extended on RV64. A full address such as
+    // `lui a0, 0x81397000` is out of range (hard error; prefer `li`).
+    if (!strcmp(w,"lui") || !strcmp(w,"auipc")) {
+      I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      if (!RvImmTok(cc,&I->imm)) return false;
+      if (I->rd<0) return false;
+      if (!RvCheckUimm20(cc, I->imm)) return false;
+      nins++; continue;
+    }
+    // CSR imm forms: csrrwi/csrrsi/csrrci rd, csr, zimm  |  csrwi/csrsi/csrci csr, zimm
+    if (!strcmp(w,"csrrwi") || !strcmp(w,"csrrsi") || !strcmp(w,"csrrci")) {
+      I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      if (!RvImmTok(cc,&I->imm)) return false; if (cc->lex.token!=',') return false; LexNext(cc);
+      { int z=0; if(!RvImmTok(cc,&z)) return false;
+        if (!RvCheckCsrImm(cc, I->imm) || !RvCheckZimm5(cc, z)) return false;
+        I->rs1=z; }
+      if (I->rd<0) return false; nins++; continue;
+    }
+    if (!strcmp(w,"csrwi") || !strcmp(w,"csrsi") || !strcmp(w,"csrci")) {
+      if (!RvImmTok(cc,&I->imm)) return false; if (cc->lex.token!=',') return false; LexNext(cc);
+      { int z=0; if(!RvImmTok(cc,&z)) return false;
+        if (!RvCheckCsrImm(cc, I->imm) || !RvCheckZimm5(cc, z)) return false;
+        I->rs1=z; }
+      I->rd=0; nins++; continue;
+    }
+    // A-ext: lr.d/lr.w rd, (rs1)  |  sc.d/sc.w rd, rs2, (rs1)  |  amo* rd, rs2, (rs1)
+    if (!strcmp(w,"lr.d") || !strcmp(w,"lr.w") || !strcmp(w,"lrd") || !strcmp(w,"lrw")) {
+      I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      if (cc->lex.token!='(') return false; LexNext(cc);
+      I->rs1=RvRegTok(cc); if (cc->lex.token!=')') return false; LexNext(cc);
+      I->rs2=0; if (I->rd<0||I->rs1<0) return false; nins++; continue;
+    }
+    if (!strcmp(w,"sc.d") || !strcmp(w,"sc.w") || !strcmp(w,"scd") || !strcmp(w,"scw") ||
+        !strcmp(w,"amoswap.d")||!strcmp(w,"amoadd.d")||!strcmp(w,"amoxor.d")||!strcmp(w,"amoand.d")||
+        !strcmp(w,"amoor.d")||!strcmp(w,"amomin.d")||!strcmp(w,"amomax.d")||!strcmp(w,"amominu.d")||!strcmp(w,"amomaxu.d")||
+        !strcmp(w,"amoswap.w")||!strcmp(w,"amoadd.w")||!strcmp(w,"amoxor.w")||!strcmp(w,"amoand.w")||
+        !strcmp(w,"amoor.w")||!strcmp(w,"amomin.w")||!strcmp(w,"amomax.w")||!strcmp(w,"amominu.w")||!strcmp(w,"amomaxu.w")||
+        !strcmp(w,"amoswapd")||!strcmp(w,"amoaddd")||!strcmp(w,"amoxord")||!strcmp(w,"amoandd")||
+        !strcmp(w,"amoord")||!strcmp(w,"amomind")||!strcmp(w,"amomaxd")||!strcmp(w,"amominud")||!strcmp(w,"amomaxud")||
+        !strcmp(w,"amoswapw")||!strcmp(w,"amoaddw")||!strcmp(w,"amoxorw")||!strcmp(w,"amoandw")||
+        !strcmp(w,"amoorw")||!strcmp(w,"amominw")||!strcmp(w,"amomaxw")||!strcmp(w,"amominuw")||!strcmp(w,"amomaxuw")) {
+      I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      I->rs2=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      if (cc->lex.token!='(') return false; LexNext(cc);
+      I->rs1=RvRegTok(cc); if (cc->lex.token!=')') return false; LexNext(cc);
+      if (I->rd<0||I->rs1<0||I->rs2<0) return false; nins++; continue;
     }
     return false;   // unsupported mnemonic
   }
@@ -3692,6 +3926,9 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"mv"))   word = RvI(0,I->rd,I->rs1,0);
     else if (!strcmp(m,"not"))  word = RvI(4,I->rd,I->rs1,-1);
     else if (!strcmp(m,"neg"))  word = RvR(0x20,0,I->rd,0,I->rs1);
+    else if (!strcmp(m,"seqz")) word = RvI(3,I->rd,I->rs1,1);              // sltiu rd, rs, 1
+    else if (!strcmp(m,"snez")) word = RvR(0,3,I->rd,0,I->rs1);            // sltu rd, zero, rs
+    else if (!strcmp(m,"jr"))   word = RvJalr(0,I->rs1,0);
     else if (!strcmp(m,"li"))   word = RvI(0,I->rd,0,I->imm);
     else if (!strcmp(m,"j"))    word = RvJ(0,boff);
     else if (!strcmp(m,"beqz")) word = RvBr(0,I->rs1,0,boff);
@@ -3715,6 +3952,7 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"sb"))   word = RvStore(0,I->rs2,I->imm,I->rs1);
     else if (!strcmp(m,"jalr")) word = RvJalr(I->rd,I->rs1,I->imm);
     else if (!strcmp(m,"addi")) word = RvI(0,I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"addiw")) word = RvIw(0,I->rd,I->rs1,I->imm);
     else if (!strcmp(m,"andi")) word = RvI(7,I->rd,I->rs1,I->imm);
     else if (!strcmp(m,"ori"))  word = RvI(6,I->rd,I->rs1,I->imm);
     else if (!strcmp(m,"xori")) word = RvI(4,I->rd,I->rs1,I->imm);
@@ -3755,11 +3993,42 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"csrr"))       word = 0x00002073u | (I->rd<<7)  | (((U32)I->imm & 0xFFF)<<20);
     else if (!strcmp(m,"csrw"))       word = 0x00001073u | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
     else if (!strcmp(m,"csrs"))       word = 0x00002073u | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
+    else if (!strcmp(m,"csrc"))       word = 0x00003073u | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
     else if (!strcmp(m,"csrrw"))      word = 0x00001073u | (I->rd<<7) | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
     else if (!strcmp(m,"csrrs"))      word = 0x00002073u | (I->rd<<7) | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
     else if (!strcmp(m,"csrrc"))      word = 0x00003073u | (I->rd<<7) | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
     else if (!strcmp(m,"sfencevma"))  word = 0x12000073u | (I->rs1<<15);
     else if (!strcmp(m,"wfi"))        word = 0x10500073u;
+    else if (!strcmp(m,"lui"))        word = RvU(0x37u, I->rd, I->imm);
+    else if (!strcmp(m,"auipc"))      word = RvU(0x17u, I->rd, I->imm);
+    else if (!strcmp(m,"csrrwi"))     word = 0x00005073u | (I->rd<<7) | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
+    else if (!strcmp(m,"csrrsi"))     word = 0x00006073u | (I->rd<<7) | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
+    else if (!strcmp(m,"csrrci"))     word = 0x00007073u | (I->rd<<7) | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
+    else if (!strcmp(m,"csrwi"))      word = 0x00005073u | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
+    else if (!strcmp(m,"csrsi"))      word = 0x00006073u | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
+    else if (!strcmp(m,"csrci"))      word = 0x00007073u | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
+    else if (!strcmp(m,"lr.d")||!strcmp(m,"lrd")) word = RvA(0x02,0,0x3,I->rd,I->rs1,0);
+    else if (!strcmp(m,"lr.w")||!strcmp(m,"lrw")) word = RvA(0x02,0,0x2,I->rd,I->rs1,0);
+    else if (!strcmp(m,"sc.d")||!strcmp(m,"scd")) word = RvA(0x03,0,0x3,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"sc.w")||!strcmp(m,"scw")) word = RvA(0x03,0,0x2,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amoswap.d")||!strcmp(m,"amoswapd")) word = RvA(0x01,0,0x3,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amoadd.d")||!strcmp(m,"amoaddd"))   word = RvA(0x00,0,0x3,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amoxor.d")||!strcmp(m,"amoxord"))   word = RvA(0x04,0,0x3,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amoand.d")||!strcmp(m,"amoandd"))   word = RvA(0x0C,0,0x3,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amoor.d")||!strcmp(m,"amoord"))     word = RvA(0x08,0,0x3,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amomin.d")||!strcmp(m,"amomind"))   word = RvA(0x10,0,0x3,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amomax.d")||!strcmp(m,"amomaxd"))   word = RvA(0x14,0,0x3,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amominu.d")||!strcmp(m,"amominud")) word = RvA(0x18,0,0x3,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amomaxu.d")||!strcmp(m,"amomaxud")) word = RvA(0x1C,0,0x3,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amoswap.w")||!strcmp(m,"amoswapw")) word = RvA(0x01,0,0x2,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amoadd.w")||!strcmp(m,"amoaddw"))   word = RvA(0x00,0,0x2,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amoxor.w")||!strcmp(m,"amoxorw"))   word = RvA(0x04,0,0x2,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amoand.w")||!strcmp(m,"amoandw"))   word = RvA(0x0C,0,0x2,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amoor.w")||!strcmp(m,"amoorw"))     word = RvA(0x08,0,0x2,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amomin.w")||!strcmp(m,"amominw"))   word = RvA(0x10,0,0x2,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amomax.w")||!strcmp(m,"amomaxw"))   word = RvA(0x14,0,0x2,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amominu.w")||!strcmp(m,"amominuw")) word = RvA(0x18,0,0x2,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"amomaxu.w")||!strcmp(m,"amomaxuw")) word = RvA(0x1C,0,0x2,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"fencei"))     word = 0x0000100Fu;
     ICAdd(cc, IC_RAW_RV, (I64)word, RT_I64);
   }
@@ -3849,7 +4118,15 @@ bool ParseStatement(Compiler *cc) {
     }
     // x86 opcodes HolyC accepts as bare statements (`PUSHFD CLI … POPFD`): mstatus.MIE here.
     if (cc->lex.token == TK_IDENT && !cc->lex.hash_entry && cc->lex.token_str) {
-      if (!strcmp(cc->lex.token_str, "lock")) { LexNext(cc); continue; }   // `lock x++;`: single core here
+      if (!strcmp(cc->lex.token_str, "lock")) {
+        // `lock stmt;` / `lock {…}` — amoswap spin (IC_LOCK_*), not a no-op.
+        LexNext(cc);
+        ICAdd(cc, IC_LOCK_ENTER, 0, RT_I64);
+        if (!ParseStatement(cc)) return false;
+        ICAdd(cc, IC_LOCK_LEAVE, 0, RT_I64);
+        if (cc->lex.token != ',') return true;
+        continue;
+      }
       int sys_ic = 0;
       if (!strcmp(cc->lex.token_str, "CLI")) sys_ic = IC_CLI;
       else if (!strcmp(cc->lex.token_str, "STI")) sys_ic = IC_STI;

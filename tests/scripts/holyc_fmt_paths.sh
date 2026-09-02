@@ -9,6 +9,7 @@
 #   Compiler/**/*RV*
 #   Adam/*RV*            (HolyC only; not *.PRJ)
 #   tests/exec/cases/
+#   tests/compiler/cases/   (codegen stress programs; not negative/)
 #   tests/fmt/golden/    (not tests/fmt/cases/ — intentionally ugly inputs)
 #
 # Exclusions: tests/scratch/, tests/fmt/cases/, known unformattable fixtures.
@@ -56,6 +57,7 @@ emit_find() {
       \( -name '*.hc' -o -name '*.HC' -o -name '*.HH' -o -name '*.hh' \) -print
   fi
   emit_find tests/exec/cases \( -name '*.hc' -o -name '*.HC' \)
+  emit_find tests/compiler/cases \( -name '*.hc' -o -name '*.HC' \)
   emit_find tests/fmt/golden \( -name '*.hc' -o -name '*.HC' \)
 } | sort -u | while IFS= read -r f; do
   base="$(basename "$f")"

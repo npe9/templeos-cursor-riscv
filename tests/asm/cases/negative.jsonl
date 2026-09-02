@@ -1,0 +1,26 @@
+{"name":"subi","insns":["subi a0, a0, 1"],"why":"no subi pseudo; use addi with neg imm"}
+{"name":"sub_imm","insns":["sub a0, a0, 1"],"why":"sub is R-type only"}
+{"name":"add_imm","insns":["add a0, a0, 1"],"why":"add is R-type only"}
+{"name":"bogus_opcode","insns":["bogusopcode a0, a0"],"why":"unknown mnemonic"}
+{"name":"c_addi","insns":["c.addi a0, 1"],"why":"RVC not supported"}
+{"name":"c_nop","insns":["c.nop"],"why":"RVC not supported"}
+{"name":"pct_hi","insns":["lui a0, %hi(foo)"],"why":"%hi/%lo reloc syntax not supported"}
+{"name":"pct_lo","insns":["addi a0, a0, %lo(foo)"],"why":"%hi/%lo reloc syntax not supported"}
+{"name":"bad_reg","insns":["addi foo, a0, 1"],"why":"invalid register"}
+{"name":"missing_comma","insns":["addi a0 a0 1"],"why":"bad operand punctuation"}
+{"name":"jal_bare","insns":["jal L"],"why":"bare jal not assembled (use j / call)"}
+{"name":"sext_w","insns":["sext.w a0, a1"],"why":"pseudo not supported"}
+{"name":"la_pseudo","insns":["la a0, L"],"why":"la/%hi/%lo not supported"}
+{"name":"call_undef_shape","insns":["call"],"why":"call needs a symbol operand"}
+{"name":"empty_regs","insns":["addi"],"why":"missing operands"}
+{"name":"lr_bad_shape","insns":["lr.d a0, a1"],"why":"A-ext lr needs (rs1) mem form"}
+{"name":"fence_dot_i_as_two_tok","insns":["fence . i"],"why":"use fencei (joined) not spaced dots"}
+{"name":"addi_oor","insns":["addi a0, a0, 2048"],"why":"I-type simm12 hard-fail (was silent mask to -2048)"}
+{"name":"addi_oor_neg","insns":["addi a0, a0, -2049"],"why":"I-type simm12 hard-fail below -2048"}
+{"name":"ld_oor","insns":["ld a0, 4096(sp)"],"why":"load offset simm12 hard-fail"}
+{"name":"sd_oor","insns":["sd a0, 2048(sp)"],"why":"store offset simm12 hard-fail"}
+{"name":"slli_oor","insns":["slli a0, a1, 64"],"why":"shamt must be 0..63"}
+{"name":"lui_oor_addr","insns":["lui a0, 0x81397000"],"why":"lui takes 20-bit field not full address; use li"}
+{"name":"jalr_oor","insns":["jalr ra, 2048(a0)"],"why":"jalr offset simm12 hard-fail"}
+{"name":"csr_oor","insns":["csrr a0, 0x1000"],"why":"CSR imm must be 0..0xFFF"}
+{"name":"zimm_oor","insns":["csrwi mstatus, 32"],"why":"CSR zimm must be 0..31"}

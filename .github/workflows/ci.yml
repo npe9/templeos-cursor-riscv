@@ -1,6 +1,6 @@
 # Jobs: syntax-sh | shellcheck | compile-compliance (parallel) → qemu-integration.
-# Mirrors local: `make compliance` + `make fmt-test` + `make fmt-check` then
-# `make qemu-integration` (or `make ci`). See docs/CI.md and tests/README.md.
+# Mirrors local: `make compliance` + `make fmt-test` + `make fmt-check` + `asm-stress` +
+# `asm-prop`, then `make qemu-integration` (or `make ci`). See docs/CI.md and tests/README.md.
 # Markdown-only pushes skip via paths-ignore; force a full run with
 # Actions → CI → Run workflow.
 name: CI
@@ -61,7 +61,10 @@ jobs:
             tests/scripts/run_fmt_test.sh \
             tests/scripts/run_fmt.sh \
             tests/scripts/holyc_fmt_paths.sh \
-            tests/scripts/gen_compliance_candidates.sh; do
+            tests/scripts/gen_compliance_candidates.sh \
+            tests/scripts/run_asm_stress.sh \
+            tests/scripts/run_asm_gnu_diff.sh \
+            tests/scripts/run_compiler_stress.sh; do
             shellcheck -S error -x "$f"
           done
 
@@ -88,10 +91,19 @@ jobs:
       - name: HolyC fmt-check (enforced roots)
         run: make fmt-check
 
+      - name: Assembler semantics stress (goldens; gas optional)
+        run: make asm-stress
+
+      - name: Assembler property tests (RV64I oracle)
+        run: make asm-prop
+
+      - name: Assembler GNU differential (immediates/pseudos; gas optional)
+        run: make asm-gnu-diff
+
   qemu-integration:
     runs-on: ubuntu-24.04
     needs: [compile-compliance, shellcheck, syntax-sh]
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
 
@@ -105,5 +117,5 @@ jobs:
             qemu-system-riscv64 \
             python3
 
-      - name: qemu-integration (oracles, templeos + kernel smokes, plat-virt, phase3, hc-repl, REPL, term-probe)
+      - name: qemu-integration (asm+compiler stress/prop, oracles, templeos + kernel smokes, plat-virt, phase3, hc-repl, REPL, term-probe)
         run: make && make qemu-integration

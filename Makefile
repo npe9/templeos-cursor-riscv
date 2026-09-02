@@ -31,7 +31,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke repl-blob repl-regression hc-repl hc-repl-smoke term-probe-pty repl-uart-echo-pty baremetal baremetal-plat baremetal-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke kernel-selfboot-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-win-smoke kernel-win-interactive kernel-win-run kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-smp-smoke kernel-exepubs-smoke kernel-phase3-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
+.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop asm-gnu-diff compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration repl-smoke repl-blob repl-regression hc-repl hc-repl-smoke term-probe-pty repl-uart-echo-pty baremetal baremetal-plat baremetal-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke kernel-selfboot-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-win-smoke kernel-win-interactive kernel-win-run kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-smp-smoke kernel-exepubs-smoke kernel-phase3-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -72,6 +72,11 @@ asm-prop: $(COMPILER_BIN)
 	@chmod +x tests/scripts/run_asm_prop.sh
 	@tests/scripts/run_asm_prop.sh
 
+# Differential assembler tests: holyc-riscv --asm-dump vs GNU gas (immediates/pseudos).
+asm-gnu-diff: $(COMPILER_BIN)
+	@chmod +x tests/scripts/run_asm_gnu_diff.sh
+	@tests/scripts/run_asm_gnu_diff.sh
+
 # Host HolyC→RISC-V codegen semantics (curated exec oracles + negatives + soft patterns).
 compiler-stress: $(COMPILER_BIN)
 	@chmod +x tests/scripts/run_compiler_stress.sh
@@ -86,6 +91,7 @@ compiler-prop: $(COMPILER_BIN)
 stress: $(COMPILER_BIN)
 	@$(MAKE) asm-stress
 	@$(MAKE) asm-prop
+	@$(MAKE) asm-gnu-diff
 	@$(MAKE) compiler-stress
 	@$(MAKE) compiler-prop
 
@@ -643,9 +649,10 @@ help:
 	@echo "  fmt-test        - Golden + idempotency for holyc-riscv --fmt (tests/fmt/)"
 	@echo "  asm-stress      - Assembler semantics (TryAssembleRiscV encodings; tests/asm/)"
 	@echo "  asm-prop        - Property-based assembler (random RV64I vs oracle; tests/asm/)"
+	@echo "  asm-gnu-diff    - HolyC vs GNU gas differential (immediates/pseudos; tests/asm/)"
 	@echo "  compiler-stress - HolyC codegen semantics (curated oracles; tests/compiler/)"
 	@echo "  compiler-prop   - Property-based compiler (opt-tier equivalence; tests/compiler/)"
-	@echo "  stress          - asm-stress + asm-prop + compiler-stress + compiler-prop"
+	@echo "  stress          - asm-stress + asm-prop + asm-gnu-diff + compiler-stress + compiler-prop"
 	@echo "  compliance      - Compile-only compliance (manifests)"
 	@echo "  ci              - compliance, fmt-test, fmt-check, asm-stress, asm-prop, then qemu-integration"
 	@echo "  compliance-exec - run_holyc_compliance.sh --exec (suites + exec oracles; no templeos-smoke)"

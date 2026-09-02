@@ -1,0 +1,11 @@
+# Optional insn-pattern checks after host AOT (soft|hard).
+# Columns (tab): name, source.hc, regex (ERE on objdump -d text), mode
+# soft = WARN only; hard = FAIL on match.
+#
+# Split (audit): do not point slli;srli soft TODO at stack &x — that path never
+# materializes a bit31 U32 VA, so it greens while real abs addrs like 0x80001000
+# still emit the pair.
+# (a) hard: forbid *useless* zext when lo half is already clean (lui alone).
+# (b) bit31 U32 VA zext (c_abs_store_bit31.hc) is expected / OK — not pattern-failed.
+# sd zero for *p=0: hard check in run_compiler_stress.sh (c_ptr_store_zero.hc), not this soft table.
+no_useless_u32_zext	tests/compiler/cases/c_abs_store_clean.hc	slli.*\n.*srli	hard

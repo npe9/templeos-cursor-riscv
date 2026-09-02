@@ -62,6 +62,7 @@ tests/exec/cases/e_u0_marker_size.hc	0000000000000090
 tests/exec/cases/e_asm_arg.hc	000000000000002a
 tests/exec/cases/e_asm_fill.hc	0000000000414100
 tests/exec/cases/e_asm_inline.hc	0000000000000040
+tests/exec/cases/e_asm_li_wide.hc	0000000081396868
 tests/exec/cases/e_native_str.hc	000000000000005f
 tests/exec/cases/e_native_bits.hc	0000000000000fff
 tests/exec/cases/e_native_misc.hc	00000000000003ff
