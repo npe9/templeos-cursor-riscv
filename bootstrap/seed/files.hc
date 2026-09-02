@@ -1,6 +1,6 @@
 // files.hc -- TempleOS file utilities, in HolyC: Cat, Copy, Move, Rename, FileFind, FilesFind,
 // Find (grep with wildcards), Activate (Enter-on-link), DirEd. Built on FileRead/FileWrite/Del.
-// Cd/Pwd/DirMk/DirDel/IsDir and File* live in seed/fs.hc (HolyC arena at 0x85000000).
+// Cd/Pwd/DirMk/DirDel/IsDir and File* live in seed/fs.hc (HolyC arena at 0x87800000).
 U8 FileAbsBuf[65];
 // ToAbs -- ToAbs("name")
 // NAME
@@ -34,15 +34,17 @@ U8 *ToAbs(U8 *nm)
 // SYNOPSIS
 //   U0 Cat(U8 *name);
 // DESCRIPTION
-//   Reads name from the memfs and prints its bytes to the UART (TempleOS Type/Cat style
-//   for text). Ensures a trailing newline if the file does not end with one. HolyC in
-//   files.hc -- no longer a C RuntimeRegister.
-// INPUTS
-//   name - memfs path
-// OUTPUTS
-//   none (file text on UART); prints an error line if missing
+//   Reads name from the memfs and prints its bytes to the UART (like `cat`).
+//   Adds a trailing newline if the file does not end with one. Path is
+//   cwd-relative unless it starts with '/'.
+// EXAMPLES
+//   Cat("boot.hc");
+//   Cat("print.hc");
+//   Dir;
+// SEE ALSO
+//   Dir  Copy  FileRead  Ed  Vi
 // BUGS
-//   Binary files will dump raw bytes. Path resolution follows FileRead (cwd-relative).
+//   Binary files dump raw bytes.
 U0 Cat(U8 *name)
 {
   U8 *d;
@@ -373,4 +375,139 @@ U0 DirEd()
 {
   DirWrite();
   editor(".dirlist");
+}
+// ---- UART binary export (base64 framed; host: tools/uart_recv_dump.py) ----
+U8 B64At(I64 i)
+{
+  U8 *a;
+  a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  return a[i];
+}
+// B64Put24 -- emit four base64 chars for up to three input bytes.
+U0 B64Put24(U8 *d, I64 n)
+{
+  I64 v;
+  U8 c0, c1, c2;
+  c0 = 0;
+  c1 = 0;
+  c2 = 0;
+  if (n > 0)
+    c0 = d[0];
+  if (n > 1)
+    c1 = d[1];
+  if (n > 2)
+    c2 = d[2];
+  v = (c0 << 16) | (c1 << 8) | c2;
+  PutCh(B64At ((v >> 18) & 63));
+  PutCh(B64At ((v >> 12) & 63));
+  if (n > 1)
+    PutCh(B64At ((v >> 6) & 63));
+  else
+    PutCh('=');
+  if (n > 2)
+    PutCh(B64At(v & 63));
+  else
+    PutCh('=');
+}
+// DumpB64 -- DumpB64(d,n)
+// NAME
+//   DumpB64 - base64-encode n bytes at d to UART (76 cols).
+// SYNOPSIS
+//   DumpB64(d,n)
+// DESCRIPTION
+//   RFC-style base64 without headers; wraps at 76 characters.
+// INPUTS
+//   d - source bytes
+//   n - byte count
+// OUTPUTS
+//   UART text
+// BUGS
+//   See source; RISC-V UART REPL may omit full TempleOS behavior.
+U0 DumpB64(U8 *d, I64 n)
+{
+  I64 i, col, take;
+  U8 chunk[3];
+  col = 0;
+  i = 0;
+  while (i < n) {
+    take = n - i;
+    if (take > 3)
+      take = 3;
+    chunk[0] = d[i];
+    chunk[1] = 0;
+    chunk[2] = 0;
+    if (take > 1)
+      chunk[1] = d[i + 1];
+    if (take > 2)
+      chunk[2] = d[i + 2];
+    B64Put24(chunk, take);
+    col = col + 4;
+    if (col >= 76) {
+      PutCh('\n');
+      col = 0;
+    }
+    i = i + take;
+  }
+  if (col)
+    PutCh('\n');
+}
+// DumpMem -- DumpMem(addr,n,label)
+// NAME
+//   DumpMem - framed base64 dump of a physical memory range.
+// SYNOPSIS
+//   DumpMem(addr,n,label)
+// DESCRIPTION
+//   Emits $$HC_DUMP … $$ markers, base64 payload, $$HC_END$$. Use for
+//   framebuffer (MEM_FB), trap snapshots, or other MMIO/RAM windows.
+//   Host: tools/uart_recv_dump.py decodes to a file.
+// EXAMPLES
+//   DumpMem(MEM_FB, 640*480*4, "fb.raw");
+//   DumpMem(0x87000100, 136, "trap_snap");
+// SEE ALSO
+//   DumpFile  Cat  Dm
+// BUGS
+//   Large dumps are slow (~4/3 serial expansion); no flow control.
+U0 DumpMem(I64 addr, I64 n, U8 *label = "mem")
+{
+  U8 *p;
+  if (!addr || n <= 0) {
+    "DumpMem: need addr and n>0\n";
+    return;
+  }
+  if (!label)
+    label = "mem";
+  "$$HC_DUMP name=%s size=%d addr=0x%X$$\n", label, n, addr;
+  p = addr;
+  DumpB64(p, n);
+  "$$HC_END$$\n";
+}
+// DumpFile -- DumpFile("file")
+// NAME
+//   DumpFile - framed base64 export of a memfs file over UART.
+// SYNOPSIS
+//   DumpFile("file")
+// DESCRIPTION
+//   Safe binary export for the REPL serial line (unlike raw Cat, which can
+//   inject ESC/Ctrl-C/NUL into the terminal). Host decodes with
+//   tools/uart_recv_dump.py. For multiple files, dump each and tar on host.
+// EXAMPLES
+//   DumpFile("boot.hc");
+//   DumpFile("hello.hc");
+// SEE ALSO
+//   Cat  Copy  DumpMem  Dm
+// BUGS
+//   Memfs files cap at 65536 bytes; no upload/receive path yet.
+U0 DumpFile(U8 *name)
+{
+  U8 *d;
+  I64 n;
+  d = FileRead(name);
+  n = FileLen(name);
+  if (!d || n < 0) {
+    "DumpFile: no such file: %s\n", name;
+    return;
+  }
+  "$$HC_DUMP name=%s size=%d$$\n", name, n;
+  DumpB64(d, n);
+  "$$HC_END$$\n";
 }

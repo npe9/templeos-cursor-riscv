@@ -1,7 +1,10 @@
 // edit.hc -- HolyC full-screen editor (redefines Edit). TermKeyGet; Tab=complete/2sp.
-// ^O save, ^G activate, ^] src (session push; ^X pops), ^K Man under cursor, ^X exit.
+// ^O save, ^G activate, ^] src (same-file seek; else session push; ^X pops), ^K Man, ^X exit.
+// After jump, target line is vertically centered in the viewport.
 // Declares `editor`; RVEditorSelected sets default. EditC = C escape hatch.
 I64 EvTop, EvCx, EvCy, EvDoLoad;
+// EvBase/EvTot/EvWinN: same windowed-file semantics as Vi (EdLn is 256 lines).
+I64 EvBase, EvTot, EvWinN;
 U8 EvMsg[96], EvName[64];
 I64 EvK, EvLen, EvDirty, EvTr, EvJ, EvPl;
 #define EVSESS_MAX 4
@@ -39,9 +42,9 @@ U0 EvRender(U8 *name, U8 *msg)
   PutCh(' ');
   UartStr(name);
   UartStr(" ln ");
-  "%d", EvCy + 1;
+  "%d", EvBase + EvCy + 1;
   PutCh('/');
-  "%d", EdN;
+  "%d", EvTot > 0 ? EvTot : EdN;
   UartStr(" col ");
   "%d", EvCx + 1;
   UartStr(" ^O save ^G go ^] src ^K man ^X exit");
@@ -100,10 +103,10 @@ U0 EvSave(U8 *name)
   EvMsg[0] = 0;
 }
 
-U0 EvLoad(U8 *name)
+U0 EvLoadAt(U8 *name, I64 base)
 {
   U8 *data;
-  I64 dn, i, j, p;
+  I64 dn, i, j, p, ln, tot;
   p = 0;
   while (name[p] && p < 63) {
     EvName[p] = name[p];
@@ -111,12 +114,37 @@ U0 EvLoad(U8 *name)
   }
   EvName[p] = 0;
   EdN = 0;
+  EvBase = 0;
+  EvTot = 0;
+  EvWinN = 0;
+  if (base < 0)
+    base = 0;
   data = FileRead(name);
   dn = FileLen(name);
   if (dn < 0)
     dn = 0;
+  tot = 0;
+  if (data && dn > 0) {
+    tot = 1;
+    i = 0;
+    while (i < dn) {
+      if (data[i] == '\n' && i + 1 < dn)
+        tot++;
+      i++;
+    }
+  }
+  EvTot = tot;
   if (data) {
     i = 0;
+    ln = 0;
+    while (i < dn && ln < base) {
+      while (i < dn && data[i] != '\n')
+        i++;
+      if (i < dn && data[i] == '\n')
+        i++;
+      ln++;
+    }
+    EvBase = ln;
     while (i < dn && EdN < 256) {
       j = 0;
       while (i < dn && data[i] != '\n' && j < 127) {
@@ -136,9 +164,52 @@ U0 EvLoad(U8 *name)
     EdLn[0][0] = 0;
     EdN = 1;
   }
+  EvWinN = EdN;
+  if (EvTot < EvBase + EdN)
+    EvTot = EvBase + EdN;
   EvTop = 0;
   EvCx = 0;
   EvCy = 0;
+}
+
+U0 EvLoad(U8 *name)
+{
+  EvLoadAt(name, 0);
+}
+// Seek to 0-based file line abs; reload the 256-line window when needed.
+U0 EvGotoAbs(I64 abs)
+{
+  I64 base;
+  if (abs < 0)
+    abs = 0;
+  if (EvTot > 0 && abs >= EvTot)
+    abs = EvTot - 1;
+  if (abs >= EvBase && abs < EvBase + EdN) {
+    EvCy = abs - EvBase;
+    if (EvCx > EdLineLen(EvCy))
+      EvCx = EdLineLen(EvCy);
+    return;
+  }
+  base = abs - 100;
+  if (base < 0)
+    base = 0;
+  if (abs - base >= 256)
+    base = abs - 200;
+  if (base < 0)
+    base = 0;
+  if (EvTot > 256 && EvTot - base < 256) {
+    base = EvTot - 256;
+    if (base < 0)
+      base = 0;
+  }
+  EvLoadAt(EvName, base);
+  EvCy = abs - EvBase;
+  if (EvCy < 0)
+    EvCy = 0;
+  if (EvCy >= EdN)
+    EvCy = EdN - 1;
+  if (EvCx > EdLineLen(EvCy))
+    EvCx = EdLineLen(EvCy);
 }
 
 U0 EvSessPush()
@@ -221,25 +292,97 @@ I64 EvTryQuit()
   return 1;
 }
 
+U0 EvCenter()
+{
+  I64 tr;
+  tr = TermRows() - 2;
+  if (tr < 1)
+    tr = 1;
+  EvTop = EvCy - tr / 2;
+  if (EvTop < 0)
+    EvTop = 0;
+}
+
+I64 EvFindDefLine(U8 *fname, U8 *name)
+{
+  U8 *data, line[128];
+  I64 dn, i, j, ln, col, id_ln, k;
+  data = FileRead(fname);
+  dn = FileLen(fname);
+  if (!data || !name || !*name || dn < 0)
+    return -1;
+  i = 0;
+  ln = 0;
+  id_ln = -1;
+  while (i < dn) {
+    j = 0;
+    while (i < dn && data[i] != '\n' && j < 127) {
+      line[j] = data[i];
+      j++;
+      i++;
+    }
+    line[j] = 0;
+    while (i < dn && data[i] != '\n')
+      i++;
+    if (i < dn && data[i] == '\n')
+      i++;
+    col = DefAt(line, name);
+    if (col >= 0)
+      return ln;
+    if (id_ln < 0) {
+      k = 0;
+      while (line[k] == ' ' || line[k] == 9)
+        k++;
+      if (!(line[k] == '/' && line[k + 1] == '/')) {
+        col = IdentAt(line, name);
+        if (col >= 0)
+          id_ln = ln;
+      }
+    }
+    ln++;
+  }
+  return id_ln;
+}
+
 U0 EvJumpSeek(U8 *name)
 {
-  I64 i, col;
+  I64 i, col, j, abs;
+  if (!name || !*name)
+    return;
   for (i = 0; i < EdN; i++) {
     col = DefAt(&EdLn[i][0], name);
     if (col >= 0) {
       EvCy = i;
       EvCx = col;
+      EvCenter();
       return;
     }
   }
   for (i = 0; i < EdN; i++) {
+    j = 0;
+    while (EdLn[i][j] == ' ' || EdLn[i][j] == 9)
+      j++;
+    if (EdLn[i][j] == '/' && EdLn[i][j + 1] == '/')
+      continue;
     col = IdentAt(&EdLn[i][0], name);
     if (col >= 0) {
       EvCy = i;
       EvCx = col;
+      EvCenter();
       return;
     }
   }
+  abs = EvFindDefLine(EvName, name);
+  if (abs < 0)
+    return;
+  EvGotoAbs(abs);
+  EvCx = 0;
+  col = DefAt(&EdLn[EvCy][0], name);
+  if (col < 0)
+    col = IdentAt(&EdLn[EvCy][0], name);
+  if (col >= 0)
+    EvCx = col;
+  EvCenter();
 }
 
 U0 EvOpen(U8 *fn, I64 do_seek)
@@ -271,21 +414,50 @@ U0 EvJumpName(U8 *fn)
   }
   JumpFile[p] = 0;
 }
+// Ident at cursor, else first ident after focus (rest of line, then later lines).
+U0 EvJumpIdentFill()
+{
+  I64 y;
+  JumpIdent[0] = 0;
+  WordIdent(&EdLn[EvCy][0], EvCx, JumpIdent);
+  if (JumpIdent[0])
+    return;
+  y = EvCy + 1;
+  while (y < EdN) {
+    WordIdent(&EdLn[y][0], 0, JumpIdent);
+    if (JumpIdent[0])
+      return;
+    y++;
+  }
+}
 
 U0 EvJump()
 {
-  U8 *fn;
-  JumpIdent[0] = 0;
+  U8 *fn, *s;
+  I64 i;
   EvDoLoad = 0;
-  WordIdent(&EdLn[EvCy][0], EvCx, JumpIdent);
-  if (!JumpIdent[0])
+  EvMsg[0] = 0;
+  EvJumpIdentFill();
+  if (!JumpIdent[0]) {
+    s = "no ident";
+    i = 0;
+    while (s[i] && i < 95) {
+      EvMsg[i] = s[i];
+      i++;
+    }
+    EvMsg[i] = 0;
     return;
+  }
   fn = SrcFile(JumpIdent);
   if (!fn) {
     JumpIdent[0] = 0;
     return;
   }
   EvJumpName(fn);
+  if (!StrICmp(EvName, JumpFile)) {
+    EvJumpSeek(JumpIdent);
+    return;
+  }
   EvOpen(JumpFile, 1);
 }
 
@@ -310,15 +482,32 @@ U0 EvActivate()
 
 U0 EvMan()
 {
-  WordIdent(&EdLn[EvCy][0], EvCx, JumpIdent);
-  if (!JumpIdent[0])
-    return;
+  EvJumpIdentFill();
   TermClear();
-  Man(JumpIdent);
+  if (!JumpIdent[0])
+    Man(0);
+  else
+    Man(JumpIdent);
   UartStr("-- press a key --");
   TermKeyGet();
 }
-
+// Edit -- Edit(name)
+// NAME
+//   Edit - full-screen editor trampoline (host or EditHoly)
+// SYNOPSIS
+//   U0 Edit(U8 *name);
+// DESCRIPTION
+//   Opens the full-screen editor on a memfs file. Default may be the host EditC
+//   slot; set `editor=&EditHoly;` or `editor=&Vi;` for HolyC editors. Keys in
+//   EditHoly: ^O save, ^] src, ^K Man, ^X exit.
+// EXAMPLES
+//   // Edit("boot.hc");
+//   editor=&EditHoly;
+//   Man("Vi");
+// SEE ALSO
+//   EditHoly  EditC  Vi  Ed  Src  Man
+// BUGS
+//   Trampoline to host unless you point editor at EditHoly/Vi.
 U0 Edit(U8 *name)
 {
   I64 (*ed)(U8 *);
@@ -334,6 +523,10 @@ U0 EditHoly(U8 *name)
   EvLoad(name);
   EvDirty = 0;
   EvDoLoad = 0;
+  if (JumpIdent[0]) {
+    EvJumpSeek(JumpIdent);
+    JumpIdent[0] = 0;
+  }
   msg = "";
   TermProbe();
   TermClear();
@@ -360,22 +553,25 @@ U0 EditHoly(U8 *name)
       EvDirty = 0;
     } else if (EvK == 7)
       EvActivate();
-    else if (EvK == 29)
+    else if (EvK == 29) {
       EvJump();
-    else if (EvK == 11)
+      msg = EvMsg;
+    } else if (EvK == 11)
       EvMan();
     else if (EvK == KEY_UP) {
       if (EvCy > 0) {
         EvCy--;
         if (EvCx > EdLineLen(EvCy))
           EvCx = EdLineLen(EvCy);
-      }
+      } else if (EvBase > 0)
+        EvGotoAbs(EvBase + EvCy - 1);
     } else if (EvK == KEY_DOWN) {
       if (EvCy < EdN - 1) {
         EvCy++;
         if (EvCx > EdLineLen(EvCy))
           EvCx = EdLineLen(EvCy);
-      }
+      } else if (EvBase + EdN < EvTot)
+        EvGotoAbs(EvBase + EvCy + 1);
     } else if (EvK == KEY_RIGHT) {
       if (EvCx < EvLen)
         EvCx++;
@@ -395,17 +591,17 @@ U0 EditHoly(U8 *name)
     else if (EvK == KEY_END)
       EvCx = EvLen;
     else if (EvK == KEY_PGUP) {
-      EvCy -= EvTr;
-      if (EvCy < 0)
-        EvCy = 0;
-      if (EvCx > EdLineLen(EvCy))
-        EvCx = EdLineLen(EvCy);
+      I64 abs;
+      abs = EvBase + EvCy - EvTr;
+      if (abs < 0)
+        abs = 0;
+      EvGotoAbs(abs);
     } else if (EvK == KEY_PGDN) {
-      EvCy += EvTr;
-      if (EvCy > EdN - 1)
-        EvCy = EdN - 1;
-      if (EvCx > EdLineLen(EvCy))
-        EvCx = EdLineLen(EvCy);
+      I64 abs;
+      abs = EvBase + EvCy + EvTr;
+      if (EvTot > 0 && abs >= EvTot)
+        abs = EvTot - 1;
+      EvGotoAbs(abs);
     } else if (EvK == KEY_DELETE) {
       if (EvCx < EvLen) {
         for (EvJ = EvCx; EdLn[EvCy][EvJ]; EvJ++)
@@ -450,7 +646,14 @@ U0 EditHoly(U8 *name)
         EvDirty = 1;
       }
     } else if (EvK == 9 || EvK == '\t') {
-      if (!CompTab(&EdLn[EvCy][0], 128, &EvCx, 0)) {
+      CompAsmReset();
+      for (EvJ = 0; EvJ < EvCy; EvJ++) {
+        CompAsmFeed(&EdLn[EvJ][0], EdLineLen(EvJ));
+        CompAsmFeed("\n", 1);
+      }
+      CompAsmFeed(&EdLn[EvCy][0], EvCx);
+      CompCx = EvCx;
+      if (!CompTab(&EdLn[EvCy][0], 128, 0)) {
         if (EvLen + 2 <= 127) {
           for (EvJ = 0; EvJ < 2; EvJ++) {
             EvLen = EdLineLen(EvCy);
@@ -461,8 +664,10 @@ U0 EditHoly(U8 *name)
           }
           EvDirty = 1;
         }
-      } else
+      } else {
+        EvCx = CompCx;
         EvDirty = 1;
+      }
     } else if (EvK >= 32 && EvK < 127) {
       if (EvLen < 127) {
         for (EvJ = EvLen; EvJ >= EvCx; EvJ--)

@@ -1,10 +1,14 @@
 // vim.hc -- modal vim-lite. Src("Vi"). `$`=ASCII36. Tab=complete/2sp. Enter split via VSuf+VMove.
-// gd / ^] / Enter-on-symbol: SrcFile -> session push (depth 4); :q pops.
-// K / gM: Man(ident under cursor), pause for a key, redraw.
+// gd / ^] / Enter-on-symbol: same-file seeks in place; else SrcFile session push (depth 4); :q pops.
+// After jump, target line is vertically centered. Files >256 lines: windowed load around the def.
+// K / gM: Man(ident at or after cursor), pause for a key, redraw.
 // Resolve: SrcmapFileOf -> SrcmapGet spill -> memfs / Name.hc -> DocFileFor.
 U8 VLn[256][128], VOut[16384], VTmp[128], VMove[128], VSuf[128], VUndoLn[256][128];
 U8 VYank[2048], VPat[64], VFile[64];
 I64 VN, VCy, VCx, VTop, VMode, VDirty, VQuit, VPush, VDoSeek;
+// VBase: 0-based file line of VLn[0]; VTot: total lines in file (status Ln abs/tot).
+// VWinN: file lines covered at last load (for windowed :w splice).
+I64 VBase, VTot, VWinN;
 I64 VUndoN, VUndoCy, VUndoCx, VUndoTop, VUndoDirty, VUndoOk, VInsSnap;
 I64 VCount, VOpCnt, VPend, VPendOp, VFindCh, VFindFwd, VFindTill, VMy, VMx;
 I64 VYankLen, VYankLine, VSearchDir, VDotKind, VDotCnt, VDotCh, VDotMot, VVis;
@@ -27,7 +31,8 @@ I64 VSessDepth;
 I64 VLen(I64 i)
 {
   I64 n = 0;
-  while (VLn[i][n])
+  // Cap at 127 so a missing NUL cannot run into the next row.
+  while (n < 127 && VLn[i][n])
     n++;
   return n;
 }
@@ -63,41 +68,45 @@ U0 VSetL(I64 i, U8 *s)
   }
   VLn[i][j] = 0;
 }
-
-U0 VInsL(I64 pos)
+// Insert empty line at pos. Returns 0 if buffer full (caller must not truncate/overwrite).
+I64 VInsL(I64 pos)
 {
-  I64 k, j, src, dst;
+  I64 k, j;
   if (VN >= 256)
-    return;
+    return 0;
   if (pos < 0)
     pos = 0;
   if (pos > VN)
     pos = VN;
   k = VN;
   while (k > pos) {
-    src = k - 1;
-    dst = k;
+    // Full-row move via VMove — avoids &VLn[i][0] pointer alias miscompile.
     j = 0;
-    while (VLn[src][j] && j < 127) {
-      VMove[j] = VLn[src][j];
+    while (j < 128) {
+      VMove[j] = VLn[k - 1][j];
       j++;
     }
-    VMove[j] = 0;
     j = 0;
-    while (VMove[j] && j < 127) {
-      VLn[dst][j] = VMove[j];
+    while (j < 128) {
+      VLn[k][j] = VMove[j];
       j++;
     }
-    VLn[dst][j] = 0;
     k = k - 1;
   }
-  VLn[pos][0] = 0;
+  j = 0;
+  while (j < 128) {
+    VLn[pos][j] = 0;
+    j++;
+  }
   VN = VN + 1;
+  if (VTot < VBase + VN)
+    VTot = VBase + VN;
+  return 1;
 }
 
 U0 VDelL(I64 pos)
 {
-  I64 k, j, src, dst, last;
+  I64 k, j, last;
   if (VN <= 1) {
     VN = 1;
     VLn[0][0] = 0;
@@ -108,24 +117,22 @@ U0 VDelL(I64 pos)
   last = VN - 1;
   k = pos;
   while (k < last) {
-    src = k + 1;
-    dst = k;
     j = 0;
-    while (VLn[src][j] && j < 127) {
-      VMove[j] = VLn[src][j];
+    while (j < 128) {
+      VMove[j] = VLn[k + 1][j];
       j++;
     }
-    VMove[j] = 0;
     j = 0;
-    while (VMove[j] && j < 127) {
-      VLn[dst][j] = VMove[j];
+    while (j < 128) {
+      VLn[k][j] = VMove[j];
       j++;
     }
-    VLn[dst][j] = 0;
     k = k + 1;
   }
   VN = VN - 1;
   VLn[VN][0] = 0;
+  if (VTot > VBase + VN)
+    VTot = VTot - 1;
 }
 
 U0 VInsChar(I64 ch)
@@ -845,8 +852,9 @@ U0 VPut(I64 before)
         k++;
       }
       VTmp[j] = 0;
+      if (!VInsL(VCy + 1))
+        return;
       VLn[VCy][VCx] = 0;
-      VInsL(VCy + 1);
       VSetL(VCy + 1, VTmp);
       VCy++;
       VCx = 0;
@@ -860,18 +868,50 @@ U0 VPut(I64 before)
     VCx--;
   VDirty = 1;
 }
-
-U0 VLoad(U8 *name)
+// Count newlines in file (1-based last line even without trailing NL).
+I64 VCountLines(U8 *data, I64 dn)
+{
+  I64 i, n;
+  if (!data || dn <= 0)
+    return 0;
+  n = 1;
+  i = 0;
+  while (i < dn) {
+    if (data[i] == '\n') {
+      if (i + 1 < dn)
+        n++;
+    }
+    i++;
+  }
+  return n;
+}
+// Load up to 256 lines starting at 0-based file line `base`.
+U0 VLoadAt(U8 *name, I64 base)
 {
   U8 *data;
-  I64 dn, i, j;
+  I64 dn, i, j, ln;
   VN = 0;
+  VBase = 0;
+  VTot = 0;
+  VWinN = 0;
+  if (base < 0)
+    base = 0;
   data = FileRead(name);
   dn = FileLen(name);
   if (dn < 0)
     dn = 0;
   if (data) {
+    VTot = VCountLines(data, dn);
     i = 0;
+    ln = 0;
+    while (i < dn && ln < base) {
+      while (i < dn && data[i] != '\n')
+        i++;
+      if (i < dn && data[i] == '\n')
+        i++;
+      ln++;
+    }
+    VBase = ln;
     while (i < dn && VN < 256) {
       j = 0;
       while (i < dn && data[i] != '\n' && j < 127) {
@@ -891,29 +931,128 @@ U0 VLoad(U8 *name)
     VN = 1;
     VLn[0][0] = 0;
   }
+  VWinN = VN;
+  if (VTot < VBase + VN)
+    VTot = VBase + VN;
+}
+
+U0 VLoad(U8 *name)
+{
+  VLoadAt(name, 0);
+}
+// Seek to 0-based file line abs; reload the 256-line window when needed.
+U0 VGotoAbs(I64 abs)
+{
+  I64 base;
+  if (abs < 0)
+    abs = 0;
+  if (VTot > 0 && abs >= VTot)
+    abs = VTot - 1;
+  if (abs >= VBase && abs < VBase + VN) {
+    VCy = abs - VBase;
+    VClamp();
+    return;
+  }
+  base = abs - 100;
+  if (base < 0)
+    base = 0;
+  if (abs - base >= 256)
+    base = abs - 200;
+  if (base < 0)
+    base = 0;
+  if (VTot > 256 && VTot - base < 256) {
+    base = VTot - 256;
+    if (base < 0)
+      base = 0;
+  }
+  VLoadAt(VFile, base);
+  VCy = abs - VBase;
+  if (VCy < 0)
+    VCy = 0;
+  if (VCy >= VN)
+    VCy = VN - 1;
+  VClamp();
 }
 
 U0 VSave()
 {
-  I64 k, m, off = 0, n;
-  for (k = 0; k < VN; k++) {
-    m = 0;
-    while (VLn[k][m] && off < 16383) {
-      VOut[off] = VLn[k][m];
-      off++;
-      m++;
+  I64 k, m, off = 0, n, dn, i, ln, j;
+  U8 *data, *out;
+  // Windowed / truncated buffer: splice edited lines back into the full file.
+  if (VBase > 0 || VTot > VWinN) {
+    data = FileRead(VFile);
+    dn = FileLen(VFile);
+    if (dn < 0)
+      dn = 0;
+    out = MAlloc(65536);
+    if (!out) {
+      UartStr("Vi: save OOM\n");
+      return;
     }
-    if (off < 16383) {
-      VOut[off] = '\n';
-      off++;
+    off = 0;
+    i = 0;
+    ln = 0;
+    if (data) {
+      while (i < dn && ln < VBase && off < 65535) {
+        out[off] = data[i];
+        if (data[i] == '\n')
+          ln++;
+        off++;
+        i++;
+      }
     }
+    for (k = 0; k < VN && off < 65534; k++) {
+      m = 0;
+      while (VLn[k][m] && off < 65534) {
+        out[off] = VLn[k][m];
+        off++;
+        m++;
+      }
+      if (off < 65535) {
+        out[off] = '\n';
+        off++;
+      }
+    }
+    if (data) {
+      j = 0;
+      while (i < dn && j < VWinN) {
+        if (data[i] == '\n')
+          j++;
+        i++;
+      }
+      while (i < dn && off < 65535) {
+        out[off] = data[i];
+        off++;
+        i++;
+      }
+    }
+    out[off] = 0;
+    off = FmtSave(VFile, out, off);
+    Free(out);
+  } else {
+    for (k = 0; k < VN; k++) {
+      m = 0;
+      while (VLn[k][m] && off < 16383) {
+        VOut[off] = VLn[k][m];
+        off++;
+        m++;
+      }
+      if (off < 16383) {
+        VOut[off] = '\n';
+        off++;
+      }
+    }
+    VOut[off] = 0;
+    off = FmtSave(VFile, VOut, off);
   }
-  VOut[off] = 0;
-  off = FmtSave(VFile, VOut, off);
   if (IsHcName(VFile)) {
-    VLoad(VFile);
+    n = VBase + VCy;
+    VLoadAt(VFile, VBase);
     if (VCy >= VN)
       VCy = VN - 1;
+    // Keep absolute cursor line when possible.
+    if (n >= VBase && n < VBase + VN)
+      VCy = n - VBase;
     if (VCy < 0)
       VCy = 0;
     n = VLen(VCy);
@@ -959,7 +1098,7 @@ U0 VDraw()
   } else {
     "-- NORMAL --";
   }
-  " %s%s Ln %d/%d Col %d ", VFile, VDirty ? "*" : "", VCy + 1, VN, VCx + 1;
+  " %s%s Ln %d/%d Col %d ", VFile, VDirty ? "*" : "", VBase + VCy + 1, VTot > 0 ? VTot : VN, VCx + 1;
   VEsc("[0m");
   TermClearEol();
   TermGoto(VCy - VTop + 1, VCx + 1);
@@ -1116,12 +1255,14 @@ U0 VMotion(I64 mot, I64 cnt)
       if (VCy < VN - 1) {
         VCy++;
         VClamp();
-      }
+      } else if (VBase + VN < VTot)
+        VGotoAbs(VBase + VCy + 1);
     } else if (mot == 'k') {
       if (VCy > 0) {
         VCy--;
         VClamp();
-      }
+      } else if (VBase > 0)
+        VGotoAbs(VBase + VCy - 1);
     } else if (mot == 'w')
       VWordW();
     else if (mot == 'b')
@@ -1141,7 +1282,7 @@ U0 VMotion(I64 mot, I64 cnt)
     else if (mot == 36)
       VGoEOL();
     else if (mot == 'G') {
-      VCy = VN - 1;
+      VGotoAbs(VTot > 0 ? VTot - 1 : VN - 1);
       VCx = 0;
     } else if (mot == '%')
       VMatchPct();
@@ -1377,29 +1518,103 @@ U0 VSessPop()
     VCx = n;
 }
 
+U0 VCenter()
+{
+  I64 tr;
+  tr = TermRows() - 1;
+  if (tr < 1)
+    tr = 1;
+  VTop = VCy - tr / 2;
+  if (VTop < 0)
+    VTop = 0;
+}
+// Absolute 0-based line of `name` def in file, or -1. Prefers DefAt; else IdentAt off //.
+I64 VFindDefLine(U8 *fname, U8 *name)
+{
+  U8 *data, line[128];
+  I64 dn, i, j, ln, col, id_ln, k;
+  data = FileRead(fname);
+  dn = FileLen(fname);
+  if (!data || !name || !*name || dn < 0)
+    return -1;
+  i = 0;
+  ln = 0;
+  id_ln = -1;
+  while (i < dn) {
+    j = 0;
+    while (i < dn && data[i] != '\n' && j < 127) {
+      line[j] = data[i];
+      j++;
+      i++;
+    }
+    line[j] = 0;
+    while (i < dn && data[i] != '\n')
+      i++;
+    if (i < dn && data[i] == '\n')
+      i++;
+    col = DefAt(line, name);
+    if (col >= 0)
+      return ln;
+    if (id_ln < 0) {
+      k = 0;
+      while (line[k] == ' ' || line[k] == 9)
+        k++;
+      if (!(line[k] == '/' && line[k + 1] == '/')) {
+        col = IdentAt(line, name);
+        if (col >= 0)
+          id_ln = ln;
+      }
+    }
+    ln++;
+  }
+  return id_ln;
+}
+
 U0 VJumpSeek(U8 *name)
 {
-  I64 i, col;
+  I64 i, col, j, abs;
+  if (!name || !*name)
+    return;
   i = 0;
   while (i < VN) {
     col = DefAt(&VLn[i][0], name);
     if (col >= 0) {
       VCy = i;
       VCx = col;
+      VCenter();
       return;
     }
     i++;
   }
   i = 0;
   while (i < VN) {
+    j = 0;
+    while (VLn[i][j] == ' ' || VLn[i][j] == 9)
+      j++;
+    if (VLn[i][j] == '/' && VLn[i][j + 1] == '/') {
+      i++;
+      continue;
+    }
     col = IdentAt(&VLn[i][0], name);
     if (col >= 0) {
       VCy = i;
       VCx = col;
+      VCenter();
       return;
     }
     i++;
   }
+  abs = VFindDefLine(VFile, name);
+  if (abs < 0)
+    return;
+  VGotoAbs(abs);
+  VCx = 0;
+  col = DefAt(&VLn[VCy][0], name);
+  if (col < 0)
+    col = IdentAt(&VLn[VCy][0], name);
+  if (col >= 0)
+    VCx = col;
+  VCenter();
 }
 
 U0 VOpen(U8 *fn, I64 do_seek)
@@ -1549,13 +1764,16 @@ U0 VCmd()
       }
     }
   } else if (cmd[0] == 36) {
-    VCy = VN - 1;
+    if (VTot > 0)
+      VGotoAbs(VTot - 1);
+    else
+      VGotoAbs(VN - 1);
     VCx = 0;
     return;
   }
   if (have1 && cmd[p] == 0) {
-    if (a1 >= 1 && a1 <= VN) {
-      VCy = a1 - 1;
+    if (a1 >= 1) {
+      VGotoAbs(a1 - 1);
       VCx = 0;
     }
     return;
@@ -1582,14 +1800,35 @@ U0 VCmd()
     }
   }
 }
+// Ident at cursor, else first ident after focus (rest of line, then later lines).
+U0 VJumpIdentFill()
+{
+  I64 y;
+  JumpIdent[0] = 0;
+  WordIdent(&VLn[VCy][0], VCx, JumpIdent);
+  if (JumpIdent[0])
+    return;
+  y = VCy + 1;
+  while (y < VN) {
+    WordIdent(&VLn[y][0], 0, JumpIdent);
+    if (JumpIdent[0])
+      return;
+    y++;
+  }
+}
 
 U0 VJump()
 {
   U8 *fn;
-  I64 p;
-  WordIdent(&VLn[VCy][0], VCx, JumpIdent);
-  if (!JumpIdent[0])
+  I64 p, sr;
+  VJumpIdentFill();
+  if (!JumpIdent[0]) {
+    sr = TermRows();
+    TermGoto(sr, 1);
+    TermClearEol();
+    UartStr("no ident");
     return;
+  }
   fn = SrcFile(JumpIdent);
   if (!fn) {
     JumpIdent[0] = 0;
@@ -1601,23 +1840,28 @@ U0 VJump()
     p++;
   }
   JumpFile[p] = 0;
+  if (!StrICmp(VFile, JumpFile)) {
+    VJumpSeek(JumpIdent);
+    return;
+  }
   VOpen(JumpFile, 1);
 }
 
 U0 VMan()
 {
-  WordIdent(&VLn[VCy][0], VCx, JumpIdent);
-  if (!JumpIdent[0])
-    return;
+  VJumpIdentFill();
   TermClear();
-  Man(JumpIdent);
+  if (!JumpIdent[0])
+    Man(0);
+  else
+    Man(JumpIdent);
   UartStr("-- press a key --");
   VGet();
 }
 
 U0 VInsert(I64 c)
 {
-  I64 n, k, j, t, nrow;
+  I64 n, k, j, t, nrow, i;
   if (c == 27) {
     VMode = 0;
     VInsSnap = 0;
@@ -1633,18 +1877,33 @@ U0 VInsert(I64 c)
     return;
   }
   if (c == '\r' || c == '\n') {
+    // Split at cursor. Insert the new row BEFORE truncating — if the 256-line
+    // buffer is full, VInsL fails and we must not clobber the following line
+    // (old order: truncate + VSetL(next) overwrote KEEP_* rows below).
+    if (VN >= 256)
+      return;
     j = 0;
     t = VCx;
-    while (VLn[VCy][t] && j < 127) {
+    if (t < 0)
+      t = 0;
+    if (t > 127)
+      t = 127;
+    while (t < 127 && VLn[VCy][t] && j < 127) {
       VSuf[j] = VLn[VCy][t];
       j++;
       t++;
     }
     VSuf[j] = 0;
-    VLn[VCy][VCx] = 0;
     nrow = VCy + 1;
-    VInsL(nrow);
-    VSetL(nrow, VSuf);
+    if (!VInsL(nrow))
+      return;
+    VLn[VCy][VCx] = 0;
+    j = 0;
+    while (VSuf[j] && j < 127) {
+      VLn[nrow][j] = VSuf[j];
+      j++;
+    }
+    VLn[nrow][j] = 0;
     VCy = nrow;
     VCx = 0;
     VDirty = 1;
@@ -1661,6 +1920,12 @@ U0 VInsert(I64 c)
     return;
   }
   if (c == 9 || c == '\t') {
+    CompAsmReset();
+    for (i = 0; i < VCy; i++) {
+      CompAsmFeed(&VLn[i][0], VLen(i));
+      CompAsmFeed("\n", 1);
+    }
+    CompAsmFeed(&VLn[VCy][0], VCx);
     CompCx = VCx;
     if (!CompTab(&VLn[VCy][0], 128, 0)) {
       VInsChar(' ');
@@ -1694,7 +1959,7 @@ U0 VActivate()
     JumpIdent[0] = 0;
     VOpen(w, 0);
   } else if (w[0]) {
-    WordIdent(&VLn[VCy][0], VCx, JumpIdent);
+    VJumpIdentFill();
     if (JumpIdent[0])
       VJump();
   }
@@ -1713,7 +1978,23 @@ U0 VVisDel(I64 op)
     VApplyOp(op, y1, x1, y2, x2, 0);
   VVis = 0;
 }
-
+// Vi -- Vi(name)
+// NAME
+//   Vi - modal vim-lite full-screen editor
+// SYNOPSIS
+//   U0 Vi(U8 *name);
+// DESCRIPTION
+//   Opens a memfs file in a small vim-like editor. Normal/insert modes; :w :q;
+//   gd/^] jump to definition; K or gM shows Man for the ident at or after the cursor.
+//   Set `editor=&Vi;` to make Src/DirEd use Vi by default.
+// EXAMPLES
+//   // Vi("boot.hc");   // interactive — :q to quit
+//   editor=&Vi;
+//   Man("Src");
+// SEE ALSO
+//   Edit  EditHoly  Ed  Src  Man  Fmt
+// BUGS
+//   Subset of vim; 256-line buffer with windowed seek/save for larger files.
 U0 Vi(U8 *name)
 {
   I64 c, n, tr, cnt, k, t, j;
@@ -1733,6 +2014,10 @@ U0 Vi(U8 *name)
   VQuit = 0;
   VPush = 0;
   VDoSeek = 0;
+  if (JumpIdent[0]) {
+    VJumpSeek(JumpIdent);
+    JumpIdent[0] = 0;
+  }
   VUndoOk = 0;
   VInsSnap = 0;
   VCount = 0;
@@ -1767,16 +2052,18 @@ U0 Vi(U8 *name)
     else if (c == KEY_END)
       c = 36;
     else if (c == KEY_PGUP) {
-      VCy -= tr;
-      if (VCy < 0)
-        VCy = 0;
-      VClamp();
+      I64 abs;
+      abs = VBase + VCy - tr;
+      if (abs < 0)
+        abs = 0;
+      VGotoAbs(abs);
       continue;
     } else if (c == KEY_PGDN) {
-      VCy += tr;
-      if (VCy > VN - 1)
-        VCy = VN - 1;
-      VClamp();
+      I64 abs;
+      abs = VBase + VCy + tr;
+      if (VTot > 0 && abs >= VTot)
+        abs = VTot - 1;
+      VGotoAbs(abs);
       continue;
     } else if (c == KEY_DELETE)
       c = 'x';
@@ -1823,11 +2110,11 @@ U0 Vi(U8 *name)
         VClrCnt();
         if (VPendOp) {
           VMy = VCy;
-          VCy = 0;
+          VGotoAbs(0);
           VApplyOp(VPendOp, VMy, 0, 0, 0, 1);
           VPendOp = 0;
         } else {
-          VCy = 0;
+          VGotoAbs(0);
           VCx = 0;
         }
       } else if (c == 'd')
@@ -1980,14 +2267,11 @@ U0 Vi(U8 *name)
       continue;
     }
     if (c == 'G') {
-      if (VCount > 0) {
-        if (VCount <= VN)
-          VCy = VCount - 1;
-        VCx = 0;
-      } else {
-        VCy = VN - 1;
-        VCx = 0;
-      }
+      if (VCount > 0)
+        VGotoAbs(VCount - 1);
+      else
+        VGotoAbs(VTot > 0 ? VTot - 1 : VN - 1);
+      VCx = 0;
       VClrCnt();
       continue;
     }
@@ -2147,7 +2431,10 @@ U0 Vi(U8 *name)
     }
     if (c == 'o') {
       VSnap();
-      VInsL(VCy + 1);
+      if (!VInsL(VCy + 1)) {
+        VClrCnt();
+        continue;
+      }
       VCy++;
       VCx = 0;
       VInsSnap = 1;
@@ -2158,7 +2445,10 @@ U0 Vi(U8 *name)
     }
     if (c == 'O') {
       VSnap();
-      VInsL(VCy);
+      if (!VInsL(VCy)) {
+        VClrCnt();
+        continue;
+      }
       VCx = 0;
       VInsSnap = 1;
       VMode = 1;
@@ -2172,6 +2462,8 @@ U0 Vi(U8 *name)
       continue;
     }
     if (c == 'a') {
+      // Append after cursor (EOL when already on last char). Same INSERT
+      // Enter split path as i — must preserve rows below.
       if (n > 0 && VCx < n)
         VCx++;
       VEnterIns();

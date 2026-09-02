@@ -8,12 +8,15 @@
 // SYNOPSIS
 //   U0 Help();
 // DESCRIPTION
-//   Prints a short welcome: eval prompt, editors, Man, MemMap/Regs, asm, timer,
-//   files, history keys, and soft Reset. Same text runs at boot.
-// INPUTS
-//   none
-// OUTPUTS
-//   Overview on the UART
+//   One-screen map of the REPL: how to eval, open editors, look up Man pages, dig
+//   into MemMap/Regs, arm the timer, list files, and soft-reset. Same banner runs
+//   at boot — call Help anytime you forget the entry points.
+// EXAMPLES
+//   Help;
+//   Man("Print");
+//   Sections;
+// SEE ALSO
+//   Man  Sections  MemMap  Regs  Dir
 // BUGS
 //   Banner is hand-maintained; Up/Down history seed lives in C (worry_dream_repl).
 U0 Help()
@@ -22,12 +25,15 @@ U0 Help()
   UartStr("  Eval     >  statements run now; ans= hex (or Print / \"fmt\", args;)\n");
   UartStr("  Editors  Src(\"x.hc\");  Vi: gd/^]=src K=man (:q pops)  editor=&EditHoly;\n");
   UartStr("  Help     Man(\"Clint\"); Man(\"Print\"); Help; Sections;\n");
-  UartStr("  Dig-down MemMap; Regs; Reg(\"a7\"); RegHelp;\n");
-  UartStr("  Asm      asm { li a7,4 addi a7,a7,-1 }; Reg(\"a7\");\n");
+  UartStr("  Labs     Tutorial;  SF;  Run(\"A01_RV64I.hc\");  (SF-style curriculum)\n");
+  UartStr("  Funs     Funs;  type to filter  Enter=Src  Esc=quit  (FunsList; dump)\n");
+  UartStr("  Dig-down MemMap; Regs; Reg(\"a7\"); Bits(\"mstatus\"); RegHelp;\n");
+  UartStr("  Asm      asm { li a7,4 addi a7,a7,-1 }; AsmDoc(\"addi\"); AsmList();\n");
   UartStr("  Timer    Man(\"Clint\");  // SetTrap → TrapInit → TimerArm → wfi\n");
-  UartStr("  Files    Dir; Cat(\"boot.hc\"); Fmt(\"file.hc\");\n");
+  UartStr("  Files    Dir; Cat(\"boot.hc\"); DumpFile(\"boot.hc\"); Fmt(\"file.hc\");\n");
   UartStr("  Keys     Up/Down=history  Tab=complete (CI)  Ctrl-C=interrupt\n");
-  UartStr("  Soft     Reset;   ErrGo; opens last compile error\n");
+  UartStr("  Soft     Reset;   HardReset; Halt; Fault;  Man(\"Reset\");\n");
 }
 UartStr("[boot] HolyC primitives loaded. Dir; to list, Run/Edit to change them live.\n");
+Run("tutorial.hc");
 Help();

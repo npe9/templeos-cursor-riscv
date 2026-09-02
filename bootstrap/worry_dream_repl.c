@@ -3,7 +3,9 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 #include "../host/holyc_compiler.h"
+#include "asm_templates.inc"  /* generated from seed/asm_doc.hc by gen_boot_blob.py */
 
 /* 16550 UART base. Per-platform: overridden with -DUART_BASE=0x... from the Makefile PLATFORM
  * table (default is QEMU virt's UART). */
@@ -1695,7 +1697,7 @@ static int fun_sec_from_name(const char *name) {
     if (fun_name_eq(name, "Funs") || fun_name_eq(name, "FunsS") || fun_name_eq(name, "FunsSec") ||
         fun_name_eq(name, "FunSec") || fun_name_eq(name, "FunSecName") || fun_name_eq(name, "Man") ||
         fun_name_eq(name, "Sections") || fun_name_eq(name, "Run") || fun_name_eq(name, "Src") ||
-        fun_name_eq(name, "SrcFile") || fun_name_eq(name, "SrcText") || fun_name_eq(name, "Exec") ||
+        fun_name_eq(name, "SrcFile") || fun_name_eq(name, "SymFile") || fun_name_eq(name, "SrcText") || fun_name_eq(name, "Exec") ||
         fun_name_eq(name, "Reset") || fun_name_eq(name, "MemMap") || fun_name_eq(name, "Regs") ||
         fun_name_eq(name, "FunCount") || fun_name_eq(name, "FunName") || fun_name_eq(name, "FunHasSrc") ||
         fun_name_eq(name, "FunPick") || fun_name_eq(name, "FunEd") || fun_name_eq(name, "FunWrite") ||
@@ -2794,7 +2796,7 @@ static void BootHolyCRuntime(void) {
         "math.hc", "term.hc", "sym.hc", "csr.hc",
         "ds.hc", "ds_csr.hc", "ds_uart.hc", "ds_clint.hc", "ds_plic.hc",
         "fmt.hc",
-        "dir.hc", "asm_complete.hc", "complete.hc", "ed.hc", "edit.hc", "start.hc", "trap.hc",
+        "dir.hc", "asm_complete.hc", "asm_doc.hc", "complete.hc", "ed.hc", "edit.hc", "start.hc", "trap.hc",
         "debug.hc", "disasm.hc", "vim.hc", "RVEditorSelected.hc",
         "man.hc", "files.hc", "funs.hc", "callers.hc", "boot.hc",
         0
@@ -2851,7 +2853,7 @@ static const char *const rl_asm_ops[] = {
     "add","addi","and","andi","or","ori","xor","xori",
     "sub","sll","slli","srl","srli","sra","srai","slt","slti","sltu",
     "mul","div","divu","rem","remu",
-    "lui","auipc","li","mv","not","neg",
+    "lui","auipc","li","mv","not","neg","seqz","snez","jr",
     "ld","lw","lwu","lh","lhu","lb","lbu","sd","sw","sh","sb",
     "jalr","j","call","beq","bne","blt","bge","bltu","bgeu","beqz","bnez",
     "ret","nop","wfi","mret","sret","ecall","ebreak","fencei","fence.i",
@@ -3097,6 +3099,36 @@ static int rl_asm_imm_opnd(const char *mn) {
         rl_str_eq_i(mn, "csrci")) return 1;
     return -1;
 }
+static int rl_asm_branch_opnd(const char *mn) {
+    if (rl_str_eq_i(mn, "j") || rl_str_eq_i(mn, "call")) return 0;
+    if (rl_str_eq_i(mn, "beqz") || rl_str_eq_i(mn, "bnez")) return 1;
+    if (rl_str_eq_i(mn, "beq") || rl_str_eq_i(mn, "bne") ||
+        rl_str_eq_i(mn, "blt") || rl_str_eq_i(mn, "bge") ||
+        rl_str_eq_i(mn, "bltu") || rl_str_eq_i(mn, "bgeu")) return 2;
+    return -1;
+}
+static const char *rl_asm_template(const char *mn) {
+    const char *p = rl_asm_tpl_raw;
+    if (!mn || !mn[0] || !p) return 0;
+    while (*p) {
+        const char *sep = strchr(p, '|');
+        if (!sep) break;
+        if ((int)(sep - p) == (int)strlen(mn) && rl_prefix_eq(p, mn, (int)(sep - p)))
+            return sep + 1;
+        p = sep + 1;
+        sep = strchr(p, '|');
+        if (!sep) break;
+        p = sep + 1;
+    }
+    return 0;
+}
+static void rl_asm_print_template(const char *mn) {
+    const char *tpl = rl_asm_template(mn);
+    if (!tpl || !tpl[0]) return;
+    puts_uart("\n  → ");
+    for (const char *q = tpl; *q && *q != '|'; q++) putc_uart(*q);
+    puts_uart("\n");
+}
 static int rl_asm_tokchar(int c) {
     return rl_ident(c) || c == '.' || c == '-' || c == '+';
 }
@@ -3169,6 +3201,7 @@ static int rl_asm_kind(const char *buf, int cur) {
     if (csr_i >= 0 && opnd == csr_i) return RL_ASM_CSR;
     imm_i = rl_asm_imm_opnd(mn);
     if (imm_i >= 0 && opnd == imm_i) return RL_ASM_NONE;
+    if (rl_asm_branch_opnd(mn) >= 0 && opnd >= rl_asm_branch_opnd(mn)) return RL_ASM_NONE;
     return RL_ASM_REG;
 }
 static int rl_collect_asm(const char **out, int kind, const char *pfx, int plen) {
@@ -3239,6 +3272,7 @@ static int rl_complete_core(char *buf, int max, int *len, int *cur, int list_ok)
     char pfx[HIST_CAP];
     if (end > 0 && (buf[end - 1] == '"' || buf[end - 1] == '\'')) return 0;
     while (start > 0 && rl_pathchar((unsigned char)buf[start - 1])) start--;
+    if (start == end) return 0;   /* empty token → indent path (CompApply parity) */
     if (start < end) {
         for (i = start; i < end; i++)
             if (buf[i] == '.' || buf[i] == '/') pathish = 1;
@@ -3283,10 +3317,21 @@ static int rl_complete_core(char *buf, int max, int *len, int *cur, int list_ok)
     if (list_ok && nm > 1 && fill <= old) {
         puts_uart("\n");
         for (i = 0; i < nm; i++) {
-            puts_uart("  "); puts_uart(matches[i]); puts_uart("\n");
+            const char *tpl;
+            puts_uart("  "); puts_uart(matches[i]);
+            if (in_asm && akind == RL_ASM_OP) {
+                tpl = rl_asm_template(matches[i]);
+                if (tpl && tpl[0]) {
+                    puts_uart("  — ");
+                    for (const char *q = tpl; *q && *q != '|'; q++) putc_uart(*q);
+                }
+            }
+            puts_uart("\n");
         }
         return nm; /* caller redraws after list */
     }
+    if (need && in_asm && akind == RL_ASM_OP && nm == 1)
+        rl_asm_print_template(matches[0]);
     return need ? nm : (nm > 0 ? nm : 0);
 }
 
@@ -3426,14 +3471,9 @@ static int repl_read_line_ex(char *buf, int max, int flags, const char *prompt) 
             continue;
         }
         if (c == '\t') {
-            if (flags & RL_COMPLETE) {
-                g_rl_hist_age = -1;
-                rl_do_complete(buf, max, &len, &cur, prompt);
-            } else {
-                /* Ed input / plain: mid-token → CI complete; else 2-space indent */
-                g_rl_hist_age = -1;
-                rl_smart_tab(buf, max, &len, &cur, prompt);
-            }
+            /* Mid-token → CI complete; else 2-space indent (matches Ed/Vi CompTab). */
+            g_rl_hist_age = -1;
+            rl_smart_tab(buf, max, &len, &cur, prompt);
             continue;
         }
         if (c >= 32 && c < 127 && len < max - 1) {

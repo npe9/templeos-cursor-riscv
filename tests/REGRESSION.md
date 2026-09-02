@@ -58,7 +58,7 @@ While fixing Src, regression also caught a second P0: HolyC `FsCreate`/`FileWrit
 |------------------|---------|--------|----------|
 | `holy_rt.h` x86 leftovers (`InU8`/`OutU8`/`GetRAX`/`CPUId`/`FarCall32`/…) | Portability shims for AOT/exec harness | Not RuntimeRegister'd in REPL; `Man("GetRAX")` → no such symbol (rt.hc/c_api Man scrubbed) | **done** |
 | `Ed` / `Edit` HolyC | Editable HolyC editors | Entry once-indirects to C (`0xB8`/`0xE0`) so smoke pipes work; `EdHoly`/`EditHoly` editable; `EdC`/`EditC` same slots as repair hatches | **P2** architecture (working, not fake) |
-| Host slots generally | “Pure HolyC” | Compiler/UART/srcmap/Callers/MemMap/… still C behind slots on `repl.elf`; memfs arena is HolyC-owned (`0x85000000`) with deprecated C bridges | **P2** docs |
+| Host slots generally | “Pure HolyC” | Compiler/UART/srcmap/Callers/MemMap/… still C behind slots on `repl.elf`; memfs arena is HolyC-owned (`0x87800000`) with deprecated C bridges | **P2** docs |
 | WinMgr / DolDoc / net | Full TempleOS | Text_base + soft FB demos only | **P3** |
 
 ## C bootstrap / host-slot inventory (brutally honest)
@@ -68,7 +68,7 @@ While fixing Src, regression also caught a second P0: HolyC `FsCreate`/`FileWrit
 | `TermRows`/`TermCols`/`TermFlags`/`TermSetSize`/`TermProbe` | `term.hc`, Vi, EditHoly, FunPick | **Fixed** — HolyC `g_term_*`; Probe one-byte + RX own (no `TermPoll` prefetch); optional push to C `TermSetSize` for EdC/EditC. C `TermProbe` (EditC) also one-byte — bulk poll starved HolyC Vi after Edit |
 | `TermKeyGet` | Vi / EditHoly / FunPick | **Fixed** — default interactive path is HolyC CSI + `g_term_rx_own` (one UART byte/iter, not slot `0xD0`). `TermKeyGetC`/`HcTermKeyGet` repair-only; EdC/EditC/C readline still call C `TermKeyGet` directly |
 | UART ring/drain/get slots | `uart.hc`, HolyC TermKeyGet/Probe | **bridge** — ring still published by C; HolyC pops via published ptrs only while `g_term_rx_own` (no steal from C readline) |
-| memfs base/cwd slots | `fs.hc` | **Fixed** — HolyC arena at `0x85000000` (+ cwd after slots); File*/Dir/Cd/Cat no longer read `0x87001010`/`0x18`. C seed boot + EdC/EditC write the same arena (slots still published as deprecated bridge) |
+| memfs base/cwd slots | `fs.hc` | **Fixed** — HolyC arena at `0x87800000` (+ cwd after slots; fits default 128MiB virt RAM); File*/Dir/Cd/Cat use fixed arena; C no longer publishes `0x87001010`/`0x18` |
 | compile/run + `g_run_file` | `run.hc` | **ExePutS path green** — guest `Compiler_RV` + `ExePutS("40+2;")` → 42 (`make kernel-exepubs-smoke`). Host AOT forward-import bug for `OptPass4` fixed via `RewriteForwardImportCalls` (TempleOS name restored). `Run`/`Exec`: ExePutS when host slot unset; REPL keeps `0x87001000` until Compiler_RV is linked there. Do **not** grow `jit.hc`. |
 | FmtSrc / FmtFile / fmt buf | `fmt.hc` | **intentional bridge** — host `HolyFmtSrc` (AST/CST `host/holyc_fmt.c`); same as `holyc-riscv --fmt` / `make fmt-test` |
 | Ed/Edit/EdC/EditC slots | `ed.hc`/`edit.hc` | **intentional bridge** (repair) + smoke pipe; bodies are HolyC |
@@ -78,6 +78,7 @@ While fixing Src, regression also caught a second P0: HolyC `FsCreate`/`FileWrit
 | `RuntimeRegister` as OS API | — | **done** — REPL registers **zero** C builtins into HTT_FUN |
 | `holy_rt` linked into guest (`repl.elf`) | C REPL + exec harness | **build-only OK** for AOT/oracle; **deprecated** for OS path |
 | `worry_dream_repl.c` / `0x87001xxx` | legacy `make -C bootstrap -f Makefile.repl` | **deprecated** — still C-dependent; list above |
+| REPL multiline `...` Tab | Same as Ed/Vi | **fixed** — C readline used `rl_do_complete` only (empty token listed all syms); now `rl_smart_tab` (2sp indent + mid-token complete). Regression: `MLTAB_MARK` |
 | Mac-AOT `hc_repl` | `bootstrap/hc_repl` | **assert no host slots / no worry_dream link** (smoke greps sources) |
 
 Do **not** paper over with checks that pass when the feature is a no-op (label-only greps, `SrcFile` without `Src`, FnSize without `>0`, editor paint text without `FileLen`/`Run`).

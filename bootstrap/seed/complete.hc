@@ -1,8 +1,10 @@
 // complete.hc -- case-insensitive Tab completion for editors (Vi / EditHoly / Ed).
 // CompTab(line,max,list_ok): uses CompCx as cursor in/out. If a partial ident/path
-// sits before CompCx, fill from HTT_FUN (via FunCollect) or memfs (case-insensitive).
+// sits before CompCx, fill from HTT_FUN (via FunCollect) + #defines (HTT_DEFINE_STR
+// via SymDefineHash — MEM_*, UART_*, … from MemMapSelected.hc / csr.hc / live macros) or memfs (CI).
+// Inside asm{} (see asm_complete.hc): opcodes / GPRs / CSR names instead of HolyC syms.
 // Returns 1 if Tab was handled; 0 if caller should insert 2-space indent.
-#define COMP_MAX 32
+#define COMP_MAX 64
 #define COMP_NAME 48
 U8 CompNames[COMP_MAX][COMP_NAME];
 I64 CompN;
@@ -123,17 +125,45 @@ I64 CompCollectSyms(U8 *pfx, I64 plen)
   CompN = 0;
   body = SymHashBody();
   mask = SymHashMask();
+  if (body && mask >= 0) {
+    nwalk = 0;
+    for (b = 0; b <= mask && CompN < COMP_MAX; b++) {
+      e = *(I64 *)(body + b * 8);
+      while (e && CompN < COMP_MAX) {
+        nwalk++;
+        if (nwalk > 2048)
+          break;
+        ty = *(I64 *)(e + 16);
+        if (ty & 0x100) {
+          nm = *(I64 *)(e + 8);
+          CompAdd(nm, pfx, plen);
+        }
+        e = *(I64 *)e;
+      }
+      if (nwalk > 2048)
+        break;
+    }
+  }
+  // Live #defines (MEM_PLIC, MEM_UART, …) — same define_table the host lexer expands.
+  body = SymDefineHashBody();
+  mask = SymDefineHashMask();
   if (!body || mask < 0)
-    return 0;
+    return CompN;
+  // Cap: empty-bucket scan must not hang if the slot is stale/corrupt.
+  if (mask > 2047)
+    mask = 2047;
   nwalk = 0;
   for (b = 0; b <= mask && CompN < COMP_MAX; b++) {
+    nwalk++;
+    if (nwalk > 4096)
+      return CompN;
     e = *(I64 *)(body + b * 8);
     while (e && CompN < COMP_MAX) {
       nwalk++;
-      if (nwalk > 2048)
+      if (nwalk > 4096)
         return CompN;
       ty = *(I64 *)(e + 16);
-      if (ty & 0x100) {
+      if (ty & 0x040) {
         nm = *(I64 *)(e + 8);
         CompAdd(nm, pfx, plen);
       }
@@ -175,9 +205,45 @@ I64 CompCollectFiles(U8 *pfx, I64 plen)
   return CompN;
 }
 
+I64 CompCollectAsm(I64 kind, U8 *pfx, I64 plen)
+{
+  U8 *p, *s;
+  U8 tmp[COMP_NAME];
+  I64 n, i;
+  CompN = 0;
+  if (kind == ASM_COMP_NONE)
+    return 0;
+  if (kind == ASM_COMP_OP)
+    p = AsmCompOps;
+  else if (kind == ASM_COMP_CSR)
+    p = AsmCompCsrs;
+  else
+    p = AsmCompRegs;
+  if (!p)
+    return 0;
+  while (*p) {
+    s = p;
+    while (*p && *p != '|')
+      p++;
+    n = p - s;
+    if (n > 0 && n < COMP_NAME) {
+      i = 0;
+      while (i < n) {
+        tmp[i] = s[i];
+        i++;
+      }
+      tmp[n] = 0;
+      CompAdd(tmp, pfx, plen);
+    }
+    if (*p == '|')
+      p++;
+  }
+  return CompN;
+}
+
 I64 CompApply(U8 *line, I64 max, I64 list_ok)
 {
-  I64 end, start, pathish, nm, fill, old, delta, i, need;
+  I64 end, start, pathish, nm, fill, old, delta, i, need, in_asm, akind;
   U8 *best;
   end = CompCx;
   start = end;
@@ -199,7 +265,19 @@ I64 CompApply(U8 *line, I64 max, I64 list_ok)
   for (i = 0; i < old; i++)
     CompPfx[i] = line[start + i];
   CompPfx[i] = 0;
-  if (pathish)
+  in_asm = CompAsmInside();
+  if (!in_asm && CompAsmMode == 0) {
+    // No prior buffer scan — detect from this line alone.
+    CompAsmReset();
+    CompAsmFeed(line, CompCx);
+    in_asm = CompAsmInside();
+  }
+  if (in_asm && !pathish) {
+    akind = CompAsmKind(line, CompCx);
+    nm = CompCollectAsm(akind, CompPfx, old);
+    if (!nm)
+      return 1;
+  } else if (pathish)
     nm = CompCollectFiles(CompPfx, old);
   else {
     nm = CompCollectSyms(CompPfx, old);
@@ -252,8 +330,24 @@ I64 CompApply(U8 *line, I64 max, I64 list_ok)
   if (list_ok && nm > 1 && fill <= old) {
     PutCh('\n');
     for (i = 0; i < nm; i++) {
+      U8 *tpl;
       UartStr("  ");
       UartStr(&CompNames[i][0]);
+      if (in_asm && akind == ASM_COMP_OP) {
+        tpl = AsmDocTemplate(&CompNames[i][0]);
+        if (tpl && *tpl) {
+          UartStr("  — ");
+          UartStr(tpl);
+        }
+      }
+      PutCh('\n');
+    }
+  } else if (need && in_asm && akind == ASM_COMP_OP && nm == 1) {
+    U8 *tpl = AsmDocTemplate(best);
+    if (tpl && *tpl) {
+      PutCh('\n');
+      UartStr("  → ");
+      UartStr(tpl);
       PutCh('\n');
     }
   }

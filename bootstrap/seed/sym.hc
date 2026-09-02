@@ -8,6 +8,9 @@ U8 FunListBuf[8192];
 I64 g_funs_buf[512];
 I64 g_fun_n = 0;
 I64 g_caller_n = 0;
+// gd/^]/Src seek: globals so VLoad/EvLoad cant clobber them (must precede dir.hc in boot)
+U8 JumpIdent[64];
+U8 JumpFile[64];
 I64 SymHash()
 {
   return *(I64 *)0x87001070;
@@ -189,6 +192,126 @@ U0 NameDotHc(U8 *name, U8 *out)
   out[j + 2] = 'c';
   out[j + 3] = 0;
 }
+
+I64 SymCanonInto(U8 *name, U8 *out)
+{
+  U8 *base, *ent, *nm;
+  I64 body, mask, b, e, i, j, max;
+  if (!name || !*name || !out)
+    return 0;
+  body = SymHashBody();
+  mask = SymHashMask();
+  if (body && mask >= 0) {
+    for (b = 0; b <= mask; b++) {
+      e = *(I64 *)(body + b * 8);
+      while (e) {
+        if ((*(I64 *)(e + 16) & HTT_FUN)) {
+          nm = *(I64 *)(e + 8);
+          if (nm && !StrICmp(nm, name)) {
+            j = 0;
+            while (nm[j] && j < 63) {
+              out[j] = nm[j];
+              j++;
+            }
+            out[j] = 0;
+            return 1;
+          }
+        }
+        e = *(I64 *)e;
+      }
+    }
+  }
+  base = SrcMapBase();
+  max = SrcMapMax();
+  if (base) {
+    for (i = 0; i < max; i++) {
+      ent = base + i *SRCMAP_STRIDE;
+      if (*(I32 *)ent) {
+        nm = ent + 4;
+        if (!StrICmp(nm, name)) {
+          j = 0;
+          while (nm[j] && j < 63) {
+            out[j] = nm[j];
+            j++;
+          }
+          out[j] = 0;
+          return 1;
+        }
+      }
+    }
+  }
+  j = 0;
+  while (name[j] && j < 63) {
+    out[j] = name[j];
+    j++;
+  }
+  out[j] = 0;
+  return 0;
+}
+// SymFile -- SymFile("Name")
+// NAME
+//   SymFile - memfs path defining a symbol (no editor, no spill)
+// SYNOPSIS
+//   U8 *SymFile(U8 *name);
+// DESCRIPTION
+//   Returns the memfs filename where Name is defined: srcmap Run() origin,
+//   an existing memfs seed (Name.hc), or man_topics.hc for hardware topics.
+//   Case-insensitive for HolyC functions (Print/print). Silent on failure (0).
+//   Unlike SrcFile, does not materialize srcmap spill files or print UART errors.
+// EXAMPLES
+//   Print("%s\n", SymFile("Print"));
+//   Print("%s\n", SymFile("CLINT"));
+//   if (!SymFile("Foo")) Print("Foo: no file\n");
+// SEE ALSO
+//   SrcFile  Src  SrcmapFileOf  DocFileFor  Man
+// BUGS
+//   REPL-only defs with srcmap text but no file return 0 until Src spills Name.hc.
+U8 *SymFile(U8 *name)
+{
+  U8 *f, *df;
+  I64 j;
+  if (!name || !*name)
+    return 0;
+  SymCanonInto(name, SymTmp);
+  f = SrcmapFileOf(SymTmp);
+  if (f) {
+    j = 0;
+    while (f[j] && j < 63) {
+      srcfile_buf[j] = f[j];
+      j++;
+    }
+    srcfile_buf[j] = 0;
+    return srcfile_buf;
+  }
+  if (FileLen(name) >= 0) {
+    j = 0;
+    while (name[j] && j < 63) {
+      srcfile_buf[j] = name[j];
+      j++;
+    }
+    srcfile_buf[j] = 0;
+    return srcfile_buf;
+  }
+  NameDotHc(SymTmp, srcfile_buf);
+  if (FileLen(srcfile_buf) >= 0)
+    return srcfile_buf;
+  NameDotHc(name, srcfile_buf);
+  if (FileLen(srcfile_buf) >= 0)
+    return srcfile_buf;
+  df = DocFileFor(name);
+  if (!df)
+    df = DocFileFor(SymTmp);
+  if (df) {
+    j = 0;
+    while (df[j] && j < 63) {
+      srcfile_buf[j] = df[j];
+      j++;
+    }
+    srcfile_buf[j] = 0;
+    return srcfile_buf;
+  }
+  return 0;
+}
 // Prefer host call_editor (slot 0x87001078): uses HolyC `editor` global, falls back to C Edit.
 U0 HcCallEditor(U8 *name)
 {
@@ -201,42 +324,22 @@ U0 HcCallEditor(U8 *name)
 U8 *SrcFile(U8 *name)
 {
   U8 *f, *s;
-  I64 n, j;
+  I64 n;
   if (!name || !*name)
     return 0;
-  f = SrcmapFileOf(name);
+  f = SymFile(name);
   if (f)
     return f;
-  s = SrcmapGet(name);
+  SymCanonInto(name, SymTmp);
+  s = SrcmapGet(SymTmp);
   if (s) {
-    NameDotHc(name, SymTmp);
+    NameDotHc(SymTmp, srcfile_buf);
     n = 0;
     while (s[n])
       n++;
-    FileWrite(SymTmp, s, n);
-    j = 0;
-    while (SymTmp[j] && j < 63) {
-      srcfile_buf[j] = SymTmp[j];
-      j++;
-    }
-    srcfile_buf[j] = 0;
+    FileWrite(srcfile_buf, s, n);
     return srcfile_buf;
   }
-  if (FileLen(name) >= 0)
-    return name;
-  NameDotHc(name, SymTmp);
-  if (FileLen(SymTmp) >= 0) {
-    j = 0;
-    while (SymTmp[j] && j < 63) {
-      srcfile_buf[j] = SymTmp[j];
-      j++;
-    }
-    srcfile_buf[j] = 0;
-    return srcfile_buf;
-  }
-  f = DocFileFor(name);
-  if (f)
-    return f;
   UartStr("SrcFile: no source for ");
   UartStr(name);
   UartStr("\n");
@@ -254,6 +357,20 @@ U8 *SrcText(U8 *name)
     return FileRead(f);
   return 0;
 }
+// Stash symbol for Vi/EditHoly seek-on-open (matches C src_jump_set).
+U0 SrcJumpSet(U8 *name)
+{
+  I64 i;
+  JumpIdent[0] = 0;
+  if (!name || !*name)
+    return;
+  i = 0;
+  while (name[i] && i < 63) {
+    JumpIdent[i] = name[i];
+    i++;
+  }
+  JumpIdent[i] = 0;
+}
 // Src("Name") -- TempleOS goto-definition: open defining source in preferred editor, then Run.
 U0 Src(U8 *name)
 {
@@ -266,7 +383,9 @@ U0 Src(U8 *name)
   }
   fn = SrcmapFileOf(name);
   if (fn) {
+    SrcJumpSet(name);
     HcCallEditor(fn);
+    JumpIdent[0] = 0;
     Run(fn);
     return;
   }
@@ -277,7 +396,9 @@ U0 Src(U8 *name)
     while (s[n])
       n++;
     FileWrite(SymTmp, s, n);
+    SrcJumpSet(name);
     HcCallEditor(SymTmp);
+    JumpIdent[0] = 0;
     Run(SymTmp);
     return;
   }
@@ -288,13 +409,17 @@ U0 Src(U8 *name)
   }
   NameDotHc(name, SymTmp);
   if (FileLen(SymTmp) >= 0) {
+    SrcJumpSet(name);
     HcCallEditor(SymTmp);
+    JumpIdent[0] = 0;
     Run(SymTmp);
     return;
   }
   fn = DocFileFor(name);
   if (fn) {
+    SrcJumpSet(name);
     HcCallEditor(fn);
+    JumpIdent[0] = 0;
     return;
     // comments only — no Run
   }
@@ -444,6 +569,58 @@ U0 Funs()
       editable++;
     }
     UartStr("\n");
+  }
+  UartStr("  Src-editable: ");
+  "%d\n", editable;
+}
+// FunsList -- FunsList()
+// NAME
+//   FunsList - non-interactive dump of the function symbol table
+// SYNOPSIS
+//   U0 FunsList();
+// DESCRIPTION
+//   Prints up to 200 HTT_FUN names (UART-capped) with [src] when Src()/edit is
+//   available. Prefer Funs; for the interactive filter → Src picker.
+// EXAMPLES
+//   FunsList;
+// SEE ALSO
+//   Funs  FunPick  FunsS  FunsSec  FunWrite
+U0 FunsList()
+{
+  I64 i, n, editable, pass, want, s, shown, any;
+  I64 order[6];
+  editable = 0;
+  shown = 0;
+  n = FunCount();
+  order[0] = 1;
+  order[1] = 2;
+  order[2] = 3;
+  order[3] = 4;
+  order[4] = 5;
+  order[5] = 9;
+  UartStr("Symbol table: ");
+  "%d", n;
+  UartStr(" functions (by topic)\n");
+  for (pass = 0; pass < 6; pass++) {
+    want = order[pass];
+    any = 0;
+    for (i = 0; i < n && shown < 200; i++) {
+      s = FunSecAt(i);
+      if (s != want)
+        continue;
+      if (!any) {
+        "--- %d %s ---\n", want, FunSecName(want);
+        any = 1;
+      }
+      UartStr("  ");
+      UartStr(FunName(i));
+      if (FunHasSrc(i)) {
+        UartStr("  [src]");
+        editable++;
+      }
+      UartStr("\n");
+      shown++;
+    }
   }
   UartStr("  Src-editable: ");
   "%d\n", editable;
