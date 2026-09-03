@@ -6,10 +6,31 @@ Automated smokes may use an emulator; that harness is not the product. Prefer bo
 
 ## Prerequisites
 
-- Host C toolchain (`make` → `holyc-riscv`)
+- Host C toolchain (`gcc`, `make`) — builds `holyc-riscv` from sources in `host/`
 - Guest / CI tools: `riscv64-unknown-elf-gcc` (+ `ld`/`objcopy`), Python 3
 - Optional for local integration smokes: `qemu-system-riscv64`
 - Optional: `shellcheck` for `make lint-sh`
+
+There is **no** separate HolyC compiler download, submodule, or install step. A clean
+clone plus the tools above is enough for `make`, `make test`, and (with QEMU) `make ci`.
+
+## Self-contained repository
+
+| In git | Not in git (build locally) |
+|--------|----------------------------|
+| `host/*.c` / `host/*.h` — full host AOT compiler | `./holyc-riscv` — produced by `make` (gitignored; platform-specific) |
+| `bootstrap/holy_rt*.h`, `seed/*.hc` — REPL runtime tables + seeds | `bootstrap/repl.elf`, `boot_blob_embed.h` — from `Makefile.repl` / `make repl-blob` |
+| `tools/pack_tosb.c`, generators | `tools/pack_tosb` — built on demand by kernel smokes |
+
+**Bootstrap path:** standard host `gcc` compiles `host/` → `./holyc-riscv`. That binary
+AOT-compiles HolyC guests (kernel smokes, `repl-blob`, `hc_repl`). The bare-metal REPL
+(`bootstrap/Makefile.repl`) also links `host/*.c` directly as a guest object — it does
+**not** require a prebuilt `./holyc-riscv` to link `repl.elf`, though `make repl-blob`
+uses the host binary for AOT validation when present.
+
+**Do not commit** `./holyc-riscv`: macOS and Linux produce different native binaries. CI
+and local workflows always build from `host/` (`make` or `make holyc-riscv`). Override only
+for debugging: `HOLYC=/path/to/holyc-riscv` or `HOLYC_BIN=…` in test scripts.
 
 ## Build and test
 
@@ -53,7 +74,7 @@ Cursor rule: [`.cursor/rules/holyc-fmt.mdc`](../.cursor/rules/holyc-fmt.mdc).
 ## Boards / Kconfig
 
 ```bash
-make menuconfig-rv
+make menuconfig
 # or
 make -C templeos-riscv defconfig-sifive_u
 ```

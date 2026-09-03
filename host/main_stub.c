@@ -56,6 +56,48 @@ static int fmt_file(const char *path, int inplace) {
   return 0;
 }
 
+/* Walk IC after Compile(); print each IC_RAW_RV word as 8 lowercase hex digits.
+ * Bypasses RVU32 peephole (which drops nop / mv rd,rd) so this is assembler semantics. */
+static int asm_dump_file(const char *path) {
+  FILE *f = fopen(path, "r");
+  if (!f) {
+    fprintf(stderr, "Cannot open %s\n", path);
+    return 2;
+  }
+  if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 2; }
+  long sz = ftell(f);
+  if (sz < 0) { fclose(f); return 2; }
+  if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return 2; }
+  char *src = malloc((size_t)sz + 1);
+  if (!src) { fclose(f); return 2; }
+  if (fread(src, 1, (size_t)sz, f) != (size_t)sz) { free(src); fclose(f); return 2; }
+  src[sz] = '\0';
+  fclose(f);
+
+  Compiler *cc = Compile(src, path, true);
+  free(src);
+  if (cc->error) {
+    const char *file = cc->error_file ? cc->error_file : path;
+    fprintf(stderr, "%s:%d:%d: error: %s\n", file, cc->error_line,
+            cc->error_col > 0 ? cc->error_col : 1, cc->error);
+    CompilerFree(cc);
+    return 2;
+  }
+
+  I64 n = 0;
+  for (CIntermediateCode *ic = cc->ic_head; ic; ic = ic->next) {
+    if (ic->ic_code != IC_RAW_RV) continue;
+    printf("%08x\n", (unsigned)(U32)ic->ic_data);
+    n++;
+  }
+  CompilerFree(cc);
+  if (n == 0) {
+    fprintf(stderr, "asm-dump: no IC_RAW_RV words (asm skipped or empty)\n");
+    return 1;
+  }
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc >= 2 && strcmp(argv[1], "--fmt") == 0) {
     int inplace = 1;
@@ -79,6 +121,14 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  if (argc >= 2 && strcmp(argv[1], "--asm-dump") == 0) {
+    if (argc < 3) {
+      fprintf(stderr, "Usage: %s --asm-dump <file.hc>\n", argv[0]);
+      return 1;
+    }
+    return asm_dump_file(argv[2]);
+  }
+
   printf("═══════════════════════════════════════════════════════════\n");
   printf("HolyC to RISC-V Compiler (AOT/JIT)\n");
   printf("═══════════════════════════════════════════════════════════\n\n");
@@ -86,6 +136,7 @@ int main(int argc, char **argv) {
   if (argc < 2) {
     printf("Usage: %s <file.hc> [-o output.bin]\n", argv[0]);
     printf("       %s --fmt [--stdout] <file.hc>...\n", argv[0]);
+    printf("       %s --asm-dump <file.hc>\n", argv[0]);
     return 1;
   }
 

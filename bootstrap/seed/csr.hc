@@ -1,42 +1,19 @@
 // csr.hc -- RISC-V MemMap / GPR / CSR symbols + real csrr/csrw Get/Set + Reg dig-down.
-// Boot after sym.hc (MemMap/Regs slots). Edit live: Run("csr.hc");
-// ---- Memory-map symbols (use without hardcoding 0x85…) -----------------------------------
-#define MEM_RAM        0x80000000
-#define MEM_TEST       0x00100000
-#define MEM_CLINT      0x02000000
-#define MEM_CLINT_MTIME_OFF    0xBFF8
-#define MEM_CLINT_MTIMECMP_OFF 0x4000
-#define MEM_MTIME      0x0200BFF8
-#define MEM_MTIMECMP   0x02004000
-#define MEM_PLIC       0x0C000000
-#define MEM_UART       0x10000000
-#define MEM_VIRTIO     0x10001000
-#define MEM_VIRTIO_STRIDE 0x1000
-#define MEM_FW_CFG     0x10100000
-#define MEM_FS         0x85000000
-#define MEM_HEAP       0x86000000
-#define MEM_FB         0x86100000
-#define MEM_FIXED      0x87000000
-#define MEM_TRAP_SNAP  0x87000100
-#define MEM_REGS_SNAP  0x87000300
-#define MEM_HOST_SLOTS 0x87001000
-#define MEM_STACK      0x87F00000
-// Kernel phase3 Compiler.BIN embed — not present in the UART REPL image.
-#define MEM_COMPILER   0
-// ---- Region ↔ HolyC driver (typical virt-style MEM_* defaults; Kernel uses RVMemMap.HC + Kconfig) --------
-// Last column of MemMap(); dig-down: MemMapDrvFind("uart"); Man("MemMap");
-#define MEMMAP_DRV_UART    "RVUart16550 / uart.hc"
-#define MEMMAP_DRV_CLINT   "RVTimer / CLINT"
-#define MEMMAP_DRV_PLIC    "RVPlicHw"
-#define MEMMAP_DRV_VIRTIO  "DskVirtioRV / RVVirtioMmio*"
-#define MEMMAP_DRV_FB      "RVFb / ramfb"
-#define MEMMAP_DRV_FW_CFG  "RVFwCfgYes"
-#define MEMMAP_DRV_FS      "fs.hc"
-#define MEMMAP_DRV_HEAP    "mem.hc"
-#define MEMMAP_DRV_TRAP    "trap.hc"
-#define MEMMAP_DRV_REGS    "Regs / csr.hc"
-#define MEMMAP_DRV_TEST    "[plat SiFive test]"
-#define MEMMAP_DRV_RAM     "[plat DRAM]"
+// Boot after MemMapSelected.hc (board MEM_*) + sym.hc (MemMap/Regs slots). Edit: Run("csr.hc");
+// Board MEM_* / MEMMAP_DRV_* come from MemMapSelected.hc (make -C templeos-riscv syncconfig).
+// PLIC pending offset is architectural (not a Kconfig symbol).
+#define MEM_PLIC_PENDING_OFF   0x1000
+// NS16550A byte offsets @ MEM_UART (THR/RBR at +0).
+#define UART_LSR_OFF  5
+#define UART_LSR_THRE  0x20
+#define UART_LSR_DR    0x01
+// Legacy virtio-mmio register offsets (MagicValue 'virt' = 0x74726976).
+#define VIRTIO_MAGIC           0x74726976
+#define VIRTIO_REG_MAGIC       0x00
+#define VIRTIO_REG_VERSION     0x04
+#define VIRTIO_REG_DEVICE_ID   0x08
+#define VIRTIO_REG_GUEST_PGSZ  0x28
+#define VIRTIO_REG_STATUS      0x70
 // ---- GPR ABI indices (REG_SP etc.; string dig-down via Reg("sp")) -------------------------
 #define REG_ZERO 0
 #define REG_RA   1
@@ -72,18 +49,37 @@
 #define REG_T5   30
 #define REG_T6   31
 // ---- CSR address constants (CSRGet(CSR_MSTATUS); also Reg("mstatus")) --------------------
-#define CSR_SATP     0x180
-#define CSR_SSCRATCH 0x140
-#define CSR_MSTATUS  0x300
-#define CSR_MISA     0x301
-#define CSR_MIE      0x304
-#define CSR_MTVEC    0x305
-#define CSR_MSCRATCH 0x340
-#define CSR_MEPC     0x341
-#define CSR_MCAUSE   0x342
-#define CSR_MTVAL    0x343
-#define CSR_MIP      0x344
-#define CSR_MHARTID  0xF14
+#define CSR_SSTATUS    0x100
+#define CSR_SIE        0x104
+#define CSR_STVEC      0x105
+#define CSR_SSCRATCH   0x140
+#define CSR_SEPC       0x141
+#define CSR_SCAUSE     0x142
+#define CSR_STVAL      0x143
+#define CSR_SIP        0x144
+#define CSR_SATP       0x180
+#define CSR_MSTATUS    0x300
+#define CSR_MISA       0x301
+#define CSR_MEDELEG    0x302
+#define CSR_MIDELEG    0x303
+#define CSR_MIE        0x304
+#define CSR_MTVEC      0x305
+#define CSR_MCOUNTEREN 0x306
+#define CSR_MSCRATCH   0x340
+#define CSR_MEPC       0x341
+#define CSR_MCAUSE     0x342
+#define CSR_MTVAL      0x343
+#define CSR_MIP        0x344
+#define CSR_MCYCLE     0xB00
+#define CSR_MINSTRET   0xB02
+#define CSR_CYCLE      0xC00
+#define CSR_TIME       0xC01
+#define CSR_INSTRET    0xC02
+#define CSR_MHARTID    0xF14
+I64 g_reg_snap_asm;
+I64 g_reg_entry;
+I64 g_reg_snap_fresh;
+// set by EvalAsmRun — RegEntry skips re-snap once so Reg("a0") sees post-asm GPRs
 asm {
 	HcGetMStatus::
 	csrr	a0, 0x300
@@ -97,6 +93,18 @@ asm {
 	HcSetMIsa::
 	csrw	0x301, a0
 	ret
+	HcGetMedeleg::
+	csrr	a0, 0x302
+	ret
+	HcSetMedeleg::
+	csrw	0x302, a0
+	ret
+	HcGetMideleg::
+	csrr	a0, 0x303
+	ret
+	HcSetMideleg::
+	csrw	0x303, a0
+	ret
 	HcGetMie::
 	csrr	a0, 0x304
 	ret
@@ -109,6 +117,12 @@ asm {
 	HcSetMtvec::
 	csrw	0x305, a0
 	fencei
+	ret
+	HcGetMCounterEn::
+	csrr	a0, 0x306
+	ret
+	HcSetMCounterEn::
+	csrw	0x306, a0
 	ret
 	HcGetMScratch::
 	csrr	a0, 0x340
@@ -140,6 +154,37 @@ asm {
 	HcSetMip::
 	csrw	0x344, a0
 	ret
+	HcGetMCycle::
+	csrr	a0, 0xB00
+	ret
+	HcGetMInstret::
+	csrr	a0, 0xB02
+	ret
+	HcGetCycle::
+	csrr	a0, 0xC00
+	ret
+	HcGetInstret::
+	csrr	a0, 0xC02
+	ret
+	HcGetSStatus::
+	csrr	a0, 0x100
+	ret
+	HcSetSStatus::
+	csrw	0x100, a0
+	ret
+	HcGetSie::
+	csrr	a0, 0x104
+	ret
+	HcSetSie::
+	csrw	0x104, a0
+	ret
+	HcGetStvec::
+	csrr	a0, 0x105
+	ret
+	HcSetStvec::
+	csrw	0x105, a0
+	fencei
+	ret
 	HcGetSatp::
 	csrr	a0, 0x180
 	ret
@@ -152,23 +197,165 @@ asm {
 	HcSetSScratch::
 	csrw	0x140, a0
 	ret
+	HcGetSepc::
+	csrr	a0, 0x141
+	ret
+	HcSetSepc::
+	csrw	0x141, a0
+	ret
+	HcGetScause::
+	csrr	a0, 0x142
+	ret
+	HcSetScause::
+	csrw	0x142, a0
+	ret
+	HcGetStval::
+	csrr	a0, 0x143
+	ret
+	HcSetStval::
+	csrw	0x143, a0
+	ret
+	HcGetSip::
+	csrr	a0, 0x144
+	ret
+	HcSetSip::
+	csrw	0x144, a0
+	ret
 	HcGetMHartId::
 	csrr	a0, 0xF14
 	ret
+	RegSnapAsm::
+	addi	sp, sp, -16
+	sd	t6, 0(sp)
+	sd	t5, 8(sp)
+	lui	t6, 0x10E00
+	slli	t6, t6, 3
+	sd	x1, 0x308(t6)
+	addi	t5, sp, 16
+	sd	t5, 0x310(t6)
+	sd	x3, 0x318(t6)
+	sd	x4, 0x320(t6)
+	sd	x5, 0x328(t6)
+	sd	x6, 0x330(t6)
+	sd	x7, 0x338(t6)
+	sd	x8, 0x340(t6)
+	sd	x9, 0x348(t6)
+	sd	x10, 0x350(t6)
+	sd	x11, 0x358(t6)
+	sd	x12, 0x360(t6)
+	sd	x13, 0x368(t6)
+	sd	x14, 0x370(t6)
+	sd	x15, 0x378(t6)
+	sd	x16, 0x380(t6)
+	sd	x17, 0x388(t6)
+	sd	x18, 0x390(t6)
+	sd	x19, 0x398(t6)
+	sd	x20, 0x3A0(t6)
+	sd	x21, 0x3A8(t6)
+	sd	x22, 0x3B0(t6)
+	sd	x23, 0x3B8(t6)
+	sd	x24, 0x3C0(t6)
+	sd	x25, 0x3C8(t6)
+	sd	x26, 0x3D0(t6)
+	sd	x27, 0x3D8(t6)
+	sd	x28, 0x3E0(t6)
+	sd	x29, 0x3E8(t6)
+	ld	t5, 8(sp)
+	sd	t5, 0x3F0(t6)
+	ld	t5, 0(sp)
+	sd	t5, 0x3F8(t6)
+	ld	t5, 8(sp)
+	ld	t6, 0(sp)
+	addi	sp, sp, 16
+	ret
+}
+
+U0 RegsSnapOnly()
+{
+  // Inline asm — must match RegSnapAsm (also used from Reg:: / JIT g_reg_snap_asm).
+  asm {
+	addi	sp, sp, -16
+	sd	t6, 0(sp)
+	sd	t5, 8(sp)
+	lui	t6, 0x10E00
+	slli	t6, t6, 3
+	sd	x1, 0x308(t6)
+	addi	t5, sp, 16
+	sd	t5, 0x310(t6)
+	sd	x3, 0x318(t6)
+	sd	x4, 0x320(t6)
+	sd	x5, 0x328(t6)
+	sd	x6, 0x330(t6)
+	sd	x7, 0x338(t6)
+	sd	x8, 0x340(t6)
+	sd	x9, 0x348(t6)
+	sd	x10, 0x350(t6)
+	sd	x11, 0x358(t6)
+	sd	x12, 0x360(t6)
+	sd	x13, 0x368(t6)
+	sd	x14, 0x370(t6)
+	sd	x15, 0x378(t6)
+	sd	x16, 0x380(t6)
+	sd	x17, 0x388(t6)
+	sd	x18, 0x390(t6)
+	sd	x19, 0x398(t6)
+	sd	x20, 0x3A0(t6)
+	sd	x21, 0x3A8(t6)
+	sd	x22, 0x3B0(t6)
+	sd	x23, 0x3B8(t6)
+	sd	x24, 0x3C0(t6)
+	sd	x25, 0x3C8(t6)
+	sd	x26, 0x3D0(t6)
+	sd	x27, 0x3D8(t6)
+	sd	x28, 0x3E0(t6)
+	sd	x29, 0x3E8(t6)
+	ld	t5, 8(sp)
+	sd	t5, 0x3F0(t6)
+	ld	t5, 0(sp)
+	sd	t5, 0x3F8(t6)
+	ld	t5, 8(sp)
+	ld	t6, 0(sp)
+	addi	sp, sp, 16
+  }
+}
+
+U0 RegsRestoreOnly()
+{
+  // Do not reload ra/sp/fp/s* — HolyC frames use them. Only temps/args Print may smash.
+  asm {
+	lui	t6, 0x10E00
+	slli	t6, t6, 3
+	ld	x5, 0x328(t6)
+	ld	x6, 0x330(t6)
+	ld	x7, 0x338(t6)
+	ld	x10, 0x350(t6)
+	ld	x11, 0x358(t6)
+	ld	x12, 0x360(t6)
+	ld	x13, 0x368(t6)
+	ld	x14, 0x370(t6)
+	ld	x15, 0x378(t6)
+	ld	x16, 0x380(t6)
+	ld	x17, 0x388(t6)
+	ld	x28, 0x3E0(t6)
+	ld	x29, 0x3E8(t6)
+	ld	x30, 0x3F0(t6)
+	ld	t6, 0x3F8(t6)
+  }
 }
 // GetMStatus -- GetMStatus()
 // NAME
-//   GetMStatus - read mstatus (CSR_MSTATUS / csrr)
+//   GetMStatus - read mstatus (machine status CSR)
 // SYNOPSIS
 //   I64 GetMStatus();
 // DESCRIPTION
-//   Real csrr of machine status (MIE, FS, privilege stack, …). Pair with SetMStatus.
-//   Siblings: GetMie/GetMtvec/GetMepc/GetMcause/GetMtval/GetMScratch/GetMip/GetMIsa/
-//   GetSatp/GetSScratch/GetMHartId. Numeric: CSRGet(CSR_MSTATUS). Dig-down: Reg("mstatus").
-// INPUTS
-//   none
-// OUTPUTS
-//   Current mstatus value
+//   Reads the machine status register (interrupt enable, FPU dirty bits, …).
+//   Pair with SetMStatus / CSRGet(CSR_MSTATUS) / Reg("mstatus").
+// EXAMPLES
+//   Print("%X\n", GetMStatus());
+//   Reg("mstatus");
+//   Print("%X\n", CSRGet(CSR_MSTATUS));
+// SEE ALSO
+//   SetMStatus  CSRGet  Reg  Regs  MIE  TrapInit
 // BUGS
 //   M-mode only on this port (bare-metal seed profile).
 I64 GetMStatus()
@@ -280,6 +467,126 @@ U0 SetSScratch(I64 v)
 {
   HcSetSScratch(v);
 }
+
+I64 GetMedeleg()
+{
+  return HcGetMedeleg();
+}
+
+U0 SetMedeleg(I64 v)
+{
+  HcSetMedeleg(v);
+}
+
+I64 GetMideleg()
+{
+  return HcGetMideleg();
+}
+
+U0 SetMideleg(I64 v)
+{
+  HcSetMideleg(v);
+}
+
+I64 GetMCounterEn()
+{
+  return HcGetMCounterEn();
+}
+
+U0 SetMCounterEn(I64 v)
+{
+  HcSetMCounterEn(v);
+}
+
+I64 GetMCycle()
+{
+  return HcGetMCycle();
+}
+
+I64 GetMInstret()
+{
+  return HcGetMInstret();
+}
+
+I64 GetCycle()
+{
+  return HcGetCycle();
+}
+
+I64 GetInstret()
+{
+  return HcGetInstret();
+}
+
+I64 GetSStatus()
+{
+  return HcGetSStatus();
+}
+
+U0 SetSStatus(I64 v)
+{
+  HcSetSStatus(v);
+}
+
+I64 GetSie()
+{
+  return HcGetSie();
+}
+
+U0 SetSie(I64 v)
+{
+  HcSetSie(v);
+}
+
+I64 GetStvec()
+{
+  return HcGetStvec();
+}
+
+U0 SetStvec(I64 v)
+{
+  HcSetStvec(v);
+}
+
+I64 GetSepc()
+{
+  return HcGetSepc();
+}
+
+U0 SetSepc(I64 v)
+{
+  HcSetSepc(v);
+}
+
+I64 GetScause()
+{
+  return HcGetScause();
+}
+
+U0 SetScause(I64 v)
+{
+  HcSetScause(v);
+}
+
+I64 GetStval()
+{
+  return HcGetStval();
+}
+
+U0 SetStval(I64 v)
+{
+  HcSetStval(v);
+}
+
+I64 GetSip()
+{
+  return HcGetSip();
+}
+
+U0 SetSip(I64 v)
+{
+  HcSetSip(v);
+}
 // GetMHartId -- GetMHartId()
 // NAME
 //   GetMHartId - read mhartid (read-only)
@@ -323,12 +630,15 @@ U0 SetRFlags(I64 f)
 // SYNOPSIS
 //   I64 CSRGet(I64 csr);
 // DESCRIPTION
-//   Dispatch on CSR_MSTATUS / CSR_MEPC / … to the matching Get* (real csrr). Prefer named
-//   GetMStatus when you know which CSR; use CSRGet when the address is symbolic.
-// INPUTS
-//   csr - CSR_* address constant
-// OUTPUTS
-//   CSR value, or 0 if unknown
+//   Reads a control/status register given its CSR_* number (e.g. CSR_MSTATUS).
+//   Prefer named helpers (GetMStatus) when you know which register; use CSRGet
+//   when the address is symbolic or passed around.
+// EXAMPLES
+//   Print("%X\n", CSRGet(CSR_MSTATUS));
+//   Print("%X\n", GetMStatus());
+//   Reg("mstatus");
+// SEE ALSO
+//   CSRSet  GetMStatus  Reg  Regs  RegHelp  CSR
 // BUGS
 //   Unknown csr numbers return 0 (no illegal-instruction probe).
 I64 CSRGet(I64 csr)
@@ -337,10 +647,16 @@ I64 CSRGet(I64 csr)
     return GetMStatus();
   if (csr == CSR_MISA)
     return GetMIsa();
+  if (csr == CSR_MEDELEG)
+    return GetMedeleg();
+  if (csr == CSR_MIDELEG)
+    return GetMideleg();
   if (csr == CSR_MIE)
     return GetMie();
   if (csr == CSR_MTVEC)
     return GetMtvec();
+  if (csr == CSR_MCOUNTEREN)
+    return GetMCounterEn();
   if (csr == CSR_MSCRATCH)
     return GetMScratch();
   if (csr == CSR_MEPC)
@@ -351,10 +667,32 @@ I64 CSRGet(I64 csr)
     return GetMtval();
   if (csr == CSR_MIP)
     return GetMip();
+  if (csr == CSR_MCYCLE)
+    return GetMCycle();
+  if (csr == CSR_MINSTRET)
+    return GetMInstret();
+  if (csr == CSR_CYCLE)
+    return GetCycle();
+  if (csr == CSR_INSTRET)
+    return GetInstret();
+  if (csr == CSR_SSTATUS)
+    return GetSStatus();
+  if (csr == CSR_SIE)
+    return GetSie();
+  if (csr == CSR_STVEC)
+    return GetStvec();
   if (csr == CSR_SATP)
     return GetSatp();
   if (csr == CSR_SSCRATCH)
     return GetSScratch();
+  if (csr == CSR_SEPC)
+    return GetSepc();
+  if (csr == CSR_SCAUSE)
+    return GetScause();
+  if (csr == CSR_STVAL)
+    return GetStval();
+  if (csr == CSR_SIP)
+    return GetSip();
   if (csr == CSR_MHARTID)
     return GetMHartId();
   return 0;
@@ -365,14 +703,17 @@ I64 CSRGet(I64 csr)
 // SYNOPSIS
 //   U0 CSRSet(I64 csr,I64 v);
 // DESCRIPTION
-//   Dispatch to Set*. mhartid is RO (no-op). mip/misa are WARL — hardware may ignore bits.
-// INPUTS
-//   csr - CSR_* constant
-//   v - value to write
-// OUTPUTS
-//   none
+//   Writes a control/status register by CSR_* number. Some registers are
+//   read-only or WARL (hardware may ignore bits). Do not point mtvec at junk —
+//   use TrapInit for the normal trap path.
+// EXAMPLES
+//   Print("%X\n", CSRGet(CSR_MIE));
+//   // CSRSet(CSR_MIE, CSRGet(CSR_MIE)|128);  // set MTIE carefully
+//   Man("CLINT");
+// SEE ALSO
+//   CSRGet  SetMStatus  TrapInit  RegHelp  CSR
 // BUGS
-//   Unknown csr: no-op. Do not point mtvec at junk (SetMtvec / TrapInit).
+//   Unknown csr: no-op. mhartid is RO.
 U0 CSRSet(I64 csr, I64 v)
 {
   if (csr == CSR_MSTATUS) {
@@ -383,12 +724,24 @@ U0 CSRSet(I64 csr, I64 v)
     SetMIsa(v);
     return;
   }
+  if (csr == CSR_MEDELEG) {
+    SetMedeleg(v);
+    return;
+  }
+  if (csr == CSR_MIDELEG) {
+    SetMideleg(v);
+    return;
+  }
   if (csr == CSR_MIE) {
     SetMie(v);
     return;
   }
   if (csr == CSR_MTVEC) {
     SetMtvec(v);
+    return;
+  }
+  if (csr == CSR_MCOUNTEREN) {
+    SetMCounterEn(v);
     return;
   }
   if (csr == CSR_MSCRATCH) {
@@ -411,12 +764,40 @@ U0 CSRSet(I64 csr, I64 v)
     SetMip(v);
     return;
   }
+  if (csr == CSR_SSTATUS) {
+    SetSStatus(v);
+    return;
+  }
+  if (csr == CSR_SIE) {
+    SetSie(v);
+    return;
+  }
+  if (csr == CSR_STVEC) {
+    SetStvec(v);
+    return;
+  }
   if (csr == CSR_SATP) {
     SetSatp(v);
     return;
   }
   if (csr == CSR_SSCRATCH) {
     SetSScratch(v);
+    return;
+  }
+  if (csr == CSR_SEPC) {
+    SetSepc(v);
+    return;
+  }
+  if (csr == CSR_SCAUSE) {
+    SetScause(v);
+    return;
+  }
+  if (csr == CSR_STVAL) {
+    SetStval(v);
+    return;
+  }
+  if (csr == CSR_SIP) {
+    SetSip(v);
     return;
   }
   if (csr == CSR_MHARTID) {
@@ -494,15 +875,15 @@ I64 MemMapFind(U8 *name)
 //   U8 *MemMapDrvFind(U8 *name);
 // DESCRIPTION
 //   Maps region names to the owning driver string shown in MemMap's last column.
-//   Virt REPL defaults match Kernel/Drv selects (RVUart16550, RVTimer, RVPlicHw, …).
-//   Kernel builds: see Kernel/Drv/RVMemMap.HC (Kconfig-driven). Dig-down from MemMap;
+//   Strings come from MemMapSelected.hc (Kconfig UART/PLIC/virtio/FB picks).
+//   Kernel builds: see Kernel/Drv/RVMemMap.HC. Dig-down from MemMap;
 //   Man("MemMap"); MemMapDrv;
 // INPUTS
 //   name - same aliases as MemMapFind ("uart","clint","plic","virtio","fb",…)
 // OUTPUTS
 //   Static driver hint string, or 0 if unknown
 // BUGS
-//   Seed table is typical virt-style MEM_*; other boards need Kernel RVMemMap + defconfig.
+//   Seed table tracks MemMapSelected.hc (Kconfig); Kernel: RVMemMap.HC + RVAutoConf.HH.
 U8 *MemMapDrvFind(U8 *name)
 {
   if (!name)
@@ -547,7 +928,7 @@ U8 *MemMapDrvFind(U8 *name)
 // OUTPUTS
 //   UART table
 // BUGS
-//   Virt defaults in csr.hc; Kernel uses RVMemMap.HC + RVAutoConf.HH.
+//   MemMapSelected.hc (Kconfig); Kernel uses RVMemMap.HC + RVAutoConf.HH.
 U0 MemMapDrv()
 {
   UartStr("MemMapDrv — region → HolyC driver (this profile; see Man(\"MemMap\")):\n");
@@ -562,79 +943,884 @@ U0 MemMapDrv()
   "  MEM_TEST    0x%X  %s\n", MEM_TEST, MEMMAP_DRV_TEST;
   UartStr("  MemMap;  MemMapDrvFind(\"uart\");  Man(\"MemMap\");\n");
 }
-// Reg -- Reg("sp") / Reg("mstatus")
-// NAME
-//   Reg - dig-down one GPR or CSR by name
-// SYNOPSIS
-//   I64 Reg(U8 *name);
-// DESCRIPTION
-//   Prints value + short description. GPRs use a call-site snap (same as Regs). CSRs use live
-//   csrr. Accepts ABI names (sp,ra,a0), xN, REG_* tails, and CSR names (mstatus,mepc,…).
-//   From MemMap: Regs; Reg("mstatus"); GetMStatus; Man("Regs"); RegHelp;
-// INPUTS
-//   name - register or CSR name string
-// OUTPUTS
-//   Value, or -1 if unknown
-// BUGS
-//   Needs host reg_one_stub slot on repl.elf; CSR Get* still work without it.
-I64 Reg(U8 *name)
+// ---- HolyC Regs snap+print+restore (MEM_REGS_SNAP). Soft path; Hw* / Sdtrig stay separate.
+// ABI name table: RegGprIndex + RegGprLine (avoid U8*[32] walk — AOT hang on repl-holyc).
+U0 RegLineDesc(U8 *name, I64 v, U8 *desc)
 {
-  I64 (*rg)(U8 *name);
-  rg = *(I64 *)0x87001150;
-  if (rg)
-    return rg(name);
-  if (!name)
+  UartStr("  ");
+  UartStr(name);
+  UartStr(" = ");
+  Print("%p", v);
+  if (desc && *desc) {
+    UartStr("  ");
+    UartStr(desc);
+  }
+  PutCh('\n');
+}
+// RegGprDigit -- parse trailing decimal digits (a7→7, s10→10); -1 if junk remains.
+I64 RegGprDigit(U8 *s)
+{
+  I64 n;
+  if (!s || !*s)
     return -1;
+  n = 0;
+  while (*s >= '0' && *s <= '9') {
+    n = n * 10 + (*s - '0');
+    s++;
+  }
+  if (*s)
+    return -1;
+  return n;
+}
+// RegGprIndex -- resolve xN / ABI / fp / REG_* without g_gpr_abi[] walk (AOT hang).
+I64 RegGprIndex(U8 *name)
+{
+  I64 n;
+  U8 *p;
+  U8 c0;
+  if (!name || !*name)
+    return -1;
+  if ((name[0] == 'x' || name[0] == 'X') && name[1] >= '0' && name[1] <= '9') {
+    n = 0;
+    p = name + 1;
+    while (*p >= '0' && *p <= '9') {
+      n = n * 10 + (*p - '0');
+      p++;
+    }
+    if (!*p && n >= 0 && n < 32)
+      return n;
+    return -1;
+  }
+  if ((name[0] == 'R' || name[0] == 'r') && (name[1] == 'E' || name[1] == 'e') && (name[2] == 'G' || name[2] == 'g')) {
+    p = name + 3;
+    if (*p == '_')
+      p++;
+    name = p;
+    if (!*name)
+      return -1;
+  }
+  if (!StrICmp(name, "zero"))
+    return REG_ZERO;
+  if (!StrICmp(name, "ra"))
+    return REG_RA;
+  if (!StrICmp(name, "sp"))
+    return REG_SP;
+  if (!StrICmp(name, "gp"))
+    return REG_GP;
+  if (!StrICmp(name, "tp"))
+    return REG_TP;
+  if (!StrICmp(name, "fp") || !StrICmp(name, "s0"))
+    return REG_FP;
+  if (!StrICmp(name, "s1"))
+    return REG_S1;
+  c0 = name[0];
+  if (c0 >= 'A' && c0 <= 'Z')
+    c0 += 32;
+  if (c0 == 't' && name[1]) {
+    n = RegGprDigit(name + 1);
+    if (n >= 0 && n <= 2)
+      return REG_T0 + n;
+    if (n >= 3 && n <= 6)
+      return REG_T3 + (n - 3);
+  }
+  if (c0 == 'a' && name[1]) {
+    n = RegGprDigit(name + 1);
+    if (n >= 0 && n <= 7)
+      return REG_A0 + n;
+  }
+  if (c0 == 's' && name[1]) {
+    n = RegGprDigit(name + 1);
+    if (n == 0 || n == 1)
+      return REG_S0 + n;
+    if (n >= 2 && n <= 11)
+      return REG_S2 + (n - 2);
+  }
+  return -1;
+}
+// RegGprLine -- one GPR line xN/abi = value (Print only — UartStr chains hung Reg on AOT).
+U0 RegGprLine(I64 i, I64 v)
+{
+  if (i == 0)
+    "  x00/zero = %p  hardwired zero\n", v;
+  else if (i == 1)
+    "  x01/ra = %p  return address\n", v;
+  else if (i == 2)
+    "  x02/sp = %p  stack pointer\n", v;
+  else if (i == 3)
+    "  x03/gp = %p  global pointer\n", v;
+  else if (i == 4)
+    "  x04/tp = %p  thread pointer\n", v;
+  else if (i == 5)
+    "  x05/t0 = %p  temp (caller-saved)\n", v;
+  else if (i == 6)
+    "  x06/t1 = %p  temp (caller-saved)\n", v;
+  else if (i == 7)
+    "  x07/t2 = %p  temp (caller-saved)\n", v;
+  else if (i == 8)
+    "  x08/s0 = %p  saved / frame ptr (fp)\n", v;
+  else if (i == 9)
+    "  x09/s1 = %p  saved (callee-saved)\n", v;
+  else if (i == 10)
+    "  x10/a0 = %p  arg/ret (caller-saved)\n", v;
+  else if (i == 11)
+    "  x11/a1 = %p  arg/ret (caller-saved)\n", v;
+  else if (i == 12)
+    "  x12/a2 = %p  arg/ret (caller-saved)\n", v;
+  else if (i == 13)
+    "  x13/a3 = %p  arg/ret (caller-saved)\n", v;
+  else if (i == 14)
+    "  x14/a4 = %p  arg/ret (caller-saved)\n", v;
+  else if (i == 15)
+    "  x15/a5 = %p  arg/ret (caller-saved)\n", v;
+  else if (i == 16)
+    "  x16/a6 = %p  arg/ret (caller-saved)\n", v;
+  else if (i == 17)
+    "  x17/a7 = %p  arg/ret (caller-saved)\n", v;
+  else if (i == 18)
+    "  x18/s2 = %p  saved (callee-saved)\n", v;
+  else if (i == 19)
+    "  x19/s3 = %p  saved (callee-saved)\n", v;
+  else if (i == 20)
+    "  x20/s4 = %p  saved (callee-saved)\n", v;
+  else if (i == 21)
+    "  x21/s5 = %p  saved (callee-saved)\n", v;
+  else if (i == 22)
+    "  x22/s6 = %p  saved (callee-saved)\n", v;
+  else if (i == 23)
+    "  x23/s7 = %p  saved (callee-saved)\n", v;
+  else if (i == 24)
+    "  x24/s8 = %p  saved (callee-saved)\n", v;
+  else if (i == 25)
+    "  x25/s9 = %p  saved (callee-saved)\n", v;
+  else if (i == 26)
+    "  x26/s10 = %p  saved (callee-saved)\n", v;
+  else if (i == 27)
+    "  x27/s11 = %p  saved (callee-saved)\n", v;
+  else if (i == 28)
+    "  x28/t3 = %p  temp (caller-saved)\n", v;
+  else if (i == 29)
+    "  x29/t4 = %p  temp (caller-saved)\n", v;
+  else if (i == 30)
+    "  x30/t5 = %p  temp (caller-saved)\n", v;
+  else if (i == 31)
+    "  x31/t6 = %p  temp (caller-saved)\n", v;
+  else
+    "  x??/? = %p\n", v;
+}
+// ---- CSR bitfield decode (explicit bit tests; no table walks — repl-holyc AOT) ----
+U0 CsrDecodeMstatus(I64 v)
+{
+  I64 mpp, fs, xs, vs, uxl, sxl;
+  if (v & 1)
+    Print("   UIE=1 (user interrupts enabled)\n");
+  if (v & 2)
+    Print("   SIE=1 (supervisor interrupts enabled)\n");
+  if (v & 8)
+    Print("   MIE=1 (machine interrupts enabled)\n");
+  else
+    Print("   MIE=0 (machine interrupts disabled)\n");
+  if (v & 16)
+    Print("   UPIE=1 (user prior IE)\n");
+  if (v & 32)
+    Print("   SPIE=1 (supervisor prior IE)\n");
+  if (v & 128)
+    Print("   MPIE=1 (machine prior IE)\n");
+  if (v & 256)
+    Print("   SPP=1 (prior privilege S-mode)\n");
+  vs = (v >> 9) & 3;
+  if (vs)
+    Print("   VS=%d (%s)\n", vs, vs == 1 ? "Initial" : vs == 2 ? "Clean" : vs == 3 ? "Dirty" : "?");
+  mpp = (v >> 11) & 3;
+  if (mpp == 1)
+    Print("   MPP=01 (S-mode)\n");
+  else if (mpp == 3)
+    Print("   MPP=11 (M-mode)\n");
+  else if (mpp == 2)
+    Print("   MPP=10 (reserved)\n");
+  else
+    Print("   MPP=00 (U-mode)\n");
+  fs = (v >> 13) & 3;
+  if (fs)
+    Print("   FS=%d (%s)\n", fs, fs == 1 ? "Initial" : fs == 2 ? "Clean" : fs == 3 ? "Dirty" : "?");
+  xs = (v >> 15) & 3;
+  if (xs)
+    Print("   XS=%d (%s)\n", xs, xs == 1 ? "Initial" : xs == 2 ? "Clean" : xs == 3 ? "Dirty" : "?");
+  if (v & 0x20000)
+    Print("   MPRV=1 (loads/stores at MPP privilege)\n");
+  if (v & 0x40000)
+    Print("   SUM=1 (supervisor may access user pages)\n");
+  if (v & 0x80000)
+    Print("   MXR=1 (executable pages readable)\n");
+  if (v & 0x100000)
+    Print("   TVM=1 (trap satp/tlb ops from S-mode)\n");
+  if (v & 0x200000)
+    Print("   TW=1 (trap WFI from S-mode)\n");
+  if (v & 0x400000)
+    Print("   TSR=1 (trap sret from S-mode)\n");
+  uxl = (v >> 32) & 3;
+  if (uxl == 1)
+    Print("   UXL=01 (32-bit U-mode)\n");
+  else if (uxl == 2)
+    Print("   UXL=10 (64-bit U-mode)\n");
+  sxl = (v >> 34) & 3;
+  if (sxl == 1)
+    Print("   SXL=01 (32-bit S-mode)\n");
+  else if (sxl == 2)
+    Print("   SXL=10 (64-bit S-mode)\n");
+  if (v & 0x8000000000000000)
+    Print("   SD=1 (some state dirty)\n");
+}
+
+U0 CsrDecodeMisa(I64 v)
+{
+  I64 mxl, any;
+  mxl = (v >> 62) & 3;
+  if (mxl == 1)
+    Print("   MXL=01 (RV32)\n");
+  else if (mxl == 2)
+    Print("   MXL=10 (RV64)\n");
+  else if (mxl)
+    Print("   MXL=%d (?)\n", mxl);
+  any = 0;
+  if (v & 1) {
+    Print("   A");
+    any = 1;
+  }
+  if (v & 4) {
+    if (any)
+      Print(" C");
+    else
+      Print("   C");
+    any = 1;
+  }
+  if (v & 8) {
+    if (any)
+      Print(" D");
+    else
+      Print("   D");
+    any = 1;
+  }
+  if (v & 32) {
+    if (any)
+      Print(" F");
+    else
+      Print("   F");
+    any = 1;
+  }
+  if (v & 256) {
+    if (any)
+      Print(" I");
+    else
+      Print("   I");
+    any = 1;
+  }
+  if (v & 4096) {
+    if (any)
+      Print(" M");
+    else
+      Print("   M");
+    any = 1;
+  }
+  if (v & 262144) {
+    if (any)
+      Print(" S");
+    else
+      Print("   S");
+    any = 1;
+  }
+  if (v & 1048576) {
+    if (any)
+      Print(" U");
+    else
+      Print("   U");
+    any = 1;
+  }
+  if (any)
+    Print(" (ISA extensions set)\n");
+}
+
+U0 CsrDecodeIrqBits(I64 v, U8 *kind)
+{
+  if (v & 2)
+    Print("   SSIE=1 (supervisor soft %s)\n", kind);
+  if (v & 8)
+    Print("   MSIE=1 (machine soft %s)\n", kind);
+  if (v & 32)
+    Print("   STIE=1 (supervisor timer %s)\n", kind);
+  if (v & 128)
+    Print("   MTIE=1 (machine timer %s)\n", kind);
+  if (v & 512)
+    Print("   SEIE=1 (supervisor external %s)\n", kind);
+  if (v & 2048)
+    Print("   MEIE=1 (machine external %s)\n", kind);
+}
+
+U0 CsrDecodeMie(I64 v)
+{
+  CsrDecodeIrqBits(v, "enable");
+}
+
+U0 CsrDecodeMip(I64 v)
+{
+  if (v & 2)
+    Print("   SSIP=1 (supervisor soft pending)\n");
+  if (v & 8)
+    Print("   MSIP=1 (machine soft pending)\n");
+  if (v & 32)
+    Print("   STIP=1 (supervisor timer pending)\n");
+  if (v & 128)
+    Print("   MTIP=1 (machine timer pending)\n");
+  if (v & 512)
+    Print("   SEIP=1 (supervisor external pending)\n");
+  if (v & 2048)
+    Print("   MEIP=1 (machine external pending)\n");
+}
+
+U0 CsrDecodeMtvec(I64 v)
+{
+  I64 mode;
+  mode = v & 3;
+  if (mode == 0)
+    Print("   MODE=0 (Direct)\n");
+  else if (mode == 1)
+    Print("   MODE=1 (Vectored)\n");
+  else
+    Print("   MODE=%d (?)\n", mode);
+  Print("   BASE=%p (trap entry)\n", v & ~3);
+}
+
+U0 CsrDecodeMepc(I64 v)
+{
+  Print("   PC=%p", v);
+  if (v & 1)
+    Print(" (bit0 set — compressed or misaligned)");
+  Print("\n");
+  Print("   mret target\n");
+}
+
+U0 CsrDecodeMcause(I64 v)
+{
+  I64 intr, code;
+  intr = (v >> 63) & 1;
+  code = v & 0x7FFFFFFFFFFFFFFF;
+  if (intr)
+    Print("   Interrupt=1 (");
+  else
+    Print("   Exception (Interrupt=0)\n   code=%d (", code);
+  if (intr) {
+    if (code == 0)
+      Print("user soft interrupt");
+    else if (code == 1)
+      Print("supervisor soft interrupt");
+    else if (code == 3)
+      Print("machine soft interrupt");
+    else if (code == 4)
+      Print("user timer interrupt");
+    else if (code == 5)
+      Print("supervisor timer interrupt");
+    else if (code == 7)
+      Print("machine timer interrupt");
+    else if (code == 8)
+      Print("user external interrupt");
+    else if (code == 9)
+      Print("supervisor external interrupt");
+    else if (code == 11)
+      Print("machine external interrupt");
+    else
+      Print("IRQ code %d", code);
+    Print(")\n");
+    Print("   code=%d (", code);
+    if (code == 11)
+      Print("MEI");
+    else if (code == 7)
+      Print("MTI");
+    else if (code == 3)
+      Print("MSI");
+    else if (code == 9)
+      Print("SEI");
+    else if (code == 5)
+      Print("STI");
+    else if (code == 1)
+      Print("SSI");
+    else
+      Print("?");
+    Print(")\n");
+  } else {
+    if (code == 0)
+      Print("insn address misaligned");
+    else if (code == 1)
+      Print("insn access fault");
+    else if (code == 2)
+      Print("illegal instruction");
+    else if (code == 3)
+      Print("breakpoint");
+    else if (code == 4)
+      Print("load address misaligned");
+    else if (code == 5)
+      Print("load access fault");
+    else if (code == 6)
+      Print("store address misaligned");
+    else if (code == 7)
+      Print("store access fault");
+    else if (code == 8)
+      Print("ecall from U-mode");
+    else if (code == 9)
+      Print("ecall from S-mode");
+    else if (code == 11)
+      Print("ecall from M-mode");
+    else if (code == 12)
+      Print("insn page fault");
+    else if (code == 13)
+      Print("load page fault");
+    else if (code == 15)
+      Print("store page fault");
+    else
+      Print("exception %d", code);
+    Print(")\n");
+  }
+}
+
+U0 CsrDecodeMtval(I64 v, I64 mcause_hint)
+{
+  I64 intr, code;
+  if (!v) {
+    Print("   (zero)\n");
+    return;
+  }
+  code = mcause_hint;
+  if (code < 0) {
+    code = GetMcause();
+  }
+  intr = (code >> 63) & 1;
+  code = code & 0x7FFFFFFFFFFFFFFF;
+  if (!intr && (code == 0 || code == 2))
+    Print("   faulting instruction bits (misaligned/illegal insn)\n");
+  else if (!intr && code >= 4 && code <= 7)
+    Print("   bad address for load/store\n");
+  else if (!intr && code >= 12 && code <= 15)
+    Print("   faulting virtual address\n");
+  Print("   value=%p\n", v);
+}
+
+U0 CsrDecodeMscratch(I64 v)
+{
+  if (v)
+    Print("   scratch=%p (trap/OS private)\n", v);
+  else
+    Print("   (zero — unused)\n");
+}
+
+U0 CsrDecodeMhartid(I64 v)
+{
+  Print("   hart %d (read-only)\n", v);
+}
+
+U0 CsrDecodeMtime(I64 v)
+{
+  Print("   CLINT MMIO @ MEM_MTIME (not CSR; CSR_TIME=0xC01 is read-only shadow)\n");
+  Print("   ticks=%d\n", v);
+}
+// CsrExplainVal -- decode CSR bitfields for a known value (Print only — AOT-safe).
+U0 CsrExplainVal(U8 *name, I64 v, I64 mcause_hint)
+{
+  if (!name || !*name)
+    return;
   if (!StrICmp(name, "mstatus")) {
-    "  mstatus = 0x%X  machine status\n", GetMStatus();
-    return GetMStatus();
-  }
-  if (!StrICmp(name, "mepc")) {
-    "  mepc = 0x%X\n", GetMepc();
-    return GetMepc();
-  }
-  if (!StrICmp(name, "mcause")) {
-    "  mcause = 0x%X\n", GetMcause();
-    return GetMcause();
-  }
-  if (!StrICmp(name, "mtvec")) {
-    "  mtvec = 0x%X\n", GetMtvec();
-    return GetMtvec();
-  }
-  if (!StrICmp(name, "mie")) {
-    "  mie = 0x%X\n", GetMie();
-    return GetMie();
-  }
-  if (!StrICmp(name, "mip")) {
-    "  mip = 0x%X\n", GetMip();
-    return GetMip();
-  }
-  if (!StrICmp(name, "mtval")) {
-    "  mtval = 0x%X\n", GetMtval();
-    return GetMtval();
-  }
-  if (!StrICmp(name, "mscratch")) {
-    "  mscratch = 0x%X\n", GetMScratch();
-    return GetMScratch();
+    CsrDecodeMstatus(v);
+    return;
   }
   if (!StrICmp(name, "misa")) {
-    "  misa = 0x%X\n", GetMIsa();
-    return GetMIsa();
+    CsrDecodeMisa(v);
+    return;
   }
-  if (!StrICmp(name, "satp")) {
-    "  satp = 0x%X\n", GetSatp();
-    return GetSatp();
+  if (!StrICmp(name, "mie")) {
+    CsrDecodeMie(v);
+    return;
   }
-  if (!StrICmp(name, "sscratch")) {
-    "  sscratch = 0x%X\n", GetSScratch();
-    return GetSScratch();
+  if (!StrICmp(name, "mip")) {
+    CsrDecodeMip(v);
+    return;
+  }
+  if (!StrICmp(name, "mtvec")) {
+    CsrDecodeMtvec(v);
+    return;
+  }
+  if (!StrICmp(name, "mepc")) {
+    CsrDecodeMepc(v);
+    return;
+  }
+  if (!StrICmp(name, "mcause")) {
+    CsrDecodeMcause(v);
+    return;
+  }
+  if (!StrICmp(name, "mtval")) {
+    CsrDecodeMtval(v, mcause_hint);
+    return;
+  }
+  if (!StrICmp(name, "mscratch")) {
+    CsrDecodeMscratch(v);
+    return;
   }
   if (!StrICmp(name, "mhartid")) {
-    "  mhartid = 0x%X\n", GetMHartId();
-    return GetMHartId();
+    CsrDecodeMhartid(v);
+    return;
   }
-  UartStr("Reg: host slot empty (CSR name fallback missed)\n");
+  if (!StrICmp(name, "mtime")) {
+    CsrDecodeMtime(v);
+    return;
+  }
+}
+// CsrExplain -- CsrExplain("mstatus") / live decode; alias path for Reg dig-down.
+I64 CsrExplain(U8 *name)
+{
+  I64 v;
+  if (!name || !*name) {
+    UartStr("CsrExplain: need CSR name — Reg(\"mstatus\"); Bits(\"mstatus\"); Man(\"CSR\");\n");
+    return -1;
+  }
+  if (!StrICmp(name, "mtime")) {
+    v = *(I64 *)MEM_MTIME;
+    Print("mtime = 0x%X\n", v);
+    CsrExplainVal("mtime", v, -1);
+    return v;
+  }
+  if (!StrICmp(name, "mstatus"))
+    v = GetMStatus();
+  else if (!StrICmp(name, "misa"))
+    v = GetMIsa();
+  else if (!StrICmp(name, "mie"))
+    v = GetMie();
+  else if (!StrICmp(name, "mip"))
+    v = GetMip();
+  else if (!StrICmp(name, "mtvec"))
+    v = GetMtvec();
+  else if (!StrICmp(name, "mepc"))
+    v = GetMepc();
+  else if (!StrICmp(name, "mcause"))
+    v = GetMcause();
+  else if (!StrICmp(name, "mtval"))
+    v = GetMtval();
+  else if (!StrICmp(name, "mscratch"))
+    v = GetMScratch();
+  else if (!StrICmp(name, "mhartid"))
+    v = GetMHartId();
+  else {
+    UartStr("CsrExplain: unknown — try RegHelp; Bits(\"mstatus\"); Man(\"CSR\");\n");
+    return -1;
+  }
+  Print("%s = 0x%X\n", name, v);
+  CsrExplainVal(name, v, -1);
+  return v;
+}
+// CsrDecodeVal -- CsrDecodeVal("mcause", 3) decode without live CSR read.
+U0 CsrDecodeVal(U8 *name, I64 v)
+{
+  if (!name || !*name) {
+    UartStr("CsrDecodeVal: need name + value — CsrDecodeVal(\"mcause\", 3);\n");
+    return;
+  }
+  Print("%s = 0x%X\n", name, v);
+  CsrExplainVal(name, v, -1);
+}
+// Called after GPRs are frozen in MEM_REGS_SNAP (or zeros if snap skipped).
+U0 RegsDumpHc()
+{
+  I64 i, v;
+  UartStr("GPRs at Regs stub entry (xN/abi; snap+restore; Man(\"ABI\")):\n");
+  for (i = 1; i < 32; i++) {
+    v = *(I64 *)(MEM_REGS_SNAP + i * 8);
+    RegGprLine(i, v);
+  }
+  // Spill CSRs via inline csrr (HcGet* calls after the first hung on holyc AOT).
+  asm {
+	lui	t6, 0x10E00
+	slli	t6, t6, 3
+	csrr	t5, 0x300
+	sd	t5, 0x400(t6)
+	csrr	t5, 0x301
+	sd	t5, 0x408(t6)
+	csrr	t5, 0x304
+	sd	t5, 0x410(t6)
+	csrr	t5, 0x305
+	sd	t5, 0x418(t6)
+	csrr	t5, 0x341
+	sd	t5, 0x420(t6)
+	csrr	t5, 0x342
+	sd	t5, 0x428(t6)
+	csrr	t5, 0x343
+	sd	t5, 0x430(t6)
+	csrr	t5, 0x340
+	sd	t5, 0x438(t6)
+	csrr	t5, 0x344
+	sd	t5, 0x440(t6)
+	csrr	t5, 0xF14
+	sd	t5, 0x448(t6)
+  }
+  UartStr("CSRs (CSR_* / GetMStatus… ; Reg(\"mstatus\"); Man(\"Regs\")):\n");
+  v = *(I64 *)(MEM_REGS_SNAP + 0x100);
+  RegLineDesc("mstatus ", v, "machine status (MIE/FS/...)");
+  CsrExplainVal("mstatus", v, -1);
+  v = *(I64 *)(MEM_REGS_SNAP + 0x108);
+  RegLineDesc("misa    ", v, "ISA / extension bitmap (WARL)");
+  v = *(I64 *)(MEM_REGS_SNAP + 0x110);
+  RegLineDesc("mie     ", v, "machine interrupt enable");
+  v = *(I64 *)(MEM_REGS_SNAP + 0x118);
+  RegLineDesc("mtvec   ", v, "trap vector base");
+  v = *(I64 *)(MEM_REGS_SNAP + 0x120);
+  RegLineDesc("mepc    ", v, "exception PC (mret target)");
+  v = *(I64 *)(MEM_REGS_SNAP + 0x128);
+  RegLineDesc("mcause  ", v, "trap cause (interrupt|code)");
+  CsrExplainVal("mcause", v, -1);
+  v = *(I64 *)(MEM_REGS_SNAP + 0x130);
+  RegLineDesc("mtval   ", v, "bad addr / faulting insn");
+  v = *(I64 *)(MEM_REGS_SNAP + 0x138);
+  RegLineDesc("mscratch", v, "M scratch");
+  v = *(I64 *)(MEM_REGS_SNAP + 0x140);
+  RegLineDesc("mip     ", v, "machine interrupt pending");
+  v = *(I64 *)(MEM_REGS_SNAP + 0x148);
+  RegLineDesc("mhartid ", v, "hardware thread id (RO)");
+  v = *(I64 *)MEM_MTIME;
+  RegLineDesc("mtime   ", v, "CLINT cycle (MMIO, not CSR)");
+  UartStr("Dig-down: Reg(\"sp\"); Reg(\"mstatus\"); CsrExplain(\"mcause\"); Bits(\"mie\"); RegHelp;\n");
+}
+// Print one reg from MEM_REGS_SNAP (GPRs) or live CSR. Called from Reg:: after
+// RegSnapAsm — GPR indices reflect call-site values, not post-prologue live regs.
+I64 RegOneHc(U8 *name)
+{
+  I64 gi, v;
+  if (!name || !*name) {
+    UartStr("Reg: need a name — Reg(\"sp\"); Reg(\"mstatus\"); RegHelp;\n");
+    return -1;
+  }
+  gi = RegGprIndex(name);
+  if (gi >= 0) {
+    v = *(I64 *)(MEM_REGS_SNAP + gi * 8);
+    RegGprLine(gi, v);
+    if (!StrICmp(name, "fp") && gi == REG_FP)
+      "  (fp is alias for s0/x08)\n";
+    return v;
+  }
+  if (!StrICmp(name, "mstatus")) {
+    v = GetMStatus();
+    RegLineDesc("mstatus", v, "machine status");
+    CsrExplainVal("mstatus", v, -1);
+    return v;
+  }
+  if (!StrICmp(name, "mepc")) {
+    v = GetMepc();
+    RegLineDesc("mepc", v, "exception PC");
+    CsrExplainVal("mepc", v, -1);
+    return v;
+  }
+  if (!StrICmp(name, "mcause")) {
+    v = GetMcause();
+    RegLineDesc("mcause", v, "trap cause");
+    CsrExplainVal("mcause", v, -1);
+    return v;
+  }
+  if (!StrICmp(name, "mtvec")) {
+    v = GetMtvec();
+    RegLineDesc("mtvec", v, "trap vector");
+    CsrExplainVal("mtvec", v, -1);
+    return v;
+  }
+  if (!StrICmp(name, "mie")) {
+    v = GetMie();
+    RegLineDesc("mie", v, "interrupt enable");
+    CsrExplainVal("mie", v, -1);
+    return v;
+  }
+  if (!StrICmp(name, "mip")) {
+    v = GetMip();
+    RegLineDesc("mip", v, "interrupt pending");
+    CsrExplainVal("mip", v, -1);
+    return v;
+  }
+  if (!StrICmp(name, "mtval")) {
+    v = GetMtval();
+    RegLineDesc("mtval", v, "bad addr / insn");
+    CsrExplainVal("mtval", v, GetMcause());
+    return v;
+  }
+  if (!StrICmp(name, "mscratch")) {
+    v = GetMScratch();
+    RegLineDesc("mscratch", v, "M scratch");
+    CsrExplainVal("mscratch", v, -1);
+    return v;
+  }
+  if (!StrICmp(name, "misa")) {
+    v = GetMIsa();
+    RegLineDesc("misa", v, "ISA bitmap");
+    CsrExplainVal("misa", v, -1);
+    return v;
+  }
+  if (!StrICmp(name, "satp")) {
+    v = GetSatp();
+    RegLineDesc("satp", v, "addr xlate");
+    return v;
+  }
+  if (!StrICmp(name, "sscratch")) {
+    v = GetSScratch();
+    RegLineDesc("sscratch", v, "S scratch");
+    return v;
+  }
+  if (!StrICmp(name, "mhartid")) {
+    v = GetMHartId();
+    RegLineDesc("mhartid", v, "hart id");
+    CsrExplainVal("mhartid", v, -1);
+    return v;
+  }
+  if (!StrICmp(name, "mtime")) {
+    v = *(I64 *)MEM_MTIME;
+    RegLineDesc("mtime   ", v, "CLINT cycle (MMIO)");
+    CsrExplainVal("mtime", v, -1);
+    return v;
+  }
+  UartStr("Reg: unknown \"");
+  UartStr(name);
+  UartStr("\" — try RegHelp; or Regs;\n");
   return -1;
+}
+// Legacy worry_dream publishes C fns at 0x87001xxx. On repl-holyc that page is
+// bare DRAM — non-zero garbage must not be jal'd (Regs hung after soft banner).
+// Define before MemMap/Regs (no &OnTrap-style forward-ref on the checker).
+I64 SoftDbgSlotFnOk(I64 p)
+{
+  /* Legacy only: HostSlotsInstall publishes SOFTDBG_SLOT_MAGIC at 0x87001FF8. */
+  if (*(I64 *)0x87001FF8 != 0x534C4F54)
+    return 0;
+  if (!p)
+    return 0;
+  if (p < 0x80000000 || p >= 0x87000000)
+    return 0;
+  return 1;
+}
+
+I64 RegStubPtrOk(I64 p)
+{
+  // HostSlotsInstall C stubs (reg_one_stub/regs_snap_stub) — no magic required.
+  if (!p)
+    return 0;
+  if (p >= 0x80000000 && p < 0x87000000)
+    return 1;
+  return 0;
+}
+
+U0 SoftDbgHostSlotsClear()
+{
+  I64 i, base;
+  base = 0x87001000;
+  i = 0;
+  while (i < 512) {
+    *(I64 *)(base + i * 8) = 0;
+    i++;
+  }
+}
+// MemMap -- MemMap()
+// NAME
+//   MemMap - print RISC-V memory map with MEM_* symbols and owning drivers
+// SYNOPSIS
+//   U0 MemMap();
+// DESCRIPTION
+//   Lists RAM, HolyC memfs/heap, FB, trap/regs snaps, stack, and MMIO with driver
+//   column. Legacy repl.elf may use a C host slot for live JIT code_mem sizes;
+//   otherwise this HolyC map (same dig-down as MemMapDrv).
+// EXAMPLES
+//   MemMap;  MemMapFind("heap");  MemMapDrvFind("uart");
+// SEE ALSO
+//   MemMapDrv  MemMapFind  Regs  RegHelp  Man("MemMap")
+U0 MemMap()
+{
+  I64 (*mm)();
+  I64 code_base, heap_base;
+  mm = *(I64 *)0x87001128;
+  if (SoftDbgSlotFnOk(mm)) {
+    mm();
+    return;
+  }
+  UartStr("Memory map (RISC-V; MEM_* in csr.hc; last col = HolyC driver):\n");
+  "  MEM_RAM        0x%X  DRAM                          %s\n", MEM_RAM, MEMMAP_DRV_RAM;
+  code_base = *(I64 *)0x87001140;
+  heap_base = *(I64 *)0x87001148;
+  if (code_base)
+    "  MEM_CODE     @ %p  [live JIT code_mem]\n", code_base;
+  if (heap_base)
+    "  MEM_JIT_HEAP @ %p  [live C heap_mem]\n", heap_base;
+  "  MEM_FS         0x%X  HolyC memfs arena           %s\n", MEM_FS, MEMMAP_DRV_FS;
+  "  MEM_HEAP       0x%X  HolyC MAlloc arena          %s\n", MEM_HEAP, MEMMAP_DRV_HEAP;
+  "  MEM_FB         0x%X  soft FB (ramfb)             %s\n", MEM_FB, MEMMAP_DRV_FB;
+  "  MEM_FIXED      0x%X  trap/regs + host slots      [plat]\n", MEM_FIXED;
+  "  MEM_TRAP_SNAP  0x%X  DbgReg / trap GPRs          %s\n", MEM_TRAP_SNAP, MEMMAP_DRV_TRAP;
+  "  MEM_REGS_SNAP  0x%X  Regs() GPR snapshot         %s\n", MEM_REGS_SNAP, MEMMAP_DRV_REGS;
+  "  MEM_STACK      0x%X  Boot/Reset stack (down)     [plat]\n", MEM_STACK;
+  "  MEM_UART       0x%X  16550                       %s\n", MEM_UART, MEMMAP_DRV_UART;
+  "  MEM_CLINT      0x%X  mtime/mtimecmp              %s\n", MEM_CLINT, MEMMAP_DRV_CLINT;
+  "  MEM_PLIC       0x%X  external IRQs               %s\n", MEM_PLIC, MEMMAP_DRV_PLIC;
+  "  MEM_VIRTIO     0x%X  virtio-mmio                 %s\n", MEM_VIRTIO, MEMMAP_DRV_VIRTIO;
+  "  MEM_FW_CFG     0x%X  QEMU fw_cfg                 %s\n", MEM_FW_CFG, MEMMAP_DRV_FW_CFG;
+  "  MEM_TEST       0x%X  SiFive test                 %s\n", MEM_TEST, MEMMAP_DRV_TEST;
+  UartStr("Dig-down: Regs; Reg(\"mstatus\"); MemMapDrvFind(\"uart\"); Man(\"MemMap\"); RegHelp;\n");
+  UartStr("  MemMapFind(\"heap\");  Print(\"%X\\n\", MEM_HEAP);\n");
+}
+// Regs -- Regs()
+// NAME
+//   Regs - dump all GPRs + CSRs with descriptions
+// SYNOPSIS
+//   U0 Regs();
+// DESCRIPTION
+//   Snapshots GPRs at stub entry into MEM_REGS_SNAP, prints them + CSRs, then
+//   restores so UART print does not smash live regs. Prefer this soft path over
+//   Hw*/Sdtrig. Dig-down: Reg("sp"); RegHelp; Man("Regs"); docs/DEBUGGER.md.
+// BUGS
+//   Stub-entry freeze (not mid-expr). Same-line asm{…}; Regs / Reg("a7").
+#define HC_SLOT_REGS     0x87001130
+#define HC_SLOT_REG_ONE  0x87001150
+U0 Regs()
+{
+  I64 (*regs_stub)();
+  // Host slots only on legacy repl.elf (HC_SLOT_COMPILE); hc-repl leaves page zero/garbage.
+  if (*(I64 *)0x87001000) {
+    regs_stub = *(I64 *)HC_SLOT_REGS;
+    if (RegStubPtrOk ((I64)regs_stub)) {
+      regs_stub();
+      return;
+    }
+  }
+  UartStr("Regs (HolyC soft):\n");
+  RegsSnapOnly();
+  RegsDumpHc();
+  RegsRestoreOnly();
+}
+
+I64 RegEntry(U8 *name)
+{
+  if (!g_reg_snap_fresh)
+    RegsSnapOnly();
+  g_reg_snap_fresh = 0;
+  return RegOneHc(name);
+}
+
+I64 Reg(U8 *name)
+{
+  I64 (*reg_one)(U8 *);
+  if (!name)
+    return -1;
+  if (*(I64 *)0x87001000) {
+    reg_one = *(I64 *)HC_SLOT_REG_ONE;
+    if (RegStubPtrOk ((I64)reg_one))
+      return reg_one(name);
+  }
+  return RegEntry(name);
+}
+
+U0 RegSnapAddrFix()
+{
+  asm {
+	la	t0, RegSnapAsm
+	la	t1, g_reg_snap_asm
+	sd	t0, 0(t1)
+  }
+  g_reg_entry = RegEntry;
 }
 // RegHelp -- RegHelp()
 // NAME
@@ -642,22 +1828,28 @@ I64 Reg(U8 *name)
 // SYNOPSIS
 //   U0 RegHelp();
 // DESCRIPTION
-//   TempleOS-ish help for dig-down: MemMap → Regs → Reg("name") / GetMStatus / CSRGet(CSR_*).
-// INPUTS
-//   none
-// OUTPUTS
-//   UART legend
+//   Cheat sheet for MemMap → Regs → Reg("name") dig-down: MEM_* windows, REG_*
+//   names, CSR_* constants, and the Get/Set helpers that read them.
+// EXAMPLES
+//   RegHelp;
+//   MemMap;
+//   Regs;
+// SEE ALSO
+//   Regs  Reg  MemMap  CSRGet  Man  CSR
 // BUGS
-//   Hand-maintained; keep in sync with csr.hc defines.
+//   Hand-maintained; keep in sync with csr.hc / MemMapSelected.hc.
 U0 RegHelp()
 {
   UartStr("RegHelp — MemMap / GPR / CSR dig-down\n");
   UartStr("  MemMap;  MemMapDrv;  MemMapFind(\"heap\");  MemMapDrvFind(\"uart\");\n");
-  UartStr("  Print(\"%X\\n\", MEM_HEAP);  Regs;  Reg(\"sp\");  Reg(\"mstatus\");  Dr;\n");
+  UartStr("  Print(\"%X\\n\", MEM_HEAP);  Regs;  Reg(\"sp\");  Reg(\"mstatus\");  CsrExplain(\"mcause\");  Bits(\"mie\");  Dr;\n");
   UartStr("MEM_*: RAM FS HEAP FB FIXED TRAP_SNAP REGS_SNAP STACK UART CLINT PLIC VIRTIO FW_CFG\n");
   UartStr("Drivers (MemMap last col): RVUart16550 RVTimer/CLINT RVPlicHw DskVirtioRV RVFb\n");
-  UartStr("REG_*: ZERO RA SP GP TP T0-T6 S0-S11 A0-A7 (indices for docs / Reg(\"sp\"))\n");
-  UartStr("CSR_*: MSTATUS MISA MIE MTVEC MSCRATCH MEPC MCAUSE MTVAL MIP SATP SSCRATCH MHARTID\n");
+  UartStr("GPR aliases: x0-x31, zero/ra/sp/fp/gp/t*/s*/a*, REG_*; case-insensitive\n");
+  UartStr("  Reg(\"a0\"); Reg(\"x10\"); Reg(\"fp\"); Man(\"ABI\"); Man(\"Reg\"); Run(\"A02_RegsABI.hc\");\n");
+  UartStr("CSR_*: M*/S* + MCYCLE/MINSTRET/CYCLE/INSTRET (see RegHelp / Man(\"CSR\"))\n");
+  UartStr("CSR decode: Reg(\"mstatus\"); CsrExplain(\"mcause\"); Bits(\"mie\"); Man(\"mstatus\");\n");
+  UartStr("Datasheet: DsFind(\"uart\"); DsShow(\"mstatus\"); DsDecode(\"uart.lsr\",0x21); Man(\"Datasheet\");\n");
   UartStr("Get/Set: GetMStatus/SetMStatus GetMie/SetMie GetMtvec/SetMtvec GetMepc/SetMepc\n");
   UartStr("  GetMcause/SetMcause GetMtval/SetMtval GetMScratch/SetMScratch GetMip/SetMip\n");
   UartStr("  GetMIsa/SetMIsa GetSatp/SetSatp GetSScratch/SetSScratch GetMHartId (RO)\n");
@@ -683,5 +1875,5 @@ U0 CpuRep()
   "  mhartid=0x%X  misa=0x%X\n", GetMHartId(), GetMIsa();
   "  mstatus=0x%X  mtvec=0x%X  mie=0x%X\n", GetMStatus(), GetMtvec(), GetMie();
   "  mepc=0x%X  mcause=0x%X  satp=0x%X\n", GetMepc(), GetMcause(), GetSatp();
-  UartStr("  Regs; Reg(\"mstatus\"); RegHelp; Man(\"Regs\");\n");
+  "  Regs; Reg(\"mstatus\"); CsrExplain(\"mcause\"); Bits(\"mie\"); RegHelp; Man(\"Regs\");\n";
 }

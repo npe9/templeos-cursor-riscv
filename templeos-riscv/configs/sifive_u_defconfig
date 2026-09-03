@@ -1,10 +1,15 @@
-# QEMU sifive_u — SiFive UART0 + RVSifivePlat; same DRAM/CLINT/PLIC as virt; no virtio/ramfb
+# QEMU sifive_u — HiFive Unleashed / FU540 map (QEMU 10.x DTB)
+# UART0 @ 0x10010000 IRQ4, UART1 @ 0x10011000, CLINT @ 0x02000000 (1 MHz),
+# PLIC @ 0x0C000000, GPIO @ 0x10060000 (reset pin 10), PRCI @ 0x10000000,
+# GEM eth @ 0x10090000 — RVSifiveGemYes (TX/RX + loopback self-test).
+# No virtio / ramfb / fw_cfg on this machine.
 CONFIG_PLATFORM_SIFIVE_U=y
 # CONFIG_PLATFORM_VIRT is not set
 CONFIG_UART_SIFIVE=y
 # CONFIG_UART_16550 is not set
 # CONFIG_UART_HTIF is not set
 # CONFIG_UART_STUB is not set
+CONFIG_HAS_CLINT=y
 CONFIG_HAS_PLIC=y
 # CONFIG_HAS_VIRTIO_MMIO is not set
 # CONFIG_HAS_VIRTIO_PCI is not set

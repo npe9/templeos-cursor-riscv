@@ -15,6 +15,8 @@
 #define VMR_QUEUE_ALIGN   0x3c
 #define VMR_QUEUE_PFN     0x40
 #define VMR_QUEUE_NOTIFY  0x50
+#define VMR_INTERRUPT_STATUS 0x60
+#define VMR_INTERRUPT_ACK 0x64
 #define VMR_STATUS        0x70
 #define VSTAT_ACK         1
 #define VSTAT_DRIVER      2
@@ -32,6 +34,9 @@
 #define VIN_ABS_DFLT_MAX  32767
 #ifndef CONFIG_VIRTIO_DRV_RAM_BASE
 #define CONFIG_VIRTIO_DRV_RAM_BASE 0x88000000
+#endif
+#ifndef CONFIG_VIRTIO_MMIO_IRQ_BASE
+#define CONFIG_VIRTIO_MMIO_IRQ_BASE 0x10000000
 #endif
 #define VIN_DEV_MAX       4
 #define VIN_VQ_STRIDE     0x10000
@@ -330,6 +335,53 @@ I64 VirtioInputPoll(I64 max)
       "virtio-input: type=%d code=%d value=%d\n", ev.type, ev.code, ev.value;
     n++;
   }
+  return n;
+}
+
+I64 VirtioInputIrqNum(I64 dev)
+{
+  if (dev < 0 || dev >= virtio_input_count)
+    return -1;
+  return (virtio_input_bases[dev] - CONFIG_VIRTIO_MMIO_IRQ_BASE) >> 12;
+}
+
+U0 VirtioInputIrqAck(I64 dev)
+{
+  U8 *r;
+  U32 st;
+  if (dev < 0 || dev >= virtio_input_count)
+    return;
+  r = virtio_input_bases[dev];
+  st = InU32(r + VMR_INTERRUPT_STATUS);
+  if (st)
+    OutU32(r + VMR_INTERRUPT_ACK, st);
+}
+
+I64 VirtioInputIrqInit()
+{
+  I64 i, irq, first = -1;
+  for (i = 0; i < virtio_input_count; i++) {
+    irq = VirtioInputIrqNum(i);
+    if (irq < 0)
+      continue;
+    VirtioInputIrqAck(i);
+    RVPlicEnable(irq, 1);
+    if (first < 0)
+      first = irq;
+  }
+  if (first >= 0) {
+    RVPlicSetThreshold(0);
+    RvSetMEIE();
+  }
+  return first;
+}
+
+I64 VirtioInputIrqService(I64 max)
+{
+  I64 i, n;
+  n = VirtioInputPoll(max);
+  for (i = 0; i < virtio_input_count; i++)
+    VirtioInputIrqAck(i);
   return n;
 }
 // Linux KEY_* → ASCII. shift=TRUE for shifted glyphs. Returns 0 if not a typeable key.

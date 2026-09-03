@@ -1,6 +1,6 @@
 // files.hc -- TempleOS file utilities, in HolyC: Cat, Copy, Move, Rename, FileFind, FilesFind,
 // Find (grep with wildcards), Activate (Enter-on-link), DirEd. Built on FileRead/FileWrite/Del.
-// Cd/Pwd/DirMk/DirDel/IsDir and File* live in seed/fs.hc (HolyC arena at 0x87800000).
+// Cd/Pwd/DirMk/MkDir/DirDel/IsDir and File* live in seed/fs.hc (HolyC arena at 0x87800000).
 U8 FileAbsBuf[65];
 // ToAbs -- ToAbs("name")
 // NAME
@@ -38,8 +38,9 @@ U8 *ToAbs(U8 *nm)
 //   Adds a trailing newline if the file does not end with one. Path is
 //   cwd-relative unless it starts with '/'.
 // EXAMPLES
-//   Cat("boot.hc");
-//   Cat("print.hc");
+//   Cat("Boot/boot.hc");
+//   Cat("Lib/print.hc");
+//   Cat("print.hc");  // basename still works
 //   Dir;
 // SEE ALSO
 //   Dir  Copy  FileRead  Ed  Vi
@@ -88,45 +89,7 @@ I64 Copy(U8 *from, U8 *to)
   "copied %s -> %s (%d bytes)\n", from, to, n;
   return n;
 }
-// Move -- Move("from","to")
-// NAME
-//   Move - copy then Del.
-// SYNOPSIS
-//   Move("from","to")
-// DESCRIPTION
-//   copy then Del.
-// INPUTS
-//   "from" - string argument
-//   "to" - string argument
-// OUTPUTS
-//   copy then Del.
-// BUGS
-//   See source; RISC-V UART REPL may omit full TempleOS behavior.
-I64 Move(U8 *from, U8 *to)
-{
-  I64 n = Copy(from, to);
-  if (n >= 0)
-    Del(from);
-  return n;
-}
-// Rename -- Rename("from","to")
-// NAME
-//   Rename - alias of Move.
-// SYNOPSIS
-//   Rename("from","to")
-// DESCRIPTION
-//   alias of Move.
-// INPUTS
-//   "from" - string argument
-//   "to" - string argument
-// OUTPUTS
-//   alias of Move.
-// BUGS
-//   See source; RISC-V UART REPL may omit full TempleOS behavior.
-I64 Rename(U8 *from, U8 *to)
-{
-  return Move(from, to);
-}
+// Move / Rename -- in-place slot rename lives in fs.hc (FsRename).
 // FileFind -- FileFind("name")
 // NAME
 //   FileFind - print whether name exists.
@@ -278,14 +241,21 @@ U0 FindIn(U8 *nm, U8 *needle)
 //   See source; RISC-V UART REPL may omit full TempleOS behavior.
 U0 Find(U8 *needle, U8 *pat = "*")
 {
-  I64 i, n;
-  U8 *nm;
+  I64 i, n, cl;
+  U8 *nm, *rest, *cwd;
+  cwd = CwdStr();
+  cl = 0;
+  while (cwd[cl])
+    cl++;
   n = FileCount();
   for (i = 0; i < n; i++) {
     nm = FileName(i);
     if (!nm || !InCwd(nm))
       continue;
-    if (!WildMatch(nm, pat))
+    rest = nm + cl;
+    if (rest[0] == '.')
+      continue;
+    if (!WildMatch(nm, pat) && !WildMatch(rest, pat))
       continue;
     FindIn(nm, needle);
   }
@@ -464,9 +434,10 @@ U0 DumpB64(U8 *d, I64 n)
 //   DumpMem(MEM_FB, 640*480*4, "fb.raw");
 //   DumpMem(0x87000100, 136, "trap_snap");
 // SEE ALSO
-//   DumpFile  Cat  Dm
+//   DumpFile  Cat  Dm  ZmodemSend
 // BUGS
-//   Large dumps are slow (~4/3 serial expansion); no flow control.
+//   Large dumps are slow (~4/3 serial expansion). Host Ctrl-S/Ctrl-Q
+//   (UartXonXoff, default on) can pause TX; UartRtsCts is a no-op stub on virt.
 U0 DumpMem(I64 addr, I64 n, U8 *label = "mem")
 {
   U8 *p;
@@ -494,7 +465,7 @@ U0 DumpMem(I64 addr, I64 n, U8 *label = "mem")
 //   DumpFile("boot.hc");
 //   DumpFile("hello.hc");
 // SEE ALSO
-//   Cat  Copy  DumpMem  Dm
+//   Cat  Copy  DumpMem  Dm  DumpChanges  ZmodemSend
 // BUGS
 //   Memfs files cap at 65536 bytes; no upload/receive path yet.
 U0 DumpFile(U8 *name)

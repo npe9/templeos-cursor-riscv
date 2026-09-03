@@ -9,6 +9,8 @@ I64 main()
   r += (StrMatch("hello", hay, 0) == hay) * 4;
   r += (StrIMatch("WORLD", hay, 0) == hay + 6) * 8;
   r += (StrIMatch("HELLO", hay, 0) == hay) * 16;
-  r += (StrMatch("WORLD", hay, 0) == 0) * 32;   // case-sensitive: no match
-  return r;                                     // 0x3F
+  r += (StrMatch("WORLD", hay, 0) == 0) * 32;
+  // case-sensitive: no match
+  return r;
+  // 0x3F
 }

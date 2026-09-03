@@ -44,7 +44,12 @@ static CMemberLst *HostMemberFind(CHashClass *cls, const char *name) {
 
 CIntermediateCode *ICNew(Compiler *cc, U8 opcode) {
   (void)cc;
+#ifdef BARE_METAL
+  extern void *parse_calloc(size_t n, size_t sz);
+  CIntermediateCode *ic = parse_calloc(1, sizeof(CIntermediateCode));
+#else
   CIntermediateCode *ic = calloc(1, sizeof(CIntermediateCode));
+#endif
   if (!ic) {
     // Allocation failed!
     return NULL;
@@ -537,6 +542,8 @@ static bool EmitFnAddress(Compiler *cc, CHashFun *fn) {
     return true;
   }
   if (fn->exe_addr) {
+    // Immediate code address — must NOT end in IC_DEREF: EnsureLvalueAddressPushed after
+    // `&Fn` retracts a trailing DEREF and would leave &exe_addr (the slot) instead.
     ICAdd(cc, IC_IMM_I64, fn->exe_addr, RT_I64);
     return true;
   }
@@ -888,6 +895,8 @@ static bool EmitNoParenCall(Compiler *cc, CHashFun *func) {
 }
 
 static bool ParsePrimary(Compiler *cc) {
+  cc->var_just_loaded = false;
+  cc->global_just_loaded = false;
   bool addr_of = cc->addr_of_ident;
   cc->addr_of_ident = false;
   // Default: no global variable context until we identify one
@@ -1389,6 +1398,8 @@ static bool ParsePrimary(Compiler *cc) {
         // Generate address of variable: addi a0, s0, offset
         // Use IC_LEA (Load Effective Address) with offset
         ICAdd(cc, IC_LEA, sym->offset, RT_I64);
+        cc->var_just_loaded = true;
+        cc->global_just_loaded = false;
         if (sym->is_array) {
           // An array is its address: no auto-deref; push it so it is a proper eval-stack value
           // (call argument, assignment source). `[` sees the pushed base and adds no second push.
@@ -1409,6 +1420,8 @@ static bool ParsePrimary(Compiler *cc) {
         cc->last_global_var = global;
         cc->last_member = NULL;
         cc->last_var_symbol = NULL;  // stale local from an earlier statement would suppress the auto-deref
+        cc->var_just_loaded = false;
+        cc->global_just_loaded = true;
         cc->last_expr_type = (global->raw_type == RT_F64 && !global->pointed_to_type && !(global->flags & GVF_ARRAY)) ? RT_F64 :
                              (global->pointed_to_type || global->raw_type == RT_U8 || global->raw_type == RT_U16 ||
                               global->raw_type == RT_U32 || global->raw_type == RT_U64) ? RT_U64 : RT_I64;
@@ -1696,14 +1709,15 @@ static bool ParseUnary(Compiler *cc) {
 // Handle postfix operators: [], ., ->
 static bool ParsePostfix(Compiler *cc) {
   // Parse primary expression first
-  Symbol *pre_symbol = cc->last_var_symbol;  // Save to detect if variable was loaded
   bool is_paren_expr = (cc->lex.token == '(');  // Track parenthesized expressions
   if (!ParsePrimary(cc)) return false;
   
   // Auto-dereference variables (match original PE_DEREFERENCE phase PrsExp.HC:97-118)
-  // Only if a variable was just loaded AND not lvalue/array
+  // Only if ParsePrimary just loaded a local (var_just_loaded), not a stale last_var_symbol
+  // left over from an earlier operand in `!p || !p[0]` — that used to skip auto-deref and
+  // made U8* param `p[i]` index the stack slot (stack smash).
   // Skip auto-deref for parenthesized expressions
-  if (cc->last_var_symbol && cc->last_var_symbol != pre_symbol && !(cc->flags & (CCF_RAX | CCF_ARRAY)) && !is_paren_expr) {
+  if (cc->var_just_loaded && cc->last_var_symbol && !(cc->flags & (CCF_RAX | CCF_ARRAY)) && !is_paren_expr) {
     // Create IC_DEREF with typed load
     CIntermediateCode *ic = ICNew(cc, IC_DEREF);
     ic->res.type.raw_type = RT_I64;
@@ -1717,7 +1731,7 @@ static bool ParsePostfix(Compiler *cc) {
     if (cc->ic_tail) cc->ic_tail->next = ic;
     else cc->ic_head = ic;
     cc->ic_tail = ic;
-  } else if (!cc->last_var_symbol && cc->last_global_var &&
+  } else if (cc->global_just_loaded && !cc->last_var_symbol && cc->last_global_var &&
              !(cc->flags & (CCF_RAX | CCF_ARRAY)) && !is_paren_expr) {
     // Auto-deref for global variables. IC_IMM_I64 pushed the address; drop that slot so the
     // value is the only thing left (a second global operand would otherwise pop the address).
@@ -1731,6 +1745,8 @@ static bool ParsePostfix(Compiler *cc) {
     else cc->ic_head = ic;
     cc->ic_tail = ic;
   }
+  cc->var_just_loaded = false;
+  cc->global_just_loaded = false;
   
   // Handle postfix operators (array subscript, member access)
   // Save a prefix pointer-cast's element width (e.g. `(U32*)p`) before resetting for the postfix loop:
@@ -3649,7 +3665,8 @@ static bool TryAssembleRiscV(Compiler *cc) {
 
     // Pseudo & real mnemonics.
     if (!strcmp(w,"ret") || !strcmp(w,"nop") || !strcmp(w,"wfi") || !strcmp(w,"fencei") ||
-        !strcmp(w,"mret") || !strcmp(w,"sret") || !strcmp(w,"ecall") || !strcmp(w,"ebreak")) {
+        !strcmp(w,"mret") || !strcmp(w,"sret") || !strcmp(w,"ecall") || !strcmp(w,"ebreak") ||
+        !strcmp(w,"unimp")) {
       nins++; continue;
     }
     if (!strcmp(w,"mv") || !strcmp(w,"not") || !strcmp(w,"neg") ||
@@ -3876,6 +3893,8 @@ static bool TryAssembleRiscV(Compiler *cc) {
 
   CHashFun *fn = NULL;
   CIntermediateCode *asm_prev_head = NULL, *asm_prev_tail = NULL;
+  CLabel *export_lab[64];
+  for (int zi = 0; zi < 64; zi++) export_lab[zi] = NULL;
   if (!inline_mode) {
     // Register + emit into a deferred function chain (like ParseFunction).
     CHashEntry *e = cc->hash_table ? HashFind(label, cc->hash_table, HTT_FUN) : NULL;
@@ -3884,12 +3903,38 @@ static bool TryAssembleRiscV(Compiler *cc) {
            if (cc->hash_table) HashAdd((CHashEntry *)fn, cc->hash_table); }
     CLabel *entry = LabelNew(cc, label);
     fn->entry_label = entry; fn->entry_label_defined = 1;
+    fn->is_extern = FALSE;
+    RewriteForwardImportCalls(cc, fn);
     asm_prev_head = cc->ic_head; asm_prev_tail = cc->ic_tail;
     cc->ic_head = cc->ic_tail = NULL;
     ICAdd(cc, IC_LABEL, (I64)entry, RT_I64); entry->defined = true;
+    // Secondary `Name::` in the same block must be first-class AOT functions too.
+    // Otherwise later HolyC calls become implicit `__imp_*` slots (never filled when
+    // `_start` owns the blob) — HcCsrrMcause / ReplSetJmp / HcGet* hung or returned 0.
+    for (int li = 0; li < nlabs; li++) {
+      if (!labs[li].is_export) continue;
+      CHashEntry *ae = cc->hash_table ? HashFind(labs[li].name, cc->hash_table, HTT_FUN) : NULL;
+      CHashFun *afn;
+      if (ae && (ae->type & HTT_FUN)) afn = (CHashFun *)ae;
+      else {
+        afn = calloc(1, sizeof(CHashFun));
+        afn->str = strdup(labs[li].name); afn->type = HTT_FUN; afn->raw_type = RT_I64;
+        if (cc->hash_table) HashAdd((CHashEntry *)afn, cc->hash_table);
+      }
+      CLabel *el = LabelNew(cc, labs[li].name);
+      afn->entry_label = el; afn->entry_label_defined = 1; afn->is_extern = FALSE;
+      RewriteForwardImportCalls(cc, afn);
+      export_lab[li] = el;
+    }
   }
 
   for (int i = 0; i < nins; i++) {
+    for (int li = 0; li < nlabs; li++) {
+      if (export_lab[li] && labs[li].idx == i) {
+        ICAdd(cc, IC_LABEL, (I64)export_lab[li], RT_I64);
+        export_lab[li]->defined = true;
+      }
+    }
     RvI2 *I = &ins[i]; const char *m = I->mn; U32 word = 0x00000013;  // default nop
     int boff = 0;
     // External HolyC call: emit IC_CALL to the callee's entry label (forward decls OK).
@@ -3918,6 +3963,7 @@ static bool TryAssembleRiscV(Compiler *cc) {
       boff = (t - i) * 4;
     }
     if (!strcmp(m,"ret"))       word = RvJalr(0,1,0);
+    else if (!strcmp(m,"unimp")) word = 0xC0001073u;   // csrrw x0,cycle,x0 — illegal (cycle is RO)
     else if (!strcmp(m,"nop"))  word = RvI(0,0,0,0);
     else if (!strcmp(m,"mret")) word = 0x30200073u;
     else if (!strcmp(m,"sret")) word = 0x10200073u;   // SYSTEM funct12=0x102
@@ -4035,7 +4081,8 @@ static bool TryAssembleRiscV(Compiler *cc) {
   #undef RV_LBL
 
   if (inline_mode) {
-    // Inline asm is part of the current statement/function IC stream; CompileAOT/Wrap later.
+    // Freeze GPRs into MEM_REGS_SNAP before the next Reg/Regs on this statement.
+    ICEmitRegsSnap(cc);
     cc->asm_funcs_translated++;
     cc->last_expr_type = RT_I0;
     return true;
@@ -5893,7 +5940,14 @@ static bool ParseGlobalDeclList(Compiler *cc) {
 void WrapStatementsAsFrame(Compiler *cc) {
   I64 locals = cc->locals_size;
   I64 frame_size = 16 + locals;
-  CIntermediateCode *ent = calloc(1, sizeof(CIntermediateCode));
+  CIntermediateCode *ent;
+#ifdef BARE_METAL
+  extern void *parse_calloc(size_t n, size_t sz);
+  ent = parse_calloc(1, sizeof(CIntermediateCode));
+#else
+  ent = calloc(1, sizeof(CIntermediateCode));
+#endif
+  if (!ent) return;
   ent->ic_code = IC_ENTER;
   ent->ic_data = (locals << 32);
   ent->next = cc->ic_head;

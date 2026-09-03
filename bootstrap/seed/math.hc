@@ -227,20 +227,78 @@ I64 Btc(I64 *bitfield, I64 bit)
   bitfield[bit >> 6] ^= 1 << (bit & 63);
   return old;
 }
-
-I64 LBts(I64 *b, I64 bit)
-{
-  return Bts(b, bit);
+// LBts/LBtr/LBtc/LXchgI64 — A-ext atomics (byte bitfields + amoswap.d). See Man("LXchgI64").
+asm {
+	LBts::
+	srai	t0,a1,3
+	add	t0,a0,t0
+	andi	t1,t0,3
+	sub	t2,t0,t1
+	slli	t1,t1,3
+	andi	t3,a1,7
+	add	t1,t1,t3
+	li	t3,1
+	sll	t3,t3,t1
+	math_lbts_r:
+	lr.w	t4,(t2)
+	and	t5,t4,t3
+	sltu	t5,zero,t5
+	or	t6,t4,t3
+	sc.w	t0,t6,(t2)
+	bnez	t0,math_lbts_r
+	mv	a0,t5
+	ret
 }
 
-I64 LBtr(I64 *b, I64 bit)
-{
-  return Btr(b, bit);
+asm {
+	LBtr::
+	srai	t0,a1,3
+	add	t0,a0,t0
+	andi	t1,t0,3
+	sub	t2,t0,t1
+	slli	t1,t1,3
+	andi	t3,a1,7
+	add	t1,t1,t3
+	li	t3,1
+	sll	t3,t3,t1
+	math_lbtr_r:
+	lr.w	t4,(t2)
+	and	t5,t4,t3
+	sltu	t5,zero,t5
+	not	t6,t3
+	and	t6,t4,t6
+	sc.w	t0,t6,(t2)
+	bnez	t0,math_lbtr_r
+	mv	a0,t5
+	ret
 }
 
-I64 LBtc(I64 *b, I64 bit)
-{
-  return Btc(b, bit);
+asm {
+	LBtc::
+	srai	t0,a1,3
+	add	t0,a0,t0
+	andi	t1,t0,3
+	sub	t2,t0,t1
+	slli	t1,t1,3
+	andi	t3,a1,7
+	add	t1,t1,t3
+	li	t3,1
+	sll	t3,t3,t1
+	math_lbtc_r:
+	lr.w	t4,(t2)
+	and	t5,t4,t3
+	sltu	t5,zero,t5
+	xor	t6,t4,t3
+	sc.w	t0,t6,(t2)
+	bnez	t0,math_lbtc_r
+	mv	a0,t5
+	ret
+}
+
+asm {
+	LXchgI64::
+	amoswap.d	a0,a1,(a0)
+	ret
 }
 
 I64 Bsf(I64 x)

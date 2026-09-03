@@ -4,7 +4,8 @@
 #define JIT_BASE 0x84000000
 #define JIT_END  0x84F00000
 #define JIT_GLOBB 0x83F00000
-#define JIT_FUN_MAX 96
+// Boot registers ~147 AOT symbols via JitAdd; leave headroom for Run/redefine.
+#define JIT_FUN_MAX 256
 #define JIT_NAME_MAX 32
 #define JIT_SLOT 16
 #define JIT_CLS_MAX 16
@@ -32,8 +33,7 @@ class CJitFun
   U8 *entry;
   I64 argc;
   I64 is_void;
-}
-;
+};
 CJitFun jit_funs[JIT_FUN_MAX];
 I64 jit_nfun;
 class CJitMem
@@ -41,16 +41,15 @@ class CJitMem
   U8 name[JIT_NAME_MAX];
   I64 off;
   I64 size;
-}
-;
+};
+
 class CJitCls
 {
   U8 name[JIT_NAME_MAX];
   I64 nmem;
   I64 size;
   CJitMem mem[JIT_MEM_MAX];
-}
-;
+};
 CJitCls jit_cls[JIT_CLS_MAX];
 I64 jit_ncls;
 class CJitGlob
@@ -58,8 +57,7 @@ class CJitGlob
   U8 name[JIT_NAME_MAX];
   I64 addr;
   I64 size;
-}
-;
+};
 CJitGlob jit_globs[64];
 I64 jit_nglob;
 U8 *jit_glob_brk;
@@ -376,6 +374,8 @@ I64 JitFind(U8 *name)
 I64 JitAdd(U8 *name, U8 *entry, I64 argc, I64 is_void)
 {
   I64 i;
+  // Reuse slot on redefine so Run("…") after Ed updates the same name
+  // (livedrv second Run → LIVEDRV) without exhausting JIT_FUN_MAX.
   i = JitFind(name);
   if (i < 0) {
     if (jit_nfun >= JIT_FUN_MAX)
@@ -716,7 +716,9 @@ U0 JitGenPrim()
   if (*jit_src == '*') {
     jit_src++;
     JitGenPrim();
-    JitLd(10, 0, 10);
+    // Byte load: U8 *p / "str" walks (livedrv *s++ + ToUpper). I64* stores use
+    // JitSd in assign; thin JIT does not track pointed-to size on unary *.
+    JitLbu(10, 0, 10);
     return;
   }
   if (*jit_src == '!') {
@@ -1021,25 +1023,47 @@ U0 JitGenCmp()
       JitR(0, 2, 10, 10, 6);
       // slt a0,a0,t1
     } else if (op == 3) {
-      // <=  !(b<a) = !(a>b)
+      // <=  !(left > right)
       JitR(0, 2, 10, 10, 6);
-      // slt a0,right,left (= left>right)
-      JitI(3, 5, 10, 1);
-      JitI(4, 10, 5, 1);
-      // a0 = !a0
+      // slt a0,right,left
+      JitI(4, 10, 10, 1);
+      // xori a0,a0,1
     } else if (op == 4) {
-      // >=
+      // >=  !(left < right)
       JitR(0, 2, 10, 6, 10);
       // slt a0,left,right
-      JitI(3, 5, 10, 1);
-      JitI(4, 10, 5, 1);
+      JitI(4, 10, 10, 1);
+      // xori a0,a0,1
     }
+  }
+}
+
+U0 JitGenLogic()
+{
+  JitGenCmp();
+  while (1) {
+    JitSkip();
+    if (*jit_src == '&' && jit_src[1] == '&') {
+      jit_src = jit_src + 2;
+      JitPushA0();
+      JitGenCmp();
+      JitPopT1();
+      // t1=left, a0=right (cmp already 0/1)
+      JitR(0, 7, 10, 6, 10);
+    } else if (*jit_src == '|' && jit_src[1] == '|') {
+      jit_src = jit_src + 2;
+      JitPushA0();
+      JitGenCmp();
+      JitPopT1();
+      JitR(0, 6, 10, 6, 10);
+    } else
+      break;
   }
 }
 
 U0 JitGenExpr()
 {
-  JitGenCmp();
+  JitGenLogic();
 }
 
 I64 JitAllocLocal(U8 *name, I64 size)
@@ -1247,7 +1271,7 @@ U0 JitGenAssignOrExpr()
         }
       }
     }
-    // name[i] = expr
+    // name[i] = expr  (or name[i] rvalue → GenExpr below)
     if (*jit_src == '[') {
       jit_src++;
       li = JitFindLocal(name);
@@ -1258,10 +1282,11 @@ U0 JitGenAssignOrExpr()
       JitGenExpr();
       // index
       JitNeed(']');
-      JitPushA0();
       JitSkip();
       if (*jit_src == '=' && jit_src[1] != '=') {
         jit_src++;
+        JitPushA0();
+        // index
         JitGenExpr();
         // value
         JitPushA0();
@@ -1277,6 +1302,10 @@ U0 JitGenAssignOrExpr()
         JitSd(10, 0, 5);
         return;
       }
+      // Rvalue name[i] inside assign RHS — do not leak PushA0; reload via GenExpr.
+      jit_src = save;
+      JitGenExpr();
+      return;
     }
   }
   jit_src = save;
@@ -1942,6 +1971,17 @@ I64 JitTryOne(U8 *line)
       if (!jit_funs[fi].is_void)
         Print("ans=%p=%d\n", r, r);
       return 1;
+    }
+    if (*jit_src == ';') {
+      fi = JitFind(fname);
+      if (fi >= 0) {
+        jit_src++;
+        JitFenceI;
+        r = JitCallEntry(jit_funs[fi].entry);
+        if (!jit_funs[fi].is_void)
+          Print("ans=%p=%d\n", r, r);
+        return 1;
+      }
     }
     // name = expr;  or bare expr involving name
   }

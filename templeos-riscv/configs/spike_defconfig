@@ -1,10 +1,13 @@
-# QEMU spike — EXPERIMENTAL (HTIF console, no PLIC/virtio)
+# QEMU spike — HTIF console (ELF tohost @ 0x807FF000) + CLINT @ 0x02000000
+# timebase 10 MHz. No PLIC / virtio / ramfb / fw_cfg (machine has none).
 CONFIG_PLATFORM_SPIKE=y
 # CONFIG_PLATFORM_VIRT is not set
 CONFIG_UART_HTIF=y
 # CONFIG_UART_16550 is not set
+CONFIG_HAS_CLINT=y
 # CONFIG_HAS_PLIC is not set
 # CONFIG_HAS_VIRTIO_MMIO is not set
 # CONFIG_HAS_VIRTIO_PCI is not set
 # CONFIG_HAS_FW_CFG is not set
 CONFIG_FB_PRESENT_NONE=y
+CONFIG_TIMEBASE_FREQ=10000000

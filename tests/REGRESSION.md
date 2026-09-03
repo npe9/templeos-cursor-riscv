@@ -5,12 +5,26 @@ User-facing REPL guide: [docs/REPL.md](../docs/REPL.md). Test layout: [README.md
 ## How to run
 
 ```bash
-make repl-regression   # hard gate: Src must open Vi, FnSize>0, Man/SrcFile, trap, livedrv…
-make repl-smoke        # broader language/demo smoke (still useful; not a substitute)
-make ci                # compliance + fmt-test + qemu-integration (includes repl-regression)
+make repl-holyc-regression   # A3 HolyC honesty (memfs/language; expand toward full flip)
+make a3-flip-check           # G7 scaffolding: holyc-smoke+regression+repl-cmp → READY/NOT READY
+make repl-regression         # DEPRECATED legacy C gate (Vi/Man/Regs/…); required CI until A3
+make repl-smoke              # DEPRECATED legacy language smoke
+make ci                      # compliance + fmt-test + qemu-integration (dual-run)
+# SKIP_REPL_LEGACY=1 make qemu-integration
+# Draft (do not apply yet): docs/A3_FLIP_DRAFT.md
 ```
 
-`tests/scripts/run_repl_regression.sh` greps the QEMU log for required needles and **rejects** the broken `Src: wrote Name.hc` stub. Failures print the missing needle and a log tail.
+`tests/scripts/run_repl_holyc_regression.sh` greps the HolyC thin-image QEMU log for
+**G6 covered** needles: Dir/Src-quit/DumpFile/Run/Man/Tab/HIST/G1 soft dbg/Sys/journal/Atoi/JIT
++ G2 trap/Ctrl-C + G3 `gd`/`K` + **livedrv Done** (Home Ed+Run via `PutS`; `livedrv `/`LIVEDRV `).
+Man needle uses `Man("Regs")` (not `Man("Reg")`). Bt honesty = **`Bt (trap freeze)`** after Fault
+(trap lane; live `Bt;` without freeze is UART stub). **Explicitly waived (not G7 blockers):** Fmt
+host rewrite (`fmt-test`/`fmt-check`), Demo/*.HC UART batch (`make compliance` curated six),
+ZMODEM (DumpFile+9P). Do **not** flip CI / delete `worry_dream` until `make a3-flip-check` prints
+READY and SELF_HOST G7 blockers clear.
+Legacy uart livedrv insert is `150a` (was `148a` before RTS/CTS stub).
+`tests/scripts/run_repl_regression.sh` greps the legacy `repl.elf` log for Src→Vi / Man /
+editors / trap / livedrv. Failures print the missing needle and a log tail.
 
 Kernel FB/Gr/Win/plat smokes are separate (`make kernel-fb-smoke` etc.) and are listed under P3 — do not treat them as proof that the REPL Src loop works.
 

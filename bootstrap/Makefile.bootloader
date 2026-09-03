@@ -1,0 +1,122 @@
+# Split bootloader — HolyC-only guest image (holyc-riscv AOT + Python pack).
+#
+# NO riscv64-*-gcc / gas / ld / objcopy for product boot.bin.
+# Host holyc-riscv (built from host/*.c) is the bootstrap compiler.
+#
+# Outputs (repo-root build/bootloader/):
+#   boot.bin — flat image @ BOOTLOADER_BASE (jump or copy mode)
+#
+# Payload for bootloader-repl / smoke: HolyC hc_repl blob
+#   build/hc_repl.blob.bin  (make -C bootstrap/hc_repl hc_repl.blob.bin)
+#
+# See docs/BAREMETAL.md § Split bootloader + REPL (HolyC-only constraint).
+
+ROOT     := ..
+BL_DIR   := $(ROOT)/build/bootloader
+BL_SRC   := bootloader
+HOLYC    := $(ROOT)/holyc-riscv
+PACK     := $(BL_SRC)/pack_bootloader.py
+KCFG     := $(ROOT)/templeos-riscv/include/generated/kconfig.mk
+
+ifneq ($(wildcard $(KCFG)),)
+  include $(KCFG)
+endif
+
+ifeq ($(BOOTLOADER_BASE),)
+  BOOTLOADER_BASE := 0x20000000
+endif
+ifeq ($(ENTRY_POINT),)
+  ENTRY_POINT := 0x80000000
+endif
+
+ifndef BOOT_MODE
+  ifeq ($(BOOT_MODE_COPY),y)
+    BOOT_MODE := copy
+  else ifeq ($(CONFIG_BOOT_MODE_COPY),y)
+    BOOT_MODE := copy
+  else
+    BOOT_MODE := jump
+  endif
+endif
+
+PFLASH_SIZE ?= 0x02000000
+ifeq ($(origin PAD_PFLASH),undefined)
+  ifeq ($(BOOTLOADER_BASE),0x20000000)
+    PAD_PFLASH := 1
+  else
+    PAD_PFLASH := 0
+  endif
+endif
+
+# HolyC REPL flat blob (not the legacy C worry_dream guest).
+PAYLOAD_BIN ?= $(ROOT)/build/hc_repl.blob.bin
+
+BOOT_BIN := $(BL_DIR)/boot.bin
+BOOT_ELF := $(BL_DIR)/boot.elf
+MODE_STAMP := $(BL_DIR)/.mode-$(BOOT_MODE)
+
+.PHONY: all bootloader clean qemu-args qemu-args-jump qemu-args-copy payload
+
+all bootloader: $(BOOT_BIN)
+	@echo "✓ Bootloader ($(BOOT_MODE), HolyC AOT) @ $(BOOTLOADER_BASE) → ENTRY_POINT $(ENTRY_POINT)"
+	@echo "  BIN: $(BOOT_BIN)"
+ifeq ($(BOOT_MODE),jump)
+	@echo "  QEMU jump: $(QEMU_ARGS_JUMP)"
+else
+	@echo "  QEMU copy: $(QEMU_ARGS_COPY)"
+endif
+
+$(BL_DIR):
+	@mkdir -p $@
+
+$(HOLYC):
+	@$(MAKE) -C $(ROOT) holyc-riscv
+
+payload: $(PAYLOAD_BIN)
+
+$(PAYLOAD_BIN): $(HOLYC)
+	@$(MAKE) -C $(ROOT)/bootstrap/hc_repl blob
+
+$(MODE_STAMP): | $(BL_DIR)
+	@rm -f $(BL_DIR)/.mode-*
+	@touch $@
+
+PACK_FLAGS = --holyc $(abspath $(HOLYC)) \
+	--src-dir $(abspath $(BL_SRC)) \
+	--out $(abspath $(BOOT_BIN)) \
+	--mode $(BOOT_MODE) \
+	--entry-point $(ENTRY_POINT) \
+	--bootloader-base $(BOOTLOADER_BASE)
+
+ifeq ($(PAD_PFLASH),1)
+  PACK_FLAGS += --pflash-size $(PFLASH_SIZE)
+endif
+
+ifeq ($(BOOT_MODE),copy)
+$(BOOT_BIN): $(HOLYC) $(BL_SRC)/boot.hc $(PACK) $(PAYLOAD_BIN) $(MODE_STAMP) | $(BL_DIR)
+	python3 $(PACK) $(PACK_FLAGS) --payload $(abspath $(PAYLOAD_BIN))
+	@cp -f $(BOOT_BIN) $(BOOT_ELF)
+else
+$(BOOT_BIN): $(HOLYC) $(BL_SRC)/boot.hc $(PACK) $(MODE_STAMP) | $(BL_DIR)
+	python3 $(PACK) $(PACK_FLAGS)
+	@cp -f $(BOOT_BIN) $(BOOT_ELF)
+endif
+
+QEMU ?= qemu-system-riscv64
+# Prefer HolyC blob as DRAM payload for jump smoke.
+REPL_BIN := $(PAYLOAD_BIN)
+QEMU_ARGS_JUMP = $(QEMU) -M virt -m 128M -bios none \
+	-drive if=pflash,format=raw,file=$(BOOT_BIN) \
+	-device loader,file=$(REPL_BIN),addr=$(ENTRY_POINT) -nographic
+QEMU_ARGS_COPY = $(QEMU) -M virt -m 128M -bios none \
+	-drive if=pflash,format=raw,file=$(BOOT_BIN) -nographic
+
+qemu-args: qemu-args-$(BOOT_MODE)
+qemu-args-jump:
+	@echo "$(QEMU_ARGS_JUMP)"
+qemu-args-copy:
+	@echo "$(QEMU_ARGS_COPY)"
+
+clean:
+	rm -f $(BOOT_BIN) $(BOOT_ELF) $(BOOT_BIN).stub \
+	      $(BL_DIR)/.mode-* $(BL_SRC)/boot_cfg.hc

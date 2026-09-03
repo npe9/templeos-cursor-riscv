@@ -1,5 +1,5 @@
 #!/bin/bash
-# REPL 9p smoke: Run ninep.hc NinepSmoke under QEMU with host virtfs attached.
+# REPL 9p smoke: Run ninep.hc NinepSmoke under QEMU with host virtfs (import + export).
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -38,10 +38,21 @@ kill "$qpid" 2>/dev/null || true
 wait "$qpid" 2>/dev/null || true
 out="$(tr -d '\r' <"$log")"
 rm -f "$log"
-if printf '%s\n' "$out" | grep -q 'ans=0x0000000000000000'; then
-  echo "REPL-9p smoke: OK"
-  exit 0
+if ! printf '%s\n' "$out" | grep -q 'ans=0x0000000000000000'; then
+  echo "FAIL REPL-9p smoke — NinepSmoke did not return 0" >&2
+  printf '%s\n' "$out" | tail -20 >&2
+  exit 1
 fi
-echo "FAIL REPL-9p smoke — NinepSmoke did not return 0" >&2
-printf '%s\n' "$out" | tail -20 >&2
-exit 1
+if [ ! -f "$T/share/export.txt" ] || ! grep -qF 'overwrite-9p' "$T/share/export.txt"; then
+  echo "FAIL REPL-9p smoke — guest→host export.txt overwrite missing or wrong" >&2
+  ls -la "$T/share" >&2 || true
+  cat "$T/share/export.txt" 2>/dev/null | sed 's/^/  got: /' >&2 || true
+  exit 1
+fi
+if [ ! -f "$T/share/Home/nest/out.hc" ] || ! grep -qF 'nested-9p' "$T/share/Home/nest/out.hc"; then
+  echo "FAIL REPL-9p smoke — nested Home/nest/out.hc missing or wrong" >&2
+  find "$T/share" -type f 2>/dev/null | sed 's/^/  /' >&2 || true
+  exit 1
+fi
+echo "REPL-9p smoke: OK (read + export + overwrite + nested)"
+exit 0

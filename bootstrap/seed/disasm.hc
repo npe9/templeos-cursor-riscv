@@ -6,6 +6,40 @@
 // a mnemonic and otherwise the mnemonic goes into a variable printed once with args.
 U8 *RN[32] = {"zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6"};
 U8 *FRN[32] = {"ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7", "fs0", "fs1", "fa0", "fa1", "fa2", "fa3", "fa4", "fa5", "fa6", "fa7", "fs2", "fs3", "fs4", "fs5", "fs6", "fs7", "fs8", "fs9", "fs10", "fs11", "ft8", "ft9", "ft10", "ft11"};
+// DisAsmMode=1 (UA): assemblable source for asm{}. Labs hold in-window branch targets.
+I64 DisAsmMode;
+I64 DisAsmLo;
+I64 DisAsmHi;
+I64 DisAsmLabs[128];
+I64 DisAsmLabN;
+// DisAsmLabClear -- DisAsmLabClear()
+U0 DisAsmLabClear()
+{
+  DisAsmLabN = 0;
+}
+// DisAsmLabAdd -- DisAsmLabAdd(t)
+U0 DisAsmLabAdd(I64 t)
+{
+  I64 i;
+  if (t < DisAsmLo || t >= DisAsmHi)
+    return;
+  for (i = 0; i < DisAsmLabN; i++)
+    if (DisAsmLabs[i] == t)
+      return;
+  if (DisAsmLabN < 128) {
+    DisAsmLabs[DisAsmLabN] = t;
+    DisAsmLabN++;
+  }
+}
+// DisAsmLabHas -- DisAsmLabHas(a)
+I64 DisAsmLabHas(I64 a)
+{
+  I64 i;
+  for (i = 0; i < DisAsmLabN; i++)
+    if (DisAsmLabs[i] == a)
+      return 1;
+  return 0;
+}
 // Pm -- Pm(s)
 // NAME
 //   Pm - print a mnemonic string.
@@ -170,6 +204,8 @@ U0 Sym(I64 addr)
 {
   U8 *nm;
   I64 base;
+  if (DisAsmMode)
+    return;
   nm = SymName(addr);
   if (!nm)
     return;
@@ -198,6 +234,8 @@ U0 Sym(I64 addr)
 U0 MmTag(I64 a)
 {
   U8 *m;
+  if (DisAsmMode)
+    return;
   m = MmN(a);
   if (m) {
     " <%s>", m;
@@ -251,23 +289,46 @@ U0 DisasmOne(I64 addr, I64 w)
     Pm("mret");
   else if (w == 0x10500073)
     Pm("wfi");
-  else if (w == 0x0000100F)
-    Pm("fence.i");
-  else if (w == 0x00008067)
+  else if (w == 0x0000100F) {
+    if (DisAsmMode)
+      Pm("fencei");
+    else
+      Pm("fence.i");
+  } else if (w == 0x00008067)
     Pm("ret");
   else if (op == 0x37) {
     "lui %s, ", RN[rd];
-    DiImm(w & 0xFFFFF000);
-    MmTag(w & 0xFFFFF000);
+    if (DisAsmMode)
+      DiImm ((w >> 12) & 0xFFFFF);
+    else {
+      DiImm(w & 0xFFFFF000);
+      MmTag(w & 0xFFFFF000);
+    }
   } else if (op == 0x17) {
     "auipc %s, ", RN[rd];
-    DiImm(w & 0xFFFFF000);
+    if (DisAsmMode)
+      DiImm ((w >> 12) & 0xFFFFF);
+    else
+      DiImm(w & 0xFFFFF000);
   } else if (op == 0x6F) {
     jt = (((w >> 31) & 1) << 20) | (((w >> 12) & 0xFF) << 12) | (((w >> 20) & 1) << 11) | (((w >> 21) & 0x3FF) << 1);
     if (jt & 0x100000)
       jt |= ~0x1FFFFF;
-    "jal %s, 0x%08X", RN[rd], addr + jt;
-    Sym(addr + jt);
+    if (DisAsmMode) {
+      // TryAssembleRiscV: j label (rd=0) only — no bare jal
+      if (rd == 0 && DisAsmLabHas(addr + jt))
+        "j L_%08X", addr + jt;
+      else if (rd == 0) {
+        "; j 0x%08X (outside window)\n", addr + jt;
+        goto disasm_one_track;
+      } else {
+        "; jal %s, 0x%08X (use j/call)\n", RN[rd], addr + jt;
+        goto disasm_one_track;
+      }
+    } else {
+      "jal %s, 0x%08X", RN[rd], addr + jt;
+      Sym(addr + jt);
+    }
     if (rd == 0 && addr + jt > DisHi)
       DisHi = addr + jt;
   } else if (op == 0x67) {
@@ -280,6 +341,8 @@ U0 DisasmOne(I64 addr, I64 w)
     if (f3 == 0 && rs1 == 0) {
       "li %s, ", RN[rd];
       DiImm(immI);
+    } else if (DisAsmMode && f3 == 0 && immI == 0) {
+      "mv %s, %s", RN[rd], RN[rs1];
     } else {
       if (f3 == 0)
         mn = "addi";
@@ -300,6 +363,12 @@ U0 DisasmOne(I64 addr, I64 w)
         mn = "ori";
       else
         mn = "andi";
+      if (DisAsmMode && f3 == 3) {
+        "; sltiu %s, %s, ", RN[rd], RN[rs1];
+        DiImm(immI);
+        " (no sltiu in asm{})\n";
+        goto disasm_one_track;
+      }
       "%s %s, %s, ", mn, RN[rd], RN[rs1];
       if (f3 == 1 || f3 == 5)
         DiImm ((w >> 20) & 0x3F);
@@ -307,6 +376,9 @@ U0 DisasmOne(I64 addr, I64 w)
         DiImm(immI);
     }
   } else if (op == 0x1B) {
+    if (DisAsmMode) {
+      "; ";
+    }
     if (f3 == 0)
       mn = "addiw";
     else if (f3 == 1)
@@ -318,6 +390,10 @@ U0 DisasmOne(I64 addr, I64 w)
       DiImm(immI);
     else
       DiImm(rs2);
+    if (DisAsmMode) {
+      " (W-ops limited in asm{})\n";
+      goto disasm_one_track;
+    }
   } else if (op == 0x33) {
     if (f7 == 0x20) {
       if (f3 == 0)
@@ -400,8 +476,17 @@ U0 DisasmOne(I64 addr, I64 w)
     jt = (((w >> 31) & 1) << 12) | (((w >> 25) & 0x3F) << 5) | (((w >> 8) & 0xF) << 1) | (((w >> 7) & 1) << 11);
     if (jt & 0x1000)
       jt |= ~0x1FFF;
-    "%s %s, %s, 0x%08X", mn, RN[rs1], RN[rs2], addr + jt;
-    Sym(addr + jt);
+    if (DisAsmMode) {
+      if (DisAsmLabHas(addr + jt))
+        "%s %s, %s, L_%08X", mn, RN[rs1], RN[rs2], addr + jt;
+      else {
+        "; %s %s, %s, 0x%08X (outside window)\n", mn, RN[rs1], RN[rs2], addr + jt;
+        goto disasm_one_track;
+      }
+    } else {
+      "%s %s, %s, 0x%08X", mn, RN[rs1], RN[rs2], addr + jt;
+      Sym(addr + jt);
+    }
     if (addr + jt > DisHi)
       DisHi = addr + jt;
   } else if (op == 0x73) {
@@ -424,24 +509,47 @@ U0 DisasmOne(I64 addr, I64 w)
         Pm("system");
     }
   } else if (op == 0x07 && f3 == 3) {
+    if (DisAsmMode) {
+      "; fld (no fld in asm{})\n";
+      goto disasm_one_track;
+    }
     "fld %s, ", FRN[rd];
     DiImm(immI);
     "(%s)", RN[rs1];
   } else if (op == 0x27 && f3 == 3) {
+    if (DisAsmMode) {
+      "; fsd (no fsd in asm{})\n";
+      goto disasm_one_track;
+    }
     "fsd %s, ", FRN[rs2];
     DiImm(immS);
     "(%s)", RN[rs1];
   } else if (op == 0x53) {
     if (f7 == 0x01) {
-      "fadd.d %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2];
+      if (DisAsmMode)
+        "faddd %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2];
+      else
+        "fadd.d %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2];
     } else if (f7 == 0x05) {
-      "fsub.d %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2];
+      if (DisAsmMode)
+        "fsubd %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2];
+      else
+        "fsub.d %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2];
     } else if (f7 == 0x09) {
-      "fmul.d %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2];
+      if (DisAsmMode)
+        "fmuld %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2];
+      else
+        "fmul.d %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2];
     } else if (f7 == 0x0D) {
-      "fdiv.d %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2];
+      if (DisAsmMode)
+        "fdivd %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2];
+      else
+        "fdiv.d %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2];
     } else if (f7 == 0x2D) {
-      "fsqrt.d %s, %s", FRN[rd], FRN[rs1];
+      if (DisAsmMode)
+        "fsqrtd %s, %s", FRN[rd], FRN[rs1];
+      else
+        "fsqrt.d %s, %s", FRN[rd], FRN[rs1];
     } else if (f7 == 0x11) {
       if (rs1 == rs2) {
         if (f3 == 0)
@@ -450,6 +558,10 @@ U0 DisasmOne(I64 addr, I64 w)
           mn = "fneg.d";
         else
           mn = "fabs.d";
+        if (DisAsmMode) {
+          "; %s (pseudo; no asm{} form)\n", mn;
+          goto disasm_one_track;
+        }
         "%s %s, %s", mn, FRN[rd], FRN[rs1];
       } else {
         if (f3 == 0)
@@ -458,6 +570,10 @@ U0 DisasmOne(I64 addr, I64 w)
           mn = "fsgnjn.d";
         else
           mn = "fsgnjx.d";
+        if (DisAsmMode) {
+          "; %s (no asm{} form)\n", mn;
+          goto disasm_one_track;
+        }
         "%s %s, %s, %s", mn, FRN[rd], FRN[rs1], FRN[rs2];
       }
     } else if (f7 == 0x15) {
@@ -465,6 +581,10 @@ U0 DisasmOne(I64 addr, I64 w)
         mn = "fmin.d";
       else
         mn = "fmax.d";
+      if (DisAsmMode) {
+        "; %s (no asm{} form)\n", mn;
+        goto disasm_one_track;
+      }
       "%s %s, %s, %s", mn, FRN[rd], FRN[rs1], FRN[rs2];
     } else if (f7 == 0x51) {
       if (f3 == 0)
@@ -473,15 +593,35 @@ U0 DisasmOne(I64 addr, I64 w)
         mn = "flt.d";
       else
         mn = "feq.d";
-      "%s %s, %s, %s", mn, RN[rd], FRN[rs1], FRN[rs2];
+      if (DisAsmMode) {
+        if (f3 == 0)
+          mn = "fled";
+        else if (f3 == 1)
+          mn = "fltd";
+        else
+          mn = "feqd";
+        "%s %s, %s, %s", mn, RN[rd], FRN[rs1], FRN[rs2];
+      } else
+        "%s %s, %s, %s", mn, RN[rd], FRN[rs1], FRN[rs2];
     } else if (f7 == 0x79) {
-      "fmv.d.x %s, %s", FRN[rd], RN[rs1];
+      if (DisAsmMode)
+        "fmvdx %s, %s", FRN[rd], RN[rs1];
+      else
+        "fmv.d.x %s, %s", FRN[rd], RN[rs1];
     } else if (f7 == 0x71) {
       if (f3 == 0)
         mn = "fmv.x.d";
       else
         mn = "fclass.d";
-      "%s %s, %s", mn, RN[rd], FRN[rs1];
+      if (DisAsmMode) {
+        if (f3 == 0)
+          "fmvxd %s, %s", RN[rd], FRN[rs1];
+        else {
+          "; fclass.d (no asm{} form)\n";
+          goto disasm_one_track;
+        }
+      } else
+        "%s %s, %s", mn, RN[rd], FRN[rs1];
     } else if (f7 == 0x61) {
       if (rs2 == 2)
         mn = "fcvt.l.d";
@@ -491,7 +631,15 @@ U0 DisasmOne(I64 addr, I64 w)
         mn = "fcvt.w.d";
       else
         mn = "fcvt.wu.d";
-      "%s %s, %s", mn, RN[rd], FRN[rs1];
+      if (DisAsmMode) {
+        if (rs2 == 2)
+          "fcvtld_rtz %s, %s", RN[rd], FRN[rs1];
+        else {
+          "; %s (limited asm{} fcvt)\n", mn;
+          goto disasm_one_track;
+        }
+      } else
+        "%s %s, %s", mn, RN[rd], FRN[rs1];
     } else if (f7 == 0x69) {
       if (rs2 == 2)
         mn = "fcvt.d.l";
@@ -501,17 +649,41 @@ U0 DisasmOne(I64 addr, I64 w)
         mn = "fcvt.d.w";
       else
         mn = "fcvt.d.wu";
-      "%s %s, %s", mn, FRN[rd], RN[rs1];
+      if (DisAsmMode) {
+        if (rs2 == 2)
+          "fcvtdl %s, %s", FRN[rd], RN[rs1];
+        else {
+          "; %s (limited asm{} fcvt)\n", mn;
+          goto disasm_one_track;
+        }
+      } else
+        "%s %s, %s", mn, FRN[rd], RN[rs1];
     } else {
+      if (DisAsmMode) {
+        "; fp.op f7=";
+        DiImm(f7);
+        " raw=";
+        DiImm(w & 0xFFFFFFFF);
+        "\n";
+        goto disasm_one_track;
+      }
       "fp.op f7=";
       DiImm(f7);
       " raw=";
       DiImm(w & 0xFFFFFFFF);
     }
   } else {
+    if (DisAsmMode) {
+      "; raw ";
+      DiImm(w & 0xFFFFFFFF);
+      " (not in TryAssembleRiscV)\n";
+      goto disasm_one_track;
+    }
     ".word ";
     DiImm(w & 0xFFFFFFFF);
   }
+  "\n";
+  disasm_one_track:
   // Track constant chains for jalr symbolization (see KV/KOk above). lui/auipc sign-extend bit 31.
   if (rd) {
     if (op == 0x37) {
@@ -570,7 +742,6 @@ U0 DisasmOne(I64 addr, I64 w)
     else KOk[rd] = 0;
     // anything else that writes rd kills the chain
   }
-  "\n";
 }
 // DisasmC -- DisasmC(addr,w)
 // NAME
@@ -590,6 +761,222 @@ U0 DisasmC(I64 addr, I64 w)
 {
   I64 op, f3, rd, rs2, rdp, rs1p, imm, u, sh, f2, ff, b12, jt;
   U8 *mn;
+  // UA/asm{} has no c.* forms — expand common RVC to 32-bit mnemonics TryAssembleRiscV knows.
+  if (DisAsmMode) {
+    op = w & 3;
+    f3 = (w >> 13) & 7;
+    rd = (w >> 7) & 0x1F;
+    rs2 = (w >> 2) & 0x1F;
+    rdp = ((w >> 2) & 7) + 8;
+    rs1p = ((w >> 7) & 7) + 8;
+    if (w == 0x0000) {
+      "; illegal RVC\n";
+      return;
+    }
+    if (w == 0x0001) {
+      Pm("nop\n");
+      return;
+    }
+    if (w == 0x9002) {
+      Pm("ebreak\n");
+      return;
+    }
+    if (op == 0) {
+      if (f3 == 0) {
+        u = ((w >> 7) & 0x30) | ((w >> 1) & 0x3C0) | ((w >> 4) & 4) | ((w >> 2) & 8);
+        "addi %s, sp, ", RN[rdp];
+        DiImm(u);
+        "\n";
+        return;
+      }
+      if (f3 == 2) {
+        u = ((w >> 7) & 0x38) | ((w << 1) & 0x40) | ((w >> 4) & 4);
+        "lw %s, ", RN[rdp];
+        DiImm(u);
+        "(%s)\n", RN[rs1p];
+        return;
+      }
+      if (f3 == 3) {
+        u = ((w >> 7) & 0x38) | ((w << 1) & 0xC0);
+        "ld %s, ", RN[rdp];
+        DiImm(u);
+        "(%s)\n", RN[rs1p];
+        return;
+      }
+      if (f3 == 6) {
+        u = ((w >> 7) & 0x38) | ((w << 1) & 0x40) | ((w >> 4) & 4);
+        "sw %s, ", RN[rdp];
+        DiImm(u);
+        "(%s)\n", RN[rs1p];
+        return;
+      }
+      if (f3 == 7) {
+        u = ((w >> 7) & 0x38) | ((w << 1) & 0xC0);
+        "sd %s, ", RN[rdp];
+        DiImm(u);
+        "(%s)\n", RN[rs1p];
+        return;
+      }
+      "; RVC 0x%X (no asm{} expansion)\n", w & 0xFFFF;
+      return;
+    }
+    if (op == 1) {
+      imm = ((w >> 2) & 0x1F) | ((w >> 7) & 0x20);
+      if (imm & 0x20)
+        imm |= ~0x3F;
+      if (f3 == 0) {
+        if (rd == 0)
+          Pm("nop\n");
+        else {
+          "addi %s, %s, ", RN[rd], RN[rd];
+          DiImm(imm);
+          "\n";
+        }
+        return;
+      }
+      if (f3 == 2) {
+        "li %s, ", RN[rd];
+        DiImm(imm);
+        "\n";
+        return;
+      }
+      if (f3 == 3) {
+        if (rd == 2) {
+          imm = ((w >> 3) & 0x200) | ((w << 4) & 0x180) | ((w << 1) & 0x40) | ((w << 3) & 0x20) | ((w >> 2) & 0x10);
+          if (imm & 0x200)
+            imm |= ~0x3FF;
+          "addi sp, sp, ";
+          DiImm(imm);
+          "\n";
+        } else {
+          imm = (((w >> 2) & 0x1F) << 12) | (((w >> 12) & 1) << 17);
+          if (imm & 0x20000)
+            imm |= ~0x3FFFF;
+          "lui %s, ", RN[rd];
+          DiImm ((imm >> 12) & 0xFFFFF);
+          "\n";
+        }
+        return;
+      }
+      if (f3 == 4) {
+        f2 = (w >> 10) & 3;
+        sh = ((w >> 2) & 0x1F) | ((w >> 7) & 0x20);
+        if (f2 == 0) {
+          "srli %s, %s, ", RN[rs1p], RN[rs1p];
+          DiImm(sh);
+          "\n";
+        } else if (f2 == 1) {
+          "srai %s, %s, ", RN[rs1p], RN[rs1p];
+          DiImm(sh);
+          "\n";
+        } else if (f2 == 2) {
+          imm = sh;
+          if (imm & 0x20)
+            imm |= ~0x3F;
+          "andi %s, %s, ", RN[rs1p], RN[rs1p];
+          DiImm(imm);
+          "\n";
+        } else {
+          ff = (w >> 5) & 3;
+          if ((w >> 12) & 1) {
+            "; RVC W-op 0x%X\n", w & 0xFFFF;
+          } else {
+            if (ff == 0)
+              "sub %s, %s, %s\n", RN[rs1p], RN[rs1p], RN[rdp];
+            else if (ff == 1)
+              "xor %s, %s, %s\n", RN[rs1p], RN[rs1p], RN[rdp];
+            else if (ff == 2)
+              "or %s, %s, %s\n", RN[rs1p], RN[rs1p], RN[rdp];
+            else
+              "and %s, %s, %s\n", RN[rs1p], RN[rs1p], RN[rdp];
+          }
+        }
+        return;
+      }
+      if (f3 == 5) {
+        jt = (((w >> 12) & 1) << 11) | (((w >> 11) & 1) << 4) | (((w >> 9) & 3) << 8) | (((w >> 8) & 1) << 10) | (((w >> 7) & 1) << 6) | (((w >> 6) & 1) << 7) | (((w >> 3) & 7) << 1) | (((w >> 2) & 1) << 5);
+        if (jt & 0x800)
+          jt |= ~0xFFF;
+        if (DisAsmLabHas(addr + jt))
+          "j L_%08X\n", addr + jt;
+        else
+          "; j 0x%08X (outside window)\n", addr + jt;
+        if (addr + jt > DisHi)
+          DisHi = addr + jt;
+        return;
+      }
+      jt = (((w >> 12) & 1) << 8) | (((w >> 10) & 3) << 3) | (((w >> 5) & 3) << 6) | (((w >> 3) & 3) << 1) | (((w >> 2) & 1) << 5);
+      if (jt & 0x100)
+        jt |= ~0x1FF;
+      if (f3 == 6)
+        mn = "beq";
+      else
+        mn = "bne";
+      if (DisAsmLabHas(addr + jt))
+        "%s %s, zero, L_%08X\n", mn, RN[rs1p], addr + jt;
+      else
+        "; %s %s, zero, 0x%08X (outside)\n", mn, RN[rs1p], addr + jt;
+      if (addr + jt > DisHi)
+        DisHi = addr + jt;
+      return;
+    }
+    if (op == 2) {
+      if (f3 == 0) {
+        sh = ((w >> 2) & 0x1F) | ((w >> 7) & 0x20);
+        "slli %s, %s, ", RN[rd], RN[rd];
+        DiImm(sh);
+        "\n";
+        return;
+      }
+      if (f3 == 2) {
+        u = ((w >> 7) & 0x20) | ((w >> 2) & 0x1C) | ((w << 4) & 0xC0);
+        "lw %s, ", RN[rd];
+        DiImm(u);
+        "(sp)\n";
+        return;
+      }
+      if (f3 == 3) {
+        u = ((w >> 7) & 0x20) | ((w >> 2) & 0x18) | ((w << 4) & 0x1C0);
+        "ld %s, ", RN[rd];
+        DiImm(u);
+        "(sp)\n";
+        return;
+      }
+      if (f3 == 4) {
+        b12 = (w >> 12) & 1;
+        if (!b12) {
+          if (rs2 == 0)
+            "jalr zero, 0(%s)\n", RN[rd];
+          else
+            "mv %s, %s\n", RN[rd], RN[rs2];
+        } else {
+          if (rd == 0 && rs2 == 0)
+            Pm("ebreak\n");
+          else if (rs2 == 0)
+            "jalr ra, 0(%s)\n", RN[rd];
+          else
+            "add %s, %s, %s\n", RN[rd], RN[rd], RN[rs2];
+        }
+        return;
+      }
+      if (f3 == 6) {
+        u = ((w >> 7) & 0x3C) | ((w >> 1) & 0xC0);
+        "sw %s, ", RN[rs2];
+        DiImm(u);
+        "(sp)\n";
+        return;
+      }
+      if (f3 == 7) {
+        u = ((w >> 7) & 0x38) | ((w >> 1) & 0x1C0);
+        "sd %s, ", RN[rs2];
+        DiImm(u);
+        "(sp)\n";
+        return;
+      }
+    }
+    "; RVC 0x%X (no asm{} expansion)\n", w & 0xFFFF;
+    return;
+  }
   op = w & 3;
   f3 = (w >> 13) & 7;
   rd = (w >> 7) & 0x1F;
@@ -808,14 +1195,18 @@ U0 DisasmAt(I64 addr, I64 max = 2000, I64 end = 0)
   for (k = 0; k < 32; k++)
     KOk[k] = 0;
   DisHi = 0;
-  "; disassembly @ 0x%08X\n", addr;
+  if (!DisAsmMode)
+    "; disassembly @ 0x%08X\n", addr;
   i = 0;
   while (i < max) {
     if (end && addr >= end)
       return;
     // exact bound (Uf: the hash entrys recorded size)
     lo = *(U16 *)addr;
-    "0x%08X:  ", addr;
+    if (DisAsmMode && DisAsmLabHas(addr))
+      "L_%08X:\n", addr;
+    if (!DisAsmMode)
+      "0x%08X:  ", addr;
     if ((lo & 3) != 3) {
       DisasmC(addr, lo);
       if (lo == 0x8082 && addr >= DisHi)
@@ -840,17 +1231,20 @@ U0 DisasmAt(I64 addr, I64 max = 2000, I64 end = 0)
 // ret-stop heuristic there. U(addr, n=28) is the raw-address window. Disasm stays as an alias.
 // Uf -- Uf(name)
 // NAME
-//   Uf - disassemble a named function.
+//   Uf - disassemble a named function
 // SYNOPSIS
-//   Uf(name)
+//   U0 Uf(U8 *name);
 // DESCRIPTION
-//   disassemble a named function.
-// INPUTS
-//   name - argument
-// OUTPUTS
-//   disassemble a named function.
+//   Prints RISC-V assembly for a named function (TempleOS Uf). Uses the hash size
+//   when known; otherwise walks until a ret. Alias: Disasm. Raw windows: U(addr,n).
+// EXAMPLES
+//   Uf("Print");
+//   Disasm("Dir");
+//   U(FnAddr("Print"), 8);
+// SEE ALSO
+//   Disasm  U  UA  FnAddr  FnSize  Src  Man
 // BUGS
-//   See source; RISC-V UART REPL may omit full TempleOS behavior.
+//   C builtins have size 0 — heuristic stop at ret.
 U0 Uf(U8 *name)
 {
   I64 a, n;
@@ -870,21 +1264,113 @@ U0 Uf(U8 *name)
 }
 // U -- U(addr,n)
 // NAME
-//   U - disassemble n insns at addr.
+//   U - disassemble n insns at addr
 // SYNOPSIS
-//   U(addr,n)
+//   U0 U(I64 addr, I64 n=28);
 // DESCRIPTION
-//   disassemble n insns at addr.
-// INPUTS
-//   addr - argument
-//   n - argument
-// OUTPUTS
-//   disassemble n insns at addr.
+//   Raw-address unassemble window (TempleOS U). Default 28 insns. After a fault,
+//   pc (and _RIP) hold the trapped mepc — dig-down with U(pc-16); or U(_RIP);
+//   like TempleOS U(_RIP-16). Named functions: Uf("Name"). Assemblable source:
+//   UA(addr) / UAsm(addr).
+// EXAMPLES
+//   U(FnAddr("Print"), 8);
+//   U(pc-16);
+//   U(_RIP);
+// SEE ALSO
+//   UA  UAsm  Uf  Disasm  pc  _RIP  FnAddr  Dr  Regs
 // BUGS
-//   See source; RISC-V UART REPL may omit full TempleOS behavior.
+//   pc is last trap PC, not a live sampler of the REPL eval IP.
 U0 U(I64 addr, I64 n = 28)
 {
+  DisAsmMode = 0;
   DisasmAt(addr, n);
+}
+// DisAsmCollect -- walk a window and record branch/jal targets for UA labels.
+U0 DisAsmCollect(I64 addr, I64 max)
+{
+  I64 i, lo, w, op, jt, a;
+  a = addr;
+  DisAsmLo = addr;
+  DisAsmHi = addr + max * 4;
+  DisAsmLabClear();
+  i = 0;
+  while (i < max) {
+    lo = *(U16 *)a;
+    if ((lo & 3) != 3) {
+      op = lo & 3;
+      if (op == 1 && ((lo >> 13) & 7) == 5) {
+        jt = (((lo >> 12) & 1) << 11) | (((lo >> 11) & 1) << 4) | (((lo >> 9) & 3) << 8) | (((lo >> 8) & 1) << 10) | (((lo >> 7) & 1) << 6) | (((lo >> 6) & 1) << 7) | (((lo >> 3) & 7) << 1) | (((lo >> 2) & 1) << 5);
+        if (jt & 0x800)
+          jt |= ~0xFFF;
+        DisAsmLabAdd(a + jt);
+      } else if (op == 1 && (((lo >> 13) & 7) == 6 || ((lo >> 13) & 7) == 7)) {
+        jt = (((lo >> 12) & 1) << 8) | (((lo >> 10) & 3) << 3) | (((lo >> 5) & 3) << 6) | (((lo >> 3) & 3) << 1) | (((lo >> 2) & 1) << 5);
+        if (jt & 0x100)
+          jt |= ~0x1FF;
+        DisAsmLabAdd(a + jt);
+      }
+      a += 2;
+    } else {
+      w = *(U32 *)a;
+      op = w & 0x7F;
+      if (op == 0x6F) {
+        jt = (((w >> 31) & 1) << 20) | (((w >> 12) & 0xFF) << 12) | (((w >> 20) & 1) << 11) | (((w >> 21) & 0x3FF) << 1);
+        if (jt & 0x100000)
+          jt |= ~0x1FFFFF;
+        DisAsmLabAdd(a + jt);
+      } else if (op == 0x63) {
+        jt = (((w >> 31) & 1) << 12) | (((w >> 25) & 0x3F) << 5) | (((w >> 8) & 0xF) << 1) | (((w >> 7) & 1) << 11);
+        if (jt & 0x1000)
+          jt |= ~0x1FFF;
+        DisAsmLabAdd(a + jt);
+      }
+      a += 4;
+    }
+    i++;
+  }
+}
+// UA -- UA(addr,n)
+// NAME
+//   UA - print assemblable RISC-V source at addr
+// SYNOPSIS
+//   U0 UA(I64 addr, I64 n=28);
+// DESCRIPTION
+//   Like U(addr,n) but emits lines meant to paste into REPL asm { … }.
+//   Uses ABI register names and TryAssembleRiscV / asm_complete mnemonics
+//   (li/mv/addi/ld/…, fencei, faddd…). No address prefixes or <Sym> tags.
+//   In-window branches become j/beq … L_%08X with matching labels. RVC is
+//   expanded to 32-bit forms where possible. Alias: UAsm.
+// EXAMPLES
+//   UA(FnAddr("U"), 12);
+//   UA(pc-16);
+//   // then wrap the printed lines in:  asm { … };
+// SEE ALSO
+//   U  UAsm  Uf  Disasm  asm_complete
+// BUGS
+//   Bare jal (rd!=0) and out-of-window branches are commented — asm{} has
+//   j/call only. W-ops (addiw…), sltiu, some FP, and .word are comments.
+//   Pseudo vs raw: li/mv/ret preferred; RVC float loads stay as comments.
+U0 UA(I64 addr, I64 n = 28)
+{
+  DisAsmMode = 1;
+  DisAsmCollect(addr, n);
+  DisasmAt(addr, n);
+  DisAsmMode = 0;
+}
+// UAsm -- UAsm(addr,n)
+// NAME
+//   UAsm - alias of UA
+// SYNOPSIS
+//   U0 UAsm(I64 addr, I64 n=28);
+// DESCRIPTION
+//   Alias of UA — assemblable disassembly for asm{}.
+// EXAMPLES
+//   UAsm(FnAddr("Print"), 8);
+// SEE ALSO
+//   UA  U
+U0 UAsm(I64 addr, I64 n = 28)
+{
+  UA(addr, n);
 }
 // Disasm -- Disasm(name)
 // NAME

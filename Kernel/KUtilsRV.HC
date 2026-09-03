@@ -106,7 +106,7 @@ asm {
 	ret
 }
 // Bit-field ops on a byte array: bit n is bit (n&7) of byte n>>3. Bt tests, Bts sets, Btr resets;
-// each returns the OLD bit. LBts/LBtr are the locked variants (single core here -> identical).
+// each returns the OLD bit. LBts/LBtr/LBtc use LR.W/SC.W on the containing aligned word (A-ext).
 asm {
 	Bt::
 	srai	t0,a1,3
@@ -153,17 +153,24 @@ asm {
 
 asm {
 	LBts::
+	// a0=bf, a1=bit → atomic set; return old bit
 	srai	t0,a1,3
 	add	t0,a0,t0
-	lbu	t1,0(t0)
-	andi	t2,a1,7
-	srl	t3,t1,t2
-	andi	t3,t3,1
-	li	t4,1
-	sll	t4,t4,t2
-	or	t1,t1,t4
-	sb	t1,0(t0)
-	mv	a0,t3
+	andi	t1,t0,3
+	sub	t2,t0,t1
+	slli	t1,t1,3
+	andi	t3,a1,7
+	add	t1,t1,t3
+	li	t3,1
+	sll	t3,t3,t1
+	lbts_retry:
+	lr.w	t4,(t2)
+	and	t5,t4,t3
+	sltu	t5,zero,t5
+	or	t6,t4,t3
+	sc.w	t0,t6,(t2)
+	bnez	t0,lbts_retry
+	mv	a0,t5
 	ret
 }
 
@@ -171,16 +178,44 @@ asm {
 	LBtr::
 	srai	t0,a1,3
 	add	t0,a0,t0
-	lbu	t1,0(t0)
-	andi	t2,a1,7
-	srl	t3,t1,t2
-	andi	t3,t3,1
-	li	t4,1
-	sll	t4,t4,t2
-	not	t4,t4
-	and	t1,t1,t4
-	sb	t1,0(t0)
-	mv	a0,t3
+	andi	t1,t0,3
+	sub	t2,t0,t1
+	slli	t1,t1,3
+	andi	t3,a1,7
+	add	t1,t1,t3
+	li	t3,1
+	sll	t3,t3,t1
+	lbtr_retry:
+	lr.w	t4,(t2)
+	and	t5,t4,t3
+	sltu	t5,zero,t5
+	not	t6,t3
+	and	t6,t4,t6
+	sc.w	t0,t6,(t2)
+	bnez	t0,lbtr_retry
+	mv	a0,t5
+	ret
+}
+
+asm {
+	LBtc::
+	srai	t0,a1,3
+	add	t0,a0,t0
+	andi	t1,t0,3
+	sub	t2,t0,t1
+	slli	t1,t1,3
+	andi	t3,a1,7
+	add	t1,t1,t3
+	li	t3,1
+	sll	t3,t3,t1
+	lbtc_retry:
+	lr.w	t4,(t2)
+	and	t5,t4,t3
+	sltu	t5,zero,t5
+	xor	t6,t4,t3
+	sc.w	t0,t6,(t2)
+	bnez	t0,lbtc_retry
+	mv	a0,t5
 	ret
 }
 // I64 Bsf(I64 v): index of the lowest set bit, or -1 if v==0.  Bsr: the highest set bit.
@@ -451,13 +486,10 @@ asm {
 	mv	a0,fp
 	ret
 }
-// LXchgI64(d,v): swap *d with v, return the old value. The runtime impl is a plain (non-atomic)
-// load/store; QEMU virt boots single-core, so ld/sd is a faithful port.
+// LXchgI64(d,v): atomic swap *d with v (amoswap.d), return the old value.
 asm {
 	LXchgI64::
-	ld	t0,0(a0)
-	sd	a1,0(a0)
-	mv	a0,t0
+	amoswap.d	a0,a1,(a0)
 	ret
 }
 // StrMatch(needle,hay,flags): return a pointer to the first occurrence of needle in hay, or 0.

@@ -6,8 +6,10 @@
 #   machine = virt | sifive_u | spike | … (see make list-kernels)
 #
 # Temporarily applies defconfig-<machine> (rewrites Kernel/RVAutoConf.HH + *Selected.HH),
-# compiles tests/exec/cases/kernel_plat_demo.hc, snapshots config into the outdir,
-# then restores the previous templeos-riscv/.config (or virt if none).
+# compiles tests/exec/cases/kernel_plat_demo.hc (or RV32 asm for opentitan),
+# snapshots config into the outdir, then restores the previous templeos-riscv/.config.
+#
+# Policy: no SKIP=OK. Unknown / non-board targets fail. Missing toolchain fails.
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -38,15 +40,12 @@ case "$MACHINE_IN" in
   microchip_icicle|microchip-icicle-kit) DEFCONFIG=microchip_icicle ;;
   xiangshan|xiangshan-kunminghu) DEFCONFIG=xiangshan ;;
   amd_microblaze_v|amd-microblaze-v-generic) DEFCONFIG=amd_microblaze_v ;;
-  opentitan)
-    echo "SKIP build kernel (opentitan) — RV32 / 128 KiB profile; use rv32 toolchain later (RV32.md)" >&2
-    exit 0 ;;
-  none)
-    echo "SKIP build kernel (none) — empty machine; no CPU/RAM" >&2
-    exit 0 ;;
-  host)
-    echo "SKIP build kernel (host) — legacy stub; not a QEMU -M" >&2
-    exit 0 ;;
+  opentitan) DEFCONFIG=opentitan ;;
+  visionfive2|visionfive-2|jh7110) DEFCONFIG=visionfive2 ;;
+  milkv_mars|milkv-mars|mars) DEFCONFIG=milkv_mars ;;
+  none|host)
+    echo "FAIL build kernel ($MACHINE_IN) — not a TempleOS/RV board target (excluded from plat matrix)" >&2
+    exit 1 ;;
   *)
     if [ -f "$TOS/configs/${MACHINE_IN}_defconfig" ]; then
       DEFCONFIG="$MACHINE_IN"
@@ -57,7 +56,7 @@ case "$MACHINE_IN" in
 esac
 
 for t in "$GCC" "$OBJCOPY" "$LD"; do
-  command -v "$t" >/dev/null 2>&1 || { echo "SKIP build kernel — missing $t" >&2; exit 0; }
+  command -v "$t" >/dev/null 2>&1 || { echo "FAIL build kernel — missing $t" >&2; exit 1; }
 done
 [ -f "$COMPILER" ] || [ -x "$COMPILER" ] || make -C "$ROOT" holyc-riscv >/dev/null
 
@@ -94,19 +93,88 @@ trap restore_cfg EXIT
 
 make -C "$TOS" "defconfig-$DEFCONFIG" >/dev/null
 
-# Shared harness objects (machine-independent).
-if [ ! -f "$EXEC_DIR/crt0.o" ] || [ ! -f "$EXEC_DIR/oracle_out.o" ] || \
-   [ "$HARNESS/crt0.S" -nt "$EXEC_DIR/crt0.o" ] || [ "$HARNESS/oracle_out.c" -nt "$EXEC_DIR/oracle_out.o" ] || \
-   [ "$ROOT/bootstrap/holy_rt.h" -nt "$EXEC_DIR/oracle_out.o" ]; then
-  "$GCC" -march=rv64imafdc -mabi=lp64d -mcmodel=medany -O2 -g -nostdlib -ffreestanding -fno-builtin \
-    -c "$HARNESS/oracle_out.c" -o "$EXEC_DIR/oracle_out.o" || { echo "FAIL build kernel — harness compile" >&2; exit 1; }
-  "$GCC" -march=rv64imafdc -mabi=lp64d -mcmodel=medany -O2 -g -nostdlib -ffreestanding -fno-builtin \
-    -c "$HARNESS/crt0.S" -o "$EXEC_DIR/crt0.o" || { echo "FAIL build kernel — crt0" >&2; exit 1; }
+MARCH=rv64imafdc
+MABI=lp64d
+ENTRY_POINT=0x80000000
+if [ -f "$TOS/include/generated/kconfig.mk" ]; then
+  # shellcheck disable=SC1090
+  . "$TOS/include/generated/kconfig.mk"
 fi
+MARCH="${MARCH:-rv64imafdc}"
+MABI="${MABI:-lp64d}"
 
 T="$(mktemp -d)"
 # shellcheck disable=SC2064
 trap "rm -rf '$T'; restore_cfg" EXIT
+
+# --- OpenTitan: RV32 asm plat smoke (HolyC is RV64-only until ARCH_RISCV32) ---
+if [ "$DEFCONFIG" = opentitan ]; then
+  "$GCC" -march=rv32imc -mabi=ilp32 -nostdlib -ffreestanding -fno-builtin \
+    -T "$HARNESS/link_opentitan.ld" -o "$T/plat.elf" "$HARNESS/opentitan_plat.S" \
+    || { echo "FAIL build kernel — opentitan RV32 link" >&2; exit 1; }
+  cp "$T/plat.elf" "$KDIR/plat.elf"
+  cp "$T/plat.elf" "$EXEC_DIR/${DEFCONFIG}_plat.elf"
+  cp "$T/plat.elf" "$EXEC_DIR/plat-$DEFCONFIG.elf"
+  "$OBJCOPY" -O binary "$KDIR/plat.elf" "$KDIR/plat.bin" 2>/dev/null || true
+  cp "$TOS/.config" "$KDIR/.config"
+  cp "$ROOT/Kernel/RVAutoConf.HH" "$KDIR/RVAutoConf.HH"
+  mkdir -p "$KDIR/DrvSelected"
+  for f in RVUartSelected.HH RVPlicSelected.HH RVSifiveSelected.HH RVVirtioSelected.HH RVFbSelected.HH RVTimerSelected.HH; do
+    [ -f "$ROOT/Kernel/Drv/$f" ] && cp "$ROOT/Kernel/Drv/$f" "$KDIR/DrvSelected/$f"
+  done
+  python3 "$TOS/scripts/kconfig.py" qemu-args >"$KDIR/qemu-args.txt" 2>"$KDIR/qemu-system.txt" || true
+  {
+    echo "machine=$DEFCONFIG"
+    echo "elf=$KDIR/plat.elf"
+    echo "output_format=elf"
+    echo "note=RV32 asm harness until ARCH_RISCV32; drivers RVUartIbex+RVTimerIbex ready"
+    echo "compat_elf=$EXEC_DIR/${DEFCONFIG}_plat.elf"
+    date -u +'built=%Y-%m-%dT%H:%M:%SZ'
+  } >"$KDIR/BUILD_INFO.txt"
+  echo "Built kernel ($DEFCONFIG): $KDIR/plat.elf (RV32 asm plat harness)"
+  exit 0
+fi
+
+# Shared harness objects (machine-independent RV64).
+# sifive_e uses slim oracle_out_plat.o (16 KiB DTIM); others use full oracle_out.o.
+ORACLE_SRC="$HARNESS/oracle_out.c"
+ORACLE_OBJ="$EXEC_DIR/oracle_out.o"
+LINK_LD="$HARNESS/link_exec.ld"
+if [ "$DEFCONFIG" = sifive_e ]; then
+  ORACLE_SRC="$HARNESS/oracle_out_plat.c"
+  ORACLE_OBJ="$EXEC_DIR/oracle_out_plat.o"
+  LINK_LD="$HARNESS/link_sifive_e.ld"
+elif [ "$DEFCONFIG" = visionfive2 ]; then
+  LINK_LD="$HARNESS/link_visionfive2.ld"
+elif [ "$DEFCONFIG" = milkv_mars ]; then
+  LINK_LD="$HARNESS/link_milkv_mars.ld"
+fi
+
+need_oracle=0
+if [ ! -f "$ORACLE_OBJ" ] || [ "$ORACLE_SRC" -nt "$ORACLE_OBJ" ] || \
+   [ "$ROOT/bootstrap/holy_rt.h" -nt "$ORACLE_OBJ" ]; then
+  need_oracle=1
+fi
+need_crt=0
+if [ ! -f "$EXEC_DIR/crt0.o" ] || [ "$HARNESS/crt0.S" -nt "$EXEC_DIR/crt0.o" ]; then
+  need_crt=1
+fi
+
+if [ "$need_oracle" -eq 1 ]; then
+  UART_DEF=""
+  if [ "$DEFCONFIG" = sifive_e ]; then
+    UART_DEF="-DUART_BASE=0x10013000UL"
+  fi
+  # shellcheck disable=SC2086
+  "$GCC" -march="$MARCH" -mabi="$MABI" -mcmodel=medany -O2 -g -nostdlib -ffreestanding -fno-builtin \
+    $UART_DEF -c "$ORACLE_SRC" -o "$ORACLE_OBJ" \
+    || { echo "FAIL build kernel — harness compile" >&2; exit 1; }
+fi
+if [ "$need_crt" -eq 1 ]; then
+  "$GCC" -march="$MARCH" -mabi="$MABI" -mcmodel=medany -O2 -g -nostdlib -ffreestanding -fno-builtin \
+    -c "$HARNESS/crt0.S" -o "$EXEC_DIR/crt0.o" \
+    || { echo "FAIL build kernel — crt0" >&2; exit 1; }
+fi
 
 if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then
   echo "FAIL build kernel — HolyC compile error ($DEFCONFIG)" >&2
@@ -114,23 +182,25 @@ if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2
   exit 1
 fi
 ( cd "$T" && "$OBJCOPY" -I binary -O elf64-littleriscv blob.bin blob_in.o && \
-  "$LD" -T "$HARNESS/link_exec.ld" -nostdlib --no-warn-mismatch -o plat.elf \
-    "$EXEC_DIR/crt0.o" "$EXEC_DIR/oracle_out.o" blob_in.o ) \
+  "$LD" -T "$LINK_LD" -nostdlib --no-warn-mismatch -o plat.elf \
+    "$EXEC_DIR/crt0.o" "$ORACLE_OBJ" blob_in.o ) \
   >/dev/null 2>&1 || { echo "FAIL build kernel — link error ($DEFCONFIG)" >&2; exit 1; }
 
 cp "$T/plat.elf" "$KDIR/plat.elf"
 cp "$T/plat.elf" "$EXEC_DIR/${DEFCONFIG}_plat.elf"
-# Compat with earlier plat-$MACHINE.elf naming from smoke scripts.
 cp "$T/plat.elf" "$EXEC_DIR/plat-$DEFCONFIG.elf"
 
-# Optional firmware ROM image (Kconfig OUTPUT_FORMAT_FIRMWARE).
+"$OBJCOPY" -O binary "$KDIR/plat.elf" "$KDIR/plat-ram.bin" 2>/dev/null || true
+if [ -f "$KDIR/plat-ram.bin" ]; then
+  cp "$KDIR/plat-ram.bin" "$EXEC_DIR/${DEFCONFIG}_plat.bin"
+fi
+
 OUTPUT_FMT=elf
 if [ -f "$TOS/include/generated/kconfig.mk" ]; then
   # shellcheck disable=SC1090
   . "$TOS/include/generated/kconfig.mk"
 fi
 if [ "${OUTPUT_FORMAT:-elf}" = firmware ]; then
-  FW_MK="$ROOT/bootstrap/Makefile.firmware"
   FW_OUT="$ROOT/build/firmware"
   make -C "$ROOT/bootstrap" -f Makefile.firmware \
     PAYLOAD_ELF="$KDIR/plat.elf" \
@@ -142,23 +212,31 @@ if [ "${OUTPUT_FORMAT:-elf}" = firmware ]; then
   cp "$FW_OUT/templeos-fw.elf" "$KDIR/plat-fw.elf"
   OUTPUT_FMT=firmware
   echo "Built firmware ($DEFCONFIG): $KDIR/plat.bin (flash @ ${FLASH_BASE:-0x20000000})"
+elif [ -f "$KDIR/plat-ram.bin" ]; then
+  cp "$KDIR/plat-ram.bin" "$KDIR/plat.bin"
 fi
 
-# Snapshot Kconfig + generated HolyC headers so flipping .config does not lose this board.
 cp "$TOS/.config" "$KDIR/.config"
 cp "$ROOT/Kernel/RVAutoConf.HH" "$KDIR/RVAutoConf.HH"
 mkdir -p "$KDIR/DrvSelected"
-for f in RVUartSelected.HH RVPlicSelected.HH RVSifiveSelected.HH RVVirtioSelected.HH RVFbSelected.HH; do
+for f in RVUartSelected.HH RVPlicSelected.HH RVSifiveSelected.HH RVVirtioSelected.HH RVFbSelected.HH RVTimerSelected.HH; do
   [ -f "$ROOT/Kernel/Drv/$f" ] && cp "$ROOT/Kernel/Drv/$f" "$KDIR/DrvSelected/$f"
 done
 python3 "$TOS/scripts/kconfig.py" qemu-args >"$KDIR/qemu-args.txt" 2>"$KDIR/qemu-system.txt" || true
+ENTRY_HEX="${ENTRY_POINT:-0x80000000}"
 {
   echo "machine=$DEFCONFIG"
   echo "elf=$KDIR/plat.elf"
   echo "output_format=$OUTPUT_FMT"
+  if [ -f "$KDIR/plat-ram.bin" ]; then
+    echo "ram_bin=$KDIR/plat-ram.bin"
+  fi
   if [ "$OUTPUT_FMT" = firmware ]; then
     echo "firmware_bin=$KDIR/plat.bin"
     echo "firmware_elf=$KDIR/plat-fw.elf"
+  elif [ -f "$KDIR/plat.bin" ]; then
+    echo "plat_bin=$KDIR/plat.bin"
+    echo "loader_hint=-device loader,file=plat.bin,addr=${ENTRY_HEX},cpu-num=0"
   fi
   echo "compat_elf=$EXEC_DIR/${DEFCONFIG}_plat.elf"
   date -u +'built=%Y-%m-%dT%H:%M:%SZ'
@@ -166,4 +244,7 @@ python3 "$TOS/scripts/kconfig.py" qemu-args >"$KDIR/qemu-args.txt" 2>"$KDIR/qemu
 
 if [ "$OUTPUT_FMT" = elf ]; then
   echo "Built kernel ($DEFCONFIG): $KDIR/plat.elf"
+  if [ -f "$KDIR/plat.bin" ]; then
+    echo "  + flat RAM bin: $KDIR/plat.bin ($(wc -c <"$KDIR/plat.bin") bytes)"
+  fi
 fi

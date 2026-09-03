@@ -1,3 +1,4 @@
-I64 main() {
+I64 main()
+{
   return 65 + 66 + 67;
 }

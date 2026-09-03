@@ -1,88 +1,121 @@
-// dir.hc -- Dir() listing for the AOT HolyC REPL (no editor / host-slot deps).
+// dir.hc -- cwd-aware Dir() for the AOT HolyC REPL.
+// At /: subdirs as "Home/" (from Home/.dir). Inside a dir: files only. Hides dotfiles.
+// Split helpers keep AOT frames small (a fat Dir() spilled and hung on cwd walks).
+// Editor / Src live in ide_src.hc (G3) after seed ed/edit/vim.
+I64 DirSlash(U8 *s)
+{
+  I64 n;
+  n = 0;
+  while (s[n] && s[n] != '/')
+    n++;
+  return n;
+}
+
+I64 DirIsDotDir(U8 *s)
+{
+  if (*s != '.')
+    return 0;
+  if (s[1] != 'd' || s[2] != 'i' || s[3] != 'r')
+    return 0;
+  if (s[4])
+    return 0;
+  return 1;
+}
+
+U0 DirOne(I64 i)
+{
+  U8 *nm, *cwd, *p, *q;
+  I64 sl, k;
+  nm = FileName(i);
+  if (!nm)
+    return;
+  cwd = FsCwd();
+  if (!cwd)
+    cwd = "";
+  p = nm;
+  q = cwd;
+  while (*q) {
+    if (*p != *q)
+      return;
+    p++;
+    q++;
+  }
+  if (*p == '.')
+    return;
+  sl = DirSlash(p);
+  if (p[sl] == '/') {
+    if (DirIsDotDir(p + sl + 1)) {
+      UartStr("  ");
+      k = 0;
+      while (k < sl) {
+        PutCh(p[k]);
+        k++;
+      }
+      UartStr("/\n");
+    }
+    return;
+  }
+  Print("  %s  (%d)\n", p, FileSize(i));
+}
+
 U0 Dir()
 {
-  I64 i, n, sz;
-  U8 *nm;
+  I64 i, n;
+  U8 *cwd;
   n = FileCount();
+  cwd = FsCwd();
+  if (!cwd)
+    cwd = "";
   Print("Dir: %d files\n", n);
-  for (i = 0; i < n; i++) {
-    nm = FileName(i);
-    sz = FileSize(i);
-    if (!nm)
-      continue;
-    Print("  %s  (%d)\n", nm, sz);
+  UartStr(" /");
+  UartStr(cwd);
+  PutCh('\n');
+  i = 0;
+  while (i < n) {
+    DirOne(i);
+    i++;
   }
 }
 
-U0 Cat(U8 *name)
+U0 Ls()
 {
-  U8 *p, *s;
-  if (!name || !*name) {
-    "Cat: need name\n";
-    return;
-  }
-  // Copy name — avoid name[i] on the parameter (AOT index hazard).
-  s = name;
-  p = FsTmp;
-  while (*s && p < &FsTmp[150]) {
-    *p = *s;
-    p++;
-    s++;
-  }
-  *p = 0;
-  p = FileRead(FsTmp);
-  if (!p) {
-    "Cat: no such file\n";
-    return;
-  }
-  UartStr(p);
-  PutCh('\n');
+  Dir;
 }
-// Src -- print defining source from memfs (AOT image has no live JIT editor yet).
-// Note: avoid name[i] on the parameter (AOT frame/index hazard); copy via *p bump first.
-U8 src_path[96];
-U0 Src(U8 *name)
+// Cat / Copy / DumpFile live in seed/files.hc (AOT-included from repl.hc).
+I64 LinkKind(U8 *name, U8 *out)
 {
-  U8 *p, *d;
+  I64 n = 0;
   if (!name) {
-    "Src: need name\n";
-    return;
+    out[0] = 0;
+    return 0;
   }
-  if (!*name) {
-    "Src: need name\n";
-    return;
+  while (name[n] && n < 63) {
+    out[n] = name[n];
+    n++;
   }
-  d = src_path;
-  p = name;
-  while (*p && d < &src_path[90]) {
-    *d = *p;
-    d++;
-    p++;
+  out[n] = 0;
+  if (n && out[n - 1] == 47) {
+    n--;
+    out[n] = 0;
   }
-  *d = 0;
-  p = FileRead(src_path);
-  if (!p) {
-    d = src_path;
-    while (*d)
-      d++;
-    *d = '.';
-    d++;
-    *d = 'h';
-    d++;
-    *d = 'c';
-    d++;
-    *d = 0;
-    p = FileRead(src_path);
-  }
-  if (!p) {
-    UartStr("Src: no source for ");
-    UartStr(src_path);
-    PutCh('\n');
-    return;
-  }
-  UartStr("==== ");
-  UartStr(src_path);
-  UartStr(" ====\n");
-  UartStr(p);
-  PutCh('\n');
+  if (!out[0])
+    return 0;
+  if (out[0] == '.' && !out[1])
+    return 0;
+  if (out[0] == '.' && out[1] == '.' && !out[2])
+    return 1;
+  if (IsDir(out))
+    return 1;
+  if (FileLen(out) >= 0)
+    return 2;
+  return 0;
+}
+
+U0 LinkCd(U8 *name)
+{
+  Cd(name);
+}
+
+U0 DirWrite()
+{
 }

@@ -132,13 +132,13 @@ I64 NinePVirtioMmioSendRecv(I64 req_len)
   if (pad & 3)
     pad = pad + 4 - (pad & 3);
   r = ninep_mmio_base;
-  MemSet(V9P_RSP_MSG, 0, P9_MSIZE_DEFAULT);
+  MemSet(V9P_RSP_MSG, 0, 4096);
   ninep_mmio_desc_tmp[0].addr = V9P_REQ_MSG;
   ninep_mmio_desc_tmp[0].len = pad;
   ninep_mmio_desc_tmp[0].flags = VDESC_F_NEXT;
   ninep_mmio_desc_tmp[0].next = 1;
   ninep_mmio_desc_tmp[1].addr = V9P_RSP_MSG;
-  ninep_mmio_desc_tmp[1].len = P9_MSIZE_DEFAULT;
+  ninep_mmio_desc_tmp[1].len = 4096;
   ninep_mmio_desc_tmp[1].flags = VDESC_F_WRITE;
   ninep_mmio_desc_tmp[1].next = 0;
   MemCpy(V9P_VQ, ninep_mmio_desc_tmp, 32);
@@ -149,7 +149,9 @@ I64 NinePVirtioMmioSendRecv(I64 req_len)
   ninep_mmio_avail_tmp.used_ev = 0;
   MemCpy(V9P_VQ + 128, &ninep_mmio_avail_tmp, 20);
   ninep_mmio_avail_idx = aidx + 1;
+  // Ensure avail is visible before sampling used / notifying.
   uidx0 = InU16(V9P_VQ + 4098);
+  InU32(r + VMR_STATUS);
   OutU32(r + VMR_QUEUE_NOTIFY, 0);
   for (spin = 0; spin < 200000000; spin++)
     if (InU16(V9P_VQ + 4098) != uidx0)

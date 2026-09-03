@@ -21,12 +21,14 @@
 | Kernel UART smokes | `kernel-*-smoke` (print…virtioshell) | **qemu-integration** | See Makefile list |
 | FB / Gr / Win | `kernel-fb/gr/win-smoke` | **qemu-integration** | Headless UART hash |
 | Guest ExePutS / fundef | `kernel-exepubs*-smoke` | **qemu-integration** | |
+| A2 guest Cmp REPL | `repl-cmp-smoke` (`kernel-repl-exepubs-smoke`) | **qemu-integration** | `build/repl-cmp.elf`; [SELF_HOST.md](../docs/SELF_HOST.md) |
 | Phase3 (Compiler_RV + StartOS) | `kernel-phase3-smoke` | **qemu-integration** | [COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md) |
 | Plat virt UART/CLINT | `kernel-plat-smoke` | **qemu-integration** | Kconfig HolyC drivers |
 | Plat sifive_u | `kernel-plat-sifive-u-smoke` | **local only** | Restores virt defconfig after |
-| Mac-AOT `hc_repl` | `hc-repl-smoke` | **qemu-integration** | Transitional bridge |
-| REPL language smoke | `repl-smoke` | **qemu-integration** | |
-| REPL honesty | `repl-regression` | **qemu-integration** | [REGRESSION.md](REGRESSION.md) |
+| Mac-AOT / HolyC REPL | `repl-holyc-smoke` / `repl-holyc-regression` | **qemu-integration** | Memfs/Dir/JIT honesty; dual-run with legacy until A3 flip |
+| HolyC split boot | `bootloader-smoke` | **qemu-integration** | `boot.bin` + `hc_repl.blob.bin` |
+| REPL language smoke | `repl-smoke` | **qemu-integration** | **Deprecated** legacy C; required until A3 (`SKIP_REPL_LEGACY=1` local only) |
+| REPL honesty | `repl-regression` | **qemu-integration** | **Deprecated** until A3; [REGRESSION.md](REGRESSION.md) |
 | REPL 9p transport | `repl-9p-smoke` | **qemu-integration** | Virtio 9p REPL smoke |
 | Term geometry PTY | `term-probe-pty` | **qemu-integration** | |
 | Project coverage tally | `make coverage` | **local only** | Heavy; not a merge gate |
@@ -47,7 +49,9 @@
 | Stress (both) | asm + compiler (+ property) | `make stress` |
 | UART execution oracles | `tests/exec/` | `make exec-oracle` → `tests/scripts/run_exec_oracles.sh` |
 | TempleOS/RISC-V QEMU smoke | `templeos-riscv/` | `make templeos-smoke` |
-| Bare-metal REPL | `bootstrap/repl.elf` | `make repl-smoke` / `repl-regression` |
+| Bare-metal REPL (guest Cmp) | `build/repl-cmp.elf` | `make repl-cmp-smoke` (A2 product compile) |
+| Bare-metal REPL (HolyC bridge) | `build/repl-holyc.elf` | `make repl-holyc-smoke` / `repl-holyc-regression` |
+| Bare-metal REPL (legacy C) | `bootstrap/repl.elf` | `make repl-smoke` / `repl-regression` (**deprecated**) |
 
 ## Kernel / platform smokes (selected)
 
@@ -58,6 +62,7 @@
 | `kernel-plat-sifive-u-smoke` | Same on `-M sifive_u` | **no** (local) |
 | `kernel-fb-smoke` / `gr` / `win` | FB / Gr* / text_base WinMgr | yes |
 | `kernel-exepubs-smoke` / `phase3-smoke` | Guest `ExePutS` / Cmp / StartOS | yes |
+| `repl-cmp-smoke` | A2: Kernel+`Compiler_RV` ExePutS UART REPL | yes |
 
 Platform tutorial: [../templeos-riscv/KCONFIG.md](../templeos-riscv/KCONFIG.md). Machines: [PLATFORM.md](../templeos-riscv/PLATFORM.md) (virt, sifive_u, amd_microblaze_v, opentitan, …).
 

@@ -19,7 +19,9 @@ make -C "$ROOT" holyc-riscv >/dev/null
 make -C "$ROOT/bootstrap/hc_repl" all
 
 # Mandate: Mac-AOT guest has no 0x87001xxx host slots and does not link worry_dream/holy_rt.
+# seed_embed.hc is generated memfs payload (legacy seed copies as strings) — not guest runtime.
 if grep -RIn --include='*.hc' -E '0x87001[0-9A-Fa-f]{3}' "$ROOT/bootstrap/hc_repl" \
+  | grep -v seed_embed.hc \
   | grep -v -E 'No 0x87001|no 0x87001'; then
   echo "FAIL hc-repl-smoke — HolyC sources still reference host slots" >&2
   exit 1
@@ -46,8 +48,61 @@ add_case() {
   if [ $# -gt 1 ]; then expected+="$2"$'\n'; fi
 }
 
+# Soft VT mux (console.hc): CONSOLE.md #4 — first so needles survive HIST/Tty ring stress
+add_case 'VtList();'
+add_case 'Vt(1);'
+add_case 'VtPutStr("vt1-session");'
+add_case 'VtCapture(1);'
+add_case 'Print("vt-cap-line\\n");'
+add_case 'VtCapture(0);'
+add_case 'VtList();'
+add_case 'VtDetach();'
+# G5 hist_seed: cold Up first (before any session push) → HIST_SEED_OK
+input+=$'\x1b[A\n'
+# /proc-ish (sys.hc) early — before Dir (Dir can be slow on large memfs)
+add_case 'Sys();'
+# G5 history session Up×1 / Up×2 — before TtyRaw / Src starve the ring
+input+=$'Print("HIST_RECALL_OK\\n");\n'
+input+=$'\x1b[A\n'
+input+=$'Print("HIST_UP2_OK\\n");\n'
+input+=$'Print("HIST_UP2_TOP\\n");\n'
+input+=$'\x1b[A\x1b[A\n'
+# Line discipline (tty.hc): CONSOLE.md #1
+add_case 'Tty();'
+add_case 'TtyRaw();'
+add_case 'Tty();'
+add_case 'TtyCanon();'
+add_case 'TtyMapIn(13);' 000000000000000a
+add_case 'TtyIsErase(8);' 0000000000000001
+add_case 'TtyIsKill(21);' 0000000000000001
+add_case 'TtyEofHit();' 0000000000000000
+add_case 'TtyOnlcrGet();' 0000000000000000
+add_case 'TtyOnlcr(1);'
+add_case 'TtyOnlcrGet();' 0000000000000001
+add_case 'TtyOnlcr(0);'
+# Term size/type (term.hc): CONSOLE.md #11
+add_case 'TermSize(80,24);'
+add_case 'TermNameAnsi;'
+add_case 'TermRep;'
+
 add_case 'Dir;'
-add_case 'Src("hello.hc");'
+add_case 'Cd("Tutorials");'
+add_case 'Pwd();'
+add_case 'Cd("/");'
+add_case 'Cat("Lib/print.hc");'
+add_case 'MkDir("Home/Work");'
+add_case 'Cd("Home/Work");'
+add_case 'Pwd();'
+add_case 'Cd("/");'
+add_case 'Cat("Home/hello.hc");'
+# G3 Src opens Vi — quit like legacy regression (:q)
+input+=$'Src("hello.hc");\n:q\r'
+add_case 'DumpFile("hello.hc");'
+add_case 'DumpMem(0x87800000, 8, "fshead");'
+add_case 'FileWrite("Home/jlog.hc","z",1);'
+add_case 'FsChanges;'
+add_case 'DumpChanges;'
+add_case 'FsReplay;'
 add_case 'I64 Add(I64 a, I64 b) { return a + b; }'
 add_case 'Add(1,1);' 0000000000000002
 add_case 'Add(40,2);' 000000000000002a
@@ -84,30 +139,142 @@ add_case 'gv;' 000000000000002a
 add_case 'I64 Id(I64 v) { return v; } Id(Id(6));' 0000000000000006
 add_case 'I64 Sl(U8 *t) { I64 n = 0; while (t[n]) n++; return n; } Sl("hello!");' 0000000000000006
 add_case 'Print("jit-print");'
+add_case 'LogInfo("smoke","dmesg-ring");'
+add_case 'LogWarn("smoke","warn-needle");'
+add_case 'LogErr("smoke","err-needle");'
+add_case 'DMesg();'
 add_case 'Atoi("123");' 000000000000007b
 add_case 'U8 *s = MAlloc(16);'
 add_case 'StrCpy(s, "abc");'
 add_case 'StrLen(s);' 0000000000000003
+add_case 'Man("Print");'
+add_case 'Man("CLINT");'
+add_case 'Man("Regs");'
+add_case 'Sections;'
+add_case 'FunsList;'
+add_case 'Funs("Print");'
+add_case 'SrcFileRep("Print");'
+add_case 'FnSizeRep("Print");'
+# G5 Tab / CompCollectSyms / multiline indent+complete
+add_case 'CompCollectSyms("MEM_PL", 6);' 0000000000000005
+add_case 'CompCollectSyms("Pri", 3);' 0000000000000001
+input+=$'Print("MEM_PLIC=%X\\n", MEM_PL\t);\n'
+input+=$'pri\t("hc-tab-print\\n");\n'
+input+=$'U0 MlTabFn()\n{\n\tPrint("  MLTAB_MARK\\n");\n}\n'
+add_case 'MlTabFn();'
+# (HIST_RECALL_OK / HIST_UP2_* wired early after Dir — see above)
+# G1 soft Regs / MemMap / StkRep / Callers (HolyC; no host slots)
+add_case 'MemMap;'
+add_case 'Reg("a0");'
+add_case 'Reg("x10");'
+add_case 'Man("ABI");'
+add_case 'Regs;'
+add_case 'StkRep;'
+add_case 'I64 CB(){return 7;}'
+add_case 'I64 CA(){return CB();}'
+add_case 'CA();' 0000000000000007
+add_case 'Callers("CB");'
+# Compound eval: asm {…}; Reg — post-asm snap (a0 survives HolyC arg clobber)
+add_case 'asm { li a0,5 }; Reg("a0");' 0000000000000005
 
 log="$(mktemp)"
 # shellcheck disable=SC2086
-printf '%s' "$input" | $TIMEOUT_CMD 90 "$QEMU" -M virt -bios none -kernel "$ELF" -nographic \
+printf '%s' "$input" | $TIMEOUT_CMD 240 "$QEMU" -M virt -m 128M -bios none -kernel "$ELF" -nographic \
   >"$log" 2>&1 || true
 
 fail=0
 need() {
-  if ! grep -qF "$1" "$log"; then
+  if ! grep -qF -- "$1" "$log"; then
     echo "FAIL hc-repl-smoke — missing: $1" >&2
     fail=1
   fi
 }
 
 need "HolyC AOT REPL"
+need "A2: ExePutS owns compile loop"
+need "A2: bridge→Jit (Cmp=make repl-cmp / build/repl-cmp.elf)"
 need "> "
 need "Dir: "
+need "Home/"
+need "Lib/"
+need "Tutorials/"
+need "cwd: /Tutorials/"
+need "print.hc -- Print / PutChars"
+need "cwd: /Home/Work/"
 need "hello.hc"
 need "Hello from HolyC memfs"
+need '$HC_DUMP name=hello.hc'
+need '$HC_DUMP name=fshead size=8 addr=0x87800000$'
+need '$HC_END$'
+need 'W  Home/jlog.hc'
+need '$HC_CHANGES'
+need 'replay=0'
 need "jit-print"
+need "--- dmesg ---"
+need "dmesg-ring"
+need "warn-needle"
+need "err-needle"
+need "=== sys (UART /proc-ish) ==="
+need "--- uptime ---"
+need "--- mem ---"
+need "--- irq ---"
+need "--- devices ---"
+need "--- cnts ---"
+need "=== tty (line discipline) ==="
+need "mode=canon"
+need "mode=raw"
+need "onlcr=0"
+need "eof_hit=0"
+need "--- term ---"
+need "80 x 24"
+need "name=ansi"
+need "=== VT (soft mux) ==="
+need "--- VT 1 (vt1) ---"
+need "vt1-session"
+need "vt-cap-line"
+need "--- VT 0 (repl) ---"
+need "repl-holyc ready"
+need "formatted print to the UART"
+need "Core-Local Interruptor"
+need "Regs - dump GPRs"
+need "Manual sections"
+need "Symbol table:"
+need "Funs filter: Print"
+need "SrcFile Print=print.hc"
+need "FnSize Print="
+need "G5: Tab=complete/indent  Up/Down=history"
+need "MEM_PLIC="
+need "hc-tab-print"
+need "  MLTAB_MARK"
+# hist_seed cold Up → Print HIST_SEED_OK
+if [ "$(grep -cF 'HIST_SEED_OK' "$log" || true)" -lt 1 ]; then
+  echo "FAIL hc-repl-smoke — need HIST_SEED_OK (hist_seed Up)" >&2
+  fail=1
+fi
+# History Up re-ran Print → at least two HIST_RECALL_OK
+if [ "$(grep -cF 'HIST_RECALL_OK' "$log" || true)" -lt 2 ]; then
+  echo "FAIL hc-repl-smoke — need ≥2 HIST_RECALL_OK (history Up)" >&2
+  fail=1
+fi
+# Up×2 re-ran older Print → at least two HIST_UP2_OK (and TOP once from its own Enter)
+if [ "$(grep -cF 'HIST_UP2_OK' "$log" || true)" -lt 2 ]; then
+  echo "FAIL hc-repl-smoke — need ≥2 HIST_UP2_OK (history Up×2)" >&2
+  fail=1
+fi
+if ! grep -qF 'HIST_UP2_TOP' "$log"; then
+  echo "FAIL hc-repl-smoke — missing HIST_UP2_TOP" >&2
+  fail=1
+fi
+# G1 soft dbg (HolyC path)
+need "Regs (HolyC soft)"
+need "FS=1"
+need "x10/a0"
+need "RISC-V integer register naming"
+need "MEM_REGS_SNAP"
+need "RVUart"
+need "Bt (live)"
+need "callers of CB"
+need "x10/a0 = 0x0000000000000005"
 
 # Compare ans= hex sequence (non-void statements only)
 mapfile -t got_ans < <(grep -oE 'ans=0x[0-9a-fA-F]+' "$log" | sed 's/ans=0x//' | tr 'A-F' 'a-f')

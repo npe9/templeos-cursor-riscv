@@ -4,17 +4,28 @@
 .section .text.init
 .global _start
 
+.equ HART_STACK_SIZE, 0x10000
+.equ MAX_HARTS, 8
+
 _start:
     # Disable interrupts
     csrw mie, zero
     csrw mip, zero
-    
-    # Set up stack pointer
-    # QEMU virt machine has RAM at 0x80000000
-    # Reserve first 4MB for code/data, stack grows down from there
+
+    csrr t0, mhartid
+    li   t1, MAX_HARTS
+    bgeu t0, t1, _halt
+
+    # Per-hart stack: _stack_top - hartid * HART_STACK_SIZE
     la sp, _stack_top
+    li t1, HART_STACK_SIZE
+    mul t1, t0, t1
+    sub sp, sp, t1
+
+    # Secondary harts: park (master-only REPL). Wake path is kernel crt0_smp / RVSmp.
+    bnez t0, _halt
     
-    # Clear BSS section
+    # Clear BSS section (hart 0 only)
     la t0, _bss_start
     la t1, _bss_end
 clear_bss:
@@ -66,5 +77,3 @@ _trap_handler:
 _stack_top:
 
 # Remove duplicate symbol definitions - linker script provides these
-
-

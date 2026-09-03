@@ -52,6 +52,7 @@
 #include "KHashB"
 #include "KHashRV" // RV HolyC HashStr/HashAdd/HashFind (KHashA asm skipped)
 #include "KLoad"
+#include "Drv/RVRtc.HC" // Goldfish RTC before KDate NowDateTimeStruct
 #include "KDate"
 #include "StrPrint"
 #include "StrScan"
@@ -74,19 +75,28 @@
 #include "KUtilsRV"   // native RISC-V ports of KUtils.HC low-level primitives (MemSet/MemCpy)
 #include "KCmpStubsRV" // HashAddAfter/CallExt*/Doc* stubs for Compiler_RV ExePutS
 #include "Drv/RVSifivePlat.HC" // SiFive UART/CLINT/PLIC facade (Yes on sifive_u/e)
+#include "Drv/RVSifiveGem.HC"  // Cadence GEM TX/RX (Yes on sifive_u ETH_BASE)
 #include "Drv/RVUart.HC"       // Kconfig UART (16550 / SiFive / HTIF stub)
 #include "Drv/RVTimer.HC"      // CLINT mtime/mtimecmp
+#include "Drv/RVSmp.HC"        // multi-hart wake / AMO helpers (Phase G)
 #include "Drv/RVPlic.HC"       // PLIC enable/claim (no-op without CONFIG_HAS_PLIC)
 #include "Drv/RVVirtioPlat.HC" // virtio-mmio base/count from Kconfig
+#include "Drv/VirtioNet.HC"    // virtio-mmio net + virtio-pci fallback
 #include "Drv/VirtioInput.HC"  // virtio-mmio input (DeviceID 18)
-#include "Drv/Virtio9p.HC"     // virtio-mmio 9p client (DeviceID 9)
+#include "Drv/Virtio9p.HC"     // virtio-mmio/pci 9p client (DeviceID 9)
+#include "Drv/VirtioConsole.HC" // virtio-mmio console (DeviceID 3)
+#include "Drv/VirtioBalloon.HC" // virtio-mmio balloon (DeviceID 5)
+#include "Drv/VirtioScsi.HC"   // virtio-mmio SCSI HBA (DeviceID 8)
+#include "Drv/VirtioPciBlk.HC" // virtio-pci blk client (ECAM; opt-in LBA read)
 #include "BlkDev/DskVirtioRV"   // native RISC-V legacy virtio-mmio block driver (translates x86 DskATA)
 #include "KBootRV"   // RISC-V portable boot init (tables + UART console)
+#include "Drv/RVFwCfg.HC" // QEMU fw_cfg DMA / file dir (before RVFb ramfb)
 #include "RVFb"      // Native 32-bpp linear FB + ramfb/simplefb present (not VGA)
 #include "Drv/RVFbPlat.HC"     // apply Kconfig FB present kind → RVFbSetPresent
 #include "Drv/RVMemMap.HC"     // MMIO region ↔ driver legend (Kconfig)
 #include "RVGr"      // Thin Gr*/CDC + soft term + RVSysGrInit (32-bpp; not full Adam)
 #include "RVWinMgr"  // TempleOS-style text_base WinMgr → rv_fb present (no VGA/DolDoc)
+#include "RVWinSerial" // UART TTY + crash mon beside WinMgr (after rv_winmgr glbls)
 #include "RVTextBase" // TextChar/TextPrint portable (DocRecalc / draw_it)
 #include "RVPhase3.HH"  // phase-3 forward decls (bodies after Compiler_RV_Body in phase3 demo)
 #include "RVKMain"   // RVKMain last — may call RVSysGrInit / RVSysWinInit

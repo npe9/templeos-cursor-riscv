@@ -17,11 +17,26 @@
 #define P9_RWALK         111
 #define P9_TLOPEN        12
 #define P9_RLOPEN        13
+#define P9_TLCREATE      14
+#define P9_RLCREATE      15
+#define P9_TMKDIR        72
+#define P9_RMKDIR        73
 #define P9_TREAD         116
 #define P9_RREAD         117
+#define P9_TWRITE        118
+#define P9_RWRITE        119
 #define P9_TCLUNK        120
 #define P9_RCLUNK        121
+#define P9_TREMOVE       122
+#define P9_RREMOVE       123
 #define P9_O_RDONLY      0
+#define P9_O_WRONLY      1
+#define P9_O_RDWR        2
+#define P9_O_TRUNC       0x200
+#define P9_IOHDRSZ       24
+#define P9_WRITE_CHUNK   4096
+#define P9_MODE_FILE     0x1A4
+#define P9_MODE_DIR      0x1ED
 #define VDESC_F_NEXT     1
 #define VDESC_F_WRITE    2
 class CNinepDesc
@@ -273,6 +288,330 @@ I64 NinepReadPath(U8 *path, U8 *buf, I64 cap)
   return n;
 }
 
+U0 NinepNormSharePath(U8 *path, U8 *out, I64 cap)
+{
+  I64 i, j;
+  if (!out || cap <= 1)
+    return;
+  out[0] = 0;
+  if (!path || !path[0])
+    return;
+  i = 0;
+  if (path[0] && path[1] == ':') {
+    if (path[2] == '/' || path[2] == '\\')
+      i = 3;
+    else
+      i = 2;
+  }
+  while (path[i] == '/' || path[i] == '\\')
+    i++;
+  j = 0;
+  while (path[i] && j < cap - 1) {
+    if (path[i] == '\\')
+      out[j] = '/';
+    else
+      out[j] = path[i];
+    j++;
+    i++;
+  }
+  out[j] = 0;
+}
+
+I64 NinepPathComp(U8 *path, I64 idx, U8 *out, I64 cap)
+{
+  I64 n;
+  while (path[idx] == '/')
+    idx++;
+  if (!path[idx] || cap <= 1) {
+    out[0] = 0;
+    return idx;
+  }
+  n = 0;
+  while (path[idx] && path[idx] != '/' && n < cap - 1) {
+    out[n] = path[idx];
+    n++;
+    idx++;
+  }
+  out[n] = 0;
+  return idx;
+}
+
+I64 NinepClunk(U32 fid)
+{
+  U8 *req = NINEP_REQ;
+  I64 off = 7 + 4;
+  NinepPutU32(req, 7, fid);
+  NinepPutU32(req, 0, off - 4);
+  req[4] = P9_TCLUNK;
+  req[5] = ninep_tag & 0xFF;
+  req[6] = (ninep_tag >> 8) & 0xFF;
+  NinepSend(off);
+  ninep_tag++;
+  return 0;
+}
+
+I64 NinepWalk(U32 fid, U32 newfid, U8 *name)
+{
+  U8 *req = NINEP_REQ;
+  U8 *rsp = NINEP_RSP;
+  I64 off = 7 + 4 + 4 + 2;
+  NinepPutU32(req, 7, fid);
+  NinepPutU32(req, 11, newfid);
+  req[15] = 1;
+  req[16] = 0;
+  off = NinepPutStr(req, off, name);
+  NinepPutU32(req, 0, off - 4);
+  req[4] = P9_TWALK;
+  req[5] = ninep_tag & 0xFF;
+  req[6] = (ninep_tag >> 8) & 0xFF;
+  if (NinepSend(off) <= 0 || rsp[4] != P9_RWALK) {
+    ninep_tag++;
+    return -1;
+  }
+  ninep_tag++;
+  return 0;
+}
+
+I64 NinepWalkClone(U32 fid, U32 newfid)
+{
+  U8 *req = NINEP_REQ;
+  U8 *rsp = NINEP_RSP;
+  I64 off = 7 + 4 + 4 + 2;
+  NinepPutU32(req, 7, fid);
+  NinepPutU32(req, 11, newfid);
+  req[15] = 0;
+  req[16] = 0;
+  NinepPutU32(req, 0, off - 4);
+  req[4] = P9_TWALK;
+  req[5] = ninep_tag & 0xFF;
+  req[6] = (ninep_tag >> 8) & 0xFF;
+  if (NinepSend(off) <= 0 || rsp[4] != P9_RWALK) {
+    ninep_tag++;
+    return -1;
+  }
+  ninep_tag++;
+  return 0;
+}
+
+I64 NinepLopen(U32 fid, U32 flags)
+{
+  U8 *req = NINEP_REQ;
+  U8 *rsp = NINEP_RSP;
+  I64 off = 7 + 4 + 4;
+  NinepPutU32(req, 7, fid);
+  NinepPutU32(req, 11, flags);
+  NinepPutU32(req, 0, off - 4);
+  req[4] = P9_TLOPEN;
+  req[5] = ninep_tag & 0xFF;
+  req[6] = (ninep_tag >> 8) & 0xFF;
+  if (NinepSend(off) <= 0 || rsp[4] != P9_RLOPEN)
+    return -1;
+  ninep_tag++;
+  return 0;
+}
+
+I64 NinepMkdir(U32 dfid, U8 *name)
+{
+  U8 *req = NINEP_REQ;
+  U8 *rsp = NINEP_RSP;
+  I64 off = 7 + 4;
+  NinepPutU32(req, 7, dfid);
+  off = NinepPutStr(req, off, name);
+  NinepPutU32(req, off, P9_MODE_DIR);
+  off += 4;
+  NinepPutU32(req, off, 0);
+  off += 4;
+  NinepPutU32(req, 0, off - 4);
+  req[4] = P9_TMKDIR;
+  req[5] = ninep_tag & 0xFF;
+  req[6] = (ninep_tag >> 8) & 0xFF;
+  if (NinepSend(off) <= 0 || rsp[4] != P9_RMKDIR)
+    return -1;
+  ninep_tag++;
+  return 0;
+}
+
+I64 NinepRemove(U32 fid)
+{
+  U8 *req = NINEP_REQ;
+  U8 *rsp = NINEP_RSP;
+  I64 off = 7 + 4;
+  NinepPutU32(req, 7, fid);
+  NinepPutU32(req, 0, off - 4);
+  req[4] = P9_TREMOVE;
+  req[5] = ninep_tag & 0xFF;
+  req[6] = (ninep_tag >> 8) & 0xFF;
+  if (NinepSend(off) <= 0 || rsp[4] != P9_RREMOVE)
+    return -1;
+  ninep_tag++;
+  return 0;
+}
+
+I64 NinepLcreate(U32 fid, U8 *name)
+{
+  U8 *req = NINEP_REQ;
+  U8 *rsp = NINEP_RSP;
+  I64 off = 7 + 4;
+  NinepPutU32(req, 7, fid);
+  off = NinepPutStr(req, off, name);
+  NinepPutU32(req, off, P9_O_RDWR | P9_O_TRUNC);
+  off += 4;
+  NinepPutU32(req, off, P9_MODE_FILE);
+  off += 4;
+  NinepPutU32(req, off, 0);
+  off += 4;
+  NinepPutU32(req, 0, off - 4);
+  req[4] = P9_TLCREATE;
+  req[5] = ninep_tag & 0xFF;
+  req[6] = (ninep_tag >> 8) & 0xFF;
+  if (NinepSend(off) <= 0 || rsp[4] != P9_RLCREATE)
+    return -1;
+  ninep_tag++;
+  return 0;
+}
+
+I64 NinepMkdirOne(U32 parent, U8 *name)
+{
+  U32 fid;
+  fid = ninep_next_fid++;
+  if (!NinepWalk(parent, fid, name))
+    return fid;
+  NinepMkdir(parent, name);
+  fid = ninep_next_fid++;
+  if (NinepWalk(parent, fid, name))
+    return 0;
+  return fid;
+}
+
+I64 NinepCreateAt(U32 parent, U8 *name, U8 *buf, I64 len)
+{
+  U8 *req = NINEP_REQ;
+  U8 *rsp = NINEP_RSP;
+  U32 fid, cfid;
+  I64 n, i, chunk, off;
+  fid = ninep_next_fid++;
+  if (!NinepWalk(parent, fid, name))
+    NinepRemove(fid);
+  cfid = ninep_next_fid++;
+  if (NinepWalkClone(parent, cfid))
+    return -2;
+  if (NinepLcreate(cfid, name)) {
+    NinepClunk(cfid);
+    return -4;
+  }
+  n = 0;
+  while (n < len) {
+    chunk = len - n;
+    if (chunk > P9_WRITE_CHUNK)
+      chunk = P9_WRITE_CHUNK;
+    off = 7 + 4 + 8 + 4;
+    NinepPutU32(req, 7, cfid);
+    NinepPutU32(req, 11, n & 0xFFFFFFFF);
+    NinepPutU32(req, 15, 0);
+    NinepPutU32(req, 19, chunk);
+    for (i = 0; i < chunk; i++)
+      req[23 + i] = buf[n + i];
+    off = 23 + chunk;
+    NinepPutU32(req, 0, off - 4);
+    req[4] = P9_TWRITE;
+    req[5] = ninep_tag & 0xFF;
+    req[6] = (ninep_tag >> 8) & 0xFF;
+    if (NinepSend(off) <= 0 || rsp[4] != P9_RWRITE) {
+      NinepClunk(cfid);
+      return -5;
+    }
+    ninep_tag++;
+    i = NinepGetU32(rsp, 7);
+    if (i <= 0) {
+      NinepClunk(cfid);
+      return -6;
+    }
+    n = n + i;
+  }
+  NinepClunk(cfid);
+  return n;
+}
+
+I64 NinepWritePath(U8 *path, U8 *buf, I64 len)
+{
+  U32 parent, nxt, stack[8];
+  I64 i, nstack, idx;
+  U8 name[128], comp[128];
+  if (!path || !path[0] || !buf || len < 0)
+    return -1;
+  parent = ninep_root_fid;
+  nstack = 0;
+  idx = 0;
+  name[0] = 0;
+  for (i = 0; i < 8; i++) {
+    idx = NinepPathComp(path, idx, comp, 128);
+    if (!comp[0])
+      break;
+    while (path[idx] == '/')
+      idx++;
+    if (!path[idx]) {
+      MemCpy(name, comp, 128);
+      break;
+    }
+    nxt = NinepMkdirOne(parent, comp);
+    if (!nxt) {
+      for (i = 0; i < nstack; i++)
+        NinepClunk(stack[i]);
+      return -3;
+    }
+    if (nstack < 8)
+      stack[nstack++] = nxt;
+    parent = nxt;
+  }
+  if (!name[0])
+    return -2;
+  i = NinepCreateAt(parent, name, buf, len);
+  while (nstack > 0) {
+    nstack--;
+    NinepClunk(stack[nstack]);
+  }
+  return i;
+}
+
+I64 NineExportAs(U8 *local_path, U8 *host_name)
+{
+  U8 *d;
+  I64 n, w;
+  U8 mtag[64];
+  if (!local_path || !local_path[0] || !host_name || !host_name[0])
+    return -1;
+  d = FileRead(local_path);
+  n = FileLen(local_path);
+  if (!d || n < 0)
+    return -2;
+  if (NinepInit())
+    return -3;
+  if (NinepVersion())
+    return -4;
+  if (NinepMountTag(mtag, 64) <= 0)
+    StrCpy(mtag, "hostshare");
+  if (NinepAttach(mtag))
+    return -5;
+  w = NinepWritePath(host_name, d, n);
+  return w;
+}
+
+I64 NineExport(U8 *path)
+{
+  U8 name[128];
+  if (!path || !path[0])
+    return -1;
+  NinepNormSharePath(path, name, 128);
+  if (!name[0])
+    return -2;
+  return NineExportAs(path, name);
+}
+
+I64 FileCopy9p(U8 *local_path, U8 *host_name)
+{
+  return NineExportAs(local_path, host_name);
+}
+
 I64 Mount9p(U8 *prefix, U8 *tag)
 {
   U8 mtag[64];
@@ -323,8 +662,17 @@ I64 NinepSmoke()
   buf[n] = 0;
   if (MemCmp(buf, "hello from 9p", 13))
     return -5;
+  if (NinepWritePath("export.txt", "guest->host 9p\n", 15) != 15)
+    return -6;
+  if (NinepWritePath("export.txt", "overwrite-9p\n", 13) != 13)
+    return -7;
+  if (NinepWritePath("Home/nest/out.hc", "nested-9p\n", 10) != 10)
+    return -8;
   return 0;
 }
-// Man("Mount9p") — import host virtfs file into memfs (Run("ninep.hc") first).
+// Man("Mount9p") — import/export host virtfs (Run("ninep.hc") first).
 //   Mount9p("host/", "hostshare");  // prefix optional; tag=0 reads mount_tag
-//   NinepSmoke();                 // oracle helper for QEMU -virtfs smoke
+//   NineExport("Home/a/b.hc");      // memfs → share Home/a/b.hc (Tmkdir parents)
+//   NineExportAs("Home/note.hc", "n.hc");
+//   FileCopy9p("boot.hc", "boot.hc");
+//   NinepSmoke();                   // oracle helper for QEMU -virtfs smoke

@@ -1,5 +1,5 @@
 // Virtio9p.HC — 9P2000.L client facade (NinePClient + pluggable NinePTransport).
-// Dig-down: Man("Virtio9p"); Virtio9pInit; Mount9p; Virtio9pSelfTest;
+// Dig-down: Man("Virtio9p"); Virtio9pInit; Mount9p; NineExport; Virtio9pSelfTest;
 #ifndef RV_DRV_VIRTIO_9P_HC
 #define RV_DRV_VIRTIO_9P_HC
 #include "../NineP/NineP.HH"
@@ -10,12 +10,43 @@
 #include "../NineP/NinePClient.HC"
 CNinePClient ninep_client;
 I64 ninep_ready;
+U0 Virtio9pNormSharePath(U8 *path, U8 *out, I64 cap)
+{
+  I64 i, j;
+  if (!out || cap <= 1)
+    return;
+  out[0] = 0;
+  if (!path || !path[0])
+    return;
+  i = 0;
+  if (path[0] && path[1] == ':') {
+    if (path[2] == '/' || path[2] == '\\')
+      i = 3;
+    else
+      i = 2;
+  }
+  while (path[i] == '/' || path[i] == '\\')
+    i++;
+  j = 0;
+  while (path[i] && j < cap - 1) {
+    if (path[i] == '\\')
+      out[j] = '/';
+    else
+      out[j] = path[i];
+    j++;
+    i++;
+  }
+  out[j] = 0;
+}
+
 I64 Virtio9pConnect(U8 *tag)
 {
   U8 mtag[64];
-  if (NinePTransportBindMmio())
+  I64 tp;
+  if (NinePTransportBindAny())
     return -1;
-  if (NinePClientInit(&ninep_client, NINEP_TP_MMIO))
+  tp = ninep_tp_kind;
+  if (NinePClientInit(&ninep_client, tp))
     return -2;
   if (NinePClientVersion(&ninep_client))
     return -3;
@@ -38,16 +69,16 @@ I64 Virtio9pInit()
 
 I64 Virtio9pVersion()
 {
-  if (NinePTransportBindMmio())
+  if (NinePTransportBindAny())
     return -1;
-  if (NinePClientInit(&ninep_client, NINEP_TP_MMIO))
+  if (NinePClientInit(&ninep_client, ninep_tp_kind))
     return -2;
   return NinePClientVersion(&ninep_client);
 }
 
 I64 Virtio9pGetMountTag(U8 *buf, I64 cap)
 {
-  if (NinePTransportBindMmio())
+  if (NinePTransportBindAny())
     return -1;
   return NinePTransportMountTag(buf, cap);
 }
@@ -69,6 +100,15 @@ I64 Virtio9pReadPath(U8 *path, U8 *buf, I64 cap)
   return NinePClientReadPath(&ninep_client, path, buf, cap);
 }
 
+I64 Virtio9pWritePath(U8 *path, U8 *buf, I64 len)
+{
+  // Nested Tmkdir + Tremove overwrite: prefer primary-TU / seed NinepWritePath
+  // (HolyC AOT miscompiles the fuller body under Kernel_RV.PRJ includes).
+  if (!ninep_ready)
+    return -1;
+  return NinePClientWritePath(&ninep_client, path, buf, len);
+}
+
 I64 Virtio9pImportFile(U8 *host_path, U8 *local_path)
 {
   U8 buf[4096];
@@ -80,6 +120,55 @@ I64 Virtio9pImportFile(U8 *host_path, U8 *local_path)
     return n;
   buf[n] = 0;
   return FileWrite(local_path, buf, n);
+}
+
+I64 Virtio9pExportFile(U8 *local_path, U8 *host_path)
+{
+  U8 *buf;
+  I64 sz, n;
+  U8 name[128];
+  if (!ninep_ready)
+    return -1;
+  if (!local_path || !local_path[0])
+    return -2;
+  if (!host_path || !host_path[0]) {
+    Virtio9pNormSharePath(local_path, name, 128);
+    host_path = name;
+  }
+  if (!host_path[0])
+    return -3;
+  sz = 0;
+  buf = FileRead(local_path, &sz, NULL);
+  if (!buf || sz < 0)
+    return -4;
+  n = Virtio9pWritePath(host_path, buf, sz);
+  return n;
+}
+
+I64 NineExport(U8 *path)
+{
+  U8 name[128];
+  if (!path || !path[0])
+    return -1;
+  if (!ninep_ready) {
+    if (Virtio9pConnect(0))
+      return -2;
+  }
+  Virtio9pNormSharePath(path, name, 128);
+  if (!name[0])
+    return -3;
+  return Virtio9pExportFile(path, name);
+}
+
+I64 NineExportAs(U8 *local_path, U8 *host_name)
+{
+  if (!local_path || !local_path[0] || !host_name || !host_name[0])
+    return -1;
+  if (!ninep_ready) {
+    if (Virtio9pConnect(0))
+      return -2;
+  }
+  return Virtio9pExportFile(local_path, host_name);
 }
 
 I64 Mount9p(U8 *prefix, U8 *tag)
@@ -146,20 +235,26 @@ I64 Virtio9pSelfTest(U8 *expect, I64 expect_len)
 }
 // Man("Virtio9p") -- Virtio9p()
 // NAME
-//   Virtio9p - transport-agnostic 9P2000.L client (host virtfs import)
+//   Virtio9p - transport-agnostic 9P2000.L client (host virtfs import/export)
 // SYNOPSIS
 //   I64 Virtio9pInit();
 //   I64 Mount9p(U8 *prefix, U8 *tag);
 //   I64 Virtio9pReadPath(U8 *path, U8 *buf, I64 cap);
+//   I64 Virtio9pWritePath(U8 *path, U8 *buf, I64 len);
+//   I64 NineExport(U8 *path);
+//   I64 NineExportAs(U8 *local, U8 *host_name);
 //   I64 Virtio9pSelfTest(U8 *expect, I64 expect_len);
 // DESCRIPTION
-//   Layered client: NinePClient core + NinePTransport (NinePVirtioMmio today;
-//   NinePVirtioPci stub). Attach QEMU -virtfs / -fsdev on virtio-9p-device.
+//   Layered client: NinePClient + NinePTransport (MMIO first, PCI queues if no
+//   mmio 9p). Attach QEMU -virtfs / -fsdev on virtio-9p-device or virtio-9p-pci.
 //   Mount9p(prefix, tag) reads host share root and imports regular files into
-//   the memfs namespace at prefix/. Pass tag=0 to use the device mount_tag.
+//   the memfs namespace at prefix/. NineExport(path) / Virtio9pWritePath push
+//   guest bytes onto the share (Tmkdir parents, Tlcreate or Tlopen+Twrite
+//   overwrite). Nested paths like Home/a/b.hc create dirs on the share.
+//   Pass tag=0 to use the device mount_tag.
 U0 Virtio9p()
 {
-  "Virtio9p: NinePClient + virtio-mmio transport (DeviceID 9)\n";
-  "  Init=%d\n", Virtio9pInit();
+  "Virtio9p: NinePClient + virtio-mmio/pci transport (DeviceID 9)\n";
+  "  Init=%d tp=%d\n", Virtio9pInit(), ninep_tp_kind;
 }
 #endif

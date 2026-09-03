@@ -12,6 +12,7 @@ This document maps **original x86 TempleOS** (in-repo `tos/Doc/*.DD`, `Kernel/*.
 | **D (start)** | **Done:** **`tos_api_yield()`** bumps **`g_yield_count`** (no task switch). Kernel prints count after guest returns. |
 | **E (start)** | **Started:** **virtio-mmio** (modern v2) + **PCI virtio-blk**; **RedSea** **`redsea_read_contiguous`**, root scan (all non-dir files). QEMU MMIO: **`-global virtio-mmio.force-legacy=off`**. Smoke: **`make redsea-smoke-img`**. |
 | **F (start)** | **Started:** `Kernel/RVFb.HC` + `Kernel/RVGr.HC` + `Kernel/RVWinMgr.HC` — 32-bpp FB, thin Gr*/CDC, soft term, TempleOS-style text_base WinMgr. Board: `BOARD_FB.md`. Graphics boot still needs phase-3 **Compiler load + StartOS/Adam** on that FB ([`COMPILER_RV.md`](COMPILER_RV.md)). |
+| **G (start)** | **Started:** multi-hart park/wake (`tests/exec/harness/crt0_smp.S`, `Kernel/Drv/RVSmp.HC`), A-ext `LXchg*`/`LBts`/`LBtr`/`LBtc` + HolyC `lock` (amoswap spin). Optional `make kernel-smp-smoke` (`-smp 2`). Default CI stays single-hart. Full Seth job queues / `Core0StartMP` still thin. |
 
 **QEMU `virt` with `-bios none -kernel`:** Bring-up assumes **supervisor mode** at ELF entry (matches `stvec` / `scause`). If a platform enters **M-mode** only, add `mtvec` + delegation or an M-mode trampoline.
 
@@ -68,10 +69,10 @@ This document maps **original x86 TempleOS** (in-repo `tos/Doc/*.DD`, `Kernel/*.
 | **D** | **`CTask`**, **`Yield`**, round-robin; RV **asm** context switch | `Kernel/Sched.HC` model. |
 | **E** | **virtio-blk** + **RedSea** read path | `Kernel/BlkDev/*` + `FileSysRedSea.HC` role. |
 | **F** | **Display** + **input** backends behind TempleOS-style APIs | `Display.HC`, `KeyDev` / `Mouse.HC` roles. |
-| **G** | **Second hart**: Seth loop, jobs, locks | `MultiProc.HC`. |
+| **G** | **Second hart**: Seth loop, jobs, locks | `MultiProc.HC`. **Started:** crt0_smp + `RVSmpWake`/`RVAmoAddI64`; real A-ext atomics + `lock`. Residual: full Seth queues, `mp_cnt` finalize, OpenSBI HSM path. |
 | **H** | **Traps ↔ HolyC `try`/`catch`** | `KExcept.HC`. |
 
-**Next apples-to-apples milestone:** **Phase E** — one **virtio-blk** read path (polled), then **RedSea**-shaped superblock / directory parse (read-only), matching the **`Kernel/BlkDev/*`** + **`FileSysRedSea.HC`** role at minimal depth.
+**Next apples-to-apples milestone:** deepen **Phase G** (Seth job queues / `mp_cnt`) and **Phase E** virtio depth as needed. Single-hart CI default stays green; optional `make kernel-smp-smoke`.
 
 ---
 

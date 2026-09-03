@@ -1,5 +1,5 @@
 #!/bin/bash
-# Kernel virtio-9p smoke: HolyC Virtio9p.HC reads a host file via QEMU -virtfs.
+# Kernel virtio-9p smoke: HolyC Virtio9p.HC reads + writes host virtfs via QEMU -virtfs.
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -47,11 +47,25 @@ fi
 out="$($TIMEOUT 30 "$QEMU" -M virt -m 256M -bios none -kernel "$T/kp.elf" -nographic \
         -fsdev local,id=fsdev0,path="$T/share",security_model=none \
         -device virtio-9p-device,fsdev=fsdev0,mount_tag=hostshare </dev/null 2>&1 | tr -d '\r')"
-if printf '%s\n' "$out" | grep -qF "$EXPECT"; then
-  echo "Kernel-virtio-9p smoke: OK"
-  exit 0
+if ! printf '%s\n' "$out" | grep -qF "$EXPECT"; then
+  echo "FAIL kernel-virtio-9p smoke — expected line not found:" >&2
+  echo "  want: $EXPECT" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | head -12 | sed 's/^/  got: /' >&2
+  exit 1
 fi
-echo "FAIL kernel-virtio-9p smoke — expected line not found:" >&2
-echo "  want: $EXPECT" >&2
-printf '%s\n' "$out" | grep -v 'import unresolved' | head -12 | sed 's/^/  got: /' >&2
-exit 1
+if [ ! -f "$T/share/export.txt" ]; then
+  echo "FAIL kernel-virtio-9p smoke — guest→host export.txt missing on host share" >&2
+  exit 1
+fi
+if ! grep -qF 'overwrite-9p' "$T/share/export.txt"; then
+  echo "FAIL kernel-virtio-9p smoke — export.txt overwrite mismatch" >&2
+  sed 's/^/  got: /' "$T/share/export.txt" >&2
+  exit 1
+fi
+if [ ! -f "$T/share/Home/nest/out.hc" ] || ! grep -qF 'nested-9p' "$T/share/Home/nest/out.hc"; then
+  echo "FAIL kernel-virtio-9p smoke — nested Home/nest/out.hc missing or wrong" >&2
+  find "$T/share" -type f 2>/dev/null | sed 's/^/  /' >&2 || true
+  exit 1
+fi
+echo "Kernel-virtio-9p smoke: OK (read + export + overwrite + nested)"
+exit 0

@@ -5,7 +5,8 @@
 //   2) Guest MakeOS: Cmp → Tiny.BIN → Load → Call.
 //   3) Guest Runtime: Cmp Seed/Svc/Kern + Adam/StartOS.BIN (HolyC modules on A:).
 //   4) StartOS primarily Loads those guest BINs (not host-staged ExeFile strings).
-// Residual host AOT: phase3 ELF + pack_tosb Compiler.BIN; AdamCore preferably guest BIN.
+// Residual host AOT: phase3 ELF + pack_tosb Compiler.BIN.
+// AdamCore: guest Cmp→Load→Call FileWrite only (no linked MakeAdam fallback).
 //
 // Include AFTER Compiler_RV_Body.PRJ so `cmp`/`ExePutS`/`Cmp` are real symbols.
 // Demo must also #include "RVHostBinEmbed.HC" (host-packed TOSB bytes).
@@ -370,6 +371,7 @@ Bool RVPhase3GuestRuntime()
   U8 *src;
   I64 val;
   CBinFile *bfh;
+  CHashExport *tmpex;
   if (!rv_phase3_makeos_ok)
     return FALSE;
   RVPhase3Uart("RVPhase3: Runtime staging A:/Runtime/Seed...\n");
@@ -409,9 +411,9 @@ Bool RVPhase3GuestRuntime()
   if (!RVPhase3CmpWrite("A:/Runtime/Svc.PRJ", "A:/Runtime/Svc.BIN", "RVPhase3: Runtime Svc Cmp FAILED.\n"))
     return FALSE;
   RVPhase3Uart("RVPhase3: Runtime Svc.BIN ready for StartOS Load.\n");
-  // Kern.BIN — arg call (3*n); n+n+n still clobbers reg-arg (documented residual).
+  // Kern.BIN — arg call with n+n+n (reg-arg multi-use; was ADD clobber).
   RVPhase3Uart("RVPhase3: Runtime staging A:/Runtime/Kern...\n");
-  src = "public I64 KernScale(I64 n)\n" "{\n" "  return 3*n;\n" "}\n";
+  src = "public I64 KernScale(I64 n)\n" "{\n" "  return n+n+n;\n" "}\n";
   FileWrite("A:/Runtime/KernMem.HC", src, StrLen(src));
   src = "#include \"A:/Runtime/KernMem.HC\"\n" "public I64 KernBase()\n" "{\n" "  return 15;\n" "}\n" "public I64 KernInit()\n" "{\n" "  return KernBase+KernScale(9);\n" "}\n";
   FileWrite("A:/Runtime/Kern.HC", src, StrLen(src));
@@ -430,7 +432,7 @@ Bool RVPhase3GuestRuntime()
     RVPhase3UartI64("RVPhase3: Runtime Kern Call FAILED r=", val);
     return FALSE;
   }
-  RVPhase3Uart("RVPhase3: Runtime Kern.BIN OK (arg+call+add→42).\n");
+  RVPhase3Uart("RVPhase3: Runtime Kern.BIN OK (n+n+n arg+call→42).\n");
   // Adam/StartOS.BIN — guest-built StartOS body (boot prefers Load over host ExeFile).
   RVPhase3Uart("RVPhase3: Runtime staging A:/Adam/StartOS...\n");
   DirMk("A:/Adam");
@@ -441,24 +443,25 @@ Bool RVPhase3GuestRuntime()
   if (!RVPhase3CmpWrite("A:/Adam/StartOS.PRJ", "A:/Adam/StartOS.BIN", "RVPhase3: Runtime StartOS Cmp FAILED.\n"))
     return FALSE;
   RVPhase3Uart("RVPhase3: Runtime StartOS.BIN ready for StartOS Load.\n");
-  // AdamCore.BIN — guest Cmp MakeAdam bring-up (FileWrite/DirMk imports).
+  // AdamCore: CALL_IMPORT via in-blob _RV_HC_CALL veneer → host HolyC / FileWrite.
+  // RVRet42 sits 28 bytes after _RV_HC_CALL (FP-2048 veneer, no post-SP fix).
+  RVCmpExportOne("RVHCCall", &_RV_HC_CALL);
+  RVCmpExportOne("RVRet42", (I64)(&_RV_HC_CALL) + 28);
+  RVCmpExportOne("RVHCRet41", &RVHCRet41);
+  RVCmpExportOne("RVHCAdd1", &RVHCAdd1);
+  RVPhase3UartI64("RVPhase3: RVHCCall=", &_RV_HC_CALL);
+  RVPhase3UartI64("RVPhase3: RVRet42=", (I64)(&_RV_HC_CALL) + 28);
+  RVPhase3UartI64("RVPhase3: RVHCRet41=", &RVHCRet41);
   RVPhase3Uart("RVPhase3: Runtime staging A:/Adam/AdamCore...\n");
-  // DirMk with stack path (no string lits — those hang guest Cmp).
-  src =
-    "import Bool DirMk(U8 *filename);\n"
-    "public U0 AdamRVCoreInit()\n"
-    "{\n"
-    "  U8 p[8];\n"
-    "  p[0]='A';p[1]=':';p[2]='/';p[3]='A';p[4]='d';p[5]='a';p[6]='m';p[7]=0;\n"
-    "  DirMk(p);\n"
-    "}\n";
+  // Guest FileWrite multi-STR (RTL remat) plants READY+CORE without MakeAdam.
+  src = MStrPrint("import I64 FileWrite(U8 *filename,U8 *fbuf,I64 size);\n" "public I64 AdamRVCoreInit()\n" "{\n" "  FileWrite(\"A:/Adam/READY.TXT\",\"Adam\",4);\n" "  FileWrite(\"A:/Adam/CORE.TXT\",\"MakeAdam_RV_Core\",16);\n" "  return 1;\n" "}\n");
+  RVPhase3UartI64("RVPhase3: AdamCore src len=", StrLen(src));
   FileWrite("A:/Adam/AdamCore.HC", src, StrLen(src));
   FileWrite("A:/Adam/AdamCore.PRJ", src, StrLen(src));
+  Free(src);
   RVPhase3Uart("RVPhase3: Runtime Cmp(A:/Adam/AdamCore.PRJ)...\n");
-  if (!RVPhase3CmpWrite("A:/Adam/AdamCore.PRJ", "A:/Adam/AdamCore.BIN", "RVPhase3: Runtime AdamCore Cmp FAILED.\n")) {
-    RVPhase3Uart("RVPhase3: AdamCore Cmp soft-fail (StartOS uses linked core).\n");
-    return TRUE;
-  }
+  if (!RVPhase3CmpWrite("A:/Adam/AdamCore.PRJ", "A:/Adam/AdamCore.BIN", "RVPhase3: Runtime AdamCore Cmp FAILED.\n"))
+    return FALSE;
   RVPhase3Uart("RVPhase3: Runtime AdamCore.BIN ready for StartOS Load.\n");
   return TRUE;
 }
@@ -466,7 +469,7 @@ Bool RVPhase3GuestRuntime()
 Bool RVPhase3StartOS()
 {
   //P3 intermediate: StartOS success = Load guest-Cmp'd BINs (StartOS/Seed/Svc/Kern/AdamCore).
-  // Linked MakeAdam_RV_Core remains fallback if AdamCore.BIN missing.
+  // Adam markers come from guest AdamCore Call→FileWrite only (no linked MakeAdam).
   I64 r, sz = 0;
   U8 *back;
   CBinFile *bfh;
@@ -477,40 +480,46 @@ Bool RVPhase3StartOS()
     RVPhase3Uart("RVPhase3: StartOS needs guest Runtime OK first.\n");
     return FALSE;
   }
-  // Prefer guest-Cmp'd AdamCore.BIN; fall back to linked MakeAdam_RV_Core.
-  if (FileFind("A:/Adam/AdamCore.BIN")) {
-    // Guest Cmp BINs resolve imports via Fs hash (same as Load Compiler.BIN).
-    RVCmpExportOne("DirMk",&DirMk);
-    RVCmpExportOne("FileWrite",&FileWrite);
-    bfh = Load("A:/Adam/AdamCore.BIN", LDF_JUST_LOAD | LDF_SILENT);
-    if (!bfh || bfh->bin_signature != BIN_SIGNATURE_VAL) {
-      RVPhase3Uart("RVPhase3: AdamCore.BIN Load FAILED.\n");
-      return FALSE;
-    }
-    RVPhase3Uart("RVPhase3: AdamCore.BIN Load OK; Call AdamRVCoreInit...\n");
-    RVPhase3CallExport("AdamRVCoreInit");
-    back = FileRead("A:/Adam/READY.TXT", &sz, NULL);
-    if (back && sz == 4) {
-      RVPhase3Uart("RVPhase3: StartOS Load AdamCore.BIN OK (guest Cmp).\n");
-    } else {
-      // Guest BIN loaded but did not plant markers — linked core.
-      AdamRVCoreInit;
-      RVPhase3Uart("RVPhase3: AdamCore.BIN OK; markers via linked MakeAdam.\n");
-    }
-  } else {
-    AdamRVCoreInit;
-    RVPhase3Uart("RVPhase3: StartOS AdamRVCoreInit via linked host AOT.\n");
+  if (!FileFind("A:/Adam/AdamCore.BIN")) {
+    RVPhase3Uart("RVPhase3: StartOS needs A:/Adam/AdamCore.BIN.\n");
+    return FALSE;
+  }
+  RVCmpExportOne("RVHCCall", &_RV_HC_CALL);
+  RVCmpExportOne("RVRet42", (I64)(&_RV_HC_CALL) + 28);
+  RVCmpExportOne("RVHCRet41", &RVHCRet41);
+  RVCmpExportOne("RVHCAdd1", &RVHCAdd1);
+  RVCmpExportOne("DirMk", &DirMk);
+  RVCmpExportOne("FileWrite", &FileWrite);
+  RVCmpExportOne("IsRaw", &IsRaw);
+  bfh = Load("A:/Adam/AdamCore.BIN", LDF_JUST_LOAD | LDF_SILENT);
+  if (!bfh || bfh->bin_signature != BIN_SIGNATURE_VAL) {
+    RVPhase3Uart("RVPhase3: AdamCore.BIN Load FAILED.\n");
+    return FALSE;
+  }
+  RVPhase3Uart("RVPhase3: AdamCore.BIN Load OK; Call AdamRVCoreInit...\n");
+  r = RVPhase3CallExport("AdamRVCoreInit");
+  RVPhase3UartI64("RVPhase3: AdamRVCoreInit returned ", r);
+  if (r != 1) {
+    RVPhase3UartI64("RVPhase3: AdamCore Call FAILED r=", r);
+    return FALSE;
   }
   back = FileRead("A:/Adam/READY.TXT", &sz, NULL);
-  if (!back || sz != 4) {
-    RVPhase3Uart("RVPhase3: Adam READY.TXT missing.\n");
+  if (!back || sz != 4 || back[0] != 'A' || back[1] != 'd' || back[2] != 'a' || back[3] != 'm') {
+    if (back)
+      Free(back);
+    RVPhase3Uart("RVPhase3: AdamCore Call OK but READY.TXT missing (guest FileWrite).\n");
     return FALSE;
   }
+  Free(back);
+  RVPhase3Uart("RVPhase3: StartOS Load AdamCore.BIN OK (guest Cmp FileWrite STR_CONST).\n");
   back = FileRead("A:/Adam/CORE.TXT", &sz, NULL);
   if (!back || sz < 10) {
-    RVPhase3Uart("RVPhase3: Adam CORE.TXT missing (MakeAdam_RV_Core).\n");
+    if (back)
+      Free(back);
+    RVPhase3Uart("RVPhase3: Adam CORE.TXT missing (guest AdamCore).\n");
     return FALSE;
   }
+  Free(back);
   // Primary StartOS body: Load guest-Cmp'd StartOS.BIN (not host-staged ExeFile string).
   if (!FileFind("A:/Adam/StartOS.BIN")) {
     RVPhase3Uart("RVPhase3: StartOS needs A:/Adam/StartOS.BIN.\n");
@@ -582,43 +591,29 @@ Bool RVPhase3StartOS()
   FileWrite("A:/Runtime/KERN.OK", "OK", 2);
   RVPhase3Uart("RVPhase3: StartOS Load Kern.BIN OK (KernInit=42).\n");
   rv_phase3_startos_ok = TRUE;
-  if (FileFind("A:/Adam/AdamCore.BIN"))
-    RVPhase3Uart("RVPhase3: StartOS subset OK (guest BINs AdamCore+StartOS+Seed+Svc+Kern).\n");
-  else
-    RVPhase3Uart("RVPhase3: StartOS subset OK (guest BINs StartOS+Seed+Svc+Kern).\n");
+  RVPhase3Uart("RVPhase3: StartOS subset OK (guest BINs AdamCore+StartOS+Seed+Svc+Kern).\n");
   return TRUE;
 }
 
 U0 RVPhase3WinRefresh()
 {
-  U8 *wp, *home;
-  I64 sz = 0, idx = -1;
+  U8 *wp;
+  I64 sz = 0;
   if (!rv_phase3_startos_ok)
+    return;
+  if (!rv_winmgr.ready)
     return;
   wp = FileRead("A:/Adam/WALLPAPER.TXT", &sz, NULL);
   if (wp && sz > 0)
     RVWinSetWallpaper(wp);
   if (rv_winmgr.n_wins > 0) {
     RVWinSetTitle(0, "Adam");
-    RVWinSetBody(0, "$$ETempleOS/RISC-V Adam\n" "$$FMakeAdam_RV_Core on FB WinMgr\n" "$$AGuest Cmp Runtime BINs\n" "$$BLoad() StartOS+Seed+Svc+Kern\n" "$$3StartOS_RV (guest BIN)\n" "$$B0$$7Doc-lite BG sample\n");
-    if (rv_winmgr.n_wins > 1) {
-      RVWinSetTitle(1, "DolDoc / Files");
-      RVWinSetBody(1, "$$EMakeAdam_RV_Core / DolDoc-lite\n" "$$Ftext_base + TextChar on ramfb\n" "A:/Adam/HOME.DD\n" "A:/Adam/READY.TXT\n" "A:/Adam/CORE.TXT\n" "A:/Adam/StartOS.BIN\n" "A:/MakeOS/Tiny.BIN\n" "A:/MakeOS/MAKEOS.OK\n" "A:/Runtime/Seed.BIN\n" "A:/Runtime/SEED.OK\n" "A:/Runtime/Svc.BIN\n" "A:/Runtime/SVC.OK\n" "A:/Runtime/Kern.BIN\n" "A:/Runtime/KERN.OK\n" "A:/Compiler/FULLBIN.TXT\n");
-    }
-    if (rv_winmgr.n_wins < 3)
-      idx = RVWinNew(20, rv_winmgr.cols - 4, 18, rv_winmgr.rows - 4, "HOME.DD", "", FALSE);
-    no_warn idx;
-    if (rv_winmgr.n_wins > 2) {
-      home = FileRead("A:/Adam/HOME.DD", &sz, NULL);
-      RVWinSetTitle(2, "HOME.DD");
-      if (home && sz > 0)
-        RVWinSetBody(2, home);
-      else
-        RVWinSetBody(2, "empty HOME.DD\n");
-    }
-    RVWinMgrRefresh;
-    RVPhase3Uart("RVPhase3: WinMgr Adam desktop updated on FB.\n");
+    RVWinSetBody(0, "$$ETempleOS/RISC-V Adam\n" "$$FMakeAdam_RV_Core on FB WinMgr\n" "$$AGuest Cmp Runtime BINs\n" "$$BLoad() StartOS+Seed+Svc+Kern\n" "$$3StartOS_RV + DocTermNew\n" "$$B0$$7Doc-lite BG sample\n");
   }
+  DocTermNew;
+  RVDocHomeOpen(NULL);
+  RVWinMgrRefresh;
+  RVPhase3Uart("RVPhase3: WinMgr DocTerm-lite desktop updated on FB.\n");
 }
 
 U0 RVPhase3()

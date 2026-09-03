@@ -18,12 +18,20 @@ BMD_DIR  := $(ROOT)/build/baremetal
 REPL_MK  := Makefile.repl
 KCFG     := $(ROOT)/templeos-riscv/include/generated/kconfig.mk
 
-# Optional Kconfig bases (KERNEL_LINK_ADDR / DRAM_BASE from syncconfig).
+# Optional Kconfig bases (ENTRY_POINT / LOAD_BASE / MARCH from syncconfig).
 ifneq ($(wildcard $(KCFG)),)
   include $(KCFG)
 endif
 
-LOAD_BASE ?= $(RAM_BASE)
+ifeq ($(origin LOAD_BASE),undefined)
+  ifneq ($(ENTRY_POINT),)
+    LOAD_BASE := $(ENTRY_POINT)
+  else ifneq ($(RAM_BASE),)
+    LOAD_BASE := $(RAM_BASE)
+  else
+    LOAD_BASE := 0x80000000
+  endif
+endif
 ifeq ($(LOAD_BASE),)
   LOAD_BASE := 0x80000000
 endif

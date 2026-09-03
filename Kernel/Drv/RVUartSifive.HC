@@ -19,6 +19,27 @@ I64 RVUartGetC()
   return RVSifiveUartGetC;
 }
 
+I64 RVUartTryGet()
+{
+  if (!RVSifiveUartDataReady)
+    return -1;
+  return RVSifiveUartGetC;
+}
+
+U0 RVUartSoftOn(I64 on = 1)
+{
+  no_warn on;
+}
+
+I64 RVUartSoftGet()
+{
+  return 0;
+}
+
+U0 RVUartRxDrain()
+{
+}
+
 I64 RVUartGetLine(U8 *buf, I64 max)
 {
   I64 n = 0, ch;

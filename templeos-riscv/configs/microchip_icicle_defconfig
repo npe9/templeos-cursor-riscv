@@ -1,13 +1,19 @@
-# QEMU microchip-icicle-kit — TENTATIVE (needs hss.bin)
-# MMUART0 @ 0x20000000 (16550-ish best-guess); CLINT @ 0x02000000; PLIC @ 0x0C000000.
-# Bare -bios none typically fails without HSS firmware.
+# QEMU microchip-icicle-kit (PolarFire SoC) — plat smoke: -bios none -kernel (no HSS).
+# MMUART0 @ 0x20000000 (serial-mm regshift=2 → UART_REG_SHIFT=2); PLIC IRQ 90.
+# ACLINT SWI @ 0x02000000 + mtimer @ 0x02004000 (classic mtime +0xBFF8 / mtimecmp +0x4000
+# from CLINT_BASE); timebase 1 MHz. PLIC @ 0x0C000000 (SiFive layout).
+# Machine min_cpus=2 (E51 + U54) — UART lines may interleave; smoke greps plat-smoke: PASS.
 CONFIG_PLATFORM_MICROCHIP_ICICLE=y
 # CONFIG_PLATFORM_VIRT is not set
 CONFIG_UART_16550=y
 CONFIG_UART_BASE=0x20000000
+CONFIG_UART_IRQ=90
+CONFIG_UART_REG_SHIFT=2
+CONFIG_HAS_CLINT=y
+CONFIG_CLINT_BASE=0x02000000
 CONFIG_HAS_PLIC=y
 CONFIG_PLIC_BASE=0x0C000000
-CONFIG_CLINT_BASE=0x02000000
+CONFIG_TIMEBASE_FREQ=1000000
 # CONFIG_HAS_VIRTIO_MMIO is not set
 # CONFIG_HAS_FW_CFG is not set
 CONFIG_FB_PRESENT_NONE=y

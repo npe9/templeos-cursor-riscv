@@ -4,7 +4,8 @@
 # Platform Kconfig (HolyC OS drivers use Kernel/RVAutoConf.HH):
 #   make defconfig | defconfig-<machine> | menuconfig | syncconfig | list-defconfigs
 # Machines: virt sifive_u sifive_e spike shakti_c microchip_icicle
-#           xiangshan amd_microblaze_v opentitan host  (see PLATFORM.md)
+#           xiangshan amd_microblaze_v opentitan visionfive2 milkv_mars host
+#           (see PLATFORM.md)
 # Multi-machine device drivers are HolyC (Kernel/Drv/*), not C.
 
 PREFIX ?= riscv64-unknown-elf-
@@ -17,6 +18,11 @@ QEMU ?= qemu-system-riscv64
 PYTHON ?= python3
 KCONFIG := $(PYTHON) scripts/kconfig.py
 
+AUTOCONF := include/generated/autoconf.h
+KCONFIG_MK := include/generated/kconfig.mk
+-include $(KCONFIG_MK)
+
+# From kconfig.mk when present; virt CI defaults otherwise.
 MARCH ?= rv64imafdc
 MABI ?= lp64d
 
@@ -27,9 +33,6 @@ CFLAGS := -march=$(MARCH) -mabi=$(MABI) -mcmodel=medany -O2 -g \
 BUILD := build
 LINK := link/kernel.ld
 LINK_SELFHOST := link/kernel_selfhost.ld
-AUTOCONF := include/generated/autoconf.h
-KCONFIG_MK := include/generated/kconfig.mk
--include $(KCONFIG_MK)
 
 KERNEL_C := kernel/kernel.c
 GUEST_CALL_C := kernel/guest_call.c
@@ -41,16 +44,19 @@ BOOT_S := kernel/boot.S
 TRAP_S := kernel/trap_entry.S
 
 DEFCONFIGS := virt sifive_u sifive_e spike shakti_c microchip_icicle \
-	xiangshan amd_microblaze_v opentitan host none
+	xiangshan amd_microblaze_v opentitan visionfive2 milkv_mars host none
 
 .PHONY: all image guest selfhost qemu qemu-selfhost clean check-holyc redsea-smoke-img \
-	defconfig defconfig-virt menuconfig syncconfig qemu-args list-defconfigs help \
+	defconfig defconfig-virt menuconfig menuconfig-test syncconfig qemu-args list-defconfigs help \
 	$(foreach m,$(DEFCONFIGS),defconfig-$(m)) \
 	$(foreach m,$(DEFCONFIGS),qemu-args-$(m))
 
 all: image
 
 # --- Kconfig -----------------------------------------------------------------
+MCONF := scripts/kconfig/mconf
+CONF  := scripts/kconfig/conf
+
 $(AUTOCONF) ../Kernel/RVAutoConf.HH: .config scripts/kconfig.py Kconfig Kconfig.machines
 	@$(KCONFIG) sync
 
@@ -73,8 +79,21 @@ defconfig: defconfig-virt
 list-defconfigs:
 	@$(KCONFIG) list-defconfigs
 
-menuconfig:
-	$(KCONFIG) menuconfig
+# Linux mconf + lxdialog (vendored scripts/kconfig). Needs TTY + ncurses + host cc.
+$(MCONF) $(CONF):
+	$(MAKE) -C scripts/kconfig
+
+menuconfig: $(MCONF)
+	@if [ ! -t 0 ] || [ ! -t 1 ]; then \
+		echo "error: menuconfig requires an interactive TTY" >&2; \
+		echo "hint: run \`make menuconfig\` from a terminal" >&2; \
+		exit 1; \
+	fi
+	./$(MCONF) Kconfig
+	$(KCONFIG) sync
+
+menuconfig-test:
+	$(KCONFIG) menuconfig-test
 
 syncconfig:
 	$(KCONFIG) sync
@@ -189,13 +208,16 @@ qemu-selfhost: $(BUILD)/tos-rv-selfhost.elf
 
 clean:
 	rm -rf $(BUILD)
+	$(MAKE) -C scripts/kconfig clean
 
 help:
 	@echo "TempleOS/RISC-V image + platform Kconfig"
-	@echo "  defconfig / defconfig-<machine> / list-defconfigs / menuconfig"
-	@echo "  qemu-args / qemu-args-<machine>  (machine form does not write .config)"
+	@echo "  defconfig / defconfig-<machine> / list-defconfigs"
+	@echo "  menuconfig              - Linux mconf + lxdialog (needs ncurses + TTY)"
+	@echo "  menuconfig-test         - build mconf/conf; conf --olddefconfig sanity"
+	@echo "  syncconfig / qemu-args / qemu-args-<machine>"
 	@echo "  image / qemu            - C bootstrap + HolyC guest (virt-oriented console)"
 	@echo "  Multi-kernel (repo root): make kernel-<machine> / kernels / list-kernels"
 	@echo "  Multi-machine OS drivers: Kernel/Drv/* + make kernel-plat-smoke (repo root)"
 	@echo "Machines: $(DEFCONFIGS)"
-	@echo "See PLATFORM.md"
+	@echo "See KCONFIG.md / PLATFORM.md"

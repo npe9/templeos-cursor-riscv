@@ -10,6 +10,9 @@
 // GrUpdateVGAGraphics. DocTerm-lite (P4): DocTermNew → Term + Put/Display/Border
 // docs + HOME.DD; WinMgrTask pumps input/refresh (Spawn via RVKSpawn when live).
 // Input: VirtioInput → click-to-focus + type into focused body (Phase F.1).
+// UART dig-down: RVWinSerial (included after this file) — forward decls for pump.
+U0 RVWinSerialPoll();
+Bool RVWinSerialInit();
 #define RV_WIN_MAX       8
 #define RV_WIN_TITLE_MAX 48
 #define RV_WIN_BODY_MAX  1024
@@ -723,7 +726,7 @@ U0 RVWinMgrDrawIts()
 
 U0 RVWinMgrPresent(Bool full_frame = FALSE)
 {
-  //ramfb: push cursor-only updates too (partial present skip left stale save-under on screen).
+  //ramfb: configure once (RVFbPresentRamfb); later presents are no-ops so cocoa stays alive.
   no_warn full_frame;
   if (!rv_fb.pixels)
     return;
@@ -736,7 +739,7 @@ U0 RVWinMgrCursorErase()
   U32 *pix, *save;
   if (!rv_winmgr.ptr_save_valid || !rv_fb.pixels)
     return;
-  stride = rv_fb.stride;
+  stride = RVFbPixStride();
   pix = rv_fb.pixels;
   save = rv_winmgr.ptr_save;
   for (row = 0; row < RV_CURSOR_H; row++) {
@@ -759,7 +762,7 @@ U0 RVWinMgrCursorSaveUnder(I64 px, I64 py)
   U32 *pix, *save;
   if (!rv_fb.pixels)
     return;
-  stride = rv_fb.stride;
+  stride = RVFbPixStride();
   pix = rv_fb.pixels;
   save = rv_winmgr.ptr_save;
   rv_winmgr.ptr_ox = px;
@@ -825,15 +828,23 @@ U0 RVWinMgrDrawCursor()
 
 U0 RVWinMgrCursorUpdate()
 {
-  //Pointer-only repaint: restore save-under, draw cursor, skip full blit / ramfb reconfig.
+  //Pointer-only repaint: restore save-under, save, draw cursor (skip full text blit).
   I64 px, py;
   if (!rv_winmgr.ready || !rv_winmgr.input_ok || !rv_fb.pixels)
     return;
+  if (rv_winmgr.ptr_x < 0)
+    rv_winmgr.ptr_x = 0;
+  if (rv_winmgr.ptr_y < 0)
+    rv_winmgr.ptr_y = 0;
+  if (rv_winmgr.ptr_x >= rv_winmgr.cols)
+    rv_winmgr.ptr_x = rv_winmgr.cols - 1;
+  if (rv_winmgr.ptr_y >= rv_winmgr.rows)
+    rv_winmgr.ptr_y = rv_winmgr.rows - 1;
   px = rv_winmgr.ptr_x *FONT_WIDTH;
   py = rv_winmgr.ptr_y *FONT_HEIGHT;
   RVWinMgrCursorErase;
-  RVWinMgrDrawCursorAt(px, py);
   RVWinMgrCursorSaveUnder(px, py);
+  RVWinMgrDrawCursorAt(px, py);
   RVWinMgrPresent(FALSE);
 }
 
@@ -848,10 +859,12 @@ U0 RVWinMgrRefresh()
   RVWinMgrBlitTextBase;
   RVWinMgrDrawIts;
   rv_winmgr.ptr_save_valid = FALSE;
-  RVWinMgrDrawCursor;
-  px = rv_winmgr.ptr_x *FONT_WIDTH;
-  py = rv_winmgr.ptr_y *FONT_HEIGHT;
-  RVWinMgrCursorSaveUnder(px, py);
+  if (rv_winmgr.input_ok) {
+    px = rv_winmgr.ptr_x *FONT_WIDTH;
+    py = rv_winmgr.ptr_y *FONT_HEIGHT;
+    RVWinMgrCursorSaveUnder(px, py);
+    RVWinMgrDrawCursorAt(px, py);
+  }
   RVWinMgrPresent(TRUE);
   rv_winmgr.updates++;
 }
@@ -1219,12 +1232,14 @@ I64 RVWinMgrPumpInput(I64 max)
 U0 RVWinMgrRun(I64 max_iters = 0)
 {
   //Interactive desktop pump. max_iters=0 → until ESC; else bounded (smokes).
+  // UART serial TTY (RVWinSerialPoll) runs each tick alongside VirtioInput.
   I64 i = 0;
   rv_winmgr.want_quit = FALSE;
   if (!rv_winmgr.input_ok)
     RVWinMgrInputInit;
   while (!rv_winmgr.want_quit) {
     RVWinMgrPumpInput(256);
+    RVWinSerialPoll;
     // Sleep(1) is a no-op without CTask jiffies; CLINT idle keeps cocoa/SDL responsive.
     RVIdleMs(1);
     rv_winmgr_task_iters++;
@@ -1286,5 +1301,7 @@ Bool RVSysWinInit()
   LBts(&sys_run_level, RLf_WINMGR);
   RVWinMgrRefresh;
   Print("RVSysWinInit: WinMgr desktop wins=%d focus=%d %dx%d text=%dx%d input=%d put=%d\n", rv_winmgr.n_wins, rv_winmgr.focus, rv_fb.width, rv_fb.height, rv_winmgr.cols, rv_winmgr.rows, rv_winmgr.input_ok, DocPut() != NULL);
+  // Dual-console: UART dig-down stays live while FB/WinMgr owns virtio input.
+  RVWinSerialInit;
   return TRUE;
 }

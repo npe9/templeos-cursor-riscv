@@ -159,6 +159,9 @@ typedef bool      Bool;
 #define IC_FN_ADDR       0xB6   // ic_data = CLabel*: a function's address as a value (auipc/addi)
 #define IC_BLOCK_COPY    0xBB   // struct copy: eval stack [dst,src] (src top), ic_data = byte count; copies then leaves dst
 #define IC_RAW_RV        0xBC   // emit ic_data as one raw 32-bit RISC-V instruction word (x86-asm translation)
+#define IC_REGS_SNAP     0xBD   // inline asm{} → MEM_REGS_SNAP freeze before Reg/Regs
+#define IC_LOCK_ENTER    0xBD   // `lock` stmt: amoswap spin on HOLYC_STMT_LOCK_ADDR
+#define IC_LOCK_LEAVE    0xBE
 #define IC_UDIV          0x9E
 #define IC_UMOD          0x9F
 #define IC_ULESS         0xA0
@@ -172,6 +175,8 @@ typedef bool      Bool;
 #define ICF_GLBL_ADDR    1      // ic_flags on IC_IMM_I64: ic_data is a global's data_addr (AOT: data section)
 #define ICF_FRAME_SLOT   2      // IC_ASSIGN: store to s0+ic_data (no address on eval stack)
 #define ICF_REG_LOCAL    4      // IC_MOV/ASSIGN: value in arg1.reg; frame slot holds caller spill
+#define ICF_ASSIGN_ZERO  8      // IC_ASSIGN: RHS was IMM 0 — store x0; skip dead li before addr pop
+#define ICF_CMP_IMM      16     // IC_BR_EQU…LESS_EQU: rhs is imm in arg2.disp; only lhs on eval stack
 #define IC_EVAL_DROP      0x92 /* addi sp,sp,ic_data (drop eval slots); signed ic_data */
 
 // Raw types
@@ -485,6 +490,8 @@ typedef struct {
   
   // Expression type tracking
   Symbol *last_var_symbol;  // Last variable referenced (for array subscripting)
+  bool var_just_loaded;     // ParsePrimary just emitted IC_LEA for last_var_symbol
+  bool global_just_loaded;  // ParsePrimary just pushed a global's address (IC_IMM_I64)
   CHashClass *last_expr_class;  // Last expression's class (for member access)
   CHashClass *last_type_class;  // Most recently parsed type's class (for decls)
   struct CHashGlblVar *last_global_var;  // Last global variable referenced
@@ -620,6 +627,7 @@ bool ParseREPLStatement(Compiler *cc);  // For REPL: parse one statement
 // IC Generation
 CIntermediateCode *ICNew(Compiler *cc, U8 opcode);
 void ICAdd(Compiler *cc, U8 opcode, I64 data, U8 type);
+void ICEmitRegsSnap(Compiler *cc);
 void ICSetArg1(CIntermediateCode *ic, CICType type, I64 reg, I64 disp);
 void ICSetArg2(CIntermediateCode *ic, CICType type, I64 reg, I64 disp);
 void ICSetRes(CIntermediateCode *ic, CICType type, I64 reg, I64 disp);

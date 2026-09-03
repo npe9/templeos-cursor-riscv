@@ -13,12 +13,12 @@
   X(Floor, 1) X(Ceil, 1) X(Round, 1) X(Trunc, 1) X(Sin, 1) X(Cos, 1) X(Tan, 1) X(ATan, 1) \
   X(Abs, 1) X(Sign, 1) \
   X(Bt, 2) X(Bts, 2) X(Btr, 2) X(Btc, 2) X(LBts, 2) X(LBtr, 2) X(LBtc, 2) X(Bsf, 1) X(Bsr, 1) \
-  X(BEqu, 3) X(BFieldOrU32, 3) X(SwapI64, 2) X(LXchgI64, 2) X(SqrI64, 1) X(ClampI64, 3) X(MSize, 1) X(MSize2, 1) \
+  X(BEqu, 3) X(BFieldOrU32, 3) X(SwapI64, 2) X(LXchgI64, 2) X(Lock, 0) X(Unlock, 0) X(SqrI64, 1) X(ClampI64, 3) X(MSize, 1) X(MSize2, 1) \
   X(InU8, 1) X(OutU8, 2) X(InU16, 1) X(OutU16, 2) X(InU32, 1) X(OutU32, 2) X(RepInU32, 3) X(RepOutU32, 3) \
   X(GetRAX, 0) X(GetRBP, 0) X(GetRFlags, 0) X(SetRFlags, 1) X(CPUId, 2) X(InvlPg, 1) X(SysHlt, 0) X(GetTSC, 0) X(Caller, 1) \
   X(QueInit, 1) X(QueIns, 2) X(QueInsRev, 2) X(QueRem, 1) X(StrMatch, 3) X(StrIMatch, 3) X(StrICmp, 2) X(Pow10, 1) \
   X(StrNCmp, 3) X(ModU64, 2) X(LBEqu, 3) \
-  X(BFieldExtU32, 3) X(RepInU16, 3) X(GetRSP, 0) X(SaveExceptRegs, 0) X(Call, 1) X(FarCall32, 4) X(Yield, 0) X(TaskEndNow, 0) X(RVTaskSwitch, 2) X(RVTrapInit, 0) X(RVTimerArm, 1) X(RVGetTicks, 0) X(RVPreemptInit, 1) X(RVPreemptSpawn, 2) X(RVPreemptExit, 0) X(RVCritEnter, 0) X(RVCritLeave, 1) X(RVSleep, 1) X(RVUartIrqInit, 0) X(RVUartHasInput, 0) X(RVUartGetBuffered, 0) X(RVBlkInit, 0) X(RVBlkRead, 2) X(RVBlkWrite, 2) X(RVCtxSw, 2) X(RVYieldInit, 1) X(RVPreemptReal, 1) X(RVJiffies, 0) X(RVJiffiesInit, 1) X(RVTrapDiag, 0) X(RVRunBlob, 2) X(RVVirtioIrqs, 0)
+  X(BFieldExtU32, 3) X(RepInU16, 3) X(GetRSP, 0) X(SaveExceptRegs, 0) X(Call, 1) X(FarCall32, 4) X(Yield, 0) X(TaskEndNow, 0) X(RVTaskSwitch, 2) X(RVTrapInit, 0) X(RVTimerArm, 1) X(RVGetTicks, 0) X(RVPreemptInit, 1) X(RVPreemptSpawn, 2) X(RVPreemptExit, 0) X(RVCritEnter, 0) X(RVCritLeave, 1) X(RVSleep, 1) X(RVUartIrqInit, 0) X(RVUartHasInput, 0) X(RVUartGetBuffered, 0) X(RVBlkInit, 0) X(RVBlkRead, 2) X(RVBlkWrite, 2) X(RVCtxSw, 2) X(RVYieldInit, 1) X(RVPreemptReal, 1) X(RVJiffies, 0) X(RVJiffiesInit, 1) X(RVTrapDiag, 0) X(RVCrashMonInit, 0) X(RVCrashMon, 0) X(RVRunBlob, 2) X(RVVirtioIrqs, 0) X(RVVirtioPciIsrReg, 1)
 /* HashStr/HashFind/HashAdd/HashRemDel: guest Kernel KHashRV (TempleOS hash). Not imported. */
 
 /* F64 typing of the runtime (arguments and results travel as raw 64-bit patterns): the
@@ -43,16 +43,6 @@ static int HolyRtRetVoid(const char *n) {
                              "RegHelp", "CpuRep", "CSRSet",
                              "StrPrintJoin", "UartRxDrain", 0 };
   for (int i = 0; v[i]; i++) if (holy_rt_streq(n, v[i])) return 1;
-  return 0;
-}
-/* REPL: do not register these TempleOS names from C — seeds define them in HolyC. */
-static int HolyRtSeedOwned(const char *n) {
-  static const char *o[] = {
-    "Print", "PutS", "PutChars", "CAlloc", "MSize2",
-    "StrLen", "StrCpy", "StrCmp", "StrCat", "StrNew", "StrNCmp", "StrICmp",
-    "MemCpy", "MemSet", "MemCmp", "MemSetI64",
-    "AbsI64", "MaxI64", "MinI64", "ToUpper", "ToLower", "SqrI64", "ClampI64", 0 };
-  for (int i = 0; o[i]; i++) if (holy_rt_streq(n, o[i])) return 1;
   return 0;
 }
 static unsigned HolyRtF64Mask(const char *n) {

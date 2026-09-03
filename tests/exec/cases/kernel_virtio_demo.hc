@@ -1,5 +1,5 @@
 // The kernel's OWN native RISC-V virtio-blk driver (Kernel/BlkDev/DskVirtioRV.HC) driving a real disk
-// on the QEMU virt machine over legacy virtio-mmio -- the RISC-V translation of the x86 ATA driver.
+// on the QEMU virt machine — MMIO (virtio-blk-device) or PCI fallback (virtio-blk-pci).
 // The VM is launched with a 256-sector raw disk image whose sector 5 is pre-filled with 0xCC. The
 // demo brings the device up (legacy handshake + virtqueue), reads sector 5 and checks it, then writes
 // a pattern to sector 10 and reads it back -- exercising the full descriptor-chain request path.
@@ -21,7 +21,10 @@ I64 main()
     Sh("no virtio-blk device\n");
     return 0;
   }
-  Sh("device up\n");
+  if (virtio_blk_kind == VBLK_KIND_PCI)
+    Sh("device up (pci)\n");
+  else
+    Sh("device up\n");
   if (VirtioBlkRead(5, buf) == 0 && buf[0] == 0xCC && buf[511] == 0xCC) {
     Sh("read sector 5 = 0xCC OK\n");
     ok++;

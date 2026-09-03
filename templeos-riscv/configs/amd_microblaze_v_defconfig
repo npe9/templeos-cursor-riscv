@@ -1,14 +1,17 @@
-# QEMU amd-microblaze-v-generic — TENTATIVE
-# DDR @ 0x80000000; UARTLite serial0 + 16550 @ 0x44A11000 serial1 (regshift 2).
-# No SiFive PLIC/CLINT (AXI INTC). Use: -serial null -serial mon:stdio
+# QEMU amd-microblaze-v-generic — no -kernel/-bios boot; use loader device.
+# UARTLite serial0 @ 0x40600000; XPS timer @ 0x41C00000; XPS INTC @ 0x41200000.
+# 16550 serial1 @ 0x44A11000 (regshift 2, unused).
 CONFIG_PLATFORM_AMD_MICROBLAZE_V=y
 # CONFIG_PLATFORM_VIRT is not set
-CONFIG_UART_16550=y
-# CONFIG_UART_SIFIVE is not set
-# CONFIG_UART_HTIF is not set
-# CONFIG_UART_STUB is not set
-CONFIG_UART_BASE=0x44A11000
+CONFIG_UART_UARTLITE=y
+CONFIG_UART_BASE=0x40600000
+# CONFIG_HAS_CLINT is not set
+CONFIG_HAS_XPS_TIMER=y
+CONFIG_XPS_TIMER_BASE=0x41C00000
+CONFIG_TIMEBASE_FREQ=100000000
 # CONFIG_HAS_PLIC is not set
+CONFIG_HAS_XPS_INTC=y
+CONFIG_XPS_INTC_BASE=0x41200000
 # CONFIG_HAS_VIRTIO_MMIO is not set
 # CONFIG_HAS_VIRTIO_PCI is not set
 # CONFIG_HAS_FW_CFG is not set

@@ -32,6 +32,11 @@
 #define VIRTIO_MMIO_BASE 0x10001000UL
 #endif
 #define UART_IRQ    10     /* QEMU virt 16550 on PLIC */
+#define UART_XON    0x11   /* DC1 / Ctrl-Q — resume TX */
+#define UART_XOFF   0x13   /* DC3 / Ctrl-S — pause TX */
+/* Shared with HolyC Lib/uart.hc (retired TERM slots). Values, not pointers. */
+#define UART_FC_ADDR         0x870010F0UL
+#define UART_TX_PAUSED_ADDR  0x870010F8UL
 /* TempleOS throw('Break') — little-endian multi-char I64 ('B'+'r'<<8+…). */
 #define EXCEPT_BREAK ((I64)0x6B61657242ULL)
 
@@ -51,12 +56,30 @@ static int g_break_interactive;
  * stale last RBR value and enqueues a duplicate (interactive typing → "aa" per key).
  * Masking only MEIE left MTIE free to re-enter drain during break-armed eval / UartPut.
  * Ctrl-C still works: UART IRQ or timer poll runs after MIE is restored. */
+static int uart_fc_on(void) {
+    return *(volatile I64 *)UART_FC_ADDR != 0;
+}
+static void uart_fc_note(U8 ch) {
+    if (!uart_fc_on()) return;
+    if (ch == UART_XOFF)
+        *(volatile I64 *)UART_TX_PAUSED_ADDR = 1;
+    else if (ch == UART_XON)
+        *(volatile I64 *)UART_TX_PAUSED_ADDR = 0;
+}
+static int uart_fc_is_ctrl(U8 ch) {
+    if (!uart_fc_on()) return 0;
+    return ch == UART_XON || ch == UART_XOFF;
+}
 static void uart_hw_drain(void) {
     I64 mstatus;
     __asm__ volatile("csrr %0, mstatus" : "=r"(mstatus));
     __asm__ volatile("csrc mstatus, %0" :: "r"((I64)(1 << 3))); /* MIE */
     while (*(volatile U8 *)(UART_BASE + 5) & 0x01) {
         U8 ch = *(volatile U8 *)UART_BASE;
+        if (uart_fc_is_ctrl(ch)) {
+            uart_fc_note(ch);
+            continue; /* not delivered to readline */
+        }
         if (ch == CH_CTRLC) {
             g_break_pending = 1;
             /* During eval, consume the break byte so it does not pollute the next prompt. */
@@ -97,8 +120,11 @@ static int plic_service_uart(void) {
 }
 static void UartPut(U8 ch) {
     /* Drain RX while transmitting so the 16550 FIFO cannot overflow during
-     * long redraws (Vi/Edit) while piped input is still arriving. */
+     * long redraws (Vi/Edit) while piped input is still arriving. With software
+     * XON/XOFF (UartXonXoff(1)), host Ctrl-S pauses until Ctrl-Q. */
     uart_hw_drain();
+    while (uart_fc_on() && *(volatile I64 *)UART_TX_PAUSED_ADDR)
+        uart_hw_drain();
     while (!(*(volatile U8 *)(UART_BASE + 5) & 0x20));
     *(volatile U8 *)UART_BASE = ch;
 }
@@ -180,8 +206,13 @@ static void print_f64(U64 bits) {
 #define MEMFS_PHYS_BASE 0x87800000ULL
 static U8 code_mem[8*1024*1024];   // 8MB for compiled code (never reused)
 static size_t code_pos = 0;
-static U8 heap_mem[96*1024*1024];  // 96MB heap (IC/parse; free() is a no-op; large seeds e.g. vim.hc)
+/* Permanent bump heap: hash / glbls / labels / srcmap. free() is a no-op.
+ * IC nodes (~1KB each) go to parse_mem and are released via parse_reset() after
+ * each repl_eval unit — without that, per-seed boot OOMs ~96MB and faults. */
+static U8 heap_mem[72*1024*1024];
 static size_t heap_pos = 0;
+static U8 parse_mem[24*1024*1024];
+static size_t parse_pos = 0;
 
 // Special malloc for CODE - never freed, never reused
 void *code_malloc(size_t sz) {
@@ -213,11 +244,8 @@ void *malloc(size_t sz) {
         puts_uart(" pos=");
         print_hex(heap_pos);
         puts_uart("]\n");
-        // Reset heap for REPL - free everything except code
-        heap_pos = 0;
-        void *p = &heap_mem[heap_pos];
-        heap_pos += aligned;
-        return p;
+        /* Do not rewind heap_pos — that orphans the live hash table and faults. */
+        return NULL;
     }
     void *p = &heap_mem[heap_pos];
     heap_pos += aligned;
@@ -231,6 +259,27 @@ void *calloc(size_t n, size_t sz) {
     for (size_t i = 0; i < total; i++) ((U8*)p)[i] = 0;
     return p;
 }
+/* Host parser IC nodes (BARE_METAL): bump arena reset each compile unit. */
+void *parse_calloc(size_t n, size_t sz) {
+    size_t total, aligned;
+    void *p;
+    if (!n || !sz) return NULL;
+    total = n * sz;
+    aligned = (total + 7) & ~7;
+    if (parse_pos + aligned > sizeof(parse_mem)) {
+        puts_uart("[parse_calloc: OUT OF MEMORY! sz=");
+        print_hex(total);
+        puts_uart(" pos=");
+        print_hex(parse_pos);
+        puts_uart("]\n");
+        return NULL;
+    }
+    p = &parse_mem[parse_pos];
+    parse_pos += aligned;
+    for (size_t i = 0; i < total; i++) ((U8 *)p)[i] = 0;
+    return p;
+}
+void parse_reset(void) { parse_pos = 0; }
 // Don't free in REPL - we need to keep function code alive!
 void free(void *p) { (void)p; }
 /* Bare-metal libc bits newly needed by host parser.c (memcmp/realloc/strchr). */
@@ -395,9 +444,29 @@ static MemFile *memfs_lookup(const char *full) {            // exact stored name
         if (memfs[i].used && !strcmp(memfs[i].name, full)) return &memfs[i];
     return NULL;
 }
+/* Unique basename match (Lib/uart.hc ↔ uart.hc) — mirrors seed/fs.hc FsLookupBase. */
+static MemFile *memfs_lookup_base(const char *want) {
+    const char *w = want, *b;
+    MemFile *hit = NULL;
+    if (!w || !*w || *w == '.') return NULL;
+    for (const char *p = want; *p; p++) if (*p == '/') w = p + 1;
+    if (!*w || *w == '.') return NULL;
+    for (int i = 0; i < MEMFS_MAX_FILES; i++) if (memfs[i].used) {
+        b = memfs[i].name;
+        for (const char *p = memfs[i].name; *p; p++) if (*p == '/') b = p + 1;
+        if (*b == '.') continue;
+        if (!strcmp(b, w)) {
+            if (hit) return hit; /* ambiguous: keep first */
+            hit = &memfs[i];
+        }
+    }
+    return hit;
+}
 static MemFile *memfs_find(const char *name) {
     char full[64]; memfs_resolve(name, full);
-    return memfs_lookup(full);
+    MemFile *f = memfs_lookup(full);
+    if (f) return f;
+    return memfs_lookup_base(full);
 }
 static MemFile *memfs_create(const char *name) {
     char fullbuf[64]; memfs_resolve(name, fullbuf);
@@ -1348,6 +1417,8 @@ static const char *doc_file_for(const char *name) {
 static void repl_eval(const char *src, int echo, int start_line) {
     Compiler *cc = g_cc;
     if (!cc) return;
+    /* Drop IC nodes from the previous unit (code lives in code_mem). */
+    parse_reset();
     if (cc->lex.src) free(cc->lex.src);
     cc->lex.src = strdup(src);
     cc->lex.ptr = cc->lex.src;
@@ -1675,8 +1746,9 @@ static int fun_name_pfx(const char *n, const char *p) {
 static int fun_sec_from_file(const char *file) {
     const char *b = file;
     for (const char *p = file; *p; p++) if (*p == '/') b = p + 1;
-    if (fun_name_eq(b, "man.hc") || fun_name_eq(b, "boot.hc") || fun_name_eq(b, "funs.hc") ||
-        fun_name_eq(b, "callers.hc"))
+    if (fun_name_eq(b, "man.hc") || fun_name_eq(b, "boot.hc") || fun_name_eq(b, "ops.hc") ||
+        fun_name_eq(b, "funs.hc") || fun_name_eq(b, "callers.hc") || fun_name_eq(b, "log.hc") ||
+        fun_name_eq(b, "sys.hc"))
         return 1;
     if (fun_name_eq(b, "dir.hc") || fun_name_eq(b, "files.hc")) return 2;
     if (fun_name_eq(b, "uart.hc") || fun_name_eq(b, "term.hc") || fun_name_eq(b, "str.hc") ||
@@ -1699,6 +1771,14 @@ static int fun_sec_from_name(const char *name) {
         fun_name_eq(name, "Sections") || fun_name_eq(name, "Run") || fun_name_eq(name, "Src") ||
         fun_name_eq(name, "SrcFile") || fun_name_eq(name, "SymFile") || fun_name_eq(name, "SrcText") || fun_name_eq(name, "Exec") ||
         fun_name_eq(name, "Reset") || fun_name_eq(name, "MemMap") || fun_name_eq(name, "Regs") ||
+        fun_name_eq(name, "SafeMode") || fun_name_eq(name, "Recover") ||
+        fun_name_eq(name, "Log") || fun_name_eq(name, "LogInfo") || fun_name_eq(name, "LogWarn") ||
+        fun_name_eq(name, "LogErr") || fun_name_eq(name, "LogClear") || fun_name_eq(name, "DMesg") ||
+        fun_name_eq(name, "LogInit") || fun_name_eq(name, "LogCount") || fun_name_eq(name, "LogNow") ||
+        fun_name_eq(name, "Sys") || fun_name_eq(name, "SysHelp") || fun_name_eq(name, "SysInit") ||
+        fun_name_eq(name, "Uptime") || fun_name_eq(name, "UptimeTicks") || fun_name_eq(name, "UptimeSecs") ||
+        fun_name_eq(name, "MemRep") || fun_name_eq(name, "IrqRep") || fun_name_eq(name, "DevRep") ||
+        fun_name_eq(name, "Cnts") ||
         fun_name_eq(name, "FunCount") || fun_name_eq(name, "FunName") || fun_name_eq(name, "FunHasSrc") ||
         fun_name_eq(name, "FunPick") || fun_name_eq(name, "FunEd") || fun_name_eq(name, "FunWrite") ||
         fun_name_eq(name, "Callers") || fun_name_eq(name, "WhoCalls") || fun_name_eq(name, "CallersGo") ||
@@ -2404,6 +2484,46 @@ __asm__(
     "  ld t5, 0x3F0(t6)\n"
     "  csrr t6, sscratch\n"
     "  j regs_dump_c\n"
+    ".globl regs_snap_only_stub\n"
+    "regs_snap_only_stub:\n"
+    "  csrw sscratch, t6\n"
+    "  lui  t6, 0x10E00\n"
+    "  slli t6, t6, 3\n"
+    "  sd x1, 0x308(t6)\n"
+    "  sd x2, 0x310(t6)\n"
+    "  sd x3, 0x318(t6)\n"
+    "  sd x4, 0x320(t6)\n"
+    "  sd x5, 0x328(t6)\n"
+    "  sd x6, 0x330(t6)\n"
+    "  sd x7, 0x338(t6)\n"
+    "  sd x8, 0x340(t6)\n"
+    "  sd x9, 0x348(t6)\n"
+    "  sd x10, 0x350(t6)\n"
+    "  sd x11, 0x358(t6)\n"
+    "  sd x12, 0x360(t6)\n"
+    "  sd x13, 0x368(t6)\n"
+    "  sd x14, 0x370(t6)\n"
+    "  sd x15, 0x378(t6)\n"
+    "  sd x16, 0x380(t6)\n"
+    "  sd x17, 0x388(t6)\n"
+    "  sd x18, 0x390(t6)\n"
+    "  sd x19, 0x398(t6)\n"
+    "  sd x20, 0x3A0(t6)\n"
+    "  sd x21, 0x3A8(t6)\n"
+    "  sd x22, 0x3B0(t6)\n"
+    "  sd x23, 0x3B8(t6)\n"
+    "  sd x24, 0x3C0(t6)\n"
+    "  sd x25, 0x3C8(t6)\n"
+    "  sd x26, 0x3D0(t6)\n"
+    "  sd x27, 0x3D8(t6)\n"
+    "  sd x28, 0x3E0(t6)\n"
+    "  sd x29, 0x3E8(t6)\n"
+    "  sd x30, 0x3F0(t6)\n"
+    "  csrr t5, sscratch\n"
+    "  sd t5, 0x3F8(t6)\n"
+    "  ld t5, 0x3F0(t6)\n"
+    "  csrr t6, sscratch\n"
+    "  ret\n"
     ".globl reg_one_stub\n"
     "reg_one_stub:\n"
     "  csrw sscratch, t6\n"
@@ -2446,6 +2566,7 @@ __asm__(
     "  j reg_one_c\n"
 );
 HRT_I64 regs_snap_stub(void);
+HRT_I64 regs_snap_only_stub(void);
 HRT_I64 reg_one_stub(char *name);
 static const char *gpr_abi[32] = {
     "zero","ra","sp","gp","tp","t0","t1","t2","s0","s1",
@@ -2458,11 +2579,16 @@ static const char *gpr_desc[32] = {
     "stack pointer",
     "global pointer",
     "thread pointer",
-    "temp", "temp", "temp",
-    "saved / frame ptr", "saved",
-    "arg/ret 0", "arg/ret 1", "arg 2", "arg 3", "arg 4", "arg 5", "arg 6", "arg 7",
-    "saved", "saved", "saved", "saved", "saved", "saved", "saved", "saved", "saved", "saved",
-    "temp", "temp", "temp", "temp"
+    "temp (caller-saved)", "temp (caller-saved)", "temp (caller-saved)",
+    "saved / frame ptr (fp)", "saved (callee-saved)",
+    "arg/ret (caller-saved)", "arg/ret (caller-saved)", "arg/ret (caller-saved)",
+    "arg/ret (caller-saved)", "arg/ret (caller-saved)", "arg/ret (caller-saved)",
+    "arg/ret (caller-saved)", "arg/ret (caller-saved)",
+    "saved (callee-saved)", "saved (callee-saved)", "saved (callee-saved)",
+    "saved (callee-saved)", "saved (callee-saved)", "saved (callee-saved)",
+    "saved (callee-saved)", "saved (callee-saved)", "saved (callee-saved)",
+    "saved (callee-saved)",
+    "temp (caller-saved)", "temp (caller-saved)", "temp (caller-saved)", "temp (caller-saved)"
 };
 typedef struct {
     const char *name; int csr; const char *desc; int writable; const char *api;
@@ -2529,9 +2655,29 @@ static I64 csr_read_by_num(int csr) {
     }
     return v;
 }
+static void gpr_line(int i, I64 v) {
+    puts_uart("  x");
+    if (i >= 10) putc_uart((char)('0' + i / 10));
+    putc_uart((char)('0' + i % 10));
+    puts_uart("/");
+    puts_uart(gpr_abi[i]);
+    puts_uart(" = ");
+    print_hex((U64)v);
+    puts_uart("  ");
+    puts_uart(gpr_desc[i]);
+    putc_uart('\n');
+}
+static int gpr_digit(const char *s) {
+    int n = 0;
+    if (!s || !*s) return -1;
+    while (*s >= '0' && *s <= '9') n = n * 10 + (*s++ - '0');
+    if (*s) return -1;
+    return n;
+}
 static int gpr_index(const char *name) {
-    char buf[8];
-    int i;
+    int i, n;
+    char c0;
+    const char *p;
     if (!name || !name[0]) return -1;
     if ((name[0] == 'x' || name[0] == 'X') && name[1] >= '0' && name[1] <= '9') {
         i = 0; name++;
@@ -2539,37 +2685,48 @@ static int gpr_index(const char *name) {
         if (!*name && i >= 0 && i < 32) return i;
         return -1;
     }
-    for (i = 0; i < 32; i++) if (reg_name_eq(name, gpr_abi[i])) return i;
-    /* REG_SP style */
     if (name[0] == 'R' || name[0] == 'r') {
         if (name[1] == 'E' || name[1] == 'e') {
             if (name[2] == 'G' || name[2] == 'g') {
-                const char *p = name + 3;
+                p = name + 3;
                 if (*p == '_') p++;
-                for (i = 0; i < 32; i++) if (reg_name_eq(p, gpr_abi[i])) return i;
+                name = p;
+                if (!*name) return -1;
             }
         }
     }
-    (void)buf;
+    if (reg_name_eq(name, "zero")) return 0;
+    if (reg_name_eq(name, "ra")) return 1;
+    if (reg_name_eq(name, "sp")) return 2;
+    if (reg_name_eq(name, "gp")) return 3;
+    if (reg_name_eq(name, "tp")) return 4;
+    if (reg_name_eq(name, "fp") || reg_name_eq(name, "s0")) return 8;
+    if (reg_name_eq(name, "s1")) return 9;
+    c0 = name[0];
+    if (c0 >= 'A' && c0 <= 'Z') c0 = (char)(c0 + 32);
+    if (c0 == 't' && name[1]) {
+        n = gpr_digit(name + 1);
+        if (n >= 0 && n <= 2) return 5 + n;
+        if (n >= 3 && n <= 6) return 28 + (n - 3);
+    }
+    if (c0 == 'a' && name[1]) {
+        n = gpr_digit(name + 1);
+        if (n >= 0 && n <= 7) return 10 + n;
+    }
+    if (c0 == 's' && name[1]) {
+        n = gpr_digit(name + 1);
+        if (n == 0 || n == 1) return 8 + n;
+        if (n >= 2 && n <= 11) return 16 + n;
+    }
     return -1;
 }
 __attribute__((used)) static HRT_I64 regs_dump_c(void) {
     volatile U64 *r = (volatile U64 *)REGS_SNAP_BASE;
     I64 v;
-    char pad[16];
-    int i, k, j;
-    puts_uart("GPRs at Regs() call site (xN / ABI / REG_* ; see RegHelp):\n");
-    for (i = 1; i < 32; i++) {
-        k = 0;
-        pad[k++] = 'x';
-        if (i >= 10) pad[k++] = (char)('0' + i / 10);
-        pad[k++] = (char)('0' + i % 10);
-        while (k < 4) pad[k++] = ' ';
-        for (j = 0; gpr_abi[i][j]; j++) pad[k++] = gpr_abi[i][j];
-        while (k < 8) pad[k++] = ' ';
-        pad[k] = 0;
-        reg_line_desc(pad, (I64)r[i], gpr_desc[i]);
-    }
+    int i;
+    puts_uart("GPRs at Regs() call site (xN/abi; snap+restore; Man(\"ABI\")):\n");
+    for (i = 1; i < 32; i++)
+        gpr_line(i, (I64)r[i]);
     puts_uart("CSRs (CSR_* / GetMStatus… ; Reg(\"mstatus\"); Man(\"Regs\")):\n");
     for (i = 0; csr_tab[i].name; i++) {
         v = csr_read_by_num(csr_tab[i].csr);
@@ -2579,27 +2736,56 @@ __attribute__((used)) static HRT_I64 regs_dump_c(void) {
     puts_uart("Dig-down: Reg(\"sp\"); Reg(\"mstatus\"); GetMStatus; SetMStatus(v); RegHelp;\n");
     return 0;
 }
-__attribute__((used)) static HRT_I64 reg_one_c(void) {
+__attribute__((used)) static HRT_I64 reg_one_read(char *name) {
     volatile U64 *r = (volatile U64 *)REGS_SNAP_BASE;
-    char *name = (char *)(U64)r[10]; /* a0 at snap time */
     I64 v;
     int i, gi;
-    char pad[16];
     if (!name || !name[0]) {
         puts_uart("Reg: need a name — Reg(\"sp\"); Reg(\"mstatus\"); RegHelp;\n");
         return -1;
     }
     gi = gpr_index(name);
     if (gi >= 0) {
-        int k = 0, j;
-        pad[k++] = 'x';
-        if (gi >= 10) pad[k++] = (char)('0' + gi / 10);
-        pad[k++] = (char)('0' + gi % 10);
-        while (k < 4) pad[k++] = ' ';
-        for (j = 0; gpr_abi[gi][j]; j++) pad[k++] = gpr_abi[gi][j];
-        while (k < 8) pad[k++] = ' ';
-        pad[k] = 0;
-        reg_line_desc(pad, (I64)r[gi], gpr_desc[gi]);
+        gpr_line(gi, (I64)r[gi]);
+        if (reg_name_eq(name, "fp") && gi == 8)
+            puts_uart("  (fp is alias for s0/x08)\n");
+        return (HRT_I64)r[gi];
+    }
+    for (i = 0; csr_tab[i].name; i++) {
+        if (reg_name_eq(name, csr_tab[i].name)) {
+            v = csr_read_by_num(csr_tab[i].csr);
+            reg_line_desc(csr_tab[i].name, v, csr_tab[i].desc);
+            puts_uart("  "); puts_uart(csr_tab[i].api);
+            puts_uart(";  CSRGet(CSR_");
+            for (const char *p = csr_tab[i].name; *p; p++)
+                putc_uart((char)(*p >= 'a' && *p <= 'z' ? *p - 32 : *p));
+            puts_uart(");\n");
+            return v;
+        }
+    }
+    if (reg_name_eq(name, "mtime")) {
+        v = *(volatile I64 *)MEM_MTIME_ADDR;
+        reg_line_desc("mtime   ", v, "CLINT cycle (MMIO)");
+        return v;
+    }
+    puts_uart("Reg: unknown \""); puts_uart(name);
+    puts_uart("\" — try RegHelp; or Regs;\n");
+    return -1;
+}
+__attribute__((used)) static HRT_I64 reg_one_c(void) {
+    volatile U64 *r = (volatile U64 *)REGS_SNAP_BASE;
+    char *name = (char *)(U64)r[10]; /* a0 at snap time */
+    I64 v;
+    int i, gi;
+    if (!name || !name[0]) {
+        puts_uart("Reg: need a name — Reg(\"sp\"); Reg(\"mstatus\"); RegHelp;\n");
+        return -1;
+    }
+    gi = gpr_index(name);
+    if (gi >= 0) {
+        gpr_line(gi, (I64)r[gi]);
+        if (reg_name_eq(name, "fp") && gi == 8)
+            puts_uart("  (fp is alias for s0/x08)\n");
         return (HRT_I64)r[gi];
     }
     for (i = 0; csr_tab[i].name; i++) {
@@ -2711,7 +2897,10 @@ static HRT_I64 SrcText(char *name) {
 #define HC_SLOT_TERM_KEYGET (HC_SLOT_BASE + 0xD0)  /* HRT_I64 (*)(void) — C TermKeyGet repair hatch */
 #define HC_SLOT_EDIT        (HC_SLOT_BASE + 0xE0)  /* HRT_I64 (*)(char*) — C Edit */
 #define HC_SLOT_CALLERS     (HC_SLOT_BASE + 0xE8)  /* HRT_I64 (*)(char*) — C CallersScan */
-/* 0xF0..0x108: retired TERM_PROBE/ROWS/COLS/FLAGS — HolyC term.hc owns geometry */
+/* 0xF0/0xF8: software XON/XOFF enable + TX-paused (shared with HolyC uart.hc). */
+#define HC_SLOT_UART_FC        (HC_SLOT_BASE + 0xF0)  /* I64 — 1 = XON/XOFF on */
+#define HC_SLOT_UART_TX_PAUSED (HC_SLOT_BASE + 0xF8)  /* I64 — 1 = saw XOFF */
+/* 0x100..0x108: retired TERM geometry — HolyC term.hc owns rows/cols */
 #define HC_SLOT_TERM_SETSZ  (HC_SLOT_BASE + 0x110) /* HRT_I64 (*)(I64,I64) — C TermSetSize */
 /* Inspection APIs kept in C (live JIT sizes / GPR snap / callers_buf). HolyC once-indirects. */
 #define HC_SLOT_CALLER_NAME (HC_SLOT_BASE + 0x118) /* HRT_I64 (*)(I64) — C CallerName → char* */
@@ -2747,6 +2936,8 @@ static void HostSlotsInstall(Compiler *cc) {
     *(volatile U64 *)HC_SLOT_UART_RH    = (U64)&uart_rh;
     *(volatile U64 *)HC_SLOT_UART_RT    = (U64)&uart_rt;
     *(volatile U64 *)HC_SLOT_UART_CAP   = (U64)UART_RX_CAP;
+    *(volatile I64 *)HC_SLOT_UART_FC       = 1; /* software XON/XOFF on by default */
+    *(volatile I64 *)HC_SLOT_UART_TX_PAUSED = 0;
     *(volatile U64 *)HC_SLOT_CC         = (U64)&g_cc;
     *(volatile U64 *)HC_SLOT_SRCMAP     = (U64)&srcmap[0];
     *(volatile U64 *)HC_SLOT_SRCMAP_MAX = (U64)SRCMAP_MAX;
@@ -2778,7 +2969,7 @@ static void HostSlotsInstall(Compiler *cc) {
     *(volatile U64 *)HC_SLOT_ERR_HAVE    = (U64)&g_err_have;
     *(volatile U64 *)HC_SLOT_CODE_BASE   = (U64)&code_mem[0];
     *(volatile U64 *)HC_SLOT_HEAP_BASE   = (U64)&heap_mem[0];
-    *(volatile U64 *)HC_SLOT_REG_ONE     = (U64)&reg_one_stub;
+    *(volatile U64 *)HC_SLOT_REG_ONE     = (U64)&reg_one_read;
 }
 
 static void RuntimeInit(Compiler *cc) {
@@ -2791,14 +2982,25 @@ static void RuntimeInit(Compiler *cc) {
  * Per-seed Run() so SrcFile / FunSec map to real seed names (blob boot collapses to boot_blob.hc). */
 static void BootHolyCRuntime(void) {
     static const char *order[] = {
-        "MemMapSelected.hc", /* Kconfig MEM_*; must precede uart.hc / csr.hc */
-        "uart.hc", "mem.hc", "print.hc", "str.hc", "fs.hc", "run.hc",
-        "math.hc", "term.hc", "sym.hc", "csr.hc",
-        "ds.hc", "ds_csr.hc", "ds_uart.hc", "ds_clint.hc", "ds_plic.hc",
-        "fmt.hc",
-        "dir.hc", "asm_complete.hc", "asm_doc.hc", "complete.hc", "ed.hc", "edit.hc", "start.hc", "trap.hc",
-        "debug.hc", "disasm.hc", "vim.hc", "RVEditorSelected.hc",
-        "man.hc", "files.hc", "funs.hc", "callers.hc", "boot.hc",
+        "Boot/MemMapSelected.hc", /* Kconfig MEM_*; must precede uart.hc / csr.hc */
+        "Lib/uart.hc", "Lib/mem.hc", "Lib/print.hc", "Lib/str.hc",
+        "Lib/log.hc", "Lib/frame.hc", /* frame after log (redefines LogMuxEmit; needs g_uart_mux) */
+        "Lib/console.hc", /* soft VT mux after frame (VtMuxNotify → FrameSend) */
+        "Lib/tty.hc", /* CONSOLE.md #1 line discipline */
+        "Lib/fs.hc", "Lib/run.hc",
+        "Lib/math.hc", "Lib/term.hc", "Lib/sym.hc", "Lib/csr.hc",
+        "Lib/ds.hc", "Doc/Datasheet/ds_csr.hc", "Doc/Datasheet/ds_uart.hc",
+        "Doc/Datasheet/ds_clint.hc", "Doc/Datasheet/ds_plic.hc",
+        "Lib/fmt.hc",
+        "Lib/ninep.hc",
+        "Lib/dir.hc", "Asm/asm_complete.hc", /* Asm/asm_doc.hc: large tables — still gated */
+        "Lib/complete.hc",
+        "Apps/ed.hc", "Apps/edit.hc", "Boot/start.hc", "Boot/trap.hc",
+        "Boot/debug.hc", "Boot/hwdbg.hc", "Boot/gdbstub.hc", "Asm/disasm.hc",
+        "Apps/vim.hc", "Boot/RVEditorSelected.hc",
+        "Doc/man.hc", "Lib/files.hc", "Apps/zmodem.hc", "Apps/trzsz.hc",
+        "Apps/funs.hc", "Apps/callers.hc", "Lib/sys.hc",
+        "Boot/ops.hc", "Boot/boot.hc",
         0
     };
     int i;

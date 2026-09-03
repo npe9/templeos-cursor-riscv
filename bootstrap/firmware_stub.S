@@ -6,6 +6,10 @@
  * image) to RAM_BASE and jumps to it.  Payload _start clears BSS and runs main.
  *
  * Link with firmware.ld; payload is objcopy'd from a normal 0x80000000 ELF.
+ *
+ * Split boot (HolyC-only): see bootstrap/bootloader/boot.hc + pack_bootloader.py
+ * and make bootloader / bootloader-smoke (docs/BAREMETAL.md).  This GNU
+ * firmware_stub.S path remains for legacy make firmware only.
  */
 
 .section .text.init

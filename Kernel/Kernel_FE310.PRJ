@@ -1,0 +1,17 @@
+// Tiny Kernel_RV.PRJ slice for FE310 / QEMU sifive_e (dual artifact).
+//
+// Product layout (not “Kernel in DTIM”):
+//   • Kernel = XIP/QSPI @ 0x20400000 (execute in place; host-prepatched imports)
+//   • Bootloader only in DTIM @ 0x80000000 (copy .data, clear .bss, jump to XIP)
+// QEMU sifive_e: 16 KiB DTIM only — no external DRAM. Full Kernel_RV / REPL do not fit.
+//
+// Matrix: build/kernels/sifive_e/plat.elf (slim XIP). Fuller:
+//   make kernel-sifive-e-full-smoke → kernel-fe310.elf
+// RV32 HolyC emit for real FE310 hart: later — after RV64 virtio/net/etc (G13 after drivers).
+// Demo: tests/exec/cases/kernel_fe310_full.hc
+#include "RVAutoConf.HH"
+#include "Drv/RVSifivePlat.HC"
+#include "Drv/RVUart.HC"
+#include "Drv/RVTimer.HC"
+#include "Drv/RVPlic.HC"
+#include "Drv/RVMemMap.HC"

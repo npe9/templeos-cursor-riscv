@@ -28,6 +28,7 @@ defconfig does not stomp the only ELF on disk:
 | Path | Role |
 |------|------|
 | `build/kernels/<machine>/plat.elf` | Plat-demo HolyC kernel for that board |
+| `build/kernels/<machine>/plat.bin` | Flat RAM image (`objcopy -O binary`; gaps zero-filled ~8 MiB). Useful for `-device loader,addr=ENTRY,file=…`. **Not** a size fix for tiny DTIM. |
 | `build/kernels/<machine>/.config` | Snapshot of the defconfig used |
 | `build/kernels/<machine>/RVAutoConf.HH` | Snapshot of generated HolyC defines |
 | `build/kernels/<machine>/DrvSelected/` | Snapshot of `*Selected.HH` shims |
@@ -40,12 +41,15 @@ make kernel-virt                  # → build/kernels/virt/plat.elf
 make kernel-sifive_u
 make kernel-spike
 make kernels                      # all KERNEL_BUILD_MACHINES (see Makefile)
+make kernel-visionfive2           # board-only JH7110 plat.elf (no QEMU smoke yet)
 make -C templeos-riscv qemu-args-sifive_u   # print -M without writing .config
 ```
 
 Smokes call `tests/scripts/build_kernel_plat.sh` then load the matching ELF + QEMU `-M`.
-Each build restores the previous `.config` (usually virt). Tentative / firmware-needed
-machines may still **build** an ELF while `kernel-plat-*-smoke` prints **SKIP**.
+Each build restores the previous `.config` (usually virt). Every matrix board must
+smoke green (`plat-smoke: PASS`); see [DRIVERS.md](../docs/DRIVERS.md).
+Board-only profiles (VisionFive 2) build/link but stay **out of** `kernel-plat-matrix`
+until a green smoke exists — do not add skip=OK.
 
 ## Configure
 
@@ -55,14 +59,15 @@ make -C templeos-riscv defconfig-sifive_u        # SiFive UART0 @ 0x10010000
 make -C templeos-riscv defconfig-spike           # HTIF tohost @ 0x807FF000
 make -C templeos-riscv defconfig-amd_microblaze_v
 make -C templeos-riscv defconfig-opentitan       # RV32 tiny profile
-make -C templeos-riscv defconfig-none            # empty machine (skip)
+make -C templeos-riscv defconfig-visionfive2     # JH7110 board (no QEMU -M)
+make -C templeos-riscv defconfig-none            # empty machine (inventory only)
 make -C templeos-riscv list-defconfigs
 make -C templeos-riscv menuconfig                # pick machine + tweak hex addresses
 make -C templeos-riscv syncconfig                # refresh autoconf + RVAutoConf.HH + MemMapSelected.hc
 make -C templeos-riscv qemu-args                 # prints suggested harness argv for CI/local smokes
 ```
 
-From the **repo root**: `make menuconfig-rv`
+From the **repo root**: `make menuconfig`
 
 ## HolyC drivers (`Kernel/Drv/`)
 
@@ -70,13 +75,13 @@ From the **repo root**: `make menuconfig-rv`
 |------|------|
 | `RVSifivePlat.HC` → `RVSifiveSelected.HH` | SiFive UART/CLINT/PLIC **named** facade (`RVSifiveYes` on `sifive_u`/`e`) |
 | `RVUart.HC` → `RVUartSelected.HH` | Includes 16550 / SiFive / HTIF / stub |
-| `RVUart16550.HC` / `RVUartSifive.HC` / … | Concrete UART drivers (`RVUartSifive` thin-wraps `RVSifiveUart*`) |
+| `RVUart16550.HC` / `RVUartSifive.HC` / … | Concrete UART drivers (`RVUartIbex` for OpenTitan) |
 | `RVTimer.HC` | CLINT `mtime` / `mtimecmp` |
 | `RVPlic.HC` → `RVPlicSelected.HH` | PLIC hw or stub |
 | `RVVirtioPlat.HC` → `RVVirtioSelected.HH` | virtio-mmio/PCI present helpers |
 | `VirtioNet.HC` | virtio-mmio net TX/RX (`CONFIG_HAS_VIRTIO_NET`) |
 | `VirtioInput.HC` | virtio-mmio input event poll (`CONFIG_HAS_VIRTIO_INPUT`) |
-| `Virtio9p.HC` | virtio-mmio 9p2000.l client — host virtfs import (`CONFIG_HAS_VIRTIO_9P`) |
+| `Virtio9p.HC` | virtio-mmio 9p2000.l client — host virtfs import + export (`CONFIG_HAS_VIRTIO_9P`) |
 | `RVFbPlat.HC` → `RVFbSelected.HH` | `RVFbSetPresent` kind + fw_cfg base |
 | `RVMemMap.HC` | MMIO region ↔ driver legend (`RVMemMap`; SiFive → `RVSifivePlat`) |
 
@@ -100,27 +105,73 @@ Inventory checked against **QEMU 10.1.3** `qemu-system-riscv64 -M help` and
 | Status | Meaning |
 |--------|---------|
 | **CI** | In default `qemu-integration` / `make kernel-plat-smoke` |
-| **Smoke** | Extra `make kernel-plat-*-smoke` proven locally; not required for default CI |
-| **Tentative** | Defconfig + drivers/stubs; no bare-metal plat smoke yet |
-| **Skip** | Defconfig for inventory only; plat script exits 0 with reason |
+| **Smoke** | `make kernel-plat-*-smoke` / matrix proven; not all required for default CI |
+| **WIP (board)** | Defconfig + link build; real-board recipe only — out of matrix until green |
+| **Excluded** | Not a TempleOS board target — omitted from matrix (not skip=OK) |
 
 | Machine / profile | Defconfig | Kind | Status | Wired | Stub / notes |
 |-------------------|-----------|------|--------|-------|--------------|
 | **virt** | `virt` | Emulator (CI) | **CI** | 16550 @ `CONFIG_UART_BASE`, CLINT, PLIC, fw_cfg/ramfb, virtio-blk/net/input | Supported default harness map |
-| **sifive_u** | `sifive_u` | Board port | **Smoke** | SiFive UART0 @ `0x10010000`, CLINT/PLIC via **`RVSifivePlat`** | No virtio/ramfb; `make kernel-plat-sifive-u-smoke` |
-| **spike** | `spike` | Emulator | **Smoke** | HTIF `tohost` @ `0x807FF000` (ELF symbols in harness `crt0.S` + `link_exec.ld`), CLINT | No PLIC/virtio; `make kernel-plat-spike-smoke` |
-| **sifive_e** | `sifive_e` | Board port | **Skip** | Same **`RVSifivePlat`** API; UART @ `0x10013000`, PLIC | Tiny DTIM (~16 KiB) — image does not fit |
-| **shakti_c** | `shakti_c` | Board port | **Skip** | CLINT/PLIC virt-like | Shakti UART @ `0x11300` → UART **stub** |
-| **microchip-icicle-kit** | `microchip_icicle` | Board port | **Skip** | CLINT/PLIC; MMUART0 best-guess 16550 @ `0x20000000` | Needs **hss.bin**; bare `-bios none` fails |
-| **xiangshan-kunminghu** | `xiangshan` | Board port | **Tentative** | 16550 @ `0x310B0000` (regshift 2), ACLINT @ `0x38000000` | APLIC/IMSIC — PLIC **stub**; RX may need spaced 16550 |
-| **amd-microblaze-v-generic** | `amd_microblaze_v` | Board port | **Skip** | 16550 @ `0x44A11000` (serial1) | UARTLite is serial0; no PLIC/CLINT — plat demo needs CLINT |
-| **opentitan** | `opentitan` | Board port | **Skip** | PLIC @ `0x48000000`; DRAM 128 KiB @ `0x10000000` | Ibex UART → **stub**; riscv32; image does not fit — [RV32.md](RV32.md) |
-| **none** | `none` | Emulator | **Skip** | — | QEMU empty machine; no CPU/RAM until devices added |
-| **host** | `host` | Legacy stub | **Skip** | — | Not in QEMU 10.x `-M help`; completeness only |
+| **sifive_u** | `sifive_u` | Board port | **Smoke** | SiFive UART0 @ `0x10010000` (IRQ4), UART1/PRCI/GPIO in MemMap, **GEM TX/RX** (`RVSifiveGem` @ `0x10090000`), CLINT 1 MHz + PLIC via **`RVSifivePlat`**, plat smoke: `clint_adv` + `plic` + `memmap` | No virtio/ramfb; `make kernel-plat-sifive-u-smoke` / `kernel-sifive-gem-smoke` |
+| **spike** | `spike` | Emulator | **Smoke** | HTIF `tohost`/`fromhost` @ `0x807FF000` (ELF symbols), CLINT 10 MHz (`clint_adv`), `RVPlicStub` | No PLIC/virtio/ramfb; `make kernel-plat-spike-smoke` |
+| **sifive_e** | `sifive_e` | Board port | **Smoke** | Same **`RVSifivePlat`** API; UART @ `0x10013000`, PLIC | Dual: slim XIP `plat.elf` (matrix) + `kernel-fe310.elf` (DTIM boot → XIP Kernel); RV32 emit later |
+| **shakti_c** | `shakti_c` | Board port | **Smoke** | **`RVUartShakti`** @ `0x11300` (no UART→PLIC in QEMU); ACLINT @ `0x02000000` (10 MHz); SiFive PLIC @ `0x0C000000` (**QEMU aperture 128 KiB** — `RVPlicHw` no-ops threshold/claim @ `+0x200000`) | Load **`-bios plat.elf`** only (`-bios none` rejected as filename) |
+| **microchip-icicle-kit** | `microchip_icicle` | Board port | **Smoke** | MMUART0 16550 @ `0x20000000` (**regshift 2**, PLIC IRQ **90**); ACLINT @ `0x02000000` (**1 MHz**); PLIC @ `0x0C000000` | **`-bios none -kernel`** (HSS not required); `min_cpus=2` (E51+U54) — UART may interleave |
+| **xiangshan-kunminghu** | `xiangshan` | Board port | **Smoke** | 16550 @ `0x310B0000` (regshift 2), ACLINT @ `0x38000000`, APLIC @ `0x31100000` + IMSIC @ `0x3A800000` (`RVPlicAplic`: mtopei, eithreshold, multi-hart TARGET) | Load as **`-bios plat.elf`**; MSI→IMSIC |
+| **amd-microblaze-v-generic** | `amd_microblaze_v` | Board port | **Smoke** | **`RVUartUartlite`** @ `0x40600000`; **`RVTimerXps`** @ `0x41C00000`; **`RVPlicXps`** @ `0x41200000` | No `-kernel`/`-bios` — smoke: `-device loader,file=ELF,cpu-num=0` (+ `plat.bin` alias) |
+| **opentitan** | `opentitan` | Board port | **Smoke** | **`RVUartIbex`** @ `0x40000000`; **`RVTimerIbex`** @ `0x40100000`; PLIC @ `0x48000000`; flash boot @ `0x20000400` | Plat smoke: **RV32 asm** harness until ARCH_RISCV32 emit; HolyC drivers ready — [RV32.md](RV32.md) / [DRIVERS.md](../docs/DRIVERS.md) |
+| **visionfive2** | `visionfive2` | Board port | **WIP (board)** | 16550/DW8250 UART0 @ `0x10000000` (regshift 2), CLINT @ `0x02000000`, PLIC @ `0x0C000000`, DDR @ `0x40000000` / entry `0x40200000`, simplefb present hook | **No QEMU `-M`**. `make kernel-visionfive2` / `-help`; packed `plat.bin`. Out of matrix until smoke green (not skip=OK) |
+| **milkv-mars** | `milkv_mars` | Board port | **WIP (board)** | Same JH7110 map as VisionFive 2 (own defconfig / `link_milkv_mars.ld` / OpenOCD) | **No QEMU `-M`**. `make kernel-milkv-mars` / `-help`. Out of matrix until smoke green (not skip=OK) |
+| **none** | `none` | Emulator | **Excluded** | — | Empty machine; not a matrix board (not skip=OK) |
+| **host** | `host` | Legacy stub | **Excluded** | — | Not in QEMU 10.x `-M help`; not a matrix board |
+
+Driver capability survey: **[DRIVERS.md](../docs/DRIVERS.md)**.
 
 Harness binary / `-M` strings for each defconfig: `make -C templeos-riscv qemu-args` (and
-[CI.md](../docs/CI.md)). Full inventory probe: `make kernel-plat-matrix`. Milk-V /
-VisionFive: `PLATFORM_CUSTOM` + `RVFbSimpleFbBind` — [BOARD_FB.md](BOARD_FB.md).
+[CI.md](../docs/CI.md)). Full inventory probe: `make kernel-plat-matrix` (all matrix boards must
+be OK — skips are not allowed). JH7110: `visionfive2_defconfig` +
+`milkv_mars_defconfig` + `RVFbSimpleFbBind` — [BOARD_FB.md](BOARD_FB.md).
+Do **not** overwrite `visionfive2_*` from the Mars port (or vice versa).
+
+### VisionFive 2 board recipe (no QEMU)
+
+JH7110 map (Linux/`jh7110.dtsi` + TRM): UART0 `0x10000000`, CLINT `0x02000000`, PLIC
+`0x0C000000`, DDR `0x40000000+`. OpenSBI/U-Boot typically reserve
+`0x40000000`–`0x40200000`; plat ELF links at **`0x40200000`**. UART IRQ 32;
+`UART_REG_SHIFT=2`; CLINT timebase **4 MHz**. Console: 115200 8N1 on UART0
+(GPIO header / USB-serial).
+
+```bash
+make kernel-visionfive2          # → build/kernels/visionfive2/plat.{elf,bin}
+make kernel-visionfive2-help     # full U-Boot / OpenOCD recipe + artifact sizes
+make -C templeos-riscv qemu-args-visionfive2   # prints BOARD-ONLY note (no -M)
+
+# U-Boot (after firmware left UART0 live) — load flat bin then jump:
+#   tftp $loadaddr plat.bin          # or load mmc / sf
+#   go 0x40200000
+# Expect UART: plat-smoke: PASS
+
+# OpenOCD / gdb (JTAG; after DDR init via SPL/U-Boot or vendor cfg):
+#   source tests/openocd/visionfive2_load_plat.tcl
+#   # or: load_image build/kernels/visionfive2/plat.elf 0x40200000 elf
+# Prefer ELF (segment-aware); flat plat.bin is packed contiguous for tftp/mmc.
+```
+
+Framebuffer: select `FB_PRESENT_SIMPLEFB`; leave `SIMPLEFB_BASE=0` until firmware
+publishes XR24, then set `SIMPLEFB_*` or call `RVFbSimpleFbBind` — [BOARD_FB.md](BOARD_FB.md).
+
+### Milk-V Mars board recipe (no QEMU)
+
+Same JH7110 SoC class as VisionFive 2 — **separate** files (`milkv_mars_defconfig`,
+`link_milkv_mars.ld`, `milkv_mars_load_plat.tcl`). Do not overwrite `visionfive2_*`.
+
+```bash
+make kernel-milkv-mars           # → build/kernels/milkv_mars/plat.{elf,bin}
+make kernel-milkv-mars-help      # U-Boot / OpenOCD recipe + artifact sizes
+make -C templeos-riscv qemu-args-milkv_mars
+
+# U-Boot / OpenOCD: same entry 0x40200000; see make kernel-milkv-mars-help
+```
 
 ### QEMU `-M` vs this tree (QEMU 10.1.3)
 
@@ -135,6 +186,7 @@ VisionFive: `PLATFORM_CUSTOM` + `RVFbSimpleFbBind` — [BOARD_FB.md](BOARD_FB.md
 | spike | yes |
 | virt | yes |
 | xiangshan-kunminghu | yes (`xiangshan`) |
+| *(VisionFive 2 / Milk-V Mars / JH7110)* | **no** — board-only (`visionfive2`, `milkv_mars`) |
 
 | `qemu-system-riscv32 -M` | In-tree |
 |--------------------------|---------|
@@ -150,6 +202,7 @@ VisionFive: `PLATFORM_CUSTOM` + `RVFbSimpleFbBind` — [BOARD_FB.md](BOARD_FB.md
 | virt, sifive_u, sifive_e, spike, shakti_c, microchip_icicle, xiangshan, amd_microblaze_v, opentitan, host | **none** defconfig; spike HTIF→ELF `tohost`; plat matrix |
 | Kconfig UART/CLINT/PLIC/virtio/fw_cfg | **HEAP/MEMFS/HOST_SLOTS/SMP_MAILBOX/STACK**, **VIRTIO_MMIO_IRQ_BASE**, **VIRTIO_DRV_RAM_BASE**; `MEM_*` aliases in `RVAutoConf.HH` |
 | `kernel-plat-smoke` + sifive_u | **`kernel-plat-spike-smoke`**, **`kernel-plat-matrix`** |
+| Board ports above | **`visionfive2`** + **`milkv_mars`** defconfigs + packed JH7110 link scripts + OpenOCD (no QEMU `-M`) |
 
 ## Fill-gap plan (CSR / asm / virtio / SMP)
 
@@ -167,10 +220,10 @@ Ordered session plan from the unexposed-RV + virt-device audit. Prefer HolyC
    smoke TX + RX self-test (`make kernel-virtio-net-smoke`). Trap-vector IRQ RX deferred.
 5. **virtio-input (mmio)** — keyboard/mouse event poll into UART / Term path
    (`make kernel-virtio-input-smoke`).
-6. **Phase G SMP** — crt0_smp + `RVSmpWake` + optional `kernel-smp-smoke`.
-   Residual: Seth JobQue, `mp_cnt` finalize, mie.MSIE WFI wake polish, OpenSBI HSM.
-7. **Defer** — HolyC virtio-blk PCI, virtio-console/rng/gpu, AIA, full S-mode
-   OS (document residual below).
+6. **Phase G SMP** — crt0_smp + `RVSmpWake`/`RVSmpWakeHart` + MSIE WFI + optional `kernel-smp-smoke`.
+   Residual: full Seth JobQue, TempleOS `mp_cnt` finalize, OpenSBI HSM.
+7. **Defer** — virtio-rng/gpu, **AIA MSI-X→IMSIC** (virt uses PLIC INTx only), full S-mode; TCP/IP
+   (document residual below). Console/balloon/SCSI mmio + BlkDev MMIO→PCI are landed.
 
 ## Multi-hart / SMP (Phase G)
 
@@ -178,12 +231,19 @@ TempleOS is **master/slave**, not Linux SMP: hart 0 runs UART REPL / OS; seconda
 
 | Path | Notes |
 |------|--------|
-| **QEMU virt `-bios none -smp N`** | All harts enter `tests/exec/harness/crt0_smp.S` (or REPL `bootstrap/startup.s`). Hart 0 clears BSS / runs the blob; others take per-hart stacks and poll a mailbox at `CONFIG_SMP_MAILBOX_BASE` (default `0x87001E00`). Wake: `RVSmpWake` + CLINT MSIP. |
+| **QEMU virt `-bios none -smp N`** | All harts enter `tests/exec/harness/crt0_smp.S` (or REPL `bootstrap/startup.s`). Hart 0 clears BSS / runs the blob; others take per-hart stacks and poll a mailbox at `CONFIG_SMP_MAILBOX_BASE` (default `0x87001E00`). Wake: `RVSmpWake` / `RVSmpWakeHart` + CLINT MSIP; secondaries arm `mie.MSIE` (smoke busy-polls mailbox — pure WFI is too slow under QEMU `-smp`). |
 | **OpenSBI HSM** | Use when firmware owns secondary bring-up (not the `-bios none` smoke path). |
 | **Atomics** | `LXchgI64` = `amoswap.d`; `LBts`/`LBtr`/`LBtc` = LR.W/SC.W; HolyC `lock` = amoswap spin near host-slots (`0x87001F00` on transitional REPL). |
 | **Smoke** | Optional: `make kernel-smp-smoke` (not in default `qemu-integration`). |
 
-HolyC API: `Kernel/Drv/RVSmp.HC` (`RVHartId`, `RVSmpWake`, `RVAmoAddI64`, …). Man: `Man("SMP")`.
+HolyC API: `Kernel/Drv/RVSmp.HC` (`RVHartId`, `RVSmpWake`, `RVSmpWakeHart`, `RVSmpMpCnt`, `RVAmoAddI64`, …). Man: `Man("SMP")`.
+
+## System devices (virt RTC / fw_cfg)
+
+| Device | HolyC | Smoke |
+|--------|-------|-------|
+| **Goldfish RTC** | `RVRtc.HC` → `RVRtcGoldfish` @ `CONFIG_RTC_BASE`; `KDate` `NowDateTimeStruct` | `make kernel-rtc-smoke` (also `e_native_date` oracle) |
+| **fw_cfg** | `RVFwCfg.HC` → DMA / `RVFwCfgFind` / `RVFwCfgSigOk`; ramfb uses Find+Write | `make kernel-fwcfg-smoke`; FB path still `kernel-fb-smoke` |
 
 ## Firmware / BIOS
 
@@ -292,14 +352,38 @@ make kernel-sifive_u              # leave ELF under build/kernels/sifive_u/
 make kernel-spike
 make kernel-plat-sifive-u-smoke   # rebuild if needed + QEMU -M sifive_u
 make kernel-plat-spike-smoke      # HTIF console + CLINT
-make kernel-plat-matrix           # every known -M: OK or SKIP+why
+make kernel-plat-matrix           # every matrix -M: must OK (skips not allowed)
 ```
 
-Exercises `RVUart*` / `RVClint*` plus, when `RVSifivePresent`, the named
-`RVSifiveUart*` / `RVSifiveClint*` API and reset-capability probes
-(`RVSifiveCanReset` — does **not** call `RVSifiveReset`). Dig-down:
-`Man("SiFive")` / `Man("Reset")` (REPL topics) / `RVMemMap` driver column
-`RVSifivePlat`.
+Exercises `RVUart*` / `RVClint*` (mtime advance + `ArmTicks`) plus, when
+`CONFIG_HAS_PLIC` / APLIC, enable/claim/complete on the UART IRQ; when
+`RVSifivePresent`, the named `RVSifiveUart*` / `RVSifiveClint*` / `RVSifivePlic*`
+API and reset-capability probes (`RVSifiveCanReset` — does **not** call
+`RVSifiveReset`). Plat smoke probes MemMap driver strings (UART1/PRCI/GPIO/ETH
+on sifive_u); full `RVMemMap()` needs Print (not in the minimal harness).
+Dig-down: `Man("SiFive")` / `Man("Reset")` (REPL topics) / `RVMemMap` driver
+column `RVSifivePlat`.
+
+**sifive_u FU540 map (QEMU 10.x DTB):**
+
+| Region | Address | HolyC |
+|--------|---------|-------|
+| UART0 | `0x10010000` IRQ 4 | `RVUartSifive` / `RVSifivePlat` |
+| UART1 | `0x10011000` | MemMap legend (`RVSifiveUart1Base`) |
+| CLINT | `0x02000000` (1 MHz) | `RVTimerClint` / `RVSifiveClint*` |
+| PLIC | `0x0C000000` | `RVPlicHw` / `RVSifivePlic*` |
+| GPIO | `0x10060000` pin 10 | reset via `RVSifiveReset` |
+| PRCI | `0x10000000` | legend only (not AON) |
+| GEM eth | `0x10090000` | `RVSifiveGem` TX/RX (+ LBL self-test); IRQ 53 poll |
+| DRAM | `0x80000000` / 128 MiB | link + soft arenas |
+
+**spike map:**
+
+| Region | Address | HolyC |
+|--------|---------|-------|
+| HTIF tohost/fromhost | `0x807FF000` / `+0x40` | `RVUartHtif` (putc + getc/fromhost) |
+| CLINT | `0x02000000` (10 MHz) | `RVTimerClint` |
+| PLIC / virtio / FB | — | stub / absent |
 
 **SiFive reset / halt / fault (board first):**
 
@@ -312,24 +396,46 @@ Exercises `RVUart*` / `RVClint*` plus, when `RVSifivePresent`, the named
 
 Do not poke `0x10000000` as AON on sifive_u — that window is PRCI on FU540 maps.
 
-### Tentative ports (config / build; no CI smoke)
+### sifive_e / FE310 dual artifacts (XIP Kernel + DTIM bootloader)
+
+QEMU `-M sifive_e` memory (`info mtree`, QEMU 10.1.3):
+
+| Region | Range | Role |
+|--------|-------|------|
+| XIP | `0x20000000`–`0x3fffffff` (ROM; reset `@ 0x20400000`) | **Kernel** execute-in-place (QSPI) |
+| DTIM | `0x80000000`–`0x80003fff` (16 KiB RAM) | **Bootloader** + `.data` / `.bss` / stack only — no external DRAM |
+
+| Artifact | Path | Link | Role |
+|----------|------|------|------|
+| Slim plat (matrix) | `build/kernels/sifive_e/plat.elf` | `link_sifive_e.ld` — blob in XIP | UART+CLINT; `kernel-plat-matrix` |
+| Fuller tiny Kernel | `build/kernels/sifive_e/kernel-fe310.elf` | `link_sifive_e_full.ld` — Kernel XIP, `.boot` in DTIM | `Kernel_FE310.PRJ`; `make kernel-sifive-e-full-smoke` |
+
+**Boot path (fuller image):** reset trampoline in XIP copies `.boot` LMA→DTIM VMA → bootloader sets SP, copies `.data`, clears `.bss`, jumps to HolyC blob in XIP. Import slots are **host-prepatched** (`patch_fe310_xip_imports.py`) because XIP is ROM — do not abandon XIP for “ROM can’t patch”.
+
+**RV32 sequencing:** real FE310 is RV32; today’s smoke is RV64 codegen on QEMU `sifive_e`. Full `HOLYC_XLEN=32` emit is **later** (after RV64 virtio/net/drivers) — see [DRIVERS.md](../docs/DRIVERS.md) / G13 in [GAPS.md](../docs/GAPS.md).
+
+“Full” here means HolyC `Kernel/Drv` UART+CLINT+PLIC+SiFive+MemMap — not full `Kernel_RV.PRJ` and **not** REPL.
+
+### Extra board recipes (HolyC / RV32 harness)
 
 ```bash
-make kernels                      # also builds tentative boards that compile
+make kernels                      # all KERNEL_BUILD_MACHINES
 make -C templeos-riscv qemu-args-xiangshan
 make -C templeos-riscv qemu-args-amd_microblaze_v
 make -C templeos-riscv qemu-args-opentitan   # resolves defconfig; no .config write
+make -C templeos-riscv qemu-args-sifive_e
+make -C templeos-riscv qemu-args-visionfive2 # BOARD-ONLY note (no -M)
 
 # Or interactive / active-tree configure (rewrites global headers):
 make -C templeos-riscv defconfig-xiangshan
+make -C templeos-riscv defconfig-visionfive2
 make -C templeos-riscv qemu-args
 make -C templeos-riscv defconfig   # restore CI default
 ```
 
-Load `build/kernels/<machine>/plat.elf` with the harness argv from `qemu-args-<machine>`
-(or your board boot path). Tentative boards may hang or print nothing without matching
-UART hardware; that is expected until a real driver lands. Prefer extending
-`Kernel/Drv/*` stubs over inventing C drivers.
+Load `build/kernels/<machine>/plat.elf` with the harness argv from `qemu-args-<machine>`.
+Driver survey: [DRIVERS.md](../docs/DRIVERS.md). VisionFive 2: board recipe in
+§ VisionFive 2 above (`make kernel-visionfive2`).
 
 ## Magic numbers → Kconfig
 
@@ -351,23 +457,33 @@ UART hardware; that is expected until a real driver lands. Prefer extending
 |------|----------|--------------------------|
 | **CSR HolyC API** | M trap set + `medeleg`/`mideleg`/`mcounteren`, `mcycle`/`minstret`/`cycle`/`instret`, S mirrors `sstatus`/`sie`/`stvec`/`sepc`/`scause`/`stval`/`sip` | PMP, FCSR, H-ext, AIA CSRs, full S-mode OS/SBI |
 | **`asm{}`** | A-ext LR/SC + AMO (dotted or undotted), `lui`/`auipc`, CSR imm (`csrrwi`/`csrwi`…) on host + guest `Asm_RV.HC` | RVC emit, V, full F, W-ops, generic `fence` |
-| **virtio-mmio blk** | `DskVirtioRV` (unchanged) | HolyC virtio-**PCI** blk |
-| **virtio-net** | `Kernel/Drv/VirtioNet.HC` TX/RX + `RxDrain`/`SetRxCb`/`RxSelfTest` + `IrqAck`/`IrqService` (+ `IrqInit` PLIC enable); smoke TX + RX self-test (`make kernel-virtio-net-smoke`) | TCP/IP stack, PCI net, live SLIRP RX gate, trap-vector IRQ RX (`IrqInit` needs RVTrapInit+MEIE — do not enable PLIC without a handler) |
-| **virtio-input** | `Kernel/Drv/VirtioInput.HC` poll + `make kernel-virtio-input-smoke` | Term key integration, tablet absolute map |
-| **virtio-9p** | `Kernel/Drv/Virtio9p.HC` 9P2000.L **client** (host → guest virtfs) + `make kernel-virtio-9p-smoke` | Guest-as-9p-server (export memfs), PCI 9p, TCP 9p, VFS mount glue |
-| **Other virt attachables** | — | gpu, rng, console, balloon, USB, NVMe, AIA |
+| **virtio-mmio blk** | `DskVirtioRV` (mmio first) + **`VirtioPciBlk`** fallback; `kernel-virtio-smoke` + `kernel-virtio-pci-smoke` | AIA MSI-X→IMSIC (virt = PLIC INTx) |
+| **virtio-net** | `VirtioNet.HC` TX/RX (mmio) + **`VirtioPciNet`** fallback; mmio PLIC + **PCI INTx/ISR** (`VirtioPciNetIrq*`); smokes net + net-pci | TCP/IP stack, live SLIRP RX gate; AIA MSI-X |
+| **virtio-input** | `VirtioInput.HC` poll + ABS map + PLIC ACK; `make kernel-virtio-input-smoke` | Live key inject gate; more KEY_* glyphs |
+| **virtio-9p** | `Virtio9p.HC` 9P2000.L client (MMIO or **PCI queues**/`NinePVirtioPci` SendRecv) + nested `Tmkdir` / overwrite export + `kernel-virtio-9p-smoke` / `kernel-virtio-9p-pci-smoke` | Guest-as-9p-server, TCP 9p, VFS mount glue |
+| **virtio-console** | `VirtioConsole.HC` port-0 TX/RX + `kernel-virtio-console-smoke` (file chardev) | Multiport; stdio chardev dual with UART |
+| **virtio-balloon** | `VirtioBalloon.HC` inflate/deflate + `kernel-virtio-balloon-smoke` | Stats queue; reclaim policy |
+| **virtio-scsi** | `VirtioScsi.HC` INQUIRY + READ(10) + `kernel-virtio-scsi-smoke` | WRITE(10); BlkDev glue; multi-LUN |
+| **Other virt attachables** | PCI MSI-X disable + **INTx/ISR** + **trap MEIE** (`RvSetMEIE`, `RVVirtioPciIsrReg`, `kernel-virtioirq-smoke` / `kernel-virtio-pci-irq-smoke`) | gpu, rng, USB, NVMe; **AIA MSI-X→IMSIC** deferred on virt PLIC |
 
 Enable / test:
 
 ```bash
 make -C templeos-riscv defconfig   # HAS_VIRTIO_NET / HAS_VIRTIO_INPUT / HAS_VIRTIO_9P default y on virt
-make kernel-virtio-net-smoke       # UART oracle: virtio-net: tx_ok + rx_ok
+make kernel-virtio-net-smoke       # UART oracle: virtio-net: tx_ok + rx_ok (mmio)
+make kernel-virtio-net-pci-smoke   # same oracle over virtio-net-pci
 make kernel-virtio-input-smoke     # UART oracle: virtio-input: ready
-make kernel-virtio-9p-smoke        # UART oracle: virtio-9p: read_ok (host virtfs)
+make kernel-virtio-9p-smoke        # UART oracle: virtio-9p: read_ok + host export.txt (mmio)
+make kernel-virtio-9p-pci-smoke    # same over virtio-9p-pci
+make kernel-virtio-console-smoke   # UART oracle: virtio-console: tx_ok
+make kernel-virtio-balloon-smoke   # UART oracle: virtio-balloon: ok
+make kernel-virtio-scsi-smoke      # UART oracle: virtio-scsi: ok
 # REPL: Man("VirtioNet"); Man("Virtio9p"); Man("CSR"); Man("AsmRV");
 ```
 
 ### 9p / virtfs (Phase A — guest client)
+
+Pedagogy (protocol + APIs): [docs/NINEP.md](../docs/NINEP.md). Operator export recipes: [docs/FILE_EXPORT.md](../docs/FILE_EXPORT.md) Method 2.
 
 QEMU shares a **host directory into the guest** over virtio-9p (not IP). The guest HolyC driver is a **9p client**; QEMU’s 9p backend is the server.
 
@@ -380,6 +496,19 @@ qemu-system-riscv64 -M virt -m 256M -bios none -kernel build/exec/kp.elf -nograp
   -device virtio-9p-device,fsdev=fsdev0,mount_tag=hostshare
 ```
 
-PCI attach (same protocol): replace `-device virtio-9p-device,...` with `-device virtio-9p-pci,...` (needs `-device virtio-pci` bus on virt).
+PCI attach (same protocol): replace `-device virtio-9p-device,...` with
+`-device virtio-9p-pci,...` (virt has a PCIe root; `-bios none` needs guest BAR
+assign — `VirtioPciAssignBar4`). Net: `-netdev user,id=net0 -device virtio-net-pci,netdev=net0`
+(MMIO: `virtio-net-device`). `Virtio9pConnect` / `VirtioNetInit` prefer MMIO then PCI.
 
-**Not implemented:** guest exporting REPL memfs or RedSea over 9p (needs a 9p **server** in HolyC); mounting host files into `fs.hc` memfs automatically; TCP `9p` over virtio-net (would need a full IP stack + different transport).
+**Also implemented:** guest → host **file export** via the same 9p client
+(`Tmkdir` parents, `Tlcreate`/`Twrite`, or overwrite `Tlopen`+`Twrite`):
+`NineExport` / `Virtio9pWritePath` write nested paths onto the QEMU virtfs share.
+See [docs/FILE_EXPORT.md](../docs/FILE_EXPORT.md) Method 2.
+
+**Not implemented:** guest exporting REPL memfs or RedSea as a 9p **server**;
+automatic mount of host files into `fs.hc` memfs; TCP `9p` over virtio-net
+(would need a full IP stack + different transport).
+
+Guest → host without virtfs: UART `DumpFile` / `DumpMem` / ZMODEM —
+[docs/FILE_EXPORT.md](../docs/FILE_EXPORT.md).

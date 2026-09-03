@@ -14,6 +14,7 @@ EXPECT_HASH_PREFIX="RVWinMgr interactive hash="
 EXPECT_DONE_PREFIX="RVWinMgr interactive DONE"
 EXPECT_INPUT="input_ok=1"
 EXPECT_PUT="put=1"
+EXPECT_SERIAL="RVWinSerial ready"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
@@ -65,6 +66,8 @@ fi
 cp "$T/win_i.elf" "$OUTDIR/win_i.elf"
 ELF="$OUTDIR/win_i.elf"
 
+# Headless CI keeps plain -serial stdio for UART capture.
+# Human hold uses -serial mon:stdio (UART + QEMU monitor on stdio; Ctrl-A then C).
 QEMU_BASE=( -M virt -m 256M -bios none -kernel "$ELF"
   -device ramfb -serial stdio
   -device virtio-keyboard-device -device virtio-tablet-device )
@@ -79,7 +82,11 @@ if [ "$HOLD" = "1" ]; then
   fi
   echo "Kernel-win-interactive: built $ELF"
   echo "Launching QEMU display=$DISPLAY_KIND (Tab/click/type; ESC quits)…"
-  exec "$QEMU" "${QEMU_BASE[@]}" -display "$DISPLAY_KIND"
+  echo "Serial+monitor on stdio (-serial mon:stdio); Ctrl-A then C for QEMU monitor."
+  exec "$QEMU" -M virt -m 256M -bios none -kernel "$ELF" \
+    -device ramfb -serial mon:stdio \
+    -device virtio-keyboard-device -device virtio-tablet-device \
+    -display "$DISPLAY_KIND"
 fi
 
 # Headless proof (default / CI)
@@ -88,7 +95,7 @@ command -v "$QEMU" >/dev/null 2>&1 || { echo "SKIP kernel-win-interactive — mi
 if [ "$RUN_QEMU" != "1" ]; then
   echo "Kernel-win-interactive: built $ELF (RVWIN_RUN=0 — skip QEMU)"
   echo "Run:"
-  echo "  qemu-system-riscv64 ${QEMU_BASE[*]} -display cocoa"
+  echo "  qemu-system-riscv64 -M virt -m 256M -bios none -kernel $ELF -device ramfb -serial mon:stdio -device virtio-keyboard-device -device virtio-tablet-device -display cocoa"
   exit 0
 fi
 
@@ -121,8 +128,14 @@ if ! printf '%s\n' "$done_line" | grep -qF "$EXPECT_INPUT"; then
   echo "  got: $done_line" >&2
   exit 1
 fi
+if ! printf '%s\n' "$out" | grep -qF "$EXPECT_SERIAL"; then
+  echo "FAIL kernel-win-interactive — no UART serial TTY banner:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | head -25 | sed 's/^/  got: /' >&2
+  exit 1
+fi
 
 echo "Kernel-win-interactive: OK ($line)"
 echo "  $done_line"
+echo "  serial: $EXPECT_SERIAL"
 echo "Human cocoa (one command): make kernel-win-run"
 exit 0

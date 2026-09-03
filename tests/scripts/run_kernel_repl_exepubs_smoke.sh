@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# A2 product compile path: Kernel_RV + Compiler_RV_Body ExePutS UART REPL.
+# Installs build/repl-cmp.elf (alias of repl_exepubs.elf). See docs/SELF_HOST.md A2.
+# Cmp-distinct needles prove guest Cmp (not hc_repl JitTry) compiled.
+set -u
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+HARNESS="$ROOT/tests/exec/harness"
+OUTDIR="$ROOT/build/exec"
+COMPILER="$ROOT/holyc-riscv"
+SRC="$ROOT/tests/exec/cases/kernel_repl_exepubs_demo.hc"
+EXPECT="A2 ExePutS loop: OK"
+EXPECT_PROBE="probe ans=42"
+EXPECT_ANS="ans=42"
+EXPECT_CMP_OWN="A2: Compiler_RV owns ExePutS"
+EXPECT_CMP_DONE="A2: Cmp compiled 40+2"
+
+GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
+OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
+LD="${RISCV_LD:-riscv64-unknown-elf-ld}"
+QEMU="${QEMU_SYSTEM:-qemu-system-riscv64}"
+TIMEOUT="timeout"; command -v gtimeout >/dev/null 2>&1 && TIMEOUT="gtimeout"
+
+for t in "$GCC" "$OBJCOPY" "$LD" "$QEMU"; do
+  command -v "$t" >/dev/null 2>&1 || { echo "SKIP kernel-repl-exepubs smoke — missing $t" >&2; exit 0; }
+done
+
+make -C "$ROOT" holyc-riscv >/dev/null
+mkdir -p "$OUTDIR"
+if [ ! -f "$OUTDIR/crt0.o" ] || [ ! -f "$OUTDIR/oracle_out.o" ] || \
+   [ "$HARNESS/crt0.S" -nt "$OUTDIR/crt0.o" ] || [ "$HARNESS/oracle_out.c" -nt "$OUTDIR/oracle_out.o" ] || \
+   [ "$ROOT/bootstrap/holy_rt.h" -nt "$OUTDIR/oracle_out.o" ] || [ "$ROOT/bootstrap/holy_rt_names.h" -nt "$OUTDIR/oracle_out.o" ]; then
+  "$GCC" -march=rv64imafdc -mabi=lp64d -mcmodel=medany -O2 -g -nostdlib -ffreestanding -fno-builtin \
+    -c "$HARNESS/oracle_out.c" -o "$OUTDIR/oracle_out.o" || { echo "FAIL kernel-repl-exepubs smoke — harness compile" >&2; exit 1; }
+  "$GCC" -march=rv64imafdc -mabi=lp64d -mcmodel=medany -O2 -g -nostdlib -ffreestanding -fno-builtin \
+    -c "$HARNESS/crt0.S" -o "$OUTDIR/crt0.o" || { echo "FAIL kernel-repl-exepubs smoke — crt0" >&2; exit 1; }
+fi
+
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
+
+if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then
+  echo "FAIL kernel-repl-exepubs smoke — compile error" >&2
+  HOLYC_INCLUDE_ROOT="$ROOT" HOLYC_ALL_ERRORS=1 "$COMPILER" "$SRC" -o /dev/null 2>&1 | tail -30 >&2
+  exit 1
+fi
+( cd "$T" && "$OBJCOPY" -I binary -O elf64-littleriscv \
+    --rename-section .data=.data,alloc,load,code,contents,readonly \
+    blob.bin blob_in.o && \
+  "$LD" -T "$HARNESS/link_exepubs.ld" -nostdlib --no-warn-mismatch \
+    -o kp.elf "$OUTDIR/crt0.o" "$OUTDIR/oracle_out.o" blob_in.o ) \
+  >/dev/null 2>&1 || { echo "FAIL kernel-repl-exepubs smoke — link error" >&2; exit 1; }
+
+cp "$T/kp.elf" "$OUTDIR/repl_exepubs.elf"
+# Product alias: Interactive guest Cmp REPL (not the thin hc_repl Jit bridge).
+mkdir -p "$ROOT/build"
+cp "$T/kp.elf" "$ROOT/build/repl-cmp.elf"
+
+# Probe already ran ExePutS(40+2); pipe one more snippet through the REPL loop, then quit.
+input=$'I64 MakeOSProbe(){return 42;}\nMakeOSProbe;\nq\n'
+out="$(LC_ALL=C printf '%s' "$input" | $TIMEOUT 120 "$QEMU" -M virt -m 128M -bios none \
+  -kernel "$T/kp.elf" -nographic 2>&1 | LC_ALL=C tr -d '\r')"
+
+fail=0
+need() {
+  if ! printf '%s\n' "$out" | grep -qF "$1"; then
+    echo "FAIL kernel-repl-exepubs smoke — missing: $1" >&2
+    fail=1
+  fi
+}
+need "$EXPECT_CMP_OWN"
+need "A2 ExePutS REPL"
+need "$EXPECT_PROBE"
+need "$EXPECT_CMP_DONE"
+need "$EXPECT_ANS"
+need "$EXPECT"
+
+if [ "$fail" -ne 0 ]; then
+  printf '%s\n' "$out" | grep -E 'A2|ExePutS|ans=|Except|Error|FAIL|OK|probe|Cmp|Compiler_RV' | head -40 | sed 's/^/  /' >&2
+  printf '%s\n' "$out" | tail -30 | sed 's/^/  /' >&2
+  exit 1
+fi
+
+echo "Kernel-REPL-ExePutS smoke: OK (guest Cmp owns UART compile loop → build/repl-cmp.elf)"
+exit 0

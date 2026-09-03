@@ -7,7 +7,7 @@ U8 fun_sec_name_buf[24];
 U8 FunListBuf[8192];
 I64 g_funs_buf[512];
 I64 g_fun_n = 0;
-I64 g_caller_n = 0;
+// g_caller_n lives in callers.hc (CallersScan)
 // gd/^]/Src seek: globals so VLoad/EvLoad cant clobber them (must precede dir.hc in boot)
 U8 JumpIdent[64];
 U8 JumpFile[64];
@@ -463,7 +463,8 @@ I64 FunCount()
 
 U8 *FunName(I64 idx)
 {
-  FunCollect();
+  /* Do not FunCollect() here — O(n) per call made Funs("Print") / FpRebuild
+   * O(n²) and hung under QEMU at n=512. Call FunCount()/FunCollect() first. */
   if (idx < 0 || idx >= g_fun_n)
     return 0;
   return *(I64 *)(g_funs_buf[idx] + 8);
@@ -488,9 +489,9 @@ I64 FunSecFromFile(U8 *file)
   for (p = file; *p; p++)
     if (*p == '/')
       b = p + 1;
-  if (SymStrEq(b, "man.hc") || SymStrEq(b, "boot.hc") || SymStrEq(b, "funs.hc") || SymStrEq(b, "callers.hc") || SymStrEq(b, "run.hc") || SymStrEq(b, "sym.hc"))
+  if (SymStrEq(b, "man.hc") || SymStrEq(b, "boot.hc") || SymStrEq(b, "ops.hc") || SymStrEq(b, "funs.hc") || SymStrEq(b, "callers.hc") || SymStrEq(b, "run.hc") || SymStrEq(b, "sym.hc") || SymStrEq(b, "log.hc") || SymStrEq(b, "sys.hc"))
     return 1;
-  if (SymStrEq(b, "dir.hc") || SymStrEq(b, "files.hc") || SymStrEq(b, "fs.hc"))
+  if (SymStrEq(b, "dir.hc") || SymStrEq(b, "files.hc") || SymStrEq(b, "fs.hc") || SymStrEq(b, "zmodem.hc"))
     return 2;
   if (SymStrEq(b, "uart.hc") || SymStrEq(b, "term.hc") || SymStrEq(b, "str.hc") || SymStrEq(b, "print.hc"))
     return 3;
@@ -671,99 +672,6 @@ U0 FunWrite()
   FileWrite(".funlist", FunListBuf, p - FunListBuf);
   "wrote .funlist\n";
 }
-// CallersScan/CallerName/CallerCnt/MemMap/Regs/StkRep: once-indirect to working C.
-// Hollow HolyC bodies that printed labels without live data were a lie — keep real C until
-// a HolyC port can read code_pos/callers_buf/GPR snap without host help.
-I64 CallersScan(U8 *name)
-{
-  I64 (*scan)(U8 *name);
-  scan = *(I64 *)0x870010E8;
-  if (!scan) {
-    g_caller_n = 0;
-    return 0;
-  }
-  g_caller_n = scan(name);
-  return g_caller_n;
-}
-
-I64 CallerCnt()
-{
-  I64 (*cnt)();
-  cnt = *(I64 *)0x87001120;
-  if (cnt)
-    return cnt();
-  return g_caller_n;
-}
-
-U8 *CallerName(I64 idx)
-{
-  U8 * (*nm)(I64 idx);
-  nm = *(I64 *)0x87001118;
-  if (!nm)
-    return 0;
-  return nm(idx);
-}
-// MemMap -- MemMap()
-// NAME
-//   MemMap - print RISC-V memory map with MEM_* symbols and owning drivers
-// SYNOPSIS
-//   U0 MemMap();
-// DESCRIPTION
-//   Lists RAM, live JIT code/heap, HolyC memfs/heap, FB, trap/regs snaps, stack,
-//   and MMIO (UART/CLINT/PLIC/virtio/fw_cfg). Last column is the HolyC driver or
-//   subsystem (e.g. RVUart16550 / uart.hc, RVTimer / CLINT, RVPlicHw, DskVirtioRV,
-//   RVFb / ramfb). Dig-down: MemMapDrvFind("uart"); MemMapDrv; Regs; Reg("mstatus");
-//   Man("MemMap"); RegHelp; MemMapFind("heap"); Print("%X\n", MEM_HEAP);
-// INPUTS
-//   none
-// OUTPUTS
-//   UART map + dig-down hints (driver column included)
-// BUGS
-//   Live sizes need C host slots on repl.elf. Driver column is virt defaults;
-//   Kernel boards use Kernel/Drv/RVMemMap.HC + Kconfig.
-U0 MemMap()
-{
-  I64 (*mm)();
-  mm = *(I64 *)0x87001128;
-  if (mm) {
-    mm();
-    return;
-  }
-  UartStr("MemMap: host slot empty — MemMapDrv; after csr.hc for driver legend\n");
-}
-// Regs -- Regs()
-// NAME
-//   Regs - dump all GPRs + CSRs with descriptions
-// SYNOPSIS
-//   U0 Regs();
-// DESCRIPTION
-//   Snapshots GPRs at the call site (xN / ABI / REG_*) and prints M-mode CSRs (mstatus,
-//   mie, mip, mtvec, mepc, mcause, mtval, mscratch, satp, …) with short "what it does" text.
-//   Dig-down: Reg("sp"); Reg("mstatus"); GetMStatus; CSRGet(CSR_MSTATUS); RegHelp; Man("Regs").
-// INPUTS
-//   none
-// OUTPUTS
-//   UART dump
-// BUGS
-//   GPR snap is C naked stub; CSR Get/Set live in csr.hc (real csrr/csrw).
-U0 Regs()
-{
-  I64 (*rg)();
-  rg = *(I64 *)0x87001130;
-  if (rg) {
-    rg();
-    return;
-  }
-  UartStr("Regs: host slot empty\n");
-}
-
-U0 StkRep()
-{
-  I64 (*sr)();
-  sr = *(I64 *)0x87001138;
-  if (sr) {
-    sr();
-    return;
-  }
-  UartStr("StkRep: host slot empty\n");
-}
+// CallersScan / MemMap / Regs / StkRep: MemMap+Regs in csr.hc; StkRep in debug.hc;
+// CallersScan in callers.hc (HolyC + optional host slot / g_callers_hc).
+// g_caller_n kept for CallerCnt compatibility with Fun* tooling.

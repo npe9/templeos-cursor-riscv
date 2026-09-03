@@ -80,7 +80,7 @@ I64 CompStrOk(U8 *s)
   while (k < COMP_NAME) {
     if (!s[k])
       return k > 0;
-    if (!CompIsIdent(s[k]) && s[k] != '.')
+    if (!CompIsIdent(s[k]) && s[k] != '.' && s[k] != '/')
       return 0;
     k++;
   }
@@ -120,7 +120,7 @@ U0 CompAdd(U8 *s, U8 *pfx, I64 plen)
 
 I64 CompCollectSyms(U8 *pfx, I64 plen)
 {
-  I64 body, mask, b, e, ty, nwalk;
+  I64 body, mask, b, e, ty, nwalk, i, nfun;
   U8 *nm;
   CompN = 0;
   body = SymHashBody();
@@ -147,28 +147,64 @@ I64 CompCollectSyms(U8 *pfx, I64 plen)
   // Live #defines (MEM_PLIC, MEM_UART, …) — same define_table the host lexer expands.
   body = SymDefineHashBody();
   mask = SymDefineHashMask();
-  if (!body || mask < 0)
-    return CompN;
-  // Cap: empty-bucket scan must not hang if the slot is stale/corrupt.
-  if (mask > 2047)
-    mask = 2047;
-  nwalk = 0;
-  for (b = 0; b <= mask && CompN < COMP_MAX; b++) {
-    nwalk++;
-    if (nwalk > 4096)
-      return CompN;
-    e = *(I64 *)(body + b * 8);
-    while (e && CompN < COMP_MAX) {
+  if (body && mask >= 0) {
+    // Cap: empty-bucket scan must not hang if the slot is stale/corrupt.
+    if (mask > 2047)
+      mask = 2047;
+    nwalk = 0;
+    for (b = 0; b <= mask && CompN < COMP_MAX; b++) {
       nwalk++;
       if (nwalk > 4096)
-        return CompN;
-      ty = *(I64 *)(e + 16);
-      if (ty & 0x040) {
-        nm = *(I64 *)(e + 8);
-        CompAdd(nm, pfx, plen);
+        break;
+      e = *(I64 *)(body + b * 8);
+      while (e && CompN < COMP_MAX) {
+        nwalk++;
+        if (nwalk > 4096)
+          break;
+        ty = *(I64 *)(e + 16);
+        if (ty & 0x040) {
+          nm = *(I64 *)(e + 8);
+          CompAdd(nm, pfx, plen);
+        }
+        e = *(I64 *)e;
       }
-      e = *(I64 *)e;
+      if (nwalk > 4096)
+        break;
     }
+  }
+  // Thin path / missing slot: seed MEM_* names (AOT #defines still expand).
+  // Explicit CompAdd — U8[]="..." / U8* init is unreliable in AOT blobs.
+  CompAdd("MEM_RAM", pfx, plen);
+  CompAdd("MEM_TEST", pfx, plen);
+  CompAdd("MEM_CLINT", pfx, plen);
+  CompAdd("MEM_CLINT_MTIME_OFF", pfx, plen);
+  CompAdd("MEM_CLINT_MTIMECMP_OFF", pfx, plen);
+  CompAdd("MEM_MTIME", pfx, plen);
+  CompAdd("MEM_MTIMECMP", pfx, plen);
+  CompAdd("MEM_PLIC", pfx, plen);
+  CompAdd("MEM_PLIC_ENABLE_OFF", pfx, plen);
+  CompAdd("MEM_PLIC_THRESHOLD_OFF", pfx, plen);
+  CompAdd("MEM_PLIC_CLAIM_OFF", pfx, plen);
+  CompAdd("MEM_PLIC_PENDING_OFF", pfx, plen);
+  CompAdd("MEM_UART", pfx, plen);
+  CompAdd("MEM_VIRTIO", pfx, plen);
+  CompAdd("MEM_VIRTIO_STRIDE", pfx, plen);
+  CompAdd("MEM_FW_CFG", pfx, plen);
+  CompAdd("MEM_FS", pfx, plen);
+  CompAdd("MEM_HEAP", pfx, plen);
+  CompAdd("MEM_FB", pfx, plen);
+  CompAdd("MEM_FIXED", pfx, plen);
+  CompAdd("MEM_TRAP_SNAP", pfx, plen);
+  CompAdd("MEM_REGS_SNAP", pfx, plen);
+  CompAdd("MEM_HOST_SLOTS", pfx, plen);
+  CompAdd("MEM_STACK", pfx, plen);
+  CompAdd("MEM_COMPILER", pfx, plen);
+  // JIT / Fun* table (repl-holyc man_sym) when host hash is empty.
+  nfun = FunCount();
+  for (i = 0; i < nfun && CompN < COMP_MAX; i++) {
+    nm = FunName(i);
+    if (nm)
+      CompAdd(nm, pfx, plen);
   }
   return CompN;
 }
@@ -176,7 +212,7 @@ I64 CompCollectSyms(U8 *pfx, I64 plen)
 I64 CompCollectFiles(U8 *pfx, I64 plen)
 {
   I64 i, cl, k;
-  U8 *cwd, *nm, *rest;
+  U8 *cwd, *nm, *rest, *b;
   CompN = 0;
   cwd = FsCwd();
   if (!cwd)
@@ -199,6 +235,9 @@ I64 CompCollectFiles(U8 *pfx, I64 plen)
     if (rest[0] == '.')
       continue;
     CompAdd(rest, pfx, plen);
+    b = FsBaseName(rest);
+    if (b != rest)
+      CompAdd(b, pfx, plen);
     if (cl)
       CompAdd(nm, pfx, plen);
   }

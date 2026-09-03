@@ -7,6 +7,11 @@ HOST = ../host
 # Repo root on -I path so host/compiler.c can #include "bootstrap/holy_rt_names.h"
 ROOT = ..
 
+KCFG := $(ROOT)/templeos-riscv/include/generated/kconfig.mk
+ifneq ($(wildcard $(KCFG)),)
+  include $(KCFG)
+endif
+
 # ---- Platform address map -----------------------------------------------------------------
 # Select a target board with PLATFORM=<name> (default: qemu-virt). Each row sets the RAM/link
 # base and the 16550 UART base; LOAD_BASE flows to the linker (--defsym) and UART_BASE to both
@@ -17,6 +22,7 @@ ROOT = ..
 # NOTE: `-bios none` makes QEMU's reset ROM jump to 0x80000000 unconditionally, so a non-default
 # LOAD_BASE build links correctly but is NOT bootable via `-kernel` on qemu-virt -- it targets a
 # board whose loader jumps to that base. Verify such builds with objdump, not QEMU.
+# Kconfig ENTRY_POINT / LOAD_BASE (via kconfig.mk) override the platform row when set.
 PLATFORM ?= qemu-virt
 
 ifeq ($(PLATFORM),qemu-virt)
@@ -30,11 +36,25 @@ else
   $(error Unknown PLATFORM '$(PLATFORM)' -- add a row to Makefile.repl, or pass LOAD_BASE=/UART_BASE= directly)
 endif
 
-# A direct LOAD_BASE=/UART_BASE= on the command line overrides the platform row.
-LOAD_BASE ?= $(PLAT_LOAD_BASE)
+# Prefer Kconfig ENTRY_POINT/LOAD_BASE, then platform row, then CLI override.
+ifeq ($(origin LOAD_BASE),undefined)
+  ifneq ($(ENTRY_POINT),)
+    LOAD_BASE := $(ENTRY_POINT)
+  else ifneq ($(RAM_BASE),)
+    LOAD_BASE := $(RAM_BASE)
+  else
+    LOAD_BASE := $(PLAT_LOAD_BASE)
+  endif
+endif
 UART_BASE ?= $(PLAT_UART_BASE)
 
-CFLAGS = -march=rv64imafdc_zifencei -mabi=lp64d -mcmodel=medany -O0 -g
+MARCH ?= rv64imafdc
+MABI ?= lp64d
+# Modern GNU as treats fence.i as Zifencei-only; keep older rv64imafdc configs bootable.
+ifeq ($(findstring zifencei,$(MARCH)),)
+MARCH := $(MARCH)_zifencei
+endif
+CFLAGS = -march=$(MARCH) -mabi=$(MABI) -mcmodel=medany -O0 -g
 CFLAGS += -nostdlib -ffreestanding -fno-builtin -I$(ROOT) -I$(HOST) -DUART_BASE=$(UART_BASE)
 
 LDFLAGS = -T linker.ld -nostdlib --no-warn-mismatch \
@@ -44,8 +64,8 @@ LDFLAGS = -T linker.ld -nostdlib --no-warn-mismatch \
 # slots). Prefer make hc-repl (no guest C) or kernel+Compiler_RV. Remaining C deps in seeds:
 #   compile/run, UART ring+drain+get, Ed/Edit repair, Fmt, srcmap/hash/call_editor,
 #   Callers*/MemMap/Regs/StkRep, trap dispatch/reentry.
-# HolyC-owned: Term geometry + TermKeyGet (interactive), memfs arena at 0x85000000 (seed/fs.hc).
-# C memfs/Term* slots remain as deprecated bridges for EdC/EditC/seed boot only.
+# HolyC-owned: Term geometry + TermKeyGet (interactive), memfs arena at 0x87800000 (seed/fs.hc).
+# MEMFS/CWD and TERM_PROBE/ROWS/COLS/FLAGS host-slot publishes removed (HolyC owns those).
 repl.elf: startup.o worry_dream_repl.o compiler.o
 	$(LD) $(LDFLAGS) -o $@ $^
 	@echo "✓ Built Worry Dream REPL (DEPRECATED: C guest + host slots — see comment above)"
@@ -63,7 +83,8 @@ compiler.o: $(HOST)/compiler.c $(HOST)/lexer.c $(HOST)/parser.c $(HOST)/hash_tab
 
 # The editable HolyC primitives/editors are real files under seed/; this bakes them into a C
 # table so memfs_seed() ships them. Editing a seed/*.hc regenerates the header and rebuilds.
-seed_files.h: $(wildcard seed/*.hc) gen_seeds.py
+seed_files.h: $(wildcard seed/*.hc) $(wildcard seed/tutorials/*.hc) \
+		$(wildcard seed/datasheet/*.hc) gen_seeds.py seed_layout.py
 	python3 gen_seeds.py seed seed_files.h
 
 # Prebuilt boot runtime snapshot (concatenated seeds). Rebuild after editing seeds:
@@ -78,13 +99,18 @@ boot_blob_embed.h: $(wildcard seed/*.hc) gen_boot_blob.py
 	  python3 gen_boot_blob.py seed $@; \
 	fi
 
+asm_templates.inc: seed/asm_doc.hc gen_boot_blob.py
+	python3 gen_boot_blob.py seed boot_blob_embed.h
+
 worry_dream_repl.o: worry_dream_repl.c $(HOST)/holyc_compiler.h $(HOST)/hash_table.h \
-		holy_rt.h holy_rt_names.h seed_files.h boot_blob_embed.h
+		holy_rt.h holy_rt_names.h seed_files.h boot_blob_embed.h asm_templates.inc
 	$(CC) $(CFLAGS) -c $< -o $@
 
 startup.o: startup.s
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Default QEMU virt RAM is 128MiB — enough for BSS + memfs @0x87800000 + MEM_STACK.
+# Do not require -m 256M (that was only needed when memfs lived at 0x88000000).
 run: repl.elf
 	qemu-system-riscv64 -M virt -bios none -kernel repl.elf -nographic
 

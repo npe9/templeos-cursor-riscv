@@ -193,6 +193,8 @@ Compiler *CompilerNew(const char *source, const char *filename) {
   
   // Expression type tracking
   cc->last_var_symbol = NULL;
+  cc->var_just_loaded = false;
+  cc->global_just_loaded = false;
   cc->last_expr_class = NULL;
   cc->last_type_class = NULL;
   cc->last_global_var = NULL;
@@ -291,20 +293,19 @@ void CompilerFree(Compiler *cc) {
 // - If buf==NULL: only count bytes (for sizing passes)
 // - If buf!=NULL: emit bytes and count (for final emission pass)
 
-// ---- Tier 1 peephole: cancel an adjacent eval-stack push/pop -------------------------------
+// ---- Tier 1 peephole: cancel adjacent eval-stack push/pop / push-abandon --------------------
 // The codegen bakes stack traffic into each op's emit (IMM auto-pushes, consumers pop), so the
 // dominant redundancy is `addi sp,-8; sd rX,0(sp); ld rX,0(sp); addi sp,+8` -- push a value and
 // immediately pop it back into the SAME register, which is pure waste (the value is still in rX).
-// RVU32 keeps the last three emitted words; when a fourth completes the pattern it rewinds rip by
-// three words and drops the fourth. It runs identically in the sizing (buf==NULL) and emit passes
-// -- rip is adjusted the same way in both -- so the relaxation loop still converges.
+// Also: `addi sp,-8; sd; addi sp,+8` with no load (EVAL_DROP / assign-zero abandon) is pure dead.
+// RVU32 keeps the last three emitted words; when a pattern completes it rewinds rip. It runs
+// identically in the sizing (buf==NULL) and emit passes so the relaxation loop still converges.
 //
 // CAUTION: CompileAOT has TWO emit loops -- the do-while sizing loop AND a separate final-emission
 // pass. The window (g_pp_n) must be reset at the START of each and at EVERY IC_LABEL in BOTH, or
 // the two passes cancel differently: mismatched sizes, and push/pops wrongly cancelled across a
-// branch target (which silently miscompiles every loop). We only cancel when rX==rY -- the pop
-// target equals the push source -- which is unambiguously safe; the rX!=rY (-> `mv rY,rX`) case is
-// left on the table. Gated by g_pp_on (= cc->optimize).
+// branch target (which silently miscompiles every loop). We only cancel push/pop when rX==rY.
+// push rX; pop rY -> mv is intentionally OFF (miscompiled PjPutHex / Print). Gated by g_pp_on.
 static U32 g_pp[3];
 static int g_pp_n;
 static int g_pp_on;
@@ -334,12 +335,31 @@ static int RvIsAddi(U32 w, int rd, int rs1, int imm) {
   return (w & 0x7F) == 0x13 && ((w >> 12) & 7) == 0 && (int)((w >> 7) & 0x1F) == rd &&
          (int)((w >> 15) & 0x1F) == rs1 && (((I32)w) >> 20) == imm;
 }
+/* sd rs2,0(sp) — eval-stack push store. */
+static int RvIsSdSp0(U32 w, int *rs2) {
+  if ((w & 0x7F) != 0x23 || ((w >> 12) & 7) != 3 || ((w >> 15) & 0x1F) != 2) return 0;
+  if ((int)(((w >> 7) & 0x1F) | (((w >> 25) & 0x7F) << 5)) != 0) return 0;
+  if (rs2) *rs2 = (int)((w >> 20) & 0x1F);
+  return 1;
+}
+/* mv rd,rs ≡ addi rd,rs,0 */
+static int RvIsMv(U32 w, int *rd, int *rs) {
+  if ((w & 0x7F) != 0x13 || ((w >> 12) & 7) != 0 || (((I32)w) >> 20) != 0) return 0;
+  if (rd) *rd = (int)((w >> 7) & 0x1F);
+  if (rs) *rs = (int)((w >> 15) & 0x1F);
+  return 1;
+}
+static void PpRewind(U8 *buf, U8 **ptr, I64 *rip, int n) {
+  if (n <= 0 || n > g_pp_n) return;
+  if (buf && ptr) *ptr -= 4 * n;
+  *rip -= 4 * n;
+  g_pp_n -= n;
+}
 static void RVU32(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
   if (g_pp_on && g_pp_n >= 3) {
     U32 w0 = g_pp[0], w1 = g_pp[1], w2 = g_pp[2];
     int isDec = RvIsAddi(w0, 2, 2, -8);                                                   // addi sp,sp,-8
-    int isSd  = (w1 & 0x7F) == 0x23 && ((w1 >> 12) & 7) == 3 && ((w1 >> 15) & 0x1F) == 2 &&
-                (int)(((w1 >> 7) & 0x1F) | (((w1 >> 25) & 0x7F) << 5)) == 0;              // sd rX,0(sp)
+    int isSd  = RvIsSdSp0(w1, NULL);                                                     // sd rX,0(sp)
     int isLd  = (w2 & 0x7F) == 0x03 && ((w2 >> 12) & 7) == 3 && ((w2 >> 15) & 0x1F) == 2 &&
                 (int)((w2 >> 20) & 0xFFF) == 0;                                           // ld rY,0(sp)
     int isInc = RvIsAddi(val, 2, 2, 8);                                                   // addi sp,sp,+8
@@ -349,6 +369,18 @@ static void RVU32(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
       *rip -= 12;
       g_pp_n = 0;
       return;                                          // the fourth word (addi sp,+8) is cancelled too
+    }
+  }
+  /* Pure dead push: addi sp,-8; sd rX,0(sp); addi sp,+8 with no load — EVAL_DROP / assign-zero abandon.
+   * Do NOT add push rX; pop rY → mv here: that miscompiled indexed stores (PjPutHex / Print). */
+  if (g_pp_on && g_pp_n >= 2 && RvIsAddi(val, 2, 2, 8)) {
+    int rX = 0;
+    U32 wDec = g_pp[g_pp_n - 2], wSd = g_pp[g_pp_n - 1];
+    if (RvIsAddi(wDec, 2, 2, -8) && RvIsSdSp0(wSd, &rX)) {
+      if (buf && ptr) *ptr -= 8;
+      *rip -= 8;
+      g_pp_n -= 2;
+      return;
     }
   }
   // BB-local frame-slot forwarding (mode>=4). Unsafe w/ pointer aliases — gated for bisect.
@@ -445,6 +477,76 @@ static U32 StoreA0ToRs1(U8 pointed_to, U8 rs1) {
   return 0x23 | (f3 << 12) | (rs1 << 15) | (RV_A0 << 20);
 }
 static U32 StoreA0ToRs1Off(U8 p, U8 rs1, I64 off) { return StoreA0ToRs1(p,rs1)|(((U32)off&31)<<7)|(((U32)off&0xFE0)<<20); }
+static U32 StoreZeroToRs1(U8 pointed_to, U8 rs1) {
+  return StoreA0ToRs1(pointed_to, rs1) & ~(0x1Fu << 20); /* rs2 = x0 */
+}
+
+/* After *p=0 / ASSIGN: is a0 (the stored value) observed? Statement + LEAVE → no;
+ * return / outer expr / REPL RETURN_VAL2 → yes (keep li a0,0 after store). */
+static int AssignResultNeeded(CIntermediateCode *ic) {
+  CIntermediateCode *n = ic ? ic->next : NULL;
+  while (n && (n->ic_code == IC_NOP1 || n->ic_code == IC_NOP2)) n = n->next;
+  if (!n) return 0;
+  if (n->ic_code == IC_END_EXP) {
+    CIntermediateCode *n2 = n->next;
+    while (n2 && (n2->ic_code == IC_NOP1 || n2->ic_code == IC_NOP2)) n2 = n2->next;
+    if (!n2) return 0;
+    if (n2->ic_code == IC_RETURN_VAL || n2->ic_code == IC_RETURN_VAL2) return 1;
+    if (n2->ic_code == IC_JMP) return 1; /* return *p=0: a0 live across jmp to leave */
+    if (n2->ic_code == IC_LEAVE || n2->ic_code == IC_RET) return 0;
+    return 0; /* next statement */
+  }
+  return 1;
+}
+
+/* Ptr ASSIGN with ICF_ASSIGN_ZERO: addr on eval stack (a0 still holds it after skipped IMM 0);
+ * store x0 through the live address reg (no useless `mv t0,a0` / `addi t0,a0,0`).
+ * Push result only when observed. Relies on push-abandon peep when safe. */
+static void EmitAssignStoreZero(U8 *b, U8 **q, I64 *r, I64 *d, CIntermediateCode *ic) {
+  int rd = 0, rs = RV_A0, rX = 0, have_t0 = 0;
+  int addr_reg = RV_A0;
+  if (*d >= 1) {
+    int can_abandon = 0;
+    if (g_pp_on && g_pp_n >= 2) {
+      int idx_dec = g_pp_n - 2, idx_sd = g_pp_n - 1;
+      if (RvIsAddi(g_pp[idx_dec], 2, 2, -8) && RvIsSdSp0(g_pp[idx_sd], &rX) && rX == RV_A0)
+        can_abandon = 1;
+    }
+    if (can_abandon) {
+      RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20)); /* peep drops push */
+      (*d)--;
+      addr_reg = RV_A0;
+    } else {
+      RVU32(b, q, r, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));
+      RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
+      (*d)--;
+      have_t0 = 1;
+      addr_reg = RV_T0;
+    }
+  }
+  if (!have_t0) {
+    if (g_pp_on && g_pp_n >= 1 && RvIsMv(g_pp[g_pp_n - 1], &rd, &rs) && rd == RV_A0 && rs != RV_A0) {
+      /* Dead mv a0,rs — addr already in rs; drop mv and store through rs. */
+      U32 k0 = 0, k1 = 0;
+      int kn = 0;
+      if (g_pp_n == 2) { k0 = g_pp[0]; kn = 1; }
+      else if (g_pp_n == 3) { k0 = g_pp[0]; k1 = g_pp[1]; kn = 2; }
+      PpRewind(b, q, r, 1);
+      if (kn == 1) { g_pp[0] = k0; g_pp_n = 1; }
+      else if (kn == 2) { g_pp[0] = k0; g_pp[1] = k1; g_pp_n = 2; }
+      addr_reg = rs;
+    } else {
+      addr_reg = RV_A0; /* sd zero,0(a0) — no addi t0,a0,0 */
+    }
+  }
+  RVU32(b, q, r, StoreZeroToRs1(ic->arg1_type_pointed_to, addr_reg));
+  if (AssignResultNeeded(ic)) {
+    RVU32(b, q, r, 0x13 | (RV_A0 << 7)); /* li a0,0 */
+    RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
+    RVU32(b, q, r, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20));
+    (*d)++;
+  }
+}
 
 // Struct copy for `b = a` (same class, size>8): eval stack holds [dst, src] with src on top and
 // ic_data = the byte count. Pops both, copies n bytes (8-byte words then a byte tail), and leaves
@@ -471,13 +573,14 @@ static void EmitBlockCopy(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_dept
   *stack_depth -= 1;   // popped 2 (dst,src), pushed 1 (result)
 }
 
-// PC-relative call: always auipc+jalr (full ±2 GiB range, fixed 2-word size).
-// A jal fast path (1 word, ±1 MiB) was tempting but unsafe here: choosing jal vs auipc+jalr per call
-// changes the instruction count, and the address passes don't re-converge, so a call sitting near the
-// ±1 MiB boundary is sized in one pass and emitted in another -> a truncated jal target and an
-// immediate trap. Blobs are now routinely >1 MiB (many native primitives), so that boundary is hit in
-// practice (it silently broke the spawn demo). A fixed 2-word encoding keeps every address stable
-// regardless of distance; the one extra instruction per call is worth the guaranteed correctness.
+// PC-relative call to a same-unit label: always auipc+jalr (full ±2 GiB, fixed 2-word size).
+//
+// Why not `jal` (±1 MiB)? Distance-dependent 1- vs 2-word encoding desyncs the sizing loop vs
+// final emit near the ±1 MiB edge (broke spawn demo). Blobs are routinely >1 MiB.
+//
+// Why not direct `jal` for every HTT_FUN? Import / undefined prototype / host RT slots need
+// `ld` from a mutable slot + `jalr` so the loader can fill and TempleOS-style redefinition
+// still works. Do not “directize” those without a frozen binding.
 static void EmitJalToLabel(U8 *pass_buf, U8 **pass_ptr, I64 *rip, CLabel *lb, U8 rd) {
   I64 pc = *rip;
   I64 target = lb->addr;
@@ -866,8 +969,29 @@ static void EmitJump(U8 *pass_buf, U8 **pass_ptr, I64 *rip, CLabel *lb) {
   RVU32(pass_buf, pass_ptr, rip, 0x67 | (RV_ZERO << 7) | (RV_T0 << 15) | (((U32)lo & 0xFFF) << 20)); // jalr zero, lo(t0)
 }
 
+// B-type branch rs1 ? rs2 → lb. f3: beq=0 bne=1 blt=4 bge=5 bltu=6 bgeu=7.
+// Short ±4 KB; else inverse beq/bne-sized skip over `jal zero,target` (±1 MB).
+static void EmitBrRsRs(U8 *pass_buf, U8 **pass_ptr, I64 *rip, int f3, int rs1, int rs2, CLabel *lb) {
+  I64 offset = lb->addr - *rip;
+  if (offset >= -4096 && offset <= 4094) {
+    RVU32(pass_buf, pass_ptr, rip,
+          0x63 | ((U32)f3 << 12) | (((U32)(offset >> 11) & 1) << 7) | (((U32)(offset >> 1) & 0xF) << 8) |
+              ((U32)rs1 << 15) | ((U32)rs2 << 20) | (((U32)(offset >> 5) & 0x3F) << 25) |
+              (((U32)(offset >> 12) & 1) << 31));
+    return;
+  }
+  int inv = f3 ^ 1; /* beq↔bne; blt↔bge; bltu↔bgeu */
+  RVU32(pass_buf, pass_ptr, rip,
+        0x63 | ((U32)inv << 12) | (0 << 7) | (4 << 8) | ((U32)rs1 << 15) | ((U32)rs2 << 20));
+  I64 joff = lb->addr - *rip;
+  RVU32(pass_buf, pass_ptr, rip,
+        0x6F | (((U32)(joff >> 12) & 0xFF) << 12) | (((U32)(joff >> 11) & 1) << 20) |
+            (((U32)(joff >> 1) & 0x3FF) << 21) | (((U32)(joff >> 20) & 1) << 31));
+}
+
 // Conditional branch on a0 to a label, relaxed for range: a B-type beq/bne reaches ±4 KB; a
 // larger target uses the inverse branch over a `jal zero,target` (±1 MB). `br_zero` picks beq.
+// Kept as the historical encoding path (do not route through EmitBrRsRs — bisect safety).
 static void EmitCondBranch(U8 *pass_buf, U8 **pass_ptr, I64 *rip, bool br_zero, CLabel *lb) {
   I64 offset = lb->addr - *rip;
   if (offset >= -4096 && offset <= 4094) {
@@ -876,12 +1000,66 @@ static void EmitCondBranch(U8 *pass_buf, U8 **pass_ptr, I64 *rip, bool br_zero, 
           (RV_A0 << 15) | (RV_ZERO << 20) | (((U32)(offset >> 5) & 0x3F) << 25) | (((U32)(offset >> 12) & 1) << 31));
     return;
   }
-  // Inverse short branch over the long jump: `b{ne,eq} a0,zero,+8; jal zero,target`.
-  U32 inv = br_zero ? (1u << 12) : 0u;   // BR_ZERO → skip when a0 != 0
-  RVU32(pass_buf, pass_ptr, rip, 0x63 | inv | (0 << 7) | (4 << 8) | (RV_A0 << 15) | (RV_ZERO << 20));  // to +8 (imm=8)
+  U32 inv = br_zero ? (1u << 12) : 0u;
+  RVU32(pass_buf, pass_ptr, rip, 0x63 | inv | (0 << 7) | (4 << 8) | (RV_A0 << 15) | (RV_ZERO << 20));
   I64 joff = lb->addr - *rip;
   RVU32(pass_buf, pass_ptr, rip, 0x6F | (((U32)(joff >> 12) & 0xFF) << 12) | (((U32)(joff >> 11) & 1) << 20) |
-        (((U32)(joff >> 1) & 0x3FF) << 21) | (((U32)(joff >> 20) & 1) << 31));  // jal zero, target
+        (((U32)(joff >> 1) & 0x3FF) << 21) | (((U32)(joff >> 20) & 1) << 31));
+}
+
+/* Map IC_BR_EQU_EQU…LESS_EQU → (f3, swap_operands). GREATER uses blt with swapped regs. */
+static void BrCmpF3(U8 code, int *f3, int *swap) {
+  *swap = 0;
+  switch (code) {
+  case IC_BR_EQU_EQU: *f3 = 0; break;
+  case IC_BR_NOT_EQU: *f3 = 1; break;
+  case IC_BR_LESS: *f3 = 4; break;
+  case IC_BR_GREATER_EQU: *f3 = 5; break;
+  case IC_BR_GREATER: *f3 = 4; *swap = 1; break;
+  case IC_BR_LESS_EQU: *f3 = 5; *swap = 1; break;
+  default: *f3 = 0; break;
+  }
+}
+
+/* Pop lhs (+ optional imm rhs) and emit compare-and-branch. Stack depth updated. */
+static void EmitIC_BrCmp(U8 *b, U8 **q, I64 *r, I64 *d, CIntermediateCode *ic) {
+  CLabel *lb = (CLabel *)ic->ic_data;
+  int f3 = 0, swap = 0, lhs = RV_T0, rhs = RV_T1;
+  BrCmpF3(ic->ic_code, &f3, &swap);
+  if (ic->ic_flags & ICF_CMP_IMM) {
+    int rX = 0, abandoned = 0;
+    if (*d >= 1 && g_pp_on && g_pp_n >= 2) {
+      if (RvIsAddi(g_pp[g_pp_n - 2], 2, 2, -8) && RvIsSdSp0(g_pp[g_pp_n - 1], &rX) && rX == RV_A0) {
+        RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
+        (*d)--;
+        abandoned = 1;
+        lhs = RV_A0;
+      }
+    }
+    if (!abandoned && *d >= 1) {
+      RVU32(b, q, r, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));
+      RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
+      (*d)--;
+      lhs = RV_T0;
+    }
+    EmitLoadImm64(b, q, r, RV_T1, ic->arg2.disp);
+    rhs = RV_T1;
+  } else {
+    if (*d >= 2) {
+      RVU32(b, q, r, 0x03 | (RV_T1 << 7) | (3 << 12) | (RV_SP << 15));
+      RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
+      (*d)--;
+      RVU32(b, q, r, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));
+      RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
+      (*d)--;
+      lhs = RV_T0;
+      rhs = RV_T1;
+    }
+  }
+  if (swap) { int t = lhs; lhs = rhs; rhs = t; }
+  EmitBrRsRs(b, q, r, f3, lhs, rhs, lb);
+  lb->sd = *d;
+  lb->sd_set = true;
 }
 static void EmitTryLeave(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *cc, I64 data_base) {
   EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->try_top_var, data_base);
@@ -929,6 +1107,28 @@ static void EmitIncDec(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, 
 }
 
 static void EmitGlobalAddr(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *cc, U8 rd, CHashGlblVar *g, I64 data_base);
+static void EmitRegsSnapStub(U8 *pass_buf, U8 **pass_ptr, I64 *rip) {
+#ifdef HOLYC_STANDALONE
+  /* AOT guest (repl-holyc blob): never embed host regs_snap_only_stub PC. */
+  (void)pass_buf;
+  (void)pass_ptr;
+  (void)rip;
+  return;
+#else
+  extern void regs_snap_only_stub(void);
+  I64 addr = (I64)regs_snap_only_stub;
+  U32 hi = (U32)(((addr + 0x800) >> 12) & 0xFFFFF);
+  RVU32(pass_buf, pass_ptr, rip, 0x37 | (RV_T0 << 7) | (hi << 12));
+  I64 lo = addr - (I64)((addr + 0x800) & ~0xFFFLL);
+  if (lo)
+    RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (RV_T0 << 15) | ((lo & 0xFFF) << 20));
+  if (addr & 0x80000000) {
+    RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (1 << 12) | (RV_T0 << 15) | (32 << 20));
+    RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (5 << 12) | (RV_T0 << 15) | (32 << 20));
+  }
+  RVU32(pass_buf, pass_ptr, rip, 0x67 | (RV_RA << 7) | (RV_T0 << 15));
+#endif
+}
 // Shared: argument shuffle for IC_CALL / IC_CALL_INDIRECT2, then PC-rel or host-indirect tail.
 static void EmitCallArgsAndInvoke(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth,
                                   Compiler *cc, CLabel *pc_target, I64 *exe_addr_host_ptr, I64 arg_count,
@@ -1004,6 +1204,10 @@ void ICAdd(Compiler *cc, U8 opcode, I64 data, U8 type) {
     cc->ic_head = ic;
   }
   cc->ic_tail = ic;
+}
+
+void ICEmitRegsSnap(Compiler *cc) {
+  ICAdd(cc, IC_REGS_SNAP, 0, RT_I0);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1264,18 +1468,385 @@ static void IcOptFrameAccess(Compiler *cc) {
   }
 }
 
+/* Unlink [first..last] inclusive from the IC list; does not free nodes. */
+static void IcUnlinkRange(Compiler *cc, CIntermediateCode *first, CIntermediateCode *last) {
+  CIntermediateCode *prev = first->last, *nxt = last->next;
+  if (prev) prev->next = nxt; else cc->ic_head = nxt;
+  if (nxt) nxt->last = prev; else cc->ic_tail = prev;
+}
+
+/* Count JMP/BR references to lb across the whole IC list. */
+static int IcLabelRefs(Compiler *cc, CLabel *lb) {
+  int n = 0;
+  for (CIntermediateCode *p = cc->ic_head; p; p = p->next) {
+    U8 c = p->ic_code;
+    if ((c == IC_JMP || c == IC_BR_ZERO || c == IC_BR_NOT_ZERO ||
+         c == IC_BR_EQU_EQU || c == IC_BR_NOT_EQU || c == IC_BR_LESS ||
+         c == IC_BR_GREATER_EQU || c == IC_BR_GREATER || c == IC_BR_LESS_EQU ||
+         c == IC_FN_ADDR || c == IC_TRY_ENTER) &&
+        (CLabel *)p->ic_data == lb)
+      n++;
+  }
+  return n;
+}
+
+/* True if [start..end) has no nested control-flow / labels (safe to equate for arm merge). */
+static int IcArmIsStraight(CIntermediateCode *start, CIntermediateCode *end) {
+  for (CIntermediateCode *p = start; p && p != end; p = p->next) {
+    U8 c = p->ic_code;
+    if (c == IC_LABEL || c == IC_JMP || c == IC_BR_ZERO || c == IC_BR_NOT_ZERO ||
+        c == IC_BR_EQU_EQU || c == IC_BR_NOT_EQU || c == IC_BR_LESS ||
+        c == IC_BR_GREATER_EQU || c == IC_BR_GREATER || c == IC_BR_LESS_EQU ||
+        c == IC_SWITCH || c == IC_NOBOUND_SWITCH || c == IC_TRY_ENTER ||
+        c == IC_TRY_LEAVE || c == IC_THROW || c == IC_SUB_CALL)
+      return 0;
+  }
+  return 1;
+}
+
+static int IcArmEqual(CIntermediateCode *a, CIntermediateCode *a_end,
+                      CIntermediateCode *b, CIntermediateCode *b_end) {
+  while (a != a_end && b != b_end) {
+    if (!a || !b) return 0;
+    if (a->ic_code != b->ic_code) return 0;
+    if (a->ic_data != b->ic_data) return 0;
+    if (a->ic_flags != b->ic_flags) return 0;
+    if (a->arg1_type_pointed_to != b->arg1_type_pointed_to) return 0;
+    if ((a->ic_flags & ICF_REG_LOCAL) && a->arg1.reg != b->arg1.reg) return 0;
+    a = a->next;
+    b = b->next;
+  }
+  return a == a_end && b == b_end;
+}
+
+/* IMM k; BR_ZERO/BR_NOT_ZERO → drop IMM; fold to JMP or delete branch.
+ * When BR_ZERO of nonzero (if(1)…) becomes fall-through, drop a classic dead else arm
+ * if the else label has no remaining refs. */
+static int IcOptConstBranch(Compiler *cc) {
+  int changed = 0;
+  for (CIntermediateCode *ic = cc->ic_head; ic; ) {
+    CIntermediateCode *br = ic->next;
+    if (ic->ic_code == IC_IMM_I64 && !(ic->ic_flags & ICF_GLBL_ADDR) && br &&
+        (br->ic_code == IC_BR_ZERO || br->ic_code == IC_BR_NOT_ZERO) &&
+        IcFoldFitsI32(ic->ic_data)) {
+      I64 v = ic->ic_data;
+      int taken = (br->ic_code == IC_BR_ZERO) ? (v == 0) : (v != 0);
+      CLabel *targ = (CLabel *)br->ic_data;
+      CIntermediateCode *after = br->next;
+
+      if (taken) {
+        /* Always branch: drop IMM, BR → JMP. */
+        br->ic_code = IC_JMP;
+        IcUnlinkRange(cc, ic, ic);
+        changed = 1;
+        ic = after;
+        continue;
+      }
+
+      /* Never taken: drop IMM + BR. Optionally delete dead else of if(1) else. */
+      CIntermediateCode *then0 = after;
+      IcUnlinkRange(cc, ic, br);
+      changed = 1;
+
+      /* Classic if/else: [then] JMP end; LABEL else; [else]; LABEL end — else only
+       * targeted by the removed BR. */
+      if (then0 && targ) {
+        CIntermediateCode *p = then0, *jmp_end = NULL, *lab_else = NULL;
+        while (p && p->ic_code != IC_LABEL) {
+          if (p->ic_code == IC_JMP) jmp_end = p;
+          p = p->next;
+        }
+        if (p && p->ic_code == IC_LABEL && (CLabel *)p->ic_data == targ)
+          lab_else = p;
+        if (jmp_end && lab_else && jmp_end->next == lab_else &&
+            IcArmIsStraight(then0, jmp_end) && IcLabelRefs(cc, targ) == 0) {
+          CLabel *end_lb = (CLabel *)jmp_end->ic_data;
+          CIntermediateCode *lab_end = lab_else->next;
+          while (lab_end &&
+                 !(lab_end->ic_code == IC_LABEL && (CLabel *)lab_end->ic_data == end_lb))
+            lab_end = lab_end->next;
+          if (lab_end && IcArmIsStraight(lab_else->next, lab_end) &&
+              IcLabelRefs(cc, end_lb) == 1) {
+            /* Drop JMP end + LABEL else + else body; keep LABEL end (join). */
+            IcUnlinkRange(cc, jmp_end, lab_end->last);
+          }
+        }
+      }
+      ic = then0;
+      continue;
+    }
+    ic = ic->next;
+  }
+  return changed;
+}
+
+/* if (c) { A } else { A } with straight identical arms → just A (drop branch/jmp/labels). */
+static int IcOptIfElseTailMerge(Compiler *cc) {
+  int changed = 0;
+  for (CIntermediateCode *br = cc->ic_head; br; br = br->next) {
+    if (br->ic_code != IC_BR_ZERO) continue;
+    CLabel *else_lb = (CLabel *)br->ic_data;
+    CIntermediateCode *then0 = br->next;
+    CIntermediateCode *p = then0, *jmp_end = NULL;
+    while (p && p->ic_code != IC_LABEL) {
+      if (p->ic_code == IC_JMP) jmp_end = p;
+      p = p->next;
+    }
+    if (!jmp_end || !p || p->ic_code != IC_LABEL || (CLabel *)p->ic_data != else_lb)
+      continue;
+    if (jmp_end->next != p) continue; /* JMP must immediately precede else label */
+    CIntermediateCode *lab_else = p;
+    CLabel *end_lb = (CLabel *)jmp_end->ic_data;
+    CIntermediateCode *else0 = lab_else->next;
+    CIntermediateCode *lab_end = else0;
+    while (lab_end &&
+           !(lab_end->ic_code == IC_LABEL && (CLabel *)lab_end->ic_data == end_lb))
+      lab_end = lab_end->next;
+    if (!lab_end) continue;
+    /* then = [then0 .. jmp_end), else = [else0 .. lab_end) */
+    if (!IcArmIsStraight(then0, jmp_end) || !IcArmIsStraight(else0, lab_end))
+      continue;
+    if (!IcArmEqual(then0, jmp_end, else0, lab_end))
+      continue;
+    if (IcLabelRefs(cc, else_lb) != 1 || IcLabelRefs(cc, end_lb) != 1)
+      continue;
+    /* Condition value would have been popped by BR_ZERO — drop it; keep then arm. */
+    br->ic_code = IC_EVAL_DROP;
+    br->ic_data = 8;
+    IcUnlinkRange(cc, jmp_end, lab_end);
+    return 1; /* one merge per pass; IcOptimize loop will rescan */
+  }
+  return changed;
+}
+
+static int IcIsIntCmp(U8 c) { return c >= IC_EQU_EQU && c <= IC_LESS_EQU; }
+static int IcIsBrCmp(U8 c) { return c >= IC_BR_EQU_EQU && c <= IC_BR_LESS_EQU; }
+
+/* EQU_EQU…LESS_EQU followed by BR_ZERO/BR_NOT_ZERO → IC_BR_* (TempleOS OptBr*).
+ * When RHS is a nearby IMM_I64, attach ICF_CMP_IMM and drop the IMM (lhs stays on stack). */
+static int IcOptCmpToBranch(Compiler *cc) {
+  int changed = 0;
+  for (CIntermediateCode *br = cc->ic_head; br; br = br->next) {
+    if (br->ic_code != IC_BR_ZERO && br->ic_code != IC_BR_NOT_ZERO) continue;
+    CIntermediateCode *cmp = br->last;
+    while (cmp && (cmp->ic_code == IC_NOP1 || cmp->ic_code == IC_NOP2)) cmp = cmp->last;
+    if (!cmp || !IcIsIntCmp(cmp->ic_code)) continue;
+    U8 neu;
+    if (br->ic_code == IC_BR_NOT_ZERO)
+      neu = (U8)(cmp->ic_code + (IC_BR_EQU_EQU - IC_EQU_EQU));
+    else
+      neu = (U8)(((cmp->ic_code - IC_EQU_EQU) ^ 1) + IC_BR_EQU_EQU);
+    CIntermediateCode *imm = cmp->last;
+    while (imm && (imm->ic_code == IC_NOP1 || imm->ic_code == IC_NOP2)) imm = imm->last;
+    br->ic_code = neu;
+    if (imm && imm->ic_code == IC_IMM_I64 && !(imm->ic_flags & ICF_GLBL_ADDR) &&
+        IcFoldFitsI32(imm->ic_data) && imm->next == cmp) {
+      br->ic_flags |= ICF_CMP_IMM;
+      br->arg2.disp = imm->ic_data;
+      IcUnlinkRange(cc, imm, cmp);
+    } else {
+      IcUnlinkRange(cc, cmp, cmp);
+    }
+    changed = 1;
+  }
+  return changed;
+}
+
+/* Scratch on CLabel during BoolElide only (emit overwrites addr). */
+#define LB_F_BAD_EDGE  0x10000
+
+static void IcBoolElideBuildStats(Compiler *cc) {
+  for (CIntermediateCode *p = cc->ic_head; p; p = p->next) {
+    if (p->ic_code != IC_LABEL) continue;
+    CLabel *lb = (CLabel *)p->ic_data;
+    if (!lb) continue;
+    lb->addr = 0; /* temp ref count */
+    lb->flags &= ~LB_F_BAD_EDGE;
+  }
+  for (CIntermediateCode *p = cc->ic_head; p; p = p->next) {
+    U8 c = p->ic_code;
+    if (!(c == IC_JMP || c == IC_BR_ZERO || c == IC_BR_NOT_ZERO || IcIsBrCmp(c) ||
+          c == IC_FN_ADDR || c == IC_TRY_ENTER))
+      continue;
+    CLabel *lb = (CLabel *)p->ic_data;
+    if (!lb) continue;
+    lb->addr++;
+    if (c == IC_JMP) continue;
+    if (!IcIsBrCmp(c)) lb->flags |= LB_F_BAD_EDGE;
+  }
+}
+
+/* Retarget JMP/BR/BrCmp that point at `from` to `to`. Required when deleting a
+ * short-circuit label after a prior OR elision turned an outer AND's BR_ZERO into
+ * a JMP to that label — missing JMP here left VCmd with `j` to a deleted addr
+ * (illegal insn). */
+static void IcRetargetLabel(Compiler *cc, CLabel *from, CLabel *to) {
+  for (CIntermediateCode *p = cc->ic_head; p; p = p->next) {
+    U8 c = p->ic_code;
+    if ((c == IC_JMP || c == IC_BR_ZERO || c == IC_BR_NOT_ZERO || IcIsBrCmp(c)) &&
+        (CLabel *)p->ic_data == from)
+      p->ic_data = (I64)to;
+  }
+}
+
+/* Parser || / && manufacture IMM 0/1 then BR_ZERO/NOT_ZERO → direct then/else.
+ * Nested `(a||b) && c`: OR elision turns AND's BR_ZERO into JMP F; AND elision
+ * must IcRetargetLabel(F → Else) including that JMP.
+ *
+ * One O(n) stats pass per elision (not per BR candidate) — boot blob was O(n²). */
+static int IcOptLogicalBoolElide(Compiler *cc) {
+  int changed = 0;
+  for (;;) {
+    IcBoolElideBuildStats(cc);
+    int progress = 0;
+    for (CIntermediateCode *ifbr = cc->ic_head; ifbr; ifbr = ifbr->next) {
+      if (ifbr->ic_code != IC_BR_ZERO && ifbr->ic_code != IC_BR_NOT_ZERO) continue;
+      CIntermediateCode *lab_e = ifbr->last;
+      if (!lab_e || lab_e->ic_code != IC_LABEL) continue;
+      CLabel *e = (CLabel *)lab_e->ic_data;
+      CIntermediateCode *imm1 = lab_e->last;
+      if (!imm1 || imm1->ic_code != IC_IMM_I64 || (imm1->ic_flags & ICF_GLBL_ADDR)) continue;
+      CIntermediateCode *lab_t = imm1->last;
+      if (!lab_t || lab_t->ic_code != IC_LABEL) continue;
+      CLabel *t = (CLabel *)lab_t->ic_data;
+      CIntermediateCode *jmp_e = lab_t->last;
+      if (!jmp_e || jmp_e->ic_code != IC_JMP || (CLabel *)jmp_e->ic_data != e) continue;
+      CIntermediateCode *imm0 = jmp_e->last;
+      if (!imm0 || imm0->ic_code != IC_IMM_I64 || (imm0->ic_flags & ICF_GLBL_ADDR)) continue;
+      int is_or = (imm0->ic_data == 0 && imm1->ic_data == 1);
+      int is_and = (imm0->ic_data == 1 && imm1->ic_data == 0);
+      if (!is_or && !is_and) continue;
+      if (!e || !t || e->addr != 1 || t->addr < 1) continue;
+      if (t->flags & LB_F_BAD_EDGE) continue; /* value edges keep bool manufacture */
+
+      if (is_or && ifbr->ic_code == IC_BR_ZERO) {
+        ifbr->ic_code = IC_JMP;
+        IcUnlinkRange(cc, imm0, jmp_e);
+        IcUnlinkRange(cc, imm1, lab_e);
+        if (lab_t->next == ifbr) {
+          IcUnlinkRange(cc, lab_t, lab_t);
+          lab_t->next = ifbr->next;
+          lab_t->last = ifbr;
+          if (ifbr->next) ifbr->next->last = lab_t;
+          else cc->ic_tail = lab_t;
+          ifbr->next = lab_t;
+        }
+        progress = 1;
+        break;
+      }
+      if (is_or && ifbr->ic_code == IC_BR_NOT_ZERO) {
+        IcRetargetLabel(cc, t, (CLabel *)ifbr->ic_data);
+        IcUnlinkRange(cc, imm0, ifbr);
+        progress = 1;
+        break;
+      }
+      if (is_and && ifbr->ic_code == IC_BR_ZERO) {
+        IcRetargetLabel(cc, t, (CLabel *)ifbr->ic_data);
+        IcUnlinkRange(cc, imm0, ifbr);
+        progress = 1;
+        break;
+      }
+    }
+    if (!progress) break;
+    changed = 1;
+  }
+  return changed;
+}
+
+/* True if [call..jmp] is CALL (+ CALL_END) (+ END_EXP) JMP — statement call then goto/continue. */
+static int IcIsCallThenJmp(CIntermediateCode *call, CIntermediateCode *jmp,
+                          CIntermediateCode **out_end_exp) {
+  if (out_end_exp) *out_end_exp = NULL;
+  if (!call || !jmp) return 0;
+  if (call->ic_code != IC_CALL && call->ic_code != IC_CALL_INDIRECT2) return 0;
+  if (call->ic_flags != 0) return 0; /* arity 0 only (VClrCnt) */
+  CIntermediateCode *p = call->next;
+  if (p && p->ic_code == IC_CALL_END) p = p->next;
+  if (p && p->ic_code == IC_END_EXP) {
+    if (out_end_exp) *out_end_exp = p;
+    p = p->next;
+  }
+  return p == jmp && jmp->ic_code == IC_JMP;
+}
+
+/* CALL X; END_EXP; JMP L ×N → one shared CALL+END_EXP+JMP; others JMP share. */
+static int IcOptCallJmpTailMerge(Compiler *cc) {
+  int changed = 0;
+  for (CIntermediateCode *jmp = cc->ic_head; jmp; jmp = jmp->next) {
+    if (jmp->ic_code != IC_JMP) continue;
+    CIntermediateCode *call = jmp->last;
+    while (call && (call->ic_code == IC_END_EXP || call->ic_code == IC_CALL_END ||
+                    call->ic_code == IC_NOP1 || call->ic_code == IC_NOP2))
+      call = call->last;
+    CIntermediateCode *end_exp = NULL;
+    if (!IcIsCallThenJmp(call, jmp, &end_exp)) continue;
+    CLabel *dest = (CLabel *)jmp->ic_data;
+    for (CIntermediateCode *j2 = cc->ic_head; j2 && j2 != jmp; j2 = j2->next) {
+      if (j2->ic_code != IC_JMP || (CLabel *)j2->ic_data != dest) continue;
+      CIntermediateCode *c2 = j2->last;
+      while (c2 && (c2->ic_code == IC_END_EXP || c2->ic_code == IC_CALL_END ||
+                    c2->ic_code == IC_NOP1 || c2->ic_code == IC_NOP2))
+        c2 = c2->last;
+      CIntermediateCode *ee2 = NULL;
+      if (!IcIsCallThenJmp(c2, j2, &ee2)) continue;
+      if (c2->ic_code != call->ic_code || c2->ic_data != call->ic_data) continue;
+      if (call->ic_code == IC_CALL_INDIRECT2 && c2->ic_class != call->ic_class) continue;
+      /* Keep c2..j2; replace call..jmp with JMP to label at c2. */
+      CLabel *share = LabelNew(cc, NULL);
+      CIntermediateCode *lab = ICNew(cc, IC_LABEL);
+      if (!lab || !share) return changed;
+      lab->ic_data = (I64)share;
+      share->defined = true;
+      lab->last = c2->last;
+      lab->next = c2;
+      if (c2->last) c2->last->next = lab;
+      else cc->ic_head = lab;
+      c2->last = lab;
+      call->ic_code = IC_JMP;
+      call->ic_data = (I64)share;
+      call->ic_flags = 0;
+      call->ic_class = NULL;
+      IcUnlinkRange(cc, call->next, jmp);
+      changed = 1;
+      return 1;
+    }
+  }
+  return changed;
+}
+
+/* Unconditional JMP: drop unreachable IC until next LABEL (no other IR entries). */
+static int IcOptDeadAfterJmp(Compiler *cc) {
+  int changed = 0;
+  for (CIntermediateCode *jmp = cc->ic_head; jmp; jmp = jmp->next) {
+    if (jmp->ic_code != IC_JMP) continue;
+    CIntermediateCode *p = jmp->next;
+    if (!p || p->ic_code == IC_LABEL || p->ic_code == IC_LEAVE || p->ic_code == IC_ENTER)
+      continue;
+    CIntermediateCode *last = p;
+    while (last->next && last->next->ic_code != IC_LABEL &&
+           last->next->ic_code != IC_LEAVE && last->next->ic_code != IC_ENTER)
+      last = last->next;
+    IcUnlinkRange(cc, p, last);
+    changed = 1;
+    return 1;
+  }
+  return changed;
+}
+
 static void IcOptimize(Compiler *cc) {
   if (!cc->optimize) return;
   /* Tier-2 on by default. HOLYC_NO_TIER2=1 disables (bisect). */
   int changed = getenv("HOLYC_NO_TIER2") ? 0 : 1;
+  int guard = 0;
   while (changed) {
+    if (++guard > 50000) {
+      fprintf(stderr, "IcOptimize: iteration cap (%d) — possible non-termination\n", guard);
+      break;
+    }
     changed = 0;
-    for (CIntermediateCode *ic = cc->ic_head; ic; ic = ic->next) {
+    /* Fold/identity: apply all matches in one scan (was one-per-outer-iter → O(n²)). */
+    for (CIntermediateCode *ic = cc->ic_head; ic; ) {
       CIntermediateCode *n1 = ic->next, *n2 = n1 ? n1->next : (CIntermediateCode *)0;
-      // Constant fold: IMM(a); IMM(b); binop -> IMM(a op b)
-      // Only fold values that fit signed 32-bit — absolute AOT addresses (UART/DRAM/fw_cfg,
-      // typically >= 0x10000000) are often bare IMMs without ICF_GLBL_ADDR; folding those
-      // with MUL-scaled indexing miscompiled RVKMain (selfboot hang).
       if (ic->ic_code == IC_IMM_I64 && !(ic->ic_flags & ICF_GLBL_ADDR) &&
           n1 && n1->ic_code == IC_IMM_I64 && !(n1->ic_flags & ICF_GLBL_ADDR) && n2 &&
           IcFoldFitsI32(ic->ic_data) && IcFoldFitsI32(n1->ic_data)) {
@@ -1284,10 +1855,10 @@ static void IcOptimize(Compiler *cc) {
           ic->ic_data = r;
           ic->next = n2->next;
           if (n2->next) n2->next->last = ic; else cc->ic_tail = ic;
-          changed = 1; break;
+          changed = 1;
+          continue; /* recheck from folded IMM */
         }
       }
-      // Algebraic identity: IMM(id); binop -> drop both (left operand stays pushed).
       if (ic->ic_code == IC_IMM_I64 && !(ic->ic_flags & ICF_GLBL_ADDR) && n1 && ic->last &&
           ic->last->ic_code != IC_LABEL && ic->last->ic_code != IC_ENTER &&
           ic->last->ic_code != IC_NOP1) {
@@ -1295,11 +1866,25 @@ static void IcOptimize(Compiler *cc) {
         if ((op == IC_ADD || op == IC_SUB || op == IC_OR || op == IC_XOR) && v == 0) drop = 1;
         else if ((op == IC_MUL || op == IC_DIV) && v == 1) drop = 1;
         if (drop) {
-          ic->last->next = n1->next;
-          if (n1->next) n1->next->last = ic->last; else cc->ic_tail = ic->last;
-          changed = 1; break;
+          CIntermediateCode *prev = ic->last;
+          prev->next = n1->next;
+          if (n1->next) n1->next->last = prev; else cc->ic_tail = prev;
+          changed = 1;
+          ic = prev;
+          continue;
         }
       }
+      ic = ic->next;
+    }
+    if (!getenv("HOLYC_NO_TIER2")) {
+      if (IcOptCmpToBranch(cc)) changed = 1;
+      /* Bool elision on by default (BrCmp-only; JMP retarget for nested OR-in-AND).
+       * HOLYC_NO_BOOL_ELIDE=1 to bisect. */
+      if (!getenv("HOLYC_NO_BOOL_ELIDE") && IcOptLogicalBoolElide(cc)) changed = 1;
+      if (IcOptConstBranch(cc)) changed = 1;
+      if (!getenv("HOLYC_NO_TAIL_MERGE") && IcOptIfElseTailMerge(cc)) changed = 1;
+      if (!getenv("HOLYC_NO_CALL_TAIL") && IcOptCallJmpTailMerge(cc)) changed = 1;
+      if (!getenv("HOLYC_NO_DEAD_JMP") && IcOptDeadAfterJmp(cc)) changed = 1;
     }
   }
   IcOptFrameAccess(cc);
@@ -1442,6 +2027,13 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         
       case IC_IMM_I64:
       case IC_IMM_F64:  // F64 travels as its raw 64-bit pattern in integer registers / eval stack
+        /* IMM 0 right before ptr ASSIGN: skip li/push so addr stays in a0 (ICF_ASSIGN_ZERO). */
+        if (cc->optimize && ic->ic_code == IC_IMM_I64 && !(ic->ic_flags & ICF_GLBL_ADDR) &&
+            ic->ic_data == 0 && ic->next && ic->next->ic_code == IC_ASSIGN &&
+            !(ic->next->ic_flags & ICF_FRAME_SLOT)) {
+          ic->next->ic_flags |= ICF_ASSIGN_ZERO;
+          break;
+        }
         if (ic->ic_flags == ICF_GLBL_ADDR && cc->aot_data_layout) {
           {
             CHashGlblVar *g = AOTGlobalByAddr(cc, ic->ic_data);
@@ -1548,6 +2140,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         break;
       case IC_ASSIGN:
         if (ic->ic_flags & ICF_FRAME_SLOT) { EmitIC_ASSIGN(pass_buf,&pass_ptr,&rip,&stack_depth_pass,ic); break; }
+        if (ic->ic_flags & ICF_ASSIGN_ZERO) {
+          EmitAssignStoreZero(pass_buf, &pass_ptr, &rip, &stack_depth_pass, ic);
+          break;
+        }
         if (stack_depth_pass >= 1) {
           // If both value and address are on the stack, pop value first and move to a0
           if (stack_depth_pass >= 2) {
@@ -1657,6 +2253,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           EmitCondBranch(pass_buf, &pass_ptr, &rip, false, lb);
           lb->sd = stack_depth_pass; lb->sd_set = true;
         }
+        break;
+      case IC_BR_EQU_EQU:
+      case IC_BR_NOT_EQU:
+      case IC_BR_LESS:
+      case IC_BR_GREATER_EQU:
+      case IC_BR_GREATER:
+      case IC_BR_LESS_EQU:
+        EmitIC_BrCmp(pass_buf, &pass_ptr, &rip, &stack_depth_pass, ic);
         break;
       case IC_JMP:
         {
@@ -1815,6 +2419,9 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         break;
       case IC_RAW_RV:
         RVU32(pass_buf, &pass_ptr, &rip, (U32)ic->ic_data);   // pre-assembled RISC-V word (x86 translation)
+        break;
+      case IC_REGS_SNAP:
+        EmitRegsSnapStub(pass_buf, &pass_ptr, &rip);
         break;
       case IC_RETURN_VAL:
       case IC_RETURN_VAL2:
@@ -2000,6 +2607,12 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         
       case IC_IMM_I64:
       case IC_IMM_F64:  // F64 travels as its raw 64-bit pattern in integer registers / eval stack
+        if (cc->optimize && ic->ic_code == IC_IMM_I64 && !(ic->ic_flags & ICF_GLBL_ADDR) &&
+            ic->ic_data == 0 && ic->next && ic->next->ic_code == IC_ASSIGN &&
+            !(ic->next->ic_flags & ICF_FRAME_SLOT)) {
+          ic->next->ic_flags |= ICF_ASSIGN_ZERO;
+          break;
+        }
         if (ic->ic_flags == ICF_GLBL_ADDR && cc->aot_data_layout) {
           {
             CHashGlblVar *g = AOTGlobalByAddr(cc, ic->ic_data);
@@ -2108,6 +2721,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         break;
       case IC_ASSIGN:
         if (ic->ic_flags & ICF_FRAME_SLOT) { EmitIC_ASSIGN(pass_buf,&pass_ptr,&rip,&stack_depth_final,ic); break; }
+        if (ic->ic_flags & ICF_ASSIGN_ZERO) {
+          EmitAssignStoreZero(pass_buf, &pass_ptr, &rip, &stack_depth_final, ic);
+          break;
+        }
         if (stack_depth_final >= 1) {
           if (stack_depth_final >= 2) {
             RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15)); // ld t1, 0(sp) - pop value
@@ -2211,6 +2828,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           EmitCondBranch(pass_buf, &pass_ptr, &rip, false, lb);
           lb->sd = stack_depth_final; lb->sd_set = true;
         }
+        break;
+      case IC_BR_EQU_EQU:
+      case IC_BR_NOT_EQU:
+      case IC_BR_LESS:
+      case IC_BR_GREATER_EQU:
+      case IC_BR_GREATER:
+      case IC_BR_LESS_EQU:
+        EmitIC_BrCmp(pass_buf, &pass_ptr, &rip, &stack_depth_final, ic);
         break;
       case IC_JMP:
         {
@@ -2371,6 +2996,9 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         break;
       case IC_RAW_RV:
         RVU32(pass_buf, &pass_ptr, &rip, (U32)ic->ic_data);   // pre-assembled RISC-V word (x86 translation)
+        break;
+      case IC_REGS_SNAP:
+        EmitRegsSnapStub(pass_buf, &pass_ptr, &rip);
         break;
       case IC_RETURN_VAL:
       case IC_RETURN_VAL2:

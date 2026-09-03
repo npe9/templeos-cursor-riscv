@@ -39,6 +39,13 @@ INTERN_WRAPPERS = {
     "StrIMatch": "RVStrIMatch",
     "Call": "RVCall",
 }
+# Guest AdamCore / CALL_IMPORT extras (not always in Compiler.BIN patch table).
+# RVHCCall: in-blob jalr veneer so host HolyC sees ra in .text (not heap guest).
+EXTRA_EXPORTS = [
+    ("DirMk", "DirMk"),
+    ("FileWrite", "FileWrite"),
+    ("RVHCCall", "_RV_HC_CALL"),
+]
 
 if not bin_path.exists():
     raise SystemExit(f"missing {bin_path} — run pack_tosb first")
@@ -85,6 +92,9 @@ lines = [
 for name in sorted(names):
     sym = INTERN_WRAPPERS.get(name, name)
     lines.append(f'  RVCmpExportOne("{name}",&{sym}); n++;')
+for exp_name, sym in EXTRA_EXPORTS:
+    if exp_name not in names:
+        lines.append(f'  RVCmpExportOne("{exp_name}",&{sym}); n++;')
 lines += [
     "  return n;",
     "}",

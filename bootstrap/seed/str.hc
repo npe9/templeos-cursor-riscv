@@ -249,6 +249,73 @@ I64 StrICmp(U8 *a, U8 *b)
     cb += 32;
   return ca - cb;
 }
+// StrMatch -- StrMatch(needle, hay, flags)
+// NAME
+//   StrMatch - find needle in hay (case-sensitive); returns ptr or NULL
+// SYNOPSIS
+//   U8 *StrMatch(U8 *needle, U8 *hay, I64 flags=0);
+// DESCRIPTION
+//   TempleOS StrMatch: first occurrence of needle in hay, or NULL. flags unused.
+// SEE ALSO
+//   StrIMatch  StrICmp  Funs
+U8 *StrMatch(U8 *needle, U8 *hay, I64 flags = 0)
+{
+  U8 *h, *a, *b;
+  flags = flags;
+  if (!needle || !hay)
+    return 0;
+  if (!*needle)
+    return hay;
+  for (h = hay; *h; h++) {
+    a = needle;
+    b = h;
+    while (*a && *a == *b) {
+      a++;
+      b++;
+    }
+    if (!*a)
+      return h;
+  }
+  return 0;
+}
+// StrIMatch -- StrIMatch(needle, hay, flags)
+// NAME
+//   StrIMatch - find needle in hay (ASCII case-insensitive); returns ptr or NULL
+// SYNOPSIS
+//   U8 *StrIMatch(U8 *needle, U8 *hay, I64 flags=0);
+// DESCRIPTION
+//   Like StrMatch but folds A-Z before compare. Used by Funs / FunPick filter.
+// SEE ALSO
+//   StrMatch  StrICmp  Funs
+U8 *StrIMatch(U8 *needle, U8 *hay, I64 flags = 0)
+{
+  U8 *h, *a, *b;
+  I64 ca, cb;
+  flags = flags;
+  if (!needle || !hay)
+    return 0;
+  if (!*needle)
+    return hay;
+  for (h = hay; *h; h++) {
+    a = needle;
+    b = h;
+    while (*a) {
+      ca = *a;
+      cb = *b;
+      if (ca >= 'A' && ca <= 'Z')
+        ca += 32;
+      if (cb >= 'A' && cb <= 'Z')
+        cb += 32;
+      if (ca != cb)
+        break;
+      a++;
+      b++;
+    }
+    if (!*a)
+      return h;
+  }
+  return 0;
+}
 // MemCpy -- MemCpy(dst,src,n)
 // NAME
 //   MemCpy - copy n bytes from src to dst.

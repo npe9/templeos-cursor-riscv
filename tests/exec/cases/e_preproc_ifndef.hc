@@ -15,4 +15,8 @@
 #ifndef ALSO_NOT_DEFINED
 #define D 300
 #endif
-I64 main(){ return A*1 + B*10 + C*100 + D*1000; }   // 5 + 70 + 4000 + 300000 = 304075 = 0x4A40B
+I64 main()
+{
+  return A * 1 + B * 10 + C * 100 + D * 1000;
+}
+// 5 + 70 + 4000 + 300000 = 304075 = 0x4A40B

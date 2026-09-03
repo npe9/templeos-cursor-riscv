@@ -21,6 +21,10 @@ BOOT_ORDER = [
     "mem.hc",
     "print.hc",
     "str.hc",
+    "log.hc",
+    "frame.hc",  # after log (redefines LogMuxEmit); g_uart_mux from uart.hc
+    "console.hc",  # soft VT mux (CONSOLE.md #4); after frame for VtMuxNotify
+    "tty.hc",  # CONSOLE.md #1 line discipline (after uart PutCh)
     "fs.hc",
     "run.hc",
     "math.hc",
@@ -36,20 +40,26 @@ BOOT_ORDER = [
     "ninep.hc",
     "dir.hc",
     "asm_complete.hc",
-    "asm_doc.hc",
+    # asm_doc.hc: large tables — still gated (templates via asm_templates.inc)
     "complete.hc",
     "ed.hc",
     "edit.hc",
     "start.hc",
     "trap.hc",
     "debug.hc",
+    "hwdbg.hc",
+    "gdbstub.hc",
     "disasm.hc",
     "vim.hc",
     "RVEditorSelected.hc",
     "man.hc",
     "files.hc",
+    "zmodem.hc",
+    "trzsz.hc",
     "funs.hc",
     "callers.hc",
+    "sys.hc",
+    "ops.hc",
     "boot.hc",
 ]
 
@@ -102,6 +112,12 @@ def read_asm_doc_raw(seed_dir: str) -> str:
         if not rest.startswith('"'):
             break
     return "".join(parts)
+
+
+def repo_root(seed_dir: str) -> str:
+    """Repo root: parent of bootstrap/ (seed_dir is typically bootstrap/seed)."""
+    bootstrap = os.path.abspath(os.path.join(seed_dir, ".."))
+    return os.path.abspath(os.path.join(bootstrap, ".."))
 
 
 def gen_asm_templates_inc(seed_dir: str, out_path: str) -> None:
@@ -157,14 +173,18 @@ def main() -> int:
 
     # Optional AOT validation / artifact (future Load target).
     if holyc:
+        root = repo_root(seed_dir)
         hc_path = os.path.join(os.path.dirname(out_h) or ".", "boot_runtime.hc")
         os.makedirs(os.path.dirname(hc_path) or ".", exist_ok=True)
         open(hc_path, "w", encoding="utf-8").write(blob)
         bin_path = out_bin or os.path.join(os.path.dirname(out_h) or ".", "boot_runtime.bin")
+        env = os.environ.copy()
+        env["HOLYC_INCLUDE_ROOT"] = root
         r = subprocess.run(
             [holyc, hc_path, "-o", bin_path],
             capture_output=True,
             text=True,
+            env=env,
         )
         if r.returncode != 0 or "Error:" in (r.stdout + r.stderr):
             sys.stderr.write(r.stdout)

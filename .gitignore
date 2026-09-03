@@ -1,10 +1,20 @@
-# Build outputs (local; never commit)
-build/
+# Build outputs (local; never commit) — except known-good pin README
+build/*
+!build/known-good/
+build/known-good/*
+!build/known-good/README.md
 *.o
 *.elf
 *.bin
 *.dSYM/
 a.out
+bootstrap/bootloader/boot_cfg.hc
+
+# Linux mconf/conf host binaries (built by make menuconfig)
+templeos-riscv/scripts/kconfig/mconf
+templeos-riscv/scripts/kconfig/conf
+templeos-riscv/scripts/kconfig/mconf-cflags
+templeos-riscv/scripts/kconfig/mconf-libs
 
 # Host compiler + tool binaries (produced by `make` / packers)
 /holyc-riscv
@@ -97,3 +107,7 @@ build/exec/prog_arr.hc
 # Kconfig local state (regenerated; defconfigs are tracked)
 templeos-riscv/.config
 templeos-riscv/.config.old
+
+# Python bytecode caches
+__pycache__/
+*.pyc

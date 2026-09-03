@@ -71,7 +71,7 @@ U0 EdSetLine(I64 i, U8 *s)
 I64 EdReadLine(U8 *buf, I64 max)
 {
   I64 i = 0, c, old, j;
-  /* Blocking get via host UartGet slot (once-indirect). */
+  /* Soft RX via hc_repl HcUartGet (UartGet ring + MMIO drain). */
   while (1) {
     c = HcUartGet();
     if (c == '\r' || c == '\n') {
@@ -247,25 +247,24 @@ I64 EdParseAddr(U8 *s, I64 *pp, I64 *have)
 }
 // Ed -- Ed(name)
 // NAME
-//   Ed - classic line editor (redefines C Ed).
+//   Ed - classic line editor
 // SYNOPSIS
-//   Ed(name)
+//   U0 Ed(U8 *name);
 // DESCRIPTION
-//   classic line editor (redefines C Ed).
-// INPUTS
-//   name - argument
-// OUTPUTS
-//   classic line editor (redefines C Ed).
+//   Opens a simple line-oriented editor on a memfs file (a/i/d/p/n/w/q). Good for
+//   scripted smoke and tiny edits. Prefer Vi or EditHoly for full-screen work;
+//   EdC is the C escape hatch if HolyC Ed breaks.
+// EXAMPLES
+//   // Ed("boot.hc");   // interactive — use q to quit
+//   Man("EdC");
+//   Dir;
+// SEE ALSO
+//   EdC  EdHoly  Vi  Edit  Src  Cat
 // BUGS
-//   HolyC body kept for Src/live-edit; entry calls C Ed via the host slot
-//   (once-indirect funptr) so repl_read_line feeds piped smoke. Prefer EdHoly
-//   once EdReadLine input is solid without the host get.
+//   repl-holyc: always EdHoly (soft RX). Legacy host slot 0x870010B8 is cleared.
 U0 Ed(U8 *name)
 {
-  I64 (*ed)(U8 *name);
-  ed = *(I64 *)0x870010B8;
-  if (ed)
-    ed(name);
+  EdHoly(name);
 }
 
 U0 EdHoly(U8 *name)
@@ -428,12 +427,14 @@ U0 EdHoly(U8 *name)
 // SYNOPSIS
 //   U0 EdC(U8 *file);
 // DESCRIPTION
-//   Always-available C line editor if HolyC Ed/EdHoly breaks. Same host slot as Ed
-//   (0x870010B8). Prefer Ed after boot; use EdC when recovering a broken editor.
-// INPUTS
-//   file - memfs path to edit
-// OUTPUTS
-//   none (interactive editor)
+//   Always-available C line editor if HolyC Ed/EdHoly breaks. Same host slot as
+//   Ed. Prefer Ed after boot; use EdC when recovering a broken editor.
+// EXAMPLES
+//   // EdC("boot.hc");  // interactive
+//   Man("Ed");
+//   SrcFile("EdC");
+// SEE ALSO
+//   Ed  EdHoly  Vi  Edit  Src
 // BUGS
 //   Once-indirect to C; not live-editable beyond this trampoline.
 U0 EdC(U8 *name)

@@ -248,7 +248,7 @@ U0 OptPass3(CCmpCtrl *cc,COptReg *reg_offsets)
 	  break;
 	case IC_RETURN_VAL:
 	case IC_RETURN_VAL2:
-	  if (tmpc) {
+	  if (tmpc && tmpil1 && tmpil1->ic_class) {
 	    if (tmpc->raw_type==RT_F64 && tmpil1->ic_class->raw_type!=RT_F64)
 	      tmpil1->ic_flags|=ICF_RES_TO_F64;
 	    else if (tmpc->raw_type!=RT_F64 &&

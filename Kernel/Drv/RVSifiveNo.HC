@@ -10,6 +10,11 @@ I64 RVSifiveUartBase()
   return 0;
 }
 
+I64 RVSifiveUart1Base()
+{
+  return 0;
+}
+
 I64 RVSifiveClintBase()
 {
   return 0;
@@ -18,6 +23,41 @@ I64 RVSifiveClintBase()
 I64 RVSifivePlicBase()
 {
   return 0;
+}
+
+I64 RVSifiveTestBase()
+{
+  return 0;
+}
+
+I64 RVSifiveAonBase()
+{
+  return 0;
+}
+
+I64 RVSifiveGpioBase()
+{
+  return 0;
+}
+
+I64 RVSifiveGpioResetPin()
+{
+  return 32;
+}
+
+I64 RVSifivePrciBase()
+{
+  return 0;
+}
+
+I64 RVSifiveEthBase()
+{
+  return 0;
+}
+
+Bool RVSifiveCanReset()
+{
+  return FALSE;
 }
 
 U0 RVSifiveUartInit()
@@ -66,5 +106,25 @@ I64 RVSifivePlicClaim()
 }
 
 U0 RVSifivePlicComplete(I64 irq)
+{
+}
+
+Bool RVSifiveReset()
+{
+  return FALSE;
+}
+
+Bool RVSifivePowerOff()
+{
+  return FALSE;
+}
+
+U0 RVSifiveHalt()
+{
+  while (TRUE)
+    HLT;
+}
+
+U0 RVSifiveFault()
 {
 }

@@ -1,7 +1,7 @@
 // man.hc -- Man("Name"): integrated help. TempleOS Man jumps to a symbol's src / MN: page;
 // here Man prints a Unix-complete text page sourced from the `// Name --` doc block above
 // the definition, or from man_topics.hc for hardware/symbol topics (CLINT, PLIC, MEM_*, …).
-// Lookup is case-insensitive where practical. Template (TempleOS tone, Unix bar):
+// Lookup is case-insensitive where practical. Template (plain English + runnable examples):
 //
 //   // Name -- Name(args)
 //   // NAME
@@ -9,21 +9,20 @@
 //   // SYNOPSIS
 //   //   ret Name(args);
 //   // DESCRIPTION
-//   //   What it does / specification.
-//   // INPUTS
-//   //   arg - meaning
-//   // OUTPUTS
-//   //   return / side effects
-//   // BUGS
-//   //   Honest limitations (stubs, missing callers, port gaps).
+//   //   What it does, when to use it, caveats — no assumed expert jargon.
+//   // EXAMPLES
+//   //   Name(...);          // 1–3 copy-paste lines for the UART REPL
+//   // SEE ALSO
+//   //   RelatedFun  RelatedTopic
+//   // BUGS          (optional short limitations)
 //
 // Blocks are consecutive `//` lines. Stop at the next `// OtherFun --` or a blank line.
 // Section titles (NAME, DESCRIPTION, ...) are not boundaries -- only `// Ident --` is.
 // Prefer PutCh/UartStr here: Print varargs are fragile under the JIT frame spill.
 //
 // Manual sections (Unix-like; FunsS; groups by these, FunsSec(n); filters one):
-//   1 shell/cmds     Run Src Funs FunPick Man Help MemMap Regs Exec Reset  (funs.hc man.hc boot.hc)
-//   2 files/FS       Dir Cat Cd Copy Find File* DirMk                 (dir.hc files.hc)
+//   1 shell/cmds     Run Src Funs Man Help MemMap Regs Sys SafeMode Recover Reset  (funs.hc man.hc boot.hc ops.hc sys.hc)
+//   2 files/FS       Dir Cat Cd Copy Find File* Zmodem* FsChanges     (dir.hc files.hc zmodem.hc)
 //   3 terminal       PutCh GetCh Term* Uart*                          (term.hc uart.hc)
 //   4 editor         Ed Edit Vi EdC EditC                             (ed.hc edit.hc vim.hc)
 //   5 debug/runtime  Disasm Bp StkRep Reg RegHelp CpuRep CSR* Trap*   (debug/csr/disasm/trap/...)
@@ -35,11 +34,13 @@
 // SYNOPSIS
 //   U0 Sections();
 // DESCRIPTION
-//   Lists FunsS / FunsSec / FunSec section numbers used by the UART REPL help system.
-// INPUTS
-//   none
-// OUTPUTS
-//   Prints the legend on the UART; no return value.
+//   Lists the numbered help groups used by FunsS / FunsSec / FunSec. Use this when
+//   browsing which shell, file, editor, or debug APIs belong together.
+// EXAMPLES
+//   Sections;
+//   FunsSec(1);   // shell/cmds
+// SEE ALSO
+//   Help  Man  FunsS  FunsSec
 // BUGS
 //   Legend is hand-maintained; new seeds may need a FunSec map update in the REPL C.
 U0 Sections()
@@ -47,7 +48,7 @@ U0 Sections()
   UartStr("Manual sections (FunsS;  FunsSec(n);  FunSec(\"Name\")):\n");
   UartStr("  1 shell/cmds     2 files/FS     3 terminal\n");
   UartStr("  4 editor         5 debug/runtime  9 internal\n");
-  UartStr("Topics (not functions): Man(\"CLINT\"); Man(\"PLIC\"); Man(\"SiFive\");  see man_topics.hc\n");
+  UartStr("Topics (not functions): Man(\"CLINT\"); Man(\"PLIC\"); Man(\"Sys\");  see man_topics.hc\n");
   UartStr("HolyC seeds: uart/mem/print/str/term/...  (no C RuntimeRegister Man pages)\n");
 }
 // ManIdent -- ManIdent(c)
@@ -223,6 +224,8 @@ U0 ManPut(U8 *s, U8 *name)
 {
   I64 i, j, k, m, first;
   U8 *doc, *base;
+  if (!name)
+    name = "";
   if (!s) {
     UartStr("(no HolyC source -- a C builtin)\n");
     return;
@@ -236,7 +239,7 @@ U0 ManPut(U8 *s, U8 *name)
       i++;
     }
     PutCh('\n');
-    UartStr("(add // Name -- Name(...); then NAME/SYNOPSIS/DESCRIPTION/INPUTS/OUTPUTS/BUGS)\n");
+    UartStr("(add // Name -- Name(...); then NAME/SYNOPSIS/DESCRIPTION/EXAMPLES/SEE ALSO)\n");
     return;
   }
   s = doc;
@@ -285,7 +288,7 @@ U0 ManPut(U8 *s, U8 *name)
       i++;
     }
     PutCh('\n');
-    UartStr("(add // Name -- Name(...); then NAME/SYNOPSIS/DESCRIPTION/INPUTS/OUTPUTS/BUGS)\n");
+    UartStr("(add // Name -- Name(...); then NAME/SYNOPSIS/DESCRIPTION/EXAMPLES/SEE ALSO)\n");
   }
 }
 // ManHdr -- ManHdr()
@@ -396,7 +399,7 @@ I64 ManSrcCanon(U8 *name)
   }
   return 0;
 }
-// DocFileFor -- topic/symbol man pages live in man_topics.hc (redefines sym.hc stub)
+// DocFileFor -- topic/symbol man pages live in man_topics.hc (redefines stub)
 // NAME
 //   DocFileFor - memfs file holding a `// Name --` topic page
 U8 *DocFileFor(U8 *name)
@@ -406,9 +409,170 @@ U8 *DocFileFor(U8 *name)
     return 0;
   s = FileRead("man_topics.hc");
   if (!s)
+    s = FileRead("Doc/man_topics.hc");
+  if (!s)
     return 0;
   if (ManDoc(s, name))
     return "man_topics.hc";
+  return 0;
+}
+// ManUnitFor -- memfs basename whose `// Name --` documents Name
+// Explicit FileRead list (no U8*[] table — AOT pointer-index hazards).
+U8 *ManUnitFor(U8 *name)
+{
+  U8 *s, *path, *base;
+  I64 j, pass;
+  if (!name || !*name)
+    return 0;
+  for (pass = 0; pass < 18; pass++) {
+    if (pass == 0)
+      path = "print.hc";
+    else if (pass == 1)
+      path = "str.hc";
+    else if (pass == 2)
+      path = "mem.hc";
+    else if (pass == 3)
+      path = "files.hc";
+    else if (pass == 4)
+      path = "dir.hc";
+    else if (pass == 5)
+      path = "run.hc";
+    else if (pass == 6)
+      path = "fs.hc";
+    else if (pass == 7)
+      path = "uart.hc";
+    else if (pass == 8)
+      path = "boot.hc";
+    else if (pass == 9)
+      path = "man.hc";
+    else if (pass == 10)
+      path = "man_topics.hc";
+    else if (pass == 11)
+      path = "funs.hc";
+    else if (pass == 12)
+      path = "log.hc";
+    else if (pass == 13)
+      path = "Lib/print.hc";
+    else if (pass == 14)
+      path = "Lib/log.hc";
+    else if (pass == 15)
+      path = "Doc/man_topics.hc";
+    else if (pass == 16)
+      path = "Doc/man.hc";
+    else
+      path = "Apps/funs.hc";
+    s = FileRead(path);
+    if (!s)
+      continue;
+    if (ManDoc(s, name)) {
+      base = path;
+      for (j = 0; path[j]; j++)
+        if (path[j] == '/')
+          base = path + j + 1;
+      j = 0;
+      while (base[j] && j < 63) {
+        srcfile_buf[j] = base[j];
+        j++;
+      }
+      srcfile_buf[j] = 0;
+      return srcfile_buf;
+    }
+  }
+  return 0;
+}
+// SymFile -- SymFile("Name") (redefines sym.hc; srcmap first, then memfs Man scan)
+U8 *SymFile(U8 *name)
+{
+  U8 *f, *df;
+  I64 j;
+  if (!name || !*name)
+    return 0;
+  SymCanonInto(name, SymTmp);
+  f = SrcmapFileOf(SymTmp);
+  if (f) {
+    j = 0;
+    while (f[j] && j < 63) {
+      srcfile_buf[j] = f[j];
+      j++;
+    }
+    srcfile_buf[j] = 0;
+    return srcfile_buf;
+  }
+  f = ManUnitFor(SymTmp);
+  if (f)
+    return f;
+  f = ManUnitFor(name);
+  if (f)
+    return f;
+  if (FileLen(name) >= 0) {
+    j = 0;
+    while (name[j] && j < 63) {
+      srcfile_buf[j] = name[j];
+      j++;
+    }
+    srcfile_buf[j] = 0;
+    return srcfile_buf;
+  }
+  NameDotHc(SymTmp, srcfile_buf);
+  if (FileLen(srcfile_buf) >= 0)
+    return srcfile_buf;
+  NameDotHc(name, srcfile_buf);
+  if (FileLen(srcfile_buf) >= 0)
+    return srcfile_buf;
+  df = DocFileFor(name);
+  if (!df)
+    df = DocFileFor(SymTmp);
+  if (df) {
+    j = 0;
+    while (df[j] && j < 63) {
+      srcfile_buf[j] = df[j];
+      j++;
+    }
+    srcfile_buf[j] = 0;
+    return srcfile_buf;
+  }
+  return 0;
+}
+// SrcFile -- SrcFile("Name") (redefines sym.hc; keep srcmap spill for legacy)
+U8 *SrcFile(U8 *name)
+{
+  U8 *f, *s;
+  I64 n;
+  if (!name || !*name)
+    return 0;
+  f = SymFile(name);
+  if (f)
+    return f;
+  SymCanonInto(name, SymTmp);
+  s = SrcmapGet(SymTmp);
+  if (s) {
+    NameDotHc(SymTmp, srcfile_buf);
+    n = 0;
+    while (s[n])
+      n++;
+    FileWrite(srcfile_buf, s, n);
+    return srcfile_buf;
+  }
+  UartStr("SrcFile: no source for ");
+  UartStr(name);
+  UartStr("\n");
+  return 0;
+}
+// SrcText -- SrcText("Name") (redefines sym.hc; srcmap → ManUnitFor → topics)
+U8 *SrcText(U8 *name)
+{
+  U8 *s, *f;
+  if (!name || !*name)
+    return 0;
+  s = SrcmapGet(name);
+  if (s)
+    return s;
+  f = ManUnitFor(name);
+  if (f)
+    return FileRead(f);
+  f = DocFileFor(name);
+  if (f)
+    return FileRead(f);
   return 0;
 }
 // Man -- Man("Name")
@@ -417,25 +581,27 @@ U8 *DocFileFor(U8 *name)
 // SYNOPSIS
 //   U0 Man(U8 *name);
 // DESCRIPTION
-//   TempleOS Man opens src / help for a symbol. On the UART REPL this prints a structured
-//   text page (NAME/SYNOPSIS/DESCRIPTION/INPUTS/OUTPUTS/BUGS) from the seed doc block,
-//   plus address/size/section. Prefer Man over browsing raw source when learning an API.
-//   Also covers hardware/symbol topics in man_topics.hc (e.g. Man("CLINT"), Man("Clint")).
-//   Lookup is case-insensitive where practical (Print/print, CLINT/Clint).
-// INPUTS
-//   name - NUL-terminated symbol or topic (e.g. "Dir", "Print", "CLINT", "MEM_CLINT")
-// OUTPUTS
-//   UART man page; no return value
+//   Prints a short help page for a HolyC function or a hardware/topic name. Prefer this
+//   over reading raw source when learning an API. Pages come from the `// Name --` block
+//   above the definition, or from man_topics.hc for topics like CLINT / PLIC / SiFive.
+//   Lookup is case-insensitive where practical (Print/print, CLINT/Clint). Pass NULL or
+//   "" and you get "Man: nil" — never a crash. After the page, Uf/Src/Callers dig deeper.
+// EXAMPLES
+//   Man("Print");
+//   Man("Clint");     // same topic as Man("CLINT")
+//   Man("MemMap");
+// SEE ALSO
+//   Help  Src  Uf  Sections  CLINT  PLIC
 // BUGS
 //   No DolDoc / MN: hyperlinks yet. Missing doc blocks fall back to a definition snippet.
-//   Unknown names report "no such symbol". Topic pages (man_topics.hc) are not callable.
-//   Orphan SrcText with FnAddr=0 prints NOT IN REPL - do not treat as callable.
+//   Topic pages are documentation only (not callable). FnAddr=0 with orphan SrcText prints
+//   NOT IN REPL — do not treat that name as a live function.
 U0 Man(U8 *name)
 {
   I64 i, topic;
   U8 *src, *df;
-  if (!name) {
-    UartStr("Man: no such symbol\n");
+  if (!name || !*name) {
+    UartStr("Man: nil\n");
     return;
   }
   i = 0;
@@ -476,4 +642,29 @@ U0 Man(U8 *name)
   }
   ManHdr;
   ManPut(SrcText(ManNm), ManNm);
+}
+// SrcFileRep / FnSizeRep — UART reports (thin-image smoke; JIT Print %s is fragile)
+U0 SrcFileRep(U8 *name)
+{
+  U8 *f;
+  UartStr("SrcFile ");
+  if (name)
+    UartStr(name);
+  UartStr("=");
+  f = SrcFile(name);
+  if (f)
+    UartStr(f);
+  else
+    UartStr("(nil)");
+  PutCh('\n');
+}
+
+U0 FnSizeRep(U8 *name)
+{
+  UartStr("FnSize ");
+  if (name)
+    UartStr(name);
+  UartStr("=");
+  ManDec(FnSize(name));
+  PutCh('\n');
 }

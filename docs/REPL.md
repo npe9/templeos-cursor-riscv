@@ -11,6 +11,24 @@ syncconfig`) matches the active Kconfig board — CI default is **virt**. Flip b
 
 ## Run
 
+**Product paths (HolyC-only guest)** — see [SELF_HOST.md](SELF_HOST.md):
+
+```bash
+make                         # host holyc-riscv (bootstrap AOT; stays C)
+# A2 guest Cmp compile REPL (Kernel+Compiler_RV ExePutS):
+make repl-cmp && qemu-system-riscv64 -M virt -m 128M -bios none -kernel build/repl-cmp.elf -nographic
+make repl-cmp-smoke
+# Memfs/Dir honesty bridge (ExePutS→thin Jit; do not grow jit.hc):
+make repl-holyc
+qemu-system-riscv64 -M virt -bios none -kernel build/repl-holyc.elf -nographic
+make repl-holyc-smoke
+make repl-holyc-regression
+make bootloader-smoke        # split HolyC boot + payload
+```
+
+**Deprecated legacy C guest** (`worry_dream_repl.c`) — still **required** CI dual-run until A3 flip
+([SELF_HOST.md](SELF_HOST.md) blockers). Local: `SKIP_REPL_LEGACY=1 make qemu-integration`.
+
 ```bash
 make                         # host holyc-riscv (needed by some seeds / fmt bridges)
 make repl-blob               # rebuild boot runtime snapshot (after editing seed/*.hc)
@@ -22,9 +40,27 @@ qemu-system-riscv64 -M virt -bios none -kernel repl.elf -nographic
 
 Boot loads a **prebuilt HolyC snapshot** (`boot_blob_embed.h`, built by `make repl-blob` /
 `bootstrap/gen_boot_blob.py`) via one `run_source` of the concatenated seeds — not
-`Run("mem.hc")` per file. Individual `seed/*.hc` still land in memfs for live edit.
-The generator AOT-validates the concat with `holyc-riscv` when available
-(`bootstrap/boot_runtime.bin`).
+`Run("mem.hc")` per file. Individual seeds land in a hierarchical memfs (`Lib/print.hc`,
+`Tutorials/A01_RV64I.hc`, …). Bare names (`Run("print.hc")`, `Cat("boot.hc")`) still
+resolve while basenames stay unique. The generator AOT-validates the concat with
+`holyc-riscv` when available (`bootstrap/boot_runtime.bin`).
+
+### Memfs layout
+
+```
+/Home          user files (hello on the AOT guest)
+/Tmp           scratch
+/Boot          boot.hc, start.hc, trap/timer, MemMapSelected, …
+/Lib           print, str, fs, uart, mem, dir, files, run, …
+/Apps          Vi/Edit/Ed, Funs, Callers
+/Asm           asm_doc, asm_complete, disasm
+/Doc           man, man_topics, tutorial
+/Doc/Datasheet ds_uart.hc, ds_csr.hc, …
+/Tutorials     A01_*.hc, B*.hc, C*.hc
+```
+
+`Dir;` lists the current directory (subdirs as `name/`). `Cd("Tutorials");` `Pwd;`
+`MkDir("Home/Work");` (alias of TempleOS `DirMk`). Kernel/Drv is not in this REPL tree.
 
 Compile errors print as `file:line:col: error: …` (host `holyc-riscv` and the UART REPL).
 `ErrGo;` opens the preferred editor on the last error site.
@@ -32,8 +68,12 @@ Compile errors print as `file:line:col: error: …` (host `holyc-riscv` and the 
 From repo root:
 
 ```bash
-make repl-smoke              # automated UART cases
-make repl-regression         # hard Src / Man / FnSize / editor / trap gate
+make repl-cmp-smoke          # A2: guest Compiler_RV ExePutS UART loop
+make repl-holyc-smoke        # HolyC memfs/Dir bridge smoke
+make repl-holyc-regression   # HolyC honesty subset (expand toward full flip)
+make bootloader-smoke        # HolyC split-boot product path
+make repl-smoke              # deprecated legacy C guest
+make repl-regression         # deprecated legacy honesty gate
 ```
 
 See [tests/REGRESSION.md](../tests/REGRESSION.md) for what “PASS” must mean. Local emulator
@@ -47,10 +87,11 @@ make hc-repl-smoke
 ```
 
 Bridge only — **do not** add language features to `bootstrap/hc_repl/jit.hc`. Destination:
-guest `Compiler_RV` ([COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md)).
-Remaining C in `worry_dream_repl.c` (readline, UART drain, host compile slot,
-`RuntimeRegister`) is **bootstrap only** — kill toward HolyC seeds / `ExePutS`;
-see [MULTIARCH.md](MULTIARCH.md) §2.
+guest `Compiler_RV` via **`make repl-cmp`** ([COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md),
+[SELF_HOST.md](SELF_HOST.md) A2). Remaining C in **deprecated** `worry_dream_repl.c`
+(readline, UART drain, host compile slot, …) blocks the self-host story — migrate off it
+in A3, not because Mac `holyc-riscv` is going away. Host slots / `RuntimeRegister` as OS
+API: kill toward HolyC seeds / `ExePutS` — [MULTIARCH.md](MULTIARCH.md) §2.
 
 ## Boot welcome and history
 
@@ -77,15 +118,16 @@ printing a fresh **`> `** until braces/parens balance and the unit compiles.
 |--------|---------|
 | Define + call | `I64 Add(I64 a,I64 b){return a+b;}` then `Add(40,2);` → `0x2a` |
 | Print | `"x=%d\n", 42;` |
-| Edit source | `Src("Dir");` — opens default editor (Vi), `:w` / quit, then `Run` |
+| Edit source | `Src("Dir");` / `Src("hello.hc");` — preferred editor (Vi default); `:q` / `q` returns to REPL, then `Run` |
 | Goto def | Vi: `gd` / `^]` / Enter on symbol; EditHoly: `^]` / `^G`. Pushes a buffer session (memfs spill, depth 4) and loads `SrcFile("Name")` in the same editor loop; `:q` / `^X` pops. Resolve: srcmap file → srcmap text spill → memfs / `Name.hc` → `DocFileFor` (Man topics). No full TempleOS hash `SrcLink` yet. |
 | Man under cursor | Vi: `K` or `gM` → `Man(ident)` then press a key to redraw. EditHoly: `^K`. |
 | Format file | `Fmt("file.hc");` — host `HolyFmtSrc` (same as `holyc-riscv --fmt`) |
-| Help / symbols | `Help;` `Man("Print");` `Man("CLINT");` / `Man("Clint");` `SrcFile("Print");` |
-| Function picker | `Funs;` — grouped by topic (`Sections;`); type to filter, Tab=next topic, Enter=`Src`, `^G`=`Man`, Esc quit. Seed filter: `Funs("Uart");`. Dump: `FunsList;` |
-| Debug | `MemMap;` `Regs;` `StkRep;` (host-slot backed on `repl.elf` — honest C, not hollow labels). MemMap last column = HolyC driver (`MemMapDrvFind("uart")`, `Man("MemMap")`) |
+| Help / symbols | `Help;` `Man("Print");` `Man("CLINT");` / `Man("Clint");` `SrcFile("Print");` — on thin `repl-holyc`: same Man/topics + `FunsList;` / `SrcFileRep;` (interactive FunPick = legacy) |
+| Function picker | `Funs;` — grouped by topic (`Sections;`); type to filter, Tab=next topic, Enter=`Src`, `^G`=`Man`, Esc quit. Filter dump (no Esc): `Funs("Uart");`. Full dump: `FunsList;` |
+| Debug | `MemMap;` `Regs;` `StkRep;` `Bp(&Fn);` `U(pc-16);` — full matrix in [DEBUGGER.md](DEBUGGER.md). Host-slot Regs/StkRep on legacy `repl.elf`; watch/step WIP. MemMap last column = HolyC driver (`MemMapDrvFind("uart")`) |
 | Datasheet | `DsFind("uart");` `DsShow("mstatus");` `DsDecode("mstatus");` `Bits("uart.lsr", 0x21);` — bitfield decode from OS-owned sheets ([DATASHEET.md](DATASHEET.md), `Man("Datasheet")`) |
 | Tab complete | Partial token before cursor: functions / globals, **`#define`s** (`MEM_PLIC`, `MEM_UART`, … from live `define_table` / `csr.hc`), or memfs paths. Case-insensitive. `asm{}` → opcodes / GPRs / CSRs (`asm_complete.hc`). Editors use the same `CompTab` path. |
+| Export files | `DumpChanges;` / `ZmodemSend("boot.hc");` / `TrzszSend("boot.hc");` / `FsChanges;` / `ZmodemSendChanges;` / `TrzszSendChanges;` — UART framed dump, ZMODEM, or native trzsz ([FILE_EXPORT.md](FILE_EXPORT.md)). |
 
 `Man("Name")` covers HolyC functions (doc blocks above definitions) and **topics/symbols** in
 `bootstrap/seed/man_topics.hc` — hardware like **CLINT** / **PLIC**, `MEM_*` addresses, CSR
@@ -145,6 +187,10 @@ More: [COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md) (asm section).
 
 ## Related
 
+- [UART.md](UART.md) — serial primer, FIFOs, Ctrl-S/Ctrl-Q flow control
+- [DEBUGGER.md](DEBUGGER.md) — Regs / Bp / StkRep / trap freeze (watch/step WIP)
+- [FILE_EXPORT.md](FILE_EXPORT.md) — `DumpFile` / UART receive / 9p honesty (guest → host)
+- [NINEP.md](NINEP.md) — virtio-9p; prefer over terminal bulk copy
 - [DATASHEET.md](DATASHEET.md) — register bitfield sheets (`DsDecode` / `Bits`)
 - [IDE.md](IDE.md) — expected IDE behaviors (navigation, Src, Man, editing, ErrGo, gaps)
 - [ARCHITECTURE.md](ARCHITECTURE.md)

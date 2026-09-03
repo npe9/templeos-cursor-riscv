@@ -13,17 +13,6 @@
 #define RV_FB_PRESENT_NONE      0
 #define RV_FB_PRESENT_RAMFB     1
 #define RV_FB_PRESENT_SIMPLEFB  2
-// QEMU fw_cfg MMIO (virt): data@0 selector@8 dma@16. Base from Kconfig.
-#ifndef CONFIG_FW_CFG_BASE
-#define CONFIG_FW_CFG_BASE 0x10100000
-#endif
-#define RV_FWCFG_BASE       CONFIG_FW_CFG_BASE
-#define RV_FWCFG_DMA_HI     (CONFIG_FW_CFG_BASE+0x10)
-#define RV_FWCFG_DMA_LO     (CONFIG_FW_CFG_BASE+0x14)
-#define RV_FWCFG_FILE_DIR   0x19
-#define RV_FWCFG_DMA_READ   0x02
-#define RV_FWCFG_DMA_SELECT 0x08
-#define RV_FWCFG_DMA_WRITE  0x10
 // DRM fourcc XR24 (XRGB8888)
 #define RV_FB_FOURCC_XR24   ('X'|('R'<<8)|('2'<<16)|('4'<<24))
 class CRVFb
@@ -118,108 +107,51 @@ Bool RVFbSimpleFbTryBoard()
   return RVFbSimpleFbBind ((U32 *)CONFIG_SIMPLEFB_BASE, CONFIG_SIMPLEFB_WIDTH, CONFIG_SIMPLEFB_HEIGHT, CONFIG_SIMPLEFB_STRIDE, RV_FB_FOURCC_XR24);
 }
 
-U0 RVFwCfgDma(U32 control, U32 len, U8 *buf)
+I64 RVFbPixStride()
 {
-  //Issue one fw_cfg DMA op. control/len/addr in the descriptor are big-endian.
-  U32 dma[4];
-  // control, length, addr_lo, addr_hi — 16 bytes, U64 addr LE in dma[2..3]
-  I64 phys = &dma;
-  I64 be_addr;
-  dma[0] = EndianU32(control);
-  dma[1] = EndianU32(len);
-  // Store guest buffer address as BE U64 in dma[2]/dma[3]
-  be_addr = EndianI64(buf);
-  dma[2] = be_addr.u32[0];
-  dma[3] = be_addr.u32[1];
-  // Trigger: write BE phys addr of descriptor to DMA register (hi then lo).
-  OutU32(RV_FWCFG_DMA_HI, EndianU32(phys.u32[1]));
-  OutU32(RV_FWCFG_DMA_LO, EndianU32(phys.u32[0]));
-  I64 spins = 0;
-  while (dma[0]) {
-    if (EndianU32(dma[0]) & 1)
-      break;
-    spins++;
-    if (spins > 1000000)
-      break;
-    Yield;
-  }
+  //U32 pixels per row for indexing rv_fb.pixels[]. rv_fb.stride is bytes.
+  I64 n;
+  if (!rv_fb.stride)
+    return rv_fb.width;
+  n = rv_fb.stride >> 2;
+  if (n < rv_fb.width)
+    n = rv_fb.width;
+  return n;
 }
 
 Bool RVFbProbeRamfb()
 {
   //TRUE if fw_cfg lists etc/ramfb (QEMU `-device ramfb`). Safe under `-nographic` without ramfb.
-  U32 count = 0;
-  U8 ent[64];
-  I64 i, j;
-  Bool found = FALSE;
-  RVFwCfgDma ((RV_FWCFG_FILE_DIR << 16) | RV_FWCFG_DMA_SELECT | RV_FWCFG_DMA_READ, 4, &count);
-  count = EndianU32(count);
-  if (!count || count > 512)
-    return FALSE;
-  for (i = 0; i < count; i++) {
-    RVFwCfgDma(RV_FWCFG_DMA_READ, 64, ent);
-    Bool match = TRUE;
-    U8 *want = "etc/ramfb";
-    for (j = 0; want[j]; j++)
-      if (ent[8 + j] != want[j]) {
-        match = FALSE;
-        break;
-      }
-    if (match && !ent[8 + j]) {
-      found = TRUE;
-      break;
-    }
-  }
-  return found;
+  return RVFwCfgFind("etc/ramfb") >= 0;
 }
 
 Bool RVFbPresentRamfb()
 {
   //Locate etc/ramfb via fw_cfg and point it at rv_fb.pixels. Requires `-device ramfb`.
-  U32 count = 0;
-  U8 ent[64];
-  I64 i, j;
-  U16 sel = 0;
-  Bool found = FALSE;
+  // QEMU maps guest RAM as the scanout; rewriting etc/ramfb every frame recreates
+  // DisplaySurfaces (cocoa/SDL crash / leak). Configure once.
+  I64 sel;
+  I64 i;
+  if (rv_fb.backend == RV_FB_PRESENT_RAMFB && rv_fb.present_ok && rv_fb.pixels)
+    return TRUE;
   if (!rv_fb.pixels)
     return FALSE;
-  RVFwCfgDma ((RV_FWCFG_FILE_DIR << 16) | RV_FWCFG_DMA_SELECT | RV_FWCFG_DMA_READ, 4, &count);
-  count = EndianU32(count);
-  if (!count || count > 512)
-    return FALSE;
-  for (i = 0; i < count; i++) {
-    RVFwCfgDma(RV_FWCFG_DMA_READ, 64, ent);
-    // name at offset 8
-    Bool match = TRUE;
-    U8 *want = "etc/ramfb";
-    for (j = 0; want[j]; j++)
-      if (ent[8 + j] != want[j]) {
-        match = FALSE;
-        break;
-      }
-    if (match && !ent[8 + j]) {
-      sel = EndianU16 ((&ent[4])(U16 *)[0]);
-      found = TRUE;
-      break;
-    }
-  }
-  if (!found)
+  sel = RVFwCfgFind("etc/ramfb");
+  if (sel < 0)
     return FALSE;
   // RAMFBCfg: addr(u64) fourcc flags width height stride — all BE
   U8 cfg[28];
-  MemSet(cfg, 0, 28);
+  for (i = 0; i < 28; i++)
+    cfg[i] = 0;
   I64 be_fb = EndianI64(rv_fb.pixels);
   MemCpy(cfg, &be_fb, 8);
   U32 fourcc = EndianU32(RV_FB_FOURCC_XR24);
   MemCpy(cfg + 8, &fourcc, 4);
-  U32 z = 0;
-  MemCpy(cfg + 12, &z, 4);
-  // flags
   U32 w = EndianU32(rv_fb.width), h = EndianU32(rv_fb.height), st = EndianU32(rv_fb.stride);
   MemCpy(cfg + 16, &w, 4);
   MemCpy(cfg + 20, &h, 4);
   MemCpy(cfg + 24, &st, 4);
-  RVFwCfgDma ((sel << 16) | RV_FWCFG_DMA_SELECT | RV_FWCFG_DMA_WRITE, 28, cfg);
+  RVFwCfgWriteSel(sel, cfg, 28);
   rv_fb.backend = RV_FB_PRESENT_RAMFB;
   rv_fb.present_ok = TRUE;
   return TRUE;

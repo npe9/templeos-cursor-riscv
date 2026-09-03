@@ -19,9 +19,103 @@
 //   Print("%X\n", MEM_UART);
 //   Print("%s\n", MemMapDrvFind("uart"));
 // SEE ALSO
-//   MemMapDrv  MemMapDrvFind  MemMapFind  CLINT  PLIC  UART  RegHelp  SiFive
+//   MemMapDrv  MemMapDrvFind  MemMapFind  CLINT  PLIC  UART  RegHelp  SiFive  Regs
 // BUGS
 //   REPL MemMap uses host slots for live JIT sizes. Addresses are this profile's MEM_*.
+// Regs -- Regs()
+// NAME
+//   Regs - dump GPRs and M-mode CSRs
+// SYNOPSIS
+//   Regs;  Dr;
+// DESCRIPTION
+//   Snapshots general-purpose registers at stub entry into MEM_REGS_SNAP, prints
+//   each as xN/abi (e.g. x10/a0) with a one-line role hint, then M-mode CSRs
+//   with CsrExplainVal bitfield decode (set fields only). Reg("name") accepts
+//   any alias: x10, a0, fp (→s0), REG_SP, case-insensitive. CSR dig-down also
+//   via CsrExplain("mstatus") or Bits("mstatus") (datasheet tables).
+//   Values are frozen at Regs/Reg stub entry (snap+restore) — not mid-expression.
+//   Dig-down: RegHelp; Man("ABI"); Man("Reg"); docs/DEBUGGER.md.
+// EXAMPLES
+//   Regs;
+//   asm { li a0, 42 }; Reg("a0"); Reg("x10");
+//   Reg("mstatus");  CsrExplain("mcause");
+//   Man("ABI");
+// SEE ALSO
+//   Reg  RegHelp  ABI  MemMap  StkRep  CLINT  CSR  Debugger
+// BUGS
+//   FPR names (fa0, ft0) are asm{} / RegHelp only — not Reg() GPR dig-down yet.
+// ABI -- ABI (RISC-V calling convention)
+// NAME
+//   ABI - RISC-V integer register naming and calling convention
+// SYNOPSIS
+//   Man("ABI");  RegHelp;  Run("A02_RegsABI.hc");
+// DESCRIPTION
+//   RV64 has 32 GPRs (x0..x31). The psABI gives each a role:
+//     x0 / zero — hardwired 0; writes discarded
+//     ra (x1)   — return address (jal link)
+//     sp (x2)   — stack pointer
+//     gp (x3)   — global pointer; tp (x4) — thread pointer
+//     t0..t6    — temporaries (caller-saved; clobbered across calls)
+//     s0..s11   — saved registers (callee-saved); s0 is also fp (frame pointer)
+//     a0..a7    — function arguments and return values
+//   Calling convention (integer, this REPL/compiler):
+//     • First eight integer args in a0..a7; additional args on the stack.
+//     • Return value in a0 (a1 for 128-bit pairs when used).
+//     • Callee saves s0..s11 (and must preserve sp); may clobber t* and a*.
+//     • ra holds the return address; sp must stay valid across calls.
+//   Reg("name") resolves xN, ABI names, fp→s0, and REG_* constants. Regs prints
+//   xN/abi pairs. Tutorial lab: Run("A02_RegsABI.hc") under /Tutorials.
+// EXAMPLES
+//   Man("ABI");
+//   asm { li a0, 1; li a1, 2; add a0, a0, a1 }; Reg("a0");
+//   Reg("fp"); Reg("x08");
+// SEE ALSO
+//   Reg  Regs  RegHelp  A02_RegsABI  Asm  Debugger  CSR
+// BUGS
+//   Float ABI (fa0..fa7, fs*) is for asm{} only here — no Reg("fa0") yet.
+// Reg -- Reg(name)
+// NAME
+//   Reg - read one GPR or named CSR by symbolic name
+// SYNOPSIS
+//   I64 Reg(U8 *name);
+// DESCRIPTION
+//   Snap+restore one register (same stub entry as Regs). Accepts:
+//     • Numeric: x0..x31 (case-insensitive x10 / X10)
+//     • ABI: zero, ra, sp, gp, tp, t0..t6, s0..s11, a0..a7
+//     • Synonyms: fp → s0 (x08); REG_SP, REG_A0, … (REG_ prefix optional)
+//   Prints xN/abi = value plus a short role line. CSRs: mstatus, mepc, mcause,
+//   mie, mip, mtvec, mtval, mscratch, misa, satp, mhartid, mtime (MMIO).
+//   CSR names auto-decode set bitfields (MIE, MPP, MEIE, mcause code names, …).
+//   CsrExplain("mstatus"); and Bits("mie"); use the same field tables.
+//   Returns the value (or -1 on unknown name). Use on the same eval line as
+//   asm{} before the REPL clobbers caller-saved regs.
+// EXAMPLES
+//   asm { li a7, 20; addi a7, a7, -4 }; Reg("a7");
+//   Reg("x10");   // same GPR as Reg("a0")
+//   Reg("sp"); Reg("mstatus");
+//   CsrExplain("mcause");  Bits("mie");
+//   Man("ABI"); RegHelp;
+// SEE ALSO
+//   Regs  Reg  RegHelp  ABI  Bits  CsrExplain  GetMStatus  Debugger
+// BUGS
+//   Stub-entry snap only — not live mid-prologue. Same-line asm{…}; Reg required.
+// a0 -- a0 (x10, first argument / return)
+// NAME
+//   a0 - first integer argument and primary return register
+// SYNOPSIS
+//   Reg("a0");  Reg("x10");
+// DESCRIPTION
+//   a0 is x10 in the numeric encoding. HolyC passes the first integer argument
+//   in a0 and returns scalar results in a0 (TempleOS / RISC-V psABI). Caller-saved:
+//   callees may overwrite it unless they are leaf functions you control. After
+//   asm { … }; on the same REPL line, Reg("a0") shows what your snippet left there.
+// EXAMPLES
+//   asm { li a0, 99 }; Reg("a0");
+//   I64 Echo(I64 x) { return x; } Echo(42);  // result in a0 at machine level
+// SEE ALSO
+//   ABI  Reg  Regs  A02_RegsABI
+// BUGS
+//   Topic-only — use Reg("a0") for live dig-down, not Man("a0") as a function.
 // CLINT -- CLINT (Core-Local Interruptor)
 // NAME
 //   CLINT - Core-Local Interruptor (machine timer + soft IRQ)
@@ -214,16 +308,54 @@
 //   HolyC seed csr.hc exposes M-mode trap/timer CSRs plus delegation
 //   (medeleg/mideleg/mcounteren), counters (mcycle/minstret and cycle/instret),
 //   and S-mode mirrors (sstatus/sie/stvec/sepc/scause/stval/sip) even while the
-//   REPL stays M-mode. Dig-down: Reg("name"); Man("Regs").
+//   REPL stays M-mode. Dig-down: Reg("name"); CsrExplain("mstatus");
+//   Bits("mie"); Man("Regs"). CsrDecode* prints set bitfields (MIE/MPP/FS,
+//   mcause exception names, mtvec MODE/BASE, …). Datasheet tables: ds_csr.hc.
 // EXAMPLES
 //   Regs;
 //   Reg("mstatus");
+//   CsrExplain("mcause");
+//   CsrDecodeMstatus(GetMStatus());
 //   Print("%X\n", GetMCycle());
 //   Print("%X\n", CSRGet(CSR_MEDELEG));
 // SEE ALSO
-//   Regs  Reg  RegHelp  CSRGet  CSRSet  GetMStatus  AsmRV  MIE  MTIE
+//   Regs  Reg  RegHelp  CSRGet  CSRSet  GetMStatus  CsrExplain  Bits  AsmRV  MIE  MTIE
 // BUGS
-//   Unknown CSRGet numbers return 0 (no illegal-instruction probe).
+//   Unknown CSRGet numbers return 0 (no illegal-instruction probe). Hypervisor
+//   CSRs (hstatus, hedeleg, …) not decoded yet.
+// mstatus -- mstatus (machine status CSR)
+// NAME
+//   mstatus - machine status register (CSR 0x300)
+// SYNOPSIS
+//   Reg("mstatus");  GetMStatus;  CsrExplain("mstatus");  Bits("mstatus");
+// DESCRIPTION
+//   Global interrupt enables (UIE/SIE/MIE), prior IE bits (UPIE/SPIE/MPIE),
+//   prior privilege (MPP/SPP), FP/vector/extension dirty state (FS/VS/XS),
+//   VM helpers (MPRV/SUM/MXR/TVM/TW/TSR), and XLEN fields (UXL/SXL/SD).
+//   Reg and Regs auto-decode set fields via CsrDecodeMstatus. TrapInit sets MIE.
+// EXAMPLES
+//   Reg("mstatus");
+//   CsrDecodeMstatus(0x8000000A00006088);
+// SEE ALSO
+//   MIE  MTIE  CSR  Reg  Bits  Man("CSR")
+// BUGS
+//   Topic-only — use Reg/GetMStatus for live values.
+// mcause -- mcause (trap cause CSR)
+// NAME
+//   mcause - trap cause register (CSR 0x342)
+// SYNOPSIS
+//   Reg("mcause");  GetMcause;  CsrExplain("mcause");
+// DESCRIPTION
+//   Bit 63: interrupt (1) vs exception (0). Low bits: cause code. CsrDecodeMcause
+//   names common codes (breakpoint=3, ecall U/S/M=8/9/11, load fault=5, MEI=11, …).
+//   Pair with mepc (return PC) and mtval (faulting addr or insn bits).
+// EXAMPLES
+//   Reg("mcause");
+//   CsrDecodeMcause(0x800000000000000B);  // MEI
+// SEE ALSO
+//   mepc  mtval  TrapDump  CSR  Reg
+// BUGS
+//   Custom platform interrupt codes may show as numeric only.
 // AsmRV -- AsmRV (asm{} mnemonics)
 // NAME
 //   AsmRV - host/guest asm{} mnemonic surface (RV64IM + A subset)
@@ -295,7 +427,8 @@
 //   slots (MEM_VIRTIO..), brings up RX/TX queues, TX/RX ethernet frames (10-byte
 //   virtio_net_hdr + payload). Polled RX: VirtioNetRx / VirtioNetRxDrain +
 //   VirtioNetSetRxCb. PLIC helpers: VirtioNetIrqInit / IrqAck / IrqService
-//   (trap-vector MEIE wire-up still deferred). Smoke: make kernel-virtio-net-smoke
+//   (IrqInit sets mie.MEIE; trap ACK via HolyServiceExternal / RVVirtioPciIsrReg
+//   for PCI INTx). AIA MSI-X→IMSIC deferred on virt PLIC. Smoke: kernel-virtio-net-smoke
 //   (UART: virtio-net: tx_ok + rx_ok via RxSelfTest). Enable: CONFIG_HAS_VIRTIO_NET.
 // EXAMPLES
 //   // MMIO — identity (read-only safe); DeviceID 1 = net
@@ -330,6 +463,34 @@
 //   VirtioNet  VirtioBlk  MemMap  RVVirtioPlat
 // BUGS
 //   Callable VirtioInput* live under Kernel/Drv; smoke does not inject keys.
+// NAME
+//   VirtioConsole - HolyC virtio-mmio console (DeviceID 3)
+// SYNOPSIS
+//   Man("VirtioConsole");  VirtioConsoleInit;  VirtioConsolePuts("hi");
+// DESCRIPTION
+//   Kernel/Drv/VirtioConsole.HC: port-0 receiveq/transmitq. TX via
+//   VirtioConsoleWrite/Puts; RX via VirtioConsoleRead. PLIC helpers match
+//   VirtioNet. Smoke: make kernel-virtio-console-smoke (UART: virtio-console: tx_ok).
+// SEE ALSO
+//   VirtioNet  VirtioInput  MemMap  RVVirtioPlat
+// NAME
+//   VirtioBalloon - HolyC virtio-mmio balloon (DeviceID 5)
+// SYNOPSIS
+//   Man("VirtioBalloon");  VirtioBalloonInit;  VirtioBalloonInflate(1);
+// DESCRIPTION
+//   Kernel/Drv/VirtioBalloon.HC: inflate/deflate PFN lists from a fixed page pool.
+//   Smoke: make kernel-virtio-balloon-smoke (UART: virtio-balloon: ok).
+// SEE ALSO
+//   VirtioConsole  VirtioScsi  MemMap
+// NAME
+//   VirtioScsi - HolyC virtio-mmio SCSI HBA (DeviceID 8)
+// SYNOPSIS
+//   Man("VirtioScsi");  VirtioScsiInit;  VirtioScsiInquiry;  VirtioScsiReadLba;
+// DESCRIPTION
+//   Kernel/Drv/VirtioScsi.HC: control/event/request queues; INQUIRY + READ(10).
+//   Smoke: make kernel-virtio-scsi-smoke (UART: virtio-scsi: ok).
+// SEE ALSO
+//   VirtioBlk  DskVirtioRV  MemMap
 // VirtioBlk -- VirtioBlk (virtio-mmio block)
 // NAME
 //   VirtioBlk - legacy virtio-mmio block (DeviceID 2)
@@ -360,16 +521,37 @@
 //   TempleOS-shaped multicore: hart 0 is master (UART REPL / OS). Secondaries park
 //   on per-hart stacks (crt0_smp / startup.s) then run one mailbox job — not N REPLs.
 //   QEMU virt: -smp N -bios none. Mailbox @ 0x87001E00. CLINT MSIP wakes WFI when
-//   mie.MSIE is set; the smoke path also busy-polls the mailbox.
+//   mie.MSIE is set (crt0_smp enables it on secondaries).
 //   Atomics: LXchgI64=amoswap.d, LBts/LBtr/LBtc=LR/SC, lock=amoswap spin @ 0x87001F00.
 //   Optional smoke: make kernel-smp-smoke. OpenSBI HSM is for firmware-hosted boards.
 // EXAMPLES
 //   Man("SMP");
 //   Man("RVSmpWake");
 // SEE ALSO
-//   RVHartId  RVSmpWake  LXchgI64  LBts  lock  CLINT
+//   RVHartId  RVSmpWake  RVSmpWakeHart  RVSmpMpCnt  LXchgI64  LBts  lock  CLINT
 // BUGS
-//   Single mailbox only — full Seth JobQue / mp_cnt finalize still TODO.
+//   Single mailbox only — full Seth JobQue / TempleOS mp_cnt finalize still TODO.
+// GoldfishRTC -- GoldfishRTC (topic)
+// NAME
+//   GoldfishRTC - QEMU virt wall-clock RTC
+// SYNOPSIS
+//   RVRtcReadNs;  RVRtcPresent;  Now;
+// DESCRIPTION
+//   Goldfish RTC @ CONFIG_RTC_BASE (virt 0x101000). TIME_LOW latches TIME_HIGH.
+//   KDate NowDateTimeStruct uses RVRtc when CONFIG_HAS_GOLDFISH_RTC.
+//   Smoke: make kernel-rtc-smoke.
+// SEE ALSO
+//   Now  NowDateTimeStruct  MemMap  fw_cfg
+// fw_cfg -- fw_cfg (topic)
+// NAME
+//   fw_cfg - QEMU firmware config DMA
+// SYNOPSIS
+//   RVFwCfgSigOk;  RVFwCfgFind("etc/ramfb");  RVFwCfgFileCount;
+// DESCRIPTION
+//   MMIO @ CONFIG_FW_CFG_BASE. DMA descriptor + file-dir Find/Read/Write.
+//   ramfb present uses Find+WriteSel. Smoke: make kernel-fwcfg-smoke.
+// SEE ALSO
+//   RVFb  MemMap  GoldfishRTC
 // LXchgI64 -- LXchgI64 (topic)
 // NAME
 //   LXchgI64 - atomic exchange (amoswap.d)
@@ -409,6 +591,54 @@
 //   Run  Src  Edit  Vi  Ed
 // BUGS
 //   Prints "ErrGo: no error" if nothing jumpable was recorded yet.
+// SafeMode -- SafeMode (ops recovery)
+// NAME
+//   SafeMode - UART operate-through: FsCheckpoint + export/reset recipe
+// SYNOPSIS
+//   SafeMode;
+// DESCRIPTION
+//   Live U0 SafeMode() is in ops.hc (full UART REPL boot blob). Pins a
+//   "safemode" epoch when the memfs journal is ready. No WinMgr. Export with
+//   FsChanges / DumpChanges before Reset. Soft reseed: Man("Recover").
+// EXAMPLES
+//   Man("SafeMode");
+//   SafeMode;
+// SEE ALSO
+//   Recover  FsRecover  FsReplay  Reset  FsChanges  FsCheckpoint  DumpChanges
+// BUGS
+//   Topic mirrors ops.hc; prefer Man("SafeMode") after Run of boot blob.
+// Recover -- Recover (soft reseal)
+// NAME
+//   Recover - drop non-snap session files and FsEpochSealNamed(RECOVER)
+// SYNOPSIS
+//   Recover;
+// DESCRIPTION
+//   MEMFS_LOG P6. ops.hc Recover calls FsRecover: drops slots not in the snap
+//   table, reseals a bumped epoch labeled RECOVER. FsReplay verifies journal
+//   vs tree (no body rewrite). Mutated snap seeds stay until power-cycle.
+// EXAMPLES
+//   DumpChanges;
+//   FsReplay;
+//   Recover;
+// SEE ALSO
+//   FsRecover  FsReplay  SafeMode  Reset  FsSnap  FsEpochSealNamed
+// BUGS
+//   No host-blob reinstall of pristine seed bytes — honest soft recover only.
+// FsReplay -- FsReplay (journal verify)
+// NAME
+//   FsReplay - check memfs against the change journal since an epoch
+// SYNOPSIS
+//   FsReplay;  FsReplay(0);
+// DESCRIPTION
+//   Walks journal records and reports OK / MISS / DRIFT. Does not rewrite
+//   file bodies (log has metadata only). See fs.hc / MEMFS_LOG P6.
+// EXAMPLES
+//   FileWrite("Home/t.hc", "x", 1);
+//   FsReplay;
+// SEE ALSO
+//   FsRecover  Recover  FsLog  FsChanges
+// BUGS
+//   WRAP means history was compacted — remaining ring only.
 // Reset -- Reset (soft + board)
 // NAME
 //   Reset - soft Boot re-entry; board HW via RVSifiveReset / HardReset
@@ -417,11 +647,12 @@
 // DESCRIPTION
 //   Soft Reset re-enters Boot (REPL stack clean) — not a chip power cycle. HardReset
 //   pokes the MEM_TEST finisher when present. SiFive board HW paths: Man("SiFive").
+//   Operate-through: Man("SafeMode"); Man("Recover"); docs/OPS.md.
 // EXAMPLES
 //   Man("Reset");   // see trap.hc page for the live U0 Reset()
 //   Help;
 // SEE ALSO
-//   SiFive  Halt  Fault  Boot  HardReset
+//   SafeMode  Recover  SiFive  Halt  Fault  Boot  HardReset
 // Halt -- Halt (topic)
 // NAME
 //   Halt - park CPU in wfi (see trap.hc Halt / RVSifiveHalt)
@@ -433,17 +664,104 @@
 //   Man("Halt");    // live function page is in trap.hc
 // SEE ALSO
 //   Reset  HardReset  SiFive
+// Debugger -- Debugger (topic)
+// NAME
+//   Debugger - UART REPL dig-down (Regs Bt Bp Watch Step TrapDump CrashMon)
+// SYNOPSIS
+//   Man("Debugger");
+//   DbgHelp;  Regs;  Bt;  Bp(&Fn);  Watch(&x);  Step;  TrapDump;
+//   CrashHelp;  Fault;  // crash> md/mw/regs/bt/go
+//   HwTrigProbe;  HwHelp;  // hardware triggers / host gdb twin
+// DESCRIPTION
+//   In-guest debugger for the HolyC UART REPL. Regs/Reg snap+restore GPRs
+//   (MEM_REGS_SNAP). Bp patches ebreak; DbgTrap dumps and continues (BpStop
+//   aborts to prompt). Bt walks FP frames (trap freeze or live). Watch is a
+//   soft compare; HwWatch/HwBreak use Sdtrig mcontrol when present (hwdbg.hc).
+//   Step/StepOver arm one-shot next-insn / ra breakpoints (not dcsr.step).
+//   TrapDump prints mcause/mepc/mtval + saved GPRs. Product path default
+//   CrashOnTrap dumps + crash> monitor (CONSOLE #9). Full matrix: docs/DEBUGGER.md.
+//   Host gdb/OpenOCD: make hwdbg-smoke / docs/BAREMETAL.md.
+//   UART GDB RSP: GdbStub; / make gdb-uart-smoke.
+// EXAMPLES
+//   DbgHelp;
+//   I64 Add(I64 a,I64 b){return a+b;} Bp(&Add); Add(11,22);
+//   I64 w; Watch(&w); w=3; WatchChk;
+//   Fault;  // crash> go
+//   HwTrigProbe; HwHelp;
+//   GdbHelp;
+// SEE ALSO
+//   Regs  Bt  Bp  Watch  Step  TrapDump  CrashMon  DbgHelp  HwDbg  GdbStub  StkRep  RegHelp
+// BUGS
+//   No interactive Dbg shell; dcsr.step is Debug-mode only (use host gdb stepi).
+// CrashMon -- CrashMon (topic)
+// NAME
+//   CrashMon - post-fault UART monitor (md/mw/regs/bt/reboot)
+// SYNOPSIS
+//   Man("CrashMon");  CrashHelp;  Fault;  CrashDump;  CrashMon;
+// DESCRIPTION
+//   CONSOLE wishlist #9 on product repl-holyc. Boot SetTrapFn(&CrashOnTrap)
+//   (no mtvec); TrapInitOnce on Fault keeps the handler. Sync faults print
+//   cause/PC/SP/regs/bt then crash>. Commands: help regs bt pc dump|snap
+//   md [ADDR|pc|sp|fp|snap] [N]  da ADDR [N]  mw ADDR VAL
+//   go|cont|q reboot|reset hard|hardreset. Seed: bootstrap/seed/crash.hc.
+//   FB twin: Kernel RVWinSerial + host RVCrashMon* (same cmd vocabulary while
+//   WinMgr runs — BOARD_FB.md). Not the AOT ExePutS REPL.
+// EXAMPLES
+//   CrashMon;          // crash> md / go
+//   Fault;             // needs G2 TrapInitOnce for auto-enter
+//   CrashHelp; Man("CrashMon");
+// SEE ALSO
+//   CrashDump  CrashOnTrap  Md  Mw  TrapDump  Regs  Bt  Reset  Debugger  Fault
+// BUGS
+//   Auto Fault→crash> blocked while G2 mtvec install is WIP. Nested faults
+//   possible if md/mw leave DRAM; no JIT eval inside crash>.
+// HwDbg -- HwDbg (topic)
+// NAME
+//   HwDbg - hardware triggers (Sdtrig) + host gdbstub twin
+// SYNOPSIS
+//   Man("HwDbg");  HwHelp;  HwTrigProbe;  HwWatch(&x);  HwBreak(&F);
+// DESCRIPTION
+//   Guest APIs in hwdbg.hc program tselect/tdata1/tdata2 for M-mode store or
+//   execute match (action=breakpoint → DbgTrap). Probe with HwTrigProbe (QEMU
+//   virt typically tinfo=0x44). Soft Watch/Bp/Step remain in debug.hc. Host:
+//   make hwdbg-smoke attaches riscv64-*-gdb to QEMU -S -gdb.
+// EXAMPLES
+//   HwTrigProbe;
+//   I64 w; HwWatch(&w); w=1; HwClr;
+// SEE ALSO
+//   Debugger  Watch  Bp  Step  HwHelp  GdbStub  docs/DEBUGGER.md
+// BUGS
+//   dcsr not writable from M-mode; FE310 needs OpenOCD for JTAG attach.
+// GdbStub -- GdbStub (topic)
+// NAME
+//   GdbStub - GDB remote serial protocol over UART
+// SYNOPSIS
+//   Man("GdbStub");  GdbHelp;  GdbStub;
+// DESCRIPTION
+//   Cooperative guest RSP stub (gdbstub.hc). Emits $HC_GDB$, speaks ?, g, G, m,
+//   M, p, Z0/z0 (soft Bp), soft-step s, c→S05, qSupported (swbreak+), D on raw
+//   UART. GdbUseMux ch2 flag (TX still raw). Host: uart_gdb_proxy.py /
+//   make gdb-uart-smoke. Soft Regs/Bp unchanged; qemu -gdb is hwdbg-smoke.
+// EXAMPLES
+//   GdbHelp; GdbStub;
+// SEE ALSO
+//   GdbHelp  Debugger  HwDbg  Regs  Bp  Step
+// BUGS
+//   No live resume while attached; soft-step is arm-only; PC is trap mepc or ra.
 // Fault -- Fault (topic)
 // NAME
 //   Fault - deliberate illegal insn for trap testing
 // SYNOPSIS
+//   Fault;   // product: CrashOnTrap → dump → crash>
 //   SetTrap("OnTrap"); TrapInit; Fault;
 // DESCRIPTION
 //   Forces an illegal-instruction trap so you can test SetTrap handlers.
+//   On repl-holyc, default CrashOnTrap dumps + enters CrashMon (type go).
 // EXAMPLES
+//   Fault;  // crash> go
 //   SetTrap("OnTrap"); TrapInit; Fault;
 // SEE ALSO
-//   SetTrap  TrapInit  Break  SiFive  pc
+//   CrashMon  CrashOnTrap  SetTrap  TrapInit  Break  SiFive  pc
 // pc -- pc (last trap PC)
 // NAME
 //   pc - last trap/fault program counter (_RIP analogue)
@@ -462,14 +780,74 @@
 //   U  UA  Uf  _RIP  Dr  Regs  Fault  GetMepc
 // BUGS
 //   Not a live sampler of the REPL eval IP — only last trap epc (and boot seed).
+// Sys -- Sys (/proc-ish inspection)
+// NAME
+//   Sys - UART OS system inspection (uptime / mem / irq / devices / cnts)
+// SYNOPSIS
+//   Sys;  Uptime; MemRep; IrqRep; DevRep; Cnts;  SysHelp;
+// DESCRIPTION
+//   /proc-like helpers for the UART console (CONSOLE.md #10). Seed: sys.hc.
+//   Sys dumps everything; individuals print one section. No ps/task table yet
+//   (single REPL). Timebase ≈ SYS_TIMEBASE (10 MHz virt). Prefer MemMap for
+//   address dig-down; DevRep is the compact device inventory.
+// EXAMPLES
+//   Sys;
+//   Uptime; MemRep;
+//   Man("Sys");
+// SEE ALSO
+//   Uptime  MemRep  IrqRep  DevRep  Cnts  CpuRep  MemMap  DMesg  Help
+// BUGS
+//   No mounts/ps; PLIC claim not read (would claim IRQ).
+// Term -- Term (size / type negotiation)
+// NAME
+//   Term - UART terminal geometry and type (rows/cols/termname)
+// SYNOPSIS
+//   TermSize(80,24);  TermSetSize(24,80);  TermNameAnsi; TermNameXterm;
+//   TermRows; TermCols; TermName; TermRep; TermQuery; TermProbe; TermHelp;
+// DESCRIPTION
+//   Guest stores COLUMNS×LINES and a TERM-ish name (CONSOLE.md #11). Defaults
+//   80×24 / "ansi". HolyC TermSize is cols-first; TermSetSize is rows-first.
+//   Optional query: TermQuery / TermProbe (DSR CPR + ESC[18t) needs a real PTY.
+//   Host push while TermProbe/editors own RX:
+//     ESC [ 8 ; rows ; cols t
+//     ESC ] 777 ; cols ; rows ; name BEL
+// EXAMPLES
+//   TermSize(80,24); TermSetName("xterm"); TermRep;
+//   TermQuery;  // or TermProbe;
+//   Man("Term"); TermHelp;
+// SEE ALSO
+//   TermSize  TermSetSize  TermName  TermRep  TermProbe  TermQuery  TermHelp  Help
+// BUGS
+//   Piped QEMU smoke has no emulator reply — probe times out, defaults stick.
+// Vt -- Vt (soft console mux)
+// NAME
+//   Vt - soft-switch virtual terminals over one UART (tmux-ish stub)
+// SYNOPSIS
+//   Vt(1);  VtAttach(1);  VtDetach;  VtNext; VtPrev;  VtList;
+//   VtPutStr("note");  VtCapture(1);  VtKeys(1);  VtClear;  VtHelp;
+// DESCRIPTION
+//   CONSOLE.md #4 / G25. Four soft VTs (VT0=REPL). Switch prints a banner and
+//   replays that VT's scrollback. VtAttach aliases Vt; VtDetach returns to VT0.
+//   VtCapture(1) dual-writes Print/UartStr into the current VT (PutCh hook;
+//   still emits UART). VtKeys(1) enables Ctrl-A then 0-3/n/p/d/l in readline
+//   (default off). With UartMuxOn, also FrameSend(ch0, "V\\tN").
+// EXAMPLES
+//   Vt(1); VtPutStr("side-session"); VtDetach;
+//   VtCapture(1); Print("cap\\n"); VtCapture(0);
+//   VtKeys(1);  // then Ctrl-A 1 at the prompt
+//   Man("Vt");
+// SEE ALSO
+//   VtAttach  VtDetach  VtCapture  VtKeys  VtNext  VtList  UartMuxOn  Help
+// BUGS
+//   No panes. Capture/keys default off. Print never hidden (serial primacy).
 // Tutorial -- Tutorial (curriculum)
 // NAME
 //   Tutorial - Software Foundations–style HolyC labs (ISA / CSAPP / Beck)
 // SYNOPSIS
-//   Tutorial;  SF;  Run("A01_RV64I.hc");
+//   Tutorial;  SF;  Cd("Tutorials"); Run("A01_RV64I.hc");
 // DESCRIPTION
-//   Executable curriculum: each chapter is a .hc lesson under memfs (from
-//   bootstrap/seed/tutorials/). Run the file, complete TODO/Fill_in exercises,
+//   Executable curriculum: each chapter is a .hc lesson under /Tutorials
+//   (bootstrap/seed/tutorials/). Run the file, complete TODO/Fill_in exercises,
 //   Run again. Part A = RISC-V ISA; Part B = CSAPP 3e chapters; Part C = Beck 3e.
 // EXAMPLES
 //   Tutorial;
@@ -504,3 +882,47 @@
 //   DsDecode  DsShow  DsFind  Bits  Reg  CSRGet  MemMap  UART  CLINT  PLIC
 // BUGS
 //   Subset of fields only; extend sheets rather than hardcoding in C.
+// Zmodem -- Zmodem (UART file export)
+// NAME
+//   Zmodem - guest→host memfs export (sz / rz / trzsz --zmodem)
+// SYNOPSIS
+//   ZmodemSend("boot.hc");
+//   ZmodemSendDir("Tutorials");
+//   FsChanges;  ZmodemSendChanges;  DumpChanges;
+// DESCRIPTION
+//   UartPut writes raw bytes to the 16550 THR — no CRLF mangling — so a
+//   ZMODEM sender on the guest can talk to host `rz` or this repo's
+//   tools/uart_recv_zmodem.py. For native trzsz (no --zmodem), see Trzsz /
+//   TrzszSend. Session writes: HolyC FileWrite journals after FsEpochSeal
+//   (end of boot); dirty bits still drive ZmodemSendChanges (P3). UART batch:
+//   DumpChanges (P2) emits $$HC_CHANGES$$ then DumpFile bodies. Workflow: edit →
+//   FsChanges → DumpChanges or ZmodemSendChanges → host file → git diff.
+// EXAMPLES
+//   FileWrite("Tmp/note.txt", "hi\n", 3);
+//   FsChanges;
+//   ZmodemSend("Tmp/note.txt");
+//   DumpChanges;
+// SEE ALSO
+//   ZmodemSend  Trzsz  TrzszSend  ExportFs  FsChanges  FsLog  DumpFile  DumpChanges
+// BUGS
+//   Sender times out if no receiver answers ZRINIT. Unified text diff is
+//   host-side (git); FsDiff; is size/hash vs snap; FsDiff(a,b) is epoch-range.
+// Trzsz -- Trzsz (native UART file export)
+// NAME
+//   Trzsz - guest→host memfs export (native tsz / stock trzsz)
+// SYNOPSIS
+//   TrzszSend("boot.hc");
+//   TrzszSendDir("Tutorials");
+//   TrzszSendChanges;
+// DESCRIPTION
+//   Speaks real trzsz wire protocol (::TRZSZ:TRANSFER:S, #ACT/#CFG JSON,
+//   zlib+base64 #DATA, MD5) so stock trzsz clients work without --zmodem.
+//   Host recipe: tools/uart_recv_trzsz.py / make trzsz-smoke. Send-only
+//   (no guest trz upload). ZMODEM remains ZmodemSend.
+// EXAMPLES
+//   TrzszSend("boot.hc");
+//   FileWrite("Tmp/n.txt","x",1); TrzszSendChanges;
+// SEE ALSO
+//   TrzszSend  Zmodem  ZmodemSend  DumpFile  FsChanges
+// BUGS
+//   Full UART REPL only; times out if no host client answers #ACT.

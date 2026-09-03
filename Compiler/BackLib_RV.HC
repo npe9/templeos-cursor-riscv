@@ -494,6 +494,12 @@ U0 RVLi(CIntermediateCode *tmpi, U8 rd, I64 imm)
     RVLui(tmpi, rd, hi);
     if (lo)
       RVAddi(tmpi, rd, rd, lo);
+    // RV64 LUI sign-extends bit31 into [63:32]. Kernel/blob VAs like
+    // 0x8080_0000 need zero-extend (host EmitCallArgsAndInvoke same).
+    if (!hi32 && imm & 0x80000000) {
+      RVSlli(tmpi, rd, rd, 32);
+      RVSrli(tmpi, rd, rd, 32);
+    }
     return;
   }
   // Full 64-bit: build hi32 in rd, shift, add lo32 via scratch != rd.
@@ -517,6 +523,11 @@ U0 RVLi(CIntermediateCode *tmpi, U8 rd, I64 imm)
     RVLui(tmpi, scratch, lo_hi);
     if (lo_lo)
       RVAddi(tmpi, scratch, scratch, lo_lo);
+    // RV64 LUI sign-extends bit31; zero-extend before adding into hi<<32.
+    if (lo32 & 0x80000000) {
+      RVSlli(tmpi, scratch, scratch, 32);
+      RVSrli(tmpi, scratch, scratch, 32);
+    }
     RVAdd(tmpi, rd, rd, scratch);
   } else if (lo_lo)
     RVAddi(tmpi, rd, rd, lo_lo);

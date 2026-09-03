@@ -262,36 +262,58 @@ U0 ICRet(CIntermediateCode *tmpi)
 /* Function Prologue/Epilogue */
 U0 ICEnter(CIntermediateCode *tmpi, I64 frame_size)
 {
-  // Function prologue. OptPass012 stores ic_data=-fun->size (x86 convention).
-  I64 alloc;
+  // Match host EmitIC_ENTER: 16-byte header (ra+fp) + aligned locals so
+  // guest→host calls see ABI-compliant SP (host callees save ra at 0(sp)).
+  I64 alloc, f;
   if (frame_size < 0)
     alloc = -frame_size;
   else
     alloc = frame_size;
-  // Save frame pointer
-  RVAddi(tmpi, RV_REG_SP, RV_REG_SP, -8);
-  RVSd(tmpi, RV_REG_FP, RV_REG_SP, 0);
-  // Set up frame pointer
-  RVAddi(tmpi, RV_REG_FP, RV_REG_SP, 8);
-  // Allocate stack frame
-  if (alloc > 0) {
-    if (-alloc >= -2048 && -alloc <= 2047) {
-      RVAddi(tmpi, RV_REG_SP, RV_REG_SP, -alloc);
-    } else {
-      RVLi(tmpi, RV_REG_T6, -alloc);
-      RVAdd(tmpi, RV_REG_SP, RV_REG_SP, RV_REG_T6);
-    }
+  if (alloc & 15)
+    alloc = alloc + 16 - (alloc & 15);
+  f = 16 + alloc;
+  if (-f >= -2048 && -f <= 2047)
+    RVAddi(tmpi, RV_REG_SP, RV_REG_SP, -f);
+  else {
+    RVLi(tmpi, RV_REG_T6, -f);
+    RVAdd(tmpi, RV_REG_SP, RV_REG_SP, RV_REG_T6);
+  }
+  RVSd(tmpi, RV_REG_RA, RV_REG_SP, 0);
+  RVSd(tmpi, RV_REG_FP, RV_REG_SP, 8);
+  if (f >= -2048 && f <= 2047)
+    RVAddi(tmpi, RV_REG_FP, RV_REG_SP, f);
+  else {
+    RVLi(tmpi, RV_REG_T6, f);
+    RVAdd(tmpi, RV_REG_FP, RV_REG_SP, RV_REG_T6);
   }
 }
 
 U0 ICLeave(CIntermediateCode *tmpi, I64 frame_size)
 {
-  // Function epilogue. Prefer FP restore (like x86 LEAVE) over size math.
+  // Match host EmitIC_LEAVE: sp = fp - f; restore ra/fp; sp += f; ret.
+  I64 alloc, f;
   no_warn frame_size;
-  // mov sp, fp; ld fp, -8(sp); addi sp, sp, 8; ret
-  RVAddi(tmpi, RV_REG_SP, RV_REG_FP, -8);
-  RVLd(tmpi, RV_REG_FP, RV_REG_SP, 0);
-  RVAddi(tmpi, RV_REG_SP, RV_REG_SP, 8);
+  if (frame_size < 0)
+    alloc = -frame_size;
+  else
+    alloc = frame_size;
+  if (alloc & 15)
+    alloc = alloc + 16 - (alloc & 15);
+  f = 16 + alloc;
+  if (-f >= -2048 && -f <= 2047)
+    RVAddi(tmpi, RV_REG_SP, RV_REG_FP, -f);
+  else {
+    RVLi(tmpi, RV_REG_T6, -f);
+    RVAdd(tmpi, RV_REG_SP, RV_REG_FP, RV_REG_T6);
+  }
+  RVLd(tmpi, RV_REG_RA, RV_REG_SP, 0);
+  RVLd(tmpi, RV_REG_FP, RV_REG_SP, 8);
+  if (f >= -2048 && f <= 2047)
+    RVAddi(tmpi, RV_REG_SP, RV_REG_SP, f);
+  else {
+    RVLi(tmpi, RV_REG_T6, f);
+    RVAdd(tmpi, RV_REG_SP, RV_REG_SP, RV_REG_T6);
+  }
   RVRet(tmpi);
 }
 /* Boolean Operations */

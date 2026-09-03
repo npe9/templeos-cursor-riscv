@@ -74,9 +74,12 @@ CDoc *DocNew(U8 *filename = NULL, CTask *task = NULL)
   no_warn task;
   return NULL;
 }
-
+U0 RVDocPutS(U8 *st);
+// RVWinMgr DocTerm-lite append
 CDocEntry *DocPrint(CDoc *doc = NULL, U8 *fmt,...)
 {
+  // Varargs StrPrintJoin here trips host Tier-2 into a hang; append via RVDocPutS from callers
+  // or use a non-varargs helper. Keep ExePutS import slot alive.
   no_warn doc;
   no_warn fmt;
   return NULL;
@@ -244,4 +247,31 @@ U8 *RVStrIMatch(U8 *needle, U8 *haystack)
 I64 RVCall(U8 *machine_code)
 {
   return Call(machine_code);
+}
+/* Guest eval-SP is junk at CALL_IMPORT (SP>>28==0); FP ok.
+ * SP=FP-2048 for HolyC ENTER; leave SP for caller to rebuild after RET. */
+asm {
+	_RV_HC_CALL::
+	// Guest ra at FP-2040 (host SP=FP-2048 grows down; s-regs not preserved)
+	SD	RA,-2040(S0)
+	ADDI	SP,S0,-2048
+	AUIPC	RA,0
+	ADDI	RA,RA,12
+	JALR	ZERO,0(T1)
+	LD	RA,-2040(S0)
+	RET
+	_RV_RET42::
+	LI	A0,42
+	RET
+}
+_extern _RV_HC_CALL U0 RVHCCall();
+_extern _RV_RET42 I64 RVRet42Asm();
+I64 RVHCRet41()
+{
+  return 41;
+}
+
+I64 RVHCAdd1(I64 x)
+{
+  return x + 1;
 }

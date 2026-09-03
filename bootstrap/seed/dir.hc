@@ -12,10 +12,7 @@ U8 DirFlat[1024];
 U8 DirBuf[2048];
 I64 DirLen;
 I64 DirNs;
-U8 JumpIdent[64];
-// identifier for gd/^] -- global so VLoad/EvLoad cant clobber it
-U8 JumpFile[64];
-// originating filename, filled by SrcFile then loaded by the editor loop
+// JumpIdent / JumpFile live in sym.hc (boot before editors)
 // WordAt -- WordAt(line,col,out)
 // NAME
 //   WordAt - copy the whitespace-delimited word under col into out.
@@ -76,30 +73,40 @@ I64 IdentChar(I64 c)
 }
 // WordIdent -- WordIdent(line,col,out)
 // NAME
-//   WordIdent - copy the C identifier under col into out.
+//   WordIdent - copy the C identifier at or after col into out.
 // SYNOPSIS
 //   WordIdent(line,col,out)
 // DESCRIPTION
-//   copy the C identifier under col into out.
+//   If col is on an identifier, copy that whole ident. Otherwise scan forward
+//   on the line for the first identifier (so gd/^]/K work with the cursor
+//   before a name: ` Foo(`). Empty out if none remain on the line.
 // INPUTS
 //   line - argument
 //   col - argument
 //   out - argument
 // OUTPUTS
-//   copy the C identifier under col into out.
+//   copy the C identifier at or after col into out.
 // BUGS
 //   See source; RISC-V UART REPL may omit full TempleOS behavior.
 U0 WordIdent(U8 *line, I64 col, U8 *out)
 {
   I64 i = col, j = 0;
+  out[0] = 0;
+  if (!line)
+    return;
   if (i < 0)
     i = 0;
   if (i > 127)
     i = 127;
-  while (i > 0 && !IdentChar(line[i]))
-    i--;
-  while (i > 0 && IdentChar(line[i - 1]))
-    i--;
+  if (IdentChar(line[i])) {
+    while (i > 0 && IdentChar(line[i - 1]))
+      i--;
+  } else {
+    while (i < 128 && line[i] && !IdentChar(line[i]))
+      i++;
+    if (i >= 128 || !IdentChar(line[i]))
+      return;
+  }
   while (i < 128 && IdentChar(line[i]) && j < 63) {
     out[j] = line[i];
     j++;
@@ -158,7 +165,15 @@ I64 IdentAt(U8 *line, U8 *name)
 //   See source; RISC-V UART REPL may omit full TempleOS behavior.
 I64 DefAt(U8 *line, U8 *name)
 {
-  I64 i, k;
+  I64 i, k, j;
+  if (!line || !name)
+    return -1;
+  j = 0;
+  while (line[j] == ' ' || line[j] == 9)
+    j++;
+  // Doc/header comments often say Name(...); skip so gd/Src land on the real def.
+  if (line[j] == '/' && line[j + 1] == '/')
+    return -1;
   i = IdentAt(line, name);
   if (i < 0)
     return -1;
@@ -480,18 +495,17 @@ U0 DirWrite()
 // SYNOPSIS
 //   U0 Dir();
 // DESCRIPTION
-//   Lists the current working directory on the UART (TempleOS Dir, memfs port). Prints
-//   "/cwd", optional "../", subdirectory names as "name/", and files with sizes. Hides
-//   dotfiles (.dir markers, .dirlist). Redefines the C Dir builtin -- Src("Dir") edits
-//   this HolyC. DirWrite dumps the same names into ".dirlist" for DirEd / Activate.
-// INPUTS
-//   none (uses CwdStr / FileCount / FileName)
-// OUTPUTS
-//   none (listing on UART)
+//   Lists files and subdirectories in the current memfs directory (like `ls`).
+//   Shows "/cwd", optional "../", dirs as "name/", and files with sizes. Dotfiles
+//   are hidden. Alias: Ls. Use Cd("subdir") first to change directory.
+// EXAMPLES
+//   Dir;
+//   Cd("Demo"); Dir;
+//   Ls;
+// SEE ALSO
+//   Ls  Cd  Cat  Pwd  DirMk  MkDir  Find
 // BUGS
-//   Max 16 subdirectory names tracked (DirFlat). Not a recursive tree. Keep locals few
-//   in helpers -- JIT frame spills are limited (long Dir bodies have hung across Print).
-//   Stock TempleOS Dir has flags / DolDoc links; here links are Activate/DirEd convention.
+//   Max 16 subdirectory names tracked. Not a recursive tree.
 U0 Dir()
 {
   I64 i, n;

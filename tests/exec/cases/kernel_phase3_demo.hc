@@ -6,7 +6,6 @@
 #include "/Kernel/Kernel_RV.PRJ"
 #include "/Compiler/RISCVRegs.HH"
 #include "/Compiler/Compiler_RV_Body.PRJ"
-#include "/Adam/MakeAdam_RV_Core.HC"
 #include "/Adam/Opt/Boot/MakeAll_RV.HC"
 #include "/Kernel/RVCmpImports.HC"
 #include "/Kernel/RVCmpRtPatch.HH"

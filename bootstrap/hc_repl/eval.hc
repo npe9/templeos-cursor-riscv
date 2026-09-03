@@ -1,6 +1,6 @@
 // eval.hc -- line dispatch for the AOT HolyC REPL.
-// Full TempleOS-style JIT Eval needs a guest compiler (not in this image).
-// Here: builtin cmds (Dir/Src/…) + I64 expression Eval for digits/ops.
+// A2: compile/eval statements go through ExePutS (exepubs.hc), not raw JitTry.
+// Builtin cmds (Dir/Src/…) + I64 expression Eval fallback for digits/ops.
 U8 repl_line[512];
 I64 repl_len;
 I64 eval_pos;
@@ -214,7 +214,7 @@ I64 CmdIs(U8 *line, U8 *name)
       return 0;
     i++;
   }
-  while (line[i] == ' ' || line[i] == '\t' || line[i] == ';')
+  while (line[i] == ' ' || line[i] == '\t' || line[i] == ';' || line[i] == '\r' || line[i] == '\n')
     i++;
   return !line[i];
 }
@@ -261,17 +261,433 @@ I64 CmdStrArg(U8 *line, U8 *verb)
   return !line[i];
 }
 
-U0 Help()
+I64 CmdParseI64(U8 *line, I64 *io, I64 *out)
 {
-  UartStr("TempleOS RISC-V — HolyC AOT REPL (Mac-built; no C guest runtime)\n");
-  UartStr("  Eval     >  I64 expr / fun defs; Print / \"fmt\", args;\n");
-  UartStr("  Files    Dir; Src(\"f\"); Cat(\"f.hc\"); Run(\"f.hc\"); Cd/Pwd;\n");
-  UartStr("  Help     help;  Help;\n");
-  UartStr("  Note     Full Man/MemMap/Regs/asm/history: use bootstrap repl.elf\n");
-  UartStr("  Soft     platform halt/reset to leave (Reset; on full REPL)\n");
+  I64 i, v, neg, d;
+  i = *io;
+  while (line[i] == ' ' || line[i] == '\t')
+    i++;
+  v = 0;
+  neg = 0;
+  if (line[i] == '-') {
+    neg = 1;
+    i++;
+  }
+  if (line[i] == '0' && (line[i + 1] == 'x' || line[i + 1] == 'X')) {
+    i = i + 2;
+    while (1) {
+      d = -1;
+      if (line[i] >= '0' && line[i] <= '9')
+        d = line[i] - '0';
+      else if (line[i] >= 'a' && line[i] <= 'f')
+        d = line[i] - 'a' + 10;
+      else if (line[i] >= 'A' && line[i] <= 'F')
+        d = line[i] - 'A' + 10;
+      if (d < 0)
+        break;
+      v = v * 16 + d;
+      i++;
+    }
+  } else if (line[i] >= '0' && line[i] <= '9') {
+    while (line[i] >= '0' && line[i] <= '9') {
+      v = v * 10 + (line[i] - '0');
+      i++;
+    }
+  } else
+    return 0;
+  if (neg)
+    v = -v;
+  *out = v;
+  *io = i;
+  return 1;
+}
+// DumpMem(addr,n) or DumpMem(addr,n,"label") — AOT call, not JIT (lui sign-extend).
+I64 CmdDumpMem(U8 *line)
+{
+  I64 i, j, addr, n, q;
+  U8 lab[64];
+  i = 0;
+  while (line[i] == ' ' || line[i] == '\t')
+    i++;
+  if (line[i] != 'D' || line[i + 1] != 'u' || line[i + 2] != 'm' || line[i + 3] != 'p' || line[i + 4] != 'M' || line[i + 5] != 'e' || line[i + 6] != 'm')
+    return 0;
+  i = i + 7;
+  while (line[i] == ' ' || line[i] == '\t')
+    i++;
+  if (line[i] != '(')
+    return 0;
+  i++;
+  if (!CmdParseI64(line, &i, &addr))
+    return 0;
+  while (line[i] == ' ' || line[i] == '\t')
+    i++;
+  if (line[i] != ',')
+    return 0;
+  i++;
+  if (!CmdParseI64(line, &i, &n))
+    return 0;
+  while (line[i] == ' ' || line[i] == '\t')
+    i++;
+  lab[0] = 'm';
+  lab[1] = 'e';
+  lab[2] = 'm';
+  lab[3] = 0;
+  if (line[i] == ',') {
+    i++;
+    while (line[i] == ' ' || line[i] == '\t')
+      i++;
+    q = line[i];
+    if (q != '"' && q != '\'')
+      return 0;
+    i++;
+    j = 0;
+    while (line[i] && line[i] != q && j < 63) {
+      lab[j] = line[i];
+      j++;
+      i++;
+    }
+    lab[j] = 0;
+    if (line[i] != q)
+      return 0;
+    i++;
+  }
+  while (line[i] == ' ' || line[i] == '\t')
+    i++;
+  if (line[i] != ')')
+    return 0;
+  i++;
+  while (line[i] == ' ' || line[i] == '\t' || line[i] == ';')
+    i++;
+  if (line[i])
+    return 0;
+  DumpMem(addr, n, lab);
+  return 1;
 }
 
-U0 ReplEvalLine(U8 *line)
+U0 Help()
+{
+  UartStr("TempleOS RISC-V — HolyC AOT REPL (repl-holyc.elf)\n");
+  UartStr("  Eval     >  ExePutS compile loop; I64 expr / fun defs; Print;\n");
+  UartStr("  Files    Dir; Cd(\"Lib\"); Cat(\"print.hc\"); Src(\"hello.hc\");\n");
+  UartStr("  Editors  Vi / Ed / EditHoly; Src opens preferred editor (:q / q)\n");
+  UartStr("  Man      Man(\"Print\"); Man(\"ABI\"); Man(\"Regs\"); Sections;\n");
+  UartStr("  Funs     FunsList;  Funs(\"Print\");  FunsSec(3);\n");
+  UartStr("  Dig-down MemMap; Regs; Reg(\"mstatus\"); CsrExplain(\"mcause\"); DbgHelp;\n");
+  UartStr("  Crash    Fault → crash> md/mw/regs/bt/go; CrashHelp; Man(\"CrashMon\");\n");
+  UartStr("  Sys      Sys; Uptime; MemRep; IrqRep; DevRep; Cnts;\n");
+  UartStr("  Term     TermSize(80,24); TermRep; TermQuery; TermHelp;\n");
+  UartStr("  Tty      Tty; TtyCanon; TtyRaw; TtyEcho(1); TtyHelp;\n");
+  UartStr("  VT       Vt(1); VtDetach; VtCapture(1); VtKeys(1); VtList; VtHelp;\n");
+  UartStr("  Log      LogInfo(\"boot\",\"msg\"); DMesg; LogClear;\n");
+  UartStr("  Tab      mid-token=sym/MEM_*/path/asm{}; else 2sp; multiline ...\n");
+  UartStr("  Keys     Up/Down=history  Left/Right/Home/End  Tab  ^U/^W  BS  empty ^D=eof\n");
+  UartStr("  Export   DumpFile; DumpChanges; FsChanges; FsReplay; Recover;\n");
+  UartStr("  Help     help;  Help;\n");
+  UartStr("  A2       ExePutS→Jit here; guest Cmp=make repl-cmp\n");
+  UartStr("  Trap     TrapInit; Fault; Break;  Ctrl-C during eval\n");
+  UartStr("  Note     ZMODEM / interactive FunPick: bootstrap repl.elf until parity\n");
+  UartStr("  Soft     SafeMode; Recover; Reset; HardReset; Halt;\n");
+}
+U8 eval_stmt[512];
+U8 eval_asm_tok[32];
+U8 eval_asm_op1[32];
+U8 eval_asm_op2[32];
+U8 eval_asm_op3[32];
+I64 eval_asm_err;
+U8 *eval_asm_p;
+// Top-level ; outside strings/{}/() — compound REPL line.
+I64 EvalHasTopSemi(U8 *line)
+{
+  I64 depth, in_str, q;
+  U8 *p;
+  if (!line)
+    return 0;
+  p = line;
+  depth = 0;
+  in_str = 0;
+  q = 0;
+  while (*p) {
+    if (in_str) {
+      if (*p == '\\' && p[1]) {
+        p = p + 2;
+        continue;
+      }
+      if (*p == q)
+        in_str = 0;
+      p++;
+      continue;
+    }
+    if (*p == '"' || *p == '\'') {
+      in_str = 1;
+      q = *p;
+      p++;
+      continue;
+    }
+    if (*p == '{')
+      depth++;
+    if (*p == '}') {
+      if (depth > 0)
+        depth--;
+    }
+    if (*p == ';' && depth == 0)
+      return 1;
+    p++;
+  }
+  return 0;
+}
+// Copy one ;-delimited unit (respect {}/strings) into eval_stmt; advance *io.
+I64 EvalTakeStmt(U8 *line, I64 *io)
+{
+  I64 i, depth, in_str, q, start;
+  U8 *p, *end;
+  if (!line || !io)
+    return 0;
+  p = line + *io;
+  while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' || *p == ';')
+    p++;
+  if (!*p) {
+    *io = p - line;
+    return 0;
+  }
+  start = p - line;
+  depth = 0;
+  in_str = 0;
+  q = 0;
+  end = p;
+  while (*p) {
+    if (in_str) {
+      if (*p == '\\' && p[1]) {
+        p = p + 2;
+        end = p;
+        continue;
+      }
+      if (*p == q)
+        in_str = 0;
+      p++;
+      end = p;
+      continue;
+    }
+    if (*p == '"' || *p == '\'') {
+      in_str = 1;
+      q = *p;
+      p++;
+      end = p;
+      continue;
+    }
+    if (*p == '{')
+      depth++;
+    if (*p == '}') {
+      if (depth > 0)
+        depth--;
+    }
+    if (*p == ';' && depth == 0) {
+      end = p;
+      p++;
+      break;
+    }
+    if (*p == '}' && depth == 0) {
+      end = p + 1;
+      p++;
+      break;
+    }
+    p++;
+    end = p;
+  }
+  i = 0;
+  while (start + i < end - line && i < 511) {
+    eval_stmt[i] = line[start + i];
+    i++;
+  }
+  eval_stmt[i] = 0;
+  *io = p - line;
+  return i > 0;
+}
+
+U0 EvalAsmSkip()
+{
+  while (*eval_asm_p == ' ' || *eval_asm_p == '\t' || *eval_asm_p == '\r' || *eval_asm_p == '\n' || *eval_asm_p == ',')
+    eval_asm_p++;
+}
+
+I64 EvalAsmIdent(U8 *out, I64 max)
+{
+  I64 n = 0;
+  I64 c;
+  EvalAsmSkip();
+  while (*eval_asm_p && n < max - 1) {
+    c = *eval_asm_p;
+    if (c >= 'a' && c <= 'z')
+      ;
+    else if (c >= 'A' && c <= 'Z')
+      ;
+    else if (c >= '0' && c <= '9')
+      ;
+    else if (c == '_')
+      ;
+    else
+      break;
+    out[n] = c;
+    n++;
+    eval_asm_p++;
+  }
+  out[n] = 0;
+  return n > 0;
+}
+
+I64 EvalAsmNum(I64 *out)
+{
+  I64 v, neg, d, base;
+  neg = 0;
+  EvalAsmSkip();
+  if (*eval_asm_p == '-') {
+    neg = 1;
+    eval_asm_p++;
+  }
+  base = 10;
+  v = 0;
+  if (*eval_asm_p == '0' && (eval_asm_p[1] == 'x' || eval_asm_p[1] == 'X')) {
+    base = 16;
+    eval_asm_p = eval_asm_p + 2;
+    while (1) {
+      d = -1;
+      if (*eval_asm_p >= '0' && *eval_asm_p <= '9')
+        d = *eval_asm_p - '0';
+      else if (*eval_asm_p >= 'a' && *eval_asm_p <= 'f')
+        d = *eval_asm_p - 'a' + 10;
+      else if (*eval_asm_p >= 'A' && *eval_asm_p <= 'F')
+        d = *eval_asm_p - 'A' + 10;
+      if (d < 0)
+        break;
+      v = v *base + d;
+      eval_asm_p++;
+    }
+  } else if (*eval_asm_p >= '0' && *eval_asm_p <= '9') {
+    while (*eval_asm_p >= '0' && *eval_asm_p <= '9') {
+      v = v * 10 + (*eval_asm_p - '0');
+      eval_asm_p++;
+    }
+  } else
+    return 0;
+  if (neg)
+    v = -v;
+  *out = v;
+  return 1;
+}
+
+I64 EvalAsmReg()
+{
+  if (!EvalAsmIdent(eval_asm_op1, 32))
+    return -1;
+  return RegGprIndex(eval_asm_op1);
+}
+
+I64 EvalAsmInsn()
+{
+  I64 rd, rs1, rs2, imm;
+  if (!EvalAsmIdent(eval_asm_tok, 32))
+    return 0;
+  if (eval_asm_tok[0] == '#' || (eval_asm_tok[0] == '/' && eval_asm_p[0] == '/'))
+    return 1;
+  if (!StrICmp(eval_asm_tok, "li")) {
+    rd = EvalAsmReg();
+    if (rd < 0 || !EvalAsmNum(&imm))
+      return -1;
+    JitLi(rd, imm);
+    return 1;
+  }
+  if (!StrICmp(eval_asm_tok, "addi")) {
+    rd = EvalAsmReg();
+    rs1 = EvalAsmReg();
+    if (rd < 0 || rs1 < 0 || !EvalAsmNum(&imm))
+      return -1;
+    JitI(0, rd, rs1, imm);
+    return 1;
+  }
+  if (!StrICmp(eval_asm_tok, "mv")) {
+    rd = EvalAsmReg();
+    rs1 = EvalAsmReg();
+    if (rd < 0 || rs1 < 0)
+      return -1;
+    JitI(0, rd, rs1, 0);
+    return 1;
+  }
+  if (!StrICmp(eval_asm_tok, "nop")) {
+    JitI(0, 0, 0, 0);
+    return 1;
+  }
+  if (!StrICmp(eval_asm_tok, "lui")) {
+    rd = EvalAsmReg();
+    if (rd < 0 || !EvalAsmNum(&imm))
+      return -1;
+    JitLui(rd, (imm >> 12) & 0xFFFFF);
+    return 1;
+  }
+  if (!StrICmp(eval_asm_tok, "add")) {
+    rd = EvalAsmReg();
+    rs1 = EvalAsmReg();
+    rs2 = EvalAsmReg();
+    if (rd < 0 || rs1 < 0 || rs2 < 0)
+      return -1;
+    JitR(0, 0, rd, rs1, rs2);
+    return 1;
+  }
+  if (!StrICmp(eval_asm_tok, "sub")) {
+    rd = EvalAsmReg();
+    rs1 = EvalAsmReg();
+    rs2 = EvalAsmReg();
+    if (rd < 0 || rs1 < 0 || rs2 < 0)
+      return -1;
+    JitR(0x20, 0, rd, rs1, rs2);
+    return 1;
+  }
+  eval_asm_err = 1;
+  return -1;
+}
+// REPL asm { … } — thin encode via jit_at (no host Cmp). Minimal mnemonics only.
+I64 EvalAsmRun(U8 *line)
+{
+  U8 *p, *body, *tramp;
+  I64 rc, i;
+  if (!line)
+    return 0;
+  i = 0;
+  while (line[i] == ' ' || line[i] == '\t')
+    i++;
+  if ((line[i] != 'a' && line[i] != 'A') || (line[i + 1] != 's' && line[i + 1] != 'S') || (line[i + 2] != 'm' && line[i + 2] != 'M'))
+    return 0;
+  i = i + 3;
+  while (line[i] == ' ' || line[i] == '\t')
+    i++;
+  if (line[i] != '{')
+    return 0;
+  p = line + i + 1;
+  body = p;
+  while (*p && *p != '}')
+    p++;
+  if (*p != '}')
+    return 0;
+  eval_asm_p = body;
+  eval_asm_err = 0;
+  tramp = jit_at;
+  while (eval_asm_p < p) {
+    rc = EvalAsmInsn();
+    if (rc < 0) {
+      UartStr("Eval: asm error\n");
+      return 1;
+    }
+    while (*eval_asm_p == ';' || *eval_asm_p == ' ' || *eval_asm_p == '\t' || *eval_asm_p == '\r' || *eval_asm_p == '\n')
+      eval_asm_p++;
+  }
+  JitJalr(0, 1, 0);
+  JitFenceI;
+  JitCallEntry(tramp);
+  // Snap now — Reg("a0") must not re-snap after HolyC arg clobber.
+  RegsSnapOnly();
+  g_reg_snap_fresh = 1;
+  return 1;
+}
+
+U0 ReplEvalOne(U8 *line)
 {
   I64 v, jr;
   if (!line)
@@ -280,8 +696,76 @@ U0 ReplEvalLine(U8 *line)
     line++;
   if (!*line)
     return;
+  if (EvalAsmRun(line))
+    return;
+  if (CmdStrArg(line, "Ed")) {
+    Ed(FsTmp);
+    return;
+  }
+  if (CmdStrArg(line, "Run")) {
+    Run(FsTmp);
+    return;
+  }
+  if (CmdStrArg(line, "Vi")) {
+    Vi(FsTmp);
+    return;
+  }
   if (CmdIs(line, "help") || CmdIs(line, "Help")) {
     Help();
+    return;
+  }
+  if (CmdIs(line, "Sections")) {
+    Sections();
+    return;
+  }
+  if (CmdIs(line, "FunsList")) {
+    FunsList();
+    return;
+  }
+  if (CmdIs(line, "Regs") || CmdIs(line, "Dr")) {
+    Regs();
+    return;
+  }
+  if (CmdIs(line, "MemMap")) {
+    MemMap();
+    return;
+  }
+  if (CmdIs(line, "MemMapDrv")) {
+    MemMapDrv();
+    return;
+  }
+  if (CmdIs(line, "Bt") || CmdIs(line, "StkRep")) {
+    StkRep();
+    return;
+  }
+  if (CmdIs(line, "DbgHelp")) {
+    DbgHelp();
+    return;
+  }
+  if (CmdIs(line, "CrashHelp")) {
+    CrashHelp();
+    return;
+  }
+  if (CmdIs(line, "CrashDump")) {
+    CrashDump();
+    return;
+  }
+  if (CmdIs(line, "CrashMon")) {
+    CrashMon();
+    return;
+  }
+  if (CmdIs(line, "RegHelp")) {
+    RegHelp();
+    return;
+  }
+  if (CmdStrArg(line, "Reg")) {
+    I64 v;
+    v = Reg(FsTmp);
+    Print("ans=%p=%d\n", v, v);
+    return;
+  }
+  if (CmdIs(line, "RegsRestoreDemo")) {
+    RegsRestoreDemo();
     return;
   }
   if (CmdIs(line, "Dir") || CmdIs(line, "Ls")) {
@@ -300,11 +784,126 @@ U0 ReplEvalLine(U8 *line)
     Cat(FsTmp);
     return;
   }
+  if (CmdStrArg(line, "DumpFile")) {
+    DumpFile(FsTmp);
+    return;
+  }
+  if (CmdIs(line, "DumpChanges")) {
+    DumpChanges();
+    return;
+  }
+  if (CmdIs(line, "FsChanges")) {
+    FsChanges();
+    return;
+  }
+  if (CmdIs(line, "FsLog")) {
+    FsLog();
+    return;
+  }
+  if (CmdIs(line, "FsEpoch")) {
+    Print("epoch=%d\n", FsEpoch());
+    return;
+  }
+  if (CmdIs(line, "FsDiff")) {
+    FsDiff();
+    return;
+  }
+  if (CmdIs(line, "FsReplay")) {
+    Print("replay=%d\n", FsReplay());
+    return;
+  }
+  if (CmdIs(line, "FsRecover") || CmdIs(line, "Recover")) {
+    Print("recover=%d\n", FsRecover());
+    return;
+  }
+  if (CmdIs(line, "DMesg")) {
+    DMesg();
+    return;
+  }
+  if (CmdIs(line, "Sys")) {
+    Sys();
+    return;
+  }
+  if (CmdIs(line, "SysHelp")) {
+    SysHelp();
+    return;
+  }
+  if (CmdIs(line, "Tty")) {
+    Tty();
+    return;
+  }
+  if (CmdIs(line, "TtyHelp")) {
+    TtyHelp();
+    return;
+  }
+  if (CmdIs(line, "TtyCanon")) {
+    TtyCanon();
+    return;
+  }
+  if (CmdIs(line, "TtyRaw")) {
+    TtyRaw();
+    return;
+  }
+  if (CmdIs(line, "TtyInit")) {
+    TtyInit();
+    return;
+  }
+  if (CmdIs(line, "TtyEofClear")) {
+    TtyEofClear();
+    return;
+  }
+  if (CmdIs(line, "TermRep")) {
+    TermRep();
+    return;
+  }
+  if (CmdIs(line, "TermHelp")) {
+    TermHelp();
+    return;
+  }
+  if (CmdIs(line, "Uptime")) {
+    Uptime();
+    return;
+  }
+  if (CmdIs(line, "MemRep")) {
+    MemRep();
+    return;
+  }
+  if (CmdIs(line, "IrqRep")) {
+    IrqRep();
+    return;
+  }
+  if (CmdIs(line, "DevRep")) {
+    DevRep();
+    return;
+  }
+  if (CmdIs(line, "Cnts")) {
+    Cnts();
+    return;
+  }
+  if (CmdIs(line, "LogClear")) {
+    LogClear();
+    return;
+  }
+  if (CmdIs(line, "LogInit")) {
+    LogInit();
+    return;
+  }
+  if (CmdIs(line, "LogCount")) {
+    Print("log_count=%d\n", LogCount());
+    return;
+  }
+  if (CmdDumpMem(line))
+    return;
   if (CmdStrArg(line, "Cd")) {
     Cd(FsTmp);
     return;
   }
-  jr = JitTry(line);
+  if (CmdStrArg(line, "MkDir") || CmdStrArg(line, "DirMk")) {
+    MkDir(FsTmp);
+    return;
+  }
+  // A2: TempleOS-shaped compile entry (ExePutS), not direct JitTry.
+  jr = ExePutS(line, NULL);
   if (jr)
     return;
   if (IsExprLine(line)) {
@@ -317,4 +916,28 @@ U0 ReplEvalLine(U8 *line)
     return;
   }
   UartStr("Eval: not recognized. try help;\n");
+}
+
+U0 ReplEvalLine(U8 *line)
+{
+  I64 pos = 0, n = 0;
+  if (!line)
+    return;
+  // Fast path: one statement (usual REPL line) — avoid split buffer.
+  if (!EvalHasTopSemi(line)) {
+    ReplEvalOne(line);
+    return;
+  }
+  while (EvalTakeStmt(line, &pos)) {
+    n++;
+    if (n > 1)
+      break;
+  }
+  if (n <= 1) {
+    ReplEvalOne(line);
+    return;
+  }
+  pos = 0;
+  while (EvalTakeStmt(line, &pos))
+    ReplEvalOne(eval_stmt);
 }

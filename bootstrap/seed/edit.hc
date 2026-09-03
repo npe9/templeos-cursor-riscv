@@ -514,6 +514,8 @@ U0 Edit(U8 *name)
   ed = *(I64 *)0x870010E0;
   if (ed)
     ed(name);
+  else
+    EditHoly(name);
 }
 
 U0 EditHoly(U8 *name)

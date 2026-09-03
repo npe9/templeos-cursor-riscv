@@ -1,11 +1,18 @@
-// run.hc -- Run / Exec: prefer guest ExePutS when Compiler_RV is linked;
+// run.hc -- Run / Exec: A2 prefers guest ExePutS when Compiler_RV is live;
 // fall back to host compile slot 0x87001000 for the Mac-AOT REPL bridge.
 // Destination remains Compiler_RV + ExePutS. Do not grow jit.hc.
+Bool g_exepubs_prefer;
+// set TRUE after CInit / when ExePutS is the live JIT
 U0 HcCompile(U8 *src)
 {
   I64 (*host)(U8 *src);
   if (!src)
     return;
+  // A2: guest ExePutS first when Compiler_RV owns the loop
+  if (g_exepubs_prefer) {
+    ExePutS(src);
+    return;
+  }
   host = *(I64 *)0x87001000;
   if (host)
     host(src);
@@ -37,7 +44,17 @@ U0 RunSetFile(U8 *name)
 // SYNOPSIS
 //   U0 Run(U8 *name);
 // DESCRIPTION
-//   FileRead the unit; Compiler_RV ExePutS when linked, else host slot.
+//   Loads a .hc file from the memfs, compiles it, and runs the definitions /
+//   top-level statements. Use after editing with Vi/Ed, or to load a demo
+//   (e.g. timer.hc). On compile failure, ErrGo jumps to the error site.
+// EXAMPLES
+//   Run("timer.hc");
+//   Dir;
+//   Cat("boot.hc");
+// SEE ALSO
+//   Exec  Src  ErrGo  Fmt  Ed  Vi
+// BUGS
+//   Missing file prints an error and returns.
 U0 Run(U8 *name)
 {
   U8 *src;
@@ -53,6 +70,11 @@ U0 Run(U8 *name)
     return;
   }
   RunSetFile(name);
+  if (g_exepubs_prefer) {
+    ExePutS(src, name);
+    RunSetFile("");
+    return;
+  }
   host = *(I64 *)0x87001000;
   if (host)
     host(src);

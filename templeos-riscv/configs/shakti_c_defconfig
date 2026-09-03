@@ -1,12 +1,18 @@
-# QEMU shakti_c — TENTATIVE
-# DRAM @ 0x80000000; CLINT/PLIC virt-like; Shakti UART @ 0x11300 (stub — no HolyC driver).
+# QEMU shakti_c — load plat ELF as -bios only (-bios none rejected as a filename).
+# Shakti UART @ 0x11300 (RVUartShakti; TX+4 / RX+8 / STATUS+0xC). QEMU does not
+# wire UART→PLIC (IRQ stays 0). ACLINT SWI @ 0x02000000 + mtimer @ 0x02004000
+# (mtime +0xBFF8 / mtimecmp +0x4000 from CLINT_BASE); timebase 10 MHz.
+# SiFive PLIC @ 0x0C000000 (28 sources). Single hart.
 CONFIG_PLATFORM_SHAKTI_C=y
 # CONFIG_PLATFORM_VIRT is not set
-CONFIG_UART_STUB=y
+CONFIG_UART_SHAKTI=y
 CONFIG_UART_BASE=0x00011300
+CONFIG_UART_IRQ=0
+CONFIG_HAS_CLINT=y
+CONFIG_CLINT_BASE=0x02000000
 CONFIG_HAS_PLIC=y
 CONFIG_PLIC_BASE=0x0C000000
-CONFIG_CLINT_BASE=0x02000000
+CONFIG_TIMEBASE_FREQ=10000000
 # CONFIG_HAS_VIRTIO_MMIO is not set
 # CONFIG_HAS_FW_CFG is not set
 CONFIG_FB_PRESENT_NONE=y

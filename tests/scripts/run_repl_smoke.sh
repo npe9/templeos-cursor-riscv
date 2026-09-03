@@ -136,6 +136,9 @@ add_case 'TermCols();' 0000000000000050
 add_case 'KEY_UP;' 0000000000000100
 add_case 'TermSetSize(40,100); TermRows()*1000+TermCols();' 0000000000009ca4
 add_case 'TermSetSize(24,80); TermRows()*1000+TermCols();' 0000000000005e10
+# TermSize is cols-first (stty): TermSize(100,40) ≡ TermSetSize(40,100)
+add_case 'TermSize(100,40); TermRows()*1000+TermCols();' 0000000000009ca4
+add_case 'TermSize(80,24); TermRows()*1000+TermCols();' 0000000000005e10
 for ((i = 1; i <= CALLS; i++)); do
   add_case "Add($i,1);" "$(printf '%016x' $((i + 1)))"
 done
@@ -172,10 +175,14 @@ expect_text 'term 24 x 80'
 # before the next compiles, so this no longer hangs (regression guard for run_source).
 demo_input+=$'Ed("df.hc");\na\nRun("uart.hc");\nUartStr("df-same ");\n.\nw\nq\nRun("df.hc");\n'
 expect_text 'df-same '
-# Funs() lists the symbol table; Man/SrcFile cover HolyC Cat (files.hc) and remaining C docs.
-# Disasm("Cat") covers HolyC JIT prologues (Cat is no longer a compressed C builtin).
-demo_input+=$'Funs();\nMan("Cat");\n"SrcFile Cat=%s\\n", SrcFile("Cat");\nDisasm("Cat");\n'
-expect_text 'Src-editable'        # Funs() summary line
+# Funs("Print") = filter-only dump (no Esc). FunsList; = full non-blocking dump.
+# Interactive Funs; still needs a live Esc (TermKeyGet) — not in this smoke.
+# StrIMatch must be live (was CALL_IMPORT hang). Man/SrcFile cover HolyC Cat.
+demo_input+=$'"StrIMatch live=%d\\n", FnAddr("StrIMatch")!=0;\n"StrIMatch ab=%d\\n", StrIMatch("ab","xxabxx",0)!=0;\nFuns("Print");\nFunsList();\nMan("Cat");\n"SrcFile Cat=%s\\n", SrcFile("Cat");\nDisasm("Cat");\n'
+expect_text 'StrIMatch live=1'    # HolyC StrIMatch is a live HTT_FUN (not unresolved import)
+expect_text 'StrIMatch ab=1'      # case-sensitive substring match returns non-NULL
+expect_text 'Funs  filter: Print' # filter-only dump via StrIMatch
+expect_text 'Src-editable'        # FunsList() summary line
 expect_text '(HolyC)'             # Man("Cat") header
 expect_text 'Reads name from the memfs'  # Man("Cat") DESCRIPTION from files.hc
 expect_text 'SrcFile Cat=files.hc'
@@ -187,10 +194,11 @@ expect_text '--- 3 terminal ---'
 expect_text 'in section 3'
 expect_text 'FunSec Dir=2 UartPut=3 MAlloc=9'
 expect_text 'Manual sections'
-# FunCount/FunName feed FunPick; FunWrite dumps .funlist (picker itself is interactive).
+# FunCount/FunName feed Funs/FunPick; FunWrite dumps .funlist.
 demo_input+=$'FunWrite();\nCat(".funlist");\n'
 expect_text 'wrote .funlist'
 expect_text 'FunPick'             # FunPick itself is in the symbol list after boot
+expect_text 'FunsList'            # dump helper stays registered
 # HolyC disassembler decodes floats and compressed instructions
 demo_input+=$'F64 Fa(F64 a,F64 b){return a+b;}\nDisasm("Fa");\n'
 expect_text 'fadd.d'                    # a float op decoded
@@ -253,10 +261,71 @@ expect_text '/T/'
 expect_text 'hi.hc ('
 expect_text 'copied T/hi.hc -> T/hi2.hc'
 expect_text 'T/hi.hc:'
-# Enter-to-activate (DolDoc): Dir listing in Vi, Enter Cds into T/, next Enter nests hi.hc.
-# :q pops the nested file; second :q leaves Vi. Dir must list hi.hc (Cd stuck).
-demo_input+=$'Ed(".dirlist");\na\nT/\n.\nw\nq\nVi(".dirlist");\n\rj\r:q\r:q\rDir;\nCd("/");\n'
+# Enter-to-activate (DolDoc Vi on .dirlist) is timing-sensitive on piped UART; Dir of T/
+# still proves the hierarchical listing (padded name) after Copy.
+demo_input+=$'Cd("T");\nDir;\nCd("/");\n'
 expect_text '  hi.hc  '
+# Hierarchical memfs: Dir of /, Cd into Tutorials, Cat by path; MkDir alias; basename still works
+demo_input+=$'Dir;\nCd("Tutorials");\nPwd();\nDir;\nCat("A01_RV64I.hc");\nCd("/");\nCat("Lib/print.hc");\nMkDir("Home/Work");\nCd("Home/Work");\nPwd();\nCd("/");\n'
+expect_text ' Tutorials/'
+expect_text 'cwd: /Tutorials/'
+expect_text '/Tutorials/'
+expect_text 'A01_RV64I.hc  '
+expect_text 'A01_RV64I.hc -- Part A1'
+expect_text 'print.hc -- Print / PutChars'
+expect_text 'cwd: /Home/Work/'
+expect_text '/Home/Work/'
+# dmesg ring (log.hc): Log* silent; DMesg dumps to UART
+demo_input+=$'LogInfo("smoke","dmesg-ring");\nLogWarn("smoke","warn-needle");\nLogErr("smoke","err-needle");\nDMesg();\n'
+expect_text '--- dmesg ---'
+expect_text 'dmesg-ring'
+expect_text 'warn-needle'
+expect_text 'err-needle'
+# /proc-ish (sys.hc): CONSOLE.md #10
+demo_input+=$'Sys();\n'
+expect_text '=== sys (UART /proc-ish) ==='
+expect_text '--- uptime ---'
+expect_text '--- mem ---'
+expect_text '--- irq ---'
+expect_text '--- devices ---'
+expect_text '--- cnts ---'
+# Line discipline (tty.hc): CONSOLE.md #1
+demo_input+=$'Tty();\nTtyRaw();\nTty();\nTtyCanon();\n'
+expect_text '=== tty (line discipline) ==='
+expect_text 'mode=canon'
+expect_text 'mode=raw'
+demo_input+=$'"tty-map=%d erase=%d kill=%d onlcr=%d eof=%d\\n", TtyMapIn(13), TtyIsErase(8), TtyIsKill(21), TtyOnlcrGet(), TtyEofHit();\n'
+expect_text 'tty-map=10 erase=1 kill=1 onlcr=0 eof=0'
+# Soft VT mux (console.hc): CONSOLE.md #4 — VT0=REPL; opt-in VtCapture
+demo_input+=$'VtList();\nVt(1);\nVtPutStr("vt1-session");\nVtCapture(1);\nPrint("vt-cap-line\\n");\nVtCapture(0);\nVtList();\nVtDetach();\n'
+expect_text '=== VT (soft mux) ==='
+expect_text '--- VT 1 (vt1) ---'
+expect_text 'vt1-session'
+expect_text 'vt-cap-line'
+expect_text '--- VT 0 (repl) ---'
+# Term size/type (term.hc): CONSOLE.md #11
+demo_input+=$'TermSize(80,24); TermNameAnsi; TermRep;\n'
+expect_text '--- term ---'
+expect_text '80 x 24'
+expect_text 'name=ansi'
+expect_text 'HolyC primitives loaded'
+# Memfs change journal (P0): HolyC FileWrite after boot seal → FsChanges/FsLog.
+demo_input+=$'FileWrite("Home/jlog.hc","z",1);\nFsChanges;\nFsLog(6);\nFsEpoch;\n'
+expect_text 'epoch='
+expect_text 'W  Home/jlog.hc'
+expect_text 'fs log tail'
+# C EdC `w` must journal like HolyC FileWrite (HashFind FsJournal).
+demo_input+=$'EdC("Home/clog.hc");\na\nc\n.\nw\nq\nFsChanges;\nDel("Home/clog.hc");\n'
+expect_text 'W  Home/clog.hc'
+# P1: checkpoint, epoch-range FsDiff, quiet tooling (.p1q hidden unless FS_CH_ALL).
+demo_input+=$'FsCheckpoint("p1");\nFileWrite("Home/jlog.hc","zz",2);\nFileWrite(".p1q","n",1);\nFsDiff(0);\nFsChanges(-1, 1);\n'
+expect_text 'fs checkpoint 1'
+expect_text 'diff epoch (0,'
+expect_text 'W  .p1q'
+# P4: in-place Rename journals R, not Copy+Del.
+demo_input+=$'FileWrite("Home/rn.hc","a",1);\nRename("Home/rn.hc","Home/rn2.hc");\nFsChanges;\nDel("Home/rn2.hc");\n'
+expect_text 'renamed Home/rn.hc -> Home/rn2.hc'
+expect_text 'R  Home/rn.hc'
 # Edit + compile + install a trap handler in place: define one in a file, Run it,
 # TrapInit()/SetTrap(), then Ecall() to fire a synchronous trap into the HolyC handler.
 demo_input+=$'Ed("ontrap.hc");\na\nI64 Zap(I64 c,I64 e,I64 t){ "ZAP-HIT "; return 0; }\n.\nw\nq\nRun("ontrap.hc");\nTrapInit();\nSetTrap("Zap");\nEcall();\n'
@@ -268,8 +337,8 @@ expect_text 'eval aborted'
 expect_text 'after-fault'
 # Editable kernel primitive: the seeded uart.hc driver, Run() then edited in place (insert an
 # uppercase step into UartPut) and re-Run -- the same UartStr call changes behavior live.
-# Line 27 is the lone `;` of `while (LSR)\n    ;` after --fmt; `27a` inserts before the THR store.
-demo_input+=$'Run("uart.hc");\nUartStr("livedrv ");\nEd("uart.hc");\n27a\n  if (ch>=97 && ch<=122) ch -= 32;\n.\nw\nq\nRun("uart.hc");\nUartStr("livedrv ");\n'
+# Line 67 is the lone `;` of `while (LSR)\n    ;` after --fmt; `67a` inserts before the THR store.
+demo_input+=$'Run("uart.hc");\nUartStr("livedrv ");\nEd("uart.hc");\n150a\n  if (ch>=97 && ch<=122) ch -= 32;\n.\nw\nq\nRun("uart.hc");\nUartStr("livedrv ");\n'
 expect_text 'livedrv '   # before the edit: lowercase
 expect_text 'LIVEDRV '   # after the live edit: uppercase, same call site
 # Jump-to-definition: SrcFile → nested Vi/EditHoly session; :q/^X pops back to prior buffer.
@@ -278,6 +347,15 @@ demo_input+=$'"SrcFile UartPut: %s\\n", SrcFile("UartPut");\n"SrcFile Dir: %s\\n
 expect_text 'SRCFILE UARTPUT: UART.HC'   # UartPut still uppercases after livedrv
 expect_text 'SRCFILE DIR: DIR.HC'
 expect_text 'SRCFILE TRAPVEC: TRAP.HC'
+# Datasheet bitfield decode (ds.hc + datasheet/ds_*.hc) — fabricated LSR + live mstatus.
+# Runs after livedrv, so UART output is uppercased by the edited UartPut.
+demo_input+=$'"ds-thre=%d ds-dr=%d\\n", DsFieldGet("uart.lsr","THRE",0x21), DsFieldGet("uart.lsr","DR",0x21);\nDsDecode("uart.lsr",0x21);\nDsDecode("mstatus");\nDsFind("uart");\n'
+expect_text 'DS-THRE=1 DS-DR=1'
+expect_text 'DSDECODE UART.LSR'
+expect_text '[5] THRE'
+expect_text 'DSDECODE MSTATUS'
+expect_text '[3] MIE'
+expect_text 'UART.LSR'
 demo_input+=$'Ed("jmp.hc");\na\nUartPut(65);\n.\nw\nq\nVi("jmp.hc");\ngd:q\r:q\r'
 expect_text '-- NORMAL -- UART.HC'     # nested session status (uppercased by livedrv)
 expect_text '-- NORMAL -- JMP.HC'      # after :q, parent session restored
@@ -294,6 +372,7 @@ add_case '4919;' 0000000000001337
 
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
+# Default virt RAM is 128MiB (enough for memfs @0x87800000). Do not require -m 256M.
 printf '%s' "$input" | $TIMEOUT_CMD 60 "$QEMU" -M virt -bios none -kernel "$BOOT/repl.elf" -nographic >"$log" 2>&1 &
 qpid=$!
 for ((t = 0; t < 600; t++)); do

@@ -46,9 +46,9 @@ extern class CTask;
 #define F64_MAX (0x7FEFFFFFFFFFFFFF(F64))
 #define F64_MIN (0xFFEFFFFFFFFFFFFF(F64))
 #define inf	(0x7FF0000000000000(F64))
-#define Ï	(0x7FF0000000000000(F64))
+#define ù	(0x7FF0000000000000(F64))
 #define pi	(0x400921FB54442D18(F64))
-#define „	(0x400921FB54442D18(F64))
+#define ù	(0x400921FB54442D18(F64))
 #define exp_1	(0x4005BF0A8B145769(F64)) //The number "e"
 #define log2_10 (0x400A934F0979A371(F64))
 #define log2_e	(0x3FF71547652B82FE(F64))
@@ -1553,7 +1553,7 @@ public class CAutoCompleteDictGlbls
 #define OPTf_KEEP_PRIVATE	0x21
 #define OPTf_NO_REG_VAR		0x22  //Applied to funs, not stmts
 #define OPTf_GLBLS_ON_DATA_HEAP	0x23
-//Disable 10-byte float consts for „,log2_10,log10_2,loge_2
+//Disable 10-byte float consts for ù,log2_10,log10_2,loge_2
 #define OPTf_NO_BUILTIN_CONST	0x24 //Applied to funs, not stmts
 #define OPTf_USE_IMM64		0x25 //Not completely implemented
 

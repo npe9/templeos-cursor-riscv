@@ -1,5 +1,6 @@
-// Interactive DocTerm desktop + VirtioInput proof.
-// Headless: paint hash + input_ok + bounded pump. Hold: make kernel-win-run (ESC quits).
+// Interactive DocTerm desktop + VirtioInput proof + UART serial TTY.
+// Headless: paint hash + input_ok + bounded pump (+ serial banner).
+// Hold: make kernel-win-run (ESC or serial `q` quits).
 #include "/Kernel/Kernel_RV.PRJ"
 I64 main()
 {
@@ -29,18 +30,31 @@ I64 main()
   RVDocPutS("hello from DocPrint\n");
   RVWinMgrRefresh;
   h = RVFbHash() & 0xFFFFFFFF;
-  // Paint proof first (CI), then bring up virtio-input.
+  // Paint proof first (CI), then bring up virtio-input + serial TTY.
   Print("RVWinMgr interactive hash=0x%08X present=%d backend=%d term=%d home=%d put=%d border=%d\n", h, rv_fb.present_ok, rv_fb.backend, rv_winmgr.term_idx, rv_winmgr.home_idx, DocPut() != NULL, DocBorder() != NULL);
   RVWinMgrInputInit;
   Print("RVWinMgr interactive input_ok=%d\n", rv_winmgr.input_ok);
+  RVWinSerialInit;
   hold = 0;
 #ifdef RV_WIN_HOLD
   hold = 1;
 #endif
-  // Stress: typing, wrap, cursor save-under, refresh (headless trap guard).
-  
-  {
+  // Headless-only: typing, wrap, $ parse, cursor at bottom (save-under must stay in-FB).
+  // HOLD / kernel-win-run skips this — cocoa must not eat 200 ramfb presents before the desktop.
+  if (!hold) {
     I64 si, sj;
+    U8 *dollar_junk = "$$FG,e$$ $$TX,\"hi\"$$ $$ZZ $$B7 $$$$\n";
+    for (si = 0; dollar_junk[si]; si++)
+      RVWinBodyPutChar(dollar_junk[si]);
+    rv_winmgr.ptr_x = 0;
+    rv_winmgr.ptr_y = 0;
+    RVWinMgrCursorUpdate;
+    rv_winmgr.ptr_x = rv_winmgr.cols - 1;
+    rv_winmgr.ptr_y = rv_winmgr.rows - 1;
+    RVWinMgrCursorUpdate;
+    rv_winmgr.ptr_x = 0;
+    rv_winmgr.ptr_y = rv_winmgr.rows - 1;
+    RVWinMgrRefresh;
     for (si = 0; si < 200; si++) {
       for (sj = 0; sj < 26; sj++)
         RVWinBodyPutChar('a' + sj);
@@ -58,6 +72,6 @@ I64 main()
   else
     RVWinMgrRun(64);
   h = RVFbHash() & 0xFFFFFFFF;
-  Print("RVWinMgr interactive DONE hash=0x%08X input_ok=%d events=%d iters=%d quit=%d\n", h, rv_winmgr.input_ok, rv_winmgr.input_events, rv_winmgr_task_iters, rv_winmgr.want_quit);
+  Print("RVWinMgr interactive DONE hash=0x%08X input_ok=%d events=%d iters=%d quit=%d serial_cmds=%d\n", h, rv_winmgr.input_ok, rv_winmgr.input_events, rv_winmgr_task_iters, rv_winmgr.want_quit, rv_win_serial_cmds);
   return 0;
 }

@@ -14,11 +14,12 @@ EXPECT_HOST="RVPhase3: Load() host Compiler.BIN OK"
 EXPECT_FULL="RVPhase3: Load() full Compiler.BIN OK"
 EXPECT_MAKEOS="RVPhase3: MakeOS OK"
 EXPECT_RUNTIME="RVPhase3: Runtime OK"
+EXPECT_ADAMCORE="RVPhase3: StartOS Load AdamCore.BIN OK (guest Cmp FileWrite STR_CONST)."
 EXPECT_STARTOS_BIN="RVPhase3: StartOS Load StartOS.BIN OK"
 EXPECT_SEED="RVPhase3: StartOS Load Seed.BIN OK"
 EXPECT_SVC="RVPhase3: StartOS Load Svc.BIN OK"
 EXPECT_KERN="RVPhase3: StartOS Load Kern.BIN OK"
-EXPECT2="RVPhase3: StartOS subset OK"
+EXPECT2="RVPhase3: StartOS subset OK (guest BINs AdamCore+StartOS+Seed+Svc+Kern)."
 EXPECT3="RVPhase3: done (compiler + StartOS)"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -105,6 +106,7 @@ if printf '%s\n' "$out" | grep -qF "$EXPECT" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_FULL" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_MAKEOS" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_RUNTIME" && \
+   printf '%s\n' "$out" | grep -qF "$EXPECT_ADAMCORE" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_STARTOS_BIN" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_SEED" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_SVC" && \
@@ -115,7 +117,7 @@ if printf '%s\n' "$out" | grep -qF "$EXPECT" && \
   exit 0
 fi
 echo "FAIL kernel-phase3 smoke — expected line not found:" >&2
-echo "  want: $EXPECT / $EXPECT_LOAD / $EXPECT_HOST / $EXPECT_FULL / $EXPECT_MAKEOS / $EXPECT_RUNTIME / $EXPECT_STARTOS_BIN / $EXPECT_SEED / $EXPECT_SVC / $EXPECT_KERN / $EXPECT2 / $EXPECT3" >&2
+echo "  want: $EXPECT / $EXPECT_LOAD / $EXPECT_HOST / $EXPECT_FULL / $EXPECT_MAKEOS / $EXPECT_RUNTIME / $EXPECT_ADAMCORE / $EXPECT_STARTOS_BIN / $EXPECT_SEED / $EXPECT_SVC / $EXPECT_KERN / $EXPECT2 / $EXPECT3" >&2
 printf '%s\n' "$out" | grep -E 'RVPhase3|StartOS|ExePutS|Load|MakeOS|Runtime|Kern|AdamCore|Cmp|Except|Error|FAIL|OK|RVKMain' | head -60 | LC_ALL=C sed 's/^/  /' >&2
 printf '%s\n' "$out" | tail -40 | LC_ALL=C sed 's/^/  /' >&2
 exit 1

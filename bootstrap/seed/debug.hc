@@ -1,93 +1,442 @@
-// debug.hc -- the HolyC debugger. One-shot breakpoints via ebreak (0x00100073), written entirely
-// in HolyC: it patches code with plain pokes, syncs the I-cache with an asm{} fence.i, and reads
-// the trapped registers the trampoline publishes at 0x87000100. Break with Bp(&Func); on a hit
-// DbgTrap (installed via SetTrap) dumps the args and continues. Edit it: Src("Bp") / Src("DbgTrap").
+// debug.hc -- HolyC debugger: ebreak breakpoints, soft watch, stack walk, step-over.
+// Dig-down: docs/DEBUGGER.md. Soft Regs snap+restore: csr.hc RegsSnapStub → MEM_REGS_SNAP
+// (same pattern as legacy C stub; do not fork a second clobbering Regs). Hw*/Sdtrig
+// (hwdbg.hc) stay additive — leave Watch/Step soft paths here unless Hw* wraps them.
+// Trap freeze: MEM_TRAP_SNAP / DbgReg.
+//
+// MEM_TRAP_SNAP word indices (U64) — C trapvec publish:
+//   DBG_I_RA=0  DBG_I_T0..T6=1..7  DBG_I_A0..A7=8..15  DBG_I_SP=16  DBG_I_FP=17
+//   DBG_I_CAUSE=18  DBG_I_EPC=19  DBG_I_TVAL=20
+#define DBG_I_RA 0
+#define DBG_I_T0 1
+#define DBG_I_A0 8
+#define DBG_I_SP 16
+#define DBG_I_FP 17
+#define DBG_I_CAUSE 18
+#define DBG_I_EPC 19
+#define DBG_I_TVAL 20
 I64 DbgAddr[16], DbgSaved[16], DbgActive[16];
-// fence.i, assembled natively -- sync the instruction cache after patching code.
+I64 WatchAddr[8], WatchLen[8], WatchLast[8], WatchActive[8];
+I64 DbgStopOnHit;
+// 0=dump+continue (default); 1=dump+abort eval to prompt
+I64 WatchDoBreak;
+// 0=report only; 1=abort eval on soft watch hit from DbgTrap
+I64 DbgWatchHit;
+I64 DbgStepAddr;
+// last Step-armed address (for Bps listing)
 asm {
 	FenceI::
 	fencei
 	ret
+	DbgLiveS0::
+	mv	a0, s0
+	ret
+	DbgLiveRa::
+	mv	a0, ra
+	ret
+	DbgLiveSp::
+	mv	a0, sp
+	ret
 }
-// Trapped register n from the published block: 0=ra, 1..7=t0..t6, 8..15=a0..a7, 16=sp.
+
+I64 DbgInRam(I64 a)
+{
+  return a >= 0x80000000 && a < 0x88000000;
+}
+// Decode JIT prologue `addi sp,sp,-N` at entry → frame size N (0 if not the simple form).
+I64 DbgFrameSize(I64 entry)
+{
+  U32 w;
+  I64 imm;
+  if (!DbgInRam(entry))
+    return 0;
+  w = *(U32 *)entry;
+  if ((w & 0xFFFFF) != 0x10113)
+    return 0;
+  imm = (w >> 20) & 0xFFF;
+  if (imm & 0x800)
+    imm = imm - 0x1000;
+  if (imm < 0)
+    return -imm;
+  return 0;
+}
+
+I64 DbgPeekWatch(I64 addr, I64 len)
+{
+  // Fold up to 8 bytes into one I64 for compare (soft watch limit).
+  I64 v, i, n;
+  v = 0;
+  n = len;
+  if (n > 8)
+    n = 8;
+  if (n <= 0)
+    n = 8;
+  for (i = 0; i < n; i++)
+    v = v | ((*(U8 *)(addr + i) & 0xFF) << (i * 8));
+  return v;
+}
 // DbgReg -- DbgReg(n)
 // NAME
-//   DbgReg - read trapped register n from 0x87000100.
+//   DbgReg - read trapped register n from MEM_TRAP_SNAP (last exception freeze)
 // SYNOPSIS
-//   DbgReg(n)
+//   I64 DbgReg(I64 n);
 // DESCRIPTION
-//   read trapped register n from 0x87000100.
-// INPUTS
-//   n - argument
-// OUTPUTS
-//   read trapped register n from 0x87000100.
+//   Peeks word n of the fixed trap publish block (not live GPRs — use Regs/Reg for stub-entry
+//   snap+restore). Indices: 0=ra, 1..7=t0..t6, 8..15=a0..a7, 16=sp, 17=s0/fp,
+//   18=mcause, 19=mepc, 20=mtval (when trapvec published them).
+// EXAMPLES
+//   DbgReg(DBG_I_A0);  DbgSp;  DbgFP;  TrapDump;
+// SEE ALSO
+//   DbgTrap  Bp  TrapDump  Regs  Bt  GetMepc
 // BUGS
-//   See source; RISC-V UART REPL may omit full TempleOS behavior.
+//   Stale until a trap has published.
 I64 DbgReg(I64 n)
 {
-  return *(I64 *)(0x87000100 + n * 8);
+  return *(I64 *)(MEM_TRAP_SNAP + n * 8);
 }
-// Trap handler. On a breakpoint (cause 3) at one of ours: restore the original instruction
-// (one-shot), dump the arguments, and re-execute. Returns the resume PC, or 0 for default handling.
-// DbgTrap -- DbgTrap(cause,epc,tval)
+
+I64 DbgRa()
+{
+  return DbgReg(DBG_I_RA);
+}
+
+I64 DbgSp()
+{
+  return DbgReg(DBG_I_SP);
+}
+
+I64 DbgFP()
+{
+  return DbgReg(DBG_I_FP);
+}
+
+U0 DbgSymLine(I64 addr)
+{
+  U8 *nm;
+  I64 base;
+  nm = SymName(addr);
+  if (nm) {
+    base = SymBase(addr);
+    "  %s+0x%X", nm, addr - base;
+  }
+}
+// BtWalk -- walk FP chain from (pc,s0), symbolize each frame.
+U0 BtWalk(I64 start_pc, I64 s0)
+{
+  I64 i, cur, ra, ps0, N, sz, entry;
+  U8 *nm;
+  cur = start_pc;
+  UartStr("  stack:\n");
+  for (i = 0; i < 16; i++) {
+    "    #%d 0x%X", i, cur;
+    DbgSymLine(cur);
+    "\n";
+    entry = SymBase(cur);
+    if (!entry || !DbgInRam(s0))
+      break;
+    nm = SymName(cur);
+    sz = 0;
+    // ebreak/Bp at function entry: prologue has not run — s0 is still the caller's.
+    // Using the callee's JIT frame size here reads ra/ps0 swapped (next "pc" == fp).
+    if (nm && cur != entry)
+      sz = FnSize(nm);
+    if (sz > 0) {
+      N = DbgFrameSize(entry);
+      if (!N || !DbgInRam(s0 - N))
+        break;
+      ra = *(I64 *)(s0 - N);
+      ps0 = *(I64 *)(s0 - N + 8);
+    } else {
+      if (!DbgInRam(s0 - 16))
+        break;
+      ra = *(I64 *)(s0 - 8);
+      ps0 = *(I64 *)(s0 - 16);
+    }
+    if (!DbgInRam(ra) || ra == cur)
+      break;
+    cur = ra;
+    s0 = ps0;
+  }
+}
+
+I64 BtSnapFresh()
+{
+  // Sync exception in MEM_TRAP_SNAP (not boot-seeded pc=U, not IRQ leftover fp).
+  I64 cause, epc;
+  cause = DbgReg(DBG_I_CAUSE);
+  epc = DbgReg(DBG_I_EPC);
+  if (cause < 0 || cause > 15)
+    return 0;
+  if (!epc || !DbgInRam(epc))
+    return 0;
+  return epc;
+}
+// Bt -- Bt()
 // NAME
-//   DbgTrap - breakpoint trap handler: restore insn, dump args, continue.
+//   Bt - symbolic backtrace (trap freeze or live s0/ra)
 // SYNOPSIS
-//   DbgTrap(cause,epc,tval)
+//   U0 Bt();
 // DESCRIPTION
-//   breakpoint trap handler: restore insn, dump args, continue.
-// INPUTS
-//   cause - argument
-//   epc - argument
-//   tval - argument
-// OUTPUTS
-//   breakpoint trap handler: restore insn, dump args, continue.
+//   Walks the FP chain like StkRep: JIT frames via entry addi sp,-N; C frames via
+//   gcc ra@s0-8 / s0@s0-16. Prefers MEM_TRAP_SNAP after a sync trap/Bp (cause+epc);
+//   ignores boot-seeded `pc` (=U) and IRQ-only fp leftovers. Else live s0/ra.
+// EXAMPLES
+//   Bp(&Foo); Foo(1); Bt;
+//   StkRep;
+// SEE ALSO
+//   StkRep  DbgFP  DbgSp  TrapDump  Callers
 // BUGS
-//   See source; RISC-V UART REPL may omit full TempleOS behavior.
-I64 DbgTrap(I64 cause, I64 epc, I64 tval)
+//   Stops on large/multi-insn prologues / omit-frame-pointer; max 16 frames.
+U0 Bt()
+{
+  I64 fp, ra, epc, caller_s0;
+  epc = BtSnapFresh();
+  fp = DbgFP();
+  if (epc && DbgInRam(fp)) {
+    UartStr("Bt (trap freeze):\n");
+    BtWalk(epc, fp);
+    return;
+  }
+  // Capture ra/s0 in-line — HolyC calls to DbgLiveRa/DbgLiveS0 asm labels hang on holyc.
+  asm {
+	lui	t6, 0x10E00
+	slli	t6, t6, 3
+	sd	ra, 0x200(t6)
+	sd	s0, 0x208(t6)
+  }
+  ra = *(I64 *)0x87000200;
+  fp = *(I64 *)0x87000208;
+  UartStr("Bt (live):\n");
+  // Match C StkRep: start at caller using saved s0 chain when present.
+  if (DbgInRam(fp - 16))
+    caller_s0 = *(I64 *)(fp - 16);
+  else
+    caller_s0 = fp;
+  if (DbgInRam(ra) && DbgInRam(caller_s0))
+    BtWalk(ra, caller_s0);
+  else {
+    UartStr("  stack:\n");
+    UartStr("    #0 live frame\n");
+  }
+}
+// WatchChk -- compare soft watches; print hits; return hit count.
+I64 WatchChk()
+{
+  I64 i, n, cur, hits;
+  hits = 0;
+  DbgWatchHit = 0;
+  for (i = 0; i < 8; i++) {
+    if (!WatchActive[i])
+      continue;
+    n = WatchLen[i];
+    if (n <= 0)
+      n = 8;
+    cur = DbgPeekWatch(WatchAddr[i], n);
+    if (cur != WatchLast[i]) {
+      hits++;
+      DbgWatchHit = 1;
+      "\n*** watch hit @ 0x%X  old=0x%X new=0x%X len=%d\n", WatchAddr[i], WatchLast[i], cur, n;
+      WatchLast[i] = cur;
+      Bt;
+    }
+  }
+  return hits;
+}
+// Watch -- Watch(addr, len)
+// NAME
+//   Watch - soft data watchpoint (compare stub; no Sdtrig)
+// SYNOPSIS
+//   U0 Watch(I64 addr, I64 len=8);
+// DESCRIPTION
+//   Arms a soft watch: snapshots up to 8 bytes at addr. DbgTrap (and WatchChk)
+//   compare on each trap; on change prints *** watch hit and Bt. With WatchBreak;
+//   a hit aborts the eval back to the prompt. No hardware triggers on default virt —
+//   misses stores that never trap. Poll: WatchChk; after a region of code.
+// EXAMPLES
+//   I64 w; Watch(&w); w=7; WatchChk;
+//   WatchBreak;  // next DbgTrap watch hit → abort
+// SEE ALSO
+//   WatchClr  Watchs  WatchChk  Bp  DbgTrap  docs/DEBUGGER.md
+// BUGS
+//   Soft only; len capped at 8 for the compare word; races between traps invisible.
+U0 Watch(I64 addr, I64 len = 8)
+{
+  I64 i, slot;
+  if (!addr) {
+    UartStr("Watch: null address\n");
+    return;
+  }
+  if (len <= 0)
+    len = 8;
+  if (len > 8)
+    len = 8;
+  slot = -1;
+  for (i = 0; i < 8; i++)
+    if (!WatchActive[i]) {
+      slot = i;
+      break;
+    }
+  if (slot < 0) {
+    UartStr("Watch: table full\n");
+    return;
+  }
+  WatchAddr[slot] = addr;
+  WatchLen[slot] = len;
+  WatchLast[slot] = DbgPeekWatch(addr, len);
+  WatchActive[slot] = 1;
+  SetTrap("DbgTrap");
+  TrapInit();
+  "Watch armed @ 0x%X len=%d (soft compare; WatchChk / DbgTrap)\n", addr, len;
+}
+
+U0 WatchClr(I64 addr)
 {
   I64 i;
+  for (i = 0; i < 8; i++)
+    if (WatchActive[i] && WatchAddr[i] == addr) {
+      WatchActive[i] = 0;
+      "Watch cleared @ 0x%X\n", addr;
+      return;
+    }
+  "WatchClr: none @ 0x%X\n", addr;
+}
+
+U0 Watchs()
+{
+  I64 i, n;
+  n = 0;
+  for (i = 0; i < 8; i++)
+    if (WatchActive[i]) {
+      "  watch @ 0x%X len=%d last=0x%X\n", WatchAddr[i], WatchLen[i], WatchLast[i];
+      n++;
+    }
+  if (!n)
+    UartStr("  (no watches)\n");
+}
+
+U0 WatchBreak()
+{
+  WatchDoBreak = 1;
+  UartStr("WatchBreak: on — soft watch hit in DbgTrap aborts eval\n");
+}
+
+U0 WatchContinue()
+{
+  WatchDoBreak = 0;
+  UartStr("WatchContinue: soft watch report-only\n");
+}
+// TrapDump -- TrapDump()
+// NAME
+//   TrapDump - print last trap CSRs + saved GPRs from MEM_TRAP_SNAP
+// SYNOPSIS
+//   U0 TrapDump();
+// DESCRIPTION
+//   Shows mcause/mepc/mtval (snap words 18..20 when published, else live GetM*)
+//   and ra/sp/fp/a0..a3 from the trap freeze, then Bt.
+// EXAMPLES
+//   Fault; TrapDump;
+//   Bp(&F); F(1); TrapDump;
+// SEE ALSO
+//   DbgReg  Bt  GetMcause  GetMepc  GetMtval  pc
+U0 TrapDump()
+{
+  I64 cause, epc, tval;
+  cause = DbgReg(DBG_I_CAUSE);
+  epc = DbgReg(DBG_I_EPC);
+  tval = DbgReg(DBG_I_TVAL);
+  if (!epc && pc)
+    epc = pc;
+  if (!cause)
+    cause = GetMcause();
+  if (!tval)
+    tval = GetMtval();
+  UartStr("TrapDump (MEM_TRAP_SNAP / last freeze):\n");
+  "  mcause=0x%X  mepc=0x%X  mtval=0x%X  pc=0x%X\n", cause, epc, tval, pc;
+  "  ra=0x%X", DbgRa();
+  DbgSymLine(DbgRa());
+  "\n";
+  "  sp=0x%X  fp=0x%X\n", DbgSp(), DbgFP();
+  "  a0=0x%X a1=0x%X a2=0x%X a3=0x%X\n", DbgReg(DBG_I_A0), DbgReg(DBG_I_A0 + 1), DbgReg(DBG_I_A0 + 2), DbgReg(DBG_I_A0 + 3);
+  Bt;
+}
+// DbgTrap -- DbgTrap(cause,epc,tval)
+// NAME
+//   DbgTrap - breakpoint / watch trap handler
+// SYNOPSIS
+//   I64 DbgTrap(I64 cause, I64 epc, I64 tval);
+// DESCRIPTION
+//   On our ebreak (cause 3): restore insn, dump args, optional Bt, then continue
+//   (return epc) or abort to prompt if BpStop. Always runs WatchChk. Step arms are
+//   one-shot Bps like any other.
+// SEE ALSO
+//   Bp  Watch  Step  TrapDump  Bt
+// BUGS
+//   Resolve via SetTrap("DbgTrap") / FnAddr — do NOT take &DbgTrap from an earlier
+//   unit (same forward-ref pitfall as &OnTrap before OnTrap's body).
+I64 DbgTrap(I64 cause, I64 epc, I64 tval)
+{
+  I64 i, resume;
+  pc = epc;
+  *(I64 *)(MEM_TRAP_SNAP + DBG_I_CAUSE * 8) = cause;
+  *(I64 *)(MEM_TRAP_SNAP + DBG_I_EPC * 8) = epc;
+  *(I64 *)(MEM_TRAP_SNAP + DBG_I_TVAL * 8) = tval;
+  WatchChk();
+  resume = 0;
   if (cause == 3) {
     for (i = 0; i < 16; i++) {
       if (DbgActive[i] && DbgAddr[i] == epc) {
-        *(U32 *)DbgAddr[i] = DbgSaved[i];
-        // restore original instruction
+        if ((DbgSaved[i] & 3) != 3)
+          *(U16 *)DbgAddr[i] = DbgSaved[i] & 0xFFFF;
+        else
+          *(U32 *)DbgAddr[i] = DbgSaved[i];
         FenceI();
         DbgActive[i] = 0;
-        // one-shot: it fires once
-        "\n*** breakpoint @ 0x%08X  (args at entry)\n", epc;
-        "  a0=0x%X  a1=0x%X  a2=0x%X  a3=0x%X\n", DbgReg(8), DbgReg(9), DbgReg(10), DbgReg(11);
-        "  a4=0x%X  a5=0x%X  a6=0x%X  a7=0x%X\n", DbgReg(12), DbgReg(13), DbgReg(14), DbgReg(15);
-        "  ra=0x%X  sp=0x%X\n", DbgReg(0), DbgReg(16);
-        return epc;
-        // re-run the restored instruction
+        if (DbgStepAddr == epc) {
+          "\n*** step @ 0x%08X\n", epc;
+          DbgStepAddr = 0;
+        } else
+          "\n*** breakpoint @ 0x%08X  (args at entry)\n", epc;
+        "  a0=0x%X  a1=0x%X  a2=0x%X  a3=0x%X\n", DbgReg(DBG_I_A0), DbgReg(DBG_I_A0 + 1), DbgReg(DBG_I_A0 + 2), DbgReg(DBG_I_A0 + 3);
+        "  a4=0x%X  a5=0x%X  a6=0x%X  a7=0x%X\n", DbgReg(DBG_I_A0 + 4), DbgReg(DBG_I_A0 + 5), DbgReg(DBG_I_A0 + 6), DbgReg(DBG_I_A0 + 7);
+        "  ra=0x%X  sp=0x%X  fp=0x%X\n", DbgRa(), DbgSp(), DbgFP();
+        Bt;
+        if (DbgStopOnHit) {
+          UartStr("*** dbg stop (BpStop) — eval aborted\n");
+          return 0;
+        }
+        resume = epc;
+        break;
       }
     }
   }
+  if (DbgWatchHit && WatchDoBreak) {
+    UartStr("*** watch break — eval aborted\n");
+    DbgWatchHit = 0;
+    return 0;
+  }
+  if (resume)
+    return resume;
+  if (cause < 0)
+    return epc;
   return 0;
 }
 // Bp -- Bp(&Func)
 // NAME
-//   Bp - one-shot breakpoint at a function entry (refuses compressed C builtins).
+//   Bp - one-shot software breakpoint (ebreak patch)
 // SYNOPSIS
 //   Bp(&Func)
 // DESCRIPTION
-//   one-shot breakpoint at a function entry (refuses compressed C builtins).
-// INPUTS
-//   &Func - out-parameter pointer
-// OUTPUTS
-//   one-shot breakpoint at a function entry (refuses compressed C builtins).
-// BUGS
-//   See source; RISC-V UART REPL may omit full TempleOS behavior.
+//   Patches ebreak (32-bit) or c.ebreak when the entry is compressed. On hit: restore,
+//   dump args + Bt, continue (re-exec) unless BpStop. Max 16.
+// EXAMPLES
+//   Bp(&Add); Add(11,22); Bps; BpClr(&Add);
+// SEE ALSO
+//   Bps  BpClr  BpStop  Cont  Step  DbgTrap
 U0 Bp(I64 addr)
 {
   I64 i, slot;
   if (!addr) {
     "Bp: null address\n";
-    return;
-  }
-  if ((*(U32 *)addr & 3) != 3) {
-    "Bp: entry is a compressed instruction (a C built-in) -- can't\n";
     return;
   }
   slot = -1;
@@ -101,68 +450,187 @@ U0 Bp(I64 addr)
     return;
   }
   DbgAddr[slot] = addr;
-  DbgSaved[slot] = *(U32 *)addr;
-  *(U32 *)addr = 0x00100073;
-  // ebreak
+  if ((*(U32 *)addr & 3) != 3) {
+    DbgSaved[slot] = *(U16 *)addr & 0xFFFF;
+    *(U16 *)addr = 0x9002;
+  } else {
+    DbgSaved[slot] = *(U32 *)addr;
+    *(U32 *)addr = 0x00100073;
+  }
   FenceI();
   DbgActive[slot] = 1;
   SetTrap("DbgTrap");
-  // route traps to us
-  TrapInit();
-  // install the vector (mtvec)
+  // hc_repl (TRAP_VEC_OFF≠0): ensure mtvec. Legacy: SetTrap name-only; C owns vector.
+  if (TRAP_VEC_OFF)
+    TrapInit();
   "Bp set @ 0x%08X\n", addr;
 }
-// Bps -- Bps()
-// NAME
-//   Bps - list active breakpoints.
-// SYNOPSIS
-//   Bps()
-// DESCRIPTION
-//   list active breakpoints.
-// INPUTS
-//   none
-// OUTPUTS
-//   list active breakpoints.
-// BUGS
-//   See source; RISC-V UART REPL may omit full TempleOS behavior.
+
 U0 Bps()
 {
-  I64 i, n = 0;
+  I64 i, n;
+  n = 0;
   for (i = 0; i < 16; i++)
     if (DbgActive[i]) {
-      "  bp @ 0x%08X\n", DbgAddr[i];
+      "  bp @ 0x%08X", DbgAddr[i];
+      if (DbgAddr[i] == DbgStepAddr)
+        UartStr("  (step)");
+      "\n";
       n++;
     }
   if (!n)
     "  (no active breakpoints)\n";
 }
-// BpClr -- BpClr(addr)
-// NAME
-//   BpClr - clear breakpoint at addr.
-// SYNOPSIS
-//   BpClr(addr)
-// DESCRIPTION
-//   clear breakpoint at addr.
-// INPUTS
-//   addr - argument
-// OUTPUTS
-//   clear breakpoint at addr.
-// BUGS
-//   See source; RISC-V UART REPL may omit full TempleOS behavior.
+
 U0 BpClr(I64 addr)
 {
   I64 i;
   for (i = 0; i < 16; i++)
     if (DbgActive[i] && DbgAddr[i] == addr) {
-      *(U32 *)DbgAddr[i] = DbgSaved[i];
+      if ((DbgSaved[i] & 3) != 3)
+        *(U16 *)DbgAddr[i] = DbgSaved[i] & 0xFFFF;
+      else
+        *(U32 *)DbgAddr[i] = DbgSaved[i];
       FenceI();
       DbgActive[i] = 0;
+      if (DbgStepAddr == addr)
+        DbgStepAddr = 0;
       "Bp cleared @ 0x%08X\n", addr;
       return;
     }
   "BpClr: no active breakpoint @ 0x%08X\n", addr;
 }
-// ---- TempleOS-style inspection: Dr (registers), Dm/D (hex dump), Da (symbolic slot dump) ----
+
+U0 BpStop()
+{
+  DbgStopOnHit = 1;
+  UartStr("BpStop: on — next Bp hit dumps then aborts eval (Cont = re-run)\n");
+}
+
+U0 BpGo()
+{
+  DbgStopOnHit = 0;
+  UartStr("BpGo: on — Bp hits dump and continue (default)\n");
+}
+// Cont -- Cont()
+// NAME
+//   Cont - continue after debug stop
+// SYNOPSIS
+//   Cont;
+// DESCRIPTION
+//   Default Bp mode auto-continues after dump. After BpStop abort, Cont means
+//   re-invoke the callee from the prompt (no trapped context to resume).
+// SEE ALSO
+//   Bp  BpStop  BpGo  Step
+U0 Cont()
+{
+  if (DbgStopOnHit)
+    UartStr("Cont: BpStop is on — re-call the function from `>` (no live resume)\n");
+  else
+    UartStr("Cont: Bp auto-continues on hit (BpGo). Use BpStop to abort instead.\n");
+}
+// Step -- Step(addr)
+// NAME
+//   Step - soft single-step: one-shot ebreak at next insn
+// SYNOPSIS
+//   Step;  Step(addr);
+// DESCRIPTION
+//   Arms Bp at the next sequential instruction after addr (default: last trap pc).
+//   Insn length 4 if low 2 bits == 11, else 2 (RVC). Not true dcsr.step — branches
+//   / jumps are not followed; use StepOver for return-address break.
+// EXAMPLES
+//   pc = FnAddr("Add"); Step; Add(1,2);
+// SEE ALSO
+//   StepOver  Bp  DbgTrap  docs/DEBUGGER.md
+// BUGS
+//   Sequential only; no debug-mode step; needs 32-bit patchable target.
+U0 Step(I64 addr = 0)
+{
+  I64 next, w;
+  if (!addr)
+    addr = pc;
+  if (!addr) {
+    UartStr("Step: no pc — pass addr or trap/Bp first\n");
+    return;
+  }
+  w = *(U16 *)addr;
+  if ((w & 3) == 3)
+    next = addr + 4;
+  else
+    next = addr + 2;
+  if ((*(U32 *)next & 3) != 3) {
+    "Step: next 0x%X is compressed — can't patch\n", next;
+    return;
+  }
+  DbgStepAddr = next;
+  Bp(next);
+  "Step: armed @ 0x%X (next after 0x%X)\n", next, addr;
+}
+// StepOver -- StepOver()
+// NAME
+//   StepOver - soft step-over via breakpoint at return address
+// SYNOPSIS
+//   StepOver;
+// DESCRIPTION
+//   After a trap/Bp, sets a one-shot Bp at DbgRa (caller). Live: uses DbgLiveRa.
+// SEE ALSO
+//   Step  Bp  DbgRa
+U0 StepOver()
+{
+  I64 ra;
+  ra = DbgRa();
+  if (!ra || !DbgInRam(ra))
+    ra = DbgLiveRa();
+  if (!ra || !DbgInRam(ra)) {
+    UartStr("StepOver: no return address\n");
+    return;
+  }
+  if ((*(U32 *)ra & 3) != 3) {
+    "StepOver: ra 0x%X compressed — can't\n", ra;
+    return;
+  }
+  DbgStepAddr = ra;
+  Bp(ra);
+  "StepOver: armed @ ra 0x%X\n", ra;
+}
+// DbgHelp -- DbgHelp()
+// NAME
+//   DbgHelp - short debugger cheat sheet
+// SYNOPSIS
+//   DbgHelp;
+// DESCRIPTION
+//   Lists Regs/Bt/Bp/Watch/Step/TrapDump entry points. Full matrix: docs/DEBUGGER.md.
+U0 DbgHelp()
+{
+  UartStr("DbgHelp — UART debugger (docs/DEBUGGER.md)\n");
+  UartStr("  Regs; Reg(\"a0\"); Reg(\"mstatus\"); CsrExplain(\"mcause\");  // soft snap+restore GPRs (csr.hc)\n");
+  UartStr("  Bt; StkRep;                     // backtrace (trap freeze or live)\n");
+  UartStr("  Bp(&F); Bps; BpClr(&F); Cont;   // ebreak; BpStop aborts eval\n");
+  UartStr("  Watch(&x); WatchChk; Watchs;    // soft compare (WatchBreak aborts)\n");
+  UartStr("  Step; StepOver;                 // soft next-insn / ra breakpoint\n");
+  UartStr("  TrapDump; DbgReg(n); pc;        // last trap CSRs + GPRs\n");
+  UartStr("  CsrExplain(\"mstatus\"); Bits(\"mie\");       // CSR bitfield decode\n");
+  UartStr("  CrashDump; CrashMon; CrashHelp; // fault → crash> (CONSOLE #9)\n");
+  UartStr("  Man(\"Debugger\"); Man(\"CrashMon\"); Man(\"Regs\"); U(pc-16);\n");
+}
+// StkRep -- StkRep()
+// NAME
+//   StkRep - symbolic stack report (TempleOS-style)
+// SYNOPSIS
+//   StkRep;
+// DESCRIPTION
+//   Prefer C host slot on legacy REPL; else call HolyC Bt (same FP walk).
+U0 StkRep()
+{
+  I64 (*sr)();
+  sr = *(I64 *)0x87001138;
+  if (SoftDbgSlotFnOk(sr)) {
+    sr();
+    return;
+  }
+  Bt;
+}
+// ---- TempleOS-style inspection: Dr / Dm / D / Da ----
 // Dr -- Dr()
 // NAME
 //   Dr - dump registers (Regs); dig-down with Reg/GetM*
@@ -170,33 +638,15 @@ U0 BpClr(I64 addr)
 //   U0 Dr();
 // DESCRIPTION
 //   Alias of Regs. Then Reg("sp"); Reg("mstatus"); GetMStatus; RegHelp; Man("Regs").
-// INPUTS
-//   none
-// OUTPUTS
-//   Full GPR+CSR dump
 // BUGS
-//   Same as Regs (C snap + HolyC CSR Get/Set in csr.hc).
+//   Same as Regs (snap+restore stub; values at stub entry — docs/DEBUGGER.md).
 U0 Dr()
 {
-  Regs;
+  Regs();
 }
-// Dm -- Dm(a,n)
-// NAME
-//   Dm - hex+ASCII dump.
-// SYNOPSIS
-//   Dm(a,n)
-// DESCRIPTION
-//   hex+ASCII dump.
-// INPUTS
-//   a - argument
-//   n - argument
-// OUTPUTS
-//   hex+ASCII dump.
-// BUGS
-//   See source; RISC-V UART REPL may omit full TempleOS behavior.
+
 U0 Dm(I64 a, I64 n = 64)
 {
-  // hex + ASCII, 16 bytes a row
   I64 r, c, b;
   for (r = 0; r < n; r += 16) {
     "%08X: ", a + r;
@@ -218,41 +668,14 @@ U0 Dm(I64 a, I64 n = 64)
     "\n";
   }
 }
-// D -- D(a,n)
-// NAME
-//   D - alias of Dm (also shadows holy_rt D after boot).
-// SYNOPSIS
-//   D(a,n)
-// DESCRIPTION
-//   alias of Dm (also shadows holy_rt D after boot).
-// INPUTS
-//   a - argument
-//   n - argument
-// OUTPUTS
-//   alias of Dm (also shadows holy_rt D after boot).
-// BUGS
-//   See source; RISC-V UART REPL may omit full TempleOS behavior.
+
 U0 D(I64 a, I64 n = 64)
 {
   Dm(a, n);
 }
-// Da -- Da(a,n)
-// NAME
-//   Da - symbolic I64 slot dump.
-// SYNOPSIS
-//   Da(a,n)
-// DESCRIPTION
-//   symbolic I64 slot dump.
-// INPUTS
-//   a - argument
-//   n - argument
-// OUTPUTS
-//   symbolic I64 slot dump.
-// BUGS
-//   See source; RISC-V UART REPL may omit full TempleOS behavior.
+
 U0 Da(I64 a, I64 n = 8)
 {
-  // n I64 slots; each value symbolized if it lands in a function
   I64 i, v, base;
   U8 *nm;
   for (i = 0; i < n; i++) {

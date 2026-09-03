@@ -120,8 +120,9 @@ add '"FnSize Dir=%d\n", FnSize("Dir");'
 # StrIMatch must be live HolyC (Funs filter hung on unresolved CALL_IMPORT before seed-owned Str*).
 add '"FnAddr StrIMatch=%d\n", FnAddr("StrIMatch");'
 add '"StrIMatch ab=%d\n", StrIMatch("ab","xxabxx",0)!=0;'
-# Interactive Funs("Print") must complete (Esc) with a filtered list — hang = full QEMU timeout.
-add $'Funs("Print");\n\x1b'
+# Funs("Print") is filter-only (no Esc). Interactive Funs; still needs Esc — hang = QEMU timeout.
+add 'Funs("Print");'
+# Keep a brief interactive Funs+Esc regression; filter dump is the smoke-critical path.
 add $'Funs();\n\x1b'
 
 # Non-interactive Fun*/Callers (+ FileWrite name integrity for .funlist)
@@ -154,6 +155,11 @@ add 'Regs();'
 add 'StkRep();'
 add 'Reg("mstatus");'
 add 'Reg("sp");'
+add 'Reg("a0");'
+add 'Reg("x10");'
+add 'Reg("fp");'
+add 'Man("ABI");'
+add 'Man("Reg");'
 add '"MEM_HEAP=%X\n", MEM_HEAP;'
 add '"GetMStatus=%X\n", GetMStatus();'
 add 'RegHelp();'
@@ -165,10 +171,13 @@ add '"asm_inline_s2=%d\n", AsmS2Probe();'
 add 'asm { li s2, 10 }'
 add 'asm { addi s2,s2,3 }'
 add '"asm_repl_s2=%d\n", Reg("s2");'
+add 'asm { li a0, 5 }; "asm_repl_a0=%d\n", Reg("a0");'
 add 'asm { li a7, 20 addi a7,a7,-4 }; "asm_repl_a7=%d\n", Reg("a7");'
 # ';' separators (TempleOS/gas) + li pseudo + R-type sub; same-line Regs must show a7=3 s2=1.
 add 'Regs; asm { li s2,1; li a7,4; sub a7,a7,s2 }; Regs'
 add 'asm { li s2,1; li a7,4; sub a7,a7,s2 }; "asm_semi_a7=%d asm_semi_s2=%d\n", Reg("a7"), Reg("s2");'
+# After Regs restore, stub-entry a7 must still be readable by Reg on the same line.
+add 'asm { li a7, 5 }; Regs; "post_regs_a7=%d\n", Reg("a7");'
 # Encode-only system ops (do not execute sret/mret/ecall/ebreak unlabeled in M-mode).
 add 'asm { SretEnc:: sret ret }'
 add '"asm_sret_sz=%d\n", FnSize("SretEnc");'
@@ -180,12 +189,19 @@ add 'TermCols();'
 # HolyC geometry (term.hc) Vi/EditHoly read after TermProbe (piped UART keeps 80x24; SetSize must stick)
 add 'TermSetSize(40,100); TermRows()*1000+TermCols();'
 add 'TermSetSize(24,80);'
+add 'TermSize(100,40); TermRows()*1000+TermCols();'
+add 'TermSize(80,24);'
 
 # **** Src opens Vi on originating file and seeks to the def (JumpIdent + VCenter) ****
 # Broken stub printed "Src: wrote Dir.hc" and returned — that is a hard fail below.
 add 'Src("Dir");'
 add $':q\r'
 add 'Dir;'
+add 'Cd("Tutorials");'
+add 'Pwd();'
+add 'Cat("A01_RV64I.hc");'
+add 'Cd("/");'
+add 'Cat("Lib/print.hc");'
 add 'Src("Print");'
 add $':q\r'
 add '"after-Src-Print\n";'
@@ -311,10 +327,18 @@ add 'TrapInit();'
 add 'SetTrap("Zap");'
 add 'Ecall();'
 
+# Memfs change journal (P0/P1): FileWrite after boot FsEpochSeal → FsChanges/FsLog
+add 'FileWrite("Home/jlog.hc","z",1);'
+add 'FsChanges;'
+add 'FsLog(4);'
+add 'FsCheckpoint("p1");'
+add 'FileWrite(".p1q","n",1);'
+add 'FsChanges(-1, 1);'
+
 # Livedrv: edit uart.hc live, prove Run after edit still works
 add 'Run("uart.hc");'
 add 'UartStr("livedrv ");'
-add $'Ed("uart.hc");\n57a\n  if (ch>=97 && ch<=122) ch -= 32;\n.\nw\nq'
+add $'Ed("uart.hc");\n150a\n  if (ch>=97 && ch<=122) ch -= 32;\n.\nw\nq'
 add 'Run("uart.hc");'
 add 'UartStr("livedrv ");'
 
@@ -432,15 +456,26 @@ expect_text 'Dig-down'
 expect_text 'mstatus'
 expect_text 'stack pointer'
 expect_text 'return address'
+expect_text 'x10/a0'
+expect_text 'arg/ret (caller-saved)'
+expect_text 'saved / frame ptr (fp)'
+expect_text '(fp is alias for s0/x08)'
+expect_text 'RISC-V integer register naming'
+expect_text 'caller-saved'
+expect_text 'callee-saved'
+expect_text 'a0..a7'
+expect_text 'Reg - read one GPR'
 expect_text 'GetMStatus'
 expect_text 'RegHelp'
 expect_text 'asm_inline_s2=3'
 expect_text 'asm_repl_s2=13'
+expect_text 'asm_repl_a0=5'
 expect_text 'asm_repl_a7=16'
 expect_text 'asm_semi_a7=3 asm_semi_s2=1'
 # Same-line Regs after semicolon asm (a7 is caller-saved across REPL line boundaries).
-expect_text '  x17 a7   = 0x0000000000000003  arg 7'
-expect_text '  x18 s2   = 0x0000000000000001  saved'
+expect_text '  x17/a7 = 0x0000000000000003  arg/ret (caller-saved)'
+expect_text '  x18/s2 = 0x0000000000000001  saved (callee-saved)'
+expect_text 'post_regs_a7=5'
 expect_re 'asm_sret_sz=[1-9]' 'labeled sret encodes'
 expect_re 'MEM_HEAP=0*86000000' 'MEM_HEAP symbol'
 expect_text 'stack:'
@@ -448,7 +483,8 @@ expect_text 'stack:'
 expect_text 'KEY_UP=256 KEY_DOWN=257'
 expect_text 'ans=0x0000000000000018'  # TermRows 24
 expect_text 'ans=0x0000000000000050'  # TermCols 80
-expect_text 'ans=0x0000000000009ca4'  # TermSetSize(40,100) → rows*1000+cols (C geometry)
+expect_text 'ans=0x0000000000009ca4'  # TermSetSize(40,100) → rows*1000+cols
+expect_text 'ans=0x0000000000009ca4'  # TermSize(100,40) cols-first same geometry
 
 # Src opened Vi on the real seed file and sought the def (not Ln 1 / stub write)
 reject_text 'Src: wrote Dir.hc'
@@ -466,8 +502,11 @@ expect_text '-- NORMAL -- run.hc'
 expect_text 'after-Src-Print'
 expect_text 'after-Src-TimerArm'
 expect_text 'after-Src-Run'
-# Dir listing still works after Src(Dir)
-expect_text 'dir.hc  '
+# Dir listing still works after Src(Dir) — hierarchical (Lib/ not a flat dir.hc line)
+expect_text ' Lib/'
+expect_text ' Tutorials/'
+expect_text 'cwd: /Tutorials/'
+expect_text 'A01_RV64I.hc -- Part A1'
 
 expect_text 'wrote scr.hc'
 expect_text 'Visual editor works'
@@ -525,6 +564,10 @@ expect_re 'foo bar Xoo|Xoo bar foo' 'Vi /foo n rX (IRQ timing may hit 1st or 2nd
 expect_text 'AF'
 expect_text 'FROM_E'
 expect_text 'ZAP-HIT'
+expect_text 'W  Home/jlog.hc'
+expect_text 'fs log tail'
+expect_text 'fs checkpoint 1'
+expect_text 'W  .p1q'
 expect_text 'Interrupted'
 expect_text 'after-ctrlc'
 expect_text 'caught-break'

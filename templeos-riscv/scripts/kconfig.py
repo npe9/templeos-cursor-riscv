@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Minimal Kconfig for TempleOS/RISC-V — no external dependencies.
+"""Minimal Kconfig sync for TempleOS/RISC-V.
 
-Supports: mainmenu, source, menu/endmenu, choice/endchoice, config (bool/hex/int/string),
-default (with optional `if`), depends on, help.
+Parser/sync for .config → autoconf.h / RVAutoConf.HH / MemMap / kconfig.mk.
+Interactive UI is Linux's real mconf + lxdialog (vendored under scripts/kconfig/),
+built with a C compiler + ncurses — see `make menuconfig`.
+
+Supports (Linux Kconfig subset used by this tree): mainmenu, source, menu/endmenu,
+choice/endchoice, config (bool/hex/int/string), default (with optional `if`),
+depends on, help.
 
 Commands:
   defconfig [FILE]   apply configs/*_defconfig or named file (default: virt_defconfig)
   olddefconfig       fill missing symbols from defaults using current .config
-  menuconfig         Linux-style interactive TUI (stdin must be a TTY)
-  menuconfig-test    non-interactive tree / format sanity check
+  menuconfig         run vendored mconf (TTY); then sync (prefer: make menuconfig)
+  menuconfig-test    build/run Linux conf --olddefconfig sanity check
   sync               rewrite autoconf headers from .config
   qemu-args [M]      print suggested qemu args from .config, or resolve M's defconfig
                      without writing global headers (multi-kernel / docs)
@@ -322,7 +327,7 @@ def write_config_file(path: Path, vals: Dict[str, Any], order: List[str], symbol
     lines = [
         "#",
         "# TempleOS/RISC-V platform configuration (generated — do not edit by hand;",
-        "# use: make -C templeos-riscv menuconfig / defconfig)",
+        "# use: make menuconfig / make -C templeos-riscv defconfig)",
         "#",
         "",
     ]
@@ -443,7 +448,29 @@ def resolve_defaults(k: Kconfig, preset: Dict[str, str]) -> Dict[str, Any]:
                     chosen = "0"
                 else:
                     chosen = ""
-            newv = _parse_val(sym, chosen)
+            # Symbol-ref defaults (e.g. `default ENTRY_POINT` for hex)
+            if (
+                isinstance(chosen, str)
+                and chosen in k.symbols
+                and chosen != name
+                and not chosen.startswith("0x")
+                and not chosen.startswith("0X")
+                and not (chosen[:1].isdigit() if chosen else False)
+                and not chosen.startswith('"')
+            ):
+                if chosen not in vals:
+                    continue  # wait for multi-pass until ref is resolved
+                ref = vals[chosen]
+                if sym.type == "hex":
+                    newv = _fmt_hex(ref)
+                elif sym.type == "string":
+                    newv = str(ref).strip('"')
+                elif sym.type == "int":
+                    newv = str(int(str(ref).strip('"'), 0)) if not isinstance(ref, bool) else "0"
+                else:
+                    newv = _parse_val(sym, str(ref))
+            else:
+                newv = _parse_val(sym, chosen)
             if vals.get(name) != newv:
                 vals[name] = newv
                 changed = True
@@ -521,9 +548,12 @@ def write_autoconf(vals: Dict[str, Any], symbols: Dict[str, Symbol]) -> None:
         ("CONFIG_VIRTIO_DRV_RAM_BASE", "RV_CFG_VIRTIO_DRV_RAM_BASE"),
         ("CONFIG_FW_CFG_BASE", "RV_CFG_FW_CFG_BASE"),
         ("CONFIG_RTC_BASE", "RV_CFG_RTC_BASE"),
+        ("CONFIG_ENTRY_POINT", "RV_CFG_ENTRY_POINT"),
         ("CONFIG_KERNEL_ENTRY", "RV_CFG_KERNEL_ENTRY"),
         ("CONFIG_KERNEL_LINK_ADDR", "RV_CFG_KERNEL_LINK_ADDR"),
         ("CONFIG_DRAM_BASE", "RV_CFG_DRAM_BASE"),
+        ("CONFIG_RISCV_ISA", "RV_CFG_RISCV_ISA"),
+        ("CONFIG_RISCV_ABI", "RV_CFG_RISCV_ABI"),
         ("CONFIG_SYS_FIXED_AREA", "RV_CFG_SYS_FIXED_AREA"),
         ("CONFIG_FB_SOFT_BASE", "RV_CFG_FB_SOFT_BASE"),
         ("CONFIG_HEAP_BASE", "RV_CFG_HEAP_BASE"),
@@ -548,6 +578,7 @@ def write_autoconf(vals: Dict[str, Any], symbols: Dict[str, Symbol]) -> None:
         ("PLIC_BASE", "MEM_PLIC"),
         ("VIRTIO_MMIO_BASE", "MEM_VIRTIO"),
         ("FW_CFG_BASE", "MEM_FW_CFG"),
+        ("RTC_BASE", "MEM_RTC"),
         ("DRAM_BASE", "MEM_RAM"),
         ("SYS_FIXED_AREA", "MEM_FIXED"),
         ("FB_SOFT_BASE", "MEM_FB"),
@@ -556,13 +587,17 @@ def write_autoconf(vals: Dict[str, Any], symbols: Dict[str, Symbol]) -> None:
         ("HOST_SLOTS_BASE", "MEM_HOST_SLOTS"),
         ("STACK_BASE", "MEM_STACK"),
         ("SIFIVE_TEST_BASE", "MEM_TEST"),
+        ("SIFIVE_GPIO_BASE", "MEM_GPIO"),
+        ("SIFIVE_UART1_BASE", "MEM_UART1"),
+        ("SIFIVE_PRCI_BASE", "MEM_PRCI"),
+        ("SIFIVE_ETH_BASE", "MEM_ETH"),
     ]
     for key, dst in mem_aliases:
         if key in vals and symbols.get(key) and symbols[key].type == "hex":
             h_lines.append(f"#define {dst} CONFIG_{key}")
             hc_lines.append(f"#define {dst} CONFIG_{key}")
 
-    # RISCV_VIRT kept for existing #ifdef RISCV_VIRT sites (Goldfish RTC path)
+    # RISCV_VIRT kept for existing #ifdef RISCV_VIRT sites (legacy; RTC uses CONFIG_HAS_GOLDFISH_RTC)
     if vals.get("PLATFORM_VIRT"):
         h_lines.append("#define RISCV_VIRT 1")
         hc_lines.append("#define RISCV_VIRT 1")
@@ -581,21 +616,63 @@ def write_autoconf(vals: Dict[str, Any], symbols: Dict[str, Symbol]) -> None:
 
 
 def write_kconfig_mk(vals: Dict[str, Any]) -> None:
-    """Make-friendly variables from .config (included by templeos-riscv/Makefile)."""
+    """Make + shell-friendly variables from .config (KEY=value, no spaces).
+
+    Sourced by build_kernel_plat.sh; included by Makefiles.
+    """
     KCONFIG_MK.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "# Generated by templeos-riscv/scripts/kconfig.py — do not edit.",
+        "# Format: KEY=value (Make include + shell `source` both work).",
         "",
     ]
     if vals.get("OUTPUT_FORMAT_FIRMWARE"):
-        lines.append("CONFIG_OUTPUT_FORMAT_FIRMWARE := y")
-        lines.append("OUTPUT_FORMAT := firmware")
+        lines.append("CONFIG_OUTPUT_FORMAT_FIRMWARE=y")
+        lines.append("OUTPUT_FORMAT=firmware")
     else:
-        lines.append("OUTPUT_FORMAT := elf")
-    lines.append(f"FLASH_BASE := {_fmt_hex(vals.get('FLASH_BASE', '0x20000000'))}")
-    lines.append(f"PFLASH_SIZE := {_fmt_hex(vals.get('PFLASH_SIZE', '0x02000000'))}")
-    ram = vals.get("KERNEL_LINK_ADDR") or vals.get("DRAM_BASE") or "0x80000000"
-    lines.append(f"RAM_BASE := {_fmt_hex(ram)}")
+        lines.append("OUTPUT_FORMAT=elf")
+    lines.append(f"FLASH_BASE={_fmt_hex(vals.get('FLASH_BASE', '0x20000000'))}")
+    lines.append(f"PFLASH_SIZE={_fmt_hex(vals.get('PFLASH_SIZE', '0x02000000'))}")
+    entry = (
+        vals.get("ENTRY_POINT")
+        or vals.get("KERNEL_ENTRY")
+        or vals.get("KERNEL_LINK_ADDR")
+        or vals.get("DRAM_BASE")
+        or "0x80000000"
+    )
+    entry_h = _fmt_hex(entry)
+    ram = vals.get("KERNEL_LINK_ADDR") or entry
+    lines.append(f"ENTRY_POINT={entry_h}")
+    lines.append(f"LOAD_BASE={entry_h}")
+    lines.append(f"RAM_BASE={_fmt_hex(ram)}")
+    if vals.get("BOOT_SPLIT"):
+        lines.append("CONFIG_BOOT_SPLIT=y")
+        lines.append("BOOT_SPLIT=y")
+        bl_base = vals.get("BOOTLOADER_BASE") or "0x20000000"
+        lines.append(f"BOOTLOADER_BASE={_fmt_hex(bl_base)}")
+        if vals.get("BOOT_MODE_COPY"):
+            lines.append("CONFIG_BOOT_MODE_COPY=y")
+            lines.append("BOOT_MODE_COPY=y")
+            lines.append("BOOT_MODE=copy")
+        else:
+            lines.append("CONFIG_BOOT_MODE_JUMP=y")
+            lines.append("BOOT_MODE_JUMP=y")
+            lines.append("BOOT_MODE=jump")
+    else:
+        lines.append(f"BOOTLOADER_BASE={_fmt_hex(vals.get('BOOTLOADER_BASE', '0x20000000'))}")
+        lines.append("BOOT_MODE=jump")
+    isa = str(vals.get("RISCV_ISA", "rv64imafdc")).strip().strip('"') or "rv64imafdc"
+    abi = str(vals.get("RISCV_ABI", "lp64d")).strip().strip('"') or "lp64d"
+    lines.append(f"RISCV_ISA={isa}")
+    lines.append(f"RISCV_ABI={abi}")
+    lines.append(f"MARCH={isa}")
+    lines.append(f"MABI={abi}")
+    if vals.get("ARCH_RISCV32"):
+        lines.append("ARCH_BITS=32")
+        lines.append("CONFIG_ARCH_RISCV32=y")
+    else:
+        lines.append("ARCH_BITS=64")
+        lines.append("CONFIG_ARCH_RISCV64=y")
     lines.append("")
     KCONFIG_MK.write_text("\n".join(lines))
 
@@ -631,13 +708,23 @@ def write_memmap_selected(vals: Dict[str, Any]) -> None:
     clint = _hex_int(vals, "CLINT_BASE")
     mtime_off = _hex_int(vals, "CLINT_MTIME_OFF", 0xBFF8)
     mtimecmp_off = _hex_int(vals, "CLINT_MTIMECMP_OFF", 0x4000)
+    if vals.get("HAS_XPS_TIMER"):
+        clint = _hex_int(vals, "XPS_TIMER_BASE", 0x41C00000)
+        mtime_off = 0
+        mtimecmp_off = 0x10  # Timer1 TCSR (one-shot arm legend)
     plic = _hex_int(vals, "PLIC_BASE") if vals.get("HAS_PLIC") else 0
     plic_en = _hex_int(vals, "PLIC_ENABLE_OFF", 0x2000) if vals.get("HAS_PLIC") else 0
     plic_thr = _hex_int(vals, "PLIC_THRESHOLD_OFF", 0x200000) if vals.get("HAS_PLIC") else 0
     plic_claim = _hex_int(vals, "PLIC_CLAIM_OFF", 0x200004) if vals.get("HAS_PLIC") else 0
+    if vals.get("HAS_XPS_INTC"):
+        plic = _hex_int(vals, "XPS_INTC_BASE", 0x41200000)
+        plic_en = 0x10  # SIE
+        plic_thr = 0
+        plic_claim = 0x18  # IVR / IAR adjacent legend
     virtio = _hex_int(vals, "VIRTIO_MMIO_BASE") if vals.get("HAS_VIRTIO_MMIO") else 0
     virtio_stride = _hex_int(vals, "VIRTIO_MMIO_STRIDE", 0x1000) if vals.get("HAS_VIRTIO_MMIO") else 0
     fw_cfg = _hex_int(vals, "FW_CFG_BASE") if vals.get("HAS_FW_CFG") else 0
+    rtc = _hex_int(vals, "RTC_BASE") if vals.get("HAS_GOLDFISH_RTC") else 0
     ram = _hex_int(vals, "DRAM_BASE", 0x80000000)
     fixed = _hex_int(vals, "SYS_FIXED_AREA", 0x87000000)
     fb = _hex_int(vals, "FB_SOFT_BASE", 0x86100000)
@@ -646,6 +733,10 @@ def write_memmap_selected(vals: Dict[str, Any]) -> None:
     host_slots = _hex_int(vals, "HOST_SLOTS_BASE", 0x87001000)
     stack = _hex_int(vals, "STACK_BASE", 0x87F00000)
     test = _hex_int(vals, "SIFIVE_TEST_BASE")
+    gpio = _hex_int(vals, "SIFIVE_GPIO_BASE")
+    uart1 = _hex_int(vals, "SIFIVE_UART1_BASE")
+    prci = _hex_int(vals, "SIFIVE_PRCI_BASE")
+    eth = _hex_int(vals, "SIFIVE_ETH_BASE")
 
     if vals.get("UART_SIFIVE"):
         drv_uart = "RVSifivePlat / uart.hc"
@@ -655,17 +746,84 @@ def write_memmap_selected(vals: Dict[str, Any]) -> None:
         drv_uart = "RVUartHtif / uart.hc"
         drv_clint = "RVTimer / CLINT"
         drv_plic = "RVPlicHw" if vals.get("HAS_PLIC") else "RVPlicStub"
+    elif vals.get("UART_SHAKTI"):
+        drv_uart = "RVUartShakti / uart.hc"
+        drv_clint = "RVTimer / CLINT"
+        drv_plic = "RVPlicHw" if vals.get("HAS_PLIC") else "RVPlicStub"
+    elif vals.get("UART_UARTLITE"):
+        drv_uart = "RVUartUartlite / uart.hc"
+        if vals.get("HAS_XPS_TIMER"):
+            drv_clint = "RVTimerXps"
+        elif vals.get("HAS_IBEX_TIMER"):
+            drv_clint = "RVTimerIbex"
+        elif vals.get("HAS_CLINT", True):
+            drv_clint = "RVTimer / CLINT"
+        else:
+            drv_clint = "RVTimerStub"
+        if vals.get("HAS_XPS_INTC"):
+            drv_plic = "RVPlicXps"
+        elif vals.get("HAS_PLIC"):
+            drv_plic = "RVPlicHw"
+        else:
+            drv_plic = "RVPlicStub"
+    elif vals.get("UART_IBEX"):
+        drv_uart = "RVUartIbex / uart.hc"
+        if vals.get("HAS_IBEX_TIMER"):
+            drv_clint = "RVTimerIbex"
+        elif vals.get("HAS_CLINT", True):
+            drv_clint = "RVTimer / CLINT"
+        else:
+            drv_clint = "RVTimerStub"
+        if vals.get("HAS_PLIC"):
+            drv_plic = "RVPlicHw"
+        elif vals.get("HAS_APLIC"):
+            drv_plic = "RVPlicAplic"
+        else:
+            drv_plic = "RVPlicStub"
     elif vals.get("UART_STUB"):
         drv_uart = "RVUartStub / uart.hc"
-        drv_clint = "RVTimer / CLINT"
-        drv_plic = "RVPlicHw" if vals.get("HAS_PLIC") else "RVPlicStub"
+        if vals.get("HAS_IBEX_TIMER"):
+            drv_clint = "RVTimerIbex"
+        elif vals.get("HAS_CLINT", True):
+            drv_clint = "RVTimer / CLINT"
+        else:
+            drv_clint = "RVTimerStub"
+        if vals.get("HAS_PLIC"):
+            drv_plic = "RVPlicHw"
+        elif vals.get("HAS_APLIC"):
+            drv_plic = "RVPlicAplic"
+        else:
+            drv_plic = "RVPlicStub"
     else:
         drv_uart = "RVUart16550 / uart.hc"
-        drv_clint = "RVTimer / CLINT"
-        drv_plic = "RVPlicHw" if vals.get("HAS_PLIC") else "RVPlicStub"
+        if vals.get("HAS_IBEX_TIMER"):
+            drv_clint = "RVTimerIbex"
+        elif vals.get("HAS_CLINT", True):
+            drv_clint = "RVTimer / CLINT"
+        else:
+            drv_clint = "RVTimerStub"
+        if vals.get("HAS_PLIC"):
+            drv_plic = "RVPlicHw"
+        elif vals.get("HAS_APLIC"):
+            drv_plic = "RVPlicAplic"
+        else:
+            drv_plic = "RVPlicStub"
+
+    # SiFive / HTIF / Shakti branches still use HAS_PLIC for drv_plic; APLIC boards
+    # (xiangshan) are UART_16550 and hit the else branch above.
+    if vals.get("UART_SIFIVE"):
+        if vals.get("HAS_APLIC") and not vals.get("HAS_PLIC"):
+            drv_plic = "RVPlicAplic"
+    elif vals.get("UART_HTIF") or vals.get("UART_SHAKTI"):
+        if vals.get("HAS_APLIC") and not vals.get("HAS_PLIC"):
+            drv_plic = "RVPlicAplic"
 
     if vals.get("HAS_VIRTIO_MMIO"):
         drv_virtio = "DskVirtioRV / VirtioNet / VirtioInput / Virtio9p"
+        if vals.get("HAS_VIRTIO_PCI"):
+            drv_virtio += " / VirtioPciBlk"
+    elif vals.get("HAS_VIRTIO_PCI"):
+        drv_virtio = "VirtioPci / VirtioPciBlk"
     else:
         drv_virtio = "RVVirtioMmioNo"
 
@@ -677,6 +835,7 @@ def write_memmap_selected(vals: Dict[str, Any]) -> None:
         drv_fb = "RVFb / ramfb"
 
     drv_fw = "RVFwCfgYes" if vals.get("HAS_FW_CFG") else "RVFwCfgNo"
+    drv_rtc = "RVRtcGoldfish" if vals.get("HAS_GOLDFISH_RTC") else "RVRtcNo"
 
     lines = [
         "// Generated by templeos-riscv/scripts/kconfig.py — do not edit.",
@@ -694,9 +853,14 @@ def write_memmap_selected(vals: Dict[str, Any]) -> None:
         f"#define MEM_PLIC_THRESHOLD_OFF {_mem_hex(plic_thr)}",
         f"#define MEM_PLIC_CLAIM_OFF     {_mem_hex(plic_claim)}",
         f"#define MEM_UART       {_mem_hex(uart)}",
+        f"#define MEM_UART1      {_mem_hex(uart1)}",
+        f"#define MEM_GPIO       {_mem_hex(gpio)}",
+        f"#define MEM_PRCI       {_mem_hex(prci)}",
+        f"#define MEM_ETH        {_mem_hex(eth)}",
         f"#define MEM_VIRTIO     {_mem_hex(virtio)}",
         f"#define MEM_VIRTIO_STRIDE {_mem_hex(virtio_stride)}",
         f"#define MEM_FW_CFG     {_mem_hex(fw_cfg)}",
+        f"#define MEM_RTC        {_mem_hex(rtc)}",
         f"#define MEM_FS         {_mem_hex(memfs)}",
         f"#define MEM_HEAP       {_mem_hex(heap)}",
         f"#define MEM_FB         {_mem_hex(fb)}",
@@ -713,6 +877,7 @@ def write_memmap_selected(vals: Dict[str, Any]) -> None:
         f'#define MEMMAP_DRV_VIRTIO  "{drv_virtio}"',
         f'#define MEMMAP_DRV_FB      "{drv_fb}"',
         f'#define MEMMAP_DRV_FW_CFG  "{drv_fw}"',
+        f'#define MEMMAP_DRV_RTC     "{drv_rtc}"',
         '#define MEMMAP_DRV_FS      "fs.hc"',
         '#define MEMMAP_DRV_HEAP    "mem.hc"',
         '#define MEMMAP_DRV_TRAP    "trap.hc"',
@@ -752,14 +917,33 @@ def write_drv_selecteds(vals: Dict[str, Any]) -> None:
         uart = '#include "RVUartSifive.HC"\n'
     elif vals.get("UART_HTIF"):
         uart = '#include "RVUartHtif.HC"\n'
+    elif vals.get("UART_SHAKTI"):
+        uart = '#include "RVUartShakti.HC"\n'
+    elif vals.get("UART_UARTLITE"):
+        uart = '#include "RVUartUartlite.HC"\n'
+    elif vals.get("UART_IBEX"):
+        uart = '#include "RVUartIbex.HC"\n'
     elif vals.get("UART_STUB"):
         uart = '#include "RVUartStub.HC"\n'
     else:
         uart = '#include "RVUart16550.HC"\n'
     (drv / "RVUartSelected.HH").write_text(hdr + uart)
 
+    if vals.get("HAS_CLINT", True):
+        (drv / "RVTimerSelected.HH").write_text(hdr + '#include "RVTimerClint.HC"\n')
+    elif vals.get("HAS_IBEX_TIMER"):
+        (drv / "RVTimerSelected.HH").write_text(hdr + '#include "RVTimerIbex.HC"\n')
+    elif vals.get("HAS_XPS_TIMER"):
+        (drv / "RVTimerSelected.HH").write_text(hdr + '#include "RVTimerXps.HC"\n')
+    else:
+        (drv / "RVTimerSelected.HH").write_text(hdr + '#include "RVTimerStub.HC"\n')
+
     if vals.get("HAS_PLIC"):
         (drv / "RVPlicSelected.HH").write_text(hdr + '#include "RVPlicHw.HC"\n')
+    elif vals.get("HAS_APLIC"):
+        (drv / "RVPlicSelected.HH").write_text(hdr + '#include "RVPlicAplic.HC"\n')
+    elif vals.get("HAS_XPS_INTC"):
+        (drv / "RVPlicSelected.HH").write_text(hdr + '#include "RVPlicXps.HC"\n')
     else:
         (drv / "RVPlicSelected.HH").write_text(hdr + '#include "RVPlicStub.HC"\n')
 
@@ -781,8 +965,20 @@ def write_drv_selecteds(vals: Dict[str, Any]) -> None:
         fb.append('#include "RVFbKindNone.HC"\n')
     else:
         fb.append('#include "RVFbKindRamfb.HC"\n')
-    fb.append('#include "RVFwCfgYes.HC"\n' if vals.get("HAS_FW_CFG") else '#include "RVFwCfgNo.HC"\n')
     (drv / "RVFbSelected.HH").write_text(hdr + "".join(fb))
+
+    (drv / "RVFwCfgSelected.HH").write_text(
+        hdr + ('#include "RVFwCfgYes.HC"\n' if vals.get("HAS_FW_CFG") else '#include "RVFwCfgNo.HC"\n')
+    )
+    (drv / "RVRtcSelected.HH").write_text(
+        hdr + ('#include "RVRtcGoldfish.HC"\n' if vals.get("HAS_GOLDFISH_RTC") else '#include "RVRtcNo.HC"\n')
+    )
+
+    # SiFive Cadence GEM (FU540); Yes when SIFIVE_ETH_BASE is non-zero.
+    eth_base = _hex_int(vals, "SIFIVE_ETH_BASE")
+    (drv / "RVSifiveGemSelected.HH").write_text(
+        hdr + ('#include "RVSifiveGemYes.HC"\n' if eth_base else '#include "RVSifiveGemNo.HC"\n')
+    )
 
 
 def cmd_defconfig(name: str) -> int:
@@ -836,8 +1032,22 @@ def cmd_qemu_args(machine: Optional[str] = None) -> int:
         system = str(vals.get("QEMU_SYSTEM", "qemu-system-riscv64")).strip('"')
         qmachine = str(vals.get("QEMU_MACHINE", name)).strip('"')
         extra = str(vals.get("QEMU_EXTRA_ARGS", "")).strip('"')
+        load = str(vals.get("QEMU_LOAD_MODE", "kernel")).strip('"')
+        if load == "board" or qmachine in ("board-only",):
+            entry = vals.get("ENTRY_POINT", "0x40200000")
+            print(f"# BOARD-ONLY ({name}): no QEMU -M — U-Boot go / OpenOCD @ {entry}")
+            print(
+                f"# QEMU_SYSTEM={system} QEMU_LOAD_MODE={load} "
+                f"(from {name}_defconfig, no write)",
+                file=sys.stderr,
+            )
+            return 0
         print(f"-M {qmachine} {extra}".strip())
-        print(f"# QEMU_SYSTEM={system} (from {name}_defconfig, no write)", file=sys.stderr)
+        print(
+            f"# QEMU_SYSTEM={system} QEMU_LOAD_MODE={load} "
+            f"(from {name}_defconfig, no write)",
+            file=sys.stderr,
+        )
         return 0
     preset = read_config_file(CONFIG_PATH)
     if not preset:
@@ -846,9 +1056,18 @@ def cmd_qemu_args(machine: Optional[str] = None) -> int:
     system = preset.get("QEMU_SYSTEM", '"qemu-system-riscv64"').strip('"')
     qmachine = preset.get("QEMU_MACHINE", '"virt"').strip('"')
     extra = preset.get("QEMU_EXTRA_ARGS", '""').strip('"')
+    load = preset.get("QEMU_LOAD_MODE", '"kernel"').strip('"')
+    if load == "board" or qmachine in ("board-only",):
+        entry = preset.get("CONFIG_ENTRY_POINT") or preset.get("ENTRY_POINT", "0x40200000")
+        if isinstance(entry, str) and entry.startswith("CONFIG_"):
+            entry = "0x40200000"
+        name = str(preset.get("PLATFORM_NAME", "board")).strip('"')
+        print(f"# BOARD-ONLY ({name}): no QEMU -M — U-Boot go / OpenOCD @ {entry}")
+        print(f"# QEMU_SYSTEM={system} QEMU_LOAD_MODE={load}", file=sys.stderr)
+        return 0
     # Args only (Makefile does $(QEMU) $(qemu-args)). Binary is printed for docs.
     print(f"-M {qmachine} {extra}".strip())
-    print(f"# QEMU_SYSTEM={system}", file=sys.stderr)
+    print(f"# QEMU_SYSTEM={system} QEMU_LOAD_MODE={load}", file=sys.stderr)
     return 0
 
 
@@ -867,34 +1086,80 @@ def vals_to_preset(vals: Dict[str, Any], symbols: Dict[str, Symbol]) -> Dict[str
     return preset
 
 
+def _mconf_dir() -> Path:
+    return Path(__file__).resolve().parent / "kconfig"
+
+
 def cmd_menuconfig() -> int:
-    k = load_kconfig()
-    preset = read_config_file(CONFIG_PATH)
-    vals = resolve_defaults(k, preset)
+    """Run Linux mconf, then sync generated headers. Prefer `make menuconfig`."""
+    import subprocess
 
-    # Non-TTY: fall back to listing root menu (no interactive keys).
-    if not sys.stdin.isatty():
-        from menuconfig_tui import _build_root_items
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print("error: menuconfig requires an interactive TTY", file=sys.stderr)
+        print("hint: run `make menuconfig` from a terminal", file=sys.stderr)
+        return 1
 
-        print(k.mainmenu)
-        for item in _build_root_items(k, vals, _tokenize_cond):
-            print(f"  {item.label}")
-        print("hint: run menuconfig from an interactive terminal (TTY)")
-        return 0
+    kdir = _mconf_dir()
+    mconf = kdir / "mconf"
+    if not mconf.is_file():
+        r = subprocess.run(["make", "-C", str(kdir), "mconf"], cwd=str(ROOT))
+        if r.returncode != 0:
+            return r.returncode
+    env = os.environ.copy()
+    env["KCONFIG_CONFIG"] = str(CONFIG_PATH)
+    r = subprocess.run([str(mconf), "Kconfig"], cwd=str(ROOT), env=env)
+    if r.returncode not in (0, 1):
+        # mconf returns 1 on some quit paths; still sync if .config exists
+        if not CONFIG_PATH.is_file():
+            return r.returncode
+    return cmd_sync()
 
-    from menuconfig_tui import run_menuconfig_tui
 
-    vals = run_menuconfig_tui(
-        k,
-        vals,
-        _tokenize_cond,
-        lambda v: vals_to_preset(v, k.symbols),
-        resolve_defaults,
-        _fmt_hex,
-        _parse_val,
-        write_config_file,
-        write_autoconf,
-        CONFIG_PATH,
+def cmd_menuconfig_test() -> int:
+    """Non-interactive: build Linux conf and --olddefconfig our Kconfig."""
+    import subprocess
+    import tempfile
+
+    kdir = _mconf_dir()
+    r = subprocess.run(["make", "-C", str(kdir), "conf"], cwd=str(ROOT))
+    if r.returncode != 0:
+        print("menuconfig-test FAIL: could not build scripts/kconfig/conf", file=sys.stderr)
+        return 1
+    conf = kdir / "conf"
+    with tempfile.TemporaryDirectory() as td:
+        cfg = Path(td) / ".config"
+        env = os.environ.copy()
+        env["KCONFIG_CONFIG"] = str(cfg)
+        r = subprocess.run(
+            [str(conf), "--olddefconfig", "Kconfig"],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0:
+            print(r.stderr or r.stdout, file=sys.stderr)
+            print("menuconfig-test FAIL: conf --olddefconfig", file=sys.stderr)
+            return 1
+        text = cfg.read_text()
+    for needle in (
+        "CONFIG_PLATFORM_VIRT=y",
+        "CONFIG_ENTRY_POINT=",
+        "CONFIG_RISCV_ISA=",
+        "CONFIG_ISA_RV64IMAFDC=y",
+        "CONFIG_OUTPUT_FORMAT_ELF=y",
+    ):
+        if needle not in text:
+            print(f"menuconfig-test FAIL: missing {needle!r} in conf output", file=sys.stderr)
+            return 1
+    # Ensure mconf also links
+    r = subprocess.run(["make", "-C", str(kdir), "mconf"], cwd=str(ROOT))
+    if r.returncode != 0:
+        print("menuconfig-test FAIL: could not build scripts/kconfig/mconf", file=sys.stderr)
+        return 1
+    print(
+        "menuconfig-test OK: Linux conf --olddefconfig + mconf build "
+        f"(ENTRY_POINT/ISA present; frontend=scripts/kconfig/mconf)"
     )
     return 0
 
@@ -927,9 +1192,7 @@ def main() -> int:
     if args.command == "menuconfig":
         return cmd_menuconfig()
     if args.command == "menuconfig-test":
-        from menuconfig_tui import self_test
-
-        return self_test(load_kconfig(), _tokenize_cond)
+        return cmd_menuconfig_test()
     if args.command == "qemu-args":
         return cmd_qemu_args(args.arg)
     return 1

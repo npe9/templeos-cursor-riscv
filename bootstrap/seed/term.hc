@@ -32,7 +32,12 @@
 #define TS_ESC 1
 #define TS_CSI 2
 #define TS_SS3 3
+#define TS_OSC 4
 #define TERM_Q 64
+#define TERM_NAME_MAX 32
+#define TERM_OSC_MAX 64
+/* Custom OSC 777: host → guest size+type (ESC ] 777 ; cols ; rows ; name BEL). */
+#define TERM_OSC_NEGOTIATE 777
 class CTerm
 {
   I64 rows;
@@ -57,6 +62,9 @@ I64 g_term_got_digit = 0;
 I64 g_term_priv = 0;
 I64 g_term_params[8];
 I64 g_term_gave_up = 0;
+U8 *g_term_name_p;
+U8 g_term_osc[TERM_OSC_MAX];
+I64 g_term_osc_n = 0;
 /* HolyC interactive path owns the shared RX ring while TermKeyGet/TermProbe run.
  * Cleared otherwise so GetCh/TermPoll cannot steal bytes from C readline/EdC. */
 I64 g_term_rx_own = 0;
@@ -66,9 +74,9 @@ CTermEvent g_repq[TERM_Q];
 I64 g_trh = 0, g_trt = 0;
 U8 g_uart_ung[8];
 I64 g_uart_ung_n = 0;
-/* Geometry is HolyC-owned (g_term_*). TermProbe / TermHandleCsi update these; Vi/EditHoly
- * read TermRows/TermCols. Optional one-way push to C TermSetSize keeps EdC/EditC in sync.
- * Do NOT read C TermRows/Cols/Probe slots — that was "C owns, HolyC peeks". */
+/* Geometry + termname are HolyC-owned (g_term_*). TermProbe / CSI 8 / OSC 777
+ * update these; Vi/EditHoly read TermRows/TermCols. Optional one-way push to C
+ * TermSetSize keeps EdC/EditC in sync. Do NOT read C TermRows/Cols/Probe slots. */
 I64 TermRows()
 {
   return g_term_rows;
@@ -83,6 +91,62 @@ I64 TermFlags()
 {
   return g_term_flags;
 }
+// TermName -- TermName()
+// NAME
+//   TermName - current terminal type string (TERM-ish)
+// SYNOPSIS
+//   U8 *TermName();
+// DESCRIPTION
+//   Returns guest-stored name (default "ansi"). Host may set via OSC 777 or
+//   TermSetName. Editors do not require a rich terminfo — name is advisory.
+// EXAMPLES
+//   Print("%s\n", TermName);
+// SEE ALSO
+//   TermSetName  TermSize  TermRep  TermHelp
+U8 *TermName()
+{
+  if (!g_term_name_p) {
+    g_term_name_p = MAlloc(TERM_NAME_MAX);
+    if (g_term_name_p)
+      LogCpy(g_term_name_p, "ansi", TERM_NAME_MAX);
+  }
+  return g_term_name_p;
+}
+// TermSetName -- TermSetName(s)
+// NAME
+//   TermSetName - store terminal type string
+// SYNOPSIS
+//   U0 TermSetName(U8 *s);
+// DESCRIPTION
+//   Copies into heap name buffer (default "ansi").
+// EXAMPLES
+//   TermSetName("xterm");
+// SEE ALSO
+//   TermName  TermSize  TermRep
+U0 TermSetName(I64 s)
+{
+  /* String arg from seed JIT is ABI-fragile — use TermNamePreset or OSC 777. */
+  (s);
+}
+
+U0 TermNameAnsi()
+{
+  if (!g_term_name_p)
+    TermName;
+  LogCpy(g_term_name_p, "ansi", TERM_NAME_MAX);
+}
+
+U0 TermNameXterm()
+{
+  if (!g_term_name_p)
+    TermName;
+  LogCpy(g_term_name_p, "xterm", TERM_NAME_MAX);
+}
+
+U0 TermNameSet(I64 s)
+{
+  TermSetName(s);
+}
 
 U0 TermSetSize(I64 rows, I64 cols)
 {
@@ -96,6 +160,25 @@ U0 TermSetSize(I64 rows, I64 cols)
   /* intentional bridge: HolyC → C repair hatch only */
   if (csetz)
     csetz(g_term_rows, g_term_cols);
+}
+// TermSize -- TermSize(cols, rows)
+// NAME
+//   TermSize - set geometry cols-first (stty-style)
+// SYNOPSIS
+//   U0 TermSize(I64 cols, I64 rows);
+// DESCRIPTION
+//   Guest-side size negotiation (CONSOLE.md #11). Args are COLUMNS then LINES
+//   — TermSize(80,24) is the classic VT. Clears TF_CPR (manual override). For
+//   rows-first see TermSetSize. Host may also push ESC[8;rows;cols t or OSC 777
+//   while TermProbe / editors own RX.
+// EXAMPLES
+//   TermSize(80,24);
+//   TermSize(120,40); TermRep;
+// SEE ALSO
+//   TermSetSize  TermRows  TermCols  TermProbe  TermQuery  TermRep  TermHelp
+U0 TermSize(I64 cols, I64 rows)
+{
+  TermSetSize(rows, cols);
 }
 
 U0 TermGet(CTerm *t)
@@ -213,6 +296,25 @@ U0 UartUnget(I64 ch)
   if (g_uart_ung_n < 8)
     g_uart_ung[g_uart_ung_n++] = ch;
 }
+/* Push a byte back onto the shared UART RX ring (same ring C readline drains).
+ * Used when Esc meta cancels so a quit-on-Esc UI does not steal the next REPL char. */
+U0 UartRxUnget(I64 ch)
+{
+  I64 rx, rhp, rtp, cap, rh, rt, prev;
+  rx = *(I64 *)0x87001020;
+  rhp = *(I64 *)0x87001028;
+  rtp = *(I64 *)0x87001030;
+  cap = *(I64 *)0x87001038;
+  if (!rx || !rhp || !rtp || cap < 2)
+    return;
+  rh = *(I64 *)rhp;
+  rt = *(I64 *)rtp;
+  prev = (rt - 1) & (cap - 1);
+  if (prev == rh)
+    return;
+  *(U8 *)(rx + prev) = ch;
+  *(I64 *)rtp = prev;
+}
 
 I64 UartTryGetByte()
 {
@@ -227,8 +329,10 @@ I64 UartTryGetByte()
   rhp = *(I64 *)0x87001028;
   rtp = *(I64 *)0x87001030;
   cap = *(I64 *)0x87001038;
-  if (!rx || !rhp || !rtp || cap < 2)
-    return -1;
+  if (!rx || !rhp || !rtp || cap < 2) {
+    /* Product HolyC path: soft ring in hc_repl/uart.hc (HcUartTry). */
+    return HcUartTry();
+  }
   rh = *(I64 *)rhp;
   rt = *(I64 *)rtp;
   if (rh == rt)
@@ -310,6 +414,46 @@ U0 TermHandleCsi(I64 ch)
     TermEmitRep(TE_DEVICE_REPORT, a, b);
 }
 
+U0 TermHandleOsc()
+{
+  /* OSC 777 ; cols ; rows ; name  — host push size + termname (BEL-terminated). */
+  I64 cols, rows;
+  U8 *p;
+  if (g_term_osc_n <= 0)
+    return;
+  g_term_osc[g_term_osc_n] = 0;
+  p = g_term_osc;
+  /* Require leading "777;" */
+  if (p[0] != '7' || p[1] != '7' || p[2] != '7' || p[3] != ';')
+    return;
+  p += 4;
+  cols = 0;
+  while (*p >= '0' && *p <= '9') {
+    cols = cols * 10 + (*p - '0');
+    p++;
+  }
+  if (*p != ';')
+    return;
+  p++;
+  rows = 0;
+  while (*p >= '0' && *p <= '9') {
+    rows = rows * 10 + (*p - '0');
+    p++;
+  }
+  if (*p == ';') {
+    p++;
+    if (!g_term_name_p)
+      TermName;
+    LogCpy(g_term_name_p, p, TERM_NAME_MAX);
+  }
+  if (rows >= 2 && rows <= 255 && cols >= 2 && cols <= 512) {
+    g_term_rows = rows;
+    g_term_cols = cols;
+    g_term_flags |= TF_CPR;
+    TermEmitRep(TE_RESIZE, rows, cols);
+  }
+}
+
 I64 TermParseByte(I64 ch)
 {
   I64 n;
@@ -335,9 +479,17 @@ I64 TermParseByte(I64 ch)
       g_term_state = TS_SS3;
       return 0;
     }
+    if (ch == ']') {
+      g_term_state = TS_OSC;
+      g_term_osc_n = 0;
+      return 0;
+    }
     g_term_state = TS_GROUND;
     TermEmitKey(TE_ESCAPE, 27, 0);
-    return TermParseByte(ch);
+    /* Shared ring — not HolyC-only ung — so Esc quit (Funs) leaves the next
+     * REPL line intact for C readline. */
+    UartRxUnget(ch);
+    return 0;
   }
   if (g_term_state == TS_CSI) {
     g_term_esc_at = TermNow();
@@ -397,6 +549,24 @@ I64 TermParseByte(I64 ch)
     }
     return 0;
   }
+  if (g_term_state == TS_OSC) {
+    g_term_esc_at = TermNow();
+    /* BEL ends OSC; ESC starts ST (ESC \) — treat ESC as abort into ESC state. */
+    if (ch == 7) {
+      TermHandleOsc();
+      g_term_state = TS_GROUND;
+      g_term_osc_n = 0;
+      return 0;
+    }
+    if (ch == 27) {
+      g_term_state = TS_ESC;
+      g_term_osc_n = 0;
+      return 0;
+    }
+    if (g_term_osc_n < TERM_OSC_MAX - 1)
+      g_term_osc[g_term_osc_n++] = ch;
+    return 0;
+  }
   return 0;
 }
 
@@ -413,6 +583,7 @@ U0 TermCheckTimeouts()
   }
   g_term_state = TS_GROUND;
   g_term_esc_at = 0;
+  g_term_osc_n = 0;
 }
 
 U0 TermPoll()
@@ -554,6 +725,12 @@ I64 TermProbe()
   }
   rhp = *(I64 *)0x87001028;
   rtp = *(I64 *)0x87001030;
+  if (!rhp || !rtp) {
+    /* No C RX ring (repl-holyc): skip CPR probe; keep default 80x24. */
+    g_term_rx_own = 0;
+    g_term_gave_up = 1;
+    return 0;
+  }
   if (rhp && rtp) {
     rh = *(I64 *)rhp;
     rt = *(I64 *)rtp;
@@ -621,3 +798,66 @@ I64 TermProbeHoly()
 {
   return TermProbe();
 }
+// TermQuery -- TermQuery()
+// NAME
+//   TermQuery - optional host geometry query (TermProbe)
+// SYNOPSIS
+//   I64 TermQuery();
+// DESCRIPTION
+//   Asks a cooperating host PTY for size via DSR CPR + ESC[18t (same as
+//   TermProbe). Returns 1 if TF_CPR set. Piped smokes time out and keep the
+//   stored defaults (80x24 / "ansi"). Does not change termname.
+// EXAMPLES
+//   TermQuery; TermRep;
+// SEE ALSO
+//   TermProbe  TermSize  TermRep  TermHelp
+I64 TermQuery()
+{
+  return TermProbe();
+}
+// TermRep -- TermRep()
+// NAME
+//   TermRep - print stored cols x rows and termname
+// SYNOPSIS
+//   U0 TermRep();
+// DESCRIPTION
+//   One-shot dump of guest terminal negotiation state (CONSOLE.md #11).
+// EXAMPLES
+//   TermSize(80,24); TermSetName("xterm"); TermRep;
+// SEE ALSO
+//   TermSize  TermName  TermQuery  TermHelp
+U0 TermRep()
+{
+  UartStr("--- term ---\n");
+  "  %d x %d  name=", TermCols(), TermRows();
+  UartStr(TermName());
+  "  flags=%X\n", TermFlags();
+}
+// TermHelp -- TermHelp()
+// NAME
+//   TermHelp - cheat sheet for size / type negotiation
+// SYNOPSIS
+//   U0 TermHelp();
+// DESCRIPTION
+//   Lists TermSize / TermSetName / TermProbe / host escape protocols.
+// EXAMPLES
+//   TermHelp;
+// SEE ALSO
+//   TermRep  Help  Man("Term")
+U0 TermHelp()
+{
+  UartStr("TermHelp — size/type negotiation (CONSOLE.md #11)\n");
+  UartStr("  TermSize(80,24);     // cols, rows (stty-style)\n");
+  UartStr("  TermSetSize(24,80);  // rows, cols\n");
+  UartStr("  TermSetName(\"xterm\"); TermNameAnsi; TermNameXterm; TermRep;\n");
+  UartStr("  TermQuery; / TermProbe;  // ask host PTY (CPR + ESC[18t)\n");
+  UartStr("  Host push: ESC[8;rows;cols t  or  OSC 777;cols;rows;name BEL\n");
+  UartStr("  Defaults: 80x24 name=ansi  Man(\"Term\");\n");
+}
+
+U0 TermInit()
+{
+  TermName();
+  /* ensure default "ansi" in I64 name words */
+}
+TermInit;

@@ -16,19 +16,23 @@ HolyC driver language in user-facing text.
 | `make asm-stress` / `compiler-stress` / `stress` | Assembler encodings + curated codegen oracles — [tests/asm/](tests/asm/README.md), [tests/compiler/](tests/compiler/README.md) |
 | `make ci` | `compliance` + `fmt-test` + `fmt-check` + `asm-stress` + `asm-prop` + `qemu-integration` (mirrors Actions after shell jobs) |
 | `make syntax-sh` / `make lint-sh` | `bash -n` all scripts / ShellCheck primary scripts |
-| `make repl-smoke` / `make repl-regression` | REPL UART smoke / honesty gate — [tests/REGRESSION.md](tests/REGRESSION.md) |
+| `make repl-smoke` / `make repl-regression` | **Deprecated** legacy C guest — still **required** CI until A3 flip; local `SKIP_REPL_LEGACY=1` — [tests/REGRESSION.md](tests/REGRESSION.md) |
+| `make repl-holyc` / `repl-holyc-smoke` / `repl-holyc-regression` | Product HolyC REPL path (CI dual-run) — [docs/SELF_HOST.md](docs/SELF_HOST.md) |
+| `make a3-flip-check` | G7 scaffolding — HolyC smoke+regression+repl-cmp → READY/NOT READY; does **not** flip CI — [docs/A3_FLIP_DRAFT.md](docs/A3_FLIP_DRAFT.md) |
 | `make kernel-plat-smoke` | HolyC Kconfig UART+CLINT on CI default board (in `qemu-integration`) |
+| `make kernel-plat-matrix` | Every known `-M` plat smoke — **skips are not allowed** |
 | `make kernels` / `list-kernels` | Multi-kernel: `build/kernels/<machine>/plat.elf` per defconfig |
 | `make kernel-phase3-smoke` | Guest Compiler_RV + StartOS subset — [COMPILER_RV.md](templeos-riscv/COMPILER_RV.md) |
-| `make hc-repl` / `hc-repl-smoke` | Transitional Mac-AOT guest — **do not grow `jit.hc`** |
+| `make hc-repl` / `hc-repl-smoke` | Alias of `repl-holyc*` — **do not grow `jit.hc`** |
 | `make coverage` | Project-mode compile tally (local; not CI) |
-| `make menuconfig-rv` | Platform Kconfig — [KCONFIG.md](templeos-riscv/KCONFIG.md) |
-| `make baremetal` / `make baremetal-smoke` | RAM `build/baremetal/repl.{elf,bin}` — OpenOCD / `-kernel` — [docs/BAREMETAL.md](docs/BAREMETAL.md) |
-| `make firmware` / `make firmware-smoke` | Flash ROM @ `0x20000000` + BIOS copies — [docs/BAREMETAL.md](docs/BAREMETAL.md) |
+| `make menuconfig` | Platform Kconfig curses UI — [KCONFIG.md](templeos-riscv/KCONFIG.md) |
+| `make baremetal` / `make baremetal-smoke` | Legacy C RAM `build/baremetal/repl.{elf,bin}` — [docs/BAREMETAL.md](docs/BAREMETAL.md) |
+| `make bootloader` / `bootloader-repl` / `bootloader-smoke` | **HolyC** `build/bootloader/boot.bin` + `hc_repl.blob.bin` — [docs/BAREMETAL.md](docs/BAREMETAL.md) § Split |
+| `make firmware` / `make firmware-smoke` | Legacy GNU flash ROM @ `0x20000000` — [docs/BAREMETAL.md](docs/BAREMETAL.md) |
 
 Formatter (gofmt-style): `holyc-riscv --fmt` on edited `.hc`/`.HC`/`.HH` — do not hand-fight style. Roots: `tests/scripts/holyc_fmt_paths.sh`. Goldens: `make fmt-test`. Rule: `.cursor/rules/holyc-fmt.mdc`.
 
-Debug (host build): `HOLYC_TRACE=1`, `HOLYC_TOKTRACE=<substr>`. Stale `repl.elf` / harness objects often look like universal CRASH/hang — rebuild after `host/holyc_compiler.h` / `bootstrap/holy_rt*.h` changes.
+Debug (host build): `HOLYC_TRACE=1`, `HOLYC_TOKTRACE=<substr>`. Stale `repl.elf` / harness objects often look like universal CRASH/hang — rebuild after `host/holyc_compiler.h` / `bootstrap/holy_rt*.h` changes. Ops recovery: [docs/OPS.md](docs/OPS.md); pin last-good ELFs with `make known-good-pin`.
 
 Kernel FB/Gr/Win interactive (macOS): see [BOARD_FB.md](templeos-riscv/BOARD_FB.md). Codegen bisect: `HOLYC_NO_OPT=1` / `HOLYC_NO_TIER2=1` / `HOLYC_NO_PROMOTE=1` / `HOLYC_O1_MODE`.
 
@@ -37,17 +41,23 @@ Kernel FB/Gr/Win interactive (macOS): see [BOARD_FB.md](templeos-riscv/BOARD_FB.
 - Jobs: `syntax-sh` ‖ `shellcheck` ‖ `compile-compliance` → `qemu-integration`. Details: [docs/CI.md](docs/CI.md), matrix: [tests/README.md](tests/README.md).
 - **Markdown-only** pushes skip CI (`paths-ignore`); use **Actions → CI → Run workflow** to force a run.
 - `concurrency: cancel-in-progress` — an older run may show **cancelled** while tip is green.
+- Platform / `kernel-plat-matrix` / board smoke **skips are not allowed** as a success outcome. Boards must boot/smoke green, or work continues until they do (honest blockers = temporary WIP with a fix plan — not permanent skip=OK). Do not add new intentional matrix skips. [PLATFORM.md](templeos-riscv/PLATFORM.md) **WIP** rows are honest blockers (with fix plan) — not skip=OK.
 
 ## Docs and layout
 
-| Doc | Topic |
-|-----|--------|
-| [docs/LAYOUT.md](docs/LAYOUT.md) | Source-tree map (`host/` / `tos/` / TempleOS) |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System map / self-host |
-| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Norms |
-| [docs/REPL.md](docs/REPL.md) | Interactive HolyC |
-| [docs/HOLYC_IMPLEMENTATION_STATUS.md](docs/HOLYC_IMPLEMENTATION_STATUS.md) | Language surface |
-| [templeos-riscv/PLATFORM.md](templeos-riscv/PLATFORM.md) | Board ports + CI emulator targets (virt, sifive_u, …) |
+Topic index: **[docs/README.md](docs/README.md)**. Lean pointers:
+
+| Topic | Doc |
+|-------|-----|
+| Getting started / norms | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) · [docs/LAYOUT.md](docs/LAYOUT.md) |
+| Architecture / self-host | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/SELF_HOST.md](docs/SELF_HOST.md) |
+| REPL / UART / console | [docs/REPL.md](docs/REPL.md) · [docs/UART.md](docs/UART.md) · [docs/CONSOLE.md](docs/CONSOLE.md) |
+| Debugger | [docs/DEBUGGER.md](docs/DEBUGGER.md) |
+| FS / 9P / export | [docs/NINEP.md](docs/NINEP.md) · [docs/FILE_EXPORT.md](docs/FILE_EXPORT.md) |
+| Drivers / boards | [docs/DRIVERS.md](docs/DRIVERS.md) · [templeos-riscv/PLATFORM.md](templeos-riscv/PLATFORM.md) |
+| Build / CI / ops / verify | [docs/CI.md](docs/CI.md) · [docs/OPS.md](docs/OPS.md) · [docs/VERIFICATION.md](docs/VERIFICATION.md) |
+| Tutorials / gaps | [docs/tutorials/README.md](docs/tutorials/README.md) · [docs/GAPS.md](docs/GAPS.md) |
+| Language surface | [docs/HOLYC_IMPLEMENTATION_STATUS.md](docs/HOLYC_IMPLEMENTATION_STATUS.md) |
 
 Host compiler: `host/` (`lexer.c`, `parser.c`, …). TempleOS port trees: `Kernel/`, `Compiler/`, `Adam/`, `Demo/` (do not rename). ISO/home reference: `tos/` (`StartOS`, `Apps`, `Doc`, …). Scratch: `tests/scratch/`. Session notes: `docs/archive/` (ignored).
 

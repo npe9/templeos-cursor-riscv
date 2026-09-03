@@ -1,4 +1,7 @@
-# QEMU sifive_e — EXPERIMENTAL (tiny DTIM; full kernel does not fit); RVSifivePlat API
+# QEMU sifive_e — SiFive FE310: XIP @ 0x20400000 + DTIM 16 KiB @ 0x80000000.
+# Matrix: slim plat.elf (XIP). Fuller: make kernel-sifive-e-full → kernel-fe310.elf
+#   (DTIM bootloader → XIP Kernel; host-prepatched imports). No DRAM beyond DTIM.
+# RV32 HolyC emit: later (after RV64 drivers).
 CONFIG_PLATFORM_SIFIVE_E=y
 # CONFIG_PLATFORM_VIRT is not set
 CONFIG_UART_SIFIVE=y
@@ -9,3 +12,6 @@ CONFIG_HAS_PLIC=y
 # CONFIG_HAS_FW_CFG is not set
 CONFIG_FB_PRESENT_NONE=y
 CONFIG_DRAM_SIZE=0x4000
+CONFIG_ENTRY_POINT=0x20400000
+CONFIG_KERNEL_ENTRY=0x20400000
+CONFIG_KERNEL_LINK_ADDR=0x20400000

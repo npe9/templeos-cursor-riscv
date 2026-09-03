@@ -10,8 +10,11 @@ mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT
 
 if [[ ! -x "$BIN" ]]; then
-  echo "error: missing $BIN (run make holyc-riscv)" >&2
-  exit 1
+  echo "Building holyc-riscv..." >&2
+  make -C "$ROOT" holyc-riscv >/dev/null || {
+    echo "error: missing $BIN (run make holyc-riscv)" >&2
+    exit 1
+  }
 fi
 
 fail=0

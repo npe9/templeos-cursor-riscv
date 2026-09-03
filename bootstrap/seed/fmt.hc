@@ -84,9 +84,20 @@ I64 FmtSrcLen(U8 *src)
 }
 // Fmt -- Fmt("file.hc")
 // NAME
-//   Fmt - format a memfs HolyC file in place; returns new length or -1.
-//   Compares against host FmtSrc buffer so "rewritten" is accurate even when
-//   length is unchanged. Always prints a Fmt: line (editors use quiet HcFmtFile).
+//   Fmt - format a memfs HolyC file in place
+// SYNOPSIS
+//   I64 Fmt(U8 *name);
+// DESCRIPTION
+//   Pretty-prints a .hc/.HH file using the host formatter (gofmt-style) and writes
+//   it back if anything changed. Returns the new length, or -1 on failure. Editors
+//   often call the quiet HcFmtFile helper; Fmt always prints a status line.
+// EXAMPLES
+//   Fmt("boot.hc");
+//   Cat("boot.hc");
+// SEE ALSO
+//   FmtSrc  HcFmt  Ed  Vi  Cat
+// BUGS
+//   Only .hc/.HH names; missing file → -1.
 I64 Fmt(U8 *name)
 {
   U8 *src, *out;

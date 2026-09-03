@@ -23,7 +23,7 @@ Bool RvAsmIsMn(U8 *s)
 {
   if (!s)
     return FALSE;
-  if (RvAsmStrEqI(s, "ret") || RvAsmStrEqI(s, "nop") || RvAsmStrEqI(s, "wfi") || RvAsmStrEqI(s, "mret") || RvAsmStrEqI(s, "sret") || RvAsmStrEqI(s, "ecall") || RvAsmStrEqI(s, "ebreak") || RvAsmStrEqI(s, "fencei") || RvAsmStrEqI(s, "fence.i") || RvAsmStrEqI(s, "mv") || RvAsmStrEqI(s, "not") || RvAsmStrEqI(s, "neg") || RvAsmStrEqI(s, "li") || RvAsmStrEqI(s, "addi") || RvAsmStrEqI(s, "andi") || RvAsmStrEqI(s, "ori") || RvAsmStrEqI(s, "xori") || RvAsmStrEqI(s, "slti") || RvAsmStrEqI(s, "slli") || RvAsmStrEqI(s, "srli") || RvAsmStrEqI(s, "srai") || RvAsmStrEqI(s, "add") || RvAsmStrEqI(s, "sub") || RvAsmStrEqI(s, "and") || RvAsmStrEqI(s, "or") || RvAsmStrEqI(s, "xor") || RvAsmStrEqI(s, "sll") || RvAsmStrEqI(s, "srl") || RvAsmStrEqI(s, "sra") || RvAsmStrEqI(s, "slt") || RvAsmStrEqI(s, "sltu") || RvAsmStrEqI(s, "mul") || RvAsmStrEqI(s, "div") || RvAsmStrEqI(s, "rem") || RvAsmStrEqI(s, "divu") || RvAsmStrEqI(s, "remu") || RvAsmStrEqI(s, "ld") || RvAsmStrEqI(s, "lw") || RvAsmStrEqI(s, "sd") || RvAsmStrEqI(s, "sw") || RvAsmStrEqI(s, "jalr") || RvAsmStrEqI(s, "csrr") || RvAsmStrEqI(s, "csrw") || RvAsmStrEqI(s, "csrs") || RvAsmStrEqI(s, "csrrw") || RvAsmStrEqI(s, "csrrs") || RvAsmStrEqI(s, "csrrc"))
+  if (RvAsmStrEqI(s, "ret") || RvAsmStrEqI(s, "nop") || RvAsmStrEqI(s, "wfi") || RvAsmStrEqI(s, "mret") || RvAsmStrEqI(s, "sret") || RvAsmStrEqI(s, "ecall") || RvAsmStrEqI(s, "ebreak") || RvAsmStrEqI(s, "fencei") || RvAsmStrEqI(s, "fence.i") || RvAsmStrEqI(s, "mv") || RvAsmStrEqI(s, "not") || RvAsmStrEqI(s, "neg") || RvAsmStrEqI(s, "li") || RvAsmStrEqI(s, "lui") || RvAsmStrEqI(s, "auipc") || RvAsmStrEqI(s, "addi") || RvAsmStrEqI(s, "andi") || RvAsmStrEqI(s, "ori") || RvAsmStrEqI(s, "xori") || RvAsmStrEqI(s, "slti") || RvAsmStrEqI(s, "slli") || RvAsmStrEqI(s, "srli") || RvAsmStrEqI(s, "srai") || RvAsmStrEqI(s, "add") || RvAsmStrEqI(s, "sub") || RvAsmStrEqI(s, "and") || RvAsmStrEqI(s, "or") || RvAsmStrEqI(s, "xor") || RvAsmStrEqI(s, "sll") || RvAsmStrEqI(s, "srl") || RvAsmStrEqI(s, "sra") || RvAsmStrEqI(s, "slt") || RvAsmStrEqI(s, "sltu") || RvAsmStrEqI(s, "mul") || RvAsmStrEqI(s, "div") || RvAsmStrEqI(s, "rem") || RvAsmStrEqI(s, "divu") || RvAsmStrEqI(s, "remu") || RvAsmStrEqI(s, "ld") || RvAsmStrEqI(s, "lw") || RvAsmStrEqI(s, "sd") || RvAsmStrEqI(s, "sw") || RvAsmStrEqI(s, "jalr") || RvAsmStrEqI(s, "csrr") || RvAsmStrEqI(s, "csrw") || RvAsmStrEqI(s, "csrs") || RvAsmStrEqI(s, "csrrw") || RvAsmStrEqI(s, "csrrs") || RvAsmStrEqI(s, "csrrc") || RvAsmStrEqI(s, "csrrwi") || RvAsmStrEqI(s, "csrrsi") || RvAsmStrEqI(s, "csrrci") || RvAsmStrEqI(s, "csrwi") || RvAsmStrEqI(s, "csrsi") || RvAsmStrEqI(s, "csrci") || RvAsmStrEqI(s, "lrd") || RvAsmStrEqI(s, "lrw") || RvAsmStrEqI(s, "scd") || RvAsmStrEqI(s, "scw") || RvAsmStrEqI(s, "amoswapd") || RvAsmStrEqI(s, "amoaddd") || RvAsmStrEqI(s, "amoxord") || RvAsmStrEqI(s, "amoandd") || RvAsmStrEqI(s, "amoord") || RvAsmStrEqI(s, "amomind") || RvAsmStrEqI(s, "amomaxd") || RvAsmStrEqI(s, "amominud") || RvAsmStrEqI(s, "amomaxud") || RvAsmStrEqI(s, "amoswapw") || RvAsmStrEqI(s, "amoaddw") || RvAsmStrEqI(s, "amoxorw") || RvAsmStrEqI(s, "amoandw") || RvAsmStrEqI(s, "amoorw") || RvAsmStrEqI(s, "amominw") || RvAsmStrEqI(s, "amomaxw") || RvAsmStrEqI(s, "amominuw") || RvAsmStrEqI(s, "amomaxuw") || RvAsmStrEqI(s, "lr") || RvAsmStrEqI(s, "sc") || RvAsmStrEqI(s, "amoswap") || RvAsmStrEqI(s, "amoadd") || RvAsmStrEqI(s, "amoxor") || RvAsmStrEqI(s, "amoand") || RvAsmStrEqI(s, "amoor") || RvAsmStrEqI(s, "amomin") || RvAsmStrEqI(s, "amomax") || RvAsmStrEqI(s, "amominu") || RvAsmStrEqI(s, "amomaxu"))
     return TRUE;
   // subi is not a standard gas mnemonic — reject with a clear LexExcept in PrsAsmRVIns.
   if (RvAsmStrEqI(s, "subi"))
@@ -143,6 +143,67 @@ I64 RvAsmRegTok(CCmpCtrl *cc)
   return r;
 }
 
+I64 RvAsmCsrNum(U8 *n)
+{
+  if (!n)
+    return -1;
+  if (RvAsmStrEqI(n, "sstatus"))
+    return 0x100;
+  if (RvAsmStrEqI(n, "sie"))
+    return 0x104;
+  if (RvAsmStrEqI(n, "stvec"))
+    return 0x105;
+  if (RvAsmStrEqI(n, "sscratch"))
+    return 0x140;
+  if (RvAsmStrEqI(n, "sepc"))
+    return 0x141;
+  if (RvAsmStrEqI(n, "scause"))
+    return 0x142;
+  if (RvAsmStrEqI(n, "stval"))
+    return 0x143;
+  if (RvAsmStrEqI(n, "sip"))
+    return 0x144;
+  if (RvAsmStrEqI(n, "satp"))
+    return 0x180;
+  if (RvAsmStrEqI(n, "mstatus"))
+    return 0x300;
+  if (RvAsmStrEqI(n, "misa"))
+    return 0x301;
+  if (RvAsmStrEqI(n, "medeleg"))
+    return 0x302;
+  if (RvAsmStrEqI(n, "mideleg"))
+    return 0x303;
+  if (RvAsmStrEqI(n, "mie"))
+    return 0x304;
+  if (RvAsmStrEqI(n, "mtvec"))
+    return 0x305;
+  if (RvAsmStrEqI(n, "mcounteren"))
+    return 0x306;
+  if (RvAsmStrEqI(n, "mscratch"))
+    return 0x340;
+  if (RvAsmStrEqI(n, "mepc"))
+    return 0x341;
+  if (RvAsmStrEqI(n, "mcause"))
+    return 0x342;
+  if (RvAsmStrEqI(n, "mtval"))
+    return 0x343;
+  if (RvAsmStrEqI(n, "mip"))
+    return 0x344;
+  if (RvAsmStrEqI(n, "mcycle"))
+    return 0xB00;
+  if (RvAsmStrEqI(n, "minstret"))
+    return 0xB02;
+  if (RvAsmStrEqI(n, "cycle"))
+    return 0xC00;
+  if (RvAsmStrEqI(n, "time"))
+    return 0xC01;
+  if (RvAsmStrEqI(n, "instret"))
+    return 0xC02;
+  if (RvAsmStrEqI(n, "mhartid"))
+    return 0xF14;
+  return -1;
+}
+
 Bool RvAsmImmTok(CCmpCtrl *cc, I64 *out)
 {
   I64 neg = 0, v;
@@ -150,14 +211,48 @@ Bool RvAsmImmTok(CCmpCtrl *cc, I64 *out)
     neg = 1;
     Lex(cc);
   }
-  if (cc->token != TK_I64)
-    return FALSE;
-  v = cc->cur_i64;
-  if (neg)
-    v = -v;
-  *out = v;
-  Lex(cc);
-  return TRUE;
+  if (cc->token == TK_I64) {
+    v = cc->cur_i64;
+    if (neg)
+      v = -v;
+    *out = v;
+    Lex(cc);
+    return TRUE;
+  }
+  if (!neg && cc->token == TK_IDENT && cc->cur_str) {
+    v = RvAsmCsrNum(cc->cur_str);
+    if (v >= 0) {
+      *out = v;
+      Lex(cc);
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+Bool RvAsmFitsSimm12(I64 imm)
+{
+  return imm >= -2048 && imm <= 2047;
+}
+
+Bool RvAsmFitsShamt(I64 sh)
+{
+  return 0 <= sh <= 63;
+}
+
+Bool RvAsmFitsUimm20(I64 imm)
+{
+  return (0 <= imm <= 0xFFFFF) || (-0x80000 <= imm < 0);
+}
+
+Bool RvAsmFitsCsrImm(I64 imm)
+{
+  return 0 <= imm <= 0xFFF;
+}
+
+Bool RvAsmFitsZimm5(I64 z)
+{
+  return 0 <= z <= 31;
 }
 
 U32 RvAsmI(U32 f3, I64 rd, I64 rs1, I64 imm)
@@ -185,6 +280,96 @@ U32 RvAsmJalr(I64 rd, I64 rs1, I64 imm)
   return 0x67 | (rd << 7) | (rs1 << 15) | ((imm & 0xFFF) << 20);
 }
 
+U32 RvAsmU(U32 opc, I64 rd, I64 imm20)
+{
+  return opc | (rd << 7) | ((imm20 & 0xFFFFF) << 12);
+}
+
+U32 RvAsmA(U32 f5, U32 aqrl, U32 f3, I64 rd, I64 rs1, I64 rs2)
+{
+  return 0x2F | (rd << 7) | (f3 << 12) | (rs1 << 15) | (rs2 << 20) | (aqrl << 25) | (f5 << 27);
+}
+// Wide li: match host EmitLoadImm64 / BackLib RVLi (lui+addi; U32 bit31 → slli/srli 32 zext).
+U0 RvAsmEmitLi(CCmpCtrl *cc, I64 rd, I64 imm)
+{
+  I64 hi, lo, hi32, lo32, hi_hi, hi_lo, lo_hi, lo_lo, scratch;
+  if (imm >= -2048 && imm <= 2047) {
+    AOTStoreCodeU32(cc, RvAsmI(0, rd, 0, imm));
+    return;
+  }
+  hi32 = imm >> 32;
+  if (!hi32 || hi32 == -1) {
+    hi = (imm + 0x800) >> 12;
+    lo = imm & 0xFFF;
+    if (lo & 0x800)
+      lo |= 0xFFFFFFFFFFFFF000;
+    AOTStoreCodeU32(cc, RvAsmU(0x37, rd, hi));
+    if (lo)
+      AOTStoreCodeU32(cc, RvAsmI(0, rd, rd, lo));
+    if (!hi32 && imm & 0x80000000) {
+      AOTStoreCodeU32(cc, 0x13 | (rd << 7) | (1 << 12) | (rd << 15) | (32 << 20));
+      AOTStoreCodeU32(cc, 0x13 | (rd << 7) | (5 << 12) | (rd << 15) | (32 << 20));
+    }
+    return;
+  }
+  scratch = 5;
+  // t0
+  if (rd == scratch)
+    scratch = 6;
+  // t1
+  hi_hi = (hi32 + 0x800) >> 12;
+  hi_lo = hi32 & 0xFFF;
+  if (hi_lo & 0x800)
+    hi_lo |= 0xFFFFFFFFFFFFF000;
+  AOTStoreCodeU32(cc, RvAsmU(0x37, rd, hi_hi));
+  if (hi_lo)
+    AOTStoreCodeU32(cc, RvAsmI(0, rd, rd, hi_lo));
+  AOTStoreCodeU32(cc, 0x13 | (rd << 7) | (1 << 12) | (rd << 15) | (32 << 20));
+  // slli rd,32
+  lo32 = imm & 0xFFFFFFFF;
+  lo_hi = (lo32 + 0x800) >> 12;
+  lo_lo = lo32 & 0xFFF;
+  if (lo_lo & 0x800)
+    lo_lo |= 0xFFFFFFFFFFFFF000;
+  if (lo_hi) {
+    AOTStoreCodeU32(cc, RvAsmU(0x37, scratch, lo_hi));
+    if (lo_lo)
+      AOTStoreCodeU32(cc, RvAsmI(0, scratch, scratch, lo_lo));
+    if (lo32 & 0x80000000) {
+      AOTStoreCodeU32(cc, 0x13 | (scratch << 7) | (1 << 12) | (scratch << 15) | (32 << 20));
+      AOTStoreCodeU32(cc, 0x13 | (scratch << 7) | (5 << 12) | (scratch << 15) | (32 << 20));
+    }
+    AOTStoreCodeU32(cc, RvAsmR(0, 0, rd, rd, scratch));
+  } else if (lo_lo)
+    AOTStoreCodeU32(cc, RvAsmI(0, rd, rd, lo_lo));
+}
+
+U0 RvAsmMergeDotSuffix(U8 *mn, CCmpCtrl *cc)
+{
+  U8 *s;
+  I64 n, i;
+  if (cc->token != '.')
+    return;
+  Lex(cc);
+  if (cc->token != TK_IDENT || !cc->cur_str)
+    return;
+  s = cc->cur_str;
+  n = 0;
+  while (mn[n])
+    n++;
+  mn[n++] = '.';
+  i = 0;
+  while (s[i] && n < 31) {
+    mn[n] = s[i];
+    if ('A' <= mn[n] <= 'Z')
+      mn[n] += 32;
+    n++;
+    i++;
+  }
+  mn[n] = 0;
+  Lex(cc);
+}
+
 Bool PrsAsmRVIns(CCmpCtrl *cc)
 {
   // TRUE if a known RV mnemonic was assembled. FALSE → caller may treat as label.
@@ -198,6 +383,7 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
   mn = StrNew(cc->cur_str);
   Lex(cc);
   // skip mnemonic
+  RvAsmMergeDotSuffix(mn, cc);
   if (RvAsmStrEqI(mn, "ret")) {
     Free(mn);
     AOTStoreCodeU32(cc, RvAsmJalr(0, 1, 0));
@@ -257,6 +443,10 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       Free(mn);
       LexExcept(cc, "Bad register at ");
     }
+    if (!RvAsmFitsCsrImm(imm)) {
+      Free(mn);
+      LexExcept(cc, "CSR immediate out of range (need 0..0xFFF) at ");
+    }
     Free(mn);
     AOTStoreCodeU32(cc, 0x00002073 | (rd << 7) | ((imm & 0xFFF) << 20));
     return TRUE;
@@ -276,6 +466,10 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       Free(mn);
       LexExcept(cc, "Bad register at ");
     }
+    if (!RvAsmFitsCsrImm(imm)) {
+      Free(mn);
+      LexExcept(cc, "CSR immediate out of range (need 0..0xFFF) at ");
+    }
     Free(mn);
     AOTStoreCodeU32(cc, 0x00001073 | (rs1 << 15) | ((imm & 0xFFF) << 20));
     return TRUE;
@@ -294,6 +488,10 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
     if (rs1 < 0) {
       Free(mn);
       LexExcept(cc, "Bad register at ");
+    }
+    if (!RvAsmFitsCsrImm(imm)) {
+      Free(mn);
+      LexExcept(cc, "CSR immediate out of range (need 0..0xFFF) at ");
     }
     Free(mn);
     AOTStoreCodeU32(cc, 0x00002073 | (rs1 << 15) | ((imm & 0xFFF) << 20));
@@ -319,6 +517,10 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
     if (rd < 0 || rs1 < 0) {
       Free(mn);
       LexExcept(cc, "Bad register at ");
+    }
+    if (!RvAsmFitsCsrImm(imm)) {
+      Free(mn);
+      LexExcept(cc, "CSR immediate out of range (need 0..0xFFF) at ");
     }
     if (RvAsmStrEqI(mn, "csrrw"))
       word = 0x00001073 | (rd << 7) | (rs1 << 15) | ((imm & 0xFFF) << 20);
@@ -368,7 +570,7 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       LexExcept(cc, "Bad register at ");
     }
     Free(mn);
-    AOTStoreCodeU32(cc, RvAsmI(0, rd, 0, imm));
+    RvAsmEmitLi(cc, rd, imm);
     return TRUE;
   }
   is_imm = RvAsmStrEqI(mn, "addi") || RvAsmStrEqI(mn, "andi") || RvAsmStrEqI(mn, "ori") || RvAsmStrEqI(mn, "xori") || RvAsmStrEqI(mn, "slti") || RvAsmStrEqI(mn, "slli") || RvAsmStrEqI(mn, "srli") || RvAsmStrEqI(mn, "srai");
@@ -392,6 +594,15 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
     if (rd < 0 || rs1 < 0) {
       Free(mn);
       LexExcept(cc, "Bad register at ");
+    }
+    if (RvAsmStrEqI(mn, "slli") || RvAsmStrEqI(mn, "srli") || RvAsmStrEqI(mn, "srai")) {
+      if (!RvAsmFitsShamt(imm)) {
+        Free(mn);
+        LexExcept(cc, "shift amount out of range (need 0..63) at ");
+      }
+    } else if (!RvAsmFitsSimm12(imm)) {
+      Free(mn);
+      LexExcept(cc, "immediate out of range for 12-bit signed field (need -2048..2047; use li) at ");
     }
     if (RvAsmStrEqI(mn, "addi"))
       word = RvAsmI(0, rd, rs1, imm);
@@ -504,6 +715,10 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       Free(mn);
       LexExcept(cc, "Bad register at ");
     }
+    if (!RvAsmFitsSimm12(imm)) {
+      Free(mn);
+      LexExcept(cc, "immediate out of range for 12-bit signed field (need -2048..2047) at ");
+    }
     if (RvAsmStrEqI(mn, "ld"))
       word = RvAsmLoad(3, first, imm, rs1);
     else if (RvAsmStrEqI(mn, "lw"))
@@ -543,8 +758,209 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       Free(mn);
       LexExcept(cc, "Bad register at ");
     }
+    if (!RvAsmFitsSimm12(imm)) {
+      Free(mn);
+      LexExcept(cc, "immediate out of range for 12-bit signed field (need -2048..2047) at ");
+    }
     Free(mn);
     AOTStoreCodeU32(cc, RvAsmJalr(rd, rs1, imm));
+    return TRUE;
+  }
+  if (RvAsmStrEqI(mn, "lui") || RvAsmStrEqI(mn, "auipc")) {
+    // imm is the 20-bit U-type field (gas-compatible), not a full address.
+    // `lui a0, 0x81397` → 0x81397000; prefer `li` for constants.
+    rd = RvAsmRegTok(cc);
+    if (cc->token != ',') {
+      Free(mn);
+      LexExcept(cc, "Expecting ',' at ");
+    }
+    Lex(cc);
+    if (!RvAsmImmTok(cc, &imm)) {
+      Free(mn);
+      LexExcept(cc, "Expecting imm at ");
+    }
+    if (rd < 0) {
+      Free(mn);
+      LexExcept(cc, "Bad register at ");
+    }
+    if (!RvAsmFitsUimm20(imm)) {
+      Free(mn);
+      LexExcept(cc, "lui/auipc immediate out of range (need 20-bit field 0..0xFFFFF; prefer li) at ");
+    }
+    if (RvAsmStrEqI(mn, "lui"))
+      word = RvAsmU(0x37, rd, imm);
+    else
+      word = RvAsmU(0x17, rd, imm);
+    Free(mn);
+    AOTStoreCodeU32(cc, word);
+    return TRUE;
+  }
+  if (RvAsmStrEqI(mn, "csrrwi") || RvAsmStrEqI(mn, "csrrsi") || RvAsmStrEqI(mn, "csrrci")) {
+    rd = RvAsmRegTok(cc);
+    if (cc->token != ',') {
+      Free(mn);
+      LexExcept(cc, "Expecting ',' at ");
+    }
+    Lex(cc);
+    if (!RvAsmImmTok(cc, &imm)) {
+      Free(mn);
+      LexExcept(cc, "Expecting csr imm at ");
+    }
+    if (cc->token != ',') {
+      Free(mn);
+      LexExcept(cc, "Expecting ',' at ");
+    }
+    Lex(cc);
+    if (!RvAsmImmTok(cc, &rs1)) {
+      Free(mn);
+      LexExcept(cc, "Expecting zimm at ");
+    }
+    if (!RvAsmFitsCsrImm(imm) || !RvAsmFitsZimm5(rs1)) {
+      Free(mn);
+      LexExcept(cc, "CSR imm/zimm out of range at ");
+    }
+    if (rd < 0) {
+      Free(mn);
+      LexExcept(cc, "Bad register at ");
+    }
+    if (RvAsmStrEqI(mn, "csrrwi"))
+      word = 0x00005073 | (rd << 7) | (rs1 << 15) | ((imm & 0xFFF) << 20);
+    else if (RvAsmStrEqI(mn, "csrrsi"))
+      word = 0x00006073 | (rd << 7) | (rs1 << 15) | ((imm & 0xFFF) << 20);
+    else
+      word = 0x00007073 | (rd << 7) | (rs1 << 15) | ((imm & 0xFFF) << 20);
+    Free(mn);
+    AOTStoreCodeU32(cc, word);
+    return TRUE;
+  }
+  if (RvAsmStrEqI(mn, "csrwi") || RvAsmStrEqI(mn, "csrsi") || RvAsmStrEqI(mn, "csrci")) {
+    if (!RvAsmImmTok(cc, &imm)) {
+      Free(mn);
+      LexExcept(cc, "Expecting csr imm at ");
+    }
+    if (cc->token != ',') {
+      Free(mn);
+      LexExcept(cc, "Expecting ',' at ");
+    }
+    Lex(cc);
+    if (!RvAsmImmTok(cc, &rs1)) {
+      Free(mn);
+      LexExcept(cc, "Expecting zimm at ");
+    }
+    if (!RvAsmFitsCsrImm(imm) || !RvAsmFitsZimm5(rs1)) {
+      Free(mn);
+      LexExcept(cc, "CSR imm/zimm out of range at ");
+    }
+    if (RvAsmStrEqI(mn, "csrwi"))
+      word = 0x00005073 | (rs1 << 15) | ((imm & 0xFFF) << 20);
+    else if (RvAsmStrEqI(mn, "csrsi"))
+      word = 0x00006073 | (rs1 << 15) | ((imm & 0xFFF) << 20);
+    else
+      word = 0x00007073 | (rs1 << 15) | ((imm & 0xFFF) << 20);
+    Free(mn);
+    AOTStoreCodeU32(cc, word);
+    return TRUE;
+  }
+  if (RvAsmStrEqI(mn, "lr.d") || RvAsmStrEqI(mn, "lrd") || RvAsmStrEqI(mn, "lr.w") || RvAsmStrEqI(mn, "lrw")) {
+    rd = RvAsmRegTok(cc);
+    if (cc->token != ',') {
+      Free(mn);
+      LexExcept(cc, "Expecting ',' at ");
+    }
+    Lex(cc);
+    if (cc->token != '(') {
+      Free(mn);
+      LexExcept(cc, "Expecting '(' at ");
+    }
+    Lex(cc);
+    rs1 = RvAsmRegTok(cc);
+    if (cc->token != ')') {
+      Free(mn);
+      LexExcept(cc, "Expecting ')' at ");
+    }
+    Lex(cc);
+    if (rd < 0 || rs1 < 0) {
+      Free(mn);
+      LexExcept(cc, "Bad register at ");
+    }
+    if (RvAsmStrEqI(mn, "lr.d") || RvAsmStrEqI(mn, "lrd"))
+      word = RvAsmA(0x02, 0, 0x3, rd, rs1, 0);
+    else
+      word = RvAsmA(0x02, 0, 0x2, rd, rs1, 0);
+    Free(mn);
+    AOTStoreCodeU32(cc, word);
+    return TRUE;
+  }
+  if (RvAsmStrEqI(mn, "sc.d") || RvAsmStrEqI(mn, "scd") || RvAsmStrEqI(mn, "sc.w") || RvAsmStrEqI(mn, "scw") || RvAsmStrEqI(mn, "amoswap.d") || RvAsmStrEqI(mn, "amoswapd") || RvAsmStrEqI(mn, "amoadd.d") || RvAsmStrEqI(mn, "amoaddd") || RvAsmStrEqI(mn, "amoxor.d") || RvAsmStrEqI(mn, "amoxord") || RvAsmStrEqI(mn, "amoand.d") || RvAsmStrEqI(mn, "amoandd") || RvAsmStrEqI(mn, "amoor.d") || RvAsmStrEqI(mn, "amoord") || RvAsmStrEqI(mn, "amomin.d") || RvAsmStrEqI(mn, "amomind") || RvAsmStrEqI(mn, "amomax.d") || RvAsmStrEqI(mn, "amomaxd") || RvAsmStrEqI(mn, "amominu.d") || RvAsmStrEqI(mn, "amominud") || RvAsmStrEqI(mn, "amomaxu.d") || RvAsmStrEqI(mn, "amomaxud") || RvAsmStrEqI(mn, "amoswap.w") || RvAsmStrEqI(mn, "amoswapw") || RvAsmStrEqI(mn, "amoadd.w") || RvAsmStrEqI(mn, "amoaddw") || RvAsmStrEqI(mn, "amoxor.w") || RvAsmStrEqI(mn, "amoxorw") || RvAsmStrEqI(mn, "amoand.w") || RvAsmStrEqI(mn, "amoandw") || RvAsmStrEqI(mn, "amoor.w") || RvAsmStrEqI(mn, "amoorw") || RvAsmStrEqI(mn, "amomin.w") || RvAsmStrEqI(mn, "amominw") || RvAsmStrEqI(mn, "amomax.w") || RvAsmStrEqI(mn, "amomaxw") || RvAsmStrEqI(mn, "amominu.w") || RvAsmStrEqI(mn, "amominuw") || RvAsmStrEqI(mn, "amomaxu.w") || RvAsmStrEqI(mn, "amomaxuw")) {
+    rd = RvAsmRegTok(cc);
+    if (cc->token != ',') {
+      Free(mn);
+      LexExcept(cc, "Expecting ',' at ");
+    }
+    Lex(cc);
+    rs2 = RvAsmRegTok(cc);
+    if (cc->token != ',') {
+      Free(mn);
+      LexExcept(cc, "Expecting ',' at ");
+    }
+    Lex(cc);
+    if (cc->token != '(') {
+      Free(mn);
+      LexExcept(cc, "Expecting '(' at ");
+    }
+    Lex(cc);
+    rs1 = RvAsmRegTok(cc);
+    if (cc->token != ')') {
+      Free(mn);
+      LexExcept(cc, "Expecting ')' at ");
+    }
+    Lex(cc);
+    if (rd < 0 || rs1 < 0 || rs2 < 0) {
+      Free(mn);
+      LexExcept(cc, "Bad register at ");
+    }
+    if (RvAsmStrEqI(mn, "sc.d") || RvAsmStrEqI(mn, "scd"))
+      word = RvAsmA(0x03, 0, 0x3, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "sc.w") || RvAsmStrEqI(mn, "scw"))
+      word = RvAsmA(0x03, 0, 0x2, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amoswap.d") || RvAsmStrEqI(mn, "amoswapd"))
+      word = RvAsmA(0x01, 0, 0x3, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amoadd.d") || RvAsmStrEqI(mn, "amoaddd"))
+      word = RvAsmA(0x00, 0, 0x3, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amoxor.d") || RvAsmStrEqI(mn, "amoxord"))
+      word = RvAsmA(0x04, 0, 0x3, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amoand.d") || RvAsmStrEqI(mn, "amoandd"))
+      word = RvAsmA(0x0C, 0, 0x3, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amoor.d") || RvAsmStrEqI(mn, "amoord"))
+      word = RvAsmA(0x08, 0, 0x3, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amomin.d") || RvAsmStrEqI(mn, "amomind"))
+      word = RvAsmA(0x10, 0, 0x3, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amomax.d") || RvAsmStrEqI(mn, "amomaxd"))
+      word = RvAsmA(0x14, 0, 0x3, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amominu.d") || RvAsmStrEqI(mn, "amominud"))
+      word = RvAsmA(0x18, 0, 0x3, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amomaxu.d") || RvAsmStrEqI(mn, "amomaxud"))
+      word = RvAsmA(0x1C, 0, 0x3, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amoswap.w") || RvAsmStrEqI(mn, "amoswapw"))
+      word = RvAsmA(0x01, 0, 0x2, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amoadd.w") || RvAsmStrEqI(mn, "amoaddw"))
+      word = RvAsmA(0x00, 0, 0x2, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amoxor.w") || RvAsmStrEqI(mn, "amoxorw"))
+      word = RvAsmA(0x04, 0, 0x2, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amoand.w") || RvAsmStrEqI(mn, "amoandw"))
+      word = RvAsmA(0x0C, 0, 0x2, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amoor.w") || RvAsmStrEqI(mn, "amoorw"))
+      word = RvAsmA(0x08, 0, 0x2, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amomin.w") || RvAsmStrEqI(mn, "amominw"))
+      word = RvAsmA(0x10, 0, 0x2, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amomax.w") || RvAsmStrEqI(mn, "amomaxw"))
+      word = RvAsmA(0x14, 0, 0x2, rd, rs1, rs2);
+    else if (RvAsmStrEqI(mn, "amominu.w") || RvAsmStrEqI(mn, "amominuw"))
+      word = RvAsmA(0x18, 0, 0x2, rd, rs1, rs2);
+    else
+      word = RvAsmA(0x1C, 0, 0x2, rd, rs1, rs2);
+    Free(mn);
+    AOTStoreCodeU32(cc, word);
     return TRUE;
   }
   Free(mn);

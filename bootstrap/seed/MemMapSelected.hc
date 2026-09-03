@@ -13,9 +13,14 @@
 #define MEM_PLIC_THRESHOLD_OFF 0x00200000
 #define MEM_PLIC_CLAIM_OFF     0x00200004
 #define MEM_UART       0x10000000
+#define MEM_UART1      0x00000000
+#define MEM_GPIO       0x00000000
+#define MEM_PRCI       0x00000000
+#define MEM_ETH        0x00000000
 #define MEM_VIRTIO     0x10001000
 #define MEM_VIRTIO_STRIDE 0x00001000
 #define MEM_FW_CFG     0x10100000
+#define MEM_RTC        0x00101000
 #define MEM_FS         0x87800000
 #define MEM_HEAP       0x86000000
 #define MEM_FB         0x86100000
@@ -29,9 +34,10 @@
 #define MEMMAP_DRV_UART    "RVUart16550 / uart.hc"
 #define MEMMAP_DRV_CLINT   "RVTimer / CLINT"
 #define MEMMAP_DRV_PLIC    "RVPlicHw"
-#define MEMMAP_DRV_VIRTIO  "DskVirtioRV / VirtioNet / VirtioInput / Virtio9p"
+#define MEMMAP_DRV_VIRTIO  "DskVirtioRV / VirtioNet / VirtioInput / Virtio9p / VirtioPciBlk"
 #define MEMMAP_DRV_FB      "RVFb / ramfb"
 #define MEMMAP_DRV_FW_CFG  "RVFwCfgYes"
+#define MEMMAP_DRV_RTC     "RVRtcGoldfish"
 #define MEMMAP_DRV_FS      "fs.hc"
 #define MEMMAP_DRV_HEAP    "mem.hc"
 #define MEMMAP_DRV_TRAP    "trap.hc"

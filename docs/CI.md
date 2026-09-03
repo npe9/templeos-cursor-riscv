@@ -22,7 +22,19 @@ Semantics stress only: `make stress` (= `asm-stress` + `asm-prop` + `compiler-st
 
 ## What `qemu-integration` covers
 
-Exec oracles, TempleOS C-image smoke, the long `kernel-*-smoke` list (print → virtio → FB/Gr/Win → ExePutS → **phase3**), **`kernel-plat-smoke`** (default-board Kconfig UART/CLINT), **`hc-repl-smoke`**, **`repl-smoke`**, **`repl-regression`**, **`repl-9p-smoke`**, **`term-probe-pty`**. It begins with **`asm-stress`**, **`compiler-stress`**, and **`compiler-prop`** ([tests/asm/](../tests/asm/README.md), [tests/compiler/](../tests/compiler/README.md)).
+Exec oracles, TempleOS C-image smoke, the long `kernel-*-smoke` list (print → virtio → FB/Gr/Win → ExePutS → **phase3**), **`kernel-plat-smoke`**, then **Track A** ([SELF_HOST.md](SELF_HOST.md)):
+
+| Path | Targets | CI status |
+|------|---------|-----------|
+| **HolyC guest Cmp (A2/A3)** | `kernel-repl-exepubs-smoke` / `repl-cmp-smoke` → `build/repl-cmp.elf` | **Required** |
+| **HolyC memfs bridge** | `repl-holyc-smoke`, `repl-holyc-regression`, `bootloader-smoke` | **Required** |
+| **Deprecated legacy C guest** | `repl-smoke`, `repl-regression` | **Required until A3 flip**; local `SKIP_REPL_LEGACY=1` skips |
+
+Also **`repl-9p-smoke`**, **`term-probe-pty`**, **`repl-uart-echo-pty`**. Begins with **`asm-stress`**, **`compiler-stress`**, and **`compiler-prop`**.
+
+**When to drop legacy from required CI:** [SELF_HOST.md](SELF_HOST.md) § G7 checklist +
+[A3_FLIP_DRAFT.md](A3_FLIP_DRAFT.md) (draft only — **do not apply** until
+`make a3-flip-check` prints READY). Do **not** set `SKIP_REPL_LEGACY` in GitHub Actions.
 
 CI’s default machine profile is **virt** (typical virt memory map). That is an emulator
 target for automation — board ports are separate ([PLATFORM.md](../templeos-riscv/PLATFORM.md)).

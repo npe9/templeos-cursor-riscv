@@ -16,7 +16,7 @@ TempleOS ISO/home content lives under **`tos/`**.
 │   ├── Makefile.repl        # Primary: worry_dream_repl + seed/
 │   ├── worry_dream_repl.c / holy_rt*.h / startup.s / linker.ld
 │   ├── gen_seeds.py
-│   ├── seed/                # HolyC memfs seeds for REPL
+│   ├── seed/                # HolyC memfs seeds → /Boot /Lib /Apps /Doc /Tutorials
 │   ├── hc_repl/             # Transitional Mac-AOT guest (do not grow jit.hc)
 │   ├── archive/             # Historical demos / old Makefiles (not built by CI)
 │   └── README.md

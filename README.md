@@ -24,10 +24,12 @@ Layout and self-host: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. Tree map
 
 ### Prerequisites
 
-- Host C toolchain + Make
+- Host C toolchain + Make — the HolyC compiler **sources** live in `host/`; `make` builds `./holyc-riscv` (not downloaded or committed)
 - Cross tools for guest images / CI: `riscv64-unknown-elf-gcc` (and `ld`/`objcopy`), Python 3
 - Optional for local smokes: `qemu-system-riscv64` (CI harness only)
 - Optional: `shellcheck` (`make lint-sh`)
+
+Self-contained workflow: [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#self-contained-repository).
 
 ### Build and CI gate
 
@@ -50,25 +52,21 @@ cd bootstrap && make -f Makefile.repl
 make kernel-print-smoke     # Kernel_RV StrPrintJoin → UART
 make kernel-plat-smoke      # Kconfig HolyC UART+CLINT (CI default board)
 make kernel-fb-smoke        # FB present path (headless hash) — BOARD_FB.md
-make menuconfig-rv          # or: make -C templeos-riscv defconfig-sifive_u
+make menuconfig             # curses Kconfig (ISA / entry / board) → RVAutoConf.HH
+# or: make -C templeos-riscv defconfig-sifive_u
 ```
 
 ## Documentation
 
-**Index:** [docs/README.md](docs/README.md) — one true doc per topic.
+**Topic index:** [docs/README.md](docs/README.md) (architecture, REPL/UART, drivers/boards, CI/ops, tutorials, gaps, …).
 
-| Doc | Topic |
-|-----|--------|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Host, REPL, Kernel, guest Cmp |
-| [docs/LAYOUT.md](docs/LAYOUT.md) | Source-tree map |
-| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Build, test, norms |
-| [AGENTS.md](AGENTS.md) | Agent make-target cheat sheet |
-| [docs/CI.md](docs/CI.md) | CI jobs and local mirrors |
-| [docs/REPL.md](docs/REPL.md) | Interactive HolyC |
-| [templeos-riscv/KCONFIG.md](templeos-riscv/KCONFIG.md) | Platform Kconfig |
-| [templeos-riscv/PLATFORM.md](templeos-riscv/PLATFORM.md) | Board ports + CI emulator targets |
-| [templeos-riscv/COMPILER_RV.md](templeos-riscv/COMPILER_RV.md) | Guest compiler / phase3 |
-| [tests/README.md](tests/README.md) | Test matrix |
+| Jump | Doc |
+|------|-----|
+| Norms / layout | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) · [docs/LAYOUT.md](docs/LAYOUT.md) · [AGENTS.md](AGENTS.md) |
+| Architecture / self-host | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/SELF_HOST.md](docs/SELF_HOST.md) |
+| Boards / Kconfig / guest Cmp | [templeos-riscv/PLATFORM.md](templeos-riscv/PLATFORM.md) · [templeos-riscv/KCONFIG.md](templeos-riscv/KCONFIG.md) · [templeos-riscv/COMPILER_RV.md](templeos-riscv/COMPILER_RV.md) |
+| CI / tests | [docs/CI.md](docs/CI.md) · [tests/README.md](tests/README.md) |
+| Tutorials | [docs/tutorials/README.md](docs/tutorials/README.md) |
 
 ## Example (HolyC)
 

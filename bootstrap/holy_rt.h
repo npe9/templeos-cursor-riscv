@@ -263,15 +263,45 @@ static HRT_I64 HolyBt(HRT_U8 *bf, HRT_I64 n) { return (bf[n >> 3] >> (n & 7)) & 
 static HRT_I64 HolyBts(HRT_U8 *bf, HRT_I64 n) { HRT_I64 o = (bf[n >> 3] >> (n & 7)) & 1; bf[n >> 3] |= (HRT_U8)(1 << (n & 7)); return o; }
 static HRT_I64 HolyBtr(HRT_U8 *bf, HRT_I64 n) { HRT_I64 o = (bf[n >> 3] >> (n & 7)) & 1; bf[n >> 3] &= (HRT_U8)~(1 << (n & 7)); return o; }
 static HRT_I64 HolyBtc(HRT_U8 *bf, HRT_I64 n) { HRT_I64 o = (bf[n >> 3] >> (n & 7)) & 1; bf[n >> 3] ^= (HRT_U8)(1 << (n & 7)); return o; }
-static HRT_I64 HolyLBts(HRT_U8 *bf, HRT_I64 n) { return HolyBts(bf, n); }
-static HRT_I64 HolyLBtr(HRT_U8 *bf, HRT_I64 n) { return HolyBtr(bf, n); }
-static HRT_I64 HolyLBtc(HRT_U8 *bf, HRT_I64 n) { return HolyBtc(bf, n); }
+/* Locked bit ops: GCC emits A-ext LR/SC (or AMO) for sub-word atomics on rv64ima. */
+static HRT_I64 HolyLBts(HRT_U8 *bf, HRT_I64 n) {
+  HRT_U8 *p = bf + (n >> 3);
+  HRT_U8 mask = (HRT_U8)(1u << (n & 7));
+  return (__atomic_fetch_or(p, mask, __ATOMIC_SEQ_CST) & mask) != 0;
+}
+static HRT_I64 HolyLBtr(HRT_U8 *bf, HRT_I64 n) {
+  HRT_U8 *p = bf + (n >> 3);
+  HRT_U8 mask = (HRT_U8)(1u << (n & 7));
+  return (__atomic_fetch_and(p, (HRT_U8)~mask, __ATOMIC_SEQ_CST) & mask) != 0;
+}
+static HRT_I64 HolyLBtc(HRT_U8 *bf, HRT_I64 n) {
+  HRT_U8 *p = bf + (n >> 3);
+  HRT_U8 mask = (HRT_U8)(1u << (n & 7));
+  return (__atomic_fetch_xor(p, mask, __ATOMIC_SEQ_CST) & mask) != 0;
+}
 static HRT_I64 HolyBsf(HRT_I64 v) { if (!v) return -1; HRT_I64 i = 0; while (!((HRT_U64)v >> i & 1)) i++; return i; }
 static HRT_I64 HolyBsr(HRT_I64 v) { if (!v) return -1; HRT_I64 i = 63; while (!((HRT_U64)v >> i & 1)) i--; return i; }
 static HRT_I64 HolyBEqu(HRT_U8 *bf, HRT_I64 n, HRT_I64 val) { if (val) HolyBts(bf, n); else HolyBtr(bf, n); return val; }
 static HRT_I64 HolyBFieldOrU32(HRT_U8 *bf, HRT_I64 lo, HRT_I64 hi) { for (HRT_I64 i = lo; i <= hi; i++) HolyBts(bf, i); return 0; }
 static HRT_I64 HolySwapI64(HRT_I64 *a, HRT_I64 *b) { HRT_I64 t = *a; *a = *b; *b = t; return 0; }
-static HRT_I64 HolyLXchgI64(HRT_I64 *d, HRT_I64 v) { HRT_I64 o = *d; *d = v; return o; }
+static HRT_I64 HolyLXchgI64(HRT_I64 *d, HRT_I64 v) {
+  return __atomic_exchange_n(d, v, __ATOMIC_SEQ_CST);
+}
+/* HolyC `lock` stmt spinlock (amoswap). Fixed RAM slot near SYS_FIXED_AREA. */
+#ifndef HOLYC_STMT_LOCK_ADDR
+#define HOLYC_STMT_LOCK_ADDR 0x87001F00UL
+#endif
+static HRT_I64 HolyLock(void) {
+  volatile HRT_I64 *lk = (volatile HRT_I64 *)HOLYC_STMT_LOCK_ADDR;
+  while (__atomic_exchange_n(lk, (HRT_I64)1, __ATOMIC_ACQUIRE))
+    __asm__ volatile("nop");
+  return 0;
+}
+static HRT_I64 HolyUnlock(void) {
+  volatile HRT_I64 *lk = (volatile HRT_I64 *)HOLYC_STMT_LOCK_ADDR;
+  __atomic_store_n(lk, (HRT_I64)0, __ATOMIC_RELEASE);
+  return 0;
+}
 static HRT_I64 HolySqrI64(HRT_I64 x) { return x * x; }
 static HRT_I64 HolyClampI64(HRT_I64 x, HRT_I64 lo, HRT_I64 hi) { return x < lo ? lo : x > hi ? hi : x; }
 static HRT_I64 HolyMSize(HRT_U8 *p) { return p ? ((HolyBlk *)p - 1)->size : 0; }
@@ -383,8 +413,227 @@ static HRT_I64 HolyFarCall32(HRT_I64 a, HRT_I64 b, HRT_I64 c, HRT_I64 d) { (void
 #define HOLY_VIRTIO_SLOT0_BASE (HOLY_VIRTIO_MMIO_BASE - HOLY_VIRTIO_MMIO_STRIDE)
 
 static void HolyServiceExternal(void);
+static HRT_I64 HolyRVTrapInit(void);
 static volatile HRT_I64 holy_ticks = 0;
 static HRT_I64 holy_timer_interval = 0;
+/* UART crash monitor for FB/Win dual-console (RVCrashMonInit). Off by default so
+ * existing RVTrapInit smokes keep silent skip-on-fault. */
+static int holy_crash_mon_en = 0;
+static HRT_I64 holy_crash_mcause, holy_crash_mepc, holy_crash_mtval;
+
+static void holy_crash_puthex(HRT_U64 v) {
+  const char *hx = "0123456789abcdef";
+  int i;
+  for (i = 60; i >= 0; i -= 4)
+    HOLY_RT_PUTC(hx[(v >> i) & 0xF]);
+}
+
+static int holy_crash_in_ram(HRT_I64 a) {
+  return a >= (HRT_I64)0x80000000LL && a < (HRT_I64)0x88000000LL;
+}
+
+static HRT_I64 holy_crash_getc(void) {
+  volatile HRT_U8 *rbr = (volatile HRT_U8 *)HOLY_UART_BASE;
+  volatile HRT_U8 *lsr = (volatile HRT_U8 *)(HOLY_UART_BASE + 5);
+  while (!(*lsr & 1))
+    ;
+  return (HRT_I64)(*rbr & 0xFF);
+}
+
+static void holy_crash_gets(char *buf, int max) {
+  int n = 0;
+  HRT_I64 ch;
+  while (n < max - 1) {
+    ch = holy_crash_getc();
+    if (ch == '\r' || ch == '\n') {
+      HOLY_RT_PUTC('\n');
+      break;
+    }
+    if (ch == 8 || ch == 127) {
+      if (n > 0) {
+        n--;
+        rt_puts("\b \b");
+      }
+      continue;
+    }
+    if (ch == 3) {
+      buf[0] = 0;
+      rt_puts("^C\n");
+      return;
+    }
+    if (ch >= 32 && ch < 127) {
+      buf[n++] = (char)ch;
+      HOLY_RT_PUTC((char)ch);
+    }
+  }
+  buf[n] = 0;
+}
+
+static int holy_crash_cmd_eq(const char *line, const char *cmd) {
+  int i = 0;
+  if (!line || !cmd) return 0;
+  while (cmd[i] && line[i] == cmd[i]) i++;
+  if (cmd[i]) return 0;
+  return !line[i] || line[i] == ' ' || line[i] == '\t';
+}
+
+static const char *holy_crash_skip(const char *p) {
+  if (!p) return p;
+  while (*p == ' ' || *p == '\t') p++;
+  return p;
+}
+
+static const char *holy_crash_skip_tok(const char *p) {
+  p = holy_crash_skip(p);
+  while (*p && *p != ' ' && *p != '\t') p++;
+  return holy_crash_skip(p);
+}
+
+static HRT_I64 holy_crash_parse_i64(const char *p) {
+  HRT_I64 v = 0, neg = 0, base = 10;
+  p = holy_crash_skip(p);
+  if (*p == '-') { neg = 1; p++; }
+  if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) { base = 16; p += 2; }
+  while (*p) {
+    int d;
+    if (*p >= '0' && *p <= '9') d = *p - '0';
+    else if (base == 16 && *p >= 'a' && *p <= 'f') d = *p - 'a' + 10;
+    else if (base == 16 && *p >= 'A' && *p <= 'F') d = *p - 'A' + 10;
+    else break;
+    v = v * base + d;
+    p++;
+  }
+  return neg ? -v : v;
+}
+
+static void holy_crash_md(HRT_I64 addr, HRT_I64 n) {
+  HRT_I64 i;
+  if (!holy_crash_in_ram(addr) || n <= 0) {
+    rt_puts("md: bad addr/len\n");
+    return;
+  }
+  if (n > 0x1000) n = 0x1000;
+  for (i = 0; i < n; i++) {
+    if ((i & 15) == 0) {
+      holy_crash_puthex((HRT_U64)(addr + i));
+      HOLY_RT_PUTC(':');
+    }
+    HOLY_RT_PUTC(' ');
+    {
+      HRT_U8 b = *(volatile HRT_U8 *)(addr + i);
+      const char *hx = "0123456789abcdef";
+      HOLY_RT_PUTC(hx[(b >> 4) & 0xF]);
+      HOLY_RT_PUTC(hx[b & 0xF]);
+    }
+    if ((i & 15) == 15) HOLY_RT_PUTC('\n');
+  }
+  if (n & 15) HOLY_RT_PUTC('\n');
+}
+
+static void holy_crash_bt(void) {
+  HRT_I64 sp, i, a, n = 0;
+  __asm__ volatile("mv %0, sp" : "=r"(sp));
+  rt_puts("bt sp=");
+  holy_crash_puthex((HRT_U64)sp);
+  HOLY_RT_PUTC('\n');
+  for (i = 0; i < 64 && n < 16; i++) {
+    a = *(volatile HRT_I64 *)(sp + i * 8);
+    if (!holy_crash_in_ram(a) || (a & 1)) continue;
+    rt_puts("  #");
+    HOLY_RT_PUTC((char)('0' + (n % 10)));
+    rt_puts(" ");
+    holy_crash_puthex((HRT_U64)a);
+    HOLY_RT_PUTC('\n');
+    n++;
+  }
+  if (!n) rt_puts("  (empty)\n");
+}
+
+static void HolyCrashMonEnter(HRT_I64 mcause, HRT_I64 mepc, HRT_I64 mtval) {
+  char line[128];
+  holy_crash_mcause = mcause;
+  holy_crash_mepc = mepc;
+  holy_crash_mtval = mtval;
+  rt_puts("\n*** UART crash dump (FB/Win serial)\n");
+  rt_puts("mcause=");
+  holy_crash_puthex((HRT_U64)mcause);
+  rt_puts(" mepc=");
+  holy_crash_puthex((HRT_U64)mepc);
+  rt_puts(" mtval=");
+  holy_crash_puthex((HRT_U64)mtval);
+  HOLY_RT_PUTC('\n');
+  rt_puts("crash> cmds: md mw regs bt dump go reboot help\n");
+  for (;;) {
+    rt_puts("crash> ");
+    holy_crash_gets(line, (int)sizeof line);
+    if (!line[0]) continue;
+    if (holy_crash_cmd_eq(line, "go") || holy_crash_cmd_eq(line, "c")) {
+      rt_puts("crash: leave monitor\n");
+      return;
+    }
+    if (holy_crash_cmd_eq(line, "reboot") || holy_crash_cmd_eq(line, "reset")) {
+      rt_puts("crash: reboot (halt)\n");
+      for (;;) __asm__ volatile("wfi");
+    }
+    if (holy_crash_cmd_eq(line, "help") || holy_crash_cmd_eq(line, "?")) {
+      rt_puts("md ADDR [N]  mw ADDR VAL  regs  bt  dump  go  reboot\n");
+      continue;
+    }
+    if (holy_crash_cmd_eq(line, "regs") || holy_crash_cmd_eq(line, "dump")) {
+      rt_puts("mcause=");
+      holy_crash_puthex((HRT_U64)holy_crash_mcause);
+      rt_puts(" mepc=");
+      holy_crash_puthex((HRT_U64)holy_crash_mepc);
+      rt_puts(" mtval=");
+      holy_crash_puthex((HRT_U64)holy_crash_mtval);
+      HOLY_RT_PUTC('\n');
+      continue;
+    }
+    if (holy_crash_cmd_eq(line, "bt")) {
+      holy_crash_bt();
+      continue;
+    }
+    if (holy_crash_cmd_eq(line, "md")) {
+      const char *p = holy_crash_skip_tok(line);
+      HRT_I64 addr = holy_crash_parse_i64(p);
+      p = holy_crash_skip_tok(p);
+      HRT_I64 n = *p ? holy_crash_parse_i64(p) : 64;
+      holy_crash_md(addr, n);
+      continue;
+    }
+    if (holy_crash_cmd_eq(line, "mw")) {
+      const char *p = holy_crash_skip_tok(line);
+      HRT_I64 addr = holy_crash_parse_i64(p);
+      p = holy_crash_skip_tok(p);
+      HRT_I64 val = holy_crash_parse_i64(p);
+      if (!holy_crash_in_ram(addr)) {
+        rt_puts("mw: bad addr\n");
+        continue;
+      }
+      *(volatile HRT_I64 *)addr = val;
+      rt_puts("mw ok\n");
+      continue;
+    }
+    rt_puts("?\n");
+  }
+}
+
+static HRT_I64 HolyRVCrashMonInit(void) {
+  holy_crash_mon_en = 1;
+  HolyRVTrapInit();
+  return 0;
+}
+
+static HRT_I64 HolyRVCrashMon(void) {
+  HRT_I64 mcause, mepc, mtval;
+  if (!holy_crash_mon_en)
+    holy_crash_mon_en = 1;
+  __asm__ volatile("csrr %0, mcause" : "=r"(mcause));
+  __asm__ volatile("csrr %0, mepc" : "=r"(mepc));
+  __asm__ volatile("csrr %0, mtval" : "=r"(mtval));
+  HolyCrashMonEnter(mcause, mepc, mtval);
+  return 0;
+}
 
 __attribute__((used)) static HRT_I64 HolyTrapDispatch(void) {
   HRT_I64 mcause;
@@ -396,10 +645,17 @@ __attribute__((used)) static HRT_I64 HolyTrapDispatch(void) {
     *mtimecmp = *mtime + holy_timer_interval;              /* re-arm */
   } else if (mcause == (HRT_I64)0x800000000000000BULL) {    /* machine external (PLIC) interrupt */
     HolyServiceExternal();
-  } else if (mcause >= 0) {                                 /* synchronous exception: skip it (best effort) */
-    HRT_I64 mepc;
+  } else if (mcause >= 0) {                                 /* synchronous exception */
+    HRT_I64 mepc, mtval;
     __asm__ volatile("csrr %0, mepc" : "=r"(mepc));
-    __asm__ volatile("csrw mepc, %0" :: "r"(mepc + 4));
+    __asm__ volatile("csrr %0, mtval" : "=r"(mtval));
+    if (holy_crash_mon_en) {
+      HolyCrashMonEnter(mcause, mepc, mtval);
+      __asm__ volatile("csrr %0, mepc" : "=r"(mepc));
+      __asm__ volatile("csrw mepc, %0" :: "r"(mepc + 4)); /* skip faulting insn after go */
+    } else {
+      __asm__ volatile("csrw mepc, %0" :: "r"(mepc + 4)); /* best-effort skip */
+    }
   }
   return 0;
 }
@@ -592,7 +848,25 @@ static HRT_I64 HolyRVSleep(HRT_I64 ticks) {
 static char holy_urx[256];
 static int  holy_urx_head = 0, holy_urx_tail = 0;
 
-static volatile HRT_I64 holy_virtio_irqs = 0;   /* count of serviced virtio-mmio completion interrupts */
+static volatile HRT_I64 holy_virtio_irqs = 0;   /* count of serviced virtio mmio/PCI completion IRQs */
+
+/* PCI INTx on QEMU virt → PLIC 32..35 (shared). HolyC IrqInit registers virtio ISR status
+ * MMIO pointers here so the trap can clear INTx (read clears). MSI-X→IMSIC stays deferred. */
+#define HOLY_VIRTIO_PCI_ISR_MAX 8
+#define HOLY_PCIE_IRQ_BASE 32
+#define HOLY_PCIE_IRQ_COUNT 4
+static volatile HRT_U8 *holy_virtio_pci_isr[HOLY_VIRTIO_PCI_ISR_MAX];
+static int holy_virtio_pci_isr_n = 0;
+
+static HRT_I64 HolyRVVirtioPciIsrReg(HRT_I64 isr_addr) {
+  int i;
+  if (!isr_addr) return -1;
+  for (i = 0; i < holy_virtio_pci_isr_n; i++)
+    if (holy_virtio_pci_isr[i] == (volatile HRT_U8 *)isr_addr) return 0;
+  if (holy_virtio_pci_isr_n >= HOLY_VIRTIO_PCI_ISR_MAX) return -1;
+  holy_virtio_pci_isr[holy_virtio_pci_isr_n++] = (volatile HRT_U8 *)isr_addr;
+  return 0;
+}
 
 static void HolyServiceExternal(void) {
   volatile HRT_U32 *claim = (volatile HRT_U32 *)(HOLY_PLIC + HOLY_PLIC_CLAIM_OFF);
@@ -613,6 +887,14 @@ static void HolyServiceExternal(void) {
     volatile HRT_U32 *iack = (volatile HRT_U32 *)(HOLY_VIRTIO_SLOT0_BASE + (HRT_I64)irq*HOLY_VIRTIO_MMIO_STRIDE + 0x64);
     *iack = *isr;
     holy_virtio_irqs++;
+  } else if (irq >= HOLY_PCIE_IRQ_BASE && irq < HOLY_PCIE_IRQ_BASE + HOLY_PCIE_IRQ_COUNT) {
+    /* virtio-pci INTx: read each registered ISR status byte (clears the line). */
+    int i;
+    for (i = 0; i < holy_virtio_pci_isr_n; i++) {
+      if (!holy_virtio_pci_isr[i]) continue;
+      if (*holy_virtio_pci_isr[i])
+        holy_virtio_irqs++;
+    }
   }
   if (irq) *claim = irq;                                                   /* complete */
 }

@@ -5,6 +5,7 @@
  */
 #help_index "Compiler/Internal/RISCV"
 /* IC Move Operation - Core data movement function */
+extern U0 ICLea(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, I64 rip);
 U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, I64 rip)
 {
   // Move/load/store data between registers and memory
@@ -19,9 +20,10 @@ U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
       RVLi(tmpi, r1, d2);
     } else if (t1 & MDF_STK) {
       // Arg push: OptPass4 turns IC_IMM→IC_MOV with res=STK; must push imm.
-      RVLi(tmpi, RV_REG_T6, d2);
+      // Leave value in a0 too (RISC-V 1-arg ABI / host EmitLoadArgs skips ld for N<2).
+      RVLi(tmpi, RV_REG_A0, d2);
       RVAddi(tmpi, RV_REG_SP, RV_REG_SP, -8);
-      RVSd(tmpi, RV_REG_T6, RV_REG_SP, 0);
+      RVSd(tmpi, RV_REG_A0, RV_REG_SP, 0);
     } else if (t1 & MDF_DISP) {
       // Store immediate to memory via temp register
       RVLi(tmpi, RV_REG_T6, d2);
@@ -159,9 +161,14 @@ U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
   }
   // Stack operations - should be handled by pass 6
   if (t1 & MDF_STK) {
-    // Push
+    // Push value (REG or via temp). Direct RVSd — nested ICMov(DISP) hung
+    // guest Cmp when pushing STR_CONST call args.
+    if (!(t2 & MDF_REG)) {
+      ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T6, 0, t2, r2, d2, rip);
+      r2 = RV_REG_T6;
+    }
     RVAddi(tmpi, RV_REG_SP, RV_REG_SP, -8);
-    ICMov(tmpi, MDF_DISP + RT_I64, RV_REG_SP, 0, t2, r2, d2, rip);
+    RVSd(tmpi, r2, RV_REG_SP, 0);
     return;
   }
   if (t2 & MDF_STK) {
@@ -170,11 +177,38 @@ U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
     RVAddi(tmpi, RV_REG_SP, RV_REG_SP, 8);
     return;
   }
+  // RIP-relative (OptPass4 folds ABS_ADDR / string / globals to MDF_RIP_DISP32)
+  if (t2 & MDF_RIP_DISP32) {
+    I64 pc = rip + tmpi->ic_cnt, off = d2 - pc;
+    RVAuipc(tmpi, RV_REG_T6, (off + 0x800) >> 12 & 0xFFFFF);
+    RVAddi(tmpi, RV_REG_T6, RV_REG_T6, off << 52 >> 52);
+    ICMov(tmpi, t1, r1, d1, MDF_DISP + raw_type2, RV_REG_T6, 0, rip);
+    return;
+  }
+  if (t1 & MDF_RIP_DISP32) {
+    I64 pc = rip + tmpi->ic_cnt, off = d1 - pc;
+    RVAuipc(tmpi, RV_REG_T5, (off + 0x800) >> 12 & 0xFFFFF);
+    RVAddi(tmpi, RV_REG_T5, RV_REG_T5, off << 52 >> 52);
+    ICMov(tmpi, MDF_DISP + raw_type1, RV_REG_T5, 0, t2, r2, d2, rip);
+    return;
+  }
+  // SIB: [base + index<<scale + disp] (OptPass4 array index)
+  if (t2 & MDF_SIB) {
+    ICLea(tmpi, MDF_REG + RT_I64, RV_REG_T6, 0, t2, r2, d2, rip);
+    ICMov(tmpi, t1, r1, d1, MDF_DISP + raw_type2, RV_REG_T6, 0, rip);
+    return;
+  }
+  if (t1 & MDF_SIB) {
+    ICLea(tmpi, MDF_REG + RT_I64, RV_REG_T5, 0, t1, r1, d1, rip);
+    ICMov(tmpi, MDF_DISP + raw_type1, RV_REG_T5, 0, t2, r2, d2, rip);
+    return;
+  }
 }
 /* Arithmetic Operations */
 U0 ICAdd(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, CICType t3, I64 r3, I64 d3, I64 rip)
 {
   // IC_ADD: t1/r1/d1 = t2/r2/d2 + t3/r3/d3
+  // n+n multi-use is handled in ICLea (OptPass4 folds n+n → SIB LEA).
   U8 dest_reg = RV_REG_A0;
   // Default to a0 for results
   U8 src1_reg, src2_reg;
@@ -583,23 +617,73 @@ U0 ICMod(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
 U0 ICLea(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, I64 rip)
 {
   // IC_LEA: Load effective address
-  U8 dest_reg = RV_REG_A0;
+  // OptPass4 folds n+n to SIB [reg+reg]; never ADD into that shared GPR.
+  U8 dest_reg = RV_REG_A0, acc, base, index, shamt;
+  Bool retarget = FALSE;
+  CIntermediateCode *nxt;
   if (t1 & MDF_REG)
     dest_reg = r1;
+  acc = dest_reg;
   if (t2 & MDF_DISP) {
-    // LEA reg, [base + offset]
+    // LEA reg, [base + offset] — in-place lea rd,[rd+imm] is intentional.
     if (d2 >= -2048 && d2 <= 2047) {
       RVAddi(tmpi, dest_reg, r2, d2);
     } else {
       RVLi(tmpi, RV_REG_T6, d2);
       RVAdd(tmpi, dest_reg, r2, RV_REG_T6);
     }
+    acc = dest_reg;
+  } else if (t2 & MDF_SIB) {
+    // [base + index<<scale + disp]; scale in bits[15:14] (0,1,2,3 → 1,2,4,8)
+    base = r2.u8[0];
+    index = r2.u8[1] & 31;
+    shamt = r2 >> 14 & 3;
+    // n+n fold: base==index; writing dest==base destroys the live arg.
+    if (acc == base || acc == index) {
+      acc = RV_REG_A0;
+      if (acc == base || acc == index)
+        acc = RV_REG_T2;
+    }
+    if (shamt) {
+      RVSlli(tmpi, RV_REG_T6, index, shamt);
+      RVAdd(tmpi, acc, base, RV_REG_T6);
+    } else
+      RVAdd(tmpi, acc, base, index);
+    if (d2) {
+      if (d2 >= -2048 && d2 <= 2047)
+        RVAddi(tmpi, acc, acc, d2);
+      else {
+        RVLi(tmpi, RV_REG_T6, d2);
+        RVAdd(tmpi, acc, acc, RV_REG_T6);
+      }
+    }
+    if (t1 & MDF_REG && acc != dest_reg) {
+      if (base == index && dest_reg == base) {
+        tmpi->res.type = MDF_REG + RT_I64;
+        tmpi->res.reg = acc;
+        tmpi->res.disp = 0;
+        retarget = TRUE;
+      } else
+        RVMv(tmpi, dest_reg, acc);
+    }
+  } else if (t2 & MDF_RIP_DISP32) {
+    I64 pc = rip + tmpi->ic_cnt, off = d2 - pc;
+    RVAuipc(tmpi, dest_reg, (off + 0x800) >> 12 & 0xFFFFF);
+    RVAddi(tmpi, dest_reg, dest_reg, off << 52 >> 52);
+    acc = dest_reg;
   } else if (t2 & MDF_IMM) {
-    // LEA reg, immediate (just load immediate)
     RVLi(tmpi, dest_reg, d2);
+    acc = dest_reg;
   }
   if (!(t1 & MDF_REG)) {
-    ICMov(tmpi, t1, r1, d1, MDF_REG + RT_I64, dest_reg, 0, rip);
+    ICMov(tmpi, t1, r1, d1, MDF_REG + RT_I64, acc, 0, rip);
+  }
+  if (retarget) {
+    nxt = tmpi->next;
+    while (nxt && nxt->ic_code <= IC_NOP2)
+      nxt = nxt->next;
+    if (nxt && intermediate_code_table[nxt->ic_code].arg_cnt == IS_2_ARG && nxt->arg1.type & MDF_REG && nxt->arg1.reg == dest_reg)
+      nxt->arg1.reg = acc;
   }
 }
 #help_index ""
