@@ -59,6 +59,16 @@ for one * and two fwd for two **.
   return res;
 }
 
+// Host AOT of `cmp.internal_types[rt]+stars` emits +stars bytes (not
+// sizeof(CHashClass)). `tmpc++` scales correctly — needed for STR_CONST U8*
+// and guest Cmp of *"lit". Keep rt a compile-time constant at the load site.
+CHashClass *CmpU8StarType()
+{
+  CHashClass *tmpc=cmp.internal_types[RT_U8];
+  tmpc++;
+  return tmpc;
+}
+
 CHashFun *PrsFunNew()
 {
   I64 i;

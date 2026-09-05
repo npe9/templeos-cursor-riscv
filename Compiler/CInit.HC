@@ -273,13 +273,16 @@ U0 CmpFillTables()
     if (Bt(&cmp.non_ptr_vars_mask,i))
       cmp.non_ptr_vars_map[cmp.num_non_ptr_vars++]=i;
 
+  // dual_U16_tokens: prefer d[ch]= (same scale Lex reads). Never use d['/'] —
+  // host AOT of index/value char '/' mis-stores, so // /* duals stay 0 and
+  // guest Cmp LexExcepts "Missing expression" on leading // comments (T:2F).
   cmp.dual_U16_tokens1=d=CAlloc(8*TK_TKS_NUM);
   d['!']=TK_NOT_EQU<<16+'=';
   d['&']=TK_AND_AND<<16+'&';
   d['*']=TK_MUL_EQU<<16+'=';
   d['+']=TK_PLUS_PLUS<<16+'+';
   d['-']=TK_DEREFERENCE<<16+'>';
-  d['/']='*';
+  d[0x2F]='*'; // "/*" (not d['/'])
   d[':']=TK_DBL_COLON<<16+':';
   d['<']=TK_LESS_EQU<<16+'=';
   d['=']=TK_EQU_EQU<<16+'=';
@@ -292,7 +295,7 @@ U0 CmpFillTables()
   d['&']=TK_AND_EQU<<16+'=';
   d['+']=TK_ADD_EQU<<16+'=';
   d['-']=TK_MINUS_MINUS<<16+'-';
-  d['/']='/';
+  d[0x2F]=0x2F; // "//" (not d['/']='/')
   d['<']=TK_SHL<<16+'<';
   d['>']=TK_SHR<<16+'>';
   d['^']=TK_XOR_XOR<<16+'^';
@@ -300,7 +303,7 @@ U0 CmpFillTables()
 
   cmp.dual_U16_tokens3=d=CAlloc(sizeof(U32)*TK_TKS_NUM);
   CmpSetU32(d,'-',(TK_SUB_EQU<<16)+'=');
-  CmpSetU32(d,'/',(TK_DIV_EQU<<16)+'=');
+  CmpSetU32(d,0x2F,(TK_DIV_EQU<<16)+'=');
 
   d=CAlloc(sizeof(U32)*TK_TKS_NUM);
   cmp.binary_ops=d;
@@ -309,7 +312,7 @@ U0 CmpFillTables()
   CmpSetU32(d,TK_SHL,((PREC_EXP+ASSOCF_LEFT)<<16)+IC_SHL);
   CmpSetU32(d,TK_SHR,((PREC_EXP+ASSOCF_LEFT)<<16)+IC_SHR);
   CmpSetU32(d,'*',(PREC_MUL<<16)+IC_MUL);
-  CmpSetU32(d,'/',((PREC_MUL+ASSOCF_LEFT)<<16)+IC_DIV);
+  CmpSetU32(d,0x2F,((PREC_MUL+ASSOCF_LEFT)<<16)+IC_DIV);
   CmpSetU32(d,'%',((PREC_MUL+ASSOCF_LEFT)<<16)+IC_MOD);
   CmpSetU32(d,'&',(PREC_AND<<16)+IC_AND);
   CmpSetU32(d,'^',(PREC_XOR<<16)+IC_XOR);

@@ -4,6 +4,16 @@
  * Replaces BackA.HC for RISC-V target.
  */
 #help_index "Compiler/Internal/RISCV"
+/* PC-rel materialize for MDF_RIP_DISP32 (AOT data_rip or JIT abs). */
+U0 RVEmitRipAddr(CIntermediateCode *tmpi, U8 rd, I64 abs_val, I64 rip)
+{
+  I64 offset, hi, lo;
+  offset = abs_val - rip - tmpi->ic_cnt;
+  hi = (offset + 0x800) >> 12;
+  lo = offset - (hi << 12);
+  RVAuipc(tmpi, rd, hi);
+  RVAddi(tmpi, rd, rd, lo);
+}
 /* IC Move Operation - Core data movement function */
 extern U0 ICLea(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, I64 rip);
 U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, I64 rip)
@@ -25,8 +35,8 @@ U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
       RVAddi(tmpi, RV_REG_SP, RV_REG_SP, -8);
       RVSd(tmpi, RV_REG_A0, RV_REG_SP, 0);
     } else if (t1 & MDF_RIP_DISP32) {
-      // OptPass4 folds JIT heap abs addrs to RIP_DISP32; store imm absolutely.
-      RVLi(tmpi, RV_REG_T5, d1);
+      // Folded ABS/JIT global: PC-rel addr then store imm (AOT data_rip OK).
+      RVEmitRipAddr(tmpi, RV_REG_T5, d1, rip);
       RVLi(tmpi, RV_REG_T6, d2);
       switch (raw_type1) {
         case RT_I8 :
@@ -182,7 +192,7 @@ U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
   // RIP before STK: MDF_RIP_DISP32 must not fall into the push path
   // (for-loop `s=s+i` was lea + push instead of sd).
   if (t1 & MDF_RIP_DISP32) {
-    RVLi(tmpi, RV_REG_T5, d1);
+    RVEmitRipAddr(tmpi, RV_REG_T5, d1, rip);
     if (!(t2 & MDF_REG)) {
       ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T6, 0, t2, r2, d2, rip);
       r2 = RV_REG_T6;
@@ -206,7 +216,7 @@ U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
     return;
   }
   if (t2 & MDF_RIP_DISP32) {
-    RVLi(tmpi, RV_REG_T6, d2);
+    RVEmitRipAddr(tmpi, RV_REG_T6, d2, rip);
     switch (raw_type2) {
       case RT_I8 :
       RVLb(tmpi, RV_REG_T0, RV_REG_T6, 0);

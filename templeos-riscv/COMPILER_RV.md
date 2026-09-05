@@ -34,7 +34,7 @@ Mirror `tos/Doc/Boot.DD` (`::/Doc/Boot.DD` at runtime):
 | In-image ExePutS | `kernel_exepubs_demo.hc` / `kernel_exepubs_fundef.hc` | Expr + fun-def → 42 (same stmt or split ExePutS) |
 | Guest Cmp MakeOS | `RVPhase3MakeOS` | **Cmp→Tiny.BIN export→Load→Call → 42** (no hand TOSB) |
 | Guest Runtime seed | `RVPhase3GuestRuntime` | **Cmp→Seed/Svc/Kern/Kernel/StartOS/AdamCore.BIN**; StartOS **Loads** them; arg + `F()+imm` proven |
-| Phase3 ELF itself | host AOT of thin demo + link of `Compiler.BIN` @ `0x81000000` | **Still host-built** scaffold; linked BIN is bootstrap **bytes** only — live Cmp is **heap Load** of RedSea seed (G9 reloc) |
+| Phase3 ELF itself | host AOT of thin demo; RedSea virtio img ships `Compiler.BIN` + probe `Kernel.BIN` | **Still host-built** scaffold; ELF `.compiler_bin` @`0x81000000` optional (`PHASE3_LINK_COMPILER_BIN=1`); live Cmp is **heap Load** of RedSea Compiler seed (G9 reloc); Kernel seed FileFind+Load before Cmp |
 | Temp bridge | `bootstrap/hc_repl` + `jit.hc` | **Stop expanding** |
 
 ## Run gates
@@ -46,7 +46,7 @@ make kernel-exepubs-fundef-smoke   # ExePutS fun-def → 42 (if present)
 make kernel-phase3-smoke           # Load Compiler.BIN + MakeOS Cmp + Runtime Cmp + StartOS
 ```
 
-Console (UART) phase3 expects (among others): `MakeOS OK`, `Runtime OK (…call+imm…)`, `Kern.BIN OK (arg+call+add→42)`, `StartOS Load AdamCore.BIN OK (guest Cmp FileWrite STR_CONST)`, `StartOS Load StartOS/Seed/Svc/Kern.BIN OK`, `StartOS Load Kernel.BIN OK (guest Cmp preferred over Mac scaffold)`, `StartOS subset OK (guest BINs AdamCore+…+Kernel)`, `done (compiler + StartOS)`. AdamCore: guest Cmp→Load→Call `FileWrite` multi-STR via `RVHCCall` plants READY/CORE — **hard required** (no linked MakeAdam fallback). Soft P6 (not required): `P6 MakeAdam_RV_Lite Load→Call OK (menu_n=8 Menu_RV, LITE.TXT)` after staging Menu_RV on A:.
+Console (UART) phase3 expects (among others): `MakeOS OK`, `Runtime OK (…call+imm…)`, `Kern.BIN OK (arg+call+add→42)`, `RedSea Kernel.BIN seed FileFind+Load OK (KernelProbe=42)`, `StartOS Load AdamCore.BIN OK (guest Cmp FileWrite STR_CONST)`, `StartOS Load StartOS/Seed/Svc/Kern.BIN OK`, `StartOS Load Kernel.BIN OK (RedSea Kernel.BIN preferred over Mac phase3.elf scaffold)`, `StartOS subset OK (guest BINs AdamCore+…+Kernel)`, `done (compiler + StartOS)`. AdamCore: guest Cmp→Load→Call `FileWrite` multi-STR via `RVHCCall` plants READY/CORE — **hard required** (no linked MakeAdam fallback). Soft P6 (not required): `P6 MakeAdam_RV_Lite Load→Call OK (menu_n=8 Menu_RV, LITE.TXT)` after staging Menu_RV on A:.
 
 ## Gap-fill plan (ordered)
 
@@ -118,24 +118,28 @@ asm { li a7, 20 addi a7,a7,-4 }; Regs
 | `A:/Runtime/Seed.BIN` | multi-`#include` + `F()+imm` | `RuntimeSeedInit=42` |
 | `A:/Runtime/Svc.BIN` | runtime service surface | `RuntimeSvcProbe=42` |
 | `A:/Runtime/Kern.BIN` | arg call + `n+n+n` | `KernInit=42` (`KernBase+KernScale(9)`) |
-| `A:/Kernel/Kernel.BIN` | Boot.DD-shaped guest Kernel module | `KernelProbe=42` — **preferred** over Mac phase3 ELF as the “Kernel.BIN” product story |
+| `A:/Kernel/Kernel.BIN` | Boot.DD-shaped **probe** on RedSea seed (`KernelProbe=42`, `KernelEntry=0x4B45`); host `pack_tosb` of `tests/exec/cases/kernel_bin_probe.hc` | **Not** full `Kernel_RV` — preferred over Mac phase3 ELF as the Kernel.BIN *path*; real Kernel.BIN boot still residual |
 | `A:/Adam/StartOS.BIN` | StartOS body | `StartOSProbe=1` |
 | `A:/Adam/AdamCore.BIN` | MakeAdam bring-up (guest Cmp) | **Required** — guest `FileWrite` multi-STR via `RVHCCall` plants `READY.TXT`+`CORE.TXT`; phase3 fails hard if Cmp/Load/Call/READY soft-fails |
 
-Console proof: `Kern.BIN OK (arg+call+add→42)` … `StartOS Load Kern.BIN OK` … `StartOS Load Kernel.BIN OK (guest Cmp preferred…)` … `StartOS subset OK (guest BINs …+Kernel)`.
+Console proof: `RedSea Kernel.BIN seed FileFind+Load OK` … `Kern.BIN OK (arg+call+add→42)` … `StartOS Load Kern.BIN OK` … `StartOS Load Kernel.BIN OK (RedSea Kernel.BIN preferred…)` … `StartOS subset OK (guest BINs …+Kernel)`.
 
 **Residual host AOT (inventory — each piece until removable):**
 
 | Residual | Why still host | Removable when |
 |----------|----------------|----------------|
-| phase3 ELF scaffolding (`kernel_phase3_demo.hc` → `build/exec/phase3.elf`) | Boot glue: `RVKMain` / RedSea / `Load`; **no** in-image `Compiler_RV_Body` (G9) | Thin C/asm loader that only `Load`s RedSea `Kernel.BIN` + runtime |
-| `build/Compiler.BIN` via `pack_tosb` + link at `0x81000000` | Bootstrap **byte source** for staging onto A:; live path is heap `Load("A:/Compiler/Compiler.BIN")` (PC-rel host AOT = relocatable) | Guest Cmp rebuilds Compiler TOSB, or RedSea disk image ships seed (drop `.compiler_bin` from ELF) |
-| Host `holyc-riscv` AOT of RVPhase3 staging strings | Tiny Runtime/MakeOS/Menu_RV/Kernel extract sources written to A: then guest-Cmp’d — staging still lives in host-built ELF text | Sources live on RedSea/9P (or guest-built Kernel plants them) |
+| phase3 ELF scaffolding (`kernel_phase3_demo.hc` → `build/exec/phase3.elf`) | Boot glue: `RVKMain` / RedSea / `Load` / Cmp orchestration; **no** in-image `Compiler_RV_Body` (G9) | Shrink toward thin loader only (`kernel_thin_loader_demo.hc` → `thin_loader.elf` already proves mount+Load+`KernelEntry`); retire when `Kernel.BIN` owns traps/heap/UART/RedSea |
+| `build/Compiler.BIN` via `pack_tosb` → RedSea virtio img | Host still packs seed; smoke stages `build/exec/phase3_redsea.img` (`tools/mk_redsea_seed_img.py`) with `A:/Compiler/Compiler.BIN`; live path is heap `Load` (PC-rel = relocatable) | Guest Cmp rebuilds Compiler TOSB (drop host `pack_tosb` seed) |
+| `build/Kernel.BIN` via `pack_tosb` → RedSea virtio img | Host packs **probe** (`KernelProbe→42`, `KernelEntry→0x4B45`); early FileFind+Load+handoff before Cmp; Runtime prefers RedSea seed; `make kernel-thin-loader-smoke` proves loader→BIN Call | Guest Cmp (or host pack of real `Kernel_RV`) TOSB that owns traps/heap/RedSea; thin loader jumps and **does not return** to Mac scaffold |
+| ELF `.compiler_bin` @ `0x81000000` | **Optional** last-resort (`PHASE3_LINK_COMPILER_BIN=1`); default smoke omits `compiler_full.o` | Keep only as recovery if RedSea seed missing |
+| Host `holyc-riscv` AOT of RVPhase3 staging strings | Tiny Runtime/MakeOS/Menu_RV extract sources written to A: then guest-Cmp’d — staging still lives in host-built ELF text | Sources live on RedSea/9P (or guest-built Kernel plants them) |
 | Win split-AOT `char_bmp_*` wire (`RVCmpWireCharBmps` / `RVCmpPatchCharBmps`) | Loaded Compiler.BIN zero-fills bitmaps; Lex needs kernel copies | **Do not regress** — stays until Compiler seed shares live kernel globals |
 
-**G9 shrink this pass:** live Cmp is **heap `Load` of RedSea `A:/Compiler/Compiler.BIN`** (relocatable PC-rel seed; plants `RELOC.TXT`). Linked `0x81000000` is bootstrap bytes only (fallback LoadPass if reloc fails). Guest `A:/Kernel/Kernel.BIN` Cmp→Load→Call still preferred over Mac scaffold. Earlier: dropped Body + HostBinEmbed + Menu U8[] embeds. Soft P6 stages Menu_RV_Guest via `RVAdamLiteMenuSrc`.
+**G9 shrink this pass:** live Cmp is **heap `Load` of RedSea `A:/Compiler/Compiler.BIN`** from virtio seed img (relocatable PC-rel; plants `RELOC.TXT`). Default phase3 ELF has **empty/absent** `.compiler_bin` (no Mac pack bytes at `0x81000000`). **Also:** host-packed probe `A:/Kernel/Kernel.BIN` on the same RedSea img; `RVPhase3ProbeSeedKernel` FileFind+Load+Call **KernelProbe+KernelEntry** before Cmp; Runtime prefers that seed (guest Cmp Kernel rebuild = fallback only). **Thin loader milestone:** `kernel_thin_loader_demo.hc` → `build/exec/thin_loader.elf` (`make kernel-thin-loader-smoke`) mounts virtio, Loads RedSea `Kernel.BIN`, CallExports `KernelEntry` (0x4B45) — no Cmp/StartOS. Loader ELF still embeds full `Kernel_RV.PRJ` (not tiny yet); handoff into probe BIN is proven. `RVKMain` prefers `RVMountVirtioDisk` then RAM fallback. Earlier: dropped Body + HostBinEmbed + Menu U8[] embeds. Soft P6 stages Menu_RV_Guest via `RVAdamLiteMenuSrc`.
 
-**Must stay host-built (document):** `holyc-riscv` + `pack_tosb` producing `Compiler.BIN` seed until guest Cmp can rebuild Compiler; phase3 ELF boot scaffolding until a thin loader Loads RedSea `Kernel.BIN` as the **actual** kernel image (today’s guest Kernel.BIN is a probe module, not full `Kernel_RV`); win split-AOT `char_bmp_*` wire — do not regress. Next residual cut: ship Compiler.BIN on a RedSea image so phase3 ELF need not link `.compiler_bin`.
+**Must stay host-built (document):** `holyc-riscv` + `pack_tosb` + `mk_redsea_seed_img.py` producing Compiler + Kernel **probe** seeds until guest Cmp rebuilds them; phase3 ELF Cmp/StartOS scaffolding until `Kernel.BIN` is bootable `Kernel_RV` (or thin loader stops returning after handoff into a real core); win split-AOT `char_bmp_*` wire — do not regress.
+
+**Honest blocker to drop phase3.elf:** RedSea `Kernel.BIN` must become a bootable `Kernel_RV` (traps, heap, UART, RedSea/virtio, `Load`) that the thin loader can jump into **without** Mac AOT of Cmp/StartOS. Landed: probe staging + FileFind/Load + **thin loader ELF handoff to `KernelEntry`**. Still residual: probe ≠ kernel; thin loader ELF still hosts full `Kernel_RV` for mount/Load; phase3.elf still required for Cmp/StartOS product path.
 
 **P6 soft (not DoD):** guest Cmp→Load→Call `AdamLite.BIN` (nested `#include Menu_RV` → `Menu_RV_Guest` → menu_n=8). Call must run **before** flat Menu Load (dup `RVMenu*` exports hung Call). Guest `FileWrite` inside that BIN still hangs under loaded Cmp — phase3 plants `LITE.TXT` after Call. Gaps: FileWrite-in-Lite / local U8* / rich `Menu_RV.HC` CMenu — [GAPS.md](../docs/GAPS.md) § MakeAdam_RV.
 

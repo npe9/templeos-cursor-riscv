@@ -150,7 +150,10 @@ pe_check_binary_ops2:
 	} else {
 	  tmpi=cc->coc.coc_head.last;
 	  tmpc=tmpi->ic_class;
-	  if (stk_op.u16[0]==IC_DEREF && tmpc->ptr_stars_cnt)
+	  // Guard stars: host-AOT `type+1` byte-add left bogus ptr_stars and
+	  // tmpc-- walked off-slab → OptClassFwd fault hang on *"lit".
+	  if (stk_op.u16[0]==IC_DEREF && tmpc &&
+		0<tmpc->ptr_stars_cnt<=PTR_STARS_NUM)
 	    tmpc--;
 	  else if (stk_op.u16[0]==IC_ADDR) {
 	    cc->abs_cnts.c_addres++;
@@ -159,8 +162,9 @@ pe_check_binary_ops2:
 	    tmpc++;
 	  }
 	  tmpc=OptClassFwd(tmpc);
-	  if (stk_op)
+	  if (stk_op) { // applying unary
 	    ICAdd(cc,stk_op,0,tmpc);
+	  }
 	  goto pe_check_binary_ops2;
 	}
 
@@ -455,7 +459,7 @@ I64 PrsFunCall(CCmpCtrl *cc,CPrsStk *ps,Bool indirect,CHashFun *tmpf)
       if (tmpm->flags & (MLF_STR_DFT_AVAILABLE|MLF_LASTCLASS) &&
 	    cc->flags&CCF_AOT_COMPILE) {
 	cm=COCMiscNew(cc,CMT_STR_CONST);
-	ICAdd(cc,IC_STR_CONST,cm,cmp.internal_types[RT_U8]+1);
+	ICAdd(cc,IC_STR_CONST,cm,CmpU8StarType());
 	cm->st_len=StrLen(dft_val)+1;
 	cm->str=StrNew(dft_val);
 	cc->flags|=CCF_HAS_MISC_DATA;
@@ -700,13 +704,14 @@ I64 PrsUnaryTerm(CCmpCtrl *cc,CPrsStk *ps,CMemberLst **_local_var,
 	break;
       case TK_STR:
 	cm=COCMiscNew(cc,CMT_STR_CONST);
-	ICAdd(cc,IC_STR_CONST,cm,cmp.internal_types[RT_U8]+1);
+	// Host AOT: `internal_types[RT_U8]+1` is +1 byte; use ++ helper.
+	ICAdd(cc,IC_STR_CONST,cm,CmpU8StarType());
 	cm->str=LexExtStr(cc,&cm->st_len);
 	cc->flags|=CCF_HAS_MISC_DATA;
 	break;
       case TK_INS_BIN:
 	cm=COCMiscNew(cc,CMT_STR_CONST);
-	ICAdd(cc,IC_STR_CONST,cm,cmp.internal_types[RT_U8]+1);
+	ICAdd(cc,IC_STR_CONST,cm,CmpU8StarType());
 	cm->str=cc->cur_str;
 	cm->st_len=cc->cur_str_len;
 	cc->cur_str=NULL;

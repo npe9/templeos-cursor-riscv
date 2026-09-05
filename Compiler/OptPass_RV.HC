@@ -74,6 +74,8 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
     case IC_NOP2 :
     // No operation - already handled by optimizer
     break;
+    case IC_ADDR :
+    // &local / &name[i] — same as MOV (stock OptPass789A)
     case IC_MOV :
     if (tmpi->ic_class->raw_type == RT_F64) {
       ICFMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip2);
@@ -430,8 +432,8 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
       i = 8;
     
     {
-      CIntermediateCode *start_i = NULL, *tmpi2, *first_push = NULL;
-      I64 n = 0, k = 0, rev = 0, has_str = 0, arg_slot;
+      CIntermediateCode *start_i = NULL, *tmpi2;
+      I64 n = 0, k = 0, rev = 0, arg_slot;
       U8 ard;
       tmpi2 = OptLag(tmpi);
       while (tmpi2) {
@@ -444,13 +446,8 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
       if (start_i) {
         tmpi2 = start_i->next;
         while (tmpi2 && tmpi2 != tmpi && n < 8) {
-          if (tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES)) {
-            if (!first_push)
-              first_push = tmpi2;
-            if (tmpi2->ic_code == IC_STR_CONST)
-              has_str = 1;
+          if (tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES))
             n++;
-          }
           tmpi2 = tmpi2->next;
         }
       }
@@ -458,7 +455,11 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
         i = n;
       if (i > 8)
         i = 8;
-      if (n >= 2 && has_str && first_push && (first_push->ic_code == IC_IMM_I64 || (first_push->ic_code == IC_MOV && (first_push->arg1.type & MDF_IMM))))
+      // COCPush appends args RTL (last parsed = list head). Typed remat
+      // into a0.. must reverse; FileWrite(size,...) was only IMM-first before
+      // — StrCpy(glbl,"lit") RTL is STR then ABS → LTR remat swapped dst/src
+      // (Lex Soft Call r=0 / seed-X kept X).
+      if (n >= 2)
         rev = 1;
       if (start_i) {
         tmpi2 = start_i->next;
@@ -764,8 +765,7 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
     case IC_ASSIGN :
     case IC_ASSIGN_PP :
     case IC_ASSIGN_MM :
-    /* ICAssign + OptPass6: reject BY_VAL+STK fusion (was NOP ASSIGN → IMM
-     * push, no through-pointer store). Locals stay BY_VAL DISP/REG. */
+    /* OptPass4 folds AOT ABS→BY_VAL+RIP; ICMov RIP is PC-rel store. */
     ICAssign(tmpi, rip2);
     if (code == IC_ASSIGN_PP)
       RVAddi(tmpi, tmpi->arg1.reg, tmpi->arg1.reg, tmpi->ic_class->size);

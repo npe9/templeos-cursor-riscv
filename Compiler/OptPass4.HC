@@ -413,15 +413,15 @@ p4_sib:
 	      tmpi->ic_flags|=ICF_BY_VAL;
 	    }
 	  } else if (!(tmpi1->ic_flags&ICF_NO_RIP) &&
-		!(cc->flags&CCF_AOT_COMPILE) &&
 		(tmpi1->ic_code==IC_ABS_ADDR ||
 		tmpi1->ic_code==IC_MOV && tmpi1->arg1.type==MDF_IMM+RT_I64)) {
 	    if (tmpi1->ic_code==IC_ABS_ADDR)
 	      i=tmpi1->ic_data;
 	    else
 	      i=tmpi1->arg1.disp;
-	    // See IC_DEREF: fold all non-neg abs addrs; RV ICMov uses abs RVLi.
-	    // RV AOT: keep ABS_ADDR for IET_ABS_ADDR patch.
+	    // Fold ABS→BY_VAL+RIP for ASSIGN. RV ICMov RIP uses PC-rel
+	    // (AOT data_rip and JIT abs). Skipping AOT left STK pointer +
+	    // Pass6 fusion → IMM push, no store (Scalar Soft Call r=0).
 	    if (i>=0) {
 	      tmpi->ic_flags|=tmpi1->ic_flags;
 	      tmpi->arg1.disp=i;
