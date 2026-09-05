@@ -21,7 +21,9 @@
 #define VSTAT_ACK         1
 #define VSTAT_DRIVER      2
 #define VSTAT_DRIVER_OK   4
-#define VIN_QSZ           8
+#define VIN_QSZ           32
+#define VIN_AVAIL_OFF     (VIN_QSZ * 16)
+#define VIN_USED_OFF      4096
 #define VDESC_F_WRITE     2
 #define EV_SYN            0
 #define EV_KEY            1
@@ -202,7 +204,7 @@ I64 VirtioInputInitOne(I64 dev)
   OutU32(r + VMR_QUEUE_ALIGN, 4096);
   OutU32(r + VMR_QUEUE_PFN, vq >> 12);
   desc = vq;
-  avail = vq + 128;
+  avail = vq + VIN_AVAIL_OFF;
   for (i = 0; i < VIN_QSZ; i++) {
     desc[i].addr = evt + i * 16;
     desc[i].len = 8;
@@ -229,6 +231,18 @@ I64 VirtioInputInitOne(I64 dev)
   return 0;
 }
 
+U0 VirtioInputKick()
+{
+  //Re-notify all event queues so the device keeps filling buffers (fair poll).
+  I64 i;
+  U8 *r;
+  for (i = 0; i < virtio_input_count; i++) {
+    r = virtio_input_bases[i];
+    OutU32(r + VMR_QUEUE_SEL, 0);
+    OutU32(r + VMR_QUEUE_NOTIFY, 0);
+  }
+}
+
 I64 VirtioInputInit()
 {
   I64 i;
@@ -253,7 +267,7 @@ I64 VirtioInputPending(I64 dev)
   if (dev < 0 || dev >= virtio_input_count)
     return 0;
   vq = VIN_VQ_DEV(dev);
-  used = vq + 4096;
+  used = vq + VIN_USED_OFF;
   // used->idx is U16; subtract modulo 65536 (same pattern as VirtioNetRxPending).
   return (U16)(used->idx - (U16)virtio_input_last[dev]);
 }
@@ -272,8 +286,8 @@ I64 VirtioInputPollOneDev(I64 dev, CVinEvent *ev)
   r = virtio_input_bases[dev];
   vq = VIN_VQ_DEV(dev);
   evt = VIN_EVT_DEV(dev);
-  used = vq + 4096;
-  avail = vq + 128;
+  used = vq + VIN_USED_OFF;
+  avail = vq + VIN_AVAIL_OFF;
   uidx = (U16)virtio_input_last[dev];
   id = used->ring[uidx % VIN_QSZ].id;
   // Always advance (VirtioNetRx pattern) so a bad descriptor cannot wedge Pending forever.

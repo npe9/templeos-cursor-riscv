@@ -11,11 +11,9 @@
   CKCfg *kernel_cfg;
   kernel_cfg=KCfgNew;
 };
-
 // Platform Kconfig → templeos-riscv/.config → RVAutoConf.HH (UART/CLINT/PLIC/virtio/FB/entry).
 // Regenerate: make -C templeos-riscv defconfig | menuconfig. Default is QEMU virt (CI).
 #include "RVAutoConf.HH"
-
 // SYS_FIXED_AREA is an x86 fixed physical address (0x100000) that is unmapped on RISC-V; TaskInit
 // reads the initial FPU state out of it, so on the QEMU virt machine it must name real RAM. Default
 // it to a high RAM page here (guarded, so a program may still override it before the include). RVKMain
@@ -46,11 +44,11 @@
 #include "StrB"
 #define KERNEL_HASH_RV 1
 #include "KHashA"
+#include "KHashRV" // RV HolyC HashStr/HashAdd/HashFind BEFORE KHashB (HashDefineLstAdd needs live HashFind)
 //x86: #include "KInts"
 #include "KDataTypes"
 #include "Compress"
 #include "KHashB"
-#include "KHashRV" // RV HolyC HashStr/HashAdd/HashFind (KHashA asm skipped)
 #include "KLoad"
 #include "Drv/RVRtc.HC" // Goldfish RTC before KDate NowDateTimeStruct
 #include "KDate"
@@ -73,6 +71,8 @@
 //x86: #include "FunSeg"
 #include "KMain"
 #include "KUtilsRV"   // native RISC-V ports of KUtils.HC low-level primitives (MemSet/MemCpy)
+#include "KMathA_RV"  // HolyC D3* (KMathA x86 FPU asm skipped)
+#include "/Adam/AMathODE_RV" // ODENew/RK5 + ODEsUpdate (soft winmgr timing)
 #include "KCmpStubsRV" // HashAddAfter/CallExt*/Doc* stubs for Compiler_RV ExePutS
 #include "Drv/RVSifivePlat.HC" // SiFive UART/CLINT/PLIC facade (Yes on sifive_u/e)
 #include "Drv/RVSifiveGem.HC"  // Cadence GEM TX/RX (Yes on sifive_u ETH_BASE)
@@ -95,10 +95,21 @@
 #include "Drv/RVFbPlat.HC"     // apply Kconfig FB present kind → RVFbSetPresent
 #include "Drv/RVMemMap.HC"     // MMIO region ↔ driver legend (Kconfig)
 #include "RVGr"      // Thin Gr*/CDC + soft term + RVSysGrInit (32-bpp; not full Adam)
+#include "RVSprite"  // Sprite3/DC2Sprite subset on CRVDC (Demo blot/SpriteRaw; not mesh)
+#include "RVODE"     // demoted — stock Demo/Games/MassSpring.HC is the product path
+#include "RVDoc"     // P2 minimal CDoc entry stream (HOME Recalc/PutKey/links)
+#include "/Adam/DolDoc/MakeDoc_RV" // P2 shim → RVDocDemoProbe (full MakeDoc deferred G8)
+#include "/Adam/Menu_RV"   // MenuNew-lite + PersonalMenu.DD text (P3; no WinMgr deps)
 #include "RVWinMgr"  // TempleOS-style text_base WinMgr → rv_fb present (no VGA/DolDoc)
+#include "RVAC"      // AutoComplete lite (after WinMgr: FillIn → RVWinBodyPutChar)
+#include "/Adam/PopUp_RV"  // PopUpOk/NoYes + DocForm-lite modal on FB (P3; needs RVWin*)
+#include "/Adam/Ctrls_RV"  // Bttn/Slider subset on CRVDC (P3; needs RVWin* + Gr*)
+#include "/Adam/WinDemo_RV" // Soft SettingsPush/WinMax/PopUpColor/Refresh for Demo/*.HC
+#include "/Adam/ASnd_RV"    // Soft music/Play/SndTaskEndCB for Apps SongTask (Span)
+#include "/Adam/ABlkDev/FileMgr_RV" // FMRebuildDocDrv + soft shims; RVFileMgrOpen in RVWinMgr
+
 #include "RVWinSerial" // UART TTY + crash mon beside WinMgr (after rv_winmgr glbls)
 #include "RVTextBase" // TextChar/TextPrint portable (DocRecalc / draw_it)
 #include "RVPhase3.HH"  // phase-3 forward decls (bodies after Compiler_RV_Body in phase3 demo)
 #include "RVKMain"   // RVKMain last — may call RVSysGrInit / RVSysWinInit
-
 #exe {KCfgDel(kernel_cfg);};

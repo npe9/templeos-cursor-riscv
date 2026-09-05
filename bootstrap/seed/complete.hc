@@ -1,9 +1,12 @@
 // complete.hc -- case-insensitive Tab completion for editors (Vi / EditHoly / Ed).
 // CompTab(line,max,list_ok): uses CompCx as cursor in/out. If a partial ident/path
 // sits before CompCx, fill from HTT_FUN (via FunCollect) + #defines (HTT_DEFINE_STR
-// via SymDefineHash — MEM_*, UART_*, … from MemMapSelected.hc / csr.hc / live macros) or memfs (CI).
+// via SymDefineHash when host publishes define_table; else explicit CompAdd of
+// MemMapSelected.hc / csr.hc macros — AOT U8* define pipes are unreliable) + session
+// #define names (DefRegister / DefTryRegister via ExePutS) or memfs (CI).
 // Inside asm{} (see asm_complete.hc): opcodes / GPRs / CSR names instead of HolyC syms.
 // Returns 1 if Tab was handled; 0 if caller should insert 2-space indent.
+// Thin-path define Tab covers MEM_*/UART_*/VIRTIO_*/REG_*/CSR_* without 0x87001xxx.
 #define COMP_MAX 64
 #define COMP_NAME 48
 U8 CompNames[COMP_MAX][COMP_NAME];
@@ -117,6 +120,201 @@ U0 CompAdd(U8 *s, U8 *pfx, I64 plen)
   CompNames[CompN][k] = 0;
   CompN++;
 }
+// Session #define registry (thin repl-holyc: no host define_table slot).
+// DefTryRegister on ExePutS / ReplEvalOne; Tab via CompCollectDefines.
+#define DEF_MAX 64
+#define DEF_NAME 48
+U8 DefNames[DEF_MAX][DEF_NAME];
+I64 DefN;
+U0 DefRegister(U8 *name)
+{
+  I64 i, k, same;
+  if (!name || !name[0] || DefN >= DEF_MAX)
+    return;
+  if (!CompStrOk(name))
+    return;
+  for (i = 0; i < DefN; i++) {
+    same = 1;
+    k = 0;
+    while (k < DEF_NAME) {
+      if (DefNames[i][k] != name[k]) {
+        same = 0;
+        break;
+      }
+      if (!name[k])
+        break;
+      k++;
+    }
+    if (same)
+      return;
+  }
+  k = 0;
+  while (k < DEF_NAME - 1 && name[k]) {
+    DefNames[DefN][k] = name[k];
+    k++;
+  }
+  DefNames[DefN][k] = 0;
+  DefN++;
+}
+
+U0 DefCollect(U8 *pfx, I64 plen)
+{
+  I64 i;
+  for (i = 0; i < DefN; i++)
+    CompAdd(&DefNames[i][0], pfx, plen);
+}
+
+I64 DefTryRegister(U8 *line)
+{
+  U8 *p, *start;
+  U8 name[DEF_NAME];
+  I64 i;
+  if (!line)
+    return 0;
+  p = line;
+  while (*p == ' ' || *p == '\t')
+    p++;
+  if (*p != '#')
+    return 0;
+  p++;
+  while (*p == ' ' || *p == '\t')
+    p++;
+  if (p[0] != 'd' || p[1] != 'e' || p[2] != 'f' || p[3] != 'i' || p[4] != 'n' || p[5] != 'e')
+    return 0;
+  if (CompIsIdent(p[6]))
+    return 0;
+  p += 6;
+  while (*p == ' ' || *p == '\t')
+    p++;
+  i = 0;
+  while (i < DEF_NAME - 1 && CompIsIdent (*p)) {
+    name[i] = *p;
+    i++;
+    p++;
+  }
+  name[i] = 0;
+  if (i)
+    DefRegister(name);
+  // Only consume a define-only unit (no trailing stmts after this line).
+  start = p;
+  while (*start == ' ' || *start == '\t')
+    start++;
+  while (*start && *start != '\n')
+    start++;
+  if (*start == '\n') {
+    start++;
+    while (*start == ' ' || *start == '\t' || *start == '\n')
+      start++;
+    if (*start)
+      return 0;
+  }
+  return 1;
+}
+// Thin path define catalog (MemMapSelected + csr.hc). AOT U8* pipes are
+// unreliable — explicit CompAdd (proven for MEM_*). Before Fun* under COMP_MAX.
+U0 CompCollectDefines(U8 *pfx, I64 plen)
+{
+  CompAdd("MEM_RAM", pfx, plen);
+  CompAdd("MEM_TEST", pfx, plen);
+  CompAdd("MEM_CLINT", pfx, plen);
+  CompAdd("MEM_CLINT_MTIME_OFF", pfx, plen);
+  CompAdd("MEM_CLINT_MTIMECMP_OFF", pfx, plen);
+  CompAdd("MEM_MTIME", pfx, plen);
+  CompAdd("MEM_MTIMECMP", pfx, plen);
+  CompAdd("MEM_PLIC", pfx, plen);
+  CompAdd("MEM_PLIC_ENABLE_OFF", pfx, plen);
+  CompAdd("MEM_PLIC_THRESHOLD_OFF", pfx, plen);
+  CompAdd("MEM_PLIC_CLAIM_OFF", pfx, plen);
+  CompAdd("MEM_PLIC_PENDING_OFF", pfx, plen);
+  CompAdd("MEM_UART", pfx, plen);
+  CompAdd("MEM_UART1", pfx, plen);
+  CompAdd("MEM_GPIO", pfx, plen);
+  CompAdd("MEM_PRCI", pfx, plen);
+  CompAdd("MEM_ETH", pfx, plen);
+  CompAdd("MEM_VIRTIO", pfx, plen);
+  CompAdd("MEM_VIRTIO_STRIDE", pfx, plen);
+  CompAdd("MEM_FW_CFG", pfx, plen);
+  CompAdd("MEM_RTC", pfx, plen);
+  CompAdd("MEM_FS", pfx, plen);
+  CompAdd("MEM_HEAP", pfx, plen);
+  CompAdd("MEM_FB", pfx, plen);
+  CompAdd("MEM_FIXED", pfx, plen);
+  CompAdd("MEM_TRAP_SNAP", pfx, plen);
+  CompAdd("MEM_REGS_SNAP", pfx, plen);
+  CompAdd("MEM_HOST_SLOTS", pfx, plen);
+  CompAdd("MEM_STACK", pfx, plen);
+  CompAdd("MEM_COMPILER", pfx, plen);
+  CompAdd("UART_LSR_OFF", pfx, plen);
+  CompAdd("UART_LSR_THRE", pfx, plen);
+  CompAdd("UART_LSR_DR", pfx, plen);
+  CompAdd("VIRTIO_MAGIC", pfx, plen);
+  CompAdd("VIRTIO_REG_MAGIC", pfx, plen);
+  CompAdd("VIRTIO_REG_VERSION", pfx, plen);
+  CompAdd("VIRTIO_REG_DEVICE_ID", pfx, plen);
+  CompAdd("VIRTIO_REG_GUEST_PGSZ", pfx, plen);
+  CompAdd("VIRTIO_REG_STATUS", pfx, plen);
+  CompAdd("REG_ZERO", pfx, plen);
+  CompAdd("REG_RA", pfx, plen);
+  CompAdd("REG_SP", pfx, plen);
+  CompAdd("REG_GP", pfx, plen);
+  CompAdd("REG_TP", pfx, plen);
+  CompAdd("REG_T0", pfx, plen);
+  CompAdd("REG_T1", pfx, plen);
+  CompAdd("REG_T2", pfx, plen);
+  CompAdd("REG_S0", pfx, plen);
+  CompAdd("REG_FP", pfx, plen);
+  CompAdd("REG_S1", pfx, plen);
+  CompAdd("REG_A0", pfx, plen);
+  CompAdd("REG_A1", pfx, plen);
+  CompAdd("REG_A2", pfx, plen);
+  CompAdd("REG_A3", pfx, plen);
+  CompAdd("REG_A4", pfx, plen);
+  CompAdd("REG_A5", pfx, plen);
+  CompAdd("REG_A6", pfx, plen);
+  CompAdd("REG_A7", pfx, plen);
+  CompAdd("REG_S2", pfx, plen);
+  CompAdd("REG_S3", pfx, plen);
+  CompAdd("REG_S4", pfx, plen);
+  CompAdd("REG_S5", pfx, plen);
+  CompAdd("REG_S6", pfx, plen);
+  CompAdd("REG_S7", pfx, plen);
+  CompAdd("REG_S8", pfx, plen);
+  CompAdd("REG_S9", pfx, plen);
+  CompAdd("REG_S10", pfx, plen);
+  CompAdd("REG_S11", pfx, plen);
+  CompAdd("REG_T3", pfx, plen);
+  CompAdd("REG_T4", pfx, plen);
+  CompAdd("REG_T5", pfx, plen);
+  CompAdd("REG_T6", pfx, plen);
+  CompAdd("CSR_SSTATUS", pfx, plen);
+  CompAdd("CSR_SIE", pfx, plen);
+  CompAdd("CSR_STVEC", pfx, plen);
+  CompAdd("CSR_SSCRATCH", pfx, plen);
+  CompAdd("CSR_SEPC", pfx, plen);
+  CompAdd("CSR_SCAUSE", pfx, plen);
+  CompAdd("CSR_STVAL", pfx, plen);
+  CompAdd("CSR_SIP", pfx, plen);
+  CompAdd("CSR_SATP", pfx, plen);
+  CompAdd("CSR_MSTATUS", pfx, plen);
+  CompAdd("CSR_MISA", pfx, plen);
+  CompAdd("CSR_MEDELEG", pfx, plen);
+  CompAdd("CSR_MIDELEG", pfx, plen);
+  CompAdd("CSR_MIE", pfx, plen);
+  CompAdd("CSR_MTVEC", pfx, plen);
+  CompAdd("CSR_MCOUNTEREN", pfx, plen);
+  CompAdd("CSR_MSCRATCH", pfx, plen);
+  CompAdd("CSR_MEPC", pfx, plen);
+  CompAdd("CSR_MCAUSE", pfx, plen);
+  CompAdd("CSR_MTVAL", pfx, plen);
+  CompAdd("CSR_MIP", pfx, plen);
+  CompAdd("CSR_MCYCLE", pfx, plen);
+  CompAdd("CSR_MINSTRET", pfx, plen);
+  CompAdd("CSR_CYCLE", pfx, plen);
+  CompAdd("CSR_TIME", pfx, plen);
+  CompAdd("CSR_INSTRET", pfx, plen);
+  CompAdd("CSR_MHARTID", pfx, plen);
+  DefCollect(pfx, plen);
+}
 
 I64 CompCollectSyms(U8 *pfx, I64 plen)
 {
@@ -144,7 +342,7 @@ I64 CompCollectSyms(U8 *pfx, I64 plen)
         break;
     }
   }
-  // Live #defines (MEM_PLIC, MEM_UART, …) — same define_table the host lexer expands.
+  // Host define_table when published (legacy / future slots).
   body = SymDefineHashBody();
   mask = SymDefineHashMask();
   if (body && mask >= 0) {
@@ -172,33 +370,7 @@ I64 CompCollectSyms(U8 *pfx, I64 plen)
         break;
     }
   }
-  // Thin path / missing slot: seed MEM_* names (AOT #defines still expand).
-  // Explicit CompAdd — U8[]="..." / U8* init is unreliable in AOT blobs.
-  CompAdd("MEM_RAM", pfx, plen);
-  CompAdd("MEM_TEST", pfx, plen);
-  CompAdd("MEM_CLINT", pfx, plen);
-  CompAdd("MEM_CLINT_MTIME_OFF", pfx, plen);
-  CompAdd("MEM_CLINT_MTIMECMP_OFF", pfx, plen);
-  CompAdd("MEM_MTIME", pfx, plen);
-  CompAdd("MEM_MTIMECMP", pfx, plen);
-  CompAdd("MEM_PLIC", pfx, plen);
-  CompAdd("MEM_PLIC_ENABLE_OFF", pfx, plen);
-  CompAdd("MEM_PLIC_THRESHOLD_OFF", pfx, plen);
-  CompAdd("MEM_PLIC_CLAIM_OFF", pfx, plen);
-  CompAdd("MEM_PLIC_PENDING_OFF", pfx, plen);
-  CompAdd("MEM_UART", pfx, plen);
-  CompAdd("MEM_VIRTIO", pfx, plen);
-  CompAdd("MEM_VIRTIO_STRIDE", pfx, plen);
-  CompAdd("MEM_FW_CFG", pfx, plen);
-  CompAdd("MEM_FS", pfx, plen);
-  CompAdd("MEM_HEAP", pfx, plen);
-  CompAdd("MEM_FB", pfx, plen);
-  CompAdd("MEM_FIXED", pfx, plen);
-  CompAdd("MEM_TRAP_SNAP", pfx, plen);
-  CompAdd("MEM_REGS_SNAP", pfx, plen);
-  CompAdd("MEM_HOST_SLOTS", pfx, plen);
-  CompAdd("MEM_STACK", pfx, plen);
-  CompAdd("MEM_COMPILER", pfx, plen);
+  CompCollectDefines(pfx, plen);
   // JIT / Fun* table (repl-holyc man_sym) when host hash is empty.
   nfun = FunCount();
   for (i = 0; i < nfun && CompN < COMP_MAX; i++) {
@@ -304,13 +476,13 @@ I64 CompApply(U8 *line, I64 max, I64 list_ok)
   for (i = 0; i < old; i++)
     CompPfx[i] = line[start + i];
   CompPfx[i] = 0;
-  in_asm = CompAsmInside();
-  if (!in_asm && CompAsmMode == 0) {
-    // No prior buffer scan — detect from this line alone.
+  // CompAsmMode=0 → re-detect from line[0..CompCx); ignore stale depth.
+  if (CompAsmMode == 0) {
     CompAsmReset();
     CompAsmFeed(line, CompCx);
     in_asm = CompAsmInside();
-  }
+  } else
+    in_asm = CompAsmInside();
   if (in_asm && !pathish) {
     akind = CompAsmKind(line, CompCx);
     nm = CompCollectAsm(akind, CompPfx, old);
@@ -396,4 +568,25 @@ I64 CompApply(U8 *line, I64 max, I64 list_ok)
 I64 CompTab(U8 *line, I64 max, I64 list_ok)
 {
   return CompApply(line, max, list_ok);
+}
+// Probe: CompTab mid-line (CompCx ≠ EOL) fills token and preserves suffix.
+U0 CompMidDemo()
+{
+  U8 line[32];
+  U8 *s;
+  I64 i;
+  s = "x=MEM_PL;";
+  i = 0;
+  while (s[i] && i < 31) {
+    line[i] = s[i];
+    i++;
+  }
+  line[i] = 0;
+  CompAsmMode = 0;
+  CompAsmReset();
+  // Cursor after 'L' (index of ';') so token is MEM_PL.
+  CompCx = 8;
+  CompTab(line, 32, 0);
+  UartStr(line);
+  PutCh('\n');
 }

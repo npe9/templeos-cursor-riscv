@@ -1,0 +1,4 @@
+// MakeAdam_RV_Lite.PRJ — P6 thin Adam probe (Menu_RV only; not full MakeAdam).
+// Guest Cmp→Load→Call is soft-probed in RVPhase3 (see docs/GAPS.md § MakeAdam_RV).
+// Do not treat this PRJ as P6 exit — PopUp/WinMgr/DolDoc/host-AOT win_*.elf remain.
+#include "MakeAdam_RV_Lite"

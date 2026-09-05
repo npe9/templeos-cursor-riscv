@@ -40,6 +40,12 @@ args.
   ps->ptr2=0;
   tmpi=cc->coc.coc_head.next;
   while (code=tmpi->ic_code) {
+    // Bogus ic_code (e.g. 0x4000 from host-AOT `PREC<<16+i` mispack) must not
+    // enter nobound switch[] — that hung guest Cmp of *"lit".
+    if (code<0 || code>=IC_ICS_NUM) {
+      "Pass:%d Bad IC:%X\n",cc->pass,code;
+      LexExcept(cc,"Compiler Optimization Error at ");
+    }
     tmpc=tmpi->ic_class;
     tmpi->ic_class2=tmpc;
     tmpi_push=tmpi;

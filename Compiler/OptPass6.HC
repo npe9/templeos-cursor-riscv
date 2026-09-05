@@ -91,7 +91,7 @@ U0 OptPass6Lag(CCmpCtrl *cc, CPrsStk *ps, CIntermediateCode *tmpi, I64 *_stk_ptr
 
 U0 OptPass6(CCmpCtrl *cc)
 {
-  CIntermediateCode *tmpi, *tmpi_next, *tmpil1, *tmpil2, *old_tmpil2;
+  CIntermediateCode *tmpi, *tmpi_next, *tmpil1, *tmpil2, *old_tmpil2, *tmpil_addr;
   I64 stk_ptr = 0, reg_stk_size, clobbered_reg_mask = REGG_CLOBBERED;
   CPrsStk *ps = cc->ps;
   ps->ptr = 0;
@@ -111,7 +111,14 @@ U0 OptPass6(CCmpCtrl *cc)
       tmpil1 = tmpi;
       if (tmpi->arg2.type & MDF_STK) {
         if (tmpil2->res.type & MDF_STK && !(tmpil2->ic_flags & ICF_PUSH_RES)) {
-          if (tmpi->ic_code == IC_ASSIGN && tmpi->ic_flags & ICF_BY_VAL && tmpi->ic_flags & ICF_RES_NOT_USED && tmpil2->ic_code != IC_CALL_END && tmpil2->ic_code != IC_CALL_END2 && tmpil2->ic_code != IC_SET_RAX && !(tmpi->ic_flags & (ICF_ARG2_TO_F64 | ICF_ARG2_TO_INT)) && !(tmpil2->ic_flags & (ICF_RES_TO_F64 | ICF_RES_TO_INT))) {
+          /* AOT ABS_ADDR can leave ASSIGN BY_VAL with STK arg1 (pointer).
+           * Clear it before bind/fuse so ICAssign stores through the reg. */
+          if (tmpi->ic_code == IC_ASSIGN && tmpi->ic_flags & ICF_BY_VAL && tmpi->arg1.type & MDF_STK)
+            tmpi->ic_flags &= ~ICF_BY_VAL;
+          /* Never fuse IC_ASSIGN into the RHS (was: BY_VAL+RES_NOT_USED).
+           * Fusion NOPed ASSIGN and left IMM as a STK push — Soft Call r=0.
+           * Locals still store via ICAssign BY_VAL DISP/REG. */
+          if (FALSE && tmpi->ic_code == IC_ASSIGN && tmpi->ic_flags & ICF_BY_VAL && tmpi->ic_flags & ICF_RES_NOT_USED && !(tmpi->arg1.type & MDF_STK) && tmpil2->ic_code != IC_CALL_END && tmpil2->ic_code != IC_CALL_END2 && tmpil2->ic_code != IC_SET_RAX && !(tmpi->ic_flags & (ICF_ARG2_TO_F64 | ICF_ARG2_TO_INT)) && !(tmpil2->ic_flags & (ICF_RES_TO_F64 | ICF_RES_TO_INT))) {
             tmpil2->res.type = tmpi->arg1.type & MDG_MASK + tmpi->arg1_type_pointed_to;
             tmpil2->res.reg = tmpi->arg1.reg;
             tmpil2->res.disp = tmpi->arg1.disp;
@@ -125,6 +132,20 @@ U0 OptPass6(CCmpCtrl *cc)
             tmpil2->res.type = MDF_REG + tmpil2->res.type.raw_type;
             tmpil2->res.reg = REG_RAX;
             tmpil2->res.disp = 0;
+            /* Both args were STK: also bind arg1 (addr) to R8. Without this,
+             * only the RHS becomes a0 and ABS_ADDR may stay STK/push while
+             * ASSIGN expects a pointer reg — Scalar dump had a4 then push. */
+            if (tmpi->arg1.type & MDF_STK && intermediate_code_table[tmpi->ic_code].arg_cnt == IS_2_ARG) {
+              tmpil_addr = OptLag1(tmpil2);
+              if (tmpil_addr && tmpil_addr->res.type & MDF_STK && !(tmpil_addr->ic_flags & ICF_PUSH_RES)) {
+                tmpi->arg1.type = MDF_REG + tmpi->arg1.type.raw_type;
+                tmpi->arg1.reg = REG_R8;
+                tmpi->arg1.disp = 0;
+                tmpil_addr->res.type = MDF_REG + tmpil_addr->res.type.raw_type;
+                tmpil_addr->res.reg = REG_R8;
+                tmpil_addr->res.disp = 0;
+              }
+            }
           }
         }
       } else if (tmpi->arg1.type & MDF_STK && tmpil2->res.type & MDF_STK && !(tmpil2->ic_flags & ICF_PUSH_RES)) {

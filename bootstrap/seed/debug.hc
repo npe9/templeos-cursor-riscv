@@ -120,10 +120,24 @@ U0 DbgSymLine(I64 addr)
     "  %s+0x%X", nm, addr - base;
   }
 }
-// BtWalk -- walk FP chain from (pc,s0), symbolize each frame.
-U0 BtWalk(I64 start_pc, I64 s0)
+// BtSnapFresh -- sync-exception epc in MEM_TRAP_SNAP, or 0.
+// Not boot-seeded pc=U; not IRQ-only leftovers (cause < 0).
+I64 BtSnapFresh()
 {
-  I64 i, cur, ra, ps0, N, sz, entry;
+  I64 cause, epc;
+  cause = DbgReg(DBG_I_CAUSE);
+  epc = DbgReg(DBG_I_EPC);
+  if (cause < 0 || cause > 15)
+    return 0;
+  if (!epc || !DbgInRam(epc))
+    return 0;
+  return epc;
+}
+// BtWalk -- walk FP chain from (pc,s0), symbolize each frame.
+// trap_entry: 1 when start_pc is a sync-trap PC at function entry (use snap ra).
+U0 BtWalk(I64 start_pc, I64 s0, I64 trap_entry)
+{
+  I64 i, cur, ra, ps0, N, sz, entry, at_entry;
   U8 *nm;
   cur = start_pc;
   UartStr("  stack:\n");
@@ -136,11 +150,19 @@ U0 BtWalk(I64 start_pc, I64 s0)
       break;
     nm = SymName(cur);
     sz = 0;
+    at_entry = cur == entry;
     // ebreak/Bp at function entry: prologue has not run — s0 is still the caller's.
     // Using the callee's JIT frame size here reads ra/ps0 swapped (next "pc" == fp).
-    if (nm && cur != entry)
+    if (nm && !at_entry)
       sz = FnSize(nm);
-    if (sz > 0) {
+    if (i == 0 && at_entry && trap_entry) {
+      // Next PC is trapped ra (MEM_TRAP_SNAP), not *(s0-8) (caller's saved ra).
+      ra = DbgReg(DBG_I_RA);
+      if (DbgInRam(s0 - 16))
+        ps0 = *(I64 *)(s0 - 16);
+      else
+        ps0 = s0;
+    } else if (sz > 0) {
       N = DbgFrameSize(entry);
       if (!N || !DbgInRam(s0 - N))
         break;
@@ -157,19 +179,6 @@ U0 BtWalk(I64 start_pc, I64 s0)
     cur = ra;
     s0 = ps0;
   }
-}
-
-I64 BtSnapFresh()
-{
-  // Sync exception in MEM_TRAP_SNAP (not boot-seeded pc=U, not IRQ leftover fp).
-  I64 cause, epc;
-  cause = DbgReg(DBG_I_CAUSE);
-  epc = DbgReg(DBG_I_EPC);
-  if (cause < 0 || cause > 15)
-    return 0;
-  if (!epc || !DbgInRam(epc))
-    return 0;
-  return epc;
 }
 // Bt -- Bt()
 // NAME
@@ -194,7 +203,7 @@ U0 Bt()
   fp = DbgFP();
   if (epc && DbgInRam(fp)) {
     UartStr("Bt (trap freeze):\n");
-    BtWalk(epc, fp);
+    BtWalk(epc, fp, 1);
     return;
   }
   // Capture ra/s0 in-line — HolyC calls to DbgLiveRa/DbgLiveS0 asm labels hang on holyc.
@@ -213,7 +222,7 @@ U0 Bt()
   else
     caller_s0 = fp;
   if (DbgInRam(ra) && DbgInRam(caller_s0))
-    BtWalk(ra, caller_s0);
+    BtWalk(ra, caller_s0, 0);
   else {
     UartStr("  stack:\n");
     UartStr("    #0 live frame\n");
@@ -351,7 +360,8 @@ U0 TrapDump()
   if (!tval)
     tval = GetMtval();
   UartStr("TrapDump (MEM_TRAP_SNAP / last freeze):\n");
-  "  mcause=0x%X  mepc=0x%X  mtval=0x%X  pc=0x%X\n", cause, epc, tval, pc;
+  McausePrint(cause);
+  "  mepc=0x%X  mtval=0x%X  pc=0x%X\n", epc, tval, pc;
   "  ra=0x%X", DbgRa();
   DbgSymLine(DbgRa());
   "\n";

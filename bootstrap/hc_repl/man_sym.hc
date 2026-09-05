@@ -21,7 +21,7 @@ I64 SymHashBody()
 {
   return 0;
 }
-// complete.hc CompCollectSyms — no live define_table on thin path (pipe fallback).
+// complete.hc CompCollectSyms — CompAdd catalog + session DefRegister (#define).
 I64 SymDefineHashBody()
 {
   return 0;

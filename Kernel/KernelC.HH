@@ -472,6 +472,7 @@ public extern U0 UserTaskCont();
 public extern I64 Adam(U8 *fmt,...);
 public extern I64 PopUp(U8 *buf,CTask *parent=NULL,CTask **_pu_task=NULL);
 public extern I64 PopUpPrint(U8 *fmt,...);
+extern I64 (*fp_popup)(U8 *buf,CTask *parent=NULL,CTask **_pu_task=NULL);
 
 #help_index "Job/Exe;Task/Job/Exe;MultiCore"
 public extern I64 JobResGet(CJob *rqst=NULL);

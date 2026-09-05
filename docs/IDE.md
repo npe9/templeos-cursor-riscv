@@ -26,9 +26,11 @@ Editors are selected by Kconfig (**Editors** → `RVEditorSelected.hc`); overrid
 
 | Editor | Jump keys | Pop |
 |--------|-----------|-----|
-| Vi | `gd`, `^]`, Enter on symbol | `:q` |
+| Vi | `gd`, `^]`, Enter on symbol (**NORMAL / navigate only**) | `:q` |
 | EditHoly | `^]` / `^G` | `^X` |
 | EdHoly | (line-oriented; prefer Vi/Edit for dig-down) | `q` |
+
+Vi **INSERT**: Enter splits the line (newline). Enter must not jump.
 
 **Checklist**
 
@@ -85,7 +87,7 @@ Man is UART text (NAME / SYNOPSIS / DESCRIPTION / …), not DolDoc `MN:` hyperli
 | **Tab** mid-token | Case-insensitive complete (funs / paths via `CompTab`); one match → fill; several → common prefix or list. Inside `asm{}`: opcodes / GPRs / CSR names (`asm_complete.hc`). |
 | **Tab** at indent / no partial | Insert **2-space** indent (not a completion popup). |
 | **Undo** | Vi: single-level buffer undo (`u`). Ideal: multi-level + EditHoly/Ed parity. |
-| **Split / join** | Vi: Enter splits line (suffix via `VSuf`); join is the inverse expectation for line surgery. Keep behavior predictable and testable. |
+| **Split / join** | Vi **INSERT**: Enter splits line (suffix via `VSuf`). Vi **NORMAL**: Enter activates / jumps (not split). Join is the inverse for line surgery. |
 | **Format-on-save** | Vi `:w` / Edit `^O` / Ed `w` go through `FmtSave` / host `HolyFmtSrc` (same as `holyc-riscv --fmt`). Explicit: `Fmt("file.hc");`. |
 | **Dirty / quit** | Warn or require write before discarding when dirty (product ideal); never lose parent session on nested quit. |
 

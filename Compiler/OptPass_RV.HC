@@ -31,6 +31,23 @@ U8 RVAArgReg(I64 n)
     return RV_REG_A0;
   }
 }
+/* Shared ABS_ADDR materialize for IC_ABS_ADDR + CALL_IMPORT remat.
+ * Keep OUT of ICToRISCV switch cases (host AOT mishandles mid-case locals).
+ * Always PC-rel auipc/addi like host EmitGlobalAddrOff — no CCF_AOT flag
+ * guard (that guard fell through to RVLi → Soft Call r=0).
+ * Dump proof: addr math is correct (auipc/addi → module_base+data_rip);
+ * Soft Call r=0 is missing ASSIGN store through that pointer (not reloc). */
+U0 RVEmitAbsAddr(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 rd, I64 abs_val, U8 *buf, I64 rip2)
+{
+  I64 offset, hi, lo;
+  cc = cc;
+  buf = buf;
+  offset = abs_val - rip2 - tmpi->ic_cnt;
+  hi = (offset + 0x800) >> 12;
+  lo = offset - (hi << 12);
+  RVAuipc(tmpi, rd, hi);
+  RVAddi(tmpi, rd, rd, lo);
+}
 /* Main IC to RISC-V Translation Function */
 U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2, COptReg *reg_offsets)
 {
@@ -355,6 +372,8 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
     case IC_CALL_IMPORT :
     // Remat PUSH_RES into a0... If first PUSH_RES is IMM and any STR follows
     // (RTL IC for FileWrite(path,buf,size)), reverse-assign; else LTR.
+    // After _RV_HC_CALL (SP=FP-2048), rebuild SP so ADD_RSP/CALL_END/LEAVE
+    // see the same depth as a non-veneer call (store-then-FileWrite hang).
     tmpf = tmpi->ic_data(CHashFun *);
     call_rip = rip;
     if (cc->flags & CCF_AOT_COMPILE && cc->aotc)
@@ -368,17 +387,27 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
     if (i & 15)
       i = i + 16 - (i & 15);
     offset = 16 + i;
+    // ENTER PushRegs(local vars) sit below the frame; keep them in depth.
     jal_off = 0;
+    if (cc->htc.fun) {
+      j = 0;
+      while (j < 32) {
+        if (cc->htc.fun->used_reg_mask & (REGG_LOCAL_VARS | REGG_LOCAL_NON_PTR_VARS) & (1 << j))
+          jal_off += 8;
+        j++;
+      }
+    }
     i = 0;
     
     {
       CIntermediateCode *tmpi2 = OptLag(tmpi);
+      I64 call_push = 0;
       while (tmpi2) {
         if (tmpi2->ic_code == IC_CALL_START) {
           j = 0;
           while (j < 32) {
             if (tmpi2->ic_data & (1 << j))
-              jal_off += 8;
+              call_push += 8;
             j++;
           }
           break;
@@ -387,6 +416,7 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
           i++;
         tmpi2 = OptLag(tmpi2);
       }
+      jal_off += call_push;
     }
     if (tmpf) {
       if (tmpf->arg_cnt > i)
@@ -444,6 +474,8 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
               RVLi(tmpi, ard, tmpi2->ic_data);
             else if (tmpi2->ic_code == IC_MOV && (tmpi2->arg1.type & MDF_IMM))
               RVLi(tmpi, ard, tmpi2->arg1.disp);
+            else if (tmpi2->ic_code == IC_ABS_ADDR)
+              RVEmitAbsAddr(cc, tmpi, ard, tmpi2->ic_data, buf, rip2);
             else if (tmpi2->ic_code == IC_STR_CONST) {
               lb = tmpi2->ic_data(CCodeMisc *);
               if (!lb || lb->addr == INVALID_PTR) {
@@ -479,7 +511,7 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
       call_rip += cc->aotc->rip;
     
     {
-      I64 callee = 0;
+      I64 callee = 0, patch_off = 0, post_sp;
       if (tmpf && tmpf->str) {
         tmpex = HashFind(tmpf->str, Fs->hash_table, HTT_EXPORT_SYS_SYM);
         if (tmpex)
@@ -489,18 +521,18 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
         RVAuipc(tmpi, RV_REG_T1, 0);
         RVLd(tmpi, RV_REG_T1, RV_REG_T1, 12);
         RVJal(tmpi, RV_REG_ZERO, 12);
-        jal_off = tmpi->ic_cnt;
+        patch_off = tmpi->ic_cnt;
         ICU64(tmpi, callee);
       } else {
         RVAuipc(tmpi, RV_REG_T1, 0);
         RVLd(tmpi, RV_REG_T1, RV_REG_T1, 12);
         RVJal(tmpi, RV_REG_ZERO, 12);
-        jal_off = tmpi->ic_cnt;
+        patch_off = tmpi->ic_cnt;
         ICU64(tmpi, 0);
         if (buf && cc->flags & CCF_AOT_COMPILE && tmpf) {
           tmpie = CAlloc(sizeof(CAOTImportExport));
           tmpie->type = IET_IMM_I64;
-          tmpie->rip = call_rip + jal_off;
+          tmpie->rip = call_rip + patch_off;
           tmpie->next = tmpf->ie_lst;
           tmpf->ie_lst = tmpie;
         }
@@ -517,6 +549,14 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
         RVJal(tmpi, RV_REG_ZERO, 12);
         ICU64(tmpi, callee);
         RVJalr(tmpi, RV_REG_RA, RV_REG_T0, 0);
+      }
+      // Veneer left SP=FP-2048; match non-veneer depth for ADD_RSP+CALL_END.
+      post_sp = -(offset + jal_off + (i << 3));
+      if (post_sp >= -2048 && post_sp <= 2047)
+        RVAddi(tmpi, RV_REG_SP, RV_REG_FP, post_sp);
+      else {
+        RVLi(tmpi, RV_REG_T6, post_sp);
+        RVAdd(tmpi, RV_REG_SP, RV_REG_FP, RV_REG_T6);
       }
     }
     break;
@@ -724,22 +764,17 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
     case IC_ASSIGN :
     case IC_ASSIGN_PP :
     case IC_ASSIGN_MM :
-    // Assignment with possible post-increment/decrement
-    ICMov(tmpi, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip2);
-    if (code == IC_ASSIGN_PP) {
-      // Post-increment the pointer
+    /* ICAssign + OptPass6: reject BY_VAL+STK fusion (was NOP ASSIGN → IMM
+     * push, no through-pointer store). Locals stay BY_VAL DISP/REG. */
+    ICAssign(tmpi, rip2);
+    if (code == IC_ASSIGN_PP)
       RVAddi(tmpi, tmpi->arg1.reg, tmpi->arg1.reg, tmpi->ic_class->size);
-    } else if (code == IC_ASSIGN_MM) {
-      // Post-decrement the pointer
+    else if (code == IC_ASSIGN_MM)
       RVAddi(tmpi, tmpi->arg1.reg, tmpi->arg1.reg, -tmpi->ic_class->size);
-    }
-    if (tmpi->res.type.mode) {
-      ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip2);
-    }
     break;
     /* Increment/Decrement with Dereference */
     case IC_DEREF :
-    // Dereference pointer
+    // Dereference pointer (arg1 holds address in a reg after Pass6).
     ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_DISP + tmpi->arg1_type_pointed_to, tmpi->arg1.reg, 0, rip2);
     break;
     case IC_DEREF_PP :
@@ -753,30 +788,16 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
     RVAddi(tmpi, tmpi->arg1.reg, tmpi->arg1.reg, -tmpi->ic_class->size);
     break;
     case IC_PP_ :
-    // Pre-increment pointer
-    RVAddi(tmpi, tmpi->arg1.reg, tmpi->arg1.reg, tmpi->ic_class->size);
-    ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_DISP + tmpi->arg1_type_pointed_to, tmpi->arg1.reg, 0, rip2);
+    ICPreIncDec(tmpi, 1, rip2);
     break;
     case IC_MM_ :
-    // Pre-decrement pointer
-    RVAddi(tmpi, tmpi->arg1.reg, tmpi->arg1.reg, -tmpi->ic_class->size);
-    ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_DISP + tmpi->arg1_type_pointed_to, tmpi->arg1.reg, 0, rip2);
+    ICPreIncDec(tmpi, -1, rip2);
     break;
     case IC__PP :
-    // Dereference, post-increment value
-    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_DISP + tmpi->arg1_type_pointed_to, tmpi->arg1.reg, 0, rip2);
-    RVAddi(tmpi, RV_REG_T0, RV_REG_T0, 1);
-    ICMov(tmpi, MDF_DISP + tmpi->arg1_type_pointed_to, tmpi->arg1.reg, 0, MDF_REG + RT_I64, RV_REG_T0, 0, rip2);
-    RVAddi(tmpi, RV_REG_T0, RV_REG_T0, -1);
-    ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_T0, 0, rip2);
+    ICPostIncDec(tmpi, 1, rip2);
     break;
     case IC__MM :
-    // Dereference, post-decrement value
-    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_DISP + tmpi->arg1_type_pointed_to, tmpi->arg1.reg, 0, rip2);
-    RVAddi(tmpi, RV_REG_T0, RV_REG_T0, -1);
-    ICMov(tmpi, MDF_DISP + tmpi->arg1_type_pointed_to, tmpi->arg1.reg, 0, MDF_REG + RT_I64, RV_REG_T0, 0, rip2);
-    RVAddi(tmpi, RV_REG_T0, RV_REG_T0, 1);
-    ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_T0, 0, rip2);
+    ICPostIncDec(tmpi, -1, rip2);
     break;
     /* Immediates */
     case IC_IMM_I64 :
@@ -826,6 +847,15 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
       ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_A0, 0, rip2);
     break;
     case IC_ABS_ADDR :
+    /* Guest AOT: ic_data is data_addr_rip. RVLi embeds unpatchable imm.
+     * GOT via RVEmitAbsAddr (no mid-case locals). */
+    if (tmpi->res.type & MDF_REG)
+      RVEmitAbsAddr(cc, tmpi, tmpi->res.reg, tmpi->ic_data, buf, rip2);
+    else {
+      RVEmitAbsAddr(cc, tmpi, RV_REG_T0, tmpi->ic_data, buf, rip2);
+      ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_T0, 0, rip2);
+    }
+    break;
     case IC_ADDR_IMPORT :
     case IC_HEAP_GLBL :
     if (tmpi->res.type & MDF_REG)
@@ -864,18 +894,25 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
     break;
     case IC_CALL_START :
     /* Mid-function (CALL_IMPORT etc.): guest eval-SP is often junk while FP
-     * from ENTER is valid — rebuild SP=FP-frame so arg remat lands correctly.
+     * from ENTER is valid — rebuild SP below frame + ENTER local PushRegs so
+     * arg pushes do not overwrite saved s-regs (Count→store then FileWrite).
      * Top-level ExePutS expression JIT has no ENTER; FP is host Call()'s s0
      * (unreliable with -fomit-frame-pointer). Leave SP as Call() set it —
      * otherwise SP=FP-16 corrupts the return stack and MakeOSProbe hangs. */
     if (cc->htc.fun) {
-      I64 fsz = 0, alloc = 0;
+      I64 fsz = 0, alloc = 0, local_push = 0, jbit = 0;
       alloc = cc->htc.fun->size;
       if (alloc < 0)
         alloc = -alloc;
       if (alloc & 15)
         alloc = alloc + 16 - (alloc & 15);
       fsz = 16 + alloc;
+      while (jbit < 32) {
+        if (cc->htc.fun->used_reg_mask & (REGG_LOCAL_VARS | REGG_LOCAL_NON_PTR_VARS) & (1 << jbit))
+          local_push += 8;
+        jbit++;
+      }
+      fsz += local_push;
       if (-fsz >= -2048 && -fsz <= 2047)
         RVAddi(tmpi, RV_REG_SP, RV_REG_FP, -fsz);
       else {

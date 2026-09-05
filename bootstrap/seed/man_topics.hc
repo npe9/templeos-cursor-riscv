@@ -824,22 +824,26 @@
 //   Vt - soft-switch virtual terminals over one UART (tmux-ish stub)
 // SYNOPSIS
 //   Vt(1);  VtAttach(1);  VtDetach;  VtNext; VtPrev;  VtList;
-//   VtPutStr("note");  VtCapture(1);  VtKeys(1);  VtClear;  VtHelp;
+//   VtPutStr("note");  VtCapture(1);  VtKeys(1);  VtPane(0,1);  VtClear;  VtHelp;
 // DESCRIPTION
 //   CONSOLE.md #4 / G25. Four soft VTs (VT0=REPL). Switch prints a banner and
 //   replays that VT's scrollback. VtAttach aliases Vt; VtDetach returns to VT0.
 //   VtCapture(1) dual-writes Print/UartStr into the current VT (PutCh hook;
 //   still emits UART). VtKeys(1) enables Ctrl-A then 0-3/n/p/d/l in readline
-//   (default off). With UartMuxOn, also FrameSend(ch0, "V\\tN").
+//   (default off). VtPane(a,b) records host-side split layout (framed P\\ta\\tb
+//   when UartMuxOn); no guest ANSI TTY split — use uart_mux.py --vt-panes.
+//   With UartMuxOn, also FrameSend(ch0, "V\\tN").
 // EXAMPLES
 //   Vt(1); VtPutStr("side-session"); VtDetach;
 //   VtCapture(1); Print("cap\\n"); VtCapture(0);
 //   VtKeys(1);  // then Ctrl-A 1 at the prompt
+//   VtPane(0,1); VtPaneOff;
 //   Man("Vt");
 // SEE ALSO
-//   VtAttach  VtDetach  VtCapture  VtKeys  VtNext  VtList  UartMuxOn  Help
+//   VtAttach  VtDetach  VtCapture  VtKeys  VtPane  VtNext  VtList  UartMuxOn  Help
 // BUGS
-//   No panes. Capture/keys default off. Print never hidden (serial primacy).
+//   No guest ANSI panes (host --vt-panes only). Capture/keys default off.
+//   Print never hidden (serial primacy).
 // Tutorial -- Tutorial (curriculum)
 // NAME
 //   Tutorial - Software Foundations–style HolyC labs (ISA / CSAPP / Beck)

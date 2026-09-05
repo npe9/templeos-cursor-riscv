@@ -1,11 +1,11 @@
 # Bare-metal RAM artifacts for FPGA OpenOCD and QEMU -bios none -kernel.
 #
 # Outputs (repo-root build/baremetal/):
-#   repl.elf / repl.bin   — default REPL payload @ LOAD_BASE (0x80000000 virt)
-#   plat.elf / plat.bin   — kernel plat demo (PAYLOAD=plat MACHINE=virt)
+#   plat.elf / plat.bin   — kernel plat demo (default PAYLOAD=plat MACHINE=virt)
+#   For HolyC REPL RAM image use repo-root: make repl-payload → build/baremetal/repl.bin
 #
-# These are the same RAM-linked images as bootstrap/repl.elf or build/kernels/*/plat.elf,
-# copied into a stable install dir with a flat .bin for OpenOCD load_image / QEMU -kernel.
+# Plat images are copied into a stable install dir with a flat .bin for OpenOCD /
+# QEMU -kernel. Legacy C guest (worry_dream) PAYLOAD=repl removed.
 #
 # Flash packaging (FPGA BRAM/flash boot @ FLASH_BASE) stays on make firmware — see
 # bootstrap/Makefile.firmware and docs/BAREMETAL.md.
@@ -15,7 +15,6 @@ OBJCOPY = $(RISCV_PREFIX)objcopy
 
 ROOT     := ..
 BMD_DIR  := $(ROOT)/build/baremetal
-REPL_MK  := Makefile.repl
 KCFG     := $(ROOT)/templeos-riscv/include/generated/kconfig.mk
 
 # Optional Kconfig bases (ENTRY_POINT / LOAD_BASE / MARCH from syncconfig).
@@ -36,19 +35,17 @@ ifeq ($(LOAD_BASE),)
   LOAD_BASE := 0x80000000
 endif
 
-PAYLOAD  ?= repl
+PAYLOAD  ?= plat
 MACHINE  ?= virt
 
 ifeq ($(PAYLOAD),repl)
-  SRC_ELF   := repl.elf
-  OUT_STEM  := repl
-  BUILD_CMD := $(MAKE) -f $(REPL_MK) LOAD_BASE=$(LOAD_BASE) repl.elf
+  $(error Legacy C guest baremetal PAYLOAD=repl removed (worry_dream deleted). Use: make repl-payload / make bootloader-repl, or PAYLOAD=plat)
 else ifeq ($(PAYLOAD),plat)
   SRC_ELF   := $(ROOT)/build/kernels/$(MACHINE)/plat.elf
   OUT_STEM  := plat
   BUILD_CMD := $(ROOT)/tests/scripts/build_kernel_plat.sh $(MACHINE)
 else
-  $(error Set PAYLOAD=repl|plat)
+  $(error Set PAYLOAD=plat (legacy PAYLOAD=repl / worry_dream removed; use make repl-payload))
 endif
 
 OUT_ELF := $(BMD_DIR)/$(OUT_STEM).elf

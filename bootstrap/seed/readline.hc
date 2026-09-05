@@ -1,21 +1,27 @@
 // readline.hc -- HolyC REPL smart Tab + history Up/Down (G5).
-// Mid-token → CompTab; else 2-space indent. Multi-entry history ring (compile units).
+// Mid-token at CompCx/g_rl_cur → CompTab; else 2-space indent (mid-line ok).
+// Multi-entry history ring (compile units).
 // Multiline asm{} context: feed g_rl_accum before the current line (CompAsmMode).
 // Include after complete.hc + term.hc + tty.hc (TermClearEol / KEY_* / TtyInCh).
 // Soft RX via TtyInCh (HcUartGet + ICRNL) — do not TermKeyGet; do not touch uart ring.
 // Erase/kill/eof policy lives in tty.hc; Tab/history stay here.
+// History stores whole compile units (embedded '\n'); Up recalls multiline via
+// RlHistRecallUnit (prefix → repl_accum, last line → edit buf). Single-line HIST_*
+// needles unchanged (seeds / session Prints have no '\n').
 U8 *g_rl_accum;
 I64 g_rl_accum_len;
 U8 *g_rl_prompt;
 I64 g_rl_cont;
 I64 g_rl_cur;
 #define RL_HIST_MAX 16
-#define RL_HIST_CAP 256
-U8 g_rl_hist_ring[16][256];
+#define RL_HIST_CAP 1024
+U8 g_rl_hist_ring[16][1024];
 I64 g_rl_hist_n;
 I64 g_rl_hist_head;
 I64 g_rl_hist_age;
-U8 g_rl_hist_draft[256];
+U8 g_rl_hist_draft[1024];
+I64 g_rl_hist_accum_clear;
+U8 *g_rl_hist_recall_unit;
 // RlReadKey -- TtyInCh + ESC/[ A|B|C|D|H|F → arrows/home/end.
 // Optional VT Ctrl-A prefix when g_vt_keys (console.hc VtKeys(1)).
 I64 RlReadKey()
@@ -95,7 +101,7 @@ I64 RlReadKey()
 
 I64 ReplSmartTab(U8 *buf, I64 max, I64 *len_p, I64 list_ok)
 {
-  I64 n;
+  I64 n, cx, i;
   if (!buf || !len_p || max < 4)
     return -1;
   n = *len_p;
@@ -103,30 +109,70 @@ I64 ReplSmartTab(U8 *buf, I64 max, I64 *len_p, I64 list_ok)
     n = 0;
   if (n >= max)
     n = max - 1;
-  CompCx = n;
+  cx = g_rl_cur;
+  if (cx < 0)
+    cx = 0;
+  if (cx > n)
+    cx = n;
+  CompCx = cx;
   CompAsmMode = 0;
   CompAsmReset();
   if (g_rl_accum && g_rl_accum_len > 0)
     CompAsmFeed(g_rl_accum, g_rl_accum_len);
-  CompAsmFeed(buf, n);
+  // Feed only through cursor so asm{} context matches CompCx.
+  CompAsmFeed(buf, cx);
   if (CompAsmInside())
     CompAsmMode = 1;
-  if (n > 0 && CompIsPath(buf[n - 1])) {
+  if (cx > 0 && CompIsPath(buf[cx - 1])) {
     CompTab(buf, max, list_ok);
     CompAsmMode = 0;
-    *len_p = CompCx;
+    i = 0;
+    while (i < max - 1 && buf[i])
+      i++;
+    *len_p = i;
+    if (CompCx < 0)
+      CompCx = 0;
+    if (CompCx > i)
+      CompCx = i;
+    g_rl_cur = CompCx;
     return 1;
   }
   CompAsmMode = 0;
-  if (n + 2 < max) {
-    buf[n] = ' ';
-    buf[n + 1] = ' ';
-    buf[n + 2] = 0;
-    *len_p = n + 2;
-    CompCx = n + 2;
-    return 0;
+  if (n + 2 >= max)
+    return -1;
+  // Mid-line or EOL: insert 2-space indent at cursor.
+  i = n;
+  while (i >= cx) {
+    buf[i + 2] = buf[i];
+    i--;
   }
-  return -1;
+  buf[cx] = ' ';
+  buf[cx + 1] = ' ';
+  *len_p = n + 2;
+  CompCx = cx + 2;
+  g_rl_cur = CompCx;
+  return 0;
+}
+// Probe: ReplSmartTab uses g_rl_cur (not EOL-only CompCx=n).
+U0 RlMidDemo()
+{
+  U8 line[32];
+  U8 *s;
+  I64 i, n;
+  s = "x=MEM_PL;";
+  i = 0;
+  while (s[i] && i < 31) {
+    line[i] = s[i];
+    i++;
+  }
+  line[i] = 0;
+  n = i;
+  CompAsmMode = 0;
+  CompAsmReset();
+  g_rl_cur = 8;
+  ReplSmartTab(line, 32, &n, 0);
+  UartStr(line);
+  PutCh('\n');
 }
 
 U0 ReplRedrawLine(U8 *buf, I64 n)
@@ -213,16 +259,154 @@ U0 RlHistPushUnit(U8 *unit, I64 ulen)
     n = RL_HIST_CAP - 1;
   j = 0;
   i = 0;
+  // Preserve embedded newlines (compile-unit recall); do not flatten to spaces.
   while (i < n && j < RL_HIST_CAP - 1) {
-    if (unit[s + i] == '\n')
-      g_rl_hist_draft[j] = ' ';
-    else
-      g_rl_hist_draft[j] = unit[s + i];
+    g_rl_hist_draft[j] = unit[s + i];
     j++;
     i++;
   }
   g_rl_hist_draft[j] = 0;
   RlHistPush(g_rl_hist_draft);
+}
+
+I64 RlHistHasNl(U8 *s)
+{
+  I64 i;
+  if (!s)
+    return 0;
+  i = 0;
+  while (s[i]) {
+    if (s[i] == '\n')
+      return 1;
+    i++;
+  }
+  return 0;
+}
+
+U0 RlHistScanDepths(U8 *text, I64 n, I64 *bd, I64 *pd)
+{
+  I64 i, q, brace, paren;
+  brace = 0;
+  paren = 0;
+  if (!text || n <= 0) {
+    if (bd)
+      *bd = 0;
+    if (pd)
+      *pd = 0;
+    return;
+  }
+  i = 0;
+  while (i < n) {
+    if (text[i] == '"' || text[i] == '\'') {
+      q = text[i];
+      i++;
+      while (i < n && text[i] != q) {
+        if (text[i] == '\\' && i + 1 < n)
+          i++;
+        i++;
+      }
+      if (i < n)
+        i++;
+      continue;
+    }
+    if (text[i] == '{')
+      brace++;
+    else if (text[i] == '}') {
+      if (brace > 0)
+        brace--;
+    } else if (text[i] == '(')
+      paren++;
+    else if (text[i] == ')') {
+      if (paren > 0)
+        paren--;
+    }
+    i++;
+  }
+  if (bd)
+    *bd = brace;
+  if (pd)
+    *pd = paren;
+}
+// RlHistRecallUnit -- replay prefix lines to UART; last line → buf for edit.
+// Fills g_rl_accum[0..accum_len) with prefix including final '\n' when present.
+// Caller owns brace/paren via out pointers; sets g_rl_cont.
+I64 RlHistRecallUnit(U8 *unit, U8 *buf, I64 max, I64 *len_p, U8 *accum, I64 accum_max, I64 *accum_len_p, I64 *brace_p, I64 *paren_p)
+{
+  I64 ulen, i, prefix, llen, first;
+  U8 *p, *nl, *last_nl, *last;
+  if (!unit || !buf || !len_p || !accum || !accum_len_p || max < 2 || accum_max < 2)
+    return 0;
+  ulen = 0;
+  while (unit[ulen])
+    ulen++;
+  RlHistScanDepths(unit, ulen, brace_p, paren_p);
+  last_nl = 0;
+  p = unit;
+  while (*p) {
+    if (*p == '\n')
+      last_nl = p;
+    p++;
+  }
+  if (!last_nl) {
+    i = 0;
+    while (unit[i] && i < max - 1) {
+      buf[i] = unit[i];
+      i++;
+    }
+    buf[i] = 0;
+    *len_p = i;
+    *accum_len_p = 0;
+    accum[0] = 0;
+    g_rl_cont = 0;
+    return 1;
+  }
+  prefix = last_nl - unit + 1;
+  if (prefix >= accum_max)
+    prefix = accum_max - 1;
+  i = 0;
+  while (i < prefix) {
+    accum[i] = unit[i];
+    i++;
+  }
+  accum[prefix] = 0;
+  *accum_len_p = prefix;
+  PutCh('\n');
+  p = unit;
+  first = 1;
+  while (p <= last_nl) {
+    nl = p;
+    while (nl <= last_nl && *nl != '\n')
+      nl++;
+    if (nl > last_nl)
+      break;
+    if (first) {
+      UartStr("> ");
+      first = 0;
+    } else
+      UartStr("... ");
+    i = 0;
+    while (p + i < nl) {
+      PutCh(p[i]);
+      i++;
+    }
+    PutCh('\n');
+    p = nl + 1;
+  }
+  last = last_nl + 1;
+  llen = 0;
+  while (last[llen] && last[llen] != '\n')
+    llen++;
+  if (llen >= max)
+    llen = max - 1;
+  i = 0;
+  while (i < llen) {
+    buf[i] = last[i];
+    i++;
+  }
+  buf[llen] = 0;
+  *len_p = llen;
+  g_rl_cont = 1;
+  return 2;
 }
 
 U0 RlHistDraftSave(U8 *buf, I64 n)
@@ -252,7 +436,7 @@ U0 RlHistSetFrom(U8 *buf, I64 max, I64 *len_p, U8 *src)
   *len_p = i;
   g_rl_cur = i;
 }
-
+// RlHistUp -- 0=noop 1=single-line fill 2=multiline (g_rl_hist_recall_unit set).
 I64 RlHistUp(U8 *buf, I64 max, I64 *len_p)
 {
   U8 *ent;
@@ -266,6 +450,14 @@ I64 RlHistUp(U8 *buf, I64 max, I64 *len_p)
   ent = RlHistGet(g_rl_hist_age);
   if (!ent)
     return 0;
+  if (RlHistHasNl(ent)) {
+    g_rl_hist_recall_unit = ent;
+    buf[0] = 0;
+    *len_p = 0;
+    return 2;
+  }
+  g_rl_hist_recall_unit = 0;
+  g_rl_hist_accum_clear = 1;
   RlHistSetFrom(buf, max, len_p, ent);
   return 1;
 }
@@ -279,12 +471,22 @@ I64 RlHistDown(U8 *buf, I64 max, I64 *len_p)
     return 0;
   g_rl_hist_age--;
   if (g_rl_hist_age < 0) {
+    g_rl_hist_recall_unit = 0;
+    g_rl_hist_accum_clear = 1;
     RlHistSetFrom(buf, max, len_p, g_rl_hist_draft);
     return 1;
   }
   ent = RlHistGet(g_rl_hist_age);
   if (!ent)
     return 0;
+  if (RlHistHasNl(ent)) {
+    g_rl_hist_recall_unit = ent;
+    buf[0] = 0;
+    *len_p = 0;
+    return 2;
+  }
+  g_rl_hist_recall_unit = 0;
+  g_rl_hist_accum_clear = 1;
   RlHistSetFrom(buf, max, len_p, ent);
   return 1;
 }
@@ -292,6 +494,7 @@ I64 RlHistDown(U8 *buf, I64 max, I64 *len_p)
 U0 RlHistLeaveBrowse()
 {
   g_rl_hist_age = -1;
+  g_rl_hist_recall_unit = 0;
 }
 // RlHistSeed -- boot demos oldest→newest; first Up recalls HIST_SEED_OK.
 U0 RlHistSeed()
@@ -299,6 +502,8 @@ U0 RlHistSeed()
   g_rl_hist_n = 0;
   g_rl_hist_head = 0;
   g_rl_hist_age = -1;
+  g_rl_hist_accum_clear = 0;
+  g_rl_hist_recall_unit = 0;
   // Legacy-shaped demos (thin-safe). Newest = smoke needle.
   RlHistPush("Dir;");
   RlHistPush("Regs;");

@@ -428,6 +428,73 @@ static void holy_crash_puthex(HRT_U64 v) {
     HOLY_RT_PUTC(hx[(v >> i) & 0xF]);
 }
 
+static void holy_crash_putdec(HRT_U64 v) {
+  char buf[24];
+  int n = 0;
+  if (!v) {
+    HOLY_RT_PUTC('0');
+    return;
+  }
+  while (v && n < (int)sizeof(buf)) {
+    buf[n++] = (char)('0' + (v % 10));
+    v /= 10;
+  }
+  while (n > 0)
+    HOLY_RT_PUTC(buf[--n]);
+}
+
+/* Mirror bootstrap/seed/csr.hc McauseCauseName for FB/Win UART crash dumps. */
+static const char *holy_mcause_name(HRT_I64 v) {
+  int intr = (int)((v >> 63) & 1);
+  HRT_I64 code = v & (HRT_I64)0x7FFFFFFFFFFFFFFFLL;
+  if (intr) {
+    switch ((int)code) {
+      case 0: return "user soft interrupt";
+      case 1: return "supervisor soft interrupt";
+      case 3: return "machine soft interrupt";
+      case 4: return "user timer interrupt";
+      case 5: return "supervisor timer interrupt";
+      case 7: return "machine timer interrupt";
+      case 8: return "user external interrupt";
+      case 9: return "supervisor external interrupt";
+      case 11: return "machine external interrupt";
+      default: return "interrupt";
+    }
+  }
+  switch ((int)code) {
+    case 0: return "insn address misaligned";
+    case 1: return "insn access fault";
+    case 2: return "illegal instruction";
+    case 3: return "breakpoint";
+    case 4: return "load address misaligned";
+    case 5: return "load access fault";
+    case 6: return "store address misaligned";
+    case 7: return "store access fault";
+    case 8: return "ecall from U-mode";
+    case 9: return "ecall from S-mode";
+    case 11: return "ecall from M-mode";
+    case 12: return "insn page fault";
+    case 13: return "load page fault";
+    case 15: return "store page fault";
+    default: return "exception";
+  }
+}
+
+static void holy_crash_put_mcause(HRT_I64 mcause) {
+  int intr = (int)((mcause >> 63) & 1);
+  HRT_I64 code = mcause & (HRT_I64)0x7FFFFFFFFFFFFFFFLL;
+  rt_puts("mcause=");
+  holy_crash_puthex((HRT_U64)mcause);
+  if (intr)
+    rt_puts(" Interrupt code=");
+  else
+    rt_puts(" Exception code=");
+  holy_crash_putdec((HRT_U64)code);
+  rt_puts(" (");
+  rt_puts(holy_mcause_name(mcause));
+  rt_puts(")");
+}
+
 static int holy_crash_in_ram(HRT_I64 a) {
   return a >= (HRT_I64)0x80000000LL && a < (HRT_I64)0x88000000LL;
 }
@@ -530,23 +597,38 @@ static void holy_crash_md(HRT_I64 addr, HRT_I64 n) {
   if (n & 15) HOLY_RT_PUTC('\n');
 }
 
+static int holy_crash_in_code(HRT_I64 a) {
+  /* Text / AOT below SYS_FIXED_AREA; stack is ~0x87E… */
+  return a >= (HRT_I64)0x80000000LL && a < (HRT_I64)0x87000000LL && !(a & 1);
+}
+
 static void holy_crash_bt(void) {
-  HRT_I64 sp, i, a, n = 0;
-  __asm__ volatile("mv %0, sp" : "=r"(sp));
-  rt_puts("bt sp=");
-  holy_crash_puthex((HRT_U64)sp);
-  HOLY_RT_PUTC('\n');
-  for (i = 0; i < 64 && n < 16; i++) {
-    a = *(volatile HRT_I64 *)(sp + i * 8);
-    if (!holy_crash_in_ram(a) || (a & 1)) continue;
-    rt_puts("  #");
-    HOLY_RT_PUTC((char)('0' + (n % 10)));
-    rt_puts(" ");
-    holy_crash_puthex((HRT_U64)a);
+  /* RVCrashMon trap path freezes mcause/mepc/mtval only — not fp/ra.
+   * Honest: print trap mepc + insn word at mepc (mtval=0 often means 0x0 insn). */
+  HRT_U32 insn = 0;
+  rt_puts("bt (trap mepc only — no fp/ra freeze in RVCrashMon)\n");
+  if (holy_crash_in_code(holy_crash_mepc)) {
+    rt_puts("  #0 ");
+    holy_crash_puthex((HRT_U64)holy_crash_mepc);
     HOLY_RT_PUTC('\n');
-    n++;
+    insn = *(volatile HRT_U32 *)holy_crash_mepc;
+    rt_puts("  insn=");
+    holy_crash_puthex((HRT_U64)insn);
+    if (!insn)
+      rt_puts(" (word 0 — null/unmapped code)");
+    else if ((insn >> 16) == 0)
+      rt_puts(" (halfword/trunc ptr? — jump-into-data)");
+    HOLY_RT_PUTC('\n');
+  } else {
+    rt_puts("  (mepc not in code range");
+    if (holy_crash_mepc & 1)
+      rt_puts(" — odd PC");
+    rt_puts(")\n");
+    rt_puts("  mepc=");
+    holy_crash_puthex((HRT_U64)holy_crash_mepc);
+    HOLY_RT_PUTC('\n');
   }
-  if (!n) rt_puts("  (empty)\n");
+  rt_puts("  (live dig-down: serial `bt` / HolyC Bt; — FP/RA walk)\n");
 }
 
 static void HolyCrashMonEnter(HRT_I64 mcause, HRT_I64 mepc, HRT_I64 mtval) {
@@ -555,13 +637,25 @@ static void HolyCrashMonEnter(HRT_I64 mcause, HRT_I64 mepc, HRT_I64 mtval) {
   holy_crash_mepc = mepc;
   holy_crash_mtval = mtval;
   rt_puts("\n*** UART crash dump (FB/Win serial)\n");
-  rt_puts("mcause=");
-  holy_crash_puthex((HRT_U64)mcause);
-  rt_puts(" mepc=");
+  holy_crash_put_mcause(mcause);
+  HOLY_RT_PUTC('\n');
+  rt_puts("mepc=");
   holy_crash_puthex((HRT_U64)mepc);
   rt_puts(" mtval=");
   holy_crash_puthex((HRT_U64)mtval);
   HOLY_RT_PUTC('\n');
+  if (holy_crash_in_code(mepc)) {
+    HRT_U32 insn = *(volatile HRT_U32 *)mepc;
+    rt_puts("insn@mepc=");
+    holy_crash_puthex((HRT_U64)insn);
+    if (!insn)
+      rt_puts(" (0 — often jump-to-null / freed JIT)");
+    else if ((insn >> 16) == 0)
+      rt_puts(" (halfword/trunc ptr? — jump-into-data)");
+    HOLY_RT_PUTC('\n');
+  } else if (mepc & 1) {
+    rt_puts("mepc odd — misaligned PC / corrupt return\n");
+  }
   rt_puts("crash> cmds: md mw regs bt dump go reboot help\n");
   for (;;) {
     rt_puts("crash> ");
@@ -580,9 +674,9 @@ static void HolyCrashMonEnter(HRT_I64 mcause, HRT_I64 mepc, HRT_I64 mtval) {
       continue;
     }
     if (holy_crash_cmd_eq(line, "regs") || holy_crash_cmd_eq(line, "dump")) {
-      rt_puts("mcause=");
-      holy_crash_puthex((HRT_U64)holy_crash_mcause);
-      rt_puts(" mepc=");
+      holy_crash_put_mcause(holy_crash_mcause);
+      HOLY_RT_PUTC('\n');
+      rt_puts("mepc=");
       holy_crash_puthex((HRT_U64)holy_crash_mepc);
       rt_puts(" mtval=");
       holy_crash_puthex((HRT_U64)holy_crash_mtval);
@@ -1167,21 +1261,22 @@ __attribute__((naked, aligned(4))) static void HolyRealPreemptVector(void) {
   );
 }
 /* --- Diagnostic trap handler: prints mcause/mepc/mtval to the UART and halts. Temporary; used to
- * decide whether a "hang" is actually a synchronous fault. Install with HolyRVTrapDiag(). --------- */
+ * decide whether a "hang" is actually a synchronous fault. Install with HolyRVTrapDiag().
+ * mcause line matches McausePrint / holy_crash_put_mcause symbolic form. ------------------------- */
 __attribute__((used)) static void HolyTrapDiagBody(void) {
   HRT_I64 mcause, mepc, mtval;
   __asm__ volatile("csrr %0, mcause" : "=r"(mcause));
   __asm__ volatile("csrr %0, mepc"   : "=r"(mepc));
   __asm__ volatile("csrr %0, mtval"  : "=r"(mtval));
-  volatile char *u = (volatile char *)HOLY_UART_BASE;
-  const char *hx = "0123456789abcdef";
-  const char *lbl = "\nTRAP mcause="; while (*lbl) *u = *lbl++;
-  for (int i = 60; i >= 0; i -= 4) *u = hx[(mcause >> i) & 0xF];
-  lbl = " mepc="; while (*lbl) *u = *lbl++;
-  for (int i = 60; i >= 0; i -= 4) *u = hx[(mepc >> i) & 0xF];
-  lbl = " mtval="; while (*lbl) *u = *lbl++;
-  for (int i = 60; i >= 0; i -= 4) *u = hx[(mtval >> i) & 0xF];
-  *u = '\n';
+  HOLY_RT_PUTC('\n');
+  rt_puts("TRAP ");
+  holy_crash_put_mcause(mcause);
+  HOLY_RT_PUTC('\n');
+  rt_puts("mepc=");
+  holy_crash_puthex((HRT_U64)mepc);
+  rt_puts(" mtval=");
+  holy_crash_puthex((HRT_U64)mtval);
+  HOLY_RT_PUTC('\n');
   for (;;) __asm__ volatile("wfi");
 }
 __attribute__((naked, aligned(4))) static void HolyTrapDiagVector(void) {

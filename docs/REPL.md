@@ -26,8 +26,8 @@ make repl-holyc-regression
 make bootloader-smoke        # split HolyC boot + payload
 ```
 
-**Deprecated legacy C guest** (`worry_dream_repl.c`) — still **required** CI dual-run until A3 flip
-([SELF_HOST.md](SELF_HOST.md) blockers). Local: `SKIP_REPL_LEGACY=1 make qemu-integration`.
+**Deleted legacy C guest** (`worry_dream_repl.c`) — use `make repl-holyc` / `hc-repl`
+(A3 Done; CI honesty = HolyC path above). See [SELF_HOST.md](SELF_HOST.md).
 
 ```bash
 make                         # host holyc-riscv (needed by some seeds / fmt bridges)
@@ -70,10 +70,10 @@ From repo root:
 ```bash
 make repl-cmp-smoke          # A2: guest Compiler_RV ExePutS UART loop
 make repl-holyc-smoke        # HolyC memfs/Dir bridge smoke
-make repl-holyc-regression   # HolyC honesty subset (expand toward full flip)
+make repl-holyc-regression   # primary HolyC honesty gate (CI)
 make bootloader-smoke        # HolyC split-boot product path
-make repl-smoke              # deprecated legacy C guest
-make repl-regression         # deprecated legacy honesty gate
+make repl-smoke              # deprecated legacy C guest (local only)
+make repl-regression         # deprecated legacy honesty (local only)
 ```
 
 See [tests/REGRESSION.md](../tests/REGRESSION.md) for what “PASS” must mean. Local emulator
@@ -126,7 +126,7 @@ printing a fresh **`> `** until braces/parens balance and the unit compiles.
 | Function picker | `Funs;` — grouped by topic (`Sections;`); type to filter, Tab=next topic, Enter=`Src`, `^G`=`Man`, Esc quit. Filter dump (no Esc): `Funs("Uart");`. Full dump: `FunsList;` |
 | Debug | `MemMap;` `Regs;` `StkRep;` `Bp(&Fn);` `U(pc-16);` — full matrix in [DEBUGGER.md](DEBUGGER.md). Host-slot Regs/StkRep on legacy `repl.elf`; watch/step WIP. MemMap last column = HolyC driver (`MemMapDrvFind("uart")`) |
 | Datasheet | `DsFind("uart");` `DsShow("mstatus");` `DsDecode("mstatus");` `Bits("uart.lsr", 0x21);` — bitfield decode from OS-owned sheets ([DATASHEET.md](DATASHEET.md), `Man("Datasheet")`) |
-| Tab complete | Partial token before cursor: functions / globals, **`#define`s** (`MEM_PLIC`, `MEM_UART`, … from live `define_table` / `csr.hc`), or memfs paths. Case-insensitive. `asm{}` → opcodes / GPRs / CSRs (`asm_complete.hc`). Editors use the same `CompTab` path. |
+| Tab complete | Partial token before cursor: functions / globals, **`#define`s** (`MEM_PLIC`, session `#define` via `DefRegister`, catalog / host `define_table` when published), or memfs paths. Case-insensitive. Mid-line uses `CompCx`/`g_rl_cur`. `asm{}` → opcodes / GPRs / CSRs (`asm_complete.hc`). Editors use the same `CompTab` path. |
 | Export files | `DumpChanges;` / `ZmodemSend("boot.hc");` / `TrzszSend("boot.hc");` / `FsChanges;` / `ZmodemSendChanges;` / `TrzszSendChanges;` — UART framed dump, ZMODEM, or native trzsz ([FILE_EXPORT.md](FILE_EXPORT.md)). |
 
 `Man("Name")` covers HolyC functions (doc blocks above definitions) and **topics/symbols** in
@@ -154,7 +154,7 @@ Unlabeled `asm{}` on the host/REPL path emits raw RV via `TryAssembleRiscV`. Not
 - ABI names `a0`–`a7`, `s0`–`s11`, … work.
 - CSR ops accept numeric immediates or names from `csr.hc` (`mstatus`, `mepc`, …).
 - Tab inside `asm{}` completes opcodes / registers / CSR names (REPL C readline + editor `CompTab`; tables in `bootstrap/seed/asm_complete.hc`).
-- Tab outside `asm{}` also completes live `#define`s (`MEM_*`, `UART_*`, …) from the compiler `define_table` — same macros `csr.hc` / seeds publish (no hard-coded address list).
+- Tab outside `asm{}` also completes `#define`s: CompAdd catalog (`MEM_*`/`UART_*`/…), session `#define` names (`DefRegister` on thin `repl-holyc`), and host `define_table` when published (legacy).
 - Guest destination assembler is `Compiler/Asm_RV.HC` (`CMP_RV_ASM`).
 
 ```holyc

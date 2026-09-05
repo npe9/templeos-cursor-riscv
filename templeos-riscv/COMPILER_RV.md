@@ -33,8 +33,8 @@ Mirror `tos/Doc/Boot.DD` (`::/Doc/Boot.DD` at runtime):
 | Host AOT Compiler_RV | `holyc-riscv Compiler/Compiler_RV.PRJ` → ~1.1MB | **Bootstrap** (`build/compiler_rv.blob.bin` → `Compiler.BIN`) |
 | In-image ExePutS | `kernel_exepubs_demo.hc` / `kernel_exepubs_fundef.hc` | Expr + fun-def → 42 (same stmt or split ExePutS) |
 | Guest Cmp MakeOS | `RVPhase3MakeOS` | **Cmp→Tiny.BIN export→Load→Call → 42** (no hand TOSB) |
-| Guest Runtime seed | `RVPhase3GuestRuntime` | **Cmp→Seed/Svc/Kern/StartOS/AdamCore.BIN**; StartOS **Loads** them; arg + `F()+imm` proven |
-| Phase3 ELF itself | host AOT of demo + link | **Still host-built** — residual documented under P3 intermediate |
+| Guest Runtime seed | `RVPhase3GuestRuntime` | **Cmp→Seed/Svc/Kern/Kernel/StartOS/AdamCore.BIN**; StartOS **Loads** them; arg + `F()+imm` proven |
+| Phase3 ELF itself | host AOT of thin demo + link of `Compiler.BIN` @ `0x81000000` | **Still host-built** scaffold; linked BIN is bootstrap **bytes** only — live Cmp is **heap Load** of RedSea seed (G9 reloc) |
 | Temp bridge | `bootstrap/hc_repl` + `jit.hc` | **Stop expanding** |
 
 ## Run gates
@@ -46,7 +46,7 @@ make kernel-exepubs-fundef-smoke   # ExePutS fun-def → 42 (if present)
 make kernel-phase3-smoke           # Load Compiler.BIN + MakeOS Cmp + Runtime Cmp + StartOS
 ```
 
-Console (UART) phase3 expects (among others): `MakeOS OK`, `Runtime OK (…call+imm…)`, `Kern.BIN OK (arg+call+add→42)`, `StartOS Load AdamCore.BIN OK (guest Cmp FileWrite STR_CONST)`, `StartOS Load StartOS/Seed/Svc/Kern.BIN OK`, `StartOS subset OK (guest BINs AdamCore+…)`, `done (compiler + StartOS)`. AdamCore: guest Cmp→Load→Call `FileWrite` multi-STR via `RVHCCall` plants READY/CORE — **hard required** (no linked MakeAdam fallback).
+Console (UART) phase3 expects (among others): `MakeOS OK`, `Runtime OK (…call+imm…)`, `Kern.BIN OK (arg+call+add→42)`, `StartOS Load AdamCore.BIN OK (guest Cmp FileWrite STR_CONST)`, `StartOS Load StartOS/Seed/Svc/Kern.BIN OK`, `StartOS Load Kernel.BIN OK (guest Cmp preferred over Mac scaffold)`, `StartOS subset OK (guest BINs AdamCore+…+Kernel)`, `done (compiler + StartOS)`. AdamCore: guest Cmp→Load→Call `FileWrite` multi-STR via `RVHCCall` plants READY/CORE — **hard required** (no linked MakeAdam fallback). Soft P6 (not required): `P6 MakeAdam_RV_Lite Load→Call OK (menu_n=8 Menu_RV, LITE.TXT)` after staging Menu_RV on A:.
 
 ## Gap-fill plan (ordered)
 
@@ -71,7 +71,7 @@ Root cause: AOT `IC_CALL` used heap `buf` as PC when computing jal offsets (`Opt
 
 Proven in phase3: Seed `RuntimeSeedVal+27`, Kern `KernBase+KernScale(9)` with `KernScale`=`n+n+n` → 42.
 
-**AdamCore / CALL_IMPORT → host HolyC:** Guest eval-SP is junk (`SP>>28==0`); FP stays valid. Veneer `_RV_HC_CALL` saves guest `ra` at `FP-2040` (not `s11` — host HolyC clobbers s-regs), sets `SP=FP-2048`, `JR T1`. **Arg marshalling:** OptPass6 `ICF_PUSH_RES` `res.type=` fix; abs64 callee+veneer slots (`IC_BODY_SIZE=0x83`); `RVAArgReg()` for a-reg ids (avoid `RV_REG_A0+n` U8 mis-encode). CALL_IMPORT remats PUSH_RES as IMM/MOV+IMM/`la` STR; if IC emitted **RTL** (IMM/size before STRs, as in `FileWrite(path,buf,size)`), **reverse-assign** into `a0..`; else left-to-right. **CALL_START** rebuilds `SP=FP-frame` **only when `cc->htc.fun` is set** (mid-function). Top-level ExePutS expression JIT has no ENTER — host `Call()`’s `s0` is not a HolyC FP; unconditional `SP=FP-16` corrupted the return stack and hung on `MakeOSProbe` after fun-def. **Proven:** guest→asm `RVRet42`; 0-arg HolyC; `RVHCAdd1(40)=41`; `DirMk` 1-STR; **`FileWrite` multi-STR**; **`make kernel-exepubs-fundef-smoke`** (split `ExePutS` def then call → 42).
+**AdamCore / CALL_IMPORT → host HolyC:** Guest eval-SP is junk (`SP>>28==0`); FP stays valid. Veneer `_RV_HC_CALL` saves guest `ra` at `FP-2040` (not `s11` — host HolyC clobbers s-regs), sets `SP=FP-2048`, `JR T1`. **Arg marshalling:** OptPass6 `ICF_PUSH_RES` `res.type=` fix; abs64 callee+veneer slots (`IC_BODY_SIZE=0x83`); `RVAArgReg()` for a-reg ids (avoid `RV_REG_A0+n` U8 mis-encode). CALL_IMPORT remats PUSH_RES as IMM/MOV+IMM/`la` STR; if IC emitted **RTL** (IMM/size before STRs, as in `FileWrite(path,buf,size)`), **reverse-assign** into `a0..`; else left-to-right. After `_RV_HC_CALL`, rebuild `SP=FP-(frame+ENTER locals+call push+args)` so `ADD_RSP`/`CALL_END`/`LEAVE` match a non-veneer call (Count→store then multi-STR FileWrite). **CALL_START** rebuilds `SP=FP-frame-ENTER_locals` **only when `cc->htc.fun` is set** (mid-function). Top-level ExePutS expression JIT has no ENTER — host `Call()`’s `s0` is not a HolyC FP; unconditional `SP=FP-16` corrupted the return stack and hung on `MakeOSProbe` after fun-def. **Proven:** guest→asm `RVRet42`; 0-arg HolyC; `RVHCAdd1(40)=41`; `DirMk` 1-STR; **`FileWrite` multi-STR**; **`make kernel-exepubs-fundef-smoke`** (split `ExePutS` def then call → 42).
 
 **ICAdd / ICLea multi-use (fixed):** `n+n+n` on a reg-allocated arg: OptPass4 folds `n+n` to SIB `IC_LEA`; emitting `add rd,rs,rs` into the live arg GPR destroyed `n` for the third term (symptom: `KernScale(9)`→9, `KernBase+…`→24). Fix in `ICLea`: when SIB `base==index` and dest aliases that reg, accumulate in `a0`/`t2` and retarget left-assoc consumer `arg1`.
 
@@ -118,18 +118,26 @@ asm { li a7, 20 addi a7,a7,-4 }; Regs
 | `A:/Runtime/Seed.BIN` | multi-`#include` + `F()+imm` | `RuntimeSeedInit=42` |
 | `A:/Runtime/Svc.BIN` | runtime service surface | `RuntimeSvcProbe=42` |
 | `A:/Runtime/Kern.BIN` | arg call + `n+n+n` | `KernInit=42` (`KernBase+KernScale(9)`) |
+| `A:/Kernel/Kernel.BIN` | Boot.DD-shaped guest Kernel module | `KernelProbe=42` — **preferred** over Mac phase3 ELF as the “Kernel.BIN” product story |
 | `A:/Adam/StartOS.BIN` | StartOS body | `StartOSProbe=1` |
 | `A:/Adam/AdamCore.BIN` | MakeAdam bring-up (guest Cmp) | **Required** — guest `FileWrite` multi-STR via `RVHCCall` plants `READY.TXT`+`CORE.TXT`; phase3 fails hard if Cmp/Load/Call/READY soft-fails |
 
-Console proof: `Kern.BIN OK (arg+call+add→42)` … `StartOS Load Kern.BIN OK` … `StartOS subset OK (guest BINs StartOS+Seed+Svc+Kern)`.
+Console proof: `Kern.BIN OK (arg+call+add→42)` … `StartOS Load Kern.BIN OK` … `StartOS Load Kernel.BIN OK (guest Cmp preferred…)` … `StartOS subset OK (guest BINs …+Kernel)`.
 
-**Residual host AOT (evidence — still required this pass):**
+**Residual host AOT (inventory — each piece until removable):**
 
-| Residual | Why still host |
-|----------|----------------|
-| phase3 ELF (`kernel_phase3_demo.hc` → `build/exec/phase3.elf`) | Boot scaffolding + `RVKMain` / RedSea / in-image `Compiler_RV_Body` |
-| `build/Compiler.BIN` via `pack_tosb` + link at `0x81000000` | Full guest Compiler seed (97 IMM_I64 imports); not yet self-hosted Cmp of Compiler |
-| Host `holyc-riscv` AOT of RVPhase3 staging strings | Sources written to A: then guest-Cmp’d — staging still lives in host-built ELF |
+| Residual | Why still host | Removable when |
+|----------|----------------|----------------|
+| phase3 ELF scaffolding (`kernel_phase3_demo.hc` → `build/exec/phase3.elf`) | Boot glue: `RVKMain` / RedSea / `Load`; **no** in-image `Compiler_RV_Body` (G9) | Thin C/asm loader that only `Load`s RedSea `Kernel.BIN` + runtime |
+| `build/Compiler.BIN` via `pack_tosb` + link at `0x81000000` | Bootstrap **byte source** for staging onto A:; live path is heap `Load("A:/Compiler/Compiler.BIN")` (PC-rel host AOT = relocatable) | Guest Cmp rebuilds Compiler TOSB, or RedSea disk image ships seed (drop `.compiler_bin` from ELF) |
+| Host `holyc-riscv` AOT of RVPhase3 staging strings | Tiny Runtime/MakeOS/Menu_RV/Kernel extract sources written to A: then guest-Cmp’d — staging still lives in host-built ELF text | Sources live on RedSea/9P (or guest-built Kernel plants them) |
+| Win split-AOT `char_bmp_*` wire (`RVCmpWireCharBmps` / `RVCmpPatchCharBmps`) | Loaded Compiler.BIN zero-fills bitmaps; Lex needs kernel copies | **Do not regress** — stays until Compiler seed shares live kernel globals |
+
+**G9 shrink this pass:** live Cmp is **heap `Load` of RedSea `A:/Compiler/Compiler.BIN`** (relocatable PC-rel seed; plants `RELOC.TXT`). Linked `0x81000000` is bootstrap bytes only (fallback LoadPass if reloc fails). Guest `A:/Kernel/Kernel.BIN` Cmp→Load→Call still preferred over Mac scaffold. Earlier: dropped Body + HostBinEmbed + Menu U8[] embeds. Soft P6 stages Menu_RV_Guest via `RVAdamLiteMenuSrc`.
+
+**Must stay host-built (document):** `holyc-riscv` + `pack_tosb` producing `Compiler.BIN` seed until guest Cmp can rebuild Compiler; phase3 ELF boot scaffolding until a thin loader Loads RedSea `Kernel.BIN` as the **actual** kernel image (today’s guest Kernel.BIN is a probe module, not full `Kernel_RV`); win split-AOT `char_bmp_*` wire — do not regress. Next residual cut: ship Compiler.BIN on a RedSea image so phase3 ELF need not link `.compiler_bin`.
+
+**P6 soft (not DoD):** guest Cmp→Load→Call `AdamLite.BIN` (nested `#include Menu_RV` → `Menu_RV_Guest` → menu_n=8). Call must run **before** flat Menu Load (dup `RVMenu*` exports hung Call). Guest `FileWrite` inside that BIN still hangs under loaded Cmp — phase3 plants `LITE.TXT` after Call. Gaps: FileWrite-in-Lite / local U8* / rich `Menu_RV.HC` CMenu — [GAPS.md](../docs/GAPS.md) § MakeAdam_RV.
 
 **Dropped this pass:** linked `MakeAdam_RV_Core.HC` from `kernel_phase3_demo.hc` — phase3 Adam markers are guest AdamCore only. (`MakeAdam_RV_Core` remains for `StartOS_RV.HC` / win demos that plant HOME.DD/WALLPAPER.)
 

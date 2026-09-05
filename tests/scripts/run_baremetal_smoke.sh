@@ -1,5 +1,5 @@
 #!/bin/bash
-# Smoke: boot bare-metal REPL flat bin @ RAM via qemu -bios none -kernel.
+# Smoke: boot HolyC REPL flat bin @ RAM via qemu -bios none -kernel (repl-payload).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -15,7 +15,7 @@ else
   exit 2
 fi
 
-make -C "$ROOT" baremetal >/dev/null
+make -C "$ROOT" repl-payload >/dev/null
 
 if [ ! -f "$BIN" ]; then
   echo "FAIL baremetal smoke — missing $BIN" >&2

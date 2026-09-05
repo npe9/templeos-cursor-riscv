@@ -413,9 +413,12 @@ asm {
 asm {
 	QueRem::
 	ld	t0,8(a0)
+	beq	t0,zero,qr_done
 	ld	t1,0(a0)
+	beq	t1,zero,qr_done
 	sd	t1,0(t0)
 	sd	t0,8(t1)
+	qr_done:
 	li	a0,0
 	ret
 }
@@ -565,6 +568,22 @@ asm {
 	Sqrt::
 	fmvdx	fa0,a0
 	fsqrtd	fa0,fa0
+	fmvxd	a0,fa0
+	ret
+}
+// Sqr: d*d (replaces KMathA _SQR x87; needed by AMathODE MassFind / state_scale).
+asm {
+	Sqr::
+	fmvdx	fa0,a0
+	fmuld	fa0,fa0,fa0
+	fmvxd	a0,fa0
+	ret
+}
+// Abs: clear sign bit (RV64D fabs.d).
+asm {
+	Abs::
+	fmvdx	fa0,a0
+	fabsd	fa0,fa0
 	fmvxd	a0,fa0
 	ret
 }

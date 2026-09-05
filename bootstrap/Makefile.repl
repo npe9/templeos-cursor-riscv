@@ -16,7 +16,7 @@ endif
 # Select a target board with PLATFORM=<name> (default: qemu-virt). Each row sets the RAM/link
 # base and the 16550 UART base; LOAD_BASE flows to the linker (--defsym) and UART_BASE to both
 # the C REPL (-DUART_BASE) and the linker. To retarget, add a row -- nothing else is platform-
-# specific: startup.s uses only linker symbols and every other MMIO address (CLINT/PLIC/virtio)
+# specific: every other MMIO address (CLINT/PLIC/virtio)
 # is the RISC-V-standard layout QEMU virt and most SoCs share.
 #
 # NOTE: `-bios none` makes QEMU's reset ROM jump to 0x80000000 unconditionally, so a non-default
@@ -57,29 +57,12 @@ endif
 CFLAGS = -march=$(MARCH) -mabi=$(MABI) -mcmodel=medany -O0 -g
 CFLAGS += -nostdlib -ffreestanding -fno-builtin -I$(ROOT) -I$(HOST) -DUART_BASE=$(UART_BASE)
 
-LDFLAGS = -T linker.ld -nostdlib --no-warn-mismatch \
-          --defsym LOAD_BASE=$(LOAD_BASE)
+# Legacy C guest (worry_dream_repl.c) deleted — product path is make hc-repl / repl-payload.
+# This makefile remains for boot_blob_embed.h / seed_files.h / asm_templates.inc helpers.
 
-# DEPRECATED guest path: still C-dependent (worry_dream_repl.c + holy_rt + 0x87001xxx host
-# slots). Prefer make hc-repl (no guest C) or kernel+Compiler_RV. Remaining C deps in seeds:
-#   compile/run, UART ring+drain+get, Ed/Edit repair, Fmt, srcmap/hash/call_editor,
-#   Callers*/MemMap/Regs/StkRep, trap dispatch/reentry.
-# HolyC-owned: Term geometry + TermKeyGet (interactive), memfs arena at 0x87800000 (seed/fs.hc).
-# MEMFS/CWD and TERM_PROBE/ROWS/COLS/FLAGS host-slot publishes removed (HolyC owns those).
-repl.elf: startup.o worry_dream_repl.o compiler.o
-	$(LD) $(LDFLAGS) -o $@ $^
-	@echo "✓ Built Worry Dream REPL (DEPRECATED: C guest + host slots — see comment above)"
-
-compiler.o: $(HOST)/compiler.c $(HOST)/lexer.c $(HOST)/parser.c $(HOST)/hash_table.c \
-		$(HOST)/compiler_helper.c $(HOST)/holyc_fmt.c $(HOST)/holyc_compiler.h \
-		$(HOST)/hash_table.h $(HOST)/holyc_fmt.h holy_rt.h holy_rt_names.h
-	$(CC) $(CFLAGS) -DBARE_METAL -c $(HOST)/compiler.c -o compiler_main.o
-	$(CC) $(CFLAGS) -DBARE_METAL -c $(HOST)/lexer.c -o lexer.o
-	$(CC) $(CFLAGS) -DBARE_METAL -c $(HOST)/parser.c -o parser.o
-	$(CC) $(CFLAGS) -DBARE_METAL -c $(HOST)/hash_table.c -o hash.o
-	$(CC) $(CFLAGS) -DBARE_METAL -c $(HOST)/compiler_helper.c -o compiler_helper.o
-	$(CC) $(CFLAGS) -DBARE_METAL -c $(HOST)/holyc_fmt.c -o holyc_fmt.o
-	$(LD) -r -o $@ compiler_main.o lexer.o parser.o hash.o compiler_helper.o holyc_fmt.o
+repl.elf:
+	@echo "error: legacy C guest repl.elf removed (worry_dream deleted); use: make hc-repl or make repl-payload" >&2
+	@exit 2
 
 # The editable HolyC primitives/editors are real files under seed/; this bakes them into a C
 # table so memfs_seed() ships them. Editing a seed/*.hc regenerates the header and rebuilds.
@@ -102,19 +85,7 @@ boot_blob_embed.h: $(wildcard seed/*.hc) gen_boot_blob.py
 asm_templates.inc: seed/asm_doc.hc gen_boot_blob.py
 	python3 gen_boot_blob.py seed boot_blob_embed.h
 
-worry_dream_repl.o: worry_dream_repl.c $(HOST)/holyc_compiler.h $(HOST)/hash_table.h \
-		holy_rt.h holy_rt_names.h seed_files.h boot_blob_embed.h asm_templates.inc
-	$(CC) $(CFLAGS) -c $< -o $@
-
-startup.o: startup.s
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Default QEMU virt RAM is 128MiB — enough for BSS + memfs @0x87800000 + MEM_STACK.
-# Do not require -m 256M (that was only needed when memfs lived at 0x88000000).
-run: repl.elf
-	qemu-system-riscv64 -M virt -bios none -kernel repl.elf -nographic
-
 clean:
 	rm -f *.o *.elf seed_files.h boot_blob_embed.h boot_runtime.hc boot_runtime.bin
 
-.PHONY: run clean
+.PHONY: clean

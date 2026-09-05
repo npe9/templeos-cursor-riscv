@@ -629,11 +629,11 @@ I64 ExePutS(U8 *buf,U8 *filename=NULL,
 	Free(machine_code);
     }
   } catch {
-    if (Fs->except_ch=='Compiler' || Fs->except_ch=='Break') {
-      Fs->catch_except=TRUE;
-      okay=FALSE;
-      res=0;
-    }
+    // Host AOT IC_THROW writes except_ch to __task, not necessarily Fs→adam.
+    // Always recover so LexExcept / bad id does not leave a half-parsed ctrl.
+    Fs->catch_except = TRUE;
+    okay = FALSE;
+    res = 0;
   }
   QueRem(cc);
   if (okay)
@@ -736,7 +736,8 @@ U0 CInit()
   AsmHashLoad;
   if (cmp.internal_types[RT_I64])
     cmp.ic_nop.ic_class=cmp.internal_types[RT_I64];
-  UAsmHashLoad;
+  // Soft-load AsmHashLoad has no HTT_OPCODE rows; UAsmHashLoad would only
+  // build empty tables. Skip until OpCodes.DD is installed on A:.
 }
 
 // Call CInit() after Adam/heap exist (Load Compiler / ExePutS smoke). Do not auto-run at

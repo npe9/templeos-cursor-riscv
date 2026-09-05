@@ -66,11 +66,13 @@ CMemberLstMeta *MemberMetaFind(U8 *needle_str,CMemberLst *haystack_member_lst)
 
 CMemberLst *MemberFind(U8 *needle_str,CHashClass *haystack_class)
 {//Find class member. See $LK,"ClassRep",A="MN:ClassRep"$() and $LK,"DocForm",A="MN:DocForm"$().
-  I64 i;
+  I64 i, guard = 256;
   CMemberLst *tmpm;
   do {
     tmpm=haystack_class->member_lst_and_root;
     while (tmpm) {
+      if (--guard <= 0)
+	return NULL; // RV: corrupt member BST must not hang guest Cmp of class
       if (!(i=StrCmp(tmpm->str,needle_str))) {
 	tmpm->use_cnt++;
 	return tmpm;

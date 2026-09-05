@@ -375,20 +375,53 @@ jh_done:
 
 I64 PopUp(U8 *buf,CTask *parent=NULL,CTask **_pu_task=NULL)
 {//Execute code in $LK,"PopUp",A="MN:PopUp"$ task.
-  I64 res;
+  I64 res,i;
   CJob *tmpc;
   CTask *task=Spawn(&SrvCmdLine,NULL,"Servant",,parent);
+  CDrv *dv;
+  CBlkDev *bd;
   if (!parent) {
     TaskExe(task,parent,buf,1<<JOBf_EXIT_ON_COMPLETE|1<<JOBf_FREE_ON_COMPLETE);
     if (_pu_task) *_pu_task=task;
     return 0;
   } else {
     Fs->popup_task=task;
+    // Stock WAKE_MASTER Suspend+Yield; Spawn→RVKFixSpawnFrame makes servant runnable.
+    // Kill(wait=TRUE) hangs: HolyYield skips KILL_TASK but never TaskEnd.
     tmpc=TaskExe(task,parent,buf,1<<JOBf_WAKE_MASTER|1<<JOBf_FOCUS_MASTER);
     if (_pu_task) *_pu_task=task;
     JobResScan(tmpc,&res);
     Fs->popup_task=NULL;
-    Kill(task);
+    Kill(task,FALSE);
+    // Soft-reap like RVWinTaskSoftKill: drop locks, unlink, invalidate.
+    // Orphaned Drv/BlkDev locks → FilesFind DrvLock Yield forever.
+    if (task) {
+      for (i=0;i<DRVS_NUM;i++) {
+	dv=&blkdev.drvs[i];
+	if (dv->owning_task==task) {
+	  dv->owning_task=NULL;
+	  LBtr(&dv->locked_flags,DVlf_LOCKED);
+	}
+      }
+      for (i=0;i<BLKDEVS_NUM;i++) {
+	bd=&blkdev.blkdevs[i];
+	if (bd->owning_task==task) {
+	  bd->owning_task=NULL;
+	  LBtr(&bd->locked_flags,BDlf_LOCKED);
+	}
+      }
+      if (task->next_task && task->last_task &&
+	    task->next_task!=task &&
+	    task->next_task->last_task==task &&
+	    task->last_task->next_task==task) {
+	TaskQueRem(task);
+	task->next_task=task;
+	task->last_task=task;
+      }
+      LBts(&task->task_flags,TASKf_KILL_TASK);
+      LBts(&task->task_flags,TASKf_SUSPENDED);
+      task->task_signature=0;
+    }
     if (_pu_task) *_pu_task=NULL;
     return res;
   }

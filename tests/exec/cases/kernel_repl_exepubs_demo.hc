@@ -47,10 +47,16 @@ I64 main()
   RVYieldInit(&Fs);
   RVJiffiesInit(CONFIG_TIMEBASE_FREQ / 1000);
   RVKernelInit();
+  // Soft RX: PutS/FcPoll must not drop piped stdin before GetLine (A2 REPL).
+  RVUartSoftOn(1);
   RVMountRAMDisk('A', 4096);
   CInit();
-  if (adam_task && cmp.asm_hash)
-    adam_task->hash_table->next = cmp.asm_hash;
+  // Chain Fs → asm_hash only when distinct (aliasing creates a HashFind self-loop).
+  if (cmp.asm_hash)
+    cmp.asm_hash->next = NULL;
+  if (Fs && Fs->hash_table && cmp.asm_hash && Fs->hash_table != cmp.asm_hash)
+    Fs->hash_table->next = cmp.asm_hash;
+  RVExePubsWire;
   if (!HashFind("I64", cmp.asm_hash, HTT_INTERNAL_TYPE, 1)) {
     UartPutS("A2 ExePutS REPL: I64 FAIL\n");
     return 1;

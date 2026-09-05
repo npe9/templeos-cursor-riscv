@@ -21,7 +21,9 @@ U0 Exit()
 
 Bool TaskValidate(CTask *task)
 {//return TRUE if task looks valid.
-  if (!(0<task<=I32_MAX) || task->addr!=task ||
+  // x86 used `0<task<=I32_MAX` (32-bit heap). RV64 CTasks live in high DRAM
+  // (e.g. Adam @ 0x86900000) — signature + self-addr are the real checks.
+  if (!task || task->addr!=task ||
 	task->task_signature!=TASK_SIGNATURE_VAL)
     return FALSE;
   else
@@ -239,6 +241,21 @@ I64 TaskInit(CTask *task,I64 stk_size)
   return task;
 }
 
+U0 RVKFixSpawnFrame(CTask *task)
+{//Undo Spawn's x86 [&Exit][data] pushes; plant HolyRVCtxSw {s0..s11=0, ra=rip}.
+  // Yield pops that frame and `ret`s to ra. Plain x86 layout → ra≈0 → mepc=0.
+  I64 top,*frame,i;
+  if (!task) return;
+  top=task->rsp+16;
+  frame=(top-104)&(~15);
+  for (i=0;i<12;i++)
+    frame[i]=0;
+  frame[12]=task->rip;
+  if (!frame[12])
+    Print("RVKFixSpawnFrame WARNING: entry rip=0\n");
+  task->rsp=frame;
+}
+
 CTask *Spawn(U0 (*fp_start_addr)(U8 *data),U8 *data=NULL,U8 *task_name=NULL,
 	I64 target_cpu=-1,	//-1 for current CPU. See $LK,"multi-core",A="FI:::/Demo/MultiCore/LoadTest.HC"$.
 	CTask *parent=NULL,	//NULL means adam
@@ -269,6 +286,8 @@ CTask *Spawn(U0 (*fp_start_addr)(U8 *data),U8 *data=NULL,U8 *task_name=NULL,
   *task->rsp=data;
   task->rsp(U8 *)-=8;
   *task->rsp=&Exit;
+  // RISC-V: Yield/HolyRVCtxSw pops {s0..s11,ra}. Plain x86 [&Exit][data] → mepc=0.
+  RVKFixSpawnFrame(task);
   task->hash_table->next=parent->hash_table;
   MemCpy(task->task_name,task_name,TASK_NAME_LEN);
   StrCpy(task->task_title,task->task_name);

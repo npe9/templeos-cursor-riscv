@@ -22,7 +22,25 @@ Bool BlkDevUnlock(CBlkDev *bd,Bool rst=FALSE)
       bd->flags&=~(BDF_INITIALIZED|BDF_INIT_IN_PROGRESS);
     bd->owning_task=NULL;
     LBtr(&bd->locked_flags,BDlf_LOCKED);
-    Yield; //Prevent deadlock
+    // Match DrvUnlock: Yield only if a peer is actually runnable.
+    // Unconditional Yield with parked RVKSpawn Term/HOME peers hung
+    // FilesFind/FileFind under WinMgr (DrvLock wait / idle spin).
+    if (Fs && Fs->next_task && Fs->next_task!=Fs) {
+      CTask *t=Fs->next_task;
+      Bool peer=FALSE;
+      while (t!=Fs) {
+	if (!Bt(&t->task_flags,TASKf_KILL_TASK) &&
+	      !Bt(&t->task_flags,TASKf_SUSPENDED) &&
+	      !Bt(&t->task_flags,TASKf_AWAITING_MSG)) {
+	  peer=TRUE;
+	  break;
+	}
+	t=t->next_task;
+	if (!t) break;
+      }
+      if (peer)
+	Yield; //Prevent deadlock
+    }
     return TRUE;
   } else
     return FALSE;

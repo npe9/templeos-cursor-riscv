@@ -7,9 +7,25 @@
 #define RV_UART_BASE  CONFIG_UART_BASE
 #endif
 // Trampoline in this file so KeyDevAdd can take &fn (cross-include & is flaky).
+// Optional mirror (WinMgr Term REPL): set while evaluating a Term line so Print
+// lands in both UART and the graphical Term body.
+Bool (*RVConsoleMirrorPutS)(U8 *st);
 Bool RVConsolePutS(U8 *st)
 {
+  if (RVConsoleMirrorPutS && st)
+    (*RVConsoleMirrorPutS)(st);
   return RVUartPutS(st);
+}
+// PutChars/LexPutToken use put_key; put_s-only left put_key=NULL → jalr 0 (mepc=0).
+Bool RVConsolePutKey(I64 ch, I64 sc)
+{
+  U8 e[2];
+  no_warn sc;
+  e[0] = ch;
+  e[1] = 0;
+  if (RVConsoleMirrorPutS)
+    RVConsoleMirrorPutS(e);
+  return RVUartPutS(e);
 }
 
 U0 RVKernelInit()
@@ -30,13 +46,23 @@ U0 RVKernelInit()
       if (Bt(&i, j))
         set_bits_table[i]++;
     }
-  // Native console: platform UART (Drv/RVUart) on the StdOut keydev chain.
+  // Native console: UART StdOut + stock Ctrl-Alt cbs via KeyDevCtrlAltInit
+  // (full KeyDevInit KDRaw chain deferred — hung PopUp/SrvCmdLine on RV).
+  RVConsoleMirrorPutS = NULL;
   RVUartInit();
   MemSet(&keydev.put_key_head, 0, sizeof(CKeyDevEntry));
   QueInit(&keydev.put_key_head);
-  KeyDevAdd(NULL, &RVConsolePutS, CONFIG_UART_BASE, FALSE);
+  KeyDevCtrlAltInit;
+  // PutChars/LexPutToken need put_key (NULL → jalr 0 / mepc=0).
+  KeyDevAdd(&RVConsolePutKey, &RVConsolePutS, CONFIG_UART_BASE, FALSE);
   Fs->display_flags = 0;
+  LBts(&Fs->display_flags, DISPLAYf_NOT_RAW);
   kbd.scan_code = 0;
+  SYS_CTRL_ALT_FLAGS[0] = 0;
+  // Defense: x86 HPET fields must stay 0 — nonzero + HPET() load-faults at 0xFED000F0.
+  cnts.HPET_freq = 0;
+  cnts.HPET_kHz_freq = 0;
+  cnts.HPET_initial = 0;
 }
 // --- Minimal cooperative scheduler --------------------------------------------------------------
 // A round-robin over fixed task slots, built on the RVTaskSwitch context-switch primitive. This is
@@ -210,16 +236,13 @@ U0 RVMountRAMDisk(U8 drv_let, I64 blocks)
   Drv(drv_let);
   // sets Fs->cur_dv, Fs->cur_dir="/"
 }
-// Spawn a task with the kernel's own Spawn(), then re-seed its first on-stack switch frame for the
-// RISC-V calling convention and link it into Adam's next_task ring — the boot's Spawn boilerplate.
+// Spawn with ADD_TO_QUE=0, then link into adam's next_task ring.
+// Spawn() already plants HolyRVCtxSw via RVKFixSpawnFrame (mepc=0-safe).
 CTask *RVKSpawn(U0 (*entry)(), U8 *name, CTask *adam)
 {
   CTask *t = Spawn(entry, NULL, name, -1, adam, 0, 0);
-  I64 top = t->rsp + 16, *frame = (top - 104) & (~15), i;
-  for (i = 0; i < 12; i++)
-    frame[i] = 0;
-  frame[12] = t->rip;
-  t->rsp = frame;
+  if (!t->rip)
+    Print("RVKSpawn WARNING: entry rip=0 for %s\n", name);
   t->next_task = adam->next_task;
   t->last_task = adam;
   adam->next_task->last_task = t;

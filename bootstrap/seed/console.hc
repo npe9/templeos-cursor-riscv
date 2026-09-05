@@ -3,7 +3,10 @@
 // Opt-in: VtCapture(1) dual-writes Print/UartStr into current VT scrollback
 //   (PutCh hook; FrameSend still raw UartPut). VtKeys(1) enables Ctrl-A prefix.
 // When UartMuxOn: FrameSend(ch0, "V\tN") for host tools/uart_mux.py --vt-split.
-// Flat arrays. Serial REPL stays primary (not FB WinMgr). No panes.
+// VtPane(a,b): layout intent only — no guest ANSI split (fights readline).
+//   Host: uart_mux.py --vt-panes renders side-by-side from demuxed vtN.
+//   Framed notify: "P\ta\tb" / "P\t-" when UartMuxOn.
+// Flat arrays. Serial REPL stays primary (not FB WinMgr).
 #define VT_N 4
 #define VT_LINE_MAX 48
 #define VT_SCROLL_N 6
@@ -20,6 +23,8 @@ I64 g_vt_cap_busy;
 I64 g_vt_cap_len;
 U8 g_vt_cap_line[VT_LINE_MAX];
 I64 g_vt_keys;
+I64 g_vt_pane_a;
+I64 g_vt_pane_b;
 U0 VtPutN(U8 *s, I64 max)
 {
   I64 i;
@@ -78,6 +83,8 @@ U0 VtInit()
   g_vt_cap_busy = 0;
   g_vt_cap_len = 0;
   g_vt_keys = 0;
+  g_vt_pane_a = -1;
+  g_vt_pane_b = -1;
   g_vt_inited = 1;
 }
 
@@ -233,6 +240,74 @@ I64 VtKeysGet()
 {
   return g_vt_keys;
 }
+// Notify host pane layout (ch0 "P\ta\tb" or "P\t-"). No-op when mux off.
+U0 VtPaneMuxNotify()
+{
+  U8 msg[6];
+  if (!g_uart_mux)
+    return;
+  msg[0] = 'P';
+  msg[1] = '\t';
+  if (g_vt_pane_a < 0 || g_vt_pane_b < 0) {
+    msg[2] = '-';
+    FrameSend(FRAME_CH_CONSOLE, msg, 3);
+    return;
+  }
+  msg[2] = '0' + g_vt_pane_a;
+  msg[3] = '\t';
+  msg[4] = '0' + g_vt_pane_b;
+  FrameSend(FRAME_CH_CONSOLE, msg, 5);
+}
+// VtPane -- VtPane(0,1)
+// NAME
+//   VtPane - record host-side split layout (no guest TTY redraw)
+U0 VtPane(I64 a, I64 b)
+{
+  if (!g_vt_inited)
+    VtInit;
+  if (a < 0 || a >= VT_N || b < 0 || b >= VT_N) {
+    UartStr("VtPane: bad id (0..");
+    PutCh('0' + (VT_N - 1));
+    UartStr(")\n");
+    return;
+  }
+  g_vt_pane_a = a;
+  g_vt_pane_b = b;
+  VtPaneMuxNotify;
+  g_vt_cap_busy = 1;
+  UartStr("VtPane: ");
+  PutCh('0' + a);
+  UartStr(" | ");
+  PutCh('0' + b);
+  UartStr(" (host --vt-panes; no guest TTY split)\n");
+  g_vt_cap_busy = 0;
+}
+// VtPaneOff -- clear pane layout.
+U0 VtPaneOff()
+{
+  if (!g_vt_inited)
+    VtInit;
+  g_vt_pane_a = -1;
+  g_vt_pane_b = -1;
+  VtPaneMuxNotify;
+  g_vt_cap_busy = 1;
+  UartStr("VtPane: off\n");
+  g_vt_cap_busy = 0;
+}
+
+I64 VtPaneA()
+{
+  if (!g_vt_inited)
+    VtInit;
+  return g_vt_pane_a;
+}
+
+I64 VtPaneB()
+{
+  if (!g_vt_inited)
+    VtInit;
+  return g_vt_pane_b;
+}
 // Vt -- Vt(1)
 U0 Vt(I64 n)
 {
@@ -328,6 +403,14 @@ U0 VtList()
     PutCh('0' + (g_vt_count[i] % 10));
     PutCh('\n');
   }
+  if (g_vt_pane_a >= 0 && g_vt_pane_b >= 0) {
+    UartStr("pane: ");
+    PutCh('0' + g_vt_pane_a);
+    UartStr(" | ");
+    PutCh('0' + g_vt_pane_b);
+    UartStr("  (host --vt-panes)\n");
+  } else
+    UartStr("pane: off\n");
   UartStr("=== VT end ===\n");
   g_vt_cap_busy = 0;
 }
@@ -339,7 +422,8 @@ U0 VtHelp()
   UartStr("  VtPutStr(\"line\"); VtTitle(\"name\"); VtClear; VtList;\n");
   UartStr("  VtCapture(1);  // Print/UartStr → current VT scrollback (opt-in)\n");
   UartStr("  VtKeys(1);     // Ctrl-A then 0-3 / n / p / d  (readline)\n");
+  UartStr("  VtPane(0,1); VtPaneOff;  // host --vt-panes layout (no TTY split)\n");
   UartStr("  UartMuxOn; Vt(1);  // also framed V\\tN on ch0\n");
-  UartStr("  No panes. Man(\"Vt\");  docs/CONSOLE.md\n");
+  UartStr("  Man(\"Vt\");  docs/CONSOLE.md\n");
 }
 VtInit;

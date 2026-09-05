@@ -1,4 +1,7 @@
 #!/bin/bash
+# RETIRED: worry_dream C guest deleted.
+echo "error: run_repl_regression retired (worry_dream deleted); use run_repl_holyc_regression.sh" >&2
+exit 2
 # Hard regression gate for the bare-metal REPL. Unlike run_repl_smoke.sh (which can stay
 # "green" while Src only FileWrite's without opening an editor), this script *requires*
 # Src/Man/editor/trap/livedrv behaviors that users notice when broken.

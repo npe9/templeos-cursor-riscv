@@ -50,7 +50,10 @@ I64 main()
   UartPutS("ExePutS smoke: fs ok\n");
   CInit();
   UartPutS("ExePutS smoke: CInit ok\n");
-  if (adam_task && cmp.asm_hash)
+  if (cmp.asm_hash)
+    cmp.asm_hash->next = NULL;
+  if (adam_task && adam_task->hash_table && cmp.asm_hash &&
+      adam_task->hash_table != cmp.asm_hash)
     adam_task->hash_table->next = cmp.asm_hash;
   if (HashFind("I64", cmp.asm_hash, HTT_INTERNAL_TYPE, 1))
     UartPutS("ExePutS smoke: I64 ok\n");

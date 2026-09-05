@@ -340,7 +340,7 @@ M-mode — prefer OpenOCD hardware breakpoints/watchpoints on silicon.
 | GDB over UART (board, no JTAG) | `GdbStub;` + `tools/uart_gdb_proxy.py` (partial RSP) |
 | HW break/watch on virt without patching text | `HwBreak` / `HwWatch`, or gdb `hbreak`/`watch` |
 | Load ELF, flash, FE310 JTAG | [BAREMETAL.md](BAREMETAL.md) OpenOCD + `riscv64-*-gdb` |
-| FB / WinMgr interactive | [BOARD_FB.md](../templeos-riscv/BOARD_FB.md) — UART dig-down via `RVWinSerial` (`help`/`regs`/`bt`/`fault`→`crash>`) while FB is up |
+| FB / WinMgr interactive | [BOARD_FB.md](../templeos-riscv/BOARD_FB.md) — UART HolyC ExePutS via `RVWinSerial` (`1+1;` → `ans=2`; `fault`→`crash>`) while FB is up |
 | Pull snaps/files to host | [FILE_EXPORT.md](FILE_EXPORT.md) |
 
 Archive `bootstrap/archive/stepping_debugger.c` and `tests/scratch/legacy/debugger.hc`
@@ -354,7 +354,7 @@ are **not** product — do not grow them.
 |-------|-------------------------|------------------------|-------|
 | Legacy `repl.elf` | host slots | seed HolyC | Full dig-down; regression covers Regs restore + `Bp` smoke |
 | `repl-holyc` / bootloader-repl | HolyC soft | seed HolyC in AOT blob | `CrashOnTrap` default; `#include` `crash.hc` / `hwdbg.hc` |
-| Kernel plat / phase3 / win | `RVWinSerial` + `RVCrashMon*` (UART) | UART oracle / dig-down | Soft CSR `regs`/`bt`; full product `CrashOnTrap` is `repl-holyc` |
+| Kernel plat / phase3 / win | `RVWinSerial` + `RVCrashMon*` (UART) | UART ExePutS REPL + dig-down meta | Dig-down `Regs`/`Reg("a0")` = soft GPR snap → `MEM_REGS_SNAP` (+ CSR). Dig-down `bt` = live FP/RA (code PCs `<0x87000000` only) with **static** sym map (no `HashFind`/`FunSeg`). Crash>`bt` = trap **mepc** only (no fp/ra freeze). Full product `CrashOnTrap`/`Bt` is `repl-holyc`. |
 
 Smokes: `make dbg-smoke` (Regs/Bt/Bp/Watch), `make trap-smoke` (Fault/`crash>`/Break), `make hwdbg-smoke` (qemu-gdbstub + `HwTrigProbe`),
 `make gdb-uart-smoke` (guest `GdbStub` RSP), `make repl-regression` (Regs restore + Bp),

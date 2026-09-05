@@ -20,6 +20,7 @@ COMPILER_SOURCES = \
 	$(HOST_DIR)/hash_table.c \
 	$(HOST_DIR)/compiler_helper.c \
 	$(HOST_DIR)/holyc_fmt.c \
+	$(HOST_DIR)/aot_link.c \
 	$(HOST_DIR)/main_stub.c
 COMPILER_HEADERS = \
 	$(HOST_DIR)/holyc_compiler.h \
@@ -31,7 +32,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop asm-gnu-diff compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration a3-flip-check repl-smoke dbg-smoke hwdbg-smoke gdb-uart-smoke trap-smoke repl-blob repl-regression repl-holyc repl-holyc-smoke repl-holyc-regression hc-repl hc-repl-smoke term-probe-pty repl-uart-echo-pty repl-uart-xon-pty zmodem-smoke trzsz-smoke dump-changes-smoke baremetal baremetal-plat baremetal-smoke repl-payload bootloader bootloader-repl bootloader-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke kernel-selfboot-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtio-pci-irq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-win-smoke kernel-win-interactive kernel-win-serial-smoke kernel-win-run kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-sifive-gem-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-sifive-e-full kernel-sifive-e-full-smoke kernel-smp-smoke kernel-exepubs-smoke kernel-repl-exepubs-smoke repl-cmp repl-cmp-smoke kernel-phase3-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
+.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop asm-gnu-diff compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration a3-flip-check repl-smoke dbg-smoke hwdbg-smoke gdb-uart-smoke trap-smoke repl-blob repl-regression repl-holyc repl-holyc-smoke repl-holyc-regression hc-repl hc-repl-smoke term-probe-pty repl-uart-echo-pty repl-uart-xon-pty zmodem-smoke trzsz-smoke dump-changes-smoke baremetal baremetal-plat baremetal-smoke repl-payload bootloader bootloader-repl bootloader-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke kernel-selfboot-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtio-pci-irq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-cdc-smoke kernel-demo-netofdots-smoke kernel-demo-blot-smoke kernel-span-smoke kernel-psalmody-smoke kernel-ode-smoke kernel-win-smoke kernel-win-interactive kernel-win-serial-smoke kernel-win-run kernel-win-rebuild kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-sifive-gem-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-sifive-e-full kernel-sifive-e-full-smoke kernel-smp-smoke kernel-exepubs-smoke kernel-repl-exepubs-smoke repl-cmp repl-cmp-smoke kernel-phase3-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -162,9 +163,10 @@ bios-smoke:
 	@tests/scripts/run_bios_smoke.sh
 
 # RAM-linked bare-metal install dir (FPGA OpenOCD / qemu -bios none -kernel). See docs/BAREMETAL.md.
-# Legacy C guest path (worry_dream); product HolyC payload is `make repl-payload`.
+# Legacy C guest (worry_dream) removed — product HolyC payload is `make repl-payload`.
+# `make baremetal` without PAYLOAD builds plat; for REPL use `make repl-payload`.
 baremetal:
-	$(MAKE) -C bootstrap -f Makefile.baremetal baremetal
+	$(MAKE) -C bootstrap -f Makefile.baremetal baremetal PAYLOAD=plat
 
 baremetal-plat:
 	$(MAKE) -C bootstrap -f Makefile.baremetal baremetal PAYLOAD=plat
@@ -194,20 +196,18 @@ bootloader-smoke:
 	@chmod +x tests/scripts/run_bootloader_smoke.sh
 	@tests/scripts/run_bootloader_smoke.sh
 
-# Legacy C guest REPL (worry_dream_repl.c) — DEPRECATED for product/self-host.
-# Still required in qemu-integration until SELF_HOST.md A3 flip criteria; then delete.
-# Local: SKIP_REPL_LEGACY=1 skips these in qemu-integration only (not for CI).
+# Legacy C guest (worry_dream) deleted — use repl-holyc-smoke / trap-smoke / dbg on HolyC path.
 repl-smoke:
-	@chmod +x tests/scripts/run_repl_smoke.sh
-	@tests/scripts/run_repl_smoke.sh
+	@echo "error: repl-smoke retired (worry_dream deleted); use: make repl-holyc-smoke" >&2
+	@exit 2
 
 dbg-smoke:
-	@chmod +x tests/scripts/run_dbg_smoke.sh
-	@tests/scripts/run_dbg_smoke.sh
+	@echo "error: dbg-smoke retired with worry_dream C guest; use HolyC REPL / docs/DEBUGGER.md" >&2
+	@exit 2
 
 hwdbg-smoke:
-	@chmod +x tests/scripts/run_hwdbg_smoke.sh
-	@tests/scripts/run_hwdbg_smoke.sh
+	@echo "error: hwdbg-smoke retired with worry_dream C guest; use HolyC REPL / docs/DEBUGGER.md" >&2
+	@exit 2
 
 # Guest GDB RSP over UART (GdbStub) — raw UART until mux ch2; not qemu -gdb.
 gdb-uart-smoke:
@@ -219,7 +219,7 @@ trap-smoke:
 	@tests/scripts/run_trap_smoke.sh
 
 # Rebuild REPL boot runtime snapshot (concat seeds → boot_blob_embed.h + AOT validate).
-# After editing bootstrap/seed/*.hc, run this (or just rebuild repl.elf — Makefile.repl depends on it).
+# After editing bootstrap/seed/*.hc, run this (boot_blob_embed.h via Makefile.repl).
 repl-blob: $(COMPILER_BIN)
 	@$(MAKE) -C bootstrap -f Makefile.repl boot_blob_embed.h HOLYC_HOST=../holyc-riscv
 	@echo "✓ repl boot blob ready (bootstrap/boot_blob_embed.h)"
@@ -242,17 +242,16 @@ repl-holyc-regression:
 	@chmod +x tests/scripts/run_repl_holyc_regression.sh
 	@tests/scripts/run_repl_holyc_regression.sh
 
-# G7 scaffolding: HolyC smoke+regression+repl-cmp + blocker checklist → READY/NOT READY.
-# Does NOT change qemu-integration dual-run. Draft apply notes: docs/A3_FLIP_DRAFT.md.
+# G7 readiness: HolyC smoke+regression+repl-cmp → READY/NOT READY (A3 flip applied).
+# See docs/A3_FLIP_DRAFT.md / docs/SELF_HOST.md.
 a3-flip-check:
 	@chmod +x tests/scripts/run_a3_flip_check.sh
 	@tests/scripts/run_a3_flip_check.sh
 
-# Hard REPL gate on LEGACY C guest: Src must open Vi, FnSize>0, Man/SrcFile, trap…
-# See tests/REGRESSION.md. Product path: repl-holyc-regression (dual-run until A3).
+# Legacy C guest honesty gate retired with worry_dream. Primary: repl-holyc-regression.
 repl-regression:
-	@chmod +x tests/scripts/run_repl_regression.sh
-	@tests/scripts/run_repl_regression.sh
+	@echo "error: repl-regression retired (worry_dream deleted); use: make repl-holyc-regression" >&2
+	@exit 2
 
 # PTY + mock CPR: TermProbe must leave 80x24 (piped smoke cannot; host TTY answers DSR).
 term-probe-pty:
@@ -354,6 +353,12 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) kernel-virtio-scsi-smoke
 	@$(MAKE) kernel-fb-smoke
 	@$(MAKE) kernel-gr-smoke
+	@$(MAKE) kernel-cdc-smoke
+	@$(MAKE) kernel-demo-netofdots-smoke
+	@$(MAKE) kernel-demo-blot-smoke
+	@$(MAKE) kernel-span-smoke
+	@$(MAKE) kernel-psalmody-smoke
+	@$(MAKE) kernel-ode-smoke
 	@$(MAKE) kernel-win-smoke
 	@$(MAKE) kernel-win-interactive
 	@$(MAKE) kernel-win-serial-smoke
@@ -365,24 +370,16 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) kernel-exepubs-fundef-smoke
 	@$(MAKE) kernel-repl-exepubs-smoke
 	@$(MAKE) kernel-phase3-smoke
-	# Track A (docs/SELF_HOST.md A3): HolyC product gates are required.
+	# Track A (docs/SELF_HOST.md A3 Done): HolyC-only honesty gates.
 	# repl-cmp-smoke already ran above as kernel-repl-exepubs-smoke → build/repl-cmp.elf.
+	# Legacy repl-smoke/repl-regression and zmodem-smoke are local-only (not required).
 	@$(MAKE) repl-holyc-smoke
 	@$(MAKE) repl-holyc-regression
 	@$(MAKE) bootloader-smoke
-	# Deprecated legacy C guest (worry_dream). Still required until A3 flip criteria.
-	# Local opt-out only: SKIP_REPL_LEGACY=1 make qemu-integration (CI must not set this).
-ifeq ($(SKIP_REPL_LEGACY),1)
-	@echo "NOTE: SKIP_REPL_LEGACY=1 — skipping deprecated repl-smoke/repl-regression (not for CI)"
-else
-	@$(MAKE) repl-smoke
-	@$(MAKE) repl-regression
-endif
 	@$(MAKE) repl-9p-smoke
 	@$(MAKE) term-probe-pty
 	@$(MAKE) repl-uart-echo-pty
 	@$(MAKE) repl-uart-xon-pty
-	@$(MAKE) zmodem-smoke
 	@$(MAKE) dump-changes-smoke
 
 # Compile a program that #includes the real kernel, formats with its StrPrintJoin, and prints
@@ -600,26 +597,132 @@ kernel-gr-smoke:
 	@chmod +x tests/scripts/run_kernel_gr_smoke.sh
 	@tests/scripts/run_kernel_gr_smoke.sh
 
+# DCNew/GrBlot + Sprite3 subset on CRVDC (P4 widen; Demo blot/SpriteRaw).
+kernel-cdc-smoke:
+	@chmod +x tests/scripts/run_kernel_cdc_smoke.sh
+	@tests/scripts/run_kernel_cdc_smoke.sh
+
+# Stock Demo/Graphics/NetOfDots.HC on RV Gr (CDC/GrLine step/PressAKey soft).
+kernel-demo-netofdots-smoke:
+	@chmod +x tests/scripts/run_kernel_demo_netofdots_smoke.sh
+	@tests/scripts/run_kernel_demo_netofdots_smoke.sh
+
+# Stock Demo/Graphics/Blot.HC (FloodFill3/brush + SettingsPush/WinMax/PopUpColor/Refresh).
+kernel-demo-blot-smoke:
+	@chmod +x tests/scripts/run_kernel_demo_blot_smoke.sh
+	@tests/scripts/run_kernel_demo_blot_smoke.sh
+
+# Stock Apps/Span Load (Cd(__DIR__) + Bridge/FloodFill + GetMsg/PopUpFileName).
+kernel-span-smoke:
+	@chmod +x tests/scripts/run_kernel_span_smoke.sh
+	@tests/scripts/run_kernel_span_smoke.sh
+
+# Psalmody API + host $IB staff embed (Note2Ona/Menu/Tempo; fixture bins).
+kernel-psalmody-smoke:
+	@chmod +x tests/scripts/run_kernel_psalmody_smoke.sh
+	@tests/scripts/run_kernel_psalmody_smoke.sh
+
+# Lite RVODE mass-spring tick + pause (P5 stretch; UART oracle).
+kernel-ode-smoke:
+	@chmod +x tests/scripts/run_kernel_ode_smoke.sh
+	@tests/scripts/run_kernel_ode_smoke.sh
+
 # TempleOS-style text_base WinMgr on RVFb (bordered windows → ramfb; UART hash).
 kernel-win-smoke:
 	@chmod +x tests/scripts/run_kernel_win_smoke.sh
 	@tests/scripts/run_kernel_win_smoke.sh
 
+# --- win_i.elf / win_hold.elf: incremental AOT compile + link ---
+# Units: build/aot/win/{kernel_i|kernel_hold,compiler}.bin → link → blob → ELF.
+# Unchanged units skip parse/optimize/emit; only relink when an input .bin is newer.
+# Force full rebuild: make kernel-win-rebuild  (rm ELFs + aot units)
+WIN_I_ELF := build/exec/win_i.elf
+WIN_HOLD_ELF := build/exec/win_hold.elf
+WIN_AOT_DIR := build/aot/win
+WIN_AOT_COMPILER_BIN := $(WIN_AOT_DIR)/compiler.bin
+WIN_AOT_KERNEL_I_BIN := $(WIN_AOT_DIR)/kernel_i.bin
+WIN_AOT_KERNEL_HOLD_BIN := $(WIN_AOT_DIR)/kernel_hold.bin
+WIN_AOT_BLOB_I := $(WIN_AOT_DIR)/win_i.blob.bin
+WIN_AOT_BLOB_HOLD := $(WIN_AOT_DIR)/win_hold.blob.bin
+WIN_AOT_CASE_I := tests/exec/aot/win_i.hc
+WIN_AOT_CASE_HOLD := tests/exec/aot/win_hold.hc
+WIN_AOT_COMPILER_SRC := tests/exec/aot/win_compiler.PRJ
+WIN_AOT_SCRIPT := tests/scripts/run_kernel_win_interactive.sh
+WIN_AOT_HARNESS := \
+	tests/exec/harness/crt0.S \
+	tests/exec/harness/oracle_out.c \
+	tests/exec/harness/link_exepubs.ld \
+	bootstrap/holy_rt.h
+
+# First build writes .d; subsequent builds use precise include graphs.
+-include $(WIN_AOT_DIR)/compiler.d
+-include $(WIN_AOT_DIR)/kernel_i.d
+-include $(WIN_AOT_DIR)/kernel_hold.d
+
+$(WIN_AOT_DIR):
+	@mkdir -p $(WIN_AOT_DIR)
+
+$(WIN_AOT_COMPILER_BIN): $(WIN_AOT_COMPILER_SRC) $(COMPILER_BIN) | $(WIN_AOT_DIR)
+	@echo "holyc: compile unit compiler ← $(WIN_AOT_COMPILER_SRC)"
+	@HOLYC_INCLUDE_ROOT="$(CURDIR)" ./$(COMPILER_BIN) $(WIN_AOT_COMPILER_SRC) \
+		-o $@ --deps $(WIN_AOT_DIR)/compiler.d --map $(WIN_AOT_DIR)/compiler.map
+
+$(WIN_AOT_KERNEL_I_BIN): $(WIN_AOT_CASE_I) tests/exec/cases/kernel_win_interactive.hc $(COMPILER_BIN) | $(WIN_AOT_DIR)
+	@echo "holyc: compile unit kernel_i ← $(WIN_AOT_CASE_I)"
+	@HOLYC_INCLUDE_ROOT="$(CURDIR)" ./$(COMPILER_BIN) $(WIN_AOT_CASE_I) \
+		-o $@ --deps $(WIN_AOT_DIR)/kernel_i.d --map $(WIN_AOT_DIR)/kernel_i.map
+
+$(WIN_AOT_KERNEL_HOLD_BIN): $(WIN_AOT_CASE_HOLD) tests/exec/cases/kernel_win_interactive.hc $(COMPILER_BIN) | $(WIN_AOT_DIR)
+	@echo "holyc: compile unit kernel_hold ← $(WIN_AOT_CASE_HOLD)"
+	@HOLYC_INCLUDE_ROOT="$(CURDIR)" ./$(COMPILER_BIN) $(WIN_AOT_CASE_HOLD) \
+		-o $@ --deps $(WIN_AOT_DIR)/kernel_hold.d --map $(WIN_AOT_DIR)/kernel_hold.map
+
+$(WIN_AOT_BLOB_I): $(WIN_AOT_KERNEL_I_BIN) $(WIN_AOT_COMPILER_BIN) $(COMPILER_BIN)
+	@echo "holyc: link $(WIN_AOT_BLOB_I)"
+	@./$(COMPILER_BIN) --link -o $@ --base 0x80800000 \
+		$(WIN_AOT_KERNEL_I_BIN) $(WIN_AOT_COMPILER_BIN)
+
+$(WIN_AOT_BLOB_HOLD): $(WIN_AOT_KERNEL_HOLD_BIN) $(WIN_AOT_COMPILER_BIN) $(COMPILER_BIN)
+	@echo "holyc: link $(WIN_AOT_BLOB_HOLD)"
+	@./$(COMPILER_BIN) --link -o $@ --base 0x80800000 \
+		$(WIN_AOT_KERNEL_HOLD_BIN) $(WIN_AOT_COMPILER_BIN)
+
+$(WIN_I_ELF): $(WIN_AOT_BLOB_I) $(WIN_AOT_SCRIPT) $(WIN_AOT_HARNESS)
+	@mkdir -p build/exec
+	@chmod +x $(WIN_AOT_SCRIPT)
+	@RVWIN_HOLD=0 RVWIN_BUILD_ONLY=1 RVWIN_SKIP_AOT=1 RVWIN_BLOB=$(WIN_AOT_BLOB_I) \
+		RVWIN_OUT=$(WIN_I_ELF) $(WIN_AOT_SCRIPT)
+
+$(WIN_HOLD_ELF): $(WIN_AOT_BLOB_HOLD) $(WIN_AOT_SCRIPT) $(WIN_AOT_HARNESS)
+	@mkdir -p build/exec
+	@chmod +x $(WIN_AOT_SCRIPT)
+	@RVWIN_HOLD=1 RVWIN_BUILD_ONLY=1 RVWIN_SKIP_AOT=1 RVWIN_BLOB=$(WIN_AOT_BLOB_HOLD) \
+		RVWIN_OUT=$(WIN_HOLD_ELF) $(WIN_AOT_SCRIPT)
+
+# Force AOT even if mtimes look current (e.g. after tool-chain swap without touch).
+kernel-win-rebuild:
+	@rm -f $(WIN_I_ELF) $(WIN_HOLD_ELF) build/exec/win_serial.elf
+	@rm -rf $(WIN_AOT_DIR)
+	@$(MAKE) $(WIN_I_ELF) $(WIN_HOLD_ELF)
+
 # Interactive WinMgr ELF + headless UART proof (paint + virtio-input).
 # Human cocoa: make kernel-win-run
-kernel-win-interactive:
+kernel-win-interactive: $(WIN_I_ELF) $(WIN_HOLD_ELF)
 	@chmod +x tests/scripts/run_kernel_win_interactive.sh
-	@tests/scripts/run_kernel_win_interactive.sh
+	@RVWIN_HOLD=0 RVWIN_SKIP_BUILD=1 RVWIN_OUT=$(WIN_I_ELF) \
+		tests/scripts/run_kernel_win_interactive.sh
 
 # UART dig-down while WinMgr hold: help/regs/q needles on -serial
-kernel-win-serial-smoke:
+kernel-win-serial-smoke: $(WIN_HOLD_ELF)
 	@chmod +x tests/scripts/run_kernel_win_serial_smoke.sh
 	@tests/scripts/run_kernel_win_serial_smoke.sh
 
 # One-command interactive desktop (cocoa on macOS / sdl elsewhere; ESC quits).
-kernel-win-run:
+# Reuses $(WIN_HOLD_ELF) when Kernel/Compiler/holyc-riscv/harness unchanged.
+kernel-win-run: $(WIN_HOLD_ELF)
 	@chmod +x tests/scripts/run_kernel_win_interactive.sh
-	@RVWIN_HOLD=1 RVWIN_DISPLAY=auto tests/scripts/run_kernel_win_interactive.sh
+	@RVWIN_HOLD=1 RVWIN_DISPLAY=auto RVWIN_SKIP_BUILD=1 RVWIN_OUT=$(WIN_HOLD_ELF) \
+		tests/scripts/run_kernel_win_interactive.sh
 
 # Multi-kernel: one plat-demo ELF (+ config snapshot) per Kconfig machine.
 # Artifacts: build/kernels/<machine>/plat.elf and build/exec/<machine>_plat.elf
@@ -874,30 +977,36 @@ help:
 	@echo "  ci              - compliance, fmt-test, fmt-check, asm-stress, asm-prop, then qemu-integration"
 	@echo "  compliance-exec - run_holyc_compliance.sh --exec (suites + exec oracles; no templeos-smoke)"
 	@echo "  exec-oracle     - UART oracle tests only (tests/exec; needs RISC-V + qemu-system)"
-	@echo "  qemu-integration - asm/compiler-stress + oracles + templeos + kernel smokes + plat/phase3 + HolyC+legacy REPL (dual-run; SELF_HOST.md A3)"
+	@echo "  qemu-integration - asm/compiler-stress + oracles + templeos + kernel smokes + plat/phase3 + HolyC REPL honesty (A3 Done)"
 	@echo "  repl-holyc / repl-holyc-smoke - HolyC memfs/Dir REPL (ExePutS→Jit bridge; no C guest)"
 	@echo "  repl-cmp / repl-cmp-smoke - A2/A3 required: Kernel+Compiler_RV ExePutS (build/repl-cmp.elf; =kernel-repl-exepubs-smoke)"
-	@echo "  repl-holyc-regression - A3 HolyC honesty (memfs/Dir/Src-dump/JIT language; expand toward full flip)"
-	@echo "  a3-flip-check     - G7 scaffolding: holyc-smoke+regression+repl-cmp → READY/NOT READY (does not flip CI)"
+	@echo "  repl-holyc-regression - primary HolyC honesty gate (memfs/Dir/Src-dump/JIT language)"
+	@echo "  a3-flip-check     - G7 readiness: holyc-smoke+regression+repl-cmp → READY/NOT READY"
 	@echo "  bootloader-smoke  - HolyC pflash boot → HolyC REPL blob (product split-boot)"
-	@echo "  SKIP_REPL_LEGACY=1 - local only: skip deprecated repl-smoke/repl-regression in qemu-integration"
-	@echo "  repl-smoke        - DEPRECATED legacy C guest (worry_dream); still required CI until A3 flip"
+	@echo "  repl-smoke        - RETIRED (worry_dream deleted); use repl-holyc-smoke"
 	@echo "  hc-repl / hc-repl-smoke - alias of repl-holyc* (do not grow jit.hc)"
-	@echo "  repl-regression   - DEPRECATED legacy C honesty (Vi/Man/Regs/…); still required CI until A3 flip"
+	@echo "  repl-regression   - RETIRED (worry_dream deleted); use repl-holyc-regression"
 	@echo "  term-probe-pty    - PTY + mock CPR: TermProbe updates TermRows/TermCols"
 	@echo "  repl-uart-echo-pty - paced PTY: single-echo keys + Ctrl-C (uart_hw_drain race)"
 	@echo "  repl-uart-xon-pty  - PTY: host Ctrl-S/Ctrl-Q pauses/resumes bulk UART TX"
-	@echo "  zmodem-smoke     - guest ZMODEM send + host Python rz (PTY)"
+	@echo "  zmodem-smoke     - guest ZMODEM send + host Python rz (PTY; local only, G11 waived)"
 	@echo "  trzsz-smoke      - guest native trzsz (tsz) send + host Python client (local)"
 	@echo "  dump-changes-smoke - DumpChanges UART + rename journal + wrap"
 	@echo "  gdb-uart-smoke   - guest GdbStub RSP over UART (regs/mem/Z0/soft-step; not qemu -gdb)"
 	@echo "  known-good-pin / known-good-check - hash last-good repl/plat ELFs (docs/OPS.md)"
 	@echo "  kernel-fb-smoke   - 32-bpp FB + QEMU ramfb (UART hash; optional display via -device ramfb)"
 	@echo "  kernel-gr-smoke   - Gr*/CDC + soft term on FB (UART hash; RVGrRefresh/present)"
+	@echo "  kernel-cdc-smoke  - DCNew/GrBlot/FloodFill/brush + Sprite3 (Demo Blot APIs; UART hash)"
+	@echo "  kernel-demo-netofdots-smoke - stock Demo/Graphics/NetOfDots.HC on RV Gr (UART hash)"
+	@echo "  kernel-demo-blot-smoke - stock Demo/Graphics/Blot.HC FloodFill3/brush + Win shims"
+	@echo "  kernel-span-smoke - stock Apps/Span Load Cd(__DIR__) + GetMsg/PopUpFileName"
+	@echo "  kernel-psalmody-smoke - Psalmody Note2Ona/Menu/Tempo + host \$IB staff embed"
+	@echo "  kernel-ode-smoke  - stock Demo/Games/MassSpring.HC on AMathODE_RV (RK5+ODEsUpdate)"
 	@echo "  kernel-win-smoke  - TempleOS-style WinMgr windows on FB (UART hash; bordered desktop)"
 	@echo "  kernel-win-interactive - win_i.elf + headless UART proof (ramfb + virtio-kbd/tablet)"
-	@echo "  kernel-win-serial-smoke - WinMgr hold + serial help/regs/q dig-down needles"
-	@echo "  kernel-win-run    - one-command cocoa/sdl DocTerm until ESC (serial mon:stdio; Ctrl-A C)"
+	@echo "  kernel-win-serial-smoke - WinMgr hold + serial HolyC ExePutS (1+1→ans) + crash/q"
+	@echo "  kernel-win-run    - one-command cocoa/sdl DocTerm until ESC (reuses win_hold.elf if current)"
+	@echo "  kernel-win-rebuild - force full AOT (rm build/aot/win + win_*.elf; recompile all units)"
 	@echo "  kernel-plat-smoke - HolyC Kconfig UART/CLINT smoke on -M virt"
 	@echo "  kernel-rtc-smoke  - Goldfish RTC wall-clock on virt"
 	@echo "  kernel-fwcfg-smoke - QEMU fw_cfg signature + file dir on virt"

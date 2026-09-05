@@ -1,15 +1,15 @@
 // kernel_phase3_demo.hc — RVKMain phase 3 smoke:
-// Kernel + Compiler_RV → CInit/ExePutS → Load(CBinFile) → guest MakeOS(Cmp) →
-// guest Runtime BINs → StartOS Loads StartOS+Seed+Svc+Kern.
+// Kernel + Load(Compiler.BIN seed) → guest MakeOS(Cmp) →
+// guest Runtime BINs (incl. A:/Kernel/Kernel.BIN) → StartOS Loads them.
+// G9: no in-image Compiler_RV_Body / HostBinEmbed — Cmp is loaded seed.
 // TempleOS Boot.DD shape (not jit.hc). See templeos-riscv/COMPILER_RV.md.
 #define RV_PHASE3 1
+#define RV_PHASE3_LOADED_CMP_ONLY 1
 #include "/Kernel/Kernel_RV.PRJ"
 #include "/Compiler/RISCVRegs.HH"
-#include "/Compiler/Compiler_RV_Body.PRJ"
 #include "/Adam/Opt/Boot/MakeAll_RV.HC"
 #include "/Kernel/RVCmpImports.HC"
 #include "/Kernel/RVCmpRtPatch.HH"
-#include "/Kernel/RVHostBinEmbed.HC"
 #include "/Kernel/RVPhase3.HC"
 I64 main()
 {

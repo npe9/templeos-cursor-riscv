@@ -1,0 +1,14 @@
+// TempleOS MenuNew-format PersonalMenu for RISC-V WinMgr (P3).
+// SoT for RVMenuPersonalInit MenuFile / FileFind (A:/Adam/PersonalMenu.DD).
+Win {
+  TileHorz(,1);
+  TileVert(,2);
+  WinMax(,3);
+  Close(,4);
+}
+Help {
+  About(,5);
+  Help(,6);
+  FormDemo(,7);
+  CtrlsDemo(,8);
+}

@@ -124,13 +124,19 @@ add '1+1;'
 # Re-Running seed uart.hc would redefine UartPut and clobber AOT soft RX
 # (hc_repl/uart.hc). Legacy uart insert mark is 150a after RTS/CTS stub (docs
 # once said 148a). Same honesty: 6a inserts ToUpper before PutCh, re-Run.
-# Unary * is Lbu in jit.hc (U8 walk). Avoid s[i] loops (can wedge after LiveMsg).
+# Use s[i] OK after JIT fix (rvalue name[i] no longer leaks PushA0). Prefer *s++ + Lbu.
 add $'Ed("Home/livedrv.hc");\na\nU0 LiveMsg()\n{\n  I64 ch;\n  U8 *s = "livedrv ";\n  while (*s) {\n    ch = *s++;\n    PutCh(ch);\n  }\n}\n.\nw\nq'
 add 'Run("Home/livedrv.hc");'
 add 'LiveMsg;'
 add $'Ed("Home/livedrv.hc");\n6a\n    ch = ToUpper(ch);\n.\nw\nq'
 add 'Run("Home/livedrv.hc");'
 add 'LiveMsg;'
+
+# ---- G3 Vi INSERT Enter splits; Esc+:wq (soft-ring Esc unget) ----
+add $'FileWrite("Home/vsplit.txt","",0);'
+add $'Vi("Home/vsplit.txt");\niVSPLIT_A\rVSPLIT_B\x1b:wq\r'
+add 'Cat("Home/vsplit.txt");'
+add '"after-vi-split\n";'
 
 # ---- G3 gd: nested (Print → print.hc) + same-file seek ----
 add $'Ed("Home/jmp.hc");\na\nPrint("jmp-mark\\n");\n.\nw\nq'
@@ -185,13 +191,21 @@ add 'Man("GetRAX");'
 # ---- G5 Tab / CompCollectSyms / multiline (... indent + mid-token) ----
 # Live asm{} mid-token Tab is flaky on piped UART; prove CompCollect* + Fun/MEM Tab.
 add 'CompCollectSyms("MEM_PL", 6);'
+add 'CompCollectSyms("UART_LSR", 8);'
 add 'CompCollectSyms("Pri", 3);'
 add 'CompCollectAsm(0, "slli", 4);'  # ASM_COMP_OP
+add '#define SESDEF_TAB_OK 1'
+add 'CompCollectSyms("SESDEF_TAB", 10);'
+add 'CompMidDemo();'
+add 'RlMidDemo();'
 add $'I64 g6mpl = MEM_PL\t;'
 add 'g6mpl;'
 add $'pri\t("hc-tab-print\\n");'
 add $'U0 MlTabFn()\n{\n\tPrint("  MLTAB_MARK\\n");\n}\n'
 add 'MlTabFn();'
+# Multiline unit recall (Up re-runs braced Print)
+add $'{\nPrint("HIST_ML_OK\\n");\n}\n'
+add $'\x1b[A\n'
 # asm{} body (no mid-token Tab — piped list/newline is flaky); Print then call
 add 'I64 AsmTabOp(){asm{slli a0,zero,0 addi a0,a0,3}}'
 add 'Print("asm_tab_op_ok\n");'
@@ -316,6 +330,9 @@ expect_text "hc-tab-print"
 expect_text "  MLTAB_MARK"
 expect_text "asm_tab_op_ok"
 expect_text "ans=0x0000000000000005"   # CompCollectSyms(MEM_PL) → 5
+expect_text "ans=0x0000000000000003"   # CompCollectSyms(UART_LSR) → 3
+expect_text "ans=0x0000000000000001"   # CompCollectSyms(SESDEF_TAB) session #define
+expect_text "x=MEM_PLIC;"              # CompMidDemo + RlMidDemo mid-line Tab
 # Tab expanded MEM_PL → MEM_PLIC (JIT may not eval #define; prove echo)
 expect_text "I64 g6mpl = MEM_PLIC;"
 if [ "$(grep -cF 'HIST_RECALL_OK' "$log" || true)" -lt 2 ]; then
@@ -331,6 +348,10 @@ if [ "$(grep -cF 'HIST_UP2_OK' "$log" || true)" -lt 2 ]; then
   FAILS=$((FAILS + 1))
 fi
 expect_text "HIST_UP2_TOP"
+if [ "$(grep -cF 'HIST_ML_OK' "$log" || true)" -lt 2 ]; then
+  echo "FAIL repl-holyc-regression — need ≥2 HIST_ML_OK (multiline unit Up)" >&2
+  FAILS=$((FAILS + 1))
+fi
 # G1 soft dbg (DONE — cover)
 expect_text "Regs (HolyC soft)"
 expect_text "FS=1"
@@ -400,6 +421,14 @@ reject_text "editor: not in repl-holyc"
 # G3 livedrv / gd / K (product path; not legacy uart 150a)
 expect_text 'livedrv '
 expect_text 'LIVEDRV '
+expect_text 'VSPLIT_A'
+expect_text 'VSPLIT_B'
+expect_text 'after-vi-split'
+# Cat must show a real newline between halves (ANSI frames may glue visually).
+if ! grep -q $'VSPLIT_A\nVSPLIT_B' "$log"; then
+  echo "FAIL repl-holyc-regression — Vi INSERT Enter missing newline between VSPLIT_A/B" >&2
+  FAILS=$((FAILS + 1))
+fi
 expect_text '-- NORMAL -- print.hc'
 expect_text 'after-nested-gd'
 expect_text 'after-same-gd'

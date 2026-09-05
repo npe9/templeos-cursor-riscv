@@ -48,7 +48,9 @@ add_case() {
   if [ $# -gt 1 ]; then expected+="$2"$'\n'; fi
 }
 
-# Soft VT mux (console.hc): CONSOLE.md #4 — first so needles survive HIST/Tty ring stress
+# G5 hist_seed: cold Up before any session push → HIST_SEED_OK (same as holyc-regression)
+input+=$'\x1b[A\n'
+# Soft VT mux (console.hc): CONSOLE.md #4 — after hist_seed so Up recalls seed, not Vt*
 add_case 'VtList();'
 add_case 'Vt(1);'
 add_case 'VtPutStr("vt1-session");'
@@ -57,8 +59,8 @@ add_case 'Print("vt-cap-line\\n");'
 add_case 'VtCapture(0);'
 add_case 'VtList();'
 add_case 'VtDetach();'
-# G5 hist_seed: cold Up first (before any session push) → HIST_SEED_OK
-input+=$'\x1b[A\n'
+add_case 'VtPane(0,1);'
+add_case 'VtPaneOff();'
 # /proc-ish (sys.hc) early — before Dir (Dir can be slow on large memfs)
 add_case 'Sys();'
 # G5 history session Up×1 / Up×2 — before TtyRaw / Src starve the ring
@@ -157,11 +159,19 @@ add_case 'SrcFileRep("Print");'
 add_case 'FnSizeRep("Print");'
 # G5 Tab / CompCollectSyms / multiline indent+complete
 add_case 'CompCollectSyms("MEM_PL", 6);' 0000000000000005
+add_case 'CompCollectSyms("UART_LSR", 8);' 0000000000000003
 add_case 'CompCollectSyms("Pri", 3);' 0000000000000001
+add_case '#define SESDEF_TAB_OK 1'
+add_case 'CompCollectSyms("SESDEF_TAB", 10);' 0000000000000001
+add_case 'CompMidDemo();'
+add_case 'RlMidDemo();'
 input+=$'Print("MEM_PLIC=%X\\n", MEM_PL\t);\n'
 input+=$'pri\t("hc-tab-print\\n");\n'
 input+=$'U0 MlTabFn()\n{\n\tPrint("  MLTAB_MARK\\n");\n}\n'
 add_case 'MlTabFn();'
+# G5 multiline unit recall: Up re-runs braced Print (HIST_ML_OK ≥2)
+input+=$'{\nPrint("HIST_ML_OK\\n");\n}\n'
+input+=$'\x1b[A\n'
 # (HIST_RECALL_OK / HIST_UP2_* wired early after Dir — see above)
 # G1 soft Regs / MemMap / StkRep / Callers (HolyC; no host slots)
 add_case 'MemMap;'
@@ -232,6 +242,8 @@ need "=== VT (soft mux) ==="
 need "--- VT 1 (vt1) ---"
 need "vt1-session"
 need "vt-cap-line"
+need "host --vt-panes"
+need "VtPane: off"
 need "--- VT 0 (repl) ---"
 need "repl-holyc ready"
 need "formatted print to the UART"
@@ -246,6 +258,7 @@ need "G5: Tab=complete/indent  Up/Down=history"
 need "MEM_PLIC="
 need "hc-tab-print"
 need "  MLTAB_MARK"
+need "x=MEM_PLIC;"
 # hist_seed cold Up → Print HIST_SEED_OK
 if [ "$(grep -cF 'HIST_SEED_OK' "$log" || true)" -lt 1 ]; then
   echo "FAIL hc-repl-smoke — need HIST_SEED_OK (hist_seed Up)" >&2
@@ -265,6 +278,11 @@ if ! grep -qF 'HIST_UP2_TOP' "$log"; then
   echo "FAIL hc-repl-smoke — missing HIST_UP2_TOP" >&2
   fail=1
 fi
+# Multiline compile-unit Up recall
+if [ "$(grep -cF 'HIST_ML_OK' "$log" || true)" -lt 2 ]; then
+  echo "FAIL hc-repl-smoke — need ≥2 HIST_ML_OK (multiline unit Up)" >&2
+  fail=1
+fi
 # G1 soft dbg (HolyC path)
 need "Regs (HolyC soft)"
 need "FS=1"
@@ -276,25 +294,40 @@ need "Bt (live)"
 need "callers of CB"
 need "x10/a0 = 0x0000000000000005"
 
-# Compare ans= hex sequence (non-void statements only)
+# Compare ans= oracles as an ordered subsequence of guest ans lines.
+# Soft probes like Reg("a0") are I64 and emit ans= that are not oracles —
+# index-aligned compare falsely drifts (ans-order); subsequence is honest.
 mapfile -t got_ans < <(grep -oE 'ans=0x[0-9a-fA-F]+' "$log" | sed 's/ans=0x//' | tr 'A-F' 'a-f')
 mapfile -t exp_ans < <(printf '%s' "$expected")
+ans_match() {
+  local g="$1" e="$2" g_norm
+  if [ "$g" = "$e" ]; then
+    return 0
+  fi
+  g_norm=$(printf '%016x' "0x$g" 2>/dev/null || echo "$g")
+  [ "$g_norm" = "$e" ] || [ "$g" = "$e" ]
+}
 if [ "${#got_ans[@]}" -lt "${#exp_ans[@]}" ]; then
-  echo "FAIL hc-repl-smoke — got ${#got_ans[@]} ans lines, expected ${#exp_ans[@]}" >&2
+  echo "FAIL hc-repl-smoke — got ${#got_ans[@]} ans lines, expected ≥${#exp_ans[@]}" >&2
   fail=1
 else
+  gi=0
   i=0
   while [ "$i" -lt "${#exp_ans[@]}" ]; do
-    g="${got_ans[$i]}"
-    # strip leading zeros for compare flexibility, but prefer exact 16-digit match
     e="${exp_ans[$i]}"
-    if [ "$g" != "$e" ]; then
-      # allow shorter hex without leading zeros in g
-      g_norm=$(printf '%016x' "0x$g" 2>/dev/null || echo "$g")
-      if [ "$g_norm" != "$e" ] && [ "$g" != "$e" ]; then
-        echo "FAIL hc-repl-smoke — ans[$i]: got $g want $e" >&2
-        fail=1
+    found=0
+    while [ "$gi" -lt "${#got_ans[@]}" ]; do
+      g="${got_ans[$gi]}"
+      gi=$((gi + 1))
+      if ans_match "$g" "$e"; then
+        found=1
+        break
       fi
+    done
+    if [ "$found" -eq 0 ]; then
+      echo "FAIL hc-repl-smoke — ans oracle[$i]=$e not found (subsequence after prior oracles)" >&2
+      fail=1
+      break
     fi
     i=$((i + 1))
   done

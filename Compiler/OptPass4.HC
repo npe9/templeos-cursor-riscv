@@ -216,19 +216,27 @@ U0 OptPass4(CCmpCtrl *cc,COptReg *reg_offsets,I64 *_type)
 		OptFree(tmpi1);
 	      }
 	    }
-	  } else if ((tmpi1->ic_code==IC_ABS_ADDR ||
-		tmpi1->ic_code==IC_MOV &&
-		tmpi1->arg1.type==MDF_IMM+RT_I64 &&
-		0<=tmpi1->arg1.disp<=I32_MAX)&& !(tmpi1->ic_flags&ICF_NO_RIP)) {
+	  } else if (!(tmpi1->ic_flags&ICF_NO_RIP) &&
+		!(cc->flags&CCF_AOT_COMPILE) &&
+		(tmpi1->ic_code==IC_ABS_ADDR ||
+		tmpi1->ic_code==IC_MOV && tmpi1->arg1.type==MDF_IMM+RT_I64)) {
+	    // Parenthesize ABS_ADDR vs MOV&&IMM. Keep I32_MAX for DEREF→RIP:
+	    // large JIT heap folds here have tripped guest Cmp (if(i) → blob
+	    // illegal insn). ASSIGN fold (below) may still take large addrs;
+	    // ICMov stores IMM→RIP absolutely. Unfolder DEREF uses ABS_ADDR+ld.
+	    // RV AOT: do not fold — ABS_ADDR needs IET_ABS_ADDR U64 patch.
 	    if (tmpi1->ic_code==IC_ABS_ADDR)
-	      tmpi->arg1.disp=tmpi1->ic_data;
+	      i=tmpi1->ic_data;
 	    else
-	      tmpi->arg1.disp=tmpi1->arg1.disp;
-	    tmpi->ic_flags|=tmpi1->ic_flags;
-	    tmpi->ic_code=IC_MOV;
-	    tmpi->arg1.type=MDF_RIP_DISP32+tmpi->arg1_type_pointed_to;
-	    tmpi->arg1.reg=REG_RIP;
-	    OptFree(tmpi1);
+	      i=tmpi1->arg1.disp;
+	    if (0<=i<=I32_MAX) {
+	      tmpi->arg1.disp=i;
+	      tmpi->ic_flags|=tmpi1->ic_flags;
+	      tmpi->ic_code=IC_MOV;
+	      tmpi->arg1.type=MDF_RIP_DISP32+tmpi->arg1_type_pointed_to;
+	      tmpi->arg1.reg=REG_RIP;
+	      OptFree(tmpi1);
+	    }
 	  }
 	  break;
 	case IC_BR_MM_ZERO:
@@ -261,18 +269,24 @@ p4_lea_gone:
 	      tmpi->ic_flags|=ICF_BY_VAL;
 	      OptSetNOP2(tmpi1);
 	    }
-	  } else if ((tmpi1->ic_code==IC_ABS_ADDR || tmpi1->ic_code==IC_MOV &&
-		tmpi1->arg1.type==MDF_IMM+RT_I64 &&
-		0<=tmpi1->arg1.disp<=I32_MAX)&& !(tmpi1->ic_flags&ICF_NO_RIP)) {
-	    tmpi->ic_flags|=tmpi1->ic_flags;
+	  } else if (!(tmpi1->ic_flags&ICF_NO_RIP) &&
+		!(cc->flags&CCF_AOT_COMPILE) &&
+		(tmpi1->ic_code==IC_ABS_ADDR ||
+		tmpi1->ic_code==IC_MOV && tmpi1->arg1.type==MDF_IMM+RT_I64)) {
 	    if (tmpi1->ic_code==IC_ABS_ADDR)
-	      tmpi->arg1.disp=tmpi1->ic_data;
+	      i=tmpi1->ic_data;
 	    else
-	      tmpi->arg1.disp=tmpi1->arg1.disp;
-	    tmpi->arg1.type=MDF_RIP_DISP32+tmpi->arg1_type_pointed_to;
-	    tmpi->arg1.reg=REG_RIP;
-	    tmpi->ic_flags|=ICF_BY_VAL;
-	    OptFree(tmpi1);
+	      i=tmpi1->arg1.disp;
+	    // Fold ABS→BY_VAL+RIP for ++/--. ICPostIncDec/ICPreIncDec honor
+	    // BY_VAL via ICMov RIP (absolute RVLi); never MDF_DISP+REG_RIP.
+	    if (i>=0) {
+	      tmpi->ic_flags|=tmpi1->ic_flags;
+	      tmpi->arg1.disp=i;
+	      tmpi->arg1.type=MDF_RIP_DISP32+tmpi->arg1_type_pointed_to;
+	      tmpi->arg1.reg=REG_RIP;
+	      tmpi->ic_flags|=ICF_BY_VAL;
+	      OptFree(tmpi1);
+	    }
 	  }
 	  break;
 	case IC_ADD:
@@ -398,18 +412,24 @@ p4_sib:
 	      }
 	      tmpi->ic_flags|=ICF_BY_VAL;
 	    }
-	  } else if ((tmpi1->ic_code==IC_ABS_ADDR ||
-		tmpi1->ic_code==IC_MOV && tmpi1->arg1.type==MDF_IMM+RT_I64 &&
-		0<=tmpi1->arg1.disp<=I32_MAX)&& !(tmpi1->ic_flags&ICF_NO_RIP)) {
-	    tmpi->ic_flags|=tmpi1->ic_flags;
+	  } else if (!(tmpi1->ic_flags&ICF_NO_RIP) &&
+		!(cc->flags&CCF_AOT_COMPILE) &&
+		(tmpi1->ic_code==IC_ABS_ADDR ||
+		tmpi1->ic_code==IC_MOV && tmpi1->arg1.type==MDF_IMM+RT_I64)) {
 	    if (tmpi1->ic_code==IC_ABS_ADDR)
-	      tmpi->arg1.disp=tmpi1->ic_data;
+	      i=tmpi1->ic_data;
 	    else
-	      tmpi->arg1.disp=tmpi1->arg1.disp;
-	    tmpi->arg1.type=MDF_RIP_DISP32+tmpi->arg1.type.raw_type;
-	    tmpi->arg1.reg=REG_RIP;
-	    tmpi->ic_flags|=ICF_BY_VAL;
-	    OptSetNOP2(tmpi1);
+	      i=tmpi1->arg1.disp;
+	    // See IC_DEREF: fold all non-neg abs addrs; RV ICMov uses abs RVLi.
+	    // RV AOT: keep ABS_ADDR for IET_ABS_ADDR patch.
+	    if (i>=0) {
+	      tmpi->ic_flags|=tmpi1->ic_flags;
+	      tmpi->arg1.disp=i;
+	      tmpi->arg1.type=MDF_RIP_DISP32+tmpi->arg1.type.raw_type;
+	      tmpi->arg1.reg=REG_RIP;
+	      tmpi->ic_flags|=ICF_BY_VAL;
+	      OptSetNOP2(tmpi1);
+	    }
 	  }
 	  break;
 	case IC_RETURN_VAL:

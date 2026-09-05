@@ -56,9 +56,10 @@ cp "$T/kp.elf" "$OUTDIR/repl_exepubs.elf"
 mkdir -p "$ROOT/build"
 cp "$T/kp.elf" "$ROOT/build/repl-cmp.elf"
 
-# Probe already ran ExePutS(40+2); pipe one more snippet through the REPL loop, then quit.
-input=$'I64 MakeOSProbe(){return 42;}\nMakeOSProbe;\nq\n'
-out="$(LC_ALL=C printf '%s' "$input" | $TIMEOUT 120 "$QEMU" -M virt -m 128M -bios none \
+# Probe already ran ExePutS(40+2). Delay stdin until after CInit/probe so the
+# UART RX FIFO is not overrun while the guest is still booting (lost lines → hang).
+input=$'40+2;\nq\n'
+out="$( { sleep 5; LC_ALL=C printf '%s' "$input"; } | $TIMEOUT 180 "$QEMU" -M virt -m 128M -bios none \
   -kernel "$T/kp.elf" -nographic 2>&1 | LC_ALL=C tr -d '\r')"
 
 fail=0
@@ -72,7 +73,11 @@ need "$EXPECT_CMP_OWN"
 need "A2 ExePutS REPL"
 need "$EXPECT_PROBE"
 need "$EXPECT_CMP_DONE"
-need "$EXPECT_ANS"
+# Loop line is exactly "ans=42" (probe prints "probe ans=42").
+if ! printf '%s\n' "$out" | grep -qx 'ans=42'; then
+  echo "FAIL kernel-repl-exepubs smoke — missing: ans=42 (REPL loop)" >&2
+  fail=1
+fi
 need "$EXPECT"
 
 if [ "$fail" -ne 0 ]; then

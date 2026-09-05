@@ -97,31 +97,21 @@ need 'CrashHelp'
 need 'Md @'
 need 'crash: leave monitor'
 need 'after-crashmon'
-
-soft_fail=0
-soft_need() {
-  if ! grep -qF -- "$1" "$log"; then
-    echo "WIP  trap-smoke — G2 pending: $1" >&2
-    soft_fail=1
-  fi
-}
-soft_need 'illegal instruction'
-soft_need 'after-fault'
-soft_need 'Interrupted'
-soft_need 'after-break'
-soft_need 'ZAP-HIT'
-soft_need 'after-ecall'
-soft_need 'after-ctrlc'
+need 'illegal instruction'
+need '*** FAULT'
+need 'crash>'
+need 'eval aborted'
+need 'after-fault'
+need 'Interrupted'
+need 'after-break'
+need 'ZAP-HIT'
+need 'after-ecall'
+need 'after-ctrlc'
 
 if [[ "$fail" -ne 0 ]]; then
   echo "---- uart (tail) ----" >&2
   tail -n 120 "$log" >&2
   exit 1
-fi
-
-if [[ "$soft_fail" -ne 0 ]]; then
-  echo "OK   trap-smoke: CrashMon (CONSOLE #9); G2 Fault/Break/Ctrl-C still WIP (TrapInitOnce)"
-  exit 0
 fi
 
 echo "OK   trap-smoke: Fault/CrashMon, Break, SetTrap/Ecall, Ctrl-C on repl-holyc"

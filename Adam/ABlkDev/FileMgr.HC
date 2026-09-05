@@ -404,7 +404,7 @@ U0 FMMakeISO(CDoc *doc)
       tmpde=tmpde->parent;
     if (tmpde && *tmpde->full_name) {
       Silent;
-      RedSeaISO(,tmpde->full_name);
+      RedSeaISO(NULL,tmpde->full_name);
       Silent(OFF);
     }
   }

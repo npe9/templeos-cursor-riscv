@@ -1,4 +1,7 @@
 #!/bin/bash
+# RETIRED: worry_dream C guest deleted.
+echo "error: run_dbg_smoke retired with worry_dream C guest; see docs/DEBUGGER.md" >&2
+exit 2
 # Minimal QEMU UART REPL debugger smoke: Regs snap, Bt, Bp hit/continue, WatchChk.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

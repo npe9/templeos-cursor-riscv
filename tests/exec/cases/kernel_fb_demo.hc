@@ -25,9 +25,9 @@ I64 main()
   // configures QEMU -device ramfb when present; soft path always hashed
   I64 h = RVFbHash() & 0xFFFFFFFF;
   Print("RVFb smoke hash=0x%08X present=%d backend=%d %dx%d\n", h, rv_fb.present_ok, rv_fb.backend, rv_fb.width, rv_fb.height);
-  // simplefb bind stub: copy soft FB into a second XR24 buffer (board-shaped path).
+  // simplefb bind stub: copy compose into a third XR24 buffer (board-shaped path).
   scan = 0x86500000;
-  // above soft FB @ 0x86100000 (800×600×4 ≈ 1.9MB ends ~0x862D4C00)
+  // soft scanout @ 0x86100000, compose @ +2MiB (0x86300000); scratch above both
   ok = RVFbSimpleFbBind(scan, 800, 600, 0, RV_FB_FOURCC_XR24);
   if (!ok || !RVFbSimpleFbBound()) {
     Print("RVFb simplefb FAIL bind\n");

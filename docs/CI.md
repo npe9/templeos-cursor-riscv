@@ -28,13 +28,13 @@ Exec oracles, TempleOS C-image smoke, the long `kernel-*-smoke` list (print → 
 |------|---------|-----------|
 | **HolyC guest Cmp (A2/A3)** | `kernel-repl-exepubs-smoke` / `repl-cmp-smoke` → `build/repl-cmp.elf` | **Required** |
 | **HolyC memfs bridge** | `repl-holyc-smoke`, `repl-holyc-regression`, `bootloader-smoke` | **Required** |
-| **Deprecated legacy C guest** | `repl-smoke`, `repl-regression` | **Required until A3 flip**; local `SKIP_REPL_LEGACY=1` skips |
+| **Deprecated legacy C guest** | `repl-smoke`, `repl-regression` | **Optional local only** (A3 Done; not in `qemu-integration`) |
 
-Also **`repl-9p-smoke`**, **`term-probe-pty`**, **`repl-uart-echo-pty`**. Begins with **`asm-stress`**, **`compiler-stress`**, and **`compiler-prop`**.
+Also **`repl-9p-smoke`**, **`term-probe-pty`**, **`repl-uart-echo-pty`**, **`repl-uart-xon-pty`**, **`dump-changes-smoke`**. Begins with **`asm-stress`**, **`compiler-stress`**, and **`compiler-prop`**.
 
-**When to drop legacy from required CI:** [SELF_HOST.md](SELF_HOST.md) § G7 checklist +
-[A3_FLIP_DRAFT.md](A3_FLIP_DRAFT.md) (draft only — **do not apply** until
-`make a3-flip-check` prints READY). Do **not** set `SKIP_REPL_LEGACY` in GitHub Actions.
+**A3 Done:** honesty path is HolyC-only. Legacy dual-run and `zmodem-smoke` are
+**not** required CI (G11 waived; DumpChanges covers export). Follow-up: delete
+`worry_dream_repl.c` — [SELF_HOST.md](SELF_HOST.md), [A3_FLIP_DRAFT.md](A3_FLIP_DRAFT.md).
 
 CI’s default machine profile is **virt** (typical virt memory map). That is an emulator
 target for automation — board ports are separate ([PLATFORM.md](../templeos-riscv/PLATFORM.md)).
@@ -51,6 +51,8 @@ user-facing text; this key sequence is harness-only.
 
 | Target | Why |
 |--------|-----|
+| `repl-smoke` / `repl-regression` | Deprecated legacy C guest — A3 Done; scheduled delete |
+| `zmodem-smoke` / `trzsz-smoke` | Legacy full-REPL export (G11 waived); product = DumpChanges + 9P |
 | `kernel-plat-sifive-u-smoke` | Non-default machine; run when changing SiFive/Kconfig ports |
 | Other `defconfig-*` boards | Tentative; image may not fit (see [PLATFORM.md](../templeos-riscv/PLATFORM.md)) |
 | `make coverage` | Heavy all-errors project compile tally — useful locally |

@@ -19,7 +19,23 @@ U0 BlkWriteZero(CDrv *dv,I64 blk,I64 cnt)
     cnt-=n;
     if (show_progress)
       progress1+=n;
-    Yield;  //Prevent locking
+    // Match DrvUnlock/BlkDevUnlock: skip Yield when no runnable peer.
+    if (Fs && Fs->next_task && Fs->next_task!=Fs) {
+      CTask *t=Fs->next_task;
+      Bool peer=FALSE;
+      while (t!=Fs) {
+	if (!Bt(&t->task_flags,TASKf_KILL_TASK) &&
+	      !Bt(&t->task_flags,TASKf_SUSPENDED) &&
+	      !Bt(&t->task_flags,TASKf_AWAITING_MSG)) {
+	  peer=TRUE;
+	  break;
+	}
+	t=t->next_task;
+	if (!t) break;
+      }
+      if (peer)
+	Yield;  //Prevent locking
+    }
   }
   Free(z);
   if (show_progress) {

@@ -182,14 +182,46 @@ U0 ReplReadLine()
     if (ch < 0)
       continue;
     if (ch == KEY_UP) {
-      if (RlHistUp(repl_buf, 512, &n)) {
+      kind = RlHistUp(repl_buf, 512, &n);
+      if (kind == 2 && g_rl_hist_recall_unit) {
+        RlHistRecallUnit(g_rl_hist_recall_unit, repl_buf, 512, &n, repl_accum, 4096, &repl_accum_len, &repl_brace, &repl_paren);
+        g_rl_accum_len = repl_accum_len;
+        g_rl_hist_recall_unit = 0;
+        g_rl_cur = n;
+        ReplRedrawLine(repl_buf, n);
+      } else if (kind == 1) {
+        if (g_rl_hist_accum_clear) {
+          repl_accum_len = 0;
+          repl_accum[0] = 0;
+          repl_brace = 0;
+          repl_paren = 0;
+          g_rl_accum_len = 0;
+          g_rl_cont = 0;
+          g_rl_hist_accum_clear = 0;
+        }
         g_rl_cur = n;
         ReplRedrawLine(repl_buf, n);
       }
       continue;
     }
     if (ch == KEY_DOWN) {
-      if (RlHistDown(repl_buf, 512, &n)) {
+      kind = RlHistDown(repl_buf, 512, &n);
+      if (kind == 2 && g_rl_hist_recall_unit) {
+        RlHistRecallUnit(g_rl_hist_recall_unit, repl_buf, 512, &n, repl_accum, 4096, &repl_accum_len, &repl_brace, &repl_paren);
+        g_rl_accum_len = repl_accum_len;
+        g_rl_hist_recall_unit = 0;
+        g_rl_cur = n;
+        ReplRedrawLine(repl_buf, n);
+      } else if (kind == 1) {
+        if (g_rl_hist_accum_clear) {
+          repl_accum_len = 0;
+          repl_accum[0] = 0;
+          repl_brace = 0;
+          repl_paren = 0;
+          g_rl_accum_len = 0;
+          g_rl_cont = 0;
+          g_rl_hist_accum_clear = 0;
+        }
         g_rl_cur = n;
         ReplRedrawLine(repl_buf, n);
       }
@@ -315,22 +347,24 @@ U0 ReplReadLine()
     }
     if (ch == '\t') {
       RlHistLeaveBrowse();
-      // Tab completes at end for now (CompCx = n); cursor follows.
+      // Tab at g_rl_cur (mid-line ok); CompCx follows completed token.
       old = n;
-      g_rl_cur = n;
       kind = ReplSmartTab(repl_buf, 512, &n, 1);
-      g_rl_cur = n;
+      if (kind < 0)
+        continue;
       if (kind == 0) {
-        UartStr("  ");
+        if (cur >= old)
+          UartStr("  ");
+        else
+          ReplRedrawLine(repl_buf, n);
       } else if (kind == 1) {
-        if (n > old) {
+        if (cur >= old && g_rl_cur == n && n > old) {
           i = old;
           while (i < n) {
             PutCh(repl_buf[i]);
             i++;
           }
         } else {
-          PutCh('\n');
           ReplRedrawLine(repl_buf, n);
         }
       }
@@ -378,11 +412,18 @@ U0 ReplAccumReset()
 
 I64 ReplShouldParse(U8 *buf, I64 n, I64 brace, I64 paren)
 {
+  I64 i;
   if (brace || paren)
     return 0;
   if (n <= 0)
     return 0;
   if (buf[n - 1] == ';' || buf[n - 1] == '}')
+    return 1;
+  // #define / #undef — no trailing ';' (session DefRegister).
+  i = 0;
+  while (i < n && (buf[i] == ' ' || buf[i] == '\t'))
+    i++;
+  if (i < n && buf[i] == '#')
     return 1;
   return 0;
 }
@@ -412,6 +453,11 @@ U0 ReplLoop()
     }
     if (!n && !repl_accum_len)
       continue;
+    // Physical-line join: keep '\n' so history stores compile units (legacy parity).
+    if (repl_accum_len > 0 && repl_accum_len < 4095) {
+      repl_accum[repl_accum_len] = '\n';
+      repl_accum_len++;
+    }
     i = 0;
     while (i < n && repl_accum_len < 4095) {
       if (repl_buf[i] == '{')
@@ -440,7 +486,7 @@ U0 ReplLoop()
       continue;
     }
     ReplEvalLine(repl_accum);
-    RlHistPush(repl_accum);
+    RlHistPushUnit(repl_accum, repl_accum_len);
     ReplAccumReset();
   }
 }
@@ -547,7 +593,24 @@ I64 ReplMain()
   JitAdd("VtCaptureGet", &VtCaptureGet, 0, 0);
   JitAdd("VtKeys", &VtKeys, 1, 1);
   JitAdd("VtKeysGet", &VtKeysGet, 0, 0);
+  JitAdd("VtPane", &VtPane, 2, 1);
+  JitAdd("VtPaneOff", &VtPaneOff, 0, 1);
+  JitAdd("VtPaneA", &VtPaneA, 0, 0);
+  JitAdd("VtPaneB", &VtPaneB, 0, 0);
   JitAdd("VtHelp", &VtHelp, 0, 1);
+  // CONSOLE #11 — Term* (seed/term.hc); smoke TermSize/TermNameAnsi/TermRep
+  JitAdd("TermInit", &TermInit, 0, 1);
+  JitAdd("TermSize", &TermSize, 2, 1);
+  JitAdd("TermSetSize", &TermSetSize, 2, 1);
+  JitAdd("TermRows", &TermRows, 0, 0);
+  JitAdd("TermCols", &TermCols, 0, 0);
+  JitAdd("TermFlags", &TermFlags, 0, 0);
+  JitAdd("TermName", &TermName, 0, 0);
+  JitAdd("TermNameAnsi", &TermNameAnsi, 0, 1);
+  JitAdd("TermNameXterm", &TermNameXterm, 0, 1);
+  JitAdd("TermRep", &TermRep, 0, 1);
+  JitAdd("TermHelp", &TermHelp, 0, 1);
+  JitAdd("TermQuery", &TermQuery, 0, 0);
   JitAdd("SrcFileRep", &SrcFileRep, 1, 1);
   JitAdd("FnSizeRep", &FnSizeRep, 1, 1);
   g_callers_hc = &CallersScanJit;
@@ -557,6 +620,8 @@ I64 ReplMain()
   JitAdd("CsrDecodeVal", &CsrDecodeVal, 2, 1);
   JitAdd("CsrDecodeMstatus", &CsrDecodeMstatus, 1, 1);
   JitAdd("CsrDecodeMcause", &CsrDecodeMcause, 1, 1);
+  JitAdd("McauseCauseName", &McauseCauseName, 1, 0);
+  JitAdd("McausePrint", &McausePrint, 1, 1);
   JitAdd("Dr", &Dr, 0, 1);
   JitAdd("MemMap", &MemMap, 0, 1);
   JitAdd("MemMapDrv", &MemMapDrv, 0, 1);
@@ -588,6 +653,8 @@ I64 ReplMain()
   JitAdd("CompCollectSyms", &CompCollectSyms, 2, 0);
   JitAdd("CompCollectFiles", &CompCollectFiles, 2, 0);
   JitAdd("CompCollectAsm", &CompCollectAsm, 3, 0);
+  JitAdd("CompMidDemo", &CompMidDemo, 0, 1);
+  JitAdd("RlMidDemo", &RlMidDemo, 0, 1);
   JitAdd("TrapInit", &TrapInit, 0, 1);
   JitAdd("TrapInitOnce", &TrapInitOnce, 0, 1);
   JitAdd("SetTrap", &SetTrap, 1, 1);
@@ -610,6 +677,7 @@ I64 ReplMain()
   LogInit;
   SysInit;
   TtyInit;
+  TermInit;
   VtInit;
   LogInfo("boot", "repl-holyc ready");
   LogWarn("boot", "uart mux ch3 pending");

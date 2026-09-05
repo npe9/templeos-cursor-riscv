@@ -23,4 +23,5 @@ tests/compiler/cases/c_class_field.hc	000000000000002a
 tests/compiler/cases/c_string_len.hc	0000000000000005
 tests/compiler/cases/c_funptr_local.hc	000000000000002a
 tests/compiler/cases/c_if_loop.hc	000000000000001e
+tests/compiler/cases/c_lock_stmt.hc	000000000000002a
 tests/compiler/cases/c_u8_param_idx.hc	0000000000000053

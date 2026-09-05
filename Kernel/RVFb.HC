@@ -1,6 +1,11 @@
 // Native RISC-V linear framebuffer (Phase 0–1). Not VGA.
 //
-// Software draws into a 32-bpp XRGB8888 buffer in guest RAM. Present is pluggable:
+// Double-buffer (TempleOS gr.dc2 → scanout shape): Gr/WinMgr paint into a compose
+// buffer (`rv_fb.pixels`); `RVFbPresent` MemCpy-flips to `rv_fb.scanout` then
+// pushes the scanout to the backend. Mid-frame wallpaper/text blits stay invisible
+// to cocoa/SDL ramfb (which maps guest scanout RAM directly).
+//
+// Present backends:
 //   - QEMU virt: fw_cfg DMA + `-device ramfb` (see tests/scripts/run_kernel_fb_smoke.sh)
 //   - Boards: simplefb DT / firmware linear FB via RVFbSimpleFbBind + RV_FB_PRESENT_SIMPLEFB
 //
@@ -9,6 +14,8 @@
 #define RV_FB_W_DEFAULT     800
 #define RV_FB_H_DEFAULT     600
 #define RV_FB_BPP           32
+// Soft layout: scanout @ FB_SOFT_BASE, compose @ +2MiB (keeps 0x86500000 free for fb smoke).
+#define RV_FB_COMPOSE_OFF   0x200000
 // Present backend kinds (RVFbSetPresent / rv_fb.backend).
 #define RV_FB_PRESENT_NONE      0
 #define RV_FB_PRESENT_RAMFB     1
@@ -18,6 +25,9 @@
 class CRVFb
 {
   U32 *pixels;
+  // compose / paint target (Gr, WinMgr, RVFbPut*)
+  U32 *scanout;
+  // display front buffer (ramfb / simplefb); may equal pixels if undoubled
   I64 width;
   I64 height;
   I64 stride;
@@ -125,16 +135,38 @@ Bool RVFbProbeRamfb()
   return RVFwCfgFind("etc/ramfb") >= 0;
 }
 
+I64 RVFbBytes()
+{
+  //Byte size of one XR24 frame (stride × height).
+  if (rv_fb.stride <= 0 || rv_fb.height <= 0)
+    return 0;
+  return rv_fb.stride *rv_fb.height;
+}
+
+U0 RVFbFlip()
+{
+  //Compose → scanout. No-op when undoubled (same pointer).
+  I64 n;
+  if (!rv_fb.pixels || !rv_fb.scanout || rv_fb.pixels == rv_fb.scanout)
+    return;
+  n = RVFbBytes;
+  if (n > 0)
+    MemCpy(rv_fb.scanout, rv_fb.pixels, n);
+}
+
 Bool RVFbPresentRamfb()
 {
-  //Locate etc/ramfb via fw_cfg and point it at rv_fb.pixels. Requires `-device ramfb`.
+  //Locate etc/ramfb via fw_cfg and point it at rv_fb.scanout. Requires `-device ramfb`.
   // QEMU maps guest RAM as the scanout; rewriting etc/ramfb every frame recreates
-  // DisplaySurfaces (cocoa/SDL crash / leak). Configure once.
+  // DisplaySurfaces (cocoa/SDL crash / leak). Configure once; Flip updates pixels.
   I64 sel;
   I64 i;
-  if (rv_fb.backend == RV_FB_PRESENT_RAMFB && rv_fb.present_ok && rv_fb.pixels)
+  U32 *front = rv_fb.scanout;
+  if (!front)
+    front = rv_fb.pixels;
+  if (rv_fb.backend == RV_FB_PRESENT_RAMFB && rv_fb.present_ok && front)
     return TRUE;
-  if (!rv_fb.pixels)
+  if (!front)
     return FALSE;
   sel = RVFwCfgFind("etc/ramfb");
   if (sel < 0)
@@ -143,7 +175,7 @@ Bool RVFbPresentRamfb()
   U8 cfg[28];
   for (i = 0; i < 28; i++)
     cfg[i] = 0;
-  I64 be_fb = EndianI64(rv_fb.pixels);
+  I64 be_fb = EndianI64(front);
   MemCpy(cfg, &be_fb, 8);
   U32 fourcc = EndianU32(RV_FB_FOURCC_XR24);
   MemCpy(cfg + 8, &fourcc, 4);
@@ -159,7 +191,7 @@ Bool RVFbPresentRamfb()
 
 Bool RVFbPresentSimpleFb()
 {
-  //Push soft buffer to a bound simplefb scanout (or no-op if already drawing into it).
+  //Push compose to a bound simplefb scanout (or no-op if Flip already landed there).
   // Stub: XR24 only; row copy when stride/base differ. DT discovery is board-side later.
   I64 y, row_bytes, dst_stride;
   U8 *src, *dst;
@@ -173,8 +205,14 @@ Bool RVFbPresentSimpleFb()
   if (!dst_stride)
     dst_stride = rv_simplefb.width * (RV_FB_BPP / 8);
   row_bytes = rv_fb.width * (RV_FB_BPP / 8);
+  if (rv_fb.scanout == rv_simplefb.base && rv_fb.stride == dst_stride) {
+    // Flip already wrote compose → scanout (== firmware FB).
+    rv_fb.backend = RV_FB_PRESENT_SIMPLEFB;
+    rv_fb.present_ok = TRUE;
+    return TRUE;
+  }
   if (rv_fb.pixels == rv_simplefb.base && rv_fb.stride == dst_stride) {
-    // Draw buffer is the scanout — firmware already displays it.
+    // Undoubled: paint target is the scanout.
     rv_fb.backend = RV_FB_PRESENT_SIMPLEFB;
     rv_fb.present_ok = TRUE;
     return TRUE;
@@ -191,24 +229,41 @@ Bool RVFbPresentSimpleFb()
 
 Bool RVFbInit(I64 width = RV_FB_W_DEFAULT, I64 height = RV_FB_H_DEFAULT, U32 *pixels = NULL)
 {
-  //Bind a linear 32-bpp buffer. pixels=NULL uses RV_FB_BASE_DEFAULT.
+  //Bind 32-bpp compose + scanout. pixels=NULL ⇒ soft double buffer at FB_SOFT_BASE.
+  // Non-NULL pixels = caller's scanout (simplefb); compose uses soft RAM when distinct.
+  U32 *soft = RV_FB_BASE_DEFAULT;
+  U32 *compose, *front;
+  I64 nbytes;
   if (width <= 0 || height <= 0)
     return FALSE;
-  if (!pixels)
-    pixels = RV_FB_BASE_DEFAULT;
-  rv_fb.pixels = pixels;
   rv_fb.width = width;
   rv_fb.height = height;
   rv_fb.stride = width * (RV_FB_BPP / 8);
+  nbytes = RVFbBytes;
+  if (!pixels) {
+    front = soft;
+    compose = (soft(U8 *) + RV_FB_COMPOSE_OFF)(U32 *);
+  } else {
+    front = pixels;
+    if (pixels == soft)
+      compose = (soft(U8 *) + RV_FB_COMPOSE_OFF)(U32 *);
+    else
+      compose = soft;
+  }
+  rv_fb.pixels = compose;
+  rv_fb.scanout = front;
   rv_fb.present_ok = FALSE;
   rv_fb.backend = RV_FB_PRESENT_NONE;
-  MemSet(rv_fb.pixels, 0, rv_fb.stride *height);
+  MemSet(rv_fb.pixels, 0, nbytes);
+  if (rv_fb.scanout != rv_fb.pixels)
+    MemSet(rv_fb.scanout, 0, nbytes);
   return TRUE;
 }
 
 U0 RVFbPresent()
 {
-  //Push the linear buffer to the active display backend (no-op if none / backend absent).
+  //Flip compose → scanout, then push scanout to the active backend.
+  RVFbFlip;
   if (rv_fb_present_kind == RV_FB_PRESENT_RAMFB)
     RVFbPresentRamfb();
   else if (rv_fb_present_kind == RV_FB_PRESENT_SIMPLEFB)

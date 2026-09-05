@@ -88,6 +88,10 @@ U0 RVUartSoftEnqueue(I64 ch)
 U0 RVUartRxDrain()
 {
   I64 ch;
+  // Mask IRQs across LSR→RBR (same as seed uart.hc / C uart_hw_drain):
+  // nested timer/UART IRQ can re-read stale RBR and soft-enqueue a duplicate.
+  PUSHFD;
+  CLI;
   while (RVUartIn(5) & 1) {
     ch = RVUartIn(0) & 0xFF;
     if (RVUartFc) {
@@ -103,13 +107,18 @@ U0 RVUartRxDrain()
     if (RVUartSoft)
       RVUartSoftEnqueue(ch);
   }
+  POPFD;
 }
 
 U0 RVUartFcPoll()
 {
   I64 ch;
-  if (!RVUartFc && !RVUartSoft)
+  // Need soft ring to drain RX during PutS without dropping keys. With FC on
+  // but Soft off, reading RBR here ate piped stdin (A2 GetLine saw one char then hung).
+  if (!RVUartSoft)
     return;
+  PUSHFD;
+  CLI;
   while (RVUartIn(5) & 1) {
     ch = RVUartIn(0) & 0xFF;
     if (RVUartFc) {
@@ -122,9 +131,9 @@ U0 RVUartFcPoll()
         continue;
       }
     }
-    if (RVUartSoft)
-      RVUartSoftEnqueue(ch);
+    RVUartSoftEnqueue(ch);
   }
+  POPFD;
 }
 
 Bool RVUartPutS(U8 *st)

@@ -1,13 +1,38 @@
-// RVWinSerial.HC — UART TTY beside FB/WinMgr (BOARD_FB dual-console).
-// VirtioInput owns the graphical Term; serial stays a live dig-down console.
+// RVWinSerial.HC — HolyC ExePutS REPL on UART + graphical Term (BOARD_FB).
+// Serial: soft-RX line buffer → Dispatch → RVWinSerialEval (ExePutS when wired).
+// Term: VirtioInput → RVWinTermPutChar → same Dispatch (Print mirrored into Term).
 // Soft RX (RVUartSoftOn) + polled drain in RVWinMgrRun. Crash mon via
-// RVCrashMonInit (host trap → UART crash>). Prefer serial-always-TTY over VT mux.
+// RVCrashMonInit (host trap → UART crash>). Dig-down regs/bt/md/mw/fault remain
+// as meta; prefer HolyC for everything else.
 #define RV_WIN_SERIAL_LINE_MAX 160
+// Soft GPR snap (same window as seed/csr.hc / gdbstub — not trap snap).
+#define MEM_REGS_SNAP 0x87000300
+#define REG_ZERO 0
+#define REG_RA   1
+#define REG_SP   2
+#define REG_GP   3
+#define REG_TP   4
+#define REG_T0   5
+#define REG_S0   8
+#define REG_FP   8
+#define REG_S1   9
+#define REG_A0   10
+#define REG_S2   18
+#define REG_T3   28
 I64 rv_win_serial_ready;
 I64 rv_win_serial_cmds;
 I64 rv_win_serial_len;
 U8 rv_win_serial_line[RV_WIN_SERIAL_LINE_MAX];
 I64 (*RVWinSerialEval)(U8 *line);
+// Graphical Term + Adam line buffers (virtio-kbd → same Dispatch as serial).
+I64 rv_win_term_len;
+I64 rv_win_term_cmds;
+I64 rv_win_term_mirror;
+U8 rv_win_term_line[RV_WIN_SERIAL_LINE_MAX];
+I64 rv_win_adam_len;
+I64 rv_win_adam_cmds;
+I64 rv_win_adam_mirror;
+U8 rv_win_adam_line[RV_WIN_SERIAL_LINE_MAX];
 asm {
 	RVWinCsrrMstatus::
 	csrr	a0, 0x300
@@ -27,21 +52,32 @@ asm {
 	RVWinCsrrMtval::
 	csrr	a0, 0x343
 	ret
+	// Deliberate illegal insn for `fault` → UART crash>. Encodes as
+	// csrrw x0,cycle,x0 (0xC0001073) — RO CSR write. Not GetTSC/IC_RDTSC.
 	RVWinSerialFaultAsm::
-	.word	0
+	unimp
 	ret
 }
 
 I64 RVWinSerialCmdEq(U8 *line, U8 *cmd)
 {
+  //Case-insensitive cmd match; line may end with ';' (smoke sends Regs;).
   I64 i;
+  U8 a, b;
   if (!line || !cmd)
     return 0;
   i = 0;
-  while (cmd[i] && line[i] == cmd[i])
+  while (cmd[i]) {
+    a = line[i];
+    b = cmd[i];
+    if (a >= 'A' && a <= 'Z')
+      a += 32;
+    if (b >= 'A' && b <= 'Z')
+      b += 32;
+    if (a != b)
+      return 0;
     i++;
-  if (cmd[i])
-    return 0;
+  }
   return !line[i] || line[i] == ' ' || line[i] == '\t' || line[i] == ';';
 }
 
@@ -66,53 +102,656 @@ I64 RVWinSerialInRam(I64 a)
 {
   return a >= 0x80000000 && a < 0x88000000;
 }
+// Text / AOT blob below SYS_FIXED_AREA (0x87000000). Stack sits ~0x87E… —
+// InRam alone cannot distinguish code from frame pointers.
+I64 RVWinSerialInCode(I64 a)
+{
+  return a >= 0x80000000 && a < 0x87000000 && !(a & 1);
+}
+
+I64 RVWinSerialInStk(I64 a)
+{
+  return a >= 0x87000000 && a < 0x88000000 && !(a & 7);
+}
 
 U0 RVWinSerialHelp()
 {
+  if (RVWinSerialEval) {
+    Print("RVWinSerial — HolyC ExePutS REPL (UART + graphical Term)\n");
+    Print("  type HolyC at `>` (e.g. 1+1;  Print(\"hi\\n\");)\n");
+    Print("  Term (cocoa/SDL): click window, focus Term, Enter runs\n");
+    Print("  max / tileh / tilev  WinMax / WinTileHorz / WinTileVert\n");
+    Print("  user        Spawn User → new Term-like win (P1)\n");
+    Print("  q / quit     quit WinMgr (same as ESC on virtio-kbd)\n");
+    Print("  fault/crash  UART crash> (md/mw/regs/bt/go/reboot)\n");
+    Print("  dig-down:    help regs bt md ADDR [N] mw ADDR VAL\n");
+    return;
+  }
   Print("RVWinSerial — UART TTY while WinMgr/FB runs (docs/CONSOLE.md, BOARD_FB.md)\n");
   Print("  help / ?     this sheet\n");
-  Print("  regs         CSR dig-down (mstatus/mie/mip/mepc/mcause/mtval)\n");
-  Print("  bt           stack walk from SP (code ptrs in DRAM)\n");
+  Print("  regs         soft GPR snap + CSR dig-down\n");
+  Print("  bt           FP/RA backtrace (live; code PCs; soft sym map)\n");
   Print("  md ADDR [N]  hex dump DRAM (default 64 bytes)\n");
   Print("  mw ADDR VAL  store I64 in DRAM\n");
+  Print("  max          WinMax focused window\n");
+  Print("  tileh/tilev  WinTileHorz / WinTileVert\n");
+  Print("  user         Spawn User → new Term-like win\n");
   Print("  fault        deliberate illegal insn → UART crash>\n");
   Print("  crash        enter UART crash> monitor now\n");
   Print("  q / quit     quit WinMgr (same as ESC on virtio-kbd)\n");
-  Print("Virtio-kbd/tablet stay on the graphical Term; type here on -serial.\n");
-  Print("Full HolyC ExePutS REPL: repl-holyc / A2 kernel_repl_exepubs (not this ELF).\n");
+  Print("Wire RVWinSerialEval=&ExePutS (win interactive) for HolyC REPL.\n");
+}
+// Mirror of bootstrap/seed/csr.hc McauseCauseName — Kernel has no seed include.
+U8 *RVWinMcauseName(I64 v)
+{
+  I64 intr, code;
+  intr = (v >> 63) & 1;
+  code = v & 0x7FFFFFFFFFFFFFFF;
+  if (intr) {
+    if (code == 3)
+      return "machine soft interrupt";
+    if (code == 7)
+      return "machine timer interrupt";
+    if (code == 11)
+      return "machine external interrupt";
+    if (code == 1)
+      return "supervisor soft interrupt";
+    if (code == 5)
+      return "supervisor timer interrupt";
+    if (code == 9)
+      return "supervisor external interrupt";
+    return "interrupt";
+  }
+  if (code == 0)
+    return "insn address misaligned";
+  if (code == 1)
+    return "insn access fault";
+  if (code == 2)
+    return "illegal instruction";
+  if (code == 3)
+    return "breakpoint";
+  if (code == 4)
+    return "load address misaligned";
+  if (code == 5)
+    return "load access fault";
+  if (code == 6)
+    return "store address misaligned";
+  if (code == 7)
+    return "store access fault";
+  if (code == 8)
+    return "ecall from U-mode";
+  if (code == 9)
+    return "ecall from S-mode";
+  if (code == 11)
+    return "ecall from M-mode";
+  if (code == 12)
+    return "insn page fault";
+  if (code == 13)
+    return "load page fault";
+  if (code == 15)
+    return "store page fault";
+  return "exception";
+}
+
+U0 RVWinMcausePrint(I64 v, I64 mepc)
+{
+  I64 intr, code;
+  U8 *name;
+  // Idle / no fault snap: mcause=0 is still "insn address misaligned" in the
+  // ISA table, but printing that at Regs; is misleading — say none.
+  if (!v && !mepc) {
+    Print("     mcause=0x0  (none — no fault snap)\n");
+    return;
+  }
+  intr = (v >> 63) & 1;
+  code = v & 0x7FFFFFFFFFFFFFFF;
+  name = RVWinMcauseName(v);
+  if (intr)
+    Print("     mcause=0x%X  Interrupt code=%d (%s)\n", v, code, name);
+  else
+    Print("     mcause=0x%X  Exception code=%d (%s)\n", v, code, name);
+}
+// Inline snap — must match seed/csr.hc RegsSnapOnly / gdbstub GdbSnapRegs
+// (lui/slli → 0x87000000; xN at MEM_REGS_SNAP+N*8). No Hc*/HashFind.
+U0 RVWinRegsSnapOnly()
+{
+  asm {
+	addi	sp, sp, -16
+	sd	t6, 0(sp)
+	sd	t5, 8(sp)
+	lui	t6, 0x10E00
+	slli	t6, t6, 3
+	sd	x1, 0x308(t6)
+	addi	t5, sp, 16
+	sd	t5, 0x310(t6)
+	sd	x3, 0x318(t6)
+	sd	x4, 0x320(t6)
+	sd	x5, 0x328(t6)
+	sd	x6, 0x330(t6)
+	sd	x7, 0x338(t6)
+	sd	x8, 0x340(t6)
+	sd	x9, 0x348(t6)
+	sd	x10, 0x350(t6)
+	sd	x11, 0x358(t6)
+	sd	x12, 0x360(t6)
+	sd	x13, 0x368(t6)
+	sd	x14, 0x370(t6)
+	sd	x15, 0x378(t6)
+	sd	x16, 0x380(t6)
+	sd	x17, 0x388(t6)
+	sd	x18, 0x390(t6)
+	sd	x19, 0x398(t6)
+	sd	x20, 0x3A0(t6)
+	sd	x21, 0x3A8(t6)
+	sd	x22, 0x3B0(t6)
+	sd	x23, 0x3B8(t6)
+	sd	x24, 0x3C0(t6)
+	sd	x25, 0x3C8(t6)
+	sd	x26, 0x3D0(t6)
+	sd	x27, 0x3D8(t6)
+	sd	x28, 0x3E0(t6)
+	sd	x29, 0x3E8(t6)
+	ld	t5, 8(sp)
+	sd	t5, 0x3F0(t6)
+	ld	t5, 0(sp)
+	sd	t5, 0x3F8(t6)
+	ld	t5, 8(sp)
+	ld	t6, 0(sp)
+	addi	sp, sp, 16
+  }
+  *(I64 *)MEM_REGS_SNAP = 0;
+}
+
+U0 RVWinRegsRestoreOnly()
+{
+  // Do not reload ra/sp/fp/s* — HolyC frames use them. Temps/args only.
+  asm {
+	lui	t6, 0x10E00
+	slli	t6, t6, 3
+	ld	x5, 0x328(t6)
+	ld	x6, 0x330(t6)
+	ld	x7, 0x338(t6)
+	ld	x10, 0x350(t6)
+	ld	x11, 0x358(t6)
+	ld	x12, 0x360(t6)
+	ld	x13, 0x368(t6)
+	ld	x14, 0x370(t6)
+	ld	x15, 0x378(t6)
+	ld	x16, 0x380(t6)
+	ld	x17, 0x388(t6)
+	ld	x28, 0x3E0(t6)
+	ld	x29, 0x3E8(t6)
+	ld	x30, 0x3F0(t6)
+	ld	t6, 0x3F8(t6)
+  }
+}
+
+I64 RVWinRegGprDigit(U8 *s)
+{
+  I64 n;
+  if (!s || !*s)
+    return -1;
+  n = 0;
+  while (*s >= '0' && *s <= '9') {
+    n = n * 10 + (*s - '0');
+    s++;
+  }
+  if (*s)
+    return -1;
+  return n;
+}
+
+I64 RVWinRegGprIndex(U8 *name)
+{
+  I64 n;
+  U8 *p;
+  U8 c0;
+  if (!name || !*name)
+    return -1;
+  if ((name[0] == 'x' || name[0] == 'X') && name[1] >= '0' && name[1] <= '9') {
+    n = 0;
+    p = name + 1;
+    while (*p >= '0' && *p <= '9') {
+      n = n * 10 + (*p - '0');
+      p++;
+    }
+    if (!*p && n >= 0 && n < 32)
+      return n;
+    return -1;
+  }
+  if ((name[0] == 'R' || name[0] == 'r') && (name[1] == 'E' || name[1] == 'e') && (name[2] == 'G' || name[2] == 'g')) {
+    p = name + 3;
+    if (*p == '_')
+      p++;
+    name = p;
+    if (!*name)
+      return -1;
+  }
+  if (!StrICmp(name, "zero"))
+    return REG_ZERO;
+  if (!StrICmp(name, "ra"))
+    return REG_RA;
+  if (!StrICmp(name, "sp"))
+    return REG_SP;
+  if (!StrICmp(name, "gp"))
+    return REG_GP;
+  if (!StrICmp(name, "tp"))
+    return REG_TP;
+  if (!StrICmp(name, "fp") || !StrICmp(name, "s0"))
+    return REG_FP;
+  if (!StrICmp(name, "s1"))
+    return REG_S1;
+  c0 = name[0];
+  if (c0 >= 'A' && c0 <= 'Z')
+    c0 += 32;
+  if (c0 == 't' && name[1]) {
+    n = RVWinRegGprDigit(name + 1);
+    if (n >= 0 && n <= 2)
+      return REG_T0 + n;
+    if (n >= 3 && n <= 6)
+      return REG_T3 + (n - 3);
+  }
+  if (c0 == 'a' && name[1]) {
+    n = RVWinRegGprDigit(name + 1);
+    if (n >= 0 && n <= 7)
+      return REG_A0 + n;
+  }
+  if (c0 == 's' && name[1]) {
+    n = RVWinRegGprDigit(name + 1);
+    if (n == 0 || n == 1)
+      return REG_S0 + n;
+    if (n >= 2 && n <= 11)
+      return REG_S2 + (n - 2);
+  }
+  return -1;
+}
+
+U0 RVWinRegGprLine(I64 i, I64 v)
+{
+  if (i == 1)
+    Print("  x01/ra = 0x%X\n", v);
+  else if (i == 2)
+    Print("  x02/sp = 0x%X\n", v);
+  else if (i == 3)
+    Print("  x03/gp = 0x%X\n", v);
+  else if (i == 4)
+    Print("  x04/tp = 0x%X\n", v);
+  else if (i == 5)
+    Print("  x05/t0 = 0x%X\n", v);
+  else if (i == 6)
+    Print("  x06/t1 = 0x%X\n", v);
+  else if (i == 7)
+    Print("  x07/t2 = 0x%X\n", v);
+  else if (i == 8)
+    Print("  x08/s0 = 0x%X\n", v);
+  else if (i == 9)
+    Print("  x09/s1 = 0x%X\n", v);
+  else if (i == 10)
+    Print("  x10/a0 = 0x%X\n", v);
+  else if (i == 11)
+    Print("  x11/a1 = 0x%X\n", v);
+  else if (i == 12)
+    Print("  x12/a2 = 0x%X\n", v);
+  else if (i == 13)
+    Print("  x13/a3 = 0x%X\n", v);
+  else if (i == 14)
+    Print("  x14/a4 = 0x%X\n", v);
+  else if (i == 15)
+    Print("  x15/a5 = 0x%X\n", v);
+  else if (i == 16)
+    Print("  x16/a6 = 0x%X\n", v);
+  else if (i == 17)
+    Print("  x17/a7 = 0x%X\n", v);
+  else if (i == 18)
+    Print("  x18/s2 = 0x%X\n", v);
+  else if (i == 19)
+    Print("  x19/s3 = 0x%X\n", v);
+  else if (i == 20)
+    Print("  x20/s4 = 0x%X\n", v);
+  else if (i == 21)
+    Print("  x21/s5 = 0x%X\n", v);
+  else if (i == 22)
+    Print("  x22/s6 = 0x%X\n", v);
+  else if (i == 23)
+    Print("  x23/s7 = 0x%X\n", v);
+  else if (i == 24)
+    Print("  x24/s8 = 0x%X\n", v);
+  else if (i == 25)
+    Print("  x25/s9 = 0x%X\n", v);
+  else if (i == 26)
+    Print("  x26/s10 = 0x%X\n", v);
+  else if (i == 27)
+    Print("  x27/s11 = 0x%X\n", v);
+  else if (i == 28)
+    Print("  x28/t3 = 0x%X\n", v);
+  else if (i == 29)
+    Print("  x29/t4 = 0x%X\n", v);
+  else if (i == 30)
+    Print("  x30/t5 = 0x%X\n", v);
+  else if (i == 31)
+    Print("  x31/t6 = 0x%X\n", v);
+  else
+    Print("  x%d = 0x%X\n", i, v);
 }
 
 U0 RVWinSerialRegs()
 {
+  I64 cause, mepc, i, v;
+  RVWinRegsSnapOnly;
+  Print("GPRs (soft snap @ stub entry):\n");
+  for (i = 1; i < 32; i++) {
+    v = *(I64 *)(MEM_REGS_SNAP + i * 8);
+    RVWinRegGprLine(i, v);
+  }
+  cause = RVWinCsrrMcause();
+  mepc = RVWinCsrrMepc();
   Print("regs mstatus=0x%X mie=0x%X mip=0x%X\n", RVWinCsrrMstatus(), RVWinCsrrMie(), RVWinCsrrMip());
-  Print("     mepc=0x%X mcause=0x%X mtval=0x%X sp=0x%X\n", RVWinCsrrMepc(), RVWinCsrrMcause(), RVWinCsrrMtval(), GetRSP());
+  Print("     mepc=0x%X mtval=0x%X sp=0x%X\n", mepc, RVWinCsrrMtval(), GetRSP());
+  RVWinMcausePrint(cause, mepc);
   Print("(Fault snap: UART crash> after RVCrashMonInit + fault.)\n");
+  RVWinRegsRestoreOnly;
+}
+// HolyC ExePutS symbols (seed/csr.hc not linked into Kernel+Compiler_RV images).
+public U0 Regs()
+{
+  Print("Regs (kernel soft):\n");
+  RVWinSerialRegs;
+}
+// Soft REPL entry points for ExePutS hash (unique names — no HolyC overload).
+// RVExePubsWire registers them as Dir/Ls/Pwd/Cd/Help/Man.
+// Text-only RedSea walk: Kernel Dir() emits DolDoc $$MA/PutFileLink (hangs on UART),
+// and FilesFind (FileNameAbs/DirFilesSort/try) also hung on win serial ExePutS.
+// Honest listing = BlkRead cur-dir entries, Print names — no $$ / no FilesFind.
+public U0 RVWinSoftDir()
+{
+  U8 *st, *buf, *buf1;
+  CDrv *dv;
+  CDirEntry *ptr;
+  I64 ch, clus, n, blks;
+  st = DirCur;
+  if (!st) {
+    Print("Dir: Invalid Drive (soft — mount RAM disk first)\n");
+    return;
+  }
+  Print("Dir (soft): %s\n", st);
+  Free(st);
+  dv = Fs->cur_dv;
+  if (!dv || dv->fs_type != FSt_REDSEA) {
+    Print("  (no RedSea cwd)\n");
+    return;
+  }
+  clus = Name2DirClus(dv, Fs->cur_dir);
+  if (!clus) {
+    Print("  (bad dir clus)\n");
+    return;
+  }
+  buf1 = MAlloc(BLK_SIZE);
+  if (!buf1 || !BlkRead(dv, buf1, clus, 1)) {
+    Free(buf1);
+    Print("  (dir read fail)\n");
+    return;
+  }
+  ptr = buf1(U8 *) - offset(CDirEntry.start);
+  blks = ptr->size >> BLK_SIZE_BITS;
+  if (blks < 1)
+    blks = 1;
+  buf = MAlloc(blks << BLK_SIZE_BITS);
+  if (!buf || !BlkRead(dv, buf, clus, blks)) {
+    Free(buf1);
+    Free(buf);
+    Print("  (dir read fail)\n");
+    return;
+  }
+  Free(buf1);
+  ptr = buf(U8 *) - offset(CDirEntry.start);
+  n = 0;
+  while (TRUE) {
+    if (!(ch = *ptr->name))
+      break;
+    if (!(ptr->attr & RS_ATTR_DELETED)) {
+      if (ptr->attr & RS_ATTR_DIR)
+        Print("  %s/\n", ptr->name);
+      else
+        Print("  %s  %d\n", ptr->name, ptr->size);
+      n++;
+    }
+    ptr(U8 *) += CDIR_SIZE;
+  }
+  Free(buf);
+  if (!n)
+    Print("  (empty)\n");
+  else
+    Print("  (%d entries)\n", n);
+}
+
+public U0 RVWinSoftLs()
+{
+  RVWinSoftDir;
+}
+
+public U0 RVWinSoftPwd()
+{
+  U8 *st;
+  st = DirCur;
+  if (!st) {
+    Print("(no cwd)\n");
+    return;
+  }
+  Print("%s\n", st);
+  Free(st);
+}
+
+public I64 RVWinSoftCd(U8 *dirname)
+{
+  if (!dirname || !*dirname)
+    return Cd("~", FALSE);
+  return Cd(dirname, FALSE);
+}
+
+public U0 RVWinSoftHelp()
+{
+  RVWinSerialHelp;
+}
+
+public U0 RVWinSoftMan(U8 *name)
+{
+  if (!name || !*name) {
+    Print("Man: need a name — Man(\"Print\"); (full pages on repl-holyc)\n");
+    return;
+  }
+  Print("Man(\"%s\"): soft stub — symbol docs live on repl-holyc Man/seed\n", name);
+}
+
+public I64 Reg(U8 *name)
+{
+  I64 v, gi;
+  if (!name)
+    return -1;
+  gi = RVWinRegGprIndex(name);
+  if (gi >= 0) {
+    RVWinRegsSnapOnly;
+    v = *(I64 *)(MEM_REGS_SNAP + gi * 8);
+    Print("Reg(\"%s\")=0x%X\n", name, v);
+    return v;
+  }
+  if (!StrICmp(name, "mstatus")) {
+    v = RVWinCsrrMstatus();
+    Print("Reg(\"%s\")=0x%X\n", name, v);
+    return v;
+  }
+  if (!StrICmp(name, "mie")) {
+    v = RVWinCsrrMie();
+    Print("Reg(\"%s\")=0x%X\n", name, v);
+    return v;
+  }
+  if (!StrICmp(name, "mip")) {
+    v = RVWinCsrrMip();
+    Print("Reg(\"%s\")=0x%X\n", name, v);
+    return v;
+  }
+  if (!StrICmp(name, "mepc")) {
+    v = RVWinCsrrMepc();
+    Print("Reg(\"%s\")=0x%X\n", name, v);
+    return v;
+  }
+  if (!StrICmp(name, "mcause")) {
+    v = RVWinCsrrMcause();
+    Print("Reg(\"%s\")=0x%X\n", name, v);
+    return v;
+  }
+  if (!StrICmp(name, "mtval")) {
+    v = RVWinCsrrMtval();
+    Print("Reg(\"%s\")=0x%X\n", name, v);
+    return v;
+  }
+  Print("Reg(\"%s\"): unknown (try a0/sp/ra/xN or mstatus/mie/mip/mepc/mcause/mtval)\n", name);
+  return -1;
+}
+// Next frame from s0: prefer gcc/expr (ra@s0-8, s0@s0-16), else HolyC ENTER
+// (ra@s0-N, s0@s0-N+8 for N=16..512). Returns 1 and fills *ra_out/*s0_out.
+I64 RVWinSerialBtFrameNext(I64 s0, I64 *ra_out, I64 *s0_out)
+{
+  I64 ra, ps0, N;
+  *ra_out = 0;
+  *s0_out = 0;
+  if (!RVWinSerialInRam(s0) || (s0 & 7))
+    return 0;
+  if (RVWinSerialInRam(s0 - 16)) {
+    ra = *(I64 *)(s0 - 8);
+    ps0 = *(I64 *)(s0 - 16);
+    if (RVWinSerialInCode(ra) && (RVWinSerialInStk(ps0) || RVWinSerialInRam(ps0))) {
+      *ra_out = ra;
+      *s0_out = ps0;
+      return 1;
+    }
+  }
+  // HolyC IC_ENTER: sd ra,0(sp); sd s0,8(sp); addi s0,sp,N
+  for (N = 16; N <= 512; N += 8) {
+    if (!RVWinSerialInRam(s0 - N))
+      continue;
+    ra = *(I64 *)(s0 - N);
+    ps0 = *(I64 *)(s0 - N + 8);
+    if (!RVWinSerialInCode(ra))
+      continue;
+    if (ps0 && !RVWinSerialInRam(ps0))
+      continue;
+    *ra_out = ra;
+    *s0_out = ps0;
+    return 1;
+  }
+  return 0;
+}
+// Static nearest-below map — FunSegFind is a Kernel stub; HashFind can hang.
+// Addresses filled by RVWinSerialSymWire (after all & targets exist).
+#define RV_WIN_SYM_MAX 16
+I64 rv_win_sym_addr[RV_WIN_SYM_MAX];
+U8 *rv_win_sym_nm[RV_WIN_SYM_MAX];
+I64 rv_win_sym_n;
+U0 RVWinSerialSymCand(I64 addr, I64 cand, U8 *nm, I64 *best_d, U8 **best_nm)
+{
+  I64 d;
+  if (!cand || !nm || cand > addr)
+    return;
+  d = addr - cand;
+  if (d > 0x8000)
+    return;
+  if (*best_d < 0 || d < *best_d) {
+    *best_d = d;
+    *best_nm = nm;
+  }
+}
+
+U8 *RVWinSerialSymName(I64 addr)
+{
+  I64 best, i;
+  U8 *nm;
+  if (!RVWinSerialInCode(addr) || rv_win_sym_n <= 0)
+    return NULL;
+  best = -1;
+  nm = NULL;
+  for (i = 0; i < rv_win_sym_n; i++)
+    RVWinSerialSymCand(addr, rv_win_sym_addr[i], rv_win_sym_nm[i], &best, &nm);
+  if (best < 0)
+    return NULL;
+  return nm;
+}
+
+U0 RVWinSerialBtPrint(I64 n, I64 pc)
+{
+  U8 *sym;
+  sym = RVWinSerialSymName(pc);
+  if (sym)
+    Print("  #%d 0x%X %s\n", n, pc, sym);
+  else
+    Print("  #%d 0x%X\n", n, pc);
 }
 
 U0 RVWinSerialBt(I64 max = 16)
 {
-  I64 sp, i, a, n;
+  I64 sp, fp, ra, ps0, cur, i, n, seen[16];
   if (max <= 0)
     max = 16;
-  if (max > 32)
-    max = 32;
+  if (max > 16)
+    max = 16;
   sp = GetRSP();
-  Print("bt sp=0x%X\n", sp);
-  n = 0;
-  for (i = 0; i < 64 && n < max; i++) {
-    a = *(I64 *)(sp + i * 8);
-    if (!RVWinSerialInRam(a))
-      continue;
-    if (a & 1)
-      continue;
-    // RV compressed can be any even; prefer 0x80xxxxxx kernel/blob range
-    Print("  #%d 0x%X\n", n, a);
-    n++;
+  // Capture live ra/s0 before further HolyC calls smash them (same idea as seed Bt).
+  // Scratch under SYS_FIXED_AREA — not a trap snap; dig-down has no GPR freeze.
+  asm {
+	lui	t6, 0x10E00
+	slli	t6, t6, 3
+	sd	ra, 0x200(t6)
+	sd	s0, 0x208(t6)
   }
-  if (!n)
-    Print("  (empty)\n");
+  ra = *(I64 *)0x87000200;
+  fp = *(I64 *)0x87000208;
+  Print("bt live fp=0x%X sp=0x%X (code PCs only; no trap snap)\n", fp, sp);
+  n = 0;
+  cur = ra;
+  if (!RVWinSerialInCode(cur)) {
+    Print("  (no live code PC — try fault → crash> bt for mepc)\n");
+    return;
+  }
+  RVWinSerialBtPrint(n, cur);
+  seen[n++] = cur;
+  // Advance from our frame to the caller's saved s0 (cur should match saved ra).
+  if (!RVWinSerialBtFrameNext(fp, &ra, &ps0)) {
+    Print("  (stopped — no FP chain)\n");
+    return;
+  }
+  if (ra != cur && RVWinSerialInCode(ra)) {
+    // Unusual layout: print the frame-next ra too if distinct.
+    for (i = 0; i < n; i++)
+      if (seen[i] == ra)
+        break;
+    if (i >= n && n < max) {
+      RVWinSerialBtPrint(n, ra);
+      seen[n++] = ra;
+    }
+  }
+  fp = ps0;
+  while (n < max) {
+    if (!RVWinSerialBtFrameNext(fp, &ra, &ps0))
+      break;
+    if (!RVWinSerialInCode(ra))
+      break;
+    for (i = 0; i < n; i++)
+      if (seen[i] == ra || seen[i] == fp)
+        break;
+    if (i < n)
+      break;
+    // cycle / repeat
+    if (ps0 == fp)
+      break;
+    RVWinSerialBtPrint(n, ra);
+    seen[n++] = ra;
+    if (!ps0 || !RVWinSerialInRam(ps0))
+      break;
+    fp = ps0;
+  }
+  if (n >= max)
+    Print("  (cap %d)\n", max);
 }
-
+// Do not add public Bt() — TempleOS Bt(bitmap,bit) is the bit-test intrinsic.
 U0 RVWinSerialMd(I64 addr, I64 n = 64)
 {
   I64 i, b;
@@ -146,13 +785,38 @@ U0 RVWinSerialMw(I64 addr, I64 val)
 
 U0 RVWinSerialFault()
 {
+  // Soft RX must not drain HW FIFO during fault Print — host CrashMon reads
+  // LSR/RBR directly (go/q would land in the soft ring and be invisible).
+  RVUartSoftOn(0);
   Print("RVWinSerial: deliberate fault → UART crash>\n");
   RVWinSerialFaultAsm();
+  RVUartSoftOn(1);
 }
 
 U0 RVWinSerialPrompt()
 {
   Print("> ");
+}
+// Soft-parse Reg("name"); without mid-block locals (host AOT corrupts those).
+U0 RVWinSerialSoftReg(U8 *p)
+{
+  U8 name[32];
+  I64 ni, j;
+  ni = 0;
+  j = 3;
+  while (p[j] == ' ' || p[j] == '\t')
+    j++;
+  if (p[j] == '(')
+    j++;
+  while (p[j] == ' ' || p[j] == '\t' || p[j] == '"')
+    j++;
+  while (p[j] && p[j] != '"' && p[j] != ')' && p[j] != ';' && ni < 31)
+    name[ni++] = p[j++];
+  name[ni] = 0;
+  if (ni)
+    Reg(name);
+  else
+    Print("Reg: need a name — Reg(\"a0\");\n");
 }
 
 Bool RVWinSerialDispatch(U8 *line)
@@ -170,7 +834,18 @@ Bool RVWinSerialDispatch(U8 *line)
     return FALSE;
   }
   if (RVWinSerialCmdEq(p, "regs")) {
+    // Direct — avoid ExePutS JIT for Regs; (null export / CALL_IMPORT risk).
+    Print("Regs (kernel soft):\n");
     RVWinSerialRegs;
+    return FALSE;
+  }
+  // Reg("a0"); / Reg("mstatus"); — parse without JIT (same reliability as regs).
+  if ((p[0] == 'R' || p[0] == 'r') && p[1] == 'e' && p[2] == 'g' && (p[3] == '(' || p[3] == ' ')) {
+    RVWinSerialSoftReg(p);
+    return FALSE;
+  }
+  if (RVWinSerialCmdEq(p, "dir") || RVWinSerialCmdEq(p, "ls")) {
+    RVWinSoftDir;
     return FALSE;
   }
   if (RVWinSerialCmdEq(p, "bt")) {
@@ -209,6 +884,22 @@ Bool RVWinSerialDispatch(U8 *line)
     Print("RVWinSerial: quit WinMgr\n");
     return TRUE;
   }
+  if (RVWinSerialCmdEq(p, "max")) {
+    RVWinMax(-1);
+    return FALSE;
+  }
+  if (RVWinSerialCmdEq(p, "tileh")) {
+    RVWinTileHorz;
+    return FALSE;
+  }
+  if (RVWinSerialCmdEq(p, "tilev")) {
+    RVWinTileVert;
+    return FALSE;
+  }
+  if (RVWinSerialCmdEq(p, "user")) {
+    RVWinSpawnUser(NULL);
+    return FALSE;
+  }
   if (RVWinSerialEval) {
     r = RVWinSerialEval(p);
     Print("ans=%d\n", r);
@@ -226,12 +917,138 @@ U0 RVWinSerialPutEcho(I64 ch)
   RVUartPutS(e);
 }
 
+Bool RVWinTermMirrorPutS(U8 *st)
+{
+  //KeyDev mirror while Term/User/Adam line is evaluating — UART Print fills the app body.
+  if (!st)
+    return FALSE;
+  if (rv_win_term_mirror) {
+    RVDocPutS(st);
+    return TRUE;
+  }
+  if (rv_win_adam_mirror) {
+    RVWinBodyAppend(rv_winmgr.adam_idx, st);
+    return TRUE;
+  }
+  return FALSE;
+}
+
+U0 RVWinTermPrompt()
+{
+  RVDocPutS("> ");
+}
+
+U0 RVWinAdamPrompt()
+{
+  RVWinBodyAppend(rv_winmgr.adam_idx, "> ");
+}
+
+U0 RVWinTermPutChar(I64 ch)
+{
+  //Virtio Term/User REPL: echo into focus body; Enter → RVWinSerialDispatch (ExePutS).
+  U8 e[2];
+  I64 len, idx, kind;
+  CRVWin *w;
+  if (ch == '\t') {
+    RVWinFocusNext;
+    return;
+  }
+  idx = rv_winmgr.focus;
+  if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+    idx = rv_winmgr.term_idx;
+  if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+    return;
+  w = &rv_winmgr.wins[idx];
+  kind = w->kind;
+  if (ch == 8) {
+    if (rv_win_term_len > 0) {
+      rv_win_term_len--;
+      rv_win_term_line[rv_win_term_len] = 0;
+      len = RVWinBodyLen(w->body);
+      if (len > 0)
+        w->body[len - 1] = 0;
+    }
+    return;
+  }
+  if (ch == '\n' || ch == '\r') {
+    RVWinBodyAppend(idx, "\n");
+    rv_win_term_line[rv_win_term_len] = 0;
+    rv_win_term_mirror = 1;
+    RVWinSerialDispatch(rv_win_term_line);
+    rv_win_term_mirror = 0;
+    rv_win_term_len = 0;
+    if (kind == RV_WIN_KIND_USER)
+      rv_winmgr.user_cmds++;
+    else
+      rv_win_term_cmds++;
+    if (!rv_winmgr.want_quit) {
+      if (kind == RV_WIN_KIND_USER)
+        RVWinBodyAppend(idx, "> ");
+      else
+        RVWinTermPrompt;
+    }
+    return;
+  }
+  if (ch >= 32 && ch < 127 && rv_win_term_len < RV_WIN_SERIAL_LINE_MAX - 1) {
+    rv_win_term_line[rv_win_term_len++] = ch;
+    e[0] = ch;
+    e[1] = 0;
+    RVWinBodyAppend(idx, e);
+  }
+}
+
+U0 RVWinAdamPutChar(I64 ch)
+{
+  //Virtio Adam REPL (TempleOS Adam task DocPutKey → ExePutS shape).
+  U8 e[2];
+  I64 len, idx;
+  CRVWin *w;
+  idx = rv_winmgr.adam_idx;
+  if (ch == '\t') {
+    RVWinFocusNext;
+    return;
+  }
+  if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+    return;
+  w = &rv_winmgr.wins[idx];
+  if (ch == 8) {
+    if (rv_win_adam_len > 0) {
+      rv_win_adam_len--;
+      rv_win_adam_line[rv_win_adam_len] = 0;
+      len = RVWinBodyLen(w->body);
+      if (len > 0)
+        w->body[len - 1] = 0;
+    }
+    return;
+  }
+  if (ch == '\n' || ch == '\r') {
+    RVWinBodyAppend(idx, "\n");
+    rv_win_adam_line[rv_win_adam_len] = 0;
+    rv_win_adam_mirror = 1;
+    RVWinSerialDispatch(rv_win_adam_line);
+    rv_win_adam_mirror = 0;
+    rv_win_adam_len = 0;
+    rv_win_adam_cmds++;
+    if (!rv_winmgr.want_quit)
+      RVWinAdamPrompt;
+    return;
+  }
+  if (ch >= 32 && ch < 127 && rv_win_adam_len < RV_WIN_SERIAL_LINE_MAX - 1) {
+    rv_win_adam_line[rv_win_adam_len++] = ch;
+    e[0] = ch;
+    e[1] = 0;
+    RVWinBodyAppend(idx, e);
+  }
+}
+
 U0 RVWinSerialPoll()
 {
-  I64 ch;
+  //Non-blocking soft-RX drain. At most one full line (or a small char budget)
+  //per WinMgr tick so ExePutS / PutS cannot starve VirtioInput for the FB loop.
+  I64 ch, budget = 256;
   if (!rv_win_serial_ready)
     return;
-  while (TRUE) {
+  while (budget-- > 0) {
     ch = RVUartTryGet;
     if (ch < 0)
       break;
@@ -242,7 +1059,8 @@ U0 RVWinSerialPoll()
       rv_win_serial_len = 0;
       if (!rv_winmgr.want_quit)
         RVWinSerialPrompt;
-      continue;
+      // One statement per tick — return so RVWinMgrRun can pump virtio-kbd/tablet.
+      break;
     }
     if (ch == 3) {
       rv_win_serial_len = 0;
@@ -264,6 +1082,28 @@ U0 RVWinSerialPoll()
   }
 }
 
+U0 RVWinSerialSymAdd(I64 addr, U8 *nm)
+{
+  if (rv_win_sym_n >= RV_WIN_SYM_MAX || !addr || !nm)
+    return;
+  rv_win_sym_addr[rv_win_sym_n] = addr;
+  rv_win_sym_nm[rv_win_sym_n] = nm;
+  rv_win_sym_n++;
+}
+// Called from Init once all dig-down targets exist (no forward & at parse time).
+U0 RVWinSerialSymWire()
+{
+  if (rv_win_sym_n)
+    return;
+  RVWinSerialSymAdd(&RVWinSerialBt, "RVWinSerialBt");
+  RVWinSerialSymAdd(&RVWinSerialDispatch, "RVWinSerialDispatch");
+  RVWinSerialSymAdd(&RVWinSerialPoll, "RVWinSerialPoll");
+  RVWinSerialSymAdd(&RVWinSerialRegs, "RVWinSerialRegs");
+  RVWinSerialSymAdd(&Regs, "Regs");
+  RVWinSerialSymAdd(&Reg, "Reg");
+  RVWinSerialSymAdd(&RVWinMgrRun, "RVWinMgrRun");
+}
+
 Bool RVWinSerialInit()
 {
   if (rv_win_serial_ready)
@@ -271,10 +1111,22 @@ Bool RVWinSerialInit()
   RVUartSoftOn(1);
   RVTrapInit();
   RVCrashMonInit();
+  RVWinSerialSymWire;
   rv_win_serial_ready = TRUE;
   rv_win_serial_len = 0;
   rv_win_serial_cmds = 0;
-  Print("RVWinSerial ready soft=%d crash_mon=1 (help; regs; bt; fault; q)\n", RVUartSoftGet);
+  rv_win_term_len = 0;
+  rv_win_term_cmds = 0;
+  rv_win_term_mirror = 0;
+  rv_win_adam_len = 0;
+  rv_win_adam_cmds = 0;
+  rv_win_adam_mirror = 0;
+  // Mirror Print into Term/Adam only while that app's Dispatch is active.
+  RVConsoleMirrorPutS = &RVWinTermMirrorPutS;
+  if (RVWinSerialEval)
+    Print("RVWinSerial ready soft=%d crash_mon=1 ExePutS REPL (HolyC UART+Term; fault; q)\n", RVUartSoftGet);
+  else
+    Print("RVWinSerial ready soft=%d crash_mon=1 (help; regs; bt; fault; q)\n", RVUartSoftGet);
   RVWinSerialPrompt;
   return TRUE;
 }

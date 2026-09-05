@@ -13,7 +13,51 @@
 #include <string.h>
 
 #ifndef BARE_METAL
+#include <stdarg.h>
+#include <unistd.h>
 #include <sys/mman.h>
+
+/* Visible AOT progress (stderr). Default: on when stderr is a TTY.
+ * HOLYC_PROGRESS=1 forces on (pipes/CI logs); =0 forces off.
+ * HOLYC_QUIET=1 forces off (smokes that must stay silent). */
+int HolyProgressOn(void) {
+  static int cached = -1;
+  if (cached >= 0) return cached;
+  const char *q = getenv("HOLYC_QUIET");
+  if (q && *q && strcmp(q, "0") != 0) { cached = 0; return 0; }
+  const char *p = getenv("HOLYC_PROGRESS");
+  if (p && *p) {
+    cached = (strcmp(p, "0") == 0) ? 0 : 1;
+    return cached;
+  }
+  cached = isatty(STDERR_FILENO) ? 1 : 0;
+  return cached;
+}
+
+const char *HolyProgressRel(const char *path) {
+  if (!path || !*path) return path ? path : "?";
+  const char *root = getenv("HOLYC_INCLUDE_ROOT");
+  if (root && *root) {
+    size_t n = strlen(root);
+    if (n > 0 && strncmp(path, root, n) == 0) {
+      const char *rest = path + n;
+      while (*rest == '/') rest++;
+      if (*rest) return rest;
+    }
+  }
+  return path;
+}
+
+void HolyProgress(const char *fmt, ...) {
+  if (!HolyProgressOn()) return;
+  fputs("holyc: ", stderr);
+  va_list ap;
+  va_start(ap, fmt);
+  vfprintf(stderr, fmt, ap);
+  va_end(ap);
+  fputc('\n', stderr);
+  fflush(stderr);
+}
 #else
 // Bare metal stubs
 #define PAGE_SIZE 4096
@@ -46,11 +90,17 @@ static inline int munmap(void *addr, size_t len) {
 // COMPILER MANAGEMENT
 // ═══════════════════════════════════════════════════════════════
 
-Compiler *CompilerNew(const char *source, const char *filename) {
+Compiler *CompilerNewBuf(const char *source, size_t size, const char *filename) {
   Compiler *cc = calloc(1, sizeof(Compiler));
   
-  // Initialize lexer
-  cc->lex.src = strdup(source);
+  // Initialize lexer — copy full buffer (may contain trailing CDocBin after text NUL).
+  if (!source) source = "";
+  cc->lex.src = malloc(size + 1);
+  if (cc->lex.src) {
+    if (size) memcpy(cc->lex.src, source, size);
+    cc->lex.src[size] = '\0';
+  }
+  cc->lex.src_size = size;
   cc->lex.ptr = cc->lex.src;
   cc->lex.line = 1;
   cc->lex.col = 1;
@@ -216,6 +266,10 @@ Compiler *CompilerNew(const char *source, const char *filename) {
   return cc;
 }
 
+Compiler *CompilerNew(const char *source, const char *filename) {
+  return CompilerNewBuf(source, source ? strlen(source) : 0, filename);
+}
+
 static void FreeDeferredFnICChunks(Compiler *cc) {
   AOTFnICChunk *n = cc->aot_fn_ic_head;
   while (n) {
@@ -249,9 +303,73 @@ void CompilerFree(Compiler *cc) {
   
   // Free code buffer if allocated
   if (cc->code_buffer) free(cc->code_buffer);
+
+#ifndef BARE_METAL
+  if (cc->aot_deps) {
+    for (I64 di = 0; di < cc->aot_dep_n; di++) free(cc->aot_deps[di]);
+    free(cc->aot_deps);
+  }
+#endif
   
   free(cc);
 }
+
+#ifndef BARE_METAL
+void AOTDepAdd(Compiler *cc, const char *path) {
+  if (!cc || !path || !*path) return;
+  for (I64 i = 0; i < cc->aot_dep_n; i++)
+    if (cc->aot_deps[i] && !strcmp(cc->aot_deps[i], path)) return;
+  if (cc->aot_dep_n >= cc->aot_dep_cap) {
+    I64 ncap = cc->aot_dep_cap ? cc->aot_dep_cap * 2 : 64;
+    char **nd = realloc(cc->aot_deps, (size_t)ncap * sizeof(char *));
+    if (!nd) return;
+    cc->aot_deps = nd;
+    cc->aot_dep_cap = ncap;
+  }
+  cc->aot_deps[cc->aot_dep_n++] = strdup(path);
+}
+
+void AOTWriteDeps(Compiler *cc, const char *dep_path, const char *target) {
+  if (!cc || !dep_path || !target) return;
+  FILE *f = fopen(dep_path, "w");
+  if (!f) return;
+  fprintf(f, "%s:", target);
+  for (I64 i = 0; i < cc->aot_dep_n; i++)
+    if (cc->aot_deps[i]) fprintf(f, " \\\n  %s", cc->aot_deps[i]);
+  fputc('\n', f);
+  fclose(f);
+}
+
+void AOTWriteMap(Compiler *cc, const char *map_path) {
+  if (!cc || !map_path || !cc->hash_table) return;
+  FILE *mf = fopen(map_path, "w");
+  if (!mf) return;
+  for (I64 i = 0; i <= cc->hash_table->mask; i++) {
+    for (CHashEntry *e = cc->hash_table->body[i]; e; e = e->next) {
+      if (!(e->type & HTT_FUN)) continue;
+      CHashFun *fn = (CHashFun *)e;
+      if (!fn->entry_label || !fn->entry_label_defined) continue;
+      bool in_unit = false;
+      for (CLabel *l = cc->labels; l; l = l->next)
+        if (l == (CLabel *)fn->entry_label) { in_unit = true; break; }
+      if (in_unit)
+        fprintf(mf, "%08llx %s\n", (long long)((CLabel *)fn->entry_label)->addr,
+                fn->str ? fn->str : "?");
+    }
+  }
+  if (cc->aot_data_layout) {
+    for (I64 i = 0; i <= cc->hash_table->mask; i++) {
+      for (CHashEntry *e = cc->hash_table->body[i]; e; e = e->next) {
+        if (!(e->type & HTT_GLBL_VAR)) continue;
+        CHashGlblVar *g = (CHashGlblVar *)e;
+        fprintf(mf, "%08llx %s\n", (long long)(cc->aot_data_base + g->data_addr_rip),
+                g->str ? g->str : "?");
+      }
+    }
+  }
+  fclose(mf);
+}
+#endif
 
 // ═══════════════════════════════════════════════════════════════
 // RISC-V INSTRUCTION ENCODING
@@ -954,32 +1072,22 @@ static void EmitAddImm(U8 *pass_buf, U8 **pass_ptr, I64 *rip, int rd, int rs, I6
   if (lo) RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (RV_T0 << 15) | (((U32)lo & 0xFFF) << 20)); // addi t0, t0, lo
   RVU32(pass_buf, pass_ptr, rip, 0x33 | ((U32)rd << 7) | ((U32)rs << 15) | (RV_T0 << 20));               // add rd, rs, t0
 }
-// Unconditional jump to a label: `jal zero` reaches ±1 MB; a farther target uses auipc+jalr
-// through t0 (t0 is caller-saved and free at a jump point).
-static void EmitJump(U8 *pass_buf, U8 **pass_ptr, I64 *rip, CLabel *lb) {
-  I64 offset = lb->addr - *rip;
-  if (offset >= -(1 << 20) && offset < (1 << 20)) {
-    RVU32(pass_buf, pass_ptr, rip, 0x6F | (((U32)(offset >> 12) & 0xFF) << 12) | (((U32)(offset >> 11) & 1) << 20) |
-          (((U32)(offset >> 1) & 0x3FF) << 21) | (((U32)(offset >> 20) & 1) << 31));
-    return;
-  }
+// Unconditional jump: always auipc+jalr (fixed 2 words), same rationale as EmitJalToLabel.
+// Distance-dependent jal vs auipc+jalr desynced sizing vs final emit on large AOTs
+// (CInit `j` into mid-auipc/addi). ICF_RELAX_LONG kept for call-site compatibility.
+static void EmitJump(U8 *pass_buf, U8 **pass_ptr, I64 *rip, CIntermediateCode *ic, CLabel *lb) {
+  (void)ic;
   I64 rel = lb->addr - *rip;
   I64 hi = (rel + 0x800) >> 12, lo = rel - (hi << 12);
   RVU32(pass_buf, pass_ptr, rip, 0x17 | (RV_T0 << 7) | (((U32)hi & 0xFFFFF) << 12));                 // auipc t0, hi
   RVU32(pass_buf, pass_ptr, rip, 0x67 | (RV_ZERO << 7) | (RV_T0 << 15) | (((U32)lo & 0xFFF) << 20)); // jalr zero, lo(t0)
 }
 
-// B-type branch rs1 ? rs2 → lb. f3: beq=0 bne=1 blt=4 bge=5 bltu=6 bgeu=7.
-// Short ±4 KB; else inverse beq/bne-sized skip over `jal zero,target` (±1 MB).
-static void EmitBrRsRs(U8 *pass_buf, U8 **pass_ptr, I64 *rip, int f3, int rs1, int rs2, CLabel *lb) {
-  I64 offset = lb->addr - *rip;
-  if (offset >= -4096 && offset <= 4094) {
-    RVU32(pass_buf, pass_ptr, rip,
-          0x63 | ((U32)f3 << 12) | (((U32)(offset >> 11) & 1) << 7) | (((U32)(offset >> 1) & 0xF) << 8) |
-              ((U32)rs1 << 15) | ((U32)rs2 << 20) | (((U32)(offset >> 5) & 0x3F) << 25) |
-              (((U32)(offset >> 12) & 1) << 31));
-    return;
-  }
+// B-type branch: always inverse + jal (fixed 2 words). Short B-type ±4KB oscillation
+// prevented AOT convergence on Kernel+Compiler blobs (pass cap → stale labels).
+static void EmitBrRsRs(U8 *pass_buf, U8 **pass_ptr, I64 *rip, CIntermediateCode *ic, int f3, int rs1, int rs2,
+                       CLabel *lb) {
+  (void)ic;
   int inv = f3 ^ 1; /* beq↔bne; blt↔bge; bltu↔bgeu */
   RVU32(pass_buf, pass_ptr, rip,
         0x63 | ((U32)inv << 12) | (0 << 7) | (4 << 8) | ((U32)rs1 << 15) | ((U32)rs2 << 20));
@@ -989,17 +1097,9 @@ static void EmitBrRsRs(U8 *pass_buf, U8 **pass_ptr, I64 *rip, int f3, int rs1, i
             (((U32)(joff >> 1) & 0x3FF) << 21) | (((U32)(joff >> 20) & 1) << 31));
 }
 
-// Conditional branch on a0 to a label, relaxed for range: a B-type beq/bne reaches ±4 KB; a
-// larger target uses the inverse branch over a `jal zero,target` (±1 MB). `br_zero` picks beq.
-// Kept as the historical encoding path (do not route through EmitBrRsRs — bisect safety).
-static void EmitCondBranch(U8 *pass_buf, U8 **pass_ptr, I64 *rip, bool br_zero, CLabel *lb) {
-  I64 offset = lb->addr - *rip;
-  if (offset >= -4096 && offset <= 4094) {
-    U32 f3 = br_zero ? 0u : (1u << 12);
-    RVU32(pass_buf, pass_ptr, rip, 0x63 | f3 | (((U32)(offset >> 11) & 1) << 7) | (((U32)(offset >> 1) & 0xF) << 8) |
-          (RV_A0 << 15) | (RV_ZERO << 20) | (((U32)(offset >> 5) & 0x3F) << 25) | (((U32)(offset >> 12) & 1) << 31));
-    return;
-  }
+// Conditional branch on a0: always inverse beq/bne + jal (fixed 2 words).
+static void EmitCondBranch(U8 *pass_buf, U8 **pass_ptr, I64 *rip, CIntermediateCode *ic, bool br_zero, CLabel *lb) {
+  (void)ic;
   U32 inv = br_zero ? (1u << 12) : 0u;
   RVU32(pass_buf, pass_ptr, rip, 0x63 | inv | (0 << 7) | (4 << 8) | (RV_A0 << 15) | (RV_ZERO << 20));
   I64 joff = lb->addr - *rip;
@@ -1057,7 +1157,7 @@ static void EmitIC_BrCmp(U8 *b, U8 **q, I64 *r, I64 *d, CIntermediateCode *ic) {
     }
   }
   if (swap) { int t = lhs; lhs = rhs; rhs = t; }
-  EmitBrRsRs(b, q, r, f3, lhs, rhs, lb);
+  EmitBrRsRs(b, q, r, ic, f3, lhs, rhs, lb);
   lb->sd = *d;
   lb->sd_set = true;
 }
@@ -1128,6 +1228,30 @@ static void EmitRegsSnapStub(U8 *pass_buf, U8 **pass_ptr, I64 *rip) {
   }
   RVU32(pass_buf, pass_ptr, rip, 0x67 | (RV_RA << 7) | (RV_T0 << 15));
 #endif
+}
+
+/* A-ext AMO word: opcode 0x2F; aqrl is {aq,rl} in bits [26:25]. */
+static U32 RvAmo(U32 f5, U32 aqrl, U32 f3, int rd, int rs1, int rs2) {
+  return 0x2Fu | ((U32)rd << 7) | (f3 << 12) | ((U32)rs1 << 15) | ((U32)rs2 << 20) |
+         (aqrl << 25) | (f5 << 27);
+}
+
+/* HolyC `lock`: spin acquire matching HolyLock (amoswap.d.aq 1 until old==0). */
+static void EmitLockEnter(U8 *pass_buf, U8 **pass_ptr, I64 *rip) {
+  EmitLoadImm64(pass_buf, pass_ptr, rip, RV_T0, (I64)HOLYC_STMT_LOCK_ADDR);
+  RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T1 << 7) | (1 << 20));  // addi t1, zero, 1
+  I64 loop = *rip;
+  RVU32(pass_buf, pass_ptr, rip, RvAmo(0x01, 2, 0x3, RV_T2, RV_T0, RV_T1));  // amoswap.d.aq t2,t1,(t0)
+  I64 offset = loop - *rip;  // bnez t2, loop (−4)
+  RVU32(pass_buf, pass_ptr, rip,
+        0x63 | (1u << 12) | (((U32)(offset >> 11) & 1) << 7) | (((U32)(offset >> 1) & 0xF) << 8) |
+            ((U32)RV_T2 << 15) | (((U32)(offset >> 5) & 0x3F) << 25) | (((U32)(offset >> 12) & 1) << 31));
+}
+
+/* HolyC `lock` leave: release store 0 matching HolyUnlock (amoswap.d.rl zero). */
+static void EmitLockLeave(U8 *pass_buf, U8 **pass_ptr, I64 *rip) {
+  EmitLoadImm64(pass_buf, pass_ptr, rip, RV_T0, (I64)HOLYC_STMT_LOCK_ADDR);
+  RVU32(pass_buf, pass_ptr, rip, RvAmo(0x01, 1, 0x3, RV_ZERO, RV_T0, RV_ZERO));  // amoswap.d.rl zero,zero,(t0)
 }
 // Shared: argument shuffle for IC_CALL / IC_CALL_INDIRECT2, then PC-rel or host-indirect tail.
 static void EmitCallArgsAndInvoke(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth,
@@ -1614,7 +1738,7 @@ static int IcOptIfElseTailMerge(Compiler *cc) {
     br->ic_code = IC_EVAL_DROP;
     br->ic_data = 8;
     IcUnlinkRange(cc, jmp_end, lab_end);
-    return 1; /* one merge per pass; IcOptimize loop will rescan */
+    changed = 1; /* drain all identical if/else in one scan (boot blob size) */
   }
   return changed;
 }
@@ -1814,7 +1938,9 @@ static int IcOptCallJmpTailMerge(Compiler *cc) {
   return changed;
 }
 
-/* Unconditional JMP: drop unreachable IC until next LABEL (no other IR entries). */
+/* Unconditional JMP: drop unreachable IC until next LABEL (no other IR entries).
+ * Drain every match in one scan — one-per-outer-iter was O(regions×n) and hung
+ * host AOT of Kernel+Compiler_RV (make kernel-win-run never left holyc-riscv). */
 static int IcOptDeadAfterJmp(Compiler *cc) {
   int changed = 0;
   for (CIntermediateCode *jmp = cc->ic_head; jmp; jmp = jmp->next) {
@@ -1828,7 +1954,6 @@ static int IcOptDeadAfterJmp(Compiler *cc) {
       last = last->next;
     IcUnlinkRange(cc, p, last);
     changed = 1;
-    return 1;
   }
   return changed;
 }
@@ -1838,11 +1963,14 @@ static void IcOptimize(Compiler *cc) {
   /* Tier-2 on by default. HOLYC_NO_TIER2=1 disables (bisect). */
   int changed = getenv("HOLYC_NO_TIER2") ? 0 : 1;
   int guard = 0;
+  HolyProgress("optimize …");
   while (changed) {
     if (++guard > 50000) {
       fprintf(stderr, "IcOptimize: iteration cap (%d) — possible non-termination\n", guard);
       break;
     }
+    if ((guard % 5000) == 0)
+      HolyProgress("optimize … iter %d", guard);
     changed = 0;
     /* Fold/identity: apply all matches in one scan (was one-per-outer-iter → O(n²)). */
     for (CIntermediateCode *ic = cc->ic_head; ic; ) {
@@ -1888,11 +2016,13 @@ static void IcOptimize(Compiler *cc) {
     }
   }
   IcOptFrameAccess(cc);
+  HolyProgress("optimize done (%d iters)", guard);
 }
 
 U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   if (getenv("HOLYC_NO_OPT")) cc->optimize = false;
   IcOptimize(cc);
+  HolyProgress("size …");
   g_pp_on = cc->optimize;   // Tier 1 push/pop peephole (sound; kept on with O1 default)
   // Check if this is a function or expression
   CIntermediateCode *ic = cc->ic_head;
@@ -1917,6 +2047,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     prev_size = rip;
     rip = 0;
     pass++;
+    HolyProgress("size pass %d …", pass);
 
     ic = cc->ic_head;
     I64 stack_depth_pass = 0;
@@ -2237,7 +2368,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           }
 
           CLabel *lb = (CLabel*)ic->ic_data;
-          EmitCondBranch(pass_buf, &pass_ptr, &rip, true, lb);
+          EmitCondBranch(pass_buf, &pass_ptr, &rip, ic, true, lb);
           lb->sd = stack_depth_pass; lb->sd_set = true;   // the taken path reaches lb at this depth; fall-through keeps it
         }
         break;
@@ -2250,7 +2381,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           }
 
           CLabel *lb = (CLabel*)ic->ic_data;
-          EmitCondBranch(pass_buf, &pass_ptr, &rip, false, lb);
+          EmitCondBranch(pass_buf, &pass_ptr, &rip, ic, false, lb);
           lb->sd = stack_depth_pass; lb->sd_set = true;
         }
         break;
@@ -2266,7 +2397,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         {
           CLabel *lb = (CLabel*)ic->ic_data;
           lb->sd = stack_depth_pass; lb->sd_set = true;   // the jump reaches lb at this depth
-          EmitJump(pass_buf, &pass_ptr, &rip, lb);
+          EmitJump(pass_buf, &pass_ptr, &rip, ic, lb);
         }
         break;
       case IC_MOV:
@@ -2423,6 +2554,12 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_REGS_SNAP:
         EmitRegsSnapStub(pass_buf, &pass_ptr, &rip);
         break;
+      case IC_LOCK_ENTER:
+        EmitLockEnter(pass_buf, &pass_ptr, &rip);
+        break;
+      case IC_LOCK_LEAVE:
+        EmitLockLeave(pass_buf, &pass_ptr, &rip);
+        break;
       case IC_RETURN_VAL:
       case IC_RETURN_VAL2:
         // Return value should be in a0
@@ -2458,7 +2595,9 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     ic = ic->next;
   }
   
-  } while (rip != prev_size && pass < 10);  // Iterate until convergence
+  // Fixed-size jmp/br encodings (always long). Pass cap of 10 used to abort mid-shrink
+  // with stale label addrs → final emit `j` into auipc/addi (CInit load fault).
+  } while (rip != prev_size && pass < 8);
 #ifndef BARE_METAL
   if (getenv("HOLYC_TRACE")) {
     // A branch to a label whose IC_LABEL was never emitted keeps a stale addr → wrong target.
@@ -2471,6 +2610,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     }
   }
 #endif
+  I64 sized_rip = rip;
+  if (rip != prev_size) {
+    fprintf(stderr, "HOLYC AOT: sizing did not converge after %d passes (last %lld → %lld)\n",
+            pass, (long long)prev_size, (long long)rip);
+#ifndef BARE_METAL
+    return NULL;
+#endif
+  }
 
   // Lay out this unit's string literals right after the code (8-aligned).
   I64 str_base = (rip + 7) & ~7LL, str_total = 0;
@@ -2504,6 +2651,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
 
   // After convergence, do one final pass with emission enabled
   if (pass_buf == NULL) {
+  HolyProgress("emit …");
   pass_buf = buffer;
   pass_ptr = buffer;
   rip = 0;
@@ -2812,7 +2960,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           }
 
           CLabel *lb = (CLabel*)ic->ic_data;
-          EmitCondBranch(pass_buf, &pass_ptr, &rip, true, lb);
+          EmitCondBranch(pass_buf, &pass_ptr, &rip, ic, true, lb);
           lb->sd = stack_depth_final; lb->sd_set = true;   // the taken path reaches lb at this depth; fall-through keeps it
         }
         break;
@@ -2825,7 +2973,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
           }
 
           CLabel *lb = (CLabel*)ic->ic_data;
-          EmitCondBranch(pass_buf, &pass_ptr, &rip, false, lb);
+          EmitCondBranch(pass_buf, &pass_ptr, &rip, ic, false, lb);
           lb->sd = stack_depth_final; lb->sd_set = true;
         }
         break;
@@ -2841,7 +2989,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         {
           CLabel *lb = (CLabel*)ic->ic_data;
           lb->sd = stack_depth_final; lb->sd_set = true;   // the jump reaches lb at this depth
-          EmitJump(pass_buf, &pass_ptr, &rip, lb);
+          EmitJump(pass_buf, &pass_ptr, &rip, ic, lb);
         }
         break;
       case IC_MOV:
@@ -3000,6 +3148,12 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       case IC_REGS_SNAP:
         EmitRegsSnapStub(pass_buf, &pass_ptr, &rip);
         break;
+      case IC_LOCK_ENTER:
+        EmitLockEnter(pass_buf, &pass_ptr, &rip);
+        break;
+      case IC_LOCK_LEAVE:
+        EmitLockLeave(pass_buf, &pass_ptr, &rip);
+        break;
       case IC_RETURN_VAL:
       case IC_RETURN_VAL2:
         // Return value should be in a0
@@ -3036,12 +3190,14 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     }
     }
   
-  if (rip != prev_size) {
+  if (rip != sized_rip) {
     fprintf(stderr, "HOLYC AOT: emit size %lld != sized %lld (pass %d) — label/call mismatch\n",
-            (long long)rip, (long long)prev_size, pass);
+            (long long)rip, (long long)sized_rip, pass);
+#ifndef BARE_METAL
+    free(buffer);
+    return NULL;
+#endif
   }
-  // Debug: show convergence
-  // printf("Converged after %d passes, code_size=%lld\n", pass, rip);
   
   // Copy the string literals in after the code; the blob/buffer size includes them.
   if (str_total) {
@@ -3116,6 +3272,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     }
   }
 #endif
+  HolyProgress("done (%lld bytes)", (long long)rip);
   return buffer;
 }
 
@@ -3238,18 +3395,27 @@ void RuntimeDeclare(Compiler *cc) {
   }
 }
 
-Compiler *Compile(const char *source, const char *filename, bool aot) {
-  Compiler *cc = CompilerNew(source, filename);
+Compiler *CompileBuf(const char *source, size_t size, const char *filename, bool aot) {
+  /* Progress before CompilerNew: New() calls LexNext, which may walk nested
+   * #includes while fetching the first token. */
+  HolyProgress("compile %s", HolyProgressRel(filename ? filename : "<source>"));
+  HolyProgress("parse …");
+  Compiler *cc = CompilerNewBuf(source, size, filename);
   cc->aot_mode = aot;
   cc->defer_aot_compile = TRUE;
   if (aot) RuntimeDeclare(cc);
-  
+#ifndef BARE_METAL
+  if (filename) AOTDepAdd(cc, filename);
+#endif
+
   // Parse the program
   if (!ParseProgram(cc)) {
     // fprintf(stderr, "Compilation failed: %s\n", 
     //         cc->error ? cc->error : "Unknown error");
+    HolyProgress("parse failed");
     return cc;
   }
+  HolyProgress("parse ok");
   
   // Stitch deferred per-function IC chains (source order) then single AOT pass
   AOTFnICChunk *stitched = NULL;
@@ -3397,5 +3563,9 @@ Compiler *Compile(const char *source, const char *filename, bool aot) {
   }
   
   return cc;
+}
+
+Compiler *Compile(const char *source, const char *filename, bool aot) {
+  return CompileBuf(source, source ? strlen(source) : 0, filename, aot);
 }
 

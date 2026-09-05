@@ -1,4 +1,7 @@
 #!/bin/bash
+# RETIRED: worry_dream C guest deleted.
+echo "error: run_repl_smoke retired (worry_dream deleted); use run_hc_repl_smoke.sh / make repl-holyc-smoke" >&2
+exit 2
 # Smoke-test the bare-metal REPL (bootstrap/repl.elf) under QEMU: feed statements over the
 # UART, compare the printed answers (TempleOS-style "ans=0x..=.." per non-void statement) with the expected sequence.
 # Covers cross-statement function calls (exe_addr indirection), redefinition, recursion, >8
@@ -297,12 +300,14 @@ expect_text 'mode=raw'
 demo_input+=$'"tty-map=%d erase=%d kill=%d onlcr=%d eof=%d\\n", TtyMapIn(13), TtyIsErase(8), TtyIsKill(21), TtyOnlcrGet(), TtyEofHit();\n'
 expect_text 'tty-map=10 erase=1 kill=1 onlcr=0 eof=0'
 # Soft VT mux (console.hc): CONSOLE.md #4 — VT0=REPL; opt-in VtCapture
-demo_input+=$'VtList();\nVt(1);\nVtPutStr("vt1-session");\nVtCapture(1);\nPrint("vt-cap-line\\n");\nVtCapture(0);\nVtList();\nVtDetach();\n'
+demo_input+=$'VtList();\nVt(1);\nVtPutStr("vt1-session");\nVtCapture(1);\nPrint("vt-cap-line\\n");\nVtCapture(0);\nVtList();\nVtDetach();\nVtPane(0,1);\nVtPaneOff();\n'
 expect_text '=== VT (soft mux) ==='
 expect_text '--- VT 1 (vt1) ---'
 expect_text 'vt1-session'
 expect_text 'vt-cap-line'
 expect_text '--- VT 0 (repl) ---'
+expect_text 'host --vt-panes'
+expect_text 'VtPane: off'
 # Term size/type (term.hc): CONSOLE.md #11
 demo_input+=$'TermSize(80,24); TermNameAnsi; TermRep;\n'
 expect_text '--- term ---'

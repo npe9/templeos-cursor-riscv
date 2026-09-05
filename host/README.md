@@ -13,7 +13,8 @@ external HolyC install step — only host `gcc` + `make`.
 | `holyc_fmt.c` | `--fmt` / HolyFmtSrc (canonical gofmt-style formatter; `make fmt` / `make fmt-check`) |
 | `hash_table.c` | Symbol table |
 | `compiler_helper.c` | StrPrintF etc. for lexer |
-| `main_stub.c` | CLI entry (`HOLYC_STANDALONE`) |
+| `aot_link.c` | `holyc-riscv --link` — stitch AOT blobs, patch HOFYIMP1 cross-imports |
+| `main_stub.c` | CLI entry (`HOLYC_STANDALONE`): compile, `--link`, `--fmt`, `--asm-dump` |
 
 Headers: `holyc_compiler.h`, `holyc_fmt.h`, `hash_table.h`, `holy_api.h`.
 

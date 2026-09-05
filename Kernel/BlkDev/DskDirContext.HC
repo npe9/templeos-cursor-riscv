@@ -66,7 +66,11 @@ CDirContext *DirContextNew(U8 *_mask,Bool make_mask=FALSE,
       Free(dirc->mask);
       dirc->mask=StrNew("*");
     } else {
-      if (!make_dirs || FileNameChk(dirc->mask)) {
+      // Wildcards are never directory names. Stock tries Cd("*") when
+      // make_dirs=FALSE (FileNameChk short-circuit); on RV that RedSea
+      // probe + BlkDevUnlock Yield hung FilesFind under live RVKSpawn.
+      if (!StrOcc(dirc->mask,'*') && !StrOcc(dirc->mask,'?') &&
+	    (!make_dirs || FileNameChk(dirc->mask))) {
 	old_silent=Silent;
 //Try mask to see if Dir. If Dir, change to dir and set to "*".
 	if (Cd(dirc->mask,make_dirs)) {

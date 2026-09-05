@@ -17,7 +17,7 @@ static bool EndsWith(const char *str, const char *suffix) {
   return strcmp(str + str_len - suffix_len, suffix) == 0;
 }
 
-static bool ReadEntireFile(const char *path, char **out_src) {
+static bool ReadEntireFile(const char *path, char **out_src, size_t *out_size) {
   if (!path || !out_src) return false;
 
   FILE *f = fopen(path, "rb");
@@ -52,6 +52,7 @@ static bool ReadEntireFile(const char *path, char **out_src) {
 
   buffer[fsize] = '\0';
   *out_src = buffer;
+  if (out_size) *out_size = (size_t)fsize;
   return true;
 }
 
@@ -76,6 +77,101 @@ static void ExtractDirectory(const char *path, char *out_dir, size_t out_size) {
   out_dir[dir_len] = '\0';
 }
 
+/* Resolve lex->filename past "<macro expansion>" frames to the real include path. */
+static const char *LexRealFilename(Lexer *lex) {
+  if (!lex) return "";
+  if (lex->filename && lex->filename[0] && lex->filename[0] != '<')
+    return lex->filename;
+  for (IncludeFile *inc = lex->include_stack; inc; inc = inc->next) {
+    if (inc->filename && inc->filename[0] && inc->filename[0] != '<')
+      return inc->filename;
+  }
+  return lex->filename ? lex->filename : "";
+}
+
+/* Host absolute path → TempleOS-rooted path under HOLYC_INCLUDE_ROOT (e.g. /tos/Apps/Span). */
+static void TempleosPathFromHost(const char *host_path, char *out, size_t out_size) {
+  if (!out || out_size == 0) return;
+  out[0] = '\0';
+  if (!host_path || !host_path[0] || host_path[0] == '<') {
+    StrPrintF(out, out_size, "%s", host_path ? host_path : "");
+    return;
+  }
+#ifndef BARE_METAL
+  const char *root = getenv("HOLYC_INCLUDE_ROOT");
+  if (root && *root) {
+    size_t root_len = strlen(root);
+    while (root_len > 1 && (root[root_len - 1] == '/' || root[root_len - 1] == '\\'))
+      root_len--;
+    if (strncmp(host_path, root, root_len) == 0) {
+      const char *rest = host_path + root_len;
+      if (*rest == '/' || *rest == '\\') rest++;
+      if (*rest)
+        StrPrintF(out, out_size, "/%s", rest);
+      else
+        StrPrintF(out, out_size, "/");
+      /* Normalize backslashes for TempleOS Cd/Dir semantics. */
+      for (char *p = out; *p; p++) {
+        if (*p == '\\') *p = '/';
+      }
+      return;
+    }
+  }
+#endif
+  StrPrintF(out, out_size, "%s", host_path);
+  for (char *p = out; *p; p++) {
+    if (*p == '\\') *p = '/';
+  }
+}
+
+/* KernelA `#define __DIR__ #exe{StreamDir;}` — host skips #exe, so expand builtins here. */
+static int LexExeBuiltin(Compiler *cc, const char *name) {
+  Lexer *lex = &cc->lex;
+  char injected[MAX_INCLUDE_PATH + 16];
+  const char *fn = LexRealFilename(lex);
+  int line = lex->line;
+  /* Prefer include-stack line when expanding through a macro frame. */
+  if (lex->filename && lex->filename[0] == '<' && lex->include_stack)
+    line = lex->include_stack->line;
+
+  if (!strcmp(name, "__LINE__")) {
+    StrPrintF(injected, sizeof(injected), "%d", line);
+  } else if (!strcmp(name, "__FILE__")) {
+    char path[MAX_INCLUDE_PATH];
+    TempleosPathFromHost(fn, path, sizeof(path));
+    StrPrintF(injected, sizeof(injected), "\"%s\"", path);
+  } else if (!strcmp(name, "__DIR__")) {
+    char host_dir[MAX_INCLUDE_PATH];
+    char path[MAX_INCLUDE_PATH];
+    ExtractDirectory(fn, host_dir, sizeof(host_dir));
+    TempleosPathFromHost(host_dir[0] ? host_dir : fn, path, sizeof(path));
+    if (!path[0])
+      StrPrintF(path, sizeof(path), "/");
+    StrPrintF(injected, sizeof(injected), "\"%s\"", path);
+  } else {
+    return 0;
+  }
+
+  IncludeFile *inc = calloc(1, sizeof(IncludeFile));
+  if (!inc) return 0;
+  inc->src = lex->src;
+  inc->src_size = lex->src_size;
+  inc->ptr = lex->ptr;
+  inc->filename = lex->filename;
+  inc->line = lex->line;
+  inc->col = lex->col;
+  inc->next = lex->include_stack;
+  lex->include_stack = inc;
+  lex->src = strdup(injected);
+  lex->src_size = lex->src ? strlen(lex->src) : 0;
+  lex->ptr = lex->src;
+  lex->filename = strdup("<exe builtin>");
+  lex->line = 1;
+  lex->col = 1;
+  LexNext(cc);
+  return cc->lex.token;
+}
+
 static bool NeedsSeparator(const char *dir) {
   if (!dir || !dir[0]) return false;
   size_t len = strlen(dir);
@@ -87,7 +183,8 @@ static bool TryIncludeInDirectory(const char *dir,
                                   const char *filename,
                                   char *resolved,
                                   size_t resolved_size,
-                                  char **out_src) {
+                                  char **out_src,
+                                  size_t *out_size) {
   if (!filename || !resolved || !out_src) return false;
 
   char candidate[MAX_INCLUDE_PATH];
@@ -106,7 +203,7 @@ static bool TryIncludeInDirectory(const char *dir,
     return false;
   }
 
-  if (ReadEntireFile(candidate, out_src)) {
+  if (ReadEntireFile(candidate, out_src, out_size)) {
     StrPrintF(resolved, resolved_size, "%s", candidate);
     return true;
   }
@@ -126,7 +223,7 @@ static bool TryIncludeInDirectory(const char *dir,
       return false;
     }
 
-    if (ReadEntireFile(candidate, out_src)) {
+    if (ReadEntireFile(candidate, out_src, out_size)) {
       StrPrintF(resolved, resolved_size, "%s", candidate);
       return true;
     }
@@ -149,6 +246,7 @@ static bool IsAbsolutePath(const char *path) {
 static bool LoadIncludeFile(Compiler *cc,
                             const char *filename,
                             char **out_src,
+                            size_t *out_size,
                             char *resolved_path,
                             size_t resolved_size) {
   if (!filename || !out_src || !resolved_path) return false;
@@ -163,23 +261,23 @@ static bool LoadIncludeFile(Compiler *cc,
       char rooted[MAX_INCLUDE_PATH];
       int w = StrPrintF(rooted, sizeof(rooted), "%s%s", root, filename);
       if (w > 0 && w < (int)sizeof(rooted)) {
-        if (TryIncludeInDirectory(NULL, rooted, resolved_path, resolved_size, out_src)) return true;
+        if (TryIncludeInDirectory(NULL, rooted, resolved_path, resolved_size, out_src, out_size)) return true;
         if (!EndsWith(filename, ".HC") && !EndsWith(filename, ".HH")) {
           char tmp2[MAX_INCLUDE_PATH];
           int w2 = StrPrintF(tmp2, sizeof(tmp2), "%s.HC", rooted);
-          if (w2 > 0 && w2 < (int)sizeof(tmp2) && TryIncludeInDirectory(NULL, tmp2, resolved_path, resolved_size, out_src)) return true;
+          if (w2 > 0 && w2 < (int)sizeof(tmp2) && TryIncludeInDirectory(NULL, tmp2, resolved_path, resolved_size, out_src, out_size)) return true;
         }
       }
     }
 #endif
-    if (TryIncludeInDirectory(NULL, filename, resolved_path, resolved_size, out_src)) {
+    if (TryIncludeInDirectory(NULL, filename, resolved_path, resolved_size, out_src, out_size)) {
       return true;
     }
     if (!EndsWith(filename, ".HC")) {
       char tmp[MAX_INCLUDE_PATH];
       int written = StrPrintF(tmp, sizeof(tmp), "%s.HC", filename);
       if (written >= 0 && written < (int)sizeof(tmp)) {
-        if (TryIncludeInDirectory(NULL, tmp, resolved_path, resolved_size, out_src)) {
+        if (TryIncludeInDirectory(NULL, tmp, resolved_path, resolved_size, out_src, out_size)) {
           return true;
         }
       }
@@ -191,18 +289,18 @@ static bool LoadIncludeFile(Compiler *cc,
   ExtractDirectory(cc->lex.filename, current_dir, sizeof(current_dir));
 
   if (current_dir[0]) {
-    if (TryIncludeInDirectory(current_dir, filename, resolved_path, resolved_size, out_src)) {
+    if (TryIncludeInDirectory(current_dir, filename, resolved_path, resolved_size, out_src, out_size)) {
       return true;
     }
     if (!EndsWith(filename, ".HC") && !EndsWith(filename, ".HH")) {   // `#include "KStart16"` → KStart16.HC
       char tmp[MAX_INCLUDE_PATH];
       int written = StrPrintF(tmp, sizeof(tmp), "%s.HC", filename);
       if (written > 0 && written < (int)sizeof(tmp) &&
-          TryIncludeInDirectory(current_dir, tmp, resolved_path, resolved_size, out_src)) return true;
+          TryIncludeInDirectory(current_dir, tmp, resolved_path, resolved_size, out_src, out_size)) return true;
     }
   }
 
-  if (TryIncludeInDirectory(NULL, filename, resolved_path, resolved_size, out_src)) {
+  if (TryIncludeInDirectory(NULL, filename, resolved_path, resolved_size, out_src, out_size)) {
     return true;
   }
 
@@ -306,6 +404,128 @@ static void SkipDolDoc(Lexer *lex) {
     }
     if (*lex->ptr == '\n') { lex->line++; lex->col = 1; } else lex->col++;
     lex->ptr++;
+  }
+}
+
+/* TempleOS DocSave on-disk CDocBin header: U32 num,flags,size,use_cnt (after text NUL). */
+#define CDOC_BIN_HDR_SIZE 16
+
+static int DocBinParseBI(const char *cmd, size_t cmd_len, U32 *out_bi) {
+  /* Find BI=<digits> inside `$IB…$` / `$IS…$` body (cmd points past opening '$'). */
+  const char *p = cmd;
+  const char *end = cmd + cmd_len;
+  while (p + 3 < end) {
+    if ((p[0] == 'B' || p[0] == 'b') && (p[1] == 'I' || p[1] == 'i') && p[2] == '=') {
+      p += 3;
+      U32 n = 0;
+      int any = 0;
+      while (p < end && *p >= '0' && *p <= '9') {
+        n = n * 10u + (U32)(*p - '0');
+        p++;
+        any = 1;
+      }
+      if (any) {
+        *out_bi = n;
+        return 1;
+      }
+      return 0;
+    }
+    p++;
+  }
+  return 0;
+}
+
+static int DocBinFindInSrc(const char *src, size_t src_size, U32 bin_num,
+                          const U8 **out_data, U32 *out_size) {
+  size_t text_len, rem;
+  const U8 *p;
+  if (!src || src_size == 0 || bin_num == 0 || !out_data || !out_size) return 0;
+  text_len = 0;
+  while (text_len < src_size && src[text_len]) text_len++;
+  if (text_len + 1 >= src_size) return 0;
+  p = (const U8 *)src + text_len + 1;
+  rem = src_size - (text_len + 1);
+  while (rem >= CDOC_BIN_HDR_SIZE) {
+    U32 num, flags, size, use_cnt;
+    memcpy(&num, p, 4);
+    memcpy(&flags, p + 4, 4);
+    memcpy(&size, p + 8, 4);
+    memcpy(&use_cnt, p + 12, 4);
+    (void)flags;
+    (void)use_cnt;
+    p += CDOC_BIN_HDR_SIZE;
+    rem -= CDOC_BIN_HDR_SIZE;
+    if (size > rem) return 0;
+    if (num == bin_num) {
+      *out_data = p;
+      *out_size = size;
+      return 1;
+    }
+    p += size;
+    rem -= size;
+  }
+  return 0;
+}
+
+static void LexEmitDocBin(Compiler *cc, int want_size) {
+  /* `$IB` → TK_STR (bin bytes); `$IS` → TK_I64 (bin size). TempleOS Lex DOCT_INS_BIN*. */
+  Lexer *lex = &cc->lex;
+  const char *cmd = lex->ptr + 1; /* past '$' */
+  const char *scan = cmd;
+  size_t cmd_len = 0;
+  U32 bi = 0;
+  const U8 *data = NULL;
+  U32 size = 0;
+
+  while (*scan) {
+    if (scan[0] == '$') {
+      if (scan[1] == '$') { scan += 2; continue; }
+      break;
+    }
+    scan++;
+  }
+  cmd_len = (size_t)(scan - cmd);
+  DocBinParseBI(cmd, cmd_len, &bi);
+  SkipDolDoc(lex);
+
+  if (bi && DocBinFindInSrc(lex->src, lex->src_size, bi, &data, &size)) {
+    if (want_size) {
+      lex->token = TK_I64;
+      lex->token_i64 = (I64)size;
+      lex->token_is_char = false;
+      if (lex->token_str) { free(lex->token_str); lex->token_str = NULL; }
+      lex->token_str_len = 0;
+      return;
+    }
+    lex->token = TK_STR;
+    lex->token_is_char = false;
+    if (lex->token_str) free(lex->token_str);
+    lex->token_str = malloc((size_t)size + 1);
+    if (lex->token_str) {
+      if (size) memcpy(lex->token_str, data, size);
+      lex->token_str[size] = '\0';
+      lex->token_str_len = (int)size;
+    } else {
+      lex->token_str_len = 0;
+    }
+    return;
+  }
+
+  /* Missing bin: TempleOS still yields empty/zero; keep prior NULL-ish behavior. */
+  if (want_size) {
+    lex->token = TK_I64;
+    lex->token_i64 = 0;
+    lex->token_is_char = false;
+    if (lex->token_str) { free(lex->token_str); lex->token_str = NULL; }
+    lex->token_str_len = 0;
+  } else {
+    lex->token = TK_I64;
+    lex->token_i64 = 0;
+    lex->token_is_char = false;
+    if (lex->token_str) free(lex->token_str);
+    lex->token_str = strdup("");
+    lex->token_str_len = 0;
+    cc->asm_blocks_skipped++;
   }
 }
 
@@ -501,7 +721,8 @@ static void HandlePreprocessor(Compiler *cc) {
     
     char resolved_path[MAX_INCLUDE_PATH];
     char *include_src = NULL;
-    if (!LoadIncludeFile(cc, filename, &include_src, resolved_path, sizeof(resolved_path))) {
+    size_t include_size = 0;
+    if (!LoadIncludeFile(cc, filename, &include_src, &include_size, resolved_path, sizeof(resolved_path))) {
       char err_msg[256];
       StrPrintF(err_msg, sizeof(err_msg), "Unable to open include file '%s'", filename);
       Error(cc, err_msg);
@@ -510,6 +731,7 @@ static void HandlePreprocessor(Compiler *cc) {
 
     IncludeFile *inc = calloc(1, sizeof(IncludeFile));
     inc->src = lex->src;
+    inc->src_size = lex->src_size;
     inc->ptr = lex->ptr;
     inc->filename = lex->filename;
     inc->line = lex->line;
@@ -518,10 +740,15 @@ static void HandlePreprocessor(Compiler *cc) {
     lex->include_stack = inc;
 
     lex->src = include_src;
+    lex->src_size = include_size;
     lex->ptr = include_src;
     lex->filename = strdup(resolved_path);
     lex->line = 1;
     lex->col = 1;
+    HolyProgress("  %s", HolyProgressRel(resolved_path));
+#ifndef BARE_METAL
+    AOTDepAdd(cc, resolved_path);
+#endif
 
     return;  // Don't skip to next line
   } else if (strcmp(directive, "ifdef") == 0 || strcmp(directive, "ifndef") == 0 ||
@@ -662,6 +889,12 @@ static int LexIdentifier(Compiler *cc) {
   
   if (lex->token_str) free(lex->token_str);
   lex->token_str = strdup(buf);
+
+  /* TempleOS KernelA builtins: intercept before `#define __DIR__ #exe{…}` expands to a skip. */
+  if (!strcmp(buf, "__DIR__") || !strcmp(buf, "__FILE__") || !strcmp(buf, "__LINE__")) {
+    int tok = LexExeBuiltin(cc, buf);
+    if (tok) return tok;
+  }
   
   // Check if it's a #define macro first
   CHashEntry *def_entry = HashFind(buf, cc->define_table, HTT_DEFINE_STR);
@@ -843,6 +1076,7 @@ static int LexIdentifier(Compiler *cc) {
         // Re-lex the expanded text by pushing it onto the include stack
         IncludeFile *inc = calloc(1, sizeof(IncludeFile));
         inc->src = lex->src;
+        inc->src_size = lex->src_size;
         inc->ptr = lex->ptr;
         inc->filename = lex->filename;
         inc->line = lex->line;
@@ -852,6 +1086,7 @@ static int LexIdentifier(Compiler *cc) {
         
         // Replace with expanded macro text
         lex->src = strdup(expanded);
+        lex->src_size = lex->src ? strlen(lex->src) : 0;
         lex->ptr = lex->src;
         lex->filename = strdup("<macro expansion>");
         lex->line = 1;
@@ -869,6 +1104,7 @@ static int LexIdentifier(Compiler *cc) {
       // Simple (non-parameterized) macro
       IncludeFile *inc = calloc(1, sizeof(IncludeFile));
       inc->src = lex->src;
+      inc->src_size = lex->src_size;
       inc->ptr = lex->ptr;
       inc->filename = lex->filename;
       inc->line = lex->line;
@@ -878,6 +1114,7 @@ static int LexIdentifier(Compiler *cc) {
 
       const char *replacement = def->data ? def->data : "";
       lex->src = strdup(replacement);
+      lex->src_size = lex->src ? strlen(lex->src) : 0;
       lex->ptr = lex->src;
       lex->filename = strdup("<macro expansion>");
       lex->line = 1;
@@ -1107,7 +1344,8 @@ static void LexNextInner(Compiler *cc);
 void LexPushStringPending(Compiler *cc, const char *text) {
   Lexer *lex = &cc->lex;
   IncludeFile *inc = calloc(1, sizeof(IncludeFile));
-  inc->src = lex->src; inc->ptr = lex->ptr; inc->filename = lex->filename; inc->line = lex->line; inc->col = lex->col;
+  inc->src = lex->src; inc->src_size = lex->src_size;
+  inc->ptr = lex->ptr; inc->filename = lex->filename; inc->line = lex->line; inc->col = lex->col;
   inc->has_pending = true;
   inc->p_token = lex->token; inc->p_i64 = lex->token_i64; inc->p_f64 = lex->token_f64;
   inc->p_is_char = lex->token_is_char; inc->p_str_len = lex->token_str_len; inc->p_hash = lex->hash_entry;
@@ -1115,6 +1353,7 @@ void LexPushStringPending(Compiler *cc, const char *text) {
   inc->next = lex->include_stack;
   lex->include_stack = inc;
   lex->src = strdup(text);
+  lex->src_size = lex->src ? strlen(lex->src) : 0;
   lex->ptr = lex->src;
   lex->filename = strdup("<default argument>");
   lex->line = 1; lex->col = 1;
@@ -1128,7 +1367,8 @@ void LexAbandonPendingString(Compiler *cc) {
     IncludeFile *inc = lex->include_stack;
     bool pend = inc->has_pending;
     lex->include_stack = inc->next;
-    lex->src = inc->src; lex->ptr = inc->ptr; lex->filename = inc->filename; lex->line = inc->line; lex->col = inc->col;
+    lex->src = inc->src; lex->src_size = inc->src_size;
+    lex->ptr = inc->ptr; lex->filename = inc->filename; lex->line = inc->line; lex->col = inc->col;
     if (pend) {
       lex->token = inc->p_token; lex->token_i64 = inc->p_i64; lex->token_f64 = inc->p_f64;
       lex->token_is_char = inc->p_is_char; lex->token_str_len = inc->p_str_len; lex->hash_entry = inc->p_hash;
@@ -1165,17 +1405,15 @@ static void LexNextInner(Compiler *cc) {
       // `$$` in code: the current address (`Fs->rip=$$;`) or, in a class body, the offset.
       lex->ptr += 2; lex->col += 2; lex->token = TK_DOLLAR; return;
     } else if (lex->ptr[0] == '$' && lex->ptr[1] >= 'A' && lex->ptr[1] <= 'Z') {
-      // A DolDoc command in code. `$IB,"…",BI=n$` embeds binary data (a sprite) and is an
-      // expression: NULL here, the data is not carried. Others (`$SP…$` definitions) vanish.
+      // DolDoc in code. `$IB`/`$IS` insert bin ptr/size from trailing CDocBin (TempleOS).
+      // `$SP…$` (sprite defs) and other cmds vanish from the token stream.
       bool is_ib = (lex->ptr[1] == 'I' && lex->ptr[2] == 'B');
-      SkipDolDoc(lex);
-      if (is_ib) {
-        lex->token = TK_I64; lex->token_i64 = 0; lex->token_is_char = false;
-        if (lex->token_str) free(lex->token_str);
-        lex->token_str = strdup(""); lex->token_str_len = 0;
-        cc->asm_blocks_skipped++;
+      bool is_is = (lex->ptr[1] == 'I' && lex->ptr[2] == 'S');
+      if (is_ib || is_is) {
+        LexEmitDocBin(cc, is_is ? 1 : 0);
         return;
       }
+      SkipDolDoc(lex);
     } else if (*lex->ptr == '#') {
       HandlePreprocessor(cc);
     } else {
@@ -1215,6 +1453,7 @@ static void LexNextInner(Compiler *cc) {
       
       // Restore previous file
       lex->src = inc->src;
+      lex->src_size = inc->src_size;
       lex->ptr = inc->ptr;
       lex->filename = inc->filename;
       lex->line = inc->line;
@@ -1507,6 +1746,7 @@ void LexPush(Compiler *cc) {
   
   saved->hash_entry = cc->lex.hash_entry;
   saved->src = cc->lex.src;
+  saved->src_size = cc->lex.src_size;
   saved->filename = cc->lex.filename;
   saved->include_stack = cc->lex.include_stack;
   
@@ -1532,16 +1772,19 @@ void LexPopRestore(Compiler *cc) {
       IncludeFile *inc = cc->lex.include_stack;
       cc->lex.include_stack = inc->next;
       cc->lex.src = inc->src;
+      cc->lex.src_size = inc->src_size;
       cc->lex.filename = inc->filename;
       free(inc);
     }
     cc->lex.src = saved->src;
+    cc->lex.src_size = saved->src_size;
     cc->lex.filename = saved->filename;
   } else {
     // Frames finished during the lookahead were popped (kept alive above): re-link them so
     // the saved buffer resumes and then returns to the outer file where it left off.
     cc->lex.include_stack = saved->include_stack;
     cc->lex.src = saved->src;
+    cc->lex.src_size = saved->src_size;
     cc->lex.filename = saved->filename;
   }
   // Restore state

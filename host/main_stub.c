@@ -56,10 +56,8 @@ static int fmt_file(const char *path, int inplace) {
   return 0;
 }
 
-/* Walk IC after Compile(); print each IC_RAW_RV word as 8 lowercase hex digits.
- * Bypasses RVU32 peephole (which drops nop / mv rd,rd) so this is assembler semantics. */
 static int asm_dump_file(const char *path) {
-  FILE *f = fopen(path, "r");
+  FILE *f = fopen(path, "rb");
   if (!f) {
     fprintf(stderr, "Cannot open %s\n", path);
     return 2;
@@ -74,7 +72,7 @@ static int asm_dump_file(const char *path) {
   src[sz] = '\0';
   fclose(f);
 
-  Compiler *cc = Compile(src, path, true);
+  Compiler *cc = CompileBuf(src, (size_t)sz, path, true);
   free(src);
   if (cc->error) {
     const char *file = cc->error_file ? cc->error_file : path;
@@ -98,22 +96,33 @@ static int asm_dump_file(const char *path) {
   return 0;
 }
 
+static char *stem_map_path(const char *bin) {
+  size_t n = strlen(bin);
+  char *m = malloc(n + 5);
+  if (!m) return NULL;
+  memcpy(m, bin, n + 1);
+  char *dot = strrchr(m, '.');
+  if (dot && strchr(dot, '/') == NULL) strcpy(dot, ".map");
+  else strcat(m, ".map");
+  return m;
+}
+
+static void usage(const char *argv0) {
+  fprintf(stderr,
+          "Usage: %s <file.hc> [-o out.bin] [--deps out.d] [--map out.map]\n"
+          "       %s --link -o out.bin [--base 0x80800000] a.bin b.bin...\n"
+          "       %s --fmt [--stdout] <file.hc>...\n"
+          "       %s --asm-dump <file.hc>\n",
+          argv0, argv0, argv0, argv0);
+}
+
 int main(int argc, char **argv) {
   if (argc >= 2 && strcmp(argv[1], "--fmt") == 0) {
     int inplace = 1;
     int i = 2;
-    if (argc < 3) {
-      fprintf(stderr, "Usage: %s --fmt [--stdout] <file.hc>...\n", argv[0]);
-      return 1;
-    }
-    if (strcmp(argv[2], "--stdout") == 0) {
-      inplace = 0;
-      i = 3;
-    }
-    if (i >= argc) {
-      fprintf(stderr, "Usage: %s --fmt [--stdout] <file.hc>...\n", argv[0]);
-      return 1;
-    }
+    if (argc < 3) { usage(argv[0]); return 1; }
+    if (strcmp(argv[2], "--stdout") == 0) { inplace = 0; i = 3; }
+    if (i >= argc) { usage(argv[0]); return 1; }
     for (; i < argc; i++) {
       int rc = fmt_file(argv[i], inplace);
       if (rc) return rc;
@@ -122,77 +131,134 @@ int main(int argc, char **argv) {
   }
 
   if (argc >= 2 && strcmp(argv[1], "--asm-dump") == 0) {
-    if (argc < 3) {
-      fprintf(stderr, "Usage: %s --asm-dump <file.hc>\n", argv[0]);
-      return 1;
-    }
+    if (argc < 3) { usage(argv[0]); return 1; }
     return asm_dump_file(argv[2]);
   }
 
-  printf("═══════════════════════════════════════════════════════════\n");
-  printf("HolyC to RISC-V Compiler (AOT/JIT)\n");
-  printf("═══════════════════════════════════════════════════════════\n\n");
+  if (argc >= 2 && strcmp(argv[1], "--link") == 0)
+    return HolyAOTLink(argc - 1, argv + 1);
 
-  if (argc < 2) {
-    printf("Usage: %s <file.hc> [-o output.bin]\n", argv[0]);
-    printf("       %s --fmt [--stdout] <file.hc>...\n", argv[0]);
-    printf("       %s --asm-dump <file.hc>\n", argv[0]);
-    return 1;
+  const char *input = NULL;
+  const char *output = "a.bin";
+  const char *deps = NULL;
+  const char *map_arg = NULL;
+  int quiet = 0;
+  int map_owned = 0;
+
+  for (int i = 1; i < argc; i++) {
+    if (!strcmp(argv[i], "-o") && i + 1 < argc) {
+      output = argv[++i];
+      quiet = 1;
+    } else if (!strcmp(argv[i], "--deps") && i + 1 < argc) {
+      deps = argv[++i];
+    } else if (!strcmp(argv[i], "--map") && i + 1 < argc) {
+      map_arg = argv[++i];
+    } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+      usage(argv[0]);
+      return 0;
+    } else if (argv[i][0] == '-') {
+      fprintf(stderr, "Unknown option: %s\n", argv[i]);
+      usage(argv[0]);
+      return 1;
+    } else if (!input) {
+      input = argv[i];
+    } else {
+      /* Legacy: holyc-riscv in.hc out.bin */
+      output = argv[i];
+      quiet = 1;
+    }
   }
 
-  const char *input = argv[1];
-  const char *output = argc > 3 ? argv[3] : "a.bin";
+  if (!input) { usage(argv[0]); return 1; }
 
-  FILE *f = fopen(input, "r");
+  char *map_path = NULL;
+  if (map_arg) {
+    map_path = (char *)map_arg;
+  } else {
+    map_path = stem_map_path(output);
+    map_owned = 1;
+  }
+
+  FILE *f = fopen(input, "rb");
   if (!f) {
     fprintf(stderr, "Cannot open %s\n", input);
+    if (map_owned) free(map_path);
     return 1;
   }
 
   fseek(f, 0, SEEK_END);
   long sz = ftell(f);
   fseek(f, 0, SEEK_SET);
-  char *src = malloc(sz + 1);
-  fread(src, 1, sz, f);
+  char *src = malloc((size_t)sz + 1);
+  if (!src) { fclose(f); if (map_owned) free(map_path); return 1; }
+  if (sz > 0 && fread(src, 1, (size_t)sz, f) != (size_t)sz) {
+    free(src); fclose(f); if (map_owned) free(map_path); return 1;
+  }
   src[sz] = '\0';
   fclose(f);
 
-  printf("Compiling %s...\n", input);
-  Compiler *cc = Compile(src, input, true);
+  if (!quiet) {
+    printf("═══════════════════════════════════════════════════════════\n");
+    printf("HolyC to RISC-V Compiler (AOT/JIT)\n");
+    printf("═══════════════════════════════════════════════════════════\n\n");
+    printf("Compiling %s...\n", input);
+  }
+
+  Compiler *cc = CompileBuf(src, (size_t)sz, input, true);
   free(src);
 
   if (cc->error) {
     const char *file = cc->error_file ? cc->error_file : input;
-    fprintf(stderr, "%s:%d:%d: error: %s\n", file, cc->error_line, cc->error_col > 0 ? cc->error_col : 1, cc->error);
+    fprintf(stderr, "%s:%d:%d: error: %s\n", file, cc->error_line,
+            cc->error_col > 0 ? cc->error_col : 1, cc->error);
     if (cc->error_count > 1 || getenv("HOLYC_ALL_ERRORS")) {
       I64 n = cc->error_count < 256 ? cc->error_count : 256;
-      for (I64 i = 0; i < n; i++)
+      for (I64 ei = 0; ei < n; ei++)
         fprintf(stderr, "%s:%lld:%lld: error: %s\n",
-                cc->errors[i].file ? cc->errors[i].file : input,
-                (long long)cc->errors[i].line,
-                (long long)(cc->errors[i].col > 0 ? cc->errors[i].col : 1),
-                cc->errors[i].msg);
-      if (cc->error_count > 256) fprintf(stderr, "  ... %lld more\n", (long long)(cc->error_count - 256));
+                cc->errors[ei].file ? cc->errors[ei].file : input,
+                (long long)cc->errors[ei].line,
+                (long long)(cc->errors[ei].col > 0 ? cc->errors[ei].col : 1),
+                cc->errors[ei].msg);
+      if (cc->error_count > 256)
+        fprintf(stderr, "  ... %lld more\n", (long long)(cc->error_count - 256));
     }
     fprintf(stderr, "(%lld error(s))\n", (long long)cc->error_count);
+    CompilerFree(cc);
+    if (map_owned) free(map_path);
     return 1;
   }
 
-  printf("✓ Compiled successfully (AOT mode)\n");
-  if (cc->asm_blocks_skipped) printf("  (%lld x86 asm block(s) skipped)\n", (long long)cc->asm_blocks_skipped);
-  printf("Code size: %lld bytes\n", cc->code_size);
+  if (!cc->code_buffer) {
+    fprintf(stderr, "AOT emit failed\n");
+    CompilerFree(cc);
+    if (map_owned) free(map_path);
+    return 1;
+  }
 
   f = fopen(output, "wb");
-  fwrite(cc->code_buffer, 1, cc->code_size, f);
+  if (!f) {
+    fprintf(stderr, "Cannot write %s\n", output);
+    CompilerFree(cc);
+    if (map_owned) free(map_path);
+    return 1;
+  }
+  fwrite(cc->code_buffer, 1, (size_t)cc->code_size, f);
   fclose(f);
 
-  printf("✓ Wrote %s\n\n", output);
-  printf("To disassemble:\n");
-  printf("  riscv64-unknown-elf-objdump -D -b binary -m riscv:rv64 %s\n\n", output);
-  printf("To run in QEMU:\n");
-  printf("  qemu-riscv64 %s\n", output);
+  if (map_path) AOTWriteMap(cc, map_path);
+  if (deps) AOTWriteDeps(cc, deps, output);
+
+  if (!quiet) {
+    printf("✓ Compiled successfully (AOT mode)\n");
+    if (cc->asm_blocks_skipped)
+      printf("  (%lld x86 asm block(s) skipped)\n", (long long)cc->asm_blocks_skipped);
+    printf("Code size: %lld bytes\n", cc->code_size);
+    printf("✓ Wrote %s\n", output);
+    if (map_path) printf("✓ Wrote %s\n", map_path);
+  }
 
   CompilerFree(cc);
+  if (map_owned) free(map_path);
   return 0;
 }
 #endif

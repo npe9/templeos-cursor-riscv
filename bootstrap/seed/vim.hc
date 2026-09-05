@@ -2039,6 +2039,52 @@ U0 Vi(U8 *name)
     tr = TermRows() - 1;
     if (tr < 1)
       tr = 1;
+    /* INSERT first: do not fold arrows into hjkl (would type letters) or map
+     * Delete→x. Enter/`\\r`/`\\n` split via VInsert; jump is NORMAL-only below. */
+    if (VMode == 1) {
+      if (c == KEY_UP) {
+        if (VCy > 0)
+          VCy--;
+        VClamp();
+        continue;
+      }
+      if (c == KEY_DOWN) {
+        if (VCy < VN - 1)
+          VCy++;
+        VClamp();
+        continue;
+      }
+      if (c == KEY_LEFT) {
+        if (VCx > 0)
+          VCx--;
+        continue;
+      }
+      if (c == KEY_RIGHT) {
+        n = VLen(VCy);
+        if (VCx < n)
+          VCx++;
+        continue;
+      }
+      if (c == KEY_HOME) {
+        VCx = 0;
+        continue;
+      }
+      if (c == KEY_END) {
+        VCx = VLen(VCy);
+        continue;
+      }
+      if (c == KEY_DELETE) {
+        n = VLen(VCy);
+        if (VCx < n) {
+          for (k = VCx; k < n; k++)
+            VLn[VCy][k] = VLn[VCy][k + 1];
+          VDirty = 1;
+        }
+        continue;
+      }
+      VInsert(c);
+      continue;
+    }
     if (c == KEY_UP)
       c = 'k';
     else if (c == KEY_DOWN)
@@ -2067,10 +2113,6 @@ U0 Vi(U8 *name)
       continue;
     } else if (c == KEY_DELETE)
       c = 'x';
-    if (VMode == 1) {
-      VInsert(c);
-      continue;
-    }
     if (VPend == 'f' || VPend == 't' || VPend == 'F' || VPend == 'T') {
       if (c >= 32 && c < 127) {
         cnt = VCnt();

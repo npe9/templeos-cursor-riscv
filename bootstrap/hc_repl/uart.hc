@@ -191,3 +191,15 @@ I64 HcUartTry()
   g_hc_rt = (g_hc_rt + 1) & (HC_RX_CAP - 1);
   return ch;
 }
+/* Push one byte back onto the soft RX ring (TermParseByte Esc-meta cancel).
+ * Host-slot UartRxUnget is a no-op on repl-holyc — without this, Esc drops the
+ * following key (Enter / ':'), so INSERT Enter never lands and NORMAL sees jump. */
+U0 HcUartUnget(I64 ch)
+{
+  I64 prev;
+  prev = (g_hc_rt - 1) & (HC_RX_CAP - 1);
+  if (prev == g_hc_rh)
+    return;
+  g_hc_rx[prev] = ch;
+  g_hc_rt = prev;
+}

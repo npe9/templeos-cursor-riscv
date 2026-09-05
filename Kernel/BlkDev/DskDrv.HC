@@ -18,7 +18,25 @@ Bool DrvUnlock(CDrv *dv,Bool rst=FALSE)
     BlkDevUnlock(dv->bd,rst);
     dv->owning_task=NULL;
     LBtr(&dv->locked_flags,DVlf_LOCKED);
-    Yield; //Prevent deadlock
+    // Yield for multi-task fairness — but skip if every peer is parked/killed.
+    // Otherwise DrvUnlock→Yield into a live RVKSpawn consumer (or idle-spin)
+    // hung FileFind under WinMgr (SUSPENDED/AWAITING_MSG peers).
+    if (Fs && Fs->next_task && Fs->next_task!=Fs) {
+      CTask *t=Fs->next_task;
+      Bool peer=FALSE;
+      while (t!=Fs) {
+	if (!Bt(&t->task_flags,TASKf_KILL_TASK) &&
+	      !Bt(&t->task_flags,TASKf_SUSPENDED) &&
+	      !Bt(&t->task_flags,TASKf_AWAITING_MSG)) {
+	  peer=TRUE;
+	  break;
+	}
+	t=t->next_task;
+	if (!t) break;
+      }
+      if (peer)
+	Yield;
+    }
     return TRUE;
   } else
     return FALSE;

@@ -32,7 +32,7 @@ Related: [UART.md](UART.md) (primer + XON/XOFF), [REPL.md](REPL.md), [DEBUGGER.m
 | **Legacy** `bootstrap/repl.elf` (`worry_dream_repl.c`) | Deprecated C guest + full seed blob | Richest TTY/readline/dbg/export; **required** CI until A3 flip |
 | **Product** `repl-holyc` / bootloader-repl | HolyC AOT; zero host slots | UART + memfs + DumpFile; readline/trap/Regs **catching up** (G1–G5) |
 | **Kernel plat / phase3** | HolyC kernel plat / StartOS subset | Print/oracle UART; not the REPL console stack |
-| **WinMgr / FB** | `BOARD_FB.md` | Dual-console: FB + **UART dig-down** (`RVWinSerial`); not full REPL stack |
+| **WinMgr / FB** | `BOARD_FB.md` | Dual-console: FB + **UART HolyC ExePutS REPL** (`RVWinSerial`); CrashMon on fault |
 
 Claims below are **have** only when the capability works on at least one supported
 image; notes call out legacy-only vs product.
@@ -43,15 +43,15 @@ image; notes call out legacy-only vs product.
 
 | # | Wishlist item | Status | What exists | Gaps |
 |---|---------------|--------|-------------|------|
-| **1** | Line discipline / TTY (canonical/raw, echo, erase/kill, CR/LF, flow, ^C, ^D) | **partial** | HolyC `tty.hc`: canon/raw, echo, ICRNL, opt-in ONLCR, erase/`^U`/`^W`, empty `^D`→`TtyEofHit`+`ReplLoop` exit; mid-line cursor in `ReplReadLine`; soft RX; **XON/XOFF** (#12) | Legacy C readline separate; Tab mid-line still EOL-ish; RTS/CTS stub |
+| **1** | Line discipline / TTY (canonical/raw, echo, erase/kill, CR/LF, flow, ^C, ^D) | **partial** | HolyC `tty.hc`: canon/raw, echo, ICRNL, opt-in ONLCR, erase/`^U`/`^W`, empty `^D`→`TtyEofHit`+`ReplLoop` exit; mid-line cursor in `ReplReadLine`; soft RX; **XON/XOFF** (#12) | Legacy C readline separate; RTS/CTS stub |
 | **2** | Terminal capabilities (ANSI/VT100 cursor, clear, inverse, colors, size, keypad) | **partial** | `term.hc` + C twin: `TermGoto` / `TermClear` / hide cursor; CSI/SS3/OSC input; `TermSize` / `TermProbe` / `TermRows`/`Cols`/`Name`; inverse on C path (`\x1b[7m`); `TF_COLOR` flag | No full color API; no application keypad; size probe needs a cooperating host PTY (`term-probe-pty`); WinMgr ≠ VT |
-| **3** | Decent shell (history, editing, completion, pipelines/redir, run without losing console) | **partial** | HolyC **REPL** *is* the shell: multi-entry history Up/Down (16-slot ring + hist_seed demos), Tab/`CompTab` (incl. `asm{}`), mid-line arrows (TTY), `Run`/`Src`/editors; eval returns to `>` | No pipelines / redir / job control; multiline unit recall / live defines = **G5** residual; FunPick interactive still legacy-stronger |
-| **4** | Console multiplexing (tmux-like / multiple VTs over UART) | **partial** | Soft `Vt`/`VtAttach`/`VtDetach`/`VtNext`; opt-in `VtCapture` (Print/UartStr dual-write) + `VtKeys` (Ctrl-A); framed `V\tN`; host `--vt-follow`/`--vt-split` | No panes; capture/keys default off; FB WinMgr separate |
+| **3** | Decent shell (history, editing, completion, pipelines/redir, run without losing console) | **partial** | HolyC **REPL** *is* the shell: multi-entry history Up/Down (16-slot ring + hist_seed demos), Tab/`CompTab` (incl. `asm{}` + session `#define` + mid-line), mid-line arrows (TTY), `Run`/`Src`/editors; eval returns to `>` | No pipelines / redir / job control; host define_table expansion = **G5** residual; FunPick interactive still legacy-stronger |
+| **4** | Console multiplexing (tmux-like / multiple VTs over UART) | **partial** | Soft `Vt`/`VtAttach`/`VtDetach`/`VtNext`; opt-in `VtCapture` + `VtKeys` (Ctrl-A); `VtPane(a,b)` layout + framed `P\ta\tb`; host `--vt-follow`/`--vt-split`/`--vt-panes` | No guest ANSI TTY split (host panes only); capture/keys default off; FB WinMgr separate |
 | **5** | Binary-safe framing (escaped channels: dbg/xfer/RPC ≠ console text) | **partial** | `frame.hc` + `tools/uart_mux.py` (off by default; `UartMuxOn`); ad-hoc `$HC_DUMP$` / ZMODEM remain | Console PutCh wrap / RX demux / ch1·ch2·ch4 payloads still stubs; not in early boot Run |
 | **6** | Remote filesystem (9P / UART FS — prefer over ZMODEM) | **partial** | **Virtio-9p client**: `Mount9p` / `NineExport` / `Virtio9pWritePath`; smokes `repl-9p-smoke`, `kernel-virtio-9p-smoke` — teach: [NINEP.md](NINEP.md) | No **UART** 9P; needs virtfs; guest-as-9p-server explicitly non-goal ([GAPS.md](GAPS.md)); ZMODEM on thin image **waived** (G11) — DumpFile + 9P |
 | **7** | Debugger transport (GDB remote: regs/mem/bp/step/continue/threads) | **partial** | **Soft UART dig-down** ([DEBUGGER.md](DEBUGGER.md)). **Guest UART RSP**: `GdbStub;` / `make gdb-uart-smoke` (`?`/`g`/`m`/`Z0`/`z0`/soft-`s`/`c`→S05, raw `$HC_GDB$`). **Host** QEMU `-gdb` (`hwdbg-smoke`) | ch2 round-trip WIP (`GdbUseMux` flag); no live resume while attached; no SMP RSP |
 | **8** | Logging facility (dmesg ring, severity, ≠ stdout) | **partial** | Seed `log.hc`: ring + `Log*`/`DMesg`; `LogMuxEmit` → ch3 when `frame.hc` + `UartMuxOn` | No Print-style varargs `LogF` |
-| **9** | Crash monitor (trap dump + md/mw/regs/bt/reboot) | **have** | `CrashDump`/`CrashMon`/`CrashOnTrap`/`Md`/`Mw` (`crash.hc`); Help/Man; `SetTrapFn(&CrashOnTrap)` at boot; G2 `TrapInitOnce` on first Fault/Break/SetTrap; FB twin `RVWinSerial`/`RVCrashMon*` | Kernel Panic/`Dbg` x86-era |
+| **9** | Crash monitor (trap dump + md/mw/regs/bt/reboot) | **have** | `CrashDump`/`CrashMon`/`CrashOnTrap`/`Md`/`Mw` (`crash.hc`); Help/Man; `SetTrapFn(&CrashOnTrap)` at boot; G2 `TrapInitOnce` on first Fault/Break/SetTrap; FB twin `RVWinSerial` ExePutS + `RVCrashMon*` | Kernel Panic/`Dbg` x86-era |
 | **10** | System inspection (ps, mem, irqs, uptime, devices, mounts, counters) | **partial** | Seed `sys.hc`: `Sys` / `Uptime` / `MemRep` / `IrqRep` / `DevRep` / `Cnts` (+ Help/Man); also `MemMap` / CSR / `FsChanges` / `mtime` | No `ps` / task table; no mounts table; timebase fixed (`SYS_TIMEBASE`) |
 | **11** | Clock + terminal size negotiation | **partial** | CLINT `mtime` / `TimerArm`; optional Goldfish RTC; **size/type:** guest `g_term_rows`/`cols`/`name` (default 80×24 / `ansi`); `TermSize(cols,rows)` / `TermSetName`; host push `ESC[8;rows;cols t` or OSC `777;cols;rows;name BEL`; optional `TermQuery`/`TermProbe` | Wall-clock sync API for console still missing; OSC/CSI push only while TermProbe/editors own RX |
 | **12** | Flow control (XON/XOFF or RTS/CTS) for panic/bulk | **partial** | Software **XON/XOFF** on virt 16550: seed `uart.hc` / C `UartPut` / `hc_repl` / Kernel `RVUart16550` — host Ctrl-S pauses TX, Ctrl-Q resumes; `UartXonXoff(0)` for binary (ZMODEM/trzsz auto-disable). Smoke: `make repl-uart-xon-pty`. **RTS/CTS soft stub** (`UartRtsCts`) — no-op on virt | Stub only for HW FC (virt chardev ignores modem lines). Kernel PutS FC poll may drop non-FC RX (no ring); `hc_repl` soft ring preserves keys. SiFive/HTIF/other UARTs: no shared FC yet |
@@ -72,7 +72,7 @@ adjusted for what already exists.
 | **3** | **Framed multi-channel UART** (ch0 console, ch2 dbg, ch3 log; escape binary) | Unblocks safe dbg/xfer without eating the prompt; prerequisite for mux + UART FS | Reuse `$HC_*$` lessons; **before** more ZMODEM |
 | **4** | **GDB RSP (or thin subset) on dbg channel** | User priority; host qemu-gdbstub does **not** help bare UART-only boards | **Partial raw UART** (`GdbStub` / `gdb-uart-smoke`: regs/mem/`Z0`/soft-step); ch2 TX reserved (`GdbUseMux`); keep soft `Regs`/`Bp` |
 | **5** | **dmesg ring → ch3** | Panic/bulk without stomping TTY; pairs with FC later | Ring **done**; ch3 via `frame.hc` `LogMuxEmit` when `UartMuxOn` |
-| **6** | **VT multiplexing** (2–N logical consoles over ch0) | Soft slice landed (`console.hc`); deepen after PutCh wrap | Soft done; panes/Ctrl-A later |
+| **6** | **VT multiplexing** (2–N logical consoles over ch0) | Soft slice landed (`console.hc`); deepen after PutCh wrap | Soft + host panes; guest ANSI split deferred |
 | **7** | **UART 9P or framed FS** (ch1) | Virtio-9p already covers “remote FS” when virtfs exists; UART FS for boards without virtio | After #3; ZMODEM on thin **waived** (G11) |
 | **8** | ~~Flow control (XON/XOFF)~~ — **done** (SW); RTS/CTS **stub** (no-op virt) | Panic/bulk Dump — see #12 | Real RTS/CTS when boards wire pins |
 | **9** | **Richer terminal UI** (colors, keypad, status) | Editors already ANSI-capable | After TTY solid |
@@ -156,7 +156,7 @@ input. Boot loads after `frame.hc` (for optional framed notify).
 
 ### How to switch
 
-At the `>` prompt (HolyC APIs — no Ctrl-A yet):
+At the `>` prompt (HolyC APIs; Ctrl-A via opt-in `VtKeys(1)`):
 
 ```text
 Vt(1);                 // soft-switch to VT1 (banner + scrollback replay)
@@ -167,7 +167,9 @@ VtCapture(1);          // opt-in: Print/UartStr dual-write into current VT
 Print("captured\n");
 VtCapture(0);
 VtKeys(1);             // Ctrl-A then 0-3 / n / p / d / l  (readline)
-VtList;                // * marks active
+VtPane(0,1);           // layout for host --vt-panes (no guest TTY split)
+VtPaneOff;
+VtList;                // * marks active; shows pane: A | B or off
 VtClear;
 VtNext;  VtPrev;
 VtHelp;  Man("Vt");
@@ -179,6 +181,7 @@ With framed mux (optional):
 Run("frame.hc");       // if not already booted in
 UartMuxOn;
 Vt(2);                 // also FrameSend(ch0, "V\t2")
+VtPane(0,1);           // also FrameSend(ch0, "P\t0\t1")
 UartMuxOff;
 ```
 
@@ -186,8 +189,8 @@ Host sketch:
 
 ```bash
 python3 tools/uart_mux.py --selftest
-qemu-system-riscv64 … -nographic 2>&1 | python3 tools/uart_mux.py -o /tmp/mux --vt-split
-# → /tmp/mux/vt0 … vt3 (banner + framed V\tN split) plus console/log/…
+qemu-system-riscv64 … -nographic 2>&1 | python3 tools/uart_mux.py -o /tmp/mux --vt-split --vt-panes
+# → /tmp/mux/vt0 … vt3 + vt_panes.txt (side-by-side) plus console/log/…
 ```
 
 ### Guest APIs
@@ -195,16 +198,17 @@ qemu-system-riscv64 … -nographic 2>&1 | python3 tools/uart_mux.py -o /tmp/mux 
 | API | Role |
 |-----|------|
 | `Vt(n)` / `VtAttach(n)` / `VtDetach` / `VtNext` / `VtPrev` | Soft-switch; banner + replay; detach → VT0 |
-| `VtCur` / `VtCount` / `VtList` | Query / inventory (`* ` = active) |
+| `VtCur` / `VtCount` / `VtList` | Query / inventory (`* ` = active; pane line) |
 | `VtPutStr` / `VtTitle` / `VtClear` | Session line buffer + title; wipe scrollback |
 | `VtCapture(1\|0)` / `VtCaptureGet` | Opt-in PutCh hook: Print/UartStr → current VT scrollback (still UART) |
 | `VtKeys(1\|0)` / `VtKeysGet` | Opt-in Ctrl-A prefix in `RlReadKey` (default off) |
+| `VtPane(a,b)` / `VtPaneOff` / `VtPaneA` / `VtPaneB` | Host-side split layout intent (`-1` = off); framed `P\ta\tb` / `P\t-` |
 | `VtHelp` / `VtInit` | Cheat sheet / idempotent init (VT0=`repl`) |
-| `VtMuxNotify` | Internal: framed `V\tN` on ch0 when `UartMuxOn` |
+| `VtMuxNotify` / `VtPaneMuxNotify` | Internal: framed `V\tN` / `P\t…` on ch0 when `UartMuxOn` |
 
 ### Limits
 
-- **Panes** not implemented (split views).
+- **No guest ANSI pane split** — would fight readline/echo on the shared UART TTY. Useful split is **host** `uart_mux.py --vt-panes` (side-by-side dump from demuxed `vtN`).
 - Ctrl-A prefix is **opt-in** (`VtKeys(1)`); default readline unchanged.
 - `VtCapture` dual-writes only (never hides UART) — REPL primacy preserved.
 - `Print` / `UartStr` capture via PutCh hook; `FrameSend` stays on raw `UartPut`.
@@ -213,8 +217,8 @@ qemu-system-riscv64 … -nographic 2>&1 | python3 tools/uart_mux.py -o /tmp/mux 
 - UART serial REPL remains primary vs FB WinMgr — VT mux does not claim exclusive UART.
 
 Smoke: boot `VtList` + early interactive `Vt(1)` / `VtPutStr` / `VtCapture` /
-`VtDetach` needles in `repl-holyc-smoke` / `repl-smoke`. Host:
-`python3 tools/uart_mux.py --selftest` (also `--vt-split` / `--vt-follow` / `--vt-status`).
+`VtPane` / `VtDetach` needles in `repl-holyc-smoke` / `repl-smoke`. Host:
+`python3 tools/uart_mux.py --selftest` (also `--vt-split` / `--vt-panes` / `--vt-follow` / `--vt-status`).
 
 ---
 
@@ -247,7 +251,7 @@ erase/kill/eof classifiers (echo/ICRNL/ONLCR stay as set).
 ### Limits
 
 - Legacy C `repl_read_line_ex` is not rewritten (product path owns the slice).
-- Mid-line Tab still completes as if at EOL (`CompCx = n`); G5 may deepen.
+- Mid-line Tab uses `g_rl_cur` → `CompCx` (`ReplSmartTab` / `CompMidDemo`).
 - `TtyOnlcr` does **not** wrap global `PutCh` (binary / DumpFile safe).
 - RTS/CTS still stub (#12).
 - Do not grow `jit.hc` — seed + AOT `#include` only.
@@ -288,7 +292,7 @@ Breakpoints still go through `DbgTrap`. G2: `make trap-smoke` (Fault/Break/Ctrl-
 | `Md(addr,n)` / `Mw(addr,val)` | DRAM hex+ASCII dump / aligned I64 store |
 | `CrashParseAddr` | `pc`/`sp`/`fp`/`ra`/`snap` aliases for monitor cmds |
 
-**FB twin:** Kernel `RVWinSerial` + host `RVCrashMon`/`RVCrashMonInit` (`bootstrap/holy_rt.h`) — UART dig-down (`help`/`regs`/`bt`/`md`/`mw`/`fault`/`crash`) while WinMgr is up ([BOARD_FB.md](../templeos-riscv/BOARD_FB.md)). Same command vocabulary; not the AOT `repl-holyc` ExePutS path.
+**FB twin:** Kernel `RVWinSerial` + host `RVCrashMon`/`RVCrashMonInit` (`bootstrap/holy_rt.h`) — UART **HolyC ExePutS** REPL while WinMgr is up ([BOARD_FB.md](../templeos-riscv/BOARD_FB.md)); dig-down `regs`/`bt`/`md`/`mw`/`fault`/`crash` remain as serial meta; traps enter `crash>`.
 
 Smoke: `make trap-smoke` — Fault→dump→`crash>`→`go`→`after-fault`; Break; SetTrap/Ecall;
 Ctrl-C (`after-ctrlc`). Dig-down: `Man("CrashMon")`; `Help` lists entry points.
@@ -396,6 +400,6 @@ Host **Ctrl-S** (XOFF `0x13`) pauses UART TX; **Ctrl-Q** (XON `0x11`) resumes. D
 | `dbg-smoke` / `hwdbg-smoke` / `gdb-uart-smoke` | Soft dbg / host qemu-gdbstub / guest UART RSP |
 | `dump-changes-smoke` / `zmodem-smoke` / `trzsz-smoke` | Framed export (ad-hoc) |
 | `repl-9p-smoke` / `kernel-virtio-9p-smoke` | Remote FS (virtio) |
-| `kernel-win-interactive` / `kernel-win-serial-smoke` | FB WinMgr + UART `RVWinSerial` banner / help needle |
+| `kernel-win-interactive` / `kernel-win-serial-smoke` | FB WinMgr + UART HolyC ExePutS (`ans=`) / crash> / quit |
 
 Update this page when PutCh wrap or Ctrl-A VT binds land; prefer probing seeds over guessing.

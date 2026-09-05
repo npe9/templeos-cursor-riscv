@@ -5,11 +5,12 @@
 | `pack_tosb.c` / `pack_tosb` | Pack TempleOS-style blobs |
 | `gen_cmp_imports.py` | Generate `Kernel/RVCmpImports.HC` |
 | `gen_host_bin_embed.py` | Embed host bins for guest |
+| `gen_adam_lite_embed.py` | Emits `Kernel/RVAdamLiteMenuSrc.HC` from in-tree `Adam/Menu_RV_Guest.HC` (nested guest `#include`; no full Menu U8[]) |
 | `legacy/` | Retired root utilities (`riscv_dump`, early backends) |
 | `uart_recv_dump.py` | Decode `DumpFile` / `DumpMem` / `DumpChanges` frames (`--keep-path`, `--selftest`) |
 | `uart_recv_zmodem.py` | ZMODEM receive (`rz` subset) from REPL UART; `--selftest` / `--qemu` (QEMU **PTY**, not PIPE) |
 | `uart_recv_trzsz.py` | Native trzsz receive (`tsz` client) from REPL UART; `--selftest` / `--qemu` (QEMU **PTY**, not PIPE) |
-| `uart_mux.py` | Demux framed multi-channel UART (`frame.hc` / CONSOLE.md); `--selftest` / `-o DIR` / `--vt-split` / `--vt-follow` / `--vt N` / `--vt-status` |
+| `uart_mux.py` | Demux framed multi-channel UART (`frame.hc` / CONSOLE.md); `--selftest` / `-o DIR` / `--vt-split` / `--vt-panes` / `--vt-follow` / `--vt N` / `--vt-status` |
 | `uart_gdb_proxy.py` | Guest `GdbStub` RSP over UART: `--selftest` / `--qemu` smoke / `--uart`+`--listen` for gdb |
 
 ### UART binary export

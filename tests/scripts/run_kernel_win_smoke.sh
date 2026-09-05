@@ -16,7 +16,7 @@ SRC="$ROOT/tests/exec/cases/kernel_win_demo.hc"
 EXPECT_PREFIX="RVWinMgr smoke hash="
 # Word-wise FNV-1a for kernel_win_demo.hc (800×600). Override with RVWIN_EXPECT_HASH.
 # 0x00000000 = calibrate mode (print hash, write build/exec/win_expect_hash.txt).
-PINNED_HASH="0xEDE200CB"
+PINNED_HASH="0xF29CD5B3"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
@@ -58,6 +58,32 @@ out="$($TIMEOUT 40 "$QEMU" -M virt -m 128M -bios none -kernel "$T/win.elf" \
 if ! printf '%s\n' "$out" | grep -qF "$EXPECT_PREFIX"; then
   echo "FAIL kernel-win smoke — no hash line:" >&2
   printf '%s\n' "$out" | grep -v 'import unresolved' | head -20 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$out" | grep -qF "RVWinMgr Term live_msg ok"; then
+  echo "FAIL kernel-win smoke — no Term live_msg ok:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -F Term | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qF "MassSpring stock via"; then
+  echo "FAIL kernel-win smoke — no MassSpring stock pointer:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -F MassSpring | head -5 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qF "RVDoc Write ok"; then
+  echo "FAIL kernel-win smoke — no DocWrite ok:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -F RVDoc | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qF "RVMenuFile n="; then
+  echo "FAIL kernel-win smoke — no RVMenuFile:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -F RVMenu | head -5 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qF "RVAC words="; then
+  echo "FAIL kernel-win smoke — no RVAC words:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -F RVAC | head -5 | sed 's/^/  got: /' >&2
   exit 1
 fi
 

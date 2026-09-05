@@ -251,7 +251,6 @@ U0 PrsArrayDims(CCmpCtrl *cc,I64 mode,CArrayDim *dim)
   dim->next=NULL;
   dim->cnt=0;
   dim->total_cnt=1;
-  tmpad1=&dim->next;
   if (cc->token=='[') {
     if (mode.u8[1]==PRS1B_FUN_ARG)
       LexExcept(cc,"No arrays in fun args at ");
@@ -259,12 +258,21 @@ U0 PrsArrayDims(CCmpCtrl *cc,I64 mode,CArrayDim *dim)
       if (Lex(cc)==']' && !dim->next)
 	j=0;
       else {
-	if ((j=LexExpressionI64(cc))<0)
+	/* RV: literal sizes skip LexExpressionI64→Call during AOT Cmp. */
+	if (cc->token==TK_I64) {
+	  j=cc->cur_i64;
+	  Lex(cc);
+	} else if ((j=LexExpressionI64(cc))<0)
+	  LexExcept(cc,"Invalid array size at ");
+	if (j<0)
 	  LexExcept(cc,"Invalid array size at ");
       }
       tmpad=MAlloc(sizeof(CArrayDim));
       tmpad->next=NULL;
-      tmpad1=&dim;
+      /* RV: was `tmpad1=&dim` — that is CArrayDim** on the stack slot, not the
+       * head struct. x86 stack layout often survived; RV corrupted dim and hung
+       * guest Cmp of `U8 name[24]` class/glbl members. */
+      tmpad1=dim;
       do {
 	tmpad1->total_cnt*=j;
 	if (!tmpad1->next) {

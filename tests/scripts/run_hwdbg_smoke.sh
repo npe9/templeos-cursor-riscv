@@ -1,4 +1,7 @@
 #!/bin/bash
+# RETIRED: worry_dream C guest deleted.
+echo "error: run_hwdbg_smoke retired with worry_dream C guest; see docs/DEBUGGER.md" >&2
+exit 2
 # Hardware debugger smoke: QEMU gdbstub + Sdtrig CSR probe + guest HwTrigProbe.
 # Needs: qemu-system-riscv64, riscv64-elf-gdb | riscv64-unknown-elf-gdb | gdb-multiarch
 set -euo pipefail

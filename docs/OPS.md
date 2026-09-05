@@ -113,6 +113,37 @@ Details: [build/known-good/README.md](../build/known-good/README.md).
 Stale `repl.elf` after `host/holyc_compiler.h` / `bootstrap/holy_rt*.h` edits often
 looks like universal hang — rebuild, then re-pin if the new image is trusted.
 
+Host AOT progress (watch long `make kernel-win-rebuild` builds): stderr lines prefixed
+`holyc:` when stderr is a TTY — `HOLYC_PROGRESS=1` forces on, `HOLYC_QUIET=1` off.
+
+### Incremental win AOT (compile + link)
+
+`make kernel-win-interactive` / `kernel-win-run` no longer re-parse/optimize the whole
+Kernel+Compiler include graph on every leaf edit. Units under `build/aot/win/`:
+
+| Artifact | Source | Role |
+|----------|--------|------|
+| `compiler.bin` (+ `.map` / `.d`) | `tests/exec/aot/win_compiler.PRJ` | Compiler_RV + RVExePubs |
+| `kernel_i.bin` / `kernel_hold.bin` | `tests/exec/aot/win_{i,hold}.hc` | Kernel_RV + main (no Body) |
+| `win_*.blob.bin` | `holyc-riscv --link` | Cross-patch HOFYIMP1 imports @ `0x80800000` |
+| `build/exec/win_*.elf` | objcopy + `link_exepubs.ld` | QEMU kernel |
+
+Touch a Compiler `.HC` → only `compiler` unit + link (~3s). Touch Kernel/main → only
+`kernel_*` + link (~10s). No-op when deps unchanged (~instant).
+
+Force a clean full rebuild:
+
+```bash
+make kernel-win-rebuild   # rm ELFs + build/aot/win; recompile all units
+# or: rm -rf build/aot/win && make build/exec/win_i.elf
+```
+
+CLI: `holyc-riscv file.hc -o out.bin [--deps out.d] [--map out.map]` and
+`holyc-riscv --link -o out.bin [--base 0x80800000] a.bin b.bin…` (sibling `.map` required).
+
+Remaining gaps toward TempleOS Cmp/Load multi-TU: shared `Fs`/`cmp` still need
+`RVAotLibSync` / `RVCmpWireAsmHash` at boot; per-`.HC` objects (not per-PRJ) not yet.
+
 ---
 
 ## Board / image won’t boot

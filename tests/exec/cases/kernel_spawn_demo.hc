@@ -94,15 +94,7 @@ I64 main()
   Print("calling the real Spawn()...\n");
   CTask *t = Spawn(&taskA, NULL, "tA", -1, adam, 0, 0);
   Print("real Spawn -> task=0x%X task_num=%d rip_set=%d\n", t, t->task_num, t->rip != 0);
-  // RISC-V fixup: seed the switch frame on the real task's stack (ra=entry, s0..s11=0)
-  I64 top = t->rsp + 16;
-  // stack top before Spawn's x86 [&Exit][data] pushes
-  I64 *frame = (top - 104) & (~15);
-  I64 i;
-  for (i = 0; i < 12; i++)
-    frame[i] = 0;
-  frame[12] = t->rip;
-  t->rsp = frame;
+  // Spawn() plants HolyRVCtxSw via RVKFixSpawnFrame (no second fixup).
   // link the real task into adam's circular list
   t->next_task = adam->next_task;
   t->last_task = adam;

@@ -161,10 +161,12 @@ asm {
 	csrr	a0, 0xB02
 	ret
 	HcGetCycle::
-	csrr	a0, 0xC00
+	// M-mode: prefer mcycle (0xB00). U-mode cycle (0xC00) can illegal-trap
+	// without Zicntr / mcounteren; mcycle is always legal in M-mode.
+	csrr	a0, 0xB00
 	ret
 	HcGetInstret::
-	csrr	a0, 0xC02
+	csrr	a0, 0xB02
 	ret
 	HcGetSStatus::
 	csrr	a0, 0x100
@@ -1297,38 +1299,89 @@ U0 CsrDecodeMepc(I64 v)
   Print("\n");
   Print("   mret target\n");
 }
-
-U0 CsrDecodeMcause(I64 v)
+// McauseCauseName -- symbolic interrupt/exception name for mcause (CSR 0x342).
+U8 *McauseCauseName(I64 v)
 {
   I64 intr, code;
   intr = (v >> 63) & 1;
   code = v & 0x7FFFFFFFFFFFFFFF;
-  if (intr)
-    Print("   Interrupt=1 (");
-  else
-    Print("   Exception (Interrupt=0)\n   code=%d (", code);
   if (intr) {
     if (code == 0)
-      Print("user soft interrupt");
-    else if (code == 1)
-      Print("supervisor soft interrupt");
-    else if (code == 3)
-      Print("machine soft interrupt");
-    else if (code == 4)
-      Print("user timer interrupt");
-    else if (code == 5)
-      Print("supervisor timer interrupt");
-    else if (code == 7)
-      Print("machine timer interrupt");
-    else if (code == 8)
-      Print("user external interrupt");
-    else if (code == 9)
-      Print("supervisor external interrupt");
-    else if (code == 11)
-      Print("machine external interrupt");
-    else
-      Print("IRQ code %d", code);
-    Print(")\n");
+      return "user soft interrupt";
+    if (code == 1)
+      return "supervisor soft interrupt";
+    if (code == 3)
+      return "machine soft interrupt";
+    if (code == 4)
+      return "user timer interrupt";
+    if (code == 5)
+      return "supervisor timer interrupt";
+    if (code == 7)
+      return "machine timer interrupt";
+    if (code == 8)
+      return "user external interrupt";
+    if (code == 9)
+      return "supervisor external interrupt";
+    if (code == 11)
+      return "machine external interrupt";
+    return "interrupt";
+  }
+  if (code == 0)
+    return "insn address misaligned";
+  if (code == 1)
+    return "insn access fault";
+  if (code == 2)
+    return "illegal instruction";
+  if (code == 3)
+    return "breakpoint";
+  if (code == 4)
+    return "load address misaligned";
+  if (code == 5)
+    return "load access fault";
+  if (code == 6)
+    return "store address misaligned";
+  if (code == 7)
+    return "store access fault";
+  if (code == 8)
+    return "ecall from U-mode";
+  if (code == 9)
+    return "ecall from S-mode";
+  if (code == 11)
+    return "ecall from M-mode";
+  if (code == 12)
+    return "insn page fault";
+  if (code == 13)
+    return "load page fault";
+  if (code == 15)
+    return "store page fault";
+  return "exception";
+}
+// McausePrint -- compact crash-line decode: mcause=0xN  Exception/Interrupt code=N (name)
+U0 McausePrint(I64 v)
+{
+  I64 intr, code;
+  U8 *name;
+  intr = (v >> 63) & 1;
+  code = v & 0x7FFFFFFFFFFFFFFF;
+  name = McauseCauseName(v);
+  if (intr)
+    "  mcause=0x%X  Interrupt code=%d (%s)\n", v, code, name;
+  else
+    "  mcause=0x%X  Exception code=%d (%s)\n", v, code, name;
+}
+
+U0 CsrDecodeMcause(I64 v)
+{
+  I64 intr, code;
+  U8 *name;
+  intr = (v >> 63) & 1;
+  code = v & 0x7FFFFFFFFFFFFFFF;
+  name = McauseCauseName(v);
+  if (intr)
+    Print("   Interrupt=1 (%s)\n", name);
+  else
+    Print("   Exception (Interrupt=0)\n   code=%d (%s)\n", code, name);
+  if (intr) {
     Print("   code=%d (", code);
     if (code == 11)
       Print("MEI");
@@ -1344,38 +1397,6 @@ U0 CsrDecodeMcause(I64 v)
       Print("SSI");
     else
       Print("?");
-    Print(")\n");
-  } else {
-    if (code == 0)
-      Print("insn address misaligned");
-    else if (code == 1)
-      Print("insn access fault");
-    else if (code == 2)
-      Print("illegal instruction");
-    else if (code == 3)
-      Print("breakpoint");
-    else if (code == 4)
-      Print("load address misaligned");
-    else if (code == 5)
-      Print("load access fault");
-    else if (code == 6)
-      Print("store address misaligned");
-    else if (code == 7)
-      Print("store access fault");
-    else if (code == 8)
-      Print("ecall from U-mode");
-    else if (code == 9)
-      Print("ecall from S-mode");
-    else if (code == 11)
-      Print("ecall from M-mode");
-    else if (code == 12)
-      Print("insn page fault");
-    else if (code == 13)
-      Print("load page fault");
-    else if (code == 15)
-      Print("store page fault");
-    else
-      Print("exception %d", code);
     Print(")\n");
   }
 }

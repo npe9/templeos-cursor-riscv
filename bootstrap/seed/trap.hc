@@ -276,35 +276,8 @@ U0 TrapPutHex(I64 v)
 
 U8 *TrapCauseName(I64 cause)
 {
-  if (cause < 0) {
-    cause = cause & 0xFF;
-    if (cause == 3)
-      return "software interrupt";
-    if (cause == 7)
-      return "timer interrupt";
-    if (cause == 11)
-      return "external interrupt";
-    return "interrupt";
-  }
-  if (cause == 0)
-    return "instruction misaligned";
-  if (cause == 1)
-    return "instruction access fault";
-  if (cause == 2)
-    return "illegal instruction";
-  if (cause == 3)
-    return "breakpoint";
-  if (cause == 4)
-    return "load misaligned";
-  if (cause == 5)
-    return "load access fault (bad address)";
-  if (cause == 6)
-    return "store misaligned";
-  if (cause == 7)
-    return "store access fault (bad address)";
-  if (cause == 8 || cause == 9 || cause == 11)
-    return "ecall";
-  return "trap";
+  // Shared table with CsrDecodeMcause / McausePrint (csr.hc).
+  return McauseCauseName(cause);
 }
 
 I64 TrapResolve(U8 *name)
@@ -469,8 +442,8 @@ U0 TrapFaultDump(I64 *frame, I64 cause, I64 epc, I64 tval)
 {
   UartStr("\n*** FAULT: ");
   UartStr(TrapCauseName(cause));
-  UartStr("\n  cause=");
-  TrapPutHex(cause);
+  UartStr("\n");
+  McausePrint(cause);
   UartStr("  tval=");
   TrapPutHex(tval);
   UartStr("\n  pc  = ");

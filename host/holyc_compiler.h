@@ -160,8 +160,12 @@ typedef bool      Bool;
 #define IC_BLOCK_COPY    0xBB   // struct copy: eval stack [dst,src] (src top), ic_data = byte count; copies then leaves dst
 #define IC_RAW_RV        0xBC   // emit ic_data as one raw 32-bit RISC-V instruction word (x86-asm translation)
 #define IC_REGS_SNAP     0xBD   // inline asm{} → MEM_REGS_SNAP freeze before Reg/Regs
-#define IC_LOCK_ENTER    0xBD   // `lock` stmt: amoswap spin on HOLYC_STMT_LOCK_ADDR
-#define IC_LOCK_LEAVE    0xBE
+#define IC_LOCK_ENTER    0xBE   // `lock` stmt: amoswap.d.aq spin on HOLYC_STMT_LOCK_ADDR
+#define IC_LOCK_LEAVE    0xBF   // `lock` stmt: amoswap.d.rl store 0 (HolyUnlock)
+/* Fixed AMO word for HolyC `lock` — match bootstrap/holy_rt.h HolyLock/HolyUnlock. */
+#ifndef HOLYC_STMT_LOCK_ADDR
+#define HOLYC_STMT_LOCK_ADDR 0x87001F00ULL
+#endif
 #define IC_UDIV          0x9E
 #define IC_UMOD          0x9F
 #define IC_ULESS         0xA0
@@ -177,6 +181,7 @@ typedef bool      Bool;
 #define ICF_REG_LOCAL    4      // IC_MOV/ASSIGN: value in arg1.reg; frame slot holds caller spill
 #define ICF_ASSIGN_ZERO  8      // IC_ASSIGN: RHS was IMM 0 — store x0; skip dead li before addr pop
 #define ICF_CMP_IMM      16     // IC_BR_EQU…LESS_EQU: rhs is imm in arg2.disp; only lhs on eval stack
+#define ICF_RELAX_LONG   32     // jmp/br site locked to long encoding (monotonic AOT relaxation)
 #define IC_EVAL_DROP      0x92 /* addi sp,sp,ic_data (drop eval slots); signed ic_data */
 
 // Raw types
@@ -349,6 +354,7 @@ typedef struct CHashEntry CHashEntry;
 typedef struct IncludeFile {
   struct IncludeFile *next;
   char *src;         // Source code
+  size_t src_size;   // Byte length of src (may include trailing CDocBin after text NUL)
   char *ptr;         // Current position
   char *filename;    // Filename
   int line;          // Line number in this file
@@ -374,12 +380,14 @@ typedef struct LexerStack {
   int brace_depth;
   CHashEntry *hash_entry;  // Saved hash entry
   char *src;               // Saved source buffer (a macro expansion may have been entered since)
+  size_t src_size;
   char *filename;
   struct IncludeFile *include_stack;  // Saved include/expansion depth
 } LexerStack;
 
 typedef struct {
   char *src;
+  size_t src_size;  // Byte length of src buffer content (trailing CDocBin after text NUL)
   char *ptr;
   int line;
   int col;
@@ -583,6 +591,11 @@ typedef struct {
   int asm_extra_export_n;
   char asm_extra_exports[8][48];
 
+  /* Include / entry paths for Make depfiles (`-MD` / `--deps`). Host AOT only. */
+  char **aot_deps;
+  I64 aot_dep_n;
+  I64 aot_dep_cap;
+
 } Compiler;
 
 // String literal for target code
@@ -607,11 +620,13 @@ typedef struct StringLiteral {
 
 // Lexer
 Compiler *CompilerNew(const char *source, const char *filename);
+Compiler *CompilerNewBuf(const char *source, size_t size, const char *filename);
 void LexPushStringPending(Compiler *cc, const char *text);
 void LexAbandonPendingString(Compiler *cc);
 void MakeImportSlot(Compiler *cc, CHashFun *f);   // parser.c: `__imp_<name>` slot, calls go through it
 void CompilerFree(Compiler *cc);
 Compiler *Compile(const char *source, const char *filename, bool aot);
+Compiler *CompileBuf(const char *source, size_t size, const char *filename, bool aot);
 void LexNext(Compiler *cc);
 bool LexExpect(Compiler *cc, int token);
 
@@ -657,6 +672,22 @@ I64 ExecuteJIT(void *code);
 // Utilities
 void Error(Compiler *cc, const char *msg);
 bool IsKeyword(const char *str);
+
+/* Host AOT progress on stderr (TTY by default; HOLYC_PROGRESS=1 forces on;
+ * HOLYC_QUIET=1 / HOLYC_PROGRESS=0 forces off). Flush each line. No-op on bare metal. */
+#ifndef BARE_METAL
+int HolyProgressOn(void);
+const char *HolyProgressRel(const char *path);
+void HolyProgress(const char *fmt, ...);
+void AOTDepAdd(Compiler *cc, const char *path);
+void AOTWriteDeps(Compiler *cc, const char *dep_path, const char *target);
+void AOTWriteMap(Compiler *cc, const char *map_path);
+int HolyAOTLink(int argc, char **argv); /* argv[0]=="--link" */
+#else
+#define HolyProgressOn() 0
+#define HolyProgressRel(p) (p)
+#define HolyProgress(...) ((void)0)
+#endif
 
 #endif // HOLYC_COMPILER_H
 

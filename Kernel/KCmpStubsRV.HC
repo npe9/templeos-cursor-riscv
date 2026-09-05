@@ -37,13 +37,8 @@ CHeapCtrl *MHeapCtrl(U8 *src)
     return Fs->data_heap;
   return NULL;
 }
-
-Bool DocUnlock(CDoc *doc)
-{
-  no_warn doc;
-  return FALSE;
-}
-
+Bool DocUnlock(CDoc *doc);
+// real: Kernel/RVDoc.HC (P2)
 U8 *Doc2PlainText(CDoc *doc, CDocEntry *doc_e)
 {
   no_warn doc;
@@ -55,64 +50,8 @@ U0 DocBinsValidate(CDoc *doc)
 {
   no_warn doc;
 }
-
-U0 DocDel(CDoc *doc)
-{
-  no_warn doc;
-}
-
-U0 DocLoad(CDoc *doc, U8 *src2, I64 size)
-{
-  no_warn doc;
-  no_warn src2;
-  no_warn size;
-}
-
-CDoc *DocNew(U8 *filename = NULL, CTask *task = NULL)
-{
-  no_warn filename;
-  no_warn task;
-  return NULL;
-}
-U0 RVDocPutS(U8 *st);
-// RVWinMgr DocTerm-lite append
-CDocEntry *DocPrint(CDoc *doc = NULL, U8 *fmt,...)
-{
-  // Varargs StrPrintJoin here trips host Tier-2 into a hang; append via RVDocPutS from callers
-  // or use a non-varargs helper. Keep ExePutS import slot alive.
-  no_warn doc;
-  no_warn fmt;
-  return NULL;
-}
-
-CDocEntry *DocPutLine(CDoc *doc, CDocEntry *doc_e)
-{
-  no_warn doc;
-  no_warn doc_e;
-  return NULL;
-}
-
-I64 DocSize(CDoc *doc)
-{
-  no_warn doc;
-  return 0;
-}
-
-Bool DocWrite(CDoc *doc, Bool prompt = FALSE)
-{
-  no_warn doc;
-  no_warn prompt;
-  return FALSE;
-}
-
-U8 *DocSave(CDoc *doc, I64 *_size = NULL)
-{
-  no_warn doc;
-  if (_size)
-    *_size = 0;
-  return NULL;
-}
-
+// DocDel / DocNew / DocLoad / DocPrint / DocPutLine / DocSize / DocWrite / DocSave
+// → Kernel/RVDoc.HC (P2 minimal CDoc entry stream)
 U0 Ed(U8 *filename = NULL, I64 edf_dof_flags = 0)
 {
   no_warn filename;

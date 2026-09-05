@@ -25,6 +25,11 @@ CHashDefineStr *DefineLstLoad(U8 *dname,U8 *lst)
     while (*ptr++);
   }
   tmph->data=MAlloc(ptr+1-lst);
+  if (!tmph->data) {
+    Free(tmph->str);
+    Free(tmph);
+    return NULL;
+  }
   MemCpy(tmph->data,lst,ptr+1-lst);
   tmph->cnt=cnt;
 

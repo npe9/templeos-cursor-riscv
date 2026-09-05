@@ -790,12 +790,16 @@ sp_out_eng: //Engineering notation
 	  m=argv[cur_arg++];
 	  if (flags&PRTF_COMMA) {
 	    comma_fmt_cnt=comma_cnt=4;
+	    k0=0;
 	    do {
 	      tmp_buf[k]= m&15 +'0';
 	      if (tmp_buf[k]>'9') tmp_buf[k]+='A'-0x3A;
 	      k++;
-	      m>>=4;
-	      if (!m) break;
+	      // Bound to 16 nibbles: U64 is scalar-union/I64; >> is arithmetic.
+	      // mstatus.SD (bit63) otherwise floods TMP_BUF with F's.
+	      m=m>>4;
+	      k0++;
+	      if (!m || k0>=16) break;
 	      if (!--comma_cnt) {
 		tmp_buf[k++]=',';
 		comma_cnt=4;
@@ -803,12 +807,14 @@ sp_out_eng: //Engineering notation
 	    } while (k<TMP_BUF_LEN-SLOP);
 	    goto sp_out_comma_num;
 	  } else {
+	    k0=0;
 	    do {
 	      tmp_buf[k]= m&15 +'0';
 	      if (tmp_buf[k]>'9') tmp_buf[k]+='A'-0x3A;
 	      k++;
-	      m>>=4;
-	    } while (m && k<TMP_BUF_LEN-SLOP);
+	      m=m>>4;
+	      k0++;
+	    } while (m && k0<16 && k<TMP_BUF_LEN-SLOP);
 	    goto sp_out_num;
 	  }
 	case 'x':
@@ -817,12 +823,14 @@ sp_out_eng: //Engineering notation
 	  m=argv[cur_arg++];
 	  if (flags&PRTF_COMMA) {
 	    comma_fmt_cnt=comma_cnt=4;
+	    k0=0;
 	    do {
 	      tmp_buf[k]= m&15 +'0';
 	      if (tmp_buf[k]>'9') tmp_buf[k]+='a'-0x3A;
 	      k++;
-	      m>>=4;
-	      if (!m) break;
+	      m=m>>4;
+	      k0++;
+	      if (!m || k0>=16) break;
 	      if (!--comma_cnt) {
 		tmp_buf[k++]=',';
 		comma_cnt=4;
@@ -830,12 +838,14 @@ sp_out_eng: //Engineering notation
 	    } while (k<TMP_BUF_LEN-SLOP);
 	    goto sp_out_comma_num;
 	  } else {
+	    k0=0;
 	    do {
 	      tmp_buf[k]= m&15 +'0';
 	      if (tmp_buf[k]>'9') tmp_buf[k]+='a'-0x3A;
 	      k++;
-	      m>>=4;
-	    } while (m && k<TMP_BUF_LEN-SLOP);
+	      m=m>>4;
+	      k0++;
+	    } while (m && k0<16 && k<TMP_BUF_LEN-SLOP);
 	    goto sp_out_num;
 	  }
 	case 'b':
@@ -845,10 +855,12 @@ sp_out_eng: //Engineering notation
 	  m=argv[cur_arg++];
 	  if (flags&PRTF_COMMA) {
 	    comma_fmt_cnt=comma_cnt=4;
+	    k0=0;
 	    do {
 	      tmp_buf[k++]= m&1 +'0';
-	      m>>=1;
-	      if (!m) break;
+	      m=m>>1;
+	      k0++;
+	      if (!m || k0>=64) break;
 	      if (!--comma_cnt) {
 		tmp_buf[k++]=',';
 		comma_cnt=4;
@@ -856,10 +868,12 @@ sp_out_eng: //Engineering notation
 	    } while (k<TMP_BUF_LEN-SLOP);
 	    goto sp_out_comma_num;
 	  } else {
+	    k0=0;
 	    do {
 	      tmp_buf[k++]= m&1 +'0';
-	      m>>=1;
-	    } while (m && k<TMP_BUF_LEN-SLOP);
+	      m=m>>1;
+	      k0++;
+	    } while (m && k0<64 && k<TMP_BUF_LEN-SLOP);
 	    goto sp_out_num;
 	  }
 	case '%':

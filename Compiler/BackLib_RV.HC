@@ -133,7 +133,11 @@ U0 ICU64(CIntermediateCode *tmpi, U64 q)
 /* RISC-V Instruction Encoding Functions */
 U0 RVEmitR(CIntermediateCode *tmpi, U8 opcode, U8 rd, U8 funct3, U8 rs1, U8 rs2, U8 funct7)
 {
-  // Emit R-type instruction: funct7[31:25] rs2[24:20] rs1[19:15] funct3[14:12] rd[11:7] opcode[6:0]
+  // Emit R-type. Do NOT mask rs2: RVSlli passes shamt here — shamt=32 sets
+  // bit25 via (32<<20), the RV64 6-bit shamt encoding. Masking rs2&=31 made
+  // slli/srli 32 into no-ops → LUI sign-extend (mtval=0xffffffff82……).
+  rd &= 31;
+  rs1 &= 31;
   U32 inst = opcode | (rd << 7) | (funct3 << 12) | (rs1 << 15) | (rs2 << 20) | (funct7 << 25);
   ICU32(tmpi, inst);
 }
@@ -141,6 +145,9 @@ U0 RVEmitR(CIntermediateCode *tmpi, U8 opcode, U8 rd, U8 funct3, U8 rs1, U8 rs2,
 U0 RVEmitI(CIntermediateCode *tmpi, U8 opcode, U8 rd, U8 funct3, U8 rs1, I64 imm)
 {
   // Emit I-type instruction: imm[31:20] rs1[19:15] funct3[14:12] rd[11:7] opcode[6:0]
+  // Mask regs: unmasked REG_RIP(32) made `ld t0,1(x0)` (bit5→imm[0]).
+  rd &= 31;
+  rs1 &= 31;
   I64 imm12 = imm & 0xFFF;
   U32 inst = opcode | (rd << 7) | (funct3 << 12) | (rs1 << 15) | (imm12 << 20);
   ICU32(tmpi, inst);
@@ -149,6 +156,8 @@ U0 RVEmitI(CIntermediateCode *tmpi, U8 opcode, U8 rd, U8 funct3, U8 rs1, I64 imm
 U0 RVEmitS(CIntermediateCode *tmpi, U8 opcode, U8 funct3, U8 rs1, U8 rs2, I64 imm)
 {
   // Emit S-type instruction: imm[11:5] rs2[24:20] rs1[19:15] funct3[14:12] imm[4:0] opcode[6:0]
+  rs1 &= 31;
+  rs2 &= 31;
   U32 imm_low = imm & 0x1F;
   U32 imm_high = (imm >> 5) & 0x7F;
   U32 inst = opcode | (imm_low << 7) | (funct3 << 12) | (rs1 << 15) | (rs2 << 20) | (imm_high << 25);
@@ -158,6 +167,8 @@ U0 RVEmitS(CIntermediateCode *tmpi, U8 opcode, U8 funct3, U8 rs1, U8 rs2, I64 im
 U0 RVEmitB(CIntermediateCode *tmpi, U8 opcode, U8 funct3, U8 rs1, U8 rs2, I64 offset)
 {
   // Emit B-type instruction: imm[12|10:5] rs2[24:20] rs1[19:15] funct3[14:12] imm[4:1|11] opcode[6:0]
+  rs1 &= 31;
+  rs2 &= 31;
   U32 imm_11 = (offset >> 11) & 0x1;
   U32 imm_4_1 = (offset >> 1) & 0xF;
   U32 imm_10_5 = (offset >> 5) & 0x3F;

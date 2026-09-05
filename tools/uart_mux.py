@@ -15,11 +15,13 @@ Soft VT (console.hc / CONSOLE.md #4): guest Vt(n) prints banners
   --- VT N (title) ---
 and, when UartMuxOn, FrameSend(ch0, b"V\\tN"). Use --vt-split with -o DIR
 to write vt0..vt3 session files. --vt-follow streams the active VT live;
---vt N filters follow/stdout to one session.
+--vt N filters follow/stdout to one session. VtPane(a,b) records layout
+(framed P\\ta\\tb); --vt-panes renders a side-by-side dump (no guest TTY split).
 
 Usage:
   qemu-system-riscv64 … -nographic 2>&1 | python3 tools/uart_mux.py -o /tmp/mux
   qemu-system-riscv64 … -nographic 2>&1 | python3 tools/uart_mux.py -o /tmp/mux --vt-split
+  qemu-system-riscv64 … -nographic 2>&1 | python3 tools/uart_mux.py -o /tmp/mux --vt-panes
   qemu-system-riscv64 … -nographic 2>&1 | python3 tools/uart_mux.py --vt-follow
   python3 tools/uart_mux.py --selftest
 
@@ -27,6 +29,7 @@ At the guest prompt:
   UartMuxOn;  Print("hi\\n");  LogInfo("mux","ch3");  UartMuxOff;
   Vt(1); VtPutStr("side"); VtDetach;
   VtCapture(1); Print("cap\\n"); VtCapture(0);
+  VtPane(0,1);  // host --vt-panes; VtPaneOff;
 """
 from __future__ import annotations
 
@@ -92,12 +95,20 @@ class Demux:
         self.vt_cur = 0
         self.vt: dict[int, bytearray] = {i: bytearray() for i in range(VT_N)}
         self.vt_switches = 0
+        self.vt_pane: tuple[int, int] | None = None
         self._vt_follow_cb = None  # optional Callable[[int, bytes], None]
 
     def _vt_switch(self, n: int) -> None:
         if 0 <= n < VT_N:
             self.vt_cur = n
             self.vt_switches += 1
+
+    def _vt_pane_set(self, a: int, b: int) -> None:
+        if 0 <= a < VT_N and 0 <= b < VT_N:
+            self.vt_pane = (a, b)
+
+    def _vt_pane_clear(self) -> None:
+        self.vt_pane = None
 
     def _note_console_bytes(self, data: bytes) -> None:
         """Track soft VT banners + append bytes to active vtN buffer."""
@@ -141,12 +152,25 @@ class Demux:
             self.channels[ch] = bytearray()
         self.channels[ch].extend(payload)
         self.frames += 1
-        # Soft VT framed notify on ch0: "V\tN"
-        if ch == 0 and len(payload) >= 3 and payload[0] == ord("V") and payload[1] == ord("\t"):
-            dig = payload[2] - ord("0")
-            if 0 <= dig < VT_N:
-                self._vt_switch(dig)
-                return
+        # Soft VT framed notify on ch0: "V\tN" or pane "P\ta\tb" / "P\t-"
+        if ch == 0 and len(payload) >= 3 and payload[1] == ord("\t"):
+            if payload[0] == ord("V"):
+                dig = payload[2] - ord("0")
+                if 0 <= dig < VT_N:
+                    self._vt_switch(dig)
+                    return
+            if payload[0] == ord("P"):
+                if payload[2] == ord("-"):
+                    self._vt_pane_clear()
+                    return
+                if (
+                    len(payload) >= 5
+                    and payload[3] == ord("\t")
+                    and ord("0") <= payload[2] <= ord("3")
+                    and ord("0") <= payload[4] <= ord("3")
+                ):
+                    self._vt_pane_set(payload[2] - ord("0"), payload[4] - ord("0"))
+                    return
         if ch == 0:
             self._note_console_bytes(payload)
 
@@ -192,10 +216,45 @@ class Demux:
             + ("*" if i == self.vt_cur else "")
             for i in range(VT_N)
         ]
+        pane = (
+            f" pane={self.vt_pane[0]}|{self.vt_pane[1]}"
+            if self.vt_pane is not None
+            else " pane=off"
+        )
         return (
             f"vt_cur={self.vt_cur} switches={self.vt_switches} "
             + " ".join(parts)
+            + pane
         )
+
+    def render_panes(self, width: int = 36, max_lines: int = 12) -> str:
+        """Side-by-side dump of two VT buffers (host-side; no guest TTY split)."""
+        if self.vt_pane is not None:
+            a, b = self.vt_pane
+        else:
+            a, b = 0, 1
+        w = max(8, min(width, 72))
+
+        def lines_of(n: int) -> list[str]:
+            raw = bytes(self.vt.get(n, b"")).decode("utf-8", errors="replace")
+            raw = raw.replace("\r\n", "\n").replace("\r", "\n")
+            out = [ln.replace("\t", " ") for ln in raw.split("\n") if ln != ""]
+            if len(out) > max_lines:
+                out = out[-max_lines:]
+            return out
+
+        left, right = lines_of(a), lines_of(b)
+        nrows = max(len(left), len(right), 1)
+        hdr = f"===== VT panes: {a} | {b} ====="
+        col_a = f"vt{a}".ljust(w)
+        col_b = f"vt{b}".ljust(w)
+        rows = [hdr, f"{col_a} | {col_b}", ("-" * w) + "-+-" + ("-" * w)]
+        for i in range(nrows):
+            la = (left[i] if i < len(left) else "")[:w].ljust(w)
+            lb = (right[i] if i < len(right) else "")[:w].ljust(w)
+            rows.append(f"{la} | {lb}")
+        rows.append(f"===== panes end ({a}|{b}) =====")
+        return "\n".join(rows) + "\n"
 
 
 def parse_args() -> argparse.Namespace:
@@ -235,6 +294,25 @@ def parse_args() -> argparse.Namespace:
         help="Print VT size/cur summary on stderr at EOF",
     )
     p.add_argument(
+        "--vt-panes",
+        action="store_true",
+        help="Render side-by-side VT panes at EOF (stdout; or OUT/vt_panes.txt with -o)",
+    )
+    p.add_argument(
+        "--vt-pane-left",
+        type=int,
+        default=-1,
+        metavar="A",
+        help="With --vt-panes, left VT (default: guest VtPane or 0)",
+    )
+    p.add_argument(
+        "--vt-pane-right",
+        type=int,
+        default=-1,
+        metavar="B",
+        help="With --vt-panes, right VT (default: guest VtPane or 1)",
+    )
+    p.add_argument(
         "--selftest",
         action="store_true",
         help="Encode/decode round-trip (no QEMU)",
@@ -262,6 +340,7 @@ def selftest() -> int:
     stream += bad
     stream += encode_frame(0, b"V\t1")
     stream += b"\r\n--- VT 1 (vt1) ---\r\nside-session\n"
+    stream += encode_frame(0, b"P\t0\t1")
     stream += encode_frame(0, b"V\t0")
     stream += b"\r\n--- VT 0 (repl) ---\r\n"
     d.feed(bytes(stream))
@@ -277,9 +356,18 @@ def selftest() -> int:
     assert d.bad_crc >= 1
     assert d.vt_switches >= 2
     assert b"side-session" in d.vt[1]
+    assert d.vt_pane == (0, 1)
+    panes = d.render_panes()
+    assert "VT panes: 0 | 1" in panes
+    assert "side-session" in panes
+    assert "panes end" in panes
     joined1 = b"".join(c for n, c in followed if n == 1)
     assert b"side-session" in joined1
     assert "vt_cur=" in d.vt_status_line()
+    assert "pane=0|1" in d.vt_status_line()
+    d._vt_pane_clear()
+    assert d.vt_pane is None
+    assert "pane=off" in d.vt_status_line()
     assert crc8(b"") == 0
     assert crc8(bytes([0, 0, 0])) == 0
     print("uart_mux selftest OK", file=sys.stderr)
@@ -318,8 +406,13 @@ def main() -> int:
         pass
     demux.feed_eof()
 
-    if args.vt_status or args.vt_split or args.vt_follow:
+    if 0 <= args.vt_pane_left < VT_N and 0 <= args.vt_pane_right < VT_N:
+        demux._vt_pane_set(args.vt_pane_left, args.vt_pane_right)
+
+    if args.vt_status or args.vt_split or args.vt_follow or args.vt_panes:
         print(f"uart_mux: {demux.vt_status_line()}", file=sys.stderr)
+
+    panes_txt = demux.render_panes() if args.vt_panes else None
 
     if args.out_dir:
         args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -331,13 +424,18 @@ def main() -> int:
             for i in range(VT_N):
                 (args.out_dir / f"vt{i}").write_bytes(bytes(demux.vt.get(i, b"")))
             (args.out_dir / "vt_status.txt").write_text(demux.vt_status_line() + "\n")
+        if panes_txt is not None:
+            (args.out_dir / "vt_panes.txt").write_text(panes_txt)
         print(
             f"uart_mux: frames={demux.frames} bad_crc={demux.bad_crc} "
             f"bad_len={demux.bad_len} vt_sw={demux.vt_switches} → {args.out_dir}",
             file=sys.stderr,
         )
     elif not args.console_stdout and not args.vt_follow:
-        sys.stdout.buffer.write(bytes(demux.channels[0]))
+        if panes_txt is not None:
+            sys.stdout.write(panes_txt)
+        else:
+            sys.stdout.buffer.write(bytes(demux.channels[0]))
         for ch, name in CH_NAMES.items():
             n = len(demux.channels.get(ch, b""))
             if n:
@@ -348,6 +446,9 @@ def main() -> int:
             f"frames={demux.frames} bad_crc={demux.bad_crc} bad_len={demux.bad_len}",
             file=sys.stderr,
         )
+    elif panes_txt is not None:
+        # --vt-follow / --console-stdout already used stdout; panes → stderr
+        print(panes_txt, end="", file=sys.stderr)
     return 0 if demux.bad_crc == 0 or demux.frames > 0 else 1
 
 

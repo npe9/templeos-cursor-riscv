@@ -202,7 +202,8 @@ U0 CrashDump()
   UartStr("\n*** FAULT: ");
   UartStr(TrapCauseName(cause));
   UartStr("\n");
-  "  cause=0x%X  tval=0x%X\n", cause, tval;
+  McausePrint(cause);
+  "  tval=0x%X\n", tval;
   "  pc  = 0x%X", epc;
   if (epc)
     DbgSymLine(epc);

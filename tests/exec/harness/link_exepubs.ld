@@ -39,8 +39,8 @@ SECTIONS {
     *blob_in.o(.data)
   } > RAM
 
-  /* Host-packed full Compiler.BIN (TOSB) for LoadBuf — see RVPhase3LoadFullCompiler.
-   * Must EXCLUDE_FILE above or .data steals this section (was at 0x80003340). */
+  /* Host-packed Compiler.BIN (TOSB) — bootstrap *bytes* for RedSea stage.
+   * Live Cmp is heap Load of A:/Compiler/Compiler.BIN (G9 relocatable seed). */
   .compiler_bin 0x81000000 : {
     KEEP(*compiler_full.o(.data .data.*))
   } > RAM

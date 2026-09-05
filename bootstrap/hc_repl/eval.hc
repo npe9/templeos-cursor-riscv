@@ -377,7 +377,7 @@ U0 Help()
   UartStr("  Sys      Sys; Uptime; MemRep; IrqRep; DevRep; Cnts;\n");
   UartStr("  Term     TermSize(80,24); TermRep; TermQuery; TermHelp;\n");
   UartStr("  Tty      Tty; TtyCanon; TtyRaw; TtyEcho(1); TtyHelp;\n");
-  UartStr("  VT       Vt(1); VtDetach; VtCapture(1); VtKeys(1); VtList; VtHelp;\n");
+  UartStr("  VT       Vt(1); VtDetach; VtCapture(1); VtKeys(1); VtPane(0,1); VtList; VtHelp;\n");
   UartStr("  Log      LogInfo(\"boot\",\"msg\"); DMesg; LogClear;\n");
   UartStr("  Tab      mid-token=sym/MEM_*/path/asm{}; else 2sp; multiline ...\n");
   UartStr("  Keys     Up/Down=history  Left/Right/Home/End  Tab  ^U/^W  BS  empty ^D=eof\n");
@@ -695,6 +695,9 @@ U0 ReplEvalOne(U8 *line)
   while (*line == ' ' || *line == '\t')
     line++;
   if (!*line)
+    return;
+  // Session #define → Tab registry (thin path; no host define_table / expansion).
+  if (DefTryRegister(line))
     return;
   if (EvalAsmRun(line))
     return;

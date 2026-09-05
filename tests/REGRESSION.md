@@ -5,23 +5,22 @@ User-facing REPL guide: [docs/REPL.md](../docs/REPL.md). Test layout: [README.md
 ## How to run
 
 ```bash
-make repl-holyc-regression   # A3 HolyC honesty (memfs/language; expand toward full flip)
-make a3-flip-check           # G7 scaffolding: holyc-smoke+regression+repl-cmp → READY/NOT READY
-make repl-regression         # DEPRECATED legacy C gate (Vi/Man/Regs/…); required CI until A3
-make repl-smoke              # DEPRECATED legacy language smoke
-make ci                      # compliance + fmt-test + qemu-integration (dual-run)
-# SKIP_REPL_LEGACY=1 make qemu-integration
-# Draft (do not apply yet): docs/A3_FLIP_DRAFT.md
+make repl-holyc-regression   # primary HolyC honesty gate (CI; A3 Done)
+make a3-flip-check           # G7 readiness: holyc-smoke+regression+repl-cmp → READY/NOT READY
+make repl-regression         # DEPRECATED legacy C gate (Vi/Man/Regs/…); local only
+make repl-smoke              # DEPRECATED legacy language smoke; local only
+make ci                      # compliance + fmt-test + qemu-integration (HolyC-only honesty)
+# Follow-up: delete worry_dream (deleted) — docs/A3_FLIP_DRAFT.md
 ```
 
 `tests/scripts/run_repl_holyc_regression.sh` greps the HolyC thin-image QEMU log for
 **G6 covered** needles: Dir/Src-quit/DumpFile/Run/Man/Tab/HIST/G1 soft dbg/Sys/journal/Atoi/JIT
-+ G2 trap/Ctrl-C + G3 `gd`/`K` + **livedrv Done** (Home Ed+Run via `PutS`; `livedrv `/`LIVEDRV `).
++ G2 trap/Ctrl-C + G3 `gd`/`K` + **livedrv Done** (Home Ed+Run `6a` ToUpper; `livedrv `/`LIVEDRV `).
 Man needle uses `Man("Regs")` (not `Man("Reg")`). Bt honesty = **`Bt (trap freeze)`** after Fault
-(trap lane; live `Bt;` without freeze is UART stub). **Explicitly waived (not G7 blockers):** Fmt
-host rewrite (`fmt-test`/`fmt-check`), Demo/*.HC UART batch (`make compliance` curated six),
-ZMODEM (DumpFile+9P). Do **not** flip CI / delete `worry_dream` until `make a3-flip-check` prints
-READY and SELF_HOST G7 blockers clear.
+(trap lane; live `Bt;` without freeze is UART stub). **Explicitly waived:** Fmt host rewrite
+(`fmt-test`/`fmt-check`), Demo/*.HC UART batch (`make compliance` curated six), ZMODEM
+(DumpFile+9P). **A3 Done** — primary CI gate is `repl-holyc-regression` only; legacy
+`repl-regression` / `zmodem-smoke` are local. Follow-up: delete `worry_dream (deleted)`.
 Legacy uart livedrv insert is `150a` (was `148a` before RTS/CTS stub).
 `tests/scripts/run_repl_regression.sh` greps the legacy `repl.elf` log for Src→Vi / Man /
 editors / trap / livedrv. Failures print the missing needle and a log tail.
@@ -91,8 +90,8 @@ While fixing Src, regression also caught a second P0: HolyC `FsCreate`/`FileWrit
 | trap name/disp/vec/reentry + `0x87000100` snap | `trap.hc`/`debug.hc`/`start.hc` | **intentional bridge** (C trampoline publishes GPRs) |
 | `RuntimeRegister` as OS API | — | **done** — REPL registers **zero** C builtins into HTT_FUN |
 | `holy_rt` linked into guest (`repl.elf`) | C REPL + exec harness | **build-only OK** for AOT/oracle; **deprecated** for OS path |
-| `worry_dream_repl.c` / `0x87001xxx` | legacy `make -C bootstrap -f Makefile.repl` | **deprecated** — still C-dependent; list above |
+| `worry_dream (deleted)_repl.c` / `0x87001xxx` | legacy `make -C bootstrap -f Makefile.repl` | **deprecated** — still C-dependent; list above |
 | REPL multiline `...` Tab | Same as Ed/Vi | **fixed** — C readline used `rl_do_complete` only (empty token listed all syms); now `rl_smart_tab` (2sp indent + mid-token complete). Regression: `MLTAB_MARK` |
-| Mac-AOT `hc_repl` | `bootstrap/hc_repl` | **assert no host slots / no worry_dream link** (smoke greps sources) |
+| Mac-AOT `hc_repl` | `bootstrap/hc_repl` | **assert no host slots / no worry_dream (deleted) link** (smoke greps sources) |
 
 Do **not** paper over with checks that pass when the feature is a no-op (label-only greps, `SrcFile` without `Src`, FnSize without `>0`, editor paint text without `FileLen`/`Run`).

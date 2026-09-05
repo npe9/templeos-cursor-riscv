@@ -1,0 +1,24 @@
+$TX,"TempleOS/RISC-V HOME.DD"$
+$FG,14$P2 DolDoc core — CDoc entry stream$FG,7$
+$AN,"home"$
+
+$LK,"Help Index",A="FI:A:/Doc/HelpIndex.DD"$
+$LK,"Welcome",A="FI:A:/Doc/Welcome.DD"$
+$LK,"HelloWorld",A="FI:A:/Doc/HelloWorld.DD"$
+$LK,"DemoInPage",A="FI:A:/Demo/ToHtmlToTXTDemo/DemoInPage.DD"$
+
+$BT,"OK",LE=1$  $CB,"Notes"$  $MA,"Dir",LM="Dir;"$  $MU,"Go",LE=7$
+$DA,"riscv"$  $LS,"Adult"$
+$SP,"icon"$
+
+$TR,"Adam"$
+$ID,+2$
+  Kernel hooks
+  WinMgr / DocTerm
+$ID,-2$
+$TR-C,"Collapsed demo"$
+$ID,+2$
+  hidden until click
+$ID,-2$
+
+arrows/Pg scroll  Enter=activate  click links/trees/forms

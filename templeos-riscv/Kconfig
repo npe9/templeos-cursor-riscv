@@ -205,7 +205,7 @@ config HOST_SLOTS_BASE
 	help
 	  Fixed page for Mac-AOT REPL C↔HolyC ABI (compile/run funptrs,
 	  UART ring metadata, trapvec, editors). This is NOT board MMIO —
-	  it must stay stable while worry_dream_repl publishes slots. Board
+	  it must stay stable for board/driver MMIO contracts. Board
 	  ports that drop the transitional REPL can ignore it; Kernel OS
 	  paths prefer CONFIG_* / Hash over slots.
 

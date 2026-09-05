@@ -60,6 +60,10 @@ U0 IntCore0TimerHndlr(CTask *)
 
 I64 SysTimerRead()
 {//System timer count with overflow already handled.
+#ifdef CONFIG_ARCH_RISCV64
+  // No 8253 PIT on RISC-V ó rdtime (same CSR as GetTSC).
+  return GetTSC;
+#else
   I64 i,res;
   PUSHFD
   CLI
@@ -75,11 +79,17 @@ I64 SysTimerRead()
   LBtr(&sys_semas[SEMA_SYS_TIMER],0);
   POPFD
   return res;
+#endif
 }
 
 I64 HPET()
 { //Get high precision event timer.
+#ifdef CONFIG_ARCH_RISCV64
+  // No memory-mapped HPET at 0xFED00000 ó that load faults on QEMU virt (mtval=0xFED000F0).
+  return GetTSC;
+#else
   return *(dev.uncached_alias+HPET_MAIN_CNT)(I64 *);
+#endif
 }
 
 I64 TimeCal()
@@ -121,10 +131,16 @@ I64 TimeCal()
 
 F64 tS()
 {//Time since boot in seconds as a float.
+#ifdef CONFIG_ARCH_RISCV64
+  // Never follow cnts.HPET_freq on RV: BSS/heap can leave it nonzero, and the
+  // x86 HPET path load-faults at 0xFED000F0 (BlkRead last_time=tS -> Mount hang).
+  return ToF64(GetTSC)/ToF64(CONFIG_TIMEBASE_FREQ);
+#else
   if (cnts.HPET_freq)
     return ToF64(HPET-cnts.HPET_initial)/cnts.HPET_freq;
   else
     return SysTimerRead/ToF64(SYS_TIMER_FREQ);
+#endif
 }
 
 Bool Blink(F64 Hz=2.5)
@@ -136,12 +152,17 @@ Bool Blink(F64 Hz=2.5)
 U0 Busy(I64 ÊS)
 {//Loosely timed.
   I64 i;
+#ifdef CONFIG_ARCH_RISCV64
+  i=GetTSC+CONFIG_TIMEBASE_FREQ*ÊS/1000000;
+  while (GetTSC<i);
+#else
   if (cnts.HPET_freq) {
     i=HPET+cnts.HPET_freq*ÊS/1000000;
     while (HPET<i);
   } else
     for (i=0;i<ÊS;i++)
       PortNop;
+#endif
 }
 
 U0 SleepUntil(I64 wake_jiffy)

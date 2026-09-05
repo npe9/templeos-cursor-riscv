@@ -601,73 +601,87 @@ I64 PrsUnaryTerm(CCmpCtrl *cc,CPrsStk *ps,CMemberLst **_local_var,
   *_local_var=NULL;
   *paren_prec=PREC_NULL;
   switch (cc->token) {
-    start:
+    /* Flat unary-prefix cases — nested start:/end: under host AOT of
+     * Compiler.BIN made `break` after Lex skip the shared PrsPush/return,
+     * so guest Cmp of `*"lit"` / `*p` LexExcept'd "Missing expression". */
+    case '~':
+    case '!':
+    case '-':
+    case '*':
       if (PREC_UNARY_PRE>*max_prec)
 	*max_prec=PREC_UNARY_PRE;
       *unary_pre_prec=PREC_UNARY_PRE;
-      start:
-	case '~': i=IC_COM;		break;
-	case '!': i=IC_NOT;		break;
-	case '-': i=IC_UNARY_MINUS;	break;
-	case '*': i=IC_DEREF;		break;
-      end:
-	Lex(cc); //Skip op
-	break;
-      case '&':
-	if (Lex(cc)==TK_IDENT) {
-	  if (tmpc=cc->hash_entry) {
-	    if (tmpc->type & HTT_FUN) {
-	      tmpf=tmpc;
-	      if (!Bt(&tmpf->flags,Ff_INTERNAL)) {
-		if (Bt(&tmpf->flags,Cf_EXTERN)) {
-		  if (cc->flags&CCF_AOT_COMPILE) {
-		    if (cc->flags&CCF_ASM_EXPRESSIONS) {
-		      if (tmpex=HashFind(tmpf->str,cc->htc.hash_table_lst,
-			    HTT_EXPORT_SYS_SYM))
-			goto pu_export_sys_sym;
-		      else
-			goto pu_new_sys_sym;
-		    }
-		    LexExcept(cc,"Can't take addr of extern fun");
-		  }
-		  cc->abs_cnts.externs++;
-		  ICAdd(cc,IC_IMM_I64,
-			&tmpf->exe_addr,cmp.internal_types[RT_PTR]);
-		  ICAdd(cc,IC_DEREF,0,cmp.internal_types[RT_PTR]);
-		} else {
-		  if (cc->flags&CCF_AOT_COMPILE) {
-		    ICAdd(cc,IC_ABS_ADDR,
-			  tmpf->exe_addr,cmp.internal_types[RT_PTR]);
-		    if (cc->flags&CCF_ASM_EXPRESSIONS)
-		      cc->abs_cnts.abs_addres++;
-		  } else
-		    ICAdd(cc,IC_IMM_I64,
-			  tmpf->exe_addr,cmp.internal_types[RT_PTR]);
-		}
-		cc->abs_cnts.c_addres++;
-		Lex(cc);
-		return PE_MAYBE_MODIFIERS;
-	      }
-	    } else if (tmpc->type & HTT_EXPORT_SYS_SYM) {
-	      tmpex=tmpc;
-	      if (cc->flags&CCF_ASM_EXPRESSIONS &&
-		    !(cc->flags&CCF_AOT_COMPILE) && tmpex->type&HTF_IMM) {
-		cc->abs_cnts.c_addres++;
-		ICAdd(cc,IC_IMM_I64,
-		      tmpex->val,cmp.internal_types[RT_PTR]);
-		Lex(cc);
-		return PE_MAYBE_MODIFIERS;
-	      } else
-		goto pu_export_sys_sym;
-	    }
-	  } else if (cc->flags&CCF_ASM_EXPRESSIONS && !cc->local_var_entry)
-	    goto pu_ident_but_not_local_var;
-	}
-	i=IC_ADDR;
-	break;
-    end:
+      if (cc->token=='~')
+	i=IC_COM;
+      else if (cc->token=='!')
+	i=IC_NOT;
+      else if (cc->token=='-')
+	i=IC_UNARY_MINUS;
+      else
+	i=IC_DEREF;
+      Lex(cc); //Skip op
       PrsPush(ps,tmpc);
-      PrsPush(ps,PREC_UNARY_PRE<<16+i);
+      // Pack opcode in u16[0], prec in u16[1]. Do NOT use `PREC<<16+i`:
+      // host AOT of that form emitted (PREC<<16)+(i*0x1000) → ic_code 0x4000
+      // and OptPass012 hung on nobound switch[0x4000] for `*"lit"`.
+      PrsPush(ps,i+0x10000*PREC_UNARY_PRE);
+      return PE_UNARY_TERM2;
+    case '&':
+      if (Lex(cc)==TK_IDENT) {
+	if (tmpc=cc->hash_entry) {
+	  if (tmpc->type & HTT_FUN) {
+	    tmpf=tmpc;
+	    if (!Bt(&tmpf->flags,Ff_INTERNAL)) {
+	      if (Bt(&tmpf->flags,Cf_EXTERN)) {
+		if (cc->flags&CCF_AOT_COMPILE) {
+		  if (cc->flags&CCF_ASM_EXPRESSIONS) {
+		    if (tmpex=HashFind(tmpf->str,cc->htc.hash_table_lst,
+			  HTT_EXPORT_SYS_SYM))
+		      goto pu_export_sys_sym;
+		    else
+		      goto pu_new_sys_sym;
+		  }
+		  LexExcept(cc,"Can't take addr of extern fun");
+		}
+		cc->abs_cnts.externs++;
+		ICAdd(cc,IC_IMM_I64,
+		      &tmpf->exe_addr,cmp.internal_types[RT_PTR]);
+		ICAdd(cc,IC_DEREF,0,cmp.internal_types[RT_PTR]);
+	      } else {
+		if (cc->flags&CCF_AOT_COMPILE) {
+		  ICAdd(cc,IC_ABS_ADDR,
+			tmpf->exe_addr,cmp.internal_types[RT_PTR]);
+		  if (cc->flags&CCF_ASM_EXPRESSIONS)
+		    cc->abs_cnts.abs_addres++;
+		} else
+		  ICAdd(cc,IC_IMM_I64,
+			tmpf->exe_addr,cmp.internal_types[RT_PTR]);
+	      }
+	      cc->abs_cnts.c_addres++;
+	      Lex(cc);
+	      return PE_MAYBE_MODIFIERS;
+	    }
+	  } else if (tmpc->type & HTT_EXPORT_SYS_SYM) {
+	    tmpex=tmpc;
+	    if (cc->flags&CCF_ASM_EXPRESSIONS &&
+		  !(cc->flags&CCF_AOT_COMPILE) && tmpex->type&HTF_IMM) {
+	      cc->abs_cnts.c_addres++;
+	      ICAdd(cc,IC_IMM_I64,
+		    tmpex->val,cmp.internal_types[RT_PTR]);
+	      Lex(cc);
+	      return PE_MAYBE_MODIFIERS;
+	    } else
+	      goto pu_export_sys_sym;
+	  }
+	} else if (cc->flags&CCF_ASM_EXPRESSIONS && !cc->local_var_entry)
+	  goto pu_ident_but_not_local_var;
+      }
+      if (PREC_UNARY_PRE>*max_prec)
+	*max_prec=PREC_UNARY_PRE;
+      *unary_pre_prec=PREC_UNARY_PRE;
+      i=IC_ADDR;
+      PrsPush(ps,tmpc);
+      PrsPush(ps,i+0x10000*PREC_UNARY_PRE);
       return PE_UNARY_TERM2;
 
     start:
@@ -887,8 +901,12 @@ pu_export_sys_sym:
 	      cc->abs_cnts.externs++;
 	      ICAdd(cc,IC_IMM_I64,&tmpg->data_addr,tmpc);
 	      ICAdd(cc,IC_DEREF,0,tmpc);
-	    } else
-	      ICAdd(cc,IC_IMM_I64,tmpg->data_addr,tmpc);
+	    } else {
+	      // RV JIT: use ABS_ADDR so OptPass5 cannot coalesce an IMM address
+	      // into DEREF.arg1 (that made IC_DEREF emit `ld a0,0(x0)` / return
+	      // the address). ABS_ADDR stays a separate IC; Pass6 binds it to a reg.
+	      ICAdd(cc,IC_ABS_ADDR,tmpg->data_addr,tmpc);
+	    }
 	  }
 	  Lex(cc);
 	  if (tmpg->flags & GVF_FUN) {
@@ -1112,8 +1130,13 @@ I64 PrsUnaryModifier(CCmpCtrl *cc,CPrsStk *ps,CMemberLst **_local_var,
 U8 *LexExpression2Bin(CCmpCtrl *cc,I64 *_type=NULL)
 {//Compile cc expression. You call the code.
   U8 *res;
-  I64 size;
+  I64 size, old_flags=cc->flags;
   Bool old_trace=Btr(&cc->flags,CCf_PASS_TRACE_PRESENT);
+  /* RV: array dims / const exprs call this during AOT Cmp. With
+   * CCF_AOT_COMPILE set, OptPass emit is module-reloc oriented and
+   * Call(machine_code) of U8 name[24] hung guest Cmp of class/globals.
+   * Force JIT emit for eval-during-parse (TempleOS Call() of the blob). */
+  cc->flags&=~CCF_AOT_COMPILE;
   COCPush(cc);
   COCInit(cc);
   if (PrsExpression(cc,NULL,FALSE)) {
@@ -1123,6 +1146,7 @@ U8 *LexExpression2Bin(CCmpCtrl *cc,I64 *_type=NULL)
   } else
     res=NULL;
   COCPop(cc);
+  cc->flags=cc->flags&~CCF_AOT_COMPILE|old_flags&CCF_AOT_COMPILE;
   BEqu(&cc->flags,CCf_PASS_TRACE_PRESENT,old_trace);
   return res;
 }

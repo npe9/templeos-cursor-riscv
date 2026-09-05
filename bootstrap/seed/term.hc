@@ -305,8 +305,13 @@ U0 UartRxUnget(I64 ch)
   rhp = *(I64 *)0x87001028;
   rtp = *(I64 *)0x87001030;
   cap = *(I64 *)0x87001038;
-  if (!rx || !rhp || !rtp || cap < 2)
+  if (!rx || !rhp || !rtp || cap < 2) {
+    /* Product HolyC soft RX (hc_repl/uart.hc). Host slots are absent on
+     * repl-holyc — previously this returned without pushback and Esc ate the
+     * next byte (INSERT Enter / ':' after Esc). */
+    HcUartUnget(ch);
     return;
+  }
   rh = *(I64 *)rhp;
   rt = *(I64 *)rtp;
   prev = (rt - 1) & (cap - 1);

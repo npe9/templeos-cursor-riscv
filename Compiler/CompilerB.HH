@@ -1,5 +1,5 @@
 #help_index "Compiler"
-extern U0 CInit(Bool first);
+extern U0 CInit();
 public extern I64 ExeFile(U8 *name,I64 ccf_flags=0);
 public extern I64 ExeFile2(U8 *name,I64 ccf_flags=0);
 public extern I64 ExePrint(U8 *fmt,...);

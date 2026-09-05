@@ -11,7 +11,7 @@ Honesty gate: **[tests/REGRESSION.md](../tests/REGRESSION.md)**. Seed `MEM_*` co
 | Output | Build | Guest runtime | CI |
 |--------|-------|---------------|-----|
 | `build/repl-holyc.elf` | `make repl-holyc` | **HolyC only** — AOT blob, `start.hc` entry, no host slots | **Product** — `repl-holyc-smoke`, `repl-holyc-regression`, `bootloader-smoke` |
-| `repl.elf` | `make -C bootstrap -f Makefile.repl` | **C** (`worry_dream_repl.c` + `startup.s`) + host compiler in-guest | **Deprecated** dual-run — `repl-smoke`, `repl-regression` until [SELF_HOST.md](../docs/SELF_HOST.md) A3 |
+| `repl.elf` | — | — | **Removed** with worry_dream; use `make hc-repl` / `repl-payload` |
 
 **Mandate:** destination is HolyC built by the guest compiler — no second C runtime.
 Do not grow `jit.hc` as a parallel language. Mac `holyc-riscv` (C) stays as bootstrap
@@ -21,7 +21,7 @@ workstation tooling — see SELF_HOST.md (not “purge all C”).
 
 | Path | Kind | Category | Notes |
 |------|------|----------|-------|
-| `worry_dream_repl.c` | C (~3.6k LOC) | **→ HolyC** (Track A) | **Deprecated** legacy guest: readline, UART ring, compile slot, editor repair |
+| `worry_dream_repl.c` | — | **Deleted** | Legacy C guest removed; use `hc_repl/` |
 | `startup.s` | asm | **→ HolyC** | Replaced by `hc_repl/start.hc` `asm{_start}` on HolyC path |
 | `holy_rt.h` / `holy_rt_names.h` | C headers | **Host / AOT** | Bare-metal import resolver + oracle helpers for host `holyc-riscv`; not REPL OS APIs |
 | `linker.ld` | ld script | **Host link** | Legacy `repl.elf` sections/BSS |
@@ -53,7 +53,7 @@ See **[docs/SELF_HOST.md](../docs/SELF_HOST.md)** Track A (A0–A6) and Track B 
 | Phase | Goal |
 |-------|------|
 | **Now** | Dual-run CI: HolyC product smokes + deprecated legacy honesty |
-| **A3** | Flip honesty default to `repl-holyc`; quarantine/delete `worry_dream_repl.c` |
+| **A3** | Flip honesty default to `repl-holyc`; `worry_dream_repl.c` **deleted** |
 | **B0+** | Guest `Cmp` rebuilds Compiler/Kernel/Adam on target |
 
 ## Layout
@@ -61,7 +61,7 @@ See **[docs/SELF_HOST.md](../docs/SELF_HOST.md)** Track A (A0–A6) and Track B 
 | Path | Role |
 |------|------|
 | `Makefile.repl` | Legacy build → `repl.elf` |
-| `worry_dream_repl.c` | C guest REPL + host slots — **deprecated** |
+| `worry_dream_repl.c` | **Deleted** — use `hc_repl/` |
 | `holy_rt.h` / `holy_rt_names.h` | Host + legacy-guest AOT imports |
 | `startup.s` / `linker.ld` | Legacy boot + link |
 | `gen_seeds.py` / `gen_boot_blob.py` | Host bake tools |
