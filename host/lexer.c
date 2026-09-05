@@ -89,7 +89,30 @@ static const char *LexRealFilename(Lexer *lex) {
   return lex->filename ? lex->filename : "";
 }
 
-/* Host absolute path → TempleOS-rooted path under HOLYC_INCLUDE_ROOT (e.g. /tos/Apps/Span). */
+/* TempleOS drive / boot prefixes: `::/x` → `/x`, `A:/x` → `/x`, `:/x` → `/x`. */
+static const char *StripTempleOSPathPrefix(const char *filename) {
+  if (!filename || !filename[0]) return filename;
+  if (filename[0] == ':' && filename[1] == ':')
+    return filename + 2; /* `::/Adam` → `/Adam`; bare `::` → "" */
+  if (filename[0] == ':' && (filename[1] == '/' || filename[1] == '\\'))
+    return filename + 1; /* `:/Demo` → `/Demo` */
+  if (((filename[0] >= 'A' && filename[0] <= 'Z') ||
+       (filename[0] >= 'a' && filename[0] <= 'z')) &&
+      filename[1] == ':')
+    return filename + 2; /* `A:/Kernel` → `/Kernel` */
+  return filename;
+}
+
+static void PathSlashNormalize(char *s) {
+  for (; s && *s; s++) {
+    if (*s == '\\') *s = '/';
+  }
+}
+
+/* Host path → distribution-rooted `/…` under HOLYC_INCLUDE_ROOT.
+ * Keeps repo `tos/` in __DIR__ (e.g. `/tos/Apps/Span`) so AOT top-level Cd(__DIR__)
+ * fails fast before BlkDev mount — stripping to `/Apps/Span` hangs RedSeaCd.
+ * Relative paths are treated as already under the include root. */
 static void TempleosPathFromHost(const char *host_path, char *out, size_t out_size) {
   if (!out || out_size == 0) return;
   out[0] = '\0';
@@ -101,27 +124,33 @@ static void TempleosPathFromHost(const char *host_path, char *out, size_t out_si
   const char *root = getenv("HOLYC_INCLUDE_ROOT");
   if (root && *root) {
     size_t root_len = strlen(root);
+    const char *rest = NULL;
     while (root_len > 1 && (root[root_len - 1] == '/' || root[root_len - 1] == '\\'))
       root_len--;
-    if (strncmp(host_path, root, root_len) == 0) {
-      const char *rest = host_path + root_len;
-      if (*rest == '/' || *rest == '\\') rest++;
+    if (strncmp(host_path, root, root_len) == 0 &&
+        (host_path[root_len] == '/' || host_path[root_len] == '\\' ||
+         host_path[root_len] == '\0')) {
+      rest = host_path + root_len;
+    } else if (host_path[0] != '/' && host_path[0] != '\\' &&
+               !(((host_path[0] >= 'A' && host_path[0] <= 'Z') ||
+                  (host_path[0] >= 'a' && host_path[0] <= 'z')) &&
+                 host_path[1] == ':') &&
+               !strstr(host_path, "..")) {
+      rest = host_path;
+    }
+    if (rest) {
+      while (*rest == '/' || *rest == '\\') rest++;
       if (*rest)
         StrPrintF(out, out_size, "/%s", rest);
       else
         StrPrintF(out, out_size, "/");
-      /* Normalize backslashes for TempleOS Cd/Dir semantics. */
-      for (char *p = out; *p; p++) {
-        if (*p == '\\') *p = '/';
-      }
+      PathSlashNormalize(out);
       return;
     }
   }
 #endif
   StrPrintF(out, out_size, "%s", host_path);
-  for (char *p = out; *p; p++) {
-    if (*p == '\\') *p = '/';
-  }
+  PathSlashNormalize(out);
 }
 
 /* KernelA `#define __DIR__ #exe{StreamDir;}` — host skips #exe, so expand builtins here. */
@@ -251,7 +280,9 @@ static bool LoadIncludeFile(Compiler *cc,
                             size_t resolved_size) {
   if (!filename || !out_src || !resolved_path) return false;
 
-  if (filename[0] == ':' && filename[1] == ':' && filename[2] == '/') filename += 2;   // `::/Adam/…`: the boot drive's root
+  /* `::/Adam/…`, `A:/Kernel/…`, `:/Demo/…` → distribution-rooted absolute. */
+  filename = StripTempleOSPathPrefix(filename);
+
   if (IsAbsolutePath(filename)) {
     // TempleOS paths are rooted at the distribution ("/Kernel/KernelA.HH"): HOLYC_INCLUDE_ROOT
     // names that directory on the host (the exec scripts point it at the repo root).
@@ -259,12 +290,23 @@ static bool LoadIncludeFile(Compiler *cc,
     const char *root = getenv("HOLYC_INCLUDE_ROOT");
     if (root && *root) {
       char rooted[MAX_INCLUDE_PATH];
+      char tos_rooted[MAX_INCLUDE_PATH];
       int w = StrPrintF(rooted, sizeof(rooted), "%s%s", root, filename);
       if (w > 0 && w < (int)sizeof(rooted)) {
         if (TryIncludeInDirectory(NULL, rooted, resolved_path, resolved_size, out_src, out_size)) return true;
         if (!EndsWith(filename, ".HC") && !EndsWith(filename, ".HH")) {
           char tmp2[MAX_INCLUDE_PATH];
           int w2 = StrPrintF(tmp2, sizeof(tmp2), "%s.HC", rooted);
+          if (w2 > 0 && w2 < (int)sizeof(tmp2) && TryIncludeInDirectory(NULL, tmp2, resolved_path, resolved_size, out_src, out_size)) return true;
+        }
+      }
+      /* ISO trees live under tos/ on the host (`::/Apps` → $ROOT/tos/Apps). */
+      w = StrPrintF(tos_rooted, sizeof(tos_rooted), "%s/tos%s", root, filename);
+      if (w > 0 && w < (int)sizeof(tos_rooted)) {
+        if (TryIncludeInDirectory(NULL, tos_rooted, resolved_path, resolved_size, out_src, out_size)) return true;
+        if (!EndsWith(filename, ".HC") && !EndsWith(filename, ".HH")) {
+          char tmp2[MAX_INCLUDE_PATH];
+          int w2 = StrPrintF(tmp2, sizeof(tmp2), "%s.HC", tos_rooted);
           if (w2 > 0 && w2 < (int)sizeof(tmp2) && TryIncludeInDirectory(NULL, tmp2, resolved_path, resolved_size, out_src, out_size)) return true;
         }
       }
@@ -1256,6 +1298,9 @@ static int LexString(Lexer *lex) {
         case 'n': buf[len++] = '\n'; lex->ptr++; lex->col++; break;
         case 't': buf[len++] = '\t'; lex->ptr++; lex->col++; break;
         case 'r': buf[len++] = '\r'; lex->ptr++; lex->col++; break;
+        /* Host extension: C-style \b = BS (0x08). TempleOS Lex.HC omits it;
+         * without this, "\b \b" / '\b' become literal 'b' and UART rubout echo breaks. */
+        case 'b': buf[len++] = '\b'; lex->ptr++; lex->col++; break;
         case '\\': buf[len++] = '\\'; lex->ptr++; lex->col++; break;
         case '"': buf[len++] = '"'; lex->ptr++; lex->col++; break;
         case '\'': buf[len++] = '\''; lex->ptr++; lex->col++; break;
