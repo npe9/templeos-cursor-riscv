@@ -135,17 +135,22 @@ public Bool AutoComplete(Bool val = OFF)
 
 public U0 Refresh(I64 cnt = 1, Bool force = FALSE)
 {
-  //Soft Adam Refresh — present FB (and WinMgr paint when ready). No 30fps wait.
+  //Soft Adam Refresh — Yield so stock AnimateTask / SongTask share the CPU.
+  // Full RVWinMgrRefresh from Animate while Fs is mid-DirContextNew/Cd/FileWrite
+  // hung stock Span() ESC save (UART last line: PopUpFileName; never FileWrite
+  // return). WinMgrTask / explicit present still paint; force=TRUE = old path.
   I64 i;
-  no_warn force;
   if (cnt < 1)
     cnt = 1;
   for (i = 0; i < cnt; i++) {
-    if (rv_winmgr.ready)
-      RVWinMgrRefresh;
-    else
-      RVGrRefresh;
+    if (force) {
+      if (rv_winmgr.ready)
+        RVWinMgrRefresh;
+      else
+        RVGrRefresh;
+    }
     rv_refresh_hits++;
+    Yield;
   }
 }
 
@@ -164,11 +169,15 @@ I64 rv_popup_ok_hits;
 I64 rv_popup_file_hits;
 public Bool PopUpOk(U8 *header = NULL, U8 *footer = NULL)
 {
-  //TempleOS PopUpOk shape → RVPopUpOk when WinMgr up; else UART ack.
+  //TempleOS PopUpOk blocks until dismissed. RV open is non-blocking — auto-resolve
+  // so stock Apps (Span) can reach GetMsg without a stuck modal focus.
   no_warn footer;
   rv_popup_ok_hits++;
-  if (rv_winmgr.ready)
-    return RVPopUpOk(header);
+  if (rv_winmgr.ready) {
+    if (RVPopUpOk(header))
+      RVPopUpResolve(1);
+    return TRUE;
+  }
   if (header)
     Print("PopUpOk soft: %s\n", header);
   return TRUE;

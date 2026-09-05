@@ -39,7 +39,8 @@ U0 Help()
   UartStr("  Timer    Man(\"Clint\");  // SetTrap → TrapInit → TimerArm → wfi\n");
   UartStr("  Files    Dir; ZmodemSend(\"boot.hc\"); FsChanges; DumpChanges;\n");
   UartStr("  Keys     Up/Down=history  Tab  ^U=kill  ^W=werase  BS/DEL  Ctrl-C\n");
-  UartStr("  Soft     SafeMode; Recover; Reset; HardReset; Halt;  Man(\"SafeMode\");\n");
+  UartStr("  Soft     SafeMode; Recover; Reset; Halt;  Man(\"SafeMode\");\n");
+  UartStr("  QEMU     Quit; Exit; Fail; HardReset;  // SiFive test @ MEM_TEST\n");
 }
 LogInfo("boot", "HolyC primitives loaded");
 UartStr("[boot] HolyC primitives loaded. Dir; to list, Run/Edit to change them live.\n");

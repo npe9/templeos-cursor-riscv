@@ -29,8 +29,8 @@ Related: [UART.md](UART.md) (primer + XON/XOFF), [REPL.md](REPL.md), [DEBUGGER.m
 
 | Guest | What it is | Console strength |
 |-------|------------|------------------|
-| **Legacy** `bootstrap/repl.elf` (`worry_dream_repl.c`) | Deprecated C guest + full seed blob | Richest TTY/readline/dbg/export; **required** CI until A3 flip |
-| **Product** `repl-holyc` / bootloader-repl | HolyC AOT; zero host slots | UART + memfs + DumpFile; readline/trap/Regs **catching up** (G1–G5) |
+| **Product** `repl-holyc` / `hc-repl` / bootloader-repl | HolyC AOT; zero host slots | Classic UART REPL (`> `); memfs + DumpFile; readline/trap/Regs on HolyC path |
+| **Deleted** legacy `worry_dream_repl.c` | C guest removed (A3) | Use `make hc-repl`; do not resurrect |
 | **Kernel plat / phase3** | HolyC kernel plat / StartOS subset | Print/oracle UART; not the REPL console stack |
 | **WinMgr / FB** | `BOARD_FB.md` | Dual-console: FB + **UART HolyC ExePutS REPL** (`RVWinSerial`); CrashMon on fault |
 

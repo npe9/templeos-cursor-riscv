@@ -172,6 +172,7 @@ Seed helper: `NinepReadPath`. Kernel: `NinePClientReadPath` /
 
 `NineExport("Home/a/b.hc")` → share path `Home/a/b.hc` with dirs created.
 `NineExportAs(local, "n.hc")` writes basename `n.hc` at share root.
+Drive prefixes (`A:`, `::`) are stripped for the share name — see [PATHS.md](PATHS.md).
 
 ### Nested dirs / remove (high level)
 

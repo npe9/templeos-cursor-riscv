@@ -111,5 +111,6 @@
 #include "RVWinSerial" // UART TTY + crash mon beside WinMgr (after rv_winmgr glbls)
 #include "RVTextBase" // TextChar/TextPrint portable (DocRecalc / draw_it)
 #include "RVPhase3.HH"  // phase-3 forward decls (bodies after Compiler_RV_Body in phase3 demo)
+#include "RVThinLoader.HH" // G9 thin-loader handoff decls (body in thin-loader demo)
 #include "RVKMain"   // RVKMain last — may call RVSysGrInit / RVSysWinInit
 #exe {KCfgDel(kernel_cfg);};

@@ -196,7 +196,7 @@ U0 ReplRedrawLine(U8 *buf, I64 n)
     g_rl_cur = n;
   i = n;
   while (i > g_rl_cur) {
-    PutCh('\b');
+    PutCh(8);
     i--;
   }
 }

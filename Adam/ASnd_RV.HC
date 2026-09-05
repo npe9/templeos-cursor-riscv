@@ -61,10 +61,11 @@ public U0 MusicSettingsRst()
 
 public U0 Play(U8 *st, U8 *words = NULL)
 {
-  //Soft Play — count only; no note synthesis on RV lite.
+  //Soft Play — count only; Yield so stock SongTask while(TRUE) cooperates.
   no_warn st;
   no_warn words;
   rv_snd_play_hits++;
+  Yield;
 }
 
 public U0 RVSndNote(I8 ona = 0)
@@ -72,5 +73,18 @@ public U0 RVSndNote(I8 ona = 0)
   //Soft ona probe for Psalmody (stock Snd in KMisc is PC-speaker OutU8 no-op on RV).
   no_warn ona;
   rv_snd_ona_hits++;
+}
+
+public U8 *GodWordStr(I64 bits = 17)
+{
+  //Soft Adam/GodWordStr — Psalmody JukeBox reward text.
+  no_warn bits;
+  return StrNew("God");
+}
+
+public U8 *GodSongStr()
+{
+  //Soft Adam/GodSongStr — Psalmody random song insert.
+  return StrNew("5qC");
 }
 #endif

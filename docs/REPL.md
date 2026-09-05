@@ -11,39 +11,27 @@ syncconfig`) matches the active Kconfig board — CI default is **virt**. Flip b
 
 ## Run
 
-**Product paths (HolyC-only guest)** — see [SELF_HOST.md](SELF_HOST.md):
+**One true command — classic UART HolyC REPL** (no C guest; WinMgr/FB Term is a different path):
 
 ```bash
-make                         # host holyc-riscv (bootstrap AOT; stays C)
-# A2 guest Cmp compile REPL (Kernel+Compiler_RV ExePutS):
-make repl-cmp && qemu-system-riscv64 -M virt -m 128M -bios none -kernel build/repl-cmp.elf -nographic
-make repl-cmp-smoke
-# Memfs/Dir honesty bridge (ExePutS→thin Jit; do not grow jit.hc):
-make repl-holyc
-qemu-system-riscv64 -M virt -bios none -kernel build/repl-holyc.elf -nographic
-make repl-holyc-smoke
-make repl-holyc-regression
-make bootloader-smoke        # split HolyC boot + payload
+make hc-repl          # same as: make repl-holyc
+qemu-system-riscv64 -M virt -m 128M -bios none -kernel build/repl-holyc.elf -nographic
+# Expect: boot banner → Help → prompt "> "  (type 1+2; → ans=0x…=3)
 ```
 
-**Deleted legacy C guest** (`worry_dream_repl.c`) — use `make repl-holyc` / `hc-repl`
-(A3 Done; CI honesty = HolyC path above). See [SELF_HOST.md](SELF_HOST.md).
+Aliases: `build/hc_repl.elf` ≡ `build/repl-holyc.elf`. Smoke/regression:
+`make hc-repl-smoke` / `make repl-holyc-regression`. Split boot:
+`make bootloader-repl` / `bootloader-smoke`. Guest Cmp converge (A2):
+`make repl-cmp` → `build/repl-cmp.elf`. See [SELF_HOST.md](SELF_HOST.md).
 
-```bash
-make                         # host holyc-riscv (needed by some seeds / fmt bridges)
-make repl-blob               # rebuild boot runtime snapshot (after editing seed/*.hc)
-cd bootstrap
-make clean && make -f Makefile.repl
-qemu-system-riscv64 -M virt -bios none -kernel repl.elf -nographic
-# Default QEMU virt RAM is 128MiB — enough (memfs @ 0x87800000). make -f Makefile.repl run
-```
+Legacy C guest (`worry_dream_repl.c`) is **deleted**; `make repl-smoke` /
+`repl-regression` exit with a redirect to the HolyC targets above.
 
-Boot loads a **prebuilt HolyC snapshot** (`boot_blob_embed.h`, built by `make repl-blob` /
-`bootstrap/gen_boot_blob.py`) via one `run_source` of the concatenated seeds — not
-`Run("mem.hc")` per file. Individual seeds land in a hierarchical memfs (`Lib/print.hc`,
-`Tutorials/A01_RV64I.hc`, …). Bare names (`Run("print.hc")`, `Cat("boot.hc")`) still
-resolve while basenames stay unique. The generator AOT-validates the concat with
-`holyc-riscv` when available (`bootstrap/boot_runtime.bin`).
+Memfs seeds (`Lib/print.hc`, `Tutorials/…`, …) embed into the HolyC AOT guest
+via `bootstrap/hc_repl/` (`gen_embed.py`). Bare names (`Run("print.hc")`,
+`Cat("boot.hc")`) still resolve while basenames stay unique. After editing
+`bootstrap/seed/*.hc`, rebuild with `make hc-repl` (optional seed-concat helper:
+`make repl-blob`).
 
 ### Memfs layout
 
@@ -60,7 +48,9 @@ resolve while basenames stay unique. The generator AOT-validates the concat with
 ```
 
 `Dir;` lists the current directory (subdirs as `name/`). `Cd("Tutorials");` `Pwd;`
-`MkDir("Home/Work");` (alias of TempleOS `DirMk`). Kernel/Drv is not in this REPL tree.
+(`Pwd` prints `::/Tutorials/` — TempleOS boot-root form; `Cd` also accepts
+`::/Tutorials`, `A:/Home`, `~/Work`). `MkDir("Home/Work");` (alias of TempleOS `DirMk`).
+Kernel/Drv is not in this REPL tree. Full dual-namespace map: [PATHS.md](PATHS.md).
 
 Compile errors print as `file:line:col: error: …` (host `holyc-riscv` and the UART REPL).
 `ErrGo;` opens the preferred editor on the last error site.
@@ -68,44 +58,36 @@ Compile errors print as `file:line:col: error: …` (host `holyc-riscv` and the 
 From repo root:
 
 ```bash
-make repl-cmp-smoke          # A2: guest Compiler_RV ExePutS UART loop
-make repl-holyc-smoke        # HolyC memfs/Dir bridge smoke
+make hc-repl-smoke           # alias: repl-holyc-smoke
 make repl-holyc-regression   # primary HolyC honesty gate (CI)
+make repl-cmp-smoke          # A2: guest Compiler_RV ExePutS UART loop
 make bootloader-smoke        # HolyC split-boot product path
-make repl-smoke              # deprecated legacy C guest (local only)
-make repl-regression         # deprecated legacy honesty (local only)
 ```
 
 See [tests/REGRESSION.md](../tests/REGRESSION.md) for what “PASS” must mean. Local emulator
 invocation for the harness is documented in [CI.md](CI.md) only.
 
-### Temporary Mac-AOT guest (`hc_repl`)
+### Thin guest note (`bootstrap/hc_repl`)
 
-```bash
-make hc-repl
-make hc-repl-smoke
-```
-
-Bridge only — **do not** add language features to `bootstrap/hc_repl/jit.hc`. Destination:
-guest `Compiler_RV` via **`make repl-cmp`** ([COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md),
-[SELF_HOST.md](SELF_HOST.md) A2). Remaining C in **deprecated** `worry_dream_repl.c`
-(readline, UART drain, host compile slot, …) blocks the self-host story — migrate off it
-in A3, not because Mac `holyc-riscv` is going away. Host slots / `RuntimeRegister` as OS
-API: kill toward HolyC seeds / `ExePutS` — [MULTIARCH.md](MULTIARCH.md) §2.
+**Do not** add language features to `jit.hc`. Interactive compile destination is guest
+`Compiler_RV` via **`make repl-cmp`** ([COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md),
+[SELF_HOST.md](SELF_HOST.md)). Thin `repl-holyc` keeps ExePutS→`JitTry` for memfs/Dir
+honesty only.
 
 ## Boot welcome and history
 
 On start, `boot.hc` prints `[boot] HolyC primitives loaded…` then `Help;` — a short
 capability overview (eval, editors, Man, MemMap/Regs, asm, timer, files, keys, soft
-`Reset;`). Type `Help;` again anytime. To leave a session, use guest `Reset;` (re-enter boot)
-or your platform’s normal halt/reset; do not treat host-emulator key sequences as product UI.
+`Reset;`). Type `Help;` again anytime. To leave a QEMU virt session cleanly, use guest
+`Quit;` / `Exit;` (SiFive test PASS @ `MEM_TEST` → host exit 0); soft `Reset;` only
+re-enters Boot. Prefer guest Quit over host-emulator key sequences as product UI.
 
 Readline history is **preloaded** (oldest→newest) so **Up** walks demos first:
 
 `Help;` → `1+2*3;` → `Man("Clint");` → `Man("Print");` → `Src("Dir");` → `MemMap;` →
 `Regs;` → `Dir;` → `Cat("boot.hc");` → asm/`Reg("a7")` → `Uf("Print");` → `Fmt("boot.hc");`
 
-(Seed lives in C `hist_seed()` in `worry_dream_repl.c`; banner text in `bootstrap/seed/boot.hc`.)
+(History seed: `RlHistSeed` in `bootstrap/seed/readline.hc`; banner in `bootstrap/seed/boot.hc`.)
 
 **Up/Down** recall whole **compile units**, not individual physical lines: a multi-line
 function entered across several Enters is one history entry (embedded newlines). While a unit
@@ -181,9 +163,10 @@ More: [COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md) (asm section).
 
 ## Honesty
 
-- Legacy `repl.elf` still uses **host slots** (`0x87001xxx`) for compile/run, Callers, MemMap, Regs, traps, etc. Inventory: [REGRESSION.md](../tests/REGRESSION.md).
+- Product path is HolyC-only (`make hc-repl` / `repl-holyc`) — **no** `0x87001xxx` host slots.
 - Graphics / WinMgr are **not** this UART REPL — use `make kernel-fb-smoke` / `kernel-win-smoke` ([BOARD_FB.md](../templeos-riscv/BOARD_FB.md)).
 - Full DolDoc / mouse / net are not implemented.
+- ZMODEM embed on thin image waived (DumpFile + virtio-9p); interactive FunPick still partial.
 
 ## Related
 

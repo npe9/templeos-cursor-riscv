@@ -76,6 +76,13 @@ I64 main()
   Print("RVWinMgr interactive: kernel ok\n");
   RVMountRAMDisk('A', 4096);
   FileWrite("A:/WINDIR.TXT", "win soft dir\n", 13);
+  // Stage PersonalMenu under A:/Adam before DemoDesktop RVKSpawn (stock path).
+  
+  {
+    U8 *menu_dd = "Win {\n" "  TileHorz(,1);\n" "  TileVert(,2);\n" "  WinMax(,3);\n" "  Close(,4);\n" "}\n" "Help {\n" "  About(,5);\n" "  Help(,6);\n" "  FormDemo(,7);\n" "  CtrlsDemo(,8);\n" "}\n";
+    DirMk("A:/Adam");
+    FileWrite("A:/Adam/PersonalMenu.DD", menu_dd, StrLen(menu_dd));
+  }
   Print("RVWinMgr interactive: mount ok\n");
   Print("RVWinMgr interactive: CInit...\n");
 #ifndef HOLYC_AOT_NO_COMPILER_BODY

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Psalmody API + host $IB staff embed (Note2Ona/Menu/Tempo + IbStaffInit from fixture bins).
+# Stock Apps/Psalmody Load + WinMgr GetMsg live (Note2Ona/Menu/Tempo + $IB staff + live notes).
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -43,7 +43,7 @@ fi
 
 cp "$T/psalmody.elf" "$OUTDIR/psalmody.elf"
 
-out="$($TIMEOUT 60 "$QEMU" -M virt -m 128M -bios none -kernel "$T/psalmody.elf" \
+out="$($TIMEOUT 120 "$QEMU" -M virt -m 128M -bios none -kernel "$T/psalmody.elf" \
   -device ramfb -display none -serial stdio </dev/null 2>&1 | tr -d '\r')"
 
 if ! printf '%s\n' "$out" | grep -qF "$EXPECT_PREFIX"; then
@@ -56,6 +56,7 @@ line="$(printf '%s\n' "$out" | grep -F "$EXPECT_PREFIX" | tail -1)"
 if printf '%s\n' "$out" | grep -qE 'RVPsalmody .* FAIL'; then
   echo "FAIL kernel-psalmody smoke — guest FAIL:" >&2
   echo "  got: $line" >&2
+  printf '%s\n' "$out" | grep -E 'RVPsalmody' | head -10 | sed 's/^/  got: /' >&2
   exit 1
 fi
 if ! printf '%s\n' "$line" | grep -qE 'ona=51'; then
@@ -68,6 +69,12 @@ if ! printf '%s\n' "$line" | grep -qE 'ib=3'; then
   echo "  got: $line" >&2
   exit 1
 fi
+if ! printf '%s\n' "$out" | grep -qE 'RVPsalmody live ok live=[1-9]'; then
+  echo "FAIL kernel-psalmody smoke — expected live ok:" >&2
+  printf '%s\n' "$out" | grep -E 'RVPsalmody live' | head -5 | sed 's/^/  got: /' >&2
+  exit 1
+fi
 
-echo "Kernel-psalmody smoke: OK ($line)"
+live="$(printf '%s\n' "$out" | grep -E 'RVPsalmody live ok' | tail -1)"
+echo "Kernel-psalmody smoke: OK ($line | $live)"
 exit 0

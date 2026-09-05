@@ -54,7 +54,9 @@ U0 CrashGetLine(U8 *buf, I64 max)
     if (ch == 8 || ch == 127) {
       if (i > 0) {
         i--;
-        UartStr("\b \b");
+        PutCh(8);
+        PutCh(' ');
+        PutCh(8);
       }
       continue;
     }
@@ -170,7 +172,7 @@ U0 CrashHelp()
   UartStr("    go|cont|q        leave monitor → abort eval to >\n");
   UartStr("    reboot|reset     soft Boot;  hard|hardreset  test finisher\n");
   UartStr("  HolyC: CrashDump; CrashMon; Md(a); Mw(a,v); Man(\"CrashMon\");\n");
-  UartStr("  Soft:  SafeMode; Recover; Reset; HardReset;  Man(\"Debugger\");\n");
+  UartStr("  Soft:  SafeMode; Recover; Reset; HardReset; Quit;  Man(\"Debugger\");\n");
   UartStr("  FB:    RVWinSerial + RVCrashMon (help/regs/bt/md/mw/fault/crash)\n");
   UartStr("         while WinMgr — BOARD_FB.md / docs/CONSOLE.md\n");
 }

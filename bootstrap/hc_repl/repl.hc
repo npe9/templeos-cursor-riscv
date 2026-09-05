@@ -230,7 +230,7 @@ U0 ReplReadLine()
     if (ch == KEY_LEFT) {
       if (cur > 0) {
         g_rl_cur = cur - 1;
-        PutCh('\b');
+        PutCh(8);
       }
       continue;
     }
@@ -243,7 +243,7 @@ U0 ReplReadLine()
     }
     if (ch == KEY_HOME) {
       while (g_rl_cur > 0) {
-        PutCh('\b');
+        PutCh(8);
         g_rl_cur--;
       }
       continue;
@@ -666,6 +666,16 @@ I64 ReplMain()
   JitAdd("BreakArm", &BreakArm, 0, 1);
   JitAdd("BreakDisarm", &BreakDisarm, 0, 1);
   JitAdd("OnTrap", &OnTrap, 3, 0);
+  // SiFive test finisher @ MEM_TEST (QEMU virt): Quit/Exit/PowerOff=PASS,
+  // Fail=FAIL, HardReset=RESET; soft Reset=Boot re-entry; Halt=wfi park.
+  JitAdd("TestFinisher", &TestFinisher, 1, 1);
+  JitAdd("Quit", &Quit, 0, 1);
+  JitAdd("Exit", &Exit, 0, 1);
+  JitAdd("PowerOff", &PowerOff, 0, 1);
+  JitAdd("Fail", &Fail, 0, 1);
+  JitAdd("Reset", &Reset, 0, 1);
+  JitAdd("HardReset", &HardReset, 0, 1);
+  JitAdd("Halt", &Halt, 0, 1);
   TrapUartSoftDrain = &HcTrapUartSoftDrain;
   // G2: TrapInitOnce on Fault/Break/SetTrap/BreakArm — not at boot (mtvec wedge).
   // CONSOLE #9: bind CrashOnTrap by fn ptr (no mtvec); TrapInit keeps it if g_trap_fn set.

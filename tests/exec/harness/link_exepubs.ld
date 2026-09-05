@@ -39,8 +39,10 @@ SECTIONS {
     *blob_in.o(.data)
   } > RAM
 
-  /* Host-packed Compiler.BIN (TOSB) — bootstrap *bytes* for RedSea stage.
-   * Live Cmp is heap Load of A:/Compiler/Compiler.BIN (G9 relocatable seed). */
+  /* Optional host-packed Compiler.BIN (TOSB) — last-resort bootstrap *bytes*.
+   * Default phase3 smoke ships seed on RedSea virtio img (omit compiler_full.o).
+   * Live Cmp is heap Load of A:/Compiler/Compiler.BIN (G9 relocatable seed).
+   * PHASE3_LINK_COMPILER_BIN=1 links compiler_full.o into this section. */
   .compiler_bin 0x81000000 : {
     KEEP(*compiler_full.o(.data .data.*))
   } > RAM

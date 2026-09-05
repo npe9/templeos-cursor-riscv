@@ -1,16 +1,18 @@
 // RVPhase3.HC — TempleOS Boot.DD phase 3 on RISC-V.
 // x86: Load("/Compiler/Compiler") → ExeFile("StartOS") → SrvTaskCont.
 // RV (P3 intermediate — see templeos-riscv/COMPILER_RV.md):
-//   1) Stage host-seed Compiler.BIN (ELF @0x81000000 bytes) → A:/Compiler/Compiler.BIN →
+//   1) Prefer A:/Compiler/Compiler.BIN already on RedSea (virtio seed img) →
 //      heap Load() → live Cmp/ExePutS (G9 relocatable seed; no in-image Body).
+//      Optional last-resort: ELF .compiler_bin @0x81000000 bytes → FileWrite →A:.
 //   2) Guest MakeOS: loaded Cmp → Tiny.BIN → Load → Call.
 //   3) Guest Runtime: Cmp Seed/Svc/Kern + Adam/StartOS.BIN (HolyC modules on A:).
 //   4) StartOS primarily Loads those guest BINs (not host-staged ExeFile strings).
-// Residual host AOT (G9): phase3 ELF scaffolding + pack_tosb Compiler.BIN seed
-// linked at 0x81000000 as bootstrap *bytes* (→A:). Live Cmp is heap Load() of
-// A:/Compiler/Compiler.BIN (host AOT is PC-rel — relocatable; no fixed-VMA
-// LoadPass). Full Menu_RV U8[] embed dropped; soft P6 stages Menu_RV_Guest
-// via RVAdamLiteMenuSrc. AdamCore: guest Cmp→Load→Call FileWrite only.
+// Residual host AOT (G9): phase3 ELF scaffolding + pack_tosb Compiler.BIN +
+// Kernel.BIN probes on RedSea img (ELF .compiler_bin optional). Live Cmp is
+// heap Load() of A:/Compiler/Compiler.BIN (PC-rel — relocatable). Kernel.BIN
+// seed is FileFind+Load early (before Cmp); Runtime prefers RedSea seed over
+// guest Cmp rebuild. Full Menu_RV U8[] embed dropped; soft P6 stages
+// Menu_RV_Guest via RVAdamLiteMenuSrc. AdamCore: guest Cmp→Load→Call FileWrite.
 //
 // Define RV_PHASE3_LOADED_CMP_ONLY in the demo (no Compiler_RV_Body.PRJ).
 // Cmp below forwards to HashFind("Cmp") after LoadFullCompiler.
@@ -23,6 +25,7 @@ Bool rv_phase3_hostbin_ok = FALSE;
 Bool rv_phase3_fullcmp_ok = FALSE;
 Bool rv_phase3_makeos_ok = FALSE;
 Bool rv_phase3_runtime_ok = FALSE;
+Bool rv_phase3_kernel_seed_ok = FALSE;
 I64 (*rv_phase3_loaded_cmp)(U8 *filename, U8 *map_name, U8 *out_name, U8 mapfile_drv_let) = NULL;
 #ifdef RV_PHASE3_LOADED_CMP_ONLY
 I64 Cmp(U8 *filename, U8 *map_name = NULL, U8 *out_name = NULL, U8 mapfile_drv_let = 0)
@@ -114,7 +117,7 @@ U0 RVPhase3DumpLiteScalar(CBinFile *bfh)
     else
       code = tmpex->val;
     RVPhase3UartHex64("RVPhase3: abs dump Init=0x", code(I64));
-    for (j = 0; j < 12; j++) {
+    for (j = 0; j < 16; j++) {
       abs_val = 0;
       MemCpy(&abs_val, code + j * 4, 4);
       RVPhase3UartHex64("RVPhase3: abs dump Init_word=", abs_val & 0xFFFFFFFF);
@@ -190,6 +193,53 @@ U8 *RVPackTOSB(U8 *code, I64 code_len, I64 *sz_out)
 Bool RVPhase3LoadBin();
 Bool RVPhase3LoadHostBin();
 Bool RVPhase3LoadFullCompiler();
+Bool RVPhase3ProbeSeedKernel()
+{
+  // G9: after virtio RedSea mount, prove host-staged A:/Kernel/Kernel.BIN
+  // before Cmp. Growing seed (KernelProbe→42, KernelEntry→0x4B45 via
+  // KernelInitLite heap+FileWrite), not full Kernel_RV — FileFind+Load+handoff
+  // toward thin loader that replaces Mac phase3.elf as the forever scaffold.
+  CBinFile *bfh;
+  I64 r;
+  if (rv_phase3_kernel_seed_ok)
+    return TRUE;
+  if (!FileFind("A:/Kernel/Kernel.BIN")) {
+    RVPhase3Uart("RVPhase3: RedSea Kernel.BIN seed missing (FileFind).\n");
+    return FALSE;
+  }
+  RVPhase3Uart("RVPhase3: RedSea Kernel.BIN seed FileFind OK; Load...\n");
+  bfh = Load("A:/Kernel/Kernel.BIN", LDF_JUST_LOAD | LDF_SILENT);
+  if (!bfh || bfh->bin_signature != BIN_SIGNATURE_VAL) {
+    RVPhase3Uart("RVPhase3: RedSea Kernel.BIN seed Load FAILED.\n");
+    return FALSE;
+  }
+  r = RVPhase3CallExport("KernelProbe");
+  if (r != 42) {
+    RVPhase3UartI64("RVPhase3: RedSea Kernel.BIN KernelProbe FAILED r=", r);
+    return FALSE;
+  }
+  r = RVPhase3CallExport("KernelEntry");
+  if (r != 0x4B45) {
+    RVPhase3UartI64("RVPhase3: RedSea Kernel.BIN KernelEntry FAILED r=", r);
+    return FALSE;
+  }
+  if (!FileFind("A:/Kernel/ENTRY.OK")) {
+    RVPhase3Uart("RVPhase3: RedSea Kernel.BIN ENTRY.OK missing (InitLite).\n");
+    return FALSE;
+  }
+  r = RVPhase3CallExport("KernelHeapProbe");
+  if (r != 64) {
+    RVPhase3UartI64("RVPhase3: RedSea Kernel.BIN KernelHeapProbe FAILED r=", r);
+    return FALSE;
+  }
+  FileWrite("A:/Kernel/SEED.OK", "OK", 2);
+  rv_phase3_kernel_seed_ok = TRUE;
+  RVPhase3Uart("RVPhase3: RedSea Kernel.BIN seed FileFind+Load OK (KernelProbe=42).\n");
+  RVPhase3Uart("RVPhase3: RedSea Kernel.BIN KernelEntry handoff OK (0x4B45).\n");
+  RVPhase3Uart("RVPhase3: RedSea Kernel.BIN InitLite OK (ENTRY.OK + HeapProbe=64).\n");
+  return TRUE;
+}
+
 Bool RVPhase3LoadCompiler()
 {
 #ifdef RV_PHASE3_LOADED_CMP_ONLY
@@ -365,10 +415,10 @@ Bool RVPhase3LoadFullCompiler()
   //Load full Compiler_RV TOSB (97 imports); CInit + loaded ExePutS as live JIT.
   // G9: prefer RedSea A:/Compiler/Compiler.BIN via heap Load() — host AOT is
   // PC-rel (auipc), so the seed is relocatable (no IET_ABS_ADDR). Linked
-  // 0x81000000 remains bootstrap byte source until a RedSea image ships the seed.
+  // 0x81000000 is optional last-resort byte source (PHASE3_LINK_COMPILER_BIN).
   CBinFile *src, *bfh, *red;
   CHashExport *tmpex, *tmpex_eps, *tmpex_cmp;
-  I64 n, val, sz, red_sz = 0, cinit_addr, exeps_addr;
+  I64 n, val, sz = 0, red_sz = 0, cinit_addr, exeps_addr;
   U8 *probe, *red_buf = NULL;
   Bool prefer_redsea = FALSE, have_linked = FALSE, used_reloc = FALSE;
   if (rv_phase3_fullcmp_ok)
@@ -378,7 +428,7 @@ Bool RVPhase3LoadFullCompiler()
     return FALSE;
 #endif
   src = 0x81000000(CBinFile *);
-  // link_exepubs.ld .compiler_bin — optional once RedSea already has matching seed.
+  // link_exepubs.ld .compiler_bin — optional; smoke default omits compiler_full.o.
   if (src->bin_signature == BIN_SIGNATURE_VAL) {
     sz = src->file_size;
     if (sz >= sizeof(CBinFile) && sz <= 0x400000)
@@ -404,7 +454,7 @@ Bool RVPhase3LoadFullCompiler()
     }
     FileWrite("A:/Compiler/Compiler.BIN", src, sz);
     FileWrite("A:/Compiler/FULLBIN.MARK", "FULL", 4);
-    RVPhase3Uart("RVPhase3: staged A:/Compiler/Compiler.BIN (RedSea host seed).\n");
+    RVPhase3Uart("RVPhase3: staged A:/Compiler/Compiler.BIN (ELF .compiler_bin fallback).\n");
   } else {
     FileWrite("A:/Compiler/FULLBIN.MARK", "FULL", 4);
     RVPhase3Uart("RVPhase3: prefer A:/Compiler/Compiler.BIN (RedSea seed; heap Load).\n");
@@ -603,18 +653,24 @@ Bool RVPhase3GuestRuntime()
     return FALSE;
   }
   RVPhase3Uart("RVPhase3: Runtime Kern.BIN OK (n+n+n arg+call→42).\n");
-  // G9: guest Kernel.BIN (Boot.DD shape) — StartOS prefers this over Mac scaffold.
-  // Tiny probe until guest Cmp can rebuild real Kernel_RV; not the phase3 ELF.
+  // G9: prefer host-staged RedSea A:/Kernel/Kernel.BIN (Boot.DD shape) over
+  // guest Cmp rebuild. Probe until guest Cmp can rebuild real Kernel_RV.
+  // Early RVPhase3ProbeSeedKernel already FileFind+Load'd the seed.
   RVPhase3Uart("RVPhase3: Runtime staging A:/Kernel/Kernel.BIN...\n");
   DirMk("A:/Kernel");
-  src = "public I64 KernelProbe()\n" "{\n" "  return 42;\n" "}\n";
-  FileWrite("A:/Kernel/Kernel.HC", src, StrLen(src));
-  FileWrite("A:/Kernel/Kernel.PRJ", src, StrLen(src));
-  RVPhase3Uart("RVPhase3: Runtime Cmp(A:/Kernel/Kernel.PRJ)...\n");
-  if (!RVPhase3CmpWrite("A:/Kernel/Kernel.PRJ", "A:/Kernel/Kernel.BIN", "RVPhase3: Runtime Kernel Cmp FAILED.\n"))
-    return FALSE;
-  FileWrite("A:/Kernel/KERNEL.OK", "OK", 2);
-  RVPhase3Uart("RVPhase3: Runtime Kernel.BIN ready (guest Cmp preferred over Mac scaffold).\n");
+  if (FileFind("A:/Kernel/Kernel.BIN") && rv_phase3_kernel_seed_ok) {
+    FileWrite("A:/Kernel/KERNEL.OK", "OK", 2);
+    RVPhase3Uart("RVPhase3: Runtime Kernel.BIN ready (RedSea seed; preferred over guest Cmp rebuild).\n");
+  } else {
+    src = "public I64 KernelProbe()\n" "{\n" "  return 42;\n" "}\n";
+    FileWrite("A:/Kernel/Kernel.HC", src, StrLen(src));
+    FileWrite("A:/Kernel/Kernel.PRJ", src, StrLen(src));
+    RVPhase3Uart("RVPhase3: Runtime Cmp(A:/Kernel/Kernel.PRJ)...\n");
+    if (!RVPhase3CmpWrite("A:/Kernel/Kernel.PRJ", "A:/Kernel/Kernel.BIN", "RVPhase3: Runtime Kernel Cmp FAILED.\n"))
+      return FALSE;
+    FileWrite("A:/Kernel/KERNEL.OK", "OK", 2);
+    RVPhase3Uart("RVPhase3: Runtime Kernel.BIN ready (guest Cmp fallback; preferred over Mac scaffold).\n");
+  }
   // Adam/StartOS.BIN — guest-built StartOS body (boot prefers Load over host ExeFile).
   RVPhase3Uart("RVPhase3: Runtime staging A:/Adam/StartOS...\n");
   DirMk("A:/Adam");
@@ -734,10 +790,15 @@ Bool RVPhase3GuestRuntime()
   FileWrite("A:/Adam/LiteScalar.PRJ", src, StrLen(src));
   if (!RVPhase3CmpWrite("A:/Adam/LiteScalar.PRJ", "A:/Adam/LiteScalar.BIN", "RVPhase3: P6 bisect scalar-glbl BLOCKED.\n"))
     RVPhase3Uart("RVPhase3: P6 bisect — scalar-glbl FAIL.\n");
-  else
+  else {
     RVPhase3Uart("RVPhase3: P6 bisect — scalar-glbl Cmp OK.\n");
-  // Soft: Menu Lex-shaped guest Cmp. StrCpy→glbl U8[] Cmp OK; U8 elem Call
-  // still soft (saw 0). Local U8 name[32]/*p++ ident walk — stepped bisects.
+    // Early Soft Call/Dump deferred — Call after Dump hung Menu fold proof.
+    // Scalar Soft Call still runs in StartOS (later). Sibling owns DumpLiteScalar.
+    RVPhase3Uart("RVPhase3: P6 bisect — scalar early Soft Call soft-skip (Menu fold).\n");
+  }
+  // Soft: Menu Lex Soft Call — StrCpy→glbl U8[] then g_lex_buf[0] ('T').
+  // Fixed: CALL_IMPORT typed remat now reverses COCPush RTL args (was LTR
+  // swap for StrCpy). Soft bisects Asg/Cpy/Seed remain as regression probes.
   // Full in-tree Menu_RV.HC (CMenu/CCmpCtrl) still host/WinMgr.
   RVPhase3Uart("RVPhase3: P6 bisect — Menu hand Lex Cmp...\n");
   src = "import U8 *StrCpy(U8 *dst,U8 *src);\n" "U8 g_lex_buf[40];\n" "public I64 AdamLiteLexProbe()\n" "{\n" "  StrCpy(g_lex_buf,\"TileHorz\");\n" "  return g_lex_buf[0];\n" "}\n";
@@ -746,6 +807,30 @@ Bool RVPhase3GuestRuntime()
     RVPhase3Uart("RVPhase3: P6 bisect — Menu Lex FAIL.\n");
   else
     RVPhase3Uart("RVPhase3: P6 bisect — Menu Lex Cmp OK.\n");
+  // H1: glbl U8[] assign+load without StrCpy (isolate elem store/load).
+  RVPhase3Uart("RVPhase3: P6 bisect — Lex U8 assign Cmp...\n");
+  src = "U8 g_lex_asg[40];\n" "public I64 AdamLiteLexAsgProbe()\n" "{\n" "  g_lex_asg[0]='T';\n" "  return g_lex_asg[0];\n" "}\n";
+  FileWrite("A:/Adam/LiteLexAsg.PRJ", src, StrLen(src));
+  if (!RVPhase3CmpWrite("A:/Adam/LiteLexAsg.PRJ", "A:/Adam/LiteLexAsg.BIN", "RVPhase3: P6 bisect Lex U8 assign BLOCKED.\n"))
+    RVPhase3Uart("RVPhase3: P6 bisect — Lex U8 assign FAIL.\n");
+  else
+    RVPhase3Uart("RVPhase3: P6 bisect — Lex U8 assign Cmp OK.\n");
+  // H2: StrCpy→glbl then return const (isolate CALL_IMPORT remat hang vs write).
+  RVPhase3Uart("RVPhase3: P6 bisect — Lex StrCpy const Cmp...\n");
+  src = "import U8 *StrCpy(U8 *dst,U8 *src);\n" "U8 g_lex_c[40];\n" "public I64 AdamLiteLexCpyProbe()\n" "{\n" "  StrCpy(g_lex_c,\"TileHorz\");\n" "  return 8;\n" "}\n";
+  FileWrite("A:/Adam/LiteLexCpy.PRJ", src, StrLen(src));
+  if (!RVPhase3CmpWrite("A:/Adam/LiteLexCpy.PRJ", "A:/Adam/LiteLexCpy.BIN", "RVPhase3: P6 bisect Lex StrCpy const BLOCKED.\n"))
+    RVPhase3Uart("RVPhase3: P6 bisect — Lex StrCpy const FAIL.\n");
+  else
+    RVPhase3Uart("RVPhase3: P6 bisect — Lex StrCpy const Cmp OK.\n");
+  // H3: seed 'X' then StrCpy — if still 'X' dst remat missed; if 0 empty src; if 'T' OK.
+  RVPhase3Uart("RVPhase3: P6 bisect — Lex seed-X StrCpy Cmp...\n");
+  src = "import U8 *StrCpy(U8 *dst,U8 *src);\n" "U8 g_lex_x[40];\n" "public I64 AdamLiteLexSeedProbe()\n" "{\n" "  g_lex_x[0]='X';\n" "  StrCpy(g_lex_x,\"TileHorz\");\n" "  return g_lex_x[0];\n" "}\n";
+  FileWrite("A:/Adam/LiteLexSeed.PRJ", src, StrLen(src));
+  if (!RVPhase3CmpWrite("A:/Adam/LiteLexSeed.PRJ", "A:/Adam/LiteLexSeed.BIN", "RVPhase3: P6 bisect Lex seed-X BLOCKED.\n"))
+    RVPhase3Uart("RVPhase3: P6 bisect — Lex seed-X FAIL.\n");
+  else
+    RVPhase3Uart("RVPhase3: P6 bisect — Lex seed-X Cmp OK.\n");
   // Stepped local-U8 surfaces (Menu ReadIdent shape). Keep extract free of
   // these until Cmp green — nested #include Menu_RV must stay soft-OK.
   RVPhase3Uart("RVPhase3: P6 bisect — local U8[32] only Cmp...\n");
@@ -764,7 +849,8 @@ Bool RVPhase3GuestRuntime()
     RVPhase3Uart("RVPhase3: P6 bisect — local U8* assign FAIL.\n");
   else
     RVPhase3Uart("RVPhase3: P6 bisect — local U8* assign Cmp OK.\n");
-  // G8: star-lit / *p Cmp+Call (unary prec pack fix i+0x10000*PREC).
+  // G8 OWNER (star-lit/*p): Cmp+Call ungated. Host AOT `type+1` was +1 byte —
+  // fixed via CmpU8StarType(). Sibling: do not soft-skip these probes.
   RVPhase3Uart("RVPhase3: P6 bisect — star-lit Cmp...\n");
   src = "public I64 AdamLiteStarLitProbe()\n" "{\n" "  return *\"TileHorz\";\n" "}\n";
   FileWrite("A:/Adam/LiteStarLit.PRJ", src, StrLen(src));
@@ -779,6 +865,14 @@ Bool RVPhase3GuestRuntime()
     RVPhase3Uart("RVPhase3: P6 bisect — local U8* lit FAIL.\n");
   else
     RVPhase3Uart("RVPhase3: P6 bisect — local U8* lit Cmp OK.\n");
+  // Menu ReadIdent shape: while (*p) copy into local U8[32] (star-lit/*p OK).
+  RVPhase3Uart("RVPhase3: P6 bisect — local U8* ident walk Cmp...\n");
+  src = "public I64 AdamLiteIdentProbe()\n" "{\n" "  U8 name[32];\n" "  U8 *p=\"TileHorz\";\n" "  I64 n=0;\n" "  while (*p && n<31) {\n" "    name[n++]=*p++;\n" "  }\n" "  name[n]=0;\n" "  if (name[0]=='T' && name[4]=='H')\n" "    return n;\n" "  return 0;\n" "}\n";
+  FileWrite("A:/Adam/LiteIdent.PRJ", src, StrLen(src));
+  if (!RVPhase3CmpWrite("A:/Adam/LiteIdent.PRJ", "A:/Adam/LiteIdent.BIN", "RVPhase3: P6 bisect local U8* ident BLOCKED.\n"))
+    RVPhase3Uart("RVPhase3: P6 bisect — local U8* ident FAIL.\n");
+  else
+    RVPhase3Uart("RVPhase3: P6 bisect — local U8* ident Cmp OK.\n");
   // Class member U8[] + StrCpy (Menu ent shape).
   RVPhase3Uart("RVPhase3: P6 bisect — class member StrCpy Cmp...\n");
   src = "import U8 *StrCpy(U8 *dst,U8 *src);\n" "class CRVMenuEntM\n" "{\n" "  U8 name[24];\n" "  I64 id;\n" "};\n" "CRVMenuEntM g_ent_m;\n" "public I64 AdamLiteMemProbe()\n" "{\n" "  StrCpy(g_ent_m.name,\"TileHorz\");\n" "  return g_ent_m.name[0];\n" "}\n";
@@ -787,40 +881,21 @@ Bool RVPhase3GuestRuntime()
     RVPhase3Uart("RVPhase3: P6 bisect — class member StrCpy FAIL.\n");
   else
     RVPhase3Uart("RVPhase3: P6 bisect — class member StrCpy Cmp OK.\n");
-  // In-tree Menu_RV_Guest + Lex+Guest wrap on A: (nested #include, not flat extract).
-  // Guest alone: PersonalMenu + Width/src_embedded. Wrap folds Guest_Lex before Guest.
+  // In-tree Menu_RV_Guest + Lex+Guest wrap (P6 fold toward shared Menu).
+  // Stepped Guest Cmp first (prove PersonalMenu extract before Lex body).
+  RVPhase3Uart("RVPhase3: P6 bisect — tiny Guest Cmp...\n");
+  src = "I64 rv_menu_personal_n;\n" "public U0 RVMenuPersonalInit(){rv_menu_personal_n=8;}\n" "public I64 RVMenuPersonalCount(){if(!rv_menu_personal_n)RVMenuPersonalInit;return rv_menu_personal_n;}\n" "public I64 RVMenuPersonalId(I64 i){return i+1;}\n" "public U8 *RVMenuPersonalName(I64 i){return \"X\";}\n" "public I64 RVMenuPersonalWidth(){return 12;}\n";
+  FileWrite("A:/Adam/LiteGuestTiny.PRJ", src, StrLen(src));
+  if (!RVPhase3CmpWrite("A:/Adam/LiteGuestTiny.PRJ", "A:/Adam/LiteGuestTiny.BIN", "RVPhase3: P6 bisect tiny Guest BLOCKED.\n"))
+    RVPhase3Uart("RVPhase3: P6 bisect — tiny Guest FAIL.\n");
+  else
+    RVPhase3Uart("RVPhase3: P6 bisect — tiny Guest Cmp OK.\n");
+  RVPhase3Uart("RVPhase3: P6 staging Menu_RV_Guest src...\n");
   src = RVAdamLiteMenuGuestSrc();
+  RVPhase3UartI64("RVPhase3: P6 GuestSrc len=", StrLen(src));
   FileWrite("A:/Adam/Menu_RV_Guest.HC", src, StrLen(src));
   RVPhase3UartI64("RVPhase3: Menu_RV_Guest.HC staged bytes=", StrLen(src));
-  // Soft: index hand Lex unit (also folded into Menu_RV wrap for AdamLite).
-  src = RVAdamLiteMenuLexSrc();
-  FileWrite("A:/Adam/Menu_RV_Guest_Lex.HC", src, StrLen(src));
-  FileWrite("A:/Adam/LiteMenuLex.PRJ", src, StrLen(src));
-  RVPhase3Uart("RVPhase3: P6 bisect — Guest_Lex index hand Lex Cmp...\n");
-  if (!RVPhase3CmpWrite("A:/Adam/LiteMenuLex.PRJ", "A:/Adam/LiteMenuLex.BIN", "RVPhase3: P6 bisect Guest_Lex BLOCKED.\n"))
-    RVPhase3Uart("RVPhase3: P6 bisect — Guest_Lex FAIL.\n");
-  else
-    RVPhase3Uart("RVPhase3: P6 bisect — Guest_Lex Cmp OK.\n");
-  src = RVAdamLiteMenuRVWrapSrc();
-  FileWrite("A:/Adam/Menu_RV.HC", src, StrLen(src));
-  RVPhase3UartI64("RVPhase3: Menu_RV.HC wrap staged bytes=", StrLen(src));
-  // PersonalMenu.DD SoT for host MenuFile / guest Lex Init string.
-  src = "Win {\n" "  TileHorz(,1);\n" "  TileVert(,2);\n" "  WinMax(,3);\n" "  Close(,4);\n" "}\n" "Help {\n" "  About(,5);\n" "  Help(,6);\n" "  FormDemo(,7);\n" "  CtrlsDemo(,8);\n" "}\n";
-  FileWrite("A:/Adam/PersonalMenu.DD", src, StrLen(src));
-  RVPhase3UartI64("RVPhase3: PersonalMenu.DD staged bytes=", StrLen(src));
-  // Soft: Lex+Guest wrap Call probe (same nest AdamLite uses).
-  src = "#include \"Menu_RV\"\n" "public I64 AdamLiteLexFoldProbe()\n" "{\n" "  RVMenuPersonalInit;\n" "  return RVMenuPersonalCount;\n" "}\n";
-  FileWrite("A:/Adam/LiteLexFold.PRJ", src, StrLen(src));
-  RVPhase3Uart("RVPhase3: P6 bisect — Lex+Guest fold wrap Cmp...\n");
-  if (!RVPhase3CmpWrite("A:/Adam/LiteLexFold.PRJ", "A:/Adam/LiteLexFold.BIN", "RVPhase3: P6 bisect Lex+Guest fold BLOCKED.\n"))
-    RVPhase3Uart("RVPhase3: P6 bisect — Lex+Guest fold FAIL.\n");
-  else
-    RVPhase3Uart("RVPhase3: P6 bisect — Lex+Guest fold Cmp OK.\n");
-  if (!FileFind("A:/Adam/Menu_RV.HC") || !FileFind("A:/Adam/Menu_RV_Guest.HC"))
-    RVPhase3Uart("RVPhase3: P6 bisect — Menu_RV(+Guest) FileFind MISS after write.\n");
-  else
-    RVPhase3Uart("RVPhase3: P6 bisect — Menu_RV(+Guest) FileFind OK.\n");
-  // Flat Cmp of Guest body alone (no Lex include — Init falls back to n=8).
+  // Flat Guest before Lex (avoid failed Lex poisoning subsequent Cmp).
   RVPhase3Uart("RVPhase3: P6 bisect — flat Menu_RV_Guest Cmp...\n");
   back = FileRead("A:/Adam/Menu_RV_Guest.HC", &sz, NULL);
   if (!back || sz <= 0) {
@@ -833,6 +908,43 @@ Bool RVPhase3GuestRuntime()
     else
       RVPhase3Uart("RVPhase3: P6 bisect — flat Menu_RV OK.\n");
   }
+  // Lex stepped: scalars+SelfTest stub, then full index Lex.
+  RVPhase3Uart("RVPhase3: P6 bisect — Lex stub Cmp...\n");
+  src = "I64 rv_menu_lex_n;\n" "public I64 RVMenuLexNew(U8 *st){if(!st)return 0;return 8;}\n" "public I64 RVMenuLexSelfTest(){return RVMenuLexNew(\"x\");}\n";
+  FileWrite("A:/Adam/LiteLexStub.PRJ", src, StrLen(src));
+  if (!RVPhase3CmpWrite("A:/Adam/LiteLexStub.PRJ", "A:/Adam/LiteLexStub.BIN", "RVPhase3: P6 bisect Lex stub BLOCKED.\n"))
+    RVPhase3Uart("RVPhase3: P6 bisect — Lex stub FAIL.\n");
+  else
+    RVPhase3Uart("RVPhase3: P6 bisect — Lex stub Cmp OK.\n");
+  RVPhase3Uart("RVPhase3: P6 staging Menu_RV_Guest_Lex src...\n");
+  src = RVAdamLiteMenuLexSrc();
+  RVPhase3UartI64("RVPhase3: P6 LexSrc len=", StrLen(src));
+  FileWrite("A:/Adam/Menu_RV_Guest_Lex.HC", src, StrLen(src));
+  FileWrite("A:/Adam/LiteMenuLex.PRJ", src, StrLen(src));
+  RVPhase3Uart("RVPhase3: P6 bisect — Guest_Lex index hand Lex Cmp...\n");
+  if (!RVPhase3CmpWrite("A:/Adam/LiteMenuLex.PRJ", "A:/Adam/LiteMenuLex.BIN", "RVPhase3: P6 bisect Guest_Lex BLOCKED.\n"))
+    RVPhase3Uart("RVPhase3: P6 bisect — Guest_Lex FAIL.\n");
+  else
+    RVPhase3Uart("RVPhase3: P6 bisect — Guest_Lex Cmp OK.\n");
+  src = RVAdamLiteMenuRVWrapSrc();
+  FileWrite("A:/Adam/Menu_RV.HC", src, StrLen(src));
+  RVPhase3UartI64("RVPhase3: Menu_RV.HC wrap staged bytes=", StrLen(src));
+  src = "Win {\n" "  TileHorz(,1);\n" "  TileVert(,2);\n" "  WinMax(,3);\n" "  Close(,4);\n" "}\n" "Help {\n" "  About(,5);\n" "  Help(,6);\n" "  FormDemo(,7);\n" "  CtrlsDemo(,8);\n" "}\n";
+  FileWrite("A:/Adam/PersonalMenu.DD", src, StrLen(src));
+  RVPhase3UartI64("RVPhase3: PersonalMenu.DD staged bytes=", StrLen(src));
+  // Soft: Lex+Guest wrap Cmp (Init + optional LexSelfTest).
+  Cd("A:/Adam");
+  src = "#include \"Menu_RV\"\n" "public I64 AdamLiteLexFoldProbe()\n" "{\n" "  I64 n;\n" "  RVMenuPersonalInit;\n" "  n=RVMenuLexSelfTest;\n" "  if (n>0)\n" "    rv_menu_personal_n=n;\n" "  return RVMenuPersonalCount;\n" "}\n";
+  FileWrite("A:/Adam/LiteLexFold.PRJ", src, StrLen(src));
+  RVPhase3Uart("RVPhase3: P6 bisect — Lex+Guest fold wrap Cmp...\n");
+  if (!RVPhase3CmpWrite("A:/Adam/LiteLexFold.PRJ", "A:/Adam/LiteLexFold.BIN", "RVPhase3: P6 bisect Lex+Guest fold BLOCKED.\n"))
+    RVPhase3Uart("RVPhase3: P6 bisect — Lex+Guest fold FAIL.\n");
+  else
+    RVPhase3Uart("RVPhase3: P6 bisect — Lex+Guest fold Cmp OK.\n");
+  if (!FileFind("A:/Adam/Menu_RV.HC") || !FileFind("A:/Adam/Menu_RV_Guest.HC"))
+    RVPhase3Uart("RVPhase3: P6 bisect — Menu_RV(+Guest) FileFind MISS after write.\n");
+  else
+    RVPhase3Uart("RVPhase3: P6 bisect — Menu_RV(+Guest) FileFind OK.\n");
   // Tiny nested include (absolute path).
   src = "public I64 AdamLiteIncProbe()\n{\n  return 7;\n}\n";
   FileWrite("A:/Adam/LiteInc.HC", src, StrLen(src));
@@ -844,21 +956,25 @@ Bool RVPhase3GuestRuntime()
   else
     RVPhase3Uart("RVPhase3: P6 bisect — tiny include OK.\n");
   RVPhase3Uart("RVPhase3: P6 bisect — nested #include Menu_RV...\n");
-  // Do NOT store Count into local/glbl before multi-STR FileWrite (CALL_IMPORT hang).
-  // Sibling store→FileWrite probe is separate (LiteStoreFw). Menu Lite stays FileWrite-safe.
-  Cd("A:/Adam");
-  src = "#include \"Menu_RV\"\n" "import I64 FileWrite(U8 *filename,U8 *fbuf,I64 size);\n" "public I64 AdamRVLiteInit()\n" "{\n" "  RVMenuPersonalInit;\n" "  FileWrite(\"A:/Adam/LITE.TXT\",\"MakeAdam_RV_Lite\",16);\n" "  return 8;\n" "}\n";
+  // Prefer LexSelfTest fold; fall back to Init-only then menu-free.
+  src = "#include \"Menu_RV\"\n" "import I64 FileWrite(U8 *filename,U8 *fbuf,I64 size);\n" "public I64 AdamRVLiteInit()\n" "{\n" "  I64 n;\n" "  RVMenuPersonalInit;\n" "  n=RVMenuLexSelfTest;\n" "  if (n>0)\n" "    rv_menu_personal_n=n;\n" "  FileWrite(\"A:/Adam/LITE.TXT\",\"MakeAdam_RV_Lite\",16);\n" "  return 8;\n" "}\n";
   FileWrite("A:/Adam/MakeAdam_RV_Lite.HC", src, StrLen(src));
   FileWrite("A:/Adam/MakeAdam_RV_Lite.PRJ", src, StrLen(src));
   if (!RVPhase3CmpWrite("A:/Adam/MakeAdam_RV_Lite.PRJ", "A:/Adam/AdamLite.BIN", "RVPhase3: P6 MakeAdam_RV_Lite Cmp BLOCKED (soft; #include Menu_RV).\n")) {
-    RVPhase3Uart("RVPhase3: P6 nested include soft-fail; try abs #include...\n");
-    src = "#include \"A:/Adam/Menu_RV.HC\"\n" "import I64 FileWrite(U8 *filename,U8 *fbuf,I64 size);\n" "public I64 AdamRVLiteInit()\n" "{\n" "  RVMenuPersonalInit;\n" "  FileWrite(\"A:/Adam/LITE.TXT\",\"MakeAdam_RV_Lite\",16);\n" "  return 8;\n" "}\n";
+    RVPhase3Uart("RVPhase3: P6 LexSelfTest include soft-fail; try Init-only...\n");
+    src = "#include \"Menu_RV\"\n" "import I64 FileWrite(U8 *filename,U8 *fbuf,I64 size);\n" "public I64 AdamRVLiteInit()\n" "{\n" "  RVMenuPersonalInit;\n" "  FileWrite(\"A:/Adam/LITE.TXT\",\"MakeAdam_RV_Lite\",16);\n" "  return 8;\n" "}\n";
     FileWrite("A:/Adam/MakeAdam_RV_Lite.HC", src, StrLen(src));
     FileWrite("A:/Adam/MakeAdam_RV_Lite.PRJ", src, StrLen(src));
-    if (!RVPhase3CmpWrite("A:/Adam/MakeAdam_RV_Lite.PRJ", "A:/Adam/AdamLite.BIN", "RVPhase3: P6 MakeAdam_RV_Lite Cmp BLOCKED (soft; abs #include).\n"))
-      RVPhase3Uart("RVPhase3: P6 MakeAdam_RV_Lite probe — Cmp soft-fail (G8 Menu_RV).\n");
-    else
-      RVPhase3Uart("RVPhase3: P6 AdamLite.BIN ready (guest Cmp abs #include Menu_RV).\n");
+    if (!RVPhase3CmpWrite("A:/Adam/MakeAdam_RV_Lite.PRJ", "A:/Adam/AdamLite.BIN", "RVPhase3: P6 MakeAdam_RV_Lite Cmp BLOCKED (soft; Init-only).\n")) {
+      RVPhase3Uart("RVPhase3: P6 Menu include soft-fail; menu-free FileWrite fallback...\n");
+      src = "import I64 FileWrite(U8 *filename,U8 *fbuf,I64 size);\n" "public I64 AdamRVLiteInit()\n" "{\n" "  FileWrite(\"A:/Adam/LITE.TXT\",\"MakeAdam_RV_Lite\",16);\n" "  return 8;\n" "}\n";
+      FileWrite("A:/Adam/MakeAdam_RV_Lite.PRJ", src, StrLen(src));
+      if (!RVPhase3CmpWrite("A:/Adam/MakeAdam_RV_Lite.PRJ", "A:/Adam/AdamLite.BIN", "RVPhase3: P6 MakeAdam_RV_Lite Cmp BLOCKED (soft; menu-free).\n"))
+        RVPhase3Uart("RVPhase3: P6 MakeAdam_RV_Lite probe — Cmp soft-fail (G8 Menu_RV).\n");
+      else
+        RVPhase3Uart("RVPhase3: P6 AdamLite.BIN ready (guest Cmp menu-free FileWrite).\n");
+    } else
+      RVPhase3Uart("RVPhase3: P6 AdamLite.BIN ready (guest Cmp Init-only Menu_RV).\n");
   } else
     RVPhase3Uart("RVPhase3: P6 AdamLite.BIN ready (guest Cmp #include Menu_RV).\n");
   // Focused proof: same-module Count→local then multi-STR CALL_IMPORT (no Menu).
@@ -1055,7 +1171,7 @@ Bool RVPhase3StartOS()
     }
   }
   // Soft Calls after AdamLite. Dump abs/Init then Scalar Soft Call.
-  // Lex/Mem/flat Count stay soft (same ABS_ADDR root); star-lit gated.
+  // Lex+Mem Soft Calls ungated (CALL_IMPORT RTL remat); flat Count soft; star-lit sibling.
   if (FileFind("A:/Adam/LiteScalar.BIN")) {
     bfh = Load("A:/Adam/LiteScalar.BIN", LDF_JUST_LOAD | LDF_SILENT);
     if (bfh && bfh->bin_signature == BIN_SIGNATURE_VAL) {
@@ -1073,7 +1189,61 @@ Bool RVPhase3StartOS()
         RVPhase3UartI64("RVPhase3: P6 bisect — scalar-glbl Call soft-fail r=", r);
     }
   }
-  if (FALSE && FileFind("A:/Adam/LiteLex.BIN")) {
+  // Lex Soft Call: StrCpy→glbl U8[] then return g_lex_buf[0] ('T').
+  // Bisect Soft Calls: U8 assign-elem, StrCpy→const, then full Lex.
+  if (FileFind("A:/Adam/LiteLexAsg.BIN")) {
+    bfh = Load("A:/Adam/LiteLexAsg.BIN", LDF_JUST_LOAD | LDF_SILENT);
+    if (bfh && bfh->bin_signature == BIN_SIGNATURE_VAL) {
+      try {
+        r = RVPhase3CallExport("AdamLiteLexAsgProbe");
+      } catch {
+        Fs->catch_except = TRUE;
+        r = -2;
+        RVPhase3Uart("RVPhase3: P6 bisect — Lex U8 assign Call threw.\n");
+      }
+      if (r == 'T')
+        RVPhase3Uart("RVPhase3: P6 bisect — Lex U8 assign Call OK.\n");
+      else
+        RVPhase3UartI64("RVPhase3: P6 bisect — Lex U8 assign Call soft-fail r=", r);
+    }
+  }
+  if (FileFind("A:/Adam/LiteLexCpy.BIN")) {
+    RVCmpExportOne("StrCpy", &RVStrCpy);
+    bfh = Load("A:/Adam/LiteLexCpy.BIN", LDF_JUST_LOAD | LDF_SILENT);
+    if (bfh && bfh->bin_signature == BIN_SIGNATURE_VAL) {
+      try {
+        r = RVPhase3CallExport("AdamLiteLexCpyProbe");
+      } catch {
+        Fs->catch_except = TRUE;
+        r = -2;
+        RVPhase3Uart("RVPhase3: P6 bisect — Lex StrCpy const Call threw.\n");
+      }
+      if (r == 8)
+        RVPhase3Uart("RVPhase3: P6 bisect — Lex StrCpy const Call OK.\n");
+      else
+        RVPhase3UartI64("RVPhase3: P6 bisect — Lex StrCpy const Call soft-fail r=", r);
+    }
+  }
+  if (FileFind("A:/Adam/LiteLexSeed.BIN")) {
+    RVCmpExportOne("StrCpy", &RVStrCpy);
+    bfh = Load("A:/Adam/LiteLexSeed.BIN", LDF_JUST_LOAD | LDF_SILENT);
+    if (bfh && bfh->bin_signature == BIN_SIGNATURE_VAL) {
+      try {
+        r = RVPhase3CallExport("AdamLiteLexSeedProbe");
+      } catch {
+        Fs->catch_except = TRUE;
+        r = -2;
+        RVPhase3Uart("RVPhase3: P6 bisect — Lex seed-X Call threw.\n");
+      }
+      if (r == 'T')
+        RVPhase3Uart("RVPhase3: P6 bisect — Lex seed-X Call OK (StrCpy wrote).\n");
+      else if (r == 'X')
+        RVPhase3Uart("RVPhase3: P6 bisect — Lex seed-X Call soft-fail kept X (dst remat miss).\n");
+      else
+        RVPhase3UartI64("RVPhase3: P6 bisect — Lex seed-X Call soft-fail r=", r);
+    }
+  }
+  if (FileFind("A:/Adam/LiteLex.BIN")) {
     RVCmpExportOne("StrCpy", &RVStrCpy);
     bfh = Load("A:/Adam/LiteLex.BIN", LDF_JUST_LOAD | LDF_SILENT);
     if (bfh && bfh->bin_signature == BIN_SIGNATURE_VAL) {
@@ -1090,7 +1260,9 @@ Bool RVPhase3StartOS()
         RVPhase3UartI64("RVPhase3: P6 bisect — Menu Lex Call soft-fail r=", r);
     }
   }
-  if (FALSE && FileFind("A:/Adam/LiteMem.BIN")) {
+  // Mem Soft Call: class member U8[] StrCpy then name[0] ('T').
+  // Same CALL_IMPORT RTL remat fix as Lex.
+  if (FileFind("A:/Adam/LiteMem.BIN")) {
     RVCmpExportOne("StrCpy", &RVStrCpy);
     bfh = Load("A:/Adam/LiteMem.BIN", LDF_JUST_LOAD | LDF_SILENT);
     if (bfh && bfh->bin_signature == BIN_SIGNATURE_VAL) {
@@ -1107,7 +1279,7 @@ Bool RVPhase3StartOS()
         RVPhase3UartI64("RVPhase3: P6 bisect — class member StrCpy Call soft-fail r=", r);
     }
   }
-  // Star-lit / local U8* lit Soft Calls.
+  // Soft Calls: star-lit / local U8* lit (Cmp ungated above).
   if (FileFind("A:/Adam/LiteStarLit.BIN")) {
     bfh = Load("A:/Adam/LiteStarLit.BIN", LDF_JUST_LOAD | LDF_SILENT);
     if (bfh && bfh->bin_signature == BIN_SIGNATURE_VAL) {
@@ -1128,10 +1300,17 @@ Bool RVPhase3StartOS()
         RVPhase3UartI64("RVPhase3: P6 bisect — local U8* lit Call soft-fail r=", r);
     }
   }
-  if (FALSE && FileFind("A:/Adam/LiteIdent.BIN")) {
+  // Soft Call: local U8* ident walk (Menu ReadIdent shape).
+  if (FileFind("A:/Adam/LiteIdent.BIN")) {
     bfh = Load("A:/Adam/LiteIdent.BIN", LDF_JUST_LOAD | LDF_SILENT);
     if (bfh && bfh->bin_signature == BIN_SIGNATURE_VAL) {
-      r = RVPhase3CallExport("AdamLiteIdentProbe");
+      try {
+        r = RVPhase3CallExport("AdamLiteIdentProbe");
+      } catch {
+        Fs->catch_except = TRUE;
+        r = -2;
+        RVPhase3Uart("RVPhase3: P6 bisect — local U8* ident Call threw.\n");
+      }
       if (r == 8)
         RVPhase3Uart("RVPhase3: P6 bisect — local U8* ident Call OK.\n");
       else
@@ -1235,7 +1414,7 @@ Bool RVPhase3StartOS()
   }
   FileWrite("A:/Runtime/KERN.OK", "OK", 2);
   RVPhase3Uart("RVPhase3: StartOS Load Kern.BIN OK (KernInit=42).\n");
-  // Prefer guest Kernel.BIN (Boot.DD) over relying on Mac phase3 ELF alone.
+  // Prefer RedSea/guest Kernel.BIN (Boot.DD) over relying on Mac phase3 ELF alone.
   if (!FileFind("A:/Kernel/Kernel.BIN") || !FileFind("A:/Kernel/KERNEL.OK")) {
     RVPhase3Uart("RVPhase3: StartOS needs guest A:/Kernel/Kernel.BIN.\n");
     return FALSE;
@@ -1251,7 +1430,7 @@ Bool RVPhase3StartOS()
     RVPhase3UartI64("RVPhase3: StartOS Kernel Load+Call FAILED r=", r);
     return FALSE;
   }
-  RVPhase3Uart("RVPhase3: StartOS Load Kernel.BIN OK (guest Cmp preferred over Mac scaffold).\n");
+  RVPhase3Uart("RVPhase3: StartOS Load Kernel.BIN OK (RedSea Kernel.BIN preferred over Mac phase3.elf scaffold).\n");
   rv_phase3_startos_ok = TRUE;
   RVPhase3Uart("RVPhase3: StartOS subset OK (guest BINs AdamCore+StartOS+Seed+Svc+Kern+Kernel).\n");
   return TRUE;
@@ -1280,6 +1459,9 @@ U0 RVPhase3WinRefresh()
 
 U0 RVPhase3()
 {
+  // G9: prove RedSea Kernel.BIN seed before Cmp (thin-loader milestone).
+  if (!RVPhase3ProbeSeedKernel())
+    RVPhase3Uart("RVPhase3: RedSea Kernel.BIN seed probe failed (continuing).\n");
   if (!RVPhase3LoadCompiler()) {
     RVPhase3Uart("RVPhase3: abort (compiler not loaded).\n");
     return;

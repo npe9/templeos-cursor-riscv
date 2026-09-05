@@ -267,7 +267,10 @@ U0 TtyEchoErase()
 {
   if (!g_tty_echo)
     return;
-  UartStr("\b \b");
+  // BS-space-BS (TTY_CH_ERASE=8).
+  PutCh(TTY_CH_ERASE);
+  PutCh(' ');
+  PutCh(TTY_CH_ERASE);
 }
 
 U0 TtyEchoKill(I64 n)
@@ -277,7 +280,9 @@ U0 TtyEchoKill(I64 n)
     return;
   i = 0;
   while (i < n) {
-    UartStr("\b \b");
+    PutCh(TTY_CH_ERASE);
+    PutCh(' ');
+    PutCh(TTY_CH_ERASE);
     i++;
   }
 }

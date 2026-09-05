@@ -98,6 +98,19 @@ class CRVGrGlbls
 };
 CRVGrGlbls rv_gr;
 CRVDC rv_scrn_dc;
+// Stock Apps (PsalmodyDraw) call gr.fp_draw_ms — soft null cursor until AMouse.
+U0 RVDrawMsNull(CDC *dc, I64 x, I64 y)
+{
+  no_warn dc;
+  no_warn x;
+  no_warn y;
+}
+
+class CGrMsGlbls
+{
+  U0 (*fp_draw_ms)(CDC *dc, I64 x, I64 y);
+};
+CGrMsGlbls gr;
 // screen DC storage (aliases rv_fb.pixels compose after RVGrInit)
 class CRVTerm
 {
@@ -313,6 +326,7 @@ Bool RVGrInit(I64 width = RV_FB_W_DEFAULT, I64 height = RV_FB_H_DEFAULT, U32 *pi
   if (!RVDCScrnBind(rv_gr.dc))
     return FALSE;
   rv_gr.fp_draw_it = NULL;
+  gr.fp_draw_ms = &RVDrawMsNull;
   rv_term.cols = rv_fb.width / FONT_WIDTH;
   rv_term.rows = rv_fb.height / FONT_HEIGHT;
   if (rv_term.cols < 1)

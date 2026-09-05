@@ -1,7 +1,8 @@
 #!/bin/bash
 # Stock Apps/Span Load on RV (Cd(__DIR__) + Bridge/DrawIt + GetMsg under WinMgr).
 # CI: -display none + UART needles; GetMsg PlaceMass + win_getmsg + FilesFind PopUpPickFile
-# (not infinite Span() / stock FileMgr GetMsg).
+# + stock Span() live GetMsg under Yield+WinMgr pump (SHIFT_ESC; SongTask soft Play)
+# + stock Span() SongTask+AnimateTask (SHIFT_ESC; Refresh Yield-only under peers).
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -45,7 +46,7 @@ fi
 
 cp "$T/span.elf" "$OUTDIR/span.elf"
 
-out="$($TIMEOUT 90 "$QEMU" -M virt -m 128M -bios none -kernel "$T/span.elf" \
+out="$($TIMEOUT 120 "$QEMU" -M virt -m 128M -bios none -kernel "$T/span.elf" \
   -device ramfb -display none -serial stdio </dev/null 2>&1 | tr -d '\r')"
 
 if ! printf '%s\n' "$out" | grep -qF "$EXPECT_PREFIX"; then
@@ -58,6 +59,11 @@ line="$(printf '%s\n' "$out" | grep -F "$EXPECT_PREFIX" | tail -1)"
 if printf '%s\n' "$out" | grep -qF 'RVSpan smoke FAIL'; then
   echo "FAIL kernel-span smoke — guest FAIL:" >&2
   echo "  got: $line" >&2
+  exit 1
+fi
+if printf '%s\n' "$out" | grep -qE 'RVSpan live FAIL'; then
+  echo "FAIL kernel-span smoke — live GetMsg FAIL:" >&2
+  printf '%s\n' "$out" | grep -E 'RVSpan live' | head -5 | sed 's/^/  got: /' >&2
   exit 1
 fi
 if ! printf '%s\n' "$line" | grep -qE 'masses=1[5-9]|masses=[2-9][0-9]'; then
@@ -80,6 +86,18 @@ if ! printf '%s\n' "$line" | grep -qE 'pick=1'; then
   echo "  got: $line" >&2
   exit 1
 fi
+if ! printf '%s\n' "$out" | grep -qE 'RVSpan live ok live=[1-9]'; then
+  echo "FAIL kernel-span smoke — expected live ok:" >&2
+  printf '%s\n' "$out" | grep -E 'RVSpan live' | head -5 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qE 'RVSpan full ok'; then
+  echo "FAIL kernel-span smoke — expected full Span() ok:" >&2
+  printf '%s\n' "$out" | grep -E 'RVSpan full' | head -5 | sed 's/^/  got: /' >&2
+  exit 1
+fi
 
-echo "Kernel-span smoke: OK ($line)"
+live="$(printf '%s\n' "$out" | grep -E 'RVSpan live ok' | tail -1)"
+full="$(printf '%s\n' "$out" | grep -E 'RVSpan full ok' | tail -1)"
+echo "Kernel-span smoke: OK ($line | $live | $full)"
 exit 0

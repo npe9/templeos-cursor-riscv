@@ -59,10 +59,185 @@ I64 SpanWinMgrGetMsgProbe()
     return 0;
   return SpanCountMasses - before;
 }
+CTask *g_span_live_fs;
+I64 g_span_live_msgs;
+I64 g_span_live_placed;
+I64 g_span_live_play;
+U0 SpanLivePump(U8 *unused)
+{
+  //Feed TaskMsg while live GetMsg blocks (Yield pump).
+  I64 i;
+  no_warn unused;
+  for (i = 0; i < 8; i++)
+    Yield;
+  if (g_span_live_fs) {
+    mode_bttn.state = MD_MASS;
+    TaskMsg(g_span_live_fs, NULL, MSG_MS_L_DOWN, 24, 18, 0);
+    for (i = 0; i < 4; i++)
+      Yield;
+    TaskMsg(g_span_live_fs, NULL, MSG_MS_L_DOWN, 48, 30, 0);
+    for (i = 0; i < 4; i++)
+      Yield;
+    TaskMsg(g_span_live_fs, NULL, MSG_KEY_DOWN, CH_SHIFT_ESC, 0, 0);
+    for (i = 0; i < 2; i++)
+      Yield;
+    TaskMsg(g_span_live_fs, NULL, MSG_KEY_UP, CH_SHIFT_ESC, 0, 0);
+  }
+  while (TRUE)
+    Yield;
+}
+
+I64 SpanStockLiveLoop()
+{
+  //Stock Span() GetMsg shape under Yield+pump (kept as live needle).
+  // Full Span() Song/Animate is SpanStockFull below.
+  CTask *pump;
+  CCtrl *bt_run, *bt_mode;
+  CDC *dc;
+  I64 msg, a1, a2, before, mask, idx, n_msg = 0;
+  if (!rv_winmgr.ready)
+    return -1;
+  RVYieldInit(&Fs);
+  g_span_live_fs = Fs;
+  g_span_live_msgs = 0;
+  g_span_live_placed = 0;
+  g_span_live_play = 0;
+  if (!Fs->put_doc)
+    Fs->put_doc = DocNew;
+  Fs->display_doc = Fs->put_doc;
+  idx = RVWinNew(2, 70, 2, 40, "SpanLive", "", TRUE);
+  if (idx >= 0) {
+    RVWinBindTask(idx, Fs, RV_WIN_KIND_USER, FALSE);
+    RVWinFocus(idx);
+  }
+  sys_focus_task = Fs;
+  SettingsPush;
+  WinBorder(OFF);
+  WinMax;
+  DocCursor;
+  bt_run = CtrlBttnNew(0, 0, 80,, 2, "Stopped\0Running\0", run_colors, &run_bttn);
+  bt_mode = CtrlBttnNew(0, 3 * FONT_HEIGHT, 80,, MD_MODES_NUM, Define("ST_SPAN_MODES"), mode_colors, &mode_bttn);
+  if (!bt_run || !bt_mode) {
+    Print("RVSpan live CtrlBttn FAIL\n");
+    return 0;
+  }
+  ode = SpanNew;
+  if (!ode) {
+    Print("RVSpan live SpanNew FAIL\n");
+    return 0;
+  }
+  SpanBridge1Init(ode);
+  mode_bttn.state = MD_MASS;
+  Fs->draw_it = &DrawIt;
+  dc = DCAlias;
+  before = SpanCountMasses;
+  pump = Spawn(&SpanLivePump, NULL, "SpanPump",, Fs);
+  if (!pump) {
+    Print("RVSpan live Spawn FAIL\n");
+    return 0;
+  }
+  Print("RVSpan live enter\n");
+  mask = 1 << MSG_MS_L_DOWN | 1 << MSG_MS_R_DOWN | 1 << MSG_MS_L_UP | 1 << MSG_KEY_DOWN | 1 << MSG_MS_MOVE;
+  try {
+    while (TRUE) {
+      msg = GetMsg(&a1, &a2, mask);
+      n_msg++;
+      switch (msg) {
+        case MSG_MS_L_DOWN :
+        if (mode_bttn.state == MD_MASS)
+          PlaceMass(a1, a2);
+        break;
+        case MSG_KEY_DOWN :
+        if (a1 == CH_SHIFT_ESC || a1 == CH_ESC)
+          goto span_live_done;
+        break;
+      }
+      if (n_msg > 32)
+        goto span_live_done;
+    }
+    span_live_done:
+    GetMsg(,, 1 << MSG_KEY_UP);
+  } catch
+    PutExcept;
+  Print("RVSpan live exit\n");
+  g_span_live_msgs = n_msg;
+  g_span_live_placed = SpanCountMasses - before;
+  Kill(pump, FALSE);
+  CtrlBttnDel(bt_run);
+  CtrlBttnDel(bt_mode);
+  SpanDel(ode);
+  ode = NULL;
+  DCFill(dc);
+  DCDel(dc);
+  SettingsPop;
+  Fs->draw_it = NULL;
+  if (g_span_live_placed < 1 || g_span_live_msgs < 2) {
+    Print("RVSpan live FAIL placed=%d msgs=%d\n", g_span_live_placed, g_span_live_msgs);
+    return 0;
+  }
+  return g_span_live_placed;
+}
+
+U0 SpanFullPump(U8 *unused)
+{
+  //Stock Span() Song+Animate under Yield: PlaceMass then SHIFT_ESC (skip ESC save).
+  I64 i;
+  no_warn unused;
+  for (i = 0; i < 24; i++)
+    Yield;
+  if (g_span_live_fs) {
+    mode_bttn.state = MD_MASS;
+    TaskMsg(g_span_live_fs, NULL, MSG_MS_L_DOWN, 30, 22, 0);
+    for (i = 0; i < 8; i++)
+      Yield;
+    TaskMsg(g_span_live_fs, NULL, MSG_KEY_DOWN, CH_SHIFT_ESC, 0, 0);
+    for (i = 0; i < 200; i++)
+      Yield;
+    TaskMsg(g_span_live_fs, NULL, MSG_KEY_UP, CH_SHIFT_ESC, 0, 0);
+  }
+  while (TRUE)
+    Yield;
+}
+
+I64 SpanStockFull()
+{
+  //Stock Apps/Span Span() — SongTask+AnimateTask+PopUpOk+GetMsg under Yield pump.
+  CTask *pump;
+  I64 idx, play0, ref0;
+  if (!rv_winmgr.ready)
+    return 0;
+  RVYieldInit(&Fs);
+  g_span_live_fs = Fs;
+  sys_focus_task = Fs;
+  if (!Fs->put_doc)
+    Fs->put_doc = DocNew;
+  Fs->display_doc = Fs->put_doc;
+  idx = RVWinNew(2, 70, 2, 40, "SpanFull", "", TRUE);
+  if (idx >= 0) {
+    RVWinBindTask(idx, Fs, RV_WIN_KIND_USER, FALSE);
+    RVWinFocus(idx);
+  }
+  play0 = rv_snd_play_hits;
+  ref0 = rv_refresh_hits;
+  pump = Spawn(&SpanFullPump, NULL, "SpanFullPump",, Fs);
+  if (!pump) {
+    Print("RVSpan full Spawn FAIL\n");
+    return 0;
+  }
+  Print("RVSpan full enter\n");
+  Span;
+  Print("RVSpan full exit play=%d refresh=%d\n", rv_snd_play_hits - play0, rv_refresh_hits - ref0);
+  Kill(pump, FALSE);
+  if (rv_snd_play_hits <= play0 && rv_refresh_hits <= ref0) {
+    Print("RVSpan full FAIL no Song/Animate activity\n");
+    return 0;
+  }
+  return 1;
+}
 
 I64 main()
 {
-  I64 n, h, fill, placed, win_placed, pick_ok;
+  I64 n, h, fill, placed, win_placed, pick_ok, live, full;
   CCtrl *bt_run, *bt_mode;
   CDC *dc;
   CTask *adam;
@@ -183,5 +358,19 @@ I64 main()
   ode = NULL;
   DCDel(dc);
   SettingsPop;
+  // Stock Span() live GetMsg under Yield+WinMgr pump (SHIFT_ESC exit; no DirMk save).
+  live = SpanStockLiveLoop;
+  if (live < 1) {
+    Print("RVSpan live FAIL live=%d placed=%d msgs=%d\n", live, g_span_live_placed, g_span_live_msgs);
+    return 1;
+  }
+  Print("RVSpan live ok live=%d placed=%d msgs=%d\n", live, g_span_live_placed, g_span_live_msgs);
+  // Stock Span() with SongTask+AnimateTask (SHIFT_ESC abort — ESC DirMk save optional).
+  full = SpanStockFull;
+  if (full < 1) {
+    Print("RVSpan full FAIL play=%d refresh=%d\n", rv_snd_play_hits, rv_refresh_hits);
+    return 1;
+  }
+  Print("RVSpan full ok play=%d refresh=%d popup_ok=%d\n", rv_snd_play_hits, rv_refresh_hits, rv_popup_ok_hits);
   return 0;
 }

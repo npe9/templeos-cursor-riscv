@@ -122,21 +122,79 @@ I64 FsStrNCmp(U8 *a, U8 *b, I64 n)
   return 0;
 }
 // Resolve name into FsResolveBuf (cwd-relative, fold . / ..).
+// Accepts TempleOS prefixes (`::/`, `A:`…`Z:`, `~/`) as memfs absolute — dual-namespace
+// bridge so UART Cd/FileFind match BlkDev/`::` muscle memory (see docs/PATHS.md).
 U0 FsResolve(U8 *name)
 {
   U8 *cwd;
-  I64 n, i, o;
+  I64 n, i, o, abs;
   if (!name)
     name = "";
+  /* Snapshot: Cd/FileFind often pass FsTmp; we rebuild into FsTmp below. */
+  if (name != FsPath2) {
+    i = 0;
+    while (name[i] && i < 62) {
+      FsPath2[i] = name[i];
+      i++;
+    }
+    FsPath2[i] = 0;
+    name = FsPath2;
+  }
+  abs = 0;
+  if (name[0] == ':' && name[1] == ':') {
+    name = name + 2;
+    abs = 1;
+  } else if (name[0] && name[1] == ':' && ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z'))) {
+    name = name + 2;
+    abs = 1;
+  } else if (name[0] == '~' && (!name[1] || name[1] == '/')) {
+    if (name[1] == '/')
+      name = name + 2;
+    else
+      name = name + 1;
+    /* Rewrite snapshot as Home/… then treat absolute. */
+    n = 0;
+    FsTmp[n] = 'H';
+    n++;
+    FsTmp[n] = 'o';
+    n++;
+    FsTmp[n] = 'm';
+    n++;
+    FsTmp[n] = 'e';
+    n++;
+    FsTmp[n] = '/';
+    n++;
+    if (*name) {
+      i = 0;
+      while (name[i] && n < 62) {
+        FsTmp[n] = name[i];
+        n++;
+        i++;
+      }
+    }
+    FsTmp[n] = 0;
+    i = 0;
+    while (FsTmp[i] && i < 62) {
+      FsPath2[i] = FsTmp[i];
+      i++;
+    }
+    FsPath2[i] = 0;
+    name = FsPath2;
+    abs = 1;
+  } else if (name[0] == ':' && (name[1] == '/' || !name[1])) {
+    name = name + 1;
+    abs = 1;
+  }
   cwd = FsCwd();
   if (!cwd)
     cwd = "";
   n = 0;
   i = 0;
   o = 0;
-  if (name[0] == '/')
-    name++;
-  else
+  if (abs || name[0] == '/') {
+    if (name[0] == '/')
+      name++;
+  } else
     while (cwd[n]) {
       FsTmp[n] = cwd[n];
       n++;
@@ -1069,7 +1127,8 @@ I64 Cd(U8 *name)
 
 U0 Pwd()
 {
-  "/%s\n", FsCwd();
+  // TempleOS boot-root metaphor for UART memfs (internal storage stays slash paths).
+  "::/%s\n", FsCwd();
 }
 
 U8 *CwdStr()

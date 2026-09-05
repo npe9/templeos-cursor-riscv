@@ -1,9 +1,4 @@
-// Menu_RV_Guest_Lex.HC — index hand Lex → flat Personal ids (P6).
-// Folded into guest Menu wrap before Guest (see Menu_RV wrap + MENU_RV_GUEST_LEX_HC).
-// Flat Guest alone still Cmps without this file. Uses st[i] + local U8 name[] —
-// no local U8* lit walk, no CMenu heap (those still block guest product Menu).
-#ifndef MENU_RV_GUEST_LEX_HC
-#define MENU_RV_GUEST_LEX_HC
+#define MENU_RV_GUEST_LEX_HC 1
 #define RV_MENU_LEX_MAX_STEPS 2048
 #define RV_MENU_LEX_MAX 16
 I64 rv_menu_lex_n;
@@ -11,24 +6,19 @@ I64 rv_menu_lex_id[RV_MENU_LEX_MAX];
 I64 rv_menu_lex_steps;
 I64 rv_menu_lex_abort;
 I64 rv_menu_lex_parse_hits;
-Bool RVMenuLexOk()
-{
-  rv_menu_lex_steps++;
-  if (rv_menu_lex_steps > RV_MENU_LEX_MAX_STEPS) {
-    rv_menu_lex_abort = 1;
-    return FALSE;
-  }
-  return TRUE;
-}
-
 I64 RVMenuSkipI(U8 *st, I64 i)
 {
   U8 ch;
-  while (st && RVMenuLexOk()) {
+  while (st) {
+    rv_menu_lex_steps++;
+    if (rv_menu_lex_steps > RV_MENU_LEX_MAX_STEPS) {
+      rv_menu_lex_abort = 1;
+      break;
+    }
     ch = st[i];
     if (!ch)
       break;
-    if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
+    if (ch == 32 || ch == 9 || ch == 13 || ch == 10) {
       i++;
       continue;
     }
@@ -39,25 +29,37 @@ I64 RVMenuSkipI(U8 *st, I64 i)
 
 I64 RVMenuReadIdentI(U8 *st, I64 i, U8 *out, I64 max)
 {
-  I64 n = 0;
+  I64 n;
   U8 ch;
+  n = 0;
   i = RVMenuSkipI(st, i);
   if (!out || max < 2) {
-    if (out && max > 0)
-      out[0] = 0;
+    if (out)
+      if (max > 0)
+        out[0] = 0;
     return i;
   }
   out[0] = 0;
   if (!st)
     return i;
   ch = st[i];
-  if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_'))
+  if (!ch)
     return i;
-  while (st[i] && n < max - 1 && RVMenuLexOk()) {
-    ch = st[i];
-    if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_'))
+  if (!((ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch == 95))
+    return i;
+  while (st[i]) {
+    rv_menu_lex_steps++;
+    if (rv_menu_lex_steps > RV_MENU_LEX_MAX_STEPS) {
+      rv_menu_lex_abort = 1;
       break;
-    out[n++] = ch;
+    }
+    if (n >= max - 1)
+      break;
+    ch = st[i];
+    if (!((ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || (ch >= 48 && ch <= 57) || ch == 95))
+      break;
+    out[n] = ch;
+    n++;
     i++;
   }
   out[n] = 0;
@@ -66,99 +68,125 @@ I64 RVMenuReadIdentI(U8 *st, I64 i, U8 *out, I64 max)
 
 I64 RVMenuReadI64I(U8 *st, I64 i, I64 *out)
 {
-  I64 v = 0;
+  I64 v;
   U8 ch;
+  v = 0;
   i = RVMenuSkipI(st, i);
-  if (!out)
-    return i;
-  *out = 0;
+  if (out)
+    *out = 0;
   if (!st)
     return i;
-  while (RVMenuLexOk()) {
-    ch = st[i];
-    if (ch < '0' || ch > '9')
+  while (1) {
+    rv_menu_lex_steps++;
+    if (rv_menu_lex_steps > RV_MENU_LEX_MAX_STEPS) {
+      rv_menu_lex_abort = 1;
       break;
-    v = v * 10 + (ch - '0');
+    }
+    ch = st[i];
+    if (!ch)
+      break;
+    if (ch < 48 || ch > 57)
+      break;
+    v = v * 10 + (ch - 48);
     i++;
   }
-  *out = v;
+  if (out)
+    *out = v;
   return i;
 }
 
-I64 RVMenuIdFromIdent(U8 *name)
+I64 RVMenuIdFromName(U8 *name)
 {
-  //Char-wise match — no StrCmp import (guest Cmp unresolved).
-  if (!name || !name[0])
+  if (!name)
     return 0;
-  if (name[0] == 'T' && name[4] == 'H')
+  if (!name[0])
+    return 0;
+  if (name[0] == 84 && name[4] == 72)
     return 1;
-  if (name[0] == 'T' && name[4] == 'V')
+  if (name[0] == 84 && name[4] == 86)
     return 2;
-  if (name[0] == 'W' && name[3] == 'M')
+  if (name[0] == 87 && name[3] == 77)
     return 3;
-  if (name[0] == 'C' && name[1] == 'l')
+  if (name[0] == 67 && name[1] == 108)
     return 4;
-  if (name[0] == 'A' && name[1] == 'b')
+  if (name[0] == 65 && name[1] == 98)
     return 5;
-  if (name[0] == 'H' && name[1] == 'e')
+  if (name[0] == 72 && name[1] == 101)
     return 6;
-  if (name[0] == 'F' && name[1] == 'o')
+  if (name[0] == 70 && name[1] == 111)
     return 7;
-  if (name[0] == 'C' && name[1] == 't')
+  if (name[0] == 67 && name[1] == 116)
     return 8;
   return 0;
 }
 
 I64 RVMenuParseFlatI(U8 *st, I64 i)
 {
-  U8 name[32];
-  I64 arg1 = 0, id;
+  I64 depth;
+  I64 id;
+  I64 arg1;
+  U8 name[24];
   U8 ch;
-  while (st && st[i] && rv_menu_lex_n < RV_MENU_LEX_MAX && RVMenuLexOk()) {
-    i = RVMenuSkipI(st, i);
-    if (!st[i] || st[i] == '}')
+  depth = 0;
+  while (st && st[i] && rv_menu_lex_n < RV_MENU_LEX_MAX) {
+    rv_menu_lex_steps++;
+    if (rv_menu_lex_steps > RV_MENU_LEX_MAX_STEPS) {
+      rv_menu_lex_abort = 1;
       break;
-    i = RVMenuReadIdentI(st, i, name, 32);
-    if (!name[0]) {
-      if (st[i])
-        i++;
-      continue;
     }
     i = RVMenuSkipI(st, i);
     ch = st[i];
-    if (ch == '(') {
-      arg1 = 0;
+    if (!ch)
+      break;
+    if (ch == 125) {
+      if (depth > 0)
+        depth--;
       i++;
+      continue;
+    }
+    i = RVMenuReadIdentI(st, i, name, 24);
+    i = RVMenuSkipI(st, i);
+    ch = st[i];
+    if (ch == 40) {
+      i++;
+      id = 0;
+      arg1 = 0;
       i = RVMenuSkipI(st, i);
-      if (st[i] && st[i] != ',' && st[i] != ')')
-        i = RVMenuReadI64I(st, i, &arg1);
+      if (st[i] && st[i] != 44 && st[i] != 41)
+        i = RVMenuReadI64I(st, i, &id);
       i = RVMenuSkipI(st, i);
-      if (st[i] == ',') {
+      if (st[i] == 44) {
         i++;
         i = RVMenuSkipI(st, i);
-        if (st[i] && st[i] != ',' && st[i] != ')')
+        if (st[i] && st[i] != 44 && st[i] != 41)
           i = RVMenuReadI64I(st, i, &arg1);
       }
-      while (st[i] && st[i] != ')' && RVMenuLexOk())
+      while (st[i] && st[i] != 41) {
+        rv_menu_lex_steps++;
+        if (rv_menu_lex_steps > RV_MENU_LEX_MAX_STEPS) {
+          rv_menu_lex_abort = 1;
+          break;
+        }
         i++;
-      if (st[i] == ')')
+      }
+      if (st[i] == 41)
         i++;
       i = RVMenuSkipI(st, i);
-      if (st[i] == ';')
+      if (st[i] == 59)
         i++;
-      id = RVMenuIdFromIdent(name);
       if (!id && arg1 > 0)
         id = arg1;
-      rv_menu_lex_id[rv_menu_lex_n] = id;
-      rv_menu_lex_n++;
-    } else if (ch == '{') {
+      if (!id)
+        id = RVMenuIdFromName(name);
+      if (id && rv_menu_lex_n < RV_MENU_LEX_MAX) {
+        rv_menu_lex_id[rv_menu_lex_n] = id;
+        rv_menu_lex_n++;
+      }
+    } else if (ch == 123) {
+      depth++;
       i++;
-      i = RVMenuParseFlatI(st, i);
-      i = RVMenuSkipI(st, i);
-      if (st[i] == '}')
-        i++;
     } else {
-      if (st[i])
+      if (ch)
         i++;
     }
   }
@@ -167,9 +195,9 @@ I64 RVMenuParseFlatI(U8 *st, I64 i)
 
 public I64 RVMenuLexNew(U8 *st)
 {
+  rv_menu_lex_n = 0;
   rv_menu_lex_steps = 0;
   rv_menu_lex_abort = 0;
-  rv_menu_lex_n = 0;
   if (!st || !st[0])
     return 0;
   rv_menu_lex_parse_hits++;
@@ -178,4 +206,8 @@ public I64 RVMenuLexNew(U8 *st)
     return 0;
   return rv_menu_lex_n;
 }
-#endif
+
+public I64 RVMenuLexSelfTest()
+{
+  return RVMenuLexNew("Win{TileHorz(,1);TileVert(,2);WinMax(,3);Close(,4);}Help{About(,5);Help(,6);FormDemo(,7);CtrlsDemo(,8);}");
+}

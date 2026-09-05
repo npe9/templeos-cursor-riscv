@@ -3,6 +3,7 @@
 | Path | Role |
 |------|------|
 | `pack_tosb.c` / `pack_tosb` | Pack TempleOS-style blobs |
+| `mk_redsea_seed_img.py` | Pack host files into a RedSea raw image (phase3 virtio `Compiler.BIN` + `Kernel.BIN` seeds) |
 | `gen_cmp_imports.py` | Generate `Kernel/RVCmpImports.HC` |
 | `gen_host_bin_embed.py` | Embed host bins for guest |
 | `gen_adam_lite_embed.py` | Emits `Kernel/RVAdamLiteMenuSrc.HC` from in-tree `Adam/Menu_RV_Guest.HC` (nested guest `#include`; no full Menu U8[]) |

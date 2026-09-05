@@ -385,8 +385,9 @@ U0 Help()
   UartStr("  Help     help;  Help;\n");
   UartStr("  A2       ExePutS→Jit here; guest Cmp=make repl-cmp\n");
   UartStr("  Trap     TrapInit; Fault; Break;  Ctrl-C during eval\n");
-  UartStr("  Note     ZMODEM / interactive FunPick: bootstrap repl.elf until parity\n");
-  UartStr("  Soft     SafeMode; Recover; Reset; HardReset; Halt;\n");
+  UartStr("  Note     ZMODEM waived on thin image; DumpFile / 9P; FunPick partial\n");
+  UartStr("  Soft     SafeMode; Recover; Reset; Halt;\n");
+  UartStr("  QEMU     Quit; Exit; Fail; HardReset;  // SiFive test @ MEM_TEST\n");
 }
 U8 eval_stmt[512];
 U8 eval_asm_tok[32];

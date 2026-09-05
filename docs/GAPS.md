@@ -76,7 +76,7 @@ Depends-on = DAG edges (do upstream first). Lane = file ownership for parallel a
 | **G6** | Expand `repl-holyc-regression` → flip needles | **Done** — cover G1–G5+G2 trap+livedrv+Sys/journal/Man/Tab/HIST/language; **Fmt+Demo+G11 ZMODEM waived** | G1–G5 | M | **ci** — `tests/scripts/*holyc*`, [REGRESSION.md](../tests/REGRESSION.md); Makefile only |
 | **G7** | **A3 flip** (+ delete `worry_dream`) | **Done** — dual-run dropped; worry_dream **deleted** | G6 + criteria 1–4 | S | **ci** — [A3_FLIP_DRAFT.md](A3_FLIP_DRAFT.md) applied; Fmt+Demo+ZMODEM waived |
 | **G8** | **B0** guest Cmp → loadable BIN | Remote rebuild starts; self-host DoD Track B | A2 done | L | **cmp** — `Compiler/**/*RV*`, phase3 / ExePutS UART proof; [COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md). **Partial:** MakeOS/Runtime/AdamCore + soft AdamLite (menu_n=8) BINs green; **not** full Adam/DolDoc/`MakeAdam_RV`; class/StrCpy-glbl/U0-import gaps |
-| **G9** | **A5** thin HolyC phase3 + RedSea BINs | Boot ≠ “host AOT’d demo ELF” alone | G8 partial OK | L | **phase3** — `Adam/`, `Kernel/RVPhase3.HC`, RedSea Load path. **Partial:** guest BINs + **reloc heap Load** of `A:/Compiler/Compiler.BIN` (PC-rel seed); Body+HostBinEmbed+Menu U8[] **dropped**; residual = phase3 ELF scaffold + pack_tosb seed bytes @0x81000000 (staging only) |
+| **G9** | **A5** thin HolyC phase3 + RedSea BINs | Boot ≠ “host AOT’d demo ELF” alone | G8 partial OK | L | **phase3** — `Adam/`, `Kernel/RVPhase3.HC`, RedSea Load path. **Partial:** guest BINs + **reloc heap Load** of virtio RedSea `Compiler.BIN` (ELF `.compiler_bin` dropped by default) + **staged probe `Kernel.BIN`** FileFind+Load+`KernelEntry` handoff before Cmp + **`kernel-thin-loader-smoke`** (mount→Load→Call, no Cmp); residual = phase3 ELF Cmp/StartOS scaffold + host `pack_tosb` seeds (not bootable Kernel_RV) |
 | **G10** | **A4** retire `templeos-riscv/kernel/*.c` from CI | Honest product images; drop `templeos-smoke` dependency | G9 or HolyC plat ORACLE | M | **c-kernel** — `templeos-riscv/kernel/`, Makefile `templeos-smoke` |
 | **G11** | ZMODEM on `repl-holyc` | **Waived** — not A3/G7 | — | S | **export** — embed refused (~28 KiB `zmodem.hc`+`trzsz.hc`, JIT risk); product = DumpFile/DumpChanges + virtio-9p; legacy `zmodem-smoke`/`trzsz-smoke` = local only |
 | **G12** | Virtio-PCI finish | TCP/IP; AIA MSI-X→IMSIC | BlkDev MMIO→PCI + 9p/net PCI + INTx MEIE done | M | **virtio** — TCP; MSI-X on AIA boards |
@@ -173,6 +173,7 @@ are). Top **missing** items to schedule after Wave 1–2:
 | **G25** | VT mux (2+ consoles over UART) | tmux-like attach | G22 | M | **Partial** — `Vt`/`VtAttach`/`VtDetach`/`VtCapture`/`VtKeys`(Ctrl-A); `VtPane(a,b)` + framed `P\ta\tb`; host `--vt-follow`/`--vt-split`/`--vt-panes`; **no guest ANSI TTY split** |
 | **G26** | XON/XOFF (or RTS/CTS) flow control | Panic/bulk Dump/9P | — / G22 | S | **SW XON/XOFF done** (`UartXonXoff`, `repl-uart-xon-pty`); **RTS/CTS soft stub** (`UartRtsCts` / `RVUartRtsCts`) — **no-op on virt** (real pin wiring TBD) |
 | **G27** | /proc-ish inspection remainder | `ps` / mounts UART UI | — | S | **Core done** — `bootstrap/seed/sys.hc` (`Sys`/`Uptime`/`MemRep`/`IrqRep`/`DevRep`/`Cnts`). **Remaining:** task table, mounts |
+| **G28** | Path/`::` vs UART/host Unix dual-namespace | One TempleOS grammar for Cd/FilesFind/`#include`/`__DIR__` | — | M | **Partial** — [PATHS.md](PATHS.md): host `A:`/`::` + `tos/` include fallback; `__DIR__`→`/…` (keeps `tos/`); UART `FsResolve` accepts `::`/`A:`/`~`, `Pwd`→`::/`. Residual: memfs≠BlkDev letter; 9P as `P:`; `__DIR__`≠guest `::/` |
 
 **Waived:** **G11** ZMODEM/trzsz on thin `repl-holyc` — DumpFile + DumpChanges + virtio-9p
 cover operate-through; embed refused (~28 KiB / JIT risk). See [SELF_HOST.md](SELF_HOST.md).
@@ -232,21 +233,22 @@ Ctrls + AC + WallPaper sprites). Guest Cmp cannot rebuild that stack as product 
 | Blocker | Why it blocks P6 exit | Evidence |
 |---------|----------------------|----------|
 | **G8 remainder** | Guest Cmp of large multi-file Adam/Compiler projects (not tiny Runtime BINs) | phase3 MakeOS/Runtime OK; full `Compiler.PRJ` / `MakeAdam` not guest-Cmp’d |
-| **G9 residual host AOT** | phase3 ELF scaffold + `pack_tosb` Compiler.BIN still Mac-built (linked @0x81000000 as **byte source**); live Cmp is reloc heap Load of RedSea seed; Runtime staging strings in ELF text; guest `Kernel.BIN` is probe not full Kernel_RV | [COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md) P3 residual — Body / HostBinEmbed / Menu U8[] **gone**; reloc RedSea Compiler Load preferred |
+| **G9 residual host AOT** | phase3 ELF Cmp/StartOS scaffold + host `pack_tosb`→RedSea virtio img still Mac-built; live Cmp is reloc heap Load (no default ELF `.compiler_bin`); Runtime staging strings in ELF text; RedSea `Kernel.BIN` is **probe** (`KernelProbe→42`, `KernelEntry→0x4B45`) not full Kernel_RV — FileFind+Load+handoff before Cmp landed; **thin loader ELF** (`thin_loader.elf`) proves mount→Load→`KernelEntry` without Cmp | [COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md) P3 residual — Body / HostBinEmbed / Menu U8[] / default `.compiler_bin` **gone**; Kernel seed + thin handoff landed; bootable Kernel.BIN / non-returning handoff next |
 | **DolDoc / Menu Lex** | CmpCtrl MenuNew on split-AOT via abs addrs | Hand Lex SoT; `RVCmpCtrlAddrsGet`+soft I64 `MenuNewCmpCtrl`; DocForm class-meta |
 | **PopUp_RV / WinMgr** | PopUp needs `CRVWin` / `rv_winmgr` symbols | Soft Lite probe omits PopUp; host AOT `win_*.elf` still bootstrap |
 
 **P6 soft probe (landed, not DoD):** phase3 stages in-tree `Adam/Menu_RV_Guest.HC`
-(+ `Menu_RV` wrap with `MENU_RV_GUEST_CMP`) via `RVAdamLiteMenuSrc` (G9 — **no** full
-Menu U8[] embed). Guest remains **PersonalMenu extract** (Count/Name/Id) — attempts to
-nest `CMenu`/index Lex/`StrCmp`/id tables into Guest **block** flat Guest Cmp (breaks
-AdamLite `#include`). Soft `Menu_RV_Guest_Lex.HC` (index `st[i]` Lex) is a separate Cmp
-probe. Host `Menu_RV`: real `CMenu` hand Lex + `MenuNewCmpCtrl`, `MenuTask`/
-`MenuEntryWidth`, unified `MenuPush`/`MenuPop`; PersonalMenu.DD staged on A:. Guest Cmp of
-`MakeAdam_RV_Lite` prefers nested `#include "Menu_RV"` → Init + `FileWrite(LITE.TXT)` +
-`return 8` (avoid Count→local before multi-STR unless sibling CALL_IMPORT store is green).
-Soft — does **not** gate phase3. PopUp CRVWin / DocTerm remain host WinMgr (`win_*.elf`).
-Load→Call needle: `P6 MakeAdam_RV_Lite Load→Call OK (menu_n=8 Menu_RV, LITE.TXT)`.
+(+ `Menu_RV` wrap with `MENU_RV_GUEST_CMP` + folded `Menu_RV_Guest_Lex`) via
+`RVAdamLiteMenuSrc` (G9 — **no** full Menu U8[] embed). Guest chrome APIs: Count/Name/Id/
+**Width** (shared with host WinMgr surface). Wrap `#include`s Lex then Guest. Soft probes:
+`LiteMenuLex` / `LiteLexFold` / flat Guest — **currently guest Cmp err=1** (regression vs
+prior PersonalMenu-only Guest; Width/Lex body under bisect). AdamLite prefers
+`#include "Menu_RV"` → Init + `FileWrite(LITE.TXT)` + `return 8`; **menu-free FileWrite
+fallback** if Menu include Cmp fails (keeps StartOS Load→Call needle). Nesting
+`CMenu`/`CAlloc` still **blocks** guest product Menu. Host `Menu_RV`: real `CMenu` hand Lex
++ `MenuNewCmpCtrl`, `MenuTask`/`MenuEntryWidth`, unified `MenuPush`/`MenuPop`.
+PopUp CRVWin / DocTerm remain host WinMgr (`win_*.elf`). Soft — does **not** gate phase3.
+Load→Call needle: `P6 MakeAdam_RV_Lite Load→Call OK (menu_n=8 Lex+Guest|Menu_RV, LITE.TXT)`.
 
 **Guest Cmp gaps found this pass (G8 remainder):**
 
@@ -257,21 +259,25 @@ Load→Call needle: `P6 MakeAdam_RV_Lite Load→Call OK (menu_n=8 Menu_RV, LITE.
 | Guest `FileWrite` inside AdamLite.BIN | **OK** as Count→local then multi-STR `FileWrite` (CALL_IMPORT restores SP after `_RV_HC_CALL`). Guest plants LITE.TXT |
 | Local `U8 name[32]` | guest Cmp **OK** |
 | Local `U8 *p="lit"; return 1` | guest Cmp **OK** |
-| `*"lit"` / `return *p` / ident walk | guest Cmp+Call **OK** for star-lit / `*p` (was hang: host AOT `PREC<<16+i` → ic_code 0x4000). Ident walk still soft |
+| `*"lit"` / `return *p` / ident walk | guest Cmp+Call **OK** (`CmpU8StarType`: host AOT `type+1` was +1 byte; also prior pack `PREC<<16+i` → ic 0x4000). Ident walk still soft |
 | Glbl `U8[]` elem after StrCpy | Cmp OK; Call soft-fail r=0 (ABS_ADDR / REG_RAX=x0 — separate) |
 | Span `DirMk("A:/Span")` | phase3 Soft Call **OK** (`DrvUnlock` Yield only if live peer). Span smoke still soft-skips live DirMk (Doc Print under put_doc) |
-| Guest index Lex (`Menu_RV_Guest_Lex`) | soft Cmp probe; fold into Guest when Call-green |
+| Guest index Lex (`Menu_RV_Guest_Lex`) | wrap **folded**; flat Guest_Lex Cmp **err=1** (bisect) |
+| Lex+Guest fold wrap (`LiteLexFold`) | Cmp **err=1** while Guest/Lex Cmp red |
+| Flat Guest (+Width) | Cmp **err=1** (was OK as PersonalMenu-only extract) |
 | Guest Kernel `CMenu` / `CAlloc(sizeof)` | **BLOCKED** flat Cmp — keep `MENU_RV_GUEST_CMP` |
 | Rich host `Menu_RV` CmpCtrl / PopUp / DocTerm | WinMgr `win_*.elf` path (not guest product yet) |
 
 **Next 3 steps (order):**
 
-1. Fold Guest_Lex after ident-walk Call-green; CALL_IMPORT store is sibling-owned.
-   (`*"lit"` / `*p` OptPass hang fixed — unary prec pack).
-2. Finish G9 residual: guest `A:/Kernel/Kernel.BIN` Load preferred (probe landed);
-   **reloc heap Load** of RedSea `Compiler.BIN` landed (PC-rel seed; linked VMA = bytes only).
-   Next: drop `.compiler_bin` from phase3 ELF (ship seed on RedSea image) + thin loader that
-   boots from RedSea Kernel.BIN (not Mac phase3.elf) + guest Cmp of Compiler.
+1. Unblock guest Cmp of flat Guest (+Width) then Guest_Lex; only then drop
+   menu-free AdamLite fallback. `CMenu`/`CAlloc` remains later. Star-lit/`*p` Soft Call ungated.
+2. Finish G9 residual: RedSea probe `A:/Kernel/Kernel.BIN` FileFind+Load+`KernelEntry`
+   handoff **landed** (host `pack_tosb` seed; Runtime prefers seed; `make kernel-thin-loader-smoke`
+   proves mount→Load→Call without Cmp); **reloc heap Load** of virtio RedSea `Compiler.BIN`
+   landed; default ELF `.compiler_bin` **dropped**. Next: grow `Kernel.BIN` into real
+   `Kernel_RV` (traps/heap/UART/RedSea/`Load`) so thin loader can jump and not return —
+   then retire Mac `phase3.elf` Cmp/StartOS scaffold + guest Cmp of Compiler.
 3. Only then attempt guest Cmp of DolDoc subset / real `MakeAdam_RV` — do **not** claim
    P6 until on-target Load runs DocTerm+WinMgr without Mac AOT of `win_*.elf` as DoD.
 

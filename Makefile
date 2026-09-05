@@ -32,7 +32,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop asm-gnu-diff compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration a3-flip-check repl-smoke dbg-smoke hwdbg-smoke gdb-uart-smoke trap-smoke repl-blob repl-regression repl-holyc repl-holyc-smoke repl-holyc-regression hc-repl hc-repl-smoke term-probe-pty repl-uart-echo-pty repl-uart-xon-pty zmodem-smoke trzsz-smoke dump-changes-smoke baremetal baremetal-plat baremetal-smoke repl-payload bootloader bootloader-repl bootloader-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke kernel-selfboot-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtio-pci-irq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-cdc-smoke kernel-demo-netofdots-smoke kernel-demo-blot-smoke kernel-span-smoke kernel-psalmody-smoke kernel-ode-smoke kernel-win-smoke kernel-win-interactive kernel-win-serial-smoke kernel-win-run kernel-win-rebuild kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-sifive-gem-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-sifive-e-full kernel-sifive-e-full-smoke kernel-smp-smoke kernel-exepubs-smoke kernel-repl-exepubs-smoke repl-cmp repl-cmp-smoke kernel-phase3-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
+.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop asm-gnu-diff compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration a3-flip-check repl-smoke dbg-smoke hwdbg-smoke gdb-uart-smoke trap-smoke repl-blob repl-regression repl-holyc repl-holyc-smoke repl-holyc-regression hc-repl hc-repl-smoke path-namespace-smoke term-probe-pty repl-uart-echo-pty repl-uart-xon-pty zmodem-smoke trzsz-smoke dump-changes-smoke baremetal baremetal-plat baremetal-smoke repl-payload bootloader bootloader-repl bootloader-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke kernel-selfboot-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtio-pci-irq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-cdc-smoke kernel-demo-netofdots-smoke kernel-demo-blot-smoke kernel-span-smoke kernel-psalmody-smoke kernel-ode-smoke kernel-win-smoke kernel-win-interactive kernel-win-serial-smoke kernel-win-run kernel-win-rebuild kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-sifive-gem-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-sifive-e-full kernel-sifive-e-full-smoke kernel-smp-smoke kernel-exepubs-smoke kernel-repl-exepubs-smoke repl-cmp repl-cmp-smoke kernel-phase3-smoke kernel-thin-loader-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -236,6 +236,22 @@ repl-holyc-smoke: hc-repl-smoke
 hc-repl-smoke:
 	@chmod +x tests/scripts/run_hc_repl_smoke.sh
 	@tests/scripts/run_hc_repl_smoke.sh
+	@chmod +x tests/scripts/run_hc_repl_quit_smoke.sh
+	@tests/scripts/run_hc_repl_quit_smoke.sh
+
+# SiFive test finisher only (Quit/Exit/Fail @ MEM_TEST on -M virt).
+hc-repl-quit-smoke:
+	@chmod +x tests/scripts/run_hc_repl_quit_smoke.sh
+	@tests/scripts/run_hc_repl_quit_smoke.sh
+
+.PHONY: hc-repl-quit-smoke
+
+# G28: host A:/ + ::/ include + __DIR__ → / (tos-stripped)
+path-namespace-smoke: $(COMPILER_BIN)
+	@chmod +x tests/scripts/run_path_namespace_smoke.sh
+	@tests/scripts/run_path_namespace_smoke.sh
+
+.PHONY: path-namespace-smoke
 
 # HolyC honesty subset (expand toward full repl-regression; see SELF_HOST.md flip criteria).
 repl-holyc-regression:
@@ -370,6 +386,7 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) kernel-exepubs-fundef-smoke
 	@$(MAKE) kernel-repl-exepubs-smoke
 	@$(MAKE) kernel-phase3-smoke
+	@$(MAKE) kernel-thin-loader-smoke
 	# Track A (docs/SELF_HOST.md A3 Done): HolyC-only honesty gates.
 	# repl-cmp-smoke already ran above as kernel-repl-exepubs-smoke → build/repl-cmp.elf.
 	# Legacy repl-smoke/repl-regression and zmodem-smoke are local-only (not required).
@@ -888,6 +905,10 @@ kernel-phase3-smoke:
 	@chmod +x tests/scripts/run_kernel_phase3_smoke.sh
 	@tests/scripts/run_kernel_phase3_smoke.sh
 
+kernel-thin-loader-smoke:
+	@chmod +x tests/scripts/run_kernel_thin_loader_smoke.sh
+	@tests/scripts/run_kernel_thin_loader_smoke.sh
+
 # ShellCheck on the same primary scripts as the CI shellcheck job (requires shellcheck on PATH).
 lint-sh:
 	@command -v shellcheck >/dev/null 2>&1 || { echo 'error: install shellcheck (e.g. brew install shellcheck)' >&2; exit 1; }
@@ -940,6 +961,7 @@ test: $(COMPILER_BIN)
 		$(RISCV_OBJDUMP) -D -b binary -m riscv:rv64 build/simple.bin 2>/dev/null || echo "  (install riscv-objdump to see disassembly)"; \
 	fi
 	@$(MAKE) fmt-test
+	@$(MAKE) path-namespace-smoke
 
 # Clean build artifacts (binaries, dSYMs, build/, bootstrap objs)
 clean:
@@ -985,6 +1007,8 @@ help:
 	@echo "  bootloader-smoke  - HolyC pflash boot → HolyC REPL blob (product split-boot)"
 	@echo "  repl-smoke        - RETIRED (worry_dream deleted); use repl-holyc-smoke"
 	@echo "  hc-repl / hc-repl-smoke - alias of repl-holyc* (do not grow jit.hc)"
+	@echo "  hc-repl-quit-smoke - Quit/Exit/Fail via SiFive test @ MEM_TEST (virt)"
+	@echo "  path-namespace-smoke - G28 host A:/ + ::/ include + __DIR__ /tos-strip"
 	@echo "  repl-regression   - RETIRED (worry_dream deleted); use repl-holyc-regression"
 	@echo "  term-probe-pty    - PTY + mock CPR: TermProbe updates TermRows/TermCols"
 	@echo "  repl-uart-echo-pty - paced PTY: single-echo keys + Ctrl-C (uart_hw_drain race)"
@@ -999,8 +1023,8 @@ help:
 	@echo "  kernel-cdc-smoke  - DCNew/GrBlot/FloodFill/brush + Sprite3 (Demo Blot APIs; UART hash)"
 	@echo "  kernel-demo-netofdots-smoke - stock Demo/Graphics/NetOfDots.HC on RV Gr (UART hash)"
 	@echo "  kernel-demo-blot-smoke - stock Demo/Graphics/Blot.HC FloodFill3/brush + Win shims"
-	@echo "  kernel-span-smoke - stock Apps/Span Load Cd(__DIR__) + GetMsg/PopUpFileName"
-	@echo "  kernel-psalmody-smoke - Psalmody Note2Ona/Menu/Tempo + host \$IB staff embed"
+	@echo "  kernel-span-smoke - stock Apps/Span Load + GetMsg live (Yield pump) / PopUpFileName"
+	@echo "  kernel-psalmody-smoke - Psalmody Load + Note2Ona/Menu/Tempo/\$IB + GetMsg live"
 	@echo "  kernel-ode-smoke  - stock Demo/Games/MassSpring.HC on AMathODE_RV (RK5+ODEsUpdate)"
 	@echo "  kernel-win-smoke  - TempleOS-style WinMgr windows on FB (UART hash; bordered desktop)"
 	@echo "  kernel-win-interactive - win_i.elf + headless UART proof (ramfb + virtio-kbd/tablet)"
@@ -1031,6 +1055,7 @@ help:
 	@echo "  kernel-exepubs-smoke - Guest ExePutS Add(40,2) (Compiler_RV; see COMPILER_RV.md)"
 	@echo "  kernel-repl-exepubs-smoke - alias of repl-cmp-smoke (SELF_HOST.md A2)"
 	@echo "  kernel-phase3-smoke  - RVKMain phase 3: Compiler_RV + StartOS subset (UART)"
+	@echo "  kernel-thin-loader-smoke - virtio RedSea Load Kernel.BIN + KernelEntry handoff (G9)"
 	@echo "  menuconfig      - Linux mconf (ncurses) → .config + RVAutoConf.HH (templeos-riscv/KCONFIG.md)"
 	@echo "  lint-sh       - ShellCheck CI shell scripts (needs shellcheck on PATH)"
 	@echo "  syntax-sh     - bash -n on all tests/scripts/*.sh (no dependencies)"

@@ -80,7 +80,9 @@ Do **not** power-cycle until session work is off the guest.
 |------|--------------------|------|
 | **`SafeMode;`** | UART-only recovery banner; `FsCheckpoint("safemode")` (or `FsSnap` if journal not ready). **Does not** wipe memfs or touch WinMgr (REPL has none). | Prompt lives; want a named pin + reminder to export |
 | **`Reset;`** | Soft Boot re-entry (`trap.hc`) | Clear stack / interrupt state; keep files |
-| **`HardReset;`** | MEM_TEST finisher when mapped | Sim/board reset only when you mean it |
+| **`HardReset;`** | MEM_TEST finisher RESET `0x7777` | Sim/board reset only when you mean it |
+| **`Quit;` / `Exit;`** | MEM_TEST finisher PASS `0x5555` | End QEMU virt session (host exit 0) |
+| **`Fail;`** | MEM_TEST finisher FAIL `0x10003333` | End QEMU with non-zero host exit |
 | **`Recover;`** / **`FsRecover;`** | Drop slots not in snap table; `FsEpochSealNamed(id,"RECOVER")`. Clears journal. **Does not** reinstall pristine seed bytes from the host blob. | After export, when you want a clean dirty-set without power-cycle |
 | **`FsReplay;`** | Verify journal vs tree (OK/MISS/DRIFT); no body rewrite | Forensics before/after Recover |
 

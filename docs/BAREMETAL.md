@@ -11,9 +11,8 @@ and bare QEMU (not the OpenSBI/EDK2 `-bios` story).
 
 | Artifact | Link / load address | Build | Use |
 |----------|---------------------|-------|-----|
-| `build/baremetal/repl.elf` | RAM `0x80000000` (virt default) | `make baremetal` | OpenOCD `load_image`, gdb, `qemu -kernel repl.elf` |
-| `build/baremetal/repl.bin` | same (flat) | `make baremetal` | OpenOCD binary load, `qemu -kernel repl.bin`, `-device loader` |
-| `bootstrap/repl.elf` | RAM `LOAD_BASE` | `make -C bootstrap -f Makefile.repl repl.elf` | Same image; baremetal dir is the install copy |
+| `build/repl-holyc.elf` / `build/hc_repl.elf` | RAM `0x80000000` | `make hc-repl` | **Product** classic UART HolyC REPL |
+| `build/baremetal/repl.bin` (via `repl-payload`) | same | `make repl-payload` | Copy of `hc_repl.blob.bin` for OpenOCD naming |
 | `build/kernels/<m>/plat.elf` | RAM `CONFIG_KERNEL_LINK_ADDR` | `make kernel-plat-smoke` / `build_kernel_plat.sh` | HolyC kernel plat demo |
 | `build/baremetal/plat.elf` / `.bin` | RAM | `make baremetal-plat` | Plat demo in stable baremetal dir |
 | `build/firmware/templeos-fw.bin` | flash `0x20000000` | `make firmware` | FPGA flash / QEMU pflash (`-bios none -drive if=pflash,...`) |
@@ -22,18 +21,16 @@ and bare QEMU (not the OpenSBI/EDK2 `-bios` story).
 | `build/kernels/<m>/plat.bin` | flash (when Kconfig firmware) | `menuconfig` → **Firmware ROM** + `build_kernel_plat.sh` | Per-board flash image of kernel plat |
 | `build/bootloader/boot.bin` | `BOOTLOADER_BASE` (default flash `0x20000000`) | `make bootloader` | **HolyC** jump/copy head (`boot.hc` + `pack_bootloader.py`) |
 | `build/hc_repl.blob.bin` | `ENTRY_POINT` / DRAM load | `make repl-payload` / `hc_repl` blob | **HolyC** AOT REPL flat payload |
-| `build/baremetal/repl.bin` (via `repl-payload`) | same | `make repl-payload` | Copy of `hc_repl.blob.bin` for OpenOCD naming |
 
 **Entry symbol:** `_start` in HolyC `asm{}` for product images (`bootstrap/bootloader/boot.hc`,
-`bootstrap/hc_repl/start.hc`). Legacy C guest uses `bootstrap/startup.s` /
-`tests/exec/harness/crt0.S`.
+`bootstrap/hc_repl/start.hc`). Legacy C guest (`worry_dream` / `startup.s`) is deleted.
 
 **Linker scripts:**
 
 | Script | Role |
 |--------|------|
-| `bootstrap/linker.ld` | Legacy C REPL RAM image (`Makefile.repl`) |
 | `tests/exec/harness/link_exec.ld` | Kernel/exec harness @ `0x80000000` |
+| `bootstrap/hc_repl/link.ld` | Product UART HolyC REPL RAM image |
 | `bootstrap/kernel_linker.ld` | Full HolyC kernel tree link |
 | `bootstrap/firmware.ld` | Legacy GNU flash head @ `FLASH_BASE` + embedded `.fw_payload` |
 | *(none for product bootloader)* | Flat `holyc-riscv` bin; optional Python pflash pad |
@@ -51,10 +48,10 @@ Kconfig `syncconfig` feeds `RAM_BASE` / `KERNEL_LINK_ADDR` into `make baremetal`
 ## Make targets
 
 ```bash
-make baremetal              # legacy C guest → build/baremetal/repl.{elf,bin}
+make hc-repl                # product UART HolyC REPL → build/repl-holyc.elf
 make repl-payload           # HolyC hc_repl.blob.bin (+ copy to baremetal/repl.bin)
 make baremetal-plat         # plat.elf + plat.bin (virt kernel demo)
-make baremetal-smoke        # qemu -bios none -kernel legacy repl.bin, REPL 1+1
+make baremetal              # default PAYLOAD=plat (not the classic REPL)
 make bootloader             # HolyC build/bootloader/boot.bin @ BOOTLOADER_BASE
 make bootloader-repl        # HolyC bootloader + HolyC REPL blob
 make bootloader-smoke       # pflash HolyC jump → REPL 1+1
@@ -62,17 +59,17 @@ make firmware               # legacy GNU flash ROM + bios copies (see below)
 make firmware-smoke         # pflash boot smoke (legacy wrap)
 ```
 
-Install dir only copies/links; it does not change the link layout. Rebuild REPL with
-`Makefile.repl`, then `make baremetal` refreshes `build/baremetal/*`.
+For the classic UART REPL on bare QEMU, prefer `make hc-repl` (not `make baremetal`).
+`make repl-payload` refreshes the flat blob used by OpenOCD / split boot.
 
 ## Workflow A — RAM load (FPGA + bare QEMU)
 
 **When:** JTAG loads directly into DRAM, or QEMU virt with `-bios none` (reset ROM jumps
 to `0x80000000`).
 
-1. `make baremetal`
+1. `make hc-repl` (or `make repl-payload` for flat `.bin`)
 2. OpenOCD: load at `LOAD_BASE`, reset, run from `_start`
-3. QEMU: `-bios none -kernel build/baremetal/repl.bin`
+3. QEMU: `-bios none -kernel build/repl-holyc.elf` (or `build/baremetal/repl.bin` after `repl-payload`)
 
 Flat `.bin` is a byte-for-byte image starting at `LOAD_BASE` (`.text` through `.data`;
 BSS is zero-filled by `_start`). Prefer `.elf` when you need segment-aware loading or
@@ -90,7 +87,7 @@ source [find interface/jtag.cfg]
 # adapter speed 10000
 
 set WORK_AREA 0x80000000
-set _IMAGE     /path/to/templeos-cursor-riscv/build/baremetal/repl.elf
+set _IMAGE     /path/to/templeos-cursor-riscv/build/repl-holyc.elf
 
 init
 halt
@@ -98,7 +95,7 @@ halt
 # ELF: honors PT_LOAD segments and link address
 load_image $_IMAGE $WORK_AREA elf
 
-# Flat binary alternative (same LOAD_BASE as linker.ld):
+# Flat binary alternative (after make repl-payload):
 # load_image /path/to/build/baremetal/repl.bin $WORK_AREA bin
 
 # Optional: symbols for gdb

@@ -309,7 +309,8 @@ asm {
 	li	a0,0
 	ret
 }
-// BEqu(bf,n,val): set bit n to val (Bts if val, Btr if not); returns val. LBEqu is the locked variant.
+// BEqu(bf,n,val): set bit n to val (Bts if val, Btr if not); return OLD bit
+// (TempleOS ABI — Silent/Raw/ProgressBars etc. restore via old=BEqu(...,new)).
 asm {
 	BEqu::
 	srai	t0,a1,3
@@ -318,15 +319,17 @@ asm {
 	andi	t2,a1,7
 	li	t4,1
 	sll	t4,t4,t2
+	and	t5,t1,t4
+	sltu	t5,zero,t5
 	beq	a2,zero,beq_clr
 	or	t1,t1,t4
 	j	beq_st
 	beq_clr:
-	not	t4,t4
-	and	t1,t1,t4
+	not	t6,t4
+	and	t1,t1,t6
 	beq_st:
 	sb	t1,0(t0)
-	mv	a0,a2
+	mv	a0,t5
 	ret
 }
 
@@ -334,19 +337,27 @@ asm {
 	LBEqu::
 	srai	t0,a1,3
 	add	t0,a0,t0
-	lbu	t1,0(t0)
-	andi	t2,a1,7
-	li	t4,1
-	sll	t4,t4,t2
+	andi	t1,t0,3
+	sub	t2,t0,t1
+	slli	t1,t1,3
+	andi	t3,a1,7
+	add	t1,t1,t3
+	li	t3,1
+	sll	t3,t3,t1
+	lbeq_retry:
+	lr.w	t4,(t2)
+	and	t5,t4,t3
+	sltu	t5,zero,t5
 	beq	a2,zero,lbeq_clr
-	or	t1,t1,t4
-	j	lbeq_st
+	or	t6,t4,t3
+	j	lbeq_sc
 	lbeq_clr:
-	not	t4,t4
-	and	t1,t1,t4
-	lbeq_st:
-	sb	t1,0(t0)
-	mv	a0,a2
+	not	t0,t3
+	and	t6,t4,t0
+	lbeq_sc:
+	sc.w	t0,t6,(t2)
+	bnez	t0,lbeq_retry
+	mv	a0,t5
 	ret
 }
 // I64 StrICmp(U8 *a, U8 *b): case-insensitive compare (lower both), 0 if equal.

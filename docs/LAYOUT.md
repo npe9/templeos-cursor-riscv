@@ -12,12 +12,11 @@ TempleOS ISO/home content lives under **`tos/`**.
 ├── host/                    # Host HolyC → RISC-V AOT compiler (C)
 │   ├── lexer.c parser.c compiler.c holyc_fmt.c …
 │   └── README.md
-├── bootstrap/               # Bare-metal REPL + transitional Mac-AOT
-│   ├── Makefile.repl        # Primary: worry_dream_repl + seed/
-│   ├── worry_dream_repl.c / holy_rt*.h / startup.s / linker.ld
-│   ├── gen_seeds.py
+├── bootstrap/               # Bare-metal HolyC REPL + boot helpers
+│   ├── hc_repl/             # Product UART REPL (make hc-repl; do not grow jit.hc)
 │   ├── seed/                # HolyC memfs seeds → /Boot /Lib /Apps /Doc /Tutorials
-│   ├── hc_repl/             # Transitional Mac-AOT guest (do not grow jit.hc)
+│   ├── Makefile.repl        # seed blob helpers only (legacy C guest deleted)
+│   ├── gen_seeds.py
 │   ├── archive/             # Historical demos / old Makefiles (not built by CI)
 │   └── README.md
 ├── Kernel/ Compiler/ Adam/ Demo/   # Actively ported HolyC — do not rename
@@ -49,7 +48,8 @@ relative layout as TempleOS `/`, not scattered at the git root:
 | `tos/Apps/` `tos/Doc/` `tos/Misc/` `tos/Linux/` `tos/Downloads/` `tos/0000Boot/` | Upstream product trees |
 
 See [tos/README.md](../tos/README.md). Guest `::/` paths still mean ISO root;
-host scripts use `tos/…`.
+host scripts use `tos/…`. Path dual-namespace (BlkDev vs UART memfs vs host AOT):
+[PATHS.md](PATHS.md).
 
 ## Host compiler (`host/`)
 
@@ -63,9 +63,9 @@ Compile flags include `-Ihost -I.` so `#include "holyc_compiler.h"` and
 
 | Path | Role |
 |------|------|
-| `Makefile.repl` + `worry_dream_repl.c` | Live UART REPL (C guest + host slots) |
-| `seed/` | Editable HolyC primitives baked into `seed_files.h` |
-| `hc_repl/` | Temporary HolyC-only AOT ELF — **do not grow `jit.hc`** |
+| `hc_repl/` | **Product UART HolyC REPL** (`make hc-repl`) — **do not grow `jit.hc`** |
+| `seed/` | Editable HolyC primitives (embedded by `hc_repl/gen_embed.py`) |
+| `Makefile.repl` | Seed/blob helpers only (legacy C `repl.elf` target retired) |
 | `archive/` | Old one-off demos, stress `.txt`, alternate Makefiles — not CI |
 
 See [REPL.md](REPL.md) and [bootstrap/README.md](../bootstrap/README.md).

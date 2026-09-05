@@ -630,12 +630,13 @@ public CMenuEntry *MenuEntryFind(CMenu *haystack_menu, U8 *needle_full_name)
 
 U0 RVMenuPersonalInit()
 {
-  //PersonalMenu via MenuFile of A:/Adam/PersonalMenu.DD (TempleOS MenuFile shape).
-  // Stage the DD when missing (WinMgr chrome before phase3 DirMk). FileFind is
-  // Yield-safe after BlkDevUnlock peer-runnable check + DirContextNew skip of
-  // Cd("*"). Table fallback if FS/MenuFile fails — keep chrome alive.
+  //PersonalMenu via MenuFile of A:/Adam/PersonalMenu.DD (TempleOS shape).
+  // Mount stages the DD under A:/Adam (DirMk fixed: LBEqu returns old bit so
+  // FileFind Silent restore works). Root A:/PersonalMenu.DD is fallback; table
+  // if MenuFile fails.
   CMenu *m;
-  U8 *path = "A:/Adam/PersonalMenu.DD";
+  U8 *adam_path = "A:/Adam/PersonalMenu.DD";
+  U8 *root_path = "A:/PersonalMenu.DD";
   U8 *src;
   if (rv_menu_personal_n > 0)
     return;
@@ -644,18 +645,23 @@ U0 RVMenuPersonalInit()
     RVMenuTableLoad;
     return;
   }
-  if (!FileFind(path)) {
-    DirMk("A:/Adam");
-    src = "Win {\n" "  TileHorz(,1);\n" "  TileVert(,2);\n" "  WinMax(,3);\n" "  Close(,4);\n" "}\n" "Help {\n" "  About(,5);\n" "  Help(,6);\n" "  FormDemo(,7);\n" "  CtrlsDemo(,8);\n" "}\n";
-    FileWrite(path, src, StrLen(src));
-    Print("RVMenuPersonalInit staged %s bytes=%d\n", path, StrLen(src));
+  m = MenuFile(adam_path);
+  if (m && rv_menu_personal_n > 0 && !rv_menu_src_embedded) {
+    Print("RVMenuPersonalInit MenuFile ok n=%d emb=%d path=%s\n", rv_menu_personal_n, rv_menu_src_embedded, adam_path);
+    return;
   }
-  if (FileFind(path)) {
-    m = MenuFile(path);
-    if (m && rv_menu_personal_n > 0) {
-      Print("RVMenuPersonalInit MenuFile ok n=%d emb=%d path=%s\n", rv_menu_personal_n, rv_menu_src_embedded, path);
-      return;
-    }
+  rv_menu_personal_n = 0;
+  m = MenuFile(root_path);
+  if (!m || rv_menu_src_embedded || rv_menu_personal_n <= 0) {
+    src = "Win {\n" "  TileHorz(,1);\n" "  TileVert(,2);\n" "  WinMax(,3);\n" "  Close(,4);\n" "}\n" "Help {\n" "  About(,5);\n" "  Help(,6);\n" "  FormDemo(,7);\n" "  CtrlsDemo(,8);\n" "}\n";
+    FileWrite(root_path, src, StrLen(src));
+    Print("RVMenuPersonalInit staged %s bytes=%d\n", root_path, StrLen(src));
+    rv_menu_personal_n = 0;
+    m = MenuFile(root_path);
+  }
+  if (m && rv_menu_personal_n > 0 && !rv_menu_src_embedded) {
+    Print("RVMenuPersonalInit MenuFile ok n=%d emb=%d path=%s\n", rv_menu_personal_n, rv_menu_src_embedded, root_path);
+    return;
   }
   Print("RVMenuPersonalInit MenuFile miss — table fallback\n");
   RVMenuTableLoad;

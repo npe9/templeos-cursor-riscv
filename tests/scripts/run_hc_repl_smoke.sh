@@ -76,12 +76,22 @@ add_case 'Tty();'
 add_case 'TtyCanon();'
 add_case 'TtyMapIn(13);' 000000000000000a
 add_case 'TtyIsErase(8);' 0000000000000001
+add_case 'TtyIsErase(127);' 0000000000000001
 add_case 'TtyIsKill(21);' 0000000000000001
 add_case 'TtyEofHit();' 0000000000000000
 add_case 'TtyOnlcrGet();' 0000000000000000
 add_case 'TtyOnlcr(1);'
 add_case 'TtyOnlcrGet();' 0000000000000001
 add_case 'TtyOnlcr(0);'
+# Rubout: BS (0x08) and DEL (0x7f) erase last char; echo must be BS-space-BS (not literal "b b").
+input+=$'x\x08Print("BS08_ERASE_OK\\n");\n'
+input+=$'y\x7fPrint("DEL7F_ERASE_OK\\n");\n'
+# Buffer mutation: 9 + BS + 3; → 3 (if erase failed → 93)
+input+=$'9\x083;\n'
+expected+=$'0000000000000003\n'
+# DEL rubout on a typed digit
+input+=$'8\x7f4;\n'
+expected+=$'0000000000000004\n'
 # Term size/type (term.hc): CONSOLE.md #11
 add_case 'TermSize(80,24);'
 add_case 'TermNameAnsi;'
@@ -89,6 +99,13 @@ add_case 'TermRep;'
 
 add_case 'Dir;'
 add_case 'Cd("Tutorials");'
+add_case 'Pwd();'
+add_case 'Cd("/");'
+# G28 path bridge: TempleOS prefixes on UART memfs
+add_case 'Cd("::/Tutorials");'
+add_case 'Pwd();'
+add_case 'Cd("A:/");'
+add_case 'Cd("~/");'
 add_case 'Pwd();'
 add_case 'Cd("/");'
 add_case 'Cat("Lib/print.hc");'
@@ -209,7 +226,10 @@ need "Home/"
 need "Lib/"
 need "Tutorials/"
 need "cwd: /Tutorials/"
+need "::/Tutorials/"
 need "print.hc -- Print / PutChars"
+need "cwd: /Home/"
+need "::/Home/"
 need "cwd: /Home/Work/"
 need "hello.hc"
 need "Hello from HolyC memfs"
@@ -235,6 +255,21 @@ need "mode=canon"
 need "mode=raw"
 need "onlcr=0"
 need "eof_hit=0"
+need "BS08_ERASE_OK"
+need "DEL7F_ERASE_OK"
+# Erase echo: after typed 'x' then BS, UART must emit BS-space-BS (0x08 0x20 0x08), not "b b".
+if ! grep -aob $'x\x08 \x08' "$log" >/dev/null; then
+  echo "FAIL hc-repl-smoke — missing BS-space-BS erase echo after 'x' (0x08)" >&2
+  fail=1
+fi
+if ! grep -aob $'y\x08 \x08' "$log" >/dev/null; then
+  echo "FAIL hc-repl-smoke — missing BS-space-BS erase echo after 'y' (DEL→rubout)" >&2
+  fail=1
+fi
+if grep -aob $'xb b' "$log" >/dev/null || grep -aob $'yb b' "$log" >/dev/null; then
+  echo "FAIL hc-repl-smoke — erase echoed literal 'b b' (broken Holyc \\\\b escape)" >&2
+  fail=1
+fi
 need "--- term ---"
 need "80 x 24"
 need "name=ansi"

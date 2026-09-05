@@ -646,13 +646,28 @@
 //   Reset;  HardReset;  Halt;  Fault;
 // DESCRIPTION
 //   Soft Reset re-enters Boot (REPL stack clean) — not a chip power cycle. HardReset
-//   pokes the MEM_TEST finisher when present. SiFive board HW paths: Man("SiFive").
+//   pokes the MEM_TEST finisher RESET (0x7777). Quit/Exit/PowerOff write PASS (0x5555)
+//   to end QEMU; Fail writes FAIL. SiFive board HW paths: Man("SiFive").
 //   Operate-through: Man("SafeMode"); Man("Recover"); docs/OPS.md.
 // EXAMPLES
 //   Man("Reset");   // see trap.hc page for the live U0 Reset()
+//   Quit;           // leave QEMU (SiFive test PASS)
 //   Help;
 // SEE ALSO
-//   SafeMode  Recover  SiFive  Halt  Fault  Boot  HardReset
+//   SafeMode  Recover  SiFive  Halt  Fault  Boot  HardReset  Quit  Exit  Fail
+// Quit -- Quit (topic)
+// NAME
+//   Quit - end QEMU via SiFive test PASS @ MEM_TEST
+// SYNOPSIS
+//   Quit;  Exit;  PowerOff;  Fail;  HardReset;
+// DESCRIPTION
+//   On QEMU -M virt, MEM_TEST is sifive_test @ 0x100000. Quit writes 0x5555 (PASS /
+//   host exit 0). Fail writes 0x10003333. HardReset writes 0x7777 (guest reset).
+//   Soft Reset; only re-enters Boot — use Quit to leave the emulator session.
+// EXAMPLES
+//   Quit;
+// SEE ALSO
+//   Exit  Fail  HardReset  Reset  Halt  MEM_TEST  SiFive
 // Halt -- Halt (topic)
 // NAME
 //   Halt - park CPU in wfi (see trap.hc Halt / RVSifiveHalt)

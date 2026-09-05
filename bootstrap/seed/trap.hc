@@ -622,14 +622,86 @@ U0 Reset()
   *(I64 *)0x87000000 = *(I64 *)0x87001080;
   TrapCall0(boot);
 }
+// SiFive test finisher @ MEM_TEST (QEMU virt sifive_test @ 0x100000).
+// U32 stores only: PASS=0x5555 → QEMU exit 0; FAIL=0x3333|(code<<16); RESET=0x7777.
+#ifndef TEST_FINISHER_FAIL
+#define TEST_FINISHER_FAIL  0x3333
+#define TEST_FINISHER_PASS  0x5555
+#define TEST_FINISHER_RESET 0x7777
+#endif
+// TestFinisher -- TestFinisher(code)
+// NAME
+//   TestFinisher - poke SiFive test MMIO (QEMU virt harness)
+// SYNOPSIS
+//   U0 TestFinisher(U32 code);
+// DESCRIPTION
+//   Writes `code` to MEM_TEST then parks in wfi. On QEMU -M virt this is the
+//   sifive_test device: 0x5555 pass/shutdown, 0x3333 fail, 0x7777 reset.
+//   No-op message if MEM_TEST is 0 (board without finisher).
+// EXAMPLES
+//   Quit;       // PASS
+//   Fail;       // FAIL code 0
+//   HardReset;  // guest reset request
+// SEE ALSO
+//   Quit  Exit  Fail  HardReset  Halt  MEM_TEST
+U0 TestFinisher(U32 code)
+{
+  U32 *t;
+  if (!MEM_TEST) {
+    UartStr("TestFinisher: MEM_TEST not mapped\n");
+    return;
+  }
+  t = MEM_TEST;
+  *t = code;
+  while (TRUE)
+    HLT;
+}
+// Quit -- Quit()
+// NAME
+//   Quit - shut down QEMU via SiFive test PASS (0x5555)
+// SYNOPSIS
+//   Quit;  Exit;  PowerOff;
+// DESCRIPTION
+//   Writes TEST_FINISHER_PASS to MEM_TEST. On QEMU virt this ends the emulator
+//   with success (exit 0). Soft Reset; only re-enters Boot — use Quit to leave.
+// EXAMPLES
+//   Quit;
+// SEE ALSO
+//   Exit  PowerOff  Fail  HardReset  Reset  Halt
+U0 Quit()
+{
+  TestFinisher(TEST_FINISHER_PASS);
+}
+
+U0 Exit()
+{
+  Quit;
+}
+
+U0 PowerOff()
+{
+  Quit;
+}
+// Fail -- Fail()
+// NAME
+//   Fail - shut down QEMU via SiFive test FAIL (0x3333 | 1<<16)
+// SYNOPSIS
+//   Fail;
+// DESCRIPTION
+//   Writes FAIL with panic code 1 in bits 31:16 so the host process typically
+//   exits non-zero. Custom codes: TestFinisher(0x3333 | (n << 16));
+// EXAMPLES
+//   Fail;
+// SEE ALSO
+//   Quit  HardReset  TestFinisher
+U0 Fail()
+{
+  TestFinisher(TEST_FINISHER_FAIL | (1 << 16));
+}
 
 U0 HardReset()
 {
-  U32 *t;
-  t = MEM_TEST;
-  *t = 0x7777;
-  while (TRUE)
-    HLT;
+  TestFinisher(TEST_FINISHER_RESET);
 }
 
 U0 Halt()

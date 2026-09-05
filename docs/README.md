@@ -41,7 +41,7 @@ see [CI](#build--ci--ops--verification) and [PLATFORM.md](../templeos-riscv/PLAT
 | [../bootstrap/hc_repl/README.md](../bootstrap/hc_repl/README.md) | Transitional Mac-AOT `hc_repl` (do not grow `jit.hc`) |
 | [../host/README.md](../host/README.md) | Host `holyc-riscv` sources |
 
-**Honest status (short):** Guest self-host is the product DoD ([SELF_HOST.md](SELF_HOST.md)). Host `holyc-riscv` is required AOT bootstrap. Guest `Compiler_RV` is the language destination. `bootstrap/hc_repl` is temporary; legacy `worry_dream_repl.c` is deprecated until A3 flip. Ordered remaining work: [GAPS.md](GAPS.md).
+**Honest status (short):** Guest self-host is the product DoD ([SELF_HOST.md](SELF_HOST.md)). Host `holyc-riscv` is required AOT bootstrap. Guest `Compiler_RV` is the language destination. Classic UART REPL: **`make hc-repl`**. Legacy `worry_dream` C guest is **deleted**. Ordered remaining work: [GAPS.md](GAPS.md).
 
 ---
 
@@ -72,6 +72,7 @@ see [CI](#build--ci--ops--verification) and [PLATFORM.md](../templeos-riscv/PLAT
 | Doc | Blurb |
 |-----|--------|
 | [NINEP.md](NINEP.md) | 9P / virtfs remote FS (NineExport; prefer over terminal bulk) |
+| [PATHS.md](PATHS.md) | TempleOS `::`/`A:` vs UART memfs vs host `/…` namespaces |
 | [FILE_EXPORT.md](FILE_EXPORT.md) | Export files from a running guest |
 | [MEMFS_LOG.md](MEMFS_LOG.md) | Memfs change journal / epochs (design → export) |
 

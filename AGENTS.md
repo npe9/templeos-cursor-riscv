@@ -16,15 +16,16 @@ HolyC driver language in user-facing text.
 | `make asm-stress` / `compiler-stress` / `stress` | Assembler encodings + curated codegen oracles — [tests/asm/](tests/asm/README.md), [tests/compiler/](tests/compiler/README.md) |
 | `make ci` | `compliance` + `fmt-test` + `fmt-check` + `asm-stress` + `asm-prop` + `qemu-integration` (mirrors Actions after shell jobs) |
 | `make syntax-sh` / `make lint-sh` | `bash -n` all scripts / ShellCheck primary scripts |
-| `make repl-smoke` / `make repl-regression` | **Deprecated** legacy C guest — **local only** / scheduled delete (A3 Done; not in `qemu-integration`) — [tests/REGRESSION.md](tests/REGRESSION.md) |
-| `make repl-holyc` / `repl-holyc-smoke` / `repl-holyc-regression` | Product HolyC REPL path (CI honesty) — [docs/SELF_HOST.md](docs/SELF_HOST.md) |
+| `make hc-repl` / `make repl-holyc` | **Classic UART HolyC REPL** → `build/repl-holyc.elf` (alias `hc_repl.elf`); QEMU: `-kernel build/repl-holyc.elf -nographic` — [docs/REPL.md](docs/REPL.md) |
+| `make repl-holyc-smoke` / `repl-holyc-regression` | Product HolyC honesty gates (CI) — [docs/SELF_HOST.md](docs/SELF_HOST.md) |
+| `make repl-smoke` / `make repl-regression` | **Retired** (worry_dream C guest deleted) — use `repl-holyc-*` |
 | `make a3-flip-check` | G7 readiness — HolyC smoke+regression+repl-cmp → READY/NOT READY — [docs/A3_FLIP_DRAFT.md](docs/A3_FLIP_DRAFT.md) |
 | `make kernel-plat-smoke` | HolyC Kconfig UART+CLINT on CI default board (in `qemu-integration`) |
 | `make kernel-plat-matrix` | Every known `-M` plat smoke — **skips are not allowed** |
 | `make kernels` / `list-kernels` | Multi-kernel: `build/kernels/<machine>/plat.elf` per defconfig |
 | `make kernel-win-rebuild` | Force full win AOT: `rm -rf build/aot/win` + rebuild `win_*.elf` (all units) |
 | `make kernel-win-interactive` / `kernel-win-run` | Incremental AOT: compile changed units only, then link — [OPS.md](docs/OPS.md) § Host AOT |
-| `make hc-repl` / `hc-repl-smoke` | Alias of `repl-holyc*` — **do not grow `jit.hc`** |
+| `make hc-repl-smoke` | Alias of `repl-holyc-smoke` — **do not grow `jit.hc`** |
 | `make coverage` | Project-mode compile tally (local; not CI) |
 | `make menuconfig` | Platform Kconfig curses UI — [KCONFIG.md](templeos-riscv/KCONFIG.md) |
 | `make baremetal` / `make baremetal-smoke` | Legacy C RAM `build/baremetal/repl.{elf,bin}` — [docs/BAREMETAL.md](docs/BAREMETAL.md) |

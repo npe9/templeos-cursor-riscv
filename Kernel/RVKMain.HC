@@ -45,9 +45,20 @@ U0 RVKMain()
   // Kconfig FB present kind (ramfb on virt; none elsewhere)
   // Bring up storage and mount the file system (KMain's BlkDevsInitAll / DskChg). On the QEMU virt
   // machine this is a RAM disk auto-formatted with the kernel's own RedSea — a real, mounted drive A.
+#ifdef RV_THIN_LOADER
+#define RV_REDSEA_VIRTIO_BOOT 1
+#endif
 #ifdef RV_PHASE3
-  RVMountRAMDisk('A', 16384);
-  // 8 MB — guest Cmp + Adam/MakeOS need room
+#define RV_REDSEA_VIRTIO_BOOT 1
+#endif
+#ifdef RV_REDSEA_VIRTIO_BOOT
+  // G9: prefer virtio-blk RedSea image (ships Compiler.BIN + Kernel.BIN) over blank RAM.
+  // phase3 / thin-loader smokes attach build/*_redsea.img; no virtio → RAM fallback.
+  RVMountVirtioDisk('A');
+  if (!Fs->cur_dv || Fs->cur_dv->dv_signature != DRV_SIGNATURE_VAL) {
+    RVMountRAMDisk('A', 16384);
+    // 8 MB — guest Cmp + Adam/MakeOS need room
+  }
 #else
   RVMountRAMDisk('A', 4096);
   // 2 MB RedSea disk on drive 'A'
@@ -63,6 +74,12 @@ U0 RVKMain()
     if (back && sz == StrLen(msg) && !StrNCmp(back, msg, StrLen(msg)))
       Print("RVKMain: mounted RedSea on A:, wrote and read A:/BOOT.TXT back OK (%d bytes).\n", sz);
   }
+#ifdef RV_THIN_LOADER
+  // G9: mount + Load RedSea Kernel.BIN + Call KernelEntry — no Cmp/StartOS.
+  RVThinLoader;
+  Print("RVKMain: thin loader smoke complete; skipping Boot/Spin task wait.\n");
+  return;
+#endif
 #ifdef RV_PHASE3
   RVPhase3;
   /* Skip WinInit here: fw_cfg/ramfb probe can stall under -nographic; FB Adam path is win-smoke. */
