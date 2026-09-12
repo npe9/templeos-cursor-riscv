@@ -31,7 +31,7 @@ Run through the guest compiler (`RVWinSerialHolyC` → `ExePutS`, whole-buffer):
 | `Demo/ForLoop.HC` | CORRECT — `for sum 0..4 = 10`, `for (;i<4;i++) sum = 6`; C-style and empty-init for loops, string-statement `"fmt",args;` Print all work |
 | `Demo/NullCase.HC` | CORRECT (after the RV `IC_SWITCH` fix below) — Zero/One/Two/Three/Ten/Eleven, each once |
 | `Demo/SubSwitch.HC` | CORRECT — `Zero [One] Two [Three] Four [Five]`; sub-switch `start:`/`end:` blocks (IC_SUB_CALL) work |
-| `Demo/Directives.HC` | FAILS — `__DATE__`/`__TIME__`/`__FILE__`/`__LINE__` are not lexed in the guest ("Invalid lval at __DATE__"); the guest handles only `__DIR__`. Niche compiler-directive gap |
+| `Demo/Directives.HC` | FAILS on `__DATE__` — not an RV regression: the host lexer only implements `__LINE__`/`__FILE__`/`__DIR__` too, and `Demo/Directives.HC` needs `__DATE__`/`__TIME__`, which are unimplemented on both. The guest also lacks `__LINE__`/`__FILE__`/`__DIR__` (host parity would add those three) |
 | `Demo/Templates/Registry1.HC` | FAILS — `RegDft` is a missing runtime function (registry not ported); a runtime gap, not a compiler bug |
 
 ### FIXED: guest `switch` dispatch (was stubbed in the RV backend)
