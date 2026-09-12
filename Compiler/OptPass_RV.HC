@@ -1042,11 +1042,10 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
     break;
     /* Switch Statement */
     case IC_SWITCH :
+    ICSwitchRV(tmpi, tmpi->ic_data(CCodeMisc *), FALSE, rip);
+    break;
     case IC_NOBOUND_SWITCH :
-    // ic_data points to switch table structure
-    // TODO: Need to extract table info from ic_data
-    // ICSwitch(tmpi, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp,
-    //          jump_table, table_size, rip2);
+    ICSwitchRV(tmpi, tmpi->ic_data(CCodeMisc *), TRUE, rip);
     break;
     /* Bit Manipulation */
     case IC_BT :
@@ -1563,7 +1562,10 @@ I64 OptPass789A(CCmpCtrl *cc, COptReg *reg_offsets, U8 *buf, CDbgInfo **_dbg)
       if (buf && cm->jmp_table) {
         p = buf + rip;
         for (i = 0; i < cm->range; i++) {
-          *p(I64 *) = cm->jmp_table[i]->addr;
+          // DELTA from the table base, not an absolute offset: ICSwitchRV loads the
+          // table PC-relatively and adds this delta, so the whole switch stays
+          // position-independent (the JIT runs from a MAlloc'd code heap).
+          *p(I64 *) = cm->jmp_table[i]->addr - cm->addr;
           p += sizeof(I64);
         }
       }

@@ -23,27 +23,30 @@ Run through the guest compiler (`RVWinSerialHolyC` → `ExePutS`, whole-buffer):
 | Program | Result |
 |---------|--------|
 | `Demo/ForLoop.HC` | CORRECT — `for sum 0..4 = 10`, `for (;i<4;i++) sum = 6`; C-style and empty-init for loops, string-statement `"fmt",args;` Print all work |
-| `Demo/NullCase.HC` | WRONG — prints "Zero" 20 times instead of Zero/One/Two/Three/Ten/Eleven |
+| `Demo/NullCase.HC` | CORRECT (after the RV `IC_SWITCH` fix below) — prints Zero/One/Two/Three/Ten/Eleven, each once |
 
-### Open: guest `switch` dispatch collapses to the first case
+### FIXED: guest `switch` dispatch (was stubbed in the RV backend)
 
-`NullCase.HC` prints the case-0 body for all 20 loop iterations. Root cause is
-exact: **`IC_SWITCH` and `IC_NOBOUND_SWITCH` are stubbed in the RV backend**
-(`Compiler/OptPass_RV.HC:1044` — a bare `break;` with a `TODO: extract table info
-from ic_data`). The guest emits no dispatch, so control falls straight into the
-first case body. Everything upstream is correct: `PrsSwitch` (`Compiler/PrsStmt.HC:578`)
-builds the jump table (`mc_jt->jmp_table[range]`, default-filled then case labels
-at `val-lo`) and patches `value-lo`/`range` into the `IC_SUB`/`IC_IMM` pair;
-case-value parsing handles null cases (`case:` → 0 then `++`). Host AOT switch works
-via `ICSwitch` (`Compiler/OptPass789A.HC:1012`; `tests/exec/cases/e_subswitch_break.hc`
-→ 0x7f passes).
+`Demo/NullCase.HC` originally printed the case-0 body for all 20 iterations because
+`IC_SWITCH`/`IC_NOBOUND_SWITCH` were **stubbed** in the RV backend
+(`Compiler/OptPass_RV.HC` — a bare `break;`). No dispatch was emitted, so control fell
+straight into the first case.
 
-Implementing it on RV means porting `ICSwitch`: bounds-check `(u64)(value-lo) >=
-range → default`, load `jmp_table[value-lo]` (a table of resolved label addresses
-emitted into the code image — the label-address relocation is the substantive part;
-`IC_GET_LABEL` at `OptPass_RV.HC:1291` already resolves single label addresses to
-build on), then an indirect jump. This is the next concrete target for "stock
-programs working" and is a bounded codegen feature, not a hunt.
+Fixed by `ICSwitchRV` (`Compiler/BackC_RV.HC`): the value is already normalized to
+`value-lo` by `PrsSwitch`, so it bounds-checks `(u64)index >= range` to the default
+label, then loads the target from the jump table PC-relatively. The table
+(`CMT_JMP_TABLE`, `OptPass_RV.HC`) now stores each entry as a **delta from the table
+base** (`label_off - cm->addr`); `ICSwitchRV` computes the table address with
+`auipc/addi` and adds the loaded delta, so the whole switch is position-independent
+(the REPL JIT runs from a MAlloc'd code heap). The sequence is fixed-size every pass
+(offset 0 + clear `ICF_CODE_FINAL` while a label is unresolved) so pass 7-9 sizing
+does not oscillate.
+
+Verified: `switch` in a loop dispatches correctly (`0→case0, 1→default, 2→case2,
+out-of-range→default`), null-case auto-increment and sparse cases work
+(`0→0,1→1,2..9→default,10→10,11→11`), and stock `Demo/NullCase.HC` and
+`Demo/ForLoop.HC` both run correctly. All win gates and `repl-holyc-regression`
+stay green.
 
 ## Reproduction
 

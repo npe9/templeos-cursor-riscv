@@ -492,30 +492,53 @@ U0 ICXorXor(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64
     ICMov(tmpi, t1, r1, d1, MDF_REG + RT_I64, dest_reg, 0, rip);
   }
 }
-/* Switch Statement */
-U0 ICSwitch(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, I64 *jump_table, I64 table_size, I64 rip)
+/* Switch Statement — jump-table dispatch.
+ *
+ * PrsSwitch (Compiler/PrsStmt.HC) already normalized the value to `value-lo` (an
+ * IC_IMM_I64+IC_SUB pair) so arg1 is the table index, and it built mc_jt->jmp_table
+ * (range entries, default-filled then case labels at val-lo) with mc_jt->dft the
+ * default label and mc_jt->range the table size. The table itself is emitted in the
+ * misc epilogue at mc_jt->addr (OptPass_RV.HC, CMT_JMP_TABLE) as I64 entries; each
+ * entry is stored as a DELTA from the table start (label_off - mc_jt->addr), so a
+ * PC-relative base plus the loaded delta yields the runtime target — position
+ * independent, exactly like IC_GET_LABEL's auipc/addi.
+ *
+ * Fixed byte count every pass (offset 0 + clear ICF_CODE_FINAL while a label is
+ * unresolved) so pass 7-9 sizing cannot oscillate. */
+U0 ICSwitchRV(CIntermediateCode *tmpi, CCodeMisc *mc_jt, Bool nobound, I64 rip)
 {
-  // Switch statement via jump table
-  U8 index_reg;
-  // Load switch value
-  if (t1 & MDF_REG) {
-    index_reg = r1;
-  } else {
-    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, t1, r1, d1, rip);
-    index_reg = RV_REG_T0;
+  I64 range, toff, doff;
+  if (!mc_jt)
+    return;
+  range = mc_jt->range;
+  // index = value-lo into t0 (arg1 already normalized by PrsSwitch)
+  ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0,
+	tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+  if (!nobound) {
+    // if ((U64)index >= range) goto default   — implemented as: if in-bounds skip
+    // the 4-byte default jump that follows.
+    RVLi(tmpi, RV_REG_T1, range);
+    RVBltu(tmpi, RV_REG_T0, RV_REG_T1, 8);
+    if (!mc_jt->dft || mc_jt->dft->addr == INVALID_PTR) {
+      doff = 0;
+      tmpi->ic_flags &= ~ICF_CODE_FINAL;
+    } else
+      doff = mc_jt->dft->addr - (rip + tmpi->ic_cnt);
+    RVJ(tmpi, doff);   // JAL x0 — always 4 bytes
   }
-  // Bounds check (compare with table_size)
-  RVLi(tmpi, RV_REG_T1, table_size);
-  RVBgeu(tmpi, index_reg, RV_REG_T1, 12);
-  // Skip to default if out of bounds
-  // Load jump table base address
-  RVLi(tmpi, RV_REG_T1, jump_table);
-  // Calculate offset: index * 8
-  RVSlli(tmpi, index_reg, index_reg, 3);
-  // Load target address from table
-  RVAdd(tmpi, RV_REG_T1, RV_REG_T1, index_reg);
-  RVLd(tmpi, RV_REG_T6, RV_REG_T1, 0);
-  // Jump to target
-  RVJalr(tmpi, RV_REG_ZERO, RV_REG_T6, 0);
+  // t1 = runtime address of the jump table (PC-relative to mc_jt->addr)
+  if (mc_jt->addr == INVALID_PTR) {
+    toff = 0;
+    tmpi->ic_flags &= ~ICF_CODE_FINAL;
+  } else
+    toff = mc_jt->addr - (rip + tmpi->ic_cnt);
+  RVAuipc(tmpi, RV_REG_T1, (toff + 0x800) >> 12 & 0xFFFFF);
+  RVAddi(tmpi, RV_REG_T1, RV_REG_T1, toff << 52 >> 52);
+  // delta = table[index]; target = table_base + delta; jump.
+  RVSlli(tmpi, RV_REG_T2, RV_REG_T0, 3);
+  RVAdd(tmpi, RV_REG_T2, RV_REG_T1, RV_REG_T2);
+  RVLd(tmpi, RV_REG_T3, RV_REG_T2, 0);
+  RVAdd(tmpi, RV_REG_T3, RV_REG_T1, RV_REG_T3);
+  RVJalr(tmpi, RV_REG_ZERO, RV_REG_T3, 0);
 }
 #help_index ""
