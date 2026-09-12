@@ -64,3 +64,25 @@ re-measure: inject it before `RVWinVtRun()` in `tests/exec/cases/kernel_win_inte
 call `RVStockMeasure();` after the `VtDemo.DD` `FileWrite`, `make build/exec/win_vt.elf`,
 boot under `qemu-system-riscv64 -M virt -nographic`, and read the `STOCKDD`/`STOCKPROG`
 lines. Revert the harness afterwards (it is a committed gate input).
+
+
+## Runtime library ports (REPL-callable)
+
+Runtime functions become callable from the REPL by planting them as `HTT_FUN`
+`CHashFun`s (not `RVCmpExportOne`, which only registers an `HTF_IMM` address the
+parser cannot call). The harness (`kernel_win_interactive.hc`) fills a `pubs[]`
+array of kernel `&Func` addresses and `RVExePubsWireAddrs` (`Compiler/RVExePubs.HC`)
+plants each with a return/arg signature. Pointer returns/args use `i64t` (the caller
+casts) since no struct classes are planted.
+
+Ported this pass (query/util only — no side effects, no blocking input): `FilesFind`,
+`DirTreeDel`, `StrFind`, `ScanFlags`, `Define`, `Now`, `Str2Date`, `Date2Struct`.
+Verified callable from the REPL (StrFind→match, Now/Str2Date→date, FilesFind→dir
+entries, DirTreeDel→frees) with all win gates + serial-smoke (the pubs-index canary)
+green.
+
+Deliberately left out: blocking-input functions (`GetChar`/`GetI64`/`GetF64` — they
+would wedge the VT present loop), side-effecting ones (`Spawn`, `Ed`), and registry
+(`ARegistry.HC` is not compiled into the image — a build-inclusion question, not a
+planting one). `__DATE__`/`__TIME__` lexer directives remain unimplemented on host
+and guest alike.

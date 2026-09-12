@@ -340,7 +340,15 @@ I64 main()
   // Kernel &Regs/&Dir — Compiler address-of imports may stay GOT=0.
   
   {
-    I64 pubs[15];
+    I64 pubs[23];
+    pubs[15] = &FilesFind;    // query runtime: CDirEntry *FilesFind(U8 *mask, I64 flags=0)
+    pubs[16] = &DirTreeDel;   // U0 DirTreeDel(CDirEntry *)
+    pubs[17] = &StrFind;      // U8 *StrFind(U8 *needle, U8 *haystack, I64 flags=0)
+    pubs[18] = &ScanFlags;    // U0 ScanFlags(U8 *dst, U8 *lst, U8 *src)
+    pubs[19] = &Define;       // U8 *Define(U8 *dname)
+    pubs[20] = &Now;          // CDate Now()
+    pubs[21] = &Str2Date;     // CDate Str2Date(U8 *st)
+    pubs[22] = &Date2Struct;  // U0 Date2Struct(CDateStruct *, CDate)
     pubs[14] = &RVWinSoftCat;
     pubs[0] = &Print;
     pubs[1] = &PutChars;

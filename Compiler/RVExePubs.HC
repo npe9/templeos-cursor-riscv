@@ -592,6 +592,60 @@ I64 RVExePubsWireAddrs(I64 *addrs)
       n++;
     }
   }
+  // Slot 15: FilesFind — query runtime. Returns CDirEntry* (planted as i64t, caller
+  // casts) so stock file-utility programs (Templates/Util1.HC) resolve.
+  if (addrs[15] && !HashFind("FilesFind", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("FilesFind", addrs[15], i64t, 2);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "mask", u8p);
+      RVExePubAddArg(tmpf, "flags", i64t, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
+  // Slots 16-22: query/util runtime (no side effects, no blocking input). Pointer
+  // returns/args are planted as i64t and the caller casts (no struct classes here).
+  if (addrs[16] && !HashFind("DirTreeDel", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("DirTreeDel", addrs[16], cls_u0, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "de", i64t); n++; }
+  }
+  if (addrs[17] && !HashFind("StrFind", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("StrFind", addrs[17], i64t, 3);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "needle", u8p);
+      RVExePubAddArg(tmpf, "haystack", u8p);
+      RVExePubAddArg(tmpf, "flags", i64t, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
+  if (addrs[18] && !HashFind("ScanFlags", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("ScanFlags", addrs[18], cls_u0, 3);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "dst", i64t);
+      RVExePubAddArg(tmpf, "lst", u8p);
+      RVExePubAddArg(tmpf, "src", u8p);
+      n++;
+    }
+  }
+  if (addrs[19] && !HashFind("Define", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Define", addrs[19], i64t, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "dname", u8p); n++; }
+  }
+  if (addrs[20] && !HashFind("Now", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Now", addrs[20], i64t, 0);
+    if (tmpf) n++;
+  }
+  if (addrs[21] && !HashFind("Str2Date", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Str2Date", addrs[21], i64t, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "st", u8p); n++; }
+  }
+  if (addrs[22] && !HashFind("Date2Struct", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Date2Struct", addrs[22], cls_u0, 2);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "ds", i64t);
+      RVExePubAddArg(tmpf, "cdt", i64t);
+      n++;
+    }
+  }
   return n;
 }
 
@@ -651,9 +705,9 @@ I64 RVExePubsWire()
 {
   // Monolithic Body: symbols are in-image. Split-AOT Kernel should call
   // RVExePubsWireAddrs with Kernel &Print/&Regs/… instead.
-  I64 addrs[15];
+  I64 addrs[23];
   I64 zi;
-  for (zi = 0; zi < 15; zi++)
+  for (zi = 0; zi < 23; zi++)
     addrs[zi] = 0;
   addrs[0] = &Print;
   addrs[1] = &PutChars;
