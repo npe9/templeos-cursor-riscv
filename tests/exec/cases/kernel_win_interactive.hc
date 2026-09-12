@@ -482,6 +482,17 @@ I64 main()
   // self-test desktop demo below and drop straight into the interactive DolDoc REPL.
   // The gate images (win_vt/win_i/win_hold) leave the bit clear and run the full demo.
   if ((RVWinHoldFlag() >> 32) & 1) {
+    // Clean boot: seed a couple of real stock DolDoc files so there is something to
+    // browse (Cat("A:/Doc/God.DD");), and greet in the Term instead of the test string.
+    DirMk("A:/Doc");
+    { U8 *s = "The $$LK+PU,\"Holy Spirit\",A=\"FI:::/Adam/God/HSNotes.DD\"$$ can puppet you.\n\n"; FileWrite("A:/Doc/God.DD", s, StrLen(s)); }
+    { U8 *s = "$$WW,1$$A $$FG,2$$Queue$$FG$$ is a bunch of $$LK,\"MAlloc\",A=\"MN:MAlloc\"$$()ed chunks of mem linked together in a circle with one ptr to the $$FG,2$$next$$FG$$ value and another ptr to the $$FG,2$$last$$FG$$ value.  These ptrs must be stored in the first locations in the structure.\n"; FileWrite("A:/Doc/Que.DD", s, StrLen(s)); }
+    if (rv_winmgr.term_idx >= 0 && rv_winmgr.wins[rv_winmgr.term_idx].doc &&
+        rv_winmgr.wins[rv_winmgr.term_idx].doc->doc_signature == DOC_SIGNATURE_VAL) {
+      DocClear(rv_winmgr.wins[rv_winmgr.term_idx].doc);
+      RVDocPutS("TempleOS/RISC-V \x97 HolyC ExePutS + DolDoc.\n");
+      RVDocPutS("Try:  2+3;   Dir;   Cat(\"A:/Doc/God.DD\");   F64 f=2.0; Sqrt(f);\n");
+    }
     RVWinVtRun();
     return 0;
   }
