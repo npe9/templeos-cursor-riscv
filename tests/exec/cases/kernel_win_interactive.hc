@@ -478,6 +478,13 @@ I64 main()
   RVWinMgrInputInit;
   Print("RVWinMgr interactive input_ok=%d\n", rv_winmgr.input_ok);
   RVWinSerialInit;
+  // Clean-boot variant (win_flag_tos: bit 32 of RVWinHoldFlag): skip the scripted
+  // self-test desktop demo below and drop straight into the interactive DolDoc REPL.
+  // The gate images (win_vt/win_i/win_hold) leave the bit clear and run the full demo.
+  if ((RVWinHoldFlag() >> 32) & 1) {
+    RVWinVtRun();
+    return 0;
+  }
   // Prove graphical Term ExePutS (same Dispatch as serial) — not paint-only.
   if (rv_winmgr.term_idx >= 0) {
     I64 ti;

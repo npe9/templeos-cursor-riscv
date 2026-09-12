@@ -216,3 +216,23 @@ A breakpoint hit returns to the prompt ("*** breakpoint at … <Name+0x..>"), re
 breakpoint, and abandons the line — there is no `Step` yet. `Bp` writes 4 bytes, so a
 breakpoint on a compressed (2-byte) instruction also covers its neighbour until cleared.
 Faults do the same (mcause/mepc/mtval/ra line); `crash` drops into the monitor for `md`/`bt`.
+
+
+## Running it: `make tos`
+
+`make tos` (alias `make kernel-tos`) boots a **clean interactive TempleOS/RISC-V** —
+the real HolyC ExePutS REPL and DolDoc desktop presented to your terminal as ANSI over
+the UART, with NO scripted self-test demo. It builds `build/exec/win_tos.elf` (the same
+kernel + compiler + DolDoc as `kernel-vt-holyc`, differing only in the link-time flag
+unit `tests/exec/aot/win_flag_tos.hc`, which sets bit 32 = "clean boot"), sizes the VT to
+your terminal, and drops you at the `> ` prompt:
+
+    2+3;                         # arithmetic
+    "hi\n";  I64 i=7; i*6;       # HolyC statements
+    F64 f=2.0; Sqrt(f);          # F64 math
+    Cat("A:/Doc/VtDemo.DD");     # render a DolDoc file (colour + links interpreted)
+    Dir;                         # list the RAM filesystem
+    q                            # quit (or Ctrl-A then X)
+
+The runtime library functions ported for the REPL (MAlloc/StrPrint/FilesFind/Now/…) and
+the CDirEntry/CDateStruct types are all callable here.
