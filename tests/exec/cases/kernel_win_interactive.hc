@@ -340,7 +340,10 @@ I64 main()
   // Kernel &Regs/&Dir — Compiler address-of imports may stay GOT=0.
   
   {
-    I64 pubs[28];
+    I64 pubs[31];
+    pubs[28] = &MStrPrint;    // U8 *MStrPrint(U8 *fmt,...)
+    pubs[29] = &StrPrint;     // U8 *StrPrint(U8 *dst, U8 *fmt,...)
+    pubs[30] = &DocPrint;     // CDocEntry *DocPrint(CDoc *doc, U8 *fmt,...)
     pubs[23] = &MAlloc;       // U8 *MAlloc(I64 size, CTask *mem_task=NULL)
     pubs[24] = &CAlloc;       // U8 *CAlloc(I64 size, CTask *mem_task=NULL)
     pubs[25] = &Free;         // U0 Free(U8 *ptr)

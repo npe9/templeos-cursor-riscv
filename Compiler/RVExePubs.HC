@@ -686,6 +686,40 @@ I64 RVExePubsWireAddrs(I64 *addrs)
       n++;
     }
   }
+  // Slots 28-30: the printf-family (varargs). Same shape as Print above: arg_cnt is the
+  // FIXED args, Ff_DOT_DOT_DOT set, then the argc/argv varargs markers (MLF_DOT_DOT_DOT).
+  if (addrs[28] && !HashFind("MStrPrint", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("MStrPrint", addrs[28], i64t, 1);
+    if (tmpf) {
+      Bts(&tmpf->flags, Ff_DOT_DOT_DOT);
+      RVExePubAddArg(tmpf, "fmt", u8p);
+      RVExePubAddArg(tmpf, "argc", i64t, 16);
+      RVExePubAddArg(tmpf, "argv", i64t, 16);
+      n++;
+    }
+  }
+  if (addrs[29] && !HashFind("StrPrint", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("StrPrint", addrs[29], i64t, 2);
+    if (tmpf) {
+      Bts(&tmpf->flags, Ff_DOT_DOT_DOT);
+      RVExePubAddArg(tmpf, "dst", u8p);
+      RVExePubAddArg(tmpf, "fmt", u8p);
+      RVExePubAddArg(tmpf, "argc", i64t, 16);
+      RVExePubAddArg(tmpf, "argv", i64t, 16);
+      n++;
+    }
+  }
+  if (addrs[30] && !HashFind("DocPrint", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("DocPrint", addrs[30], i64t, 2);
+    if (tmpf) {
+      Bts(&tmpf->flags, Ff_DOT_DOT_DOT);
+      RVExePubAddArg(tmpf, "doc", i64t, MLF_DFT_AVAILABLE, 0);
+      RVExePubAddArg(tmpf, "fmt", u8p);
+      RVExePubAddArg(tmpf, "argc", i64t, 16);
+      RVExePubAddArg(tmpf, "argv", i64t, 16);
+      n++;
+    }
+  }
   return n;
 }
 
@@ -745,9 +779,9 @@ I64 RVExePubsWire()
 {
   // Monolithic Body: symbols are in-image. Split-AOT Kernel should call
   // RVExePubsWireAddrs with Kernel &Print/&Regs/… instead.
-  I64 addrs[28];
+  I64 addrs[31];
   I64 zi;
-  for (zi = 0; zi < 28; zi++)
+  for (zi = 0; zi < 31; zi++)
     addrs[zi] = 0;
   addrs[0] = &Print;
   addrs[1] = &PutChars;

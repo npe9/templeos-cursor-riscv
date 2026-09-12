@@ -75,11 +75,17 @@ array of kernel `&Func` addresses and `RVExePubsWireAddrs` (`Compiler/RVExePubs.
 plants each with a return/arg signature. Pointer returns/args use `i64t` (the caller
 casts) since no struct classes are planted.
 
-Ported this pass (query/util only — no side effects, no blocking input): `FilesFind`,
-`DirTreeDel`, `StrFind`, `ScanFlags`, `Define`, `Now`, `Str2Date`, `Date2Struct`.
-Verified callable from the REPL (StrFind→match, Now/Str2Date→date, FilesFind→dir
-entries, DirTreeDel→frees) with all win gates + serial-smoke (the pubs-index canary)
-green.
+Ported so far (verified callable from the REPL, all win gates + serial-smoke green):
+- **Query/util:** `FilesFind`, `DirTreeDel`, `StrFind`, `ScanFlags`, `Define`, `Now`,
+  `Str2Date`, `Date2Struct`.
+- **Allocator + string foundations:** `MAlloc`, `CAlloc`, `Free`, `StrNew`, `Str2I64`
+  (these were NOT callable before — only `HTF_IMM` address constants; programs that
+  allocate need them as real calls).
+- **printf-family (varargs):** `MStrPrint`, `StrPrint`, `DocPrint` (planted with the
+  `Ff_DOT_DOT_DOT` + `argc`/`argv` shape that `Print` uses).
+
+Compiler intrinsics already cover math/bit/Que/`StrLen`/`ToUpper`/`ToI64` etc. via
+`RVExePubInternsIn`, so those never needed planting.
 
 Deliberately left out: blocking-input functions (`GetChar`/`GetI64`/`GetF64` — they
 would wedge the VT present loop), side-effecting ones (`Spawn`, `Ed`), and registry
