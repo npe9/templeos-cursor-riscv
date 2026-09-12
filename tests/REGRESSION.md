@@ -7,10 +7,9 @@ User-facing REPL guide: [docs/REPL.md](../docs/REPL.md). Test layout: [README.md
 ```bash
 make repl-holyc-regression   # primary HolyC honesty gate (CI; A3 Done)
 make a3-flip-check           # G7 readiness: holyc-smoke+regression+repl-cmp → READY/NOT READY
-make repl-regression         # DEPRECATED legacy C gate (Vi/Man/Regs/…); local only
-make repl-smoke              # DEPRECATED legacy language smoke; local only
 make ci                      # compliance + fmt-test + qemu-integration (HolyC-only honesty)
-# Follow-up: delete worry_dream (deleted) — docs/A3_FLIP_DRAFT.md
+# make repl-regression / repl-smoke are RETIRED: the legacy C guest is deleted and
+# both targets now print an error pointing at the repl-holyc-* equivalents.
 ```
 
 `tests/scripts/run_repl_holyc_regression.sh` greps the HolyC thin-image QEMU log for
@@ -19,11 +18,11 @@ make ci                      # compliance + fmt-test + qemu-integration (HolyC-o
 Man needle uses `Man("Regs")` (not `Man("Reg")`). Bt honesty = **`Bt (trap freeze)`** after Fault
 (trap lane; live `Bt;` without freeze is UART stub). **Explicitly waived:** Fmt host rewrite
 (`fmt-test`/`fmt-check`), Demo/*.HC UART batch (`make compliance` curated six), ZMODEM
-(DumpFile+9P). **A3 Done** — primary CI gate is `repl-holyc-regression` only; legacy
-`repl-regression` / `zmodem-smoke` are local. Follow-up: delete `worry_dream (deleted)`.
-Legacy uart livedrv insert is `150a` (was `148a` before RTS/CTS stub).
-`tests/scripts/run_repl_regression.sh` greps the legacy `repl.elf` log for Src→Vi / Man /
-editors / trap / livedrv. Failures print the missing needle and a log tail.
+(DumpFile+9P). **A3 Done** — `repl-holyc-regression` is now the only REPL honesty gate;
+the legacy C guest and its `repl.elf` were deleted in `080f729`, so `repl-regression` and
+`tests/scripts/run_repl_regression.sh` only print an error. `zmodem-smoke` is local-only and
+currently **red** (it still builds the deleted `repl.elf` — [CI.md](../docs/CI.md) WIP row).
+Failures print the missing needle and a log tail.
 
 Kernel FB/Gr/Win/plat smokes are separate (`make kernel-fb-smoke` etc.) and are listed under P3 — do not treat them as proof that the REPL Src loop works.
 
@@ -89,9 +88,9 @@ While fixing Src, regression also caught a second P0: HolyC `FsCreate`/`FileWrit
 | CallersScan/Name/Cnt, MemMap, Regs, StkRep | `sym.hc` | **intentional bridge** (honest C; was hollow HolyC) |
 | trap name/disp/vec/reentry + `0x87000100` snap | `trap.hc`/`debug.hc`/`start.hc` | **intentional bridge** (C trampoline publishes GPRs) |
 | `RuntimeRegister` as OS API | — | **done** — REPL registers **zero** C builtins into HTT_FUN |
-| `holy_rt` linked into guest (`repl.elf`) | C REPL + exec harness | **build-only OK** for AOT/oracle; **deprecated** for OS path |
-| `worry_dream (deleted)_repl.c` / `0x87001xxx` | legacy `make -C bootstrap -f Makefile.repl` | **deprecated** — still C-dependent; list above |
+| `holy_rt` linked into guest | exec harness only | **build-only OK** for AOT/oracle; the C REPL that also linked it is deleted |
+| `worry_dream_repl.c` / `0x87001xxx` | — | **deleted** (`080f729`). A few seed files still poke `0x87001xxx` literally (e.g. `seed/ed.hc`); `bootstrap/Makefile.repl` survives only to generate `boot_blob_embed.h` (its `seed_files.h` / `asm_templates.inc` outputs have no consumer left) |
 | REPL multiline `...` Tab | Same as Ed/Vi | **fixed** — C readline used `rl_do_complete` only (empty token listed all syms); now `rl_smart_tab` (2sp indent + mid-token complete). Regression: `MLTAB_MARK` |
-| Mac-AOT `hc_repl` | `bootstrap/hc_repl` | **assert no host slots / no worry_dream (deleted) link** (smoke greps sources) |
+| Mac-AOT `hc_repl` | `bootstrap/hc_repl` | **assert no host slots / no `worry_dream`+`holy_rt`+`RuntimeRegister` symbols** — `run_hc_repl_smoke.sh` greps the ELF as a negative assertion; keep the grep even though the C guest is gone |
 
 Do **not** paper over with checks that pass when the feature is a no-op (label-only greps, `SrcFile` without `Src`, FnSize without `>0`, editor paint text without `FileLen`/`Run`).

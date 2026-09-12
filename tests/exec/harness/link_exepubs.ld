@@ -21,10 +21,10 @@ SECTIONS {
     *(.rodata .rodata.*)
   } > RAM
 
-  /* Exclude blob_in.o + compiler_full.o — they have fixed VMAs below.
+  /* Exclude blob_in.o + compiler_full.o + kernel_embed.o — fixed VMAs below.
    * Patterns need a leading * so path-prefixed inputs (build/exec/…) match. */
   .data : {
-    EXCLUDE_FILE(*blob_in.o *compiler_full.o) *(.data .data.*)
+    EXCLUDE_FILE(*blob_in.o *compiler_full.o *kernel_embed.o) *(.data .data.*)
   } > RAM
 
   .bss : {
@@ -39,12 +39,12 @@ SECTIONS {
     *blob_in.o(.data)
   } > RAM
 
-  /* Optional host-packed Compiler.BIN (TOSB) — last-resort bootstrap *bytes*.
-   * Default phase3 smoke ships seed on RedSea virtio img (omit compiler_full.o).
-   * Live Cmp is heap Load of A:/Compiler/Compiler.BIN (G9 relocatable seed).
-   * PHASE3_LINK_COMPILER_BIN=1 links compiler_full.o into this section. */
+  /* Optional host-packed TOSB at 0x81000000 — Compiler.BIN (phase3 last-resort)
+   * or Kernel.BIN (thin embed; drops chicken-egg MMIO+raw). Never link both.
+   * Default phase3 omits compiler_full.o (RedSea seed). SoftCall remounts virtio. */
   .compiler_bin 0x81000000 : {
     KEEP(*compiler_full.o(.data .data.*))
+    KEEP(*kernel_embed.o(.data .data.*))
   } > RAM
 
   . = 0x87F00000;

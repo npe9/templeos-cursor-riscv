@@ -86,6 +86,24 @@ static void put_hex_u64(uint64_t x) {
   }
 }
 
+/* Fatal-fault report from crt0's trap_entry. Deliberately slimmer than the virt
+ * build's — no cause-name table, to stay inside the sifive_e DTIM budget. The
+ * blob-relative offset feeds HOLYC_MAP=file to name the faulting function. */
+void trap_report(unsigned long cause, unsigned long epc, unsigned long tval) {
+  puts_uart("\nTRAP mcause=0x");
+  put_hex_u64(cause);
+  puts_uart(" mepc=0x");
+  put_hex_u64(epc);
+  puts_uart(" mtval=0x");
+  put_hex_u64(tval);
+  if (epc >= (unsigned long)_binary_blob_bin_start &&
+      epc < (unsigned long)_binary_blob_bin_end) {
+    puts_uart(" blob+0x");
+    put_hex_u64(epc - (unsigned long)_binary_blob_bin_start);
+  }
+  puts_uart("\nTRAP halted\n");
+}
+
 void oracle_report(unsigned long result) {
   puts_uart("ORACLE ");
   put_hex_u64((uint64_t)result);

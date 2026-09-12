@@ -35,6 +35,42 @@ static void put_hex_u64(uint64_t x) {
     putc_uart(n < 10 ? (char)('0' + n) : (char)('a' + (n - 10)));
   }
 }
+/* Fatal-fault report, called from crt0's trap_entry. The blob-relative offset is
+ * the point of this: it feeds straight into HOLYC_MAP=file (offset -> function name),
+ * which is the only way to name a faulting PC — the blob is objcopy -I binary'd in
+ * and so carries no ELF symbols. */
+static const char *const trap_cause_name[16] = {
+  "insn-misaligned", "insn-fault",  "illegal-insn",   "breakpoint",
+  "load-misaligned", "load-fault",  "store-misaligned", "store-fault",
+  "ecall-u",         "ecall-s",     "?",              "ecall-m",
+  "insn-page-fault", "load-page-fault", "?",          "store-page-fault"
+};
+static void puts_uart(const char *s) {
+  while (*s)
+    putc_uart(*s++);
+}
+void trap_report(unsigned long cause, unsigned long epc, unsigned long tval) {
+  puts_uart("\nTRAP mcause=0x");
+  put_hex_u64(cause);
+  if ((int64_t)cause >= 0 && cause < 16) {
+    puts_uart(" (");
+    puts_uart(trap_cause_name[cause]);
+    putc_uart(')');
+  } else if ((int64_t)cause < 0) {
+    puts_uart(" (interrupt)");
+  }
+  puts_uart(" mepc=0x");
+  put_hex_u64(epc);
+  puts_uart(" mtval=0x");
+  put_hex_u64(tval);
+  if (epc >= (unsigned long)_binary_blob_bin_start &&
+      epc < (unsigned long)_binary_blob_bin_end) {
+    puts_uart(" blob+0x");
+    put_hex_u64(epc - (unsigned long)_binary_blob_bin_start);
+  }
+  puts_uart("\nTRAP halted\n");
+}
+
 void oracle_report(unsigned long result) {
   uint64_t bits = (uint64_t)result;
   const char *p = "ORACLE ";

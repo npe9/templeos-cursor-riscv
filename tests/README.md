@@ -25,10 +25,10 @@
 | Phase3 (Compiler_RV + StartOS) | `kernel-phase3-smoke` | **qemu-integration** | [COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md) |
 | Plat virt UART/CLINT | `kernel-plat-smoke` | **qemu-integration** | Kconfig HolyC drivers |
 | Plat sifive_u | `kernel-plat-sifive-u-smoke` | **local only** | Restores virt defconfig after |
-| Mac-AOT / HolyC REPL | `repl-holyc-smoke` / `repl-holyc-regression` | **qemu-integration** | Memfs/Dir/JIT honesty; dual-run with legacy until A3 flip |
+| Mac-AOT / HolyC REPL | `repl-holyc-smoke` / `repl-holyc-regression` | **qemu-integration** | Memfs/Dir/JIT honesty; **the** REPL honesty gate since the A3 flip (no dual-run) |
 | HolyC split boot | `bootloader-smoke` | **qemu-integration** | `boot.bin` + `hc_repl.blob.bin` |
-| REPL language smoke | `repl-smoke` | **qemu-integration** | **Deprecated** legacy C; required until A3 (`SKIP_REPL_LEGACY=1` local only) |
-| REPL honesty | `repl-regression` | **qemu-integration** | **Deprecated** until A3; [REGRESSION.md](REGRESSION.md) |
+| REPL language smoke | `repl-smoke` | **retired** | Legacy C guest deleted; target errors out → use `repl-holyc-smoke` |
+| REPL honesty | `repl-regression` | **retired** | Legacy C guest deleted; target errors out → use `repl-holyc-regression` ([REGRESSION.md](REGRESSION.md)) |
 | REPL 9p transport | `repl-9p-smoke` | **qemu-integration** | Virtio 9p REPL smoke |
 | Term geometry PTY | `term-probe-pty` | **qemu-integration** | |
 | Project coverage tally | `make coverage` | **local only** | Heavy; not a merge gate |
@@ -51,7 +51,7 @@
 | TempleOS/RISC-V QEMU smoke | `templeos-riscv/` | `make templeos-smoke` |
 | Bare-metal REPL (guest Cmp) | `build/repl-cmp.elf` | `make repl-cmp-smoke` (A2 product compile) |
 | Bare-metal REPL (HolyC bridge) | `build/repl-holyc.elf` | `make repl-holyc-smoke` / `repl-holyc-regression` |
-| Bare-metal REPL (legacy C) | `bootstrap/repl.elf` | `make repl-smoke` / `repl-regression` (**deprecated**) |
+| Bare-metal REPL (legacy C) | **deleted** (`080f729`) | `make repl-smoke` / `repl-regression` remain only as errors pointing at `repl-holyc-*` |
 
 ## Kernel / platform smokes (selected)
 
