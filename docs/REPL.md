@@ -182,3 +182,37 @@ More: [COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md) (asm section).
 - [HOLYC_IMPLEMENTATION_STATUS.md](HOLYC_IMPLEMENTATION_STATUS.md) — what execution smokes cover
 - [../AGENTS.md](../AGENTS.md) — agent-oriented build notes
 - [README.md](README.md) — documentation index
+
+## Console keys (win_vt DocTerm over the UART)
+
+The Term window keeps every line it printed; the serial line editor understands the
+VT cursor keys so you can read back through it:
+
+| key | effect |
+|-----|--------|
+| PgUp / PgDn | page the Term window back / forward through its history |
+| Up / Down arrow | one line back / forward |
+| Home / End | oldest line / back to the live bottom |
+| any new command | jumps back to the live bottom |
+
+The terminal is asked for its size at boot (`CSI 18 t`); a real terminal answers and the
+desktop is laid out at that size, a pipe or dumb terminal keeps the `RV_VT_COLS`/`RV_VT_ROWS`
+defaults from `tests/exec/aot/win_flag_vt.hc` (80×24). Pasted lines up to 1023 bytes are
+taken intact (the RX interrupt ring, not the 16-byte FIFO, buffers them).
+
+## Debugger surface (win_vt)
+
+| call | what |
+|------|------|
+| `Disasm("Name")` / `Uf("Name")` | disassemble a function (hash size when known, else to `ret`) |
+| `U(addr, n=28)` / `DisasmAt(addr, max, end)` | raw window at an address |
+| `UA(addr, n=28)` | assemblable source you can paste back into `asm { … }` |
+| `FnAddr("Name")` | code address of a function or Kernel export |
+| `Bp(addr)` / `Bp` | plant an `EBREAK` at a code address / list breakpoints |
+| `BpClr(addr)` / `BpClr` | restore one / all |
+| `PassTrace(bits)` | dump the compiler's ICs for every following line (`PassTrace(0)` stops) |
+
+A breakpoint hit returns to the prompt ("*** breakpoint at … <Name+0x..>"), restores every
+breakpoint, and abandons the line — there is no `Step` yet. `Bp` writes 4 bytes, so a
+breakpoint on a compressed (2-byte) instruction also covers its neighbour until cleared.
+Faults do the same (mcause/mepc/mtval/ra line); `crash` drops into the monitor for `md`/`bt`.

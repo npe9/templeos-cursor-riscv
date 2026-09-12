@@ -39,12 +39,25 @@ Verified line by line in the win_vt REPL (`make build/exec/win_vt.elf`).
 | Branch conditions with RIP-relative operands | | loads used the function-local `rip` | branch helpers take `rip2` |
 | Hex literals `0xA`…`0xE` | | only `0xF` lexed | host bug (below) |
 
-### Host compiler fix that this uncovered
+### Host compiler fixes this uncovered
+
+`&ExternFn` (see "Still open" below, now closed) and the pointer-array member stride:
 
 `host/parser.c`: a class member `T *arr[N]` took `sizeof(T)` as its element stride, so
 `cmp.internal_types[raw_type]=tmpc` in `AsmHashLoad` wrote heap pointers hundreds of bytes
 past `cmp`, over other compiler-unit globals (`char_bmp_hex_numeric` word 2 became a
 pointer → bits for `A`–`E` gone). Regression case: `tests/exec/cases/e_member_ptr_array.hc`.
+
+### Pointer-array members affected by the stride bug (audit)
+
+Every `T *arr[N]` class member compiled by the host had the wrong stride before the fix.
+Sites, all stock code with no compensating hacks: `CCmpGlbls.internal_types` (the one that
+surfaced), `CBlkDevGlbls.let_to_drv` (drive-letter lookup — `Cd`/`Let2BlkDev`), `CTask.
+except_callers` (stride 1 — smeared into `catch_except`), `CHashAC.fillin_matches` (REPL
+autocomplete), `CAutoCompleteDictGlbls.fillins`, and in Adam `gr.pen_brushes` /
+`scrn_zoom_tables` (not in the win image). The only "compensation" found is
+`AsmHashLoad`'s re-assert of the `*`/`**` class slots, which is harmless and kept.
+kernel-win-interactive and kernel-win-serial-smoke went green once these indexed correctly.
 
 ## Deliberately different (ISA / console)
 
@@ -58,14 +71,29 @@ pointer → bits for `A`–`E` gone). Regression case: `tests/exec/cases/e_membe
 
 ## Still open
 
-* Cross-unit `&ExternFn` from the Compiler unit in the win blob resolved to a dead import
-  slot (illegal instruction); the F64 runtime uses a Kernel-filled table instead. Worth a
-  linker look before any other compiler-unit code takes a Kernel function's address.
-* `Bp`/`Step` not exported to the seed REPL; disassembler/debugger absent from win_vt.
-* `PassTrace` not exported to the REPL (would have shortened every probe above).
-* In-REPL scrollback; RV_VT_COLS/ROWS defaults. The DocTerm VT redraw drops the first
-  character or two of a line once the window has scrolled (`Ab375Ab` shows as `b375Ab`),
-  which is the "not getting the full console" symptom — the serial echo is intact.
+* ~~Cross-unit `&ExternFn` resolved to a dead import slot~~ — fixed in the host: the unary
+  `&` path retracted the slot-load DEREF that `EmitFnAddress` emits (leaving the slot
+  address), and an address-only use never bumped the slot's `use_cnt`, so the loader never
+  filled it. Regression: `tests/exec/cases/e_addr_of_extern_fn.hc`. The F64 runtime table
+  (`RVCmpSetF64Rt`) is kept as the simpler mechanism.
+* ~~`Bp`/`Step`, disassembler and `PassTrace` absent from the seed REPL~~ — `Bp`/`BpClr`,
+  `Disasm`/`U`/`UA`/`Uf`/`FnAddr` (`Kernel/RVDisasm.HC`) and `PassTrace` are now planted
+  (`RVExePubsWireDbg`); a breakpoint recovers to the prompt. No single-step yet.
+* ~~The DocTerm console froze after roughly a windowful of output~~ — the "not getting the
+  full console" symptom. Root cause was the VT console **redraw**, not input, eval or the
+  UART: `RVDocDrawWin` rendered doc entries at `y = doc_e->y - scroll_y`, and `DocRecalc`
+  lays a console oldest-first from `y=0`, so a bare `scroll_y=0` painted only the FIRST
+  `hh` lines and every later line fell past the client. Bisected by flipping
+  `rv_console_mirror_only` to 0 (raw UART): all output appeared, proving the DolDoc redraw
+  was the only broken stage. Fix: console docs (Term/Adam/User) now render the TAIL page
+  by default (`sy = RVDocLineCount - hh + scroll_y`), and the `scroll_y` in `[-max,0]` that
+  `RVWinClampScroll` keeps pages back through history — PgUp/PgDn scrollback verified.
+  `RVWinBodyAppend` also no longer `DocRst`s the CDoc when the flat 1 KB `body[]` fills
+  (that wiped scrollback and dropped new text); it front-trims whole lines and always
+  appends to the CDoc incrementally. The first-char-on-scroll clip (`Ab375Ab`→`b375Ab`)
+  was fixed earlier via `line_start_col` reset.
+* RV_VT_COLS/ROWS: the presenter queries the terminal (`CSI 18 t`) at startup and parses
+  the `CSI 8;r;c t` reply; compiled-in defaults otherwise.
 * Boot-time harness probes `PopUp("FileMgr(1,0);")` / `Cd("A:")` report
   `Undefined identifier at "("` in win_vt (pre-existing; the kernel-win-* gates were red
   before this audit and are unchanged by it).
