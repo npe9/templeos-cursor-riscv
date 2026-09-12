@@ -58,4 +58,9 @@ TempleOS/RISC-V - clean interactive boot at ${COLS}x${ROWS}.
   Quit:    q   (or Ctrl-A then X)
 EOF
 sleep 2
-exec "$QEMU" -M virt -m 256M -bios none -kernel "$ELF" -nographic
+DISK="$ROOT/build/exec/tos_disk.img"
+DRIVE_ARGS=()
+if [ -f "$DISK" ]; then
+  DRIVE_ARGS=(-drive "file=$DISK,if=none,format=raw,id=hd0" -device virtio-blk-device,drive=hd0)
+fi
+exec "$QEMU" -M virt -m 256M -bios none -kernel "$ELF" -nographic "${DRIVE_ARGS[@]}"

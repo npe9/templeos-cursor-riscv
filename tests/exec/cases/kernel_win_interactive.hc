@@ -340,7 +340,9 @@ I64 main()
   // Kernel &Regs/&Dir — Compiler address-of imports may stay GOT=0.
   
   {
-    I64 pubs[36];
+    I64 pubs[38];
+    pubs[36] = &FileRead;     // U8 *FileRead(U8 *name, I64 *size=NULL, I64 *attr=NULL)
+    pubs[37] = &FileWrite;    // I64 FileWrite(U8 *name, U8 *buf, I64 size, CDate=0, I64 attr=0)
     pubs[31] = &RVMemCpy;     // U8 *MemCpy(U8 *dst, U8 *src, I64 size)
     pubs[32] = &RVMemSet;     // U8 *MemSet(U8 *dst, I64 dat, I64 size)
     pubs[33] = &DocNew;       // CDoc *DocNew(U8 *filename=NULL, CTask *task=NULL)
@@ -482,6 +484,10 @@ I64 main()
   // self-test desktop demo below and drop straight into the interactive DolDoc REPL.
   // The gate images (win_vt/win_i/win_hold) leave the bit clear and run the full demo.
   if ((RVWinHoldFlag() >> 32) & 1) {
+    // Clean boot. If a virtio-blk RedSea disk is attached (run_kernel_tos.sh -drive),
+    // mount it as B: so the full stock tos/ tree is browsable (Cat("B:/Doc/God.DD");).
+    // No device -> RVMountVirtioDisk returns without mounting, A: RAM still works.
+    RVMountVirtioDisk('B');
     // Clean boot: seed a couple of real stock DolDoc files so there is something to
     // browse (Cat("A:/Doc/God.DD");), and greet in the Term instead of the test string.
     DirMk("A:/Doc");
@@ -491,7 +497,8 @@ I64 main()
         rv_winmgr.wins[rv_winmgr.term_idx].doc->doc_signature == DOC_SIGNATURE_VAL) {
       DocClear(rv_winmgr.wins[rv_winmgr.term_idx].doc);
       RVDocPutS("TempleOS/RISC-V \x97 HolyC ExePutS + DolDoc.\n");
-      RVDocPutS("Try:  2+3;   Dir;   Cat(\"A:/Doc/God.DD\");   F64 f=2.0; Sqrt(f);\n");
+      RVDocPutS("Try:  2+3;   Dir;   Cat(\"B:/Doc/Welcome.DD\");   F64 f=2.0; Sqrt(f);\n");
+      RVDocPutS("The stock tos/Doc tree is on B: (Cat any B:/Doc/*.DD); A: is a RAM disk.\n");
     }
     RVWinVtRun();
     return 0;

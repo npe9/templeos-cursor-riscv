@@ -881,6 +881,27 @@ I64 RVExePubsWireAddrs(I64 *addrs)
       n++;
     }
   }
+  // Slots 36-37: filesystem read/write, so REPL programs can load/save files.
+  if (addrs[36] && !HashFind("FileRead", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("FileRead", addrs[36], i64t, 3);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "name", u8p);
+      RVExePubAddArg(tmpf, "size", i64t, MLF_DFT_AVAILABLE, 0);
+      RVExePubAddArg(tmpf, "attr", i64t, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
+  if (addrs[37] && !HashFind("FileWrite", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("FileWrite", addrs[37], i64t, 5);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "name", u8p);
+      RVExePubAddArg(tmpf, "fbuf", u8p);
+      RVExePubAddArg(tmpf, "size", i64t);
+      RVExePubAddArg(tmpf, "cdt", i64t, MLF_DFT_AVAILABLE, 0);
+      RVExePubAddArg(tmpf, "attr", i64t, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
   return n;
 }
 
@@ -940,9 +961,9 @@ I64 RVExePubsWire()
 {
   // Monolithic Body: symbols are in-image. Split-AOT Kernel should call
   // RVExePubsWireAddrs with Kernel &Print/&Regs/… instead.
-  I64 addrs[36];
+  I64 addrs[38];
   I64 zi;
-  for (zi = 0; zi < 36; zi++)
+  for (zi = 0; zi < 38; zi++)
     addrs[zi] = 0;
   addrs[0] = &Print;
   addrs[1] = &PutChars;

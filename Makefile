@@ -827,7 +827,16 @@ $(WIN_VT_ELF): $(WIN_AOT_BLOB_VT) $(WIN_AOT_SCRIPT) $(WIN_AOT_HARNESS)
 
 # Real HolyC ExePutS REPL + real DolDoc, presented to YOUR terminal as ANSI.
 # Same desktop/compiler/DolDoc as kernel-win-interactive — only the scanout differs.
-kernel-tos: $(WIN_TOS_ELF)
+# RedSea disk image: the full stock tos/Doc tree + a few runnable Demo programs, so
+# `make tos` boots with real TempleOS content on B: (Cat any B:/Doc/*.DD).
+build/exec/tos_disk.img: tools/mk_redsea_seed_img.py $(wildcard tos/Doc/*.DD)
+	@mkdir -p build/exec
+	@python3 tools/mk_redsea_seed_img.py $@ \
+		$$(for f in tos/Doc/*.DD; do echo "Doc/$$(basename $$f)=$$f"; done) \
+		Demo/ForLoop.HC=Demo/ForLoop.HC Demo/NullCase.HC=Demo/NullCase.HC \
+		Demo/SubSwitch.HC=Demo/SubSwitch.HC >/dev/null
+
+kernel-tos: $(WIN_TOS_ELF) build/exec/tos_disk.img
 	@chmod +x tests/scripts/run_kernel_tos.sh
 	@tests/scripts/run_kernel_tos.sh
 

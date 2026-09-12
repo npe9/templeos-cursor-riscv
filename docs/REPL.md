@@ -234,5 +234,12 @@ your terminal, and drops you at the `> ` prompt:
     Dir;                         # list the RAM filesystem
     q                            # quit (or Ctrl-A then X)
 
-The runtime library functions ported for the REPL (MAlloc/StrPrint/FilesFind/Now/…) and
-the CDirEntry/CDateStruct types are all callable here.
+The runtime library functions ported for the REPL (MAlloc/StrPrint/FilesFind/FileRead/
+Now/…) and the CDirEntry/CDateStruct types are all callable here.
+
+**Real disk on B:.** `make tos` builds a RedSea disk image (`build/exec/tos_disk.img`)
+from the full stock `tos/Doc` tree plus a few Demo programs and attaches it as a
+virtio-blk device. The clean boot mounts it as `B:` (via `RVMountVirtioDisk`), so every
+stock TempleOS document is browsable — `Cat("B:/Doc/Welcome.DD");`,
+`Cat("B:/Doc/DolDocOverview.DD");`, etc. `A:` remains a RAM disk for scratch files.
+Without the disk, the mount is a no-op and `A:` still works.
