@@ -34,6 +34,7 @@ in product docs. Matrix policy: **skips are not allowed** — see
 | Virtio console | `VirtioConsole.HC` | mmio port-0 TX/RX | `HAS_VIRTIO_CONSOLE` |
 | Virtio balloon | `VirtioBalloon.HC` | mmio inflate/deflate | `HAS_VIRTIO_BALLOON` |
 | Virtio SCSI | `VirtioScsi.HC` | mmio INQUIRY + READ(10) | `HAS_VIRTIO_SCSI` |
+| Sound / Play | `Adam/ASnd_RV.HC` + `VirtioSnd.HC` | real `Play` → `RVSnd` + soft PCM; virtio-sound DeviceID 25 PCM TX; default Yield note waits; opt-in `RVSndRealTiming` → `RVJiffies` SleepUntil (+ spin if Yield unwired) | always on Kernel_RV; smoke `kernel-virtio-snd-smoke` (`timing_ms=`) / `kernel-psalmody-smoke` |
 | Framebuffer | `RVFbPlat.HC` → `RVFbSelected.HH` | ramfb / simplefb / none | `FB_PRESENT_*` |
 | fw_cfg | `RVFwCfg.HC` → `RVFwCfgSelected.HH` | `RVFwCfgYes` (DMA/Find/Sig), `RVFwCfgNo` | `HAS_FW_CFG` |
 | Goldfish RTC | `RVRtc.HC` → `RVRtcSelected.HH` | `RVRtcGoldfish`, `RVRtcNo` | `HAS_GOLDFISH_RTC` |
@@ -55,8 +56,8 @@ Legend: **P** = present (wired), **S** = stub / no-op selected, **—** = N/A fo
 | **xiangshan** | P 16550 (regshift2) | P ACLINT-as-CLINT | P APLIC+IMSIC (mtopei/eithreshold/hart TARGET) | — | — | — | — | — | Smoke (`-bios`) |
 | **amd_microblaze_v** | P UARTLite | P XPS timer | P XPS INTC | — | — | — | — | — | Smoke (loader) |
 | **opentitan** | P Ibex (HolyC) / asm smoke | P Ibex timer (HolyC) / asm poke | P map | — | — | — | — | — | Smoke (RV32 asm) |
-| **visionfive2** | P 16550/DW8250 @ `0x10000000` | P CLINT @ `0x02000000` (4 MHz) | P @ `0x0C000000` | W simplefb hook (`SIMPLEFB_BASE=0`) | — | — | — | — | **WIP board** (`make kernel-visionfive2`; no QEMU) |
-| **milkv_mars** | P 16550/DW8250 (JH7110 map) | P CLINT @ `0x02000000` | P @ `0x0C000000` | W simplefb hook | — | — | — | — | **WIP board** (`make kernel-milkv-mars`; no QEMU) |
+| **visionfive2** | P 16550/DW8250 @ `0x10000000` | P CLINT @ `0x02000000` (4 MHz) | P @ `0x0C000000` | W simplefb hook (`SIMPLEFB_BASE=0`) | — | — | — | — | **Smoke** (`plat-qemu.elf` on virt; board @ `0x40200000`) |
+| **milkv_mars** | P 16550/DW8250 (JH7110 map) | P CLINT @ `0x02000000` | P @ `0x0C000000` | W simplefb hook | — | — | — | — | **Smoke** (`plat-qemu.elf` on virt; own board files) |
 | **none / host** | — | — | — | — | — | — | — | — | **Excluded** (not boards) |
 
 ## What each product path needs
@@ -75,11 +76,11 @@ Legend: **P** = present (wired), **S** = stub / no-op selected, **—** = N/A fo
 2. ~~**Ibex timer HolyC driver**~~ — **done**: `RVTimerIbex.HC` @ `CONFIG_IBEX_TIMER_BASE` (`0x40100000`), selected when `HAS_IBEX_TIMER`.
 3. ~~**Xiangshan APLIC**~~ — **done (MSI + IMSIC file)**: `RVPlicAplic.HC` enable, `mtopei` claim, IMSIC `eidelivery`/`eie`/`eithreshold`, multi-hart `RVPlicEnableHart`; nested S-domain / guest files still open.
 4. ~~**Virtio-PCI BlkDev fallback**~~ — **done**: `VirtioBlkInit` MMIO→`VirtioPciBlk` (+ R/W); smoke `kernel-virtio-pci-smoke`. **PCI INTx/ISR** for blk+net (`VirtioPciIrqNum`/`IsrAck`/`EnableIntx`; MSI-X disabled on virt PLIC). **Trap MEIE** for mmio + PCI: `RvSetMEIE` from IrqInit; `HolyServiceExternal` ACKs mmio 1..8 and PCI INTx 32..35 via `RVVirtioPciIsrReg`; smokes `kernel-virtioirq-smoke` + `kernel-virtio-pci-irq-smoke`. Still deferred: **AIA MSI-X→IMSIC** (virt board uses PLIC INTx only — MSI-X needs APLIC/IMSIC like Xiangshan); TCP/IP.
-5. **Virtio console / balloon / SCSI** — **mmio slices landed**: `VirtioConsole` (port-0 **TX** with file/null chardev; avoid stdio dual with UART), `VirtioBalloon` (inflate/deflate), `VirtioScsi` (**INQUIRY** command path + best-effort READ(10); eventq notify after prime). Still open: multiport console, balloon statsq, reliable SCSI WRITE / BlkDev glue, rng/gpu.
+5. **Virtio console / balloon / SCSI / sound** — **mmio slices landed**: `VirtioConsole` (port-0 **TX** with file/null chardev; avoid stdio dual with UART), `VirtioBalloon` (inflate/deflate), `VirtioScsi` (**INQUIRY** command path + best-effort READ(10); eventq notify after prime), `VirtioSnd` (**PCM TX** SET_PARAMS→START→txq; smoke `kernel-virtio-snd-smoke` with `-audiodev none`). Still open: multiport console, balloon statsq, reliable SCSI WRITE / BlkDev glue, snd RX/capture, async TX periods, rng/gpu.
 5b. ~~**SiFive GEM eth (sifive_u)**~~ — **done (TX/RX poll slice)**: `RVSifiveGemYes` @ `CONFIG_SIFIVE_ETH_BASE`, local-loopback RX self-test; smoke `kernel-sifive-gem-smoke`. Still open: PLIC/MEIE RX, PHY MDIO, TCP/IP.
 6. **Full FE310 / sifive_e product image** — **partial (correct layout)**: Kernel **XIP/QSPI** + **bootloader in DTIM** only (`.data` LMA→VMA copy, `.bss` clear, stack; imports **host-prepatched** — do not write ROM at runtime). Matrix keeps slim `plat.elf`. Fuller: `kernel-fe310.elf` / `make kernel-sifive-e-full-smoke`. Full `Kernel_RV` / REPL still out (16 KiB DTIM). RV32 emit = later (item 1).
-7. **VisionFive 2 (JH7110)** — **WIP**: `visionfive2_defconfig` + packed `link_visionfive2.ld` + UART_REG_SHIFT=2 + OpenOCD + `make kernel-visionfive2-help`. No QEMU `-M`; out of matrix until board smoke green.
-8. **Milk-V Mars (JH7110)** — **WIP**: sibling of VF2 — `milkv_mars_defconfig` + `link_milkv_mars.ld` + OpenOCD + `make kernel-milkv-mars-help` (do **not** overwrite `visionfive2_*`). Out of matrix until green.
+7. **VisionFive 2 (JH7110)** — **Smoke**: `visionfive2_defconfig` + packed `link_visionfive2.ld` + UART_REG_SHIFT=2 + OpenOCD + **`plat-qemu.elf` virt harness** (`make kernel-plat-visionfive2-smoke`). No native QEMU `-M`; UART/CLINT/PLIC bases match virt.
+8. **Milk-V Mars (JH7110)** — **Smoke**: sibling of VF2 — `milkv_mars_defconfig` + `link_milkv_mars.ld` + OpenOCD + same virt harness (do **not** overwrite `visionfive2_*`).
 
 ### ARCH_RISCV32 exact blocker (smallest unblock path)
 
@@ -104,7 +105,27 @@ make kernel-sifive-gem-smoke        # Cadence GEM TX + local-loopback RX (sifive
 make kernel-plat-spike-smoke
 make kernel-plat-matrix             # all matrix boards; must be all OK
 make kernel-sifive-e-full-smoke     # FE310: DTIM bootloader → XIP Kernel_FE310
-make kernel-visionfive2             # JH7110 plat.elf (board-only; no QEMU smoke)
-make kernel-milkv-mars              # Milk-V Mars JH7110 plat.elf (own files)
+make kernel-visionfive2             # JH7110 board plat + plat-qemu.elf
+make kernel-plat-visionfive2-smoke  # virt harness (JH7110 UART/CLINT/PLIC)
+make kernel-milkv-mars              # Milk-V Mars JH7110 (own files)
+make kernel-plat-milkv-mars-smoke
+make kernel-virtio-snd-smoke        # virtio-sound PCM TX (audiodev none; tx_ok needle)
 make -C templeos-riscv qemu-args-<machine>
+```
+
+### Virtio-sound PCM TX (host hear / record)
+
+CI uses `-audiodev none` (proves `tx_ok` without a speaker). To listen or capture:
+
+```bash
+# macOS CoreAudio (hear Play/Snd notes)
+qemu-system-riscv64 -M virt -m 256M -bios none -kernel build/exec/psalmody.elf \
+  -audiodev coreaudio,id=snd0 -device virtio-sound-device,audiodev=snd0 \
+  -device ramfb -display none -serial stdio
+
+# WAV capture (then open out.wav)
+qemu-system-riscv64 -M virt -m 256M -bios none -kernel build/exec/kp.elf \
+  -audiodev wav,id=snd0,path=out.wav -device virtio-sound-device,audiodev=snd0 \
+  -nographic
+# or: make kernel-virtio-snd-smoke  (none backend; UART tx_ok=)
 ```

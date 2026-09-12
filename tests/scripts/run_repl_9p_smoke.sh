@@ -1,9 +1,11 @@
 #!/bin/bash
-# REPL 9p smoke: Run ninep.hc NinepSmoke under QEMU with host virtfs (import + export).
+# REPL 9p smoke: NinepSmoke on the HolyC AOT REPL under QEMU with host virtfs
+# (import + export). seed/ninep.hc is AOT-#included by bootstrap/hc_repl/repl.hc and
+# reachable through JitAdd — the thin JitTry evaluator cannot compile the driver, so
+# this drives NinepSmoke directly instead of Run("ninep.hc").
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BOOT="$ROOT/bootstrap"
 QEMU="${QEMU_SYSTEM_RISCV:-qemu-system-riscv64}"
 TIMEOUT_CMD=""
 if command -v timeout >/dev/null 2>&1; then
@@ -15,17 +17,27 @@ else
   exit 0
 fi
 
-make -C "$ROOT" repl-blob >/dev/null
-make -C "$BOOT" -f Makefile.repl repl.elf >/dev/null
+# No `set -e` here (the poll loops below rely on non-zero greps), so the build
+# has to be checked by hand — otherwise a failed `make` just leaves a stale ELF
+# in place and the smoke reports on yesterday's image.
+if ! make -C "$ROOT" hc-repl >/dev/null; then
+  echo "FAIL REPL-9p smoke — make hc-repl failed" >&2
+  exit 1
+fi
+ELF="$ROOT/build/repl-holyc.elf"
+if [ ! -f "$ELF" ]; then
+  echo "FAIL REPL-9p smoke — missing $ELF (make hc-repl)" >&2
+  exit 1
+fi
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/share"
 printf 'hello from 9p' >"$T/share/test.txt"
 
-input=$'Run("ninep.hc");\nNinepSmoke();\n4919;\n'
+input=$'NinepSmoke();\n4919;\n'
 log="$(mktemp)"
-printf '%s' "$input" | $TIMEOUT_CMD 90 "$QEMU" -M virt -m 256M -bios none -kernel "$BOOT/repl.elf" -nographic \
+printf '%s' "$input" | $TIMEOUT_CMD 90 "$QEMU" -M virt -m 256M -bios none -kernel "$ELF" -nographic \
   -fsdev local,id=fsdev0,path="$T/share",security_model=none \
   -device virtio-9p-device,fsdev=fsdev0,mount_tag=hostshare >"$log" 2>&1 &
 qpid=$!

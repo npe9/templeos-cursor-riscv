@@ -48,7 +48,7 @@ Honest framing: **slice proofs + stronger oracles**, not seL4-for-TempleOS.
 | Layer | Language | Role |
 |-------|----------|------|
 | `host/` (`lexer.c`, `parser.c`, `compiler.c`, …) | **C** | Mac AOT bootstrap `holyc-riscv` — HolyC → RISC-V |
-| `bootstrap/worry_dream_repl.c`, `holy_rt*.h`, `startup.s` | **C + asm** | Legacy UART REPL / slots (deprecated product path; still instructive for trap/regs snaps) |
+| `bootstrap/holy_rt*.h` | **C** | Runtime name/ABI headers shared with the host AOT. The legacy UART REPL that used them (`worry_dream_repl.c`, `startup.s`) is **deleted** — read `080f729` if you want the old trap/regs snaps |
 | `bootstrap/seed/*.hc`, `hc_repl/`, `bootloader/boot.hc` | **HolyC** (+ `asm{}`) | Product REPL, memfs, ZMODEM, tutorials, HolyC boot head |
 | `Kernel/`, `Compiler/`, `Adam/` | **HolyC** | Ported TempleOS trees; guest `Compiler_RV` is the language destination |
 | `templeos-riscv/` | **C** loader + Kconfig | Board image / plat harness glue |

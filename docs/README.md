@@ -50,8 +50,10 @@ see [CI](#build--ci--ops--verification) and [PLATFORM.md](../templeos-riscv/PLAT
 | Doc | Blurb |
 |-----|--------|
 | [REPL.md](REPL.md) | Interactive HolyC: `Src` / Vi / Fmt / MemMap |
+| [REPL_FUNS.md](REPL_FUNS.md) | Adam/DocTerm cmdline → UART REPL catalog + DolDoc→ANSI map |
 | [UART.md](UART.md) | UART primer (history, framing/FIFOs, flow-control concepts + this repo) |
 | [CONSOLE.md](CONSOLE.md) | UART console wishlist audit (TTY / framing / dbg / 9P — have·partial·missing) |
+| [DOLDOC_VT.md](DOLDOC_VT.md) | DolDoc on a VT100 / curses terminal — present the WinMgr cell grid as ANSI (`kernel-vt-smoke` green under QEMU; untried on a real terminal) |
 | [FLOW_CONTROL.md](FLOW_CONTROL.md) | FC ops sheet (XON/XOFF shipped; RTS/CTS stub; primer → UART.md) |
 | [BAREMETAL.md](BAREMETAL.md) | FPGA OpenOCD + bare QEMU; bootloader / firmware / split images |
 
@@ -125,8 +127,8 @@ Chapter bodies: `bootstrap/seed/tutorials/*.hc` → memfs `/Tutorials/`.
 
 | Doc | Blurb |
 |-----|--------|
-| [GAPS.md](GAPS.md) | Ordered gap-fill plan (A3 flip / worry_dream delete; wave lanes) |
-| [A3_FLIP_DRAFT.md](A3_FLIP_DRAFT.md) | G7 flip draft — do **not** apply until `a3-flip-check` READY |
+| [GAPS.md](GAPS.md) | Ordered gap-fill plan (wave lanes) |
+| [A3_FLIP_DRAFT.md](A3_FLIP_DRAFT.md) | G7 flip draft — **applied**; kept as the record of how the flip and the `worry_dream` delete were done |
 | [RISCV_PORT_PLAN.md](RISCV_PORT_PLAN.md) | Older port-plan notes *(historical)* |
 | [MULTIARCH.md](MULTIARCH.md) | Forward multi-arch sketch |
 | [../templeos-riscv/RV32.md](../templeos-riscv/RV32.md) | RV32 plan |

@@ -1,7 +1,9 @@
 # A3 / G7 flip — draft notes (**APPLIED**)
 
-Flip edits from this draft are applied to `Makefile` + docs (A3 **Done**).
-`worry_dream_repl.c` delete remains a **follow-up** (do not delete yet).
+Flip edits from this draft are applied to `Makefile` + docs (A3 **Done**), and the
+`worry_dream_repl.c` follow-up delete **also landed** (commit `080f729`): the C guest,
+`startup.s` / `linker.ld` and the legacy `bootstrap/repl.elf` link path are gone. Nothing in
+this draft is still pending — it is kept as a record of how the flip was done.
 
 Scaffolding: `make a3-flip-check` prints **READY**; [SELF_HOST.md](SELF_HOST.md) G7
 blockers empty. ZMODEM / Fmt / Demo waived. **G2 trap/Ctrl-C** and **G3 livedrv** Done.
@@ -19,7 +21,7 @@ Related: [GAPS.md](GAPS.md) **G7 Done**, [CI.md](CI.md), [REGRESSION.md](../test
 
 1. Honesty path = HolyC only (`repl-holyc-smoke`, `repl-holyc-regression`, `repl-cmp-smoke`, `bootloader-smoke`).
 2. Drop **required** legacy dual-run (`repl-smoke` / `repl-regression`) from `qemu-integration`. **Done.**
-3. Optionally delete `bootstrap/worry_dream_repl.c` (+ legacy `Makefile.repl` link path) in a follow-up once nothing else references it. **Not yet.**
+3. Delete `bootstrap/worry_dream_repl.c` (+ legacy `Makefile.repl` link path) in a follow-up once nothing else references it. **Done** (`080f729`).
 4. Keep `SKIP_REPL_LEGACY` out of GitHub Actions forever (variable obsolete; dual-run branch removed).
 
 ---
@@ -45,7 +47,7 @@ Help text demotes `repl-smoke` / `repl-regression` to local / scheduled delete.
 
 | File | Change |
 |------|--------|
-| [SELF_HOST.md](SELF_HOST.md) | A3 **Done**; flip checklist checked; worry_dream delete still open |
+| [SELF_HOST.md](SELF_HOST.md) | A3 **Done**; flip checklist checked; worry_dream delete **Done** |
 | [GAPS.md](GAPS.md) | G7 → Done; critical-path note |
 | [CI.md](CI.md) | Legacy + zmodem → optional local |
 | [REGRESSION.md](../tests/REGRESSION.md) | Primary gate = `repl-holyc-regression` only |
@@ -56,11 +58,18 @@ Help text demotes `repl-smoke` / `repl-regression` to local / scheduled delete.
 
 ---
 
-## Follow-up delete (separate commit after CI green)
+## Follow-up delete — **landed** (`080f729`)
 
-- Delete or move under `bootstrap/archive/`: `worry_dream_repl.c`, legacy `startup.s` link bits used only by `Makefile.repl` guest C path.
-- Retire `make repl-smoke` / `repl-regression` targets or point them at an archived recipe.
-- Remove leftover `SKIP_REPL_LEGACY` mentions if any remain.
+- [x] `worry_dream_repl.c`, legacy `startup.s` / `linker.ld` link bits used only by the `Makefile.repl` guest C path: **deleted** (not archived).
+- [x] `make repl-smoke` / `repl-regression` (and `dbg-smoke` / `hwdbg-smoke`): kept as targets that print a clear error and redirect to the HolyC equivalents, so old muscle memory and old docs fail loudly instead of silently doing nothing. Same for `tests/scripts/run_repl_smoke.sh` / `run_repl_regression.sh` / `run_dbg_smoke.sh` / `run_hwdbg_smoke.sh`, and `repl.elf` in `bootstrap/Makefile.repl`.
+- [x] `SKIP_REPL_LEGACY` no longer appears in `Makefile` or `.github/workflows/`.
+
+Still-live descendants of the old C guest, so they are **not** vestigial:
+`bootstrap/Makefile.repl` still generates `boot_blob_embed.h` for the HolyC REPL (its
+`seed_files.h` / `asm_templates.inc` outputs are vestigial and no longer built by default),
+and `tests/scripts/run_hc_repl_smoke.sh` greps the
+Mac-AOT ELF for `worry_dream|holy_rt|RuntimeRegister` symbols as a **negative** assertion
+(the guest must not have relinked them). Do not "clean up" that grep.
 
 ---
 

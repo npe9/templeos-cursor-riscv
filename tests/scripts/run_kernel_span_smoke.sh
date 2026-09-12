@@ -2,7 +2,7 @@
 # Stock Apps/Span Load on RV (Cd(__DIR__) + Bridge/DrawIt + GetMsg under WinMgr).
 # CI: -display none + UART needles; GetMsg PlaceMass + win_getmsg + FilesFind PopUpPickFile
 # + stock Span() live GetMsg under Yield+WinMgr pump (SHIFT_ESC; SongTask soft Play)
-# + stock Span() SongTask+AnimateTask (SHIFT_ESC; Refresh Yield-only under peers).
+# + stock Span() SongTask+AnimateTask ESC save → DirMk("~/Span") / FileWrite Game.DATA.
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -46,7 +46,7 @@ fi
 
 cp "$T/span.elf" "$OUTDIR/span.elf"
 
-out="$($TIMEOUT 120 "$QEMU" -M virt -m 128M -bios none -kernel "$T/span.elf" \
+out="$($TIMEOUT 300 "$QEMU" -M virt -m 128M -bios none -kernel "$T/span.elf" \
   -device ramfb -display none -serial stdio </dev/null 2>&1 | tr -d '\r')"
 
 if ! printf '%s\n' "$out" | grep -qF "$EXPECT_PREFIX"; then
@@ -96,8 +96,24 @@ if ! printf '%s\n' "$out" | grep -qE 'RVSpan full ok'; then
   printf '%s\n' "$out" | grep -E 'RVSpan full' | head -5 | sed 's/^/  got: /' >&2
   exit 1
 fi
+if ! printf '%s\n' "$out" | grep -qE 'RVSpan full ok .*paint=[1-9]'; then
+  echo "FAIL kernel-span smoke — expected Refresh paint/ODE hits:" >&2
+  printf '%s\n' "$out" | grep -E 'RVSpan full' | head -5 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if printf '%s\n' "$out" | grep -qE 'RVSpan save FAIL'; then
+  echo "FAIL kernel-span smoke — ESC save FAIL:" >&2
+  printf '%s\n' "$out" | grep -E 'RVSpan save' | head -5 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qE 'RVSpan save ok size=[1-9]'; then
+  echo "FAIL kernel-span smoke — expected ESC save ok:" >&2
+  printf '%s\n' "$out" | grep -E 'RVSpan save|PopUpFileName' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
 
 live="$(printf '%s\n' "$out" | grep -E 'RVSpan live ok' | tail -1)"
 full="$(printf '%s\n' "$out" | grep -E 'RVSpan full ok' | tail -1)"
-echo "Kernel-span smoke: OK ($line | $live | $full)"
+save="$(printf '%s\n' "$out" | grep -E 'RVSpan save ok' | tail -1)"
+echo "Kernel-span smoke: OK ($line | $live | $full | $save)"
 exit 0

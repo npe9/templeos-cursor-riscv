@@ -79,13 +79,23 @@ if [ -f "$TOS/.config" ]; then
   SAVE_HAD_CFG=1
 fi
 
+# This build applies a foreign board's Kconfig and puts the previous one back, so
+# leave the generated headers exactly as found — content *and* mtime. Without the
+# snapshot the round trip invalidates every AOT unit whose .d includes them.
+# shellcheck source=tests/scripts/kconfig_snapshot.sh
+. "$SCRIPT_DIR/kconfig_snapshot.sh"
+kconfig_snapshot_begin
+
 restore_cfg() {
   if [ "$SAVE_HAD_CFG" -eq 1 ]; then
-    cp "$SAVE_CFG" "$TOS/.config"
+    # Write-if-different, matching kconfig.py: restoring identical bytes must not
+    # move .config's mtime, or the header rule looks stale on every plat build.
+    cmp -s "$SAVE_CFG" "$TOS/.config" || cp "$SAVE_CFG" "$TOS/.config"
     make -C "$TOS" syncconfig >/dev/null
   else
     make -C "$TOS" defconfig-virt >/dev/null
   fi
+  kconfig_snapshot_end
   rm -f "$SAVE_CFG"
   cleanup_lock
 }
@@ -216,6 +226,49 @@ elif [ -f "$KDIR/plat-ram.bin" ]; then
   cp "$KDIR/plat-ram.bin" "$KDIR/plat.bin"
 fi
 
+# JH7110 boards: also build a QEMU virt harness twin.
+# Virt already places UART/CLINT/PLIC at the JH7110 bases (0x10000000 /
+# 0x02000000 / 0x0C000000). Board plat keeps DDR@0x40200000 + REG_SHIFT=2;
+# plat-qemu.elf uses virt DRAM@0x80000000 + REG_SHIFT=0 for the byte 16550.
+JH7110_QEMU=0
+if [ "$DEFCONFIG" = visionfive2 ] || [ "$DEFCONFIG" = milkv_mars ]; then
+  JH7110_QEMU=1
+  AUTOCONF="$ROOT/Kernel/RVAutoConf.HH"
+  SAVE_AUTO="$T/RVAutoConf.board.HH"
+  cp "$AUTOCONF" "$SAVE_AUTO"
+  if ! grep -q '^#define CONFIG_UART_REG_SHIFT 2$' "$AUTOCONF"; then
+    echo "FAIL build kernel — expected CONFIG_UART_REG_SHIFT 2 for $DEFCONFIG qemu twin" >&2
+    exit 1
+  fi
+  sed -i.bak 's/^#define CONFIG_UART_REG_SHIFT 2$/#define CONFIG_UART_REG_SHIFT 0/' "$AUTOCONF"
+  rm -f "$AUTOCONF.bak"
+  if ! grep -q '^#define CONFIG_UART_REG_SHIFT 0$' "$AUTOCONF"; then
+    cp "$SAVE_AUTO" "$AUTOCONF"
+    echo "FAIL build kernel — REG_SHIFT patch failed for $DEFCONFIG plat-qemu" >&2
+    exit 1
+  fi
+  if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob-qemu.bin" >/dev/null 2>&1; then
+    cp "$SAVE_AUTO" "$AUTOCONF"
+    echo "FAIL build kernel — HolyC compile error ($DEFCONFIG plat-qemu)" >&2
+    HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob-qemu.bin" 2>&1 | tail -20 >&2
+    exit 1
+  fi
+  # link_exec.ld places the AOT blob via the literal object name blob_in.o
+  mkdir -p "$T/qemu"
+  ( cd "$T/qemu" && cp ../blob-qemu.bin blob.bin && \
+    "$OBJCOPY" -I binary -O elf64-littleriscv blob.bin blob_in.o && \
+    "$LD" -T "$HARNESS/link_exec.ld" -nostdlib --no-warn-mismatch -o plat-qemu.elf \
+      "$EXEC_DIR/crt0.o" "$ORACLE_OBJ" blob_in.o ) \
+    >/dev/null 2>&1 || {
+      cp "$SAVE_AUTO" "$AUTOCONF"
+      echo "FAIL build kernel — link error ($DEFCONFIG plat-qemu)" >&2
+      exit 1
+    }
+  cp "$SAVE_AUTO" "$AUTOCONF"
+  cp "$T/qemu/plat-qemu.elf" "$KDIR/plat-qemu.elf"
+  cp "$T/qemu/plat-qemu.elf" "$EXEC_DIR/${DEFCONFIG}_plat-qemu.elf"
+fi
+
 cp "$TOS/.config" "$KDIR/.config"
 cp "$ROOT/Kernel/RVAutoConf.HH" "$KDIR/RVAutoConf.HH"
 mkdir -p "$KDIR/DrvSelected"
@@ -223,6 +276,14 @@ for f in RVUartSelected.HH RVPlicSelected.HH RVSifiveSelected.HH RVVirtioSelecte
   [ -f "$ROOT/Kernel/Drv/$f" ] && cp "$ROOT/Kernel/Drv/$f" "$KDIR/DrvSelected/$f"
 done
 python3 "$TOS/scripts/kconfig.py" qemu-args >"$KDIR/qemu-args.txt" 2>"$KDIR/qemu-system.txt" || true
+if [ "$JH7110_QEMU" -eq 1 ]; then
+  {
+    echo "# BOARD plat.bin @ ${ENTRY_POINT:-0x40200000} (U-Boot go / OpenOCD)"
+    echo "# QEMU harness (no native -M): JH7110 UART/CLINT/PLIC bases on virt"
+    echo "#   -M virt -bios none -kernel build/kernels/${DEFCONFIG}/plat-qemu.elf"
+    echo "#   REG_SHIFT=0 + DRAM@0x80000000 for virt byte 16550; board plat keeps shift=2"
+  } >>"$KDIR/qemu-args.txt"
+fi
 ENTRY_HEX="${ENTRY_POINT:-0x80000000}"
 {
   echo "machine=$DEFCONFIG"
@@ -238,6 +299,10 @@ ENTRY_HEX="${ENTRY_POINT:-0x80000000}"
     echo "plat_bin=$KDIR/plat.bin"
     echo "loader_hint=-device loader,file=plat.bin,addr=${ENTRY_HEX},cpu-num=0"
   fi
+  if [ "$JH7110_QEMU" -eq 1 ]; then
+    echo "qemu_elf=$KDIR/plat-qemu.elf"
+    echo "qemu_note=-M virt -bios none -kernel plat-qemu.elf (JH7110 map overlap)"
+  fi
   echo "compat_elf=$EXEC_DIR/${DEFCONFIG}_plat.elf"
   date -u +'built=%Y-%m-%dT%H:%M:%SZ'
 } >"$KDIR/BUILD_INFO.txt"
@@ -246,5 +311,8 @@ if [ "$OUTPUT_FMT" = elf ]; then
   echo "Built kernel ($DEFCONFIG): $KDIR/plat.elf"
   if [ -f "$KDIR/plat.bin" ]; then
     echo "  + flat RAM bin: $KDIR/plat.bin ($(wc -c <"$KDIR/plat.bin") bytes)"
+  fi
+  if [ "$JH7110_QEMU" -eq 1 ]; then
+    echo "  + QEMU harness: $KDIR/plat-qemu.elf (-M virt, JH7110 UART/CLINT/PLIC)"
   fi
 fi

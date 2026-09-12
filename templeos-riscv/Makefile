@@ -57,10 +57,23 @@ all: image
 MCONF := scripts/kconfig/mconf
 CONF  := scripts/kconfig/conf
 
-$(AUTOCONF) ../Kernel/RVAutoConf.HH: .config scripts/kconfig.py Kconfig Kconfig.machines
-	@$(KCONFIG) sync
+# scripts/kconfig.py is write-if-different: a re-sync that changes nothing leaves the
+# generated files' mtime alone, which is what stops AOT units (build/aot/win/kernel.d
+# includes RVAutoConf.HH and the Drv/RV*Selected.HH selects) from rebuilding for free.
+# The side effect is that any file a sync legitimately skipped stays older than
+# .config forever, so a rule keyed on their own mtime would re-run the generator on
+# every invocation. Let a stamp own freshness instead, and depend on it order-only so
+# these targets are still generated on demand when absent (after make clean), yet
+# never look perpetually stale. Consumers keep depending on $(AUTOCONF) directly:
+# its mtime now moves exactly when the config content changed.
+KCONFIG_STAMP := include/generated/.autoconf-stamp
 
-$(KCONFIG_MK): .config scripts/kconfig.py Kconfig Kconfig.machines
+$(KCONFIG_STAMP): .config scripts/kconfig.py Kconfig Kconfig.machines
+	@$(KCONFIG) sync
+	@mkdir -p $(@D)
+	@touch $@
+
+$(AUTOCONF) $(KCONFIG_MK) ../Kernel/RVAutoConf.HH: | $(KCONFIG_STAMP)
 	@$(KCONFIG) sync
 
 .config:

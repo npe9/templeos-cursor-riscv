@@ -295,9 +295,13 @@ qemu-system-riscv64 -M virt -m 256M -bios none -kernel … -nographic \
 | Smokes read+export+nested | **have** | `repl-9p-smoke`, `kernel-virtio-9p-smoke`, `kernel-virtio-9p-pci-smoke` |
 | Guest as 9p **server** | **missing** | Non-goal; host always serves |
 | TCP / UART 9P | **missing** | Need IP or CONSOLE framing ch1 |
-| Recursive tree import / VFS mount | **missing** | No full memfs mirror of host tree |
+| Recursive tree import / VFS mount | **have** | Soft `P:` + stock `FileRead("P:/…")` + `FilesFind` root/nested + DirContext `Cd("P:/…")` after Connect (`kernel-virtio-9p-smoke`) |
 | RedSea ↔ virtfs sync | **missing** | Export is explicit client write |
 | Boards without virtio-9p | **N/A** | Use [FILE_EXPORT.md](FILE_EXPORT.md) UART / ZMODEM |
+| Soft `P:` Let2Drv / Cd grammar | **have** | `RVSoftLet9pPlant`; Connect plants quiet; smokes home + virtio-9p + UART SoftLetRep |
+| Soft `P:` FileRead (no client import) | **have** | `FSt_9P` + `NinePTryFileRead` → `Virtio9pReadPath` |
+| Soft `P:` FilesFind share root + nested | **have** | `NinePTryFilesFind` → `Virtio9pFilesFindMask(dir,mask)` walk+Treaddir (`kernel-virtio-9p-smoke`) |
+| Soft `P:` DirContext Cd after Connect | **have** | `Virtio9pConnect`→`Drv('P')`; `NinePCd` string + `NinePFilesFind` uses `Fs->cur_dir` |
 
 Limits that bite operators: write chunk **4 KiB**; import buffer **4 KiB** on
 kernel `ImportFile`; needs virtfs attached; kernel AOT wrapper fragility (call

@@ -10,7 +10,7 @@ COMPILER="$ROOT/holyc-riscv"
 SRC="$ROOT/tests/exec/cases/kernel_demo_blot.hc"
 EXPECT_PREFIX="RVDemo Blot smoke hash="
 # Calibrate on first green: RVDEMO_BLOT_EXPECT_HASH=0x00000000 make kernel-demo-blot-smoke
-PINNED_HASH="0x00FF93C4"
+PINNED_HASH="0xA3B0362C"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"

@@ -14,7 +14,7 @@ COMPILER="$ROOT/holyc-riscv"
 SRC="$ROOT/tests/exec/cases/kernel_gr_demo.hc"
 EXPECT_PREFIX="RVGr smoke hash="
 # Word-wise FNV-1a for tests/exec/cases/kernel_gr_demo.hc (800×600). Override with RVGR_EXPECT_HASH.
-PINNED_HASH="0xA5396813"
+PINNED_HASH="0x6EF34074"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"

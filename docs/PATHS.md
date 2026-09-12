@@ -27,13 +27,30 @@ Stock behavior (see `Kernel/BlkDev/DskStrA.HC`, `DskDirB.HC`, `DskDrv.HC`):
 | `/…` | Absolute on **current** drive |
 | relative | Under `Fs->cur_dir` |
 
-`DirCur` prints `A:/path`. Guest `StreamDir` / `#define __DIR__` follow the include
-file’s drive-letter abs path.
+`DirCur` prints `A:/path` when mounted. Guest `StreamDir` / `#define __DIR__`
+follow the include file’s drive-letter abs path (often `::/…` or `A:/…`).
+
+### Soft Cd (AOT pre-mount)
+
+Stock `Load.HC` does `Cd(__DIR__);` as a **top-level** stmt. Host AOT runs that
+chunk **before** `main` mounts a BlkDev, so `Fs->cur_dv` is still null.
+
+`Cd` in `DskDirB.HC`: when `!Fs->cur_dv`, strip `A:` / `::`, record `Fs->cur_dir`,
+return — **do not** call `RedSeaCd` / `FAT32Cd`. Mount later resets `cur_dir` to `/`.
+That is what keeps Span / Psalmody `Cd(__DIR__)` from hanging on empty RAM disks.
+
+`DirCur` / SoftCall `Pwd` in the soft window print **`::` + `cur_dir`** (boot-root
+form, same as host `__DIR__` / UART `Pwd`) — never bare Unix `/…`. Soft `Cd("A:/Home")`
+still stores `/Home` internally; `DirCur` reports `::/Home`. Soft `DirNameAbs("A:/Home")`
+likewise yields `::/Home` (no `Drv2Let` throw). `RVSoftLetPlant('A')` plants a signed
+`BDT_RAM` + `CDrv` so `Let2Drv('A')` / `Let2Drv(':')` work **without** virtio or
+`RedSeaFmt`, and **without** setting `Fs->cur_dv` (soft Cd path stays). Gated by
+`make kernel-home-smoke` (`SoftCd DirCur ok` / `Soft Let2Drv` / `Soft DirNameAbs`).
 
 ## UART memfs bridge (partial unification)
 
 Internal names stay hierarchical slash paths (`Home/…`, `Tutorials/…`) — no letter
-device. Bridge in `FsResolve`:
+**device**. Bridge in `FsResolve` (letters are aliases of the one memfs):
 
 | Input | Resolves as |
 |-------|-------------|
@@ -43,7 +60,12 @@ device. Bridge in `FsResolve`:
 | `/Tutorials`, `Tutorials` | unchanged (absolute / cwd-relative) |
 
 `Pwd` prints TempleOS boot-root form: `::/Home/Work/`.  
-`Cd` still logs `cwd: /Home/Work/` (smoke-stable memfs form).
+`Cd` logs the same form: `cwd: ::/Home/Work/`.
+
+**Safe now:** TempleOS *grammar* on memfs (`::` / `A:` / `~` accepted; `Pwd`/`Cd` log → `::/`).  
+**Kernel soft letter:** `RVSoftLetPlant` → real `Let2Drv` without virtio (`kernel-home-smoke`).  
+**UART soft letter:** seed `soft_let.hc` plants the same tables in `repl-holyc` (`SoftLetRep` / `hc-repl-smoke`).  
+**9P letter:** `RVSoftLet9pPlant('P')` / `Virtio9pConnect` → `Let2Drv('P')`; soft `Cd("P:/…")` (`kernel-home-smoke`, `kernel-virtio-9p-smoke`).
 
 ## Host AOT adapter
 
@@ -56,35 +78,61 @@ device. Bridge in `FsResolve`:
 | `/tos/Apps/…` | `$ROOT/tos/Apps/…` (host layout escape hatch) |
 | relative | directory of current file |
 
+Guest Soft Cmp (`Compiler/Lex.HC` `#include`): relative names (no `A:`/`::`/`/`)
+also join the **including file's directory** from `lex_include_stk->full_name`
+before `FileNameAbs` — same host AOT shape. Stock JIT relies on `Cd(__DIR__)`
+running before Lex hits the include; Soft AOT does not. Soft tip `+makedocrel`
+proves nest MakeDoc_RV relative `#include "DocInit_RV"` Soft Cmp+Call.
+Stock Soft `Cd(__DIR__)` / Soft `#exe{Cd}` still blocked (Soft AOT KernelA
+`__DIR__` `#exe{StreamDir}` → Invalid lval; SoftExeDir HTT_FUN plant hung
+DocEd Soft Call). Soft nest seed keeps Soft `#define __DIR__` string + Soft
+`import Cd` workaround.
+
 `__DIR__` / `__FILE__` (host builtins; guest uses `#exe{StreamDir;}`):
 
-- Emit **`/…`** under the include root (not raw `/Users/…`).
-- **Keep** a leading repo `tos/` in `__DIR__` (`/tos/Apps/Span`) — stripping to
-  `/Apps/Span` makes pre-mount AOT `Cd(__DIR__)` hang in RedSeaCd; `/tos/…` fails fast.
+- Emit **`::/…`** under the include root (StreamDir / boot-root shape).
+- Map host **`tos/X` → `::/X`** (ISO layout; `#include "::/Apps/…"` already falls
+  back to `$ROOT/tos/Apps/…`).
+- Soft Cd (above) makes pre-mount `Cd(__DIR__)` safe — no need to keep `/tos/…`
+  in the string for hang avoidance.
 - Relative compile paths (`Demo/Foo.HC`) count as already under the include root.
-- Guest `StreamDir` still emits drive-letter paths (`A:/…` / `::/…`).
-- `#include "::/Apps/…"` still resolves via `$ROOT/tos/Apps/…` (include adapter only).
-
-Smokes may still `#include "/tos/…"` or `/Kernel/…`; prefer `::/…` in new guest-facing
-code. Do not grow new host-only `/Users/…` absolutes.
+- Guest `StreamDir` may still prefer a concrete drive letter (`A:/…`); host uses
+  portable `::/…`.
+- Smokes may still `#include "/tos/…"` or `/Kernel/…`; prefer `::/…` in new
+  guest-facing code. Do not grow new host-only `/Users/…` absolutes.
 
 ## 9P / export
 
-Virtfs share paths are **not** a BlkDev letter yet. `Virtio9pNormSharePath` /
-`NinepNormSharePath` strip `A:` / `::` for the host share name. Mount-as-`P:` (or
-import into `A:/Host/…`) is future work — see [NINEP.md](NINEP.md).
+Virtfs share letter is **`P:`**. `RVSoftLet9pPlant('P')` / `Virtio9pConnect` plant a
+signed soft BlkDev (`FSt_9P`) so `Let2Drv('P')` works; soft `Cd("P:/…")` / `DirNameAbs` stay on
+the `::/…` path until a real `Drv()` (same honesty as soft `A:`). Stock `FileRead("P:/…")` goes
+through `NinePTryFileRead` → `Virtio9pReadPath` (no explicit client import). `Virtio9pNormSharePath`
+/ `NinepNormSharePath` strip `A:` / `P:` / `::` for the host share name. Stock `FilesFind("P:/*")` and nested `FilesFind("P:/dir/*")` list via
+`Virtio9pFilesFindMask` (walk + Treaddir multi-dirent + `d_off`). After `Virtio9pConnect`,
+`Drv('P')` selects the share so stock `Cd("P:/…")` / DirContext relative `FilesFind("*")` work
+(`kernel-virtio-9p-smoke`); plant-only soft Cd stays `::/…` until Connect (`kernel-home-smoke`).
 
 ## What “done” looks like
 
 | Milestone | Status |
 |-----------|--------|
 | Document dual namespaces | **This page** |
-| Host `__DIR__` / `__FILE__` TempleOS-shaped | **Partial** (`/` under include root; keeps `tos/` for Cd-before-mount) |
-| Host `#include` `A:` / `::` + `tos/` fallback | **Partial** |
-| UART `Cd`/`FsResolve` accepts `::` / `A:` / `~` | **Partial** |
-| UART `Pwd` prints `::/` | **Partial** |
-| One Cd/Pwd story on all product shells (memfs = BlkDev) | Open |
-| 9P under a drive letter | Open |
+| Soft Cd when `!Fs->cur_dv` (Span Load) | **Done** |
+| Soft `DirCur`/`Pwd` → `::/…` (pre-mount) | **Done** (`kernel-home-smoke`) |
+| Soft `DirNameAbs` → `::/…`; soft `Let2Drv` via `RVSoftLetPlant` (no virtio) | **Done** (`kernel-home-smoke`) |
+| Host `__DIR__` / `__FILE__` → `::/…` (tos→ISO) | **Done** |
+| Host `#include` `A:` / `::` + `tos/` fallback | **Done** |
+| UART `Cd`/`FsResolve` accepts `::` / `A:` / `~` | **Done** (letter = alias) |
+| UART `Pwd` prints `::/` | **Done** |
+| UART `Cd` log `cwd: ::/` | **Done** (`repl-holyc-smoke`) |
+| Real memfs BlkDev letter / `Let2Drv` (Kernel soft) | **Done** (`RVSoftLetPlant`) |
+| UART memfs → Kernel `Let2Drv` tables | **Done** (`bootstrap/seed/soft_let.hc`, `hc-repl-smoke`) |
+| One Cd/Pwd log story (memfs `cwd:` vs `::/`) | **Done** |
+| 9P under drive letter `P:` (`Let2Drv` / soft `Cd`) | **Done** (`RVSoftLet9pPlant`, `kernel-home-smoke`, `kernel-virtio-9p-smoke`, UART SoftLetRep) |
+| 9P `FileRead("P:/…")` (no Virtio9pReadPath import) | **Done** (`NinePTryFileRead`, `kernel-virtio-9p-smoke`) |
+| 9P `FilesFind("P:/*")` (share root) | **Done** (`Virtio9pFilesFindMask` Treaddir, `kernel-virtio-9p-smoke`) |
+| Nested `FilesFind("P:/dir/*")` | **Done** (dir walk + Treaddir, `kernel-virtio-9p-smoke`) |
+| DirContext Cd on `FSt_9P` | **Done** (`Virtio9pConnect`→`Drv('P')` + string `NinePCd`, `kernel-virtio-9p-smoke`) |
 
 ## See also
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# G7 A3 flip readiness gate (scaffolding only — does NOT change CI dual-run).
+# G7 A3 flip readiness gate. The flip itself is already applied (legacy dual-run is gone
+# from qemu-integration and the worry_dream C guest is deleted); this stays as the local
+# re-check that the HolyC honesty gates are still the ones holding the line.
 # Runs HolyC product honesty targets and prints READY / NOT READY.
 # Clear REMAINING_BLOCKERS below only when SELF_HOST.md G7 rows are green or waived.
 set -euo pipefail
@@ -25,7 +27,7 @@ else
 fi
 echo ""
 echo "Gates: repl-holyc-smoke + repl-holyc-regression + repl-cmp-smoke"
-echo "(bootloader-smoke is also an A3 criterion — run separately before applying the flip draft.)"
+echo "(bootloader-smoke is also an A3 criterion — run it separately; it is not part of this gate.)"
 echo ""
 
 fail=0
@@ -52,11 +54,9 @@ if [ "$fail" -ne 0 ]; then
 fi
 if [ "${#REMAINING_BLOCKERS[@]}" -ne 0 ]; then
   echo "NOT READY — gates green locally may still be pending; ${#REMAINING_BLOCKERS[@]} G7 blocker(s) listed above"
-  echo "          Clear REMAINING_BLOCKERS in this script only after SELF_HOST G7 rows are green/waived,"
-  echo "          then apply docs/A3_FLIP_DRAFT.md (Makefile/CI) in a separate change."
+  echo "          Clear REMAINING_BLOCKERS in this script only after SELF_HOST G7 rows are green/waived."
   exit 1
 fi
 
 echo "READY — HolyC smoke+regression+repl-cmp green and G7 blocker list empty"
-echo "         Next: apply docs/A3_FLIP_DRAFT.md (drop dual-run); do not set SKIP_REPL_LEGACY in CI."
 exit 0

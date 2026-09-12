@@ -27,6 +27,7 @@ Related: [SELF_HOST.md](SELF_HOST.md), [REPL.md](REPL.md), [PLATFORM.md](../temp
 | UART export | `DumpFile` / `DumpMem` / `DumpChanges` + `tools/uart_recv_dump.py` | **Done** — per-file + batch manifest (`--keep-path`) |
 | ZMODEM / `ZmodemSendChanges` | `bootstrap/seed/zmodem.hc`, `tools/uart_recv_zmodem.py` | **Done** — sz subset; dirty bits (**P3**) |
 | Change journal / epochs | `fs.hc` side ring @ `MEMFS_CWD+FS_LOG_OFF`; `boot.hc` seals | **P0–P6 done** — seal / checkpoint / `DumpChanges` / `Rename` / wrap / `FsReplay` / `Recover` |
+| JTAG-readable journal header | `fs.hc` `FsLogHdrSync()` @ `MEMFS_CWD+FS_LOG_HDR_OFF`; `tools/jtag_recv_fslog.py` | **Done** — header read off a running guest, decoder round-trips real dumps, survives `FsLogCompact` (`gen=1`); `repl-holyc-regression` green |
 | 9p | `bootstrap/seed/ninep.hc`, `Kernel/Drv/Virtio9p.HC` | Client import + share-root export (`NineExport`) |
 | Editor dirty | `VDirty` in `vim.hc` / Edit spill | **Buffer-local** — not FS journal |
 | Content hashes / boot baseline table | FNV-1a in snap + journal `hash` field | **P1 done** |
@@ -41,6 +42,68 @@ with `FsRecover`/`Recover`, or ZMODEM the dirty set (`ZmodemSendChanges` on the 
 UART REPL only). Product `repl-holyc` has the journal + UART export + Replay/Recover.
 
 ---
+
+## Reading the journal over JTAG
+
+**Status: verified on target.** The header was read off a running guest at
+`0x87E19B00` with every field correct, `tools/jtag_recv_fslog.py` round-trips a real
+98 KiB dump via both the magic scan and `--base`, and the cursor stays consistent
+across `FsLogCompact` (600 rewrites → `gen=1`, `count ≤ rec_max`).
+Walkthrough: [tutorials/export-changes.md](tutorials/export-changes.md) § 8.
+
+The ring bytes were always in RAM. What was missing was the *cursor*: `FsLogHead`,
+`FsLogCount`, `FsLogSeq` and `FsLogEpochId` lived only in HolyC globals, so a halted
+core gave you `FS_LOG_MAX` fixed-size records with no way to tell which were valid,
+where the write cursor sat, or which epoch they belonged to. `FsLogHdrSync()` now
+mirrors that cursor into a self-describing 64-byte block at `MEMFS_CWD+FS_LOG_HDR_OFF`,
+called from `FsLogPut()` — the single place those globals move, and the tail of every
+epoch change — so the header is never staler than the ring.
+
+| Field | Offset | Meaning |
+|-------|--------|---------|
+| magic | `+0` | `"TOSFSLOG"` — scan for this if you do not want to hardcode an address |
+| version / hdr_size | `+8` / `+12` | `1` / `64` |
+| rec_size / rec_max | `+16` / `+20` | `FS_LOG_REC` (144) / `FS_LOG_MAX` (512) |
+| head / count | `+24` / `+28` | next write index / live records |
+| seq / epoch | `+32` / `+36` | next sequence number / current epoch id |
+| chrono_start / gen | `+40` / `+44` | oldest live index / compaction generation |
+| ring_addr | `+48` | absolute ring address, u32 lo then hi |
+| self_addr | `+56` | this block's own address, u32 lo then hi |
+
+`self_addr` is what makes a magic scan work: a reader that finds the magic at some
+offset in a dump recovers the dump's base as `self_addr - offset`, and from there
+locates the ring exactly. **Do not** try to find the ring by backing up
+`rec_size * rec_max` from the header — they are not adjacent, the collapsed
+dirty-set tables (~15 KiB) sit between them.
+
+Records run chronologically from `chrono_start`, wrapping `mod rec_max`, for `count`
+records. Because the header carries the ring's own address, the operator recipe is one
+address and no symbols — and the layout can move without changing the recipe.
+
+On QEMU virt the header is at **`0x87E19B00`** (`MEMFS_CWD` `0x87E01B00` + `0x18000`)
+and the ring at **`0x87E03F00`**. Halt first, or you are reading a moving ring:
+
+```
+> halt
+> dump_image fslog.bin 0x87E03F00 0x30000     # ring through header
+```
+
+```
+(gdb) dump binary memory fslog.bin 0x87E03F00 0x87E33F00
+```
+
+Then decode on the host:
+
+```
+python3 tools/jtag_recv_fslog.py fslog.bin --base 0x87E03F00
+python3 tools/jtag_recv_fslog.py fslog.bin --json      # for scripting
+python3 tools/jtag_recv_fslog.py --selftest            # no hardware needed
+```
+
+This gives you the *history of names and ops* — what changed, in what order, under
+which epoch, with each body's size and FNV hash. It does **not** carry file bodies:
+those still come out via `DumpFile` / `DumpChanges` over UART, or 9P. The JTAG path is
+for the case where the console is gone but the core is still halted and addressable.
 
 ## Recommended model
 

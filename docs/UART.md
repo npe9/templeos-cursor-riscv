@@ -120,8 +120,8 @@ by 4; Kernel `RVUart16550` uses `U32` in/out so THRE waits see real LSR.
 until `LSR.DR`, read RBR.
 
 **Interrupts:** IER + PLIC so RX can wake `wfi` (Ctrl-C / break). Soft RX rings
-(`uart.hc`, `worry_dream_repl.c`) drain the HW FIFO into a larger software queue
-so keys are not lost during long TX.
+(`bootstrap/seed/uart.hc`, `bootstrap/hc_repl/uart.hc`) drain the HW FIFO into a larger
+software queue so keys are not lost during long TX.
 
 ### Why the OS / REPL cares
 
@@ -196,7 +196,7 @@ honest **no-op on virt** (flag only; Put does not wait on CTS).
 
 | Mechanism | Status | Where |
 |-----------|--------|--------|
-| Software **XON/XOFF** | **Shipped** (16550 console paths) | Seed `uart.hc`, C `worry_dream_repl.c`, `hc_repl/uart.hc`, Kernel `RVUart16550` |
+| Software **XON/XOFF** | **Shipped** (16550 console paths) | Seed `uart.hc`, `hc_repl/uart.hc`, Kernel `RVUart16550` |
 | Enable / disable API | **Shipped** | `UartXonXoff` / `RVUartXonXoff` (default **on**) |
 | Smoke | **Shipped** | `make repl-uart-xon-pty` |
 | Auto-disable for ZMODEM/trzsz | **Shipped** | `zmodem.hc` / `trzsz.hc` save/restore FC |
@@ -211,7 +211,7 @@ Gap tracker: [GAPS.md](GAPS.md) **G26** (SW done; RTS/CTS stubbed). Console audi
 
 | Path | Honors FC? | Notes |
 |------|------------|--------|
-| Legacy full REPL (`worry_dream` + seed `uart.hc`) | **Yes** | Shared slots `0x870010F0` (fc) / `0x870010F8` (tx paused); IRQ + Put drain |
+| Seed blob REPL (`bootstrap/seed/uart.hc`) | **Yes** | Shared slots `0x870010F0` (fc) / `0x870010F8` (tx paused); IRQ + Put drain. The C half of this pair (`worry_dream_repl.c`) is **deleted** — the slots remain because the seed still uses them |
 | Product `repl-holyc` / `hc_repl` | **Yes** | BSS `UartFc` / `UartTxPaused`; soft RX ring |
 | Kernel `RVUart16550` | **Yes** | `RVUartFc` / `RVUartTxPaused`; **FC poll drops non-FC RX** (no ring) |
 | `RVUartSifive`, `RVUartHtif`, `RVUartShakti`, `RVUartUartlite`, `RVUartIbex`, stub | **No** | Console PutS only today |
@@ -248,6 +248,7 @@ Gap tracker: [GAPS.md](GAPS.md) **G26** (SW done; RTS/CTS stubbed). Console audi
 |-----|------|
 | `UartXonXoff(1)` / `UartXonXoff(0)` | Enable / disable SW FC (seed + `hc_repl`) |
 | `UartFcGet()` | Current SW enable flag |
+| `UartPut(ch)` | Raw byte out — drains RX, waits out XOFF, then pokes THR |
 | `UartRtsCts(1\|0)` / `UartRtsCtsGet` | HW FC stub — **no-op on virt** |
 | `UartFcNote` / `UartFcIsCtrl` | Internal: classify & apply XON/XOFF |
 | `RVUartXonXoff(on)` / `RVUartRtsCts(on)` | Kernel 16550 twins |
@@ -260,8 +261,14 @@ on the host PTY (TX should stall), then **Ctrl-Q** (resume). Automated:
 make repl-uart-xon-pty
 ```
 
-(`tests/scripts/run_repl_uart_xon_pty.sh` — injects XOFF mid-`UartStr`, asserts
-marker does not finish until XON.)
+(`tests/scripts/run_repl_uart_xon_pty.sh` — runs `build/hc_repl.elf`, injects
+XOFF mid-payload, asserts the EOT marker does not arrive until XON.)
+
+The XON/XOFF entry points above are **prompt-callable on `repl-holyc`**:
+`UartPut`, `UartXonXoff`, `UartFcGet`, `UartRtsCts` and `UartRtsCtsGet` are
+JIT-registered in `bootstrap/hc_repl/repl.hc`. Loops around them have to live
+in a function body (`U0 Blast(){for(…)…}`) — the thin `JitTry` has no toplevel
+`while`/`for`, and `jit.hc` is deliberately not growing one.
 
 ### Limits / pitfalls
 
@@ -282,7 +289,6 @@ marker does not finish until XON.)
 |------|------|
 | `bootstrap/seed/uart.hc` | HolyC 16550 + XON/XOFF + shared ring (full UART REPL blob) |
 | `bootstrap/hc_repl/uart.hc` | Thin HolyC 16550 + soft ring + FC (`repl-holyc`) |
-| `bootstrap/worry_dream_repl.c` | Legacy C Put/drain/IRQ; shares FC slots with seed |
 | `Kernel/Drv/RVUart.HC` | Includes Kconfig-selected impl |
 | `Kernel/Drv/RVUart16550.HC` | NS16550A / DW8250 + `RVUartXonXoff` |
 | `Kernel/Drv/RVUartSifive.HC` | → `RVSifivePlat` (no FC yet) |
@@ -304,8 +310,9 @@ The UART carries bytes only — **rows, columns, and TERM name live in software*
 | Guest query | `TermQuery;` / `TermProbe;` — DSR CPR + `ESC[18t` (needs host PTY) |
 | Host push | `ESC[8;rows;cols t` or OSC `ESC]777;cols;rows;name BEL` while probe/editors own RX |
 
-Editors (`Vi` / `EditHoly`) call `TermProbe` then use `TermRows`/`TermCols`.
-Piped CI keeps defaults (no emulator reply). Full protocol: [CONSOLE.md](CONSOLE.md)
+Editors (`Vi` / `EditHoly`) call `TermProbe` then use `TermRows`/`TermCols`
+(HolyC soft RX on `hc_repl`; same CSI as former worry_dream C). Piped CI keeps
+defaults (no emulator reply). Full protocol: [CONSOLE.md](CONSOLE.md)
 § Terminal size / type negotiation. Smoke: `make term-probe-pty`.
 
 ---

@@ -53,6 +53,31 @@ if ! printf '%s\n' "$out" | grep -qF "$EXPECT"; then
   printf '%s\n' "$out" | grep -v 'import unresolved' | head -12 | sed 's/^/  got: /' >&2
   exit 1
 fi
+if ! printf '%s\n' "$out" | grep -qF 'virtio-9p: Let2Drv P ok'; then
+  echo "FAIL kernel-virtio-9p smoke — Let2Drv P: after Connect:" >&2
+  printf '%s\n' "$out" | grep -FiE 'Let2Drv|9p|FAIL' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qF 'virtio-9p: FileRead P ok'; then
+  echo "FAIL kernel-virtio-9p smoke — FileRead P:/test.txt via soft P:" >&2
+  printf '%s\n' "$out" | grep -FiE 'FileRead|FilesFind|9p|FAIL' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qF 'virtio-9p: FilesFind P ok'; then
+  echo "FAIL kernel-virtio-9p smoke — FilesFind P:/* after nested opens:" >&2
+  printf '%s\n' "$out" | grep -FiE 'FilesFind|FileRead|9p|FAIL' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qF 'virtio-9p: FilesFind nested ok'; then
+  echo "FAIL kernel-virtio-9p smoke — FilesFind P:/Home/* and P:/Home/nest/*:" >&2
+  printf '%s\n' "$out" | grep -FiE 'FilesFind|FileRead|9p|FAIL' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qF 'virtio-9p: DirContext Cd ok'; then
+  echo "FAIL kernel-virtio-9p smoke — DirContext Cd P:/Home + relative FilesFind:" >&2
+  printf '%s\n' "$out" | grep -FiE 'DirContext|Cd|FilesFind|9p|FAIL' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
 if [ ! -f "$T/share/export.txt" ]; then
   echo "FAIL kernel-virtio-9p smoke — guest→host export.txt missing on host share" >&2
   exit 1
@@ -67,5 +92,5 @@ if [ ! -f "$T/share/Home/nest/out.hc" ] || ! grep -qF 'nested-9p' "$T/share/Home
   find "$T/share" -type f 2>/dev/null | sed 's/^/  /' >&2 || true
   exit 1
 fi
-echo "Kernel-virtio-9p smoke: OK (read + export + overwrite + nested)"
+echo "Kernel-virtio-9p smoke: OK (read + export + overwrite + nested + Let2Drv P + FileRead P + FilesFind P + FilesFind nested + DirContext Cd)"
 exit 0

@@ -22,6 +22,12 @@ for t in "$GCC" "$OBJCOPY" "$LD" "$QEMU" "$COMPILER"; do
   command -v "$t" >/dev/null 2>&1 || { echo "FAIL kernel-sifive-gem smoke — missing $t" >&2; exit 1; }
 done
 
+# Snapshot the generated headers so this sifive_u→virt round trip leaves them with
+# their original mtime — they sit in AOT include graphs (build/aot/win/kernel.d).
+# shellcheck source=tests/scripts/kconfig_snapshot.sh
+. "$SCRIPT_DIR/kconfig_snapshot.sh"
+kconfig_snapshot_begin
+
 # GEM Yes selected only after sifive_u defconfig (writes RVSifiveGemSelected.HH).
 make -C "$ROOT/templeos-riscv" defconfig-sifive_u >/dev/null || {
   echo "FAIL kernel-sifive-gem smoke — defconfig-sifive_u" >&2
@@ -39,7 +45,7 @@ if [ ! -f "$OUTDIR/crt0.o" ] || [ ! -f "$OUTDIR/oracle_out.o" ] || \
 fi
 
 T="$(mktemp -d)"
-trap 'rm -rf "$T"; make -C "$ROOT/templeos-riscv" defconfig-virt >/dev/null' EXIT
+trap 'rm -rf "$T"; make -C "$ROOT/templeos-riscv" defconfig-virt >/dev/null; kconfig_snapshot_end' EXIT
 
 if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then
   echo "FAIL kernel-sifive-gem smoke — compile error" >&2

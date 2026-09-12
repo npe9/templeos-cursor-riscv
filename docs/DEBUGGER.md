@@ -4,17 +4,22 @@ In-guest inspection on the RISC-V HolyC REPL: registers, traps, stack, breakpoin
 disasm. Soft dig-down is first-class here; **UART GDB RSP** (`GdbStub`) is a partial
 host attach path. QEMU `-gdb` / OpenOCD remain for JTAG / ELF load — [BAREMETAL.md](BAREMETAL.md).
 
-**Scope today:** legacy full UART REPL (`bootstrap/repl.elf` / `worry_dream_repl.c`
-host slots) has the richest surface. Product `repl-holyc` shares HolyC seeds
-(`debug.hc`, `trap.hc`, `disasm.hc`, …) but may print `host slot empty` for
-`Regs` / `StkRep` / `Callers` until those move fully into HolyC.
+**Scope today:** the only shipping debugger is the product `repl-holyc` image. It
+AOT-includes the debug seeds (`debug.hc`, `trap.hc`, `crash.hc`, …) but **not**
+`disasm.hc` (`U`/`Uf` wiring gap — see [REPL_FUNS.md](REPL_FUNS.md)), and host-slot
+dig-downs still print `host slot empty` for `Regs` / `StkRep` / `Callers` until those are
+fully HolyC. The legacy full UART REPL (`bootstrap/repl.elf` / `worry_dream_repl.c`) that
+used to have the richer surface was **deleted** in `080f729`; where this page says
+"legacy REPL" below, read it as *history*, not as something you can run. `make dbg-smoke` /
+`hwdbg-smoke` were retired with it and now print an error.
 
 Related: [REPL.md](REPL.md), [DATASHEET.md](DATASHEET.md), [FILE_EXPORT.md](FILE_EXPORT.md),
 [BOARD_FB.md](../templeos-riscv/BOARD_FB.md), `Man("Regs")`, `RegHelp;`, `Sections;`
 (section 5 = debug/runtime).
 
-Seeds: `bootstrap/seed/debug.hc`, `crash.hc`, `hwdbg.hc`, `gdbstub.hc`, `trap.hc`, `csr.hc`, `disasm.hc`, `sym.hc`,
-`callers.hc`. Kernel x86-style `Dbg` / `Panic` / `S` / `B` live in `Kernel/KDbg.HC`
+Seeds: `bootstrap/seed/debug.hc`, `crash.hc`, `hwdbg.hc`, `gdbstub.hc`, `trap.hc`, `csr.hc`,
+`disasm.hc` (seed only — **not** product AOT/`JitAdd`), `sym.hc`, `callers.hc`.
+Kernel x86-style `Dbg` / `Panic` / `S` / `B` live in `Kernel/KDbg.HC`
 (not wired as the UART REPL debugger).
 
 ---
@@ -22,7 +27,7 @@ Seeds: `bootstrap/seed/debug.hc`, `crash.hc`, `hwdbg.hc`, `gdbstub.hc`, `trap.hc
 ## Capability matrix
 
 Status is **as of the tree now** (implementation in flight). Update this table when
-APIs land; prefer probing `debug.hc` / `worry_dream_repl.c` over guessing.
+APIs land; prefer probing `bootstrap/seed/debug.hc` over guessing.
 
 | Capability | Status | Invoke | Limits |
 |------------|--------|--------|--------|
@@ -36,7 +41,7 @@ APIs land; prefer probing `debug.hc` / `worry_dream_repl.c` over guessing.
 | **Backtrace / stack walk** | **works** | `Bt;` `StkRep;` | HolyC `Bt` (trap freeze or live FP). Legacy `StkRep` host slot when present; else `Call(Bt)`. Caps ~16 frames. |
 | **Callers (static xref)** | **works** (legacy) | `Callers("Print");` `WhoCalls;` `CallersGo;` | Scans JIT bodies; C builtins / fn-ptrs invisible. |
 | **Symbolize PC** | **works** | `FunSegFind` / `SymName` / `SymBase`; used by `Da` / `Uf` / `Bt` | Nearest HTT_FUN below addr (+ size when known). |
-| **Disasm at PC / name** | **works** | `U(pc-16);` `Uf("Print");` `UA(addr);` `Disasm("Print");` | After trap, `pc` / `_RIP` = last mepc. |
+| **Disasm at PC / name** | **missing** (product) / seed on legacy blob | `U(pc-16);` `Uf("Print");` `UA(addr);` `Disasm("Print");` | `disasm.hc` not in `repl-holyc` `#include` / `SEED_BOOT_ORDER` / `JitAdd`. Legacy `gen_boot_blob` embeds it. After trap, `pc` / `_RIP` = last mepc when wired. |
 | **Hex / symbolic dump** | **works** | `D(a);` `Dm(a,n);` `Da(a,n);` | `Da` symbolizes I64 slots. |
 | **MemMap** | **works** | `MemMap;` `MemMapFind("trap");` | Trap/regs snap rows; driver column. |
 | **Ctrl-C / Break** | **works** | Ctrl-C during eval; `Break;` | `throw('Break')` / prompt; not a debug stop. |
@@ -134,6 +139,8 @@ TrapDump; DbgHelp; Man("Debugger");
 
 ### Disasm / dump / symbols
 
+`U`/`Uf`/`UA` need `disasm.hc` wired (legacy blob / future AOT) — **not** on thin `repl-holyc` today.
+
 ```holyc
 Uf("Print"); U(FnAddr("Print"), 8); UA(pc - 16);
 Da(DbgSp, 8); Dm(MEM_HEAP, 64);
@@ -149,7 +156,9 @@ DumpMem(MEM_TRAP_SNAP, 0x100);   // host: tools/uart_recv_dump.py — FILE_EXPOR
 
 ## Regs: snap + restore (honest freeze points)
 
-On legacy `repl.elf`, `regs_snap_stub` / `reg_one_stub` (`worry_dream_repl.c`):
+History — how the deleted `repl.elf` did it (`regs_snap_stub` / `reg_one_stub` in
+`worry_dream_repl.c`). Kept because the HolyC replacement must reproduce the same
+snap/restore contract, and `MEM_REGS_SNAP` is still the agreed address:
 
 1. Snapshot `x1..x31` → **`MEM_REGS_SNAP`** (`0x87000300`; `t6` via `sscratch`).
 2. Print from the snap (C UART may smash live regs).

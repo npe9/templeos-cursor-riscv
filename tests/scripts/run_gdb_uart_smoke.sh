@@ -1,10 +1,11 @@
 #!/bin/bash
-# Guest GDB RSP over UART smoke (GdbStub + tools/uart_gdb_proxy.py).
+# Guest GDB RSP over UART smoke (GdbStub + tools/uart_gdb_proxy.py) on the HolyC
+# AOT REPL. seed/gdbstub.hc is AOT-#included by bootstrap/hc_repl/repl.hc, so
+# `GdbHelp; GdbStub;` work post-seal without Run() (a JIT Run of that file hangs).
 # Does not use QEMU -gdb (that is hwdbg-smoke). Soft dbg-smoke untouched.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BOOT="$ROOT/bootstrap"
 QEMU="${QEMU_SYSTEM_RISCV:-qemu-system-riscv64}"
 
 TIMEOUT_CMD=""
@@ -17,12 +18,17 @@ else
   exit 2
 fi
 
-make -C "$BOOT" -f Makefile.repl repl.elf >/dev/null
+make -C "$ROOT" hc-repl >/dev/null
+ELF="$ROOT/build/repl-holyc.elf"
+if [[ ! -f $ELF ]]; then
+  echo "FAIL gdb-uart-smoke — missing $ELF (make hc-repl)" >&2
+  exit 1
+fi
 
 python3 "$ROOT/tools/uart_gdb_proxy.py" --selftest
 
 set +e
-$TIMEOUT_CMD 120s python3 "$ROOT/tools/uart_gdb_proxy.py" --qemu "$BOOT/repl.elf" --qemu-bin "$QEMU"
+$TIMEOUT_CMD 120s python3 "$ROOT/tools/uart_gdb_proxy.py" --qemu "$ELF" --qemu-bin "$QEMU"
 rc=$?
 set -e
 

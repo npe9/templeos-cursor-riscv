@@ -341,7 +341,9 @@ Smoke: `Sys;` needles in `repl-smoke` / `repl-holyc-smoke`. Dig-down: `Man("Sys"
 ## Terminal size / type negotiation (`bootstrap/seed/term.hc`)
 
 Guest stores geometry + TERM-ish name (CONSOLE.md #11). Defaults **80×24** /
-**`ansi`**. Editors (`Vi` / `EditHoly`) read `TermRows` / `TermCols`.
+**`ansi`**. Editors (`Vi` / `EditHoly`) call `TermProbe` at open, then paint
+with `TermRows` / `TermCols` (status line uses `TermRows()`, text height
+`TermRows()-1` / `TermTextRows`).
 
 | API | Role |
 |-----|------|
@@ -354,6 +356,17 @@ Guest stores geometry + TERM-ish name (CONSOLE.md #11). Defaults **80×24** /
 | `TermQuery` / `TermProbe` | Optional host query (DSR CPR + `ESC[18t`) |
 | `TermHelp` | Cheat sheet |
 
+**How Vi gets size (HolyC path, same protocol as deleted worry_dream C):**
+
+1. Default **80×24** until probe or `TermSize`.
+2. `TermProbe` / `TermQuery`: save cursor, `ESC[999;999H`, DSR `ESC[6n`,
+   window-size `ESC[18t`; host PTY replies `ESC[rows;colsR` and/or
+   `ESC[8;rows;colst` → sets `g_term_*` + `TF_CPR`. Soft RX empty check
+   (`UartRxReady` / host-slot ring) skips probe when a pipe is feeding input
+   (piped CI keeps defaults; no permanent skip on product `hc_repl`).
+3. Host may also push size while editors own RX (below).
+4. Manual: `TermSize(120,40);` / `TermRep;`.
+
 **Host → guest push** (while `TermProbe` / editors own RX):
 
 ```text
@@ -362,9 +375,10 @@ ESC ] 777 ; cols ; rows ; name BEL      # custom OSC: size + termname
 ```
 
 **Guest → host query:** `TermQuery;` / `TermProbe;` — needs a real PTY
-(`make term-probe-pty`). Piped QEMU smoke times out and keeps defaults.
+(`make term-probe-pty` → `build/hc_repl.elf`). Piped QEMU smoke times out and
+keeps defaults.
 
-Smoke: `TermSize` / `TermSetSize` cases in `repl-smoke`; PTY probe via
+Smoke: `TermSize` cases in `hc-repl-smoke` / `repl-holyc-smoke`; PTY probe via
 `term-probe-pty`. `Help` / `Man("Term")` / `TermHelp`.
 
 ---

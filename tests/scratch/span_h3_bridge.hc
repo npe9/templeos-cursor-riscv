@@ -1,0 +1,24 @@
+#include "/Kernel/Kernel_RV.PRJ"
+#include "/tos/Apps/Span/Load.HC"
+I64 main()
+{
+  CTask *adam; CBlkPool *bp; CHeapCtrl *ah; CCPU *gs; CMathODE *o;
+  adam = 0x86900000; MemSet(adam, 0, sizeof(CTask)); Fs = adam; adam_task = adam;
+  MemSet(the_heap, 0, sizeof(CHeapCtrl)); heap_next = 0x82000400; heap_end = 0x86000000;
+  bp = 0x86800000; BlkPoolInit(bp, 0x2000); sys_code_bp = bp;
+  ah = HeapCtrlInit(NULL, NULL, bp); adam->code_heap = ah; adam->data_heap = ah;
+  MemSet(SYS_FIXED_AREA, 0, 8192); TaskInit(adam, 0);
+  adam->task_signature = TASK_SIGNATURE_VAL; adam->addr = adam;
+  QueInit(&adam->next_ode); QueInit(&adam->next_ctrl);
+  gs = 0x86A00000; MemSet(gs, 0, sizeof(CCPU)); gs->seth_task = adam; adam->gs = gs; Gs = gs;
+  RVKernelInit(); RVMountRAMDisk('A', 4096);
+  DefineLstLoad("ST_SPAN_MODES", "Mass\0Concrete\0Steel\0Wire\0Move\0Delete\0");
+  if (!RVGrInit(800, 600) || !RVWinMgrInit()) { Print("H3 FAIL\n"); return 1; }
+  RVFbSetPresent(RV_FB_PRESENT_RAMFB); RVYieldInit(&Fs);
+  adam->put_doc = DocNew; adam->display_doc = adam->put_doc;
+  Print("H3 cols=%d rows=%d\n", TEXT_COLS, TEXT_ROWS);
+  SettingsPush; WinBorder(OFF); WinMax; DocCursor;
+  Print("H3 after WinMax cols=%d rows=%d\n", TEXT_COLS, TEXT_ROWS);
+  o = SpanNew; Print("H3 Bridge\n"); SpanBridge1Init(o);
+  Print("H3 BridgeDone\n"); SpanDel(o); SettingsPop; Print("H3 ok\n"); return 0;
+}

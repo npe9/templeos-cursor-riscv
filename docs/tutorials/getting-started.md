@@ -8,11 +8,10 @@ Boot the bare-metal HolyC REPL, confirm Man/MemMap/`Tutorial` work.
 
 ```bash
 make
-make repl-blob
-cd bootstrap && make clean && make -f Makefile.repl
+make hc-repl
 ```
 
-Load `bootstrap/repl.elf` on the configured board profile. Details:
+Load `build/repl-holyc.elf` on the configured board profile. Details:
 [../REPL.md](../REPL.md), [../../templeos-riscv/PLATFORM.md](../../templeos-riscv/PLATFORM.md).
 
 ## First five minutes

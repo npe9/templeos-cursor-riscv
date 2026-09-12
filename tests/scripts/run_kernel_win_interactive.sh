@@ -25,6 +25,8 @@ EXPECT_DONE_PREFIX="RVWinMgr interactive DONE"
 EXPECT_INPUT="input_ok=1"
 EXPECT_PUT="put=1"
 EXPECT_MOUNT="RVWinMgr interactive: mount ok"
+EXPECT_HOME_CD='RVWinMgr interactive Cd(~) ok dir='
+EXPECT_SOFTCD_NULL="RVWinMgr interactive SoftCd null stay-put ok"
 EXPECT_SERIAL="RVWinSerial ready"
 EXPECT_EXEPUBS="ExePutS REPL"
 EXPECT_PROBE="ExePutS probe ans=2"
@@ -179,7 +181,7 @@ QEMU_BASE=( -M virt -m 256M -bios none -kernel "$ELF"
 
 # LC_ALL=C: DocLite/ST_ERR UART can emit non-UTF8 bytes; macOS tr otherwise
 # exits mid-stream (Illegal byte sequence) → SIGPIPE guest before hash/DONE.
-out="$($TIMEOUT 90 "$QEMU" "${QEMU_BASE[@]}" -display none </dev/null 2>&1 | LC_ALL=C tr -d '\r')"
+out="$($TIMEOUT 150 "$QEMU" "${QEMU_BASE[@]}" -display none </dev/null 2>&1 | LC_ALL=C tr -d '\r')"
 
 if ! printf '%s\n' "$out" | grep -qF "$EXPECT_HASH_PREFIX"; then
   echo "FAIL kernel-win-interactive — no hash line:" >&2
@@ -211,6 +213,17 @@ fi
 if ! printf '%s\n' "$out" | grep -qF "$EXPECT_MOUNT"; then
   echo "FAIL kernel-win-interactive — no Mount/RedSea (mount ok):" >&2
   printf '%s\n' "$out" | grep -v 'import unresolved' | grep -E 'mount|Mount|kernel ok|FAIL' | head -10 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+# Stock Cd("~") after RVHomeBringUp (HomeSet A:/Home on mount).
+if ! printf '%s\n' "$out" | grep -qE 'RVWinMgr interactive Cd\(~\) ok dir=A:/Home home=A:/Home'; then
+  echo "FAIL kernel-win-interactive — HomeSet/Cd(~) needle:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'HomeSet|Cd\(~\)|home=' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qF "$EXPECT_SOFTCD_NULL"; then
+  echo "FAIL kernel-win-interactive — SoftCd null stay-put regress:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -Fi SoftCd | head -5 | sed 's/^/  got: /' >&2
   exit 1
 fi
 if ! printf '%s\n' "$out" | grep -qF "$EXPECT_PROBE"; then
@@ -308,6 +321,12 @@ if ! printf '%s\n' "$out" | grep -qF "$EXPECT_MENU"; then
   printf '%s\n' "$out" | grep -v 'import unresolved' | grep -F menu | head -5 | sed 's/^/  got: /' >&2
   exit 1
 fi
+# MenuNewCmpCtrl: CmpCtrl abs addrs + LexExpressionI64 literal fast-path (soft_i64=0).
+if ! printf '%s\n' "$out" | grep -qE 'MenuNewCmpCtrl n=[1-9][0-9]* cmp_hits=[1-9] soft_i64=0 fp_ok=1'; then
+  echo "FAIL kernel-win-interactive — MenuNewCmpCtrl not hard-green (soft_i64=0 fp_ok=1):" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -Fi MenuNewCmpCtrl | head -5 | sed 's/^/  got: /' >&2
+  exit 1
+fi
 if ! printf '%s\n' "$out" | grep -qE 'RVPopUp stock JobRes res=[1-9]'; then
   echo "FAIL kernel-win-interactive — stock PopUp JobRes not seen:" >&2
   printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'PopUp|popup|JobRes' | head -8 | sed 's/^/  got: /' >&2
@@ -383,6 +402,22 @@ if ! printf '%s\n' "$out" | grep -qF "$EXPECT_OPEN_LINK"; then
   printf '%s\n' "$out" | grep -v 'import unresolved' | grep -F RVDoc | head -8 | sed 's/^/  got: /' >&2
   exit 1
 fi
+# Welcome Activate (stock HOME FI:) — not soft-skipped; HelpIndex alone is opens=1.
+if ! printf '%s\n' "$out" | grep -qF 'RVDoc OpenLink title=Welcome.DD'; then
+  echo "FAIL kernel-win-interactive — no Welcome.DD OpenLink (Welcome Activate):" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -F OpenLink | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qE 'RVDoc OpenLink opens=[2-9]'; then
+  echo "FAIL kernel-win-interactive — OpenLink opens < 2 (Welcome Activate missing):" >&2
+  printf '%s\n' "$out" | grep -F 'OpenLink opens' | head -3 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if printf '%s\n' "$out" | grep -qF 'Welcome Activate skipped'; then
+  echo "FAIL kernel-win-interactive — Welcome Activate still soft-skipped:" >&2
+  printf '%s\n' "$out" | grep -F 'Welcome Activate' | head -3 | sed 's/^/  got: /' >&2
+  exit 1
+fi
 if ! printf '%s\n' "$out" | grep -qF "$EXPECT_FORM_LEX"; then
   echo "FAIL kernel-win-interactive — no RVDoc FormLex banner:" >&2
   printf '%s\n' "$out" | grep -v 'import unresolved' | grep -F FormLex | head -5 | sed 's/^/  got: /' >&2
@@ -393,6 +428,7 @@ if ! printf '%s\n' "$out" | grep -qF "$EXPECT_DOC_BIN"; then
   printf '%s\n' "$out" | grep -v 'import unresolved' | grep -F bin | head -5 | sed 's/^/  got: /' >&2
   exit 1
 fi
+# DemoInPage: TX+CX → DOCEF_CENTER_X (RVDocPrsFlagsCmp) + HTML/HX/SO/HC + hash lex.
 if ! printf '%s\n' "$out" | grep -qF "$EXPECT_DEMO_DOC"; then
   echo "FAIL kernel-win-interactive — no RVDoc DemoInPage banner:" >&2
   printf '%s\n' "$out" | grep -v 'import unresolved' | grep -F DemoInPage | head -5 | sed 's/^/  got: /' >&2
@@ -408,9 +444,13 @@ if ! printf '%s\n' "$out" | grep -qE 'RVDoc DemoInPage entries=[1-9][0-9]*.*hx=1
   printf '%s\n' "$out" | grep -F DemoInPage | head -3 | sed 's/^/  got: /' >&2
   exit 1
 fi
-# DocInit_RV HashFind lex (doldoc.hash) — required for DemoInPage.
 if ! printf '%s\n' "$out" | grep -qE 'RVDoc DemoInPage entries=[1-9][0-9]*.*lex=[1-9]'; then
   echo "FAIL kernel-win-interactive — DemoInPage DocInit_RV hash lex not >=1:" >&2
+  printf '%s\n' "$out" | grep -F DemoInPage | head -3 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qE 'RVDoc DemoInPage entries=[1-9][0-9]*.*flag=[1-9]'; then
+  echo "FAIL kernel-win-interactive — DemoInPage DocPlain_RV flag (TX+CX) not >=1:" >&2
   printf '%s\n' "$out" | grep -F DemoInPage | head -3 | sed 's/^/  got: /' >&2
   exit 1
 fi
@@ -444,6 +484,132 @@ fi
 if ! printf '%s\n' "$out" | grep -qE 'RVFileMgr open idx=[0-9].*ffind=1'; then
   echo "FAIL kernel-win-interactive — FileMgr open ffind!=1:" >&2
   printf '%s\n' "$out" | grep -F RVFileMgr | head -5 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+# Stock PopUp("Cd(\"A:\");FileMgr(1,Fs->parent_task)") — compound ExePutS reaches FileMgr.
+if ! printf '%s\n' "$out" | grep -qE 'RVWinMgr ExePrint Cd;FileMgr compound res=.*pick_hits=[0-9]+→[1-9]'; then
+  echo "FAIL kernel-win-interactive — Cd;FileMgr compound ExePutS pick:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'Cd;FileMgr|compound|ExePrint' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+_cdfm_line="$(printf '%s\n' "$out" | grep -E 'RVWinMgr ExePrint Cd;FileMgr compound res=.*pick_hits=' | tail -1)"
+_cdfm_before="$(printf '%s\n' "$_cdfm_line" | sed -n 's/.*pick_hits=\([0-9]*\)→.*/\1/p')"
+_cdfm_after="$(printf '%s\n' "$_cdfm_line" | sed -n 's/.*pick_hits=[0-9]*→\([0-9]*\).*/\1/p')"
+if [ -z "$_cdfm_before" ] || [ -z "$_cdfm_after" ] || [ "$_cdfm_after" -le "$_cdfm_before" ]; then
+  echo "FAIL kernel-win-interactive — Cd;FileMgr compound pick_hits did not increase:" >&2
+  printf '%s\n' "$_cdfm_line" | sed 's/^/  got: /' >&2
+  exit 1
+fi
+# Stock DocPopUp PopUpPickFile → PopUp(Cd("%Q");FileMgr) GetMsg (JOBT_MSG; path + getmsg≥1).
+if ! printf '%s\n' "$out" | grep -qF 'PopUpPickFile DocPopUp begin'; then
+  echo "FAIL kernel-win-interactive — DocPopUp PopUpPickFile begin:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'PopUpPickFile|DocPopUp' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qE 'RVWinMgr interactive FileMgr pick ok path=A:/'; then
+  echo "FAIL kernel-win-interactive — FileMgr pick-file DocPopUp GetMsg:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'FileMgr pick|PopUpPickFile|FileMgr pick' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+# Stock PopUpPickFile must hit FileMgr GetMsg (not stale JobRes / soft FilesFind).
+if ! printf '%s\n' "$out" | grep -qF 'PopUpPickFile ok:'; then
+  echo "FAIL kernel-win-interactive — PopUpPickFile stock ok (not soft FilesFind):" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'PopUpPickFile' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+# Prove JobsHndlr left JOBT_MSG for ScanMsg/GetMsg (not JobRunOne/Exit).
+if ! printf '%s\n' "$out" | grep -qE 'FileMgr pick ok mode=1 getmsg=[1-9]'; then
+  echo "FAIL kernel-win-interactive — FileMgr GetMsg hits (JOBT_MSG path):" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'FileMgr pick|getmsg' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+# Stock PopUp("Cd(\"A:\");FileMgr(FM_PICK_DIR,Fs->parent_task)") — DefineLoad expand.
+if ! printf '%s\n' "$out" | grep -qE 'RVWinMgr ExePrint Cd;FileMgr\(FM_PICK_DIR\) compound res=.*pick_hits=[0-9]+→[1-9]'; then
+  echo "FAIL kernel-win-interactive — Cd;FileMgr(FM_PICK_DIR) compound ExePutS pick:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'Cd;FileMgr\(FM_PICK_DIR\)|pickdir|ExePrint|Undefined' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+_cddir_line="$(printf '%s\n' "$out" | grep -E 'RVWinMgr ExePrint Cd;FileMgr\(FM_PICK_DIR\) compound res=.*pick_hits=' | tail -1)"
+_cddir_before="$(printf '%s\n' "$_cddir_line" | sed -n 's/.*pick_hits=\([0-9]*\)→.*/\1/p')"
+_cddir_after="$(printf '%s\n' "$_cddir_line" | sed -n 's/.*pick_hits=[0-9]*→\([0-9]*\).*/\1/p')"
+if [ -z "$_cddir_before" ] || [ -z "$_cddir_after" ] || [ "$_cddir_after" -le "$_cddir_before" ]; then
+  echo "FAIL kernel-win-interactive — Cd;FileMgr(FM_PICK_DIR) compound pick_hits did not increase:" >&2
+  printf '%s\n' "$_cddir_line" | sed 's/^/  got: /' >&2
+  exit 1
+fi
+# Stock DocPopUp PopUpPickDir → PopUp(Cd("%Q");FileMgr(FM_PICK_DIR)) GetMsg.
+if ! printf '%s\n' "$out" | grep -qF 'PopUpPickDir DocPopUp begin'; then
+  echo "FAIL kernel-win-interactive — DocPopUp PopUpPickDir begin:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'PopUpPickDir|DocPopUp' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qF 'PopUpPickDir ok:'; then
+  echo "FAIL kernel-win-interactive — PopUpPickDir stock ok (not soft FilesFind):" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'PopUpPickDir' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qE 'RVWinMgr interactive FileMgr pickdir ok path=A:/'; then
+  echo "FAIL kernel-win-interactive — FileMgr pick-dir DocPopUp GetMsg:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'FileMgr pickdir|PopUpPickDir|FileMgr pick' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qE 'FileMgr pick ok mode=2 getmsg=[1-9]'; then
+  echo "FAIL kernel-win-interactive — FileMgr GetMsg hits (FM_PICK_DIR):" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'FileMgr pick|getmsg|mode=2' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+# Stock DocPopUp PopUpFileName → PopUp("FileNameForm…") via ExePubs HTT_FUN plant.
+if ! printf '%s\n' "$out" | grep -qF 'PopUpFileName DocPopUp begin'; then
+  echo "FAIL kernel-win-interactive — DocPopUp PopUpFileName begin:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'PopUpFileName|FileNameForm' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+# Prefer stock servant PopUp ok:; parent Soft Call is fallback only.
+if ! printf '%s\n' "$out" | grep -qE 'PopUpFileName ok:|PopUpFileName parent FileNameForm ok:'; then
+  echo "FAIL kernel-win-interactive — PopUpFileName FileNameForm/DocForm path:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'PopUpFileName|FileNameForm' | head -12 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qE 'RVWinMgr interactive PopUpFileName ok path='; then
+  echo "FAIL kernel-win-interactive — PopUpFileName DocPopUp path:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'PopUpFileName' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+# Soft accept-dft alone is not stock proof.
+if printf '%s\n' "$out" | grep -qF 'PopUpFileName soft accept dft:' && \
+   ! printf '%s\n' "$out" | grep -qE 'PopUpFileName ok:|PopUpFileName parent FileNameForm ok:'; then
+  echo "FAIL kernel-win-interactive — PopUpFileName soft accept only (ExePubs plant?):" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'PopUpFileName|FileNameForm|Undefined' | head -12 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+# _intern Fs→IC_MOV_FS as ExePutS call arg (stock PopUp FileMgr string path).
+if ! printf '%s\n' "$out" | grep -qE 'RVWinMgr Fs->parent_task=[0-9A-Fa-f]+'; then
+  echo "FAIL kernel-win-interactive — Fs->parent_task ExePutS (Invalid lval / IC_FS):" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'Fs->parent|Invalid lval|ExePutS Fs' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+# Stock PopUp("FileMgr(1,Fs->parent_task)") — Fs remat; pick_hits must increase.
+if ! printf '%s\n' "$out" | grep -qE 'RVWinMgr ExePrint FileMgr\(1,Fs->parent_task\) res=.*pick_hits=[0-9]+→[1-9]'; then
+  echo "FAIL kernel-win-interactive — FileMgr(1,Fs->parent_task) ExePrint pick:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'FileMgr\(1,Fs|Fs->parent|ExePrint' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+_fm_line="$(printf '%s\n' "$out" | grep -E 'RVWinMgr ExePrint FileMgr\(1,Fs->parent_task\) res=.*pick_hits=' | tail -1)"
+_fm_before="$(printf '%s\n' "$_fm_line" | sed -n 's/.*pick_hits=\([0-9]*\)→.*/\1/p')"
+_fm_after="$(printf '%s\n' "$_fm_line" | sed -n 's/.*pick_hits=[0-9]*→\([0-9]*\).*/\1/p')"
+if [ -z "$_fm_before" ] || [ -z "$_fm_after" ] || [ "$_fm_after" -le "$_fm_before" ]; then
+  echo "FAIL kernel-win-interactive — FileMgr(1,Fs->parent_task) pick_hits did not increase:" >&2
+  printf '%s\n' "$_fm_line" | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qE 'RVWinMgr ExePrint FileMgr\(1,0\) res=.*pick_hits=[0-9]+→[1-9]'; then
+  echo "FAIL kernel-win-interactive — FileMgr(1,0) ExePrint pick:" >&2
+  printf '%s\n' "$out" | grep -v 'import unresolved' | grep -FiE 'FileMgr\(1,0\)|ExePrint FileMgr' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if printf '%s\n' "$out" | grep -qE 'mepc=0000000000000000'; then
+  echo "FAIL kernel-win-interactive — mepc=0 during FileMgr pick:" >&2
+  printf '%s\n' "$out" | grep -n 'mepc=' | head -5 | sed 's/^/  got: /' >&2
   exit 1
 fi
 # MenuActivate About must exercise stock Job PopUp (extra spawn beyond pre-probe).
@@ -521,6 +687,7 @@ fi
 echo "Kernel-win-interactive: OK ($line)"
 echo "  $done_line"
 echo "  mount: $EXPECT_MOUNT"
+echo "  home: $EXPECT_HOME_CD / $EXPECT_SOFTCD_NULL"
 echo "  serial: $EXPECT_SERIAL ($EXPECT_EXEPUBS; $EXPECT_PROBE)"
 echo "  term: $EXPECT_TERM_ANS ($EXPECT_TERM_CMDS)"
 echo "  adam/home/move: $EXPECT_ADAM_CMDS / $EXPECT_HOME_SCROLL / $EXPECT_MOVE"

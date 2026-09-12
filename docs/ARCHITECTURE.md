@@ -35,7 +35,7 @@ HolyC runtime for Kconfig boards; emulators are how CI and local smokes load ELF
 | Area | Path | Role |
 |------|------|------|
 | **Host compiler** | `host/` (`lexer.c`, `parser.c`, `compiler.c`, `holyc_fmt.c`, …) | Source in git; `make` → `./holyc-riscv` (gitignored native binary); AOT HolyC → RISC-V |
-| **Bare-metal REPL** | `bootstrap/` (`Makefile.repl`, `worry_dream_repl.c`, `seed/*.hc`) | UART prompt; full-surface smoke until guest Cmp owns the loop |
+| **Bare-metal REPL** | `bootstrap/` (`seed/*.hc` + `hc_repl/`; `Makefile.repl` now only generates the seed blob headers) | UART prompt; full-surface smoke until guest Cmp owns the loop. The C guest `worry_dream_repl.c` was **deleted** (`080f729`) |
 | **Bare-metal install** | `bootstrap/Makefile.baremetal`, `docs/BAREMETAL.md` | `build/baremetal/repl.{elf,bin}` @ RAM — OpenOCD / `-bios none -kernel` |
 | **Firmware / BIOS** | `bootstrap/Makefile.firmware`, `firmware_stub.S`, `firmware.ld` | `templeos-fw.bin` = flash ROM @ `0x20000000` (pflash); `templeos-bios.elf` = RAM payload for `-bios` — `make firmware` |
 | **Mac-AOT bridge** | `bootstrap/hc_repl/` | Temporary HolyC guest ELF; **do not grow `jit.hc`** |
@@ -54,7 +54,7 @@ HolyC runtime for Kconfig boards; emulators are how CI and local smokes load ELF
 | Host `holyc-riscv` | **Required** bootstrap: built from `host/` via `make`; builds smokes, packs `Compiler.BIN`, phase3 ELF | Remains the seed producer; shrink over time |
 | Guest `Compiler_RV` + `ExePutS` | Expr / fun-def → 42; guest `Cmp` → Load → Call proven in phase3 | **Language destination** — not `jit.hc` |
 | Boot baseline | Phase3 still host-AOTs the demo ELF + Compiler seed; StartOS **Loads** guest BINs | [COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md) P3: HolyC-built runtime as boot baseline |
-| C hooks / `RuntimeRegister` | Still in `worry_dream_repl.c` (readline, UART drain, host compile slot, …) | **Kill** — callable APIs = HolyC only; see [MULTIARCH.md](MULTIARCH.md) §2 |
+| C hooks / `RuntimeRegister` | The C guest that owned them is **deleted**; what is left are literal `0x87001xxx` slot pokes in a few seed files (e.g. `seed/ed.hc`) and the host-side compile/fmt/editor bridges listed in [REGRESSION.md](../tests/REGRESSION.md) | **Kill the rest** — callable APIs = HolyC only; see [MULTIARCH.md](MULTIARCH.md) §2 |
 | x86 parity | Subsystem map in [TOS_X86_PARITY.md](../templeos-riscv/TOS_X86_PARITY.md); not full VGA/DolDoc/mouse | Text_base WinMgr + 32-bpp FB; UART REPL |
 
 **Runtime mandate:** no guest runtime other than HolyC built by the compiler

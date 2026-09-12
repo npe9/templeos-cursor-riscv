@@ -59,8 +59,8 @@ symbolic enum text when defined.
 Sheets load after `csr.hc` (see `gen_boot_blob.py` `BOOT_ORDER`). After edits:
 
 ```bash
-make -C bootstrap -f Makefile.repl
-# or: make repl-blob && make -C bootstrap -f Makefile.repl
+make hc-repl                              # rebuild the guest image with the new sheets
+# seed blob headers only: make repl-blob   (= make -C bootstrap -f Makefile.repl)
 ```
 
 ## Related

@@ -72,17 +72,21 @@ for the session. **ZMODEM** and **trzsz** already save/restore via
 Manual check: during a long `DumpFile("…");` or `Print` flood, type **Ctrl-S**
 on the host PTY (output should stall), then **Ctrl-Q** (resume).
 
-Automated: `make repl-uart-xon-pty` (legacy `repl.elf`, virt 16550; PTY clears
-host IXON and injects XOFF/XON). Requires a healthy seed boot so `UartPut` /
-`UartXonXoff` are defined — if boot aborts (OOM / fault mid-seed), the smoke
-cannot exercise FC (interactive `1+1;` may still work).
+Automated: `make repl-uart-xon-pty` (product `build/hc_repl.elf`, virt 16550;
+PTY clears host IXON and injects XOFF/XON). It types the payload at the prompt,
+so `UartPut` / `UartXonXoff` must be in the JIT table — `bootstrap/hc_repl/repl.hc`
+registers both, along with `UartFcGet` / `UartRtsCts` / `UartRtsCtsGet`. The
+thin `JitTry` evaluator has no **toplevel** `while`/`for`, so the smoke wraps
+its blast in a prompt-defined `U0 XonBlast(){…}` (fun bodies do have loops) and
+paces it with an inner delay loop — unpaced, QEMU pushes 800 bytes in ~3 ms and
+the host XOFF can never land mid-stream.
 
 ## Which UART paths honor FC
 
 | Path | XON/XOFF? | RTS/CTS? | Notes |
 |------|-----------|----------|--------|
 | `bootstrap/seed/uart.hc` | **Yes** | Stub (`UartRtsCts`) | Shared SW state @ `0x870010F0` / `0x870010F8` |
-| `bootstrap/worry_dream_repl.c` | **Yes** | — | Same SW addresses; IRQ drain syncs pause |
+| ~~`bootstrap/worry_dream_repl.c`~~ | — | — | **Deleted** (`080f729`). Used the same SW addresses; kept here only because the seed slot layout outlived it |
 | `bootstrap/hc_repl/uart.hc` | **Yes** | Stub | Soft RX ring during Put / XON poll (keys kept) |
 | `Kernel/Drv/RVUart16550.HC` | **Yes** | Stub (`RVUartRtsCts`) | `RVUartFcPoll` **drops** non-FC RX (no ring) |
 | SiFive / HTIF / Shakti / Uartlite / Ibex / Stub | **No** | **No** | No shared FC layer yet |
@@ -114,6 +118,17 @@ I64 UartRtsCtsGet();      // nonzero if UartRtsCts(1) was requested
 U0 UartPut(I64 ch);       // drains; waits while SW-paused; THRE; poke THR
 U0 UartRxDrain();         // FIFO → ring; XON/XOFF → pause flag only
 ```
+
+All five of the above are JIT-registered on `repl-holyc`, so they are callable
+at the prompt as written. `UartRxDrain` is not (it is plumbing, and the polling
+callers already run it).
+
+`UartRxDrain` masks MIE (`PUSHFD; CLI; … POPFD`) for the whole LSR→RBR→ring
+window in **both** `seed/uart.hc` and `hc_repl/uart.hc`. Once `BreakArm` turns
+on the UART/timer IRQs, the trap-side drain runs the same loop on the same
+ring; an IRQ between the foreground `n = head + 1` and its `head = n` lets the
+handler advance head and the foreground store then rewinds it, re-serving bytes
+the reader already took (a typed `XonBlast();` comes back as `XonBlast((;`).
 
 Helpers (not Man topics): `UartFcNote`, `UartFcIsCtrl` (seed / hc_repl).
 

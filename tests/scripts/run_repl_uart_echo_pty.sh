@@ -2,15 +2,19 @@
 # Paced PTY typing: each keystroke must appear once (not "aa" per key).
 # Catches the 16550 LSR/RBR × nested-IRQ stale-RBR race in uart_hw_drain.
 # Piped smoke often misses it (bulk RX / different IRQ timing).
+#
+# Product guest: HolyC AOT REPL (build/hc_repl.elf). The legacy C bootstrap/repl.elf
+# this used to build was deleted with worry_dream.
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BOOT="$ROOT/bootstrap"
+ELF="$ROOT/build/hc_repl.elf"
 QEMU="${QEMU_SYSTEM_RISCV:-qemu-system-riscv64}"
 
-make -C "$BOOT" -f Makefile.repl repl.elf >/dev/null
+make -C "$ROOT" holyc-riscv >/dev/null
+make -C "$ROOT/bootstrap/hc_repl" all >/dev/null
 
-python3 - "$BOOT/repl.elf" "$QEMU" <<'PY'
+python3 - "$ELF" "$QEMU" <<'PY'
 import os, pty, select, signal, subprocess, sys, time, termios
 
 elf, qemu = sys.argv[1], sys.argv[2]
@@ -96,20 +100,35 @@ for delay in (0.0, 0.005, 0.01, 0.015, 0.02):
             failures += 1
             sys.stderr.write(f"FAIL missing echo delay={delay}: {seg[:48]!r}\n")
 
-# Ctrl-C must still interrupt a busy eval (MIE restore path).
+# Ctrl-C must interrupt a busy eval (ExePutS BreakArm + timer/Break IRQ path).
+# Spin() is an AOT seed helper (seed/sys.hc): the thin JitTry has no toplevel
+# while/for, and `while(1){}` at the prompt only ever produced "unknown fun while".
+# 30 s is far longer than we wait, so a missed Ctrl-C fails instead of hanging.
 mark = len(buf)
-os.write(master, b"while(1){}\r")
-time.sleep(0.4)
+os.write(master, b"Spin(30);\r")
+time.sleep(0.6)
 os.write(master, b"\x03")
-deadline = time.time() + 6
+t_break = time.time()
+deadline = t_break + 8
 while time.time() < deadline:
     read_more(0.2)
     if b"Interrupted" in buf[mark:]:
         break
-if b"Interrupted" not in buf[mark:]:
+seg = buf[mark:]
+if b"unknown fun" in seg:
     failures += 1
-    sys.stderr.write("FAIL repl-uart-echo-pty — Ctrl-C did not interrupt\n")
-    sys.stderr.write(repr(buf[mark:mark + 120]) + "\n")
+    sys.stderr.write(f"FAIL repl-uart-echo-pty — Spin() not JIT-registered: {seg[:120]!r}\n")
+elif b"Interrupted" not in seg:
+    failures += 1
+    sys.stderr.write("FAIL repl-uart-echo-pty — Ctrl-C did not interrupt a running eval\n")
+    sys.stderr.write(repr(seg[:200]) + "\n")
+elif time.time() - t_break > 6:
+    failures += 1
+    sys.stderr.write("FAIL repl-uart-echo-pty — Ctrl-C took >6 s (Spin ran to completion?)\n")
+# The spin must have been cut short: Spin(30) returning normally would print ans=.
+if b"Interrupted" in seg and b"ans=" in seg.split(b"Interrupted")[0]:
+    failures += 1
+    sys.stderr.write("FAIL repl-uart-echo-pty — Spin returned before the interrupt\n")
 
 proc.send_signal(signal.SIGKILL)
 try:

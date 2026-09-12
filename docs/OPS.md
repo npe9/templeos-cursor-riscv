@@ -118,6 +118,19 @@ looks like universal hang — rebuild, then re-pin if the new image is trusted.
 Host AOT progress (watch long `make kernel-win-rebuild` builds): stderr lines prefixed
 `holyc:` when stderr is a TTY — `HOLYC_PROGRESS=1` forces on, `HOLYC_QUIET=1` off.
 
+### Compiler diagnostic env vars
+
+All off by default, all stderr-only, none affect codegen (verified byte-identical
+blobs with `HOLYC_WARN_ALIGN` on vs off).
+
+| Var | What it prints | Use it when |
+|---|---|---|
+| `HOLYC_MAP=<file>` | `offset name` per function in the unit | Turning a faulting PC into a function name. The blob is `objcopy -I binary`'d in and has **no ELF symbols**, so this is the only way — see the TRAP line in [CI.md](CI.md) |
+| `HOLYC_DUMP_CLASS=<C>` | that class's whole member table (offset, size, type) | `offset: unknown member`, or any "is the layout what I think it is" question |
+| `HOLYC_WARN_ALIGN=1` | `[align] C.m off=44 size=8 (off % 8 == 4)` for every 2/4/8-byte member at a non-multiple offset | Porting to a core that traps misaligned access. HolyC packs with no padding — correct on x86, and the RV backend emits a real full-width `ld`/`sd` at whatever offset results. Survey: [../tests/scratch/align_survey.md](../tests/scratch/align_survey.md) |
+| `HOLYC_ALL_ERRORS=1` | every parse error, not just the first | A compile fails and the first error is a cascade victim |
+| `HOLYC_TRACE=1` | `ParseFunction` failure sites | A function silently fails to parse |
+
 ### Incremental win AOT (compile + link)
 
 `make kernel-win-interactive` / `kernel-win-run` no longer re-parse/optimize the whole
@@ -126,12 +139,43 @@ Kernel+Compiler include graph on every leaf edit. Units under `build/aot/win/`:
 | Artifact | Source | Role |
 |----------|--------|------|
 | `compiler.bin` (+ `.map` / `.d`) | `tests/exec/aot/win_compiler.PRJ` | Compiler_RV + RVExePubs |
-| `kernel_i.bin` / `kernel_hold.bin` | `tests/exec/aot/win_{i,hold}.hc` | Kernel_RV + main (no Body) |
+| `kernel.bin` (+ `.map` / `.d`) | `tests/exec/aot/win_kernel.hc` | Kernel_RV + main (no Body) — **shared by both ELFs** |
+| `flag_i.bin` / `flag_hold.bin` | `tests/exec/aot/win_flag_{i,hold}.hc` | `RVWinHoldFlag()` → 0 / 1 (~1 KB) |
 | `win_*.blob.bin` | `holyc-riscv --link` | Cross-patch HOFYIMP1 imports @ `0x80800000` |
 | `build/exec/win_*.elf` | objcopy + `link_exepubs.ld` | QEMU kernel |
 
-Touch a Compiler `.HC` → only `compiler` unit + link (~3s). Touch Kernel/main → only
-`kernel_*` + link (~10s). No-op when deps unchanged (~instant).
+Touch a Compiler `.HC` → only `compiler` unit + link. Touch Kernel/main → only
+`kernel` + relink. No-op when deps unchanged (~instant).
+
+#### One shared Kernel unit for win_i + win_hold
+
+`win_i` and `win_hold` differ by a single runtime bool: headless (typing/wrap stress
+then `RVWinMgrRun(64)`) vs interactive hold (`RVWinMgrRun(0)`; ESC / serial `q` quits).
+They used to be two `#define RV_WIN_HOLD`-flavoured compiles of the same include graph,
+so one Kernel leaf edit cost **two** full ~20s unit compiles.
+
+Now the bool is a HOFYIMP1 cross-unit call to `RVWinHoldFlag()`, defined in a ~1 KB
+per-variant flag unit chosen at `--link` time (`RV_WIN_HOLD_UNIT` in
+`kernel_win_interactive.hc` selects this path; plain `RV_WIN_HOLD` still works for the
+script's monolithic fallback). The flag unit is linked **last** so `kernel` and
+`compiler` land at identical VMAs in both blobs — `win_i.blob.bin` and
+`win_hold.blob.bin` are byte-identical apart from one immediate byte.
+
+A Kernel leaf edit is therefore one compile plus two ~0.3s relinks, not two compiles.
+
+#### Compiler identity stamp (`build/aot/.compiler-stamp`)
+
+Units depend on **what `holyc-riscv` is**, not when it was last linked. `-g` links embed
+a fresh `LC_UUID`/debug stamp, so a rebuilt-but-identical compiler gets a new mtime —
+which used to invalidate every unit (~80s full remake) after any `host/*.c` touch,
+branch switch, or `make ci`. The stamp holds a hash of `COMPILER_SOURCES` +
+`COMPILER_HEADERS` + `holy_rt_names.h` + `CFLAGS`, and its mtime moves **only** when
+that hash changes; unit rules depend on the stamp. Touch `host/lexer.c` without changing
+it → compiler relinks (~3s), HolyC units are kept.
+
+Two consequences: the stamp recipe re-runs (hash only) on every `make`, so `make -n`
+pessimistically shows all units rebuilding — trust a real build. And a toolchain swap
+with no source change won't invalidate units; that's what `kernel-win-rebuild` is for.
 
 Force a clean full rebuild:
 

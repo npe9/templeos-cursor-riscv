@@ -8,7 +8,10 @@ SMOKE="$SCRIPT_DIR/run_kernel_plat_smoke.sh"
 failed=0
 ran=0
 
-# Real QEMU -M boards we ship defconfigs for. none/host are not matrix targets.
+# Real board / harness profiles we ship defconfigs for.
+# none/host are not matrix targets (excluded, not skip=OK).
+# visionfive2 / milkv_mars: no native -M; smoke via plat-qemu.elf on virt
+# (JH7110 UART/CLINT/PLIC base overlap — see PLATFORM.md).
 MACHINES=(
   virt
   sifive_u
@@ -19,6 +22,8 @@ MACHINES=(
   xiangshan
   amd_microblaze_v
   opentitan
+  visionfive2
+  milkv_mars
 )
 
 echo "=== kernel plat machine matrix ==="

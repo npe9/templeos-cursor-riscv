@@ -43,13 +43,20 @@ if [ -f "$TOS/.config" ]; then
   SAVE_HAD_CFG=1
 fi
 
+# shellcheck source=tests/scripts/kconfig_snapshot.sh
+. "$SCRIPT_DIR/kconfig_snapshot.sh"
+kconfig_snapshot_begin
+
 restore_cfg() {
   if [ "$SAVE_HAD_CFG" -eq 1 ]; then
-    cp "$SAVE_CFG" "$TOS/.config"
+    # Write-if-different, matching kconfig.py: restoring identical bytes must not
+    # move .config's mtime, or the header rule looks stale on every plat build.
+    cmp -s "$SAVE_CFG" "$TOS/.config" || cp "$SAVE_CFG" "$TOS/.config"
     make -C "$TOS" syncconfig >/dev/null
   else
     make -C "$TOS" defconfig-virt >/dev/null
   fi
+  kconfig_snapshot_end
   rm -f "$SAVE_CFG"
   cleanup_lock
 }

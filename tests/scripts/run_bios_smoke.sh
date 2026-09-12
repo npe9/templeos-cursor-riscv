@@ -1,5 +1,7 @@
 #!/bin/bash
-# Smoke: boot TempleOS via qemu -bios (RAM-loaded payload) and expect REPL prompt.
+# Smoke: boot TempleOS via qemu -bios (RAM-loaded payload) and expect the payload to run.
+# Payload is the Kconfig kernel plat image (Makefile.firmware PAYLOAD=plat). The legacy C
+# guest repl.elf this used to grep for ("> " prompt, 1+1) was deleted in 080f729.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -25,19 +27,18 @@ fi
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 
-input='1+1;'$'\n'
-printf '%s' "$input" | $TIMEOUT_CMD 45 "$QEMU" -M virt -m 128M -bios "$BIOS_ELF" \
-  -nographic >"$log" 2>&1 || true
+$TIMEOUT_CMD 45 "$QEMU" -M virt -m 128M -bios "$BIOS_ELF" \
+  -nographic >"$log" 2>&1 </dev/null || true
 
-if ! grep -q '> ' "$log"; then
-  echo "FAIL bios smoke — no REPL prompt" >&2
+if ! grep -q 'plat-smoke: uart_ok' "$log"; then
+  echo "FAIL bios smoke — payload did not reach the UART" >&2
   tail -40 "$log" >&2
   exit 1
 fi
-if ! grep -q 'ans=0x0000000000000002' "$log"; then
-  echo "FAIL bios smoke — 1+1 answer missing" >&2
+if ! grep -q 'plat-smoke: PASS' "$log"; then
+  echo "FAIL bios smoke — plat payload did not pass" >&2
   tail -40 "$log" >&2
   exit 1
 fi
 
-echo "PASS bios smoke (-bios RAM payload, REPL 1+1)"
+echo "PASS bios smoke (-bios RAM payload, kernel plat)"

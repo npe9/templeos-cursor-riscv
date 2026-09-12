@@ -92,10 +92,30 @@ expected+=$'0000000000000003\n'
 # DEL rubout on a typed digit
 input+=$'8\x7f4;\n'
 expected+=$'0000000000000004\n'
+# Mid-line cursor (CSI Left/End): 93 Left insert 0 End ; → 903
+input+=$'93\x1b[D0\x1b[F;\n'
+expected+=$'0000000000000387\n'
+# Home insert: 23 Home 1 End ; → 123
+input+=$'23\x1b[H1\x1b[F;\n'
+expected+=$'000000000000007b\n'
+# Extended cmdline after eval error: reseed line, Left×2, Delete '+' → 9;
+input+=$'9+;\n'
+input+=$'\x1b[D\x1b[D\x1b[3~\n'
+expected+=$'0000000000000009\n'
+input+=$'Print("RL_REEDIT_OK\\n");\n'
 # Term size/type (term.hc): CONSOLE.md #11
 add_case 'TermSize(80,24);'
 add_case 'TermNameAnsi;'
 add_case 'TermRep;'
+# DolDoc $$FG/$$BG → SGR map (term.hc): ST_COLORS 14 (YELLOW) → bright SGR 93
+add_case 'TermSgrColor(14);' 000000000000005d
+# seed/disasm.hc wired into the product REPL: U / Uf / UA. Register names come from
+# DisAsmNamesInit — the AOT entry skips file-scope initializers, so RN[] would be (null).
+add_case 'U(FnAddr("Print"), 4);'
+add_case 'Uf("Cat");'
+add_case 'UA(FnAddr("Print"), 3);'
+# Stock ~/HomeWrappers F over memfs — must run before the JIT cases redefine F.
+add_case 'F("HomeWalk");'
 
 add_case 'Dir;'
 add_case 'Cd("Tutorials");'
@@ -108,6 +128,8 @@ add_case 'Cd("A:/");'
 add_case 'Cd("~/");'
 add_case 'Pwd();'
 add_case 'Cd("/");'
+# G28 UART soft letter tables (Let2Drv via RVSoftLetPlant at boot)
+add_case 'SoftLetRep;'
 add_case 'Cat("Lib/print.hc");'
 add_case 'MkDir("Home/Work");'
 add_case 'Cd("Home/Work");'
@@ -158,6 +180,14 @@ add_case 'gv;' 000000000000002a
 add_case 'I64 Id(I64 v) { return v; } Id(Id(6));' 0000000000000006
 add_case 'I64 Sl(U8 *t) { I64 n = 0; while (t[n]) n++; return n; } Sl("hello!");' 0000000000000006
 add_case 'Print("jit-print");'
+# Fun-body Print(fmt,args) via JitGenPrintCall → StrPrintJoin (not C regs)
+add_case 'U0 JitPrintFmt(){Print("hi%d\n",1);}'
+add_case 'JitPrintFmt();'
+# Fun-body "fmt",args; string statement (same PutS / StrPrintJoin path)
+add_case 'U0 JitStrStmt(){"ss%d\n",1;}'
+add_case 'JitStrStmt();'
+add_case 'U0 JitStrLit(){"ssl-plain\n";}'
+add_case 'JitStrLit();'
 add_case 'LogInfo("smoke","dmesg-ring");'
 add_case 'LogWarn("smoke","warn-needle");'
 add_case 'LogErr("smoke","err-needle");'
@@ -225,12 +255,17 @@ need "Dir: "
 need "Home/"
 need "Lib/"
 need "Tutorials/"
-need "cwd: /Tutorials/"
+need "cwd: ::/Tutorials/"
 need "::/Tutorials/"
 need "print.hc -- Print / PutChars"
-need "cwd: /Home/"
+need "cwd: ::/Home/"
 need "::/Home/"
-need "cwd: /Home/Work/"
+need "cwd: ::/Home/Work/"
+need "RVSoftLetPlant: let=A boot=A type=1 (uart memfs)"
+need "RVSoftLet9pPlant: let=P (9P share)"
+need "Soft Let2Drv A: ok drv="
+need "Soft Let2Drv P: ok drv="
+need "Soft Cd P: ok cwd="
 need "hello.hc"
 need "Hello from HolyC memfs"
 need '$HC_DUMP name=hello.hc'
@@ -240,6 +275,9 @@ need 'W  Home/jlog.hc'
 need '$HC_CHANGES'
 need 'replay=0'
 need "jit-print"
+need "hi1"
+need "ss1"
+need "ssl-plain"
 need "--- dmesg ---"
 need "dmesg-ring"
 need "warn-needle"
@@ -257,6 +295,7 @@ need "onlcr=0"
 need "eof_hit=0"
 need "BS08_ERASE_OK"
 need "DEL7F_ERASE_OK"
+need "RL_REEDIT_OK"
 # Erase echo: after typed 'x' then BS, UART must emit BS-space-BS (0x08 0x20 0x08), not "b b".
 if ! grep -aob $'x\x08 \x08' "$log" >/dev/null; then
   echo "FAIL hc-repl-smoke — missing BS-space-BS erase echo after 'x' (0x08)" >&2
@@ -273,6 +312,16 @@ fi
 need "--- term ---"
 need "80 x 24"
 need "name=ansi"
+# U/Uf/UA + F wiring (seed/disasm.hc + seed/home_wrappers.hc)
+need "; disassembly @ 0x"
+need "addi sp, sp, -0x"
+need "bytes to next symbol"
+need "Home/home_wrappers.hc:"
+# Register names resolved: a (null) here means DisAsmNamesInit did not run.
+if grep -qF '(null), (null)' "$log"; then
+  echo "FAIL hc-repl-smoke — disasm printed (null) registers (RN/FRN uninitialized)" >&2
+  fail=1
+fi
 need "=== VT (soft mux) ==="
 need "--- VT 1 (vt1) ---"
 need "vt1-session"

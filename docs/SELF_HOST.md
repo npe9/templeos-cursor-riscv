@@ -29,7 +29,8 @@ Related: [ARCHITECTURE.md](ARCHITECTURE.md), [COMPILER_RV.md](../templeos-riscv/
 ## Track A — Zero guest C
 
 Goal: product images and CI honesty path do not depend on a C guest runtime, so remote
-recompile is not blocked on `worry_dream` / host slots.
+recompile is not blocked on a C guest or host slots. (The `worry_dream` C guest is
+**deleted** — see the A3 row below.)
 
 | Phase | Goal | Acceptance |
 |-------|------|------------|
@@ -116,14 +117,14 @@ bridge). Do **not** grow `jit.hc` (capacity `JIT_FUN_MAX` bump only when Wave em
 | Multiline Tab / asm{} Tab / CompCollectSyms | **Partial** | **Cover** CompCollect*/Fun Tab/MEM_* Tab/multiline indent/asm{} + Up (`HIST_RECALL_OK`) | Multi-entry hist_seed, multiline unit recall, live define_table = legacy residual (not flip-blocking alone) |
 | DumpFile / DumpChanges / FsLog | **Done** | **Cover** | UART export on thin; operate-through substitute for ZMODEM |
 | Sys / Uptime / MemRep (/proc-ish) | **Done** | **Cover** | `Sys;` → `=== sys (UART /proc-ish) ===` (G27 core) |
-| Demo/*.HC batch + boot banner | **Waived** | **Waive** | **Not a G7 blocker.** Probe: thin JIT `FileWrite`+`Run` of `NullCase.HC` → `JIT: compile error` (`case:` / `start:`/`end:`); `repl-cmp` is line-at-a-time ExePutS (160 B) — not a Demo file runner. Substitute: curated six (`NullCase`/`Print`/`SubSwitch`/`RadixSort`/`Exceptions`/`GlblVars`) `pass_any` in `make compliance` + host AOT OK. UART Demo batch stays legacy `repl-smoke` until delete |
-| ZMODEM / trzsz on thin image | **Waived** | **Waive** | **Not a G7 blocker.** Product path: `DumpFile` / `DumpChanges` / `FsChanges` + virtio-9p (`NineExport`). Embed refused: `zmodem.hc`+`trzsz.hc` ≈28 KiB / ~1.3k lines — thin-image + JIT risk ([CONSOLE.md](CONSOLE.md) demote; [GAPS.md](GAPS.md) **G11 waived**). Legacy `zmodem-smoke` / `trzsz-smoke` = local only until worry_dream delete |
+| Demo/*.HC batch + boot banner | **Waived** | **Waive** | **Not a G7 blocker.** Probe: thin JIT `FileWrite`+`Run` of `NullCase.HC` → `JIT: compile error` (`case:` / `start:`/`end:`); `repl-cmp` is line-at-a-time ExePutS (160 B) — not a Demo file runner. Substitute: curated six (`NullCase`/`Print`/`SubSwitch`/`RadixSort`/`Exceptions`/`GlblVars`) `pass_any` in `make compliance` + host AOT OK. The UART Demo batch used to lean on legacy `repl-smoke`; that target is retired with the C guest, so there is **no** UART Demo batch today |
+| ZMODEM / trzsz on thin image | **Waived** | **Waive** | **Not a G7 blocker.** Product path: `DumpFile` / `DumpChanges` / `FsChanges` + virtio-9p (`NineExport`). Embed refused: `zmodem.hc`+`trzsz.hc` ≈28 KiB / ~1.3k lines — thin-image + JIT risk ([CONSOLE.md](CONSOLE.md) demote; [GAPS.md](GAPS.md) **G11 waived**). `zmodem-smoke` / `trzsz-smoke` were local-only and are now **red**: they still build the deleted `bootstrap/repl.elf` ([CI.md](CI.md) WIP row) |
 
 **G7 readiness:** `make a3-flip-check` prints **READY** (smoke + holyc-regression +
 repl-cmp; `REMAINING_BLOCKERS` empty). Named session blockers (**G2** trap/Ctrl-C,
 **G3** livedrv) are **Done**. **Fmt, Demo, and G11 ZMODEM are waived.** **A3 flip
-applied** — dual-run + required `zmodem-smoke` dropped. Follow-up: delete
-`worry_dream_repl.c` ([A3_FLIP_DRAFT.md](A3_FLIP_DRAFT.md)).
+applied** — dual-run + required `zmodem-smoke` dropped, and the follow-up delete of
+`worry_dream_repl.c` landed in `080f729` ([A3_FLIP_DRAFT.md](A3_FLIP_DRAFT.md)).
 
 ### A2 status (ExePutS owns compile)
 

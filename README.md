@@ -45,9 +45,9 @@ Same stages as GitHub Actions after shellcheck/syntax. Details: [docs/CI.md](doc
 ### REPL / kernel / platform
 
 ```bash
-cd bootstrap && make -f Makefile.repl
-# load repl.elf on your board or CI emulator — docs/REPL.md
-# gates: make repl-smoke / repl-regression
+make hc-repl                # → build/repl-holyc.elf (classic UART HolyC REPL)
+# load build/repl-holyc.elf on your board or CI emulator — docs/REPL.md
+# gates: make repl-holyc-smoke / repl-holyc-regression
 
 make kernel-print-smoke     # Kernel_RV StrPrintJoin → UART
 make kernel-plat-smoke      # Kconfig HolyC UART+CLINT (CI default board)

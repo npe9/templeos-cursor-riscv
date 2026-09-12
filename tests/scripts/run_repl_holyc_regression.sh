@@ -163,8 +163,14 @@ add 'SetTrap("ZapTrap");'
 add 'Ecall();'
 add 'Print("after-ecall\n");'
 add 'SetTrap("CrashOnTrap");'
-add 'I64 __brk; for(__brk=0;;__brk++) {}'
-input+=$'\x03'
+# Ctrl-C must interrupt a *running* eval, not just cancel a line. The old probe
+# here was `for(__brk=0;;__brk++) {}`, which the thin JitTry rejects as "unknown
+# fun for" — it never spun, so the Interrupted needle below was satisfied by the
+# earlier explicit Break;. Spin() is a real AOT busy loop (seed/sys.hc), and the
+# ^C has to be fed *after* the eval starts: blasted in one write it just sits at
+# the head of the soft RX ring and ExePutS takes it before JitTry runs.
+input_pre="$input"
+input=""
 add 'Print("after-ctrlc\n");'
 
 # ---- Run after FileWrite + DumpFile export ----
@@ -197,6 +203,10 @@ add 'CompCollectAsm(0, "slli", 4);'  # ASM_COMP_OP
 add '#define SESDEF_TAB_OK 1'
 add 'CompCollectSyms("SESDEF_TAB", 10);'
 add 'CompMidDemo();'
+# asm{} Tab tables + AsmDoc templates are file-scope stores the AOT stitch drops;
+# CompCollectAsm/AsmDocTemplate answer 0 silently, so needle the demo's output.
+add 'CompAsmDemo();'
+add 'AsmDoc("addi");'
 add 'RlMidDemo();'
 add $'I64 g6mpl = MEM_PL\t;'
 add 'g6mpl;'
@@ -276,6 +286,12 @@ qpid=$!
     echo "FAIL repl-holyc-regression — boot gate: no Try: Dir; in log" >&2
     exit 1
   fi
+  printf '%s' "$input_pre"
+  # Busy eval, then Ctrl-C once it is genuinely running (see the G2 block above).
+  printf 'Spin(20);\n'
+  sleep 3
+  printf '\003'
+  sleep 1
   printf '%s' "$input"
   while kill -0 "$qpid" 2>/dev/null; do sleep 0.05; done
 ) >"$fifo" &
@@ -305,8 +321,8 @@ expect_text "Dir: "
 expect_text "Home/"
 expect_text "Lib/"
 expect_text "Tutorials/"
-expect_text "cwd: /Tutorials/"
-expect_text "cwd: /Home/Work/"
+expect_text "cwd: ::/Tutorials/"
+expect_text "cwd: ::/Home/Work/"
 expect_text "print.hc"
 expect_text "Hello from HolyC memfs"
 expect_text "runme-ok"
@@ -333,6 +349,13 @@ expect_text "ans=0x0000000000000005"   # CompCollectSyms(MEM_PL) → 5
 expect_text "ans=0x0000000000000003"   # CompCollectSyms(UART_LSR) → 3
 expect_text "ans=0x0000000000000001"   # CompCollectSyms(SESDEF_TAB) session #define
 expect_text "x=MEM_PLIC;"              # CompMidDemo + RlMidDemo mid-line Tab
+# asm{} Tab tables (AsmCompOps/Regs/Csrs + AsmDocRaw) survived the AOT stitch
+expect_text "asm_tab_ops=7"
+expect_text "asm_tab_regs=8"
+expect_text "asm_tab_csrs=1"
+expect_text "asm_tab_tpl=slli rd, rs, shamt"
+expect_text "addi rd, rs, imm"
+reject_text "asm_tab_tpl=(none)"
 # Tab expanded MEM_PL → MEM_PLIC (JIT may not eval #define; prove echo)
 expect_text "I64 g6mpl = MEM_PLIC;"
 if [ "$(grep -cF 'HIST_RECALL_OK' "$log" || true)" -lt 2 ]; then
@@ -404,6 +427,27 @@ expect_text "eval aborted"
 expect_text "after-fault"
 expect_text "Interrupted"
 expect_text "after-break"
+# Genuine coverage for "Ctrl-C interrupts a running eval": one Interrupted comes
+# from the explicit Break; above, the second must come from the Spin(20) probe.
+if [ "$(grep -cF 'Interrupted' "$log" || true)" -lt 2 ]; then
+  echo "FAIL repl-holyc-regression — need ≥2 Interrupted (Break; + Ctrl-C during Spin)" >&2
+  FAILS=$((FAILS + 1))
+fi
+# First thing after the Spin(20) echo must be Interrupted — not an ans= line,
+# which would mean the spin ran to completion and the Ctrl-C only cancelled a
+# prompt, and not "unknown fun", which would mean Spin is not registered.
+spin_verdict="$(awk '
+  /Spin\(20\);/  { seen = 1; next }
+  seen && /unknown fun/ { print "unregistered"; exit }
+  seen && /Interrupted/ { print "interrupted"; exit }
+  seen && /ans=/        { print "ran-to-completion"; exit }
+' "$log")"
+if [ "$spin_verdict" != "interrupted" ]; then
+  echo "FAIL repl-holyc-regression — Ctrl-C did not break a running eval (Spin verdict: ${spin_verdict:-none})" >&2
+  FAILS=$((FAILS + 1))
+fi
+expect_text "fun slots used"   # boot slot-budget banner (jit_nfun/JIT_FUN_MAX)
+reject_text "JIT: fun table full"
 expect_text "ZAP-HIT"
 expect_text "after-ecall"
 expect_text "after-ctrlc"

@@ -104,7 +104,9 @@ run_manifest() {
     fi
 
     local out
-    out="$("$HOLYC" "$fpath" -o /tmp/holyc_compliance_$$.bin 2>&1)"
+    # HOLYC_PRINT_SIZE: `-o` puts the compiler in quiet mode, so the "Code size:"
+    # line parsed below is otherwise suppressed and every case reads as size 0.
+    out="$(HOLYC_PRINT_SIZE=1 "$HOLYC" "$fpath" -o /tmp/holyc_compliance_$$.bin 2>&1)"
     local rc=$?
     local sz
     sz="$(echo "$out" | sed -n 's/.*Code size: \([0-9][0-9]*\).*/\1/p' | tail -1)"

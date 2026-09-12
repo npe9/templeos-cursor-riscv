@@ -1,9 +1,11 @@
-# StarFive VisionFive 2 (JH7110) — real board; no QEMU -M in QEMU 10.x.
+# StarFive VisionFive 2 (JH7110) — real board; no native QEMU -M in QEMU 10.x.
 # UART0 DW8250 @ 0x10000000 (reg-shift 2; TX-to-base OK), CLINT @ 0x02000000,
 # PLIC @ 0x0C000000, DDR @ 0x40000000, link/entry @ 0x40200000 (after OpenSBI
 # 2 MiB reserved). TIMEBASE 4 MHz. FB: simplefb present hook; SIMPLEFB_BASE=0
-# until firmware publishes XR24 (RVFbSimpleFbBind). Keep out of plat matrix
-# until a smoke exists (not skip=OK). Build: make kernel-visionfive2
+# until firmware publishes XR24 (RVFbSimpleFbBind).
+# Plat smoke / matrix: plat-qemu.elf on -M virt (UART/CLINT/PLIC bases match;
+# REG_SHIFT=0 + DRAM@0x80000000 for virt byte 16550). Board plat.bin stays
+# shift=2 @ 0x40200000. Build: make kernel-visionfive2 / kernel-plat-visionfive2-smoke
 CONFIG_PLATFORM_VISIONFIVE2=y
 # CONFIG_PLATFORM_VIRT is not set
 CONFIG_UART_16550=y

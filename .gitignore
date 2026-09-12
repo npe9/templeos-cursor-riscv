@@ -107,6 +107,7 @@ build/exec/prog_arr.hc
 # Kconfig local state (regenerated; defconfigs are tracked)
 templeos-riscv/.config
 templeos-riscv/.config.old
+templeos-riscv/include/generated/.autoconf-stamp
 
 # Python bytecode caches
 __pycache__/

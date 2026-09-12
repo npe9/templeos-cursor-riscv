@@ -1,5 +1,6 @@
 #!/bin/bash
-# Stock Apps/Psalmody Load + WinMgr GetMsg live (Note2Ona/Menu/Tempo + $IB staff + live notes).
+# Stock Apps/Psalmody Load + Draw $IB imgs/DrawIt/PopUpDuration + WinMgr GetMsg live
+# (SHIFT_ESC exit, record 'z', right-click→PopUpDuration needles).
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -69,12 +70,50 @@ if ! printf '%s\n' "$line" | grep -qE 'ib=3'; then
   echo "  got: $line" >&2
   exit 1
 fi
+if ! printf '%s\n' "$line" | grep -qE 'ona_hits=[1-9]'; then
+  echo "FAIL kernel-psalmody smoke — expected ona_hits>=1 (RV Snd):" >&2
+  echo "  got: $line" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$line" | grep -qE 'pcm=[1-9]'; then
+  echo "FAIL kernel-psalmody smoke — expected pcm>=1 (soft square ring):" >&2
+  echo "  got: $line" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$line" | grep -qE 'notes=[1-9]'; then
+  echo "FAIL kernel-psalmody smoke — expected notes>=1 (Play parse):" >&2
+  echo "  got: $line" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qE 'RVPsalmody UI ok imgs=12 first=10 draw=1 dur=6'; then
+  echo "FAIL kernel-psalmody smoke — expected UI ok (imgs/DrawIt/PopUpDuration):" >&2
+  printf '%s\n' "$out" | grep -E 'RVPsalmody UI' | head -5 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qE 'RVPsalmody UI ok imgs=12 first=10 draw=1 dur=6 sprite=1'; then
+  echo "FAIL kernel-psalmody smoke — expected UI SpriteIns (play/record LM=):" >&2
+  printf '%s\n' "$out" | grep -E 'RVPsalmody UI' | head -5 | sed 's/^/  got: /' >&2
+  exit 1
+fi
 if ! printf '%s\n' "$out" | grep -qE 'RVPsalmody live ok live=[1-9]'; then
   echo "FAIL kernel-psalmody smoke — expected live ok:" >&2
   printf '%s\n' "$out" | grep -E 'RVPsalmody live' | head -5 | sed 's/^/  got: /' >&2
   exit 1
 fi
+if ! printf '%s\n' "$out" | grep -qE 'RVPsalmody needles ok esc=1 rec=1 dur=6'; then
+  echo "FAIL kernel-psalmody smoke — expected needles ok (SHIFT_ESC/record/PopUpDuration):" >&2
+  printf '%s\n' "$out" | grep -E 'RVPsalmody needles' | head -5 | sed 's/^/  got: /' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -qE 'RVPsalmody stock needles ok esc=1 rec=1 dur=6 notes=[1-9]'; then
+  echo "FAIL kernel-psalmody smoke — expected stock Psalmody() needles:" >&2
+  printf '%s\n' "$out" | grep -E 'RVPsalmody stock' | head -8 | sed 's/^/  got: /' >&2
+  exit 1
+fi
 
+ui="$(printf '%s\n' "$out" | grep -E 'RVPsalmody UI ok' | tail -1)"
 live="$(printf '%s\n' "$out" | grep -E 'RVPsalmody live ok' | tail -1)"
-echo "Kernel-psalmody smoke: OK ($line | $live)"
+needles="$(printf '%s\n' "$out" | grep -E 'RVPsalmody needles ok' | tail -1)"
+stock="$(printf '%s\n' "$out" | grep -E 'RVPsalmody stock needles ok' | tail -1)"
+echo "Kernel-psalmody smoke: OK ($line | $ui | $live | $needles | $stock)"
 exit 0

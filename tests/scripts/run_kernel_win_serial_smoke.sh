@@ -31,6 +31,9 @@ EXPECT_BT_SYM="RVWinSerial"
 # PersonalMenu MenuFile of A:/Adam/PersonalMenu.DD (not static-table-only).
 EXPECT_MENU_FILE_INIT="RVMenuPersonalInit MenuFile ok"
 EXPECT_MENU_ADAM_PATH="path=A:/Adam/PersonalMenu.DD"
+EXPECT_FILEMGR_PICK="FileMgr pick ok"
+EXPECT_POPUP_PICK="PopUpPickFile ok:"
+EXPECT_POPUP_SERVANT="PopUpPickFile DocPopUp begin"
 
 command -v "$QEMU" >/dev/null 2>&1 || { echo "SKIP kernel-win-serial — missing $QEMU" >&2; exit 0; }
 
@@ -85,7 +88,8 @@ for needle in "$EXPECT_READY" "$EXPECT_EXEPUBS" "$EXPECT_ANS_LOOP" "$EXPECT_ANS_
     "$EXPECT_REGS" "$EXPECT_GPR_A0" "$EXPECT_REG_A0" "$EXPECT_MCAUSE_NONE" \
     "$EXPECT_PRINT_HI" "$EXPECT_DIR_SOFT" "$EXPECT_DIR_ENTRY" \
     "$EXPECT_BT_LIVE" "$EXPECT_BT_CODE" "$EXPECT_BT_SYM" \
-    "$EXPECT_CRASH_DUMP" "$EXPECT_QUIT" "$EXPECT_MENU_FILE_INIT" "$EXPECT_MENU_ADAM_PATH"; do
+    "$EXPECT_CRASH_DUMP" "$EXPECT_QUIT" "$EXPECT_MENU_FILE_INIT" "$EXPECT_MENU_ADAM_PATH" \
+    "$EXPECT_FILEMGR_PICK" "$EXPECT_POPUP_PICK" "$EXPECT_POPUP_SERVANT"; do
   if ! printf '%s\n' "$out" | grep -qF "$needle"; then
     echo "FAIL kernel-win-serial — missing: $needle" >&2
     fail=1
@@ -98,6 +102,15 @@ if printf '%s\n' "$out" | grep -qF 'RVMenuPersonalInit MenuFile miss'; then
 fi
 if ! printf '%s\n' "$out" | grep -qE 'RVWinMgr MENU PersonalMenu .* emb=0'; then
   echo "FAIL kernel-win-serial — MENU PersonalMenu emb!=0 (file load?)" >&2
+  fail=1
+fi
+# FileMgr pick must not mepc=0; JobRes path still green earlier in the same UART.
+if printf '%s\n' "$out" | grep -qE 'mepc=0000000000000000'; then
+  echo "FAIL kernel-win-serial — mepc=0 (FileMgr pick / JobRes?)" >&2
+  fail=1
+fi
+if ! printf '%s\n' "$out" | grep -qE 'RVPopUp stock JobRes res=[1-9]|interactive popup JobRes done'; then
+  echo "FAIL kernel-win-serial — JobRes regress after FileMgr pick:" >&2
   fail=1
 fi
 if printf '%s\n' "$out" | grep -qF "$EXPECT_DIR_ENTRY"; then
@@ -137,7 +150,7 @@ if [ "$fail" -ne 0 ]; then
   printf '%s\n' "$out" | grep -v 'import unresolved' | head -120 | sed 's/^/  got: /' >&2
   exit 1
 fi
-echo "Kernel-win-serial: OK ($EXPECT_READY + ExePutS ans=42 + for→ans=10 + Regs/Reg GPR + Dir/WINDIR.TXT + Print + bt/sym + crash dump + quit + PersonalMenu MenuFile)"
+echo "Kernel-win-serial: OK ($EXPECT_READY + ExePutS ans=42 + for→ans=10 + Regs/Reg GPR + Dir/WINDIR.TXT + Print + bt/sym + crash dump + quit + PersonalMenu MenuFile + FileMgr pick GetMsg)"
 if printf '%s\n' "$out" | grep -qF "$EXPECT_DONE"; then
   echo "  $EXPECT_DONE present"
 fi

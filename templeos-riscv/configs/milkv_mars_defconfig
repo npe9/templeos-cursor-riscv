@@ -1,11 +1,12 @@
-# Milk-V Mars (StarFive JH7110) — real board; no QEMU -M in QEMU 10.x.
+# Milk-V Mars (StarFive JH7110) — real board; no native QEMU -M in QEMU 10.x.
 # Same JH7110 map as VisionFive 2 (separate defconfig — do not overwrite
 # visionfive2_*). UART0 DW8250 @ 0x10000000 (reg-shift 2), CLINT @
 # 0x02000000, PLIC @ 0x0C000000, DDR @ 0x40000000, link/entry @ 0x40200000
 # (after OpenSBI 2 MiB reserved). TIMEBASE 4 MHz. FB: simplefb present hook;
-# SIMPLEFB_BASE=0 until firmware publishes XR24 (RVFbSimpleFbBind). Keep out
-# of plat matrix until a smoke exists (not skip=OK).
-# Build: make kernel-milkv-mars | make kernel-milkv-mars-help
+# SIMPLEFB_BASE=0 until firmware publishes XR24 (RVFbSimpleFbBind).
+# Plat smoke / matrix: plat-qemu.elf on -M virt (same JH7110-map harness as
+# VisionFive 2). Board plat.bin stays shift=2 @ 0x40200000.
+# Build: make kernel-milkv-mars | kernel-plat-milkv-mars-smoke
 CONFIG_PLATFORM_MILKV_MARS=y
 # CONFIG_PLATFORM_VIRT is not set
 CONFIG_UART_16550=y

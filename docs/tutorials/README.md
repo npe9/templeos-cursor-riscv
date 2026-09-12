@@ -13,9 +13,8 @@ Bare `Run("B02_DataRep.hc");` still works (unique basename).
 
 ```bash
 make
-make repl-blob
-cd bootstrap && make clean && make -f Makefile.repl
-# load bootstrap/repl.elf on your board / harness
+make hc-repl
+# load build/repl-holyc.elf on your board / harness
 ```
 
 At the `>` prompt:
@@ -170,6 +169,7 @@ Index entry also: [tutorial.hc](../../bootstrap/seed/tutorial.hc) (`Tutorial;` /
 | Doc | Why |
 |-----|-----|
 | [getting-started.md](getting-started.md) | First five minutes |
+| [export-changes.md](export-changes.md) | Make changes and get them off the box — `FsChanges` / `DumpChanges` / JTAG journal |
 | [../REPL.md](../REPL.md) | UART REPL, `asm{}`, Man, MemMap |
 | [../ARCHITECTURE.md](../ARCHITECTURE.md) | Host / REPL / Kernel / guest Cmp |
 | [../../templeos-riscv/PLATFORM.md](../../templeos-riscv/PLATFORM.md) | Boards + `MEM_*` |

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # DumpChanges UART manifest + DumpFile bodies; P4 rename; P5 wrap honesty.
+# Runs on the product HolyC image (build/repl-holyc.elf). This used to boot the legacy C
+# guest bootstrap/repl.elf, deleted in 080f729. The P5 fill loop is wrapped in a function
+# because the thin JIT rejects a top-level `for` statement ("JIT: unknown fun for").
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BOOT="$ROOT/bootstrap"
 QEMU="${QEMU_SYSTEM_RISCV:-qemu-system-riscv64}"
 OUT="$(mktemp -d /tmp/dump-changes.XXXXXX)"
 LOG="$(mktemp /tmp/dump-changes-log.XXXXXX)"
@@ -26,14 +28,14 @@ fi
 
 python3 "$ROOT/tools/uart_recv_dump.py" --selftest
 
-make -C "$BOOT" -f Makefile.repl repl.elf >/dev/null
+make -C "$ROOT" hc-repl >/dev/null
 
 input='FileWrite("Home/dc.hc","p2body",6);
 DumpChanges;
 Rename("Home/dc.hc","Home/dc2.hc");
 FsChanges;
-I64 wi;
-for (wi=0; wi<520; wi++) FileWrite("Home/wrap.hc","x",1);
+U0 DcFill520() { I64 wi; for (wi = 0; wi < 520; wi++) FileWrite("Home/wrap.hc", "x", 1); }
+DcFill520;
 FsLog(32);
 FileWrite("Home/p6.hc","p6",2);
 FsReplay;
@@ -43,7 +45,7 @@ FsChanges;
 '
 
 printf '%s' "$input" | $TIMEOUT_CMD 90 "$QEMU" -M virt -bios none \
-  -kernel "$BOOT/repl.elf" -nographic >"$LOG" 2>&1 &
+  -kernel "$ROOT/build/repl-holyc.elf" -nographic >"$LOG" 2>&1 &
 qpid=$!
 for ((t = 0; t < 900; t++)); do
   if grep -q 'ans=0x0000000000001337' "$LOG" 2>/dev/null; then break; fi

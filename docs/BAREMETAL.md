@@ -39,7 +39,7 @@ Override RAM base for a custom board:
 
 ```bash
 make baremetal LOAD_BASE=0x80200000
-make -C bootstrap -f Makefile.repl PLATFORM=my-board   # after adding a Makefile.repl row
+make -C templeos-riscv defconfig-my-board              # board bases come from Kconfig now
 ```
 
 Kconfig `syncconfig` feeds `RAM_BASE` / `KERNEL_LINK_ADDR` into `make baremetal` and
@@ -56,7 +56,7 @@ make bootloader             # HolyC build/bootloader/boot.bin @ BOOTLOADER_BASE
 make bootloader-repl        # HolyC bootloader + HolyC REPL blob
 make bootloader-smoke       # pflash HolyC jump → REPL 1+1
 make firmware               # legacy GNU flash ROM + bios copies (see below)
-make firmware-smoke         # pflash boot smoke (legacy wrap)
+make firmware-smoke         # pflash boot smoke (GNU wrap around the plat payload)
 ```
 
 For the classic UART REPL on bare QEMU, prefer `make hc-repl` (not `make baremetal`).
@@ -250,7 +250,8 @@ qemu-system-riscv64 -M virt -m 128M -bios none \
 ```
 
 Smoke: `make bootloader-smoke` (HolyC jump + pflash). Does not replace
-`baremetal-smoke` / `firmware-smoke` (legacy C guest / GNU firmware wrap).
+`baremetal-smoke` / `firmware-smoke`, which wrap the Kconfig **plat** payload through the
+legacy GNU toolchain path (their old C-guest REPL payload is deleted).
 
 **Sources:** `bootstrap/bootloader/boot.hc` + `pack_bootloader.py`. No `bootloader.S`.
 

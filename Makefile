@@ -32,7 +32,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop asm-gnu-diff compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration a3-flip-check repl-smoke dbg-smoke hwdbg-smoke gdb-uart-smoke trap-smoke repl-blob repl-regression repl-holyc repl-holyc-smoke repl-holyc-regression hc-repl hc-repl-smoke path-namespace-smoke term-probe-pty repl-uart-echo-pty repl-uart-xon-pty zmodem-smoke trzsz-smoke dump-changes-smoke baremetal baremetal-plat baremetal-smoke repl-payload bootloader bootloader-repl bootloader-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke kernel-selfboot-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtio-pci-irq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-cdc-smoke kernel-demo-netofdots-smoke kernel-demo-blot-smoke kernel-span-smoke kernel-psalmody-smoke kernel-ode-smoke kernel-win-smoke kernel-win-interactive kernel-win-serial-smoke kernel-win-run kernel-win-rebuild kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-sifive-gem-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-sifive-e-full kernel-sifive-e-full-smoke kernel-smp-smoke kernel-exepubs-smoke kernel-repl-exepubs-smoke repl-cmp repl-cmp-smoke kernel-phase3-smoke kernel-thin-loader-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
+.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop asm-gnu-diff compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration a3-flip-check repl-smoke dbg-smoke hwdbg-smoke gdb-uart-smoke trap-smoke repl-blob repl-regression repl-holyc repl-holyc-smoke repl-holyc-regression hc-repl hc-repl-smoke path-namespace-smoke term-probe-pty repl-uart-echo-pty repl-uart-xon-pty zmodem-smoke trzsz-smoke dump-changes-smoke baremetal baremetal-plat baremetal-smoke repl-payload bootloader bootloader-repl bootloader-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke kernel-selfboot-smoke kernel-home-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtio-pci-irq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-vt-smoke kernel-vt-demo kernel-vt-repl kernel-vt-holyc mux-smoke kernel-cdc-smoke kernel-demo-netofdots-smoke kernel-demo-blot-smoke kernel-span-smoke kernel-psalmody-smoke kernel-ode-smoke kernel-win-smoke kernel-win-interactive kernel-win-serial-smoke kernel-win-run kernel-win-rebuild kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-sifive-gem-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-sifive-e-full kernel-sifive-e-full-smoke kernel-smp-smoke kernel-exepubs-smoke kernel-repl-exepubs-smoke repl-cmp repl-cmp-smoke kernel-phase3-smoke kernel-thin-loader-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -59,6 +59,10 @@ fmt: $(COMPILER_BIN)
 	@tests/scripts/run_fmt.sh
 
 # Fail if any enforced HolyC file differs from holyc-riscv --fmt (like gofmt -l).
+probe-lint:
+	@chmod +x tests/scripts/check_no_debug_probes.sh
+	@tests/scripts/check_no_debug_probes.sh
+
 fmt-check: $(COMPILER_BIN)
 	@chmod +x tests/scripts/holyc_fmt_paths.sh tests/scripts/run_fmt.sh
 	@tests/scripts/run_fmt.sh --check
@@ -106,6 +110,7 @@ stress: $(COMPILER_BIN)
 
 # Same stages as GitHub Actions: compile compliance, then QEMU (exec oracles + TempleOS smoke).
 ci: $(COMPILER_BIN)
+	@$(MAKE) probe-lint
 	@$(MAKE) compliance
 	@$(MAKE) fmt-test
 	@$(MAKE) fmt-check
@@ -345,6 +350,7 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) kernel-ctask-preempt-smoke
 	@$(MAKE) kernel-ctask-sleep-smoke
 	@$(MAKE) kernel-selfboot-smoke
+	@$(MAKE) kernel-home-smoke
 	@$(MAKE) kernel-redsea-smoke
 	@$(MAKE) kernel-strprint-smoke
 	@$(MAKE) kernel-dir-smoke
@@ -367,6 +373,7 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) kernel-virtio-console-smoke
 	@$(MAKE) kernel-virtio-balloon-smoke
 	@$(MAKE) kernel-virtio-scsi-smoke
+	@$(MAKE) kernel-virtio-snd-smoke
 	@$(MAKE) kernel-fb-smoke
 	@$(MAKE) kernel-gr-smoke
 	@$(MAKE) kernel-cdc-smoke
@@ -394,6 +401,7 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) repl-holyc-regression
 	@$(MAKE) bootloader-smoke
 	@$(MAKE) repl-9p-smoke
+	@$(MAKE) gdb-uart-smoke
 	@$(MAKE) term-probe-pty
 	@$(MAKE) repl-uart-echo-pty
 	@$(MAKE) repl-uart-xon-pty
@@ -502,6 +510,11 @@ kernel-selfboot-smoke:
 	@chmod +x tests/scripts/run_kernel_selfboot_smoke.sh
 	@tests/scripts/run_kernel_selfboot_smoke.sh
 
+# TempleOS HomeSet / Cd("~") — RAM drv slot without RedSeaFmt (Fmt ClusAlloc hang separate).
+kernel-home-smoke:
+	@chmod +x tests/scripts/run_kernel_home_smoke.sh
+	@tests/scripts/run_kernel_home_smoke.sh
+
 # The kernel's OWN RedSea filesystem on a BDT_RAM disk: BlkDevAdd auto-formats (RedSeaFmt), then
 # FileWrite + RedSeaFileRead round-trip two files — all real Kernel/BlkDev/*.HC, no device driver.
 kernel-redsea-smoke:
@@ -600,6 +613,10 @@ kernel-virtio-scsi-smoke:
 	@chmod +x tests/scripts/run_kernel_virtio_scsi_smoke.sh
 	@tests/scripts/run_kernel_virtio_scsi_smoke.sh
 
+kernel-virtio-snd-smoke:
+	@chmod +x tests/scripts/run_kernel_virtio_snd_smoke.sh
+	@tests/scripts/run_kernel_virtio_snd_smoke.sh
+
 repl-9p-smoke:
 	@chmod +x tests/scripts/run_repl_9p_smoke.sh
 	@tests/scripts/run_repl_9p_smoke.sh
@@ -613,6 +630,27 @@ kernel-fb-smoke:
 kernel-gr-smoke:
 	@chmod +x tests/scripts/run_kernel_gr_smoke.sh
 	@tests/scripts/run_kernel_gr_smoke.sh
+
+kernel-vt-smoke:
+	@chmod +x tests/scripts/run_kernel_vt_smoke.sh
+	@tests/scripts/run_kernel_vt_smoke.sh
+
+# Human-eyeball VT demo on a REAL terminal (not a gate — it holds until Ctrl-A X).
+# RV_VT_ROWS=25 to see what RVWinMgrLiteInit hardcodes; default 24 is a real terminal.
+kernel-vt-demo:
+	@chmod +x tests/scripts/run_kernel_vt_demo.sh
+	@tests/scripts/run_kernel_vt_demo.sh
+
+# Console/VT multiplexing: guest soft VTs + framed channels + host uart_mux.py demux.
+# Asserts byte parity with a plain cat — nothing exercised the demuxer before this.
+mux-smoke:
+	@chmod +x tests/scripts/run_mux_smoke.sh
+	@tests/scripts/run_mux_smoke.sh
+
+# Interactive DolDoc/WinMgr REPL on YOUR terminal via the VT presenter (not a gate).
+kernel-vt-repl:
+	@chmod +x tests/scripts/run_kernel_vt_repl.sh
+	@tests/scripts/run_kernel_vt_repl.sh
 
 # DCNew/GrBlot + Sprite3 subset on CRVDC (P4 widen; Demo blot/SpriteRaw).
 kernel-cdc-smoke:
@@ -650,19 +688,31 @@ kernel-win-smoke:
 	@tests/scripts/run_kernel_win_smoke.sh
 
 # --- win_i.elf / win_hold.elf: incremental AOT compile + link ---
-# Units: build/aot/win/{kernel_i|kernel_hold,compiler}.bin → link → blob → ELF.
+# Units: build/aot/win/{kernel,compiler,flag_i|flag_hold}.bin → link → blob → ELF.
 # Unchanged units skip parse/optimize/emit; only relink when an input .bin is newer.
+#
+# win_i and win_hold differ by one runtime bool (headless stress + bounded pump
+# vs RVWinMgrRun(0) hold), so they share ONE compiled Kernel unit. The bool is a
+# HOFYIMP1 cross-unit call to RVWinHoldFlag() in a ~1KB per-variant flag unit,
+# selected at --link time. A Kernel leaf edit is therefore one ~30s compile, not
+# two. Layout is identical in both blobs (kernel, compiler, then the flag unit).
 # Force full rebuild: make kernel-win-rebuild  (rm ELFs + aot units)
 WIN_I_ELF := build/exec/win_i.elf
 WIN_HOLD_ELF := build/exec/win_hold.elf
+WIN_VT_ELF := build/exec/win_vt.elf
 WIN_AOT_DIR := build/aot/win
 WIN_AOT_COMPILER_BIN := $(WIN_AOT_DIR)/compiler.bin
-WIN_AOT_KERNEL_I_BIN := $(WIN_AOT_DIR)/kernel_i.bin
-WIN_AOT_KERNEL_HOLD_BIN := $(WIN_AOT_DIR)/kernel_hold.bin
+WIN_AOT_KERNEL_BIN := $(WIN_AOT_DIR)/kernel.bin
+WIN_AOT_FLAG_I_BIN := $(WIN_AOT_DIR)/flag_i.bin
+WIN_AOT_FLAG_HOLD_BIN := $(WIN_AOT_DIR)/flag_hold.bin
+WIN_AOT_FLAG_VT_BIN := $(WIN_AOT_DIR)/flag_vt.bin
 WIN_AOT_BLOB_I := $(WIN_AOT_DIR)/win_i.blob.bin
 WIN_AOT_BLOB_HOLD := $(WIN_AOT_DIR)/win_hold.blob.bin
-WIN_AOT_CASE_I := tests/exec/aot/win_i.hc
-WIN_AOT_CASE_HOLD := tests/exec/aot/win_hold.hc
+WIN_AOT_BLOB_VT := $(WIN_AOT_DIR)/win_vt.blob.bin
+WIN_AOT_CASE_KERNEL := tests/exec/aot/win_kernel.hc
+WIN_AOT_FLAG_I_SRC := tests/exec/aot/win_flag_i.hc
+WIN_AOT_FLAG_HOLD_SRC := tests/exec/aot/win_flag_hold.hc
+WIN_AOT_FLAG_VT_SRC := tests/exec/aot/win_flag_vt.hc
 WIN_AOT_COMPILER_SRC := tests/exec/aot/win_compiler.PRJ
 WIN_AOT_SCRIPT := tests/scripts/run_kernel_win_interactive.sh
 WIN_AOT_HARNESS := \
@@ -673,36 +723,69 @@ WIN_AOT_HARNESS := \
 
 # First build writes .d; subsequent builds use precise include graphs.
 -include $(WIN_AOT_DIR)/compiler.d
--include $(WIN_AOT_DIR)/kernel_i.d
--include $(WIN_AOT_DIR)/kernel_hold.d
+-include $(WIN_AOT_DIR)/kernel.d
+
+# AOT units depend on *what holyc-riscv is*, not on when it was last linked.
+# `-g` links embed a fresh LC_UUID/debug stamp, so a rebuilt-but-identical
+# compiler (touch, branch switch, `make ci`) has a new mtime and used to
+# invalidate every unit — a full ~25s remake for no semantic change.
+# The stamp's mtime moves only when the hash of compiler inputs changes.
+AOT_STAMP := build/aot/.compiler-stamp
+AOT_STAMP_INPUTS := $(COMPILER_SOURCES) $(COMPILER_HEADERS) bootstrap/holy_rt_names.h
+
+$(AOT_STAMP): $(COMPILER_BIN) $(AOT_STAMP_INPUTS)
+	@mkdir -p $(@D)
+	@h=`{ cat $(AOT_STAMP_INPUTS); echo '$(CFLAGS)'; } | \
+	   { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } | \
+	   cut -d' ' -f1`; \
+	 if [ "$$h" != "`cat $@ 2>/dev/null`" ]; then \
+	   printf '%s\n' "$$h" >$@; \
+	   echo "holyc: compiler changed - AOT units will rebuild"; \
+	 fi
 
 $(WIN_AOT_DIR):
 	@mkdir -p $(WIN_AOT_DIR)
 
-$(WIN_AOT_COMPILER_BIN): $(WIN_AOT_COMPILER_SRC) $(COMPILER_BIN) | $(WIN_AOT_DIR)
+$(WIN_AOT_COMPILER_BIN): $(WIN_AOT_COMPILER_SRC) $(AOT_STAMP) | $(WIN_AOT_DIR)
 	@echo "holyc: compile unit compiler ← $(WIN_AOT_COMPILER_SRC)"
 	@HOLYC_INCLUDE_ROOT="$(CURDIR)" ./$(COMPILER_BIN) $(WIN_AOT_COMPILER_SRC) \
 		-o $@ --deps $(WIN_AOT_DIR)/compiler.d --map $(WIN_AOT_DIR)/compiler.map
 
-$(WIN_AOT_KERNEL_I_BIN): $(WIN_AOT_CASE_I) tests/exec/cases/kernel_win_interactive.hc $(COMPILER_BIN) | $(WIN_AOT_DIR)
-	@echo "holyc: compile unit kernel_i ← $(WIN_AOT_CASE_I)"
-	@HOLYC_INCLUDE_ROOT="$(CURDIR)" ./$(COMPILER_BIN) $(WIN_AOT_CASE_I) \
-		-o $@ --deps $(WIN_AOT_DIR)/kernel_i.d --map $(WIN_AOT_DIR)/kernel_i.map
+$(WIN_AOT_KERNEL_BIN): $(WIN_AOT_CASE_KERNEL) tests/exec/cases/kernel_win_interactive.hc $(AOT_STAMP) | $(WIN_AOT_DIR)
+	@echo "holyc: compile unit kernel ← $(WIN_AOT_CASE_KERNEL)"
+	@HOLYC_INCLUDE_ROOT="$(CURDIR)" ./$(COMPILER_BIN) $(WIN_AOT_CASE_KERNEL) \
+		-o $@ --deps $(WIN_AOT_DIR)/kernel.d --map $(WIN_AOT_DIR)/kernel.map
 
-$(WIN_AOT_KERNEL_HOLD_BIN): $(WIN_AOT_CASE_HOLD) tests/exec/cases/kernel_win_interactive.hc $(COMPILER_BIN) | $(WIN_AOT_DIR)
-	@echo "holyc: compile unit kernel_hold ← $(WIN_AOT_CASE_HOLD)"
-	@HOLYC_INCLUDE_ROOT="$(CURDIR)" ./$(COMPILER_BIN) $(WIN_AOT_CASE_HOLD) \
-		-o $@ --deps $(WIN_AOT_DIR)/kernel_hold.d --map $(WIN_AOT_DIR)/kernel_hold.map
+$(WIN_AOT_FLAG_I_BIN): $(WIN_AOT_FLAG_I_SRC) $(AOT_STAMP) | $(WIN_AOT_DIR)
+	@echo "holyc: compile unit flag_i ← $(WIN_AOT_FLAG_I_SRC)"
+	@HOLYC_INCLUDE_ROOT="$(CURDIR)" ./$(COMPILER_BIN) $(WIN_AOT_FLAG_I_SRC) \
+		-o $@ --map $(WIN_AOT_DIR)/flag_i.map
 
-$(WIN_AOT_BLOB_I): $(WIN_AOT_KERNEL_I_BIN) $(WIN_AOT_COMPILER_BIN) $(COMPILER_BIN)
+$(WIN_AOT_FLAG_HOLD_BIN): $(WIN_AOT_FLAG_HOLD_SRC) $(AOT_STAMP) | $(WIN_AOT_DIR)
+	@echo "holyc: compile unit flag_hold ← $(WIN_AOT_FLAG_HOLD_SRC)"
+	@HOLYC_INCLUDE_ROOT="$(CURDIR)" ./$(COMPILER_BIN) $(WIN_AOT_FLAG_HOLD_SRC) \
+		-o $@ --map $(WIN_AOT_DIR)/flag_hold.map
+
+$(WIN_AOT_FLAG_VT_BIN): $(WIN_AOT_FLAG_VT_SRC) $(AOT_STAMP) | $(WIN_AOT_DIR)
+	@echo "holyc: compile unit flag_vt ← $(WIN_AOT_FLAG_VT_SRC)"
+	@HOLYC_INCLUDE_ROOT="$(CURDIR)" ./$(COMPILER_BIN) $(WIN_AOT_FLAG_VT_SRC) \
+		-o $@ --map $(WIN_AOT_DIR)/flag_vt.map
+
+$(WIN_AOT_BLOB_VT): $(WIN_AOT_KERNEL_BIN) $(WIN_AOT_COMPILER_BIN) $(WIN_AOT_FLAG_VT_BIN) $(AOT_STAMP)
+	@echo "holyc: link $(WIN_AOT_BLOB_VT)"
+	@./$(COMPILER_BIN) --link -o $@ --base 0x80800000 \
+		$(WIN_AOT_KERNEL_BIN) $(WIN_AOT_COMPILER_BIN) $(WIN_AOT_FLAG_VT_BIN)
+
+# Flag unit goes last so kernel/compiler sit at the same VMA in both blobs.
+$(WIN_AOT_BLOB_I): $(WIN_AOT_KERNEL_BIN) $(WIN_AOT_COMPILER_BIN) $(WIN_AOT_FLAG_I_BIN) $(AOT_STAMP)
 	@echo "holyc: link $(WIN_AOT_BLOB_I)"
 	@./$(COMPILER_BIN) --link -o $@ --base 0x80800000 \
-		$(WIN_AOT_KERNEL_I_BIN) $(WIN_AOT_COMPILER_BIN)
+		$(WIN_AOT_KERNEL_BIN) $(WIN_AOT_COMPILER_BIN) $(WIN_AOT_FLAG_I_BIN)
 
-$(WIN_AOT_BLOB_HOLD): $(WIN_AOT_KERNEL_HOLD_BIN) $(WIN_AOT_COMPILER_BIN) $(COMPILER_BIN)
+$(WIN_AOT_BLOB_HOLD): $(WIN_AOT_KERNEL_BIN) $(WIN_AOT_COMPILER_BIN) $(WIN_AOT_FLAG_HOLD_BIN) $(AOT_STAMP)
 	@echo "holyc: link $(WIN_AOT_BLOB_HOLD)"
 	@./$(COMPILER_BIN) --link -o $@ --base 0x80800000 \
-		$(WIN_AOT_KERNEL_HOLD_BIN) $(WIN_AOT_COMPILER_BIN)
+		$(WIN_AOT_KERNEL_BIN) $(WIN_AOT_COMPILER_BIN) $(WIN_AOT_FLAG_HOLD_BIN)
 
 $(WIN_I_ELF): $(WIN_AOT_BLOB_I) $(WIN_AOT_SCRIPT) $(WIN_AOT_HARNESS)
 	@mkdir -p build/exec
@@ -716,9 +799,21 @@ $(WIN_HOLD_ELF): $(WIN_AOT_BLOB_HOLD) $(WIN_AOT_SCRIPT) $(WIN_AOT_HARNESS)
 	@RVWIN_HOLD=1 RVWIN_BUILD_ONLY=1 RVWIN_SKIP_AOT=1 RVWIN_BLOB=$(WIN_AOT_BLOB_HOLD) \
 		RVWIN_OUT=$(WIN_HOLD_ELF) $(WIN_AOT_SCRIPT)
 
+$(WIN_VT_ELF): $(WIN_AOT_BLOB_VT) $(WIN_AOT_SCRIPT) $(WIN_AOT_HARNESS)
+	@mkdir -p build/exec
+	@chmod +x $(WIN_AOT_SCRIPT)
+	@RVWIN_HOLD=1 RVWIN_BUILD_ONLY=1 RVWIN_SKIP_AOT=1 RVWIN_BLOB=$(WIN_AOT_BLOB_VT) \
+		RVWIN_OUT=$(WIN_VT_ELF) $(WIN_AOT_SCRIPT)
+
+# Real HolyC ExePutS REPL + real DolDoc, presented to YOUR terminal as ANSI.
+# Same desktop/compiler/DolDoc as kernel-win-interactive — only the scanout differs.
+kernel-vt-holyc:
+	@chmod +x tests/scripts/run_kernel_vt_holyc.sh
+	@tests/scripts/run_kernel_vt_holyc.sh
+
 # Force AOT even if mtimes look current (e.g. after tool-chain swap without touch).
 kernel-win-rebuild:
-	@rm -f $(WIN_I_ELF) $(WIN_HOLD_ELF) build/exec/win_serial.elf
+	@rm -f $(WIN_I_ELF) $(WIN_HOLD_ELF) $(WIN_VT_ELF) build/exec/win_serial.elf
 	@rm -rf $(WIN_AOT_DIR)
 	@$(MAKE) $(WIN_I_ELF) $(WIN_HOLD_ELF)
 
@@ -747,7 +842,7 @@ kernel-win-run: $(WIN_HOLD_ELF)
 KERNEL_BUILD_MACHINES := virt sifive_u spike shakti_c sifive_e \
 	microchip_icicle xiangshan amd_microblaze_v opentitan visionfive2 milkv_mars
 # none / host: not matrix boards (empty / not a QEMU -M) — excluded, not skip=OK.
-# visionfive2 / milkv_mars: board-only (no QEMU -M) — builds/links; keep out of plat matrix.
+# visionfive2 / milkv_mars: board plat.bin + plat-qemu.elf (virt JH7110-map harness).
 
 define KERNEL_MACHINE_template
 .PHONY: kernel-$(1)
@@ -785,8 +880,8 @@ list-kernels:
 	    xiangshan) note="smoke: -bios plat.elf" ;; \
 	    amd_microblaze_v) note="smoke: -device loader,file=ELF|bin,cpu-num=0" ;; \
 	    opentitan) note="smoke: RV32 asm + RVUartIbex map (-kernel)" ;; \
-	    visionfive2) note="board-only: U-Boot/OpenOCD @ 0x40200000 (no QEMU -M)" ;; \
-	    milkv_mars) note="board-only: U-Boot/OpenOCD @ 0x40200000 (JH7110; no QEMU -M)" ;; \
+	    visionfive2) note="board @ 0x40200000 + plat-qemu.elf smoke on -M virt" ;; \
+	    milkv_mars) note="board @ 0x40200000 + plat-qemu.elf smoke on -M virt (JH7110)" ;; \
 	    *) note="" ;; \
 	  esac; \
 	  printf '%-22s %-10s %s\n' "$$m" "$$st" "$$note"; \
@@ -825,6 +920,14 @@ kernel-sifive-gem-smoke:
 kernel-plat-spike-smoke:
 	@chmod +x tests/scripts/run_kernel_plat_smoke.sh
 	@tests/scripts/run_kernel_plat_smoke.sh spike
+
+kernel-plat-visionfive2-smoke:
+	@chmod +x tests/scripts/run_kernel_plat_smoke.sh
+	@tests/scripts/run_kernel_plat_smoke.sh visionfive2
+
+kernel-plat-milkv-mars-smoke:
+	@chmod +x tests/scripts/run_kernel_plat_smoke.sh
+	@tests/scripts/run_kernel_plat_smoke.sh milkv_mars
 
 # FE310 dual artifact: slim plat.elf stays matrix path; fuller Kernel_FE310.PRJ
 # is XIP Kernel + DTIM bootloader (16 KiB RAM — no external DRAM). Not in qemu-integration.
@@ -885,20 +988,8 @@ tools/pack_tosb: tools/pack_tosb.c
 	$(CC) -O2 -Wall -o $@ $<
 
 build/Compiler.BIN: tools/pack_tosb build/compiler_rv.blob.bin
-	@if [ -f build/compiler_rv.map ]; then \
-	  CINIT_OFF=$$(awk '/ CInit$$/{print $$1; exit}' build/compiler_rv.map); \
-	  EXEPS_OFF=$$(awk '/ ExePutS$$/{print $$1; exit}' build/compiler_rv.map); \
-	  CMP_OFF=$$(awk '/ Cmp$$/{print $$1; exit}' build/compiler_rv.map); \
-	  if [ -n "$$CMP_OFF" ]; then \
-	    ./tools/pack_tosb -v -e CInit:0x$$CINIT_OFF -e ExePutS:0x$$EXEPS_OFF \
-	      -e Cmp:0x$$CMP_OFF build/compiler_rv.blob.bin $@; \
-	  else \
-	    ./tools/pack_tosb -v -e CInit:0x$$CINIT_OFF -e ExePutS:0x$$EXEPS_OFF \
-	      build/compiler_rv.blob.bin $@; \
-	  fi; \
-	else \
-	  ./tools/pack_tosb -v build/compiler_rv.blob.bin $@; \
-	fi
+	@chmod +x tools/compiler_bin_pack_exports.sh tools/pack_compiler_bin.sh
+	@tools/pack_compiler_bin.sh build/compiler_rv.map build/compiler_rv.blob.bin $@
 	python3 tools/gen_cmp_imports.py
 
 kernel-phase3-smoke:
@@ -1008,7 +1099,7 @@ help:
 	@echo "  repl-smoke        - RETIRED (worry_dream deleted); use repl-holyc-smoke"
 	@echo "  hc-repl / hc-repl-smoke - alias of repl-holyc* (do not grow jit.hc)"
 	@echo "  hc-repl-quit-smoke - Quit/Exit/Fail via SiFive test @ MEM_TEST (virt)"
-	@echo "  path-namespace-smoke - G28 host A:/ + ::/ include + __DIR__ /tos-strip"
+	@echo "  path-namespace-smoke - G28 host A:/ + ::/ include + __DIR__ ::/ (tos→ISO)"
 	@echo "  repl-regression   - RETIRED (worry_dream deleted); use repl-holyc-regression"
 	@echo "  term-probe-pty    - PTY + mock CPR: TermProbe updates TermRows/TermCols"
 	@echo "  repl-uart-echo-pty - paced PTY: single-echo keys + Ctrl-C (uart_hw_drain race)"
@@ -1020,7 +1111,12 @@ help:
 	@echo "  known-good-pin / known-good-check - hash last-good repl/plat ELFs (docs/OPS.md)"
 	@echo "  kernel-fb-smoke   - 32-bpp FB + QEMU ramfb (UART hash; optional display via -device ramfb)"
 	@echo "  kernel-gr-smoke   - Gr*/CDC + soft term on FB (UART hash; RVGrRefresh/present)"
-	@echo "  kernel-cdc-smoke  - DCNew/GrBlot/FloodFill/brush + Sprite3 (Demo Blot APIs; UART hash)"
+	@echo "  kernel-vt-smoke   - WinMgr/DolDoc grid -> ANSI on a VT100 (headless; idle present must cost 0 B)"
+	@echo "  kernel-vt-demo    - same presenter on YOUR terminal, holds until Ctrl-A X (RV_VT_ROWS=24/25)"
+	@echo "  mux-smoke         - soft VT split + framed channels through tools/uart_mux.py"
+	@echo "  kernel-vt-repl    - INTERACTIVE DolDoc REPL on your terminal (help/regs/bt/md; q to quit)"
+	@echo "  kernel-vt-holyc   - REAL HolyC ExePutS + real DolDoc on your terminal (2+3; works)"
+	@echo "  kernel-cdc-smoke  - DCNew/GrBlot/FloodFill/brush + Sprite3/mesh + ScrnCast libs (UART hash)"
 	@echo "  kernel-demo-netofdots-smoke - stock Demo/Graphics/NetOfDots.HC on RV Gr (UART hash)"
 	@echo "  kernel-demo-blot-smoke - stock Demo/Graphics/Blot.HC FloodFill3/brush + Win shims"
 	@echo "  kernel-span-smoke - stock Apps/Span Load + GetMsg live (Yield pump) / PopUpFileName"
@@ -1045,6 +1141,7 @@ help:
 	@echo "  kernel-virtio-console-smoke - HolyC VirtioConsole TX smoke (virtio-mmio)"
 	@echo "  kernel-virtio-balloon-smoke - HolyC VirtioBalloon inflate/deflate smoke"
 	@echo "  kernel-virtio-scsi-smoke - HolyC VirtioScsi INQUIRY+READ smoke"
+	@echo "  kernel-virtio-snd-smoke - HolyC VirtioSnd PCM TX smoke (virtio-sound + audiodev none)"
 	@echo "  kernel-plat-sifive-u-smoke - HolyC plat smoke on -M sifive_u (PLATFORM.md)"
 	@echo "  kernel-sifive-gem-smoke - HolyC Cadence GEM TX+RX loopback on -M sifive_u"
 	@echo "  kernel-plat-spike-smoke - HolyC plat smoke on -M spike"
@@ -1055,7 +1152,7 @@ help:
 	@echo "  kernel-exepubs-smoke - Guest ExePutS Add(40,2) (Compiler_RV; see COMPILER_RV.md)"
 	@echo "  kernel-repl-exepubs-smoke - alias of repl-cmp-smoke (SELF_HOST.md A2)"
 	@echo "  kernel-phase3-smoke  - RVKMain phase 3: Compiler_RV + StartOS subset (UART)"
-	@echo "  kernel-thin-loader-smoke - virtio RedSea Load Kernel.BIN + KernelEntry handoff (G9)"
+	@echo "  kernel-thin-loader-smoke - embed Kernel.BIN + SoftCall virtio remount (G9)"
 	@echo "  menuconfig      - Linux mconf (ncurses) → .config + RVAutoConf.HH (templeos-riscv/KCONFIG.md)"
 	@echo "  lint-sh       - ShellCheck CI shell scripts (needs shellcheck on PATH)"
 	@echo "  syntax-sh     - bash -n on all tests/scripts/*.sh (no dependencies)"

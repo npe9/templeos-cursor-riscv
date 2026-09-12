@@ -100,23 +100,22 @@ config PLATFORM_NONE
 	  Not a TempleOS/RV board. Excluded from kernel-plat-matrix (not a skip).
 
 config PLATFORM_VISIONFIVE2
-	bool "StarFive VisionFive 2 (JH7110) — board-only"
+	bool "StarFive VisionFive 2 (JH7110)"
 	help
-	  Real JH7110 SBC. No QEMU -M in QEMU 10.x — build + serial/OpenOCD
-	  recipe only until a harness exists. UART0 DW8250 @ 0x10000000
-	  (reg-shift 2; TX-to-base OK for plat), CLINT @ 0x02000000, PLIC @
-	  0x0C000000, DDR @ 0x40000000 (entry 0x40200000 after OpenSBI 2 MiB).
-	  FB: simplefb present hook (SIMPLEFB_* = 0 until firmware publishes XR24).
-	  Keep out of kernel-plat-matrix until smoke is green (not skip=OK).
+	  Real JH7110 SBC. No native QEMU -M in QEMU 10.x. UART0 DW8250 @
+	  0x10000000 (reg-shift 2), CLINT @ 0x02000000, PLIC @ 0x0C000000,
+	  DDR @ 0x40000000 (entry 0x40200000 after OpenSBI 2 MiB). FB: simplefb
+	  present hook (SIMPLEFB_* = 0 until firmware publishes XR24).
+	  Plat smoke / matrix: plat-qemu.elf on -M virt (UART/CLINT/PLIC bases
+	  match; REG_SHIFT=0 for virt byte 16550). Board plat.bin keeps shift=2.
 
 config PLATFORM_MILKV_MARS
-	bool "Milk-V Mars (JH7110) — board-only"
+	bool "Milk-V Mars (JH7110)"
 	help
 	  Milk-V Mars SBC (StarFive JH7110 — same SoC class as VisionFive 2).
 	  Separate defconfig/ld/OpenOCD from visionfive2_* (do not overwrite).
-	  No QEMU -M in QEMU 10.x. UART0/CLINT/PLIC/DDR map matches VF2
-	  (0x10000000 / 0x02000000 / 0x0C000000 / 0x40000000, entry 0x40200000).
-	  FB: simplefb present hook. Out of kernel-plat-matrix until smoke green.
+	  No native QEMU -M. UART0/CLINT/PLIC/DDR map matches VF2.
+	  Same plat-qemu.elf virt harness as VisionFive 2 (matrix).
 
 config PLATFORM_CUSTOM
 	bool "Custom (edit addresses below)"

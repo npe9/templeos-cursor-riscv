@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host path-namespace smoke: A:/ + ::/ includes (tos fallback), __DIR__ → /tos/…
+# Host path-namespace smoke: A:/ + ::/ includes (tos fallback), __DIR__ → ::/… (tos stripped).
 # See docs/PATHS.md (G28).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -39,7 +39,7 @@ if ! HOLYC_INCLUDE_ROOT="$ROOT" "$HOLYC" "$T/inc_apps.hc" -o "$T/inc_apps.bin" >
   fi
 fi
 
-# --- __DIR__ / __FILE__ TempleOS shape under tos/ ---
+# --- __DIR__ / __FILE__ StreamDir shape under tos/ (host tos/ → guest ::/) ---
 mkdir -p "$ROOT/tos/_path_ns_probe"
 cat >"$ROOT/tos/_path_ns_probe/dir_probe.hc" <<'EOF'
 U8 *d=__DIR__;
@@ -56,13 +56,17 @@ python3 - <<PY
 import sys
 data=open("$T/dir_probe.bin","rb").read()
 text=data.decode("latin1", errors="ignore")
-# expect /tos/_path_ns_probe (keep tos/ for Cd-before-mount safety)
-if "/tos/_path_ns_probe" not in text:
-    print("missing /tos/_path_ns_probe in blob", file=sys.stderr)
-    hits=[repr(s) for s in text.split("\\0") if "path" in s or "tos" in s or s.startswith("/")]
+# expect ::/_path_ns_probe (tos/ stripped to ISO / StreamDir shape)
+if "::/_path_ns_probe" not in text:
+    print("missing ::/_path_ns_probe in blob", file=sys.stderr)
+    hits=[repr(s) for s in text.split("\\0") if "path" in s or "tos" in s or s.startswith("/") or ":" in s[:3]]
     print("hits:", hits[:20], file=sys.stderr)
     sys.exit(1)
-print("path-namespace host: A:/ + ::/Apps + __DIR__ /tos/ OK")
+# must not keep host layout /tos/ in __DIR__
+if "/tos/_path_ns_probe" in text:
+    print("unexpected /tos/ retained in __DIR__", file=sys.stderr)
+    sys.exit(1)
+print("path-namespace host: A:/ + ::/Apps + __DIR__ ::/ (tos-stripped) OK")
 PY
 
 echo "PASS path-namespace-smoke"

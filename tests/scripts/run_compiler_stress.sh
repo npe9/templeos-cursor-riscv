@@ -176,34 +176,41 @@ if [ -f "$PAT_MANIFEST" ] && command -v "$OBJDUMP" >/dev/null 2>&1; then
     fi
   fi
 
-  # CR/LF: if (x=='\r'||x=='\n') must beq to 13/10 without bool push/pop/sub/seqz.
+  # CR/LF: if (x=='\r'||x=='\n') must compare-and-branch on 13/10, no bool push/pop/sub/seqz.
   crlf_src="$ROOT/tests/compiler/cases/c_crlf_or.hc"
   if [ -f "$crlf_src" ]; then
     if "$HOLYC" "$crlf_src" -o "$OUTDIR/pat_crlf_or.bin" >"$OUTDIR/pat_crlf_or.out" 2>&1; then
       "$OBJDUMP" -D -b binary -m riscv:rv64 "$OUTDIR/pat_crlf_or.bin" \
         >"$OUTDIR/pat_crlf_or.dis" 2>/dev/null || true
       dis="$OUTDIR/pat_crlf_or.dis"
-      # Condition core with bool elision: ld/li/beq ×2 + j .else (no bool 0/1).
-      # Budget 12 words (default elision ≈7; leave headroom for prologue drift).
-      n_beq=$(grep -cE 'beq[[:space:]]+a0,t1' "$dis" || true)
+      # Condition core with bool elision: ld/li/b<cc> a0,t1 ×2 + j (no bool 0/1).
+      # Branch POLARITY is deliberately not pinned. EmitBrRsRs/EmitCondBranch emit
+      # fixed-width branches (inverted b<cc> over a j) instead of range-relaxed short
+      # B-type: ±4KB oscillation prevented AOT convergence on Kernel+Compiler blobs
+      # (pass cap → stale labels). So `bne a0,t1` + `j` is intended codegen here —
+      # do NOT "fix" the emitter back to a single `beq`. The property under test is
+      # real compare-and-branch against the literal in t1, not which way it jumps.
+      n_br=$(grep -cE 'b(eq|ne)[[:space:]]+a0,t1' "$dis" || true)
       n_li13=$(grep -cE 'li[[:space:]]+t1,13' "$dis" || true)
       n_li10=$(grep -cE 'li[[:space:]]+t1,10' "$dis" || true)
       n_seqz=$(grep -cE 'seqz[[:space:]]' "$dis" || true)
       n_sub=$(grep -cE 'sub[[:space:]]+a0,t0,t1' "$dis" || true)
       n_beqz=$(grep -cE 'beqz[[:space:]]' "$dis" || true)
+      # Budget 12 words: range-relaxed form ≈7, fixed-width form = 8; headroom for
+      # prologue drift, but far below any bool-materializing lowering.
       core=$(awk '
         /li[[:space:]]+t1,13/ {start=NR-1; if(start<1) start=1; seen13=1}
         start && seen13 && (/j[[:space:]]/ && NR>start+3) {
           print NR-start+1; exit
         }
       ' "$dis")
-      if [ "${n_li13:-0}" -ge 1 ] && [ "${n_li10:-0}" -ge 1 ] && [ "${n_beq:-0}" -ge 2 ] &&
+      if [ "${n_li13:-0}" -ge 1 ] && [ "${n_li10:-0}" -ge 1 ] && [ "${n_br:-0}" -ge 2 ] &&
          [ "${n_seqz:-0}" -eq 0 ] && [ "${n_sub:-0}" -eq 0 ] && [ "${n_beqz:-0}" -eq 0 ] &&
          [ "${core:-99}" -le 12 ]; then
-        echo "OK   pat:crlf_or (beq imm13/10, core=${core} insn, no seqz/sub/beqz)"
+        echo "OK   pat:crlf_or (b<cc> a0,t1 ×2 imm13/10, core=${core} insn, no seqz/sub/beqz)"
         pass=$((pass + 1))
       else
-        echo "FAIL pat:crlf_or — want beq×2 + li 13/10, no seqz/sub/beqz, core≤12 (got beq=$n_beq li13=$n_li13 li10=$n_li10 seqz=$n_seqz sub=$n_sub beqz=$n_beqz core=$core)"
+        echo "FAIL pat:crlf_or — want beq|bne a0,t1 ×2 + li 13/10, no seqz/sub/beqz, core≤12 (got br=$n_br li13=$n_li13 li10=$n_li10 seqz=$n_seqz sub=$n_sub beqz=$n_beqz core=$core)"
         fail=$((fail + 1))
       fi
     else

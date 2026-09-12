@@ -18,6 +18,7 @@ the path when virtfs is unavailable.
 | Binary-safe ZMODEM (`sz`/`rz` / `trzsz --zmodem`) | **`ZmodemSend` / `tools/uart_recv_zmodem.py`** | **Working** (full UART REPL only; **waived** on thin `repl-holyc` — G11) |
 | Native trzsz (`tsz` / stock `trzsz`, no `--zmodem`) | **`TrzszSend` / `tools/uart_recv_trzsz.py`** | **Working** (full UART REPL send-only; **waived** on thin image — G11) |
 | Batch “what changed this session” | **`DumpChanges`** (UART) / **`ZmodemSendChanges`** / **`TrzszSendChanges`** | **Working** — `DumpChanges`/`FsChanges` on full UART REPL **and** `repl-holyc` (product path); ZMODEM/trzsz batch full UART REPL only |
+| Read the change journal off a **halted** core (no UART, no console) | **JTAG / OpenOCD `dump_image` + `tools/jtag_recv_fslog.py`** | **Working** — self-describing header at `MEMFS_CWD+FS_LOG_HDR_OFF`; names + ops + sizes, not bodies. [Tutorial](tutorials/export-changes.md) § 8 |
 | Pull host files *into* the guest | Virtio-9p **client** (`Mount9p` / `Virtio9p`) | Working import |
 | Push guest memfs *onto* host share | Virtio-9p **client write** (`NineExport` / `Virtio9pWritePath`) | Working (nested `Tmkdir` + overwrite; needs virtfs) |
 | Kernel plat / RedSea image as a host file | Build tree / OpenOCD / gdb — not a guest dump API | See [limitations](#what-is-not-implemented) |
@@ -43,7 +44,8 @@ HolyC image (`build/repl-holyc.elf` / bootloader-repl) — that is the **A3 oper
 path. **G11 waived:** do **not** AOT-embed `zmodem.hc` / `trzsz.hc` on thin images
 (~28 KiB combined, binary protocol + XON/XOFF — size/JIT risk). Prefer `DumpFile` /
 `DumpChanges`, or virtio-9p `NineExport` when virtfs is available ([NINEP.md](NINEP.md)).
-Legacy full REPL (`bootstrap/repl.elf`) keeps ZMODEM/trzsz until A3 deletes `worry_dream`.
+The legacy full REPL (`bootstrap/repl.elf`) that carried ZMODEM/trzsz is **deleted**, so those
+protocols have no shipping guest today — `DumpFile` / `DumpChanges` / 9P are the export path.
 
 ---
 

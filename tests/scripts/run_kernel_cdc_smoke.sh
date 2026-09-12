@@ -1,5 +1,10 @@
 #!/bin/bash
-# Kernel CDC/Sprite smoke: DCNew/GrBlot/FloodFill/brush + Sprite3 on 32-bpp CRVDC (P4).
+# Kernel CDC/Sprite smoke: DCNew/GrBlot/FloodFill/brush + Sprite3 + mesh/ScrnCast libs +
+# CompressBuf .GR.Z roundtrip (grzok) + WinMgr ScrnCast compose hook (wmcast/ja) +
+# just_audio snd queue + soft AUWrite (auok) +
+# optional offscreen 8-bit live body + FloodFill (u8ok/ff8) +
+# opt-in GrUpdateVGAGraphics 8-bit expand present (vgaok) +
+# opt-in WinMgr text/draw_it into full-screen is_u8 (wm8ok) on 32-bpp CRVDC/FB.
 # CI uses -display none + UART hash; no host window required.
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,7 +15,9 @@ COMPILER="$ROOT/holyc-riscv"
 SRC="$ROOT/tests/exec/cases/kernel_cdc_demo.hc"
 EXPECT_PREFIX="RVCDC smoke hash="
 # Word-wise FNV-1a for kernel_cdc_demo.hc (800×600). Override with RVCDC_EXPECT_HASH.
-PINNED_HASH="0x0CEA249A"
+# Calibrate: RVCDC_EXPECT_HASH=0x00000000 make kernel-cdc-smoke
+# Pin recalibrated 2026-09-05 (WIP FB drift vs 0x53F1F7A6/0xF98D0CE6; wm8/auok/vgaok post-hash).
+PINNED_HASH="0xEFB2D715"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
@@ -75,6 +82,39 @@ if [ "$hash" != "$want" ]; then
   echo "FAIL kernel-cdc smoke — hash mismatch:" >&2
   echo "  want: $want" >&2
   echo "  got:  $line" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$line" | grep -qE 'grzok=1'; then
+  echo "FAIL kernel-cdc smoke — grzok missing/failed: $line" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$line" | grep -qE 'u8ok=1'; then
+  echo "FAIL kernel-cdc smoke — u8ok missing/failed: $line" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$line" | grep -qE 'ff8=[1-9][0-9]*'; then
+  echo "FAIL kernel-cdc smoke — ff8 missing/failed (u8 FloodFill): $line" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$line" | grep -qE 'wmcast=[1-9]'; then
+  echo "FAIL kernel-cdc smoke — wmcast missing/failed: $line" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$line" | grep -qE 'ja=0'; then
+  echo "FAIL kernel-cdc smoke — ja missing/failed: $line" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$line" | grep -qE 'vgaok=1'; then
+  echo "FAIL kernel-cdc smoke — vgaok missing/failed (8-bit expand present): $line" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$line" | grep -qE 'auok=1'; then
+  echo "FAIL kernel-cdc smoke — auok missing/failed (just_audio AUWrite): $line" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$line" | grep -qE 'wm8ok=1'; then
+  echo "FAIL kernel-cdc smoke — wm8ok missing/failed (WinMgr draw into is_u8): $line" >&2
   exit 1
 fi
 

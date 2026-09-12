@@ -81,19 +81,21 @@ into `HTT_FUN` for TempleOS APIs. Interactive compile on the guest =
 
 ### What remains C (honest — bootstrap only)
 
-Residual C in `bootstrap/worry_dream_repl.c` is **bootstrap**, not destination:
+`bootstrap/worry_dream_repl.c` — which held readline, IRQ drain into a shared RX ring,
+the host compile slot, fmt / editor repair hatches, and the `0x87001xxx` publish
+pointers — is **deleted** (`080f729`). Its HolyC replacements live in `bootstrap/seed/`
+and `bootstrap/hc_repl/`.
 
-- readline / line editing
-- IRQ drain into a shared RX ring
-- host compile slot (AOT via host `holyc-riscv` for the REPL loop)
-- fmt / editor repair hatches
-- publish pointers at `0x87001xxx`
+What is still C is **bootstrap, not destination**: the host `holyc-riscv` AOT compiler
+under `host/`, the fmt/editor/sym bridges it backs (see
+[REGRESSION.md](../tests/REGRESSION.md)), and `templeos-riscv/`'s loader glue.
 
-Do **not** treat these as APIs to reimplement in C on a new arch.
+Do **not** treat any of these as APIs to reimplement in C on a new arch.
 
 ### C REPL audit (concrete leftovers)
 
-As-of the C-hook audit of `worry_dream_repl.c` / `holy_rt`:
+As-of the C-hook audit taken before `worry_dream_repl.c` was deleted (the slot addresses
+still describe what the seed pokes today):
 
 - [x] **`ErrGo`:** HolyC `ErrGo` in `seed/sym.hc` reads published err metadata
   slots (`HC_SLOT_ERR_*` @ `0x87001158..170`); **zero** `RuntimeRegister`.

@@ -41,15 +41,16 @@ make kernel-virt                  # → build/kernels/virt/plat.elf
 make kernel-sifive_u
 make kernel-spike
 make kernels                      # all KERNEL_BUILD_MACHINES (see Makefile)
-make kernel-visionfive2           # board-only JH7110 plat.elf (no QEMU smoke yet)
+make kernel-visionfive2           # JH7110 board plat.elf + plat-qemu.elf
 make -C templeos-riscv qemu-args-sifive_u   # print -M without writing .config
 ```
 
 Smokes call `tests/scripts/build_kernel_plat.sh` then load the matching ELF + QEMU `-M`.
 Each build restores the previous `.config` (usually virt). Every matrix board must
 smoke green (`plat-smoke: PASS`); see [DRIVERS.md](../docs/DRIVERS.md).
-Board-only profiles (VisionFive 2) build/link but stay **out of** `kernel-plat-matrix`
-until a green smoke exists — do not add skip=OK.
+Board-only load recipes (VisionFive 2 / Milk-V Mars U-Boot/OpenOCD) remain
+documented below; **plat smoke / matrix** use the `plat-qemu.elf` virt harness
+(JH7110 UART/CLINT/PLIC base overlap — not skip=OK).
 
 ## Configure
 
@@ -106,7 +107,7 @@ Inventory checked against **QEMU 10.1.3** `qemu-system-riscv64 -M help` and
 |--------|---------|
 | **CI** | In default `qemu-integration` / `make kernel-plat-smoke` |
 | **Smoke** | `make kernel-plat-*-smoke` / matrix proven; not all required for default CI |
-| **WIP (board)** | Defconfig + link build; real-board recipe only — out of matrix until green |
+| **WIP (board)** | Honest blocker: defconfig/link only — not in matrix until smoke green (not skip=OK) |
 | **Excluded** | Not a TempleOS board target — omitted from matrix (not skip=OK) |
 
 | Machine / profile | Defconfig | Kind | Status | Wired | Stub / notes |
@@ -120,8 +121,8 @@ Inventory checked against **QEMU 10.1.3** `qemu-system-riscv64 -M help` and
 | **xiangshan-kunminghu** | `xiangshan` | Board port | **Smoke** | 16550 @ `0x310B0000` (regshift 2), ACLINT @ `0x38000000`, APLIC @ `0x31100000` + IMSIC @ `0x3A800000` (`RVPlicAplic`: mtopei, eithreshold, multi-hart TARGET) | Load as **`-bios plat.elf`**; MSI→IMSIC |
 | **amd-microblaze-v-generic** | `amd_microblaze_v` | Board port | **Smoke** | **`RVUartUartlite`** @ `0x40600000`; **`RVTimerXps`** @ `0x41C00000`; **`RVPlicXps`** @ `0x41200000` | No `-kernel`/`-bios` — smoke: `-device loader,file=ELF,cpu-num=0` (+ `plat.bin` alias) |
 | **opentitan** | `opentitan` | Board port | **Smoke** | **`RVUartIbex`** @ `0x40000000`; **`RVTimerIbex`** @ `0x40100000`; PLIC @ `0x48000000`; flash boot @ `0x20000400` | Plat smoke: **RV32 asm** harness until ARCH_RISCV32 emit; HolyC drivers ready — [RV32.md](RV32.md) / [DRIVERS.md](../docs/DRIVERS.md) |
-| **visionfive2** | `visionfive2` | Board port | **WIP (board)** | 16550/DW8250 UART0 @ `0x10000000` (regshift 2), CLINT @ `0x02000000`, PLIC @ `0x0C000000`, DDR @ `0x40000000` / entry `0x40200000`, simplefb present hook | **No QEMU `-M`**. `make kernel-visionfive2` / `-help`; packed `plat.bin`. Out of matrix until smoke green (not skip=OK) |
-| **milkv-mars** | `milkv_mars` | Board port | **WIP (board)** | Same JH7110 map as VisionFive 2 (own defconfig / `link_milkv_mars.ld` / OpenOCD) | **No QEMU `-M`**. `make kernel-milkv-mars` / `-help`. Out of matrix until smoke green (not skip=OK) |
+| **visionfive2** | `visionfive2` | Board port | **Smoke** | 16550/DW8250 UART0 @ `0x10000000` (regshift 2), CLINT @ `0x02000000`, PLIC @ `0x0C000000`, DDR @ `0x40000000` / entry `0x40200000`, simplefb present hook | **No native QEMU `-M`**. Dual artifact: board `plat.bin` @ `0x40200000` + **`plat-qemu.elf`** on `-M virt` (UART/CLINT/PLIC bases match; REG_SHIFT=0 for virt byte 16550). `make kernel-plat-visionfive2-smoke` / matrix. **Open board-side gap:** `SIMPLEFB_BASE=0`, so the FB hook is compiled in but never auto-binds — see § JH7110 framebuffer below |
+| **milkv-mars** | `milkv_mars` | Board port | **Smoke** | Same JH7110 map as VisionFive 2 (own defconfig / `link_milkv_mars.ld` / OpenOCD) | Same virt harness twin (`plat-qemu.elf`). `make kernel-plat-milkv-mars-smoke` / matrix. Same **open** `SIMPLEFB_BASE=0` gap as VisionFive 2 — see § JH7110 framebuffer below |
 | **none** | `none` | Emulator | **Excluded** | — | Empty machine; not a matrix board (not skip=OK) |
 | **host** | `host` | Legacy stub | **Excluded** | — | Not in QEMU 10.x `-M help`; not a matrix board |
 
@@ -133,18 +134,23 @@ be OK — skips are not allowed). JH7110: `visionfive2_defconfig` +
 `milkv_mars_defconfig` + `RVFbSimpleFbBind` — [BOARD_FB.md](BOARD_FB.md).
 Do **not** overwrite `visionfive2_*` from the Mars port (or vice versa).
 
-### VisionFive 2 board recipe (no QEMU)
+### VisionFive 2 board recipe (+ virt harness)
 
 JH7110 map (Linux/`jh7110.dtsi` + TRM): UART0 `0x10000000`, CLINT `0x02000000`, PLIC
 `0x0C000000`, DDR `0x40000000+`. OpenSBI/U-Boot typically reserve
-`0x40000000`–`0x40200000`; plat ELF links at **`0x40200000`**. UART IRQ 32;
+`0x40000000`–`0x40200000`; board plat ELF links at **`0x40200000`**. UART IRQ 32;
 `UART_REG_SHIFT=2`; CLINT timebase **4 MHz**. Console: 115200 8N1 on UART0
 (GPIO header / USB-serial).
 
+QEMU 10.x has **no** `-M visionfive2`. Virt already places UART/CLINT/PLIC at the
+same bases, so CI smokes a twin **`plat-qemu.elf`**: `REG_SHIFT=0` + DRAM @
+`0x80000000` for virt’s byte 16550; board `plat.bin` keeps shift=2 @ `0x40200000`.
+
 ```bash
-make kernel-visionfive2          # → build/kernels/visionfive2/plat.{elf,bin}
+make kernel-visionfive2          # → build/kernels/visionfive2/plat.{elf,bin,qemu.elf}
+make kernel-plat-visionfive2-smoke
 make kernel-visionfive2-help     # full U-Boot / OpenOCD recipe + artifact sizes
-make -C templeos-riscv qemu-args-visionfive2   # prints BOARD-ONLY note (no -M)
+make -C templeos-riscv qemu-args-visionfive2
 
 # U-Boot (after firmware left UART0 live) — load flat bin then jump:
 #   tftp $loadaddr plat.bin          # or load mmc / sf
@@ -153,25 +159,48 @@ make -C templeos-riscv qemu-args-visionfive2   # prints BOARD-ONLY note (no -M)
 
 # OpenOCD / gdb (JTAG; after DDR init via SPL/U-Boot or vendor cfg):
 #   source tests/openocd/visionfive2_load_plat.tcl
-#   # or: load_image build/kernels/visionfive2/plat.elf 0x40200000 elf
 # Prefer ELF (segment-aware); flat plat.bin is packed contiguous for tftp/mmc.
 ```
 
 Framebuffer: select `FB_PRESENT_SIMPLEFB`; leave `SIMPLEFB_BASE=0` until firmware
 publishes XR24, then set `SIMPLEFB_*` or call `RVFbSimpleFbBind` — [BOARD_FB.md](BOARD_FB.md).
 
-### Milk-V Mars board recipe (no QEMU)
+### Milk-V Mars board recipe (+ virt harness)
 
 Same JH7110 SoC class as VisionFive 2 — **separate** files (`milkv_mars_defconfig`,
 `link_milkv_mars.ld`, `milkv_mars_load_plat.tcl`). Do not overwrite `visionfive2_*`.
 
 ```bash
-make kernel-milkv-mars           # → build/kernels/milkv_mars/plat.{elf,bin}
+make kernel-milkv-mars           # → build/kernels/milkv_mars/plat.{elf,bin,qemu.elf}
+make kernel-plat-milkv-mars-smoke
 make kernel-milkv-mars-help      # U-Boot / OpenOCD recipe + artifact sizes
 make -C templeos-riscv qemu-args-milkv_mars
 
 # U-Boot / OpenOCD: same entry 0x40200000; see make kernel-milkv-mars-help
 ```
+
+### JH7110 framebuffer — open board-side gap
+
+Both JH7110 boards (VisionFive 2, Milk-V Mars) select `CONFIG_FB_PRESENT_SIMPLEFB=y` but ship
+`CONFIG_SIMPLEFB_BASE=0` (width/height/stride 0 too). `RVFbSimpleFbTryBoard` bails on a zero
+base, so `RVFbPlatApplyPresent` is a no-op and **nothing binds a scanout at boot** — the FB
+code is compiled in and unreachable on real silicon.
+
+This is not a matrix blocker: the plat smokes run on the `plat-qemu.elf` twin under `-M virt`,
+where FB coverage comes from **ramfb**, not simplefb. It is an honest **board-side** gap for
+anyone booting the real hardware.
+
+Fix plan (in preference order):
+
+1. Boot firmware that leaves a linear **XR24** buffer and publishes a `simple-framebuffer` DT
+   node, then set `SIMPLEFB_BASE` / `WIDTH` / `HEIGHT` (`STRIDE` optional) in the defconfig.
+2. Failing a DT node, call `RVFbSimpleFbBind(base, w, h, stride, RV_FB_FOURCC_XR24)` once from
+   board init with the addresses the firmware actually used.
+3. An FDT/OF walker that discovers the node automatically is listed as future work — until it
+   exists these addresses stay manual.
+
+Full vendor DRM/KMS (inno HDMI + multi-plane) is **out of scope**; see
+[BOARD_FB.md](BOARD_FB.md) for the per-board survey and rationale.
 
 ### QEMU `-M` vs this tree (QEMU 10.1.3)
 
@@ -186,7 +215,7 @@ make -C templeos-riscv qemu-args-milkv_mars
 | spike | yes |
 | virt | yes |
 | xiangshan-kunminghu | yes (`xiangshan`) |
-| *(VisionFive 2 / Milk-V Mars / JH7110)* | **no** — board-only (`visionfive2`, `milkv_mars`) |
+| *(VisionFive 2 / Milk-V Mars / JH7110)* | **no native `-M`** — board plat + **`plat-qemu.elf` on `-M virt`** (`visionfive2`, `milkv_mars`) |
 
 | `qemu-system-riscv32 -M` | In-tree |
 |--------------------------|---------|
@@ -202,7 +231,7 @@ make -C templeos-riscv qemu-args-milkv_mars
 | virt, sifive_u, sifive_e, spike, shakti_c, microchip_icicle, xiangshan, amd_microblaze_v, opentitan, host | **none** defconfig; spike HTIF→ELF `tohost`; plat matrix |
 | Kconfig UART/CLINT/PLIC/virtio/fw_cfg | **HEAP/MEMFS/HOST_SLOTS/SMP_MAILBOX/STACK**, **VIRTIO_MMIO_IRQ_BASE**, **VIRTIO_DRV_RAM_BASE**; `MEM_*` aliases in `RVAutoConf.HH` |
 | `kernel-plat-smoke` + sifive_u | **`kernel-plat-spike-smoke`**, **`kernel-plat-matrix`** |
-| Board ports above | **`visionfive2`** + **`milkv_mars`** defconfigs + packed JH7110 link scripts + OpenOCD (no QEMU `-M`) |
+| Board ports above | **`visionfive2`** + **`milkv_mars`**: board plat + **virt JH7110-map `plat-qemu.elf` smoke** (matrix) |
 
 ## Fill-gap plan (CSR / asm / virtio / SMP)
 
@@ -263,21 +292,23 @@ Two boot paths exist on QEMU 8+ virt:
 | `build/firmware/templeos-fw.bin` | `0x20000000` (flash) | `-bios none -drive if=pflash,...` | M-mode, flash ROM |
 | `build/firmware/templeos-fw.elf` | `0x20000000` | debug / `objdump` | flash-linked ELF |
 
-Build (default payload = bare-metal REPL linked at `0x80000000`):
+Build (default payload = the Kconfig kernel **plat** image; `PAYLOAD=repl` errored out
+with the legacy C guest and is no longer accepted):
 
 ```bash
-make baremetal         # build/baremetal/repl.elf + repl.bin (RAM / OpenOCD / -kernel)
-make baremetal-smoke    # -kernel repl.bin + REPL 1+1 oracle
-make firmware          # alias: make bios — flash ROM + bios copies
-make firmware-smoke    # pflash boot + REPL 1+1 oracle
-make bios-smoke        # -bios RAM payload + REPL 1+1 oracle
+make baremetal         # build/baremetal/plat.elf + plat.bin (RAM / OpenOCD / -kernel)
+make baremetal-smoke   # different artifact: make repl-payload → build/baremetal/repl.bin
+                       # (HolyC REPL flat blob) + 1+1 oracle
+make firmware          # alias: make bios — flash ROM + bios copies (wraps plat.elf)
+make firmware-smoke    # pflash boot + plat-smoke PASS
+make bios-smoke        # -bios RAM payload + plat-smoke PASS
 tests/scripts/qemu-baremetal.sh     # -bios none -kernel (default)
 tests/scripts/qemu-bios.sh          # -bios launcher (default)
 tests/scripts/qemu-bios.sh --pflash # pflash launcher
 ```
 
-Other payloads: `make -C bootstrap -f Makefile.firmware PAYLOAD=plat firmware`
-(after `build/kernels/virt/plat.elf` exists).
+For a HolyC **REPL** image use `make hc-repl` (`-kernel build/repl-holyc.elf`) or the split
+`make bootloader-repl`; there is no REPL firmware payload today.
 
 ### QEMU virt reset behavior (QEMU 10.x)
 
@@ -446,8 +477,8 @@ Driver survey: [DRIVERS.md](../docs/DRIVERS.md). VisionFive 2: board recipe in
 | Virtio driver scratch RAM | `CONFIG_VIRTIO_DRV_RAM_BASE` (needs `-m`≥256M on virt) | — |
 | DRAM / link / soft FB / heap / memfs / stack | `CONFIG_DRAM_*`, `KERNEL_*`, `HEAP_BASE`, `MEMFS_BASE`, `STACK_BASE` | — |
 | SMP mailbox | `CONFIG_SMP_MAILBOX_BASE` | `crt0_smp.S` `.equ` must match by hand |
-| Transitional REPL host slots | `CONFIG_HOST_SLOTS_BASE` | `worry_dream_repl.c` + seed still poke `0x87001xxx` literally until REPL migrates off slots |
-| Seed `bootstrap/seed/MemMapSelected.hc` `MEM_*` | Same bases as `RVAutoConf.HH` | Regenerated by `defconfig` / `syncconfig`; rebuild `repl.elf` after board flip |
+| Transitional REPL host slots | `CONFIG_HOST_SLOTS_BASE` | The C guest that owned this page is **deleted**; a few seed files still poke `0x87001xxx` literally (e.g. `bootstrap/seed/ed.hc` `0x870010B8`, cleared on `repl-holyc`) — keep the base until the seed reads `MEM_HOST_SLOTS` only. `RVSmp.HC` also hardcodes `0x87001E00` for the SMP mailbox |
+| Seed `bootstrap/seed/MemMapSelected.hc` `MEM_*` | Same bases as `RVAutoConf.HH` | Regenerated by `defconfig` / `syncconfig`; rebuild `build/repl-holyc.elf` (`make hc-repl`) after board flip |
 | SiFive test / AON / GPIO reset | `CONFIG_SIFIVE_*` | — |
 
 
