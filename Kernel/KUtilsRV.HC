@@ -446,44 +446,37 @@ asm {
 	li	a0,0
 	ret
 }
-// BFieldExtU32(bf,lo,hi): extract bits [lo..hi] of byte array bf as an integer (bit lo = LSB).
+// U32 BFieldExtU32(U8 *bit_field=a0, I64 bit=a1, I64 size=a2) — KernelB.HH: third arg is a bit
+// COUNT, not a high bit index. Mirrors x86 _BIT_FIELD_EXT_U32 (KUtils.HC) exactly:
+//   (*(U64 *)(bf + bit/8) >> (bit & 7)) & ((1 << size) - 1)
+// A (lo..hi) range reading made BFieldExtU32(buf,4,8) answer the wrong value and broke
+// tests/exec/cases/e_native_bfield.hc; Compress.HC depends on the stock meaning.
 asm {
 	BFieldExtU32::
-	li	a3,0
-	mv	a4,a2
-	bfe_loop:
-	blt	a4,a1,bfe_done
-	srai	t0,a4,3
+	srai	t0,a1,3
 	add	t0,a0,t0
-	lbu	t1,0(t0)
-	andi	t2,a4,7
+	ld	t1,0(t0)
+	andi	t2,a1,7
 	srl	t1,t1,t2
-	andi	t1,t1,1
-	slli	a3,a3,1
-	or	a3,a3,t1
-	addi	a4,a4,-1
-	j	bfe_loop
-	bfe_done:
-	mv	a0,a3
+	li	t3,1
+	sll	t3,t3,a2
+	addi	t3,t3,-1
+	and	a0,t1,t3
 	ret
 }
-// BFieldOrU32(bf,lo,hi): set bits [lo..hi] of byte array bf.
+// U0 BFieldOrU32(U8 *bit_field=a0, I64 bit=a1, U32 pattern=a2) — third arg is a PATTERN to OR
+// in at `bit`, not a high bit index. Mirrors x86 _BIT_FIELD_OR_U32:
+//   *(U64 *)(bf + bit/8) |= (U64)pattern << (bit & 7)
+// So BFieldOrU32(buf,4,0xFF) sets bits 4..11 (buf[0]=0xF0, buf[1]=0x0F).
 asm {
 	BFieldOrU32::
-	mv	a4,a1
-	bfo_loop:
-	blt	a2,a4,bfo_done
-	srai	t0,a4,3
+	srai	t0,a1,3
 	add	t0,a0,t0
-	lbu	t1,0(t0)
-	andi	t2,a4,7
-	li	t3,1
-	sll	t3,t3,t2
+	andi	t2,a1,7
+	sll	t3,a2,t2
+	ld	t1,0(t0)
 	or	t1,t1,t3
-	sb	t1,0(t0)
-	addi	a4,a4,1
-	j	bfo_loop
-	bfo_done:
+	sd	t1,0(t0)
 	li	a0,0
 	ret
 }
@@ -994,4 +987,27 @@ F64 Pow(F64 a, F64 b)
     return (a - a) / (a - a);
   // nan
   return Exp(b *Ln(a));
+}
+
+/* Guest-JIT entry points for the _intern F64 ICs (IC_SIN/COS/TAN/ATAN/POWER):
+ * the host AOT lowers Sin() etc. to its runtime, so the guest backend calls these. */
+public F64 RVF64Sin(F64 x)
+{
+  return Sin(x);
+}
+public F64 RVF64Cos(F64 x)
+{
+  return Cos(x);
+}
+public F64 RVF64Tan(F64 x)
+{
+  return Tan(x);
+}
+public F64 RVF64ATan(F64 x)
+{
+  return ATan(x);
+}
+public F64 RVF64Pow(F64 a, F64 b)
+{
+  return Pow(a, b);
 }

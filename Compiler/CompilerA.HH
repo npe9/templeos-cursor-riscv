@@ -284,6 +284,7 @@ class CIntermediateStruct
 #define KW_HASERRCODE	45
 #define KW_ARGPOP	46
 #define KW_NOARGPOP	47
+#define KW_CONTINUE	48	// RV: host AOT parity; TempleOS HolyC has no continue
 
 #define AKW_ALIGN	64
 #define AKW_ORG		65
@@ -402,5 +403,10 @@ class COptReg
 #define CMPF_ONE_ASM_INS	2
 #define CMPF_LEX_FIRST		4
 #define CMPF_PRS_SEMICOLON	8
+// RV: parse exactly one statement — a declaration must not fall through to PrsStmt's
+// while(TRUE) and eat the next one. Lets `for(U32 i=0;i<n;i++)` work (host compiler accepts it).
+#define CMPF_ONE_STMT		16
+// RV: this asm{} blob is executed immediately via Call(), so it must end in a RET.
+#define CMPF_ASM_CALLED		32
 
 #help_index ""

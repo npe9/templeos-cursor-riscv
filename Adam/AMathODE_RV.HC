@@ -626,6 +626,11 @@ public U0 ODEsUpdate(CTask *task)
     while (ode && ode != &task->next_ode) {
       if (++ode_guard > 16)
         break;
+      // Skip while SpanSave/ODERenum (or nested update) holds BUSY.
+      if (ode->flags & ODEF_BUSY) {
+        ode = ode->next;
+        continue;
+      }
       t_initial = ode->t;
       d = tS;
       if (!(ode->flags & ODEF_STARTED)) {

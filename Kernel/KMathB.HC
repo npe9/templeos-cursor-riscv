@@ -70,7 +70,9 @@ I64 CeilI64(I64 num,I64 to)
   }
 }
 
+#ifndef RV_THIN_LOADER
 //See $LK,"::/Doc/Credits.DD"$.
+// Thin Jump never Rand/Seed - SoftCall owns RNG; stubs in KThinMapFatStubs.
 #define LIN_CONGRUE_A	6364136223846793005
 #define LIN_CONGRUE_C	1442695040888963407
 
@@ -155,3 +157,4 @@ I64 Seed(I64 seed=0,CTask *task=NULL)
     return task->rand_seed^=GetTSC;
   }
 }
+#endif

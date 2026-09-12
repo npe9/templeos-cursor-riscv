@@ -1,5 +1,8 @@
-U8 *LexStmt2Bin(CCmpCtrl *cc,I64 *_type,I64 cmp_flags=0)
+U8 *LexStmt2Bin(CCmpCtrl *cc,I64 *_type,I64 cmp_flags=CMPF_PRS_SEMICOLON)
 {//Compile one cc stmt to bin code.
+ // Default matches CompilerB.HH / stock ExeCmdLine call sites. cmp_flags=0
+ // leaves ';' unconsumed so the next LexStmt2Bin sees empty COC → INVALID_PTR
+ // and ExePutS stops after the first stmt (Cd;FileMgr never reaches FileMgr).
   I64 size,i,j,k,*res=INVALID_PTR;
   CCodeCtrl *tmpcbh;
   if (_type) *_type=RT_I64;
@@ -92,7 +95,23 @@ CAOT *CmpJoin(CCmpCtrl *cc,I64 cmp_flags,U8 *map_name=NULL,U8 mapfile_drv_let=0)
 	if (cmp_flags&CMPF_ASM_BLK)
 	  break;
       }
-    } else
+    } else if (cmp_flags&CMPF_ASM_BLK) {
+      // JIT asm{}: assemble the body. PrsStmt has no CMPF_ASM_BLK handling and would parse
+      // the mnemonics as HolyC. The AOT side never reaches here — top-level AOT asm{} goes
+      // straight to PrsAsmBlk in PrsStmt's KW_ASM arm.
+      PrsAsmBlk(cc,cmp_flags);
+#ifdef CMP_RV_ASM
+      /* A blob about to be Call()ed must return. A top-level `asm {…}` at the REPL runs
+       * immediately, and without a terminator execution fell off the end into zero padding —
+       * `asm {addi t1,t0,1}` reported mcause=2 exactly one instruction past the block. Append
+       * the RET only for that case: in-function asm is embedded in the caller (an extra RET
+       * would return early), and a definition-only blob (`::` exports) is never Called. If the
+       * block already ends in RET or a jump, this one is simply unreachable. */
+      if (cmp_flags&CMPF_ASM_CALLED && !g_rv_asm_exports)
+	AOTStoreCodeU32(cc,0x00008067);   // ret
+#endif
+    }
+    else
       PrsStmt(cc,,,cmp_flags);
     AOTGlblsResolve(cc,res);
   } catch {
@@ -613,10 +632,18 @@ I64 ExePutS(U8 *buf,U8 *filename=NULL,
     while (cc->token &&
 	  (cc->token!='}' || !(cc->flags & CCF_EXE_BLK)) ) {
       cc->flags&=~CCF_HAS_MISC_DATA;
-      machine_code=LexStmt2Bin(cc,&type);
+      // CMPF_PRS_SEMICOLON: consume ';' so compound ExePutS runs every stmt
+      // (stock PopUpPickFile "Cd(...);FileMgr(...);").
+      machine_code=LexStmt2Bin(cc,&type,CMPF_PRS_SEMICOLON);
       if (machine_code==INVALID_PTR)
 	break;
-      if (!(cc->flags&CCF_JUST_LOAD)) {
+      // LexStmt2Bin has TWO failure values, and only one of them means "stop".
+      // INVALID_PTR = no statement parsed (above). NULL = the statement parsed but
+      // COCCompile emitted no callable code — a bare declaration such as the `I64 i=7;`
+      // in `I64 i=7; i*6;`. Calling that jumps to 0, which is the illegal-instruction
+      // crash with insn@mepc=0. Skip the Call and keep going: PrsStmt succeeded, so
+      // tokens advanced and the loop still makes progress.
+      if (machine_code && !(cc->flags&CCF_JUST_LOAD)) {
 	t0=tS;
 	res=Call(machine_code);
 	Fs->answer=res;
@@ -625,7 +652,7 @@ I64 ExePutS(U8 *buf,U8 *filename=NULL,
 	Fs->new_answer=TRUE;
 	cc->pmt_line=0;
       }
-      if (!(cc->flags&CCF_HAS_MISC_DATA))
+      if (machine_code && !(cc->flags&CCF_HAS_MISC_DATA))
 	Free(machine_code);
     }
   } catch {

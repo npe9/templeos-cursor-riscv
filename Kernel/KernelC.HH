@@ -316,6 +316,7 @@ public extern U8 *ToggleZorNotZ(U8 *name);
 public extern U8 *FileNameTmpTxt();
 
 #help_index "File/Internal"
+public extern I64 rv_dirc_depth;
 public extern U0 DirContextDel(CDirContext *dirc,Bool restore=TRUE);
 public extern CDirContext *DirContextNew(U8 *mask,
 	Bool make_mask=FALSE,Bool make_dirs=FALSE,Bool no_mask=FALSE);

@@ -1,5 +1,6 @@
 // log.hc -- dmesg-style program/kernel log ring (≠ Print stdout, ≠ FsLog journal).
-// Optional UART mux ch3: frame.hc redefines LogMuxEmit after UartMuxOn.
+// Optional UART mux ch3: frame.hc installs FrameLogMuxEmit into g_log_mux_hook
+// from UartMuxOn (it does NOT redefine LogMuxEmit — see the note at that hook).
 #define LOG_INFO 0
 #define LOG_WARN 1
 #define LOG_ERR 2
@@ -19,18 +20,24 @@ I64 g_log_count;
 I64 g_log_dropped;
 I64 g_log_inited;
 I64 g_log_seq;
-// Optional ch3: stub until frame.hc loads and redefines LogMuxEmit.
-// UartMuxOn sets g_log_mux_ch=FRAME_CH_LOG; mux off leaves this a no-op.
+// Optional ch3. UartMuxOn sets g_log_mux_ch=FRAME_CH_LOG; mux off is a no-op.
 I64 g_log_mux_ch;
+// frame.hc used to "redefine" LogMuxEmit to reach ch3. That never worked: this is one
+// AOT translation unit, so the call below binds to the definition in scope here, and
+// the later one was dead code — LogInfo silently never reached the framed log channel.
+// Dispatch through a hook instead, the same shape as uart.hc's g_uart_putc_hook, and
+// let frame.hc install it in UartMuxOn.
+U0 (*g_log_mux_hook)(I64 level, U8 *sub, U8 *msg);
 U0 LogMuxEmit(I64 level, U8 *sub, U8 *msg)
 {
-  // Stub — frame.hc redefines to FrameSend(ch3, …). Keep body cheap for boot.
   if (!g_uart_mux && !g_log_mux_ch)
     return;
   if (!sub || !msg)
     return;
   if (level < 0)
     return;
+  if (g_log_mux_hook)
+    (*g_log_mux_hook)(level, sub, msg);
 }
 // LogNow -- LogNow()
 // NAME

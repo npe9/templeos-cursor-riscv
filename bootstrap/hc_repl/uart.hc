@@ -72,9 +72,18 @@ I64 UartFcIsCtrl(I64 ch)
 // Pull 16550 RX into soft ring. XON/XOFF update pause only (not enqueued).
 // Full ring: break (leave byte in FIFO) — never spin / never drop silently here.
 // BreakArm / Trap IRQ: HcTrapUartSoftDrain in repl.hc (after trap.hc) owns Ctrl-C.
+//
+// MIE masked for the whole LSR→RBR→ring window, same race fix seed/uart.hc
+// already carries. Once BreakArm enables the UART/timer IRQs, the trap-side
+// drain runs the identical loop on the same ring: an IRQ landing between our
+// `n = head + 1` and our `head = n` lets the handler advance head past us and
+// our store then rewinds it, re-serving bytes the reader already consumed
+// (typed "XonBlast();" echoed back as "XonBlast((;").
 U0 UartRxDrain()
 {
   I64 ch, n;
+  PUSHFD;
+  CLI;
   while (*(U8 *)UART_LSR & 1) {
     n = (g_hc_rh + 1) & (HC_RX_CAP - 1);
     // Leave byte in 16550 if soft ring is full (never drop after RBR read).
@@ -88,6 +97,7 @@ U0 UartRxDrain()
     g_hc_rx[g_hc_rh] = ch;
     g_hc_rh = n;
   }
+  POPFD;
 }
 
 U0 UartFcPoll()

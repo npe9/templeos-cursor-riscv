@@ -2,7 +2,8 @@
 // Sources: host TryAssembleRiscV (parser.c) + guest Compiler/Asm_RV.HC mnemonics;
 // GPR/ABI from RvRegNum / AsmRVRegsAdd; CSR names from csr.hc Reg().
 // Tables are '|' -separated (not NUL) so seed memfs embedding stays intact.
-// Loaded before complete.hc. Keep in sync with worry_dream_repl.c rl_asm_*.
+// Loaded before complete.hc. HolyC is the only copy now — the C guest's rl_asm_*
+// tables went away with worry_dream_repl.c (080f729).
 #define ASM_COMP_OP 0
 #define ASM_COMP_REG 1
 #define ASM_COMP_CSR 2
@@ -11,9 +12,20 @@ I64 CompAsmSt;
 I64 CompAsmDepth;
 // 0=auto (default BSS), 1=force inside asm{}, 2=force outside
 I64 CompAsmMode;
-U8 *AsmCompOps = "add|addi|and|andi|or|ori|xor|xori|" "sub|sll|slli|srl|srli|sra|srai|slt|slti|sltu|" "mul|div|divu|rem|remu|" "lui|auipc|li|mv|not|neg|seqz|snez|jr|" "ld|lw|lwu|lh|lhu|lb|lbu|sd|sw|sh|sb|" "jalr|j|call|beq|bne|blt|bge|bltu|bgeu|beqz|bnez|" "ret|nop|wfi|mret|sret|ecall|ebreak|fencei|fence.i|" "csrr|csrw|csrs|csrc|csrrw|csrrs|csrrc|" "csrrwi|csrrsi|csrrci|csrwi|csrsi|csrci|" "rdtime|sfencevma|lifp|" "lr.d|lr.w|lrd|lrw|sc.d|sc.w|scd|scw|" "amoswap.d|amoadd.d|amoxor.d|amoand.d|amoor.d|" "amomin.d|amomax.d|amominu.d|amomaxu.d|" "amoswap.w|amoadd.w|amoxor.w|amoand.w|amoor.w|" "amomin.w|amomax.w|amominu.w|amomaxu.w|" "amoswapd|amoaddd|amoxord|amoandd|amoord|" "amomind|amomaxd|amominud|amomaxud|" "amoswapw|amoaddw|amoxorw|amoandw|amoorw|" "amominw|amomaxw|amominuw|amomaxuw|" "fsqrtd|faddd|fsubd|fmuld|fdivd|fled|fltd|feqd|" "fmvdx|fmvxd|fcvtdl|fcvtld_rtz|fcvtld_rdn|fcvtld_rmm|";
-U8 *AsmCompRegs = "zero|ra|sp|gp|tp|fp|" "t0|t1|t2|t3|t4|t5|t6|" "s0|s1|s2|s3|s4|s5|s6|s7|s8|s9|s10|s11|" "a0|a1|a2|a3|a4|a5|a6|a7|" "x0|x1|x2|x3|x4|x5|x6|x7|x8|x9|" "x10|x11|x12|x13|x14|x15|x16|x17|" "x18|x19|x20|x21|x22|x23|x24|x25|" "x26|x27|x28|x29|x30|x31|" "ft0|ft1|ft2|ft3|ft4|ft5|ft6|ft7|ft8|ft9|ft10|ft11|" "fs0|fs1|fs2|fs3|fs4|fs5|fs6|fs7|fs8|fs9|fs10|fs11|" "fa0|fa1|fa2|fa3|fa4|fa5|fa6|fa7|" "f0|f1|f2|f3|f4|f5|f6|f7|f8|f9|" "f10|f11|f12|f13|f14|f15|f16|f17|" "f18|f19|f20|f21|f22|f23|f24|f25|" "f26|f27|f28|f29|f30|f31|";
-U8 *AsmCompCsrs = "mstatus|misa|medeleg|mideleg|mie|mtvec|mcounteren|" "mscratch|mepc|mcause|mtval|mip|" "mcycle|minstret|cycle|time|instret|mhartid|" "sstatus|sie|stvec|sscratch|sepc|scause|stval|sip|satp|";
+U8 *AsmCompOps;
+U8 *AsmCompRegs;
+U8 *AsmCompCsrs;
+// AsmCompTablesInit -- fill the '|' tables above.
+// The bare call below is a top-level statement, so it runs on every path: interpreted,
+// boot blob, and the repl-holyc AOT image, where host/compiler.c routes `_start`'s first
+// call through __init_globals. Re-storing the same literals is harmless.
+U0 AsmCompTablesInit()
+{
+  AsmCompOps = "add|addi|and|andi|or|ori|xor|xori|" "sub|sll|slli|srl|srli|sra|srai|slt|slti|sltu|" "mul|div|divu|rem|remu|" "lui|auipc|li|mv|not|neg|seqz|snez|jr|" "ld|lw|lwu|lh|lhu|lb|lbu|sd|sw|sh|sb|" "jalr|j|call|beq|bne|blt|bge|bltu|bgeu|beqz|bnez|" "ret|nop|wfi|mret|sret|ecall|ebreak|fencei|fence.i|" "csrr|csrw|csrs|csrc|csrrw|csrrs|csrrc|" "csrrwi|csrrsi|csrrci|csrwi|csrsi|csrci|" "rdtime|sfencevma|lifp|" "lr.d|lr.w|lrd|lrw|sc.d|sc.w|scd|scw|" "amoswap.d|amoadd.d|amoxor.d|amoand.d|amoor.d|" "amomin.d|amomax.d|amominu.d|amomaxu.d|" "amoswap.w|amoadd.w|amoxor.w|amoand.w|amoor.w|" "amomin.w|amomax.w|amominu.w|amomaxu.w|" "amoswapd|amoaddd|amoxord|amoandd|amoord|" "amomind|amomaxd|amominud|amomaxud|" "amoswapw|amoaddw|amoxorw|amoandw|amoorw|" "amominw|amomaxw|amominuw|amomaxuw|" "fsqrtd|faddd|fsubd|fmuld|fdivd|fled|fltd|feqd|" "fmvdx|fmvxd|fcvtdl|fcvtld_rtz|fcvtld_rdn|fcvtld_rmm|";
+  AsmCompRegs = "zero|ra|sp|gp|tp|fp|" "t0|t1|t2|t3|t4|t5|t6|" "s0|s1|s2|s3|s4|s5|s6|s7|s8|s9|s10|s11|" "a0|a1|a2|a3|a4|a5|a6|a7|" "x0|x1|x2|x3|x4|x5|x6|x7|x8|x9|" "x10|x11|x12|x13|x14|x15|x16|x17|" "x18|x19|x20|x21|x22|x23|x24|x25|" "x26|x27|x28|x29|x30|x31|" "ft0|ft1|ft2|ft3|ft4|ft5|ft6|ft7|ft8|ft9|ft10|ft11|" "fs0|fs1|fs2|fs3|fs4|fs5|fs6|fs7|fs8|fs9|fs10|fs11|" "fa0|fa1|fa2|fa3|fa4|fa5|fa6|fa7|" "f0|f1|f2|f3|f4|f5|f6|f7|f8|f9|" "f10|f11|f12|f13|f14|f15|f16|f17|" "f18|f19|f20|f21|f22|f23|f24|f25|" "f26|f27|f28|f29|f30|f31|";
+  AsmCompCsrs = "mstatus|misa|medeleg|mideleg|mie|mtvec|mcounteren|" "mscratch|mepc|mcause|mtval|mip|" "mcycle|minstret|cycle|time|instret|mhartid|" "sstatus|sie|stvec|sscratch|sepc|scause|stval|sip|satp|";
+}
+AsmCompTablesInit;
 U0 CompAsmReset()
 {
   CompAsmSt = 0;

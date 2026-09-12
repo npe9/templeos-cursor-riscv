@@ -2,14 +2,14 @@
 // Used by `make coverage` to measure how much of the kernel the compiler accepts. Keep in sync.
 //Compile this by calling $LK,"BootHDIns",A="MN:BootHDIns"$().
 //Don't do it directly.  See $LK,"Cmp(\"/Kernel/Kernel\")",A="FF:::/Adam/Opt/Boot/BootHDIns.HC,Cmp(\"/Kernel/Kernel\""$.
-
 #exe {
-  Cd(__DIR__);;
-  Option(OPTf_WARN_PAREN,ON);
-  Option(OPTf_WARN_DUP_TYPES,ON);
-  #include "KCfg"
-  CKCfg *kernel_cfg;
-  kernel_cfg=KCfgNew;
+Cd(__DIR__);
+;
+Option(OPTf_WARN_PAREN, ON);
+Option(OPTf_WARN_DUP_TYPES, ON);
+#include "KCfg"
+CKCfg *kernel_cfg;
+kernel_cfg = KCfgNew;
 };
 // Platform Kconfig → templeos-riscv/.config → RVAutoConf.HH (UART/CLINT/PLIC/virtio/FB/entry).
 // Regenerate: make -C templeos-riscv defconfig | menuconfig. Default is QEMU virt (CI).
@@ -37,59 +37,151 @@
 #include "StrA"
 #include "KGlbls"
 #include "KMathB"
+#ifdef RV_THIN_LOADER
+#include "KThinSchedStubs" // no x86 Yield/TaskFocus — host HolyYield
+#else
 #include "Sched"
+#endif
+#ifdef RV_THIN_LOADER
+#include "KThinMemStubs" // linear arena — SoftCall MemSoft+MakeMemSoft own HeapCtrl/MemPag in Kernel.BIN
+#else
 #include "Mem/MakeMem"
+#endif
+#ifndef RV_THIN_LOADER
 #include "FontStd"
 #include "FontCyrillic"
+#endif
 #include "StrB"
 #define KERNEL_HASH_RV 1
+#ifdef RV_THIN_LOADER
+#include "KThinHashStubs" // lite HashAdd/Find/TableNew for thin Jump; Define stubbed
+#else
 #include "KHashA"
 #include "KHashRV" // RV HolyC HashStr/HashAdd/HashFind BEFORE KHashB (HashDefineLstAdd needs live HashFind)
+#endif
 //x86: #include "KInts"
 #include "KDataTypes"
-#include "Compress"
+#ifndef RV_THIN_LOADER
+#include "Compress" // SoftCall CompressSoft packs Arc into Kernel.BIN (→'CM')
 #include "KHashB"
-#include "KLoad"
+#include "KLoad" // SoftCall KLoadSoft packs LoadPass1 import+ABS into Kernel.BIN (→'LD')
+#include "RVHofyPatch" // HOFYIMP1 re-patch from Fs after Load(Compiler.BIN)
+#endif
+// Thin: export-only RVThinLoadBuf in RVThinLoader.HC (Kernel.BIN import-free seed).
+#ifdef RV_THIN_LOADER
+#include "KThinDateStubs" // ~8 KiB Date2Struct/Now* — SoftCall owns real time
+#else
 #include "Drv/RVRtc.HC" // Goldfish RTC before KDate NowDateTimeStruct
 #include "KDate"
+#endif
+#ifdef RV_THIN_LOADER
+#include "KThinStrPrintStubs" // ~41 KiB StrPrintJoin/%f/Q/q gated — thin %s/%d/%X only
+#else
 #include "StrPrint"
+#endif
+#ifdef RV_THIN_LOADER
+#include "KThinStrScanStubs" // SoftCall never StrScan/Str2*; Color2Str path unused
+#else
 #include "StrScan"
+#endif
+#ifdef RV_THIN_LOADER
+#include "KThinStrUtilStubs" // StrUtil/MStrUtil + GetOutOfDollar — MakeBlkDev gated
+#else
+// full StrUtil lives in StrA/StrB (included above)
+#endif
+#ifdef RV_THIN_LOADER
+// KDefine gated — stubs in KThinHashStubs (SysDefinesLoad unused on thin Jump)
+#else
 #include "KDefine"
+#endif
+#ifdef RV_THIN_LOADER
+#include "KThinDbgDisplayStubs" // no VGA RawPutChar / StkRep/Fault* — SoftCall never needs them
+#else
 #include "Display"
+#endif
 #include "KMisc"
+#ifdef RV_THIN_LOADER
+#include "KThinSndStubs" // Snd/ScrnCast/Beep — ASnd_RV gated; KMisc bodies #ifndef'd
+#endif
+#ifndef RV_THIN_LOADER
 #include "KDbg"
+#endif
+#ifdef RV_THIN_LOADER
+#include "KThinKeyDevStubs" // UART PutS/KeyDevAdd only — SoftCall KeyDevSoft owns Ctrl-Alt
+#else
 #include "KeyDev"
-#include "KExcept"
+#endif
+#include "KExcept" // SoftCall ExceptSoft packs SysTry/throw/PutExcept into Kernel.BIN
+#ifdef RV_THIN_LOADER
+#include "KThinSerialStubs" // InputFilterTask before Job (SerialDev gated)
+#else
 #include "SerialDev/MakeSerialDev"
+#endif
+#ifdef RV_THIN_LOADER
+#include "KThinQSortStubs" // SoftCall QSortSoft owns QSortI64 — DirEntry in gated MakeBlkDev
+#else
 #include "QSort"
+#endif
+#ifdef RV_THIN_LOADER
+#include "KThinTaskStubs" // minimal Adam TaskInit — no Spawn/TaskEnd/ExeCmdLine
+#include "KThinJobStubs" // SoftCall Jump — no JobRunOne/TaskExe servant queue
+#else
 #include "KTask"
 #include "Job"
+#endif
+#ifndef RV_THIN_LOADER
 #include "PCIBIOS"
 //x86: #include "MultiProc"
 #include "EdLite"
+#endif
+#ifndef RV_THIN_LOADER
 #include "BlkDev/MakeBlkDev"
+#endif
 //x86: #include "FunSeg"
+#ifndef RV_THIN_LOADER
 #include "KMain"
+#endif
 #include "KUtilsRV"   // native RISC-V ports of KUtils.HC low-level primitives (MemSet/MemCpy)
-#include "KMathA_RV"  // HolyC D3* (KMathA x86 FPU asm skipped)
+#ifdef RV_THIN_LOADER
+#include "KThinMapFatStubs" // TimeCal/Pow/QueVect/Fifo/D3/Rand/ScanFlags/PutExcept/Endian
+#endif
+#ifndef RV_THIN_LOADER
+#include "KMathA_RV"  // HolyC D3* (KMathA x86 FPU asm skipped) — thin stubs in MapFat
 #include "/Adam/AMathODE_RV" // ODENew/RK5 + ODEsUpdate (soft winmgr timing)
-#include "KCmpStubsRV" // HashAddAfter/CallExt*/Doc* stubs for Compiler_RV ExePutS
+#endif
+#include "KCmpStubsRV" // HashAddAfter/CallExt*/Doc* stubs + SoftCall ENTER wrappers
 #include "Drv/RVSifivePlat.HC" // SiFive UART/CLINT/PLIC facade (Yes on sifive_u/e)
+#ifndef RV_THIN_LOADER
 #include "Drv/RVSifiveGem.HC"  // Cadence GEM TX/RX (Yes on sifive_u ETH_BASE)
+#endif
 #include "Drv/RVUart.HC"       // Kconfig UART (16550 / SiFive / HTIF stub)
 #include "Drv/RVTimer.HC"      // CLINT mtime/mtimecmp
 #include "Drv/RVSmp.HC"        // multi-hart wake / AMO helpers (Phase G)
 #include "Drv/RVPlic.HC"       // PLIC enable/claim (no-op without CONFIG_HAS_PLIC)
 #include "Drv/RVVirtioPlat.HC" // virtio-mmio base/count from Kconfig
+#ifndef RV_THIN_LOADER
 #include "Drv/VirtioNet.HC"    // virtio-mmio net + virtio-pci fallback
 #include "Drv/VirtioInput.HC"  // virtio-mmio input (DeviceID 18)
 #include "Drv/Virtio9p.HC"     // virtio-mmio/pci 9p client (DeviceID 9)
 #include "Drv/VirtioConsole.HC" // virtio-mmio console (DeviceID 3)
 #include "Drv/VirtioBalloon.HC" // virtio-mmio balloon (DeviceID 5)
 #include "Drv/VirtioScsi.HC"   // virtio-mmio SCSI HBA (DeviceID 8)
-#include "Drv/VirtioPciBlk.HC" // virtio-pci blk client (ECAM; opt-in LBA read)
+#include "Drv/VirtioSnd.HC"    // virtio-mmio sound PCM TX (DeviceID 25)
+#endif
+#ifdef RV_THIN_LOADER
+#ifndef RV_THIN_EMBED_BIN
+// G9 chicken-egg libs: MMIO-only virtio + raw RedSea + arena (no PCI/BlkDev).
+// Dropped when RV_THIN_EMBED_BIN links Kernel.BIN @0x81000000 (SoftCall owns virtio).
+#include "Drv/RVThinVirtioBlk.HC"
+#include "BlkDev/RVRedSeaRaw.HC"
+#endif
+#else
+#include "Drv/VirtioPciBlk.HC" // virtio-pci blk (DskVirtioRV MMIO fallback)
 #include "BlkDev/DskVirtioRV"   // native RISC-V legacy virtio-mmio block driver (translates x86 DskATA)
+#include "BlkDev/RVRedSeaRaw.HC" // chicken-egg raw file read (shared with thin)
+#endif
 #include "KBootRV"   // RISC-V portable boot init (tables + UART console)
+#ifndef RV_THIN_LOADER
 #include "Drv/RVFwCfg.HC" // QEMU fw_cfg DMA / file dir (before RVFb ramfb)
 #include "RVFb"      // Native 32-bpp linear FB + ramfb/simplefb present (not VGA)
 #include "Drv/RVFbPlat.HC"     // apply Kconfig FB present kind → RVFbSetPresent
@@ -107,10 +199,14 @@
 #include "/Adam/WinDemo_RV" // Soft SettingsPush/WinMax/PopUpColor/Refresh for Demo/*.HC
 #include "/Adam/ASnd_RV"    // Soft music/Play/SndTaskEndCB for Apps SongTask (Span)
 #include "/Adam/ABlkDev/FileMgr_RV" // FMRebuildDocDrv + soft shims; RVFileMgrOpen in RVWinMgr
-
 #include "RVWinSerial" // UART TTY + crash mon beside WinMgr (after rv_winmgr glbls)
 #include "RVTextBase" // TextChar/TextPrint portable (DocRecalc / draw_it)
 #include "RVPhase3.HH"  // phase-3 forward decls (bodies after Compiler_RV_Body in phase3 demo)
+#endif
+#ifdef RV_THIN_LOADER
+#include "RVThinLoader.HC" // body before RVKMain — avoid HOFY __imp_RVThinLoader=0
+#else
 #include "RVThinLoader.HH" // G9 thin-loader handoff decls (body in thin-loader demo)
+#endif
 #include "RVKMain"   // RVKMain last — may call RVSysGrInit / RVSysWinInit
 #exe {KCfgDel(kernel_cfg);};

@@ -4,11 +4,14 @@
 //   - U32 text_base cells (ASCII + 4-bit FG/BG, same layout as Doc/TextBase.DD)
 //   - TextBorder / TextRect / TextPrint into text_base (portable HolyC, no x86 asm)
 //   - Z-ordered task windows with borders + titles
-//   - Render text_base → rv_fb.pixels (compose) then RVFbPresent (flip+backend)
+//   - Render text_base → 32-bpp compose (default) or full-screen is_u8 (RVGrPaintDC)
+//     then GrUpdateVGAGraphics expand + RVFbPresent
+//   - Opt-in: RVGrU8ComposeEnable → WinMgr text/draw_it/sprites paint is_u8; Bind-only
+//     (non-fullscreen) still present-expand only
 //
 // Gaps vs full Adam: full DolDoc (~28 files) still open — P2 Kernel/RVDoc.HC
 // CDoc entry subset + DocSave/Write/Read + DocEdIns/BS/undo; Term/Adam sync;
-// DocBorderNew widgets; bins/sprites / modal DocEd open. No 8-bit CDC blot.
+// DocBorderNew widgets; bins/sprites / modal DocEd open. Default draw stays 32-bpp.
 // DocTermNew → Term + Put/Display/Border docs + HOME.DD; WinMgrTask pumps.
 // Input: VirtioInput → TaskMsg → live RVKSpawn GetMsg/ScanMsg (Term/User/HOME) or Fs drain;
 // JobsHndlr skips JOBT_MSG so ScanMsg on RVKSpawn is safe. DocSprite→Sprite3 after blit.
@@ -300,13 +303,31 @@ I64 RVWinBodyLineLen(U8 *body, I64 end)
 U0 RVWinMgrBorderCharsInit()
 {
   //Match Kernel/KMain.HC SysGrInit graphics-mode border_chars.
-  rv_winmgr.border_chars[2](I64) = 0x0908070605040302;
-  rv_winmgr.border_chars[10](U32) = 0x0D0C0B0A;
+  // Host AOT hangs on U8[i](I64)/U8[i](U32) cast-stores into the array — plant bytes
+  // explicitly (LE layout of 0x0908070605040302 @ [2] and 0x0D0C0B0A @ [10]).
+  rv_winmgr.border_chars[0] = 0;
+  rv_winmgr.border_chars[1] = 0;
+  rv_winmgr.border_chars[2] = 0x02;
+  rv_winmgr.border_chars[3] = 0x03;
+  rv_winmgr.border_chars[4] = 0x04;
+  rv_winmgr.border_chars[5] = 0x05;
+  rv_winmgr.border_chars[6] = 0x06;
+  rv_winmgr.border_chars[7] = 0x07;
+  rv_winmgr.border_chars[8] = 0x08;
+  rv_winmgr.border_chars[9] = 0x09;
+  rv_winmgr.border_chars[10] = 0x0A;
+  rv_winmgr.border_chars[11] = 0x0B;
+  rv_winmgr.border_chars[12] = 0x0C;
+  rv_winmgr.border_chars[13] = 0x0D;
+  rv_winmgr.border_chars[14] = 0;
+  rv_winmgr.border_chars[15] = 0;
 }
 
 U0 RVDocLiteInitOne(CDoc *doc, U64 desc)
 {
   //Stamp DOC_SIGNATURE_VAL so DocPut/DocDisplay/DocBorder succeed.
+  // Must DocRst-style head queue — bare MemSet leaves head.next=NULL and DocSize hangs.
+  // bin_head must QueInit too — Sprite/DocSpriteIns QueIns hangs on null last.
   if (!doc)
     return;
   MemSet(doc, 0, sizeof(CDoc));
@@ -316,6 +337,11 @@ U0 RVDocLiteInitOne(CDoc *doc, U64 desc)
   doc->mem_task = Fs;
   doc->owning_task = Fs;
   doc->max_entries = 4096;
+  doc->head.next = doc->head.last = doc;
+  doc->cur_entry = doc;
+  QueInit(&doc->bin_head);
+  QueInit(&doc->undo_head);
+  doc->cur_bin_num = 1;
 }
 
 U0 RVDocTermDocsInit()
@@ -378,6 +404,139 @@ public CDoc *DocBorder(CTask *task = NULL)
   if ((res = task->border_doc) && res->doc_signature == DOC_SIGNATURE_VAL)
     return res;
   return NULL;
+}
+
+I64 RVDocTermWire(CDoc *doc)
+{
+  // TempleOS DocTermNew put/display/border wire without WinMgr/Menu/Raw/FB.
+  // Soft Call bridge: guest DocNew+DocPrintF then Wire → DocPut/Display/Border.
+  CDoc *bdoc, *p, *d, *b;
+  I64 bn;
+  CDoc *old_put, *old_disp, *old_border;
+  if (!doc || doc->doc_signature != DOC_SIGNATURE_VAL)
+    return 3;
+  if (!Fs)
+    return 4;
+  old_put = Fs->put_doc;
+  old_disp = Fs->display_doc;
+  old_border = Fs->border_doc;
+  Fs->put_doc = doc;
+  Fs->display_doc = doc;
+  Fs->border_src = BDS_CUR_DRV;
+  bdoc = DocBorderNew(doc);
+  if (!bdoc) {
+    Fs->put_doc = old_put;
+    Fs->display_doc = old_disp;
+    Fs->border_doc = old_border;
+    return 5;
+  }
+  Fs->border_doc = bdoc;
+  p = DocPut;
+  d = DocDisplay;
+  b = DocBorder;
+  if (!p || p != doc) {
+    Fs->put_doc = old_put;
+    Fs->display_doc = old_disp;
+    Fs->border_doc = old_border;
+    DocDel(bdoc);
+    return 6;
+  }
+  if (!d || d != doc) {
+    Fs->put_doc = old_put;
+    Fs->display_doc = old_disp;
+    Fs->border_doc = old_border;
+    DocDel(bdoc);
+    return 7;
+  }
+  if (!b || b != bdoc) {
+    Fs->put_doc = old_put;
+    Fs->display_doc = old_disp;
+    Fs->border_doc = old_border;
+    DocDel(bdoc);
+    return 9;
+  }
+  bn = DocSize(bdoc);
+  Fs->put_doc = old_put;
+  Fs->display_doc = old_disp;
+  Fs->border_doc = old_border;
+  DocDel(bdoc);
+  if (bn <= 0)
+    return 10;
+  return 8;
+}
+
+I64 RVDocTermNewSoft()
+{
+  // TempleOS DocTermNew Put/Display/Border product shape without WinMgr/Menu/Raw/FB.
+  // Soft Call entry beyond Wire: owns DocNew+desc='Term'+max_entries=4096, then
+  // DocBorderNew + DocPut/Display/Border identity (restore Fs on exit).
+  CDoc *pdoc, *bdoc, *p, *d, *b;
+  CDoc *old_put, *old_disp, *old_border;
+  I64 old_bsrc, bn;
+  if (!Fs)
+    return 4;
+  old_put = Fs->put_doc;
+  old_disp = Fs->display_doc;
+  old_border = Fs->border_doc;
+  old_bsrc = Fs->border_src;
+  pdoc = DocNew;
+  if (!pdoc || pdoc->doc_signature != DOC_SIGNATURE_VAL)
+    return 3;
+  pdoc->max_entries = 4096;
+  pdoc->desc = 'Term';
+  Fs->border_src = BDS_CUR_DRV;
+  Fs->put_doc = pdoc;
+  Fs->display_doc = pdoc;
+  bdoc = DocBorderNew(pdoc);
+  if (!bdoc) {
+    Fs->put_doc = old_put;
+    Fs->display_doc = old_disp;
+    Fs->border_doc = old_border;
+    Fs->border_src = old_bsrc;
+    DocDel(pdoc);
+    return 5;
+  }
+  Fs->border_doc = bdoc;
+  p = DocPut;
+  d = DocDisplay;
+  b = DocBorder;
+  if (!p || p != pdoc || p->desc != 'Term' || p->max_entries != 4096) {
+    Fs->put_doc = old_put;
+    Fs->display_doc = old_disp;
+    Fs->border_doc = old_border;
+    Fs->border_src = old_bsrc;
+    DocDel(bdoc);
+    DocDel(pdoc);
+    return 6;
+  }
+  if (!d || d != pdoc) {
+    Fs->put_doc = old_put;
+    Fs->display_doc = old_disp;
+    Fs->border_doc = old_border;
+    Fs->border_src = old_bsrc;
+    DocDel(bdoc);
+    DocDel(pdoc);
+    return 7;
+  }
+  if (!b || b != bdoc) {
+    Fs->put_doc = old_put;
+    Fs->display_doc = old_disp;
+    Fs->border_doc = old_border;
+    Fs->border_src = old_bsrc;
+    DocDel(bdoc);
+    DocDel(pdoc);
+    return 9;
+  }
+  bn = DocSize(bdoc);
+  Fs->put_doc = old_put;
+  Fs->display_doc = old_disp;
+  Fs->border_doc = old_border;
+  Fs->border_src = old_bsrc;
+  DocDel(bdoc);
+  DocDel(pdoc);
+  if (bn <= 0)
+    return 10;
+  return 8;
 }
 
 U0 RVWinBodyAppend(I64 idx, U8 *st)
@@ -502,6 +661,49 @@ U0 RVWinScrollXYBy(I64 idx, I64 dx, I64 dy)
   rv_winmgr.wins[idx].scroll_x += dx;
   rv_winmgr.wins[idx].scroll_y += dy;
   RVWinClampScroll(idx);
+}
+
+Bool RVWinMgrLiteInit()
+{
+  // UART Soft Call / headless: text grid + ready without FB/Gr.
+  // Fixed 80×25 over static text_base; no win_z_buf (WinZBuf no-ops).
+  // Enables stock DocTermNew → Term window / term_idx without interactive FB.
+  I64 cols = 80, rows = 25, cells;
+  if (rv_winmgr.ready)
+    return TRUE;
+  cells = cols *rows;
+  if (cells > RV_TEXT_BASE_STORE_CELLS)
+    return FALSE;
+  MemSet(&rv_winmgr, 0, sizeof(CRVWinMgrGlbls));
+  rv_winmgr.cols = cols;
+  rv_winmgr.rows = rows;
+  rv_winmgr.text_base = rv_text_base_store;
+  MemSet(rv_winmgr.text_base, 0, cells *sizeof(U32));
+  rv_winmgr.win_z_buf = NULL;
+  rv_winmgr.win_z_highest = 0;
+  RVWinMgrBorderCharsInit;
+  rv_winmgr.wallpaper_attr = BLUE << 4 + WHITE;
+  rv_winmgr.wallpaper_bg = 0;
+  StrCpy(rv_winmgr.wallpaper_line, "TempleOS/RISC-V  WinMgr lite (UART, no FB)");
+  rv_winmgr.wallpaper_heap[0] = 0;
+  rv_winmgr.wallpaper_idle[0] = 0;
+  rv_winmgr.wallpaper_task_n = 0;
+  rv_winmgr.focus = -1;
+  rv_winmgr.term_idx = -1;
+  rv_winmgr.adam_idx = -1;
+  rv_winmgr.home_idx = -1;
+  rv_winmgr.gr_idx = -1;
+  rv_winmgr.drag_mode = RV_DRAG_NONE;
+  rv_winmgr.drag_idx = -1;
+  rv_winmgr.filemgr_idx = -1;
+  rv_winmgr.ready = TRUE;
+  text.cols = cols;
+  text.rows = rows;
+  text.font = sys_font_std;
+  text.aux_font = sys_font_cyrillic;
+  MemCpy(text.border_chars, rv_winmgr.border_chars, 16);
+  DocInit;
+  return TRUE;
 }
 
 Bool RVWinMgrInit()
@@ -1377,15 +1579,66 @@ U0 RVWinMgrComposeWins()
 
 U0 RVWinMgrBlitTextBase()
 {
-  //Render text_base glyphs into 32-bpp rv_fb (GrUpdateTextBG+FG portable).
+  //Render text_base glyphs into paint DC (32-bpp compose default, or full-screen is_u8).
   I64 row, col, px, py, gy, gx, ch, fg, bg, cell;
-  U8 *glyph;
-  U32 *pix, fgc, bgc;
+  U8 *glyph, *body8, fgi, bgi, marg8;
+  U32 *pix, fgc, bgc, margin;
   I64 cols = rv_winmgr.cols, rows = rv_winmgr.rows;
-  I64 stride = rv_fb.width;
-  if (!rv_fb.pixels || !rv_winmgr.text_base)
+  I64 stride, stride8;
+  CRVDC *paint = RVGrPaintDC;
+  Bool u8;
+  if (!rv_winmgr.text_base)
+    return;
+  u8 = paint && paint->is_u8 && paint->body;
+  if (u8) {
+    body8 = paint->body(U8 *);
+    stride8 = paint->width_internal;
+    marg8 = RVColorNearestIdx(rv_winmgr.wallpaper_bg);
+    for (row = 0; row < rows; row++) {
+      for (col = 0; col < cols; col++) {
+        cell = rv_winmgr.text_base[row *cols + col];
+        ch = cell & 255;
+        fg = (cell >> 8) & 15;
+        bg = (cell >> 12) & 15;
+        if (cell & ATTRF_INVERT) {
+          ch = fg;
+          fg = bg;
+          bg = ch;
+          ch = cell & 255;
+        }
+        if (cell & ATTRF_SEL) {
+          fg ^= 15;
+          bg ^= 15;
+        }
+        fgi = fg;
+        bgi = bg;
+        px = col *FONT_WIDTH;
+        py = row *FONT_HEIGHT;
+        glyph = (&sys_font_std[ch])(U8 *);
+        for (gy = 0; gy < FONT_HEIGHT; gy++) {
+          U8 bits = glyph[gy];
+          I64 dy = (py + gy) * stride8 + px;
+          for (gx = 0; gx < FONT_WIDTH; gx++) {
+            if (bits & (1 << gx))
+              body8[dy + gx] = fgi;
+            else
+              body8[dy + gx] = bgi;
+          }
+        }
+      }
+    }
+    for (py = rows *FONT_HEIGHT; py < paint->height; py++)
+      for (px = 0; px < paint->width; px++)
+        body8[py *stride8 + px] = marg8;
+    for (py = 0; py < rows *FONT_HEIGHT; py++)
+      for (px = cols *FONT_WIDTH; px < paint->width; px++)
+        body8[py *stride8 + px] = marg8;
+    return;
+  }
+  if (!rv_fb.pixels)
     return;
   pix = rv_fb.pixels;
+  stride = rv_fb.width;
   for (row = 0; row < rows; row++) {
     for (col = 0; col < cols; col++) {
       cell = rv_winmgr.text_base[row *cols + col];
@@ -1421,7 +1674,7 @@ U0 RVWinMgrBlitTextBase()
     }
   }
   // Clear any leftover FB margin beyond the text grid.
-  U32 margin = rv_winmgr.wallpaper_bg;
+  margin = rv_winmgr.wallpaper_bg;
   for (py = rows *FONT_HEIGHT; py < rv_fb.height; py++)
     for (px = 0; px < rv_fb.width; px++)
       pix[py *stride + px] = margin;
@@ -1438,7 +1691,7 @@ U0 RVWinMgrDrawDocSprites()
   CDoc *doc;
   CDocEntry *doc_e;
   CDocBin *tmpb;
-  CRVDC *dc = rv_gr.dc;
+  CRVDC *dc = RVGrPaintDC;
   if (!dc)
     return;
   for (i = 0; i < RV_WIN_MAX; i++) {
@@ -1474,9 +1727,10 @@ U0 RVWinMgrDrawIts()
 {
   //GrUpdateTaskWin analogue: per-window draw_it with DC clip to client pixels.
   // Prefer stock CTask.draw_it(task,dc) (MassSpring); fall back to CRVWin.draw_it.
+  // Paint target: full-screen is_u8 when RVGrU8ComposeActive, else 32-bpp screen DC.
   I64 i, x1, y1, x2, y2;
   CRVWin *w;
-  CRVDC *dc = rv_gr.dc;
+  CRVDC *dc = RVGrPaintDC;
   CTask *task;
   if (!dc)
     return;
@@ -1509,9 +1763,13 @@ U0 RVWinMgrDrawIts()
 U0 RVWinMgrPresent(Bool full_frame = FALSE)
 {
   //Flip compose→scanout then present. ramfb fw_cfg is configure-once; Flip every frame.
+  // Opt-in: when rv_gr_u8_present, expand 8-bit backbuffer into compose first
+  // (GrUpdateVGAGraphics shape). Default remains 32-bpp compose → Flip.
   no_warn full_frame;
   if (!rv_fb.pixels)
     return;
+  if (rv_gr_u8_present)
+    GrUpdateVGAGraphics;
   RVFbPresent();
 }
 
@@ -1519,11 +1777,33 @@ U0 RVWinMgrCursorErase()
 {
   I64 row, col, px, py, stride;
   U32 *pix, *save;
-  if (!rv_winmgr.ptr_save_valid || !rv_fb.pixels)
+  U8 *body8;
+  CRVDC *paint;
+  if (!rv_winmgr.ptr_save_valid)
+    return;
+  paint = RVGrPaintDC;
+  save = rv_win_ptr_save;
+  if (paint && paint->is_u8 && paint->body) {
+    body8 = paint->body(U8 *);
+    stride = paint->width_internal;
+    for (row = 0; row < RV_CURSOR_H; row++) {
+      py = rv_winmgr.ptr_oy + row;
+      if (py < 0 || py >= paint->height)
+        continue;
+      for (col = 0; col < RV_CURSOR_W; col++) {
+        px = rv_winmgr.ptr_ox + col;
+        if (px < 0 || px >= paint->width)
+          continue;
+        body8[py *stride + px] = save[row *RV_CURSOR_W + col] & 255;
+      }
+    }
+    rv_winmgr.ptr_save_valid = FALSE;
+    return;
+  }
+  if (!rv_fb.pixels)
     return;
   stride = RVFbPixStride();
   pix = rv_fb.pixels;
-  save = rv_win_ptr_save;
   for (row = 0; row < RV_CURSOR_H; row++) {
     py = rv_winmgr.ptr_oy + row;
     if (py < 0 || py >= rv_fb.height)
@@ -1542,13 +1822,32 @@ U0 RVWinMgrCursorSaveUnder(I64 px, I64 py)
 {
   I64 row, col, x, y, stride;
   U32 *pix, *save;
+  U8 *body8;
+  CRVDC *paint;
+  paint = RVGrPaintDC;
+  save = rv_win_ptr_save;
+  rv_winmgr.ptr_ox = px;
+  rv_winmgr.ptr_oy = py;
+  if (paint && paint->is_u8 && paint->body) {
+    body8 = paint->body(U8 *);
+    stride = paint->width_internal;
+    for (row = 0; row < RV_CURSOR_H; row++) {
+      y = py + row;
+      for (col = 0; col < RV_CURSOR_W; col++) {
+        x = px + col;
+        if (x < 0 || y < 0 || x >= paint->width || y >= paint->height)
+          save[row *RV_CURSOR_W + col] = BLUE;
+        else
+          save[row *RV_CURSOR_W + col] = body8[y *stride + x];
+      }
+    }
+    rv_winmgr.ptr_save_valid = TRUE;
+    return;
+  }
   if (!rv_fb.pixels)
     return;
   stride = RVFbPixStride();
   pix = rv_fb.pixels;
-  save = rv_win_ptr_save;
-  rv_winmgr.ptr_ox = px;
-  rv_winmgr.ptr_oy = py;
   for (row = 0; row < RV_CURSOR_H; row++) {
     y = py + row;
     for (col = 0; col < RV_CURSOR_W; col++) {
@@ -1568,16 +1867,16 @@ U0 RVWinMgrDrawCursorAt(I64 px, I64 py)
   // 8×8 sys_font_std glyphs use LSB-first — do not mix conventions on the same row width.
   static U16 arrow[16] = {0x4000, 0x6000, 0x7000, 0x7800, 0x7C00, 0x7E00, 0x7F00, 0x7F80, 0x7FC0, 0x7F00, 0x7E00, 0x6C00, 0x6C00, 0x4800, 0x4800, 0x0000};
   I64 row, col, x, y;
-  U32 fg, bg, save;
+  U32 save;
   CRVDC *dc;
   U16 bits;
-  if (!rv_winmgr.ready || !rv_winmgr.input_ok || !rv_fb.pixels)
+  if (!rv_winmgr.ready || !rv_winmgr.input_ok)
     return;
-  dc = rv_gr.dc;
+  dc = RVGrPaintDC;
   if (!dc || !dc->body)
     return;
-  fg = RVColor(WHITE);
-  bg = RVColor(BLACK);
+  if (!dc->is_u8 && !rv_fb.pixels)
+    return;
   save = dc->color;
   for (row = 0; row < 16; row++) {
     bits = arrow[row];
@@ -1586,13 +1885,18 @@ U0 RVWinMgrDrawCursorAt(I64 px, I64 py)
         continue;
       x = px + col;
       y = py + row;
-      if (x < 0 || y < 0 || x >= rv_fb.width || y >= rv_fb.height)
+      if (x < 0 || y < 0 || x >= dc->width || y >= dc->height)
         continue;
-      RVFbPutPixel(x, y, fg);
-      if (x + 1 < rv_fb.width)
-        RVFbPutPixel(x + 1, y, bg);
-      if (y + 1 < rv_fb.height)
-        RVFbPutPixel(x, y + 1, bg);
+      dc->color = WHITE;
+      GrPlot(dc, x, y);
+      if (x + 1 < dc->width) {
+        dc->color = BLACK;
+        GrPlot(dc, x + 1, y);
+      }
+      if (y + 1 < dc->height) {
+        dc->color = BLACK;
+        GrPlot(dc, x, y + 1);
+      }
     }
   }
   dc->color = save;
@@ -1612,7 +1916,9 @@ U0 RVWinMgrCursorUpdate()
 {
   //Pointer-only repaint: restore save-under, save, draw cursor (skip full text blit).
   I64 px, py;
-  if (!rv_winmgr.ready || !rv_winmgr.input_ok || !rv_fb.pixels)
+  if (!rv_winmgr.ready || !rv_winmgr.input_ok)
+    return;
+  if (!RVGrU8ComposeActive && !rv_fb.pixels)
     return;
   if (rv_winmgr.ptr_x < 0)
     rv_winmgr.ptr_x = 0;
@@ -1687,11 +1993,14 @@ U0 RVWinMgrUpdateODEs()
 
 U0 RVWinMgrRefresh()
 {
-  //Full frame into compose FB (wallpaper → wins → menu → blit → ODE → draw_it → cursor),
-  // then Flip+present. Offscreen compose avoids cocoa seeing mid-blit black/text flashes
-  // (TempleOS gr.dc2 → scanout). WinZBuf filled on WinToTop / layout (SEMA-style).
+  //Full frame into paint DC (wallpaper → wins → menu → blit → ODE → draw_it → cursor),
+  // then expand (if U8) + Flip+present. Offscreen compose avoids cocoa seeing mid-blit
+  // flashes (TempleOS gr.dc2 → scanout). WinZBuf filled on WinToTop / layout.
+  // ScrnCast: after compose (stock post-GrUpdateScrn), not Soft Refresh / Yield path.
   I64 px, py;
-  if (!rv_winmgr.ready || !rv_fb.pixels)
+  if (!rv_winmgr.ready)
+    return;
+  if (!RVGrU8ComposeActive && !rv_fb.pixels)
     return;
   RVWinMgrWallPaper;
   RVWinMgrComposeWins;
@@ -1708,6 +2017,7 @@ U0 RVWinMgrRefresh()
     RVWinMgrDrawCursorAt(px, py);
   }
   RVWinMgrPresent(TRUE);
+  RVScrnCastWinMgrHook;
   rv_winmgr.updates++;
 }
 
@@ -1818,6 +2128,8 @@ Bool RVDocOpenLink(U8 *link)
   }
   doc = DocNew(title);
   if (doc) {
+    // DocPutS (not DocPrint) — Welcome/Help bodies are DolDoc templates; DocPrint
+    // → StrPrintJoin would treat any % as printf (FormLex hang sibling).
     DocPutS(doc, w->body);
     DocRecalc(doc);
     w->doc = doc;
@@ -2047,6 +2359,7 @@ public U0 DocTermNew()
     return;
   rv_winmgr.term_idx = idx;
   w = &rv_winmgr.wins[idx];
+  w->kind = RV_WIN_KIND_TERM;
   w->border_attr = LTGREEN;
   w->text_attr = BLUE << 4 + WHITE;
   if (!w->body[0])
@@ -3586,23 +3899,129 @@ U0 RVWinMgrRun(I64 max_iters = 0)
   }
 }
 
-public U0 WinMgrTask(I64 unused = 0)
+I64 RVWinMgrLiteSoft()
+{
+  // Soft Call: UART WinMgr lite init + Term window/title (no FB).
+  // Soft Call hang after stock DocTermNew Soft Call OK was DocTermNew→DocPutS $$
+  // HashFind(doldoc.hash) Soft-hostile walk (Soft remat Soft tips). Soft Soft Call
+  // proves LiteInit ready + Term slot without DocEd/DocPutS dollar parse.
+  I64 idx;
+  CRVWin *w;
+  if (!RVWinMgrLiteInit())
+    return 3;
+  DocEdKeyInjectClear;
+  idx = rv_winmgr.term_idx;
+  if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+    idx = RVDocFindByTitle("Term");
+  if (idx < 0)
+    idx = RVWinNew(38, 77, 2, 11, "Term", "Soft Term\n> ", TRUE);
+  if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+    return 4;
+  rv_winmgr.term_idx = idx;
+  w = &rv_winmgr.wins[idx];
+  w->kind = RV_WIN_KIND_TERM;
+  w->border_attr = LTGREEN;
+  w->text_attr = BLUE << 4 + WHITE;
+  RVWinSetTitle(idx, "Term");
+  if (StrCmp(w->title, "Term"))
+    return 5;
+  if (!rv_winmgr.ready)
+    return 6;
+  return 8;
+}
+
+I64 RVWinMgrTickSoft()
+{
+  // Soft Call: one RVWinMgrRun(1) without interactive FB (UART proof via iters).
+  // Refresh early-outs without pixels; task_iters still advances.
+  I64 i0, i1, idx;
+  if (!rv_winmgr.ready) {
+    if (!RVWinMgrLiteInit())
+      return 3;
+    DocTermNew;
+    idx = rv_winmgr.term_idx;
+    if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+      return 4;
+  }
+  i0 = rv_winmgr_task_iters;
+  RVWinMgrRun(1);
+  i1 = rv_winmgr_task_iters;
+  if (i1 <= i0)
+    return 5;
+  return 8;
+}
+
+public U0 WinMgrTask(I64 max_iters = 0)
 {
   //P4 lite WinMgrTask (Adam/WinMgr.HC role): refresh + VirtioInput pump, no ODE/menus.
   // Spawn with RVKSpawn(&WinMgrTask, "Window Mgr", adam) when the scheduler is live;
   // demos may also call WinMgrTask() / RVWinMgrRun directly on Adam.
+  // max_iters=0 → until ESC (product); Soft Call / smoke use 1 (UART, no FB).
+  sys_winmgr_task = Fs;
+  LBts(&sys_run_level, RLf_WINMGR);
+  if (!rv_winmgr.input_ok)
+    RVWinMgrInputInit;
+  RVWinMgrRun(max_iters);
+  LBtr(&sys_run_level, RLf_WINMGR);
+}
+
+I64 RVWinMgrTaskSoft()
+{
+  // Soft Call: WinMgrTask product shape without interactive FB / infinite pump.
+  // Sets sys_winmgr_task+RLf_WINMGR, RVWinMgrRun(1), clears RLf_WINMGR (stock exit).
+  I64 i0, i1, idx;
+  CTask *old_wm;
+  if (!rv_winmgr.ready) {
+    if (!RVWinMgrLiteInit())
+      return 3;
+    DocTermNew;
+    idx = rv_winmgr.term_idx;
+    if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+      return 4;
+  }
+  old_wm = sys_winmgr_task;
+  i0 = rv_winmgr_task_iters;
+  WinMgrTask(1);
+  i1 = rv_winmgr_task_iters;
+  if (Bt(&sys_run_level, RLf_WINMGR)) {
+    LBtr(&sys_run_level, RLf_WINMGR);
+    sys_winmgr_task = old_wm;
+    return 5;
+  }
+  if (i1 <= i0) {
+    sys_winmgr_task = old_wm;
+    return 6;
+  }
+  // Soft Call hygiene: restore prior winmgr task (stock leaves Fs after exit).
+  sys_winmgr_task = old_wm;
+  return 8;
+}
+
+U0 RVWinMgrSpawnSoftEntry(U8 *unused)
+{
+  //UART Soft Call: stock WinMgrTask head + one tick, then KILL+Yield.
+  // Do not call WinMgrTask→Run→IdleMs: IdleMs Yields until 1ms mtime and Soft Soft
+  // would burn its pump budget before KILL. Same RLf/sys_winmgr_task/iters proof.
   no_warn unused;
   sys_winmgr_task = Fs;
   LBts(&sys_run_level, RLf_WINMGR);
   if (!rv_winmgr.input_ok)
     RVWinMgrInputInit;
-  RVWinMgrRun(0);
+  rv_winmgr.want_quit = 0;
+  RVWinMgrPumpInput(64);
+  RVCtrlAltFlagsService;
+  RVWinSerialPoll;
+  RVWinMgrRefresh;
+  rv_winmgr_task_iters++;
   LBtr(&sys_run_level, RLf_WINMGR);
+  LBts(&Fs->task_flags, TASKf_KILL_TASK);
+  Yield;
 }
 
 CTask *RVWinMgrSpawn(CTask *adam = NULL)
 {
   //Spawn WinMgrTask via RVKSpawn (RV stack fixup). Returns task or NULL.
+  // Stock StartOS: Spawn(&WinMgrTask,…,"Window Mgr"). Soft Call uses SoftEntry+Yield.
   CTask *t;
   if (!rv_winmgr.ready)
     return NULL;
@@ -3619,6 +4038,72 @@ CTask *RVWinMgrSpawn(CTask *adam = NULL)
   return t;
 }
 
+I64 RVWinMgrSpawnSoft()
+{
+  // Soft Call: scheduled WinMgr task (RVKSpawn), not inlined WinMgrTask(1) on Adam.
+  // UART / no interactive FB: SoftEntry one-tick + KILL+Yield; Adam Yield-pumps.
+  I64 i0, i1, idx, n;
+  CTask *adam, *t, *old_wm, *caller;
+  if (!rv_winmgr.ready) {
+    if (!RVWinMgrLiteInit())
+      return 3;
+    DocTermNew;
+    idx = rv_winmgr.term_idx;
+    if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+      return 4;
+  }
+  adam = adam_task;
+  if (!adam)
+    adam = Fs;
+  if (!adam)
+    return 5;
+  caller = Fs;
+  old_wm = sys_winmgr_task;
+  // StartOS_RV may mark Adam as wm without Spawn — clear sticky so Soft can Spawn.
+  if (sys_winmgr_task == adam || sys_winmgr_task == caller)
+    sys_winmgr_task = NULL;
+  if (sys_winmgr_task)
+    return 7;
+  i0 = rv_winmgr_task_iters;
+  t = RVKSpawn(&RVWinMgrSpawnSoftEntry, "Window Mgr", adam);
+  if (!t || t == caller || t == adam)
+    return 6;
+  t->wake_jiffy = 0;
+  sys_winmgr_task = t;
+  n = 0;
+  while (!Bt(&t->task_flags, TASKf_KILL_TASK) && n < 256) {
+    Yield;
+    n++;
+  }
+  i1 = rv_winmgr_task_iters;
+  if (!Bt(&t->task_flags, TASKf_KILL_TASK)) {
+    if (sys_winmgr_task == t)
+      sys_winmgr_task = NULL;
+    RVWinTaskSoftKill(t);
+    sys_winmgr_task = old_wm;
+    return 9;
+  }
+  if (i1 <= i0) {
+    if (sys_winmgr_task == t)
+      sys_winmgr_task = NULL;
+    RVWinTaskSoftKill(t);
+    sys_winmgr_task = old_wm;
+    return 10;
+  }
+  // Soft SoftEntry ran as Fs: prove scheduled (not Adam).
+  if (t == caller || t == adam) {
+    sys_winmgr_task = old_wm;
+    return 11;
+  }
+  if (Bt(&sys_run_level, RLf_WINMGR))
+    LBtr(&sys_run_level, RLf_WINMGR);
+  if (sys_winmgr_task == t)
+    sys_winmgr_task = NULL;
+  RVWinTaskSoftKill(t);
+  sys_winmgr_task = old_wm;
+  return 8;
+}
+
 Bool RVSysWinInit()
 {
   //Boot helper: Gr + WinMgr + demo desktop when a present backend exists.
@@ -3633,6 +4118,9 @@ Bool RVSysWinInit()
   // best-effort; OK if no virtio-input on this QEMU line
   // DocTermNew runs inside DemoDesktop (wires Put/Display/Border). StartOS/MakeAdam
   // HOME.DD load needs RedSea (RVKMain mount + StartOS_RV / win-interactive).
+  // Stock ~ / Cd("~") after mount HomeSet (RVKMain / demos call RVHomeBringUp).
+  if (Fs && Fs->cur_dv && !blkdev.home_dir)
+    RVHomeBringUp(Drv2Let(Fs->cur_dv));
   LBts(&sys_run_level, RLf_WINMGR);
   RVWinMgrRefresh;
   Print("RVSysWinInit: WinMgr desktop wins=%d focus=%d %dx%d text=%dx%d input=%d put=%d\n", rv_winmgr.n_wins, rv_winmgr.focus, rv_fb.width, rv_fb.height, rv_winmgr.cols, rv_winmgr.rows, rv_winmgr.input_ok, DocPut() != NULL);

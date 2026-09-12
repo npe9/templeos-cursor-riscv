@@ -60,9 +60,9 @@
 #endif
 #ifdef CONFIG_HAS_VIRTIO_MMIO
 #ifdef CONFIG_HAS_VIRTIO_PCI
-#define RV_MEMMAP_DRV_VIRTIO "DskVirtioRV / VirtioNet / VirtioInput / Virtio9p / VirtioConsole / VirtioBalloon / VirtioScsi / VirtioPciBlk / VirtioPciNet"
+#define RV_MEMMAP_DRV_VIRTIO "DskVirtioRV / VirtioNet / VirtioInput / Virtio9p / VirtioConsole / VirtioBalloon / VirtioScsi / VirtioSnd / VirtioPciBlk / VirtioPciNet"
 #else
-#define RV_MEMMAP_DRV_VIRTIO "DskVirtioRV / VirtioNet / VirtioInput / Virtio9p / VirtioConsole / VirtioBalloon / VirtioScsi"
+#define RV_MEMMAP_DRV_VIRTIO "DskVirtioRV / VirtioNet / VirtioInput / Virtio9p / VirtioConsole / VirtioBalloon / VirtioScsi / VirtioSnd"
 #endif
 #define RV_MEMMAP_VIRTIO_BASE CONFIG_VIRTIO_MMIO_BASE
 #else

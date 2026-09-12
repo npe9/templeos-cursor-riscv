@@ -443,7 +443,7 @@ I64 LexInStr(CCmpCtrl *cc,U8 *buf,I64 size,Bool *done)
 
 I64 Lex(CCmpCtrl *cc)
 {//Fetch next token.
-  I64 i,j,k,l,ch;
+  I64 i,j,k,l,ch,ch1;
   CHash *tmph;
   Bool str_done,in_str,neg_e;
   U8 *fbuf,*buf2,*buf3,buf[STR_LEN];
@@ -580,7 +580,9 @@ lex_float_start:
 	  } else {
 	    if (ch=='e' || ch=='E')
 	      break;
-	    cc->cur_f64=i*Pow10I64(-k);
+	    // RV: divide by the exact 10^k (stock x87 got this from 80-bit
+	    // intermediates); i*Pow10I64(-k) is 3-4 ulps off for 1.5, 0.5…
+	    cc->cur_f64=i/Pow10I64(k);
 	    cc->flags|=CCF_USE_LAST_U16;
 	    cc->token=TK_F64;
 	    goto lex_end;
@@ -599,7 +601,9 @@ lex_float_start:
 	    j=j*10+ch-'0';
 	  else {
 	    if (neg_e)
-	      cc->cur_f64=i*Pow10I64(-j-k);
+	      j=-j;
+	    if (j-k<0)
+	      cc->cur_f64=i/Pow10I64(k-j);
 	    else
 	      cc->cur_f64=i*Pow10I64(j-k);
 	    cc->flags|=CCF_USE_LAST_U16;
@@ -703,6 +707,23 @@ lex_float_start:
 	    if (Lex(cc)!=TK_STR)
 	      goto lex_end;
 	    fbuf=ExtDft(cc->cur_str,"HC.Z");
+	    // RV Soft AOT: relative #include joins the including file's dir
+	    // (host AOT shape). Stock JIT runs Cd(__DIR__) before Lex hits the
+	    // include; Soft AOT does not. Kernel Makes use #exe{Cd(__DIR__)}.
+	    // Strip last / from full_name — avoid DirFile/IsDir DirContext.
+	    if (fbuf && !(fbuf[0] && fbuf[1]==':') && *fbuf!='/' &&
+		  cc->lex_include_stk && cc->lex_include_stk->full_name) {
+	      buf3=StrNew(cc->lex_include_stk->full_name);
+	      if (StrOcc(buf3,'/')) {
+		StrLastRem(buf3,"/");
+		if (*buf3) {
+		  buf2=MStrPrint("%s/%s",buf3,fbuf);
+		  Free(fbuf);
+		  fbuf=buf2;
+		}
+	      }
+	      Free(buf3);
+	    }
 	    buf2=FileNameAbs(fbuf);
 	    Free(fbuf);
 	    // RV: never LexIncludeStr(NULL) — CurBufPtr walks hang. FileRead already
@@ -1104,7 +1125,10 @@ lex_dot_dot:
       case ']'...'^':
       case '{'...'~':
       case '`':
-	if (!(i=cmp.dual_U16_tokens1[ch])) {
+	/* RV: CmpGetU32 matches CInit CmpSetU32 plant (host AOT d[i]= mis-stores
+	 * for '&'/'|'). Keep ch1 across LexGetChar — host AOT reuses ch's reg
+	 * for j, so tokens2[ch] saw '=' and Soft &=/|=/+= → Missing expression. */
+	if (!(i=CmpGetU32(cmp.dual_U16_tokens1,ch))) {
 	  if (ch=='$$') {
 	    ch=LexGetChar(cc);
 	    if (ch=='$$') {
@@ -1128,6 +1152,7 @@ lex_dot_dot:
 	    goto lex_end;
 	  }
 	} else {
+	  ch1=ch;
 	  j=LexGetChar(cc);
 	  if (i.u16[0]==j) {
 	    i>>=16;
@@ -1159,7 +1184,7 @@ lex_check_comment:
 	      goto lex_end;
 	    }
 	  }
-	  if (i=cmp.dual_U16_tokens2[ch]) {
+	  if (i=CmpGetU32(cmp.dual_U16_tokens2,ch1)) {
 	    if (i.u16[0]==j) {
 	      i>>=16;
 	      if (!i) {// "//"
@@ -1184,7 +1209,7 @@ lex_check_comment:
 		goto lex_end;
 	      }
 	    }
-	    if (i=cmp.dual_U16_tokens3[ch]) {
+	    if (i=CmpGetU32(cmp.dual_U16_tokens3,ch1)) {
 	      if (i.u16[0]==j) {
 		cc->token=i.u16[1];
 		goto lex_end;
@@ -1192,7 +1217,7 @@ lex_check_comment:
 	    }
 	  }
 	  cc->flags|=CCF_USE_LAST_U16;
-	  cc->token=ch;
+	  cc->token=ch1;
 	  goto lex_end;
 	}
       case TK_TKS_NUM:

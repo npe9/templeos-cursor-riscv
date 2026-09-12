@@ -1,13 +1,56 @@
 // Sprite blit subset for 32-bpp CRVDC (P4 widen toward Demo graphics apps).
 // Mirrors Adam/Gr/GrSpritePlot.HC + SpriteNew.HC / Demo/Graphics/SpriteRaw.HC patterns,
-// but plots via RVGr (GrPlot/Line/Rect/Circle/Blot) — not 8-bit VGA CDC / mesh / ScrnCast.
-// Index order matches SPT_END .. SPT_TEXT_DIAMOND (see Adam/Gr/Gr.HH).
-#include "/Adam/Gr/Gr.HH"
-I64 rv_sprite_elem_base_sizes[SPT_TYPES_NUM] = {sizeof(CSpriteBase), sizeof(CSpriteColor), sizeof(CSpriteDitherColor), sizeof(CSpriteT), sizeof(CSpritePtPt), sizeof(CSpriteBase), sizeof(CSpriteBase), sizeof(CSpritePt), sizeof(CSpritePt), sizeof(CSpriteNumPtU8s), sizeof(CSpritePtPt), sizeof(CSpriteNumU8s), sizeof(CSpritePtPt), sizeof(CSpritePtPtAng), sizeof(CSpritePtRad), sizeof(CSpritePtWHAng), sizeof(CSpritePtWHAngSides), sizeof(CSpriteNumU8s), sizeof(CSpriteNumU8s), sizeof(CSpriteNumU8s), sizeof(CSpriteNumU8s), sizeof(CSpritePt), sizeof(CSpritePt), sizeof(CSpritePtWHU8s), sizeof(CSpriteMeshU8s), sizeof(CSpritePtMeshU8s), sizeof(CSpritePtPt), sizeof(CSpritePtStr), sizeof(CSpritePtStr), sizeof(CSpritePtStr)};
+// but plots via RVGr (GrPlot/Line/Rect/Circle/Blot/Gr3Mesh) — not VGA CDC / ScrnCast WinMgr.
+// Index order matches SPT_END .. SPT_TEXT_DIAMOND (see Adam/Gr/Gr.HH; included from RVGr).
+// Mesh: SPT_MESH / SPT_SHIFTABLE_MESH → Gr3Mesh (flat or DCF_TRANSFORM/SYMMETRY). Still deferred: bsplines;
+// offscreen DCNew8 live body + FloodFill in RVGr; WinMgr default 32-bpp, opt-in ComposeEnable → is_u8.
+// AOT glbl init of sizeof() arrays was untrustworthy (saw heap_next). Fill at first use.
+// DocPut lives in RVWinMgr (included after this file) — forward for DocSpriteIns.
+CDoc *DocPut(CTask *task = NULL);
+I64 rv_sprite_elem_base_sizes[SPT_TYPES_NUM];
+Bool rv_sprite_elem_sizes_ready = FALSE;
+U0 RVSpriteElemSizesInit()
+{
+  if (rv_sprite_elem_sizes_ready)
+    return;
+  rv_sprite_elem_base_sizes[SPT_END] = sizeof(CSpriteBase);
+  rv_sprite_elem_base_sizes[SPT_COLOR] = sizeof(CSpriteColor);
+  rv_sprite_elem_base_sizes[SPT_DITHER_COLOR] = sizeof(CSpriteDitherColor);
+  rv_sprite_elem_base_sizes[SPT_THICK] = sizeof(CSpriteT);
+  rv_sprite_elem_base_sizes[SPT_PLANAR_SYMMETRY] = sizeof(CSpritePtPt);
+  rv_sprite_elem_base_sizes[SPT_TRANSFORM_ON] = sizeof(CSpriteBase);
+  rv_sprite_elem_base_sizes[SPT_TRANSFORM_OFF] = sizeof(CSpriteBase);
+  rv_sprite_elem_base_sizes[SPT_SHIFT] = sizeof(CSpritePt);
+  rv_sprite_elem_base_sizes[SPT_PT] = sizeof(CSpritePt);
+  rv_sprite_elem_base_sizes[SPT_POLYPT] = sizeof(CSpriteNumPtU8s);
+  rv_sprite_elem_base_sizes[SPT_LINE] = sizeof(CSpritePtPt);
+  rv_sprite_elem_base_sizes[SPT_POLYLINE] = sizeof(CSpriteNumU8s);
+  rv_sprite_elem_base_sizes[SPT_RECT] = sizeof(CSpritePtPt);
+  rv_sprite_elem_base_sizes[SPT_ROTATED_RECT] = sizeof(CSpritePtPtAng);
+  rv_sprite_elem_base_sizes[SPT_CIRCLE] = sizeof(CSpritePtRad);
+  rv_sprite_elem_base_sizes[SPT_ELLIPSE] = sizeof(CSpritePtWHAng);
+  rv_sprite_elem_base_sizes[SPT_POLYGON] = sizeof(CSpritePtWHAngSides);
+  rv_sprite_elem_base_sizes[SPT_BSPLINE2] = sizeof(CSpriteNumU8s);
+  rv_sprite_elem_base_sizes[SPT_BSPLINE2_CLOSED] = sizeof(CSpriteNumU8s);
+  rv_sprite_elem_base_sizes[SPT_BSPLINE3] = sizeof(CSpriteNumU8s);
+  rv_sprite_elem_base_sizes[SPT_BSPLINE3_CLOSED] = sizeof(CSpriteNumU8s);
+  rv_sprite_elem_base_sizes[SPT_FLOOD_FILL] = sizeof(CSpritePt);
+  rv_sprite_elem_base_sizes[SPT_FLOOD_FILL_NOT] = sizeof(CSpritePt);
+  rv_sprite_elem_base_sizes[SPT_BITMAP] = sizeof(CSpritePtWHU8s);
+  rv_sprite_elem_base_sizes[SPT_MESH] = sizeof(CSpriteMeshU8s);
+  rv_sprite_elem_base_sizes[SPT_SHIFTABLE_MESH] = sizeof(CSpritePtMeshU8s);
+  rv_sprite_elem_base_sizes[SPT_ARROW] = sizeof(CSpritePtPt);
+  rv_sprite_elem_base_sizes[SPT_TEXT] = sizeof(CSpritePtStr);
+  rv_sprite_elem_base_sizes[SPT_TEXT_BOX] = sizeof(CSpritePtStr);
+  rv_sprite_elem_base_sizes[SPT_TEXT_DIAMOND] = sizeof(CSpritePtStr);
+  rv_sprite_elem_sizes_ready = TRUE;
+}
+
 I64 SpriteElemSize(CSprite *tmpg)
 {
   //Adam/Gr/SpriteNew.HC SpriteElemSize — size walk for binary sprite streams.
   I64 i, t;
+  RVSpriteElemSizesInit;
   if (!tmpg)
     return rv_sprite_elem_base_sizes[SPT_END];
   t = tmpg->type & SPG_TYPE_MASK;
@@ -48,12 +91,21 @@ I64 SpriteElemSize(CSprite *tmpg)
 I64 SpriteSize(U8 *elems)
 {
   CSprite *tmpg, *tmpg1;
+  I64 n = 0, sz;
   if (!elems)
     return 0;
+  RVSpriteElemSizesInit;
   tmpg = elems(U8 *) - offset(CSprite.start);
   tmpg1 = tmpg;
-  while (tmpg->type & SPG_TYPE_MASK)
-    tmpg(U8 *) += SpriteElemSize(tmpg);
+  while (tmpg->type & SPG_TYPE_MASK) {
+    n++;
+    if (n > 4096)
+      return 0;
+    sz = SpriteElemSize(tmpg);
+    if (sz < 1 || sz > 0x100000)
+      return 0;
+    tmpg(U8 *) += sz;
+  }
   return tmpg(U8 *) - tmpg1(U8 *) + rv_sprite_elem_base_sizes[SPT_END];
 }
 
@@ -82,22 +134,28 @@ U0 RVSpriteBlotBitmap(CRVDC *dc, I64 x, I64 y, I64 w, I64 h, U8 *body, I64 width
 
 U0 Sprite3(CRVDC *dc = NULL, I64 x, I64 y, I64 z, U8 *elems, Bool just_one_elem = FALSE)
 {
-  //Subset of Adam Sprite3: COLOR/THICK/SHIFT/PT/LINE/ARROW/RECT/CIRCLE/FLOOD/TEXT/BITMAP.
-  // Skips mesh, transforms, bsplines, dither (full 8-bit CDC path later).
+  //Subset of Adam Sprite3: COLOR/THICK/SHIFT/PT/LINE/ARROW/RECT/CIRCLE/FLOOD/TEXT/BITMAP/MESH.
+  // Skips transforms, bsplines, dither (lighting/symmetry later).
   CSprite *tmpg;
-  I64 i, x1, y1, x2, y2, *ptr;
+  I64 i, x1, y1, x2, y2, z1, *ptr, n_el, sz;
   U32 old_color, fill_color;
   I64 old_thick, old_flags, t;
+  CD3I32 *p, *p2;
   if (!dc)
     dc = rv_gr.dc;
   if (!dc || !elems)
     return;
+  RVSpriteElemSizesInit;
   tmpg = elems(U8 *) - offset(CSprite.start);
   old_color = dc->color;
   old_thick = dc->thick;
   old_flags = dc->flags;
+  n_el = 0;
   while (tmpg->type & SPG_TYPE_MASK) {
     t = tmpg->type & SPG_TYPE_MASK;
+    n_el++;
+    if (n_el > 512)
+      break;
     switch (t) {
       case SPT_COLOR :
       dc->color = RVColor(tmpg->c.color);
@@ -106,6 +164,8 @@ U0 Sprite3(CRVDC *dc = NULL, I64 x, I64 y, I64 z, U8 *elems, Bool just_one_elem 
       dc->thick = tmpg->t.thick;
       if (dc->thick < 1)
         dc->thick = 1;
+      if (dc->thick > 64)
+        dc->thick = 64;
       break;
       case SPT_SHIFT :
       x += tmpg->p.x1;
@@ -116,7 +176,13 @@ U0 Sprite3(CRVDC *dc = NULL, I64 x, I64 y, I64 z, U8 *elems, Bool just_one_elem 
       break;
       case SPT_LINE :
       case SPT_ARROW :
-      GrLine(dc, tmpg->pp.x1 + x, tmpg->pp.y1 + y, tmpg->pp.x2 + x, tmpg->pp.y2 + y);
+      x1 = tmpg->pp.x1 + x;
+      y1 = tmpg->pp.y1 + y;
+      x2 = tmpg->pp.x2 + x;
+      y2 = tmpg->pp.y2 + y;
+      if (x1 < -4096 || y1 < -4096 || x2 < -4096 || y2 < -4096 || x1 > 8192 || y1 > 8192 || x2 > 8192 || y2 > 8192)
+        break;
+      GrLine(dc, x1, y1, x2, y2);
       break;
       case SPT_RECT :
       x1 = tmpg->pp.x1 + x;
@@ -139,16 +205,8 @@ U0 Sprite3(CRVDC *dc = NULL, I64 x, I64 y, I64 z, U8 *elems, Bool just_one_elem 
       GrCircle(dc, tmpg->pr.x1 + x, tmpg->pr.y1 + y, tmpg->pr.radius);
       break;
       case SPT_FLOOD_FILL :
-      //Adam/Gr/GrSpritePlot.HC — seed-match fill at (x1,y1).
-      GrFloodFill3(dc, tmpg->p.x1 + x, tmpg->p.y1 + y, z, FALSE);
-      break;
       case SPT_FLOOD_FILL_NOT :
-      //Adam: temporarily strip ROP to .c0; RV color is palette/XRGB (no CBGR.c0).
-      fill_color = dc->color;
-      if (fill_color < COLORS_NUM)
-        dc->color = RVColor(fill_color);
-      GrFloodFill3(dc, tmpg->p.x1 + x, tmpg->p.y1 + y, z, TRUE);
-      dc->color = fill_color;
+      // Skip: full-scrn flood from $IB streams wedges DrawNote/PsmMenu under 32-bpp FB.
       break;
       case SPT_TEXT :
       case SPT_TEXT_BOX :
@@ -160,7 +218,7 @@ U0 Sprite3(CRVDC *dc = NULL, I64 x, I64 y, I64 z, U8 *elems, Bool just_one_elem 
       break;
       case SPT_POLYLINE :
       ptr = &tmpg->nu.u;
-      if (tmpg->nu.num >= 1) {
+      if (tmpg->nu.num >= 1 && tmpg->nu.num < 4096) {
         x1 = ptr[0];
         y1 = ptr[1];
         for (i = 1; i < tmpg->nu.num; i++) {
@@ -171,6 +229,39 @@ U0 Sprite3(CRVDC *dc = NULL, I64 x, I64 y, I64 z, U8 *elems, Bool just_one_elem 
           y1 = y2;
         }
       }
+      break;
+      case SPT_MESH :
+      if (tmpg->mu.vertex_cnt < 1 || tmpg->mu.vertex_cnt > 4096 || tmpg->mu.tri_cnt < 0 || tmpg->mu.tri_cnt > 8192)
+        break;
+      p2 = p = MAlloc(tmpg->mu.vertex_cnt *sizeof(CD3I32));
+      if (!p)
+        break;
+      MemCpy(p, &tmpg->mu.u, tmpg->mu.vertex_cnt *sizeof(CD3I32));
+      for (i = 0; i < tmpg->mu.vertex_cnt; i++, p2++) {
+        p2->x += x;
+        p2->y += y;
+        p2->z += z;
+      }
+      Gr3Mesh(dc, tmpg->mu.vertex_cnt, p, tmpg->mu.tri_cnt, (&tmpg->mu.u)(U8 *) + sizeof(CD3I32) * tmpg->mu.vertex_cnt);
+      Free(p);
+      break;
+      case SPT_SHIFTABLE_MESH :
+      if (tmpg->pmu.vertex_cnt < 1 || tmpg->pmu.vertex_cnt > 4096 || tmpg->pmu.tri_cnt < 0 || tmpg->pmu.tri_cnt > 8192)
+        break;
+      x1 = tmpg->pmu.x + x;
+      y1 = tmpg->pmu.y + y;
+      z1 = tmpg->pmu.z + z;
+      p2 = p = MAlloc(tmpg->pmu.vertex_cnt *sizeof(CD3I32));
+      if (!p)
+        break;
+      MemCpy(p, &tmpg->pmu.u, tmpg->pmu.vertex_cnt *sizeof(CD3I32));
+      for (i = 0; i < tmpg->pmu.vertex_cnt; i++, p2++) {
+        p2->x += x1;
+        p2->y += y1;
+        p2->z += z1;
+      }
+      Gr3Mesh(dc, tmpg->pmu.vertex_cnt, p, tmpg->pmu.tri_cnt, (&tmpg->pmu.u)(U8 *) + sizeof(CD3I32) * tmpg->pmu.vertex_cnt);
+      Free(p);
       break;
       case SPT_DITHER_COLOR :
       case SPT_PLANAR_SYMMETRY :
@@ -184,13 +275,14 @@ U0 Sprite3(CRVDC *dc = NULL, I64 x, I64 y, I64 z, U8 *elems, Bool just_one_elem 
       case SPT_BSPLINE2_CLOSED :
       case SPT_BSPLINE3 :
       case SPT_BSPLINE3_CLOSED :
-      case SPT_MESH :
-      case SPT_SHIFTABLE_MESH :
       break;
     }
     if (just_one_elem)
       break;
-    tmpg(U8 *) += SpriteElemSize(tmpg);
+    sz = SpriteElemSize(tmpg);
+    if (sz < 1 || sz > 0x100000)
+      break;
+    tmpg(U8 *) += sz;
   }
   dc->color = old_color;
   dc->thick = old_thick;
@@ -224,8 +316,10 @@ U8 *DC2Sprite(CRVDC *tmpb)
   return tmpg(U8 *) + offset(CSprite.start);
 }
 
-U0 Sprite(U8 *elems)
+U0 SpritePlot(U8 *elems)
 {
-  //Graphics-path stand-in for DocSprite — plot on screen DC at origin.
+  //Bare Gr plot at origin (no DocPut). PsmMenu uses Sprite→DocSpriteIns instead.
+  if (!elems || !rv_gr.dc)
+    return;
   Sprite3(rv_gr.dc, 0, 0, 0, elems);
 }

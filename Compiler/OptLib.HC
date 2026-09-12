@@ -233,6 +233,10 @@ CIntermediateCode *OptBrZero(CCmpCtrl *cc, CIntermediateCode *tmpi)
 {
   CCodeMisc *lb_true, *lb_false;
   CIntermediateCode *tmpii = OptLag(tmpi), *tmpii2;
+  I64 push_guard;
+  // RV: Soft Call heap/list corruption → OptLag NULL; bare switch hung tip Cmp on &&.
+  if (!tmpii)
+    return tmpi;
   switch (tmpii->ic_code) {
     case IC_NOT :
     tmpi->ic_code = IC_BR_NOT_ZERO;
@@ -303,14 +307,25 @@ CIntermediateCode *OptBrZero(CCmpCtrl *cc, CIntermediateCode *tmpi)
       tmpi->ic_code += IC_BR_EQU_EQU2 - IC_BR_EQU_EQU;
       tmpi->ic_flags &= ~ICF_PUSH_CMP;
       tmpii = tmpi->next;
-      //IC_PUSH_CMP inst
-      while (tmpii->ic_code != IC_PUSH_CMP)
+      //IC_PUSH_CMP inst — RV: missing PUSH_CMP must not spin (Guest_Lex && hang).
+      push_guard = 256;
+      while (tmpii && tmpii->ic_code != IC_PUSH_CMP) {
         tmpii = tmpii->next;
-      tmpii->t.arg1_tree = tmpi;
-      OptSetNOP1(tmpii);
+        if (--push_guard <= 0) {
+          tmpii = NULL;
+          break;
+        }
+      }
+      if (tmpii) {
+        tmpii->t.arg1_tree = tmpi;
+        OptSetNOP1(tmpii);
+      }
     }
     lb_true = tmpi->ic_data;
     if (tmpi->ic_code == IC_BR_AND_AND_ZERO) {
+      // RV: null arg trees after Soft Calls → trap/HLT looked like tip Comp hang.
+      if (!tmpi->t.arg1_tree || !tmpi->t.arg2_tree || !tmpi->t.arg1_tree->next || !tmpi->t.arg2_tree->next)
+        return tmpi;
       tmpii = tmpi->t.arg1_tree->next;
       tmpii->ic_data = lb_true;
       tmpii->t.arg1_tree = tmpi->t.arg1_tree;
@@ -325,6 +340,8 @@ CIntermediateCode *OptBrZero(CCmpCtrl *cc, CIntermediateCode *tmpi)
       tmpii = OptBrZero(cc, tmpii);
       OptSetNOP1(tmpi);
     } else if (tmpi->ic_code == IC_BR_OR_OR_ZERO) {
+      if (!tmpi->t.arg1_tree || !tmpi->t.arg2_tree || !tmpi->t.arg1_tree->next || !tmpi->t.arg2_tree->next)
+        return tmpi;
       lb_false = COCMiscNew(cc, CMT_LABEL);
       tmpi->ic_code = IC_LABEL;
       tmpi->ic_flags = 0;
@@ -343,7 +360,7 @@ CIntermediateCode *OptBrZero(CCmpCtrl *cc, CIntermediateCode *tmpi)
       tmpii = OptBrZero(cc, tmpii);
     } else
       tmpii = tmpi;
-    if (tmpi->ic_flags & ICF_POP_CMP && tmpi->t.arg1_tree->ic_code == IC_NOP1) {
+    if (tmpi->ic_flags & ICF_POP_CMP && tmpi->t.arg1_tree && tmpi->t.arg1_tree->ic_code == IC_NOP1) {
       tmpi->t.arg1_tree = tmpi->t.arg1_tree->t.arg1_tree;
       tmpi->ic_flags &= ~ICF_POP_CMP;
     }
@@ -356,6 +373,9 @@ CIntermediateCode *OptBrNotZero(CCmpCtrl *cc, CIntermediateCode *tmpi)
 {
   CCodeMisc *lb_true, *lb_false;
   CIntermediateCode *tmpii = OptLag(tmpi), *tmpii2;
+  I64 push_guard;
+  if (!tmpii)
+    return tmpi;
   switch (tmpii->ic_code) {
     case IC_NOT :
     tmpi->ic_code = IC_BR_ZERO;
@@ -426,14 +446,24 @@ CIntermediateCode *OptBrNotZero(CCmpCtrl *cc, CIntermediateCode *tmpi)
       tmpi->ic_code += IC_BR_EQU_EQU2 - IC_BR_EQU_EQU;
       tmpi->ic_flags &= ~ICF_PUSH_CMP;
       tmpii = tmpi->next;
-      //IC_PUSH_CMP inst
-      while (tmpii->ic_code != IC_PUSH_CMP)
+      //IC_PUSH_CMP inst — RV: missing PUSH_CMP must not spin.
+      push_guard = 256;
+      while (tmpii && tmpii->ic_code != IC_PUSH_CMP) {
         tmpii = tmpii->next;
-      tmpii->t.arg1_tree = tmpi;
-      OptSetNOP1(tmpii);
+        if (--push_guard <= 0) {
+          tmpii = NULL;
+          break;
+        }
+      }
+      if (tmpii) {
+        tmpii->t.arg1_tree = tmpi;
+        OptSetNOP1(tmpii);
+      }
     }
     lb_true = tmpi->ic_data;
     if (tmpi->ic_code == IC_BR_OR_OR_NOT_ZERO) {
+      if (!tmpi->t.arg1_tree || !tmpi->t.arg2_tree || !tmpi->t.arg1_tree->next || !tmpi->t.arg2_tree->next)
+        return tmpi;
       tmpii = tmpi->t.arg1_tree->next;
       tmpii->t.arg1_tree = tmpi->t.arg1_tree;
       tmpii->t.arg1_class = tmpi->t.arg1_class;
@@ -448,6 +478,8 @@ CIntermediateCode *OptBrNotZero(CCmpCtrl *cc, CIntermediateCode *tmpi)
       tmpii = OptBrNotZero(cc, tmpii);
       OptSetNOP1(tmpi);
     } else if (tmpi->ic_code == IC_BR_AND_AND_NOT_ZERO) {
+      if (!tmpi->t.arg1_tree || !tmpi->t.arg2_tree || !tmpi->t.arg1_tree->next || !tmpi->t.arg2_tree->next)
+        return tmpi;
       lb_false = COCMiscNew(cc, CMT_LABEL);
       tmpi->ic_code = IC_LABEL;
       tmpi->ic_flags = 0;
@@ -466,7 +498,7 @@ CIntermediateCode *OptBrNotZero(CCmpCtrl *cc, CIntermediateCode *tmpi)
       tmpii = OptBrNotZero(cc, tmpii);
     } else
       tmpii = tmpi;
-    if (tmpi->ic_flags & ICF_POP_CMP && tmpi->t.arg1_tree->ic_code == IC_NOP1) {
+    if (tmpi->ic_flags & ICF_POP_CMP && tmpi->t.arg1_tree && tmpi->t.arg1_tree->ic_code == IC_NOP1) {
       tmpi->t.arg1_tree = tmpi->t.arg1_tree->t.arg1_tree;
       tmpi->ic_flags &= ~ICF_POP_CMP;
     }
@@ -524,8 +556,10 @@ I64 CmpRawTypePointed(CHashClass *tmpc)
 U0 CmpMinTypePointed(CIntermediateCode *tmpi, I64 pt1)
 {
   I64 pt;
+  /* Stock TempleOS assigned `pt` (no-op). Shrink pointed_to to the narrower
+   * of the two so OptPass6 BY_VAL+REG fusion sees U8 for *d=*p (sb, not lbu). */
   if ((pt = tmpi->arg1_type_pointed_to) && pt != RT_F64 && 0 < pt1 < pt)
-    tmpi->arg1_type_pointed_to = pt;
+    tmpi->arg1_type_pointed_to = pt1;
 }
 
 U0 CmpF1PushPop(CIntermediateCode *tmpi, CIntermediateCode *tmpi2)

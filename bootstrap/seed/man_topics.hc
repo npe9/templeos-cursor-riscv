@@ -383,7 +383,7 @@
 //   GNU gas expansions (pseudos), and notes. seed/asm_complete.hc drives Tab
 //   completion inside asm { }: mnemonics, GPR/FPR ABI names, CSR names; operand-
 //   aware (imm/label positions suppress completion). Tab lists show templates.
-//   REPL readline mirrors completion in C (worry_dream_repl.c rl_asm_*).
+//   REPL readline drives this from HolyC (seed/complete.hc + seed/readline.hc).
 // EXAMPLES
 //   asm { addi a0, a1, 42 };  Reg("a0");
 //   AsmDoc("mv");   AsmDoc("li");
@@ -822,7 +822,8 @@
 // DESCRIPTION
 //   Guest stores COLUMNS×LINES and a TERM-ish name (CONSOLE.md #11). Defaults
 //   80×24 / "ansi". HolyC TermSize is cols-first; TermSetSize is rows-first.
-//   Optional query: TermQuery / TermProbe (DSR CPR + ESC[18t) needs a real PTY.
+//   Optional query: TermQuery / TermProbe (DSR CPR + ESC[18t) needs a real PTY
+//   (make term-probe-pty → hc_repl). Soft RX empty → probe; piped input skips.
 //   Host push while TermProbe/editors own RX:
 //     ESC [ 8 ; rows ; cols t
 //     ESC ] 777 ; cols ; rows ; name BEL

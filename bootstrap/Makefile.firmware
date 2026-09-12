@@ -21,7 +21,6 @@ OBJCOPY = $(RISCV_PREFIX)objcopy
 
 ROOT     := ..
 FW_DIR   := $(ROOT)/build/firmware
-REPL_MK  := Makefile.repl
 
 FLASH_BASE ?= 0x20000000
 RAM_BASE   ?= 0x80000000
@@ -33,11 +32,13 @@ LDFLAGS = -T firmware.ld -nostdlib --no-warn-mismatch \
           --defsym FLASH_BASE=$(FLASH_BASE) \
           --defsym RAM_BASE=$(RAM_BASE)
 
-PAYLOAD ?= repl
+# Default was PAYLOAD=repl until the legacy C guest was deleted (080f729); that build now
+# has no repl.elf to wrap, so plat is the default and repl errors out (same as
+# Makefile.baremetal). For a HolyC REPL flash image use: make bootloader-repl.
+PAYLOAD ?= plat
 
 ifeq ($(PAYLOAD),repl)
-  PAYLOAD_ELF ?= repl.elf
-  PAYLOAD_BUILD := $(MAKE) -f $(REPL_MK) repl.elf
+  $(error Legacy C guest firmware PAYLOAD=repl removed (worry_dream deleted). Use PAYLOAD=plat, or make bootloader-repl / make repl-payload for the HolyC REPL)
 else ifeq ($(PAYLOAD),plat)
   PAYLOAD_ELF ?= $(ROOT)/build/kernels/virt/plat.elf
   PAYLOAD_BUILD := $(ROOT)/tests/scripts/build_kernel_plat.sh virt

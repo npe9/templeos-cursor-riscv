@@ -1,14 +1,30 @@
 // Menu_RV.HC — Adam MenuNew/MenuFile shape for RISC-V WinMgr (P3).
 // Builds real CMenu/CMenuEntry trees via budgeted hand Lex (smoke SoT).
-// MenuNewCmpCtrl uses soft-I64 CmpCtrl Lex when fps are absolute code addrs
-// (RVCmpCtrlAddrsGet from Compiler unit). Kernel &CmpCtrlNew GOT is unsafe on
+// MenuNewCmpCtrl uses CmpCtrl Lex + LexExpressionI64 when fps are absolute
+// code addrs (RVCmpCtrlAddrsGet). Kernel &CmpCtrlNew GOT is unsafe on
 // split-AOT (illegal insn ≈0x8098 truncated ptr) — wire via WireCmpCtrlAddrs.
+// LexExpressionI64 literals skip Call (Compiler __imp_Call GOT class).
 // About (RV_MENU_ID_ABOUT) → WinMgr PopUp (Job.HC fp_popup / PopUp_RV Spawn).
 #ifndef MENU_RV_HC
 #define MENU_RV_HC
-// Guest Cmp (phase3 A:): PersonalMenu + Width via Menu_RV_Guest; wrap folds
-// Guest_Lex before Guest (MENU_RV_GUEST_LEX_HC). No CMenu/CmpCtrl yet.
+// Guest Cmp (phase3 A:): PersonalMenu + Width + I64 CRVLiteMenu/RVMenuNew
+// + CRVLiteMenuEntry next/sub + I64 CRVLiteDoc/RVDocNewLite/PrintLite
+// + RVPopUpLite/OkLite (no CRVWin) via Menu_RV_Guest; wrap folds Guest_Lex
+// before Guest. No CmpCtrl/product DocTerm.
 #ifdef MENU_RV_GUEST_CMP
+// Guest Soft Cmp: PersonalMenu + Width + product-layout CRVLiteMenu/Entry
+// (Kernel CMenu Bool pad[6] / U8 pad[7] Soft Cmp green) + Doc/PopUp lite.
+// MENU_RV_GUEST_CMP gates Guest chrome vs live WinMgr PopUp/DocTerm
+// (not I64-only types anymore). Soft tips green for product MenuEntryWidth /
+// MenuNewHand / MenuFpOk / MenuNewCmpCtrl Soft Cmp + Soft PopUp/DocTerm Soft Cmp
+// (+popupsoft+popupsoftfp+popupsoftwinfp+popupsoftwinfpcall+doctermsoft).
+// Soft Call MenuNewCmpCtrl is now green in-sequence
+// (+menulexi64softcall+menunewsubcmpcall+menunewcmpcall+menunewcmpctrlcall),
+// so that precondition is met. Still keep the ifdef: the #else product branch
+// has never been guest Soft Cmp'd (phase3 always stages MENU_RV_GUEST_CMP=1),
+// and it needs real CCmpCtrl/CMenu/CMenuEntry/CTask rather than the seed's lite
+// CRVLiteCmpCtrl. Drop the ifdef only once the wrap Soft Cmps without Guest.
+#include "Menu_RV_Guest_Lex"
 #include "Menu_RV_Guest"
 #else
 #define RV_MENU_ID_NONE     0
@@ -59,7 +75,7 @@ Bool RVMenuFpOk(I64 fp)
 Bool RVMenuFpsWired()
 {
   //Safe readiness — non-NULL and look like real RV code pointers.
-  return RVMenuFpOk(rv_fp_CmpCtrlNew) && RVMenuFpOk(rv_fp_Lex) && RVMenuFpOk(rv_fp_CmpCtrlDel);
+  return RVMenuFpOk(rv_fp_CmpCtrlNew) && RVMenuFpOk(rv_fp_Lex) && RVMenuFpOk(rv_fp_LexExpressionI64) && RVMenuFpOk(rv_fp_CmpCtrlDel);
 }
 
 U0 RVMenuTableLoad()
@@ -357,9 +373,8 @@ CMenu *MenuNewHand(U8 *st, I64 flags, CTask *task)
   return m;
 }
 // ---- CmpCtrl path (Adam/Menu.HC MenuNewSub shape) ----
-// Soft I64: PersonalMenu uses TileHorz(,1) empty slots. Adam calls
-// LexExpressionI64 (JIT Call) which faults on RV for empty/simple args.
-// Read TK_I64/CHAR directly; skip unknowns to ','/')' — no Call.
+// Prefer LexExpressionI64 (abs-addr wire). Literals skip Call inside
+// LexExpressionI64; soft path remains only if LexExpressionI64 fp missing.
 I64 MenuLexI64Soft(CCmpCtrl *cc)
 {
   I64 v = 0, steps = 0;
@@ -379,13 +394,25 @@ I64 MenuLexI64Soft(CCmpCtrl *cc)
     rv_menu_cmp_soft_i64++;
     return v;
   }
-  // Unknown / expression-like: skip to comma or paren (do not LexExpressionI64).
+  // Unknown / expression-like: skip to comma or paren (do not Call).
   while (cc->token && cc->token != ',' && cc->token != ')' && steps < 64) {
     rv_fp_Lex(cc);
     steps++;
   }
   rv_menu_cmp_soft_i64++;
   return 0;
+}
+
+I64 MenuLexI64(CCmpCtrl *cc)
+{
+  //Stock Adam MenuNewSub: LexExpressionI64. Soft only if fp unwired.
+  if (!cc)
+    return 0;
+  if (cc->token == ',' || cc->token == ')')
+    return 0;
+  if (RVMenuFpOk(rv_fp_LexExpressionI64))
+    return rv_fp_LexExpressionI64(cc);
+  return MenuLexI64Soft(cc);
 }
 
 CMenuEntry *MenuNewSubCmp(CCmpCtrl *cc, CTask *task)
@@ -401,15 +428,15 @@ CMenuEntry *MenuNewSubCmp(CCmpCtrl *cc, CTask *task)
     if (rv_fp_Lex(cc) == '(') {
       tmpme->msg_code = MSG_KEY_DOWN_UP;
       if (rv_fp_Lex(cc) != ',' && cc->token != ')')
-        tmpme->msg_code = MenuLexI64Soft(cc);
+        tmpme->msg_code = MenuLexI64(cc);
       if (cc->token == ',')
         rv_fp_Lex(cc);
       if (cc->token != ',' && cc->token != ')')
-        tmpme->arg1 = MenuLexI64Soft(cc);
+        tmpme->arg1 = MenuLexI64(cc);
       if (cc->token == ',')
         rv_fp_Lex(cc);
       if (cc->token != ',' && cc->token != ')')
-        tmpme->arg2 = MenuLexI64Soft(cc);
+        tmpme->arg2 = MenuLexI64(cc);
       if (cc->token != ')')
         rv_fp_Lex(cc);
       // tolerate missing ')' soft
@@ -481,8 +508,8 @@ public CMenu *MenuNew(U8 *st, I64 flags = 0, CTask *task = NULL)
 
 public CMenu *MenuNewCmpCtrl(U8 *st, I64 flags = 0, CTask *task = NULL)
 {
-  //CmpCtrl MenuNew when fps are absolute (WireCmpCtrlAddrs). Soft I64 args —
-  // never LexExpressionI64 Call. Falls back to hand Lex MenuNew.
+  //CmpCtrl MenuNew when fps are absolute (WireCmpCtrlAddrs). Uses
+  // LexExpressionI64 (literal fast-path; no soft-I64). Falls back to hand Lex.
   CMenu *m;
   if (!task)
     task = Fs;
@@ -503,7 +530,7 @@ public CMenu *MenuNewCmpCtrl(U8 *st, I64 flags = 0, CTask *task = NULL)
 
 I64 RVMenuCmpSelfTest()
 {
-  //TileHorz(,1) empty-comma via CmpCtrl when wired; else hand Lex.
+  //TileHorz(,1) empty-comma via CmpCtrl+LexExpressionI64 when wired; else hand.
   // Restore full PersonalMenu after — truncated flat menu made MenuActivate(4)
   // miss About (id=0) and left Apps PopUp unprobed.
   U8 *st = "Win {\n" "  TileHorz(,1);\n" "  TileVert(,2);\n" "}\n" "Help {\n" "  About(,5);\n" "}\n";
@@ -732,7 +759,7 @@ public I64 RVMenuFile(U8 *filename)
 U0 RVMenuWireCmpCtrl(CCmpCtrl * (*fp_new)(U8 *buf = NULL, I64 flags = 0, U8 *filename = NULL), I64 (*fp_lex)(CCmpCtrl *cc), I64 (*fp_lex_i64)(CCmpCtrl *cc), U0 (*fp_del)(CCmpCtrl *cc))
 {
   //Prefer WireCmpCtrlAddrs on split-AOT. Direct &CmpCtrlNew from Kernel is unsafe.
-  if (!RVMenuFpOk(fp_new) || !RVMenuFpOk(fp_lex) || !RVMenuFpOk(fp_del)) {
+  if (!RVMenuFpOk(fp_new) || !RVMenuFpOk(fp_lex) || !RVMenuFpOk(fp_lex_i64) || !RVMenuFpOk(fp_del)) {
     rv_fp_CmpCtrlNew = NULL;
     rv_fp_Lex = NULL;
     rv_fp_LexExpressionI64 = NULL;
@@ -748,6 +775,7 @@ U0 RVMenuWireCmpCtrl(CCmpCtrl * (*fp_new)(U8 *buf = NULL, I64 flags = 0, U8 *fil
 U0 RVMenuWireCmpCtrlAddrs(I64 *addrs)
 {
   //addrs[0..3] = CmpCtrlNew, Lex, LexExpressionI64, CmpCtrlDel (Compiler-unit abs).
+  // addrs[4]=LexExtStr optional (Doc Soft tip; wire ignores).
   if (!addrs) {
     RVMenuWireCmpCtrl(NULL, NULL, NULL, NULL);
     return;

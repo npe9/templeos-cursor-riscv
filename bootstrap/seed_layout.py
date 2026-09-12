@@ -51,10 +51,14 @@ FILE_DIR = {
     "sys.hc": "Lib",
     "fs.hc": "Lib",
     "run.hc": "Lib",
+    # G28 soft BlkDev letter tables (Let2Drv / RVSoftLetPlant) — sibling of fs.hc.
+    "soft_let.hc": "Lib",
     "math.hc": "Lib",
     "term.hc": "Lib",
     "dir.hc": "Lib",
     "files.hc": "Lib",
+    # Stock ships F/R/FD/RD as ~/HomeWrappers.HC — keep the /Home metaphor.
+    "home_wrappers.hc": "Home",
     "fmt.hc": "Lib",
     "complete.hc": "Lib",
     "readline.hc": "Lib",

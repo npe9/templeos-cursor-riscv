@@ -10,10 +10,18 @@
 // Optional mirror (WinMgr Term REPL): set while evaluating a Term line so Print
 // lands in both UART and the graphical Term body.
 Bool (*RVConsoleMirrorPutS)(U8 *st);
+// Default 0 = mirror AND write the UART, which is right when the screen is a
+// framebuffer and the UART is a separate device. Set to 1 when something else owns
+// the wire — the RVDocVT presenter ships the whole grid as ANSI over that same UART,
+// so a raw Print during evaluation overwrites the frame mid-render. With this set, a
+// mirror that accepted the string suppresses the raw write.
+I64 rv_console_mirror_only;
 Bool RVConsolePutS(U8 *st)
 {
-  if (RVConsoleMirrorPutS && st)
-    (*RVConsoleMirrorPutS)(st);
+  if (RVConsoleMirrorPutS && st) {
+    if ((*RVConsoleMirrorPutS)(st) && rv_console_mirror_only)
+      return TRUE;
+  }
   return RVUartPutS(st);
 }
 // PutChars/LexPutToken use put_key; put_s-only left put_key=NULL → jalr 0 (mepc=0).
@@ -23,8 +31,10 @@ Bool RVConsolePutKey(I64 ch, I64 sc)
   no_warn sc;
   e[0] = ch;
   e[1] = 0;
-  if (RVConsoleMirrorPutS)
-    RVConsoleMirrorPutS(e);
+  if (RVConsoleMirrorPutS) {
+    if (RVConsoleMirrorPutS(e) && rv_console_mirror_only)
+      return TRUE;
+  }
   return RVUartPutS(e);
 }
 
@@ -32,10 +42,24 @@ U0 RVKernelInit()
 {
   //Bring up the portable kernel environment on RISC-V. Call once before using the kernel.
   I64 i, j;
+  // ExpandBuf / Compress.HC guards expanded_size against mem_mapped_space (stock top-of-map).
+  // Host `_extern MEM_MAPPED_SPACE U8 *mem_mapped_space` allocates a separate BSS slot; it does
+  // not alias KStartRV's U64 MEM_MAPPED_SPACE[1]. Assign the HolyC name ExpandBuf reads.
+  if (!mem_mapped_space)
+    mem_mapped_space = 0x100000000(U8 *);
+#ifndef RV_THIN_LOADER
   // Base-10 power table: %f float formatting (StrPrint) and Str2F64 index it.
+  // Thin gates StrPrint+StrScan — SoftCall never indexes pow10_I64.
   pow10_I64 = CAlloc(sizeof(F64) * (308 + 308 + 1));
-  for (i = -308; i <= 308; i++)
-    pow10_I64[i + 309] = Pow10(ToF64(i));
+  // Exact table: 10^0..10^22 are representable, so repeated *10.0 is exact and
+  // 1.0/10^k is correctly rounded. Pow10() (runtime exp/log) was 3-4 ulps off,
+  // which skewed every lexed F64 literal (1.5 -> 0x3FF7FFFFFFFFFFFD).
+  pow10_I64[309] = 1.0;
+  for (i = 1; i <= 308; i++)
+    pow10_I64[i + 309] = pow10_I64[i + 308] * 10.0;
+  for (i = 1; i <= 308; i++)
+    pow10_I64[309 - i] = 1.0 / pow10_I64[309 + i];
+#endif
   // Bit-reversal and pop-count tables (verbatim from SysGlblsInit).
   rev_bits_table = CAlloc(256);
   set_bits_table = CAlloc(256);
@@ -49,6 +73,7 @@ U0 RVKernelInit()
   // Native console: UART StdOut + stock Ctrl-Alt cbs via KeyDevCtrlAltInit
   // (full KeyDevInit KDRaw chain deferred — hung PopUp/SrvCmdLine on RV).
   RVConsoleMirrorPutS = NULL;
+  rv_console_mirror_only = 0;
   RVUartInit();
   MemSet(&keydev.put_key_head, 0, sizeof(CKeyDevEntry));
   QueInit(&keydev.put_key_head);
@@ -63,6 +88,11 @@ U0 RVKernelInit()
   cnts.HPET_freq = 0;
   cnts.HPET_kHz_freq = 0;
   cnts.HPET_initial = 0;
+  // ScrnCast snd ring (stock SysGlblsInit / KMain) — RVSnd queues when record.
+  QueInit(&scrncast.snd_head);
+  scrncast.ona = scrncast.snd_head.ona = 0;
+  scrncast.record = FALSE;
+  scrncast.just_audio = FALSE;
 }
 // --- Minimal cooperative scheduler --------------------------------------------------------------
 // A round-robin over fixed task slots, built on the RVTaskSwitch context-switch primitive. This is
@@ -127,6 +157,7 @@ U8 *MAlloc(I64 size, CTask *mem_task = NULL)
   }
   U8 *chunk;
   I64 usize;
+  CMemUnused *tail;
   if (f) {
     if (prev)
       prev->next = f->next;
@@ -134,6 +165,18 @@ U8 *MAlloc(I64 size, CTask *mem_task = NULL)
       the_heap->malloc_free_lst = f->next;
     chunk = f;
     usize = f->size;
+    // Split the remainder back onto the free list. Without this, first-fit hands a whole
+    // freed page to a 33-byte MStrPrint buffer and the rest is lost for good: the 64 MB
+    // arena (0x82000400..fb at 0x86100000) drained in ~90 s of idle Win compositing and
+    // MAlloc started returning NULL, which SPutChar uses unchecked -> MemCpy(NULL,..).
+    // Keep a remainder only if it can still carry a header plus a payload.
+    if (usize - need >= offset(CMemUsed.start) + 16) {
+      tail = chunk + need;
+      tail->size = usize - need;
+      tail->next = the_heap->malloc_free_lst;
+      the_heap->malloc_free_lst = tail;
+      usize = need;
+    }
   } else {
     if (heap_next + need > heap_end)
       return NULL;
@@ -154,7 +197,9 @@ U0 Free(U8 *ptr)
     return;
   CMemUsed *u = ptr - offset(CMemUsed.start);
   CMemUnused *fu = u;
-  fu->size = u->size;
+  I64 sz = u->size;
+  the_heap->used_u8s -= sz;   // MAlloc adds it; without this used_u8s only ever grows
+  fu->size = sz;
   fu->next = the_heap->malloc_free_lst;
   the_heap->malloc_free_lst = fu;
 }
@@ -215,18 +260,135 @@ U0 RVBootTask2()
 // own Kernel/BlkDev/*.HC: BlkDevInit auto-formats a blank RAM disk with RedSeaFmt, Drv() selects it.
 // The x86 boot uses a physical ATA disk; on QEMU virt a BDT_RAM disk needs no device driver at all
 // (BlkRead/BlkWrite MemCpy to/from the buffer). blocks*512 bytes are allocated from the heap.
+// Ensure BlkDev + Drv letter tables (BlkDevsInitAll runtime half, no MountIDEAuto).
+U0 RVBlkDevTablesInit()
+{
+  I64 i;
+  if (blkdev.blkdevs)
+    return;
+  blkdev.blkdevs = CAlloc(sizeof(CBlkDev) * BLKDEVS_NUM);
+  blkdev.drvs = CAlloc(sizeof(CDrv) * DRVS_NUM);
+  for (i = 0; i < DRVS_NUM; i++)
+    blkdev.let_to_drv[i] = &blkdev.drvs[i];
+}
+// G28 soft letter: plant signed CBlkDev+CDrv so Let2Drv(let) works without
+// virtio / RedSeaFmt. Type follows Let2BlkDevType (A:→BDT_RAM, P:→ISO_FILE_READ
+// stock map — 9P share letter). Soft plant clears RO/cache; does NOT set
+// Fs->cur_dv — soft Cd / DirCur / DirNameAbs stay on !cur_dv `::/…` until Drv().
+// Idempotent: returns existing Let2Drv if already signed. Quiet (no Print) for
+// thin demos that call via Virtio9pConnect before console put_s is wired.
+public CDrv *RVSoftLetPlantQuiet(U8 drv_let = 'A')
+{
+  CBlkDev *bd;
+  CDrv *dv;
+  I64 type;
+  drv_let = ToUpper(drv_let);
+  if (!('A' <= drv_let && drv_let <= 'Z'))
+    return NULL;
+  RVBlkDevTablesInit;
+  if (dv = Let2Drv(drv_let, FALSE))
+    return dv;
+  type = Let2BlkDevType(drv_let);
+  if (type == BDT_NULL)
+    return NULL;
+  bd = BlkDevNextFreeSlot(drv_let, type);
+  // Soft letter-only: not a real ISO/ATA mount — drop RO/cache from type defaults.
+  bd->flags &= ~(BDF_READ_ONLY | BDF_READ_CACHE);
+  bd->unit = 0;
+  bd->RAM_dsk = 0;
+  bd->max_blk = 0;
+  bd->bd_signature = BD_SIGNATURE_VAL;
+  // No BDf_INITIALIZED — BlkDevAdd/BlkDevInit may still format later.
+  dv = DrvMakeFreeSlot(drv_let);
+  dv->bd = bd;
+  dv->drv_offset = bd->drv_offset;
+  dv->size = 0;
+  dv->dv_signature = DRV_SIGNATURE_VAL;
+  dv->fs_type = FSt_UNKNOWN;
+  if (!blkdev.boot_drv_let)
+    blkdev.boot_drv_let = drv_let;
+  return dv;
+}
+
+public CDrv *RVSoftLetPlant(U8 drv_let = 'A')
+{
+  CDrv *dv;
+  drv_let = ToUpper(drv_let);
+  dv = RVSoftLetPlantQuiet(drv_let);
+  if (dv)
+    Print("RVSoftLetPlant: let=%c boot=%c type=%d (no cur_dv)\n", drv_let, blkdev.boot_drv_let, dv->bd->type);
+  return dv;
+}
+// G28: plant P: as the virtfs/9P share letter (Let2Drv('P'); Cd("P:/…") soft).
+// Idempotent; does not require virtio — Virtio9pConnect also calls quiet plant.
+public CDrv *RVSoftLet9pPlant(U8 drv_let = 'P')
+{
+  CDrv *dv;
+  drv_let = ToUpper(drv_let);
+  if (!drv_let)
+    drv_let = 'P';
+  dv = RVSoftLetPlant(drv_let);
+  if (dv) {
+    dv->fs_type = FSt_9P;
+    // Mark INIT so Drv('P') skips ISO BlkDevInit; FSt_9P is the real mount.
+    if (dv->bd)
+      LBts(&dv->bd->flags, BDf_INITIALIZED);
+    Print("RVSoftLet9pPlant: let=%c fs=9P (9P share)\n", dv->drv_let);
+  }
+  return dv;
+}
+
+public CDrv *RVSoftLet9pPlantQuiet(U8 drv_let = 'P')
+{
+  CDrv *dv;
+  drv_let = ToUpper(drv_let);
+  if (!drv_let)
+    drv_let = 'P';
+  dv = RVSoftLetPlantQuiet(drv_let);
+  if (dv) {
+    dv->fs_type = FSt_9P;
+    if (dv->bd)
+      LBts(&dv->bd->flags, BDf_INITIALIZED);
+  }
+  return dv;
+}
+// TempleOS KMain HomeSet after BlkDevsInitAll/DskChg. Win/soft images often
+// left blkdev.home_dir=NULL → stock Cd("~") StrLen(home_dir+2) mtval=2.
+// SoftCd null→Cd("") stay-put for PopUp Cd; is separate and must stay green.
+// Call after mount returns (not inside BlkDevAdd path — keeps format fast/honest).
+public U0 RVHomeBringUp(U8 drv_let = 'A')
+{
+  U8 *path;
+  if (!Fs || !Fs->cur_dv)
+    return;
+  drv_let = ToUpper(drv_let);
+  if (!blkdev.boot_drv_let)
+    blkdev.boot_drv_let = drv_let;
+  path = MStrPrint("%c:/Home", drv_let);
+  HomeSet(path);
+  Free(path);
+  Print("RVHomeBringUp: home=%s boot=%c\n", blkdev.home_dir, blkdev.boot_drv_let);
+}
+
 U0 RVMountRAMDisk(U8 drv_let, I64 blocks)
 {
   // The runtime half of BlkDevsInitAll (its #exe half would emit the x86 MountIDEAuto): allocate the
   // block-device and drive tables and wire the drive-letter map. Guard against a second call.
-  if (!blkdev.blkdevs) {
-    blkdev.blkdevs = CAlloc(sizeof(CBlkDev) * BLKDEVS_NUM);
-    blkdev.drvs = CAlloc(sizeof(CDrv) * DRVS_NUM);
-    I64 i;
-    for (i = 0; i < DRVS_NUM; i++)
-      blkdev.let_to_drv[i] = &blkdev.drvs[i];
-  }
-  CBlkDev *bd = BlkDevNextFreeSlot(drv_let, BDT_RAM);
+  CBlkDev *bd;
+  CDrv *dv;
+  RVBlkDevTablesInit;
+  drv_let = ToUpper(drv_let);
+  // Reuse G28 soft letter if present (same BlkDev slot); else take a free slot.
+  dv = Let2Drv(drv_let, FALSE);
+  if (dv && dv->bd && dv->bd->bd_signature == BD_SIGNATURE_VAL && !(dv->bd->flags & BDF_INITIALIZED)) {
+    bd = dv->bd;
+    bd->type = BDT_RAM;
+    bd->first_drv_let = drv_let;
+  } else if (dv && dv->bd && (dv->bd->flags & BDF_INITIALIZED)) {
+    Drv(drv_let);
+    return;
+  } else
+    bd = BlkDevNextFreeSlot(drv_let, BDT_RAM);
   bd->unit = 0;
   bd->RAM_dsk = 0;
   bd->max_blk = blocks - 1;

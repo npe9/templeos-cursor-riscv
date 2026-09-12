@@ -1,25 +1,59 @@
-// DocInit_RV.HC — stock Adam/DolDoc/DocInit.HC minus CmpCtrl PrsDocFlags.
+// DocInit_RV.HC -- stock Adam/DolDoc/DocInit.HC minus CmpCtrl dft-flag seed Lex.
 //
-// Libs-first: DefineLstLoad + HashLstAdd → doldoc.hash (DHT_DOC_CMD /
+// Libs-first: DefineLstLoad + HashLstAdd -> doldoc.hash (DHT_DOC_CMD /
 // DHT_DOC_FLAG / DHT_COLOR) so RVDocPrsDollarCmd HashFind matches stock
 // PrsDollarCmd IDENT lookup. Default de/type flags are hand-planted from the
-// same CmpCtrl seed string in DocInit.HC (TX+T;DA+P+…;HC+T) — no Lex.
+// same CmpCtrl seed string in DocInit.HC (TX+T;DA+P+...;HC+T) -- no Lex.
+// Soft tip +docinitseed: RVDocInitSeedApply (HashFind+RVDocPrsFlagsCmp) must
+// match this hand plant (Kernel/RVDoc.HC). Do not call SeedApply from here --
+// OPTf_EXTERNS_TO_IMPORTS + split-AOT GOT was null (win mcause=5 mtval=0).
 //
 // Prefer HashLstAdd(Define data) over HashDefineLstAdd: the latter lived in
 // KHashB and historically compiled before KHashRV HashFind (empty doldoc.hash,
 // DemoInPage lex=0). Direct HashFind+HashLstAdd is SoT on RV.
 //
-// Full PrsDocFlags via CmpCtrlNew/Lex remains G8 (Compiler_RV). When that is
-// green, replace this file with `#include "DocInit"` from MakeDoc.
+// Runtime TX flags (+CX): Kernel/RVDoc.HC RVDocPrsFlagsCmp (HashFind).
+// Soft +docflaglex: CmpCtrl PrsDocFlags via planted abs fps (RVDocPrsFlagsLex).
+// Soft +doccmdlex: CmpCtrl one-cmd PrsDollarCmd (IDENT+flags+TK_STR).
+// Soft +docarglex: CmpCtrl one LexExpressionI64 arg (BT,LE=1 / DA,LEN=8;
+// literal fast-path via RVCmpCtrlAddrsGet). Soft +docextstr: LexExtStr T=/LM=
+// (TX,T="hi" / MA,LM="Cd;" via addrs[4]). Soft +docmultilex: multi-arg
+// TX+CX,T= / LK A=+HTML=+BI=. Soft +docplaininc/+makedocinc/+docinitinc+docinitu0+docinitbody+docinitdefines+docinitmemset+docinitbts+docinitdefload+docinithashfind+docinithashtablenew+docinitdeflstload+docinithashlstadd+docinithash+docinitkernhash+docinitkernhashfind+glblvaridx+varrmw+formembrmw:
+// guest DocInit Soft tip: Soft #include DolDocDefines + Soft CDocInitSoftGlbls g_doldoc +
+// MemSet/Bts/DefineLoad + stock HashFind(Fs->hash_table) FM_PICK_* guard (Soft AOT
+// sees _intern Fs via RVCmpWireAsmHash→asm_hash plant). Soft HashTableNew /
+// DefineLstLoad / HashLstAdd Soft Cmp+Call early (+docinithashtablenew+docinitdeflstload+docinithashlstadd;
+// Soft export HashLstAdd; Soft Call HashLstAdd return-count Soft tip; before Fs remat Soft Call). Soft
+// g_doldoc.hash Soft Cmp+Call early (+docinithash; Soft Call HashLstAdd return-count Soft tip —
+// Soft Call HashFind remat Soft glbl.hash Soft-fail r=3). Kernel doldoc.hash Soft Cmp+Call early
+// (+docinitkernhash; Soft Call RVDocDolDocHashGet after host DocInit; no Soft Call Load Soft doldoc).
+// Soft Call HashFind remat into Soft ht after Soft CALL_IMPORT (+docinitkernhashfind) Soft Cmp-only.
+// Soft glbl != Kernel doldoc. Soft Call
+// Soft tip Soft #include unmodified stock DocInit_RV.HC (bare Kernel doldoc into Soft
+// asm_hash via RVExePubInternDolDocIn). Soft Call DocInitInc Soft tip Soft Call DocInit
+// (+docinitinc; Soft #include guest DocInit_RV Soft Call MemSet/Bts/DefineLoad/HashFind+Fs Soft
+// g_doldoc). Soft tip Soft #include stock Soft Call Soft tip (+docinitstock). Soft Call
+// HashFind remat KernHashFind / Soft g_doldoc.hash still open (r=3). Full MakeDoc G8. When green,
+// replace this file with `#include "DocInit"` from MakeDoc.
 #help_index "DolDoc/RV"
 U0 DocInit()
 {
-  //$LK-UL,"CMD Defines",A="MN:DOCT_TEXT"$ — RV hash warm; no CmpCtrl.
+  //$LK-UL,"CMD Defines",A="MN:DOCT_TEXT"$ -- RV hash warm; no CmpCtrl.
   I64 i;
   CHashDefineStr *tmph;
-  // Idempotent: already warm if TX resolves (skip empty stale tables).
+  // Idempotent warm path FIRST (before any Fs->hash_table HashFind). Soft Call
+  // remat Soft tips can leave Fs->hash_table Soft-CALL-hostile; walking it from
+  // LiteInit→DocInit hung WinMgr lite Soft Call after stock DocTermNew Soft Call
+  // OK. doldoc.hash TX probe stays host-safe when DocInit already warmed once.
   if (doldoc.hash && HashFind("TX", doldoc.hash, DHT_DOC_CMD))
     return;
+  // ExePutS PopUp FileMgr(FM_PICK_*) -- plant on cold warm only (first DocInit).
+  if (Fs && Fs->hash_table) {
+    if (!HashFind("FM_PICK_FILE", Fs->hash_table, HTT_DEFINE_STR))
+      DefineLoad("FM_PICK_FILE", "1");
+    if (!HashFind("FM_PICK_DIR", Fs->hash_table, HTT_DEFINE_STR))
+      DefineLoad("FM_PICK_DIR", "2");
+  }
   if (!HashFind("ST_DOC_CMDS", Fs->hash_table, HTT_DEFINE_STR))
     DefineLstLoad("ST_DOC_CMDS", "TX\0CR\0SR\0TB\0PB\0CU\0MK\0PT\0CL\0PL\0LM\0RM\0HD\0FO\0ID\0FG\0" "BG\0FD\0BD\0WW\0HL\0BK\0IV\0UL\0SX\0SY\0CM\0AN\0LK\0BT\0" "DA\0CB\0LS\0MA\0MU\0HX\0TR\0SP\0IB\0IS\0SO\0HC\0ER\0");
   if (!HashFind("ST_DOC_FLAGS", Fs->hash_table, HTT_DEFINE_STR))
@@ -39,7 +73,7 @@ U0 DocInit()
     HashLstAdd(tmph->data, DHT_COLOR, doldoc.hash);
   MemSet(doldoc.dft_de_flags, 0, sizeof(doldoc.dft_de_flags));
   MemSet(doldoc.dft_type_flags, 0, sizeof(doldoc.dft_type_flags));
-  // Hand plant of DocInit.HC CmpCtrl seed (no Lex / PrsDocFlags).
+  // Hand plant of DocInit.HC CmpCtrl seed (Soft Call SeedApply must match).
   doldoc.dft_de_flags[DOCT_TEXT] = DOCEF_TAG;
   doldoc.dft_de_flags[DOCT_DATA] = DOCEF_DEREF_DATA | DOCEF_HAS_TERMINATOR | DOCEF_TAG | DOCEF_DFT_LEN | DOCEF_DFT_RAW_TYPE;
   doldoc.dft_de_flags[DOCT_CURSOR_MOVEMENT] = DOCEF_LEFT_EXP | DOCEF_RIGHT_EXP;

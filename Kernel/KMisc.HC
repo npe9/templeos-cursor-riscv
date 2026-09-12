@@ -4,6 +4,7 @@ U0 PortNop()
   InU8(0x21);
 }
 
+#ifndef RV_THIN_LOADER
 U16 EndianU16(U16 d)
 {//Swap big<-->little endian.
   I64 res=0;
@@ -35,6 +36,7 @@ I64 EndianI64(I64 d)
   res.u8[0]=d.u8[7];
   return res;
 }
+#endif
 
 I64 BCnt(I64 d)
 {//Count set bits in I64.
@@ -61,7 +63,7 @@ U0 IntCore0TimerHndlr(CTask *)
 I64 SysTimerRead()
 {//System timer count with overflow already handled.
 #ifdef CONFIG_ARCH_RISCV64
-  // No 8253 PIT on RISC-V ó rdtime (same CSR as GetTSC).
+  // No 8253 PIT on RISC-V ù rdtime (same CSR as GetTSC).
   return GetTSC;
 #else
   I64 i,res;
@@ -85,13 +87,14 @@ I64 SysTimerRead()
 I64 HPET()
 { //Get high precision event timer.
 #ifdef CONFIG_ARCH_RISCV64
-  // No memory-mapped HPET at 0xFED00000 ó that load faults on QEMU virt (mtval=0xFED000F0).
+  // No memory-mapped HPET at 0xFED00000 ù that load faults on QEMU virt (mtval=0xFED000F0).
   return GetTSC;
 #else
   return *(dev.uncached_alias+HPET_MAIN_CNT)(I64 *);
 #endif
 }
 
+#ifndef RV_THIN_LOADER
 I64 TimeCal()
 {
   static I64 time_stamp_start=0,timer_start=0,HPET_start=0;
@@ -128,6 +131,7 @@ I64 TimeCal()
   POPFD
   return cnts.time_stamp_freq;
 }
+#endif
 
 F64 tS()
 {//Time since boot in seconds as a float.
@@ -149,18 +153,18 @@ Bool Blink(F64 Hz=2.5)
   return ToI64(cnts.jiffies*2*Hz/JIFFY_FREQ)&1;
 }
 
-U0 Busy(I64 ÊS)
+U0 Busy(I64 ùS)
 {//Loosely timed.
   I64 i;
 #ifdef CONFIG_ARCH_RISCV64
-  i=GetTSC+CONFIG_TIMEBASE_FREQ*ÊS/1000000;
+  i=GetTSC+CONFIG_TIMEBASE_FREQ*ùS/1000000;
   while (GetTSC<i);
 #else
   if (cnts.HPET_freq) {
-    i=HPET+cnts.HPET_freq*ÊS/1000000;
+    i=HPET+cnts.HPET_freq*ùS/1000000;
     while (HPET<i);
   } else
-    for (i=0;i<ÊS;i++)
+    for (i=0;i<ùS;i++)
       PortNop;
 #endif
 }
@@ -181,6 +185,7 @@ U0 Sleep(I64 mS)
     SleepUntil(cnts.jiffies+mS*JIFFY_FREQ/1000);
 }
 
+#ifndef RV_THIN_LOADER
 F64 Ona2Freq(I8 ona)
 {//Ona to freq. Ona=60 is 440.0Hz.
   if (!ona)
@@ -197,10 +202,16 @@ I8 Freq2Ona(F64 freq)
     return 0;
 }
 
+U0 (*fp_snd_rv)(I8 ona); //ASnd_RV installs RVSnd (PC speaker inert on RISC-V virt)
+
 U0 Snd(I8 ona=0)
 {//Play ona, a piano key num. 0 means rest.
   I64 period;
   CSndData *d;
+  if (fp_snd_rv) {
+    (*fp_snd_rv)(ona);
+    return;
+  }
   if (!Bt(&sys_semas[SEMA_MUTE],0) &&
 	!LBts(&sys_semas[SEMA_SND],0)) { //Mutex. Just throw-out if in use
     if (!ona) {
@@ -282,6 +293,7 @@ Bool Mute(Bool val)
     res=LBtr(&sys_semas[SEMA_MUTE],0);
   return res;
 }
+#endif
 
 Bool IsMute()
 {//Return is-mute flag.

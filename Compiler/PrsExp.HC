@@ -210,7 +210,16 @@ pe_do_binary_op:
 	  if (intermediate_code_table[tmpi->ic_code].type!=IST_DEREF ||
 		!tmpc->ptr_stars_cnt && !Bt(&tmpc->flags,Cf_INTERNAL_TYPE))
 	    LexExcept(cc,"Invalid lval at ");
+	  /* Ident dump: DEREF class at DEREF→NOP1 (A:/PrsIdent.DD).
+	   * No mid-case locals — host AOT of those corrupts this path. */
+	  if (cc->htc.fun && cc->htc.fun->str &&
+		!StrCmp(cc->htc.fun->str,"AdamLiteIdentProbe") && tmpc) {
+	    FileWrite("A:/PrsIdent.DD",&tmpc->raw_type,1);
+	    FileWrite("A:/PrsIdentStars.DD",&tmpc->ptr_stars_cnt,1);
+	  }
 	  tmpi->ic_code=IC_NOP1; //Important for setting class (pretty sure)
+	  /* RV: pin OptClassFwd pointee on NOP1 for pe_push_lower→ASSIGN. */
+	  tmpi->ic_class=tmpc;
 	  cur_op.u8[2]=PREC_ASSIGN|ASSOCF_RIGHT;
 	}
 
@@ -466,6 +475,15 @@ I64 PrsFunCall(CCmpCtrl *cc,CPrsStk *ps,Bool indirect,CHashFun *tmpf)
       } else
 	ICAdd(cc,IC_IMM_I64,dft_val,tmpm->member_class);
     } else {
+      if (needs_right_paren && cc->token==')') {
+	//Arity mismatch, not a broken expression. Falling through to
+	//PrsUnaryTerm here reports "Missing expression at ')'", which reads
+	//like a parser fault and has cost more than one bisect.
+	if (tmpf->str)
+	  PrintErr("Fun '%s' wants %d args, %d given.\n",
+		tmpf->str,tmpf->arg_cnt,tmpf->arg_cnt-i-1);
+	LexExcept(cc,"Missing fun arg at ");
+      }
       if (!PrsExpression(cc,NULL,FALSE,ps))
 	throw('Compiler');
       else {
@@ -490,6 +508,7 @@ I64 PrsFunCall(CCmpCtrl *cc,CPrsStk *ps,Bool indirect,CHashFun *tmpf)
   if (tmpm && tmpm->flags & MLF_DOT_DOT_DOT) {
     COCInit(cc);
     tmpi=ICAdd(cc,IC_IMM_I64,0,tmpm->member_class);
+    tmpi->ic_flags|=ICF_RV_VA_ARGC;   //RV: next ABI slot is argv (a pointer), not a value
     COCPush(cc);
     if (is_print) {
       if (cc->token!=';') {
@@ -1165,6 +1184,14 @@ I64 LexExpressionI64(CCmpCtrl *cc)
 {//Compile cc expression, forcing to I64 and eval.
   U8 *machine_code;
   I64 res,type;
+  /* RV: TK_I64/CHAR skip LexExpression2Bin→Call. Split-AOT Compiler
+   * __imp_Call is a GOT slot (same class as truncated &CmpCtrlNew→0x8098);
+   * MenuNew / array dims only need literals. Same shape as PrsVar dims. */
+  if (cc->token==TK_I64 || cc->token==TK_CHAR_CONST) {
+    res=cc->cur_i64;
+    Lex(cc);
+    return res;
+  }
   if (machine_code=LexExpression2Bin(cc,&type)) {
     res=Call(machine_code);
     Free(machine_code);

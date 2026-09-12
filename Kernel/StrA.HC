@@ -469,6 +469,7 @@ I64 StrOcc(U8 *src, I64 ch)
   return i;
 }
 
+#ifndef RV_THIN_LOADER
 I64 Spaces2Tabs(U8 *dst,U8 *src)
 {//Src buf with spaces to dst buf without.
   U8 *src2;
@@ -563,6 +564,7 @@ U8 *StrUtil(U8 *_src,I64 flags)
     Spaces2Tabs(_src,_src);
   return _src;
 }
+#endif
 
 U8 *StrFirstOcc(U8 *src,U8 *marker)
 {//Point to 1st occurrence of marker set in str.

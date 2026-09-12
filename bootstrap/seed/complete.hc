@@ -590,3 +590,20 @@ U0 CompMidDemo()
   UartStr(line);
   PutCh('\n');
 }
+// Probe: the asm{} tables are live. AsmCompOps / AsmCompRegs / AsmCompCsrs and AsmDocRaw
+// are file-scope stores, not baked data, and both CompCollectAsm and AsmDocTemplate answer
+// 0 silently when they are NULL — so an image that lost them looks like "Tab offers
+// nothing", which no count alone would catch.
+U0 CompAsmDemo()
+{
+  U8 *tpl;
+  "asm_tab_ops=%d\n", CompCollectAsm(ASM_COMP_OP, "csrr", 4);
+  "asm_tab_regs=%d\n", CompCollectAsm(ASM_COMP_REG, "a", 1);
+  "asm_tab_csrs=%d\n", CompCollectAsm(ASM_COMP_CSR, "mca", 3);
+  tpl = AsmDocTemplate("slli");
+  if (!tpl || !*tpl) {
+    UartStr("asm_tab_tpl=(none)\n");
+    return;
+  }
+  "asm_tab_tpl=%s\n", tpl;
+}

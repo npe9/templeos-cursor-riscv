@@ -236,6 +236,7 @@ I64 VirtioBlkCapacity()
   hi = InU32(r + 0x104);
   return lo | (hi << 32);
 }
+#ifndef RV_THIN_LOADER
 // Mount the virtio-blk device as a RedSea drive (BDT_VIRTIO) -- the RISC-V translation of the x86
 // MountIDEAuto/RVMountRAMDisk path, but backed by a REAL disk: RedSea's BlkRead/BlkWrite now dispatch
 // to VirtioBlkRead/VirtioBlkWrite. BlkDevAdd formats a blank disk (RedSeaFmt) or mounts an existing one.
@@ -286,3 +287,38 @@ U0 VirtioBlkIrqInit()
   RvSetMEIE();
   // mie.MEIE
 }
+/* SoftCall ENTER wrappers for Kernel.BIN mount/BlkDev ownership (G9).
+ * Remount of an already-mounted letter hangs (BlkDevNextFreeSlot+BlkDevAdd);
+ * if virtio RedSea is up, re-validate via BlkRead; else call RVMountVirtioDisk. */
+I64 RVVirtioBlkCapacity()
+{
+  return VirtioBlkCapacity();
+}
+
+I64 RVVirtioBlkRead(I64 sector, U8 *buf)
+{
+  return VirtioBlkRead(sector, buf);
+}
+
+Bool RVRedSeaValidate(U8 drv_let)
+{
+  return RedSeaValidate(drv_let);
+}
+
+I64 RVRVMountVirtioDisk(U8 drv_let)
+{
+  if (Fs && Fs->cur_dv && Fs->cur_dv->dv_signature == DRV_SIGNATURE_VAL &&
+      Fs->cur_dv->bd && Fs->cur_dv->bd->type == BDT_VIRTIO) {
+    if (RedSeaValidate(drv_let))
+      return 0x4B4D;
+    // 'KM'
+    return -1;
+  }
+  RVMountVirtioDisk(drv_let);
+  if (Fs && Fs->cur_dv && Fs->cur_dv->dv_signature == DRV_SIGNATURE_VAL &&
+      RedSeaValidate(drv_let))
+    return 0x4B4D;
+  return -2;
+}
+#endif
+// RVRedSeaRawFileRead lives in BlkDev/RVRedSeaRaw.HC (thin + full).

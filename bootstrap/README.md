@@ -22,14 +22,14 @@ workstation tooling — see SELF_HOST.md (not “purge all C”).
 | Path | Kind | Category | Notes |
 |------|------|----------|-------|
 | `worry_dream_repl.c` | — | **Deleted** | Legacy C guest removed; use `hc_repl/` |
-| `startup.s` | asm | **→ HolyC** | Replaced by `hc_repl/start.hc` `asm{_start}` on HolyC path |
+| `startup.s` | — | **Deleted** | Replaced by `hc_repl/start.hc` `asm{_start}` |
 | `holy_rt.h` / `holy_rt_names.h` | C headers | **Host / AOT** | Bare-metal import resolver + oracle helpers for host `holyc-riscv`; not REPL OS APIs |
-| `linker.ld` | ld script | **Host link** | Legacy `repl.elf` sections/BSS |
+| `linker.ld` | — | **Deleted** | Was `repl.elf` sections/BSS; product link is `hc_repl/link.ld` |
 | `kernel_linker.ld` | ld script | **Unused** | Orphan; kernel uses `tests/exec/harness/link_exec.ld` |
-| `Makefile.repl` | Makefile | **Host build** | Builds legacy `repl.elf` + generates blobs |
+| `Makefile.repl` | Makefile | **Host build** | Generates `boot_blob_embed.h`. Its `repl.elf` target is an error redirect; `seed_files.h` / `asm_templates.inc` are vestigial and off the default goal |
 | `gen_seeds.py` | Python | **Host tool** | `seed/*.hc` → `seed_files.h` |
 | `gen_boot_blob.py` | Python | **Host tool** | Boot-order concat → `boot_blob_embed.h` (+ optional AOT validate) |
-| `seed_files.h` | generated C | **Generated** | C table for `memfs_seed()` in legacy path |
+| `seed_files.h` | generated C | **Vestigial** | C table for the deleted guest's `memfs_seed()`; nothing `#include`s it now |
 | `boot_blob_embed.h` | generated C | **Generated** | Concatenated seed snapshot (legacy boot embed; per-seed `Run` still primary) |
 | `boot_runtime.hc` / `.bin` | generated HC | **Generated** | Intermediate for `gen_boot_blob.py` |
 | `hc_repl/gen_embed.py` | Python | **Host tool** | Curated seed slice → `seed_embed.hc` for AOT memfs |
@@ -52,7 +52,7 @@ See **[docs/SELF_HOST.md](../docs/SELF_HOST.md)** Track A (A0–A6) and Track B 
 
 | Phase | Goal |
 |-------|------|
-| **Now** | Dual-run CI: HolyC product smokes + deprecated legacy honesty |
+| **Now** | HolyC-only CI honesty (`repl-holyc-smoke` / `-regression` / `bootloader-smoke`); dual-run dropped |
 | **A3** | Flip honesty default to `repl-holyc`; `worry_dream_repl.c` **deleted** |
 | **B0+** | Guest `Cmp` rebuilds Compiler/Kernel/Adam on target |
 
@@ -60,10 +60,10 @@ See **[docs/SELF_HOST.md](../docs/SELF_HOST.md)** Track A (A0–A6) and Track B 
 
 | Path | Role |
 |------|------|
-| `Makefile.repl` | Legacy build → `repl.elf` |
+| `Makefile.repl` | Seed blob headers (`boot_blob_embed.h`); `repl.elf` is an error redirect |
 | `worry_dream_repl.c` | **Deleted** — use `hc_repl/` |
-| `holy_rt.h` / `holy_rt_names.h` | Host + legacy-guest AOT imports |
-| `startup.s` / `linker.ld` | Legacy boot + link |
+| `holy_rt.h` / `holy_rt_names.h` | Host AOT import names (exec oracles) |
+| `startup.s` / `linker.ld` | **Deleted** with the C guest |
 | `gen_seeds.py` / `gen_boot_blob.py` | Host bake tools |
 | `seed_layout.py` | Memfs dirs: `/Home` `/Lib` `/Tutorials` … (basename aliases) |
 | `seed/` | Editable HolyC memfs seeds |

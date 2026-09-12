@@ -27,10 +27,19 @@ SEED_BOOT_ORDER = [
     "run.hc",
     "dir.hc",
     "files.hc",
+    "home_wrappers.hc",
     "boot.hc",
     "log.hc",
     "sys.hc",
     "tutorial.hc",
+    # U/Uf/UA source for Src/Cat — U and Uf sit at the tail, so this one needs
+    # the full body (a 12000-byte truncation would cut them off).
+    "disasm.hc",
+    # 9P client + GDB RSP stub: both are AOT-#included in repl.hc (the thin JitTry
+    # evaluator cannot build them), so these copies are for Cat/Src only. Full bodies
+    # — the Mount9p usage block and GdbHelp both sit past a 12000-byte truncation.
+    "ninep.hc",
+    "gdbstub.hc",
     # G4 Man / Funs — full bodies for ManUnitFor / DocFileFor (not truncated)
     "man.hc",
     "man_topics.hc",
@@ -86,6 +95,9 @@ FULL_EMBED_BASENAMES = frozenset(
         "man_topics.hc",
         "man.hc",
         "funs.hc",
+        "disasm.hc",
+        "ninep.hc",
+        "gdbstub.hc",
     }
 )
 

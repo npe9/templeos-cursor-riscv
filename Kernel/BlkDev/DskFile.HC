@@ -6,9 +6,27 @@ U8 *FileRead(U8 *filename, I64 *_size = NULL, I64 *_attr = NULL)
   I64 i, size = 0, attr = 0;
   CDirContext *dirc;
   CArcCompress *arc;
+  // G28: FSt_9P soft P: — DirContext-free path (stock FileRead("P:/…")).
+  if (filename && (res = NinePTryFileRead(filename, &size, &attr))) {
+    if (_attr)
+      *_attr = attr;
+    if (_size)
+      *_size = size;
+    return res;
+  }
   absname = FileNameAbs(filename);
   altname = ToggleZorNotZ(absname);
-  if ((tmph = HashFind(absname, adam_task->hash_table, HTT_FILE)) || (tmph = HashFind(altname, adam_task->hash_table, HTT_FILE))) {
+  if (res = NinePTryFileRead(absname, &size, &attr)) {
+    Free(absname);
+    Free(altname);
+    if (_attr)
+      *_attr = attr;
+    if (_size)
+      *_size = size;
+    return res;
+  }
+  // Soft / thin demos may lack adam_task hash — skip resident cache.
+  if (adam_task && adam_task->hash_table && ((tmph = HashFind(absname, adam_task->hash_table, HTT_FILE)) || (tmph = HashFind(altname, adam_task->hash_table, HTT_FILE)))) {
     size = tmph->user_data1;
     res = MAlloc(size + 1);
     MemCpy(res, tmph->user_data0, size);
@@ -29,6 +47,9 @@ U8 *FileRead(U8 *filename, I64 *_size = NULL, I64 *_attr = NULL)
           break;
           case FSt_FAT32 :
           res = FAT32FileRead(dirc->dv, Fs->cur_dir, dirc->mask, &size, &attr);
+          break;
+          case FSt_9P :
+          res = NinePFileRead(dirc->dv, Fs->cur_dir, dirc->mask, &size, &attr);
           break;
           default:
           PrintErr("File System Not Supported\n");
@@ -53,6 +74,9 @@ U8 *FileRead(U8 *filename, I64 *_size = NULL, I64 *_attr = NULL)
             case FSt_FAT32 :
             res = FAT32FileRead(dirc->dv, Fs->cur_dir, dirc->mask, &size, &attr);
             break;
+            case FSt_9P :
+            res = NinePFileRead(dirc->dv, Fs->cur_dir, dirc->mask, &size, &attr);
+            break;
             default:
             PrintErr("File System Not Supported\n");
           }
@@ -62,7 +86,7 @@ U8 *FileRead(U8 *filename, I64 *_size = NULL, I64 *_attr = NULL)
     }
     if (!res)
       PrintErr("File not found: \"%s\".\n", filename);
-    if (res && attr & RS_ATTR_RESIDENT)
+    if (res && attr & RS_ATTR_RESIDENT && adam_task && adam_task->hash_table)
       HashGenericAdd(curname, HTT_FILE, AMAllocIdent(res), size, 0, adam_task);
   }
   if (res && attr & RS_ATTR_COMPRESSED) {

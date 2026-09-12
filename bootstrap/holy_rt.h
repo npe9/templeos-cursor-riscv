@@ -383,7 +383,19 @@ static HRT_I64 HolyBFieldExtU32(HRT_U8 *bf, HRT_I64 lo, HRT_I64 hi) { HRT_I64 r 
 static HRT_I64 HolyRepInU16(HRT_U8 *buf, HRT_I64 cnt, HRT_I64 port) { (void)port; for (HRT_I64 i = 0; i < cnt * 2; i++) buf[i] = 0; return 0; }
 static HRT_I64 HolyGetRSP(void) { HRT_I64 v; __asm__ volatile("mv %0, sp" : "=r"(v)); return v; }
 static HRT_I64 HolySaveExceptRegs(void) { return 0; }
-static HRT_I64 HolyCall(HRT_I64 addr) { return addr ? ((HRT_I64 (*)(void))addr)() : 0; }
+/* RISC-V has no coherent instruction cache: after writing instructions you MUST
+ * fence.i before executing them. The JIT path never did. On a freshly-MAlloc'd block
+ * this usually survives, but a nested compile (PrsVarInit's eval-during-parse of an
+ * initialiser) reuses memory that was just freed after being executed, so the stale
+ * decode wins and you land on whatever was there before — the `illegal instruction,
+ * insn@mepc=0` at a heap address. Mandatory on real silicon regardless. */
+static HRT_I64 HolyCall(HRT_I64 addr) {
+  if (!addr) return 0;
+  /* Raw encoding: -march=rv64imafdc does not enable Zifencei, so the mnemonic will
+   * not assemble. 0x0000100f IS fence.i and is accepted everywhere. */
+  __asm__ volatile(".word 0x0000100f" ::: "memory");
+  return ((HRT_I64 (*)(void))addr)();
+}
 static HRT_I64 HolyFarCall32(HRT_I64 a, HRT_I64 b, HRT_I64 c, HRT_I64 d) { (void)a; (void)b; (void)c; (void)d; return 0; }
 /* --- RISC-V machine-mode traps + CLINT timer (QEMU virt) -----------------------------------------
  * A trap vector that saves the caller-saved registers, calls a C dispatcher, restores, and mrets.
@@ -420,6 +432,11 @@ static HRT_I64 holy_timer_interval = 0;
  * existing RVTrapInit smokes keep silent skip-on-fault. */
 static int holy_crash_mon_en = 0;
 static HRT_I64 holy_crash_mcause, holy_crash_mepc, holy_crash_mtval;
+/* Frozen at trap entry by HolyTrapVector. Non-static so the vector's `la` resolves.
+ * ra is the single most useful one: a fault inside a leaf (MemCpy, StrLen, a stub)
+ * traps before that function has saved ra, so ra still holds its caller — which is
+ * the question "who passed the bad pointer?" that mepc alone cannot answer. */
+HRT_I64 holy_crash_ra, holy_crash_fp, holy_crash_sp;
 
 static void holy_crash_puthex(HRT_U64 v) {
   const char *hx = "0123456789abcdef";
@@ -598,15 +615,31 @@ static void holy_crash_md(HRT_I64 addr, HRT_I64 n) {
 }
 
 static int holy_crash_in_code(HRT_I64 a) {
-  /* Text / AOT below SYS_FIXED_AREA; stack is ~0x87E… */
-  return a >= (HRT_I64)0x80000000LL && a < (HRT_I64)0x87000000LL && !(a & 1);
+  /* Code is the harness text plus the AOT blob — NOT the whole low 112 MB.
+   * The old test (< 0x87000000) swallowed the guest heap (0x82000400..0x86000000),
+   * so every heap pointer on the stack was reported as a candidate frame and the two
+   * or three real ones were buried in noise. Bound it by the blob instead. */
+  extern unsigned char _binary_blob_bin_start[], _binary_blob_bin_end[];
+  HRT_I64 blob0 = (HRT_I64)_binary_blob_bin_start;
+  HRT_I64 blob1 = (HRT_I64)_binary_blob_bin_end;
+  if (a & 1) return 0;
+  if (a >= (HRT_I64)0x80000000LL && a < blob0 && a < (HRT_I64)0x80100000LL)
+    return 1;                       /* crt0 / oracle_out text */
+  return a >= blob0 && a < blob1;   /* the AOT blob */
 }
 
 static void holy_crash_bt(void) {
-  /* RVCrashMon trap path freezes mcause/mepc/mtval only — not fp/ra.
-   * Honest: print trap mepc + insn word at mepc (mtval=0 often means 0x0 insn). */
+  /* #0 is mepc. #1 is the ra frozen at trap entry — exact when the faulting function
+   * is a leaf (it had not saved ra yet), stale if it had. Deeper frames come from a
+   * CONSERVATIVE stack scan, not a frame walk: this codegen emits
+   *   addi sp,sp,-N / sd ra,0(sp) / sd s0,8(sp) / addi s0,sp,N
+   * with N varying per function (16/24/32/56/120 observed), so ra sits at s0-N and
+   * there is no fixed offset to chase. The scan therefore prints every stack word
+   * that looks like a code address; some are stale. Labelled so, rather than dressed
+   * up as a real backtrace. */
   HRT_U32 insn = 0;
-  rt_puts("bt (trap mepc only — no fp/ra freeze in RVCrashMon)\n");
+  HRT_I64 *p, *end, v; int hits = 0;
+  rt_puts("bt (mepc + trap-frozen ra, then conservative stack scan)\n");
   if (holy_crash_in_code(holy_crash_mepc)) {
     rt_puts("  #0 ");
     holy_crash_puthex((HRT_U64)holy_crash_mepc);
@@ -628,7 +661,34 @@ static void holy_crash_bt(void) {
     holy_crash_puthex((HRT_U64)holy_crash_mepc);
     HOLY_RT_PUTC('\n');
   }
-  rt_puts("  (live dig-down: serial `bt` / HolyC Bt; — FP/RA walk)\n");
+  if (holy_crash_ra) {
+    rt_puts("  #1 ");
+    holy_crash_puthex((HRT_U64)holy_crash_ra);
+    if (holy_crash_in_code(holy_crash_ra))
+      rt_puts("  <- ra at trap (caller, if the faulting fn is a leaf)");
+    else
+      rt_puts("  (ra not in code range — already clobbered)");
+    HOLY_RT_PUTC('\n');
+  }
+  /* Conservative scan: stack words that look like code. Stale entries are expected. */
+  p = (HRT_I64 *)holy_crash_sp;
+  if (p && holy_crash_fp > holy_crash_sp) {
+    end = (HRT_I64 *)holy_crash_fp;
+    if (end - p > 512) end = p + 512;
+    rt_puts("  -- stack scan (may include stale frames) --\n");
+    while (p < end && hits < 12) {
+      v = *p++;
+      if (holy_crash_in_code(v)) {
+        rt_puts("     ");
+        holy_crash_puthex((HRT_U64)v);
+        HOLY_RT_PUTC('\n');
+        hits++;
+      }
+    }
+    if (!hits)
+      rt_puts("     (none)\n");
+  }
+  rt_puts("  map: HOLYC_MAP=f holyc-riscv <case> -o b.bin; addr-0x80800000 -> fn\n");
 }
 
 static void HolyCrashMonEnter(HRT_I64 mcause, HRT_I64 mepc, HRT_I64 mtval) {
@@ -712,6 +772,58 @@ static void HolyCrashMonEnter(HRT_I64 mcause, HRT_I64 mepc, HRT_I64 mtval) {
   }
 }
 
+/* Fault -> back to the REPL prompt instead of the blocking crash> monitor.
+ * setjmp/longjmp in two naked stubs: RVTrapRecoverArm() stores ra/sp/fp and returns 0;
+ * after a synchronous exception the trap dispatcher points mepc at the trampoline, which
+ * reloads ra/sp/fp and returns 1 to that same call site. The REPL re-arms per line, so a
+ * fault costs one line, not the session. `crash` still enters the monitor on demand. */
+HRT_I64 holy_repl_recover_ra, holy_repl_recover_sp, holy_repl_recover_fp;
+HRT_I64 holy_repl_recover_armed;
+/* Fault info handed to the REPL for its one-line report (mcause/mepc/mtval at the trap). */
+HRT_I64 holy_repl_recover_cause, holy_repl_recover_epc, holy_repl_recover_tval;
+
+__attribute__((naked, aligned(4))) static void HolyReplRecoverTramp(void) {
+  __asm__ volatile(
+    "la t0, holy_repl_recover_sp\n ld sp,0(t0)\n"
+    "la t0, holy_repl_recover_fp\n ld s0,0(t0)\n"
+    "la t0, holy_repl_recover_ra\n ld ra,0(t0)\n"
+    "li a0,1\n"
+    "ret\n"
+  );
+}
+
+__attribute__((naked, aligned(4))) static HRT_I64 HolyRVTrapRecoverArm(void) {
+  __asm__ volatile(
+    "la t0, holy_repl_recover_ra\n sd ra,0(t0)\n"
+    "la t0, holy_repl_recover_sp\n sd sp,0(t0)\n"
+    "la t0, holy_repl_recover_fp\n sd s0,0(t0)\n"
+    "la t0, holy_repl_recover_armed\n li t1,1\n sd t1,0(t0)\n"
+    "li a0,0\n"
+    "ret\n"
+  );
+}
+
+/* Ctrl-C out of a wedged evaluation. `while(1) wfi;` never returns to the REPL's input pump,
+ * so the polled UART path can never see the ^C. With the 16550 RX interrupt enabled the IRQ
+ * still fires (wfi wakes on an interrupt), and we mret into the recovery trampoline instead of
+ * back into the loop. Chars that are NOT the break go to the kernel's own soft RX ring through
+ * a registered sink — the runtime's holy_urx ring is a different buffer and the REPL never
+ * reads it, so buffering there would silently eat keystrokes. */
+HRT_I64 holy_break_req;
+static void (*holy_urx_sink)(HRT_I64);
+static HRT_I64 HolyRVSetRxSink(HRT_I64 fn) { holy_urx_sink = (void (*)(HRT_I64))fn; return 0; }
+
+static HRT_I64 HolyRVTrapRecoverDisarm(void) {
+  holy_repl_recover_armed = 0;
+  return 0;
+}
+/* ra frozen by HolyTrapVector at the trap: for a fault in a leaf (or a raw asm{} blob)
+ * this is the caller, which mepc alone cannot tell you. */
+static HRT_I64 HolyRVTrapRecoverRa(void) { return holy_crash_ra; }
+static HRT_I64 HolyRVTrapRecoverCause(void) { return holy_repl_recover_cause; }
+static HRT_I64 HolyRVTrapRecoverEpc(void)   { return holy_repl_recover_epc; }
+static HRT_I64 HolyRVTrapRecoverTval(void)  { return holy_repl_recover_tval; }
+
 static HRT_I64 HolyRVCrashMonInit(void) {
   holy_crash_mon_en = 1;
   HolyRVTrapInit();
@@ -739,11 +851,33 @@ __attribute__((used)) static HRT_I64 HolyTrapDispatch(void) {
     *mtimecmp = *mtime + holy_timer_interval;              /* re-arm */
   } else if (mcause == (HRT_I64)0x800000000000000BULL) {    /* machine external (PLIC) interrupt */
     HolyServiceExternal();
+    if (holy_break_req && holy_repl_recover_armed) {
+      holy_break_req = 0;
+      holy_repl_recover_armed = 0;              /* one-shot, same as the fault path */
+      holy_repl_recover_cause = -1;             /* -1 = user break, not a trap */
+      holy_repl_recover_epc = 0;
+      holy_repl_recover_tval = 0;
+      __asm__ volatile("csrw mepc, %0" :: "r"(&HolyReplRecoverTramp));
+      /* The REPL lives in M-mode; if the fault came from S/U (e.g. an `sret` typed at
+       * the prompt), the trampoline must still run in M-mode: MPP=3, MPIE=1. */
+      __asm__ volatile("li t0, 0x1880\n csrs mstatus, t0" ::: "t0");
+    }
   } else if (mcause >= 0) {                                 /* synchronous exception */
     HRT_I64 mepc, mtval;
     __asm__ volatile("csrr %0, mepc" : "=r"(mepc));
     __asm__ volatile("csrr %0, mtval" : "=r"(mtval));
-    if (holy_crash_mon_en) {
+    if (holy_repl_recover_armed) {
+      /* One-shot: disarm before returning, so a fault inside the REPL's own recovery
+       * path falls through to the monitor instead of looping through the trampoline. */
+      holy_repl_recover_armed = 0;
+      holy_repl_recover_cause = mcause;
+      holy_repl_recover_epc = mepc;
+      holy_repl_recover_tval = mtval;
+      __asm__ volatile("csrw mepc, %0" :: "r"(&HolyReplRecoverTramp));
+      /* The REPL lives in M-mode; if the fault came from S/U (e.g. an `sret` typed at
+       * the prompt), the trampoline must still run in M-mode: MPP=3, MPIE=1. */
+      __asm__ volatile("li t0, 0x1880\n csrs mstatus, t0" ::: "t0");
+    } else if (holy_crash_mon_en) {
       HolyCrashMonEnter(mcause, mepc, mtval);
       __asm__ volatile("csrr %0, mepc" : "=r"(mepc));
       __asm__ volatile("csrw mepc, %0" :: "r"(mepc + 4)); /* skip faulting insn after go */
@@ -761,6 +895,12 @@ __attribute__((naked, aligned(4))) static void HolyTrapVector(void) {
     "sd t3,32(sp)\n sd t4,40(sp)\n sd t5,48(sp)\n sd t6,56(sp)\n"
     "sd a0,64(sp)\n sd a1,72(sp)\n sd a2,80(sp)\n sd a3,88(sp)\n"
     "sd a4,96(sp)\n sd a5,104(sp)\n sd a6,112(sp)\n sd a7,120(sp)\n"
+    /* Freeze ra/fp/sp for the crash backtrace before the dispatcher's own frame
+     * buries them. t0/t1 are already spilled above, so they are free to clobber. */
+    "la t0, holy_crash_ra\n sd ra,0(t0)\n"
+    "la t0, holy_crash_fp\n sd s0,0(t0)\n"
+    "addi t1, sp, 128\n"
+    "la t0, holy_crash_sp\n sd t1,0(t0)\n"
     "call HolyTrapDispatch\n"
     "ld ra,0(sp)\n ld t0,8(sp)\n ld t1,16(sp)\n ld t2,24(sp)\n"
     "ld t3,32(sp)\n ld t4,40(sp)\n ld t5,48(sp)\n ld t6,56(sp)\n"
@@ -970,6 +1110,8 @@ static void HolyServiceExternal(void) {
     volatile HRT_U8 *lsr = (volatile HRT_U8 *)(HOLY_UART_BASE + 5);
     while (*lsr & 1) {                                                     /* drain the RX FIFO */
       char c = (char)*rbr;
+      if (c == 3 && holy_repl_recover_armed) { holy_break_req = 1; continue; }  /* ^C: break out */
+      if (holy_urx_sink) { holy_urx_sink((HRT_I64)(HRT_U8)c); continue; }       /* kernel's ring */
       int nh = (holy_urx_head + 1) & 255;
       if (nh != holy_urx_tail) { holy_urx[holy_urx_head] = c; holy_urx_head = nh; }
     }
@@ -1000,6 +1142,15 @@ static HRT_I64 HolyRVUartIrqInit(void) {
   *(volatile HRT_U32 *)(HOLY_PLIC + HOLY_PLIC_ENABLE_OFF) |= (1u << HOLY_UART_IRQ);
   *(volatile HRT_U32 *)(HOLY_PLIC + HOLY_PLIC_THRESHOLD_OFF) = 0;
   __asm__ volatile("csrs mie, %0" :: "r"((HRT_I64)(1<<11)));              /* MEIE: machine external int */
+  return 0;
+}
+/* Turn the 16550 RX interrupt back off. The REPL enables it only while a command runs (when
+ * nothing is polling) and disables it again before returning to the input pump: with both
+ * active the ISR and the poller race for the same FIFO and keystrokes vanish — the more the
+ * kernel printed, the more often the ISR won. */
+static HRT_I64 HolyRVUartIrqOff(void) {
+  *(volatile HRT_U8 *)(HOLY_UART_BASE + 1) = 0;                            /* IER: RX int off */
+  *(volatile HRT_U32 *)(HOLY_PLIC + HOLY_PLIC_ENABLE_OFF) &= ~(1u << HOLY_UART_IRQ);
   return 0;
 }
 static HRT_I64 HolyRVUartHasInput(void) { return holy_urx_head != holy_urx_tail; }

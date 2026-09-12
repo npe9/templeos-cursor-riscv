@@ -254,6 +254,180 @@ U0 TermShowCursor()
   PutCh('5');
   PutCh('h');
 }
+/* ---- SGR: the DolDoc attribute cmds as real escapes (REPL_FUNS.md) ----
+ * DolDoc $$FG,n$$ / $$BG,n$$ take a TempleOS ST_COLORS index (Kernel/KDefine.HC:
+ * BLACK BLUE GREEN CYAN RED PURPLE BROWN LTGRAY DKGRAY LTBLUE LTGREEN LTCYAN
+ * LTRED LTPURPLE YELLOW WHITE). ANSI orders its eight differently and puts the
+ * top eight on the bright 90/100 planes, so TermSgrColor remaps rather than
+ * adding 30+n. Guarded by TF_ANSI like TermGoto/TermClear; TF_COLOR advertises
+ * the capability so a mono host can drop the sequences. */
+I64 TermSgrColor(I64 n)
+{
+  I64 c;
+  c = n & 7;
+  if (c == 1)
+    c = 4;
+  else if (c == 3)
+    c = 6;
+  else if (c == 4)
+    c = 1;
+  else if (c == 6)
+    c = 3;
+  if (n & 8)
+    return 90 + c;
+  return 30 + c;
+}
+
+I64 TermColorOk()
+{
+  if (!(TermFlags() & TF_ANSI))
+    return 0;
+  return (TermFlags() & TF_COLOR) != 0;
+}
+/* Emit ESC [ <n> m. All the attribute helpers funnel through here. */
+U0 TermSgr(I64 n)
+{
+  if (!TermColorOk())
+    return;
+  PutCh(27);
+  PutCh('[');
+  "%d", n;
+  PutCh('m');
+}
+// TermColor -- TermColor(on)
+// NAME
+//   TermColor - enable/disable SGR emission (TF_COLOR)
+// SYNOPSIS
+//   U0 TermColor(I64 on);
+// DESCRIPTION
+//   TF_COLOR gates every Term SGR helper. Default off so piped smokes and
+//   dumb hosts see plain bytes; turn it on for an ANSI terminal.
+// EXAMPLES
+//   TermColor(1); TermFg(YELLOW_IDX); UartStr("hi\n"); TermAttrOff;
+// SEE ALSO
+//   TermFg  TermBg  TermRep  TermHelp
+U0 TermColor(I64 on)
+{
+  if (on)
+    g_term_flags |= TF_COLOR;
+  else
+    g_term_flags &= ~TF_COLOR;
+}
+
+I64 TermColorGet()
+{
+  return (g_term_flags & TF_COLOR) != 0;
+}
+// TermFg -- TermFg(n)
+// NAME
+//   TermFg - DolDoc $$FG,n$$ as an ANSI foreground
+// SYNOPSIS
+//   U0 TermFg(I64 n);
+// DESCRIPTION
+//   n is a TempleOS ST_COLORS index 0-15 (0-7 map to SGR 30-37, 8-15 to the
+//   bright 90-97 plane). TermFgDft is the $$FD$$ / SGR 39 reset.
+// EXAMPLES
+//   TermColor(1); TermFg(4); UartStr("red\n"); TermFgDft;
+// SEE ALSO
+//   TermBg  TermFgDft  TermAttrOff  TermColor
+U0 TermFg(I64 n)
+{
+  TermSgr(TermSgrColor(n));
+}
+// TermBg -- TermBg(n)
+// NAME
+//   TermBg - DolDoc $$BG,n$$ as an ANSI background
+// SYNOPSIS
+//   U0 TermBg(I64 n);
+// DESCRIPTION
+//   Same ST_COLORS mapping as TermFg, shifted to the background plane
+//   (SGR 40-47 / 100-107). TermBgDft is the $$BD$$ / SGR 49 reset.
+// SEE ALSO
+//   TermFg  TermBgDft  TermAttrOff
+U0 TermBg(I64 n)
+{
+  TermSgr(TermSgrColor(n) + 10);
+}
+/* $$FD$$ / $$BD$$ — restore the host's default fg/bg. */
+U0 TermFgDft()
+{
+  TermSgr(39);
+}
+
+U0 TermBgDft()
+{
+  TermSgr(49);
+}
+/* $$IV,1$$ / $$IV,0$$ */
+U0 TermInverse(I64 on)
+{
+  if (on)
+    TermSgr(7);
+  else
+    TermSgr(27);
+}
+/* $$UL,1$$ / $$UL,0$$ */
+U0 TermUnderline(I64 on)
+{
+  if (on)
+    TermSgr(4);
+  else
+    TermSgr(24);
+}
+/* $$BK,1$$ / $$BK,0$$ — many terminals render blink as bold or ignore it. */
+U0 TermBlink(I64 on)
+{
+  if (on)
+    TermSgr(5);
+  else
+    TermSgr(25);
+}
+/* $$HL,1$$ / $$HL,0$$ — stock U/Un highlight has no clean SGR; bold is the
+ * closest honest stand-in on a UART. */
+U0 TermBold(I64 on)
+{
+  if (on)
+    TermSgr(1);
+  else
+    TermSgr(22);
+}
+// TermAttrOff -- TermAttrOff()
+// NAME
+//   TermAttrOff - SGR 0: drop every color and attribute
+// SYNOPSIS
+//   U0 TermAttrOff();
+// DESCRIPTION
+//   Always emit this before handing the line back to the REPL prompt so a
+//   half-written DolDoc attribute run cannot leak into readline.
+// SEE ALSO
+//   TermFg  TermBg  TermInverse  TermUnderline  TermBlink  TermBold
+U0 TermAttrOff()
+{
+  TermSgr(0);
+}
+// TermColorDemo -- TermColorDemo()
+// NAME
+//   TermColorDemo - print the 16 ST_COLORS names in their own color
+// SYNOPSIS
+//   U0 TermColorDemo();
+// DESCRIPTION
+//   Smoke/eyeball check for the DolDoc -> SGR map. Turns TF_COLOR on for the
+//   duration and restores the prior setting.
+// SEE ALSO
+//   TermFg  TermColor  TermRep
+U0 TermColorDemo()
+{
+  I64 i, was;
+  was = TermColorGet();
+  TermColor(1);
+  UartStr("--- term color (ST_COLORS -> SGR) ---\n");
+  for (i = 0; i < 16; i++) {
+    TermFg(i);
+    "  %d -> SGR %d\n", i, TermSgrColor(i);
+  }
+  TermAttrOff;
+  TermColor(was);
+}
 
 I64 TermNow()
 {
@@ -728,18 +902,24 @@ I64 TermProbe()
     g_term_rx_own = 0;
     return r;
   }
+  /* Bytes waiting in RX mean a pipe/script is feeding us — DSR will not get a
+   * reply and the timeout only burns time while more input piles up. Match
+   * former worry_dream TermProbe: C host-slot ring OR HolyC soft ring. */
   rhp = *(I64 *)0x87001028;
   rtp = *(I64 *)0x87001030;
-  if (!rhp || !rtp) {
-    /* No C RX ring (repl-holyc): skip CPR probe; keep default 80x24. */
-    g_term_rx_own = 0;
-    g_term_gave_up = 1;
-    return 0;
-  }
   if (rhp && rtp) {
     rh = *(I64 *)rhp;
     rt = *(I64 *)rtp;
     if (rh != rt) {
+      g_term_gave_up = 1;
+      g_term_rx_own = 0;
+      return 0;
+    }
+  } else {
+    /* Product HolyC path (hc_repl/uart.hc): no 0x87001xxx slots. Soft ring
+     * emptiness via UartRxReady — do NOT permanently skip CPR (that left Vi
+     * stuck at 80x24 after worry_dream delete). */
+    if (UartRxReady()) {
       g_term_gave_up = 1;
       g_term_rx_own = 0;
       return 0;
@@ -858,6 +1038,12 @@ U0 TermHelp()
   UartStr("  TermQuery; / TermProbe;  // ask host PTY (CPR + ESC[18t)\n");
   UartStr("  Host push: ESC[8;rows;cols t  or  OSC 777;cols;rows;name BEL\n");
   UartStr("  Defaults: 80x24 name=ansi  Man(\"Term\");\n");
+  UartStr("  Color (DolDoc $$FG/$$BG/$$IV/$$UL/$$BK/$$FD/$$BD -> SGR):\n");
+  UartStr("    TermColor(1);        // TF_COLOR gate (off by default)\n");
+  UartStr("    TermFg(n); TermBg(n);      // n = ST_COLORS 0..15\n");
+  UartStr("    TermFgDft; TermBgDft;      // $$FD$$ / $$BD$$\n");
+  UartStr("    TermInverse(1); TermUnderline(1); TermBlink(1); TermBold(1);\n");
+  UartStr("    TermAttrOff; TermColorDemo;  // SGR 0 / 16-color chart\n");
 }
 
 U0 TermInit()

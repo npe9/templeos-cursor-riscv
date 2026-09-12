@@ -84,6 +84,7 @@ I64 QueSize(CQue *head)
   return res;
 }
 
+#ifndef RV_THIN_LOADER
 CQueVectU8 *QueVectU8New(I64 min_idx=0)
 {//Create new queue vecter.
   CQueVectU8 *res=MAlloc(sizeof(CQueVectU8));
@@ -321,3 +322,4 @@ I64 FifoI64Cnt(CFifoI64 *f)
   POPFD
   return res;
 }
+#endif

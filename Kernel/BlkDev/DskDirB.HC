@@ -63,6 +63,10 @@ Bool Cd(U8 *dirname = NULL, Bool make_dirs = FALSE)
       if (!*new_cur_dir)
         StrCpy(new_cur_dir, "/");
     } else if (!StrCmp(buf, "~")) {
+      if (!blkdev.home_dir || StrLen(blkdev.home_dir) < 2) {
+        res = FALSE;
+        break;
+      }
       Free(new_cur_dir);
       new_cur_dir = MAlloc(StrLen(blkdev.home_dir + 2) + 1 + StrLen(chg_to_buf) + 1);
       StrCpy(new_cur_dir, blkdev.home_dir + 2);
@@ -74,17 +78,22 @@ Bool Cd(U8 *dirname = NULL, Bool make_dirs = FALSE)
         res = FALSE;
         break;
       }
-      cur_dir_clus = Name2DirClus(dv, new_cur_dir);
-      switch (dv->fs_type) {
-        case FSt_REDSEA :
-        res = RedSeaCd(buf, cur_dir_clus);
-        break;
-        case FSt_FAT32 :
-        res = FAT32Cd(buf, cur_dir_clus);
-        break;
-        default:
-        PrintErr("File System Not Supported\n");
-        res = FALSE;
+      // FSt_9P: never Name2DirClus/DrvLock — NinePCd walks parent/name on virtfs.
+      if (dv->fs_type == FSt_9P)
+        res = NinePCd(new_cur_dir, buf);
+      else {
+        cur_dir_clus = Name2DirClus(dv, new_cur_dir);
+        switch (dv->fs_type) {
+          case FSt_REDSEA :
+          res = RedSeaCd(buf, cur_dir_clus);
+          break;
+          case FSt_FAT32 :
+          res = FAT32Cd(buf, cur_dir_clus);
+          break;
+          default:
+          PrintErr("File System Not Supported\n");
+          res = FALSE;
+        }
       }
       if (!res && make_dirs) {
         Free(Fs->cur_dir);

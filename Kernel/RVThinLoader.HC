@@ -1,10 +1,32 @@
-// RVThinLoader — G9 thin boot path: virtio RedSea already mounted by RVKMain,
-// then FileFind+Load A:/Kernel/Kernel.BIN and Call KernelEntry (handoff).
-// No Cmp / MakeOS / StartOS — purpose is prove loader→BIN transfer so Mac
-// phase3.elf can shrink toward “mount + Load + jump” only.
-// Demo: tests/exec/cases/kernel_thin_loader_demo.hc
+// RVThinLoader — G9 thin boot path: export-only LoadBufLite → HashAdd exports →
+// HashFind("KernelEntry") → Call (SoftCall-shaped Jump). SoftCall owns first
+// mount + FS/Load ENTER in BIN then HLT — loader does not regain control.
+//
+// RV_THIN_EMBED_BIN: Kernel.BIN linked at KERNEL_EMBED_ADDR (.kernel_bin) —
+// no RVThinVirtioBlk / RVRedSeaRaw chicken-egg. SoftCall re-Inits virtio for
+// LoadProbe/FS. Else: libs-first MMIO+raw+arena fetch (legacy chicken-egg).
+// Demo: kernel_thin_loader_demo.hc
 #ifndef RV_THIN_LOADER_HC
 #define RV_THIN_LOADER_HC
+#ifndef KERNEL_BIN_MAGIC_ADDR
+#define KERNEL_BIN_MAGIC_ADDR 0x8700E000
+#endif
+#ifndef KERNEL_BIN_MAGIC_VAL
+#define KERNEL_BIN_MAGIC_VAL 0x4B494E49
+#endif
+#ifndef KERNEL_BIN_STAY_ADDR
+#define KERNEL_BIN_STAY_ADDR 0x8700E008
+#endif
+#ifndef KERNEL_BIN_STAY_VAL
+#define KERNEL_BIN_STAY_VAL 0x53544159
+#endif
+// LoadBuf plants &KernelEntry here; SoftCall JumpSoft checks HashFind match.
+#ifndef KERNEL_BIN_ENTRY_ADDR
+#define KERNEL_BIN_ENTRY_ADDR 0x8700E010
+#endif
+#ifndef KERNEL_EMBED_ADDR
+#define KERNEL_EMBED_ADDR 0x81000000
+#endif
 Bool rv_thin_loader_ok = FALSE;
 U0 RVThinUart(U8 *msg)
 {
@@ -22,67 +44,148 @@ U0 RVThinUartI64(U8 *prefix, I64 v)
   RVThinUart(msg);
 }
 
-I64 RVThinCallExport(U8 *name)
+U32 RVThinLoadU32(U8 **_src)
 {
+  U32 v;
+  MemCpy(&v, *_src, 4);
+  *_src += 4;
+  return v;
+}
+// Export-only LoadBuf for import-free Kernel.BIN (no KLoad.HC in thin PRJ).
+// Accepts IET_REL32/IMM32/REL64/IMM64_EXPORT + IET_END only — SoftCall seed
+// packs REL64_EXPORT for KernelProbe/Entry/InitLite/… with zero imports/abs.
+// HashAdds each export into Fs->hash_table; plants Jump-hint for SoftCall.
+// Embed path: in-place (no MAlloc copy) — export-only does not patch body.
+CBinFile *RVThinLoadBuf(CBinFile *src, I64 size)
+{
+  CBinFile *bfh;
+  U8 *module_base, *pt, *st_ptr;
+  I64 etype, i, entry;
+  I64 *eslot;
   CHashExport *tmpex;
-  if (!name)
-    return -1;
-  tmpex = HashFind(name, Fs->hash_table, HTT_EXPORT_SYS_SYM);
-  if (!tmpex)
-    tmpex = HashFind(name, Fs->hash_table, HTT_FUN);
-  if (!tmpex)
-    return -1;
-  if (tmpex->type & HTT_FUN)
-    return Call(tmpex(CHashFun *)->exe_addr);
-  return Call(tmpex->val);
+  CHashTable *table;
+  if (!src || size < sizeof(CBinFile) || src->bin_signature != BIN_SIGNATURE_VAL)
+    return NULL;
+  if (src->patch_table_offset <= 0 || src->patch_table_offset >= size)
+    return NULL;
+  table = Fs->hash_table;
+  if (!table || !table->body)
+    return NULL;
+#ifdef RV_THIN_EMBED_BIN
+  bfh = src;
+#else
+  bfh = MAlloc(size);
+  if (!bfh)
+    return NULL;
+  MemCpy(bfh, src, size);
+#endif
+  module_base = bfh(U8 *) + sizeof(CBinFile);
+  pt = bfh(U8 *) + bfh->patch_table_offset;
+  entry = 0;
+  while (TRUE) {
+    etype = *pt++;
+    if (etype == IET_END)
+      break;
+    i = RVThinLoadU32(&pt);
+    st_ptr = pt;
+    pt += StrLen(st_ptr) + 1;
+    if (etype == IET_REL32_EXPORT || etype == IET_IMM32_EXPORT || etype == IET_REL64_EXPORT || etype == IET_IMM64_EXPORT) {
+      if (!*st_ptr)
+        goto thin_load_fail;
+      tmpex = CAlloc(sizeof(CHashExport));
+      if (!tmpex)
+        goto thin_load_fail;
+      tmpex->str = StrNew(st_ptr);
+      if (!tmpex->str)
+        goto thin_load_fail;
+      tmpex->type = HTT_EXPORT_SYS_SYM | HTF_IMM;
+      if (etype == IET_IMM32_EXPORT || etype == IET_IMM64_EXPORT)
+        tmpex->val = i;
+      else
+        tmpex->val = i + module_base;
+      HashAdd(tmpex, table);
+      if (!StrCmp(st_ptr, "KernelEntry"))
+        entry = tmpex->val;
+    } else {
+      // Imports / ABS / heaps / MAIN need full KLoad — refuse (seed must stay import-free).
+      goto thin_load_fail;
+    }
+  }
+  if (!entry)
+    goto thin_load_fail;
+  eslot = KERNEL_BIN_ENTRY_ADDR;
+  *eslot = entry;
+  return bfh;
+  thin_load_fail:
+#ifndef RV_THIN_EMBED_BIN
+  Free(bfh);
+#endif
+  return NULL;
 }
 
 U0 RVThinLoader()
 {
   CBinFile *bfh;
-  I64 r;
+  U8 *raw;
+  I64 r, sz, *stay, *eslot;
+  CHashExport *tmpex;
   rv_thin_loader_ok = FALSE;
-  RVThinUart("RVThinLoader: RedSea mounted; FileFind A:/Kernel/Kernel.BIN...\n");
-  if (!FileFind("A:/Kernel/Kernel.BIN")) {
-    RVThinUart("RVThinLoader: Kernel.BIN missing (FileFind).\n");
+#ifdef RV_THIN_EMBED_BIN
+  RVThinUart("RVThinLoader: thin embed+LoadBuf; Kernel.BIN @0x81000000...\n");
+  raw = KERNEL_EMBED_ADDR;
+  if (!raw || raw(CBinFile *)->bin_signature != BIN_SIGNATURE_VAL) {
+    RVThinUart("RVThinLoader: embed Kernel.BIN missing/bad TOSB.\n");
     return;
   }
-  RVThinUart("RVThinLoader: FileFind OK; Load...\n");
-  bfh = Load("A:/Kernel/Kernel.BIN", LDF_JUST_LOAD | LDF_SILENT);
+  sz = raw(CBinFile *)->file_size;
+  if (sz < sizeof(CBinFile)) {
+    RVThinUart("RVThinLoader: embed Kernel.BIN size bad.\n");
+    return;
+  }
+  RVThinUartI64("RVThinLoader: embed OK sz=", sz);
+  RVThinUart("RVThinLoader: embed OK; LoadBuf...\n");
+  bfh = RVThinLoadBuf(raw(CBinFile *), sz);
+#else
+  RVThinUart("RVThinLoader: thin MMIO+raw+arena; read Kernel/Kernel.BIN...\n");
+  raw = RVRedSeaRawFileRead("Kernel", "Kernel.BIN", &sz);
+  if (!raw || sz < sizeof(CBinFile)) {
+    RVThinUart("RVThinLoader: raw Kernel.BIN missing.\n");
+    return;
+  }
+  // SoftCall is import-free — export-only LoadBufLite (no full KLoad in thin).
+  RVThinUartI64("RVThinLoader: raw OK arena sz=", sz);
+  RVThinUart("RVThinLoader: raw OK; LoadBuf...\n");
+  bfh = RVThinLoadBuf(raw(CBinFile *), sz);
+  Free(raw);
+#endif
   if (!bfh || bfh->bin_signature != BIN_SIGNATURE_VAL) {
-    RVThinUart("RVThinLoader: Load FAILED.\n");
+    RVThinUart("RVThinLoader: LoadBuf FAILED.\n");
     return;
   }
-  RVThinUart("RVThinLoader: Load OK; Call KernelEntry (handoff)...\n");
-  r = RVThinCallExport("KernelEntry");
-  if (r != 0x4B45) {
-    RVThinUartI64("RVThinLoader: KernelEntry FAILED r=", r);
+  // Plant STAY so KernelEntry SoftCall then HLT (phase3 Call leaves slot 0).
+  stay = KERNEL_BIN_STAY_ADDR;
+  *stay = KERNEL_BIN_STAY_VAL;
+  eslot = KERNEL_BIN_ENTRY_ADDR;
+  if (!eslot || !*eslot) {
+    RVThinUart("RVThinLoader: Jump-hint missing after LoadBuf.\n");
     return;
   }
-  r = RVThinCallExport("KernelProbe");
-  if (r != 42) {
-    RVThinUartI64("RVThinLoader: KernelProbe FAILED r=", r);
+  tmpex = HashFind("KernelEntry", Fs->hash_table, HTT_EXPORT_SYS_SYM);
+  if (!tmpex || !tmpex->val) {
+    RVThinUart("RVThinLoader: HashFind KernelEntry FAILED.\n");
     return;
   }
-  // G9 growth: KernelEntry ran KernelInitLite (heap MAlloc/Free + FileWrite).
-  if (!FileFind("A:/Kernel/ENTRY.OK")) {
-    RVThinUart("RVThinLoader: ENTRY.OK missing (KernelInitLite FileWrite).\n");
+  // SoftCall JumpSoft also requires HashFind == Jump-hint.
+  if (tmpex->val != *eslot) {
+    RVThinUart("RVThinLoader: HashFind/Jump-hint mismatch.\n");
     return;
   }
-  r = RVThinCallExport("KernelHeapProbe");
-  if (r != 64) {
-    RVThinUartI64("RVThinLoader: KernelHeapProbe FAILED r=", r);
-    return;
-  }
-  r = RVThinCallExport("KernelInitLite");
-  if (r != 0x4B49) {
-    RVThinUartI64("RVThinLoader: KernelInitLite FAILED r=", r);
-    return;
-  }
-  FileWrite("A:/Kernel/THIN.OK", "OK", 2);
   rv_thin_loader_ok = TRUE;
-  RVThinUart("RVThinLoader: handoff OK (KernelEntry=0x4B45, KernelProbe=42).\n");
-  RVThinUart("RVThinLoader: InitLite OK (ENTRY.OK + HeapProbe=64 + InitLite=0x4B49).\n");
-  RVThinUart("RVThinLoader: done (thin loader + RedSea Kernel.BIN).\n");
+  RVThinUart("RVThinLoader: LoadBuf OK; Jump KernelEntry via HashFind (non-return)...\n");
+  // Call via HashFind (SoftCall-shaped). Stay path never returns (SoftCall+HLT).
+  r = Call(tmpex->val);
+  // Unreachable when Stay holds.
+  RVThinUartI64("RVThinLoader: Jump returned (FAIL) r=", r);
+  rv_thin_loader_ok = FALSE;
 }
 #endif

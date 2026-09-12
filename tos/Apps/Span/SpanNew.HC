@@ -30,6 +30,10 @@ U8 *SpanSave(CMathODE *ode,I64 *_size=NULL)
   MySpring *tmps;
   SpanHeader h;
 
+  // RV: hold ODEF_BUSY so Animate Refresh→ODEsUpdate skips during this walk
+  // (DirContext begins only later in FileWrite).
+  if (ode)
+    ode->flags|=ODEF_BUSY;
   ODERenum(ode);
   h.version=SPAN_VERSION;
   if (ode->next_mass!=&ode->next_mass)
@@ -61,6 +65,8 @@ U8 *SpanSave(CMathODE *ode,I64 *_size=NULL)
     tmps=tmps->next;
   }
   if (_size) *_size=cnt;
+  if (ode)
+    ode->flags&=~ODEF_BUSY;
   return res;
 }
 

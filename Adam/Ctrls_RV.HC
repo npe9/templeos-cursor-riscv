@@ -710,4 +710,65 @@ public U0 ViewAnglesDel(CTask *task = NULL)
       rv_ctrls_n--;
   }
 }
+
+I64 RVCtrlsSoft()
+{
+  // Soft Call: Ctrls_RV MakeAdam tip (UART / no interactive FB).
+  // LiteInit+DocTermNew if needed → stamp Fs sig → DemoInstall → queue/Active + click.
+  // No DrawCtrls (needs rv_gr.dc); product desktop still host win_*.elf.
+  I64 idx, n0, hits0;
+  CTask *task;
+  CCtrl *c;
+  CRVWin *w;
+  if (!rv_winmgr.ready) {
+    if (!RVWinMgrLiteInit())
+      return 3;
+  }
+  if (rv_winmgr.term_idx < 0 || rv_winmgr.term_idx >= RV_WIN_MAX || !rv_winmgr.wins[rv_winmgr.term_idx].used)
+    DocTermNew;
+  idx = rv_winmgr.term_idx;
+  if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+    return 4;
+  w = &rv_winmgr.wins[idx];
+  task = w->task;
+  if (!TaskValidate(task))
+    task = Fs;
+  // UART Soft Call: Adam/Fs often lacks addr/signature (DemoDesktop stamps both).
+  if (task) {
+    task->addr = task;
+    task->task_signature = TASK_SIGNATURE_VAL;
+  }
+  if (!TaskValidate(task))
+    return 5;
+  if (!task->next_ctrl || !task->last_ctrl)
+    QueInit(&task->next_ctrl);
+  n0 = rv_ctrls_n;
+  hits0 = rv_ctrls_hits;
+  RVCtrlsDemoInstall(idx);
+  if (!RVCtrlsActive())
+    return 6;
+  if (rv_ctrls_n < 2)
+    return 7;
+  if (!CtrlFindUnique(task, CTRLT_WIN_HSCROLL))
+    return 9;
+  if (!CtrlFindUnique(task, CTRLT_WIN_VSCROLL))
+    return 10;
+  if (!CtrlFindUnique(task, CTRLT_VIEWING_ANGLES))
+    return 11;
+  CtrlsUpdate(task);
+  hits0 = rv_ctrls_hits;
+  c = task->next_ctrl;
+  while (c != &task->next_ctrl) {
+    if (c->type == CTRLT_GENERIC && c->left_click) {
+      (*c->left_click)(c, c->left + 1, c->top + 1, TRUE);
+      break;
+    }
+    c = c->next;
+  }
+  if (rv_ctrls_hits <= hits0)
+    return 12;
+  if (rv_ctrls_n <= n0)
+    return 13;
+  return 8;
+}
 #endif

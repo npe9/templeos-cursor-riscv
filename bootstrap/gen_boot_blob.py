@@ -14,7 +14,9 @@ import os
 import subprocess
 import sys
 
-# Must match BootHolyCRuntime / worry_dream_repl.c boot order.
+# Must match BootHolyCRuntime boot order (and bootstrap/hc_repl/gen_embed.py
+# SEED_BOOT_ORDER, which carries the AOT subset). The C guest that also encoded this
+# order, worry_dream_repl.c, was deleted in 080f729.
 BOOT_ORDER = [
     "MemMapSelected.hc",  # Kconfig MEM_* (syncconfig); must precede uart.hc / csr.hc
     "uart.hc",
@@ -121,7 +123,11 @@ def repo_root(seed_dir: str) -> str:
 
 
 def gen_asm_templates_inc(seed_dir: str, out_path: str) -> None:
-    """Emit mn|template pairs for worry_dream_repl.c Tab hints (from asm_doc.hc)."""
+    """Emit mn|template pairs for asm Tab hints (from asm_doc.hc).
+
+    Written for the deleted C guest's readline; nothing #includes asm_templates.inc today
+    (the HolyC readline uses seed/asm_complete.hc), so this is generated on request only.
+    """
     raw = read_asm_doc_raw(seed_dir)
     pairs: list[str] = []
     for rec in raw.split(";"):

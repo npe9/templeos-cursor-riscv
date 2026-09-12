@@ -52,6 +52,60 @@ asm {
 	RVWinCsrrMtval::
 	csrr	a0, 0x343
 	ret
+	RVWinCsrrMtvec::
+	csrr	a0, 0x305
+	ret
+	RVWinCsrrMscratch::
+	csrr	a0, 0x340
+	ret
+	RVWinCsrrMisa::
+	csrr	a0, 0x301
+	ret
+	RVWinCsrrMhartid::
+	csrr	a0, 0xF14
+	ret
+	RVWinCsrrMedeleg::
+	csrr	a0, 0x302
+	ret
+	RVWinCsrrMideleg::
+	csrr	a0, 0x303
+	ret
+	RVWinCsrrMcounteren::
+	csrr	a0, 0x306
+	ret
+	RVWinCsrrSstatus::
+	csrr	a0, 0x100
+	ret
+	RVWinCsrrSie::
+	csrr	a0, 0x104
+	ret
+	RVWinCsrrSip::
+	csrr	a0, 0x144
+	ret
+	RVWinCsrrStvec::
+	csrr	a0, 0x105
+	ret
+	RVWinCsrrSepc::
+	csrr	a0, 0x141
+	ret
+	RVWinCsrrScause::
+	csrr	a0, 0x142
+	ret
+	RVWinCsrrStval::
+	csrr	a0, 0x143
+	ret
+	RVWinCsrrSatp::
+	csrr	a0, 0x180
+	ret
+	RVWinCsrrCycle::
+	csrr	a0, 0xC00
+	ret
+	RVWinCsrrTime::
+	csrr	a0, 0xC01
+	ret
+	RVWinCsrrInstret::
+	csrr	a0, 0xC02
+	ret
 	// Deliberate illegal insn for `fault` → UART crash>. Encodes as
 	// csrrw x0,cycle,x0 (0xC0001073) — RO CSR write. Not GetTSC/IC_RDTSC.
 	RVWinSerialFaultAsm::
@@ -124,12 +178,13 @@ U0 RVWinSerialHelp()
     Print("  user        Spawn User → new Term-like win (P1)\n");
     Print("  q / quit     quit WinMgr (same as ESC on virtio-kbd)\n");
     Print("  fault/crash  UART crash> (md/mw/regs/bt/go/reboot)\n");
-    Print("  dig-down:    help regs bt md ADDR [N] mw ADDR VAL\n");
+    Print("  dig-down:    help regs csrs bt md ADDR [N] mw ADDR VAL\n");
     return;
   }
   Print("RVWinSerial — UART TTY while WinMgr/FB runs (docs/CONSOLE.md, BOARD_FB.md)\n");
   Print("  help / ?     this sheet\n");
   Print("  regs         soft GPR snap + CSR dig-down\n");
+  Print("  csrs / csr   machine + supervisor CSR dump (mstatus/mie/mtvec/…)\n");
   Print("  bt           FP/RA backtrace (live; code PCs; soft sym map)\n");
   Print("  md ADDR [N]  hex dump DRAM (default 64 bytes)\n");
   Print("  mw ADDR VAL  store I64 in DRAM\n");
@@ -451,6 +506,36 @@ U0 RVWinSerialRegs()
   Print("(Fault snap: UART crash> after RVCrashMonInit + fault.)\n");
   RVWinRegsRestoreOnly;
 }
+// `csrs` — machine/supervisor CSR dump. Direct, like `regs`: no ExePutS JIT in the path, so it
+// still works when the compiler is the thing being debugged. Reading a CSR the platform does not
+// implement traps, and the REPL's fault recovery now catches that and returns to the prompt
+// rather than wedging, so an unimplemented row costs one line instead of the session.
+U0 RVWinSerialCsrs()
+{
+  I64 mc, me;
+  Print("Machine:\n");
+  Print("  mstatus  =0x%016X  misa   =0x%016X\n", RVWinCsrrMstatus(), RVWinCsrrMisa());
+  Print("  mie      =0x%016X  mip    =0x%016X\n", RVWinCsrrMie(), RVWinCsrrMip());
+  Print("  mtvec    =0x%016X  mscratch=0x%016X\n", RVWinCsrrMtvec(), RVWinCsrrMscratch());
+  Print("  mepc     =0x%016X  mcause =0x%016X\n", RVWinCsrrMepc(), RVWinCsrrMcause());
+  Print("  mtval    =0x%016X  mhartid=0x%016X\n", RVWinCsrrMtval(), RVWinCsrrMhartid());
+  Print("  medeleg  =0x%016X  mideleg=0x%016X\n", RVWinCsrrMedeleg(), RVWinCsrrMideleg());
+  Print("  mcounteren=0x%016X\n", RVWinCsrrMcounteren());
+  Print("Supervisor:\n");
+  Print("  sstatus  =0x%016X  satp   =0x%016X\n", RVWinCsrrSstatus(), RVWinCsrrSatp());
+  Print("  sie      =0x%016X  sip    =0x%016X\n", RVWinCsrrSie(), RVWinCsrrSip());
+  Print("  stvec    =0x%016X  sepc   =0x%016X\n", RVWinCsrrStvec(), RVWinCsrrSepc());
+  Print("  scause   =0x%016X  stval  =0x%016X\n", RVWinCsrrScause(), RVWinCsrrStval());
+  Print("Counters:\n");
+  Print("  cycle    =0x%016X  time   =0x%016X\n", RVWinCsrrCycle(), RVWinCsrrTime());
+  Print("  instret  =0x%016X\n", RVWinCsrrInstret());
+  // Hoisted, not RVWinMcausePrint(RVWinCsrrMcause(), RVWinCsrrMepc()): nested calls in the
+  // argument list of a NON-variadic callee wedged here (the same nesting inside the variadic
+  // Print()s above is fine, so the two arg paths differ).
+  mc = RVWinCsrrMcause();
+  me = RVWinCsrrMepc();
+  RVWinMcausePrint(mc, me);
+}
 // HolyC ExePutS symbols (seed/csr.hc not linked into Kernel+Compiler_RV images).
 public U0 Regs()
 {
@@ -543,14 +628,41 @@ public U0 RVWinSoftPwd()
 
 public I64 RVWinSoftCd(U8 *dirname)
 {
+  // ExePub Cd; passes dirname=0 (remat OK). Stock PopUp "Cd;" must stay-put —
+  // map null/empty to Cd("") (early TRUE), never stock Cd(NULL)→"~".
+  // Real Cd("~") needs RVHomeBringUp (HomeSet A:/Home) on mount.
   if (!dirname || !*dirname)
-    return Cd("~", FALSE);
+    return Cd("", FALSE);
   return Cd(dirname, FALSE);
 }
 
 public U0 RVWinSoftHelp()
 {
   RVWinSerialHelp;
+}
+
+public U0 RVWinSoftCat(U8 *name)
+{
+  // Cat a file into the focused window. PutS rather than Print("%s",…): a .DD file is
+  // full of $ commands and % sequences, and Print would try to format the latter.
+  // While a Term line is evaluating, PutS is mirrored into the window's CDoc
+  // (RVWinTermMirrorPutS -> RVDocPutS -> DocPutS), so DolDoc $-commands in the file
+  // are INTERPRETED — which is the point of Cat'ing a .DD.
+  U8 *buf;
+  I64 sz = 0;
+  if (!name || !*name) {
+    Print("Cat: need a name — Cat(\"HOME.DD\");\n");
+    return;
+  }
+  buf = FileRead(name, &sz);
+  if (!buf) {
+    Print("Cat: cannot read %s\n", name);
+    return;
+  }
+  PutS(buf);
+  if (sz > 0 && buf[sz - 1] != '\n')
+    PutS("\n");
+  Free(buf);
 }
 
 public U0 RVWinSoftMan(U8 *name)
@@ -819,7 +931,7 @@ U0 RVWinSerialSoftReg(U8 *p)
     Print("Reg: need a name — Reg(\"a0\");\n");
 }
 
-Bool RVWinSerialDispatch(U8 *line)
+Bool RVWinSerialDispatch2(U8 *line)
 {
   U8 *p, *q;
   I64 addr, n, val, r;
@@ -833,10 +945,14 @@ Bool RVWinSerialDispatch(U8 *line)
     RVWinSerialHelp;
     return FALSE;
   }
+  if (RVWinSerialCmdEq(p, "csrs") || RVWinSerialCmdEq(p, "csr")) {
+    RVWinSerialCsrs();
+    return FALSE;
+  }
   if (RVWinSerialCmdEq(p, "regs")) {
     // Direct — avoid ExePutS JIT for Regs; (null export / CALL_IMPORT risk).
     Print("Regs (kernel soft):\n");
-    RVWinSerialRegs;
+    RVWinSerialRegs();
     return FALSE;
   }
   // Reg("a0"); / Reg("mstatus"); — parse without JIT (same reliability as regs).
@@ -876,7 +992,9 @@ Bool RVWinSerialDispatch(U8 *line)
   }
   if (RVWinSerialCmdEq(p, "crash")) {
     Print("RVWinSerial: entering crash> (host mon; 'go' returns)\n");
+    RVUartIrqOff();       // crash mon polls the UART itself; RX IRQ would eat its input
     RVCrashMon();
+    RVUartIrqInit();
     return FALSE;
   }
   if (RVWinSerialCmdEq(p, "q") || RVWinSerialCmdEq(p, "quit")) {
@@ -902,11 +1020,51 @@ Bool RVWinSerialDispatch(U8 *line)
   }
   if (RVWinSerialEval) {
     r = RVWinSerialEval(p);
-    Print("ans=%d\n", r);
+    // A U0 statement (Cat("x"); Dir; …) leaves nothing meaningful in a0, so the old
+    // unconditional print showed whatever happened to be there — `ans=2196234160`
+    // after a Cat. ExePutS records the real type per statement in Fs->answer_type.
+    if (Fs && Fs->answer_type == RT_U0)
+      Print("\n");
+    else
+      Print("ans=%d\n", r);
     return FALSE;
   }
   Print("?\n");
   return FALSE;
+}
+
+
+// Arm the fault/^C recovery point around the WHOLE dispatch, not just the evaluated statement:
+// a wedge inside a built-in (`regs`, `csrs`) is exactly as worth escaping as one inside HolyC.
+// One-shot and disarmed on every exit — the trampoline restores ra/sp/fp captured here, so
+// leaving it armed after this frame returns would jump into a dead frame.
+Bool RVWinSerialDispatch(U8 *line)
+{
+  Bool res;
+  I64 cause;
+  if (RVTrapRecoverArm()) {
+    cause = RVTrapRecoverCause();
+    RVTrapRecoverDisarm();
+    if (cause < 0) {
+      Print("\n^C — interrupted, back at the prompt\n");
+      return FALSE;
+    }
+    Print("\n*** fault in that line — back at the prompt (`crash` for the monitor)\n");
+    Print("    mcause=%d (%s) mepc=%08X mtval=%08X ra=%08X\n",
+	  cause, RVWinMcauseName(cause),
+	  RVTrapRecoverEpc(), RVTrapRecoverTval(), RVTrapRecoverRa());
+    return FALSE;
+  }
+  // RX interrupt ON only while the command runs. The input pump is not polling during this
+  // window, so the ISR cannot race it; that race made keystrokes vanish after any large dump.
+  // Anything typed meanwhile lands in the runtime ring and is drained below, in normal context.
+  RVUartIrqInit();
+  res = RVWinSerialDispatch2(line);
+  RVUartIrqOff();
+  while ((cause = RVUartGetBuffered()) >= 0)
+    RVUartSoftEnqueue(cause & 0xFF);
+  RVTrapRecoverDisarm();
+  return res;
 }
 
 U0 RVWinSerialPutEcho(I64 ch)
@@ -960,13 +1118,22 @@ U0 RVWinTermPutChar(I64 ch)
     return;
   w = &rv_winmgr.wins[idx];
   kind = w->kind;
-  if (ch == 8) {
+  // 127 (DEL) as well as 8 (^H): a VT100/xterm Backspace key sends DEL, and without
+  // it the key fell through to the printable test below — which excludes 127 — so it
+  // was silently dropped and backspace did nothing. RVWinSerialPoll already accepted
+  // both; these two entry points did not.
+  if (ch == 8 || ch == 127) {
     if (rv_win_term_len > 0) {
       rv_win_term_len--;
       rv_win_term_line[rv_win_term_len] = 0;
       len = RVWinBodyLen(w->body);
       if (len > 0)
         w->body[len - 1] = 0;
+      // A doc-backed window renders from the CDoc, not from body, so truncating body
+      // alone leaves the erased character on screen (same pairing RVWinBodyPutChar
+      // uses in RVWinMgr.HC).
+      if (w->doc && w->doc->doc_signature == DOC_SIGNATURE_VAL)
+        DocEdBackspace(w->doc);
     }
     return;
   }
@@ -1011,13 +1178,15 @@ U0 RVWinAdamPutChar(I64 ch)
   if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
     return;
   w = &rv_winmgr.wins[idx];
-  if (ch == 8) {
+  if (ch == 8 || ch == 127) {
     if (rv_win_adam_len > 0) {
       rv_win_adam_len--;
       rv_win_adam_line[rv_win_adam_len] = 0;
       len = RVWinBodyLen(w->body);
       if (len > 0)
         w->body[len - 1] = 0;
+      if (w->doc && w->doc->doc_signature == DOC_SIGNATURE_VAL)
+        DocEdBackspace(w->doc);
     }
     return;
   }
@@ -1111,6 +1280,7 @@ Bool RVWinSerialInit()
   RVUartSoftOn(1);
   RVTrapInit();
   RVCrashMonInit();
+
   RVWinSerialSymWire;
   rv_win_serial_ready = TRUE;
   rv_win_serial_len = 0;

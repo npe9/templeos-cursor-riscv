@@ -85,7 +85,7 @@ U0 ICCmp(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
   }
 }
 /* Branch Operations */
-U0 ICBranch(CIntermediateCode *tmpi, CCodeMisc *label, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, I64 rip, U8 branch_type, Bool is_unsigned)
+U0 ICBranch(CIntermediateCode *tmpi, CCodeMisc *label, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, I64 rip, I64 rip2, U8 branch_type, Bool is_unsigned)
 {
   // Conditional branch
   // branch_type: 0=EQU, 1=NOT_EQU, 2=LESS, 3=GREATER_EQU, 4=GREATER, 5=LESS_EQU
@@ -95,7 +95,7 @@ U0 ICBranch(CIntermediateCode *tmpi, CCodeMisc *label, CICType t1, I64 r1, I64 d
   if (t1 & MDF_REG) {
     src1_reg = r1;
   } else {
-    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, t1, r1, d1, rip);
+    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, t1, r1, d1, rip2);
     src1_reg = RV_REG_T0;
   }
   if (t2 & MDF_REG) {
@@ -104,7 +104,7 @@ U0 ICBranch(CIntermediateCode *tmpi, CCodeMisc *label, CICType t1, I64 r1, I64 d
     RVLi(tmpi, RV_REG_T1, d2);
     src2_reg = RV_REG_T1;
   } else {
-    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T1, 0, t2, r2, d2, rip);
+    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T1, 0, t2, r2, d2, rip2);
     src2_reg = RV_REG_T1;
   }
   // Fixed-size short B* while label unresolved — avoid far/near size thrash.
@@ -157,7 +157,7 @@ U0 ICBranch(CIntermediateCode *tmpi, CCodeMisc *label, CICType t1, I64 r1, I64 d
   }
 }
 /* Simple Branch Operations */
-U0 ICBranchZero(CIntermediateCode *tmpi, CCodeMisc *label, CICType t1, I64 r1, I64 d1, I64 rip)
+U0 ICBranchZero(CIntermediateCode *tmpi, CCodeMisc *label, CICType t1, I64 r1, I64 d1, I64 rip, I64 rip2)
 {
   // Branch if zero
   U8 src_reg;
@@ -165,7 +165,7 @@ U0 ICBranchZero(CIntermediateCode *tmpi, CCodeMisc *label, CICType t1, I64 r1, I
   if (t1 & MDF_REG) {
     src_reg = r1;
   } else {
-    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, t1, r1, d1, rip);
+    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, t1, r1, d1, rip2);
     src_reg = RV_REG_T0;
   }
   // Branch PC is after any ICMov bytes already in ic_body.
@@ -176,7 +176,7 @@ U0 ICBranchZero(CIntermediateCode *tmpi, CCodeMisc *label, CICType t1, I64 r1, I
   RVBeq(tmpi, src_reg, RV_REG_ZERO, offset);
 }
 
-U0 ICBranchNotZero(CIntermediateCode *tmpi, CCodeMisc *label, CICType t1, I64 r1, I64 d1, I64 rip)
+U0 ICBranchNotZero(CIntermediateCode *tmpi, CCodeMisc *label, CICType t1, I64 r1, I64 d1, I64 rip, I64 rip2)
 {
   // Branch if not zero
   U8 src_reg;
@@ -184,7 +184,7 @@ U0 ICBranchNotZero(CIntermediateCode *tmpi, CCodeMisc *label, CICType t1, I64 r1
   if (t1 & MDF_REG) {
     src_reg = r1;
   } else {
-    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, t1, r1, d1, rip);
+    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, t1, r1, d1, rip2);
     src_reg = RV_REG_T0;
   }
   if (!label || label->addr == INVALID_PTR)
@@ -192,6 +192,42 @@ U0 ICBranchNotZero(CIntermediateCode *tmpi, CCodeMisc *label, CICType t1, I64 r1
   else
     offset = label->addr - (rip + tmpi->ic_cnt);
   RVBne(tmpi, src_reg, RV_REG_ZERO, offset);
+}
+/* OptPass folds (a&b) into BR_AND_*: Soft MenuFpOk `if (fp & 1)` → opcode 149.
+ * Without emit, Soft Cmp Warns=0 but Soft Call always returns 0 → r=4. */
+U0 ICAndBranch(CIntermediateCode *tmpi, CCodeMisc *label, Bool br_if_zero, I64 rip, I64 rip2)
+{
+  U8 src1_reg, src2_reg;
+  I64 offset;
+  CICArg *arg1 = &tmpi->arg1, *arg2 = &tmpi->arg2;
+  if (arg1->type & MDF_IMM) {
+    arg1 = &tmpi->arg2;
+    arg2 = &tmpi->arg1;
+  }
+  if (arg1->type & MDF_REG)
+    src1_reg = arg1->reg;
+  else {
+    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, arg1->type, arg1->reg, arg1->disp, rip2);
+    src1_reg = RV_REG_T0;
+  }
+  if (arg2->type & MDF_REG)
+    src2_reg = arg2->reg;
+  else if (arg2->type & MDF_IMM) {
+    RVLi(tmpi, RV_REG_T1, arg2->disp);
+    src2_reg = RV_REG_T1;
+  } else {
+    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T1, 0, arg2->type, arg2->reg, arg2->disp, rip2);
+    src2_reg = RV_REG_T1;
+  }
+  RVAnd(tmpi, RV_REG_T0, src1_reg, src2_reg);
+  if (!label || label->addr == INVALID_PTR)
+    offset = 0;
+  else
+    offset = label->addr - (rip + tmpi->ic_cnt);
+  if (br_if_zero)
+    RVBeq(tmpi, RV_REG_T0, RV_REG_ZERO, offset);
+  else
+    RVBne(tmpi, RV_REG_T0, RV_REG_ZERO, offset);
 }
 /* Unconditional Jump */
 U0 ICJmp(CIntermediateCode *tmpi, CCodeMisc *label, I64 rip)

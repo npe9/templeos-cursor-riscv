@@ -18,7 +18,7 @@
 // SEE ALSO
 //   Man  Sections  MemMap  Regs  Dir
 // BUGS
-//   Banner is hand-maintained; Up/Down history seed lives in C (worry_dream_repl).
+//   Banner is hand-maintained; Up/Down history seed lives in RlHistSeed (readline.hc).
 U0 Help()
 {
   UartStr("TempleOS RISC-V — HolyC REPL\n");

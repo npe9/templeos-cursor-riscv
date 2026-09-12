@@ -38,7 +38,7 @@ U0 Virtio9pNormSharePath(U8 *path, U8 *out, I64 cap)
   }
   out[j] = 0;
 }
-
+extern CDrv *RVSoftLet9pPlantQuiet(U8 drv_let = 'P');
 I64 Virtio9pConnect(U8 *tag)
 {
   U8 mtag[64];
@@ -58,6 +58,11 @@ I64 Virtio9pConnect(U8 *tag)
   if (NinePClientAttach(&ninep_client, tag, "holyc"))
     return -5;
   ninep_ready = 1;
+  // G28: 9P share is drive letter P: (quiet — thin demos may lack put_s).
+  // Select cur_dv so stock Cd("P:/…") / DirContext skip the !cur_dv soft path
+  // (soft plant-only Cd stays ::/… until Connect — home smoke).
+  RVSoftLet9pPlantQuiet('P');
+  Drv('P');
   return 0;
 }
 
@@ -176,47 +181,58 @@ I64 Mount9p(U8 *prefix, U8 *tag)
   U8 dent[512];
   U8 name[128];
   U8 local[160];
-  U64 off;
-  I64 n, i, ns, copied;
-  U8 dtype;
+  U64 off, d_off;
+  I64 n, i, ns, copied, ent;
+  U8 qtype;
+  U32 fid;
   if (!prefix)
     prefix = "";
   if (Virtio9pConnect(tag))
     return -1;
+  fid = NinePClientAllocFid(&ninep_client);
+  if (NinePClientWalkClone(&ninep_client, ninep_client.root_fid, fid))
+    return -2;
+  if (NinePClientLopen(&ninep_client, fid, P9_O_RDONLY | P9_O_DIRECTORY)) {
+    NinePClientClunk(&ninep_client, fid);
+    return -3;
+  }
   copied = 0;
   off = 0;
   while (1) {
-    n = NinePClientReaddir(&ninep_client, ninep_client.root_fid, off, dent, 512);
+    n = NinePClientReaddir(&ninep_client, fid, off, dent, 512);
     if (n <= 0)
       break;
     i = 0;
-    i += 13;
-    i += 8;
-    dtype = dent[i];
-    i += 1;
-    ns = NinePGetU16(dent, i);
-    i += 2;
-    if (ns <= 0 || ns >= 120)
-      break;
-    MemSet(name, 0, 128);
-    MemCpy(name, dent + i, ns);
-    name[ns] = 0;
-    i += ns;
-    off += n;
-    if (name[0] == '.')
-      continue;
-    if (dtype == P9_QTDIR)
-      continue;
-    local[0] = 0;
-    if (prefix[0]) {
-      StrCpy(local, prefix);
-      if (prefix[StrLen(prefix) - 1] != '/')
-        StrCat(local, "/");
+    while (i + 24 <= n) {
+      qtype = dent[i];
+      d_off = NinePGetU64(dent, i + 13);
+      ns = NinePGetU16(dent, i + 22);
+      if (ns <= 0 || ns >= 120 || i + 24 + ns > n)
+        break;
+      MemSet(name, 0, 128);
+      MemCpy(name, dent + i + 24, ns);
+      name[ns] = 0;
+      ent = 24 + ns;
+      i += ent;
+      off = d_off;
+      if (name[0] == '.')
+        continue;
+      if (qtype & P9_QTDIR)
+        continue;
+      local[0] = 0;
+      if (prefix[0]) {
+        StrCpy(local, prefix);
+        if (prefix[StrLen(prefix) - 1] != '/')
+          StrCat(local, "/");
+      }
+      StrCat(local, name);
+      if (Virtio9pImportFile(name, local) >= 0)
+        copied++;
     }
-    StrCat(local, name);
-    if (Virtio9pImportFile(name, local) >= 0)
-      copied++;
+    if (i == 0)
+      break;
   }
+  NinePClientClunk(&ninep_client, fid);
   return copied;
 }
 
@@ -232,6 +248,94 @@ I64 Virtio9pSelfTest(U8 *expect, I64 expect_len)
   if (MemCmp(buf, expect, expect_len))
     return -3;
   return 0;
+}
+// G28: FilesFind("P:/*") / nested "P:/dir/*" — real ninep_client Treaddir.
+// dir=NULL/"" → share root; else walk path components then readdir.
+CDirEntry *Virtio9pFilesFindMask(U8 *dir, U8 *mask, I64 fuf_flags)
+{
+  U8 dent[512], name[128], comp[128], *full, *p;
+  U64 off, d_off;
+  I64 n, i, ns, ent, ci;
+  U8 qtype;
+  U32 fid;
+  CDirEntry *res = NULL, *tmpde;
+  if (!ninep_ready || !mask)
+    return NULL;
+  // 9P2000.L: Treaddir needs an opened directory fid; parse all dirents per Rreaddir.
+  fid = NinePClientAllocFid(&ninep_client);
+  if (NinePClientWalkClone(&ninep_client, ninep_client.root_fid, fid))
+    return NULL;
+  if (dir && dir[0]) {
+    p = dir;
+    while (*p) {
+      while (*p == '/')
+        p++;
+      if (!*p)
+        break;
+      ci = 0;
+      while (*p && *p != '/' && ci < 127) {
+        comp[ci] = *p;
+        ci++;
+        p++;
+      }
+      comp[ci] = 0;
+      if (!comp[0])
+        break;
+      // Twalk in place (newfid==fid) for each path component.
+      if (NinePClientWalk(&ninep_client, fid, fid, comp)) {
+        NinePClientClunk(&ninep_client, fid);
+        return NULL;
+      }
+    }
+  }
+  if (NinePClientLopen(&ninep_client, fid, P9_O_RDONLY | P9_O_DIRECTORY)) {
+    NinePClientClunk(&ninep_client, fid);
+    return NULL;
+  }
+  off = 0;
+  while (1) {
+    n = NinePClientReaddir(&ninep_client, fid, off, dent, 512);
+    if (n <= 0)
+      break;
+    i = 0;
+    while (i + 24 <= n) {
+      qtype = dent[i];
+      // qid.type (P9_QTDIR), not linux d_type
+      d_off = NinePGetU64(dent, i + 13);
+      ns = NinePGetU16(dent, i + 22);
+      if (ns <= 0 || ns >= 120 || i + 24 + ns > n)
+        break;
+      MemSet(name, 0, 128);
+      MemCpy(name, dent + i + 24, ns);
+      name[ns] = 0;
+      ent = 24 + ns;
+      i += ent;
+      off = d_off;
+      if (name[0] == '.')
+        continue;
+      if (Bt(&fuf_flags, FUf_JUST_DIRS) && !(qtype & P9_QTDIR))
+        continue;
+      if (Bt(&fuf_flags, FUf_JUST_FILES) && (qtype & P9_QTDIR))
+        continue;
+      if (!FilesFindMatch(name, mask, fuf_flags))
+        continue;
+      tmpde = CAlloc(sizeof(CDirEntry));
+      StrCpy(tmpde->name, name);
+      if (qtype & P9_QTDIR)
+        tmpde->attr = RS_ATTR_DIR;
+      if (dir && dir[0])
+        full = MStrPrint("P:/%s/%s", dir, name);
+      else
+        full = MStrPrint("P:/%s", name);
+      tmpde->full_name = full;
+      tmpde->next = res;
+      res = tmpde;
+    }
+    if (i == 0)
+      break;
+  }
+  NinePClientClunk(&ninep_client, fid);
+  return res;
 }
 // Man("Virtio9p") -- Virtio9p()
 // NAME
@@ -251,7 +355,8 @@ I64 Virtio9pSelfTest(U8 *expect, I64 expect_len)
 //   the memfs namespace at prefix/. NineExport(path) / Virtio9pWritePath push
 //   guest bytes onto the share (Tmkdir parents, Tlcreate or Tlopen+Twrite
 //   overwrite). Nested paths like Home/a/b.hc create dirs on the share.
-//   Pass tag=0 to use the device mount_tag.
+//   Pass tag=0 to use the device mount_tag. Successful Connect plants soft
+//   letter P: (RVSoftLet9pPlant) so Let2Drv('P') / Cd("P:/…") grammar works.
 U0 Virtio9p()
 {
   "Virtio9p: NinePClient + virtio-mmio/pci transport (DeviceID 9)\n";

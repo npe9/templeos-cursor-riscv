@@ -16,6 +16,7 @@ U0 RVEmitRipAddr(CIntermediateCode *tmpi, U8 rd, I64 abs_val, I64 rip)
 }
 /* IC Move Operation - Core data movement function */
 extern U0 ICLea(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, I64 rip);
+extern U0 ICRVStoreThru(CIntermediateCode *tmpi, I64 pt, I64 addr_reg, I64 addr_disp, CICType t2, I64 r2, I64 d2, I64 rip);
 U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, I64 rip)
 {
   // Move/load/store data between registers and memory
@@ -35,9 +36,9 @@ U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
       RVAddi(tmpi, RV_REG_SP, RV_REG_SP, -8);
       RVSd(tmpi, RV_REG_A0, RV_REG_SP, 0);
     } else if (t1 & MDF_RIP_DISP32) {
-      // Folded ABS/JIT global: PC-rel addr then store imm (AOT data_rip OK).
-      RVEmitRipAddr(tmpi, RV_REG_T5, d1, rip);
+      // Folded ABS/JIT global: imm first (64-bit RVLi scratches T5), then PC-rel addr.
       RVLi(tmpi, RV_REG_T6, d2);
+      RVEmitRipAddr(tmpi, RV_REG_T5, d1, rip);
       switch (raw_type1) {
         case RT_I8 :
         case RT_U8 :
@@ -192,11 +193,12 @@ U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
   // RIP before STK: MDF_RIP_DISP32 must not fall into the push path
   // (for-loop `s=s+i` was lea + push instead of sd).
   if (t1 & MDF_RIP_DISP32) {
-    RVEmitRipAddr(tmpi, RV_REG_T5, d1, rip);
+    // Value before address: a 64-bit imm/load into T6 scratches T5.
     if (!(t2 & MDF_REG)) {
       ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T6, 0, t2, r2, d2, rip);
       r2 = RV_REG_T6;
     }
+    RVEmitRipAddr(tmpi, RV_REG_T5, d1, rip);
     switch (raw_type1) {
       case RT_I8 :
       case RT_U8 :
@@ -242,8 +244,9 @@ U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
     if (t1 & MDF_REG)
       RVMv(tmpi, r1, RV_REG_T0);
     else if (t1 & MDF_STK) {
+      RVMv(tmpi, RV_REG_A0, RV_REG_T0);
       RVAddi(tmpi, RV_REG_SP, RV_REG_SP, -8);
-      RVSd(tmpi, RV_REG_T0, RV_REG_SP, 0);
+      RVSd(tmpi, RV_REG_A0, RV_REG_SP, 0);
     } else
       ICMov(tmpi, t1, r1, d1, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
     return;
@@ -252,18 +255,29 @@ U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
   if (t1 & MDF_STK) {
     // Push value (REG or via temp). Direct RVSd — nested ICMov(DISP) hung
     // guest Cmp when pushing STR_CONST call args.
+    // Leave value in a0 like IMM→STK path — Soft CALL remat of local args
+    // (MenuFpOk good fp) often sees empty FP push slots; 1-arg ABI needs a0.
     if (!(t2 & MDF_REG)) {
-      ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T6, 0, t2, r2, d2, rip);
-      r2 = RV_REG_T6;
+      ICMov(tmpi, MDF_REG + RT_I64, RV_REG_A0, 0, t2, r2, d2, rip);
+      r2 = RV_REG_A0;
+    } else if (r2 != RV_REG_A0) {
+      RVMv(tmpi, RV_REG_A0, r2);
+      r2 = RV_REG_A0;
     }
     RVAddi(tmpi, RV_REG_SP, RV_REG_SP, -8);
     RVSd(tmpi, r2, RV_REG_SP, 0);
     return;
   }
   if (t2 & MDF_STK) {
-    // Pop
-    ICMov(tmpi, t1, r1, d1, MDF_DISP + RT_I64, RV_REG_SP, 0, rip);
+    /* Pop. Soft VarRmw: nested ICMov(REG←DISP+SP) Soft-hung; ld sp directly. */
+    if (t1 & MDF_REG) {
+      RVLd(tmpi, r1, RV_REG_SP, 0);
+      RVAddi(tmpi, RV_REG_SP, RV_REG_SP, 8);
+      return;
+    }
+    RVLd(tmpi, RV_REG_T6, RV_REG_SP, 0);
     RVAddi(tmpi, RV_REG_SP, RV_REG_SP, 8);
+    ICMov(tmpi, t1, r1, d1, MDF_REG + RT_I64, RV_REG_T6, 0, rip);
     return;
   }
   // SIB: [base + index<<scale + disp] (OptPass4 array index)
@@ -273,12 +287,28 @@ U0 ICMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
     return;
   }
   if (t1 & MDF_SIB) {
+    /* StoreThru: nested ICMov(MDF_DISP+raw) CICType trap for U8/U16 (Ident). */
     ICLea(tmpi, MDF_REG + RT_I64, RV_REG_T5, 0, t1, r1, d1, rip);
-    ICMov(tmpi, MDF_DISP + raw_type1, RV_REG_T5, 0, t2, r2, d2, rip);
+    ICRVStoreThru(tmpi, raw_type1, RV_REG_T5, 0, t2, r2, d2, rip);
     return;
   }
 }
 /* Arithmetic Operations */
+/* Load CICArg into a GPR. Soft VarRmw: ICMov(REG←STK) Soft-hung on nested
+ * ICMov(DISP+SP); pop with ld. Used by ICAdd/ICAnd/… for STK args. */
+U8 RVLoadToReg(CIntermediateCode *tmpi, U8 dest, CICType t, I64 r, I64 d, I64 rip)
+{
+  if (t & MDF_REG)
+    return r;
+  if (t & MDF_STK) {
+    RVLd(tmpi, dest, RV_REG_SP, 0);
+    RVAddi(tmpi, RV_REG_SP, RV_REG_SP, 8);
+    return dest;
+  }
+  ICMov(tmpi, MDF_REG + RT_I64, dest, 0, t, r, d, rip);
+  return dest;
+}
+
 U0 ICAdd(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, CICType t3, I64 r3, I64 d3, I64 rip)
 {
   // IC_ADD: t1/r1/d1 = t2/r2/d2 + t3/r3/d3
@@ -286,13 +316,7 @@ U0 ICAdd(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
   U8 dest_reg = RV_REG_A0;
   // Default to a0 for results
   U8 src1_reg, src2_reg;
-  // Load operands into registers
-  if (t2 & MDF_REG) {
-    src1_reg = r2;
-  } else {
-    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, t2, r2, d2, rip);
-    src1_reg = RV_REG_T0;
-  }
+  src1_reg = RVLoadToReg(tmpi, RV_REG_T0, t2, r2, d2, rip);
   if (t3 & MDF_IMM) {
     // Immediate add
     I64 imm = d3;
@@ -329,13 +353,7 @@ U0 ICSub(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
   // IC_SUB: t1/r1/d1 = t2/r2/d2 - t3/r3/d3
   U8 dest_reg = RV_REG_A0;
   U8 src1_reg, src2_reg;
-  // Load first operand
-  if (t2 & MDF_REG) {
-    src1_reg = r2;
-  } else {
-    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, t2, r2, d2, rip);
-    src1_reg = RV_REG_T0;
-  }
+  src1_reg = RVLoadToReg(tmpi, RV_REG_T0, t2, r2, d2, rip);
   if (t3 & MDF_IMM) {
     // Subtract immediate: ADD with negated immediate
     I64 imm = -d3;
@@ -371,12 +389,7 @@ U0 ICAnd(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
   // IC_AND: t1/r1/d1 = t2/r2/d2 & t3/r3/d3
   U8 dest_reg = RV_REG_A0;
   U8 src1_reg, src2_reg;
-  if (t2 & MDF_REG) {
-    src1_reg = r2;
-  } else {
-    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, t2, r2, d2, rip);
-    src1_reg = RV_REG_T0;
-  }
+  src1_reg = RVLoadToReg(tmpi, RV_REG_T0, t2, r2, d2, rip);
   if (t3 & MDF_IMM) {
     I64 imm = d3;
     if (imm >= -2048 && imm <= 2047) {
@@ -410,12 +423,7 @@ U0 ICOr(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2,
   // IC_OR
   U8 dest_reg = RV_REG_A0;
   U8 src1_reg, src2_reg;
-  if (t2 & MDF_REG) {
-    src1_reg = r2;
-  } else {
-    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, t2, r2, d2, rip);
-    src1_reg = RV_REG_T0;
-  }
+  src1_reg = RVLoadToReg(tmpi, RV_REG_T0, t2, r2, d2, rip);
   if (t3 & MDF_IMM) {
     I64 imm = d3;
     if (imm >= -2048 && imm <= 2047) {
@@ -449,12 +457,7 @@ U0 ICXor(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
   // IC_XOR
   U8 dest_reg = RV_REG_A0;
   U8 src1_reg, src2_reg;
-  if (t2 & MDF_REG) {
-    src1_reg = r2;
-  } else {
-    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, t2, r2, d2, rip);
-    src1_reg = RV_REG_T0;
-  }
+  src1_reg = RVLoadToReg(tmpi, RV_REG_T0, t2, r2, d2, rip);
   if (t3 & MDF_IMM) {
     I64 imm = d3;
     if (imm >= -2048 && imm <= 2047) {
@@ -690,19 +693,34 @@ U0 ICMod(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
 /* Post-inc/dec (fi++ / fi--). OptPass4 folds JIT globals to
  * ICF_BY_VAL + MDF_RIP_DISP32 with reg=REG_RIP (32). Emitting
  * MDF_DISP with that reg truncates to x0 and bleeds bit5 into imm
- * → `ld t0,1(x0)` (mtval=1). Honor BY_VAL + arg1.type/disp like x86. */
+ * → `ld t0,1(x0)` (mtval=1). Honor BY_VAL + arg1.type/disp like x86.
+ *
+ * Never build a CICType inline in an ICMov argument out of `tmpi-><member>`:
+ * host AOT scales `k + tmpi->arg1_type_pointed_to` as pointer arithmetic on
+ * `tmpi` (k + pt*sizeof(CIntermediateCode)), so the write-back arrived as
+ * MDF_STK and `g++` pushed the bumped value instead of storing it (guest AOT
+ * `t=arr[i++]` read the wrong element and lost the bump). Stage pt/type in
+ * locals first, same as ICAssign's tloc.
+ *
+ * Host trigger (host/parser.c ParseAdd): the left operand's pointer-ness comes
+ * from PtrElemInfo, which reads the sticky cc->last_var_symbol/last_member
+ * state. A leading int literal sets none of it, so `k + p->m` inherits the
+ * pointer left over from an earlier argument -- here `tmpi` itself, already
+ * marshalled into arg 1. `p->m + k` and a staged local are both unaffected.
+ * Repro: tests/scratch/host_arg_slot_scale_repro.hc. */
 U0 ICPostIncDec(CIntermediateCode *tmpi, I64 delta_sign, I64 rip)
 {
   CHashClass *tmpc = tmpi->ic_class, *tmpc1;
-  I64 step, r;
+  I64 step, r, pt;
   CICType tloc;
   tmpc1 = tmpc - 1;
+  pt = tmpi->arg1_type_pointed_to;
   if (tmpc->ptr_stars_cnt && tmpc1->size != 1)
     step = tmpc1->size *delta_sign;
   else
     step = delta_sign;
   if (tmpi->ic_flags & ICF_BY_VAL) {
-    tloc = tmpi->arg1.type & MDG_MASK + tmpi->arg1_type_pointed_to;
+    tloc = (tmpi->arg1.type & MDG_MASK) + pt;
     ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, tloc, tmpi->arg1.reg, tmpi->arg1.disp, rip);
     RVAddi(tmpi, RV_REG_T1, RV_REG_T0, step);
     ICMov(tmpi, tloc, tmpi->arg1.reg, tmpi->arg1.disp, MDF_REG + RT_I64, RV_REG_T1, 0, rip);
@@ -715,26 +733,28 @@ U0 ICPostIncDec(CIntermediateCode *tmpi, I64 delta_sign, I64 rip)
       ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T2, 0, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
       r = RV_REG_T2;
     }
-    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_DISP + tmpi->arg1_type_pointed_to, r, 0, rip);
+    tloc = MDF_DISP + pt;
+    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, tloc, r, 0, rip);
     if (tmpi->res.type.mode)
       ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
     RVAddi(tmpi, RV_REG_T1, RV_REG_T0, step);
-    ICMov(tmpi, MDF_DISP + tmpi->arg1_type_pointed_to, r, 0, MDF_REG + RT_I64, RV_REG_T1, 0, rip);
+    ICRVStoreThru(tmpi, pt, r, 0, MDF_REG + RT_I64, RV_REG_T1, 0, rip);
   }
 }
 
 U0 ICPreIncDec(CIntermediateCode *tmpi, I64 delta_sign, I64 rip)
 {
   CHashClass *tmpc = tmpi->ic_class, *tmpc1;
-  I64 step, r;
+  I64 step, r, pt;
   CICType tloc;
   tmpc1 = tmpc - 1;
+  pt = tmpi->arg1_type_pointed_to;
   if (tmpc->ptr_stars_cnt && tmpc1->size != 1)
     step = tmpc1->size *delta_sign;
   else
     step = delta_sign;
   if (tmpi->ic_flags & ICF_BY_VAL) {
-    tloc = tmpi->arg1.type & MDG_MASK + tmpi->arg1_type_pointed_to;
+    tloc = (tmpi->arg1.type & MDG_MASK) + pt;
     ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, tloc, tmpi->arg1.reg, tmpi->arg1.disp, rip);
     RVAddi(tmpi, RV_REG_T0, RV_REG_T0, step);
     ICMov(tmpi, tloc, tmpi->arg1.reg, tmpi->arg1.disp, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
@@ -748,27 +768,321 @@ U0 ICPreIncDec(CIntermediateCode *tmpi, I64 delta_sign, I64 rip)
       r = RV_REG_T2;
     }
     RVAddi(tmpi, r, r, step);
-    ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_DISP + tmpi->arg1_type_pointed_to, r, 0, rip);
+    tloc = MDF_DISP + pt;
+    ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, tloc, r, 0, rip);
+  }
+}
+/* *p++ / *p-- — match x86 ICDerefPostIncDec: deref old, write back p±size.
+ * Prior RV only bumped arg1.reg (no store) → Soft Call r=0 on ident walk. */
+U0 ICDerefPostIncDec(CIntermediateCode *tmpi, I64 delta_sign, I64 rip)
+{
+  CHashClass *tmpc1 = tmpi->ic_class;
+  CICType t, tptr, tval;
+  I64 r, step, pt;
+  step = tmpc1->size *delta_sign;
+  pt = tmpi->arg1_type_pointed_to;
+  t = tmpi->res.type.raw_type;
+  if (t > pt)
+    t = pt;
+  /* Stage the derived types: inline `k + tmpi-><member>` in an ICMov arg is
+   * scaled as pointer arithmetic on tmpi by host AOT (see ICPostIncDec). */
+  tptr = (tmpi->arg1.type & MDG_MASK) + RT_I64;
+  tval = MDF_DISP + t.raw_type;
+  if (tmpi->ic_flags & ICF_BY_VAL) {
+    if (tmpi->arg1.type & MDF_REG)
+      r = tmpi->arg1.reg;
+    else {
+      ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, tptr, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+      r = RV_REG_T0;
+    }
+    ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, tval, r, 0, rip);
+    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T1, 0, tptr, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+    RVAddi(tmpi, RV_REG_T1, RV_REG_T1, step);
+    ICMov(tmpi, tptr, tmpi->arg1.reg, tmpi->arg1.disp, MDF_REG + RT_I64, RV_REG_T1, 0, rip);
+  } else {
+    if (tmpi->arg1.type & MDF_REG)
+      r = tmpi->arg1.reg;
+    else {
+      ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T2, 0, tptr, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+      r = RV_REG_T2;
+    }
+    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_DISP + RT_I64, r, 0, rip);
+    RVAddi(tmpi, RV_REG_T1, RV_REG_T0, step);
+    ICMov(tmpi, MDF_DISP + RT_I64, r, 0, MDF_REG + RT_I64, RV_REG_T1, 0, rip);
+    ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, tval, RV_REG_T0, 0, rip);
+  }
+}
+/* *p++= / *p--= — match x86 ICAssignPostIncDec (writeback p). */
+U0 ICAssignPostIncDec(CIntermediateCode *tmpi, I64 delta_sign, I64 rip)
+{
+  CHashClass *tmpc1 = tmpi->ic_class2 - 1;
+  I64 r, step, pt;
+  CICType tptr, tval;
+  step = tmpc1->size *delta_sign;
+  pt = tmpi->arg1_type_pointed_to;
+  /* Stage the derived types (see ICPostIncDec): inline `k + tmpi-><member>`
+   * in an ICMov arg is scaled as pointer arithmetic on tmpi by host AOT. */
+  tptr = (tmpi->arg1.type & MDG_MASK) + RT_I64;
+  tval = MDF_DISP + pt;
+  if (tmpi->ic_flags & ICF_BY_VAL) {
+    if (tmpi->arg1.type & MDF_REG)
+      r = tmpi->arg1.reg;
+    else if (tmpi->arg1.type & (MDF_DISP | MDF_SIB | MDF_RIP_DISP32)) {
+      ICLea(tmpi, MDF_REG + RT_I64, RV_REG_T2, 0, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+      r = RV_REG_T2;
+    } else {
+      ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, tptr, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+      r = RV_REG_T0;
+    }
+    /* Narrow: StoreThru — not ICMov(MDF_DISP+pt) CICType trap. */
+    if (pt && pt < RT_I64)
+      ICRVStoreThru(tmpi, pt, r, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+    else
+      ICMov(tmpi, tval, r, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+    if (tmpi->res.type.mode)
+      ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T1, 0, tptr, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+    RVAddi(tmpi, RV_REG_T1, RV_REG_T1, step);
+    ICMov(tmpi, tptr, tmpi->arg1.reg, tmpi->arg1.disp, MDF_REG + RT_I64, RV_REG_T1, 0, rip);
+  } else {
+    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T2, 0, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_DISP + RT_I64, RV_REG_T2, 0, rip);
+    if (pt && pt < RT_I64)
+      ICRVStoreThru(tmpi, pt, RV_REG_T0, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+    else
+      ICMov(tmpi, tval, RV_REG_T0, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+    if (tmpi->res.type.mode)
+      ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+    RVAddi(tmpi, RV_REG_T1, RV_REG_T0, step);
+    ICMov(tmpi, MDF_DISP + RT_I64, RV_REG_T2, 0, MDF_REG + RT_I64, RV_REG_T1, 0, rip);
   }
 }
 /* Match x86 ICAssign: BY_VAL stores to folded RIP/DISP/REG lvalues.
- * BY_VAL+STK is inconsistent (pointer still on stack) — store through it. */
-U0 ICAssign(CIntermediateCode *tmpi, I64 rip)
+ * BY_VAL+STK is inconsistent (pointer still on stack) — store through it.
+ * Narrow store through ptr REG: gate on pointed_to width (not arg1.raw).
+ * H5 raw<I64 missed *d= (raw=PTR). Dropping REG&& (pt-only DISP) hung
+ * after MakeAdam — keep REG&&. Ident now has pt=U8 at Pass3/6.
+ *
+ * Ident emit dump: non-BY_VAL REG path took br=3 with pt=U8 arg2=DISP+U8 but
+ * ic_cnt=4 emitted only `lbu s1,0(s2)` — inline `ICMov(MDF_DISP+pt,…)` was
+ * received as REG←DISP (host-AOT CICType arg). Store via I64 pt + RVSb. */
+U0 ICRVStoreThru(CIntermediateCode *tmpi, I64 pt, I64 addr_reg, I64 addr_disp, CICType t2, I64 r2, I64 d2, I64 rip)
+{
+  I64 val_reg;
+  if (t2 & MDF_REG)
+    val_reg = r2;
+  else {
+    /* REG+I64 dest: load width still follows t2.raw (REG←DISP uses raw_type2). */
+    ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, t2, r2, d2, rip);
+    val_reg = RV_REG_T0;
+  }
+  if (addr_disp && (addr_disp < -2048 || addr_disp > 2047)) {
+    RVLi(tmpi, RV_REG_T1, addr_disp);
+    RVAdd(tmpi, RV_REG_T1, addr_reg, RV_REG_T1);
+    addr_reg = RV_REG_T1;
+    addr_disp = 0;
+  }
+  switch (pt) {
+    case RT_I8 :
+    case RT_U8 :
+    RVSb(tmpi, val_reg, addr_reg, addr_disp);
+    break;
+    case RT_I16 :
+    case RT_U16 :
+    RVSh(tmpi, val_reg, addr_reg, addr_disp);
+    break;
+    case RT_I32 :
+    case RT_U32 :
+    RVSw(tmpi, val_reg, addr_reg, addr_disp);
+    break;
+    default:
+    RVSd(tmpi, val_reg, addr_reg, addr_disp);
+  }
+}
+/* Soft DocInit for(i) arr[i]&=mask — IC_AND_EQU/OR/XOR. */
+U0 ICAndEqu(CIntermediateCode *tmpi, I64 rip)
+{
+  I64 pt = tmpi->arg1_type_pointed_to;
+  U8 addr;
+  if (!pt)
+    pt = RT_I64;
+  if (tmpi->ic_flags & ICF_BY_VAL && !(tmpi->arg1.type & MDF_STK)) {
+    ICLea(tmpi, MDF_REG + RT_I64, RV_REG_T2, 0, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+    addr = RV_REG_T2;
+  } else
+    addr = RVLoadToReg(tmpi, RV_REG_T2, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+  ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_DISP + pt, addr, 0, rip);
+  ICAnd(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+  ICRVStoreThru(tmpi, pt, addr, 0, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
+  if (tmpi->res.type.mode)
+    ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
+}
+
+U0 ICOrEqu(CIntermediateCode *tmpi, I64 rip)
+{
+  I64 pt = tmpi->arg1_type_pointed_to;
+  U8 addr;
+  if (!pt)
+    pt = RT_I64;
+  if (tmpi->ic_flags & ICF_BY_VAL && !(tmpi->arg1.type & MDF_STK)) {
+    ICLea(tmpi, MDF_REG + RT_I64, RV_REG_T2, 0, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+    addr = RV_REG_T2;
+  } else
+    addr = RVLoadToReg(tmpi, RV_REG_T2, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+  ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_DISP + pt, addr, 0, rip);
+  ICOr(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+  ICRVStoreThru(tmpi, pt, addr, 0, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
+  if (tmpi->res.type.mode)
+    ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
+}
+
+U0 ICXorEqu(CIntermediateCode *tmpi, I64 rip)
+{
+  I64 pt = tmpi->arg1_type_pointed_to;
+  U8 addr;
+  if (!pt)
+    pt = RT_I64;
+  if (tmpi->ic_flags & ICF_BY_VAL && !(tmpi->arg1.type & MDF_STK)) {
+    ICLea(tmpi, MDF_REG + RT_I64, RV_REG_T2, 0, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+    addr = RV_REG_T2;
+  } else
+    addr = RVLoadToReg(tmpi, RV_REG_T2, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+  ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_DISP + pt, addr, 0, rip);
+  ICXor(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+  ICRVStoreThru(tmpi, pt, addr, 0, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
+  if (tmpi->res.type.mode)
+    ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
+}
+
+// Compound assignment (`x op= y`) for the ops stock x86 emits as ICAddSubEctEqu / ICMulEqu /
+// ICDivEqu / ICShiftEqu. Same read-modify-write shape as ICAndEqu above: resolve the target
+// address (arg1 is a pointer, arg1_type_pointed_to its width), load, op with arg2, store back,
+// and copy to res when the expression value is used. Without these the guest (REPL) compiler
+// hit the "not implemented" default: `x+=3` silently did nothing and `x*=2` faulted, because
+// the NOP left arg2 pushed and res unset. Signedness comes from the TARGET type (`U64 q; q/=2`
+// must divide unsigned), and an F64 target takes the FP path.
+U8 ICEquAddr(CIntermediateCode *tmpi, I64 rip)
 {
   if (tmpi->ic_flags & ICF_BY_VAL && !(tmpi->arg1.type & MDF_STK)) {
-    ICMov(tmpi, tmpi->arg1.type & MDG_MASK + tmpi->arg1_type_pointed_to, tmpi->arg1.reg, tmpi->arg1.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
-    if (tmpi->res.type.mode)
-      ICMov(tmpi, tmpi->res.type & MDG_MASK + tmpi->arg1_type_pointed_to, tmpi->res.reg, tmpi->res.disp, tmpi->arg1.type & MDG_MASK + tmpi->arg1_type_pointed_to, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+    ICLea(tmpi, MDF_REG + RT_I64, RV_REG_T2, 0, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+    return RV_REG_T2;
+  }
+  return RVLoadToReg(tmpi, RV_REG_T2, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+}
+// op: 0 add, 1 sub, 2 mul, 3 div, 4 mod, 5 shl, 6 shr
+U0 ICArithEqu(CIntermediateCode *tmpi, I64 op, I64 rip)
+{
+  // IC_ADD_EQU..IC_SHR_EQU (op 0..6): *lval op= arg2. Stock picks the F64 form by
+  // !ICF_USE_INT (OptPass6), converting an int lval/rhs like ICFOpEqu does.
+  I64 pt = tmpi->arg1_type_pointed_to;
+  U8 addr;
+  Bool uns;
+  if (!pt)
+    pt = RT_I64;
+  addr = ICEquAddr(tmpi, rip);
+  if (!(tmpi->ic_flags & ICF_USE_INT) && op <= 3) {
+    if (pt == RT_F64)
+      RVFld(tmpi, RV_FREG_FT0, addr, 0);
+    else {
+      ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_DISP + pt, addr, 0, rip);
+      if (pt & RTF_UNSIGNED)
+        RVFcvtDLu(tmpi, RV_FREG_FT0, RV_REG_T0);
+      else
+        RVFcvtDL(tmpi, RV_FREG_FT0, RV_REG_T0);
+    }
+    if (tmpi->arg2.type.raw_type == RT_F64 || tmpi->arg2.type & MDF_IMM)
+      ICFLoad(tmpi, RV_FREG_FT1, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+    else {
+      ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T1, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+      RVFcvtDL(tmpi, RV_FREG_FT1, RV_REG_T1);
+    }
+    if (op == 0)
+      RVFaddD(tmpi, RV_FREG_FT0, RV_FREG_FT0, RV_FREG_FT1);
+    else if (op == 1)
+      RVFsubD(tmpi, RV_FREG_FT0, RV_FREG_FT0, RV_FREG_FT1);
+    else if (op == 2)
+      RVFmulD(tmpi, RV_FREG_FT0, RV_FREG_FT0, RV_FREG_FT1);
+    else
+      RVFdivD(tmpi, RV_FREG_FT0, RV_FREG_FT0, RV_FREG_FT1);
+    if (pt == RT_F64) {
+      RVFsd(tmpi, RV_FREG_FT0, addr, 0);
+      ICFStore(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, RV_FREG_FT0, rip);
+    } else {
+      RVFcvtLD(tmpi, RV_REG_T0, RV_FREG_FT0, 1);   // rtz: HolyC ToI64 truncates
+      ICRVStoreThru(tmpi, pt, addr, 0, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
+      if (tmpi->res.type.mode)
+        ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
+    }
+    return;
+  }
+  uns = pt & RTF_UNSIGNED;
+  ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_DISP + pt, addr, 0, rip);
+  if (op == 0)
+    ICAdd(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+  else if (op == 1)
+    ICSub(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+  else if (op == 2)
+    ICMul(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip, uns);
+  else if (op == 3)
+    ICDiv(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip, uns);
+  else if (op == 4)
+    ICMod(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip, uns);
+  else if (op == 5)
+    ICShl(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+  else
+    ICShr(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip, !uns);
+  ICRVStoreThru(tmpi, pt, addr, 0, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
+  if (tmpi->res.type.mode)
+    ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
+}
+
+U0 ICAssign(CIntermediateCode *tmpi, I64 rip)
+{
+  CICType tloc;
+  I64 pt;
+  if (tmpi->ic_flags & ICF_BY_VAL && !(tmpi->arg1.type & MDF_STK)) {
+    pt = tmpi->arg1_type_pointed_to;
+    /* Narrow BY_VAL: REG (*d=) and SIB/DISP/RIP (out[n]=) — never
+     * ICMov(MDF_*+pt); host-AOT CICType arg made that a load (Ident). */
+    if (pt && pt < RT_I64) {
+      if (tmpi->arg1.type & MDF_REG)
+        ICRVStoreThru(tmpi, pt, tmpi->arg1.reg, tmpi->arg1.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+      else if (tmpi->arg1.type & (MDF_DISP | MDF_SIB | MDF_RIP_DISP32)) {
+        ICLea(tmpi, MDF_REG + RT_I64, RV_REG_T2, 0, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+        ICRVStoreThru(tmpi, pt, RV_REG_T2, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+      } else {
+        tloc = (tmpi->arg1.type & MDG_MASK) + pt;
+        ICMov(tmpi, tloc, tmpi->arg1.reg, tmpi->arg1.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+      }
+      if (tmpi->res.type.mode) {
+        if (tmpi->res.type & MDF_REG)
+          ICRVStoreThru(tmpi, pt, tmpi->res.reg, tmpi->res.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+        else if (tmpi->res.type & (MDF_DISP | MDF_SIB | MDF_RIP_DISP32)) {
+          ICLea(tmpi, MDF_REG + RT_I64, RV_REG_T2, 0, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, rip);
+          ICRVStoreThru(tmpi, pt, RV_REG_T2, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+        } else {
+          tloc = (tmpi->res.type & MDG_MASK) + pt;
+          ICMov(tmpi, tloc, tmpi->res.reg, tmpi->res.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+        }
+      }
+      return;
+    }
+    tloc = (tmpi->arg1.type & MDG_MASK) + pt;
+    ICMov(tmpi, tloc, tmpi->arg1.reg, tmpi->arg1.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+    if (tmpi->res.type.mode) {
+      tloc = (tmpi->res.type & MDG_MASK) + pt;
+      ICMov(tmpi, tloc, tmpi->res.reg, tmpi->res.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+    }
     return;
   }
   if (tmpi->arg1.type & MDF_REG) {
-    ICMov(tmpi, MDF_DISP + tmpi->arg1_type_pointed_to, tmpi->arg1.reg, tmpi->arg1.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+    ICRVStoreThru(tmpi, tmpi->arg1_type_pointed_to, tmpi->arg1.reg, tmpi->arg1.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
     if (tmpi->res.type.mode)
       ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
     return;
   }
   ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T2, 0, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
-  ICMov(tmpi, MDF_DISP + tmpi->arg1_type_pointed_to, RV_REG_T2, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
+  ICRVStoreThru(tmpi, tmpi->arg1_type_pointed_to, RV_REG_T2, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
   if (tmpi->res.type.mode)
     ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
 }

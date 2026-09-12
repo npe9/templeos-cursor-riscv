@@ -23,12 +23,24 @@
 #define FS_SNAPNM_OFF 2632
 #define FS_SNAPHASH_OFF 8776
 // Side ring of fixed records after snap+hash tables, still < MEM_STACK (0x87F00000).
-// Header/seq/epoch live in HolyC globals; bodies at MEMFS_CWD+FS_LOG_OFF.
-// Keep C memset in worry_dream_repl.c in sync (MEMFS_CWD_OFF + FS_LOG_OFF).
+// Bodies at MEMFS_CWD+FS_LOG_OFF; the cursor (seq/epoch/head/count) lives in HolyC
+// globals AND is mirrored into the FS_LOG_HDR_OFF block below, so an external
+// debugger can read the journal without symbols. FsLogHdrSync() keeps them in step.
+// hc_repl/fs.hc FsInit() zeroes cwd..FS_LOG_OFF at boot; keep the two in sync.
 #define FS_LOG_OFF    9216
 #define FS_LOG_REC    144
 #define FS_LOG_MAX    512
 // Collapsed dirty-set (paths+ops) sits after the ring; still < MEM_STACK.
+// JTAG/OpenOCD-readable journal header. The ring bytes were always in memory, but
+// the cursor was not, so a halted-core dump found 512 fixed-size records with no way
+// to tell which were valid, where the write cursor sat, or which epoch they belonged
+// to. This 64-byte block is self-describing: find the magic and it names the ring's
+// address, stride, capacity and live extent. Placed past the dirty-set tables, which
+// end at FsChBase()+MEMFS_MAX*140 (= FS_LOG_OFF+FS_LOG_MAX*FS_LOG_REC+13440 = 96384).
+// Absolute on QEMU virt: MEMFS_CWD 0x87E01B00 + 0x18000 = 0x87E19B00.
+#define FS_LOG_HDR_OFF  98304
+#define FS_LOG_HDR_SIZE 64
+#define FS_LOG_HDR_VER  1
 #define FS_FNV_OFF    0x811C9DC5
 #define FS_FNV_PRIME  0x01000193
 #define FS_EPOCH_BOOT 0
@@ -361,6 +373,11 @@ U8 *FsChBase()
   return FsLogBase() + FS_LOG_MAX *FS_LOG_REC;
 }
 
+U8 *FsLogHdrBase()
+{
+  return FsCwd() + FS_LOG_HDR_OFF;
+}
+
 U8 *FsChPathAt(I64 i)
 {
   return FsChBase() + i * 64;
@@ -386,9 +403,11 @@ I32 *FsChSzP(I64 i)
   return (I32 *)(FsChBase() + MEMFS_MAX * 130 + i * 4);
 }
 
-I32 *FsChHashP(I64 i)
+// U32, not I32: this holds an FNV-1a hash, so a hash with bit 31 set must zero-extend.
+// As I32 the (correct, 4-byte) signed load reported 0xE36FA7C0 as 0xFFFFFFFFE36FA7C0.
+U32 *FsChHashP(I64 i)
 {
-  return (I32 *)(FsChBase() + MEMFS_MAX * 134 + i * 4);
+  return (U32 *)(FsChBase() + MEMFS_MAX * 134 + i * 4);
 }
 
 U8 *FsChEpP(I64 i)
@@ -455,6 +474,64 @@ I64 FsLogLoadU16(U8 *p)
   return v;
 }
 
+// Mirror the journal cursor into the JTAG-readable header. Every field an external
+// reader needs is here, so the OpenOCD recipe is one address and no symbols:
+//   +0  magic "TOSFSLOG"   +8  version      +12 hdr_size    +16 rec_size
+//   +20 rec_max            +24 head         +28 count       +32 seq
+//   +36 epoch              +40 chrono_start +44 gen         +48 ring_addr (lo,hi)
+//   +56 self_addr (lo,hi)  -- this block's own address, so a reader that found the
+//                             magic by scanning can recover the dump's base address
+//                             and locate the ring without assuming any layout.
+//                             ring_bytes is rec_size*rec_max; not stored.
+// Records run chronologically from chrono_start, wrapping mod rec_max, for count
+// records. All fields little-endian u32 (ring_addr is a u32 pair) to match the
+// record encoding FsLogStoreU32 already uses.
+U0 FsLogHdrSync()
+{
+  U8 *h, *p, *rp;
+  I64 ring, start, self;
+  h = FsLogHdrBase();
+  p = h;
+  *p = 'T';
+  p++;
+  *p = 'O';
+  p++;
+  *p = 'S';
+  p++;
+  *p = 'F';
+  p++;
+  *p = 'S';
+  p++;
+  *p = 'L';
+  p++;
+  *p = 'O';
+  p++;
+  *p = 'G';
+  rp = FsLogBase();
+  ring = rp(I64);
+  // Oldest live record: the ring only wraps after FsLogCompact, but keep the same
+  // rule FsLogChronoIdx uses so a reader never has to know which happened.
+  if (FsLogCount < FS_LOG_MAX)
+    start = 0;
+  else
+    start = FsLogHead;
+  FsLogStoreU32(h + 8, FS_LOG_HDR_VER);
+  FsLogStoreU32(h + 12, FS_LOG_HDR_SIZE);
+  FsLogStoreU32(h + 16, FS_LOG_REC);
+  FsLogStoreU32(h + 20, FS_LOG_MAX);
+  FsLogStoreU32(h + 24, FsLogHead);
+  FsLogStoreU32(h + 28, FsLogCount);
+  FsLogStoreU32(h + 32, FsLogSeq);
+  FsLogStoreU32(h + 36, FsLogEpochId);
+  FsLogStoreU32(h + 40, start);
+  FsLogStoreU32(h + 44, FsLogGen);
+  FsLogStoreU32(h + 48, ring & 0xFFFFFFFF);
+  FsLogStoreU32(h + 52, ring >> 32);
+  self = h(I64);
+  FsLogStoreU32(h + 56, self & 0xFFFFFFFF);
+  FsLogStoreU32(h + 60, self >> 32);
+}
+
 U0 FsLogPut(I64 op, U8 *path, U8 *path2, I64 size, I64 flags, I64 hash, I64 epoch)
 {
   U8 *r, *p;
@@ -482,6 +559,9 @@ U0 FsLogPut(I64 op, U8 *path, U8 *path2, I64 size, I64 flags, I64 hash, I64 epoc
     FsLogHead = 0;
   if (FsLogCount < FS_LOG_MAX)
     FsLogCount++;
+  // Single sync point: this is the only place seq/head/count move, and every epoch
+  // change ends in a FS_OP_EPOCH record, so the header is never staler than the ring.
+  FsLogHdrSync();
 }
 
 I64 FsLogChronoIdx(I64 age)
@@ -1119,7 +1199,8 @@ I64 Cd(U8 *name)
     }
     cwd[i] = 0;
   }
-  UartStr("cwd: /");
+  // Same TempleOS boot-root form as Pwd (G28 one Cd/Pwd log story).
+  UartStr("cwd: ::/");
   UartStr(cwd);
   PutCh('\n');
   return 0;

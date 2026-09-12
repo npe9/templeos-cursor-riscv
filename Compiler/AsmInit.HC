@@ -106,7 +106,7 @@ U0 AsmHashLoad()
   // When a board image ships OpCodes on A:, restore FileRead("A:/Compiler/OpCodes.DD") here.
   {
     // No OpCodes.DD yet: soft-load HolyC keywords (same order/ids as OpCodes.DD).
-    U8 *kw = "include\0define\0union\0catch\0class\0try\0if\0else\0for\0while\0" "extern\0_extern\0return\0sizeof\0_intern\0do\0asm\0goto\0exe\0break\0" "switch\0start\0end\0case\0default\0public\0offset\0import\0_import\0" "ifdef\0ifndef\0ifaot\0ifjit\0endif\0assert\0reg\0noreg\0lastclass\0" "no_warn\0help_index\0help_file\0static\0lock\0defined\0interrupt\0" "haserrcode\0argpop\0noargpop\0";
+    U8 *kw = "include\0define\0union\0catch\0class\0try\0if\0else\0for\0while\0" "extern\0_extern\0return\0sizeof\0_intern\0do\0asm\0goto\0exe\0break\0" "switch\0start\0end\0case\0default\0public\0offset\0import\0_import\0" "ifdef\0ifndef\0ifaot\0ifjit\0endif\0assert\0reg\0noreg\0lastclass\0" "no_warn\0help_index\0help_file\0static\0lock\0defined\0interrupt\0" "haserrcode\0argpop\0noargpop\0continue\0";
     I64 ki = 0;
     while (*kw) {
       CHashGeneric *tmph = CAlloc(sizeof(CHashGeneric));

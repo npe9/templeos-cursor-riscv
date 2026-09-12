@@ -214,7 +214,12 @@ I64 TaskInit(CTask *task,I64 stk_size)
   MemCpy(task->fpu_mmx,
 	SYS_FIXED_AREA+offset(CSysFixedArea.init_fpu_mmx),sizeof(CFPU));
 
+#ifdef RV_THIN_LOADER
+  // Jump-hint SoftCall path never HashFinds — skip TASK_HASH_TABLE_SIZE alloc.
+  task->hash_table=NULL;
+#else
   task->hash_table=HashTableNew(TASK_HASH_TABLE_SIZE,task);
+#endif
 
   if (!stk_size)
     stk_size=MEM_DFT_STK;
@@ -338,10 +343,12 @@ I64 ExeCmdLine(CCmpCtrl *cc)
     // Skip TTS_CUR_LEX title rewrite for string JIT (line_start may be a short
     // literal; TempleOS MemCpy(STR_LEN) over-reads). Title is cosmetic.
     cc->flags&=~CCF_HAS_MISC_DATA;
+    // 8 = CMPF_PRS_SEMICOLON (CompilerA.HH): consume ';' between stmts so
+    // compound ExePutS/ExeCmdLine reaches the last stmt (Cd;FileMgr).
     if (lsb)
-      machine_code=(*lsb)(cc,&type,0);
+      machine_code=(*lsb)(cc,&type,8);
     else
-      machine_code=LexStmt2Bin(cc,&type);
+      machine_code=LexStmt2Bin(cc,&type,8);
     if (machine_code==INVALID_PTR)
       break;
     if (!(cc->flags&CCF_JUST_LOAD)) {

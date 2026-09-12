@@ -88,6 +88,60 @@ U0 OptPass6Lag(CCmpCtrl *cc, CPrsStk *ps, CIntermediateCode *tmpi, I64 *_stk_ptr
   *_stk_ptr = stk_ptr;
   *_clobbered_reg_mask = clobbered_reg_mask;
 }
+/* Ident: dump each IC_ASSIGN pointed_to / arg1 mode / BY_VAL at Pass6.
+ * Overwritten by later ASSIGNs — last write is *d=*p. */
+U0 OptPass6IdentAssignPtDump(CCmpCtrl *cc, CIntermediateCode *tmpi)
+{
+  U8 raw, mode, pt, byv;
+  if (!cc->htc.fun || !cc->htc.fun->str || StrCmp(cc->htc.fun->str, "AdamLiteIdentProbe"))
+    return;
+  if (tmpi->ic_code != IC_ASSIGN)
+    return;
+  pt = tmpi->arg1_type_pointed_to;
+  raw = tmpi->arg1.type.raw_type;
+  mode = tmpi->arg1.type.mode;
+  byv = 0;
+  if (tmpi->ic_flags & ICF_BY_VAL)
+    byv = 1;
+  FileWrite("A:/AsgIdentPt6.DD", &pt, 1);
+  FileWrite("A:/AsgIdentRaw6.DD", &raw, 1);
+  FileWrite("A:/AsgIdentMode6.DD", &mode, 1);
+  FileWrite("A:/AsgIdentByv6.DD", &byv, 1);
+}
+/* Ident fusion dumps → A:/Opt6Ident.DD (≤4 × 12 I64). */
+I64 opt6_ident_fuse_n = 0;
+I64 opt6_ident_fuse_buf[48];
+U0 OptPass6IdentFuseDump(CCmpCtrl *cc, CIntermediateCode *tmpi, CIntermediateCode *tmpil2)
+{
+  I64 *slot, pt, n;
+  if (opt6_ident_fuse_n >= 4)
+    return;
+  if (!cc->htc.fun || !cc->htc.fun->str || StrCmp(cc->htc.fun->str, "AdamLiteIdentProbe"))
+    return;
+  n = opt6_ident_fuse_n;
+  slot = &opt6_ident_fuse_buf[n * 12];
+  pt = tmpi->arg1_type_pointed_to;
+  slot[0] = tmpi->arg1.type(U16);
+  slot[1] = tmpi->arg1.type.raw_type;
+  slot[2] = pt;
+  slot[3] = 0;
+  slot[4] = -1;
+  if (tmpi->ic_class) {
+    slot[3] = tmpi->ic_class->raw_type;
+    slot[4] = tmpi->ic_class->ptr_stars_cnt;
+  }
+  slot[5] = tmpi->ic_flags;
+  slot[6] = tmpil2->ic_code;
+  slot[7] = tmpil2->arg1.type(U16);
+  slot[8] = tmpil2->arg1.type.raw_type;
+  slot[9] = tmpil2->arg1_type_pointed_to;
+  slot[10] = tmpil2->res.type(U16);
+  slot[11] = 0;
+  if (tmpi->arg1.type & MDF_REG && pt && pt < RT_I64)
+    slot[11] = 1;
+  opt6_ident_fuse_n = n + 1;
+  FileWrite("A:/Opt6Ident.DD", opt6_ident_fuse_buf, sizeof(I64) * 12 * opt6_ident_fuse_n);
+}
 
 U0 OptPass6(CCmpCtrl *cc)
 {
@@ -101,6 +155,7 @@ U0 OptPass6(CCmpCtrl *cc)
   else
     reg_stk_size = 1;
 #assert REGG_STK_TMP==(1<<RV_REG_T4) || REGG_STK_TMP==(1<<9)
+  opt6_ident_fuse_n = 0;
   tmpi = cc->coc.coc_head.next;
   old_tmpil2 = NULL;
   tmpil1 = tmpil2 = &cmp.ic_nop;
@@ -109,9 +164,13 @@ U0 OptPass6(CCmpCtrl *cc)
       if (tmpil1->ic_code > IC_NOP2)
         tmpil2 = tmpil1;
       tmpil1 = tmpi;
+      OptPass6IdentAssignPtDump(cc, tmpi);
       if (tmpi->arg2.type & MDF_STK) {
         if (tmpil2->res.type & MDF_STK && !(tmpil2->ic_flags & ICF_PUSH_RES)) {
-          if (tmpi->ic_code == IC_ASSIGN && tmpi->ic_flags & ICF_BY_VAL && tmpi->ic_flags & ICF_RES_NOT_USED && tmpil2->ic_code != IC_CALL_END && tmpil2->ic_code != IC_CALL_END2 && tmpil2->ic_code != IC_SET_RAX && !(tmpi->ic_flags & (ICF_ARG2_TO_F64 | ICF_ARG2_TO_INT)) && !(tmpil2->ic_flags & (ICF_RES_TO_F64 | ICF_RES_TO_INT))) {
+          /* Skip fuse for narrow BY_VAL SIB/DISP/RIP (out[n]= U8*): fused
+           * res=MDF_SIB+U8 still hit ICMov(MDF_DISP+raw) CICType trap. */
+          if (tmpi->ic_code == IC_ASSIGN && tmpi->ic_flags & ICF_BY_VAL && tmpi->ic_flags & ICF_RES_NOT_USED && tmpil2->ic_code != IC_CALL_END && tmpil2->ic_code != IC_CALL_END2 && tmpil2->ic_code != IC_SET_RAX && !(tmpi->ic_flags & (ICF_ARG2_TO_F64 | ICF_ARG2_TO_INT)) && !(tmpil2->ic_flags & (ICF_RES_TO_F64 | ICF_RES_TO_INT)) && !(tmpi->arg1_type_pointed_to && tmpi->arg1_type_pointed_to < RT_I64 && tmpi->arg1.type & (MDF_DISP | MDF_SIB | MDF_RIP_DISP32))) {
+            OptPass6IdentFuseDump(cc, tmpi, tmpil2);
             tmpil2->res.type = tmpi->arg1.type & MDG_MASK + tmpi->arg1_type_pointed_to;
             tmpil2->res.reg = tmpi->arg1.reg;
             tmpil2->res.disp = tmpi->arg1.disp;

@@ -160,6 +160,15 @@ Bool RVUartDataReady()
 I64 RVUartTryGet()
 {
   I64 ch, nt;
+  // When the 16550 RX interrupt is enabled (RVUartIrqInit — the REPL turns it on so ^C can
+  // break a wedged evaluation), the ISR drains the FIFO into the RUNTIME's ring before any
+  // poller sees it. Every consumer polls through here, so take from that ring first: without
+  // this, keystrokes raced the ISR and simply vanished, and the more output the kernel wrote
+  // the more often the ISR won. Returns -1 when the interrupt is off, so nothing changes for
+  // builds/boards that never call RVUartIrqInit.
+  ch = RVUartGetBuffered();
+  if (ch >= 0)
+    return ch & 0xFF;
   if (RVUartSoft) {
     RVUartRxDrain;
     if (RVUartSoftHead == RVUartSoftTail)

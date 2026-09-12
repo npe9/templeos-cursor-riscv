@@ -9,9 +9,20 @@
 // Demo stock reuse: `#define CDC CRVDC`, palette-index pen (dc->color=RED), GrLine step/start,
 // soft PressAKey (no GetChar block). First proof: Demo/Graphics/NetOfDots.HC.
 // FloodFill/brush/GrLine3/GrCircle3 (Adam GrPrimatives shape) for Demo/Graphics/Blot.HC.
-// Full 8-bit palette CDC body / ScrnCast / mesh still deferred.
+// Libs-first widen: DCCopy/DCExt/DCDiff, 8-bit body quantize + GR-lite
+// DCSave/DCLoad (CompressBuf .GR.Z when DCSF_COMPRESSED), soft ScrnCast frame (DCDiff),
+// GrFillTri0/Gr3Mesh (flat, no lighting), optional offscreen 8-bit live body
+// (DCNew8 + Plot/Blot/Peek/Fill/FloodFill).
+// Opt-in WinMgr 8-bit compose present: rv_gr_dc_u8 + rv_gr_u8_present → GrUpdateVGAGraphics
+// expands palette body into 32-bpp compose before Flip (default path stays 32-bpp).
+// When full-screen U8 is bound (ComposeEnable), WinMgr text/draw_it/sprites paint into
+// is_u8 then expand on present (RVGrPaintDC); small Bind-only buffers stay present-expand.
+// WinMgr compose path calls ScrnCastFrame when scrncast.record && !just_audio.
+// ScrnCast AU: RVSnd queues CSndData when record; soft AUWrite/.AU (just_audio OK).
+// Still deferred: mesh lighting/transform/symmetry.
 // TempleOS CDC* name → 32-bpp CRVDC (stock Demo/Graphics/*.HC).
 #define CDC CRVDC
+#include "/Adam/Gr/Gr.HH" // CMeshTri / SPT_* for Gr3Mesh + Sprite mesh elems
 // TempleOS gr_palette_std indices → full 8-bit XRGB8888 (0x00RRGGBB, not 6-bit VGA 0xAA).
 U32 rv_palette_std_tpl[COLORS_NUM] = {0x00000000, 0x000000FF, 0x0000FF00, 0x0000FFFF, 0x00FF0000, 0x00FF00FF, 0x00AA5500, 0x00AAAAAA, 0x00555555, 0x005555FF, 0x0055FF55, 0x0055FFFF, 0x00FF5555, 0x00FF55FF, 0x00FFFF55, 0x00FFFFFF};
 U32 rv_palette_std[COLORS_NUM];
@@ -38,20 +49,28 @@ U0 RVPaletteSetStd()
 
 class CRVDC
 {
-  //32-bpp CDC bridge (not 8-bit palette body). color is XRGB U32.
+  //32-bpp CDC bridge by default; optional is_u8 ⇒ body is U8 palette (TempleOS CDC).
+  // color may be palette index or XRGB U32 (RVDCPenColor / RVDCPenIdx).
   U32 *body;
+  // start/end bracket the serialisable scalar header, matching stock CDC's markers so
+  // `offset(CDC.end)-offset(CDC.start)` resolves under `#define CDC CRVDC` (that is
+  // what Adam/Gr/GrDC.HC's DCSave/DCLoad span uses). U0 members are zero-size — the
+  // dump confirms CDC's own start/end take 0 bytes — so this does not move a field.
+  // Deliberately after `body`: a pointer must not be serialised, it is re-derived.
+  U0 start;
   I64 width;
   I64 height;
   I64 width_internal;
-  // pixels per row
+  // pixels per row (U32 elems) or byte stride when is_u8 ((width+7)&~7)
   U32 color;
   U32 color2;
   U32 bkcolor;
   I64 thick;
   I64 flags;
+  U0 end;
   // DCF_* subset: DONT_DRAW, RECORD_EXTENTS, NO_TRANSPARENTS, ALIAS, SCRN_BITMAP
   Bool is_scrn;
-  // TRUE ⇒ body aliases rv_fb.pixels (compose)
+  // TRUE ⇒ body aliases rv_fb.pixels (compose); always 32-bpp
   CRVDC *brush;
   // optional stamp DC for pen (Demo/Graphics/Blot.HC)
   I64 x0;
@@ -67,6 +86,9 @@ class CRVDC
   I64 min_y;
   I64 max_y;
   // DCF_RECORD_EXTENTS
+  Bool is_u8;
+  // TRUE ⇒ body is U8 palette indices (offscreen + opt-in WinMgr paint DC). Trailing
+  // so brush/clip offsets match pre-8bit CRVDC layout.
 };
 
 U32 RVDCPenColor(CRVDC *dc)
@@ -92,12 +114,17 @@ I64 PressAKey()
 class CRVGrGlbls
 {
   CRVDC *dc;
-  // persistent screen DC
+  // persistent screen DC (aliases 32-bpp compose)
   U0 (*fp_draw_it)(CRVDC *dc);
   // optional WinMgr-lite refresh hook
 };
 CRVGrGlbls rv_gr;
 CRVDC rv_scrn_dc;
+// Opt-in 8-bit compose present (separate I64 globals — do not grow CRVGrGlbls;
+// Bool packing misaligned rv_scrn_dc and broke the 32-bpp hash pin).
+CRVDC *rv_gr_dc_u8;
+I64 rv_gr_u8_present;
+I64 rv_gr_u8_owned;
 // Stock Apps (PsalmodyDraw) call gr.fp_draw_ms — soft null cursor until AMouse.
 U0 RVDrawMsNull(CDC *dc, I64 x, I64 y)
 {
@@ -189,6 +216,7 @@ Bool RVDCScrnBind(CRVDC *dc)
   dc->height = rv_fb.height;
   dc->width_internal = RVFbPixStride;
   dc->is_scrn = TRUE;
+  dc->is_u8 = FALSE;
   dc->flags = DCF_SCRN_BITMAP;
   RVDCRst(dc);
   return TRUE;
@@ -208,7 +236,34 @@ CRVDC *RVDCNew(I64 width, I64 height)
   dc->width_internal = width;
   dc->height = height;
   dc->is_scrn = FALSE;
+  dc->is_u8 = FALSE;
   n = width *height *sizeof(U32);
+  dc->body = CAlloc(n);
+  if (!dc->body) {
+    Free(dc);
+    return NULL;
+  }
+  RVDCRst(dc);
+  return dc;
+}
+
+CRVDC *RVDCNew8(I64 width, I64 height)
+{
+  //Offscreen 8-bit palette DC (TempleOS CDC body shape). WinMgr/FB stay 32-bpp.
+  CRVDC *dc;
+  I64 n, wi;
+  if (width < 1 || height < 1)
+    return NULL;
+  dc = CAlloc(sizeof(CRVDC));
+  if (!dc)
+    return NULL;
+  wi = width + 7 & ~7;
+  dc->width = width;
+  dc->width_internal = wi;
+  dc->height = height;
+  dc->is_scrn = FALSE;
+  dc->is_u8 = TRUE;
+  n = wi *height;
   dc->body = CAlloc(n);
   if (!dc->body) {
     Free(dc);
@@ -257,24 +312,46 @@ U0 DCExtentsInit(CRVDC *dc = NULL)
   dc->min_y = I64_MAX;
   dc->max_y = I64_MIN;
 }
-// TempleOS API names used by Demo/Graphics blot patterns (32-bpp CRVDC, not 8-bit CDC).
+// TempleOS API names used by Demo/Graphics blot patterns (32-bpp CRVDC + optional DCNew8).
 #define DCNew RVDCNew
+#define DCNew8 RVDCNew8
 #define DCDel RVDCDel
 #define DCFill RVDCFill
 #define DCClear RVDCClear
 #define DCRst RVDCRst
 U0 RVDCFill(CRVDC *dc = NULL, U32 val = 0)
 {
+  //TempleOS DCFill stores a palette index on 8-bit CDC; on 32-bpp map 0..15 via RVColor
+  //(stock Apps use DCFill(WHITE) before black DrawIt staff — raw 15 is not white XRGB).
   I64 i, n;
-  U32 *p;
+  U32 *p, px;
+  U8 *p8, v8;
   if (!dc)
     dc = rv_gr.dc;
   if (!dc || !dc->body)
     return;
   n = dc->width_internal *dc->height;
+  if (dc->is_u8) {
+    p8 = dc->body(U8 *);
+    if (val == RV_TRANSPARENT)
+      v8 = TRANSPARENT;
+    else if (val < COLORS_NUM || val == COLOR_MONO)
+      v8 = val;
+    else
+      v8 = val & 0xFF;
+    for (i = 0; i < n; i++)
+      p8[i] = v8;
+    return;
+  }
+  if (val == RV_TRANSPARENT)
+    px = RV_TRANSPARENT;
+  else if (val < COLORS_NUM)
+    px = RVColor(val);
+  else
+    px = val;
   p = dc->body;
   for (i = 0; i < n; i++)
-    p[i] = val;
+    p[i] = px;
 }
 
 U0 RVDCClear(CRVDC *dc = NULL)
@@ -306,12 +383,31 @@ I64 RVColorNearestIdx(U32 c)
   return best;
 }
 
+U8 RVDCPenIdx(CRVDC *dc)
+{
+  //Palette index for is_u8 Plot/Fill (TempleOS CDC pen).
+  if (!dc)
+    return 0;
+  if (dc->color == COLOR_MONO || dc->color == TRANSPARENT)
+    return COLOR_MONO;
+  if (dc->color < COLORS_NUM)
+    return dc->color;
+  return RVColorNearestIdx(dc->color);
+}
+
 U32 GrPeek(CRVDC *dc = NULL, I64 x, I64 y)
 {
+  U8 c8;
   if (!dc)
     dc = rv_gr.dc;
   if (!dc || !dc->body || x < 0 || y < 0 || x >= dc->width || y >= dc->height)
     return RV_TRANSPARENT;
+  if (dc->is_u8) {
+    c8 = dc->body(U8 *)[y *dc->width_internal + x];
+    if (c8 == TRANSPARENT)
+      return RV_TRANSPARENT;
+    return RVColor(c8);
+  }
   return dc->body[y *dc->width_internal + x];
 }
 
@@ -326,6 +422,9 @@ Bool RVGrInit(I64 width = RV_FB_W_DEFAULT, I64 height = RV_FB_H_DEFAULT, U32 *pi
   if (!RVDCScrnBind(rv_gr.dc))
     return FALSE;
   rv_gr.fp_draw_it = NULL;
+  rv_gr_dc_u8 = NULL;
+  rv_gr_u8_present = 0;
+  rv_gr_u8_owned = 0;
   gr.fp_draw_ms = &RVDrawMsNull;
   rv_term.cols = rv_fb.width / FONT_WIDTH;
   rv_term.rows = rv_fb.height / FONT_HEIGHT;
@@ -374,11 +473,130 @@ Bool RVSysGrInit()
   return TRUE;
 }
 
+I64 RVBody8ExpandToFB(U8 *body, I64 width, I64 height, I64 wi, I64 dx = 0, I64 dy = 0)
+{
+  //GrUpdateVGAGraphics portable core: 8-bit palette → XRGB compose (no VGA planes).
+  // Clips to rv_fb; returns pixels written. Default WinMgr path does not call this.
+  I64 x, y, sx, sy, stride, n = 0;
+  U8 c;
+  U32 *pix;
+  if (!body || !rv_fb.pixels || width < 1 || height < 1 || wi < width)
+    return 0;
+  pix = rv_fb.pixels;
+  stride = RVFbPixStride;
+  for (y = 0; y < height; y++) {
+    sy = dy + y;
+    if (sy < 0 || sy >= rv_fb.height)
+      continue;
+    for (x = 0; x < width; x++) {
+      sx = dx + x;
+      if (sx < 0 || sx >= rv_fb.width)
+        continue;
+      c = body[y *wi + x];
+      if (c == TRANSPARENT)
+        pix[sy *stride + sx] = RV_TRANSPARENT;
+      else
+        pix[sy *stride + sx] = RVColor(c);
+      n++;
+    }
+  }
+  return n;
+}
+
+I64 RVDCExpandU8ToFB(CRVDC *dc8, I64 dx = 0, I64 dy = 0)
+{
+  //Expand an is_u8 CRVDC body into compose at (dx,dy).
+  if (!dc8 || !dc8->is_u8 || !dc8->body)
+    return 0;
+  return RVBody8ExpandToFB(dc8->body(U8 *), dc8->width, dc8->height, dc8->width_internal, dx, dy);
+}
+
+U0 GrUpdateVGAGraphics()
+{
+  //TempleOS name → expand optional 8-bit compose backbuffer into 32-bpp FB.
+  // Stock writes VGA planes; here XR24 compose is the Flip source.
+  if (!rv_gr_u8_present || !rv_gr_dc_u8)
+    return;
+  RVDCExpandU8ToFB(rv_gr_dc_u8, 0, 0);
+}
+
+Bool RVGrU8ComposeBind(CRVDC *dc8)
+{
+  //Opt-in: present expands this is_u8 DC into compose. Does not change 32-bpp draw callers.
+  // Caller retains ownership (use Enable for an owned screen-sized buffer).
+  if (!dc8 || !dc8->is_u8 || !dc8->body)
+    return FALSE;
+  if (rv_gr_u8_owned && rv_gr_dc_u8 && rv_gr_dc_u8 != dc8)
+    DCDel(rv_gr_dc_u8);
+  rv_gr_dc_u8 = dc8;
+  rv_gr_u8_present = 1;
+  rv_gr_u8_owned = 0;
+  return TRUE;
+}
+
+U0 RVGrU8ComposeUnbind()
+{
+  //Stop present expand; leave caller-owned dc_u8 alone (owned buffers freed by Disable).
+  if (rv_gr_u8_owned && rv_gr_dc_u8)
+    DCDel(rv_gr_dc_u8);
+  rv_gr_dc_u8 = NULL;
+  rv_gr_u8_present = 0;
+  rv_gr_u8_owned = 0;
+}
+
+Bool RVGrU8ComposeEnable()
+{
+  //Alloc screen-sized 8-bit backbuffer and bind for present expand (owned).
+  CRVDC *dc8;
+  if (!rv_fb.width || !rv_fb.height)
+    return FALSE;
+  if (rv_gr_dc_u8 && rv_gr_dc_u8->is_u8 && rv_gr_dc_u8->width == rv_fb.width && rv_gr_dc_u8->height == rv_fb.height) {
+    rv_gr_u8_present = 1;
+    return TRUE;
+  }
+  dc8 = DCNew8(rv_fb.width, rv_fb.height);
+  if (!dc8)
+    return FALSE;
+  if (rv_gr_u8_owned && rv_gr_dc_u8)
+    DCDel(rv_gr_dc_u8);
+  rv_gr_dc_u8 = dc8;
+  rv_gr_u8_present = 1;
+  rv_gr_u8_owned = 1;
+  return TRUE;
+}
+
+U0 RVGrU8ComposeDisable()
+{
+  //Unbind and free owned 8-bit compose buffer.
+  RVGrU8ComposeUnbind;
+}
+
+Bool RVGrU8ComposeActive()
+{
+  //TRUE when a full-screen is_u8 backbuffer is bound for WinMgr paint + present expand.
+  // Small Bind-only DCs (vgaok 16×16) expand on present but do not steal WinMgr draw.
+  if (!rv_gr_u8_present || !rv_gr_dc_u8 || !rv_gr_dc_u8->is_u8 || !rv_gr_dc_u8->body)
+    return FALSE;
+  if (!rv_fb.width || !rv_fb.height)
+    return FALSE;
+  return rv_gr_dc_u8->width == rv_fb.width && rv_gr_dc_u8->height == rv_fb.height;
+}
+
+CRVDC *RVGrPaintDC()
+{
+  //WinMgr / draw_it paint target: full-screen U8 when active, else 32-bpp screen DC.
+  if (RVGrU8ComposeActive)
+    return rv_gr_dc_u8;
+  return rv_gr.dc;
+}
+
 U0 RVGrRefresh()
 {
-  //WinMgr-lite: optional draw_it, then push pixels to the active present backend.
+  //WinMgr-lite: optional draw_it, optional 8-bit expand, then Flip+present.
   if (rv_gr.fp_draw_it && rv_gr.dc)
     (*rv_gr.fp_draw_it)(rv_gr.dc);
+  if (rv_gr_u8_present)
+    GrUpdateVGAGraphics;
   RVFbPresent();
 }
 
@@ -393,6 +611,7 @@ I64 RVGrBlotMono(CRVDC *dc, I64 x, I64 y, CRVDC *img)
   // Adam GrPlot brush path (GrPrimatives) — top-left of brush at (x,y).
   I64 ix, iy, dx, dy, w, h, cnt = 0;
   U32 *dst, c, pen;
+  U8 *src8, *dst8, c8, pen8;
   if (!dc || !dc->body || !img || !img->body)
     return 0;
   if (dc->flags & DCF_DONT_DRAW)
@@ -400,6 +619,9 @@ I64 RVGrBlotMono(CRVDC *dc, I64 x, I64 y, CRVDC *img)
   w = img->width;
   h = img->height;
   pen = RVDCPenColor(dc);
+  pen8 = RVDCPenIdx(dc);
+  src8 = img->is_u8 ? img->body(U8 *) : NULL;
+  dst8 = dc->is_u8 ? dc->body(U8 *) : NULL;
   for (iy = 0; iy < h; iy++) {
     dy = y + iy;
     if (dy < 0 || dy >= dc->height)
@@ -416,11 +638,21 @@ I64 RVGrBlotMono(CRVDC *dc, I64 x, I64 y, CRVDC *img)
         if (dx < dc->clip_x1 || dx >= dc->clip_x2)
           continue;
       }
-      c = img->body[iy *img->width_internal + ix];
-      if (!c || c == RV_TRANSPARENT)
-        continue;
-      dst = dc->body;
-      dst[dy *dc->width_internal + dx] = pen;
+      if (src8) {
+        c8 = src8[iy *img->width_internal + ix];
+        if (!c8)
+          continue;
+      } else {
+        c = img->body[iy *img->width_internal + ix];
+        if (!c || c == RV_TRANSPARENT)
+          continue;
+      }
+      if (dst8)
+        dst8[dy *dc->width_internal + dx] = pen8;
+      else {
+        dst = dc->body;
+        dst[dy *dc->width_internal + dx] = pen;
+      }
       cnt++;
       if (dc->flags & DCF_RECORD_EXTENTS) {
         if (dx < dc->min_x)
@@ -441,6 +673,7 @@ Bool GrPlot0(CRVDC *dc = NULL, I64 x, I64 y)
 {
   //Raw pixel plot — no brush (Adam GrPlot0 shape). Used by FloodFill.
   U32 *body;
+  U8 *body8;
   if (!dc)
     dc = rv_gr.dc;
   if (!dc || !dc->body)
@@ -463,8 +696,13 @@ Bool GrPlot0(CRVDC *dc = NULL, I64 x, I64 y)
     if (y > dc->max_y)
       dc->max_y = y;
   }
-  body = dc->body;
-  body[y *dc->width_internal + x] = RVDCPenColor(dc);
+  if (dc->is_u8) {
+    body8 = dc->body(U8 *);
+    body8[y *dc->width_internal + x] = RVDCPenIdx(dc);
+  } else {
+    body = dc->body;
+    body[y *dc->width_internal + x] = RVDCPenColor(dc);
+  }
   return TRUE;
 }
 
@@ -491,6 +729,7 @@ U0 GrRect(CRVDC *dc = NULL, I64 x, I64 y, I64 w, I64 h)
   //Axis-aligned fill. Clipped to DC + optional clip rect.
   I64 xx, yy, x2, y2;
   U32 *body, c;
+  U8 *body8, c8;
   if (!dc)
     dc = rv_gr.dc;
   if (!dc || !dc->body || w <= 0 || h <= 0)
@@ -528,6 +767,14 @@ U0 GrRect(CRVDC *dc = NULL, I64 x, I64 y, I64 w, I64 h)
       dc->min_y = y;
     if (y2 - 1 > dc->max_y)
       dc->max_y = y2 - 1;
+  }
+  if (dc->is_u8) {
+    body8 = dc->body(U8 *);
+    c8 = RVDCPenIdx(dc);
+    for (yy = y; yy < y2; yy++)
+      for (xx = x; xx < x2; xx++)
+        body8[yy *dc->width_internal + xx] = c8;
+    return;
   }
   body = dc->body;
   c = RVDCPenColor(dc);
@@ -687,15 +934,17 @@ class CRVFFPt
 
 I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
 {
-  //Adam GrFloodFill shape on 32-bpp CRVDC (scanline BFS; no depth_buf).
+  //Adam GrFloodFill shape on 32-bpp CRVDC + optional is_u8 palette body (scanline BFS; no depth_buf).
   // not_color=TRUE: fill while pixel != pen (boundary); FALSE: fill while == seed.
   // Queue starts modest and doubles — full width*height MAlloc fails on lean smoke heaps.
-  // Pixel loads via U32* can widen to I64 in HolyC compares — always mask to 32-bit.
-  I64 res = 0, old_flags, qcap, head, tail, x0, x1, xx, yy, n, new_cap, idx;
+  // Pixel loads can widen to I64 in HolyC compares — mask 32-bit / 8-bit as appropriate.
+  // is_u8: compare/write palette indices (RVDCPenIdx); 32-bpp: XRGB (RVDCPenColor / body U32).
+  I64 res = 0, old_flags, qcap, head, tail, x0, x1, xx, yy, n, new_cap, idx, wi;
   U32 seed, fill, c2, *body, old_c2, px;
+  U8 *body8;
   CRVDC *old_brush;
   CRVFFPt *q, *q2;
-  Bool match;
+  Bool match, u8;
   if (!dc)
     dc = rv_gr.dc;
   if (!dc || !dc->body)
@@ -708,8 +957,19 @@ I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
   old_brush = dc->brush;
   old_c2 = dc->color2;
   dc->brush = NULL;
-  seed = GrPeek(dc, x, y);
-  fill = RVDCPenColor(dc);
+  u8 = dc->is_u8;
+  wi = dc->width_internal;
+  body = NULL;
+  body8 = NULL;
+  if (u8) {
+    body8 = dc->body(U8 *);
+    seed = body8[y *wi + x] & 0xFF;
+    fill = RVDCPenIdx(dc) & 0xFF;
+  } else {
+    body = dc->body;
+    seed = body[y *wi + x] & 0xFFFFFFFF;
+    fill = RVDCPenColor(dc);
+  }
   if (not_color) {
     c2 = fill;
     dc->color2 = c2;
@@ -727,7 +987,7 @@ I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
   if (n < 1)
     goto ff_done;
   // Guard against corrupt geometry writing past the body (OOB would inflate res).
-  if (dc->width > 4096 || dc->height > 4096 || dc->width_internal < dc->width)
+  if (dc->width > 4096 || dc->height > 4096 || wi < dc->width)
     goto ff_done;
   qcap = dc->width << 3;
   if (qcap < 4096)
@@ -746,7 +1006,6 @@ I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
   q[tail].x = x;
   q[tail].y = y;
   tail++;
-  body = dc->body;
   while (head < tail) {
     xx = q[head].x;
     yy = q[head].y;
@@ -754,14 +1013,22 @@ I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
     if (xx < 0 || yy < 0 || xx >= dc->width || yy >= dc->height)
       continue;
     // Already filled / not a seed match — skip (dedupe queue).
-    px = body[yy *dc->width_internal + xx] & 0xFFFFFFFF;
+    idx = yy *wi + xx;
+    if (u8)
+      px = body8[idx] & 0xFF;
+    else
+      px = body[idx] & 0xFFFFFFFF;
     match = not_color ? px != c2 : px == c2;
     if (!match)
       continue;
     // Expand left to run start
     x0 = xx;
     while (x0 > 0) {
-      px = body[yy *dc->width_internal + (x0 - 1)] & 0xFFFFFFFF;
+      idx = yy *wi + (x0 - 1);
+      if (u8)
+        px = body8[idx] & 0xFF;
+      else
+        px = body[idx] & 0xFFFFFFFF;
       match = not_color ? px != c2 : px == c2;
       if (!match)
         break;
@@ -769,19 +1036,29 @@ I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
     }
     x1 = xx;
     while (x1 + 1 < dc->width) {
-      px = body[yy *dc->width_internal + (x1 + 1)] & 0xFFFFFFFF;
+      idx = yy *wi + (x1 + 1);
+      if (u8)
+        px = body8[idx] & 0xFF;
+      else
+        px = body[idx] & 0xFFFFFFFF;
       match = not_color ? px != c2 : px == c2;
       if (!match)
         break;
       x1++;
     }
     for (xx = x0; xx <= x1; xx++) {
-      idx = yy *dc->width_internal + xx;
-      px = body[idx] & 0xFFFFFFFF;
+      idx = yy *wi + xx;
+      if (u8)
+        px = body8[idx] & 0xFF;
+      else
+        px = body[idx] & 0xFFFFFFFF;
       match = not_color ? px != c2 : px == c2;
       if (!match)
         continue;
-      body[idx] = fill;
+      if (u8)
+        body8[idx] = fill;
+      else
+        body[idx] = fill;
       res++;
       if (res > n) {
         //Geometry/OOB guard
@@ -799,7 +1076,11 @@ I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
           dc->max_y = yy;
       }
       if (yy > 0) {
-        px = body[(yy - 1) * dc->width_internal + xx] & 0xFFFFFFFF;
+        idx = (yy - 1) * wi + xx;
+        if (u8)
+          px = body8[idx] & 0xFF;
+        else
+          px = body[idx] & 0xFFFFFFFF;
         match = not_color ? px != c2 : px == c2;
         if (match) {
           if (tail >= qcap && qcap < n) {
@@ -822,7 +1103,11 @@ I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
         }
       }
       if (yy + 1 < dc->height) {
-        px = body[(yy + 1) * dc->width_internal + xx] & 0xFFFFFFFF;
+        idx = (yy + 1) * wi + xx;
+        if (u8)
+          px = body8[idx] & 0xFF;
+        else
+          px = body[idx] & 0xFFFFFFFF;
         match = not_color ? px != c2 : px == c2;
         if (match) {
           if (tail >= qcap && qcap < n) {
@@ -872,9 +1157,10 @@ U0 Refresh(I64 cnt = 1, Bool force = FALSE)
 
 I64 GrBlot(CRVDC *dc = NULL, I64 x, I64 y, CRVDC *img)
 {
-  //32-bpp blit. Skips RV_TRANSPARENT unless DCF_NO_TRANSPARENTS on img.
+  //Blit: 32↔32, 8→32 (palette expand), 8→8, 32→8 (quantize). Skips transparent key.
   I64 ix, iy, dx, dy, w, h, cnt = 0;
   U32 *dst, *src, c;
+  U8 *src8, *dst8, c8;
   Bool skip_tr;
   if (!dc)
     dc = rv_gr.dc;
@@ -885,6 +1171,10 @@ I64 GrBlot(CRVDC *dc = NULL, I64 x, I64 y, CRVDC *img)
   w = img->width;
   h = img->height;
   skip_tr = !(img->flags & DCF_NO_TRANSPARENTS);
+  src8 = img->is_u8 ? img->body(U8 *) : NULL;
+  dst8 = dc->is_u8 ? dc->body(U8 *) : NULL;
+  src = img->body;
+  dst = dc->body;
   for (iy = 0; iy < h; iy++) {
     dy = y + iy;
     if (dy < 0 || dy >= dc->height)
@@ -901,11 +1191,25 @@ I64 GrBlot(CRVDC *dc = NULL, I64 x, I64 y, CRVDC *img)
         if (dx < dc->clip_x1 || dx >= dc->clip_x2)
           continue;
       }
-      c = img->body[iy *img->width_internal + ix];
-      if (skip_tr && c == RV_TRANSPARENT)
-        continue;
-      dst = dc->body;
-      dst[dy *dc->width_internal + dx] = c;
+      if (src8) {
+        c8 = src8[iy *img->width_internal + ix];
+        if (skip_tr && c8 == TRANSPARENT)
+          continue;
+        if (dst8)
+          dst8[dy *dc->width_internal + dx] = c8;
+        else if (c8 == TRANSPARENT)
+          dst[dy *dc->width_internal + dx] = RV_TRANSPARENT;
+        else
+          dst[dy *dc->width_internal + dx] = RVColor(c8);
+      } else {
+        c = src[iy *img->width_internal + ix];
+        if (skip_tr && c == RV_TRANSPARENT)
+          continue;
+        if (dst8)
+          dst8[dy *dc->width_internal + dx] = RVColorNearestIdx(c);
+        else
+          dst[dy *dc->width_internal + dx] = c;
+      }
       cnt++;
       if (dc->flags & DCF_RECORD_EXTENTS) {
         if (dx < dc->min_x)
@@ -962,6 +1266,44 @@ U0 GrPrint(CRVDC *dc = NULL, I64 x, I64 y, U8 *st)
     GrPutChar(dc, cx, y, *st++);
     cx += FONT_WIDTH;
   }
+}
+
+U0 GrBorder(CRVDC *dc = NULL, I64 x1, I64 y1, I64 x2, I64 y2, I64 step = 1, I64 start = 0)
+{
+  //Adam GrComposites GrBorder — 2D rect via GrLine3 (Psalmody DrawPickTools).
+  GrLine3(dc, x1, y1, 0, x2, y1, 0, step, start);
+  GrLine3(dc, x2, y1, 0, x2, y2, 0, step, start);
+  GrLine3(dc, x2, y2, 0, x1, y2, 0, step, start);
+  GrLine3(dc, x1, y2, 0, x1, y1, 0, step, start);
+}
+
+I64 GrVPrint(CRVDC *dc = NULL, I64 x, I64 y, U8 *fmt,...)
+{
+  //Adam GrBitMap GrVPrint — vertical text for Tempo/Stacatto chrome.
+  U8 *buf, *p;
+  I64 res = 0, y0;
+  if (!fmt)
+    return 0;
+  if (!dc)
+    dc = rv_gr.dc;
+  buf = StrPrintJoin(NULL, fmt, argc, argv);
+  if (!buf)
+    return 0;
+  y0 = y;
+  p = buf;
+  while (*p) {
+    if (*p == '\n') {
+      y = y0;
+      x += FONT_WIDTH;
+      p++;
+      continue;
+    }
+    GrPutChar(dc, x, y, *p++);
+    y += FONT_HEIGHT;
+    res++;
+  }
+  Free(buf);
+  return res;
 }
 
 U0 RVTermClear()
@@ -1056,4 +1398,719 @@ U0 RVWinFill(I64 x, I64 y, I64 w, I64 h, U32 face, U32 border, U8 *title = NULL)
     dc->color = RVColor(YELLOW);
     GrPrint(dc, x + 4, y + 2, title);
   }
+}
+// --- CDC copy/diff + 8-bit GR-lite + soft ScrnCast + flat mesh (libs-first) ---
+#define RVGR_MAGIC 'RVGR'
+class CRVGRHdr
+{
+  //GR-lite: CRVGRHdr + 8-bit body, or + CArcCompress body when DCF_COMPRESSED.
+  I64 magic;
+  I64 width;
+  I64 height;
+  I64 width_internal;
+  I64 x0;
+  I64 y0;
+  I64 flags;
+};
+CRVDC *rv_scrncast_base;
+Bool rv_scrncast_on;
+I64 rv_scrncast_winmgr_hits;
+// RVWinMgrRefresh → ScrnCastFrame count (smoke needle)
+CRVDC *DCCopy(CRVDC *dc)
+{
+  //Alloc independent copy of CRVDC body (Adam DCCopy shape; no depth/mat).
+  CRVDC *res;
+  I64 n;
+  if (!dc || !dc->body)
+    return NULL;
+  if (dc->is_u8)
+    res = DCNew8(dc->width, dc->height);
+  else
+    res = DCNew(dc->width, dc->height);
+  if (!res)
+    return NULL;
+  if (dc->is_u8)
+    n = dc->width_internal *dc->height;
+  else
+    n = dc->width_internal *dc->height *sizeof(U32);
+  MemCpy(res->body, dc->body, n);
+  res->color = dc->color;
+  res->color2 = dc->color2;
+  res->bkcolor = dc->bkcolor;
+  res->thick = dc->thick;
+  res->flags = dc->flags & ~(DCF_ALIAS | DCF_SCRN_BITMAP);
+  res->x0 = dc->x0;
+  res->y0 = dc->y0;
+  res->clip_x1 = dc->clip_x1;
+  res->clip_y1 = dc->clip_y1;
+  res->clip_x2 = dc->clip_x2;
+  res->clip_y2 = dc->clip_y2;
+  return res;
+}
+
+CRVDC *DCExt(CRVDC *dc, I64 x1, I64 y1, I64 x2, I64 y2)
+{
+  //Crop inclusive rect into a new DC (Adam DCExt; no win_task scroll).
+  CRVDC *res;
+  I64 x, y, w, h;
+  U32 *src, *dst;
+  U8 *src8, *dst8;
+  if (!dc || !dc->body)
+    return NULL;
+  if (x1 > x2)
+    SwapI64(&x1, &x2);
+  if (y1 > y2)
+    SwapI64(&y1, &y2);
+  if (x1 < 0)
+    x1 = 0;
+  if (y1 < 0)
+    y1 = 0;
+  if (x2 >= dc->width)
+    x2 = dc->width - 1;
+  if (y2 >= dc->height)
+    y2 = dc->height - 1;
+  if (x1 > x2 || y1 > y2)
+    return NULL;
+  w = x2 - x1 + 1;
+  h = y2 - y1 + 1;
+  if (dc->is_u8)
+    res = DCNew8(w, h);
+  else
+    res = DCNew(w, h);
+  if (!res)
+    return NULL;
+  DCFill(res, 0);
+  if (dc->is_u8) {
+    src8 = dc->body(U8 *);
+    dst8 = res->body(U8 *);
+    for (y = 0; y < h; y++)
+      for (x = 0; x < w; x++)
+        dst8[y *res->width_internal + x] = src8[(y1 + y) * dc->width_internal + (x1 + x)];
+  } else {
+    src = dc->body;
+    dst = res->body;
+    for (y = 0; y < h; y++)
+      for (x = 0; x < w; x++)
+        dst[y *res->width_internal + x] = src[(y1 + y) * dc->width_internal + (x1 + x)];
+  }
+  res->x0 = x1;
+  res->y0 = y1;
+  return res;
+}
+
+CRVDC *DCDiff(CRVDC *base, CRVDC *update)
+{
+  //Trim to window of changed pixels (Adam DCDiff). Same body mode required.
+  I64 x1 = 0, y1 = 0, x2, y2, x, y;
+  CRVDC *res;
+  U32 *b, *u;
+  U8 *b8, *u8;
+  if (!base || !update || !base->body || !update->body)
+    return NULL;
+  if (base->width != update->width || base->height != update->height)
+    return NULL;
+  if (base->is_u8 != update->is_u8)
+    return NULL;
+  x2 = update->width - 1;
+  y2 = update->height - 1;
+  if (base->is_u8) {
+    b8 = base->body(U8 *);
+    u8 = update->body(U8 *);
+    while (y1 <= y2) {
+      for (x = 0; x < update->width; x++)
+        if (b8[y1 *base->width_internal + x] != u8[y1 *update->width_internal + x])
+          goto df_y2;
+      y1++;
+    }
+    return NULL;
+    df_y2:
+    while (y1 < y2) {
+      for (x = 0; x < update->width; x++)
+        if (b8[y2 *base->width_internal + x] != u8[y2 *update->width_internal + x])
+          goto df_x1;
+      y2--;
+    }
+    df_x1:
+    while (x1 < x2) {
+      for (y = y1; y <= y2; y++)
+        if (b8[y *base->width_internal + x1] != u8[y *update->width_internal + x1])
+          goto df_x2;
+      x1++;
+    }
+    df_x2:
+    while (x1 < x2) {
+      for (y = y1; y <= y2; y++)
+        if (b8[y *base->width_internal + x2] != u8[y *update->width_internal + x2])
+          goto df_done;
+      x2--;
+    }
+  } else {
+    b = base->body;
+    u = update->body;
+    while (y1 <= y2) {
+      for (x = 0; x < update->width; x++)
+        if (b[y1 *base->width_internal + x] != u[y1 *update->width_internal + x])
+          goto df32_y2;
+      y1++;
+    }
+    return NULL;
+    df32_y2:
+    while (y1 < y2) {
+      for (x = 0; x < update->width; x++)
+        if (b[y2 *base->width_internal + x] != u[y2 *update->width_internal + x])
+          goto df32_x1;
+      y2--;
+    }
+    df32_x1:
+    while (x1 < x2) {
+      for (y = y1; y <= y2; y++)
+        if (b[y *base->width_internal + x1] != u[y *update->width_internal + x1])
+          goto df32_x2;
+      x1++;
+    }
+    df32_x2:
+    while (x1 < x2) {
+      for (y = y1; y <= y2; y++)
+        if (b[y *base->width_internal + x2] != u[y *update->width_internal + x2])
+          goto df_done;
+      x2--;
+    }
+  }
+  df_done:
+  res = DCExt(update, x1, y1, x2, y2);
+  return res;
+}
+
+U8 *DCBody8(CRVDC *dc)
+{
+  //Quantize 32-bpp CRVDC → 8-bit palette indices, or identity-copy is_u8 body.
+  U8 *dst;
+  I64 x, y, wi, n;
+  if (!dc || !dc->body)
+    return NULL;
+  wi = dc->width + 7 & ~7;
+  n = wi *dc->height;
+  dst = CAlloc(n);
+  if (!dst)
+    return NULL;
+  if (dc->is_u8) {
+    for (y = 0; y < dc->height; y++)
+      for (x = 0; x < dc->width; x++)
+        dst[y *wi + x] = dc->body(U8 *)[y *dc->width_internal + x];
+    return dst;
+  }
+  for (y = 0; y < dc->height; y++)
+    for (x = 0; x < dc->width; x++)
+      dst[y *wi + x] = RVColorNearestIdx(dc->body[y *dc->width_internal + x]);
+  return dst;
+}
+
+CRVDC *DCFromBody8(U8 *body, I64 width, I64 height)
+{
+  //Expand 8-bit palette body → 32-bpp CRVDC (ScrnCast/GR load path).
+  CRVDC *dc;
+  I64 x, y, wi;
+  U8 c;
+  if (!body || width < 1 || height < 1)
+    return NULL;
+  wi = width + 7 & ~7;
+  dc = DCNew(width, height);
+  if (!dc)
+    return NULL;
+  for (y = 0; y < height; y++)
+    for (x = 0; x < width; x++) {
+      c = body[y *wi + x];
+      if (c == TRANSPARENT)
+        dc->body[y *dc->width_internal + x] = RV_TRANSPARENT;
+      else
+        dc->body[y *dc->width_internal + x] = RVColor(c);
+    }
+  return dc;
+}
+
+U8 *DCSave(CRVDC *dc, I64 *_size = NULL, I64 dcsf_flags = 0)
+{
+  //GR-lite blob: CRVGRHdr + 8-bit body. DCSF_COMPRESSED → CompressBuf (CArcCompress).
+  U8 *body8, *res, *ptr, *payload;
+  CArcCompress *arc = NULL;
+  I64 wi, body_size, payload_size, total, flags;
+  CRVGRHdr *hdr;
+  if (!dc || !dc->body)
+    return NULL;
+  body8 = DCBody8(dc);
+  if (!body8)
+    return NULL;
+  wi = dc->width + 7 & ~7;
+  body_size = wi *dc->height;
+  flags = 0;
+  if (dcsf_flags & DCSF_COMPRESSED) {
+    arc = CompressBuf(body8, body_size);
+    Free(body8);
+    body8 = NULL;
+    if (!arc)
+      return NULL;
+    payload = arc;
+    payload_size = arc->compressed_size;
+    flags |= DCF_COMPRESSED;
+  } else {
+    payload = body8;
+    payload_size = body_size;
+  }
+  total = sizeof(CRVGRHdr) + payload_size;
+  res = MAlloc(total);
+  if (!res) {
+    Free(body8);
+    Free(arc);
+    return NULL;
+  }
+  hdr = res(CRVGRHdr *);
+  hdr->magic = RVGR_MAGIC;
+  hdr->width = dc->width;
+  hdr->height = dc->height;
+  hdr->width_internal = wi;
+  hdr->x0 = dc->x0;
+  hdr->y0 = dc->y0;
+  hdr->flags = flags;
+  ptr = res + sizeof(CRVGRHdr);
+  MemCpy(ptr, payload, payload_size);
+  Free(body8);
+  Free(arc);
+  if (_size)
+    *_size = total;
+  return res;
+}
+
+CRVDC *DCLoad(U8 *src, I64 *_size = NULL)
+{
+  //Load GR-lite → 32-bpp CRVDC via palette expand (ExpandBuf if DCF_COMPRESSED).
+  CRVGRHdr *hdr;
+  CRVDC *dc;
+  U8 *body, *body8 = NULL;
+  CArcCompress *arc;
+  I64 body_size, payload_size;
+  if (!src)
+    return NULL;
+  hdr = src(CRVGRHdr *);
+  if (hdr->magic != RVGR_MAGIC || hdr->width < 1 || hdr->height < 1)
+    return NULL;
+  body = src + sizeof(CRVGRHdr);
+  body_size = hdr->width_internal *hdr->height;
+  if (hdr->flags & DCF_COMPRESSED) {
+    arc = body(CArcCompress *);
+    payload_size = arc->compressed_size;
+    body8 = ExpandBuf(arc);
+    if (!body8)
+      return NULL;
+    dc = DCFromBody8(body8, hdr->width, hdr->height);
+    Free(body8);
+  } else {
+    payload_size = body_size;
+    dc = DCFromBody8(body, hdr->width, hdr->height);
+  }
+  if (!dc)
+    return NULL;
+  dc->x0 = hdr->x0;
+  dc->y0 = hdr->y0;
+  if (_size)
+    *_size = sizeof(CRVGRHdr) + payload_size;
+  return dc;
+}
+
+I64 GRWrite(U8 *filename, CRVDC *dc, I64 dcsf_flags = 0)
+{
+  //TempleOS GRWrite soft — FileWrite GR-lite; DCSF_COMPRESSED → .GR.Z ExtDft shape.
+  I64 size = 0, wrote;
+  U8 *src, *st;
+  if (!filename || !dc)
+    return 0;
+  if (dcsf_flags & DCSF_COMPRESSED)
+    st = ExtDft(filename, "GR.Z");
+  else
+    st = ExtDft(filename, "GR");
+  src = DCSave(dc, &size, dcsf_flags);
+  if (!src) {
+    Free(st);
+    return 0;
+  }
+  wrote = FileWrite(st, src, size);
+  Free(st);
+  Free(src);
+  if (wrote)
+    return size;
+  return 0;
+}
+
+CRVDC *GRRead(U8 *filename)
+{
+  //TempleOS GRRead soft — try .GR.Z then .GR via ExtDft/FileRead.
+  U8 *src, *st;
+  CRVDC *dc = NULL;
+  if (!filename)
+    return NULL;
+  st = ExtDft(filename, "GR.Z");
+  src = FileRead(st);
+  Free(st);
+  if (!src) {
+    st = ExtDft(filename, "GR");
+    src = FileRead(st);
+    Free(st);
+  }
+  if (!src)
+    return NULL;
+  dc = DCLoad(src);
+  Free(src);
+  return dc;
+}
+
+Bool GRScrnCaptureRead(U8 *filename, CRVDC *dc = NULL, I64 x = 0, I64 y = 0)
+{
+  //Demo/Graphics/ScrnCapture.HC — GrBlot GR file onto dc.
+  CRVDC *dc2;
+  if (!dc)
+    dc = rv_gr.dc;
+  if (!dc)
+    return FALSE;
+  dc2 = GRRead(filename);
+  if (!dc2)
+    return FALSE;
+  GrBlot(dc, x, y, dc2);
+  DCDel(dc2);
+  return TRUE;
+}
+
+I64 GRScrnCaptureWrite(U8 *filename, Bool include_zoom = TRUE)
+{
+  //Capture screen DC to GR-lite file (no zoom plane on RV).
+  CRVDC *dc;
+  I64 size;
+  no_warn include_zoom;
+  if (!filename || !rv_gr.dc)
+    return 0;
+  dc = DCCopy(rv_gr.dc);
+  if (!dc)
+    return 0;
+  size = GRWrite(filename, dc, 0);
+  DCDel(dc);
+  return size;
+}
+
+U0 RVScrnCastSndArm()
+{
+  //Stock ScrnCast(ON) snd arm: empty queue + t0 for AUWrite cdt stamps.
+  if (!scrncast.snd_head.next)
+    QueInit(&scrncast.snd_head);
+  else
+    QueDel(&scrncast.snd_head, TRUE);
+  scrncast.t0_now = Now;
+  scrncast.snd_head.tS = scrncast.t0_tS = tS;
+  scrncast.snd_head.ona = scrncast.ona;
+}
+
+U0 ScrnCastStart(CRVDC *dc = NULL, Bool just_audio = FALSE)
+{
+  //Soft ScrnCast — video base for DCDiff frames, or just_audio (snd queue only).
+  // WinMgr Refresh hooks ScrnCastFrame when record && !just_audio.
+  if (rv_scrncast_base) {
+    DCDel(rv_scrncast_base);
+    rv_scrncast_base = NULL;
+  }
+  rv_scrncast_on = FALSE;
+  scrncast.just_audio = just_audio;
+  if (just_audio) {
+    scrncast.record = TRUE;
+  } else {
+    if (!dc)
+      dc = rv_gr.dc;
+    rv_scrncast_base = DCCopy(dc);
+    rv_scrncast_on = rv_scrncast_base != NULL;
+    scrncast.record = rv_scrncast_on;
+  }
+  if (scrncast.record)
+    RVScrnCastSndArm;
+}
+
+U0 ScrnCastStop()
+{
+  //Leave snd_head for AUWrite (stock ScrnCast(OFF) shape); caller QueDel after.
+  if (rv_scrncast_base) {
+    DCDel(rv_scrncast_base);
+    rv_scrncast_base = NULL;
+  }
+  rv_scrncast_on = FALSE;
+  scrncast.record = FALSE;
+  scrncast.just_audio = FALSE;
+}
+
+U0 SndShift(CSndData *head, F64 dt = 0)
+{
+  //Stock ScrnCast SndShift — drop nodes that go out of order after -dt.
+  CSndData *tmpsd, *tmpsd1;
+  if (!head || !dt)
+    return;
+  tmpsd = head->next;
+  while (tmpsd != head) {
+    tmpsd1 = tmpsd->next;
+    tmpsd->tS -= dt;
+    if (tmpsd->tS < tmpsd->last->tS) {
+      QueRem(tmpsd);
+      Free(tmpsd);
+    }
+    tmpsd = tmpsd1;
+  }
+}
+
+I64 AUWrite(U8 *filename, CSndData *head, CDate *t0_now, F64 t0_tS)
+{
+  //Stock AUWrite — serialize CSndData ring to .AU (CAUData cdt+ona). filename NULL → size only.
+  CSndData *tmpsd;
+  CAUData *base, *dst;
+  I64 size;
+  U8 *st;
+  CDate t0;
+  if (!head)
+    return 0;
+  if (t0_now)
+    t0 = *t0_now;
+  else
+    t0 = scrncast.t0_now;
+  size = (1 + QueCnt(head)) * sizeof(CAUData);
+  base = dst = MAlloc(size);
+  if (!base)
+    return 0;
+  tmpsd = head;
+  do {
+    dst->cdt = t0(I64) + ToI64(CDATE_FREQ * (tmpsd->tS - t0_tS));
+    dst->ona = tmpsd->ona;
+    dst++;
+    tmpsd = tmpsd->next;
+  } while (tmpsd != head);
+  if (filename) {
+    st = ExtDft(filename, "AU");
+    FileWrite(st, base, dst(U8 *) - base(U8 *));
+    Free(st);
+  }
+  Free(base);
+  return size;
+}
+
+I64 ScrnCastFrame(CRVDC *update = NULL)
+{
+  //One ScrnCast video frame: DCDiff vs base, then refresh base. Returns changed pix cnt.
+  CRVDC *diff, *next;
+  I64 n = 0;
+  if (!rv_scrncast_on || !rv_scrncast_base)
+    return 0;
+  if (!update)
+    update = rv_gr.dc;
+  if (!update)
+    return 0;
+  diff = DCDiff(rv_scrncast_base, update);
+  if (diff) {
+    n = diff->width *diff->height;
+    DCDel(diff);
+  }
+  next = DCCopy(update);
+  if (next) {
+    DCDel(rv_scrncast_base);
+    rv_scrncast_base = next;
+  }
+  return n;
+}
+
+U0 RVScrnCastWinMgrHook()
+{
+  //Adam/WinMgr.HC post-GrUpdateScrn shape: record video frames from live compose DC.
+  // First refresh while recording establishes base (stock first GRWrite); later → Frame.
+  // just_audio: skip video (stock); RVSnd still queues CSndData for AUWrite.
+  if (!scrncast.record || scrncast.just_audio) {
+    if (!scrncast.record && rv_scrncast_on)
+      ScrnCastStop;
+    return;
+  }
+  if (!rv_gr.dc)
+    return;
+  if (!rv_scrncast_on || !rv_scrncast_base) {
+    ScrnCastStart(rv_gr.dc);
+    return;
+  }
+  ScrnCastFrame(NULL);
+  rv_scrncast_winmgr_hits++;
+}
+
+I64 GrHLine(CRVDC *dc = NULL, I64 x1, I64 x2, I64 y, I64 z1 = 0, I64 z2 = 0)
+{
+  //2D horizontal run (Adam GrHLine subset; z ignored — no depth buf).
+  I64 x, cnt = 0;
+  no_warn z1;
+  no_warn z2;
+  if (!dc)
+    dc = rv_gr.dc;
+  if (!dc || !dc->body)
+    return 0;
+  if (dc->flags & DCF_DONT_DRAW)
+    return 0;
+  if (x1 > x2)
+    SwapI64(&x1, &x2);
+  for (x = x1; x <= x2; x++) {
+    GrPlot(dc, x, y);
+    cnt++;
+  }
+  return cnt;
+}
+
+I64 GrFillTri0(CRVDC *dc = NULL, CD3I32 *p1, CD3I32 *p2, CD3I32 *p3)
+{
+  //Flat 2D triangle fill (barycentric). No depth/z-interp — mesh libs-first.
+  I64 x, y, minx, maxx, miny, maxy, res = 0;
+  I64 x1, y1, x2, y2, x3, y3, area, a1, a2, a3;
+  if (!dc)
+    dc = rv_gr.dc;
+  if (!dc || !dc->body || !p1 || !p2 || !p3)
+    return 0;
+  if (dc->flags & DCF_DONT_DRAW)
+    return 0;
+  x1 = p1->x;
+  y1 = p1->y;
+  x2 = p2->x;
+  y2 = p2->y;
+  x3 = p3->x;
+  y3 = p3->y;
+  area = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1);
+  if (!area)
+    return 0;
+  minx = x1;
+  if (x2 < minx)
+    minx = x2;
+  if (x3 < minx)
+    minx = x3;
+  maxx = x1;
+  if (x2 > maxx)
+    maxx = x2;
+  if (x3 > maxx)
+    maxx = x3;
+  miny = y1;
+  if (y2 < miny)
+    miny = y2;
+  if (y3 < miny)
+    miny = y3;
+  maxy = y1;
+  if (y2 > maxy)
+    maxy = y2;
+  if (y3 > maxy)
+    maxy = y3;
+  if (minx < 0)
+    minx = 0;
+  if (miny < 0)
+    miny = 0;
+  if (maxx >= dc->width)
+    maxx = dc->width - 1;
+  if (maxy >= dc->height)
+    maxy = dc->height - 1;
+  for (y = miny; y <= maxy; y++)
+    for (x = minx; x <= maxx; x++) {
+      a1 = (x2 - x) * (y3 - y) - (x3 - x) * (y2 - y);
+      a2 = (x3 - x) * (y1 - y) - (x1 - x) * (y3 - y);
+      a3 = (x1 - x) * (y2 - y) - (x2 - x) * (y1 - y);
+      if (area > 0) {
+        if (a1 >= 0 && a2 >= 0 && a3 >= 0) {
+          GrPlot(dc, x, y);
+          res++;
+        }
+      } else if (a1 <= 0 && a2 <= 0 && a3 <= 0) {
+        GrPlot(dc, x, y);
+        res++;
+      }
+    }
+  return res;
+}
+
+I64 Gr3Mesh(CRVDC *dc = NULL, I64 vertex_cnt, CD3I32 *p, I64 tri_cnt, CMeshTri *tri)
+{
+  //Flat-shaded mesh (Adam Gr3Mesh subset — no transform/lighting/symmetry).
+  I64 i, res = 0;
+  U32 old_color;
+  CMeshTri *t;
+  if (!dc)
+    dc = rv_gr.dc;
+  if (!dc || !p || !tri || vertex_cnt < 1 || tri_cnt < 1)
+    return 0;
+  old_color = dc->color;
+  t = tri;
+  for (i = 0; i < tri_cnt; i++, t++) {
+    if (t->nums[0] < 0 || t->nums[0] >= vertex_cnt)
+      continue;
+    if (t->nums[1] < 0 || t->nums[1] >= vertex_cnt)
+      continue;
+    if (t->nums[2] < 0 || t->nums[2] >= vertex_cnt)
+      continue;
+    dc->color = RVColor(t->color);
+    res += GrFillTri0(dc, &p[t->nums[0]], &p[t->nums[1]], &p[t->nums[2]]);
+  }
+  dc->color = old_color;
+  return res;
+}
+
+I64 RVGrSoft()
+{
+  // Soft Call: tiny offscreen Gr blit (UART / no interactive FB).
+  // DCNew → DCFill → GrPlot → 2×2 GrBlot → GrPeek (RED+ink) → DCDel.
+  // Host AOT: U32i keyword prefer + ScalarTypeForSize on local U32* peels (was 8-byte
+  // ld/sd clobbering neighbors; member body[] already narrowed).
+  CRVDC *dst, *src;
+  I64 n;
+  U32 peek, red, ink, black;
+  RVPaletteSetStd;
+  red = RVColor(RED);
+  black = RVColor(BLACK);
+  ink = RVColor(GREEN);
+  dst = DCNew(8, 8);
+  if (!dst)
+    return 3;
+  src = DCNew(2, 2);
+  if (!src) {
+    DCDel(dst);
+    return 4;
+  }
+  src->flags |= DCF_NO_TRANSPARENTS;
+  DCFill(dst, BLACK);
+  DCFill(src, ink);
+  peek = GrPeek(src, 1, 0);
+  if (peek != ink) {
+    DCDel(src);
+    DCDel(dst);
+    return 11;
+  }
+  src->color = RED;
+  if (!GrPlot(src, 0, 0)) {
+    DCDel(src);
+    DCDel(dst);
+    return 5;
+  }
+  n = GrBlot(dst, 3, 3, src);
+  if (n < 4) {
+    DCDel(src);
+    DCDel(dst);
+    return 6;
+  }
+  peek = GrPeek(dst, 3, 3);
+  if (peek != red) {
+    DCDel(src);
+    DCDel(dst);
+    return 7;
+  }
+  peek = GrPeek(dst, 4, 3);
+  if (peek != ink) {
+    DCDel(src);
+    DCDel(dst);
+    return 9;
+  }
+  peek = GrPeek(dst, 0, 0);
+  if (peek != black) {
+    DCDel(src);
+    DCDel(dst);
+    return 10;
+  }
+  DCDel(src);
+  DCDel(dst);
+  return 8;
 }

@@ -2,7 +2,7 @@
 //
 // Real CDoc entry stream subset (not the full Adam/DolDoc ~28-file stack):
 //   DocNew / DocRst / DocInsEntry / DocEntryDel / DocDel
-//   DocPutS / DocLoad / DocPrint (fmt as literal; no StrPrintJoin)
+//   DocPutS / DocLoad / DocPrint (StrPrintJoin+DocPutS; stock DocPutS.HC)
 //   DocRecalc (layout + tree collapse SKIP)
 //   DocTop / DocLock / DocUnlock (single-task)
 //   DocBorderNew (title DA + [X]/MENU widgets; chrome paint still WinMgr)
@@ -15,8 +15,20 @@
 // FG/BG, INDENT, BLINK/INVERT/UNDERLINE, LINK, TREE(+U=), TX(+HTML=), BT/DA/CB/MA,
 // AN/MU(+U=)/LS/CM/SX/SY/WW/HL/LM/RM/PL, SP/IB (bin-backed DocSprite→Sprite3), HX/SO/HC.
 // Soft-skip unknown $$. PrsDollarCmd IDENT: Adam/DolDoc/DocInit_RV doldoc.hash
-// HashFind (libs-first; hand bodies SoT). Full CmpCtrl PrsDocFlags / stock
-// PrsDollarCmd Lex still G8. Guest MakeDoc #include Adam/DolDoc/* — GAPS.
+// HashFind (libs-first; hand bodies SoT). TX+CX → DOCEF_CENTER_X via
+// RVDocPrsFlagsCmp (HashFind DHT_DOC_FLAG; body here — DocPlain_RV forward GOT
+// was null: mcause=5 ld a0,0(a0)). Arg KEY="..." / KEY=n via RVDocPrsArgOnce
+// (same DHT_DOC_FLAG HashFind; quote or int; no CmpCtrl — Lex hung in prior hyps).
+// Soft tips: T=/HTML= (+docarg) + LE=/LM=/A=/BI= (+docargx) + DocInit seed
+// (+docinitseed) + CmpCtrl PrsDocFlagSingle Lex (+docflaglex: HashFind-planted
+// CmpCtrlNew/Lex/CmpCtrlDel abs fps — not Kernel GOT / DocPlain forward GOT) +
+// CmpCtrl one-cmd PrsDollarCmd Lex (+doccmdlex: IDENT+flags+TK_STR) +
+// CmpCtrl one LexExpressionI64 arg (+docarglex: BT,LE=1 / DA,LEN=8 via
+// RVCmpCtrlAddrsGet LexExpressionI64 abs; literal fast-path) + CmpCtrl
+// LexExtStr T=/LM= (+docextstr: TX,T="hi" / MA,LM="Cd;" via addrs[4]) +
+// CmpCtrl multi-arg PrsDollarCmd (+docmultilex: TX+CX,T= / LK A=+HTML=+BI=) +
+// product DocPrint TX+CX (+docprintflags) + DocEd inject/DocMenu (+doced).
+// Guest MakeDoc #include Adam/DolDoc/* — still G8.
 // DocForm: class-meta when HTT_CLASS+format meta; else Lex-lite DA/CB + DocEd.
 // Demo: RVDocDemoOpen embeds Demo/ToHtmlToTXTDemo/DemoInPage.DD (host path).
 // FileMgr: stock DirFileDoc/FilesFind via Adam/ABlkDev/FileMgr_RV.HC.
@@ -66,13 +78,1065 @@ I64 rv_doc_song_hits;
 I64 rv_doc_hc_hits;
 I64 rv_doc_demo_entries;
 I64 rv_doc_prs_lex_hits;
+I64 rv_doc_prs_flag_hits;
+I64 rv_doc_prs_flag_cmp_ok;
+I64 rv_doc_prs_flag_lex_hits;
+I64 rv_doc_prs_dollar_lex_hits;
+I64 rv_doc_prs_arg_lex_hits;
+I64 rv_doc_prs_ext_lex_hits;
+I64 rv_doc_prs_multi_lex_hits;
+I64 rv_doc_prs_arg_hits;
+Bool RVDocCmpFpOk(I64 fp)
+{
+  //Same gate as Menu_RV RVMenuFpOk — reject NULL / odd / truncated GOT stubs.
+  if (!fp)
+    return FALSE;
+  if (fp & 1)
+    return FALSE;
+  if (fp < 0x80000000)
+    return FALSE;
+  return TRUE;
+}
+
+Bool RVDocCmpFpsGet(I64 *fp_new, I64 *fp_lex, I64 *fp_del, I64 *fp_lex_i64 = NULL, I64 *fp_lex_ext = NULL)
+{
+  //Prefer RVCmpCtrlAddrsGet (Compiler-unit abs) when planted; else HashFind
+  // CmpCtrlNew/Lex/CmpCtrlDel after RVCmpPlantLoadedCmpFuns.
+  // Optional fp_lex_i64: addrs[2] LexExpressionI64 (Menu/Doc arg Soft tips).
+  // Optional fp_lex_ext: addrs[4] LexExtStr (Doc T=/LM= Soft tip).
+  CHashFun *hf;
+  I64 addrs[5];
+  I64 (*fp_get)(I64 *out);
+  I64 n;
+  if (!fp_new || !fp_lex || !fp_del)
+    return FALSE;
+  *fp_new = 0;
+  *fp_lex = 0;
+  *fp_del = 0;
+  if (fp_lex_i64)
+    *fp_lex_i64 = 0;
+  if (fp_lex_ext)
+    *fp_lex_ext = 0;
+  if (hf = HashFind("RVCmpCtrlAddrsGet", Fs->hash_table, HTT_FUN)) {
+    if (RVDocCmpFpOk(hf->exe_addr)) {
+      fp_get = hf->exe_addr;
+      n = fp_get(addrs);
+      if (n >= 4 && RVDocCmpFpOk(addrs[0]) && RVDocCmpFpOk(addrs[1]) && RVDocCmpFpOk(addrs[3])) {
+        *fp_new = addrs[0];
+        *fp_lex = addrs[1];
+        *fp_del = addrs[3];
+        if (fp_lex_i64) {
+          if (!RVDocCmpFpOk(addrs[2]))
+            return FALSE;
+          *fp_lex_i64 = addrs[2];
+        }
+        if (fp_lex_ext) {
+          if (n < 5 || !RVDocCmpFpOk(addrs[4]))
+            return FALSE;
+          *fp_lex_ext = addrs[4];
+        }
+        return TRUE;
+      }
+    }
+  }
+  if (!(hf = HashFind("CmpCtrlNew", Fs->hash_table, HTT_FUN)) || !RVDocCmpFpOk(hf->exe_addr))
+    return FALSE;
+  *fp_new = hf->exe_addr;
+  if (!(hf = HashFind("Lex", Fs->hash_table, HTT_FUN)) || !RVDocCmpFpOk(hf->exe_addr))
+    return FALSE;
+  *fp_lex = hf->exe_addr;
+  if (!(hf = HashFind("CmpCtrlDel", Fs->hash_table, HTT_FUN)) || !RVDocCmpFpOk(hf->exe_addr))
+    return FALSE;
+  *fp_del = hf->exe_addr;
+  if (fp_lex_i64) {
+    if (!(hf = HashFind("LexExpressionI64", Fs->hash_table, HTT_FUN)) || !RVDocCmpFpOk(hf->exe_addr))
+      return FALSE;
+    *fp_lex_i64 = hf->exe_addr;
+  }
+  if (fp_lex_ext) {
+    if (!(hf = HashFind("LexExtStr", Fs->hash_table, HTT_FUN)) || !RVDocCmpFpOk(hf->exe_addr))
+      return FALSE;
+    *fp_lex_ext = hf->exe_addr;
+  }
+  return TRUE;
+}
+
+Bool RVDocPrsFlagsLex(U8 *st, I64 *_de_flags, U32 *_type)
+{
+  //Stock PrsDocFlags / PrsDocFlagSingle shape (DocPlain.HC) via abs-addr CmpCtrl
+  // Lex + DHT_DOC_FLAG HashFind. Body here (not DocPlain_RV) — split-AOT
+  // forward GOT was null; Kernel &CmpCtrlNew GOT is unsafe (Menu wire class).
+  CCmpCtrl * (*fp_new)(U8 *buf = NULL, I64 flags = 0, U8 *filename = NULL);
+  I64 (*fp_lex)(CCmpCtrl *cc);
+  U0 (*fp_del)(CCmpCtrl *cc);
+  CCmpCtrl *cc;
+  CHashGeneric *tmph;
+  I64 fp_n, fp_l, fp_d, res, hits;
+  Bool turn_on;
+  if (!st || !_de_flags || !_type)
+    return FALSE;
+  if (!doldoc.hash)
+    DocInit;
+  if (!doldoc.hash)
+    return FALSE;
+  if (!RVDocCmpFpsGet(&fp_n, &fp_l, &fp_d))
+    return FALSE;
+  fp_new = fp_n;
+  fp_lex = fp_l;
+  fp_del = fp_d;
+  cc = fp_new(st, CCF_DONT_FREE_BUF, NULL);
+  if (!cc)
+    return FALSE;
+  cc->htc.hash_table_lst = NULL;
+  fp_lex(cc);
+  hits = 0;
+  while (TRUE) {
+    if (cc->token == '+')
+      turn_on = TRUE;
+    else if (cc->token == '-')
+      turn_on = FALSE;
+    else
+      break;
+    fp_lex(cc);
+    if (cc->token == TK_IDENT && cc->cur_str && (tmph = HashFind(cc->cur_str, doldoc.hash, DHT_DOC_FLAG))) {
+      res = tmph->user_data0;
+      if (res < 64) {
+        BEqu(_de_flags, res, turn_on);
+        switch (res) {
+          case DOCEf_BLINK :
+          case DOCEf_INVERT :
+          case DOCEf_UNDERLINE :
+          case DOCEf_SEL :
+          BEqu(_type, res, turn_on);
+          break;
+        }
+        hits++;
+      }
+      fp_lex(cc);
+    } else
+      break;
+  }
+  fp_del(cc);
+  if (hits)
+    rv_doc_prs_flag_lex_hits++;
+  return hits > 0;
+}
+Bool RVDocExtractQuoted(U8 **pp, U8 *dst, I64 dst_max);
+I64 RVDocParseInt(U8 *s, I64 *out);
+Bool RVDocPrsFlagsCmp(U8 *st, I64 *_de_flags, U32 *_type)
+{
+  //Stock PrsDocFlagSingle shape (DocPlain.HC): +/− IDENT → DHT_DOC_FLAG HashFind.
+  // Defined here (not DocPlain_RV extern) — split-AOT forward GOT was null
+  // (mcause=5 mtval=0 ld a0,0(a0) on DemoInPage TX+CX).
+  U8 *p;
+  U8 ident[16];
+  I64 n, res, hits;
+  Bool turn_on;
+  CHashGeneric *tmph;
+  if (!st || !_de_flags || !_type)
+    return FALSE;
+  if (!doldoc.hash)
+    DocInit;
+  if (!doldoc.hash)
+    return FALSE;
+  p = st;
+  hits = 0;
+  while (*p == '+' || *p == '-') {
+    turn_on = (*p == '+');
+    p++;
+    n = 0;
+    while (*p && *p != '+' && *p != '-' && *p != ',' && *p != '"' && *p != ' ' && *p != '\t' && n < sizeof(ident) - 1)
+      ident[n++] = *p++;
+    ident[n] = 0;
+    if (!ident[0])
+      break;
+    if (tmph = HashFind(ident, doldoc.hash, DHT_DOC_FLAG)) {
+      res = tmph->user_data0;
+      if (res < 64) {
+        BEqu(_de_flags, res, turn_on);
+        switch (res) {
+          case DOCEf_BLINK :
+          case DOCEf_INVERT :
+          case DOCEf_UNDERLINE :
+          case DOCEf_SEL :
+          BEqu(_type, res, turn_on);
+          break;
+        }
+        hits++;
+      }
+    }
+  }
+  if (hits)
+    rv_doc_prs_flag_cmp_ok++;
+  return hits > 0;
+}
+
+public I64 RVDocPrsFlagsProbe()
+{
+  //Soft/interactive: stock +CX → DOCEF_CENTER_X (DemoInPage TX+CX).
+  I64 de_flags = DOCEF_TAG;
+  U32 type = DOCT_TEXT;
+  DocInit;
+  if (!RVDocPrsFlagsCmp("+CX", &de_flags, &type))
+    return 3;
+  if (!(de_flags & DOCEF_CENTER_X))
+    return 4;
+  rv_doc_prs_flag_hits++;
+  return 8;
+}
+
+public I64 RVDocPrsFlagsLexProbe()
+{
+  //Soft tip: stock PrsDocFlags +CX via abs-addr CmpCtrl Lex (planted fps).
+  I64 de_flags = DOCEF_TAG;
+  U32 type = DOCT_TEXT;
+  I64 fp_n, fp_l, fp_d;
+  DocInit;
+  if (!doldoc.hash)
+    return 2;
+  if (!RVDocCmpFpsGet(&fp_n, &fp_l, &fp_d))
+    return 3;
+  if (!RVDocPrsFlagsLex("+CX", &de_flags, &type))
+    return 4;
+  if (!(de_flags & DOCEF_CENTER_X))
+    return 5;
+  // Multi-flag: +CX+UL → CENTER_X + UNDERLINE (type bit).
+  de_flags = DOCEF_TAG;
+  type = DOCT_TEXT;
+  if (!RVDocPrsFlagsLex("+CX+UL", &de_flags, &type))
+    return 6;
+  if (!(de_flags & DOCEF_CENTER_X) || !(de_flags & DOCEF_UNDERLINE))
+    return 7;
+  if (!(type & DOCET_UNDERLINE))
+    return 9;
+  return 8;
+}
+
+Bool RVDocPrsDollarCmdLex(U8 *st, I64 *_cmd, I64 *_de_flags, U32 *_type, U8 *tag, I64 tag_max)
+{
+  //Stock PrsDollarCmd front half (DocPlain.HC): CmpCtrl Lex IDENT → DHT_DOC_CMD,
+  // PrsDocFlags, skip commas, TK_STR tag. Abs-addr fps like RVDocPrsFlagsLex.
+  // No LexExpression* / LexExtStr / DocIns — Soft tip only (hang → revert).
+  CCmpCtrl * (*fp_new)(U8 *buf = NULL, I64 flags = 0, U8 *filename = NULL);
+  I64 (*fp_lex)(CCmpCtrl *cc);
+  U0 (*fp_del)(CCmpCtrl *cc);
+  CCmpCtrl *cc;
+  CHashGeneric *tmph;
+  I64 fp_n, fp_l, fp_d, res, cmd, n;
+  U32 typ;
+  I64 de_flags;
+  Bool turn_on;
+  if (!st || !_cmd || !_de_flags || !_type || !tag || tag_max < 2)
+    return FALSE;
+  if (!doldoc.hash)
+    DocInit;
+  if (!doldoc.hash)
+    return FALSE;
+  if (!RVDocCmpFpsGet(&fp_n, &fp_l, &fp_d))
+    return FALSE;
+  fp_new = fp_n;
+  fp_lex = fp_l;
+  fp_del = fp_d;
+  cc = fp_new(st, CCF_DONT_FREE_BUF, NULL);
+  if (!cc)
+    return FALSE;
+  cc->htc.hash_table_lst = NULL;
+  if (fp_lex(cc) != TK_IDENT || !cc->cur_str) {
+    fp_del(cc);
+    return FALSE;
+  }
+  if (!(tmph = HashFind(cc->cur_str, doldoc.hash, DHT_DOC_CMD | DHT_COLOR))) {
+    fp_del(cc);
+    return FALSE;
+  }
+  if (tmph->type & DHT_DOC_CMD)
+    cmd = tmph->user_data0;
+  else {
+    cmd = DOCT_FOREGROUND;
+  }
+  fp_lex(cc);
+  //skip cmd
+  de_flags = doldoc.dft_de_flags[cmd];
+  typ = cmd | doldoc.dft_type_flags[cmd];
+  while (TRUE) {
+    if (cc->token == '+')
+      turn_on = TRUE;
+    else if (cc->token == '-')
+      turn_on = FALSE;
+    else
+      break;
+    fp_lex(cc);
+    if (cc->token == TK_IDENT && cc->cur_str && (tmph = HashFind(cc->cur_str, doldoc.hash, DHT_DOC_FLAG))) {
+      res = tmph->user_data0;
+      if (res < 64) {
+        BEqu(&de_flags, res, turn_on);
+        switch (res) {
+          case DOCEf_BLINK :
+          case DOCEf_INVERT :
+          case DOCEf_UNDERLINE :
+          case DOCEf_SEL :
+          BEqu(&typ, res, turn_on);
+          break;
+        }
+      }
+      fp_lex(cc);
+    } else
+      break;
+  }
+  while (cc->token == ',')
+    fp_lex(cc);
+  tag[0] = 0;
+  if (cc->token == TK_STR && cc->cur_str) {
+    n = 0;
+    while (cc->cur_str[n] && n < tag_max - 1) {
+      tag[n] = cc->cur_str[n];
+      n++;
+    }
+    tag[n] = 0;
+  } else {
+    fp_del(cc);
+    return FALSE;
+  }
+  fp_del(cc);
+  *_cmd = cmd;
+  *_de_flags = de_flags;
+  *_type = typ;
+  rv_doc_prs_dollar_lex_hits++;
+  return TRUE;
+}
+
+public I64 RVDocPrsDollarCmdLexProbe()
+{
+  //Soft tip: stock PrsDollarCmd one-cmd via abs-addr CmpCtrl Lex (TX+CX,"hi").
+  I64 cmd, de_flags;
+  U32 typ;
+  U8 tag[32];
+  I64 fp_n, fp_l, fp_d;
+  DocInit;
+  if (!doldoc.hash)
+    return 2;
+  if (!RVDocCmpFpsGet(&fp_n, &fp_l, &fp_d))
+    return 3;
+  if (!RVDocPrsDollarCmdLex("TX+CX,\"hi\"", &cmd, &de_flags, &typ, tag, sizeof(tag)))
+    return 4;
+  if (cmd != DOCT_TEXT)
+    return 5;
+  if (!(de_flags & DOCEF_CENTER_X))
+    return 6;
+  if (StrCmp(tag, "hi"))
+    return 7;
+  return 8;
+}
+
+Bool RVDocPrsDollarCmdLexArg(U8 *st, I64 *_cmd, I64 *_flag_idx, I64 *_val)
+{
+  //Stock PrsDollarCmd one LexExpression* arg (DocPlain.HC DOCEf_LEFT_EXP/LEN):
+  // IDENT→DHT_DOC_CMD, optional +/-flags, optional TK_STR, IDENT→DHT_DOC_FLAG
+  // (LE/LEN), '=', LexExpressionI64. Abs-addr fps incl. LexExpressionI64
+  // (RVCmpCtrlAddrsGet[2]; literal fast-path — no Call). Soft tip only.
+  CCmpCtrl * (*fp_new)(U8 *buf = NULL, I64 flags = 0, U8 *filename = NULL);
+  I64 (*fp_lex)(CCmpCtrl *cc);
+  I64 (*fp_lex_i64)(CCmpCtrl *cc);
+  U0 (*fp_del)(CCmpCtrl *cc);
+  CCmpCtrl *cc;
+  CHashGeneric *tmph;
+  I64 fp_n, fp_l, fp_d, fp_i64, res, cmd, fi, val;
+  U32 typ;
+  I64 de_flags;
+  Bool turn_on;
+  if (!st || !_cmd || !_flag_idx || !_val)
+    return FALSE;
+  if (!doldoc.hash)
+    DocInit;
+  if (!doldoc.hash)
+    return FALSE;
+  if (!RVDocCmpFpsGet(&fp_n, &fp_l, &fp_d, &fp_i64))
+    return FALSE;
+  fp_new = fp_n;
+  fp_lex = fp_l;
+  fp_del = fp_d;
+  fp_lex_i64 = fp_i64;
+  cc = fp_new(st, CCF_DONT_FREE_BUF, NULL);
+  if (!cc)
+    return FALSE;
+  cc->htc.hash_table_lst = NULL;
+  if (fp_lex(cc) != TK_IDENT || !cc->cur_str) {
+    fp_del(cc);
+    return FALSE;
+  }
+  if (!(tmph = HashFind(cc->cur_str, doldoc.hash, DHT_DOC_CMD | DHT_COLOR))) {
+    fp_del(cc);
+    return FALSE;
+  }
+  if (tmph->type & DHT_DOC_CMD)
+    cmd = tmph->user_data0;
+  else
+    cmd = DOCT_FOREGROUND;
+  fp_lex(cc);
+  de_flags = doldoc.dft_de_flags[cmd];
+  typ = cmd | doldoc.dft_type_flags[cmd];
+  while (TRUE) {
+    if (cc->token == '+')
+      turn_on = TRUE;
+    else if (cc->token == '-')
+      turn_on = FALSE;
+    else
+      break;
+    fp_lex(cc);
+    if (cc->token == TK_IDENT && cc->cur_str && (tmph = HashFind(cc->cur_str, doldoc.hash, DHT_DOC_FLAG))) {
+      res = tmph->user_data0;
+      if (res < 64) {
+        BEqu(&de_flags, res, turn_on);
+        switch (res) {
+          case DOCEf_BLINK :
+          case DOCEf_INVERT :
+          case DOCEf_UNDERLINE :
+          case DOCEf_SEL :
+          BEqu(&typ, res, turn_on);
+          break;
+        }
+      }
+      fp_lex(cc);
+    } else
+      break;
+  }
+  while (cc->token == ',')
+    fp_lex(cc);
+  if (cc->token == TK_STR)
+    fp_lex(cc);
+  while (cc->token == ',')
+    fp_lex(cc);
+  if (cc->token != TK_IDENT || !cc->cur_str || !(tmph = HashFind(cc->cur_str, doldoc.hash, DHT_DOC_FLAG))) {
+    fp_del(cc);
+    return FALSE;
+  }
+  fi = tmph->user_data0;
+  if (fi != DOCEf_LEFT_EXP && fi != DOCEf_LEN) {
+    fp_del(cc);
+    return FALSE;
+  }
+  fp_lex(cc);
+  if (cc->token != '=') {
+    fp_del(cc);
+    return FALSE;
+  }
+  fp_lex(cc);
+  if (!cc->token) {
+    fp_del(cc);
+    return FALSE;
+  }
+  val = fp_lex_i64(cc);
+  fp_del(cc);
+  *_cmd = cmd;
+  *_flag_idx = fi;
+  *_val = val;
+  rv_doc_prs_arg_lex_hits++;
+  return TRUE;
+}
+
+public I64 RVDocPrsDollarCmdLexArgProbe()
+{
+  //Soft tip: stock PrsDollarCmd one LexExpressionI64 arg (BT,LE=1 / DA,LEN=8).
+  I64 cmd, fi, val;
+  I64 fp_n, fp_l, fp_d, fp_i64;
+  DocInit;
+  if (!doldoc.hash)
+    return 2;
+  if (!RVDocCmpFpsGet(&fp_n, &fp_l, &fp_d, &fp_i64))
+    return 3;
+  if (!RVDocPrsDollarCmdLexArg("BT,LE=1", &cmd, &fi, &val))
+    return 4;
+  if (cmd != DOCT_BTTN)
+    return 5;
+  if (fi != DOCEf_LEFT_EXP || val != 1)
+    return 6;
+  if (!RVDocPrsDollarCmdLexArg("DA,LEN=8", &cmd, &fi, &val))
+    return 7;
+  if (cmd != DOCT_DATA)
+    return 9;
+  if (fi != DOCEf_LEN || val != 8)
+    return 10;
+  return 8;
+}
+
+Bool RVDocPrsDollarCmdLexExt(U8 *st, I64 *_cmd, I64 *_flag_idx, U8 *out, I64 out_max)
+{
+  //Stock PrsDollarCmd LexExtStr arg (DocPlain.HC DOCEf_TAG / LEFT_MACRO):
+  // IDENT→DHT_DOC_CMD, optional +/-flags, skip commas; then IDENT(T/LM)='='
+  // TK_STR → LexExtStr (abs fp RVCmpCtrlAddrsGet[4]). Soft tip only.
+  CCmpCtrl * (*fp_new)(U8 *buf = NULL, I64 flags = 0, U8 *filename = NULL);
+  I64 (*fp_lex)(CCmpCtrl *cc);
+  U8 * (*fp_lex_ext)(CCmpCtrl *cc, I64 *_size = NULL, Bool lex_next = TRUE);
+  U0 (*fp_del)(CCmpCtrl *cc);
+  CCmpCtrl *cc;
+  CHashGeneric *tmph;
+  I64 fp_n, fp_l, fp_d, fp_ext, res, cmd, fi, n;
+  U32 typ;
+  I64 de_flags;
+  Bool turn_on;
+  U8 *st2;
+  if (!st || !_cmd || !_flag_idx || !out || out_max < 2)
+    return FALSE;
+  if (!doldoc.hash)
+    DocInit;
+  if (!doldoc.hash)
+    return FALSE;
+  if (!RVDocCmpFpsGet(&fp_n, &fp_l, &fp_d, NULL, &fp_ext))
+    return FALSE;
+  fp_new = fp_n;
+  fp_lex = fp_l;
+  fp_del = fp_d;
+  fp_lex_ext = fp_ext;
+  cc = fp_new(st, CCF_DONT_FREE_BUF, NULL);
+  if (!cc)
+    return FALSE;
+  cc->htc.hash_table_lst = NULL;
+  if (fp_lex(cc) != TK_IDENT || !cc->cur_str) {
+    fp_del(cc);
+    return FALSE;
+  }
+  if (!(tmph = HashFind(cc->cur_str, doldoc.hash, DHT_DOC_CMD | DHT_COLOR))) {
+    fp_del(cc);
+    return FALSE;
+  }
+  if (tmph->type & DHT_DOC_CMD)
+    cmd = tmph->user_data0;
+  else
+    cmd = DOCT_FOREGROUND;
+  fp_lex(cc);
+  de_flags = doldoc.dft_de_flags[cmd];
+  typ = cmd | doldoc.dft_type_flags[cmd];
+  while (TRUE) {
+    if (cc->token == '+')
+      turn_on = TRUE;
+    else if (cc->token == '-')
+      turn_on = FALSE;
+    else
+      break;
+    fp_lex(cc);
+    if (cc->token == TK_IDENT && cc->cur_str && (tmph = HashFind(cc->cur_str, doldoc.hash, DHT_DOC_FLAG))) {
+      res = tmph->user_data0;
+      if (res < 64) {
+        BEqu(&de_flags, res, turn_on);
+        switch (res) {
+          case DOCEf_BLINK :
+          case DOCEf_INVERT :
+          case DOCEf_UNDERLINE :
+          case DOCEf_SEL :
+          BEqu(&typ, res, turn_on);
+          break;
+        }
+      }
+      fp_lex(cc);
+    } else
+      break;
+  }
+  while (cc->token == ',')
+    fp_lex(cc);
+  if (cc->token != TK_IDENT || !cc->cur_str || !(tmph = HashFind(cc->cur_str, doldoc.hash, DHT_DOC_FLAG))) {
+    fp_del(cc);
+    return FALSE;
+  }
+  fi = tmph->user_data0;
+  if (fi != DOCEf_TAG && fi != DOCEf_LEFT_MACRO) {
+    fp_del(cc);
+    return FALSE;
+  }
+  fp_lex(cc);
+  if (cc->token != '=') {
+    fp_del(cc);
+    return FALSE;
+  }
+  fp_lex(cc);
+  if (cc->token != TK_STR || !cc->cur_str) {
+    fp_del(cc);
+    return FALSE;
+  }
+  st2 = fp_lex_ext(cc, NULL, TRUE);
+  if (!st2) {
+    fp_del(cc);
+    return FALSE;
+  }
+  n = 0;
+  while (st2[n] && n < out_max - 1) {
+    out[n] = st2[n];
+    n++;
+  }
+  out[n] = 0;
+  Free(st2);
+  fp_del(cc);
+  *_cmd = cmd;
+  *_flag_idx = fi;
+  rv_doc_prs_ext_lex_hits++;
+  return TRUE;
+}
+
+public I64 RVDocPrsDollarCmdLexExtProbe()
+{
+  //Soft tip: stock PrsDollarCmd LexExtStr args (TX,T="hi" / MA,LM="Cd;").
+  I64 cmd, fi;
+  U8 out[32];
+  I64 fp_n, fp_l, fp_d, fp_ext;
+  DocInit;
+  if (!doldoc.hash)
+    return 2;
+  if (!RVDocCmpFpsGet(&fp_n, &fp_l, &fp_d, NULL, &fp_ext))
+    return 3;
+  if (!RVDocPrsDollarCmdLexExt("TX,T=\"hi\"", &cmd, &fi, out, sizeof(out)))
+    return 4;
+  if (cmd != DOCT_TEXT)
+    return 5;
+  if (fi != DOCEf_TAG || StrCmp(out, "hi"))
+    return 6;
+  if (!RVDocPrsDollarCmdLexExt("MA,LM=\"Cd;\"", &cmd, &fi, out, sizeof(out)))
+    return 7;
+  if (cmd != DOCT_MACRO)
+    return 9;
+  if (fi != DOCEf_LEFT_MACRO || StrCmp(out, "Cd;"))
+    return 10;
+  return 8;
+}
+
+Bool RVDocPrsDollarCmdLexMulti(U8 *st, I64 *_cmd, I64 *_de_flags, U8 *tag, I64 tag_max, U8 *html, I64 html_max, U8 *aux, I64 aux_max, I64 *_bin)
+{
+  //Stock PrsDollarCmd multi-arg Soft tip (DocPlain.HC arg loop): IDENT→cmd,
+  // +/-flags, then HAS_ARG: T/HTML/A via LexExtStr, BI via LexExpressionI64.
+  // Abs fps RVCmpCtrlAddrsGet[0..4]. No DocIns / concat — Soft tip only.
+  CCmpCtrl * (*fp_new)(U8 *buf = NULL, I64 flags = 0, U8 *filename = NULL);
+  I64 (*fp_lex)(CCmpCtrl *cc);
+  I64 (*fp_lex_i64)(CCmpCtrl *cc);
+  U8 * (*fp_lex_ext)(CCmpCtrl *cc, I64 *_size = NULL, Bool lex_next = TRUE);
+  U0 (*fp_del)(CCmpCtrl *cc);
+  CCmpCtrl *cc;
+  CHashGeneric *tmph;
+  I64 fp_n, fp_l, fp_d, fp_i64, fp_ext, res, cmd, j, n, val;
+  I64 de_flags, processed_flags, arg_flags;
+  U32 typ;
+  Bool turn_on;
+  U8 *st2;
+  if (!st || !_cmd || !_de_flags || !tag || tag_max < 2 || !html || html_max < 2 || !aux || aux_max < 2 || !_bin)
+    return FALSE;
+  if (!doldoc.hash)
+    DocInit;
+  if (!doldoc.hash)
+    return FALSE;
+  if (!RVDocCmpFpsGet(&fp_n, &fp_l, &fp_d, &fp_i64, &fp_ext))
+    return FALSE;
+  fp_new = fp_n;
+  fp_lex = fp_l;
+  fp_del = fp_d;
+  fp_lex_i64 = fp_i64;
+  fp_lex_ext = fp_ext;
+  cc = fp_new(st, CCF_DONT_FREE_BUF, NULL);
+  if (!cc)
+    return FALSE;
+  cc->htc.hash_table_lst = NULL;
+  if (fp_lex(cc) != TK_IDENT || !cc->cur_str) {
+    fp_del(cc);
+    return FALSE;
+  }
+  if (!(tmph = HashFind(cc->cur_str, doldoc.hash, DHT_DOC_CMD | DHT_COLOR))) {
+    fp_del(cc);
+    return FALSE;
+  }
+  if (tmph->type & DHT_DOC_CMD)
+    cmd = tmph->user_data0;
+  else
+    cmd = DOCT_FOREGROUND;
+  fp_lex(cc);
+  de_flags = doldoc.dft_de_flags[cmd];
+  typ = cmd | doldoc.dft_type_flags[cmd];
+  while (TRUE) {
+    if (cc->token == '+')
+      turn_on = TRUE;
+    else if (cc->token == '-')
+      turn_on = FALSE;
+    else
+      break;
+    fp_lex(cc);
+    if (cc->token == TK_IDENT && cc->cur_str && (tmph = HashFind(cc->cur_str, doldoc.hash, DHT_DOC_FLAG))) {
+      res = tmph->user_data0;
+      if (res < 64) {
+        BEqu(&de_flags, res, turn_on);
+        switch (res) {
+          case DOCEf_BLINK :
+          case DOCEf_INVERT :
+          case DOCEf_UNDERLINE :
+          case DOCEf_SEL :
+          BEqu(&typ, res, turn_on);
+          break;
+        }
+      }
+      fp_lex(cc);
+    } else
+      break;
+  }
+  tag[0] = 0;
+  html[0] = 0;
+  aux[0] = 0;
+  *_bin = -1;
+  processed_flags = 0;
+  while (TRUE) {
+    while (cc->token == ',')
+      fp_lex(cc);
+    j = -1;
+    if (cc->token == TK_IDENT && cc->cur_str && (tmph = HashFind(cc->cur_str, doldoc.hash, DHT_DOC_FLAG))) {
+      j = tmph->user_data0;
+      if (j < 64) {
+        BEqu(&de_flags, j, TRUE);
+        switch (j) {
+          case DOCEf_BLINK :
+          case DOCEf_INVERT :
+          case DOCEf_UNDERLINE :
+          case DOCEf_SEL :
+          BEqu(&typ, j, TRUE);
+          break;
+        }
+      }
+      fp_lex(cc);
+    }
+    if (!(arg_flags = ~processed_flags & de_flags & DOCEG_HAS_ARG))
+      break;
+    if (cc->token == '=')
+      fp_lex(cc);
+    else
+      j = Bsf(arg_flags);
+    if (j < 0 || Bts(&processed_flags, j)) {
+      fp_del(cc);
+      return FALSE;
+    }
+    if (j == DOCEf_TAG || j == DOCEf_HTML_LINK || j == DOCEf_AUX_STR) {
+      if (cc->token != TK_STR || !cc->cur_str) {
+        fp_del(cc);
+        return FALSE;
+      }
+      st2 = fp_lex_ext(cc, NULL, TRUE);
+      if (!st2) {
+        fp_del(cc);
+        return FALSE;
+      }
+      n = 0;
+      if (j == DOCEf_TAG) {
+        while (st2[n] && n < tag_max - 1) {
+          tag[n] = st2[n];
+          n++;
+        }
+        tag[n] = 0;
+      } else if (j == DOCEf_HTML_LINK) {
+        while (st2[n] && n < html_max - 1) {
+          html[n] = st2[n];
+          n++;
+        }
+        html[n] = 0;
+      } else {
+        while (st2[n] && n < aux_max - 1) {
+          aux[n] = st2[n];
+          n++;
+        }
+        aux[n] = 0;
+      }
+      Free(st2);
+    } else if (j == DOCEf_HAS_BIN) {
+      if (!cc->token) {
+        fp_del(cc);
+        return FALSE;
+      }
+      val = fp_lex_i64(cc);
+      *_bin = val;
+    } else {
+      fp_del(cc);
+      return FALSE;
+    }
+  }
+  fp_del(cc);
+  *_cmd = cmd;
+  *_de_flags = de_flags;
+  rv_doc_prs_multi_lex_hits++;
+  return TRUE;
+}
+
+public I64 RVDocPrsDollarCmdLexMultiProbe()
+{
+  //Soft tip: multi-arg stock PrsDollarCmd via abs-addr CmpCtrl
+  // (TX+CX,T="hi" / LK,"hi",A=/HTML=/BI=).
+  I64 cmd, de_flags, bin;
+  U8 tag[32], html[64], aux[32];
+  I64 fp_n, fp_l, fp_d, fp_i64, fp_ext;
+  DocInit;
+  if (!doldoc.hash)
+    return 2;
+  if (!RVDocCmpFpsGet(&fp_n, &fp_l, &fp_d, &fp_i64, &fp_ext))
+    return 3;
+  if (!RVDocPrsDollarCmdLexMulti("TX+CX,T=\"hi\"", &cmd, &de_flags, tag, sizeof(tag), html, sizeof(html), aux, sizeof(aux), &bin))
+    return 4;
+  if (cmd != DOCT_TEXT)
+    return 5;
+  if (!(de_flags & DOCEF_CENTER_X))
+    return 6;
+  if (StrCmp(tag, "hi"))
+    return 7;
+  if (!RVDocPrsDollarCmdLexMulti("LK,\"hi\",A=\"MN:Lex\",HTML=\"http://x\",BI=1", &cmd, &de_flags, tag, sizeof(tag), html, sizeof(html), aux, sizeof(aux), &bin))
+    return 9;
+  if (cmd != DOCT_LINK)
+    return 10;
+  if (StrCmp(tag, "hi"))
+    return 11;
+  if (StrCmp(aux, "MN:Lex"))
+    return 12;
+  if (StrCmp(html, "http://x"))
+    return 13;
+  if (bin != 1)
+    return 14;
+  return 8;
+}
+
+Bool RVDocPrsArgOnce(U8 **pp, I64 *_flag_idx, U8 *val, I64 val_max)
+{
+  //Stock PrsDollarCmd arg shape (DocPlain.HC): IDENT= → DHT_DOC_FLAG HashFind
+  // then quoted "..." (T/HTML/LM/A) or int (LE/BI). No CmpCtrl Lex.
+  U8 *p;
+  U8 ident[16];
+  I64 n, num, taken;
+  CHashGeneric *tmph;
+  if (!pp || !*pp || !_flag_idx || !val || val_max < 2)
+    return FALSE;
+  if (!doldoc.hash)
+    DocInit;
+  if (!doldoc.hash)
+    return FALSE;
+  p = *pp;
+  while (*p == ' ' || *p == ',' || *p == '\t')
+    p++;
+  n = 0;
+  while (*p && *p != '=' && *p != ',' && *p != '"' && *p != ' ' && *p != '\t' && n < sizeof(ident) - 1)
+    ident[n++] = *p++;
+  ident[n] = 0;
+  if (!ident[0])
+    return FALSE;
+  while (*p == ' ' || *p == '\t')
+    p++;
+  if (*p != '=')
+    return FALSE;
+  p++;
+  while (*p == ' ' || *p == '\t')
+    p++;
+  if (!(tmph = HashFind(ident, doldoc.hash, DHT_DOC_FLAG)))
+    return FALSE;
+  *_flag_idx = tmph->user_data0;
+  if (*p == '"') {
+    if (!RVDocExtractQuoted(&p, val, val_max))
+      return FALSE;
+  } else {
+    taken = RVDocParseInt(p, &num);
+    if (taken <= 0)
+      return FALSE;
+    p += taken;
+    StrPrint(val, "%d", num);
+  }
+  *pp = p;
+  rv_doc_prs_arg_hits++;
+  return TRUE;
+}
+
+Bool RVDocPrsArgFind(U8 *cmd, I64 want_fi, U8 *val, I64 val_max)
+{
+  //Scan dollar-cmd for KEY=val via HashFind (want_fi = DOCEf_*).
+  U8 *p, *scan;
+  I64 fi;
+  if (!cmd || !val || val_max < 2)
+    return FALSE;
+  p = cmd;
+  while (*p) {
+    while (*p && !(*p >= 'A' && *p <= 'Z') && !(*p >= 'a' && *p <= 'z'))
+      p++;
+    if (!*p)
+      break;
+    scan = p;
+    if (RVDocPrsArgOnce(&scan, &fi, val, val_max)) {
+      if (fi == want_fi)
+        return TRUE;
+      p = scan;
+      continue;
+    }
+    p++;
+  }
+  return FALSE;
+}
+
+public I64 RVDocPrsArgTagProbe()
+{
+  //Soft tip: stock T=/HTML= arg Lex (HashFind + quote) toward PrsDollarCmd.
+  U8 *p;
+  U8 val[96];
+  I64 fi;
+  DocInit;
+  p = ",T=\"TempleOS\",HTML=\"http://www.templeos.org\"";
+  if (!RVDocPrsArgOnce(&p, &fi, val, sizeof(val)))
+    return 3;
+  if (fi != DOCEf_TAG || StrCmp(val, "TempleOS"))
+    return 4;
+  if (!RVDocPrsArgOnce(&p, &fi, val, sizeof(val)))
+    return 5;
+  if (fi != DOCEf_HTML_LINK || StrCmp(val, "http://www.templeos.org"))
+    return 6;
+  return 8;
+}
+
+public I64 RVDocPrsArgExtraProbe()
+{
+  //Soft tip: stock LE=/LM=/A=/BI= arg kinds (HashFind + int|quote).
+  U8 *p;
+  U8 val[96];
+  I64 fi, n;
+  DocInit;
+  p = ",LE=1,LM=\"Cd;\",A=\"MN:Lex\",BI=17";
+  if (!RVDocPrsArgOnce(&p, &fi, val, sizeof(val)))
+    return 3;
+  if (fi != DOCEf_LEFT_EXP || RVDocParseInt(val, &n) <= 0 || n != 1)
+    return 4;
+  if (!RVDocPrsArgOnce(&p, &fi, val, sizeof(val)))
+    return 5;
+  if (fi != DOCEf_LEFT_MACRO || StrCmp(val, "Cd;"))
+    return 6;
+  if (!RVDocPrsArgOnce(&p, &fi, val, sizeof(val)))
+    return 7;
+  if (fi != DOCEf_AUX_STR || StrCmp(val, "MN:Lex"))
+    return 9;
+  if (!RVDocPrsArgOnce(&p, &fi, val, sizeof(val)))
+    return 10;
+  if (fi != DOCEf_HAS_BIN || RVDocParseInt(val, &n) <= 0 || n != 17)
+    return 11;
+  return 8;
+}
+
+Bool RVDocInitSeedApply(U8 *seed)
+{
+  //Stock DocInit.HC CmpCtrl seed Lex shape without CmpCtrl: IDENT → DHT_DOC_CMD
+  // HashFind, then +/−flags via RVDocPrsFlagsCmp (same DHT_DOC_FLAG HashFind).
+  U8 *p;
+  U8 ident[16];
+  U8 flagbuf[96];
+  I64 n, i, fn;
+  U32 typ;
+  CHashGeneric *tmph;
+  if (!seed || !doldoc.hash)
+    return FALSE;
+  p = seed;
+  while (*p) {
+    while (*p == ' ' || *p == '\t' || *p == ';')
+      p++;
+    if (!*p)
+      break;
+    n = 0;
+    while (*p && *p != '+' && *p != '-' && *p != ';' && *p != ' ' && *p != '\t' && n < sizeof(ident) - 1)
+      ident[n++] = *p++;
+    ident[n] = 0;
+    if (!ident[0])
+      break;
+    fn = 0;
+    while (*p && *p != ';' && fn < sizeof(flagbuf) - 1)
+      flagbuf[fn++] = *p++;
+    flagbuf[fn] = 0;
+    if (*p == ';')
+      p++;
+    if (!(tmph = HashFind(ident, doldoc.hash, DHT_DOC_CMD)))
+      continue;
+    i = tmph->user_data0;
+    if (i < 0 || i >= DOCT_TYPES_NUM)
+      return FALSE;
+    if (flagbuf[0]) {
+      typ = doldoc.dft_type_flags[i];
+      RVDocPrsFlagsCmp(flagbuf, &doldoc.dft_de_flags[i], &typ);
+      doldoc.dft_type_flags[i] = typ;
+    }
+  }
+  return TRUE;
+}
+
+public I64 RVDocDolDocHashGet()
+{//Soft tip: Kernel doldoc.hash addr without Soft defining Soft doldoc (Load shadow).
+  if (!doldoc.hash)
+    DocInit;
+  return doldoc.hash(I64);
+}
+
+public I64 RVDocKernDolDocHashProbe()
+{//Soft tip: Kernel doldoc.hash TX via Soft Call (no Soft Call Load of Soft doldoc).
+  DocInit;
+  if (!doldoc.hash)
+    return 2;
+  if (!HashFind("TX", doldoc.hash, DHT_DOC_CMD))
+    return 3;
+  return 1;
+}
+
+public I64 RVDocInitSeedProbe()
+{
+  //Soft tip: DocInit DHT_DOC_FLAG/CMD plant + stock seed-string dft flags
+  // (DocInit.HC CmpCtrl seed Lex shape via RVDocInitSeedApply).
+  I64 i;
+  I64 de_hand[DOCT_TYPES_NUM];
+  I32 ty_hand[DOCT_TYPES_NUM];
+  DocInit;
+  if (!doldoc.hash)
+    return 2;
+  if (!HashFind("T", doldoc.hash, DHT_DOC_FLAG))
+    return 3;
+  if (!HashFind("CX", doldoc.hash, DHT_DOC_FLAG))
+    return 4;
+  if (!HashFind("TX", doldoc.hash, DHT_DOC_CMD))
+    return 5;
+  if (!HashFind("LK", doldoc.hash, DHT_DOC_CMD))
+    return 6;
+  // Snapshot current dfts (hand plant or prior SeedApply), re-apply stock seed.
+  MemCpy(de_hand, doldoc.dft_de_flags, sizeof(de_hand));
+  MemCpy(ty_hand, doldoc.dft_type_flags, sizeof(ty_hand));
+  MemSet(doldoc.dft_de_flags, 0, sizeof(doldoc.dft_de_flags));
+  MemSet(doldoc.dft_type_flags, 0, sizeof(doldoc.dft_type_flags));
+  if (!RVDocInitSeedApply("TX+T;DA+P+TRM+T+DL+DRT;CM+LE+RE;AN+T;LK+L+UL+T;MA+X+UL+T;" "MU+X+UL+T;BT+X+B+T;CB+CA+P+T+DRT;LS+LS+P+T+DRT;HX+P+Z;TR+TR+C+CA+UL+T;" "SP+T;IB+T;IS+T;SO+T;HC+T;")) {
+    MemCpy(doldoc.dft_de_flags, de_hand, sizeof(de_hand));
+    MemCpy(doldoc.dft_type_flags, ty_hand, sizeof(ty_hand));
+    return 7;
+  }
+  for (i = 0; i < DOCT_TYPES_NUM; i++)
+    doldoc.dft_de_flags[i] &= ~DOCG_BL_IV_UL;
+  if (doldoc.dft_de_flags[DOCT_TEXT] != DOCEF_TAG) {
+    MemCpy(doldoc.dft_de_flags, de_hand, sizeof(de_hand));
+    MemCpy(doldoc.dft_type_flags, ty_hand, sizeof(ty_hand));
+    return 9;
+  }
+  if (doldoc.dft_de_flags[DOCT_DATA] != (DOCEF_DEREF_DATA | DOCEF_HAS_TERMINATOR | DOCEF_TAG | DOCEF_DFT_LEN | DOCEF_DFT_RAW_TYPE)) {
+    MemCpy(doldoc.dft_de_flags, de_hand, sizeof(de_hand));
+    MemCpy(doldoc.dft_type_flags, ty_hand, sizeof(ty_hand));
+    return 10;
+  }
+  if (doldoc.dft_de_flags[DOCT_LINK] != (DOCEF_LINK | DOCEF_TAG) || !(doldoc.dft_type_flags[DOCT_LINK] & DOCET_UNDERLINE)) {
+    MemCpy(doldoc.dft_de_flags, de_hand, sizeof(de_hand));
+    MemCpy(doldoc.dft_type_flags, ty_hand, sizeof(ty_hand));
+    return 11;
+  }
+  if (doldoc.dft_de_flags[DOCT_CURSOR_MOVEMENT] != (DOCEF_LEFT_EXP | DOCEF_RIGHT_EXP)) {
+    MemCpy(doldoc.dft_de_flags, de_hand, sizeof(de_hand));
+    MemCpy(doldoc.dft_type_flags, ty_hand, sizeof(ty_hand));
+    return 12;
+  }
+  // Seed apply must match hand plant (or prior SeedApply SoT).
+  if (doldoc.dft_de_flags[DOCT_TEXT] != de_hand[DOCT_TEXT] || doldoc.dft_de_flags[DOCT_DATA] != de_hand[DOCT_DATA] || doldoc.dft_de_flags[DOCT_LINK] != de_hand[DOCT_LINK] || doldoc.dft_type_flags[DOCT_LINK] != ty_hand[DOCT_LINK]) {
+    MemCpy(doldoc.dft_de_flags, de_hand, sizeof(de_hand));
+    MemCpy(doldoc.dft_type_flags, ty_hand, sizeof(ty_hand));
+    return 13;
+  }
+  return 8;
+}
+
 Bool DocLock(CDoc *doc)
 {
+  //Adam/DolDoc/DocNew.HC DocLock — Yield while contending so WinMgr can unlock.
   if (!doc)
     return FALSE;
   if (!Bt(&doc->locked_flags, DOClf_LOCKED) || doc->owning_task != Fs) {
     while (LBts(&doc->locked_flags, DOClf_LOCKED))
-      ;
+      Yield;
     doc->owning_task = Fs;
     return TRUE;
   }
@@ -411,12 +1475,14 @@ CDocBin *DocBinNew(CDoc *doc, U8 *data, I64 size, U8 *tag = NULL)
 I64 DocSize(CDoc *doc)
 {
   CDocEntry *doc_e;
-  I64 res = 0;
+  I64 res = 0, guard = 0;
   if (!doc || doc->doc_signature != DOC_SIGNATURE_VAL)
     return 0;
   doc_e = doc->head.next;
-  while (doc_e != doc) {
+  while (doc_e && doc_e != doc) {
     res++;
+    if (++guard > 100000)
+      break;
     doc_e = doc_e->next;
   }
   return res;
@@ -643,10 +1709,31 @@ Bool RVDocCmdHasFlag(U8 *cmd, I64 ch)
 
 U0 RVDocAttachHtml(CDoc *doc, CDocEntry *doc_e, U8 *cmd)
 {
-  U8 *q, aux[160];
-  I64 n;
+  U8 *p, *q, *scan, aux[160];
+  I64 n, fi;
   if (!doc || !doc_e || !cmd)
     return;
+  // Stock arg Lex: HTML="..." via DHT_DOC_FLAG HashFind (PrsDollarCmd shape).
+  p = cmd;
+  while (*p) {
+    while (*p && !(*p >= 'A' && *p <= 'Z') && !(*p >= 'a' && *p <= 'z'))
+      p++;
+    if (!*p)
+      break;
+    scan = p;
+    if (RVDocPrsArgOnce(&scan, &fi, aux, sizeof(aux))) {
+      if (fi == DOCEf_HTML_LINK && aux[0]) {
+        doc_e->de_flags |= DOCEF_HTML_LINK;
+        doc_e->html_link = RVDocStrNew(doc, aux);
+        rv_doc_html_hits++;
+        return;
+      }
+      p = scan;
+      continue;
+    }
+    p++;
+  }
+  // Fallback string KEY= (pre-HashFind path).
   q = RVDocFindArg(cmd, "HTML");
   if (!q)
     return;
@@ -664,13 +1751,13 @@ U0 RVDocAttachHtml(CDoc *doc, CDocEntry *doc_e, U8 *cmd)
 
 U0 RVDocPrsDollarCmd(CDoc *doc, U8 *cmd)
 {
-  //DocInit_RV HashFind + hand bodies (stock PrsDollarCmd without CmpCtrl Lex).
-  // HX/SO/HC + TX/LK HTML= cover DemoInPage + widget subset without CmpCtrl.
+  //DocInit_RV HashFind + hand bodies; TX+CX via RVDocPrsFlagsCmp (same unit).
   CDocEntry *doc_e;
   CHashGeneric *tmph;
   U8 tag[128], aux[160], buf[48], ident[16];
   U8 *p, *q;
-  I64 attr, n, i, color, cols;
+  I64 attr, n, i, color, cols, de_flags, fi;
+  U32 typ;
   if (!doc || !cmd || !cmd[0])
     return;
   DocInit;
@@ -734,15 +1821,30 @@ U0 RVDocPrsDollarCmd(CDoc *doc, U8 *cmd)
   if ((cmd[0] == 'T' || cmd[0] == 't') && (cmd[1] == 'X' || cmd[1] == 'x')) {
     p = cmd + 2;
     tag[0] = 0;
-    // Skip flag run (+CX / -UL …) before the quoted tag
+    // Flag run (+CX / -UL) → RVDocPrsFlagsCmp HashFind (not CmpCtrl Lex).
+    fi = 0;
+    while (*p && *p != ',' && *p != '"' && fi < sizeof(buf) - 1)
+      buf[fi++] = *p++;
+    buf[fi] = 0;
     while (*p && *p != ',' && *p != '"')
       p++;
     if (!RVDocExtractQuoted(&p, tag, sizeof(tag))) {
-      // TX without quote — ignore
-      return;
+      // Stock T="..." when TAG is keyed (dft may omit positional quote).
+      q = p;
+      if (!RVDocPrsArgOnce(&q, &fi, tag, sizeof(tag)) || fi != DOCEf_TAG || !tag[0])
+        return;
+      p = q;
     }
-    doc_e = DocEntryNewBase(doc, DOCT_TEXT | (doc->settings_head.dft_text_attr << 8));
-    doc_e->de_flags = DOCEF_TAG;
+    de_flags = DOCEF_TAG;
+    if (doldoc.hash)
+      de_flags = doldoc.dft_de_flags[DOCT_TEXT];
+    typ = DOCT_TEXT | (doc->settings_head.dft_text_attr << 8);
+    if (doldoc.hash)
+      typ |= doldoc.dft_type_flags[DOCT_TEXT];
+    if (buf[0] && RVDocPrsFlagsCmp(buf, &de_flags, &typ))
+      rv_doc_prs_flag_hits++;
+    doc_e = DocEntryNewBase(doc, typ);
+    doc_e->de_flags = de_flags;
     doc_e->tag = RVDocStrNew(doc, tag);
     doc_e->max_col = StrLen(tag);
     RVDocAttachHtml(doc, doc_e, cmd);
@@ -754,17 +1856,21 @@ U0 RVDocPrsDollarCmd(CDoc *doc, U8 *cmd)
     tag[0] = 0;
     aux[0] = 0;
     RVDocExtractQuoted(&p, tag, sizeof(tag));
-    q = RVDocFindArg(cmd, "A");
-    if (q) {
-      q++;
-      // skip '"'
-      n = 0;
-      while (*q && *q != '"' && n < sizeof(aux) - 1)
-        aux[n++] = *q++;
-      aux[n] = 0;
+    if (RVDocPrsArgFind(cmd, DOCEf_AUX_STR, aux, sizeof(aux))) {
+      // HashFind A="..."
     } else {
-      // Positional second string
-      RVDocExtractQuoted(&p, aux, sizeof(aux));
+      q = RVDocFindArg(cmd, "A");
+      if (q) {
+        q++;
+        // skip '"'
+        n = 0;
+        while (*q && *q != '"' && n < sizeof(aux) - 1)
+          aux[n++] = *q++;
+        aux[n] = 0;
+      } else {
+        // Positional second string
+        RVDocExtractQuoted(&p, aux, sizeof(aux));
+      }
     }
     if (!tag[0])
       return;
@@ -817,9 +1923,10 @@ U0 RVDocPrsDollarCmd(CDoc *doc, U8 *cmd)
     doc_e->de_flags = DOCEF_TAG | DOCEF_UNDERLINE;
     doc_e->tag = RVDocStrNew(doc, tag);
     doc_e->max_col = 1;
-    q = RVDocFindArg(cmd, "LE");
-    if (!q) {
-      // LE=n without quotes (FindArg wants KEY=")
+    if (RVDocPrsArgFind(cmd, DOCEf_LEFT_EXP, aux, sizeof(aux)) && RVDocParseInt(aux, &n) > 0) {
+      doc_e->de_flags |= DOCEF_LEFT_EXP;
+      doc_e->left_exp = n;
+    } else {
       q = cmd;
       while (*q) {
         if (q[0] == 'L' && q[1] == 'E' && q[2] == '=') {
@@ -844,13 +1951,15 @@ U0 RVDocPrsDollarCmd(CDoc *doc, U8 *cmd)
     while (*p && *p != ',' && *p != '"')
       p++;
     RVDocExtractQuoted(&p, tag, sizeof(tag));
-    q = RVDocFindArg(cmd, "A");
-    if (q) {
-      q++;
-      n = 0;
-      while (*q && *q != '"' && n < sizeof(aux) - 1)
-        aux[n++] = *q++;
-      aux[n] = 0;
+    if (!RVDocPrsArgFind(cmd, DOCEf_AUX_STR, aux, sizeof(aux))) {
+      q = RVDocFindArg(cmd, "A");
+      if (q) {
+        q++;
+        n = 0;
+        while (*q && *q != '"' && n < sizeof(aux) - 1)
+          aux[n++] = *q++;
+        aux[n] = 0;
+      }
     }
     if (!tag[0] && aux[0]) {
       // Format-only: show aux as label with empty value placeholder
@@ -915,21 +2024,27 @@ U0 RVDocPrsDollarCmd(CDoc *doc, U8 *cmd)
     while (*p && *p != ',' && *p != '"')
       p++;
     RVDocExtractQuoted(&p, tag, sizeof(tag));
-    q = RVDocFindArg(cmd, "LM");
-    if (q) {
-      q++;
-      n = 0;
-      while (*q && *q != '"' && n < sizeof(aux) - 1)
-        aux[n++] = *q++;
-      aux[n] = 0;
+    if (RVDocPrsArgFind(cmd, DOCEf_LEFT_MACRO, aux, sizeof(aux))) {
+      // HashFind LM="..."
+    } else if (RVDocPrsArgFind(cmd, DOCEf_AUX_STR, aux, sizeof(aux))) {
+      // HashFind A="..."
     } else {
-      q = RVDocFindArg(cmd, "A");
+      q = RVDocFindArg(cmd, "LM");
       if (q) {
         q++;
         n = 0;
         while (*q && *q != '"' && n < sizeof(aux) - 1)
           aux[n++] = *q++;
         aux[n] = 0;
+      } else {
+        q = RVDocFindArg(cmd, "A");
+        if (q) {
+          q++;
+          n = 0;
+          while (*q && *q != '"' && n < sizeof(aux) - 1)
+            aux[n++] = *q++;
+          aux[n] = 0;
+        }
       }
     }
     if (!tag[0])
@@ -1034,17 +2149,22 @@ U0 RVDocPrsDollarCmd(CDoc *doc, U8 *cmd)
     doc_e->de_flags = DOCEF_TAG | DOCEF_UNDERLINE;
     doc_e->tag = RVDocStrNew(doc, tag);
     doc_e->max_col = 1;
-    q = cmd;
-    while (*q) {
-      if (q[0] == 'L' && q[1] == 'E' && q[2] == '=') {
-        q += 3;
-        if (RVDocParseInt(q, &n) > 0) {
-          doc_e->de_flags |= DOCEF_LEFT_EXP;
-          doc_e->left_exp = n;
+    if (RVDocPrsArgFind(cmd, DOCEf_LEFT_EXP, aux, sizeof(aux)) && RVDocParseInt(aux, &n) > 0) {
+      doc_e->de_flags |= DOCEF_LEFT_EXP;
+      doc_e->left_exp = n;
+    } else {
+      q = cmd;
+      while (*q) {
+        if (q[0] == 'L' && q[1] == 'E' && q[2] == '=') {
+          q += 3;
+          if (RVDocParseInt(q, &n) > 0) {
+            doc_e->de_flags |= DOCEF_LEFT_EXP;
+            doc_e->left_exp = n;
+          }
+          break;
         }
-        break;
+        q++;
       }
-      q++;
     }
     RVDocAttachUserData(doc, doc_e, cmd);
     DocInsEntry(doc, doc_e);
@@ -1177,33 +2297,56 @@ U0 RVDocPrsDollarCmd(CDoc *doc, U8 *cmd)
     DocInsEntry(doc, doc_e);
     return;
   }
-  // SP,"tag",BI=n — sprite entry + optional bin attach
+  // SP,"tag",BI=n — sprite entry + optional bin attach (+ LM= for PsmMenu play/record)
   if ((cmd[0] == 'S' || cmd[0] == 's') && (cmd[1] == 'P' || cmd[1] == 'p')) {
     p = cmd + 2;
     tag[0] = 0;
+    aux[0] = 0;
     while (*p && *p != ',' && *p != '"')
       p++;
     RVDocExtractQuoted(&p, tag, sizeof(tag));
     if (!tag[0])
       StrCpy(tag, "<SP>");
+    if (!RVDocPrsArgFind(cmd, DOCEf_LEFT_MACRO, aux, sizeof(aux))) {
+      q = RVDocFindArg(cmd, "LM");
+      if (q) {
+        q++;
+        n = 0;
+        while (*q && *q != '"' && n < sizeof(aux) - 1)
+          aux[n++] = *q++;
+        aux[n] = 0;
+      }
+    }
     doc_e = DocEntryNewBase(doc, DOCT_SPRITE | (DOC_COLOR_BIN << 8));
     doc_e->de_flags = DOCEF_TAG;
     doc_e->tag = RVDocStrNew(doc, tag);
     doc_e->max_col = StrLen(tag);
+    if (aux[0]) {
+      doc_e->de_flags |= DOCEF_LEFT_MACRO | DOCEF_AUX_STR;
+      doc_e->aux_str = RVDocStrNew(doc, aux);
+      doc_e->left_macro = doc_e->aux_str;
+    }
     n = 0;
-    q = cmd;
-    while (*q) {
-      if (q[0] == 'B' && q[1] == 'I' && q[2] == '=') {
-        q += 3;
-        if (RVDocParseInt(q, &n) > 0) {
-          doc_e->de_flags |= DOCEF_HAS_BIN;
-          doc_e->bin_num = n;
-          doc_e->bin_data = DocBinFindNum(doc, n);
-          rv_doc_bin_hits++;
+    if (RVDocPrsArgFind(cmd, DOCEf_HAS_BIN, buf, sizeof(buf)) && RVDocParseInt(buf, &n) > 0) {
+      doc_e->de_flags |= DOCEF_HAS_BIN;
+      doc_e->bin_num = n;
+      doc_e->bin_data = DocBinFindNum(doc, n);
+      rv_doc_bin_hits++;
+    } else {
+      q = cmd;
+      while (*q) {
+        if (q[0] == 'B' && q[1] == 'I' && q[2] == '=') {
+          q += 3;
+          if (RVDocParseInt(q, &n) > 0) {
+            doc_e->de_flags |= DOCEF_HAS_BIN;
+            doc_e->bin_num = n;
+            doc_e->bin_data = DocBinFindNum(doc, n);
+            rv_doc_bin_hits++;
+          }
+          break;
         }
-        break;
+        q++;
       }
-      q++;
     }
     DocInsEntry(doc, doc_e);
     return;
@@ -1222,29 +2365,44 @@ U0 RVDocPrsDollarCmd(CDoc *doc, U8 *cmd)
     doc_e->tag = RVDocStrNew(doc, tag);
     doc_e->max_col = StrLen(tag);
     n = 0;
-    q = cmd;
-    while (*q) {
-      if (q[0] == 'B' && q[1] == 'I' && q[2] == '=') {
-        q += 3;
-        if (RVDocParseInt(q, &n) > 0) {
-          doc_e->de_flags |= DOCEF_HAS_BIN;
-          doc_e->bin_num = n;
-          doc_e->bin_data = DocBinFindNum(doc, n);
-          if (doc_e->bin_data && doc_e->bin_data->size > 0) {
-            // Prefer size label when tag is placeholder (TempleOS IB footprint).
-            if (!tag[0] || !StrCmp(tag, "<IB>")) {
-              StrPrint(buf, "IB:%d", doc_e->bin_data->size);
-              Free(doc_e->tag);
-              doc_e->tag = RVDocStrNew(doc, buf);
-              doc_e->max_col = StrLen(buf);
-            }
-          }
-          rv_doc_bin_hits++;
-          rv_doc_ib_hits++;
+    if (RVDocPrsArgFind(cmd, DOCEf_HAS_BIN, buf, sizeof(buf)) && RVDocParseInt(buf, &n) > 0) {
+      doc_e->de_flags |= DOCEF_HAS_BIN;
+      doc_e->bin_num = n;
+      doc_e->bin_data = DocBinFindNum(doc, n);
+      if (doc_e->bin_data && doc_e->bin_data->size > 0) {
+        if (!tag[0] || !StrCmp(tag, "<IB>")) {
+          StrPrint(buf, "IB:%d", doc_e->bin_data->size);
+          Free(doc_e->tag);
+          doc_e->tag = RVDocStrNew(doc, buf);
+          doc_e->max_col = StrLen(buf);
         }
-        break;
       }
-      q++;
+      rv_doc_bin_hits++;
+      rv_doc_ib_hits++;
+    } else {
+      q = cmd;
+      while (*q) {
+        if (q[0] == 'B' && q[1] == 'I' && q[2] == '=') {
+          q += 3;
+          if (RVDocParseInt(q, &n) > 0) {
+            doc_e->de_flags |= DOCEF_HAS_BIN;
+            doc_e->bin_num = n;
+            doc_e->bin_data = DocBinFindNum(doc, n);
+            if (doc_e->bin_data && doc_e->bin_data->size > 0) {
+              if (!tag[0] || !StrCmp(tag, "<IB>")) {
+                StrPrint(buf, "IB:%d", doc_e->bin_data->size);
+                Free(doc_e->tag);
+                doc_e->tag = RVDocStrNew(doc, buf);
+                doc_e->max_col = StrLen(buf);
+              }
+            }
+            rv_doc_bin_hits++;
+            rv_doc_ib_hits++;
+          }
+          break;
+        }
+        q++;
+      }
     }
     DocInsEntry(doc, doc_e);
     return;
@@ -1288,13 +2446,15 @@ U0 RVDocPrsDollarCmd(CDoc *doc, U8 *cmd)
     while (*p && *p != ',' && *p != '"')
       p++;
     RVDocExtractQuoted(&p, tag, sizeof(tag));
-    q = RVDocFindArg(cmd, "A");
-    if (q) {
-      q++;
-      n = 0;
-      while (*q && *q != '"' && n < sizeof(aux) - 1)
-        aux[n++] = *q++;
-      aux[n] = 0;
+    if (!RVDocPrsArgFind(cmd, DOCEf_AUX_STR, aux, sizeof(aux))) {
+      q = RVDocFindArg(cmd, "A");
+      if (q) {
+        q++;
+        n = 0;
+        while (*q && *q != '"' && n < sizeof(aux) - 1)
+          aux[n++] = *q++;
+        aux[n] = 0;
+      }
     }
     if (!tag[0])
       StrCpy(tag, "<SO>");
@@ -1463,17 +2623,47 @@ U0 DocLoad(CDoc *doc, U8 *src2, I64 size)
 
 CDocEntry *DocPrint(CDoc *doc = NULL, U8 *fmt,...)
 {
-  // NULL doc → Term Doc-lite append (existing RVDocPutS bridge).
-  // fmt as literal (DirFileDoc formats via StrPrint+DocPutS).
+  //Stock DocPutS.HC DocPrint — StrPrintJoin then DocPutS (Psalmody PopUpDuration LE=%d).
+  U8 *buf;
+  CDocEntry *res;
   if (!fmt)
     return NULL;
+  buf = StrPrintJoin(NULL, fmt, argc, argv);
+  if (!buf)
+    return NULL;
   if (!doc) {
-    RVDocPutS(fmt);
+    RVDocPutS(buf);
+    Free(buf);
     return NULL;
   }
-  if (doc->doc_signature != DOC_SIGNATURE_VAL)
+  if (doc->doc_signature != DOC_SIGNATURE_VAL) {
+    Free(buf);
     return NULL;
-  return DocPutS(doc, fmt);
+  }
+  res = DocPutS(doc, buf);
+  Free(buf);
+  return res;
+}
+
+CDocEntry *DocPrintF(CDoc *doc, U8 *fmt, I64 a)
+{
+  // Fixed-arity Soft Call bridge into stock DocPrint vararg.
+  // True guest DocPrint Soft Call uses CALL_IMPORT remat LEA argv (OptPass_RV).
+  return DocPrint(doc, fmt, a);
+}
+
+I64 DocPrintStockProbe(CDoc *doc)
+{
+  // 1-arg host-only bisect helper (Soft Call proof uses guest DocPrintF).
+  I64 n0, n1;
+  if (!doc || doc->doc_signature != DOC_SIGNATURE_VAL)
+    return 3;
+  n0 = DocSize(doc);
+  DocPrint(doc, "%d", 8);
+  n1 = DocSize(doc);
+  if (n1 <= n0)
+    return 4;
+  return 8;
 }
 
 public Bool DocCursor(Bool show = OFF, CDoc *doc = NULL)
@@ -1486,13 +2676,29 @@ public Bool DocCursor(Bool show = OFF, CDoc *doc = NULL)
 
 U0 DocClear(CDoc *doc = NULL, Bool clear_holds = FALSE)
 {
-  //TempleOS DocClear soft — $$CL$$ when a DocPut exists; no-op for bare Gr demos.
+  //TempleOS DocClear — stock inserts $$CL$$ then DocRecalc→DocDelToEntry.
+  // RV: delete entries directly (put_doc lite queues were uninit; $$CL$$ Recalc hung).
+  CDocEntry *doc_e, *doc_e2;
+  I64 guard = 0;
+  Bool unlock;
   if (!doc && !(doc = DocPut))
     return;
-  if (clear_holds)
-    DocPrint(doc, "$$CL+H$$");
-  else
-    DocPrint(doc, "$$CL$$");
+  unlock = DocLock(doc);
+  doc_e = doc->head.next;
+  while (doc_e && doc_e != doc && ++guard < 100000) {
+    doc_e2 = doc_e->next;
+    if (clear_holds && (doc_e->de_flags & DOCEF_HOLD)) {
+      doc_e = doc_e2;
+      continue;
+    }
+    DocEntryDel(doc, doc_e);
+    doc_e = doc_e2;
+  }
+  doc->head.next = doc->head.last = doc;
+  doc->cur_entry = doc;
+  doc->cur_col = 0;
+  if (unlock)
+    DocUnlock(doc);
   DocRecalc(doc);
 }
 
@@ -1958,6 +3164,15 @@ Bool DocCaptureUndo(CDoc *doc, Bool force = FALSE)
       u = u2;
     }
     u = CAlloc(sizeof(CDocUndo), doc->mem_task);
+    // Unchecked before: a failed CAlloc here faulted on the next store rather than
+    // degrading. Undo is a convenience — dropping a snapshot when the heap is tight
+    // is correct behaviour, crashing the REPL is not. (DocSave below already guards
+    // its own MAlloc this way.)
+    if (!u) {
+      if (unlock)
+        DocUnlock(doc);
+      return FALSE;
+    }
     u->time_stamp = GetTSC;
     u->body = DocSave(doc, &u->size);
     u->doc_flags = doc->flags;
@@ -2187,12 +3402,14 @@ Bool DocForm(U8 *_d = NULL, U8 *class_name = NULL, I64 dof_flags = 0, U8 *header
   doc->flags |= DOCF_FORM | DOCF_ALLOW_UNDO;
   if (dof_flags & DOF_SIZE_MIN)
     doc->flags |= DOCF_SIZE_MIN;
+  // DocPutS for DolDoc templates — DocPrint→StrPrintJoin treats %s/%d as
+  // printf (argc=0 → throw('StrPrint') → unhandled Panic). Same shape as
+  // class-meta / RVDocFormBuildDemo. (Soft-skip mislabeled this "postinc".)
   if (header)
-    DocPrint(doc, header);
+    DocPutS(doc, header);
   else
-    DocPrint(doc, "$$TX,\"DocForm\"$$\n");
-  // A= Value:%s is DolDoc DA fmt (literal); not printf — DocPrint argc=0.
-  DocPrint(doc, "$$DA,A=\"Value:%s\"$$\n");
+    DocPutS(doc, "$$TX,\"DocForm\"$$\n");
+  DocPutS(doc, "$$DA,A=\"Value:%s\"$$\n");
   doc_e = doc->cur_entry->last;
   val_ptr = NULL;
   if (_d) {
@@ -2205,7 +3422,7 @@ Bool DocForm(U8 *_d = NULL, U8 *class_name = NULL, I64 dof_flags = 0, U8 *header
       doc_e->max_col = StrLen(line);
     }
   }
-  DocPrint(doc, "$$CB,\"Check\"$$\n");
+  DocPutS(doc, "$$CB,\"Check\"$$\n");
   doc_e = doc->cur_entry->last;
   chk_ptr = NULL;
   if (_d) {
@@ -2216,9 +3433,9 @@ Bool DocForm(U8 *_d = NULL, U8 *class_name = NULL, I64 dof_flags = 0, U8 *header
       doc_e->tag = RVDocStrNew(doc, "[X] Check");
     }
   }
-  DocPrint(doc, "$$BT,\"OK\",LE=1$$\n$$BT,\"Cancel\",LE=-1$$\n");
+  DocPutS(doc, "$$BT,\"OK\",LE=1$$\n$$BT,\"Cancel\",LE=-1$$\n");
   if (footer)
-    DocPrint(doc, footer);
+    DocPutS(doc, footer);
   DocRecalc(doc);
   DocTop(doc);
   doc_e = doc->head.next;
@@ -2373,7 +3590,7 @@ Bool DocRecalc(CDoc *doc, I64 recalc_flags = RECALCt_NORMAL)
   //Assign x/y, apply tree collapse → DOCEF_SKIP, update max_y.
   CDocEntry *doc_e, *doc_e2;
   CDocSettings *s;
-  I64 x, y, indent, cur_attr, fg, bg, j, i;
+  I64 x, y, indent, cur_attr, fg, bg, j, i, guard;
   I64 blink, invert, ul;
   Bool tree_collapsed;
   Bool unlock;
@@ -2393,12 +3610,18 @@ Bool DocRecalc(CDoc *doc, I64 recalc_flags = RECALCt_NORMAL)
   doc->max_x = doc->max_y = 0;
   // Clear prior SKIP from trees
   doc_e = doc->head.next;
-  while (doc_e != doc) {
+  guard = 0;
+  while (doc_e && doc_e != doc) {
     doc_e->de_flags &= ~DOCEF_SKIP;
     doc_e = doc_e->next;
+    if (++guard > 100000)
+      break;
   }
   doc_e = doc->head.next;
-  while (doc_e != doc) {
+  guard = 0;
+  while (doc_e && doc_e != doc) {
+    if (++guard > 100000)
+      break;
     if (doc_e->de_flags & DOCEF_SKIP) {
       doc_e->x = x;
       doc_e->y = y;
@@ -2810,12 +4033,13 @@ I64 RVDocDemoProbe()
 {
   // Load DemoInPage (+HX/SO/HC) via DocPutS; return entry count for smoke.
   CDoc *doc;
-  I64 n = 0, html0, hx0, so0, hc0, lex0;
+  I64 n = 0, html0, hx0, so0, hc0, lex0, flag0;
   html0 = rv_doc_html_hits;
   hx0 = rv_doc_hx_hits;
   so0 = rv_doc_song_hits;
   hc0 = rv_doc_hc_hits;
   lex0 = rv_doc_prs_lex_hits;
+  flag0 = rv_doc_prs_flag_hits;
   DocInit;
   doc = DocNew("DemoInPage.DD");
   if (!doc)
@@ -2824,9 +4048,105 @@ I64 RVDocDemoProbe()
   DocRecalc(doc);
   n = DocSize(doc);
   rv_doc_demo_entries = n;
-  Print("RVDoc DemoInPage entries=%d html=%d hx=%d song=%d hc=%d lex=%d\n", n, rv_doc_html_hits - html0, rv_doc_hx_hits - hx0, rv_doc_song_hits - so0, rv_doc_hc_hits - hc0, rv_doc_prs_lex_hits - lex0);
+  Print("RVDoc DemoInPage entries=%d html=%d hx=%d song=%d hc=%d lex=%d flag=%d\n", n, rv_doc_html_hits - html0, rv_doc_hx_hits - hx0, rv_doc_song_hits - so0, rv_doc_hc_hits - hc0, rv_doc_prs_lex_hits - lex0, rv_doc_prs_flag_hits - flag0);
   DocDel(doc);
   return n;
+}
+
+public I64 RVDocPrintFlagsSoft()
+{
+  // Soft Call: product DocPrint TX+CX → CENTER_X entry + DocRecalc (UART, no FB).
+  // Beyond flag/arg Soft tips — DocPrint → DocPutS → PrsDollarCmd → Recalc.
+  CDoc *doc;
+  CDocEntry *doc_e, *hit;
+  I64 guard, n0, n1;
+  DocInit;
+  doc = DocNew("FLAGS.DD");
+  if (!doc)
+    return 3;
+  n0 = DocSize(doc);
+  DocPrint(doc, "$$TX+CX,\"hi\"$$");
+  n1 = DocSize(doc);
+  if (n1 <= n0) {
+    DocDel(doc);
+    return 4;
+  }
+  hit = NULL;
+  doc_e = doc->head.next;
+  guard = 0;
+  while (doc_e && doc_e != doc) {
+    if (++guard > 100000)
+      break;
+    if (doc_e->type_u8 == DOCT_TEXT && (doc_e->de_flags & DOCEF_CENTER_X) && doc_e->tag && !StrCmp(doc_e->tag, "hi")) {
+      hit = doc_e;
+      break;
+    }
+    doc_e = doc_e->next;
+  }
+  if (!hit) {
+    DocDel(doc);
+    return 5;
+  }
+  if (!DocRecalc(doc)) {
+    DocDel(doc);
+    return 6;
+  }
+  if (!(hit->de_flags & DOCEF_CENTER_X) || hit->max_col != 2) {
+    DocDel(doc);
+    return 7;
+  }
+  DocDel(doc);
+  return 8;
+}
+
+public I64 RVDocEdSoft()
+{
+  // Soft Call: stock DocEd-lite under UART (no FB) — DOCF_FORM + inject Tab/Enter
+  // → BT LE=1; DocMenu-lite MU LE=42. Beyond DocPrintFlags Soft tip.
+  CDoc *doc;
+  I64 hits0, menu_r;
+  DocInit;
+  doc = DocNew("ED.DD");
+  if (!doc)
+    return 3;
+  doc->flags |= DOCF_FORM;
+  DocPutS(doc, "$$TX,\"Ed\"$$\n$$BT,\"OK\",LE=1$$\n$$BT,\"Cancel\",LE=-1$$\n");
+  if (!DocRecalc(doc)) {
+    DocDel(doc);
+    return 4;
+  }
+  DocEdKeyInjectClear;
+  DocEdKeyInject('\t');
+  DocEdKeyInject('\n');
+  hits0 = rv_doc_ed_modal_hits;
+  if (!DocEd(doc, 0)) {
+    DocDel(doc);
+    return 5;
+  }
+  if (rv_doc_ed_result != 1) {
+    DocDel(doc);
+    return 6;
+  }
+  if (rv_doc_ed_modal_hits <= hits0) {
+    DocDel(doc);
+    return 7;
+  }
+  DocDel(doc);
+  doc = DocNew("MENU.DD");
+  if (!doc)
+    return 9;
+  DocPutS(doc, "$$MU,\"Pick\",LE=42$$\n");
+  if (!DocRecalc(doc)) {
+    DocDel(doc);
+    return 10;
+  }
+  DocEdKeyInjectClear;
+  DocEdKeyInject('\n');
+  menu_r = DocMenu(doc, 0);
+  DocDel(doc);
+  if (menu_r != 42)
+    return 11;
+  return 8;
 }
 // Mini sprite stream for DocSprite smoke (COLOR+CIRCLE+END — SpriteRaw shape).
 class RVDocDemoSprite
@@ -2869,6 +4189,73 @@ Bool DocSprite(CDoc *doc, CDocEntry *doc_e, CRVDC *dc, I64 x, I64 y)
   Sprite3(dc, x, y, 0, tmpb->data);
   rv_doc_sprite_paints++;
   return TRUE;
+}
+
+CDocEntry *DocSpriteIns(CDoc *doc = NULL, U8 *elems, U8 *fmt = NULL)
+{
+  //Adam/Gr/GrSpritePlot.HC DocSprite — bin + $$SP$$ into DocPut (PsmMenu play/record).
+  // Named DocSpriteIns so Bool DocSprite(paint) keeps its WinMgr paint signature.
+  I64 size;
+  U8 *st;
+  Bool unlock;
+  CDocEntry *doc_e;
+  CDocBin *tmpb;
+  if (!elems)
+    return NULL;
+  if (!doc && !(doc = DocPut))
+    return NULL;
+  if (doc->doc_signature != DOC_SIGNATURE_VAL)
+    return NULL;
+  unlock = DocLock(doc);
+  size = SpriteSize(elems);
+  if (size < 1) {
+    if (unlock)
+      DocUnlock(doc);
+    return NULL;
+  }
+  tmpb = CAlloc(sizeof(CDocBin), doc->mem_task);
+  tmpb->size = size;
+  tmpb->data = MAlloc(size, doc->mem_task);
+  if (!tmpb->data) {
+    Free(tmpb);
+    if (unlock)
+      DocUnlock(doc);
+    return NULL;
+  }
+  MemCpy(tmpb->data, elems, size);
+  tmpb->num = doc->cur_bin_num;
+  tmpb->use_cnt = 1;
+  if (!doc->bin_head.next)
+    QueInit(&doc->bin_head);
+  QueIns(tmpb, doc->bin_head.last);
+  if (fmt)
+    st = MStrPrint(fmt, doc->cur_bin_num++);
+  else
+    st = MStrPrint("$$SP,\"\",BI=%d$$", doc->cur_bin_num++);
+  doc_e = DocPrint(doc, "%s", st);
+  Free(st);
+  if (doc_e) {
+    doc_e->bin_data = tmpb;
+    doc_e->de_flags |= DOCEF_HAS_BIN;
+    doc_e->bin_num = tmpb->num;
+    if ((doc_e->de_flags & DOCEF_TAG) && doc_e->tag && *doc_e->tag)
+      tmpb->tag = StrNew(doc_e->tag, doc->mem_task);
+  }
+  if (unlock)
+    DocUnlock(doc);
+  return doc_e;
+}
+
+CDocEntry *Sprite(U8 *elems, U8 *fmt = NULL)
+{
+  //Stock Sprite→DocSpriteIns when DocPut exists; else plot on screen DC (chrome).
+  // PsmMenu: Sprite($IB,BI=n$) and Sprite($IB, "$$SP,\"\",LM=\"z\",BI=%d$$").
+  CDoc *doc;
+  if (doc = DocPut)
+    return DocSpriteIns(doc, elems, fmt);
+  if (elems && rv_gr.dc)
+    Sprite3(rv_gr.dc, 0, 0, 0, elems);
+  return NULL;
 }
 
 U8 *DocBinData(CDoc *doc, I64 bin_num)
@@ -3024,8 +4411,17 @@ I64 RVFileMgrDocProbe()
 }
 // DocEd: DocEdIns/BS/undo + modal DOCF_FORM (inject/ScanMsg); DocForm Lex-lite;
 // DocMenu-lite; DocBin*; FI: via RVDocOpenLink (RVWinMgr). HX/SO/HC + TX HTML=
-// + DemoInPage host embed landed. DocSprite→Sprite3 + $$IB size + stock FileMgr
-// DirFileDoc/FilesFind. DocInit_RV HashFind PrsDollarCmd; full CmpCtrl PrsDocFlags
-// + stock MakeDoc #include still G8.
-// still open (G8). Guest MakeDoc #include Adam/DolDoc/* deferred — see MakeDoc_RV.
+// + DemoInPage host embed landed (TX+CX flag= via RVDocPrsFlagsCmp). DocSprite→
+// Sprite3 + $$IB size + stock FileMgr DirFileDoc/FilesFind. DocInit_RV HashFind
+// PrsDollarCmd + arg/tag T=/HTML= (+docarg) + LE=/LM=/A=/BI= (+docargx) via
+// RVDocPrsArgOnce. DocInit seed (+docinitseed): DHT_DOC_* plant + stock seed
+// string apply (RVDocInitSeedApply). CmpCtrl PrsDocFlags (+docflaglex): abs-addr
+// CmpCtrl Lex + DHT_DOC_FLAG HashFind (RVDocPrsFlagsLex). Soft +doccmdlex:
+// one-cmd PrsDollarCmd IDENT+flags+TK_STR via same abs fps. Soft +docarglex:
+// one LexExpressionI64 arg LE=/LEN= via RVCmpCtrlAddrsGet[2] (literal fast-path).
+// Soft +docextstr: LexExtStr T=/LM= via RVCmpCtrlAddrsGet[4] (TX,T="hi"/MA,LM=).
+// Soft +docmultilex: multi-arg PrsDollarCmd TX+CX,T= / LK A=+HTML=+BI= (abs fps).
+// Remaining: guest MakeDoc #include Adam/DolDoc/* — G8.
+// Soft +docprintflags: product DocPrint TX+CX + DocRecalc (RVDocPrintFlagsSoft).
+// Soft +doced: DocEd modal inject Tab/Enter BT LE + DocMenu MU LE (RVDocEdSoft).
 // RVDocDrawWin / DocSprite paint pass is in RVWinMgr.HC.

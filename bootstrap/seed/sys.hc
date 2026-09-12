@@ -96,6 +96,40 @@ U0 Uptime()
   "  up %d s  (%X ticks @ ~%d Hz)\n", s, t, SYS_TIMEBASE;
   "  boot_mtime=%X  now=%X\n", g_boot_mtime, MEM_MTIME ? *(I64 *)MEM_MTIME : 0;
 }
+// Spin -- Spin(secs)
+// NAME
+//   Spin - interruptible busy wait on CLINT mtime
+// SYNOPSIS
+//   I64 Spin(I64 secs);
+// DESCRIPTION
+//   Burns CPU until mtime advances `secs` seconds (clamped 1..60), then returns
+//   the iteration count. There is no scheduler here, so this is a spin, not a
+//   sleep — that is the point: it is the busy eval Ctrl-C is supposed to be able
+//   to interrupt. Deliberately does not poll the UART: a polling loop would pull
+//   the Ctrl-C into the soft RX ring and the Break IRQ would never see it.
+//   Interrupting one prints "Interrupted" and drops back to the prompt.
+// EXAMPLES
+//   Spin(2);   // ~2 s, then ans=<iterations>
+//   Spin(30);  // then hit Ctrl-C
+// SEE ALSO
+//   Uptime  UptimeTicks  BreakArm  Break  MEM_MTIME
+I64 Spin(I64 secs)
+{
+  I64 end, n;
+  if (secs < 1)
+    secs = 1;
+  if (secs > 60)
+    secs = 60;
+  if (!MEM_MTIME) {
+    UartStr("Spin: no MEM_MTIME on this board\n");
+    return 0;
+  }
+  n = 0;
+  end = *(I64 *)MEM_MTIME + secs *SYS_TIMEBASE;
+  while (*(I64 *)MEM_MTIME < end)
+    n++;
+  return n;
+}
 // MemRep -- MemRep()
 // NAME
 //   MemRep - HolyC heap summary (/proc/meminfo-ish)

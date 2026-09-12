@@ -25,6 +25,12 @@ U32 NinePGetU32(U8 *p, I64 off)
   return p[off] | (p[off + 1] << 8) | (p[off + 2] << 16) | (p[off + 3] << 24);
 }
 
+U64 NinePGetU64(U8 *p, I64 off)
+{
+  U32 lo = NinePGetU32(p, off), hi = NinePGetU32(p, off + 4);
+  return lo | (hi << 32);
+}
+
 U16 NinePGetU16(U8 *p, I64 off)
 {
   return p[off] | (p[off + 1] << 8);

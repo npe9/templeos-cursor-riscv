@@ -15,6 +15,9 @@ extern U0 RVWinSoftPwd();
 extern I64 RVWinSoftCd(U8 *dirname);
 extern U0 RVWinSoftHelp();
 extern U0 RVWinSoftMan(U8 *name);
+extern U0 RVWinSoftCat(U8 *name);
+// Soft tip Soft #include stock DocInit_RV: Kernel doldoc abs addr (Compiler unit).
+extern U8 doldoc;
 U0 RVExePubMemberLink(CHashFun *tmpf, CMemberLst *tmpm)
 {
   CMemberLst *last;
@@ -61,6 +64,397 @@ U0 RVExePubAddArg(CHashFun *tmpf, U8 *aname, CHashClass *cls, I64 flags = 0)
   tmpm->size = 8;
   RVExePubMemberLink(tmpf, tmpm);
 }
+/* Stock PopUp("…FileMgr(1,Fs->parent_task)") and Soft DocInit
+ * `HashFind(Fs->hash_table,…)` need `_intern IC_FS CTask *Fs()`.
+ * Soft AOT chains glbl→asm_hash only (not Fs), so plant into the given
+ * table — WireAsmHash plants asm_hash; WireAddrs plants Fs->hash_table. */
+CHashClass *RVExePubCTaskLiteIn(CHashTable *table)
+{
+  CHashClass *tmpc, *i64t;
+  CMemberLst *tmpm_pt, *tmpm_ht;
+  if (!table)
+    return NULL;
+  tmpc = HashFind("CTask", table, HTT_CLASS);
+  if (tmpc) {
+    // Soft DocInit needs hash_table; ExePutS needs parent_task.
+    // Require hash_table — parent_task-only lite early-return was Soft AOT
+    // Invalid lval / Invalid member on Fs->hash_table (tip-order plant wipe).
+    if (MemberFind("hash_table", tmpc))
+      return tmpc;
+    tmpm_pt = MemberFind("parent_task", tmpc);
+    if (tmpm_pt && cmp.internal_types) {
+      // Incomplete lite (parent_task only): graft hash_table as BST right child.
+      i64t = cmp.internal_types[RT_I64];
+      tmpm_ht = MemberLstNew(REG_NONE);
+      tmpm_ht->str = StrNew("hash_table");
+      tmpm_ht->offset = offset(CTask.hash_table);
+      tmpm_ht->size = sizeof(CHashTable *);
+      tmpm_ht->member_class = i64t;
+      tmpm_ht->left = NULL;
+      tmpm_ht->right = NULL;
+      tmpm_ht->next = NULL;
+      tmpm_pt->right = tmpm_ht;
+      if (!tmpm_pt->next)
+        tmpm_pt->next = tmpm_ht;
+      tmpc->last_in_member_lst = tmpm_ht;
+      tmpc->member_cnt++;
+      return tmpc;
+    }
+  }
+  if (!cmp.internal_types)
+    return NULL;
+  i64t = cmp.internal_types[RT_I64];
+  tmpc = PrsClassNew;
+  tmpc->str = StrNew("CTask");
+  tmpc->size = sizeof(CTask);
+  tmpc->raw_type = RT_I64;
+  // parent_task: CTask* (one star on the same slab) for PopUp/FileMgr.
+  tmpm_pt = MemberLstNew(REG_NONE);
+  tmpm_pt->str = StrNew("parent_task");
+  tmpm_pt->offset = offset(CTask.parent_task);
+  tmpm_pt->size = sizeof(CTask *);
+  tmpm_pt->member_class = tmpc + 1;
+  tmpm_pt->left = NULL;
+  tmpm_pt->right = NULL;
+  tmpm_pt->next = NULL;
+  // hash_table: I64-sized ptr at stock offset (Soft HashFind table arg).
+  tmpm_ht = MemberLstNew(REG_NONE);
+  tmpm_ht->str = StrNew("hash_table");
+  tmpm_ht->offset = offset(CTask.hash_table);
+  tmpm_ht->size = sizeof(CHashTable *);
+  tmpm_ht->member_class = i64t;
+  tmpm_ht->left = NULL;
+  tmpm_ht->right = NULL;
+  tmpm_ht->next = NULL;
+  // MemberFind BST: StrCmp(node,needle)>0 → right. Looking up hash_table
+  // from parent_task root goes right (parent_task > hash_table).
+  tmpm_pt->right = tmpm_ht;
+  tmpm_pt->next = tmpm_ht;
+  tmpc->member_lst_and_root = tmpm_pt;
+  tmpc->last_in_member_lst = tmpm_ht;
+  tmpc->member_cnt = 2;
+  HashAdd(tmpc, table);
+  return tmpc;
+}
+
+CHashClass *RVExePubCTaskLite()
+{
+  if (!Fs || !Fs->hash_table)
+    return NULL;
+  return RVExePubCTaskLiteIn(Fs->hash_table);
+}
+/* A planted array member needs `dim.next`, not just `dim.total_cnt`:
+ * PrsUnaryModifier keys CCF_ARRAY off `tmpm->dim.next` and takes the subscript
+ * stride from `dim.next->total_cnt * elem_size`. With `dim.next` NULL the guest
+ * Cmp saw a plain scalar and `doldoc.dft_de_flags[DOCT_TEXT] = ...` died on
+ * "Not array or ptr". Shape follows PrsVarArgs' argv plant: head total_cnt is
+ * the element count, the single dim node carries cnt + inner total_cnt 1. */
+U0 RVExePubMemberDim(CMemberLst *m, I64 cnt)
+{
+  CArrayDim *tmpad;
+  if (!m || cnt < 1)
+    return;
+  tmpad = CAlloc(sizeof(CArrayDim));
+  tmpad->next = NULL;
+  tmpad->cnt = cnt;
+  tmpad->total_cnt = 1;
+  m->dim.cnt = cnt;
+  m->dim.total_cnt = cnt;
+  m->dim.next = tmpad;
+}
+/* MemberAdd without a CCmpCtrl. Hand-linking only `next`/`right` left every
+ * member past the second unreachable from MemberFind's BST ("Invalid member at
+ * dft_type_flags"), so keep MemberAdd's exact insert: StrCmp(node,new)<=0 goes
+ * left, else right, plus the flat next lst that Prs/sizeof walk. */
+U0 RVExePubMemberPlant(CHashClass *tmpc, CMemberLst *m)
+{
+  CMemberLst **slot, *node;
+  if (!tmpc || !m)
+    return;
+  m->left = NULL;
+  m->right = NULL;
+  m->next = NULL;
+  slot = &tmpc->member_lst_and_root;
+  while (node = *slot) {
+    if (StrCmp(node->str, m->str) <= 0)
+      slot = &node->left;
+    else
+      slot = &node->right;
+  }
+  *slot = m;
+  if (tmpc->last_in_member_lst)
+    tmpc->last_in_member_lst->next = m;
+  tmpc->last_in_member_lst = m;
+  tmpc->member_cnt++;
+}
+/* Soft tip: plant Kernel doldoc into Soft asm_hash so Soft #include of unmodified
+ * stock DocInit_RV.HC Soft Cmps bare `doldoc` without Soft-local shadow. Layout
+ * matches Kernel/RVDoc.HC CDolDocGlbls (DOCT_TYPES_NUM=43). */
+#define RV_SOFT_DOCT_TYPES_NUM 43
+CHashClass *RVExePubCDolDocGlblsLiteIn(CHashTable *table)
+{
+  CHashClass *tmpc, *i64t, *i32t;
+  CMemberLst *m;
+  I64 off;
+  if (!table || !cmp.internal_types)
+    return NULL;
+  tmpc = HashFind("CDolDocGlbls", table, HTT_CLASS);
+  if (tmpc && MemberFind("dft_de_flags", tmpc) && MemberFind("hash", tmpc))
+    return tmpc;
+  i64t = cmp.internal_types[RT_I64];
+  i32t = cmp.internal_types[RT_I32];
+  if (!tmpc) {
+    tmpc = PrsClassNew;
+    tmpc->str = StrNew("CDolDocGlbls");
+    tmpc->raw_type = RT_I64;
+    HashAdd(tmpc, table);
+  }
+  off = 0;
+  tmpc->member_lst_and_root = NULL;
+  tmpc->last_in_member_lst = NULL;
+  tmpc->member_cnt = 0;
+  // hash
+  m = MemberLstNew(REG_NONE);
+  m->str = StrNew("hash");
+  m->offset = off;
+  m->size = 8;
+  m->member_class = i64t;
+  RVExePubMemberPlant(tmpc, m);
+  off += 8;
+  // dft_de_flags[43]
+  m = MemberLstNew(REG_NONE);
+  m->str = StrNew("dft_de_flags");
+  m->offset = off;
+  m->size = 8 * RV_SOFT_DOCT_TYPES_NUM;
+  m->member_class = i64t;
+  RVExePubMemberDim(m, RV_SOFT_DOCT_TYPES_NUM);
+  RVExePubMemberPlant(tmpc, m);
+  off += 8 * RV_SOFT_DOCT_TYPES_NUM;
+  // four I64[1] bitsets
+  m = MemberLstNew(REG_NONE);
+  m->str = StrNew("type_flags_nontag_invis");
+  m->offset = off;
+  m->size = 8;
+  m->member_class = i64t;
+  RVExePubMemberDim(m, 1);
+  RVExePubMemberPlant(tmpc, m);
+  off += 8;
+  m = MemberLstNew(REG_NONE);
+  m->str = StrNew("type_flags_form");
+  m->offset = off;
+  m->size = 8;
+  m->member_class = i64t;
+  RVExePubMemberDim(m, 1);
+  RVExePubMemberPlant(tmpc, m);
+  off += 8;
+  m = MemberLstNew(REG_NONE);
+  m->str = StrNew("type_flags_data");
+  m->offset = off;
+  m->size = 8;
+  m->member_class = i64t;
+  RVExePubMemberDim(m, 1);
+  RVExePubMemberPlant(tmpc, m);
+  off += 8;
+  m = MemberLstNew(REG_NONE);
+  m->str = StrNew("type_flags_chk_dup");
+  m->offset = off;
+  m->size = 8;
+  m->member_class = i64t;
+  RVExePubMemberDim(m, 1);
+  RVExePubMemberPlant(tmpc, m);
+  off += 8;
+  // clean_scan_codes[4]
+  m = MemberLstNew(REG_NONE);
+  m->str = StrNew("clean_scan_codes");
+  m->offset = off;
+  m->size = 32;
+  m->member_class = i64t;
+  RVExePubMemberDim(m, 4);
+  RVExePubMemberPlant(tmpc, m);
+  off += 32;
+  // dft_type_flags[43] I32
+  m = MemberLstNew(REG_NONE);
+  m->str = StrNew("dft_type_flags");
+  m->offset = off;
+  m->size = 4 * RV_SOFT_DOCT_TYPES_NUM;
+  m->member_class = i32t;
+  RVExePubMemberDim(m, RV_SOFT_DOCT_TYPES_NUM);
+  RVExePubMemberPlant(tmpc, m);
+  tmpc->size = off + 4 * RV_SOFT_DOCT_TYPES_NUM;
+  return tmpc;
+}
+
+I64 RVExePubInternDolDocIn(CHashTable *table)
+{
+  CHashClass *tmpc;
+  CHashGlblVar *tmpg;
+  if (!table)
+    return 0;
+  tmpc = RVExePubCDolDocGlblsLiteIn(table);
+  if (!tmpc)
+    return 0;
+  if (HashFind("doldoc", table, HTT_GLBL_VAR))
+    return 1;
+  tmpg = CAlloc(sizeof(CHashGlblVar));
+  tmpg->str = StrNew("doldoc");
+  tmpg->type = HTT_GLBL_VAR;
+  tmpg->flags = GVF_ALIAS;
+  tmpg->var_class = tmpc;
+  tmpg->size = tmpc->size;
+  tmpg->data_addr = &doldoc;
+  HashAdd(tmpg, table);
+  return 1;
+}
+
+I64 RVExePubInternFsGsIn(CHashTable *table)
+{
+  CHashFun *tmpf;
+  CHashClass *ct, *ctp;
+  I64 n = 0;
+  if (!table)
+    return 0;
+  ct = RVExePubCTaskLiteIn(table);
+  if (!ct)
+    return 0;
+  ctp = ct + 1;
+  if (!HashFind("Fs", table, HTT_FUN)) {
+    tmpf = PrsFunNew;
+    tmpf->str = StrNew("Fs");
+    tmpf->exe_addr = IC_FS;
+    tmpf->return_class = ctp;
+    tmpf->arg_cnt = 0;
+    tmpf->member_cnt = 0;
+    Bts(&tmpf->flags, Ff_INTERNAL);
+    LBtr(&tmpf->flags, Cf_EXTERN);
+    tmpf->type |= HTF_PUBLIC;
+    HashAdd(tmpf, table);
+    n++;
+  }
+  if (!HashFind("Gs", table, HTT_FUN)) {
+    tmpf = PrsFunNew;
+    tmpf->str = StrNew("Gs");
+    tmpf->exe_addr = IC_GS;
+    tmpf->return_class = ctp;
+    // CCPU * in stock; CTask* enough for member parse
+    tmpf->arg_cnt = 0;
+    tmpf->member_cnt = 0;
+    Bts(&tmpf->flags, Ff_INTERNAL);
+    LBtr(&tmpf->flags, Cf_EXTERN);
+    tmpf->type |= HTF_PUBLIC;
+    HashAdd(tmpf, table);
+    n++;
+  }
+  return n;
+}
+
+/* Stock KernelB.HH `_intern` functions: PrsExp emits tmpf->exe_addr as the IC
+ * (Ff_INTERNAL), so the REPL/Soft hash needs them as CHashFun entries. Only
+ * the ICs OptPass_RV implements are planted; x86-only ones (In/Out, Carry,
+ * RFlags, InvlPg) stay out. Kernel HTT_EXPORT_SYS_SYM entries of the same
+ * name (Bt/Bts/StrLen…) are address constants, not callable — these win. */
+CHashFun *RVExePubInternNew(CHashTable *table, U8 *name, I64 ic, CHashClass *ret, I64 arg_cnt)
+{
+  CHashFun *tmpf;
+  if (HashFind(name, table, HTT_FUN))
+    return NULL;
+  tmpf = PrsFunNew;
+  tmpf->str = StrNew(name);
+  tmpf->exe_addr = ic;
+  tmpf->return_class = ret;
+  tmpf->arg_cnt = arg_cnt;
+  tmpf->member_cnt = arg_cnt;
+  Bts(&tmpf->flags, Ff_INTERNAL);
+  LBtr(&tmpf->flags, Cf_EXTERN);
+  tmpf->type |= HTF_PUBLIC;
+  HashAdd(tmpf, table);
+  return tmpf;
+}
+
+I64 RVExePubInternsIn(CHashTable *table)
+{
+  CHashFun *tmpf;
+  CHashClass *u0, *i64t, *u64t, *f64t, *boolt, *u8t, *u8p, *i64p, *u64p, *u16p, *u32p;
+  I64 n = 0, i;
+  if (!table || !cmp.internal_types)
+    return 0;
+  u0 = cmp.internal_types[RT_U0];
+  i64t = cmp.internal_types[RT_I64];
+  u64t = cmp.internal_types[RT_U64];
+  f64t = cmp.internal_types[RT_F64];
+  boolt = cmp.internal_types[RT_I8];   // Bool is I8 (CInit internal_types_table)
+  u8t = cmp.internal_types[RT_U8];
+  u8p = u8t + 1;
+  i64p = i64t + 1;
+  u64p = u64t + 1;
+  u16p = cmp.internal_types[RT_U16] + 1;
+  u32p = cmp.internal_types[RT_U32] + 1;
+  // (I64 *bit_field, I64 bit_num) -> Bool
+  for (i = 0; i < 7; i++) {
+    switch (i) {
+      case 0 : tmpf = RVExePubInternNew(table, "Bt", IC_BT, boolt, 2); break;
+      case 1 : tmpf = RVExePubInternNew(table, "Btc", IC_BTC, boolt, 2); break;
+      case 2 : tmpf = RVExePubInternNew(table, "Btr", IC_BTR, boolt, 2); break;
+      case 3 : tmpf = RVExePubInternNew(table, "Bts", IC_BTS, boolt, 2); break;
+      case 4 : tmpf = RVExePubInternNew(table, "LBtc", IC_LBTC, boolt, 2); break;
+      case 5 : tmpf = RVExePubInternNew(table, "LBtr", IC_LBTR, boolt, 2); break;
+      default: tmpf = RVExePubInternNew(table, "LBts", IC_LBTS, boolt, 2); break;
+    }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "bit_field", i64p);
+      RVExePubAddArg(tmpf, "bit_num", i64t);
+      n++;
+    }
+  }
+  if (tmpf = RVExePubInternNew(table, "Bsf", IC_BSF, i64t, 1)) { RVExePubAddArg(tmpf, "val", i64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "Bsr", IC_BSR, i64t, 1)) { RVExePubAddArg(tmpf, "val", i64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "ToUpper", IC_TOUPPER, i64t, 1)) { RVExePubAddArg(tmpf, "ch", u8t); n++; }
+  if (tmpf = RVExePubInternNew(table, "StrLen", IC_STRLEN, i64t, 1)) { RVExePubAddArg(tmpf, "st", u8p); n++; }
+  if (tmpf = RVExePubInternNew(table, "QueInit", IC_QUE_INIT, u0, 1)) { RVExePubAddArg(tmpf, "head", u8p); n++; }
+  if (tmpf = RVExePubInternNew(table, "QueIns", IC_QUE_INS, u0, 2)) { RVExePubAddArg(tmpf, "entry", u8p); RVExePubAddArg(tmpf, "pred", u8p); n++; }
+  if (tmpf = RVExePubInternNew(table, "QueInsRev", IC_QUE_INS_REV, u0, 2)) { RVExePubAddArg(tmpf, "entry", u8p); RVExePubAddArg(tmpf, "succ", u8p); n++; }
+  if (tmpf = RVExePubInternNew(table, "QueRem", IC_QUE_REM, u0, 1)) { RVExePubAddArg(tmpf, "entry", u8p); n++; }
+  if (tmpf = RVExePubInternNew(table, "ATan", IC_ATAN, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "Abs", IC_ABS, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "AbsI64", IC_ABS_I64, i64t, 1)) { RVExePubAddArg(tmpf, "i", i64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "Cos", IC_COS, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "MaxI64", IC_MAX_I64, i64t, 2)) { RVExePubAddArg(tmpf, "n1", i64t); RVExePubAddArg(tmpf, "n2", i64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "MaxU64", IC_MAX_U64, u64t, 2)) { RVExePubAddArg(tmpf, "n1", u64t); RVExePubAddArg(tmpf, "n2", u64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "MinI64", IC_MIN_I64, i64t, 2)) { RVExePubAddArg(tmpf, "n1", i64t); RVExePubAddArg(tmpf, "n2", i64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "MinU64", IC_MIN_U64, u64t, 2)) { RVExePubAddArg(tmpf, "n1", u64t); RVExePubAddArg(tmpf, "n2", u64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "ModU64", IC_MOD_U64, u64t, 2)) { RVExePubAddArg(tmpf, "q", u64p); RVExePubAddArg(tmpf, "d", u64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "SignI64", IC_SIGN_I64, i64t, 1)) { RVExePubAddArg(tmpf, "i", i64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "Sin", IC_SIN, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "Sqr", IC_SQR, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "SqrI64", IC_SQR_I64, i64t, 1)) { RVExePubAddArg(tmpf, "i", i64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "SqrU64", IC_SQR_U64, u64t, 1)) { RVExePubAddArg(tmpf, "i", u64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "Sqrt", IC_SQRT, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "SwapI64", IC_SWAP_I64, u0, 2)) { RVExePubAddArg(tmpf, "n1", i64p); RVExePubAddArg(tmpf, "n2", i64p); n++; }
+  if (tmpf = RVExePubInternNew(table, "SwapU16", IC_SWAP_U16, u0, 2)) { RVExePubAddArg(tmpf, "n1", u16p); RVExePubAddArg(tmpf, "n2", u16p); n++; }
+  if (tmpf = RVExePubInternNew(table, "SwapU32", IC_SWAP_U32, u0, 2)) { RVExePubAddArg(tmpf, "n1", u32p); RVExePubAddArg(tmpf, "n2", u32p); n++; }
+  if (tmpf = RVExePubInternNew(table, "SwapU8", IC_SWAP_U8, u0, 2)) { RVExePubAddArg(tmpf, "n1", u8p); RVExePubAddArg(tmpf, "n2", u8p); n++; }
+  if (tmpf = RVExePubInternNew(table, "Tan", IC_TAN, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "ToBool", IC_TO_BOOL, boolt, 1)) { RVExePubAddArg(tmpf, "i", i64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "ToF64", IC_TO_F64, f64t, 1)) { RVExePubAddArg(tmpf, "i", i64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "ToI64", IC_TO_I64, i64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "GetRAX", IC_GET_RAX, i64t, 0)) n++;
+  if (tmpf = RVExePubInternNew(table, "GetRBP", IC_GET_RBP, u8p, 0)) n++;
+  if (tmpf = RVExePubInternNew(table, "GetRSP", IC_GET_RSP, u8p, 0)) n++;
+  if (tmpf = RVExePubInternNew(table, "GetTSC", IC_RDTSC, i64t, 0)) n++;
+  if (tmpf = RVExePubInternNew(table, "Pop", IC_POP, i64t, 0)) n++;
+  if (tmpf = RVExePubInternNew(table, "Push", IC_PUSH, u0, 1)) { RVExePubAddArg(tmpf, "d", i64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "SetRAX", IC_SET_RAX, u0, 1)) { RVExePubAddArg(tmpf, "d", i64t); n++; }
+  if (tmpf = RVExePubInternNew(table, "SetRBP", IC_SET_RBP, u0, 1)) { RVExePubAddArg(tmpf, "d", u8p); n++; }
+  if (tmpf = RVExePubInternNew(table, "SetRSP", IC_SET_RSP, u0, 1)) { RVExePubAddArg(tmpf, "d", u8p); n++; }
+  if (tmpf = RVExePubInternNew(table, "CLFlush", IC_CLFLUSH, u0, 1)) { RVExePubAddArg(tmpf, "a", u8p); n++; }
+  return n;
+}
+
+I64 RVExePubInternFsGs()
+{
+  if (!Fs || !Fs->hash_table)
+    return 0;
+  return RVExePubInternFsGsIn(Fs->hash_table);
+}
 
 I64 RVExePubsWireAddrs(I64 *addrs)
 {
@@ -77,6 +471,8 @@ I64 RVExePubsWireAddrs(I64 *addrs)
   i64t = cmp.internal_types[RT_I64];
   u64t = cmp.internal_types[RT_U64];
   u8p = cmp.internal_types[RT_U8] + 1;
+  n += RVExePubInternFsGs;
+  n += RVExePubInternsIn(Fs->hash_table);
   if (!HashFind("Print", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Print", addrs[0], cls_u0, 1);
     if (tmpf) {
@@ -144,6 +540,15 @@ I64 RVExePubsWireAddrs(I64 *addrs)
       n++;
     }
   }
+  // Slot 14, and read only when non-zero: callers that pass a shorter array (the
+  // monolithic RVExePubsWire below used to pass 10) must not be read out of bounds.
+  if (addrs[14] && !HashFind("Cat", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Cat", addrs[14], cls_u0, 1);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "name", u8p);
+      n++;
+    }
+  }
   return n;
 }
 
@@ -151,7 +556,10 @@ I64 RVExePubsWire()
 {
   // Monolithic Body: symbols are in-image. Split-AOT Kernel should call
   // RVExePubsWireAddrs with Kernel &Print/&Regs/… instead.
-  I64 addrs[10];
+  I64 addrs[15];
+  I64 zi;
+  for (zi = 0; zi < 15; zi++)
+    addrs[zi] = 0;
   addrs[0] = &Print;
   addrs[1] = &PutChars;
   addrs[2] = &Regs;
@@ -162,6 +570,7 @@ I64 RVExePubsWire()
   addrs[7] = &RVWinSoftCd;
   addrs[8] = &RVWinSoftHelp;
   addrs[9] = &RVWinSoftMan;
+  addrs[14] = &RVWinSoftCat;
   return RVExePubsWireAddrs(addrs);
 }
 // Split-AOT: Compiler unit has its own Fs/Gs storage. Kernel sets the live
@@ -215,12 +624,32 @@ U0 RVCmpWireCharBmps(I64 *src)
     MemCpy(char_bmp_non_eol, src[16], n);
 }
 // Chain cmp.asm_hash under Fs (same as in-image Body path after CInit).
+// Never overwrite an existing next (servant→parent): walk to the end and
+// attach asm_hash there. Severing parent loses ExePubs (FileMgr HTT_FUN).
 U0 RVCmpWireAsmHash()
 {
+  CHashTable *ht;
   if (cmp.asm_hash)
     cmp.asm_hash->next = NULL;
-  if (Fs && Fs->hash_table && cmp.asm_hash && Fs->hash_table != cmp.asm_hash)
-    Fs->hash_table->next = cmp.asm_hash;
+  // Soft AOT: CmpCtrlNew sets glbl→asm_hash (not Fs). Plant _intern Fs/Gs +
+  // CTask.hash_table here so Soft DocInit `Fs->hash_table` Soft Cmps.
+  // Soft tip Soft #include stock DocInit_RV: plant Kernel doldoc abs into asm_hash.
+  if (cmp.asm_hash) {
+    RVExePubInternFsGsIn(cmp.asm_hash);
+    RVExePubInternDolDocIn(cmp.asm_hash);
+    RVExePubInternsIn(cmp.asm_hash);
+  }
+  if (!Fs || !Fs->hash_table || !cmp.asm_hash)
+    return;
+  if (Fs->hash_table == cmp.asm_hash)
+    return;
+  ht = Fs->hash_table;
+  while (ht->next) {
+    if (ht->next == cmp.asm_hash)
+      return;
+    ht = ht->next;
+  }
+  ht->next = cmp.asm_hash;
 }
 
 I64 RVCmpCtrlAddrsGet(I64 *out)

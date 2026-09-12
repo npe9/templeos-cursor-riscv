@@ -1114,15 +1114,16 @@ args.
       case IC_LABEL:
 	lb=OptLabelFwd(tmpi->ic_data);
 	lb1=tmpi->ic_data;
+	// RV: corrupt fwd cycle hung tip Cmp on while(1)/JMP-LABEL (Guest_Lex).
+	i=64;
 	while (lb2=lb1->fwd) {
 	  lb1->fwd=lb;
 	  lb1=lb2;
+	  if (--i<=0) break;
 	}
 	if (tmpi1=OptLag(tmpi)) {
 	  if (tmpi1->ic_code==IC_JMP) {
-	    lb1=tmpi1->ic_data;
-	    while (lb1->fwd)
-	      lb1=lb1->fwd;
+	    lb1=OptLabelFwd(tmpi1->ic_data);
 	    if (lb1==lb) {
 	      tmpi->ic_flags|=tmpi1->ic_flags;
 	      OptSetNOP1(tmpi1);
@@ -1133,9 +1134,7 @@ args.
 	      lb1->fwd=lb;
 	    if (tmpi1=OptLag(tmpi1)) {
 	      if (tmpi1->ic_code==IC_JMP) {
-		lb1=tmpi1->ic_data;
-		while (lb1->fwd)
-		  lb1=lb1->fwd;
+		lb1=OptLabelFwd(tmpi1->ic_data);
 		if (lb1==lb) {
 		  tmpi->ic_flags|=tmpi1->ic_flags;
 		  OptSetNOP1(tmpi1);

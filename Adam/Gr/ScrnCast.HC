@@ -1,4 +1,9 @@
 #help_index "ScrnCast;Graphics/Device Contexts;Graphics/GR Files"
+// Stock x86 ScrnCast: GR2MV merge + AUWrite (WinMgr records via DCDiff/GRWrite).
+// RISC-V soft path (libs-first): Kernel/RVGr.HC — DCCopy/DCDiff, GR-lite + CompressBuf
+// .GR.Z (DCSF_COMPRESSED), ScrnCastStart/Frame/Stop on 32-bpp CRVDC. RVWinMgrRefresh hooks
+// ScrnCastFrame when scrncast.record && !just_audio. Soft AUWrite + RVSnd→snd_head queue
+// (just_audio) live on RV path; this stock file is not linked into Kernel_RV.
 
 #define MV_FILE_MAX	0x007FF000
 

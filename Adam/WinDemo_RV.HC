@@ -14,6 +14,7 @@ I64 rv_settings_push_hits;
 I64 rv_winmax_hits;
 I64 rv_popup_color_hits;
 I64 rv_refresh_hits;
+I64 rv_refresh_paint_hits;
 I64 rv_popup_color_dft = RED;
 public CTaskSettings *SettingsPush(CTask *task = NULL, I64 flags = 0)
 {
@@ -150,6 +151,8 @@ public U0 Refresh(I64 cnt = 1, Bool force = FALSE)
         RVGrRefresh;
     }
     rv_refresh_hits++;
+    // Soft H2: Span Animate Refresh tally (ODE/paint coexist with ESC save).
+    rv_refresh_paint_hits++;
     Yield;
   }
 }
@@ -164,7 +167,7 @@ public I64 PopUpColor(U8 *header = NULL, Bool allow_transparent = TRUE, Bool all
   return rv_popup_color_dft;
 }
 // Soft PopUp* for stock Apps (Span). Real servant PopUp lives in PopUp_RV (sibling).
-// PopUpPickFile lives in FileMgr_RV (FilesFind first-file; FileMgr GetMsg open).
+// PopUpPickFile/PickDir: FileMgr_RV. PopUpFileName: stock DocPopUp FileNameForm+PopUp.
 I64 rv_popup_ok_hits;
 I64 rv_popup_file_hits;
 public Bool PopUpOk(U8 *header = NULL, U8 *footer = NULL)
@@ -195,29 +198,110 @@ public Bool PopUpNoYes(U8 *header = NULL, U8 *footer = NULL)
   return TRUE;
 }
 
+public U8 *FileNameForm(U8 *dft = NULL, I64 dof_flags = 0, CTask *mem_task = NULL)
+{
+  // Stock DocPopUp.HC FileNameForm — DocForm on CEdFileName.
+  // Host AOT skips member `format` meta, so hand-build stock DA template + DocEd
+  // (same shape as RVDoc DocForm Lex-lite). Headless: focus first BT + Enter.
+  CEdFileName fn;
+  CDoc *doc;
+  CDocEntry *doc_e;
+  U8 line[280];
+  Bool ok = FALSE;
+  no_warn dof_flags;
+  fn.dirc = NULL;
+  if (dft && *dft)
+    StrCpy(fn.name, dft);
+  else
+    *fn.name = 0;
+  doc = DocNew("FORM.DD");
+  if (!doc)
+    return NULL;
+  doc->flags |= DOCF_FORM | DOCF_ALLOW_UNDO | DOCF_OVERSTRIKE;
+  if (dof_flags & DOF_SIZE_MIN)
+    doc->flags |= DOCF_SIZE_MIN;
+  DocPutS(doc, "$$DA,A=\"FileName:%s\"$$\n");
+  doc_e = doc->cur_entry->last;
+  if (doc_e && doc_e->type_u8 == DOCT_DATA) {
+    doc_e->data = fn.name;
+    StrPrint(line, "FileName:%s", fn.name);
+    Free(doc_e->tag);
+    doc_e->tag = RVDocStrNew(doc, line);
+    doc_e->max_col = StrLen(line);
+  }
+  DocPutS(doc, "$$BT,\"OK\",LE=1$$\n$$BT,\"Cancel\",LE=-1$$\n");
+  DocRecalc(doc);
+  DocTop(doc);
+  // First BTTN = OK; force LE=1 if PrsArg missed (doldoc LE= HashFind cold).
+  doc_e = doc->head.next;
+  while (doc_e != doc) {
+    if (doc_e->type_u8 == DOCT_BTTN) {
+      doc->cur_entry = doc_e;
+      doc_e->de_flags |= DOCEF_LEFT_EXP;
+      if (!doc_e->left_exp)
+        doc_e->left_exp = 1;
+      break;
+    }
+    doc_e = doc_e->next;
+  }
+  if (rv_doc_ed_key_n <= 0)
+    DocEdKeyInject('\n');
+  // DOF_DONT_HOME: keep OK cur_entry (DocEd DocTop would wipe focus).
+  if (DocEd(doc, dof_flags | DOF_DONT_HOME)) {
+    ok = TRUE;
+    if (rv_doc_ed_result == DOCM_CANCEL || rv_doc_ed_result < 0)
+      ok = FALSE;
+  }
+  DocDel(doc);
+  if (ok && *fn.name)
+    return StrNew(fn.name, mem_task);
+  return NULL;
+}
+// Zero-arg PopUp helper — planted in RVExePubsWireAddrs for servant ExePutS
+// (mirrors DocPopUpPick*Run). Stock PopUpFileName uses FileNameForm(…) string.
+U8 *g_popup_filename_dft;
+I64 g_popup_filename_dof;
+public U8 *DocPopUpFileNameRun()
+{
+  // Single-stmt helper for PopUp("DocPopUpFileNameRun;"); mirrors DocPopUpPick*Run.
+  return FileNameForm(g_popup_filename_dft, g_popup_filename_dof | DOF_SIZE_MIN, Fs->parent_task);
+}
+
 public U8 *PopUpFileName(U8 *dft = NULL, I64 dof_flags = 0)
 {
-  //JobRes PopUp is live; FileNameForm/FileMgr still soft. Accept dft so SpanWrite can FileWrite.
-  no_warn dof_flags;
+  // Stock DocPopUp.HC: PopUp("FileNameForm(\"%Q\",0x%X,Fs->parent_task);").
+  // Needs FileNameForm HTT_FUN via RVExePubsWireAddrs (servant ExePutS).
+  U8 *res, *st;
+  I64 raw;
   rv_popup_file_hits++;
-  if (dft && *dft) {
-    Print("PopUpFileName accept dft: %s\n", dft);
-    return StrNew(dft);
+  g_popup_filename_dft = dft;
+  g_popup_filename_dof = dof_flags;
+  st = MStrPrint("FileNameForm(\"%Q\",0x%X,Fs->parent_task);", dft, dof_flags | DOF_SIZE_MIN);
+  Print("PopUpFileName DocPopUp begin\n");
+  raw = PopUp(st, Fs);
+  Free(st);
+  if (raw > 0x10000)
+    res = raw(U8 *);
+  else
+    res = NULL;
+  if (res && *res) {
+    Print("PopUpFileName ok: %s\n", res);
+    return res;
   }
-  return StrNew("~/Span/Game.DATA");
-}
-// PopUpPickFile: Adam/ABlkDev/FileMgr_RV.HC (FilesFind first-file; FileMgr GetMsg open).
-public U8 *PopUpPickDir(U8 *dir = NULL)
-{
-  //Psalmody PSMF_CD — soft: keep current / accept dft dir string.
-  rv_popup_file_hits++;
-  if (dir && *dir) {
-    Print("PopUpPickDir accept: %s\n", dir);
-    return StrNew(dir);
+  Print("PopUpFileName empty/cancel raw=%d\n", raw);
+  // Soft Call fallback: parent FileNameForm (DocEd) if servant hash miss / cancel.
+  res = FileNameForm(dft, dof_flags | DOF_SIZE_MIN, Fs);
+  if (res && *res) {
+    Print("PopUpFileName parent FileNameForm ok: %s\n", res);
+    return res;
+  }
+  if (dft && *dft) {
+    Print("PopUpFileName soft accept dft: %s\n", dft);
+    return StrNew(dft);
   }
   return NULL;
 }
-
+// PopUpPickFile/PickDir: Adam/ABlkDev/FileMgr_RV.HC (DocPopUp MStrPrint+PopUp).
 public I64 PopUpEd(U8 *filename, CTask *parent = NULL, CTask **_pu_task = NULL)
 {
   //Psalmody Help — soft ack; real Ed servant deferred.

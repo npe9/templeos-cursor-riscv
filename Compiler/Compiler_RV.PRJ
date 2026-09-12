@@ -51,3 +51,6 @@ CUAsmGlbls	uasm;
 #include "BackB_RV"
 #include "BackC_RV"
 #include "OptPass_RV"
+// G9 seed: wire/sync helpers + CmpCtrl abs addrs for Kernel HOFYIMP1 / Menu soft Call.
+// Without this, pack_tosb cannot export RVCmpWireAsmHash/RVAotLibSync (Job ExePrint path).
+#include "RVExePubs"

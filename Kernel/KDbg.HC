@@ -34,9 +34,14 @@ Bool ChkOnStk(U8 *ptr,CTask *task=NULL)
   PUSHFD
   CLI
   if (task) {
-    if (&task->stk->stk_base<=ptr<=
-	  (&task->stk->stk_base)(U8 *)+task->stk->stk_size)
-      res=TRUE;
+    //A task whose stk is not built yet (Fs in the bare AOT exec harness) must
+    //not be walked. x86 tolerated the load at address 8 and returned junk; RV
+    //faults, and with no mtvec that is a silent hang instead of an error.
+    if (task->stk) {
+      if (&task->stk->stk_base<=ptr<=
+	    (&task->stk->stk_base)(U8 *)+task->stk->stk_size)
+	res=TRUE;
+    }
   } else if (mem_heap_base<=ptr<=mem_heap_limit)
     res=TRUE;
   POPFD

@@ -112,7 +112,33 @@ I64 RVStrLen(U8 *st)
 {
   return StrLen(st);
 }
+/* HolyC ENTER wrappers for Soft Call exports — host-AOT &FileWrite/&MAlloc can
+ * materialize __imp_* slots; Load needs a real ENTER (same pattern as RVStrLen). */
+U8 *RVMAlloc(I64 size)
+{
+  return MAlloc(size);
+}
 
+U0 RVFree(U8 *addr)
+{
+  Free(addr);
+}
+#ifndef RV_THIN_LOADER
+I64 RVFileWrite(U8 *filename, U8 *fbuf, I64 size)
+{
+  return FileWrite(filename, fbuf, size);
+}
+
+Bool RVFileFind(U8 *filename)
+{
+  return FileFind(filename);
+}
+
+I64 RVLoad(U8 *filename, I64 ld_flags)
+{
+  return Load(filename, ld_flags);
+}
+#endif
 I64 RVMaxI64(I64 a, I64 b)
 {
   return MaxI64(a, b);

@@ -1,6 +1,6 @@
 // frame.hc -- framed multi-channel UART (CONSOLE.md / G22).
 // Default off (g_uart_mux=0 in uart.hc): raw REPL unchanged.
-// Boot after log.hc (redefines LogMuxEmit; needs g_uart_mux + g_log_mux_ch).
+// Boot after log.hc (installs g_log_mux_hook; needs g_uart_mux + g_log_mux_ch).
 // Wire: SYNC=0x7E | stuffed(CH | LEN16le | PAYLOAD | CRC8)
 // Escape: 0x7D, (b^0x20) for 0x7E/0x7D. CRC8 poly 0x07 init 0.
 // CH: 0=console 1=FS 2=dbg 3=log 4=RPC. Host: tools/uart_mux.py
@@ -81,10 +81,13 @@ U0 FramePutStr(I64 ch, U8 *s)
     FrameSend(ch, s, n);
 }
 // UartMuxOn -- enable mux; LogMuxEmit (below) ships dmesg to ch3.
+U0 FrameLogMuxEmit(I64 level, U8 *sub, U8 *msg);
+// forward — defined below, installed here
 U0 UartMuxOn()
 {
   g_uart_mux = 1;
   g_log_mux_ch = FRAME_CH_LOG;
+  g_log_mux_hook = &FrameLogMuxEmit;
 }
 
 U0 UartMuxOff()
@@ -117,8 +120,9 @@ U0 FrameRpcSend(U8 *buf, I64 len)
 {
   FrameSend(FRAME_CH_RPC, buf, len);
 }
-// Redefine log.hc stub: when mux on, emit "L\tsub\tmsg" on ch3.
-U0 LogMuxEmit(I64 level, U8 *sub, U8 *msg)
+// Framed ch3 log emitter. Installed into log.hc's g_log_mux_hook by UartMuxOn — a
+// second `U0 LogMuxEmit` here would just be dead code (single translation unit).
+U0 FrameLogMuxEmit(I64 level, U8 *sub, U8 *msg)
 {
   U8 line[96];
   I64 i, n, c;

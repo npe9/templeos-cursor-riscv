@@ -9,6 +9,8 @@ I64 eval_tok;
 I64 eval_num;
 I64 eval_op;
 I64 eval_err;
+// Set by ReplEvalOne on compile/eval failure; ReplLoop reseeds g_rl_seed.
+I64 g_repl_eval_err;
 U0 EvalSkip()
 {
   while (repl_line[eval_pos] == ' ' || repl_line[eval_pos] == '\t')
@@ -381,6 +383,7 @@ U0 Help()
   UartStr("  Log      LogInfo(\"boot\",\"msg\"); DMesg; LogClear;\n");
   UartStr("  Tab      mid-token=sym/MEM_*/path/asm{}; else 2sp; multiline ...\n");
   UartStr("  Keys     Up/Down=history  Left/Right/Home/End  Tab  ^U/^W  BS  empty ^D=eof\n");
+  UartStr("  Edit     syntax/eval error re-shows line for mid-line fix (arrows/Home/End)\n");
   UartStr("  Export   DumpFile; DumpChanges; FsChanges; FsReplay; Recover;\n");
   UartStr("  Help     help;  Help;\n");
   UartStr("  A2       ExePutS→Jit here; guest Cmp=make repl-cmp\n");
@@ -641,14 +644,55 @@ I64 EvalAsmInsn()
     JitR(0x20, 0, rd, rs1, rs2);
     return 1;
   }
+  // Shift-immediate: RV64 funct6=0/0x10 with a 6-bit shamt in imm[5:0].
+  if (!StrICmp(eval_asm_tok, "slli")) {
+    rd = EvalAsmReg();
+    rs1 = EvalAsmReg();
+    if (rd < 0 || rs1 < 0 || !EvalAsmNum(&imm))
+      return -1;
+    JitI(1, rd, rs1, imm & 63);
+    return 1;
+  }
+  if (!StrICmp(eval_asm_tok, "srli")) {
+    rd = EvalAsmReg();
+    rs1 = EvalAsmReg();
+    if (rd < 0 || rs1 < 0 || !EvalAsmNum(&imm))
+      return -1;
+    JitI(5, rd, rs1, imm & 63);
+    return 1;
+  }
+  if (!StrICmp(eval_asm_tok, "srai")) {
+    rd = EvalAsmReg();
+    rs1 = EvalAsmReg();
+    if (rd < 0 || rs1 < 0 || !EvalAsmNum(&imm))
+      return -1;
+    JitI(5, rd, rs1, (imm & 63) | 0x400);
+    return 1;
+  }
   eval_asm_err = 1;
   return -1;
+}
+// Encode body[0..end) at jit_at. Unknown mnemonic / bad operand / stray token = -1
+// (a non-advancing token would otherwise spin the caller's walk forever).
+I64 EvalAsmBody(U8 *body, U8 *end)
+{
+  I64 rc;
+  eval_asm_p = body;
+  eval_asm_err = 0;
+  while (eval_asm_p < end) {
+    rc = EvalAsmInsn();
+    if (rc <= 0)
+      return -1;
+    while (*eval_asm_p == ';' || *eval_asm_p == ' ' || *eval_asm_p == '\t' || *eval_asm_p == '\r' || *eval_asm_p == '\n')
+      eval_asm_p++;
+  }
+  return 1;
 }
 // REPL asm { … } — thin encode via jit_at (no host Cmp). Minimal mnemonics only.
 I64 EvalAsmRun(U8 *line)
 {
   U8 *p, *body, *tramp;
-  I64 rc, i;
+  I64 i;
   if (!line)
     return 0;
   i = 0;
@@ -667,17 +711,10 @@ I64 EvalAsmRun(U8 *line)
     p++;
   if (*p != '}')
     return 0;
-  eval_asm_p = body;
-  eval_asm_err = 0;
   tramp = jit_at;
-  while (eval_asm_p < p) {
-    rc = EvalAsmInsn();
-    if (rc < 0) {
-      UartStr("Eval: asm error\n");
-      return 1;
-    }
-    while (*eval_asm_p == ';' || *eval_asm_p == ' ' || *eval_asm_p == '\t' || *eval_asm_p == '\r' || *eval_asm_p == '\n')
-      eval_asm_p++;
+  if (EvalAsmBody(body, p) < 0) {
+    UartStr("Eval: asm error\n");
+    return -1;
   }
   JitJalr(0, 1, 0);
   JitFenceI;
@@ -687,10 +724,108 @@ I64 EvalAsmRun(U8 *line)
   g_reg_snap_fresh = 1;
   return 1;
 }
+// I64 Name() { asm { … } } — leaf fun whose whole body is one unlabeled asm block.
+// jit.hc has no asm parser and must not grow, so encode it here and register the
+// entry in jit_funs so later Name(); calls resolve like any other JIT fun.
+I64 EvalAsmFunDef(U8 *line)
+{
+  U8 *body, *end, *entry;
+  U8 name[JIT_NAME_MAX];
+  I64 i, j, is_void;
+  if (!line)
+    return 0;
+  i = 0;
+  while (line[i] == ' ' || line[i] == '\t')
+    i++;
+  is_void = -1;
+  if (line[i] == 'U' && line[i + 1] == '0')
+    is_void = 1;
+  else if (line[i] == 'U' && line[i + 1] == '8')
+    is_void = 0;
+  else if (line[i] == 'I' && line[i + 1] == '3' && line[i + 2] == '2')
+    is_void = 0;
+  else if (line[i] == 'I' && line[i + 1] == '6' && line[i + 2] == '4')
+    is_void = 0;
+  if (is_void < 0)
+    return 0;
+  i = i + 2;
+  if (line[i] == '2' || line[i] == '4')
+    i++;
+  if (line[i] != ' ' && line[i] != '\t')
+    return 0;
+  while (line[i] == ' ' || line[i] == '\t')
+    i++;
+  j = 0;
+  while (j < JIT_NAME_MAX - 1 && ((line[i] >= 'a' && line[i] <= 'z') || (line[i] >= 'A' && line[i] <= 'Z') || (line[i] >= '0' && line[i] <= '9') || line[i] == '_')) {
+    name[j] = line[i];
+    j++;
+    i++;
+  }
+  name[j] = 0;
+  if (!j)
+    return 0;
+  while (line[i] == ' ' || line[i] == '\t')
+    i++;
+  if (line[i] != '(')
+    return 0;
+  i++;
+  while (line[i] == ' ' || line[i] == '\t')
+    i++;
+  // Args would need slot binding — leave those to jit.hc's JitParseFun.
+  if (line[i] != ')')
+    return 0;
+  i++;
+  while (line[i] == ' ' || line[i] == '\t' || line[i] == '\r' || line[i] == '\n')
+    i++;
+  if (line[i] != '{')
+    return 0;
+  i++;
+  while (line[i] == ' ' || line[i] == '\t' || line[i] == '\r' || line[i] == '\n')
+    i++;
+  if ((line[i] != 'a' && line[i] != 'A') || (line[i + 1] != 's' && line[i + 1] != 'S') || (line[i + 2] != 'm' && line[i + 2] != 'M'))
+    return 0;
+  i = i + 3;
+  while (line[i] == ' ' || line[i] == '\t' || line[i] == '\r' || line[i] == '\n')
+    i++;
+  if (line[i] != '{')
+    return 0;
+  body = line + i + 1;
+  end = body;
+  while (*end && *end != '}')
+    end++;
+  if (*end != '}')
+    return 0;
+  // The asm block must be the whole body: only the closing fun brace may follow.
+  i = 1;
+  while (end[i] == ' ' || end[i] == '\t' || end[i] == '\r' || end[i] == '\n')
+    i++;
+  if (end[i] != '}')
+    return 0;
+  i++;
+  while (end[i] == ' ' || end[i] == '\t' || end[i] == '\r' || end[i] == '\n' || end[i] == ';')
+    i++;
+  if (end[i])
+    return 0;
+  // Leaf: no prologue, so the block owns a0 and sp/ra stay the caller's (same
+  // contract as a bare asm{} line). ret lets JitGenCall treat it as a normal fun.
+  entry = jit_at;
+  jit_err = 0;
+  if (EvalAsmBody(body, end) < 0) {
+    UartStr("Eval: asm error\n");
+    return -1;
+  }
+  JitJalr(0, 1, 0);
+  JitFenceI;
+  if (jit_err || JitAdd(name, entry, 0, is_void) < 0) {
+    UartStr("Eval: asm fun table full\n");
+    return -1;
+  }
+  return 1;
+}
 
 U0 ReplEvalOne(U8 *line)
 {
-  I64 v, jr;
+  I64 v, jr, arc;
   if (!line)
     return;
   while (*line == ' ' || *line == '\t')
@@ -700,7 +835,19 @@ U0 ReplEvalOne(U8 *line)
   // Session #define → Tab registry (thin path; no host define_table / expansion).
   if (DefTryRegister(line))
     return;
-  if (EvalAsmRun(line))
+  arc = EvalAsmRun(line);
+  if (arc < 0) {
+    g_repl_eval_err = 1;
+    return;
+  }
+  if (arc > 0)
+    return;
+  arc = EvalAsmFunDef(line);
+  if (arc < 0) {
+    g_repl_eval_err = 1;
+    return;
+  }
+  if (arc > 0)
     return;
   if (CmdStrArg(line, "Ed")) {
     Ed(FsTmp);
@@ -908,12 +1055,17 @@ U0 ReplEvalOne(U8 *line)
   }
   // A2: TempleOS-shaped compile entry (ExePutS), not direct JitTry.
   jr = ExePutS(line, NULL);
-  if (jr)
+  if (jr < 0) {
+    g_repl_eval_err = 1;
+    return;
+  }
+  if (jr > 0)
     return;
   if (IsExprLine(line)) {
     v = EvalI64Line(line);
     if (eval_err) {
       "Eval: bad expression\n";
+      g_repl_eval_err = 1;
       return;
     }
     Print("ans=%p=%d\n", v, v);
@@ -925,6 +1077,7 @@ U0 ReplEvalOne(U8 *line)
 U0 ReplEvalLine(U8 *line)
 {
   I64 pos = 0, n = 0;
+  g_repl_eval_err = 0;
   if (!line)
     return;
   // Fast path: one statement (usual REPL line) — avoid split buffer.
@@ -942,6 +1095,9 @@ U0 ReplEvalLine(U8 *line)
     return;
   }
   pos = 0;
-  while (EvalTakeStmt(line, &pos))
+  while (EvalTakeStmt(line, &pos)) {
     ReplEvalOne(eval_stmt);
+    if (g_repl_eval_err)
+      return;
+  }
 }

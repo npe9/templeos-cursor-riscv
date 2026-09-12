@@ -9,11 +9,16 @@ U0 RVKMain()
   MemSet(adam, 0, sizeof(CTask));
   Fs = adam;
   adam_task = adam;
-  // Bring up the linear arena the RISC-V MAlloc carves from, plus the kernel's own block pool and
-  // heap-control (BlkPoolInit/HeapCtrlInit run unchanged). KMain does this via BlkPoolsInit.
+  // Linear arena (KBootRV MAlloc). Full BlkPool/HeapCtrl/MemPag only on non-thin boots —
+  // thin Jump path never pages through MemPagTaskAlloc.
   MemSet(the_heap, 0, sizeof(CHeapCtrl));
   heap_next = 0x82000400;
   heap_end = 0x86000000;
+#ifdef RV_THIN_LOADER
+  the_heap->hc_signature = HEAP_CTRL_SIGNATURE_VAL;
+  adam->code_heap = the_heap;
+  adam->data_heap = the_heap;
+#else
   CBlkPool *bp = 0x86800000;
   BlkPoolInit(bp, 0x2000);
   sys_code_bp = bp;
@@ -22,12 +27,8 @@ U0 RVKMain()
   adam->data_heap = ah;
   MemSet(SYS_FIXED_AREA, 0, 8192);
   // TaskInit reads the init FPU state from here (see PRJ note)
-  // Create Adam through the kernel's OWN TaskInit — the very call KStart64.HC makes for adam. It
-  // fills in task_num, rflags, the code/data-heap free-list queues, the FPU save area, the hash
-  // table, a real stack (setting rsp), the window fields, and seeds the self-looped next_task/
-  // last_task ring. Adam's rsp is re-established at the first context switch away from RVKMain, so
-  // the fresh stack TaskInit allocates is only a placeholder here. Everything TaskInit touches is
-  // the kernel's own code; only MAlloc and SYS_FIXED_AREA underneath it are RISC-V ports.
+#endif
+  // Create Adam via TaskInit (full KTask, or KThinTaskStubs under RV_THIN_LOADER).
   TaskInit(adam, 0);
   // Per-CPU block (Gs): the scheduler reads Gs->seth_task. KMain sets this up via Core0Init.
   CCPU *gs = 0x86A00000;
@@ -41,19 +42,37 @@ U0 RVKMain()
   // 1 ms jiffy from Kconfig timebase
   RVKernelInit();
   // portable tables + UART console (needs Fs valid and the heap up)
+#ifndef RV_THIN_LOADER
   RVFbPlatApplyPresent();
   // Kconfig FB present kind (ramfb on virt; none elsewhere)
+#endif
   // Bring up storage and mount the file system (KMain's BlkDevsInitAll / DskChg). On the QEMU virt
   // machine this is a RAM disk auto-formatted with the kernel's own RedSea — a real, mounted drive A.
 #ifdef RV_THIN_LOADER
-#define RV_REDSEA_VIRTIO_BOOT 1
+#ifdef RV_THIN_EMBED_BIN
+  // G9: Kernel.BIN linked at KERNEL_EMBED_ADDR — no thin MMIO+raw chicken-egg.
+  // SoftCall re-Inits virtio + first RedSea mount after Jump.
+  Print("RVKMain: thin embed Kernel.BIN; SoftCall owns virtio.\n");
+#else
+  // G9 chicken-egg libs: RVThinVirtioBlk (MMIO) + RVRedSeaRaw + linear arena.
+  // SoftCall owns first RedSea mount after Jump; no BlkDevAdd / DskVirtioRV here.
+  if (VirtioBlkInit()) {
+    Print("RVKMain: thin loader VirtioBlkInit FAILED (no virtio-blk).\n");
+    return;
+  }
+  Print("RVKMain: thin MMIO+raw+arena OK; defer first mount to SoftCall.\n");
 #endif
+  RVThinLoader;
+  // Unreachable when Stay holds (Jump + KernelEntry HLT).
+  Print("RVKMain: thin loader returned (FAIL); skipping Boot/Spin task wait.\n");
+  return;
+#else
 #ifdef RV_PHASE3
 #define RV_REDSEA_VIRTIO_BOOT 1
 #endif
 #ifdef RV_REDSEA_VIRTIO_BOOT
   // G9: prefer virtio-blk RedSea image (ships Compiler.BIN + Kernel.BIN) over blank RAM.
-  // phase3 / thin-loader smokes attach build/*_redsea.img; no virtio → RAM fallback.
+  // phase3 smokes attach build/*_redsea.img; no virtio → RAM fallback.
   RVMountVirtioDisk('A');
   if (!Fs->cur_dv || Fs->cur_dv->dv_signature != DRV_SIGNATURE_VAL) {
     RVMountRAMDisk('A', 16384);
@@ -74,12 +93,7 @@ U0 RVKMain()
     if (back && sz == StrLen(msg) && !StrNCmp(back, msg, StrLen(msg)))
       Print("RVKMain: mounted RedSea on A:, wrote and read A:/BOOT.TXT back OK (%d bytes).\n", sz);
   }
-#ifdef RV_THIN_LOADER
-  // G9: mount + Load RedSea Kernel.BIN + Call KernelEntry — no Cmp/StartOS.
-  RVThinLoader;
-  Print("RVKMain: thin loader smoke complete; skipping Boot/Spin task wait.\n");
-  return;
-#endif
+  RVHomeBringUp('A');
 #ifdef RV_PHASE3
   RVPhase3;
   /* Skip WinInit here: fw_cfg/ramfb probe can stall under -nographic; FB Adam path is win-smoke. */
@@ -113,4 +127,5 @@ U0 RVKMain()
   // invoke Run after boot. Do not block here — headless selfboot smoke must exit.
   if (rv_winmgr.ready)
     RVWinMgrPumpInput(8);
+#endif
 }

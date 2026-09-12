@@ -7,13 +7,21 @@
 #include "/bootstrap/seed/mem.hc"
 #include "/bootstrap/seed/str.hc"
 #include "/bootstrap/seed/print.hc"
+// G28: UART soft BlkDev letter tables (Let2Drv / RVSoftLetPlant) — after CAlloc.
+#include "/bootstrap/seed/soft_let.hc"
 #include "/bootstrap/seed/log.hc"
 #include "/bootstrap/seed/frame.hc"
 #include "/bootstrap/seed/console.hc"
 #include "/bootstrap/hc_repl/fs.hc"
 #include "/bootstrap/hc_repl/dir.hc"
 #include "/bootstrap/seed/files.hc"
+// Stock ~/HomeWrappers F/R/FD/RD over memfs — needs files.hc ToAbs/InCwd.
+#include "/bootstrap/seed/home_wrappers.hc"
 #include "/bootstrap/hc_repl/fs_dump_changes.hc"
+// 9P2000.L client / Mount9p / NineExport — AOT, not Run(): the thin JitTry
+// evaluator cannot build a virtio driver (class + inline MMIO). Needs memfs
+// FileRead/FileLen from files.hc above.
+#include "/bootstrap/seed/ninep.hc"
 #include "/bootstrap/hc_repl/jit.hc"
 #include "/bootstrap/hc_repl/man_sym.hc"
 #include "/bootstrap/seed/man.hc"
@@ -59,7 +67,12 @@ U0 HcUartTakeLeadingBreak()
 #include "/bootstrap/seed/debug.hc"
 #include "/bootstrap/seed/crash.hc"
 #include "/bootstrap/seed/hwdbg.hc"
+// GDB RSP over UART — AOT so `GdbStub;` works post-seal (the file's own header
+// notes a JIT Run of it hangs). Needs debug.hc Dbg* bp table + csr.hc snap.
+#include "/bootstrap/seed/gdbstub.hc"
 #include "/bootstrap/seed/callers.hc"
+// U/Uf/UA/Disasm — needs man_sym FnAddr/FnSize + dbg_jit_sym SymName/SymBase.
+#include "/bootstrap/seed/disasm.hc"
 #include "/bootstrap/hc_repl/exepubs.hc"
 #include "/bootstrap/hc_repl/ide_bridge.hc"
 // G5: asm{} / CompTab / smart Tab (do not grow jit.hc)
@@ -150,6 +163,54 @@ I64 CallersScanJit(U8 *name)
   "(%d callers of %s)\n", g_caller_n, name;
   return g_caller_n;
 }
+// U/UA insn counts: HolyC default args are filled by the caller, and the JIT call path
+// only passes what was typed — so a bare U(addr) leaves a1 holding whatever was there.
+// Clamp to the seed default (28) instead of walking a garbage-length window.
+I64 ReplUCnt(I64 n)
+{
+  if (n < 1 || n > 4096)
+    return 28;
+  return n;
+}
+
+U0 ReplU(I64 addr, I64 n)
+{
+  U(addr, ReplUCnt(n));
+}
+
+U0 ReplUA(I64 addr, I64 n)
+{
+  UA(addr, ReplUCnt(n));
+}
+// Thin-image Uf: man_sym FnSize is a synthetic 64 (no ELF/hash size table), so seed Uf
+// would clip every function at 16 insns. Bound the walk by the next registered symbol
+// above this entry and let DisasmAt's ret-stop find the real end.
+U0 ReplUf(U8 *name)
+{
+  I64 i, a, end, ea;
+  i = JitFind(name);
+  if (i < 0) {
+    "Uf: no such function: %s\n", name;
+    return;
+  }
+  a = jit_funs[i].entry;
+  if (!a) {
+    "Uf: no address for %s\n", name;
+    return;
+  }
+  end = 0;
+  for (i = 0; i < jit_nfun; i++) {
+    ea = jit_funs[i].entry;
+    if (ea > a && (!end || ea < end))
+      end = ea;
+  }
+  DisAsmMode = 0;
+  if (end)
+    "; %s (<=%d bytes to next symbol):\n", name, end - a;
+  else
+    "; %s:\n", name;
+  DisasmAt(a, 2000, end);
+}
 // Soft demo needle: freeze a7=5 into MEM_REGS_SNAP without HolyC call clobber.
 U0 RegsRestoreDemo()
 {
@@ -171,6 +232,23 @@ U0 ReplReadLine()
   g_rl_cur = 0;
   // Soft RX + RlReadKey CSI + tty erase/kill/CRNL + mid-line cursor.
   // Tab/history stay in readline.hc; XON/XOFF stay in uart drain.
+  // After syntax/eval error: g_rl_seed re-shows the failed line for mid-line edit.
+  if (g_rl_seed_len > 0) {
+    i = 0;
+    while (i < g_rl_seed_len && i < 511) {
+      repl_buf[i] = g_rl_seed[i];
+      i++;
+    }
+    repl_buf[i] = 0;
+    n = i;
+    g_rl_cur = n;
+    RlSeedClear;
+    i = 0;
+    while (i < n) {
+      PutCh(repl_buf[i]);
+      i++;
+    }
+  }
   while (n < 511) {
     cur = g_rl_cur;
     if (cur < 0)
@@ -288,6 +366,7 @@ U0 ReplReadLine()
       repl_paren = 0;
       g_rl_accum_len = 0;
       g_rl_cur = 0;
+      RlSeedForget;
       RlHistLeaveBrowse();
       TtyEofClear;
       break;
@@ -485,8 +564,16 @@ U0 ReplLoop()
       ReplAccumReset();
       continue;
     }
+    g_repl_eval_err = 0;
     ReplEvalLine(repl_accum);
     RlHistPushUnit(repl_accum, repl_accum_len);
+    // Extended cmdline: keep failed line for Left/Right/Home/End fix-up. Skip the
+    // re-seed when the line we handed out only got appended to — that is a pipe,
+    // not a cursor, and re-seeding it cascades one error over the whole session.
+    if (g_repl_eval_err && !RlSeedWasAppended(repl_accum, repl_accum_len))
+      RlSeedLine(repl_accum, repl_accum_len);
+    else
+      RlSeedForget;
     ReplAccumReset();
   }
 }
@@ -496,6 +583,10 @@ I64 ReplMain()
   UartRxInit();
   SoftDbgHostSlotsClear();
   FsInit();
+  // G28: plant A: soft letter so Let2Drv matches Kernel RVSoftLetPlant (no cur_dv).
+  RVSoftLetPlant('A');
+  // G28: plant P: as 9P/virtfs share letter (Kernel RVSoftLet9pPlant).
+  RVSoftLet9pPlant('P');
   MemfsSeed();
   FsEpochSeal(FS_EPOCH_BOOT);
   JitInit();
@@ -516,6 +607,13 @@ I64 ReplMain()
   JitAdd("FsDiff", &FsDiff, 2, 1);
   JitAdd("FsReplay", &FsReplay, 1, 0);
   JitAdd("FsRecover", &FsRecover, 0, 0);
+  // UART flow control (docs/UART.md, docs/FLOW_CONTROL.md) — these are the
+  // documented prompt-callable surface, so they have to be in the table.
+  JitAdd("UartPut", &UartPut, 1, 1);
+  JitAdd("UartXonXoff", &UartXonXoff, 1, 1);
+  JitAdd("UartFcGet", &UartFcGet, 0, 0);
+  JitAdd("UartRtsCts", &UartRtsCts, 1, 1);
+  JitAdd("UartRtsCtsGet", &UartRtsCtsGet, 0, 0);
   JitAdd("Man", &Man, 1, 1);
   JitAdd("Sections", &Sections, 0, 1);
   JitAdd("Help", &Help, 0, 1);
@@ -535,6 +633,13 @@ I64 ReplMain()
   JitAdd("Print", &Print, 1, 1);
   JitAdd("Dir", &Dir, 0, 1);
   JitAdd("Cat", &Cat, 1, 1);
+  // G28 UART soft letter (seed/soft_let.hc)
+  JitAdd("Let2Drv", &Let2Drv, 2, 0);
+  JitAdd("Let2Let", &Let2Let, 1, 0);
+  JitAdd("RVSoftLetPlant", &RVSoftLetPlant, 1, 0);
+  JitAdd("RVSoftLet9pPlant", &RVSoftLet9pPlant, 1, 0);
+  JitAdd("SoftLetRep", &SoftLetRep, 0, 1);
+  JitAdd("RVBlkDevTablesInit", &RVBlkDevTablesInit, 0, 1);
   // dmesg ring (seed/log.hc) — ≠ Print, ≠ FsLog; ts prefers MEM_RTC / LogNow
   JitAdd("Log", &Log, 3, 1);
   JitAdd("LogInfo", &LogInfo, 2, 1);
@@ -547,6 +652,10 @@ I64 ReplMain()
   JitAdd("DMesg", &DMesg, 1, 1);
   JitAdd("SysInit", &SysInit, 0, 1);
   JitAdd("Sys", &Sys, 0, 1);
+  // Interruptible busy eval (seed/sys.hc). The thin JitTry has no toplevel
+  // while/for and growing it into one is out of bounds, so the Ctrl-C smoke
+  // spins here instead of at the prompt.
+  JitAdd("Spin", &Spin, 1, 0);
   JitAdd("SysHelp", &SysHelp, 0, 1);
   JitAdd("Uptime", &Uptime, 0, 1);
   JitAdd("UptimeTicks", &UptimeTicks, 0, 0);
@@ -577,6 +686,14 @@ I64 ReplMain()
   JitAdd("TtyEofHit", &TtyEofHit, 0, 0);
   JitAdd("TtyEofClear", &TtyEofClear, 0, 1);
   JitAdd("TtyEofRaise", &TtyEofRaise, 0, 1);
+  // frame.hc (G22 framed multi-channel UART). #include'd into this image since it
+  // was written, but never published to the JIT — so UartMuxOn read as
+  // "unknown fun" and the framed half of the console stack was unreachable from
+  // the prompt. tools/uart_mux.py's --vt-split/--vt-panes want these.
+  JitAdd("UartMuxOn", &UartMuxOn, 0, 1);
+  JitAdd("UartMuxOff", &UartMuxOff, 0, 1);
+  JitAdd("UartMuxGet", &UartMuxGet, 0, 0);
+  JitAdd("FramePutStr", &FramePutStr, 2, 1);
   JitAdd("VtInit", &VtInit, 0, 1);
   JitAdd("Vt", &Vt, 1, 1);
   JitAdd("VtAttach", &VtAttach, 1, 1);
@@ -610,7 +727,24 @@ I64 ReplMain()
   JitAdd("TermNameXterm", &TermNameXterm, 0, 1);
   JitAdd("TermRep", &TermRep, 0, 1);
   JitAdd("TermHelp", &TermHelp, 0, 1);
+  JitAdd("TermProbe", &TermProbe, 0, 0);
   JitAdd("TermQuery", &TermQuery, 0, 0);
+  // REPL_FUNS.md DolDoc→ANSI rows: real SGR behind $$FG/$$BG/$$IV/$$UL/$$BK/$$FD/$$BD.
+  JitAdd("TermColor", &TermColor, 1, 1);
+  JitAdd("TermColorGet", &TermColorGet, 0, 0);
+  JitAdd("TermColorOk", &TermColorOk, 0, 0);
+  JitAdd("TermSgr", &TermSgr, 1, 1);
+  JitAdd("TermSgrColor", &TermSgrColor, 1, 0);
+  JitAdd("TermFg", &TermFg, 1, 1);
+  JitAdd("TermBg", &TermBg, 1, 1);
+  JitAdd("TermFgDft", &TermFgDft, 0, 1);
+  JitAdd("TermBgDft", &TermBgDft, 0, 1);
+  JitAdd("TermInverse", &TermInverse, 1, 1);
+  JitAdd("TermUnderline", &TermUnderline, 1, 1);
+  JitAdd("TermBlink", &TermBlink, 1, 1);
+  JitAdd("TermBold", &TermBold, 1, 1);
+  JitAdd("TermAttrOff", &TermAttrOff, 0, 1);
+  JitAdd("TermColorDemo", &TermColorDemo, 0, 1);
   JitAdd("SrcFileRep", &SrcFileRep, 1, 1);
   JitAdd("FnSizeRep", &FnSizeRep, 1, 1);
   g_callers_hc = &CallersScanJit;
@@ -641,6 +775,27 @@ I64 ReplMain()
   JitAdd("ZapTrap", &ZapTrap, 3, 0);
   JitAdd("Md", &Md, 2, 1);
   JitAdd("Mw", &Mw, 2, 1);
+  // seed/disasm.hc: U/Uf/UA — see ReplUCnt for the n=28 default.
+  JitAdd("U", &ReplU, 2, 1);
+  JitAdd("Uf", &ReplUf, 1, 1);
+  JitAdd("Disasm", &ReplUf, 1, 1);
+  JitAdd("DisasmAt", &DisasmAt, 3, 1);
+  JitAdd("UA", &ReplUA, 2, 1);
+  JitAdd("UAsm", &ReplUA, 2, 1);
+  // seed/home_wrappers.hc: stock ~/HomeWrappers command line.
+  JitAdd("F", &F, 1, 0);
+  JitAdd("FD", &FD, 1, 0);
+  JitAdd("R", &R, 2, 0);
+  JitAdd("RD", &RD, 2, 0);
+  // seed/ninep.hc / seed/gdbstub.hc are AOT-#included above, but jit_funs only has
+  // JIT_FUN_MAX(256) - ~224 boot slots left for the session's own definitions, so
+  // publish just the documented entry points (NINEP.md / DEBUGGER.md) here. The rest
+  // of Ninep*/Gdb* stays callable from AOT code and readable via Src/Cat.
+  JitAdd("Mount9p", &Mount9p, 2, 0);
+  JitAdd("NineExport", &NineExport, 1, 0);
+  JitAdd("NinepSmoke", &NinepSmoke, 0, 0);
+  JitAdd("GdbStub", &GdbStub, 0, 1);
+  JitAdd("GdbHelp", &GdbHelp, 0, 1);
   JitAdd("RegsRestoreDemo", &RegsRestoreDemo, 0, 1);
   JitAdd("Ed", &Ed, 1, 1);
   JitAdd("EdHoly", &EdHoly, 1, 1);
@@ -654,6 +809,10 @@ I64 ReplMain()
   JitAdd("CompCollectFiles", &CompCollectFiles, 2, 0);
   JitAdd("CompCollectAsm", &CompCollectAsm, 3, 0);
   JitAdd("CompMidDemo", &CompMidDemo, 0, 1);
+  JitAdd("CompAsmDemo", &CompAsmDemo, 0, 1);
+  JitAdd("AsmDoc", &AsmDoc, 1, 1);
+  JitAdd("AsmList", &AsmList, 0, 1);
+  JitAdd("AsmDocHelp", &AsmDocHelp, 0, 1);
   JitAdd("RlMidDemo", &RlMidDemo, 0, 1);
   JitAdd("TrapInit", &TrapInit, 0, 1);
   JitAdd("TrapInitOnce", &TrapInitOnce, 0, 1);
@@ -681,6 +840,11 @@ I64 ReplMain()
   // CONSOLE #9: bind CrashOnTrap by fn ptr (no mtvec); TrapInit keeps it if g_trap_fn set.
   SetTrapFn(&CrashOnTrap);
   TrapVecAddrFix();
+  // This is an interactive session, so say so: ExePutS gates BreakArm on this
+  // flag, and only TrapInit used to set it — which boot never reaches. Without
+  // it Ctrl-C could not interrupt a running eval at all. Still no mtvec swap
+  // here: the first ExePutS → BreakArm → TrapInitOnce installs it at eval time.
+  g_break_interactive = 1;
   UartRxBootstrap();
   pc = g_trap_vec;
   g_exepubs_n = 0;
@@ -699,6 +863,9 @@ I64 ReplMain()
   UartStr("A2: bridge→Jit (Cmp=make repl-cmp / build/repl-cmp.elf)\n");
   UartStr("G2: HolyC TrapDispatch + Ctrl-C Break\n");
   UartStr("G5: Tab=complete/indent  Up/Down=history\n");
+  // Slot budget in the boot banner: the next lane to AOT-#include a seed sees
+  // the headroom before it runs out, not after (JitAdd also shouts on overrun).
+  "JIT: %d/%d fun slots used (%d free)\n", jit_nfun, JIT_FUN_MAX, JIT_FUN_MAX - jit_nfun;
   UartStr("Crash: Fault → dump → crash> (go|regs|md|mw|bt|reboot)\n");
   Help();
   // Boot /proc-ish dump (smoke needles; also useful UART inventory)

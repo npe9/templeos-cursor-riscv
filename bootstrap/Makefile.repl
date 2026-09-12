@@ -1,71 +1,34 @@
-RISCV_PREFIX = riscv64-unknown-elf-
-CC = $(RISCV_PREFIX)gcc
-LD = $(RISCV_PREFIX)ld
-
-# Host HolyC→RISC-V compiler sources (repo host/)
-HOST = ../host
-# Repo root on -I path so host/compiler.c can #include "bootstrap/holy_rt_names.h"
-ROOT = ..
-
-KCFG := $(ROOT)/templeos-riscv/include/generated/kconfig.mk
-ifneq ($(wildcard $(KCFG)),)
-  include $(KCFG)
-endif
-
-# ---- Platform address map -----------------------------------------------------------------
-# Select a target board with PLATFORM=<name> (default: qemu-virt). Each row sets the RAM/link
-# base and the 16550 UART base; LOAD_BASE flows to the linker (--defsym) and UART_BASE to both
-# the C REPL (-DUART_BASE) and the linker. To retarget, add a row -- nothing else is platform-
-# specific: every other MMIO address (CLINT/PLIC/virtio)
-# is the RISC-V-standard layout QEMU virt and most SoCs share.
+# Seed blob headers for the HolyC REPL.
 #
-# NOTE: `-bios none` makes QEMU's reset ROM jump to 0x80000000 unconditionally, so a non-default
-# LOAD_BASE build links correctly but is NOT bootable via `-kernel` on qemu-virt -- it targets a
-# board whose loader jumps to that base. Verify such builds with objdump, not QEMU.
-# Kconfig ENTRY_POINT / LOAD_BASE (via kconfig.mk) override the platform row when set.
-PLATFORM ?= qemu-virt
+# This makefile used to build the legacy C guest `repl.elf` from worry_dream_repl.c. That
+# guest was deleted in 080f729, and with it the whole cross-compile setup that lived here:
+# RISCV_PREFIX/CC/LD, the PLATFORM address-map rows (qemu-virt LOAD_BASE/UART_BASE), MARCH /
+# MABI, and CFLAGS. Nothing left in this file compiles or links, so that block is gone rather
+# than kept as dead configuration that looks like it still selects a board.
+#
+# Board selection for product images is Kconfig now:
+#   make menuconfig  /  make -C templeos-riscv defconfig-<board>
+# Guest images:
+#   make hc-repl        -> build/repl-holyc.elf   (classic UART HolyC REPL)
+#   make repl-payload   -> build/hc_repl.blob.bin (flat payload for the HolyC bootloader)
 
-ifeq ($(PLATFORM),qemu-virt)
-  PLAT_LOAD_BASE := 0x80000000
-  PLAT_UART_BASE := 0x10000000
-# ---- template: copy this block, rename, and set the board's addresses --------------------
-# else ifeq ($(PLATFORM),my-board)
-#   PLAT_LOAD_BASE := 0x........
-#   PLAT_UART_BASE := 0x........
-else
-  $(error Unknown PLATFORM '$(PLATFORM)' -- add a row to Makefile.repl, or pass LOAD_BASE=/UART_BASE= directly)
-endif
+# Default goal is the blob headers. It used to fall through to repl.elf, so a plain
+# `make -f Makefile.repl` did nothing but print an error.
+.DEFAULT_GOAL := blobs
 
-# Prefer Kconfig ENTRY_POINT/LOAD_BASE, then platform row, then CLI override.
-ifeq ($(origin LOAD_BASE),undefined)
-  ifneq ($(ENTRY_POINT),)
-    LOAD_BASE := $(ENTRY_POINT)
-  else ifneq ($(RAM_BASE),)
-    LOAD_BASE := $(RAM_BASE)
-  else
-    LOAD_BASE := $(PLAT_LOAD_BASE)
-  endif
-endif
-UART_BASE ?= $(PLAT_UART_BASE)
-
-MARCH ?= rv64imafdc
-MABI ?= lp64d
-# Modern GNU as treats fence.i as Zifencei-only; keep older rv64imafdc configs bootable.
-ifeq ($(findstring zifencei,$(MARCH)),)
-MARCH := $(MARCH)_zifencei
-endif
-CFLAGS = -march=$(MARCH) -mabi=$(MABI) -mcmodel=medany -O0 -g
-CFLAGS += -nostdlib -ffreestanding -fno-builtin -I$(ROOT) -I$(HOST) -DUART_BASE=$(UART_BASE)
-
-# Legacy C guest (worry_dream_repl.c) deleted — product path is make hc-repl / repl-payload.
-# This makefile remains for boot_blob_embed.h / seed_files.h / asm_templates.inc helpers.
+blobs: boot_blob_embed.h
+	@echo "seed boot blob up to date (boot_blob_embed.h)"
+	@echo "guest image: run 'make hc-repl' (or 'make repl-payload') from the repo root" >&2
 
 repl.elf:
 	@echo "error: legacy C guest repl.elf removed (worry_dream deleted); use: make hc-repl or make repl-payload" >&2
 	@exit 2
 
-# The editable HolyC primitives/editors are real files under seed/; this bakes them into a C
-# table so memfs_seed() ships them. Editing a seed/*.hc regenerates the header and rebuilds.
+# C table for the deleted guest's memfs_seed(). Nothing #includes seed_files.h today
+# (the HolyC image seeds from boot_blob_embed.h / hc_repl/gen_embed.py), so it is NOT part
+# of `blobs`; build it explicitly if you are reviving that path. Unlike the other
+# generators this one walks all of seed/, so it fails on any file missing from
+# seed_layout.py FILE_DIR.
 seed_files.h: $(wildcard seed/*.hc) $(wildcard seed/tutorials/*.hc) \
 		$(wildcard seed/datasheet/*.hc) gen_seeds.py seed_layout.py
 	python3 gen_seeds.py seed seed_files.h
@@ -82,10 +45,13 @@ boot_blob_embed.h: $(wildcard seed/*.hc) gen_boot_blob.py
 	  python3 gen_boot_blob.py seed $@; \
 	fi
 
+# Tab-completion templates for the deleted C guest's readline. Nothing #includes this
+# today (the HolyC readline reads seed/asm_complete.hc), so it is NOT part of `blobs`;
+# build it explicitly if you are reviving that path.
 asm_templates.inc: seed/asm_doc.hc gen_boot_blob.py
 	python3 gen_boot_blob.py seed boot_blob_embed.h
 
 clean:
 	rm -f *.o *.elf seed_files.h boot_blob_embed.h boot_runtime.hc boot_runtime.bin
 
-.PHONY: clean
+.PHONY: clean blobs

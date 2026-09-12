@@ -31,8 +31,8 @@
 #define P9_O_RDONLY      0
 #define P9_O_WRONLY      1
 #define P9_O_RDWR        2
-#define P9_O_TRUNC       0x200
-#define P9_O_DIRECTORY   0x80000000
+#define P9_O_TRUNC       0x200 // P9_DOTL_TRUNC 00001000
+#define P9_O_DIRECTORY   0x10000 // P9_DOTL_DIRECTORY 00200000 (not DMDIR)
 #define P9_MODE_FILE     0x1A4
 #define P9_MODE_DIR      0x1ED
 #define P9_QTDIR         0x80

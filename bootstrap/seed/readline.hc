@@ -13,6 +13,13 @@ I64 g_rl_accum_len;
 U8 *g_rl_prompt;
 I64 g_rl_cont;
 I64 g_rl_cur;
+// After eval/compile error: next ReplReadLine starts with this line (mid-line edit).
+U8 g_rl_seed[512];
+I64 g_rl_seed_len;
+// Copy of the last seed handed to the reader, kept past the consume so the loop can
+// tell a real cursor edit from a pipe that just appended to it.
+U8 g_rl_seed_out[512];
+I64 g_rl_seed_out_len;
 #define RL_HIST_MAX 16
 #define RL_HIST_CAP 1024
 U8 g_rl_hist_ring[16][1024];
@@ -22,6 +29,62 @@ I64 g_rl_hist_age;
 U8 g_rl_hist_draft[1024];
 I64 g_rl_hist_accum_clear;
 U8 *g_rl_hist_recall_unit;
+// RlSeedLine -- keep last physical line of a failed unit for re-edit.
+U0 RlSeedLine(U8 *s, I64 n)
+{
+  I64 i, start;
+  g_rl_seed_len = 0;
+  g_rl_seed[0] = 0;
+  if (!s || n <= 0)
+    return;
+  start = 0;
+  i = 0;
+  while (i < n) {
+    if (s[i] == '\n')
+      start = i + 1;
+    i++;
+  }
+  i = 0;
+  while (start + i < n && i < 511) {
+    g_rl_seed[i] = s[start + i];
+    i++;
+  }
+  g_rl_seed[i] = 0;
+  g_rl_seed_len = i;
+  i = 0;
+  while (i < g_rl_seed_len) {
+    g_rl_seed_out[i] = g_rl_seed[i];
+    i++;
+  }
+  g_rl_seed_out[i] = 0;
+  g_rl_seed_out_len = i;
+}
+// Drop the pending seed only (the reader calls this once it has taken it).
+U0 RlSeedClear()
+{
+  g_rl_seed_len = 0;
+  g_rl_seed[0] = 0;
+}
+// Drop the pending seed and forget what was handed out.
+U0 RlSeedForget()
+{
+  RlSeedClear;
+  g_rl_seed_out_len = 0;
+  g_rl_seed_out[0] = 0;
+}
+// RlSeedWasAppended -- s is the seed we handed out with more text glued on the end
+// (or unchanged). Piped stdin has no cursor, so a re-seed there would glue every
+// later line onto the failed one and wedge the rest of the session.
+I64 RlSeedWasAppended(U8 *s, I64 n)
+{
+  I64 i;
+  if (!s || g_rl_seed_out_len <= 0 || n < g_rl_seed_out_len)
+    return 0;
+  for (i = 0; i < g_rl_seed_out_len; i++)
+    if (s[i] != g_rl_seed_out[i])
+      return 0;
+  return 1;
+}
 // RlReadKey -- TtyInCh + ESC/[ A|B|C|D|H|F → arrows/home/end.
 // Optional VT Ctrl-A prefix when g_vt_keys (console.hc VtKeys(1)).
 I64 RlReadKey()

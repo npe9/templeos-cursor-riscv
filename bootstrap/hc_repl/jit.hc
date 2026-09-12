@@ -4,8 +4,12 @@
 #define JIT_BASE 0x84000000
 #define JIT_END  0x84F00000
 #define JIT_GLOBB 0x83F00000
-// Boot registers ~147 AOT symbols via JitAdd; leave headroom for Run/redefine.
-#define JIT_FUN_MAX 256
+// Boot registers ~230 AOT symbols via JitAdd; the rest is session headroom for
+// Run/redefine. Overrun used to be silent (JitAdd → -1, symptom deferred to a
+// later "unknown fun"), so JitAdd now names the function that did not fit.
+// Cost of a slot: sizeof(CJitFun) = 56 B. The guest is a flat blob, so that is
+// 56 real image bytes, not free .bss — 256→384 measured at +7,168 B.
+#define JIT_FUN_MAX 384
 #define JIT_NAME_MAX 32
 #define JIT_SLOT 16
 #define JIT_CLS_MAX 16
@@ -123,6 +127,7 @@ U0 JitInit()
   JitAdd("StrCmp", &StrCmp, 2, 0);
   JitAdd("StrCat", &StrCat, 2, 1);
   JitAdd("PutS", &PutS, 1, 1);
+  JitAdd("UartStr", &UartStr, 1, 1);
   JitAdd("PutCh", &PutCh, 1, 1);
   JitAdd("MaxI64", &MaxI64, 2, 0);
   JitAdd("MinI64", &MinI64, 2, 0);
@@ -378,8 +383,14 @@ I64 JitAdd(U8 *name, U8 *entry, I64 argc, I64 is_void)
   // (livedrv second Run → LIVEDRV) without exhausting JIT_FUN_MAX.
   i = JitFind(name);
   if (i < 0) {
-    if (jit_nfun >= JIT_FUN_MAX)
+    if (jit_nfun >= JIT_FUN_MAX) {
+      // Loud, not silent: without this the only symptom is a much later
+      // "JIT: unknown fun X" from whatever the table dropped.
+      UartStr("JIT: fun table full (");
+      UartStr(name);
+      UartStr(" dropped, JIT_FUN_MAX reached)\n");
       return -1;
+    }
     i = jit_nfun;
     jit_nfun++;
   }
@@ -540,6 +551,32 @@ U0 JitPopT1()
   JitLd(6, 0, 2);
   JitI(0, 2, 2, 8);
 }
+// HolyC Print ABI is (fmt, argc, argv) — not C varargs. After nva pushes
+// (last at 0(sp)), reverse in place and call StrPrintJoin(fmt,nva,sp).
+// fmt_abs: string addr, or 0 if fmt was pushed under the args (at nva*8(sp)).
+U0 JitCallPrintJoin(U8 *fmt_abs, I64 nva)
+{
+  I64 i, j;
+  for (i = 0; i < nva / 2; i++) {
+    j = nva - 1 - i;
+    JitLd(5, i * 8, 2);
+    JitLd(6, j * 8, 2);
+    JitSd(6, i * 8, 2);
+    JitSd(5, j * 8, 2);
+  }
+  if (fmt_abs)
+    JitAbs(10, fmt_abs);
+  else
+    JitLd(10, nva * 8, 2);
+  JitLi(11, nva);
+  JitI(0, 12, 2, 0);
+  JitCallAbs(&StrPrintJoin);
+  if (fmt_abs) {
+    if (nva)
+      JitI(0, 2, 2, nva * 8);
+  } else
+    JitI(0, 2, 2, (nva + 1) * 8);
+}
 // Forward decls
 U0 JitGenExpr();
 U0 JitGenStmt();
@@ -604,10 +641,72 @@ U8 *JitEmitStr()
   *d = 0;
   return p;
 }
+// Fun-body / expr Print(fmt,…) — same HolyC ABI as toplevel JitCallPrintJoin.
+U0 JitGenPrintCall()
+{
+  U8 *strp;
+  I64 nva;
+  JitNeed('(');
+  JitSkip();
+  if (*jit_src == ')') {
+    jit_src++;
+    return;
+  }
+  // Print("lit"); → PutS; Print("fmt",…) → StrPrintJoin
+  if (*jit_src == '"') {
+    strp = JitEmitStr();
+    if (!strp) {
+      jit_err = 1;
+      return;
+    }
+    JitSkip();
+    if (*jit_src == ')') {
+      jit_src++;
+      JitAbs(10, strp);
+      JitCallAbs(&PutS);
+      return;
+    }
+    if (*jit_src != ',') {
+      jit_err = 1;
+      return;
+    }
+    nva = 0;
+    while (*jit_src == ',' && nva < 16) {
+      jit_src++;
+      JitGenExpr();
+      JitPushA0();
+      nva++;
+      JitSkip();
+    }
+    if (!JitNeed(')'))
+      return;
+    JitCallPrintJoin(strp, nva);
+    return;
+  }
+  // Print(expr, args…) — fmt not a string literal
+  JitGenExpr();
+  JitPushA0();
+  nva = 0;
+  JitSkip();
+  while (*jit_src == ',' && nva < 16) {
+    jit_src++;
+    JitGenExpr();
+    JitPushA0();
+    nva++;
+    JitSkip();
+  }
+  if (!JitNeed(')'))
+    return;
+  JitCallPrintJoin(0, nva);
+}
 
 U0 JitGenCall(I64 fi)
 {
   I64 narg = 0, i;
+  if (JitSeq(jit_funs[fi].name, "Print")) {
+    JitGenPrintCall();
+    return;
+  }
   JitNeed('(');
   JitSkip();
   if (*jit_src != ')') {
@@ -784,7 +883,34 @@ U0 JitGenPrim()
   } else if (gi >= 0) {
     JitAbs(5, jit_globs[gi].addr);
     JitLd(10, 0, 5);
-  } else {
+  } else if (JitSeq(jit_id, "MEM_PLIC"))
+    JitLi(10, MEM_PLIC);
+  else if (JitSeq(jit_id, "MEM_UART"))
+    JitLi(10, MEM_UART);
+  else if (JitSeq(jit_id, "MEM_HEAP"))
+    JitLi(10, MEM_HEAP);
+  else if (JitSeq(jit_id, "MEM_RAM"))
+    JitLi(10, MEM_RAM);
+  else if (JitSeq(jit_id, "MEM_CLINT"))
+    JitLi(10, MEM_CLINT);
+  else if (JitSeq(jit_id, "MEM_FS"))
+    JitLi(10, MEM_FS);
+  else if (JitSeq(jit_id, "MEM_FB"))
+    JitLi(10, MEM_FB);
+  else if (JitSeq(jit_id, "MEM_VIRTIO"))
+    JitLi(10, MEM_VIRTIO);
+  else if (JitSeq(jit_id, "MEM_TEST"))
+    JitLi(10, MEM_TEST);
+  else if (JitSeq(jit_id, "MEM_MTIME"))
+    JitLi(10, MEM_MTIME);
+  else if (JitSeq(jit_id, "MEM_MTIMECMP"))
+    JitLi(10, MEM_MTIMECMP);
+  else if (JitSeq(jit_id, "MEM_FIXED"))
+    JitLi(10, MEM_FIXED);
+  else if (JitSeq(jit_id, "MEM_STACK"))
+    JitLi(10, MEM_STACK);
+  else {
+    // Thin JIT has no #define expansion; AOT macros above are MemMapSelected.
     jit_err = 1;
     return;
   }
@@ -1555,6 +1681,39 @@ U0 JitGenStmt()
     }
   }
   jit_src = save;
+  // "fmt"; or "fmt", args; — TempleOS string statement ⇒ PutS / StrPrintJoin
+  if (*jit_src == '"') {
+    U8 *strp;
+    I64 nva;
+    strp = JitEmitStr();
+    if (!strp) {
+      jit_err = 1;
+      return;
+    }
+    JitSkip();
+    if (*jit_src == ';') {
+      jit_src++;
+      JitAbs(10, strp);
+      JitCallAbs(&PutS);
+      return;
+    }
+    if (*jit_src == ',') {
+      nva = 0;
+      while (*jit_src == ',' && nva < 16) {
+        jit_src++;
+        JitGenExpr();
+        JitPushA0();
+        nva++;
+        JitSkip();
+      }
+      if (!JitNeed(';'))
+        return;
+      JitCallPrintJoin(strp, nva);
+      return;
+    }
+    jit_err = 1;
+    return;
+  }
   // assignment or expression statement
   JitGenAssignOrExpr();
   JitNeed(';');
@@ -1916,26 +2075,179 @@ I64 JitTryOne(U8 *line)
     }
   }
   jit_src = save;
-  // Print("...");
-  if (JitIdent() && JitSeq(jit_id, "Print")) {
+  // "fmt"; or "fmt", args; — TempleOS string statement ⇒ PutS / StrPrintJoin
+  if (*jit_src == '"') {
     U8 *strp;
-    if (!JitNeed('('))
-      return -1;
+    I64 nva;
     strp = JitEmitStr();
-    if (!strp || !JitNeed(')'))
+    if (!strp)
       return -1;
     JitSkip();
-    if (*jit_src == ';')
+    if (*jit_src == ';' || !*jit_src) {
+      if (*jit_src == ';')
+        jit_src++;
+      tramp = jit_at;
+      jit_argc = 0;
+      JitPrologue();
+      JitAbs(10, strp);
+      JitCallAbs(&PutS);
+      JitEpilogue();
+      JitFenceI;
+      JitCallEntry(tramp);
+      return 1;
+    }
+    if (*jit_src == ',') {
+      tramp = jit_at;
+      jit_argc = 0;
+      jit_pargc = 0;
+      jit_local_n = 0;
+      jit_next_local = 0;
+      JitPrologue();
+      nva = 0;
+      while (*jit_src == ',' && nva < 16) {
+        jit_src++;
+        JitGenExpr();
+        if (jit_err) {
+          UartStr("JIT: Print arg error\n");
+          return -1;
+        }
+        JitPushA0();
+        nva++;
+        JitSkip();
+      }
+      JitSkip();
+      if (*jit_src == ';')
+        jit_src++;
+      JitCallPrintJoin(strp, nva);
+      JitEpilogue();
+      JitFenceI;
+      if (jit_err) {
+        UartStr("JIT: Print error\n");
+        return -1;
+      }
+      JitCallEntry(tramp);
+      return 1;
+    }
+    UartStr("JIT: bad string statement\n");
+    return -1;
+  }
+  jit_src = save;
+  // Print("..."); or Print("fmt", args...) — HolyC varargs ABI via StrPrintJoin
+  if (JitIdent() && JitSeq(jit_id, "Print")) {
+    U8 *strp;
+    I64 nva;
+    JitSkip();
+    if (*jit_src != '(') {
+      jit_src = save;
+      // fall through — bare Print; etc.
+    } else {
       jit_src++;
-    tramp = jit_at;
-    jit_argc = 0;
-    JitPrologue();
-    JitAbs(10, strp);
-    JitCallAbs(&PutS);
-    JitEpilogue();
-    JitFenceI;
-    JitCallEntry(tramp);
-    return 1;
+      JitSkip();
+      // Print("lit"); → PutS; Print("fmt",…) / Print(expr,…) → StrPrintJoin
+      if (*jit_src == '"') {
+        strp = JitEmitStr();
+        if (!strp) {
+          UartStr("JIT: Print string error\n");
+          return -1;
+        }
+        JitSkip();
+        if (*jit_src == ')') {
+          jit_src++;
+          JitSkip();
+          if (*jit_src == ';')
+            jit_src++;
+          tramp = jit_at;
+          jit_argc = 0;
+          JitPrologue();
+          JitAbs(10, strp);
+          JitCallAbs(&PutS);
+          JitEpilogue();
+          JitFenceI;
+          JitCallEntry(tramp);
+          return 1;
+        }
+        if (*jit_src != ',') {
+          UartStr("JIT: Print parse error\n");
+          return -1;
+        }
+        tramp = jit_at;
+        jit_argc = 0;
+        jit_pargc = 0;
+        jit_local_n = 0;
+        jit_next_local = 0;
+        JitPrologue();
+        nva = 0;
+        while (*jit_src == ',' && nva < 16) {
+          jit_src++;
+          JitGenExpr();
+          if (jit_err) {
+            UartStr("JIT: Print arg error\n");
+            return -1;
+          }
+          JitPushA0();
+          nva++;
+          JitSkip();
+        }
+        if (!JitNeed(')')) {
+          UartStr("JIT: Print parse error\n");
+          return -1;
+        }
+        JitSkip();
+        if (*jit_src == ';')
+          jit_src++;
+        JitCallPrintJoin(strp, nva);
+        JitEpilogue();
+        JitFenceI;
+        if (jit_err) {
+          UartStr("JIT: Print error\n");
+          return -1;
+        }
+        JitCallEntry(tramp);
+        return 1;
+      }
+      // Print(expr, args…) — fmt not a string literal
+      tramp = jit_at;
+      jit_argc = 0;
+      jit_pargc = 0;
+      jit_local_n = 0;
+      jit_next_local = 0;
+      JitPrologue();
+      JitGenExpr();
+      if (jit_err) {
+        UartStr("JIT: Print arg error\n");
+        return -1;
+      }
+      JitPushA0();
+      nva = 0;
+      JitSkip();
+      while (*jit_src == ',' && nva < 16) {
+        jit_src++;
+        JitGenExpr();
+        if (jit_err) {
+          UartStr("JIT: Print arg error\n");
+          return -1;
+        }
+        JitPushA0();
+        nva++;
+        JitSkip();
+      }
+      if (!JitNeed(')')) {
+        UartStr("JIT: Print parse error\n");
+        return -1;
+      }
+      JitSkip();
+      if (*jit_src == ';')
+        jit_src++;
+      JitCallPrintJoin(0, nva);
+      JitEpilogue();
+      JitFenceI;
+      if (jit_err) {
+        UartStr("JIT: Print error\n");
+        return -1;
+      }
+      JitCallEntry(tramp);
+      return 1;
+    }
   }
   jit_src = save;
   // Name(args);  or expr;

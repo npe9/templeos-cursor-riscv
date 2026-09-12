@@ -1629,6 +1629,9 @@ public class CAutoCompleteDictGlbls
 #define ICF_DEL_PREV_INS		0x040000000
 #define ICF_PREV_DELETED		0x080000000
 #define ICF_DONT_RESTORE		0x100000000
+// RV port: marks the argc IMM that PrsFunCall pushes ahead of the vararg VALUES, so the
+// RISC-V backend knows the next ABI slot is argv and must be a POINTER to that stack slot.
+#define ICF_RV_VA_ARGC			0x200000000
 #define ICG_NO_CVT_MASK			0x1FFFFFF00
 
 #define IC_BODY_SIZE			0x83
@@ -2666,7 +2669,8 @@ public class CBlkDev
 #define FSt_ISO9660	3 //Not Supported
 #define FSt_NTFS	4 //Not Supported
 #define FSt_UNKNOWN	5
-#define FSt_TYPES_NUM	6
+#define FSt_9P		6 //RV: virtfs/9P soft letter P: (Virtio9p)
+#define FSt_TYPES_NUM	7
 #define FSG_TYPE_MASK	0x7FFF
 //File system type flags
 #define FStf_DISABLE	15

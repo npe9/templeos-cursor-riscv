@@ -534,7 +534,7 @@ U0 PrsFor(CCmpCtrl *cc,I64 try_cnt)
   if (cc->token!='(')
     LexExcept(cc,"Expecting '(' at ");
   Lex(cc);
-  PrsStmt(cc,try_cnt);
+  PrsStmt(cc,try_cnt,NULL,CMPF_PRS_SEMICOLON|CMPF_ONE_STMT);
 
   lb=COCMiscNew(cc,CMT_LABEL);
   ICAdd(cc,IC_LABEL,lb,0);
@@ -945,7 +945,10 @@ Bool PrsStmt(CCmpCtrl *cc,I64 try_cnt=0,
 		start:
 		  case KW_ASM:
 		    if (cc->htc.fun) {
-		      if (tmpaot=CmpJoin(cc,CMPF_ASM_BLK))
+		      // CMPF_LEX_FIRST for the same reason as the top-level arm below: PrsKeyWord
+		      // classifies but does not consume, so cc->token is still `asm` here and
+		      // PrsAsmBlk answered "Expecting '{' at asm".
+		      if (tmpaot=CmpJoin(cc,CMPF_ASM_BLK|CMPF_LEX_FIRST))
 			ICAdd(cc,IC_ASM,tmpaot,0);
 		      Lex(cc); //Skip '}' of asm{}
 		    } else {
@@ -955,7 +958,11 @@ Bool PrsStmt(CCmpCtrl *cc,I64 try_cnt=0,
 			if (cc->flags&CCF_AOT_COMPILE && cc->aot_depth==1)
 			  Lex(cc); //Skip '}' of asm{}
 		      } else {
-			if (tmpaot=CmpJoin(cc,CMPF_ASM_BLK)) {
+			// CMPF_LEX_FIRST: PrsKeyWord only CLASSIFIES, it does not consume, so
+			// cc->token is still `asm` here (TK_IDENT). Without this CmpJoin re-enters
+			// PrsStmt on the same token, hits KW_ASM again and recurses until the
+			// stack dies — measured as PrsStmt never returning and never throwing.
+			if (tmpaot=CmpJoin(cc,CMPF_ASM_BLK|CMPF_LEX_FIRST|CMPF_ASM_CALLED)) {
 			  CmpFixUpJITAsm(cc,tmpaot);
 #ifdef CMP_RV_ASM
 			  // Unlabeled top-level asm{}: run the blob (host REPL parity).
@@ -1175,6 +1182,9 @@ sm_not_keyword_afterall:
 		  Lex(cc);
 		  PrsGlblVarLst(cc,PRS0_NULL|PRS1_NULL,tmpex,0,fsp_flags);
 		}
+		// RV: a for-init declaration must not fall through to the while(TRUE) below —
+		// stock PrsStmt loops here and swallows the loop condition.
+		if (cmp_flags&CMPF_ONE_STMT) return fsp_flags&FSF_ASM;
 	      } else {
 		if (tmpex->type & (HTT_OPCODE|HTT_ASM_KEYWORD)) {
 		  if (cc->htc.fun) {

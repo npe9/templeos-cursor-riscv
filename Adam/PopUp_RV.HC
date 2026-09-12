@@ -512,4 +512,80 @@ Bool RVPopUpClick(I64 cx, I64 cy)
   RVPopUpResolve(0);
   return TRUE;
 }
+
+I64 RVPopUpCRVSoft()
+{
+  // Soft Call: product RVPopUpOk → CRVWin chrome (beyond I64 RVPopUpLite).
+  // UART / no interactive FB: LiteInit+DocTermNew if needed; Resolve(1) without input.
+  I64 idx, hits0, n0;
+  CRVWin *w;
+  if (!rv_winmgr.ready) {
+    if (!RVWinMgrLiteInit())
+      return 3;
+    DocTermNew;
+    idx = rv_winmgr.term_idx;
+    if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+      return 4;
+  }
+  hits0 = rv_popup_hits;
+  n0 = rv_winmgr.n_wins;
+  if (!RVPopUpOk("SoftCRV"))
+    return 5;
+  if (rv_popup_mode != RV_POPUP_OK)
+    return 6;
+  idx = rv_popup_idx;
+  if (idx < 0 || idx >= RV_WIN_MAX)
+    return 7;
+  w = &rv_winmgr.wins[idx];
+  if (!w->used || !w->show)
+    return 9;
+  if (StrCmp(w->title, "PopUp"))
+    return 10;
+  if (rv_popup_hits <= hits0)
+    return 11;
+  if (rv_winmgr.n_wins <= n0)
+    return 12;
+  if (!RVPopUpResolve(1))
+    return 13;
+  if (rv_popup_mode != RV_POPUP_NONE || rv_popup_idx >= 0)
+    return 14;
+  if (w->used || w->show)
+    return 15;
+  if (rv_popup_result != 1)
+    return 16;
+  return 8;
+}
+
+I64 RVStartOSSoft()
+{
+  // StartOS-shaped Soft Call (UART / no interactive FB):
+  //   DocTermNew → WallPaper stub → WinMgr Spawn → PopUp CRV
+  // TempleOS StartOS: MakeAdam; DocTermNew; Spawn(WinMgrTask); WallPaperInit; …
+  // Composes green Softs; not full MakeAdam / FB / P6 Done.
+  I64 r, idx;
+  CRVWin *w;
+  if (!rv_winmgr.ready) {
+    if (!RVWinMgrLiteInit())
+      return 3;
+  }
+  DocTermNew;
+  idx = rv_winmgr.term_idx;
+  if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+    return 4;
+  w = &rv_winmgr.wins[idx];
+  if (StrCmp(w->title, "Term"))
+    return 5;
+  RVWinSetWallpaper("SoftStartOS");
+  if (StrCmp(rv_winmgr.wallpaper_line, "SoftStartOS"))
+    return 6;
+  r = RVWinMgrSpawnSoft();
+  if (r != 8)
+    return 17;
+  r = RVPopUpCRVSoft();
+  if (r != 8)
+    return 18;
+  if (rv_winmgr.term_idx < 0 || !rv_winmgr.wins[rv_winmgr.term_idx].used)
+    return 19;
+  return 8;
+}
 #endif

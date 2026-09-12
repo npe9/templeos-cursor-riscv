@@ -1,3 +1,4 @@
+#ifndef RV_THIN_LOADER
 U8 *Tabs2Spaces(U8 *src)
 {//MAlloc str with tabs to spaces.
   I64 ch,i,j,l=StrLen(src)<<1+2,col=0;
@@ -83,6 +84,7 @@ U0 GetOutOfDollar()
       '$$';
   }
 }
+#endif
 
 Bool YorN()
 {//Wait for user to answer Y or N.
@@ -120,6 +122,7 @@ U0 Help()
     PopUp("Type(\"::/Doc/HelpIndex.DD\");DocTop;View;");
 }
 
+#ifndef RV_THIN_LOADER
 U0 ScanFlags(U8 *_dst_flags,U8 *lst,U8 *src)
 {/*More than 64 flags. Flags passed by ref.
 
@@ -185,3 +188,4 @@ U8 *StrPrintFlags(U8 *dst,U8 *lst,I64 flags)
   }
   return dst;
 }
+#endif

@@ -1,41 +1,47 @@
-Bool CFileNameTo(U8 *dst,U8 *src)
+Bool CFileNameTo(U8 *dst, U8 *src)
 {
-  MemSet(dst,0,CDIR_FILENAME_LEN);
+  MemSet(dst, 0, CDIR_FILENAME_LEN);
   if (!FileNameChk(src))
     return FALSE;
-  StrCpy(dst,src);
+  StrCpy(dst, src);
   return TRUE;
 }
 
-I64 Name2DirClus(CDrv *dv,U8 *dirname)
+I64 Name2DirClus(CDrv *dv, U8 *dirname)
 {
-  Bool cont=TRUE,unlock;
+  Bool cont = TRUE, unlock;
   I64 cur_dir_clus;
   CDirEntry de;
-  U8 *buf=StrNew(dirname),*buf2=StrNew(dirname);
+  U8 *buf = StrNew(dirname), *buf2 = StrNew(dirname);
   DrvChk(dv);
+  // Soft 9P: no RedSea clus / DrvLock — Cd validates via Virtio9pDirExists.
+  if (dv->fs_type == FSt_9P) {
+    Free(buf);
+    Free(buf2);
+    return dv->root_clus;
+  }
   try {
-    unlock=DrvLock(dv);
-    cur_dir_clus=dv->root_clus;
+    unlock = DrvLock(dv);
+    cur_dir_clus = dv->root_clus;
     while (*buf && cont) {
-      StrFirstRem(buf,"/",buf2);
+      StrFirstRem(buf, "/", buf2);
       if (*buf2) {
-	switch (dv->fs_type) {
-	  case FSt_REDSEA:
-	    cont=RedSeaFileFind(dv,cur_dir_clus,buf2,&de,FUF_JUST_DIRS);
-	    break;
-	  case FSt_FAT32:
-	    cont=FAT32FileFind(dv,cur_dir_clus,buf2,&de,FUF_JUST_DIRS);
-	    break;
-	  default:
-	    throw('Drv');
-	}
-	cur_dir_clus=de.clus;
+        switch (dv->fs_type) {
+          case FSt_REDSEA :
+          cont = RedSeaFileFind(dv, cur_dir_clus, buf2, &de, FUF_JUST_DIRS);
+          break;
+          case FSt_FAT32 :
+          cont = FAT32FileFind(dv, cur_dir_clus, buf2, &de, FUF_JUST_DIRS);
+          break;
+          default:
+          throw('Drv');
+        }
+        cur_dir_clus = de.clus;
       }
     }
     if (!cont) {
-      PrintErr("File not found: \"%s\".\n",dirname);
-      cur_dir_clus=0;
+      PrintErr("File not found: \"%s\".\n", dirname);
+      cur_dir_clus = 0;
     }
     if (unlock)
       DrvUnlock(dv);
@@ -47,36 +53,41 @@ I64 Name2DirClus(CDrv *dv,U8 *dirname)
   return cur_dir_clus;
 }
 
-I64 Name2ParentDirClus(CDrv *dv,U8 *dirname)
+I64 Name2ParentDirClus(CDrv *dv, U8 *dirname)
 {
-  Bool cont=TRUE,unlock;
-  I64 cur_dir_clus,cur_dir_clus2;
+  Bool cont = TRUE, unlock;
+  I64 cur_dir_clus, cur_dir_clus2;
   CDirEntry de;
-  U8 *buf=StrNew(dirname),*buf2=StrNew(dirname);
+  U8 *buf = StrNew(dirname), *buf2 = StrNew(dirname);
   DrvChk(dv);
+  if (dv->fs_type == FSt_9P) {
+    Free(buf);
+    Free(buf2);
+    return dv->root_clus;
+  }
   try {
-    unlock=DrvLock(dv);
-    cur_dir_clus=cur_dir_clus2=dv->root_clus;
+    unlock = DrvLock(dv);
+    cur_dir_clus = cur_dir_clus2 = dv->root_clus;
     while (*buf && cont) {
-      cur_dir_clus2=cur_dir_clus;
-      StrFirstRem(buf,"/",buf2);
+      cur_dir_clus2 = cur_dir_clus;
+      StrFirstRem(buf, "/", buf2);
       if (*buf2) {
-	switch (dv->fs_type) {
-	  case FSt_REDSEA:
-	    cont=RedSeaFileFind(dv,cur_dir_clus,buf2,&de,FUF_JUST_DIRS);
-	    break;
-	  case FSt_FAT32:
-	    cont=FAT32FileFind(dv,cur_dir_clus,buf2,&de,FUF_JUST_DIRS);
-	    break;
-	  default:
-	    throw('Drv');
-	}
-	cur_dir_clus=de.clus;
+        switch (dv->fs_type) {
+          case FSt_REDSEA :
+          cont = RedSeaFileFind(dv, cur_dir_clus, buf2, &de, FUF_JUST_DIRS);
+          break;
+          case FSt_FAT32 :
+          cont = FAT32FileFind(dv, cur_dir_clus, buf2, &de, FUF_JUST_DIRS);
+          break;
+          default:
+          throw('Drv');
+        }
+        cur_dir_clus = de.clus;
       }
     }
     if (!cont) {
-      PrintErr("File not found: \"%s\".\n",dirname);
-      cur_dir_clus2=0;
+      PrintErr("File not found: \"%s\".\n", dirname);
+      cur_dir_clus2 = 0;
     }
     if (unlock)
       DrvUnlock(dv);

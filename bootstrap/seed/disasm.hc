@@ -1389,3 +1389,82 @@ U0 Disasm(U8 *name)
 {
   Uf(name);
 }
+// DisAsmNamesInit -- fill RN/FRN when the braced lists above never ran.
+// NAME
+//   DisAsmNamesInit - populate the ABI register-name tables
+// SYNOPSIS
+//   U0 DisAsmNamesInit();
+// DESCRIPTION
+//   `U8 *RN[32] = {…}` is a file-scope store, not baked data, so a path that
+//   skips top-level statements leaves it zeroed and every register disassembles
+//   as "(null)". Nothing needs this on the AOT or JIT/blob paths any more —
+//   keep it for a guest that loads only this file. Re-storing is harmless.
+// SEE ALSO
+//   U  Uf  UA  Disasm
+U0 DisAsmNamesInit()
+{
+  RN[0] = "zero";
+  RN[1] = "ra";
+  RN[2] = "sp";
+  RN[3] = "gp";
+  RN[4] = "tp";
+  RN[5] = "t0";
+  RN[6] = "t1";
+  RN[7] = "t2";
+  RN[8] = "s0";
+  RN[9] = "s1";
+  RN[10] = "a0";
+  RN[11] = "a1";
+  RN[12] = "a2";
+  RN[13] = "a3";
+  RN[14] = "a4";
+  RN[15] = "a5";
+  RN[16] = "a6";
+  RN[17] = "a7";
+  RN[18] = "s2";
+  RN[19] = "s3";
+  RN[20] = "s4";
+  RN[21] = "s5";
+  RN[22] = "s6";
+  RN[23] = "s7";
+  RN[24] = "s8";
+  RN[25] = "s9";
+  RN[26] = "s10";
+  RN[27] = "s11";
+  RN[28] = "t3";
+  RN[29] = "t4";
+  RN[30] = "t5";
+  RN[31] = "t6";
+  FRN[0] = "ft0";
+  FRN[1] = "ft1";
+  FRN[2] = "ft2";
+  FRN[3] = "ft3";
+  FRN[4] = "ft4";
+  FRN[5] = "ft5";
+  FRN[6] = "ft6";
+  FRN[7] = "ft7";
+  FRN[8] = "fs0";
+  FRN[9] = "fs1";
+  FRN[10] = "fa0";
+  FRN[11] = "fa1";
+  FRN[12] = "fa2";
+  FRN[13] = "fa3";
+  FRN[14] = "fa4";
+  FRN[15] = "fa5";
+  FRN[16] = "fa6";
+  FRN[17] = "fa7";
+  FRN[18] = "fs2";
+  FRN[19] = "fs3";
+  FRN[20] = "fs4";
+  FRN[21] = "fs5";
+  FRN[22] = "fs6";
+  FRN[23] = "fs7";
+  FRN[24] = "fs8";
+  FRN[25] = "fs9";
+  FRN[26] = "fs10";
+  FRN[27] = "fs11";
+  FRN[28] = "ft8";
+  FRN[29] = "ft9";
+  FRN[30] = "ft10";
+  FRN[31] = "ft11";
+}

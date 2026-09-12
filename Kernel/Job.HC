@@ -266,10 +266,13 @@ U0 Msg(I64 msg_code,I64 arg1,I64 arg2,I64 flags=0)
 #define JOB_CONT	1
 #define JOB_EXIT	2
 
+extern U0 RVAotLibSync(I64 fs,I64 gs);
+extern U0 RVCmpWireAsmHash();
+
 I64 JobRunOne(I64 run_flags,CJobCtrl *ctrl)
 {//Called with ctrl->flags,JOBCf_LOCKED.
   CJob *tmpc=ctrl->next_waiting;
-  CTask   *master;
+  CTask   *master,*parent;
   I64 res,flags=tmpc->flags,old_flags=GetRFlags;
   if (Bt(&flags,JOBf_EXIT_ON_COMPLETE))
     res=JOB_EXIT;
@@ -305,9 +308,21 @@ I64 JobRunOne(I64 run_flags,CJobCtrl *ctrl)
       LBtr(&ctrl->flags,JOBCf_LOCKED);
       SetRFlags(run_flags);
       LBtr(&Fs->task_flags,TASKf_IDLE);
-      try
-	      tmpc->res=ExePrint("%s",tmpc->aux_str);
-      catch
+      try {
+	// RVCmpWireAsmHash preserves servant→parent (does not sever ExePubs).
+	RVAotLibSync(Fs,Gs);
+	RVCmpWireAsmHash;
+	// Inherit parent drv/dir like FileMgrPopUpSrv — else DirCur→Drv2Let faults.
+	parent=Fs->parent_task;
+	if (TaskValidate(parent) && parent->cur_dv) {
+	  Fs->cur_dv=parent->cur_dv;
+	  if (parent->cur_dir) {
+	    Free(Fs->cur_dir);
+	    Fs->cur_dir=StrNew(parent->cur_dir,Fs);
+	  }
+	}
+	tmpc->res=ExePrint("%s",tmpc->aux_str);
+      } catch
 	Fs->catch_except=TRUE;
       SetRFlags(old_flags);
       break;
@@ -349,23 +364,29 @@ I64 JobRunOne(I64 run_flags,CJobCtrl *ctrl)
 I64 JobsHndlr(I64 run_flags,CTask *task=NULL)
 {//Handle all waiting cmds and return.
   I64 cnt=0,old_flags=GetRFlags;
+  CJob *tmpc;
   if (!task) task=Fs;
   while (TRUE) {
     CLI
     while (LBts(&task->srv_ctrl.flags,JOBCf_LOCKED))
       PAUSE
-    if (task->srv_ctrl.next_waiting!=&task->srv_ctrl)
-      switch (JobRunOne(run_flags,&task->srv_ctrl)) {
-	case JOB_CONT:
-	  cnt++;
-	  break;
-	case JOB_EXIT:
-	  Exit;
-	case JOB_DONE:
-	  goto jh_done;
-      }
-    else
+    tmpc=task->srv_ctrl.next_waiting;
+    if (tmpc==&task->srv_ctrl)
       goto jh_done;
+    // JOBT_MSG belongs to ScanMsg/GetMsg. JobRunOne returns JOB_DONE for MSG;
+    // on RV, entering that path on a fresh RVKSpawn/PopUp servant has faulted
+    // mepc=0 — leave MSG queued and return so ScanMsg can drain it.
+    if (tmpc->job_code==JOBT_MSG)
+      goto jh_done;
+    switch (JobRunOne(run_flags,&task->srv_ctrl)) {
+      case JOB_CONT:
+	cnt++;
+	break;
+      case JOB_EXIT:
+	Exit;
+      case JOB_DONE:
+	goto jh_done;
+    }
   }
 jh_done:
   LBtr(&task->srv_ctrl.flags,JOBCf_LOCKED);
@@ -390,7 +411,9 @@ I64 PopUp(U8 *buf,CTask *parent=NULL,CTask **_pu_task=NULL)
     // Kill(wait=TRUE) hangs: HolyYield skips KILL_TASK but never TaskEnd.
     tmpc=TaskExe(task,parent,buf,1<<JOBf_WAKE_MASTER|1<<JOBf_FOCUS_MASTER);
     if (_pu_task) *_pu_task=task;
-    JobResScan(tmpc,&res);
+    // JobResScan alone returns res=0 if parent woke before JOBf_DONE (long
+    // FileMgr JIT). Stock waits: JobResGet until DONE then scan.
+    res=JobResGet(tmpc);
     Fs->popup_task=NULL;
     Kill(task,FALSE);
     // Soft-reap like RVWinTaskSoftKill: drop locks, unlink, invalidate.

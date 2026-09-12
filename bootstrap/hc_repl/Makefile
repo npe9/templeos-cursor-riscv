@@ -25,7 +25,8 @@ seed_embed.hc: gen_embed.py uart.hc fs.hc dir.hc eval.hc repl.hc jit.hc exepubs.
                ../seed/files.hc ../seed/boot.hc ../seed/tutorial.hc \
                ../seed/man.hc ../seed/man_topics.hc ../seed/funs.hc \
                ../seed/term.hc ../seed/ed.hc ../seed/edit.hc ../seed/vim.hc \
-               ../seed/RVEditorSelected.hc ../seed/trap.hc \
+               ../seed/RVEditorSelected.hc ../seed/trap.hc ../seed/soft_let.hc \
+               ../seed/home_wrappers.hc ../seed/disasm.hc ../seed/ninep.hc ../seed/gdbstub.hc \
                ../seed/csr.hc ../seed/debug.hc ../seed/crash.hc ../seed/callers.hc ../seed/dbg_jit_sym.hc
 	python3 gen_embed.py
 
@@ -35,6 +36,8 @@ $(BUILD)/hc_repl.blob.bin: repl.hc seed_embed.hc uart.hc fs.hc dir.hc eval.hc ji
                            ../seed/files.hc ../seed/man.hc ../seed/term.hc ../seed/ed.hc \
                            ../seed/edit.hc ../seed/vim.hc ../seed/RVEditorSelected.hc \
                            ../seed/trap.hc ../seed/MemMapSelected.hc ../seed/sys.hc \
+                           ../seed/soft_let.hc ../seed/home_wrappers.hc ../seed/disasm.hc \
+                           ../seed/ninep.hc ../seed/gdbstub.hc \
                            ../seed/csr.hc ../seed/debug.hc ../seed/crash.hc \
                            ../seed/callers.hc ../seed/dbg_jit_sym.hc patch_imports.py
 	@mkdir -p $(BUILD)
