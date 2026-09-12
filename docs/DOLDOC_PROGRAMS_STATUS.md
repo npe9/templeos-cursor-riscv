@@ -108,7 +108,9 @@ ergonomic: `RVExePubCDirEntryLiteIn` (`Compiler/RVExePubs.HC`) plants a lite `CD
 class — members `next`, `full_name`, `name`, `size`, `attr` at their real `offset()`s,
 inserted with `RVExePubMemberPlant` (which matches `MemberFind`'s BST). Same pattern as
 the existing `CTaskLite`/`CDolDocGlblsLite` classes; wired into both class-planting
-sites (`cmp.asm_hash` and `Fs->hash_table`).
+sites (`cmp.asm_hash` and `Fs->hash_table`). `CDateStruct` is planted the same way
+(value type — its `size` lets `CDateStruct ds;` reserve the stack slot), so
+`Date2Struct(&ds,Now); ds.hour/ds.min/ds.sec/ds.year` works (verified `19:47:14 yr=2026`).
 
 Verified end-to-end — the stock file-iteration idiom runs from the REPL:
 `d0=de=FilesFind("A:/*"); while (de) { n++; de=de->next; }` counts entries and

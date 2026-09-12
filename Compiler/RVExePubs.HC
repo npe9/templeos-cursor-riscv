@@ -287,6 +287,57 @@ CHashClass *RVExePubCDolDocGlblsLiteIn(CHashTable *table)
   return tmpc;
 }
 
+CHashClass *RVExePubCDateStructLiteIn(CHashTable *table)
+{
+  // Lite CDateStruct so Date2Struct(&ds,dt) output is usable (ds.hour/min/sec/...).
+  // Value type: size must be right so `CDateStruct ds;` reserves the stack slot.
+  CHashClass *tmpc, *u8t, *i32t;
+  CMemberLst *m;
+  I64 i;
+  U8 *names[6];
+  I64 offs[6];
+  if (!table || !cmp.internal_types)
+    return NULL;
+  tmpc = HashFind("CDateStruct", table, HTT_CLASS);
+  if (tmpc && MemberFind("hour", tmpc) && MemberFind("year", tmpc))
+    return tmpc;
+  u8t = cmp.internal_types[RT_U8];
+  i32t = cmp.internal_types[RT_I32];
+  if (!tmpc) {
+    tmpc = PrsClassNew;
+    tmpc->str = StrNew("CDateStruct");
+    tmpc->size = sizeof(CDateStruct);
+    tmpc->raw_type = RT_I64;
+  }
+  names[0] = "sec";         offs[0] = offset(CDateStruct.sec);
+  names[1] = "min";         offs[1] = offset(CDateStruct.min);
+  names[2] = "hour";        offs[2] = offset(CDateStruct.hour);
+  names[3] = "day_of_week"; offs[3] = offset(CDateStruct.day_of_week);
+  names[4] = "day_of_mon";  offs[4] = offset(CDateStruct.day_of_mon);
+  names[5] = "mon";         offs[5] = offset(CDateStruct.mon);
+  for (i = 0; i < 6; i++) {
+    if (MemberFind(names[i], tmpc))
+      continue;
+    m = MemberLstNew(REG_NONE);
+    m->str = StrNew(names[i]);
+    m->offset = offs[i];
+    m->size = 1;
+    m->member_class = u8t;
+    RVExePubMemberPlant(tmpc, m);
+  }
+  if (!MemberFind("year", tmpc)) {
+    m = MemberLstNew(REG_NONE);
+    m->str = StrNew("year");
+    m->offset = offset(CDateStruct.year);
+    m->size = 4;
+    m->member_class = i32t;
+    RVExePubMemberPlant(tmpc, m);
+  }
+  if (!HashFind("CDateStruct", table, HTT_CLASS))
+    HashAdd(tmpc, table);
+  return tmpc;
+}
+
 CHashClass *RVExePubCDirEntryLiteIn(CHashTable *table)
 {
   // Lite CDirEntry so FilesFind()'s result is usable: `while (de) { ...de->full_name;
@@ -544,6 +595,7 @@ I64 RVExePubsWireAddrs(I64 *addrs)
   u8p = cmp.internal_types[RT_U8] + 1;
   n += RVExePubInternFsGs;
   RVExePubCDirEntryLiteIn(Fs->hash_table);
+  RVExePubCDateStructLiteIn(Fs->hash_table);
   n += RVExePubInternsIn(Fs->hash_table);
   // Compiler-unit debug entry points (local addresses): PassTrace dumps ICs per pass.
   if (!HashFind("PassTrace", Fs->hash_table, HTT_FUN)) {
@@ -970,6 +1022,7 @@ U0 RVCmpWireAsmHash()
     RVExePubInternFsGsIn(cmp.asm_hash);
     RVExePubInternDolDocIn(cmp.asm_hash);
     RVExePubCDirEntryLiteIn(cmp.asm_hash);
+    RVExePubCDateStructLiteIn(cmp.asm_hash);
     RVExePubInternsIn(cmp.asm_hash);
   }
   if (!Fs || !Fs->hash_table || !cmp.asm_hash)
