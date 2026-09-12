@@ -8,13 +8,19 @@ DolDoc source lexer stores a single `$`), `FileWrite`-ing it, then rendering via
 
 ## DolDoc files — WORKING
 
-Five stock `tos/Doc/*.DD` files (God, Date, Start, Que, CompilerOverview) seeded
-and read back **byte-exact** (read == original size for all five), then `Cat`'d:
-the `$FG`/`$LK`/`$ID` markup is **interpreted, not printed literally** (0 literal
-`$LK`, prose renders — e.g. Que.DD shows "A Queue is a bunch of MAlloc()ed chunks
-of mem linked together in a circle"). The stock `.DD` files in this tree are pure
-text with no trailing `CDocBin` blob, so `DocLoad` only parses the `$`-command
-markup, which the DocTerm now lays out and scrolls correctly.
+Stock `tos/Doc/*.DD` files seed into the guest FS and render with markup
+**interpreted, not printed literally**:
+- Five small files (God, Date, Start, Que, CompilerOverview) round-trip byte-exact
+  and render prose with `$FG`/`$LK`/`$ID` consumed (Que.DD shows "A Queue is a bunch
+  of MAlloc()ed chunks of mem linked together in a circle").
+- `DemoIndex.DD` (7194 bytes, a **tree/link index**) round-trips byte-exact and
+  renders with 0 literal `$TR` and 0 literal `$LK` — trees and links are parsed into
+  doc entries (DocLoad reported 24 entries), no fault.
+
+`RVDoc.HC` implements the rich commands too (TREE, BTTN, INVERT, super/subscript,
+underline, blink). The stock `.DD` files in this tree are pure text with no trailing
+`CDocBin` blob, so `DocLoad` only parses the `$`-command markup, which the DocTerm
+now lays out and scrolls correctly.
 
 ## Programs — PARTIAL
 
@@ -23,7 +29,10 @@ Run through the guest compiler (`RVWinSerialHolyC` → `ExePutS`, whole-buffer):
 | Program | Result |
 |---------|--------|
 | `Demo/ForLoop.HC` | CORRECT — `for sum 0..4 = 10`, `for (;i<4;i++) sum = 6`; C-style and empty-init for loops, string-statement `"fmt",args;` Print all work |
-| `Demo/NullCase.HC` | CORRECT (after the RV `IC_SWITCH` fix below) — prints Zero/One/Two/Three/Ten/Eleven, each once |
+| `Demo/NullCase.HC` | CORRECT (after the RV `IC_SWITCH` fix below) — Zero/One/Two/Three/Ten/Eleven, each once |
+| `Demo/SubSwitch.HC` | CORRECT — `Zero [One] Two [Three] Four [Five]`; sub-switch `start:`/`end:` blocks (IC_SUB_CALL) work |
+| `Demo/Directives.HC` | FAILS — `__DATE__`/`__TIME__`/`__FILE__`/`__LINE__` are not lexed in the guest ("Invalid lval at __DATE__"); the guest handles only `__DIR__`. Niche compiler-directive gap |
+| `Demo/Templates/Registry1.HC` | FAILS — `RegDft` is a missing runtime function (registry not ported); a runtime gap, not a compiler bug |
 
 ### FIXED: guest `switch` dispatch (was stubbed in the RV backend)
 
