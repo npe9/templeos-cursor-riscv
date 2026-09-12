@@ -200,6 +200,7 @@ kernel_cfg = KCfgNew;
 #include "/Adam/ASnd_RV"    // Soft music/Play/SndTaskEndCB for Apps SongTask (Span)
 #include "/Adam/ABlkDev/FileMgr_RV" // FMRebuildDocDrv + soft shims; RVFileMgrOpen in RVWinMgr
 #include "RVWinSerial" // UART TTY + crash mon beside WinMgr (after rv_winmgr glbls)
+#include "RVDisasm"   // Disasm/U/UA/DisasmAt — seed disasm.hc port over the task hash
 #include "RVTextBase" // TextChar/TextPrint portable (DocRecalc / draw_it)
 #include "RVPhase3.HH"  // phase-3 forward decls (bodies after Compiler_RV_Body in phase3 demo)
 #endif

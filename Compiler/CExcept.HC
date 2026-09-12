@@ -186,7 +186,7 @@ U0 ICPut(CCmpCtrl *cc,CIntermediateCode *tmpi)
 {
   I64 opcode=tmpi->ic_code,i;
   if (opcode>=IC_END_EXP && opcode!=IC_NOP2) {
-    "%15ts %016X ",intermediate_code_table[opcode].name,tmpi->ic_data;
+    "%s %016X ",intermediate_code_table[opcode].name,tmpi->ic_data; // RV Print: no %ts / width flags
     if (cc->pass) {
       if (tmpi->res.type.mode) {
 	"$$PURPLE$$RES:$$FG$$";

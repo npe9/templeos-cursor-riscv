@@ -25,6 +25,7 @@ CLexFile *LexFilePop(CCmpCtrl *cc)
   return cc->lex_include_stk;
 }
 
+I64 rv_pass_trace_sticky; // RV: PassTrace() setting applied to every new CCmpCtrl (per-line REPL)
 CCmpCtrl *CmpCtrlNew(U8 *buf=NULL,I64 flags=0,U8 *filename=NULL)
 {//MAlloc and Init CCmpCtrl.
 //Frees buf in $LK,"CmpCtrlDel",A="MN:CmpCtrlDel"$ unless $LK,"CCF_DONT_FREE_BUF",A="MN:CCF_DONT_FREE_BUF"$ flag is set.
@@ -52,6 +53,10 @@ CCmpCtrl *CmpCtrlNew(U8 *buf=NULL,I64 flags=0,U8 *filename=NULL)
     buf=CAlloc(8);
   tmpf->buf=tmpf->buf_ptr=tmpf->line_start=cc->cur_buf_ptr=buf;
   tmpf->line_num=1;
+  if (rv_pass_trace_sticky) {
+    cc->pass_trace=cc->saved_pass_trace=rv_pass_trace_sticky;
+    Bts(&cc->flags,CCf_PASS_TRACE_PRESENT);
+  }
   return cc;
 }
 

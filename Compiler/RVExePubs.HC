@@ -52,8 +52,10 @@ CHashFun *RVExePubFunNew(U8 *name, I64 addr, CHashClass *ret, I64 arg_cnt)
   return tmpf;
 }
 
-U0 RVExePubAddArg(CHashFun *tmpf, U8 *aname, CHashClass *cls, I64 flags = 0)
+U0 RVExePubAddArg(CHashFun *tmpf, U8 *aname, CHashClass *cls, I64 flags = 0, I64 dft_val = 0)
 {
+  // flags may carry MLF_DFT_AVAILABLE: PrsExp then fills a missing arg with dft_val
+  // (stock default-arg mechanism), e.g. FileMgr(FM_PICK_FILE) → mem_task=NULL.
   CMemberLst *tmpm;
   if (!tmpf || !aname || !cls)
     return;
@@ -61,6 +63,7 @@ U0 RVExePubAddArg(CHashFun *tmpf, U8 *aname, CHashClass *cls, I64 flags = 0)
   tmpm->str = StrNew(aname);
   tmpm->member_class = cls;
   tmpm->flags = flags;
+  tmpm->dft_val = dft_val;
   tmpm->size = 8;
   RVExePubMemberLink(tmpf, tmpm);
 }
@@ -473,6 +476,14 @@ I64 RVExePubsWireAddrs(I64 *addrs)
   u8p = cmp.internal_types[RT_U8] + 1;
   n += RVExePubInternFsGs;
   n += RVExePubInternsIn(Fs->hash_table);
+  // Compiler-unit debug entry points (local addresses): PassTrace dumps ICs per pass.
+  if (!HashFind("PassTrace", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("PassTrace", &PassTrace, i64t, 1);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "i", i64t, MLF_DFT_AVAILABLE, 0b10001111101);
+      n++;
+    }
+  }
   if (!HashFind("Print", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Print", addrs[0], cls_u0, 1);
     if (tmpf) {
@@ -540,6 +551,38 @@ I64 RVExePubsWireAddrs(I64 *addrs)
       n++;
     }
   }
+  // Slots 10-13 (win harness): Adam FileMgr/FileNameForm and their zero/one-arg PopUp
+  // runners, so servant ExePutS("Cd(…);FileMgr(FM_PICK_FILE,Fs->parent_task);") and
+  // DocPopUp's FileNameForm(...) resolve. Read only when non-zero (short arrays).
+  if (addrs[10] && !HashFind("FileMgr", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("FileMgr", addrs[10], u8p, 2);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "mode", i64t, MLF_DFT_AVAILABLE, 0);
+      RVExePubAddArg(tmpf, "mem_task", u8p, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
+  if (addrs[11] && !HashFind("DocPopUpPickFileRun", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("DocPopUpPickFileRun", addrs[11], u8p, 1);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "dir", u8p, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
+  if (addrs[12] && !HashFind("FileNameForm", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("FileNameForm", addrs[12], u8p, 3);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "dft", u8p, MLF_DFT_AVAILABLE, 0);
+      RVExePubAddArg(tmpf, "dof_flags", i64t, MLF_DFT_AVAILABLE, 0);
+      RVExePubAddArg(tmpf, "mem_task", u8p, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
+  if (addrs[13] && !HashFind("DocPopUpFileNameRun", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("DocPopUpFileNameRun", addrs[13], u8p, 0);
+    if (tmpf)
+      n++;
+  }
   // Slot 14, and read only when non-zero: callers that pass a shorter array (the
   // monolithic RVExePubsWire below used to pass 10) must not be read out of bounds.
   if (addrs[14] && !HashFind("Cat", Fs->hash_table, HTT_FUN)) {
@@ -548,6 +591,58 @@ I64 RVExePubsWireAddrs(I64 *addrs)
       RVExePubAddArg(tmpf, "name", u8p);
       n++;
     }
+  }
+  return n;
+}
+
+/* Debugger surface for the REPL: Kernel passes &Disasm,&DisasmAt,&U,&UA,&RVDisFnAddr,&RVUf
+ * (8-slot array; zero = not provided). Separate from WireAddrs so short arrays stay safe. */
+I64 RVExePubsWireDbg(I64 *addrs)
+{
+  CHashFun *tmpf;
+  CHashClass *cls_u0, *u8p, *i64t;
+  I64 n = 0;
+  if (!Fs || !Fs->hash_table || !cmp.internal_types || !addrs)
+    return 0;
+  cls_u0 = cmp.internal_types[RT_U0];
+  i64t = cmp.internal_types[RT_I64];
+  u8p = cmp.internal_types[RT_U8] + 1;
+  if (addrs[0] && !HashFind("Disasm", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Disasm", addrs[0], cls_u0, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "name", u8p); n++; }
+  }
+  if (addrs[1] && !HashFind("DisasmAt", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("DisasmAt", addrs[1], cls_u0, 3);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "addr", i64t);
+      RVExePubAddArg(tmpf, "max", i64t, MLF_DFT_AVAILABLE, 2000);
+      RVExePubAddArg(tmpf, "end", i64t, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
+  if (addrs[2] && !HashFind("U", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("U", addrs[2], cls_u0, 2);
+    if (tmpf) { RVExePubAddArg(tmpf, "addr", i64t); RVExePubAddArg(tmpf, "n", i64t, MLF_DFT_AVAILABLE, 28); n++; }
+  }
+  if (addrs[3] && !HashFind("UA", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("UA", addrs[3], cls_u0, 2);
+    if (tmpf) { RVExePubAddArg(tmpf, "addr", i64t); RVExePubAddArg(tmpf, "n", i64t, MLF_DFT_AVAILABLE, 28); n++; }
+  }
+  if (addrs[4] && !HashFind("FnAddr", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("FnAddr", addrs[4], i64t, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "name", u8p); n++; }
+  }
+  if (addrs[5] && !HashFind("Uf", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Uf", addrs[5], cls_u0, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "name", u8p); n++; }
+  }
+  if (addrs[6] && !HashFind("Bp", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Bp", addrs[6], i64t, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "addr", i64t, MLF_DFT_AVAILABLE, 0); n++; }
+  }
+  if (addrs[7] && !HashFind("BpClr", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("BpClr", addrs[7], i64t, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "addr", i64t, MLF_DFT_AVAILABLE, 0); n++; }
   }
   return n;
 }

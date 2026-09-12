@@ -49,9 +49,15 @@ _extern _LAST_FUN I64 LastFun(I64 argc,I64 *argv); //Execute last fun with args.
 
 I64 PassTrace(I64 i=0b10001111101)
 {//Ctrls which optimizer passes are displayed.
-  I64 old=Fs->last_cc->pass_trace;
-  if (i) Fs->last_cc->saved_pass_trace=i;
-  Fs->last_cc->pass_trace=i;
+  // RV REPL compiles each line with a fresh CCmpCtrl (no ExeCmdLine loop), so the
+  // setting is kept in rv_pass_trace_sticky and applied by CmpCtrlNew. last_cc may be NULL.
+  I64 old=rv_pass_trace_sticky;
+  rv_pass_trace_sticky=i;
+  if (Fs->last_cc) {
+    old=Fs->last_cc->pass_trace;
+    if (i) Fs->last_cc->saved_pass_trace=i;
+    Fs->last_cc->pass_trace=i;
+  }
   return old;
 }
 

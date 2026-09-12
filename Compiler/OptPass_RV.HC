@@ -256,16 +256,12 @@ U0 RVEmitCallArgRemat(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I
         RVAuipc(tmpi, ard, (call_rip + 0x800) >> 12 & 0xFFFFF);
         RVAddi(tmpi, ard, ard, call_rip << 52 >> 52);
       } else if (n >= 2) {
-        // Push order = IC order (k); ABI reg = arg_slot (rev when n>=2).
-        // n==1: keep a0 from STK push — empty FP slot ld clobbers Soft Call.
-        call_rip = -(frame_off + call_push + ((k + 1) << 3));
-        if (call_rip >= -2048 && call_rip <= 2047)
-          RVLd(tmpi, ard, RV_REG_FP, call_rip);
-        else {
-          RVLi(tmpi, RV_REG_T6, call_rip);
-          RVAdd(tmpi, RV_REG_T6, RV_REG_FP, RV_REG_T6);
-          RVLd(tmpi, ard, RV_REG_T6, 0);
-        }
+        // Any other pushing IC (e.g. ABS_ADDR+DEREF of a heap global above I32_MAX, which
+        // OptPass4 cannot fold to RIP): the value IS on the stack — the arg block is live at
+        // sp and slot arg_slot is sp+arg_slot*8 (same as the argv remat). The old FP-relative
+        // guess read an unrelated frame slot (DisasmAt(xa,2,0) got an F64 pattern in a0).
+        // n==1: keep a0 from the STK push.
+        RVLd(tmpi, ard, RV_REG_SP, arg_slot << 3);
       }
       k++;
     }
@@ -1408,6 +1404,10 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
     // IC_BODY_SIZE cannot go through ic_body at all. `asm{}` in the REPL emitted garbage
     // and every block ended up jumping to 0.
     break;
+    case IC_HOLYC_TYPECAST :
+    // Stock OptPass789A: a cast that survived the passes is a typed move.
+    ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip2);
+    break;
     case IC_BR_BT :
     ICBrBitOpsRV(tmpi, tmpi->ic_data, 0, TRUE, rip, rip2);
     break;
@@ -1521,6 +1521,9 @@ I64 OptPass789A(CCmpCtrl *cc, COptReg *reg_offsets, U8 *buf, CDbgInfo **_dbg)
       tmpi = tmpi_next;
       continue;
     }
+    // PassTrace(…) (stock OptPass789A): dump each IC as it is emitted.
+    if (tmpi->ic_flags & ICF_PASS_TRACE && (Bt(&cc->saved_pass_trace, cc->pass) || Bt(&cc->saved_pass_trace, 9)))
+      ICPut(cc, tmpi);
     ICToRISCV(cc, tmpi, buf, rip, &rip2, reg_offsets);
     if (tmpi->ic_cnt >= IC_BODY_SIZE && tmpi->ic_code != IC_ASM) {
       *uart = 'B';
