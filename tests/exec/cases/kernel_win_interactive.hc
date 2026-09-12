@@ -340,7 +340,12 @@ I64 main()
   // Kernel &Regs/&Dir — Compiler address-of imports may stay GOT=0.
   
   {
-    I64 pubs[23];
+    I64 pubs[28];
+    pubs[23] = &MAlloc;       // U8 *MAlloc(I64 size, CTask *mem_task=NULL)
+    pubs[24] = &CAlloc;       // U8 *CAlloc(I64 size, CTask *mem_task=NULL)
+    pubs[25] = &Free;         // U0 Free(U8 *ptr)
+    pubs[26] = &StrNew;       // U8 *StrNew(U8 *buf, CTask *mem_task=NULL)
+    pubs[27] = &Str2I64;      // I64 Str2I64(U8 *st, I64 radix=10, U8 **end=NULL)
     pubs[15] = &FilesFind;    // query runtime: CDirEntry *FilesFind(U8 *mask, I64 flags=0)
     pubs[16] = &DirTreeDel;   // U0 DirTreeDel(CDirEntry *)
     pubs[17] = &StrFind;      // U8 *StrFind(U8 *needle, U8 *haystack, I64 flags=0)

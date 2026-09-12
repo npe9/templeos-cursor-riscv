@@ -646,6 +646,46 @@ I64 RVExePubsWireAddrs(I64 *addrs)
       n++;
     }
   }
+  // Slots 23-27: allocator + string foundations. Not compiler intrinsics and not
+  // callable via the HTF_IMM RVCmpImports table — programs that MAlloc/StrNew need
+  // these planted as real HTT_FUN calls. Pointer returns are i64t (caller casts).
+  if (addrs[23] && !HashFind("MAlloc", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("MAlloc", addrs[23], i64t, 2);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "size", i64t);
+      RVExePubAddArg(tmpf, "mem_task", i64t, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
+  if (addrs[24] && !HashFind("CAlloc", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("CAlloc", addrs[24], i64t, 2);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "size", i64t);
+      RVExePubAddArg(tmpf, "mem_task", i64t, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
+  if (addrs[25] && !HashFind("Free", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Free", addrs[25], cls_u0, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "ptr", i64t); n++; }
+  }
+  if (addrs[26] && !HashFind("StrNew", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("StrNew", addrs[26], i64t, 2);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "buf", u8p);
+      RVExePubAddArg(tmpf, "mem_task", i64t, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
+  if (addrs[27] && !HashFind("Str2I64", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Str2I64", addrs[27], i64t, 3);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "st", u8p);
+      RVExePubAddArg(tmpf, "radix", i64t, MLF_DFT_AVAILABLE, 10);
+      RVExePubAddArg(tmpf, "end", i64t, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
   return n;
 }
 
@@ -705,9 +745,9 @@ I64 RVExePubsWire()
 {
   // Monolithic Body: symbols are in-image. Split-AOT Kernel should call
   // RVExePubsWireAddrs with Kernel &Print/&Regs/… instead.
-  I64 addrs[23];
+  I64 addrs[28];
   I64 zi;
-  for (zi = 0; zi < 23; zi++)
+  for (zi = 0; zi < 28; zi++)
     addrs[zi] = 0;
   addrs[0] = &Print;
   addrs[1] = &PutChars;
