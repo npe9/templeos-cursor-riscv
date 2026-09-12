@@ -526,24 +526,27 @@ static void RVU32(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
   }
 }
 
-/* IC_DEREF: load *rs1 into a0; width from arg1_type_pointed_to (U32* → lwu, not ld). */
-static U32 DerefLoadFromRs1(U8 pointed_to, U8 rs1) {
+/* IC_DEREF / IncDec: load *rs1 into rd; width from arg1_type_pointed_to (U32 → lwu, not ld). */
+static U32 LoadRdFromRs1(U8 pointed_to, U8 rd, U8 rs1) {
   switch (pointed_to) {
   case RT_I8:
-    return 0x03 | (RV_A0 << 7) | (0 << 12) | (rs1 << 15); /* lb */
+    return 0x03 | (rd << 7) | (0 << 12) | (rs1 << 15); /* lb */
   case RT_U8:
-    return 0x03 | (RV_A0 << 7) | (4 << 12) | (rs1 << 15); /* lbu */
+    return 0x03 | (rd << 7) | (4 << 12) | (rs1 << 15); /* lbu */
   case RT_I16:
-    return 0x03 | (RV_A0 << 7) | (1 << 12) | (rs1 << 15); /* lh */
+    return 0x03 | (rd << 7) | (1 << 12) | (rs1 << 15); /* lh */
   case RT_U16:
-    return 0x03 | (RV_A0 << 7) | (5 << 12) | (rs1 << 15); /* lhu */
+    return 0x03 | (rd << 7) | (5 << 12) | (rs1 << 15); /* lhu */
   case RT_I32:
-    return 0x03 | (RV_A0 << 7) | (2 << 12) | (rs1 << 15); /* lw */
+    return 0x03 | (rd << 7) | (2 << 12) | (rs1 << 15); /* lw */
   case RT_U32:
-    return 0x03 | (RV_A0 << 7) | (6 << 12) | (rs1 << 15); /* lwu */
+    return 0x03 | (rd << 7) | (6 << 12) | (rs1 << 15); /* lwu */
   default:
-    return 0x03 | (RV_A0 << 7) | (3 << 12) | (rs1 << 15); /* ld */
+    return 0x03 | (rd << 7) | (3 << 12) | (rs1 << 15); /* ld */
   }
+}
+static U32 DerefLoadFromRs1(U8 pointed_to, U8 rs1) {
+  return LoadRdFromRs1(pointed_to, RV_A0, rs1);
 }
 static U32 DerefLoadFromRs1Off(U8 p, U8 rs1, I64 off) { return DerefLoadFromRs1(p,rs1)|(((U32)off&0xFFF)<<20); }
 
@@ -583,8 +586,8 @@ static void EmitLoadImm64(U8 *pass_buf, U8 **pass_ptr, I64 *rip, U8 rd, I64 v) {
   }
 }
 
-// Typed store of a0 through rs1 (mirror of DerefLoadFromRs1).
-static U32 StoreA0ToRs1(U8 pointed_to, U8 rs1) {
+// Typed store of rs2 through rs1 (mirror of LoadRdFromRs1).
+static U32 StoreRs2ToRs1(U8 pointed_to, U8 rs1, U8 rs2) {
   U32 f3;
   switch (pointed_to) {
   case RT_I8: case RT_U8:   f3 = 0; break; /* sb */
@@ -592,11 +595,14 @@ static U32 StoreA0ToRs1(U8 pointed_to, U8 rs1) {
   case RT_I32: case RT_U32: f3 = 2; break; /* sw */
   default:                  f3 = 3; break; /* sd */
   }
-  return 0x23 | (f3 << 12) | (rs1 << 15) | (RV_A0 << 20);
+  return 0x23 | (f3 << 12) | (rs1 << 15) | (rs2 << 20);
+}
+static U32 StoreA0ToRs1(U8 pointed_to, U8 rs1) {
+  return StoreRs2ToRs1(pointed_to, rs1, RV_A0);
 }
 static U32 StoreA0ToRs1Off(U8 p, U8 rs1, I64 off) { return StoreA0ToRs1(p,rs1)|(((U32)off&31)<<7)|(((U32)off&0xFE0)<<20); }
 static U32 StoreZeroToRs1(U8 pointed_to, U8 rs1) {
-  return StoreA0ToRs1(pointed_to, rs1) & ~(0x1Fu << 20); /* rs2 = x0 */
+  return StoreRs2ToRs1(pointed_to, rs1, RV_ZERO); /* rs2 = x0 */
 }
 
 /* After *p=0 / ASSIGN: is a0 (the stored value) observed? Statement + LEAVE → no;
@@ -1190,16 +1196,19 @@ static void EmitThrow(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, C
 // ++/-- : IC_PP_/IC_MM_ (pre) and IC__PP/IC__MM (post). The operand address is in a0 (IC_LEA
 // leaves it there without pushing; the parser retracts any auto-deref). Result value goes to a0
 // and onto the eval stack, like IC_DEREF.
-static void EmitIncDec(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, I64 delta, Bool post) {
+// Width from arg1_type_pointed_to: CDoc's adjacent U32 cur_bin_num / I64 max_entries must use
+// lwu/sw — a plain ld/sd on member++ corrupts max_entries and feeds MStrPrint a huge vararg.
+static void EmitIncDec(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, I64 delta, Bool post, U8 pty) {
+  if (!pty) pty = RT_I64;
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (RV_A0 << 15));                          // mv t0, a0
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (3 << 12) | (RV_T0 << 15));              // ld t1, 0(t0)
+  RVU32(pass_buf, pass_ptr, rip, LoadRdFromRs1(pty, RV_T1, RV_T0));                             // typed load t1, 0(t0)
   if (delta >= -2048 && delta <= 2047) {
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T2 << 7) | (RV_T1 << 15) | ((delta & 0xFFF) << 20)); // addi t2, t1, delta
   } else {   // pointer step of a large struct: build the constant, then add
     EmitLoadImm64(pass_buf, pass_ptr, rip, RV_T2, delta);
     RVU32(pass_buf, pass_ptr, rip, 0x33 | (RV_T2 << 7) | (RV_T1 << 15) | (RV_T2 << 20));         // add t2, t1, t2
   }
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T0 << 15) | (RV_T2 << 20));             // sd t2, 0(t0)
+  RVU32(pass_buf, pass_ptr, rip, StoreRs2ToRs1(pty, RV_T0, RV_T2));                             // typed store t2, 0(t0)
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A0 << 7) | ((post ? RV_T1 : RV_T2) << 15));         // mv a0, old/new
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));          // addi sp, sp, -8
   RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20));             // sd a0, 0(sp)
@@ -1356,7 +1365,19 @@ static void O1LoadMapFromFun(CIntermediateCode *enter) {
   }
 }
 
-static void EmitIC_ENTER(U8 *b, U8 **q, I64 *r, CIntermediateCode *ic) {
+/* PUSHFD parks mstatus on sp and POPFD pops it, neither tracked in stack_depth, and a single
+ * PUSHFD routinely has several POPFD exits — so a linear walk cannot say how many flag slots are
+ * parked at a given statement boundary. IC_END_EXP's exact `sp = s0 - frame` restore would
+ * discard them (it silently ate Spawn's / TaskExe's saved mstatus). In such functions keep the
+ * old static pop, which those stock kernel CLI/STI windows already ran correctly. */
+static bool FnParksFlags(CIntermediateCode *enter) {
+  for (CIntermediateCode *p = enter->next; p; p = p->next) {
+    if (p->ic_code == IC_LEAVE) return false;
+    if (p->ic_code == IC_PUSHFD) return true;
+  }
+  return false;
+}
+static I64 EmitIC_ENTER(U8 *b, U8 **q, I64 *r, CIntermediateCode *ic) {
   I64 n = ic->ic_data & 0xffffffff, l = ic->ic_data >> 32;
   I64 rp = n > 8 ? 8 : n, f = 16 + rp * 8 + l;
   O1LoadMapFromFun(ic);
@@ -1383,6 +1404,7 @@ static void EmitIC_ENTER(U8 *b, U8 **q, I64 *r, CIntermediateCode *ic) {
                      ((RV_A0 + i) << 20) | ((so >> 5) << 25));
     }
   }
+  return f;
 }
 
 static void EmitIC_LEAVE(U8 *b, U8 **q, I64 *r, CIntermediateCode *ic) {
@@ -1463,8 +1485,10 @@ static int O1IsWideLocal(U8 pty) {
 /* Conservative eval-stack net for FRAME_SLOT matching (addr under RHS value). */
 static int IcNetStack(CIntermediateCode *p) {
   switch (p->ic_code) {
-  case IC_IMM_I64: case IC_IMM_F64: case IC_MOV: case IC_DEREF:
-  case IC_PUSH_ARG: case IC_FN_ADDR: case IC_PC: case IC_ADDR: return 1;
+  case IC_IMM_I64: case IC_IMM_F64: case IC_STR_CONST: case IC_MOV: case IC_DEREF:
+  case IC_PUSH_ARG: case IC_FN_ADDR: case IC_PC: case IC_ADDR:
+  /* EmitIncDec always pushes the old/new value (same as DEREF). */
+  case IC_PP_: case IC_MM_: case IC__PP: case IC__MM: return 1;
   case IC_ADD: case IC_SUB: case IC_MUL: case IC_DIV: case IC_MOD:
   case IC_AND: case IC_OR: case IC_XOR: case IC_SHL: case IC_SHR: case IC_USHR:
   case IC_FADD: case IC_FSUB: case IC_FMUL: case IC_FDIV:
@@ -1503,12 +1527,17 @@ static void IcOptFrameAccess(Compiler *cc) {
         continue;
       }
       if (mode < 2) continue;
-      /* Varargs / call argv: LEA; PUSH_ARG; PUSH_RES — address must stay on the eval stack. */
+      /* Varargs / call argv: LEA; PUSH_ARG; PUSH_RES — address must stay on the eval stack.
+       * Do not walk into a call: `v = MStrPrint(fmt, doc->cur_bin_num++)` is LEA v; PUSH;
+       * CALL_START; …; ASSIGN(argv) — folding that ASSIGN onto v corrupts argc/argv (PsmMenu BI). */
       if (p->ic_code == IC_LEA && n && n->ic_code == IC_PUSH_ARG && O1OffFits12(p->ic_data) &&
           (!n->next || n->next->ic_code != IC_PUSH_RES)) {
         int depth = 1;
         for (CIntermediateCode *q = n->next; q; q = q->next) {
           if (q->ic_code == IC_LABEL) break;
+          if (q->ic_code == IC_CALL_START || q->ic_code == IC_CALL ||
+              q->ic_code == IC_CALL_INDIRECT || q->ic_code == IC_CALL_INDIRECT2)
+            break;
           if (q->ic_code == IC_ASSIGN && !(q->ic_flags & ICF_FRAME_SLOT) && depth == 2) {
             q->ic_flags |= ICF_FRAME_SLOT;
             q->ic_data = p->ic_data;
@@ -2016,6 +2045,7 @@ static void IcOptimize(Compiler *cc) {
     }
   }
   IcOptFrameAccess(cc);
+
   HolyProgress("optimize done (%d iters)", guard);
 }
 
@@ -2051,6 +2081,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
 
     ic = cc->ic_head;
     I64 stack_depth_pass = 0;
+    I64 cur_frame = -1;   // frame size of the function being emitted (-1 = frameless fragment)
     pass_ptr = NULL;
 
     pass_buf = NULL;
@@ -2076,7 +2107,9 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       // Use SAME logic for sizing and emission (TempleOS 1:1)
       switch (ic->ic_code) {
       case IC_ENTER:
-        EmitIC_ENTER(pass_buf, &pass_ptr, &rip, ic); break;
+        cur_frame = EmitIC_ENTER(pass_buf, &pass_ptr, &rip, ic);
+        if (FnParksFlags(ic)) cur_frame = -1;   // keep the static pop; see FnParksFlags
+        break;
         {
           I64 param_cnt = ic->ic_data & 0xFFFFFFFF;
           I64 locals_size = ic->ic_data >> 32;
@@ -2103,6 +2136,8 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         }
         break;
       case IC_LEAVE:
+        // A stale cur_frame past the end of a function would aim `addi sp,s0,-N` at a foreign s0.
+        cur_frame = -1;
         EmitIC_LEAVE(pass_buf, &pass_ptr, &rip, ic); break;
         {
           I64 param_cnt_leave = ic->ic_data & 0xFFFFFFFF;
@@ -2520,17 +2555,24 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         stack_depth_pass++;
         break;
       }
-      case IC_PP_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass,  (ic->ic_data ? ic->ic_data : 1), FALSE); break;
-      case IC_MM_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass, -(ic->ic_data ? ic->ic_data : 1), FALSE); break;
-      case IC__PP:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass,  (ic->ic_data ? ic->ic_data : 1), TRUE);  break;
-      case IC__MM:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass, -(ic->ic_data ? ic->ic_data : 1), TRUE);  break;
+      case IC_PP_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass,  (ic->ic_data ? ic->ic_data : 1), FALSE, ic->arg1_type_pointed_to); break;
+      case IC_MM_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass, -(ic->ic_data ? ic->ic_data : 1), FALSE, ic->arg1_type_pointed_to); break;
+      case IC__PP:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass,  (ic->ic_data ? ic->ic_data : 1), TRUE,  ic->arg1_type_pointed_to); break;
+      case IC__MM:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass, -(ic->ic_data ? ic->ic_data : 1), TRUE,  ic->arg1_type_pointed_to); break;
       case IC_END_EXP:
-        // End of expression statement: discard residual eval-stack slots so sp is back at
-        // the frame base (the epilogue/ret loads are sp-relative). Keep the top value in a0
-        // — it is the REPL's Fs->answer via the trailing IC_RETURN_VAL2.
+        // End of expression statement: sp must go back to the frame base (s0 - frame_size).
+        // Popping `depth*8` instead trusted a STATIC counter, and that counter diverges from
+        // the real depth whenever a branch skips pushes that the fall-through path makes — the
+        // pop then ran past the frame base and the next push overwrote the saved ra, so the
+        // function `ret`ed into whatever a0 held. Restore from s0 (exact, path-insensitive);
+        // fall back to the counter only in frameless JIT fragments (LexExpression2Bin), where
+        // s0 still belongs to the caller.
         if (stack_depth_pass > 0) {
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (((stack_depth_pass * 8) & 0xFFF)<<20)); // addi sp, sp, depth*8
+          if (cur_frame >= 0)
+            EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_S0, -cur_frame);  // sp = frame base (exact)
+          else
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (((stack_depth_pass * 8) & 0xFFF)<<20));
         }
         stack_depth_pass = 0;
         break;
@@ -2659,6 +2701,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   O1SlotClear();
   ic = cc->ic_head;
   I64 stack_depth_final = 0;
+  I64 cur_frame = -1;   // frame size of the function being emitted (-1 = frameless fragment)
     
     // Add prologue for expressions with calls (same as in multi-pass loop)
     if (has_call && !is_function) {
@@ -2672,7 +2715,9 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       // Same unified switch, but now with pass_buf = buffer
       switch (ic->ic_code) {
       case IC_ENTER:
-        EmitIC_ENTER(pass_buf, &pass_ptr, &rip, ic); break;
+        cur_frame = EmitIC_ENTER(pass_buf, &pass_ptr, &rip, ic);
+        if (FnParksFlags(ic)) cur_frame = -1;   // keep the static pop; see FnParksFlags
+        break;
         {
           I64 param_cnt = ic->ic_data & 0xFFFFFFFF;
           I64 locals_size = ic->ic_data >> 32;
@@ -2698,6 +2743,8 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         }
         break;
       case IC_LEAVE:
+        // A stale cur_frame past the end of a function would aim `addi sp,s0,-N` at a foreign s0.
+        cur_frame = -1;
         EmitIC_LEAVE(pass_buf, &pass_ptr, &rip, ic); break;
         {
           I64 param_cnt_leave = ic->ic_data & 0xFFFFFFFF;
@@ -3111,17 +3158,24 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         stack_depth_final++;
         break;
       }
-      case IC_PP_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final,  (ic->ic_data ? ic->ic_data : 1), FALSE); break;
-      case IC_MM_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final, -(ic->ic_data ? ic->ic_data : 1), FALSE); break;
-      case IC__PP:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final,  (ic->ic_data ? ic->ic_data : 1), TRUE);  break;
-      case IC__MM:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final, -(ic->ic_data ? ic->ic_data : 1), TRUE);  break;
+      case IC_PP_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final,  (ic->ic_data ? ic->ic_data : 1), FALSE, ic->arg1_type_pointed_to); break;
+      case IC_MM_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final, -(ic->ic_data ? ic->ic_data : 1), FALSE, ic->arg1_type_pointed_to); break;
+      case IC__PP:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final,  (ic->ic_data ? ic->ic_data : 1), TRUE,  ic->arg1_type_pointed_to); break;
+      case IC__MM:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final, -(ic->ic_data ? ic->ic_data : 1), TRUE,  ic->arg1_type_pointed_to); break;
       case IC_END_EXP:
-        // End of expression statement: discard residual eval-stack slots so sp is back at
-        // the frame base (the epilogue/ret loads are sp-relative). Keep the top value in a0
-        // — it is the REPL's Fs->answer via the trailing IC_RETURN_VAL2.
+        // End of expression statement: sp must go back to the frame base (s0 - frame_size).
+        // Popping `depth*8` instead trusted a STATIC counter, and that counter diverges from
+        // the real depth whenever a branch skips pushes that the fall-through path makes — the
+        // pop then ran past the frame base and the next push overwrote the saved ra, so the
+        // function `ret`ed into whatever a0 held. Restore from s0 (exact, path-insensitive);
+        // fall back to the counter only in frameless JIT fragments (LexExpression2Bin), where
+        // s0 still belongs to the caller.
         if (stack_depth_final > 0) {
           RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (((stack_depth_final * 8) & 0xFFF)<<20)); // addi sp, sp, depth*8
+          if (cur_frame >= 0)
+            EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_S0, -cur_frame);  // sp = frame base (exact)
+          else
+            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (((stack_depth_final * 8) & 0xFFF)<<20));
         }
         stack_depth_final = 0;
         break;
@@ -3395,6 +3449,86 @@ void RuntimeDeclare(Compiler *cc) {
   }
 }
 
+// A unit that defines `_start` owns boot, so the synthetic entry chunk that normally runs the
+// top-level statements cannot be placed first — QEMU (`-bios none`) enters at blob offset 0 and
+// `_start` has to be there. The statements still have to run: a file-scope initializer whose
+// value is not a compile-time constant (a string literal's address, `&glbl`, a call) compiles to
+// a store, not to data bytes, so dropping the statement stream loses it with no diagnostic —
+// `U8 *RN[32] = {"zero", …}` read back as (null) throughout repl-holyc.
+//
+// Wrap the statements in a callable `__init_globals` chunk and hand `_start`'s first outgoing
+// call to it; `__init_globals` runs the stores, then calls whatever `_start` meant to call and
+// returns its value. Retargeting one IC_CALL keeps `_start`'s prologue (mstatus.FS, sp) and the
+// asm word stream untouched — inserting instructions there would desync the branch offsets
+// ParseAsmFunction already baked — and the initializers land before *any* HolyC code, which is
+// the order the non-`_start` entry chunk gives.
+static void AOTInitGlobalsForStart(Compiler *cc, CHashFun *start_f) {
+  // No top-level statements: no chunk and no retarget (a `_start`-only bootloader stays byte
+  // for byte what it was).
+  if (!cc->aot_main_head || !cc->aot_fn_ic_head) return;
+  AOTFnICChunk *sc = NULL;
+  for (AOTFnICChunk *c = cc->aot_fn_ic_head; c; c = c->next)
+    if (c->fun == start_f) { sc = c; break; }
+  if (!sc) return;
+  // `call Name` inside asm{} is IC_CALL to the callee's entry label: that first handoff out of
+  // `_start` is where the C runtime would run its init array.
+  CIntermediateCode *hook = NULL;
+  for (CIntermediateCode *ic = sc->head; ic; ic = ic->next) {
+    if (ic->ic_code == IC_CALL) { hook = ic; break; }
+    if (ic == sc->tail) break;
+  }
+  if (!hook) {
+#ifndef BARE_METAL
+    fprintf(stderr, "HOLYC AOT: `_start` never calls into HolyC — %s has top-level statements "
+                    "(file-scope initializers) with nowhere to run\n",
+            cc->lex.filename ? cc->lex.filename : "this unit");
+#endif
+    return;
+  }
+  CLabel *onward = (CLabel *)hook->ic_data;
+  I64 onward_flags = hook->ic_flags;
+
+  // Everything is allocated before any state moves, so a failure here cannot leave the
+  // statement stream half-detached.
+  CHashFun *initf = calloc(1, sizeof(CHashFun));
+  AOTFnICChunk *chunk = calloc(1, sizeof(AOTFnICChunk));
+  CIntermediateCode *lab = ICNew(cc, IC_LABEL);
+  if (!initf || !chunk || !lab) { free(initf); free(chunk); return; }
+  initf->str = strdup("__init_globals");
+  initf->type = HTT_FUN;
+  initf->raw_type = RT_I64;
+  initf->is_extern = FALSE;
+  initf->entry_label_defined = 1;
+  CLabel *entry = LabelNew(cc, "__init_globals");
+  initf->entry_label = entry;
+  if (cc->hash_table) HashAdd((CHashEntry *)initf, cc->hash_table);
+
+  cc->ic_head = cc->aot_main_head;
+  cc->ic_tail = cc->aot_main_tail;
+  cc->aot_main_head = cc->aot_main_tail = NULL;
+  ICAdd(cc, IC_CALL_START, 0, RT_I64);
+  ICAdd(cc, IC_CALL, (I64)onward, RT_I64);
+  cc->ic_tail->ic_flags = onward_flags;   // `_start` passed no args; keep its a0 as our result
+  ICAdd(cc, IC_CALL_END, 0, RT_I64);
+  WrapStatementsAsFrame(cc);
+  // The entry label goes ahead of IC_ENTER, the way ParseFunction orders a body.
+  lab->ic_data = (I64)entry;
+  lab->next = cc->ic_head;
+  if (cc->ic_head) cc->ic_head->last = lab;
+  cc->ic_head = lab;
+  entry->defined = true;
+
+  chunk->head = cc->ic_head;
+  chunk->tail = cc->ic_tail;
+  chunk->fun = initf;
+  chunk->next = NULL;
+  cc->ic_head = cc->ic_tail = NULL;
+  // Last chunk: `_start` keeps offset 0 and every other function keeps its place in the blob.
+  cc->aot_fn_ic_tail->next = chunk;
+  cc->aot_fn_ic_tail = chunk;
+  hook->ic_data = (I64)entry;
+}
+
 Compiler *CompileBuf(const char *source, size_t size, const char *filename, bool aot) {
   /* Progress before CompilerNew: New() calls LexNext, which may walk nested
    * #includes while fetching the first token. */
@@ -3440,11 +3574,13 @@ Compiler *CompileBuf(const char *source, size_t size, const char *filename, bool
   }
   // Run top-level statements (globals' initializers, `#exe`) first; if a main() is defined here,
   // call it after them and its return is the program's result.
-  // Skip synthetic entry when `_start` owns boot (it calls main itself).
+  // When `_start` owns boot there is no synthetic entry chunk (offset 0 belongs to `_start`);
+  // the statements go into `__init_globals`, which `_start`'s first call reaches instead.
   CHashEntry *main_e = (cc->defer_aot_compile && cc->hash_table) ? HashFind("main", cc->hash_table, HTT_FUN) : NULL;
   if (main_e && !((CHashFun *)main_e)->entry_label_defined) main_e = NULL;
   if (have_start) {
     stitched = cc->aot_fn_ic_head;
+    AOTInitGlobalsForStart(cc, (CHashFun *)start_e);
   } else if (cc->defer_aot_compile && (cc->aot_main_head || main_e)) {
     // Entry chunk, placed first: `Fs = &__task`, then the top-level statements (HolyC runs
     // them in source order) — or, when there are none, a call to main() for C-style files.

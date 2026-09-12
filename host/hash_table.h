@@ -59,6 +59,12 @@ typedef struct CMemberLst {
   U8 ptr_depth;             // pointer levels
   bool is_array;            // `U8 name[8]`: the member is its address
   I64 elem_size;            // element size for array/pointer members
+  // `U8 name[4][96]`: flat storage, subscript k advances dim_stride[k] bytes. Mirrors the
+  // ndims/dim_stride a local Symbol and a CHashGlblVar already carry; without it a partial
+  // subscript of a member (`w.rows[n]`) stepped one ELEMENT and then dereferenced, so it
+  // yielded a loaded byte instead of the row address.
+  int ndims;                // 0/1 = flat; >1 = multi-dimensional
+  I64 dim_stride[4];
 } CMemberLst;
 
 // Hash entry for classes/types
@@ -84,9 +90,10 @@ typedef struct CHashFun {
   I64 type;                  // HTT_FUN
   I64 use_cnt;
   
-  I64 raw_type;             // Return type
+  I64 raw_type;             // Return RT_* (RT_I64 for pointer returns)
   I64 size;                 // Function size
-  I64 ptr_stars_cnt;        // Pointer level
+  I64 ptr_stars_cnt;        // Return pointer depth (0 for scalar returns)
+  U8 ret_pointed_to;        // Pointee RT_* when ptr_stars_cnt > 0 (`U8 *LstSub` → RT_U8)
   
   I64 exe_addr;             // Function address
   I64 arg_cnt;              // Argument count

@@ -50,8 +50,8 @@ operand). Correctness first; efficiency is layered on the existing opt story
 | `CALL` (arity 0) + `END_EXP` + `JMP L` ×N | Share one call+jmp; others `JMP` share | `HOLYC_NO_CALL_TAIL=1` |
 | Code after `JMP` before next `LABEL` | DCE (no other IR entries) | `HOLYC_NO_DEAD_JMP=1` |
 
-Guest `getenv` is always NULL (`worry_dream_repl.c`), so host-only env gates do **not**
-affect REPL seed compiles — defaults must be safe for vim.
+Guest `getenv` is always NULL, so host-only env gates do **not** affect REPL seed
+compiles — defaults must be safe for vim.
 
 Bool-elision root cause (vim `VCmd` illegal insn): OR elision turned an outer AND's
 `BR_ZERO→F` into `JMP F`, then AND elision deleted `F` without retargeting that `JMP`.
@@ -72,26 +72,35 @@ Condition core of `U0 F(I64 x){ if (x=='\r'\|\|x=='\n') X(); else Y(); }`
 |-------|----------:|-------|
 | Pre-Tier-2 / `HOLYC_NO_OPT` | **~35–40** | push/pop/`sub`/`seqz` per `==`, then IMM 0/1, then `beqz` |
 | O1 + cmp→branch only | **~16–20** | `ld; li t1,13; beq` ×2, still bool 0/1 + `beqz` |
-| + bool elision (**default**) | **~7** | `ld; li; beq` ×2; `j .else` |
+| + bool elision (**default**) | **~8** | `ld; li; b<cc>; j` ×2 (no bool 0/1) |
 
-Default after:
+Default after (fixed-width branch form — inverted `bne` hopping over the `j` that
+takes the taken edge):
 
 ```text
   ld   a0, -8(s0)
   li   t1, 13
-  beq  a0, t1, .true
+  bne  a0, t1, .chk10
+  j    .true
+.chk10:
   ld   a0, -8(s0)
   li   t1, 10
-  beq  a0, t1, .true
-  j    .else
+  bne  a0, t1, .else
+  j    .true
 .true:
   … then …
 .else:
   … else …
 ```
 
+`EmitBrRsRs` / `EmitCondBranch` deliberately emit this fixed-width `b<cc>`+`j`
+pair instead of a single range-relaxed `beq`: the ±4KB B-type reach made branch
+sizes oscillate between AOT passes and prevented convergence (stale labels past
+the pass cap) on the Kernel+Compiler blobs. Do not "optimize" it back.
+
 Oracle: `tests/compiler/cases/c_crlf_or.hc` in `make compiler-stress`
-(requires `beq` to 13/10, no `seqz`/`sub`/`beqz`, core ≤12).
+(requires `b<cc> a0,t1` ×2 against 13/10, no `seqz`/`sub`/`beqz`, core ≤12;
+polarity is not pinned).
 
 ### Calls: `auipc+jalr` vs import slot vs host abs
 

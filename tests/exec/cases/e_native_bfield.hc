@@ -1,4 +1,4 @@
-// Verifies native RISC-V ModU64 / BFieldExtU32 / BFieldOrU32 in KUtilsRV.HC.
+// Verifies native RISC-V ModU64 / BFieldExtU32 / BFieldOrU32 (stock KernelB semantics).
 #include "/Kernel/Kernel_RV.PRJ"
 I64 main()
 {
@@ -10,13 +10,13 @@ I64 main()
   r += (q == 14) * 2;
   U8 buf[8];
   MemSet(buf, 0, 8);
-  BFieldOrU32(buf, 4, 11);
-  // set bits 4..11 -> byte0=0xF0, byte1=0x0F
-  r += (BFieldExtU32(buf, 4, 11) == 0xFF) * 4;
+  // Stock: OR pattern 0xFF at bit 4 → bits 4..11 set (byte0=0xF0, byte1=0x0F).
+  BFieldOrU32(buf, 4, 0xFF);
+  r += (BFieldExtU32(buf, 4, 8) == 0xFF) * 4;
   r += (buf[0] == 0xF0) * 8;
   r += (buf[1] == 0x0F) * 16;
-  r += (BFieldExtU32(buf, 6, 9) == 0xF) * 32;
-  // middle 4 bits
+  r += (BFieldExtU32(buf, 6, 4) == 0xF) * 32;
+  // middle 4 bits starting at bit 6
   U64 q2 = 55;
   I64 m0 = ModU64(&q2, 0);
   // d==0 guard

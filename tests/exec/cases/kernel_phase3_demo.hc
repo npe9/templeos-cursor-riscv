@@ -5,6 +5,8 @@
 // TempleOS Boot.DD shape (not jit.hc). See templeos-riscv/COMPILER_RV.md.
 #define RV_PHASE3 1
 #define RV_PHASE3_LOADED_CMP_ONLY 1
+// G9: Menu Guest/Lex/wrap live on RedSea — do not link RVAdamLiteMenuSrc ELF strings.
+#define RV_PHASE3_MENU_REDSEA 1
 #include "/Kernel/Kernel_RV.PRJ"
 #include "/Compiler/RISCVRegs.HH"
 #include "/Adam/Opt/Boot/MakeAll_RV.HC"

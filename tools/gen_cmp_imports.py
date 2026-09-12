@@ -46,6 +46,8 @@ EXTRA_EXPORTS = [
     ("FileWrite", "FileWrite"),
     ("RVHCCall", "_RV_HC_CALL"),
 ]
+# Not present as kernel HolyC symbols on RV (TempleOS x86 helpers).
+SKIP_EXPORTS = {"IsDbgMode", "IsRaw"}
 
 if not bin_path.exists():
     raise SystemExit(f"missing {bin_path} — run pack_tosb first")
@@ -90,6 +92,8 @@ lines = [
     "  I64 n=0;",
 ]
 for name in sorted(names):
+    if name in SKIP_EXPORTS:
+        continue
     sym = INTERN_WRAPPERS.get(name, name)
     lines.append(f'  RVCmpExportOne("{name}",&{sym}); n++;')
 for exp_name, sym in EXTRA_EXPORTS:

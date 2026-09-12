@@ -109,10 +109,11 @@ static void PathSlashNormalize(char *s) {
   }
 }
 
-/* Host path → distribution-rooted `/…` under HOLYC_INCLUDE_ROOT.
- * Keeps repo `tos/` in __DIR__ (e.g. `/tos/Apps/Span`) so AOT top-level Cd(__DIR__)
- * fails fast before BlkDev mount — stripping to `/Apps/Span` hangs RedSeaCd.
- * Relative paths are treated as already under the include root. */
+/* Host path → boot-root `::/…` under HOLYC_INCLUDE_ROOT (StreamDir shape).
+ * Maps the repo ISO tree `tos/X` → `::/X`, mirroring the `#include "::/Apps/…"`
+ * → `$ROOT/tos/Apps/…` adapter. Soft Cd (DskDirB.HC: no cur_dv → strip `X:`,
+ * record cur_dir) makes pre-mount AOT `Cd(__DIR__)` safe without keeping `/tos/`.
+ * Relative paths are treated as already under the include root. See docs/PATHS.md. */
 static void TempleosPathFromHost(const char *host_path, char *out, size_t out_size) {
   if (!out || out_size == 0) return;
   out[0] = '\0';
@@ -140,10 +141,19 @@ static void TempleosPathFromHost(const char *host_path, char *out, size_t out_si
     }
     if (rest) {
       while (*rest == '/' || *rest == '\\') rest++;
+      /* Repo ISO tree: `tos/Apps/Span` → `::/Apps/Span`; bare `tos` → `::/`. */
+      if (strncmp(rest, "tos", 3) == 0) {
+        if (rest[3] == '/' || rest[3] == '\\') {
+          rest += 4;
+          while (*rest == '/' || *rest == '\\') rest++;
+        } else if (rest[3] == '\0') {
+          rest += 3;
+        }
+      }
       if (*rest)
-        StrPrintF(out, out_size, "/%s", rest);
+        StrPrintF(out, out_size, "::/%s", rest);
       else
-        StrPrintF(out, out_size, "/");
+        StrPrintF(out, out_size, "::/");
       PathSlashNormalize(out);
       return;
     }
@@ -1171,6 +1181,13 @@ static int LexIdentifier(Compiler *cc) {
   lex->hash_entry = HashFind(buf, cc->hash_table, 0xFFFFFFFF);
   
   if (lex->hash_entry) {
+    // Prefer KEYWORD when INTERNAL_TYPE (or another entry) shadows it in the bucket.
+    // `U32i` is both KW_U32 and an internal type; without this, `U32i union U32` lexes as
+    // TK_IDENT and the `_extern SYMBOL` skipper eats the scalar base (U32 stayed RT_I64).
+    if (!(lex->hash_entry->type & HTT_KEYWORD)) {
+      CHashEntry *kw_e = HashFind(buf, cc->hash_table, HTT_KEYWORD);
+      if (kw_e) lex->hash_entry = kw_e;
+    }
     // Check if it's a keyword
     if (lex->hash_entry->type & HTT_KEYWORD) {
       CHashKeyword *kw = (CHashKeyword*)lex->hash_entry;

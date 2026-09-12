@@ -78,7 +78,7 @@ indirect calls, chain comparisons, guest `Compiler_RV` codegen.
 | Useless `slli;srli` on clean lo | **Hard** in `patterns.tsv` via `c_abs_store_clean.hc` (`0x10000000`) |
 | Bit31 U32 VA zext | **Expected** (`lui`+`slli`/`srli` 32) — see `c_abs_store_bit31.hc`; not a pattern fail |
 | Store-zero → `sd zero` | `ICF_ASSIGN_ZERO` + hard check on `c_ptr_store_zero.hc` (no `mv t0,a0`); stack width oracle `c_i64_store_zero.hc` |
-| CR/LF `\|\|` compare-branch | `c_crlf_or.hc` — `beq` to 13/10, core ≤12 insn, no `seqz` |
+| CR/LF `\|\|` compare-branch | `c_crlf_or.hc` — `b<cc> a0,t1` ×2 against `li t1,13` / `li t1,10`, core ≤12 insn, no `seqz`/`sub`/`beqz`. Polarity is **not** pinned: `EmitBrRsRs` / `EmitCondBranch` emit fixed-width branches (inverted `bne` over a `j`) rather than range-relaxed short B-type, because ±4KB oscillation broke AOT convergence on Kernel+Compiler blobs — so `bne`+`j` is intended, not a regression from a single `beq` |
 | Indexed `sb` safety | `c_idx_store_sb.hc` — must be `sb a0,0(t0)`, never `sb a0,0(a0)` |
 | Full exec oracle set | Still run by `make exec-oracle`; this suite is a curated fast subset |
 | Guest Asm_RV encoding parity | Not in this suite (host AOT only); see `tests/asm/GAPS.md` for asm |

@@ -25,3 +25,7 @@ tests/compiler/cases/c_funptr_local.hc	000000000000002a
 tests/compiler/cases/c_if_loop.hc	000000000000001e
 tests/compiler/cases/c_lock_stmt.hc	000000000000002a
 tests/compiler/cases/c_u8_param_idx.hc	0000000000000053
+tests/compiler/cases/c_arr_postinc_idx.hc	000000000000001f
+# `_start` unit keeps its file-scope string-literal initializers (`__init_globals`)
+tests/exec/cases/e_start_glbl_strinit.hc	00000000000000c4
+tests/exec/cases/e_start_no_toplevel.hc	0000000000000002

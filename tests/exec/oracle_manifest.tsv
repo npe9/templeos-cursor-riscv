@@ -53,6 +53,7 @@ tests/exec/cases/e_f64_array_decay.hc	000000000000003f
 tests/exec/cases/e_indirect_sibling_args.hc	000000000000001f
 tests/exec/cases/e_postfix_cast_store.hc	000000000000007f
 tests/exec/cases/e_kernel_scalar_union.hc	0000000000000007
+tests/exec/cases/e_u32_peel_union.hc	000000000000007f
 tests/exec/cases/e_kernel_queue.hc	0000000000000007
 tests/exec/cases/e_struct_copy.hc	000000000000000f
 tests/exec/cases/e_global_2d_array.hc	00000000000003ff
@@ -77,3 +78,13 @@ tests/exec/cases/e_native_mmio.hc	000000000000003f
 tests/exec/cases/e_native_date.hc	000000000000000f
 tests/exec/cases/e_native_flib.hc	00000000000003ff
 tests/exec/cases/e_cast_deref_store.hc	00000000000007ff
+tests/exec/cases/e_member_pp_vararg.hc	00000000000000ff
+tests/exec/cases/e_mstr_pp_vararg.hc	000000000000007f
+tests/exec/cases/e_arr_postinc_forms.hc	0000000000000fff
+# `_start` units: the AOT keeps their top-level statements (`__init_globals`) — host/compiler.c
+tests/exec/cases/e_start_glbl_strinit.hc	00000000000000c4
+tests/exec/cases/e_start_no_toplevel.hc	0000000000000002
+tests/exec/cases/e_call_ptr_deref.hc	00000000000000ff
+tests/exec/cases/e_arr2d_member_row.hc	000000000000003f
+tests/exec/cases/e_subswitch_break.hc	000000000000007f
+tests/exec/cases/e_member_ptr_array.hc	000000000000003c

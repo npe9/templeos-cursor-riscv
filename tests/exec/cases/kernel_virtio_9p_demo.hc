@@ -80,7 +80,40 @@ I64 V9pNestedWrite(U8 *dir1, U8 *dir2, U8 *leaf, U8 *buf, I64 len)
 
 I64 main()
 {
-  I64 rc;
+  I64 rc, gsz, i;
+  U8 *got;
+  CTask *adam = 0x86900000;
+  CBlkPool *bp;
+  CHeapCtrl *ah;
+  CCPU *gs;
+  // Boot scaffolding so FileRead HashFind sees live Fs+adam_task.
+  MemSet(adam, 0, sizeof(CTask));
+  Fs = adam;
+  adam_task = adam;
+  MemSet(the_heap, 0, sizeof(CHeapCtrl));
+  heap_next = 0x82000400;
+  heap_end = 0x86000000;
+  bp = 0x86800000;
+  BlkPoolInit(bp, 0x2000);
+  sys_code_bp = bp;
+  ah = HeapCtrlInit(NULL, NULL, bp);
+  adam->code_heap = ah;
+  adam->data_heap = ah;
+  MemSet(SYS_FIXED_AREA, 0, 8192);
+  TaskInit(adam, 0);
+  gs = 0x86A00000;
+  MemSet(gs, 0, sizeof(CCPU));
+  gs->seth_task = adam;
+  adam->gs = gs;
+  Gs = gs;
+  RVYieldInit(&Fs);
+  RVKernelInit();
+  if (!blkdev.blkdevs) {
+    blkdev.blkdevs = CAlloc(sizeof(CBlkDev) * BLKDEVS_NUM);
+    blkdev.drvs = CAlloc(sizeof(CDrv) * DRVS_NUM);
+    for (i = 0; i < DRVS_NUM; i++)
+      blkdev.let_to_drv[i] = &blkdev.drvs[i];
+  }
   Sh("virtio-9p demo: 9P2000.L client (mmio or pci)\n");
   rc = Virtio9pSelfTest("hello from 9p", 13);
   if (rc) {
@@ -102,6 +135,133 @@ I64 main()
     Sh("virtio-9p: read_fail\n");
     return -6;
   }
+  // G28: Virtio9pConnect plants soft P: (RVSoftLet9pPlant).
+  if (!Let2Drv('P', FALSE)) {
+    Sh("virtio-9p: Let2Drv P FAIL\n");
+    return -7;
+  }
+  Sh("virtio-9p: Let2Drv P ok\n");
+  // G28 VFS: stock FileRead("P:/…") → NineP (no Virtio9pReadPath import).
+  gsz = 0;
+  got = FileRead("P:/test.txt", &gsz, NULL);
+  if (!got || gsz < 13 || MemCmp(got, "hello from 9p", 13)) {
+    Sh("virtio-9p: FileRead P FAIL\n");
+    Free(got);
+    return -8;
+  }
+  Free(got);
+  Sh("virtio-9p: FileRead P ok\n");
+  // G28: stock FilesFind("P:/*") after nested opens (Treaddir + d_off).
+  
+  {
+    CDirEntry *de, *tmp;
+    I64 nent = 0;
+    Bool saw = FALSE;
+    de = FilesFind("P:/*");
+    tmp = de;
+    while (tmp) {
+      nent++;
+      if (!StrCmp(tmp->name, "test.txt"))
+        saw = TRUE;
+      tmp = tmp->next;
+    }
+    DirTreeDel(de);
+    if (!nent || !saw) {
+      Sh("virtio-9p: FilesFind P FAIL\n");
+      return -9;
+    }
+  }
+  Sh("virtio-9p: FilesFind P ok\n");
+  // Nested FilesFind after V9pNestedWrite created Home/nest/out.hc.
+  
+  {
+    CDirEntry *de, *tmp;
+    I64 nent = 0;
+    Bool saw_nest = FALSE, saw_out = FALSE;
+    de = FilesFind("P:/Home/*");
+    tmp = de;
+    while (tmp) {
+      nent++;
+      if (!StrCmp(tmp->name, "nest"))
+        saw_nest = TRUE;
+      tmp = tmp->next;
+    }
+    DirTreeDel(de);
+    if (!nent || !saw_nest) {
+      Sh("virtio-9p: FilesFind P/Home FAIL\n");
+      return -10;
+    }
+    nent = 0;
+    de = FilesFind("P:/Home/nest/*");
+    tmp = de;
+    while (tmp) {
+      nent++;
+      if (!StrCmp(tmp->name, "out.hc"))
+        saw_out = TRUE;
+      tmp = tmp->next;
+    }
+    DirTreeDel(de);
+    if (!nent || !saw_out) {
+      Sh("virtio-9p: FilesFind P/Home/nest FAIL\n");
+      return -11;
+    }
+  }
+  Sh("virtio-9p: FilesFind nested ok\n");
+  // G28: DirContext Cd on FSt_9P — stock Cd("P:/…") then relative FilesFind("*").
+  
+  {
+    CDirEntry *de, *tmp;
+    I64 nent = 0;
+    Bool saw_nest = FALSE, saw_out = FALSE;
+    U8 *cwd;
+    if (!Cd("P:/Home")) {
+      Sh("virtio-9p: Cd P:/Home FAIL\n");
+      return -12;
+    }
+    cwd = DirCur;
+    if (!cwd || StrCmp(cwd, "P:/Home")) {
+      Sh("virtio-9p: Cd DirCur FAIL\n");
+      Free(cwd);
+      return -13;
+    }
+    Free(cwd);
+    de = FilesFind("*");
+    tmp = de;
+    while (tmp) {
+      nent++;
+      if (!StrCmp(tmp->name, "nest"))
+        saw_nest = TRUE;
+      tmp = tmp->next;
+    }
+    DirTreeDel(de);
+    if (!nent || !saw_nest) {
+      Sh("virtio-9p: DirContext FilesFind FAIL\n");
+      return -14;
+    }
+    if (!Cd("nest")) {
+      Sh("virtio-9p: Cd nest FAIL\n");
+      return -15;
+    }
+    nent = 0;
+    de = FilesFind("*");
+    tmp = de;
+    while (tmp) {
+      nent++;
+      if (!StrCmp(tmp->name, "out.hc"))
+        saw_out = TRUE;
+      tmp = tmp->next;
+    }
+    DirTreeDel(de);
+    if (!nent || !saw_out) {
+      Sh("virtio-9p: DirContext nest FAIL\n");
+      return -16;
+    }
+    if (!Cd("P:/")) {
+      Sh("virtio-9p: Cd P:/ FAIL\n");
+      return -17;
+    }
+  }
+  Sh("virtio-9p: DirContext Cd ok\n");
   Sh("virtio-9p: read_ok\n");
   return 0;
 }

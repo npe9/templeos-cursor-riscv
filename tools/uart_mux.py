@@ -49,6 +49,9 @@ CH_NAMES = {
 }
 VT_N = 4
 VT_BANNER_RE = re.compile(rb"--- VT ([0-3]) \(")
+# Longest prefix of a banner that can straddle a read: "\r\n--- VT 0 (" -> hold back
+# this many bytes so a banner split across chunks is still matched.
+VT_BANNER_HOLD = 16
 
 
 def crc8(data: bytes) -> int:
@@ -91,6 +94,8 @@ class Demux:
         self.channels: dict[int, bytearray] = {i: bytearray() for i in range(5)}
         self.frames = 0
         self.bad_crc = 0
+        self._rawbuf = bytearray()
+        self._cons_pending = bytearray()
         self.bad_len = 0
         self.vt_cur = 0
         self.vt: dict[int, bytearray] = {i: bytearray() for i in range(VT_N)}
@@ -99,7 +104,9 @@ class Demux:
         self._vt_follow_cb = None  # optional Callable[[int, bytes], None]
 
     def _vt_switch(self, n: int) -> None:
-        if 0 <= n < VT_N:
+        # Idempotent: with framing on, a Vt(n) produces BOTH a framed "V\tN" notify and
+        # the soft banner, so counting every notify double-reports every switch.
+        if 0 <= n < VT_N and n != self.vt_cur:
             self.vt_cur = n
             self.vt_switches += 1
 
@@ -110,25 +117,61 @@ class Demux:
     def _vt_pane_clear(self) -> None:
         self.vt_pane = None
 
+    def _vt_emit(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        self.vt[self.vt_cur].extend(chunk)
+        if self._vt_follow_cb:
+            self._vt_follow_cb(self.vt_cur, chunk)
+
     def _note_console_bytes(self, data: bytes) -> None:
-        """Track soft VT banners + append bytes to active vtN buffer."""
+        """Track soft VT banners + append bytes to active vtN buffer.
+
+        Callers hand this data in arbitrary sizes — the raw path feeds a single byte
+        at a time — so the multi-byte banner pattern can only be found by carrying a
+        pending buffer across calls. Scanning each call's data in isolation meant
+        `--- VT N (title) ---` never matched and soft-banner splitting silently did
+        nothing (the selftest missed it: its switches come from framed V\tN).
+        """
         if not data:
             return
-        # Scan banners; emit follow chunks per active VT after each switch.
-        pos = 0
-        for m in VT_BANNER_RE.finditer(data):
-            chunk = data[pos : m.start()]
-            if chunk:
-                self.vt[self.vt_cur].extend(chunk)
-                if self._vt_follow_cb:
-                    self._vt_follow_cb(self.vt_cur, chunk)
+        self._cons_pending.extend(data)
+        buf = bytes(self._cons_pending)
+        last = 0
+        for m in VT_BANNER_RE.finditer(buf):
+            self._vt_emit(buf[last : m.start()])
             self._vt_switch(int(m.group(1)))
-            pos = m.start()
-        tail = data[pos:]
-        if tail:
-            self.vt[self.vt_cur].extend(tail)
-            if self._vt_follow_cb:
-                self._vt_follow_cb(self.vt_cur, tail)
+            # The banner text belongs to the VT it announces — emit it there, and
+            # consume it so a retained tail cannot re-match it on the next call.
+            self._vt_emit(buf[m.start() : m.end()])
+            last = m.end()
+        rest = buf[last:]
+        if len(rest) > VT_BANNER_HOLD:
+            cut = len(rest) - VT_BANNER_HOLD
+            self._vt_emit(rest[:cut])
+            rest = rest[cut:]
+        self._cons_pending = bytearray(rest)
+
+    def _flush_console_pending(self) -> None:
+        if self._cons_pending:
+            self._vt_emit(bytes(self._cons_pending))
+            self._cons_pending.clear()
+
+    def _recover_raw(self) -> None:
+        """Not a frame after all — emit the candidate bytes as console.
+
+        A literal 0x7E in console text is indistinguishable from SYNC, and the REPL
+        boot banner contains one ('~10000000 Hz' in Uptime). Dropping the buffer on a
+        failed frame silently truncated everything after that byte. Re-emit the
+        original, still-stuffed bytes (SYNC included) so console text survives.
+        """
+        raw = bytes(self._rawbuf)
+        self._rawbuf.clear()
+        if not raw:
+            return
+        self.raw_console.extend(raw)
+        self.channels[0].extend(raw)
+        self._note_console_bytes(raw)
 
     def _finish_frame(self) -> None:
         raw = bytes(self._buf)
@@ -137,16 +180,20 @@ class Demux:
         self._esc = False
         if len(raw) < 4:
             self.bad_len += 1
+            self._recover_raw()
             return
         body, csum = raw[:-1], raw[-1]
         if crc8(body) != csum:
             self.bad_crc += 1
+            self._recover_raw()
             return
         ch = body[0]
         ln = body[1] | (body[2] << 8)
         if ln > 256 or 3 + ln != len(body):
             self.bad_len += 1
+            self._recover_raw()
             return
+        self._rawbuf.clear()
         payload = body[3 : 3 + ln]
         if ch not in self.channels:
             self.channels[ch] = bytearray()
@@ -157,6 +204,10 @@ class Demux:
             if payload[0] == ord("V"):
                 dig = payload[2] - ord("0")
                 if 0 <= dig < VT_N:
+                    # Raw console bytes still held for banner matching belong to the
+                    # VT we are leaving — a framed switch is out-of-band and would
+                    # otherwise misattribute them to the new one.
+                    self._flush_console_pending()
                     self._vt_switch(dig)
                     return
             if payload[0] == ord("P"):
@@ -181,11 +232,14 @@ class Demux:
                     self._in_frame = True
                     self._esc = False
                     self._buf.clear()
+                    self._rawbuf.clear()
+                    self._rawbuf.append(b)
                 else:
                     self.raw_console.append(b)
                     self.channels[0].append(b)
                     self._note_console_bytes(bytes([b]))
                 continue
+            self._rawbuf.append(b)
             if self._esc:
                 self._buf.append(b ^ 0x20)
                 self._esc = False
@@ -195,20 +249,34 @@ class Demux:
                 continue
             if b == SYNC:
                 if self._buf:
+                    # Drop the trailing SYNC from the candidate; it starts the next one.
+                    self._rawbuf.pop()
                     self._finish_frame()
                 self._in_frame = True
                 self._esc = False
                 self._buf.clear()
+                self._rawbuf.clear()
+                self._rawbuf.append(b)
                 continue
             self._buf.append(b)
-            if len(self._buf) >= 4:
+            if len(self._buf) >= 3:
                 ln = self._buf[1] | (self._buf[2] << 8)
-                if ln <= 256 and len(self._buf) == 3 + ln + 1:
+                # A real frame is at most FRAME_MAX (64); >256 cannot become valid, so
+                # give up now rather than swallowing the rest of the stream to EOF.
+                if ln > 256:
+                    self.bad_len += 1
+                    self._buf.clear()
+                    self._in_frame = False
+                    self._esc = False
+                    self._recover_raw()
+                    continue
+                if len(self._buf) >= 4 and len(self._buf) == 3 + ln + 1:
                     self._finish_frame()
 
     def feed_eof(self) -> None:
         if self._in_frame and self._buf:
             self._finish_frame()
+        self._flush_console_pending()
 
     def vt_status_line(self) -> str:
         parts = [
@@ -357,6 +425,18 @@ def selftest() -> int:
     assert d.vt_switches >= 2
     assert b"side-session" in d.vt[1]
     assert d.vt_pane == (0, 1)
+    # Soft banners alone (no framing) must drive VT switching, fed one byte at a
+    # time the way the raw console path does. This is the regression that hid behind
+    # the framed assertions above.
+    d2 = Demux()
+    soft = b"boot ~ tilde\r\n--- VT 1 (vt1) ---\r\nalpha\n--- VT 2 (vt2) ---\nbeta\n"
+    for byte in soft:
+        d2.feed(bytes([byte]))
+    d2.feed_eof()
+    assert d2.vt_switches == 2, d2.vt_switches
+    assert b"alpha" in d2.vt[1], bytes(d2.vt[1])
+    assert b"beta" in d2.vt[2], bytes(d2.vt[2])
+    assert b"boot ~ tilde" in d2.vt[0], bytes(d2.vt[0])
     panes = d.render_panes()
     assert "VT panes: 0 | 1" in panes
     assert "side-session" in panes

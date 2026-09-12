@@ -248,6 +248,12 @@ int main(int argc, char **argv) {
   if (map_path) AOTWriteMap(cc, map_path);
   if (deps) AOTWriteDeps(cc, deps, output);
 
+  // `-o` implies quiet (above), which silences the "Code size:" line that
+  // tests/scripts/run_holyc_compliance.sh parses to check a construct actually
+  // emitted code. Opt-in so no existing script's captured stdout changes shape.
+  if (quiet && getenv("HOLYC_PRINT_SIZE"))
+    printf("Code size: %lld bytes\n", cc->code_size);
+
   if (!quiet) {
     printf("✓ Compiled successfully (AOT mode)\n");
     if (cc->asm_blocks_skipped)

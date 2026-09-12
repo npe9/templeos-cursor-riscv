@@ -3,6 +3,7 @@
 // Hold: make kernel-win-run (ESC or serial `q` quits). Serial is the regular
 // TempleOS ExePutS loop (same as A2 / repl-cmp), not dig-down-only.
 #include "/Kernel/Kernel_RV.PRJ"
+#include "/Kernel/RVDocVT.HC"
 #include "/Compiler/RISCVRegs.HH"
 // Incremental host AOT links Compiler_RV as a separate unit (see tests/exec/aot/).
 // Monolithic one-shot still includes the Body here.
@@ -14,9 +15,17 @@ extern I64 RVExePubsWireAddrs(I64 *addrs);
 extern U0 RVAotLibSync(I64 fs, I64 gs);
 extern U0 RVCmpWireAsmHash();
 extern U0 RVCmpWireCharBmps(I64 *src);
+extern U0 RVCmpSetF64Rt(I64 *tbl);
 extern I64 RVCmpCtrlAddrsGet(I64 *out);
 extern U0 RVMenuWireCmpCtrlAddrs(I64 *addrs);
 extern I64 RVExePutSSynced(U8 *buf, I64 fs, I64 gs);
+#endif
+#ifdef RV_WIN_HOLD_UNIT
+// Split AOT: one shared Kernel unit for win_i + win_hold + win_vt; the variant lives
+// in the tiny win_flag_{i,hold,vt}.hc unit (tests/exec/aot/) picked at --link time.
+// RVWinHoldFlag: 0 headless proof, 1 FB hold, 2 present to a VT100 over UART.
+// RVWinVtCols/Rows: VT text geometry, 0 in the non-VT units = keep RVGrInit defaults.
+extern I64 RVWinHoldFlag();
 #endif
 I64 RVWinSerialHolyC(U8 *line)
 {
@@ -68,13 +77,161 @@ U0 RVWinAdamBoot()
   RVJiffiesInit(CONFIG_TIMEBASE_FREQ / 1000);
 }
 
+// ---- VT presentation (RVWinHoldFlag()==2) -------------------------------------
+// The desktop, ExePutS REPL and DolDoc are all exactly the ones the FB variants use.
+// The only difference is the scanout: RVVtPresent diffs the composed text grid and
+// ships ANSI over the same UART, instead of RVWinMgrPresent pushing pixels at ramfb.
+I64 g_vt_caret_row;
+I64 g_vt_caret_col;
+U0 RVWinVtCaret(I64 idx)
+{
+  // The WinMgr keeps no caret field; the end of the focused window's text is the
+  // insertion point for an append-only REPL body.
+  CRVWin *w;
+  I64 x, y, ch;
+  if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+    return;
+  w = &rv_winmgr.wins[idx];
+  g_vt_caret_row = w->top;
+  g_vt_caret_col = w->left;
+  for (y = w->top; y <= w->bottom; y++) {
+    for (x = w->left; x <= w->right; x++) {
+      ch = rv_winmgr.text_base[y *rv_winmgr.cols + x] & 255;
+      if (ch > 32) {
+        g_vt_caret_row = y;
+        g_vt_caret_col = x + 1;
+      }
+    }
+  }
+  if (g_vt_caret_col > w->right)
+    g_vt_caret_col = w->right;
+}
+
+// Readable palette for the VT presentation. Scoped to this path on purpose: the FB
+// variants keep their existing attrs, so no render hash moves.
+//
+// The desktop ships the Term body as WHITE<<4 | LTGRAY — light gray on white, which
+// on a real terminal is roughly 1.4:1 and close to unreadable. Principles applied:
+//   * body text gets the maximum available contrast: BLACK on WHITE (~21:1);
+//   * focus is signalled by border BRIGHTNESS (LTBLUE vs DKGRAY), not hue alone, so it
+//     survives a monochrome terminal and colour-blind viewers;
+//   * the wallpaper stays dark so window edges read as edges;
+//   * nothing depends on colour to be understood — the border and title already carry
+//     focus, colour only reinforces it.
+// Attr layout is BG<<4 | FG. Parenthesised because this codebase writes `BG << 4 + FG`
+// and relies on HolyC binding << tighter than +, which is not the C rule.
+U0 RVWinVtTheme()
+{
+  I64 i, tattr, battr;
+  CRVWin *w;
+  rv_winmgr.wallpaper_attr = (BLUE << 4) + LTGRAY;
+  tattr = (WHITE << 4) + BLACK;
+  for (i = 0; i < RV_WIN_MAX; i++) {
+    w = &rv_winmgr.wins[i];
+    if (!w->used)
+      continue;
+    if (i == rv_winmgr.focus)
+      battr = LTBLUE;
+    else
+      battr = DKGRAY;
+    w->text_attr = tattr;
+    w->border_attr = battr;
+    // The window is a mirror of its CTask: RVWinSyncFromTask copies
+    // t->text_attr/border_attr back over w-> on every compose, so setting the window
+    // alone is undone a frame later. The task is the source of truth.
+    //
+    // No TaskValidate guard: it was silently skipping the write, which is why the
+    // window FILL (RVWinMgr.HC:1573 paints the interior with w->text_attr) stayed at
+    // the stock 0x0F white-on-black and the dark theme inverted every unwritten cell
+    // to a white ground — while the text itself, painted from the CDoc's own attrs,
+    // came out dark. That mismatch is the "white boundary": it traces the exact edge
+    // of what the doc has written.
+    if (w->task) {
+      w->task->text_attr = tattr;
+      w->task->border_attr = battr;
+    }
+  }
+}
+
+U0 RVWinVtRun()
+{
+  I64 ch, n, idx, last_row = -1, last_col = -1;
+  // The presenter owns the wire: a raw Print during evaluation would land in the
+  // middle of an ANSI frame. Default 0 (mirror AND write) is right for the FB
+  // variants, where the UART is a separate device. See Kernel/KBootRV.HC.
+  rv_console_mirror_only = 1;
+  // The demo desktop tiles three windows, which at 80 columns leaves the Term about
+  // 19 wide — unusable as a prompt. Maximize it; the others stay a `tileh`/`tilev`
+  // away. (Same thing the dig-down `max` command does.)
+  if (rv_winmgr.term_idx >= 0) {
+    RVWinFocus(rv_winmgr.term_idx);
+    RVWinMax(rv_winmgr.term_idx);
+  }
+  RVWinVtTheme();
+  // Something worth Cat'ing. The demo placeholders (RVWinMgr.HC ~2196) are written
+  // with their own filename as their contents — A:/HOME.DD really is the 7 bytes
+  // "HOME.DD" — so Cat on them looks broken when it is working. This one carries
+  // actual DolDoc markup, so `Cat("A:/Doc/VtDemo.DD");` demonstrates that $-commands
+  // are interpreted (colour + a link) rather than printed literally.
+  {
+    U8 *dd = "$FG,LTBLUE$TempleOS/RISC-V$FG$ on a VT100\n"
+             "$FG,GREEN$Colour$FG$ and $UL$underline$UL$ come from DolDoc, not ANSI.\n"
+             "Link: $LK,\"HOME.DD\",A=\"FI:A:/HOME.DD\"$\n"
+             "Cat prints through DocPutS, so these $$ commands are parsed.\n";
+    DirMk("A:/Doc");
+    FileWrite("A:/Doc/VtDemo.DD", dd, StrLen(dd));
+  }
+  RVVtInit(0, 1);
+  while (!rv_winmgr.want_quit) {
+    ch = RVUartTryGet;
+    if (ch >= 0)
+      RVWinTermPutChar(ch);
+    // Follow the tail. RVWinClampScroll recomputes max = lines - height from the live
+    // doc, so parking scroll_y past the end pins the view to the newest output. The
+    // WinMgr has scroll_y and a clamp but nothing that auto-follows, which is why a
+    // REPL scrolled off the bottom and appeared to freeze. Must happen BEFORE compose,
+    // which reads scroll_y.
+    idx = rv_winmgr.focus;
+    if (idx < 0)
+      idx = rv_winmgr.term_idx;
+    if (idx >= 0 && idx < RV_WIN_MAX && rv_winmgr.wins[idx].used) {
+      rv_winmgr.wins[idx].scroll_y = 0x40000000;
+      RVWinClampScroll(idx);
+    }
+    // Re-assert per frame: Tab moves focus and `user` spawns new windows.
+    RVWinVtTheme();
+    // RVWinMgrRefresh is the pixel pipeline and bails without rv_fb.pixels; only its
+    // first two steps build the text grid, which is all the presenter consumes.
+    RVWinMgrWallPaper;
+    RVWinMgrComposeWins;
+    n = RVVtPresent();
+    idx = rv_winmgr.focus;
+    if (idx < 0)
+      idx = rv_winmgr.term_idx;
+    RVWinVtCaret(idx);
+    // Re-park the cursor only on a change. RVVtPresentAt would do it unconditionally
+    // and an idle spin loop then ships tens of thousands of cursor escapes a second,
+    // destroying the zero-cost-when-idle property the presenter exists for.
+    if (n > 0 || g_vt_caret_row != last_row || g_vt_caret_col != last_col) {
+      RVVtGoto(g_vt_caret_row, g_vt_caret_col);
+      RVVtCursor(1);
+      RVVtFlush();
+      last_row = g_vt_caret_row;
+      last_col = g_vt_caret_col;
+    }
+  }
+  RVVtStop();
+  RVUartPutS("\nRVWinMgr VT: quit\n");
+}
+
 I64 main()
 {
-  I64 h, hold, r;
+  I64 h, hold, r, vt_cols = 0, vt_rows = 0;
   RVWinAdamBoot;
   RVKernelInit();
   Print("RVWinMgr interactive: kernel ok\n");
   RVMountRAMDisk('A', 4096);
+  RVHomeBringUp('A');
   FileWrite("A:/WINDIR.TXT", "win soft dir\n", 13);
   // Stage PersonalMenu under A:/Adam before DemoDesktop RVKSpawn (stock path).
   
@@ -82,6 +239,24 @@ I64 main()
     U8 *menu_dd = "Win {\n" "  TileHorz(,1);\n" "  TileVert(,2);\n" "  WinMax(,3);\n" "  Close(,4);\n" "}\n" "Help {\n" "  About(,5);\n" "  Help(,6);\n" "  FormDemo(,7);\n" "  CtrlsDemo(,8);\n" "}\n";
     DirMk("A:/Adam");
     FileWrite("A:/Adam/PersonalMenu.DD", menu_dd, StrLen(menu_dd));
+  }
+  // Stock Cd("~") after RVHomeBringUp (post-mount). SoftCd null stay-put separate.
+  
+  {
+    U8 *st;
+    if (!blkdev.home_dir || !Cd("~")) {
+      Print("RVWinMgr interactive HomeSet FAIL home=%X\n", blkdev.home_dir);
+      return 1;
+    }
+    st = DirCur;
+    Print("RVWinMgr interactive Cd(~) ok dir=%s home=%s\n", st, blkdev.home_dir);
+    Free(st);
+    // SoftCd stay-put must still early-out (PopUp Cd; path).
+    if (!RVWinSoftCd(NULL)) {
+      Print("RVWinMgr interactive SoftCd null FAIL\n");
+      return 1;
+    }
+    Print("RVWinMgr interactive SoftCd null stay-put ok\n");
   }
   Print("RVWinMgr interactive: mount ok\n");
   Print("RVWinMgr interactive: CInit...\n");
@@ -97,7 +272,7 @@ I64 main()
   // Split-AOT: never &CmpCtrlNew from Kernel (GOT trunc → insn 0x8098).
   
   {
-    I64 cmp_addrs[4];
+    I64 cmp_addrs[5];
     I64 n_cmp = RVCmpCtrlAddrsGet(cmp_addrs);
     RVMenuWireCmpCtrlAddrs(cmp_addrs);
     Print("RVWinMgr interactive: MenuNew CmpCtrl addrs n=%d fp_ok=%d\n", n_cmp, RVMenuFpsWired);
@@ -128,6 +303,18 @@ I64 main()
     bmps[16] = &char_bmp_non_eol[0];
     RVAotLibSync(Fs, Gs);
     RVCmpWireCharBmps(bmps);
+    // Guest IC_SIN/COS/TAN/ATAN/POWER call these Kernel F64 wrappers (KUtilsRV).
+    {
+      I64 f64rt[8], zi;
+      for (zi = 0; zi < 8; zi++)
+        f64rt[zi] = 0;
+      f64rt[0] = &RVF64Sin;
+      f64rt[1] = &RVF64Cos;
+      f64rt[2] = &RVF64Tan;
+      f64rt[3] = &RVF64ATan;
+      f64rt[4] = &RVF64Pow;
+      RVCmpSetF64Rt(f64rt);
+    }
   }
   CInit();
   Print("RVWinMgr interactive: CInit ok\n");
@@ -135,7 +322,7 @@ I64 main()
   // Split-AOT: Compiler-unit abs addrs (not Kernel &CmpCtrlNew GOT).
   
   {
-    I64 cmp_addrs[4];
+    I64 cmp_addrs[5];
     I64 n_cmp = RVCmpCtrlAddrsGet(cmp_addrs);
     RVMenuWireCmpCtrlAddrs(cmp_addrs);
     Print("RVWinMgr interactive: MenuNew CmpCtrl addrs n=%d fp_ok=%d\n", n_cmp, RVMenuFpsWired);
@@ -143,7 +330,8 @@ I64 main()
   // Kernel &Regs/&Dir — Compiler address-of imports may stay GOT=0.
   
   {
-    I64 pubs[10];
+    I64 pubs[15];
+    pubs[14] = &RVWinSoftCat;
     pubs[0] = &Print;
     pubs[1] = &PutChars;
     pubs[2] = &Regs;
@@ -154,6 +342,10 @@ I64 main()
     pubs[7] = &RVWinSoftCd;
     pubs[8] = &RVWinSoftHelp;
     pubs[9] = &RVWinSoftMan;
+    pubs[10] = &FileMgr;
+    pubs[11] = &DocPopUpPickFileRun;
+    pubs[12] = &FileNameForm;
+    pubs[13] = &DocPopUpFileNameRun;
     Print("RVWinMgr interactive: ExePubs wired n=%d\n", RVExePubsWireAddrs(pubs));
   }
 #endif
@@ -180,8 +372,30 @@ I64 main()
     return 1;
   }
   Print("RVWinMgr interactive: ExePutS wired\n");
+  // Decide the variant BEFORE the framebuffer exists. RVWinMgrInit derives the text
+  // grid as rv_fb.width/FONT_WIDTH x rv_fb.height/FONT_HEIGHT, so the only way to get
+  // a desktop that fits a terminal is to size the FB for it here — after the desktop
+  // is composed the window coordinates are already baked at 100x75 and retargeting
+  // rv_winmgr.rows/cols would leave the layout behind.
+  hold = 0;
+#ifdef RV_WIN_HOLD
+  hold = 1;
+#endif
+#ifdef RV_WIN_HOLD_UNIT
+  // Packed flag: variant in bits 0..7, cols in 8..19, rows in 20..31. Kept to one
+  // import because adding two more broke DocInit_RV's hash in this shared unit.
+  h = RVWinHoldFlag();
+  hold = h & 255;
+  vt_cols = (h >> 8) & 4095;
+  vt_rows = (h >> 20) & 4095;
+#endif
   rv_sys_gr_force = 1;
-  if (!RVGrInit()) {
+  if (hold == 2 && vt_cols > 0 && vt_rows > 0) {
+    if (!RVGrInit(vt_cols *FONT_WIDTH, vt_rows *FONT_HEIGHT)) {
+      Print("RVWinMgr interactive FAIL (Gr vt)\n");
+      return 1;
+    }
+  } else if (!RVGrInit()) {
     Print("RVWinMgr interactive FAIL (Gr)\n");
     return 1;
   }
@@ -237,7 +451,7 @@ I64 main()
     RVWinMenuStub(rv_winmgr.adam_idx);
     Print("RVWinMgr interactive menu hits=%d open=%d n=%d\n", rv_winmgr.menu_hits, rv_winmgr.menu_open, RVMenuPersonalCount);
     Print("RVWinMgr interactive menu lex_test=%d lex_hits=%d abort=%d\n", RVMenuLexSelfTest, rv_menu_lex_hits, rv_menu_lex_abort);
-    // Soft-I64 CmpCtrl MenuNew (TileHorz(,1)) via Compiler abs addrs.
+    // CmpCtrl MenuNew + LexExpressionI64 (literal fast-path; soft_i64=0).
     Print("RVWinMgr interactive MenuNewCmpCtrl n=%d cmp_hits=%d soft_i64=%d fp_ok=%d\n", RVMenuCmpSelfTest, rv_menu_cmp_hits, rv_menu_cmp_soft_i64, RVMenuFpsWired);
     // Stock Job.HC PopUp BEFORE Menu About (SrvCmdLine+ExePrint+JobRes; RVKSpawn).
     Print("RVWinMgr interactive popup JobRes begin\n");
@@ -304,10 +518,18 @@ I64 main()
       {
         CDocEntry *lk;
         CDocBin *bn;
-        // Welcome FI: OpenLink proven via HelpIndex→Welcome path above; skip
-        // second Activate (can hang post-OpenLink before opens= print).
-        no_warn lk;
-        Print("RVDoc OpenLink opens=%d (Welcome Activate skipped)\n", rv_doc_link_opens);
+        // Welcome FI: Activate stock HOME Welcome link (second FI: after HelpIndex).
+        lk = hw->doc->head.next;
+        while (lk && lk != hw->doc) {
+          if (lk->type_u8 == DOCT_LINK && lk->aux_str && StrMatch("Welcome", lk->aux_str)) {
+            hw->doc->cur_entry = lk;
+            if (RVDocActivate(hw->doc, lk))
+              rv_winmgr.home_link_hits++;
+            break;
+          }
+          lk = lk->next;
+        }
+        Print("RVDoc OpenLink opens=%d\n", rv_doc_link_opens);
         DocEdKeyInjectClear;
         // Tab past DATA+CB onto OK, Enter → LE=1
         DocEdKeyInject('\t');
@@ -324,11 +546,72 @@ I64 main()
           DocBinsValidate(hw->doc);
           Print("RVDoc bin hits=%d cur_bin=%d ib=%d\n", rv_doc_bin_hits, hw->doc->cur_bin_num, rv_doc_ib_hits);
         }
-        // P2: host Demo DolDoc load (DemoInPage + HX/SO/HC) — no OpenLink hang.
+        // P2: host Demo DolDoc load (TX+CX → DOCEF_CENTER_X via RVDocPrsFlagsCmp).
         RVDocDemoProbe;
         // Stock FMRebuildDocDrv → CRVWin open (FilesFind+DirFileDoc; not probe-only).
         RVFileMgrOpen;
         Print("RVWinMgr interactive FileMgr open hits=%d idx=%d\n", rv_winmgr.filemgr_open_hits, rv_winmgr.filemgr_idx);
+        // Stock PopUp ExePrint FileMgr(1,0) green (Job parent drv + DirCur).
+        // Stock Fs->parent_task via _intern IC_FS + ExePub CTask lite.
+        
+        {
+          I64 eres;
+          I64 hits0 = rv_filemgr_pick_hits;
+          // Parse+codegen probe: _intern Fs→IC_MOV_FS (no FileMgr GetMsg).
+          eres = ExePutS("Print(\"RVWinMgr Fs->parent_task=%X\\n\",Fs->parent_task);");
+          Print("RVWinMgr ExePutS Fs->parent_task probe res=%d\n", eres);
+          eres = PopUp("FileMgr(1,0);", Fs);
+          Print("RVWinMgr ExePrint FileMgr(1,0) res=%d pick_hits=%d→%d\n", eres, hits0, rv_filemgr_pick_hits);
+          // Fs remat as FileMgr arg (single stmt).
+          hits0 = rv_filemgr_pick_hits;
+          eres = PopUp("FileMgr(1,Fs->parent_task);", Fs);
+          Print("RVWinMgr ExePrint FileMgr(1,Fs->parent_task) res=%d pick_hits=%d→%d\n", eres, hits0, rv_filemgr_pick_hits);
+          // Compound ExePutS: Cd then FileMgr — must reach FileMgr (not Cd Bool).
+          hits0 = rv_filemgr_pick_hits;
+          eres = PopUp("Cd(\"A:\");FileMgr(1,Fs->parent_task);", Fs);
+          Print("RVWinMgr ExePrint Cd;FileMgr compound res=%d pick_hits=%d→%d\n", eres, hits0, rv_filemgr_pick_hits);
+        }
+        // Stock DocPopUp PopUpPickFile via Cd;FileMgr compound+PopUp.
+        
+        {
+          U8 *pick;
+          Print("RVWinMgr interactive FileMgr pick begin\n");
+          pick = PopUpPickFile("A:");
+          if (pick && *pick)
+            Print("RVWinMgr interactive FileMgr pick ok path=%s getmsg=%d\n", pick, rv_filemgr_getmsg_hits);
+          else
+            Print("RVWinMgr interactive FileMgr pick FAIL getmsg=%d\n", rv_filemgr_getmsg_hits);
+          Free(pick);
+        }
+        // Stock DocPopUp PopUpPickDir via Cd;FileMgr(FM_PICK_DIR) compound+PopUp.
+        
+        {
+          I64 eres;
+          I64 hits0 = rv_filemgr_pick_hits;
+          U8 *pick;
+          // Literal FM_PICK_DIR — DocInit_RV DefineLoad; not numeric 2.
+          eres = PopUp("Cd(\"A:\");FileMgr(FM_PICK_DIR,Fs->parent_task);", Fs);
+          Print("RVWinMgr ExePrint Cd;FileMgr(FM_PICK_DIR) compound res=%d pick_hits=%d→%d\n", eres, hits0, rv_filemgr_pick_hits);
+          Print("RVWinMgr interactive FileMgr pickdir begin\n");
+          pick = PopUpPickDir("A:");
+          if (pick && *pick)
+            Print("RVWinMgr interactive FileMgr pickdir ok path=%s getmsg=%d\n", pick, rv_filemgr_getmsg_hits);
+          else
+            Print("RVWinMgr interactive FileMgr pickdir FAIL getmsg=%d\n", rv_filemgr_getmsg_hits);
+          Free(pick);
+        }
+        // Stock DocPopUp PopUpFileName via FileNameForm+PopUp (DOF_SIZE_MIN).
+        
+        {
+          U8 *fn;
+          Print("RVWinMgr interactive PopUpFileName begin\n");
+          fn = PopUpFileName("~/Span/Game.DATA");
+          if (fn && *fn)
+            Print("RVWinMgr interactive PopUpFileName ok path=%s\n", fn);
+          else
+            Print("RVWinMgr interactive PopUpFileName FAIL\n");
+          Free(fn);
+        }
         RVWinMgrRefresh;
         Print("RVDoc DocSprite paints=%d\n", rv_doc_sprite_paints);
       }
@@ -457,10 +740,7 @@ I64 main()
   }
   if (rv_winmgr.term_idx >= 0)
     RVWinFocus(rv_winmgr.term_idx);
-  hold = 0;
-#ifdef RV_WIN_HOLD
-  hold = 1;
-#endif
+  // hold / vt_* were resolved before RVGrInit (the FB had to be sized from them).
   // Headless-only: typing, wrap, $ parse, cursor at bottom (save-under must stay in-FB).
   // HOLD / kernel-win-run skips this — cocoa must not eat 200 ramfb presents before the desktop.
   if (!hold) {
@@ -491,7 +771,9 @@ I64 main()
         RVWinMgrCursorUpdate;
     }
   }
-  if (hold)
+  if (hold == 2)
+    RVWinVtRun();
+  else if (hold)
     RVWinMgrRun(0);
   else
     RVWinMgrRun(64);

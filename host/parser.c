@@ -148,7 +148,15 @@ void SymTablePopTo(Compiler *cc, SymTable *scope) {
   while (cc->symtab && cc->symtab != scope) SymTablePop(cc);
 }
 
-static bool ParseFunctionPointerDeclarator(Compiler *cc, char **out_name, int *out_param_count) {
+static bool ParseConstDim(Compiler *cc, I64 *out);
+static I64 CountAggregateElements(Compiler *cc);
+
+// `T (*name)(params)` and `T (*name[N])(params)` / `T (*name[])(params)`. `out_arr_cnt` comes
+// back 0 for the scalar form and the element count for a table; -1 asks the caller to size the
+// table from its initializer.
+static bool ParseFunctionPointerDeclarator(Compiler *cc, char **out_name, int *out_param_count,
+                                           I64 *out_arr_cnt) {
+  if (out_arr_cnt) *out_arr_cnt = 0;
   if (cc->lex.token != '(') {
     Error(cc, "Expected '(' for function pointer declarator");
     return false;
@@ -174,6 +182,33 @@ static bool ParseFunctionPointerDeclarator(Compiler *cc, char **out_name, int *o
 
   char *name = strdup(cc->lex.token_str);
   LexNext(cc);
+
+  // `(*name[N])(…)`: a dispatch table of function pointers. The extent binds to the declarator,
+  // inside the parens, which is why the array brackets are read here and not by the caller.
+  if (cc->lex.token == '[') {
+    I64 cnt = 0;
+    LexNext(cc);
+    if (cc->lex.token == ']') {
+      cnt = -1;                                   // `[]`: sized by the initializer
+    } else if (!ParseConstDim(cc, &cnt)) {
+      free(name);
+      return false;
+    } else if (cnt <= 0) {
+      free(name);
+      Error(cc, "Function pointer array needs a positive extent");
+      return false;
+    }
+    if (!LexExpect(cc, ']')) {
+      free(name);
+      return false;
+    }
+    if (cc->lex.token == '[') {
+      free(name);
+      Error(cc, "Multi-dimensional function pointer arrays are not supported");
+      return false;
+    }
+    if (out_arr_cnt) *out_arr_cnt = cnt;
+  }
 
   if (!LexExpect(cc, ')')) {
     free(name);
@@ -282,21 +317,46 @@ static bool EmitLocalFunctionPointerInitialization(Compiler *cc, Symbol *sym) {
   return true;
 }
 
+static bool ParseLocalAggregateInit(Compiler *cc, Symbol *sym, U8 var_type, CHashClass *decl_class);
+
 static bool ParseLocalFunctionPointerDeclList(Compiler *cc, U8 return_type) {
   do {
     char *name = NULL;
     int parameter_count = 0;
-    if (!ParseFunctionPointerDeclarator(cc, &name, &parameter_count)) {
+    I64 arr_cnt = 0;
+    if (!ParseFunctionPointerDeclarator(cc, &name, &parameter_count, &arr_cnt)) {
       return false;
+    }
+
+    if (arr_cnt < 0) {   // `T (*f[])(…) = {…}`: extent from the initializer
+      arr_cnt = 0;
+      if (cc->lex.token == '=') {
+        LexPush(cc);
+        LexNext(cc);
+        if (cc->lex.token == '{') arr_cnt = CountAggregateElements(cc);
+        LexPopRestore(cc);
+      }
+      if (arr_cnt <= 0) {
+        free(name);
+        Error(cc, "Cannot size `[]` function pointer table without a `{…}` initializer");
+        return false;
+      }
     }
 
     Symbol *sym = SymbolDefine(cc, name, SYM_VAR);
     sym->data_type = RT_I64;
-    sym->size = 8;
+    sym->size = arr_cnt > 0 ? 8 * arr_cnt : 8;
     sym->is_function_pointer = true;
     sym->function_return_type = return_type;
     sym->func_ptr_param_count = parameter_count;
     sym->pointed_to_type = RT_I64;
+    sym->element_size = 8;
+    if (arr_cnt > 0) {   // a table: `f[k]` subscripts it, `(*f[k])(…)` calls through it
+      sym->is_array = true;
+      sym->array_size = arr_cnt;
+      sym->ndims = 1;
+      sym->dim_stride[0] = 8;
+    }
 
     int aligned_size = (sym->size + 7) & ~7;
     sym->offset = HOLY_LOCAL_MARKER(cc->locals_size);
@@ -304,7 +364,12 @@ static bool ParseLocalFunctionPointerDeclList(Compiler *cc, U8 return_type) {
 
     if (cc->lex.token == '=') {
       LexNext(cc);
-      if (!EmitLocalFunctionPointerInitialization(cc, sym)) {
+      if (sym->is_array) {
+        if (!ParseLocalAggregateInit(cc, sym, RT_I64, NULL)) {
+          free(name);
+          return false;
+        }
+      } else if (!EmitLocalFunctionPointerInitialization(cc, sym)) {
         free(name);
         return false;
       }
@@ -330,12 +395,13 @@ static bool ParseLocalFunctionPointerDeclList(Compiler *cc, U8 return_type) {
   return true;
 }
 
-static CHashGlblVar *CreateGlobalFunctionPointerEntry(Compiler *cc, const char *name, U8 return_type, int param_count) {
+static CHashGlblVar *CreateGlobalFunctionPointerEntry(Compiler *cc, const char *name, U8 return_type,
+                                                      int param_count, I64 arr_cnt) {
   CHashGlblVar *tmpg = calloc(1, sizeof(CHashGlblVar));
   tmpg->str = strdup(name);
   tmpg->type = HTT_GLBL_VAR;
   tmpg->use_cnt = 0;
-  tmpg->size = 8;
+  tmpg->size = arr_cnt > 0 ? 8 * arr_cnt : 8;
   tmpg->flags = GVF_FUN;
   tmpg->is_function_pointer = true;
   tmpg->function_return_type = return_type;
@@ -343,37 +409,31 @@ static CHashGlblVar *CreateGlobalFunctionPointerEntry(Compiler *cc, const char *
   tmpg->raw_type = RT_I64;
   tmpg->pointed_to_type = 0;
   tmpg->element_size = 8;
+  if (arr_cnt > 0) {   // `T (*f[N])(…)`: a table, so `f[k]` subscripts by 8 bytes
+    tmpg->flags |= GVF_ARRAY;
+    tmpg->dim.cnt = tmpg->dim.total_cnt = arr_cnt;
+    tmpg->ndims = 1;
+    tmpg->dim_stride[0] = 8;
+  }
   tmpg->data_addr = calloc(1, tmpg->size);
   HashAdd((CHashEntry*)tmpg, cc->hash_table);
   return tmpg;
 }
 
-static bool InitializeGlobalFunctionPointer(Compiler *cc, CHashGlblVar *global_entry) {
-  if (cc->lex.token != '=') {
-    return true;
-  }
-
-  LexNext(cc);
-
-  bool has_amp = false;
-  if (cc->lex.token == '&') {
-    has_amp = true;
-    LexNext(cc);
-  }
-
-  I64 init_val = 0;
-  bool have_value = false;
-
+// One slot of a function pointer table / a scalar function pointer: `&Name`, `Name`, or 0.
+// A function's address is only known once the unit is laid out, so `&Name` is a run-time store
+// into the global's data (the entry chunk in AOT, right now in the REPL) rather than data bytes.
+static bool InitGlobalFunctionPointerSlot(Compiler *cc, CHashGlblVar *g, I64 byte_off) {
+  if (cc->lex.token == '&') LexNext(cc);
   if (cc->lex.token == TK_IDENT) {
     CHashEntry *fn_entry = HashFind(cc->lex.token_str, cc->hash_table, HTT_FUN);
     if (!fn_entry || !(fn_entry->type & HTT_FUN)) {
       Error(cc, "Expected function name in initialization");
       return false;
     }
-    CHashFun *fn = (CHashFun*)fn_entry;
+    CHashFun *fn = (CHashFun *)fn_entry;
     LexNext(cc);
-    // Stored at run time (the entry chunk / this REPL unit): the address is PC-relative in AOT.
-    ICAdd(cc, IC_IMM_I64, (I64)global_entry->data_addr, RT_I64);
+    ICAdd(cc, IC_IMM_I64, (I64)g->data_addr + byte_off, RT_I64);
     cc->ic_tail->ic_flags = ICF_GLBL_ADDR;
     if (!EmitFnAddress(cc, fn)) return false;
     CIntermediateCode *aic = ICNew(cc, IC_ASSIGN);
@@ -383,35 +443,68 @@ static bool InitializeGlobalFunctionPointer(Compiler *cc, CHashGlblVar *global_e
     if (cc->ic_tail) cc->ic_tail->next = aic; else cc->ic_head = aic;
     cc->ic_tail = aic;
     ICAdd(cc, IC_END_EXP, 0, RT_I64);
-    (void)has_amp;
     return true;
-  } else if (cc->lex.token == TK_I64) {
-    init_val = cc->lex.token_i64;
-    have_value = true;
+  }
+  if (cc->lex.token == TK_I64) {
+    *(I64 *)((U8 *)g->data_addr + byte_off) = cc->lex.token_i64;
     LexNext(cc);
-  } else {
-    Error(cc, "Unsupported initializer for function pointer");
-    return false;
+    return true;
   }
+  Error(cc, "Unsupported initializer for function pointer");
+  return false;
+}
 
-  if (!have_value) {
+static bool InitializeGlobalFunctionPointer(Compiler *cc, CHashGlblVar *global_entry) {
+  if (cc->lex.token != '=') {
     return true;
   }
 
-  *(I64*)global_entry->data_addr = init_val;
-  (void)has_amp;
-  return true;
+  LexNext(cc);
+
+  if (!(global_entry->flags & GVF_ARRAY))
+    return InitGlobalFunctionPointerSlot(cc, global_entry, 0);
+
+  // `T (*f[N])(…) = {&A, &B, …}` — HolyC also allows the brace-less `= &A, &B;` form here,
+  // since a function pointer table's declarator cannot be confused with a declarator list.
+  bool braced = (cc->lex.token == '{');
+  if (braced) LexNext(cc);
+  I64 total = global_entry->dim.total_cnt > 0 ? global_entry->dim.total_cnt : 1;
+  I64 idx = 0;
+  while (cc->lex.token != (braced ? '}' : ';') && cc->lex.token != TK_EOF) {
+    if (idx >= total) { Error(cc, "Too many initializers"); return false; }
+    if (!InitGlobalFunctionPointerSlot(cc, global_entry, idx * 8)) return false;
+    idx++;
+    if (cc->lex.token == ',') LexNext(cc); else break;
+  }
+  // Slots the list omitted stay 0 — `data_addr` is calloc'd.
+  return braced ? LexExpect(cc, '}') : true;
 }
 
 static bool ParseGlobalFunctionPointerDeclList(Compiler *cc, U8 return_type) {
   do {
     char *name = NULL;
     int parameter_count = 0;
-    if (!ParseFunctionPointerDeclarator(cc, &name, &parameter_count)) {
+    I64 arr_cnt = 0;
+    if (!ParseFunctionPointerDeclarator(cc, &name, &parameter_count, &arr_cnt)) {
       return false;
     }
 
-    CHashGlblVar *entry = CreateGlobalFunctionPointerEntry(cc, name, return_type, parameter_count);
+    if (arr_cnt < 0) {   // `T (*f[])(…) = {…}`: extent from the initializer
+      arr_cnt = 0;
+      if (cc->lex.token == '=') {
+        LexPush(cc);
+        LexNext(cc);
+        if (cc->lex.token == '{') arr_cnt = CountAggregateElements(cc);
+        LexPopRestore(cc);
+      }
+      if (arr_cnt <= 0) {
+        free(name);
+        Error(cc, "Cannot size `[]` function pointer table without a `{…}` initializer");
+        return false;
+      }
+    }
+
+    CHashGlblVar *entry = CreateGlobalFunctionPointerEntry(cc, name, return_type, parameter_count, arr_cnt);
     if (cc->lex.token == '=') {
       if (!InitializeGlobalFunctionPointer(cc, entry)) {
         free(name);
@@ -484,7 +577,16 @@ static bool ParseConstDim(Compiler *cc, I64 *out);
 // IC_IMM_I64) left on the eval stack; drop it first so [ ] . -> reads leave exactly one value.
 static void DerefDroppingAddressSlot(Compiler *cc) {
   CIntermediateCode *t = cc->ic_tail;
-  if (t && (t->ic_code == IC_ADD || t->ic_code == IC_PUSH_ARG || t->ic_code == IC_IMM_I64 || t->ic_code == IC_DEREF))
+  // Every binary producer pushes its result, not just IC_ADD: `(p - 128)->m` and `(b + i * n)->m`
+  // left the computed address on the eval stack. Straight-line code still ran (the emitter's
+  // depth counter tracked the leak, and IC_END_EXP popped it), but a branch that skipped the
+  // leaked pushes reached the join with a different real depth — IC_END_EXP then popped past
+  // the frame base and the next push overwrote the saved ra.
+  if (t && (t->ic_code == IC_ADD || t->ic_code == IC_SUB || t->ic_code == IC_MUL ||
+            t->ic_code == IC_DIV || t->ic_code == IC_MOD ||
+            t->ic_code == IC_AND || t->ic_code == IC_OR  || t->ic_code == IC_XOR ||
+            t->ic_code == IC_SHL || t->ic_code == IC_SHR || t->ic_code == IC_USHR ||
+            t->ic_code == IC_PUSH_ARG || t->ic_code == IC_IMM_I64 || t->ic_code == IC_DEREF))
     ICAdd(cc, IC_EVAL_DROP, 8, RT_I64);   // IC_DEREF: `p->m` at offset 0 — the pointer value's slot
   ICAdd(cc, IC_DEREF, 0, RT_I64);
 }
@@ -588,7 +690,8 @@ static bool ParseUnary(Compiler *cc);
 static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name);
 static bool ParseEnumDefinitionBody(Compiler *cc, const char *enum_name, bool register_type);
 bool ParseEnum(Compiler *cc);
-static bool ParseFunctionPointerDeclarator(Compiler *cc, char **out_name, int *out_param_count);
+static bool ParseFunctionPointerDeclarator(Compiler *cc, char **out_name, int *out_param_count,
+                                           I64 *out_arr_cnt);
 static bool ParseLocalFunctionPointerDeclList(Compiler *cc, U8 return_type);
 static bool ParseGlobalFunctionPointerDeclList(Compiler *cc, U8 return_type);
 
@@ -867,6 +970,19 @@ static bool EmitDefaultArg(Compiler *cc, CHashFun *fn, I64 i) {
 }
 
 // `IsDbgMode`, `ProgressBarsRst;`: HolyC calls a function named without parentheses.
+// A call's result carries the callee's return pointer-ness, so ParseUnary's deref can
+// size `*Fn()` from the pointee (its expr_ptr_depth arm) instead of falling back to
+// RT_I64 and loading 8 bytes out of a 4-byte slot.
+static void SetCallResultPtr(Compiler *cc, CHashFun *func) {
+  if (func && func->ptr_stars_cnt > 0 && func->ret_pointed_to) {
+    cc->expr_ptr_depth = (U8)func->ptr_stars_cnt;
+    cc->expr_pointee = func->ret_pointed_to;
+    cc->call_ptr_just_loaded = true;
+  } else {
+    cc->expr_ptr_depth = 0;
+  }
+}
+
 static bool EmitNoParenCall(Compiler *cc, CHashFun *func) {
   ICAdd(cc, IC_CALL_START, 0, RT_I64);
   int arg_count = 0;
@@ -889,7 +1005,10 @@ static bool EmitNoParenCall(Compiler *cc, CHashFun *func) {
   cc->last_var_symbol = NULL;
   cc->last_expr_type = (cc->call_ret_type == RT_F64) ? RT_F64 : (cc->call_ret_type == RT_I0 || cc->call_ret_type == RT_U0) ? RT_I0 : RT_I64;
   cc->last_global_var = NULL;
-  cc->last_member = NULL; cc->expr_ptr_depth = 0;  // call result is the callee's return type, not an argument's
+  cc->last_member = NULL;
+  // The call result IS the callee's return type, not an argument's: carry a pointer
+  // return through so `*Fn()` derefs at the pointee's width.
+  SetCallResultPtr(cc, func);
   ICAdd(cc, IC_CALL_END, 0, RT_I64);
   return true;
 }
@@ -897,6 +1016,7 @@ static bool EmitNoParenCall(Compiler *cc, CHashFun *func) {
 static bool ParsePrimary(Compiler *cc) {
   cc->var_just_loaded = false;
   cc->global_just_loaded = false;
+  cc->call_ptr_just_loaded = false;
   bool addr_of = cc->addr_of_ident;
   cc->addr_of_ident = false;
   // Default: no global variable context until we identify one
@@ -1114,8 +1234,18 @@ static bool ParsePrimary(Compiler *cc) {
           return false;
         }
         CMemberLst *om = ocls->member_lst;
-        while (om && strcmp(om->str, cc->lex.token_str)) om = om->next;
-        if (!om) { Error(cc, "offset: unknown member"); return false; }
+        // Guard om->str: a member can legitimately have no name (HostMemberFind
+        // guards it too), and strcmp(NULL, ...) would crash the compiler here.
+        while (om && !(om->str && cc->lex.token_str && !strcmp(om->str, cc->lex.token_str)))
+          om = om->next;
+        if (!om) {
+          char msg[160];
+          snprintf(msg, sizeof msg, "offset: unknown member '%s' in class '%s'",
+                   cc->lex.token_str ? cc->lex.token_str : "(null)",
+                   ocls->str ? ocls->str : "(anon)");
+          Error(cc, msg);
+          return false;
+        }
         off += om->offset;
         ocls = om->member_class;
         LexNext(cc);
@@ -1286,9 +1416,13 @@ static bool ParsePrimary(Compiler *cc) {
       }
       
       CHashEntry *entry = HashFind(name, cc->hash_table, HTT_FUN);
+      // Outlives the branch below so the call result can carry the callee's return
+      // pointer-ness; stays NULL on the non-HTT_FUN paths, which clears it instead.
+      CHashFun *called = NULL;
       if (entry && (entry->type & HTT_FUN)) {
         // Function found in hash table
         CHashFun *func = (CHashFun*)entry;
+        called = func;
         if (func) {
           // Fill in trailing default arguments; too few without defaults is an error.
           while (arg_count < func->param_cnt && arg_count < 16 && func->param_has_default[arg_count]) {
@@ -1370,8 +1504,11 @@ static bool ParsePrimary(Compiler *cc) {
       cc->last_expr_type = (cc->call_ret_type == RT_F64) ? RT_F64 : (cc->call_ret_type == RT_I0 || cc->call_ret_type == RT_U0) ? RT_I0 : RT_I64;
       
       cc->last_global_var = NULL;
-      cc->last_member = NULL; cc->expr_ptr_depth = 0;  // call result is the callee's return type, not an argument's
-      
+      cc->last_member = NULL;
+      // Result is the callee's return type, not an argument's — including its
+      // pointer-ness, so `*Fn()` derefs at the pointee's width.
+      SetCallResultPtr(cc, called);
+
       ICAdd(cc, IC_CALL_END, 0, RT_I64);
       free(name);
       return true;
@@ -1597,8 +1734,14 @@ static bool ParseUnary(Compiler *cc) {
     LexNext(cc);
     if (!ParseUnary(cc)) return false;
     // Operand must stay an address: retract the auto-deref ParsePostfix appended.
-    if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->ic_code = IC_NOP1;
-    { U8 pe; I64 pd; I64 step = PtrElemInfo(cc, &pe, &pd); ICAdd(cc, IC_PP_, step > 1 ? step : 0, RT_I64); }  // pre-increment (scaled for pointers)
+    // The retracted DEREF carries the lvalue's width; IncDec needs it or a U8/U16/U32
+    // lvalue gets an 8-byte read-modify-write (neighbour bytes in the result, and a
+    // tail member overruns its class).
+    U8 lty_pp = 0;
+    if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) { lty_pp = cc->ic_tail->arg1_type_pointed_to; cc->ic_tail->ic_code = IC_NOP1; }
+    // step != 0 means the lvalue is itself a pointer/array (8 bytes wide) — keep I64.
+    { U8 pe; I64 pd; I64 step = PtrElemInfo(cc, &pe, &pd); ICAdd(cc, IC_PP_, step > 1 ? step : 0, RT_I64);
+      if (!step && lty_pp && cc->ic_tail) cc->ic_tail->arg1_type_pointed_to = lty_pp; }  // pre-increment (scaled for pointers)
     return true;
   }
   
@@ -1607,8 +1750,10 @@ static bool ParseUnary(Compiler *cc) {
     LexNext(cc);
     if (!ParseUnary(cc)) return false;
     // Operand must stay an address: retract the auto-deref ParsePostfix appended.
-    if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->ic_code = IC_NOP1;
-    { U8 pe; I64 pd; I64 step = PtrElemInfo(cc, &pe, &pd); ICAdd(cc, IC_MM_, step > 1 ? step : 0, RT_I64); }  // pre-decrement
+    U8 lty_mm = 0;
+    if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) { lty_mm = cc->ic_tail->arg1_type_pointed_to; cc->ic_tail->ic_code = IC_NOP1; }
+    { U8 pe; I64 pd; I64 step = PtrElemInfo(cc, &pe, &pd); ICAdd(cc, IC_MM_, step > 1 ? step : 0, RT_I64);
+      if (!step && lty_mm && cc->ic_tail) cc->ic_tail->arg1_type_pointed_to = lty_mm; }  // pre-decrement
     return true;
   }
   
@@ -1671,14 +1816,26 @@ static bool ParseUnary(Compiler *cc) {
     U8 depth = 0, pointee = 0;
     if (cc->last_var_symbol && cc->last_var_symbol->pointed_to_type != 0) {
       pointee = cc->last_var_symbol->pointed_to_type; depth = cc->last_var_symbol->ptr_depth;
+      if (depth <= 1) {
+        CHashClass *pc = (CHashClass *)cc->last_var_symbol->extra;
+        if (pc && pc->size > 0) pointee = ScalarTypeForSize(pointee, pc->size);
+      }
     } else if (cc->last_var_symbol && cc->last_var_symbol->is_array) {
       // `*arr` on a plain array: the array decays to element*, so the deref loads/stores ONE
       // element, whose width is the element type — not RT_I64. Without this, deref_type stayed
       // RT_I64 and `*arr = v` emitted an 8-byte store that zeroed the next 7 bytes of the array
       // (e.g. DirNameAbs's `U8 drv[3]; *drv=Drv2Let;` lost the ':' it put in drv[1], hanging Load).
       pointee = cc->last_var_symbol->data_type; depth = 1;
+      {
+        I64 esz = cc->last_var_symbol->element_size > 0 ? cc->last_var_symbol->element_size : 8;
+        pointee = ScalarTypeForSize(pointee, esz);
+      }
     } else if (!cc->last_var_symbol && cc->last_global_var && cc->last_global_var->pointed_to_type) {
       pointee = cc->last_global_var->pointed_to_type; depth = cc->last_global_var->ptr_depth;
+      if (depth <= 1) {
+        CHashClass *pc = cc->last_global_var->var_class;
+        if (pc && pc->size > 0) pointee = ScalarTypeForSize(pointee, pc->size);
+      }
     } else if (!cc->last_var_symbol && !cc->last_global_var && cc->last_member && cc->last_member->pointed_to_type) {
       pointee = cc->last_member->pointed_to_type; depth = cc->last_member->ptr_depth;
     } else if (cc->expr_ptr_depth) {   // `**pp`: the inner deref left a pointer
@@ -1754,7 +1911,9 @@ static bool ParsePostfix(Compiler *cc) {
   // `*(U32*)p` stores/loads by that width instead of defaulting to 8 bytes.
   U8 primary_ptr_cast = cc->cast_elem_type;
   cc->cast_elem_type = 0;
-  if (!is_paren_expr) cc->expr_ptr_depth = 0;   // `(**ppb)[i]` keeps the depth the parens computed
+  // `(**ppb)[i]` keeps the depth the parens computed; a pointer-returning call keeps
+  // its pointee so `*Fn()` can size the deref.
+  if (!is_paren_expr && !cc->call_ptr_just_loaded) cc->expr_ptr_depth = 0;
   while (true) {
     if (cc->lex.token == '(') {
       // HolyC postfix cast: expr(type) / expr(type *), e.g. "0123456789ABCDEF"(U8 *)[i].
@@ -1795,6 +1954,9 @@ static bool ParsePostfix(Compiler *cc) {
       I64 elem_size = 8;  // Default to I64
       Symbol *saved_symbol = cc->last_var_symbol;
       CHashGlblVar *saved_global = cc->last_global_var;
+      // Parsing the index expression overwrites cc->last_member (`m.rows[n]` re-binds it to
+      // whatever `n` resolves to), so snapshot it alongside the symbol/global.
+      CMemberLst *saved_member = cc->last_member;
       // Element type/size: through a pointer it is the pointee (class or primitive); for an
       // array it is the declared element. The final DEREF is typed accordingly.
       U8 elem_type = RT_I64;
@@ -1804,6 +1966,7 @@ static bool ParsePostfix(Compiler *cc) {
           CHashClass *pc = (CHashClass *)saved_symbol->extra;
           elem_size = pc && pc->size > 0 ? pc->size : PrimitiveTypeSize(elem_type);
           if (saved_symbol->ptr_depth > 1) { elem_type = RT_I64; elem_size = 8; }   // `argv[i]` of `U8 **argv`
+          else elem_type = ScalarTypeForSize(elem_type, elem_size);  // `U32 *p` / scalar-union pointee
           if (elem_size <= 0) elem_size = 8;
         } else {
           elem_size = saved_symbol->element_size ? saved_symbol->element_size : 8;
@@ -1823,12 +1986,15 @@ static bool ParsePostfix(Compiler *cc) {
         if (mb->pointed_to_type && mb->ptr_depth > 1 && !mb->is_array) { elem_type = RT_I64; elem_size = 8; }
         if (!mb->is_array && !mb->pointed_to_type && mb->member_class && mb->member_class->size > 0) elem_size = mb->member_class->size;
         if (elem_size <= 0) elem_size = 8;
+        if (mb->ndims > 1 && cc->subscript_level < mb->ndims - 1)
+          elem_size = mb->dim_stride[cc->subscript_level];
       } else if (saved_global) {
         if (saved_global->pointed_to_type && !(saved_global->flags & GVF_ARRAY)) {
           elem_type = saved_global->pointed_to_type;
           CHashClass *pc = saved_global->var_class;
           elem_size = pc && pc->size > 0 ? pc->size : PrimitiveTypeSize(elem_type);
           if (saved_global->ptr_depth > 1) { elem_type = RT_I64; elem_size = 8; }
+          else elem_type = ScalarTypeForSize(elem_type, elem_size);
           if (elem_size <= 0) elem_size = 8;
         } else {
           elem_size = saved_global->element_size ? saved_global->element_size : 8;
@@ -1885,6 +2051,10 @@ static bool ParsePostfix(Compiler *cc) {
         if (cc->lex.token == '[') { cc->subscript_level++; continue; }
         cc->flags |= CCF_RAX; cc->last_expr_type = RT_I64;
       } else if (saved_global && saved_global->ndims > 1 && cc->subscript_level < saved_global->ndims - 1) {
+        if (cc->lex.token == '[') { cc->subscript_level++; continue; }
+        cc->flags |= CCF_RAX; cc->last_expr_type = RT_I64;
+      } else if (!saved_symbol && !saved_global && saved_member &&
+                 saved_member->ndims > 1 && cc->subscript_level < saved_member->ndims - 1) {
         if (cc->lex.token == '[') { cc->subscript_level++; continue; }
         cc->flags |= CCF_RAX; cc->last_expr_type = RT_I64;
       }
@@ -2013,8 +2183,11 @@ static bool ParsePostfix(Compiler *cc) {
       LexNext(cc);
       // Operand must stay an address: retract the early auto-deref (first reference of a
       // variable in an expression gets one before this loop runs).
-      if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->ic_code = IC_NOP1;
-      { U8 pe; I64 pd; I64 step = PtrElemInfo(cc, &pe, &pd); ICAdd(cc, IC__PP, step > 1 ? step : 0, RT_I64); }  // post-increment (scaled)
+      // The retracted DEREF carries the lvalue's width — see the ++var site above.
+      U8 lty_ppost = 0;
+      if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) { lty_ppost = cc->ic_tail->arg1_type_pointed_to; cc->ic_tail->ic_code = IC_NOP1; }
+      { U8 pe; I64 pd; I64 step = PtrElemInfo(cc, &pe, &pd); ICAdd(cc, IC__PP, step > 1 ? step : 0, RT_I64);
+        if (!step && lty_ppost && cc->ic_tail) cc->ic_tail->arg1_type_pointed_to = lty_ppost; }  // post-increment (scaled)
       continue;
     }
     
@@ -2023,8 +2196,10 @@ static bool ParsePostfix(Compiler *cc) {
       LexNext(cc);
       // Operand must stay an address: retract the early auto-deref (first reference of a
       // variable in an expression gets one before this loop runs).
-      if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) cc->ic_tail->ic_code = IC_NOP1;
-      { U8 pe; I64 pd; I64 step = PtrElemInfo(cc, &pe, &pd); ICAdd(cc, IC__MM, step > 1 ? step : 0, RT_I64); }  // post-decrement
+      U8 lty_mpost = 0;
+      if (cc->ic_tail && cc->ic_tail->ic_code == IC_DEREF) { lty_mpost = cc->ic_tail->arg1_type_pointed_to; cc->ic_tail->ic_code = IC_NOP1; }
+      { U8 pe; I64 pd; I64 step = PtrElemInfo(cc, &pe, &pd); ICAdd(cc, IC__MM, step > 1 ? step : 0, RT_I64);
+        if (!step && lty_mpost && cc->ic_tail) cc->ic_tail->arg1_type_pointed_to = lty_mpost; }  // post-decrement
       continue;
     }
     
@@ -2991,6 +3166,11 @@ static bool ParseSwitchStatement(Compiler *cc) {
   // sub_switch groups: start: block runs before any of its cases, end: block after (on break)
   CLabel *sub_start[8], *sub_dispatch[8], *sub_end[8];
   int sub_n = 0, cur_sub = -1;
+  // `start:` blocks NEST (PrsStmt has `start: case KW_ASM: … start: case KW_LOCK:`). A single
+  // cur_sub let the inner `start:` overwrite the outer one, so the outer block's sub_end label
+  // was never defined and every `break` inside it jumped to an unresolved label — a wild jump.
+  // That is what made `asm{}` in the REPL die *after* its arm completed.
+  int sub_stack[8], sub_sp = 0;
   I64 max_val = -0x8000000000000000LL; // I64_MIN
   
   // Save break context
@@ -3007,6 +3187,7 @@ static bool ParseSwitchStatement(Compiler *cc) {
       LexNext(cc);  // ':'
       if (mk == 1) {
         cur_sub = sub_n++;
+        if (sub_sp < 8) sub_stack[sub_sp++] = cur_sub;
         sub_start[cur_sub] = LabelNew(cc, NULL);
         sub_dispatch[cur_sub] = LabelNew(cc, NULL);
         sub_end[cur_sub] = LabelNew(cc, NULL);
@@ -3023,12 +3204,14 @@ static bool ParseSwitchStatement(Compiler *cc) {
         }
         ICAdd(cc, IC_JMP, (I64)sub_dispatch[cur_sub], RT_I64);   // then pick the actual case
       } else {
-        if (cur_sub >= 0) {
-          ICAdd(cc, IC_LABEL, (I64)sub_end[cur_sub], RT_I64);
-          sub_end[cur_sub]->defined = true;
+        // Close the innermost open `start:` block and fall back to the one enclosing it.
+        if (sub_sp > 0) {
+          int done = sub_stack[--sub_sp];
+          ICAdd(cc, IC_LABEL, (I64)sub_end[done], RT_I64);
+          sub_end[done]->defined = true;
         }
-        cc->current_break_label = end_label;
-        cur_sub = -1;
+        cc->current_break_label = sub_sp > 0 ? sub_end[sub_stack[sub_sp - 1]] : end_label;
+        cur_sub = sub_sp > 0 ? sub_stack[sub_sp - 1] : -1;
         while (cc->lex.token != KW_CASE && cc->lex.token != KW_DEFAULT &&
                cc->lex.token != '}' && cc->lex.token != TK_EOF && !PeekSubMarker(cc)) {
           if (!ParseStatement(cc)) {
@@ -3037,6 +3220,11 @@ static bool ParseSwitchStatement(Compiler *cc) {
             return false;
           }
         }
+        // The end: block is reached by a break out of the sub_switch (or by falling off its
+        // last case). When it finishes, control leaves the switch — it must NOT drop into the
+        // body of whatever case happens to follow `end:`. Without this a break inside a
+        // sub_switch silently ran the next case.
+        ICAdd(cc, IC_JMP, (I64)(sub_sp > 0 ? sub_end[sub_stack[sub_sp - 1]] : end_label), RT_I64);
       }
       continue;
     }
@@ -3177,6 +3365,15 @@ static bool ParseSwitchStatement(Compiler *cc) {
     ICAdd(cc, IC_JMP, (I64)end_label, RT_I64);
   }
   
+  // A `start:` block with no matching `end:` still has breaks pointing at its sub_end; define
+  // them here (at the switch end) so no label is left unresolved.
+  while (sub_sp > 0) {
+    int done = sub_stack[--sub_sp];
+    if (!sub_end[done]->defined) {
+      ICAdd(cc, IC_LABEL, (I64)sub_end[done], RT_I64);
+      sub_end[done]->defined = true;
+    }
+  }
   // End label
   ICAdd(cc, IC_LABEL, (I64)end_label, RT_I64);
   end_label->defined = true;
@@ -3195,6 +3392,170 @@ static bool ParseSwitchStatement(Compiler *cc) {
   return true;
 }
 
+
+// ---- local aggregate initializers: `T a[N] = {…}`, `T a[] = {…}`, `Cls c = {…}`, `U8 s[N] = "…"` ----
+// A global's initializer can be folded into its `data_addr` while parsing; a local's storage is a
+// frame slot that does not exist until the function runs, so every element becomes an ordinary
+// store statement — the same `IC_LEA slot / IC_PUSH_ARG / <value> / IC_ASSIGN` shape that
+// `a[k] = v;` already lowers to, addressed by giving each element its own frame-slot marker.
+// Elements the list omits are stored as zero rather than left holding whatever the frame did.
+
+// The frame slot at `base_pos + byte_off` as an assignment destination.
+static void LocalInitDst(Compiler *cc, I64 base_pos, I64 byte_off) {
+  ICAdd(cc, IC_LEA, HOLY_LOCAL_MARKER(base_pos + byte_off), RT_I64);
+  ICAdd(cc, IC_PUSH_ARG, 0, RT_I64);
+}
+
+// Close the store opened by LocalInitDst; `store_type` picks the sb/sh/sw/sd/fsd width.
+static void LocalInitStore(Compiler *cc, U8 store_type) {
+  CIntermediateCode *ic = ICNew(cc, IC_ASSIGN);
+  ic->res.type.raw_type = RT_I64;
+  ic->res.type.mode = MDF_STK;
+  ic->arg1_type_pointed_to = store_type;
+  if (cc->ic_tail) cc->ic_tail->next = ic;
+  else cc->ic_head = ic;
+  cc->ic_tail = ic;
+  ICAdd(cc, IC_END_EXP, 0, RT_I64);
+}
+
+static void LocalInitImm(Compiler *cc, I64 base_pos, I64 byte_off, U8 store_type, I64 v) {
+  LocalInitDst(cc, base_pos, byte_off);
+  ICAdd(cc, IC_IMM_I64, v, RT_I64);
+  if (store_type == RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
+  LocalInitStore(cc, store_type);
+}
+
+// Zero `nbytes` at `byte_off`, eight at a time where the offset allows it. A local's slot base is
+// 8-aligned, so the wide stores are aligned whenever their offset is.
+static void LocalInitZeroRange(Compiler *cc, I64 base_pos, I64 byte_off, I64 nbytes) {
+  I64 i = 0;
+  while (i < nbytes) {
+    if (((byte_off + i) & 7) == 0 && nbytes - i >= 8) {
+      LocalInitImm(cc, base_pos, byte_off + i, RT_I64, 0);
+      i += 8;
+    } else {
+      LocalInitImm(cc, base_pos, byte_off + i, RT_U8, 0);
+      i++;
+    }
+  }
+}
+
+// `U8 s[N] = "abc"` — copy the literal's bytes and its NUL into the slot, then zero the tail.
+// (The scalar path this replaces stored the literal's ADDRESS into s[0] and dropped the string.)
+static void LocalInitString(Compiler *cc, I64 base_pos, I64 byte_off, I64 size,
+                            const char *s, I64 slen) {
+  I64 i = 0;
+  for (; i < slen && i < size - 1; i++) LocalInitImm(cc, base_pos, byte_off + i, RT_U8, (U8)s[i]);
+  if (i < size) {
+    LocalInitImm(cc, base_pos, byte_off + i, RT_U8, 0);
+    i++;
+  }
+  if (i < size) LocalInitZeroRange(cc, base_pos, byte_off + i, size - i);
+}
+
+// One initializer element at `byte_off`. A non-NULL `cls` means the element is a class instance,
+// so a nested `{…}` fills it member-wise (mirroring InitAggregateElement's global-side walk).
+static bool ParseLocalInitElement(Compiler *cc, I64 base_pos, I64 byte_off, CHashClass *cls,
+                                  U8 raw_type, I64 size, bool is_ptr) {
+  if (cc->lex.token == '{') {
+    if (!cls) { Error(cc, "Nested initializer for a non-class element"); return false; }
+    LexNext(cc);
+    I64 filled_to = 0;
+    for (CMemberLst *m = cls->member_lst; m && cc->lex.token != '}'; m = m->next) {
+      CHashClass *mcls = (!m->pointed_to_type && !m->is_array) ? m->member_class : NULL;
+      I64 esz = m->elem_size > 0 ? m->elem_size : 8;
+      bool str_member = (cc->lex.token == TK_STR && !m->pointed_to_type && esz == 1);
+      if (m->is_array && !str_member && m->size > esz) {
+        // An array member takes its extent's worth of consecutive elements, or its own `{…}`.
+        bool sub = (cc->lex.token == '{');
+        if (sub) LexNext(cc);
+        I64 cnt = m->size / esz;
+        CHashClass *ecls = (!m->pointed_to_type) ? m->member_class : NULL;
+        I64 k = 0;
+        for (; k < cnt && cc->lex.token != '}'; k++) {
+          if (!ParseLocalInitElement(cc, base_pos, byte_off + m->offset + k * esz, ecls,
+                                     m->raw_type, esz, m->pointed_to_type != 0)) return false;
+          if (k + 1 < cnt) { if (cc->lex.token == ',') LexNext(cc); else { k++; break; } }
+        }
+        if (k < cnt) LocalInitZeroRange(cc, base_pos, byte_off + m->offset + k * esz, (cnt - k) * esz);
+        if (sub && !LexExpect(cc, '}')) return false;
+      } else if (!ParseLocalInitElement(cc, base_pos, byte_off + m->offset, mcls, m->raw_type,
+                                        m->size, m->pointed_to_type != 0)) return false;
+      filled_to = m->offset + m->size;
+      if (cc->lex.token == ',') LexNext(cc); else break;
+    }
+    if (filled_to < size) LocalInitZeroRange(cc, base_pos, byte_off + filled_to, size - filled_to);
+    return LexExpect(cc, '}');
+  }
+
+  // A string into a byte array member/element copies bytes; into a pointer it is an address.
+  if (cc->lex.token == TK_STR && !is_ptr && size > 1 && PrimitiveTypeSize(raw_type) <= 1) {
+    const char *s = cc->lex.token_str ? cc->lex.token_str : "";
+    LocalInitString(cc, base_pos, byte_off, size, s, cc->lex.token_str_len);
+    LexNext(cc);
+    return true;
+  }
+
+  U8 store_type = is_ptr ? RT_I64 : ScalarTypeForSize(raw_type, size);
+  LocalInitDst(cc, base_pos, byte_off);
+  if (!ParseAssignment(cc)) return false;
+  if (store_type == RT_F64 && cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
+  else if (store_type != RT_F64 && cc->last_expr_type == RT_F64) ICAdd(cc, IC_TO_I64, 0, RT_I64);
+  LocalInitStore(cc, store_type);
+  cc->last_var_symbol = NULL;
+  return true;
+}
+
+static bool ParseLocalAggregateInit(Compiler *cc, Symbol *sym, U8 var_type, CHashClass *decl_class) {
+  I64 base_pos = HOLY_LOCAL_MARKER_POS(sym->offset);
+  bool braced = (cc->lex.token == '{');
+  I64 elem_size = sym->is_array ? (sym->element_size > 0 ? sym->element_size : 8) : sym->size;
+  bool elem_is_ptr = sym->pointed_to_type != 0;
+  CHashClass *cls = elem_is_ptr ? NULL : decl_class;
+
+  if (!sym->is_array)
+    return ParseLocalInitElement(cc, base_pos, 0, cls, var_type, sym->size, elem_is_ptr);
+
+  // `U8 s[N] = "…"`: the whole array takes the literal, not one element.
+  if (cc->lex.token == TK_STR && !elem_is_ptr && elem_size == 1) {
+    const char *s = cc->lex.token_str ? cc->lex.token_str : "";
+    LocalInitString(cc, base_pos, 0, sym->size, s, cc->lex.token_str_len);
+    LexNext(cc);
+    return true;
+  }
+
+  if (braced) LexNext(cc);
+  I64 total = sym->array_size > 0 ? sym->array_size : 1;
+  // Row width for a nested-brace multi-dim initializer `{{…},{…}}`: elements per outermost group.
+  I64 row = (sym->ndims > 1 && elem_size > 0) ? sym->dim_stride[0] / elem_size : 0;
+  I64 idx = 0;
+  while (cc->lex.token != (braced ? '}' : ';') && cc->lex.token != TK_EOF) {
+    if (sym->ndims > 1 && cc->lex.token == '{' && row > 0) {
+      // A braced row fills up to `row` flat elements; a short row zero-pads to the next boundary.
+      LexNext(cc);
+      I64 rstart = idx;
+      while (cc->lex.token != '}' && cc->lex.token != TK_EOF && idx < rstart + row) {
+        if (idx >= total) { Error(cc, "Too many initializers"); return false; }
+        if (!ParseLocalInitElement(cc, base_pos, idx * elem_size, cls, var_type, elem_size, elem_is_ptr))
+          return false;
+        idx++;
+        if (cc->lex.token == ',') LexNext(cc); else break;
+      }
+      if (!LexExpect(cc, '}')) return false;
+      I64 rend = rstart + row < total ? rstart + row : total;
+      if (idx < rend) LocalInitZeroRange(cc, base_pos, idx * elem_size, (rend - idx) * elem_size);
+      idx = rend;
+    } else {
+      if (idx >= total) { Error(cc, "Too many initializers"); return false; }
+      if (!ParseLocalInitElement(cc, base_pos, idx * elem_size, cls, var_type, elem_size, elem_is_ptr))
+        return false;
+      idx++;
+    }
+    if (cc->lex.token == ',') LexNext(cc); else break;
+  }
+  if (idx < total) LocalInitZeroRange(cc, base_pos, idx * elem_size, (total - idx) * elem_size);
+  return braced ? LexExpect(cc, '}') : true;
+}
 
 static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_name) {
   // type name;
@@ -3215,6 +3576,9 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
     sym->data_type = type;
     sym->pointed_to_type = cc->last_pointed_to_type;  // Save pointed-to type
     sym->ptr_depth = cc->last_ptr_depth;
+    // Scalar-union pointees (`U32i union U32`) may record RT_I64 with size 4 — match members.
+    if (sym->pointed_to_type && decl_class && decl_class->size > 0)
+      sym->pointed_to_type = ScalarTypeForSize(sym->pointed_to_type, decl_class->size);
     if (cc->last_pointed_to_type) sym->data_type = RT_I64;  // the variable itself is a pointer: 8-byte loads/stores
     sym->extra = decl_class;
     
@@ -3244,10 +3608,13 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
       // T name[N][M]...: flat storage; subscript k advances by dim_stride[k] bytes.
       I64 dims[4];
       int nd = 0;
+      bool infer_first = false;
       while (cc->lex.token == '[') {
         LexNext(cc);  // Skip '['
         I64 dimv = 0;
-        if (!ParseConstDim(cc, &dimv)) {
+        if (nd == 0 && cc->lex.token == ']') {
+          infer_first = true;      // `T a[] = {…}`: extent counted from the initializer below
+        } else if (!ParseConstDim(cc, &dimv)) {
           free(name);
           return false;
         }
@@ -3262,6 +3629,23 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
         free(name);
         Error(cc, "Too many array dimensions (max 4)");
         return false;
+      }
+      if (infer_first) {
+        // Count the initializer's top-level elements (rows, for `T a[][M]`) without consuming it.
+        I64 n = 0;
+        if (cc->lex.token == '=') {
+          LexPush(cc);
+          LexNext(cc);
+          if (cc->lex.token == '{') n = CountAggregateElements(cc);
+          else if (cc->lex.token == TK_STR && base_size == 1) n = cc->lex.token_str_len + 1;
+          LexPopRestore(cc);
+        }
+        if (n <= 0) {
+          free(name);
+          Error(cc, "Expected constant array size");
+          return false;
+        }
+        dims[0] = n;
       }
       I64 total = 1;
       for (int k = 0; k < nd; k++) total *= dims[k];
@@ -3292,6 +3676,20 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
     if (cc->lex.token == '=') {
       LexNext(cc);
       
+      // Aggregate initializer: a braced list, a class instance's `{…}`, or a string literal
+      // filling a byte array. Each element becomes its own store into the frame slot.
+      bool aggregate = (cc->lex.token == '{') ||
+                       (sym->is_array && cc->lex.token == TK_STR && !sym->pointed_to_type &&
+                        sym->element_size == 1 && sym->size > 1);
+      if (aggregate) {
+        if (!ParseLocalAggregateInit(cc, sym, type, decl_class)) {
+          free(name);
+          return false;
+        }
+        cc->last_var_symbol = NULL;
+        cc->last_type_class = decl_class;
+      } else {
+      
       // Implement initialization: I64 a = 5;
       // Use the exact same pattern as regular assignment: LEA, PUSH_ARG, ParseExpression, ASSIGN
       // We need to push the address to preserve it before parsing the RHS
@@ -3319,6 +3717,7 @@ static bool ParseVariableDeclWithName(Compiler *cc, U8 type, const char *var_nam
       
       ICAdd(cc, IC_END_EXP, 0, RT_I64);  // initializer is a statement: drop the value
       cc->last_var_symbol = NULL;
+      }
     }
     
     // Restore declaration class for subsequent comma-separated variables
@@ -4883,10 +5282,16 @@ static bool ParseClassMembers(Compiler *cc, CHashClass *tmpc, bool is_union, I64
       else { member_size = PrimitiveTypeSize(member_type); if (member_size <= 0) member_size = 8; }
       I64 elem_size = member_size;
       bool is_array = false;
+      I64 mdims[4]; int m_nd = 0;
       while (cc->lex.token == '[') {                  // T name[N][M], N a constant expression
         LexNext(cc);
         is_array = true;
-        if (cc->lex.token != ']') { I64 n = 0; if (!ParseConstDim(cc, &n)) { free(member_name); return false; } member_size *= n; }
+        if (cc->lex.token != ']') {
+          I64 n = 0;
+          if (!ParseConstDim(cc, &n)) { free(member_name); return false; }
+          member_size *= n;
+          if (m_nd < 4) mdims[m_nd++] = n;
+        } else if (m_nd < 4) mdims[m_nd++] = 0;       // `name[]`
         if (!LexExpect(cc, ']')) { free(member_name); return false; }
       }
       CMemberLst *m = calloc(1, sizeof(CMemberLst));
@@ -4901,8 +5306,22 @@ static bool ParseClassMembers(Compiler *cc, CHashClass *tmpc, bool is_union, I64
       m->elem_size = ptr ? PrimitiveTypeSize(ptr) : elem_size;
       if (ptr && mcls && mcls->size > 0) m->elem_size = mcls->size;
       if (ptr) m->pointed_to_type = ScalarTypeForSize(ptr, m->elem_size);
+      // `T *arr[N]` member: the ELEMENTS are pointers (8 bytes), not T. With the pointee
+      // size above, `cmp.internal_types[raw_type]=tmpc` strode by sizeof(CHashClass) and
+      // scattered heap pointers across the compiler unit's globals (char_bmp_hex_numeric
+      // lost bits A-E; only `0xF` lexed).
+      if (ptr && is_array) { m->elem_size = 8; m->pointed_to_type = RT_I64; }
       m->member_class = (ptr || is_array) ? mcls : mcls;
       m->size = member_size;
+      // Multi-dim member: subscript k steps by the product of the dims below it.
+      if (m_nd > 1 && !ptr) {
+        m->ndims = m_nd;
+        for (int k = 0; k < m_nd; k++) {
+          I64 st = elem_size;
+          for (int j = k + 1; j < m_nd; j++) st *= mdims[j];
+          m->dim_stride[k] = st;
+        }
+      }
       if (cc->lex.token == ':') {                     // bit field
         LexNext(cc);
         if (cc->lex.token != TK_I64) { Error(cc, "Expected bit field width"); return false; }
@@ -5024,6 +5443,44 @@ bool ParseClass(Compiler *cc) {
     }
     I64 total = is_union ? (agg > base_off ? agg : base_off) : base_off + agg;
     tmpc->size = total > min_size ? total : min_size;
+#ifndef BARE_METAL
+    // HOLYC_DUMP_CLASS=<name> prints the member table this parse produced. The
+    // question it answers: when `offset(C.m)` says "unknown member", was m never
+    // added, or added and unfindable? Those have different fixes.
+    {
+      const char *want = getenv("HOLYC_DUMP_CLASS");
+      if (want && class_name && !strcmp(want, class_name)) {
+        I64 n = 0;
+        fprintf(stderr, "[class] %s size=%lld\n", class_name, (long long)tmpc->size);
+        for (CMemberLst *m = tmpc->member_lst; m; m = m->next, n++)
+          fprintf(stderr, "  [%2lld] %-24s off=%-5lld size=%-4lld raw=%d ptr=%d depth=%d arr=%d\n",
+                  (long long)n, m->str ? m->str : "(null)", (long long)m->offset,
+                  (long long)m->size, (int)m->raw_type, (int)m->pointed_to_type,
+                  (int)m->ptr_depth, (int)m->is_array);
+        fprintf(stderr, "[class] %s: %lld member(s)\n", class_name, (long long)n);
+      }
+    }
+    // HOLYC_WARN_ALIGN=1 reports 2/4/8-byte members placed at an offset that is not a
+    // multiple of their size. HolyC packs members with no padding (correct TempleOS
+    // semantics — x86 tolerates misaligned loads, and Terry hand-padded instead), but
+    // RISC-V does not make that promise: a misaligned ld/sd may be emulated in
+    // hardware, trapped to firmware, or faulted, depending on the core. The RV backend
+    // emits a real full-width ld/sd at whatever offset the member lands on, so this is
+    // a portability signal and not a style nit.
+    // Off by default and layout-changing nothing: stock TempleOS headers are
+    // hand-padded and pass silently. Arrays are skipped — `size` there is the whole
+    // array, not the element, so its alignment requirement is not `size`.
+    if (getenv("HOLYC_WARN_ALIGN") && class_name) {
+      for (CMemberLst *m = tmpc->member_lst; m; m = m->next) {
+        if (m->is_array || !m->str) continue;
+        if (m->size != 2 && m->size != 4 && m->size != 8) continue;
+        if (m->offset % m->size == 0) continue;
+        fprintf(stderr, "[align] %s.%s off=%lld size=%lld (off %% %lld == %lld)\n",
+                class_name, m->str, (long long)m->offset, (long long)m->size,
+                (long long)m->size, (long long)(m->offset % m->size));
+      }
+    }
+#endif
   }
   if (!LexExpect(cc, '}')) {
     free(class_name);
@@ -5191,6 +5648,8 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
   tmpg->raw_type = var_type;
   tmpg->pointed_to_type = cc->last_pointed_to_type;
   tmpg->ptr_depth = cc->last_ptr_depth;
+  if (tmpg->pointed_to_type && decl_class && decl_class->size > 0)
+    tmpg->pointed_to_type = ScalarTypeForSize(tmpg->pointed_to_type, decl_class->size);
   if (cc->last_pointed_to_type) tmpg->raw_type = RT_I64;  // the variable itself is a pointer: 8-byte loads/stores
   
   // Find type class in hash table
@@ -5358,7 +5817,13 @@ bool ParseFunction(Compiler *cc) {
     Error(cc, "Expected type");
     { PF_TRACE(__LINE__); return false; }
   }
-  
+  // Pointer-ness of the RETURN type, captured here because parsing the parameter
+  // list calls ParseType again and overwrites last_pointed_to_type/last_ptr_depth.
+  // Without this a call result has no pointee, so `*Fn()` on a `U32 *`-returning
+  // function derefs 8 bytes instead of 4 (see ParseUnary's deref width sources).
+  U8 ret_pointee = cc->last_pointed_to_type;
+  U8 ret_depth = cc->last_ptr_depth;
+
   // Parse function name
   if (cc->lex.token == KW_THROW) {
     // `U0 throw(I64 ch=0,Bool no_log=FALSE) {…}` — the kernel's own throw; here `throw` is
@@ -5480,7 +5945,8 @@ bool ParseFunction(Compiler *cc) {
         if (cc->lex.token == '(') {
           char *fp_name = NULL;
           int fp_param_cnt = 0;
-          if (!ParseFunctionPointerDeclarator(cc, &fp_name, &fp_param_cnt)) {
+          // A `T (*f[N])(…)` parameter decays to the same pointer as `T (*f)(…)`: ignore the extent.
+          if (!ParseFunctionPointerDeclarator(cc, &fp_name, &fp_param_cnt, NULL)) {
             free(name);
             { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
           }
@@ -5610,6 +6076,8 @@ bool ParseFunction(Compiler *cc) {
       param->extra = param_decl_class;
       param->pointed_to_type = cc->last_pointed_to_type;
       param->ptr_depth = cc->last_ptr_depth;
+      if (param->pointed_to_type && param_decl_class && param_decl_class->size > 0)
+        param->pointed_to_type = ScalarTypeForSize(param->pointed_to_type, param_decl_class->size);
       if (cc->last_pointed_to_type) param->data_type = RT_I64;
 
       // Record size metadata for class parameters (best effort)
@@ -5660,6 +6128,13 @@ bool ParseFunction(Compiler *cc) {
   // Update hash entry with arg count
   func_hash->arg_cnt = param_count;
   func_hash->raw_type = return_type;   // call sites type the result from this (F64 results)
+  // Pointer returns: call sites need the pointee to size a deref of the result.
+  // Only widen — a forward decl and its definition share one CHashFun, and the
+  // declaration that knew the pointee must not be cleared by one that did not.
+  if (ret_depth > 0 && ret_pointee) {
+    func_hash->ptr_stars_cnt = ret_depth;
+    func_hash->ret_pointed_to = ret_pointee;
+  }
   
   if (!LexExpect(cc, ')')) {
     free(name);
@@ -5996,7 +6471,9 @@ static bool ParseTopLevelInner(Compiler *cc) {
     LexNext(cc);
     bool type_follows = IsTypeStartToken(cc) || cc->lex.token == KW_CLASS || cc->lex.token == KW_UNION;
     LexPopRestore(cc);
-    if (type_follows) LexNext(cc);
+    // Do not skip a leading type name (`U32i union U32`): INTERNAL `U32i` can lex as TK_IDENT
+    // and would be eaten here, dropping the scalar base so the union stays raw_type RT_I64.
+    if (type_follows && !IsTypeStartToken(cc)) LexNext(cc);
   }
   // `extern CUAsmGlbls uasm;` before the class is defined: forward-declare the class.
   if (is_extern && cc->lex.token == TK_IDENT && !IsTypeStartToken(cc)) {

@@ -4,11 +4,16 @@
 Layout matches Kernel/BlkDev/FileSysRedSea.HC (clus == LBA, bitmap @ LBA1..):
   boot LBA0, bitmap_sects = ceil(sects/4096), data_area = bitmap_sects,
   first data clus at data_area (overlaps last bitmap sector — marked used),
-  root at data_area+1.
+  root at data_area+1 (contiguous multi-blk when root slots need it).
+
+Supports nested guest paths (e.g. Adam/DolDoc/MakeDoc_RV.HC) via multi-blk
+contiguous dirs at each level. Name2DirClus walks parent/name on RedSea.
 
 Example:
   tools/mk_redsea_seed_img.py build/phase3_redsea.img \\
       Compiler/Compiler.BIN=build/Compiler.BIN \\
+      Adam/DolDoc/MakeDoc_RV.HC=tests/exec/seeds/phase3_MakeDoc_RV_Nest.HC \\
+      MakeOS/Tiny.PRJ=tests/exec/seeds/phase3_MakeOS.HC \\
       Kernel/Kernel.BIN=build/Kernel.BIN
 """
 from __future__ import annotations
@@ -24,6 +29,7 @@ RS_ATTR_DIR = 0x10
 RS_ATTR_CONTIGUOUS = 0x800
 CDIR_SIZE = 64
 NAME_MAX = 37  # CDIR_FILENAME_LEN 38 incl NUL
+SLOTS_PER_BLK = BLKSZ // CDIR_SIZE  # 8
 
 
 def le16(x: int) -> bytes:
@@ -67,6 +73,34 @@ def parse_mapping(s: str) -> tuple[str, str]:
     return guest, host
 
 
+def nblks_for_slots(nslots: int) -> int:
+    return max(1, (nslots * CDIR_SIZE + BLKSZ - 1) // BLKSZ)
+
+
+def parent_path(dpath: str) -> str:
+    if not dpath:
+        return ""
+    if "/" not in dpath:
+        return ""
+    return dpath.rsplit("/", 1)[0]
+
+
+def basename(path: str) -> str:
+    return path.rsplit("/", 1)[-1] if path else ""
+
+
+def spare_slots_for(dpath: str) -> int:
+    # Spare blks: guest Cmp FileWrite *.BIN + Adam P6 Lite* staging without
+    # relocating a tight dir (Runtime was 6 files → 8 slots full). Nested
+    # Adam/DolDoc keeps one spare blk for Soft nest BIN growth.
+    top = dpath.split("/", 1)[0] if dpath else ""
+    if dpath in ("Adam", "Runtime", "MakeOS") or top in ("Adam", "Runtime", "MakeOS"):
+        return SLOTS_PER_BLK * 2
+    if dpath.endswith("/DolDoc") or dpath == "DolDoc" or "/DolDoc/" in (dpath + "/"):
+        return SLOTS_PER_BLK
+    return SLOTS_PER_BLK
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("out_img", help="output raw RedSea image path")
@@ -74,7 +108,7 @@ def main() -> int:
         "files",
         nargs="+",
         type=parse_mapping,
-        help="GUEST_PATH=HOST_FILE (e.g. Compiler/Compiler.BIN=build/Compiler.BIN)",
+        help="GUEST_PATH=HOST_FILE (e.g. Adam/DolDoc/MakeDoc_RV.HC=…)",
     )
     ap.add_argument(
         "--sects",
@@ -82,26 +116,53 @@ def main() -> int:
         default=16384,
         help="image size in 512-byte sectors (default 16384 = 8MiB, phase3 RAM size)",
     )
+    ap.add_argument(
+        "--min-root-blks",
+        type=int,
+        default=0,
+        help="minimum contiguous root directory blocks (0 = auto: ≥2 when ≥3 root dirs)",
+    )
     args = ap.parse_args()
     if args.sects < 64:
         print("sects too small", file=sys.stderr)
         return 1
 
-    # Group files by parent directory (one level under root for now).
-    # guest path "Compiler/Compiler.BIN" → dir Compiler, file Compiler.BIN
-    dirs: dict[str, list[tuple[str, bytes]]] = {}
+    # Nested tree: every intermediate dir path + files keyed by full guest path.
+    # guest "Adam/DolDoc/MakeDoc_RV.HC" → dirs Adam, Adam/DolDoc; file under Adam/DolDoc.
+    all_dirs: set[str] = set()
+    files: dict[str, bytes] = {}  # full guest path → body
     for guest, host in args.files:
         parts = [p for p in guest.split("/") if p]
-        if len(parts) == 1:
-            dname, fname = "", parts[0]
-        elif len(parts) == 2:
-            dname, fname = parts[0], parts[1]
-        else:
-            print(f"only root or one subdir supported: {guest}", file=sys.stderr)
+        if not parts:
+            print(f"empty guest path: {guest}", file=sys.stderr)
             return 1
+        for i in range(len(parts) - 1):
+            all_dirs.add("/".join(parts[: i + 1]))
         with open(host, "rb") as f:
             body = f.read()
-        dirs.setdefault(dname, []).append((fname, body))
+        if guest in files:
+            print(f"duplicate guest path: {guest}", file=sys.stderr)
+            return 1
+        files[guest] = body
+
+    def child_dirs(dpath: str) -> list[str]:
+        out = []
+        prefix = f"{dpath}/" if dpath else ""
+        for d in all_dirs:
+            if dpath:
+                if d.startswith(prefix) and "/" not in d[len(prefix) :]:
+                    out.append(d)
+            elif "/" not in d:
+                out.append(d)
+        return sorted(out)
+
+    def child_files(dpath: str) -> list[str]:
+        out = []
+        for fpath in files:
+            parent = parent_path(fpath)
+            if parent == dpath:
+                out.append(fpath)
+        return sorted(out)
 
     bm_sects = bitmap_sects_for(args.sects)
     data_area = bm_sects
@@ -113,29 +174,60 @@ def main() -> int:
     mark_clus(bitmap, data_area, next_clus)
     next_clus += 1
 
-    root_clus = next_clus
-    mark_clus(bitmap, data_area, root_clus)
-    next_clus += 1
+    def alloc_blks(n: int) -> int:
+        nonlocal next_clus
+        if next_clus + n > args.sects:
+            raise RuntimeError("image full — raise --sects")
+        base = next_clus
+        for i in range(n):
+            mark_clus(bitmap, data_area, base + i)
+        next_clus += n
+        return base
 
-    # Allocate subdirectory clusters + file extents.
-    dir_clus: dict[str, int] = {}
-    file_meta: list[tuple[str, str, int, int, bytes]] = []  # dname, fname, clus, size, body
-    for dname, entries in dirs.items():
-        if dname:
-            dc = next_clus
-            mark_clus(bitmap, data_area, dc)
-            next_clus += 1
-            dir_clus[dname] = dc
-        for fname, body in entries:
-            nblk = max(1, (len(body) + BLKSZ - 1) // BLKSZ)
-            if next_clus + nblk > args.sects:
-                print("image full — raise --sects", file=sys.stderr)
-                return 1
-            fc = next_clus
-            for i in range(nblk):
-                mark_clus(bitmap, data_area, fc + i)
-            next_clus += nblk
-            file_meta.append((dname, fname, fc, len(body), body))
+    # Root: multi-blk contiguous (. size drives RedSeaFileFind BlkRead count).
+    root_child_dirs = child_dirs("")
+    root_child_files = child_files("")
+    root_nslots = 2 + len(root_child_dirs) + len(root_child_files)
+    root_nblk = nblks_for_slots(root_nslots)
+    min_root = args.min_root_blks
+    if min_root <= 0:
+        # Product phase3: Compiler+Kernel+Adam (+MakeOS/Runtime) → keep spare blk
+        # for Adam lean expand / guest DirMk without relocating root mid-smoke.
+        min_root = 2 if len(root_child_dirs) >= 3 else 1
+    root_nblk = max(root_nblk, min_root)
+    try:
+        root_clus = alloc_blks(root_nblk)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    root_sz = root_nblk * BLKSZ
+
+    # Allocate dirs depth-first parents-before-children so parent_clus is known.
+    dir_clus: dict[str, int] = {"": root_clus}
+    dir_nblk: dict[str, int] = {"": root_nblk}
+    # Depth-sorted so Adam before Adam/DolDoc.
+    for dpath in sorted(all_dirs, key=lambda p: (p.count("/"), p)):
+        nslots = 2 + len(child_dirs(dpath)) + len(child_files(dpath))
+        spare = spare_slots_for(dpath)
+        dnblk = nblks_for_slots(nslots + spare)
+        try:
+            dc = alloc_blks(dnblk)
+        except RuntimeError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        dir_clus[dpath] = dc
+        dir_nblk[dpath] = dnblk
+
+    # File extents
+    file_meta: list[tuple[str, int, int, bytes]] = []  # fpath, clus, size, body
+    for fpath, body in sorted(files.items()):
+        nblk = max(1, (len(body) + BLKSZ - 1) // BLKSZ)
+        try:
+            fc = alloc_blks(nblk)
+        except RuntimeError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        file_meta.append((fpath, fc, len(body), body))
 
     # Boot sector
     boot = bytearray(BLKSZ)
@@ -149,51 +241,57 @@ def main() -> int:
     img[0:BLKSZ] = boot
     img[BLKSZ : BLKSZ + len(bitmap)] = bitmap
 
-    # Root directory
-    root = bytearray(BLKSZ)
-    root[0:64] = cdir(RS_ATTR_DIR | RS_ATTR_CONTIGUOUS, ".", root_clus, BLKSZ)
-    root[64:128] = cdir(RS_ATTR_DIR | RS_ATTR_CONTIGUOUS, "..", root_clus, 0)
-    slot = 2
-    for dname, dc in dir_clus.items():
-        if slot >= BLKSZ // CDIR_SIZE:
-            print("root dir full", file=sys.stderr)
-            return 1
-        root[slot * CDIR_SIZE : (slot + 1) * CDIR_SIZE] = cdir(
-            RS_ATTR_DIR | RS_ATTR_CONTIGUOUS, dname, dc, BLKSZ
+    def write_dir(dpath: str) -> int:
+        dc = dir_clus[dpath]
+        dnblk = dir_nblk[dpath]
+        dsz = dnblk * BLKSZ
+        parent = parent_path(dpath) if dpath else ""
+        parent_c = dir_clus[parent] if dpath else root_clus
+        buf = bytearray(dsz)
+        buf[0:64] = cdir(RS_ATTR_DIR | RS_ATTR_CONTIGUOUS, ".", dc, dsz)
+        # Root .. points at root; nested .. points at parent clus.
+        buf[64:128] = cdir(
+            RS_ATTR_DIR | RS_ATTR_CONTIGUOUS, "..", parent_c if dpath else root_clus, 0
         )
-        slot += 1
-    for dname, fname, fc, sz, body in file_meta:
-        if dname:
-            continue
-        if slot >= BLKSZ // CDIR_SIZE:
-            print("root dir full", file=sys.stderr)
-            return 1
-        root[slot * CDIR_SIZE : (slot + 1) * CDIR_SIZE] = cdir(
-            RS_ATTR_CONTIGUOUS, fname, fc, sz
-        )
-        slot += 1
-    img[root_clus * BLKSZ : root_clus * BLKSZ + BLKSZ] = root
-
-    # Subdirectories
-    for dname, dc in dir_clus.items():
-        sub = bytearray(BLKSZ)
-        sub[0:64] = cdir(RS_ATTR_DIR | RS_ATTR_CONTIGUOUS, ".", dc, BLKSZ)
-        sub[64:128] = cdir(RS_ATTR_DIR | RS_ATTR_CONTIGUOUS, "..", root_clus, 0)
         slot = 2
-        for dn, fname, fc, sz, body in file_meta:
-            if dn != dname:
-                continue
-            if slot >= BLKSZ // CDIR_SIZE:
-                print(f"dir {dname} full", file=sys.stderr)
+        max_slots = dsz // CDIR_SIZE
+        for cd in child_dirs(dpath):
+            if slot >= max_slots:
+                print(f"dir {dpath or '/'} full", file=sys.stderr)
                 return 1
-            sub[slot * CDIR_SIZE : (slot + 1) * CDIR_SIZE] = cdir(
-                RS_ATTR_CONTIGUOUS, fname, fc, sz
+            cdc = dir_clus[cd]
+            cdsz = dir_nblk[cd] * BLKSZ
+            buf[slot * CDIR_SIZE : (slot + 1) * CDIR_SIZE] = cdir(
+                RS_ATTR_DIR | RS_ATTR_CONTIGUOUS, basename(cd), cdc, cdsz
             )
             slot += 1
-        img[dc * BLKSZ : dc * BLKSZ + BLKSZ] = sub
+        for fpath in child_files(dpath):
+            if slot >= max_slots:
+                print(f"dir {dpath or '/'} full", file=sys.stderr)
+                return 1
+            # look up meta
+            fc = sz = None
+            body = None
+            for fp, fclus, fsz, fbody in file_meta:
+                if fp == fpath:
+                    fc, sz, body = fclus, fsz, fbody
+                    break
+            assert fc is not None and sz is not None
+            buf[slot * CDIR_SIZE : (slot + 1) * CDIR_SIZE] = cdir(
+                RS_ATTR_CONTIGUOUS, basename(fpath), fc, sz
+            )
+            slot += 1
+        img[dc * BLKSZ : dc * BLKSZ + dsz] = buf
+        return 0
+
+    if write_dir("") != 0:
+        return 1
+    for dpath in sorted(all_dirs, key=lambda p: (p.count("/"), p)):
+        if write_dir(dpath) != 0:
+            return 1
 
     # File payloads
-    for dname, fname, fc, sz, body in file_meta:
+    for fpath, fc, sz, body in file_meta:
         off = fc * BLKSZ
         img[off : off + len(body)] = body
 
@@ -201,9 +299,11 @@ def main() -> int:
     with open(args.out_img, "wb") as f:
         f.write(img)
     nfiles = len(file_meta)
+    ndirs = len(all_dirs)
     print(
         f"wrote {args.out_img} ({len(img)} bytes, {args.sects} sects, "
-        f"bitmap={bm_sects}, root={root_clus}, files={nfiles})",
+        f"bitmap={bm_sects}, root={root_clus}/{root_nblk}blk, "
+        f"dirs={ndirs}, files={nfiles})",
         file=sys.stderr,
     )
     return 0
