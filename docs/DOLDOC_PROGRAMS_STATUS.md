@@ -116,6 +116,6 @@ Verified end-to-end — the stock file-iteration idiom runs from the REPL:
 `d0=de=FilesFind("A:/*"); while (de) { n++; de=de->next; }` counts entries and
 `d0->full_name` reads the path. All win gates + repl-holyc-regression green.
 
-Discovered gap (separate from porting): the guest compiler does not parse the ternary
-`?:` operator (`x?a:b` gives "Missing ')'"). Common enough to be worth a later fix; use
-`if` in the meantime.
+Note: the guest compiler rejects the ternary `?:` operator ("Missing ')'"). This is
+CORRECT, not a gap — genuine TempleOS HolyC has no `?:` (0 uses in the reference tree);
+it is a C-ism. Use `if`/`||`/`&&` as stock code does.
