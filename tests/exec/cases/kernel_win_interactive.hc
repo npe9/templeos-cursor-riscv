@@ -340,7 +340,12 @@ I64 main()
   // Kernel &Regs/&Dir — Compiler address-of imports may stay GOT=0.
   
   {
-    I64 pubs[31];
+    I64 pubs[36];
+    pubs[31] = &RVMemCpy;     // U8 *MemCpy(U8 *dst, U8 *src, I64 size)
+    pubs[32] = &RVMemSet;     // U8 *MemSet(U8 *dst, I64 dat, I64 size)
+    pubs[33] = &DocNew;       // CDoc *DocNew(U8 *filename=NULL, CTask *task=NULL)
+    pubs[34] = &DocDel;       // U0 DocDel(CDoc *doc)
+    pubs[35] = &DocClear;     // U0 DocClear(CDoc *doc=NULL, Bool clear_holds=FALSE)
     pubs[28] = &MStrPrint;    // U8 *MStrPrint(U8 *fmt,...)
     pubs[29] = &StrPrint;     // U8 *StrPrint(U8 *dst, U8 *fmt,...)
     pubs[30] = &DocPrint;     // CDocEntry *DocPrint(CDoc *doc, U8 *fmt,...)

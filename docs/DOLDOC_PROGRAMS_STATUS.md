@@ -83,6 +83,13 @@ Ported so far (verified callable from the REPL, all win gates + serial-smoke gre
   allocate need them as real calls).
 - **printf-family (varargs):** `MStrPrint`, `StrPrint`, `DocPrint` (planted with the
   `Ff_DOT_DOT_DOT` + `argc`/`argv` shape that `Print` uses).
+- **mem + doc objects:** `MemCpy`, `MemSet` (the RV implementations under stock names),
+  `DocNew`, `DocDel`, `DocClear`.
+
+21 runtime functions in total are now REPL-callable. Still deferred: graphics
+(`GrRect`/`GrLine`/`GrPrint` — need the FB/DC runtime), sound (`Snd`/`Play`),
+side-effecting FS/task (`Cd`/`DirMk`/`Del`/`Spawn`), and the interactive message loop
+(`GetMsg`/`Msg`). Registry (`ARegistry.HC`) needs compiling into the image first.
 
 Compiler intrinsics already cover math/bit/Que/`StrLen`/`ToUpper`/`ToI64` etc. via
 `RVExePubInternsIn`, so those never needed planting.

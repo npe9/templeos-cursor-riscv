@@ -720,6 +720,46 @@ I64 RVExePubsWireAddrs(I64 *addrs)
       n++;
     }
   }
+  // Slots 31-35: mem + doc-object manipulation. MemCpy/MemSet are &RVMemCpy/&RVMemSet
+  // (the RV implementations) planted under their stock names.
+  if (addrs[31] && !HashFind("MemCpy", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("MemCpy", addrs[31], i64t, 3);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "dst", i64t);
+      RVExePubAddArg(tmpf, "src", i64t);
+      RVExePubAddArg(tmpf, "size", i64t);
+      n++;
+    }
+  }
+  if (addrs[32] && !HashFind("MemSet", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("MemSet", addrs[32], i64t, 3);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "dst", i64t);
+      RVExePubAddArg(tmpf, "dat", i64t);
+      RVExePubAddArg(tmpf, "size", i64t);
+      n++;
+    }
+  }
+  if (addrs[33] && !HashFind("DocNew", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("DocNew", addrs[33], i64t, 2);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "filename", u8p, MLF_DFT_AVAILABLE, 0);
+      RVExePubAddArg(tmpf, "task", i64t, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
+  if (addrs[34] && !HashFind("DocDel", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("DocDel", addrs[34], cls_u0, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "doc", i64t); n++; }
+  }
+  if (addrs[35] && !HashFind("DocClear", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("DocClear", addrs[35], cls_u0, 2);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "doc", i64t, MLF_DFT_AVAILABLE, 0);
+      RVExePubAddArg(tmpf, "clear_holds", i64t, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
+  }
   return n;
 }
 
@@ -779,9 +819,9 @@ I64 RVExePubsWire()
 {
   // Monolithic Body: symbols are in-image. Split-AOT Kernel should call
   // RVExePubsWireAddrs with Kernel &Print/&Regs/… instead.
-  I64 addrs[31];
+  I64 addrs[36];
   I64 zi;
-  for (zi = 0; zi < 31; zi++)
+  for (zi = 0; zi < 36; zi++)
     addrs[zi] = 0;
   addrs[0] = &Print;
   addrs[1] = &PutChars;
