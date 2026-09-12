@@ -1,0 +1,26 @@
+extern I64 RVWinSerialHolyC(U8 *buf);
+U0 RVStockMeasure()
+{
+  U8 *b; I64 sz;
+  DirMk("A:/Doc");
+  { U8 *s = "The $$LK+PU,\"Holy Spirit\",A=\"FI:::/Adam/God/HSNotes.DD\"$$ can puppet you.\n\n"; FileWrite("A:/Doc/God.DD", s, StrLen(s)); }
+  { U8 *s = "$$WW,1$$Dates are 32-bit signed ints representing the number of days since the birth of Christ.  Negative values represent B.C.E. dates.\n"; FileWrite("A:/Doc/Date.DD", s, StrLen(s)); }
+  { U8 *s = "$$WW+H,1$$$$FG,5$$$$TX+CX,\"TempleOS V5.03\",D=\"DD_OS_NAME_VERSION\"$$$$FG$$\n\n$$TX+CX,\"Public Domain Operating System\"$$\n\n$$LK,\"Help & Index\",A=\"FI:::/Doc/HelpIndex.DD\"$$, $$LK,\"Quick Start: Cmd line\",A=\"FI:::/Doc/CmdLineOverview.DD\"$$\n"; FileWrite("A:/Doc/Start.DD", s, StrLen(s)); }
+  { U8 *s = "$$WW,1$$A $$FG,2$$Queue$$FG$$ is a bunch of $$LK,\"MAlloc\",A=\"MN:MAlloc\"$$()ed chunks of mem linked together in a circle with one ptr to the $$FG,2$$next$$FG$$ value and another ptr to the $$FG,2$$last$$FG$$ value.  These ptrs must be stored in the first locations in the structure.\n"; FileWrite("A:/Doc/Que.DD", s, StrLen(s)); }
+  { U8 *s = "$$WW,1$$$$FG,5$$$$TX+CX,\"Compiler Index\"$$$$FG$$\n\n$$LK,\"::/Doc/Asm.DD\"$$\n\n$$LK,\"::/Doc/Directives.DD\"$$\n\n$$LK,\"::/Doc/Options.DD\"$$\n\n$$LK,\"::/Doc/PreProcessor.DD\"$$\n\n$$LK,\"::/Doc/ScopingLinkage.DD\"$$\n\nSee $$LK,\"Hello World\",A=\"FI:::/Doc/HelloWorld.DD\"$$.\n"; FileWrite("A:/Doc/CompilerOverview.DD", s, StrLen(s)); }
+  Print("STOCKDD begin\n");
+  b = FileRead("A:/Doc/God.DD", &sz); Print("STOCKDD %s read=%d orig=73\n", "God.DD", sz); if (b) Free(b);
+  b = FileRead("A:/Doc/Date.DD", &sz); Print("STOCKDD %s read=%d orig=135\n", "Date.DD", sz); if (b) Free(b);
+  b = FileRead("A:/Doc/Start.DD", &sz); Print("STOCKDD %s read=%d orig=219\n", "Start.DD", sz); if (b) Free(b);
+  b = FileRead("A:/Doc/Que.DD", &sz); Print("STOCKDD %s read=%d orig=266\n", "Que.DD", sz); if (b) Free(b);
+  b = FileRead("A:/Doc/CompilerOverview.DD", &sz); Print("STOCKDD %s read=%d orig=235\n", "CompilerOverview.DD", sz); if (b) Free(b);
+  Print("STOCKDD end\n");
+  Print("STOCKPROG begin\n");
+  Print("STOCKPROG run ForLoop.HC:\n");
+  { U8 *pg = "// Demo: C-style for (...;...;...) \xE2\x80\x94 supported by TempleOS HolyC and holyc-riscv.\n// Sum 0..4 \xE2\x86\x92 10; empty-init for (;\xE2\x80\xA6;\xE2\x80\xA6) and ++ in the incr clause.\nU0 ForLoopDemo()\n{\n  I64 i,s=0;\n  for (i=0;i<5;i++)\n    s=s+i;\n  \"for sum 0..4 = %d (expect 10)\\n\",s;\n\n  s=0;\n  i=0;\n  for (;i<4;i=i+1)\n    s=s+i;\n  \"for (;i<4;i++) sum = %d (expect 6)\\n\",s;\n}\n\nForLoopDemo;\n"; RVWinSerialHolyC(pg); }
+  Print("STOCKPROG done ForLoop.HC\n");
+  Print("STOCKPROG run NullCase.HC:\n");
+  { U8 *pg = "//This shows a switch stmt with some null cases.\n//If no number for the case,\n//it uses one plus prev case number.\n\nU0 NullCase()\n{\n  I64 i;\n  for (i=0;i<20;i++)\n    switch (i) {\n      case: \"Zero\\n\";   break; //Starts at zero\n      case: \"One\\n\";    break; //One plus prev case.\n      case: \"Two\\n\";    break;\n      case: \"Three\\n\";  break;\n      case 10: \"Ten\\n\"; break;\n      case: \"Eleven\\n\"; break; //One plus prev case.\n    }\n}\n\nNullCase;\n"; RVWinSerialHolyC(pg); }
+  Print("STOCKPROG done NullCase.HC\n");
+  Print("STOCKPROG end\n");
+}
