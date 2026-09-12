@@ -16,7 +16,7 @@ SRC="$ROOT/tests/exec/cases/kernel_win_demo.hc"
 EXPECT_PREFIX="RVWinMgr smoke hash="
 # Word-wise FNV-1a for kernel_win_demo.hc (800×600). Override with RVWIN_EXPECT_HASH.
 # 0x00000000 = calibrate mode (print hash, write build/exec/win_expect_hash.txt).
-PINNED_HASH="0xF29CD5B3"
+PINNED_HASH="0xE14900D6"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"

@@ -12,6 +12,7 @@
 #else
 extern I64 RVExePubsWire();
 extern I64 RVExePubsWireAddrs(I64 *addrs);
+extern I64 RVExePubsWireDbg(I64 *addrs);
 extern U0 RVAotLibSync(I64 fs, I64 gs);
 extern U0 RVCmpWireAsmHash();
 extern U0 RVCmpWireCharBmps(I64 *src);
@@ -29,12 +30,14 @@ extern I64 RVWinHoldFlag();
 #endif
 I64 RVWinSerialHolyC(U8 *line)
 {
-  U8 buf[168];
+  // Was buf[168] / 158: anything longer was cut mid-token and the truncated tail
+  // ("longvari", an open string literal) produced baffling compile errors.
+  U8 buf[RV_WIN_SERIAL_LINE_MAX + 8];
   I64 i;
   if (!line)
     return 0;
   i = 0;
-  while (line[i] && i < 158) {
+  while (line[i] && i < RV_WIN_SERIAL_LINE_MAX - 2) {
     buf[i] = line[i];
     i++;
   }
@@ -183,18 +186,25 @@ U0 RVWinVtRun()
   }
   RVVtInit(0, 1);
   while (!rv_winmgr.want_quit) {
-    ch = RVUartTryGet;
-    if (ch >= 0)
+    // Drain what has arrived (a pasted line is hundreds of bytes) before the compose +
+    // present below: one character per frame meant one full DocRecalc per keystroke, and
+    // once the Term doc had a real width that fell hopelessly behind the sender.
+    n = 0;
+    while (n < 512) {
+      ch = RVUartTryGet;
+      if (ch < 0)
+        break;
       RVWinTermPutChar(ch);
-    // Follow the tail. RVWinClampScroll recomputes max = lines - height from the live
-    // doc, so parking scroll_y past the end pins the view to the newest output. The
-    // WinMgr has scroll_y and a clamp but nothing that auto-follows, which is why a
-    // REPL scrolled off the bottom and appeared to freeze. Must happen BEFORE compose,
-    // which reads scroll_y.
+      n++;
+    }
+    // Follow the tail for plain windows. Console docs (Term/Adam) keep the cursor page at
+    // scroll_y=0 via DocRecalc and their clamp allows negative scroll_y for PgUp history,
+    // so re-parking them here would undo every PgUp on the next frame.
     idx = rv_winmgr.focus;
     if (idx < 0)
       idx = rv_winmgr.term_idx;
-    if (idx >= 0 && idx < RV_WIN_MAX && rv_winmgr.wins[idx].used) {
+    if (idx >= 0 && idx < RV_WIN_MAX && rv_winmgr.wins[idx].used &&
+        rv_winmgr.wins[idx].kind != RV_WIN_KIND_TERM && rv_winmgr.wins[idx].kind != RV_WIN_KIND_ADAM) {
       rv_winmgr.wins[idx].scroll_y = 0x40000000;
       RVWinClampScroll(idx);
     }
@@ -226,7 +236,7 @@ U0 RVWinVtRun()
 
 I64 main()
 {
-  I64 h, hold, r, vt_cols = 0, vt_rows = 0;
+  I64 h, hold, r, vt_cols = 0, vt_rows = 0, qc = 0, qr = 0;
   RVWinAdamBoot;
   RVKernelInit();
   Print("RVWinMgr interactive: kernel ok\n");
@@ -348,6 +358,21 @@ I64 main()
     pubs[13] = &DocPopUpFileNameRun;
     Print("RVWinMgr interactive: ExePubs wired n=%d\n", RVExePubsWireAddrs(pubs));
   }
+  // Debugger surface: Disasm/DisasmAt/U/UA/FnAddr/Uf (Kernel/RVDisasm.HC).
+  {
+    I64 dbg[8], di;
+    for (di = 0; di < 8; di++)
+      dbg[di] = 0;
+    dbg[0] = &Disasm;
+    dbg[1] = &DisasmAt;
+    dbg[2] = &U;
+    dbg[3] = &UA;
+    dbg[4] = &RVDisFnAddr;
+    dbg[5] = &RVUf;
+    dbg[6] = &RVBp;
+    dbg[7] = &RVBpClr;
+    Print("RVWinMgr interactive: dbg pubs wired n=%d\n", RVExePubsWireDbg(dbg));
+  }
 #endif
   RVWinSerialEval = &RVWinSerialHolyC;
 #ifdef HOLYC_AOT_NO_COMPILER_BODY
@@ -390,6 +415,14 @@ I64 main()
   vt_rows = (h >> 20) & 4095;
 #endif
   rv_sys_gr_force = 1;
+  if (hold == 2) {
+    // A live terminal reports its size; pipes/dumb terminals keep the flag-unit defaults.
+    if (RVWinSerialVtQuerySize(&qc, &qr)) {
+      vt_cols = qc;
+      vt_rows = qr;
+      Print("RVWinMgr interactive: VT size %dx%d (terminal reply)\n", qc, qr);
+    }
+  }
   if (hold == 2 && vt_cols > 0 && vt_rows > 0) {
     if (!RVGrInit(vt_cols *FONT_WIDTH, vt_rows *FONT_HEIGHT)) {
       Print("RVWinMgr interactive FAIL (Gr vt)\n");

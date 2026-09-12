@@ -71,6 +71,9 @@ out="$( {
   sleep 0.5
   printf 'fault\n'
   sleep 0.6
+  # Faults now return to the prompt (recovery); enter the monitor explicitly for its bt.
+  printf 'crash\n'
+  sleep 0.6
   printf 'bt\n'
   sleep 0.4
   printf 'go\n'
@@ -127,7 +130,7 @@ if printf '%s\n' "$out" | grep -E '^\s+#[0-9]+ 0x87E' >/dev/null; then
   fail=1
 fi
 # Crash> bt is trap-mepc only (honest; no fp freeze).
-if ! printf '%s\n' "$out" | grep -qF 'bt (trap mepc only'; then
+if ! printf '%s\n' "$out" | grep -qF 'bt (mepc'; then
   echo "FAIL kernel-win-serial — missing crash> trap-mepc bt" >&2
   fail=1
 fi

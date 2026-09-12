@@ -552,20 +552,39 @@ U0 RVWinBodyAppend(I64 idx, U8 *st)
   w = &rv_winmgr.wins[idx];
   len = RVWinBodyLen(w->body);
   n = StrLen(st);
+  // body[] is a BOUNDED scroll buffer. When the new text will not fit, drop whole lines
+  // from the FRONT to make room — never the new text. (The old code rebuilt the CDoc from
+  // a full body on every overflow: DocRst + DocPutS(body). That discarded the incoming
+  // text AND wiped the doc's scrollback back to the 1 KB body, so the Term/Adam console
+  // froze after ~1 KB of cumulative output — `regs` died after one dump, `Print` after a
+  // few lines. The attached CDoc holds the real history via DocRecalc; body is only the
+  // plain-text fallback for windows that have no doc.)
+  if (len + n > RV_WIN_BODY_MAX - 1) {
+    I64 cut = 0, drop = len + n - (RV_WIN_BODY_MAX - 1), j;
+    while (cut < len && cut < drop)
+      cut++;
+    while (cut < len && w->body[cut - 1] != '\n')  // drop only whole lines
+      cut++;
+    if (cut > len)
+      cut = len;
+    if (cut > 0) {
+      j = 0;
+      while (cut + j <= len) {   // shift tail down, including the terminating NUL
+        w->body[j] = w->body[cut + j];
+        j++;
+      }
+      len -= cut;
+    }
+  }
   for (i = 0; i < n && len < RV_WIN_BODY_MAX - 1; i++) {
     w->body[len] = st[i];
     len++;
   }
   w->body[len] = 0;
-  if (w->doc && w->doc->doc_signature == DOC_SIGNATURE_VAL && n > 0) {
-    // Only the appended prefix that fit in body
-    if (i < n) {
-      // Truncated — rebuild from body SoT
-      DocRst(w->doc, TRUE);
-      DocPutS(w->doc, w->body);
-    } else
-      DocPutS(w->doc, st);
-  }
+  // Always append incrementally to the CDoc — it owns the scrollback, so it must not be
+  // reset just because the flat body buffer had to scroll.
+  if (w->doc && w->doc->doc_signature == DOC_SIGNATURE_VAL && n > 0)
+    DocPutS(w->doc, st);
 }
 
 U0 RVDocPutS(U8 *st)
@@ -632,6 +651,15 @@ U0 RVWinClampScroll(I64 idx)
   max = lines - h;
   if (max < 0)
     max = 0;
+  if (w->doc && w->doc->doc_signature == DOC_SIGNATURE_VAL && (w->kind == RV_WIN_KIND_TERM || w->kind == RV_WIN_KIND_ADAM)) {
+    // Console docs: DocRecalc keeps the cursor page at y=0..h-1, so history lies at
+    // negative y. scroll_y in [-(lines-h), 0] pages back through it (PgUp/PgDn/arrows).
+    if (w->scroll_y < -max)
+      w->scroll_y = -max;
+    if (w->scroll_y > 0)
+      w->scroll_y = 0;
+    return;
+  }
   if (w->scroll_y < 0)
     w->scroll_y = 0;
   if (w->scroll_y > max)
@@ -887,6 +915,11 @@ U0 RVWinSyncToTask(I64 idx)
   t->border_attr = w->border_attr;
   t->text_attr = w->text_attr;
   t->win_z_num = w->z;
+  // Stock DocRecalc reads win_width/win_height (not left/right): without them the Term
+  // doc's line_start_col chased the cursor and every scrolled line lost its leading
+  // characters ("b375Ab" for "Ab375Ab"). Just the arithmetic — not TaskDerivedValsUpdate,
+  // whose TASK_LOCK spin / fp_update_ctrls callback stalled the desktop loop.
+  WinDerivedValsUpdate(t);
   if (w->show)
     LBts(&t->display_flags, DISPLAYf_SHOW);
   else
@@ -1363,11 +1396,32 @@ U0 RVDocDrawWin(CRVWin *w)
   doc = w->doc;
   if (doc->doc_signature != DOC_SIGNATURE_VAL)
     return;
-  DocRecalc(doc);
   ww = w->right - w->left + 1;
   hh = w->bottom - w->top + 1;
+  // Term/Adam consoles: once the cursor is back inside the client width, show the
+  // lines from column 0 again. Stock DocRecalc only pulls line_start_col back to the
+  // cursor column, so one long input line left every later line missing its first
+  // characters ("b375Ab" for "Ab375Ab") until the cursor reached column 0.
+  if ((w->kind == RV_WIN_KIND_TERM || w->kind == RV_WIN_KIND_ADAM || w->kind == RV_WIN_KIND_USER) && doc->x < ww && doc->line_start_col > 0)
+    doc->line_start_col = 0;
+  DocRecalc(doc);
   sx = w->scroll_x;
   sy = w->scroll_y;
+  // Console docs (Term/Adam/User) show the TAIL: DocRecalc lays entries oldest-first from
+  // y=0, so a bare scroll_y=0 renders only the FIRST hh lines and every later line falls
+  // past the client (y >= hh) — the console froze on its opening page after ~hh lines of
+  // output. Offset to the last hh lines instead; w->scroll_y (kept in [-max,0] by
+  // RVWinClampScroll) then pages back through history (PgUp/PgDn).
+  if (w->kind == RV_WIN_KIND_TERM || w->kind == RV_WIN_KIND_ADAM || w->kind == RV_WIN_KIND_USER) {
+    I64 top = RVDocLineCount(doc) - hh;
+    if (top < 0)
+      top = 0;
+    sy = top + w->scroll_y;
+    if (sy < 0)
+      sy = 0;
+    if (sy > top)
+      sy = top;
+  }
   doc_e = doc->head.next;
   while (doc_e != doc) {
     if (doc_e->de_flags & DOCEF_SKIP) {

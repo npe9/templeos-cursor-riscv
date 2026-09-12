@@ -4,7 +4,11 @@
 // Soft RX (RVUartSoftOn) + polled drain in RVWinMgrRun. Crash mon via
 // RVCrashMonInit (host trap → UART crash>). Dig-down regs/bt/md/mw/fault remain
 // as meta; prefer HolyC for everything else.
-#define RV_WIN_SERIAL_LINE_MAX 160
+extern U0 RVBpSymPrint(I64 addr);
+extern U0 RVBpRestoreAll();
+extern U0 RVWinSerialEscKey();
+extern U0 RVWinSerialTermScroll(I64 delta, Bool absolute_top, Bool absolute_bottom);
+#define RV_WIN_SERIAL_LINE_MAX 1024   // was 160: longer REPL lines were silently cut mid-token
 // Soft GPR snap (same window as seed/csr.hc / gdbstub — not trap snap).
 #define MEM_REGS_SNAP 0x87000300
 #define REG_ZERO 0
@@ -256,6 +260,11 @@ U0 RVWinMcausePrint(I64 v, I64 mepc)
   // ISA table, but printing that at Regs; is misleading — say none.
   if (!v && !mepc) {
     Print("     mcause=0x0  (none — no fault snap)\n");
+    return;
+  }
+  if (v < 0) {
+    // Bit 63 set: the last trap was an interrupt (UART RX / timer), not a fault.
+    Print("     mcause=0x%X  (none — no fault snap) [last trap: interrupt %d]\n", v, v & 0xFF);
     return;
   }
   intr = (v >> 63) & 1;
@@ -1049,8 +1058,16 @@ Bool RVWinSerialDispatch(U8 *line)
       Print("\n^C — interrupted, back at the prompt\n");
       return FALSE;
     }
+    if (cause == 3) {
+      // Bp(): report the hit and restore every planted EBREAK; the line is abandoned.
+      Print("\n*** breakpoint at %08X", RVTrapRecoverEpc());
+      RVBpSymPrint(RVTrapRecoverEpc());
+      Print(" — Bp cleared, back at the prompt\n    ra=%08X\n", RVTrapRecoverRa());
+      RVBpRestoreAll();
+      return FALSE;
+    }
     Print("\n*** fault in that line — back at the prompt (`crash` for the monitor)\n");
-    Print("    mcause=%d (%s) mepc=%08X mtval=%08X ra=%08X\n",
+    Print("    mcause=%d (%s) mepc=%08X mtval=%08X\n    ra=%08X\n",
 	  cause, RVWinMcauseName(cause),
 	  RVTrapRecoverEpc(), RVTrapRecoverTval(), RVTrapRecoverRa());
     return FALSE;
@@ -1137,10 +1154,17 @@ U0 RVWinTermPutChar(I64 ch)
     }
     return;
   }
+  if (ch == 27) {
+    // VT cursor keys (PgUp/PgDn/arrows/Home/End) page the console history; the escape
+    // sequence is consumed here so it never lands in the line.
+    RVWinSerialEscKey;
+    return;
+  }
   if (ch == '\n' || ch == '\r') {
     RVWinBodyAppend(idx, "\n");
     rv_win_term_line[rv_win_term_len] = 0;
     rv_win_term_mirror = 1;
+    RVWinSerialTermScroll(0, FALSE, TRUE);   // new output: leave scrollback
     RVWinSerialDispatch(rv_win_term_line);
     rv_win_term_mirror = 0;
     rv_win_term_len = 0;
@@ -1210,6 +1234,70 @@ U0 RVWinAdamPutChar(I64 ch)
   }
 }
 
+I64 RVWinSerialEscGet()
+{
+  // The rest of an escape sequence arrives within a few bytes; bounded spin so a bare
+  // ESC (or a slow terminal) cannot wedge the pump.
+  I64 ch, spins = 0;
+  while (spins++ < 200000) {
+    ch = RVUartTryGet;
+    if (ch >= 0)
+      return ch;
+  }
+  return -1;
+}
+
+U0 RVWinSerialTermScroll(I64 delta, Bool absolute_top, Bool absolute_bottom)
+{
+  I64 idx = rv_winmgr.term_idx, h;
+  CRVWin *w;
+  if (idx < 0 || idx >= RV_WIN_MAX)
+    return;
+  w = &rv_winmgr.wins[idx];
+  if (!w->used)
+    return;
+  h = w->bottom - w->top + 1;
+  if (absolute_bottom)
+    w->scroll_y = 0;
+  else if (absolute_top)
+    w->scroll_y = -1000000;
+  else
+    w->scroll_y += delta;
+  RVWinClampScroll(idx);
+}
+
+U0 RVWinSerialEscKey()
+{
+  I64 ch, param = 0, h = 20, idx = rv_winmgr.term_idx;
+  if (idx >= 0 && idx < RV_WIN_MAX && rv_winmgr.wins[idx].used)
+    h = rv_winmgr.wins[idx].bottom - rv_winmgr.wins[idx].top + 1;
+  ch = RVWinSerialEscGet;
+  if (ch != '[' && ch != 'O')
+    return;
+  ch = RVWinSerialEscGet;
+  while (ch >= '0' && ch <= '9') {
+    param = param * 10 + ch - '0';
+    ch = RVWinSerialEscGet;
+  }
+  while (ch == ';') {          // drop modifier params
+    ch = RVWinSerialEscGet;
+    while (ch >= '0' && ch <= '9')
+      ch = RVWinSerialEscGet;
+  }
+  if (ch == 'A')
+    RVWinSerialTermScroll(-1, FALSE, FALSE);
+  else if (ch == 'B')
+    RVWinSerialTermScroll(1, FALSE, FALSE);
+  else if (ch == 'H' || (ch == '~' && param == 1))
+    RVWinSerialTermScroll(0, TRUE, FALSE);
+  else if (ch == 'F' || (ch == '~' && param == 4))
+    RVWinSerialTermScroll(0, FALSE, TRUE);
+  else if (ch == '~' && param == 5)
+    RVWinSerialTermScroll(-(h - 1), FALSE, FALSE);
+  else if (ch == '~' && param == 6)
+    RVWinSerialTermScroll(h - 1, FALSE, FALSE);
+}
+
 U0 RVWinSerialPoll()
 {
   //Non-blocking soft-RX drain. At most one full line (or a small char budget)
@@ -1224,6 +1312,7 @@ U0 RVWinSerialPoll()
     if (ch == '\r' || ch == '\n') {
       RVUartPutS("\n");
       rv_win_serial_line[rv_win_serial_len] = 0;
+      RVWinSerialTermScroll(0, FALSE, TRUE);   // new output: leave scrollback
       RVWinSerialDispatch(rv_win_serial_line);
       rv_win_serial_len = 0;
       if (!rv_winmgr.want_quit)
@@ -1235,6 +1324,12 @@ U0 RVWinSerialPoll()
       rv_win_serial_len = 0;
       RVUartPutS("^C\n");
       RVWinSerialPrompt;
+      continue;
+    }
+    if (ch == 27) {
+      // VT cursor keys: ESC [ params final. PgUp/PgDn page the Term doc, arrows step a
+      // line, Home/End jump. Anything else is swallowed (no escape garbage in the line).
+      RVWinSerialEscKey;
       continue;
     }
     if (ch == 8 || ch == 127) {
@@ -1299,4 +1394,62 @@ Bool RVWinSerialInit()
     Print("RVWinSerial ready soft=%d crash_mon=1 (help; regs; bt; fault; q)\n", RVUartSoftGet);
   RVWinSerialPrompt;
   return TRUE;
+}
+
+Bool RVWinSerialVtQuerySize(I64 *cols, I64 *rows)
+{
+  //Ask the terminal for its size (CSI 18 t -> CSI 8 ; rows ; cols t). Bounded spin; FALSE
+  //when nothing answers (piped stdin, dumb terminal) so callers keep their defaults.
+  I64 ch, spins = 0, st = 0, r = 0, c = 0;
+  U8 q[8];
+  q[0] = 27;   // the host lexer has no \x escapes: build CSI 18 t by hand
+  q[1] = '[';
+  q[2] = '1';
+  q[3] = '8';
+  q[4] = 't';
+  q[5] = 0;
+  RVUartPutS(q);
+  while (spins < 4000000) {
+    ch = RVUartTryGet;
+    if (ch < 0) {
+      spins++;
+      continue;
+    }
+    if (st == 0) {
+      if (ch == 27)
+        st = 1;
+    } else if (st == 1) {
+      st = 0;
+      if (ch == '[')
+        st = 2;
+    } else if (st == 2) {
+      st = 0;
+      if (ch == '8')
+        st = 3;
+    } else if (st == 3) {
+      st = 0;
+      if (ch == ';')
+        st = 4;
+    } else if (st == 4) {
+      if (ch >= '0' && ch <= '9')
+        r = r * 10 + ch - '0';
+      else if (ch == ';')
+        st = 5;
+      else
+        st = 0;
+    } else if (st == 5) {
+      if (ch >= '0' && ch <= '9')
+        c = c * 10 + ch - '0';
+      else if (ch == 't') {
+        if (r >= 10 && r <= 120 && c >= 40 && c <= 300) {
+          *rows = r;
+          *cols = c;
+          return TRUE;
+        }
+        return FALSE;
+      } else
+        st = 0;
+    }
+  }
+  return FALSE;
 }

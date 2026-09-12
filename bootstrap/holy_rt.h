@@ -1079,7 +1079,7 @@ static HRT_I64 HolyRVSleep(HRT_I64 ticks) {
 #define HOLY_PLIC_CLAIM_OFF      0x200004
 #endif
 #define HOLY_UART_IRQ   10
-static char holy_urx[256];
+static char holy_urx[4096];   /* pasted REPL lines burst well past the 16-byte 16550 FIFO */
 static int  holy_urx_head = 0, holy_urx_tail = 0;
 
 static volatile HRT_I64 holy_virtio_irqs = 0;   /* count of serviced virtio mmio/PCI completion IRQs */
@@ -1112,7 +1112,7 @@ static void HolyServiceExternal(void) {
       char c = (char)*rbr;
       if (c == 3 && holy_repl_recover_armed) { holy_break_req = 1; continue; }  /* ^C: break out */
       if (holy_urx_sink) { holy_urx_sink((HRT_I64)(HRT_U8)c); continue; }       /* kernel's ring */
-      int nh = (holy_urx_head + 1) & 255;
+      int nh = (holy_urx_head + 1) & 4095;
       if (nh != holy_urx_tail) { holy_urx[holy_urx_head] = c; holy_urx_head = nh; }
     }
   } else if (irq >= 1 && irq <= 8) {
@@ -1156,7 +1156,7 @@ static HRT_I64 HolyRVUartIrqOff(void) {
 static HRT_I64 HolyRVUartHasInput(void) { return holy_urx_head != holy_urx_tail; }
 static HRT_I64 HolyRVUartGetBuffered(void) {
   if (holy_urx_head == holy_urx_tail) return -1;
-  char c = holy_urx[holy_urx_tail]; holy_urx_tail = (holy_urx_tail + 1) & 255; return (HRT_U8)c;
+  char c = holy_urx[holy_urx_tail]; holy_urx_tail = (holy_urx_tail + 1) & 4095; return (HRT_U8)c;
 }
 
 /* --- virtio-blk (legacy virtio-mmio v1) storage driver -------------------------------------------
