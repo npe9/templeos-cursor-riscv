@@ -119,3 +119,15 @@ Verified end-to-end — the stock file-iteration idiom runs from the REPL:
 Note: the guest compiler rejects the ternary `?:` operator ("Missing ')'"). This is
 CORRECT, not a gap — genuine TempleOS HolyC has no `?:` (0 uses in the reference tree);
 it is a C-ism. Use `if`/`||`/`&&` as stock code does.
+
+
+## End-to-end validation and the remaining data gap
+
+The file-iteration idiom runs from the REPL inside a function: `U0 F(){ CDirEntry *de;
+de=FilesFind("A:/*"); while(de){ ...de->full_name; de=de->next; } } F();` counted 10
+entries. Stock `Demo/Templates/Util1.HC` still stops short, but NOT on a ported function:
+`Define("ST_FILE_UTIL_FLAGS")` correctly reports the define is not loaded (and hits
+TempleOS's error-EBREAK, which the Bp-recovery catches). That is a **system-define
+data gap** — the flag-name defines aren't loaded into the guest image — not a
+function/type porting gap. Programs that skip `ScanFlags`/`Define` (pass explicit flags)
+use the ported chain end-to-end today.
