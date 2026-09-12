@@ -99,3 +99,21 @@ would wedge the VT present loop), side-effecting ones (`Spawn`, `Ed`), and regis
 (`ARegistry.HC` is not compiled into the image — a build-inclusion question, not a
 planting one). `__DATE__`/`__TIME__` lexer directives remain unimplemented on host
 and guest alike.
+
+
+## Struct types in the REPL (lite classes)
+
+Runtime functions that return/take structs (e.g. `FilesFind`→`CDirEntry*`) are now
+ergonomic: `RVExePubCDirEntryLiteIn` (`Compiler/RVExePubs.HC`) plants a lite `CDirEntry`
+class — members `next`, `full_name`, `name`, `size`, `attr` at their real `offset()`s,
+inserted with `RVExePubMemberPlant` (which matches `MemberFind`'s BST). Same pattern as
+the existing `CTaskLite`/`CDolDocGlblsLite` classes; wired into both class-planting
+sites (`cmp.asm_hash` and `Fs->hash_table`).
+
+Verified end-to-end — the stock file-iteration idiom runs from the REPL:
+`d0=de=FilesFind("A:/*"); while (de) { n++; de=de->next; }` counts entries and
+`d0->full_name` reads the path. All win gates + repl-holyc-regression green.
+
+Discovered gap (separate from porting): the guest compiler does not parse the ternary
+`?:` operator (`x?a:b` gives "Missing ')'"). Common enough to be worth a later fix; use
+`if` in the meantime.

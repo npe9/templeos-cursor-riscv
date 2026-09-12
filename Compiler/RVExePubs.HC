@@ -287,6 +287,74 @@ CHashClass *RVExePubCDolDocGlblsLiteIn(CHashTable *table)
   return tmpc;
 }
 
+CHashClass *RVExePubCDirEntryLiteIn(CHashTable *table)
+{
+  // Lite CDirEntry so FilesFind()'s result is usable: `while (de) { ...de->full_name;
+  // de=de->next; }`. Offsets/sizes come from the real struct via offset()/sizeof so they
+  // track KernelA.HH. Members inserted with RVExePubMemberPlant (matches MemberFind's BST).
+  CHashClass *tmpc, *i64t, *u8t, *u8p, *u16t;
+  CMemberLst *m;
+  if (!table || !cmp.internal_types)
+    return NULL;
+  tmpc = HashFind("CDirEntry", table, HTT_CLASS);
+  if (tmpc && MemberFind("full_name", tmpc) && MemberFind("next", tmpc))
+    return tmpc;
+  i64t = cmp.internal_types[RT_I64];
+  u8t = cmp.internal_types[RT_U8];
+  u16t = cmp.internal_types[RT_U16];
+  u8p = u8t + 1;
+  if (!tmpc) {
+    tmpc = PrsClassNew;
+    tmpc->str = StrNew("CDirEntry");
+    tmpc->size = sizeof(CDirEntry);
+    tmpc->raw_type = RT_I64;
+  }
+  if (!MemberFind("next", tmpc)) {
+    m = MemberLstNew(REG_NONE);
+    m->str = StrNew("next");
+    m->offset = offset(CDirEntry.next);
+    m->size = sizeof(CDirEntry *);
+    m->member_class = tmpc + 1;   // CDirEntry* — the class's own one-star slab
+    RVExePubMemberPlant(tmpc, m);
+  }
+  if (!MemberFind("full_name", tmpc)) {
+    m = MemberLstNew(REG_NONE);
+    m->str = StrNew("full_name");
+    m->offset = offset(CDirEntry.full_name);
+    m->size = sizeof(U8 *);
+    m->member_class = u8p;
+    RVExePubMemberPlant(tmpc, m);
+  }
+  if (!MemberFind("name", tmpc)) {
+    m = MemberLstNew(REG_NONE);
+    m->str = StrNew("name");
+    m->offset = offset(CDirEntry.name);
+    m->size = CDIR_FILENAME_LEN;
+    m->member_class = u8t;
+    RVExePubMemberDim(m, CDIR_FILENAME_LEN);
+    RVExePubMemberPlant(tmpc, m);
+  }
+  if (!MemberFind("size", tmpc)) {
+    m = MemberLstNew(REG_NONE);
+    m->str = StrNew("size");
+    m->offset = offset(CDirEntry.size);
+    m->size = sizeof(I64);
+    m->member_class = i64t;
+    RVExePubMemberPlant(tmpc, m);
+  }
+  if (!MemberFind("attr", tmpc)) {
+    m = MemberLstNew(REG_NONE);
+    m->str = StrNew("attr");
+    m->offset = offset(CDirEntry.attr);
+    m->size = sizeof(U16);
+    m->member_class = u16t;
+    RVExePubMemberPlant(tmpc, m);
+  }
+  if (!HashFind("CDirEntry", table, HTT_CLASS))
+    HashAdd(tmpc, table);
+  return tmpc;
+}
+
 I64 RVExePubInternDolDocIn(CHashTable *table)
 {
   CHashClass *tmpc;
@@ -475,6 +543,7 @@ I64 RVExePubsWireAddrs(I64 *addrs)
   u64t = cmp.internal_types[RT_U64];
   u8p = cmp.internal_types[RT_U8] + 1;
   n += RVExePubInternFsGs;
+  RVExePubCDirEntryLiteIn(Fs->hash_table);
   n += RVExePubInternsIn(Fs->hash_table);
   // Compiler-unit debug entry points (local addresses): PassTrace dumps ICs per pass.
   if (!HashFind("PassTrace", Fs->hash_table, HTT_FUN)) {
@@ -900,6 +969,7 @@ U0 RVCmpWireAsmHash()
   if (cmp.asm_hash) {
     RVExePubInternFsGsIn(cmp.asm_hash);
     RVExePubInternDolDocIn(cmp.asm_hash);
+    RVExePubCDirEntryLiteIn(cmp.asm_hash);
     RVExePubInternsIn(cmp.asm_hash);
   }
   if (!Fs || !Fs->hash_table || !cmp.asm_hash)
