@@ -27,13 +27,23 @@ Run through the guest compiler (`RVWinSerialHolyC` → `ExePutS`, whole-buffer):
 
 ### Open: guest `switch` dispatch collapses to the first case
 
-`NullCase.HC` proves the guest compiler's `switch` statement dispatches every value
-to the first `case` (all 20 loop iterations printed the case-0 body). Case-value
-PARSING is correct (`Compiler/PrsStmt.HC:663`: `case:` → 0 then `++`, `case N:` →
-`N`); the defect is in the dispatch codegen emitted after the case list (the
-switch-value comparison / jump table), guest-side only — host AOT switch works
-(`tests/exec/cases/e_subswitch_break.hc` → 0x7f passes). This is the next concrete
-target for "stock programs working".
+`NullCase.HC` prints the case-0 body for all 20 loop iterations. Root cause is
+exact: **`IC_SWITCH` and `IC_NOBOUND_SWITCH` are stubbed in the RV backend**
+(`Compiler/OptPass_RV.HC:1044` — a bare `break;` with a `TODO: extract table info
+from ic_data`). The guest emits no dispatch, so control falls straight into the
+first case body. Everything upstream is correct: `PrsSwitch` (`Compiler/PrsStmt.HC:578`)
+builds the jump table (`mc_jt->jmp_table[range]`, default-filled then case labels
+at `val-lo`) and patches `value-lo`/`range` into the `IC_SUB`/`IC_IMM` pair;
+case-value parsing handles null cases (`case:` → 0 then `++`). Host AOT switch works
+via `ICSwitch` (`Compiler/OptPass789A.HC:1012`; `tests/exec/cases/e_subswitch_break.hc`
+→ 0x7f passes).
+
+Implementing it on RV means porting `ICSwitch`: bounds-check `(u64)(value-lo) >=
+range → default`, load `jmp_table[value-lo]` (a table of resolved label addresses
+emitted into the code image — the label-address relocation is the substantive part;
+`IC_GET_LABEL` at `OptPass_RV.HC:1291` already resolves single label addresses to
+build on), then an indirect jump. This is the next concrete target for "stock
+programs working" and is a bounded codegen feature, not a hunt.
 
 ## Reproduction
 
