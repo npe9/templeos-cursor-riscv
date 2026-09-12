@@ -541,6 +541,7 @@ typedef struct {
   U8 cast_elem_type;       // pointee type after a pointer cast (`s(U8 *)[i]`), 0 = none
   CHashClass *cast_elem_class;
   bool addr_of_ident;      // `&name` pending: a function name here is an address, not a call
+  CIntermediateCode *fn_addr_slot_deref;  // tail IC of the last `&ExternFn` slot load (keep its DEREF)
   bool class_decl_follows; // ParseClass returned at `class X {…} a`: the caller parses declarators        // File where the first pending error was raised
   
   // Output

@@ -633,6 +633,11 @@ static bool EmitFnAddress(Compiler *cc, CHashFun *fn) {
     cc->ic_tail->ic_flags = ICF_GLBL_ADDR;
     ICAdd(cc, IC_EVAL_DROP, 8, RT_I64);
     ICAdd(cc, IC_DEREF, 0, RT_I64);
+    // This DEREF *is* the value (`&Fn` = the slot's contents). The unary-& path must not
+    // retract it like a variable's auto-deref: that left the slot address, and a call
+    // through the pointer jumped into the import table (guest &RVF64Sin, `fp=&StrLen`).
+    cc->fn_addr_slot_deref = cc->ic_tail;
+    fn->import_var->use_cnt++;   // address-only use still needs the slot in the import directory
     return true;
   }
   if (cc->current_function_entry_label && fn == cc->last_compiled_func) {
@@ -1791,8 +1796,10 @@ static bool ParseUnary(Compiler *cc) {
     }
     cc->flags = saved_flags;
     // ParsePrimary clears CCF_RAX, so the auto-deref still fired: retract it and make sure the
-    // address is on the eval stack (that is the whole of `&`).
-    EnsureLvalueAddressPushed(cc);
+    // address is on the eval stack (that is the whole of `&`) — unless the operand was an
+    // extern function, whose trailing DEREF loads the code address from its import slot.
+    if (cc->ic_tail != cc->fn_addr_slot_deref)
+      EnsureLvalueAddressPushed(cc);
     U8 addr_pointee = RT_I64;
     if (cc->last_var_symbol) addr_pointee = cc->last_var_symbol->pointed_to_type ? RT_I64 : cc->last_var_symbol->data_type;
     else if (cc->last_global_var) addr_pointee = cc->last_global_var->pointed_to_type ? RT_I64 : (U8)cc->last_global_var->raw_type;
