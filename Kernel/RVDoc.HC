@@ -72,6 +72,8 @@ I64 rv_doc_filemgr_user_hits;
 I64 rv_doc_filemgr_ffind;
 I64 rv_doc_link_opens;
 I64 rv_doc_open_busy;
+I64 rv_doc_last_open_idx = -1;   // window opened by the most recent FI: link (auto-focus)
+I64 rv_doc_sel_moves;            // cursor link-selection moves (canary for VT link-nav)
 I64 rv_doc_html_hits;
 I64 rv_doc_hx_hits;
 I64 rv_doc_song_hits;
@@ -3921,6 +3923,47 @@ Bool RVDocToggleTree(CDoc *doc, CDocEntry *doc_e)
   }
   DocRecalc(doc);
   return TRUE;
+}
+
+Bool RVDocSelClickable(I64 t)
+{
+  //The activatable entry types — same set RVDocFindAt treats as clickable.
+  return t == DOCT_LINK || t == DOCT_TREE || t == DOCT_BTTN || t == DOCT_CHECK_BOX ||
+         t == DOCT_MACRO || t == DOCT_DATA || t == DOCT_MENU_VAL || t == DOCT_LST ||
+         t == DOCT_SPRITE || t == DOCT_INS_BIN;
+}
+
+Bool RVDocSelMove(CDoc *doc, I64 dir)
+{
+  //Move doc->cur_entry to the next (dir>0) / prev (dir<0) clickable entry, wrapping.
+  // The list is circular through the doc sentinel (head at offset 0 == doc), so a step
+  // that lands on `doc` is the wrap point and is skipped. Returns TRUE if it moved.
+  CDocEntry *start, *doc_e;
+  I64 guard = 0;
+  if (!doc || doc->doc_signature != DOC_SIGNATURE_VAL)
+    return FALSE;
+  start = doc->cur_entry;
+  if (!start)
+    start = doc;
+  doc_e = start;
+  while (guard++ < 200000) {
+    if (dir < 0)
+      doc_e = doc_e->last;
+    else
+      doc_e = doc_e->next;
+    if (doc_e == start)
+      break;                       // full circle: no other clickable entry
+    if (doc_e == doc)
+      continue;                    // skip the sentinel, keep walking
+    if (doc_e->de_flags & DOCEF_SKIP)
+      continue;
+    if (RVDocSelClickable(doc_e->type_u8)) {
+      doc->cur_entry = doc_e;
+      rv_doc_sel_moves++;
+      return TRUE;
+    }
+  }
+  return FALSE;
 }
 
 Bool RVDocActivate(CDoc *doc, CDocEntry *doc_e)

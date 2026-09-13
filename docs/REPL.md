@@ -243,3 +243,27 @@ virtio-blk device. The clean boot mounts it as `B:` (via `RVMountVirtioDisk`), s
 stock TempleOS document is browsable — `Cat("B:/Doc/Welcome.DD");`,
 `Cat("B:/Doc/DolDocOverview.DD");`, etc. `A:` remains a RAM disk for scratch files.
 Without the disk, the mount is a no-op and `A:` still works.
+
+## Browsing DolDoc links with the cursor
+
+The desktop windows are DolDoc documents, and their links/trees/buttons are now
+**selectable by the cursor** in the VT console:
+
+* **Tab** cycles focus among the windows (`RVWinFocusNext`). Tab onto a browsable
+  document — the **HOME.DD** window, or a window opened by following a link — and the
+  arrows switch from Term scrollback to *link selection*.
+* **↑/↓** (and ←/→) move the selection between the clickable entries (`RVDocSelMove`);
+  the selected link paints fg/bg-**inverted** so you can see it, and the window scrolls
+  to keep it in view.
+* **Enter** activates the selected entry (`RVDocActivate`): an `FI:` link opens its
+  target document in a new window (and focuses it, so you can keep browsing), a `$$TR$$`
+  tree toggles collapse, a check-box flips.
+* **Tab** again returns to the Term, where the arrows scroll history and Enter evaluates
+  HolyC as before. The Term/Adam REPL consoles are never link browsers.
+
+Implementation: `RVDocSelMove`/`RVDocSelClickable` (Kernel/RVDoc.HC) walk the CDoc entry
+ring; `RVWinDocFocusIsNav`/`RVWinDocFocusSelMove`/`RVWinDocFocusActivate`
+(Kernel/RVWinMgr.HC) gate the behaviour on the focused window's kind and drive the
+scroll; the escape decoder (`RVWinSerialEscKey`) and `RVWinTermPutChar`
+(Kernel/RVWinSerial.HC) route the keys. The selected-entry highlight is in
+`RVDocDrawWin`.

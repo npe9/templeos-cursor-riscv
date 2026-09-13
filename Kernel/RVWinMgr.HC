@@ -1440,6 +1440,10 @@ U0 RVDocDrawWin(CRVWin *w)
         attr = (doc_e->type >> 8) & 255;
         if (!attr)
           attr = w->text_attr;
+        // Cursor link-selection: the focused doc's cur_entry (a clickable widget) paints
+        // fg/bg-inverted so "selectable by the cursor" is visible in the VT compose.
+        if (doc_e == doc->cur_entry && doc_e != doc && RVDocSelClickable(t))
+          attr = ((attr & 0x0F) << 4) + ((attr >> 4) & 0x0F);
         x = doc_e->x - sx;
         for (i = 0; tag[i]; i++) {
           ch = tag[i];
@@ -2189,6 +2193,7 @@ Bool RVDocOpenLink(U8 *link)
     w->doc = doc;
     Print("RVDoc OpenLink title=%s entries=%d path=%s\n", title, DocSize(doc), path);
   }
+  rv_doc_last_open_idx = idx;   // VT link-nav auto-focuses this window after Enter
   rv_doc_open_busy = 0;
   return TRUE;
 }
@@ -3123,6 +3128,83 @@ U0 RVWinBodyPutChar(I64 ch)
     if (w->kind == RV_WIN_KIND_TERM || w->kind == RV_WIN_KIND_ADAM || rv_winmgr.focus == rv_winmgr.term_idx || rv_winmgr.focus == rv_winmgr.adam_idx)
       RVACRefresh(w->body);
   }
+}
+
+Bool RVWinDocFocusIsNav()
+{
+  //TRUE when the focused window is a browsable DolDoc (HOME or a link-opened Doc win),
+  // so the VT arrows move a link cursor and Enter follows it. The Term/Adam/User REPL
+  // consoles keep arrows=scrollback and Enter=evaluate — they are not link browsers.
+  I64 idx = rv_winmgr.focus;
+  CRVWin *w;
+  if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+    return FALSE;
+  w = &rv_winmgr.wins[idx];
+  if (w->kind == RV_WIN_KIND_TERM || w->kind == RV_WIN_KIND_ADAM || w->kind == RV_WIN_KIND_USER)
+    return FALSE;
+  if (!w->doc || w->doc->doc_signature != DOC_SIGNATURE_VAL)
+    return FALSE;
+  return TRUE;
+}
+
+U0 RVWinDocFocusSelMove(I64 dir)
+{
+  //Arrow-move the link cursor in the focused browsable doc (no-op elsewhere), then
+  // scroll the window so the newly selected link stays in view.
+  I64 idx = rv_winmgr.focus, hh, cy;
+  CRVWin *w;
+  CDocEntry *doc_e;
+  if (!RVWinDocFocusIsNav())
+    return;
+  w = &rv_winmgr.wins[idx];
+  if (!RVDocSelMove(w->doc, dir))
+    return;
+  doc_e = w->doc->cur_entry;
+  if (!doc_e || doc_e == w->doc)
+    return;
+  // Non-console doc renders from y=w->scroll_y (RVDocDrawWin), so pull the selection
+  // toward the middle of the client and let RVWinClampScroll bound it.
+  hh = w->bottom - w->top - 1;   // client height minus the two borders
+  if (hh < 1)
+    hh = 1;
+  cy = doc_e->y - hh / 2;
+  if (cy < 0)
+    cy = 0;
+  w->scroll_y = cy;
+  RVWinClampScroll(idx);
+}
+
+Bool RVWinDocFocusActivate()
+{
+  //Enter on the focused browsable doc: activate the selected widget (LINK→FI: open,
+  // TREE/CB toggle, …). With no selection yet, activate the first clickable entry.
+  // A LINK that opens a new Doc window auto-focuses it so the next arrows browse it.
+  I64 idx = rv_winmgr.focus, opened;
+  CRVWin *w;
+  CDocEntry *doc_e;
+  if (!RVWinDocFocusIsNav())
+    return FALSE;
+  w = &rv_winmgr.wins[idx];
+  doc_e = w->doc->cur_entry;
+  if (!doc_e || doc_e == w->doc) {
+    if (RVDocSelMove(w->doc, 1))
+      doc_e = w->doc->cur_entry;
+  }
+  if (!doc_e || doc_e == w->doc)
+    return FALSE;
+  opened = rv_doc_last_open_idx;
+  rv_doc_last_open_idx = -1;
+  if (RVDocActivate(w->doc, doc_e)) {
+    DocRecalc(w->doc);
+    if (rv_doc_last_open_idx >= 0 && rv_doc_last_open_idx < RV_WIN_MAX &&
+        rv_winmgr.wins[rv_doc_last_open_idx].used)
+      RVWinFocus(rv_doc_last_open_idx);   // browse the newly opened doc next
+    else
+      rv_doc_last_open_idx = opened;
+    return TRUE;
+  }
+  rv_doc_last_open_idx = opened;
+  return FALSE;
 }
 
 U0 RVWinHomePutKey(I64 ch, I64 code)

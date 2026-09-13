@@ -1128,6 +1128,17 @@ U0 RVWinTermPutChar(I64 ch)
     RVWinFocusNext;
     return;
   }
+  // Browsable DolDoc window focused (Tab cycles here): arrows move the link cursor
+  // (via the escape decoder), Enter follows the selected link, everything else is
+  // swallowed. Tab (above) returns to the Term. REPL semantics resume when the Term
+  // or a User window is focused.
+  if (RVWinDocFocusIsNav()) {
+    if (ch == 27)
+      RVWinSerialEscKey;
+    else if (ch == '\n' || ch == '\r')
+      RVWinDocFocusActivate;
+    return;
+  }
   idx = rv_winmgr.focus;
   if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
     idx = rv_winmgr.term_idx;
@@ -1283,6 +1294,15 @@ U0 RVWinSerialEscKey()
     ch = RVWinSerialEscGet;
     while (ch >= '0' && ch <= '9')
       ch = RVWinSerialEscGet;
+  }
+  // When a browsable DolDoc window is focused, the arrows move the link cursor instead
+  // of scrolling the Term (Up/Left = previous link, Down/Right = next; Enter follows).
+  if (RVWinDocFocusIsNav()) {
+    if (ch == 'A' || ch == 'D')
+      RVWinDocFocusSelMove(-1);
+    else if (ch == 'B' || ch == 'C')
+      RVWinDocFocusSelMove(1);
+    return;
   }
   if (ch == 'A')
     RVWinSerialTermScroll(-1, FALSE, FALSE);

@@ -203,8 +203,12 @@ U0 RVWinVtRun()
     idx = rv_winmgr.focus;
     if (idx < 0)
       idx = rv_winmgr.term_idx;
+    // A browsable DolDoc (HOME or a link-opened Doc window) owns its own scroll — the
+    // link cursor pages it (RVWinDocFocusSelMove keeps the selected link in view). Only
+    // plain output windows tail-follow. Term/Adam consoles page themselves in RVDocDrawWin.
     if (idx >= 0 && idx < RV_WIN_MAX && rv_winmgr.wins[idx].used &&
-        rv_winmgr.wins[idx].kind != RV_WIN_KIND_TERM && rv_winmgr.wins[idx].kind != RV_WIN_KIND_ADAM) {
+        rv_winmgr.wins[idx].kind != RV_WIN_KIND_TERM && rv_winmgr.wins[idx].kind != RV_WIN_KIND_ADAM &&
+        !RVWinDocFocusIsNav()) {
       rv_winmgr.wins[idx].scroll_y = 0x40000000;
       RVWinClampScroll(idx);
     }
