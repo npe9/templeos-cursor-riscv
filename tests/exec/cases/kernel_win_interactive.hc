@@ -499,6 +499,7 @@ I64 main()
       RVDocPutS("TempleOS/RISC-V \x97 HolyC ExePutS + DolDoc.\n");
       RVDocPutS("Try:  2+3;   Dir;   Cat(\"B:/Doc/Welcome.DD\");   F64 f=2.0; Sqrt(f);\n");
       RVDocPutS("The stock tos/Doc tree is on B: (Cat any B:/Doc/*.DD); A: is a RAM disk.\n");
+      RVDocPutS("Run a program:  #include \"B:/Demo/ForLoop.HC\"\n");
     }
     RVWinVtRun();
     return 0;

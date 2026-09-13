@@ -131,3 +131,14 @@ TempleOS's error-EBREAK, which the Bp-recovery catches). That is a **system-defi
 data gap** — the flag-name defines aren't loaded into the guest image — not a
 function/type porting gap. Programs that skip `ScanFlags`/`Define` (pass explicit flags)
 use the ported chain end-to-end today.
+
+
+## Running from the disk (make tos) — both halves working
+
+With `make tos` (real RedSea disk on B:), both halves of "DolDoc files and programs
+working" run off the disk:
+- **DolDoc:** `Cat("B:/Doc/Hash.DD");` / `Cat("B:/Doc/Welcome.DD");` render the real
+  stock documents from the disk.
+- **Programs:** `#include "B:/Demo/ForLoop.HC"` runs a stock program from the disk;
+  verified ForLoop (sum 0..4=10, =6), NullCase (Zero/One/Two/Three/Ten/Eleven), and
+  SubSwitch (Zero [One] Two [Three] Four [Five]) all execute correctly from B:.
