@@ -3966,6 +3966,94 @@ Bool RVDocSelMove(CDoc *doc, I64 dir)
   return FALSE;
 }
 
+U0 RVDocEdMove(CDoc *doc, I64 dir)
+{
+  //Editor cursor: cur_entry is the insertion point (DocEdInsChar inserts at ->last, i.e.
+  // just before cur_entry; the doc sentinel == end-of-doc). dir: -1 left, +1 right,
+  // -2 up, +2 down (nearest column on the target row). DocRecalc has assigned x/y.
+  CDocEntry *doc_e, *best;
+  I64 cx, cy, ty, bestdx, dx;
+  if (!doc || doc->doc_signature != DOC_SIGNATURE_VAL)
+    return;
+  DocRecalc(doc);
+  doc_e = doc->cur_entry;
+  if (!doc_e)
+    doc_e = doc;
+  if (dir == -1) {
+    if (doc_e->last != doc)   // don't step past the head sentinel
+      doc->cur_entry = doc_e->last;
+    return;
+  }
+  if (dir == 1) {
+    if (doc_e != doc)         // sentinel already means end-of-doc
+      doc->cur_entry = doc_e->next;
+    return;
+  }
+  // up/down: current column/row (sentinel → just past the last entry)
+  if (doc_e == doc) {
+    if (doc->head.last != doc) {
+      cx = doc->head.last->x + 1;
+      cy = doc->head.last->y;
+    } else {
+      cx = 0;
+      cy = 0;
+    }
+  } else {
+    cx = doc_e->x;
+    cy = doc_e->y;
+  }
+  ty = cy + 1;
+  if (dir == -2)
+    ty = cy - 1;
+  if (ty < 0)
+    return;
+  best = NULL;
+  bestdx = 0x7FFFFFFF;
+  doc_e = doc->head.next;
+  while (doc_e != doc) {
+    if (!(doc_e->de_flags & DOCEF_SKIP) && doc_e->y == ty) {
+      dx = doc_e->x - cx;
+      if (dx < 0)
+        dx = -dx;
+      if (dx < bestdx) {
+        bestdx = dx;
+        best = doc_e;
+      }
+    }
+    doc_e = doc_e->next;
+  }
+  if (best)
+    doc->cur_entry = best;
+}
+
+I64 RVDocEdExtractText(CDoc *doc, U8 *out, I64 max)
+{
+  //Serialize the doc's text entries to plain bytes (DOCT_TEXT + \n/\t). Markup entries
+  // are dropped — a plain-text editor round-trips plain files exactly; a $-markup .DD is
+  // flattened (edit A: scratch, not stock docs). Returns the byte count written.
+  CDocEntry *doc_e;
+  I64 n = 0, i, l;
+  U8 *t;
+  if (!doc || doc->doc_signature != DOC_SIGNATURE_VAL || !out || max < 1)
+    return 0;
+  doc_e = doc->head.next;
+  while (doc_e != doc && n < max - 1) {
+    if (doc_e->type_u8 == DOCT_TEXT && doc_e->tag) {
+      t = doc_e->tag;
+      l = StrLen(t);
+      for (i = 0; i < l && n < max - 1; i++)
+        out[n++] = t[i];
+    } else if (doc_e->type_u8 == DOCT_NEW_LINE || doc_e->type_u8 == DOCT_SOFT_NEW_LINE) {
+      out[n++] = '\n';
+    } else if (doc_e->type_u8 == DOCT_TAB) {
+      out[n++] = '\t';
+    }
+    doc_e = doc_e->next;
+  }
+  out[n] = 0;
+  return n;
+}
+
 Bool RVDocActivate(CDoc *doc, CDocEntry *doc_e)
 {
   //LINK/MA/BT/MU → status (+ FI: open); TREE/CB → toggle. Returns TRUE if handled.

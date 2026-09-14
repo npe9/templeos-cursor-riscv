@@ -68,6 +68,7 @@ public U0 RVWinTileVert();
 #define RV_WIN_KIND_TERM 2
 #define RV_WIN_KIND_HOME 3
 #define RV_WIN_KIND_USER 4
+#define RV_WIN_KIND_EDIT 5
 #define RV_DRAG_NONE     0
 #define RV_DRAG_MOVE     1
 #define RV_DRAG_RESIZE_L 2
@@ -1517,7 +1518,10 @@ U0 RVWinDrawBody(CRVWin *w)
   //  $TX,"text"$     emit quoted text; unknown $cmd$ soft-skipped
   // scroll_y skips leading body lines; scroll_x pans columns (Ctrl-grab lite).
   I64 x, y, i, attr, ch, fg, bg, n, j;
-  if (w->doc && w->doc->doc_signature == DOC_SIGNATURE_VAL && (w->kind == RV_WIN_KIND_HOME || w->kind == RV_WIN_KIND_TERM || w->kind == RV_WIN_KIND_ADAM || w->kind == RV_WIN_KIND_USER)) {
+  // Any window backed by a real CDoc paints its entry stream (HOME/Term/Adam/User, the
+  // link-opened Doc windows [kind NONE], and the editor [EDIT]). The $-lite body path
+  // below is only for the doc-less placeholder windows.
+  if (w->doc && w->doc->doc_signature == DOC_SIGNATURE_VAL) {
     RVDocDrawWin(w);
     return;
   }
@@ -3169,7 +3173,23 @@ Bool RVWinDocFocusIsNav()
   if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
     return FALSE;
   w = &rv_winmgr.wins[idx];
-  if (w->kind == RV_WIN_KIND_TERM || w->kind == RV_WIN_KIND_ADAM || w->kind == RV_WIN_KIND_USER)
+  if (w->kind == RV_WIN_KIND_TERM || w->kind == RV_WIN_KIND_ADAM || w->kind == RV_WIN_KIND_USER ||
+      w->kind == RV_WIN_KIND_EDIT)
+    return FALSE;
+  if (!w->doc || w->doc->doc_signature != DOC_SIGNATURE_VAL)
+    return FALSE;
+  return TRUE;
+}
+
+Bool RVWinDocFocusIsEdit()
+{
+  //TRUE when the focused window is a text editor (ed <file>): keys mutate the CDoc.
+  I64 idx = rv_winmgr.focus;
+  CRVWin *w;
+  if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
+    return FALSE;
+  w = &rv_winmgr.wins[idx];
+  if (w->kind != RV_WIN_KIND_EDIT)
     return FALSE;
   if (!w->doc || w->doc->doc_signature != DOC_SIGNATURE_VAL)
     return FALSE;

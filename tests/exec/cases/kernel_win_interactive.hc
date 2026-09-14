@@ -92,9 +92,29 @@ U0 RVWinVtCaret(I64 idx)
   // insertion point for an append-only REPL body.
   CRVWin *w;
   I64 x, y, ch;
+  CDocEntry *ce;
   if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
     return;
   w = &rv_winmgr.wins[idx];
+  // Editor window: the caret is the doc insertion point (just before cur_entry, which
+  // DocRecalc has placed at x/y). The append-scan below is only right for end-of-doc,
+  // so track cur_entry explicitly whenever it is a real entry.
+  if (w->kind == RV_WIN_KIND_EDIT && w->doc && w->doc->doc_signature == DOC_SIGNATURE_VAL) {
+    ce = w->doc->cur_entry;
+    if (ce && ce != w->doc) {
+      g_vt_caret_row = w->top + ce->y - w->scroll_y;
+      g_vt_caret_col = w->left + ce->x - w->scroll_x;
+      if (g_vt_caret_row < w->top)
+        g_vt_caret_row = w->top;
+      if (g_vt_caret_row > w->bottom)
+        g_vt_caret_row = w->bottom;
+      if (g_vt_caret_col < w->left)
+        g_vt_caret_col = w->left;
+      if (g_vt_caret_col > w->right)
+        g_vt_caret_col = w->right;
+      return;
+    }
+  }
   g_vt_caret_row = w->top;
   g_vt_caret_col = w->left;
   for (y = w->top; y <= w->bottom; y++) {
@@ -525,6 +545,7 @@ I64 main()
       RVDocPutS("Run a program:  #include \"B:/Demo/ForLoop.HC\"\n");
       RVDocPutS("Browse examples: Tab to the Index window, arrows select a link, Enter follows.\n");
       RVDocPutS("Search docs:  find Queue   (opens a window of matching docs to browse)\n");
+      RVDocPutS("Edit a file:  ed A:/Doc/notes.txt   (type, arrows, Ctrl-W save, Tab leave)\n");
     }
     // Open the index as a browsable window (Term keeps focus so you can still type).
     RVDocOpenLink("FI:A:/Doc/Index.DD");

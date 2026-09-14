@@ -277,3 +277,21 @@ select a result, Enter opens it (disk-backed). It caps at 40 matches / 200 files
 Implemented as a dispatch bareword (`RVWinSerialDispatch2`) calling `RVWinSoftFind`
 (Kernel/RVWinSerial.HC), reusing `FilesFind`/`StrFind`/`FileRead` and the same link
 machinery as the cursor nav — so search results are selectable by the cursor for free.
+
+## Editing files: `ed`
+
+`ed <file>` opens a full-screen-lite text editor in its own window (`RV_WIN_KIND_EDIT`):
+the file loads into a CDoc, printable keys insert, Backspace deletes, Enter splits a line,
+the arrows move the cursor (↑/↓ by line, ←/→ by run), **Ctrl-W** writes the file, and
+**Tab** leaves back to the Term. The caret tracks the insertion point.
+
+Primitives reused: `DocEdInsChar`/`DocEdBackspace` (edit), `RVDocEdMove` (cursor),
+`RVDocEdExtractText` (serialize entries → plain bytes), `FileWrite` (save). Verified on
+`make tos`: `ed A:/Doc/scratch.DD`, type two lines, Ctrl-W → `wrote … (24 bytes)`, and the
+text renders live in the window.
+
+**Limitations (by design, for now):** cursor movement and insertion are at run/line
+granularity, not intra-run — you compose top-to-bottom and correct with Backspace, rather
+than positioning inside an existing word. Saving extracts plain text, so a `$`-markup
+`.DD` is flattened; edit plain files (HolyC source, notes) or `A:` scratch, not stock
+`B:/Doc` documents. No undo UI.

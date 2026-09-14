@@ -37,6 +37,8 @@ I64 rv_win_adam_len;
 I64 rv_win_adam_cmds;
 I64 rv_win_adam_mirror;
 U8 rv_win_adam_line[RV_WIN_SERIAL_LINE_MAX];
+U8 rv_win_edit_path[192];   // file backing the active `ed` editor window
+I64 rv_win_edit_dirty;      // unsaved edits since load/save
 asm {
 	RVWinCsrrMstatus::
 	csrr	a0, 0x300
@@ -741,6 +743,88 @@ public U0 RVWinSoftFind(U8 *needle)
   RVDocOpenLink("FI:A:/Doc/_Find.DD");
 }
 
+public U0 RVWinSoftEd(U8 *path)
+{
+  // Full-screen-lite text editor. Loads `path` into an RV_WIN_KIND_EDIT window's CDoc;
+  // keys mutate it via DocEdInsChar/Backspace, arrows move the cursor, Ctrl-W saves,
+  // Tab leaves. Plain files (HolyC source, notes) round-trip exactly; a $-markup .DD is
+  // flattened on save, so edit A: scratch rather than stock docs.
+  U8 *buf, tbuf[64], *bn;
+  CDoc *doc;
+  CRVWin *w;
+  I64 sz = 0, i, idx, left, right, top, bottom;
+  if (!path || !*path) {
+    Print("Ed: need a file — e.g.  ed A:/Doc/scratch.DD\n");
+    return;
+  }
+  bn = path;
+  for (i = 0; path[i]; i++)
+    if (path[i] == '/' || path[i] == ':')
+      bn = path + i + 1;
+  if (!*bn)
+    bn = "edit";
+  StrPrint(tbuf, "%s", bn);
+  buf = NULL;
+  if (Fs && Fs->cur_dv && !StrMatch("Adam", path))
+    buf = FileRead(path, &sz, NULL);
+  idx = RVDocFindByTitle(tbuf);
+  if (idx < 0) {
+    left = 3;
+    right = rv_winmgr.cols - 4;
+    top = 3;
+    bottom = rv_winmgr.rows - 3;
+    if (bottom - top < 6)
+      bottom = top + 8;
+    idx = RVWinNew(left, right, top, bottom, tbuf, "", FALSE);
+  }
+  if (idx < 0) {
+    if (buf)
+      Free(buf);
+    Print("Ed: cannot open window\n");
+    return;
+  }
+  w = &rv_winmgr.wins[idx];
+  w->kind = RV_WIN_KIND_EDIT;
+  w->border_attr = GREEN;
+  w->show = TRUE;
+  if (w->doc) {
+    DocDel(w->doc);
+    w->doc = NULL;
+  }
+  doc = DocNew(tbuf);
+  if (doc) {
+    if (buf && sz > 0)
+      DocPutS(doc, buf);
+    doc->cur_entry = doc;   // sentinel == insert at end of doc
+    DocRecalc(doc);
+    w->doc = doc;
+  }
+  if (buf)
+    Free(buf);
+  StrPrint(rv_win_edit_path, "%s", path);
+  rv_win_edit_dirty = 0;
+  RVWinFocus(idx);
+  Print("Ed: %s (%d bytes) \x97 type to edit, arrows move, Ctrl-W save, Tab leave\n", path, sz);
+}
+
+U0 RVWinEdSave()
+{
+  U8 *buf;
+  I64 n, idx = rv_winmgr.focus;
+  CRVWin *w;
+  if (!RVWinDocFocusIsEdit())
+    return;
+  w = &rv_winmgr.wins[idx];
+  buf = MAlloc(65536);
+  if (!buf)
+    return;
+  n = RVDocEdExtractText(w->doc, buf, 65536);
+  FileWrite(rv_win_edit_path, buf, n);
+  Free(buf);
+  rv_win_edit_dirty = 0;
+  Print("Ed: wrote %s (%d bytes)\n", rv_win_edit_path, n);
+}
+
 public U0 RVWinSoftMan(U8 *name)
 {
   if (!name || !*name) {
@@ -1049,6 +1133,15 @@ Bool RVWinSerialDispatch2(U8 *line)
     RVWinSoftFind(q);
     return FALSE;
   }
+  if (RVWinSerialCmdEq(p, "ed")) {
+    I64 ql;
+    q = RVWinSerialSkipTok(p);
+    ql = StrLen(q);
+    while (ql > 0 && (q[ql - 1] == ';' || q[ql - 1] == ' '))
+      q[--ql] = 0;
+    RVWinSoftEd(q);
+    return FALSE;
+  }
   if (RVWinSerialCmdEq(p, "bt")) {
     RVWinSerialBt;
     return FALSE;
@@ -1202,6 +1295,27 @@ U0 RVWinTermPutChar(I64 ch)
   CRVWin *w;
   if (ch == '\t') {
     RVWinFocusNext;
+    return;
+  }
+  // Text editor window focused (ed <file>): keys mutate the CDoc. Ctrl-W saves, arrows
+  // move the cursor (via the escape decoder), Tab (above) leaves. This is checked before
+  // the nav branch since an EDIT window is not a link browser.
+  if (RVWinDocFocusIsEdit()) {
+    CRVWin *ew = &rv_winmgr.wins[rv_winmgr.focus];
+    if (ch == 27)
+      RVWinSerialEscKey;                    // arrows -> RVDocEdMove
+    else if (ch == 23)                      // Ctrl-W: write
+      RVWinEdSave;
+    else if (ch == 8 || ch == 127) {
+      DocEdBackspace(ew->doc);
+      rv_win_edit_dirty = 1;
+    } else if (ch == '\n' || ch == '\r') {
+      DocEdInsChar(ew->doc, '\n');
+      rv_win_edit_dirty = 1;
+    } else if (ch >= 32 && ch < 127) {
+      DocEdInsChar(ew->doc, ch);
+      rv_win_edit_dirty = 1;
+    }
     return;
   }
   // Browsable DolDoc window focused (Tab cycles here): arrows move the link cursor
@@ -1370,6 +1484,19 @@ U0 RVWinSerialEscKey()
     ch = RVWinSerialEscGet;
     while (ch >= '0' && ch <= '9')
       ch = RVWinSerialEscGet;
+  }
+  // Editor window focused: arrows move the text cursor (RVDocEdMove).
+  if (RVWinDocFocusIsEdit()) {
+    CRVWin *ew = &rv_winmgr.wins[rv_winmgr.focus];
+    if (ch == 'A')
+      RVDocEdMove(ew->doc, -2);   // up
+    else if (ch == 'B')
+      RVDocEdMove(ew->doc, 2);    // down
+    else if (ch == 'C')
+      RVDocEdMove(ew->doc, 1);    // right
+    else if (ch == 'D')
+      RVDocEdMove(ew->doc, -1);   // left
+    return;
   }
   // When a browsable DolDoc window is focused, the arrows move the link cursor instead
   // of scrolling the Term (Up/Left = previous link, Down/Right = next; Enter follows).
