@@ -524,6 +524,7 @@ I64 main()
       RVDocPutS("The stock tos/Doc tree is on B: (Cat any B:/Doc/*.DD); A: is a RAM disk.\n");
       RVDocPutS("Run a program:  #include \"B:/Demo/ForLoop.HC\"\n");
       RVDocPutS("Browse examples: Tab to the Index window, arrows select a link, Enter follows.\n");
+      RVDocPutS("Search docs:  find Queue   (opens a window of matching docs to browse)\n");
     }
     // Open the index as a browsable window (Term keeps focus so you can still type).
     RVDocOpenLink("FI:A:/Doc/Index.DD");

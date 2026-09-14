@@ -267,3 +267,13 @@ ring; `RVWinDocFocusIsNav`/`RVWinDocFocusSelMove`/`RVWinDocFocusActivate`
 scroll; the escape decoder (`RVWinSerialEscKey`) and `RVWinTermPutChar`
 (Kernel/RVWinSerial.HC) route the keys. The selected-entry highlight is in
 `RVDocDrawWin`.
+
+## Searching the doc tree: `find`
+
+`find <needle>` (alias `grep <needle>`) greps the mounted doc tree (`B:/Doc`, else
+`A:/Doc`) for a substring and opens the hits as a **browsable** DolDoc window — one
+`$$LK$$` per matching file, written to `A:/Doc/_Find.DD`. Tab onto that window, arrows
+select a result, Enter opens it (disk-backed). It caps at 40 matches / 200 files scanned.
+Implemented as a dispatch bareword (`RVWinSerialDispatch2`) calling `RVWinSoftFind`
+(Kernel/RVWinSerial.HC), reusing `FilesFind`/`StrFind`/`FileRead` and the same link
+machinery as the cursor nav — so search results are selectable by the cursor for free.

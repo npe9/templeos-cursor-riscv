@@ -674,6 +674,73 @@ public U0 RVWinSoftCat(U8 *name)
   Free(buf);
 }
 
+public U0 RVWinSoftFind(U8 *needle)
+{
+  // Grep the mounted doc tree (B:/Doc, else A:/Doc) for `needle` and open the results as
+  // a browsable DolDoc: one $$LK$$ per matching file, written to A:/Doc/_Find.DD and
+  // opened via RVDocOpenLink — so the hits are selectable by the cursor like any links.
+  U8 *body, *dir, *buf, line[320], fpath[192];
+  CDirEntry *head, *de;
+  I64 sz = 0, cap = 16384, pos = 0, ln, matches = 0, scanned = 0;
+  if (!needle || !*needle) {
+    Print("Find: need a needle — e.g.  find MAlloc\n");
+    return;
+  }
+  dir = "B:/Doc";
+  head = FilesFind("B:/Doc/*", 0);
+  if (!head) {
+    dir = "A:/Doc";
+    head = FilesFind("A:/Doc/*", 0);
+  }
+  body = MAlloc(cap);
+  if (!body) {
+    if (head)
+      DirTreeDel(head);
+    return;
+  }
+  StrPrint(line, "$$FG,LTBLUE$$$$TX,\"Find: %s\"$$$$FG$$\n", needle);
+  ln = StrLen(line);
+  MemCpy(body, line, ln);
+  pos = ln;
+  body[pos] = 0;
+  de = head;
+  while (de && matches < 40 && scanned < 200) {
+    if (!(de->attr & RS_ATTR_DIR) && de->name[0]) {
+      scanned++;
+      StrPrint(fpath, "%s/%s", dir, de->name);
+      buf = FileRead(fpath, &sz, NULL);
+      if (buf) {
+        if (sz > 0 && (StrFind(needle, buf) || StrFind(needle, de->name))) {
+          StrPrint(line, "$$LK,\"%s\",A=\"FI:%s\"$$\n", de->name, fpath);
+          ln = StrLen(line);
+          if (pos + ln < cap - 1) {
+            MemCpy(body + pos, line, ln);
+            pos += ln;
+            body[pos] = 0;
+          }
+          matches++;
+        }
+        Free(buf);
+      }
+    }
+    de = de->next;
+  }
+  if (head)
+    DirTreeDel(head);
+  StrPrint(line, "\n%d match(es) in %s.  Arrows select, Enter opens.\n", matches, dir);
+  ln = StrLen(line);
+  if (pos + ln < cap - 1) {
+    MemCpy(body + pos, line, ln);
+    pos += ln;
+    body[pos] = 0;
+  }
+  DirMk("A:/Doc");
+  FileWrite("A:/Doc/_Find.DD", body, StrLen(body));
+  Free(body);
+  Print("Find: %d match(es) for \"%s\" in %s\n", matches, needle, dir);
+  RVDocOpenLink("FI:A:/Doc/_Find.DD");
+}
+
 public U0 RVWinSoftMan(U8 *name)
 {
   if (!name || !*name) {
@@ -971,6 +1038,15 @@ Bool RVWinSerialDispatch2(U8 *line)
   }
   if (RVWinSerialCmdEq(p, "dir") || RVWinSerialCmdEq(p, "ls")) {
     RVWinSoftDir;
+    return FALSE;
+  }
+  if (RVWinSerialCmdEq(p, "find") || RVWinSerialCmdEq(p, "grep")) {
+    I64 ql;
+    q = RVWinSerialSkipTok(p);
+    ql = StrLen(q);
+    while (ql > 0 && (q[ql - 1] == ';' || q[ql - 1] == ' '))
+      q[--ql] = 0;
+    RVWinSoftFind(q);
     return FALSE;
   }
   if (RVWinSerialCmdEq(p, "bt")) {
