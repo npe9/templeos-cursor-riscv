@@ -164,7 +164,7 @@ I64 IsExprLine(U8 *s)
   I64 i = 0, c, seen = 0;
   while (s[i] == ' ' || s[i] == '\t')
     i++;
-  if (!(s[i] >= '0' && s[i] <= '9') && s[i] != '(' && s[i] != '+' && s[i] != '-')
+  if (!(s[i] >= '0' && s[i] <= '9') && s[i] != '(' && s[i] != '+' && s[i] != '-' && s[i] != '*')
     return 0;
   while (s[i]) {
     c = s[i];
@@ -402,12 +402,13 @@ U8 *eval_asm_p;
 // Top-level ; outside strings/{}/() — compound REPL line.
 I64 EvalHasTopSemi(U8 *line)
 {
-  I64 depth, in_str, q;
+  I64 depth, paren, in_str, q;
   U8 *p;
   if (!line)
     return 0;
   p = line;
   depth = 0;
+  paren = 0;
   in_str = 0;
   q = 0;
   while (*p) {
@@ -433,7 +434,11 @@ I64 EvalHasTopSemi(U8 *line)
       if (depth > 0)
         depth--;
     }
-    if (*p == ';' && depth == 0)
+    if (*p == '(')
+      paren++;
+    if (*p == ')' && paren > 0)
+      paren--;
+    if (*p == ';' && depth == 0 && paren == 0)
       return 1;
     p++;
   }
@@ -442,7 +447,7 @@ I64 EvalHasTopSemi(U8 *line)
 // Copy one ;-delimited unit (respect {}/strings) into eval_stmt; advance *io.
 I64 EvalTakeStmt(U8 *line, I64 *io)
 {
-  I64 i, depth, in_str, q, start;
+  I64 i, depth, paren, in_str, q, start;
   U8 *p, *end;
   if (!line || !io)
     return 0;
@@ -455,6 +460,7 @@ I64 EvalTakeStmt(U8 *line, I64 *io)
   }
   start = p - line;
   depth = 0;
+  paren = 0;
   in_str = 0;
   q = 0;
   end = p;
@@ -484,7 +490,11 @@ I64 EvalTakeStmt(U8 *line, I64 *io)
       if (depth > 0)
         depth--;
     }
-    if (*p == ';' && depth == 0) {
+    if (*p == '(')
+      paren++;
+    if (*p == ')' && paren > 0)
+      paren--;
+    if (*p == ';' && depth == 0 && paren == 0) {
       end = p;
       p++;
       break;

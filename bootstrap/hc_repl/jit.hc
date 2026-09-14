@@ -757,6 +757,27 @@ U0 JitGenPrim()
   U8 *save;
   JitSkip();
   if (*jit_src == '(') {
+    // TempleOS postfix pointer cast, e.g. `*(*U32)0`.  The thin evaluator
+    // does not need the width for a pointer value; consume the cast and leave
+    // the following expression as the address for the outer dereference.
+    save = jit_src;
+    jit_src++;
+    JitSkip();
+    if (*jit_src == '*') {
+      jit_src++;
+      if (JitIdent() && (JitSeq(jit_id, "U8") || JitSeq(jit_id, "U16") ||
+          JitSeq(jit_id, "U32") || JitSeq(jit_id, "U64") ||
+          JitSeq(jit_id, "I8") || JitSeq(jit_id, "I16") ||
+          JitSeq(jit_id, "I32") || JitSeq(jit_id, "I64"))) {
+        JitSkip();
+        if (*jit_src == ')') {
+          jit_src++;
+          JitGenPrim();
+          return;
+        }
+      }
+    }
+    jit_src = save;
     jit_src++;
     JitGenExpr();
     JitNeed(')');
@@ -1533,7 +1554,7 @@ U0 JitGenStmt()
       if (*jit_src != ';') {
         // I64 i = 0  or i = 0
         save = jit_src;
-        if (JitIdent() && (JitSeq(jit_id, "I64") || JitSeq(jit_id, "U8") || JitSeq(jit_id, "I32"))) {
+        if (JitIdent() && (JitSeq(jit_id, "I64") || JitSeq(jit_id, "U8") || JitSeq(jit_id, "I32") || JitSeq(jit_id, "U32"))) {
           if (!JitIdent()) {
             jit_err = 1;
             return;
@@ -1610,7 +1631,7 @@ U0 JitGenStmt()
       return;
     }
     // local decl I64 x; I64 x = expr; I64 a[4]; I64 i, s = 0; U8 b;
-    if (JitSeq(jit_id, "I64") || JitSeq(jit_id, "U8") || JitSeq(jit_id, "I32") || JitSeq(jit_id, "U0")) {
+    if (JitSeq(jit_id, "I64") || JitSeq(jit_id, "U8") || JitSeq(jit_id, "I32") || JitSeq(jit_id, "U32") || JitSeq(jit_id, "U0")) {
       I64 sz0 = 8;
       if (JitSeq(jit_id, "U8"))
         sz0 = 1;
@@ -1815,7 +1836,7 @@ I64 JitParseFun()
     return 0;
   if (JitSeq(jit_id, "U0"))
     is_void = 1;
-  else if (JitSeq(jit_id, "I64") || JitSeq(jit_id, "U8") || JitSeq(jit_id, "I32"))
+  else if (JitSeq(jit_id, "I64") || JitSeq(jit_id, "U8") || JitSeq(jit_id, "I32") || JitSeq(jit_id, "U32"))
     is_void = 0;
   else
     return 0;
@@ -1840,7 +1861,7 @@ I64 JitParseFun()
         jit_err = 1;
         return -1;
       }
-      if (JitSeq(jit_id, "I64") || JitSeq(jit_id, "U0") || JitSeq(jit_id, "U8") || JitSeq(jit_id, "I32") || JitSeq(jit_id, "U64") || JitSeq(jit_id, "U8")) {
+      if (JitSeq(jit_id, "I64") || JitSeq(jit_id, "U0") || JitSeq(jit_id, "U8") || JitSeq(jit_id, "I32") || JitSeq(jit_id, "U32") || JitSeq(jit_id, "U64") || JitSeq(jit_id, "U8")) {
         JitSkip();
         if (*jit_src == '*')
           jit_src++;
@@ -1902,6 +1923,54 @@ I64 JitCallEntry(U8 *entry)
   return fp();
 }
 I64 JitTry(U8 *line);
+
+// The normal REPL entry compiles one top-level expression at a time.  Control
+// statements, however, are emitted by JitGenBlock and therefore need a frame;
+// a bare `for (...) statement;` otherwise falls through to the call parser and
+// is reported as an unknown function.  Wrap a top-level for in a reusable U0
+// function so it uses the exact same loop/codegen path as function bodies.
+I64 JitTryTopFor(U8 *line)
+{
+  U8 *save, *p;
+  U8 buf[4096];
+  U8 *d;
+  I64 n;
+  jit_src = line;
+  JitSkip();
+  save = jit_src;
+  if (!JitIdent() || !JitSeq(jit_id, "for"))
+    return 0;
+  JitSkip();
+  if (*jit_src != '(')
+    return 0;
+  // Keep the original statement intact; JitGenFor handles both a single
+  // statement body and a braced body.  The fixed name is deliberately reused
+  // so repeated interactive loops do not consume function-table slots.
+  d = buf;
+  p = "U0 __repl_for(){";
+  while (*p && d < buf + 4090)
+    *d++ = *p++;
+  n = 0;
+  p = save;
+  while (*p && d < buf + 4090) {
+    *d++ = *p++;
+    n++;
+  }
+  p = "} __repl_for();";
+  while (*p && d < buf + 4094)
+    *d++ = *p++;
+  *d = 0;
+  if (JitTry(buf) < 0) {
+    jit_src = line;
+    return -1;
+  }
+  // The wrapper consumed the complete caller line.
+  jit_src = line;
+  while (*jit_src)
+    jit_src++;
+  return 1;
+}
+
 // fwd for Run
 I64 JitRunFile(U8 *name)
 {
@@ -1997,6 +2066,12 @@ I64 JitTryOne(U8 *line)
   if (!*jit_src)
     return 0;
   save = jit_src;
+  // Top-level `for` needs a function frame; route it through the block parser.
+  jit_src = save;
+  rc = JitTryTopFor(save);
+  if (rc)
+    return rc;
+  jit_src = save;
   // class
   if (JitIdent() && JitSeq(jit_id, "class")) {
     jit_src = save;
@@ -2022,7 +2097,7 @@ I64 JitTryOne(U8 *line)
   }
   jit_src = save;
   // function or typed global
-  if (JitIdent() && (JitSeq(jit_id, "I64") || JitSeq(jit_id, "U0") || JitSeq(jit_id, "U8") || JitSeq(jit_id, "I32"))) {
+  if (JitIdent() && (JitSeq(jit_id, "I64") || JitSeq(jit_id, "U0") || JitSeq(jit_id, "U8") || JitSeq(jit_id, "I32") || JitSeq(jit_id, "U32"))) {
     jit_src = save;
     rc = JitParseFun();
     if (rc > 0)
@@ -2308,7 +2383,7 @@ I64 JitTryOne(U8 *line)
         has_assign = 1;
       p++;
     }
-    if (has_assign || (*jit_src >= '0' && *jit_src <= '9') || *jit_src == '(' || *jit_src == '-' || JitIdent()) {
+    if (has_assign || (*jit_src >= '0' && *jit_src <= '9') || *jit_src == '(' || *jit_src == '-' || *jit_src == '*' || JitIdent()) {
       jit_src = save;
       // if Ident failed above, still try expr
       tramp = jit_at;

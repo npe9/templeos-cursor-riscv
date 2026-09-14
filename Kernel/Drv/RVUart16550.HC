@@ -209,6 +209,14 @@ I64 RVUartGetC()
 I64 RVUartGetLine(U8 *buf, I64 max)
 {
   I64 n = 0, ch;
+  U8 erase[4];
+  // Build rubout bytes numerically.  The guest Compiler_RV lexer does not
+  // currently translate the C-style `\b` escape, which otherwise echoes the
+  // literal letter 'b' on the compiler REPL.
+  erase[0] = 8;
+  erase[1] = ' ';
+  erase[2] = 8;
+  erase[3] = 0;
   while (n < max - 1) {
     ch = RVUartGetC;
     if (ch == '\r' || ch == '\n') {
@@ -218,7 +226,7 @@ I64 RVUartGetLine(U8 *buf, I64 max)
     if (ch == 8 || ch == 127) {
       if (n > 0) {
         n--;
-        RVUartPutS("\b \b");
+        RVUartPutS(erase);
       }
       continue;
     }

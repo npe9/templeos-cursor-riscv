@@ -157,6 +157,8 @@ add_case 'I64 Get11th(I64 a, I64 b, I64 c, I64 d, I64 e, I64 f, I64 g, I64 h, I6
 add_case 'Get11th(1,2,3,4,5,6,7,8,9,10,11);' 000000000000000b
 add_case 'I64 Loop(I64 n) { I64 i, s = 0; for (i = 0; i < n; i++) s += i; return s; }'
 add_case 'Loop(10);' 000000000000002d
+# Top-level control statements use the same JIT block path as function bodies.
+add_case 'for(U32 i = 0; i < 3; i++) "TOP_FOR_OK\\n";'
 add_case 'I64 Dec(I64 n) { while (n > 0) { n--; } return n; }'
 add_case 'Dec(3);' 0000000000000000
 add_case 'I64 Pre() { I64 i = 5; I64 j = ++i; return j * 10 + i; }'
@@ -278,6 +280,7 @@ need "jit-print"
 need "hi1"
 need "ss1"
 need "ssl-plain"
+need "TOP_FOR_OK"
 need "--- dmesg ---"
 need "dmesg-ring"
 need "warn-needle"
