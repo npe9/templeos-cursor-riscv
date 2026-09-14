@@ -2124,10 +2124,11 @@ Bool RVDocOpenLink(U8 *link)
   //FI: path → open/focus a CDoc window (Welcome-lite / HelloWorld / generic).
   // Stock HOME.DD links use FI:A:/Doc/Welcome.DD — no RedSea Adam on win smoke,
   // so embed a short DolDoc-heavy body (WW/HL/LK/AN/MU) matching Demo/DolDoc shape.
-  U8 *path, *body, *title;
-  I64 idx, left, right, top, bottom;
+  U8 *path, *body, *title, *disk, *loaded = NULL, *bn;
+  I64 idx, left, right, top, bottom, dsz = 0, i;
   CDoc *doc;
   CRVWin *w;
+  U8 tbuf[64];
   if (!link || StrLen(link) < 4)
     return FALSE;
   if (!(link[0] == 'F' && link[1] == 'I' && link[2] == ':'))
@@ -2135,17 +2136,39 @@ Bool RVDocOpenLink(U8 *link)
   if (rv_doc_open_busy)
     return FALSE;
   rv_doc_open_busy = 1;
-  path = link + 3;
-  while (*path == ':')
-    path++;
-  // Strip leading A: or /
+  disk = link + 3;
+  while (*disk == ':')
+    disk++;
+  // `disk` keeps the drive-qualified stock path (A:/Doc/Welcome.DD, B:/Doc/God.DD) for
+  // FileRead; `path` strips A:/ and leading / for the canned-body keyword match below.
+  path = disk;
   if (path[0] == 'A' && path[1] == ':')
     path += 2;
   while (*path == '/')
     path++;
   title = "Doc";
   body = NULL;
-  if (StrMatch("Welcome", path) || StrMatch("welcome", path)) {
+  // Disk first: real stock docs on the mounted tree (B:, or A: once Adam exists). Reuse
+  // the RVDocLoadWin guard — no FS or a missing Adam tree once hung on Silent()/FileFind.
+  if (Fs && Fs->cur_dv && !StrMatch("Adam", disk)) {
+    loaded = FileRead(disk, &dsz, NULL);
+    if (loaded && dsz > 0) {
+      bn = disk;
+      for (i = 0; disk[i]; i++)
+        if (disk[i] == '/' || disk[i] == ':')
+          bn = disk + i + 1;
+      if (!*bn)
+        bn = "Doc";
+      StrPrint(tbuf, "%s", bn);
+      title = tbuf;
+    } else if (loaded) {
+      Free(loaded);
+      loaded = NULL;
+    }
+  }
+  if (loaded) {
+    // fall through to the shared open/build below with body==NULL + loaded!=NULL
+  } else if (StrMatch("Welcome", path) || StrMatch("welcome", path)) {
     title = "Welcome.DD";
     body = "$$FG,5$$$$TX,\"Welcome (RV lite)\"$$$$FG$$\n" "$$AN,\"top\"$$\n" "P2 FI: open — stock HOME link.\n" "$$LK,\"HelloWorld\",A=\"FI:A:/Doc/HelloWorld.DD\"$$\n" "$$MU,\"OK\",LE=1$$\n";
   } else if (StrMatch("HelloWorld", path) || StrMatch("Hello", path)) {
@@ -2170,7 +2193,7 @@ Bool RVDocOpenLink(U8 *link)
     if (bottom - top < 6)
       bottom = top + 8;
     idx = RVWinNew(left, right, top, bottom, title, body, FALSE);
-  } else {
+  } else if (body) {
     RVWinSetBody(idx, body);
   }
   if (idx < 0) {
@@ -2186,13 +2209,19 @@ Bool RVDocOpenLink(U8 *link)
   }
   doc = DocNew(title);
   if (doc) {
-    // DocPutS (not DocPrint) — Welcome/Help bodies are DolDoc templates; DocPrint
-    // → StrPrintJoin would treat any % as printf (FormLex hang sibling).
-    DocPutS(doc, w->body);
+    // DocPutS (not DocPrint) — .DD bodies are DolDoc templates; DocPrint → StrPrintJoin
+    // would treat any % as printf (FormLex hang sibling). A disk-loaded doc is put
+    // whole (not via the 1 KB w->body buffer), so long stock docs are not truncated.
+    if (loaded)
+      DocPutS(doc, loaded);
+    else
+      DocPutS(doc, w->body);
     DocRecalc(doc);
     w->doc = doc;
     Print("RVDoc OpenLink title=%s entries=%d path=%s\n", title, DocSize(doc), path);
   }
+  if (loaded)
+    Free(loaded);
   rv_doc_last_open_idx = idx;   // VT link-nav auto-focuses this window after Enter
   rv_doc_open_busy = 0;
   return TRUE;

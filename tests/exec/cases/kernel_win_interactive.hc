@@ -497,6 +497,25 @@ I64 main()
     DirMk("A:/Doc");
     { U8 *s = "The $$LK+PU,\"Holy Spirit\",A=\"FI:::/Adam/God/HSNotes.DD\"$$ can puppet you.\n\n"; FileWrite("A:/Doc/God.DD", s, StrLen(s)); }
     { U8 *s = "$$WW,1$$A $$FG,2$$Queue$$FG$$ is a bunch of $$LK,\"MAlloc\",A=\"MN:MAlloc\"$$()ed chunks of mem linked together in a circle with one ptr to the $$FG,2$$next$$FG$$ value and another ptr to the $$FG,2$$last$$FG$$ value.  These ptrs must be stored in the first locations in the structure.\n"; FileWrite("A:/Doc/Que.DD", s, StrLen(s)); }
+    // Console-based examples in the tree: a curated Index.DD of $$LK$$ entries into the
+    // real stock docs on B: (and a $$TR$$ of runnable demos). Tab onto this window, then
+    // arrows select a link and Enter follows it — the FI: links FileRead the target.
+    {
+      U8 *s = "$$FG,LTBLUE$$$$TX,\"TempleOS/RISC-V \x97 Console Index\"$$$$FG$$\n"
+              "$$AN,\"top\"$$\n"
+              "Browse the stock docs \x97 arrows select, Enter follows:\n"
+              "$$LK,\"About TempleOS\",A=\"FI:B:/Doc/AboutTempleOS.DD\"$$\n"
+              "$$LK,\"DolDoc Overview\",A=\"FI:B:/Doc/DolDocOverview.DD\"$$\n"
+              "$$LK,\"Compiler Overview\",A=\"FI:B:/Doc/CompilerOverview.DD\"$$\n"
+              "$$LK,\"Hash Table\",A=\"FI:B:/Doc/Hash.DD\"$$\n"
+              "$$LK,\"God Word\",A=\"FI:B:/Doc/God.DD\"$$\n"
+              "$$LK,\"Que (A: scratch)\",A=\"FI:A:/Doc/Que.DD\"$$\n"
+              "$$TR,\"Run a program (type in the Term)\"$$\n$$ID,+2$$\n"
+              "  #include \"B:/Demo/ForLoop.HC\"\n"
+              "  #include \"B:/Demo/NullCase.HC\"\n"
+              "  #include \"B:/Demo/SubSwitch.HC\"\n$$ID,-2$$\n";
+      FileWrite("A:/Doc/Index.DD", s, StrLen(s));
+    }
     if (rv_winmgr.term_idx >= 0 && rv_winmgr.wins[rv_winmgr.term_idx].doc &&
         rv_winmgr.wins[rv_winmgr.term_idx].doc->doc_signature == DOC_SIGNATURE_VAL) {
       DocClear(rv_winmgr.wins[rv_winmgr.term_idx].doc);
@@ -504,7 +523,10 @@ I64 main()
       RVDocPutS("Try:  2+3;   Dir;   Cat(\"B:/Doc/Welcome.DD\");   F64 f=2.0; Sqrt(f);\n");
       RVDocPutS("The stock tos/Doc tree is on B: (Cat any B:/Doc/*.DD); A: is a RAM disk.\n");
       RVDocPutS("Run a program:  #include \"B:/Demo/ForLoop.HC\"\n");
+      RVDocPutS("Browse examples: Tab to the Index window, arrows select a link, Enter follows.\n");
     }
+    // Open the index as a browsable window (Term keeps focus so you can still type).
+    RVDocOpenLink("FI:A:/Doc/Index.DD");
     RVWinVtRun();
     return 0;
   }
