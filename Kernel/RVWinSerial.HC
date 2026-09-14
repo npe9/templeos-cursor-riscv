@@ -182,6 +182,9 @@ U0 RVWinSerialHelp()
     Print("  Term (cocoa/SDL): click window, focus Term, Enter runs\n");
     Print("  max / tileh / tilev  WinMax / WinTileHorz / WinTileVert\n");
     Print("  user        Spawn User → new Term-like win (P1)\n");
+    Print("  Tasks;       list desktop windows + task bindings\n");
+    Print("  Find(\"str\"); grep the doc tree → browsable results window\n");
+    Print("  Ed(\"file\");  edit a file (arrows, Ctrl-W save, Tab leave)\n");
     Print("  q / quit     quit WinMgr (same as ESC on virtio-kbd)\n");
     Print("  fault/crash  UART crash> (md/mw/regs/bt/go/reboot)\n");
     Print("  dig-down:    help regs csrs bt md ADDR [N] mw ADDR VAL\n");
@@ -197,6 +200,9 @@ U0 RVWinSerialHelp()
   Print("  max          WinMax focused window\n");
   Print("  tileh/tilev  WinTileHorz / WinTileVert\n");
   Print("  user         Spawn User → new Term-like win\n");
+  Print("  Tasks;       list desktop windows + task bindings\n");
+  Print("  Find(\"str\"); grep the doc tree → browsable results window\n");
+  Print("  Ed(\"file\");  edit a file (arrows move, Ctrl-W save, Tab leave)\n");
   Print("  fault        deliberate illegal insn → UART crash>\n");
   Print("  crash        enter UART crash> monitor now\n");
   Print("  q / quit     quit WinMgr (same as ESC on virtio-kbd)\n");
@@ -807,6 +813,39 @@ public U0 RVWinSoftEd(U8 *path)
   Print("Ed: %s (%d bytes) \x97 type to edit, arrows move, Ctrl-W save, Tab leave\n", path, sz);
 }
 
+public U0 RVWinSoftTasks()
+{
+  //List the desktop windows and their task bindings — the visible face of the
+  // multitasking the WinMgr already runs (Term/HOME/User are live RVKSpawn GetMsg tasks).
+  I64 i, n = 0;
+  CRVWin *w;
+  U8 *kn;
+  Print("Windows / tasks:\n");
+  for (i = 0; i < RV_WIN_MAX; i++) {
+    w = &rv_winmgr.wins[i];
+    if (!w->used)
+      continue;
+    if (w->kind == RV_WIN_KIND_ADAM)
+      kn = "Adam";
+    else if (w->kind == RV_WIN_KIND_TERM)
+      kn = "Term";
+    else if (w->kind == RV_WIN_KIND_HOME)
+      kn = "HOME";
+    else if (w->kind == RV_WIN_KIND_USER)
+      kn = "User";
+    else if (w->kind == RV_WIN_KIND_EDIT)
+      kn = "Edit";
+    else
+      kn = "Doc ";
+    Print("  [%d]%c %s  \"%s\"  task=%s show=%d\n", i,
+      i == rv_winmgr.focus ? '*' : ' ', kn, w->title,
+      TaskValidate(w->task) ? "live" : "-", w->show);
+    n++;
+  }
+  Print("%d window(s), focus=%d.  Tab cycles, `user` spawns a Term, max/tileh/tilev layout.\n",
+    n, rv_winmgr.focus);
+}
+
 U0 RVWinEdSave()
 {
   U8 *buf;
@@ -1124,24 +1163,9 @@ Bool RVWinSerialDispatch2(U8 *line)
     RVWinSoftDir;
     return FALSE;
   }
-  if (RVWinSerialCmdEq(p, "find") || RVWinSerialCmdEq(p, "grep")) {
-    I64 ql;
-    q = RVWinSerialSkipTok(p);
-    ql = StrLen(q);
-    while (ql > 0 && (q[ql - 1] == ';' || q[ql - 1] == ' '))
-      q[--ql] = 0;
-    RVWinSoftFind(q);
-    return FALSE;
-  }
-  if (RVWinSerialCmdEq(p, "ed")) {
-    I64 ql;
-    q = RVWinSerialSkipTok(p);
-    ql = StrLen(q);
-    while (ql > 0 && (q[ql - 1] == ';' || q[ql - 1] == ' '))
-      q[--ql] = 0;
-    RVWinSoftEd(q);
-    return FALSE;
-  }
+  // Find/Ed/Tasks are planted as real HolyC functions (RVExePubs.HC) so they run through
+  // the compiler like Cat/Dir: type `Find("Queue"); Ed("A:/x"); Tasks;` at the prompt.
+  // No dispatch bareword — the crash-shell sidecar stays for md/mw/regs/crash only.
   if (RVWinSerialCmdEq(p, "bt")) {
     RVWinSerialBt;
     return FALSE;

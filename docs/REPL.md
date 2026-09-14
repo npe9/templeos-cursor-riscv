@@ -270,25 +270,27 @@ scroll; the escape decoder (`RVWinSerialEscKey`) and `RVWinTermPutChar`
 
 ## Searching the doc tree: `find`
 
-`find <needle>` (alias `grep <needle>`) greps the mounted doc tree (`B:/Doc`, else
-`A:/Doc`) for a substring and opens the hits as a **browsable** DolDoc window — one
-`$$LK$$` per matching file, written to `A:/Doc/_Find.DD`. Tab onto that window, arrows
-select a result, Enter opens it (disk-backed). It caps at 40 matches / 200 files scanned.
-Implemented as a dispatch bareword (`RVWinSerialDispatch2`) calling `RVWinSoftFind`
-(Kernel/RVWinSerial.HC), reusing `FilesFind`/`StrFind`/`FileRead` and the same link
-machinery as the cursor nav — so search results are selectable by the cursor for free.
+`Find("needle");` greps the mounted doc tree (`B:/Doc`, else `A:/Doc`) for a substring and
+opens the hits as a **browsable** DolDoc window — one `$$LK$$` per matching file, written to
+`A:/Doc/_Find.DD`. Tab onto that window, arrows select a result, Enter opens it
+(disk-backed). Caps at 40 matches / 200 files. It is a real HolyC function planted through
+the compiler (`RVExePubFunNew("Find",…)` in Compiler/RVExePubs.HC → `RVWinSoftFind` in
+Kernel/RVWinSerial.HC), not a dispatch bareword — you call it like `Cat`/`Dir`, and the
+results inherit the cursor nav for free. `Tasks;` lists the desktop windows and their task
+bindings the same way.
 
 ## Editing files: `ed`
 
-`ed <file>` opens a full-screen-lite text editor in its own window (`RV_WIN_KIND_EDIT`):
+`Ed("file");` opens a full-screen-lite text editor in its own window (`RV_WIN_KIND_EDIT`):
 the file loads into a CDoc, printable keys insert, Backspace deletes, Enter splits a line,
 the arrows move the cursor (↑/↓ by line, ←/→ by run), **Ctrl-W** writes the file, and
 **Tab** leaves back to the Term. The caret tracks the insertion point.
 
 Primitives reused: `DocEdInsChar`/`DocEdBackspace` (edit), `RVDocEdMove` (cursor),
-`RVDocEdExtractText` (serialize entries → plain bytes), `FileWrite` (save). Verified on
-`make tos`: `ed A:/Doc/scratch.DD`, type two lines, Ctrl-W → `wrote … (24 bytes)`, and the
-text renders live in the window.
+`RVDocEdExtractText` (serialize entries → plain bytes), `FileWrite` (save). `Ed`, like
+`Find`/`Tasks`, is a compiler-callable HolyC function (planted in Compiler/RVExePubs.HC),
+not a dispatch bareword. Verified on `make tos`: `Ed("A:/Doc/scratch.DD");`, type two lines,
+Ctrl-W → `wrote … (24 bytes)`, text renders live.
 
 **Limitations (by design, for now):** cursor movement and insertion are at run/line
 granularity, not intra-run — you compose top-to-bottom and correct with Backspace, rather

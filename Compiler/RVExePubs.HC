@@ -16,6 +16,9 @@ extern I64 RVWinSoftCd(U8 *dirname);
 extern U0 RVWinSoftHelp();
 extern U0 RVWinSoftMan(U8 *name);
 extern U0 RVWinSoftCat(U8 *name);
+extern U0 RVWinSoftFind(U8 *needle);
+extern U0 RVWinSoftEd(U8 *name);
+extern U0 RVWinSoftTasks();
 // Soft tip Soft #include stock DocInit_RV: Kernel doldoc abs addr (Compiler unit).
 extern U8 doldoc;
 U0 RVExePubMemberLink(CHashFun *tmpf, CMemberLst *tmpm)
@@ -902,6 +905,21 @@ I64 RVExePubsWireAddrs(I64 *addrs)
       n++;
     }
   }
+  // Slots 38-40: the VT console features as real HolyC functions — Find("needle");
+  // Ed("file"); Tasks; — so they run through the compiler like Cat/Dir, not as
+  // dispatch barewords.
+  if (addrs[38] && !HashFind("Find", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Find", addrs[38], cls_u0, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "needle", u8p); n++; }
+  }
+  if (addrs[39] && !HashFind("Ed", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Ed", addrs[39], cls_u0, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "name", u8p); n++; }
+  }
+  if (addrs[40] && !HashFind("Tasks", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Tasks", addrs[40], cls_u0, 0);
+    if (tmpf) n++;
+  }
   return n;
 }
 
@@ -961,7 +979,7 @@ I64 RVExePubsWire()
 {
   // Monolithic Body: symbols are in-image. Split-AOT Kernel should call
   // RVExePubsWireAddrs with Kernel &Print/&Regs/… instead.
-  I64 addrs[38];
+  I64 addrs[41];
   I64 zi;
   for (zi = 0; zi < 38; zi++)
     addrs[zi] = 0;
@@ -976,6 +994,9 @@ I64 RVExePubsWire()
   addrs[8] = &RVWinSoftHelp;
   addrs[9] = &RVWinSoftMan;
   addrs[14] = &RVWinSoftCat;
+  addrs[38] = &RVWinSoftFind;
+  addrs[39] = &RVWinSoftEd;
+  addrs[40] = &RVWinSoftTasks;
   return RVExePubsWireAddrs(addrs);
 }
 // Split-AOT: Compiler unit has its own Fs/Gs storage. Kernel sets the live

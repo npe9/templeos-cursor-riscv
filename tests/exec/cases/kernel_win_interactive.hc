@@ -364,9 +364,12 @@ I64 main()
   // Kernel &Regs/&Dir — Compiler address-of imports may stay GOT=0.
   
   {
-    I64 pubs[38];
+    I64 pubs[41];
     pubs[36] = &FileRead;     // U8 *FileRead(U8 *name, I64 *size=NULL, I64 *attr=NULL)
     pubs[37] = &FileWrite;    // I64 FileWrite(U8 *name, U8 *buf, I64 size, CDate=0, I64 attr=0)
+    pubs[38] = &RVWinSoftFind; // U0 Find(U8 *needle)  — grep the doc tree
+    pubs[39] = &RVWinSoftEd;   // U0 Ed(U8 *name)      — edit a file
+    pubs[40] = &RVWinSoftTasks;// U0 Tasks()           — list desktop windows/tasks
     pubs[31] = &RVMemCpy;     // U8 *MemCpy(U8 *dst, U8 *src, I64 size)
     pubs[32] = &RVMemSet;     // U8 *MemSet(U8 *dst, I64 dat, I64 size)
     pubs[33] = &DocNew;       // CDoc *DocNew(U8 *filename=NULL, CTask *task=NULL)
@@ -544,8 +547,9 @@ I64 main()
       RVDocPutS("The stock tos/Doc tree is on B: (Cat any B:/Doc/*.DD); A: is a RAM disk.\n");
       RVDocPutS("Run a program:  #include \"B:/Demo/ForLoop.HC\"\n");
       RVDocPutS("Browse examples: Tab to the Index window, arrows select a link, Enter follows.\n");
-      RVDocPutS("Search docs:  find Queue   (opens a window of matching docs to browse)\n");
-      RVDocPutS("Edit a file:  ed A:/Doc/notes.txt   (type, arrows, Ctrl-W save, Tab leave)\n");
+      RVDocPutS("Search docs:  Find(\"Queue\");   (opens a window of matching docs to browse)\n");
+      RVDocPutS("Edit a file:  Ed(\"A:/Doc/notes.txt\");   (arrows, Ctrl-W save, Tab leave)\n");
+      RVDocPutS("List tasks:   Tasks;\n");
     }
     // Open the index as a browsable window (Term keeps focus so you can still type).
     RVDocOpenLink("FI:A:/Doc/Index.DD");
