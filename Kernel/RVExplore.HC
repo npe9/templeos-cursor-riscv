@@ -289,3 +289,87 @@ public U0 Mcause()
     kind = "Interrupt";
   Print("mcause=0x%X  %s code=%d (%s)\n", v, kind, code, RVMcauseName(v));
 }
+
+U0 RVCsrDecodeIrqBits(I64 v, U8 *kind)
+{
+  if (v & 2)    Print("   SSI%s (supervisor soft)\n", kind);
+  if (v & 8)    Print("   MSI%s (machine soft)\n", kind);
+  if (v & 32)   Print("   STI%s (supervisor timer)\n", kind);
+  if (v & 128)  Print("   MTI%s (machine timer)\n", kind);
+  if (v & 512)  Print("   SEI%s (supervisor external)\n", kind);
+  if (v & 2048) Print("   MEI%s (machine external)\n", kind);
+}
+
+U0 RVCsrDecodeMtvec(I64 v)
+{
+  I64 mode = v & 3;
+  if (mode == 0)
+    Print("   MODE=0 (Direct)\n");
+  else if (mode == 1)
+    Print("   MODE=1 (Vectored)\n");
+  else
+    Print("   MODE=%d (?)\n", mode);
+  Print("   BASE=0x%X (trap entry)\n", v & (~3));
+}
+
+U0 RVCsrDecodeMisa(I64 v)
+{
+  I64 mxl = (v >> 62) & 3;
+  if (mxl == 2)
+    Print("   MXL=10 (RV64)\n");
+  else if (mxl == 1)
+    Print("   MXL=01 (RV32)\n");
+  Print("   ext:");
+  if (v & 1)    Print(" A");
+  if (v & 4)    Print(" C");
+  if (v & 8)    Print(" D");
+  if (v & 32)   Print(" F");
+  if (v & 256)  Print(" I");
+  if (v & 4096) Print(" M");
+  if (v & (1<<18)) Print(" S");
+  if (v & (1<<20)) Print(" U");
+  Print("\n");
+}
+
+public U0 Csr(U8 *name)
+{
+  //Read a CSR by name and print it, decoding the interesting ones (mstatus/mie/mip/
+  // mtvec/misa/mcause). Covers the M- and S-mode CSRs the port can read.
+  I64 v;
+  if (!name || !*name) {
+    Print("Csr: name — e.g. Csr(\"mtvec\");\n");
+    Print("  m: mstatus mie mip mtvec mepc mcause mtval mscratch misa mhartid medeleg mideleg mcounteren\n");
+    Print("  s: sstatus sie sip stvec sepc scause stval satp\n");
+    return;
+  }
+  if (!StrICmp(name, "mstatus"))      { v = RVWinCsrrMstatus();    Print("mstatus=0x%X\n", v);    RVCsrDecodeMstatus(v); }
+  else if (!StrICmp(name, "mie"))     { v = RVWinCsrrMie();        Print("mie=0x%X\n", v);        RVCsrDecodeIrqBits(v, "E=1"); }
+  else if (!StrICmp(name, "mip"))     { v = RVWinCsrrMip();        Print("mip=0x%X\n", v);        RVCsrDecodeIrqBits(v, "P=1"); }
+  else if (!StrICmp(name, "mtvec"))   { v = RVWinCsrrMtvec();      Print("mtvec=0x%X\n", v);      RVCsrDecodeMtvec(v); }
+  else if (!StrICmp(name, "mepc"))    { v = RVWinCsrrMepc();       Print("mepc=0x%X\n", v); }
+  else if (!StrICmp(name, "mcause"))  { Mcause; }
+  else if (!StrICmp(name, "mtval"))   { v = RVWinCsrrMtval();      Print("mtval=0x%X\n", v); }
+  else if (!StrICmp(name, "mscratch")){ v = RVWinCsrrMscratch();   Print("mscratch=0x%X\n", v); }
+  else if (!StrICmp(name, "misa"))    { v = RVWinCsrrMisa();       Print("misa=0x%X\n", v);       RVCsrDecodeMisa(v); }
+  else if (!StrICmp(name, "mhartid")) { v = RVWinCsrrMhartid();    Print("mhartid=0x%X\n", v); }
+  else if (!StrICmp(name, "medeleg")) { v = RVWinCsrrMedeleg();    Print("medeleg=0x%X\n", v); }
+  else if (!StrICmp(name, "mideleg")) { v = RVWinCsrrMideleg();    Print("mideleg=0x%X\n", v); }
+  else if (!StrICmp(name, "mcounteren")){ v = RVWinCsrrMcounteren(); Print("mcounteren=0x%X\n", v); }
+  else if (!StrICmp(name, "sstatus")) { v = RVWinCsrrSstatus();    Print("sstatus=0x%X\n", v); }
+  else if (!StrICmp(name, "sie"))     { v = RVWinCsrrSie();        Print("sie=0x%X\n", v);        RVCsrDecodeIrqBits(v, "E=1"); }
+  else if (!StrICmp(name, "sip"))     { v = RVWinCsrrSip();        Print("sip=0x%X\n", v);        RVCsrDecodeIrqBits(v, "P=1"); }
+  else if (!StrICmp(name, "stvec"))   { v = RVWinCsrrStvec();      Print("stvec=0x%X\n", v);      RVCsrDecodeMtvec(v); }
+  else if (!StrICmp(name, "sepc"))    { v = RVWinCsrrSepc();       Print("sepc=0x%X\n", v); }
+  else if (!StrICmp(name, "scause"))  { v = RVWinCsrrScause();     Print("scause=0x%X\n", v); }
+  else if (!StrICmp(name, "stval"))   { v = RVWinCsrrStval();      Print("stval=0x%X\n", v); }
+  else if (!StrICmp(name, "satp"))    { v = RVWinCsrrSatp();       Print("satp=0x%X\n", v); }
+  else
+    Print("Csr: unknown '%s' — Csr(); lists names\n", name);
+}
+
+public U0 Uptime()
+{
+  //Hart free-running counters (Zicntr): cycle, time (mtime tick), instret.
+  Print("cycle=%d  time=%d  instret=%d\n",
+    RVWinCsrrCycle(), RVWinCsrrTime(), RVWinCsrrInstret());
+}

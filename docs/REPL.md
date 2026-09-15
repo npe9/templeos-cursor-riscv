@@ -312,3 +312,25 @@ The console closes the loop end to end, all through the guest compiler:
 
 `Esc` in the editor focuses the Term (the window stays open — Tab back to keep editing).
 Verified on `make tos`: the program above saves (55 bytes) and prints `sum=15`.
+
+## Exploring the RISC-V machine
+
+The console carries a RISC-V exploration toolkit (Kernel/RVExplore.HC, planted as HolyC
+functions — call them like any other):
+
+    AsmList;              # the documented asm{} mnemonic catalog (137 entries)
+    AsmDoc("addi");       # one mnemonic: template / encoding / imm range / notes
+    MemMap;               # QEMU-virt physical map (CLINT/PLIC/UART/DRAM + image regions)
+    Mstatus;  Mcause;     # read + decode the trap CSRs
+    Csr("misa");          # read + decode ANY M/S CSR (misa -> RV64 ext:A C D F I M S U)
+    Csr("mtvec");         # ... mie mip mepc mtval satp sstatus scause ...
+    Uptime;               # cycle / time / instret counters
+
+Plus the debugger surface already present: `Disasm`/`U`/`Uf`/`UA` (disassemble),
+`Bp`/`BpClr` (breakpoints), `Reg`/`Regs`, and the crash-shell `md`/`mw`/`csrs`/`bt`.
+
+**"What compiles" ≠ "what can be assembled."** The HolyC compiler backend emits
+`I + M + A + F/D`; the inline `asm{}` assembler accepts a smaller set (`I + M + A + Zicsr`,
+no float, no branches/jumps). `AsmList`'s footer says so, and `asm{ <ins> };` at the prompt
+is the live test of what actually assembles. The full three-way picture (assembler vs
+disassembler vs codegen, with the drift between them) is in `docs/RISCV_INVENTORY.md`.

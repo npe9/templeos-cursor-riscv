@@ -24,6 +24,8 @@ extern U0 AsmDoc(U8 *mn);
 extern U0 MemMap();
 extern U0 Mstatus();
 extern U0 Mcause();
+extern U0 Csr(U8 *name);
+extern U0 Uptime();
 // Soft tip Soft #include stock DocInit_RV: Kernel doldoc abs addr (Compiler unit).
 extern U8 doldoc;
 U0 RVExePubMemberLink(CHashFun *tmpf, CMemberLst *tmpm)
@@ -948,6 +950,14 @@ I64 RVExePubsWireAddrs(I64 *addrs)
     tmpf = RVExePubFunNew("Mcause", addrs[45], cls_u0, 0);
     if (tmpf) n++;
   }
+  if (addrs[46] && !HashFind("Csr", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Csr", addrs[46], cls_u0, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "name", u8p); n++; }
+  }
+  if (addrs[47] && !HashFind("Uptime", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Uptime", addrs[47], cls_u0, 0);
+    if (tmpf) n++;
+  }
   return n;
 }
 
@@ -1030,6 +1040,8 @@ I64 RVExePubsWire()
   addrs[43] = &MemMap;
   addrs[44] = &Mstatus;
   addrs[45] = &Mcause;
+  addrs[46] = &Csr;
+  addrs[47] = &Uptime;
   return RVExePubsWireAddrs(addrs);
 }
 // Split-AOT: Compiler unit has its own Fs/Gs storage. Kernel sets the live

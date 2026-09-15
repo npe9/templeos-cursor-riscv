@@ -380,6 +380,8 @@ I64 main()
     pubs[43] = &MemMap;        // U0 MemMap()          — RISC-V memory map
     pubs[44] = &Mstatus;       // U0 Mstatus()         — read+decode mstatus CSR
     pubs[45] = &Mcause;        // U0 Mcause()          — read+decode mcause CSR
+    pubs[46] = &Csr;           // U0 Csr(U8 *name)     — read+decode any M/S CSR
+    pubs[47] = &Uptime;        // U0 Uptime()          — cycle/time/instret counters
     pubs[31] = &RVMemCpy;     // U8 *MemCpy(U8 *dst, U8 *src, I64 size)
     pubs[32] = &RVMemSet;     // U8 *MemSet(U8 *dst, I64 dat, I64 size)
     pubs[33] = &DocNew;       // CDoc *DocNew(U8 *filename=NULL, CTask *task=NULL)
