@@ -105,6 +105,20 @@ U0 RVAsmDocPrintField(U8 *label, U8 *val)
   Print("%s%s\n", label, val);
 }
 
+// TRUE if `mn` is a branch/jump the guest asm{} assembler accepts with a NUMERIC
+// PC-relative offset (not a label). Keeps AsmDoc's hint in sync with Asm_RV.HC.
+I64 RVAsmIsGuestBranch(U8 *mn)
+{
+  if (!mn)
+    return FALSE;
+  if (!StrICmp(mn, "beq") || !StrICmp(mn, "bne") || !StrICmp(mn, "blt") ||
+      !StrICmp(mn, "bge") || !StrICmp(mn, "bltu") || !StrICmp(mn, "bgeu") ||
+      !StrICmp(mn, "beqz") || !StrICmp(mn, "bnez") || !StrICmp(mn, "jal") ||
+      !StrICmp(mn, "jr"))
+    return TRUE;
+  return FALSE;
+}
+
 public U0 AsmDoc(U8 *mn)
 {
   //Structured docs for one asm{} mnemonic: template, encoding, imm range, GNU expansion,
@@ -116,6 +130,16 @@ public U0 AsmDoc(U8 *mn)
   }
   rec = RVAsmDocFindRec(mn);
   if (!rec) {
+    // jal is assemblable but not in the doc catalog (jalr is) - still help.
+    if (!StrICmp(mn, "jal")) {
+      Print("AsmDoc jal\n");
+      Print("  template  jal rd, off  |  jal off (rd=ra)\n");
+      Print("  encoding  J-type opcode 0x6F\n");
+      Print("  asm{}      guest takes a NUMERIC even PC-relative byte offset, e.g.\n");
+      Print("             asm{ jal x0,8 } (fwd 8) / asm{ jal x0,-8 } (back 8) - NOT a label\n");
+      Print("  semantics rd = pc+4; pc += off (off even, +/-1 MiB)\n");
+      return;
+    }
     Print("AsmDoc: unknown '%s' - AsmList(); Tab-complete inside asm{};\n", mn);
     return;
   }
@@ -127,6 +151,17 @@ public U0 AsmDoc(U8 *mn)
   RVAsmDocPrintField("  gnu       ", RVAsmDocField(rec, 4, g_rv_asm_doc_buf, ASM_DOC_GNU));
   RVAsmDocPrintField("  note      ", RVAsmDocField(rec, 5, g_rv_asm_doc_buf, ASM_DOC_NOTE));
   RVAsmDocPrintField("  semantics ", RVAsmDocField(rec, 6, g_rv_asm_doc_buf, ASM_DOC_NOTE));
+  // Use mn (stable arg), NOT s: s points into g_rv_asm_doc_buf, which the field
+  // prints above overwrote - by here it holds the last field, not the mnemonic.
+  if (RVAsmIsGuestBranch(mn)) {
+    Print("  asm{}      guest takes a NUMERIC even PC-relative byte offset, e.g.\n");
+    if (!StrICmp(mn, "jr"))
+      Print("             asm{ jr a0 } = jalr x0,0(a0)\n");
+    else if (!StrICmp(mn, "beqz") || !StrICmp(mn, "bnez"))
+      Print("             asm{ %s a0,8 } (branch 8 bytes fwd) - NOT a label\n", mn);
+    else
+      Print("             asm{ %s a0,a1,8 } (branch 8 bytes fwd) - NOT a label\n", mn);
+  }
 }
 
 public U0 AsmList()
@@ -154,8 +189,9 @@ public U0 AsmList()
   }
   Print("(%d documented. AsmDoc(\"name\") for detail.)\n", n);
   Print("Note: this is the doc catalog. What the asm{} assembler ACCEPTS is a subset\n");
-  Print("  (I+M+A+Zicsr; no float, no branches/jumps) - test live: asm{ <ins> };\n");
-  Print("  The HolyC compiler EMITS more than asm{} accepts (F/D). See docs/RISCV_INVENTORY.md\n");
+  Print("  (I+M+A+Zicsr + B-type branches + jal/jr; no float, no j/call) - test: asm{ <ins> };\n");
+  Print("  Branches/jumps take a NUMERIC even PC-relative byte offset (beq a0,a1,8), not\n");
+  Print("  a label. The HolyC compiler EMITS more than asm{} accepts (F/D). See RISCV_INVENTORY.md\n");
 }
 
 public U0 MemMap()
