@@ -548,7 +548,7 @@ I64 main()
       RVDocPutS("Run a program:  #include \"B:/Demo/ForLoop.HC\"\n");
       RVDocPutS("Browse examples: Tab to the Index window, arrows select a link, Enter follows.\n");
       RVDocPutS("Search docs:  Find(\"Queue\");   (opens a window of matching docs to browse)\n");
-      RVDocPutS("Edit a file:  Ed(\"A:/Doc/notes.txt\");   (arrows, Ctrl-W save, Tab leave)\n");
+      RVDocPutS("Edit a file:  Ed(\"A:/Doc/notes.txt\");   (arrows, Ctrl-W save, Esc leave)\n");
       RVDocPutS("List tasks:   Tasks;\n");
     }
     // Open the index as a browsable window (Term keeps focus so you can still type).

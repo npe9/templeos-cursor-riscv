@@ -297,3 +297,18 @@ granularity, not intra-run — you compose top-to-bottom and correct with Backsp
 than positioning inside an existing word. Saving extracts plain text, so a `$`-markup
 `.DD` is flattened; edit plain files (HolyC source, notes) or `A:` scratch, not stock
 `B:/Doc` documents. No undo UI.
+
+## The write-a-program-and-run-it loop
+
+The console closes the loop end to end, all through the guest compiler:
+
+    Ed("A:/prog.HC");                 # opens the editor window
+    I64 s=0,i;                        # type your program
+    for(i=1;i<=5;i++) s+=i;
+    Print("sum=%d\n",s);
+    <Ctrl-W>                          # save
+    <Esc>                             # leave the editor, focus the Term
+    #include "A:/prog.HC"             # compile + run it → sum=15
+
+`Esc` in the editor focuses the Term (the window stays open — Tab back to keep editing).
+Verified on `make tos`: the program above saves (55 bytes) and prints `sum=15`.

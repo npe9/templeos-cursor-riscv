@@ -184,7 +184,7 @@ U0 RVWinSerialHelp()
     Print("  user        Spawn User → new Term-like win (P1)\n");
     Print("  Tasks;       list desktop windows + task bindings\n");
     Print("  Find(\"str\"); grep the doc tree → browsable results window\n");
-    Print("  Ed(\"file\");  edit a file (arrows, Ctrl-W save, Tab leave)\n");
+    Print("  Ed(\"file\");  edit a file (arrows, Ctrl-W save, Esc leave)\n");
     Print("  q / quit     quit WinMgr (same as ESC on virtio-kbd)\n");
     Print("  fault/crash  UART crash> (md/mw/regs/bt/go/reboot)\n");
     Print("  dig-down:    help regs csrs bt md ADDR [N] mw ADDR VAL\n");
@@ -202,7 +202,7 @@ U0 RVWinSerialHelp()
   Print("  user         Spawn User → new Term-like win\n");
   Print("  Tasks;       list desktop windows + task bindings\n");
   Print("  Find(\"str\"); grep the doc tree → browsable results window\n");
-  Print("  Ed(\"file\");  edit a file (arrows move, Ctrl-W save, Tab leave)\n");
+  Print("  Ed(\"file\");  edit a file (arrows move, Ctrl-W save, Esc leave)\n");
   Print("  fault        deliberate illegal insn → UART crash>\n");
   Print("  crash        enter UART crash> monitor now\n");
   Print("  q / quit     quit WinMgr (same as ESC on virtio-kbd)\n");
@@ -810,7 +810,7 @@ public U0 RVWinSoftEd(U8 *path)
   StrPrint(rv_win_edit_path, "%s", path);
   rv_win_edit_dirty = 0;
   RVWinFocus(idx);
-  Print("Ed: %s (%d bytes) \x97 type to edit, arrows move, Ctrl-W save, Tab leave\n", path, sz);
+  Print("Ed: %s (%d bytes) \x97 type to edit, arrows move, Ctrl-W save, Esc leave\n", path, sz);
 }
 
 public U0 RVWinSoftTasks()
@@ -844,6 +844,19 @@ public U0 RVWinSoftTasks()
   }
   Print("%d window(s), focus=%d.  Tab cycles, `user` spawns a Term, max/tileh/tilev layout.\n",
     n, rv_winmgr.focus);
+}
+
+U0 RVWinEdExit()
+{
+  //Leave the editor: focus the Term (else Adam) so you can run what you just saved.
+  // The editor window stays open — Tab back to keep editing.
+  I64 t = rv_winmgr.term_idx;
+  if (t < 0 || t >= RV_WIN_MAX || !rv_winmgr.wins[t].used)
+    t = rv_winmgr.adam_idx;
+  if (t >= 0 && t < RV_WIN_MAX && rv_winmgr.wins[t].used) {
+    RVWinFocus(t);
+    Print("Ed: left editor (focus Term) — run it: #include \"%s\"\n", rv_win_edit_path);
+  }
 }
 
 U0 RVWinEdSave()
@@ -1497,8 +1510,12 @@ U0 RVWinSerialEscKey()
   if (idx >= 0 && idx < RV_WIN_MAX && rv_winmgr.wins[idx].used)
     h = rv_winmgr.wins[idx].bottom - rv_winmgr.wins[idx].top + 1;
   ch = RVWinSerialEscGet;
-  if (ch != '[' && ch != 'O')
+  if (ch != '[' && ch != 'O') {
+    // Bare ESC (no CSI): in the editor it means "leave" → focus the Term to run the file.
+    if (RVWinDocFocusIsEdit())
+      RVWinEdExit;
     return;
+  }
   ch = RVWinSerialEscGet;
   while (ch >= '0' && ch <= '9') {
     param = param * 10 + ch - '0';
