@@ -53,9 +53,10 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
 - **A extension round-trips:** the assembler is the only hand-writing path for atomics,
   and the disassembler now decodes opcode `0x2F` (`lr/sc/amo*`, `.d`/`.w`) — so `U`/`Uf`
   round-trips the atomics you assemble (verified assemble→`Disasm` in the win REPL).
-- **Latent bug:** `RvAsmMergeDotSuffix` appends `.d`/`.w` into a buffer allocated by
-  `StrNew` at exactly `StrLen+1` bytes (`bootstrap/seed/str.hc:132`), a small
-  out-of-bounds heap write (see [Gaps & drift](#gaps--drift)).
+- **Fixed:** the `RvAsmMergeDotSuffix` dotted-suffix heap overflow — `PrsAsmRVIns` now
+  allocates the mnemonic in a fixed 32-byte buffer (`RvAsmMnDup`) instead of
+  `StrNew(StrLen+1)`, so appending `.d`/`.w` can no longer overrun (see
+  [Gaps & drift](#gaps--drift)).
 - The REPL exploration commands (`AsmList AsmDoc MemMap Mstatus Mcause Csr Uptime`) live
   in **`Kernel/RVExplore.HC`**, wired by `Compiler/RVExePubs.HC` — committed on `archive`
   (`51f19cf`, `409155d`, `abe75ab`).
@@ -418,15 +419,16 @@ say "needs `.d`/`.w`") or the explicit `subi` hint. Usability bug, not doc drift
   assembler cannot produce. (Branches and `jal` now round-trip: the guest assembles them
   numeric, the disassembler decodes them.)
 
-### D. Latent bug — dotted-suffix heap overflow
+### D. FIXED — dotted-suffix heap overflow
 
-`PrsAsmRVIns` does `mn = StrNew(cc->cur_str)` (`Asm_RV.HC:385`), and `StrNew` allocates
-exactly `StrLen+1` bytes (`bootstrap/seed/str.hc:132`). `RvAsmMergeDotSuffix` then
-writes `mn[n++]='.'` plus the suffix chars into that buffer (`Asm_RV.HC:347-370`),
-overrunning the allocation by up to ~2 bytes (e.g. `amomaxu` alloc=8, becomes
-`amomaxu.w`\0 = 10). Bounded (`n < 31`) so it can't run away, and TempleOS `MAlloc`
-chunk granularity likely absorbs it in practice — but it is a genuine out-of-bounds
-heap write and should be fixed by allocating a fixed 32-byte scratch buffer.
+`PrsAsmRVIns` used `mn = StrNew(cc->cur_str)`, and `StrNew` allocates exactly
+`StrLen+1` bytes (`bootstrap/seed/str.hc:132`). `RvAsmMergeDotSuffix` then writes
+`mn[n++]='.'` plus the suffix chars into that buffer, overrunning the allocation by up
+to ~2 bytes (e.g. `amomaxu` alloc=8, becomes `amomaxu.w`\0 = 10). Bounded (`n < 31`) so
+it couldn't run away, and TempleOS `MAlloc` chunk granularity absorbed it in practice —
+but a genuine out-of-bounds heap write. **Fixed:** `PrsAsmRVIns` now allocates via
+`RvAsmMnDup`, a fixed 32-byte buffer with a bounded copy (`Asm_RV.HC`), so every
+mnemonic + suffix fits (max index written is 31).
 
 ### E. Disassembler decode gaps (rendered `.word`/`illegal`)
 

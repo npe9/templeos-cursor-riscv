@@ -384,6 +384,26 @@ U0 RvAsmEmitLi(CCmpCtrl *cc, I64 rd, I64 imm)
     AOTStoreCodeU32(cc, RvAsmI(0, rd, rd, lo_lo));
 }
 
+// Duplicate a mnemonic into a FIXED 32-byte buffer (not StrLen+1). RvAsmMergeDotSuffix
+// appends ".d"/".w" and writes up to mn[31], so a StrNew(StrLen+1) buffer overflows the
+// heap for a short mnemonic like "sc"+".d". 32 bytes covers every mnemonic + suffix.
+U8 *RvAsmMnDup(U8 *s)
+{
+  U8 *d;
+  I64 i;
+  d = MAlloc(32);
+  if (!d)
+    return 0;
+  i = 0;
+  if (s)
+    while (s[i] && i < 31) {
+      d[i] = s[i];
+      i++;
+    }
+  d[i] = 0;
+  return d;
+}
+
 U0 RvAsmMergeDotSuffix(U8 *mn, CCmpCtrl *cc)
 {
   U8 *s;
@@ -420,7 +440,7 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
     return FALSE;
   if (!RvAsmIsMn(cc->cur_str))
     return FALSE;
-  mn = StrNew(cc->cur_str);
+  mn = RvAsmMnDup(cc->cur_str); // fixed 32-byte buf; RvAsmMergeDotSuffix appends into it
   Lex(cc);
   // skip mnemonic
   RvAsmMergeDotSuffix(mn, cc);
