@@ -39,20 +39,21 @@ the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
   label-only and rejects numeric offsets; the guest accepting both is the remaining
   divergence. The guest still has no `j` (host reserves that spelling; use `jal x0,label`)
   and no `call`.
-- **Assembler accepts 134 encoder-reachable mnemonics** (dotted and undotted amo/lr/sc
+- **Assembler accepts 136 encoder-reachable mnemonics** (dotted and undotted amo/lr/sc
   aliases counted separately; includes the 10 new guest branch/jump forms `beq bne blt
   bge bltu bgeu beqz bnez jal jr`, the 7 narrow loads/stores `lb lh lbu lhu lwu sb sh`,
   the 14 RV64D float forms `faddd fsubd fmuld fdivd fsqrtd fled fltd feqd fmvdx fmvxd
-  fcvtld_rtz fcvtld_rdn fcvtld_rmm fcvtdl`, and the `seqz snez csrc rdtime` pseudos). It
-  recognizes an additional 12 "stem" tokens
+  fcvtld_rtz fcvtld_rdn fcvtld_rmm fcvtdl` plus float loads/stores `fld fsd`, and the
+  `seqz snez csrc rdtime` pseudos). It recognizes an additional 12 "stem" tokens
   (`lr sc amoswap amoadd amoxor amoand amoor amomin amomax amominu amomaxu`) plus
   `subi` that pass the `RvAsmIsMn` gate but then hit `LexExcept("Unsupported…")` at
   encode time — accepted by the gate, rejected by the encoder.
 - **Float now assembles** (dot-free names matching the catalog + host): the 14 RV64D
   forms `faddd/fsubd/fmuld/fdivd/fsqrtd`, compares `fled/fltd/feqd` (→GPR), moves
-  `fmvdx/fmvxd`, and converts `fcvtld_{rtz,rdn,rmm}/fcvtdl`. The compiler backend still
-  emits some D-ext the `asm{}` set doesn't cover (float loads/stores `fld/fsd`, `fsgnj`,
-  `fmin/fmax`, fused FMA, single-precision F) — but the core double ALU is hand-writable.
+  `fmvdx/fmvxd`, converts `fcvtld_{rtz,rdn,rmm}/fcvtdl`, and now `fld`/`fsd` (float
+  spill/reload). The compiler backend still emits some D-ext the `asm{}` set doesn't
+  cover (`fsgnj`, `fmin/fmax`, fused FMA, single-precision F) — but the double ALU
+  *and* double memory access are hand-writable.
 - **The doc catalog (137 entries) documents only 4 mnemonics the guest assembler now
   rejects** (`j`, `call`, `sfencevma`, and host-only `lifp`) — down from 38, as
   branches, `jal`, `jr`, narrow loads/stores, all 14 float forms, and the `seqz/snez/
@@ -79,7 +80,7 @@ the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
 | **I OP-32** (`addw`/`subw`/`mulw`…) | no | no | **no** (`0x3B` absent) |
 | **M** (`mul div divu rem remu`) | yes | yes | yes |
 | **A** (`lr/sc/amo*`, `.d` and `.w`) | **yes** | yes — `amo{or,and,xor}.d` (`BackB_RV.HC:142,145`) | **yes** (`0x2F` decoded, `RVDisasm.HC`) |
-| **F/D** (double float) | **partial** — 14 forms (arith/sqrt/cmp/mv/cvt); no `fld/fsd`, `fsgnj`, `fmin/fmax`, FMA, F32 | **yes** — 29 emitters (`BackF_RV.HC:59-227`) | yes (`0x53`, `0x07`/`0x27`) |
+| **F/D** (double float) | **partial** — 14 ALU forms + `fld`/`fsd`; no `fsgnj`, `fmin/fmax`, FMA, F32 | **yes** — 29 emitters (`BackF_RV.HC:59-227`) | yes (`0x53`, `0x07`/`0x27`) |
 | **C** (compressed) | no | no | yes (`op & 3 != 3`) |
 | **Zicsr** (`csr*`) | yes (12 forms + 28 named CSRs) | no (only via `asm{}`) | yes (`0x73`) |
 | **Fused FMA** (`fmadd.d`…) | no | no | **no** (`0x43/0x47/0x4B/0x4F` absent) |
@@ -128,6 +129,7 @@ ABI names `zero ra sp gp tp t0-t6 s0-s11 a0-a7 fp`). CSR *names* via `RvAsmCsrNu
 | D: compare | `fled fltd feqd` (rd GPR, fs1/fs2 FPR) | result 0/1 in a GPR |
 | D: move | `fmvdx fd,rs` (int bits→FPR), `fmvxd rd,fs` (FPR bits→int) | raw bit moves, no convert |
 | D: convert | `fcvtdl fd,rs` (i64→f64), `fcvtld_{rtz,rdn,rmm} rd,fs` (f64→i64) | rounding baked into the name |
+| D: load/store | `fld frd, imm(rs1)` / `fsd frs2, imm(rs1)` | float value reg, integer base (opcode 0x07/0x27, f3=3); not in the doc catalog |
 
 ### 1b. Pseudo-ops (expanded by the assembler)
 
@@ -157,7 +159,7 @@ fall through to `LexExcept("Unsupported RISC-V asm mnemonic")` (`Asm_RV.HC:966`)
 `subi` unconditionally raises `LexExcept` with a "use addi rd,rs1,-imm" hint
 (`Asm_RV.HC:428`). These are **not** accepted mnemonics.
 
-**Assembler total: 134 encoder-reachable mnemonics** (+12 gate-only stems + `subi`).
+**Assembler total: 136 encoder-reachable mnemonics** (+12 gate-only stems + `subi`).
 
 ---
 
@@ -264,9 +266,9 @@ See the [glance table](#extension-coverage-at-a-glance-the-three-way-answer). Su
 - **M** — fully supported in all three (assembler, codegen, disasm).
 - **A** — assembled and emitted (codegen `amo*.d` for locked bit ops); **not decoded**
   by the disassembler.
-- **F/D** — emitted by codegen (hardware double), decoded by disasm, and the core
-  double ALU (14 forms: arith/sqrt/cmp/mv/cvt) is now hand-assemblable in `asm{}`;
-  `fld/fsd`, `fsgnj`, `fmin/fmax`, FMA, and F32 are not. Transcendentals are soft.
+- **F/D** — emitted by codegen (hardware double), decoded by disasm, and the double
+  ALU (14 forms: arith/sqrt/cmp/mv/cvt) plus `fld`/`fsd` are now hand-assemblable in
+  `asm{}`; `fsgnj`, `fmin/fmax`, FMA, and F32 are not. Transcendentals are soft.
 - **C (compressed)** — decoded by the disassembler only; never assembled or emitted.
 - **Zicsr** — assembler + disassembler; codegen only reaches CSRs through `asm{}`.
 - **Not supported anywhere:** vector (V), fused multiply-add (FMA), OP-32 word ALU ops
@@ -371,8 +373,8 @@ The same mnemonic knowledge lives in three shapes:
 | Comparison | Agree | Disagree |
 |---|---|---|
 | doc catalog `asm_doc.hc` ↔ `rv_asm_doc_raw` | **identical** (137 ≡ 137) | none |
-| assembler ↔ doc catalog | 134 accepted ⊂ 137 documented | **4 documented mnemonics are not assemblable** (below) |
-| assembler ↔ disassembler | I/M base + **branches/`jal`** + **A** + **narrow ld/st** + **core D** overlap | disasm still uniquely has **RVC, OP-IMM-32**, and the F/D forms asm lacks (`fld/fsd`, `fsgnj`, `fmin/fmax`, FMA, F32) |
+| assembler ↔ doc catalog | 136 accepted (2 beyond the catalog: fld/fsd) | **4 documented mnemonics are not assemblable** (below) |
+| assembler ↔ disassembler | I/M base + **branches/`jal`** + **A** + **narrow ld/st** + **D (ALU + `fld`/`fsd`)** overlap | disasm still uniquely has **RVC, OP-IMM-32**, and the F/D forms asm lacks (`fsgnj`, `fmin/fmax`, FMA, F32) |
 | disassembler ↔ doc catalog | branches, F/D forms overlap | disasm adds RVC + OP-IMM-32; doc adds A + Zicsr detail the disasm can't decode |
 
 The doc catalog is the **broadest advertisement and the least accurate** relative to
