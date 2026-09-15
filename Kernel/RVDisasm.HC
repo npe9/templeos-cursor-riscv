@@ -85,7 +85,8 @@ U8 *RVDisSymName(I64 addr)
 
 // disasm.hc -- a RISC-V disassembler in HolyC. Disasm("Name") (or DisasmAt(addr)) prints a
 // 28-instruction window; Src() falls back to it for a function with no source. Decodes base
-// RV64IM, D-extension floats (incl. fsgnj/fmin/fmax and the RVC float loads/stores), and RVC,
+// RV64IMA (incl. lr/sc/amo* atomics), D-extension floats (incl. fsgnj/fmin/fmax and the RVC
+// float loads/stores), and RVC,
 // resolves jal/branch targets from the PC, and shows the raw bytes of anything it cant decode.
 // Edit it: Src("DisasmOne"). HolyC wont take a bare no-arg "str"; as an if-body, so Pm(s) prints
 // a mnemonic and otherwise the mnemonic goes into a variable printed once with args.
@@ -353,8 +354,9 @@ I64 DisHi;
 //   See source; RISC-V UART REPL may omit full TempleOS behavior.
 U0 DisasmOne(I64 addr, I64 w)
 {
-  I64 op, rd, f3, rs1, rs2, f7, immI, immS, csr, jt;
+  I64 op, rd, f3, rs1, rs2, f7, immI, immS, csr, jt, f5;
   U8 *mn;
+  U8 *sfx;
   op = w & 0x7F;
   rd = (w >> 7) & 0x1F;
   f3 = (w >> 12) & 7;
@@ -756,6 +758,54 @@ U0 DisasmOne(I64 addr, I64 w)
       DiImm(f7);
       Print(" raw=");
       DiImm(w & 0xFFFFFFFF);
+    }
+  } else if (op == 0x2F) {
+    // A extension (atomics). funct5 = bits[31:27] = f7>>2; f3 3=.d 2=.w.
+    // Mirrors the assembler's RvAsmA encodings so U/Uf round-trips them.
+    f5 = (f7 >> 2) & 0x1F;
+    sfx = ".d";
+    if (f3 == 2)
+      sfx = ".w";
+    mn = 0;
+    if (f3 == 3 || f3 == 2) {
+      if (f5 == 0x02)
+        mn = "lr";
+      else if (f5 == 0x03)
+        mn = "sc";
+      else if (f5 == 0x01)
+        mn = "amoswap";
+      else if (f5 == 0x00)
+        mn = "amoadd";
+      else if (f5 == 0x04)
+        mn = "amoxor";
+      else if (f5 == 0x0C)
+        mn = "amoand";
+      else if (f5 == 0x08)
+        mn = "amoor";
+      else if (f5 == 0x10)
+        mn = "amomin";
+      else if (f5 == 0x14)
+        mn = "amomax";
+      else if (f5 == 0x18)
+        mn = "amominu";
+      else if (f5 == 0x1C)
+        mn = "amomaxu";
+    }
+    if (!mn) {
+      if (DisAsmMode) {
+        Print("; raw ");
+        DiImm(w & 0xFFFFFFFF);
+        Print(" (not in TryAssembleRiscV)\n");
+        goto disasm_one_track;
+      }
+      Print(".word ");
+      DiImm(w & 0xFFFFFFFF);
+    } else if (f5 == 0x02) {
+      // lr rd, (rs1) — no rs2 source
+      Print("%s%s %s, (%s)", mn, sfx, RN[rd], RN[rs1]);
+    } else {
+      // sc / amo* rd, rs2, (rs1)
+      Print("%s%s %s, %s, (%s)", mn, sfx, RN[rd], RN[rs2], RN[rs1]);
     }
   } else {
     if (DisAsmMode) {

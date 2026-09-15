@@ -49,10 +49,9 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
   form). The **14 float forms are now the largest single category.** (Previously 38 —
   the six B-type branches, `beqz/bnez`, and `jr` became assemblable when guest
   numeric-offset branches were added; `jal` too.)
-- **Assembler↔disassembler asymmetry:** the assembler is the *only* place the **A
-  extension** is uniquely supported for hand-writing, yet the disassembler does **not**
-  decode atomics (opcode `0x2F` is absent) — so `U`/`Uf` cannot round-trip the atomics
-  you assemble.
+- **A extension round-trips:** the assembler is the only hand-writing path for atomics,
+  and the disassembler now decodes opcode `0x2F` (`lr/sc/amo*`, `.d`/`.w`) — so `U`/`Uf`
+  round-trips the atomics you assemble (verified assemble→`Disasm` in the win REPL).
 - **Latent bug:** `RvAsmMergeDotSuffix` appends `.d`/`.w` into a buffer allocated by
   `StrNew` at exactly `StrLen+1` bytes (`bootstrap/seed/str.hc:132`), a small
   out-of-bounds heap write (see [Gaps & drift](#gaps--drift)).
@@ -70,7 +69,7 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
 | **I 32-bit ops** (`addiw`/`slliw`/`srliw`) | no | no | yes (opcode `0x1B`) |
 | **I OP-32** (`addw`/`subw`/`mulw`…) | no | no | **no** (`0x3B` absent) |
 | **M** (`mul div divu rem remu`) | yes | yes | yes |
-| **A** (`lr/sc/amo*`, `.d` and `.w`) | **yes** | yes — `amo{or,and,xor}.d` (`BackB_RV.HC:142,145`) | **no** (`0x2F` absent) |
+| **A** (`lr/sc/amo*`, `.d` and `.w`) | **yes** | yes — `amo{or,and,xor}.d` (`BackB_RV.HC:142,145`) | **yes** (`0x2F` decoded, `RVDisasm.HC`) |
 | **F/D** (double float) | **no** | **yes** — 29 emitters (`BackF_RV.HC:59-227`) | yes (`0x53`, `0x07`/`0x27`) |
 | **C** (compressed) | no | no | yes (`op & 3 != 3`) |
 | **Zicsr** (`csr*`) | yes (12 forms + 28 named CSRs) | no (only via `asm{}`) | yes (`0x73`) |
@@ -167,9 +166,11 @@ Decoded opcode families (`RVDisasm.HC`):
 | `0x53` | FP-OP (D) | `fadd.d fsub.d fmul.d fdiv.d fsqrt.d fmv.d fsgnj{,n,x}.d fmin.d fmax.d fle.d flt.d feq.d fmv.x.d fmv.d.x fclass.d fabs.d fneg.d fcvt.{l,lu,w,wu}.d fcvt.d.{l,lu,w,wu}` |
 | `op & 3 != 3` | **RVC compressed** | `c.nop c.and c.or c.xor c.sub c.addw c.subw c.ebreak` + c.addi/c.lw/c.sw/c.j/c.beqz families |
 
+**Decoded:**
+- **Atomics — opcode `0x2F` (A extension):** `lr/sc/amo*` in `.d`/`.w` (`RVDisasm.HC`,
+  funct5 lookup). Rounds-trips with what the assembler encodes.
+
 **Not decoded (rendered `.word` / `illegal`):**
-- **Atomics — opcode `0x2F` (A extension)** is absent, even though the assembler
-  *encodes* it. (`Print(".word …")` fallback, `RVDisasm.HC:767`; `illegal` at 1072.)
 - **OP-32 `0x3B`** (`addw subw sllw srlw sraw mulw divw remw`) — absent.
 - **Fused multiply-add `0x43/0x47/0x4B/0x4F`** (`fmadd.d fmsub.d fnmadd.d fnmsub.d`) — absent.
 
@@ -339,7 +340,7 @@ The same mnemonic knowledge lives in three shapes:
 
 1. **Assembler** — `Compiler/Asm_RV.HC` (a *parser*/encoder). 99 accepted mnemonics.
 2. **Disassembler** — `Kernel/RVDisasm.HC` (a *formatter*/decoder). Richest set;
-   decodes I/M/F/D/C + branches but **not** A (atomics) or OP-32/FMA.
+   decodes I/M/A/F/D/C + branches but **not** OP-32/FMA.
 3. **Doc catalog** — `bootstrap/seed/asm_doc.hc` (`AsmDocRaw`) and the ported
    `Kernel/RVExplore.HC` (`rv_asm_doc_raw`). 137 documented entries. These two catalog
    strings are **byte-identical** to each other (the RVExplore header even says so,
@@ -351,7 +352,7 @@ The same mnemonic knowledge lives in three shapes:
 |---|---|---|
 | doc catalog `asm_doc.hc` ↔ `rv_asm_doc_raw` | **identical** (137 ≡ 137) | none |
 | assembler ↔ doc catalog | 109 accepted ⊂ 137 documented | **29 documented mnemonics are not assemblable** (below) |
-| assembler ↔ disassembler | I/M base + **branches/`jal`** overlap | asm has **A** (disasm can't decode `0x2F`); disasm has **narrow loads/stores, F/D, RVC, OP-IMM-32** the asm lacks |
+| assembler ↔ disassembler | I/M base + **branches/`jal`** + **A** overlap (`0x2F` now decoded) | disasm has **narrow loads/stores, F/D, RVC, OP-IMM-32** the asm lacks; asm has no A gap now |
 | disassembler ↔ doc catalog | branches, F/D forms overlap | disasm adds RVC + OP-IMM-32; doc adds A + Zicsr detail the disasm can't decode |
 
 The doc catalog is the **broadest advertisement and the least accurate** relative to
@@ -410,9 +411,9 @@ say "needs `.d`/`.w`") or the explicit `subi` hint. Usability bug, not doc drift
 
 ### C. Assembler ↔ disassembler asymmetry
 
-- The assembler is the **only** hand-writing path for the **A extension**, but the
-  disassembler does **not** decode opcode `0x2F` — atomics you assemble disassemble as
-  `.word`. `U`/`Uf` cannot round-trip them.
+- The assembler is the **only** hand-writing path for the **A extension**, and the
+  disassembler now decodes opcode `0x2F`, so atomics you assemble round-trip through
+  `U`/`Uf` (verified: `asm{amoadd.d/lr.d/sc.d/amomaxu.w …}` → `Disasm` in the win REPL).
 - The disassembler decodes **narrow loads/stores, F/D, RVC, OP-IMM-32** that the
   assembler cannot produce. (Branches and `jal` now round-trip: the guest assembles them
   numeric, the disassembler decodes them.)
@@ -429,7 +430,6 @@ heap write and should be fixed by allocating a fixed 32-byte scratch buffer.
 
 ### E. Disassembler decode gaps (rendered `.word`/`illegal`)
 
-- Opcode `0x2F` — **A extension atomics** (see C).
 - Opcode `0x3B` — **OP-32 word ALU** (`addw subw sllw srlw sraw mulw divw remw`).
 - Opcodes `0x43/0x47/0x4B/0x4F` — **fused multiply-add** (`fmadd.d`…).
 - `sraiw` (opcode `0x1B`, f3=5, f7 bit 0x20) is mis-rendered as `srliw`.
