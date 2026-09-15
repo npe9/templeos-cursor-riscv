@@ -364,12 +364,22 @@ I64 main()
   // Kernel &Regs/&Dir — Compiler address-of imports may stay GOT=0.
   
   {
-    I64 pubs[41];
+    I64 pubs[64];
+    // Zero every slot first: RVExePubsWireAddrs gates on `if (addrs[N])`, so any slot
+    // left unassigned would otherwise plant a stack-garbage address as a callable func
+    // (fails only when someone calls that name, not at build/wire time). MemSet, not a
+    // pubs[pi]=0 loop — an indexed store into this large local array miscompiled.
+    MemSet(pubs, 0, sizeof(pubs));
     pubs[36] = &FileRead;     // U8 *FileRead(U8 *name, I64 *size=NULL, I64 *attr=NULL)
     pubs[37] = &FileWrite;    // I64 FileWrite(U8 *name, U8 *buf, I64 size, CDate=0, I64 attr=0)
     pubs[38] = &RVWinSoftFind; // U0 Find(U8 *needle)  — grep the doc tree
     pubs[39] = &RVWinSoftEd;   // U0 Ed(U8 *name)      — edit a file
     pubs[40] = &RVWinSoftTasks;// U0 Tasks()           — list desktop windows/tasks
+    pubs[41] = &AsmList;       // U0 AsmList()         — documented asm{} mnemonics
+    pubs[42] = &AsmDoc;        // U0 AsmDoc(U8 *mn)    — one mnemonic's doc
+    pubs[43] = &MemMap;        // U0 MemMap()          — RISC-V memory map
+    pubs[44] = &Mstatus;       // U0 Mstatus()         — read+decode mstatus CSR
+    pubs[45] = &Mcause;        // U0 Mcause()          — read+decode mcause CSR
     pubs[31] = &RVMemCpy;     // U8 *MemCpy(U8 *dst, U8 *src, I64 size)
     pubs[32] = &RVMemSet;     // U8 *MemSet(U8 *dst, I64 dat, I64 size)
     pubs[33] = &DocNew;       // CDoc *DocNew(U8 *filename=NULL, CTask *task=NULL)

@@ -26,18 +26,12 @@ U0 UartPutS(U8 *s)
   }
 }
 
-// Minimal debugger surface for the standalone compiler image.  The full Adam
-// debugger is not linked into this UART-only artifact, but these entry points
-// must still exist so common top-level commands do not become compiler errors.
-public U0 MemMap()
-{
-  UartPutS("MemMap: standalone RV compiler image\n");
-  UartPutS("  RAM 0x80000000..0x87FFFFFF  UART 0x10000000\n");
-}
-
+// MemMap is now the real RISC-V memory map from Kernel/RVExplore.HC (linked via
+// Kernel_RV.PRJ and planted by RVExePubsWire). Funs stays a minimal stub for this
+// UART-only artifact (the full symbol table isn't linked here).
 public U0 Funs(U8 *filt = NULL)
 {
-  UartPutS("Funs: ExePutS CInit RVTrapInit RVTrapRecoverArm MemMap Funs\n");
+  UartPutS("Funs: ExePutS CInit RVTrapInit MemMap AsmList AsmDoc Mstatus Mcause\n");
 }
 
 I64 main()

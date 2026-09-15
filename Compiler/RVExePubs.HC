@@ -19,6 +19,11 @@ extern U0 RVWinSoftCat(U8 *name);
 extern U0 RVWinSoftFind(U8 *needle);
 extern U0 RVWinSoftEd(U8 *name);
 extern U0 RVWinSoftTasks();
+extern U0 AsmList();
+extern U0 AsmDoc(U8 *mn);
+extern U0 MemMap();
+extern U0 Mstatus();
+extern U0 Mcause();
 // Soft tip Soft #include stock DocInit_RV: Kernel doldoc abs addr (Compiler unit).
 extern U8 doldoc;
 U0 RVExePubMemberLink(CHashFun *tmpf, CMemberLst *tmpm)
@@ -920,6 +925,29 @@ I64 RVExePubsWireAddrs(I64 *addrs)
     tmpf = RVExePubFunNew("Tasks", addrs[40], cls_u0, 0);
     if (tmpf) n++;
   }
+  // Slots 41-45: RISC-V exploration (Kernel/RVExplore.HC). AsmList/AsmDoc document what
+  // the asm{} assembler accepts; MemMap prints the platform map; Mstatus/Mcause read+
+  // decode the trap CSRs.
+  if (addrs[41] && !HashFind("AsmList", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("AsmList", addrs[41], cls_u0, 0);
+    if (tmpf) n++;
+  }
+  if (addrs[42] && !HashFind("AsmDoc", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("AsmDoc", addrs[42], cls_u0, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "mn", u8p); n++; }
+  }
+  if (addrs[43] && !HashFind("MemMap", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("MemMap", addrs[43], cls_u0, 0);
+    if (tmpf) n++;
+  }
+  if (addrs[44] && !HashFind("Mstatus", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Mstatus", addrs[44], cls_u0, 0);
+    if (tmpf) n++;
+  }
+  if (addrs[45] && !HashFind("Mcause", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Mcause", addrs[45], cls_u0, 0);
+    if (tmpf) n++;
+  }
   return n;
 }
 
@@ -979,9 +1007,9 @@ I64 RVExePubsWire()
 {
   // Monolithic Body: symbols are in-image. Split-AOT Kernel should call
   // RVExePubsWireAddrs with Kernel &Print/&Regs/… instead.
-  I64 addrs[41];
+  I64 addrs[64];
   I64 zi;
-  for (zi = 0; zi < 38; zi++)
+  for (zi = 0; zi < 64; zi++)
     addrs[zi] = 0;
   addrs[0] = &Print;
   addrs[1] = &PutChars;
@@ -997,6 +1025,11 @@ I64 RVExePubsWire()
   addrs[38] = &RVWinSoftFind;
   addrs[39] = &RVWinSoftEd;
   addrs[40] = &RVWinSoftTasks;
+  addrs[41] = &AsmList;
+  addrs[42] = &AsmDoc;
+  addrs[43] = &MemMap;
+  addrs[44] = &Mstatus;
+  addrs[45] = &Mcause;
   return RVExePubsWireAddrs(addrs);
 }
 // Split-AOT: Compiler unit has its own Fs/Gs storage. Kernel sets the live
