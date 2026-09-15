@@ -112,3 +112,25 @@ ModU64(&qq,7) (qq=100) → 2, qq=14; SwapI64(&s1,&s2); MaxI64(3,9)=9; MinI64=3; 
 QueInit(qa); QueIns(qb,qa); qa[0]==qb; qb[1]==qa; QueRem(qb); qa[0]==qa   // 1 1 1
 0xA; 0xABC; 0x123456789ABC;                          // 10 2748 20015998343868
 ```
+
+## Interactive console (`make tos`) — what works now (2026-09-14)
+
+The clean boot is a usable TempleOS/RISC-V console, everything driven through the guest
+`Compiler_RV` (`ExePutS`):
+
+* **HolyC REPL** — arithmetic, statements, F64 math, `Cat`/`Dir`/`Cd`, `#include` to run a
+  program from disk. All the runtime functions and struct types are planted (see REPL.md).
+* **DolDoc desktop** — windows, PersonalMenu, `max`/`tileh`/`tilev`, Tab focus; the
+  `RVWinMgr` presenter composes to VT100/ANSI over the UART.
+* **Links selectable by the cursor** — Tab to a doc window, arrows select a link/tree
+  (inverted highlight), Enter follows it; `FI:` links `FileRead` the real target from the
+  mounted tree (stock `B:/Doc/*.DD`).
+* **Search** — `Find("needle");` greps the doc tree into a browsable results window.
+* **Editor** — `Ed("file");` (arrows, Ctrl-W save, Esc leave); the write-a-program /
+  save / run loop closes entirely in the console.
+* **Tasks** — `Tasks;` lists the desktop windows and their task bindings; `user` spawns a
+  live task-backed Term.
+
+`Find`/`Ed`/`Tasks` are planted HolyC functions (Compiler/RVExePubs.HC), not crash-shell
+barewords; the `RVWinSerial` dispatch sidecar is only for `md`/`mw`/`regs`/`crash`/`fault`.
+Deliberately omitted per scope: graphics demos and sound.
