@@ -35,11 +35,12 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
   block for label indexing, and the x86 forward-reference fixup machinery
   (`asm_undef_hash`) cannot express B/J-type's *split* immediate fields. The guest
   still has no `j` (host reserves that spelling for the label form) and no `call`.
-- **Assembler accepts 130 encoder-reachable mnemonics** (dotted and undotted amo/lr/sc
+- **Assembler accepts 134 encoder-reachable mnemonics** (dotted and undotted amo/lr/sc
   aliases counted separately; includes the 10 new guest branch/jump forms `beq bne blt
   bge bltu bgeu beqz bnez jal jr`, the 7 narrow loads/stores `lb lh lbu lhu lwu sb sh`,
-  and the 14 RV64D float forms `faddd fsubd fmuld fdivd fsqrtd fled fltd feqd fmvdx fmvxd
-  fcvtld_rtz fcvtld_rdn fcvtld_rmm fcvtdl`). It recognizes an additional 12 "stem" tokens
+  the 14 RV64D float forms `faddd fsubd fmuld fdivd fsqrtd fled fltd feqd fmvdx fmvxd
+  fcvtld_rtz fcvtld_rdn fcvtld_rmm fcvtdl`, and the `seqz snez csrc rdtime` pseudos). It
+  recognizes an additional 12 "stem" tokens
   (`lr sc amoswap amoadd amoxor amoand amoor amomin amomax amominu amomaxu`) plus
   `subi` that pass the `RvAsmIsMn` gate but then hit `LexExcept("Unsupported…")` at
   encode time — accepted by the gate, rejected by the encoder.
@@ -48,10 +49,10 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
   `fmvdx/fmvxd`, and converts `fcvtld_{rtz,rdn,rmm}/fcvtdl`. The compiler backend still
   emits some D-ext the `asm{}` set doesn't cover (float loads/stores `fld/fsd`, `fsgnj`,
   `fmin/fmax`, fused FMA, single-precision F) — but the core double ALU is hand-writable.
-- **The doc catalog (137 entries) documents only 8 mnemonics the guest assembler now
-  rejects** (`j/call/seqz/snez/csrc/rdtime/sfencevma` — down from 38 as branches, `jal`,
-  `jr`, narrow loads/stores, and all 14 float forms became assemblable). `lifp` is
-  host-only.
+- **The doc catalog (137 entries) documents only 4 mnemonics the guest assembler now
+  rejects** (`j`, `call`, `sfencevma`, and host-only `lifp`) — down from 38, as
+  branches, `jal`, `jr`, narrow loads/stores, all 14 float forms, and the `seqz/snez/
+  csrc/rdtime` pseudos became assemblable.
 - **A extension round-trips:** the assembler is the only hand-writing path for atomics,
   and the disassembler now decodes opcode `0x2F` (`lr/sc/amo*`, `.d`/`.w`) — so `U`/`Uf`
   round-trips the atomics you assemble (verified assemble→`Disasm` in the win REPL).
@@ -115,7 +116,7 @@ ABI names `zero ra sp gp tp t0-t6 s0-s11 a0-a7 fp`). CSR *names* via `RvAsmCsrNu
 | Jump (I) | `jalr` | short form `jalr rs` → `jalr ra,0(rs)` |
 | Jump (J) | `jal jr` | guest only, **numeric** offset: `jal rd,off` / `jal off`(→ra) / `jr rs`(→`jalr x0`); **no `j`**, **no `call`** |
 | Branch (B) | `beq bne blt bge bltu bgeu beqz bnez` | guest only, **numeric** PC-relative even byte offset (`beq a0,a1,8`); host wants a label |
-| Zicsr | `csrr csrw csrs csrrw csrrs csrrc csrrwi csrrsi csrrci csrwi csrsi csrci` | **no `csrc`** |
+| Zicsr | `csrr csrw csrs csrc csrrw csrrs csrrc csrrwi csrrsi csrrci csrwi csrsi csrci` | + `rdtime` (`csrrs rd,time,x0`) |
 | A: LR/SC | `lr.d lr.w lrd lrw sc.d sc.w scd scw` | dotted + no-dot aliases |
 | A: AMO `.d` | `amoswap.d amoadd.d amoxor.d amoand.d amoor.d amomin.d amomax.d amominu.d amomaxu.d` (+ no-dot `amoswapd`…`amomaxud`) | funct5 per op |
 | A: AMO `.w` | `amoswap.w amoadd.w amoxor.w amoand.w amoor.w amomin.w amomax.w amominu.w amomaxu.w` (+ no-dot `amoswapw`…`amomaxuw`) | |
@@ -131,11 +132,17 @@ ABI names `zero ra sp gp tp t0-t6 s0-s11 a0-a7 fp`). CSR *names* via `RvAsmCsrNu
 | `mv rd,rs` | `addi rd,rs,0` | `Asm_RV.HC:537` |
 | `not rd,rs` | `xori rd,rs,-1` | `Asm_RV.HC:539` |
 | `neg rd,rs` | `sub rd,zero,rs` | `Asm_RV.HC:541` |
+| `seqz rd,rs` | `sltiu rd,rs,1` | |
+| `snez rd,rs` | `sltu rd,zero,rs` | |
+| `beqz/bnez rs,off` | `beq/bne rs,zero,off` (numeric offset) | |
+| `jr rs` | `jalr zero,0(rs)` | |
+| `csrc csr,rs` | `csrrc zero,csr,rs` | |
+| `rdtime rd` | `csrrs rd,time,zero` | |
 | `li rd,imm` | `addi` when ±2047, else lui+addi(w) materialize sequence | `RvAsmEmitLi`, `Asm_RV.HC:293` |
 | `ret` `nop` | fixed words (also listed above) | |
 
 **Pseudo-ops the assembler does NOT provide** (despite the doc catalog listing them):
-`j jr call seqz snez beqz bnez rdtime`.
+`j call` (host-only, label form).
 
 ### 1c. Gate-only tokens (recognized, then rejected at encode)
 
@@ -146,7 +153,7 @@ fall through to `LexExcept("Unsupported RISC-V asm mnemonic")` (`Asm_RV.HC:966`)
 `subi` unconditionally raises `LexExcept` with a "use addi rd,rs1,-imm" hint
 (`Asm_RV.HC:428`). These are **not** accepted mnemonics.
 
-**Assembler total: 130 encoder-reachable mnemonics** (+12 gate-only stems + `subi`).
+**Assembler total: 134 encoder-reachable mnemonics** (+12 gate-only stems + `subi`).
 
 ---
 
@@ -360,7 +367,7 @@ The same mnemonic knowledge lives in three shapes:
 | Comparison | Agree | Disagree |
 |---|---|---|
 | doc catalog `asm_doc.hc` ↔ `rv_asm_doc_raw` | **identical** (137 ≡ 137) | none |
-| assembler ↔ doc catalog | 130 accepted ⊂ 137 documented | **8 documented mnemonics are not assemblable** (below) |
+| assembler ↔ doc catalog | 134 accepted ⊂ 137 documented | **4 documented mnemonics are not assemblable** (below) |
 | assembler ↔ disassembler | I/M base + **branches/`jal`** + **A** + **narrow ld/st** + **core D** overlap | disasm still uniquely has **RVC, OP-IMM-32**, and the F/D forms asm lacks (`fld/fsd`, `fsgnj`, `fmin/fmax`, FMA, F32) |
 | disassembler ↔ doc catalog | branches, F/D forms overlap | disasm adds RVC + OP-IMM-32; doc adds A + Zicsr detail the disasm can't decode |
 
@@ -397,19 +404,18 @@ debug-relevant ones:
 
 ## Gaps & drift
 
-### A. Documented but NOT assemblable (8 mnemonics)
+### A. Documented but NOT assemblable (4 mnemonics)
 
 `AsmList()`/`AsmDoc()` advertise these; the guest `asm{}` raises "Unsupported mnemonic":
 
-- **Jump pseudo-ops:** `j call`. (`jr` and `jal` **are** now assemblable in the guest;
-  `j` is deliberately left out because the host defines it as the label-only form —
-  use `jal x0,off`.)
-- **Set-if-zero pseudo:** `seqz snez`.
-- **Zicsr:** `csrc`.
-- **Misc pseudo/priv:** `rdtime sfencevma` (`sfence.vma`), `lifp` (host-only label form).
+- **Jump pseudo-ops:** `j call`. (`jr`/`jal` are assemblable; `j` is deliberately left
+  out because the host defines it as the label-only form — use `jal x0,off`.)
+- **Priv:** `sfencevma` (`sfence.vma`).
+- **Host-only:** `lifp` (label form).
 
-(The 14 float forms `faddd`…`fcvtld_*` moved OUT of this list — they now assemble in the
-guest, with the same dot-free names the catalog documents.)
+(Branches, `jal`/`jr`, narrow loads/stores, the 14 float forms `faddd`…`fcvtld_*`, and
+the `seqz/snez/csrc/rdtime` pseudos all moved OUT of this list — they now assemble in
+the guest with the same names the catalog documents.)
 
 ### B. Assembler gate accepts, encoder rejects (12 + 1)
 
