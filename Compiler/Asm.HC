@@ -915,6 +915,7 @@ U0 PrsAsmBlk(CCmpCtrl *cc,I64 cmp_flags)
   cc->flags|=CCF_ASM_EXPRESSIONS;
 #ifdef CMP_RV_ASM
   g_rv_asm_exports=0;
+  rv_asm_fixup_cnt=0;
 #endif
   if (!(cmp_flags&CMPF_ONE_ASM_INS)) {
     if (cc->token!='{')
@@ -1126,6 +1127,10 @@ U0 PrsAsmBlk(CCmpCtrl *cc,I64 cmp_flags)
 	  !(tmpo->type&(HTT_OPCODE|HTT_ASM_KEYWORD))))
       break;
   }
+#ifdef CMP_RV_ASM
+  // All block labels are defined now — patch forward branch/jump references.
+  RvAsmFixupResolve(cc);
+#endif
   AOTLocalsResolve(cc);
   aotc->lst=FALSE;
   cc->flags&=cc->flags&~CCF_ASM_EXPRESSIONS|old_flags;

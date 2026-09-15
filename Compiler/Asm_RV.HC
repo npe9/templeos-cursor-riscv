@@ -1,6 +1,18 @@
 // Asm_RV.HC — RISC-V asm{} for Compiler_RV (ExePutS / COCCompile).
 // Unlabeled `asm { addi s2,s2,3 }` → AOTStoreCodeU32 (or LexExcept).
 I64 g_rv_asm_exports;
+
+// Block-local label fixups for FORWARD branch/jump references (a label defined
+// LATER in the same asm block). Backward refs resolve inline (the label's rip is
+// already recorded). Forward refs emit a placeholder word and record an entry here;
+// PrsAsmBlk calls RvAsmFixupResolve at block end to patch the offset in place via
+// AOTStoreCodeU8At. Reset per block in PrsAsmBlk (next to g_rv_asm_exports=0).
+#define RV_ASM_MAX_FIXUP 128
+I64 rv_asm_fixup_cnt;
+I64 rv_asm_fixup_rip[RV_ASM_MAX_FIXUP];  // byte offset of the placeholder word
+U32 rv_asm_fixup_base[RV_ASM_MAX_FIXUP]; // word with imm=0 (opcode+regs+f3)
+I64 rv_asm_fixup_btype[RV_ASM_MAX_FIXUP];// 1=B-type scramble, 0=J-type
+U8 *rv_asm_fixup_name[RV_ASM_MAX_FIXUP]; // StrNew'd label name to resolve
 Bool RvAsmStrEqI(U8 *a, U8 *b)
 {
   U8 ca, cb;
@@ -475,12 +487,110 @@ U0 RvAsmMergeDotSuffix(U8 *mn, CCmpCtrl *cc)
   Lex(cc);
 }
 
+// Look up an asm-block label by name; return its recorded rip via *out_rip.
+// Labels are stored as HTT_EXPORT_SYS_SYM (`->val` = aotc->rip at the `name:` line);
+// plain `name:` goes to glbl_hash_table, `@@name:` to local_hash_table.
+Bool RvAsmLabelRip(CCmpCtrl *cc, U8 *name, I64 *out_rip)
+{
+  CHashExport *e;
+  e = HashFind(name, cc->htc.local_hash_table, HTT_EXPORT_SYS_SYM);
+  if (!e)
+    e = HashFind(name, cc->htc.glbl_hash_table, HTT_EXPORT_SYS_SYM);
+  if (!e)
+    return FALSE;
+  *out_rip = e->val;
+  return TRUE;
+}
+
+// Resolve a branch/jump TARGET operand into a PC-relative byte offset from the
+// current instruction (aotc->rip). Return: 0 = not a valid target (caller errors);
+// 1 = numeric literal or a backward label (already defined) -> *off is the offset;
+// 2 = a FORWARD label (not yet defined) -> *fwd_name = StrNew'd name, *off = 0.
+I64 RvAsmBrTarget(CCmpCtrl *cc, I64 *off, U8 **fwd_name)
+{
+  I64 lrip;
+  *fwd_name = NULL;
+  if (cc->token == '-' || cc->token == TK_I64) {
+    if (RvAsmImmTok(cc, off))
+      return 1;
+    return 0;
+  }
+  if (cc->token == TK_IDENT && cc->cur_str) {
+    // A CSR name is also a valid immediate; a branch to one makes no sense, so
+    // labels win here (RvAsmImmTok's CSR path is only reached for the numeric forms).
+    if (RvAsmLabelRip(cc, cc->cur_str, &lrip)) {
+      *off = lrip - cc->aotc->rip; // backward reference
+      Lex(cc);
+      return 1;
+    }
+    *fwd_name = StrNew(cc->cur_str); // forward reference -> fixup at block end
+    Lex(cc);
+    return 2;
+  }
+  return 0;
+}
+
+// Record a forward branch/jump reference for patching at block end.
+U0 RvAsmFixupAdd(CCmpCtrl *cc, U32 base, I64 is_btype, U8 *name)
+{
+  if (rv_asm_fixup_cnt >= RV_ASM_MAX_FIXUP) {
+    Free(name);
+    LexExcept(cc, "Too many forward label references in one asm block at ");
+  }
+  rv_asm_fixup_rip[rv_asm_fixup_cnt] = cc->aotc->rip; // == where AOTStoreCodeU32 stores next
+  rv_asm_fixup_base[rv_asm_fixup_cnt] = base;
+  rv_asm_fixup_btype[rv_asm_fixup_cnt] = is_btype;
+  rv_asm_fixup_name[rv_asm_fixup_cnt] = name;
+  rv_asm_fixup_cnt++;
+}
+
+// Patch every recorded forward reference now that all labels in the block are defined.
+// Called by PrsAsmBlk at block end. Rewrites the placeholder word in place with
+// AOTStoreCodeU8At (which does not touch aotc->rip).
+U0 RvAsmFixupResolve(CCmpCtrl *cc)
+{
+  I64 k, off, lrip, bad;
+  U32 w, immb;
+  bad = 0;
+  for (k = 0; k < rv_asm_fixup_cnt; k++) {
+    if (!RvAsmLabelRip(cc, rv_asm_fixup_name[k], &lrip)) {
+      bad = 1; // undefined label referenced by a forward branch/jump
+    } else {
+      off = lrip - rv_asm_fixup_rip[k];
+      if (rv_asm_fixup_btype[k]) {
+        if (!RvAsmFitsBimm(off))
+          bad = 2;
+        immb = ((off >> 12) & 1) << 31;
+        immb = immb | (((off >> 5) & 0x3F) << 25);
+        immb = immb | (((off >> 1) & 0xF) << 8);
+        immb = immb | (((off >> 11) & 1) << 7);
+      } else {
+        if (!RvAsmFitsJimm(off))
+          bad = 2;
+        immb = ((off >> 20) & 1) << 31;
+        immb = immb | (((off >> 1) & 0x3FF) << 21);
+        immb = immb | (((off >> 11) & 1) << 20);
+        immb = immb | (((off >> 12) & 0xFF) << 12);
+      }
+      w = rv_asm_fixup_base[k] | immb;
+      AOTStoreCodeU8At(cc, rv_asm_fixup_rip[k], w & 0xFF, (w >> 8) & 0xFF, (w >> 16) & 0xFF, (w >> 24) & 0xFF);
+    }
+    Free(rv_asm_fixup_name[k]);
+    rv_asm_fixup_name[k] = NULL;
+  }
+  rv_asm_fixup_cnt = 0;
+  if (bad == 1)
+    LexExcept(cc, "asm{}: branch/jump to an undefined label in this block ");
+  if (bad == 2)
+    LexExcept(cc, "asm{}: forward branch/jump target out of range ");
+}
+
 Bool PrsAsmRVIns(CCmpCtrl *cc)
 {
   // TRUE if a known RV mnemonic was assembled. FALSE → caller may treat as label.
-  I64 rd, rs1, rs2, imm, first, is_imm;
+  I64 rd, rs1, rs2, imm, first, is_imm, tgt;
   U32 word;
-  U8 *mn;
+  U8 *mn, *fwdname;
   if (cc->token != TK_IDENT || !cc->cur_str)
     return FALSE;
   if (!RvAsmIsMn(cc->cur_str))
@@ -921,19 +1031,25 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       }
       Lex(cc);
     }
-    if (!RvAsmImmTok(cc, &imm)) {
-      Free(mn);
-      LexExcept(cc, "Expecting branch offset at ");
-    }
     if (rs1 < 0 || rs2 < 0) {
       Free(mn);
       LexExcept(cc, "Bad register at ");
     }
-    if (!RvAsmFitsBimm(imm)) {
+    // Target: numeric offset, a backward label (resolved now), or a forward label
+    // (placeholder + fixup at block end).
+    tgt = RvAsmBrTarget(cc, &imm, &fwdname);
+    if (!tgt) {
       Free(mn);
-      LexExcept(cc, "branch offset out of range (need even, -4096..4094; PC-relative) at ");
+      LexExcept(cc, "Expecting branch offset or label at ");
     }
     Free(mn);
+    if (tgt == 2) {
+      RvAsmFixupAdd(cc, RvAsmB(first, rs1, rs2, 0), 1, fwdname);
+      AOTStoreCodeU32(cc, RvAsmB(first, rs1, rs2, 0));
+      return TRUE;
+    }
+    if (!RvAsmFitsBimm(imm))
+      LexExcept(cc, "branch offset out of range (need even, -4096..4094; PC-relative) at ");
     AOTStoreCodeU32(cc, RvAsmB(first, rs1, rs2, imm));
     return TRUE;
   }
@@ -942,30 +1058,37 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
   // label-only, so a guest `j 8` would give the same mnemonic two meanings.
   // Use `jal x0,off` for an unconditional numeric-offset jump.
   if (RvAsmStrEqI(mn, "jal")) {
-    if (cc->token == TK_I64 || cc->token == '-') {
-      rd = 1; // `jal offset` implies rd=ra
-      RvAsmImmTok(cc, &imm);
-    } else {
+    // Forms: `jal off|label` (rd=ra), `jal rd, off|label`. A leading register name
+    // followed by ',' selects the two-operand form; anything else is a target.
+    if (cc->token == TK_IDENT && RvAsmRegNum(cc->cur_str) >= 0) {
       rd = RvAsmRegTok(cc);
       if (cc->token != ',') {
         Free(mn);
         LexExcept(cc, "Expecting ',' at ");
       }
       Lex(cc);
-      if (!RvAsmImmTok(cc, &imm)) {
-        Free(mn);
-        LexExcept(cc, "Expecting jump offset at ");
-      }
+    } else {
+      rd = 1; // `jal off|label` implies rd=ra
+    }
+    tgt = RvAsmBrTarget(cc, &imm, &fwdname);
+    if (!tgt) {
+      Free(mn);
+      LexExcept(cc, "Expecting jump offset or label at ");
     }
     if (rd < 0) {
+      if (fwdname)
+        Free(fwdname);
       Free(mn);
       LexExcept(cc, "Bad register at ");
     }
-    if (!RvAsmFitsJimm(imm)) {
-      Free(mn);
-      LexExcept(cc, "jump offset out of range (need even, -1MiB..+1MiB-2; PC-relative) at ");
-    }
     Free(mn);
+    if (tgt == 2) {
+      RvAsmFixupAdd(cc, RvAsmJ(rd, 0), 0, fwdname);
+      AOTStoreCodeU32(cc, RvAsmJ(rd, 0));
+      return TRUE;
+    }
+    if (!RvAsmFitsJimm(imm))
+      LexExcept(cc, "jump offset out of range (need even, -1MiB..+1MiB-2; PC-relative) at ");
     AOTStoreCodeU32(cc, RvAsmJ(rd, imm));
     return TRUE;
   }

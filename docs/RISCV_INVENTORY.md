@@ -8,8 +8,8 @@ distinction the rest of the document is organized around:
 > code and can emit instructions from **I + M + A + F/D**. The inline `asm{}`
 > assembler (`Compiler/Asm_RV.HC`) is a *separate, much smaller* hand-written
 > parser that accepts **I + M + A + Zicsr + B-type branches + `jal`/`jr` + RV64D
-> float** (guest; branches take a numeric PC-relative offset, not a label) — but
-> **no compressed**.
+> float** (guest; branches/jumps take a numeric PC-relative offset *or* a label,
+> either direction) — but **no compressed**.
 
 The same instruction knowledge is duplicated across **three** places that do not
 agree: the assembler (a parser), the disassembler (`Kernel/RVDisasm.HC`, a
@@ -29,14 +29,16 @@ the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
   and the disassembler decodes nearly all of it, but the guest `asm{}` assembler
   (`Compiler/Asm_RV.HC`, used by the REPL / `make tos`) implements **I + M + A + Zicsr +
   B-type branches + `jal`/`jr` + RV64D float**. It has **no compressed**. Guest
-  branches/jumps take a **numeric PC-relative byte offset**
-  (`beq a0,a1,8`, `jal x0,-8`), *not* a label — the host `asm{}` parser
-  (`host/parser.c`, used to build the images and by `--asm-dump`) uses **label**
-  operands (`beq a0,a1,L`) and rejects numeric ones. That form split is a deliberate
-  host/guest divergence: the guest's single-pass emit path has no place to buffer a
-  block for label indexing, and the x86 forward-reference fixup machinery
-  (`asm_undef_hash`) cannot express B/J-type's *split* immediate fields. The guest
-  still has no `j` (host reserves that spelling for the label form) and no `call`.
+  branches/jumps take **either** a numeric even PC-relative byte offset (`beq a0,a1,8`)
+  **or a label** in either direction (`loop: … bnez t0,loop`; `beq a0,a1,skip … skip:`).
+  Backward labels resolve inline (`label_rip - aotc->rip`); forward labels emit a
+  placeholder and are patched at block end (`RvAsmFixupResolve` in `PrsAsmBlk`, via
+  `AOTStoreCodeU8At`) — a **block-local** fixup list, deliberately *not* the x86
+  `asm_undef_hash` path (which writes contiguous displacements and can't express
+  B/J-type's split immediate fields). The host `asm{}` parser (`host/parser.c`) is
+  label-only and rejects numeric offsets; the guest accepting both is the remaining
+  divergence. The guest still has no `j` (host reserves that spelling; use `jal x0,label`)
+  and no `call`.
 - **Assembler accepts 134 encoder-reachable mnemonics** (dotted and undotted amo/lr/sc
   aliases counted separately; includes the 10 new guest branch/jump forms `beq bne blt
   bge bltu bgeu beqz bnez jal jr`, the 7 narrow loads/stores `lb lh lbu lhu lwu sb sh`,
@@ -72,7 +74,7 @@ the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
 
 | Extension | `asm{}` assembles | Codegen emits ("compiles") | Disassembler decodes |
 |---|---|---|---|
-| **RV64 I** (base) | **partial** — B-type branches + `jal`/`jr` (guest: numeric offset; host: label), narrow loads/stores `lb/lh/lbu/lhu/lwu/sb/sh`, no `j`/`call`, no full `fence` (only `fence.i`), no `sltiu` | yes | yes |
+| **RV64 I** (base) | **partial** — B-type branches + `jal`/`jr` (guest: numeric offset *or* label; host: label-only), narrow loads/stores `lb/lh/lbu/lhu/lwu/sb/sh`, no `j`/`call`, no full `fence` (only `fence.i`), no `sltiu` | yes | yes |
 | **I 32-bit ops** (`addiw`/`slliw`/`srliw`) | no | no | yes (opcode `0x1B`) |
 | **I OP-32** (`addw`/`subw`/`mulw`…) | no | no | **no** (`0x3B` absent) |
 | **M** (`mul div divu rem remu`) | yes | yes | yes |
@@ -116,8 +118,8 @@ ABI names `zero ra sp gp tp t0-t6 s0-s11 a0-a7 fp`). CSR *names* via `RvAsmCsrNu
 | Load (I) | `ld lw lwu lh lhu lb lbu` | f3 lb=0 lh=1 lw=2 ld=3 lbu=4 lhu=5 lwu=6 |
 | Store (S) | `sd sw sh sb` | f3 sb=0 sh=1 sw=2 sd=3 |
 | Jump (I) | `jalr` | short form `jalr rs` → `jalr ra,0(rs)` |
-| Jump (J) | `jal jr` | guest only, **numeric** offset: `jal rd,off` / `jal off`(→ra) / `jr rs`(→`jalr x0`); **no `j`**, **no `call`** |
-| Branch (B) | `beq bne blt bge bltu bgeu beqz bnez` | guest only, **numeric** PC-relative even byte offset (`beq a0,a1,8`); host wants a label |
+| Jump (J) | `jal jr` | `jal rd,off\|label` / `jal off\|label`(→ra) / `jr rs`(→`jalr x0`); target numeric or label; **no `j`**, **no `call`** |
+| Branch (B) | `beq bne blt bge bltu bgeu beqz bnez` | numeric even byte offset (`beq a0,a1,8`) **or a label**, either direction (`loop: … bnez t0,loop`) |
 | Zicsr | `csrr csrw csrs csrc csrrw csrrs csrrc csrrwi csrrsi csrrci csrwi csrsi csrci` | + `rdtime` (`csrrs rd,time,x0`) |
 | A: LR/SC | `lr.d lr.w lrd lrw sc.d sc.w scd scw` | dotted + no-dot aliases |
 | A: AMO `.d` | `amoswap.d amoadd.d amoxor.d amoand.d amoor.d amomin.d amomax.d amominu.d amomaxu.d` (+ no-dot `amoswapd`…`amomaxud`) | funct5 per op |

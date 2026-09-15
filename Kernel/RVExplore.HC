@@ -135,8 +135,8 @@ public U0 AsmDoc(U8 *mn)
       Print("AsmDoc jal\n");
       Print("  template  jal rd, off  |  jal off (rd=ra)\n");
       Print("  encoding  J-type opcode 0x6F\n");
-      Print("  asm{}      guest takes a NUMERIC even PC-relative byte offset, e.g.\n");
-      Print("             asm{ jal x0,8 } (fwd 8) / asm{ jal x0,-8 } (back 8) - NOT a label\n");
+      Print("  asm{}      target is a NUMERIC even byte offset OR a label, e.g.\n");
+      Print("             asm{ jal x0,8 } / asm{ over: ... jal x0,over } (label, either dir)\n");
       Print("  semantics rd = pc+4; pc += off (off even, +/-1 MiB)\n");
       return;
     }
@@ -154,13 +154,15 @@ public U0 AsmDoc(U8 *mn)
   // Use mn (stable arg), NOT s: s points into g_rv_asm_doc_buf, which the field
   // prints above overwrote - by here it holds the last field, not the mnemonic.
   if (RVAsmIsGuestBranch(mn)) {
-    Print("  asm{}      guest takes a NUMERIC even PC-relative byte offset, e.g.\n");
-    if (!StrICmp(mn, "jr"))
-      Print("             asm{ jr a0 } = jalr x0,0(a0)\n");
-    else if (!StrICmp(mn, "beqz") || !StrICmp(mn, "bnez"))
-      Print("             asm{ %s a0,8 } (branch 8 bytes fwd) - NOT a label\n", mn);
-    else
-      Print("             asm{ %s a0,a1,8 } (branch 8 bytes fwd) - NOT a label\n", mn);
+    if (!StrICmp(mn, "jr")) {
+      Print("  asm{}      asm{ jr a0 } = jalr x0,0(a0)\n");
+    } else if (!StrICmp(mn, "beqz") || !StrICmp(mn, "bnez")) {
+      Print("  asm{}      target is a NUMERIC even byte offset OR a label:\n");
+      Print("             asm{ %s a0,8 } or asm{ L: ... %s a0,L } (either direction)\n", mn, mn);
+    } else {
+      Print("  asm{}      target is a NUMERIC even byte offset OR a label:\n");
+      Print("             asm{ %s a0,a1,8 } or asm{ L: ... %s a0,a1,L }\n", mn, mn);
+    }
   }
 }
 
@@ -190,8 +192,8 @@ public U0 AsmList()
   Print("(%d documented. AsmDoc(\"name\") for detail.)\n", n);
   Print("Note: this is the doc catalog. What the asm{} assembler ACCEPTS is a subset\n");
   Print("  (I+M+A+Zicsr + B-type branches + jal/jr + RV64D float; no j/call) - test: asm{ <ins> };\n");
-  Print("  Branches/jumps take a NUMERIC even PC-relative byte offset (beq a0,a1,8), not\n");
-  Print("  a label. Float names are dot-free (faddd/fsqrtd/fmvdx...). See RISCV_INVENTORY.md\n");
+  Print("  Branches/jumps take a NUMERIC even byte offset (beq a0,a1,8) OR a label, either\n");
+  Print("  direction (loop: ... bnez t0,loop). Float names dot-free. See RISCV_INVENTORY.md\n");
 }
 
 public U0 MemMap()
