@@ -7,8 +7,9 @@ distinction the rest of the document is organized around:
 > The HolyC compiler backend (`Compiler/*_RV.HC`) lowers HolyC to RISC-V machine
 > code and can emit instructions from **I + M + A + F/D**. The inline `asm{}`
 > assembler (`Compiler/Asm_RV.HC`) is a *separate, much smaller* hand-written
-> parser that accepts only **I(partial) + M + A + Zicsr** — no floating point,
-> no compressed, and **no control flow at all**.
+> parser that accepts **I + M + A + Zicsr + B-type branches + `jal`/`jr`** (guest;
+> branches take a numeric PC-relative offset, not a label) — but **no floating
+> point and no compressed**.
 
 The same instruction knowledge is duplicated across **three** places that do not
 agree: the assembler (a parser), the disassembler (`Kernel/RVDisasm.HC`, a
@@ -34,9 +35,10 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
   block for label indexing, and the x86 forward-reference fixup machinery
   (`asm_undef_hash`) cannot express B/J-type's *split* immediate fields. The guest
   still has no `j` (host reserves that spelling for the label form) and no `call`.
-- **Assembler accepts 109 encoder-reachable mnemonics** (dotted and undotted amo/lr/sc
+- **Assembler accepts 116 encoder-reachable mnemonics** (dotted and undotted amo/lr/sc
   aliases counted separately; includes the 10 new guest branch/jump forms `beq bne blt
-  bge bltu bgeu beqz bnez jal jr`). It recognizes an additional 12 "stem" tokens
+  bge bltu bgeu beqz bnez jal jr` and the 7 narrow loads/stores `lb lh lbu lhu lwu sb
+  sh`). It recognizes an additional 12 "stem" tokens
   (`lr sc amoswap amoadd amoxor amoand amoor amomin amomax amominu amomaxu`) plus
   `subi` that pass the `RvAsmIsMn` gate but then hit `LexExcept("Unsupported…")` at
   encode time — accepted by the gate, rejected by the encoder.
@@ -44,11 +46,10 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
   distinct D-extension instructions** (`Compiler/BackF_RV.HC:59-227`) that `asm{}`
   cannot express at all — yet the doc catalog advertises float mnemonics as if they
   were assemblable.
-- **The doc catalog (137 entries) documents 29 mnemonics the guest assembler rejects**
-  (`j/call/seqz/snez/csrc/rdtime/sfencevma`, byte/half loads+stores, and every float
-  form). The **14 float forms are now the largest single category.** (Previously 38 —
-  the six B-type branches, `beqz/bnez`, and `jr` became assemblable when guest
-  numeric-offset branches were added; `jal` too.)
+- **The doc catalog (137 entries) documents 22 mnemonics the guest assembler rejects**
+  (`j/call/seqz/snez/csrc/rdtime/sfencevma` and every float form). The **14 float forms
+  are now the largest single category.** (Previously 38 — the six B-type branches,
+  `beqz/bnez`, `jr`, `jal`, and the 7 narrow loads/stores all became assemblable.)
 - **A extension round-trips:** the assembler is the only hand-writing path for atomics,
   and the disassembler now decodes opcode `0x2F` (`lr/sc/amo*`, `.d`/`.w`) — so `U`/`Uf`
   round-trips the atomics you assemble (verified assemble→`Disasm` in the win REPL).
@@ -65,7 +66,7 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
 
 | Extension | `asm{}` assembles | Codegen emits ("compiles") | Disassembler decodes |
 |---|---|---|---|
-| **RV64 I** (base) | **partial** — B-type branches + `jal`/`jr` (guest: numeric offset; host: label), no `j`/`call`, no `lb/lh/lbu/lhu/lwu/sb/sh`, no full `fence` (only `fence.i`), no `sltiu` | yes | yes |
+| **RV64 I** (base) | **partial** — B-type branches + `jal`/`jr` (guest: numeric offset; host: label), narrow loads/stores `lb/lh/lbu/lhu/lwu/sb/sh`, no `j`/`call`, no full `fence` (only `fence.i`), no `sltiu` | yes | yes |
 | **I 32-bit ops** (`addiw`/`slliw`/`srliw`) | no | no | yes (opcode `0x1B`) |
 | **I OP-32** (`addw`/`subw`/`mulw`…) | no | no | **no** (`0x3B` absent) |
 | **M** (`mul div divu rem remu`) | yes | yes | yes |
@@ -106,8 +107,8 @@ ABI names `zero ra sp gp tp t0-t6 s0-s11 a0-a7 fp`). CSR *names* via `RvAsmCsrNu
 | OP-IMM (I) | `addi andi ori xori slti slli srli srai` | shifts take 6-bit shamt; **no `sltiu`, no `addiw`** |
 | OP (R) | `add sub and or xor sll srl sra slt sltu` | pure R-type; passing an immediate to `add`/`sub` raises a helpful `LexExcept` |
 | M ext (R) | `mul div rem divu remu` | funct7=1; **no `mulh*`, no `mulw/divw`** |
-| Load (I) | `ld lw` | **only** doubleword/word; no `lb/lh/lbu/lhu/lwu` |
-| Store (S) | `sd sw` | **only** doubleword/word; no `sb/sh` |
+| Load (I) | `ld lw lwu lh lhu lb lbu` | f3 lb=0 lh=1 lw=2 ld=3 lbu=4 lhu=5 lwu=6 |
+| Store (S) | `sd sw sh sb` | f3 sb=0 sh=1 sw=2 sd=3 |
 | Jump (I) | `jalr` | short form `jalr rs` → `jalr ra,0(rs)` |
 | Jump (J) | `jal jr` | guest only, **numeric** offset: `jal rd,off` / `jal off`(→ra) / `jr rs`(→`jalr x0`); **no `j`**, **no `call`** |
 | Branch (B) | `beq bne blt bge bltu bgeu beqz bnez` | guest only, **numeric** PC-relative even byte offset (`beq a0,a1,8`); host wants a label |
@@ -138,7 +139,7 @@ fall through to `LexExcept("Unsupported RISC-V asm mnemonic")` (`Asm_RV.HC:966`)
 `subi` unconditionally raises `LexExcept` with a "use addi rd,rs1,-imm" hint
 (`Asm_RV.HC:428`). These are **not** accepted mnemonics.
 
-**Assembler total: 109 encoder-reachable mnemonics** (+12 gate-only stems + `subi`).
+**Assembler total: 116 encoder-reachable mnemonics** (+12 gate-only stems + `subi`).
 
 ---
 
@@ -239,9 +240,9 @@ Handled as warnings/no-ops or remaps, not planted in the REPL hash (`STOCK_PARIT
 
 See the [glance table](#extension-coverage-at-a-glance-the-three-way-answer). Summary:
 
-- **RV64I** — base, but the assembler covers it only partially (no control flow, no
-  narrow load/store, no `sltiu`/`fence`). Codegen + disasm are complete for what the
-  compiler needs.
+- **RV64I** — base; the assembler now covers B-type branches, `jal`/`jr` (guest:
+  numeric offset), and narrow loads/stores, but still lacks `j`/`call`, `sltiu`, and
+  full `fence`. Codegen + disasm are complete for what the compiler needs.
 - **M** — fully supported in all three (assembler, codegen, disasm).
 - **A** — assembled and emitted (codegen `amo*.d` for locked bit ops); **not decoded**
   by the disassembler.
@@ -351,7 +352,7 @@ The same mnemonic knowledge lives in three shapes:
 | Comparison | Agree | Disagree |
 |---|---|---|
 | doc catalog `asm_doc.hc` ↔ `rv_asm_doc_raw` | **identical** (137 ≡ 137) | none |
-| assembler ↔ doc catalog | 109 accepted ⊂ 137 documented | **29 documented mnemonics are not assemblable** (below) |
+| assembler ↔ doc catalog | 116 accepted ⊂ 137 documented | **22 documented mnemonics are not assemblable** (below) |
 | assembler ↔ disassembler | I/M base + **branches/`jal`** + **A** overlap (`0x2F` now decoded) | disasm has **narrow loads/stores, F/D, RVC, OP-IMM-32** the asm lacks; asm has no A gap now |
 | disassembler ↔ doc catalog | branches, F/D forms overlap | disasm adds RVC + OP-IMM-32; doc adds A + Zicsr detail the disasm can't decode |
 
@@ -388,7 +389,7 @@ debug-relevant ones:
 
 ## Gaps & drift
 
-### A. Documented but NOT assemblable (29 mnemonics)
+### A. Documented but NOT assemblable (22 mnemonics)
 
 `AsmList()`/`AsmDoc()` advertise these; the guest `asm{}` raises "Unsupported mnemonic":
 
@@ -397,7 +398,6 @@ debug-relevant ones:
   use `jal x0,off`.)
 - **Set-if-zero pseudo:** `seqz snez`.
 - **Zicsr:** `csrc`.
-- **Narrow load/store:** `lb lbu lh lhu lwu sb sh`.
 - **Misc pseudo/priv:** `rdtime sfencevma` (`sfence.vma`), `lifp` (host-only label form).
 - **All floating point:** `faddd fsubd fmuld fdivd fsqrtd feqd fled fltd fmvdx fmvxd
   fcvtdl fcvtld_rtz fcvtld_rdn fcvtld_rmm`.

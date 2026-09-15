@@ -31,6 +31,13 @@
 {"name":"pseudo_seqz","insns":["seqz a0, a1"],"mode":"match"}
 {"name":"pseudo_snez","insns":["snez a0, a1"],"mode":"match"}
 {"name":"pseudo_jr","insns":["jr a0"],"mode":"match"}
+{"name":"load_lb","insns":["lb a0, 4(a1)"],"mode":"match"}
+{"name":"load_lh","insns":["lh a0, 4(a1)"],"mode":"match"}
+{"name":"load_lbu","insns":["lbu a0, 4(a1)"],"mode":"match"}
+{"name":"load_lhu","insns":["lhu a0, 4(a1)"],"mode":"match"}
+{"name":"load_lwu","insns":["lwu a0, 4(a1)"],"mode":"match"}
+{"name":"store_sb","insns":["sb a0, 8(a1)"],"mode":"match"}
+{"name":"store_sh","insns":["sh a0, 8(a1)"],"mode":"match"}
 {"name":"reject_addi_oor_hi","insns":["addi a0, a0, 2048"],"mode":"both_reject"}
 {"name":"reject_addi_oor_lo","insns":["addi a0, a0, -2049"],"mode":"both_reject"}
 {"name":"reject_ld_oor","insns":["ld a0, 4096(sp)"],"mode":"both_reject"}
