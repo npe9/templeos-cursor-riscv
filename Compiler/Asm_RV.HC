@@ -23,7 +23,7 @@ Bool RvAsmIsMn(U8 *s)
 {
   if (!s)
     return FALSE;
-  if (RvAsmStrEqI(s, "ret") || RvAsmStrEqI(s, "nop") || RvAsmStrEqI(s, "wfi") || RvAsmStrEqI(s, "mret") || RvAsmStrEqI(s, "sret") || RvAsmStrEqI(s, "ecall") || RvAsmStrEqI(s, "ebreak") || RvAsmStrEqI(s, "fencei") || RvAsmStrEqI(s, "fence.i") || RvAsmStrEqI(s, "mv") || RvAsmStrEqI(s, "not") || RvAsmStrEqI(s, "neg") || RvAsmStrEqI(s, "li") || RvAsmStrEqI(s, "lui") || RvAsmStrEqI(s, "auipc") || RvAsmStrEqI(s, "addi") || RvAsmStrEqI(s, "andi") || RvAsmStrEqI(s, "ori") || RvAsmStrEqI(s, "xori") || RvAsmStrEqI(s, "slti") || RvAsmStrEqI(s, "slli") || RvAsmStrEqI(s, "srli") || RvAsmStrEqI(s, "srai") || RvAsmStrEqI(s, "add") || RvAsmStrEqI(s, "sub") || RvAsmStrEqI(s, "and") || RvAsmStrEqI(s, "or") || RvAsmStrEqI(s, "xor") || RvAsmStrEqI(s, "sll") || RvAsmStrEqI(s, "srl") || RvAsmStrEqI(s, "sra") || RvAsmStrEqI(s, "slt") || RvAsmStrEqI(s, "sltu") || RvAsmStrEqI(s, "mul") || RvAsmStrEqI(s, "div") || RvAsmStrEqI(s, "rem") || RvAsmStrEqI(s, "divu") || RvAsmStrEqI(s, "remu") || RvAsmStrEqI(s, "ld") || RvAsmStrEqI(s, "lw") || RvAsmStrEqI(s, "sd") || RvAsmStrEqI(s, "sw") || RvAsmStrEqI(s, "jalr") || RvAsmStrEqI(s, "csrr") || RvAsmStrEqI(s, "csrw") || RvAsmStrEqI(s, "csrs") || RvAsmStrEqI(s, "csrrw") || RvAsmStrEqI(s, "csrrs") || RvAsmStrEqI(s, "csrrc") || RvAsmStrEqI(s, "csrrwi") || RvAsmStrEqI(s, "csrrsi") || RvAsmStrEqI(s, "csrrci") || RvAsmStrEqI(s, "csrwi") || RvAsmStrEqI(s, "csrsi") || RvAsmStrEqI(s, "csrci") || RvAsmStrEqI(s, "lrd") || RvAsmStrEqI(s, "lrw") || RvAsmStrEqI(s, "scd") || RvAsmStrEqI(s, "scw") || RvAsmStrEqI(s, "amoswapd") || RvAsmStrEqI(s, "amoaddd") || RvAsmStrEqI(s, "amoxord") || RvAsmStrEqI(s, "amoandd") || RvAsmStrEqI(s, "amoord") || RvAsmStrEqI(s, "amomind") || RvAsmStrEqI(s, "amomaxd") || RvAsmStrEqI(s, "amominud") || RvAsmStrEqI(s, "amomaxud") || RvAsmStrEqI(s, "amoswapw") || RvAsmStrEqI(s, "amoaddw") || RvAsmStrEqI(s, "amoxorw") || RvAsmStrEqI(s, "amoandw") || RvAsmStrEqI(s, "amoorw") || RvAsmStrEqI(s, "amominw") || RvAsmStrEqI(s, "amomaxw") || RvAsmStrEqI(s, "amominuw") || RvAsmStrEqI(s, "amomaxuw") || RvAsmStrEqI(s, "lr") || RvAsmStrEqI(s, "sc") || RvAsmStrEqI(s, "amoswap") || RvAsmStrEqI(s, "amoadd") || RvAsmStrEqI(s, "amoxor") || RvAsmStrEqI(s, "amoand") || RvAsmStrEqI(s, "amoor") || RvAsmStrEqI(s, "amomin") || RvAsmStrEqI(s, "amomax") || RvAsmStrEqI(s, "amominu") || RvAsmStrEqI(s, "amomaxu"))
+  if (RvAsmStrEqI(s, "ret") || RvAsmStrEqI(s, "nop") || RvAsmStrEqI(s, "wfi") || RvAsmStrEqI(s, "mret") || RvAsmStrEqI(s, "sret") || RvAsmStrEqI(s, "ecall") || RvAsmStrEqI(s, "ebreak") || RvAsmStrEqI(s, "fencei") || RvAsmStrEqI(s, "fence.i") || RvAsmStrEqI(s, "mv") || RvAsmStrEqI(s, "not") || RvAsmStrEqI(s, "neg") || RvAsmStrEqI(s, "li") || RvAsmStrEqI(s, "lui") || RvAsmStrEqI(s, "auipc") || RvAsmStrEqI(s, "addi") || RvAsmStrEqI(s, "andi") || RvAsmStrEqI(s, "ori") || RvAsmStrEqI(s, "xori") || RvAsmStrEqI(s, "slti") || RvAsmStrEqI(s, "slli") || RvAsmStrEqI(s, "srli") || RvAsmStrEqI(s, "srai") || RvAsmStrEqI(s, "add") || RvAsmStrEqI(s, "sub") || RvAsmStrEqI(s, "and") || RvAsmStrEqI(s, "or") || RvAsmStrEqI(s, "xor") || RvAsmStrEqI(s, "sll") || RvAsmStrEqI(s, "srl") || RvAsmStrEqI(s, "sra") || RvAsmStrEqI(s, "slt") || RvAsmStrEqI(s, "sltu") || RvAsmStrEqI(s, "mul") || RvAsmStrEqI(s, "div") || RvAsmStrEqI(s, "rem") || RvAsmStrEqI(s, "divu") || RvAsmStrEqI(s, "remu") || RvAsmStrEqI(s, "ld") || RvAsmStrEqI(s, "lw") || RvAsmStrEqI(s, "sd") || RvAsmStrEqI(s, "sw") || RvAsmStrEqI(s, "jalr") || RvAsmStrEqI(s, "jal") || RvAsmStrEqI(s, "jr") || RvAsmStrEqI(s, "beq") || RvAsmStrEqI(s, "bne") || RvAsmStrEqI(s, "blt") || RvAsmStrEqI(s, "bge") || RvAsmStrEqI(s, "bltu") || RvAsmStrEqI(s, "bgeu") || RvAsmStrEqI(s, "beqz") || RvAsmStrEqI(s, "bnez") || RvAsmStrEqI(s, "csrr") || RvAsmStrEqI(s, "csrw") || RvAsmStrEqI(s, "csrs") || RvAsmStrEqI(s, "csrrw") || RvAsmStrEqI(s, "csrrs") || RvAsmStrEqI(s, "csrrc") || RvAsmStrEqI(s, "csrrwi") || RvAsmStrEqI(s, "csrrsi") || RvAsmStrEqI(s, "csrrci") || RvAsmStrEqI(s, "csrwi") || RvAsmStrEqI(s, "csrsi") || RvAsmStrEqI(s, "csrci") || RvAsmStrEqI(s, "lrd") || RvAsmStrEqI(s, "lrw") || RvAsmStrEqI(s, "scd") || RvAsmStrEqI(s, "scw") || RvAsmStrEqI(s, "amoswapd") || RvAsmStrEqI(s, "amoaddd") || RvAsmStrEqI(s, "amoxord") || RvAsmStrEqI(s, "amoandd") || RvAsmStrEqI(s, "amoord") || RvAsmStrEqI(s, "amomind") || RvAsmStrEqI(s, "amomaxd") || RvAsmStrEqI(s, "amominud") || RvAsmStrEqI(s, "amomaxud") || RvAsmStrEqI(s, "amoswapw") || RvAsmStrEqI(s, "amoaddw") || RvAsmStrEqI(s, "amoxorw") || RvAsmStrEqI(s, "amoandw") || RvAsmStrEqI(s, "amoorw") || RvAsmStrEqI(s, "amominw") || RvAsmStrEqI(s, "amomaxw") || RvAsmStrEqI(s, "amominuw") || RvAsmStrEqI(s, "amomaxuw") || RvAsmStrEqI(s, "lr") || RvAsmStrEqI(s, "sc") || RvAsmStrEqI(s, "amoswap") || RvAsmStrEqI(s, "amoadd") || RvAsmStrEqI(s, "amoxor") || RvAsmStrEqI(s, "amoand") || RvAsmStrEqI(s, "amoor") || RvAsmStrEqI(s, "amomin") || RvAsmStrEqI(s, "amomax") || RvAsmStrEqI(s, "amominu") || RvAsmStrEqI(s, "amomaxu"))
     return TRUE;
   // subi is not a standard gas mnemonic — reject with a clear LexExcept in PrsAsmRVIns.
   if (RvAsmStrEqI(s, "subi"))
@@ -255,6 +255,22 @@ Bool RvAsmFitsZimm5(I64 z)
   return 0 <= z <= 31;
 }
 
+// B-type branch: 13-bit signed byte offset, imm[0] always 0 (even). PC-relative.
+Bool RvAsmFitsBimm(I64 imm)
+{
+  if (imm & 1)
+    return FALSE;
+  return -4096 <= imm <= 4094;
+}
+
+// J-type jal: 21-bit signed byte offset, imm[0] always 0 (even). PC-relative.
+Bool RvAsmFitsJimm(I64 imm)
+{
+  if (imm & 1)
+    return FALSE;
+  return -1048576 <= imm <= 1048574;
+}
+
 U32 RvAsmI(U32 f3, I64 rd, I64 rs1, I64 imm)
 {
   return 0x13 | (rd << 7) | (f3 << 12) | (rs1 << 15) | ((imm & 0xFFF) << 20);
@@ -283,6 +299,30 @@ U32 RvAsmJalr(I64 rd, I64 rs1, I64 imm)
 U32 RvAsmU(U32 opc, I64 rd, I64 imm20)
 {
   return opc | (rd << 7) | ((imm20 & 0xFFFFF) << 12);
+}
+
+// B-type (opcode 0x63). imm is a PC-relative byte offset; the scramble is
+// imm[12]->31, imm[10:5]->30:25, imm[4:1]->11:8, imm[11]->7 (imm[0] dropped).
+U32 RvAsmB(U32 f3, I64 rs1, I64 rs2, I64 imm)
+{
+  U32 w = 0x63 | (f3 << 12) | (rs1 << 15) | (rs2 << 20);
+  w |= ((imm >> 12) & 1) << 31;
+  w |= ((imm >> 5) & 0x3F) << 25;
+  w |= ((imm >> 1) & 0xF) << 8;
+  w |= ((imm >> 11) & 1) << 7;
+  return w;
+}
+
+// J-type jal (opcode 0x6F). imm is a PC-relative byte offset; the scramble is
+// imm[20]->31, imm[10:1]->30:21, imm[11]->20, imm[19:12]->19:12 (imm[0] dropped).
+U32 RvAsmJ(I64 rd, I64 imm)
+{
+  U32 w = 0x6F | (rd << 7);
+  w |= ((imm >> 20) & 1) << 31;
+  w |= ((imm >> 1) & 0x3FF) << 21;
+  w |= ((imm >> 11) & 1) << 20;
+  w |= ((imm >> 12) & 0xFF) << 12;
+  return w;
 }
 
 U32 RvAsmA(U32 f5, U32 aqrl, U32 f3, I64 rd, I64 rs1, I64 rs2)
@@ -729,6 +769,96 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       word = RvAsmStore(2, first, imm, rs1);
     Free(mn);
     AOTStoreCodeU32(cc, word);
+    return TRUE;
+  }
+  // B-type branches (numeric PC-relative offset; no label resolution yet — use
+  // an even byte offset, exactly as the kernel's hand-computed asm{} does).
+  if (RvAsmStrEqI(mn, "beq") || RvAsmStrEqI(mn, "bne") || RvAsmStrEqI(mn, "blt") || RvAsmStrEqI(mn, "bge") || RvAsmStrEqI(mn, "bltu") || RvAsmStrEqI(mn, "bgeu") || RvAsmStrEqI(mn, "beqz") || RvAsmStrEqI(mn, "bnez")) {
+    // first := funct3; beqz/bnez are beq/bne against x0.
+    if (RvAsmStrEqI(mn, "beq") || RvAsmStrEqI(mn, "beqz"))
+      first = 0;
+    else if (RvAsmStrEqI(mn, "bne") || RvAsmStrEqI(mn, "bnez"))
+      first = 1;
+    else if (RvAsmStrEqI(mn, "blt"))
+      first = 4;
+    else if (RvAsmStrEqI(mn, "bge"))
+      first = 5;
+    else if (RvAsmStrEqI(mn, "bltu"))
+      first = 6;
+    else
+      first = 7;
+    rs1 = RvAsmRegTok(cc);
+    if (cc->token != ',') {
+      Free(mn);
+      LexExcept(cc, "Expecting ',' at ");
+    }
+    Lex(cc);
+    if (RvAsmStrEqI(mn, "beqz") || RvAsmStrEqI(mn, "bnez")) {
+      rs2 = 0;
+    } else {
+      rs2 = RvAsmRegTok(cc);
+      if (cc->token != ',') {
+        Free(mn);
+        LexExcept(cc, "Expecting ',' at ");
+      }
+      Lex(cc);
+    }
+    if (!RvAsmImmTok(cc, &imm)) {
+      Free(mn);
+      LexExcept(cc, "Expecting branch offset at ");
+    }
+    if (rs1 < 0 || rs2 < 0) {
+      Free(mn);
+      LexExcept(cc, "Bad register at ");
+    }
+    if (!RvAsmFitsBimm(imm)) {
+      Free(mn);
+      LexExcept(cc, "branch offset out of range (need even, -4096..4094; PC-relative) at ");
+    }
+    Free(mn);
+    AOTStoreCodeU32(cc, RvAsmB(first, rs1, rs2, imm));
+    return TRUE;
+  }
+  // jal (J-type PC-relative offset), jr (jalr x0,rs,0). We deliberately do NOT
+  // define a numeric-offset `j`: the host asm{} parser defines `j label` as
+  // label-only, so a guest `j 8` would give the same mnemonic two meanings.
+  // Use `jal x0,off` for an unconditional numeric-offset jump.
+  if (RvAsmStrEqI(mn, "jal")) {
+    if (cc->token == TK_I64 || cc->token == '-') {
+      rd = 1; // `jal offset` implies rd=ra
+      RvAsmImmTok(cc, &imm);
+    } else {
+      rd = RvAsmRegTok(cc);
+      if (cc->token != ',') {
+        Free(mn);
+        LexExcept(cc, "Expecting ',' at ");
+      }
+      Lex(cc);
+      if (!RvAsmImmTok(cc, &imm)) {
+        Free(mn);
+        LexExcept(cc, "Expecting jump offset at ");
+      }
+    }
+    if (rd < 0) {
+      Free(mn);
+      LexExcept(cc, "Bad register at ");
+    }
+    if (!RvAsmFitsJimm(imm)) {
+      Free(mn);
+      LexExcept(cc, "jump offset out of range (need even, -1MiB..+1MiB-2; PC-relative) at ");
+    }
+    Free(mn);
+    AOTStoreCodeU32(cc, RvAsmJ(rd, imm));
+    return TRUE;
+  }
+  if (RvAsmStrEqI(mn, "jr")) {
+    rs1 = RvAsmRegTok(cc);
+    if (rs1 < 0) {
+      Free(mn);
+      LexExcept(cc, "Bad register at ");
+    }
+    Free(mn);
+    AOTStoreCodeU32(cc, RvAsmJalr(0, rs1, 0));
     return TRUE;
   }
   if (RvAsmStrEqI(mn, "jalr")) {

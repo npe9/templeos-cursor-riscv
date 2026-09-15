@@ -23,12 +23,20 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
 ## Headline findings
 
 - The platform target is declared **`rv64imafdc` / `lp64d`** (`Kernel/RVAutoConf.HH:6-7`),
-  and the disassembler decodes nearly all of it, but the `asm{}` assembler implements
-  only **I(partial) + M + A + Zicsr**. It has **no floating point, no compressed, and
-  no branches, `jal`, `j`, `jr` or `call`** — an `asm{}` block cannot contain a loop
-  or a conditional.
-- **Assembler accepts 99 encoder-reachable mnemonics** (dotted and undotted amo/lr/sc
-  aliases counted separately). It recognizes an additional 12 "stem" tokens
+  and the disassembler decodes nearly all of it, but the guest `asm{}` assembler
+  (`Compiler/Asm_RV.HC`, used by the REPL / `make tos`) implements only **I(partial) +
+  M + A + Zicsr + B-type branches + `jal`/`jr`**. It has **no floating point and no
+  compressed**. Guest branches/jumps take a **numeric PC-relative byte offset**
+  (`beq a0,a1,8`, `jal x0,-8`), *not* a label — the host `asm{}` parser
+  (`host/parser.c`, used to build the images and by `--asm-dump`) uses **label**
+  operands (`beq a0,a1,L`) and rejects numeric ones. That form split is a deliberate
+  host/guest divergence: the guest's single-pass emit path has no place to buffer a
+  block for label indexing, and the x86 forward-reference fixup machinery
+  (`asm_undef_hash`) cannot express B/J-type's *split* immediate fields. The guest
+  still has no `j` (host reserves that spelling for the label form) and no `call`.
+- **Assembler accepts 109 encoder-reachable mnemonics** (dotted and undotted amo/lr/sc
+  aliases counted separately; includes the 10 new guest branch/jump forms `beq bne blt
+  bge bltu bgeu beqz bnez jal jr`). It recognizes an additional 12 "stem" tokens
   (`lr sc amoswap amoadd amoxor amoand amoor amomin amomax amominu amomaxu`) plus
   `subi` that pass the `RvAsmIsMn` gate but then hit `LexExcept("Unsupported…")` at
   encode time — accepted by the gate, rejected by the encoder.
@@ -36,9 +44,11 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
   distinct D-extension instructions** (`Compiler/BackF_RV.HC:59-227`) that `asm{}`
   cannot express at all — yet the doc catalog advertises float mnemonics as if they
   were assemblable.
-- **The doc catalog (137 entries) documents 38 mnemonics the assembler rejects**
-  (all six B-type branches, `beqz/bnez/j/jr/call/seqz/snez/csrc/rdtime/sfencevma`,
-  byte/half loads+stores, and every float form). This is the largest single drift.
+- **The doc catalog (137 entries) documents 29 mnemonics the guest assembler rejects**
+  (`j/call/seqz/snez/csrc/rdtime/sfencevma`, byte/half loads+stores, and every float
+  form). The **14 float forms are now the largest single category.** (Previously 38 —
+  the six B-type branches, `beqz/bnez`, and `jr` became assemblable when guest
+  numeric-offset branches were added; `jal` too.)
 - **Assembler↔disassembler asymmetry:** the assembler is the *only* place the **A
   extension** is uniquely supported for hand-writing, yet the disassembler does **not**
   decode atomics (opcode `0x2F` is absent) — so `U`/`Uf` cannot round-trip the atomics
@@ -46,10 +56,9 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
 - **Latent bug:** `RvAsmMergeDotSuffix` appends `.d`/`.w` into a buffer allocated by
   `StrNew` at exactly `StrLen+1` bytes (`bootstrap/seed/str.hc:132`), a small
   out-of-bounds heap write (see [Gaps & drift](#gaps--drift)).
-- The five new REPL exploration commands (`AsmList AsmDoc MemMap Mstatus Mcause`) live
-  in **`Kernel/RVExplore.HC`, which is untracked** (`?? Kernel/RVExplore.HC`), wired by
-  a **modified `Compiler/RVExePubs.HC`** — uncommitted work-in-progress not present on a
-  clean checkout.
+- The REPL exploration commands (`AsmList AsmDoc MemMap Mstatus Mcause Csr Uptime`) live
+  in **`Kernel/RVExplore.HC`**, wired by `Compiler/RVExePubs.HC` — committed on `archive`
+  (`51f19cf`, `409155d`, `abe75ab`).
 
 ---
 
@@ -57,7 +66,7 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
 
 | Extension | `asm{}` assembles | Codegen emits ("compiles") | Disassembler decodes |
 |---|---|---|---|
-| **RV64 I** (base) | **partial** — no branches, no `jal`/`j`/`jr`/`call`, no `lb/lh/lbu/lhu/lwu/sb/sh`, no full `fence` (only `fence.i`), no `sltiu` | yes | yes |
+| **RV64 I** (base) | **partial** — B-type branches + `jal`/`jr` (guest: numeric offset; host: label), no `j`/`call`, no `lb/lh/lbu/lhu/lwu/sb/sh`, no full `fence` (only `fence.i`), no `sltiu` | yes | yes |
 | **I 32-bit ops** (`addiw`/`slliw`/`srliw`) | no | no | yes (opcode `0x1B`) |
 | **I OP-32** (`addw`/`subw`/`mulw`…) | no | no | **no** (`0x3B` absent) |
 | **M** (`mul div divu rem remu`) | yes | yes | yes |
@@ -100,7 +109,9 @@ ABI names `zero ra sp gp tp t0-t6 s0-s11 a0-a7 fp`). CSR *names* via `RvAsmCsrNu
 | M ext (R) | `mul div rem divu remu` | funct7=1; **no `mulh*`, no `mulw/divw`** |
 | Load (I) | `ld lw` | **only** doubleword/word; no `lb/lh/lbu/lhu/lwu` |
 | Store (S) | `sd sw` | **only** doubleword/word; no `sb/sh` |
-| Jump (I) | `jalr` | short form `jalr rs` → `jalr ra,0(rs)`; **no `jal`** |
+| Jump (I) | `jalr` | short form `jalr rs` → `jalr ra,0(rs)` |
+| Jump (J) | `jal jr` | guest only, **numeric** offset: `jal rd,off` / `jal off`(→ra) / `jr rs`(→`jalr x0`); **no `j`**, **no `call`** |
+| Branch (B) | `beq bne blt bge bltu bgeu beqz bnez` | guest only, **numeric** PC-relative even byte offset (`beq a0,a1,8`); host wants a label |
 | Zicsr | `csrr csrw csrs csrrw csrrs csrrc csrrwi csrrsi csrrci csrwi csrsi csrci` | **no `csrc`** |
 | A: LR/SC | `lr.d lr.w lrd lrw sc.d sc.w scd scw` | dotted + no-dot aliases |
 | A: AMO `.d` | `amoswap.d amoadd.d amoxor.d amoand.d amoor.d amomin.d amomax.d amominu.d amomaxu.d` (+ no-dot `amoswapd`…`amomaxud`) | funct5 per op |
@@ -128,7 +139,7 @@ fall through to `LexExcept("Unsupported RISC-V asm mnemonic")` (`Asm_RV.HC:966`)
 `subi` unconditionally raises `LexExcept` with a "use addi rd,rs1,-imm" hint
 (`Asm_RV.HC:428`). These are **not** accepted mnemonics.
 
-**Assembler total: 99 encoder-reachable mnemonics** (+12 gate-only stems + `subi`).
+**Assembler total: 109 encoder-reachable mnemonics** (+12 gate-only stems + `subi`).
 
 ---
 
@@ -339,8 +350,8 @@ The same mnemonic knowledge lives in three shapes:
 | Comparison | Agree | Disagree |
 |---|---|---|
 | doc catalog `asm_doc.hc` ↔ `rv_asm_doc_raw` | **identical** (137 ≡ 137) | none |
-| assembler ↔ doc catalog | 99 accepted ⊂ 137 documented | **38 documented mnemonics are not assemblable** (below) |
-| assembler ↔ disassembler | I/M base overlap | asm has **A** (disasm can't decode `0x2F`); disasm has **branches, `jal`, narrow loads/stores, F/D, RVC, OP-IMM-32** the asm lacks |
+| assembler ↔ doc catalog | 109 accepted ⊂ 137 documented | **29 documented mnemonics are not assemblable** (below) |
+| assembler ↔ disassembler | I/M base + **branches/`jal`** overlap | asm has **A** (disasm can't decode `0x2F`); disasm has **narrow loads/stores, F/D, RVC, OP-IMM-32** the asm lacks |
 | disassembler ↔ doc catalog | branches, F/D forms overlap | disasm adds RVC + OP-IMM-32; doc adds A + Zicsr detail the disasm can't decode |
 
 The doc catalog is the **broadest advertisement and the least accurate** relative to
@@ -368,21 +379,21 @@ debug-relevant ones:
   FilesFind Tasks Man Help` and DolDoc helpers (`Doc*`, `MStrPrint`, `ScanFlags`, date
   helpers).
 
-> **Provenance caveat:** `AsmList/AsmDoc/MemMap/Mstatus/Mcause` and their file
-> `Kernel/RVExplore.HC` are **uncommitted** (`?? Kernel/RVExplore.HC`; `RVExePubs.HC`
-> and `Kernel_RV.PRJ` modified). A clean checkout of `archive` will not have them.
+> **Provenance:** `AsmList/AsmDoc/MemMap/Mstatus/Mcause/Csr/Uptime` and their file
+> `Kernel/RVExplore.HC` are committed on `archive` (`51f19cf`, `409155d`, `abe75ab`),
+> wired via `Compiler/RVExePubs.HC` + `Kernel/Kernel_RV.PRJ`.
 
 ---
 
 ## Gaps & drift
 
-### A. Documented but NOT assemblable (38 mnemonics — largest drift)
+### A. Documented but NOT assemblable (29 mnemonics)
 
-`AsmList()`/`AsmDoc()` advertise these; `asm{}` raises "Unsupported mnemonic":
+`AsmList()`/`AsmDoc()` advertise these; the guest `asm{}` raises "Unsupported mnemonic":
 
-- **Branches (B-type):** `beq bne blt bge bltu bgeu` — plus pseudo `beqz bnez`.
-  *There is no control flow in `asm{}` at all.*
-- **Jump pseudo-ops:** `j jr call`.
+- **Jump pseudo-ops:** `j call`. (`jr` and `jal` **are** now assemblable in the guest;
+  `j` is deliberately left out because the host defines it as the label-only form —
+  use `jal x0,off`.)
 - **Set-if-zero pseudo:** `seqz snez`.
 - **Zicsr:** `csrc`.
 - **Narrow load/store:** `lb lbu lh lhu lwu sb sh`.
@@ -402,8 +413,9 @@ say "needs `.d`/`.w`") or the explicit `subi` hint. Usability bug, not doc drift
 - The assembler is the **only** hand-writing path for the **A extension**, but the
   disassembler does **not** decode opcode `0x2F` — atomics you assemble disassemble as
   `.word`. `U`/`Uf` cannot round-trip them.
-- The disassembler decodes **branches, `jal`, narrow loads/stores, F/D, RVC, OP-IMM-32**
-  that the assembler cannot produce.
+- The disassembler decodes **narrow loads/stores, F/D, RVC, OP-IMM-32** that the
+  assembler cannot produce. (Branches and `jal` now round-trip: the guest assembles them
+  numeric, the disassembler decodes them.)
 
 ### D. Latent bug — dotted-suffix heap overflow
 

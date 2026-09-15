@@ -38,4 +38,6 @@
 {"name":"reject_lui_full_addr","insns":["lui a0, 0x81397000"],"mode":"both_reject","why":"full-address lui rejected by HolyC and GNU gas"}
 {"name":"reject_jal_bare","insns":["jal L"],"mode":"holyc_reject","why":"bare jal unsupported; gas accepts undefined label as offset 0"}
 {"name":"reject_la","insns":["la a0, L"],"mode":"holyc_reject","why":"la/%hi/%lo not supported"}
+{"name":"reject_beq_numeric","insns":["beq a0, a1, 8"],"mode":"holyc_reject","gas":"beq a0,a1,.+8","why":"host asm{} branches are label-only (beq rs,rs,label); numeric byte offset rejected. Guest Asm_RV.HC accepts numeric offsets — a deliberate host/guest form divergence (see RISCV_INVENTORY.md)."}
+{"name":"reject_jal_numeric","insns":["jal ra, 8"],"mode":"holyc_reject","gas":"jal ra,.+8","why":"host asm{} has no numeric-offset jal (label/call form only); guest Asm_RV.HC accepts jal rd,imm / jal imm."}
 {"name":"wide_li_2048","insns":["li a0, 2048"],"mode":"match"}
