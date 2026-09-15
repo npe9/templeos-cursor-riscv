@@ -7,9 +7,9 @@ distinction the rest of the document is organized around:
 > The HolyC compiler backend (`Compiler/*_RV.HC`) lowers HolyC to RISC-V machine
 > code and can emit instructions from **I + M + A + F/D**. The inline `asm{}`
 > assembler (`Compiler/Asm_RV.HC`) is a *separate, much smaller* hand-written
-> parser that accepts **I + M + A + Zicsr + B-type branches + `jal`/`jr`** (guest;
-> branches take a numeric PC-relative offset, not a label) — but **no floating
-> point and no compressed**.
+> parser that accepts **I + M + A + Zicsr + B-type branches + `jal`/`jr` + RV64D
+> float** (guest; branches take a numeric PC-relative offset, not a label) — but
+> **no compressed**.
 
 The same instruction knowledge is duplicated across **three** places that do not
 agree: the assembler (a parser), the disassembler (`Kernel/RVDisasm.HC`, a
@@ -25,9 +25,9 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
 
 - The platform target is declared **`rv64imafdc` / `lp64d`** (`Kernel/RVAutoConf.HH:6-7`),
   and the disassembler decodes nearly all of it, but the guest `asm{}` assembler
-  (`Compiler/Asm_RV.HC`, used by the REPL / `make tos`) implements only **I(partial) +
-  M + A + Zicsr + B-type branches + `jal`/`jr`**. It has **no floating point and no
-  compressed**. Guest branches/jumps take a **numeric PC-relative byte offset**
+  (`Compiler/Asm_RV.HC`, used by the REPL / `make tos`) implements **I + M + A + Zicsr +
+  B-type branches + `jal`/`jr` + RV64D float**. It has **no compressed**. Guest
+  branches/jumps take a **numeric PC-relative byte offset**
   (`beq a0,a1,8`, `jal x0,-8`), *not* a label — the host `asm{}` parser
   (`host/parser.c`, used to build the images and by `--asm-dump`) uses **label**
   operands (`beq a0,a1,L`) and rejects numeric ones. That form split is a deliberate
@@ -35,21 +35,23 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
   block for label indexing, and the x86 forward-reference fixup machinery
   (`asm_undef_hash`) cannot express B/J-type's *split* immediate fields. The guest
   still has no `j` (host reserves that spelling for the label form) and no `call`.
-- **Assembler accepts 116 encoder-reachable mnemonics** (dotted and undotted amo/lr/sc
+- **Assembler accepts 130 encoder-reachable mnemonics** (dotted and undotted amo/lr/sc
   aliases counted separately; includes the 10 new guest branch/jump forms `beq bne blt
-  bge bltu bgeu beqz bnez jal jr` and the 7 narrow loads/stores `lb lh lbu lhu lwu sb
-  sh`). It recognizes an additional 12 "stem" tokens
+  bge bltu bgeu beqz bnez jal jr`, the 7 narrow loads/stores `lb lh lbu lhu lwu sb sh`,
+  and the 14 RV64D float forms `faddd fsubd fmuld fdivd fsqrtd fled fltd feqd fmvdx fmvxd
+  fcvtld_rtz fcvtld_rdn fcvtld_rmm fcvtdl`). It recognizes an additional 12 "stem" tokens
   (`lr sc amoswap amoadd amoxor amoand amoor amomin amomax amominu amomaxu`) plus
   `subi` that pass the `RvAsmIsMn` gate but then hit `LexExcept("Unsupported…")` at
   encode time — accepted by the gate, rejected by the encoder.
-- **Sharpest "compiles ≠ assembles" instance:** the compiler backend emits **29
-  distinct D-extension instructions** (`Compiler/BackF_RV.HC:59-227`) that `asm{}`
-  cannot express at all — yet the doc catalog advertises float mnemonics as if they
-  were assemblable.
-- **The doc catalog (137 entries) documents 22 mnemonics the guest assembler rejects**
-  (`j/call/seqz/snez/csrc/rdtime/sfencevma` and every float form). The **14 float forms
-  are now the largest single category.** (Previously 38 — the six B-type branches,
-  `beqz/bnez`, `jr`, `jal`, and the 7 narrow loads/stores all became assemblable.)
+- **Float now assembles** (dot-free names matching the catalog + host): the 14 RV64D
+  forms `faddd/fsubd/fmuld/fdivd/fsqrtd`, compares `fled/fltd/feqd` (→GPR), moves
+  `fmvdx/fmvxd`, and converts `fcvtld_{rtz,rdn,rmm}/fcvtdl`. The compiler backend still
+  emits some D-ext the `asm{}` set doesn't cover (float loads/stores `fld/fsd`, `fsgnj`,
+  `fmin/fmax`, fused FMA, single-precision F) — but the core double ALU is hand-writable.
+- **The doc catalog (137 entries) documents only 8 mnemonics the guest assembler now
+  rejects** (`j/call/seqz/snez/csrc/rdtime/sfencevma` — down from 38 as branches, `jal`,
+  `jr`, narrow loads/stores, and all 14 float forms became assemblable). `lifp` is
+  host-only.
 - **A extension round-trips:** the assembler is the only hand-writing path for atomics,
   and the disassembler now decodes opcode `0x2F` (`lr/sc/amo*`, `.d`/`.w`) — so `U`/`Uf`
   round-trips the atomics you assemble (verified assemble→`Disasm` in the win REPL).
@@ -72,15 +74,15 @@ Read-only survey — no code was changed. Evidence is cited as `file:line`.
 | **I OP-32** (`addw`/`subw`/`mulw`…) | no | no | **no** (`0x3B` absent) |
 | **M** (`mul div divu rem remu`) | yes | yes | yes |
 | **A** (`lr/sc/amo*`, `.d` and `.w`) | **yes** | yes — `amo{or,and,xor}.d` (`BackB_RV.HC:142,145`) | **yes** (`0x2F` decoded, `RVDisasm.HC`) |
-| **F/D** (double float) | **no** | **yes** — 29 emitters (`BackF_RV.HC:59-227`) | yes (`0x53`, `0x07`/`0x27`) |
+| **F/D** (double float) | **partial** — 14 forms (arith/sqrt/cmp/mv/cvt); no `fld/fsd`, `fsgnj`, `fmin/fmax`, FMA, F32 | **yes** — 29 emitters (`BackF_RV.HC:59-227`) | yes (`0x53`, `0x07`/`0x27`) |
 | **C** (compressed) | no | no | yes (`op & 3 != 3`) |
 | **Zicsr** (`csr*`) | yes (12 forms + 28 named CSRs) | no (only via `asm{}`) | yes (`0x73`) |
 | **Fused FMA** (`fmadd.d`…) | no | no | **no** (`0x43/0x47/0x4B/0x4F` absent) |
 | **V** (vector) | no | no | no |
 
-Note the F/D row: the compiler uses hardware double instructions for arithmetic, but
-`asm{}` has no float forms and the disassembler *can* read them back — three different
-answers for one extension.
+Note the F/D row: the compiler uses hardware double instructions for arithmetic, `asm{}`
+now hand-writes the core double ALU (14 forms), and the disassembler reads all of it
+back — the three answers have converged for the common double ops.
 
 ---
 
@@ -117,6 +119,10 @@ ABI names `zero ra sp gp tp t0-t6 s0-s11 a0-a7 fp`). CSR *names* via `RvAsmCsrNu
 | A: LR/SC | `lr.d lr.w lrd lrw sc.d sc.w scd scw` | dotted + no-dot aliases |
 | A: AMO `.d` | `amoswap.d amoadd.d amoxor.d amoand.d amoor.d amomin.d amomax.d amominu.d amomaxu.d` (+ no-dot `amoswapd`…`amomaxud`) | funct5 per op |
 | A: AMO `.w` | `amoswap.w amoadd.w amoxor.w amoand.w amoor.w amomin.w amomax.w amominu.w amomaxu.w` (+ no-dot `amoswapw`…`amomaxuw`) | |
+| D: arith | `faddd fsubd fmuld fdivd fsqrtd` (all FPR) | dot-free; rm=dyn (rne). `fsqrtd fd,fs` |
+| D: compare | `fled fltd feqd` (rd GPR, fs1/fs2 FPR) | result 0/1 in a GPR |
+| D: move | `fmvdx fd,rs` (int bits→FPR), `fmvxd rd,fs` (FPR bits→int) | raw bit moves, no convert |
+| D: convert | `fcvtdl fd,rs` (i64→f64), `fcvtld_{rtz,rdn,rmm} rd,fs` (f64→i64) | rounding baked into the name |
 
 ### 1b. Pseudo-ops (expanded by the assembler)
 
@@ -140,7 +146,7 @@ fall through to `LexExcept("Unsupported RISC-V asm mnemonic")` (`Asm_RV.HC:966`)
 `subi` unconditionally raises `LexExcept` with a "use addi rd,rs1,-imm" hint
 (`Asm_RV.HC:428`). These are **not** accepted mnemonics.
 
-**Assembler total: 116 encoder-reachable mnemonics** (+12 gate-only stems + `subi`).
+**Assembler total: 130 encoder-reachable mnemonics** (+12 gate-only stems + `subi`).
 
 ---
 
@@ -247,8 +253,9 @@ See the [glance table](#extension-coverage-at-a-glance-the-three-way-answer). Su
 - **M** — fully supported in all three (assembler, codegen, disasm).
 - **A** — assembled and emitted (codegen `amo*.d` for locked bit ops); **not decoded**
   by the disassembler.
-- **F/D** — emitted by codegen (hardware double) and decoded by disasm; **not
-  assemblable**. Transcendentals are soft.
+- **F/D** — emitted by codegen (hardware double), decoded by disasm, and the core
+  double ALU (14 forms: arith/sqrt/cmp/mv/cvt) is now hand-assemblable in `asm{}`;
+  `fld/fsd`, `fsgnj`, `fmin/fmax`, FMA, and F32 are not. Transcendentals are soft.
 - **C (compressed)** — decoded by the disassembler only; never assembled or emitted.
 - **Zicsr** — assembler + disassembler; codegen only reaches CSRs through `asm{}`.
 - **Not supported anywhere:** vector (V), fused multiply-add (FMA), OP-32 word ALU ops
@@ -353,8 +360,8 @@ The same mnemonic knowledge lives in three shapes:
 | Comparison | Agree | Disagree |
 |---|---|---|
 | doc catalog `asm_doc.hc` ↔ `rv_asm_doc_raw` | **identical** (137 ≡ 137) | none |
-| assembler ↔ doc catalog | 116 accepted ⊂ 137 documented | **22 documented mnemonics are not assemblable** (below) |
-| assembler ↔ disassembler | I/M base + **branches/`jal`** + **A** overlap (`0x2F` now decoded) | disasm has **narrow loads/stores, F/D, RVC, OP-IMM-32** the asm lacks; asm has no A gap now |
+| assembler ↔ doc catalog | 130 accepted ⊂ 137 documented | **8 documented mnemonics are not assemblable** (below) |
+| assembler ↔ disassembler | I/M base + **branches/`jal`** + **A** + **narrow ld/st** + **core D** overlap | disasm still uniquely has **RVC, OP-IMM-32**, and the F/D forms asm lacks (`fld/fsd`, `fsgnj`, `fmin/fmax`, FMA, F32) |
 | disassembler ↔ doc catalog | branches, F/D forms overlap | disasm adds RVC + OP-IMM-32; doc adds A + Zicsr detail the disasm can't decode |
 
 The doc catalog is the **broadest advertisement and the least accurate** relative to
@@ -390,7 +397,7 @@ debug-relevant ones:
 
 ## Gaps & drift
 
-### A. Documented but NOT assemblable (22 mnemonics)
+### A. Documented but NOT assemblable (8 mnemonics)
 
 `AsmList()`/`AsmDoc()` advertise these; the guest `asm{}` raises "Unsupported mnemonic":
 
@@ -400,8 +407,9 @@ debug-relevant ones:
 - **Set-if-zero pseudo:** `seqz snez`.
 - **Zicsr:** `csrc`.
 - **Misc pseudo/priv:** `rdtime sfencevma` (`sfence.vma`), `lifp` (host-only label form).
-- **All floating point:** `faddd fsubd fmuld fdivd fsqrtd feqd fled fltd fmvdx fmvxd
-  fcvtdl fcvtld_rtz fcvtld_rdn fcvtld_rmm`.
+
+(The 14 float forms `faddd`…`fcvtld_*` moved OUT of this list — they now assemble in the
+guest, with the same dot-free names the catalog documents.)
 
 ### B. Assembler gate accepts, encoder rejects (12 + 1)
 

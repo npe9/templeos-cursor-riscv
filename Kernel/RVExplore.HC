@@ -189,9 +189,9 @@ public U0 AsmList()
   }
   Print("(%d documented. AsmDoc(\"name\") for detail.)\n", n);
   Print("Note: this is the doc catalog. What the asm{} assembler ACCEPTS is a subset\n");
-  Print("  (I+M+A+Zicsr + B-type branches + jal/jr; no float, no j/call) - test: asm{ <ins> };\n");
+  Print("  (I+M+A+Zicsr + B-type branches + jal/jr + RV64D float; no j/call) - test: asm{ <ins> };\n");
   Print("  Branches/jumps take a NUMERIC even PC-relative byte offset (beq a0,a1,8), not\n");
-  Print("  a label. The HolyC compiler EMITS more than asm{} accepts (F/D). See RISCV_INVENTORY.md\n");
+  Print("  a label. Float names are dot-free (faddd/fsqrtd/fmvdx...). See RISCV_INVENTORY.md\n");
 }
 
 public U0 MemMap()
