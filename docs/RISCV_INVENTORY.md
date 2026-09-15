@@ -17,7 +17,9 @@ formatter), and the documentation catalog (`bootstrap/seed/asm_doc.hc` +
 `Kernel/RVExplore.HC`). The drift between them is catalogued in
 [§7](#7-three-way-duplication--drift) and [Gaps & drift](#gaps--drift).
 
-Read-only survey — no code was changed. Evidence is cited as `file:line`.
+Originally a read-only survey; since updated alongside the 2026-09-15 assembler work
+(guest branches/jumps, narrow ld/st, RV64D float, base pseudos; A-ext disasm decode;
+the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
 
 ---
 
