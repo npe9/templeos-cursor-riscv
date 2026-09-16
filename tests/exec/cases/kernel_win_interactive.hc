@@ -368,7 +368,9 @@ I64 main()
     // Zero every slot first: RVExePubsWireAddrs gates on `if (addrs[N])`, so any slot
     // left unassigned would otherwise plant a stack-garbage address as a callable func
     // (fails only when someone calls that name, not at build/wire time). MemSet, not a
-    // pubs[pi]=0 loop — an indexed store into this large local array miscompiled.
+    // pubs[pi]=0 loop — an indexed store into this large local array once miscompiled.
+    // That codegen bug is FIXED (verified 2026-09-16: reverting to the loop builds+runs
+    // green); MemSet stays as the clean, single-call way to zero the array.
     MemSet(pubs, 0, sizeof(pubs));
     pubs[36] = &FileRead;     // U8 *FileRead(U8 *name, I64 *size=NULL, I64 *attr=NULL)
     pubs[37] = &FileWrite;    // I64 FileWrite(U8 *name, U8 *buf, I64 size, CDate=0, I64 attr=0)
