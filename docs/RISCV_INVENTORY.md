@@ -7,9 +7,10 @@ distinction the rest of the document is organized around:
 > The HolyC compiler backend (`Compiler/*_RV.HC`) lowers HolyC to RISC-V machine
 > code and can emit instructions from **I + M + A + F/D**. The inline `asm{}`
 > assembler (`Compiler/Asm_RV.HC`) is a *separate, much smaller* hand-written
-> parser that accepts **I + M + A + Zicsr + B-type branches + `jal`/`jr` + RV64D
-> float** (guest; branches/jumps take a numeric PC-relative offset *or* a label,
-> either direction) — but **no compressed**.
+> parser that now accepts the **entire non-compressed rv64imafdc ISA** —
+> I + M + A + F + D + FMA + Zicsr + privileged, with branches/jumps taking a
+> numeric PC-relative offset *or* a label (either direction). The one deliberate
+> hole is the **compressed (RVC) assembler**: RVC is decode-only.
 
 The same instruction knowledge is duplicated across **three** places that do not
 agree: the assembler (a parser), the disassembler (`Kernel/RVDisasm.HC`, a
@@ -26,9 +27,9 @@ the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
 ## Headline findings
 
 - The platform target is declared **`rv64imafdc` / `lp64d`** (`Kernel/RVAutoConf.HH:6-7`),
-  and the disassembler decodes nearly all of it, but the guest `asm{}` assembler
-  (`Compiler/Asm_RV.HC`, used by the REPL / `make tos`) implements **I + M + A + Zicsr +
-  B-type branches + `jal`/`jr` + RV64D float**. It has **no compressed**. Guest
+  and both the disassembler and the guest `asm{}` assembler (`Compiler/Asm_RV.HC`, used
+  by the REPL / `make tos`) now cover **all of it except compressed** — I + M + A + F +
+  D + FMA + Zicsr + privileged. It has **no compressed assembler** (RVC is decode-only). Guest
   branches/jumps take **either** a numeric even PC-relative byte offset (`beq a0,a1,8`)
   **or a label** in either direction (`loop: … bnez t0,loop`; `beq a0,a1,skip … skip:`).
   Backward labels resolve inline (`label_rip - aotc->rip`); forward labels emit a
@@ -39,25 +40,27 @@ the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
   label-only and rejects numeric offsets; the guest accepting both is the remaining
   divergence. The guest still has no `j` (host reserves that spelling; use `jal x0,label`)
   and no `call`.
-- **Assembler accepts 136 encoder-reachable mnemonics** (dotted and undotted amo/lr/sc
-  aliases counted separately; includes the 10 new guest branch/jump forms `beq bne blt
-  bge bltu bgeu beqz bnez jal jr`, the 7 narrow loads/stores `lb lh lbu lhu lwu sb sh`,
-  the 14 RV64D float forms `faddd fsubd fmuld fdivd fsqrtd fled fltd feqd fmvdx fmvxd
-  fcvtld_rtz fcvtld_rdn fcvtld_rmm fcvtdl` plus float loads/stores `fld fsd`, and the
-  `seqz snez csrc rdtime` pseudos). It recognizes an additional 12 "stem" tokens
-  (`lr sc amoswap amoadd amoxor amoand amoor amomin amomax amominu amomaxu`) plus
-  `subi` that pass the `RvAsmIsMn` gate but then hit `LexExcept("Unsupported…")` at
-  encode time — accepted by the gate, rejected by the encoder.
-- **Float now assembles** (dot-free names matching the catalog + host): the 14 RV64D
-  forms `faddd/fsubd/fmuld/fdivd/fsqrtd`, compares `fled/fltd/feqd` (→GPR), moves
-  `fmvdx/fmvxd`, converts `fcvtld_{rtz,rdn,rmm}/fcvtdl`, and now `fld`/`fsd` (float
-  spill/reload). The compiler backend still emits some D-ext the `asm{}` set doesn't
-  cover (`fsgnj`, `fmin/fmax`, fused FMA, single-precision F) — but the double ALU
-  *and* double memory access are hand-writable.
-- **The doc catalog (137 entries) documents only 4 mnemonics the guest assembler now
-  rejects** (`j`, `call`, `sfencevma`, and host-only `lifp`) — down from 38, as
-  branches, `jal`, `jr`, narrow loads/stores, all 14 float forms, and the `seqz/snez/
-  csrc/rdtime` pseudos became assemblable.
+- **The assembler now covers the entire non-compressed rv64imafdc ISA.** Added since
+  the 136-mnemonic survey, in five gated increments (commits `2c36f2f f8aac34 194eeb8
+  d733cc3 a12253a` + F32 part 2): OP-32/word ops (`addiw slliw srliw sraiw addw subw
+  sllw srlw sraw mulw divw divuw remw remuw`); base-I/M leftovers (`sltiu`, `mulh
+  mulhsu mulhu`, full `fence pred,succ`, `sfence.vma`); D-ext completeness (`fsgnj.d`
+  family, `fmin/fmax.d`, `fclass.d`, the full `fcvt` matrix incl. F32↔F64); FMA
+  (`fmadd/fmsub/fnmsub/fnmadd`, `.d` and `.s`, the first R4-type); and the whole F
+  single-precision extension (`flw/fsw`, arith, sign, min/max, compares, `fclass.s`,
+  `fmv.x.w/fmv.w.x`, full single `fcvt` matrix). Every encoding is GNU byte-verified
+  via `make asm-gnu-diff` (209 match cases) and functionally exercised in the guest
+  REPL with a Disasm round-trip.
+- **Naming:** new float ops use the real dotted RISC-V spellings (`fadd.d`, `fcvt.w.s`,
+  `fmadd.s`); the 14 legacy dot-free names (`faddd fsubd fmuld fdivd fsqrtd fled fltd
+  feqd fmvdx fmvxd fcvtld_{rtz,rdn,rmm} fcvtdl`) stay accepted. Two-dot mnemonics
+  (`fcvt.<int>.<fmt>`) fold both suffixes via a looped dot-merge in each assembler.
+- **The `AsmDoc`/`AsmList` catalog is 209 entries** (was 137), documenting every
+  assemblable mnemonic with template + semantics. Remaining catalog entries the guest
+  does not assemble: `j`, `call` (host label/linkage forms), and host-only `lifp`.
+- **Deliberate non-goal:** the RVC *assembler*. The disassembler decodes compressed
+  (you read it in real binaries); hand-writing compressed — register subsets, per-form
+  immediate scaling — is not a learning-surface win and is intentionally omitted.
 - **A extension round-trips:** the assembler is the only hand-writing path for atomics,
   and the disassembler now decodes opcode `0x2F` (`lr/sc/amo*`, `.d`/`.w`) — so `U`/`Uf`
   round-trips the atomics you assemble (verified assemble→`Disasm` in the win REPL).
@@ -75,20 +78,24 @@ the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
 
 | Extension | `asm{}` assembles | Codegen emits ("compiles") | Disassembler decodes |
 |---|---|---|---|
-| **RV64 I** (base) | **partial** — B-type branches + `jal`/`jr` (guest: numeric offset *or* label; host: label-only), narrow loads/stores `lb/lh/lbu/lhu/lwu/sb/sh`, no `j`/`call`, no full `fence` (only `fence.i`), no `sltiu` | yes | yes |
-| **I 32-bit ops** (`addiw`/`slliw`/`srliw`) | no | no | yes (opcode `0x1B`) |
-| **I OP-32** (`addw`/`subw`/`mulw`…) | no | no | **no** (`0x3B` absent) |
-| **M** (`mul div divu rem remu`) | yes | yes | yes |
+| **RV64 I** (base) | **yes** — full OP/OP-IMM incl. `sltiu`, B-type branches + `jal`/`jr` (guest: numeric offset *or* label; host: label-only), all loads/stores `lb/lh/lbu/lhu/lwu/sb/sh`, full `fence pred,succ` + `fence.i`; still no `j`/`call` in guest | yes | yes |
+| **I OP-32 / word** (`addiw slliw srliw sraiw addw subw sllw srlw sraw`) | **yes** (`0x1B`/`0x3B`) | partial | **yes** (`0x1B` and `0x3B`) |
+| **M** (`mul mulh mulhsu mulhu div divu rem remu` + `mulw divw divuw remw remuw`) | **yes** | yes | **yes** (incl. mul-high + word) |
 | **A** (`lr/sc/amo*`, `.d` and `.w`) | **yes** | yes — `amo{or,and,xor}.d` (`BackB_RV.HC:142,145`) | **yes** (`0x2F` decoded, `RVDisasm.HC`) |
-| **F/D** (double float) | **partial** — 14 ALU forms + `fld`/`fsd`; no `fsgnj`, `fmin/fmax`, FMA, F32 | **yes** — 29 emitters (`BackF_RV.HC:59-227`) | yes (`0x53`, `0x07`/`0x27`) |
-| **C** (compressed) | no | no | yes (`op & 3 != 3`) |
+| **F** (single float) | **yes** — `flw/fsw`, arith/`fsqrt.s`, sign, `fmin/fmax.s`, compares, `fclass.s`, `fmv.x.w/fmv.w.x`, full `fcvt` matrix | via D path | **yes** (`0x53` .s f7 arms, `0x07`/`0x27` f3=2) |
+| **D** (double float) | **yes** — arith/sqrt/sign/`fmin/fmax`/compares/`fclass.d`/moves + full `fcvt` matrix (int↔double, F32↔F64) + `fld/fsd` | **yes** — 29 emitters (`BackF_RV.HC:59-227`) | yes (`0x53`, `0x07`/`0x27`) |
+| **Fused FMA** (`fmadd/fmsub/fnmsub/fnmadd`, `.d` and `.s`) | **yes** (R4-type, `0x43/0x47/0x4B/0x4F`) | no | **yes** |
+| **Privileged** (`sfence.vma`, `mret/sret/wfi/…`) | **yes** (`sfence.vma [rs1[,rs2]]`) | n/a | **yes** |
 | **Zicsr** (`csr*`) | yes (12 forms + 28 named CSRs) | no (only via `asm{}`) | yes (`0x73`) |
-| **Fused FMA** (`fmadd.d`…) | no | no | **no** (`0x43/0x47/0x4B/0x4F` absent) |
+| **C** (compressed) | **no — deliberate non-goal** (register-subset + per-form immediate scaling; you read compressed code, you don't hand-write it) | no | **yes** (`op & 3 != 3`) |
 | **V** (vector) | no | no | no |
 
-Note the F/D row: the compiler uses hardware double instructions for arithmetic, `asm{}`
-now hand-writes the core double ALU (14 forms), and the disassembler reads all of it
-back — the three answers have converged for the common double ops.
+The whole non-compressed **rv64imafdc** ISA now assembles, disassembles, and is
+documented in the `AsmDoc`/`AsmList` catalog — the three answers have converged.
+New float ops use the real dotted RISC-V names (`fadd.d`, `fcvt.w.s`, `fmadd.s`, …);
+the 14 legacy dot-free names (`faddd`, `fcvtld_rtz`, `fcvtdl`, …) remain accepted for
+back-compat. Compressed (RVC) is decode-only by design; everything else in
+rv64imafdc is hand-writable in `asm{}`.
 
 ---
 
@@ -111,11 +118,11 @@ ABI names `zero ra sp gp tp t0-t6 s0-s11 a0-a7 fp`). CSR *names* via `RvAsmCsrNu
 | Group | Mnemonics | Notes |
 |---|---|---|
 | System (fixed word) | `ret nop wfi mret sret ecall ebreak` | `ret`=`jalr x0,ra,0`; `nop`=`addi x0,x0,0` |
-| Instruction fence | `fence.i` / `fencei` | alias pair; **no full `fence`** |
+| Fence | `fence pred,succ` (bare = iorw,iorw) + `fence.i`/`fencei` | i/o/r/w masks; host uses lookahead, guest the `;`/`}` boundary |
 | U-type | `lui auipc` | 20-bit field, gas-compatible |
-| OP-IMM (I) | `addi andi ori xori slti slli srli srai` | shifts take 6-bit shamt; **no `sltiu`, no `addiw`** |
-| OP (R) | `add sub and or xor sll srl sra slt sltu` | pure R-type; passing an immediate to `add`/`sub` raises a helpful `LexExcept` |
-| M ext (R) | `mul div rem divu remu` | funct7=1; **no `mulh*`, no `mulw/divw`** |
+| OP-IMM (I) | `addi addiw andi ori xori slti sltiu slli srli srai slliw srliw sraiw` | word-imm shifts take 5-bit shamt |
+| OP (R) | `add sub and or xor sll srl sra slt sltu` + word `addw subw sllw srlw sraw` | pure R-type; passing an immediate to `add`/`sub` raises a helpful `LexExcept` |
+| M ext (R) | `mul mulh mulhsu mulhu div rem divu remu` + word `mulw divw divuw remw remuw` | funct7=1 (OP `0x33`) / OP-32 (`0x3B`) |
 | Load (I) | `ld lw lwu lh lhu lb lbu` | f3 lb=0 lh=1 lw=2 ld=3 lbu=4 lhu=5 lwu=6 |
 | Store (S) | `sd sw sh sb` | f3 sb=0 sh=1 sw=2 sd=3 |
 | Jump (I) | `jalr` | short form `jalr rs` → `jalr ra,0(rs)` |
@@ -159,7 +166,9 @@ fall through to `LexExcept("Unsupported RISC-V asm mnemonic")` (`Asm_RV.HC:966`)
 `subi` unconditionally raises `LexExcept` with a "use addi rd,rs1,-imm" hint
 (`Asm_RV.HC:428`). These are **not** accepted mnemonics.
 
-**Assembler total: 136 encoder-reachable mnemonics** (+12 gate-only stems + `subi`).
+**Assembler total: the full non-compressed rv64imafdc mnemonic set** (~215
+encoder-reachable forms incl. dotted/dot-free float aliases; `AsmList()` is the live
+list). `subi` and unhandled gate stems raise `LexExcept("Unsupported…")` at encode time.
 
 ---
 
@@ -191,9 +200,15 @@ Decoded opcode families (`RVDisasm.HC`):
 - **Atomics — opcode `0x2F` (A extension):** `lr/sc/amo*` in `.d`/`.w` (`RVDisasm.HC`,
   funct5 lookup). Rounds-trips with what the assembler encodes.
 
-**Not decoded (rendered `.word` / `illegal`):**
-- **OP-32 `0x3B`** (`addw subw sllw srlw sraw mulw divw remw`) — absent.
-- **Fused multiply-add `0x43/0x47/0x4B/0x4F`** (`fmadd.d fmsub.d fnmadd.d fnmsub.d`) — absent.
+**Now decoded (previously `.word`):**
+- **OP-IMM-32 / OP-32 `0x1B`/`0x3B`** — word ops `addiw slliw srliw sraiw addw subw
+  sllw srlw sraw mulw divw divuw remw remuw` all decode (mul-high `0x33` f7=1 f3=1/2/3
+  fixed too).
+- **Fused multiply-add `0x43/0x47/0x4B/0x4F`** — `fmadd/fmsub/fnmsub/fnmadd` in `.d`
+  and `.s`, one combined R4 arm printing all four operands.
+- **F single-precision `0x53` .s f7 arms** + `flw/fsw` (`0x07`/`0x27` f3=2), and
+  `sfence.vma` (`0x73` f7=0x09), plain `fence` (`0x0F` f3=0). The whole non-compressed
+  rv64imafdc now round-trips assemble→Disasm.
 
 The disassembler emits both dotted (`fadd.d`) and no-dot (`faddd`) forms, several
 annotated `; (no asm{} form)` or `; (limited asm{} fcvt)` (e.g. `RVDisasm.HC` float
@@ -260,19 +275,21 @@ Handled as warnings/no-ops or remaps, not planted in the REPL hash (`STOCK_PARIT
 
 See the [glance table](#extension-coverage-at-a-glance-the-three-way-answer). Summary:
 
-- **RV64I** — base; the assembler now covers B-type branches, `jal`/`jr` (guest:
-  numeric offset), and narrow loads/stores, but still lacks `j`/`call`, `sltiu`, and
-  full `fence`. Codegen + disasm are complete for what the compiler needs.
-- **M** — fully supported in all three (assembler, codegen, disasm).
-- **A** — assembled and emitted (codegen `amo*.d` for locked bit ops); **not decoded**
-  by the disassembler.
-- **F/D** — emitted by codegen (hardware double), decoded by disasm, and the double
-  ALU (14 forms: arith/sqrt/cmp/mv/cvt) plus `fld`/`fsd` are now hand-assemblable in
-  `asm{}`; `fsgnj`, `fmin/fmax`, FMA, and F32 are not. Transcendentals are soft.
+- **RV64I** — base fully assembles (OP/OP-IMM incl. `sltiu`, word ops, branches,
+  `jal`/`jr`, all loads/stores, full `fence pred,succ`); guest still lacks `j`/`call`.
+  Codegen + disasm complete.
+- **M** — fully supported in all three, incl. mul-high (`mulh/mulhsu/mulhu`) and the
+  word ops (`mulw divw divuw remw remuw`).
+- **A** — assembled, emitted, and **decoded** (`0x2F` round-trips).
+- **F/D** — the full single- and double-precision extensions assemble: loads/stores,
+  arith/sqrt, sign-inject, `fmin/fmax`, compares, `fclass`, moves, the complete `fcvt`
+  matrix (int↔float both widths, F32↔F64), and fused FMA (`.d`/`.s`). Codegen uses
+  hardware double; disasm decodes all of it. Transcendentals are soft.
 - **C (compressed)** — decoded by the disassembler only; never assembled or emitted.
 - **Zicsr** — assembler + disassembler; codegen only reaches CSRs through `asm{}`.
-- **Not supported anywhere:** vector (V), fused multiply-add (FMA), OP-32 word ALU ops
-  in assembler/codegen, half-precision/quad float.
+- **Not supported anywhere:** vector (V), half-precision/quad float, and the RVC
+  *assembler* (compressed is decode-only by design). FMA and OP-32 word ops are now
+  fully assembled and decoded.
 
 Platform build declares `CONFIG_ISA_RV64IMAFDC` / `CONFIG_RISCV_ABI "lp64d"`
 (`RVAutoConf.HH:6-9`).
@@ -360,20 +377,22 @@ ramfb, fw_cfg, goldfish-rtc.
 
 The same mnemonic knowledge lives in three shapes:
 
-1. **Assembler** — `Compiler/Asm_RV.HC` (a *parser*/encoder). 99 accepted mnemonics.
-2. **Disassembler** — `Kernel/RVDisasm.HC` (a *formatter*/decoder). Richest set;
-   decodes I/M/A/F/D/C + branches but **not** OP-32/FMA.
-3. **Doc catalog** — `bootstrap/seed/asm_doc.hc` (`AsmDocRaw`) and the ported
-   `Kernel/RVExplore.HC` (`rv_asm_doc_raw`). 137 documented entries. These two catalog
-   strings are **byte-identical** to each other (the RVExplore header even says so,
-   `RVExplore.HC:4-8`), and are consumed by `AsmList()` / `AsmDoc()`.
+1. **Assembler** — `Compiler/Asm_RV.HC` (a *parser*/encoder). Covers all of
+   non-compressed rv64imafdc.
+2. **Disassembler** — `Kernel/RVDisasm.HC` (a *formatter*/decoder). Decodes
+   I/M/A/F/D/C + branches + OP-32 + FMA — the full non-vector set.
+3. **Doc catalog** — `Kernel/RVExplore.HC` (`rv_asm_doc_raw`), 209 entries, consumed by
+   `AsmList()` / `AsmDoc()`. The separate bootstrap seed `bootstrap/seed/asm_doc.hc`
+   (`AsmDocRaw`) is an **older, independently-maintained copy** (~138 entries) that has
+   drifted and is **not** kept in sync by the ISA-completion work — the live REPL uses
+   `rv_asm_doc_raw`.
 
 ### Where they agree / disagree
 
 | Comparison | Agree | Disagree |
 |---|---|---|
-| doc catalog `asm_doc.hc` ↔ `rv_asm_doc_raw` | **identical** (137 ≡ 137) | none |
-| assembler ↔ doc catalog | 136 accepted (2 beyond the catalog: fld/fsd) | **4 documented mnemonics are not assemblable** (below) |
+| doc catalog `asm_doc.hc` ↔ `rv_asm_doc_raw` | core overlap | **drifted** — asm_doc.hc is the stale seed (~138), rv_asm_doc_raw is live (209) |
+| assembler ↔ doc catalog `rv_asm_doc_raw` | full rv64imafdc both sides | catalog also lists `j`/`call`/`lifp` (below) |
 | assembler ↔ disassembler | I/M base + **branches/`jal`** + **A** + **narrow ld/st** + **D (ALU + `fld`/`fsd`)** overlap | disasm still uniquely has **RVC, OP-IMM-32**, and the F/D forms asm lacks (`fsgnj`, `fmin/fmax`, FMA, F32) |
 | disassembler ↔ doc catalog | branches, F/D forms overlap | disasm adds RVC + OP-IMM-32; doc adds A + Zicsr detail the disasm can't decode |
 
@@ -393,7 +412,7 @@ debug-relevant ones:
   Reg Regs PassTrace`.
 - **New RISC-V exploration — slots 41–45** (`RVExePubs.HC:928-948,1028-1032`, backed by
   `Kernel/RVExplore.HC`):
-  - `AsmList()` — lists the 137 documented `asm{}` mnemonics + templates.
+  - `AsmList()` — lists the 209 documented `asm{}` mnemonics + templates.
   - `AsmDoc("mn")` — structured doc for one mnemonic (template/encoding/imm/GNU/note).
   - `MemMap()` — prints the platform memory map (§6).
   - `Mstatus()` — reads + field-decodes `mstatus`.
@@ -410,14 +429,17 @@ debug-relevant ones:
 
 ## Gaps & drift
 
-### A. Documented but NOT assemblable (4 mnemonics)
+### A. Documented but NOT assemblable (3 mnemonics)
 
 `AsmList()`/`AsmDoc()` advertise these; the guest `asm{}` raises "Unsupported mnemonic":
 
 - **Jump pseudo-ops:** `j call`. (`jr`/`jal` are assemblable; `j` is deliberately left
-  out because the host defines it as the label-only form — use `jal x0,off`.)
-- **Priv:** `sfencevma` (`sfence.vma`).
+  out because the host defines it as the label-only form — use `jal x0,off`. `call`
+  needs function-symbol linkage, not just block labels.)
 - **Host-only:** `lifp` (label form).
+
+(`sfence.vma` is now assemblable — bare, one-, or two-operand — as of the base-I/M
+increment.)
 
 (Branches, `jal`/`jr`, narrow loads/stores, the 14 float forms `faddd`…`fcvtld_*`, and
 the `seqz/snez/csrc/rdtime` pseudos all moved OUT of this list — they now assemble in
