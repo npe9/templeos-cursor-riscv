@@ -97,3 +97,17 @@
 {"name":"fma_fmsub_s","insns":["fmsub.s fa0, fa1, fa2, fa3"],"mode":"match"}
 {"name":"fma_fnmsub_s","insns":["fnmsub.s fa0, fa1, fa2, fa3"],"mode":"match"}
 {"name":"fma_fnmadd_s","insns":["fnmadd.s fa0, fa1, fa2, fa3"],"mode":"match"}
+{"name":"f_flw","insns":["flw fa0, 8(a1)"],"mode":"match"}
+{"name":"f_fsw","insns":["fsw fa0, 8(a1)"],"mode":"match"}
+{"name":"f_fld","insns":["fld fa0, 16(a2)"],"mode":"match"}
+{"name":"f_fsd","insns":["fsd fa0, 16(a2)"],"mode":"match"}
+{"name":"f_fadd_s","insns":["fadd.s fa0, fa1, fa2"],"mode":"match"}
+{"name":"f_fsub_s","insns":["fsub.s fa0, fa1, fa2"],"mode":"match"}
+{"name":"f_fmul_s","insns":["fmul.s fa0, fa1, fa2"],"mode":"match"}
+{"name":"f_fdiv_s","insns":["fdiv.s fa0, fa1, fa2"],"mode":"match"}
+{"name":"f_fsqrt_s","insns":["fsqrt.s fa0, fa1"],"mode":"match"}
+{"name":"f_fsgnj_s","insns":["fsgnj.s fa0, fa1, fa2"],"mode":"match"}
+{"name":"f_fsgnjn_s","insns":["fsgnjn.s fa0, fa1, fa2"],"mode":"match"}
+{"name":"f_fsgnjx_s","insns":["fsgnjx.s fa0, fa1, fa2"],"mode":"match"}
+{"name":"f_fmin_s","insns":["fmin.s fa0, fa1, fa2"],"mode":"match"}
+{"name":"f_fmax_s","insns":["fmax.s fa0, fa1, fa2"],"mode":"match"}

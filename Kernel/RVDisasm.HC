@@ -638,20 +638,18 @@ U0 DisasmOne(I64 addr, I64 w)
       else
         Pm("system");
     }
-  } else if (op == 0x07 && f3 == 3) {
-    if (DisAsmMode) {
-      Print("; fld (no fld in asm{})\n");
-      goto disasm_one_track;
-    }
-    Print("fld %s, ", FRN[rd]);
+  } else if (op == 0x07 && (f3 == 2 || f3 == 3)) {
+    if (f3 == 3)
+      Print("fld %s, ", FRN[rd]);
+    else
+      Print("flw %s, ", FRN[rd]);
     DiImm(immI);
     Print("(%s)", RN[rs1]);
-  } else if (op == 0x27 && f3 == 3) {
-    if (DisAsmMode) {
-      Print("; fsd (no fsd in asm{})\n");
-      goto disasm_one_track;
-    }
-    Print("fsd %s, ", FRN[rs2]);
+  } else if (op == 0x27 && (f3 == 2 || f3 == 3)) {
+    if (f3 == 3)
+      Print("fsd %s, ", FRN[rs2]);
+    else
+      Print("fsw %s, ", FRN[rs2]);
     DiImm(immS);
     Print("(%s)", RN[rs1]);
   } else if (op == 0x53) {
@@ -680,6 +678,30 @@ U0 DisasmOne(I64 addr, I64 w)
         Print("fsqrtd %s, %s", FRN[rd], FRN[rs1]);
       else
         Print("fsqrt.d %s, %s", FRN[rd], FRN[rs1]);
+    } else if (f7 == 0x00) {
+      Print("fadd.s %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2]);
+    } else if (f7 == 0x04) {
+      Print("fsub.s %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2]);
+    } else if (f7 == 0x08) {
+      Print("fmul.s %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2]);
+    } else if (f7 == 0x0C) {
+      Print("fdiv.s %s, %s, %s", FRN[rd], FRN[rs1], FRN[rs2]);
+    } else if (f7 == 0x2C) {
+      Print("fsqrt.s %s, %s", FRN[rd], FRN[rs1]);
+    } else if (f7 == 0x10) {
+      if (f3 == 0)
+        mn = "fsgnj.s";
+      else if (f3 == 1)
+        mn = "fsgnjn.s";
+      else
+        mn = "fsgnjx.s";
+      Print("%s %s, %s, %s", mn, FRN[rd], FRN[rs1], FRN[rs2]);
+    } else if (f7 == 0x14) {
+      if (f3 == 0)
+        mn = "fmin.s";
+      else
+        mn = "fmax.s";
+      Print("%s %s, %s, %s", mn, FRN[rd], FRN[rs1], FRN[rs2]);
     } else if (f7 == 0x11) {
       if (rs1 == rs2) {
         if (f3 == 0)
