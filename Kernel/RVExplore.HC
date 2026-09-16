@@ -190,10 +190,12 @@ public U0 AsmList()
       p++;
   }
   Print("(%d documented. AsmDoc(\"name\") for detail.)\n", n);
-  Print("Note: this is the doc catalog. What the asm{} assembler ACCEPTS is a subset\n");
-  Print("  (I+M+A+Zicsr + B-type branches + jal/jr + RV64D float; no j/call) - test: asm{ <ins> };\n");
-  Print("  Branches/jumps take a NUMERIC even byte offset (beq a0,a1,8) OR a label, either\n");
-  Print("  direction (loop: ... bnez t0,loop). Float names dot-free. See RISCV_INVENTORY.md\n");
+  Print("Note: the asm{} assembler covers all non-compressed rv64imafdc (I+M+A+F+D+FMA+\n");
+  Print("  Zicsr+priv); no j/call, no compressed. Branches/jumps take a NUMERIC even byte\n");
+  Print("  offset (beq a0,a1,8) OR a label, either direction (loop: ... bnez t0,loop).\n");
+  Print("  Float ops that round take an optional trailing rm: rne/rtz/rdn/rup/rmm/dyn\n");
+  Print("  (e.g. fcvt.w.d a0,fa1,rtz); omitted = dyn. New float names are dotted (fadd.d,\n");
+  Print("  fcvt.w.s); the 14 legacy dot-free names (faddd, fcvtdl) still work. See RISCV_INVENTORY.md\n");
 }
 
 public U0 MemMap()

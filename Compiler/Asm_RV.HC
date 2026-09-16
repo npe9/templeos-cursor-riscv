@@ -350,6 +350,45 @@ U32 RvAsmRw(U32 f7, U32 f3, I64 rd, I64 rs1, I64 rs2)
   return 0x3B | (rd << 7) | (f3 << 12) | (rs1 << 15) | (rs2 << 20) | (f7 << 25);
 }
 
+// Parse an optional trailing ", <rm>" rounding mode. Returns rm code (0..7) or -1 if none.
+// rne=0 rtz=1 rdn=2 rup=3 rmm=4 dyn=7. LexExcepts on a bad name after the comma.
+I64 RvAsmParseOptRm(CCmpCtrl *cc)
+{
+  U8 *r;
+  if (cc->token != ',')
+    return -1;
+  Lex(cc);
+  if (cc->token != TK_IDENT || !cc->cur_str)
+    LexExcept(cc, "expected rounding mode after ',' at ");
+  r = cc->cur_str;
+  if (RvAsmStrEqI(r, "rne")) {
+    Lex(cc);
+    return 0;
+  }
+  if (RvAsmStrEqI(r, "rtz")) {
+    Lex(cc);
+    return 1;
+  }
+  if (RvAsmStrEqI(r, "rdn")) {
+    Lex(cc);
+    return 2;
+  }
+  if (RvAsmStrEqI(r, "rup")) {
+    Lex(cc);
+    return 3;
+  }
+  if (RvAsmStrEqI(r, "rmm")) {
+    Lex(cc);
+    return 4;
+  }
+  if (RvAsmStrEqI(r, "dyn")) {
+    Lex(cc);
+    return 7;
+  }
+  LexExcept(cc, "bad rounding mode (rne/rtz/rdn/rup/rmm/dyn) at ");
+  return -1;
+}
+
 // fence pred/succ ordering mask: letters i(8) o(4) r(2) w(1); e.g. "rw"=3, "iorw"=15. -1 if any bad letter.
 I64 RvAsmFenceMask(U8 *s)
 {
@@ -625,7 +664,7 @@ U0 RvAsmFixupResolve(CCmpCtrl *cc)
 Bool PrsAsmRVIns(CCmpCtrl *cc)
 {
   // TRUE if a known RV mnemonic was assembled. FALSE → caller may treat as label.
-  I64 rd, rs1, rs2, imm, first, is_imm, tgt;
+  I64 rd, rs1, rs2, imm, first, is_imm, tgt, rm;
   U32 word;
   U8 *mn, *fwdname;
   if (cc->token != TK_IDENT || !cc->cur_str)
@@ -636,6 +675,7 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
   Lex(cc);
   // skip mnemonic
   RvAsmMergeDotSuffix(mn, cc);
+  rm = 7; // default rounding mode (dyn); rm-taking blocks may override from a trailing operand
   if (RvAsmStrEqI(mn, "ret")) {
     Free(mn);
     AOTStoreCodeU32(cc, RvAsmJalr(0, 1, 0));
@@ -1354,14 +1394,19 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       Free(mn);
       LexExcept(cc, "Bad float register at ");
     }
+    if (!RvAsmStrEqI(mn, "fcvt.d.s")) { // fcvt.d.s is exact (no rm); the others round
+      tgt = RvAsmParseOptRm(cc);
+      if (tgt >= 0)
+        rm = tgt;
+    }
     if (RvAsmStrEqI(mn, "fcvt.s.d"))
-      word = 0x40000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (1 << 20);
+      word = 0x40000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (1 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.d.s"))
       word = 0x42000053 | (rd << 7) | (0 << 12) | (rs1 << 15) | (0 << 20);
     else if (RvAsmStrEqI(mn, "fsqrt.s"))
-      word = 0x58000053 | (rd << 7) | (7 << 12) | (rs1 << 15);
+      word = 0x58000053 | (rd << 7) | (rm << 12) | (rs1 << 15);
     else
-      word = 0x5A000053 | (rd << 7) | (7 << 12) | (rs1 << 15);
+      word = 0x5A000053 | (rd << 7) | (rm << 12) | (rs1 << 15);
     Free(mn);
     AOTStoreCodeU32(cc, word);
     return TRUE;
@@ -1384,6 +1429,9 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       Free(mn);
       LexExcept(cc, "Bad float register at ");
     }
+    tgt = RvAsmParseOptRm(cc);
+    if (tgt >= 0)
+      rm = tgt;
     if (RvAsmStrEqI(mn, "faddd"))
       word = 0x02000053;
     else if (RvAsmStrEqI(mn, "fsubd"))
@@ -1392,7 +1440,7 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       word = 0x12000053;
     else
       word = 0x1A000053;
-    word = word | (rd << 7) | (7 << 12) | (rs1 << 15) | (rs2 << 20);
+    word = word | (rd << 7) | (rm << 12) | (rs1 << 15) | (rs2 << 20);
     Free(mn);
     AOTStoreCodeU32(cc, word);
     return TRUE;
@@ -1418,6 +1466,11 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       Free(mn);
       LexExcept(cc, "Bad float register at ");
     }
+    if (RvAsmStrEqI(mn, "fadd.s") || RvAsmStrEqI(mn, "fsub.s") || RvAsmStrEqI(mn, "fmul.s") || RvAsmStrEqI(mn, "fdiv.s")) {
+      tgt = RvAsmParseOptRm(cc);
+      if (tgt >= 0)
+        rm = tgt;
+    }
     if (RvAsmStrEqI(mn, "fsgnj.d"))
       word = 0x22000053 | (rd << 7) | (0 << 12) | (rs1 << 15) | (rs2 << 20);
     else if (RvAsmStrEqI(mn, "fsgnjn.d"))
@@ -1429,13 +1482,13 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
     else if (RvAsmStrEqI(mn, "fmax.d"))
       word = 0x2A000053 | (rd << 7) | (1 << 12) | (rs1 << 15) | (rs2 << 20);
     else if (RvAsmStrEqI(mn, "fadd.s"))
-      word = 0x00000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (rs2 << 20);
+      word = 0x00000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (rs2 << 20);
     else if (RvAsmStrEqI(mn, "fsub.s"))
-      word = 0x08000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (rs2 << 20);
+      word = 0x08000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (rs2 << 20);
     else if (RvAsmStrEqI(mn, "fmul.s"))
-      word = 0x10000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (rs2 << 20);
+      word = 0x10000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (rs2 << 20);
     else if (RvAsmStrEqI(mn, "fdiv.s"))
-      word = 0x18000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (rs2 << 20);
+      word = 0x18000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (rs2 << 20);
     else if (RvAsmStrEqI(mn, "fsgnj.s"))
       word = 0x20000053 | (rd << 7) | (0 << 12) | (rs1 << 15) | (rs2 << 20);
     else if (RvAsmStrEqI(mn, "fsgnjn.s"))
@@ -1477,6 +1530,9 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       Free(mn);
       LexExcept(cc, "Bad float register at ");
     }
+    tgt = RvAsmParseOptRm(cc);
+    if (tgt >= 0)
+      rm = tgt;
     if (RvAsmStrEqI(mn, "fmadd.d"))
       word = 0x02000043;
     else if (RvAsmStrEqI(mn, "fmsub.d"))
@@ -1493,7 +1549,7 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       word = 0x0000004B;
     else
       word = 0x0000004F;
-    word = word | (rd << 7) | (7 << 12) | (rs1 << 15) | (rs2 << 20) | (imm << 27);
+    word = word | (rd << 7) | (rm << 12) | (rs1 << 15) | (rs2 << 20) | (imm << 27);
     Free(mn);
     AOTStoreCodeU32(cc, word);
     return TRUE;
@@ -1544,6 +1600,11 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       Free(mn);
       LexExcept(cc, "Bad register at ");
     }
+    if (RvAsmStrEqI(mn, "fcvt.d.l") || RvAsmStrEqI(mn, "fcvt.d.lu") || RvAsmStrEqI(mn, "fcvt.s.w") || RvAsmStrEqI(mn, "fcvt.s.wu") || RvAsmStrEqI(mn, "fcvt.s.l") || RvAsmStrEqI(mn, "fcvt.s.lu")) {
+      tgt = RvAsmParseOptRm(cc);
+      if (tgt >= 0)
+        rm = tgt;
+    }
     if (RvAsmStrEqI(mn, "fmvdx"))
       word = 0xF2000053 | (rd << 7) | (rs1 << 15);
     else if (RvAsmStrEqI(mn, "fcvt.d.w"))
@@ -1551,19 +1612,19 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
     else if (RvAsmStrEqI(mn, "fcvt.d.wu"))
       word = 0xD2000053 | (rd << 7) | (0 << 12) | (rs1 << 15) | (1 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.d.lu"))
-      word = 0xD2000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (3 << 20);
+      word = 0xD2000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (3 << 20);
     else if (RvAsmStrEqI(mn, "fmv.w.x"))
       word = 0xF0000053 | (rd << 7) | (0 << 12) | (rs1 << 15);
     else if (RvAsmStrEqI(mn, "fcvt.s.w"))
-      word = 0xD0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (0 << 20);
+      word = 0xD0000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (0 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.s.wu"))
-      word = 0xD0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (1 << 20);
+      word = 0xD0000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (1 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.s.l"))
-      word = 0xD0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (2 << 20);
+      word = 0xD0000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (2 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.s.lu"))
-      word = 0xD0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (3 << 20);
+      word = 0xD0000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (3 << 20);
     else
-      word = 0xD2000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (2 << 20); // fcvtdl == fcvt.d.l
+      word = 0xD2000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (2 << 20); // fcvtdl == fcvt.d.l
     Free(mn);
     AOTStoreCodeU32(cc, word);
     return TRUE;
@@ -1581,6 +1642,11 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       Free(mn);
       LexExcept(cc, "Bad register at ");
     }
+    if (RvAsmStrEqI(mn, "fcvt.w.d") || RvAsmStrEqI(mn, "fcvt.wu.d") || RvAsmStrEqI(mn, "fcvt.l.d") || RvAsmStrEqI(mn, "fcvt.lu.d") || RvAsmStrEqI(mn, "fcvt.w.s") || RvAsmStrEqI(mn, "fcvt.wu.s") || RvAsmStrEqI(mn, "fcvt.l.s") || RvAsmStrEqI(mn, "fcvt.lu.s")) {
+      tgt = RvAsmParseOptRm(cc);
+      if (tgt >= 0)
+        rm = tgt;
+    }
     if (RvAsmStrEqI(mn, "fmvxd"))
       word = 0xE2000053 | (rd << 7) | (rs1 << 15);
     else if (RvAsmStrEqI(mn, "fclass.d"))
@@ -1592,27 +1658,27 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
     else if (RvAsmStrEqI(mn, "fcvtld_rmm"))
       word = 0xC2000053 | (rd << 7) | (4 << 12) | (rs1 << 15) | (2 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.w.d"))
-      word = 0xC2000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (0 << 20);
+      word = 0xC2000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (0 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.wu.d"))
-      word = 0xC2000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (1 << 20);
+      word = 0xC2000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (1 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.l.d"))
-      word = 0xC2000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (2 << 20);
+      word = 0xC2000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (2 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.lu.d"))
-      word = 0xC2000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (3 << 20);
+      word = 0xC2000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (3 << 20);
     else if (RvAsmStrEqI(mn, "fmv.x.w"))
       word = 0xE0000053 | (rd << 7) | (0 << 12) | (rs1 << 15);
     else if (RvAsmStrEqI(mn, "fclass.s"))
       word = 0xE0000053 | (rd << 7) | (1 << 12) | (rs1 << 15);
     else if (RvAsmStrEqI(mn, "fcvt.w.s"))
-      word = 0xC0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (0 << 20);
+      word = 0xC0000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (0 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.wu.s"))
-      word = 0xC0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (1 << 20);
+      word = 0xC0000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (1 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.l.s"))
-      word = 0xC0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (2 << 20);
+      word = 0xC0000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (2 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.lu.s"))
-      word = 0xC0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (3 << 20);
+      word = 0xC0000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (3 << 20);
     else
-      word = 0xC2000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (3 << 20);
+      word = 0xC2000053 | (rd << 7) | (rm << 12) | (rs1 << 15) | (3 << 20);
     Free(mn);
     AOTStoreCodeU32(cc, word);
     return TRUE;

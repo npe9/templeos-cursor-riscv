@@ -3844,7 +3844,21 @@ static U32 RvJalr(int rd,int rs1,int imm){ return 0x67u|(rd<<7)|(0u<<12)|(rs1<<1
 static U32 RvU(U32 opc,int rd,int imm20){ return opc|(rd<<7)|(((U32)imm20&0xFFFFFu)<<12); }
 static U32 RvA(U32 f5,U32 aqrl,U32 f3,int rd,int rs1,int rs2){ return 0x2Fu|(rd<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|(aqrl<<25)|(f5<<27); }
 
-typedef struct { char mn[16]; int rd,rs1,rs2,imm; char label[48]; int kind; } RvI2;  // kind: 0 none,1 branch,2 jump
+typedef struct { char mn[16]; int rd,rs1,rs2,imm,rm; char label[48]; int kind; } RvI2;  // kind: 0 none,1 branch,2 jump; rm=rounding mode (default 7=dyn)
+// Parse an optional trailing ", <rm>" rounding mode. Returns rm code (0..7) or -1 if none.
+// rne=0 rtz=1 rdn=2 rup=3 rmm=4 dyn=7. Errors on a bad name after the comma.
+static int RvParseOptRm(Compiler *cc) {
+  if (cc->lex.token != ',') return -1;
+  LexNext(cc);
+  if (cc->lex.token != TK_IDENT) { Error(cc, "expected rounding mode after ','"); return -1; }
+  char r[8]; RvLowerCopy(r, cc->lex.token_str, 8);
+  int code = -1;
+  if (!strcmp(r,"rne")) code=0; else if (!strcmp(r,"rtz")) code=1; else if (!strcmp(r,"rdn")) code=2;
+  else if (!strcmp(r,"rup")) code=3; else if (!strcmp(r,"rmm")) code=4; else if (!strcmp(r,"dyn")) code=7;
+  else { Error(cc, "bad rounding mode (rne/rtz/rdn/rup/rmm/dyn)"); return -1; }
+  LexNext(cc);
+  return code;
+}
 
 // Parse one register token (IDENT); returns reg num or -1. Case-insensitive ABI names.
 static int RvRegTok(Compiler *cc) {
@@ -4075,7 +4089,7 @@ static bool TryAssembleRiscV(Compiler *cc) {
       } else break;
     }
     if (nins >= 256) return false;
-    RvI2 *I = &ins[nins]; { RvI2 _z; { char *_p=(char*)&_z; for(unsigned _j=0;_j<sizeof(_z);_j++) _p[_j]=0; } *I=_z; } { int _i=0; for(;w[_i]&&_i<15;_i++) I->mn[_i]=w[_i]; I->mn[_i]=0; }
+    RvI2 *I = &ins[nins]; { RvI2 _z; { char *_p=(char*)&_z; for(unsigned _j=0;_j<sizeof(_z);_j++) _p[_j]=0; } *I=_z; } I->rm = 7; { int _i=0; for(;w[_i]&&_i<15;_i++) I->mn[_i]=w[_i]; I->mn[_i]=0; }
 
     // Pseudo & real mnemonics.
     if (!strcmp(w,"ret") || !strcmp(w,"nop") || !strcmp(w,"wfi") || !strcmp(w,"fencei") ||
@@ -4244,7 +4258,9 @@ static bool TryAssembleRiscV(Compiler *cc) {
     }
     if (!strcmp(w,"fsqrtd")||!strcmp(w,"fsqrt.s")||!strcmp(w,"fcvt.s.d")||!strcmp(w,"fcvt.d.s")) {  // fd, fs  (both float)
       I->rd=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvFRegTok(cc);
-      if (I->rd<0||I->rs1<0) return false; nins++; continue;
+      if (I->rd<0||I->rs1<0) return false;
+      if (!strcmp(w,"fsqrtd")||!strcmp(w,"fsqrt.s")||!strcmp(w,"fcvt.s.d")) { int _r=RvParseOptRm(cc); if(_r>=0) I->rm=_r; }
+      nins++; continue;
     }
     if (!strcmp(w,"fmadd.d")||!strcmp(w,"fmsub.d")||!strcmp(w,"fnmsub.d")||!strcmp(w,"fnmadd.d")||
         !strcmp(w,"fmadd.s")||!strcmp(w,"fmsub.s")||!strcmp(w,"fnmsub.s")||!strcmp(w,"fnmadd.s")) { // R4: fd, fs1, fs2, fs3 (all float); rs3 held in imm
@@ -4252,7 +4268,9 @@ static bool TryAssembleRiscV(Compiler *cc) {
       I->rs1=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
       I->rs2=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
       I->imm=RvFRegTok(cc);
-      if (I->rd<0||I->rs1<0||I->rs2<0||I->imm<0) return false; nins++; continue;
+      if (I->rd<0||I->rs1<0||I->rs2<0||I->imm<0) return false;
+      { int _r=RvParseOptRm(cc); if(_r>=0) I->rm=_r; }
+      nins++; continue;
     }
     if (!strcmp(w,"faddd")||!strcmp(w,"fsubd")||!strcmp(w,"fmuld")||!strcmp(w,"fdivd")||
         !strcmp(w,"fsgnj.d")||!strcmp(w,"fsgnjn.d")||!strcmp(w,"fsgnjx.d")||!strcmp(w,"fmin.d")||!strcmp(w,"fmax.d")||
@@ -4260,7 +4278,9 @@ static bool TryAssembleRiscV(Compiler *cc) {
         !strcmp(w,"fsgnj.s")||!strcmp(w,"fsgnjn.s")||!strcmp(w,"fsgnjx.s")||!strcmp(w,"fmin.s")||!strcmp(w,"fmax.s")) { // fd, fs1, fs2 (all float)
       I->rd=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
       I->rs1=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs2=RvFRegTok(cc);
-      if (I->rd<0||I->rs1<0||I->rs2<0) return false; nins++; continue;
+      if (I->rd<0||I->rs1<0||I->rs2<0) return false;
+      if (!strcmp(w,"faddd")||!strcmp(w,"fsubd")||!strcmp(w,"fmuld")||!strcmp(w,"fdivd")||!strcmp(w,"fadd.s")||!strcmp(w,"fsub.s")||!strcmp(w,"fmul.s")||!strcmp(w,"fdiv.s")) { int _r=RvParseOptRm(cc); if(_r>=0) I->rm=_r; }
+      nins++; continue;
     }
     if (!strcmp(w,"fled")||!strcmp(w,"fltd")||!strcmp(w,"feqd")||!strcmp(w,"fle.s")||!strcmp(w,"flt.s")||!strcmp(w,"feq.s")) { // rd(int), fs1, fs2 (float) -> 0/1
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
@@ -4270,12 +4290,16 @@ static bool TryAssembleRiscV(Compiler *cc) {
     if (!strcmp(w,"fmvdx")||!strcmp(w,"fcvtdl")||!strcmp(w,"fcvt.d.w")||!strcmp(w,"fcvt.d.wu")||!strcmp(w,"fcvt.d.l")||!strcmp(w,"fcvt.d.lu")||
         !strcmp(w,"fmv.w.x")||!strcmp(w,"fcvt.s.w")||!strcmp(w,"fcvt.s.wu")||!strcmp(w,"fcvt.s.l")||!strcmp(w,"fcvt.s.lu")) {  // fd(float), rs(int)
       I->rd=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc);
-      if (I->rd<0||I->rs1<0) return false; nins++; continue;
+      if (I->rd<0||I->rs1<0) return false;
+      if (!strcmp(w,"fcvt.d.l")||!strcmp(w,"fcvt.d.lu")||!strcmp(w,"fcvt.s.w")||!strcmp(w,"fcvt.s.wu")||!strcmp(w,"fcvt.s.l")||!strcmp(w,"fcvt.s.lu")) { int _r=RvParseOptRm(cc); if(_r>=0) I->rm=_r; }
+      nins++; continue;
     }
     if (!strcmp(w,"fmvxd")||!strcmp(w,"fcvtld_rtz")||!strcmp(w,"fcvtld_rdn")||!strcmp(w,"fcvtld_rmm")||!strcmp(w,"fclass.d")||!strcmp(w,"fcvt.w.d")||!strcmp(w,"fcvt.wu.d")||!strcmp(w,"fcvt.l.d")||!strcmp(w,"fcvt.lu.d")||
         !strcmp(w,"fmv.x.w")||!strcmp(w,"fclass.s")||!strcmp(w,"fcvt.w.s")||!strcmp(w,"fcvt.wu.s")||!strcmp(w,"fcvt.l.s")||!strcmp(w,"fcvt.lu.s")) { // rd(int), fs(float)
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvFRegTok(cc);
-      if (I->rd<0||I->rs1<0) return false; nins++; continue;
+      if (I->rd<0||I->rs1<0) return false;
+      if (!strcmp(w,"fcvt.w.d")||!strcmp(w,"fcvt.wu.d")||!strcmp(w,"fcvt.l.d")||!strcmp(w,"fcvt.lu.d")||!strcmp(w,"fcvt.w.s")||!strcmp(w,"fcvt.wu.s")||!strcmp(w,"fcvt.l.s")||!strcmp(w,"fcvt.lu.s")) { int _r=RvParseOptRm(cc); if(_r>=0) I->rm=_r; }
+      nins++; continue;
     }
     if (!strcmp(w,"add")||!strcmp(w,"sub")||!strcmp(w,"and")||!strcmp(w,"or")||!strcmp(w,"xor")||!strcmp(w,"sll")||!strcmp(w,"srl")||!strcmp(w,"sra")||!strcmp(w,"slt")||!strcmp(w,"sltu")||!strcmp(w,"mul")||!strcmp(w,"mulh")||!strcmp(w,"mulhsu")||!strcmp(w,"mulhu")||!strcmp(w,"div")||!strcmp(w,"rem")||!strcmp(w,"divu")||!strcmp(w,"remu")||
         !strcmp(w,"addw")||!strcmp(w,"subw")||!strcmp(w,"sllw")||!strcmp(w,"srlw")||!strcmp(w,"sraw")||!strcmp(w,"mulw")||!strcmp(w,"divw")||!strcmp(w,"divuw")||!strcmp(w,"remw")||!strcmp(w,"remuw")||
@@ -4512,11 +4536,11 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"divuw")) word = RvRw(1,5,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"remw")) word = RvRw(1,6,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"remuw")) word = RvRw(1,7,I->rd,I->rs1,I->rs2);
-    else if (!strcmp(m,"fsqrtd"))     word = 0x5A000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15);
-    else if (!strcmp(m,"faddd"))      word = 0x02000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
-    else if (!strcmp(m,"fsubd"))      word = 0x0A000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
-    else if (!strcmp(m,"fmuld"))      word = 0x12000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
-    else if (!strcmp(m,"fdivd"))      word = 0x1A000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fsqrtd"))     word = 0x5A000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15);
+    else if (!strcmp(m,"faddd"))      word = 0x02000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fsubd"))      word = 0x0A000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fmuld"))      word = 0x12000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fdivd"))      word = 0x1A000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fled"))       word = 0xA2000053u | (I->rd<<7)  | (0u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fltd"))       word = 0xA2000053u | (I->rd<<7)  | (1u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"feqd"))       word = 0xA2000053u | (I->rd<<7)  | (2u<<12) | (I->rs1<<15) | (I->rs2<<20);
@@ -4525,36 +4549,36 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"fcvtld_rtz")) word = 0xC2000053u | (I->rd<<7)  | (1u<<12) | (I->rs1<<15) | (2u<<20);
     else if (!strcmp(m,"fcvtld_rdn")) word = 0xC2000053u | (I->rd<<7)  | (2u<<12) | (I->rs1<<15) | (2u<<20);
     else if (!strcmp(m,"fcvtld_rmm")) word = 0xC2000053u | (I->rd<<7)  | (4u<<12) | (I->rs1<<15) | (2u<<20);
-    else if (!strcmp(m,"fcvtdl"))     word = 0xD2000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (2u<<20);
+    else if (!strcmp(m,"fcvtdl"))     word = 0xD2000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15) | (2u<<20);
     else if (!strcmp(m,"fsgnj.d"))    word = 0x22000053u | (I->rd<<7)  | (0u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fsgnjn.d"))   word = 0x22000053u | (I->rd<<7)  | (1u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fsgnjx.d"))   word = 0x22000053u | (I->rd<<7)  | (2u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fmin.d"))     word = 0x2A000053u | (I->rd<<7)  | (0u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fmax.d"))     word = 0x2A000053u | (I->rd<<7)  | (1u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fclass.d"))   word = 0xE2000053u | (I->rd<<7)  | (1u<<12) | (I->rs1<<15);
-    else if (!strcmp(m,"fcvt.w.d"))   word = 0xC2000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (0u<<20);
-    else if (!strcmp(m,"fcvt.wu.d"))  word = 0xC2000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (1u<<20);
-    else if (!strcmp(m,"fcvt.l.d"))   word = 0xC2000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (2u<<20);
-    else if (!strcmp(m,"fcvt.lu.d"))  word = 0xC2000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (3u<<20);
+    else if (!strcmp(m,"fcvt.w.d"))   word = 0xC2000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15) | (0u<<20);
+    else if (!strcmp(m,"fcvt.wu.d"))  word = 0xC2000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15) | (1u<<20);
+    else if (!strcmp(m,"fcvt.l.d"))   word = 0xC2000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15) | (2u<<20);
+    else if (!strcmp(m,"fcvt.lu.d"))  word = 0xC2000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15) | (3u<<20);
     else if (!strcmp(m,"fcvt.d.w"))   word = 0xD2000053u | (I->rd<<7)  | (0u<<12) | (I->rs1<<15) | (0u<<20);
     else if (!strcmp(m,"fcvt.d.wu"))  word = 0xD2000053u | (I->rd<<7)  | (0u<<12) | (I->rs1<<15) | (1u<<20);
-    else if (!strcmp(m,"fcvt.d.l"))   word = 0xD2000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (2u<<20);
-    else if (!strcmp(m,"fcvt.d.lu"))  word = 0xD2000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (3u<<20);
-    else if (!strcmp(m,"fcvt.s.d"))   word = 0x40000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (1u<<20);
+    else if (!strcmp(m,"fcvt.d.l"))   word = 0xD2000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15) | (2u<<20);
+    else if (!strcmp(m,"fcvt.d.lu"))  word = 0xD2000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15) | (3u<<20);
+    else if (!strcmp(m,"fcvt.s.d"))   word = 0x40000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15) | (1u<<20);
     else if (!strcmp(m,"fcvt.d.s"))   word = 0x42000053u | (I->rd<<7)  | (0u<<12) | (I->rs1<<15) | (0u<<20);
-    else if (!strcmp(m,"fmadd.d"))    word = 0x02000043u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
-    else if (!strcmp(m,"fmsub.d"))    word = 0x02000047u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
-    else if (!strcmp(m,"fnmsub.d"))   word = 0x0200004Bu | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
-    else if (!strcmp(m,"fnmadd.d"))   word = 0x0200004Fu | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
-    else if (!strcmp(m,"fmadd.s"))    word = 0x00000043u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
-    else if (!strcmp(m,"fmsub.s"))    word = 0x00000047u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
-    else if (!strcmp(m,"fnmsub.s"))   word = 0x0000004Bu | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
-    else if (!strcmp(m,"fnmadd.s"))   word = 0x0000004Fu | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
-    else if (!strcmp(m,"fadd.s"))     word = 0x00000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
-    else if (!strcmp(m,"fsub.s"))     word = 0x08000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
-    else if (!strcmp(m,"fmul.s"))     word = 0x10000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
-    else if (!strcmp(m,"fdiv.s"))     word = 0x18000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
-    else if (!strcmp(m,"fsqrt.s"))    word = 0x58000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15);
+    else if (!strcmp(m,"fmadd.d"))    word = 0x02000043u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
+    else if (!strcmp(m,"fmsub.d"))    word = 0x02000047u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
+    else if (!strcmp(m,"fnmsub.d"))   word = 0x0200004Bu | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
+    else if (!strcmp(m,"fnmadd.d"))   word = 0x0200004Fu | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
+    else if (!strcmp(m,"fmadd.s"))    word = 0x00000043u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
+    else if (!strcmp(m,"fmsub.s"))    word = 0x00000047u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
+    else if (!strcmp(m,"fnmsub.s"))   word = 0x0000004Bu | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
+    else if (!strcmp(m,"fnmadd.s"))   word = 0x0000004Fu | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20) | ((U32)I->imm<<27);
+    else if (!strcmp(m,"fadd.s"))     word = 0x00000053u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fsub.s"))     word = 0x08000053u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fmul.s"))     word = 0x10000053u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fdiv.s"))     word = 0x18000053u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fsqrt.s"))    word = 0x58000053u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15);
     else if (!strcmp(m,"fsgnj.s"))    word = 0x20000053u | (I->rd<<7) | (0u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fsgnjn.s"))   word = 0x20000053u | (I->rd<<7) | (1u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fsgnjx.s"))   word = 0x20000053u | (I->rd<<7) | (2u<<12) | (I->rs1<<15) | (I->rs2<<20);
@@ -4566,14 +4590,14 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"fclass.s"))   word = 0xE0000053u | (I->rd<<7) | (1u<<12) | (I->rs1<<15);
     else if (!strcmp(m,"fmv.x.w"))    word = 0xE0000053u | (I->rd<<7) | (0u<<12) | (I->rs1<<15);
     else if (!strcmp(m,"fmv.w.x"))    word = 0xF0000053u | (I->rd<<7) | (0u<<12) | (I->rs1<<15);
-    else if (!strcmp(m,"fcvt.w.s"))   word = 0xC0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (0u<<20);
-    else if (!strcmp(m,"fcvt.wu.s"))  word = 0xC0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (1u<<20);
-    else if (!strcmp(m,"fcvt.l.s"))   word = 0xC0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (2u<<20);
-    else if (!strcmp(m,"fcvt.lu.s"))  word = 0xC0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (3u<<20);
-    else if (!strcmp(m,"fcvt.s.w"))   word = 0xD0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (0u<<20);
-    else if (!strcmp(m,"fcvt.s.wu"))  word = 0xD0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (1u<<20);
-    else if (!strcmp(m,"fcvt.s.l"))   word = 0xD0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (2u<<20);
-    else if (!strcmp(m,"fcvt.s.lu"))  word = 0xD0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (3u<<20);
+    else if (!strcmp(m,"fcvt.w.s"))   word = 0xC0000053u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (0u<<20);
+    else if (!strcmp(m,"fcvt.wu.s"))  word = 0xC0000053u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (1u<<20);
+    else if (!strcmp(m,"fcvt.l.s"))   word = 0xC0000053u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (2u<<20);
+    else if (!strcmp(m,"fcvt.lu.s"))  word = 0xC0000053u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (3u<<20);
+    else if (!strcmp(m,"fcvt.s.w"))   word = 0xD0000053u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (0u<<20);
+    else if (!strcmp(m,"fcvt.s.wu"))  word = 0xD0000053u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (1u<<20);
+    else if (!strcmp(m,"fcvt.s.l"))   word = 0xD0000053u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (2u<<20);
+    else if (!strcmp(m,"fcvt.s.lu"))  word = 0xD0000053u | (I->rd<<7) | ((U32)I->rm<<12) | (I->rs1<<15) | (3u<<20);
     else if (!strcmp(m,"rdtime"))     word = 0xC0102073u | (I->rd<<7);
     else if (!strcmp(m,"csrr"))       word = 0x00002073u | (I->rd<<7)  | (((U32)I->imm & 0xFFF)<<20);
     else if (!strcmp(m,"csrw"))       word = 0x00001073u | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);

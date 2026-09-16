@@ -125,3 +125,14 @@
 {"name":"f_fcvt_s_wu","insns":["fcvt.s.wu fa0, a1"],"mode":"match"}
 {"name":"f_fcvt_s_l","insns":["fcvt.s.l fa0, a1"],"mode":"match"}
 {"name":"f_fcvt_s_lu","insns":["fcvt.s.lu fa0, a1"],"mode":"match"}
+{"name":"rm_fadd_s_rtz","insns":["fadd.s fa0, fa1, fa2, rtz"],"mode":"match"}
+{"name":"rm_fsqrt_s_rdn","insns":["fsqrt.s fa0, fa1, rdn"],"mode":"match"}
+{"name":"rm_fcvt_w_d_rtz","insns":["fcvt.w.d a0, fa1, rtz"],"mode":"match"}
+{"name":"rm_fcvt_w_d_rne","insns":["fcvt.w.d a0, fa1, rne"],"mode":"match"}
+{"name":"rm_fcvt_l_d_rdn","insns":["fcvt.l.d a0, fa1, rdn"],"mode":"match"}
+{"name":"rm_fcvt_s_w_rup","insns":["fcvt.s.w fa0, a1, rup"],"mode":"match"}
+{"name":"rm_fcvt_s_d_rmm","insns":["fcvt.s.d fa0, fa1, rmm"],"mode":"match"}
+{"name":"rm_fcvt_d_l_rtz","insns":["fcvt.d.l fa0, a1, rtz"],"mode":"match"}
+{"name":"rm_fmadd_d_rtz","insns":["fmadd.d fa0, fa1, fa2, fa3, rtz"],"mode":"match"}
+{"name":"rm_fmadd_s_rmm","insns":["fmadd.s fa0, fa1, fa2, fa3, rmm"],"mode":"match"}
+{"name":"rm_fcvt_w_s_dyn","insns":["fcvt.w.s a0, fa1, dyn"],"mode":"match"}
