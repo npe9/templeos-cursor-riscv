@@ -38,8 +38,8 @@ the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
   `asm_undef_hash` path (which writes contiguous displacements and can't express
   B/J-type's split immediate fields). The host `asm{}` parser (`host/parser.c`) is
   label-only and rejects numeric offsets; the guest accepting both is the remaining
-  divergence. The guest still has no `j` (host reserves that spelling; use `jal x0,label`)
-  and no `call`.
+  divergence. The guest now has `j` (= `jal x0,label`, numeric or label); `call` is the
+  only jump form still absent (it needs function-symbol linkage, not just block labels).
 - **The assembler now covers the entire non-compressed rv64imafdc ISA.** Added since
   the 136-mnemonic survey, in five gated increments (commits `2c36f2f f8aac34 194eeb8
   d733cc3 a12253a` + F32 part 2): OP-32/word ops (`addiw slliw srliw sraiw addw subw
@@ -57,7 +57,7 @@ the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
   (`fcvt.<int>.<fmt>`) fold both suffixes via a looped dot-merge in each assembler.
 - **The `AsmDoc`/`AsmList` catalog is 209 entries** (was 137), documenting every
   assemblable mnemonic with template + semantics. Remaining catalog entries the guest
-  does not assemble: `j`, `call` (host label/linkage forms), and host-only `lifp`.
+  does not assemble: `call` (needs function-symbol linkage) and host-only `lifp`.
 - **Deliberate non-goal:** the RVC *assembler*. The disassembler decodes compressed
   (you read it in real binaries); hand-writing compressed — register subsets, per-form
   immediate scaling — is not a learning-surface win and is intentionally omitted.
@@ -78,7 +78,7 @@ the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
 
 | Extension | `asm{}` assembles | Codegen emits ("compiles") | Disassembler decodes |
 |---|---|---|---|
-| **RV64 I** (base) | **yes** — full OP/OP-IMM incl. `sltiu`, B-type branches + `jal`/`jr` (guest: numeric offset *or* label; host: label-only), all loads/stores `lb/lh/lbu/lhu/lwu/sb/sh`, full `fence pred,succ` + `fence.i`; still no `j`/`call` in guest | yes | yes |
+| **RV64 I** (base) | **yes** — full OP/OP-IMM incl. `sltiu`, B-type branches + `jal`/`jr` (guest: numeric offset *or* label; host: label-only), all loads/stores `lb/lh/lbu/lhu/lwu/sb/sh`, full `fence pred,succ` + `fence.i`; guest has `j`, still no `call` | yes | yes |
 | **I OP-32 / word** (`addiw slliw srliw sraiw addw subw sllw srlw sraw`) | **yes** (`0x1B`/`0x3B`) | partial | **yes** (`0x1B` and `0x3B`) |
 | **M** (`mul mulh mulhsu mulhu div divu rem remu` + `mulw divw divuw remw remuw`) | **yes** | yes | **yes** (incl. mul-high + word) |
 | **A** (`lr/sc/amo*`, `.d` and `.w`) | **yes** | yes — `amo{or,and,xor}.d` (`BackB_RV.HC:142,145`) | **yes** (`0x2F` decoded, `RVDisasm.HC`) |
@@ -126,7 +126,7 @@ ABI names `zero ra sp gp tp t0-t6 s0-s11 a0-a7 fp`). CSR *names* via `RvAsmCsrNu
 | Load (I) | `ld lw lwu lh lhu lb lbu` | f3 lb=0 lh=1 lw=2 ld=3 lbu=4 lhu=5 lwu=6 |
 | Store (S) | `sd sw sh sb` | f3 sb=0 sh=1 sw=2 sd=3 |
 | Jump (I) | `jalr` | short form `jalr rs` → `jalr ra,0(rs)` |
-| Jump (J) | `jal jr` | `jal rd,off\|label` / `jal off\|label`(→ra) / `jr rs`(→`jalr x0`); target numeric or label; **no `j`**, **no `call`** |
+| Jump (J) | `jal jr j` | `jal rd,off\|label` / `jal off\|label`(→ra) / `j off\|label`(→`jal x0`) / `jr rs`(→`jalr x0`); target numeric or label; **no `call`** |
 | Branch (B) | `beq bne blt bge bltu bgeu beqz bnez` | numeric even byte offset (`beq a0,a1,8`) **or a label**, either direction (`loop: … bnez t0,loop`) |
 | Zicsr | `csrr csrw csrs csrc csrrw csrrs csrrc csrrwi csrrsi csrrci csrwi csrsi csrci` | + `rdtime` (`csrrs rd,time,x0`) |
 | A: LR/SC | `lr.d lr.w lrd lrw sc.d sc.w scd scw` | dotted + no-dot aliases |
@@ -276,7 +276,7 @@ Handled as warnings/no-ops or remaps, not planted in the REPL hash (`STOCK_PARIT
 See the [glance table](#extension-coverage-at-a-glance-the-three-way-answer). Summary:
 
 - **RV64I** — base fully assembles (OP/OP-IMM incl. `sltiu`, word ops, branches,
-  `jal`/`jr`, all loads/stores, full `fence pred,succ`); guest still lacks `j`/`call`.
+  `jal`/`jr`/`j`, all loads/stores, full `fence pred,succ`); guest still lacks `call`.
   Codegen + disasm complete.
 - **M** — fully supported in all three, incl. mul-high (`mulh/mulhsu/mulhu`) and the
   word ops (`mulw divw divuw remw remuw`).
@@ -429,13 +429,13 @@ debug-relevant ones:
 
 ## Gaps & drift
 
-### A. Documented but NOT assemblable (3 mnemonics)
+### A. Documented but NOT assemblable (2 mnemonics)
 
 `AsmList()`/`AsmDoc()` advertise these; the guest `asm{}` raises "Unsupported mnemonic":
 
-- **Jump pseudo-ops:** `j call`. (`jr`/`jal` are assemblable; `j` is deliberately left
-  out because the host defines it as the label-only form — use `jal x0,off`. `call`
-  needs function-symbol linkage, not just block labels.)
+- **Jump pseudo-op:** `call` — needs function-symbol linkage (auipc+jalr to a global
+  symbol), not just the block-local labels the guest fixup path resolves. (`j`, `jr`,
+  `jal` are all assemblable.)
 - **Host-only:** `lifp` (label form).
 
 (`sfence.vma` is now assemblable — bare, one-, or two-operand — as of the base-I/M
