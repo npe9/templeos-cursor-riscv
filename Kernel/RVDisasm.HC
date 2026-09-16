@@ -354,7 +354,7 @@ I64 DisHi;
 //   See source; RISC-V UART REPL may omit full TempleOS behavior.
 U0 DisasmOne(I64 addr, I64 w)
 {
-  I64 op, rd, f3, rs1, rs2, f7, immI, immS, csr, jt, f5;
+  I64 op, rd, f3, rs1, rs2, f7, immI, immS, csr, jt, f5, rs3;
   U8 *mn;
   U8 *sfx;
   op = w & 0x7F;
@@ -779,6 +779,22 @@ U0 DisasmOne(I64 addr, I64 w)
       Print(" raw=");
       DiImm(w & 0xFFFFFFFF);
     }
+  } else if (op == 0x43 || op == 0x47 || op == 0x4B || op == 0x4F) {
+    // Fused multiply-add (R4-type). fmt bits[26:25]: 0=.s 1=.d; rs3=bits[31:27]; rm=f3.
+    rs3 = (w >> 27) & 0x1F;
+    if (((w >> 25) & 3) == 1)
+      sfx = ".d";
+    else
+      sfx = ".s";
+    if (op == 0x43)
+      mn = "fmadd";
+    else if (op == 0x47)
+      mn = "fmsub";
+    else if (op == 0x4B)
+      mn = "fnmsub";
+    else
+      mn = "fnmadd";
+    Print("%s%s %s, %s, %s, %s", mn, sfx, FRN[rd], FRN[rs1], FRN[rs2], FRN[rs3]);
   } else if (op == 0x2F) {
     // A extension (atomics). funct5 = bits[31:27] = f7>>2; f3 3=.d 2=.w.
     // Mirrors the assembler's RvAsmA encodings so U/Uf round-trips them.
