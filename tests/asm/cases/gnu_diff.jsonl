@@ -62,3 +62,14 @@
 {"name":"op32_divuw","insns":["divuw a0, a1, a2"],"mode":"match"}
 {"name":"op32_remw","insns":["remw a0, a1, a2"],"mode":"match"}
 {"name":"op32_remuw","insns":["remuw a0, a1, a2"],"mode":"match"}
+{"name":"base_sltiu","insns":["sltiu a0, a1, 5"],"mode":"match"}
+{"name":"m_mulh","insns":["mulh a0, a1, a2"],"mode":"match"}
+{"name":"m_mulhsu","insns":["mulhsu a0, a1, a2"],"mode":"match"}
+{"name":"m_mulhu","insns":["mulhu a0, a1, a2"],"mode":"match"}
+{"name":"fence_rw_rw","insns":["fence rw, rw"],"mode":"match"}
+{"name":"fence_iorw","insns":["fence iorw, iorw"],"mode":"match"}
+{"name":"fence_r_w","insns":["fence r, w"],"mode":"match"}
+{"name":"fence_bare","insns":["fence"],"mode":"match"}
+{"name":"sfence_vma_two","insns":["sfence.vma a0, a1"],"mode":"match"}
+{"name":"sfence_vma_one","insns":["sfence.vma a0"],"mode":"match"}
+{"name":"sfence_vma_bare","insns":["sfence.vma"],"mode":"match"}

@@ -3830,6 +3830,8 @@ static U32 RvI(U32 f3,int rd,int rs1,int imm){ return 0x13u|(rd<<7)|(f3<<12)|(rs
 static U32 RvIw(U32 f3,int rd,int rs1,int imm){ return 0x1Bu|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
 static U32 RvRw(U32 f7,U32 f3,int rd,int rs1,int rs2){ return 0x3Bu|(rd<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|(f7<<25); }
 static U32 RvShiftW(U32 f3,U32 f7,int rd,int rs1,int sh){ return 0x1Bu|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)sh&0x1F)<<20)|(f7<<25); }
+// fence pred/succ ordering mask: letters i(8) o(4) r(2) w(1); e.g. "rw"=3, "iorw"=15. -1 if any bad letter.
+static int RvFenceMask(const char *s){ int m=0; if(!s||!s[0]) return -1; for(int i=0;s[i];i++){ char c=s[i]|0x20; if(c=='i')m|=8; else if(c=='o')m|=4; else if(c=='r')m|=2; else if(c=='w')m|=1; else return -1; } return m; }
 static U32 RvShift(U32 f3,U32 hi6,int rd,int rs1,int sh){ return 0x13u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)sh&0x3F)<<20)|(hi6<<26); }
 static U32 RvLoad(U32 f3,int rd,int imm,int rs1){ return 0x03u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
 static U32 RvStore(U32 f3,int rs2,int imm,int rs1){ return 0x23u|(((U32)imm&0x1F)<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|((((U32)imm>>5)&0x7F)<<25); }
@@ -4195,8 +4197,37 @@ static bool TryAssembleRiscV(Compiler *cc) {
       Error(cc, "no subi; use addi rd,rs1,-imm (or sub rd,rs1,rs2)");
       return false;
     }
-    if (!strcmp(w,"sfencevma")) {                                // rs1  (sfence.vma rs1, x0)
-      I->rs1=RvRegTok(cc); if (I->rs1<0) return false; nins++; continue;
+    if (!strcmp(w,"sfence.vma") || !strcmp(w,"sfencevma")) {     // sfence.vma [rs1[, rs2]]  (bare = zero,zero)
+      I->rs1 = 0; I->rs2 = 0;
+      if (cc->lex.token == TK_IDENT) {
+        LexPush(cc);
+        int r1 = RvRegTok(cc);                                   // consumes the ident
+        if (r1 >= 0) {
+          I->rs1 = r1;
+          if (cc->lex.token == ',') { LexNext(cc); int r2 = RvRegTok(cc); if (r2 < 0) { LexPopRestore(cc); return false; } I->rs2 = r2; }
+          LexPopNoRestore(cc);
+        } else {
+          LexPopRestore(cc);                                     // TK_IDENT was next mnemonic -> bare sfence.vma
+        }
+      }
+      nins++; continue;
+    }
+    if (!strcmp(w,"fence")) {                                     // fence [pred, succ]  (bare = iorw,iorw)
+      I->imm = 0xFF;                                              // default fm=0, pred=succ=iorw
+      if (cc->lex.token == TK_IDENT) {
+        int pred = RvFenceMask(cc->lex.token_str);
+        if (pred >= 0) {
+          LexPush(cc);
+          LexNext(cc);                                            // past pred
+          if (cc->lex.token == ',') {
+            LexNext(cc);                                          // past ','
+            int succ = (cc->lex.token == TK_IDENT) ? RvFenceMask(cc->lex.token_str) : -1;
+            if (succ >= 0) { LexNext(cc); LexPopNoRestore(cc); I->imm = (pred<<4)|succ; nins++; continue; }
+          }
+          LexPopRestore(cc);                                      // not fence operands -> bare fence
+        }
+      }
+      nins++; continue;
     }
     if (!strcmp(w,"fsqrtd")) {                                   // fd, fs  (both float)
       I->rd=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvFRegTok(cc);
@@ -4220,13 +4251,13 @@ static bool TryAssembleRiscV(Compiler *cc) {
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvFRegTok(cc);
       if (I->rd<0||I->rs1<0) return false; nins++; continue;
     }
-    if (!strcmp(w,"add")||!strcmp(w,"sub")||!strcmp(w,"and")||!strcmp(w,"or")||!strcmp(w,"xor")||!strcmp(w,"sll")||!strcmp(w,"srl")||!strcmp(w,"sra")||!strcmp(w,"slt")||!strcmp(w,"sltu")||!strcmp(w,"mul")||!strcmp(w,"div")||!strcmp(w,"rem")||!strcmp(w,"divu")||!strcmp(w,"remu")||
+    if (!strcmp(w,"add")||!strcmp(w,"sub")||!strcmp(w,"and")||!strcmp(w,"or")||!strcmp(w,"xor")||!strcmp(w,"sll")||!strcmp(w,"srl")||!strcmp(w,"sra")||!strcmp(w,"slt")||!strcmp(w,"sltu")||!strcmp(w,"mul")||!strcmp(w,"mulh")||!strcmp(w,"mulhsu")||!strcmp(w,"mulhu")||!strcmp(w,"div")||!strcmp(w,"rem")||!strcmp(w,"divu")||!strcmp(w,"remu")||
         !strcmp(w,"addw")||!strcmp(w,"subw")||!strcmp(w,"sllw")||!strcmp(w,"srlw")||!strcmp(w,"sraw")||!strcmp(w,"mulw")||!strcmp(w,"divw")||!strcmp(w,"divuw")||!strcmp(w,"remw")||!strcmp(w,"remuw")||
-        !strcmp(w,"addi")||!strcmp(w,"addiw")||!strcmp(w,"andi")||!strcmp(w,"ori")||!strcmp(w,"xori")||!strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai")||!strcmp(w,"slliw")||!strcmp(w,"srliw")||!strcmp(w,"sraiw")||!strcmp(w,"slti")) {
+        !strcmp(w,"addi")||!strcmp(w,"addiw")||!strcmp(w,"andi")||!strcmp(w,"ori")||!strcmp(w,"xori")||!strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai")||!strcmp(w,"slliw")||!strcmp(w,"srliw")||!strcmp(w,"sraiw")||!strcmp(w,"slti")||!strcmp(w,"sltiu")) {
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
       bool shamt_form  = !strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai");
       bool shamtw_form = !strcmp(w,"slliw")||!strcmp(w,"srliw")||!strcmp(w,"sraiw");
-      bool imm_form = !strcmp(w,"addiw") || !strcmp(w,"addi") || !strcmp(w,"andi") || !strcmp(w,"ori") || !strcmp(w,"xori") || !strcmp(w,"slti") || shamt_form || shamtw_form;
+      bool imm_form = !strcmp(w,"addiw") || !strcmp(w,"addi") || !strcmp(w,"andi") || !strcmp(w,"ori") || !strcmp(w,"xori") || !strcmp(w,"slti") || !strcmp(w,"sltiu") || shamt_form || shamtw_form;
       if (imm_form) {
         if(!RvImmTok(cc,&I->imm)) return false;
         if (shamt_form) {
@@ -4416,6 +4447,7 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"ori"))  word = RvI(6,I->rd,I->rs1,I->imm);
     else if (!strcmp(m,"xori")) word = RvI(4,I->rd,I->rs1,I->imm);
     else if (!strcmp(m,"slti")) word = RvI(2,I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"sltiu")) word = RvI(3,I->rd,I->rs1,I->imm);
     else if (!strcmp(m,"slli")) word = RvShift(1,0,I->rd,I->rs1,I->imm);
     else if (!strcmp(m,"srli")) word = RvShift(5,0,I->rd,I->rs1,I->imm);
     else if (!strcmp(m,"srai")) word = RvShift(5,0x10,I->rd,I->rs1,I->imm);
@@ -4430,6 +4462,9 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"slt"))  word = RvR(0,2,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"sltu")) word = RvR(0,3,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"mul"))  word = RvR(1,0,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"mulh")) word = RvR(1,1,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"mulhsu")) word = RvR(1,2,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"mulhu")) word = RvR(1,3,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"div"))  word = RvR(1,4,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"rem"))  word = RvR(1,6,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"divu")) word = RvR(1,5,I->rd,I->rs1,I->rs2);
@@ -4469,7 +4504,8 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"csrrw"))      word = 0x00001073u | (I->rd<<7) | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
     else if (!strcmp(m,"csrrs"))      word = 0x00002073u | (I->rd<<7) | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
     else if (!strcmp(m,"csrrc"))      word = 0x00003073u | (I->rd<<7) | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);
-    else if (!strcmp(m,"sfencevma"))  word = 0x12000073u | (I->rs1<<15);
+    else if (!strcmp(m,"sfence.vma") || !strcmp(m,"sfencevma"))  word = 0x12000073u | (I->rs2<<20) | (I->rs1<<15);
+    else if (!strcmp(m,"fence"))      word = 0x0000000Fu | (((U32)I->imm & 0xFFF)<<20);
     else if (!strcmp(m,"wfi"))        word = 0x10500073u;
     else if (!strcmp(m,"lui"))        word = RvU(0x37u, I->rd, I->imm);
     else if (!strcmp(m,"auipc"))      word = RvU(0x17u, I->rd, I->imm);

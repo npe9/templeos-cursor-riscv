@@ -381,6 +381,20 @@ U0 DisasmOne(I64 addr, I64 w)
       Pm("fencei");
     else
       Pm("fence.i");
+  } else if (op == 0x0F && f3 == 0) {
+    // fence pred, succ — pred=imm[27:24], succ=imm[23:20]; letters i(8) o(4) r(2) w(1).
+    rs1 = (w >> 24) & 0xF;
+    rs2 = (w >> 20) & 0xF;
+    Print("fence ");
+    if (rs1 & 8) Print("i");
+    if (rs1 & 4) Print("o");
+    if (rs1 & 2) Print("r");
+    if (rs1 & 1) Print("w");
+    Print(", ");
+    if (rs2 & 8) Print("i");
+    if (rs2 & 4) Print("o");
+    if (rs2 & 2) Print("r");
+    if (rs2 & 1) Print("w");
   } else if (w == 0x00008067)
     Pm("ret");
   else if (op == 0x37) {
@@ -450,12 +464,6 @@ U0 DisasmOne(I64 addr, I64 w)
         mn = "ori";
       else
         mn = "andi";
-      if (DisAsmMode && f3 == 3) {
-        Print("; sltiu %s, %s, ", RN[rd], RN[rs1]);
-        DiImm(immI);
-        Print(" (no sltiu in asm{})\n");
-        goto disasm_one_track;
-      }
       Print("%s %s, %s, ", mn, RN[rd], RN[rs1]);
       if (f3 == 1 || f3 == 5)
         DiImm ((w >> 20) & 0x3F);
@@ -516,6 +524,12 @@ U0 DisasmOne(I64 addr, I64 w)
     } else if (f7 == 1) {
       if (f3 == 0)
         mn = "mul";
+      else if (f3 == 1)
+        mn = "mulh";
+      else if (f3 == 2)
+        mn = "mulhsu";
+      else if (f3 == 3)
+        mn = "mulhu";
       else if (f3 == 4)
         mn = "div";
       else if (f3 == 5)
@@ -615,6 +629,9 @@ U0 DisasmOne(I64 addr, I64 w)
       Print("%s %s, ", mn, RN[rd]);
       PCsr(csr);
       Print(", %s", RN[rs1]);
+    } else if (f3 == 0 && f7 == 0x09) {
+      // sfence.vma rs1, rs2 — flush address translation (rs1=vaddr, rs2=asid; zero=all).
+      Print("sfence.vma %s, %s", RN[rs1], RN[rs2]);
     } else {
       if (w == 0x73)
         Pm("ecall");
