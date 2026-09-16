@@ -111,3 +111,17 @@
 {"name":"f_fsgnjx_s","insns":["fsgnjx.s fa0, fa1, fa2"],"mode":"match"}
 {"name":"f_fmin_s","insns":["fmin.s fa0, fa1, fa2"],"mode":"match"}
 {"name":"f_fmax_s","insns":["fmax.s fa0, fa1, fa2"],"mode":"match"}
+{"name":"f_fle_s","insns":["fle.s a0, fa1, fa2"],"mode":"match"}
+{"name":"f_flt_s","insns":["flt.s a0, fa1, fa2"],"mode":"match"}
+{"name":"f_feq_s","insns":["feq.s a0, fa1, fa2"],"mode":"match"}
+{"name":"f_fclass_s","insns":["fclass.s a0, fa1"],"mode":"match"}
+{"name":"f_fmv_x_w","insns":["fmv.x.w a0, fa1"],"mode":"match"}
+{"name":"f_fmv_w_x","insns":["fmv.w.x fa0, a1"],"mode":"match"}
+{"name":"f_fcvt_w_s","insns":["fcvt.w.s a0, fa1"],"mode":"match"}
+{"name":"f_fcvt_wu_s","insns":["fcvt.wu.s a0, fa1"],"mode":"match"}
+{"name":"f_fcvt_l_s","insns":["fcvt.l.s a0, fa1"],"mode":"match"}
+{"name":"f_fcvt_lu_s","insns":["fcvt.lu.s a0, fa1"],"mode":"match"}
+{"name":"f_fcvt_s_w","insns":["fcvt.s.w fa0, a1"],"mode":"match"}
+{"name":"f_fcvt_s_wu","insns":["fcvt.s.wu fa0, a1"],"mode":"match"}
+{"name":"f_fcvt_s_l","insns":["fcvt.s.l fa0, a1"],"mode":"match"}
+{"name":"f_fcvt_s_lu","insns":["fcvt.s.lu fa0, a1"],"mode":"match"}

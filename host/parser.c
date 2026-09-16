@@ -4262,16 +4262,18 @@ static bool TryAssembleRiscV(Compiler *cc) {
       I->rs1=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs2=RvFRegTok(cc);
       if (I->rd<0||I->rs1<0||I->rs2<0) return false; nins++; continue;
     }
-    if (!strcmp(w,"fled")||!strcmp(w,"fltd")||!strcmp(w,"feqd")) { // rd(int), fs1, fs2 (float) -> 0/1
+    if (!strcmp(w,"fled")||!strcmp(w,"fltd")||!strcmp(w,"feqd")||!strcmp(w,"fle.s")||!strcmp(w,"flt.s")||!strcmp(w,"feq.s")) { // rd(int), fs1, fs2 (float) -> 0/1
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
       I->rs1=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs2=RvFRegTok(cc);
       if (I->rd<0||I->rs1<0||I->rs2<0) return false; nins++; continue;
     }
-    if (!strcmp(w,"fmvdx")||!strcmp(w,"fcvtdl")||!strcmp(w,"fcvt.d.w")||!strcmp(w,"fcvt.d.wu")||!strcmp(w,"fcvt.d.l")||!strcmp(w,"fcvt.d.lu")) {  // fd(float), rs(int)
+    if (!strcmp(w,"fmvdx")||!strcmp(w,"fcvtdl")||!strcmp(w,"fcvt.d.w")||!strcmp(w,"fcvt.d.wu")||!strcmp(w,"fcvt.d.l")||!strcmp(w,"fcvt.d.lu")||
+        !strcmp(w,"fmv.w.x")||!strcmp(w,"fcvt.s.w")||!strcmp(w,"fcvt.s.wu")||!strcmp(w,"fcvt.s.l")||!strcmp(w,"fcvt.s.lu")) {  // fd(float), rs(int)
       I->rd=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc);
       if (I->rd<0||I->rs1<0) return false; nins++; continue;
     }
-    if (!strcmp(w,"fmvxd")||!strcmp(w,"fcvtld_rtz")||!strcmp(w,"fcvtld_rdn")||!strcmp(w,"fcvtld_rmm")||!strcmp(w,"fclass.d")||!strcmp(w,"fcvt.w.d")||!strcmp(w,"fcvt.wu.d")||!strcmp(w,"fcvt.l.d")||!strcmp(w,"fcvt.lu.d")) { // rd(int), fs(float)
+    if (!strcmp(w,"fmvxd")||!strcmp(w,"fcvtld_rtz")||!strcmp(w,"fcvtld_rdn")||!strcmp(w,"fcvtld_rmm")||!strcmp(w,"fclass.d")||!strcmp(w,"fcvt.w.d")||!strcmp(w,"fcvt.wu.d")||!strcmp(w,"fcvt.l.d")||!strcmp(w,"fcvt.lu.d")||
+        !strcmp(w,"fmv.x.w")||!strcmp(w,"fclass.s")||!strcmp(w,"fcvt.w.s")||!strcmp(w,"fcvt.wu.s")||!strcmp(w,"fcvt.l.s")||!strcmp(w,"fcvt.lu.s")) { // rd(int), fs(float)
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvFRegTok(cc);
       if (I->rd<0||I->rs1<0) return false; nins++; continue;
     }
@@ -4558,6 +4560,20 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"fsgnjx.s"))   word = 0x20000053u | (I->rd<<7) | (2u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fmin.s"))     word = 0x28000053u | (I->rd<<7) | (0u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fmax.s"))     word = 0x28000053u | (I->rd<<7) | (1u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fle.s"))      word = 0xA0000053u | (I->rd<<7) | (0u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"flt.s"))      word = 0xA0000053u | (I->rd<<7) | (1u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"feq.s"))      word = 0xA0000053u | (I->rd<<7) | (2u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fclass.s"))   word = 0xE0000053u | (I->rd<<7) | (1u<<12) | (I->rs1<<15);
+    else if (!strcmp(m,"fmv.x.w"))    word = 0xE0000053u | (I->rd<<7) | (0u<<12) | (I->rs1<<15);
+    else if (!strcmp(m,"fmv.w.x"))    word = 0xF0000053u | (I->rd<<7) | (0u<<12) | (I->rs1<<15);
+    else if (!strcmp(m,"fcvt.w.s"))   word = 0xC0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (0u<<20);
+    else if (!strcmp(m,"fcvt.wu.s"))  word = 0xC0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (1u<<20);
+    else if (!strcmp(m,"fcvt.l.s"))   word = 0xC0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (2u<<20);
+    else if (!strcmp(m,"fcvt.lu.s"))  word = 0xC0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (3u<<20);
+    else if (!strcmp(m,"fcvt.s.w"))   word = 0xD0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (0u<<20);
+    else if (!strcmp(m,"fcvt.s.wu"))  word = 0xD0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (1u<<20);
+    else if (!strcmp(m,"fcvt.s.l"))   word = 0xD0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (2u<<20);
+    else if (!strcmp(m,"fcvt.s.lu"))  word = 0xD0000053u | (I->rd<<7) | (7u<<12) | (I->rs1<<15) | (3u<<20);
     else if (!strcmp(m,"rdtime"))     word = 0xC0102073u | (I->rd<<7);
     else if (!strcmp(m,"csrr"))       word = 0x00002073u | (I->rd<<7)  | (((U32)I->imm & 0xFFF)<<20);
     else if (!strcmp(m,"csrw"))       word = 0x00001073u | (I->rs1<<15) | (((U32)I->imm & 0xFFF)<<20);

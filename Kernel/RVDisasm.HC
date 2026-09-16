@@ -702,6 +702,41 @@ U0 DisasmOne(I64 addr, I64 w)
       else
         mn = "fmax.s";
       Print("%s %s, %s, %s", mn, FRN[rd], FRN[rs1], FRN[rs2]);
+    } else if (f7 == 0x50) {
+      if (f3 == 0)
+        mn = "fle.s";
+      else if (f3 == 1)
+        mn = "flt.s";
+      else
+        mn = "feq.s";
+      Print("%s %s, %s, %s", mn, RN[rd], FRN[rs1], FRN[rs2]);
+    } else if (f7 == 0x70) {
+      if (f3 == 0)
+        Print("fmv.x.w %s, %s", RN[rd], FRN[rs1]);
+      else
+        Print("fclass.s %s, %s", RN[rd], FRN[rs1]);
+    } else if (f7 == 0x78) {
+      Print("fmv.w.x %s, %s", FRN[rd], RN[rs1]);
+    } else if (f7 == 0x60) {
+      if (rs2 == 2)
+        mn = "fcvt.l.s";
+      else if (rs2 == 3)
+        mn = "fcvt.lu.s";
+      else if (rs2 == 0)
+        mn = "fcvt.w.s";
+      else
+        mn = "fcvt.wu.s";
+      Print("%s %s, %s", mn, RN[rd], FRN[rs1]);
+    } else if (f7 == 0x68) {
+      if (rs2 == 2)
+        mn = "fcvt.s.l";
+      else if (rs2 == 3)
+        mn = "fcvt.s.lu";
+      else if (rs2 == 0)
+        mn = "fcvt.s.w";
+      else
+        mn = "fcvt.s.wu";
+      Print("%s %s, %s", mn, FRN[rd], RN[rs1]);
     } else if (f7 == 0x11) {
       if (rs1 == rs2) {
         if (f3 == 0)

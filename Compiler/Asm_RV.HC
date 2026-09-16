@@ -35,7 +35,7 @@ Bool RvAsmIsMn(U8 *s)
 {
   if (!s)
     return FALSE;
-  if (RvAsmStrEqI(s, "ret") || RvAsmStrEqI(s, "nop") || RvAsmStrEqI(s, "wfi") || RvAsmStrEqI(s, "mret") || RvAsmStrEqI(s, "sret") || RvAsmStrEqI(s, "ecall") || RvAsmStrEqI(s, "ebreak") || RvAsmStrEqI(s, "fencei") || RvAsmStrEqI(s, "fence.i") || RvAsmStrEqI(s, "fence") || RvAsmStrEqI(s, "sfence") || RvAsmStrEqI(s, "sfencevma") || RvAsmStrEqI(s, "mv") || RvAsmStrEqI(s, "not") || RvAsmStrEqI(s, "neg") || RvAsmStrEqI(s, "seqz") || RvAsmStrEqI(s, "snez") || RvAsmStrEqI(s, "csrc") || RvAsmStrEqI(s, "rdtime") || RvAsmStrEqI(s, "li") || RvAsmStrEqI(s, "lui") || RvAsmStrEqI(s, "auipc") || RvAsmStrEqI(s, "addi") || RvAsmStrEqI(s, "andi") || RvAsmStrEqI(s, "ori") || RvAsmStrEqI(s, "xori") || RvAsmStrEqI(s, "slti") || RvAsmStrEqI(s, "slli") || RvAsmStrEqI(s, "srli") || RvAsmStrEqI(s, "srai") || RvAsmStrEqI(s, "add") || RvAsmStrEqI(s, "sub") || RvAsmStrEqI(s, "and") || RvAsmStrEqI(s, "or") || RvAsmStrEqI(s, "xor") || RvAsmStrEqI(s, "sll") || RvAsmStrEqI(s, "srl") || RvAsmStrEqI(s, "sra") || RvAsmStrEqI(s, "slt") || RvAsmStrEqI(s, "sltu") || RvAsmStrEqI(s, "sltiu") || RvAsmStrEqI(s, "mul") || RvAsmStrEqI(s, "mulh") || RvAsmStrEqI(s, "mulhsu") || RvAsmStrEqI(s, "mulhu") || RvAsmStrEqI(s, "div") || RvAsmStrEqI(s, "rem") || RvAsmStrEqI(s, "divu") || RvAsmStrEqI(s, "remu") || RvAsmStrEqI(s, "addiw") || RvAsmStrEqI(s, "slliw") || RvAsmStrEqI(s, "srliw") || RvAsmStrEqI(s, "sraiw") || RvAsmStrEqI(s, "addw") || RvAsmStrEqI(s, "subw") || RvAsmStrEqI(s, "sllw") || RvAsmStrEqI(s, "srlw") || RvAsmStrEqI(s, "sraw") || RvAsmStrEqI(s, "mulw") || RvAsmStrEqI(s, "divw") || RvAsmStrEqI(s, "divuw") || RvAsmStrEqI(s, "remw") || RvAsmStrEqI(s, "remuw") || RvAsmStrEqI(s, "ld") || RvAsmStrEqI(s, "lw") || RvAsmStrEqI(s, "lwu") || RvAsmStrEqI(s, "lh") || RvAsmStrEqI(s, "lhu") || RvAsmStrEqI(s, "lb") || RvAsmStrEqI(s, "lbu") || RvAsmStrEqI(s, "sd") || RvAsmStrEqI(s, "sw") || RvAsmStrEqI(s, "sh") || RvAsmStrEqI(s, "sb") || RvAsmStrEqI(s, "jalr") || RvAsmStrEqI(s, "jal") || RvAsmStrEqI(s, "jr") || RvAsmStrEqI(s, "beq") || RvAsmStrEqI(s, "bne") || RvAsmStrEqI(s, "blt") || RvAsmStrEqI(s, "bge") || RvAsmStrEqI(s, "bltu") || RvAsmStrEqI(s, "bgeu") || RvAsmStrEqI(s, "beqz") || RvAsmStrEqI(s, "bnez") || RvAsmStrEqI(s, "faddd") || RvAsmStrEqI(s, "fsubd") || RvAsmStrEqI(s, "fmuld") || RvAsmStrEqI(s, "fdivd") || RvAsmStrEqI(s, "fsqrtd") || RvAsmStrEqI(s, "fadd") || RvAsmStrEqI(s, "fsub") || RvAsmStrEqI(s, "fmul") || RvAsmStrEqI(s, "fdiv") || RvAsmStrEqI(s, "fsqrt") || RvAsmStrEqI(s, "flw") || RvAsmStrEqI(s, "fsw") || RvAsmStrEqI(s, "fled") || RvAsmStrEqI(s, "fltd") || RvAsmStrEqI(s, "feqd") || RvAsmStrEqI(s, "fmvdx") || RvAsmStrEqI(s, "fmvxd") || RvAsmStrEqI(s, "fsgnj") || RvAsmStrEqI(s, "fsgnjn") || RvAsmStrEqI(s, "fsgnjx") || RvAsmStrEqI(s, "fmin") || RvAsmStrEqI(s, "fmax") || RvAsmStrEqI(s, "fclass") || RvAsmStrEqI(s, "fmadd") || RvAsmStrEqI(s, "fmsub") || RvAsmStrEqI(s, "fnmsub") || RvAsmStrEqI(s, "fnmadd") || RvAsmStrEqI(s, "fcvtld_rtz") || RvAsmStrEqI(s, "fcvtld_rdn") || RvAsmStrEqI(s, "fcvtld_rmm") || RvAsmStrEqI(s, "fcvtdl") || RvAsmStrEqI(s, "fcvt") || RvAsmStrEqI(s, "fld") || RvAsmStrEqI(s, "fsd") || RvAsmStrEqI(s, "csrr") || RvAsmStrEqI(s, "csrw") || RvAsmStrEqI(s, "csrs") || RvAsmStrEqI(s, "csrrw") || RvAsmStrEqI(s, "csrrs") || RvAsmStrEqI(s, "csrrc") || RvAsmStrEqI(s, "csrrwi") || RvAsmStrEqI(s, "csrrsi") || RvAsmStrEqI(s, "csrrci") || RvAsmStrEqI(s, "csrwi") || RvAsmStrEqI(s, "csrsi") || RvAsmStrEqI(s, "csrci") || RvAsmStrEqI(s, "lrd") || RvAsmStrEqI(s, "lrw") || RvAsmStrEqI(s, "scd") || RvAsmStrEqI(s, "scw") || RvAsmStrEqI(s, "amoswapd") || RvAsmStrEqI(s, "amoaddd") || RvAsmStrEqI(s, "amoxord") || RvAsmStrEqI(s, "amoandd") || RvAsmStrEqI(s, "amoord") || RvAsmStrEqI(s, "amomind") || RvAsmStrEqI(s, "amomaxd") || RvAsmStrEqI(s, "amominud") || RvAsmStrEqI(s, "amomaxud") || RvAsmStrEqI(s, "amoswapw") || RvAsmStrEqI(s, "amoaddw") || RvAsmStrEqI(s, "amoxorw") || RvAsmStrEqI(s, "amoandw") || RvAsmStrEqI(s, "amoorw") || RvAsmStrEqI(s, "amominw") || RvAsmStrEqI(s, "amomaxw") || RvAsmStrEqI(s, "amominuw") || RvAsmStrEqI(s, "amomaxuw") || RvAsmStrEqI(s, "lr") || RvAsmStrEqI(s, "sc") || RvAsmStrEqI(s, "amoswap") || RvAsmStrEqI(s, "amoadd") || RvAsmStrEqI(s, "amoxor") || RvAsmStrEqI(s, "amoand") || RvAsmStrEqI(s, "amoor") || RvAsmStrEqI(s, "amomin") || RvAsmStrEqI(s, "amomax") || RvAsmStrEqI(s, "amominu") || RvAsmStrEqI(s, "amomaxu"))
+  if (RvAsmStrEqI(s, "ret") || RvAsmStrEqI(s, "nop") || RvAsmStrEqI(s, "wfi") || RvAsmStrEqI(s, "mret") || RvAsmStrEqI(s, "sret") || RvAsmStrEqI(s, "ecall") || RvAsmStrEqI(s, "ebreak") || RvAsmStrEqI(s, "fencei") || RvAsmStrEqI(s, "fence.i") || RvAsmStrEqI(s, "fence") || RvAsmStrEqI(s, "sfence") || RvAsmStrEqI(s, "sfencevma") || RvAsmStrEqI(s, "mv") || RvAsmStrEqI(s, "not") || RvAsmStrEqI(s, "neg") || RvAsmStrEqI(s, "seqz") || RvAsmStrEqI(s, "snez") || RvAsmStrEqI(s, "csrc") || RvAsmStrEqI(s, "rdtime") || RvAsmStrEqI(s, "li") || RvAsmStrEqI(s, "lui") || RvAsmStrEqI(s, "auipc") || RvAsmStrEqI(s, "addi") || RvAsmStrEqI(s, "andi") || RvAsmStrEqI(s, "ori") || RvAsmStrEqI(s, "xori") || RvAsmStrEqI(s, "slti") || RvAsmStrEqI(s, "slli") || RvAsmStrEqI(s, "srli") || RvAsmStrEqI(s, "srai") || RvAsmStrEqI(s, "add") || RvAsmStrEqI(s, "sub") || RvAsmStrEqI(s, "and") || RvAsmStrEqI(s, "or") || RvAsmStrEqI(s, "xor") || RvAsmStrEqI(s, "sll") || RvAsmStrEqI(s, "srl") || RvAsmStrEqI(s, "sra") || RvAsmStrEqI(s, "slt") || RvAsmStrEqI(s, "sltu") || RvAsmStrEqI(s, "sltiu") || RvAsmStrEqI(s, "mul") || RvAsmStrEqI(s, "mulh") || RvAsmStrEqI(s, "mulhsu") || RvAsmStrEqI(s, "mulhu") || RvAsmStrEqI(s, "div") || RvAsmStrEqI(s, "rem") || RvAsmStrEqI(s, "divu") || RvAsmStrEqI(s, "remu") || RvAsmStrEqI(s, "addiw") || RvAsmStrEqI(s, "slliw") || RvAsmStrEqI(s, "srliw") || RvAsmStrEqI(s, "sraiw") || RvAsmStrEqI(s, "addw") || RvAsmStrEqI(s, "subw") || RvAsmStrEqI(s, "sllw") || RvAsmStrEqI(s, "srlw") || RvAsmStrEqI(s, "sraw") || RvAsmStrEqI(s, "mulw") || RvAsmStrEqI(s, "divw") || RvAsmStrEqI(s, "divuw") || RvAsmStrEqI(s, "remw") || RvAsmStrEqI(s, "remuw") || RvAsmStrEqI(s, "ld") || RvAsmStrEqI(s, "lw") || RvAsmStrEqI(s, "lwu") || RvAsmStrEqI(s, "lh") || RvAsmStrEqI(s, "lhu") || RvAsmStrEqI(s, "lb") || RvAsmStrEqI(s, "lbu") || RvAsmStrEqI(s, "sd") || RvAsmStrEqI(s, "sw") || RvAsmStrEqI(s, "sh") || RvAsmStrEqI(s, "sb") || RvAsmStrEqI(s, "jalr") || RvAsmStrEqI(s, "jal") || RvAsmStrEqI(s, "jr") || RvAsmStrEqI(s, "beq") || RvAsmStrEqI(s, "bne") || RvAsmStrEqI(s, "blt") || RvAsmStrEqI(s, "bge") || RvAsmStrEqI(s, "bltu") || RvAsmStrEqI(s, "bgeu") || RvAsmStrEqI(s, "beqz") || RvAsmStrEqI(s, "bnez") || RvAsmStrEqI(s, "faddd") || RvAsmStrEqI(s, "fsubd") || RvAsmStrEqI(s, "fmuld") || RvAsmStrEqI(s, "fdivd") || RvAsmStrEqI(s, "fsqrtd") || RvAsmStrEqI(s, "fadd") || RvAsmStrEqI(s, "fsub") || RvAsmStrEqI(s, "fmul") || RvAsmStrEqI(s, "fdiv") || RvAsmStrEqI(s, "fsqrt") || RvAsmStrEqI(s, "flw") || RvAsmStrEqI(s, "fsw") || RvAsmStrEqI(s, "fled") || RvAsmStrEqI(s, "fltd") || RvAsmStrEqI(s, "feqd") || RvAsmStrEqI(s, "fle") || RvAsmStrEqI(s, "flt") || RvAsmStrEqI(s, "feq") || RvAsmStrEqI(s, "fmv") || RvAsmStrEqI(s, "fmvdx") || RvAsmStrEqI(s, "fmvxd") || RvAsmStrEqI(s, "fsgnj") || RvAsmStrEqI(s, "fsgnjn") || RvAsmStrEqI(s, "fsgnjx") || RvAsmStrEqI(s, "fmin") || RvAsmStrEqI(s, "fmax") || RvAsmStrEqI(s, "fclass") || RvAsmStrEqI(s, "fmadd") || RvAsmStrEqI(s, "fmsub") || RvAsmStrEqI(s, "fnmsub") || RvAsmStrEqI(s, "fnmadd") || RvAsmStrEqI(s, "fcvtld_rtz") || RvAsmStrEqI(s, "fcvtld_rdn") || RvAsmStrEqI(s, "fcvtld_rmm") || RvAsmStrEqI(s, "fcvtdl") || RvAsmStrEqI(s, "fcvt") || RvAsmStrEqI(s, "fld") || RvAsmStrEqI(s, "fsd") || RvAsmStrEqI(s, "csrr") || RvAsmStrEqI(s, "csrw") || RvAsmStrEqI(s, "csrs") || RvAsmStrEqI(s, "csrrw") || RvAsmStrEqI(s, "csrrs") || RvAsmStrEqI(s, "csrrc") || RvAsmStrEqI(s, "csrrwi") || RvAsmStrEqI(s, "csrrsi") || RvAsmStrEqI(s, "csrrci") || RvAsmStrEqI(s, "csrwi") || RvAsmStrEqI(s, "csrsi") || RvAsmStrEqI(s, "csrci") || RvAsmStrEqI(s, "lrd") || RvAsmStrEqI(s, "lrw") || RvAsmStrEqI(s, "scd") || RvAsmStrEqI(s, "scw") || RvAsmStrEqI(s, "amoswapd") || RvAsmStrEqI(s, "amoaddd") || RvAsmStrEqI(s, "amoxord") || RvAsmStrEqI(s, "amoandd") || RvAsmStrEqI(s, "amoord") || RvAsmStrEqI(s, "amomind") || RvAsmStrEqI(s, "amomaxd") || RvAsmStrEqI(s, "amominud") || RvAsmStrEqI(s, "amomaxud") || RvAsmStrEqI(s, "amoswapw") || RvAsmStrEqI(s, "amoaddw") || RvAsmStrEqI(s, "amoxorw") || RvAsmStrEqI(s, "amoandw") || RvAsmStrEqI(s, "amoorw") || RvAsmStrEqI(s, "amominw") || RvAsmStrEqI(s, "amomaxw") || RvAsmStrEqI(s, "amominuw") || RvAsmStrEqI(s, "amomaxuw") || RvAsmStrEqI(s, "lr") || RvAsmStrEqI(s, "sc") || RvAsmStrEqI(s, "amoswap") || RvAsmStrEqI(s, "amoadd") || RvAsmStrEqI(s, "amoxor") || RvAsmStrEqI(s, "amoand") || RvAsmStrEqI(s, "amoor") || RvAsmStrEqI(s, "amomin") || RvAsmStrEqI(s, "amomax") || RvAsmStrEqI(s, "amominu") || RvAsmStrEqI(s, "amomaxu"))
     return TRUE;
   // subi is not a standard gas mnemonic — reject with a clear LexExcept in PrsAsmRVIns.
   if (RvAsmStrEqI(s, "subi"))
@@ -1498,7 +1498,8 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
     AOTStoreCodeU32(cc, word);
     return TRUE;
   }
-  if (RvAsmStrEqI(mn, "fled") || RvAsmStrEqI(mn, "fltd") || RvAsmStrEqI(mn, "feqd")) { // rd(GPR), fs1, fs2 (FPR) -> 0/1
+  if (RvAsmStrEqI(mn, "fled") || RvAsmStrEqI(mn, "fltd") || RvAsmStrEqI(mn, "feqd") ||
+      RvAsmStrEqI(mn, "fle.s") || RvAsmStrEqI(mn, "flt.s") || RvAsmStrEqI(mn, "feq.s")) { // rd(GPR), fs1, fs2 (FPR) -> 0/1
     rd = RvAsmRegTok(cc);
     if (cc->token != ',') {
       Free(mn);
@@ -1516,17 +1517,22 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       Free(mn);
       LexExcept(cc, "Bad register at ");
     }
-    if (RvAsmStrEqI(mn, "fled"))
+    if (RvAsmStrEqI(mn, "fled") || RvAsmStrEqI(mn, "fle.s"))
       first = 0;
-    else if (RvAsmStrEqI(mn, "fltd"))
+    else if (RvAsmStrEqI(mn, "fltd") || RvAsmStrEqI(mn, "flt.s"))
       first = 1;
     else
       first = 2;
+    if (RvAsmStrEqI(mn, "fle.s") || RvAsmStrEqI(mn, "flt.s") || RvAsmStrEqI(mn, "feq.s"))
+      word = 0xA0000053;
+    else
+      word = 0xA2000053;
     Free(mn);
-    AOTStoreCodeU32(cc, 0xA2000053 | (rd << 7) | (first << 12) | (rs1 << 15) | (rs2 << 20));
+    AOTStoreCodeU32(cc, word | (rd << 7) | (first << 12) | (rs1 << 15) | (rs2 << 20));
     return TRUE;
   }
-  if (RvAsmStrEqI(mn, "fmvdx") || RvAsmStrEqI(mn, "fcvtdl") || RvAsmStrEqI(mn, "fcvt.d.w") || RvAsmStrEqI(mn, "fcvt.d.wu") || RvAsmStrEqI(mn, "fcvt.d.l") || RvAsmStrEqI(mn, "fcvt.d.lu")) { // fd(FPR), rs(GPR)
+  if (RvAsmStrEqI(mn, "fmvdx") || RvAsmStrEqI(mn, "fcvtdl") || RvAsmStrEqI(mn, "fcvt.d.w") || RvAsmStrEqI(mn, "fcvt.d.wu") || RvAsmStrEqI(mn, "fcvt.d.l") || RvAsmStrEqI(mn, "fcvt.d.lu") ||
+      RvAsmStrEqI(mn, "fmv.w.x") || RvAsmStrEqI(mn, "fcvt.s.w") || RvAsmStrEqI(mn, "fcvt.s.wu") || RvAsmStrEqI(mn, "fcvt.s.l") || RvAsmStrEqI(mn, "fcvt.s.lu")) { // fd(FPR), rs(GPR)
     rd = RvAsmFRegTok(cc);
     if (cc->token != ',') {
       Free(mn);
@@ -1546,13 +1552,24 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       word = 0xD2000053 | (rd << 7) | (0 << 12) | (rs1 << 15) | (1 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.d.lu"))
       word = 0xD2000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (3 << 20);
+    else if (RvAsmStrEqI(mn, "fmv.w.x"))
+      word = 0xF0000053 | (rd << 7) | (0 << 12) | (rs1 << 15);
+    else if (RvAsmStrEqI(mn, "fcvt.s.w"))
+      word = 0xD0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (0 << 20);
+    else if (RvAsmStrEqI(mn, "fcvt.s.wu"))
+      word = 0xD0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (1 << 20);
+    else if (RvAsmStrEqI(mn, "fcvt.s.l"))
+      word = 0xD0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (2 << 20);
+    else if (RvAsmStrEqI(mn, "fcvt.s.lu"))
+      word = 0xD0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (3 << 20);
     else
       word = 0xD2000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (2 << 20); // fcvtdl == fcvt.d.l
     Free(mn);
     AOTStoreCodeU32(cc, word);
     return TRUE;
   }
-  if (RvAsmStrEqI(mn, "fmvxd") || RvAsmStrEqI(mn, "fclass.d") || RvAsmStrEqI(mn, "fcvtld_rtz") || RvAsmStrEqI(mn, "fcvtld_rdn") || RvAsmStrEqI(mn, "fcvtld_rmm") || RvAsmStrEqI(mn, "fcvt.w.d") || RvAsmStrEqI(mn, "fcvt.wu.d") || RvAsmStrEqI(mn, "fcvt.l.d") || RvAsmStrEqI(mn, "fcvt.lu.d")) { // rd(GPR), fs(FPR)
+  if (RvAsmStrEqI(mn, "fmvxd") || RvAsmStrEqI(mn, "fclass.d") || RvAsmStrEqI(mn, "fcvtld_rtz") || RvAsmStrEqI(mn, "fcvtld_rdn") || RvAsmStrEqI(mn, "fcvtld_rmm") || RvAsmStrEqI(mn, "fcvt.w.d") || RvAsmStrEqI(mn, "fcvt.wu.d") || RvAsmStrEqI(mn, "fcvt.l.d") || RvAsmStrEqI(mn, "fcvt.lu.d") ||
+      RvAsmStrEqI(mn, "fmv.x.w") || RvAsmStrEqI(mn, "fclass.s") || RvAsmStrEqI(mn, "fcvt.w.s") || RvAsmStrEqI(mn, "fcvt.wu.s") || RvAsmStrEqI(mn, "fcvt.l.s") || RvAsmStrEqI(mn, "fcvt.lu.s")) { // rd(GPR), fs(FPR)
     rd = RvAsmRegTok(cc);
     if (cc->token != ',') {
       Free(mn);
@@ -1580,6 +1597,20 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       word = 0xC2000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (1 << 20);
     else if (RvAsmStrEqI(mn, "fcvt.l.d"))
       word = 0xC2000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (2 << 20);
+    else if (RvAsmStrEqI(mn, "fcvt.lu.d"))
+      word = 0xC2000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (3 << 20);
+    else if (RvAsmStrEqI(mn, "fmv.x.w"))
+      word = 0xE0000053 | (rd << 7) | (0 << 12) | (rs1 << 15);
+    else if (RvAsmStrEqI(mn, "fclass.s"))
+      word = 0xE0000053 | (rd << 7) | (1 << 12) | (rs1 << 15);
+    else if (RvAsmStrEqI(mn, "fcvt.w.s"))
+      word = 0xC0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (0 << 20);
+    else if (RvAsmStrEqI(mn, "fcvt.wu.s"))
+      word = 0xC0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (1 << 20);
+    else if (RvAsmStrEqI(mn, "fcvt.l.s"))
+      word = 0xC0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (2 << 20);
+    else if (RvAsmStrEqI(mn, "fcvt.lu.s"))
+      word = 0xC0000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (3 << 20);
     else
       word = 0xC2000053 | (rd << 7) | (7 << 12) | (rs1 << 15) | (3 << 20);
     Free(mn);
