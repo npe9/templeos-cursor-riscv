@@ -700,10 +700,6 @@ U0 DisasmOne(I64 addr, I64 w)
           mn = "fsgnjn.d";
         else
           mn = "fsgnjx.d";
-        if (DisAsmMode) {
-          Print("; %s (no asm{} form)\n", mn);
-          goto disasm_one_track;
-        }
         Print("%s %s, %s, %s", mn, FRN[rd], FRN[rs1], FRN[rs2]);
       }
     } else if (f7 == 0x15) {
@@ -711,10 +707,6 @@ U0 DisasmOne(I64 addr, I64 w)
         mn = "fmin.d";
       else
         mn = "fmax.d";
-      if (DisAsmMode) {
-        Print("; %s (no asm{} form)\n", mn);
-        goto disasm_one_track;
-      }
       Print("%s %s, %s, %s", mn, FRN[rd], FRN[rs1], FRN[rs2]);
     } else if (f7 == 0x51) {
       if (f3 == 0)
@@ -743,14 +735,9 @@ U0 DisasmOne(I64 addr, I64 w)
         mn = "fmv.x.d";
       else
         mn = "fclass.d";
-      if (DisAsmMode) {
-        if (f3 == 0)
-          Print("fmvxd %s, %s", RN[rd], FRN[rs1]);
-        else {
-          Print("; fclass.d (no asm{} form)\n");
-          goto disasm_one_track;
-        }
-      } else
+      if (DisAsmMode && f3 == 0)
+        Print("fmvxd %s, %s", RN[rd], FRN[rs1]);
+      else
         Print("%s %s, %s", mn, RN[rd], FRN[rs1]);
     } else if (f7 == 0x61) {
       if (rs2 == 2)
@@ -761,15 +748,7 @@ U0 DisasmOne(I64 addr, I64 w)
         mn = "fcvt.w.d";
       else
         mn = "fcvt.wu.d";
-      if (DisAsmMode) {
-        if (rs2 == 2)
-          Print("fcvtld_rtz %s, %s", RN[rd], FRN[rs1]);
-        else {
-          Print("; %s (limited asm{} fcvt)\n", mn);
-          goto disasm_one_track;
-        }
-      } else
-        Print("%s %s, %s", mn, RN[rd], FRN[rs1]);
+      Print("%s %s, %s", mn, RN[rd], FRN[rs1]);
     } else if (f7 == 0x69) {
       if (rs2 == 2)
         mn = "fcvt.d.l";
@@ -779,15 +758,13 @@ U0 DisasmOne(I64 addr, I64 w)
         mn = "fcvt.d.w";
       else
         mn = "fcvt.d.wu";
-      if (DisAsmMode) {
-        if (rs2 == 2)
-          Print("fcvtdl %s, %s", FRN[rd], RN[rs1]);
-        else {
-          Print("; %s (limited asm{} fcvt)\n", mn);
-          goto disasm_one_track;
-        }
-      } else
-        Print("%s %s, %s", mn, FRN[rd], RN[rs1]);
+      Print("%s %s, %s", mn, FRN[rd], RN[rs1]);
+    } else if (f7 == 0x20) {
+      // fcvt.s.d fd, fs — narrow double to single (rs2 must be 1).
+      Print("fcvt.s.d %s, %s", FRN[rd], FRN[rs1]);
+    } else if (f7 == 0x21) {
+      // fcvt.d.s fd, fs — widen single to double (rs2 must be 0).
+      Print("fcvt.d.s %s, %s", FRN[rd], FRN[rs1]);
     } else {
       if (DisAsmMode) {
         Print("; fp.op f7=");
