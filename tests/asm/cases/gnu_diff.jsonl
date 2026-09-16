@@ -48,3 +48,17 @@
 {"name":"reject_beq_numeric","insns":["beq a0, a1, 8"],"mode":"holyc_reject","gas":"beq a0,a1,.+8","why":"host asm{} branches are label-only (beq rs,rs,label); numeric byte offset rejected. Guest Asm_RV.HC accepts numeric offsets — a deliberate host/guest form divergence (see RISCV_INVENTORY.md)."}
 {"name":"reject_jal_numeric","insns":["jal ra, 8"],"mode":"holyc_reject","gas":"jal ra,.+8","why":"host asm{} has no numeric-offset jal (label/call form only); guest Asm_RV.HC accepts jal rd,imm / jal imm."}
 {"name":"wide_li_2048","insns":["li a0, 2048"],"mode":"match"}
+{"name":"op32_addiw","insns":["addiw a0, a1, 5"],"mode":"match"}
+{"name":"op32_slliw","insns":["slliw a0, a1, 3"],"mode":"match"}
+{"name":"op32_srliw","insns":["srliw a0, a1, 3"],"mode":"match"}
+{"name":"op32_sraiw","insns":["sraiw a0, a1, 3"],"mode":"match"}
+{"name":"op32_addw","insns":["addw a0, a1, a2"],"mode":"match"}
+{"name":"op32_subw","insns":["subw a0, a1, a2"],"mode":"match"}
+{"name":"op32_sllw","insns":["sllw a0, a1, a2"],"mode":"match"}
+{"name":"op32_srlw","insns":["srlw a0, a1, a2"],"mode":"match"}
+{"name":"op32_sraw","insns":["sraw a0, a1, a2"],"mode":"match"}
+{"name":"op32_mulw","insns":["mulw a0, a1, a2"],"mode":"match"}
+{"name":"op32_divw","insns":["divw a0, a1, a2"],"mode":"match"}
+{"name":"op32_divuw","insns":["divuw a0, a1, a2"],"mode":"match"}
+{"name":"op32_remw","insns":["remw a0, a1, a2"],"mode":"match"}
+{"name":"op32_remuw","insns":["remuw a0, a1, a2"],"mode":"match"}

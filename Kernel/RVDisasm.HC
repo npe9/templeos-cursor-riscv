@@ -463,24 +463,50 @@ U0 DisasmOne(I64 addr, I64 w)
         DiImm(immI);
     }
   } else if (op == 0x1B) {
-    if (DisAsmMode) {
-      Print("; ");
-    }
+    // OP-IMM-32 (RV64 word): addiw (f3=0), slliw (f3=1), srliw/sraiw (f3=5).
     if (f3 == 0)
       mn = "addiw";
     else if (f3 == 1)
       mn = "slliw";
-    else
-      mn = "srliw";
+    else if (f3 == 5) {
+      if (f7 & 0x20)
+        mn = "sraiw";
+      else
+        mn = "srliw";
+    } else
+      mn = "addiw";
     Print("%s %s, %s, ", mn, RN[rd], RN[rs1]);
     if (f3 == 0)
       DiImm(immI);
     else
       DiImm(rs2);
-    if (DisAsmMode) {
-      Print(" (W-ops limited in asm{})\n");
-      goto disasm_one_track;
+  } else if (op == 0x3B) {
+    // OP-32 (RV64 word): addw/subw sllw srlw/sraw mulw divw divuw remw remuw.
+    if (f7 == 0x20) {
+      if (f3 == 0)
+        mn = "subw";
+      else
+        mn = "sraw";
+    } else if (f7 == 1) {
+      if (f3 == 0)
+        mn = "mulw";
+      else if (f3 == 4)
+        mn = "divw";
+      else if (f3 == 5)
+        mn = "divuw";
+      else if (f3 == 6)
+        mn = "remw";
+      else
+        mn = "remuw";
+    } else {
+      if (f3 == 0)
+        mn = "addw";
+      else if (f3 == 1)
+        mn = "sllw";
+      else
+        mn = "srlw";
     }
+    Print("%s %s, %s, %s", mn, RN[rd], RN[rs1], RN[rs2]);
   } else if (op == 0x33) {
     if (f7 == 0x20) {
       if (f3 == 0)

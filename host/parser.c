@@ -3828,6 +3828,8 @@ static int RvFRegNum(const char *n) {
 static U32 RvR(U32 f7,U32 f3,int rd,int rs1,int rs2){ return 0x33u|(rd<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|(f7<<25); }
 static U32 RvI(U32 f3,int rd,int rs1,int imm){ return 0x13u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
 static U32 RvIw(U32 f3,int rd,int rs1,int imm){ return 0x1Bu|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
+static U32 RvRw(U32 f7,U32 f3,int rd,int rs1,int rs2){ return 0x3Bu|(rd<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|(f7<<25); }
+static U32 RvShiftW(U32 f3,U32 f7,int rd,int rs1,int sh){ return 0x1Bu|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)sh&0x1F)<<20)|(f7<<25); }
 static U32 RvShift(U32 f3,U32 hi6,int rd,int rs1,int sh){ return 0x13u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)sh&0x3F)<<20)|(hi6<<26); }
 static U32 RvLoad(U32 f3,int rd,int imm,int rs1){ return 0x03u|(rd<<7)|(f3<<12)|(rs1<<15)|(((U32)imm&0xFFF)<<20); }
 static U32 RvStore(U32 f3,int rs2,int imm,int rs1){ return 0x23u|(((U32)imm&0x1F)<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|((((U32)imm>>5)&0x7F)<<25); }
@@ -4219,13 +4221,18 @@ static bool TryAssembleRiscV(Compiler *cc) {
       if (I->rd<0||I->rs1<0) return false; nins++; continue;
     }
     if (!strcmp(w,"add")||!strcmp(w,"sub")||!strcmp(w,"and")||!strcmp(w,"or")||!strcmp(w,"xor")||!strcmp(w,"sll")||!strcmp(w,"srl")||!strcmp(w,"sra")||!strcmp(w,"slt")||!strcmp(w,"sltu")||!strcmp(w,"mul")||!strcmp(w,"div")||!strcmp(w,"rem")||!strcmp(w,"divu")||!strcmp(w,"remu")||
-        !strcmp(w,"addi")||!strcmp(w,"addiw")||!strcmp(w,"andi")||!strcmp(w,"ori")||!strcmp(w,"xori")||!strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai")||!strcmp(w,"slti")) {
+        !strcmp(w,"addw")||!strcmp(w,"subw")||!strcmp(w,"sllw")||!strcmp(w,"srlw")||!strcmp(w,"sraw")||!strcmp(w,"mulw")||!strcmp(w,"divw")||!strcmp(w,"divuw")||!strcmp(w,"remw")||!strcmp(w,"remuw")||
+        !strcmp(w,"addi")||!strcmp(w,"addiw")||!strcmp(w,"andi")||!strcmp(w,"ori")||!strcmp(w,"xori")||!strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai")||!strcmp(w,"slliw")||!strcmp(w,"srliw")||!strcmp(w,"sraiw")||!strcmp(w,"slti")) {
       I->rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc); I->rs1=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
-      int _wl=0; while(w[_wl]) _wl++; bool imm_form = !strcmp(w,"addiw") || (_wl>0 && w[_wl-1]=='i' && strcmp(w,"jalr")) || !strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai");
+      bool shamt_form  = !strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai");
+      bool shamtw_form = !strcmp(w,"slliw")||!strcmp(w,"srliw")||!strcmp(w,"sraiw");
+      bool imm_form = !strcmp(w,"addiw") || !strcmp(w,"addi") || !strcmp(w,"andi") || !strcmp(w,"ori") || !strcmp(w,"xori") || !strcmp(w,"slti") || shamt_form || shamtw_form;
       if (imm_form) {
         if(!RvImmTok(cc,&I->imm)) return false;
-        if (!strcmp(w,"slli")||!strcmp(w,"srli")||!strcmp(w,"srai")) {
+        if (shamt_form) {
           if (!RvCheckShamt(cc, I->imm)) return false;
+        } else if (shamtw_form) {
+          if (I->imm < 0 || I->imm > 31) { Error(cc, "word shift amount out of range (need 0..31)"); return false; }
         } else if (!RvCheckSimm12(cc, I->imm)) return false;
       }
       else if (cc->lex.token==TK_I64 || cc->lex.token=='-') {
@@ -4427,6 +4434,19 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"rem"))  word = RvR(1,6,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"divu")) word = RvR(1,5,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"remu")) word = RvR(1,7,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"slliw")) word = RvShiftW(1,0,I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"srliw")) word = RvShiftW(5,0,I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"sraiw")) word = RvShiftW(5,0x20,I->rd,I->rs1,I->imm);
+    else if (!strcmp(m,"addw")) word = RvRw(0,0,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"subw")) word = RvRw(0x20,0,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"sllw")) word = RvRw(0,1,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"srlw")) word = RvRw(0,5,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"sraw")) word = RvRw(0x20,5,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"mulw")) word = RvRw(1,0,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"divw")) word = RvRw(1,4,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"divuw")) word = RvRw(1,5,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"remw")) word = RvRw(1,6,I->rd,I->rs1,I->rs2);
+    else if (!strcmp(m,"remuw")) word = RvRw(1,7,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"fsqrtd"))     word = 0x5A000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15);
     else if (!strcmp(m,"faddd"))      word = 0x02000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fsubd"))      word = 0x0A000053u | (I->rd<<7)  | (7u<<12) | (I->rs1<<15) | (I->rs2<<20);
