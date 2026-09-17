@@ -63,6 +63,11 @@ feed() {
      "I64 X2(){I64 *p=Rw2;return p[0];}","X2();",
      "I64 X3(){I64 *p=Rw3;return p[0];}","X3();",
      "I64 X4(){I64 *p=Rw4;return p[0];}","X4();",
+     # Increment 4: float-compressed doubleword loads/stores (RV64 D).
+     "asm { Rf1:: c.fld fs0,8(a1) c.fsd fa0,16(a3) c.fld fa5,248(a1) c.fsd fs0,0(a3) ret }",
+     "asm { Rf2:: c.fldsp ft0,8(sp) c.fsdsp ft11,504(sp) c.fldsp fa5,0(sp) c.fsdsp ft1,16(sp) ret }",
+     "I64 Y1(){I64 *p=Rf1;return p[0];}","Y1();",
+     "I64 Y2(){I64 *p=Rf2;return p[0];}","Y2();",
     );
     select(undef,undef,undef,5);
     for my $x (@l){ print $x,"\n"; select(undef,undef,undef,0.6); }
@@ -96,10 +101,13 @@ need "ans=-7386688999498694200"   # Rw1: c.lw/c.sw, c.addiw -1, c.andi -1
 need "ans=8393976355154133269"    # Rw2: c.srli/c.srai, c.lui +1/-1
 need "ans=7287463090653262205"    # Rw3: c.addi16sp/c.addi4spn/c.lwsp/c.ldsp
 need "ans=-2456610341888802262"   # Rw4: c.swsp/c.sdsp + c.lw/c.sw at max offset
+# Increment 4 — float-compressed doubleword ld/st (GNU-validated, 4736 checks):
+need "ans=-6737316887144159872"   # Rf1: c.fld/c.fsd (f8-f15 subset)
+need "ans=-6339335982957060062"   # Rf2: c.fldsp/c.fsdsp (full float reg, sp-relative)
 
 if [ "$fail" -ne 0 ]; then
   printf '%s\n' "$out" | grep -E 'ans=|Rv[0-9A-Z]|W[0-9A-Z]|Except|Error|TRAP' | tail -40 | sed 's/^/  /' >&2
   exit 1
 fi
-echo "RVC-asm smoke: OK (guest asm{} emits GNU-identical c.* — full common RVC set: reg/imm, c.j/c.beqz/c.bnez/c.ld/c.sd incl. labels, c.lw/c.sw, CB-arith, c.addiw, c.lui, sp-relative + frame adjust)"
+echo "RVC-asm smoke: OK (guest asm{} emits GNU-identical c.* — COMPLETE RVC set: integer reg/imm, jumps/branches incl. labels, ld/st (d/w), CB-arith, addiw, lui, sp-relative + frame adjust, and float c.fld/c.fsd/c.fldsp/c.fsdsp)"
 exit 0

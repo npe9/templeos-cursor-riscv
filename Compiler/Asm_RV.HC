@@ -1275,6 +1275,54 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
     AOTStoreCodeU16(cc, word);
     return TRUE;
   }
+  // ---- RVC increment 4: float-compressed doubleword loads/stores (RV64 D) ----
+  // Field maps validated vs GNU (-march=rv64imafdc, 4736 checks, 0 diffs).
+  // CL/CS float: c.fld frd', off(rs1') / c.fsd frs2', off(rs1') — DATA reg is a FLOAT
+  // in f8-f15 (subset), BASE rs1' an INTEGER in x8-x15, off %8 in 0..248.
+  if (RvAsmStrEqI(mn, "c.fld") || RvAsmStrEqI(mn, "c.fsd")) {
+    first = RvAsmFRegTok(cc); // float rd' (load) or rs2' (store)
+    if (cc->token != ',') { Free(mn); LexExcept(cc, "Expecting ',' at "); }
+    Lex(cc);
+    imm = 0;
+    if (!RvAsmImmTok(cc, &imm) && cc->token != '(') { Free(mn); LexExcept(cc, "Expecting off(reg) at "); }
+    if (cc->token != '(') { Free(mn); LexExcept(cc, "Expecting '(' at "); }
+    Lex(cc);
+    rs1 = RvAsmRegTok(cc); // integer base
+    if (cc->token != ')') { Free(mn); LexExcept(cc, "Expecting ')' at "); }
+    Lex(cc);
+    if (first < 8 || first > 15) { Free(mn); LexExcept(cc, "c.fld/c.fsd float register must be f8-f15 (fs0-fs1/fa0-fa5) at "); }
+    if (rs1 < 8 || rs1 > 15) { Free(mn); LexExcept(cc, "c.fld/c.fsd base register must be x8-x15 at "); }
+    if (imm < 0 || imm > 248 || (imm & 7)) { Free(mn); LexExcept(cc, "c.fld/c.fsd offset must be a multiple of 8 in 0..248 at "); }
+    if (RvAsmStrEqI(mn, "c.fld")) word = 0x2000; else word = 0xA000;
+    word |= (((first - 8) & 7) << 2) | (((imm >> 6) & 3) << 5) | (((rs1 - 8) & 7) << 7) | (((imm >> 3) & 7) << 10);
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
+  // CI/CSS float sp-relative: c.fldsp frd, off(sp) / c.fsdsp frs2, off(sp) — full
+  // float reg f0-f31, base sp, off %8 in 0..504.
+  if (RvAsmStrEqI(mn, "c.fldsp") || RvAsmStrEqI(mn, "c.fsdsp")) {
+    first = RvAsmFRegTok(cc); // float rd (load) or rs2 (store)
+    if (cc->token != ',') { Free(mn); LexExcept(cc, "Expecting ',' at "); }
+    Lex(cc);
+    imm = 0;
+    if (!RvAsmImmTok(cc, &imm) && cc->token != '(') { Free(mn); LexExcept(cc, "Expecting off(sp) at "); }
+    if (cc->token != '(') { Free(mn); LexExcept(cc, "Expecting '(' at "); }
+    Lex(cc);
+    rs1 = RvAsmRegTok(cc);
+    if (cc->token != ')') { Free(mn); LexExcept(cc, "Expecting ')' at "); }
+    Lex(cc);
+    if (first < 0 || first > 31) { Free(mn); LexExcept(cc, "Bad float register at "); }
+    if (rs1 != 2) { Free(mn); LexExcept(cc, "c.fldsp/c.fsdsp base must be sp at "); }
+    if (imm < 0 || imm > 504 || (imm & 7)) { Free(mn); LexExcept(cc, "c.fldsp/c.fsdsp offset must be a multiple of 8 in 0..504 at "); }
+    if (RvAsmStrEqI(mn, "c.fldsp"))
+      word = 0x2002 | (((imm >> 6) & 1) << 2) | (((imm >> 7) & 1) << 3) | (((imm >> 8) & 1) << 4) | (((imm >> 3) & 1) << 5) | (((imm >> 4) & 1) << 6) | ((first & 0x1F) << 7) | (((imm >> 5) & 1) << 12);
+    else
+      word = 0xA002 | ((first & 0x1F) << 2) | (((imm >> 6) & 1) << 7) | (((imm >> 7) & 1) << 8) | (((imm >> 8) & 1) << 9) | (((imm >> 3) & 1) << 10) | (((imm >> 4) & 1) << 11) | (((imm >> 5) & 1) << 12);
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
   if (RvAsmStrEqI(mn, "mv") || RvAsmStrEqI(mn, "not") || RvAsmStrEqI(mn, "neg") || RvAsmStrEqI(mn, "seqz") || RvAsmStrEqI(mn, "snez")) {
     rd = RvAsmRegTok(cc);
     if (cc->token != ',') {
