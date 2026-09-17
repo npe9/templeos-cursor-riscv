@@ -2110,54 +2110,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         cur_frame = EmitIC_ENTER(pass_buf, &pass_ptr, &rip, ic);
         if (FnParksFlags(ic)) cur_frame = -1;   // keep the static pop; see FnParksFlags
         break;
-        {
-          I64 param_cnt = ic->ic_data & 0xFFFFFFFF;
-          I64 locals_size = ic->ic_data >> 32;
-          I64 reg_param_cnt = param_cnt > 8 ? 8 : param_cnt; // Only first 8 in frame
-          I64 param_size = reg_param_cnt * 8;
-          I64 frame_size = 16 + param_size + locals_size;
-          
-          // addi sp, sp, -frame_size
-          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_SP, -frame_size);
-          // sd ra, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (3<<12) | (RV_SP<<15) | (RV_RA<<20));
-          // sd s0, 8(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (8<<7) | (3<<12) | (RV_SP<<15) | (RV_S0<<20));
-          // addi s0, sp, frame_size
-          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_S0, RV_SP, frame_size);
-          
-          // Save register parameters (only first 8, args 9+ stay on original stack)
-          for (I64 i = 0; i < reg_param_cnt; i++) {
-            // sd aX, (16+i*8)(sp)
-            U8 reg = RV_A0 + i;
-            I64 offset = 16 + i * 8;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x23 | ((offset & 0x1F)<<7) | (3<<12) | (RV_SP<<15) | (reg<<20) | ((offset>>5)<<25));
-          }
-        }
-        break;
       case IC_LEAVE:
         // A stale cur_frame past the end of a function would aim `addi sp,s0,-N` at a foreign s0.
         cur_frame = -1;
         EmitIC_LEAVE(pass_buf, &pass_ptr, &rip, ic); break;
-        {
-          I64 param_cnt_leave = ic->ic_data & 0xFFFFFFFF;
-          I64 locals_size_leave = ic->ic_data >> 32;
-          I64 reg_param_cnt_leave = param_cnt_leave > 8 ? 8 : param_cnt_leave;
-          I64 frame_size_leave = 16 + (reg_param_cnt_leave * 8) + locals_size_leave;
-          
-          // addi sp, s0, -frame_size — sp from the frame pointer, so eval-stack residue cannot
-          // shift the restores below.
-          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_S0, -frame_size_leave);
-          // ld ra, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_RA<<7) | (3<<12) | (RV_SP<<15));
-          // ld s0, 8(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_S0<<7) | (3<<12) | (RV_SP<<15) | (8<<20));
-          // addi sp, sp, frame_size
-          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_SP, frame_size_leave);
-          // ret (jalr x0, 0(ra))
-          RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<15));
-        }
-        break;
       case IC_RBP:
         if (stack_depth_pass > 0) {
           // addi sp, sp, -8
@@ -2718,53 +2674,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
         cur_frame = EmitIC_ENTER(pass_buf, &pass_ptr, &rip, ic);
         if (FnParksFlags(ic)) cur_frame = -1;   // keep the static pop; see FnParksFlags
         break;
-        {
-          I64 param_cnt = ic->ic_data & 0xFFFFFFFF;
-          I64 locals_size = ic->ic_data >> 32;
-          I64 reg_param_cnt = param_cnt > 8 ? 8 : param_cnt; // Only first 8 in frame
-          I64 param_size = reg_param_cnt * 8;
-          I64 frame_size = 16 + param_size + locals_size;
-          
-          // addi sp, sp, -frame_size
-          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_SP, -frame_size);
-          // sd ra, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (3<<12) | (RV_SP<<15) | (RV_RA<<20));
-          // sd s0, 8(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (8<<7) | (3<<12) | (RV_SP<<15) | (RV_S0<<20));
-          // addi s0, sp, frame_size
-          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_S0, RV_SP, frame_size);
-          
-          // Save register parameters (only first 8, args 9+ stay on original stack)
-          for (I64 i = 0; i < reg_param_cnt; i++) {
-            U8 reg = RV_A0 + i;
-            I64 offset = 16 + i * 8;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x23 | ((offset & 0x1F)<<7) | (3<<12) | (RV_SP<<15) | (reg<<20) | ((offset>>5)<<25));
-          }
-        }
-        break;
       case IC_LEAVE:
         // A stale cur_frame past the end of a function would aim `addi sp,s0,-N` at a foreign s0.
         cur_frame = -1;
         EmitIC_LEAVE(pass_buf, &pass_ptr, &rip, ic); break;
-        {
-          I64 param_cnt_leave = ic->ic_data & 0xFFFFFFFF;
-          I64 locals_size_leave = ic->ic_data >> 32;
-          I64 reg_param_cnt_leave = param_cnt_leave > 8 ? 8 : param_cnt_leave;
-          I64 frame_size_leave = 16 + (reg_param_cnt_leave * 8) + locals_size_leave;
-          
-          // addi sp, s0, -frame_size — sp from the frame pointer, so eval-stack residue cannot
-          // shift the restores below.
-          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_S0, -frame_size_leave);
-          // ld ra, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_RA<<7) | (3<<12) | (RV_SP<<15));
-          // ld s0, 8(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_S0<<7) | (3<<12) | (RV_SP<<15) | (8<<20));
-          // addi sp, sp, frame_size
-          EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_SP, frame_size_leave);
-          // ret (jalr x0, 0(ra))
-          RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<15));
-        }
-        break;
         
       case IC_RBP:
         if (stack_depth_final > 0) {
