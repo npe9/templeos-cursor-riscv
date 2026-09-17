@@ -90,9 +90,21 @@ static inline int munmap(void *addr, size_t len) {
 // COMPILER MANAGEMENT
 // ═══════════════════════════════════════════════════════════════
 
+/* Code-generation target descriptors (multi-arch seam; see host/holyc_target.h).
+ * rv64 is the default and the only one any codegen path acts on today. */
+const holyc_target holyc_target_rv64 = {
+  HOLYC_ARCH_RV64, "rv64", /*xlen*/64, /*ptr_width*/8, /*slot_size*/8,
+  /*stack_align*/16, /*little_endian*/1, /*ld_funct3*/3, /*sd_funct3*/3,
+};
+const holyc_target holyc_target_rv32 = {
+  HOLYC_ARCH_RV32, "rv32", /*xlen*/32, /*ptr_width*/4, /*slot_size*/8,
+  /*stack_align*/16, /*little_endian*/1, /*ld_funct3*/2, /*sd_funct3*/2,
+};
+
 Compiler *CompilerNewBuf(const char *source, size_t size, const char *filename) {
   Compiler *cc = calloc(1, sizeof(Compiler));
-  
+  cc->tgt = &holyc_target_rv64;   // default target; --target/HOLYC_ARCH overrides later
+
   // Initialize lexer — copy full buffer (may contain trailing CDocBin after text NUL).
   if (!source) source = "";
   cc->lex.src = malloc(size + 1);

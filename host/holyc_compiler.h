@@ -12,6 +12,7 @@
 #include <string.h>
 #include "hash_table.h"
 #include "holy_api.h"
+#include "holyc_target.h"
 
 // ═══════════════════════════════════════════════════════════════
 // BASIC TYPES (TempleOS compatible)
@@ -597,6 +598,10 @@ typedef struct {
   char **aot_deps;
   I64 aot_dep_n;
   I64 aot_dep_cap;
+
+  /* Active code-generation target (multi-arch seam). Defaults to &holyc_target_rv64
+   * in CompilerNewBuf. No codegen reads it yet — see host/holyc_target.h. */
+  const holyc_target *tgt;
 
 } Compiler;
 
