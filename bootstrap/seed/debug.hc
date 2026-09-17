@@ -10,7 +10,7 @@
 //     DBG_I_RA=0  DBG_I_T0..T6=1..7  DBG_I_A0..A7=8..15  DBG_I_SP=16  DBG_I_FP=17
 //     DBG_I_CAUSE=18  DBG_I_EPC=19  DBG_I_TVAL=20  DBG_I_MSTATUS=21
 //     (mstatus is the POST-trap value: MIE is clear, MPP/MPIE hold the trapped state.)
-//  2. Canonical x0..x31 at TRAP_SNAP_X (MEM_TRAP_SNAP+0x100) — read with DbgX(n). This is
+//  2. Canonical x0..x31 at TRAP_SNAP_X (0x87000400, above MEM_REGS_SNAP) — DbgX(n). This is
 //     every GPR including s1-s11/gp/tp, which view 1 has no slots for, and it matches
 //     MEM_REGS_SNAP's layout so one formatter serves both freeze and live snap.
 #define DBG_I_RA 0
@@ -143,6 +143,23 @@ U0 TrapFrameProbe()
 	ld	tp, 40(sp)
 	addi	sp, sp, 64
   }
+}
+
+// TrapFrameCheck -- TrapFrameCheck()
+// NAME
+//   TrapFrameCheck - verify the freeze survives a live Bt (scratch-collision regression)
+// SYNOPSIS
+//   U0 TrapFrameCheck();
+// DESCRIPTION
+//   Runs Bt (whose live path writes ra/s0 to the 0x87000200 scratch) and then prints whether
+//   x0 is still 0 and x1 still equals the legacy ra slot. Both fail if the canonical array is
+//   ever moved back on top of that scratch.
+// SEE ALSO
+//   TrapFrameProbe  DbgX  TrapDump
+U0 TrapFrameCheck()
+{
+  Bt;
+  "TFCHK x0z=%d x1ra=%d s1=0x%X gp=0x%X\n", DbgX(0) == 0, DbgX(1) == DbgRa(), DbgX(9), DbgX(3);
 }
 
 // DbgX -- DbgX(n)

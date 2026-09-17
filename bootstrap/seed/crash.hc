@@ -227,8 +227,10 @@ U0 CrashDump()
     Md(epc, 32);
   }
   if (CrashInRam(MEM_TRAP_SNAP)) {
-    UartStr("  --- MEM_TRAP_SNAP (0x200: slots + x0..x31) ---\n");
-    Md(MEM_TRAP_SNAP, 0x200);
+    UartStr("  --- MEM_TRAP_SNAP (legacy slots) ---\n");
+    Md(MEM_TRAP_SNAP, 0xB0);
+    UartStr("  --- TRAP_SNAP_X (x0..x31) ---\n");
+    Md(TRAP_SNAP_X, 0x100);
   }
   UartStr("  (CrashMon; md/mw/regs/bt/go — Man(\"CrashMon\"))\n");
 }
@@ -324,7 +326,7 @@ U0 CrashMon()
     if (CrashCmdEq(p, "md") || CrashCmdEq(p, "dm") || CrashCmdEq(p, "d")) {
       p = CrashSkipTok(p);
       if (!*p) {
-        Md(MEM_TRAP_SNAP, 0x200);
+        Md(MEM_TRAP_SNAP, 0xB0);
         UartStr("crash> ");
         continue;
       }

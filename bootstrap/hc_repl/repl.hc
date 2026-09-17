@@ -820,6 +820,7 @@ I64 ReplMain()
   JitAdd("SetTrapFn", &SetTrapFn, 1, 1);
   JitAdd("Fault", &Fault, 0, 1);
   JitAdd("TrapFrameProbe", &TrapFrameProbe, 0, 1);   // trap-frame width self-test (debug.hc)
+  JitAdd("TrapFrameCheck", &TrapFrameCheck, 0, 1);   // freeze survives a live Bt (debug.hc)
   JitAdd("Break", &Break, 0, 1);
   JitAdd("Ecall", &Ecall, 0, 1);
   JitAdd("TimerArm", &TimerArm, 1, 1);

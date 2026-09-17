@@ -12,10 +12,12 @@
 #define TRAP_VEC_OFF 0
 #endif
 #define TRAP_DISPATCH_SLOT 0x87000010
-// Canonical x0..x31 view of the fault freeze: MEM_TRAP_SNAP + 0x100 + N*8 == xN, the same
-// convention MEM_REGS_SNAP uses for the live snap. Exactly 32 slots — it ends ON MEM_REGS_SNAP
-// (0x87000300), so nothing may be appended after x31.
-#define TRAP_SNAP_X (MEM_TRAP_SNAP + 0x100)
+// Canonical x0..x31 view of the fault freeze: TRAP_SNAP_X + N*8 == xN, the same convention
+// MEM_REGS_SNAP uses for the live snap. It sits ABOVE the live snap, not at MEM_TRAP_SNAP+0x100:
+// 0x87000200/0x87000208 are the live-Bt ra/s0 scratch in BOTH images (debug.hc BtLive,
+// Kernel/RVWinSerial.HC:1023), so an array there would have x0/x1 clobbered by any `bt`.
+// 0x87000400..0x87000500 is unreferenced; MEM_HOST_SLOTS starts at 0x87001000.
+#define TRAP_SNAP_X 0x87000400
 #define TRAP_NAME_BUF_SLOT 0x87001058
 #define TRAP_DISP_FN_SLOT 0x87001060
 #define TRAP_FALLBACK_VEC_SLOT 0x87001068
