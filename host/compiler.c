@@ -441,6 +441,10 @@ void AOTWriteMap(Compiler *cc, const char *map_path) {
 static U32 g_pp[3];
 static int g_pp_n;
 static int g_pp_on;
+/* Doubleword load/store funct3 for the active target: 3 (ld/sd) on rv64, 2 (lw/sw) on
+ * rv32 (which has no ld/sd). Set per-compile from cc->tgt->sd_funct3 (== ld_funct3). Only
+ * the funct3==3 doubleword sites read this; narrower lb/lh/lw/lwu are width-correct on both. */
+static int g_wd3 = 3;
 static I64 g_o1_slot_off[32];
 static int g_o1_slot_reg[32], g_o1_slot_n;
 /* HOLYC_O1_MODE (default 3 — Tier-1 + frame folds + I64 local promotion):
@@ -563,7 +567,7 @@ static U32 LoadRdFromRs1(U8 pointed_to, U8 rd, U8 rs1) {
   case RT_U32:
     return 0x03 | (rd << 7) | (6 << 12) | (rs1 << 15); /* lwu */
   default:
-    return 0x03 | (rd << 7) | (3 << 12) | (rs1 << 15); /* ld */
+    return 0x03 | (rd << 7) | (g_wd3<<12) | (rs1 << 15); /* ld */
   }
 }
 static U32 DerefLoadFromRs1(U8 pointed_to, U8 rs1) {
@@ -662,7 +666,7 @@ static void EmitAssignStoreZero(U8 *b, U8 **q, I64 *r, I64 *d, CIntermediateCode
       (*d)--;
       addr_reg = RV_A0;
     } else {
-      RVU32(b, q, r, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));
+      RVU32(b, q, r, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_SP << 15));
       RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
       (*d)--;
       have_t0 = 1;
@@ -688,7 +692,7 @@ static void EmitAssignStoreZero(U8 *b, U8 **q, I64 *r, I64 *d, CIntermediateCode
   if (AssignResultNeeded(ic)) {
     RVU32(b, q, r, 0x13 | (RV_A0 << 7)); /* li a0,0 */
     RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
-    RVU32(b, q, r, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20));
+    RVU32(b, q, r, 0x23 | (g_wd3<<12) | (RV_SP << 15) | (RV_A0 << 20));
     (*d)++;
   }
 }
@@ -698,15 +702,15 @@ static void EmitAssignStoreZero(U8 *b, U8 **q, I64 *r, I64 *d, CIntermediateCode
 // the dst address (assignment is an expression). Offsets are unrolled, so n is capped by the
 // caller to fit the 12-bit load/store immediate.
 static void EmitBlockCopy(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, I64 n) {
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));              // ld t1, 0(sp)  (src)
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1<<7) | (g_wd3<<12) | (RV_SP<<15));              // ld t1, 0(sp)  (src)
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));              // addi sp,sp,8
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));              // ld t0, 0(sp)  (dst)
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0<<7) | (g_wd3<<12) | (RV_SP<<15));              // ld t0, 0(sp)  (dst)
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));              // addi sp,sp,8
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A5<<7) | (RV_T0<<15));                        // mv a5, t0 (save dst)
   I64 off = 0;
   for (; off + 8 <= n; off += 8) {
-    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2<<7) | (3<<12) | (RV_T1<<15) | (((U32)(off & 0xFFF))<<20));                       // ld t2, off(t1)
-    RVU32(pass_buf, pass_ptr, rip, 0x23 | (((U32)(off & 0x1F))<<7) | (3<<12) | (RV_T0<<15) | (RV_T2<<20) | (((U32)((off>>5)&0x7F))<<25)); // sd t2, off(t0)
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2<<7) | (g_wd3<<12) | (RV_T1<<15) | (((U32)(off & 0xFFF))<<20));                       // ld t2, off(t1)
+    RVU32(pass_buf, pass_ptr, rip, 0x23 | (((U32)(off & 0x1F))<<7) | (g_wd3<<12) | (RV_T0<<15) | (RV_T2<<20) | (((U32)((off>>5)&0x7F))<<25)); // sd t2, off(t0)
   }
   for (; off < n; off++) {
     RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2<<7) | (0<<12) | (RV_T1<<15) | (((U32)(off & 0xFFF))<<20));                       // lb t2, off(t1)
@@ -714,7 +718,7 @@ static void EmitBlockCopy(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_dept
   }
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A0<<7) | (RV_A5<<15));                        // mv a0, a5 (result = dst)
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));          // addi sp,sp,-8
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));             // sd a0, 0(sp)
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));             // sd a0, 0(sp)
   *stack_depth -= 1;   // popped 2 (dst,src), pushed 1 (result)
 }
 
@@ -745,7 +749,7 @@ static void EmitLoadArgsFromEvalStack(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64
     U8 reg = RV_A0 + (U8)k;
     I64 offset = (arg_count - 1 - k) * 8;
     RVU32(pass_buf, pass_ptr, rip,
-          0x03 | (reg << 7) | (3 << 12) | (RV_SP << 15) | ((offset & 0xFFF) << 20));
+          0x03 | (reg << 7) | (g_wd3<<12) | (RV_SP << 15) | ((offset & 0xFFF) << 20));
   }
   I64 cleanup = arg_count * 8;
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | ((cleanup & 0xFFF) << 20));
@@ -760,7 +764,7 @@ static void EmitPrepareGt8CallArgs(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 N)
     U8 reg = RV_A0 + (U8)k;
     I64 offset = (N - 1 - k) * 8;
     RVU32(pass_buf, pass_ptr, rip,
-          0x03 | (reg << 7) | (3 << 12) | (RV_T2 << 15) | ((offset & 0xFFF) << 20));
+          0x03 | (reg << 7) | (g_wd3<<12) | (RV_T2 << 15) | ((offset & 0xFFF) << 20));
   }
   I64 out_sz = (N - 8) * 8;
   RVU32(pass_buf, pass_ptr, rip,
@@ -769,22 +773,22 @@ static void EmitPrepareGt8CallArgs(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 N)
     I64 src = (N - j) * 8;
     I64 dst = (j - 9) * 8;
     RVU32(pass_buf, pass_ptr, rip,
-          0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T2 << 15) | ((src & 0xFFF) << 20));
+          0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_T2 << 15) | ((src & 0xFFF) << 20));
     RVU32(pass_buf, pass_ptr, rip,
-          0x23 | ((dst & 0x1F) << 7) | (3 << 12) | (RV_SP << 15) | (RV_T0 << 20) | ((dst >> 5) << 25));
+          0x23 | ((dst & 0x1F) << 7) | (g_wd3<<12) | (RV_SP << 15) | (RV_T0 << 20) | ((dst >> 5) << 25));
   }
 }
 
 // Unary op on the eval-stack top (a0 mirrors it): pop, apply, push.
 static void EmitUnaryOp(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, U32 insn) {
   if (*stack_depth > 0) {
-    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_A0 << 7) | (3 << 12) | (RV_SP << 15));            // ld a0, 0(sp)
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_A0 << 7) | (g_wd3<<12) | (RV_SP << 15));            // ld a0, 0(sp)
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));            // addi sp, sp, 8
     (*stack_depth)--;
   }
   RVU32(pass_buf, pass_ptr, rip, insn);
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));          // addi sp, sp, -8
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20));             // sd a0, 0(sp)
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_SP << 15) | (RV_A0 << 20));             // sd a0, 0(sp)
   (*stack_depth)++;
 }
 #define RV_UNARY_MINUS (0x40000033u | (RV_A0 << 7) | (RV_A0 << 20))               /* sub a0, zero, a0 */
@@ -796,21 +800,21 @@ static void EmitUnaryOp(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth,
 // and leave the new value in a0 and on the stack.
 static void EmitCompoundAssign(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, U32 rtype) {
   if (*stack_depth >= 2) {
-    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (3 << 12) | (RV_SP << 15));            // ld t1, 0(sp)
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (g_wd3<<12) | (RV_SP << 15));            // ld t1, 0(sp)
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));            // addi sp, sp, 8
     (*stack_depth)--;
   } else {
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T1 << 7) | (RV_A0 << 15));                        // mv t1, a0
   }
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));              // ld t0, 0(sp)
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_SP << 15));              // ld t0, 0(sp)
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));              // addi sp, sp, 8
   if (*stack_depth > 0) (*stack_depth)--;
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (3 << 12) | (RV_T0 << 15));              // ld t2, 0(t0)
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (g_wd3<<12) | (RV_T0 << 15));              // ld t2, 0(t0)
   RVU32(pass_buf, pass_ptr, rip, rtype | (RV_T2 << 7) | (RV_T2 << 15) | (RV_T1 << 20));         // op t2, t2, t1
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T0 << 15) | (RV_T2 << 20));             // sd t2, 0(t0)
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_T0 << 15) | (RV_T2 << 20));             // sd t2, 0(t0)
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A0 << 7) | (RV_T2 << 15));                          // mv a0, t2
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));          // addi sp, sp, -8
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20));             // sd a0, 0(sp)
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_SP << 15) | (RV_A0 << 20));             // sd a0, 0(sp)
   (*stack_depth)++;
 }
 #define RV_R_ADD 0x00000033u
@@ -836,31 +840,31 @@ static void EmitCompoundAssign(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack
 // F64 compound assignment (`d *= 2.0`): load *addr and the rhs as doubles, F64-op, store back.
 static void EmitF64CompoundAssign(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, U8 ic_code) {
   if (*stack_depth >= 2) {
-    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (3 << 12) | (RV_SP << 15));            // ld t1, 0(sp)  rhs bits
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (g_wd3<<12) | (RV_SP << 15));            // ld t1, 0(sp)  rhs bits
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
     (*stack_depth)--;
   } else {
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T1 << 7) | (RV_A0 << 15));                        // mv t1, a0
   }
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));              // ld t0, 0(sp)  addr
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_SP << 15));              // ld t0, 0(sp)  addr
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
   if (*stack_depth > 0) (*stack_depth)--;
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (3 << 12) | (RV_T0 << 15));              // ld t2, 0(t0)  *addr bits
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (g_wd3<<12) | (RV_T0 << 15));              // ld t2, 0(t0)  *addr bits
   RVU32(pass_buf, pass_ptr, rip, RV_FMV_D_X(RV_FA0, RV_T2));
   RVU32(pass_buf, pass_ptr, rip, RV_FMV_D_X(RV_FA1, RV_T1));
   U32 fop = ic_code == IC_FADD_EQU ? 0x02000053u : ic_code == IC_FSUB_EQU ? 0x0A000053u :
             ic_code == IC_FMUL_EQU ? 0x12000053u : 0x1A000053u;
   RVU32(pass_buf, pass_ptr, rip, RV_FOP(fop, RV_FA0, RV_FA0, RV_FA1));
   RVU32(pass_buf, pass_ptr, rip, RV_FMV_X_D(RV_A0, RV_FA0));
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T0 << 15) | (RV_A0 << 20));             // sd a0, 0(t0)
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_T0 << 15) | (RV_A0 << 20));             // sd a0, 0(t0)
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20));
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_SP << 15) | (RV_A0 << 20));
   (*stack_depth)++;
 }
 static void EmitF64Op(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, U8 ic_code) {
   if (ic_code == IC_FNEG) {
     if (*stack_depth > 0) {
-      RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_A0 << 7) | (3 << 12) | (RV_SP << 15));
+      RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_A0 << 7) | (g_wd3<<12) | (RV_SP << 15));
       RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
       (*stack_depth)--;
     }
@@ -869,9 +873,9 @@ static void EmitF64Op(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, U
     RVU32(pass_buf, pass_ptr, rip, RV_FMV_X_D(RV_A0, RV_FA0));
   } else {
     // pop right into t1, left into t0 (same order as the integer binary ops)
-    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (3 << 12) | (RV_SP << 15));
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (g_wd3<<12) | (RV_SP << 15));
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
-    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_SP << 15));
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
     if (*stack_depth >= 2) *stack_depth -= 2; else *stack_depth = 0;
     RVU32(pass_buf, pass_ptr, rip, RV_FMV_D_X(RV_FA0, RV_T0));
@@ -899,13 +903,13 @@ static void EmitF64Op(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, U
     }
   }
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20));
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_SP << 15) | (RV_A0 << 20));
   (*stack_depth)++;
 }
 // Convert eval-stack slot k in place (k = ic_data: 0 = top); a0 mirrors the top afterwards.
 static void EmitF64Convert(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 slot, Bool to_f64) {
   U32 off = (U32)((slot * 8) & 0xFFF);
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_A0 << 7) | (3 << 12) | (RV_SP << 15) | (off << 20));   // ld a0, off(sp)
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_A0 << 7) | (g_wd3<<12) | (RV_SP << 15) | (off << 20));   // ld a0, off(sp)
   if (to_f64) {
     RVU32(pass_buf, pass_ptr, rip, RV_FCVT_D_L(RV_FA0, RV_A0));
   } else {
@@ -913,8 +917,8 @@ static void EmitF64Convert(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 slot, Bool
     RVU32(pass_buf, pass_ptr, rip, RV_FCVT_L_D(RV_A0, RV_FA0));
   }
   if (to_f64) RVU32(pass_buf, pass_ptr, rip, RV_FMV_X_D(RV_A0, RV_FA0));
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20) | ((off & 0x1F) << 7) | ((off >> 5) << 25)); // sd a0, off(sp)
-  if (slot) RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_A0 << 7) | (3 << 12) | (RV_SP << 15));           // ld a0, 0(sp)
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_SP << 15) | (RV_A0 << 20) | ((off & 0x1F) << 7) | ((off >> 5) << 25)); // sd a0, off(sp)
+  if (slot) RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_A0 << 7) | (g_wd3<<12) | (RV_SP << 15));           // ld a0, 0(sp)
 }
 
 // ---- AOT data section for globals -------------------------------------------------------
@@ -965,12 +969,12 @@ static void EmitGlobalAddrOff(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *c
 static void EmitUnsignedOp(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, U8 ic_code) {
   if (*stack_depth < 2) {   // mirror the integer ops: a0 holds the right operand not yet pushed
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
-    RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20));
+    RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_SP << 15) | (RV_A0 << 20));
     (*stack_depth)++;
   }
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (3 << 12) | (RV_SP << 15));
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (g_wd3<<12) | (RV_SP << 15));
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_SP << 15));
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
   *stack_depth -= 2;
   #define RTYPE(f7, f3, rd, r1, r2) ((f7) | ((rd) << 7) | ((f3) << 12) | ((r1) << 15) | ((r2) << 20) | 0x33u)
@@ -988,7 +992,7 @@ static void EmitUnsignedOp(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_dep
   }
   #undef RTYPE
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20));
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_SP << 15) | (RV_A0 << 20));
   (*stack_depth)++;
 }
 // ---- try/catch/throw --------------------------------------------------------------------
@@ -996,16 +1000,16 @@ static void EmitUnsignedOp(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_dep
 static void EmitTryEnter(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *cc, CLabel *catch_lb, I64 data_base) {
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T2 << 7) | (RV_A0 << 15));                                   // mv t2, a0 (ctx)
   EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->try_top_var, data_base);                        // t1 = &__try_top
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T1 << 15));                       // ld t0, 0(t1)
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T2 << 15) | (RV_T0 << 20));                      // sd t0, 0(t2)  prev
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T2 << 15) | (RV_SP << 20) | (8 << 7));           // sd sp, 8(t2)
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T2 << 15) | (RV_S0 << 20) | (16 << 7));          // sd s0, 16(t2)
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_T1 << 15));                       // ld t0, 0(t1)
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_T2 << 15) | (RV_T0 << 20));                      // sd t0, 0(t2)  prev
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_T2 << 15) | (RV_SP << 20) | (8 << 7));           // sd sp, 8(t2)
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_T2 << 15) | (RV_S0 << 20) | (16 << 7));          // sd s0, 16(t2)
   I64 rel = pass_buf ? (catch_lb->addr - *rip) : 0;
   I64 hi = (rel + 0x800) >> 12, lo = rel - (hi << 12);
   RVU32(pass_buf, pass_ptr, rip, 0x17 | (RV_T0 << 7) | (((U32)hi & 0xFFFFF) << 12));                    // auipc t0, catch
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (RV_T0 << 15) | (((U32)lo & 0xFFF) << 20));
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T2 << 15) | (RV_T0 << 20) | (24 << 7));          // sd t0, 24(t2)
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T1 << 15) | (RV_T2 << 20));                      // __try_top = ctx
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_T2 << 15) | (RV_T0 << 20) | (24 << 7));          // sd t0, 24(t2)
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_T1 << 15) | (RV_T2 << 20));                      // __try_top = ctx
 }
 // PUSHFD/POPFD/CLI/STI as bare statements: HolyC lets kernel code use these x86 opcodes
 // directly. On RISC-V they act on mstatus (MIE = bit 3); PUSHFD/POPFD go through the stack.
@@ -1017,10 +1021,10 @@ static void EmitSysIntrinsic(U8 *pass_buf, U8 **pass_ptr, I64 *rip, int ic_code)
     case IC_PUSHFD:
       RVU32(pass_buf, pass_ptr, rip, 0x73 | (RV_T0 << 7) | (2 << 12) | (MSTATUS << 20));                 // csrr t0,mstatus
       RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | ((U32)(-8 & 0xFFF) << 20));   // addi sp,sp,-8
-      RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_T0 << 20));                  // sd t0,0(sp)
+      RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_SP << 15) | (RV_T0 << 20));                  // sd t0,0(sp)
       break;
     case IC_POPFD:
-      RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));                   // ld t0,0(sp)
+      RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_SP << 15));                   // ld t0,0(sp)
       RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));                   // addi sp,sp,8
       RVU32(pass_buf, pass_ptr, rip, 0x73 | (1 << 12) | (RV_T0 << 15) | (MSTATUS << 20));                // csrw mstatus,t0
       break;
@@ -1031,13 +1035,13 @@ static void EmitSysIntrinsic(U8 *pass_buf, U8 **pass_ptr, I64 *rip, int ic_code)
 static void EmitChainCmp(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *depth, int cmp) {
   if (*depth == 1) {
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
-    RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (3 << 12));
+    RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (g_wd3<<12));
     (*depth)++;
   }
   if (*depth < 2) return;
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (3 << 12) | (RV_SP << 15));              // t1 = b
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (g_wd3<<12) | (RV_SP << 15));              // t1 = b
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));              // t0 = a
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_SP << 15));              // t0 = a
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
   *depth -= 2;
   if (cmp == IC_LESS) {
@@ -1052,31 +1056,31 @@ static void EmitChainCmp(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *depth, int 
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A0 << 7) | (4 << 12) | (RV_A0 << 15) | (1 << 20));
   }
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));          // push r
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (3 << 12));
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (g_wd3<<12));
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));          // push b
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_T1 << 20) | (3 << 12));
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_T1 << 20) | (g_wd3<<12));
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A0 << 7) | (RV_T1 << 15));                          // a0 = b
   *depth += 2;
 }
 static void EmitChainAnd(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *depth) {
   if (*depth == 2) {
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
-    RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (3 << 12));
+    RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (g_wd3<<12));
     (*depth)++;
   }
   if (*depth < 3) return;
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (3 << 12) | (RV_SP << 15));              // t2 = z
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (g_wd3<<12) | (RV_SP << 15));              // t2 = z
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (3 << 12) | (RV_SP << 15));              // t1 = y
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (g_wd3<<12) | (RV_SP << 15));              // t1 = y
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));              // t0 = x
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_SP << 15));              // t0 = x
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
   *depth -= 3;
   RVU32(pass_buf, pass_ptr, rip, 0x33 | (RV_A0 << 7) | (7 << 12) | (RV_T0 << 15) | (RV_T1 << 20));   // a0 = x & y
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (3 << 12));
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (g_wd3<<12));
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_T2 << 20) | (3 << 12));
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_T2 << 20) | (g_wd3<<12));
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A0 << 7) | (RV_T2 << 15));                          // a0 = z
   *depth += 2;
 }
@@ -1164,7 +1168,7 @@ static void EmitIC_BrCmp(U8 *b, U8 **q, I64 *r, I64 *d, CIntermediateCode *ic) {
       }
     }
     if (!abandoned && *d >= 1) {
-      RVU32(b, q, r, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));
+      RVU32(b, q, r, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_SP << 15));
       RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
       (*d)--;
       lhs = RV_T0;
@@ -1173,10 +1177,10 @@ static void EmitIC_BrCmp(U8 *b, U8 **q, I64 *r, I64 *d, CIntermediateCode *ic) {
     rhs = RV_T1;
   } else {
     if (*d >= 2) {
-      RVU32(b, q, r, 0x03 | (RV_T1 << 7) | (3 << 12) | (RV_SP << 15));
+      RVU32(b, q, r, 0x03 | (RV_T1 << 7) | (g_wd3<<12) | (RV_SP << 15));
       RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
       (*d)--;
-      RVU32(b, q, r, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_SP << 15));
+      RVU32(b, q, r, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_SP << 15));
       RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
       (*d)--;
       lhs = RV_T0;
@@ -1190,27 +1194,27 @@ static void EmitIC_BrCmp(U8 *b, U8 **q, I64 *r, I64 *d, CIntermediateCode *ic) {
 }
 static void EmitTryLeave(U8 *pass_buf, U8 **pass_ptr, I64 *rip, Compiler *cc, I64 data_base) {
   EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->try_top_var, data_base);
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (3 << 12) | (RV_T1 << 15));                       // ld t2, 0(t1)  ctx
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T2 << 15));                       // ld t0, 0(t2)  prev
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T1 << 15) | (RV_T0 << 20));                      // __try_top = prev
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (g_wd3<<12) | (RV_T1 << 15));                       // ld t2, 0(t1)  ctx
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_T2 << 15));                       // ld t0, 0(t2)  prev
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_T1 << 15) | (RV_T0 << 20));                      // __try_top = prev
 }
 static void EmitThrow(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, Compiler *cc, I64 data_base) {
   if (*stack_depth > 0) {                                                                                 // value -> a0
-    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_A0 << 7) | (3 << 12) | (RV_SP << 15));
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_A0 << 7) | (g_wd3<<12) | (RV_SP << 15));
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
     (*stack_depth)--;
   }
   EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->except_ch_var, data_base);
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T1 << 15) | (RV_A0 << 20));                      // except_ch = a0
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_T1 << 15) | (RV_A0 << 20));                      // except_ch = a0
   EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->try_top_var, data_base);
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (3 << 12) | (RV_T1 << 15));                       // ld t2, 0(t1)
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (g_wd3<<12) | (RV_T1 << 15));                       // ld t2, 0(t1)
   RVU32(pass_buf, pass_ptr, rip, 0x63 | (1 << 12) | (RV_T2 << 15) | (4 << 8));                           // bnez t2, +8
   RVU32(pass_buf, pass_ptr, rip, 0x00100073);                                                            // ebreak: no handler
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T2 << 15));                       // ld t0, 0(t2) prev
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_T1 << 15) | (RV_T0 << 20));                      // __try_top = prev
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_SP << 7) | (3 << 12) | (RV_T2 << 15) | (8 << 20));           // ld sp, 8(t2)
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_S0 << 7) | (3 << 12) | (RV_T2 << 15) | (16 << 20));          // ld s0, 16(t2)
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T2 << 15) | (24 << 20));          // ld t0, 24(t2)
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_T2 << 15));                       // ld t0, 0(t2) prev
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_T1 << 15) | (RV_T0 << 20));                      // __try_top = prev
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_SP << 7) | (g_wd3<<12) | (RV_T2 << 15) | (8 << 20));           // ld sp, 8(t2)
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_S0 << 7) | (g_wd3<<12) | (RV_T2 << 15) | (16 << 20));          // ld s0, 16(t2)
+  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_T2 << 15) | (24 << 20));          // ld t0, 24(t2)
   RVU32(pass_buf, pass_ptr, rip, 0x67 | (RV_T0 << 15));                                                  // jr t0
 }
 
@@ -1232,7 +1236,7 @@ static void EmitIncDec(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, 
   RVU32(pass_buf, pass_ptr, rip, StoreRs2ToRs1(pty, RV_T0, RV_T2));                             // typed store t2, 0(t0)
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A0 << 7) | ((post ? RV_T1 : RV_T2) << 15));         // mv a0, old/new
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));          // addi sp, sp, -8
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_A0 << 20));             // sd a0, 0(sp)
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_SP << 15) | (RV_A0 << 20));             // sd a0, 0(sp)
   (*stack_depth)++;
 }
 
@@ -1303,7 +1307,7 @@ static void EmitCallArgsAndInvoke(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *st
   } else if (import_var && cc->aot_data_layout) {
     // Runtime import: the slot lives in the data section; the loader fills it by name.
     EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T0, import_var, cc->aot_data_base);
-    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T0 << 15));
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_T0 << 15));
     RVU32(pass_buf, pass_ptr, rip, 0x67 | (RV_RA << 7) | (RV_T0 << 15));
   } else {
     I64 addr = (I64)exe_addr_host_ptr;
@@ -1318,7 +1322,7 @@ static void EmitCallArgsAndInvoke(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *st
       RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (1 << 12) | (RV_T0 << 15) | (32 << 20));
       RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T0 << 7) | (5 << 12) | (RV_T0 << 15) | (32 << 20));
     }
-    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (3 << 12) | (RV_T0 << 15));
+    RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_T0 << 15));
     RVU32(pass_buf, pass_ptr, rip, 0x67 | (RV_RA << 7) | (RV_T0 << 15));
   }
 
@@ -1332,7 +1336,7 @@ static void EmitCallArgsAndInvoke(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *st
 
   // Return value is in a0; match the virtual eval stack (IC_RETURN_VAL / binary ops pop from sp).
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (3 << 12));
+  RVU32(pass_buf, pass_ptr, rip, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (g_wd3<<12));
   (*stack_depth)++;
 }
 
@@ -1404,8 +1408,8 @@ static I64 EmitIC_ENTER(U8 *b, U8 **q, I64 *r, CIntermediateCode *ic) {
   O1LoadMapFromFun(ic);
   O1SlotClear();
   EmitAddImm(b, q, r, RV_SP, RV_SP, -f);
-  RVU32(b, q, r, 0x23 | (3 << 12) | (RV_SP << 15) | (RV_RA << 20));           // sd ra, 0(sp)
-  RVU32(b, q, r, 0x23 | (8 << 7) | (3 << 12) | (RV_SP << 15) | (RV_S0 << 20)); // sd s0, 8(sp)
+  RVU32(b, q, r, 0x23 | (g_wd3<<12) | (RV_SP << 15) | (RV_RA << 20));           // sd ra, 0(sp)
+  RVU32(b, q, r, 0x23 | (8 << 7) | (g_wd3<<12) | (RV_SP << 15) | (RV_S0 << 20)); // sd s0, 8(sp)
   EmitAddImm(b, q, r, RV_S0, RV_SP, f);
   // Spill caller's sN into the promoted local's frame slot (never into stack-arg slots: off>=0).
   for (int j = 0; j < g_o1_n; j++) {
@@ -1421,7 +1425,7 @@ static I64 EmitIC_ENTER(U8 *b, U8 **q, I64 *r, CIntermediateCode *ic) {
       RVU32(b, q, r, 0x13 | ((U32)g_o1_reg[j] << 7) | ((RV_A0 + i) << 15)); // mv sN, a_i
     else {
       I64 so = 16 + i * 8;
-      RVU32(b, q, r, 0x23 | ((so & 31) << 7) | (3 << 12) | (RV_SP << 15) |
+      RVU32(b, q, r, 0x23 | ((so & 31) << 7) | (g_wd3<<12) | (RV_SP << 15) |
                      ((RV_A0 + i) << 20) | ((so >> 5) << 25));
     }
   }
@@ -1437,8 +1441,8 @@ static void EmitIC_LEAVE(U8 *b, U8 **q, I64 *r, CIntermediateCode *ic) {
     RVU32(b, q, r, (w & ~(31u << 7)) | ((U32)g_o1_reg[i] << 7)); // ld sN, off(s0)
   }
   EmitAddImm(b, q, r, RV_SP, RV_S0, -f);
-  RVU32(b, q, r, 0x03 | (RV_RA << 7) | (3 << 12) | (RV_SP << 15));
-  RVU32(b, q, r, 0x03 | (RV_S0 << 7) | (3 << 12) | (RV_SP << 15) | (8 << 20));
+  RVU32(b, q, r, 0x03 | (RV_RA << 7) | (g_wd3<<12) | (RV_SP << 15));
+  RVU32(b, q, r, 0x03 | (RV_S0 << 7) | (g_wd3<<12) | (RV_SP << 15) | (8 << 20));
   EmitAddImm(b, q, r, RV_SP, RV_SP, f);
   RVU32(b, q, r, 0x67 | (RV_RA << 15)); // ret
   g_o1_n = 0;
@@ -1454,7 +1458,7 @@ static void EmitIC_MOV(U8 *b, U8 **q, I64 *r, I64 *d, CIntermediateCode *ic) {
   else
     RVU32(b, q, r, DerefLoadFromRs1Off(pty, RV_S0, ic->ic_data));
   RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
-  RVU32(b, q, r, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (3 << 12));
+  RVU32(b, q, r, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (g_wd3<<12));
   (*d)++;
 }
 
@@ -1463,7 +1467,7 @@ static void EmitIC_ASSIGN(U8 *b, U8 **q, I64 *r, I64 *d, CIntermediateCode *ic) 
   U8 pty = ic->arg1_type_pointed_to;
   if (!pty) pty = RT_I64;
   if (*d) {
-    RVU32(b, q, r, 0x03 | (RV_A0 << 7) | (3 << 12) | (RV_SP << 15));
+    RVU32(b, q, r, 0x03 | (RV_A0 << 7) | (g_wd3<<12) | (RV_SP << 15));
     RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
     (*d)--;
   }
@@ -1472,7 +1476,7 @@ static void EmitIC_ASSIGN(U8 *b, U8 **q, I64 *r, I64 *d, CIntermediateCode *ic) 
   else
     RVU32(b, q, r, StoreA0ToRs1Off(pty, RV_S0, ic->ic_data));
   RVU32(b, q, r, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));
-  RVU32(b, q, r, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (3 << 12));
+  RVU32(b, q, r, 0x23 | (RV_SP << 15) | (RV_A0 << 20) | (g_wd3<<12));
   (*d)++;
 }
 
@@ -2092,7 +2096,7 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
           // addi sp, sp, -8
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
           // sd a0, 0(sp)
-          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));
         }
         // mv a0, s0 (addi a0, s0, 0)
         RVU32(buf, pptr, prip, 0x13 | (RV_A0<<7) | (RV_S0<<15));
@@ -2140,7 +2144,7 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
         }
         // Push value to stack so binary ops find it
         RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
+        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12)); // sd a0, 0(sp)
         (*psd)++;
         break;
         
@@ -2151,11 +2155,11 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
       case IC_MOD:
         if ((*psd) >= 2) {
           // Pop right operand into t1
-          RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (g_wd3<<12) | (RV_SP<<15));
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
           (*psd)--;
           // Pop left operand into t0
-          RVU32(buf, pptr, prip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x03 | (RV_T0<<7) | (g_wd3<<12) | (RV_SP<<15));
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
           (*psd)--;
           // Compute result (result stays in a0)
@@ -2172,7 +2176,7 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
           }
           // Push result back
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));
           (*psd)++;
         }
         break;
@@ -2183,14 +2187,14 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
       case IC_SHR:
         if ((*psd) == 1) {
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));
           (*psd)++;
         }
         if ((*psd) >= 2) {
-          RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (g_wd3<<12) | (RV_SP<<15));
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
           (*psd)--;
-          RVU32(buf, pptr, prip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x03 | (RV_T0<<7) | (g_wd3<<12) | (RV_SP<<15));
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
           (*psd)--;
           U32 inst = 0;
@@ -2208,7 +2212,7 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
           if (inst) {
             RVU32(buf, pptr, prip, inst);
             RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-            RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+            RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));
             (*psd)++;
           }
         }
@@ -2229,7 +2233,7 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
       case IC_DEREF:
         RVU32(buf, pptr, prip, DerefLoadFromRs1(ic->arg1_type_pointed_to, RV_A0));
         RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
+        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12)); // sd a0, 0(sp)
         (*psd)++;
         break;
       case IC_BLOCK_COPY:
@@ -2243,39 +2247,39 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
         }
         if ((*psd) >= 1) {
           if ((*psd) >= 2) {
-            RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15)); // ld t1, 0(sp) - pop value
+            RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (g_wd3<<12) | (RV_SP<<15)); // ld t1, 0(sp) - pop value
             RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
             (*psd)--;
             RVU32(buf, pptr, prip, 0x13 | (RV_A0<<7) | (RV_T1<<15)); // mv a0, t1
           }
 
-          RVU32(buf, pptr, prip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x03 | (RV_T0<<7) | (g_wd3<<12) | (RV_SP<<15));
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
           (*psd)--;
 
           RVU32(buf, pptr, prip, StoreA0ToRs1(ic->arg1_type_pointed_to, RV_T0)); // typed store a0 -> (t0)
           // Assignment is an expression: leave the value in a0 and on the eval stack (IC_END_EXP drops it).
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));
           (*psd)++;
         } else {
           RVU32(buf, pptr, prip, 0x13 | (RV_T0<<7) | (RV_A0<<15));
           RVU32(buf, pptr, prip, StoreA0ToRs1(ic->arg1_type_pointed_to, RV_T0)); // typed store a0 -> (t0)
           // Assignment is an expression: leave the value in a0 and on the eval stack (IC_END_EXP drops it).
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));
           (*psd)++;
         }
         break;
       case IC_PUSH_ARG:
         // Push argument to stack (don't clear a0 - let IC_IMM_I64 handle it)
         RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-        RVU32(buf, pptr, prip, 0x23 | (0<<7) | (3<<12) | (RV_SP<<15) | (RV_A0<<20) | (0<<25)); // sd a0, 0(sp)
+        RVU32(buf, pptr, prip, 0x23 | (0<<7) | (g_wd3<<12) | (RV_SP<<15) | (RV_A0<<20) | (0<<25)); // sd a0, 0(sp)
         (*psd)++;
         break;
       case IC_POP_ARG:
         // Pop argument from stack
-        RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15) | (0<<20)); // ld a0, 0(sp)
+        RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (g_wd3<<12) | (RV_SP<<15) | (0<<20)); // ld a0, 0(sp)
         RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
         (*psd)--;
         break;
@@ -2287,14 +2291,14 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
       case IC_NOT_EQU:
         if ((*psd) == 1) {
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));
           (*psd)++;
         }
         if ((*psd) >= 2) {
-          RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (g_wd3<<12) | (RV_SP<<15));
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
           (*psd)--;
-          RVU32(buf, pptr, prip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x03 | (RV_T0<<7) | (g_wd3<<12) | (RV_SP<<15));
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
           (*psd)--;
           if (ic->ic_code == IC_LESS) {
@@ -2315,14 +2319,14 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
             RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (0x3<<12) | (RV_ZERO<<15) | (RV_A0<<20));
           }
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));
           (*psd)++;
         }
         break;
       case IC_BR_ZERO:
         {
           if ((*psd) > 0) {
-            RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
+            RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (g_wd3<<12) | (RV_SP<<15));
             RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
             (*psd)--;
           }
@@ -2335,7 +2339,7 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
       case IC_BR_NOT_ZERO:
         {
           if ((*psd) > 0) {
-            RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
+            RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (g_wd3<<12) | (RV_SP<<15));
             RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
             (*psd)--;
           }
@@ -2368,17 +2372,17 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
           // addi sp, sp, -8
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
           // sd a0, 0(sp)
-          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));
         }
         // ld a0, offset(s0) - simplified, actual depends on ic_data
-        RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_S0<<15) | ((ic->ic_data & 0xFFF)<<20));
+        RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (g_wd3<<12) | (RV_S0<<15) | ((ic->ic_data & 0xFFF)<<20));
         (*psd)++;
         break;
       case IC_CALL_INDIRECT:
         {
           I64 arg_count = ic->ic_flags;  // set by the parser on this call IC
 
-          RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (g_wd3<<12) | (RV_SP<<15));
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
           (*psd)--;
 
@@ -2388,7 +2392,7 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
             EmitLoadArgsFromEvalStack(buf, pptr, prip, psd, arg_count);
           } else if (arg_count == 1) {
             // The pointer load above clobbered a0: pop the single argument into it.
-            RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
+            RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (g_wd3<<12) | (RV_SP<<15));
             RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
             (*psd)--;
           }
@@ -2405,7 +2409,7 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
 
           // Return value to a0 and the eval stack (same convention as EmitCallArgsAndInvoke).
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));
           (*psd)++;
         }
         break;
@@ -2421,7 +2425,7 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
       case IC_ADDR:
         // Address is in a0 (the parser retracted the auto-deref after IC_LEA); publish it.
         RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-        RVU32(buf, pptr, prip, 0x23 | (3<<12) | (RV_SP<<15) | (RV_A0<<20));
+        RVU32(buf, pptr, prip, 0x23 | (g_wd3<<12) | (RV_SP<<15) | (RV_A0<<20));
         (*psd)++;
         break;
       case IC_ADD_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_ADD); break;
@@ -2439,13 +2443,13 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
       case IC_FN_ADDR:
         EmitLabelAddr(buf, pptr, prip, (CLabel *)ic->ic_data, RV_A0);
         RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));
         (*psd)++;
         break;
       case IC_PC:      // `$$`: address of this instruction, pushed like an immediate
         RVU32(buf, pptr, prip, 0x17 | (RV_A0 << 7));                                        // auipc a0, 0
         RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));
         (*psd)++;
         break;
       case IC_HLT:     RVU32(buf, pptr, prip, 0x10500073); break;   // wfi
@@ -2475,7 +2479,7 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
         RVU32(buf, pptr, prip, 0x17 | (RV_A0<<7) | (((U32)hi & 0xFFFFF)<<12));          // auipc a0, hi
         RVU32(buf, pptr, prip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | (((U32)lo & 0xFFF)<<20)); // addi a0, a0, lo
         RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (g_wd3<<12));
         (*psd)++;
         break;
       }
@@ -2492,7 +2496,7 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
         // fall back to the counter only in frameless JIT fragments (LexExpression2Bin), where
         // s0 still belongs to the caller.
         if ((*psd) > 0) {
-          RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
+          RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (g_wd3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
           if ((*pcf) >= 0)
             EmitAddImm(buf, pptr, prip, RV_SP, RV_S0, -(*pcf));  // sp = frame base (exact)
           else
@@ -2535,7 +2539,7 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
         // If it's on the stack, pop it to a0
         if ((*psd) > 0) {
           // Pop value from stack to a0
-          RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
+          RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (g_wd3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
           (*psd)--;
         }
@@ -2549,8 +2553,8 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
           if (has_call) {
             // Epilogue: restore ra/s0 (sp from the frame pointer, s0 = entry sp + 16)
             RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_S0<<15) | (0xFF0<<20)); // addi sp, s0, -16
-            RVU32(buf, pptr, prip, 0x03 | (RV_RA<<7) | (3<<12) | (RV_SP<<15) | (8<<20)); // ld ra, 8(sp)
-            RVU32(buf, pptr, prip, 0x03 | (RV_S0<<7) | (3<<12) | (RV_SP<<15)); // ld s0, 0(sp)
+            RVU32(buf, pptr, prip, 0x03 | (RV_RA<<7) | (g_wd3<<12) | (RV_SP<<15) | (8<<20)); // ld ra, 8(sp)
+            RVU32(buf, pptr, prip, 0x03 | (RV_S0<<7) | (g_wd3<<12) | (RV_SP<<15)); // ld s0, 0(sp)
             RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (16<<20)); // addi sp, sp, 16
           }
           RVU32(buf, pptr, prip, 0x00008067); // ret
@@ -2568,6 +2572,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   IcOptimize(cc);
   HolyProgress("size …");
   g_pp_on = cc->optimize;   // Tier 1 push/pop peephole (sound; kept on with O1 default)
+  g_wd3 = cc->tgt->sd_funct3;   // ld/sd (rv64=3) vs lw/sw (rv32=2) for doubleword slots
   // Check if this is a function or expression
   CIntermediateCode *ic = cc->ic_head;
   Bool is_function = false;
@@ -2605,8 +2610,8 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     // Add prologue for expressions with calls
     if (has_call && !is_function) {
       RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF0<<20)); // addi sp, sp, -16
-      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (8<<7) | (3<<12) | (RV_SP<<15) | (RV_RA<<20)); // sd ra, 8(sp)
-      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (0<<7) | (3<<12) | (RV_SP<<15) | (RV_S0<<20)); // sd s0, 0(sp)
+      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (8<<7) | (g_wd3<<12) | (RV_SP<<15) | (RV_RA<<20)); // sd ra, 8(sp)
+      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (0<<7) | (g_wd3<<12) | (RV_SP<<15) | (RV_S0<<20)); // sd s0, 0(sp)
       RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_S0<<7) | (RV_SP<<15) | (16<<20)); // addi s0, sp, 16
     }
     
@@ -2687,8 +2692,8 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     // Add prologue for expressions with calls (same as in multi-pass loop)
     if (has_call && !is_function) {
       RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF0<<20)); // addi sp, sp, -16
-      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (8<<7) | (3<<12) | (RV_SP<<15) | (RV_RA<<20)); // sd ra, 8(sp)
-      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (0<<7) | (3<<12) | (RV_SP<<15) | (RV_S0<<20)); // sd s0, 0(sp)
+      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (8<<7) | (g_wd3<<12) | (RV_SP<<15) | (RV_RA<<20)); // sd ra, 8(sp)
+      RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (0<<7) | (g_wd3<<12) | (RV_SP<<15) | (RV_S0<<20)); // sd s0, 0(sp)
       RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_S0<<7) | (RV_SP<<15) | (16<<20)); // addi s0, sp, 16
     }
     
