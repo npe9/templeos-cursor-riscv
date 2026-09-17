@@ -18,10 +18,15 @@ else
   exit 2
 fi
 
-make -C "$ROOT" hc-repl >/dev/null
-ELF="$ROOT/build/repl-holyc.elf"
+# GdbStub/GdbHelp live in bootstrap/hc_repl/repl.hc (it #includes seed/gdbstub.hc). The
+# top-level `make hc-repl` now ALIASES build/repl-holyc.elf to the guest-Compiler repl-cmp
+# image ("thin JIT retired", Makefile), which has no GdbStub — pointing the smoke there made it
+# answer "Undefined identifier" and time out. Build the image the stub is actually in.
+# Porting GdbStub into the guest-Compiler image is the real fix (debugger plan D-5).
+make -C "$ROOT/bootstrap/hc_repl" all >/dev/null
+ELF="$ROOT/build/hc_repl.elf"
 if [[ ! -f $ELF ]]; then
-  echo "FAIL gdb-uart-smoke — missing $ELF (make hc-repl)" >&2
+  echo "FAIL gdb-uart-smoke — missing $ELF (make -C bootstrap/hc_repl all)" >&2
   exit 1
 fi
 
