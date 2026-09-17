@@ -1013,6 +1013,14 @@ kernel-repl-exepubs-smoke:
 
 repl-cmp-smoke: kernel-repl-exepubs-smoke
 
+# Guest asm{} assembler emits correct RVC (compressed) instructions — see
+# tests/scripts/run_rvc_asm_smoke.sh (GNU-verified c.* readback in repl-cmp.elf).
+rvc-asm-smoke:
+	@chmod +x tests/scripts/run_rvc_asm_smoke.sh
+	@tests/scripts/run_rvc_asm_smoke.sh
+
+.PHONY: rvc-asm-smoke
+
 # Build-only alias of the smoke’s install step (same ELF).
 repl-cmp: kernel-repl-exepubs-smoke
 	@test -f build/repl-cmp.elf && ls -lh build/repl-cmp.elf

@@ -65,6 +65,13 @@ U0 AOTStoreCodeU32(CCmpCtrl *cc,U32 d)
   }
 }
 
+U0 AOTStoreCodeU16(CCmpCtrl *cc,U16 h)
+{ // 2-byte little-endian emit (RVC compressed instructions). Two U8 stores so
+  // aotc->rip advances by exactly 2 and mixed 2/4-byte blocks stay byte-correct.
+  AOTStoreCodeU8(cc,h & 0xFF);
+  AOTStoreCodeU8(cc,(h >> 8) & 0xFF);
+}
+
 U0 AOTStoreCodeU64(CCmpCtrl *cc,U64 q)
 {
   CAOTCtrl *aotc=cc->aotc;

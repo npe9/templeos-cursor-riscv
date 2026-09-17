@@ -9,8 +9,12 @@ distinction the rest of the document is organized around:
 > assembler (`Compiler/Asm_RV.HC`) is a *separate, much smaller* hand-written
 > parser that now accepts the **entire non-compressed rv64imafdc ISA** —
 > I + M + A + F + D + FMA + Zicsr + privileged, with branches/jumps taking a
-> numeric PC-relative offset *or* a label (either direction). The one deliberate
-> hole is the **compressed (RVC) assembler**: RVC is decode-only.
+> numeric PC-relative offset *or* a label (either direction). It also now
+> assembles the first tranche of **compressed (RVC) 16-bit** instructions —
+> the register / immediate forms `c.nop c.ebreak c.mv c.add c.li c.addi c.slli
+> c.jr c.jalr c.sub c.and c.or c.xor` (byte-verified vs GNU `-march=rv64imac`).
+> The remaining RVC hole is the immediate-scrambled / register-subset memory &
+> branch forms (`c.j c.beqz c.bnez c.ld c.sd`), a later increment.
 
 The same instruction knowledge is duplicated across **three** places that do not
 agree: the assembler (a parser), the disassembler (`Kernel/RVDisasm.HC`, a
@@ -28,8 +32,9 @@ the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
 
 - The platform target is declared **`rv64imafdc` / `lp64d`** (`Kernel/RVAutoConf.HH:6-7`),
   and both the disassembler and the guest `asm{}` assembler (`Compiler/Asm_RV.HC`, used
-  by the REPL / `make tos`) now cover **all of it except compressed** — I + M + A + F +
-  D + FMA + Zicsr + privileged. It has **no compressed assembler** (RVC is decode-only). Guest
+  by the REPL / `make tos`) now cover **all of it plus the RVC register/immediate forms** — I + M + A + F +
+  D + FMA + Zicsr + privileged, and compressed `c.nop/c.ebreak/c.mv/c.add/c.li/c.addi/c.slli/c.jr/c.jalr/c.sub/c.and/c.or/c.xor`
+  (16-bit, emitted via `AOTStoreCodeU16`; the immediate-scrambled `c.j/c.beqz/c.ld/c.sd` remain decode-only). Guest
   branches/jumps take **either** a numeric even PC-relative byte offset (`beq a0,a1,8`)
   **or a label** in either direction (`loop: … bnez t0,loop`; `beq a0,a1,skip … skip:`).
   Backward labels resolve inline (`label_rip - aotc->rip`); forward labels emit a
@@ -55,12 +60,17 @@ the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
   `fmadd.s`); the 14 legacy dot-free names (`faddd fsubd fmuld fdivd fsqrtd fled fltd
   feqd fmvdx fmvxd fcvtld_{rtz,rdn,rmm} fcvtdl`) stay accepted. Two-dot mnemonics
   (`fcvt.<int>.<fmt>`) fold both suffixes via a looped dot-merge in each assembler.
-- **The `AsmDoc`/`AsmList` catalog is 209 entries** (was 137), documenting every
+- **The `AsmDoc`/`AsmList` catalog is 222 entries** (was 137), documenting every
   assemblable mnemonic with template + semantics. Remaining catalog entries the guest
   does not assemble: `call` (needs function-symbol linkage) and host-only `lifp`.
-- **Deliberate non-goal:** the RVC *assembler*. The disassembler decodes compressed
-  (you read it in real binaries); hand-writing compressed — register subsets, per-form
-  immediate scaling — is not a learning-surface win and is intentionally omitted.
+- **RVC assembler — increment 1 landed:** the guest `asm{}` now assembles the RVC
+  register/immediate forms (`c.nop c.ebreak c.mv c.add c.li c.addi c.slli c.jr c.jalr
+  c.sub c.and c.or c.xor`), emitting real 16-bit instructions via `AOTStoreCodeU16`;
+  `aotc->rip` advances by 2 so mixed 2/4-byte blocks stay byte-correct. Every form is
+  byte-verified against GNU (`-march=rv64imac`) and gated by `make rvc-asm-smoke`
+  (assemble-then-read-back in `repl-cmp.elf`). The remaining forms — `c.j c.beqz c.bnez
+  c.ld c.sd` (immediate scrambling + x8-x15 register subset) — are a later increment;
+  the disassembler already decodes all of them.
 - **A extension round-trips:** the assembler is the only hand-writing path for atomics,
   and the disassembler now decodes opcode `0x2F` (`lr/sc/amo*`, `.d`/`.w`) — so `U`/`Uf`
   round-trips the atomics you assemble (verified assemble→`Disasm` in the win REPL).
@@ -87,7 +97,7 @@ the `RvAsmMergeDotSuffix` overflow fix). Evidence is cited as `file:line`.
 | **Fused FMA** (`fmadd/fmsub/fnmsub/fnmadd`, `.d` and `.s`) | **yes** (R4-type, `0x43/0x47/0x4B/0x4F`) | no | **yes** |
 | **Privileged** (`sfence.vma`, `mret/sret/wfi/…`) | **yes** (`sfence.vma [rs1[,rs2]]`) | n/a | **yes** |
 | **Zicsr** (`csr*`) | yes (12 forms + 28 named CSRs) | no (only via `asm{}`) | yes (`0x73`) |
-| **C** (compressed) | **no — deliberate non-goal** (register-subset + per-form immediate scaling; you read compressed code, you don't hand-write it) | no | **yes** (`op & 3 != 3`) |
+| **C** (compressed) | **partial** — RVC register/immediate forms (`c.nop/c.ebreak/c.mv/c.add/c.li/c.addi/c.slli/c.jr/c.jalr/c.sub/c.and/c.or/c.xor`, GNU-verified); scrambled `c.j/c.beqz/c.ld/c.sd` pending | no | **yes** (`op & 3 != 3`) |
 | **V** (vector) | no | no | no |
 
 The whole non-compressed **rv64imafdc** ISA now assembles, disassembles, and is
@@ -285,11 +295,15 @@ See the [glance table](#extension-coverage-at-a-glance-the-three-way-answer). Su
   arith/sqrt, sign-inject, `fmin/fmax`, compares, `fclass`, moves, the complete `fcvt`
   matrix (int↔float both widths, F32↔F64), and fused FMA (`.d`/`.s`). Codegen uses
   hardware double; disasm decodes all of it. Transcendentals are soft.
-- **C (compressed)** — decoded by the disassembler only; never assembled or emitted.
+- **C (compressed)** — fully decoded; the guest `asm{}` now also *assembles* the RVC
+  register/immediate forms (`c.nop/c.ebreak/c.mv/c.add/c.li/c.addi/c.slli/c.jr/c.jalr/
+  c.sub/c.and/c.or/c.xor`, 16-bit via `AOTStoreCodeU16`, GNU-verified, `make
+  rvc-asm-smoke`). Scrambled memory/branch forms (`c.j/c.beqz/c.bnez/c.ld/c.sd`) are
+  still decode-only, pending a later increment.
 - **Zicsr** — assembler + disassembler; codegen only reaches CSRs through `asm{}`.
-- **Not supported anywhere:** vector (V), half-precision/quad float, and the RVC
-  *assembler* (compressed is decode-only by design). FMA and OP-32 word ops are now
-  fully assembled and decoded.
+- **Not supported anywhere:** vector (V), half-precision/quad float, and the
+  immediate-scrambled RVC forms in the *assembler* (`c.j/c.beqz/c.ld/c.sd` are still
+  decode-only). FMA and OP-32 word ops are fully assembled and decoded.
 
 Platform build declares `CONFIG_ISA_RV64IMAFDC` / `CONFIG_RISCV_ABI "lp64d"`
 (`RVAutoConf.HH:6-9`).
@@ -381,7 +395,7 @@ The same mnemonic knowledge lives in three shapes:
    non-compressed rv64imafdc.
 2. **Disassembler** — `Kernel/RVDisasm.HC` (a *formatter*/decoder). Decodes
    I/M/A/F/D/C + branches + OP-32 + FMA — the full non-vector set.
-3. **Doc catalog** — `Kernel/RVExplore.HC` (`rv_asm_doc_raw`), 209 entries, consumed by
+3. **Doc catalog** — `Kernel/RVExplore.HC` (`rv_asm_doc_raw`), 222 entries, consumed by
    `AsmList()` / `AsmDoc()`. The separate bootstrap seed `bootstrap/seed/asm_doc.hc`
    (`AsmDocRaw`) is an **older, independently-maintained copy** (~138 entries) that has
    drifted and is **not** kept in sync by the ISA-completion work — the live REPL uses
@@ -391,7 +405,7 @@ The same mnemonic knowledge lives in three shapes:
 
 | Comparison | Agree | Disagree |
 |---|---|---|
-| doc catalog `asm_doc.hc` ↔ `rv_asm_doc_raw` | core overlap | **drifted** — asm_doc.hc is the stale seed (~138), rv_asm_doc_raw is live (209) |
+| doc catalog `asm_doc.hc` ↔ `rv_asm_doc_raw` | core overlap | **drifted** — asm_doc.hc is the stale seed (~138), rv_asm_doc_raw is live (222, +13 RVC) |
 | assembler ↔ doc catalog `rv_asm_doc_raw` | full rv64imafdc both sides | catalog also lists `j`/`call`/`lifp` (below) |
 | assembler ↔ disassembler | I/M base + **branches/`jal`** + **A** + **narrow ld/st** + **D (ALU + `fld`/`fsd`)** overlap | disasm still uniquely has **RVC, OP-IMM-32**, and the F/D forms asm lacks (`fsgnj`, `fmin/fmax`, FMA, F32) |
 | disassembler ↔ doc catalog | branches, F/D forms overlap | disasm adds RVC + OP-IMM-32; doc adds A + Zicsr detail the disasm can't decode |
@@ -412,7 +426,7 @@ debug-relevant ones:
   Reg Regs PassTrace`.
 - **New RISC-V exploration — slots 41–45** (`RVExePubs.HC:928-948,1028-1032`, backed by
   `Kernel/RVExplore.HC`):
-  - `AsmList()` — lists the 209 documented `asm{}` mnemonics + templates.
+  - `AsmList()` — lists the 222 documented `asm{}` mnemonics + templates.
   - `AsmDoc("mn")` — structured doc for one mnemonic (template/encoding/imm/GNU/note).
   - `MemMap()` — prints the platform memory map (§6).
   - `Mstatus()` — reads + field-decodes `mstatus`.

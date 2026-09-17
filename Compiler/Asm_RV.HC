@@ -37,6 +37,9 @@ Bool RvAsmIsMn(U8 *s)
     return FALSE;
   if (RvAsmStrEqI(s, "ret") || RvAsmStrEqI(s, "nop") || RvAsmStrEqI(s, "wfi") || RvAsmStrEqI(s, "mret") || RvAsmStrEqI(s, "sret") || RvAsmStrEqI(s, "ecall") || RvAsmStrEqI(s, "ebreak") || RvAsmStrEqI(s, "fencei") || RvAsmStrEqI(s, "fence.i") || RvAsmStrEqI(s, "fence") || RvAsmStrEqI(s, "sfence") || RvAsmStrEqI(s, "sfencevma") || RvAsmStrEqI(s, "mv") || RvAsmStrEqI(s, "not") || RvAsmStrEqI(s, "neg") || RvAsmStrEqI(s, "seqz") || RvAsmStrEqI(s, "snez") || RvAsmStrEqI(s, "csrc") || RvAsmStrEqI(s, "rdtime") || RvAsmStrEqI(s, "li") || RvAsmStrEqI(s, "lui") || RvAsmStrEqI(s, "auipc") || RvAsmStrEqI(s, "addi") || RvAsmStrEqI(s, "andi") || RvAsmStrEqI(s, "ori") || RvAsmStrEqI(s, "xori") || RvAsmStrEqI(s, "slti") || RvAsmStrEqI(s, "slli") || RvAsmStrEqI(s, "srli") || RvAsmStrEqI(s, "srai") || RvAsmStrEqI(s, "add") || RvAsmStrEqI(s, "sub") || RvAsmStrEqI(s, "and") || RvAsmStrEqI(s, "or") || RvAsmStrEqI(s, "xor") || RvAsmStrEqI(s, "sll") || RvAsmStrEqI(s, "srl") || RvAsmStrEqI(s, "sra") || RvAsmStrEqI(s, "slt") || RvAsmStrEqI(s, "sltu") || RvAsmStrEqI(s, "sltiu") || RvAsmStrEqI(s, "mul") || RvAsmStrEqI(s, "mulh") || RvAsmStrEqI(s, "mulhsu") || RvAsmStrEqI(s, "mulhu") || RvAsmStrEqI(s, "div") || RvAsmStrEqI(s, "rem") || RvAsmStrEqI(s, "divu") || RvAsmStrEqI(s, "remu") || RvAsmStrEqI(s, "addiw") || RvAsmStrEqI(s, "slliw") || RvAsmStrEqI(s, "srliw") || RvAsmStrEqI(s, "sraiw") || RvAsmStrEqI(s, "addw") || RvAsmStrEqI(s, "subw") || RvAsmStrEqI(s, "sllw") || RvAsmStrEqI(s, "srlw") || RvAsmStrEqI(s, "sraw") || RvAsmStrEqI(s, "mulw") || RvAsmStrEqI(s, "divw") || RvAsmStrEqI(s, "divuw") || RvAsmStrEqI(s, "remw") || RvAsmStrEqI(s, "remuw") || RvAsmStrEqI(s, "ld") || RvAsmStrEqI(s, "lw") || RvAsmStrEqI(s, "lwu") || RvAsmStrEqI(s, "lh") || RvAsmStrEqI(s, "lhu") || RvAsmStrEqI(s, "lb") || RvAsmStrEqI(s, "lbu") || RvAsmStrEqI(s, "sd") || RvAsmStrEqI(s, "sw") || RvAsmStrEqI(s, "sh") || RvAsmStrEqI(s, "sb") || RvAsmStrEqI(s, "jalr") || RvAsmStrEqI(s, "jal") || RvAsmStrEqI(s, "jr") || RvAsmStrEqI(s, "j") || RvAsmStrEqI(s, "beq") || RvAsmStrEqI(s, "bne") || RvAsmStrEqI(s, "blt") || RvAsmStrEqI(s, "bge") || RvAsmStrEqI(s, "bltu") || RvAsmStrEqI(s, "bgeu") || RvAsmStrEqI(s, "beqz") || RvAsmStrEqI(s, "bnez") || RvAsmStrEqI(s, "faddd") || RvAsmStrEqI(s, "fsubd") || RvAsmStrEqI(s, "fmuld") || RvAsmStrEqI(s, "fdivd") || RvAsmStrEqI(s, "fsqrtd") || RvAsmStrEqI(s, "fadd") || RvAsmStrEqI(s, "fsub") || RvAsmStrEqI(s, "fmul") || RvAsmStrEqI(s, "fdiv") || RvAsmStrEqI(s, "fsqrt") || RvAsmStrEqI(s, "flw") || RvAsmStrEqI(s, "fsw") || RvAsmStrEqI(s, "fled") || RvAsmStrEqI(s, "fltd") || RvAsmStrEqI(s, "feqd") || RvAsmStrEqI(s, "fle") || RvAsmStrEqI(s, "flt") || RvAsmStrEqI(s, "feq") || RvAsmStrEqI(s, "fmv") || RvAsmStrEqI(s, "fmvdx") || RvAsmStrEqI(s, "fmvxd") || RvAsmStrEqI(s, "fsgnj") || RvAsmStrEqI(s, "fsgnjn") || RvAsmStrEqI(s, "fsgnjx") || RvAsmStrEqI(s, "fmin") || RvAsmStrEqI(s, "fmax") || RvAsmStrEqI(s, "fclass") || RvAsmStrEqI(s, "fmadd") || RvAsmStrEqI(s, "fmsub") || RvAsmStrEqI(s, "fnmsub") || RvAsmStrEqI(s, "fnmadd") || RvAsmStrEqI(s, "fcvtld_rtz") || RvAsmStrEqI(s, "fcvtld_rdn") || RvAsmStrEqI(s, "fcvtld_rmm") || RvAsmStrEqI(s, "fcvtdl") || RvAsmStrEqI(s, "fcvt") || RvAsmStrEqI(s, "fld") || RvAsmStrEqI(s, "fsd") || RvAsmStrEqI(s, "csrr") || RvAsmStrEqI(s, "csrw") || RvAsmStrEqI(s, "csrs") || RvAsmStrEqI(s, "csrrw") || RvAsmStrEqI(s, "csrrs") || RvAsmStrEqI(s, "csrrc") || RvAsmStrEqI(s, "csrrwi") || RvAsmStrEqI(s, "csrrsi") || RvAsmStrEqI(s, "csrrci") || RvAsmStrEqI(s, "csrwi") || RvAsmStrEqI(s, "csrsi") || RvAsmStrEqI(s, "csrci") || RvAsmStrEqI(s, "lrd") || RvAsmStrEqI(s, "lrw") || RvAsmStrEqI(s, "scd") || RvAsmStrEqI(s, "scw") || RvAsmStrEqI(s, "amoswapd") || RvAsmStrEqI(s, "amoaddd") || RvAsmStrEqI(s, "amoxord") || RvAsmStrEqI(s, "amoandd") || RvAsmStrEqI(s, "amoord") || RvAsmStrEqI(s, "amomind") || RvAsmStrEqI(s, "amomaxd") || RvAsmStrEqI(s, "amominud") || RvAsmStrEqI(s, "amomaxud") || RvAsmStrEqI(s, "amoswapw") || RvAsmStrEqI(s, "amoaddw") || RvAsmStrEqI(s, "amoxorw") || RvAsmStrEqI(s, "amoandw") || RvAsmStrEqI(s, "amoorw") || RvAsmStrEqI(s, "amominw") || RvAsmStrEqI(s, "amomaxw") || RvAsmStrEqI(s, "amominuw") || RvAsmStrEqI(s, "amomaxuw") || RvAsmStrEqI(s, "lr") || RvAsmStrEqI(s, "sc") || RvAsmStrEqI(s, "amoswap") || RvAsmStrEqI(s, "amoadd") || RvAsmStrEqI(s, "amoxor") || RvAsmStrEqI(s, "amoand") || RvAsmStrEqI(s, "amoor") || RvAsmStrEqI(s, "amomin") || RvAsmStrEqI(s, "amomax") || RvAsmStrEqI(s, "amominu") || RvAsmStrEqI(s, "amomaxu"))
     return TRUE;
+  // RVC (compressed) stem: c.mv/c.addi/c.li/... all lex as bare "c" then ".suffix".
+  if (RvAsmStrEqI(s, "c"))
+    return TRUE;
   // subi is not a standard gas mnemonic — reject with a clear LexExcept in PrsAsmRVIns.
   if (RvAsmStrEqI(s, "subi"))
     return TRUE;
@@ -855,6 +858,121 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
       word = 0x00003073 | (rd << 7) | (rs1 << 15) | ((imm & 0xFFF) << 20);
     Free(mn);
     AOTStoreCodeU32(cc, word);
+    return TRUE;
+  }
+  // ---- RVC (compressed, 16-bit) — increment 1: register/immediate forms ----
+  // Emitted via AOTStoreCodeU16 (2 bytes); aotc->rip advances by 2 so any labels
+  // and branches in the same block stay byte-correct. Every encoding below was
+  // byte-verified against GNU gas (riscv64 -march=rv64imac). No immediate-scramble
+  // forms here (c.j/c.beqz/c.ld/... come in a later increment).
+  if (RvAsmStrEqI(mn, "c.nop")) {
+    Free(mn);
+    AOTStoreCodeU16(cc, 0x0001);
+    return TRUE;
+  }
+  if (RvAsmStrEqI(mn, "c.ebreak")) {
+    Free(mn);
+    AOTStoreCodeU16(cc, 0x9002);
+    return TRUE;
+  }
+  // CR-type reg,reg: c.mv (funct4=1000) / c.add (funct4=1001). rd,rs2 != x0.
+  if (RvAsmStrEqI(mn, "c.mv") || RvAsmStrEqI(mn, "c.add")) {
+    rd = RvAsmRegTok(cc);
+    if (cc->token != ',') {
+      Free(mn);
+      LexExcept(cc, "Expecting ',' at ");
+    }
+    Lex(cc);
+    rs2 = RvAsmRegTok(cc);
+    if (rd < 1 || rs2 < 1) {
+      Free(mn);
+      LexExcept(cc, "c.mv/c.add need non-zero registers (x1-x31) at ");
+    }
+    if (RvAsmStrEqI(mn, "c.mv"))
+      word = 0x8000 | (rd << 7) | (rs2 << 2) | 2;
+    else
+      word = 0x9000 | (rd << 7) | (rs2 << 2) | 2;
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
+  // CR-type reg: c.jr (funct4=1000) / c.jalr (funct4=1001), rs2=0, rs1 != x0.
+  if (RvAsmStrEqI(mn, "c.jr") || RvAsmStrEqI(mn, "c.jalr")) {
+    rs1 = RvAsmRegTok(cc);
+    if (rs1 < 1) {
+      Free(mn);
+      LexExcept(cc, "c.jr/c.jalr need a non-zero register (x1-x31) at ");
+    }
+    if (RvAsmStrEqI(mn, "c.jr"))
+      word = 0x8000 | (rs1 << 7) | 2;
+    else
+      word = 0x9000 | (rs1 << 7) | 2;
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
+  // CI-type reg,imm: c.li / c.addi (6-bit signed imm, op=01) / c.slli (RV64
+  // shamt 0..63, op=10). imm[5] -> bit12, imm[4:0] -> bits[6:2], rd != x0.
+  if (RvAsmStrEqI(mn, "c.li") || RvAsmStrEqI(mn, "c.addi") || RvAsmStrEqI(mn, "c.slli")) {
+    rd = RvAsmRegTok(cc);
+    if (cc->token != ',') {
+      Free(mn);
+      LexExcept(cc, "Expecting ',' at ");
+    }
+    Lex(cc);
+    if (!RvAsmImmTok(cc, &imm)) {
+      Free(mn);
+      LexExcept(cc, "Expecting imm at ");
+    }
+    if (rd < 1) {
+      Free(mn);
+      LexExcept(cc, "c.li/c.addi/c.slli need a non-zero register (x1-x31) at ");
+    }
+    if (RvAsmStrEqI(mn, "c.slli")) {
+      if (imm < 0 || imm > 63) {
+        Free(mn);
+        LexExcept(cc, "c.slli shift amount out of range (need 0..63) at ");
+      }
+      word = ((imm & 0x20) << 7) | (rd << 7) | ((imm & 0x1F) << 2) | 2;
+    } else {
+      if (imm < -32 || imm > 31) {
+        Free(mn);
+        LexExcept(cc, "c.li/c.addi immediate out of range (need -32..31) at ");
+      }
+      if (RvAsmStrEqI(mn, "c.li"))
+        word = 0x4000 | ((imm & 0x20) << 7) | (rd << 7) | ((imm & 0x1F) << 2) | 1;
+      else
+        word = ((imm & 0x20) << 7) | (rd << 7) | ((imm & 0x1F) << 2) | 1;
+    }
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
+  // CA-type reg,reg: c.sub/c.xor/c.or/c.and — both regs MUST be x8-x15 (3-bit
+  // subset). funct6=100011, funct2 selects op: sub=00 xor=01 or=10 and=11.
+  if (RvAsmStrEqI(mn, "c.sub") || RvAsmStrEqI(mn, "c.xor") || RvAsmStrEqI(mn, "c.or") || RvAsmStrEqI(mn, "c.and")) {
+    rd = RvAsmRegTok(cc);
+    if (cc->token != ',') {
+      Free(mn);
+      LexExcept(cc, "Expecting ',' at ");
+    }
+    Lex(cc);
+    rs2 = RvAsmRegTok(cc);
+    if (rd < 8 || rd > 15 || rs2 < 8 || rs2 > 15) {
+      Free(mn);
+      LexExcept(cc, "c.sub/c.xor/c.or/c.and need registers x8-x15 (s0-s1/a0-a5) at ");
+    }
+    if (RvAsmStrEqI(mn, "c.sub"))
+      word = 0x8C01;
+    else if (RvAsmStrEqI(mn, "c.xor"))
+      word = 0x8C21;
+    else if (RvAsmStrEqI(mn, "c.or"))
+      word = 0x8C41;
+    else
+      word = 0x8C61;
+    word |= ((rd - 8) << 7) | ((rs2 - 8) << 2);
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
     return TRUE;
   }
   if (RvAsmStrEqI(mn, "mv") || RvAsmStrEqI(mn, "not") || RvAsmStrEqI(mn, "neg") || RvAsmStrEqI(mn, "seqz") || RvAsmStrEqI(mn, "snez")) {
