@@ -487,6 +487,14 @@ static void PpRewind(U8 *buf, U8 **ptr, I64 *rip, int n) {
   *rip -= 4 * n;
   g_pp_n -= n;
 }
+/* Raw little-endian 32-bit word emit + rip advance — the arch-neutral half of the
+ * word writer (the other half, RVU32, adds the RISC-V push/pop + O1-slot peephole).
+ * A non-RV backend reuses this and supplies its own peephole, or none. */
+static void RvEmitWord(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
+  if (buf && ptr) { *(U32 *)(*ptr) = val; (*ptr) += 4; }
+  (*rip) += 4;
+}
+
 static void RVU32(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
   if (g_pp_on && g_pp_n >= 3) {
     U32 w0 = g_pp[0], w1 = g_pp[1], w2 = g_pp[2];
@@ -531,8 +539,7 @@ static void RVU32(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
     U32 op=val&0x7F;
     if (op==0x03||op==0x13||op==0x33||op==0x37||op==0x17||op==0x67) rd_def=(int)((val>>7)&31);
   }
-  if (buf && ptr) { *(U32 *)(*ptr) = val; (*ptr) += 4; }
-  (*rip) += 4;
+  RvEmitWord(buf, ptr, rip, val);
   if (g_pp_on) {
     if (g_pp_n < 3) g_pp[g_pp_n++] = val;
     else { g_pp[0] = g_pp[1]; g_pp[1] = g_pp[2]; g_pp[2] = val; }
