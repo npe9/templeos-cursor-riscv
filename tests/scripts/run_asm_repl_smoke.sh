@@ -77,6 +77,10 @@ feed() {
      "RegPaneCost;",
      "AsmStep(\"addi a2,a2,3\");",
      "RegPaneCost;",
+     "*(0(I64 *)) = 1;",
+     "DbgViewCost;",
+     "_MCAUSE;",
+     "G;",
      "q",
     );
     select(undef,undef,undef,5);
@@ -132,6 +136,19 @@ for c in $pane_costs; do
 done
 if [ -z "${pane_costs:-}" ]; then
   echo "FAIL asm-repl smoke -- no RegPaneCost readings" >&2
+  fail=1
+fi
+# A faulting line must land in the Dbg view: the REPL paints registers + the decoded fault and
+# returns to this prompt (stock TempleOS Dbg(), no modal UI). _MCAUSE then reads 7 (store access
+# fault) straight out of the freeze through a register label.
+need "fault in that line"
+dbgv=$(printf '%s\n' "$out" | grep -A1 'DbgViewCost;' | grep -o 'ans=[0-9]*' | head -1 | cut -d= -f2)
+if [ -z "${dbgv:-}" ] || [ "${dbgv:-0}" -le 0 ]; then
+  echo "FAIL asm-repl smoke -- Dbg view did not paint after a fault (DbgViewCost=$dbgv)" >&2
+  fail=1
+fi
+if ! printf '%s\n' "$out" | grep -qx 'ans=7'; then
+  echo "FAIL asm-repl smoke -- _MCAUSE did not read the store access fault (ans=7)" >&2
   fail=1
 fi
 if [ "$fail" -ne 0 ]; then

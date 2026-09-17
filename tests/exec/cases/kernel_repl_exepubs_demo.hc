@@ -6,6 +6,7 @@
 #include "/Kernel/RVDocVT.HC"
 #include "/Kernel/RVDocText.HC"
 #include "/Kernel/RVRegPane.HC"
+#include "/Kernel/RVDbgView.HC"
 #include "/Compiler/Compiler_RV_Body.PRJ"
 #define MEM_UART 0x10000000
 extern U0 RVTrapInit();
@@ -36,6 +37,8 @@ public U0 Funs(U8 *filt = NULL)
 {
   UartPutS("Funs: ExePutS CInit RVTrapInit MemMap AsmList AsmDoc Mstatus Mcause\n");
 }
+
+I64 dbg_view_ready;
 
 I64 main()
 {
@@ -106,6 +109,11 @@ I64 main()
       AsmWatchInstall(&RegPaneUpdate);
       RVExePubFunNew("RegPane", &RegPaneUpdate, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("RegPaneCost", &RegPaneCost, cmp.internal_types[RT_I64], 0);
+      // Dbg/G: the stock entry points. A faulting line paints this view automatically below.
+      RVExePubFunNew("Dbg", &Dbg, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("G", &G, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("DbgViewCost", &DbgViewCost, cmp.internal_types[RT_I64], 0);
+      dbg_view_ready = 1;
       UartPutS("A2 reg pane wired\n");
     }
     UartPutS(buf);
@@ -143,6 +151,10 @@ I64 main()
       StrPrint(buf, "    mcause=%d mepc=%X mtval=%X ra=%X\n", cause,
         RVTrapRecoverEpc(), RVTrapRecoverTval(), RVTrapRecoverRa());
       UartPutS(buf);
+      // Land in the debugger view: registers + the decoded fault, then back to this prompt,
+      // where _A0 / Dr / U(_PC-16) / AsmStep already work. Stock TempleOS Dbg(), not a modal UI.
+      if (dbg_view_ready)
+        Dbg;
       RVTrapRecoverDisarm();
       continue;
     }
