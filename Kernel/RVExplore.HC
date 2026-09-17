@@ -194,7 +194,8 @@ public U0 AsmList()
   Print("  Zicsr+priv), plus the COMPLETE RVC set (16-bit): reg/imm, c.j/c.beqz/c.bnez,\n");
   Print("  c.ld/c.sd/c.lw/c.sw, c.andi/c.srli/c.srai, c.addiw, c.lui, sp-relative\n");
   Print("  c.lwsp/c.ldsp/c.swsp/c.sdsp + c.addi16sp/c.addi4spn, and float c.fld/c.fsd/\n");
-  Print("  c.fldsp/c.fsdsp. Only `call` remains non-assemblable.\n");
+  Print("  c.fldsp/c.fsdsp. `call` assembles too (auipc+jalr pcrel pair) to a\n");
+  Print("  block-local label or numeric offset; external-symbol call stays host-only.\n");
   Print("  Branches/jumps take a NUMERIC even byte\n");
   Print("  offset (beq a0,a1,8) OR a label, either direction (loop: ... bnez t0,loop).\n");
   Print("  Float ops that round take an optional trailing rm: rne/rtz/rdn/rup/rmm/dyn\n");

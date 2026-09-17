@@ -1021,6 +1021,14 @@ rvc-asm-smoke:
 
 .PHONY: rvc-asm-smoke
 
+# Guest asm{} assembler emits a correct `call` (auipc+jalr pcrel pair) — see
+# tests/scripts/run_call_asm_smoke.sh (GNU-verified readback in repl-cmp.elf).
+call-asm-smoke:
+	@chmod +x tests/scripts/run_call_asm_smoke.sh
+	@tests/scripts/run_call_asm_smoke.sh
+
+.PHONY: call-asm-smoke
+
 # Build-only alias of the smoke’s install step (same ELF).
 repl-cmp: kernel-repl-exepubs-smoke
 	@test -f build/repl-cmp.elf && ls -lh build/repl-cmp.elf
