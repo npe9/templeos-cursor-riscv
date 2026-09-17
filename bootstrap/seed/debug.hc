@@ -4,9 +4,15 @@
 // (hwdbg.hc) stay additive — leave Watch/Step soft paths here unless Hw* wraps them.
 // Trap freeze: MEM_TRAP_SNAP / DbgReg.
 //
-// MEM_TRAP_SNAP word indices (U64) — C trapvec publish:
-//   DBG_I_RA=0  DBG_I_T0..T6=1..7  DBG_I_A0..A7=8..15  DBG_I_SP=16  DBG_I_FP=17
-//   DBG_I_CAUSE=18  DBG_I_EPC=19  DBG_I_TVAL=20
+// The fault freeze has TWO views (published together by trap.hc TrapSnapPublish):
+//
+//  1. Legacy word indices (U64) at MEM_TRAP_SNAP — read with DbgReg(n):
+//     DBG_I_RA=0  DBG_I_T0..T6=1..7  DBG_I_A0..A7=8..15  DBG_I_SP=16  DBG_I_FP=17
+//     DBG_I_CAUSE=18  DBG_I_EPC=19  DBG_I_TVAL=20  DBG_I_MSTATUS=21
+//     (mstatus is the POST-trap value: MIE is clear, MPP/MPIE hold the trapped state.)
+//  2. Canonical x0..x31 at TRAP_SNAP_X (MEM_TRAP_SNAP+0x100) — read with DbgX(n). This is
+//     every GPR including s1-s11/gp/tp, which view 1 has no slots for, and it matches
+//     MEM_REGS_SNAP's layout so one formatter serves both freeze and live snap.
 #define DBG_I_RA 0
 #define DBG_I_T0 1
 #define DBG_I_A0 8
@@ -15,6 +21,8 @@
 #define DBG_I_CAUSE 18
 #define DBG_I_EPC 19
 #define DBG_I_TVAL 20
+#define DBG_I_MSTATUS 21
+#define DBG_I_NSLOT 22
 I64 DbgAddr[16], DbgSaved[16], DbgActive[16];
 I64 WatchAddr[8], WatchLen[8], WatchLast[8], WatchActive[8];
 I64 DbgStopOnHit;
@@ -93,6 +101,87 @@ I64 DbgPeekWatch(I64 addr, I64 len)
 I64 DbgReg(I64 n)
 {
   return *(I64 *)(MEM_TRAP_SNAP + n * 8);
+}
+
+// TrapFrameProbe -- TrapFrameProbe()
+// NAME
+//   TrapFrameProbe - fault with known values in every callee-saved register (frame self-test)
+// SYNOPSIS
+//   U0 TrapFrameProbe();
+// DESCRIPTION
+//   Plants markers in s1/s2/s5/s11/gp/tp, faults on a load from address 4, then restores them.
+//   The fault's CrashDump prints those registers, which only exist in the canonical x view —
+//   so this is what proves TrapCtxSave/TrapSnapPublish really widened. `go` resumes after the
+//   faulting load, so the restores run and the caller's registers survive.
+// EXAMPLES
+//   TrapFrameProbe;   // expect s1=0x51 s2=0x52 ... gp=0x63 tp=0x64 in the dump, then: go
+// SEE ALSO
+//   DbgX  TrapDump  CrashDump  Fault
+U0 TrapFrameProbe()
+{
+  asm {
+	addi	sp, sp, -64
+	sd	s1, 0(sp)
+	sd	s2, 8(sp)
+	sd	s5, 16(sp)
+	sd	s11, 24(sp)
+	sd	gp, 32(sp)
+	sd	tp, 40(sp)
+	li	s1, 0x51
+	li	s2, 0x52
+	li	s5, 0x55
+	li	s11, 0x5B
+	li	gp, 0x63
+	li	tp, 0x64
+	li	t0, 4
+	ld	t1, 0(t0)
+	ld	s1, 0(sp)
+	ld	s2, 8(sp)
+	ld	s5, 16(sp)
+	ld	s11, 24(sp)
+	ld	gp, 32(sp)
+	ld	tp, 40(sp)
+	addi	sp, sp, 64
+  }
+}
+
+// DbgX -- DbgX(n)
+// NAME
+//   DbgX - read trapped x-register n (0..31) from the canonical freeze array
+// SYNOPSIS
+//   I64 DbgX(I64 n);
+// DESCRIPTION
+//   TRAP_SNAP_X + n*8. Covers every GPR — including s1-s11, gp and tp, which the legacy
+//   DbgReg slots do not carry. x0 reads 0; x2 is the sp at the moment of the trap.
+// EXAMPLES
+//   DbgX(9);  // s1
+//   DbgX(2);  // sp
+// SEE ALSO
+//   DbgReg  TrapDump  Regs  Reg
+// BUGS
+//   Stale until a trap has published.
+// s-register numbering is split: s0=x8, s1=x9, s2..s11=x18..x27.
+I64 DbgXSNum(I64 n)
+{
+  if (n == 8)
+    return 0;
+  if (n == 9)
+    return 1;
+  return n - 16;
+}
+
+I64 DbgXSNext(I64 n)
+{
+  if (n == 9)
+    return 18;
+  return n + 1;
+}
+
+I64 DbgX(I64 n)
+{
+  if (n < 0 || n > 31)
+    return 0;
+  return *(I64 *)(TRAP_SNAP_X + n * 8);
 }
 
 I64 DbgRa()
@@ -349,7 +438,7 @@ U0 WatchContinue()
 //   DbgReg  Bt  GetMcause  GetMepc  GetMtval  pc
 U0 TrapDump()
 {
-  I64 cause, epc, tval;
+  I64 cause, epc, tval, i;
   cause = DbgReg(DBG_I_CAUSE);
   epc = DbgReg(DBG_I_EPC);
   tval = DbgReg(DBG_I_TVAL);
@@ -365,8 +454,18 @@ U0 TrapDump()
   "  ra=0x%X", DbgRa();
   DbgSymLine(DbgRa());
   "\n";
-  "  sp=0x%X  fp=0x%X\n", DbgSp(), DbgFP();
+  "  sp=0x%X  fp=0x%X  mstatus=0x%X\n", DbgSp(), DbgFP(), DbgReg(DBG_I_MSTATUS);
   "  a0=0x%X a1=0x%X a2=0x%X a3=0x%X\n", DbgReg(DBG_I_A0), DbgReg(DBG_I_A0 + 1), DbgReg(DBG_I_A0 + 2), DbgReg(DBG_I_A0 + 3);
+  // s1-s11 / gp / tp exist only in the canonical x view (DbgX).
+  "  gp=0x%X  tp=0x%X\n", DbgX(3), DbgX(4);
+  i = 9;
+  while (i <= 27) {
+    "  s%d=0x%X", DbgXSNum(i), DbgX(i);
+    if (DbgXSNum(i) % 4 == 3)
+      "\n";
+    i = DbgXSNext(i);
+  }
+  "\n";
   Bt;
 }
 // DbgTrap -- DbgTrap(cause,epc,tval)

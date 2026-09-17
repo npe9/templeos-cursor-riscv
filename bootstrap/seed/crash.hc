@@ -216,14 +216,19 @@ U0 CrashDump()
   "  sp  = 0x%X  fp = 0x%X\n", DbgSp(), DbgFP();
   "  a0=0x%X a1=0x%X a2=0x%X a3=0x%X\n", DbgReg(DBG_I_A0), DbgReg(DBG_I_A0 + 1), DbgReg(DBG_I_A0 + 2), DbgReg(DBG_I_A0 + 3);
   "  a4=0x%X a5=0x%X a6=0x%X a7=0x%X\n", DbgReg(DBG_I_A0 + 4), DbgReg(DBG_I_A0 + 5), DbgReg(DBG_I_A0 + 6), DbgReg(DBG_I_A0 + 7);
+  // Callee-saved + gp/tp: only the canonical x view (DbgX) carries these.
+  "  gp=0x%X tp=0x%X mstatus=0x%X\n", DbgX(3), DbgX(4), DbgReg(DBG_I_MSTATUS);
+  "  s1=0x%X s2=0x%X s3=0x%X s4=0x%X\n", DbgX(9), DbgX(18), DbgX(19), DbgX(20);
+  "  s5=0x%X s6=0x%X s7=0x%X s8=0x%X\n", DbgX(21), DbgX(22), DbgX(23), DbgX(24);
+  "  s9=0x%X s10=0x%X s11=0x%X\n", DbgX(25), DbgX(26), DbgX(27);
   Bt;
   if (CrashInRam(epc)) {
     UartStr("  --- bytes @ pc ---\n");
     Md(epc, 32);
   }
   if (CrashInRam(MEM_TRAP_SNAP)) {
-    UartStr("  --- MEM_TRAP_SNAP (0xA8) ---\n");
-    Md(MEM_TRAP_SNAP, 0xA8);
+    UartStr("  --- MEM_TRAP_SNAP (0x200: slots + x0..x31) ---\n");
+    Md(MEM_TRAP_SNAP, 0x200);
   }
   UartStr("  (CrashMon; md/mw/regs/bt/go — Man(\"CrashMon\"))\n");
 }
@@ -319,7 +324,7 @@ U0 CrashMon()
     if (CrashCmdEq(p, "md") || CrashCmdEq(p, "dm") || CrashCmdEq(p, "d")) {
       p = CrashSkipTok(p);
       if (!*p) {
-        Md(MEM_TRAP_SNAP, 0xA8);
+        Md(MEM_TRAP_SNAP, 0x200);
         UartStr("crash> ");
         continue;
       }

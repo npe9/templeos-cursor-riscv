@@ -819,6 +819,7 @@ I64 ReplMain()
   JitAdd("SetTrap", &SetTrap, 1, 1);
   JitAdd("SetTrapFn", &SetTrapFn, 1, 1);
   JitAdd("Fault", &Fault, 0, 1);
+  JitAdd("TrapFrameProbe", &TrapFrameProbe, 0, 1);   // trap-frame width self-test (debug.hc)
   JitAdd("Break", &Break, 0, 1);
   JitAdd("Ecall", &Ecall, 0, 1);
   JitAdd("TimerArm", &TimerArm, 1, 1);
