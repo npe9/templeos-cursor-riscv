@@ -42,6 +42,18 @@ feed() {
      "I64 W1(){I64 *p=Rv2;return p[0];}","W1();",
      "I64 W2(){I64 *p=Rv3;return p[0];}","W2();",
      "I64 W3(){I64 *p=Rv4;return p[0];}","W3();",
+     # Increment 2: immediate-scramble jumps/branches + subset loads/stores.
+     "asm { Rv5:: c.ld a0,8(a1) c.sd a4,16(a3) c.j 8 c.beqz a0,4 ret }",
+     "asm { Rv6:: c.bnez a1,-8 c.j -8 c.ld a0,0(a1) c.sd a0,0(a1) ret }",
+     # Label resolution: forward c.j (F), forward c.beqz (C), backward c.j (B).
+     "asm { RvF:: c.j E c.nop E: c.nop c.nop ret }",
+     "asm { RvC:: c.beqz a0,E c.nop E: c.nop c.nop ret }",
+     "asm { RvB:: E: c.nop c.nop c.j E c.nop ret }",
+     "I64 W5(){I64 *p=Rv5;return p[0];}","W5();",
+     "I64 W6(){I64 *p=Rv6;return p[0];}","W6();",
+     "I64 WF(){I64 *p=RvF;return p[0];}","WF();",
+     "I64 WC(){I64 *p=RvC;return p[0];}","WC();",
+     "I64 WB(){I64 *p=RvB;return p[0];}","WB();",
     );
     select(undef,undef,undef,5);
     for my $x (@l){ print $x,"\n"; select(undef,undef,undef,0.6); }
@@ -63,10 +75,17 @@ need "ans=-7697068278098558975"   # Rv1: c.nop/c.ebreak/c.mv/c.add
 need "ans=1548399367352567061"    # Rv2: c.li +/- , c.addi +/-
 need "ans=-9194374554141425534"   # Rv3: c.jr/c.jalr/c.slli
 need "ans=-8273801576184967923"   # Rv4: c.sub/c.and/c.or/c.xor (x8-x15 subset)
+# Increment 2 — numeric offsets (c.ld/c.sd scaled, c.j/c.beqz/c.bnez scramble):
+need "ans=-4534667282255157880"   # Rv5: c.ld 8, c.sd 16, c.j +8, c.beqz +4
+need "ans=-2195397578380149275"   # Rv6: c.bnez -8, c.j -8, c.ld 0, c.sd 0
+# Increment 2 — label resolution (2-byte forward fixup + backward inline):
+need "ans=281479271784465"        # RvF: forward c.j E  (offset +4 = 0xa011)
+need "ans=281479271792913"        # RvC: forward c.beqz E (offset +4 = 0xc111)
+need "ans=492533964668929"        # RvB: backward c.j E  (offset -4 = 0xbff5)
 
 if [ "$fail" -ne 0 ]; then
-  printf '%s\n' "$out" | grep -E 'ans=|Rv[0-9]|W[0-9]|Except|Error|TRAP' | tail -40 | sed 's/^/  /' >&2
+  printf '%s\n' "$out" | grep -E 'ans=|Rv[0-9A-Z]|W[0-9A-Z]|Except|Error|TRAP' | tail -40 | sed 's/^/  /' >&2
   exit 1
 fi
-echo "RVC-asm smoke: OK (guest asm{} emits GNU-identical c.* for all 15 increment-1 forms)"
+echo "RVC-asm smoke: OK (guest asm{} emits GNU-identical c.* — 15 increment-1 forms + c.j/c.beqz/c.bnez/c.ld/c.sd incl. label resolution)"
 exit 0

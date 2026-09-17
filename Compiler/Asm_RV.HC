@@ -460,6 +460,48 @@ U32 RvAsmJ(I64 rd, I64 imm)
   return w;
 }
 
+// RVC CJ-type immediate scramble (c.j): PC-relative byte offset, even, -2048..2046.
+// Bits [12:2] pack offset[11|4|9:8|10|6|7|3:1|5]. GNU-verified (-march=rv64imac).
+U32 RvAsmCJImm(I64 off)
+{
+  U32 w = 0;
+  w |= ((off >> 11) & 1) << 12;
+  w |= ((off >> 4) & 1) << 11;
+  w |= ((off >> 9) & 1) << 10;
+  w |= ((off >> 8) & 1) << 9;
+  w |= ((off >> 10) & 1) << 8;
+  w |= ((off >> 6) & 1) << 7;
+  w |= ((off >> 7) & 1) << 6;
+  w |= ((off >> 3) & 1) << 5;
+  w |= ((off >> 2) & 1) << 4;
+  w |= ((off >> 1) & 1) << 3;
+  w |= ((off >> 5) & 1) << 2;
+  return w;
+}
+// RVC CB-type immediate scramble (c.beqz/c.bnez): even, -256..254. Bits [12:10]
+// and [6:2] pack offset[8|4:3] and offset[7:6|2:1|5] (rs1' occupies [9:7]).
+U32 RvAsmCBImm(I64 off)
+{
+  U32 w = 0;
+  w |= ((off >> 8) & 1) << 12;
+  w |= ((off >> 4) & 1) << 11;
+  w |= ((off >> 3) & 1) << 10;
+  w |= ((off >> 7) & 1) << 6;
+  w |= ((off >> 6) & 1) << 5;
+  w |= ((off >> 2) & 1) << 4;
+  w |= ((off >> 1) & 1) << 3;
+  w |= ((off >> 5) & 1) << 2;
+  return w;
+}
+Bool RvAsmFitsCJimm(I64 off)
+{
+  return !(off & 1) && off >= -2048 && off <= 2046;
+}
+Bool RvAsmFitsCBimm(I64 off)
+{
+  return !(off & 1) && off >= -256 && off <= 254;
+}
+
 U32 RvAsmA(U32 f5, U32 aqrl, U32 f3, I64 rd, I64 rs1, I64 rs2)
 {
   return 0x2F | (rd << 7) | (f3 << 12) | (rs1 << 15) | (rs2 << 20) | (aqrl << 25) | (f5 << 27);
@@ -636,23 +678,36 @@ U0 RvAsmFixupResolve(CCmpCtrl *cc)
       bad = 1; // undefined label referenced by a forward branch/jump
     } else {
       off = lrip - rv_asm_fixup_rip[k];
-      if (rv_asm_fixup_btype[k]) {
-        if (!RvAsmFitsBimm(off))
+      // btype: 0 = J-type (4B), 1 = B-type (4B), 2 = RVC CJ (2B), 3 = RVC CB (2B).
+      if (rv_asm_fixup_btype[k] == 2) {
+        if (!RvAsmFitsCJimm(off))
           bad = 2;
-        immb = ((off >> 12) & 1) << 31;
-        immb = immb | (((off >> 5) & 0x3F) << 25);
-        immb = immb | (((off >> 1) & 0xF) << 8);
-        immb = immb | (((off >> 11) & 1) << 7);
+        w = rv_asm_fixup_base[k] | RvAsmCJImm(off);
+        AOTStoreCodeU8At(cc, rv_asm_fixup_rip[k], w & 0xFF, (w >> 8) & 0xFF);
+      } else if (rv_asm_fixup_btype[k] == 3) {
+        if (!RvAsmFitsCBimm(off))
+          bad = 2;
+        w = rv_asm_fixup_base[k] | RvAsmCBImm(off);
+        AOTStoreCodeU8At(cc, rv_asm_fixup_rip[k], w & 0xFF, (w >> 8) & 0xFF);
       } else {
-        if (!RvAsmFitsJimm(off))
-          bad = 2;
-        immb = ((off >> 20) & 1) << 31;
-        immb = immb | (((off >> 1) & 0x3FF) << 21);
-        immb = immb | (((off >> 11) & 1) << 20);
-        immb = immb | (((off >> 12) & 0xFF) << 12);
+        if (rv_asm_fixup_btype[k]) {
+          if (!RvAsmFitsBimm(off))
+            bad = 2;
+          immb = ((off >> 12) & 1) << 31;
+          immb = immb | (((off >> 5) & 0x3F) << 25);
+          immb = immb | (((off >> 1) & 0xF) << 8);
+          immb = immb | (((off >> 11) & 1) << 7);
+        } else {
+          if (!RvAsmFitsJimm(off))
+            bad = 2;
+          immb = ((off >> 20) & 1) << 31;
+          immb = immb | (((off >> 1) & 0x3FF) << 21);
+          immb = immb | (((off >> 11) & 1) << 20);
+          immb = immb | (((off >> 12) & 0xFF) << 12);
+        }
+        w = rv_asm_fixup_base[k] | immb;
+        AOTStoreCodeU8At(cc, rv_asm_fixup_rip[k], w & 0xFF, (w >> 8) & 0xFF, (w >> 16) & 0xFF, (w >> 24) & 0xFF);
       }
-      w = rv_asm_fixup_base[k] | immb;
-      AOTStoreCodeU8At(cc, rv_asm_fixup_rip[k], w & 0xFF, (w >> 8) & 0xFF, (w >> 16) & 0xFF, (w >> 24) & 0xFF);
     }
     Free(rv_asm_fixup_name[k]);
     rv_asm_fixup_name[k] = NULL;
@@ -971,6 +1026,99 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
     else
       word = 0x8C61;
     word |= ((rd - 8) << 7) | ((rs2 - 8) << 2);
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
+  // ---- RVC increment 2: immediate-scramble jumps/branches + subset loads/stores ----
+  // CJ `c.j off|label` (funct3=101, op=01). Numeric offset or a label (either
+  // direction); a forward label plants a 2-byte placeholder + a CJ fixup (kind 2).
+  if (RvAsmStrEqI(mn, "c.j")) {
+    tgt = RvAsmBrTarget(cc, &imm, &fwdname);
+    if (!tgt) {
+      Free(mn);
+      LexExcept(cc, "Expecting c.j offset or label at ");
+    }
+    Free(mn);
+    if (tgt == 2) {
+      RvAsmFixupAdd(cc, 0xA001, 2, fwdname);
+      AOTStoreCodeU16(cc, 0xA001);
+      return TRUE;
+    }
+    if (!RvAsmFitsCJimm(imm))
+      LexExcept(cc, "c.j offset out of range (even, -2048..2046; PC-relative) at ");
+    AOTStoreCodeU16(cc, 0xA001 | RvAsmCJImm(imm));
+    return TRUE;
+  }
+  // CB `c.beqz/c.bnez rs1', off|label` — rs1' MUST be x8-x15 (3-bit subset).
+  // funct3=110 (beqz) / 111 (bnez), op=01; forward label plants a CB fixup (kind 3).
+  if (RvAsmStrEqI(mn, "c.beqz") || RvAsmStrEqI(mn, "c.bnez")) {
+    rd = RvAsmRegTok(cc); // rs1'
+    if (rd < 8 || rd > 15) {
+      Free(mn);
+      LexExcept(cc, "c.beqz/c.bnez need a register x8-x15 (s0-s1/a0-a5) at ");
+    }
+    if (cc->token != ',') {
+      Free(mn);
+      LexExcept(cc, "Expecting ',' at ");
+    }
+    Lex(cc);
+    if (RvAsmStrEqI(mn, "c.beqz"))
+      word = 0xC001 | ((rd - 8) << 7);
+    else
+      word = 0xE001 | ((rd - 8) << 7);
+    Free(mn);
+    tgt = RvAsmBrTarget(cc, &imm, &fwdname);
+    if (!tgt)
+      LexExcept(cc, "Expecting c.beqz/c.bnez offset or label at ");
+    if (tgt == 2) {
+      RvAsmFixupAdd(cc, word, 3, fwdname);
+      AOTStoreCodeU16(cc, word);
+      return TRUE;
+    }
+    if (!RvAsmFitsCBimm(imm))
+      LexExcept(cc, "c.beqz/c.bnez offset out of range (even, -256..254; PC-relative) at ");
+    AOTStoreCodeU16(cc, word | RvAsmCBImm(imm));
+    return TRUE;
+  }
+  // CL/CS `c.ld rd', off(rs1')` / `c.sd rs2', off(rs1')` — regs x8-x15, off a
+  // multiple of 8 in 0..248 (uimm scaled). funct3=011 (ld) / 111 (sd), op=00.
+  if (RvAsmStrEqI(mn, "c.ld") || RvAsmStrEqI(mn, "c.sd")) {
+    rd = RvAsmRegTok(cc); // rd' (ld) or rs2' (sd)
+    if (cc->token != ',') {
+      Free(mn);
+      LexExcept(cc, "Expecting ',' at ");
+    }
+    Lex(cc);
+    imm = 0;
+    if (!RvAsmImmTok(cc, &imm) && cc->token != '(') {
+      Free(mn);
+      LexExcept(cc, "Expecting off(reg) at ");
+    }
+    if (cc->token != '(') {
+      Free(mn);
+      LexExcept(cc, "Expecting '(' at ");
+    }
+    Lex(cc);
+    rs1 = RvAsmRegTok(cc);
+    if (cc->token != ')') {
+      Free(mn);
+      LexExcept(cc, "Expecting ')' at ");
+    }
+    Lex(cc);
+    if (rd < 8 || rd > 15 || rs1 < 8 || rs1 > 15) {
+      Free(mn);
+      LexExcept(cc, "c.ld/c.sd need registers x8-x15 (s0-s1/a0-a5) at ");
+    }
+    if (imm < 0 || imm > 248 || (imm & 7)) {
+      Free(mn);
+      LexExcept(cc, "c.ld/c.sd offset must be a multiple of 8 in 0..248 at ");
+    }
+    if (RvAsmStrEqI(mn, "c.ld"))
+      word = 0x6000;
+    else
+      word = 0xE000;
+    word |= (((imm >> 3) & 7) << 10) | ((rs1 - 8) << 7) | (((imm >> 6) & 3) << 5) | ((rd - 8) << 2);
     Free(mn);
     AOTStoreCodeU16(cc, word);
     return TRUE;
