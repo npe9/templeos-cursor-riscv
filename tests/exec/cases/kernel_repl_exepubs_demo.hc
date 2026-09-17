@@ -94,6 +94,10 @@ I64 main()
     dbg[6] = &RVBp;
     dbg[7] = &RVBpClr;
     StrPrint(buf, "A2 dbg pubs wired n=%d\n", RVExePubsWireDbg(dbg));
+    // The live register pane (Kernel/RVRegPane.HC) is NOT installed here: this image is
+    // UART-only and never runs RVKernelInit/RVWinMgrLiteInit, so DocNew wedges. The pane and
+    // its cost assertions live in kernel_doctext_demo, which brings DolDoc up properly.
+    // Wiring it here needs kernel init in this image first — see the plan's D-2/D-3 note.
     UartPutS(buf);
   }
   // This image has completed the kernel/compiler setup normally performed

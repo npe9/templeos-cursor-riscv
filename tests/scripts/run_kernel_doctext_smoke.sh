@@ -87,6 +87,6 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-printf '%s\n' "$clean" | grep -F 'doctext: first=' | sed 's/^/  /'
+printf '%s\n' "$clean" | grep -E 'doctext: (first|pane_first)=' | sed 's/^/  /'
 echo "Kernel-doctext smoke: OK (entry stream → ANSI, no cell grid; idle re-render free, incremental < full, tiled render works)"
 exit 0

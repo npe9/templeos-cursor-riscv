@@ -5,6 +5,7 @@
 #include "/Kernel/Kernel_RV.PRJ"
 #include "/Kernel/RVDocVT.HC"
 #include "/Kernel/RVDocText.HC"
+#include "/Kernel/RVRegPane.HC"
 #define MEM_UART_DT 0x10000000
 
 U0 DtOut(U8 *s)
@@ -19,7 +20,7 @@ U0 DtOut(U8 *s)
 I64 main()
 {
   CDoc *doc;
-  I64 first, idle, after, tiled;
+  I64 first, idle, after, tiled, pane_first, pane_step;
   U8 buf[160];
   RVKernelInit();
   if (!RVWinMgrLiteInit()) {
@@ -46,8 +47,21 @@ I64 main()
   // (the window manager), not from anything the renderer composites.
   RVDocTextInvalidate();
   tiled = RVDocTextRender(doc, 0, 40, 12, 40);
+  // The live register pane: the same renderer, fed by the debugger's register file. Paint it,
+  // then move ONE register the way a stepped instruction would and repaint — the second paint
+  // must cost a fraction of the first, which is what makes "watch the registers change" usable
+  // on a serial line.
+  RVDocTextInvalidate();
+  RegPaneUpdate();
+  pane_first = RegPaneCost();
+  *(I64 *)(0x87000400 + 10 * 8) = 0x2A;
+  // a0 as a step would leave it
+  RegPaneUpdate();
+  pane_step = RegPaneCost();
   RVVtStop();
-  StrPrint(buf, "\ndoctext: first=%d idle=%d after=%d tiled=%d\n", first, idle, after, tiled);
+  StrPrint(buf, "\ndoctext: pane_first=%d pane_step=%d\n", pane_first, pane_step);
+  DtOut(buf);
+  StrPrint(buf, "doctext: first=%d idle=%d after=%d tiled=%d\n", first, idle, after, tiled);
   DtOut(buf);
   if (first <= 0) {
     DtOut("doctext: FAIL nothing rendered\n");
@@ -64,6 +78,14 @@ I64 main()
   if (tiled <= 0) {
     DtOut("doctext: FAIL tile render produced nothing\n");
     return 6;
+  }
+  if (pane_first <= 0) {
+    DtOut("doctext: FAIL register pane never painted\n");
+    return 7;
+  }
+  if (pane_step <= 0 || pane_step >= pane_first) {
+    DtOut("doctext: FAIL one-register repaint not cheaper than the pane's first paint\n");
+    return 8;
   }
   DtOut("doctext: PASS\n");
   return 0;

@@ -108,7 +108,6 @@ fi
 # Dr reads the same array: a0 shows the stepped value, and the CSR line is present
 need "a0  =0000000000000021"
 need "mcause="
-
 if [ "$fail" -ne 0 ]; then
   printf '%s\n' "$out" | grep -E 'A2|ExePutS|ans=|Except|Error|FAIL|OK|probe|Cmp|Compiler_RV' | head -40 | sed 's/^/  /' >&2
   printf '%s\n' "$out" | tail -30 | sed 's/^/  /' >&2

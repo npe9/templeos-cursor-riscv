@@ -23,6 +23,22 @@
 // shadow: what the registers held before the last step
 
 I64 asm_ctx_ready;
+I64 asm_watch_fn;
+// optional pane painter (Kernel/RVRegPane.HC), installed at runtime
+
+// AsmWatchInstall -- AsmWatchInstall(&RegPaneUpdate)
+// NAME
+//   AsmWatchInstall - have AsmStep repaint a live register pane after each line
+// DESCRIPTION
+//   Takes a U0(*)() and calls it after every step. Kept as a pointer so the asm REPL (compiler
+//   image) does not have to link the pane (kernel image) — whoever builds an image with both
+//   installs it. Pass 0 to stop.
+// SEE ALSO
+//   AsmStep  RegPaneUpdate
+public U0 AsmWatchInstall(I64 fn)
+{
+  asm_watch_fn = fn;
+}
 
 // Context registers, in display order: x-numbers.
 I64 AsmCtxReg(I64 i)
@@ -206,5 +222,10 @@ public I64 AsmStep(U8 *text)
   }
   if (!changed)
     "  (no register changed)\n";
+  if (asm_watch_fn) {
+    U0 (*paint)();
+    paint = asm_watch_fn;
+    paint();
+  }
   return changed;
 }
