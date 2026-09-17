@@ -68,6 +68,9 @@ feed() {
      "40+2;",
      "asm { Dt:: addi a0,a0,1 add a0,a0,a1 c.mv a1,a0 call E nop E: ret }",
      "Disasm(\"Dt\");",
+     "DisasmAt(FnAddr(\"Dt\"),32);",
+     "Bp(FnAddr(\"Dt\"));",
+     "BpClr(FnAddr(\"Dt\"));",
      "q",
     );
     select(undef,undef,undef,5);
@@ -95,12 +98,21 @@ if ! printf '%s\n' "$out" | grep -qx 'ans=42'; then
   fail=1
 fi
 need "$EXPECT"
-# Debugger surface wired + assemble->disassemble loop works.
-need "A2 dbg pubs wired n=8"
-need "c.mv a1, a0"                 # RVC instruction decoded back
-need "auipc ra"                    # `call` expansion, first word decoded
-need "jalr ra"                     # `call` expansion, second word decoded
-need "<Dt+"                        # call pcrel target resolved to a symbol+offset
+# Debugger surface wired + assemble->disassemble loop works. Only the pubs that
+# actually run in this serial image are advertised (U/UA need win/VT DolDoc), so
+# n=6, and every advertised pub is CALLED below (not just counted).
+need "A2 dbg pubs wired n=6"
+need "c.mv a1, a0"                 # Disasm: RVC instruction decoded back
+need "auipc ra"                    # Disasm: `call` expansion, first word decoded
+need "jalr ra"                     # Disasm: `call` expansion, second word decoded
+need "<Dt+"                        # Disasm: call pcrel target resolved to symbol+offset
+need "Bp set at"                   # Bp() ran
+# Every advertised dbg pub must run without trapping. The trap-recover path prints
+# "fault in that line" and returns to the prompt; assert it never appears.
+if printf '%s\n' "$out" | grep -qF "fault in that line"; then
+  echo "FAIL kernel-repl-exepubs smoke — a dbg pub trapped (fault in that line)" >&2
+  fail=1
+fi
 
 if [ "$fail" -ne 0 ]; then
   printf '%s\n' "$out" | grep -E 'A2|ExePutS|ans=|Except|Error|FAIL|OK|probe|Cmp|Compiler_RV' | head -40 | sed 's/^/  /' >&2
@@ -108,5 +120,5 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-echo "Kernel-REPL-ExePutS smoke: OK (guest Cmp owns UART compile loop → build/repl-cmp.elf; Disasm/Uf wired → asm{}→Disasm round-trip incl. RVC + call pcrel target)"
+echo "Kernel-REPL-ExePutS smoke: OK (guest Cmp owns UART compile loop → build/repl-cmp.elf; dbg pubs Disasm/DisasmAt/FnAddr/Uf/Bp/BpClr wired and each CALLED without trap → asm{}→Disasm round-trip incl. RVC + call pcrel target)"
 exit 0

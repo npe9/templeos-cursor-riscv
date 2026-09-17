@@ -79,13 +79,16 @@ I64 main()
   // Closes the assemble->disassemble loop in this REPL: `asm{Fn:: ...ret}` then
   // `Disasm("Fn")` / `Uf("Fn")` shows the decoded instructions you just emitted.
   {
+    // Slots 2 (U) and 3 (UA) are deliberately left 0: they target the win/VT DolDoc
+    // renderer this serial image lacks — U emits `$HL$` hyperlink markup then derefs a
+    // null DolDoc struct, and UA's label-collection walk runs off the end of RAM. Both
+    // fault here, so we do not advertise them. The name-based Disasm/Uf, plain DisasmAt,
+    // FnAddr, and Bp/BpClr all work in this environment (each exercised by the smoke).
     I64 dbg[8], di;
     for (di = 0; di < 8; di++)
       dbg[di] = 0;
     dbg[0] = &Disasm;
     dbg[1] = &DisasmAt;
-    dbg[2] = &U;
-    dbg[3] = &UA;
     dbg[4] = &RVDisFnAddr;
     dbg[5] = &RVUf;
     dbg[6] = &RVBp;
