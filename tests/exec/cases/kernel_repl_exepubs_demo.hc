@@ -94,10 +94,13 @@ I64 main()
     dbg[6] = &RVBp;
     dbg[7] = &RVBpClr;
     StrPrint(buf, "A2 dbg pubs wired n=%d\n", RVExePubsWireDbg(dbg));
-    // The live register pane (Kernel/RVRegPane.HC) is NOT installed here: this image is
-    // UART-only and never runs RVKernelInit/RVWinMgrLiteInit, so DocNew wedges. The pane and
-    // its cost assertions live in kernel_doctext_demo, which brings DolDoc up properly.
-    // Wiring it here needs kernel init in this image first — see the plan's D-2/D-3 note.
+    // The live register pane (Kernel/RVRegPane.HC) is NOT wired here yet. Measured, not
+    // guessed: with RVKernelInit and RVWinMgrLiteInit both up, DocNew still takes a load
+    // access fault inside DocInit+0x14 (mcause=5) — DolDoc's global init wants its
+    // DefineLstLoad/HashLstAdd-backed doldoc.hash, which this image never builds. The REPL's
+    // recover path swallows the fault, so it presents as a pane that silently never paints.
+    // Bringing DocInit up here is its own task; until then the pane and its cost assertions
+    // live in kernel_doctext_demo, which brings the whole stack up.
     UartPutS(buf);
   }
   // This image has completed the kernel/compiler setup normally performed

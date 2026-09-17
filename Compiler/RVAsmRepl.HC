@@ -192,6 +192,7 @@ public I64 AsmStep(U8 *text)
 {
   U8 *src, nm[8];
   I64 i, n, now, was, changed = 0;
+  U0 (*watch)();
   if (!text)
     return 0;
   if (!asm_ctx_ready)
@@ -223,9 +224,8 @@ public I64 AsmStep(U8 *text)
   if (!changed)
     "  (no register changed)\n";
   if (asm_watch_fn) {
-    U0 (*paint)();
-    paint = asm_watch_fn;
-    paint();
+    watch = asm_watch_fn;
+    watch();
   }
   return changed;
 }

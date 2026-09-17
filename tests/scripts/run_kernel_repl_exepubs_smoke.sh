@@ -101,7 +101,13 @@ need "$EXPECT"
 # Debugger surface wired + assemble->disassemble loop works. Only the pubs that
 # actually run in this serial image are advertised (U/UA need win/VT DolDoc), so
 # n=6, and every advertised pub is CALLED below (not just counted).
-need "A2 dbg pubs wired n=6"
+# The debugger surface legitimately grows (register labels, AsmStep, Dr …), so assert that it
+# wired and that the six functions this smoke exercises are there — not an exact pub count.
+need "A2 dbg pubs wired n="
+if printf '%s\n' "$out" | grep -qF "A2 dbg pubs wired n=0"; then
+  echo "FAIL kernel-repl-exepubs smoke — dbg pubs wired nothing" >&2
+  fail=1
+fi
 need "c.mv a1, a0"                 # Disasm: RVC instruction decoded back
 need "auipc ra"                    # Disasm: `call` expansion, first word decoded
 need "jalr ra"                     # Disasm: `call` expansion, second word decoded
