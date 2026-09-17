@@ -109,10 +109,11 @@ static char *stem_map_path(const char *bin) {
 
 static void usage(const char *argv0) {
   fprintf(stderr,
-          "Usage: %s <file.hc> [-o out.bin] [--deps out.d] [--map out.map]\n"
+          "Usage: %s <file.hc> [-o out.bin] [--target rv64] [--deps out.d] [--map out.map]\n"
           "       %s --link -o out.bin [--base 0x80800000] a.bin b.bin...\n"
           "       %s --fmt [--stdout] <file.hc>...\n"
-          "       %s --asm-dump <file.hc>\n",
+          "       %s --asm-dump <file.hc>\n"
+          "   --target selects the codegen ISA (default rv64; also via HOLYC_ARCH). rv32/others: planned.\n",
           argv0, argv0, argv0, argv0);
 }
 
@@ -142,6 +143,7 @@ int main(int argc, char **argv) {
   const char *output = "a.bin";
   const char *deps = NULL;
   const char *map_arg = NULL;
+  const char *target_arg = NULL;
   int quiet = 0;
   int map_owned = 0;
 
@@ -151,6 +153,8 @@ int main(int argc, char **argv) {
       quiet = 1;
     } else if (!strcmp(argv[i], "--deps") && i + 1 < argc) {
       deps = argv[++i];
+    } else if (!strcmp(argv[i], "--target") && i + 1 < argc) {
+      target_arg = argv[++i];
     } else if (!strcmp(argv[i], "--map") && i + 1 < argc) {
       map_arg = argv[++i];
     } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
@@ -170,6 +174,20 @@ int main(int argc, char **argv) {
   }
 
   if (!input) { usage(argv[0]); return 1; }
+
+  /* Codegen target: --target arg > HOLYC_ARCH env > rv64 default. Only rv64 emits
+   * today; rv32/others are declared (host/holyc_target.h) but codegen lands later. */
+  {
+    const char *t = target_arg ? target_arg : getenv("HOLYC_ARCH");
+    if (t && strcmp(t, "rv64") != 0) {
+      if (!strcmp(t, "rv32"))
+        fprintf(stderr, "holyc-riscv: --target rv32 is not yet supported (codegen lands in a later change)\n");
+      else
+        fprintf(stderr, "holyc-riscv: unknown --target '%s' (supported: rv64)\n", t);
+      return 1;
+    }
+    if (target_arg) setenv("HOLYC_ARCH", target_arg, 1); /* so CompilerNewBuf agrees */
+  }
 
   char *map_path = NULL;
   if (map_arg) {

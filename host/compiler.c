@@ -103,7 +103,9 @@ const holyc_target holyc_target_rv32 = {
 
 Compiler *CompilerNewBuf(const char *source, size_t size, const char *filename) {
   Compiler *cc = calloc(1, sizeof(Compiler));
-  cc->tgt = &holyc_target_rv64;   // default target; --target/HOLYC_ARCH overrides later
+  // Active codegen target: HOLYC_ARCH env (set from --target by main), else rv64.
+  { const char *a = getenv("HOLYC_ARCH");
+    cc->tgt = (a && !strcmp(a, "rv32")) ? &holyc_target_rv32 : &holyc_target_rv64; }
 
   // Initialize lexer — copy full buffer (may contain trailing CDocBin after text NUL).
   if (!source) source = "";
