@@ -47,7 +47,17 @@ I64 AsmCtxReg(I64 i)
 
 U0 AsmRegName(I64 n, U8 *out)
 {
-  if (n >= 5 && n <= 7)
+  if (n == 0)
+    StrPrint(out, "zero");
+  else if (n == 1)
+    StrPrint(out, "ra");
+  else if (n == 2)
+    StrPrint(out, "sp");
+  else if (n == 3)
+    StrPrint(out, "gp");
+  else if (n == 4)
+    StrPrint(out, "tp");
+  else if (n >= 5 && n <= 7)
     StrPrint(out, "t%d", n - 5);
   else if (n >= 28 && n <= 31)
     StrPrint(out, "t%d", n - 25);

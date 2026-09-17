@@ -73,6 +73,7 @@ feed() {
      "_A0 = 0x20;",
      "AsmStep(\"addi a0,a0,1\");",
      "_A0;",
+     "Dr;",
      "q",
     );
     select(undef,undef,undef,5);
@@ -104,6 +105,9 @@ if ! printf '%s\n' "$out" | grep -qx 'ans=33'; then
   echo "FAIL asm-repl smoke -- _A0 did not read the value the stepped instruction left" >&2
   fail=1
 fi
+# Dr reads the same array: a0 shows the stepped value, and the CSR line is present
+need "a0  =0000000000000021"
+need "mcause="
 
 if [ "$fail" -ne 0 ]; then
   printf '%s\n' "$out" | grep -E 'A2|ExePutS|ans=|Except|Error|FAIL|OK|probe|Cmp|Compiler_RV' | head -40 | sed 's/^/  /' >&2

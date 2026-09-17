@@ -1100,6 +1100,10 @@ I64 RVExePubsWireDbg(I64 *addrs)
   if (!HashFind("AsmClr", Fs->hash_table, HTT_FUN)) {
     if (RVExePubFunNew("AsmClr", &AsmClr, cls_u0, 0)) n++;
   }
+  // Dr: the stock register dump over the same freeze (RVDbgCore.HC)
+  if (!HashFind("Dr", Fs->hash_table, HTT_FUN)) {
+    if (RVExePubFunNew("Dr", &Dr, cls_u0, 0)) n++;
+  }
   return n;
 }
 
