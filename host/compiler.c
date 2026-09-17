@@ -2070,6 +2070,499 @@ static void IcOptimize(Compiler *cc) {
   HolyProgress("optimize done (%d iters)", guard);
 }
 
+/* Unified IC->machine lowering, shared by the sizing/relaxation pass and the final
+ * emit pass (PR-0b). Mutable state is threaded by pointer; data_base is 0 during
+ * sizing (addresses not yet placed) and the real base during emit. Extracted from
+ * the emit-pass switch body verbatim — see docs/MULTIARCH.md. */
+static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
+                      U8 *buf, U8 **pptr, I64 *prip, I64 *psd, I64 *pcf,
+                      I64 data_base, Bool is_function, Bool has_call) {
+  switch (ic->ic_code) {
+      case IC_ENTER:
+        (*pcf) = EmitIC_ENTER(buf, pptr, prip, ic);
+        if (FnParksFlags(ic)) (*pcf) = -1;   // keep the static pop; see FnParksFlags
+        break;
+      case IC_LEAVE:
+        // A stale (*pcf) past the end of a function would aim `addi sp,s0,-N` at a foreign s0.
+        (*pcf) = -1;
+        EmitIC_LEAVE(buf, pptr, prip, ic); break;
+        
+      case IC_RBP:
+        if ((*psd) > 0) {
+          // addi sp, sp, -8
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          // sd a0, 0(sp)
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+        }
+        // mv a0, s0 (addi a0, s0, 0)
+        RVU32(buf, pptr, prip, 0x13 | (RV_A0<<7) | (RV_S0<<15));
+        (*psd)++;
+        break;
+        
+      case IC_LEA:
+        // Load Effective Address: addi a0, s0, offset
+        // Don't push - IC_PUSH_ARG handles it for assignments, IC_DEREF handles it for loads
+        {
+          I64 offset = ic->ic_data;
+          if (offset >= -2048 && offset <= 2047) {
+          RVU32(buf, pptr, prip, 0x13 | (RV_A0<<7) | (RV_S0<<15) | ((offset & 0xFFF)<<20)); // addi a0, s0, offset
+          } else {
+            // Large offset: LUI + ADDI
+            I64 hi = (offset + 0x800) >> 12;
+            I64 lo = offset & 0xFFF;
+            if (lo & 0x800) lo |= 0xFFFFFFFFFFFFF000LL;
+            RVU32(buf, pptr, prip, 0x37 | (RV_A0<<7) | ((hi & 0xFFFFF)<<12));
+            if (lo) {
+              RVU32(buf, pptr, prip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20));
+            }
+            RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (RV_A0<<15) | (RV_S0<<20)); // add a0, a0, s0
+          }
+        }
+        // Don't push here - IC_PUSH_ARG will handle it for assignments, IC_DEREF handles it for loads
+        break;
+        
+      case IC_IMM_I64:
+      case IC_IMM_F64:  // F64 travels as its raw 64-bit pattern in integer registers / eval stack
+        if (cc->optimize && ic->ic_code == IC_IMM_I64 && !(ic->ic_flags & ICF_GLBL_ADDR) &&
+            ic->ic_data == 0 && ic->next && ic->next->ic_code == IC_ASSIGN &&
+            !(ic->next->ic_flags & ICF_FRAME_SLOT)) {
+          ic->next->ic_flags |= ICF_ASSIGN_ZERO;
+          break;
+        }
+        if (ic->ic_flags == ICF_GLBL_ADDR && cc->aot_data_layout) {
+          {
+            CHashGlblVar *g = AOTGlobalByAddr(cc, ic->ic_data);
+            EmitGlobalAddrOff(buf, pptr, prip, cc, RV_A0, g, data_base, g ? ic->ic_data - (I64)g->data_addr : 0);
+          }
+        } else {
+          // Load immediate into a0 (full 64-bit; see EmitLoadImm64)
+          EmitLoadImm64(buf, pptr, prip, RV_A0, ic->ic_data);
+        }
+        // Push value to stack so binary ops find it
+        RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
+        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
+        (*psd)++;
+        break;
+        
+      case IC_ADD:
+      case IC_SUB:
+      case IC_MUL:
+      case IC_DIV:
+      case IC_MOD:
+        if ((*psd) >= 2) {
+          // Pop right operand into t1
+          RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          (*psd)--;
+          // Pop left operand into t0
+          RVU32(buf, pptr, prip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          (*psd)--;
+          // Compute result (result stays in a0)
+          if (ic->ic_code == IC_ADD) {
+            RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20));
+          } else if (ic->ic_code == IC_SUB) {
+            RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
+          } else if (ic->ic_code == IC_MUL) {
+            RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
+          } else if (ic->ic_code == IC_DIV) {
+            RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (4<<12) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
+          } else if (ic->ic_code == IC_MOD) {
+            RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (6<<12) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
+          }
+          // Push result back
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          (*psd)++;
+        }
+        break;
+      case IC_AND:
+      case IC_OR:
+      case IC_XOR:
+      case IC_SHL:
+      case IC_SHR:
+        if ((*psd) == 1) {
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          (*psd)++;
+        }
+        if ((*psd) >= 2) {
+          RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          (*psd)--;
+          RVU32(buf, pptr, prip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          (*psd)--;
+          U32 inst = 0;
+          if (ic->ic_code == IC_AND) {
+            inst = 0x33 | (RV_A0<<7) | (0x7<<12) | (RV_T0<<15) | (RV_T1<<20);
+          } else if (ic->ic_code == IC_OR) {
+            inst = 0x33 | (RV_A0<<7) | (0x6<<12) | (RV_T0<<15) | (RV_T1<<20);
+          } else if (ic->ic_code == IC_XOR) {
+            inst = 0x33 | (RV_A0<<7) | (0x4<<12) | (RV_T0<<15) | (RV_T1<<20);
+          } else if (ic->ic_code == IC_SHL) {
+            inst = 0x33 | (RV_A0<<7) | (0x1<<12) | (RV_T0<<15) | (RV_T1<<20);
+          } else if (ic->ic_code == IC_SHR) {
+            inst = 0x33 | (RV_A0<<7) | (0x5<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25);
+          }
+          if (inst) {
+            RVU32(buf, pptr, prip, inst);
+            RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+            RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+            (*psd)++;
+          }
+        }
+        break;
+        
+      case IC_EVAL_DROP:
+        {
+          I64 adj = ic->ic_data;
+          if (adj != 0) {
+            RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((adj & 0xFFF)<<20));
+            if (adj > 0)
+              (*psd) -= adj / 8;
+            else
+              (*psd) += (-adj) / 8;
+          }
+        }
+        break;
+      case IC_DEREF:
+        RVU32(buf, pptr, prip, DerefLoadFromRs1(ic->arg1_type_pointed_to, RV_A0));
+        RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
+        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
+        (*psd)++;
+        break;
+      case IC_BLOCK_COPY:
+        EmitBlockCopy(buf, pptr, prip, psd, ic->ic_data);
+        break;
+      case IC_ASSIGN:
+        if (ic->ic_flags & ICF_FRAME_SLOT) { EmitIC_ASSIGN(buf,pptr,prip,psd,ic); break; }
+        if (ic->ic_flags & ICF_ASSIGN_ZERO) {
+          EmitAssignStoreZero(buf, pptr, prip, psd, ic);
+          break;
+        }
+        if ((*psd) >= 1) {
+          if ((*psd) >= 2) {
+            RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15)); // ld t1, 0(sp) - pop value
+            RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
+            (*psd)--;
+            RVU32(buf, pptr, prip, 0x13 | (RV_A0<<7) | (RV_T1<<15)); // mv a0, t1
+          }
+
+          RVU32(buf, pptr, prip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          (*psd)--;
+
+          RVU32(buf, pptr, prip, StoreA0ToRs1(ic->arg1_type_pointed_to, RV_T0)); // typed store a0 -> (t0)
+          // Assignment is an expression: leave the value in a0 and on the eval stack (IC_END_EXP drops it).
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          (*psd)++;
+        } else {
+          RVU32(buf, pptr, prip, 0x13 | (RV_T0<<7) | (RV_A0<<15));
+          RVU32(buf, pptr, prip, StoreA0ToRs1(ic->arg1_type_pointed_to, RV_T0)); // typed store a0 -> (t0)
+          // Assignment is an expression: leave the value in a0 and on the eval stack (IC_END_EXP drops it).
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          (*psd)++;
+        }
+        break;
+      case IC_PUSH_ARG:
+        // Push argument to stack (don't clear a0 - let IC_IMM_I64 handle it)
+        RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
+        RVU32(buf, pptr, prip, 0x23 | (0<<7) | (3<<12) | (RV_SP<<15) | (RV_A0<<20) | (0<<25)); // sd a0, 0(sp)
+        (*psd)++;
+        break;
+      case IC_POP_ARG:
+        // Pop argument from stack
+        RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15) | (0<<20)); // ld a0, 0(sp)
+        RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
+        (*psd)--;
+        break;
+      case IC_LESS:
+      case IC_GREATER:
+      case IC_LESS_EQU:
+      case IC_GREATER_EQU:
+      case IC_EQU_EQU:
+      case IC_NOT_EQU:
+        if ((*psd) == 1) {
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          (*psd)++;
+        }
+        if ((*psd) >= 2) {
+          RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          (*psd)--;
+          RVU32(buf, pptr, prip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          (*psd)--;
+          if (ic->ic_code == IC_LESS) {
+            RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T0<<15) | (RV_T1<<20));
+          } else if (ic->ic_code == IC_GREATER) {
+            RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T1<<15) | (RV_T0<<20));
+          } else if (ic->ic_code == IC_LESS_EQU) {
+            RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T1<<15) | (RV_T0<<20));
+            RVU32(buf, pptr, prip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20));
+          } else if (ic->ic_code == IC_GREATER_EQU) {
+            RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T0<<15) | (RV_T1<<20));
+            RVU32(buf, pptr, prip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20));
+          } else if (ic->ic_code == IC_EQU_EQU) {
+            RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (0x0<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
+            RVU32(buf, pptr, prip, 0x13 | (RV_A0<<7) | (3<<12) | (RV_A0<<15) | (1<<20));
+          } else if (ic->ic_code == IC_NOT_EQU) {
+            RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (0x0<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
+            RVU32(buf, pptr, prip, 0x33 | (RV_A0<<7) | (0x3<<12) | (RV_ZERO<<15) | (RV_A0<<20));
+          }
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          (*psd)++;
+        }
+        break;
+      case IC_BR_ZERO:
+        {
+          if ((*psd) > 0) {
+            RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
+            RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+            (*psd)--;
+          }
+
+          CLabel *lb = (CLabel*)ic->ic_data;
+          EmitCondBranch(buf, pptr, prip, ic, true, lb);
+          lb->sd = (*psd); lb->sd_set = true;   // the taken path reaches lb at this depth; fall-through keeps it
+        }
+        break;
+      case IC_BR_NOT_ZERO:
+        {
+          if ((*psd) > 0) {
+            RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
+            RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+            (*psd)--;
+          }
+
+          CLabel *lb = (CLabel*)ic->ic_data;
+          EmitCondBranch(buf, pptr, prip, ic, false, lb);
+          lb->sd = (*psd); lb->sd_set = true;
+        }
+        break;
+      case IC_BR_EQU_EQU:
+      case IC_BR_NOT_EQU:
+      case IC_BR_LESS:
+      case IC_BR_GREATER_EQU:
+      case IC_BR_GREATER:
+      case IC_BR_LESS_EQU:
+        EmitIC_BrCmp(buf, pptr, prip, psd, ic);
+        break;
+      case IC_JMP:
+        {
+          CLabel *lb = (CLabel*)ic->ic_data;
+          lb->sd = (*psd); lb->sd_set = true;   // the jump reaches lb at this depth
+          EmitJump(buf, pptr, prip, ic, lb);
+        }
+        break;
+      case IC_MOV:
+        EmitIC_MOV(buf,pptr,prip,psd,ic); break;
+        // Load from parameter or local variable
+        // For now, handles simple register loads and stack loads
+        if ((*psd) > 0) {
+          // addi sp, sp, -8
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          // sd a0, 0(sp)
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+        }
+        // ld a0, offset(s0) - simplified, actual depends on ic_data
+        RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_S0<<15) | ((ic->ic_data & 0xFFF)<<20));
+        (*psd)++;
+        break;
+      case IC_CALL_INDIRECT:
+        {
+          I64 arg_count = ic->ic_flags;  // set by the parser on this call IC
+
+          RVU32(buf, pptr, prip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+          (*psd)--;
+
+          if (arg_count > 8) {
+            EmitPrepareGt8CallArgs(buf, pptr, prip, arg_count);
+          } else if (arg_count >= 2 && arg_count <= 8) {
+            EmitLoadArgsFromEvalStack(buf, pptr, prip, psd, arg_count);
+          } else if (arg_count == 1) {
+            // The pointer load above clobbered a0: pop the single argument into it.
+            RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
+            RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
+            (*psd)--;
+          }
+
+          RVU32(buf, pptr, prip, 0x67 | (RV_RA<<7) | (RV_T1<<15));   // jalr ra, t1: the pointer is the code address
+
+          if (arg_count > 8) {
+            I64 out_sz = (arg_count - 8) * 8;
+            RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((out_sz & 0xFFF)<<20));
+            I64 eval_sz = arg_count * 8;
+            RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((eval_sz & 0xFFF)<<20));
+            (*psd) -= arg_count;
+          }
+
+          // Return value to a0 and the eval stack (same convention as EmitCallArgsAndInvoke).
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+          RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+          (*psd)++;
+        }
+        break;
+      case IC_CALL_INDIRECT2:
+        EmitCallArgsAndInvoke(buf, pptr, prip, psd, cc, NULL, (I64 *)ic->ic_data, ic->ic_flags, (CHashGlblVar *)ic->ic_class);
+        break;
+      case IC_CALL:
+        EmitCallArgsAndInvoke(buf, pptr, prip, psd, cc, (CLabel *)ic->ic_data, NULL, ic->ic_flags, NULL);
+        break;
+      case IC_UNARY_MINUS: EmitUnaryOp(buf, pptr, prip, psd, RV_UNARY_MINUS); break;
+      case IC_NOT:         EmitUnaryOp(buf, pptr, prip, psd, RV_LOGICAL_NOT); break;
+      case IC_COM:         EmitUnaryOp(buf, pptr, prip, psd, RV_BIT_COM); break;
+      case IC_ADDR:
+        // Address is in a0 (the parser retracted the auto-deref after IC_LEA); publish it.
+        RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+        RVU32(buf, pptr, prip, 0x23 | (3<<12) | (RV_SP<<15) | (RV_A0<<20));
+        (*psd)++;
+        break;
+      case IC_ADD_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_ADD); break;
+      case IC_SUB_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_SUB); break;
+      case IC_MUL_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_MUL); break;
+      case IC_DIV_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_DIV); break;
+      case IC_AND_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_AND); break;
+      case IC_OR_EQU:  EmitCompoundAssign(buf, pptr, prip, psd, RV_R_OR);  break;
+      case IC_XOR_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_XOR); break;
+      case IC_SHL_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_SLL); break;
+      case IC_SHR_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_SRA); break;
+      case IC_MOD_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_REM); break;
+      case IC_FADD_EQU: case IC_FSUB_EQU: case IC_FMUL_EQU: case IC_FDIV_EQU: EmitF64CompoundAssign(buf, pptr, prip, psd, ic->ic_code); break;
+      case IC_PAUSE:   RVU32(buf, pptr, prip, 0x13); break;
+      case IC_FN_ADDR:
+        EmitLabelAddr(buf, pptr, prip, (CLabel *)ic->ic_data, RV_A0);
+        RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+        (*psd)++;
+        break;
+      case IC_PC:      // `$$`: address of this instruction, pushed like an immediate
+        RVU32(buf, pptr, prip, 0x17 | (RV_A0 << 7));                                        // auipc a0, 0
+        RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+        (*psd)++;
+        break;
+      case IC_HLT:     RVU32(buf, pptr, prip, 0x10500073); break;   // wfi
+      case IC_INT:     RVU32(buf, pptr, prip, 0x00100073); break;   // ebreak
+      case IC_CHAIN_CMP: EmitChainCmp(buf, pptr, prip, psd, (int)ic->ic_data); break;
+      case IC_CHAIN_AND: EmitChainAnd(buf, pptr, prip, psd); break;
+      case IC_FADD: case IC_FSUB: case IC_FMUL: case IC_FDIV:
+      case IC_FLESS: case IC_FLESS_EQU: case IC_FGREATER: case IC_FGREATER_EQU:
+      case IC_FEQU_EQU: case IC_FNOT_EQU: case IC_FNEG: case IC_FMOD:
+        EmitF64Op(buf, pptr, prip, psd, ic->ic_code);
+        break;
+      case IC_TO_F64: EmitF64Convert(buf, pptr, prip, ic->ic_data, TRUE);  break;
+      case IC_TO_I64: EmitF64Convert(buf, pptr, prip, ic->ic_data, FALSE); break;
+      case IC_UDIV: case IC_UMOD: case IC_USHR:
+      case IC_ULESS: case IC_ULESS_EQU: case IC_UGREATER: case IC_UGREATER_EQU:
+        EmitUnsignedOp(buf, pptr, prip, psd, ic->ic_code);
+        break;
+      case IC_TRY_ENTER: EmitTryEnter(buf, pptr, prip, cc, (CLabel *)ic->ic_data, data_base); break;
+      case IC_TRY_LEAVE: EmitTryLeave(buf, pptr, prip, cc, data_base); break;
+      case IC_THROW:     EmitThrow(buf, pptr, prip, psd, cc, data_base); break;
+      case IC_CLI: case IC_STI: case IC_PUSHFD: case IC_POPFD: EmitSysIntrinsic(buf, pptr, prip, ic->ic_code); break;
+      case IC_STR_CONST: {
+        // PC-relative address of the literal; the bytes are appended after the code.
+        StringLiteral *sl = (StringLiteral *)ic->ic_data;
+        I64 rel = buf ? (sl->offset - (*prip)) : 0;
+        I64 hi = (rel + 0x800) >> 12, lo = rel - (hi << 12);
+        RVU32(buf, pptr, prip, 0x17 | (RV_A0<<7) | (((U32)hi & 0xFFFFF)<<12));          // auipc a0, hi
+        RVU32(buf, pptr, prip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | (((U32)lo & 0xFFF)<<20)); // addi a0, a0, lo
+        RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
+        RVU32(buf, pptr, prip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
+        (*psd)++;
+        break;
+      }
+      case IC_PP_:  EmitIncDec(buf, pptr, prip, psd,  (ic->ic_data ? ic->ic_data : 1), FALSE, ic->arg1_type_pointed_to); break;
+      case IC_MM_:  EmitIncDec(buf, pptr, prip, psd, -(ic->ic_data ? ic->ic_data : 1), FALSE, ic->arg1_type_pointed_to); break;
+      case IC__PP:  EmitIncDec(buf, pptr, prip, psd,  (ic->ic_data ? ic->ic_data : 1), TRUE,  ic->arg1_type_pointed_to); break;
+      case IC__MM:  EmitIncDec(buf, pptr, prip, psd, -(ic->ic_data ? ic->ic_data : 1), TRUE,  ic->arg1_type_pointed_to); break;
+      case IC_END_EXP:
+        // End of expression statement: sp must go back to the frame base (s0 - frame_size).
+        // Popping `depth*8` instead trusted a STATIC counter, and that counter diverges from
+        // the real depth whenever a branch skips pushes that the fall-through path makes — the
+        // pop then ran past the frame base and the next push overwrote the saved ra, so the
+        // function `ret`ed into whatever a0 held. Restore from s0 (exact, path-insensitive);
+        // fall back to the counter only in frameless JIT fragments (LexExpression2Bin), where
+        // s0 still belongs to the caller.
+        if ((*psd) > 0) {
+          RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
+          if ((*pcf) >= 0)
+            EmitAddImm(buf, pptr, prip, RV_SP, RV_S0, -(*pcf));  // sp = frame base (exact)
+          else
+            RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((((*psd) * 8) & 0xFFF)<<20));
+        }
+        (*psd) = 0;
+        break;
+      case IC_PUSH_RES:
+        // Push result to stack - this is just a marker, doesn't change stack_depth
+        break;
+      case IC_CALL_START:
+      case IC_CALL_END:
+        // Markers for function call boundaries
+        break;
+      case IC_LABEL:
+        { CLabel *lb = (CLabel*)ic->ic_data;
+          if (lb) lb->addr = (*prip);   /* keep map/exe_addr in sync with emitted code */
+          if (lb && lb->sd_set) (*psd) = lb->sd; O1SlotClear(); }
+        g_pp_n = 0;   // don't cancel a push/pop across a branch target (matches the sizing pass)
+        break;
+      case IC_NOP1:
+      case IC_NOP2:
+        // Explicit no-op – leave stack depth unchanged
+        break;
+      case IC_RAW_RV:
+        RVU32(buf, pptr, prip, (U32)ic->ic_data);   // pre-assembled RISC-V word (x86 translation)
+        break;
+      case IC_REGS_SNAP:
+        EmitRegsSnapStub(buf, pptr, prip);
+        break;
+      case IC_LOCK_ENTER:
+        EmitLockEnter(buf, pptr, prip);
+        break;
+      case IC_LOCK_LEAVE:
+        EmitLockLeave(buf, pptr, prip);
+        break;
+      case IC_RETURN_VAL:
+      case IC_RETURN_VAL2:
+        // Return value should be in a0
+        // If it's on the stack, pop it to a0
+        if ((*psd) > 0) {
+          // Pop value from stack to a0
+          RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
+          RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
+          (*psd)--;
+        }
+        // Value is now in a0, ready for return
+        // Do NOT adjust sp further - the epilogue expects sp at frame_base
+        (*psd) = 0;
+        break;
+      case IC_RET:
+        // Generate ret instruction with epilogue for expressions
+        if (!is_function) {
+          if (has_call) {
+            // Epilogue: restore ra/s0 (sp from the frame pointer, s0 = entry sp + 16)
+            RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_S0<<15) | (0xFF0<<20)); // addi sp, s0, -16
+            RVU32(buf, pptr, prip, 0x03 | (RV_RA<<7) | (3<<12) | (RV_SP<<15) | (8<<20)); // ld ra, 8(sp)
+            RVU32(buf, pptr, prip, 0x03 | (RV_S0<<7) | (3<<12) | (RV_SP<<15)); // ld s0, 0(sp)
+            RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (16<<20)); // addi sp, sp, 16
+          }
+          RVU32(buf, pptr, prip, 0x00008067); // ret
+        }
+        break;
+      default:
+        // Skip unimplemented ICs
+        break;
+  }
+}
+
+
 U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   if (getenv("HOLYC_NO_OPT")) cc->optimize = false;
   IcOptimize(cc);
@@ -2118,499 +2611,10 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     }
     
     while (ic) {
-      // Set label addresses
-      if (ic->ic_code == IC_LABEL) {
-        CLabel *lb = (CLabel*)ic->ic_data;
-        lb->addr = rip;
-        g_pp_n = 0;   // don't cancel a push/pop across a branch target
-      }
-      
-      // Use SAME logic for sizing and emission (TempleOS 1:1)
-      switch (ic->ic_code) {
-      case IC_ENTER:
-        cur_frame = EmitIC_ENTER(pass_buf, &pass_ptr, &rip, ic);
-        if (FnParksFlags(ic)) cur_frame = -1;   // keep the static pop; see FnParksFlags
-        break;
-      case IC_LEAVE:
-        // A stale cur_frame past the end of a function would aim `addi sp,s0,-N` at a foreign s0.
-        cur_frame = -1;
-        EmitIC_LEAVE(pass_buf, &pass_ptr, &rip, ic); break;
-      case IC_RBP:
-        if (stack_depth_pass > 0) {
-          // addi sp, sp, -8
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          // sd a0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-        }
-        // mv a0, s0 (addi a0, s0, 0)
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_S0<<15));
-        stack_depth_pass++;
-        break;
-      case IC_LEA:
-        // Load Effective Address: addi a0, s0, offset
-        // Don't push - IC_PUSH_ARG handles it for assignments, IC_DEREF handles it for loads
-        {
-          I64 offset = ic->ic_data;
-          if (offset >= -2048 && offset <= 2047) {
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_S0<<15) | ((offset & 0xFFF)<<20)); // addi a0, s0, offset
-          } else {
-            // Large offset: LUI + ADDI
-            I64 hi = (offset + 0x800) >> 12;
-            I64 lo = offset & 0xFFF;
-            if (lo & 0x800) lo |= 0xFFFFFFFFFFFFF000LL;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_A0<<7) | ((hi & 0xFFFFF)<<12));
-            if (lo) {
-              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20));
-            }
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_A0<<15) | (RV_S0<<20)); // add a0, a0, s0
-          }
-        }
-        // Don't push here - IC_PUSH_ARG will handle it for assignments, IC_DEREF handles it for loads
-        break;
-        
-      case IC_IMM_I64:
-      case IC_IMM_F64:  // F64 travels as its raw 64-bit pattern in integer registers / eval stack
-        /* IMM 0 right before ptr ASSIGN: skip li/push so addr stays in a0 (ICF_ASSIGN_ZERO). */
-        if (cc->optimize && ic->ic_code == IC_IMM_I64 && !(ic->ic_flags & ICF_GLBL_ADDR) &&
-            ic->ic_data == 0 && ic->next && ic->next->ic_code == IC_ASSIGN &&
-            !(ic->next->ic_flags & ICF_FRAME_SLOT)) {
-          ic->next->ic_flags |= ICF_ASSIGN_ZERO;
-          break;
-        }
-        if (ic->ic_flags == ICF_GLBL_ADDR && cc->aot_data_layout) {
-          {
-            CHashGlblVar *g = AOTGlobalByAddr(cc, ic->ic_data);
-            EmitGlobalAddrOff(pass_buf, &pass_ptr, &rip, cc, RV_A0, g, 0, g ? ic->ic_data - (I64)g->data_addr : 0);
-          }
-        } else {
-          // Load immediate into a0 (full 64-bit; see EmitLoadImm64)
-          EmitLoadImm64(pass_buf, &pass_ptr, &rip, RV_A0, ic->ic_data);
-        }
-        // Push value to stack so binary ops find it
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
-        stack_depth_pass++;
-        break;
-      case IC_ADD:
-      case IC_SUB:
-      case IC_MUL:
-      case IC_DIV:
-      case IC_MOD:
-        if (stack_depth_pass >= 2) {
-          // Pop right operand into t1
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_pass--;
-          // Pop left operand into t0
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_pass--;
-          // Compute result (result stays in a0)
-          if (ic->ic_code == IC_ADD) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20));
-          } else if (ic->ic_code == IC_SUB) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
-          } else if (ic->ic_code == IC_MUL) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
-          } else if (ic->ic_code == IC_DIV) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (4<<12) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
-          } else if (ic->ic_code == IC_MOD) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (6<<12) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
-          }
-          // Push result back
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-          stack_depth_pass++;
-        }
-        break;
-      case IC_AND:
-      case IC_OR:
-      case IC_XOR:
-      case IC_SHL:
-      case IC_SHR:
-        if (stack_depth_pass == 1) {
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
-          stack_depth_pass++;
-        }
-        if (stack_depth_pass >= 2) {
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_pass--;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_pass--;
-          U32 inst = 0;
-          if (ic->ic_code == IC_AND) {
-            inst = 0x33 | (RV_A0<<7) | (0x7<<12) | (RV_T0<<15) | (RV_T1<<20);
-          } else if (ic->ic_code == IC_OR) {
-            inst = 0x33 | (RV_A0<<7) | (0x6<<12) | (RV_T0<<15) | (RV_T1<<20);
-          } else if (ic->ic_code == IC_XOR) {
-            inst = 0x33 | (RV_A0<<7) | (0x4<<12) | (RV_T0<<15) | (RV_T1<<20);
-          } else if (ic->ic_code == IC_SHL) {
-            inst = 0x33 | (RV_A0<<7) | (0x1<<12) | (RV_T0<<15) | (RV_T1<<20);
-          } else if (ic->ic_code == IC_SHR) {
-            inst = 0x33 | (RV_A0<<7) | (0x5<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25);
-          }
-          if (inst) {
-            RVU32(pass_buf, &pass_ptr, &rip, inst);
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-            stack_depth_pass++;
-          }
-        }
-        break;
-      case IC_EVAL_DROP:
-        {
-          I64 adj = ic->ic_data;
-          if (adj != 0) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((adj & 0xFFF)<<20));
-            if (adj > 0)
-              stack_depth_pass -= adj / 8;
-            else
-              stack_depth_pass += (-adj) / 8;
-          }
-        }
-        break;
-      case IC_DEREF:
-        RVU32(pass_buf, &pass_ptr, &rip, DerefLoadFromRs1(ic->arg1_type_pointed_to, RV_A0));
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
-        stack_depth_pass++;
-        break;
-      case IC_BLOCK_COPY:
-        EmitBlockCopy(pass_buf, &pass_ptr, &rip, &stack_depth_pass, ic->ic_data);
-        break;
-      case IC_ASSIGN:
-        if (ic->ic_flags & ICF_FRAME_SLOT) { EmitIC_ASSIGN(pass_buf,&pass_ptr,&rip,&stack_depth_pass,ic); break; }
-        if (ic->ic_flags & ICF_ASSIGN_ZERO) {
-          EmitAssignStoreZero(pass_buf, &pass_ptr, &rip, &stack_depth_pass, ic);
-          break;
-        }
-        if (stack_depth_pass >= 1) {
-          // If both value and address are on the stack, pop value first and move to a0
-          if (stack_depth_pass >= 2) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15)); // ld t1, 0(sp) - pop value
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
-            stack_depth_pass--;
-            // Move value from t1 into a0 (mv a0, t1)
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_T1<<15));
-          }
+      // Lower this IC (sizing/relaxation pass: pass_buf==NULL counts bytes; data_base=0
+      // since addresses are not placed yet). EmitOneIC sets label addrs for IC_LABEL.
+      EmitOneIC(cc, ic, pass_buf, &pass_ptr, &rip, &stack_depth_pass, &cur_frame, 0, is_function, has_call);
 
-          // Pop address into t0
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_pass--;
-
-          // Store value (in a0) to address (in t0)
-          RVU32(pass_buf, &pass_ptr, &rip, StoreA0ToRs1(ic->arg1_type_pointed_to, RV_T0)); // typed store a0 -> (t0)
-          // Assignment is an expression: leave the value in a0 and on the eval stack (IC_END_EXP drops it).
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-          stack_depth_pass++;
-        } else {
-          // Fallback: no address on stack, assume address currently in a0
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_A0<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, StoreA0ToRs1(ic->arg1_type_pointed_to, RV_T0)); // typed store a0 -> (t0)
-          // Assignment is an expression: leave the value in a0 and on the eval stack (IC_END_EXP drops it).
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-          stack_depth_pass++;
-        }
-        break;
-      case IC_PUSH_ARG:
-        // Push argument to stack (don't clear a0 - let IC_IMM_I64 handle it)
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (0<<7) | (3<<12) | (RV_SP<<15) | (RV_A0<<20) | (0<<25)); // sd a0, 0(sp)
-        stack_depth_pass++;
-        break;
-      case IC_POP_ARG:
-        // Pop argument from stack
-        RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15) | (0<<20)); // ld a0, 0(sp)
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
-        stack_depth_pass--;
-        break;
-      case IC_LESS:
-      case IC_GREATER:
-      case IC_LESS_EQU:
-      case IC_GREATER_EQU:
-      case IC_EQU_EQU:
-      case IC_NOT_EQU:
-        if (stack_depth_pass == 1) {
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-          stack_depth_pass++;
-        }
-        if (stack_depth_pass >= 2) {
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_pass--;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_pass--;
-          if (ic->ic_code == IC_LESS) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T0<<15) | (RV_T1<<20));
-          } else if (ic->ic_code == IC_GREATER) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T1<<15) | (RV_T0<<20));
-          } else if (ic->ic_code == IC_LESS_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T1<<15) | (RV_T0<<20));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20));
-          } else if (ic->ic_code == IC_GREATER_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T0<<15) | (RV_T1<<20));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20));
-          } else if (ic->ic_code == IC_EQU_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x0<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (3<<12) | (RV_A0<<15) | (1<<20));
-          } else if (ic->ic_code == IC_NOT_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x0<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x3<<12) | (RV_ZERO<<15) | (RV_A0<<20));
-          }
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-          stack_depth_pass++;
-        }
-        break;
-      case IC_BR_ZERO:
-        {
-          if (stack_depth_pass > 0) {
-            // Pop value from stack into a0
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-            stack_depth_pass--;
-          }
-
-          CLabel *lb = (CLabel*)ic->ic_data;
-          EmitCondBranch(pass_buf, &pass_ptr, &rip, ic, true, lb);
-          lb->sd = stack_depth_pass; lb->sd_set = true;   // the taken path reaches lb at this depth; fall-through keeps it
-        }
-        break;
-      case IC_BR_NOT_ZERO:
-        {
-          if (stack_depth_pass > 0) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-            stack_depth_pass--;
-          }
-
-          CLabel *lb = (CLabel*)ic->ic_data;
-          EmitCondBranch(pass_buf, &pass_ptr, &rip, ic, false, lb);
-          lb->sd = stack_depth_pass; lb->sd_set = true;
-        }
-        break;
-      case IC_BR_EQU_EQU:
-      case IC_BR_NOT_EQU:
-      case IC_BR_LESS:
-      case IC_BR_GREATER_EQU:
-      case IC_BR_GREATER:
-      case IC_BR_LESS_EQU:
-        EmitIC_BrCmp(pass_buf, &pass_ptr, &rip, &stack_depth_pass, ic);
-        break;
-      case IC_JMP:
-        {
-          CLabel *lb = (CLabel*)ic->ic_data;
-          lb->sd = stack_depth_pass; lb->sd_set = true;   // the jump reaches lb at this depth
-          EmitJump(pass_buf, &pass_ptr, &rip, ic, lb);
-        }
-        break;
-      case IC_MOV:
-        EmitIC_MOV(pass_buf,&pass_ptr,&rip,&stack_depth_pass,ic); break;
-        // Load from parameter or local variable
-        // For now, handles simple register loads and stack loads
-        if (stack_depth_pass > 0) {
-          // addi sp, sp, -8
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          // sd a0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-        }
-        // ld a0, offset(s0) - simplified, actual depends on ic_data
-        RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_S0<<15) | ((ic->ic_data & 0xFFF)<<20));
-        stack_depth_pass++;
-        break;
-      case IC_CALL_INDIRECT:
-        {
-          I64 arg_count = ic->ic_flags;  // set by the parser on this call IC
-
-          // Pop code address into t1 (funptrs hold the entry, not &exe_addr — once-indirect).
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_pass--;
-
-          if (arg_count > 8) {
-            EmitPrepareGt8CallArgs(pass_buf, &pass_ptr, &rip, arg_count);
-          } else if (arg_count >= 2 && arg_count <= 8) {
-            EmitLoadArgsFromEvalStack(pass_buf, &pass_ptr, &rip, &stack_depth_pass, arg_count);
-          } else if (arg_count == 1) {
-            // The pointer load above clobbered a0: pop the single argument into it.
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-            stack_depth_pass--;
-          }
-
-          RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T1<<15));   // jalr ra, t1
-
-          if (arg_count > 8) {
-            I64 out_sz = (arg_count - 8) * 8;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((out_sz & 0xFFF)<<20));
-            I64 eval_sz = arg_count * 8;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((eval_sz & 0xFFF)<<20));
-            stack_depth_pass -= arg_count;
-          }
-
-          // Return value to a0 and the eval stack (same convention as EmitCallArgsAndInvoke).
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-          stack_depth_pass++;
-        }
-        break;
-      case IC_CALL_INDIRECT2:
-        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_pass, cc, NULL, (I64 *)ic->ic_data, ic->ic_flags, (CHashGlblVar *)ic->ic_class);
-        break;
-      case IC_CALL:
-        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_pass, cc, (CLabel *)ic->ic_data, NULL, ic->ic_flags, NULL);
-        break;
-      case IC_UNARY_MINUS: EmitUnaryOp(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_UNARY_MINUS); break;
-      case IC_NOT:         EmitUnaryOp(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_LOGICAL_NOT); break;
-      case IC_COM:         EmitUnaryOp(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_BIT_COM); break;
-      case IC_ADDR:
-        // Address is in a0 (the parser retracted the auto-deref after IC_LEA); publish it.
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (3<<12) | (RV_SP<<15) | (RV_A0<<20));
-        stack_depth_pass++;
-        break;
-      case IC_ADD_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_ADD); break;
-      case IC_SUB_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_SUB); break;
-      case IC_MUL_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_MUL); break;
-      case IC_DIV_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_DIV); break;
-      case IC_AND_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_AND); break;
-      case IC_OR_EQU:  EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_OR);  break;
-      case IC_XOR_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_XOR); break;
-      case IC_SHL_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_SLL); break;
-      case IC_SHR_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_SRA); break;
-      case IC_MOD_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, RV_R_REM); break;
-      case IC_FADD_EQU: case IC_FSUB_EQU: case IC_FMUL_EQU: case IC_FDIV_EQU: EmitF64CompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_pass, ic->ic_code); break;
-      case IC_PAUSE:   RVU32(pass_buf, &pass_ptr, &rip, 0x13); break;
-      case IC_FN_ADDR:
-        EmitLabelAddr(pass_buf, &pass_ptr, &rip, (CLabel *)ic->ic_data, RV_A0);
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-        stack_depth_pass++;
-        break;
-      case IC_PC:      // `$$`: address of this instruction, pushed like an immediate
-        RVU32(pass_buf, &pass_ptr, &rip, 0x17 | (RV_A0 << 7));                                        // auipc a0, 0
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-        stack_depth_pass++;
-        break;
-      case IC_HLT:     RVU32(pass_buf, &pass_ptr, &rip, 0x10500073); break;   // wfi
-      case IC_INT:     RVU32(pass_buf, &pass_ptr, &rip, 0x00100073); break;   // ebreak
-      case IC_CHAIN_CMP: EmitChainCmp(pass_buf, &pass_ptr, &rip, &stack_depth_pass, (int)ic->ic_data); break;
-      case IC_CHAIN_AND: EmitChainAnd(pass_buf, &pass_ptr, &rip, &stack_depth_pass); break;
-      case IC_FADD: case IC_FSUB: case IC_FMUL: case IC_FDIV:
-      case IC_FLESS: case IC_FLESS_EQU: case IC_FGREATER: case IC_FGREATER_EQU:
-      case IC_FEQU_EQU: case IC_FNOT_EQU: case IC_FNEG: case IC_FMOD:
-        EmitF64Op(pass_buf, &pass_ptr, &rip, &stack_depth_pass, ic->ic_code);
-        break;
-      case IC_TO_F64: EmitF64Convert(pass_buf, &pass_ptr, &rip, ic->ic_data, TRUE);  break;
-      case IC_TO_I64: EmitF64Convert(pass_buf, &pass_ptr, &rip, ic->ic_data, FALSE); break;
-      case IC_UDIV: case IC_UMOD: case IC_USHR:
-      case IC_ULESS: case IC_ULESS_EQU: case IC_UGREATER: case IC_UGREATER_EQU:
-        EmitUnsignedOp(pass_buf, &pass_ptr, &rip, &stack_depth_pass, ic->ic_code);
-        break;
-      case IC_TRY_ENTER: EmitTryEnter(pass_buf, &pass_ptr, &rip, cc, (CLabel *)ic->ic_data, 0); break;
-      case IC_TRY_LEAVE: EmitTryLeave(pass_buf, &pass_ptr, &rip, cc, 0); break;
-      case IC_THROW:     EmitThrow(pass_buf, &pass_ptr, &rip, &stack_depth_pass, cc, 0); break;
-      case IC_CLI: case IC_STI: case IC_PUSHFD: case IC_POPFD: EmitSysIntrinsic(pass_buf, &pass_ptr, &rip, ic->ic_code); break;
-      case IC_STR_CONST: {
-        // PC-relative address of the literal; the bytes are appended after the code.
-        StringLiteral *sl = (StringLiteral *)ic->ic_data;
-        I64 rel = pass_buf ? (sl->offset - rip) : 0;
-        I64 hi = (rel + 0x800) >> 12, lo = rel - (hi << 12);
-        RVU32(pass_buf, &pass_ptr, &rip, 0x17 | (RV_A0<<7) | (((U32)hi & 0xFFFFF)<<12));          // auipc a0, hi
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | (((U32)lo & 0xFFF)<<20)); // addi a0, a0, lo
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-        stack_depth_pass++;
-        break;
-      }
-      case IC_PP_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass,  (ic->ic_data ? ic->ic_data : 1), FALSE, ic->arg1_type_pointed_to); break;
-      case IC_MM_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass, -(ic->ic_data ? ic->ic_data : 1), FALSE, ic->arg1_type_pointed_to); break;
-      case IC__PP:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass,  (ic->ic_data ? ic->ic_data : 1), TRUE,  ic->arg1_type_pointed_to); break;
-      case IC__MM:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_pass, -(ic->ic_data ? ic->ic_data : 1), TRUE,  ic->arg1_type_pointed_to); break;
-      case IC_END_EXP:
-        // End of expression statement: sp must go back to the frame base (s0 - frame_size).
-        // Popping `depth*8` instead trusted a STATIC counter, and that counter diverges from
-        // the real depth whenever a branch skips pushes that the fall-through path makes — the
-        // pop then ran past the frame base and the next push overwrote the saved ra, so the
-        // function `ret`ed into whatever a0 held. Restore from s0 (exact, path-insensitive);
-        // fall back to the counter only in frameless JIT fragments (LexExpression2Bin), where
-        // s0 still belongs to the caller.
-        if (stack_depth_pass > 0) {
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
-          if (cur_frame >= 0)
-            EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_S0, -cur_frame);  // sp = frame base (exact)
-          else
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (((stack_depth_pass * 8) & 0xFFF)<<20));
-        }
-        stack_depth_pass = 0;
-        break;
-      case IC_PUSH_RES:
-        // Push result to stack - this is just a marker, doesn't change stack_depth
-        break;
-      case IC_CALL_START:
-      case IC_CALL_END:
-        // Markers for function call boundaries
-        break;
-      case IC_LABEL:
-        { CLabel *lb = (CLabel*)ic->ic_data; if (lb->sd_set) stack_depth_pass = lb->sd; O1SlotClear(); }
-        break;
-      case IC_NOP1:
-      case IC_NOP2:
-        // Explicit no-op – leave stack depth unchanged
-        break;
-      case IC_RAW_RV:
-        RVU32(pass_buf, &pass_ptr, &rip, (U32)ic->ic_data);   // pre-assembled RISC-V word (x86 translation)
-        break;
-      case IC_REGS_SNAP:
-        EmitRegsSnapStub(pass_buf, &pass_ptr, &rip);
-        break;
-      case IC_LOCK_ENTER:
-        EmitLockEnter(pass_buf, &pass_ptr, &rip);
-        break;
-      case IC_LOCK_LEAVE:
-        EmitLockLeave(pass_buf, &pass_ptr, &rip);
-        break;
-      case IC_RETURN_VAL:
-      case IC_RETURN_VAL2:
-        // Return value should be in a0
-        // If it's on the stack, pop it to a0
-        if (stack_depth_pass > 0) {
-          // Pop value from stack to a0
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
-          stack_depth_pass--;
-        }
-        // Value is now in a0, ready for return
-        // Do NOT adjust sp further - the epilogue expects sp at frame_base
-        stack_depth_pass = 0;
-        break;
-      case IC_RET:
-        // Generate ret instruction with epilogue for expressions
-        if (!is_function) {
-          if (has_call) {
-            // Epilogue: restore ra/s0 (sp from the frame pointer, s0 = entry sp + 16)
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_S0<<15) | (0xFF0<<20)); // addi sp, s0, -16
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_RA<<7) | (3<<12) | (RV_SP<<15) | (8<<20)); // ld ra, 8(sp)
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_S0<<7) | (3<<12) | (RV_SP<<15)); // ld s0, 0(sp)
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (16<<20)); // addi sp, sp, 16
-          }
-          RVU32(pass_buf, &pass_ptr, &rip, 0x00008067); // ret
-        }
-        break;
-      default:
-        // Skip unimplemented ICs
-        break;
-    }
-    
     ic = ic->next;
   }
   
@@ -2689,490 +2693,9 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
     }
     
     while (ic) {
-      // Same unified switch, but now with pass_buf = buffer
-      switch (ic->ic_code) {
-      case IC_ENTER:
-        cur_frame = EmitIC_ENTER(pass_buf, &pass_ptr, &rip, ic);
-        if (FnParksFlags(ic)) cur_frame = -1;   // keep the static pop; see FnParksFlags
-        break;
-      case IC_LEAVE:
-        // A stale cur_frame past the end of a function would aim `addi sp,s0,-N` at a foreign s0.
-        cur_frame = -1;
-        EmitIC_LEAVE(pass_buf, &pass_ptr, &rip, ic); break;
-        
-      case IC_RBP:
-        if (stack_depth_final > 0) {
-          // addi sp, sp, -8
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          // sd a0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-        }
-        // mv a0, s0 (addi a0, s0, 0)
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_S0<<15));
-        stack_depth_final++;
-        break;
-        
-      case IC_LEA:
-        // Load Effective Address: addi a0, s0, offset
-        // Don't push - IC_PUSH_ARG handles it for assignments, IC_DEREF handles it for loads
-        {
-          I64 offset = ic->ic_data;
-          if (offset >= -2048 && offset <= 2047) {
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_S0<<15) | ((offset & 0xFFF)<<20)); // addi a0, s0, offset
-          } else {
-            // Large offset: LUI + ADDI
-            I64 hi = (offset + 0x800) >> 12;
-            I64 lo = offset & 0xFFF;
-            if (lo & 0x800) lo |= 0xFFFFFFFFFFFFF000LL;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x37 | (RV_A0<<7) | ((hi & 0xFFFFF)<<12));
-            if (lo) {
-              RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | ((lo & 0xFFF)<<20));
-            }
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_A0<<15) | (RV_S0<<20)); // add a0, a0, s0
-          }
-        }
-        // Don't push here - IC_PUSH_ARG will handle it for assignments, IC_DEREF handles it for loads
-        break;
-        
-      case IC_IMM_I64:
-      case IC_IMM_F64:  // F64 travels as its raw 64-bit pattern in integer registers / eval stack
-        if (cc->optimize && ic->ic_code == IC_IMM_I64 && !(ic->ic_flags & ICF_GLBL_ADDR) &&
-            ic->ic_data == 0 && ic->next && ic->next->ic_code == IC_ASSIGN &&
-            !(ic->next->ic_flags & ICF_FRAME_SLOT)) {
-          ic->next->ic_flags |= ICF_ASSIGN_ZERO;
-          break;
-        }
-        if (ic->ic_flags == ICF_GLBL_ADDR && cc->aot_data_layout) {
-          {
-            CHashGlblVar *g = AOTGlobalByAddr(cc, ic->ic_data);
-            EmitGlobalAddrOff(pass_buf, &pass_ptr, &rip, cc, RV_A0, g, data_base, g ? ic->ic_data - (I64)g->data_addr : 0);
-          }
-        } else {
-          // Load immediate into a0 (full 64-bit; see EmitLoadImm64)
-          EmitLoadImm64(pass_buf, &pass_ptr, &rip, RV_A0, ic->ic_data);
-        }
-        // Push value to stack so binary ops find it
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
-        stack_depth_final++;
-        break;
-        
-      case IC_ADD:
-      case IC_SUB:
-      case IC_MUL:
-      case IC_DIV:
-      case IC_MOD:
-        if (stack_depth_final >= 2) {
-          // Pop right operand into t1
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_final--;
-          // Pop left operand into t0
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_final--;
-          // Compute result (result stays in a0)
-          if (ic->ic_code == IC_ADD) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20));
-          } else if (ic->ic_code == IC_SUB) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
-          } else if (ic->ic_code == IC_MUL) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
-          } else if (ic->ic_code == IC_DIV) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (4<<12) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
-          } else if (ic->ic_code == IC_MOD) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (6<<12) | (RV_T0<<15) | (RV_T1<<20) | (1<<25));
-          }
-          // Push result back
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-          stack_depth_final++;
-        }
-        break;
-      case IC_AND:
-      case IC_OR:
-      case IC_XOR:
-      case IC_SHL:
-      case IC_SHR:
-        if (stack_depth_final == 1) {
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-          stack_depth_final++;
-        }
-        if (stack_depth_final >= 2) {
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_final--;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_final--;
-          U32 inst = 0;
-          if (ic->ic_code == IC_AND) {
-            inst = 0x33 | (RV_A0<<7) | (0x7<<12) | (RV_T0<<15) | (RV_T1<<20);
-          } else if (ic->ic_code == IC_OR) {
-            inst = 0x33 | (RV_A0<<7) | (0x6<<12) | (RV_T0<<15) | (RV_T1<<20);
-          } else if (ic->ic_code == IC_XOR) {
-            inst = 0x33 | (RV_A0<<7) | (0x4<<12) | (RV_T0<<15) | (RV_T1<<20);
-          } else if (ic->ic_code == IC_SHL) {
-            inst = 0x33 | (RV_A0<<7) | (0x1<<12) | (RV_T0<<15) | (RV_T1<<20);
-          } else if (ic->ic_code == IC_SHR) {
-            inst = 0x33 | (RV_A0<<7) | (0x5<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25);
-          }
-          if (inst) {
-            RVU32(pass_buf, &pass_ptr, &rip, inst);
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-            stack_depth_final++;
-          }
-        }
-        break;
-        
-      case IC_EVAL_DROP:
-        {
-          I64 adj = ic->ic_data;
-          if (adj != 0) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((adj & 0xFFF)<<20));
-            if (adj > 0)
-              stack_depth_final -= adj / 8;
-            else
-              stack_depth_final += (-adj) / 8;
-          }
-        }
-        break;
-      case IC_DEREF:
-        RVU32(pass_buf, &pass_ptr, &rip, DerefLoadFromRs1(ic->arg1_type_pointed_to, RV_A0));
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12)); // sd a0, 0(sp)
-        stack_depth_final++;
-        break;
-      case IC_BLOCK_COPY:
-        EmitBlockCopy(pass_buf, &pass_ptr, &rip, &stack_depth_final, ic->ic_data);
-        break;
-      case IC_ASSIGN:
-        if (ic->ic_flags & ICF_FRAME_SLOT) { EmitIC_ASSIGN(pass_buf,&pass_ptr,&rip,&stack_depth_final,ic); break; }
-        if (ic->ic_flags & ICF_ASSIGN_ZERO) {
-          EmitAssignStoreZero(pass_buf, &pass_ptr, &rip, &stack_depth_final, ic);
-          break;
-        }
-        if (stack_depth_final >= 1) {
-          if (stack_depth_final >= 2) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15)); // ld t1, 0(sp) - pop value
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
-            stack_depth_final--;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_T1<<15)); // mv a0, t1
-          }
-
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_final--;
-
-          RVU32(pass_buf, &pass_ptr, &rip, StoreA0ToRs1(ic->arg1_type_pointed_to, RV_T0)); // typed store a0 -> (t0)
-          // Assignment is an expression: leave the value in a0 and on the eval stack (IC_END_EXP drops it).
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-          stack_depth_final++;
-        } else {
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_T0<<7) | (RV_A0<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, StoreA0ToRs1(ic->arg1_type_pointed_to, RV_T0)); // typed store a0 -> (t0)
-          // Assignment is an expression: leave the value in a0 and on the eval stack (IC_END_EXP drops it).
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-          stack_depth_final++;
-        }
-        break;
-      case IC_PUSH_ARG:
-        // Push argument to stack (don't clear a0 - let IC_IMM_I64 handle it)
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20)); // addi sp, sp, -8
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (0<<7) | (3<<12) | (RV_SP<<15) | (RV_A0<<20) | (0<<25)); // sd a0, 0(sp)
-        stack_depth_final++;
-        break;
-      case IC_POP_ARG:
-        // Pop argument from stack
-        RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15) | (0<<20)); // ld a0, 0(sp)
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
-        stack_depth_final--;
-        break;
-      case IC_LESS:
-      case IC_GREATER:
-      case IC_LESS_EQU:
-      case IC_GREATER_EQU:
-      case IC_EQU_EQU:
-      case IC_NOT_EQU:
-        if (stack_depth_final == 1) {
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-          stack_depth_final++;
-        }
-        if (stack_depth_final >= 2) {
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_final--;
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T0<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_final--;
-          if (ic->ic_code == IC_LESS) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T0<<15) | (RV_T1<<20));
-          } else if (ic->ic_code == IC_GREATER) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T1<<15) | (RV_T0<<20));
-          } else if (ic->ic_code == IC_LESS_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T1<<15) | (RV_T0<<20));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20));
-          } else if (ic->ic_code == IC_GREATER_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x2<<12) | (RV_T0<<15) | (RV_T1<<20));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (4<<12) | (RV_A0<<15) | (1<<20));
-          } else if (ic->ic_code == IC_EQU_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x0<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (3<<12) | (RV_A0<<15) | (1<<20));
-          } else if (ic->ic_code == IC_NOT_EQU) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x0<<12) | (RV_T0<<15) | (RV_T1<<20) | (0x20<<25));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x33 | (RV_A0<<7) | (0x3<<12) | (RV_ZERO<<15) | (RV_A0<<20));
-          }
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-          stack_depth_final++;
-        }
-        break;
-      case IC_BR_ZERO:
-        {
-          if (stack_depth_final > 0) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-            stack_depth_final--;
-          }
-
-          CLabel *lb = (CLabel*)ic->ic_data;
-          EmitCondBranch(pass_buf, &pass_ptr, &rip, ic, true, lb);
-          lb->sd = stack_depth_final; lb->sd_set = true;   // the taken path reaches lb at this depth; fall-through keeps it
-        }
-        break;
-      case IC_BR_NOT_ZERO:
-        {
-          if (stack_depth_final > 0) {
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-            stack_depth_final--;
-          }
-
-          CLabel *lb = (CLabel*)ic->ic_data;
-          EmitCondBranch(pass_buf, &pass_ptr, &rip, ic, false, lb);
-          lb->sd = stack_depth_final; lb->sd_set = true;
-        }
-        break;
-      case IC_BR_EQU_EQU:
-      case IC_BR_NOT_EQU:
-      case IC_BR_LESS:
-      case IC_BR_GREATER_EQU:
-      case IC_BR_GREATER:
-      case IC_BR_LESS_EQU:
-        EmitIC_BrCmp(pass_buf, &pass_ptr, &rip, &stack_depth_final, ic);
-        break;
-      case IC_JMP:
-        {
-          CLabel *lb = (CLabel*)ic->ic_data;
-          lb->sd = stack_depth_final; lb->sd_set = true;   // the jump reaches lb at this depth
-          EmitJump(pass_buf, &pass_ptr, &rip, ic, lb);
-        }
-        break;
-      case IC_MOV:
-        EmitIC_MOV(pass_buf,&pass_ptr,&rip,&stack_depth_final,ic); break;
-        // Load from parameter or local variable
-        // For now, handles simple register loads and stack loads
-        if (stack_depth_final > 0) {
-          // addi sp, sp, -8
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          // sd a0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-        }
-        // ld a0, offset(s0) - simplified, actual depends on ic_data
-        RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_S0<<15) | ((ic->ic_data & 0xFFF)<<20));
-        stack_depth_final++;
-        break;
-      case IC_CALL_INDIRECT:
-        {
-          I64 arg_count = ic->ic_flags;  // set by the parser on this call IC
-
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_T1<<7) | (3<<12) | (RV_SP<<15));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-          stack_depth_final--;
-
-          if (arg_count > 8) {
-            EmitPrepareGt8CallArgs(pass_buf, &pass_ptr, &rip, arg_count);
-          } else if (arg_count >= 2 && arg_count <= 8) {
-            EmitLoadArgsFromEvalStack(pass_buf, &pass_ptr, &rip, &stack_depth_final, arg_count);
-          } else if (arg_count == 1) {
-            // The pointer load above clobbered a0: pop the single argument into it.
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15));
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
-            stack_depth_final--;
-          }
-
-          RVU32(pass_buf, &pass_ptr, &rip, 0x67 | (RV_RA<<7) | (RV_T1<<15));   // jalr ra, t1: the pointer is the code address
-
-          if (arg_count > 8) {
-            I64 out_sz = (arg_count - 8) * 8;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((out_sz & 0xFFF)<<20));
-            I64 eval_sz = arg_count * 8;
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | ((eval_sz & 0xFFF)<<20));
-            stack_depth_final -= arg_count;
-          }
-
-          // Return value to a0 and the eval stack (same convention as EmitCallArgsAndInvoke).
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-          RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-          stack_depth_final++;
-        }
-        break;
-      case IC_CALL_INDIRECT2:
-        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_final, cc, NULL, (I64 *)ic->ic_data, ic->ic_flags, (CHashGlblVar *)ic->ic_class);
-        break;
-      case IC_CALL:
-        EmitCallArgsAndInvoke(pass_buf, &pass_ptr, &rip, &stack_depth_final, cc, (CLabel *)ic->ic_data, NULL, ic->ic_flags, NULL);
-        break;
-      case IC_UNARY_MINUS: EmitUnaryOp(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_UNARY_MINUS); break;
-      case IC_NOT:         EmitUnaryOp(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_LOGICAL_NOT); break;
-      case IC_COM:         EmitUnaryOp(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_BIT_COM); break;
-      case IC_ADDR:
-        // Address is in a0 (the parser retracted the auto-deref after IC_LEA); publish it.
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (3<<12) | (RV_SP<<15) | (RV_A0<<20));
-        stack_depth_final++;
-        break;
-      case IC_ADD_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_ADD); break;
-      case IC_SUB_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_SUB); break;
-      case IC_MUL_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_MUL); break;
-      case IC_DIV_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_DIV); break;
-      case IC_AND_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_AND); break;
-      case IC_OR_EQU:  EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_OR);  break;
-      case IC_XOR_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_XOR); break;
-      case IC_SHL_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_SLL); break;
-      case IC_SHR_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_SRA); break;
-      case IC_MOD_EQU: EmitCompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, RV_R_REM); break;
-      case IC_FADD_EQU: case IC_FSUB_EQU: case IC_FMUL_EQU: case IC_FDIV_EQU: EmitF64CompoundAssign(pass_buf, &pass_ptr, &rip, &stack_depth_final, ic->ic_code); break;
-      case IC_PAUSE:   RVU32(pass_buf, &pass_ptr, &rip, 0x13); break;
-      case IC_FN_ADDR:
-        EmitLabelAddr(pass_buf, &pass_ptr, &rip, (CLabel *)ic->ic_data, RV_A0);
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-        stack_depth_final++;
-        break;
-      case IC_PC:      // `$$`: address of this instruction, pushed like an immediate
-        RVU32(pass_buf, &pass_ptr, &rip, 0x17 | (RV_A0 << 7));                                        // auipc a0, 0
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-        stack_depth_final++;
-        break;
-      case IC_HLT:     RVU32(pass_buf, &pass_ptr, &rip, 0x10500073); break;   // wfi
-      case IC_INT:     RVU32(pass_buf, &pass_ptr, &rip, 0x00100073); break;   // ebreak
-      case IC_CHAIN_CMP: EmitChainCmp(pass_buf, &pass_ptr, &rip, &stack_depth_final, (int)ic->ic_data); break;
-      case IC_CHAIN_AND: EmitChainAnd(pass_buf, &pass_ptr, &rip, &stack_depth_final); break;
-      case IC_FADD: case IC_FSUB: case IC_FMUL: case IC_FDIV:
-      case IC_FLESS: case IC_FLESS_EQU: case IC_FGREATER: case IC_FGREATER_EQU:
-      case IC_FEQU_EQU: case IC_FNOT_EQU: case IC_FNEG: case IC_FMOD:
-        EmitF64Op(pass_buf, &pass_ptr, &rip, &stack_depth_final, ic->ic_code);
-        break;
-      case IC_TO_F64: EmitF64Convert(pass_buf, &pass_ptr, &rip, ic->ic_data, TRUE);  break;
-      case IC_TO_I64: EmitF64Convert(pass_buf, &pass_ptr, &rip, ic->ic_data, FALSE); break;
-      case IC_UDIV: case IC_UMOD: case IC_USHR:
-      case IC_ULESS: case IC_ULESS_EQU: case IC_UGREATER: case IC_UGREATER_EQU:
-        EmitUnsignedOp(pass_buf, &pass_ptr, &rip, &stack_depth_final, ic->ic_code);
-        break;
-      case IC_TRY_ENTER: EmitTryEnter(pass_buf, &pass_ptr, &rip, cc, (CLabel *)ic->ic_data, data_base); break;
-      case IC_TRY_LEAVE: EmitTryLeave(pass_buf, &pass_ptr, &rip, cc, data_base); break;
-      case IC_THROW:     EmitThrow(pass_buf, &pass_ptr, &rip, &stack_depth_final, cc, data_base); break;
-      case IC_CLI: case IC_STI: case IC_PUSHFD: case IC_POPFD: EmitSysIntrinsic(pass_buf, &pass_ptr, &rip, ic->ic_code); break;
-      case IC_STR_CONST: {
-        // PC-relative address of the literal; the bytes are appended after the code.
-        StringLiteral *sl = (StringLiteral *)ic->ic_data;
-        I64 rel = pass_buf ? (sl->offset - rip) : 0;
-        I64 hi = (rel + 0x800) >> 12, lo = rel - (hi << 12);
-        RVU32(pass_buf, &pass_ptr, &rip, 0x17 | (RV_A0<<7) | (((U32)hi & 0xFFFFF)<<12));          // auipc a0, hi
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_A0<<7) | (RV_A0<<15) | (((U32)lo & 0xFFF)<<20)); // addi a0, a0, lo
-        RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (0xFF8<<20));
-        RVU32(pass_buf, &pass_ptr, &rip, 0x23 | (RV_SP<<15) | (RV_A0<<20) | (3<<12));
-        stack_depth_final++;
-        break;
-      }
-      case IC_PP_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final,  (ic->ic_data ? ic->ic_data : 1), FALSE, ic->arg1_type_pointed_to); break;
-      case IC_MM_:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final, -(ic->ic_data ? ic->ic_data : 1), FALSE, ic->arg1_type_pointed_to); break;
-      case IC__PP:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final,  (ic->ic_data ? ic->ic_data : 1), TRUE,  ic->arg1_type_pointed_to); break;
-      case IC__MM:  EmitIncDec(pass_buf, &pass_ptr, &rip, &stack_depth_final, -(ic->ic_data ? ic->ic_data : 1), TRUE,  ic->arg1_type_pointed_to); break;
-      case IC_END_EXP:
-        // End of expression statement: sp must go back to the frame base (s0 - frame_size).
-        // Popping `depth*8` instead trusted a STATIC counter, and that counter diverges from
-        // the real depth whenever a branch skips pushes that the fall-through path makes — the
-        // pop then ran past the frame base and the next push overwrote the saved ra, so the
-        // function `ret`ed into whatever a0 held. Restore from s0 (exact, path-insensitive);
-        // fall back to the counter only in frameless JIT fragments (LexExpression2Bin), where
-        // s0 still belongs to the caller.
-        if (stack_depth_final > 0) {
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
-          if (cur_frame >= 0)
-            EmitAddImm(pass_buf, &pass_ptr, &rip, RV_SP, RV_S0, -cur_frame);  // sp = frame base (exact)
-          else
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (((stack_depth_final * 8) & 0xFFF)<<20));
-        }
-        stack_depth_final = 0;
-        break;
-      case IC_PUSH_RES:
-        // Push result to stack - this is just a marker, doesn't change stack_depth
-        break;
-      case IC_CALL_START:
-      case IC_CALL_END:
-        // Markers for function call boundaries
-        break;
-      case IC_LABEL:
-        { CLabel *lb = (CLabel*)ic->ic_data;
-          if (lb) lb->addr = rip;   /* keep map/exe_addr in sync with emitted code */
-          if (lb && lb->sd_set) stack_depth_final = lb->sd; O1SlotClear(); }
-        g_pp_n = 0;   // don't cancel a push/pop across a branch target (matches the sizing pass)
-        break;
-      case IC_NOP1:
-      case IC_NOP2:
-        // Explicit no-op – leave stack depth unchanged
-        break;
-      case IC_RAW_RV:
-        RVU32(pass_buf, &pass_ptr, &rip, (U32)ic->ic_data);   // pre-assembled RISC-V word (x86 translation)
-        break;
-      case IC_REGS_SNAP:
-        EmitRegsSnapStub(pass_buf, &pass_ptr, &rip);
-        break;
-      case IC_LOCK_ENTER:
-        EmitLockEnter(pass_buf, &pass_ptr, &rip);
-        break;
-      case IC_LOCK_LEAVE:
-        EmitLockLeave(pass_buf, &pass_ptr, &rip);
-        break;
-      case IC_RETURN_VAL:
-      case IC_RETURN_VAL2:
-        // Return value should be in a0
-        // If it's on the stack, pop it to a0
-        if (stack_depth_final > 0) {
-          // Pop value from stack to a0
-          RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_A0<<7) | (3<<12) | (RV_SP<<15)); // ld a0, 0(sp)
-          RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
-          stack_depth_final--;
-        }
-        // Value is now in a0, ready for return
-        // Do NOT adjust sp further - the epilogue expects sp at frame_base
-        stack_depth_final = 0;
-        break;
-      case IC_RET:
-        // Generate ret instruction with epilogue for expressions
-        if (!is_function) {
-          if (has_call) {
-            // Epilogue: restore ra/s0 (sp from the frame pointer, s0 = entry sp + 16)
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_S0<<15) | (0xFF0<<20)); // addi sp, s0, -16
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_RA<<7) | (3<<12) | (RV_SP<<15) | (8<<20)); // ld ra, 8(sp)
-            RVU32(pass_buf, &pass_ptr, &rip, 0x03 | (RV_S0<<7) | (3<<12) | (RV_SP<<15)); // ld s0, 0(sp)
-            RVU32(pass_buf, &pass_ptr, &rip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (16<<20)); // addi sp, sp, 16
-          }
-          RVU32(pass_buf, &pass_ptr, &rip, 0x00008067); // ret
-        }
-        break;
-      default:
-        // Skip unimplemented ICs
-        break;
-      }
+      // Lower this IC (final emit pass: pass_buf=buffer, real data_base). Same EmitOneIC
+      // as the sizing loop above — one body, no duplicated switch.
+      EmitOneIC(cc, ic, pass_buf, &pass_ptr, &rip, &stack_depth_final, &cur_frame, data_base, is_function, has_call);
       
       ic = ic->next;
     }
