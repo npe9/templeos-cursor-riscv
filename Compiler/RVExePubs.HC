@@ -961,6 +961,82 @@ I64 RVExePubsWireAddrs(I64 *addrs)
   return n;
 }
 
+/* TempleOS-style debugger register labels. Stock TempleOS lets you read AND assign registers
+ * as var-like labels (`U(_RIP-16);`, `_RAX = 5;` — Doc/DbgOverview.DD). The same trick works
+ * here with no compiler change: plant each register as an ordinary I64 GLOBAL whose storage IS
+ * its slot in the fault freeze, exactly as RVExePubInternDolDocIn aliases `doldoc`.
+ *
+ * Addresses must match bootstrap/seed/trap.hc (TRAP_SNAP_X / MEM_TRAP_SNAP) and
+ * bootstrap/holy_rt.h (HOLY_TRAP_SNAP_X / HOLY_TRAP_SNAP) — both images publish both views.
+ * Writes land in the freeze; making them take effect on resume is the trap-return copy-back. */
+#define RV_DBG_SNAP    0x87000100
+#define RV_DBG_SNAP_X  0x87000400
+
+I64 RVExePubRegAlias(U8 *name, I64 addr, CHashClass *i64t)
+{
+  CHashGlblVar *tmpg;
+  if (!name || !addr || !i64t || !Fs || !Fs->hash_table)
+    return 0;
+  if (HashFind(name, Fs->hash_table, HTT_GLBL_VAR))
+    return 0;
+  tmpg = CAlloc(sizeof(CHashGlblVar));
+  tmpg->str = StrNew(name);
+  tmpg->type = HTT_GLBL_VAR;
+  tmpg->flags = GVF_ALIAS;
+  // fixed address: never freed with the entry
+  tmpg->var_class = i64t;
+  tmpg->size = 8;
+  tmpg->data_addr = addr;
+  HashAdd(tmpg, Fs->hash_table);
+  return 1;
+}
+
+/* _X0.._X31 by register number, every ABI name at the same address, and the CSR slots.
+ * `Dr;` prints them; `_A0` / `_PC` read them; assignment writes the freeze. */
+I64 RVExePubsWireDbgRegs()
+{
+  CHashClass *i64t;
+  U8 nm[16], *p;
+  I64 n = 0, i, k;
+  if (!Fs || !Fs->hash_table || !cmp.internal_types)
+    return 0;
+  i64t = cmp.internal_types[RT_I64];
+  if (!i64t)
+    return 0;
+  i = 0;
+  while (i < 32) {
+    StrPrint(nm, "_X%d", i);
+    n += RVExePubRegAlias(nm, RV_DBG_SNAP_X + i * 8, i64t);
+    i++;
+  }
+  p = "zero ra sp gp tp t0 t1 t2 fp s1 a0 a1 a2 a3 a4 a5 a6 a7 s2 s3 s4 s5 s6 s7 s8 s9 s10 s11 t3 t4 t5 t6";
+  i = 0;
+  while (i < 32) {
+    k = 0;
+    nm[k++] = '_';
+    while (*p && *p != ' ') {
+      if (k < 14)
+        nm[k++] = ToUpper(*p);
+      p++;
+    }
+    nm[k] = 0;
+    if (*p == ' ')
+      p++;
+    n += RVExePubRegAlias(nm, RV_DBG_SNAP_X + i * 8, i64t);
+    i++;
+  }
+  n += RVExePubRegAlias("_S0", RV_DBG_SNAP_X + 8 * 8, i64t);
+  // s0 == fp == x8
+  n += RVExePubRegAlias("_MCAUSE", RV_DBG_SNAP + 18 * 8, i64t);
+  n += RVExePubRegAlias("_MEPC", RV_DBG_SNAP + 19 * 8, i64t);
+  n += RVExePubRegAlias("_PC", RV_DBG_SNAP + 19 * 8, i64t);
+  n += RVExePubRegAlias("_RIP", RV_DBG_SNAP + 19 * 8, i64t);
+  // stock spelling
+  n += RVExePubRegAlias("_MTVAL", RV_DBG_SNAP + 20 * 8, i64t);
+  n += RVExePubRegAlias("_MSTATUS", RV_DBG_SNAP + 21 * 8, i64t);
+  return n;
+}
+
 /* Debugger surface for the REPL: Kernel passes &Disasm,&DisasmAt,&U,&UA,&RVDisFnAddr,&RVUf
  * (8-slot array; zero = not provided). Separate from WireAddrs so short arrays stay safe. */
 I64 RVExePubsWireDbg(I64 *addrs)
@@ -1010,6 +1086,8 @@ I64 RVExePubsWireDbg(I64 *addrs)
     tmpf = RVExePubFunNew("BpClr", addrs[7], i64t, 1);
     if (tmpf) { RVExePubAddArg(tmpf, "addr", i64t, MLF_DFT_AVAILABLE, 0); n++; }
   }
+  n += RVExePubsWireDbgRegs();
+  // _X0.._X31 / _A0 / _PC …: no addrs needed, the freeze is at a fixed address
   return n;
 }
 
