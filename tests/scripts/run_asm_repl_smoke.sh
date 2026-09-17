@@ -79,6 +79,7 @@ feed() {
      "RegPaneCost;",
      "*(0(I64 *)) = 1;",
      "DbgViewCost;",
+     "DbgDisasmCost;",
      "_MCAUSE;",
      "G;",
      "q",
@@ -149,6 +150,13 @@ if [ -z "${dbgv:-}" ] || [ "${dbgv:-0}" -le 0 ]; then
 fi
 if ! printf '%s\n' "$out" | grep -qx 'ans=7'; then
   echo "FAIL asm-repl smoke -- _MCAUSE did not read the store access fault (ans=7)" >&2
+  fail=1
+fi
+# The disasm tile: Dbg captures U()'s output through a StdOut sink and renders it as a document
+# under the status pane, so the view shows registers + fault + code without a second UI.
+dis=$(printf '%s\n' "$out" | grep -A1 'DbgDisasmCost;' | grep -o 'ans=[0-9]*' | head -1 | cut -d= -f2)
+if [ -z "${dis:-}" ] || [ "${dis:-0}" -le 0 ]; then
+  echo "FAIL asm-repl smoke -- Dbg painted no disassembly tile (DbgDisasmCost=$dis)" >&2
   fail=1
 fi
 if [ "$fail" -ne 0 ]; then

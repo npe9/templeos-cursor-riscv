@@ -113,6 +113,9 @@ I64 main()
       RVExePubFunNew("Dbg", &Dbg, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("G", &G, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("DbgViewCost", &DbgViewCost, cmp.internal_types[RT_I64], 0);
+      DbgViewInit();
+      // StdOut sink so Dbg can put U()'s disassembly in a document
+      RVExePubFunNew("DbgDisasmCost", &DbgDisasmCost, cmp.internal_types[RT_I64], 0);
       dbg_view_ready = 1;
       UartPutS("A2 reg pane wired\n");
     }

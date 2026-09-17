@@ -22,16 +22,45 @@
 #define RV_DOC_TEXT_HC
 #help_index "DolDoc/VT"
 
-#define RV_DT_CELLS 8192
-// 80x25 is 2000; a tall tile still fits
+#define RV_DT_CELLS 2048
+// 80x25 is 2000
 #define RV_DT_ROWS_MAX 64
 #define RV_DT_COLS_MAX 200
+#define RV_DT_TILES 4
+// each tile keeps its OWN shadow: one shared shadow would be invalidated by every switch
+// between tiles of different geometry, so a multi-pane view would repaint in full every time
 
 U32 rv_dt_cell[RV_DT_CELLS];
 // what this render wants on screen
-U32 rv_dt_shadow[RV_DT_CELLS];
-// what the terminal is already showing
-I64 rv_dt_rows, rv_dt_cols, rv_dt_valid, rv_dt_bytes;
+U32 rv_dt_shadow[RV_DT_TILES * RV_DT_CELLS];
+// per tile: what the terminal is already showing
+I64 rv_dt_trow[RV_DT_TILES], rv_dt_tcol[RV_DT_TILES], rv_dt_trows[RV_DT_TILES],
+    rv_dt_tcols[RV_DT_TILES], rv_dt_tused[RV_DT_TILES];
+I64 rv_dt_rows, rv_dt_cols, rv_dt_bytes;
+
+// Which shadow belongs to this rectangle? Same origin+size = same tile. A new rectangle takes a
+// free slot, or evicts slot 0 (and repaints in full, which is correct for a slot it never saw).
+I64 RVDocTextTile(I64 row0, I64 col0, I64 rows, I64 cols, I64 *fresh)
+{
+  I64 i, free_i = -1;
+  *fresh = 0;
+  for (i = 0; i < RV_DT_TILES; i++) {
+    if (rv_dt_tused[i] && rv_dt_trow[i] == row0 && rv_dt_tcol[i] == col0 &&
+        rv_dt_trows[i] == rows && rv_dt_tcols[i] == cols)
+      return i;
+    if (!rv_dt_tused[i] && free_i < 0)
+      free_i = i;
+  }
+  if (free_i < 0)
+    free_i = 0;
+  rv_dt_tused[free_i] = 1;
+  rv_dt_trow[free_i] = row0;
+  rv_dt_tcol[free_i] = col0;
+  rv_dt_trows[free_i] = rows;
+  rv_dt_tcols[free_i] = cols;
+  *fresh = 1;
+  return free_i;
+}
 
 // RVDocTextInvalidate -- RVDocTextInvalidate()
 // NAME
@@ -40,7 +69,9 @@ I64 rv_dt_rows, rv_dt_cols, rv_dt_valid, rv_dt_bytes;
 //   RVDocTextRender
 U0 RVDocTextInvalidate()
 {
-  rv_dt_valid = 0;
+  I64 i;
+  for (i = 0; i < RV_DT_TILES; i++)
+    rv_dt_tused[i] = 0;
 }
 
 U0 RVDocTextCellSet(I64 row, I64 col, I64 ch, I64 attr)
@@ -118,7 +149,7 @@ U0 RVDocTextFill(CDoc *doc, I64 sx, I64 sy, I64 dft_attr)
 I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
                     I64 sx = 0, I64 sy = 0, I64 dft_attr = 0x07)
 {
-  I64 r, c, i, n, cur_attr = -1, run, start_bytes;
+  I64 r, c, i, n, cur_attr = -1, run, start_bytes, tile, fresh, base;
   U32 cell;
   if (!doc || rows <= 0 || cols <= 0)
     return 0;
@@ -129,11 +160,10 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
   n = rows * cols;
   if (n > RV_DT_CELLS)
     return 0;
-  if (rows != rv_dt_rows || cols != rv_dt_cols) {
-    rv_dt_rows = rows;
-    rv_dt_cols = cols;
-    rv_dt_valid = 0;
-  }
+  rv_dt_rows = rows;
+  rv_dt_cols = cols;
+  tile = RVDocTextTile(row0, col0, rows, cols, &fresh);
+  base = tile * RV_DT_CELLS;
   i = 0;
   while (i < n) {
     rv_dt_cell[i] = ' ' + (dft_attr << 8);
@@ -141,14 +171,13 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
   }
   DocRecalc(doc);
   RVDocTextFill(doc, sx, sy, dft_attr);
-  if (!rv_dt_valid) {
+  if (fresh) {
     i = 0;
     while (i < n) {
-      rv_dt_shadow[i] = 0xFFFFFFFF;
-      // nothing known: force a full paint
+      rv_dt_shadow[base + i] = 0xFFFFFFFF;
+      // nothing known about this tile yet: force a full paint
       i++;
     }
-    rv_dt_valid = 1;
   }
   start_bytes = rv_vt_cost;
   r = 0;
@@ -158,7 +187,7 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
     while (c < cols) {
       i = r * cols + c;
       cell = rv_dt_cell[i];
-      if (cell == rv_dt_shadow[i]) {
+      if (cell == rv_dt_shadow[base + i]) {
         run = 0;
         c++;
         continue;
@@ -172,7 +201,7 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
         RVVtSgr(cur_attr & 15, (cur_attr >> 4) & 15, 0);
       }
       RVVtPutGlyph(cell & 255);
-      rv_dt_shadow[i] = cell;
+      rv_dt_shadow[base + i] = cell;
       c++;
     }
     r++;
