@@ -57,9 +57,25 @@ mkdir -p "$ROOT/build"
 cp "$T/kp.elf" "$ROOT/build/repl-cmp.elf"
 
 # Probe already ran ExePutS(40+2). Delay stdin until after CInit/probe so the
-# UART RX FIFO is not overrun while the guest is still booting (lost lines → hang).
-input=$'40+2;\nq\n'
-out="$( { sleep 5; LC_ALL=C printf '%s' "$input"; } | $TIMEOUT 180 "$QEMU" -M virt -m 128M -bios none \
+# UART RX FIFO is not overrun while the guest is still booting (lost lines → hang),
+# and pace each line (the REPL line-editor drops chars on unpaced input). We also
+# assemble a mixed base+RVC+call block and Disasm it, proving the debugger surface
+# (Disasm/Uf, planted via RVExePubsWireDbg) closes the assemble→disassemble loop.
+feed() {
+  perl -e '
+    $|=1;
+    my @l=(
+     "40+2;",
+     "asm { Dt:: addi a0,a0,1 add a0,a0,a1 c.mv a1,a0 call E nop E: ret }",
+     "Disasm(\"Dt\");",
+     "q",
+    );
+    select(undef,undef,undef,5);
+    for my $x (@l){ print $x,"\n"; select(undef,undef,undef,0.8); }
+    select(undef,undef,undef,2);
+  '
+}
+out="$(feed | $TIMEOUT 180 "$QEMU" -M virt -m 128M -bios none \
   -kernel "$T/kp.elf" -nographic 2>&1 | LC_ALL=C tr -d '\r')"
 
 fail=0
@@ -79,6 +95,12 @@ if ! printf '%s\n' "$out" | grep -qx 'ans=42'; then
   fail=1
 fi
 need "$EXPECT"
+# Debugger surface wired + assemble->disassemble loop works.
+need "A2 dbg pubs wired n=8"
+need "c.mv a1, a0"                 # RVC instruction decoded back
+need "auipc ra"                    # `call` expansion, first word decoded
+need "jalr ra"                     # `call` expansion, second word decoded
+need "<Dt+"                        # call pcrel target resolved to a symbol+offset
 
 if [ "$fail" -ne 0 ]; then
   printf '%s\n' "$out" | grep -E 'A2|ExePutS|ans=|Except|Error|FAIL|OK|probe|Cmp|Compiler_RV' | head -40 | sed 's/^/  /' >&2
@@ -86,5 +108,5 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-echo "Kernel-REPL-ExePutS smoke: OK (guest Cmp owns UART compile loop → build/repl-cmp.elf)"
+echo "Kernel-REPL-ExePutS smoke: OK (guest Cmp owns UART compile loop → build/repl-cmp.elf; Disasm/Uf wired → asm{}→Disasm round-trip incl. RVC + call pcrel target)"
 exit 0

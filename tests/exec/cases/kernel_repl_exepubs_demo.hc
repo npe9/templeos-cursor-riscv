@@ -75,6 +75,24 @@ I64 main()
   if (Fs && Fs->hash_table && cmp.asm_hash && Fs->hash_table != cmp.asm_hash)
     Fs->hash_table->next = cmp.asm_hash;
   RVExePubsWire;
+  // Debugger surface: Disasm/DisasmAt/U/UA/FnAddr/Uf/Bp/BpClr (Kernel/RVDisasm.HC).
+  // Closes the assemble->disassemble loop in this REPL: `asm{Fn:: ...ret}` then
+  // `Disasm("Fn")` / `Uf("Fn")` shows the decoded instructions you just emitted.
+  {
+    I64 dbg[8], di;
+    for (di = 0; di < 8; di++)
+      dbg[di] = 0;
+    dbg[0] = &Disasm;
+    dbg[1] = &DisasmAt;
+    dbg[2] = &U;
+    dbg[3] = &UA;
+    dbg[4] = &RVDisFnAddr;
+    dbg[5] = &RVUf;
+    dbg[6] = &RVBp;
+    dbg[7] = &RVBpClr;
+    StrPrint(buf, "A2 dbg pubs wired n=%d\n", RVExePubsWireDbg(dbg));
+    UartPutS(buf);
+  }
   // This image has completed the kernel/compiler setup normally performed
   // before KEnd marks the Adam server live.  Without this bit, every compiler
   // diagnostic is prefixed with the misleading boot-phase note.
