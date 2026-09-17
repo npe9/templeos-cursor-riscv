@@ -74,6 +74,9 @@ feed() {
      "AsmStep(\"addi a0,a0,1\");",
      "_A0;",
      "Dr;",
+     "RegPaneCost;",
+     "AsmStep(\"addi a2,a2,3\");",
+     "RegPaneCost;",
      "q",
     );
     select(undef,undef,undef,5);
@@ -108,6 +111,29 @@ fi
 # Dr reads the same array: a0 shows the stepped value, and the CSR line is present
 need "a0  =0000000000000021"
 need "mcause="
+# Live register pane (Kernel/RVRegPane.HC) in THIS image: DolDoc must actually be alive here
+# (it was not until RVExePubs.HC stopped declaring the kernel's `doldoc` extern). The pane is
+# repainted by AsmStep's watch hook; a step that moves one register must cost far less than the
+# first paint, because the renderer only sends the cells that differ.
+need "A2 reg pane wired"
+# By the time the first cost is sampled the pane is already warm, so both samples are
+# incremental. A full 32-register pane paint is ~1364 bytes (measured by kernel-doctext-smoke);
+# a step that moves one register — and un-highlights the previous one — must stay an order of
+# magnitude under that, or the diff has stopped working.
+pane_costs=$(printf '%s\n' "$out" | grep -A2 'RegPaneCost;' | grep -o 'ans=[0-9]*' | cut -d= -f2)
+for c in $pane_costs; do
+  if [ "$c" -le 0 ]; then
+    echo "FAIL asm-repl smoke -- register pane never painted (RegPaneCost=$c)" >&2
+    fail=1
+  elif [ "$c" -ge 300 ]; then
+    echo "FAIL asm-repl smoke -- a one-register step cost $c bytes (full pane is ~1364; diff broken?)" >&2
+    fail=1
+  fi
+done
+if [ -z "${pane_costs:-}" ]; then
+  echo "FAIL asm-repl smoke -- no RegPaneCost readings" >&2
+  fail=1
+fi
 if [ "$fail" -ne 0 ]; then
   printf '%s\n' "$out" | grep -E 'A2|ExePutS|ans=|Except|Error|FAIL|OK|probe|Cmp|Compiler_RV' | head -40 | sed 's/^/  /' >&2
   printf '%s\n' "$out" | tail -30 | sed 's/^/  /' >&2

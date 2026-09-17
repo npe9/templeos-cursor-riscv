@@ -27,7 +27,16 @@ extern U0 Mcause();
 extern U0 Csr(U8 *name);
 extern U0 Uptime();
 // Soft tip Soft #include stock DocInit_RV: Kernel doldoc abs addr (Compiler unit).
+//
+// ONLY when the kernel is absent. Kernel/RVDoc.HC defines the real `doldoc`; declaring it
+// extern on top of that definition turns the global into an unresolved import for the WHOLE
+// unit, so every reference — including DocInit's own, compiled earlier — materializes as
+// address 0 (`addi a0,zero,0; ld a0,0(a0)`) and takes a load fault the first time any document
+// is created. That is what kept DolDoc dead in the REPL image. RV_DOC_ED_KEY_MAX comes from
+// Kernel/RVDoc.HC, so its absence means this is a standalone Compiler_RV build.
+#ifndef RV_DOC_ED_KEY_MAX
 extern U8 doldoc;
+#endif
 U0 RVExePubMemberLink(CHashFun *tmpf, CMemberLst *tmpm)
 {
   CMemberLst *last;

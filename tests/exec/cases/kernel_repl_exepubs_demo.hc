@@ -3,6 +3,9 @@
 // Smoke pipes HolyC lines; each line is ExePutS'd. See docs/SELF_HOST.md A2.
 #include "/Kernel/Kernel_RV.PRJ"
 #include "/Compiler/RISCVRegs.HH"
+#include "/Kernel/RVDocVT.HC"
+#include "/Kernel/RVDocText.HC"
+#include "/Kernel/RVRegPane.HC"
 #include "/Compiler/Compiler_RV_Body.PRJ"
 #define MEM_UART 0x10000000
 extern U0 RVTrapInit();
@@ -94,13 +97,17 @@ I64 main()
     dbg[6] = &RVBp;
     dbg[7] = &RVBpClr;
     StrPrint(buf, "A2 dbg pubs wired n=%d\n", RVExePubsWireDbg(dbg));
-    // The live register pane (Kernel/RVRegPane.HC) is NOT wired here yet. Measured, not
-    // guessed: with RVKernelInit and RVWinMgrLiteInit both up, DocNew still takes a load
-    // access fault inside DocInit+0x14 (mcause=5) — DolDoc's global init wants its
-    // DefineLstLoad/HashLstAdd-backed doldoc.hash, which this image never builds. The REPL's
-    // recover path swallows the fault, so it presents as a pane that silently never paints.
-    // Bringing DocInit up here is its own task; until then the pane and its cost assertions
-    // live in kernel_doctext_demo, which brings the whole stack up.
+    // Live register pane over the same freeze the labels alias: a DolDoc rendered straight to
+    // the terminal, repainted by AsmStep's watch hook so a stepped register lights up in place.
+    // DolDoc needs the WinMgr grid up, and it needed the `extern U8 doldoc` in RVExePubs.HC to
+    // stop shadowing the kernel's real global — see that file.
+    if (RVWinMgrLiteInit()) {
+      RVVtInit(0, 1);
+      AsmWatchInstall(&RegPaneUpdate);
+      RVExePubFunNew("RegPane", &RegPaneUpdate, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("RegPaneCost", &RegPaneCost, cmp.internal_types[RT_I64], 0);
+      UartPutS("A2 reg pane wired\n");
+    }
     UartPutS(buf);
   }
   // This image has completed the kernel/compiler setup normally performed
