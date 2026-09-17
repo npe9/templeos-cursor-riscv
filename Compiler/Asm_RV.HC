@@ -1123,6 +1123,158 @@ Bool PrsAsmRVIns(CCmpCtrl *cc)
     AOTStoreCodeU16(cc, word);
     return TRUE;
   }
+  // ---- RVC increment 3: word ld/st, CB-arith, RV64 addiw, lui, sp-relative ----
+  // All bit-field maps mechanically derived from GNU (-march=rv64imac) and validated
+  // over their full operand ranges (10011 checks, 0 diffs).
+  // CL/CS word: c.lw rd', off(rs1') / c.sw rs2', off(rs1') — x8-x15, off %4 in 0..124.
+  if (RvAsmStrEqI(mn, "c.lw") || RvAsmStrEqI(mn, "c.sw")) {
+    rd = RvAsmRegTok(cc); // rd' (lw) or rs2' (sw)
+    if (cc->token != ',') { Free(mn); LexExcept(cc, "Expecting ',' at "); }
+    Lex(cc);
+    imm = 0;
+    if (!RvAsmImmTok(cc, &imm) && cc->token != '(') { Free(mn); LexExcept(cc, "Expecting off(reg) at "); }
+    if (cc->token != '(') { Free(mn); LexExcept(cc, "Expecting '(' at "); }
+    Lex(cc);
+    rs1 = RvAsmRegTok(cc);
+    if (cc->token != ')') { Free(mn); LexExcept(cc, "Expecting ')' at "); }
+    Lex(cc);
+    if (rd < 8 || rd > 15 || rs1 < 8 || rs1 > 15) { Free(mn); LexExcept(cc, "c.lw/c.sw need registers x8-x15 at "); }
+    if (imm < 0 || imm > 124 || (imm & 3)) { Free(mn); LexExcept(cc, "c.lw/c.sw offset must be a multiple of 4 in 0..124 at "); }
+    if (RvAsmStrEqI(mn, "c.lw")) word = 0x4000; else word = 0xC000;
+    word |= (((rd - 8) & 7) << 2) | (((imm >> 6) & 1) << 5) | (((imm >> 2) & 1) << 6) | (((rs1 - 8) & 7) << 7) | (((imm >> 3) & 1) << 10) | (((imm >> 4) & 1) << 11) | (((imm >> 5) & 1) << 12);
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
+  // CI RV64 add-word: c.addiw rd, imm — rd != x0, 6-bit signed imm.
+  if (RvAsmStrEqI(mn, "c.addiw")) {
+    rd = RvAsmRegTok(cc);
+    if (cc->token != ',') { Free(mn); LexExcept(cc, "Expecting ',' at "); }
+    Lex(cc);
+    if (!RvAsmImmTok(cc, &imm)) { Free(mn); LexExcept(cc, "Expecting imm at "); }
+    if (rd < 1) { Free(mn); LexExcept(cc, "c.addiw needs a non-zero register (x1-x31) at "); }
+    if (imm < -32 || imm > 31) { Free(mn); LexExcept(cc, "c.addiw immediate out of range (need -32..31) at "); }
+    word = 0x2001 | ((imm & 0x1F) << 2) | ((rd & 0x1F) << 7) | (((imm >> 5) & 1) << 12);
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
+  // CB-arith: c.andi rd', imm (6-bit signed) / c.srli/c.srai rd', shamt (RV64 0..63).
+  // rd' in x8-x15. funct2 [11:10]: srli=00, srai=01, andi=10.
+  if (RvAsmStrEqI(mn, "c.andi") || RvAsmStrEqI(mn, "c.srli") || RvAsmStrEqI(mn, "c.srai")) {
+    rd = RvAsmRegTok(cc);
+    if (cc->token != ',') { Free(mn); LexExcept(cc, "Expecting ',' at "); }
+    Lex(cc);
+    if (!RvAsmImmTok(cc, &imm)) { Free(mn); LexExcept(cc, "Expecting imm at "); }
+    if (rd < 8 || rd > 15) { Free(mn); LexExcept(cc, "c.andi/c.srli/c.srai need a register x8-x15 at "); }
+    if (RvAsmStrEqI(mn, "c.andi")) {
+      if (imm < -32 || imm > 31) { Free(mn); LexExcept(cc, "c.andi immediate out of range (need -32..31) at "); }
+      word = 0x8801;
+    } else {
+      if (imm < 0 || imm > 63) { Free(mn); LexExcept(cc, "c.srli/c.srai shift amount out of range (need 0..63) at "); }
+      if (RvAsmStrEqI(mn, "c.srli")) word = 0x8001; else word = 0x8401;
+    }
+    word |= ((imm & 0x1F) << 2) | (((rd - 8) & 7) << 7) | (((imm >> 5) & 1) << 12);
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
+  // CI c.lui rd, imm — rd not in {x0,x2}; imm a NON-zero 6-bit signed field value
+  // (-32..-1, 1..31), loaded as imm<<12 (same field-value convention as c.li).
+  if (RvAsmStrEqI(mn, "c.lui")) {
+    rd = RvAsmRegTok(cc);
+    if (cc->token != ',') { Free(mn); LexExcept(cc, "Expecting ',' at "); }
+    Lex(cc);
+    if (!RvAsmImmTok(cc, &imm)) { Free(mn); LexExcept(cc, "Expecting imm at "); }
+    if (rd < 1 || rd == 2) { Free(mn); LexExcept(cc, "c.lui destination must be x1 or x3-x31 (not x0/x2) at "); }
+    if (imm == 0 || imm < -32 || imm > 31) { Free(mn); LexExcept(cc, "c.lui immediate must be non-zero in -32..31 (a 6-bit field; use c.addi16sp for sp) at "); }
+    word = 0x6001 | ((imm & 0x1F) << 2) | ((rd & 0x1F) << 7) | (((imm >> 5) & 1) << 12);
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
+  // CI c.addi16sp sp, imm — imm a NON-zero multiple of 16 in -512..496 (adjusts sp).
+  if (RvAsmStrEqI(mn, "c.addi16sp")) {
+    rs1 = RvAsmRegTok(cc);
+    if (rs1 != 2) { Free(mn); LexExcept(cc, "c.addi16sp first operand must be sp at "); }
+    if (cc->token != ',') { Free(mn); LexExcept(cc, "Expecting ',' at "); }
+    Lex(cc);
+    if (!RvAsmImmTok(cc, &imm)) { Free(mn); LexExcept(cc, "Expecting imm at "); }
+    if (imm == 0 || imm < -512 || imm > 496 || (imm & 15)) { Free(mn); LexExcept(cc, "c.addi16sp immediate must be a non-zero multiple of 16 in -512..496 at "); }
+    word = 0x6101 | (((imm >> 5) & 1) << 2) | (((imm >> 7) & 1) << 3) | (((imm >> 8) & 1) << 4) | (((imm >> 6) & 1) << 5) | (((imm >> 4) & 1) << 6) | (((imm >> 9) & 1) << 12);
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
+  // CIW c.addi4spn rd', sp, uimm — rd' in x8-x15, uimm a NON-zero multiple of 4 in 4..1020.
+  if (RvAsmStrEqI(mn, "c.addi4spn")) {
+    rd = RvAsmRegTok(cc);
+    if (cc->token != ',') { Free(mn); LexExcept(cc, "Expecting ',' at "); }
+    Lex(cc);
+    rs1 = RvAsmRegTok(cc);
+    if (rs1 != 2) { Free(mn); LexExcept(cc, "c.addi4spn second operand must be sp at "); }
+    if (cc->token != ',') { Free(mn); LexExcept(cc, "Expecting ',' at "); }
+    Lex(cc);
+    if (!RvAsmImmTok(cc, &imm)) { Free(mn); LexExcept(cc, "Expecting imm at "); }
+    if (rd < 8 || rd > 15) { Free(mn); LexExcept(cc, "c.addi4spn needs a register x8-x15 at "); }
+    if (imm <= 0 || imm > 1020 || (imm & 3)) { Free(mn); LexExcept(cc, "c.addi4spn immediate must be a non-zero multiple of 4 in 4..1020 at "); }
+    word = (((rd - 8) & 7) << 2) | (((imm >> 3) & 1) << 5) | (((imm >> 2) & 1) << 6) | (((imm >> 6) & 1) << 7) | (((imm >> 7) & 1) << 8) | (((imm >> 8) & 1) << 9) | (((imm >> 9) & 1) << 10) | (((imm >> 4) & 1) << 11) | (((imm >> 5) & 1) << 12);
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
+  // CI sp-relative loads: c.lwsp rd, off(sp) (off %4, 0..252) / c.ldsp rd, off(sp)
+  // (off %8, 0..504). rd != x0.
+  if (RvAsmStrEqI(mn, "c.lwsp") || RvAsmStrEqI(mn, "c.ldsp")) {
+    rd = RvAsmRegTok(cc);
+    if (cc->token != ',') { Free(mn); LexExcept(cc, "Expecting ',' at "); }
+    Lex(cc);
+    imm = 0;
+    if (!RvAsmImmTok(cc, &imm) && cc->token != '(') { Free(mn); LexExcept(cc, "Expecting off(sp) at "); }
+    if (cc->token != '(') { Free(mn); LexExcept(cc, "Expecting '(' at "); }
+    Lex(cc);
+    rs1 = RvAsmRegTok(cc);
+    if (cc->token != ')') { Free(mn); LexExcept(cc, "Expecting ')' at "); }
+    Lex(cc);
+    if (rd < 1) { Free(mn); LexExcept(cc, "c.lwsp/c.ldsp need a non-zero register (x1-x31) at "); }
+    if (rs1 != 2) { Free(mn); LexExcept(cc, "c.lwsp/c.ldsp base must be sp at "); }
+    if (RvAsmStrEqI(mn, "c.lwsp")) {
+      if (imm < 0 || imm > 252 || (imm & 3)) { Free(mn); LexExcept(cc, "c.lwsp offset must be a multiple of 4 in 0..252 at "); }
+      word = 0x4002 | (((imm >> 6) & 1) << 2) | (((imm >> 7) & 1) << 3) | (((imm >> 2) & 1) << 4) | (((imm >> 3) & 1) << 5) | (((imm >> 4) & 1) << 6) | ((rd & 0x1F) << 7) | (((imm >> 5) & 1) << 12);
+    } else {
+      if (imm < 0 || imm > 504 || (imm & 7)) { Free(mn); LexExcept(cc, "c.ldsp offset must be a multiple of 8 in 0..504 at "); }
+      word = 0x6002 | (((imm >> 6) & 1) << 2) | (((imm >> 7) & 1) << 3) | (((imm >> 8) & 1) << 4) | (((imm >> 3) & 1) << 5) | (((imm >> 4) & 1) << 6) | ((rd & 0x1F) << 7) | (((imm >> 5) & 1) << 12);
+    }
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
+  // CSS sp-relative stores: c.swsp rs2, off(sp) (off %4, 0..252) / c.sdsp rs2, off(sp)
+  // (off %8, 0..504). rs2 is any x0-x31.
+  if (RvAsmStrEqI(mn, "c.swsp") || RvAsmStrEqI(mn, "c.sdsp")) {
+    rs2 = RvAsmRegTok(cc);
+    if (cc->token != ',') { Free(mn); LexExcept(cc, "Expecting ',' at "); }
+    Lex(cc);
+    imm = 0;
+    if (!RvAsmImmTok(cc, &imm) && cc->token != '(') { Free(mn); LexExcept(cc, "Expecting off(sp) at "); }
+    if (cc->token != '(') { Free(mn); LexExcept(cc, "Expecting '(' at "); }
+    Lex(cc);
+    rs1 = RvAsmRegTok(cc);
+    if (cc->token != ')') { Free(mn); LexExcept(cc, "Expecting ')' at "); }
+    Lex(cc);
+    if (rs2 < 0) { Free(mn); LexExcept(cc, "Bad register at "); }
+    if (rs1 != 2) { Free(mn); LexExcept(cc, "c.swsp/c.sdsp base must be sp at "); }
+    if (RvAsmStrEqI(mn, "c.swsp")) {
+      if (imm < 0 || imm > 252 || (imm & 3)) { Free(mn); LexExcept(cc, "c.swsp offset must be a multiple of 4 in 0..252 at "); }
+      word = 0xC002 | ((rs2 & 0x1F) << 2) | (((imm >> 6) & 1) << 7) | (((imm >> 7) & 1) << 8) | (((imm >> 2) & 1) << 9) | (((imm >> 3) & 1) << 10) | (((imm >> 4) & 1) << 11) | (((imm >> 5) & 1) << 12);
+    } else {
+      if (imm < 0 || imm > 504 || (imm & 7)) { Free(mn); LexExcept(cc, "c.sdsp offset must be a multiple of 8 in 0..504 at "); }
+      word = 0xE002 | ((rs2 & 0x1F) << 2) | (((imm >> 6) & 1) << 7) | (((imm >> 7) & 1) << 8) | (((imm >> 8) & 1) << 9) | (((imm >> 3) & 1) << 10) | (((imm >> 4) & 1) << 11) | (((imm >> 5) & 1) << 12);
+    }
+    Free(mn);
+    AOTStoreCodeU16(cc, word);
+    return TRUE;
+  }
   if (RvAsmStrEqI(mn, "mv") || RvAsmStrEqI(mn, "not") || RvAsmStrEqI(mn, "neg") || RvAsmStrEqI(mn, "seqz") || RvAsmStrEqI(mn, "snez")) {
     rd = RvAsmRegTok(cc);
     if (cc->token != ',') {

@@ -54,6 +54,15 @@ feed() {
      "I64 WF(){I64 *p=RvF;return p[0];}","WF();",
      "I64 WC(){I64 *p=RvC;return p[0];}","WC();",
      "I64 WB(){I64 *p=RvB;return p[0];}","WB();",
+     # Increment 3: word ld/st, CB-arith, RV64 addiw, lui, sp-relative + frame adjust.
+     "asm { Rw1:: c.lw a0,4(a1) c.sw a4,8(a3) c.addiw a0,-1 c.andi a0,-1 ret }",
+     "asm { Rw2:: c.srli a0,5 c.srai a1,63 c.lui a0,1 c.lui s0,-1 ret }",
+     "asm { Rw3:: c.addi16sp sp,-16 c.addi4spn a0,sp,8 c.lwsp a0,4(sp) c.ldsp a0,8(sp) ret }",
+     "asm { Rw4:: c.swsp a0,4(sp) c.sdsp a0,8(sp) c.lw a0,124(a1) c.sw a0,124(a1) ret }",
+     "I64 X1(){I64 *p=Rw1;return p[0];}","X1();",
+     "I64 X2(){I64 *p=Rw2;return p[0];}","X2();",
+     "I64 X3(){I64 *p=Rw3;return p[0];}","X3();",
+     "I64 X4(){I64 *p=Rw4;return p[0];}","X4();",
     );
     select(undef,undef,undef,5);
     for my $x (@l){ print $x,"\n"; select(undef,undef,undef,0.6); }
@@ -82,10 +91,15 @@ need "ans=-2195397578380149275"   # Rv6: c.bnez -8, c.j -8, c.ld 0, c.sd 0
 need "ans=281479271784465"        # RvF: forward c.j E  (offset +4 = 0xa011)
 need "ans=281479271792913"        # RvC: forward c.beqz E (offset +4 = 0xc111)
 need "ans=492533964668929"        # RvB: backward c.j E  (offset -4 = 0xbff5)
+# Increment 3 — word ld/st, CB-arith, addiw, lui, sp-relative (GNU-derived, full-range validated):
+need "ans=-7386688999498694200"   # Rw1: c.lw/c.sw, c.addiw -1, c.andi -1
+need "ans=8393976355154133269"    # Rw2: c.srli/c.srai, c.lui +1/-1
+need "ans=7287463090653262205"    # Rw3: c.addi16sp/c.addi4spn/c.lwsp/c.ldsp
+need "ans=-2456610341888802262"   # Rw4: c.swsp/c.sdsp + c.lw/c.sw at max offset
 
 if [ "$fail" -ne 0 ]; then
   printf '%s\n' "$out" | grep -E 'ans=|Rv[0-9A-Z]|W[0-9A-Z]|Except|Error|TRAP' | tail -40 | sed 's/^/  /' >&2
   exit 1
 fi
-echo "RVC-asm smoke: OK (guest asm{} emits GNU-identical c.* — 15 increment-1 forms + c.j/c.beqz/c.bnez/c.ld/c.sd incl. label resolution)"
+echo "RVC-asm smoke: OK (guest asm{} emits GNU-identical c.* — full common RVC set: reg/imm, c.j/c.beqz/c.bnez/c.ld/c.sd incl. labels, c.lw/c.sw, CB-arith, c.addiw, c.lui, sp-relative + frame adjust)"
 exit 0
