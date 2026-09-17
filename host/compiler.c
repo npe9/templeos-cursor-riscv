@@ -8,6 +8,7 @@
  */
 
 #include "holyc_compiler.h"
+#include "rv32_lift.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -441,13 +442,16 @@ void AOTWriteMap(Compiler *cc, const char *map_path) {
 static U32 g_pp[3];
 static int g_pp_n;
 static int g_pp_on;
-/* Doubleword load/store funct3 for the active target: 3 (ld/sd) on rv64, 2 (lw/sw) on
- * rv32 (which has no ld/sd). Set per-compile from cc->tgt->sd_funct3 (== ld_funct3). Only
- * the funct3==3 doubleword sites read this; narrower lb/lh/lw/lwu are width-correct on both. */
+/* Doubleword (8-byte slot) load/store funct3 of the word stream the emitter produces. It is
+ * 3 (ld/sd) for every target: on rv32 the stream is VIRTUAL rv64 that RvEmitWord hands to
+ * host/rv32_lift.c, which turns each ld/sd into a lw/sw pair (lo @+0, hi @+4). Narrower
+ * lb/lh/lw/lwu mean the same on both. */
 static int g_wd3 = 3;
-/* Target XLEN (64/32), set beside g_wd3. rv32 has no 32-bit shift-by-32 dance in
- * EmitLoadImm64 (slli/srli by 32 is illegal there). */
+/* Target XLEN (64/32). 32 routes every emitted word through Rv32Lift. */
 static int g_xlen = 64;
+static int g_rv32_args;   /* RV32_ARG_SPILL / RV32_ARG_LOAD: a0-a7 are call args a_i : s(1+i) */
+static int g_rv32_raw;    /* asm{} words: already target code, emit untouched */
+static I64 g_rv32_divmod; /* blob offset of the rv32_divmod helper (from the previous pass) */
 static I64 g_o1_slot_off[32];
 static int g_o1_slot_reg[32], g_o1_slot_n;
 /* HOLYC_O1_MODE (default 3 — Tier-1 + frame folds + I64 local promotion):
@@ -497,9 +501,23 @@ static void PpRewind(U8 *buf, U8 **ptr, I64 *rip, int n) {
 /* Raw little-endian 32-bit word emit + rip advance — the arch-neutral half of the
  * word writer (the other half, RVU32, adds the RISC-V push/pop + O1-slot peephole).
  * A non-RV backend reuses this and supplies its own peephole, or none. */
-static void RvEmitWord(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
+static void RvEmitWordRaw(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
   if (buf && ptr) { *(U32 *)(*ptr) = val; (*ptr) += 4; }
   (*rip) += 4;
+}
+typedef struct { U8 *buf; U8 **ptr; I64 *rip; } RvEmitCtx;
+static void RvEmitLifted(void *c, uint32_t w) {
+  RvEmitCtx *e = (RvEmitCtx *)c;
+  RvEmitWordRaw(e->buf, e->ptr, e->rip, w);
+}
+static void RvEmitWord(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
+  if (g_xlen == 32 && !g_rv32_raw) {   /* rv32: expand the virtual rv64 word (rip advances per word) */
+    RvEmitCtx e = { buf, ptr, rip };
+    Rv32LiftEnv env = { g_rv32_args, *rip, g_rv32_divmod };
+    Rv32Lift(val, &env, RvEmitLifted, &e);
+    return;
+  }
+  RvEmitWordRaw(buf, ptr, rip, val);
 }
 
 static void RVU32(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
@@ -586,16 +604,6 @@ static void EmitLoadImm64(U8 *pass_buf, U8 **pass_ptr, I64 *rip, U8 rd, I64 v) {
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (rd << 7) | ((v & 0xFFF) << 20));               // addi rd, zero, v
     return;
   }
-  if (g_xlen == 32) {
-    /* rv32 P0: the register is 32 bits, so lui+addi on the low word is the whole value —
-     * no zero-extend. Bits 63..32 are deliberately TRUNCATED; wide-I64 constants (register
-     * pairs) are PR-7/8 and will revisit this site. */
-    I64 lo32 = (I64)(I32)(U32)(v & 0xFFFFFFFF);
-    I64 hi = (lo32 + 0x800) >> 12, lo = lo32 - (hi << 12);
-    RVU32(pass_buf, pass_ptr, rip, 0x37 | (rd << 7) | ((hi & 0xFFFFF) << 12));             // lui rd, hi
-    if (lo) RVU32(pass_buf, pass_ptr, rip, 0x13 | (rd << 7) | (rd << 15) | ((lo & 0xFFF) << 20)); // addi
-    return;
-  }
   I64 lo32 = (I64)(I32)(U32)(v & 0xFFFFFFFF);
   I64 hi32 = (v - lo32) >> 32;
   if (hi32 == 0 && lo32 < 0) hi32 = 0;   /* value is a positive 32-bit quantity */
@@ -618,7 +626,9 @@ static void EmitLoadImm64(U8 *pass_buf, U8 **pass_ptr, I64 *rip, U8 rd, I64 v) {
   I64 hi = (lo32 + 0x800) >> 12, lo = lo32 - (hi << 12);
   RVU32(pass_buf, pass_ptr, rip, 0x37 | (rd << 7) | ((hi & 0xFFFFF) << 12));               // lui rd, hi
   if (lo) RVU32(pass_buf, pass_ptr, rip, 0x13 | (rd << 7) | (rd << 15) | ((lo & 0xFFF) << 20)); // addi
-  if (!fits_i32) {                                                                           // zero-extend
+  // lui 0x80000 (lo32 in [0x7FFFF800, 0x7FFFFFFF], addi negative) sign-extends to
+  // 0xFFFFFFFF7FFFxxxx on rv64 — zero-extend that case too.
+  if (!fits_i32 || ((hi & 0xFFFFF) == 0x80000 && lo32 > 0)) {                               // zero-extend
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (rd << 7) | (1 << 12) | (rd << 15) | (32 << 20));   // slli rd, 32
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (rd << 7) | (5 << 12) | (rd << 15) | (32 << 20));   // srli rd, 32
   }
@@ -761,8 +771,10 @@ static void EmitLoadArgsFromEvalStack(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64
   for (I64 k = 0; k < arg_count; k++) {
     U8 reg = RV_A0 + (U8)k;
     I64 offset = (arg_count - 1 - k) * 8;
+    g_rv32_args = RV32_ARG_LOAD;
     RVU32(pass_buf, pass_ptr, rip,
           0x03 | (reg << 7) | (g_wd3<<12) | (RV_SP << 15) | ((offset & 0xFFF) << 20));
+    g_rv32_args = 0;
   }
   I64 cleanup = arg_count * 8;
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | ((cleanup & 0xFFF) << 20));
@@ -776,8 +788,10 @@ static void EmitPrepareGt8CallArgs(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 N)
   for (I64 k = 0; k < 8; k++) {
     U8 reg = RV_A0 + (U8)k;
     I64 offset = (N - 1 - k) * 8;
+    g_rv32_args = RV32_ARG_LOAD;
     RVU32(pass_buf, pass_ptr, rip,
           0x03 | (reg << 7) | (g_wd3<<12) | (RV_T2 << 15) | ((offset & 0xFFF) << 20));
+    g_rv32_args = 0;
   }
   I64 out_sz = (N - 8) * 8;
   RVU32(pass_buf, pass_ptr, rip,
@@ -1288,7 +1302,7 @@ static void EmitLockEnter(U8 *pass_buf, U8 **pass_ptr, I64 *rip) {
   EmitLoadImm64(pass_buf, pass_ptr, rip, RV_T0, (I64)HOLYC_STMT_LOCK_ADDR);
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_T1 << 7) | (1 << 20));  // addi t1, zero, 1
   I64 loop = *rip;
-  RVU32(pass_buf, pass_ptr, rip, RvAmo(0x01, 2, 0x3, RV_T2, RV_T0, RV_T1));  // amoswap.d.aq t2,t1,(t0)
+  RVU32(pass_buf, pass_ptr, rip, RvAmo(0x01, 2, (U32)g_wd3, RV_T2, RV_T0, RV_T1));  // amoswap.d.aq t2,t1,(t0)
   I64 offset = loop - *rip;  // bnez t2, loop (−4)
   RVU32(pass_buf, pass_ptr, rip,
         0x63 | (1u << 12) | (((U32)(offset >> 11) & 1) << 7) | (((U32)(offset >> 1) & 0xF) << 8) |
@@ -1298,7 +1312,7 @@ static void EmitLockEnter(U8 *pass_buf, U8 **pass_ptr, I64 *rip) {
 /* HolyC `lock` leave: release store 0 matching HolyUnlock (amoswap.d.rl zero). */
 static void EmitLockLeave(U8 *pass_buf, U8 **pass_ptr, I64 *rip) {
   EmitLoadImm64(pass_buf, pass_ptr, rip, RV_T0, (I64)HOLYC_STMT_LOCK_ADDR);
-  RVU32(pass_buf, pass_ptr, rip, RvAmo(0x01, 1, 0x3, RV_ZERO, RV_T0, RV_ZERO));  // amoswap.d.rl zero,zero,(t0)
+  RVU32(pass_buf, pass_ptr, rip, RvAmo(0x01, 1, (U32)g_wd3, RV_ZERO, RV_T0, RV_ZERO));  // amoswap.d.rl zero,zero,(t0)
 }
 // Shared: argument shuffle for IC_CALL / IC_CALL_INDIRECT2, then PC-rel or host-indirect tail.
 static void EmitCallArgsAndInvoke(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth,
@@ -1311,6 +1325,7 @@ static void EmitCallArgsAndInvoke(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *st
     EmitLoadArgsFromEvalStack(pass_buf, pass_ptr, rip, stack_depth, arg_count);
   } else if (arg_count == 1) {
     // IC_IMM_I64 leaves a duplicate on the eval stack; arg is already in a0 — drop slot only.
+    if (g_xlen == 32) RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_S1 << 7) | (RV_A1 << 15));  // mv s1, a1: arg hi
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));
     (*stack_depth)--;
   }
@@ -1438,8 +1453,10 @@ static I64 EmitIC_ENTER(U8 *b, U8 **q, I64 *r, CIntermediateCode *ic) {
       RVU32(b, q, r, 0x13 | ((U32)g_o1_reg[j] << 7) | ((RV_A0 + i) << 15)); // mv sN, a_i
     else {
       I64 so = 16 + i * 8;
+      g_rv32_args = RV32_ARG_SPILL;
       RVU32(b, q, r, 0x23 | ((so & 31) << 7) | (g_wd3<<12) | (RV_SP << 15) |
                      ((RV_A0 + i) << 20) | ((so >> 5) << 25));
+      g_rv32_args = 0;
     }
   }
   return f;
@@ -1592,6 +1609,7 @@ static void IcOptFrameAccess(Compiler *cc) {
     }
   }
   if (mode < 3 || getenv("HOLYC_NO_PROMOTE")) return;
+  if (cc->tgt->xlen == 32) return;   // s1-s8 hold 32 bits; an I64 local would need two
   for (CIntermediateCode *e = cc->ic_head; e; ) {
     if (e->ic_code != IC_ENTER) { e = e->next; continue; }
     I64 off[64], loads[64], uses[64];
@@ -2405,7 +2423,9 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
             EmitLoadArgsFromEvalStack(buf, pptr, prip, psd, arg_count);
           } else if (arg_count == 1) {
             // The pointer load above clobbered a0: pop the single argument into it.
+            g_rv32_args = RV32_ARG_LOAD;
             RVU32(buf, pptr, prip, 0x03 | (RV_A0<<7) | (g_wd3<<12) | (RV_SP<<15));
+            g_rv32_args = 0;
             RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20));
             (*psd)--;
           }
@@ -2535,7 +2555,9 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
         // Explicit no-op – leave stack depth unchanged
         break;
       case IC_RAW_RV:
+        g_rv32_raw = 1;
         RVU32(buf, pptr, prip, (U32)ic->ic_data);   // pre-assembled RISC-V word (x86 translation)
+        g_rv32_raw = 0;
         break;
       case IC_REGS_SNAP:
         EmitRegsSnapStub(buf, pptr, prip);
@@ -2580,13 +2602,28 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
 }
 
 
+// rv32: the backend's one runtime helper (64-bit div/rem) follows the code of every blob.
+static void EmitRv32Helpers(U8 *buf, U8 **pptr, I64 *prip) {
+  if (g_xlen != 32) return;
+  int n;
+  const uint32_t *w = Rv32DivmodWords(&n);
+  g_rv32_divmod = *prip;
+  g_rv32_raw = 1;
+  for (int i = 0; i < n; i++) RvEmitWord(buf, pptr, prip, w[i]);
+  g_rv32_raw = 0;
+}
+
 U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   if (getenv("HOLYC_NO_OPT")) cc->optimize = false;
   IcOptimize(cc);
   HolyProgress("size …");
-  g_pp_on = cc->optimize;   // Tier 1 push/pop peephole (sound; kept on with O1 default)
-  g_wd3 = cc->tgt->sd_funct3;   // ld/sd (rv64=3) vs lw/sw (rv32=2) for doubleword slots
   g_xlen = cc->tgt->xlen;
+  // Tier 1 push/pop peephole (sound; kept on with O1 default). Off on rv32: it rewinds
+  // emitted words by count, and Rv32Lift expands each one.
+  g_pp_on = cc->optimize && g_xlen == 64;
+  g_rv32_args = g_rv32_raw = 0;
+  g_rv32_divmod = 0;
+  Rv32LiftReset();
   // Check if this is a function or expression
   CIntermediateCode *ic = cc->ic_head;
   Bool is_function = false;
@@ -2636,6 +2673,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
 
     ic = ic->next;
   }
+  EmitRv32Helpers(pass_buf, &pass_ptr, &rip);
   
   // Fixed-size jmp/br encodings (always long). Pass cap of 10 used to abort mid-shrink
   // with stale label addrs → final emit `j` into auipc/addi (CInit load fault).
@@ -2718,6 +2756,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
       
       ic = ic->next;
     }
+    EmitRv32Helpers(pass_buf, &pass_ptr, &rip);
     }
   
   if (rip != sized_rip) {
