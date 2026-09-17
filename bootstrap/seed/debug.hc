@@ -103,13 +103,52 @@ I64 DbgReg(I64 n)
   return *(I64 *)(MEM_TRAP_SNAP + n * 8);
 }
 
+#define TRAP_POST_S1 0x87000500
+// scratch: s1 after resume (above the x array, below MEM_HOST_SLOTS)
+
+// TrapFrameEdit -- SetTrap("TrapFrameEdit")
+// NAME
+//   TrapFrameEdit - trap handler that edits a register in the freeze, then resumes
+// SYNOPSIS
+//   SetTrap("TrapFrameEdit");  TrapFrameProbe;  TrapFrameCheck;
+// DESCRIPTION
+//   Writes 0x77 into the frozen s1 (x9) and returns epc+4, so execution continues past the
+//   faulting insn. TrapSnapApply copies the array back into the frame before mret, so the
+//   resumed code must see 0x77 — the same path a debugger uses when you assign _S1 and
+//   continue. Without the copy-back the resumed s1 would still hold the planted 0x51.
+// SEE ALSO
+//   TrapFrameProbe  TrapFrameCheck  TrapSnapApply  SetTrap
+I64 TrapFrameEdit(I64 cause, I64 epc, I64 tval)
+{
+  no_warn cause;
+  no_warn tval;
+  *(I64 *)(TRAP_SNAP_X + 9 * 8) = 0x77;
+  return epc + 4;
+}
+
+// TrapFrameArmEdit -- TrapFrameArmEdit()
+// NAME
+//   TrapFrameArmEdit - install TrapFrameEdit as the trap handler (by pointer, not by name)
+// SYNOPSIS
+//   TrapFrameArmEdit;  TrapFrameProbe;  TrapFrameCheck;
+// DESCRIPTION
+//   SetTrap takes a NAME and resolves it later, which only works for names the image can look
+//   up; SetTrapFn takes the pointer directly. Used by trap-frame-smoke.
+// SEE ALSO
+//   TrapFrameEdit  SetTrapFn
+U0 TrapFrameArmEdit()
+{
+  SetTrapFn(&TrapFrameEdit);
+}
+
 // TrapFrameProbe -- TrapFrameProbe()
 // NAME
 //   TrapFrameProbe - fault with known values in every callee-saved register (frame self-test)
 // SYNOPSIS
 //   U0 TrapFrameProbe();
 // DESCRIPTION
-//   Plants markers in s1/s2/s5/s11/gp/tp, faults on a load from address 4, then restores them.
+//   Plants markers in s1/s2/s5/s11/gp/tp, faults on a load from address 4, stores the RESUMED
+//   s1 to TRAP_POST (so an edit made while stopped is observable), then restores them.
 //   The fault's CrashDump prints those registers, which only exist in the canonical x view —
 //   so this is what proves TrapCtxSave/TrapSnapPublish really widened. `go` resumes after the
 //   faulting load, so the restores run and the caller's registers survive.
@@ -135,6 +174,10 @@ U0 TrapFrameProbe()
 	li	tp, 0x64
 	li	t0, 4
 	ld	t1, 0(t0)
+	lui	t2, 0x10E00
+	slli	t2, t2, 3
+	addi	t2, t2, 0x500
+	sd	s1, 0(t2)
 	ld	s1, 0(sp)
 	ld	s2, 8(sp)
 	ld	s5, 16(sp)
@@ -160,6 +203,9 @@ U0 TrapFrameCheck()
 {
   Bt;
   "TFCHK x0z=%d x1ra=%d s1=0x%X gp=0x%X\n", DbgX(0) == 0, DbgX(1) == DbgRa(), DbgX(9), DbgX(3);
+  // s1 as the resumed code saw it: TrapSnapApply copies the freeze back before mret, so a
+  // `mw TRAP_SNAP_X+9*8 <val>` at the crash prompt lands in the real register.
+  "TFPOST s1=0x%X\n", *(I64 *)TRAP_POST_S1;
 }
 
 // DbgX -- DbgX(n)

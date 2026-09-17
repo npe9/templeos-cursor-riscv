@@ -31,6 +31,12 @@ add() { input+="$1"$'\n'; }
 add 'TrapFrameProbe;'
 add 'go'
 add 'TrapFrameCheck;'
+# Phase 2: a handler that edits the frozen s1 and RESUMES (the default fault path aborts the
+# evaluation instead). TrapSnapApply must copy the edit into the real register before mret,
+# so the probe's post-fault store sees 0x77, not the planted 0x51.
+add 'TrapFrameArmEdit;'
+add 'TrapFrameProbe;'
+add 'TrapFrameCheck;'
 add 'Print("after-probe\n");'
 add 'q'
 
@@ -74,7 +80,8 @@ need 's11=0x5B'
 need 'gp=0x63 tp=0x64'          # gp/tp too — neither has a legacy slot
 need '*** FAULT'                # the fault really happened
 need 'TRAP_SNAP_X (x0..x31)'    # the raw dump covers the canonical array too
-need 'TFCHK x0z=1 x1ra=1 s1=0x51'  # a live Bt does not clobber the array (0x200/0x208 scratch)
+need 'TFCHK x0z=1 x1ra=1 s1=0x51'  # a live Bt does not clobber the array
+need 'TFPOST s1=0x77'          # phase 2: the edited register went live on resume (TrapSnapApply)
 
 if [[ "$fail" -ne 0 ]]; then
   echo "---- uart (tail) ----" >&2

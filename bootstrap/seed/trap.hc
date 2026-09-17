@@ -361,6 +361,8 @@ U0 TrapNameStore(U8 *name)
 //                         so one formatter serves the fault freeze and the live snap.
 // The array ends exactly at MEM_REGS_SNAP (0x87000300): 32 slots, no room for a 33rd.
 // mstatus is the value AFTER the trap (MIE cleared, MPP/MPIE hold the trapped state).
+I64 g_trap_snap_live;
+
 U0 TrapSnapPublish(I64 *frame, I64 cause, I64 epc, I64 tval)
 {
   I64 k, sp_at_trap;
@@ -391,7 +393,26 @@ U0 TrapSnapPublish(I64 *frame, I64 cause, I64 epc, I64 tval)
   *(I64 *)(MEM_TRAP_SNAP + 19 * 8) = epc;
   *(I64 *)(MEM_TRAP_SNAP + 20 * 8) = tval;
   *(I64 *)(MEM_TRAP_SNAP + 21 * 8) = HcCsrrMstatus();
+  g_trap_snap_live = 1;
   pc = epc;
+}
+
+// Copy the canonical array back into the frame before TrapCtxRestore reloads it, so a register
+// EDITED while stopped is live on resume — stock TempleOS lets you assign _RAX/_RIP in the
+// debugger (Doc/DbgOverview.DD), and the labels planted by RVExePubsWireDbgRegs write here.
+// x0 and x2 are skipped: x0 is hardwired and sp is the frame's own address, not a slot in it.
+// Only runs when this trap published a freeze (interrupt paths return before this).
+U0 TrapSnapApply(I64 *frame)
+{
+  I64 k;
+  if (!g_trap_snap_live || !frame)
+    return;
+  g_trap_snap_live = 0;
+  for (k = 1; k < 32; k++) {
+    if (k == 2)
+      continue;
+    frame[k] = *(I64 *)(TRAP_SNAP_X + k * 8);
+  }
 }
 
 U0 TrapUartHwDrain()
@@ -584,6 +605,7 @@ U0 TrapDispatch(I64 *frame)
         resume = epc + 4;
     }
   }
+  TrapSnapApply(frame);
   HcCsrwMepc(resume);
 }
 

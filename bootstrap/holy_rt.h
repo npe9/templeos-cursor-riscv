@@ -841,7 +841,51 @@ static HRT_I64 HolyRVCrashMon(void) {
   return 0;
 }
 
-__attribute__((used)) static HRT_I64 HolyTrapDispatch(void) {
+/* Fault freeze, byte-compatible with the seed image's (bootstrap/seed/trap.hc
+ * TrapSnapPublish + debug.hc's index map) so one debugger core reads either image:
+ *   legacy slots 0..21 at HOLY_TRAP_SNAP  — ra,t0..t6,a0..a7,sp,fp,mcause,mepc,mtval,mstatus
+ *   canonical x0..x31 at HOLY_TRAP_SNAP_X — every GPR, indexed by register number
+ * HolyTrapVector's frame is indexed the same way (xN at N*8, 256 bytes; x2 implicit).
+ * 0x87000400 is NOT MEM_TRAP_SNAP+0x100: 0x87000200/0x208 are the live-Bt ra/s0 scratch
+ * (Kernel/RVWinSerial.HC:1023). mstatus is the POST-trap value (MIE clear, MPP/MPIE hold
+ * the trapped state). Keep these addresses in step with bootstrap/seed/trap.hc. */
+#define HOLY_TRAP_SNAP   0x87000100UL
+#define HOLY_TRAP_SNAP_X 0x87000400UL
+static void HolyTrapSnapPublish(HRT_I64 *frame, HRT_I64 cause, HRT_I64 epc, HRT_I64 tval) {
+  volatile HRT_I64 *leg = (volatile HRT_I64 *)HOLY_TRAP_SNAP;
+  volatile HRT_I64 *xs  = (volatile HRT_I64 *)HOLY_TRAP_SNAP_X;
+  HRT_I64 sp_at_trap = (HRT_I64)frame + 256, mstatus;
+  int i;
+  if (!frame) return;
+  xs[0] = 0;
+  for (i = 1; i < 32; i++) xs[i] = (i == 2) ? sp_at_trap : frame[i];
+  leg[0] = frame[1];                                   /* ra */
+  for (i = 0; i < 3; i++) leg[1 + i] = frame[5 + i];   /* t0..t2 */
+  for (i = 0; i < 4; i++) leg[4 + i] = frame[28 + i];  /* t3..t6 */
+  for (i = 0; i < 8; i++) leg[8 + i] = frame[10 + i];  /* a0..a7 */
+  leg[16] = sp_at_trap;
+  leg[17] = frame[8];                                  /* fp = s0 */
+  leg[18] = cause;
+  leg[19] = epc;
+  leg[20] = tval;
+  __asm__ volatile("csrr %0, mstatus" : "=r"(mstatus));
+  leg[21] = mstatus;
+}
+
+/* Copy the canonical array back into the frame before the vector reloads it, so a register
+ * edited while stopped is live on resume (stock TempleOS assigns _RAX/_RIP in the debugger).
+ * x0 is hardwired and x2 is the frame's own address, so both are skipped. */
+static void HolyTrapSnapApply(HRT_I64 *frame) {
+  volatile HRT_I64 *xs = (volatile HRT_I64 *)HOLY_TRAP_SNAP_X;
+  int i;
+  if (!frame) return;
+  for (i = 1; i < 32; i++) {
+    if (i == 2) continue;
+    frame[i] = xs[i];
+  }
+}
+
+__attribute__((used)) static HRT_I64 HolyTrapDispatch(HRT_I64 *frame) {
   HRT_I64 mcause;
   __asm__ volatile("csrr %0, mcause" : "=r"(mcause));
   if (mcause == (HRT_I64)0x8000000000000007ULL) {          /* machine timer interrupt */
@@ -866,6 +910,9 @@ __attribute__((used)) static HRT_I64 HolyTrapDispatch(void) {
     HRT_I64 mepc, mtval;
     __asm__ volatile("csrr %0, mepc" : "=r"(mepc));
     __asm__ volatile("csrr %0, mtval" : "=r"(mtval));
+    /* Freeze first: the recover trampoline and the crash monitor both want it, and a
+     * debugger attached later reads the same two views as in the seed image. */
+    HolyTrapSnapPublish(frame, mcause, mepc, mtval);
     if (holy_repl_recover_armed) {
       /* One-shot: disarm before returning, so a fault inside the REPL's own recovery
        * path falls through to the monitor instead of looping through the trampoline. */
@@ -884,29 +931,83 @@ __attribute__((used)) static HRT_I64 HolyTrapDispatch(void) {
     } else {
       __asm__ volatile("csrw mepc, %0" :: "r"(mepc + 4)); /* best-effort skip */
     }
+    HolyTrapSnapApply(frame);
   }
   return 0;
 }
 
 __attribute__((naked, aligned(4))) static void HolyTrapVector(void) {
   __asm__ volatile(
-    "addi sp,sp,-128\n"
-    "sd ra,0(sp)\n sd t0,8(sp)\n sd t1,16(sp)\n sd t2,24(sp)\n"
-    "sd t3,32(sp)\n sd t4,40(sp)\n sd t5,48(sp)\n sd t6,56(sp)\n"
-    "sd a0,64(sp)\n sd a1,72(sp)\n sd a2,80(sp)\n sd a3,88(sp)\n"
-    "sd a4,96(sp)\n sd a5,104(sp)\n sd a6,112(sp)\n sd a7,120(sp)\n"
+    "addi sp,sp,-256\n"
+    "sd x1,8(sp)\n"
+    "sd x3,24(sp)\n"
+    "sd x4,32(sp)\n"
+    "sd x5,40(sp)\n"
+    "sd x6,48(sp)\n"
+    "sd x7,56(sp)\n"
+    "sd x8,64(sp)\n"
+    "sd x9,72(sp)\n"
+    "sd x10,80(sp)\n"
+    "sd x11,88(sp)\n"
+    "sd x12,96(sp)\n"
+    "sd x13,104(sp)\n"
+    "sd x14,112(sp)\n"
+    "sd x15,120(sp)\n"
+    "sd x16,128(sp)\n"
+    "sd x17,136(sp)\n"
+    "sd x18,144(sp)\n"
+    "sd x19,152(sp)\n"
+    "sd x20,160(sp)\n"
+    "sd x21,168(sp)\n"
+    "sd x22,176(sp)\n"
+    "sd x23,184(sp)\n"
+    "sd x24,192(sp)\n"
+    "sd x25,200(sp)\n"
+    "sd x26,208(sp)\n"
+    "sd x27,216(sp)\n"
+    "sd x28,224(sp)\n"
+    "sd x29,232(sp)\n"
+    "sd x30,240(sp)\n"
+    "sd x31,248(sp)\n"
     /* Freeze ra/fp/sp for the crash backtrace before the dispatcher's own frame
      * buries them. t0/t1 are already spilled above, so they are free to clobber. */
     "la t0, holy_crash_ra\n sd ra,0(t0)\n"
     "la t0, holy_crash_fp\n sd s0,0(t0)\n"
-    "addi t1, sp, 128\n"
+    "addi t1, sp, 256\n"
     "la t0, holy_crash_sp\n sd t1,0(t0)\n"
+    "mv a0, sp\n"                       /* frame pointer: HolyTrapDispatch publishes the freeze */
     "call HolyTrapDispatch\n"
-    "ld ra,0(sp)\n ld t0,8(sp)\n ld t1,16(sp)\n ld t2,24(sp)\n"
-    "ld t3,32(sp)\n ld t4,40(sp)\n ld t5,48(sp)\n ld t6,56(sp)\n"
-    "ld a0,64(sp)\n ld a1,72(sp)\n ld a2,80(sp)\n ld a3,88(sp)\n"
-    "ld a4,96(sp)\n ld a5,104(sp)\n ld a6,112(sp)\n ld a7,120(sp)\n"
-    "addi sp,sp,128\n"
+    "ld x1,8(sp)\n"
+    "ld x3,24(sp)\n"
+    "ld x4,32(sp)\n"
+    "ld x5,40(sp)\n"
+    "ld x6,48(sp)\n"
+    "ld x7,56(sp)\n"
+    "ld x8,64(sp)\n"
+    "ld x9,72(sp)\n"
+    "ld x10,80(sp)\n"
+    "ld x11,88(sp)\n"
+    "ld x12,96(sp)\n"
+    "ld x13,104(sp)\n"
+    "ld x14,112(sp)\n"
+    "ld x15,120(sp)\n"
+    "ld x16,128(sp)\n"
+    "ld x17,136(sp)\n"
+    "ld x18,144(sp)\n"
+    "ld x19,152(sp)\n"
+    "ld x20,160(sp)\n"
+    "ld x21,168(sp)\n"
+    "ld x22,176(sp)\n"
+    "ld x23,184(sp)\n"
+    "ld x24,192(sp)\n"
+    "ld x25,200(sp)\n"
+    "ld x26,208(sp)\n"
+    "ld x27,216(sp)\n"
+    "ld x28,224(sp)\n"
+    "ld x29,232(sp)\n"
+    "ld x30,240(sp)\n"
+    "ld x31,248(sp)\n"
+    "addi sp,sp,256\n"
     "mret\n"
   );
 }
