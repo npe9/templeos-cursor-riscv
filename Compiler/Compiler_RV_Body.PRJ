@@ -41,4 +41,5 @@ CUAsmGlbls	uasm;
 #include "BackB_RV"
 #include "BackC_RV"
 #include "OptPass_RV"
+#include "RVAsmRepl"
 #include "RVExePubs"

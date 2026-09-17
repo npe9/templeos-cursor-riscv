@@ -1088,6 +1088,18 @@ I64 RVExePubsWireDbg(I64 *addrs)
   }
   n += RVExePubsWireDbgRegs();
   // _X0.._X31 / _A0 / _PC …: no addrs needed, the freeze is at a fixed address
+  // asm REPL (RVAsmRepl.HC, linked ahead of this file): step one line with the same array
+  // as its register file, so the debugger and the JIT share one context.
+  if (!HashFind("AsmStep", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("AsmStep", &AsmStep, i64t, 1);
+    if (tmpf) { RVExePubAddArg(tmpf, "text", u8p); n++; }
+  }
+  if (!HashFind("AsmRegs", Fs->hash_table, HTT_FUN)) {
+    if (RVExePubFunNew("AsmRegs", &AsmRegs, cls_u0, 0)) n++;
+  }
+  if (!HashFind("AsmClr", Fs->hash_table, HTT_FUN)) {
+    if (RVExePubFunNew("AsmClr", &AsmClr, cls_u0, 0)) n++;
+  }
   return n;
 }
 
