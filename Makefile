@@ -32,7 +32,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop asm-gnu-diff compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration a3-flip-check repl-smoke dbg-smoke hwdbg-smoke gdb-uart-smoke trap-smoke repl-blob repl-regression repl-holyc repl-holyc-smoke repl-holyc-regression hc-repl hc-repl-full hc-repl-smoke path-namespace-smoke term-probe-pty repl-uart-echo-pty repl-uart-xon-pty zmodem-smoke trzsz-smoke dump-changes-smoke baremetal baremetal-plat baremetal-smoke repl-payload bootloader bootloader-repl bootloader-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke kernel-selfboot-smoke kernel-home-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtio-pci-irq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-vt-smoke kernel-vt-demo kernel-vt-repl kernel-vt-holyc mux-smoke kernel-cdc-smoke kernel-demo-netofdots-smoke kernel-demo-blot-smoke kernel-span-smoke kernel-psalmody-smoke kernel-ode-smoke kernel-win-smoke kernel-win-interactive kernel-win-serial-smoke kernel-win-run kernel-win-rebuild kernel-tos tos kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-sifive-gem-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-sifive-e-full kernel-sifive-e-full-smoke kernel-smp-smoke kernel-exepubs-smoke kernel-repl-exepubs-smoke repl-cmp repl-cmp-smoke kernel-phase3-smoke kernel-thin-loader-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
+.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop asm-gnu-diff compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration a3-flip-check repl-smoke dbg-smoke hwdbg-smoke gdb-uart-smoke trap-smoke repl-blob repl-regression repl-holyc repl-holyc-smoke repl-holyc-regression hc-repl hc-repl-full hc-repl-smoke path-namespace-smoke term-probe-pty repl-uart-echo-pty repl-uart-xon-pty zmodem-smoke trzsz-smoke dump-changes-smoke baremetal baremetal-plat baremetal-smoke repl-payload bootloader bootloader-repl bootloader-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke rv32-uart-smoke kernel-selfboot-smoke kernel-home-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtio-pci-irq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-vt-smoke kernel-vt-demo kernel-vt-repl kernel-vt-holyc mux-smoke kernel-cdc-smoke kernel-demo-netofdots-smoke kernel-demo-blot-smoke kernel-span-smoke kernel-psalmody-smoke kernel-ode-smoke kernel-win-smoke kernel-win-interactive kernel-win-serial-smoke kernel-win-run kernel-win-rebuild kernel-tos tos kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-sifive-gem-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-sifive-e-full kernel-sifive-e-full-smoke kernel-smp-smoke kernel-exepubs-smoke kernel-repl-exepubs-smoke repl-cmp repl-cmp-smoke kernel-phase3-smoke kernel-thin-loader-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -349,6 +349,7 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) kernel-spawn-smoke
 	@$(MAKE) kernel-ctask-preempt-smoke
 	@$(MAKE) kernel-ctask-sleep-smoke
+	@$(MAKE) rv32-uart-smoke
 	@$(MAKE) kernel-selfboot-smoke
 	@$(MAKE) kernel-home-smoke
 	@$(MAKE) kernel-redsea-smoke
@@ -503,6 +504,12 @@ kernel-ctask-preempt-smoke:
 kernel-ctask-sleep-smoke:
 	@chmod +x tests/scripts/run_kernel_ctask_sleep_smoke.sh
 	@tests/scripts/run_kernel_ctask_sleep_smoke.sh
+
+# RV32 P0: the host compiler's --target rv32 output (import-free UART hello) booted on
+# qemu-system-riscv32 -M virt behind a minimal rv32 crt0 (tests/exec/harness/crt0_rv32.S).
+rv32-uart-smoke: holyc-riscv
+	@chmod +x tests/scripts/run_rv32_uart_smoke.sh
+	@tests/scripts/run_rv32_uart_smoke.sh
 
 # The kernel booting itself: RVKMain() (Kernel/KBootRV.HC) sets up the heap, creates Adam, and
 # Spawns + schedules the first task with the kernel's own code. The demo's main() is only RVKMain().

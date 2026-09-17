@@ -445,6 +445,9 @@ static int g_pp_on;
  * rv32 (which has no ld/sd). Set per-compile from cc->tgt->sd_funct3 (== ld_funct3). Only
  * the funct3==3 doubleword sites read this; narrower lb/lh/lw/lwu are width-correct on both. */
 static int g_wd3 = 3;
+/* Target XLEN (64/32), set beside g_wd3. rv32 has no 32-bit shift-by-32 dance in
+ * EmitLoadImm64 (slli/srli by 32 is illegal there). */
+static int g_xlen = 64;
 static I64 g_o1_slot_off[32];
 static int g_o1_slot_reg[32], g_o1_slot_n;
 /* HOLYC_O1_MODE (default 3 — Tier-1 + frame folds + I64 local promotion):
@@ -471,9 +474,9 @@ static int RvIsAddi(U32 w, int rd, int rs1, int imm) {
   return (w & 0x7F) == 0x13 && ((w >> 12) & 7) == 0 && (int)((w >> 7) & 0x1F) == rd &&
          (int)((w >> 15) & 0x1F) == rs1 && (((I32)w) >> 20) == imm;
 }
-/* sd rs2,0(sp) — eval-stack push store. */
+/* sd rs2,0(sp) — eval-stack push store (sw on rv32: doubleword = g_wd3). */
 static int RvIsSdSp0(U32 w, int *rs2) {
-  if ((w & 0x7F) != 0x23 || ((w >> 12) & 7) != 3 || ((w >> 15) & 0x1F) != 2) return 0;
+  if ((w & 0x7F) != 0x23 || ((w >> 12) & 7) != (U32)g_wd3 || ((w >> 15) & 0x1F) != 2) return 0;
   if ((int)(((w >> 7) & 0x1F) | (((w >> 25) & 0x7F) << 5)) != 0) return 0;
   if (rs2) *rs2 = (int)((w >> 20) & 0x1F);
   return 1;
@@ -504,7 +507,7 @@ static void RVU32(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
     U32 w0 = g_pp[0], w1 = g_pp[1], w2 = g_pp[2];
     int isDec = RvIsAddi(w0, 2, 2, -8);                                                   // addi sp,sp,-8
     int isSd  = RvIsSdSp0(w1, NULL);                                                     // sd rX,0(sp)
-    int isLd  = (w2 & 0x7F) == 0x03 && ((w2 >> 12) & 7) == 3 && ((w2 >> 15) & 0x1F) == 2 &&
+    int isLd  = (w2 & 0x7F) == 0x03 && ((w2 >> 12) & 7) == (U32)g_wd3 && ((w2 >> 15) & 0x1F) == 2 &&
                 (int)((w2 >> 20) & 0xFFF) == 0;                                           // ld rY,0(sp)
     int isInc = RvIsAddi(val, 2, 2, 8);                                                   // addi sp,sp,+8
     int rX = (w1 >> 20) & 0x1F, rY = (w2 >> 7) & 0x1F;
@@ -583,6 +586,16 @@ static void EmitLoadImm64(U8 *pass_buf, U8 **pass_ptr, I64 *rip, U8 rd, I64 v) {
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (rd << 7) | ((v & 0xFFF) << 20));               // addi rd, zero, v
     return;
   }
+  if (g_xlen == 32) {
+    /* rv32 P0: the register is 32 bits, so lui+addi on the low word is the whole value —
+     * no zero-extend. Bits 63..32 are deliberately TRUNCATED; wide-I64 constants (register
+     * pairs) are PR-7/8 and will revisit this site. */
+    I64 lo32 = (I64)(I32)(U32)(v & 0xFFFFFFFF);
+    I64 hi = (lo32 + 0x800) >> 12, lo = lo32 - (hi << 12);
+    RVU32(pass_buf, pass_ptr, rip, 0x37 | (rd << 7) | ((hi & 0xFFFFF) << 12));             // lui rd, hi
+    if (lo) RVU32(pass_buf, pass_ptr, rip, 0x13 | (rd << 7) | (rd << 15) | ((lo & 0xFFF) << 20)); // addi
+    return;
+  }
   I64 lo32 = (I64)(I32)(U32)(v & 0xFFFFFFFF);
   I64 hi32 = (v - lo32) >> 32;
   if (hi32 == 0 && lo32 < 0) hi32 = 0;   /* value is a positive 32-bit quantity */
@@ -618,7 +631,7 @@ static U32 StoreRs2ToRs1(U8 pointed_to, U8 rs1, U8 rs2) {
   case RT_I8: case RT_U8:   f3 = 0; break; /* sb */
   case RT_I16: case RT_U16: f3 = 1; break; /* sh */
   case RT_I32: case RT_U32: f3 = 2; break; /* sw */
-  default:                  f3 = 3; break; /* sd */
+  default:                  f3 = g_wd3; break; /* sd */
   }
   return 0x23 | (f3 << 12) | (rs1 << 15) | (rs2 << 20);
 }
@@ -2573,6 +2586,7 @@ U8 *CompileAOT(Compiler *cc, I64 *code_size) {
   HolyProgress("size …");
   g_pp_on = cc->optimize;   // Tier 1 push/pop peephole (sound; kept on with O1 default)
   g_wd3 = cc->tgt->sd_funct3;   // ld/sd (rv64=3) vs lw/sw (rv32=2) for doubleword slots
+  g_xlen = cc->tgt->xlen;
   // Check if this is a function or expression
   CIntermediateCode *ic = cc->ic_head;
   Bool is_function = false;

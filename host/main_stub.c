@@ -109,11 +109,11 @@ static char *stem_map_path(const char *bin) {
 
 static void usage(const char *argv0) {
   fprintf(stderr,
-          "Usage: %s <file.hc> [-o out.bin] [--target rv64] [--deps out.d] [--map out.map]\n"
+          "Usage: %s <file.hc> [-o out.bin] [--target rv64|rv32] [--deps out.d] [--map out.map]\n"
           "       %s --link -o out.bin [--base 0x80800000] a.bin b.bin...\n"
           "       %s --fmt [--stdout] <file.hc>...\n"
           "       %s --asm-dump <file.hc>\n"
-          "   --target selects the codegen ISA (default rv64; also via HOLYC_ARCH). rv32/others: planned.\n",
+          "   --target selects the codegen ISA (rv64 default, rv32; also via HOLYC_ARCH).\n",
           argv0, argv0, argv0, argv0);
 }
 
@@ -175,15 +175,12 @@ int main(int argc, char **argv) {
 
   if (!input) { usage(argv[0]); return 1; }
 
-  /* Codegen target: --target arg > HOLYC_ARCH env > rv64 default. Only rv64 emits
-   * today; rv32/others are declared (host/holyc_target.h) but codegen lands later. */
+  /* Codegen target: --target arg > HOLYC_ARCH env > rv64 default. rv32 emits the P0
+   * subset (32-bit values; wide I64 lands later); others are not wired yet. */
   {
     const char *t = target_arg ? target_arg : getenv("HOLYC_ARCH");
-    if (t && strcmp(t, "rv64") != 0) {
-      if (!strcmp(t, "rv32"))
-        fprintf(stderr, "holyc-riscv: --target rv32 is not yet supported (codegen lands in a later change)\n");
-      else
-        fprintf(stderr, "holyc-riscv: unknown --target '%s' (supported: rv64)\n", t);
+    if (t && strcmp(t, "rv64") != 0 && strcmp(t, "rv32") != 0) {
+      fprintf(stderr, "holyc-riscv: unknown --target '%s' (supported: rv64, rv32)\n", t);
       return 1;
     }
     if (target_arg) setenv("HOLYC_ARCH", target_arg, 1); /* so CompilerNewBuf agrees */

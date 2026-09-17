@@ -7,8 +7,9 @@
  *
  * Design (per plan): mostly DATA + a few op hooks, NOT a 93-entry vtable. rv64
  * stays the literal existing code under `if (tgt->xlen == 64)`, so any byte
- * regression bisects to a single branch. This PR only DECLARES the descriptor
- * and defaults Compiler.tgt to rv64; nothing reads it yet (byte-identical).
+ * regression bisects to a single branch. compiler.c reads xlen and sd_funct3
+ * into module statics (g_xlen/g_wd3) per compile. rv32 emits the P0 subset
+ * (32-bit values; wide I64 is later) — see `make rv32-uart-smoke`.
  */
 #ifndef HOLYC_TARGET_H
 #define HOLYC_TARGET_H
