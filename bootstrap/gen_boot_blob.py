@@ -32,6 +32,7 @@ BOOT_ORDER = [
     "math.hc",
     "term.hc",
     "sym.hc",
+    "csr_decode.hc",  # pure CSR value decoders, shared with the kernel image
     "csr.hc",
     "ds.hc",
     "ds_csr.hc",

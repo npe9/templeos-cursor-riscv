@@ -122,16 +122,28 @@ U0 AsmUiScrolled()
 #define ASMUI_MEM_MIN 3
 I64 AsmUiRegRows(I64 avail)
 {
-  I64 want;
-  RegPaneFp(TRUE);
-  want = RegPaneRowsNeeded;
-  if (want <= avail - ASMUI_MEM_MIN)
-    return want;
-  // floats and memory both: the comfortable case
-  if (want <= avail)
-    return want;
-  // floats instead of memory
+  I64 want, i = 0;
+  // Four combinations, most wanted first: floats outrank the four extra CSRs, because those
+  // four are in Machine() a keystroke away while the float registers are only here. The first
+  // one that fits wins, and it keeps the memory pane if there are rows left over for it.
+  while (i < 4) {
+    RegPaneFp(i < 2);
+    RegPaneCsrs(8);
+    if (i & 1)
+      RegPaneCsrs(4);
+    want = RegPaneRowsNeeded;
+    if (want <= avail - ASMUI_MEM_MIN)
+      return want;
+    // ...and memory under it
+    if (want <= avail)
+      return want;
+    // ...instead of memory
+    i++;
+  }
+  // Nothing fits whole: the smallest set, clipped. A pane that stops half way through a block
+  // is the failure this ranking exists to avoid, so this is the last resort.
   RegPaneFp(FALSE);
+  RegPaneCsrs(4);
   want = RegPaneRowsNeeded;
   if (want > avail)
     want = avail;

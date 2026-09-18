@@ -43,6 +43,15 @@ asm {
 	RVWinCsrrMstatus::
 	csrr	a0, 0x300
 	ret
+	RVWinCsrrFcsr::
+	csrr	a0, 0x003
+	ret
+	RVWinCsrrMcycle::
+	csrr	a0, 0xB00
+	ret
+	RVWinCsrrMinstret::
+	csrr	a0, 0xB02
+	ret
 	RVWinCsrrMie::
 	csrr	a0, 0x304
 	ret

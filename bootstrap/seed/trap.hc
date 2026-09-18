@@ -140,6 +140,36 @@ asm {
 	HcEcall::
 	ecall
 	ret
+	HcCsrrMtvec::
+	csrr	a0, 0x305
+	ret
+	HcCsrrMie::
+	csrr	a0, 0x304
+	ret
+	HcCsrrMip::
+	csrr	a0, 0x344
+	ret
+	HcCsrrMisa::
+	csrr	a0, 0x301
+	ret
+	HcCsrrMscratch::
+	csrr	a0, 0x340
+	ret
+	HcCsrrMhartid::
+	csrr	a0, 0xF14
+	ret
+	HcCsrrSatp::
+	csrr	a0, 0x180
+	ret
+	HcCsrrMcounteren::
+	csrr	a0, 0x306
+	ret
+	HcCsrrMedeleg::
+	csrr	a0, 0x302
+	ret
+	HcCsrrMideleg::
+	csrr	a0, 0x303
+	ret
 	HcCsrsMieTimer::
 	li	t0, 128
 	csrs	0x304, t0
@@ -393,6 +423,18 @@ U0 TrapSnapPublish(I64 *frame, I64 cause, I64 epc, I64 tval)
   *(I64 *)(MEM_TRAP_SNAP + 19 * 8) = epc;
   *(I64 *)(MEM_TRAP_SNAP + 20 * 8) = tval;
   *(I64 *)(MEM_TRAP_SNAP + 21 * 8) = HcCsrrMstatus();
+  // Slots 22..31: the rest of the stopped machine. Same list, same order as the C runtime's
+  // HolyTrapSnapPublish — two publishers of one layout, so they have to agree.
+  *(I64 *)(MEM_TRAP_SNAP + 22 * 8) = HcCsrrMtvec();
+  *(I64 *)(MEM_TRAP_SNAP + 23 * 8) = HcCsrrMie();
+  *(I64 *)(MEM_TRAP_SNAP + 24 * 8) = HcCsrrMip();
+  *(I64 *)(MEM_TRAP_SNAP + 25 * 8) = HcCsrrMisa();
+  *(I64 *)(MEM_TRAP_SNAP + 26 * 8) = HcCsrrMscratch();
+  *(I64 *)(MEM_TRAP_SNAP + 27 * 8) = HcCsrrMhartid();
+  *(I64 *)(MEM_TRAP_SNAP + 28 * 8) = HcCsrrSatp();
+  *(I64 *)(MEM_TRAP_SNAP + 29 * 8) = HcCsrrMcounteren();
+  *(I64 *)(MEM_TRAP_SNAP + 30 * 8) = HcCsrrMedeleg();
+  *(I64 *)(MEM_TRAP_SNAP + 31 * 8) = HcCsrrMideleg();
   g_trap_snap_live = 1;
   pc = epc;
 }

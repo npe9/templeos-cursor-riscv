@@ -879,6 +879,24 @@ static void HolyTrapSnapPublish(HRT_I64 *frame, HRT_I64 cause, HRT_I64 epc, HRT_
   leg[20] = tval;
   __asm__ volatile("csrr %0, mstatus" : "=r"(mstatus));
   leg[21] = mstatus;
+  /* Slots 22..31: the rest of the machine as it was WHEN IT STOPPED. These are all readable
+   * live, but a live read answers about now, not about the fault — mie and mip in particular
+   * change under you while you sit at the prompt looking at them. Ten slots is exactly the room
+   * between mstatus and the live-Bt scratch at 0x87000200, which is why the list ends here.
+   * Index order must match DBG_I_* in bootstrap/seed/debug.hc. */
+  {
+    HRT_I64 v;
+    __asm__ volatile("csrr %0, mtvec"      : "=r"(v)); leg[22] = v;
+    __asm__ volatile("csrr %0, mie"        : "=r"(v)); leg[23] = v;
+    __asm__ volatile("csrr %0, mip"        : "=r"(v)); leg[24] = v;
+    __asm__ volatile("csrr %0, misa"       : "=r"(v)); leg[25] = v;
+    __asm__ volatile("csrr %0, mscratch"   : "=r"(v)); leg[26] = v;
+    __asm__ volatile("csrr %0, mhartid"    : "=r"(v)); leg[27] = v;
+    __asm__ volatile("csrr %0, satp"       : "=r"(v)); leg[28] = v;
+    __asm__ volatile("csrr %0, mcounteren" : "=r"(v)); leg[29] = v;
+    __asm__ volatile("csrr %0, medeleg"    : "=r"(v)); leg[30] = v;
+    __asm__ volatile("csrr %0, mideleg"    : "=r"(v)); leg[31] = v;
+  }
 }
 
 /* Copy the canonical array back into the frame before the vector reloads it, so a register

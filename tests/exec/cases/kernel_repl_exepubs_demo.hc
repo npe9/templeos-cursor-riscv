@@ -161,6 +161,17 @@ I64 main()
       // resolve them, which is all "enabled in the REPL" means here. The asm REPL completes
       // from the same catalog, so Tab and AsmDoc agree by construction.
       RVExePubFunNew("AsmList", &AsmList, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("Mstatus", &Mstatus, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("Mcause", &Mcause, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("Uptime", &Uptime, cmp.internal_types[RT_U0], 0);
+      {
+        // Csr("mtvec") — a live read, decoded. Machine() is the same registers as they were
+        // FROZEN; both are worth having and they answer different questions.
+        CHashFun *tc;
+        tc = RVExePubFunNew("Csr", &Csr, cmp.internal_types[RT_U0], 1);
+        if (tc)
+          RVExePubAddArg(tc, "name", cmp.internal_types[RT_U8] + 1);
+      }
       {
         CHashFun *ta;
         ta = RVExePubFunNew("AsmDoc", &AsmDoc, cmp.internal_types[RT_U0], 1);
@@ -168,6 +179,9 @@ I64 main()
           RVExePubAddArg(ta, "mn", cmp.internal_types[RT_U8] + 1);
         // U8* — the mnemonic comes in as a string constant from the REPL line
       }
+      // The stopped machine, decoded: the freeze carries ten more CSRs than it used to, and
+      // this is what reads them rather than asking the hardware what it thinks NOW.
+      RVExePubFunNew("Machine", &Machine, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("DbgViewCost", &DbgViewCost, cmp.internal_types[RT_I64], 0);
       // Errors and Print() output carry DolDoc markup; translate it to ANSI instead of showing
       // the operator "$LTRED$$BK,1$ERROR:$FG$".

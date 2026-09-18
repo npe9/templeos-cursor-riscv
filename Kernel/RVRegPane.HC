@@ -33,6 +33,12 @@
 // row is worked out from the pane's width rather than fixed, because the pane is a sidebar on a
 // wide screen and a full-width block on a narrow one.
 #define REGP_ENTRY 22
+#define REGP_CSR_MAX 8
+I64 regp_csr_n = REGP_CSR_MAX;
+// How many CSRs the machine-state block shows. Four is the set that answers "why did I stop"
+// (mcause/mepc/mtval/mstatus); the other four say where the handler was, what was enabled and
+// pending, and whether anything was translated. The freeze carries all of them either way —
+// this is only about how many rows the pane can spare. See RegPaneCsrs.
 #define REGP_CSR_ENTRY 24
 I64 regp_rows = 12, regp_cols = 70;
 #define REGP_COL_SAME 15
@@ -53,11 +59,12 @@ I64 regp_row, regp_col;
 // compares against "what I showed last time" finds nothing changed on the second paint and
 // draws every register calm again. That is the red vanishing while you read it. RegPaneMark
 // latches; RegPaneUpdate only paints.
-#define REGP_MARKS 72
+#define REGP_MARKS 80
 I64 regp_moved[REGP_MARKS];
-#define REGP_PC 36
-#define REGP_FP0 40
-// marks: 0-31 registers, 32-35 CSRs, 36 pc, 40-71 float
+#define REGP_PC 32
+#define REGP_CSR0 33
+#define REGP_FP0 48
+// marks: 0-31 registers, 32 pc, 33-47 CSRs, 48-79 float
 #define REGP_FREGS 32
 I64 regp_fp = 1;
 // Whether the float block is shown. A pane with no room for it says so by turning it off rather
@@ -109,6 +116,20 @@ I64 RegPanePerRow()
 //   is how ten registers went missing when the sidebar was too narrow.
 // SEE ALSO
 //   RegPaneAt  RegPaneUpdate
+// RegPaneCsrs -- RegPaneCsrs(n)
+// NAME
+//   RegPaneCsrs - how many of the frozen CSRs the pane shows (4 or 8)
+// SEE ALSO
+//   RegPaneRowsNeeded  Machine  AsmUiLayout
+public U0 RegPaneCsrs(I64 n)
+{
+  if (n < 4)
+    n = 4;
+  if (n > REGP_CSR_MAX)
+    n = REGP_CSR_MAX;
+  regp_csr_n = n;
+}
+
 public I64 RegPaneRowsNeeded()
 {
   I64 per, csr_per, rows;
@@ -116,7 +137,7 @@ public I64 RegPaneRowsNeeded()
   csr_per = regp_cols / REGP_CSR_ENTRY;
   if (csr_per < 1)
     csr_per = 1;
-  rows = 1 + (33 + per - 1) / per + 1 + (4 + csr_per - 1) / csr_per;
+  rows = 1 + (33 + per - 1) / per + 1 + (regp_csr_n + csr_per - 1) / csr_per;
   // 33: the 32 registers and pc
   if (regp_fp)
     rows += 1 + (REGP_FREGS + per - 1) / per;
@@ -218,7 +239,20 @@ U0 RegPaneValue(U8 *out, U8 *nm, I64 v, I64 moved, I64 wide = FALSE)
 // The CSRs the debugger already freezes: why you stopped (mcause), where (mepc), on what address
 // (mtval), and the mode/interrupt state (mstatus). An asm stepper wants them beside the
 // registers — a fault is the most common reason a register looks wrong.
-#define REGP_CSR_N 4
+// The CSRs the freeze carries, in the order they answer a question about a stopped machine:
+// why (mcause), where (mepc), on what (mtval), in what state (mstatus), where the handler is
+// (mtvec), what was enabled and what was pending (mie/mip), and whether anything was translated
+// (satp). Slots 18..21 were always frozen; 22..31 were added with them, because reading them
+// live answers about now rather than about the fault. Index = slot in the legacy freeze.
+I64 RegPaneCsrSlot(I64 i)
+{
+  if (i < 4)
+    return 18 + i;
+  // mcause mepc mtval mstatus
+  return 22 + i - 4;
+  // mtvec mie mip satp — slot 22,23,24,28
+}
+
 U0 RegPaneCsrName(I64 i, U8 *out)
 {
   if (!i)
@@ -227,13 +261,26 @@ U0 RegPaneCsrName(I64 i, U8 *out)
     StrPrint(out, "mepc");
   else if (i == 2)
     StrPrint(out, "mtval");
-  else
+  else if (i == 3)
     StrPrint(out, "mstatus");
+  else if (i == 4)
+    StrPrint(out, "mtvec");
+  else if (i == 5)
+    StrPrint(out, "mie");
+  else if (i == 6)
+    StrPrint(out, "mip");
+  else
+    StrPrint(out, "satp");
 }
 
 I64 RegPaneCsrVal(I64 i)
 {
-  return *(I64 *)(REGP_SNAP + (18 + i) * 8);
+  I64 slot;
+  slot = RegPaneCsrSlot(i);
+  if (i == 7)
+    slot = 28;
+  // satp
+  return *(I64 *)(REGP_SNAP + slot * 8);
 }
 
 // RegPaneUpdate -- RegPaneUpdate()
@@ -292,10 +339,10 @@ U0 RegPaneUpdate()
   DocPutS(regp_doc, line);
   n = 0;
   col = 0;
-  while (n < REGP_CSR_N) {
+  while (n < regp_csr_n) {
     now = RegPaneCsrVal(n);
     RegPaneCsrName(n, nm);
-    RegPaneValue(line, nm, now, regp_moved[32 + n], TRUE);
+    RegPaneValue(line, nm, now, regp_moved[REGP_CSR0 + n], TRUE);
     DocPutS(regp_doc, line);
     col++;
     if (col % csr_per == 0)
@@ -352,10 +399,10 @@ public U0 RegPaneMark()
     n++;
   }
   n = 0;
-  while (n < REGP_CSR_N) {
+  while (n < REGP_CSR_MAX) {
     now = RegPaneCsrVal(n);
-    regp_moved[32 + n] = now != *(I64 *)(REGP_PREV + (32 + n) * 8);
-    *(I64 *)(REGP_PREV + (32 + n) * 8) = now;
+    regp_moved[REGP_CSR0 + n] = now != *(I64 *)(REGP_PREV + (REGP_CSR0 + n) * 8);
+    *(I64 *)(REGP_PREV + (REGP_CSR0 + n) * 8) = now;
     n++;
   }
   now = *(I64 *)(REGP_SNAP + REGP_PC_SLOT * 8);

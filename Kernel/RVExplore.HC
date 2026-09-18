@@ -7,6 +7,9 @@
 // operand template + notes) - a different shape/consumer, not redundant. See
 // docs/STOCK_PARITY.md and the AsmList<->assembler drift test.
 
+#include "/bootstrap/seed/csr_decode.hc"
+// the CSR value decoders, shared with the seed image rather than forked here
+
 #define ASM_DOC_MN 32
 #define ASM_DOC_TPL 64
 #define ASM_DOC_ENC 8
@@ -301,63 +304,10 @@ public U0 MemMap()
   Print("  0x%08X  DRAM top\n", CONFIG_DRAM_BASE + CONFIG_DRAM_SIZE);
 }
 
-U8 *RVCsrStateName(I64 x)
-{
-  if (x == 1)
-    return "Initial";
-  if (x == 2)
-    return "Clean";
-  if (x == 3)
-    return "Dirty";
-  return "?";
-}
-
-U0 RVCsrDecodeMstatus(I64 v)
-{
-  I64 mpp, fs, xs, vs;
-  if (v & 8)
-    Print("   MIE=1 (machine interrupts enabled)\n");
-  else
-    Print("   MIE=0 (machine interrupts disabled)\n");
-  if (v & 2)
-    Print("   SIE=1 (supervisor interrupts enabled)\n");
-  if (v & 128)
-    Print("   MPIE=1 (machine prior IE)\n");
-  if (v & 32)
-    Print("   SPIE=1 (supervisor prior IE)\n");
-  if (v & 256)
-    Print("   SPP=1 (prior privilege S-mode)\n");
-  vs = (v >> 9) & 3;
-  if (vs)
-    Print("   VS=%d (%s)\n", vs, RVCsrStateName(vs));
-  mpp = (v >> 11) & 3;
-  if (mpp == 1)
-    Print("   MPP=01 (S-mode)\n");
-  else if (mpp == 3)
-    Print("   MPP=11 (M-mode)\n");
-  else if (mpp == 2)
-    Print("   MPP=10 (reserved)\n");
-  else
-    Print("   MPP=00 (U-mode)\n");
-  fs = (v >> 13) & 3;
-  if (fs)
-    Print("   FS=%d (%s)\n", fs, RVCsrStateName(fs));
-  xs = (v >> 15) & 3;
-  if (xs)
-    Print("   XS=%d (%s)\n", xs, RVCsrStateName(xs));
-  if (v & 0x20000)
-    Print("   MPRV=1 (loads/stores at MPP privilege)\n");
-  if (v & 0x40000)
-    Print("   SUM=1 (supervisor may access user pages)\n");
-  if (v & 0x80000)
-    Print("   MXR=1 (executable pages readable)\n");
-  if (v & 0x200000)
-    Print("   TW=1 (trap WFI from S-mode)\n");
-  if (v & 0x8000000000000000)
-    Print("   SD=1 (some state dirty)\n");
-}
-
-U8 *RVMcauseName(I64 v)
+// The CSR decoders live in bootstrap/seed/csr_decode.hc now — one copy, shared with the seed
+// image, included at the top of this file. The fork that used to sit here knew fewer mstatus
+// fields than the seed's copy and decoded no satp at all, which is what two copies do.
+U8 *McauseCauseName(I64 v)
 {
   I64 intr, code;
   intr = (v >> 63) & 1;
@@ -393,7 +343,7 @@ public U0 Mstatus()
   //Read and decode the current mstatus CSR (interrupt-enable + privilege bits).
   I64 v = RVWinCsrrMstatus();
   Print("mstatus=0x%X\n", v);
-  RVCsrDecodeMstatus(v);
+  CsrDecodeMstatus(v);
 }
 
 public U0 Mcause()
@@ -404,48 +354,7 @@ public U0 Mcause()
   U8 *kind = "Exception";
   if (intr)
     kind = "Interrupt";
-  Print("mcause=0x%X  %s code=%d (%s)\n", v, kind, code, RVMcauseName(v));
-}
-
-U0 RVCsrDecodeIrqBits(I64 v, U8 *kind)
-{
-  if (v & 2)    Print("   SSI%s (supervisor soft)\n", kind);
-  if (v & 8)    Print("   MSI%s (machine soft)\n", kind);
-  if (v & 32)   Print("   STI%s (supervisor timer)\n", kind);
-  if (v & 128)  Print("   MTI%s (machine timer)\n", kind);
-  if (v & 512)  Print("   SEI%s (supervisor external)\n", kind);
-  if (v & 2048) Print("   MEI%s (machine external)\n", kind);
-}
-
-U0 RVCsrDecodeMtvec(I64 v)
-{
-  I64 mode = v & 3;
-  if (mode == 0)
-    Print("   MODE=0 (Direct)\n");
-  else if (mode == 1)
-    Print("   MODE=1 (Vectored)\n");
-  else
-    Print("   MODE=%d (?)\n", mode);
-  Print("   BASE=0x%X (trap entry)\n", v & (~3));
-}
-
-U0 RVCsrDecodeMisa(I64 v)
-{
-  I64 mxl = (v >> 62) & 3;
-  if (mxl == 2)
-    Print("   MXL=10 (RV64)\n");
-  else if (mxl == 1)
-    Print("   MXL=01 (RV32)\n");
-  Print("   ext:");
-  if (v & 1)    Print(" A");
-  if (v & 4)    Print(" C");
-  if (v & 8)    Print(" D");
-  if (v & 32)   Print(" F");
-  if (v & 256)  Print(" I");
-  if (v & 4096) Print(" M");
-  if (v & (1<<18)) Print(" S");
-  if (v & (1<<20)) Print(" U");
-  Print("\n");
+  Print("mcause=0x%X  %s code=%d (%s)\n", v, kind, code, McauseCauseName(v));
 }
 
 public U0 Csr(U8 *name)
@@ -455,31 +364,36 @@ public U0 Csr(U8 *name)
   I64 v;
   if (!name || !*name) {
     Print("Csr: name — e.g. Csr(\"mtvec\");\n");
-    Print("  m: mstatus mie mip mtvec mepc mcause mtval mscratch misa mhartid medeleg mideleg mcounteren\n");
+    Print("  m: mstatus mie mip mtvec mepc mcause mtval mscratch misa mhartid medeleg mideleg\n");
+    Print("     mcounteren mcycle minstret\n");
     Print("  s: sstatus sie sip stvec sepc scause stval satp\n");
+    Print("  f: fcsr\n");
     return;
   }
-  if (!StrICmp(name, "mstatus"))      { v = RVWinCsrrMstatus();    Print("mstatus=0x%X\n", v);    RVCsrDecodeMstatus(v); }
-  else if (!StrICmp(name, "mie"))     { v = RVWinCsrrMie();        Print("mie=0x%X\n", v);        RVCsrDecodeIrqBits(v, "E=1"); }
-  else if (!StrICmp(name, "mip"))     { v = RVWinCsrrMip();        Print("mip=0x%X\n", v);        RVCsrDecodeIrqBits(v, "P=1"); }
-  else if (!StrICmp(name, "mtvec"))   { v = RVWinCsrrMtvec();      Print("mtvec=0x%X\n", v);      RVCsrDecodeMtvec(v); }
+  if (!StrICmp(name, "mstatus"))      { v = RVWinCsrrMstatus();    Print("mstatus=0x%X\n", v);    CsrDecodeMstatus(v); }
+  else if (!StrICmp(name, "mie"))     { v = RVWinCsrrMie();        Print("mie=0x%X\n", v);        CsrDecodeMie(v); }
+  else if (!StrICmp(name, "mip"))     { v = RVWinCsrrMip();        Print("mip=0x%X\n", v);        CsrDecodeMip(v); }
+  else if (!StrICmp(name, "mtvec"))   { v = RVWinCsrrMtvec();      Print("mtvec=0x%X\n", v);      CsrDecodeMtvec(v); }
   else if (!StrICmp(name, "mepc"))    { v = RVWinCsrrMepc();       Print("mepc=0x%X\n", v); }
   else if (!StrICmp(name, "mcause"))  { Mcause; }
   else if (!StrICmp(name, "mtval"))   { v = RVWinCsrrMtval();      Print("mtval=0x%X\n", v); }
   else if (!StrICmp(name, "mscratch")){ v = RVWinCsrrMscratch();   Print("mscratch=0x%X\n", v); }
-  else if (!StrICmp(name, "misa"))    { v = RVWinCsrrMisa();       Print("misa=0x%X\n", v);       RVCsrDecodeMisa(v); }
+  else if (!StrICmp(name, "misa"))    { v = RVWinCsrrMisa();       Print("misa=0x%X\n", v);       CsrDecodeMisa(v); }
   else if (!StrICmp(name, "mhartid")) { v = RVWinCsrrMhartid();    Print("mhartid=0x%X\n", v); }
-  else if (!StrICmp(name, "medeleg")) { v = RVWinCsrrMedeleg();    Print("medeleg=0x%X\n", v); }
-  else if (!StrICmp(name, "mideleg")) { v = RVWinCsrrMideleg();    Print("mideleg=0x%X\n", v); }
-  else if (!StrICmp(name, "mcounteren")){ v = RVWinCsrrMcounteren(); Print("mcounteren=0x%X\n", v); }
-  else if (!StrICmp(name, "sstatus")) { v = RVWinCsrrSstatus();    Print("sstatus=0x%X\n", v); }
-  else if (!StrICmp(name, "sie"))     { v = RVWinCsrrSie();        Print("sie=0x%X\n", v);        RVCsrDecodeIrqBits(v, "E=1"); }
-  else if (!StrICmp(name, "sip"))     { v = RVWinCsrrSip();        Print("sip=0x%X\n", v);        RVCsrDecodeIrqBits(v, "P=1"); }
-  else if (!StrICmp(name, "stvec"))   { v = RVWinCsrrStvec();      Print("stvec=0x%X\n", v);      RVCsrDecodeMtvec(v); }
+  else if (!StrICmp(name, "medeleg")) { v = RVWinCsrrMedeleg();    Print("medeleg=0x%X\n", v);    CsrDecodeDeleg(v, FALSE); }
+  else if (!StrICmp(name, "mideleg")) { v = RVWinCsrrMideleg();    Print("mideleg=0x%X\n", v);    CsrDecodeDeleg(v, TRUE); }
+  else if (!StrICmp(name, "mcounteren")){ v = RVWinCsrrMcounteren(); Print("mcounteren=0x%X\n", v); CsrDecodeCounteren(v); }
+  else if (!StrICmp(name, "mcycle"))  { v = RVWinCsrrMcycle();     Print("mcycle=%d\n", v); }
+  else if (!StrICmp(name, "minstret")){ v = RVWinCsrrMinstret();   Print("minstret=%d\n", v); }
+  else if (!StrICmp(name, "fcsr"))    { v = RVWinCsrrFcsr();       Print("fcsr=0x%X\n", v);       CsrDecodeFcsr(v); }
+  else if (!StrICmp(name, "sstatus")) { v = RVWinCsrrSstatus();    Print("sstatus=0x%X\n", v);    CsrDecodeMstatus(v); }
+  else if (!StrICmp(name, "sie"))     { v = RVWinCsrrSie();        Print("sie=0x%X\n", v);        CsrDecodeMie(v); }
+  else if (!StrICmp(name, "sip"))     { v = RVWinCsrrSip();        Print("sip=0x%X\n", v);        CsrDecodeMip(v); }
+  else if (!StrICmp(name, "stvec"))   { v = RVWinCsrrStvec();      Print("stvec=0x%X\n", v);      CsrDecodeMtvec(v); }
   else if (!StrICmp(name, "sepc"))    { v = RVWinCsrrSepc();       Print("sepc=0x%X\n", v); }
   else if (!StrICmp(name, "scause"))  { v = RVWinCsrrScause();     Print("scause=0x%X\n", v); }
   else if (!StrICmp(name, "stval"))   { v = RVWinCsrrStval();      Print("stval=0x%X\n", v); }
-  else if (!StrICmp(name, "satp"))    { v = RVWinCsrrSatp();       Print("satp=0x%X\n", v); }
+  else if (!StrICmp(name, "satp"))    { v = RVWinCsrrSatp();       Print("satp=0x%X\n", v);       CsrDecodeSatp(v); }
   else
     Print("Csr: unknown '%s' — Csr(); lists names\n", name);
 }

@@ -184,7 +184,10 @@ public U0 Dbg()
   StrPrint(line, "ra  =%016X  sp   =%016X\n", *(I64 *)(DBGV_SNAP_X + 1 * 8),
            *(I64 *)(DBGV_SNAP_X + 2 * 8));
   DocPutS(dbgv_doc, line);
-  StrPrint(line, "mstatus=%016X\n", *(I64 *)(DBGV_SNAP + 21 * 8));
+  StrPrint(line, "mstatus=%016X  from %s\n", *(I64 *)(DBGV_SNAP + 21 * 8),
+           CsrPrivName((*(I64 *)(DBGV_SNAP + 21 * 8) >> 11) & 3));
+  // MPP is the privilege the trap came FROM — the one thing about the stopped machine that is
+  // in no register of its own, and that nothing in the tree used to materialise.
   DocPutS(dbgv_doc, line);
   DocPutS(dbgv_doc, "$FG,7$Dr  U(_PC-16)  _A0  AsmStep(\"...\")  Bp(addr)$FG$\n");
   dbgv_bytes = RVDocTextRender(dbgv_doc, DBGV_STATUS_ROW, 0, 6, 80);
@@ -432,6 +435,48 @@ public U0 Cls()
     // -1 = whichever layout is current; TRUE = the screen is empty, so the prompt starts at the
     // top of its region
   }
+}
+
+// Machine -- Machine()
+// NAME
+//   Machine - the architectural state you stopped in, decoded
+// SYNOPSIS
+//   Machine;
+// DESCRIPTION
+//   Csr("mip") reads the CSR now. This reads the FREEZE — what the machine held at the trap —
+//   and runs it through the same decoders (bootstrap/seed/csr_decode.hc, shared with the seed
+//   image). The difference matters most for exactly the registers you want after a fault: mip
+//   changes under you while you sit at the prompt, and mstatus.MPP is the only record of which
+//   privilege the trap came from.
+// SEE ALSO
+//   Dbg  Dr  Csr  RegPaneUpdate
+public U0 Machine()
+{
+  I64 *s;
+  s = DBGV_SNAP;
+  "mcause  =%016X  %s\n", s[18], McauseCauseName(s[18]);
+  "mepc    =%016X\n", s[19];
+  "mtval   =%016X\n", s[20];
+  "mstatus =%016X  trap came from %s\n", s[21], CsrPrivName((s[21] >> 11) & 3);
+  CsrDecodeMstatus(s[21]);
+  "mtvec   =%016X\n", s[22];
+  CsrDecodeMtvec(s[22]);
+  "mie     =%016X\n", s[23];
+  CsrDecodeMie(s[23]);
+  "mip     =%016X\n", s[24];
+  CsrDecodeMip(s[24]);
+  "misa    =%016X\n", s[25];
+  CsrDecodeMisa(s[25]);
+  "mscratch=%016X\n", s[26];
+  "mhartid =%016X\n", s[27];
+  "satp    =%016X\n", s[28];
+  CsrDecodeSatp(s[28]);
+  "mcounteren=%016X\n", s[29];
+  CsrDecodeCounteren(s[29]);
+  "medeleg =%016X\n", s[30];
+  CsrDecodeDeleg(s[30], FALSE);
+  "mideleg =%016X\n", s[31];
+  CsrDecodeDeleg(s[31], TRUE);
 }
 
 // DbgOnFault -- DbgOnFault(on)

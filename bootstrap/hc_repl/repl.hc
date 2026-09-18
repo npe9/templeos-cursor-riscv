@@ -25,6 +25,8 @@
 #include "/bootstrap/hc_repl/jit.hc"
 #include "/bootstrap/hc_repl/man_sym.hc"
 #include "/bootstrap/seed/man.hc"
+#include "/bootstrap/seed/csr_decode.hc"
+// the CSR value decoders, shared with the kernel image; must precede csr.hc, which calls them
 #include "/bootstrap/seed/csr.hc"
 #include "/bootstrap/seed/sys.hc"
 // G2: HolyC trapvec + Break (owns trap.hc). Provides pc / SetTrap / TrapInit for debug.hc.

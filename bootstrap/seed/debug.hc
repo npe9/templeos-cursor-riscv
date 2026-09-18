@@ -22,7 +22,21 @@
 #define DBG_I_EPC 19
 #define DBG_I_TVAL 20
 #define DBG_I_MSTATUS 21
-#define DBG_I_NSLOT 22
+// 22..31: the rest of the stopped machine, frozen rather than read live (a live mip answers
+// about now, not about the fault). The block ends at 31 because the live-Bt scratch owns
+// 0x87000200, which is slot 32.
+#define DBG_I_MTVEC 22
+#define DBG_I_MIE 23
+#define DBG_I_MIP 24
+#define DBG_I_MISA 25
+#define DBG_I_MSCRATCH 26
+#define DBG_I_MHARTID 27
+#define DBG_I_SATP 28
+#define DBG_I_MCOUNTEREN 29
+#define DBG_I_MEDELEG 30
+#define DBG_I_MIDELEG 31
+#define DBG_I_NSLOT 32
+// 32 now, not 22: slots 22..31 carry the widened CSR freeze above
 I64 DbgAddr[16], DbgSaved[16], DbgActive[16];
 I64 WatchAddr[8], WatchLen[8], WatchLast[8], WatchActive[8];
 I64 DbgStopOnHit;

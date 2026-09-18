@@ -88,6 +88,12 @@ feed() {
      # The same catalog as REPL functions at the HolyC prompt
      "AsmDoc(\"addi\");",
      "AsmList;",
+     # The CSR decoders, now one shared copy: fcsr had no reader anywhere in the tree, and satp
+     # was decoded only by the seed datasheet the kernel image does not link.
+     "Csr(\"fcsr\");",
+     "Csr(\"satp\");",
+     # The stopped machine, read from the widened freeze rather than from the hardware now
+     "Machine;",
      # Back at the HolyC prompt, with enough output to scroll its region right through. The
      # panes are live here too, so this is where a layout that only existed inside AsmRepl
      # would be scribbled over and then look frozen.
@@ -242,6 +248,19 @@ need "store doubleword"
 need "AsmDoc addi"
 need "12-bit signed immediate"
 need "documented asm{} mnemonics"
+# fcsr: read at all for the first time, and decoded. The flags are STICKY — by the time the
+# prompt is up the compiler has done its own float work, so this asserts the decode, not a
+# pristine value (it reads 0x3: inexact and underflow, accumulated since reset).
+need "frm=0 RNE (nearest, ties to even)"
+need "(sticky)"
+need "NX inexact"
+# satp: MODE/ASID/PPN, from the decoder both images now share
+need "MODE=0 (Bare"
+# Machine(): the freeze carries ten more CSRs than it used to, and the shared decoders read them
+need "trap came from"
+need "mtvec   ="
+need "mideleg ="
+need "nothing delegated (all traps taken in M-mode)"
 # t6 survives a step now: it is the wrapper base register, and it used to be clobbered before it
 # was ever saved, so this line ran and the value vanished.
 need "t6   0000000000000000 -> 0000000000000003"
