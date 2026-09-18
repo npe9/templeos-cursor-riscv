@@ -810,6 +810,15 @@ __attribute__((naked, aligned(4))) static HRT_I64 HolyRVTrapRecoverArm(void) {
  * a registered sink — the runtime's holy_urx ring is a different buffer and the REPL never
  * reads it, so buffering there would silently eat keystrokes. */
 HRT_I64 holy_break_req;
+/* Debugger hook: called on a synchronous exception once the freeze is published, before the
+ * recover/crash-mon decision. Returns 0 to fall through to the existing behaviour, or an
+ * address to resume at — which is what lets a debugger's G() continue the stopped context
+ * (register edits are already applied by HolyTrapSnapApply on the way out). */
+static HRT_I64 (*holy_dbg_hook)(HRT_I64 cause, HRT_I64 epc, HRT_I64 tval);
+static HRT_I64 HolyRVSetDbgHook(HRT_I64 fn) {
+  holy_dbg_hook = (HRT_I64 (*)(HRT_I64, HRT_I64, HRT_I64))fn;
+  return 0;
+}
 static void (*holy_urx_sink)(HRT_I64);
 static HRT_I64 HolyRVSetRxSink(HRT_I64 fn) { holy_urx_sink = (void (*)(HRT_I64))fn; return 0; }
 
@@ -913,6 +922,14 @@ __attribute__((used)) static HRT_I64 HolyTrapDispatch(HRT_I64 *frame) {
     /* Freeze first: the recover trampoline and the crash monitor both want it, and a
      * debugger attached later reads the same two views as in the seed image. */
     HolyTrapSnapPublish(frame, mcause, mepc, mtval);
+    if (holy_dbg_hook) {
+      HRT_I64 resume = holy_dbg_hook(mcause, mepc, mtval);
+      if (resume) {                       /* the debugger says continue here */
+        __asm__ volatile("csrw mepc, %0" :: "r"(resume));
+        HolyTrapSnapApply(frame);
+        return 0;
+      }
+    }
     if (holy_repl_recover_armed) {
       /* One-shot: disarm before returning, so a fault inside the REPL's own recovery
        * path falls through to the monitor instead of looping through the trampoline. */

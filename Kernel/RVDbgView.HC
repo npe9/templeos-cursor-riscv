@@ -22,8 +22,8 @@
 #define DBGV_STATUS_ROW REGP_ROWS
 // straight under the register pane
 
-CDoc *dbgv_doc, *dbgv_dis;
-I64 dbgv_bytes, dbgv_dis_bytes;
+CDoc *dbgv_doc, *dbgv_dis, *dbgv_mem;
+I64 dbgv_bytes, dbgv_dis_bytes, dbgv_mem_bytes, dbgv_in_trap, dbgv_primed;
 
 // --- capturing the disassembler -------------------------------------------------------------
 // DisasmOne PRINTS (a thousand lines of it); it has no buffer form. Rather than fork it, sit in
@@ -88,12 +88,42 @@ I64 DbgVCapture(I64 addr, I64 n, U8 *out, I64 max)
   return dbgv_cap_len;
 }
 
+// Append captured text as document source, escaping '$' ('$$' is DolDoc's literal '$') and
+// breaking it into lines. Shared by the disassembly and memory tiles.
+U0 DbgVPutEscaped(CDoc *doc, U8 *text)
+{
+  U8 line[160], *p;
+  I64 i = 0;
+  p = text;
+  while (*p) {
+    if (*p == '\n' || i >= 150) {
+      line[i] = 0;
+      if (i)
+        DocPutS(doc, line);
+      DocPutS(doc, "\n");
+      i = 0;
+      if (*p == '\n')
+        p++;
+      continue;
+    }
+    if (*p == '$' && i < 150)
+      line[i++] = '$';
+    line[i++] = *p;
+    p++;
+  }
+  if (i) {
+    line[i] = 0;
+    DocPutS(doc, line);
+    DocPutS(doc, "\n");
+  }
+}
+
 // Disassembly around a PC, as a rendered document. Captures U()'s output, escapes '$' so
 // DolDoc does not read the text as commands, and paints it under the status pane.
 U0 DbgDisasmPane(I64 pc)
 {
-  U8 *cap, *p, line[160];
-  I64 n, i;
+  U8 *cap;
+  I64 n;
   if (!pc)
     return;
   if (!dbgv_dis) {
@@ -105,32 +135,7 @@ U0 DbgDisasmPane(I64 pc)
   DbgVCapture(pc, 8, cap, 4096);
   DocClear(dbgv_dis);
   DocPutS(dbgv_dis, "$FG,5$disasm at _PC$FG$\n");
-  p = cap;
-  i = 0;
-  while (*p) {
-    if (*p == '\n' || i >= 150) {
-      line[i] = 0;
-      if (i)
-        DocPutS(dbgv_dis, line);
-      DocPutS(dbgv_dis, "\n");
-      i = 0;
-      if (*p == '\n')
-        p++;
-      continue;
-    }
-    if (*p == '$') {
-      if (i < 150)
-        line[i++] = '$';
-      // DolDoc literal '$' is "$$"
-    }
-    line[i++] = *p;
-    p++;
-  }
-  if (i) {
-    line[i] = 0;
-    DocPutS(dbgv_dis, line);
-    DocPutS(dbgv_dis, "\n");
-  }
+  DbgVPutEscaped(dbgv_dis, cap);
   Free(cap);
   n = DBGV_STATUS_ROW + 6;
   dbgv_dis_bytes = RVDocTextRender(dbgv_dis, n, 0, 10, 80);
@@ -179,6 +184,109 @@ public U0 Dbg()
   DocPutS(dbgv_doc, "$FG,7$Dr  U(_PC-16)  _A0  AsmStep(\"...\")  Bp(addr)$FG$\n");
   dbgv_bytes = RVDocTextRender(dbgv_doc, DBGV_STATUS_ROW, 0, 6, 80);
   DbgDisasmPane(*(I64 *)(DBGV_SNAP + 19 * 8));
+}
+
+// Memory as a document, using the same StdOut capture as the disassembly tile.
+U0 DbgMemPane(I64 addr, I64 n)
+{
+  U8 *cap;
+  I64 got;
+  if (!addr)
+    return;
+  if (!dbgv_mem) {
+    dbgv_mem = DocNew();
+    if (!dbgv_mem)
+      return;
+  }
+  cap = MAlloc(4096);
+  dbgv_cap = cap;
+  dbgv_cap_len = 0;
+  dbgv_cap_max = 4096;
+  dbgv_cap_on = 1;
+  RVWinSerialMd(addr, n);
+  dbgv_cap_on = 0;
+  cap[dbgv_cap_len] = 0;
+  DocClear(dbgv_mem);
+  DocPutS(dbgv_mem, "$FG,5$memory$FG$\n");
+  DbgVPutEscaped(dbgv_mem, cap);
+  Free(cap);
+  dbgv_mem_bytes = RVDocTextRender(dbgv_mem, DBGV_STATUS_ROW + 6, 40, 10, 40);
+}
+
+// Dm -- Dm(addr, n)
+// NAME
+//   Dm - dump memory into the debugger's memory tile (stock TempleOS name)
+// SYNOPSIS
+//   Dm(addr, n = 64);
+// SEE ALSO
+//   Dbg  Dr  U
+public U0 DbgDm(I64 addr, I64 n = 64)
+{
+  DbgMemPane(addr, n);
+}
+
+// DbgViewPrime -- DbgViewPrime()
+// NAME
+//   DbgViewPrime - create the view's documents up front
+// DESCRIPTION
+//   The panes allocate on first use. Inside a trap that is exactly the wrong time — a fault in
+//   the allocator would fault again — so the images that install the trap hook prime the docs
+//   while everything is still healthy.
+// SEE ALSO
+//   DbgTrapHook
+public U0 DbgViewPrime()
+{
+  if (!dbgv_doc)
+    dbgv_doc = DocNew();
+  if (!dbgv_dis)
+    dbgv_dis = DocNew();
+  if (!dbgv_mem)
+    dbgv_mem = DocNew();
+  dbgv_primed = 1;
+}
+
+// DbgTrapHook -- installed with RVSetDbgHook(&DbgTrapHook)
+// NAME
+//   DbgTrapHook - the debugger, running inside the trap, so G can actually continue
+// DESCRIPTION
+//   The runtime calls this on a synchronous exception once the freeze is published. It paints
+//   the view and then takes single keys from the POLLED uart (interrupts are off in a trap, so
+//   the IRQ ring never fills):
+//     g  continue past the faulting instruction
+//     p  continue at _PC (edit it first, or a register, and the copy-back applies it)
+//     r  repaint
+//     q  give up and let the REPL's recovery return you to the prompt
+//   Returns the resume address, or 0 to fall through to the old behaviour. Refuses to re-enter:
+//   a fault inside the debugger must not recurse.
+// SEE ALSO
+//   Dbg  G  DbgViewPrime
+I64 DbgTrapHook(I64 cause, I64 epc, I64 tval)
+{
+  I64 ch;
+  no_warn cause;
+  no_warn tval;
+  if (dbgv_in_trap || !dbgv_primed)
+    return 0;
+  dbgv_in_trap = 1;
+  Dbg;
+  "\n[dbg] g=go p=go@_PC r=repaint q=prompt\n";
+  while (TRUE) {
+    ch = RVUartGetC();
+    if (ch == 'g') {
+      dbgv_in_trap = 0;
+      return epc + 4;
+    }
+    if (ch == 'p') {
+      dbgv_in_trap = 0;
+      return *(I64 *)(DBGV_SNAP + 19 * 8);
+    }
+    if (ch == 'r')
+      Dbg;
+    if (ch == 'q')
+      break;
+  }
+  dbgv_in_trap = 0;
+  return 0;
 }
 
 // G -- G()

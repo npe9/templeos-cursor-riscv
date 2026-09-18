@@ -11,6 +11,7 @@
 #define MEM_UART 0x10000000
 extern U0 RVTrapInit();
 extern I64 RVTrapRecoverArm();
+extern I64 RVSetDbgHook(I64 fn);
 extern U0 RVTrapRecoverDisarm();
 extern I64 RVTrapRecoverCause();
 extern I64 RVTrapRecoverEpc();
@@ -116,6 +117,11 @@ I64 main()
       DbgViewInit();
       // StdOut sink so Dbg can put U()'s disassembly in a document
       RVExePubFunNew("DbgDisasmCost", &DbgDisasmCost, cmp.internal_types[RT_I64], 0);
+      // Run the debugger INSIDE the trap: prime the docs first (allocating during a fault is
+      // how you fault twice), then hand the runtime the hook so G can actually continue.
+      DbgViewPrime();
+      RVSetDbgHook(&DbgTrapHook);
+      RVExePubFunNew("Dm", &DbgDm, cmp.internal_types[RT_U0], 2);
       dbg_view_ready = 1;
       UartPutS("A2 reg pane wired\n");
     }
