@@ -331,6 +331,84 @@ U0 RVVtPutGlyph(I64 ch)
   RVVtPutS(u);
 }
 
+I64 rv_vt_term_rows = 25, rv_vt_term_cols = 80;
+// what the terminal said when asked; the safe default until it does
+
+// RVVtProbeSize -- RVVtProbeSize(ms)
+// NAME
+//   RVVtProbeSize - ask the terminal its size, and believe the answer
+// SYNOPSIS
+//   RVVtProbeSize(300);   // returns TRUE if the terminal answered
+// DESCRIPTION
+//   Parks the cursor far beyond any real screen (the terminal clamps it to its own corner) and
+//   asks where it ended up with DSR — the cursor-position report every terminal implements,
+//   unlike the window-size report. Bounded wait: a terminal that says nothing leaves the
+//   defaults, which is the whole point of asking rather than assuming. Bytes that are not part
+//   of the reply are pushed back, because the operator may have typed ahead.
+// SEE ALSO
+//   rv_vt_term_rows  rv_vt_term_cols  AsmUiLayout
+public I64 RVVtProbeSize(I64 ms = 300)
+{
+  I64 deadline, ch, r = 0, c = 0, st = 0;
+  RVVtSaveCur();
+  RVVtGoto(998, 998);
+  RVVtCsi();
+  RVVtPut('6');
+  RVVtPut('n');
+  RVVtRestoreCur();
+  RVVtFlush;
+  deadline = *(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) +
+             ms * (CONFIG_TIMEBASE_FREQ / 1000);
+  while (*(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) < deadline) {
+    ch = RVUartTryGet;
+    if (ch < 0)
+      continue;
+    if (st == 0) {
+      if (ch == 27)
+        st = 1;
+      else
+        RVUartSoftEnqueue(ch);
+      continue;
+    }
+    if (st == 1) {
+      if (ch == '[') {
+        st = 2;
+      } else {
+        RVUartSoftEnqueue(27);
+        RVUartSoftEnqueue(ch);
+        st = 0;
+      }
+      continue;
+    }
+    if (ch >= '0' && ch <= '9') {
+      if (st == 2)
+        r = r * 10 + ch - '0';
+      else
+        c = c * 10 + ch - '0';
+      continue;
+    }
+    if (ch == ';' && st == 2) {
+      st = 3;
+      continue;
+    }
+    if (ch == 'R' && st == 3) {
+      // Sanity: a terminal smaller than this cannot hold any of these panes, and one this large
+      // is a reply we misread. Either way the defaults are better than the answer.
+      if (r >= 10 && r <= 200 && c >= 40 && c <= 400) {
+        rv_vt_term_rows = r;
+        rv_vt_term_cols = c;
+        return TRUE;
+      }
+      return FALSE;
+    }
+    // not the reply after all
+    st = 0;
+    r = 0;
+    c = 0;
+  }
+  return FALSE;
+}
+
 U0 RVVtHome()
 {
   RVVtCsi();

@@ -21,6 +21,59 @@
 #define DOLA_PRI 2
 
 I64 rv_dola_on, rv_dola_fg = WHITE, rv_dola_bg = BLACK;
+// The text column, and where in it we are. A terminal wraps at ITS width, which would run text
+// under a sidebar painted beside it; wrapping here keeps printed output in its own column.
+I64 rv_dola_wrap, rv_dola_x;
+
+// RVDolAnsiWrap -- RVDolAnsiWrap(cols)
+// NAME
+//   RVDolAnsiWrap - how wide the text column is (0 = the whole terminal)
+// SEE ALSO
+//   RVDolAnsiInstall  RVLineEdWrap  AsmUiLayout
+public U0 RVDolAnsiWrap(I64 cols)
+{
+  rv_dola_wrap = cols;
+  rv_dola_x = 0;
+}
+
+// RVDolAnsiCol -- RVDolAnsiCol(x)
+// NAME
+//   RVDolAnsiCol - tell the translator which column the cursor is in
+// DESCRIPTION
+//   Anything that writes to the wire without going through this sink — the line editor's echo —
+//   leaves the column count stale, and the next printed line then breaks in the wrong place.
+// SEE ALSO
+//   RVDolAnsiWrap  RVLineEd
+public U0 RVDolAnsiCol(I64 x)
+{
+  rv_dola_x = x;
+}
+
+// One character on the wire, counting the column and breaking the line when it is full.
+U0 DolAnsiEmit(I64 ch)
+{
+  if (ch == '\n' || ch == '\r') {
+    RVVtPut(ch);
+    if (ch == '\n')
+      RVVtPut('\r');
+    // an explicit CR with every LF: the cursor has to come back to the column, and a terminal in
+    // LF mode would leave it where it was
+    rv_dola_x = 0;
+    return;
+  }
+  if (rv_dola_wrap && rv_dola_x >= rv_dola_wrap) {
+    RVVtPut('\n');
+    RVVtPut('\r');
+    rv_dola_x = 0;
+  }
+  if (ch == 9) {
+    RVVtPut(ch);
+    rv_dola_x = (rv_dola_x + 8) & (-8);
+    return;
+  }
+  RVVtPut(ch);
+  rv_dola_x++;
+}
 
 // Hypertext, kept rather than discarded. A DolDoc link is text plus a target; a terminal has no
 // click, so each link is numbered as it goes by and the number is what you type to follow it.
@@ -132,7 +185,7 @@ U0 DolAnsiRun(U8 *cmd)
     if (!*q)
       q = tgt;
     while (*q) {
-      RVVtPut(*q);
+      DolAnsiEmit(*q);
       q++;
     }
     DolAnsiUnderline(0);
@@ -140,7 +193,7 @@ U0 DolAnsiRun(U8 *cmd)
     StrPrint(num, "[%d]", rv_dola_link_n);
     q = num;
     while (*q) {
-      RVVtPut(*q);
+      DolAnsiEmit(*q);
       q++;
     }
     DolAnsiEsc(rv_dola_fg, -1);
@@ -189,9 +242,9 @@ Bool RVDolAnsiPutS(U8 *st)
       continue;
     }
     if (*p == '\n' || *p == '\r' || *p == 9)
-      RVVtPut(*p);
+      DolAnsiEmit(*p);
     else if (*p >= ' ' && *p < 127)
-      RVVtPut(*p);
+      DolAnsiEmit(*p);
     else if (*p >= 2 && *p <= 13)
       RVVtPutGlyph(*p);
     // Anything else — a stray control byte or a high-bit byte from the font — is DROPPED, not

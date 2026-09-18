@@ -79,6 +79,10 @@ feed() {
      ("40+2;") x 8,
      "q",
     );
+    # The guest asks the terminal how big it is (CSI 6n) before it lays anything out. Answer as
+    # a 120x40 screen: the reply sits in the UART queue until the probe reads it, and a smoke
+    # that never answers would only ever exercise the 80x25 default.
+    print "\e[40;120R";
     select(undef,undef,undef,5);
     for my $x (@l){
       if ($x =~ s/^\x01//) { print $x; }   # bare key for the in-trap debugger, no newline
@@ -113,8 +117,8 @@ if stop:
     k = d.find(stop)
     if k >= 0:
         d = d[:k]
-ROWS = 25
-scr = [[" "]*100 for _ in range(ROWS)]
+ROWS, COLS = 40, 120
+scr = [[" "]*COLS for _ in range(ROWS)]
 top, bot = 0, ROWS-1   # DECSTBM, 0-based inclusive
 r = c = 0
 i = 0
@@ -125,7 +129,7 @@ def scroll():
     # scroll the region up one line, exactly as a terminal does. Without this the replay never
     # scrolls and a pane looks pinned whether or not the scroll region actually pinned it.
     del scr[top]
-    scr.insert(bot, [" "]*100)
+    scr.insert(bot, [" "]*COLS)
 while i < len(d):
     if d[i] == "\x1b" and i+1 < len(d) and d[i+1] == "[":
         j = i+2
@@ -133,7 +137,7 @@ while i < len(d):
             j += 1
         if j < len(d):
             if d[j] == "J" and d[i+2:j] in ("2", "3"):
-                scr = [[" "]*100 for _ in range(len(scr))]
+                scr = [[" "]*COLS for _ in range(ROWS)]
                 r = c = 0
             if d[j] == "r":
                 a = d[i+2:j].split(";")
@@ -171,7 +175,7 @@ while i < len(d):
         c = 0
     elif ch == "\r":
         c = 0
-    elif ch >= " " and 0 <= r < ROWS and 0 <= c < 100:
+    elif ch >= " " and 0 <= r < ROWS and 0 <= c < COLS:
         scr[r][c] = ch; c += 1
     i += 1
 num = os.environ.get("NUM", "")
@@ -206,46 +210,74 @@ need "asm REPL: instructions are stepped"
 # content, so it is checked in the stream: pane repaints move the cursor around, and echoed
 # characters land wherever it happens to be.
 need "asm> auipc"
-# Two Ups recall the addi (past the auipc line) and step it again, so a0 accumulates 0x10 twice.
-# A recalled line that changed nothing would prove nothing, which is why the test uses one that
-# accumulates.
-# Pane assertions stop at the help text: leaving AsmRepl clears the screen, so the final
-# screen shows nothing at all.
-need_screen "a0   0000000000000020" "q  leave"
-# All 32 registers, not the 22 that fitted in the old narrow sidebar. Checked by name across the
-# whole file: zero and t6 are the first and last, s11 and a7 the ones a short pane dropped first.
-for rn in zero ra sp gp tp t0 t1 t2 s0 s1 a0 a1 a2 a3 a4 a5 a6 a7 \
-          s2 s3 s4 s5 s6 s7 s8 s9 s10 s11 t3 t4 t5 t6; do
-  # the pane writes the name %-4s then a space, so match that exact shape and not "a1" inside
-  # some other line's text. No leading "0" of the value: a1 is stepped and holds a real address.
-  need_screen "$(printf '%-4s ' "$rn")" "q  leave"
-done
-# The prompt scrolls inside its region and the panes do not move with it: the register heading is
-# still on row 1 after everything above has been typed. Without the scroll region the panes slide
-# up the screen and this row holds prompt text instead.
-if ! screen "q  leave" | head -1 | grep -q "registers"; then
-  echo "FAIL asm-repl smoke -- the register pane moved; row 1 is:" >&2
-  screen "q  leave" | head -1 >&2
-  fail=1
-fi
-# the memory pane is beside the registers, pointed where `d` put it
-need_screen "memory" "q  leave"
 need "asm REPL: out"
 
-# The layout is STANDING: after AsmRepl exits, the HolyC prompt has scrolled a screenful and the
-# register pane is still on row 1 rather than somewhere up the screen or written over.
-if ! screen_num | grep -q "^01|registers"; then
-  echo "FAIL asm-repl smoke -- the pane is not on row 1 at the HolyC prompt; rows 1-13:" >&2
-  screen_num | sed -n 1,13p >&2
-  fail=1
-fi
-# ...and the prompt's own output stayed inside its region, below the panes.
-bad_row="$(screen_num | grep -n "ans=42" | sed 's/:.*//' | while read -r r; do
-  [ "$r" -lt 13 ] && echo "$r"
-done | head -1)"
-if [ -n "$bad_row" ]; then
-  echo "FAIL asm-repl smoke -- prompt output reached row $bad_row, inside the panes" >&2
-  screen_num | sed -n 1,14p >&2
+# The layout, checked on the reconstructed screen: values in a column on the right, the REPL on
+# the left. The terminal answered the size probe with 120x40, so the sidebar starts at column 76
+# (120 - 44) and the text column is everything left of it.
+# Stop before QEMU's own exit message: that is the host talking, not the guest, and it is not
+# wrapped to any column — it would land across the sidebar and fail every assertion below.
+if ! screen_num "qemu-system-riscv64" | SIDE=76 python3 -c '
+import sys, os, re
+side = int(os.environ["SIDE"])
+rows = {}
+for ln in sys.stdin.read().split("\n"):
+    if not ln:
+        continue
+    n, _, text = ln.partition("|")
+    rows[int(n)] = text
+bad = []
+
+def at(name):
+    """(row, col) of a pane entry printed as name + padding + 16 hex digits."""
+    pat = re.compile(r"\b" + re.escape(name) + r" +[0-9A-F]{16}")
+    for r in sorted(rows):
+        m = pat.search(rows[r])
+        if m:
+            return r, m.start()
+    return None, None
+
+GPR = ("zero ra sp gp tp t0 t1 t2 s0 s1 a0 a1 a2 a3 a4 a5 a6 a7 "
+       "s2 s3 s4 s5 s6 s7 s8 s9 s10 s11 t3 t4 t5 t6").split()
+CSR = ["mcause", "mepc", "mtval", "mstatus"]
+last_reg = 0
+for nm in GPR + CSR:
+    r, c = at(nm)
+    if r is None:
+        bad.append("register %s is not on screen" % nm)
+    elif c < side:
+        bad.append("%s is at column %d, left of the sidebar (%d)" % (nm, c, side))
+    else:
+        last_reg = max(last_reg, r)
+
+# a0 was stepped twice by 0x10, and the pane says so
+r, c = at("a0")
+if r is not None and "0000000000000020" not in rows[r][c:c+40]:
+    bad.append("a0 does not show 0000000000000020: %r" % rows[r][c:c+40])
+
+# memory under the registers, in the same column
+mem = [r for r in sorted(rows) if rows[r][side:side+7].strip() == "memory"]
+if not mem:
+    bad.append("no memory pane in the sidebar")
+elif mem[0] <= last_reg:
+    bad.append("memory pane at row %d is not below the registers (row %d)" % (mem[0], last_reg))
+
+# ...and the REPL text stayed in its own column. A row legitimately holds text on the left and
+# pane on the right, so what must be clean is the gutter between them: the text column wraps one
+# column short of the sidebar, so column side-1 is written by neither and must be blank on every
+# row. A line of output that ran past its column would show up here first.
+for r in sorted(rows):
+    text = rows[r]
+    if len(text) >= side and text[side-1] != " ":
+        bad.append("row %d has %r in the gutter column %d: %r"
+                   % (r, text[side-1], side-1, text[max(0, side-30):side+20]))
+if bad:
+    for b in bad:
+        print("  " + b)
+    sys.exit(1)
+' >&2; then
+  echo "FAIL asm-repl smoke -- the sidebar layout is wrong (screen above)" >&2
+  screen_num | sed -n 1,30p >&2
   fail=1
 fi
 

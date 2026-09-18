@@ -117,8 +117,8 @@ I64 main()
       // The pane repaints after every stepped instruction, at this prompt and inside AsmRepl:
       // AsmStep itself is the painter (one painter — two would each see "nothing changed since
       // the other" and wash the red out).
-      AsmWatchInstall(&RegPaneUpdate);
-      RVExePubFunNew("RegPane", &RegPaneUpdate, cmp.internal_types[RT_U0], 0);
+      AsmWatchInstall(&RegPaneStep);
+      RVExePubFunNew("RegPane", &RegPaneStep, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("RegPaneCost", &RegPaneCost, cmp.internal_types[RT_I64], 0);
       // Dbg/G: the stock entry points. A faulting line paints this view automatically below.
       RVExePubFunNew("Dbg", &Dbg, cmp.internal_types[RT_U0], 0);
@@ -130,6 +130,9 @@ I64 main()
       // this prompt too, and a pane in the column the prompt scrolls through gets scribbled
       // over and then looks frozen. Cls puts it back rather than leaving bare rows behind.
       DbgSetRelayout(&AsmUiLayout);
+      // The panes go back up at every prompt: output scrolls the screen and a sidebar scrolls
+      // with it, so the prompt — the moment the screen is quiet — is where it is put back.
+      RVLineEdPrePrompt(&AsmUiPrePrompt);
       // Tab at the HolyC prompt completes from the hash table — every function, global, type
       // and register label the REPL can resolve, including ones defined a moment ago.
       RVLineEdComplete(&RVHashComplete);
@@ -198,13 +201,18 @@ I64 main()
   }
   UartPutS("A2: Cmp compiled 40+2\n");
   UartPutS("A2: type HolyC; 'q' quits\n");
-  if (dbg_view_ready)
+  if (dbg_view_ready) {
+    // Ask the terminal how big it is before deciding where anything goes — a sidebar on an
+    // 80-column screen is a different layout from one on a 120-column screen, and guessing is
+    // how ten registers went missing the first time.
+    RVVtProbeSize(300);
     AsmUiLayout(0, TRUE);
-  // registers across the top, the prompt scrolling below them, from here on
+  }
   while (TRUE) {
-    UartPutS("> ");
-    // History + Tab completion at the main prompt too (RVUartGetLine has neither).
-    n = RVLineEd(line, 160, "");
+    // History + Tab completion at the main prompt too (RVUartGetLine has neither). The prompt
+    // belongs to the editor now: it redraws the line, and a line longer than the text column
+    // scrolls sideways under the cursor rather than running over the sidebar.
+    n = RVLineEd(line, 160, "> ");
     if (n < 0)
       continue;
     if (n <= 0)
@@ -213,10 +221,11 @@ I64 main()
       break;
     if (RVTrapRecoverArm()) {
       I64 cause = RVTrapRecoverCause();
-      UartPutS("\n*** fault in that line; returning to prompt\n");
-      StrPrint(buf, "    mcause=%d mepc=%X mtval=%X ra=%X\n", cause,
-        RVTrapRecoverEpc(), RVTrapRecoverTval(), RVTrapRecoverRa());
-      UartPutS(buf);
+      // Through the chain, not UartPutS: printed output is kept inside the text column so it
+      // cannot be written over the panes beside it.
+      "\n*** fault in that line; returning to prompt\n";
+      "    mcause=%d mepc=%X mtval=%X ra=%X\n", cause, RVTrapRecoverEpc(),
+          RVTrapRecoverTval(), RVTrapRecoverRa();
       // Land in the debugger view: registers + the decoded fault, then back to this prompt,
       // where _A0 / Dr / U(_PC-16) / AsmStep already work. Stock TempleOS Dbg(), not a modal UI.
       if (dbg_view_ready) {
@@ -232,8 +241,7 @@ I64 main()
     }
     r = ExePutS(line);
     RVTrapRecoverDisarm();
-    StrPrint(buf, "ans=%d\n", r);
-    UartPutS(buf);
+    "ans=%d\n", r;
     ok++;
   }
   if (!ok) {

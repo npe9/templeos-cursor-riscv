@@ -18,24 +18,25 @@
 
 #define ASMUI_CTX 0x87000400
 // the register file: x0..x31, shared with the debugger and the _Xn labels
-#define ASMUI_REG_ROWS 12
-// registers, three to a row: rows 1-12
-#define ASMUI_MEM_ROWS 6
-// memory, when the asm REPL is up: rows 13-18
-#define ASMUI_SCREEN_ROWS 25
+#define ASMUI_SIDE_COLS 44
+// two 64-bit registers to a row, side by side: 2 x 22
+#define ASMUI_MIN_TEXT 32
+// narrower than this and the text column is not worth having — stack the panes on top instead
 
-// The layout is STANDING, not something AsmRepl puts up and takes down. The register pane is
-// live at the HolyC prompt too (AsmStep repaints it from wherever it is called), and a pane in
-// the column the prompt scrolls through gets scribbled over and then looks frozen — the
-// renderer's shadow still believes it owns those rows. So the panes own the top of the screen
-// for as long as the image runs, and every prompt scrolls in the region below them:
-//   mode 0  registers only, prompt in rows 13-25   (the HolyC prompt)
-//   mode 1  registers + memory, prompt in 19-25    (inside AsmRepl)
-// A terminal can only pin whole rows (DECSTBM), which is why the panes are on top rather than
-// beside the text. Re-applied after anything that could have disturbed it — a clear, a fault —
-// because the one thing worse than no layout is a layout the renderer believes in and the
-// terminal does not.
+// The values live in a column on the right and the REPL has the left: registers at the top,
+// the machine state under them, memory under that.
+//
+// A terminal cannot pin a column — DECSTBM scrolls whole rows — so the sidebar is not pinned,
+// it is REPAINTED: printed output is kept inside the text column (RVDolAnsiWrap, RVLineEdWrap)
+// so it can never be written over the panes, and the panes are put back at every prompt, which
+// is the moment the screen is quiet again. What changed is latched at the step (RegPaneMark),
+// so a register that moved is still red however many times the pane is repainted afterwards.
+//
+// On a terminal too narrow to split, the same panes stack across the top with the prompt in a
+// scroll region below them. Which one is in force is decided from the size the terminal
+// reported (RVVtProbeSize), not assumed.
 I64 asmui_mem_addr, asmui_running, asmui_step_fn, asmui_mode;
+I64 asmui_side, asmui_side_col, asmui_text_cols, asmui_mem_row, asmui_mem_rows, asmui_ready;
 
 // AsmReplInstallStep -- AsmReplInstallStep(&AsmStep)
 // NAME
@@ -98,12 +99,12 @@ U0 AsmUiScrolled()
 {
 }
 
-// After a step: AsmStep's watch hook has already repainted the registers (and marked what
-// changed in red), so this must NOT repaint them — a second paint would find nothing changed
-// since the first and draw every register calm again, which is the red vanishing as you watch.
+// The memory pane, under the registers in whichever layout is in force.
 U0 AsmUiPanes()
 {
   I64 addr;
+  if (!asmui_ready)
+    return;
   addr = asmui_mem_addr;
   if (!addr)
     addr = *(I64 *)(ASMUI_CTX + 2 * 8);
@@ -112,8 +113,8 @@ U0 AsmUiPanes()
   // to the register file itself: `d <addr>` is then an obvious next move.
   if (!addr)
     addr = ASMUI_CTX;
-  // directly under the registers, full width
-  DbgMemPaneAt(addr, 64, 12, 0, 6, 70);
+  DbgMemAt(addr, asmui_mem_row, asmui_side ? asmui_side_col : 0, asmui_mem_rows,
+           asmui_side ? ASMUI_SIDE_COLS : asmui_text_cols);
 }
 
 // AsmUiLayout -- AsmUiLayout(mode, home)
@@ -131,20 +132,70 @@ U0 AsmUiPanes()
 //   AsmRepl  RVDocTextScrollRegion  RegPaneUpdate  Cls
 public U0 AsmUiLayout(I64 mode = -1, I64 home = FALSE)
 {
-  I64 top;
+  I64 rows, cols, reg_rows;
   if (mode >= 0)
     asmui_mode = mode;
-  top = ASMUI_REG_ROWS;
-  if (asmui_mode)
-    top += ASMUI_MEM_ROWS;
-  RVDocTextScrollRegion(top + 1, ASMUI_SCREEN_ROWS);
-  RVVtGoto(home ? top : ASMUI_SCREEN_ROWS - 1, 0);
-  RVVtFlush;
+  rows = rv_vt_term_rows;
+  cols = rv_vt_term_cols;
+  asmui_side = cols - ASMUI_SIDE_COLS >= ASMUI_MIN_TEXT;
+  if (asmui_side) {
+    asmui_side_col = cols - ASMUI_SIDE_COLS;
+    asmui_text_cols = asmui_side_col - 1;
+    // one column of gutter, so a full line of text does not touch the pane
+    RegPaneAt(0, asmui_side_col, 1, ASMUI_SIDE_COLS);
+    reg_rows = RegPaneRowsNeeded;
+    // ask at this width, then give it what it asked for
+    if (reg_rows > rows - 3)
+      reg_rows = rows - 3;
+    RegPaneAt(0, asmui_side_col, reg_rows, ASMUI_SIDE_COLS);
+    asmui_mem_row = reg_rows;
+    asmui_mem_rows = rows - reg_rows;
+    RVDocTextScrollRegion(0, 0);
+    // the text column scrolls the whole screen; the sidebar is repainted rather than pinned
+    if (home) {
+      RVVtGoto(0, 0);
+      RVVtFlush;
+    }
+  } else {
+    RegPaneAt(0, 0, 1, cols);
+    reg_rows = RegPaneRowsNeeded;
+    if (reg_rows > rows - 6)
+      reg_rows = rows - 6;
+    RegPaneAt(0, 0, reg_rows, cols);
+    asmui_text_cols = cols;
+    asmui_mem_row = reg_rows;
+    asmui_mem_rows = asmui_mode ? 5 : 0;
+    RVDocTextScrollRegion(reg_rows + asmui_mem_rows + 1, rows);
+    RVVtGoto(home ? reg_rows + asmui_mem_rows : rows - 1, 0);
+    // DECSTBM homes the cursor into the panes, so it always has to be put back in the region
+    RVVtFlush;
+  }
+  RVLineEdWrap(asmui_text_cols);
+  RVDolAnsiWrap(asmui_text_cols);
+  asmui_ready = 1;
   RVDocTextInvalidate;
   // whatever was on those rows, the shadow no longer describes it
   RegPaneUpdate;
-  if (asmui_mode)
-    AsmUiPanes;
+  AsmUiPanes;
+}
+
+// AsmUiPrePrompt -- installed with RVLineEdPrePrompt(&AsmUiPrePrompt)
+// NAME
+//   AsmUiPrePrompt - put the sidebar back before each line is read
+// DESCRIPTION
+//   Output scrolls the screen and the sidebar scrolls with it. Rather than fight the terminal
+//   for every line, the panes are repainted at the prompt — the one moment the screen is quiet
+//   and the operator is looking. The marks from the last step survive it, so the registers that
+//   moved are still red.
+// SEE ALSO
+//   AsmUiLayout  RegPaneMark  RVLineEdPrePrompt
+U0 AsmUiPrePrompt()
+{
+  if (!asmui_ready)
+    return;
+  RVDocTextInvalidate;
+  RegPaneUpdate;
+  AsmUiPanes;
 }
 
 // AsmRepl -- AsmRepl()
@@ -173,7 +224,6 @@ public U0 AsmRepl()
   asmui_running = 1;
   prev_fn = rv_led_complete_fn;
   RVLineEdComplete(&AsmUiComplete);
-  asmui_mode = 1;
   Cls;
   // Cls re-applies the layout through the relayout hook; without one (an image that did not wire
   // it) put it up directly, so the loop works either way.
@@ -216,8 +266,7 @@ public U0 AsmRepl()
   asmui_running = 0;
   RVLineEdComplete(prev_fn);
   asmui_mode = 0;
-  // back to the prompt layout: the register pane stays, the memory pane's rows go back to the
-  // prompt. The layout never comes down entirely — the pane is live at the HolyC prompt too.
+  // the sidebar stays up: the registers are live at the HolyC prompt too
   Cls;
   "asm REPL: out\n";
 }

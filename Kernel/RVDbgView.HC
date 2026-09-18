@@ -19,8 +19,8 @@
 // legacy freeze slots: 18 mcause, 19 mepc, 20 mtval, 21 mstatus
 #define DBGV_SNAP_X 0x87000400
 // canonical x0..x31
-#define DBGV_STATUS_ROW REGP_ROWS
-// straight under the register pane
+#define DBGV_STATUS_ROW regp_rows
+// straight under the register pane, however many rows it is using
 
 CDoc *dbgv_doc, *dbgv_dis, *dbgv_mem;
 I64 dbgv_bytes, dbgv_dis_bytes, dbgv_mem_bytes, dbgv_in_trap, dbgv_primed;
@@ -322,18 +322,51 @@ public U0 DbgDm(I64 addr, I64 n = 64)
   DbgMemPane(addr, n);
 }
 
-// Same pane, placed by the caller — the asm REPL wants it beside the registers at the top,
-// with the prompt scrolling underneath.
-U0 DbgMemPaneAt(I64 addr, I64 n, I64 row, I64 col, I64 rows, I64 cols)
+// DbgMemAt -- DbgMemAt(addr, row, col, rows, cols)
+// NAME
+//   DbgMemAt - the memory pane, placed and sized by the caller
+// DESCRIPTION
+//   Built here rather than captured from RVWinSerialMd, because Md prints sixteen bytes to a
+//   line and this pane is often a 44-column sidebar. Bytes to a row come from the width — the
+//   widest power of two that fits — and the pane fills exactly the rows it was given, so the
+//   layout decides how much memory is on screen rather than the other way round.
+// SEE ALSO
+//   Dm  D  Da  AsmUiLayout
+public U0 DbgMemAt(I64 addr, I64 row, I64 col, I64 rows, I64 cols)
 {
-  I64 save_row;
-  save_row = dbgv_mem_row;
-  dbgv_mem_row = row;
-  dbgv_mem_col = col;
-  dbgv_mem_rows = rows;
-  dbgv_mem_cols = cols;
-  DbgMemPane(addr, n);
-  dbgv_mem_row = save_row;
+  U8 line[160], cell[8];
+  I64 per, i, b, n;
+  if (!addr || rows < 2 || cols < 16)
+    return;
+  if (!dbgv_mem) {
+    dbgv_mem = DocNew();
+    if (!dbgv_mem)
+      return;
+  }
+  per = (cols - 11) / 3;
+  if (per >= 16)
+    per = 16;
+  else if (per >= 8)
+    per = 8;
+  else
+    per = 4;
+  n = per * (rows - 1);
+  DocClear(dbgv_mem);
+  DocPutS(dbgv_mem, "$FG,5$memory$FG$\n");
+  i = 0;
+  while (i < n) {
+    StrPrint(line, "%08X ", addr + i);
+    b = 0;
+    while (b < per) {
+      StrPrint(cell, "%02X ", *(U8 *)(addr + i + b));
+      StrCat(line, cell);
+      b++;
+    }
+    DocPutS(dbgv_mem, line);
+    DocPutS(dbgv_mem, "\n");
+    i += per;
+  }
+  dbgv_mem_bytes = RVDocTextRender(dbgv_mem, row, col, rows, cols);
 }
 
 // DbgViewPrime -- DbgViewPrime()
