@@ -83,6 +83,14 @@ feed() {
      "\x01?sfen\t\x15\n",
      # ...and the doc for one mnemonic, without leaving the stepper
      "? sd",
+     # Program PMP entry 0 as a 64 KiB NAPOT region at 0x80000000, so the decoder is exercised
+     # rather than just reporting every entry OFF. addr = base>>2 | (size/8 - 1); cfg = NAPOT
+     # (A=3) with rwx. Safe to do from here: an UNLOCKED entry does not apply to M-mode, so this
+     # cannot wall the debugger off from its own memory.
+     "li t0, 0x20001FFF",
+     "csrw 0x3B0, t0",
+     "li t0, 0x1F",
+     "csrw 0x3A0, t0",
      "?",
      "q",
      # The same catalog as REPL functions at the HolyC prompt
@@ -95,6 +103,7 @@ feed() {
      # The stopped machine, read from the widened freeze rather than from the hardware now
      "Machine;",
      "Plic;",
+     "Pmp;",
      # Back at the HolyC prompt, with enough output to scroll its region right through. The
      # panes are live here too, so this is where a layout that only existed inside AsmRepl
      # would be scribbled over and then look frozen.
@@ -267,6 +276,12 @@ need "nothing delegated (all traps taken in M-mode)"
 # would acknowledge an interrupt the system was about to service.
 need "PLIC @ 0xC000000"
 need "claim/complete not read"
+# PMP, which is a build option (CONFIG_HAS_PMP): these CSRs are optional in the ISA and reading
+# one on a hart without them faults. virt has 16 entries, so this build reads them.
+need "PMP: 16 entries"
+# ...and the NAPOT decode of the entry the asm REPL just programmed: the trailing ones of the
+# address are the size, which is the part worth testing.
+need "pmp0 rwx NAPOT 0x80000000..0x80010000 (65536 bytes)"
 # t6 survives a step now: it is the wrapper base register, and it used to be clobbered before it
 # was ever saved, so this line ran and the value vanished.
 need "t6   0000000000000000 -> 0000000000000003"

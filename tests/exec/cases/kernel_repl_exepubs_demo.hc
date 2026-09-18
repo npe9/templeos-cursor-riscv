@@ -164,6 +164,7 @@ I64 main()
       RVExePubFunNew("Mstatus", &Mstatus, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Mcause", &Mcause, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Uptime", &Uptime, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("Pmp", &Pmp, cmp.internal_types[RT_U0], 0);
       {
         // Plic(): the interrupt controller is architectural state too, and nothing could read it
         CHashFun *tp2;

@@ -109,6 +109,37 @@ config ENTRY_POINT
 	  typically reserve 0x40000000–0x40200000 — link at 0x40200000.
 	  Feeds kconfig.mk ENTRY_POINT / LOAD_BASE / RAM_BASE.
 
+config HAS_PMP
+	bool "Hart implements PMP (physical memory protection)"
+	default y if PLATFORM_VIRT
+	default y if PLATFORM_SIFIVE_U
+	default y if PLATFORM_SIFIVE_E
+	default y if PLATFORM_SPIKE
+	default y if PLATFORM_MICROCHIP_ICICLE
+	default y if PLATFORM_VISIONFIVE2 || PLATFORM_MILKV_MARS
+	default n
+	help
+	  Whether pmpcfg*/pmpaddr* exist on this hart, which decides whether the
+	  debugger can show them (Pmp(); in the REPL).
+
+	  This has to be a configuration question rather than a runtime one: PMP
+	  CSRs are optional, and reading one on a hart that does not implement it
+	  raises an illegal instruction. In a debugger that is worse than the gap
+	  it fills — the fault lands in the trap handler you were trying to look
+	  at. Say n for a hart you are unsure about, and Pmp() will say it was
+	  configured out instead of faulting.
+
+	  QEMU virt implements 16 entries, so this defaults to y there.
+
+config PMP_ENTRIES
+	int "PMP entries the hart implements"
+	default 16
+	depends on HAS_PMP
+	help
+	  How many pmpaddr registers to read (0..15 on QEMU virt; the RISC-V
+	  privileged spec allows 0, 16 or 64). Entries above what the hart has
+	  read as zero rather than faulting, so this is about how much to print.
+
 endmenu
 
 menu "Memory map / link"

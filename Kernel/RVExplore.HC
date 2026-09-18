@@ -436,6 +436,126 @@ public U0 Plic(I64 max_irq = 32)
   Print("  (claim/complete not read: a read of claim acknowledges the interrupt)\n");
 }
 
+#ifdef CONFIG_HAS_PMP
+// One pmpaddr. The CSR number is an immediate, so there is no indexing a CSR — sixteen stubs and
+// a chain is what "read pmpaddr[i]" costs on this machine. See docs/DEBUG_STATE_SURVEY.md §2.
+I64 RVPmpAddr(I64 i)
+{
+  if (i == 0)
+    return RVWinCsrrPmpaddr0();
+  if (i == 1)
+    return RVWinCsrrPmpaddr1();
+  if (i == 2)
+    return RVWinCsrrPmpaddr2();
+  if (i == 3)
+    return RVWinCsrrPmpaddr3();
+  if (i == 4)
+    return RVWinCsrrPmpaddr4();
+  if (i == 5)
+    return RVWinCsrrPmpaddr5();
+  if (i == 6)
+    return RVWinCsrrPmpaddr6();
+  if (i == 7)
+    return RVWinCsrrPmpaddr7();
+  if (i == 8)
+    return RVWinCsrrPmpaddr8();
+  if (i == 9)
+    return RVWinCsrrPmpaddr9();
+  if (i == 10)
+    return RVWinCsrrPmpaddr10();
+  if (i == 11)
+    return RVWinCsrrPmpaddr11();
+  if (i == 12)
+    return RVWinCsrrPmpaddr12();
+  if (i == 13)
+    return RVWinCsrrPmpaddr13();
+  if (i == 14)
+    return RVWinCsrrPmpaddr14();
+  if (i == 15)
+    return RVWinCsrrPmpaddr15();
+  return 0;
+}
+
+// The A field: how the entry's address is interpreted.
+U8 *RVPmpModeName(I64 a)
+{
+  if (!a)
+    return "OFF";
+  if (a == 1)
+    return "TOR";
+  if (a == 2)
+    return "NA4";
+  return "NAPOT";
+}
+
+// Pmp -- Pmp()
+// NAME
+//   Pmp - the physical memory protection entries, decoded
+// SYNOPSIS
+//   Pmp;
+// DESCRIPTION
+//   Sixteen entries on QEMU virt, each a permission set (R/W/X), an addressing mode and a range.
+//   NAPOT packs the size into the address: the trailing ones say how big the region is, so
+//   0x...0111 is a 64-byte region and an entry of all ones is the whole address space. TOR takes
+//   its lower bound from the PREVIOUS entry's address, which is why they are printed in order.
+//   A locked entry (L) cannot be changed until reset, and applies to M-mode as well.
+// SEE ALSO
+//   Csr  Machine  Plic
+public U0 Pmp()
+{
+  I64 i, cfg, byte, a, addr, prev = 0, k, base, size, shown = 0;
+  Print("PMP: %d entries\n", CONFIG_PMP_ENTRIES);
+  i = 0;
+  while (i < CONFIG_PMP_ENTRIES && i < 16) {
+    cfg = RVWinCsrrPmpcfg0();
+    if (i >= 8)
+      cfg = RVWinCsrrPmpcfg2();
+    byte = (cfg >> ((i & 7) * 8)) & 0xFF;
+    addr = RVPmpAddr(i);
+    a = (byte >> 3) & 3;
+    if (a) {
+      // No %-Nd here: HolyC's Print right-justifies it, so "pmp%-2d" reads "pmp 0" and the
+      // column does not line up with anything anyway.
+      Print("  pmp%d %s%s%s %s", i, byte & 1 ? "r" : "-", byte & 2 ? "w" : "-",
+            byte & 4 ? "x" : "-", RVPmpModeName(a));
+      if (a == 1) {
+        // TOR: [previous entry's address, this one)
+        Print(" 0x%08X..0x%08X\n", prev << 2, addr << 2);
+      } else if (a == 2) {
+        Print(" 0x%08X..0x%08X\n", addr << 2, (addr << 2) + 4);
+      } else {
+        // NAPOT: the trailing ones of the address are the size
+        k = 0;
+        while (k < 60 && (addr >> k) & 1)
+          k++;
+        base = (addr & ~((1 << k) - 1)) << 2;
+        size = 1 << (k + 3);
+        Print(" 0x%08X..0x%08X (%d bytes)\n", base, base + size, size);
+      }
+      if (byte & 0x80)
+        Print("        locked until reset, and it binds M-mode too\n");
+      shown++;
+    }
+    prev = addr;
+    i++;
+  }
+  if (!shown)
+    Print("  every entry is OFF: nothing is protected, and M-mode has all of memory\n");
+}
+#else
+// Pmp -- Pmp()
+// NAME
+//   Pmp - say that PMP was configured out rather than fault trying to read it
+// DESCRIPTION
+//   CONFIG_HAS_PMP=n. pmpcfg/pmpaddr are optional CSRs and reading one on a hart without them
+//   raises an illegal instruction, which in a debugger means faulting inside the thing you were
+//   trying to look at. Turn it on in menuconfig for a hart that has them.
+public U0 Pmp()
+{
+  Print("Pmp: built without PMP (CONFIG_HAS_PMP=n in templeos-riscv/Kconfig)\n");
+}
+#endif
+
 public U0 Uptime()
 {
   //Hart free-running counters (Zicntr): cycle, time (mtime tick), instret.

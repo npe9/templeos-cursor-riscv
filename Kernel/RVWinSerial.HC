@@ -46,6 +46,65 @@ asm {
 	RVWinCsrrFcsr::
 	csrr	a0, 0x003
 	ret
+#ifdef CONFIG_HAS_PMP
+// PMP is optional in the ISA: reading pmpcfg/pmpaddr on a hart without it raises an illegal
+// instruction, so whether these stubs exist at all is a configuration question (CONFIG_HAS_PMP,
+// templeos-riscv/Kconfig). QEMU virt implements 16 entries.
+	RVWinCsrrPmpcfg0::
+	csrr	a0, 0x3A0
+	ret
+	RVWinCsrrPmpcfg2::
+	csrr	a0, 0x3A2
+	ret
+	RVWinCsrrPmpaddr0::
+	csrr	a0, 0x3B0
+	ret
+	RVWinCsrrPmpaddr1::
+	csrr	a0, 0x3B1
+	ret
+	RVWinCsrrPmpaddr2::
+	csrr	a0, 0x3B2
+	ret
+	RVWinCsrrPmpaddr3::
+	csrr	a0, 0x3B3
+	ret
+	RVWinCsrrPmpaddr4::
+	csrr	a0, 0x3B4
+	ret
+	RVWinCsrrPmpaddr5::
+	csrr	a0, 0x3B5
+	ret
+	RVWinCsrrPmpaddr6::
+	csrr	a0, 0x3B6
+	ret
+	RVWinCsrrPmpaddr7::
+	csrr	a0, 0x3B7
+	ret
+	RVWinCsrrPmpaddr8::
+	csrr	a0, 0x3B8
+	ret
+	RVWinCsrrPmpaddr9::
+	csrr	a0, 0x3B9
+	ret
+	RVWinCsrrPmpaddr10::
+	csrr	a0, 0x3BA
+	ret
+	RVWinCsrrPmpaddr11::
+	csrr	a0, 0x3BB
+	ret
+	RVWinCsrrPmpaddr12::
+	csrr	a0, 0x3BC
+	ret
+	RVWinCsrrPmpaddr13::
+	csrr	a0, 0x3BD
+	ret
+	RVWinCsrrPmpaddr14::
+	csrr	a0, 0x3BE
+	ret
+	RVWinCsrrPmpaddr15::
+	csrr	a0, 0x3BF
+	ret
+#endif
 	RVWinCsrrMcycle::
 	csrr	a0, 0xB00
 	ret
