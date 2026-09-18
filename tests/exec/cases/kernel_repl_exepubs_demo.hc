@@ -121,7 +121,24 @@ I64 main()
       // how you fault twice), then hand the runtime the hook so G can actually continue.
       DbgViewPrime();
       RVSetDbgHook(&DbgTrapHook);
-      RVExePubFunNew("Dm", &DbgDm, cmp.internal_types[RT_U0], 2);
+      {
+        CHashFun *tf;
+        tf = RVExePubFunNew("Dm", &DbgDm, cmp.internal_types[RT_U0], 2);
+        if (tf) {
+          RVExePubAddArg(tf, "addr", cmp.internal_types[RT_I64]);
+          RVExePubAddArg(tf, "n", cmp.internal_types[RT_I64], MLF_DFT_AVAILABLE, 64);
+        }
+        tf = RVExePubFunNew("D", &DbgD, cmp.internal_types[RT_U0], 2);
+        if (tf) {
+          RVExePubAddArg(tf, "addr", cmp.internal_types[RT_I64]);
+          RVExePubAddArg(tf, "n", cmp.internal_types[RT_I64], MLF_DFT_AVAILABLE, 64);
+        }
+        tf = RVExePubFunNew("Da", &DbgDa, cmp.internal_types[RT_U0], 2);
+        if (tf) {
+          RVExePubAddArg(tf, "addr", cmp.internal_types[RT_I64]);
+          RVExePubAddArg(tf, "n", cmp.internal_types[RT_I64], MLF_DFT_AVAILABLE, 16);
+        }
+      }
       dbg_view_ready = 1;
       UartPutS("A2 reg pane wired\n");
     }

@@ -83,6 +83,8 @@ feed() {
      "DbgDisasmCost;",
      "_MCAUSE;",
      "G;",
+     "D(_SP, 32);",
+     "Da(_SP, 8);",
      "q",
     );
     select(undef,undef,undef,5);
@@ -96,6 +98,53 @@ feed() {
 }
 out="$(feed | $TIMEOUT 180 "$QEMU" -M virt -m 128M -bios none \
   -kernel "$T/kp.elf" -nographic 2>&1 | LC_ALL=C tr -d '\r')"
+
+# Reconstruct the terminal from the escape stream. The renderer only sends cells that CHANGED,
+# so a pane's text is not contiguous in the output: painting "Da (addresses)" over
+# "D (offsets from 0)" emits just "a (addre" and "ses)" with cursor moves between. Grepping raw
+# output for pane text therefore fails on correct behaviour. Replay it instead.
+screen() {
+  printf '%s' "$out" | python3 -c '
+import sys
+d = sys.stdin.read()
+scr = [[" "]*100 for _ in range(30)]
+r = c = 0
+i = 0
+while i < len(d):
+    if d[i] == "\x1b" and i+1 < len(d) and d[i+1] == "[":
+        j = i+2
+        while j < len(d) and not d[j].isalpha():
+            j += 1
+        if j < len(d):
+            if d[j] == "H":
+                a = d[i+2:j].split(";")
+                try:
+                    r = int(a[0])-1 if a[0] else 0
+                    c = int(a[1])-1 if len(a) > 1 and a[1] else 0
+                except ValueError:
+                    pass
+            i = j+1
+            continue
+    ch = d[i]
+    if ch == "\n":
+        r += 1; c = 0
+    elif ch == "\r":
+        c = 0
+    elif ch >= " " and 0 <= r < 30 and 0 <= c < 100:
+        scr[r][c] = ch; c += 1
+    i += 1
+for row in scr:
+    line = "".join(row).rstrip()
+    if line:
+        print(line)
+'
+}
+need_screen() {
+  if ! screen | grep -qF -- "$1"; then
+    echo "FAIL asm-repl smoke -- not on screen: $1" >&2
+    fail=1
+  fi
+}
 
 fail=0
 need() {
@@ -151,6 +200,14 @@ fi
 # paints the view and waits for a key, so "fault in that line" must NOT appear — `g` resumes the
 # line instead and it returns a value like any other. That is the whole point of G.
 need "[dbg] g=go"
+# D numbers from zero (structure layout); Da names code addresses on the stack, which is what
+# makes a stack readable. Both render into the memory tile.
+# D paints into an empty tile, so its title is contiguous in the byte stream. Da then overwrites
+# the SAME tile, so only the changed cells go out and its title is split across cursor moves —
+# it has to be checked on the reconstructed screen, where it is also the one that survives.
+need "D (offsets from 0)"
+need_screen "Da (addresses)"
+need_screen "disasm at _PC"
 if printf '%s\n' "$out" | grep -qF "fault in that line"; then
   echo "FAIL asm-repl smoke -- the REPL recovered instead of the in-trap debugger handling it" >&2
   fail=1

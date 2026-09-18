@@ -213,6 +213,92 @@ U0 DbgMemPane(I64 addr, I64 n)
   dbgv_mem_bytes = RVDocTextRender(dbgv_mem, DBGV_STATUS_ROW + 6, 40, 10, 40);
 }
 
+// D -- D(addr, n)
+// NAME
+//   D - hex dump numbered from zero (stock TempleOS name)
+// SYNOPSIS
+//   D(addr, n = 64);
+// DESCRIPTION
+//   Stock D() numbers from zero rather than showing absolute addresses — it is for looking at a
+//   structure's layout, where the offset is what you want. Dm() is the same bytes with their
+//   real addresses. Built directly rather than captured: the offset column is the whole point,
+//   and RVWinSerialMd prints absolute addresses.
+// SEE ALSO
+//   Dm  Da  Dr  Dbg
+public U0 DbgD(I64 addr, I64 n = 64)
+{
+  U8 line[160], cell[8];
+  I64 i, b;
+  if (!addr || n <= 0)
+    return;
+  if (n > 0x400)
+    n = 0x400;
+  if (!dbgv_mem) {
+    dbgv_mem = DocNew();
+    if (!dbgv_mem)
+      return;
+  }
+  DocClear(dbgv_mem);
+  DocPutS(dbgv_mem, "$FG,5$D (offsets from 0)$FG$\n");
+  i = 0;
+  while (i < n) {
+    StrPrint(line, "%04X ", i);
+    b = 0;
+    while (b < 16 && i + b < n) {
+      StrPrint(cell, "%02X ", *(U8 *)(addr + i + b));
+      StrCat(line, cell);
+      b++;
+    }
+    DocPutS(dbgv_mem, line);
+    DocPutS(dbgv_mem, "\n");
+    i += 16;
+  }
+  dbgv_mem_bytes = RVDocTextRender(dbgv_mem, DBGV_STATUS_ROW + 6, 40, 10, 40);
+}
+
+// Da -- Da(addr, n)
+// NAME
+//   Da - one-column address dump with symbol names (stock TempleOS name)
+// SYNOPSIS
+//   Da(addr, n = 16);
+// DESCRIPTION
+//   Reads n I64s and names any that look like code, which is what makes a stack readable: this
+//   is the tool for "whose return addresses are on my stack". Symbols come from
+//   RVWinSerialSymName, the same source the backtrace uses.
+// EXAMPLES
+//   Da(_SP, 16);   // the stack under the fault
+// SEE ALSO
+//   D  Dm  Dbg  Dr
+public U0 DbgDa(I64 addr, I64 n = 16)
+{
+  U8 line[192], *sym;
+  I64 i, v;
+  if (!addr || n <= 0)
+    return;
+  if (n > 128)
+    n = 128;
+  if (!dbgv_mem) {
+    dbgv_mem = DocNew();
+    if (!dbgv_mem)
+      return;
+  }
+  DocClear(dbgv_mem);
+  DocPutS(dbgv_mem, "$FG,5$Da (addresses)$FG$\n");
+  i = 0;
+  while (i < n) {
+    v = *(I64 *)(addr + i * 8);
+    sym = RVWinSerialSymName(v);
+    if (sym)
+      StrPrint(line, "%016X %016X $FG,2$%s$FG$", addr + i * 8, v, sym);
+    else
+      StrPrint(line, "%016X %016X", addr + i * 8, v);
+    DocPutS(dbgv_mem, line);
+    DocPutS(dbgv_mem, "\n");
+    i++;
+  }
+  dbgv_mem_bytes = RVDocTextRender(dbgv_mem, DBGV_STATUS_ROW + 6, 40, 10, 40);
+}
+
 // Dm -- Dm(addr, n)
 // NAME
 //   Dm - dump memory into the debugger's memory tile (stock TempleOS name)
