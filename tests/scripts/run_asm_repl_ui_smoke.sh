@@ -87,6 +87,10 @@ feed() {
 out="$(feed | $TIMEOUT 180 "$QEMU" -M virt -m 128M -bios none \
   -kernel "$T/kp.elf" -nographic 2>&1 | LC_ALL=C tr -d '\r')"
 
+# Keep the raw stream: when an assertion about a pane fails, the only way to see why is to
+# replay it by hand.
+printf '%s' "$out" > "$OUTDIR/asm_repl_ui.out"
+
 # Reconstruct the terminal from the escape stream. The renderer only sends cells that CHANGED,
 # so a pane's text is not contiguous in the output: painting "Da (addresses)" over
 # "D (offsets from 0)" emits just "a (addre" and "ses)" with cursor moves between. Grepping raw
@@ -105,9 +109,19 @@ if stop:
     k = d.find(stop)
     if k >= 0:
         d = d[:k]
-scr = [[" "]*100 for _ in range(30)]
+ROWS = 25
+scr = [[" "]*100 for _ in range(ROWS)]
+top, bot = 0, ROWS-1   # DECSTBM, 0-based inclusive
 r = c = 0
 i = 0
+
+sr, sc = 0, 0          # DECSC/DECRC: what ESC 7 saved
+
+def scroll():
+    # scroll the region up one line, exactly as a terminal does. Without this the replay never
+    # scrolls and a pane looks pinned whether or not the scroll region actually pinned it.
+    del scr[top]
+    scr.insert(bot, [" "]*100)
 while i < len(d):
     if d[i] == "\x1b" and i+1 < len(d) and d[i+1] == "[":
         j = i+2
@@ -116,6 +130,14 @@ while i < len(d):
         if j < len(d):
             if d[j] == "J" and d[i+2:j] in ("2", "3"):
                 scr = [[" "]*100 for _ in range(len(scr))]
+                r = c = 0
+            if d[j] == "r":
+                a = d[i+2:j].split(";")
+                try:
+                    top = int(a[0])-1 if a[0] else 0
+                    bot = int(a[1])-1 if len(a) > 1 and a[1] else ROWS-1
+                except ValueError:
+                    top, bot = 0, ROWS-1
                 r = c = 0
             if d[j] == "H":
                 a = d[i+2:j].split(";")
@@ -126,12 +148,26 @@ while i < len(d):
                     pass
             i = j+1
             continue
+    if d[i] == "\x1b" and i+1 < len(d):
+        # A two-character escape, not CSI. ESC 7 / ESC 8 are how a pane repaint puts the cursor
+        # back at the prompt; a replay that skipped them printed a stray "7"/"8" into the pane
+        # and left the cursor wherever the pane finished.
+        if d[i+1] == "7":
+            sr, sc = r, c
+        elif d[i+1] == "8":
+            r, c = sr, sc
+        i += 2
+        continue
     ch = d[i]
     if ch == "\n":
-        r += 1; c = 0
+        if r == bot:
+            scroll()
+        else:
+            r += 1
+        c = 0
     elif ch == "\r":
         c = 0
-    elif ch >= " " and 0 <= r < 30 and 0 <= c < 100:
+    elif ch >= " " and 0 <= r < ROWS and 0 <= c < 100:
         scr[r][c] = ch; c += 1
     i += 1
 for row in scr:
@@ -165,6 +201,22 @@ need "asm> auipc"
 # Pane assertions stop at the help text: leaving AsmRepl clears the screen, so the final
 # screen shows nothing at all.
 need_screen "a0   0000000000000020" "q  leave"
+# All 32 registers, not the 22 that fitted in the old narrow sidebar. Checked by name across the
+# whole file: zero and t6 are the first and last, s11 and a7 the ones a short pane dropped first.
+for rn in zero ra sp gp tp t0 t1 t2 s0 s1 a0 a1 a2 a3 a4 a5 a6 a7 \
+          s2 s3 s4 s5 s6 s7 s8 s9 s10 s11 t3 t4 t5 t6; do
+  # the pane writes the name %-4s then a space, so match that exact shape and not "a1" inside
+  # some other line's text. No leading "0" of the value: a1 is stepped and holds a real address.
+  need_screen "$(printf '%-4s ' "$rn")" "q  leave"
+done
+# The prompt scrolls inside its region and the panes do not move with it: the register heading is
+# still on row 1 after everything above has been typed. Without the scroll region the panes slide
+# up the screen and this row holds prompt text instead.
+if ! screen "q  leave" | head -1 | grep -q "registers"; then
+  echo "FAIL asm-repl smoke -- the register pane moved; row 1 is:" >&2
+  screen "q  leave" | head -1 >&2
+  fail=1
+fi
 # the memory pane is beside the registers, pointed where `d` put it
 need_screen "memory" "q  leave"
 need "asm REPL: out"

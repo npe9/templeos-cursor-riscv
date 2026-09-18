@@ -17,6 +17,11 @@
 #help_index "Dbg"
 
 #define ASMUI_CTX 0x87000400
+#define ASMUI_PANE_ROWS 18
+// Rows the panes own (registers 1-12, memory 13-18). The prompt lives in a scroll region below
+// them, which is the only way a terminal can keep one part of the screen still: DECSTBM scrolls
+// whole rows, so a sidebar beside scrolling text is not something a terminal can pin. Panes on
+// top, prompt at the bottom — and the prompt stays where you left it.
 // the register file: x0..x31, shared with the debugger and the _Xn labels
 
 I64 asmui_mem_addr, asmui_running, asmui_step_fn;
@@ -66,13 +71,28 @@ I64 AsmUiComplete(U8 *word, U8 *out, I64 max)
         StrCpy(out, cand);
     }
   }
-  return hits == 1;
+  if (hits == 1)
+    return 1;
+  if (hits > 1)
+    return 0;
+  // not a register or a mnemonic: fall through to everything else the REPL knows, so Dr, _A0,
+  // AsmStep and anything you just defined complete here too
+  return RVHashComplete(word, out, max);
 }
 
+// The scroll region keeps the prompt's scrolling away from the pane rows, so the renderer's
+// shadow stays true and a step only sends the cells that changed. Nothing to do here now — kept
+// as the one place that would need to invalidate if the layout ever lets text touch the panes.
+U0 AsmUiScrolled()
+{
+}
+
+// After a step: AsmStep's watch hook has already repainted the registers (and marked what
+// changed in red), so this must NOT repaint them — a second paint would find nothing changed
+// since the first and draw every register calm again, which is the red vanishing as you watch.
 U0 AsmUiPanes()
 {
   I64 addr;
-  RegPaneUpdate;
   addr = asmui_mem_addr;
   if (!addr)
     addr = *(I64 *)(ASMUI_CTX + 2 * 8);
@@ -81,7 +101,8 @@ U0 AsmUiPanes()
   // to the register file itself: `d <addr>` is then an obvious next move.
   if (!addr)
     addr = ASMUI_CTX;
-  DbgDm(addr, 64);
+  // directly under the registers, full width
+  DbgMemPaneAt(addr, 64, 12, 0, 6, 70);
 }
 
 // AsmRepl -- AsmRepl()
@@ -111,6 +132,12 @@ public U0 AsmRepl()
   prev_fn = rv_led_complete_fn;
   RVLineEdComplete(&AsmUiComplete);
   Cls;
+  RVDocTextScrollRegion(ASMUI_PANE_ROWS + 1, 25);
+  RVVtGoto(ASMUI_PANE_ROWS, 0);
+  // 0-based here, 1-based there: both name the first row of the scroll region. The panes put the
+  // cursor back where they found it (RVVtSaveCur), so this is where the prompt stays.
+  RVVtFlush;
+  RegPaneUpdate;
   AsmUiPanes;
   "asm REPL: instructions are stepped; q leaves, d <addr> moves the memory pane, ? for keys\n";
   while (asmui_running) {
@@ -128,14 +155,19 @@ public U0 AsmRepl()
     }
     if (line[0] == 'r' && !line[1]) {
       Cls;
+      RVVtGoto(ASMUI_PANE_ROWS, 0);
+      RVVtFlush;
+      RegPaneUpdate;
       AsmUiPanes;
       continue;
     }
     if (line[0] == 'd' && line[1] == ' ') {
       asmui_mem_addr = Str2I64(line + 2);
+      AsmUiScrolled;
       AsmUiPanes;
       continue;
     }
+    AsmUiScrolled;
     if (asmui_step_fn) {
       I64 (*step)(U8 *t);
       step = asmui_step_fn;
@@ -147,6 +179,8 @@ public U0 AsmRepl()
   }
   asmui_running = 0;
   RVLineEdComplete(prev_fn);
+  RVDocTextScrollRegion(0, 0);
+  // the whole screen scrolls again
   Cls;
   "asm REPL: out\n";
 }

@@ -21,15 +21,25 @@
 #define REGP_PREV 0x87000700
 // the pane's own shadow: what it showed last time
 
-#define REGP_ROWS 9
-#define REGP_COLS 80
-#define REGP_COL_SAME 7
-// LTGRAY
-#define REGP_COL_MOVED 4
-// RED: this register just changed
+#define REGP_ROWS 12
+#define REGP_COLS 70
+// Full width at the top, three registers to a row: all 32 fit (11 rows + a heading), and each
+// entry is "name + 16 hex + gap" = 22 columns, so 3 x 22 = 66 fits inside 80 with room to spare.
+// A narrow right-hand sidebar could not show them all — that is why registers were missing.
+#define REGP_PER_ROW 3
+#define REGP_COL_SAME 15
+// WHITE — LTGRAY landed on the terminal's dim plane (SGR 90) and was hard to read
+#define REGP_COL_ZERO 8
+// DKGRAY: leading zeros, so the magnitude of a value reads at a glance
+#define REGP_COL_MOVED 12
+// LTRED: this register just changed
+#define REGP_COL_HEAD 14
+// YELLOW heading
 
 CDoc *regp_doc;
 I64 regp_bytes, regp_shown;
+I64 regp_row, regp_col;
+// top-left: the panes own the top of the screen and the prompt scrolls below them
 
 U0 RegPaneName(I64 n, U8 *out)
 {
@@ -57,6 +67,37 @@ U0 RegPaneName(I64 n, U8 *out)
     StrPrint(out, "t%d", n - 25);
 }
 
+// One register as document source: name, then the value with its leading zeros dimmed so the
+// eye lands on the significant digits. A changed register is loud; everything else stays calm
+// but readable — the old LTGRAY mapped onto the terminal's dim plane and disappeared.
+U0 RegPaneValue(U8 *out, U8 *nm, I64 v, I64 moved)
+{
+  U8 hex[24];
+  I64 i = 0, lead;
+  StrPrint(hex, "%016X", v);
+  lead = 0;
+  while (lead < 15 && hex[lead] == '0')
+    lead++;
+  // Never put two `$` next to each other: DolDoc reads `$$` as an escaped literal dollar, so
+  // "$FG$$FG,15$" parsed as `$FG` + `$` + "FG,15$" and printed "FG,15FG" into the pane. Each
+  // command is separated by the text it colours, and only the last one closes.
+  out[0] = 0;
+  StrPrint(out, "$FG,%d$%-4s ", moved ? REGP_COL_MOVED : REGP_COL_HEAD, nm);
+  StrPrint(out + StrLen(out), "$FG,%d$", REGP_COL_ZERO);
+  while (i < lead) {
+    out[StrLen(out) + 1] = 0;
+    out[StrLen(out)] = hex[i];
+    i++;
+  }
+  StrPrint(out + StrLen(out), "$FG,%d$", moved ? REGP_COL_MOVED : REGP_COL_SAME);
+  while (hex[i]) {
+    out[StrLen(out) + 1] = 0;
+    out[StrLen(out)] = hex[i];
+    i++;
+  }
+  StrPrint(out + StrLen(out), "$FG$ ");
+}
+
 // RegPaneUpdate -- RegPaneUpdate()
 // NAME
 //   RegPaneUpdate - repaint the live register pane; changed registers in red
@@ -81,23 +122,25 @@ U0 RegPaneUpdate()
       return;
   }
   DocClear(regp_doc);
-  DocPutS(regp_doc, "$FG,5$registers$FG$  (red = changed by the last step)\n");
+  StrPrint(line, "$FG,%d$registers $FG,%d$red = just changed$FG$\n", REGP_COL_HEAD,
+           REGP_COL_MOVED);
+  DocPutS(regp_doc, line);
   n = 0;
   col = 0;
   while (n < 32) {
     now = *(I64 *)(REGP_CTX + n * 8);
     was = *(I64 *)(REGP_PREV + n * 8);
     RegPaneName(n, nm);
-    StrPrint(line, "$FG,%d$%-4s %016X$FG$ ", now == was ? REGP_COL_SAME : REGP_COL_MOVED, nm, now);
+    RegPaneValue(line, nm, now, now != was);
     DocPutS(regp_doc, line);
     col++;
-    if (col % 3 == 0)
+    if (col % REGP_PER_ROW == 0)
       DocPutS(regp_doc, "\n");
     n++;
   }
-  if (col % 3)
+  if (col % REGP_PER_ROW)
     DocPutS(regp_doc, "\n");
-  regp_bytes = RVDocTextRender(regp_doc, 0, 0, REGP_ROWS, REGP_COLS);
+  regp_bytes = RVDocTextRender(regp_doc, regp_row, regp_col, REGP_ROWS, REGP_COLS);
   regp_shown = 1;
   n = 0;
   while (n < 32) {

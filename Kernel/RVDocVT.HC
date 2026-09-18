@@ -106,6 +106,20 @@ U0 RVVtCsi()
   RVVtPut(27);
   RVVtPut('[');
 }
+// DECSC/DECRC. A pane repaint happens while someone is typing at a prompt somewhere else on the
+// screen: it has to put the cursor back, and the COLOUR back too — the pane's last SGR would
+// otherwise tint the next thing the prompt echoes. ESC 7 saves both, ESC 8 restores both, which
+// is why this and not a remembered row/col.
+U0 RVVtSaveCur()
+{
+  RVVtPut(27);
+  RVVtPut('7');
+}
+U0 RVVtRestoreCur()
+{
+  RVVtPut(27);
+  RVVtPut('8');
+}
 // CSI row;colH — VT100 is 1-based, the grid is 0-based.
 U0 RVVtGoto(I64 row, I64 col)
 {

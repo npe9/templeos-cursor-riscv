@@ -24,6 +24,8 @@
 
 CDoc *dbgv_doc, *dbgv_dis, *dbgv_mem;
 I64 dbgv_bytes, dbgv_dis_bytes, dbgv_mem_bytes, dbgv_in_trap, dbgv_primed;
+I64 dbgv_mem_row = -1, dbgv_mem_col = 40, dbgv_mem_rows = 10, dbgv_mem_cols = 40;
+// -1 = the debugger's default slot under the status pane
 I64 dbgv_on_fault = 1;
 #define DBGV_WAIT_SEC 2
 // how long a fault waits for a human before giving up
@@ -213,7 +215,9 @@ U0 DbgMemPane(I64 addr, I64 n)
   DocPutS(dbgv_mem, "$FG,5$memory$FG$\n");
   DbgVPutEscaped(dbgv_mem, cap);
   Free(cap);
-  dbgv_mem_bytes = RVDocTextRender(dbgv_mem, DBGV_STATUS_ROW + 6, 40, 10, 40);
+  dbgv_mem_bytes = RVDocTextRender(dbgv_mem,
+                                   dbgv_mem_row < 0 ? DBGV_STATUS_ROW + 6 : dbgv_mem_row,
+                                   dbgv_mem_col, dbgv_mem_rows, dbgv_mem_cols);
 }
 
 // D -- D(addr, n)
@@ -256,7 +260,9 @@ public U0 DbgD(I64 addr, I64 n = 64)
     DocPutS(dbgv_mem, "\n");
     i += 16;
   }
-  dbgv_mem_bytes = RVDocTextRender(dbgv_mem, DBGV_STATUS_ROW + 6, 40, 10, 40);
+  dbgv_mem_bytes = RVDocTextRender(dbgv_mem,
+                                   dbgv_mem_row < 0 ? DBGV_STATUS_ROW + 6 : dbgv_mem_row,
+                                   dbgv_mem_col, dbgv_mem_rows, dbgv_mem_cols);
 }
 
 // Da -- Da(addr, n)
@@ -299,7 +305,9 @@ public U0 DbgDa(I64 addr, I64 n = 16)
     DocPutS(dbgv_mem, "\n");
     i++;
   }
-  dbgv_mem_bytes = RVDocTextRender(dbgv_mem, DBGV_STATUS_ROW + 6, 40, 10, 40);
+  dbgv_mem_bytes = RVDocTextRender(dbgv_mem,
+                                   dbgv_mem_row < 0 ? DBGV_STATUS_ROW + 6 : dbgv_mem_row,
+                                   dbgv_mem_col, dbgv_mem_rows, dbgv_mem_cols);
 }
 
 // Dm -- Dm(addr, n)
@@ -312,6 +320,20 @@ public U0 DbgDa(I64 addr, I64 n = 16)
 public U0 DbgDm(I64 addr, I64 n = 64)
 {
   DbgMemPane(addr, n);
+}
+
+// Same pane, placed by the caller — the asm REPL wants it beside the registers at the top,
+// with the prompt scrolling underneath.
+U0 DbgMemPaneAt(I64 addr, I64 n, I64 row, I64 col, I64 rows, I64 cols)
+{
+  I64 save_row;
+  save_row = dbgv_mem_row;
+  dbgv_mem_row = row;
+  dbgv_mem_col = col;
+  dbgv_mem_rows = rows;
+  dbgv_mem_cols = cols;
+  DbgMemPane(addr, n);
+  dbgv_mem_row = save_row;
 }
 
 // DbgViewPrime -- DbgViewPrime()

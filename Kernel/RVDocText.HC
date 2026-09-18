@@ -169,6 +169,33 @@ U0 RVDocTextFrame(I64 rows, I64 cols, U8 *title, I64 attr, I64 solid)
   }
 }
 
+// RVDocTextScrollRegion -- RVDocTextScrollRegion(top, bottom)
+// NAME
+//   RVDocTextScrollRegion - confine scrolling to part of the screen (DECSTBM)
+// SYNOPSIS
+//   RVDocTextScrollRegion(20, 25);   // rows 1..19 are frozen; the prompt scrolls below
+//   RVDocTextScrollRegion(0, 0);     // whole screen again
+// DESCRIPTION
+//   Panes paint at fixed rows and the renderer only sends cells that differ from its shadow.
+//   Anything that SCROLLS the terminal therefore desynchronises it: the panes slide up while
+//   the shadow still believes row 5 holds what it painted, so the next repaint sends nothing
+//   and the panes appear frozen. Pressing Enter at a prompt is enough to do it. A scroll region
+//   keeps the pane rows still, which is what makes a live pane above a prompt work at all.
+//   Rows are 1-based, as the terminal counts them.
+// SEE ALSO
+//   RVDocTextRender  RVDocTextInvalidate
+U0 RVDocTextScrollRegion(I64 top, I64 bottom)
+{
+  RVVtCsi;
+  if (top > 0 && bottom >= top) {
+    RVVtPutNum(top);
+    RVVtPut(';');
+    RVVtPutNum(bottom);
+  }
+  RVVtPut('r');
+  RVVtFlush;
+}
+
 // RVDocTextCaret -- RVDocTextCaret(doc, row0, col0, sx, sy)
 // NAME
 //   RVDocTextCaret - park the terminal cursor where the document's caret is
@@ -233,7 +260,7 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
                     I64 sx = 0, I64 sy = 0, I64 dft_attr = 0x07,
                     U8 *title = NULL, I64 border = 0, I64 border_attr = 0x07)
 {
-  I64 r, c, i, n, cur_attr = -1, run, start_bytes, tile, fresh, base;
+  I64 r, c, i, n, cur_attr = -1, run, start_bytes, tile, fresh, base, saved;
   U32 cell;
   if (!doc || rows <= 0 || cols <= 0)
     return 0;
@@ -282,6 +309,7 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
   }
   start_bytes = rv_vt_cost;
   r = 0;
+  saved = 0;
   while (r < rows) {
     c = 0;
     run = 0;
@@ -292,6 +320,12 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
         run = 0;
         c++;
         continue;
+      }
+      if (!saved) {
+        // Only once something is actually going to move: a tile whose cells all match still
+        // costs nothing on the wire, which is the property the whole diffing design rests on.
+        RVVtSaveCur();
+        saved = 1;
       }
       if (!run) {
         RVVtGoto(row0 + r, col0 + c);
@@ -307,6 +341,10 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
     }
     r++;
   }
+  if (saved)
+    RVVtRestoreCur();
+  // the caret goes back where the prompt left it; callers that want it parked in the document
+  // call RVDocTextCaret afterwards
   RVVtFlush;
   rv_dt_bytes = rv_vt_cost - start_bytes;
   return rv_dt_bytes;
