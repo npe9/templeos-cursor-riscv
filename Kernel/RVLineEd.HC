@@ -148,14 +148,18 @@ public I64 RVLineEd(U8 *buf, I64 max, U8 *prompt = NULL)
       if (!j)
         continue;
       complete = rv_led_complete_fn;
-      if (complete(word, comp, 128)) {
+      j = complete(word, comp, 128);
+      if (j == 1) {
         // replace [i,cur) with comp
         buf[i] = 0;
         StrCat(buf, comp);
         n = StrLen(buf);
         cur = n;
-        RVLedRedraw(prompt, buf, n, cur);
       }
+      if (j)
+        RVLedRedraw(prompt, buf, n, cur);
+      // 2 = the hook listed the candidates; the line is unchanged but the screen moved, so it
+      // has to be drawn again either way
       continue;
     }
     if (ch == 27) {

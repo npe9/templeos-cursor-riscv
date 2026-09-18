@@ -12,6 +12,7 @@
 #include "/Kernel/RVDbgView.HC"
 #include "/Kernel/RVDolAnsi.HC"
 #include "/Kernel/RVLineEd.HC"
+#include "/Kernel/RVComplete.HC"
 #include "/Kernel/RVAsmReplUi.HC"
 #include "/Compiler/Compiler_RV_Body.PRJ"
 #define MEM_UART 0x10000000
@@ -113,6 +114,9 @@ I64 main()
     // stop shadowing the kernel's real global — see that file.
     if (RVWinMgrLiteInit()) {
       RVVtInit(0, 1);
+      // The pane repaints after every stepped instruction, at this prompt and inside AsmRepl:
+      // AsmStep itself is the painter (one painter — two would each see "nothing changed since
+      // the other" and wash the red out).
       AsmWatchInstall(&RegPaneUpdate);
       RVExePubFunNew("RegPane", &RegPaneUpdate, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("RegPaneCost", &RegPaneCost, cmp.internal_types[RT_I64], 0);
@@ -122,6 +126,20 @@ I64 main()
       RVExePubFunNew("Cls", &Cls, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("AsmRepl", &AsmRepl, cmp.internal_types[RT_U0], 0);
       AsmReplInstallStep(&AsmStep);
+      // Tab at the HolyC prompt completes from the hash table — every function, global, type
+      // and register label the REPL can resolve, including ones defined a moment ago.
+      RVLineEdComplete(&RVHashComplete);
+      // Hypertext on a terminal: links are numbered as they print, Links lists them, Lk(n)
+      // follows one. A DolDoc message is a place you can go, and that should survive the
+      // translation to a serial line.
+      RVExePubFunNew("Links", &Links, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("Lk0", &Lk0, cmp.internal_types[RT_U0], 0);
+      {
+        CHashFun *tl;
+        tl = RVExePubFunNew("Lk", &Lk, cmp.internal_types[RT_U0], 1);
+        if (tl)
+          RVExePubAddArg(tl, "n", cmp.internal_types[RT_I64], MLF_DFT_AVAILABLE, 1);
+      }
       RVExePubFunNew("DbgViewCost", &DbgViewCost, cmp.internal_types[RT_I64], 0);
       // Errors and Print() output carry DolDoc markup; translate it to ANSI instead of showing
       // the operator "$LTRED$$BK,1$ERROR:$FG$".
