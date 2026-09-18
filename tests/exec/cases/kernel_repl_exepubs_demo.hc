@@ -3,11 +3,16 @@
 // Smoke pipes HolyC lines; each line is ExePutS'd. See docs/SELF_HOST.md A2.
 #include "/Kernel/Kernel_RV.PRJ"
 #include "/Compiler/RISCVRegs.HH"
+// Order matters: each of these uses the ones above it (RVAsmReplUi wants Cls/DbgDm from
+// RVDbgView, which wants the renderer and the pane). AsmStep lives on the compiler side, which
+// is included last, so the UI calls it through a pointer installed at run time.
 #include "/Kernel/RVDocVT.HC"
 #include "/Kernel/RVDocText.HC"
 #include "/Kernel/RVRegPane.HC"
-#include "/Kernel/RVDolAnsi.HC"
 #include "/Kernel/RVDbgView.HC"
+#include "/Kernel/RVDolAnsi.HC"
+#include "/Kernel/RVLineEd.HC"
+#include "/Kernel/RVAsmReplUi.HC"
 #include "/Compiler/Compiler_RV_Body.PRJ"
 #define MEM_UART 0x10000000
 extern U0 RVTrapInit();
@@ -115,6 +120,8 @@ I64 main()
       RVExePubFunNew("Dbg", &Dbg, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("G", &G, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Cls", &Cls, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("AsmRepl", &AsmRepl, cmp.internal_types[RT_U0], 0);
+      AsmReplInstallStep(&AsmStep);
       RVExePubFunNew("DbgViewCost", &DbgViewCost, cmp.internal_types[RT_I64], 0);
       // Errors and Print() output carry DolDoc markup; translate it to ANSI instead of showing
       // the operator "$LTRED$$BK,1$ERROR:$FG$".
@@ -171,7 +178,10 @@ I64 main()
   UartPutS("A2: type HolyC; 'q' quits\n");
   while (TRUE) {
     UartPutS("> ");
-    n = RVUartGetLine(line, 160);
+    // History + Tab completion at the main prompt too (RVUartGetLine has neither).
+    n = RVLineEd(line, 160, "");
+    if (n < 0)
+      continue;
     if (n <= 0)
       continue;
     if (line[0] == 'q' && (!line[1] || line[1] == ';'))
