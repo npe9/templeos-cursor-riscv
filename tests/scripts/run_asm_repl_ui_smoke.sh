@@ -71,8 +71,17 @@ feed() {
      "\x01aui\t a1, 0x1\n",
      "\x01\e[A\e[A\n",
      "d 0x87000400",
+     # Tab from the documentation catalog: "sfen" completes to sfence.vma, which the old
+     # hand-written word list did not contain. Ctrl-U kills the line rather than stepping it —
+     # Ctrl-C would LEAVE the asm REPL, and everything after it would go to the HolyC prompt.
+     "\x01sfen\t\x15\n",
+     # ...and the doc for one mnemonic, without leaving the stepper
+     "? sd",
      "?",
      "q",
+     # The same catalog as REPL functions at the HolyC prompt
+     "AsmDoc(\"addi\");",
+     "AsmList;",
      # Back at the HolyC prompt, with enough output to scroll its region right through. The
      # panes are live here too, so this is where a layout that only existed inside AsmRepl
      # would be scribbled over and then look frozen.
@@ -211,13 +220,23 @@ need "asm REPL: instructions are stepped"
 # characters land wherever it happens to be.
 need "asm> auipc"
 need "asm REPL: out"
+# The catalog, enabled in both prompts: Tab completes from it, ? explains one entry inside the
+# stepper, and AsmDoc/AsmList are callable HolyC functions at the REPL prompt.
+need "asm> sfence.vma"
+need "AsmDoc sd"
+need "store doubleword"
+need "AsmDoc addi"
+need "12-bit signed immediate"
+need "documented asm{} mnemonics"
 
 # The layout, checked on the reconstructed screen: values in a column on the right, the REPL on
 # the left. The terminal answered the size probe with 120x40, so the sidebar starts at column 76
 # (120 - 44) and the text column is everything left of it.
-# Stop before QEMU's own exit message: that is the host talking, not the guest, and it is not
-# wrapped to any column — it would land across the sidebar and fail every assertion below.
-if ! screen_num "qemu-system-riscv64" | SIDE=76 python3 -c '
+# Stop once the REPL has quit. The panes are repainted at the PROMPT, so the screen is true as
+# of the last one; the lines printed after the loop exits (and QEMU's own exit message, which is
+# the host talking and is wrapped to nothing) scroll the sidebar with no prompt left to put it
+# back. That is the known cost of a sidebar on a terminal that scrolls whole rows.
+if ! screen_num "A2 ExePutS loop" | SIDE=76 python3 -c '
 import sys, os, re
 side = int(os.environ["SIDE"])
 rows = {}

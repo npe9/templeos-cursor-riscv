@@ -52,13 +52,15 @@ public U0 AsmReplInstallStep(I64 fn)
   asmui_step_fn = fn;
 }
 
-// Words Tab completes: registers first, then the mnemonics you actually type at a stepper.
+// Tab's vocabulary: the register names, which are not in any catalog, and then the documented
+// mnemonics themselves (AsmComplete over the same 244 entries AsmList prints and AsmDoc
+// explains). A hand-written word list used to sit here and had already drifted from what the
+// assembler takes — completing a mnemonic the catalog does not document, and not completing
+// most of the ones it does.
 U8 *AsmUiWords()
 {
   return "zero ra sp gp tp t0 t1 t2 s0 s1 a0 a1 a2 a3 a4 a5 a6 a7 s2 s3 s4 s5 s6 s7 s8 s9 s10 "
-         "s11 t3 t4 t5 t6 addi add sub and or xor andi ori xori sll srl sra slli srli srai "
-         "slt sltu slti sltiu lui auipc li mv nop ret jal jalr beq bne blt bge bltu bgeu "
-         "lb lh lw ld lbu lhu lwu sb sh sw sd mul mulh div divu rem remu ecall ebreak";
+         "s11 t3 t4 t5 t6";
 }
 
 // One completion, and only when it is unambiguous: a stepper that guesses wrong wastes a step.
@@ -87,8 +89,11 @@ I64 AsmUiComplete(U8 *word, U8 *out, I64 max)
     return 1;
   if (hits > 1)
     return 0;
-  // not a register or a mnemonic: fall through to everything else the REPL knows, so Dr, _A0,
-  // AsmStep and anything you just defined complete here too
+  i = AsmComplete(word, out, max);
+  if (i)
+    return i;
+  // not a register or a documented mnemonic: fall through to everything else the REPL knows, so
+  // Dr, _A0, AsmStep and anything you just defined complete here too
   return RVHashComplete(word, out, max);
 }
 
@@ -240,7 +245,22 @@ public U0 AsmRepl()
     if (line[0] == 'q' && !line[1])
       break;
     if (line[0] == '?' && !line[1]) {
-      "  q  leave    d <addr>  memory pane    r  repaint    anything else is stepped\n";
+      "  q  leave   d <addr>  memory pane   r  repaint   ? <mn>  what it does   "
+      "?? the catalog\n";
+      continue;
+    }
+    if (line[0] == '?' && line[1] == '?' && !line[2]) {
+      AsmList;
+      continue;
+    }
+    if (line[0] == '?') {
+      // `? addi` — the documentation for the thing you were about to type, without leaving the
+      // stepper to go and ask
+      U8 *mn;
+      mn = line + 1;
+      while (*mn == ' ')
+        mn++;
+      AsmDoc(mn);
       continue;
     }
     if (line[0] == 'r' && !line[1]) {

@@ -147,6 +147,19 @@ I64 main()
         if (tl)
           RVExePubAddArg(tl, "n", cmp.internal_types[RT_I64], MLF_DFT_AVAILABLE, 1);
       }
+      // The RISC-V catalog as REPL functions: AsmList() lists the documented mnemonics and
+      // AsmDoc("addi") explains one. They are in this image already (Kernel/RVExplore.HC, via
+      // Kernel_RV.PRJ) — what was missing was planting them where the guest compiler can
+      // resolve them, which is all "enabled in the REPL" means here. The asm REPL completes
+      // from the same catalog, so Tab and AsmDoc agree by construction.
+      RVExePubFunNew("AsmList", &AsmList, cmp.internal_types[RT_U0], 0);
+      {
+        CHashFun *ta;
+        ta = RVExePubFunNew("AsmDoc", &AsmDoc, cmp.internal_types[RT_U0], 1);
+        if (ta)
+          RVExePubAddArg(ta, "mn", cmp.internal_types[RT_U8] + 1);
+        // U8* — the mnemonic comes in as a string constant from the REPL line
+      }
       RVExePubFunNew("DbgViewCost", &DbgViewCost, cmp.internal_types[RT_I64], 0);
       // Errors and Print() output carry DolDoc markup; translate it to ANSI instead of showing
       // the operator "$LTRED$$BK,1$ERROR:$FG$".

@@ -166,6 +166,75 @@ public U0 AsmDoc(U8 *mn)
   }
 }
 
+// AsmComplete -- AsmComplete(word, out, max)
+// NAME
+//   AsmComplete - complete a mnemonic from the documented catalog
+// SYNOPSIS
+//   AsmComplete("fcv", buf, 64);
+// DESCRIPTION
+//   The same 244 entries AsmList prints and AsmDoc explains, used as the asm REPL's Tab
+//   vocabulary — so what completes is exactly what is documented, and a mnemonic cannot be
+//   offered by one and unknown to the other. Returns 1 when it filled `out`, 2 when it listed
+//   the candidates, 0 when nothing matched.
+// SEE ALSO
+//   AsmList  AsmDoc  AsmRepl
+public I64 AsmComplete(U8 *word, U8 *out, I64 max)
+{
+  U8 *p, *s;
+  I64 n, hits = 0, k, listed = 0;
+  if (!word || !*word || !out || max < 2)
+    return 0;
+  if (!rv_asm_doc_raw)
+    RVAsmDocRawInit;
+  n = StrLen(word);
+  out[0] = 0;
+  p = rv_asm_doc_raw;
+  while (*p) {
+    s = RVAsmDocField(p, 0, g_rv_asm_doc_buf, ASM_DOC_MN);
+    if (s && *s && StrLen(s) >= n && !MemCmp(s, word, n)) {
+      hits++;
+      if (hits == 1) {
+        StrCpy(out, s);
+        if (StrLen(out) >= max)
+          out[max - 1] = 0;
+      } else {
+        // keep only what every match agrees on
+        k = 0;
+        while (out[k] && s[k] && out[k] == s[k])
+          k++;
+        out[k] = 0;
+      }
+    }
+    while (*p && *p != ';')
+      p++;
+    if (*p == ';')
+      p++;
+  }
+  if (!hits)
+    return 0;
+  if (StrLen(out) > n)
+    return 1;
+  // nothing more to add — show the choices rather than beeping
+  Print("\n");
+  p = rv_asm_doc_raw;
+  while (*p && listed < 24) {
+    s = RVAsmDocField(p, 0, g_rv_asm_doc_buf, ASM_DOC_MN);
+    if (s && *s && StrLen(s) >= n && !MemCmp(s, word, n)) {
+      Print("  %s", s);
+      listed++;
+      if (listed % 6 == 0)
+        Print("\n");
+    }
+    while (*p && *p != ';')
+      p++;
+    if (*p == ';')
+      p++;
+  }
+  if (listed % 6)
+    Print("\n");
+  return 2;
+}
+
 public U0 AsmList()
 {
   //One line per catalog entry (mnemonic + operand template). AsmDoc("name") for detail.
