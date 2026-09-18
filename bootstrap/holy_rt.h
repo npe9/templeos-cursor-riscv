@@ -907,6 +907,7 @@ static void HolyTrapSnapPublish(HRT_I64 *frame, HRT_I64 cause, HRT_I64 epc, HRT_
    * GUARDED on mstatus.FS. With FS=Off an fsd is an illegal instruction, so saving float state
    * unconditionally would fault inside the trap handler — a loop, not a message. FS=0 leaves the
    * block stale and says so through the fresh flag. */
+#if defined(__riscv_flen) && __riscv_flen >= 64
   {
     volatile HRT_I64 *fs = (volatile HRT_I64 *)HOLY_TRAP_SNAP_F;
     volatile HRT_I64 *fv = (volatile HRT_I64 *)HOLY_TRAP_SNAP_FV;
@@ -928,6 +929,12 @@ static void HolyTrapSnapPublish(HRT_I64 *frame, HRT_I64 cause, HRT_I64 epc, HRT_
       fv[0] = 1;   /* the block belongs to this trap, not to the last stepped line */
     }
   }
+#else
+  /* No D extension in this build (rv32ima_zicsr, say): fsd would not even assemble, and a hart
+   * with no FPU reads mstatus.FS as a hardwired zero anyway. Nothing to freeze, and the flag
+   * says so rather than leaving a stale block looking fresh. */
+  *(volatile HRT_I64 *)HOLY_TRAP_SNAP_FV = 0;
+#endif
 }
 
 /* Copy the canonical array back into the frame before the vector reloads it, so a register
