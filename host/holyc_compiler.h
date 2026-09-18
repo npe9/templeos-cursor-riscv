@@ -379,6 +379,12 @@ typedef struct LexerStack {
   char *token_str;   // Saved string (owned by this struct)
   int token_str_len; // Saved string length (TK_STR may hold NULs)
   int brace_depth;
+  int paren_depth;     // saved with the rest: lookahead re-lexes tokens, and a ( counted twice
+  int nl_asm_depth;    // never comes back down — which is how the newline rule saw depth 1 for
+  int nl_ctl_paren;    // an entire file and never fired
+  int nl_do_brace;
+  bool nl_decl;
+  bool nl_after_ctl;
   CHashEntry *hash_entry;  // Saved hash entry
   char *src;               // Saved source buffer (a macro expansion may have been entered since)
   size_t src_size;
@@ -406,7 +412,15 @@ typedef struct {
   IncludeFile *include_stack;  // Stack for #include files
   bool token_is_char;
   int token_str_len;   // TK_STR: byte length (may contain NULs)
-  int brace_depth;     // { } nesting of the token stream (error recovery)          // TK_I64 came from a char literal ('x' statements call PutChars)
+  int brace_depth;     // { } nesting of the token stream (error recovery)
+  // Newline-as-semicolon (the BCPL rule). A newline ENDS a statement when one has plainly
+  // finished — see NewlineEndsStatement in lexer.c for exactly when.
+  int paren_depth;     // ( [ nesting: a newline inside them continues the expression
+  int nl_asm_depth;    // brace depth of an open asm{} block, 0 when outside one
+  int nl_ctl_paren;    // paren depth of an if/while/for/switch header being read
+  int nl_do_brace;     // brace depth+1 of an open do..while, so a trailing `while` is known
+  bool nl_decl;        // inside a public/extern/_extern/import declaration, which spans lines
+  bool nl_after_ctl;   // the ')' just read closed such a header, so no ';' after it          // TK_I64 came from a char literal ('x' statements call PutChars)
 } Lexer;
 
 // ═══════════════════════════════════════════════════════════════

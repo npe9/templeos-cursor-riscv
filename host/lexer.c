@@ -1401,6 +1401,81 @@ static int LexString(Lexer *lex) {
 }
 
 static void LexNextInner(Compiler *cc);
+
+// ── Newline as a statement separator (the BCPL rule) ─────────────────────────────────────────
+//
+// BCPL let a newline end a statement when the statement had plainly ended, and required a
+// semicolon only when it had not. That is what this does. It is decided from the token just
+// read and the character about to be read, without lexing ahead: the next token is not needed,
+// only the shape of what starts the line.
+//
+// A newline ends the statement when ALL of these hold:
+//   * the previous token could end one — a name, a number, a string, `)`, `]`, `++`, `--`.
+//     NOT `}` (a function body is followed by the next declaration, not by an empty statement),
+//     not a keyword (`return` on its own line must not become `return;`), not an operator.
+//   * no bracket is open. Inside ( ) or [ ] a newline is continuation, which is what makes a
+//     wrapped argument list work.
+//   * the line does not begin with something that CONTINUES the statement: an operator, `,`
+//     `.` `?` `:` `)` `]` `}`, an opening `{` (a function header is followed by its body, not
+//     by a prototype), or the words `else` and `while`.
+//   * the `)` just read did not close an `if`/`while`/`for`/`switch` header, or the body would
+//     become an empty statement — the classic dangling-if of every language that does this.
+//   * we are not inside an asm{} block, where newlines already separate instructions and belong
+//     to the assembler.
+//
+// Existing source is unaffected: a line ending in `;` has `;` as its previous token, which is
+// not a terminator, so nothing is inserted.
+static bool NewlineStarterContinues(Compiler *cc, const char *p) {
+  char c = p[0];
+  if (!c) return true;
+  if (strchr("+-*/%&|^<>=!?:,.)]}{~", c)) return true;
+  // A line that starts with a string continues the one before it ONLY when the one before it
+  // was itself a string, or the word `format` — those are the two shapes of HolyC's adjacent-
+  // literal concatenation (a class field's format spec is the common one, KernelA.HH:3910).
+  // After anything else a leading string is a new statement, which is how a print reads.
+  if (c == '"') {
+    if (cc->lex.token == TK_STR) return true;
+    if (cc->lex.token == TK_IDENT && cc->lex.token_str && !strcmp(cc->lex.token_str, "format"))
+      return true;
+    return false;
+  }
+  if (c == 'e' && !strncmp(p, "else", 4) && !isalnum((unsigned char)p[4]) && p[4] != '_') return true;
+  // `while` continues the statement only when it is a do..while's own while. Suppressing it
+  // always would cost the far commoner case — a loop following an ordinary statement.
+  if (cc->lex.nl_do_brace && c == 'w' && !strncmp(p, "while", 5) &&
+      !isalnum((unsigned char)p[5]) && p[5] != '_')
+    return true;
+  return false;
+}
+
+static bool NewlineEndsStatement(Compiler *cc, int prev, bool after_ctl) {
+  Lexer *lex = &cc->lex;
+  // Opt-in while the rule learns the rest of HolyC's line-spanning declarations. Off, a source
+  // file lexes exactly as it did before this existed; on, a newline can end a statement.
+  // A file static rather than lexer state: the answer is the same for every file in a run, and
+  // the lexer struct is memset to zero in places where -1 could not survive as "not yet read".
+#ifdef BARE_METAL
+  return false;
+#else
+  static int nl_on = -1;
+  if (nl_on < 0) {
+    const char *e = getenv("HOLYC_NL_SEMI");
+    nl_on = (e && *e && *e != '0') ? 1 : 0;
+  }
+  if (!nl_on) return false;
+#endif
+  if (lex->paren_depth > 0) return false;
+  if (lex->nl_asm_depth) return false;
+  if (lex->nl_decl) return false;
+  // a public/_extern/import declaration runs to its own semicolon, across as many lines as it
+  // likes — see KernelB.HH's extern tables
+  if (after_ctl) return false;
+  if (!(prev == TK_IDENT || prev == TK_I64 || prev == TK_F64 || prev == TK_STR ||
+        prev == ')' || prev == ']' || prev == TK_PLUS_PLUS || prev == TK_MINUS_MINUS))
+    return false;
+  if (NewlineStarterContinues(cc, lex->ptr)) return false;
+  return true;
+}
 // Read `text` as the next tokens, holding the current token back until the text is exhausted
 // (default arguments are expressions evaluated at each call site).
 void LexPushStringPending(Compiler *cc, const char *text) {
@@ -1456,6 +1531,11 @@ void LexNext(Compiler *cc) {
 }
 static void LexNextInner(Compiler *cc) {
   Lexer *lex = &cc->lex;
+  int prev_token = lex->token;
+  int line_before = lex->line;
+  bool after_ctl = lex->nl_after_ctl;
+  lex->nl_after_ctl = false;
+  // one-shot: it describes the token just read, not the rest of the file
   lex->token_is_char = false;
   
   // Skip whitespace, comments, DolDoc, and preprocessor directives
@@ -1483,6 +1563,13 @@ static void LexNextInner(Compiler *cc) {
     }
   }
   
+  // A newline crossed between the last token and this one may itself be the statement's end.
+  if (lex->line > line_before && !cc->preprocessor_skip &&
+      NewlineEndsStatement(cc, prev_token, after_ctl)) {
+    lex->token = ';';
+    return;
+  }
+
   // If preprocessor says skip, consume tokens until #else or #endif
   if (cc->preprocessor_skip && *lex->ptr != '#') {
     // Skip lines until we hit a preprocessor directive
@@ -1550,6 +1637,23 @@ static void LexNextInner(Compiler *cc) {
        !((unsigned char)lex->ptr[0] == 0xE2 && (unsigned char)lex->ptr[1] == 0x88) &&
        !((unsigned char)lex->ptr[0] == 0xCF && (unsigned char)lex->ptr[1] == 0x80))) {   // `µs`: TempleOS charset
     lex->token = LexIdentifier(cc);
+    // A control header's parentheses are not an expression's: the newline after the one that
+    // closes them must not end the statement, or `if (x)` on its own line becomes `if (x);`.
+    if (lex->token == KW_IF || lex->token == KW_WHILE || lex->token == KW_FOR ||
+        lex->token == KW_SWITCH)
+      lex->nl_ctl_paren = lex->paren_depth + 1;
+    if (lex->token == KW_PUBLIC || lex->token == KW_EXTERN || lex->token == KW__EXTERN ||
+        lex->token == KW_IMPORT)
+      lex->nl_decl = true;
+    if (lex->token == KW_DO)
+      lex->nl_do_brace = lex->brace_depth + 1;
+    else if (lex->token == KW_WHILE && lex->nl_do_brace &&
+             lex->brace_depth + 1 <= lex->nl_do_brace)
+      lex->nl_do_brace = 0;
+    // ...that was the do's own while; an inner one sits at a deeper brace depth
+    else if (lex->token == KW_ASM)
+      lex->nl_asm_depth = lex->brace_depth + 1;
+    // inside asm{} the newlines are the assembler's, and it already uses them
     return;
   }
   
@@ -1732,8 +1836,23 @@ static void LexNextInner(Compiler *cc) {
   // Single character
   lex->token = *lex->ptr++;
   lex->col++;
-  if (lex->token == '{') lex->brace_depth++;
-  else if (lex->token == '}') lex->brace_depth--;
+  if (lex->token == ';' || lex->token == '{') lex->nl_decl = false;
+  if (lex->token == '{') {
+    lex->brace_depth++;
+  } else if (lex->token == '}') {
+    lex->brace_depth--;
+    if (lex->nl_asm_depth && lex->brace_depth < lex->nl_asm_depth) lex->nl_asm_depth = 0;
+  } else if (lex->token == '(' || lex->token == '[') {
+    lex->paren_depth++;
+  } else if (lex->token == ')' || lex->token == ']') {
+    if (lex->paren_depth > 0) lex->paren_depth--;
+    // Closing an if/while/for/switch header: the next newline must NOT end the statement, or
+    // the body becomes an empty one.
+    if (lex->nl_ctl_paren && lex->paren_depth < lex->nl_ctl_paren) {
+      lex->nl_ctl_paren = 0;
+      lex->nl_after_ctl = true;
+    }
+  }
 }
 
 bool LexExpect(Compiler *cc, int token) {
@@ -1804,6 +1923,12 @@ void LexPush(Compiler *cc) {
   } else saved->token_str = NULL;
   saved->token_str_len = cc->lex.token_str_len;
   saved->brace_depth = cc->lex.brace_depth;
+  saved->paren_depth = cc->lex.paren_depth;
+  saved->nl_asm_depth = cc->lex.nl_asm_depth;
+  saved->nl_ctl_paren = cc->lex.nl_ctl_paren;
+  saved->nl_do_brace = cc->lex.nl_do_brace;
+  saved->nl_decl = cc->lex.nl_decl;
+  saved->nl_after_ctl = cc->lex.nl_after_ctl;
   
   
   saved->hash_entry = cc->lex.hash_entry;
@@ -1862,6 +1987,12 @@ void LexPopRestore(Compiler *cc) {
   cc->lex.token_str = saved->token_str;  // Transfer ownership
   cc->lex.token_str_len = saved->token_str_len;
   cc->lex.brace_depth = saved->brace_depth;
+  cc->lex.paren_depth = saved->paren_depth;
+  cc->lex.nl_asm_depth = saved->nl_asm_depth;
+  cc->lex.nl_ctl_paren = saved->nl_ctl_paren;
+  cc->lex.nl_do_brace = saved->nl_do_brace;
+  cc->lex.nl_decl = saved->nl_decl;
+  cc->lex.nl_after_ctl = saved->nl_after_ctl;
   
   cc->lex.hash_entry = saved->hash_entry;
   
