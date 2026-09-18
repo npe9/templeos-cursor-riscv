@@ -4,6 +4,10 @@
 // other. Plants markers in s1/s2/s5/s11/gp/tp, faults, recovers, and reads them back.
 #define TRAP_SNAP   0x87000100
 #define TRAP_SNAP_X 0x87000400
+#define TRAP_SNAP_F 0x87000E00
+// f0..f31 as the trap froze them
+#define TRAP_SNAP_FV 0x87000F00
+// [0] = "these floats belong to this trap", [1] = the fcsr it froze
 #define MEM_UART    0x10000000
 
 extern U0 RVTrapInit();
@@ -55,6 +59,8 @@ I64 main()
 	li	s11, 0x5B
 	li	gp, 0x63
 	li	tp, 0x64
+	li	t2, 0x5F
+	fmvdx	f10, t2
 	li	t0, 4
 	ld	t1, 0(t0)
     }
@@ -73,8 +79,16 @@ I64 main()
   TfField("mcause", *(I64 *)(TRAP_SNAP + 18 * 8), 5);
   TfField("spmatch", *(I64 *)(TRAP_SNAP + 16 * 8) == TfX(2), 1);
   TfField("mstatus_nz", *(I64 *)(TRAP_SNAP + 21 * 8) != 0, 1);
+  // The widened freeze: slot 22 is mtvec, which cannot be zero once the vector is installed.
+  TfField("mtvec_nz", *(I64 *)(TRAP_SNAP + 22 * 8) != 0, 1);
+  // The float freeze: f10 was planted before the fault, and the flag says the block belongs to
+  // this trap rather than to whatever the asm stepper last left behind.
+  TfField("fresh_f", *(I64 *)TRAP_SNAP_FV, 1);
+  TfField("f10", *(I64 *)(TRAP_SNAP_F + 10 * 8), 0x5F);
   bad = TfX(9) != 0x51 || TfX(18) != 0x52 || TfX(21) != 0x55 || TfX(27) != 0x5B ||
-        TfX(3) != 0x63 || TfX(4) != 0x64 || TfX(0) != 0;
+        TfX(3) != 0x63 || TfX(4) != 0x64 || TfX(0) != 0 ||
+        *(I64 *)(TRAP_SNAP + 22 * 8) == 0 || *(I64 *)TRAP_SNAP_FV != 1 ||
+        *(I64 *)(TRAP_SNAP_F + 10 * 8) != 0x5F;
   if (bad)
     TfPutS("trapframe: FAIL\n");
   else

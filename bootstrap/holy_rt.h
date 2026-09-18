@@ -860,6 +860,8 @@ static HRT_I64 HolyRVCrashMon(void) {
  * the trapped state). Keep these addresses in step with bootstrap/seed/trap.hc. */
 #define HOLY_TRAP_SNAP   0x87000100UL
 #define HOLY_TRAP_SNAP_X 0x87000400UL
+#define HOLY_TRAP_SNAP_F 0x87000E00UL   /* f0..f31 at the trap */
+#define HOLY_TRAP_SNAP_FV 0x87000F00UL  /* [0] = fresh flag, [1] = fcsr */
 static void HolyTrapSnapPublish(HRT_I64 *frame, HRT_I64 cause, HRT_I64 epc, HRT_I64 tval) {
   volatile HRT_I64 *leg = (volatile HRT_I64 *)HOLY_TRAP_SNAP;
   volatile HRT_I64 *xs  = (volatile HRT_I64 *)HOLY_TRAP_SNAP_X;
@@ -896,6 +898,35 @@ static void HolyTrapSnapPublish(HRT_I64 *frame, HRT_I64 cause, HRT_I64 epc, HRT_
     __asm__ volatile("csrr %0, mcounteren" : "=r"(v)); leg[29] = v;
     __asm__ volatile("csrr %0, medeleg"    : "=r"(v)); leg[30] = v;
     __asm__ volatile("csrr %0, mideleg"    : "=r"(v)); leg[31] = v;
+  }
+  /* The float registers, which no trap path has ever saved — so a debugger showing f0..f31
+   * after a fault was showing whatever the asm stepper last left in its own file. Saved here in
+   * the dispatcher rather than in the vector: the vector is asm that must not grow a fault of
+   * its own, and by here we are in ordinary C with a stack.
+   *
+   * GUARDED on mstatus.FS. With FS=Off an fsd is an illegal instruction, so saving float state
+   * unconditionally would fault inside the trap handler — a loop, not a message. FS=0 leaves the
+   * block stale and says so through the fresh flag. */
+  {
+    volatile HRT_I64 *fs = (volatile HRT_I64 *)HOLY_TRAP_SNAP_F;
+    volatile HRT_I64 *fv = (volatile HRT_I64 *)HOLY_TRAP_SNAP_FV;
+    if (((mstatus >> 13) & 3) == 0) { fv[0] = 0; }
+    else {
+      HRT_I64 fcsr;
+      __asm__ volatile(
+        "fsd f0,   0(%0)\n fsd f1,   8(%0)\n fsd f2,  16(%0)\n fsd f3,  24(%0)\n"
+        "fsd f4,  32(%0)\n fsd f5,  40(%0)\n fsd f6,  48(%0)\n fsd f7,  56(%0)\n"
+        "fsd f8,  64(%0)\n fsd f9,  72(%0)\n fsd f10, 80(%0)\n fsd f11, 88(%0)\n"
+        "fsd f12, 96(%0)\n fsd f13,104(%0)\n fsd f14,112(%0)\n fsd f15,120(%0)\n"
+        "fsd f16,128(%0)\n fsd f17,136(%0)\n fsd f18,144(%0)\n fsd f19,152(%0)\n"
+        "fsd f20,160(%0)\n fsd f21,168(%0)\n fsd f22,176(%0)\n fsd f23,184(%0)\n"
+        "fsd f24,192(%0)\n fsd f25,200(%0)\n fsd f26,208(%0)\n fsd f27,216(%0)\n"
+        "fsd f28,224(%0)\n fsd f29,232(%0)\n fsd f30,240(%0)\n fsd f31,248(%0)\n"
+        :: "r"(fs) : "memory");
+      __asm__ volatile("csrr %0, fcsr" : "=r"(fcsr));
+      fv[1] = fcsr;
+      fv[0] = 1;   /* the block belongs to this trap, not to the last stepped line */
+    }
   }
 }
 

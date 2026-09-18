@@ -24,6 +24,18 @@
 // stepper's float register file sits at 0x87000800.
 #define REGP_FCTX 0x87000800
 // f0..f31, as the asm stepper leaves them
+#define REGP_FSNAP 0x87000E00
+// f0..f31, as the trap froze them
+#define REGP_FSNAP_V 0x87000F00
+// [0] non-zero once a trap has frozen the float registers; [1] the fcsr it froze
+
+// Which float file to show. The stepper writes one and the trap writes the other, and they
+// answer different questions — so the pane shows the freeze once a fault has published one, and
+// says in the heading which it is. Before that it can only be the stepper's.
+I64 RegPaneFSrc()
+{
+  return *(I64 *)REGP_FSNAP_V;
+}
 
 #define REGP_SNAP 0x87000100
 // the legacy freeze slots: 18 mcause, 19 mepc, 20 mtval, 21 mstatus
@@ -357,12 +369,19 @@ U0 RegPaneUpdate()
     // whatever the last stepped line left behind, not the faulting context. Until the freeze
     // saves f0..f31 the honest thing is to label them rather than let them sit next to the
     // integer registers looking equally true. See docs/DEBUG_STATE_SURVEY.md.
-    StrPrint(line, "$FG,%d$float $FG,%d$(as last stepped)$FG$\n", REGP_COL_HEAD, REGP_COL_ZERO);
+    if (RegPaneFSrc())
+      StrPrint(line, "$FG,%d$float $FG,%d$(frozen at the trap, fcsr=%X)$FG$\n", REGP_COL_HEAD,
+               REGP_COL_ZERO, *(I64 *)(REGP_FSNAP_V + 8));
+    else
+      StrPrint(line, "$FG,%d$float $FG,%d$(as last stepped)$FG$\n", REGP_COL_HEAD,
+               REGP_COL_ZERO);
     DocPutS(regp_doc, line);
     n = 0;
     col = 0;
     while (n < REGP_FREGS) {
       now = *(I64 *)(REGP_FCTX + n * 8);
+      if (RegPaneFSrc())
+        now = *(I64 *)(REGP_FSNAP + n * 8);
       RegPaneFName(n, nm);
       // raw bits, like the stepper prints them: an encoding is what you are checking
       RegPaneValue(line, nm, now, regp_moved[REGP_FP0 + n]);
@@ -411,6 +430,8 @@ public U0 RegPaneMark()
   n = 0;
   while (n < REGP_FREGS) {
     now = *(I64 *)(REGP_FCTX + n * 8);
+    if (RegPaneFSrc())
+      now = *(I64 *)(REGP_FSNAP + n * 8);
     regp_moved[REGP_FP0 + n] = now != *(I64 *)(REGP_PREV + (REGP_FP0 + n) * 8);
     *(I64 *)(REGP_PREV + (REGP_FP0 + n) * 8) = now;
     n++;
