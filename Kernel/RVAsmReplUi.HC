@@ -20,8 +20,11 @@
 // the register file: x0..x31, shared with the debugger and the _Xn labels
 #define ASMUI_SIDE_COLS 44
 // two 64-bit registers to a row, side by side: 2 x 22
-#define ASMUI_MIN_TEXT 32
-// narrower than this and the text column is not worth having — stack the panes on top instead
+#define ASMUI_MIN_TEXT 50
+// The text column has to stay usable. A sidebar costs 44 columns, so an 80-column terminal
+// would leave 35 — narrow enough that a register diff line ("a0   0000... -> 0000...", 43
+// characters) wraps. Below this the panes stack across the top instead, where they get the full
+// width and the prompt gets a scroll region. A sidebar therefore wants ~94 columns or more.
 
 // The values live in a column on the right and the REPL has the left: registers at the top,
 // the machine state under them, memory under that.
@@ -196,8 +199,11 @@ public U0 AsmUiLayout(I64 mode = -1, I64 home = FALSE)
 //   AsmUiLayout  RegPaneMark  RVLineEdPrePrompt
 U0 AsmUiPrePrompt()
 {
-  if (!asmui_ready)
+  if (!asmui_ready || !asmui_side)
     return;
+  // Only the sidebar needs this. Stacked, the panes sit above a scroll region and the terminal
+  // keeps them still by itself, so a step costs the cells that changed and a prompt costs
+  // nothing — repainting there would throw that away.
   RVDocTextInvalidate;
   RegPaneUpdate;
   AsmUiPanes;
