@@ -486,6 +486,28 @@ U0 RVVtClear()
   RVVtHome();
 }
 
+// RVVtCursorStyle -- RVVtCursorStyle(style)
+// NAME
+//   RVVtCursorStyle - blinking block, underline or bar (DECSCUSR)
+// SYNOPSIS
+//   RVVtCursorStyle(1);   // blinking block   2 steady block
+//   RVVtCursorStyle(3);   // blinking under   4 steady underline
+//   RVVtCursorStyle(5);   // blinking bar     6 steady bar
+//   RVVtCursorStyle(0);   // whatever the terminal had before
+// DESCRIPTION
+//   CSI Ps SP q — the space before the q is part of the sequence, not decoration. A terminal
+//   that does not know it ignores it and keeps its own cursor, which is why this is safe to send
+//   unasked.
+// SEE ALSO
+//   RVVtCursor  RVVtInit
+U0 RVVtCursorStyle(I64 style)
+{
+  RVVtCsi();
+  RVVtPutNum(style);
+  RVVtPut(' ');
+  RVVtPut('q');
+}
+
 U0 RVVtCursor(I64 on)
 {
   RVVtCsi();
@@ -516,7 +538,11 @@ U0 RVVtInit(I64 utf8, I64 color)
   rv_vt_n = 0;
   rv_vt_cost = 0;
   RVVtInvalidate();
-  RVVtCursor(0);
+  RVVtCursor(1);
+  RVVtCursorStyle(1);
+  // A blinking block, and SHOWN: this used to hide the cursor for the life of the session, which
+  // left the prompt with nothing to mark where you were typing. The panes hide it around their
+  // own paints (RVDocTextRender) so it does not bounce across the screen on the way.
   RVVtClear();
   RVVtFlush();
 }

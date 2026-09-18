@@ -40,6 +40,9 @@
 // reported (RVVtProbeSize), not assumed.
 I64 asmui_mem_addr, asmui_running, asmui_step_fn, asmui_mode;
 I64 asmui_side, asmui_side_col, asmui_text_cols, asmui_mem_row, asmui_mem_rows, asmui_ready;
+I64 asmui_dis_addr;
+#define ASMUI_DIS_LINES 12
+// how many instructions `u` shows at a time — a screenful of the text column, not a flood
 
 // AsmReplInstallStep -- AsmReplInstallStep(&AsmStep)
 // NAME
@@ -123,11 +126,17 @@ U0 AsmUiScrolled()
 I64 AsmUiRegRows(I64 avail)
 {
   I64 want, i = 0;
-  // Four combinations, most wanted first: floats outrank the four extra CSRs, because those
-  // four are in Machine() a keystroke away while the float registers are only here. The first
-  // one that fits wins, and it keeps the memory pane if there are rows left over for it.
+  // Ranked, most wanted first, and the first that fits wins.
+  //
+  // MEMORY OUTRANKS THE FLOAT BLOCK. Both were asked for and they do not fit together on a
+  // 40-row terminal: registers, pc and the machine state are 23 rows, the 32 float registers
+  // another 17, and memory needs at least 3 more. Memory wins by default because a stepper
+  // without a memory view is half a debugger, and because the float block is one keystroke away
+  // (`f`) while a pane that silently vanished is not. The heading says which one is hidden.
+  //
+  // When it is forced on, the float block takes memory's rows rather than being cut in half.
   while (i < 4) {
-    RegPaneFp(i < 2);
+    RegPaneFp(regp_fp_want && i < 2);
     RegPaneCsrs(8);
     if (i & 1)
       RegPaneCsrs(4);
@@ -135,9 +144,9 @@ I64 AsmUiRegRows(I64 avail)
     if (want <= avail - ASMUI_MEM_MIN)
       return want;
     // ...and memory under it
-    if (want <= avail)
+    if (regp_fp_want && want <= avail)
       return want;
-    // ...instead of memory
+    // ...instead of memory, but only because the floats were asked for
     i++;
   }
   // Nothing fits whole: the smallest set, clipped. A pane that stops half way through a block
@@ -318,8 +327,8 @@ public U0 AsmRepl()
     if (line[0] == 'q' && !line[1])
       break;
     if (line[0] == '?' && !line[1]) {
-      "  q  leave   d <addr>  memory pane   r  repaint   f  float regs   ? <mn>  what it "
-      "does   ?? the catalog\n";
+      "  q  leave   d <addr>  memory pane   u <sym|addr>  disassemble   r  repaint\n"
+      "  f  float regs   ? <mn>  what it does   ?? the catalog\n";
       continue;
     }
     if (line[0] == '?' && line[1] == '?' && !line[2]) {
@@ -341,8 +350,43 @@ public U0 AsmRepl()
       continue;
     }
     if (line[0] == 'f' && !line[1]) {
-      RegPaneFp(!regp_fp);
+      RegPaneFpWant(!regp_fp_want);
       AsmUiLayout(-1, FALSE);
+      if (regp_fp_want)
+        "asm REPL: float registers in, memory out (f again to swap back)\n";
+      else
+        "asm REPL: memory back\n";
+      continue;
+    }
+    if (line[0] == 'f' && line[1] == ' ') {
+      // `f 10` — what fa0 actually IS: the number, and the sign/exponent/mantissa it is built
+      // from. The pane can only afford the bits.
+      RegPaneFd(Str2I64(line + 2));
+      continue;
+    }
+    if (line[0] == 'u' && (line[1] == ' ' || !line[1])) {
+      // `u Foo` / `u 0x80001234` — read the machine's own instructions without leaving the
+      // stepper. This is how you find an idiom worth copying: disassemble something that
+      // already works, then type its instructions here and watch them move the registers.
+      U8 *arg;
+      I64 at;
+      arg = line + 1;
+      while (*arg == ' ')
+        arg++;
+      at = asmui_dis_addr;
+      if (*arg >= '0' && *arg <= '9')
+        at = Str2I64(arg);
+      else if (*arg)
+        at = RVDisFnAddr(arg);
+      if (!at && *arg)
+        "asm REPL: no symbol '%s' (Uf lists them)\n", arg;
+      else if (!at)
+        "asm REPL: u <symbol|addr> — nothing disassembled yet\n";
+      else {
+        DisasmAt(at, ASMUI_DIS_LINES, 0);
+        asmui_dis_addr = at + ASMUI_DIS_LINES * 4;
+        // a bare `u` next time carries on where this stopped, the way a debugger's u does
+      }
       continue;
     }
     if (line[0] == 'd' && line[1] == ' ') {

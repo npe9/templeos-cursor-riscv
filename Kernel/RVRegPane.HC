@@ -78,7 +78,10 @@ I64 regp_moved[REGP_MARKS];
 #define REGP_FP0 48
 // marks: 0-31 registers, 32 pc, 33-47 CSRs, 48-79 float
 #define REGP_FREGS 32
-I64 regp_fp = 1;
+I64 regp_fp = 1, regp_fp_want = 0;
+// regp_fp is what the pane is currently drawing; regp_fp_want is what the operator asked for.
+// They differ because the layout decides what FITS: the float block and the memory pane cannot
+// both be on a 40-row screen, so memory has it unless the floats were asked for by name.
 // Whether the float block is shown. A pane with no room for it says so by turning it off rather
 // than cutting it in half — see RegPaneRowsNeeded, and Fp(1) to insist.
 // pc's own mark slot, after the 32 registers and the 4 CSRs
@@ -169,6 +172,16 @@ public I64 RegPaneRowsNeeded()
 public U0 RegPaneFp(I64 on)
 {
   regp_fp = on;
+}
+
+// RegPaneFpWant -- Fp(on)
+// NAME
+//   RegPaneFpWant - ask for the float block, and let the layout make room by dropping memory
+// SEE ALSO
+//   RegPaneFp  AsmUiLayout
+public U0 RegPaneFpWant(I64 on)
+{
+  regp_fp_want = on;
 }
 
 // The float register's ABI name — ft0-7, fs0-1, fa0-7, fs2-11, ft8-11.
@@ -347,7 +360,11 @@ U0 RegPaneUpdate()
   col++;
   if (col % per)
     DocPutS(regp_doc, "\n");
-  StrPrint(line, "$FG,%d$machine state$FG$\n", REGP_COL_HEAD);
+  if (regp_fp)
+    StrPrint(line, "$FG,%d$machine state$FG$\n", REGP_COL_HEAD);
+  else
+    StrPrint(line, "$FG,%d$machine state $FG,%d$(f: float regs)$FG$\n", REGP_COL_HEAD,
+             REGP_COL_ZERO);
   DocPutS(regp_doc, line);
   n = 0;
   col = 0;
@@ -449,6 +466,68 @@ public U0 RegPaneStep()
 {
   RegPaneMark;
   RegPaneUpdate;
+}
+
+// Fd -- Fd(n)
+// NAME
+//   Fd - a float register as a NUMBER, and as the bits that make it one
+// SYNOPSIS
+//   Fd;        // all 32
+//   Fd(10);    // fa0
+// DESCRIPTION
+//   The pane shows raw bits, because that is what you check an encoding against. This is the
+//   other half: the value those bits mean, and how binary64 is built out of them — sign, the
+//   biased exponent and what power of two it stands for, and the 52-bit mantissa. The classes
+//   that have no ordinary value (zero, infinity, NaN, subnormal) say so rather than printing a
+//   number that would be a lie.
+//
+//   Reads whichever float file is current — the trap's if a fault has published one, otherwise
+//   the asm stepper's, exactly as the pane does.
+// SEE ALSO
+//   RegPaneUpdate  Fp  AsmStep  Csr("fcsr")
+public U0 RegPaneFd(I64 n = -1)
+{
+  U8 nm[8];
+  I64 i = 0, last = REGP_FREGS, v, sign, exp, frac;
+  F64 d;
+  if (n >= 0) {
+    i = n;
+    last = n + 1;
+  }
+  if (last > REGP_FREGS)
+    last = REGP_FREGS;
+  if (i < 0)
+    i = 0;
+  while (i < last) {
+    v = *(I64 *)(REGP_FCTX + i * 8);
+    if (RegPaneFSrc())
+      v = *(I64 *)(REGP_FSNAP + i * 8);
+    d = *(F64 *)(&v);
+    // the same 64 bits, read as a number instead of as an encoding
+    RegPaneFName(i, nm);
+    sign = (v >> 63) & 1;
+    exp = (v >> 52) & 0x7FF;
+    frac = v & 0xFFFFFFFFFFFFF;
+    "%-4s %016X  ", nm, v;
+    if (!exp && !frac)
+      "%szero\n", sign ? "-" : "+";
+    else if (exp == 0x7FF && !frac)
+      "%sinf\n", sign ? "-" : "+";
+    else if (exp == 0x7FF)
+      "%s (payload 0x%X)\n", (frac >> 51) & 1 ? "quiet NaN" : "signalling NaN",
+          frac & 0x7FFFFFFFFFFFF;
+    else
+      "%f\n", d;
+    "     sign=%d  exp=0x%03X ", sign, exp;
+    if (!exp)
+      "(subnormal: 2^-1022 x 0.mantissa)  ";
+    else if (exp != 0x7FF)
+      "(2^%d x 1.mantissa)  ", exp - 1023;
+    else
+      "(all ones)  ";
+    "mantissa=0x%013X\n", frac;
+    i++;
+  }
 }
 
 // RegPaneCost -- RegPaneCost()

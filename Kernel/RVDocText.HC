@@ -325,6 +325,9 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
         // Only once something is actually going to move: a tile whose cells all match still
         // costs nothing on the wire, which is the property the whole diffing design rests on.
         RVVtSaveCur();
+        RVVtCursor(0);
+        // ...and out of sight while the paint walks the tile, or the terminal draws it at every
+        // cell on the way and the prompt appears to have a cursor in two places
         saved = 1;
       }
       if (!run) {
@@ -341,8 +344,10 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
     }
     r++;
   }
-  if (saved)
+  if (saved) {
     RVVtRestoreCur();
+    RVVtCursor(1);
+  }
   // the caret goes back where the prompt left it; callers that want it parked in the document
   // call RVDocTextCaret afterwards
   RVVtFlush;

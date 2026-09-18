@@ -83,6 +83,15 @@ feed() {
      "\x01?sfen\t\x15\n",
      # ...and the doc for one mnemonic, without leaving the stepper
      "? sd",
+     # A real double this time: 0x4010000000000000 is 4.0, so the decomposition has something to
+     # say beyond "subnormal".
+     "li t1, 0x401",
+     "slli t1, t1, 52",
+     "fmv.d.x fa0, t1",
+     "f 10",
+     # ...and disassemble a symbol, which is how you find an idiom worth copying
+     "u AsmStep",
+     "? sd",
      # Program PMP entry 0 as a 64 KiB NAPOT region at 0x80000000, so the decoder is exercised
      # rather than just reporting every entry OFF. addr = base>>2 | (size/8 - 1); cfg = NAPOT
      # (A=3) with rwx. Safe to do from here: an UNLOCKED entry does not apply to M-mode, so this
@@ -279,6 +288,8 @@ need "claim/complete not read"
 # PMP, which is a build option (CONFIG_HAS_PMP): these CSRs are optional in the ISA and reading
 # one on a hart without them faults. virt has 16 entries, so this build reads them.
 need "PMP: 16 entries"
+# The float block is not silently gone when memory has the rows — the heading says how to get it
+need "(f: float regs)"
 # ...and the NAPOT decode of the entry the asm REPL just programmed: the trailing ones of the
 # address are the size, which is the part worth testing.
 need "pmp0 rwx NAPOT 0x80000000..0x80010000 (65536 bytes)"
@@ -289,6 +300,11 @@ need "t6   0000000000000000 -> 0000000000000003"
 need "fa0  0000000000000000 -> 0000000000000003"
 # Tab straight after a question mark completes what AsmDoc can explain
 need "asm> ?sfence.vma"
+# The float register as a NUMBER and as its fields, not just 16 hex digits
+need "fa0  4010000000000000  4"
+need "sign=0  exp=0x401 (2^2 x 1.mantissa)  mantissa=0x0000000000000"
+# Disassembly from inside the stepper: a symbol resolved and instructions printed
+need "asm> u AsmStep"
 
 # The layout, checked on the reconstructed screen: values in a column on the right, the REPL on
 # the left. The terminal answered the size probe with 120x40, so the sidebar starts at column 76
@@ -390,7 +406,7 @@ if bad:
   fail=1
 fi
 }
-check_layout 76 "resize-mark" "at 120x40" float
+check_layout 76 "resize-mark" "at 120x40" memory
 # After the resize the terminal is 100 columns, so the sidebar starts at 56. Nothing else about
 # the layout changes shape — which is the point: the same code laid it out at a size it was
 # never told about at boot.

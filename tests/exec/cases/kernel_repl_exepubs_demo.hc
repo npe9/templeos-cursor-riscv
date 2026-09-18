@@ -124,7 +124,7 @@ I64 main()
         // Fp(1) / Fp(0): the float block is 16 more rows, so whether it is worth the screen is
         // the operator's call as well as the layout's.
         CHashFun *tp;
-        tp = RVExePubFunNew("Fp", &RegPaneFp, cmp.internal_types[RT_U0], 1);
+        tp = RVExePubFunNew("Fp", &RegPaneFpWant, cmp.internal_types[RT_U0], 1);
         if (tp)
           RVExePubAddArg(tp, "on", cmp.internal_types[RT_I64], MLF_DFT_AVAILABLE, 1);
       }
@@ -165,6 +165,13 @@ I64 main()
       RVExePubFunNew("Mcause", &Mcause, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Uptime", &Uptime, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Pmp", &Pmp, cmp.internal_types[RT_U0], 0);
+      {
+        // Fd(n): a float register as a number and as its IEEE-754 fields
+        CHashFun *tfd;
+        tfd = RVExePubFunNew("Fd", &RegPaneFd, cmp.internal_types[RT_U0], 1);
+        if (tfd)
+          RVExePubAddArg(tfd, "n", cmp.internal_types[RT_I64], MLF_DFT_AVAILABLE, -1);
+      }
       {
         // Plic(): the interrupt controller is architectural state too, and nothing could read it
         CHashFun *tp2;
