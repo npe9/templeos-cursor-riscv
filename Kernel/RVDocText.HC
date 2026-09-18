@@ -74,10 +74,16 @@ U0 RVDocTextInvalidate()
     rv_dt_tused[i] = 0;
 }
 
+I64 rv_dt_clip_top, rv_dt_clip_left, rv_dt_clip_bot, rv_dt_clip_right;
+
 U0 RVDocTextCellSet(I64 row, I64 col, I64 ch, I64 attr)
 {
   I64 i;
   if (row < 0 || col < 0 || row >= rv_dt_rows || col >= rv_dt_cols)
+    return;
+  /* a frame owns its edge cells: content is clipped to the interior, never over the border */
+  if (row < rv_dt_clip_top || col < rv_dt_clip_left || row > rv_dt_clip_bot ||
+      col > rv_dt_clip_right)
     return;
   i = row * rv_dt_cols + col;
   if (i < 0 || i >= RV_DT_CELLS)
@@ -127,6 +133,83 @@ U0 RVDocTextFill(CDoc *doc, I64 sx, I64 sy, I64 dft_attr)
   }
 }
 
+// Chrome: a box around the tile with an optional title, painted into the tile's own cells so it
+// diffs like everything else. Glyph indices match RVWinMgr's border_chars (RVWinMgr.HC:304) and
+// RVVtPutGlyph maps 0x02..0x0D to the terminal's box-drawing equivalents, so the frame looks the
+// same here as on the framebuffer. `solid` is the focus chrome, exactly as RVTextBorder uses it.
+U0 RVDocTextFrame(I64 rows, I64 cols, U8 *title, I64 attr, I64 solid)
+{
+  U8 *bc;
+  I64 i, n;
+  bc = rv_winmgr.border_chars;
+  if (!rv_winmgr.ready)
+    return;
+  RVDocTextCellSet(0, 0, bc[6 + solid], attr);
+  RVDocTextCellSet(0, cols - 1, bc[8 + solid], attr);
+  RVDocTextCellSet(rows - 1, 0, bc[10 + solid], attr);
+  RVDocTextCellSet(rows - 1, cols - 1, bc[12 + solid], attr);
+  i = 1;
+  while (i < cols - 1) {
+    RVDocTextCellSet(0, i, bc[2 + solid], attr);
+    RVDocTextCellSet(rows - 1, i, bc[2 + solid], attr);
+    i++;
+  }
+  i = 1;
+  while (i < rows - 1) {
+    RVDocTextCellSet(i, 0, bc[4 + solid], attr);
+    RVDocTextCellSet(i, cols - 1, bc[4 + solid], attr);
+    i++;
+  }
+  if (title && *title) {
+    n = 0;
+    while (title[n] && 2 + n < cols - 2) {
+      RVDocTextCellSet(0, 2 + n, title[n], attr);
+      n++;
+    }
+  }
+}
+
+// RVDocTextCaret -- RVDocTextCaret(doc, row0, col0, sx, sy)
+// NAME
+//   RVDocTextCaret - park the terminal cursor where the document's caret is
+// DESCRIPTION
+//   DocRecalc gives the cursor entry no useful x/y of its own (RVDoc.HC:3699 advances no
+//   layout for DOCT_CURSOR), so the caret comes from doc->cur_entry->x/y plus doc->cur_col —
+//   the same pair the editor maintains. Call after rendering: a terminal shows its cursor
+//   wherever it was left, so this is what makes an edited document feel live rather than
+//   printed. Returns 0 if the doc has no caret to show.
+// SEE ALSO
+//   RVDocTextRender  RVVtGoto  RVVtCursor
+I64 RVDocTextCaret(CDoc *doc, I64 row0, I64 col0, I64 sx = 0, I64 sy = 0)
+{
+  CDocEntry *e;
+  I64 r, c;
+  if (!doc)
+    return 0;
+  e = doc->cur_entry;
+  if (!e || e == doc) {
+    /* DocNew leaves cur_entry on the sentinel, which means end-of-document — the caret belongs
+     * after the last entry, not nowhere. An empty doc really has no caret. */
+    e = doc->head.last;
+    if (!e || e == doc)
+      return 0;
+    r = e->y - sy;
+    c = e->x - sx + StrLen(e->tag ? e->tag : "");
+    if (r < 0 || c < 0)
+      return 0;
+    RVVtGoto(row0 + r, col0 + c);
+    RVVtFlush;
+    return 1;
+  }
+  r = e->y - sy;
+  c = e->x - sx + doc->cur_col;
+  if (r < 0 || c < 0)
+    return 0;
+  RVVtGoto(row0 + r, col0 + c);
+  RVVtFlush;
+  return 1;
+}
+
 // RVDocTextRender -- RVDocTextRender(doc, row0, col0, rows, cols)
 // NAME
 //   RVDocTextRender - render one DolDoc into a terminal rectangle, diffed
@@ -147,7 +230,8 @@ U0 RVDocTextFill(CDoc *doc, I64 sx, I64 sy, I64 dft_attr)
 //   Text-bearing entries only so far: no border/scrollbar chrome, and the caret is the caller's
 //   business (doc->cur_entry->x/y + doc->cur_col).
 I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
-                    I64 sx = 0, I64 sy = 0, I64 dft_attr = 0x07)
+                    I64 sx = 0, I64 sy = 0, I64 dft_attr = 0x07,
+                    U8 *title = NULL, I64 border = 0, I64 border_attr = 0x07)
 {
   I64 r, c, i, n, cur_attr = -1, run, start_bytes, tile, fresh, base;
   U32 cell;
@@ -170,7 +254,24 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
     i++;
   }
   DocRecalc(doc);
-  RVDocTextFill(doc, sx, sy, dft_attr);
+  rv_dt_clip_top = 0;
+  rv_dt_clip_left = 0;
+  rv_dt_clip_bot = rows - 1;
+  rv_dt_clip_right = cols - 1;
+  if (border) {
+    rv_dt_clip_top = 1;
+    rv_dt_clip_left = 1;
+    rv_dt_clip_bot = rows - 2;
+    rv_dt_clip_right = cols - 2;
+    RVDocTextFill(doc, sx - 1, sy - 1, dft_attr);
+    rv_dt_clip_top = 0;
+    rv_dt_clip_left = 0;
+    rv_dt_clip_bot = rows - 1;
+    rv_dt_clip_right = cols - 1;
+    RVDocTextFrame(rows, cols, title, border_attr, 0);
+  } else {
+    RVDocTextFill(doc, sx, sy, dft_attr);
+  }
   if (fresh) {
     i = 0;
     while (i < n) {

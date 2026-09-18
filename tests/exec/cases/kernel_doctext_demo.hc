@@ -20,7 +20,7 @@ U0 DtOut(U8 *s)
 I64 main()
 {
   CDoc *doc;
-  I64 first, idle, after, tiled, pane_first, pane_step;
+  I64 first, idle, after, tiled, pane_first, pane_step, framed, caret;
   U8 buf[160];
   RVKernelInit();
   if (!RVWinMgrLiteInit()) {
@@ -58,8 +58,13 @@ I64 main()
   // a0 as a step would leave it
   RegPaneUpdate();
   pane_step = RegPaneCost();
+  // Chrome + caret: a framed, titled tile, and the terminal cursor parked at the document's
+  // caret — what the renderer needs before it can drive a real console.
+  RVDocTextInvalidate();
+  framed = RVDocTextRender(doc, 14, 0, 8, 50, 0, 0, 0x07, "doc", 1, 0x07);
+  caret = RVDocTextCaret(doc, 14, 0);
   RVVtStop();
-  StrPrint(buf, "\ndoctext: pane_first=%d pane_step=%d\n", pane_first, pane_step);
+  StrPrint(buf, "\ndoctext: pane_first=%d pane_step=%d framed=%d caret=%d\n", pane_first, pane_step, framed, caret);
   DtOut(buf);
   StrPrint(buf, "doctext: first=%d idle=%d after=%d tiled=%d\n", first, idle, after, tiled);
   DtOut(buf);
@@ -86,6 +91,14 @@ I64 main()
   if (pane_step <= 0 || pane_step >= pane_first) {
     DtOut("doctext: FAIL one-register repaint not cheaper than the pane's first paint\n");
     return 8;
+  }
+  if (framed <= 0) {
+    DtOut("doctext: FAIL framed tile painted nothing\n");
+    return 9;
+  }
+  if (caret != 1) {
+    DtOut("doctext: FAIL caret not placed from cur_entry/cur_col\n");
+    return 10;
   }
   DtOut("doctext: PASS\n");
   return 0;

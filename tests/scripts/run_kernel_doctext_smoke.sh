@@ -52,12 +52,59 @@ cp "$T/vt.elf" "$OUTDIR/vt.elf"
 out="$($TIMEOUT 60 "$QEMU" -M virt -m 128M -bios none -kernel "$T/vt.elf" -nographic </dev/null 2>&1 | tr -d '\r')"
 clean="$(printf '%s\n' "$out" | grep -v 'import unresolved')"
 
+# Reconstruct the terminal from the escape stream: the renderer only sends CHANGED cells, so
+# pane text is not contiguous in the byte stream and grepping raw output fails on correct
+# behaviour. (Same replay the asm-repl smoke uses.)
+screen() {
+  printf '%s' "$clean" | python3 -c '
+import sys
+d = sys.stdin.read()
+scr = [[" "]*100 for _ in range(32)]
+r = c = 0
+i = 0
+while i < len(d):
+    if d[i] == "\x1b" and i+1 < len(d) and d[i+1] == "[":
+        j = i+2
+        while j < len(d) and not d[j].isalpha():
+            j += 1
+        if j < len(d):
+            if d[j] == "H":
+                a = d[i+2:j].split(";")
+                try:
+                    r = int(a[0])-1 if a[0] else 0
+                    c = int(a[1])-1 if len(a) > 1 and a[1] else 0
+                except ValueError:
+                    pass
+            i = j+1
+            continue
+    ch = d[i]
+    if ch == "\n":
+        r += 1; c = 0
+    elif ch == "\r":
+        c = 0
+    elif ch >= " " and 0 <= r < 32 and 0 <= c < 100:
+        scr[r][c] = ch; c += 1
+    i += 1
+for row in scr:
+    line = "".join(row).rstrip()
+    if line:
+        print(line)
+'
+}
+
 fail=0
 need() {
   printf '%s\n' "$clean" | grep -qF -- "$1" || { echo "FAIL kernel-doctext smoke — missing: $1" >&2; fail=1; }
 }
 
 need "doctext: PASS"
+# Chrome on screen: RVVtPutGlyph renders the font's box glyphs 0x02..0x0D as -, | and + in ASCII
+# mode (RVDocVT.HC), so a framed titled tile is a "+-doc---...---+" top edge with | sides; the
+# title starts two cells in, where RVDocTextFrame puts it.
+if ! screen | grep -qE '^\+-doc-+\+$'; then
+  echo "FAIL kernel-doctext smoke — no framed/titled tile on screen" >&2
+  fail=1
+fi
 
 # The guest already asserts the two cost properties and prints its own FAIL lines;
 # surface them here rather than only relying on the absence of "VT: OK".
