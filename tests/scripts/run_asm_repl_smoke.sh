@@ -78,6 +78,7 @@ feed() {
      "AsmStep(\"addi a2,a2,3\");",
      "RegPaneCost;",
      "*(0(I64 *)) = 1;",
+     "\x01g",
      "DbgViewCost;",
      "DbgDisasmCost;",
      "_MCAUSE;",
@@ -85,7 +86,11 @@ feed() {
      "q",
     );
     select(undef,undef,undef,5);
-    for my $x (@l){ print $x,"\n"; select(undef,undef,undef,0.8); }
+    for my $x (@l){
+      if ($x =~ s/^\x01//) { print $x; }   # bare key for the in-trap debugger, no newline
+      else { print $x,"\n"; }
+      select(undef,undef,undef,0.8);
+    }
     select(undef,undef,undef,2);
   '
 }
@@ -142,7 +147,14 @@ fi
 # A faulting line must land in the Dbg view: the REPL paints registers + the decoded fault and
 # returns to this prompt (stock TempleOS Dbg(), no modal UI). _MCAUSE then reads 7 (store access
 # fault) straight out of the freeze through a register label.
-need "fault in that line"
+# With the in-trap debugger installed, a fault is handled BEFORE the REPL's recovery: the hook
+# paints the view and waits for a key, so "fault in that line" must NOT appear — `g` resumes the
+# line instead and it returns a value like any other. That is the whole point of G.
+need "[dbg] g=go"
+if printf '%s\n' "$out" | grep -qF "fault in that line"; then
+  echo "FAIL asm-repl smoke -- the REPL recovered instead of the in-trap debugger handling it" >&2
+  fail=1
+fi
 dbgv=$(printf '%s\n' "$out" | grep -A1 'DbgViewCost;' | grep -o 'ans=[0-9]*' | head -1 | cut -d= -f2)
 if [ -z "${dbgv:-}" ] || [ "${dbgv:-0}" -le 0 ]; then
   echo "FAIL asm-repl smoke -- Dbg view did not paint after a fault (DbgViewCost=$dbgv)" >&2
