@@ -85,6 +85,8 @@ feed() {
      "G;",
      "D(_SP, 32);",
      "Da(_SP, 8);",
+     "s",
+     "Cls;",
      "q",
     );
     select(undef,undef,undef,5);
@@ -103,10 +105,20 @@ out="$(feed | $TIMEOUT 180 "$QEMU" -M virt -m 128M -bios none \
 # so a pane's text is not contiguous in the output: painting "Da (addresses)" over
 # "D (offsets from 0)" emits just "a (addre" and "ses)" with cursor moves between. Grepping raw
 # output for pane text therefore fails on correct behaviour. Replay it instead.
+# screen [stop-marker]: replay up to the first occurrence of the marker, or the whole stream.
+# Needed because a later Cls legitimately blanks the screen — assertions about earlier panes have
+# to look at the screen as it was before the clear.
 screen() {
-  printf '%s' "$out" | python3 -c '
-import sys
-d = sys.stdin.read()
+  printf '%s' "$out" | STOP="${1:-}" python3 -c '
+import sys, os
+# binary + replace: a boot line can carry a non-UTF-8 byte, and sys.stdin.read() would raise
+# UnicodeDecodeError — which silently produced an EMPTY screen and failed every assertion.
+d = sys.stdin.buffer.read().decode("utf-8", "replace")
+stop = os.environ.get("STOP", "")
+if stop:
+    k = d.find(stop)
+    if k >= 0:
+        d = d[:k]
 scr = [[" "]*100 for _ in range(30)]
 r = c = 0
 i = 0
@@ -116,6 +128,9 @@ while i < len(d):
         while j < len(d) and not d[j].isalpha():
             j += 1
         if j < len(d):
+            if d[j] == "J" and d[i+2:j] in ("2", "3"):
+                scr = [[" "]*100 for _ in range(len(scr))]
+                r = c = 0
             if d[j] == "H":
                 a = d[i+2:j].split(";")
                 try:
@@ -140,7 +155,7 @@ for row in scr:
 '
 }
 need_screen() {
-  if ! screen | grep -qF -- "$1"; then
+  if ! screen "${2:-}" | grep -qF -- "$1"; then
     echo "FAIL asm-repl smoke -- not on screen: $1" >&2
     fail=1
   fi
@@ -205,9 +220,24 @@ need "[dbg] g=go"
 # D paints into an empty tile, so its title is contiguous in the byte stream. Da then overwrites
 # the SAME tile, so only the changed cells go out and its title is split across cursor moves —
 # it has to be checked on the reconstructed screen, where it is also the one that survives.
+# DolDoc markup on printed output must arrive as escape codes, not as source: a bad line prints
+# "$LTRED$$BK,1$ERROR:$FG$..." unless RVDolAnsiInstall translated it.
+if printf '%s\n' "$out" | grep -qF '$LTRED$'; then
+  echo "FAIL asm-repl smoke -- DolDoc markup reached the terminal untranslated" >&2
+  fail=1
+fi
+need_screen "ERROR:" "> Cls;"
 need "D (offsets from 0)"
-need_screen "Da (addresses)"
-need_screen "disasm at _PC"
+# Cls wipes the terminal and the renderer's shadows. The prompt keeps printing afterwards, so
+# the screen is not blank — what must be gone is the debugger view that was there before.
+if screen | grep -qF "Da (addresses)"; then
+  echo "FAIL asm-repl smoke -- Cls left the debugger view on screen" >&2
+  fail=1
+fi
+need_screen "Da (addresses)" "> Cls;"
+# ...and the disasm tile as of the in-trap prompt: the tiles are painted first, then that line
+# is printed, and leaving the debugger with `g` clears the view — which is the point of it.
+need_screen "disasm at _PC" "[dbg] g=go"
 if printf '%s\n' "$out" | grep -qF "fault in that line"; then
   echo "FAIL asm-repl smoke -- the REPL recovered instead of the in-trap debugger handling it" >&2
   fail=1

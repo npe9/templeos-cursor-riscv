@@ -331,6 +331,27 @@ public U0 DbgViewPrime()
   dbgv_primed = 1;
 }
 
+// Cls -- Cls()
+// NAME
+//   Cls - clear the terminal (stock TempleOS name)
+// SYNOPSIS
+//   Cls;
+// DESCRIPTION
+//   Clears the screen AND forgets what the renderer thinks is on it. Both halves matter: panes
+//   only send cells that differ from their shadow, so clearing the terminal without
+//   invalidating would leave the next repaint convinced the old contents are still there and
+//   paint nothing.
+// SEE ALSO
+//   Dbg  G  RVDocTextInvalidate
+public U0 Cls()
+{
+  RVVtClear;
+  RVVtFlush;
+  // RVVtClear only buffers; the pane paths flush at the end of a render, so a bare clear would
+  // otherwise sit in the buffer and never reach the terminal.
+  RVDocTextInvalidate;
+}
+
 // DbgTrapHook -- installed with RVSetDbgHook(&DbgTrapHook)
 // NAME
 //   DbgTrapHook - the debugger, running inside the trap, so G can actually continue
@@ -360,10 +381,12 @@ I64 DbgTrapHook(I64 cause, I64 epc, I64 tval)
     ch = RVUartGetC();
     if (ch == 'g') {
       dbgv_in_trap = 0;
+      Cls;
       return epc + 4;
     }
     if (ch == 'p') {
       dbgv_in_trap = 0;
+      Cls;
       return *(I64 *)(DBGV_SNAP + 19 * 8);
     }
     if (ch == 'r')
@@ -372,6 +395,8 @@ I64 DbgTrapHook(I64 cause, I64 epc, I64 tval)
       break;
   }
   dbgv_in_trap = 0;
+  Cls;
+  // leaving the debugger hands back a clean terminal, however you leave it
   return 0;
 }
 
@@ -384,13 +409,13 @@ I64 DbgTrapHook(I64 cause, I64 epc, I64 tval)
 //   Registers edited while stopped are already applied on resume by the trap path's copy-back
 //   (TrapSnapApply / HolyTrapSnapApply), so after a fault that the REPL recovered from there is
 //   nothing left to resume — the line was abandoned and you are back at the prompt. G exists so
-//   the stock name means something: it clears the view. Resuming a stopped context needs the
-//   debugger to run INSIDE the trap handler, which is still to come.
+//   the stock name means something: it leaves the debugger and clears the view. Inside a trap,
+//   `g` continues the stopped context; a line the REPL already recovered has nothing to resume.
 // SEE ALSO
 //   Dbg  Dr  AsmStep
 public U0 G()
 {
-  RVDocTextInvalidate;
+  Cls;
   dbgv_bytes = 0;
 }
 

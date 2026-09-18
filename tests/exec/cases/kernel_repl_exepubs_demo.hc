@@ -6,6 +6,7 @@
 #include "/Kernel/RVDocVT.HC"
 #include "/Kernel/RVDocText.HC"
 #include "/Kernel/RVRegPane.HC"
+#include "/Kernel/RVDolAnsi.HC"
 #include "/Kernel/RVDbgView.HC"
 #include "/Compiler/Compiler_RV_Body.PRJ"
 #define MEM_UART 0x10000000
@@ -113,7 +114,11 @@ I64 main()
       // Dbg/G: the stock entry points. A faulting line paints this view automatically below.
       RVExePubFunNew("Dbg", &Dbg, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("G", &G, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("Cls", &Cls, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("DbgViewCost", &DbgViewCost, cmp.internal_types[RT_I64], 0);
+      // Errors and Print() output carry DolDoc markup; translate it to ANSI instead of showing
+      // the operator "$LTRED$$BK,1$ERROR:$FG$".
+      RVDolAnsiInstall();
       DbgViewInit();
       // StdOut sink so Dbg can put U()'s disassembly in a document
       RVExePubFunNew("DbgDisasmCost", &DbgDisasmCost, cmp.internal_types[RT_I64], 0);

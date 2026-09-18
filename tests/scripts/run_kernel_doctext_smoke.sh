@@ -58,7 +58,9 @@ clean="$(printf '%s\n' "$out" | grep -v 'import unresolved')"
 screen() {
   printf '%s' "$clean" | python3 -c '
 import sys
-d = sys.stdin.read()
+# binary + replace: a boot line can carry a non-UTF-8 byte, and sys.stdin.read() would raise
+# UnicodeDecodeError — which silently produced an EMPTY screen and failed every assertion.
+d = sys.stdin.buffer.read().decode("utf-8", "replace")
 scr = [[" "]*100 for _ in range(32)]
 r = c = 0
 i = 0
@@ -68,6 +70,9 @@ while i < len(d):
         while j < len(d) and not d[j].isalpha():
             j += 1
         if j < len(d):
+            if d[j] == "J" and d[i+2:j] in ("2", "3"):
+                scr = [[" "]*100 for _ in range(len(scr))]
+                r = c = 0
             if d[j] == "H":
                 a = d[i+2:j].split(";")
                 try:
