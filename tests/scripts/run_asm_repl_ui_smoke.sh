@@ -268,10 +268,13 @@ need "asm REPL: out"
 # The catalog, enabled in both prompts: Tab completes from it, ? explains one entry inside the
 # stepper, and AsmDoc/AsmList are callable HolyC functions at the REPL prompt.
 need "asm> sfence.vma"
-need "AsmDoc sd"
+# AsmDoc is a man page now: sections, an example, and why you would reach for the instruction
+need "SYNOPSIS"
 need "store doubleword"
-need "AsmDoc addi"
+need "MOTIVATION"
+need "sd ra, 8(sp)             # save the return address"
 need "12-bit signed immediate"
+need "addi sp, sp, -32         # open a stack frame"
 need "documented asm{} mnemonics"
 # fcsr: read at all for the first time, and decoded. The flags are STICKY — by the time the
 # prompt is up the compiler has done its own float work, so this asserts the decode, not a

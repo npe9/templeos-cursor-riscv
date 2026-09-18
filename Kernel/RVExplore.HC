@@ -101,6 +101,37 @@ U8 *RVAsmDocFindRec(U8 *mn)
 U8 g_rv_asm_doc_buf[ASM_DOC_NOTE];
 U8 g_rv_asm_doc_tpl[ASM_DOC_TPL];
 
+#define ASM_DOC_WHY 512
+U8 g_rv_asm_doc_note2[ASM_DOC_WHY];
+
+// Prose, broken at a space near the column limit. The motivation lines are sentences, not
+// fields, and a man page that runs them off the side of an 80-column terminal is not one.
+U0 RVAsmDocWrap(U8 *indent, U8 *text, I64 width)
+{
+  U8 line[128];
+  I64 n = 0, brk;
+  U8 *p;
+  p = text;
+  while (*p) {
+    n = 0;
+    while (p[n] && n < width)
+      n++;
+    if (p[n]) {
+      brk = n;
+      while (brk > 0 && p[brk] != ' ')
+        brk--;
+      if (brk > 0)
+        n = brk;
+    }
+    MemCpy(line, p, n);
+    line[n] = 0;
+    Print("%s%s\n", indent, line);
+    p += n;
+    while (*p == ' ')
+      p++;
+  }
+}
+
 U0 RVAsmDocPrintField(U8 *label, U8 *val)
 {
   if (!val || !*val)
@@ -110,6 +141,36 @@ U0 RVAsmDocPrintField(U8 *label, U8 *val)
 
 // TRUE if `mn` is a branch/jump the guest asm{} assembler accepts with a NUMERIC
 // PC-relative offset (not a label). Keeps AsmDoc's hint in sync with Asm_RV.HC.
+// Examples and motivation, kept apart from the 244-entry catalog above: that one says what an
+// instruction IS, this one says why you would reach for it and what it looks like in use. A
+// mnemonic with no entry here still gets its template, encoding and semantics — the man page
+// simply has fewer sections. Fields: mn | example | example | example | motivation.
+U8 *rv_asm_ex_raw;
+U0 RVAsmExRawInit()
+{
+  rv_asm_ex_raw = "addi|addi a0, a0, 1           # a0 = a0 + 1|addi sp, sp, -32         # open a stack frame|addi a0, zero, 7         # what li a0,7 becomes|The workhorse of RISC-V. There is no separate increment, move or load-small-constant instruction: all three are addi with one operand tied to zero. A frame prologue is addi on sp, a move is addi rd,rs,0, and a small constant is addi rd,zero,imm.;add|add a2, a0, a1           # a2 = a0 + a1|add t0, t0, t1           # accumulate||Register-register add. Use addi when one side is a constant that fits in 12 bits - it saves materialising the constant first.;sub|sub a0, a0, a1           # a0 = a0 - a1|sub t0, zero, t0         # negate, which is what neg is||There is no subi: subtract a constant with addi and a negative immediate. That is why the immediate range is asymmetric in your favour at -2048.;li|li a0, 7                 # one addi|li a0, 0x12345678        # lui + addiw pair|li t0, -1                # all ones, one instruction|A pseudo-instruction, not hardware. It becomes addi for anything in -2048..2047 and lui+addiw beyond that, so the same line can cost one instruction or two. Check with u if the size matters.;mv|mv a1, a0                # a1 = a0|||addi rd,rs,0 wearing a friendlier name. Moving a register costs an add because the ISA has no move unit - that is the RISC bargain.;lui|lui a0, 0x10E00          # a0 = 0x10E00 << 12|||Loads a 20-bit immediate into the TOP of a register, leaving the low 12 bits zero for a following addi. Every large constant on RISC-V is this pair. Note the operand is the already-shifted field, not the final value.;auipc|auipc t0, 0              # t0 = address of this instruction|auipc t0, 0x1            # t0 = pc + 0x1000||The only way to learn where you are. RISC-V has no pc-relative addressing mode and cannot read pc directly, so position-independent code, call and every la of a nearby symbol start with auipc. It is also how a JIT finds its own tables.;andi|andi a0, a0, 0xFF        # keep the low byte|andi a0, a0, -16         # align down to 16||Masking. A negative immediate sign-extends to a run of ones, which is how you round an address DOWN to a power of two in one instruction.;slli|slli a0, a0, 3           # a0 = a0 * 8|slli t6, t6, 3           # build 0x87000000 from lui 0x10E00||Multiply by a power of two, and half of every index calculation: an I64 array element is slli 3 then add. It is also how a two-instruction constant is built when lui alone cannot reach.;srli|srli a0, a0, 12          # page number from an address|||Logical shift right - zeros come in at the top. For signed division by a power of two you want srai instead, or negative numbers round the wrong way.;srai|srai a0, a0, 2           # a0 / 4, rounding toward -inf|||Arithmetic shift right: the sign bit is replicated. Note this is NOT what C division does for negatives - C rounds toward zero, this rounds down - which is why the compiler emits extra instructions for signed division by a constant.;sltu|sltu t0, a0, a1          # t0 = a0 <u a1|sltu t0, zero, a0        # t0 = (a0 != 0), which is snez||Unsigned compare into a register. It is also how you get a carry flag on a machine that has no flags: after add a2,a0,a1, sltu t0,a2,a0 is 1 exactly when the add wrapped.;ld|ld a0, 0(t6)             # load a doubleword|ld a0, 16(sp)            # a local||The 12-bit signed offset is the whole addressing mode: no index register, no scaling. An index becomes slli+add first, which is why array loops on RISC-V keep a running pointer instead.;sd|sd a0, 0(t6)             # store a doubleword|sd ra, 8(sp)             # save the return address||Same addressing as ld. Note the operand order reads backwards from the load: the register being STORED comes first, the address second.;lbu|lbu a0, 0(a1)            # a byte, zero-extended|||Use lbu for bytes that are data (characters, flags) and lb for bytes that are small signed numbers - the difference is whether bit 7 spreads into the top 56 bits.;beq|beq a0, a1, same         # jump if equal|beq a0, zero, done       # which is beqz||RISC-V compares and branches in ONE instruction - there is no flags register to set first. The comparison is part of the branch, which is why there are six of them.;bltu|bltu a0, a1, less        # unsigned less-than|bgeu a0, t0, oob         # bounds check in one instruction||The unsigned compare is the bounds check: bgeu index,limit,fail catches both too-big and negative in one go, because a negative index is a huge unsigned number.;jal|jal ra, target           # call, saving the return address|jal zero, target         # plain jump, which is j||One instruction for both call and jump: the difference is only which register the return address lands in, and zero discards it. That is the whole of RISC-V control flow - there is no separate call or jmp.;jalr|jalr zero, 0(ra)         # return, which is ret|jalr ra, 0(t0)           # indirect call||The indirect half of jal. Returning is jumping to ra and discarding the new return address, which is why ret is a pseudo-instruction for exactly this.;ret|ret                      # jalr zero, 0(ra)|||Not a real instruction. Knowing it is jalr on ra explains why a leaf function need not touch the stack at all, and why clobbering ra loses your way home.;call|call Foo                 # auipc + jalr|||A PC-relative call assembled as a pair, so it reaches +/-2 GiB without a fixed address anywhere in the encoding. That is what makes RISC-V code position-independent by default.;csrr|csrr a0, mcause          # why did I trap|csrr a0, 0x003           # fcsr, by number||The CSR number is an IMMEDIATE in the encoding, not an operand, so there is no such thing as reading a CSR whose number is in a register. Any by-number reader is a switch or self-modifying code - see docs/DEBUG_STATE_SURVEY.md.;csrw|csrw mtvec, t0           # install a trap vector|||Writing a CSR is how you configure the machine: the trap vector, the interrupt enables, the timer comparand. Note csrw discards the old value - use csrrw if you want it back.;csrrs|csrrs a0, mstatus, t0    # set bits, keep the rest|||Read-modify-write in one atomic instruction. csrs/csrc with a register are how you flip individual mstatus bits without a read-modify-write race against a trap that fires in between.;ecall|ecall                    # trap to the handler|||A deliberate trap - the system call. In this port it lands in the same handler a fault does, which is why the debugger sees both through one freeze.;ebreak|ebreak                   # breakpoint|||What a debugger writes over an instruction to stop there. Bp/BpClr in this REPL do exactly that, and the trap handler then tells you where you are.;mul|mul a0, a0, a1           # low 64 bits|||M extension. mul gives the low half and mulh the high half, so a full 128-bit product is two instructions - the pair is how the rv32 lifter builds 64-bit arithmetic.;div|div a0, a0, a1           # signed|||Division does not trap on RISC-V: divide by zero gives all-ones and overflow gives the dividend. Check the divisor yourself if you care - the hardware will not.;fence|fence rw, rw             # order loads and stores|fence                    # the full barrier||Memory ordering. RISC-V is weakly ordered: without a fence another hart can observe your stores in a different order. Device drivers need one between filling a descriptor and ringing a doorbell.;lr.d|lr.d t0, (a0)            # load-reserved|||Half of the atomic pair. lr.d takes a reservation and sc.d only succeeds if nothing touched the line in between - that is a compare-and-swap loop without a lock prefix.;amoadd.d|amoadd.d t0, t1, (a0)    # atomic add, old value in t0|||One instruction where the lr/sc pair would be a loop. Use the AMOs for counters and flags and keep lr/sc for the cases that actually need a read-modify-write of your own shape.;fmv.d.x|fmv.d.x fa0, t0          # bits into a float register|||Moves RAW BITS, no conversion: 4 in t0 becomes the double whose encoding is 4, a subnormal near zero - not 4.0. Use fcvt.d.l to convert a number. This is the instruction for building a float from a hex pattern, which is how you make an infinity or a NaN by hand.;fcvt.d.l|fcvt.d.l fa0, a0         # (double)(I64)a0|||The conversion fmv.d.x is not. Rounding is by the current rounding mode unless you name one - fcvt.d.l fa0,a0,rtz.;fadd.d|fadd.d fa0, fa1, fa2     # double add|||Sets the sticky flags in fcsr rather than trapping, so an overflow is something you find out about by reading fcsr afterwards - Csr('fcsr') in this REPL.;nop|nop                      # addi zero, zero, 0|||An addi that writes x0, which discards it. Padding, alignment, and something to patch over later.;wfi|wfi                      # stop until an interrupt|||An idle loop that does not burn the machine. It is a hint - a hart is allowed to treat it as a nop - so never rely on it for timing.;";
+}
+
+// The record for `mn` in the examples table, or 0.
+U8 *RVAsmExFindRec(U8 *mn)
+{
+  U8 *p;
+  if (!mn || !*mn)
+    return 0;
+  if (!rv_asm_ex_raw)
+    RVAsmExRawInit;
+  p = rv_asm_ex_raw;
+  while (*p) {
+    if (RVAsmDocMnEq(p, mn))
+      return p;
+    while (*p && *p != ';')
+      p++;
+    if (*p == ';')
+      p++;
+  }
+  return 0;
+}
+
 I64 RVAsmIsGuestBranch(U8 *mn)
 {
   if (!mn)
@@ -146,16 +207,55 @@ public U0 AsmDoc(U8 *mn)
     Print("AsmDoc: unknown '%s' - AsmList(); Tab-complete inside asm{};\n", mn);
     return;
   }
+  // A man page, not a row of fields: NAME/SYNOPSIS/DESCRIPTION/EXAMPLES/MOTIVATION/SEE ALSO,
+  // with a section omitted when there is nothing to put in it. The examples and the motivation
+  // come from a second table (rv_asm_ex_raw) — the catalog says what an instruction IS, and that
+  // one says why you would reach for it.
+  U8 *ex;
   s = RVAsmDocField(rec, 0, g_rv_asm_doc_buf, ASM_DOC_MN);
-  Print("AsmDoc %s\n", s);
-  RVAsmDocPrintField("  template  ", RVAsmDocField(rec, 1, g_rv_asm_doc_buf, ASM_DOC_TPL));
-  RVAsmDocPrintField("  encoding  ", RVAsmDocField(rec, 2, g_rv_asm_doc_buf, ASM_DOC_ENC));
-  RVAsmDocPrintField("  imm       ", RVAsmDocField(rec, 3, g_rv_asm_doc_buf, ASM_DOC_IMM));
-  RVAsmDocPrintField("  gnu       ", RVAsmDocField(rec, 4, g_rv_asm_doc_buf, ASM_DOC_GNU));
-  RVAsmDocPrintField("  note      ", RVAsmDocField(rec, 5, g_rv_asm_doc_buf, ASM_DOC_NOTE));
-  RVAsmDocPrintField("  semantics ", RVAsmDocField(rec, 6, g_rv_asm_doc_buf, ASM_DOC_NOTE));
+  Print("$FG,%d$NAME$FG$\n", YELLOW);
+  Print("     %s", s);
+  s = RVAsmDocField(rec, 5, g_rv_asm_doc_tpl, ASM_DOC_NOTE);
+  if (s && *s)
+    Print(" - %s", s);
+  Print("\n\n");
+  Print("$FG,%d$SYNOPSIS$FG$\n", YELLOW);
+  RVAsmDocPrintField("     ", RVAsmDocField(rec, 1, g_rv_asm_doc_buf, ASM_DOC_TPL));
+  s = RVAsmDocField(rec, 2, g_rv_asm_doc_buf, ASM_DOC_ENC);
+  if (s && *s) {
+    Print("     %s-type", s);
+    s = RVAsmDocField(rec, 3, g_rv_asm_doc_tpl, ASM_DOC_IMM);
+    if (s && *s)
+      Print(", immediate %s", s);
+    Print("\n");
+  }
+  Print("\n$FG,%d$DESCRIPTION$FG$\n", YELLOW);
+  RVAsmDocPrintField("     ", RVAsmDocField(rec, 6, g_rv_asm_doc_buf, ASM_DOC_NOTE));
+  RVAsmDocPrintField("     assembles as ", RVAsmDocField(rec, 4, g_rv_asm_doc_tpl, ASM_DOC_GNU));
+  ex = RVAsmExFindRec(mn);
+  if (ex) {
+    U8 *e1, *e2, *e3;
+    e1 = RVAsmDocField(ex, 1, g_rv_asm_doc_buf, ASM_DOC_TPL);
+    if (e1 && *e1) {
+      Print("\n$FG,%d$EXAMPLES$FG$\n", YELLOW);
+      Print("     %s\n", e1);
+      e2 = RVAsmDocField(ex, 2, g_rv_asm_doc_buf, ASM_DOC_TPL);
+      if (e2 && *e2)
+        Print("     %s\n", e2);
+      e3 = RVAsmDocField(ex, 3, g_rv_asm_doc_buf, ASM_DOC_TPL);
+      if (e3 && *e3)
+        Print("     %s\n", e3);
+    }
+    e1 = RVAsmDocField(ex, 4, g_rv_asm_doc_note2, ASM_DOC_WHY);
+    if (e1 && *e1) {
+      Print("\n$FG,%d$MOTIVATION$FG$\n", YELLOW);
+      RVAsmDocWrap("     ", e1, 66);
+    }
+  }
   // Use mn (stable arg), NOT s: s points into g_rv_asm_doc_buf, which the field
   // prints above overwrote - by here it holds the last field, not the mnemonic.
+  Print("\n$FG,%d$SEE ALSO$FG$\n", YELLOW);
+  Print("     AsmList (the whole catalog)   AsmRepl (type one and watch the registers)\n");
   if (RVAsmIsGuestBranch(mn)) {
     if (!StrICmp(mn, "jr")) {
       Print("  asm{}      asm{ jr a0 } = jalr x0,0(a0)\n");
