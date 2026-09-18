@@ -94,6 +94,7 @@ feed() {
      "Csr(\"satp\");",
      # The stopped machine, read from the widened freeze rather than from the hardware now
      "Machine;",
+     "Plic;",
      # Back at the HolyC prompt, with enough output to scroll its region right through. The
      # panes are live here too, so this is where a layout that only existed inside AsmRepl
      # would be scribbled over and then look frozen.
@@ -261,6 +262,11 @@ need "trap came from"
 need "mtvec   ="
 need "mideleg ="
 need "nothing delegated (all traps taken in M-mode)"
+# The interrupt controller, which nothing could read before. The uart is source 10 on virt and
+# the REPL enables it, so it must show as enabled — and claim is never read, because reading it
+# would acknowledge an interrupt the system was about to service.
+need "PLIC @ 0xC000000"
+need "claim/complete not read"
 # t6 survives a step now: it is the wrapper base register, and it used to be clobbered before it
 # was ever saved, so this line ran and the value vanished.
 need "t6   0000000000000000 -> 0000000000000003"

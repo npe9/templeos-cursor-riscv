@@ -398,6 +398,44 @@ public U0 Csr(U8 *name)
     Print("Csr: unknown '%s' — Csr(); lists names\n", name);
 }
 
+// Plic -- Plic()
+// NAME
+//   Plic - the interrupt controller's state: what is enabled, what is pending, at what priority
+// SYNOPSIS
+//   Plic;
+// DESCRIPTION
+//   The PLIC is architectural state as much as any CSR, and nothing here could read it: MemMap
+//   printed its base address and the IRQ path claimed from it, and that was all.
+//
+//   It does NOT read the claim register. A read of claim ACKNOWLEDGES the highest-pending
+//   interrupt and hands it to the reader — a debugger that printed it would silently eat the
+//   interrupt the system was about to service. Everything below is a read with no side effect.
+// SEE ALSO
+//   MemMap  Csr  Machine
+public U0 Plic(I64 max_irq = 32)
+{
+  I64 i, pri, pend, en, thresh;
+  if (max_irq < 1 || max_irq > 1023)
+    max_irq = 32;
+  thresh = *(U32 *)(CONFIG_PLIC_BASE + CONFIG_PLIC_THRESHOLD_OFF);
+  Print("PLIC @ 0x%X  threshold=%d (an interrupt is delivered only above this)\n",
+        CONFIG_PLIC_BASE, thresh);
+  pend = *(U32 *)(CONFIG_PLIC_BASE + 0x1000);
+  en = *(U32 *)(CONFIG_PLIC_BASE + CONFIG_PLIC_ENABLE_OFF);
+  Print("  pending=0x%08X  enabled=0x%08X  (sources 1..31)\n", pend, en);
+  i = 1;
+  while (i < max_irq && i < 32) {
+    pri = *(U32 *)(CONFIG_PLIC_BASE + i * 4);
+    if (pri || (pend >> i) & 1 || (en >> i) & 1) {
+      Print("  irq %-3d priority=%-3d %s%s\n", i, pri,
+            (en >> i) & 1 ? "enabled " : "        ",
+            (pend >> i) & 1 ? "PENDING" : "");
+    }
+    i++;
+  }
+  Print("  (claim/complete not read: a read of claim acknowledges the interrupt)\n");
+}
+
 public U0 Uptime()
 {
   //Hart free-running counters (Zicntr): cycle, time (mtime tick), instret.

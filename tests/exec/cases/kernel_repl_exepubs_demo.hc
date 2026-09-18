@@ -165,6 +165,13 @@ I64 main()
       RVExePubFunNew("Mcause", &Mcause, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Uptime", &Uptime, cmp.internal_types[RT_U0], 0);
       {
+        // Plic(): the interrupt controller is architectural state too, and nothing could read it
+        CHashFun *tp2;
+        tp2 = RVExePubFunNew("Plic", &Plic, cmp.internal_types[RT_U0], 1);
+        if (tp2)
+          RVExePubAddArg(tp2, "max_irq", cmp.internal_types[RT_I64], MLF_DFT_AVAILABLE, 32);
+      }
+      {
         // Csr("mtvec") — a live read, decoded. Machine() is the same registers as they were
         // FROZEN; both are worth having and they answer different questions.
         CHashFun *tc;
