@@ -356,6 +356,23 @@ public U0 DbgViewPrime()
   dbgv_primed = 1;
 }
 
+// A clear wipes the panes along with everything else, and the layout has to come back up or the
+// prompt is left scrolling through rows the renderer still believes it owns. The image that owns
+// the layout installs it here; without one, Cls just clears, as it always did.
+I64 dbgv_relayout_fn;
+
+// DbgSetRelayout -- DbgSetRelayout(&AsmUiLayout)
+// NAME
+//   DbgSetRelayout - the function Cls calls to put the panes and the scroll region back
+// SYNOPSIS
+//   DbgSetRelayout(&AsmUiLayout);   // U0 fn(I64 mode, I64 home)
+// SEE ALSO
+//   Cls  AsmUiLayout
+public U0 DbgSetRelayout(I64 fn)
+{
+  dbgv_relayout_fn = fn;
+}
+
 // Cls -- Cls()
 // NAME
 //   Cls - clear the terminal (stock TempleOS name)
@@ -375,6 +392,13 @@ public U0 Cls()
   // RVVtClear only buffers; the pane paths flush at the end of a render, so a bare clear would
   // otherwise sit in the buffer and never reach the terminal.
   RVDocTextInvalidate;
+  if (dbgv_relayout_fn) {
+    U0 (*relayout)(I64 mode, I64 home);
+    relayout = dbgv_relayout_fn;
+    relayout(-1, TRUE);
+    // -1 = whichever layout is current; TRUE = the screen is empty, so the prompt starts at the
+    // top of its region
+  }
 }
 
 // DbgOnFault -- DbgOnFault(on)

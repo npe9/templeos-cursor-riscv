@@ -73,6 +73,10 @@ feed() {
      "d 0x87000400",
      "?",
      "q",
+     # Back at the HolyC prompt, with enough output to scroll its region right through. The
+     # panes are live here too, so this is where a layout that only existed inside AsmRepl
+     # would be scribbled over and then look frozen.
+     ("40+2;") x 8,
      "q",
     );
     select(undef,undef,undef,5);
@@ -170,12 +174,19 @@ while i < len(d):
     elif ch >= " " and 0 <= r < ROWS and 0 <= c < 100:
         scr[r][c] = ch; c += 1
     i += 1
-for row in scr:
+num = os.environ.get("NUM", "")
+for i, row in enumerate(scr):
     line = "".join(row).rstrip()
-    if line:
+    if num:
+        print("%02d|%s" % (i+1, line))
+    elif line:
         print(line)
 '
 }
+# Same replay, but every row, numbered — assertions about WHERE something is need the blank rows
+# counted, and `screen` drops them.
+screen_num() { NUM=1 screen "${1:-}"; }
+
 need_screen() {
   if ! screen "${2:-}" | grep -qF -- "$1"; then
     echo "FAIL asm-repl smoke -- not on screen: $1" >&2
@@ -220,6 +231,23 @@ fi
 # the memory pane is beside the registers, pointed where `d` put it
 need_screen "memory" "q  leave"
 need "asm REPL: out"
+
+# The layout is STANDING: after AsmRepl exits, the HolyC prompt has scrolled a screenful and the
+# register pane is still on row 1 rather than somewhere up the screen or written over.
+if ! screen_num | grep -q "^01|registers"; then
+  echo "FAIL asm-repl smoke -- the pane is not on row 1 at the HolyC prompt; rows 1-13:" >&2
+  screen_num | sed -n 1,13p >&2
+  fail=1
+fi
+# ...and the prompt's own output stayed inside its region, below the panes.
+bad_row="$(screen_num | grep -n "ans=42" | sed 's/:.*//' | while read -r r; do
+  [ "$r" -lt 13 ] && echo "$r"
+done | head -1)"
+if [ -n "$bad_row" ]; then
+  echo "FAIL asm-repl smoke -- prompt output reached row $bad_row, inside the panes" >&2
+  screen_num | sed -n 1,14p >&2
+  fail=1
+fi
 
 if [ "$fail" -ne 0 ]; then
   printf '%s\n' "$out" | grep -E 'A2|ExePutS|ans=|Except|Error|FAIL|OK|probe|Cmp|Compiler_RV' | head -40 | sed 's/^/  /' >&2

@@ -126,6 +126,10 @@ I64 main()
       RVExePubFunNew("Cls", &Cls, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("AsmRepl", &AsmRepl, cmp.internal_types[RT_U0], 0);
       AsmReplInstallStep(&AsmStep);
+      // The pane layout is standing, not something AsmRepl puts up: the registers are live at
+      // this prompt too, and a pane in the column the prompt scrolls through gets scribbled
+      // over and then looks frozen. Cls puts it back rather than leaving bare rows behind.
+      DbgSetRelayout(&AsmUiLayout);
       // Tab at the HolyC prompt completes from the hash table — every function, global, type
       // and register label the REPL can resolve, including ones defined a moment ago.
       RVLineEdComplete(&RVHashComplete);
@@ -194,6 +198,9 @@ I64 main()
   }
   UartPutS("A2: Cmp compiled 40+2\n");
   UartPutS("A2: type HolyC; 'q' quits\n");
+  if (dbg_view_ready)
+    AsmUiLayout(0, TRUE);
+  // registers across the top, the prompt scrolling below them, from here on
   while (TRUE) {
     UartPutS("> ");
     // History + Tab completion at the main prompt too (RVUartGetLine has neither).
@@ -212,8 +219,14 @@ I64 main()
       UartPutS(buf);
       // Land in the debugger view: registers + the decoded fault, then back to this prompt,
       // where _A0 / Dr / U(_PC-16) / AsmStep already work. Stock TempleOS Dbg(), not a modal UI.
-      if (dbg_view_ready)
+      if (dbg_view_ready) {
         Dbg;
+        // A fault unwinds past whatever AsmRepl was in the middle of, so the prompt would be
+        // left confined to the asm layout's region with Tab still completing mnemonics. Put the
+        // prompt's own layout and completion back — this is the only path out of a fault.
+        AsmUiLayout(0, FALSE);
+        RVLineEdComplete(&RVHashComplete);
+      }
       RVTrapRecoverDisarm();
       continue;
     }

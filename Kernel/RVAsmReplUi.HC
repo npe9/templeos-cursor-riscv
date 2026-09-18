@@ -17,14 +17,25 @@
 #help_index "Dbg"
 
 #define ASMUI_CTX 0x87000400
-#define ASMUI_PANE_ROWS 18
-// Rows the panes own (registers 1-12, memory 13-18). The prompt lives in a scroll region below
-// them, which is the only way a terminal can keep one part of the screen still: DECSTBM scrolls
-// whole rows, so a sidebar beside scrolling text is not something a terminal can pin. Panes on
-// top, prompt at the bottom — and the prompt stays where you left it.
 // the register file: x0..x31, shared with the debugger and the _Xn labels
+#define ASMUI_REG_ROWS 12
+// registers, three to a row: rows 1-12
+#define ASMUI_MEM_ROWS 6
+// memory, when the asm REPL is up: rows 13-18
+#define ASMUI_SCREEN_ROWS 25
 
-I64 asmui_mem_addr, asmui_running, asmui_step_fn;
+// The layout is STANDING, not something AsmRepl puts up and takes down. The register pane is
+// live at the HolyC prompt too (AsmStep repaints it from wherever it is called), and a pane in
+// the column the prompt scrolls through gets scribbled over and then looks frozen — the
+// renderer's shadow still believes it owns those rows. So the panes own the top of the screen
+// for as long as the image runs, and every prompt scrolls in the region below them:
+//   mode 0  registers only, prompt in rows 13-25   (the HolyC prompt)
+//   mode 1  registers + memory, prompt in 19-25    (inside AsmRepl)
+// A terminal can only pin whole rows (DECSTBM), which is why the panes are on top rather than
+// beside the text. Re-applied after anything that could have disturbed it — a clear, a fault —
+// because the one thing worse than no layout is a layout the renderer believes in and the
+// terminal does not.
+I64 asmui_mem_addr, asmui_running, asmui_step_fn, asmui_mode;
 
 // AsmReplInstallStep -- AsmReplInstallStep(&AsmStep)
 // NAME
@@ -105,6 +116,37 @@ U0 AsmUiPanes()
   DbgMemPaneAt(addr, 64, 12, 0, 6, 70);
 }
 
+// AsmUiLayout -- AsmUiLayout(mode, home)
+// NAME
+//   AsmUiLayout - put up the standing pane layout and the prompt's scroll region
+// SYNOPSIS
+//   AsmUiLayout(0, TRUE);    // prompt layout, cursor at the top of its region
+//   AsmUiLayout(-1, FALSE);  // same mode as before, prompt continues at the bottom
+// DESCRIPTION
+//   mode 0 is registers over the prompt, mode 1 adds the memory pane (the asm REPL); -1 keeps
+//   whichever is current. DECSTBM homes the cursor to row 1 — inside the panes — so this always
+//   moves it back into the region afterwards: `home` puts it at the top (a fresh screen) and
+//   otherwise at the bottom, where the prompt carries on without overwriting what it printed.
+// SEE ALSO
+//   AsmRepl  RVDocTextScrollRegion  RegPaneUpdate  Cls
+public U0 AsmUiLayout(I64 mode = -1, I64 home = FALSE)
+{
+  I64 top;
+  if (mode >= 0)
+    asmui_mode = mode;
+  top = ASMUI_REG_ROWS;
+  if (asmui_mode)
+    top += ASMUI_MEM_ROWS;
+  RVDocTextScrollRegion(top + 1, ASMUI_SCREEN_ROWS);
+  RVVtGoto(home ? top : ASMUI_SCREEN_ROWS - 1, 0);
+  RVVtFlush;
+  RVDocTextInvalidate;
+  // whatever was on those rows, the shadow no longer describes it
+  RegPaneUpdate;
+  if (asmui_mode)
+    AsmUiPanes;
+}
+
 // AsmRepl -- AsmRepl()
 // NAME
 //   AsmRepl - an assembler REPL with the registers and memory on screen
@@ -131,14 +173,12 @@ public U0 AsmRepl()
   asmui_running = 1;
   prev_fn = rv_led_complete_fn;
   RVLineEdComplete(&AsmUiComplete);
+  asmui_mode = 1;
   Cls;
-  RVDocTextScrollRegion(ASMUI_PANE_ROWS + 1, 25);
-  RVVtGoto(ASMUI_PANE_ROWS, 0);
-  // 0-based here, 1-based there: both name the first row of the scroll region. The panes put the
-  // cursor back where they found it (RVVtSaveCur), so this is where the prompt stays.
-  RVVtFlush;
-  RegPaneUpdate;
-  AsmUiPanes;
+  // Cls re-applies the layout through the relayout hook; without one (an image that did not wire
+  // it) put it up directly, so the loop works either way.
+  if (!dbgv_relayout_fn)
+    AsmUiLayout(1, TRUE);
   "asm REPL: instructions are stepped; q leaves, d <addr> moves the memory pane, ? for keys\n";
   while (asmui_running) {
     n = RVLineEd(line, 192, "asm> ");
@@ -155,10 +195,6 @@ public U0 AsmRepl()
     }
     if (line[0] == 'r' && !line[1]) {
       Cls;
-      RVVtGoto(ASMUI_PANE_ROWS, 0);
-      RVVtFlush;
-      RegPaneUpdate;
-      AsmUiPanes;
       continue;
     }
     if (line[0] == 'd' && line[1] == ' ') {
@@ -179,8 +215,9 @@ public U0 AsmRepl()
   }
   asmui_running = 0;
   RVLineEdComplete(prev_fn);
-  RVDocTextScrollRegion(0, 0);
-  // the whole screen scrolls again
+  asmui_mode = 0;
+  // back to the prompt layout: the register pane stays, the memory pane's rows go back to the
+  // prompt. The layout never comes down entirely — the pane is live at the HolyC prompt too.
   Cls;
   "asm REPL: out\n";
 }
