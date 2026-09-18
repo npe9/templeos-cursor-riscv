@@ -85,6 +85,7 @@ feed() {
      "G;",
      "D(_SP, 32);",
      "Da(_SP, 8);",
+     "*(0(I64 *)) = 2;",
      "s",
      "Cls;",
      "q",
@@ -215,6 +216,15 @@ fi
 # paints the view and waits for a key, so "fault in that line" must NOT appear — `g` resumes the
 # line instead and it returns a value like any other. That is the whole point of G.
 need "[dbg] g=go"
+# A fault the operator does not answer must give the line back rather than hang or eat input:
+# either the wait expires ("nobody there") or the next keystroke is not a debugger key
+# ("leaving"). The second fault below is followed by an ordinary REPL line, so it takes the
+# second path — and the REPL's own recovery then reports the fault as usual.
+if ! printf '%s\n' "$out" | grep -qE '\[dbg\] (nobody there|leaving)'; then
+  echo "FAIL asm-repl smoke -- an unanswered fault neither timed out nor released the line" >&2
+  fail=1
+fi
+need "fault in that line"
 # D numbers from zero (structure layout); Da names code addresses on the stack, which is what
 # makes a stack readable. Both render into the memory tile.
 # D paints into an empty tile, so its title is contiguous in the byte stream. Da then overwrites
@@ -234,14 +244,14 @@ if screen | grep -qF "Da (addresses)"; then
   echo "FAIL asm-repl smoke -- Cls left the debugger view on screen" >&2
   fail=1
 fi
-need_screen "Da (addresses)" "> Cls;"
+# Da as of the next fault: entering the debugger repaints the tiles and leaving it clears them.
+need_screen "Da (addresses)" "> *(0(I64 *)) = 2;"
 # ...and the disasm tile as of the in-trap prompt: the tiles are painted first, then that line
 # is printed, and leaving the debugger with `g` clears the view — which is the point of it.
 need_screen "disasm at _PC" "[dbg] g=go"
-if printf '%s\n' "$out" | grep -qF "fault in that line"; then
-  echo "FAIL asm-repl smoke -- the REPL recovered instead of the in-trap debugger handling it" >&2
-  fail=1
-fi
+# (An unanswered fault DOES fall through to the REPL's recovery — that is asserted above.
+# What must not happen is the first fault, which we answer with `g`, being recovered instead
+# of resumed; the ans=1 check below covers that.)
 dbgv=$(printf '%s\n' "$out" | grep -A1 'DbgViewCost;' | grep -o 'ans=[0-9]*' | head -1 | cut -d= -f2)
 if [ -z "${dbgv:-}" ] || [ "${dbgv:-0}" -le 0 ]; then
   echo "FAIL asm-repl smoke -- Dbg view did not paint after a fault (DbgViewCost=$dbgv)" >&2

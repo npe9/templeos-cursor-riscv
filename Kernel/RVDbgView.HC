@@ -24,6 +24,9 @@
 
 CDoc *dbgv_doc, *dbgv_dis, *dbgv_mem;
 I64 dbgv_bytes, dbgv_dis_bytes, dbgv_mem_bytes, dbgv_in_trap, dbgv_primed;
+I64 dbgv_on_fault = 1;
+#define DBGV_WAIT_SEC 2
+// how long a fault waits for a human before giving up
 
 // --- capturing the disassembler -------------------------------------------------------------
 // DisasmOne PRINTS (a thousand lines of it); it has no buffer form. Rather than fork it, sit in
@@ -352,6 +355,19 @@ public U0 Cls()
   RVDocTextInvalidate;
 }
 
+// DbgOnFault -- DbgOnFault(on)
+// NAME
+//   DbgOnFault - whether a fault stops in the debugger
+// SYNOPSIS
+//   DbgOnFault(0);   // scripts: fault straight back to the prompt
+//   DbgOnFault(1);   // default
+// SEE ALSO
+//   DbgTrapHook  Dbg
+public U0 DbgOnFault(I64 on)
+{
+  dbgv_on_fault = on;
+}
+
 // DbgTrapHook -- installed with RVSetDbgHook(&DbgTrapHook)
 // NAME
 //   DbgTrapHook - the debugger, running inside the trap, so G can actually continue
@@ -369,16 +385,36 @@ public U0 Cls()
 //   Dbg  G  DbgViewPrime
 I64 DbgTrapHook(I64 cause, I64 epc, I64 tval)
 {
-  I64 ch;
+  I64 ch, deadline;
   no_warn cause;
   no_warn tval;
-  if (dbgv_in_trap || !dbgv_primed)
+  if (dbgv_in_trap || !dbgv_primed || !dbgv_on_fault)
     return 0;
   dbgv_in_trap = 1;
   Dbg;
   "\n[dbg] g=go p=go@_PC r=repaint q=prompt\n";
+  // Wait for a human, but not forever. A script that faults with nobody typing would otherwise
+  // block here until its harness timeout — the debugger must not turn a fault into a hang.
+  // Once a key arrives someone is clearly there, so the loop below blocks as you would expect.
+  deadline = *(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) +
+             DBGV_WAIT_SEC * CONFIG_TIMEBASE_FREQ;
+  ch = -1;
+  while (*(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) < deadline) {
+    ch = RVUartTryGet;
+    if (ch >= 0)
+      break;
+  }
+  if (ch < 0) {
+    dbgv_in_trap = 0;
+    Cls;
+    "[dbg] nobody there\n";
+    return 0;
+  }
+  // Only g/p/r/q belong to the debugger. ANY other key means the input was meant for the REPL,
+  // so leave immediately rather than swallowing it — otherwise a script whose next line lands
+  // inside the wait gets its text eaten one character at a time, which is worse than a hang
+  // because it looks like the line simply vanished.
   while (TRUE) {
-    ch = RVUartGetC();
     if (ch == 'g') {
       dbgv_in_trap = 0;
       Cls;
@@ -389,14 +425,20 @@ I64 DbgTrapHook(I64 cause, I64 epc, I64 tval)
       Cls;
       return *(I64 *)(DBGV_SNAP + 19 * 8);
     }
-    if (ch == 'r')
-      Dbg;
-    if (ch == 'q')
+    if (ch != 'r') {
+      // Not ours: hand the byte back through the soft RX ring so the REPL still sees the line
+      // the operator was typing. Swallowing it made a fed line arrive one character short,
+      // which looks like the line silently vanished.
+      RVUartSoftEnqueue(ch);
       break;
+    }
+    Dbg;
+    ch = RVUartGetC();
   }
   dbgv_in_trap = 0;
   Cls;
-  // leaving the debugger hands back a clean terminal, however you leave it
+  "[dbg] leaving\n";
+  // however you leave, the terminal goes back clean and the REPL gets the fault
   return 0;
 }
 
