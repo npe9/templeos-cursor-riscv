@@ -333,6 +333,72 @@ U0 RVVtPutGlyph(I64 ch)
 
 I64 rv_vt_term_rows = 25, rv_vt_term_cols = 80;
 // what the terminal said when asked; the safe default until it does
+I64 rv_vt_resize_fn, rv_vt_probe_ok, rv_vt_inband;
+// rv_vt_inband: the terminal sent an unsolicited resize report, so it will send the next one
+// too and nobody needs to keep asking
+
+// RVVtOnResize -- RVVtOnResize(&fn)
+// NAME
+//   RVVtOnResize - install what runs when the terminal changes size
+// SYNOPSIS
+//   RVVtOnResize(&AsmUiResized);   // U0 fn()
+// SEE ALSO
+//   RVVtSizeSet  RVVtResizeReports  RVVtProbeSize
+public U0 RVVtOnResize(I64 fn)
+{
+  rv_vt_resize_fn = fn;
+}
+
+// RVVtSizeSet -- RVVtSizeSet(rows, cols)
+// NAME
+//   RVVtSizeSet - record a size the terminal reported, and relayout if it moved
+// DESCRIPTION
+//   The one place a new size takes effect, whichever way it arrived: the answer to a probe, or
+//   an unsolicited report when the window was dragged. Returns TRUE if it actually changed —
+//   a report that says what we already believe must not repaint the screen.
+// SEE ALSO
+//   RVVtOnResize  RVVtProbeSize
+public I64 RVVtSizeSet(I64 rows, I64 cols)
+{
+  U0 (*fn)();
+  if (rows < 10 || rows > 200 || cols < 40 || cols > 400)
+    return FALSE;
+  // a size outside this is a misread reply, and the old one is better than a wrong one
+  rv_vt_probe_ok = 1;
+  if (rows == rv_vt_term_rows && cols == rv_vt_term_cols)
+    return FALSE;
+  rv_vt_term_rows = rows;
+  rv_vt_term_cols = cols;
+  if (rv_vt_resize_fn) {
+    fn = rv_vt_resize_fn;
+    fn();
+  }
+  return TRUE;
+}
+
+// RVVtResizeReports -- RVVtResizeReports(on)
+// NAME
+//   RVVtResizeReports - ask the terminal to tell us when it is resized (mode 2048)
+// SYNOPSIS
+//   RVVtResizeReports(TRUE);
+// DESCRIPTION
+//   In-band resize notification: the terminal sends "CSI 48 ; rows ; cols ; ... t" whenever the
+//   window changes, and one immediately when the mode is set. A serial guest gets no SIGWINCH —
+//   this is the only way to hear about a resize as it happens rather than at the next prompt.
+//   Terminals that do not know the mode ignore it, which is why the prompt also re-probes.
+// SEE ALSO
+//   RVVtSizeSet  RVVtProbeSize  RVLineEd
+public U0 RVVtResizeReports(I64 on)
+{
+  RVVtCsi();
+  RVVtPut('?');
+  RVVtPut('2');
+  RVVtPut('0');
+  RVVtPut('4');
+  RVVtPut('8');
+  RVVtPut(on ? 'h' : 'l');
+  RVVtFlush;
+}
 
 // RVVtProbeSize -- RVVtProbeSize(ms)
 // NAME
@@ -394,12 +460,9 @@ public I64 RVVtProbeSize(I64 ms = 300)
     if (ch == 'R' && st == 3) {
       // Sanity: a terminal smaller than this cannot hold any of these panes, and one this large
       // is a reply we misread. Either way the defaults are better than the answer.
-      if (r >= 10 && r <= 200 && c >= 40 && c <= 400) {
-        rv_vt_term_rows = r;
-        rv_vt_term_cols = c;
-        return TRUE;
-      }
-      return FALSE;
+      RVVtSizeSet(r, c);
+      // TRUE means the terminal answered, not that the size changed
+      return rv_vt_probe_ok;
     }
     // not the reply after all
     st = 0;

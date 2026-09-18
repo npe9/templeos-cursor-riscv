@@ -120,6 +120,14 @@ I64 main()
       AsmWatchInstall(&RegPaneStep);
       RVExePubFunNew("RegPane", &RegPaneStep, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("RegPaneCost", &RegPaneCost, cmp.internal_types[RT_I64], 0);
+      {
+        // Fp(1) / Fp(0): the float block is 16 more rows, so whether it is worth the screen is
+        // the operator's call as well as the layout's.
+        CHashFun *tp;
+        tp = RVExePubFunNew("Fp", &RegPaneFp, cmp.internal_types[RT_U0], 1);
+        if (tp)
+          RVExePubAddArg(tp, "on", cmp.internal_types[RT_I64], MLF_DFT_AVAILABLE, 1);
+      }
       // Dbg/G: the stock entry points. A faulting line paints this view automatically below.
       RVExePubFunNew("Dbg", &Dbg, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("G", &G, cmp.internal_types[RT_U0], 0);
@@ -219,6 +227,11 @@ I64 main()
     // 80-column screen is a different layout from one on a 120-column screen, and guessing is
     // how ten registers went missing the first time.
     RVVtProbeSize(300);
+    // ...and hear about it when it changes. A serial guest gets no SIGWINCH, so the terminal
+    // has to say so: mode 2048 makes it report every resize in band (and one immediately), and
+    // the prompt re-probes for terminals that do not know the mode.
+    RVVtOnResize(&AsmUiResized);
+    RVVtResizeReports(TRUE);
     AsmUiLayout(0, TRUE);
   }
   while (TRUE) {

@@ -20,6 +20,13 @@
 #define ASM_CTX      0x87000400
 // x0..x31 — the fault freeze
 #define ASM_CTX_PREV 0x87000600
+#define ASM_FCTX 0x87000800
+// f0..f31, the float half of the stepper's register file
+#define ASM_FCTX_PREV 0x87000900
+#define ASM_FCTX_OFF 0x400
+// ASM_FCTX - ASM_CTX: 1024, which fits a 12-bit offset, so the float block is reached from the
+// same base register as the integer one and costs no extra setup
+#define ASM_FREGS 32
 // shadow: what the registers held before the last step
 
 I64 asm_ctx_ready;
@@ -58,7 +65,25 @@ I64 AsmCtxReg(I64 i)
   if (i < 25)
     return 18 + i - 15;
   // s2..s11
+  if (i == 25)
+    return 31;
+  // t6 — the wrapper's own base register, which is why it needs the care below
   return -1;
+}
+
+#define ASM_CTX_BASE_REG 31
+// t6: the wrapper needs SOME register to address the context array with, and whichever one it
+// picks it cannot also carry that register's value across the step. The answer is to handle it
+// last on the way in and first on the way out:
+//   in   load everything else with t6 as the base, then load t6 itself from it — the base is
+//        consumed at the moment it is no longer needed
+//   out  park t6 on the stack (a store needs no base register beyond sp, which is not part of
+//        the context), rebuild the base in t6, store everything else, then bring the parked
+//        value back through t5 — already stored by then, so it is free to borrow
+// Without this, `li t6,3` ran and then vanished: the wrapper overwrote t6 before it was saved.
+U0 AsmCtxBase(U8 *dst)
+{
+  StrCat(dst, "lui t6,0x10E00\nslli t6,t6,3\naddi t6,t6,0x400\n");
 }
 
 U0 AsmRegName(I64 n, U8 *out)
@@ -94,12 +119,21 @@ U0 AsmCtxIo(U8 *dst, Bool store)
 {
   U8 line[64];
   I64 i, n;
-  StrCat(dst, "lui t6,0x10E00\nslli t6,t6,3\naddi t6,t6,0x400\n");
+  if (store) {
+    StrPrint(line, "addi sp,sp,-16\nsd x%d,8(sp)\n", ASM_CTX_BASE_REG);
+    StrCat(dst, line);
+  }
+  AsmCtxBase(dst);
   i = 0;
   while (TRUE) {
     n = AsmCtxReg(i);
     if (n < 0)
       break;
+    if (n == ASM_CTX_BASE_REG) {
+      i++;
+      continue;
+      // handled either side of this loop
+    }
     if (store)
       StrPrint(line, "sd x%d,%d(t6)\n", n, n * 8);
     else
@@ -107,6 +141,40 @@ U0 AsmCtxIo(U8 *dst, Bool store)
     StrCat(dst, line);
     i++;
   }
+  // The float registers ride along: same base, offset by 1024. Without them `fadd.d fa0,fa1,fa2`
+  // stepped and left nothing to look at — the value was in f10 and f10 was not saved anywhere.
+  n = 0;
+  while (n < ASM_FREGS) {
+    if (store)
+      StrPrint(line, "fsd f%d,%d(t6)\n", n, ASM_FCTX_OFF + n * 8);
+    else
+      StrPrint(line, "fld f%d,%d(t6)\n", n, ASM_FCTX_OFF + n * 8);
+    StrCat(dst, line);
+    n++;
+  }
+  if (store) {
+    // t5 has been stored, so it can carry the parked t6 into its slot
+    StrPrint(line, "ld x30,8(sp)\nsd x30,%d(t6)\naddi sp,sp,16\n", ASM_CTX_BASE_REG * 8);
+    StrCat(dst, line);
+  } else {
+    StrPrint(line, "ld x%d,%d(t6)\n", ASM_CTX_BASE_REG, ASM_CTX_BASE_REG * 8);
+    StrCat(dst, line);
+  }
+}
+
+// The float register's ABI name, which is what anyone typing at a stepper uses.
+U0 AsmFRegName(I64 n, U8 *out)
+{
+  if (n <= 7)
+    StrPrint(out, "ft%d", n);
+  else if (n <= 9)
+    StrPrint(out, "fs%d", n - 8);
+  else if (n <= 17)
+    StrPrint(out, "fa%d", n - 10);
+  else if (n <= 27)
+    StrPrint(out, "fs%d", n - 16);
+  else
+    StrPrint(out, "ft%d", n - 20);
 }
 
 U0 AsmCtxSnapPrev()
@@ -118,6 +186,11 @@ U0 AsmCtxSnapPrev()
     if (n < 0)
       break;
     *(I64 *)(ASM_CTX_PREV + n * 8) = *(I64 *)(ASM_CTX + n * 8);
+    i++;
+  }
+  i = 0;
+  while (i < ASM_FREGS) {
+    *(I64 *)(ASM_FCTX_PREV + i * 8) = *(I64 *)(ASM_FCTX + i * 8);
     i++;
   }
 }
@@ -168,6 +241,12 @@ public U0 AsmClr()
     *(I64 *)(ASM_CTX_PREV + n * 8) = 0;
     i++;
   }
+  i = 0;
+  while (i < ASM_FREGS) {
+    *(I64 *)(ASM_FCTX + i * 8) = 0;
+    *(I64 *)(ASM_FCTX_PREV + i * 8) = 0;
+    i++;
+  }
   asm_ctx_ready = 1;
 }
 
@@ -186,8 +265,9 @@ public U0 AsmClr()
 // SEE ALSO
 //   AsmRegs  AsmClr  Dr  U  Disasm
 // BUGS
-//   t6 is the wrapper's scratch and is not part of the context; sp/gp/tp/s0/ra belong to the
-//   running REPL and are left alone.
+//   sp/gp/tp/s0/ra belong to the running REPL and are left alone, so a line that writes them
+//   is not carried to the next step. t6 IS carried, though it is also the wrapper's base
+//   register — see AsmCtxBase for how.
 public I64 AsmStep(U8 *text)
 {
   U8 *src, nm[8];
@@ -216,6 +296,19 @@ public I64 AsmStep(U8 *text)
     was = *(I64 *)(ASM_CTX_PREV + n * 8);
     if (now != was) {
       AsmRegName(n, nm);
+      "  %-4s %016X -> %016X\n", nm, was, now;
+      changed++;
+    }
+    i++;
+  }
+  i = 0;
+  while (i < ASM_FREGS) {
+    now = *(I64 *)(ASM_FCTX + i * 8);
+    was = *(I64 *)(ASM_FCTX_PREV + i * 8);
+    if (now != was) {
+      AsmFRegName(i, nm);
+      // raw bits: a float's hex is what you check an encoding against, and printing it as a
+      // number would round away the thing you are looking at
       "  %-4s %016X -> %016X\n", nm, was, now;
       changed++;
     }

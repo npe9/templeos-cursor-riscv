@@ -70,11 +70,17 @@ feed() {
      "addi a0, a0, 0x10",
      "\x01aui\t a1, 0x1\n",
      "\x01\e[A\e[A\n",
+     # t6 doubles as the wrapper base register: it used to be clobbered before it was saved,
+     # so `li t6,3` ran and left nothing behind. A float register must survive a step too.
+     "li t6, 3",
+     "fmv.d.x fa0, t6",
      "d 0x87000400",
      # Tab from the documentation catalog: "sfen" completes to sfence.vma, which the old
      # hand-written word list did not contain. Ctrl-U kills the line rather than stepping it —
      # Ctrl-C would LEAVE the asm REPL, and everything after it would go to the HolyC prompt.
      "\x01sfen\t\x15\n",
+     # ...and after a question mark, which ends a word: "?sfen" is the question and then "sfen".
+     "\x01?sfen\t\x15\n",
      # ...and the doc for one mnemonic, without leaving the stepper
      "? sd",
      "?",
@@ -86,6 +92,14 @@ feed() {
      # panes are live here too, so this is where a layout that only existed inside AsmRepl
      # would be scribbled over and then look frozen.
      ("40+2;") x 8,
+     # A line that prints a word nothing else prints: the screen before the resize has to be
+     # checked against the size it was laid out for, and after it against the new one.
+     "\"resize-mark\";",
+     # The window was dragged: 30 rows by 100 columns, reported in band (mode 2048). The sidebar
+     # has to move with it — column 56 now, not 76 — and the float block no longer fits.
+     "\x01\e[48;30;100;0;0t",
+     "40+2;",
+     "40+2;",
      "q",
     );
     # The guest asks the terminal how big it is (CSI 6n) before it lays anything out. Answer as
@@ -228,15 +242,24 @@ need "store doubleword"
 need "AsmDoc addi"
 need "12-bit signed immediate"
 need "documented asm{} mnemonics"
+# t6 survives a step now: it is the wrapper base register, and it used to be clobbered before it
+# was ever saved, so this line ran and the value vanished.
+need "t6   0000000000000000 -> 0000000000000003"
+# ...and so do the float registers: fmv.d.x moves t6's bits into fa0, and the stepper says so.
+need "fa0  0000000000000000 -> 0000000000000003"
+# Tab straight after a question mark completes what AsmDoc can explain
+need "asm> ?sfence.vma"
 
 # The layout, checked on the reconstructed screen: values in a column on the right, the REPL on
 # the left. The terminal answered the size probe with 120x40, so the sidebar starts at column 76
 # (120 - 44) and the text column is everything left of it.
-# Stop once the REPL has quit. The panes are repainted at the PROMPT, so the screen is true as
-# of the last one; the lines printed after the loop exits (and QEMU's own exit message, which is
-# the host talking and is wrapped to nothing) scroll the sidebar with no prompt left to put it
-# back. That is the known cost of a sidebar on a terminal that scrolls whole rows.
-if ! screen_num "A2 ExePutS loop" | SIDE=76 python3 -c '
+# The layout, twice: at the terminal's first size and again after it was resized under us. The
+# panes are repainted at the PROMPT, so each screen is true as of the last one before the marker;
+# the lines printed after the loop exits (and QEMU's own exit message, which is the host talking
+# and is wrapped to nothing) scroll the sidebar with no prompt left to put it back. That is the
+# known cost of a sidebar on a terminal that scrolls whole rows.
+check_layout() { # check_layout <sidebar-column> <stop-marker> <what> <float|memory>
+if ! screen_num "$2" | SIDE="$1" EXPECT="$4" python3 -c '
 import sys, os, re
 side = int(os.environ["SIDE"])
 rows = {}
@@ -274,12 +297,39 @@ r, c = at("a0")
 if r is not None and "0000000000000020" not in rows[r][c:c+40]:
     bad.append("a0 does not show 0000000000000020: %r" % rows[r][c:c+40])
 
-# memory under the registers, in the same column
+# pc rides with the registers, where a debugger puts it
+r, c = at("pc")
+if r is None:
+    bad.append("pc is not on screen")
+elif c < side:
+    bad.append("pc is at column %d, left of the sidebar (%d)" % (c, side))
+
+# The blocks are RANKED by the rows available: registers and machine state always, then the 32
+# float registers, and memory only if there is still room. So which of the two is on screen is
+# itself the assertion — at 40 rows the floats displace memory, at 30 they do not fit at all.
 mem = [r for r in sorted(rows) if rows[r][side:side+7].strip() == "memory"]
-if not mem:
-    bad.append("no memory pane in the sidebar")
-elif mem[0] <= last_reg:
-    bad.append("memory pane at row %d is not below the registers (row %d)" % (mem[0], last_reg))
+flt = [r for r in sorted(rows) if rows[r][side:side+6].strip() == "float"]
+want = os.environ.get("EXPECT", "")
+if want == "float":
+    if not flt:
+        bad.append("no float block in the sidebar")
+    else:
+        for nm in ("ft0", "fa0", "ft11"):
+            r, c = at(nm)
+            if r is None:
+                bad.append("float register %s is not on screen" % nm)
+            elif r < flt[0]:
+                bad.append("%s at row %d is above the float heading (row %d)" % (nm, r, flt[0]))
+    if mem:
+        bad.append("memory pane is on screen with no rows to spare for it")
+elif want == "memory":
+    if not mem:
+        bad.append("no memory pane in the sidebar")
+    elif mem[0] <= last_reg:
+        bad.append("memory pane at row %d is not below the registers (row %d)"
+                   % (mem[0], last_reg))
+    if flt:
+        bad.append("float block is on screen at a size that cannot hold it")
 
 # ...and the REPL text stayed in its own column. A row legitimately holds text on the left and
 # pane on the right, so what must be clean is the gutter between them: the text column wraps one
@@ -295,10 +345,16 @@ if bad:
         print("  " + b)
     sys.exit(1)
 ' >&2; then
-  echo "FAIL asm-repl smoke -- the sidebar layout is wrong (screen above)" >&2
-  screen_num | sed -n 1,30p >&2
+  echo "FAIL asm-repl smoke -- the sidebar layout is wrong $3 (screen above)" >&2
+  screen_num "$2" | sed -n 1,30p >&2
   fail=1
 fi
+}
+check_layout 76 "resize-mark" "at 120x40" float
+# After the resize the terminal is 100 columns, so the sidebar starts at 56. Nothing else about
+# the layout changes shape — which is the point: the same code laid it out at a size it was
+# never told about at boot.
+check_layout 56 "qemu-system-riscv64" "after the resize to 100 columns" memory
 
 if [ "$fail" -ne 0 ]; then
   printf '%s\n' "$out" | grep -E 'A2|ExePutS|ans=|Except|Error|FAIL|OK|probe|Cmp|Compiler_RV' | head -40 | sed 's/^/  /' >&2

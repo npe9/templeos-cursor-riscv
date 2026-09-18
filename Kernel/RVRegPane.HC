@@ -18,8 +18,12 @@
 
 #define REGP_CTX  0x87000400
 // x0..x31 freeze / asm REPL register file
-#define REGP_PREV 0x87000700
-// the pane's own shadow: what it showed last time
+#define REGP_PREV 0x87000A00
+// the pane's own shadow: what it showed last time (72 slots — 32 registers, 4 CSRs, pc, and
+// the 32 float registers). Moved up from 0x87000700 when the float block was added: the
+// stepper's float register file sits at 0x87000800.
+#define REGP_FCTX 0x87000800
+// f0..f31, as the asm stepper leaves them
 
 #define REGP_SNAP 0x87000100
 // the legacy freeze slots: 18 mcause, 19 mepc, 20 mtval, 21 mstatus
@@ -49,8 +53,22 @@ I64 regp_row, regp_col;
 // compares against "what I showed last time" finds nothing changed on the second paint and
 // draws every register calm again. That is the red vanishing while you read it. RegPaneMark
 // latches; RegPaneUpdate only paints.
-#define REGP_MARKS 36
+#define REGP_MARKS 72
 I64 regp_moved[REGP_MARKS];
+#define REGP_PC 36
+#define REGP_FP0 40
+// marks: 0-31 registers, 32-35 CSRs, 36 pc, 40-71 float
+#define REGP_FREGS 32
+I64 regp_fp = 1;
+// Whether the float block is shown. A pane with no room for it says so by turning it off rather
+// than cutting it in half — see RegPaneRowsNeeded, and Fp(1) to insist.
+// pc's own mark slot, after the 32 registers and the 4 CSRs
+
+// pc rides with the general registers rather than with the CSRs, which is where a debugger puts
+// it and where the eye looks for it: x0..x31 and then pc. The value is the freeze's mepc — the
+// same thing _PC reads and where G resumes — so "the pc" and "mepc" are one number wearing two
+// names, one in each block.
+#define REGP_PC_SLOT 19
 
 // RegPaneAt -- RegPaneAt(row, col, rows, cols)
 // NAME
@@ -93,12 +111,46 @@ I64 RegPanePerRow()
 //   RegPaneAt  RegPaneUpdate
 public I64 RegPaneRowsNeeded()
 {
-  I64 per, csr_per;
+  I64 per, csr_per, rows;
   per = RegPanePerRow();
   csr_per = regp_cols / REGP_CSR_ENTRY;
   if (csr_per < 1)
     csr_per = 1;
-  return 1 + (32 + per - 1) / per + 1 + (4 + csr_per - 1) / csr_per;
+  rows = 1 + (33 + per - 1) / per + 1 + (4 + csr_per - 1) / csr_per;
+  // 33: the 32 registers and pc
+  if (regp_fp)
+    rows += 1 + (REGP_FREGS + per - 1) / per;
+  return rows;
+}
+
+// RegPaneFp -- Fp(on)
+// NAME
+//   Fp - show or hide the float registers in the pane
+// SYNOPSIS
+//   Fp(1);   Fp(0);
+// DESCRIPTION
+//   Another 32 values is another 16 rows at two to a row, which a short terminal has not got.
+//   The layout turns them off when they do not fit; this insists either way.
+// SEE ALSO
+//   RegPaneUpdate  AsmUiLayout
+public U0 RegPaneFp(I64 on)
+{
+  regp_fp = on;
+}
+
+// The float register's ABI name — ft0-7, fs0-1, fa0-7, fs2-11, ft8-11.
+U0 RegPaneFName(I64 n, U8 *out)
+{
+  if (n <= 7)
+    StrPrint(out, "ft%d", n);
+  else if (n <= 9)
+    StrPrint(out, "fs%d", n - 8);
+  else if (n <= 17)
+    StrPrint(out, "fa%d", n - 10);
+  else if (n <= 27)
+    StrPrint(out, "fs%d", n - 16);
+  else
+    StrPrint(out, "ft%d", n - 20);
 }
 
 U0 RegPaneName(I64 n, U8 *out)
@@ -230,6 +282,10 @@ U0 RegPaneUpdate()
       DocPutS(regp_doc, "\n");
     n++;
   }
+  now = *(I64 *)(REGP_SNAP + REGP_PC_SLOT * 8);
+  RegPaneValue(line, "pc", now, regp_moved[REGP_PC]);
+  DocPutS(regp_doc, line);
+  col++;
   if (col % per)
     DocPutS(regp_doc, "\n");
   StrPrint(line, "$FG,%d$machine state$FG$\n", REGP_COL_HEAD);
@@ -248,6 +304,30 @@ U0 RegPaneUpdate()
   }
   if (col % csr_per)
     DocPutS(regp_doc, "\n");
+  if (regp_fp) {
+    // Say where these came from. The float file is the asm STEPPER's (0x87000800) and no trap
+    // path writes it — neither trap vector contains a single fsd — so after a fault these are
+    // whatever the last stepped line left behind, not the faulting context. Until the freeze
+    // saves f0..f31 the honest thing is to label them rather than let them sit next to the
+    // integer registers looking equally true. See docs/DEBUG_STATE_SURVEY.md.
+    StrPrint(line, "$FG,%d$float $FG,%d$(as last stepped)$FG$\n", REGP_COL_HEAD, REGP_COL_ZERO);
+    DocPutS(regp_doc, line);
+    n = 0;
+    col = 0;
+    while (n < REGP_FREGS) {
+      now = *(I64 *)(REGP_FCTX + n * 8);
+      RegPaneFName(n, nm);
+      // raw bits, like the stepper prints them: an encoding is what you are checking
+      RegPaneValue(line, nm, now, regp_moved[REGP_FP0 + n]);
+      DocPutS(regp_doc, line);
+      col++;
+      if (col % per == 0)
+        DocPutS(regp_doc, "\n");
+      n++;
+    }
+    if (col % per)
+      DocPutS(regp_doc, "\n");
+  }
   regp_bytes = RVDocTextRender(regp_doc, regp_row, regp_col, regp_rows, regp_cols);
   regp_shown = 1;
 }
@@ -276,6 +356,16 @@ public U0 RegPaneMark()
     now = RegPaneCsrVal(n);
     regp_moved[32 + n] = now != *(I64 *)(REGP_PREV + (32 + n) * 8);
     *(I64 *)(REGP_PREV + (32 + n) * 8) = now;
+    n++;
+  }
+  now = *(I64 *)(REGP_SNAP + REGP_PC_SLOT * 8);
+  regp_moved[REGP_PC] = now != *(I64 *)(REGP_PREV + REGP_PC * 8);
+  *(I64 *)(REGP_PREV + REGP_PC * 8) = now;
+  n = 0;
+  while (n < REGP_FREGS) {
+    now = *(I64 *)(REGP_FCTX + n * 8);
+    regp_moved[REGP_FP0 + n] = now != *(I64 *)(REGP_PREV + (REGP_FP0 + n) * 8);
+    *(I64 *)(REGP_PREV + (REGP_FP0 + n) * 8) = now;
     n++;
   }
 }

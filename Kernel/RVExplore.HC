@@ -182,8 +182,10 @@ public I64 AsmComplete(U8 *word, U8 *out, I64 max)
 {
   U8 *p, *s;
   I64 n, hits = 0, k, listed = 0;
-  if (!word || !*word || !out || max < 2)
+  if (!word || !out || max < 2)
     return 0;
+  // An EMPTY word is allowed and means "all of them" — that is Tab straight after a bare `?`,
+  // and listing is what a shell does when there is nothing to narrow by.
   if (!rv_asm_doc_raw)
     RVAsmDocRawInit;
   n = StrLen(word);

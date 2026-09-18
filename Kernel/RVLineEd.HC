@@ -25,6 +25,10 @@ I64 rv_led_pre_fn;
 // the text column's width, 0 for the whole terminal. Echo that runs past it would be written
 // over the panes beside it, so a long line scrolls sideways under the cursor instead.
 I64 rv_led_wrap;
+// The line being edited, for a completion hook that wants the context and not just the word:
+// "? ad" completes a mnemonic, "ad" on its own could be anything.
+U8 *rv_led_line;
+I64 rv_led_pos;
 
 U0 RVLedPutC(I64 ch)
 {
@@ -50,6 +54,24 @@ U0 RVLedHistAdd(U8 *line)
   StrCpy(rv_led_hist + rv_led_hist_n * RV_LED_MAX, line);
   rv_led_hist_n++;
   rv_led_hist_pos = rv_led_hist_n;
+}
+
+// The i-th ';'-separated number of a CSI parameter string, or 0 if it is not there.
+I64 RVLedParam(U8 *seq, I64 i)
+{
+  I64 v = 0, k = 0;
+  while (*seq && k < i) {
+    if (*seq == ';')
+      k++;
+    seq++;
+  }
+  if (k < i)
+    return 0;
+  while (*seq >= '0' && *seq <= '9') {
+    v = v * 10 + *seq - '0';
+    seq++;
+  }
+  return v;
 }
 
 // Redraw the whole line: \r, the prompt, as much of the text as the column holds, then erase to
@@ -205,16 +227,23 @@ public I64 RVLineEd(U8 *buf, I64 max, U8 *prompt = NULL)
       if (!rv_led_complete_fn)
         continue;
       i = cur;
-      while (i > 0 && buf[i - 1] > ' ' && buf[i - 1] != ',' && buf[i - 1] != '(')
+      while (i > 0 && buf[i - 1] > ' ' && buf[i - 1] != ',' && buf[i - 1] != '(' &&
+             buf[i - 1] != '?')
         i--;
+      // '?' ends a word like a bracket does: "?ad" is the question mark and then "ad", so Tab
+      // completes the mnemonic rather than looking up a symbol called "?ad".
       j = 0;
       while (i + j < cur && j < 62) {
         word[j] = buf[i + j];
         j++;
       }
       word[j] = 0;
-      if (!j)
+      if (!j && !(i > 0 && buf[i - 1] == '?'))
         continue;
+      // Nothing typed yet: only "?" asks anyway — Tab on an empty line stays quiet rather than
+      // listing every symbol in the image.
+      rv_led_line = buf;
+      rv_led_pos = cur;
       complete = rv_led_complete_fn;
       j = complete(word, comp, 128);
       if (j == 1) {
@@ -231,11 +260,50 @@ public I64 RVLineEd(U8 *buf, I64 max, U8 *prompt = NULL)
       continue;
     }
     if (ch == 27) {
-      // CSI: arrows and friends. Unknown sequences are dropped, never inserted.
+      // CSI: arrows, and the terminal talking back. The parameters have to be READ, not assumed
+      // absent — a resize report is "ESC [ 48 ; rows ; cols ; h ; w t", and an editor that took
+      // three bytes and dropped the rest pasted "8;40;120;0;0t" into the line being typed.
+      U8 seq[40];
+      I64 sn = 0, p0, p1, p2;
       ch = RVUartGetC;
       if (ch != '[')
         continue;
-      ch = RVUartGetC;
+      while (TRUE) {
+        ch = RVUartGetC;
+        if (ch >= 0x40 && ch <= 0x7E)
+          break;
+        // a final byte ends the sequence
+        if (sn < 38)
+          seq[sn++] = ch;
+      }
+      seq[sn] = 0;
+      p0 = RVLedParam(seq, 0);
+      p1 = RVLedParam(seq, 1);
+      p2 = RVLedParam(seq, 2);
+      if (ch == 't' && p0 == 48) {
+        // the window changed size under us
+        rv_vt_inband = 1;
+        if (RVVtSizeSet(p1, p2))
+          RVLedRedraw(prompt, buf, n, cur);
+        continue;
+      }
+      if (ch == 'R') {
+        // a cursor-position report: the answer to a size probe
+        if (RVVtSizeSet(p0, p1))
+          RVLedRedraw(prompt, buf, n, cur);
+        continue;
+      }
+      if (ch == '~') {
+        // the numbered keys: Home and End arrive this way on plenty of terminals
+        if (p0 == 1 || p0 == 7) {
+          cur = 0;
+          RVLedRedraw(prompt, buf, n, cur);
+        } else if (p0 == 4 || p0 == 8) {
+          cur = n;
+          RVLedRedraw(prompt, buf, n, cur);
+        }
+        continue;
+      }
       if (ch == 'A' || ch == 'B') {
         if (ch == 'A' && rv_led_hist_pos > 0)
           rv_led_hist_pos--;

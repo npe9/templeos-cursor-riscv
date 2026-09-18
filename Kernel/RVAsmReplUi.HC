@@ -92,6 +92,10 @@ I64 AsmUiComplete(U8 *word, U8 *out, I64 max)
     return 1;
   if (hits > 1)
     return 0;
+  if (rv_led_line && rv_led_line[0] == '?')
+    return AsmComplete(word, out, max);
+  // `? fcv` is asking about a mnemonic, so complete from the catalog and nothing else — a
+  // register name is not something AsmDoc can explain. A bare `?` lists what there is.
   i = AsmComplete(word, out, max);
   if (i)
     return i;
@@ -107,11 +111,39 @@ U0 AsmUiScrolled()
 {
 }
 
-// The memory pane, under the registers in whichever layout is in force.
+// How many rows the register pane gets, and whether the float block is one of the things in it.
+//
+// Three values per row of screen is the whole problem: 32 registers, pc, 4 CSRs and 32 float
+// registers want about 40 rows at two to a row, which is a whole terminal. So they are ranked.
+// The registers and machine state always fit. The float block is next — if showing it leaves no
+// room for memory, memory goes, because someone who asked for float registers asked for them.
+// If it does not fit even then, it is turned OFF rather than cut in half: a pane that silently
+// stops half way through is how ten registers went missing.
+#define ASMUI_MEM_MIN 3
+I64 AsmUiRegRows(I64 avail)
+{
+  I64 want;
+  RegPaneFp(TRUE);
+  want = RegPaneRowsNeeded;
+  if (want <= avail - ASMUI_MEM_MIN)
+    return want;
+  // floats and memory both: the comfortable case
+  if (want <= avail)
+    return want;
+  // floats instead of memory
+  RegPaneFp(FALSE);
+  want = RegPaneRowsNeeded;
+  if (want > avail)
+    want = avail;
+  return want;
+}
+
+// The memory pane, under the registers in whichever layout is in force. Not every layout has
+// room for one — the float block takes its rows on a short screen.
 U0 AsmUiPanes()
 {
   I64 addr;
-  if (!asmui_ready)
+  if (!asmui_ready || asmui_mem_rows < 2)
     return;
   addr = asmui_mem_addr;
   if (!addr)
@@ -151,10 +183,7 @@ public U0 AsmUiLayout(I64 mode = -1, I64 home = FALSE)
     asmui_text_cols = asmui_side_col - 1;
     // one column of gutter, so a full line of text does not touch the pane
     RegPaneAt(0, asmui_side_col, 1, ASMUI_SIDE_COLS);
-    reg_rows = RegPaneRowsNeeded;
-    // ask at this width, then give it what it asked for
-    if (reg_rows > rows - 3)
-      reg_rows = rows - 3;
+    reg_rows = AsmUiRegRows(rows);
     RegPaneAt(0, asmui_side_col, reg_rows, ASMUI_SIDE_COLS);
     asmui_mem_row = reg_rows;
     asmui_mem_rows = rows - reg_rows;
@@ -166,9 +195,8 @@ public U0 AsmUiLayout(I64 mode = -1, I64 home = FALSE)
     }
   } else {
     RegPaneAt(0, 0, 1, cols);
-    reg_rows = RegPaneRowsNeeded;
-    if (reg_rows > rows - 6)
-      reg_rows = rows - 6;
+    reg_rows = AsmUiRegRows(rows - 5);
+    // stacked, the prompt needs rows of its own below the panes
     RegPaneAt(0, 0, reg_rows, cols);
     asmui_text_cols = cols;
     asmui_mem_row = reg_rows;
@@ -199,7 +227,14 @@ public U0 AsmUiLayout(I64 mode = -1, I64 home = FALSE)
 //   AsmUiLayout  RegPaneMark  RVLineEdPrePrompt
 U0 AsmUiPrePrompt()
 {
-  if (!asmui_ready || !asmui_side)
+  if (!asmui_ready)
+    return;
+  if (rv_vt_probe_ok && !rv_vt_inband)
+    RVVtProbeSize(40);
+  // A terminal that reports resizes in band has already told us; one that answered a probe once
+  // but says nothing when it is dragged gets asked again here, cheaply, at the only moment the
+  // answer can be read without stealing a keystroke. One that never answered is never asked.
+  if (!asmui_side)
     return;
   // Only the sidebar needs this. Stacked, the panes sit above a scroll region and the terminal
   // keeps them still by itself, so a step costs the cells that changed and a prompt costs
@@ -207,6 +242,26 @@ U0 AsmUiPrePrompt()
   RVDocTextInvalidate;
   RegPaneUpdate;
   AsmUiPanes;
+}
+
+// AsmUiResized -- installed with RVVtOnResize(&AsmUiResized)
+// NAME
+//   AsmUiResized - lay the screen out again at the terminal's new size
+// DESCRIPTION
+//   Everything on screen was placed for the old size, so this clears before relaying out: panes
+//   in the old columns would otherwise sit there as garbage the renderer no longer owns. The
+//   split itself may change — a window dragged narrow stops being a sidebar and becomes stacked
+//   panes with the prompt below them.
+// SEE ALSO
+//   RVVtOnResize  AsmUiLayout  RVVtResizeReports
+public U0 AsmUiResized()
+{
+  if (!asmui_ready)
+    return;
+  Cls;
+  // Cls relayouts through its hook; without one, put it up directly
+  if (!dbgv_relayout_fn)
+    AsmUiLayout(-1, TRUE);
 }
 
 // AsmRepl -- AsmRepl()
@@ -251,8 +306,8 @@ public U0 AsmRepl()
     if (line[0] == 'q' && !line[1])
       break;
     if (line[0] == '?' && !line[1]) {
-      "  q  leave   d <addr>  memory pane   r  repaint   ? <mn>  what it does   "
-      "?? the catalog\n";
+      "  q  leave   d <addr>  memory pane   r  repaint   f  float regs   ? <mn>  what it "
+      "does   ?? the catalog\n";
       continue;
     }
     if (line[0] == '?' && line[1] == '?' && !line[2]) {
@@ -271,6 +326,11 @@ public U0 AsmRepl()
     }
     if (line[0] == 'r' && !line[1]) {
       Cls;
+      continue;
+    }
+    if (line[0] == 'f' && !line[1]) {
+      RegPaneFp(!regp_fp);
+      AsmUiLayout(-1, FALSE);
       continue;
     }
     if (line[0] == 'd' && line[1] == ' ') {
