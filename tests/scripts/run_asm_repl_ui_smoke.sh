@@ -66,6 +66,9 @@ feed() {
   perl -e '
     $|=1;
     my @l=(
+     # Write a function at the HolyC prompt first: the asm REPL can then trace the code the
+     # compiler produced for it, which is the whole point of having both in one image.
+     "U0 TraceMe() { I64 q = 7; q = q + 1; }",
      "AsmRepl;",
      "addi a0, a0, 0x10",
      "\x01aui\t a1, 0x1\n",
@@ -91,6 +94,9 @@ feed() {
      "f 10",
      # ...and disassemble a symbol, which is how you find an idiom worth copying
      "u AsmStep",
+     "t TraceMe",
+     "t",
+     "t",
      "? sd",
      # Program PMP entry 0 as a 64 KiB NAPOT region at 0x80000000, so the decoder is exercised
      # rather than just reporting every entry OFF. addr = base>>2 | (size/8 - 1); cfg = NAPOT
@@ -305,6 +311,9 @@ need "fa0  4010000000000000  4"
 need "sign=0  exp=0x401 (2^2 x 1.mantissa)  mantissa=0x0000000000000"
 # Disassembly from inside the stepper: a symbol resolved and instructions printed
 need "asm> u AsmStep"
+# ...and tracing a function this session compiled, instruction by instruction
+need "asm REPL: tracing from 0x"
+need "asm> t TraceMe"
 
 # The layout, checked on the reconstructed screen: values in a column on the right, the REPL on
 # the left. The terminal answered the size probe with 120x40, so the sidebar starts at column 76

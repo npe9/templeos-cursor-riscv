@@ -40,7 +40,7 @@
 // reported (RVVtProbeSize), not assumed.
 I64 asmui_mem_addr, asmui_running, asmui_step_fn, asmui_mode;
 I64 asmui_side, asmui_side_col, asmui_text_cols, asmui_mem_row, asmui_mem_rows, asmui_ready;
-I64 asmui_dis_addr;
+I64 asmui_dis_addr, asmui_trace_pc, asmui_tracing;
 #define ASMUI_DIS_LINES 12
 // how many instructions `u` shows at a time — a screenful of the text column, not a flood
 
@@ -176,6 +176,54 @@ U0 AsmUiPanes()
     addr = ASMUI_CTX;
   DbgMemAt(addr, asmui_mem_row, asmui_side ? asmui_side_col : 0, asmui_mem_rows,
            asmui_side ? ASMUI_SIDE_COLS : asmui_text_cols);
+}
+
+// One instruction at `pc`, as text, with the address prefix stripped — "0x8001F5A4:  ld t1,
+// 0x0(sp)" becomes "ld t1, 0x0(sp)", which is exactly what the assembler takes back. The round
+// trip is deliberate: what gets stepped is what the disassembler said, so a lie in either one
+// shows up as an assembly error rather than as a wrong answer.
+I64 AsmUiInsnText(I64 pc, U8 *out, I64 max)
+{
+  U8 *cap, *p;
+  I64 n = 0;
+  cap = MAlloc(512);
+  if (!cap)
+    return FALSE;
+  DbgVCapture(pc, 1, cap, 512);
+  p = cap;
+  while (*p && *p != ':')
+    p++;
+  if (*p == ':')
+    p++;
+  while (*p == ' ' || *p == '\t')
+    p++;
+  while (*p && *p != '\n' && n < max - 1)
+    out[n++] = *p++;
+  out[n] = 0;
+  Free(cap);
+  return n > 0;
+}
+
+// Does this instruction move the pc itself? Those cannot be handed to AsmStep — it runs the line
+// inside a wrapper, and a branch would leave it — so tracing reports them and steps over.
+I64 AsmUiIsFlow(U8 *text)
+{
+  if (!MemCmp(text, "b", 1) && (text[1] == 'e' || text[1] == 'n' || text[1] == 'l' ||
+                                text[1] == 'g'))
+    return TRUE;
+  // beq bne blt bge bltu bgeu beqz bnez
+  if (!MemCmp(text, "j", 1) && (text[1] == ' ' || text[1] == 'a' || text[1] == 'r'))
+    return TRUE;
+  // j jal jalr jr
+  if (!MemCmp(text, "ret", 3))
+    return TRUE;
+  if (!MemCmp(text, "call", 4))
+    return TRUE;
+  if (!MemCmp(text, "ecall", 5) || !MemCmp(text, "ebreak", 6))
+    return TRUE;
+  if (!MemCmp(text, "c.j", 3) || !MemCmp(text, "c.b", 3))
+    return TRUE;
+  return FALSE;
 }
 
 // AsmUiLayout -- AsmUiLayout(mode, home)
@@ -328,7 +376,8 @@ public U0 AsmRepl()
       break;
     if (line[0] == '?' && !line[1]) {
       "  q  leave   d <addr>  memory pane   u <sym|addr>  disassemble   r  repaint\n"
-      "  f  float regs   ? <mn>  what it does   ?? the catalog\n";
+      "  t <sym|addr>  trace a compiled function, t again to step   f  float regs\n"
+      "  ? <mn>  what it does   ?? the catalog\n";
       continue;
     }
     if (line[0] == '?' && line[1] == '?' && !line[2]) {
@@ -362,6 +411,51 @@ public U0 AsmRepl()
       // `f 10` — what fa0 actually IS: the number, and the sign/exponent/mantissa it is built
       // from. The pane can only afford the bits.
       RegPaneFd(Str2I64(line + 2));
+      continue;
+    }
+    if (line[0] == 't' && (line[1] == ' ' || !line[1])) {
+      // `t Foo` — write C at the prompt, compile it, then walk its instructions here. Each step
+      // disassembles the instruction at the cursor and runs THAT TEXT through the stepper, so
+      // you watch a compiled function move the registers one instruction at a time.
+      U8 *arg, insn[128];
+      I64 (*step)(U8 *t);
+      arg = line + 1;
+      while (*arg == ' ')
+        arg++;
+      if (*arg) {
+        if (*arg >= '0' && *arg <= '9')
+          asmui_trace_pc = Str2I64(arg);
+        else
+          asmui_trace_pc = RVDisFnAddr(arg);
+        if (!asmui_trace_pc) {
+          "asm REPL: no symbol '%s'\n", arg;
+          continue;
+        }
+        asmui_tracing = 1;
+        "asm REPL: tracing from 0x%X — t steps, q leaves\n", asmui_trace_pc;
+      }
+      if (!asmui_tracing) {
+        "asm REPL: t <symbol|addr> to start tracing\n";
+        continue;
+      }
+      if (!AsmUiInsnText(asmui_trace_pc, insn, 128)) {
+        "asm REPL: nothing to disassemble at 0x%X\n", asmui_trace_pc;
+        asmui_tracing = 0;
+        continue;
+      }
+      "0x%X:  %s\n", asmui_trace_pc, insn;
+      if (AsmUiIsFlow(insn)) {
+        // Control flow cannot run inside the wrapper: it would jump out of it. Stepped over,
+        // and said so, rather than pretending to have executed it.
+        "  (control flow — not executed; t 0x<target> to follow it)\n";
+      } else if (asmui_step_fn) {
+        step = asmui_step_fn;
+        step(insn);
+      }
+      asmui_trace_pc += 4;
+      // RVC would be 2; the disassembler prints the width, and a compressed instruction here
+      // simply lands the cursor mid-instruction, which the next disassembly shows plainly
+      AsmUiPanes;
       continue;
     }
     if (line[0] == 'u' && (line[1] == ' ' || !line[1])) {

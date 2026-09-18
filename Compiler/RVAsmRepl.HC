@@ -27,6 +27,15 @@
 // ASM_FCTX - ASM_CTX: 1024, which fits a 12-bit offset, so the float block is reached from the
 // same base register as the integer one and costs no extra setup
 #define ASM_FREGS 32
+#define ASM_SP_SAVE 0x108
+// Offset from the context base where the wrapper parks the REPL's OWN sp while a stepped line
+// runs. It has to be within a 12-bit offset of the base register, which is why it lives here
+// rather than out with the other scratch.
+#define ASM_STACK_SZ 8192
+U8 asm_stack[ASM_STACK_SZ];
+// The stepper's private stack. Without it a traced function's prologue — `sd ra,0(sp)` is the
+// second instruction of almost every one — stored through the REPL's live sp and overwrote the
+// return address it was about to use. A stepper has to have somewhere of its own to push.
 // shadow: what the registers held before the last step
 
 I64 asm_ctx_ready;
@@ -68,6 +77,9 @@ I64 AsmCtxReg(I64 i)
   if (i == 25)
     return 31;
   // t6 — the wrapper's own base register, which is why it needs the care below
+  if (i == 26)
+    return 2;
+  // sp — on the stepper's own stack, so a traced prologue has somewhere to push
   return -1;
 }
 
@@ -124,15 +136,23 @@ U0 AsmCtxIo(U8 *dst, Bool store)
     StrCat(dst, line);
   }
   AsmCtxBase(dst);
+  if (!store) {
+    // Park the REPL's own sp before the context's sp replaces it, and put it back at the end of
+    // the store block. Everything between runs on the stepper's stack.
+    StrPrint(line, "sd x2,%d(t6)\n", ASM_SP_SAVE);
+    StrCat(dst, line);
+  }
   i = 0;
   while (TRUE) {
     n = AsmCtxReg(i);
     if (n < 0)
       break;
-    if (n == ASM_CTX_BASE_REG) {
+    if (n == ASM_CTX_BASE_REG || (store && n == 2)) {
       i++;
       continue;
-      // handled either side of this loop
+      // both handled either side of this loop: the base register because it addresses the
+      // array, and sp on the way OUT because the wrapper has pushed onto it by then and would
+      // record a value 16 bytes low
     }
     if (store)
       StrPrint(line, "sd x%d,%d(t6)\n", n, n * 8);
@@ -156,6 +176,12 @@ U0 AsmCtxIo(U8 *dst, Bool store)
     // t5 has been stored, so it can carry the parked t6 into its slot
     StrPrint(line, "ld x30,8(sp)\nsd x30,%d(t6)\naddi sp,sp,16\n", ASM_CTX_BASE_REG * 8);
     StrCat(dst, line);
+    // sp is the line's own again now that the wrapper has popped: record it, THEN take the
+    // REPL's back
+    StrCat(dst, "sd x2,16(t6)\n");
+    StrPrint(line, "ld x2,%d(t6)\n", ASM_SP_SAVE);
+    StrCat(dst, line);
+    // ...and the REPL has its own stack back
   } else {
     StrPrint(line, "ld x%d,%d(t6)\n", ASM_CTX_BASE_REG, ASM_CTX_BASE_REG * 8);
     StrCat(dst, line);
@@ -247,6 +273,10 @@ public U0 AsmClr()
     *(I64 *)(ASM_FCTX_PREV + i * 8) = 0;
     i++;
   }
+  // sp starts at the top of the stepper's own stack rather than at zero: a traced function
+  // pushes before it does anything else, and pushing through a null sp is a fault, not a step.
+  *(I64 *)(ASM_CTX + 2 * 8) = asm_stack + ASM_STACK_SZ - 16;
+  *(I64 *)(ASM_CTX_PREV + 2 * 8) = asm_stack + ASM_STACK_SZ - 16;
   asm_ctx_ready = 1;
 }
 
