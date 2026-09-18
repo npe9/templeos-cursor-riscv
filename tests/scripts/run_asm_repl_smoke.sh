@@ -154,9 +154,18 @@ if ! printf '%s\n' "$out" | grep -qx 'ans=7'; then
 fi
 # The disasm tile: Dbg captures U()'s output through a StdOut sink and renders it as a document
 # under the status pane, so the view shows registers + fault + code without a second UI.
+# Cost must clear the HEADER alone. A first cut asserted > 0 and passed while the tile showed
+# only its title: the capture sink was registered behind the console (KeyDevAdd runs lowest
+# priority first), so U()'s output never reached it. Eight disassembled instructions are ~300+
+# bytes; the bare header is well under 100.
 dis=$(printf '%s\n' "$out" | grep -A1 'DbgDisasmCost;' | grep -o 'ans=[0-9]*' | head -1 | cut -d= -f2)
-if [ -z "${dis:-}" ] || [ "${dis:-0}" -le 0 ]; then
-  echo "FAIL asm-repl smoke -- Dbg painted no disassembly tile (DbgDisasmCost=$dis)" >&2
+if [ -z "${dis:-}" ] || [ "${dis:-0}" -lt 200 ]; then
+  echo "FAIL asm-repl smoke -- Dbg disassembly tile looks header-only (DbgDisasmCost=$dis)" >&2
+  fail=1
+fi
+# and the instruction text must actually be on screen
+if ! printf '%s\n' "$out" | grep -q 'disassembly @'; then
+  echo "FAIL asm-repl smoke -- no disassembly text in the view" >&2
   fail=1
 fi
 if [ "$fail" -ne 0 ]; then

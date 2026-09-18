@@ -27,10 +27,15 @@ I64 dbgv_bytes, dbgv_dis_bytes;
 
 // --- capturing the disassembler -------------------------------------------------------------
 // DisasmOne PRINTS (a thousand lines of it); it has no buffer form. Rather than fork it, sit in
-// the StdOut chain ahead of the console (KeyDevAdd orders by priority, highest first) and
-// swallow what it emits while a capture is armed. Off, the sink returns FALSE and output flows
-// to the console as usual.
-#define DBGV_CAP_PRI 0x7FFFFFFF
+// the StdOut chain AHEAD of the console and swallow what it emits while a capture is armed.
+// Off, the sink returns FALSE and output flows to the console as usual.
+//
+// Priority is LOWEST-FIRST: KeyDevAdd walks back from the tail while an entry's priority is
+// GREATER than the new one, so the chain runs in ascending priority from head.next, and PutS
+// stops at the first sink that returns TRUE. The console registers at CONFIG_UART_BASE
+// (0x10000000, KBootRV.HC:82), so a capture sink must be BELOW that to see output first — a
+// high number puts it behind the console, where it never runs.
+#define DBGV_CAP_PRI 1
 U8 *dbgv_cap;
 I64 dbgv_cap_len, dbgv_cap_max, dbgv_cap_on;
 
