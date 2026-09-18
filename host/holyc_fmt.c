@@ -978,7 +978,11 @@ static int tok_spaced_op(FmtTok *toks, int ntoks, int i) {
   return 1;
 }
 
-static void emit_toks(FmtOut *o, FmtTok *toks, int ntoks) {
+/* `indent` is where a continuation line starts: a `//` comment runs to end of line, so any
+ * token after one must go to the NEXT line. Emitting them inline silently commented out live
+ * code — `if (x)  // note` + body on the following line came back as
+ * `// notedoc->cur_entry = ...;`, i.e. the assignment vanished into the comment. */
+static void emit_toks(FmtOut *o, FmtTok *toks, int ntoks, int indent) {
   int i;
   for (i = 0; i < ntoks; i++) {
     FmtTok *t = &toks[i];
@@ -986,8 +990,13 @@ static void emit_toks(FmtOut *o, FmtTok *toks, int ntoks) {
     int space = 0;
 
     if (t->kind == FT_COMMENT) {
+      int line_comment = t->len >= 2 && t->s[0] == '/' && t->s[1] == '/';
       if (prev) fout_emit(o, ' ');
       fout_emit_n(o, t->s, t->len);
+      if (line_comment && i + 1 < ntoks) {
+        fout_emit(o, '\n');
+        fout_indent(o, indent);
+      }
       continue;
     }
 
@@ -1035,10 +1044,10 @@ static void emit_toks(FmtOut *o, FmtTok *toks, int ntoks) {
 }
 
 /* Emit paren group already including '(' ')' with spaced interior + "kw " prefix */
-static void emit_kw_parens(FmtOut *o, const char *kw, FmtTok *toks, int ntoks) {
+static void emit_kw_parens(FmtOut *o, const char *kw, FmtTok *toks, int ntoks, int indent) {
   fout_emit_s(o, kw);
   fout_emit(o, ' ');
-  emit_toks(o, toks, ntoks);
+  emit_toks(o, toks, ntoks, indent);
 }
 
 /* ─── asm interior re-indent (tabs) ─── */
@@ -1177,7 +1186,7 @@ static void emit_else_chain(FmtOut *o, FmtNode *els, int indent, int after_brace
     }
     if (body->kind == FN_IF) {
       fout_emit(o, ' ');
-      emit_kw_parens(o, "if", body->toks, body->ntoks);
+      emit_kw_parens(o, "if", body->toks, body->ntoks, indent);
       after_brace =
           body->nkids > 0 ? emit_body(o, body->kids[0], indent) : 0;
       els = body->els;
@@ -1246,7 +1255,7 @@ static void emit_node(FmtOut *o, FmtNode *n, int indent, int inline_ok) {
 
   case FN_IF:
     if (!inline_ok) fout_indent(o, indent);
-    emit_kw_parens(o, "if", n->toks, n->ntoks);
+    emit_kw_parens(o, "if", n->toks, n->ntoks, indent);
     braced = n->nkids > 0 ? emit_body(o, n->kids[0], indent) : 0;
     if (n->els)
       emit_else_chain(o, n->els, indent, braced);
@@ -1256,14 +1265,14 @@ static void emit_node(FmtOut *o, FmtNode *n, int indent, int inline_ok) {
 
   case FN_WHILE:
     fout_indent(o, indent);
-    emit_kw_parens(o, "while", n->toks, n->ntoks);
+    emit_kw_parens(o, "while", n->toks, n->ntoks, indent);
     braced = n->nkids > 0 ? emit_body(o, n->kids[0], indent) : 0;
     if (braced) fout_emit(o, '\n');
     break;
 
   case FN_FOR:
     fout_indent(o, indent);
-    emit_kw_parens(o, "for", n->toks, n->ntoks);
+    emit_kw_parens(o, "for", n->toks, n->ntoks, indent);
     braced = n->nkids > 0 ? emit_body(o, n->kids[0], indent) : 0;
     if (braced) fout_emit(o, '\n');
     break;
@@ -1278,7 +1287,7 @@ static void emit_node(FmtOut *o, FmtNode *n, int indent, int inline_ok) {
         fout_indent(o, indent);
         fout_emit_s(o, "while ");
       }
-      emit_toks(o, n->els->toks, n->els->ntoks);
+      emit_toks(o, n->els->toks, n->els->ntoks, indent);
       fout_emit(o, ';');
     }
     fout_emit(o, '\n');
@@ -1286,7 +1295,7 @@ static void emit_node(FmtOut *o, FmtNode *n, int indent, int inline_ok) {
 
   case FN_SWITCH:
     fout_indent(o, indent);
-    emit_kw_parens(o, "switch", n->toks, n->ntoks);
+    emit_kw_parens(o, "switch", n->toks, n->ntoks, indent);
     braced = n->nkids > 0 ? emit_body(o, n->kids[0], indent) : 0;
     if (braced) fout_emit(o, '\n');
     break;
@@ -1308,7 +1317,7 @@ static void emit_node(FmtOut *o, FmtNode *n, int indent, int inline_ok) {
 
   case FN_CASE:
     fout_indent(o, indent);
-    emit_toks(o, n->toks, n->ntoks);
+    emit_toks(o, n->toks, n->ntoks, indent);
     fout_emit(o, '\n');
     break;
 
@@ -1328,7 +1337,7 @@ static void emit_node(FmtOut *o, FmtNode *n, int indent, int inline_ok) {
   case FN_UNIT:
     /* Function / class / enum: header then '{' on next line */
     fout_indent(o, indent);
-    if (n->ntoks > 0) emit_toks(o, n->toks, n->ntoks);
+    if (n->ntoks > 0) emit_toks(o, n->toks, n->ntoks, indent);
     fout_emit(o, '\n');
     fout_indent(o, indent);
     fout_emit(o, '{');
@@ -1346,7 +1355,7 @@ static void emit_node(FmtOut *o, FmtNode *n, int indent, int inline_ok) {
 
   case FN_STMT:
     fout_indent(o, indent);
-    emit_toks(o, n->toks, n->ntoks);
+    emit_toks(o, n->toks, n->ntoks, indent);
     fout_emit(o, '\n');
     break;
 
