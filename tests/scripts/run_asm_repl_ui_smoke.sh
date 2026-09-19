@@ -68,7 +68,8 @@ feed() {
     my @l=(
      # Write a function at the HolyC prompt first: the asm REPL can then trace the code the
      # compiler produced for it, which is the whole point of having both in one image.
-     "U0 TraceMe() { I64 q = 7; q = q + 1; }",
+     # A branch in it, so tracing has something to decide rather than a straight line
+     "U0 TraceMe() { I64 q = 7; if (q > 3) q = q + 1; }",
      "AsmRepl;",
      "addi a0, a0, 0x10",
      "\x01aui\t a1, 0x1\n",
@@ -95,6 +96,12 @@ feed() {
      # ...and disassemble a symbol, which is how you find an idiom worth copying
      "u AsmStep",
      "t TraceMe",
+     "t",
+     "t",
+     "t",
+     "t",
+     "t",
+     "t",
      "t",
      "t",
      "? addiw",
@@ -374,6 +381,8 @@ need "sign=0  exp=0x401 (2^2 x 1.mantissa)  mantissa=0x0000000000000"
 need "asm> u AsmStep"
 # ...and tracing a function this session compiled, instruction by instruction
 need "asm REPL: tracing from 0x"
+# a branch decided from the registers rather than stepped over
+need "  branch "
 need "asm> t TraceMe"
 
 # The layout, checked on the reconstructed screen: values in a column on the right, the REPL on

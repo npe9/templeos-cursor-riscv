@@ -202,6 +202,172 @@ I64 AsmUiInsnText(I64 pc, U8 *out, I64 max)
   return n > 0;
 }
 
+// A register name to its number, for reading the context while following a branch.
+I64 AsmUiRegNum(U8 *nm)
+{
+  I64 i = 0;
+  U8 cand[8];
+  if (!nm || !*nm)
+    return -1;
+  if (nm[0] == 'x' && nm[1] >= '0' && nm[1] <= '9')
+    return Str2I64(nm + 1);
+  while (i < 32) {
+    RegPaneName(i, cand);
+    if (!StrCmp(cand, nm))
+      return i;
+    i++;
+  }
+  return -1;
+}
+
+// The i-th comma-separated operand of a disassembled instruction, trimmed.
+I64 AsmUiOperand(U8 *text, I64 i, U8 *out, I64 max)
+{
+  U8 *p;
+  I64 k = 0, n = 0;
+  p = text;
+  while (*p && *p != ' ' && *p != '\t')
+    p++;
+  // past the mnemonic
+  while (*p) {
+    while (*p == ' ' || *p == '\t' || *p == ',')
+      p++;
+    n = 0;
+    while (*p && *p != ',' && *p != ' ' && *p != '\t' && *p != '\n' && n < max - 1)
+      out[n++] = *p++;
+    out[n] = 0;
+    if (k == i)
+      return n > 0;
+    k++;
+    while (*p && *p != ',')
+      p++;
+  }
+  return FALSE;
+}
+
+// Follow a branch: read the two registers out of the stepper's context, decide, and say so.
+// Returns the address to continue at, or 0 if this is not a branch we can settle.
+I64 AsmUiBranchTarget(U8 *text, I64 pc, I64 width)
+{
+  U8 op[32], mn[16];
+  I64 i = 0, r1, r2, v1, v2, taken = -1, target;
+  while (text[i] && text[i] != ' ' && i < 14) {
+    mn[i] = text[i];
+    i++;
+  }
+  mn[i] = 0;
+  if (!StrCmp(mn, "j") || !StrCmp(mn, "jal")) {
+    // an unconditional jump: the last operand is the target
+    if (AsmUiOperand(text, 1, op, 32) && (op[0] == '0' || op[0] == '-'))
+      return Str2I64(op);
+    if (AsmUiOperand(text, 0, op, 32))
+      return Str2I64(op);
+    return 0;
+  }
+  if (!MemCmp(mn, "beqz", 4) || !MemCmp(mn, "bnez", 4)) {
+    if (!AsmUiOperand(text, 0, op, 32))
+      return 0;
+    r1 = AsmUiRegNum(op);
+    if (r1 < 0 || !AsmUiOperand(text, 1, op, 32))
+      return 0;
+    target = Str2I64(op);
+    v1 = *(I64 *)(ASMUI_CTX + r1 * 8);
+    if (!MemCmp(mn, "beqz", 4))
+      taken = v1 == 0;
+    else
+      taken = v1 != 0;
+  } else if (mn[0] == 'b') {
+    if (!AsmUiOperand(text, 0, op, 32))
+      return 0;
+    r1 = AsmUiRegNum(op);
+    if (!AsmUiOperand(text, 1, op, 32))
+      return 0;
+    r2 = AsmUiRegNum(op);
+    if (r1 < 0 || r2 < 0 || !AsmUiOperand(text, 2, op, 32))
+      return 0;
+    target = Str2I64(op);
+    v1 = *(I64 *)(ASMUI_CTX + r1 * 8);
+    v2 = *(I64 *)(ASMUI_CTX + r2 * 8);
+    if (!StrCmp(mn, "beq"))
+      taken = v1 == v2;
+    else if (!StrCmp(mn, "bne"))
+      taken = v1 != v2;
+    else if (!StrCmp(mn, "blt"))
+      taken = v1 < v2;
+    else if (!StrCmp(mn, "bge"))
+      taken = v1 >= v2;
+    else if (!StrCmp(mn, "bltu"))
+      taken = ToU64(v1) < ToU64(v2);
+    else if (!StrCmp(mn, "bgeu"))
+      taken = ToU64(v1) >= ToU64(v2);
+    else
+      return 0;
+  } else {
+    return 0;
+  }
+  if (taken < 0)
+    return 0;
+  if (taken) {
+    "  branch TAKEN -> 0x%X\n", target;
+    return target;
+  }
+  "  branch not taken\n";
+  return pc + width;
+}
+
+// Is this register one the stepper carries? Mirrors AsmCtxReg in Compiler/RVAsmRepl.HC, which
+// lives in the other image and cannot be called from here: t0-t2, t3-t6, a0-a7, s1, s2-s11 and
+// sp. ra, gp, tp and s0 belong to the running REPL — s0 is its frame pointer, and an
+// instruction that writes it takes the prompt's own stack frame with it.
+I64 AsmUiInCtx(I64 n)
+{
+  if (n == 2)
+    return TRUE;
+  if (n >= 5 && n <= 7)
+    return TRUE;
+  if (n >= 28 && n <= 31)
+    return TRUE;
+  if (n >= 10 && n <= 17)
+    return TRUE;
+  if (n == 9)
+    return TRUE;
+  if (n >= 18 && n <= 27)
+    return TRUE;
+  return FALSE;
+}
+
+// The first operand as text, for saying which register was refused.
+U8 *AsmUiOperandName(U8 *text)
+{
+  static U8 nm[32];
+  if (!AsmUiOperand(text, 0, nm, 32))
+    StrCpy(nm, "it");
+  return nm;
+}
+
+// The register an instruction WRITES, or -1. Stores name a source first, not a destination,
+// which is the one case where the first operand is not the answer.
+I64 AsmUiDestReg(U8 *text)
+{
+  U8 mn[16], op[32];
+  I64 i = 0;
+  while (text[i] && text[i] != ' ' && i < 14) {
+    mn[i] = text[i];
+    i++;
+  }
+  mn[i] = 0;
+  if (!StrCmp(mn, "sd") || !StrCmp(mn, "sw") || !StrCmp(mn, "sh") || !StrCmp(mn, "sb") ||
+      !StrCmp(mn, "fsd") || !StrCmp(mn, "fsw") || !MemCmp(mn, "c.s", 3) ||
+      !MemCmp(mn, "c.fs", 4))
+    return -1;
+  if (mn[0] == 'f')
+    return -1;
+  // a float destination is not in the integer context either way
+  if (!AsmUiOperand(text, 0, op, 32))
+    return -1;
+  return AsmUiRegNum(op);
+}
+
 // Does this instruction move the pc itself? Those cannot be handed to AsmStep — it runs the line
 // inside a wrapper, and a branch would leave it — so tracing reports them and steps over.
 I64 AsmUiIsFlow(U8 *text)
@@ -476,10 +642,44 @@ public U0 AsmRepl()
         continue;
       }
       "0x%X:  %s\n", asmui_trace_pc, insn;
+      {
+        I64 dest;
+        dest = AsmUiDestReg(insn);
+        if (dest >= 0 && !AsmUiInCtx(dest)) {
+          // It would write a register the stepper does not carry — ra, gp, tp or s0 — which
+          // belong to the REPL running this. s0 is its frame pointer, and the first attempt at
+          // tracing a real function faulted on exactly that: `addi s0, sp, 0x20` in a prologue
+          // took the prompt's own frame with it.
+          "  (writes %s, which belongs to the REPL - not executed)\n",
+              AsmUiOperandName(insn);
+          if ((*(U16 *)asmui_trace_pc & 3) == 3)
+            asmui_trace_pc += 4;
+          else
+            asmui_trace_pc += 2;
+          AsmUiPanes;
+          continue;
+        }
+      }
       if (AsmUiIsFlow(insn)) {
-        // Control flow cannot run inside the wrapper: it would jump out of it. Stepped over,
-        // and said so, rather than pretending to have executed it.
-        "  (control flow — not executed; t 0x<target> to follow it)\n";
+        // A branch cannot RUN inside the wrapper — it would jump out of the code holding the
+        // registers — but it can be DECIDED: the condition is arithmetic on registers that are
+        // all right here. So the trace follows it rather than stepping over it.
+        I64 width, target;
+        width = 4;
+        if ((*(U16 *)asmui_trace_pc & 3) != 3)
+          width = 2;
+        target = AsmUiBranchTarget(insn, asmui_trace_pc, width);
+        if (target) {
+          asmui_trace_pc = target;
+          AsmUiPanes;
+          continue;
+        }
+        if (!MemCmp(insn, "ret", 3)) {
+          "  ret — end of this function; t <sym> to start another\n";
+          asmui_tracing = 0;
+          continue;
+        }
+        "  (jumps through a register — t 0x<target> to follow it)\n";
       } else if (asmui_step_fn) {
         step = asmui_step_fn;
         step(insn);

@@ -115,11 +115,17 @@ nobody. Before trying again, find out what the hc_repl image actually does with 
 time — `bootstrap/hc_repl/start.hc` sets FS=Initial, so the guard should be passing and the
 store should be legal, and one of those two things is not true.
 
-### 2.3 Trace through control flow
+### 2.3 ~~Trace through control flow~~ — DONE for conditional branches and direct jumps
 
-`t` lists branches and steps over them. Evaluating the condition against the context and moving
-the cursor would make it a real single-stepper for compiled code — the registers are all there,
-it is arithmetic on the ones the branch names.
+`t` reads the two registers the branch names out of the context, decides, says TAKEN or not, and
+moves the cursor. `ret` ends the trace. A jump through a register still needs `t 0x<target>`.
+
+It also refuses instructions that write a register the stepper does not carry — ra, gp, tp, s0.
+The first attempt at tracing a real function faulted on `addi s0, sp, 0x20` in the prologue,
+which took the prompt's own frame pointer with it.
+
+**Still open:** carrying ra and s0 in the context, parked and restored like sp, so a prologue
+executes fully instead of being skipped.
 
 ---
 
