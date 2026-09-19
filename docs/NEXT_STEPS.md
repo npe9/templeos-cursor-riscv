@@ -95,15 +95,25 @@ encodings, where the motivation is often "this is the same as X with the operand
 
 ## Tier 2 — survey leftovers
 
-### 2.1 Generic CSR-by-number reader
+### 2.1 ~~Generic CSR-by-number reader~~ — DONE, by writing the instruction
 
-Still if-chains; ~4000 numbers unreachable. Generate the switch from a table so the name→number
-map, the reader and `AsmDoc`'s CSR list cannot drift. See MACHINE_STATE_SURVEY.md §2.
+`CsrNum(n)` builds `csrr a0, n` + `ret` into a scratch array, fences, and calls it, so all 4096
+numbers are reachable and `Csr("0x301")` works. An unimplemented CSR faults and this REPL
+recovers to the prompt, which is itself the answer; the comment says not to call it from a trap
+handler.
 
-### 2.2 Float registers in the seed image's freeze
+### 2.2 Float registers in the seed image's freeze — TRIED, BACKED OUT, and worth knowing why
 
-The C runtime saves f0..f31 at a trap; `bootstrap/seed/trap.hc` still saves none, so in that
-image the pane's "(as last stepped)" label is the whole fix rather than half of it.
+A single `fsd` in that image's trap path breaks it: 51 assertions fail and the session stops
+part way, while the identical stub with the store removed passes. It is not the address (two
+different ones fail), not the base register (`t6` and `a0` both fail), and not the call (an empty
+stub in the same place is fine) — it is executing an FP store there, despite the `mstatus.FS`
+guard that works in the C runtime.
+
+So that image writes flag=0 at `0x87000F00` and a reader knows its float block belongs to
+nobody. Before trying again, find out what the hc_repl image actually does with the FPU at trap
+time — `bootstrap/hc_repl/start.hc` sets FS=Initial, so the guard should be passing and the
+store should be legal, and one of those two things is not true.
 
 ### 2.3 Trace through control flow
 

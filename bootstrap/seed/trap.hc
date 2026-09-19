@@ -435,6 +435,13 @@ U0 TrapSnapPublish(I64 *frame, I64 cause, I64 epc, I64 tval)
   *(I64 *)(MEM_TRAP_SNAP + 29 * 8) = HcCsrrMcounteren();
   *(I64 *)(MEM_TRAP_SNAP + 30 * 8) = HcCsrrMedeleg();
   *(I64 *)(MEM_TRAP_SNAP + 31 * 8) = HcCsrrMideleg();
+  // No float freeze in THIS image, and the flag says so rather than leaving a stale 1 from
+  // whoever ran before. The C runtime's trap path does save f0..f31 (holy_rt.h), but here a
+  // single fsd in the trap path breaks the image even with the mstatus.FS guard that works
+  // there — an empty stub in the same place is fine, so it is the store, not the call. Whatever
+  // this image does with the FPU at trap time needs understanding before trying again; until
+  // then a reader sees flag=0 and knows these floats belong to nobody.
+  *(I64 *)(0x87000F00) = 0;
   g_trap_snap_live = 1;
   pc = epc;
 }
