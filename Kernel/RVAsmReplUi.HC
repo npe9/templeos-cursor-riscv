@@ -277,6 +277,17 @@ public U0 AsmUiLayout(I64 mode = -1, I64 home = FALSE)
   }
   RVLineEdWrap(asmui_text_cols);
   RVDolAnsiWrap(asmui_text_cols);
+  // Dm/D/Da paint the debugger's own memory tile, and its default coordinates predate this
+  // layout — called from the prompt they landed across the sidebar. Point them at wherever the
+  // memory pane actually is, so every memory view in the image agrees on one place.
+  dbgv_mem_row = asmui_mem_row;
+  dbgv_mem_col = asmui_side ? asmui_side_col : 0;
+  dbgv_mem_rows = asmui_mem_rows;
+  dbgv_mem_cols = asmui_side ? ASMUI_SIDE_COLS : asmui_text_cols;
+  if (asmui_mem_rows < 2) {
+    // no memory pane in this layout: send them to the text column instead of over a pane
+    dbgv_mem_row = -1;
+  }
   asmui_ready = 1;
   RVDocTextInvalidate;
   // whatever was on those rows, the shadow no longer describes it

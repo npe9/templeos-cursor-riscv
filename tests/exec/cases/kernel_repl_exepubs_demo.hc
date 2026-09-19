@@ -165,6 +165,26 @@ I64 main()
       RVExePubFunNew("Mcause", &Mcause, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Uptime", &Uptime, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Pmp", &Pmp, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("Pt", &Pt, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("PtDemo", &PtDemo, cmp.internal_types[RT_I64], 0);
+      RVExePubFunNew("PtWalk", &PtWalk, cmp.internal_types[RT_I64], 0);
+      {
+        // Pg(va) walks the live satp; PgAt(root, levels, va) walks a table you hand it, which
+        // is how it can be exercised on a machine with paging off — as this one has.
+        CHashFun *tg;
+        tg = RVExePubFunNew("Pg", &Pg, cmp.internal_types[RT_I64], 1);
+        if (tg)
+          RVExePubAddArg(tg, "va", cmp.internal_types[RT_I64]);
+        tg = RVExePubFunNew("PgAt", &PgAt, cmp.internal_types[RT_I64], 3);
+        if (tg) {
+          RVExePubAddArg(tg, "root", cmp.internal_types[RT_I64]);
+          RVExePubAddArg(tg, "va", cmp.internal_types[RT_I64]);
+          // levels is REQUIRED here even though the C function defaults it: a planted pub's
+          // MLF_DFT_AVAILABLE default does not reach the callee — the argument arrives as zero
+          // — so a pub that looks optional would silently walk no levels at all.
+          RVExePubAddArg(tg, "levels", cmp.internal_types[RT_I64]);
+        }
+      }
       {
         // Fd(n): a float register as a number and as its IEEE-754 fields
         CHashFun *tfd;

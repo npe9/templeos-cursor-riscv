@@ -119,6 +119,16 @@ feed() {
      "Machine;",
      "Plic;",
      "Pmp;",
+     "Pt;",
+     # No & here: HolyC reads `x & (-4096)` as an address-of and says "Invalid lval". Round up
+     # with arithmetic instead — the tables have to be page-aligned for the PPN shift to mean
+     # anything.
+     # Walk a real three-level Sv39 table. It has to be one we build: this machine runs with
+     # paging off, so satp is Bare and there is no live table to walk. Each REPL line is its own
+     # scope, so the table is built by PtDemo in the image rather than by a run of lines here.
+     "PtWalk;",
+     # evidence for the note above: a two-argument pub gets only its first argument
+     "Dm(0x87000400, 32);",
      # Back at the HolyC prompt, with enough output to scroll its region right through. The
      # panes are live here too, so this is where a layout that only existed inside AsmRepl
      # would be scribbled over and then look frozen.
@@ -297,6 +307,11 @@ need "claim/complete not read"
 # PMP, which is a build option (CONFIG_HAS_PMP): these CSRs are optional in the ISA and reading
 # one on a hart without them faults. virt has 16 entries, so this build reads them.
 need "PMP: 16 entries"
+# The page-table walker, on a table built at the prompt a moment earlier: three levels, a leaf
+# with rwx, and the offset carried through. 0x80003024 is the answer if the walk is right.
+need "level 2  index 1"
+need "level 0  index 3"
+need "0x40403024 -> 0x80003024"   # no leading dash: grep would read it as an option
 # The float block is not silently gone when memory has the rows — the heading says how to get it
 need "(f: float regs)"
 # ...and the NAPOT decode of the entry the asm REPL just programmed: the trailing ones of the

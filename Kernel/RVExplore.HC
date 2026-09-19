@@ -656,6 +656,198 @@ public U0 Pmp()
 }
 #endif
 
+// ---- page tables ----------------------------------------------------------------------------
+//
+// satp says where the root table is and how many levels to walk; the rest is reading 8-byte
+// PTEs out of physical memory, which M-mode can do directly because nothing is translating its
+// own accesses. That is the whole reason a debugger can show this at all.
+//
+// Sv39: the virtual address splits into three 9-bit indices and a 12-bit offset, and a PTE is a
+// pointer to the next table unless R or X is set, which makes it a leaf. A leaf above level 0
+// is a superpage — 2 MiB at level 1, 1 GiB at level 2.
+U0 PtePerms(I64 pte)
+{
+  Print("%s%s%s%s%s%s%s%s", pte & 1 ? "v" : "-", pte & 2 ? "r" : "-", pte & 4 ? "w" : "-",
+        pte & 8 ? "x" : "-", pte & 16 ? "u" : "-", pte & 32 ? "g" : "-", pte & 64 ? "a" : "-",
+        pte & 128 ? "d" : "-");
+}
+
+I64 PtePpn(I64 pte)
+{
+  return (pte >> 10) & 0xFFFFFFFFFFF;
+}
+
+// PgAt -- PgAt(root, levels, va)
+// NAME
+//   PgAt - walk a page table that is not necessarily the live one
+// SYNOPSIS
+//   PgAt(root_physical, 0x80000024);      // Sv39 unless told otherwise
+// DESCRIPTION
+//   Takes the root table's PHYSICAL address rather than reading satp, so it can walk a table
+//   that is being built, one belonging to another hart, or one from a dump — and so it can be
+//   tested on a machine that has paging switched off, which this port does.
+// SEE ALSO
+//   Pg  Pt  Csr("satp")
+// The defaulted argument goes LAST. HolyC, like C++, wants its defaults trailing: with
+// `levels` in the middle the caller's remaining arguments arrived as zero and the walk ran no
+// levels at all.
+public I64 PgAt(I64 root, I64 va, I64 levels = 3)
+{
+  I64 lvl, idx, pte, tbl, shift, pa;
+  tbl = root;
+  lvl = levels - 1;
+  while (lvl >= 0) {
+    shift = 12 + 9 * lvl;
+    idx = (va >> shift) & 511;
+    pte = *(I64 *)(tbl + idx * 8);
+    // %d, not %-3d: HolyC's Print right-justifies a negative width, so the column would not
+    // line up anyway and the text would read "index   1"
+    Print("  level %d  index %d  pte=%016X  ", lvl, idx, pte);
+    PtePerms(pte);
+    Print("\n");
+    if (!(pte & 1)) {
+      Print("  not valid: this address is not mapped\n");
+      return 0;
+    }
+    if (pte & 10) {
+      // R or X: a leaf
+      pa = (PtePpn(pte) << 12) | (va & ((1 << shift) - 1));
+      if (lvl)
+        Print("  leaf at level %d — a %s superpage\n", lvl, lvl == 1 ? "2 MiB" : "1 GiB");
+      Print("  0x%X -> 0x%X\n", va, pa);
+      return pa;
+    }
+    tbl = PtePpn(pte) << 12;
+    lvl--;
+  }
+  Print("  ran out of levels without reaching a leaf: the table is malformed\n");
+  return 0;
+}
+
+// Pg -- Pg(va)
+// NAME
+//   Pg - translate a virtual address the way the hardware would, and show the working
+// SYNOPSIS
+//   Pg(0x80000024);
+// DESCRIPTION
+//   Reads satp, walks from its root, and prints every PTE on the way — which is the answer to
+//   "why did that address fault": the level it stopped at says whether the table, the page or
+//   the permissions were the problem. With satp in Bare mode there is nothing to walk and it
+//   says so, because on this port M-mode addresses are physical.
+// SEE ALSO
+//   PgAt  Pt  Machine
+public I64 Pg(I64 va)
+{
+  I64 satp, mode;
+  satp = RVWinCsrrSatp();
+  mode = (satp >> 60) & 15;
+  if (!mode) {
+    Print("satp=0x%X: Bare — no translation, 0x%X is already physical\n", satp, va);
+    return va;
+  }
+  Print("satp=0x%X  root=0x%X  ASID=0x%X\n", satp, PtePpn(satp) << 12, (satp >> 44) & 0xFFFF);
+  if (mode == 8)
+    return PgAt(PtePpn(satp) << 12, va, 3);
+  if (mode == 9)
+    return PgAt(PtePpn(satp) << 12, va, 4);
+  if (mode == 10)
+    return PgAt(PtePpn(satp) << 12, va, 5);
+  Print("satp mode %d is not one this walker knows\n", mode);
+  return 0;
+}
+
+// Pt -- Pt()
+// NAME
+//   Pt - what the root page table maps
+// SYNOPSIS
+//   Pt;
+// DESCRIPTION
+//   The valid entries of the root table, one line each, with the virtual range each one covers.
+//   A 1 GiB entry with R or X set maps that gigabyte directly; otherwise it points at a table
+//   for the level below.
+// SEE ALSO
+//   Pg  PgAt  Csr("satp")
+public U0 Pt()
+{
+  I64 satp, mode, root, i = 0, pte, shown = 0;
+  satp = RVWinCsrrSatp();
+  mode = (satp >> 60) & 15;
+  if (!mode) {
+    Print("satp=0x%X: Bare — nothing is translated, so there is no table to show\n", satp);
+    return;
+  }
+  root = PtePpn(satp) << 12;
+  Print("root table @ 0x%X (satp=0x%X)\n", root, satp);
+  while (i < 512) {
+    pte = *(I64 *)(root + i * 8);
+    if (pte & 1) {
+      Print("  [%d] 0x%012X..0x%012X  pte=%016X  ", i, i << 30, (i + 1) << 30, pte);
+      PtePerms(pte);
+      if (pte & 10)
+        Print("  1 GiB leaf");
+      else
+        Print("  -> table 0x%X", PtePpn(pte) << 12);
+      Print("\n");
+      shown++;
+    }
+    i++;
+  }
+  if (!shown)
+    Print("  no valid entries: nothing is mapped\n");
+}
+
+// PtDemo -- PtDemo()
+// NAME
+//   PtDemo - build a small Sv39 table and return its root, for walking
+// SYNOPSIS
+//   PgAt(PtDemo, 0x40403024);        // -> 0x80003024
+// DESCRIPTION
+//   Three levels mapping one 4 KiB page: virtual 0x40403000 to physical 0x80003000, readable,
+//   writable and executable. It exists because this port runs with paging OFF — satp is Bare,
+//   so there is no live table to walk — and a walker that has never walked anything is a
+//   guess. It is also the shortest honest answer to "what does a page table look like": three
+//   entries, each one a physical page number shifted up by ten with its permission bits in the
+//   bottom.
+// SEE ALSO
+//   PgAt  Pg  Pt
+U8 pt_demo_mem[4 * 4096];
+public I64 PtDemo()
+{
+  I64 root, l1, l0;
+  root = pt_demo_mem;
+  root = (root / 4096 + 1) * 4096;
+  // the tables have to be page-aligned, or the PPN shift means nothing
+  l1 = root + 4096;
+  l0 = root + 8192;
+  MemSet(root, 0, 3 * 4096);
+  // VPN[2] = 1, VPN[1] = 2, VPN[0] = 3 for virtual 0x40403000
+  *(I64 *)(root + 1 * 8) = ((l1 >> 12) << 10) | 1;
+  *(I64 *)(l1 + 2 * 8) = ((l0 >> 12) << 10) | 1;
+  *(I64 *)(l0 + 3 * 8) = ((0x80003000 >> 12) << 10) | 15;
+  // valid + rwx
+  return root;
+}
+
+// PtWalk -- PtWalk()
+// NAME
+//   PtWalk - build the demonstration table and walk it, in one call
+// SYNOPSIS
+//   PtWalk;
+// DESCRIPTION
+//   PgAt(PtDemo, 0x40403024, 3) without the arguments. It exists because a planted pub only
+//   delivers its FIRST argument — the rest arrive as zero — so the three-argument form cannot
+//   be called from the REPL even though it is right in C. This is the shape a user can actually
+//   run, and what the smoke checks.
+// SEE ALSO
+//   PgAt  PtDemo  Pg
+public I64 PtWalk()
+{
+  I64 root;
+  root = PtDemo;
+  Print("walking the demonstration table at 0x%X for virtual 0x40403024\n", root);
+  return PgAt(root, 0x40403024, 3);
+}
+
 public U0 Uptime()
 {
   //Hart free-running counters (Zicntr): cycle, time (mtime tick), instret.
