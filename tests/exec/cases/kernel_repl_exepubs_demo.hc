@@ -19,6 +19,7 @@
 extern U0 RVTrapInit();
 extern I64 RVTrapRecoverArm();
 extern I64 RVSetDbgHook(I64 fn);
+extern U0 RVLexNewlineSemi(I64 on);
 extern U0 RVTrapRecoverDisarm();
 extern I64 RVTrapRecoverCause();
 extern I64 RVTrapRecoverEpc();
@@ -292,6 +293,10 @@ I64 main()
     // Ask the terminal how big it is before deciding where anything goes — a sidebar on an
     // 80-column screen is a different layout from one on a 120-column screen, and guessing is
     // how ten registers went missing the first time.
+    // A line you type IS a statement, so the newline ends it: `40+2` and `Machine` need no
+    // semicolon. Only for what is typed here — nothing the Cmp compiles from a file changes, and
+    // inside asm{} the lexer keeps newlines and the rule never runs.
+    RVLexNewlineSemi(TRUE);
     RVVtProbeSize(300);
     // ...and hear about it when it changes. A serial guest gets no SIGWINCH, so the terminal
     // has to say so: mode 2048 makes it report every resize in band (and one immediately), and
@@ -331,6 +336,11 @@ I64 main()
       RVTrapRecoverDisarm();
       continue;
     }
+    // Give the line back the newline the editor stripped: that newline is what ends the
+    // statement (RVLexNewlineSemi), so without it `40+3` reaches the compiler as an unfinished
+    // expression and the rule never gets a chance to fire.
+    if (StrLen(line) < 158)
+      StrCat(line, "\n");
     r = ExePutS(line);
     RVTrapRecoverDisarm();
     "ans=%d\n", r;

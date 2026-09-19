@@ -115,6 +115,11 @@ feed() {
      "?",
      "q",
      # The same catalog as REPL functions at the HolyC prompt
+     # The BCPL rule at the prompt: no semicolons on these two, and they must still work.
+     # 40+3 rather than 40+2 because the feed types 40+2; elsewhere, and an assertion that
+     # passes on either spelling would prove nothing.
+     "40+3",
+     "AsmClasses",
      "AsmDoc(\"addi\");",
      "AsmList;",
      # The CSR decoders, now one shared copy: fcsr had no reader anywhere in the tree, and satp
@@ -300,6 +305,9 @@ need "sd ra, 8(sp)             # save the return address"
 need "12-bit signed immediate"
 need "addi sp, sp, -32         # open a stack frame"
 need "documented asm{} mnemonics"
+# A line typed without a semicolon: the newline ended the statement (guest lexer, REPL input)
+need "ans=43"
+need "instruction classes"
 # fcsr: read at all for the first time, and decoded. The flags are STICKY — by the time the
 # prompt is up the compiler has done its own float work, so this asserts the decode, not a
 # pristine value (it reads 0x3: inexact and underflow, accumulated since reset).

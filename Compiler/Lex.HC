@@ -446,6 +446,71 @@ I64 LexInStr(CCmpCtrl *cc,U8 *buf,I64 size,Bool *done)
   return i;
 }
 
+// ---- newline as a statement separator (the BCPL rule), for REPL input -----------------------
+//
+// The host compiler has this for source files (host/lexer.c, HOLYC_NL_SEMI). This is the same
+// rule for the guest, which is what the REPL compiles with — the place you feel it, because a
+// line you type IS a statement and having to end it with a semicolon is the part that reads
+// like punctuation homework.
+//
+// On only for REPL input (RVLexNewlineSemi), so nothing the Cmp compiles from a file changes.
+// Inside asm{} the lexer keeps newlines (CCF_KEEP_NEW_LINES) and this never runs, which is
+// exactly right: there the newline already separates instructions and belongs to the assembler.
+I64 rv_lex_nl_semi, rv_lex_paren;
+
+public U0 RVLexNewlineSemi(I64 on)
+{//Newline ends a statement (REPL input). Off for file compiles.
+  rv_lex_nl_semi = on;
+  rv_lex_paren = 0;
+}
+
+I64 RVLexNlStarterContinues(U8 *p, I64 prev)
+{//TRUE if what comes next continues the statement rather than starting one.
+  while (*p) {
+    if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+      p++;
+      continue;
+    }
+    if (p[0] == '/' && p[1] == '/') {
+      while (*p && *p != '\n')
+        p++;
+      continue;
+    }
+    if (p[0] == '/' && p[1] == '*') {
+      p += 2;
+      while (*p && !(p[0] == '*' && p[1] == '/'))
+        p++;
+      if (*p)
+        p += 2;
+      continue;
+    }
+    break;
+  }
+  if (!*p)
+    return FALSE;
+  //Nothing left: end of a REPL line, which cannot continue anything.
+  if (StrOcc("+-*/%&|^<>=!?:,.)]}{~", *p))
+    return TRUE;
+  if (*p == '"')
+    return prev == TK_STR;
+  //adjacent string literals concatenate; a string after anything else is a new statement
+  if (!MemCmp(p, "else", 4))
+    return TRUE;
+  return FALSE;
+}
+
+I64 RVLexNlEnds(CCmpCtrl *cc)
+{//TRUE if the newline just read ends the statement.
+  if (!rv_lex_nl_semi || rv_lex_paren > 0)
+    return FALSE;
+  if (!(cc->token == TK_IDENT || cc->token == TK_I64 || cc->token == TK_F64 ||
+        cc->token == TK_STR || cc->token == ')' || cc->token == ']' ||
+        cc->token == TK_PLUS_PLUS || cc->token == TK_MINUS_MINUS))
+    return FALSE;
+  //a keyword cannot end a statement: `return` alone on a line must not become `return;`
+  return !RVLexNlStarterContinues(cc->cur_buf_ptr, cc->token);
+}
+
 I64 Lex(CCmpCtrl *cc)
 {//Fetch next token.
   I64 i,j,k,l,ch,ch1;
@@ -1090,8 +1155,13 @@ lex_ifjit:
 	}
 	break;
       case '\n':
-	if (!(cc->flags&CCF_KEEP_NEW_LINES))
-	  break; //else fall through
+	if (!(cc->flags&CCF_KEEP_NEW_LINES)) {
+	  if (RVLexNlEnds(cc)) {
+	    cc->token=';';
+	    goto lex_end;
+	  }
+	  break;
+	} //else fall through
       case TK_INS_BIN:
       case TK_INS_BIN_SIZE:
 	cc->token=ch;
@@ -1230,6 +1300,13 @@ lex_check_comment:
     }
   }
 lex_end:
+  //Bracket depth for the newline rule: inside ( ) or [ ] a newline continues the expression.
+  if (cc->token=='(' || cc->token=='[')
+    rv_lex_paren++;
+  else if (cc->token==')' || cc->token==']') {
+    if (rv_lex_paren>0)
+      rv_lex_paren--;
+  }
   LexGetChar(cc); //Do this so WAS_NEW_LINE is right
   cc->flags|=CCF_USE_LAST_U16;
   return cc->token;
