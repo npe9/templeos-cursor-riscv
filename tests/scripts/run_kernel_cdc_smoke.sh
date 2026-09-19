@@ -17,7 +17,11 @@ EXPECT_PREFIX="RVCDC smoke hash="
 # Word-wise FNV-1a for kernel_cdc_demo.hc (800×600). Override with RVCDC_EXPECT_HASH.
 # Calibrate: RVCDC_EXPECT_HASH=0x00000000 make kernel-cdc-smoke
 # Pin recalibrated 2026-09-05 (WIP FB drift vs 0x53F1F7A6/0xF98D0CE6; wm8/auok/vgaok post-hash).
-PINNED_HASH="0xEFB2D715"
+# Re-recorded 2026-09-19, on the same evidence as kernel-gr and a little more: the old value
+# fails identically at d207eda, before any of this session's work, so the golden was stale and
+# the rendering has not moved. If it moves again, find the commit that moved it before touching
+# this line — a framebuffer hash cannot tell you whether the picture got better or worse.
+PINNED_HASH="0x95A09C04"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
