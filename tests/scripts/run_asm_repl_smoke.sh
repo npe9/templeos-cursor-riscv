@@ -237,7 +237,10 @@ if printf '%s\n' "$out" | grep -qF '$LTRED$'; then
   fail=1
 fi
 need_screen "ERROR:" "> Cls;"
-need "D (offsets from 0)"
+# On the SCREEN, not in the stream: with the paged pane there are rows left for a memory pane
+# at 80x25, so D draws a tile — and a tile's text is not contiguous in the output, because the
+# renderer sends only the cells that changed.
+need_screen "D (offsets from 0)" "> Da(_SP, 8);"
 # Cls wipes the terminal and the renderer's shadows. The prompt keeps printing afterwards, so
 # the screen is not blank — what must be gone is the debugger view that was there before.
 if screen | grep -qF "Da (addresses)"; then

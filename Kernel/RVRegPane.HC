@@ -322,94 +322,165 @@ I64 RegPaneCsrVal(I64 i)
 //   AsmWatchInstall(&RegPaneUpdate);  AsmStep("addi a0,a0,7");
 // SEE ALSO
 //   AsmStep  RVDocTextRender  Dr
-U0 RegPaneUpdate()
+// ---- the pane is PAGED --------------------------------------------------------------------
+//
+// Registers, machine state and the float registers are about 44 rows together, and memory wants
+// more. Ranking them meant something was always missing and the operator had to know which key
+// brought it back — "I do not see the memory", twice.
+//
+// So the pane packs WHOLE blocks starting at the current page and wrapping around, taking each
+// one only if it fits entirely. Nothing is ever cut in half, everything is reachable by cycling
+// (`n` in the asm REPL, or Pane(n) at the prompt), and a taller terminal simply shows more
+// blocks per page rather than a different layout.
+#define REGP_BLOCKS 3
+#define REGP_B_REGS 0
+#define REGP_B_MACHINE 1
+#define REGP_B_FLOAT 2
+I64 regp_page, regp_used;
+
+U8 *RegPaneBlockName(I64 b)
 {
-  U8 nm[12], line[160];
-  I64 n, now, col, per, csr_per;
-  if (!regp_doc) {
-    regp_doc = DocNew();
-    if (!regp_doc)
-      return;
-  }
+  if (b == REGP_B_REGS)
+    return "registers";
+  if (b == REGP_B_MACHINE)
+    return "machine state";
+  return "float";
+}
+
+// Rows a block needs at the pane's current width, heading included.
+I64 RegPaneBlockRows(I64 b)
+{
+  I64 per, csr_per;
   per = RegPanePerRow();
   csr_per = regp_cols / REGP_CSR_ENTRY;
   if (csr_per < 1)
     csr_per = 1;
-  DocClear(regp_doc);
-  if (regp_cols >= 40)
-    StrPrint(line, "$FG,%d$registers $FG,%d$red = just changed$FG$\n", REGP_COL_HEAD,
-             REGP_COL_MOVED);
-  else
-    StrPrint(line, "$FG,%d$registers$FG$\n", REGP_COL_HEAD);
-  DocPutS(regp_doc, line);
-  n = 0;
-  col = 0;
-  while (n < 32) {
-    now = *(I64 *)(REGP_CTX + n * 8);
-    RegPaneName(n, nm);
-    RegPaneValue(line, nm, now, regp_moved[n]);
-    DocPutS(regp_doc, line);
-    col++;
-    if (col % per == 0)
-      DocPutS(regp_doc, "\n");
-    n++;
-  }
-  now = *(I64 *)(REGP_SNAP + REGP_PC_SLOT * 8);
-  RegPaneValue(line, "pc", now, regp_moved[REGP_PC]);
-  DocPutS(regp_doc, line);
-  col++;
-  if (col % per)
-    DocPutS(regp_doc, "\n");
-  if (regp_fp)
-    StrPrint(line, "$FG,%d$machine state$FG$\n", REGP_COL_HEAD);
-  else
-    StrPrint(line, "$FG,%d$machine state $FG,%d$(f: float regs)$FG$\n", REGP_COL_HEAD,
-             REGP_COL_ZERO);
-  DocPutS(regp_doc, line);
-  n = 0;
-  col = 0;
-  while (n < regp_csr_n) {
-    now = RegPaneCsrVal(n);
-    RegPaneCsrName(n, nm);
-    RegPaneValue(line, nm, now, regp_moved[REGP_CSR0 + n], TRUE);
-    DocPutS(regp_doc, line);
-    col++;
-    if (col % csr_per == 0)
-      DocPutS(regp_doc, "\n");
-    n++;
-  }
-  if (col % csr_per)
-    DocPutS(regp_doc, "\n");
-  if (regp_fp) {
-    // Say where these came from. The float file is the asm STEPPER's (0x87000800) and no trap
-    // path writes it — neither trap vector contains a single fsd — so after a fault these are
-    // whatever the last stepped line left behind, not the faulting context. Until the freeze
-    // saves f0..f31 the honest thing is to label them rather than let them sit next to the
-    // integer registers looking equally true. See docs/MACHINE_STATE_SURVEY.md.
-    if (RegPaneFSrc())
-      StrPrint(line, "$FG,%d$float $FG,%d$(frozen at the trap, fcsr=%X)$FG$\n", REGP_COL_HEAD,
-               REGP_COL_ZERO, *(I64 *)(REGP_FSNAP_V + 8));
+  if (b == REGP_B_REGS)
+    return 1 + (33 + per - 1) / per;
+  // 32 registers and pc
+  if (b == REGP_B_MACHINE)
+    return 1 + (REGP_CSR_MAX + csr_per - 1) / csr_per;
+  return 1 + (REGP_FREGS + per - 1) / per;
+}
+
+// One block's DolDoc source, appended to the pane document.
+U0 RegPaneBlock(I64 b)
+{
+  U8 nm[12], line[160];
+  I64 n = 0, col = 0, now, per, csr_per;
+  per = RegPanePerRow();
+  csr_per = regp_cols / REGP_CSR_ENTRY;
+  if (csr_per < 1)
+    csr_per = 1;
+  if (b == REGP_B_REGS) {
+    if (regp_cols >= 40)
+      StrPrint(line, "$FG,%d$registers $FG,%d$red = just changed  n: more$FG$\n",
+               REGP_COL_HEAD, REGP_COL_ZERO);
     else
-      StrPrint(line, "$FG,%d$float $FG,%d$(as last stepped)$FG$\n", REGP_COL_HEAD,
-               REGP_COL_ZERO);
+      StrPrint(line, "$FG,%d$registers$FG$\n", REGP_COL_HEAD);
     DocPutS(regp_doc, line);
-    n = 0;
-    col = 0;
-    while (n < REGP_FREGS) {
-      now = *(I64 *)(REGP_FCTX + n * 8);
-      if (RegPaneFSrc())
-        now = *(I64 *)(REGP_FSNAP + n * 8);
-      RegPaneFName(n, nm);
-      // raw bits, like the stepper prints them: an encoding is what you are checking
-      RegPaneValue(line, nm, now, regp_moved[REGP_FP0 + n]);
+    while (n < 32) {
+      now = *(I64 *)(REGP_CTX + n * 8);
+      RegPaneName(n, nm);
+      RegPaneValue(line, nm, now, regp_moved[n]);
       DocPutS(regp_doc, line);
       col++;
       if (col % per == 0)
         DocPutS(regp_doc, "\n");
       n++;
     }
+    now = *(I64 *)(REGP_SNAP + REGP_PC_SLOT * 8);
+    RegPaneValue(line, "pc", now, regp_moved[REGP_PC]);
+    DocPutS(regp_doc, line);
+    col++;
     if (col % per)
       DocPutS(regp_doc, "\n");
+    return;
+  }
+  if (b == REGP_B_MACHINE) {
+    StrPrint(line, "$FG,%d$machine state $FG,%d$n: more$FG$\n", REGP_COL_HEAD, REGP_COL_ZERO);
+    DocPutS(regp_doc, line);
+    while (n < REGP_CSR_MAX) {
+      now = RegPaneCsrVal(n);
+      RegPaneCsrName(n, nm);
+      RegPaneValue(line, nm, now, regp_moved[REGP_CSR0 + n], TRUE);
+      DocPutS(regp_doc, line);
+      col++;
+      if (col % csr_per == 0)
+        DocPutS(regp_doc, "\n");
+      n++;
+    }
+    if (col % csr_per)
+      DocPutS(regp_doc, "\n");
+    return;
+  }
+  // The float file is the asm STEPPER's (0x87000800) unless a trap has frozen one, and no trap
+  // path wrote that file until the C runtime learned to. The heading says which you are reading
+  // — they are different machines otherwise. See docs/MACHINE_STATE_SURVEY.md.
+  if (RegPaneFSrc())
+    StrPrint(line, "$FG,%d$float $FG,%d$(frozen at the trap, fcsr=%X)  n: more$FG$\n",
+             REGP_COL_HEAD, REGP_COL_ZERO, *(I64 *)(REGP_FSNAP_V + 8));
+  else
+    StrPrint(line, "$FG,%d$float $FG,%d$(as last stepped)  n: more$FG$\n", REGP_COL_HEAD,
+             REGP_COL_ZERO);
+  DocPutS(regp_doc, line);
+  while (n < REGP_FREGS) {
+    now = *(I64 *)(REGP_FCTX + n * 8);
+    if (RegPaneFSrc())
+      now = *(I64 *)(REGP_FSNAP + n * 8);
+    RegPaneFName(n, nm);
+    RegPaneValue(line, nm, now, regp_moved[REGP_FP0 + n]);
+    DocPutS(regp_doc, line);
+    col++;
+    if (col % per == 0)
+      DocPutS(regp_doc, "\n");
+    n++;
+  }
+  if (col % per)
+    DocPutS(regp_doc, "\n");
+}
+
+// RegPanePage -- Pane(n)
+// NAME
+//   RegPanePage - which block the pane starts at (0 registers, 1 machine state, 2 float)
+// SYNOPSIS
+//   Pane(2);    // start at the float registers
+// SEE ALSO
+//   RegPaneUpdate  RegPaneNextPage
+public U0 RegPanePage(I64 n)
+{
+  if (n < 0)
+    n = 0;
+  regp_page = n % REGP_BLOCKS;
+}
+
+// RegPaneNextPage -- the `n` key
+public U0 RegPaneNextPage()
+{
+  regp_page = (regp_page + 1) % REGP_BLOCKS;
+}
+
+U0 RegPaneUpdate()
+{
+  I64 b, tried = 0, rows;
+  if (!regp_doc) {
+    regp_doc = DocNew();
+    if (!regp_doc)
+      return;
+  }
+  DocClear(regp_doc);
+  regp_used = 0;
+  b = regp_page;
+  while (tried < REGP_BLOCKS) {
+    rows = RegPaneBlockRows(b);
+    if (regp_used + rows <= regp_rows) {
+      RegPaneBlock(b);
+      regp_used += rows;
+    }
+    // ...and if it does not fit, try the next: a short block after a tall one still earns its
+    // place, and skipping is not the same as truncating
+    b = (b + 1) % REGP_BLOCKS;
+    tried++;
   }
   regp_bytes = RVDocTextRender(regp_doc, regp_row, regp_col, regp_rows, regp_cols);
   regp_shown = 1;

@@ -40,7 +40,7 @@
 // reported (RVVtProbeSize), not assumed.
 I64 asmui_mem_addr, asmui_running, asmui_step_fn, asmui_mode;
 I64 asmui_side, asmui_side_col, asmui_text_cols, asmui_mem_row, asmui_mem_rows, asmui_ready;
-I64 asmui_dis_addr, asmui_trace_pc, asmui_tracing;
+I64 asmui_dis_addr, asmui_trace_pc, asmui_tracing, asmui_home;
 U8 asmui_class[24];
 I64 asmui_class_i;
 // which family you are working through, and how far in
@@ -126,40 +126,35 @@ U0 AsmUiScrolled()
 // If it does not fit even then, it is turned OFF rather than cut in half: a pane that silently
 // stops half way through is how ten registers went missing.
 #define ASMUI_MEM_MIN 3
-I64 AsmUiRegRows(I64 avail)
+// The pane packs whole blocks into the rows it is given and says how many it used
+// (regp_used); memory takes what is left. Nothing here decides WHICH blocks — that is the
+// pane's business now, and cycling with `n` changes it without changing the layout.
+// Stacked: the prompt scrolls in a region below the panes, and where that starts is only known
+// once the pane has packed. DECSTBM homes the cursor into the panes, so it is always put back.
+U0 AsmUiStackedRegion(I64 rows)
 {
-  I64 want, i = 0;
-  // Ranked, most wanted first, and the first that fits wins.
-  //
-  // MEMORY OUTRANKS THE FLOAT BLOCK. Both were asked for and they do not fit together on a
-  // 40-row terminal: registers, pc and the machine state are 23 rows, the 32 float registers
-  // another 17, and memory needs at least 3 more. Memory wins by default because a stepper
-  // without a memory view is half a debugger, and because the float block is one keystroke away
-  // (`f`) while a pane that silently vanished is not. The heading says which one is hidden.
-  //
-  // When it is forced on, the float block takes memory's rows rather than being cut in half.
-  while (i < 4) {
-    RegPaneFp(regp_fp_want && i < 2);
-    RegPaneCsrs(8);
-    if (i & 1)
-      RegPaneCsrs(4);
-    want = RegPaneRowsNeeded;
-    if (want <= avail - ASMUI_MEM_MIN)
-      return want;
-    // ...and memory under it
-    if (regp_fp_want && want <= avail)
-      return want;
-    // ...instead of memory, but only because the floats were asked for
-    i++;
-  }
-  // Nothing fits whole: the smallest set, clipped. A pane that stops half way through a block
-  // is the failure this ranking exists to avoid, so this is the last resort.
-  RegPaneFp(FALSE);
-  RegPaneCsrs(4);
-  want = RegPaneRowsNeeded;
-  if (want > avail)
-    want = avail;
-  return want;
+  I64 top;
+  top = asmui_mem_row + asmui_mem_rows;
+  if (top > rows - 2)
+    top = rows - 2;
+  RVDocTextScrollRegion(top + 1, rows);
+  RVVtGoto(asmui_home ? top : rows - 1, 0);
+  RVVtFlush;
+}
+
+U0 AsmUiPlaceMem(I64 rows)
+{
+  asmui_mem_row = regp_used;
+  asmui_mem_rows = rows - regp_used;
+  if (asmui_mem_rows < ASMUI_MEM_MIN)
+    asmui_mem_rows = 0;
+  // not enough left to be a memory pane: Dm and friends print instead of drawing a tile
+  dbgv_mem_row = asmui_mem_row;
+  dbgv_mem_col = asmui_side ? asmui_side_col : 0;
+  dbgv_mem_rows = asmui_mem_rows;
+  dbgv_mem_cols = asmui_side ? ASMUI_SIDE_COLS : asmui_text_cols;
+  if (asmui_mem_rows < 2)
+    dbgv_mem_row = -1;
 }
 
 // The memory pane, under the registers in whichever layout is in force. Not every layout has
@@ -254,11 +249,12 @@ public U0 AsmUiLayout(I64 mode = -1, I64 home = FALSE)
     asmui_side_col = cols - ASMUI_SIDE_COLS;
     asmui_text_cols = asmui_side_col - 1;
     // one column of gutter, so a full line of text does not touch the pane
-    RegPaneAt(0, asmui_side_col, 1, ASMUI_SIDE_COLS);
-    reg_rows = AsmUiRegRows(rows);
+    reg_rows = rows - ASMUI_MEM_MIN;
+    if (reg_rows < 8)
+      reg_rows = rows;
+    // a screen too short to hold a pane AND memory gives the pane everything; `n` still reaches
+    // every block
     RegPaneAt(0, asmui_side_col, reg_rows, ASMUI_SIDE_COLS);
-    asmui_mem_row = reg_rows;
-    asmui_mem_rows = rows - reg_rows;
     RVDocTextScrollRegion(0, 0);
     // the text column scrolls the whole screen; the sidebar is repainted rather than pinned
     if (home) {
@@ -266,35 +262,25 @@ public U0 AsmUiLayout(I64 mode = -1, I64 home = FALSE)
       RVVtFlush;
     }
   } else {
-    RegPaneAt(0, 0, 1, cols);
-    reg_rows = AsmUiRegRows(rows - 5);
+    reg_rows = rows - 6;
     // stacked, the prompt needs rows of its own below the panes
+    if (reg_rows < 6)
+      reg_rows = rows - 2;
     RegPaneAt(0, 0, reg_rows, cols);
     asmui_text_cols = cols;
-    asmui_mem_row = reg_rows;
-    asmui_mem_rows = asmui_mode ? 5 : 0;
-    RVDocTextScrollRegion(reg_rows + asmui_mem_rows + 1, rows);
-    RVVtGoto(home ? reg_rows + asmui_mem_rows : rows - 1, 0);
-    // DECSTBM homes the cursor into the panes, so it always has to be put back in the region
-    RVVtFlush;
+    asmui_home = home;
+    // the scroll region cannot be set until the pane has packed: it starts below whatever the
+    // pane and the memory tile actually used (AsmUiStackedRegion, after RegPaneUpdate)
   }
   RVLineEdWrap(asmui_text_cols);
   RVDolAnsiWrap(asmui_text_cols);
-  // Dm/D/Da paint the debugger's own memory tile, and its default coordinates predate this
-  // layout — called from the prompt they landed across the sidebar. Point them at wherever the
-  // memory pane actually is, so every memory view in the image agrees on one place.
-  dbgv_mem_row = asmui_mem_row;
-  dbgv_mem_col = asmui_side ? asmui_side_col : 0;
-  dbgv_mem_rows = asmui_mem_rows;
-  dbgv_mem_cols = asmui_side ? ASMUI_SIDE_COLS : asmui_text_cols;
-  if (asmui_mem_rows < 2) {
-    // no memory pane in this layout: send them to the text column instead of over a pane
-    dbgv_mem_row = -1;
-  }
   asmui_ready = 1;
   RVDocTextInvalidate;
   // whatever was on those rows, the shadow no longer describes it
   RegPaneUpdate;
+  AsmUiPlaceMem(rows);
+  if (!asmui_side)
+    AsmUiStackedRegion(rows);
   AsmUiPanes;
 }
 
@@ -324,6 +310,7 @@ U0 AsmUiPrePrompt()
   // nothing — repainting there would throw that away.
   RVDocTextInvalidate;
   RegPaneUpdate;
+  AsmUiPlaceMem(rv_vt_term_rows);
   AsmUiPanes;
 }
 
@@ -392,6 +379,7 @@ public U0 AsmRepl()
       "  q  leave   d <addr>  memory pane   u <sym|addr>  disassemble   r  repaint\n"
       "  t <sym|addr>  trace a compiled function, t again to step   f  float regs\n"
       "  p <class>  work through a family, p for the next   ? <mn>  what it does\n"
+      "  n  next pane page (registers / machine state / float)   f  the float page\n"
       "  ?? the catalog\n";
       continue;
     }
@@ -414,12 +402,14 @@ public U0 AsmRepl()
       continue;
     }
     if (line[0] == 'f' && !line[1]) {
-      RegPaneFpWant(!regp_fp_want);
+      RegPanePage(REGP_B_FLOAT);
       AsmUiLayout(-1, FALSE);
-      if (regp_fp_want)
-        "asm REPL: float registers in, memory out (f again to swap back)\n";
-      else
-        "asm REPL: memory back\n";
+      continue;
+    }
+    if (line[0] == 'n' && !line[1]) {
+      // cycle which block the pane starts at: registers, machine state, float
+      RegPaneNextPage;
+      AsmUiLayout(-1, FALSE);
       continue;
     }
     if (line[0] == 'f' && line[1] == ' ') {

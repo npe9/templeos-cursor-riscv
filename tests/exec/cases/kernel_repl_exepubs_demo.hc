@@ -122,12 +122,12 @@ I64 main()
       RVExePubFunNew("RegPane", &RegPaneStep, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("RegPaneCost", &RegPaneCost, cmp.internal_types[RT_I64], 0);
       {
-        // Fp(1) / Fp(0): the float block is 16 more rows, so whether it is worth the screen is
-        // the operator's call as well as the layout's.
+        // Pane(n): which block the pane starts at — 0 registers, 1 machine state, 2 float.
+        // The pane packs whole blocks from there, so this is "show me that one first".
         CHashFun *tp;
-        tp = RVExePubFunNew("Fp", &RegPaneFpWant, cmp.internal_types[RT_U0], 1);
+        tp = RVExePubFunNew("Pane", &RegPanePage, cmp.internal_types[RT_U0], 1);
         if (tp)
-          RVExePubAddArg(tp, "on", cmp.internal_types[RT_I64], MLF_DFT_AVAILABLE, 1);
+          RVExePubAddArg(tp, "n", cmp.internal_types[RT_I64]);
       }
       // Dbg/G: the stock entry points. A faulting line paints this view automatically below.
       RVExePubFunNew("Dbg", &Dbg, cmp.internal_types[RT_U0], 0);

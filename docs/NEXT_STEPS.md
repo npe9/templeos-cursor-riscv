@@ -72,12 +72,12 @@ statement, and the lexer had already resolved the identifier, so it asks what it
 guessing. Zero errors after that, and the whole kernel image compiles BYTE-IDENTICAL with the
 rule on — which is what earned it the default. `HOLYC_NL_SEMI=0` turns it off.
 
-### 1.3 The pane cannot show everything at once
+### 1.3 ~~The pane cannot show everything at once~~ — DONE, the pane is paged
 
-32 registers, pc, 8 CSRs, 32 float registers and memory is about 70 rows and no terminal has
-that, so today they are ranked and something is always hidden. The fix is the paged pane (survey
-item 6): one pane, a key to cycle registers / float / CSRs / memory, and the heading saying which
-page you are on. That removes the whole class of "where did X go".
+It packs WHOLE blocks starting at the current page and wrapping around, taking each only if it
+fits entirely: nothing is ever cut, everything is reachable by cycling (`n` in the asm REPL,
+`Pane(n)` at the prompt), and a taller terminal simply shows more blocks rather than a different
+layout. The headings carry the hint, so a block that is off the page still says how to reach it.
 
 ### 1.4 AsmDoc motivation covers 36 of 244 instructions
 

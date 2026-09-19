@@ -104,6 +104,9 @@ feed() {
      # cannot wall the debugger off from its own memory.
      # Work through a family one instruction at a time: p starts it, p again moves on, and each
      # step is that instruction as a man page for you to type yourself.
+     # Cycle the pane: registers -> machine state -> float, whole blocks, nothing cut
+     "n",
+     "n",
      "p shift",
      "p",
      # t2, not a0: a0 carries a value a later assertion checks, and practising on it moved it
@@ -118,6 +121,8 @@ feed() {
      # The BCPL rule at the prompt: no semicolons on these two, and they must still work.
      # 40+3 rather than 40+2 because the feed types 40+2; elsewhere, and an assertion that
      # passes on either spelling would prove nothing.
+     # the two n presses above left the pane on the float page; put it back for the checks
+     "Pane(0);",
      "40+3",
      "AsmClasses",
      "AsmDoc(\"addi\");",
@@ -339,7 +344,8 @@ need "0x40403024 -> 0x80003024"   # no leading dash: grep would read it as an op
 need "ArgEcho: a=0x11 b=0x22 c=0x33"
 need "ArgEcho: a=0x1111 b=0x22 c=0x33"
 # The float block is not silently gone when memory has the rows — the heading says how to get it
-need "(f: float regs)"
+# the float page was reachable by cycling (the pane paints its heading)
+need "float "
 # ...and the NAPOT decode of the entry the asm REPL just programmed: the trailing ones of the
 # address are the size, which is the part worth testing.
 need "pmp0 rwx NAPOT 0x80000000..0x80010000 (65536 bytes)"
@@ -393,55 +399,42 @@ def at(name):
 
 GPR = ("zero ra sp gp tp t0 t1 t2 s0 s1 a0 a1 a2 a3 a4 a5 a6 a7 "
        "s2 s3 s4 s5 s6 s7 s8 s9 s10 s11 t3 t4 t5 t6").split()
-CSR = ["mcause", "mepc", "mtval", "mstatus"]
+CSR = ["mcause", "mepc", "mtval", "mstatus", "mtvec", "mie", "mip", "satp"]
+FPR = ["ft0", "fa0", "fs11", "ft11"]
+
+# The pane is PAGED: it packs whole blocks starting at the current page. So the test names which
+# blocks it expects, and every entry of a named block must be there — a block that is present
+# but cut in half is the failure this design exists to prevent.
+want = os.environ.get("EXPECT", "").split()
+BLOCKS = {"regs": ("registers", GPR + ["pc"]),
+          "machine": ("machine state", CSR),
+          "float": ("float", FPR),
+          "memory": ("memory", [])}
 last_reg = 0
-for nm in GPR + CSR:
-    r, c = at(nm)
-    if r is None:
-        bad.append("register %s is not on screen" % nm)
-    elif c < side:
-        bad.append("%s is at column %d, left of the sidebar (%d)" % (nm, c, side))
-    else:
-        last_reg = max(last_reg, r)
-
-# a0 was stepped twice by 0x10, and the pane says so
-r, c = at("a0")
-if r is not None and "0000000000000020" not in rows[r][c:c+40]:
-    bad.append("a0 does not show 0000000000000020: %r" % rows[r][c:c+40])
-
-# pc rides with the registers, where a debugger puts it
-r, c = at("pc")
-if r is None:
-    bad.append("pc is not on screen")
-elif c < side:
-    bad.append("pc is at column %d, left of the sidebar (%d)" % (c, side))
-
-# The blocks are RANKED by the rows available: registers and machine state always, then the 32
-# float registers, and memory only if there is still room. So which of the two is on screen is
-# itself the assertion — at 40 rows the floats displace memory, at 30 they do not fit at all.
-mem = [r for r in sorted(rows) if rows[r][side:side+7].strip() == "memory"]
-flt = [r for r in sorted(rows) if rows[r][side:side+6].strip() == "float"]
-want = os.environ.get("EXPECT", "")
-if want == "float":
-    if not flt:
-        bad.append("no float block in the sidebar")
-    else:
-        for nm in ("ft0", "fa0", "ft11"):
+for key, (heading, names) in BLOCKS.items():
+    head_rows = [r for r in sorted(rows) if rows[r][side:side+len(heading)] == heading]
+    if key in want:
+        if not head_rows:
+            bad.append("no %s block on screen" % key)
+            continue
+        last_reg = max(last_reg, head_rows[0])
+        for nm in names:
             r, c = at(nm)
             if r is None:
-                bad.append("float register %s is not on screen" % nm)
-            elif r < flt[0]:
-                bad.append("%s at row %d is above the float heading (row %d)" % (nm, r, flt[0]))
-    if mem:
-        bad.append("memory pane is on screen with no rows to spare for it")
-elif want == "memory":
-    if not mem:
-        bad.append("no memory pane in the sidebar")
-    elif mem[0] <= last_reg:
-        bad.append("memory pane at row %d is not below the registers (row %d)"
-                   % (mem[0], last_reg))
-    if flt:
-        bad.append("float block is on screen at a size that cannot hold it")
+                bad.append("%s: %s is not on screen" % (key, nm))
+            elif c < side:
+                bad.append("%s is at column %d, left of the sidebar (%d)" % (nm, c, side))
+            else:
+                last_reg = max(last_reg, r)
+    elif head_rows and key != "memory":
+        bad.append("%s block is on screen but was not expected on this page" % key)
+
+if "regs" in want:
+    r, c = at("a0")
+    if r is not None and "0000000000000020" not in rows[r][c:c+40]:
+        bad.append("a0 does not show 0000000000000020: %r" % rows[r][c:c+40])
+
+# a0 was stepped twice by 0x10 — checked above when the registers page is up
 
 # ...and the REPL text stayed in its own column. A row legitimately holds text on the left and
 # pane on the right, so what must be clean is the gutter between them: the text column wraps one
@@ -462,11 +455,11 @@ if bad:
   fail=1
 fi
 }
-check_layout 76 "resize-mark" "at 120x40" memory
+check_layout 76 "resize-mark" "at 120x40" "regs machine memory"
 # After the resize the terminal is 100 columns, so the sidebar starts at 56. Nothing else about
 # the layout changes shape — which is the point: the same code laid it out at a size it was
 # never told about at boot.
-check_layout 56 "qemu-system-riscv64" "after the resize to 100 columns" memory
+check_layout 56 "qemu-system-riscv64" "after the resize to 100 columns" "regs machine memory"
 
 if [ "$fail" -ne 0 ]; then
   printf '%s\n' "$out" | grep -E 'A2|ExePutS|ans=|Except|Error|FAIL|OK|probe|Cmp|Compiler_RV' | head -40 | sed 's/^/  /' >&2
