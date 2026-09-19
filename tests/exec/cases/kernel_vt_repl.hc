@@ -32,7 +32,6 @@
 #ifndef RV_VT_REPL_COLOR
 #define RV_VT_REPL_COLOR 1
 #endif
-
 // Where to park the terminal's cursor. The WinMgr keeps no caret field (windows are
 // composed, not edited in place), so derive it: the last non-blank cell inside the
 // Term window is the end of what has been typed, and the caret sits just after it.
@@ -68,7 +67,7 @@ I64 main()
     RVUartPutS("VT-REPL: LiteInit FAILED\n");
     return 1;
   }
-  if (rows * cols > RV_VT_CELLS_MAX) {
+  if (rows *cols > RV_VT_CELLS_MAX) {
     RVUartPutS("VT-REPL: rows*cols exceeds RV_VT_CELLS_MAX\n");
     return 2;
   }
@@ -78,9 +77,7 @@ I64 main()
   text.rows = rows;
   text.cols = cols;
   // One Term window filling the grid, inset by the border RVTextBorder draws outside.
-  idx = RVWinNew(1, cols - 2, 2, rows - 2, "Term",
-                 "TempleOS/RISC-V — DolDoc REPL on a VT100\n"
-                 "Type a command and press Enter.  help / regs / bt / md ADDR / q\n> ", TRUE);
+  idx = RVWinNew(1, cols - 2, 2, rows - 2, "Term", "TempleOS/RISC-V — DolDoc REPL on a VT100\n" "Type a command and press Enter.  help / regs / bt / md ADDR / q\n> ", TRUE);
   if (idx < 0) {
     RVUartPutS("VT-REPL: RVWinNew FAILED\n");
     return 3;

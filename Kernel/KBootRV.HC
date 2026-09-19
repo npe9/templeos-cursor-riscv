@@ -198,7 +198,8 @@ U0 Free(U8 *ptr)
   CMemUsed *u = ptr - offset(CMemUsed.start);
   CMemUnused *fu = u;
   I64 sz = u->size;
-  the_heap->used_u8s -= sz;   // MAlloc adds it; without this used_u8s only ever grows
+  the_heap->used_u8s -= sz;
+  // MAlloc adds it; without this used_u8s only ever grows
   fu->size = sz;
   fu->next = the_heap->malloc_free_lst;
   the_heap->malloc_free_lst = fu;

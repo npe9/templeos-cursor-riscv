@@ -13,7 +13,6 @@
 // now. See docs/MACHINE_STATE_SURVEY.md.
 #ifndef CSR_DECODE_HC
 #define CSR_DECODE_HC
-
 // ---- CSR bitfield decode (explicit bit tests; no table walks — repl-holyc AOT) ----
 U0 CsrDecodeMstatus(I64 v)
 {
@@ -346,9 +345,7 @@ U0 CsrDecodeMtime(I64 v)
   Print("   CLINT MMIO @ MEM_MTIME (not CSR; CSR_TIME=0xC01 is read-only shadow)\n");
   Print("   ticks=%d\n", v);
 }
-
 // ---- decoders the forks never had -----------------------------------------------------------
-
 // satp: the whole of the MMU's configuration in one register. Decoded until now only by the
 // seed's datasheet sheet (datasheet/ds_csr.hc), which the kernel image does not link.
 U0 CsrDecodeSatp(I64 v)
@@ -366,10 +363,8 @@ U0 CsrDecodeSatp(I64 v)
   else
     Print("   MODE=%d (reserved)\n", mode);
   Print("   ASID=0x%X\n", (v >> 44) & 0xFFFF);
-  Print("   PPN=0x%X (root page table @ 0x%X)\n", v & 0xFFFFFFFFFFF,
-        (v & 0xFFFFFFFFFFF) << 12);
+  Print("   PPN=0x%X (root page table @ 0x%X)\n", v & 0xFFFFFFFFFFF, (v & 0xFFFFFFFFFFF) << 12);
 }
-
 // fcsr: the only float state with no reader anywhere in the tree until now. fflags are sticky —
 // they accumulate until something clears them, so a flag here is "this happened at some point",
 // not "this happened last instruction".
@@ -392,7 +387,7 @@ U8 *CsrRmName(I64 rm)
 
 U0 CsrDecodeFcsr(I64 v)
 {
-  Print("   frm=%d %s\n", (v >> 5) & 7, CsrRmName((v >> 5) & 7));
+  Print("   frm=%d %s\n", (v >> 5) & 7, CsrRmName ((v >> 5) & 7));
   Print("   fflags=0x%X (sticky)\n", v & 31);
   if (v & 1)
     Print("     NX inexact\n");
@@ -407,7 +402,6 @@ U0 CsrDecodeFcsr(I64 v)
   if (!(v & 31))
     Print("     (no exception raised since the flags were last cleared)\n");
 }
-
 // mcounteren / scounteren: which counters the next privilege level may read.
 U0 CsrDecodeCounteren(I64 v)
 {
@@ -420,7 +414,6 @@ U0 CsrDecodeCounteren(I64 v)
   if (!(v & 7))
     Print("   none of cycle/time/instret readable below M\n");
 }
-
 // medeleg / mideleg: which traps are handled in S-mode instead of M-mode. A bit per cause, so
 // the cause names are the decode.
 U0 CsrDecodeDeleg(I64 v, I64 interrupts)
@@ -436,7 +429,6 @@ U0 CsrDecodeDeleg(I64 v, I64 interrupts)
     i++;
   }
 }
-
 // The privilege a trap came FROM, which mstatus.MPP holds and nothing in the tree materialises.
 U8 *CsrPrivName(I64 mpp)
 {
@@ -448,5 +440,4 @@ U8 *CsrPrivName(I64 mpp)
     return "M (machine)";
   return "?";
 }
-
 #endif

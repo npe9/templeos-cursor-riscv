@@ -17,14 +17,11 @@
 #ifndef RV_DOL_ANSI_HC
 #define RV_DOL_ANSI_HC
 #help_index "DolDoc/VT"
-
 #define DOLA_PRI 2
-
 I64 rv_dola_on, rv_dola_fg = WHITE, rv_dola_bg = BLACK;
 // The text column, and where in it we are. A terminal wraps at ITS width, which would run text
 // under a sidebar painted beside it; wrapping here keeps printed output in its own column.
 I64 rv_dola_wrap, rv_dola_x;
-
 // RVDolAnsiWrap -- RVDolAnsiWrap(cols)
 // NAME
 //   RVDolAnsiWrap - how wide the text column is (0 = the whole terminal)
@@ -35,7 +32,6 @@ public U0 RVDolAnsiWrap(I64 cols)
   rv_dola_wrap = cols;
   rv_dola_x = 0;
 }
-
 // RVDolAnsiCol -- RVDolAnsiCol(x)
 // NAME
 //   RVDolAnsiCol - tell the translator which column the cursor is in
@@ -48,7 +44,6 @@ public U0 RVDolAnsiCol(I64 x)
 {
   rv_dola_x = x;
 }
-
 // One character on the wire, counting the column and breaking the line when it is full.
 U0 DolAnsiEmit(I64 ch)
 {
@@ -74,7 +69,6 @@ U0 DolAnsiEmit(I64 ch)
   RVVtPut(ch);
   rv_dola_x++;
 }
-
 // Hypertext, kept rather than discarded. A DolDoc link is text plus a target; a terminal has no
 // click, so each link is numbered as it goes by and the number is what you type to follow it.
 // This is the same idea as a text browser's link numbering, and it keeps the one thing that
@@ -82,10 +76,9 @@ U0 DolAnsiEmit(I64 ch)
 #define DOLA_LINK_MAX 16
 #define DOLA_LINK_TEXT 48
 #define DOLA_LINK_TGT 96
-U8 rv_dola_ltext[DOLA_LINK_MAX * DOLA_LINK_TEXT];
-U8 rv_dola_ltgt[DOLA_LINK_MAX * DOLA_LINK_TGT];
+U8 rv_dola_ltext[DOLA_LINK_MAX *DOLA_LINK_TEXT];
+U8 rv_dola_ltgt[DOLA_LINK_MAX *DOLA_LINK_TGT];
 I64 rv_dola_link_n;
-
 U0 DolAnsiUnderline(I64 on)
 {
   RVVtCsi;
@@ -94,7 +87,6 @@ U0 DolAnsiUnderline(I64 on)
   RVVtPut('4');
   RVVtPut('m');
 }
-
 // Escapes go through RVDocVT's emitters, not a formatted string: HolyC does not read "\x1b" as
 // an escape, so StrPrint put the literal text "x1b[91m" on the wire. RVVtSgr/RVVtPut write real
 // bytes (and keep the byte accounting in rv_vt_cost).
@@ -110,7 +102,6 @@ U0 DolAnsiEsc(I64 fg, I64 bg)
   }
   RVVtSgr(rv_dola_fg, rv_dola_bg, 0);
 }
-
 // One buffered `$...$` command. The text arrives through PutS in arbitrary pieces, so a command
 // can START in one call and END in the next — parsing per call printed the tail of a split
 // command as literal text, which is where a stray ",1" came from after an error message. So the
@@ -175,8 +166,8 @@ U0 DolAnsiRun(U8 *cmd)
       StrCpy(tgt, text);
     }
     if (rv_dola_link_n < DOLA_LINK_MAX) {
-      StrCpy(rv_dola_ltext + rv_dola_link_n * DOLA_LINK_TEXT, text);
-      StrCpy(rv_dola_ltgt + rv_dola_link_n * DOLA_LINK_TGT, tgt);
+      StrCpy(rv_dola_ltext + rv_dola_link_n *DOLA_LINK_TEXT, text);
+      StrCpy(rv_dola_ltgt + rv_dola_link_n *DOLA_LINK_TGT, tgt);
       rv_dola_link_n++;
     }
     DolAnsiEsc(LTCYAN, -1);
@@ -185,7 +176,7 @@ U0 DolAnsiRun(U8 *cmd)
     if (!*q)
       q = tgt;
     while (*q) {
-      DolAnsiEmit(*q);
+      DolAnsiEmit (*q);
       q++;
     }
     DolAnsiUnderline(0);
@@ -193,7 +184,7 @@ U0 DolAnsiRun(U8 *cmd)
     StrPrint(num, "[%d]", rv_dola_link_n);
     q = num;
     while (*q) {
-      DolAnsiEmit(*q);
+      DolAnsiEmit (*q);
       q++;
     }
     DolAnsiEsc(rv_dola_fg, -1);
@@ -207,7 +198,6 @@ U0 DolAnsiRun(U8 *cmd)
   }
   // $TX$, $ID$, $WW$, $HL$ …: layout with nothing to say on a terminal
 }
-
 // RVDolAnsiPutS -- StdOut sink
 // NAME
 //   RVDolAnsiPutS - translate DolDoc markup to ANSI on the way out
@@ -215,7 +205,6 @@ U0 DolAnsiRun(U8 *cmd)
 //   RVDolAnsiInstall  RVDocTextRender
 U8 rv_dola_cmd[192];
 I64 rv_dola_in_cmd, rv_dola_cmd_n;
-
 Bool RVDolAnsiPutS(U8 *st)
 {
   U8 *p;
@@ -242,11 +231,11 @@ Bool RVDolAnsiPutS(U8 *st)
       continue;
     }
     if (*p == '\n' || *p == '\r' || *p == 9)
-      DolAnsiEmit(*p);
+      DolAnsiEmit (*p);
     else if (*p >= ' ' && *p < 127)
-      DolAnsiEmit(*p);
+      DolAnsiEmit (*p);
     else if (*p >= 2 && *p <= 13)
-      RVVtPutGlyph(*p);
+      RVVtPutGlyph (*p);
     // Anything else — a stray control byte or a high-bit byte from the font — is DROPPED, not
     // turned into a space: it is what printed as "1??" runs before the ERROR: line, and a space
     // per byte just moves the mess along the line.
@@ -272,7 +261,6 @@ Bool RVDolAnsiPutKey(I64 ch, I64 sc)
   RVVtFlush;
   return TRUE;
 }
-
 // RVDolAnsiInstall -- RVDolAnsiInstall()
 // NAME
 //   RVDolAnsiInstall - route printed output through the markup translator
@@ -288,7 +276,6 @@ public U0 RVDolAnsiInstall()
   rv_dola_on = 1;
   KeyDevAdd(&RVDolAnsiPutKey, &RVDolAnsiPutS, DOLA_PRI, FALSE);
 }
-
 // Links -- Links()
 // NAME
 //   Links - list the hypertext links seen so far
@@ -304,12 +291,10 @@ public U0 Links()
     return;
   }
   while (i < rv_dola_link_n) {
-    "  [%d] %s  ->  %s\n", i + 1, rv_dola_ltext + i * DOLA_LINK_TEXT,
-        rv_dola_ltgt + i * DOLA_LINK_TGT;
+    "  [%d] %s  ->  %s\n", i + 1, rv_dola_ltext + i *DOLA_LINK_TEXT, rv_dola_ltgt + i *DOLA_LINK_TGT;
     i++;
   }
 }
-
 // Lk -- Lk(n)
 // NAME
 //   Lk - follow link n (the number printed beside it)
@@ -347,7 +332,6 @@ public U0 Lk(I64 n)
   }
   "   (no handler for this target kind yet)\n";
 }
-
 // Lk0 -- Lk0()
 // NAME
 //   Lk0 - forget the collected links
@@ -357,5 +341,4 @@ public U0 Lk0()
 {
   rv_dola_link_n = 0;
 }
-
 #endif

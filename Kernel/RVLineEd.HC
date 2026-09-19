@@ -12,11 +12,9 @@
 #ifndef RV_LINE_ED_HC
 #define RV_LINE_ED_HC
 #help_index "Term"
-
 #define RV_LED_HIST 16
 #define RV_LED_MAX 192
-
-U8 rv_led_hist[RV_LED_HIST * RV_LED_MAX];
+U8 rv_led_hist[RV_LED_HIST *RV_LED_MAX];
 I64 rv_led_hist_n, rv_led_hist_pos;
 // completion hook: fills `out` with the completion of `word`, returns TRUE if it found one
 I64 rv_led_complete_fn;
@@ -29,7 +27,6 @@ I64 rv_led_wrap;
 // "? ad" completes a mnemonic, "ad" on its own could be anything.
 U8 *rv_led_line;
 I64 rv_led_pos;
-
 U0 RVLedPutC(I64 ch)
 {
   U8 e[2];
@@ -46,16 +43,15 @@ U0 RVLedHistAdd(U8 *line)
   if (rv_led_hist_n >= RV_LED_HIST) {
     i = 0;
     while (i < RV_LED_HIST - 1) {
-      StrCpy(rv_led_hist + i * RV_LED_MAX, rv_led_hist + (i + 1) * RV_LED_MAX);
+      StrCpy(rv_led_hist + i *RV_LED_MAX, rv_led_hist + (i + 1) * RV_LED_MAX);
       i++;
     }
     rv_led_hist_n = RV_LED_HIST - 1;
   }
-  StrCpy(rv_led_hist + rv_led_hist_n * RV_LED_MAX, line);
+  StrCpy(rv_led_hist + rv_led_hist_n *RV_LED_MAX, line);
   rv_led_hist_n++;
   rv_led_hist_pos = rv_led_hist_n;
 }
-
 // The i-th ';'-separated number of a CSI parameter string, or 0 if it is not there.
 I64 RVLedParam(U8 *seq, I64 i)
 {
@@ -73,7 +69,6 @@ I64 RVLedParam(U8 *seq, I64 i)
   }
   return v;
 }
-
 // Redraw the whole line: \r, the prompt, as much of the text as the column holds, then erase to
 // end and put the cursor back. When the line is longer than the column it scrolls sideways so
 // that the cursor is always on screen — the same thing a shell does in a narrow window.
@@ -113,7 +108,6 @@ U0 RVLedRedraw(U8 *prompt, U8 *buf, I64 n, I64 cur)
     i--;
   }
 }
-
 // RVLineEdPrePrompt -- RVLineEdPrePrompt(&fn)
 // NAME
 //   RVLineEdPrePrompt - install what runs just before each line is read
@@ -129,7 +123,6 @@ public U0 RVLineEdPrePrompt(I64 fn)
 {
   rv_led_pre_fn = fn;
 }
-
 // RVLineEdWrap -- RVLineEdWrap(cols)
 // NAME
 //   RVLineEdWrap - how wide the text column is (0 = the whole terminal)
@@ -139,7 +132,6 @@ public U0 RVLineEdWrap(I64 cols)
 {
   rv_led_wrap = cols;
 }
-
 // RVLineEdComplete -- install the tab-completion hook
 // NAME
 //   RVLineEdComplete - set the function Tab calls
@@ -151,7 +143,6 @@ public U0 RVLineEdComplete(I64 fn)
 {
   rv_led_complete_fn = fn;
 }
-
 // RVLineEd -- RVLineEd(buf, max, prompt)
 // NAME
 //   RVLineEd - read a line with history, completion and cursor keys
@@ -227,8 +218,7 @@ public I64 RVLineEd(U8 *buf, I64 max, U8 *prompt = NULL)
       if (!rv_led_complete_fn)
         continue;
       i = cur;
-      while (i > 0 && buf[i - 1] > ' ' && buf[i - 1] != ',' && buf[i - 1] != '(' &&
-             buf[i - 1] != '?')
+      while (i > 0 && buf[i - 1] > ' ' && buf[i - 1] != ',' && buf[i - 1] != '(' && buf[i - 1] != '?')
         i--;
       // '?' ends a word like a bracket does: "?ad" is the question mark and then "ad", so Tab
       // completes the mnemonic rather than looking up a symbol called "?ad".
@@ -310,7 +300,7 @@ public I64 RVLineEd(U8 *buf, I64 max, U8 *prompt = NULL)
         else if (ch == 'B' && rv_led_hist_pos < rv_led_hist_n)
           rv_led_hist_pos++;
         if (rv_led_hist_pos < rv_led_hist_n)
-          StrCpy(buf, rv_led_hist + rv_led_hist_pos * RV_LED_MAX);
+          StrCpy(buf, rv_led_hist + rv_led_hist_pos *RV_LED_MAX);
         else
           buf[0] = 0;
         n = StrLen(buf);
@@ -364,5 +354,4 @@ public I64 RVLineEd(U8 *buf, I64 max, U8 *prompt = NULL)
   }
   return n;
 }
-
 #endif

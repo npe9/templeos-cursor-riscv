@@ -157,7 +157,6 @@ Bool RVUartDataReady()
   return (RVUartIn(5) & 1) != 0;
 }
 
-
 I64 RVUartTryGet()
 {
   I64 ch, nt;

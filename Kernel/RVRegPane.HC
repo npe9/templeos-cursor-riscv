@@ -15,7 +15,6 @@
 #ifndef RV_REG_PANE_HC
 #define RV_REG_PANE_HC
 #help_index "DolDoc/VT"
-
 #define REGP_CTX  0x87000400
 // x0..x31 freeze / asm REPL register file
 #define REGP_PREV 0x87000A00
@@ -28,7 +27,6 @@
 // f0..f31, as the trap froze them
 #define REGP_FSNAP_V 0x87000F00
 // [0] non-zero once a trap has frozen the float registers; [1] the fcsr it froze
-
 // Which float file to show. The stepper writes one and the trap writes the other, and they
 // answer different questions — so the pane shows the freeze once a fault has published one, and
 // says in the heading which it is. Before that it can only be the stepper's.
@@ -36,10 +34,8 @@ I64 RegPaneFSrc()
 {
   return *(I64 *)REGP_FSNAP_V;
 }
-
 #define REGP_SNAP 0x87000100
 // the legacy freeze slots: 18 mcause, 19 mepc, 20 mtval, 21 mstatus
-
 // An entry is "name + value + gap". A general register is %-4s + 16 hex + a space = 22 columns;
 // a CSR spells its name out (mstatus, not mstat) and takes 24, one to a row. How many fit on a
 // row is worked out from the pane's width rather than fixed, because the pane is a sidebar on a
@@ -61,11 +57,9 @@ I64 regp_rows = 12, regp_cols = 70;
 // LTRED: this register just changed
 #define REGP_COL_HEAD 14
 // YELLOW heading
-
 CDoc *regp_doc;
 I64 regp_bytes, regp_shown;
 I64 regp_row, regp_col;
-
 // What changed is LATCHED rather than worked out while painting. The pane is painted from two
 // places — after a step, and again whenever the layout is put back up — and a painter that
 // compares against "what I showed last time" finds nothing changed on the second paint and
@@ -85,13 +79,11 @@ I64 regp_fp = 1, regp_fp_want = 0;
 // Whether the float block is shown. A pane with no room for it says so by turning it off rather
 // than cutting it in half — see RegPaneRowsNeeded, and Fp(1) to insist.
 // pc's own mark slot, after the 32 registers and the 4 CSRs
-
 // pc rides with the general registers rather than with the CSRs, which is where a debugger puts
 // it and where the eye looks for it: x0..x31 and then pc. The value is the freeze's mepc — the
 // same thing _PC reads and where G resumes — so "the pc" and "mepc" are one number wearing two
 // names, one in each block.
 #define REGP_PC_SLOT 19
-
 // RegPaneAt -- RegPaneAt(row, col, rows, cols)
 // NAME
 //   RegPaneAt - place the register pane
@@ -111,7 +103,6 @@ public U0 RegPaneAt(I64 row, I64 col, I64 rows, I64 cols)
   regp_rows = rows;
   regp_cols = cols;
 }
-
 // How many registers fit on a row of this pane, and how many rows the whole thing wants.
 I64 RegPanePerRow()
 {
@@ -121,7 +112,6 @@ I64 RegPanePerRow()
     n = 1;
   return n;
 }
-
 // RegPaneRowsNeeded -- RegPaneRowsNeeded()
 // NAME
 //   RegPaneRowsNeeded - rows this pane wants at its current width
@@ -158,7 +148,6 @@ public I64 RegPaneRowsNeeded()
     rows += 1 + (REGP_FREGS + per - 1) / per;
   return rows;
 }
-
 // RegPaneFp -- Fp(on)
 // NAME
 //   Fp - show or hide the float registers in the pane
@@ -173,7 +162,6 @@ public U0 RegPaneFp(I64 on)
 {
   regp_fp = on;
 }
-
 // RegPaneFpWant -- Fp(on)
 // NAME
 //   RegPaneFpWant - ask for the float block, and let the layout make room by dropping memory
@@ -183,7 +171,6 @@ public U0 RegPaneFpWant(I64 on)
 {
   regp_fp_want = on;
 }
-
 // The float register's ABI name — ft0-7, fs0-1, fa0-7, fs2-11, ft8-11.
 U0 RegPaneFName(I64 n, U8 *out)
 {
@@ -224,7 +211,6 @@ U0 RegPaneName(I64 n, U8 *out)
   else
     StrPrint(out, "t%d", n - 25);
 }
-
 // One register as document source: name, then the value with its leading zeros dimmed so the
 // eye lands on the significant digits. A changed register is loud; everything else stays calm
 // but readable — the old LTGRAY mapped onto the terminal's dim plane and disappeared.
@@ -260,7 +246,6 @@ U0 RegPaneValue(U8 *out, U8 *nm, I64 v, I64 moved, I64 wide = FALSE)
   }
   StrPrint(out + StrLen(out), "$FG$ ");
 }
-
 // The CSRs the debugger already freezes: why you stopped (mcause), where (mepc), on what address
 // (mtval), and the mode/interrupt state (mstatus). An asm stepper wants them beside the
 // registers — a fault is the most common reason a register looks wrong.
@@ -307,7 +292,6 @@ I64 RegPaneCsrVal(I64 i)
   // satp
   return *(I64 *)(REGP_SNAP + slot * 8);
 }
-
 // RegPaneUpdate -- RegPaneUpdate()
 // NAME
 //   RegPaneUpdate - repaint the live register pane; changed registers in red
@@ -337,7 +321,6 @@ I64 RegPaneCsrVal(I64 i)
 #define REGP_B_MACHINE 1
 #define REGP_B_FLOAT 2
 I64 regp_page, regp_used;
-
 U8 *RegPaneBlockName(I64 b)
 {
   if (b == REGP_B_REGS)
@@ -346,7 +329,6 @@ U8 *RegPaneBlockName(I64 b)
     return "machine state";
   return "float";
 }
-
 // Rows a block needs at the pane's current width, heading included.
 I64 RegPaneBlockRows(I64 b)
 {
@@ -362,7 +344,6 @@ I64 RegPaneBlockRows(I64 b)
     return 1 + (REGP_CSR_MAX + csr_per - 1) / csr_per;
   return 1 + (REGP_FREGS + per - 1) / per;
 }
-
 // One block's DolDoc source, appended to the pane document.
 U0 RegPaneBlock(I64 b)
 {
@@ -374,8 +355,7 @@ U0 RegPaneBlock(I64 b)
     csr_per = 1;
   if (b == REGP_B_REGS) {
     if (regp_cols >= 40)
-      StrPrint(line, "$FG,%d$registers $FG,%d$red = just changed  n: more$FG$\n",
-               REGP_COL_HEAD, REGP_COL_ZERO);
+      StrPrint(line, "$FG,%d$registers $FG,%d$red = just changed  n: more$FG$\n", REGP_COL_HEAD, REGP_COL_ZERO);
     else
       StrPrint(line, "$FG,%d$registers$FG$\n", REGP_COL_HEAD);
     DocPutS(regp_doc, line);
@@ -418,11 +398,9 @@ U0 RegPaneBlock(I64 b)
   // path wrote that file until the C runtime learned to. The heading says which you are reading
   // — they are different machines otherwise. See docs/MACHINE_STATE_SURVEY.md.
   if (RegPaneFSrc())
-    StrPrint(line, "$FG,%d$float $FG,%d$(frozen at the trap, fcsr=%X)  n: more$FG$\n",
-             REGP_COL_HEAD, REGP_COL_ZERO, *(I64 *)(REGP_FSNAP_V + 8));
+    StrPrint(line, "$FG,%d$float $FG,%d$(frozen at the trap, fcsr=%X)  n: more$FG$\n", REGP_COL_HEAD, REGP_COL_ZERO, *(I64 *)(REGP_FSNAP_V + 8));
   else
-    StrPrint(line, "$FG,%d$float $FG,%d$(as last stepped)  n: more$FG$\n", REGP_COL_HEAD,
-             REGP_COL_ZERO);
+    StrPrint(line, "$FG,%d$float $FG,%d$(as last stepped)  n: more$FG$\n", REGP_COL_HEAD, REGP_COL_ZERO);
   DocPutS(regp_doc, line);
   while (n < REGP_FREGS) {
     now = *(I64 *)(REGP_FCTX + n * 8);
@@ -439,7 +417,6 @@ U0 RegPaneBlock(I64 b)
   if (col % per)
     DocPutS(regp_doc, "\n");
 }
-
 // RegPanePage -- Pane(n)
 // NAME
 //   RegPanePage - which block the pane starts at (0 registers, 1 machine state, 2 float)
@@ -453,7 +430,6 @@ public U0 RegPanePage(I64 n)
     n = 0;
   regp_page = n % REGP_BLOCKS;
 }
-
 // RegPaneNextPage -- the `n` key
 public U0 RegPaneNextPage()
 {
@@ -485,7 +461,6 @@ U0 RegPaneUpdate()
   regp_bytes = RVDocTextRender(regp_doc, regp_row, regp_col, regp_rows, regp_cols);
   regp_shown = 1;
 }
-
 // RegPaneMark -- RegPaneMark()
 // NAME
 //   RegPaneMark - latch which registers have changed since the last mark
@@ -525,7 +500,6 @@ public U0 RegPaneMark()
     n++;
   }
 }
-
 // RegPaneStep -- RegPaneStep()
 // NAME
 //   RegPaneStep - latch what moved and paint it; the watch hook
@@ -538,7 +512,6 @@ public U0 RegPaneStep()
   RegPaneMark;
   RegPaneUpdate;
 }
-
 // Fd -- Fd(n)
 // NAME
 //   Fd - a float register as a NUMBER, and as the bits that make it one
@@ -585,8 +558,7 @@ public U0 RegPaneFd(I64 n = -1)
     else if (exp == 0x7FF && !frac)
       "%sinf\n", sign ? "-" : "+";
     else if (exp == 0x7FF)
-      "%s (payload 0x%X)\n", (frac >> 51) & 1 ? "quiet NaN" : "signalling NaN",
-          frac & 0x7FFFFFFFFFFFF;
+      "%s (payload 0x%X)\n", (frac >> 51) & 1 ? "quiet NaN" : "signalling NaN", frac & 0x7FFFFFFFFFFFF;
     else
       "%f\n", d;
     "     sign=%d  exp=0x%03X ", sign, exp;
@@ -600,7 +572,6 @@ public U0 RegPaneFd(I64 n = -1)
     i++;
   }
 }
-
 // RegPaneCost -- RegPaneCost()
 // NAME
 //   RegPaneCost - bytes the last pane repaint put on the wire
@@ -610,5 +581,4 @@ I64 RegPaneCost()
 {
   return regp_bytes;
 }
-
 #endif

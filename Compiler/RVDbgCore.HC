@@ -10,7 +10,6 @@
 // legacy slots: 18 mcause, 19 mepc, 20 mtval, 21 mstatus
 #define DBG_SNAP_X 0x87000400
 // canonical x0..x31
-
 // Dr -- Dr()
 // NAME
 //   Dr - dump the frozen registers (stock TempleOS name)

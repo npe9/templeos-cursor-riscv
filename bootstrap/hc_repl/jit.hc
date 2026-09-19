@@ -765,10 +765,7 @@ U0 JitGenPrim()
     JitSkip();
     if (*jit_src == '*') {
       jit_src++;
-      if (JitIdent() && (JitSeq(jit_id, "U8") || JitSeq(jit_id, "U16") ||
-          JitSeq(jit_id, "U32") || JitSeq(jit_id, "U64") ||
-          JitSeq(jit_id, "I8") || JitSeq(jit_id, "I16") ||
-          JitSeq(jit_id, "I32") || JitSeq(jit_id, "I64"))) {
+      if (JitIdent() && (JitSeq(jit_id, "U8") || JitSeq(jit_id, "U16") || JitSeq(jit_id, "U32") || JitSeq(jit_id, "U64") || JitSeq(jit_id, "I8") || JitSeq(jit_id, "I16") || JitSeq(jit_id, "I32") || JitSeq(jit_id, "I64"))) {
         JitSkip();
         if (*jit_src == ')') {
           jit_src++;
@@ -1923,7 +1920,6 @@ I64 JitCallEntry(U8 *entry)
   return fp();
 }
 I64 JitTry(U8 *line);
-
 // The normal REPL entry compiles one top-level expression at a time.  Control
 // statements, however, are emitted by JitGenBlock and therefore need a frame;
 // a bare `for (...) statement;` otherwise falls through to the call parser and
@@ -1970,7 +1966,6 @@ I64 JitTryTopFor(U8 *line)
     jit_src++;
   return 1;
 }
-
 // fwd for Run
 I64 JitRunFile(U8 *name)
 {

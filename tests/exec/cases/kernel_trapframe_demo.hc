@@ -9,11 +9,9 @@
 #define TRAP_SNAP_FV 0x87000F00
 // [0] = "these floats belong to this trap", [1] = the fcsr it froze
 #define MEM_UART    0x10000000
-
 extern U0 RVTrapInit();
 extern I64 RVTrapRecoverArm();
 extern I64 RVTrapRecoverCause();
-
 U0 TfPutS(U8 *s)
 {
   U8 *uart = MEM_UART;
@@ -85,10 +83,7 @@ I64 main()
   // this trap rather than to whatever the asm stepper last left behind.
   TfField("fresh_f", *(I64 *)TRAP_SNAP_FV, 1);
   TfField("f10", *(I64 *)(TRAP_SNAP_F + 10 * 8), 0x5F);
-  bad = TfX(9) != 0x51 || TfX(18) != 0x52 || TfX(21) != 0x55 || TfX(27) != 0x5B ||
-        TfX(3) != 0x63 || TfX(4) != 0x64 || TfX(0) != 0 ||
-        *(I64 *)(TRAP_SNAP + 22 * 8) == 0 || *(I64 *)TRAP_SNAP_FV != 1 ||
-        *(I64 *)(TRAP_SNAP_F + 10 * 8) != 0x5F;
+  bad = TfX(9) != 0x51 || TfX(18) != 0x52 || TfX(21) != 0x55 || TfX(27) != 0x5B || TfX(3) != 0x63 || TfX(4) != 0x64 || TfX(0) != 0 || *(I64 *)(TRAP_SNAP + 22 * 8) == 0 || *(I64 *)TRAP_SNAP_FV != 1 || *(I64 *)(TRAP_SNAP_F + 10 * 8) != 0x5F;
   if (bad)
     TfPutS("trapframe: FAIL\n");
   else

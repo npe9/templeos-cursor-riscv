@@ -6,10 +6,8 @@
 // Kernel/RVDisasm.HC (formatter); AsmDocRaw here is the *documentation* table (mnemonic +
 // operand template + notes) - a different shape/consumer, not redundant. See
 // docs/STOCK_PARITY.md and the AsmList<->assembler drift test.
-
 #include "/bootstrap/seed/csr_decode.hc"
 // the CSR value decoders, shared with the seed image rather than forked here
-
 #define ASM_DOC_MN 32
 #define ASM_DOC_TPL 64
 #define ASM_DOC_ENC 8
@@ -41,7 +39,7 @@ I64 RVAsmDocMnEq(U8 *rec, U8 *mn)
   while (*m) {
     if (*r == '|' || *r == ';' || !*r)
       return 0;
-    if (!RVAsmDocChEq(*r, *m))
+    if (!RVAsmDocChEq (*r, *m))
       return 0;
     r++;
     m++;
@@ -97,13 +95,10 @@ U8 *RVAsmDocFindRec(U8 *mn)
   }
   return 0;
 }
-
 U8 g_rv_asm_doc_buf[ASM_DOC_NOTE];
 U8 g_rv_asm_doc_tpl[ASM_DOC_TPL];
-
 #define ASM_DOC_WHY 512
 U8 g_rv_asm_doc_note2[ASM_DOC_WHY];
-
 // Prose, broken at a space near the column limit. The motivation lines are sentences, not
 // fields, and a man page that runs them off the side of an 80-column terminal is not one.
 U0 RVAsmDocWrap(U8 *indent, U8 *text, I64 width)
@@ -138,7 +133,6 @@ U0 RVAsmDocPrintField(U8 *label, U8 *val)
     return;
   Print("%s%s\n", label, val);
 }
-
 // TRUE if `mn` is a branch/jump the guest asm{} assembler accepts with a NUMERIC
 // PC-relative offset (not a label). Keeps AsmDoc's hint in sync with Asm_RV.HC.
 // Examples and motivation, kept apart from the 244-entry catalog above: that one says what an
@@ -150,7 +144,6 @@ U0 RVAsmExRawInit()
 {
   rv_asm_ex_raw = "addi|addi a0, a0, 1           # a0 = a0 + 1|addi sp, sp, -32         # open a stack frame|addi a0, zero, 7         # what li a0,7 becomes|The workhorse of RISC-V. There is no separate increment, move or load-small-constant instruction: all three are addi with one operand tied to zero. A frame prologue is addi on sp, a move is addi rd,rs,0, and a small constant is addi rd,zero,imm.;add|add a2, a0, a1           # a2 = a0 + a1|add t0, t0, t1           # accumulate||Register-register add. Use addi when one side is a constant that fits in 12 bits - it saves materialising the constant first.;sub|sub a0, a0, a1           # a0 = a0 - a1|sub t0, zero, t0         # negate, which is what neg is||There is no subi: subtract a constant with addi and a negative immediate. That is why the immediate range is asymmetric in your favour at -2048.;li|li a0, 7                 # one addi|li a0, 0x12345678        # lui + addiw pair|li t0, -1                # all ones, one instruction|A pseudo-instruction, not hardware. It becomes addi for anything in -2048..2047 and lui+addiw beyond that, so the same line can cost one instruction or two. Check with u if the size matters.;mv|mv a1, a0                # a1 = a0|||addi rd,rs,0 wearing a friendlier name. Moving a register costs an add because the ISA has no move unit - that is the RISC bargain.;lui|lui a0, 0x10E00          # a0 = 0x10E00 << 12|||Loads a 20-bit immediate into the TOP of a register, leaving the low 12 bits zero for a following addi. Every large constant on RISC-V is this pair. Note the operand is the already-shifted field, not the final value.;auipc|auipc t0, 0              # t0 = address of this instruction|auipc t0, 0x1            # t0 = pc + 0x1000||The only way to learn where you are. RISC-V has no pc-relative addressing mode and cannot read pc directly, so position-independent code, call and every la of a nearby symbol start with auipc. It is also how a JIT finds its own tables.;andi|andi a0, a0, 0xFF        # keep the low byte|andi a0, a0, -16         # align down to 16||Masking. A negative immediate sign-extends to a run of ones, which is how you round an address DOWN to a power of two in one instruction.;slli|slli a0, a0, 3           # a0 = a0 * 8|slli t6, t6, 3           # build 0x87000000 from lui 0x10E00||Multiply by a power of two, and half of every index calculation: an I64 array element is slli 3 then add. It is also how a two-instruction constant is built when lui alone cannot reach.;srli|srli a0, a0, 12          # page number from an address|||Logical shift right - zeros come in at the top. For signed division by a power of two you want srai instead, or negative numbers round the wrong way.;srai|srai a0, a0, 2           # a0 / 4, rounding toward -inf|||Arithmetic shift right: the sign bit is replicated. Note this is NOT what C division does for negatives - C rounds toward zero, this rounds down - which is why the compiler emits extra instructions for signed division by a constant.;sltu|sltu t0, a0, a1          # t0 = a0 <u a1|sltu t0, zero, a0        # t0 = (a0 != 0), which is snez||Unsigned compare into a register. It is also how you get a carry flag on a machine that has no flags: after add a2,a0,a1, sltu t0,a2,a0 is 1 exactly when the add wrapped.;ld|ld a0, 0(t6)             # load a doubleword|ld a0, 16(sp)            # a local||The 12-bit signed offset is the whole addressing mode: no index register, no scaling. An index becomes slli+add first, which is why array loops on RISC-V keep a running pointer instead.;sd|sd a0, 0(t6)             # store a doubleword|sd ra, 8(sp)             # save the return address||Same addressing as ld. Note the operand order reads backwards from the load: the register being STORED comes first, the address second.;lbu|lbu a0, 0(a1)            # a byte, zero-extended|||Use lbu for bytes that are data (characters, flags) and lb for bytes that are small signed numbers - the difference is whether bit 7 spreads into the top 56 bits.;beq|beq a0, a1, same         # jump if equal|beq a0, zero, done       # which is beqz||RISC-V compares and branches in ONE instruction - there is no flags register to set first. The comparison is part of the branch, which is why there are six of them.;bltu|bltu a0, a1, less        # unsigned less-than|bgeu a0, t0, oob         # bounds check in one instruction||The unsigned compare is the bounds check: bgeu index,limit,fail catches both too-big and negative in one go, because a negative index is a huge unsigned number.;jal|jal ra, target           # call, saving the return address|jal zero, target         # plain jump, which is j||One instruction for both call and jump: the difference is only which register the return address lands in, and zero discards it. That is the whole of RISC-V control flow - there is no separate call or jmp.;jalr|jalr zero, 0(ra)         # return, which is ret|jalr ra, 0(t0)           # indirect call||The indirect half of jal. Returning is jumping to ra and discarding the new return address, which is why ret is a pseudo-instruction for exactly this.;ret|ret                      # jalr zero, 0(ra)|||Not a real instruction. Knowing it is jalr on ra explains why a leaf function need not touch the stack at all, and why clobbering ra loses your way home.;call|call Foo                 # auipc + jalr|||A PC-relative call assembled as a pair, so it reaches +/-2 GiB without a fixed address anywhere in the encoding. That is what makes RISC-V code position-independent by default.;csrr|csrr a0, mcause          # why did I trap|csrr a0, 0x003           # fcsr, by number||The CSR number is an IMMEDIATE in the encoding, not an operand, so there is no such thing as reading a CSR whose number is in a register. Any by-number reader is a switch or self-modifying code - see docs/MACHINE_STATE_SURVEY.md.;csrw|csrw mtvec, t0           # install a trap vector|||Writing a CSR is how you configure the machine: the trap vector, the interrupt enables, the timer comparand. Note csrw discards the old value - use csrrw if you want it back.;csrrs|csrrs a0, mstatus, t0    # set bits, keep the rest|||Read-modify-write in one atomic instruction. csrs/csrc with a register are how you flip individual mstatus bits without a read-modify-write race against a trap that fires in between.;ecall|ecall                    # trap to the handler|||A deliberate trap - the system call. In this port it lands in the same handler a fault does, which is why the debugger sees both through one freeze.;ebreak|ebreak                   # breakpoint|||What a debugger writes over an instruction to stop there. Bp/BpClr in this REPL do exactly that, and the trap handler then tells you where you are.;mul|mul a0, a0, a1           # low 64 bits|||M extension. mul gives the low half and mulh the high half, so a full 128-bit product is two instructions - the pair is how the rv32 lifter builds 64-bit arithmetic.;div|div a0, a0, a1           # signed|||Division does not trap on RISC-V: divide by zero gives all-ones and overflow gives the dividend. Check the divisor yourself if you care - the hardware will not.;fence|fence rw, rw             # order loads and stores|fence                    # the full barrier||Memory ordering. RISC-V is weakly ordered: without a fence another hart can observe your stores in a different order. Device drivers need one between filling a descriptor and ringing a doorbell.;lr.d|lr.d t0, (a0)            # load-reserved|||Half of the atomic pair. lr.d takes a reservation and sc.d only succeeds if nothing touched the line in between - that is a compare-and-swap loop without a lock prefix.;amoadd.d|amoadd.d t0, t1, (a0)    # atomic add, old value in t0|||One instruction where the lr/sc pair would be a loop. Use the AMOs for counters and flags and keep lr/sc for the cases that actually need a read-modify-write of your own shape.;fmv.d.x|fmv.d.x fa0, t0          # bits into a float register|||Moves RAW BITS, no conversion: 4 in t0 becomes the double whose encoding is 4, a subnormal near zero - not 4.0. Use fcvt.d.l to convert a number. This is the instruction for building a float from a hex pattern, which is how you make an infinity or a NaN by hand.;fcvt.d.l|fcvt.d.l fa0, a0         # (double)(I64)a0|||The conversion fmv.d.x is not. Rounding is by the current rounding mode unless you name one - fcvt.d.l fa0,a0,rtz.;fadd.d|fadd.d fa0, fa1, fa2     # double add|||Sets the sticky flags in fcsr rather than trapping, so an overflow is something you find out about by reading fcsr afterwards - Csr('fcsr') in this REPL.;nop|nop                      # addi zero, zero, 0|||An addi that writes x0, which discards it. Padding, alignment, and something to patch over later.;wfi|wfi                      # stop until an interrupt|||An idle loop that does not burn the machine. It is a hint - a hart is allowed to treat it as a nop - so never rely on it for timing.;addiw|addiw a0, a0, 1          # 32-bit add, sign-extended to 64|||RV64 keeps 32-bit values SIGN-EXTENDED in 64-bit registers. That is why there is a whole word-width family: addw and friends redo the arithmetic in 32 bits and re-extend, so an int stays an int.;addw|addw a0, a0, a1          # (I32)a0 + (I32)a1|||Use the w forms when the language says 32-bit. add on two sign-extended values can overflow into the upper half and stop being a valid sign-extension, which is the bug that makes an int suddenly enormous.;sllw|sllw a0, a0, a1          # 32-bit shift left|||Shifts in the word family use only the low FIVE bits of the shift amount, where the 64-bit ones use six. Shifting a 32-bit value by 32 is therefore a no-op here, not a zero.;mulw|mulw a0, a0, a1          # low 32 bits of the product, sign-extended|||The 32-bit multiply, for when the result must stay an int. mul then addiw is not the same thing - this rounds the result into 32 bits before extending.;lw|lw a0, 0(a1)             # 32 bits, sign-extended|||lw SIGN-extends and lwu zero-extends. Reading a U32 field with lw is the classic way to get a huge negative number out of a perfectly good unsigned value.;sw|sw a0, 0(a1)             # store the low 32 bits|||Stores never extend - they take the bottom bits and write them. Only loads have to decide what the upper half means.;lh|lh a0, 0(a1)             # 16 bits, sign-extended|||Halfword loads must be 2-byte aligned on hardware that does not implement misaligned access. QEMU is forgiving. Real boards are often not.;bge|bge a0, a1, ge           # signed >=|bgez a0, pos            # bge a0, zero, pos||There is no bgt: swap the operands and use blt. The assembler will not do it for you here, which is worth knowing before you go looking for the instruction that does not exist.;bnez|bnez a0, loop            # bne a0, zero, loop|||Comparing against zero is free because x0 is always zero - that is what the register is FOR. Half the pseudo-instructions in RISC-V are an operation with x0 in one slot.;j|j done                   # jal zero, done|||An unconditional jump is a call whose return address goes to x0 and vanishes. Range is +/-1 MiB - beyond that you need auipc and jalr, which is what call does.;jr|jr t0                    # jalr zero, 0(t0)|||Jump to a computed address: the tail of a jump table, a function pointer, or a return to somewhere other than ra.;csrs|csrs mstatus, t0         # set the bits t0 has|||Set-bits without a read-modify-write race. The hardware does it atomically, which matters because the thing you are usually setting is an interrupt enable and an interrupt can arrive between your load and your store.;csrc|csrc mie, t0             # clear the bits t0 has|||The other half of csrs. Together they are how you flip one bit of a CSR without disturbing the rest - and without the read-modify-write window.;csrrw|csrrw t0, mscratch, t1   # swap: t0 gets the old, mscratch gets t1|||An atomic exchange with a CSR. This is the trap handler idiom: swap your scratch register with mscratch on entry and swap it back on exit, and you have a spare register without touching memory.;rdtime|rdtime a0                # csrr a0, time|||The wall-clock counter, readable from any privilege level if mcounteren allows it. On this port it is the CLINT mtime shadow - see MemMap.;sc.d|sc.d t0, t1, (a0)        # t0 = 0 if the store happened|||The other half of lr.d, and the reason the pair is a LOOP: sc can fail spuriously, so you branch back and try again. A single sc that you do not retry is a bug waiting for contention.;amoand.d|amoand.d t0, t1, (a0)    # atomic AND, old value in t0|||Clearing a flag in shared state without a lock. The old value comes back, so you also learn whether you were the one who cleared it.;amoor.d|amoor.d t0, t1, (a0)     # atomic OR, old value in t0|||Setting a flag in shared state. With the old value returned, this is a test-and-set: you set the bit and find out whether it was already set, in one instruction.;fsub.d|fsub.d fa0, fa1, fa2     # double subtract|||Floating-point subtraction is not the inverse of addition in general - a - b can be exact where a + (-b) rounds. For debugging, the fact that fsub of two equal values gives +0 (never -0, except -0 - +0) is occasionally the clue you need.;fmul.d|fmul.d fa0, fa1, fa2     # double multiply|||One rounding, at the end. Use fmadd.d when you want a multiply and an add with only ONE rounding between them - it is both faster and more accurate, which is rare.;fdiv.d|fdiv.d fa0, fa1, fa2     # double divide|||Much slower than multiply on most hardware. Dividing by a constant is usually better done as a multiply by its reciprocal, but only when you can accept the extra rounding.;fsqrt.d|fsqrt.d fa0, fa1         # double square root|||Correctly rounded, unlike the reciprocal-square-root tricks it replaced. If a result differs from another platform in the last bit, it is usually not sqrt - it is the operations around it.;feq.d|feq.d a0, fa1, fa2       # a0 = (fa1 == fa2)|||Quiet comparison: NaN gives 0 and raises no invalid flag. flt.d and fle.d are SIGNALLING - they set the invalid flag on NaN. That distinction is the whole reason there are three of them.;fclass.d|fclass.d a0, fa1         # a bit per class|||Ask what a float IS without branching on comparisons: infinity, NaN, subnormal, zero, and the sign of each. It is the instruction to reach for when a value is misbehaving and you do not want a comparison to mislead you.;fmv.x.d|fmv.x.d a0, fa1          # raw bits out|||The inverse of fmv.d.x, and the way to look at a float as an encoding - which is what the pane shows and what Fd(n) decodes.;fcvt.l.d|fcvt.l.d a0, fa1         # (I64)fa1, current rounding|fcvt.l.d a0, fa1, rtz    # toward zero, which is what C wants||C truncates toward zero and the default rounding mode is nearest-even, so a plain conversion does NOT match a C cast. That mismatch is worth remembering the first time a compiled program disagrees with a hand-written one.;fld|fld fa0, 0(a1)           # load a double|||Loads and stores of floats have their own instructions and their own registers - an ld into a GPR then fmv.d.x is two instructions and a pointless trip through the integer file.;c.mv|c.mv a0, a1              # 2 bytes instead of 4|||The compressed set is not a different ISA - each one maps to a full-size instruction. They exist because instruction FETCH is a bottleneck, and half the instructions in real code are moves, adds of small constants and stack traffic.;c.addi4spn|c.addi4spn a0, sp, 16    # a0 = sp + 16|||Compressed instructions have tiny, irregular operand fields - this one only reaches registers x8-x15 and multiples of 4. That irregularity is the price of two bytes, and the reason the assembler rejects operands that look reasonable.;c.sdsp|c.sdsp ra, 8(sp)         # save ra in 2 bytes|||Function prologues are mostly sp-relative stores, so the compressed set has forms specifically for them. That is why real code is denser than a naive count of instructions suggests.;mret|mret                     # return from a machine trap|||Restores the privilege and interrupt-enable that mstatus remembers, and jumps to mepc. Editing mepc before mret is how a debugger resumes somewhere else - which is exactly what G does in this REPL.;sfence.vma|sfence.vma               # flush the whole TLB|sfence.vma a0, a1        # one address, one ASID||After changing a page table you must tell the hardware, because the TLB is allowed to hold stale translations indefinitely. Forgetting this produces a fault that makes no sense against the table you are reading.;fence.i|fence.i                  # make written instructions visible|||Self-modifying code and JITs need this: the instruction fetch path does not see your data stores until you say so. The guest JIT in this port has to issue it after writing code.;not|not a0, a0               # xori a0, a0, -1|||Another pseudo-instruction that is an operation with a constant: -1 is all ones, and xor with all ones is complement.;seqz|seqz a0, a0              # sltiu a0, a0, 1|||Unsigned less-than-one is only true for zero, which is how a comparison against zero becomes a boolean without a branch.;lwu|lwu a0, 0(a1)            # 32 bits, zero-extended|||The unsigned half of lw, and RV64-only: on RV32 a word IS the register, so there is nothing to extend.;";
 }
-
 // The record for `mn` in the examples table, or 0.
 U8 *RVAsmExFindRec(U8 *mn)
 {
@@ -175,10 +168,7 @@ I64 RVAsmIsGuestBranch(U8 *mn)
 {
   if (!mn)
     return FALSE;
-  if (!StrICmp(mn, "beq") || !StrICmp(mn, "bne") || !StrICmp(mn, "blt") ||
-      !StrICmp(mn, "bge") || !StrICmp(mn, "bltu") || !StrICmp(mn, "bgeu") ||
-      !StrICmp(mn, "beqz") || !StrICmp(mn, "bnez") || !StrICmp(mn, "jal") ||
-      !StrICmp(mn, "jr"))
+  if (!StrICmp(mn, "beq") || !StrICmp(mn, "bne") || !StrICmp(mn, "blt") || !StrICmp(mn, "bge") || !StrICmp(mn, "bltu") || !StrICmp(mn, "bgeu") || !StrICmp(mn, "beqz") || !StrICmp(mn, "bnez") || !StrICmp(mn, "jal") || !StrICmp(mn, "jr"))
     return TRUE;
   return FALSE;
 }
@@ -268,7 +258,6 @@ public U0 AsmDoc(U8 *mn)
     }
   }
 }
-
 // AsmComplete -- AsmComplete(word, out, max)
 // NAME
 //   AsmComplete - complete a mnemonic from the documented catalog
@@ -339,7 +328,6 @@ public I64 AsmComplete(U8 *word, U8 *out, I64 max)
     Print("\n");
   return 2;
 }
-
 // ---- instruction classes: something to practise --------------------------------------------
 //
 // AsmList prints all 244 at once, which is a reference, not a way to learn. These are the
@@ -350,7 +338,6 @@ U0 RVAsmClassRawInit()
 {
   rv_asm_class_raw = "arith|add addi sub addiw addw subw lui auipc li mv neg;logic|and andi or ori xor xori not;shift|sll slli srl srli sra srai sllw slliw srlw srliw sraw sraiw;compare|slt slti sltu sltiu seqz snez;muldiv|mul mulh mulhu mulhsu div divu rem remu mulw divw divuw remw remuw;load|ld lw lwu lh lhu lb lbu;store|sd sw sh sb;branch|beq bne blt bge bltu bgeu beqz bnez;jump|j jal jalr jr ret call;csr|csrr csrw csrs csrc csrrw csrrs csrrc csrrwi csrrsi csrrci csrwi csrsi csrci rdtime;atomic|lr.d sc.d amoswap.d amoadd.d amoand.d amoor.d amoxor.d amomin.d amomax.d;float|fadd.d fsub.d fmul.d fdiv.d fsqrt.d fmin.d fmax.d feq.d flt.d fle.d fmv.d.x fmv.x.d fcvt.d.l fcvt.l.d fld fsd fclass.d;rvc|c.nop c.mv c.add c.li c.addi c.slli c.j c.beqz c.bnez c.ld c.sd c.lw c.sw c.addi4spn c.addi16sp;system|ecall ebreak mret sret wfi fence fence.i sfence.vma nop;";
 }
-
 // The mnemonic list for a class, or 0. Records are "class|mn mn mn".
 U8 *RVAsmClassFind(U8 *name)
 {
@@ -375,7 +362,6 @@ U8 *RVAsmClassFind(U8 *name)
   }
   return 0;
 }
-
 // The i-th mnemonic of a class into `out`, or FALSE when the class runs out.
 I64 RVAsmClassNth(U8 *cls, I64 i, U8 *out, I64 max)
 {
@@ -399,7 +385,6 @@ I64 RVAsmClassNth(U8 *cls, I64 i, U8 *out, I64 max)
   }
   return FALSE;
 }
-
 // AsmClasses -- AsmClasses()
 // NAME
 //   AsmClasses - the instruction families you can work through
@@ -435,7 +420,6 @@ public U0 AsmClasses()
       p++;
   }
 }
-
 // AsmClass -- AsmClass("branch")
 // NAME
 //   AsmClass - the instructions in one family, with what each one looks like
@@ -509,12 +493,10 @@ public U0 MemMap()
   Print("RISC-V memory map (QEMU virt):\n");
   Print("  0x%08X  SiFive test finisher\n", CONFIG_SIFIVE_TEST_BASE);
 #ifdef CONFIG_HAS_CLINT
-  Print("  0x%08X  CLINT (mtime +0x%X, mtimecmp +0x%X)\n", CONFIG_CLINT_BASE,
-    CONFIG_CLINT_MTIME_OFF, CONFIG_CLINT_MTIMECMP_OFF);
+  Print("  0x%08X  CLINT (mtime +0x%X, mtimecmp +0x%X)\n", CONFIG_CLINT_BASE, CONFIG_CLINT_MTIME_OFF, CONFIG_CLINT_MTIMECMP_OFF);
 #endif
 #ifdef CONFIG_HAS_PLIC
-  Print("  0x%08X  PLIC (enable +0x%X, threshold +0x%X)\n", CONFIG_PLIC_BASE,
-    CONFIG_PLIC_ENABLE_OFF, CONFIG_PLIC_THRESHOLD_OFF);
+  Print("  0x%08X  PLIC (enable +0x%X, threshold +0x%X)\n", CONFIG_PLIC_BASE, CONFIG_PLIC_ENABLE_OFF, CONFIG_PLIC_THRESHOLD_OFF);
 #endif
   Print("  0x%08X  UART 16550 (irq %d)\n", CONFIG_UART_BASE, CONFIG_UART_IRQ);
   Print("  0x%08X  DRAM base (%d MiB)\n", CONFIG_DRAM_BASE, CONFIG_DRAM_SIZE >> 20);
@@ -528,7 +510,6 @@ public U0 MemMap()
   Print("    0x%08X  stack base\n", CONFIG_STACK_BASE);
   Print("  0x%08X  DRAM top\n", CONFIG_DRAM_BASE + CONFIG_DRAM_SIZE);
 }
-
 // The CSR decoders live in bootstrap/seed/csr_decode.hc now — one copy, shared with the seed
 // image, included at the top of this file. The fork that used to sit here knew fewer mstatus
 // fields than the seed's copy and decoded no satp at all, which is what two copies do.
@@ -538,28 +519,48 @@ U8 *McauseCauseName(I64 v)
   intr = (v >> 63) & 1;
   code = v & 0x7FFFFFFFFFFFFFFF;
   if (intr) {
-    if (code == 1)  return "supervisor soft interrupt";
-    if (code == 3)  return "machine soft interrupt";
-    if (code == 5)  return "supervisor timer interrupt";
-    if (code == 7)  return "machine timer interrupt";
-    if (code == 9)  return "supervisor external interrupt";
-    if (code == 11) return "machine external interrupt";
+    if (code == 1)
+      return "supervisor soft interrupt";
+    if (code == 3)
+      return "machine soft interrupt";
+    if (code == 5)
+      return "supervisor timer interrupt";
+    if (code == 7)
+      return "machine timer interrupt";
+    if (code == 9)
+      return "supervisor external interrupt";
+    if (code == 11)
+      return "machine external interrupt";
     return "interrupt";
   }
-  if (code == 0)  return "insn address misaligned";
-  if (code == 1)  return "insn access fault";
-  if (code == 2)  return "illegal instruction";
-  if (code == 3)  return "breakpoint";
-  if (code == 4)  return "load address misaligned";
-  if (code == 5)  return "load access fault";
-  if (code == 6)  return "store address misaligned";
-  if (code == 7)  return "store access fault";
-  if (code == 8)  return "ecall from U-mode";
-  if (code == 9)  return "ecall from S-mode";
-  if (code == 11) return "ecall from M-mode";
-  if (code == 12) return "insn page fault";
-  if (code == 13) return "load page fault";
-  if (code == 15) return "store page fault";
+  if (code == 0)
+    return "insn address misaligned";
+  if (code == 1)
+    return "insn access fault";
+  if (code == 2)
+    return "illegal instruction";
+  if (code == 3)
+    return "breakpoint";
+  if (code == 4)
+    return "load address misaligned";
+  if (code == 5)
+    return "load access fault";
+  if (code == 6)
+    return "store address misaligned";
+  if (code == 7)
+    return "store access fault";
+  if (code == 8)
+    return "ecall from U-mode";
+  if (code == 9)
+    return "ecall from S-mode";
+  if (code == 11)
+    return "ecall from M-mode";
+  if (code == 12)
+    return "insn page fault";
+  if (code == 13)
+    return "load page fault";
+  if (code == 15)
+    return "store page fault";
   return "exception";
 }
 
@@ -602,34 +603,94 @@ public U0 Csr(U8 *name)
     Print("csr 0x%X = 0x%X\n", v, CsrNum(v));
     return;
   }
-  if (!StrICmp(name, "mstatus"))      { v = RVWinCsrrMstatus();    Print("mstatus=0x%X\n", v);    CsrDecodeMstatus(v); }
-  else if (!StrICmp(name, "mie"))     { v = RVWinCsrrMie();        Print("mie=0x%X\n", v);        CsrDecodeMie(v); }
-  else if (!StrICmp(name, "mip"))     { v = RVWinCsrrMip();        Print("mip=0x%X\n", v);        CsrDecodeMip(v); }
-  else if (!StrICmp(name, "mtvec"))   { v = RVWinCsrrMtvec();      Print("mtvec=0x%X\n", v);      CsrDecodeMtvec(v); }
-  else if (!StrICmp(name, "mepc"))    { v = RVWinCsrrMepc();       Print("mepc=0x%X\n", v); }
-  else if (!StrICmp(name, "mcause"))  { Mcause; }
-  else if (!StrICmp(name, "mtval"))   { v = RVWinCsrrMtval();      Print("mtval=0x%X\n", v); }
-  else if (!StrICmp(name, "mscratch")){ v = RVWinCsrrMscratch();   Print("mscratch=0x%X\n", v); }
-  else if (!StrICmp(name, "misa"))    { v = RVWinCsrrMisa();       Print("misa=0x%X\n", v);       CsrDecodeMisa(v); }
-  else if (!StrICmp(name, "mhartid")) { v = RVWinCsrrMhartid();    Print("mhartid=0x%X\n", v); }
-  else if (!StrICmp(name, "medeleg")) { v = RVWinCsrrMedeleg();    Print("medeleg=0x%X\n", v);    CsrDecodeDeleg(v, FALSE); }
-  else if (!StrICmp(name, "mideleg")) { v = RVWinCsrrMideleg();    Print("mideleg=0x%X\n", v);    CsrDecodeDeleg(v, TRUE); }
-  else if (!StrICmp(name, "mcounteren")){ v = RVWinCsrrMcounteren(); Print("mcounteren=0x%X\n", v); CsrDecodeCounteren(v); }
-  else if (!StrICmp(name, "mcycle"))  { v = RVWinCsrrMcycle();     Print("mcycle=%d\n", v); }
-  else if (!StrICmp(name, "minstret")){ v = RVWinCsrrMinstret();   Print("minstret=%d\n", v); }
-  else if (!StrICmp(name, "fcsr"))    { v = RVWinCsrrFcsr();       Print("fcsr=0x%X\n", v);       CsrDecodeFcsr(v); }
-  else if (!StrICmp(name, "sstatus")) { v = RVWinCsrrSstatus();    Print("sstatus=0x%X\n", v);    CsrDecodeMstatus(v); }
-  else if (!StrICmp(name, "sie"))     { v = RVWinCsrrSie();        Print("sie=0x%X\n", v);        CsrDecodeMie(v); }
-  else if (!StrICmp(name, "sip"))     { v = RVWinCsrrSip();        Print("sip=0x%X\n", v);        CsrDecodeMip(v); }
-  else if (!StrICmp(name, "stvec"))   { v = RVWinCsrrStvec();      Print("stvec=0x%X\n", v);      CsrDecodeMtvec(v); }
-  else if (!StrICmp(name, "sepc"))    { v = RVWinCsrrSepc();       Print("sepc=0x%X\n", v); }
-  else if (!StrICmp(name, "scause"))  { v = RVWinCsrrScause();     Print("scause=0x%X\n", v); }
-  else if (!StrICmp(name, "stval"))   { v = RVWinCsrrStval();      Print("stval=0x%X\n", v); }
-  else if (!StrICmp(name, "satp"))    { v = RVWinCsrrSatp();       Print("satp=0x%X\n", v);       CsrDecodeSatp(v); }
-  else
+  if (!StrICmp(name, "mstatus")) {
+    v = RVWinCsrrMstatus();
+    Print("mstatus=0x%X\n", v);
+    CsrDecodeMstatus(v);
+  } else if (!StrICmp(name, "mie")) {
+    v = RVWinCsrrMie();
+    Print("mie=0x%X\n", v);
+    CsrDecodeMie(v);
+  } else if (!StrICmp(name, "mip")) {
+    v = RVWinCsrrMip();
+    Print("mip=0x%X\n", v);
+    CsrDecodeMip(v);
+  } else if (!StrICmp(name, "mtvec")) {
+    v = RVWinCsrrMtvec();
+    Print("mtvec=0x%X\n", v);
+    CsrDecodeMtvec(v);
+  } else if (!StrICmp(name, "mepc")) {
+    v = RVWinCsrrMepc();
+    Print("mepc=0x%X\n", v);
+  } else if (!StrICmp(name, "mcause")) {
+    Mcause;
+  } else if (!StrICmp(name, "mtval")) {
+    v = RVWinCsrrMtval();
+    Print("mtval=0x%X\n", v);
+  } else if (!StrICmp(name, "mscratch")) {
+    v = RVWinCsrrMscratch();
+    Print("mscratch=0x%X\n", v);
+  } else if (!StrICmp(name, "misa")) {
+    v = RVWinCsrrMisa();
+    Print("misa=0x%X\n", v);
+    CsrDecodeMisa(v);
+  } else if (!StrICmp(name, "mhartid")) {
+    v = RVWinCsrrMhartid();
+    Print("mhartid=0x%X\n", v);
+  } else if (!StrICmp(name, "medeleg")) {
+    v = RVWinCsrrMedeleg();
+    Print("medeleg=0x%X\n", v);
+    CsrDecodeDeleg(v, FALSE);
+  } else if (!StrICmp(name, "mideleg")) {
+    v = RVWinCsrrMideleg();
+    Print("mideleg=0x%X\n", v);
+    CsrDecodeDeleg(v, TRUE);
+  } else if (!StrICmp(name, "mcounteren")) {
+    v = RVWinCsrrMcounteren();
+    Print("mcounteren=0x%X\n", v);
+    CsrDecodeCounteren(v);
+  } else if (!StrICmp(name, "mcycle")) {
+    v = RVWinCsrrMcycle();
+    Print("mcycle=%d\n", v);
+  } else if (!StrICmp(name, "minstret")) {
+    v = RVWinCsrrMinstret();
+    Print("minstret=%d\n", v);
+  } else if (!StrICmp(name, "fcsr")) {
+    v = RVWinCsrrFcsr();
+    Print("fcsr=0x%X\n", v);
+    CsrDecodeFcsr(v);
+  } else if (!StrICmp(name, "sstatus")) {
+    v = RVWinCsrrSstatus();
+    Print("sstatus=0x%X\n", v);
+    CsrDecodeMstatus(v);
+  } else if (!StrICmp(name, "sie")) {
+    v = RVWinCsrrSie();
+    Print("sie=0x%X\n", v);
+    CsrDecodeMie(v);
+  } else if (!StrICmp(name, "sip")) {
+    v = RVWinCsrrSip();
+    Print("sip=0x%X\n", v);
+    CsrDecodeMip(v);
+  } else if (!StrICmp(name, "stvec")) {
+    v = RVWinCsrrStvec();
+    Print("stvec=0x%X\n", v);
+    CsrDecodeMtvec(v);
+  } else if (!StrICmp(name, "sepc")) {
+    v = RVWinCsrrSepc();
+    Print("sepc=0x%X\n", v);
+  } else if (!StrICmp(name, "scause")) {
+    v = RVWinCsrrScause();
+    Print("scause=0x%X\n", v);
+  } else if (!StrICmp(name, "stval")) {
+    v = RVWinCsrrStval();
+    Print("stval=0x%X\n", v);
+  } else if (!StrICmp(name, "satp")) {
+    v = RVWinCsrrSatp();
+    Print("satp=0x%X\n", v);
+    CsrDecodeSatp(v);
+  } else
     Print("Csr: unknown '%s' — Csr(); lists names\n", name);
 }
-
 // Plic -- Plic()
 // NAME
 //   Plic - the interrupt controller's state: what is enabled, what is pending, at what priority
@@ -650,8 +711,7 @@ public U0 Plic(I64 max_irq = 32)
   if (max_irq < 1 || max_irq > 1023)
     max_irq = 32;
   thresh = *(U32 *)(CONFIG_PLIC_BASE + CONFIG_PLIC_THRESHOLD_OFF);
-  Print("PLIC @ 0x%X  threshold=%d (an interrupt is delivered only above this)\n",
-        CONFIG_PLIC_BASE, thresh);
+  Print("PLIC @ 0x%X  threshold=%d (an interrupt is delivered only above this)\n", CONFIG_PLIC_BASE, thresh);
   pend = *(U32 *)(CONFIG_PLIC_BASE + 0x1000);
   en = *(U32 *)(CONFIG_PLIC_BASE + CONFIG_PLIC_ENABLE_OFF);
   Print("  pending=0x%08X  enabled=0x%08X  (sources 1..31)\n", pend, en);
@@ -659,15 +719,12 @@ public U0 Plic(I64 max_irq = 32)
   while (i < max_irq && i < 32) {
     pri = *(U32 *)(CONFIG_PLIC_BASE + i * 4);
     if (pri || (pend >> i) & 1 || (en >> i) & 1) {
-      Print("  irq %-3d priority=%-3d %s%s\n", i, pri,
-            (en >> i) & 1 ? "enabled " : "        ",
-            (pend >> i) & 1 ? "PENDING" : "");
+      Print("  irq %-3d priority=%-3d %s%s\n", i, pri, (en >> i) & 1 ? "enabled " : "        ", (pend >> i) & 1 ? "PENDING" : "");
     }
     i++;
   }
   Print("  (claim/complete not read: a read of claim acknowledges the interrupt)\n");
 }
-
 #ifdef CONFIG_HAS_PMP
 // One pmpaddr. The CSR number is an immediate, so there is no indexing a CSR — sixteen stubs and
 // a chain is what "read pmpaddr[i]" costs on this machine. See docs/MACHINE_STATE_SURVEY.md §2.
@@ -707,7 +764,6 @@ I64 RVPmpAddr(I64 i)
     return RVWinCsrrPmpaddr15();
   return 0;
 }
-
 // The A field: how the entry's address is interpreted.
 U8 *RVPmpModeName(I64 a)
 {
@@ -719,7 +775,6 @@ U8 *RVPmpModeName(I64 a)
     return "NA4";
   return "NAPOT";
 }
-
 // Pmp -- Pmp()
 // NAME
 //   Pmp - the physical memory protection entries, decoded
@@ -748,8 +803,7 @@ public U0 Pmp()
     if (a) {
       // No %-Nd here: HolyC's Print right-justifies it, so "pmp%-2d" reads "pmp 0" and the
       // column does not line up with anything anyway.
-      Print("  pmp%d %s%s%s %s", i, byte & 1 ? "r" : "-", byte & 2 ? "w" : "-",
-            byte & 4 ? "x" : "-", RVPmpModeName(a));
+      Print("  pmp%d %s%s%s %s", i, byte & 1 ? "r" : "-", byte & 2 ? "w" : "-", byte & 4 ? "x" : "-", RVPmpModeName(a));
       if (a == 1) {
         // TOR: [previous entry's address, this one)
         Print(" 0x%08X..0x%08X\n", prev << 2, addr << 2);
@@ -787,7 +841,6 @@ public U0 Pmp()
   Print("Pmp: built without PMP (CONFIG_HAS_PMP=n in templeos-riscv/Kconfig)\n");
 }
 #endif
-
 // ---- page tables ----------------------------------------------------------------------------
 //
 // satp says where the root table is and how many levels to walk; the rest is reading 8-byte
@@ -799,16 +852,13 @@ public U0 Pmp()
 // is a superpage — 2 MiB at level 1, 1 GiB at level 2.
 U0 PtePerms(I64 pte)
 {
-  Print("%s%s%s%s%s%s%s%s", pte & 1 ? "v" : "-", pte & 2 ? "r" : "-", pte & 4 ? "w" : "-",
-        pte & 8 ? "x" : "-", pte & 16 ? "u" : "-", pte & 32 ? "g" : "-", pte & 64 ? "a" : "-",
-        pte & 128 ? "d" : "-");
+  Print("%s%s%s%s%s%s%s%s", pte & 1 ? "v" : "-", pte & 2 ? "r" : "-", pte & 4 ? "w" : "-", pte & 8 ? "x" : "-", pte & 16 ? "u" : "-", pte & 32 ? "g" : "-", pte & 64 ? "a" : "-", pte & 128 ? "d" : "-");
 }
 
 I64 PtePpn(I64 pte)
 {
   return (pte >> 10) & 0xFFFFFFFFFFF;
 }
-
 // PgAt -- PgAt(root, levels, va)
 // NAME
 //   PgAt - walk a page table that is not necessarily the live one
@@ -855,7 +905,6 @@ public I64 PgAt(I64 root, I64 va, I64 levels = 3)
   Print("  ran out of levels without reaching a leaf: the table is malformed\n");
   return 0;
 }
-
 // Pg -- Pg(va)
 // NAME
 //   Pg - translate a virtual address the way the hardware would, and show the working
@@ -887,7 +936,6 @@ public I64 Pg(I64 va)
   Print("satp mode %d is not one this walker knows\n", mode);
   return 0;
 }
-
 // Pt -- Pt()
 // NAME
 //   Pt - what the root page table maps
@@ -927,7 +975,6 @@ public U0 Pt()
   if (!shown)
     Print("  no valid entries: nothing is mapped\n");
 }
-
 // PtDemo -- PtDemo()
 // NAME
 //   PtDemo - build a small Sv39 table and return its root, for walking
@@ -959,7 +1006,6 @@ public I64 PtDemo()
   // valid + rwx
   return root;
 }
-
 // PtWalk -- PtWalk()
 // NAME
 //   PtWalk - build the demonstration table and walk it, in one call
@@ -979,7 +1025,6 @@ public I64 PtWalk()
   Print("walking the demonstration table at 0x%X for virtual 0x40403024\n", root);
   return PgAt(root, 0x40403024, 3);
 }
-
 // ArgEcho -- ArgEcho(a, b, c)
 // NAME
 //   ArgEcho - say what arrived, to tell an argument bug from a call bug
@@ -997,7 +1042,6 @@ public I64 ArgOne()
 {
   return 0x1111;
 }
-
 // ---- reading a CSR by NUMBER ----------------------------------------------------------------
 //
 // A CSR number is an immediate inside the instruction, not an operand, so there is no such
@@ -1034,6 +1078,5 @@ public I64 CsrNum(I64 num)
 public U0 Uptime()
 {
   //Hart free-running counters (Zicntr): cycle, time (mtime tick), instret.
-  Print("cycle=%d  time=%d  instret=%d\n",
-    RVWinCsrrCycle(), RVWinCsrrTime(), RVWinCsrrInstret());
+  Print("cycle=%d  time=%d  instret=%d\n", RVWinCsrrCycle(), RVWinCsrrTime(), RVWinCsrrInstret());
 }

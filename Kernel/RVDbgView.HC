@@ -14,14 +14,12 @@
 #ifndef RV_DBG_VIEW_HC
 #define RV_DBG_VIEW_HC
 #help_index "Dbg"
-
 #define DBGV_SNAP 0x87000100
 // legacy freeze slots: 18 mcause, 19 mepc, 20 mtval, 21 mstatus
 #define DBGV_SNAP_X 0x87000400
 // canonical x0..x31
 #define DBGV_STATUS_ROW regp_rows
 // straight under the register pane, however many rows it is using
-
 CDoc *dbgv_doc, *dbgv_dis, *dbgv_mem;
 I64 dbgv_bytes, dbgv_dis_bytes, dbgv_mem_bytes, dbgv_in_trap, dbgv_primed;
 I64 dbgv_mem_row = -1, dbgv_mem_col = 40, dbgv_mem_rows = 10, dbgv_mem_cols = 40;
@@ -29,7 +27,6 @@ I64 dbgv_mem_row = -1, dbgv_mem_col = 40, dbgv_mem_rows = 10, dbgv_mem_cols = 40
 I64 dbgv_on_fault = 1;
 #define DBGV_WAIT_SEC 2
 // how long a fault waits for a human before giving up
-
 // --- capturing the disassembler -------------------------------------------------------------
 // DisasmOne PRINTS (a thousand lines of it); it has no buffer form. Rather than fork it, sit in
 // the StdOut chain AHEAD of the console and swallow what it emits while a capture is armed.
@@ -43,7 +40,6 @@ I64 dbgv_on_fault = 1;
 #define DBGV_CAP_PRI 1
 U8 *dbgv_cap;
 I64 dbgv_cap_len, dbgv_cap_max, dbgv_cap_on;
-
 U0 DbgVCapCh(I64 ch)
 {
   if (!dbgv_cap || dbgv_cap_len + 1 >= dbgv_cap_max)
@@ -56,7 +52,7 @@ Bool DbgVCapPutS(U8 *st)
   if (!dbgv_cap_on)
     return FALSE;
   while (st && *st) {
-    DbgVCapCh(*st);
+    DbgVCapCh (*st);
     st++;
   }
   return TRUE;
@@ -70,7 +66,6 @@ Bool DbgVCapPutKey(I64 ch, I64 sc)
   DbgVCapCh(ch);
   return TRUE;
 }
-
 // DbgViewInit -- DbgViewInit()
 // NAME
 //   DbgViewInit - register the capture sink Dbg uses to put disassembly in a document
@@ -92,7 +87,6 @@ I64 DbgVCapture(I64 addr, I64 n, U8 *out, I64 max)
   out[dbgv_cap_len] = 0;
   return dbgv_cap_len;
 }
-
 // Where a memory dump goes. With a layout up, dbgv_mem_* name the memory pane and the dump is
 // a tile. With no memory pane in the layout (dbgv_mem_row < 0) it is PRINTED instead, so it
 // scrolls with the session like any other output — better than a floating tile at coordinates
@@ -109,7 +103,6 @@ U0 DbgMemEmit(U8 *line)
   else
     "%s", line;
 }
-
 // Append captured text as document source, escaping '$' ('$$' is DolDoc's literal '$') and
 // breaking it into lines. Shared by the disassembly and memory tiles.
 U0 DbgVPutEscaped(CDoc *doc, U8 *text)
@@ -139,7 +132,6 @@ U0 DbgVPutEscaped(CDoc *doc, U8 *text)
     DocPutS(doc, "\n");
   }
 }
-
 // Disassembly around a PC, as a rendered document. Captures U()'s output, escapes '$' so
 // DolDoc does not read the text as commands, and paints it under the status pane.
 U0 DbgDisasmPane(I64 pc)
@@ -162,7 +154,6 @@ U0 DbgDisasmPane(I64 pc)
   n = DBGV_STATUS_ROW + 6;
   dbgv_dis_bytes = RVDocTextRender(dbgv_dis, n, 0, 10, 80);
 }
-
 // Dbg -- Dbg()
 // NAME
 //   Dbg - enter the debugger view: registers + the decoded fault, then back to the prompt
@@ -195,22 +186,18 @@ public U0 Dbg()
   DocClear(dbgv_doc);
   StrPrint(line, "$FG,4$%s$FG$\n", RVWinMcauseName(cause));
   DocPutS(dbgv_doc, line);
-  StrPrint(line, "mepc=%016X  mtval=%016X\n", *(I64 *)(DBGV_SNAP + 19 * 8),
-           *(I64 *)(DBGV_SNAP + 20 * 8));
+  StrPrint(line, "mepc=%016X  mtval=%016X\n", *(I64 *)(DBGV_SNAP + 19 * 8), *(I64 *)(DBGV_SNAP + 20 * 8));
   DocPutS(dbgv_doc, line);
-  StrPrint(line, "ra  =%016X  sp   =%016X\n", *(I64 *)(DBGV_SNAP_X + 1 * 8),
-           *(I64 *)(DBGV_SNAP_X + 2 * 8));
+  StrPrint(line, "ra  =%016X  sp   =%016X\n", *(I64 *)(DBGV_SNAP_X + 1 * 8), *(I64 *)(DBGV_SNAP_X + 2 * 8));
   DocPutS(dbgv_doc, line);
-  StrPrint(line, "mstatus=%016X  from %s\n", *(I64 *)(DBGV_SNAP + 21 * 8),
-           CsrPrivName((*(I64 *)(DBGV_SNAP + 21 * 8) >> 11) & 3));
+  StrPrint(line, "mstatus=%016X  from %s\n", *(I64 *)(DBGV_SNAP + 21 * 8), CsrPrivName ((*(I64 *)(DBGV_SNAP + 21 * 8) >> 11) & 3));
   // MPP is the privilege the trap came FROM — the one thing about the stopped machine that is
   // in no register of its own, and that nothing in the tree used to materialise.
   DocPutS(dbgv_doc, line);
   DocPutS(dbgv_doc, "$FG,7$Dr  U(_PC-16)  _A0  AsmStep(\"...\")  Bp(addr)$FG$\n");
   dbgv_bytes = RVDocTextRender(dbgv_doc, DBGV_STATUS_ROW, 0, 6, 80);
-  DbgDisasmPane(*(I64 *)(DBGV_SNAP + 19 * 8));
+  DbgDisasmPane (*(I64 *)(DBGV_SNAP + 19 * 8));
 }
-
 // Memory as a document, using the same StdOut capture as the disassembly tile.
 U0 DbgMemPane(I64 addr, I64 n)
 {
@@ -236,10 +223,8 @@ U0 DbgMemPane(I64 addr, I64 n)
   DbgVPutEscaped(dbgv_mem, cap);
   Free(cap);
   if (DbgMemIsTile())
-    dbgv_mem_bytes = RVDocTextRender(dbgv_mem, dbgv_mem_row, dbgv_mem_col, dbgv_mem_rows,
-                                     dbgv_mem_cols);
+    dbgv_mem_bytes = RVDocTextRender(dbgv_mem, dbgv_mem_row, dbgv_mem_col, dbgv_mem_rows, dbgv_mem_cols);
 }
-
 // D -- D(addr, n)
 // NAME
 //   D - hex dump numbered from zero (stock TempleOS name)
@@ -281,10 +266,8 @@ public U0 DbgD(I64 addr, I64 n = 64)
     i += 16;
   }
   if (DbgMemIsTile())
-    dbgv_mem_bytes = RVDocTextRender(dbgv_mem, dbgv_mem_row, dbgv_mem_col, dbgv_mem_rows,
-                                     dbgv_mem_cols);
+    dbgv_mem_bytes = RVDocTextRender(dbgv_mem, dbgv_mem_row, dbgv_mem_col, dbgv_mem_rows, dbgv_mem_cols);
 }
-
 // Da -- Da(addr, n)
 // NAME
 //   Da - one-column address dump with symbol names (stock TempleOS name)
@@ -326,10 +309,8 @@ public U0 DbgDa(I64 addr, I64 n = 16)
     i++;
   }
   if (DbgMemIsTile())
-    dbgv_mem_bytes = RVDocTextRender(dbgv_mem, dbgv_mem_row, dbgv_mem_col, dbgv_mem_rows,
-                                     dbgv_mem_cols);
+    dbgv_mem_bytes = RVDocTextRender(dbgv_mem, dbgv_mem_row, dbgv_mem_col, dbgv_mem_rows, dbgv_mem_cols);
 }
-
 // Dm -- Dm(addr, n)
 // NAME
 //   Dm - dump memory into the debugger's memory tile (stock TempleOS name)
@@ -341,7 +322,6 @@ public U0 DbgDm(I64 addr, I64 n = 64)
 {
   DbgMemPane(addr, n);
 }
-
 // DbgMemAt -- DbgMemAt(addr, row, col, rows, cols)
 // NAME
 //   DbgMemAt - the memory pane, placed and sized by the caller
@@ -388,7 +368,6 @@ public U0 DbgMemAt(I64 addr, I64 row, I64 col, I64 rows, I64 cols)
   }
   dbgv_mem_bytes = RVDocTextRender(dbgv_mem, row, col, rows, cols);
 }
-
 // DbgViewPrime -- DbgViewPrime()
 // NAME
 //   DbgViewPrime - create the view's documents up front
@@ -408,12 +387,10 @@ public U0 DbgViewPrime()
     dbgv_mem = DocNew();
   dbgv_primed = 1;
 }
-
 // A clear wipes the panes along with everything else, and the layout has to come back up or the
 // prompt is left scrolling through rows the renderer still believes it owns. The image that owns
 // the layout installs it here; without one, Cls just clears, as it always did.
 I64 dbgv_relayout_fn;
-
 // DbgSetRelayout -- DbgSetRelayout(&AsmUiLayout)
 // NAME
 //   DbgSetRelayout - the function Cls calls to put the panes and the scroll region back
@@ -425,7 +402,6 @@ public U0 DbgSetRelayout(I64 fn)
 {
   dbgv_relayout_fn = fn;
 }
-
 // Cls -- Cls()
 // NAME
 //   Cls - clear the terminal (stock TempleOS name)
@@ -453,7 +429,6 @@ public U0 Cls()
     // top of its region
   }
 }
-
 // Machine -- Machine()
 // NAME
 //   Machine - the architectural state you stopped in, decoded
@@ -474,7 +449,7 @@ public U0 Machine()
   "mcause  =%016X  %s\n", s[18], McauseCauseName(s[18]);
   "mepc    =%016X\n", s[19];
   "mtval   =%016X\n", s[20];
-  "mstatus =%016X  trap came from %s\n", s[21], CsrPrivName((s[21] >> 11) & 3);
+  "mstatus =%016X  trap came from %s\n", s[21], CsrPrivName ((s[21] >> 11) & 3);
   CsrDecodeMstatus(s[21]);
   "mtvec   =%016X\n", s[22];
   CsrDecodeMtvec(s[22]);
@@ -495,7 +470,6 @@ public U0 Machine()
   "mideleg =%016X\n", s[31];
   CsrDecodeDeleg(s[31], TRUE);
 }
-
 // DbgOnFault -- DbgOnFault(on)
 // NAME
 //   DbgOnFault - whether a fault stops in the debugger
@@ -508,7 +482,6 @@ public U0 DbgOnFault(I64 on)
 {
   dbgv_on_fault = on;
 }
-
 // DbgTrapHook -- installed with RVSetDbgHook(&DbgTrapHook)
 // NAME
 //   DbgTrapHook - the debugger, running inside the trap, so G can actually continue
@@ -537,8 +510,7 @@ I64 DbgTrapHook(I64 cause, I64 epc, I64 tval)
   // Wait for a human, but not forever. A script that faults with nobody typing would otherwise
   // block here until its harness timeout — the debugger must not turn a fault into a hang.
   // Once a key arrives someone is clearly there, so the loop below blocks as you would expect.
-  deadline = *(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) +
-             DBGV_WAIT_SEC * CONFIG_TIMEBASE_FREQ;
+  deadline = *(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) + DBGV_WAIT_SEC *CONFIG_TIMEBASE_FREQ;
   ch = -1;
   while (*(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) < deadline) {
     ch = RVUartTryGet;
@@ -582,7 +554,6 @@ I64 DbgTrapHook(I64 cause, I64 epc, I64 tval)
   // however you leave, the terminal goes back clean and the REPL gets the fault
   return 0;
 }
-
 // G -- G()
 // NAME
 //   G - continue (stock TempleOS name)
@@ -611,5 +582,4 @@ I64 DbgDisasmCost()
 {
   return dbgv_dis_bytes;
 }
-
 #endif

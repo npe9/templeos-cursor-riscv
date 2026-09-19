@@ -7,7 +7,6 @@
 /* Bit Test Operations (emulate x86 BT/BTS/BTR/BTC) */
 /* Locked Bit Operations (for atomic operations) */
 /* Bit Scan Operations (emulate x86 BSF/BSR) */
-
 /* Byte Swap (emulate x86 BSWAP) */
 /* Population Count (count set bits) */
 U0 ICPopCount(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, I64 rip)
@@ -48,7 +47,6 @@ U0 ICPopCount(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I
   }
 }
 /* Min/Max Operations */
-
 /* Absolute Value */
 U0 ICAbs(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, I64 rip)
 {
@@ -66,7 +64,8 @@ U0 ICAbs(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
   RVBge(tmpi, src_reg, RV_REG_ZERO, 8);
   // Skip negate if >= 0
   RVNeg(tmpi, dest_reg, src_reg);
-  RVJ(tmpi, 8);   // skip the following 4-byte mv
+  RVJ(tmpi, 8);
+  // skip the following 4-byte mv
   RVMv(tmpi, dest_reg, src_reg);
   if (!(t1 & MDF_REG)) {
     ICMov(tmpi, t1, r1, d1, MDF_REG + RT_I64, dest_reg, 0, rip);
@@ -74,14 +73,12 @@ U0 ICAbs(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2
 }
 /* Sign Extraction */
 #help_index ""
-
 /* ---- Stock-semantics intrinsics (BackB/BackC ICBitOps, ICBrBitOps, ICSwap,
  * ICToUpper, ICQue*, ICModU64, ICSqr). Two-arg intern ICs carry the FIRST
  * source parameter in arg2 and the second in arg1 (OptPass4 IS_2_ARG pops),
  * so Bt(bit_field,bit_num) is arg2=bit_field, arg1=bit_num — exactly what
  * stock `bt r/m64(arg2), reg(arg1)` encodes. arg1 sits on top of the eval
  * stack, so it is always popped first. */
-
 /* Bit ops core: leaves the tested bit (0/1) in a0, applies op to the string.
  * as = bit-string arg (pointer, or the storage itself when by_val),
  * ai = bit-index arg. op: 0 BT, 1 BTS, 2 BTR, 3 BTC. lock: AMO read-modify-write. */
@@ -246,17 +243,27 @@ U0 ICQueInsRV(CIntermediateCode *tmpi, Bool rev, I64 rip)
   ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
   ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T1, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
   if (!rev) {
-    RVLd(tmpi, RV_REG_T2, RV_REG_T0, 0);    // t2 = pred->next
-    RVSd(tmpi, RV_REG_T1, RV_REG_T0, 0);    // pred->next = entry
-    RVSd(tmpi, RV_REG_T2, RV_REG_T1, 0);    // entry->next = t2
-    RVSd(tmpi, RV_REG_T0, RV_REG_T1, 8);    // entry->last = pred
-    RVSd(tmpi, RV_REG_T1, RV_REG_T2, 8);    // t2->last = entry
+    RVLd(tmpi, RV_REG_T2, RV_REG_T0, 0);
+    // t2 = pred->next
+    RVSd(tmpi, RV_REG_T1, RV_REG_T0, 0);
+    // pred->next = entry
+    RVSd(tmpi, RV_REG_T2, RV_REG_T1, 0);
+    // entry->next = t2
+    RVSd(tmpi, RV_REG_T0, RV_REG_T1, 8);
+    // entry->last = pred
+    RVSd(tmpi, RV_REG_T1, RV_REG_T2, 8);
+    // t2->last = entry
   } else {
-    RVLd(tmpi, RV_REG_T2, RV_REG_T0, 8);    // t2 = succ->last
-    RVSd(tmpi, RV_REG_T1, RV_REG_T2, 0);    // t2->next = entry
-    RVSd(tmpi, RV_REG_T0, RV_REG_T1, 0);    // entry->next = succ
-    RVSd(tmpi, RV_REG_T2, RV_REG_T1, 8);    // entry->last = t2
-    RVSd(tmpi, RV_REG_T1, RV_REG_T0, 8);    // succ->last = entry
+    RVLd(tmpi, RV_REG_T2, RV_REG_T0, 8);
+    // t2 = succ->last
+    RVSd(tmpi, RV_REG_T1, RV_REG_T2, 0);
+    // t2->next = entry
+    RVSd(tmpi, RV_REG_T0, RV_REG_T1, 0);
+    // entry->next = succ
+    RVSd(tmpi, RV_REG_T2, RV_REG_T1, 8);
+    // entry->last = t2
+    RVSd(tmpi, RV_REG_T1, RV_REG_T0, 8);
+    // succ->last = entry
   }
 }
 
@@ -276,8 +283,10 @@ U0 ICModU64RV(CIntermediateCode *tmpi, I64 rip)
   ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T1, 0, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
   ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg2.type, tmpi->arg2.reg, tmpi->arg2.disp, rip);
   RVLd(tmpi, RV_REG_T2, RV_REG_T0, 0);
-  RVEmitR(tmpi, RV_OP_OP, RV_REG_T3, 0x5, RV_REG_T2, RV_REG_T1, 0x01);   // divu
-  RVEmitR(tmpi, RV_OP_OP, RV_REG_A0, 0x7, RV_REG_T2, RV_REG_T1, 0x01);   // remu
+  RVEmitR(tmpi, RV_OP_OP, RV_REG_T3, 0x5, RV_REG_T2, RV_REG_T1, 0x01);
+  // divu
+  RVEmitR(tmpi, RV_OP_OP, RV_REG_A0, 0x7, RV_REG_T2, RV_REG_T1, 0x01);
+  // remu
   RVSd(tmpi, RV_REG_T3, RV_REG_T0, 0);
   if (tmpi->res.type.mode)
     ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_A0, 0, rip);
@@ -287,7 +296,8 @@ U0 ICSqrIntRV(CIntermediateCode *tmpi, I64 rip)
 {
   // SqrI64/SqrU64: low 64 bits of i*i are the same signed or unsigned.
   ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
-  RVEmitR(tmpi, RV_OP_OP, RV_REG_A0, 0x0, RV_REG_T0, RV_REG_T0, 0x01);   // mul
+  RVEmitR(tmpi, RV_OP_OP, RV_REG_A0, 0x0, RV_REG_T0, RV_REG_T0, 0x01);
+  // mul
   if (tmpi->res.type.mode)
     ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_A0, 0, rip);
 }
@@ -341,14 +351,17 @@ U0 ICBitScanForward(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType
   U8 src_reg = RVLoadToReg(tmpi, RV_REG_T0, t2, r2, d2, rip);
   RVMv(tmpi, RV_REG_T1, src_reg);
   RVAddi(tmpi, RV_REG_A0, RV_REG_ZERO, -1);
-  RVBeq(tmpi, RV_REG_T1, RV_REG_ZERO, 28);        // -> done
+  RVBeq(tmpi, RV_REG_T1, RV_REG_ZERO, 28);
+  // -> done
   RVMv(tmpi, RV_REG_A0, RV_REG_ZERO);
   // loop:
   RVAndi(tmpi, RV_REG_T2, RV_REG_T1, 1);
-  RVBne(tmpi, RV_REG_T2, RV_REG_ZERO, 16);        // -> done
+  RVBne(tmpi, RV_REG_T2, RV_REG_ZERO, 16);
+  // -> done
   RVSrli(tmpi, RV_REG_T1, RV_REG_T1, 1);
   RVAddi(tmpi, RV_REG_A0, RV_REG_A0, 1);
-  RVJ(tmpi, -16);                                  // -> loop
+  RVJ(tmpi, -16);
+  // -> loop
   // done:
   if (t1.mode)
     ICMov(tmpi, t1, r1, d1, MDF_REG + RT_I64, RV_REG_A0, 0, rip);
@@ -360,18 +373,20 @@ U0 ICBitScanReverse(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType
   U8 src_reg = RVLoadToReg(tmpi, RV_REG_T0, t2, r2, d2, rip);
   RVMv(tmpi, RV_REG_T1, src_reg);
   RVAddi(tmpi, RV_REG_A0, RV_REG_ZERO, -1);
-  RVBeq(tmpi, RV_REG_T1, RV_REG_ZERO, 24);        // -> done
+  RVBeq(tmpi, RV_REG_T1, RV_REG_ZERO, 24);
+  // -> done
   RVAddi(tmpi, RV_REG_A0, RV_REG_ZERO, 63);
   // loop:
-  RVBlt(tmpi, RV_REG_T1, RV_REG_ZERO, 16);        // bit63 set -> done
+  RVBlt(tmpi, RV_REG_T1, RV_REG_ZERO, 16);
+  // bit63 set -> done
   RVSlli(tmpi, RV_REG_T1, RV_REG_T1, 1);
   RVAddi(tmpi, RV_REG_A0, RV_REG_A0, -1);
-  RVJ(tmpi, -12);                                  // -> loop
+  RVJ(tmpi, -12);
+  // -> loop
   // done:
   if (t1.mode)
     ICMov(tmpi, t1, r1, d1, MDF_REG + RT_I64, RV_REG_A0, 0, rip);
 }
-
 /* MinI64/MaxI64/MinU64/MaxU64 (branch-free): t2 = -(a<b); t3 = (a-b)&t2;
  * min = b + t3, max = a - t3. arg1/arg2 order does not matter (symmetric). */
 U0 ICMinMaxRV(CIntermediateCode *tmpi, Bool is_max, Bool is_unsigned, I64 rip)

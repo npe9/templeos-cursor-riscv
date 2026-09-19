@@ -4,7 +4,6 @@
 #include "/Kernel/Kernel_RV.PRJ"
 #include "/Kernel/RVDocVT.HC"
 #define MEM_UART_VT 0x10000000
-
 U0 VtOut(U8 *s)
 {
   U8 *u = MEM_UART_VT;

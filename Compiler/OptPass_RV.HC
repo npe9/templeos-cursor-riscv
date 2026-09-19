@@ -165,7 +165,6 @@ CIntermediateCode *RVCallStartFor(CIntermediateCode *tmpi)
   }
   return NULL;
 }
-
 // TRUE while `t` is inside a nested call between `start_i` and the call being emitted. The
 // pushes of an inner call belong to it, not to us; its RESULT push — which comes after its
 // CALL_END — is ours.
@@ -199,8 +198,7 @@ U0 RVEmitCallArgRemat(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I
   tmpi2 = start_i->next;
   skip_depth = 0;
   while (tmpi2 && tmpi2 != tmpi && n < 8) {
-    if (!RVCallArgSkip(tmpi2, &skip_depth) && tmpi2->ic_code > IC_NOP2 &&
-        (tmpi2->ic_flags & ICF_PUSH_RES))
+    if (!RVCallArgSkip(tmpi2, &skip_depth) && tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES))
       n++;
     tmpi2 = tmpi2->next;
   }
@@ -216,14 +214,13 @@ U0 RVEmitCallArgRemat(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I
   k = 0;
   skip_depth = 0;
   while (tmpi2 && tmpi2 != tmpi && k < n) {
-    if (!RVCallArgSkip(tmpi2, &skip_depth) && tmpi2->ic_code > IC_NOP2 &&
-        (tmpi2->ic_flags & ICF_PUSH_RES)) {
+    if (!RVCallArgSkip(tmpi2, &skip_depth) && tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES)) {
       if (tmpi2->ic_flags & ICF_RV_VA_ARGC) {
-	if (rev)
-	  va_argv_slot = n - k;          //(n-1-k) + 1
-	else
-	  va_argv_slot = k + 1;
-	is_va = TRUE;
+        if (rev)
+          va_argv_slot = n - k;
+        //(n-1-k) + 1
+        else va_argv_slot = k + 1;
+        is_va = TRUE;
       }
       k++;
     }
@@ -233,8 +230,7 @@ U0 RVEmitCallArgRemat(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I
   k = 0;
   skip_depth = 0;
   while (tmpi2 && tmpi2 != tmpi && k < n) {
-    if (!RVCallArgSkip(tmpi2, &skip_depth) && tmpi2->ic_code > IC_NOP2 &&
-        (tmpi2->ic_flags & ICF_PUSH_RES)) {
+    if (!RVCallArgSkip(tmpi2, &skip_depth) && tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES)) {
       if (rev)
         arg_slot = n - 1 - k;
       else
@@ -843,8 +839,7 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
         I64 skip2 = 0;
         tmpi2 = start_i->next;
         while (tmpi2 && tmpi2 != tmpi && n < 8) {
-          if (!RVCallArgSkip(tmpi2, &skip2) && tmpi2->ic_code > IC_NOP2 &&
-              (tmpi2->ic_flags & ICF_PUSH_RES))
+          if (!RVCallArgSkip(tmpi2, &skip2) && tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES))
             n++;
           tmpi2 = tmpi2->next;
         }
@@ -892,8 +887,7 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
         tmpi2 = start_i->next;
         k = 0;
         while (tmpi2 && tmpi2 != tmpi && k < n) {
-          if (!RVCallArgSkip(tmpi2, &skip3) && tmpi2->ic_code > IC_NOP2 &&
-              (tmpi2->ic_flags & ICF_PUSH_RES)) {
+          if (!RVCallArgSkip(tmpi2, &skip3) && tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES)) {
             if (rev)
               arg_slot = n - 1 - k;
             else
@@ -1256,13 +1250,27 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
     case IC_XOR_EQU :
     ICXorEqu(tmpi, rip2);
     break;
-    case IC_ADD_EQU : ICArithEqu(tmpi, 0, rip2); break;
-    case IC_SUB_EQU : ICArithEqu(tmpi, 1, rip2); break;
-    case IC_MUL_EQU : ICArithEqu(tmpi, 2, rip2); break;
-    case IC_DIV_EQU : ICArithEqu(tmpi, 3, rip2); break;
-    case IC_MOD_EQU : ICArithEqu(tmpi, 4, rip2); break;
-    case IC_SHL_EQU : ICArithEqu(tmpi, 5, rip2); break;
-    case IC_SHR_EQU : ICArithEqu(tmpi, 6, rip2); break;
+    case IC_ADD_EQU :
+    ICArithEqu(tmpi, 0, rip2);
+    break;
+    case IC_SUB_EQU :
+    ICArithEqu(tmpi, 1, rip2);
+    break;
+    case IC_MUL_EQU :
+    ICArithEqu(tmpi, 2, rip2);
+    break;
+    case IC_DIV_EQU :
+    ICArithEqu(tmpi, 3, rip2);
+    break;
+    case IC_MOD_EQU :
+    ICArithEqu(tmpi, 4, rip2);
+    break;
+    case IC_SHL_EQU :
+    ICArithEqu(tmpi, 5, rip2);
+    break;
+    case IC_SHR_EQU :
+    ICArithEqu(tmpi, 6, rip2);
+    break;
     case IC_ASSIGN :
     /* OptPass4 folds AOT ABS→BY_VAL+RIP; ICMov RIP is PC-rel store. */
     ICAssign(tmpi, rip2);

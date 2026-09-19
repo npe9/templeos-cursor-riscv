@@ -21,7 +21,6 @@
 #ifndef RV_DOC_TEXT_HC
 #define RV_DOC_TEXT_HC
 #help_index "DolDoc/VT"
-
 #define RV_DT_CELLS 2048
 // 80x25 is 2000
 #define RV_DT_ROWS_MAX 64
@@ -29,15 +28,12 @@
 #define RV_DT_TILES 4
 // each tile keeps its OWN shadow: one shared shadow would be invalidated by every switch
 // between tiles of different geometry, so a multi-pane view would repaint in full every time
-
 U32 rv_dt_cell[RV_DT_CELLS];
 // what this render wants on screen
-U32 rv_dt_shadow[RV_DT_TILES * RV_DT_CELLS];
+U32 rv_dt_shadow[RV_DT_TILES *RV_DT_CELLS];
 // per tile: what the terminal is already showing
-I64 rv_dt_trow[RV_DT_TILES], rv_dt_tcol[RV_DT_TILES], rv_dt_trows[RV_DT_TILES],
-    rv_dt_tcols[RV_DT_TILES], rv_dt_tused[RV_DT_TILES];
+I64 rv_dt_trow[RV_DT_TILES], rv_dt_tcol[RV_DT_TILES], rv_dt_trows[RV_DT_TILES], rv_dt_tcols[RV_DT_TILES], rv_dt_tused[RV_DT_TILES];
 I64 rv_dt_rows, rv_dt_cols, rv_dt_bytes;
-
 // Which shadow belongs to this rectangle? Same origin+size = same tile. A new rectangle takes a
 // free slot, or evicts slot 0 (and repaints in full, which is correct for a slot it never saw).
 I64 RVDocTextTile(I64 row0, I64 col0, I64 rows, I64 cols, I64 *fresh)
@@ -45,8 +41,7 @@ I64 RVDocTextTile(I64 row0, I64 col0, I64 rows, I64 cols, I64 *fresh)
   I64 i, free_i = -1;
   *fresh = 0;
   for (i = 0; i < RV_DT_TILES; i++) {
-    if (rv_dt_tused[i] && rv_dt_trow[i] == row0 && rv_dt_tcol[i] == col0 &&
-        rv_dt_trows[i] == rows && rv_dt_tcols[i] == cols)
+    if (rv_dt_tused[i] && rv_dt_trow[i] == row0 && rv_dt_tcol[i] == col0 && rv_dt_trows[i] == rows && rv_dt_tcols[i] == cols)
       return i;
     if (!rv_dt_tused[i] && free_i < 0)
       free_i = i;
@@ -61,7 +56,6 @@ I64 RVDocTextTile(I64 row0, I64 col0, I64 rows, I64 cols, I64 *fresh)
   *fresh = 1;
   return free_i;
 }
-
 // RVDocTextInvalidate -- RVDocTextInvalidate()
 // NAME
 //   RVDocTextInvalidate - forget what the terminal is showing (next render repaints in full)
@@ -73,24 +67,20 @@ U0 RVDocTextInvalidate()
   for (i = 0; i < RV_DT_TILES; i++)
     rv_dt_tused[i] = 0;
 }
-
 I64 rv_dt_clip_top, rv_dt_clip_left, rv_dt_clip_bot, rv_dt_clip_right;
-
 U0 RVDocTextCellSet(I64 row, I64 col, I64 ch, I64 attr)
 {
   I64 i;
   if (row < 0 || col < 0 || row >= rv_dt_rows || col >= rv_dt_cols)
     return;
   /* a frame owns its edge cells: content is clipped to the interior, never over the border */
-  if (row < rv_dt_clip_top || col < rv_dt_clip_left || row > rv_dt_clip_bot ||
-      col > rv_dt_clip_right)
+  if (row < rv_dt_clip_top || col < rv_dt_clip_left || row > rv_dt_clip_bot || col > rv_dt_clip_right)
     return;
-  i = row * rv_dt_cols + col;
+  i = row *rv_dt_cols + col;
   if (i < 0 || i >= RV_DT_CELLS)
     return;
   rv_dt_cell[i] = (ch & 255) + ((attr & 255) << 8);
 }
-
 // Paint the doc's entries into the tile buffer. Mirrors RVDocDrawWin's walk (RVWinMgr.HC:1426)
 // — same sentinel (doc_e != doc), same DOCEF_SKIP rule, same text-bearing types, same attr
 // extraction — but writes cells for THIS tile instead of the global grid.
@@ -108,9 +98,7 @@ U0 RVDocTextFill(CDoc *doc, I64 sx, I64 sy, I64 dft_attr)
       continue;
     }
     t = doc_e->type_u8;
-    if (t == DOCT_TEXT || t == DOCT_LINK || t == DOCT_TREE || t == DOCT_BTTN ||
-        t == DOCT_DATA || t == DOCT_CHECK_BOX || t == DOCT_MACRO || t == DOCT_PMT ||
-        t == DOCT_MENU_VAL || t == DOCT_LST) {
+    if (t == DOCT_TEXT || t == DOCT_LINK || t == DOCT_TREE || t == DOCT_BTTN || t == DOCT_DATA || t == DOCT_CHECK_BOX || t == DOCT_MACRO || t == DOCT_PMT || t == DOCT_MENU_VAL || t == DOCT_LST) {
       tag = doc_e->tag;
       y = doc_e->y - sy;
       if (tag && y >= 0 && y < rv_dt_rows) {
@@ -132,7 +120,6 @@ U0 RVDocTextFill(CDoc *doc, I64 sx, I64 sy, I64 dft_attr)
     doc_e = doc_e->next;
   }
 }
-
 // Chrome: a box around the tile with an optional title, painted into the tile's own cells so it
 // diffs like everything else. Glyph indices match RVWinMgr's border_chars (RVWinMgr.HC:304) and
 // RVVtPutGlyph maps 0x02..0x0D to the terminal's box-drawing equivalents, so the frame looks the
@@ -168,7 +155,6 @@ U0 RVDocTextFrame(I64 rows, I64 cols, U8 *title, I64 attr, I64 solid)
     }
   }
 }
-
 // RVDocTextScrollRegion -- RVDocTextScrollRegion(top, bottom)
 // NAME
 //   RVDocTextScrollRegion - confine scrolling to part of the screen (DECSTBM)
@@ -195,7 +181,6 @@ U0 RVDocTextScrollRegion(I64 top, I64 bottom)
   RVVtPut('r');
   RVVtFlush;
 }
-
 // RVDocTextCaret -- RVDocTextCaret(doc, row0, col0, sx, sy)
 // NAME
 //   RVDocTextCaret - park the terminal cursor where the document's caret is
@@ -236,7 +221,6 @@ I64 RVDocTextCaret(CDoc *doc, I64 row0, I64 col0, I64 sx = 0, I64 sy = 0)
   RVVtFlush;
   return 1;
 }
-
 // RVDocTextRender -- RVDocTextRender(doc, row0, col0, rows, cols)
 // NAME
 //   RVDocTextRender - render one DolDoc into a terminal rectangle, diffed
@@ -256,9 +240,7 @@ I64 RVDocTextCaret(CDoc *doc, I64 row0, I64 col0, I64 sx = 0, I64 sy = 0)
 // BUGS
 //   Text-bearing entries only so far: no border/scrollbar chrome, and the caret is the caller's
 //   business (doc->cur_entry->x/y + doc->cur_col).
-I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
-                    I64 sx = 0, I64 sy = 0, I64 dft_attr = 0x07,
-                    U8 *title = NULL, I64 border = 0, I64 border_attr = 0x07)
+I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols, I64 sx = 0, I64 sy = 0, I64 dft_attr = 0x07, U8 *title = NULL, I64 border = 0, I64 border_attr = 0x07)
 {
   I64 r, c, i, n, cur_attr = -1, run, start_bytes, tile, fresh, base, saved;
   U32 cell;
@@ -268,13 +250,13 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
     rows = RV_DT_ROWS_MAX;
   if (cols > RV_DT_COLS_MAX)
     cols = RV_DT_COLS_MAX;
-  n = rows * cols;
+  n = rows *cols;
   if (n > RV_DT_CELLS)
     return 0;
   rv_dt_rows = rows;
   rv_dt_cols = cols;
   tile = RVDocTextTile(row0, col0, rows, cols, &fresh);
-  base = tile * RV_DT_CELLS;
+  base = tile *RV_DT_CELLS;
   i = 0;
   while (i < n) {
     rv_dt_cell[i] = ' ' + (dft_attr << 8);
@@ -314,7 +296,7 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
     c = 0;
     run = 0;
     while (c < cols) {
-      i = r * cols + c;
+      i = r *cols + c;
       cell = rv_dt_cell[i];
       if (cell == rv_dt_shadow[base + i]) {
         run = 0;
@@ -354,5 +336,4 @@ I64 RVDocTextRender(CDoc *doc, I64 row0, I64 col0, I64 rows, I64 cols,
   rv_dt_bytes = rv_vt_cost - start_bytes;
   return rv_dt_bytes;
 }
-
 #endif

@@ -4,7 +4,6 @@
 #define RV_CMP_ADAM_TASK_OFF	0x1146c8
 #define RV_CMP_GS_OFF		0x118348
 #define RV_CMP_BLKDEV_OFF	0x113b88
-
 #define RV_CMP_CHAR_BMP_ALPHA_OFF	0x115f10
 #define RV_CMP_CHAR_BMP_ALPHA_NUMERIC_OFF	0x1182f0
 #define RV_CMP_CHAR_BMP_ALPHA_NUMERIC_NO_AT_OFF	0x113a78
@@ -22,25 +21,43 @@
 #define RV_CMP_CHAR_BMP_SAFE_DOLLAR_OFF	0x116480
 #define RV_CMP_CHAR_BMP_FILENAME_OFF	0x1162a0
 #define RV_CMP_CHAR_BMP_NON_EOL_OFF	0x116418
-
 U0 RVCmpPatchCharBmps(U8 *mod)
-{//Host-AOT Compiler.BIN keeps zeroed char_bmp_*; Lex needs kernel bitmaps.
-  if (!mod) return;
-  if (RV_CMP_CHAR_BMP_ALPHA_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_ALPHA_OFF,char_bmp_alpha,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_ALPHA_NUMERIC_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_ALPHA_NUMERIC_OFF,char_bmp_alpha_numeric,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_ALPHA_NUMERIC_NO_AT_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_ALPHA_NUMERIC_NO_AT_OFF,char_bmp_alpha_numeric_no_at,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_WORD_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_WORD_OFF,char_bmp_word,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_DEC_NUMERIC_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_DEC_NUMERIC_OFF,char_bmp_dec_numeric,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_HEX_NUMERIC_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_HEX_NUMERIC_OFF,char_bmp_hex_numeric,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_WHITE_SPACE_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_WHITE_SPACE_OFF,char_bmp_white_space,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_NON_EOL_WHITE_SPACE_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_NON_EOL_WHITE_SPACE_OFF,char_bmp_non_eol_white_space,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_ZERO_CR_NL_CURSOR_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_ZERO_CR_NL_CURSOR_OFF,char_bmp_zero_cr_nl_cursor,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_ZERO_TAB_CR_NL_CURSOR_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_ZERO_TAB_CR_NL_CURSOR_OFF,char_bmp_zero_tab_cr_nl_cursor,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_ZERO_TAB_CR_NL_CURSOR_DOLLAR_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_ZERO_TAB_CR_NL_CURSOR_DOLLAR_OFF,char_bmp_zero_tab_cr_nl_cursor_dollar,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_MACRO_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_MACRO_OFF,char_bmp_macro,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_PRINTABLE_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_PRINTABLE_OFF,char_bmp_printable,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_DISPLAYABLE_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_DISPLAYABLE_OFF,char_bmp_displayable,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_SAFE_DOLLAR_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_SAFE_DOLLAR_OFF,char_bmp_safe_dollar,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_FILENAME_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_FILENAME_OFF,char_bmp_filename,16*sizeof(U32));
-  if (RV_CMP_CHAR_BMP_NON_EOL_OFF) MemCpy(mod+RV_CMP_CHAR_BMP_NON_EOL_OFF,char_bmp_non_eol,16*sizeof(U32));
+{
+  //Host-AOT Compiler.BIN keeps zeroed char_bmp_*; Lex needs kernel bitmaps.
+  if (!mod)
+    return;
+  if (RV_CMP_CHAR_BMP_ALPHA_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_ALPHA_OFF, char_bmp_alpha, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_ALPHA_NUMERIC_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_ALPHA_NUMERIC_OFF, char_bmp_alpha_numeric, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_ALPHA_NUMERIC_NO_AT_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_ALPHA_NUMERIC_NO_AT_OFF, char_bmp_alpha_numeric_no_at, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_WORD_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_WORD_OFF, char_bmp_word, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_DEC_NUMERIC_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_DEC_NUMERIC_OFF, char_bmp_dec_numeric, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_HEX_NUMERIC_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_HEX_NUMERIC_OFF, char_bmp_hex_numeric, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_WHITE_SPACE_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_WHITE_SPACE_OFF, char_bmp_white_space, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_NON_EOL_WHITE_SPACE_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_NON_EOL_WHITE_SPACE_OFF, char_bmp_non_eol_white_space, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_ZERO_CR_NL_CURSOR_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_ZERO_CR_NL_CURSOR_OFF, char_bmp_zero_cr_nl_cursor, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_ZERO_TAB_CR_NL_CURSOR_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_ZERO_TAB_CR_NL_CURSOR_OFF, char_bmp_zero_tab_cr_nl_cursor, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_ZERO_TAB_CR_NL_CURSOR_DOLLAR_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_ZERO_TAB_CR_NL_CURSOR_DOLLAR_OFF, char_bmp_zero_tab_cr_nl_cursor_dollar, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_MACRO_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_MACRO_OFF, char_bmp_macro, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_PRINTABLE_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_PRINTABLE_OFF, char_bmp_printable, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_DISPLAYABLE_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_DISPLAYABLE_OFF, char_bmp_displayable, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_SAFE_DOLLAR_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_SAFE_DOLLAR_OFF, char_bmp_safe_dollar, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_FILENAME_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_FILENAME_OFF, char_bmp_filename, 16 * sizeof(U32));
+  if (RV_CMP_CHAR_BMP_NON_EOL_OFF)
+    MemCpy(mod + RV_CMP_CHAR_BMP_NON_EOL_OFF, char_bmp_non_eol, 16 * sizeof(U32));
 }

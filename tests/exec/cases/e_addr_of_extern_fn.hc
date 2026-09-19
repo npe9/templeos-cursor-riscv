@@ -7,8 +7,11 @@ I64 main()
   I64 (*fp)(U8 *s) = &StrLen;
   I64 (*fq)(U8 *s);
   fq = &StrLen;
-  if (fp != fq) return 1;
-  if ((*fp)("abcd") != 4) return 2;
-  if (fq("xyz") != 3) return 3;
+  if (fp != fq)
+    return 1;
+  if ((*fp)("abcd") != 4)
+    return 2;
+  if (fq("xyz") != 3)
+    return 3;
   return 0x2b;
 }

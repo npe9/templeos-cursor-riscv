@@ -15,7 +15,6 @@
 #ifndef RV_ASM_REPL_UI_HC
 #define RV_ASM_REPL_UI_HC
 #help_index "Dbg"
-
 #define ASMUI_CTX 0x87000400
 // the register file: x0..x31, shared with the debugger and the _Xn labels
 #define ASMUI_SIDE_COLS 44
@@ -25,7 +24,6 @@
 // would leave 35 — narrow enough that a register diff line ("a0   0000... -> 0000...", 43
 // characters) wraps. Below this the panes stack across the top instead, where they get the full
 // width and the prompt gets a scroll region. A sidebar therefore wants ~94 columns or more.
-
 // The values live in a column on the right and the REPL has the left: registers at the top,
 // the machine state under them, memory under that.
 //
@@ -46,7 +44,6 @@ I64 asmui_class_i;
 // which family you are working through, and how far in
 #define ASMUI_DIS_LINES 12
 // how many instructions `u` shows at a time — a screenful of the text column, not a flood
-
 // AsmReplInstallStep -- AsmReplInstallStep(&AsmStep)
 // NAME
 //   AsmReplInstallStep - give the loop its stepper
@@ -60,7 +57,6 @@ public U0 AsmReplInstallStep(I64 fn)
 {
   asmui_step_fn = fn;
 }
-
 // Tab's vocabulary: the register names, which are not in any catalog, and then the documented
 // mnemonics themselves (AsmComplete over the same 244 entries AsmList prints and AsmDoc
 // explains). A hand-written word list used to sit here and had already drifted from what the
@@ -68,10 +64,8 @@ public U0 AsmReplInstallStep(I64 fn)
 // most of the ones it does.
 U8 *AsmUiWords()
 {
-  return "zero ra sp gp tp t0 t1 t2 s0 s1 a0 a1 a2 a3 a4 a5 a6 a7 s2 s3 s4 s5 s6 s7 s8 s9 s10 "
-         "s11 t3 t4 t5 t6";
+  return "zero ra sp gp tp t0 t1 t2 s0 s1 a0 a1 a2 a3 a4 a5 a6 a7 s2 s3 s4 s5 s6 s7 s8 s9 s10 " "s11 t3 t4 t5 t6";
 }
-
 // One completion, and only when it is unambiguous: a stepper that guesses wrong wastes a step.
 I64 AsmUiComplete(U8 *word, U8 *out, I64 max)
 {
@@ -109,14 +103,12 @@ I64 AsmUiComplete(U8 *word, U8 *out, I64 max)
   // Dr, _A0, AsmStep and anything you just defined complete here too
   return RVHashComplete(word, out, max);
 }
-
 // The scroll region keeps the prompt's scrolling away from the pane rows, so the renderer's
 // shadow stays true and a step only sends the cells that changed. Nothing to do here now — kept
 // as the one place that would need to invalidate if the layout ever lets text touch the panes.
 U0 AsmUiScrolled()
 {
 }
-
 // How many rows the register pane gets, and whether the float block is one of the things in it.
 //
 // Three values per row of screen is the whole problem: 32 registers, pc, 4 CSRs and 32 float
@@ -156,7 +148,6 @@ U0 AsmUiPlaceMem(I64 rows)
   if (asmui_mem_rows < 2)
     dbgv_mem_row = -1;
 }
-
 // The memory pane, under the registers in whichever layout is in force. Not every layout has
 // room for one — the float block takes its rows on a short screen.
 U0 AsmUiPanes()
@@ -172,10 +163,8 @@ U0 AsmUiPanes()
   // to the register file itself: `d <addr>` is then an obvious next move.
   if (!addr)
     addr = ASMUI_CTX;
-  DbgMemAt(addr, asmui_mem_row, asmui_side ? asmui_side_col : 0, asmui_mem_rows,
-           asmui_side ? ASMUI_SIDE_COLS : asmui_text_cols);
+  DbgMemAt(addr, asmui_mem_row, asmui_side ? asmui_side_col : 0, asmui_mem_rows, asmui_side ? ASMUI_SIDE_COLS : asmui_text_cols);
 }
-
 // One instruction at `pc`, as text, with the address prefix stripped — "0x8001F5A4:  ld t1,
 // 0x0(sp)" becomes "ld t1, 0x0(sp)", which is exactly what the assembler takes back. The round
 // trip is deliberate: what gets stepped is what the disassembler said, so a lie in either one
@@ -201,7 +190,6 @@ I64 AsmUiInsnText(I64 pc, U8 *out, I64 max)
   Free(cap);
   return n > 0;
 }
-
 // A register name to its number, for reading the context while following a branch.
 I64 AsmUiRegNum(U8 *nm)
 {
@@ -219,7 +207,6 @@ I64 AsmUiRegNum(U8 *nm)
   }
   return -1;
 }
-
 // The i-th comma-separated operand of a disassembled instruction, trimmed.
 I64 AsmUiOperand(U8 *text, I64 i, U8 *out, I64 max)
 {
@@ -244,7 +231,6 @@ I64 AsmUiOperand(U8 *text, I64 i, U8 *out, I64 max)
   }
   return FALSE;
 }
-
 // Follow a branch: read the two registers out of the stepper's context, decide, and say so.
 // Returns the address to continue at, or 0 if this is not a branch we can settle.
 I64 AsmUiBranchTarget(U8 *text, I64 pc, I64 width)
@@ -314,7 +300,6 @@ I64 AsmUiBranchTarget(U8 *text, I64 pc, I64 width)
   "  branch not taken\n";
   return pc + width;
 }
-
 // Is this register one the stepper carries? Mirrors AsmCtxReg in Compiler/RVAsmRepl.HC, which
 // lives in the other image and cannot be called from here: t0-t2, t3-t6, a0-a7, s1, s2-s11 and
 // sp. ra, gp, tp and s0 belong to the running REPL — s0 is its frame pointer, and an
@@ -335,7 +320,6 @@ I64 AsmUiInCtx(I64 n)
     return TRUE;
   return FALSE;
 }
-
 // The first operand as text, for saying which register was refused.
 U8 *AsmUiOperandName(U8 *text)
 {
@@ -344,7 +328,6 @@ U8 *AsmUiOperandName(U8 *text)
     StrCpy(nm, "it");
   return nm;
 }
-
 // The register an instruction WRITES, or -1. Stores name a source first, not a destination,
 // which is the one case where the first operand is not the answer.
 I64 AsmUiDestReg(U8 *text)
@@ -356,9 +339,7 @@ I64 AsmUiDestReg(U8 *text)
     i++;
   }
   mn[i] = 0;
-  if (!StrCmp(mn, "sd") || !StrCmp(mn, "sw") || !StrCmp(mn, "sh") || !StrCmp(mn, "sb") ||
-      !StrCmp(mn, "fsd") || !StrCmp(mn, "fsw") || !MemCmp(mn, "c.s", 3) ||
-      !MemCmp(mn, "c.fs", 4))
+  if (!StrCmp(mn, "sd") || !StrCmp(mn, "sw") || !StrCmp(mn, "sh") || !StrCmp(mn, "sb") || !StrCmp(mn, "fsd") || !StrCmp(mn, "fsw") || !MemCmp(mn, "c.s", 3) || !MemCmp(mn, "c.fs", 4))
     return -1;
   if (mn[0] == 'f')
     return -1;
@@ -367,13 +348,11 @@ I64 AsmUiDestReg(U8 *text)
     return -1;
   return AsmUiRegNum(op);
 }
-
 // Does this instruction move the pc itself? Those cannot be handed to AsmStep — it runs the line
 // inside a wrapper, and a branch would leave it — so tracing reports them and steps over.
 I64 AsmUiIsFlow(U8 *text)
 {
-  if (!MemCmp(text, "b", 1) && (text[1] == 'e' || text[1] == 'n' || text[1] == 'l' ||
-                                text[1] == 'g'))
+  if (!MemCmp(text, "b", 1) && (text[1] == 'e' || text[1] == 'n' || text[1] == 'l' || text[1] == 'g'))
     return TRUE;
   // beq bne blt bge bltu bgeu beqz bnez
   if (!MemCmp(text, "j", 1) && (text[1] == ' ' || text[1] == 'a' || text[1] == 'r'))
@@ -389,7 +368,6 @@ I64 AsmUiIsFlow(U8 *text)
     return TRUE;
   return FALSE;
 }
-
 // AsmUiLayout -- AsmUiLayout(mode, home)
 // NAME
 //   AsmUiLayout - put up the standing pane layout and the prompt's scroll region
@@ -449,7 +427,6 @@ public U0 AsmUiLayout(I64 mode = -1, I64 home = FALSE)
     AsmUiStackedRegion(rows);
   AsmUiPanes;
 }
-
 // AsmUiPrePrompt -- installed with RVLineEdPrePrompt(&AsmUiPrePrompt)
 // NAME
 //   AsmUiPrePrompt - put the sidebar back before each line is read
@@ -479,7 +456,6 @@ U0 AsmUiPrePrompt()
   AsmUiPlaceMem(rv_vt_term_rows);
   AsmUiPanes;
 }
-
 // AsmUiResized -- installed with RVVtOnResize(&AsmUiResized)
 // NAME
 //   AsmUiResized - lay the screen out again at the terminal's new size
@@ -499,7 +475,6 @@ public U0 AsmUiResized()
   if (!dbgv_relayout_fn)
     AsmUiLayout(-1, TRUE);
 }
-
 // AsmRepl -- AsmRepl()
 // NAME
 //   AsmRepl - an assembler REPL with the registers and memory on screen
@@ -542,11 +517,7 @@ public U0 AsmRepl()
     if (line[0] == 'q' && !line[1])
       break;
     if (line[0] == '?' && !line[1]) {
-      "  q  leave   d <addr>  memory pane   u <sym|addr>  disassemble   r  repaint\n"
-      "  t <sym|addr>  trace a compiled function, t again to step   f  float regs\n"
-      "  p <class>  work through a family, p for the next   ? <mn>  what it does\n"
-      "  n  next pane page (registers / machine state / float)   f  the float page\n"
-      "  ?? the catalog\n";
+      "  q  leave   d <addr>  memory pane   u <sym|addr>  disassemble   r  repaint\n" "  t <sym|addr>  trace a compiled function, t again to step   f  float regs\n" "  p <class>  work through a family, p for the next   ? <mn>  what it does\n" "  n  next pane page (registers / machine state / float)   f  the float page\n" "  ?? the catalog\n";
       continue;
     }
     if (line[0] == '?' && line[1] == '?' && !line[2]) {
@@ -642,6 +613,7 @@ public U0 AsmRepl()
         continue;
       }
       "0x%X:  %s\n", asmui_trace_pc, insn;
+      
       {
         I64 dest;
         dest = AsmUiDestReg(insn);
@@ -650,8 +622,7 @@ public U0 AsmRepl()
           // belong to the REPL running this. s0 is its frame pointer, and the first attempt at
           // tracing a real function faulted on exactly that: `addi s0, sp, 0x20` in a prologue
           // took the prompt's own frame with it.
-          "  (writes %s, which belongs to the REPL - not executed)\n",
-              AsmUiOperandName(insn);
+          "  (writes %s, which belongs to the REPL - not executed)\n", AsmUiOperandName(insn);
           if ((*(U16 *)asmui_trace_pc & 3) == 3)
             asmui_trace_pc += 4;
           else
@@ -742,5 +713,4 @@ public U0 AsmRepl()
   Cls;
   "asm REPL: out\n";
 }
-
 #endif

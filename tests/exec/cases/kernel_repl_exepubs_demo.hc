@@ -38,7 +38,6 @@ U0 UartPutS(U8 *s)
     s++;
   }
 }
-
 // MemMap is now the real RISC-V memory map from Kernel/RVExplore.HC (linked via
 // Kernel_RV.PRJ and planted by RVExePubsWire). Funs stays a minimal stub for this
 // UART-only artifact (the full symbol table isn't linked here).
@@ -46,9 +45,7 @@ public U0 Funs(U8 *filt = NULL)
 {
   UartPutS("Funs: ExePutS CInit RVTrapInit MemMap AsmList AsmDoc Mstatus Mcause\n");
 }
-
 I64 dbg_view_ready;
-
 I64 main()
 {
   I64 r, n, ok = 0;
@@ -93,6 +90,7 @@ I64 main()
   // Debugger surface: Disasm/DisasmAt/U/UA/FnAddr/Uf/Bp/BpClr (Kernel/RVDisasm.HC).
   // Closes the assemble->disassemble loop in this REPL: `asm{Fn:: ...ret}` then
   // `Disasm("Fn")` / `Uf("Fn")` shows the decoded instructions you just emitted.
+  
   {
     // Slots 2 (U) and 3 (UA) are deliberately left 0: they target the win/VT DolDoc
     // renderer this serial image lacks — U emits `$HL$` hyperlink markup then derefs a
@@ -121,6 +119,7 @@ I64 main()
       AsmWatchInstall(&RegPaneStep);
       RVExePubFunNew("RegPane", &RegPaneStep, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("RegPaneCost", &RegPaneCost, cmp.internal_types[RT_I64], 0);
+      
       {
         // Pane(n): which block the pane starts at — 0 registers, 1 machine state, 2 float.
         // The pane packs whole blocks from there, so this is "show me that one first".
@@ -150,6 +149,7 @@ I64 main()
       // translation to a serial line.
       RVExePubFunNew("Links", &Links, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Lk0", &Lk0, cmp.internal_types[RT_U0], 0);
+      
       {
         CHashFun *tl;
         tl = RVExePubFunNew("Lk", &Lk, cmp.internal_types[RT_U0], 1);
@@ -163,6 +163,7 @@ I64 main()
       // from the same catalog, so Tab and AsmDoc agree by construction.
       RVExePubFunNew("AsmList", &AsmList, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("AsmClasses", &AsmClasses, cmp.internal_types[RT_U0], 0);
+      
       {
         CHashFun *tk;
         tk = RVExePubFunNew("AsmClass", &AsmClass, cmp.internal_types[RT_U0], 1);
@@ -172,6 +173,7 @@ I64 main()
       RVExePubFunNew("Mstatus", &Mstatus, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Mcause", &Mcause, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Uptime", &Uptime, cmp.internal_types[RT_U0], 0);
+      
       {
         // CsrNum(0x7B0): read a CSR by number, by writing the instruction at run time
         CHashFun *tn;
@@ -184,6 +186,7 @@ I64 main()
       RVExePubFunNew("PtDemo", &PtDemo, cmp.internal_types[RT_I64], 0);
       RVExePubFunNew("PtWalk", &PtWalk, cmp.internal_types[RT_I64], 0);
       RVExePubFunNew("ArgOne", &ArgOne, cmp.internal_types[RT_I64], 0);
+      
       {
         CHashFun *te;
         te = RVExePubFunNew("ArgEcho", &ArgEcho, cmp.internal_types[RT_U0], 3);
@@ -193,6 +196,7 @@ I64 main()
           RVExePubAddArg(te, "c", cmp.internal_types[RT_I64]);
         }
       }
+      
       {
         // Pg(va) walks the live satp; PgAt(root, levels, va) walks a table you hand it, which
         // is how it can be exercised on a machine with paging off — as this one has.
@@ -210,6 +214,7 @@ I64 main()
           RVExePubAddArg(tg, "levels", cmp.internal_types[RT_I64]);
         }
       }
+      
       {
         // Fd(n): a float register as a number and as its IEEE-754 fields
         CHashFun *tfd;
@@ -217,6 +222,7 @@ I64 main()
         if (tfd)
           RVExePubAddArg(tfd, "n", cmp.internal_types[RT_I64], MLF_DFT_AVAILABLE, -1);
       }
+      
       {
         // Plic(): the interrupt controller is architectural state too, and nothing could read it
         CHashFun *tp2;
@@ -224,6 +230,7 @@ I64 main()
         if (tp2)
           RVExePubAddArg(tp2, "max_irq", cmp.internal_types[RT_I64], MLF_DFT_AVAILABLE, 32);
       }
+      
       {
         // Csr("mtvec") — a live read, decoded. Machine() is the same registers as they were
         // FROZEN; both are worth having and they answer different questions.
@@ -232,6 +239,7 @@ I64 main()
         if (tc)
           RVExePubAddArg(tc, "name", cmp.internal_types[RT_U8] + 1);
       }
+      
       {
         CHashFun *ta;
         ta = RVExePubFunNew("AsmDoc", &AsmDoc, cmp.internal_types[RT_U0], 1);
@@ -253,6 +261,7 @@ I64 main()
       // how you fault twice), then hand the runtime the hook so G can actually continue.
       DbgViewPrime();
       RVSetDbgHook(&DbgTrapHook);
+      
       {
         CHashFun *tf;
         tf = RVExePubFunNew("Dm", &DbgDm, cmp.internal_types[RT_U0], 2);
@@ -328,8 +337,7 @@ I64 main()
       // Through the chain, not UartPutS: printed output is kept inside the text column so it
       // cannot be written over the panes beside it.
       "\n*** fault in that line; returning to prompt\n";
-      "    mcause=%d mepc=%X mtval=%X ra=%X\n", cause, RVTrapRecoverEpc(),
-          RVTrapRecoverTval(), RVTrapRecoverRa();
+      "    mcause=%d mepc=%X mtval=%X ra=%X\n", cause, RVTrapRecoverEpc(), RVTrapRecoverTval(), RVTrapRecoverRa();
       // Land in the debugger view: registers + the decoded fault, then back to this prompt,
       // where _A0 / Dr / U(_PC-16) / AsmStep already work. Stock TempleOS Dbg(), not a modal UI.
       if (dbg_view_ready) {

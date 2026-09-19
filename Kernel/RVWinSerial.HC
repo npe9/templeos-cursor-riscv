@@ -37,8 +37,10 @@ I64 rv_win_adam_len;
 I64 rv_win_adam_cmds;
 I64 rv_win_adam_mirror;
 U8 rv_win_adam_line[RV_WIN_SERIAL_LINE_MAX];
-U8 rv_win_edit_path[192];   // file backing the active `ed` editor window
-I64 rv_win_edit_dirty;      // unsaved edits since load/save
+U8 rv_win_edit_path[192];
+// file backing the active `ed` editor window
+I64 rv_win_edit_dirty;
+// unsaved edits since load/save
 asm {
 	RVWinCsrrMstatus::
 	csrr	a0, 0x300
@@ -46,10 +48,10 @@ asm {
 	RVWinCsrrFcsr::
 	csrr	a0, 0x003
 	ret
-#ifdef CONFIG_HAS_PMP
-// PMP is optional in the ISA: reading pmpcfg/pmpaddr on a hart without it raises an illegal
-// instruction, so whether these stubs exist at all is a configuration question (CONFIG_HAS_PMP,
-// templeos-riscv/Kconfig). QEMU virt implements 16 entries.
+	#ifdef CONFIG_HAS_PMP
+	// PMP is optional in the ISA: reading pmpcfg/pmpaddr on a hart without it raises an illegal
+	// instruction, so whether these stubs exist at all is a configuration question (CONFIG_HAS_PMP,
+	// templeos-riscv/Kconfig). QEMU virt implements 16 entries.
 	RVWinCsrrPmpcfg0::
 	csrr	a0, 0x3A0
 	ret
@@ -104,7 +106,7 @@ asm {
 	RVWinCsrrPmpaddr15::
 	csrr	a0, 0x3BF
 	ret
-#endif
+	#endif
 	RVWinCsrrMcycle::
 	csrr	a0, 0xB00
 	ret
@@ -869,7 +871,8 @@ public U0 RVWinSoftEd(U8 *path)
   if (doc) {
     if (buf && sz > 0)
       DocPutS(doc, buf);
-    doc->cur_entry = doc;   // sentinel == insert at end of doc
+    doc->cur_entry = doc;
+    // sentinel == insert at end of doc
     DocRecalc(doc);
     w->doc = doc;
   }
@@ -905,13 +908,10 @@ public U0 RVWinSoftTasks()
       kn = "Edit";
     else
       kn = "Doc ";
-    Print("  [%d]%c %s  \"%s\"  task=%s show=%d\n", i,
-      i == rv_winmgr.focus ? '*' : ' ', kn, w->title,
-      TaskValidate(w->task) ? "live" : "-", w->show);
+    Print("  [%d]%c %s  \"%s\"  task=%s show=%d\n", i, i == rv_winmgr.focus ? '*' : ' ', kn, w->title, TaskValidate(w->task) ? "live" : "-", w->show);
     n++;
   }
-  Print("%d window(s), focus=%d.  Tab cycles, `user` spawns a Term, max/tileh/tilev layout.\n",
-    n, rv_winmgr.focus);
+  Print("%d window(s), focus=%d.  Tab cycles, `user` spawns a Term, max/tileh/tilev layout.\n", n, rv_winmgr.focus);
 }
 
 U0 RVWinEdExit()
@@ -1275,7 +1275,8 @@ Bool RVWinSerialDispatch2(U8 *line)
   }
   if (RVWinSerialCmdEq(p, "crash")) {
     Print("RVWinSerial: entering crash> (host mon; 'go' returns)\n");
-    RVUartIrqOff();       // crash mon polls the UART itself; RX IRQ would eat its input
+    RVUartIrqOff();
+    // crash mon polls the UART itself; RX IRQ would eat its input
     RVCrashMon();
     RVUartIrqInit();
     return FALSE;
@@ -1315,8 +1316,6 @@ Bool RVWinSerialDispatch2(U8 *line)
   Print("?\n");
   return FALSE;
 }
-
-
 // Arm the fault/^C recovery point around the WHOLE dispatch, not just the evaluated statement:
 // a wedge inside a built-in (`regs`, `csrs`) is exactly as worth escaping as one inside HolyC.
 // One-shot and disarmed on every exit — the trampoline restores ra/sp/fp captured here, so
@@ -1341,9 +1340,7 @@ Bool RVWinSerialDispatch(U8 *line)
       return FALSE;
     }
     Print("\n*** fault in that line — back at the prompt (`crash` for the monitor)\n");
-    Print("    mcause=%d (%s) mepc=%08X mtval=%08X\n    ra=%08X\n",
-	  cause, RVWinMcauseName(cause),
-	  RVTrapRecoverEpc(), RVTrapRecoverTval(), RVTrapRecoverRa());
+    Print("    mcause=%d (%s) mepc=%08X mtval=%08X\n    ra=%08X\n", cause, RVWinMcauseName(cause), RVTrapRecoverEpc(), RVTrapRecoverTval(), RVTrapRecoverRa());
     return FALSE;
   }
   // RX interrupt ON only while the command runs. The input pump is not polling during this
@@ -1408,16 +1405,22 @@ U0 RVWinTermPutChar(I64 ch)
   if (RVWinDocFocusIsEdit()) {
     CRVWin *ew = &rv_winmgr.wins[rv_winmgr.focus];
     if (ch == 27)
-      RVWinSerialEscKey;                    // arrows -> RVDocEdMove
-    else if (ch == 23)                      // Ctrl-W: write
-      RVWinEdSave;
-    else if (ch == 8 || ch == 127) {
+      RVWinSerialEscKey;
+    // arrows -> RVDocEdMove
+    else if(ch == 23) // Ctrl-W: write
+    RVWinEdSave;
+    else if(ch == 8 || ch == 127)
+    {
       DocEdBackspace(ew->doc);
       rv_win_edit_dirty = 1;
-    } else if (ch == '\n' || ch == '\r') {
+    }
+    else if(ch == '\n' || ch == '\r')
+    {
       DocEdInsChar(ew->doc, '\n');
       rv_win_edit_dirty = 1;
-    } else if (ch >= 32 && ch < 127) {
+    }
+    else if(ch >= 32 && ch < 127)
+    {
       DocEdInsChar(ew->doc, ch);
       rv_win_edit_dirty = 1;
     }
@@ -1470,7 +1473,8 @@ U0 RVWinTermPutChar(I64 ch)
     RVWinBodyAppend(idx, "\n");
     rv_win_term_line[rv_win_term_len] = 0;
     rv_win_term_mirror = 1;
-    RVWinSerialTermScroll(0, FALSE, TRUE);   // new output: leave scrollback
+    RVWinSerialTermScroll(0, FALSE, TRUE);
+    // new output: leave scrollback
     RVWinSerialDispatch(rv_win_term_line);
     rv_win_term_mirror = 0;
     rv_win_term_len = 0;
@@ -1589,7 +1593,8 @@ U0 RVWinSerialEscKey()
     param = param * 10 + ch - '0';
     ch = RVWinSerialEscGet;
   }
-  while (ch == ';') {          // drop modifier params
+  while (ch == ';') {
+    // drop modifier params
     ch = RVWinSerialEscGet;
     while (ch >= '0' && ch <= '9')
       ch = RVWinSerialEscGet;
@@ -1598,13 +1603,14 @@ U0 RVWinSerialEscKey()
   if (RVWinDocFocusIsEdit()) {
     CRVWin *ew = &rv_winmgr.wins[rv_winmgr.focus];
     if (ch == 'A')
-      RVDocEdMove(ew->doc, -2);   // up
-    else if (ch == 'B')
-      RVDocEdMove(ew->doc, 2);    // down
-    else if (ch == 'C')
-      RVDocEdMove(ew->doc, 1);    // right
-    else if (ch == 'D')
-      RVDocEdMove(ew->doc, -1);   // left
+      RVDocEdMove(ew->doc, -2);
+    // up
+    else if(ch == 'B')RVDocEdMove(ew->doc, 2);
+    // down
+    else if(ch == 'C')RVDocEdMove(ew->doc, 1);
+    // right
+    else if(ch == 'D')RVDocEdMove(ew->doc, -1);
+    // left
     return;
   }
   // When a browsable DolDoc window is focused, the arrows move the link cursor instead
@@ -1644,7 +1650,8 @@ U0 RVWinSerialPoll()
     if (ch == '\r' || ch == '\n') {
       RVUartPutS("\n");
       rv_win_serial_line[rv_win_serial_len] = 0;
-      RVWinSerialTermScroll(0, FALSE, TRUE);   // new output: leave scrollback
+      RVWinSerialTermScroll(0, FALSE, TRUE);
+      // new output: leave scrollback
       RVWinSerialDispatch(rv_win_serial_line);
       rv_win_serial_len = 0;
       if (!rv_winmgr.want_quit)
@@ -1707,7 +1714,6 @@ Bool RVWinSerialInit()
   RVUartSoftOn(1);
   RVTrapInit();
   RVCrashMonInit();
-
   RVWinSerialSymWire;
   rv_win_serial_ready = TRUE;
   rv_win_serial_len = 0;
@@ -1734,7 +1740,8 @@ Bool RVWinSerialVtQuerySize(I64 *cols, I64 *rows)
   //when nothing answers (piped stdin, dumb terminal) so callers keep their defaults.
   I64 ch, spins = 0, st = 0, r = 0, c = 0;
   U8 q[8];
-  q[0] = 27;   // the host lexer has no \x escapes: build CSI 18 t by hand
+  q[0] = 27;
+  // the host lexer has no \x escapes: build CSI 18 t by hand
   q[1] = '[';
   q[2] = '1';
   q[3] = '8';

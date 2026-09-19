@@ -988,25 +988,28 @@ F64 Pow(F64 a, F64 b)
   // nan
   return Exp(b *Ln(a));
 }
-
 /* Guest-JIT entry points for the _intern F64 ICs (IC_SIN/COS/TAN/ATAN/POWER):
  * the host AOT lowers Sin() etc. to its runtime, so the guest backend calls these. */
 public F64 RVF64Sin(F64 x)
 {
   return Sin(x);
 }
+
 public F64 RVF64Cos(F64 x)
 {
   return Cos(x);
 }
+
 public F64 RVF64Tan(F64 x)
 {
   return Tan(x);
 }
+
 public F64 RVF64ATan(F64 x)
 {
   return ATan(x);
 }
+
 public F64 RVF64Pow(F64 a, F64 b)
 {
   return Pow(a, b);

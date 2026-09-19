@@ -33,22 +33,26 @@
 #ifndef RV_DOC_VT_HC
 #define RV_DOC_VT_HC
 #help_index "DolDoc/VT"
-
 #define RV_VT_CELLS_MAX 8192
 #define RV_VT_BUF       512
-
 U32 rv_vt_shadow[RV_VT_CELLS_MAX];
 U8 rv_vt_buf[RV_VT_BUF];
-I64 rv_vt_n;          // bytes pending in rv_vt_buf
-I64 rv_vt_ready;      // shadow is valid: diff instead of full repaint
-I64 rv_vt_utf8;       // 1 = UTF-8 box drawing, 0 = ASCII + - | fallback
-I64 rv_vt_color;      // 1 = emit SGR colour
-I64 rv_vt_fg;         // last SGR state actually sent (-1 = unknown)
+I64 rv_vt_n;
+// bytes pending in rv_vt_buf
+I64 rv_vt_ready;
+// shadow is valid: diff instead of full repaint
+I64 rv_vt_utf8;
+// 1 = UTF-8 box drawing, 0 = ASCII + - | fallback
+I64 rv_vt_color;
+// 1 = emit SGR colour
+I64 rv_vt_fg;
+// last SGR state actually sent (-1 = unknown)
 I64 rv_vt_bg;
 I64 rv_vt_inv;
-I64 rv_vt_cost;       // bytes sent by the last present (for the smoke / tuning)
-I64 rv_vt_oversize;   // reported the too-big-grid refusal once
-
+I64 rv_vt_cost;
+// bytes sent by the last present (for the smoke / tuning)
+I64 rv_vt_oversize;
+// reported the too-big-grid refusal once
 U0 RVVtFlush()
 {
   if (!rv_vt_n)
@@ -70,16 +74,14 @@ U0 RVVtPut(I64 ch)
 U0 RVVtPutS(U8 *s)
 {
   while (s && *s) {
-    RVVtPut(*s);
+    RVVtPut (*s);
     s++;
   }
 }
-
 // Digit scratch is file scope on purpose: stores into a narrow *local* array are a
 // known codegen hazard in this compiler (an 8-byte store into a U8 slot clobbers
 // its neighbours), and this runs on every cursor address.
 U8 rv_vt_num[24];
-
 U0 RVVtPutNum(I64 v)
 {
   I64 i;
@@ -115,6 +117,7 @@ U0 RVVtSaveCur()
   RVVtPut(27);
   RVVtPut('7');
 }
+
 U0 RVVtRestoreCur()
 {
   RVVtPut(27);
@@ -149,7 +152,6 @@ I64 RVVtSgrColor(I64 n)
     return 90 + c;
   return 30 + c;
 }
-
 // ---- Theme -------------------------------------------------------------------
 // TempleOS's 16 colors are used as ROLES, not pixels: DolDoc and the WinMgr say
 // "WHITE background, BLACK text, BLUE border" and mean "body ground, body ink,
@@ -330,13 +332,11 @@ U0 RVVtPutGlyph(I64 ch)
     u = "╝";
   RVVtPutS(u);
 }
-
 I64 rv_vt_term_rows = 25, rv_vt_term_cols = 80;
 // what the terminal said when asked; the safe default until it does
 I64 rv_vt_resize_fn, rv_vt_probe_ok, rv_vt_inband;
 // rv_vt_inband: the terminal sent an unsolicited resize report, so it will send the next one
 // too and nobody needs to keep asking
-
 // RVVtOnResize -- RVVtOnResize(&fn)
 // NAME
 //   RVVtOnResize - install what runs when the terminal changes size
@@ -348,7 +348,6 @@ public U0 RVVtOnResize(I64 fn)
 {
   rv_vt_resize_fn = fn;
 }
-
 // RVVtSizeSet -- RVVtSizeSet(rows, cols)
 // NAME
 //   RVVtSizeSet - record a size the terminal reported, and relayout if it moved
@@ -375,7 +374,6 @@ public I64 RVVtSizeSet(I64 rows, I64 cols)
   }
   return TRUE;
 }
-
 // RVVtResizeReports -- RVVtResizeReports(on)
 // NAME
 //   RVVtResizeReports - ask the terminal to tell us when it is resized (mode 2048)
@@ -399,7 +397,6 @@ public U0 RVVtResizeReports(I64 on)
   RVVtPut(on ? 'h' : 'l');
   RVVtFlush;
 }
-
 // RVVtProbeSize -- RVVtProbeSize(ms)
 // NAME
 //   RVVtProbeSize - ask the terminal its size, and believe the answer
@@ -423,8 +420,7 @@ public I64 RVVtProbeSize(I64 ms = 300)
   RVVtPut('n');
   RVVtRestoreCur();
   RVVtFlush;
-  deadline = *(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) +
-             ms * (CONFIG_TIMEBASE_FREQ / 1000);
+  deadline = *(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) + ms * (CONFIG_TIMEBASE_FREQ / 1000);
   while (*(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) < deadline) {
     ch = RVUartTryGet;
     if (ch < 0)
@@ -485,7 +481,6 @@ U0 RVVtClear()
   RVVtPut('J');
   RVVtHome();
 }
-
 // RVVtCursorStyle -- RVVtCursorStyle(style)
 // NAME
 //   RVVtCursorStyle - blinking block, underline or bar (DECSCUSR)
@@ -573,7 +568,7 @@ I64 RVVtPresent()
     return 0;
   rows = rv_winmgr.rows;
   cols = rv_winmgr.cols;
-  if (rows * cols > RV_VT_CELLS_MAX) {
+  if (rows *cols > RV_VT_CELLS_MAX) {
     // A returned 0 otherwise reads as "nothing changed", so an oversized grid would
     // look like a working presenter painting a blank terminal. Say so once.
     if (!rv_vt_oversize) {
@@ -597,7 +592,7 @@ I64 RVVtPresent()
     // -1 = cursor is not on this row at a useful column
     col = 0;
     while (col < cols) {
-      i = row * cols + col;
+      i = row *cols + col;
       cell = grid[i];
       prev = rv_vt_shadow[i];
       if (rv_vt_ready && cell == prev) {
@@ -609,7 +604,7 @@ I64 RVVtPresent()
       // break the run on a longer stretch of unchanged cells.
       run = 0;
       while (col < cols) {
-        i = row * cols + col;
+        i = row *cols + col;
         cell = grid[i];
         prev = rv_vt_shadow[i];
         if (rv_vt_ready && cell == prev) {

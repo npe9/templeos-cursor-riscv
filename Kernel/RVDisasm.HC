@@ -4,7 +4,6 @@
 // HTT_EXPORT_SYS_SYM values for Kernel exports). Bare "fmt",args; statements became Print().
 #help_index "Debugging/Unassemble"
 extern U0 DisAsmNamesInit();
-
 I64 RVDisFnAddr(U8 *name)
 {
   CHashFun *tmpf;
@@ -82,7 +81,6 @@ U8 *RVDisSymName(I64 addr)
     return NULL;
   return e->str;
 }
-
 // disasm.hc -- a RISC-V disassembler in HolyC. Disasm("Name") (or DisasmAt(addr)) prints a
 // 28-instruction window; Src() falls back to it for a function with no source. Decodes base
 // RV64IMA (incl. lr/sc/amo* atomics), D-extension floats (incl. fsgnj/fmin/fmax and the RVC
@@ -386,15 +384,23 @@ U0 DisasmOne(I64 addr, I64 w)
     rs1 = (w >> 24) & 0xF;
     rs2 = (w >> 20) & 0xF;
     Print("fence ");
-    if (rs1 & 8) Print("i");
-    if (rs1 & 4) Print("o");
-    if (rs1 & 2) Print("r");
-    if (rs1 & 1) Print("w");
+    if (rs1 & 8)
+      Print("i");
+    if (rs1 & 4)
+      Print("o");
+    if (rs1 & 2)
+      Print("r");
+    if (rs1 & 1)
+      Print("w");
     Print(", ");
-    if (rs2 & 8) Print("i");
-    if (rs2 & 4) Print("o");
-    if (rs2 & 2) Print("r");
-    if (rs2 & 1) Print("w");
+    if (rs2 & 8)
+      Print("i");
+    if (rs2 & 4)
+      Print("o");
+    if (rs2 & 2)
+      Print("r");
+    if (rs2 & 1)
+      Print("w");
   } else if (w == 0x00008067)
     Pm("ret");
   else if (op == 0x37) {
@@ -1698,17 +1704,18 @@ U0 DisAsmNamesInit()
   FRN[30] = "ft10";
   FRN[31] = "ft11";
 }
-
 // ---- Breakpoints: Bp(addr) plants EBREAK; the trap returns to the prompt (recovery) with a
 // symbolized report and every breakpoint restored (stock Bp/BpClr shape; no Step yet). ----
 #define RV_BP_MAX 16
 I64 rv_bp_addr[RV_BP_MAX];
 I64 rv_bp_orig[RV_BP_MAX];
 I64 rv_bp_n;
-
 U0 RVBpFence()
 {
-  asm {FENCEI};
+  asm {
+	FENCEI
+  }
+  ;
 }
 
 I64 RVBpFind(I64 addr)
@@ -1759,7 +1766,8 @@ I64 RVBp(I64 addr = 0)
   rv_bp_addr[rv_bp_n] = addr;
   rv_bp_orig[rv_bp_n] = *(U32 *)addr;
   rv_bp_n++;
-  *(U32 *)addr = 0x00100073;   // ebreak (4 bytes: a compressed insn there loses its neighbor until restore)
+  *(U32 *)addr = 0x00100073;
+  // ebreak (4 bytes: a compressed insn there loses its neighbor until restore)
   RVBpFence;
   Print("Bp set at %08X", addr);
   RVBpSymPrint(addr);

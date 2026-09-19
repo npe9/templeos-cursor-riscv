@@ -26,7 +26,6 @@
 #ifndef RV_VT_DEMO_COLOR
 #define RV_VT_DEMO_COLOR 1
 #endif
-
 I64 main()
 {
   I64 rows = RV_VT_DEMO_ROWS, cols = RV_VT_DEMO_COLS, y, n;
@@ -36,7 +35,7 @@ I64 main()
     return 1;
   // RVVtPresent refuses a grid larger than its shadow; say so here rather than
   // silently painting nothing.
-  if (rows * cols > RV_VT_CELLS_MAX) {
+  if (rows *cols > RV_VT_CELLS_MAX) {
     RVUartPutS("VT demo: rows*cols exceeds RV_VT_CELLS_MAX (8192)\n");
     return 2;
   }
@@ -64,8 +63,7 @@ I64 main()
     StrPrint(buf, "row %02d", y);
     RVTextPrint(2, y, WHITE, buf);
   }
-  StrPrint(buf, "TempleOS/RISC-V DolDoc VT presenter  %dx%d  utf8=%d color=%d",
-           cols, rows, RV_VT_DEMO_UTF8, RV_VT_DEMO_COLOR);
+  StrPrint(buf, "TempleOS/RISC-V DolDoc VT presenter  %dx%d  utf8=%d color=%d", cols, rows, RV_VT_DEMO_UTF8, RV_VT_DEMO_COLOR);
   RVTextPrint(12, 3, LTCYAN, buf);
   RVTextPrint(12, 5, YELLOW, "Top ruler AND bottom border must both be visible.");
   RVTextPrint(12, 6, YELLOW, "If the ruler scrolled off, the grid is taller than this terminal.");

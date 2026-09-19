@@ -402,7 +402,6 @@ I32 *FsChSzP(I64 i)
 {
   return (I32 *)(FsChBase() + MEMFS_MAX * 130 + i * 4);
 }
-
 // U32, not I32: this holds an FNV-1a hash, so a hash with bit 31 set must zero-extend.
 // As I32 the (correct, 4-byte) signed load reported 0xE36FA7C0 as 0xFFFFFFFFE36FA7C0.
 U32 *FsChHashP(I64 i)
@@ -473,7 +472,6 @@ I64 FsLogLoadU16(U8 *p)
   v = v | (*p << 8);
   return v;
 }
-
 // Mirror the journal cursor into the JTAG-readable header. Every field an external
 // reader needs is here, so the OpenOCD recipe is one address and no symbols:
 //   +0  magic "TOSFSLOG"   +8  version      +12 hdr_size    +16 rec_size

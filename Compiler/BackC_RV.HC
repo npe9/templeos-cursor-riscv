@@ -512,8 +512,7 @@ U0 ICSwitchRV(CIntermediateCode *tmpi, CCodeMisc *mc_jt, Bool nobound, I64 rip)
     return;
   range = mc_jt->range;
   // index = value-lo into t0 (arg1 already normalized by PrsSwitch)
-  ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0,
-	tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
+  ICMov(tmpi, MDF_REG + RT_I64, RV_REG_T0, 0, tmpi->arg1.type, tmpi->arg1.reg, tmpi->arg1.disp, rip);
   if (!nobound) {
     // if ((U64)index >= range) goto default   — implemented as: if in-bounds skip
     // the 4-byte default jump that follows.
@@ -524,7 +523,8 @@ U0 ICSwitchRV(CIntermediateCode *tmpi, CCodeMisc *mc_jt, Bool nobound, I64 rip)
       tmpi->ic_flags &= ~ICF_CODE_FINAL;
     } else
       doff = mc_jt->dft->addr - (rip + tmpi->ic_cnt);
-    RVJ(tmpi, doff);   // JAL x0 — always 4 bytes
+    RVJ(tmpi, doff);
+    // JAL x0 — always 4 bytes
   }
   // t1 = runtime address of the jump table (PC-relative to mc_jt->addr)
   if (mc_jt->addr == INVALID_PTR) {

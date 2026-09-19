@@ -13,9 +13,7 @@
 #ifndef RV_COMPLETE_HC
 #define RV_COMPLETE_HC
 #help_index "Term"
-
 #define RVCOMP_LIST_MAX 24
-
 // Walk one hash table for entries starting with `word`. Returns the number of matches, fills
 // `out` with the longest common prefix of them, and optionally prints them.
 I64 RVCompScan(CHashTable *table, U8 *word, I64 n, U8 *out, I64 max, I64 list)
@@ -58,7 +56,6 @@ I64 RVCompScan(CHashTable *table, U8 *word, I64 n, U8 *out, I64 max, I64 list)
     "\n";
   return hits;
 }
-
 // RVHashComplete -- Tab hook for the HolyC prompt
 // NAME
 //   RVHashComplete - complete from the compiler's hash table
@@ -93,5 +90,4 @@ I64 RVHashComplete(U8 *word, U8 *out, I64 max)
   RVCompScan(Fs->hash_table, word, n, best, 160, TRUE);
   return 2;
 }
-
 #endif

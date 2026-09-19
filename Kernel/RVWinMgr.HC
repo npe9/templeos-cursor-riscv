@@ -564,13 +564,15 @@ U0 RVWinBodyAppend(I64 idx, U8 *st)
     I64 cut = 0, drop = len + n - (RV_WIN_BODY_MAX - 1), j;
     while (cut < len && cut < drop)
       cut++;
-    while (cut < len && w->body[cut - 1] != '\n')  // drop only whole lines
+    while (cut < len && w->body[cut - 1] != '\n')
+      // drop only whole lines
       cut++;
     if (cut > len)
       cut = len;
     if (cut > 0) {
       j = 0;
-      while (cut + j <= len) {   // shift tail down, including the terminating NUL
+      while (cut + j <= len) {
+        // shift tail down, including the terminating NUL
         w->body[j] = w->body[cut + j];
         j++;
       }
@@ -2226,7 +2228,8 @@ Bool RVDocOpenLink(U8 *link)
   }
   if (loaded)
     Free(loaded);
-  rv_doc_last_open_idx = idx;   // VT link-nav auto-focuses this window after Enter
+  rv_doc_last_open_idx = idx;
+  // VT link-nav auto-focuses this window after Enter
   rv_doc_open_busy = 0;
   return TRUE;
 }
@@ -3173,8 +3176,7 @@ Bool RVWinDocFocusIsNav()
   if (idx < 0 || idx >= RV_WIN_MAX || !rv_winmgr.wins[idx].used)
     return FALSE;
   w = &rv_winmgr.wins[idx];
-  if (w->kind == RV_WIN_KIND_TERM || w->kind == RV_WIN_KIND_ADAM || w->kind == RV_WIN_KIND_USER ||
-      w->kind == RV_WIN_KIND_EDIT)
+  if (w->kind == RV_WIN_KIND_TERM || w->kind == RV_WIN_KIND_ADAM || w->kind == RV_WIN_KIND_USER || w->kind == RV_WIN_KIND_EDIT)
     return FALSE;
   if (!w->doc || w->doc->doc_signature != DOC_SIGNATURE_VAL)
     return FALSE;
@@ -3213,7 +3215,8 @@ U0 RVWinDocFocusSelMove(I64 dir)
     return;
   // Non-console doc renders from y=w->scroll_y (RVDocDrawWin), so pull the selection
   // toward the middle of the client and let RVWinClampScroll bound it.
-  hh = w->bottom - w->top - 1;   // client height minus the two borders
+  hh = w->bottom - w->top - 1;
+  // client height minus the two borders
   if (hh < 1)
     hh = 1;
   cy = doc_e->y - hh / 2;
@@ -3245,11 +3248,10 @@ Bool RVWinDocFocusActivate()
   rv_doc_last_open_idx = -1;
   if (RVDocActivate(w->doc, doc_e)) {
     DocRecalc(w->doc);
-    if (rv_doc_last_open_idx >= 0 && rv_doc_last_open_idx < RV_WIN_MAX &&
-        rv_winmgr.wins[rv_doc_last_open_idx].used)
-      RVWinFocus(rv_doc_last_open_idx);   // browse the newly opened doc next
-    else
-      rv_doc_last_open_idx = opened;
+    if (rv_doc_last_open_idx >= 0 && rv_doc_last_open_idx < RV_WIN_MAX && rv_winmgr.wins[rv_doc_last_open_idx].used)
+      RVWinFocus(rv_doc_last_open_idx);
+    // browse the newly opened doc next
+    else rv_doc_last_open_idx = opened;
     return TRUE;
   }
   rv_doc_last_open_idx = opened;

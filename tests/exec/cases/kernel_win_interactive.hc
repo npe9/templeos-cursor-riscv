@@ -79,7 +79,6 @@ U0 RVWinAdamBoot()
   RVYieldInit(&Fs);
   RVJiffiesInit(CONFIG_TIMEBASE_FREQ / 1000);
 }
-
 // ---- VT presentation (RVWinHoldFlag()==2) -------------------------------------
 // The desktop, ExePutS REPL and DolDoc are all exactly the ones the FB variants use.
 // The only difference is the scanout: RVVtPresent diffs the composed text grid and
@@ -129,7 +128,6 @@ U0 RVWinVtCaret(I64 idx)
   if (g_vt_caret_col > w->right)
     g_vt_caret_col = w->right;
 }
-
 // Readable palette for the VT presentation. Scoped to this path on purpose: the FB
 // variants keep their existing attrs, so no render hash moves.
 //
@@ -196,11 +194,9 @@ U0 RVWinVtRun()
   // "HOME.DD" — so Cat on them looks broken when it is working. This one carries
   // actual DolDoc markup, so `Cat("A:/Doc/VtDemo.DD");` demonstrates that $-commands
   // are interpreted (colour + a link) rather than printed literally.
+  
   {
-    U8 *dd = "$FG,LTBLUE$TempleOS/RISC-V$FG$ on a VT100\n"
-             "$FG,GREEN$Colour$FG$ and $UL$underline$UL$ come from DolDoc, not ANSI.\n"
-             "Link: $LK,\"HOME.DD\",A=\"FI:A:/HOME.DD\"$\n"
-             "Cat prints through DocPutS, so these $$ commands are parsed.\n";
+    U8 *dd = "$FG,LTBLUE$TempleOS/RISC-V$FG$ on a VT100\n" "$FG,GREEN$Colour$FG$ and $UL$underline$UL$ come from DolDoc, not ANSI.\n" "Link: $LK,\"HOME.DD\",A=\"FI:A:/HOME.DD\"$\n" "Cat prints through DocPutS, so these $$ commands are parsed.\n";
     DirMk("A:/Doc");
     FileWrite("A:/Doc/VtDemo.DD", dd, StrLen(dd));
   }
@@ -226,9 +222,7 @@ U0 RVWinVtRun()
     // A browsable DolDoc (HOME or a link-opened Doc window) owns its own scroll — the
     // link cursor pages it (RVWinDocFocusSelMove keeps the selected link in view). Only
     // plain output windows tail-follow. Term/Adam consoles page themselves in RVDocDrawWin.
-    if (idx >= 0 && idx < RV_WIN_MAX && rv_winmgr.wins[idx].used &&
-        rv_winmgr.wins[idx].kind != RV_WIN_KIND_TERM && rv_winmgr.wins[idx].kind != RV_WIN_KIND_ADAM &&
-        !RVWinDocFocusIsNav()) {
+    if (idx >= 0 && idx < RV_WIN_MAX && rv_winmgr.wins[idx].used && rv_winmgr.wins[idx].kind != RV_WIN_KIND_TERM && rv_winmgr.wins[idx].kind != RV_WIN_KIND_ADAM && !RVWinDocFocusIsNav()) {
       rv_winmgr.wins[idx].scroll_y = 0x40000000;
       RVWinClampScroll(idx);
     }
@@ -338,6 +332,7 @@ I64 main()
     RVAotLibSync(Fs, Gs);
     RVCmpWireCharBmps(bmps);
     // Guest IC_SIN/COS/TAN/ATAN/POWER call these Kernel F64 wrappers (KUtilsRV).
+    
     {
       I64 f64rt[8], zi;
       for (zi = 0; zi < 8; zi++)
@@ -372,39 +367,72 @@ I64 main()
     // That codegen bug is FIXED (verified 2026-09-16: reverting to the loop builds+runs
     // green); MemSet stays as the clean, single-call way to zero the array.
     MemSet(pubs, 0, sizeof(pubs));
-    pubs[36] = &FileRead;     // U8 *FileRead(U8 *name, I64 *size=NULL, I64 *attr=NULL)
-    pubs[37] = &FileWrite;    // I64 FileWrite(U8 *name, U8 *buf, I64 size, CDate=0, I64 attr=0)
-    pubs[38] = &RVWinSoftFind; // U0 Find(U8 *needle)  — grep the doc tree
-    pubs[39] = &RVWinSoftEd;   // U0 Ed(U8 *name)      — edit a file
-    pubs[40] = &RVWinSoftTasks;// U0 Tasks()           — list desktop windows/tasks
-    pubs[41] = &AsmList;       // U0 AsmList()         — documented asm{} mnemonics
-    pubs[42] = &AsmDoc;        // U0 AsmDoc(U8 *mn)    — one mnemonic's doc
-    pubs[43] = &MemMap;        // U0 MemMap()          — RISC-V memory map
-    pubs[44] = &Mstatus;       // U0 Mstatus()         — read+decode mstatus CSR
-    pubs[45] = &Mcause;        // U0 Mcause()          — read+decode mcause CSR
-    pubs[46] = &Csr;           // U0 Csr(U8 *name)     — read+decode any M/S CSR
-    pubs[47] = &Uptime;        // U0 Uptime()          — cycle/time/instret counters
-    pubs[31] = &RVMemCpy;     // U8 *MemCpy(U8 *dst, U8 *src, I64 size)
-    pubs[32] = &RVMemSet;     // U8 *MemSet(U8 *dst, I64 dat, I64 size)
-    pubs[33] = &DocNew;       // CDoc *DocNew(U8 *filename=NULL, CTask *task=NULL)
-    pubs[34] = &DocDel;       // U0 DocDel(CDoc *doc)
-    pubs[35] = &DocClear;     // U0 DocClear(CDoc *doc=NULL, Bool clear_holds=FALSE)
-    pubs[28] = &MStrPrint;    // U8 *MStrPrint(U8 *fmt,...)
-    pubs[29] = &StrPrint;     // U8 *StrPrint(U8 *dst, U8 *fmt,...)
-    pubs[30] = &DocPrint;     // CDocEntry *DocPrint(CDoc *doc, U8 *fmt,...)
-    pubs[23] = &MAlloc;       // U8 *MAlloc(I64 size, CTask *mem_task=NULL)
-    pubs[24] = &CAlloc;       // U8 *CAlloc(I64 size, CTask *mem_task=NULL)
-    pubs[25] = &Free;         // U0 Free(U8 *ptr)
-    pubs[26] = &StrNew;       // U8 *StrNew(U8 *buf, CTask *mem_task=NULL)
-    pubs[27] = &Str2I64;      // I64 Str2I64(U8 *st, I64 radix=10, U8 **end=NULL)
-    pubs[15] = &FilesFind;    // query runtime: CDirEntry *FilesFind(U8 *mask, I64 flags=0)
-    pubs[16] = &DirTreeDel;   // U0 DirTreeDel(CDirEntry *)
-    pubs[17] = &StrFind;      // U8 *StrFind(U8 *needle, U8 *haystack, I64 flags=0)
-    pubs[18] = &ScanFlags;    // U0 ScanFlags(U8 *dst, U8 *lst, U8 *src)
-    pubs[19] = &Define;       // U8 *Define(U8 *dname)
-    pubs[20] = &Now;          // CDate Now()
-    pubs[21] = &Str2Date;     // CDate Str2Date(U8 *st)
-    pubs[22] = &Date2Struct;  // U0 Date2Struct(CDateStruct *, CDate)
+    pubs[36] = &FileRead;
+    // U8 *FileRead(U8 *name, I64 *size=NULL, I64 *attr=NULL)
+    pubs[37] = &FileWrite;
+    // I64 FileWrite(U8 *name, U8 *buf, I64 size, CDate=0, I64 attr=0)
+    pubs[38] = &RVWinSoftFind;
+    // U0 Find(U8 *needle)  — grep the doc tree
+    pubs[39] = &RVWinSoftEd;
+    // U0 Ed(U8 *name)      — edit a file
+    pubs[40] = &RVWinSoftTasks;
+    // U0 Tasks()           — list desktop windows/tasks
+    pubs[41] = &AsmList;
+    // U0 AsmList()         — documented asm{} mnemonics
+    pubs[42] = &AsmDoc;
+    // U0 AsmDoc(U8 *mn)    — one mnemonic's doc
+    pubs[43] = &MemMap;
+    // U0 MemMap()          — RISC-V memory map
+    pubs[44] = &Mstatus;
+    // U0 Mstatus()         — read+decode mstatus CSR
+    pubs[45] = &Mcause;
+    // U0 Mcause()          — read+decode mcause CSR
+    pubs[46] = &Csr;
+    // U0 Csr(U8 *name)     — read+decode any M/S CSR
+    pubs[47] = &Uptime;
+    // U0 Uptime()          — cycle/time/instret counters
+    pubs[31] = &RVMemCpy;
+    // U8 *MemCpy(U8 *dst, U8 *src, I64 size)
+    pubs[32] = &RVMemSet;
+    // U8 *MemSet(U8 *dst, I64 dat, I64 size)
+    pubs[33] = &DocNew;
+    // CDoc *DocNew(U8 *filename=NULL, CTask *task=NULL)
+    pubs[34] = &DocDel;
+    // U0 DocDel(CDoc *doc)
+    pubs[35] = &DocClear;
+    // U0 DocClear(CDoc *doc=NULL, Bool clear_holds=FALSE)
+    pubs[28] = &MStrPrint;
+    // U8 *MStrPrint(U8 *fmt,...)
+    pubs[29] = &StrPrint;
+    // U8 *StrPrint(U8 *dst, U8 *fmt,...)
+    pubs[30] = &DocPrint;
+    // CDocEntry *DocPrint(CDoc *doc, U8 *fmt,...)
+    pubs[23] = &MAlloc;
+    // U8 *MAlloc(I64 size, CTask *mem_task=NULL)
+    pubs[24] = &CAlloc;
+    // U8 *CAlloc(I64 size, CTask *mem_task=NULL)
+    pubs[25] = &Free;
+    // U0 Free(U8 *ptr)
+    pubs[26] = &StrNew;
+    // U8 *StrNew(U8 *buf, CTask *mem_task=NULL)
+    pubs[27] = &Str2I64;
+    // I64 Str2I64(U8 *st, I64 radix=10, U8 **end=NULL)
+    pubs[15] = &FilesFind;
+    // query runtime: CDirEntry *FilesFind(U8 *mask, I64 flags=0)
+    pubs[16] = &DirTreeDel;
+    // U0 DirTreeDel(CDirEntry *)
+    pubs[17] = &StrFind;
+    // U8 *StrFind(U8 *needle, U8 *haystack, I64 flags=0)
+    pubs[18] = &ScanFlags;
+    // U0 ScanFlags(U8 *dst, U8 *lst, U8 *src)
+    pubs[19] = &Define;
+    // U8 *Define(U8 *dname)
+    pubs[20] = &Now;
+    // CDate Now()
+    pubs[21] = &Str2Date;
+    // CDate Str2Date(U8 *st)
+    pubs[22] = &Date2Struct;
+    // U0 Date2Struct(CDateStruct *, CDate)
     pubs[14] = &RVWinSoftCat;
     pubs[0] = &Print;
     pubs[1] = &PutChars;
@@ -423,6 +451,7 @@ I64 main()
     Print("RVWinMgr interactive: ExePubs wired n=%d\n", RVExePubsWireAddrs(pubs));
   }
   // Debugger surface: Disasm/DisasmAt/U/UA/FnAddr/Uf (Kernel/RVDisasm.HC).
+  
   {
     I64 dbg[8], di;
     for (di = 0; di < 8; di++)
@@ -532,29 +561,25 @@ I64 main()
     // Clean boot: seed a couple of real stock DolDoc files so there is something to
     // browse (Cat("A:/Doc/God.DD");), and greet in the Term instead of the test string.
     DirMk("A:/Doc");
-    { U8 *s = "The $$LK+PU,\"Holy Spirit\",A=\"FI:::/Adam/God/HSNotes.DD\"$$ can puppet you.\n\n"; FileWrite("A:/Doc/God.DD", s, StrLen(s)); }
-    { U8 *s = "$$WW,1$$A $$FG,2$$Queue$$FG$$ is a bunch of $$LK,\"MAlloc\",A=\"MN:MAlloc\"$$()ed chunks of mem linked together in a circle with one ptr to the $$FG,2$$next$$FG$$ value and another ptr to the $$FG,2$$last$$FG$$ value.  These ptrs must be stored in the first locations in the structure.\n"; FileWrite("A:/Doc/Que.DD", s, StrLen(s)); }
+    
+    {
+      U8 *s = "The $$LK+PU,\"Holy Spirit\",A=\"FI:::/Adam/God/HSNotes.DD\"$$ can puppet you.\n\n";
+      FileWrite("A:/Doc/God.DD", s, StrLen(s));
+    }
+    
+    {
+      U8 *s = "$$WW,1$$A $$FG,2$$Queue$$FG$$ is a bunch of $$LK,\"MAlloc\",A=\"MN:MAlloc\"$$()ed chunks of mem linked together in a circle with one ptr to the $$FG,2$$next$$FG$$ value and another ptr to the $$FG,2$$last$$FG$$ value.  These ptrs must be stored in the first locations in the structure.\n";
+      FileWrite("A:/Doc/Que.DD", s, StrLen(s));
+    }
     // Console-based examples in the tree: a curated Index.DD of $$LK$$ entries into the
     // real stock docs on B: (and a $$TR$$ of runnable demos). Tab onto this window, then
     // arrows select a link and Enter follows it — the FI: links FileRead the target.
+    
     {
-      U8 *s = "$$FG,LTBLUE$$$$TX,\"TempleOS/RISC-V \x97 Console Index\"$$$$FG$$\n"
-              "$$AN,\"top\"$$\n"
-              "Browse the stock docs \x97 arrows select, Enter follows:\n"
-              "$$LK,\"About TempleOS\",A=\"FI:B:/Doc/AboutTempleOS.DD\"$$\n"
-              "$$LK,\"DolDoc Overview\",A=\"FI:B:/Doc/DolDocOverview.DD\"$$\n"
-              "$$LK,\"Compiler Overview\",A=\"FI:B:/Doc/CompilerOverview.DD\"$$\n"
-              "$$LK,\"Hash Table\",A=\"FI:B:/Doc/Hash.DD\"$$\n"
-              "$$LK,\"God Word\",A=\"FI:B:/Doc/God.DD\"$$\n"
-              "$$LK,\"Que (A: scratch)\",A=\"FI:A:/Doc/Que.DD\"$$\n"
-              "$$TR,\"Run a program (type in the Term)\"$$\n$$ID,+2$$\n"
-              "  #include \"B:/Demo/ForLoop.HC\"\n"
-              "  #include \"B:/Demo/NullCase.HC\"\n"
-              "  #include \"B:/Demo/SubSwitch.HC\"\n$$ID,-2$$\n";
+      U8 *s = "$$FG,LTBLUE$$$$TX,\"TempleOS/RISC-V \x97 Console Index\"$$$$FG$$\n" "$$AN,\"top\"$$\n" "Browse the stock docs \x97 arrows select, Enter follows:\n" "$$LK,\"About TempleOS\",A=\"FI:B:/Doc/AboutTempleOS.DD\"$$\n" "$$LK,\"DolDoc Overview\",A=\"FI:B:/Doc/DolDocOverview.DD\"$$\n" "$$LK,\"Compiler Overview\",A=\"FI:B:/Doc/CompilerOverview.DD\"$$\n" "$$LK,\"Hash Table\",A=\"FI:B:/Doc/Hash.DD\"$$\n" "$$LK,\"God Word\",A=\"FI:B:/Doc/God.DD\"$$\n" "$$LK,\"Que (A: scratch)\",A=\"FI:A:/Doc/Que.DD\"$$\n" "$$TR,\"Run a program (type in the Term)\"$$\n$$ID,+2$$\n" "  #include \"B:/Demo/ForLoop.HC\"\n" "  #include \"B:/Demo/NullCase.HC\"\n" "  #include \"B:/Demo/SubSwitch.HC\"\n$$ID,-2$$\n";
       FileWrite("A:/Doc/Index.DD", s, StrLen(s));
     }
-    if (rv_winmgr.term_idx >= 0 && rv_winmgr.wins[rv_winmgr.term_idx].doc &&
-        rv_winmgr.wins[rv_winmgr.term_idx].doc->doc_signature == DOC_SIGNATURE_VAL) {
+    if (rv_winmgr.term_idx >= 0 && rv_winmgr.wins[rv_winmgr.term_idx].doc && rv_winmgr.wins[rv_winmgr.term_idx].doc->doc_signature == DOC_SIGNATURE_VAL) {
       DocClear(rv_winmgr.wins[rv_winmgr.term_idx].doc);
       RVDocPutS("TempleOS/RISC-V \x97 HolyC ExePutS + DolDoc.\n");
       RVDocPutS("Try:  2+3;   Dir;   Cat(\"B:/Doc/Welcome.DD\");   F64 f=2.0; Sqrt(f);\n");

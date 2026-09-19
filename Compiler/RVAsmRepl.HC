@@ -37,11 +37,9 @@ U8 asm_stack[ASM_STACK_SZ];
 // second instruction of almost every one — stored through the REPL's live sp and overwrote the
 // return address it was about to use. A stepper has to have somewhere of its own to push.
 // shadow: what the registers held before the last step
-
 I64 asm_ctx_ready;
 I64 asm_watch_fn;
 // optional pane painter (Kernel/RVRegPane.HC), installed at runtime
-
 // AsmWatchInstall -- AsmWatchInstall(&RegPaneUpdate)
 // NAME
 //   AsmWatchInstall - have AsmStep repaint a live register pane after each line
@@ -55,7 +53,6 @@ public U0 AsmWatchInstall(I64 fn)
 {
   asm_watch_fn = fn;
 }
-
 // Context registers, in display order: x-numbers.
 I64 AsmCtxReg(I64 i)
 {
@@ -82,7 +79,6 @@ I64 AsmCtxReg(I64 i)
   // sp — on the stepper's own stack, so a traced prologue has somewhere to push
   return -1;
 }
-
 #define ASM_CTX_BASE_REG 31
 // t6: the wrapper needs SOME register to address the context array with, and whichever one it
 // picks it cannot also carry that register's value across the step. The answer is to handle it
@@ -125,7 +121,6 @@ U0 AsmRegName(I64 n, U8 *out)
   else
     StrPrint(out, "x%d", n);
 }
-
 // Append the ld/sd block that moves the whole context between the array and the machine.
 U0 AsmCtxIo(U8 *dst, Bool store)
 {
@@ -187,7 +182,6 @@ U0 AsmCtxIo(U8 *dst, Bool store)
     StrCat(dst, line);
   }
 }
-
 // The float register's ABI name, which is what anyone typing at a stepper uses.
 U0 AsmFRegName(I64 n, U8 *out)
 {
@@ -220,7 +214,6 @@ U0 AsmCtxSnapPrev()
     i++;
   }
 }
-
 // AsmRegs -- AsmRegs()
 // NAME
 //   AsmRegs - print the asm REPL's register context
@@ -247,7 +240,6 @@ public U0 AsmRegs()
   if (col % 3)
     "\n";
 }
-
 // AsmClr -- AsmClr()
 // NAME
 //   AsmClr - zero the asm REPL's register context
@@ -279,7 +271,6 @@ public U0 AsmClr()
   *(I64 *)(ASM_CTX_PREV + 2 * 8) = asm_stack + ASM_STACK_SZ - 16;
   asm_ctx_ready = 1;
 }
-
 // AsmStep -- AsmStep("addi a0,a0,1")
 // NAME
 //   AsmStep - assemble and run one line with the register context, then show what changed

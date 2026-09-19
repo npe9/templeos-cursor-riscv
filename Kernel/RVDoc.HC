@@ -72,8 +72,10 @@ I64 rv_doc_filemgr_user_hits;
 I64 rv_doc_filemgr_ffind;
 I64 rv_doc_link_opens;
 I64 rv_doc_open_busy;
-I64 rv_doc_last_open_idx = -1;   // window opened by the most recent FI: link (auto-focus)
-I64 rv_doc_sel_moves;            // cursor link-selection moves (canary for VT link-nav)
+I64 rv_doc_last_open_idx = -1;
+// window opened by the most recent FI: link (auto-focus)
+I64 rv_doc_sel_moves;
+// cursor link-selection moves (canary for VT link-nav)
 I64 rv_doc_html_hits;
 I64 rv_doc_hx_hits;
 I64 rv_doc_song_hits;
@@ -1056,14 +1058,16 @@ Bool RVDocInitSeedApply(U8 *seed)
 }
 
 public I64 RVDocDolDocHashGet()
-{//Soft tip: Kernel doldoc.hash addr without Soft defining Soft doldoc (Load shadow).
+{
+  //Soft tip: Kernel doldoc.hash addr without Soft defining Soft doldoc (Load shadow).
   if (!doldoc.hash)
     DocInit;
   return doldoc.hash(I64);
 }
 
 public I64 RVDocKernDolDocHashProbe()
-{//Soft tip: Kernel doldoc.hash TX via Soft Call (no Soft Call Load of Soft doldoc).
+{
+  //Soft tip: Kernel doldoc.hash TX via Soft Call (no Soft Call Load of Soft doldoc).
   DocInit;
   if (!doldoc.hash)
     return 2;
@@ -3928,9 +3932,7 @@ Bool RVDocToggleTree(CDoc *doc, CDocEntry *doc_e)
 Bool RVDocSelClickable(I64 t)
 {
   //The activatable entry types — same set RVDocFindAt treats as clickable.
-  return t == DOCT_LINK || t == DOCT_TREE || t == DOCT_BTTN || t == DOCT_CHECK_BOX ||
-         t == DOCT_MACRO || t == DOCT_DATA || t == DOCT_MENU_VAL || t == DOCT_LST ||
-         t == DOCT_SPRITE || t == DOCT_INS_BIN;
+  return t == DOCT_LINK || t == DOCT_TREE || t == DOCT_BTTN || t == DOCT_CHECK_BOX || t == DOCT_MACRO || t == DOCT_DATA || t == DOCT_MENU_VAL || t == DOCT_LST || t == DOCT_SPRITE || t == DOCT_INS_BIN;
 }
 
 Bool RVDocSelMove(CDoc *doc, I64 dir)
@@ -3952,9 +3954,11 @@ Bool RVDocSelMove(CDoc *doc, I64 dir)
     else
       doc_e = doc_e->next;
     if (doc_e == start)
-      break;                       // full circle: no other clickable entry
+      break;
+    // full circle: no other clickable entry
     if (doc_e == doc)
-      continue;                    // skip the sentinel, keep walking
+      continue;
+    // skip the sentinel, keep walking
     if (doc_e->de_flags & DOCEF_SKIP)
       continue;
     if (RVDocSelClickable(doc_e->type_u8)) {
@@ -3980,12 +3984,14 @@ U0 RVDocEdMove(CDoc *doc, I64 dir)
   if (!doc_e)
     doc_e = doc;
   if (dir == -1) {
-    if (doc_e->last != doc)   // don't step past the head sentinel
+    if (doc_e->last != doc)
+      // don't step past the head sentinel
       doc->cur_entry = doc_e->last;
     return;
   }
   if (dir == 1) {
-    if (doc_e != doc)         // sentinel already means end-of-doc
+    if (doc_e != doc)
+      // sentinel already means end-of-doc
       doc->cur_entry = doc_e->next;
     return;
   }

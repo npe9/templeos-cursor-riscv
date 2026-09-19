@@ -953,7 +953,6 @@ U0 ICXorEqu(CIntermediateCode *tmpi, I64 rip)
   if (tmpi->res.type.mode)
     ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
 }
-
 // Compound assignment (`x op= y`) for the ops stock x86 emits as ICAddSubEctEqu / ICMulEqu /
 // ICDivEqu / ICShiftEqu. Same read-modify-write shape as ICAndEqu above: resolve the target
 // address (arg1 is a pointer, arg1_type_pointed_to its width), load, op with arg2, store back,
@@ -1008,7 +1007,8 @@ U0 ICArithEqu(CIntermediateCode *tmpi, I64 op, I64 rip)
       RVFsd(tmpi, RV_FREG_FT0, addr, 0);
       ICFStore(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, RV_FREG_FT0, rip);
     } else {
-      RVFcvtLD(tmpi, RV_REG_T0, RV_FREG_FT0, 1);   // rtz: HolyC ToI64 truncates
+      RVFcvtLD(tmpi, RV_REG_T0, RV_FREG_FT0, 1);
+      // rtz: HolyC ToI64 truncates
       ICRVStoreThru(tmpi, pt, addr, 0, MDF_REG + RT_I64, RV_REG_T0, 0, rip);
       if (tmpi->res.type.mode)
         ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_T0, 0, rip);

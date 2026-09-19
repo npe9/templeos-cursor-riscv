@@ -293,7 +293,6 @@ U0 ICFMov(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r
   // Bits are bits: a plain integer move implements every F64 move.
   ICMov(tmpi, t1, r1, d1, t2, r2, d2, rip);
 }
-
 /* op: 0 add, 1 sub, 2 mul, 3 div */
 U0 ICFArith(CIntermediateCode *tmpi, I64 op, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, CICType t3, I64 r3, I64 d3, I64 rip)
 {
@@ -403,7 +402,6 @@ U0 ICFCmp(CIntermediateCode *tmpi, CICType t1, I64 r1, I64 d1, CICType t2, I64 r
   if (t1.mode)
     ICMov(tmpi, t1, r1, d1, MDF_REG + RT_I64, RV_REG_A0, 0, rip);
 }
-
 /* F64 runtime call, host convention: bits in a0 (a1), result bits in a0.
  * ICCall saves/restores ra around the call. */
 U0 ICFRtCall1(CIntermediateCode *tmpi, I64 fn, CICType t1, I64 r1, I64 d1, CICType t2, I64 r2, I64 d2, I64 rip)

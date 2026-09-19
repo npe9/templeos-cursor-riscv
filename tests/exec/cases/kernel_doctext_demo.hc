@@ -7,7 +7,6 @@
 #include "/Kernel/RVDocText.HC"
 #include "/Kernel/RVRegPane.HC"
 #define MEM_UART_DT 0x10000000
-
 U0 DtOut(U8 *s)
 {
   U8 *u = MEM_UART_DT;

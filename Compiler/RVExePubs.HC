@@ -328,12 +328,18 @@ CHashClass *RVExePubCDateStructLiteIn(CHashTable *table)
     tmpc->size = sizeof(CDateStruct);
     tmpc->raw_type = RT_I64;
   }
-  names[0] = "sec";         offs[0] = offset(CDateStruct.sec);
-  names[1] = "min";         offs[1] = offset(CDateStruct.min);
-  names[2] = "hour";        offs[2] = offset(CDateStruct.hour);
-  names[3] = "day_of_week"; offs[3] = offset(CDateStruct.day_of_week);
-  names[4] = "day_of_mon";  offs[4] = offset(CDateStruct.day_of_mon);
-  names[5] = "mon";         offs[5] = offset(CDateStruct.mon);
+  names[0] = "sec";
+  offs[0] = offset(CDateStruct.sec);
+  names[1] = "min";
+  offs[1] = offset(CDateStruct.min);
+  names[2] = "hour";
+  offs[2] = offset(CDateStruct.hour);
+  names[3] = "day_of_week";
+  offs[3] = offset(CDateStruct.day_of_week);
+  names[4] = "day_of_mon";
+  offs[4] = offset(CDateStruct.day_of_mon);
+  names[5] = "mon";
+  offs[5] = offset(CDateStruct.mon);
   for (i = 0; i < 6; i++) {
     if (MemberFind(names[i], tmpc))
       continue;
@@ -384,7 +390,8 @@ CHashClass *RVExePubCDirEntryLiteIn(CHashTable *table)
     m->str = StrNew("next");
     m->offset = offset(CDirEntry.next);
     m->size = sizeof(CDirEntry *);
-    m->member_class = tmpc + 1;   // CDirEntry* — the class's own one-star slab
+    m->member_class = tmpc + 1;
+    // CDirEntry* — the class's own one-star slab
     RVExePubMemberPlant(tmpc, m);
   }
   if (!MemberFind("full_name", tmpc)) {
@@ -487,7 +494,6 @@ I64 RVExePubInternFsGsIn(CHashTable *table)
   }
   return n;
 }
-
 /* Stock KernelB.HH `_intern` functions: PrsExp emits tmpf->exe_addr as the IC
  * (Ff_INTERNAL), so the REPL/Soft hash needs them as CHashFun entries. Only
  * the ICs OptPass_RV implements are planted; x86-only ones (In/Out, Carry,
@@ -522,7 +528,8 @@ I64 RVExePubInternsIn(CHashTable *table)
   i64t = cmp.internal_types[RT_I64];
   u64t = cmp.internal_types[RT_U64];
   f64t = cmp.internal_types[RT_F64];
-  boolt = cmp.internal_types[RT_I8];   // Bool is I8 (CInit internal_types_table)
+  boolt = cmp.internal_types[RT_I8];
+  // Bool is I8 (CInit internal_types_table)
   u8t = cmp.internal_types[RT_U8];
   u8p = u8t + 1;
   i64p = i64t + 1;
@@ -532,13 +539,27 @@ I64 RVExePubInternsIn(CHashTable *table)
   // (I64 *bit_field, I64 bit_num) -> Bool
   for (i = 0; i < 7; i++) {
     switch (i) {
-      case 0 : tmpf = RVExePubInternNew(table, "Bt", IC_BT, boolt, 2); break;
-      case 1 : tmpf = RVExePubInternNew(table, "Btc", IC_BTC, boolt, 2); break;
-      case 2 : tmpf = RVExePubInternNew(table, "Btr", IC_BTR, boolt, 2); break;
-      case 3 : tmpf = RVExePubInternNew(table, "Bts", IC_BTS, boolt, 2); break;
-      case 4 : tmpf = RVExePubInternNew(table, "LBtc", IC_LBTC, boolt, 2); break;
-      case 5 : tmpf = RVExePubInternNew(table, "LBtr", IC_LBTR, boolt, 2); break;
-      default: tmpf = RVExePubInternNew(table, "LBts", IC_LBTS, boolt, 2); break;
+      case 0 :
+      tmpf = RVExePubInternNew(table, "Bt", IC_BT, boolt, 2);
+      break;
+      case 1 :
+      tmpf = RVExePubInternNew(table, "Btc", IC_BTC, boolt, 2);
+      break;
+      case 2 :
+      tmpf = RVExePubInternNew(table, "Btr", IC_BTR, boolt, 2);
+      break;
+      case 3 :
+      tmpf = RVExePubInternNew(table, "Bts", IC_BTS, boolt, 2);
+      break;
+      case 4 :
+      tmpf = RVExePubInternNew(table, "LBtc", IC_LBTC, boolt, 2);
+      break;
+      case 5 :
+      tmpf = RVExePubInternNew(table, "LBtr", IC_LBTR, boolt, 2);
+      break;
+      default:
+      tmpf = RVExePubInternNew(table, "LBts", IC_LBTS, boolt, 2);
+      break;
     }
     if (tmpf) {
       RVExePubAddArg(tmpf, "bit_field", i64p);
@@ -546,47 +567,171 @@ I64 RVExePubInternsIn(CHashTable *table)
       n++;
     }
   }
-  if (tmpf = RVExePubInternNew(table, "Bsf", IC_BSF, i64t, 1)) { RVExePubAddArg(tmpf, "val", i64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "Bsr", IC_BSR, i64t, 1)) { RVExePubAddArg(tmpf, "val", i64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "ToUpper", IC_TOUPPER, i64t, 1)) { RVExePubAddArg(tmpf, "ch", u8t); n++; }
-  if (tmpf = RVExePubInternNew(table, "StrLen", IC_STRLEN, i64t, 1)) { RVExePubAddArg(tmpf, "st", u8p); n++; }
-  if (tmpf = RVExePubInternNew(table, "QueInit", IC_QUE_INIT, u0, 1)) { RVExePubAddArg(tmpf, "head", u8p); n++; }
-  if (tmpf = RVExePubInternNew(table, "QueIns", IC_QUE_INS, u0, 2)) { RVExePubAddArg(tmpf, "entry", u8p); RVExePubAddArg(tmpf, "pred", u8p); n++; }
-  if (tmpf = RVExePubInternNew(table, "QueInsRev", IC_QUE_INS_REV, u0, 2)) { RVExePubAddArg(tmpf, "entry", u8p); RVExePubAddArg(tmpf, "succ", u8p); n++; }
-  if (tmpf = RVExePubInternNew(table, "QueRem", IC_QUE_REM, u0, 1)) { RVExePubAddArg(tmpf, "entry", u8p); n++; }
-  if (tmpf = RVExePubInternNew(table, "ATan", IC_ATAN, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "Abs", IC_ABS, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "AbsI64", IC_ABS_I64, i64t, 1)) { RVExePubAddArg(tmpf, "i", i64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "Cos", IC_COS, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "MaxI64", IC_MAX_I64, i64t, 2)) { RVExePubAddArg(tmpf, "n1", i64t); RVExePubAddArg(tmpf, "n2", i64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "MaxU64", IC_MAX_U64, u64t, 2)) { RVExePubAddArg(tmpf, "n1", u64t); RVExePubAddArg(tmpf, "n2", u64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "MinI64", IC_MIN_I64, i64t, 2)) { RVExePubAddArg(tmpf, "n1", i64t); RVExePubAddArg(tmpf, "n2", i64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "MinU64", IC_MIN_U64, u64t, 2)) { RVExePubAddArg(tmpf, "n1", u64t); RVExePubAddArg(tmpf, "n2", u64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "ModU64", IC_MOD_U64, u64t, 2)) { RVExePubAddArg(tmpf, "q", u64p); RVExePubAddArg(tmpf, "d", u64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "SignI64", IC_SIGN_I64, i64t, 1)) { RVExePubAddArg(tmpf, "i", i64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "Sin", IC_SIN, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "Sqr", IC_SQR, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "SqrI64", IC_SQR_I64, i64t, 1)) { RVExePubAddArg(tmpf, "i", i64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "SqrU64", IC_SQR_U64, u64t, 1)) { RVExePubAddArg(tmpf, "i", u64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "Sqrt", IC_SQRT, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "SwapI64", IC_SWAP_I64, u0, 2)) { RVExePubAddArg(tmpf, "n1", i64p); RVExePubAddArg(tmpf, "n2", i64p); n++; }
-  if (tmpf = RVExePubInternNew(table, "SwapU16", IC_SWAP_U16, u0, 2)) { RVExePubAddArg(tmpf, "n1", u16p); RVExePubAddArg(tmpf, "n2", u16p); n++; }
-  if (tmpf = RVExePubInternNew(table, "SwapU32", IC_SWAP_U32, u0, 2)) { RVExePubAddArg(tmpf, "n1", u32p); RVExePubAddArg(tmpf, "n2", u32p); n++; }
-  if (tmpf = RVExePubInternNew(table, "SwapU8", IC_SWAP_U8, u0, 2)) { RVExePubAddArg(tmpf, "n1", u8p); RVExePubAddArg(tmpf, "n2", u8p); n++; }
-  if (tmpf = RVExePubInternNew(table, "Tan", IC_TAN, f64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "ToBool", IC_TO_BOOL, boolt, 1)) { RVExePubAddArg(tmpf, "i", i64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "ToF64", IC_TO_F64, f64t, 1)) { RVExePubAddArg(tmpf, "i", i64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "ToI64", IC_TO_I64, i64t, 1)) { RVExePubAddArg(tmpf, "d", f64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "GetRAX", IC_GET_RAX, i64t, 0)) n++;
-  if (tmpf = RVExePubInternNew(table, "GetRBP", IC_GET_RBP, u8p, 0)) n++;
-  if (tmpf = RVExePubInternNew(table, "GetRSP", IC_GET_RSP, u8p, 0)) n++;
-  if (tmpf = RVExePubInternNew(table, "GetTSC", IC_RDTSC, i64t, 0)) n++;
-  if (tmpf = RVExePubInternNew(table, "Pop", IC_POP, i64t, 0)) n++;
-  if (tmpf = RVExePubInternNew(table, "Push", IC_PUSH, u0, 1)) { RVExePubAddArg(tmpf, "d", i64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "SetRAX", IC_SET_RAX, u0, 1)) { RVExePubAddArg(tmpf, "d", i64t); n++; }
-  if (tmpf = RVExePubInternNew(table, "SetRBP", IC_SET_RBP, u0, 1)) { RVExePubAddArg(tmpf, "d", u8p); n++; }
-  if (tmpf = RVExePubInternNew(table, "SetRSP", IC_SET_RSP, u0, 1)) { RVExePubAddArg(tmpf, "d", u8p); n++; }
-  if (tmpf = RVExePubInternNew(table, "CLFlush", IC_CLFLUSH, u0, 1)) { RVExePubAddArg(tmpf, "a", u8p); n++; }
+  if (tmpf = RVExePubInternNew(table, "Bsf", IC_BSF, i64t, 1)) {
+    RVExePubAddArg(tmpf, "val", i64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "Bsr", IC_BSR, i64t, 1)) {
+    RVExePubAddArg(tmpf, "val", i64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "ToUpper", IC_TOUPPER, i64t, 1)) {
+    RVExePubAddArg(tmpf, "ch", u8t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "StrLen", IC_STRLEN, i64t, 1)) {
+    RVExePubAddArg(tmpf, "st", u8p);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "QueInit", IC_QUE_INIT, u0, 1)) {
+    RVExePubAddArg(tmpf, "head", u8p);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "QueIns", IC_QUE_INS, u0, 2)) {
+    RVExePubAddArg(tmpf, "entry", u8p);
+    RVExePubAddArg(tmpf, "pred", u8p);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "QueInsRev", IC_QUE_INS_REV, u0, 2)) {
+    RVExePubAddArg(tmpf, "entry", u8p);
+    RVExePubAddArg(tmpf, "succ", u8p);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "QueRem", IC_QUE_REM, u0, 1)) {
+    RVExePubAddArg(tmpf, "entry", u8p);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "ATan", IC_ATAN, f64t, 1)) {
+    RVExePubAddArg(tmpf, "d", f64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "Abs", IC_ABS, f64t, 1)) {
+    RVExePubAddArg(tmpf, "d", f64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "AbsI64", IC_ABS_I64, i64t, 1)) {
+    RVExePubAddArg(tmpf, "i", i64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "Cos", IC_COS, f64t, 1)) {
+    RVExePubAddArg(tmpf, "d", f64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "MaxI64", IC_MAX_I64, i64t, 2)) {
+    RVExePubAddArg(tmpf, "n1", i64t);
+    RVExePubAddArg(tmpf, "n2", i64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "MaxU64", IC_MAX_U64, u64t, 2)) {
+    RVExePubAddArg(tmpf, "n1", u64t);
+    RVExePubAddArg(tmpf, "n2", u64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "MinI64", IC_MIN_I64, i64t, 2)) {
+    RVExePubAddArg(tmpf, "n1", i64t);
+    RVExePubAddArg(tmpf, "n2", i64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "MinU64", IC_MIN_U64, u64t, 2)) {
+    RVExePubAddArg(tmpf, "n1", u64t);
+    RVExePubAddArg(tmpf, "n2", u64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "ModU64", IC_MOD_U64, u64t, 2)) {
+    RVExePubAddArg(tmpf, "q", u64p);
+    RVExePubAddArg(tmpf, "d", u64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "SignI64", IC_SIGN_I64, i64t, 1)) {
+    RVExePubAddArg(tmpf, "i", i64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "Sin", IC_SIN, f64t, 1)) {
+    RVExePubAddArg(tmpf, "d", f64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "Sqr", IC_SQR, f64t, 1)) {
+    RVExePubAddArg(tmpf, "d", f64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "SqrI64", IC_SQR_I64, i64t, 1)) {
+    RVExePubAddArg(tmpf, "i", i64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "SqrU64", IC_SQR_U64, u64t, 1)) {
+    RVExePubAddArg(tmpf, "i", u64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "Sqrt", IC_SQRT, f64t, 1)) {
+    RVExePubAddArg(tmpf, "d", f64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "SwapI64", IC_SWAP_I64, u0, 2)) {
+    RVExePubAddArg(tmpf, "n1", i64p);
+    RVExePubAddArg(tmpf, "n2", i64p);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "SwapU16", IC_SWAP_U16, u0, 2)) {
+    RVExePubAddArg(tmpf, "n1", u16p);
+    RVExePubAddArg(tmpf, "n2", u16p);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "SwapU32", IC_SWAP_U32, u0, 2)) {
+    RVExePubAddArg(tmpf, "n1", u32p);
+    RVExePubAddArg(tmpf, "n2", u32p);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "SwapU8", IC_SWAP_U8, u0, 2)) {
+    RVExePubAddArg(tmpf, "n1", u8p);
+    RVExePubAddArg(tmpf, "n2", u8p);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "Tan", IC_TAN, f64t, 1)) {
+    RVExePubAddArg(tmpf, "d", f64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "ToBool", IC_TO_BOOL, boolt, 1)) {
+    RVExePubAddArg(tmpf, "i", i64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "ToF64", IC_TO_F64, f64t, 1)) {
+    RVExePubAddArg(tmpf, "i", i64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "ToI64", IC_TO_I64, i64t, 1)) {
+    RVExePubAddArg(tmpf, "d", f64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "GetRAX", IC_GET_RAX, i64t, 0))
+    n++;
+  if (tmpf = RVExePubInternNew(table, "GetRBP", IC_GET_RBP, u8p, 0))
+    n++;
+  if (tmpf = RVExePubInternNew(table, "GetRSP", IC_GET_RSP, u8p, 0))
+    n++;
+  if (tmpf = RVExePubInternNew(table, "GetTSC", IC_RDTSC, i64t, 0))
+    n++;
+  if (tmpf = RVExePubInternNew(table, "Pop", IC_POP, i64t, 0))
+    n++;
+  if (tmpf = RVExePubInternNew(table, "Push", IC_PUSH, u0, 1)) {
+    RVExePubAddArg(tmpf, "d", i64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "SetRAX", IC_SET_RAX, u0, 1)) {
+    RVExePubAddArg(tmpf, "d", i64t);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "SetRBP", IC_SET_RBP, u0, 1)) {
+    RVExePubAddArg(tmpf, "d", u8p);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "SetRSP", IC_SET_RSP, u0, 1)) {
+    RVExePubAddArg(tmpf, "d", u8p);
+    n++;
+  }
+  if (tmpf = RVExePubInternNew(table, "CLFlush", IC_CLFLUSH, u0, 1)) {
+    RVExePubAddArg(tmpf, "a", u8p);
+    n++;
+  }
   return n;
 }
 
@@ -746,7 +891,10 @@ I64 RVExePubsWireAddrs(I64 *addrs)
   // returns/args are planted as i64t and the caller casts (no struct classes here).
   if (addrs[16] && !HashFind("DirTreeDel", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("DirTreeDel", addrs[16], cls_u0, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "de", i64t); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "de", i64t);
+      n++;
+    }
   }
   if (addrs[17] && !HashFind("StrFind", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("StrFind", addrs[17], i64t, 3);
@@ -768,15 +916,22 @@ I64 RVExePubsWireAddrs(I64 *addrs)
   }
   if (addrs[19] && !HashFind("Define", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Define", addrs[19], i64t, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "dname", u8p); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "dname", u8p);
+      n++;
+    }
   }
   if (addrs[20] && !HashFind("Now", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Now", addrs[20], i64t, 0);
-    if (tmpf) n++;
+    if (tmpf)
+      n++;
   }
   if (addrs[21] && !HashFind("Str2Date", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Str2Date", addrs[21], i64t, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "st", u8p); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "st", u8p);
+      n++;
+    }
   }
   if (addrs[22] && !HashFind("Date2Struct", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Date2Struct", addrs[22], cls_u0, 2);
@@ -807,7 +962,10 @@ I64 RVExePubsWireAddrs(I64 *addrs)
   }
   if (addrs[25] && !HashFind("Free", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Free", addrs[25], cls_u0, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "ptr", i64t); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "ptr", i64t);
+      n++;
+    }
   }
   if (addrs[26] && !HashFind("StrNew", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("StrNew", addrs[26], i64t, 2);
@@ -890,7 +1048,10 @@ I64 RVExePubsWireAddrs(I64 *addrs)
   }
   if (addrs[34] && !HashFind("DocDel", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("DocDel", addrs[34], cls_u0, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "doc", i64t); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "doc", i64t);
+      n++;
+    }
   }
   if (addrs[35] && !HashFind("DocClear", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("DocClear", addrs[35], cls_u0, 2);
@@ -926,50 +1087,67 @@ I64 RVExePubsWireAddrs(I64 *addrs)
   // dispatch barewords.
   if (addrs[38] && !HashFind("Find", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Find", addrs[38], cls_u0, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "needle", u8p); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "needle", u8p);
+      n++;
+    }
   }
   if (addrs[39] && !HashFind("Ed", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Ed", addrs[39], cls_u0, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "name", u8p); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "name", u8p);
+      n++;
+    }
   }
   if (addrs[40] && !HashFind("Tasks", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Tasks", addrs[40], cls_u0, 0);
-    if (tmpf) n++;
+    if (tmpf)
+      n++;
   }
   // Slots 41-45: RISC-V exploration (Kernel/RVExplore.HC). AsmList/AsmDoc document what
   // the asm{} assembler accepts; MemMap prints the platform map; Mstatus/Mcause read+
   // decode the trap CSRs.
   if (addrs[41] && !HashFind("AsmList", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("AsmList", addrs[41], cls_u0, 0);
-    if (tmpf) n++;
+    if (tmpf)
+      n++;
   }
   if (addrs[42] && !HashFind("AsmDoc", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("AsmDoc", addrs[42], cls_u0, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "mn", u8p); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "mn", u8p);
+      n++;
+    }
   }
   if (addrs[43] && !HashFind("MemMap", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("MemMap", addrs[43], cls_u0, 0);
-    if (tmpf) n++;
+    if (tmpf)
+      n++;
   }
   if (addrs[44] && !HashFind("Mstatus", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Mstatus", addrs[44], cls_u0, 0);
-    if (tmpf) n++;
+    if (tmpf)
+      n++;
   }
   if (addrs[45] && !HashFind("Mcause", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Mcause", addrs[45], cls_u0, 0);
-    if (tmpf) n++;
+    if (tmpf)
+      n++;
   }
   if (addrs[46] && !HashFind("Csr", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Csr", addrs[46], cls_u0, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "name", u8p); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "name", u8p);
+      n++;
+    }
   }
   if (addrs[47] && !HashFind("Uptime", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Uptime", addrs[47], cls_u0, 0);
-    if (tmpf) n++;
+    if (tmpf)
+      n++;
   }
   return n;
 }
-
 /* TempleOS-style debugger register labels. Stock TempleOS lets you read AND assign registers
  * as var-like labels (`U(_RIP-16);`, `_RAX = 5;` — Doc/DbgOverview.DD). The same trick works
  * here with no compiler change: plant each register as an ordinary I64 GLOBAL whose storage IS
@@ -980,7 +1158,6 @@ I64 RVExePubsWireAddrs(I64 *addrs)
  * Writes land in the freeze; making them take effect on resume is the trap-return copy-back. */
 #define RV_DBG_SNAP    0x87000100
 #define RV_DBG_SNAP_X  0x87000400
-
 I64 RVExePubRegAlias(U8 *name, I64 addr, CHashClass *i64t)
 {
   CHashGlblVar *tmpg;
@@ -999,7 +1176,6 @@ I64 RVExePubRegAlias(U8 *name, I64 addr, CHashClass *i64t)
   HashAdd(tmpg, Fs->hash_table);
   return 1;
 }
-
 /* _X0.._X31 by register number, every ABI name at the same address, and the CSR slots.
  * `Dr;` prints them; `_A0` / `_PC` read them; assignment writes the freeze. */
 I64 RVExePubsWireDbgRegs()
@@ -1025,7 +1201,7 @@ I64 RVExePubsWireDbgRegs()
     nm[k++] = '_';
     while (*p && *p != ' ') {
       if (k < 14)
-        nm[k++] = ToUpper(*p);
+        nm[k++] = ToUpper (*p);
       p++;
     }
     nm[k] = 0;
@@ -1045,7 +1221,6 @@ I64 RVExePubsWireDbgRegs()
   n += RVExePubRegAlias("_MSTATUS", RV_DBG_SNAP + 21 * 8, i64t);
   return n;
 }
-
 /* Debugger surface for the REPL: Kernel passes &Disasm,&DisasmAt,&U,&UA,&RVDisFnAddr,&RVUf
  * (8-slot array; zero = not provided). Separate from WireAddrs so short arrays stay safe. */
 I64 RVExePubsWireDbg(I64 *addrs)
@@ -1060,7 +1235,10 @@ I64 RVExePubsWireDbg(I64 *addrs)
   u8p = cmp.internal_types[RT_U8] + 1;
   if (addrs[0] && !HashFind("Disasm", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Disasm", addrs[0], cls_u0, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "name", u8p); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "name", u8p);
+      n++;
+    }
   }
   if (addrs[1] && !HashFind("DisasmAt", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("DisasmAt", addrs[1], cls_u0, 3);
@@ -1073,27 +1251,47 @@ I64 RVExePubsWireDbg(I64 *addrs)
   }
   if (addrs[2] && !HashFind("U", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("U", addrs[2], cls_u0, 2);
-    if (tmpf) { RVExePubAddArg(tmpf, "addr", i64t); RVExePubAddArg(tmpf, "n", i64t, MLF_DFT_AVAILABLE, 28); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "addr", i64t);
+      RVExePubAddArg(tmpf, "n", i64t, MLF_DFT_AVAILABLE, 28);
+      n++;
+    }
   }
   if (addrs[3] && !HashFind("UA", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("UA", addrs[3], cls_u0, 2);
-    if (tmpf) { RVExePubAddArg(tmpf, "addr", i64t); RVExePubAddArg(tmpf, "n", i64t, MLF_DFT_AVAILABLE, 28); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "addr", i64t);
+      RVExePubAddArg(tmpf, "n", i64t, MLF_DFT_AVAILABLE, 28);
+      n++;
+    }
   }
   if (addrs[4] && !HashFind("FnAddr", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("FnAddr", addrs[4], i64t, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "name", u8p); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "name", u8p);
+      n++;
+    }
   }
   if (addrs[5] && !HashFind("Uf", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Uf", addrs[5], cls_u0, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "name", u8p); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "name", u8p);
+      n++;
+    }
   }
   if (addrs[6] && !HashFind("Bp", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("Bp", addrs[6], i64t, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "addr", i64t, MLF_DFT_AVAILABLE, 0); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "addr", i64t, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
   }
   if (addrs[7] && !HashFind("BpClr", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("BpClr", addrs[7], i64t, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "addr", i64t, MLF_DFT_AVAILABLE, 0); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "addr", i64t, MLF_DFT_AVAILABLE, 0);
+      n++;
+    }
   }
   n += RVExePubsWireDbgRegs();
   // _X0.._X31 / _A0 / _PC …: no addrs needed, the freeze is at a fixed address
@@ -1101,17 +1299,23 @@ I64 RVExePubsWireDbg(I64 *addrs)
   // as its register file, so the debugger and the JIT share one context.
   if (!HashFind("AsmStep", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("AsmStep", &AsmStep, i64t, 1);
-    if (tmpf) { RVExePubAddArg(tmpf, "text", u8p); n++; }
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "text", u8p);
+      n++;
+    }
   }
   if (!HashFind("AsmRegs", Fs->hash_table, HTT_FUN)) {
-    if (RVExePubFunNew("AsmRegs", &AsmRegs, cls_u0, 0)) n++;
+    if (RVExePubFunNew("AsmRegs", &AsmRegs, cls_u0, 0))
+      n++;
   }
   if (!HashFind("AsmClr", Fs->hash_table, HTT_FUN)) {
-    if (RVExePubFunNew("AsmClr", &AsmClr, cls_u0, 0)) n++;
+    if (RVExePubFunNew("AsmClr", &AsmClr, cls_u0, 0))
+      n++;
   }
   // Dr: the stock register dump over the same freeze (RVDbgCore.HC)
   if (!HashFind("Dr", Fs->hash_table, HTT_FUN)) {
-    if (RVExePubFunNew("Dr", &Dr, cls_u0, 0)) n++;
+    if (RVExePubFunNew("Dr", &Dr, cls_u0, 0))
+      n++;
   }
   return n;
 }

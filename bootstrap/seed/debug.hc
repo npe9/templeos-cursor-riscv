@@ -116,10 +116,8 @@ I64 DbgReg(I64 n)
 {
   return *(I64 *)(MEM_TRAP_SNAP + n * 8);
 }
-
 #define TRAP_POST_S1 0x87000500
 // scratch: s1 after resume (above the x array, below MEM_HOST_SLOTS)
-
 // TrapFrameEdit -- SetTrap("TrapFrameEdit")
 // NAME
 //   TrapFrameEdit - trap handler that edits a register in the freeze, then resumes
@@ -139,7 +137,6 @@ I64 TrapFrameEdit(I64 cause, I64 epc, I64 tval)
   *(I64 *)(TRAP_SNAP_X + 9 * 8) = 0x77;
   return epc + 4;
 }
-
 // TrapFrameArmEdit -- TrapFrameArmEdit()
 // NAME
 //   TrapFrameArmEdit - install TrapFrameEdit as the trap handler (by pointer, not by name)
@@ -154,7 +151,6 @@ U0 TrapFrameArmEdit()
 {
   SetTrapFn(&TrapFrameEdit);
 }
-
 // TrapFrameProbe -- TrapFrameProbe()
 // NAME
 //   TrapFrameProbe - fault with known values in every callee-saved register (frame self-test)
@@ -201,7 +197,6 @@ U0 TrapFrameProbe()
 	addi	sp, sp, 64
   }
 }
-
 // TrapFrameCheck -- TrapFrameCheck()
 // NAME
 //   TrapFrameCheck - verify the freeze survives a live Bt (scratch-collision regression)
@@ -221,7 +216,6 @@ U0 TrapFrameCheck()
   // `mw TRAP_SNAP_X+9*8 <val>` at the crash prompt lands in the real register.
   "TFPOST s1=0x%X\n", *(I64 *)TRAP_POST_S1;
 }
-
 // DbgX -- DbgX(n)
 // NAME
 //   DbgX - read trapped x-register n (0..31) from the canonical freeze array

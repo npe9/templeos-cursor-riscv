@@ -383,7 +383,6 @@ U0 TrapNameStore(U8 *name)
     i++;
   }
 }
-
 // TrapCtxSave's frame is indexed by register number (xN at N*8, 256 bytes; x2/sp implicit).
 // Two views are published, both readable while frozen (see debug.hc's index map):
 //   legacy slots 0..21  — ra,t0..t6,a0..a7,sp,fp,mcause,mepc,mtval,mstatus (existing readers)
@@ -392,7 +391,6 @@ U0 TrapNameStore(U8 *name)
 // The array ends exactly at MEM_REGS_SNAP (0x87000300): 32 slots, no room for a 33rd.
 // mstatus is the value AFTER the trap (MIE cleared, MPP/MPIE hold the trapped state).
 I64 g_trap_snap_live;
-
 U0 TrapSnapPublish(I64 *frame, I64 cause, I64 epc, I64 tval)
 {
   I64 k, sp_at_trap;
@@ -445,7 +443,6 @@ U0 TrapSnapPublish(I64 *frame, I64 cause, I64 epc, I64 tval)
   g_trap_snap_live = 1;
   pc = epc;
 }
-
 // Copy the canonical array back into the frame before TrapCtxRestore reloads it, so a register
 // EDITED while stopped is live on resume — stock TempleOS lets you assign _RAX/_RIP in the
 // debugger (Doc/DbgOverview.DD), and the labels planted by RVExePubsWireDbgRegs write here.
