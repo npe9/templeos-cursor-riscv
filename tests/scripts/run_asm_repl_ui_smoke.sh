@@ -102,6 +102,12 @@ feed() {
      # rather than just reporting every entry OFF. addr = base>>2 | (size/8 - 1); cfg = NAPOT
      # (A=3) with rwx. Safe to do from here: an UNLOCKED entry does not apply to M-mode, so this
      # cannot wall the debugger off from its own memory.
+     # Work through a family one instruction at a time: p starts it, p again moves on, and each
+     # step is that instruction as a man page for you to type yourself.
+     "p shift",
+     "p",
+     # t2, not a0: a0 carries a value a later assertion checks, and practising on it moved it
+     "slli t2, t2, 2",
      "li t0, 0x20001FFF",
      "csrw 0x3B0, t0",
      "li t0, 0x1F",
@@ -272,7 +278,7 @@ need_screen() {
 
 fail=0
 need() {
-  if ! printf '%s\n' "$out" | grep -qF "$1"; then
+  if ! printf '%s\n' "$out" | grep -qF -- "$1"; then
     echo "FAIL asm-repl smoke -- missing: $1" >&2
     fail=1
   fi
@@ -336,6 +342,9 @@ need "t6   0000000000000000 -> 0000000000000003"
 need "fa0  0000000000000000 -> 0000000000000003"
 # Tab straight after a question mark completes what AsmDoc can explain
 need "asm> ?sfence.vma"
+# Practice mode: the family, the instruction, and its man page — then you type it
+need "-- shift 1 --"
+need "-- shift 2 --"
 # The float register as a NUMBER and as its fields, not just 16 hex digits
 need "fa0  4010000000000000  4"
 need "sign=0  exp=0x401 (2^2 x 1.mantissa)  mantissa=0x0000000000000"

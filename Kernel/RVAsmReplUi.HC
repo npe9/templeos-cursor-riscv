@@ -41,6 +41,9 @@
 I64 asmui_mem_addr, asmui_running, asmui_step_fn, asmui_mode;
 I64 asmui_side, asmui_side_col, asmui_text_cols, asmui_mem_row, asmui_mem_rows, asmui_ready;
 I64 asmui_dis_addr, asmui_trace_pc, asmui_tracing;
+U8 asmui_class[24];
+I64 asmui_class_i;
+// which family you are working through, and how far in
 #define ASMUI_DIS_LINES 12
 // how many instructions `u` shows at a time — a screenful of the text column, not a flood
 
@@ -388,7 +391,8 @@ public U0 AsmRepl()
     if (line[0] == '?' && !line[1]) {
       "  q  leave   d <addr>  memory pane   u <sym|addr>  disassemble   r  repaint\n"
       "  t <sym|addr>  trace a compiled function, t again to step   f  float regs\n"
-      "  ? <mn>  what it does   ?? the catalog\n";
+      "  p <class>  work through a family, p for the next   ? <mn>  what it does\n"
+      "  ?? the catalog\n";
       continue;
     }
     if (line[0] == '?' && line[1] == '?' && !line[2]) {
@@ -422,6 +426,33 @@ public U0 AsmRepl()
       // `f 10` — what fa0 actually IS: the number, and the sign/exponent/mantissa it is built
       // from. The pane can only afford the bits.
       RegPaneFd(Str2I64(line + 2));
+      continue;
+    }
+    if (line[0] == 'p' && (line[1] == ' ' || !line[1])) {
+      // `p shift` starts a family, `p` moves to the next one in it. Each step is the
+      // instruction's own man page — what it does, an example, and why you would reach for it —
+      // and then you type it yourself and watch the registers move. That is the practice.
+      U8 *arg, mn[32];
+      arg = line + 1;
+      while (*arg == ' ')
+        arg++;
+      if (*arg) {
+        StrCpy(asmui_class, arg);
+        asmui_class_i = 0;
+      }
+      if (!asmui_class[0]) {
+        AsmClasses;
+        "  p <class> to work through one, p for the next\n";
+        continue;
+      }
+      if (!RVAsmClassNth(asmui_class, asmui_class_i, mn, 32)) {
+        "asm REPL: that is all of %s — p <class> for another\n", asmui_class;
+        asmui_class[0] = 0;
+        continue;
+      }
+      "-- %s %d --\n", asmui_class, asmui_class_i + 1;
+      AsmDoc(mn);
+      asmui_class_i++;
       continue;
     }
     if (line[0] == 't' && (line[1] == ' ' || !line[1])) {

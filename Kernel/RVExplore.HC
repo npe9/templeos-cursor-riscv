@@ -340,6 +340,131 @@ public I64 AsmComplete(U8 *word, U8 *out, I64 max)
   return 2;
 }
 
+// ---- instruction classes: something to practise --------------------------------------------
+//
+// AsmList prints all 244 at once, which is a reference, not a way to learn. These are the
+// families you would actually sit down with — the arithmetic, the shifts, the branches, the
+// atomics — so that AsmRepl can walk you through one family at a time.
+U8 *rv_asm_class_raw;
+U0 RVAsmClassRawInit()
+{
+  rv_asm_class_raw = "arith|add addi sub addiw addw subw lui auipc li mv neg;logic|and andi or ori xor xori not;shift|sll slli srl srli sra srai sllw slliw srlw srliw sraw sraiw;compare|slt slti sltu sltiu seqz snez;muldiv|mul mulh mulhu mulhsu div divu rem remu mulw divw divuw remw remuw;load|ld lw lwu lh lhu lb lbu;store|sd sw sh sb;branch|beq bne blt bge bltu bgeu beqz bnez;jump|j jal jalr jr ret call;csr|csrr csrw csrs csrc csrrw csrrs csrrc csrrwi csrrsi csrrci csrwi csrsi csrci rdtime;atomic|lr.d sc.d amoswap.d amoadd.d amoand.d amoor.d amoxor.d amomin.d amomax.d;float|fadd.d fsub.d fmul.d fdiv.d fsqrt.d fmin.d fmax.d feq.d flt.d fle.d fmv.d.x fmv.x.d fcvt.d.l fcvt.l.d fld fsd fclass.d;rvc|c.nop c.mv c.add c.li c.addi c.slli c.j c.beqz c.bnez c.ld c.sd c.lw c.sw c.addi4spn c.addi16sp;system|ecall ebreak mret sret wfi fence fence.i sfence.vma nop;";
+}
+
+// The mnemonic list for a class, or 0. Records are "class|mn mn mn".
+U8 *RVAsmClassFind(U8 *name)
+{
+  U8 *p, *q;
+  I64 n;
+  if (!name || !*name)
+    return 0;
+  if (!rv_asm_class_raw)
+    RVAsmClassRawInit;
+  n = StrLen(name);
+  p = rv_asm_class_raw;
+  while (*p) {
+    q = p;
+    while (*q && *q != '|')
+      q++;
+    if (q - p == n && !MemCmp(p, name, n))
+      return q + 1;
+    while (*p && *p != ';')
+      p++;
+    if (*p == ';')
+      p++;
+  }
+  return 0;
+}
+
+// The i-th mnemonic of a class into `out`, or FALSE when the class runs out.
+I64 RVAsmClassNth(U8 *cls, I64 i, U8 *out, I64 max)
+{
+  U8 *p;
+  I64 k = 0, n = 0;
+  p = RVAsmClassFind(cls);
+  if (!p)
+    return FALSE;
+  while (*p && *p != ';') {
+    if (*p == ' ') {
+      p++;
+      continue;
+    }
+    n = 0;
+    while (*p && *p != ' ' && *p != ';' && n < max - 1)
+      out[n++] = *p++;
+    out[n] = 0;
+    if (k == i)
+      return TRUE;
+    k++;
+  }
+  return FALSE;
+}
+
+// AsmClasses -- AsmClasses()
+// NAME
+//   AsmClasses - the instruction families you can work through
+// SYNOPSIS
+//   AsmClasses;
+// SEE ALSO
+//   AsmClass  AsmDoc  AsmRepl
+public U0 AsmClasses()
+{
+  U8 nm[32], *p, *r;
+  I64 n, k;
+  if (!rv_asm_class_raw)
+    RVAsmClassRawInit;
+  Print("instruction classes - AsmClass(\"branch\"), or `p branch` in AsmRepl to work through\n");
+  p = rv_asm_class_raw;
+  while (*p) {
+    k = 0;
+    while (*p && *p != '|' && k < 30)
+      nm[k++] = *p++;
+    nm[k] = 0;
+    // copy the name out: the record continues past it, so printing the pointer would print the
+    // whole line of mnemonics as well
+    n = 1;
+    r = p;
+    while (*r && *r != ';') {
+      if (*r == ' ')
+        n++;
+      r++;
+    }
+    Print("  %-9s %d\n", nm, n);
+    p = r;
+    if (*p == ';')
+      p++;
+  }
+}
+
+// AsmClass -- AsmClass("branch")
+// NAME
+//   AsmClass - the instructions in one family, with what each one looks like
+// SYNOPSIS
+//   AsmClass("shift");
+// SEE ALSO
+//   AsmClasses  AsmDoc  AsmRepl
+public U0 AsmClass(U8 *name)
+{
+  U8 mn[32], *rec, *tpl;
+  I64 i = 0;
+  if (!RVAsmClassFind(name)) {
+    Print("no class %s — AsmClasses; lists them\n", name);
+    return;
+  }
+  Print("%s:\n", name);
+  while (RVAsmClassNth(name, i, mn, 32)) {
+    rec = RVAsmDocFindRec(mn);
+    if (rec) {
+      tpl = RVAsmDocField(rec, 1, g_rv_asm_doc_tpl, ASM_DOC_TPL);
+      Print("  %-12s %s\n", mn, tpl);
+    } else {
+      Print("  %-12s\n", mn);
+    }
+    i++;
+  }
+  Print("  AsmDoc(\"%s\") for any of them\n", mn);
+}
+
 public U0 AsmList()
 {
   //One line per catalog entry (mnemonic + operand template). AsmDoc("name") for detail.

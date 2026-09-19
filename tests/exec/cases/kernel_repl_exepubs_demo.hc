@@ -161,6 +161,13 @@ I64 main()
       // resolve them, which is all "enabled in the REPL" means here. The asm REPL completes
       // from the same catalog, so Tab and AsmDoc agree by construction.
       RVExePubFunNew("AsmList", &AsmList, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("AsmClasses", &AsmClasses, cmp.internal_types[RT_U0], 0);
+      {
+        CHashFun *tk;
+        tk = RVExePubFunNew("AsmClass", &AsmClass, cmp.internal_types[RT_U0], 1);
+        if (tk)
+          RVExePubAddArg(tk, "name", cmp.internal_types[RT_U8] + 1);
+      }
       RVExePubFunNew("Mstatus", &Mstatus, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Mcause", &Mcause, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Uptime", &Uptime, cmp.internal_types[RT_U0], 0);
