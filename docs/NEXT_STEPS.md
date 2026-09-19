@@ -57,19 +57,20 @@ disassembler already knows the width — return it from `AsmUiInsnText` instead 
 
 ## Tier 1 — asked for, only half done
 
-### 1.1 The newline rule is not in the REPL
+### 1.1 ~~The newline rule is not in the REPL~~ — DONE
 
 `HOLYC_NL_SEMI=1` works in the host compiler, which is what compiles source files. The REPL is
 the *guest* compiler (`Compiler/`), and it has none of it — so at the prompt `40+2` still needs
 its semicolon, which is where the BCPL rule would be felt most. Port `NewlineEndsStatement` into
 the guest lexer, where the same five conditions apply.
 
-### 1.2 The newline rule is off by default
+### 1.2 ~~The newline rule is off by default~~ — DONE, and the 36 were one rule
 
-36 constructs in this tree still want a semicolon the rule does not supply. Each one is a rule to
-learn, the way adjacent string literals and `_extern` declarations were. Worth doing in one
-sitting with `HOLYC_NL_SEMI=1` and the error list as the worklist; the gate is the byte-identical
-build, which already passes with it off.
+All 36 were the same shape: a TYPE NAME alone at the end of a line, with the declarator under it
+(`U32` then `char_bmp_alpha[16]= {...}`, pages of them in Kernel/StrA.HC). A type cannot end a
+statement, and the lexer had already resolved the identifier, so it asks what it was rather than
+guessing. Zero errors after that, and the whole kernel image compiles BYTE-IDENTICAL with the
+rule on — which is what earned it the default. `HOLYC_NL_SEMI=0` turns it off.
 
 ### 1.3 The pane cannot show everything at once
 

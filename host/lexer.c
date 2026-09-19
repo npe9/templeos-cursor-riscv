@@ -1450,8 +1450,12 @@ static bool NewlineStarterContinues(Compiler *cc, const char *p) {
 
 static bool NewlineEndsStatement(Compiler *cc, int prev, bool after_ctl) {
   Lexer *lex = &cc->lex;
-  // Opt-in while the rule learns the rest of HolyC's line-spanning declarations. Off, a source
-  // file lexes exactly as it did before this existed; on, a newline can end a statement.
+  // ON by default now. It was opt-in while the rule learned HolyC's line-spanning shapes —
+  // adjacent string literals, `_extern` declarations, `while` after a `do`, and a type name on
+  // a line of its own — and the gate for turning it on was that the whole kernel image compiles
+  // BYTE-IDENTICAL with it, which it does. HOLYC_NL_SEMI=0 turns it off if that ever stops
+  // being true.
+  //
   // A file static rather than lexer state: the answer is the same for every file in a run, and
   // the lexer struct is memset to zero in places where -1 could not survive as "not yet read".
 #ifdef BARE_METAL
@@ -1460,7 +1464,7 @@ static bool NewlineEndsStatement(Compiler *cc, int prev, bool after_ctl) {
   static int nl_on = -1;
   if (nl_on < 0) {
     const char *e = getenv("HOLYC_NL_SEMI");
-    nl_on = (e && *e && *e != '0') ? 1 : 0;
+    nl_on = (e && *e && *e == '0') ? 0 : 1;
   }
   if (!nl_on) return false;
 #endif
@@ -1472,6 +1476,14 @@ static bool NewlineEndsStatement(Compiler *cc, int prev, bool after_ctl) {
   if (after_ctl) return false;
   if (!(prev == TK_IDENT || prev == TK_I64 || prev == TK_F64 || prev == TK_STR ||
         prev == ')' || prev == ']' || prev == TK_PLUS_PLUS || prev == TK_MINUS_MINUS))
+    return false;
+  // A TYPE NAME cannot end a statement. HolyC writes wide declarations with the class on its
+  // own line and the declarator under it:
+  //     U32
+  //       char_bmp_alpha[16]= {...};
+  // and there are pages of those in Kernel/StrA.HC. The lexer already resolved the identifier,
+  // so ask what it was rather than guessing from the spelling.
+  if (prev == TK_IDENT && lex->hash_entry && (lex->hash_entry->type & HTT_CLASS))
     return false;
   if (NewlineStarterContinues(cc, lex->ptr)) return false;
   return true;
