@@ -385,7 +385,7 @@ U0 RegPaneUpdate()
     // path writes it — neither trap vector contains a single fsd — so after a fault these are
     // whatever the last stepped line left behind, not the faulting context. Until the freeze
     // saves f0..f31 the honest thing is to label them rather than let them sit next to the
-    // integer registers looking equally true. See docs/DEBUG_STATE_SURVEY.md.
+    // integer registers looking equally true. See docs/MACHINE_STATE_SURVEY.md.
     if (RegPaneFSrc())
       StrPrint(line, "$FG,%d$float $FG,%d$(frozen at the trap, fcsr=%X)$FG$\n", REGP_COL_HEAD,
                REGP_COL_ZERO, *(I64 *)(REGP_FSNAP_V + 8));

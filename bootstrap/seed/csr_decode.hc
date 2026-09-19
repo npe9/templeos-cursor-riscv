@@ -10,7 +10,7 @@
 // the two images read CSRs by different means (GetMStatus here, RVWinCsrrMstatus there) and a
 // decoder that read its own input could not be shared. It is also what makes it right for a
 // debugger: after a fault you want the value you STOPPED at decoded, not whatever the CSR says
-// now. See docs/DEBUG_STATE_SURVEY.md.
+// now. See docs/MACHINE_STATE_SURVEY.md.
 #ifndef CSR_DECODE_HC
 #define CSR_DECODE_HC
 
