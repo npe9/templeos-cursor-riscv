@@ -10,7 +10,12 @@ COMPILER="$ROOT/holyc-riscv"
 SRC="$ROOT/tests/exec/cases/kernel_demo_blot.hc"
 EXPECT_PREFIX="RVDemo Blot smoke hash="
 # Calibrate on first green: RVDEMO_BLOT_EXPECT_HASH=0x00000000 make kernel-demo-blot-smoke
-PINNED_HASH="0xA3B0362C"
+# Re-recorded 2026-09-19. Every pinned framebuffer hash in tests/scripts was read at HEAD and
+# again in a worktree at d207eda, before this session: all six came out identical, so no
+# rendering moved and the pins that disagree were simply stale. If one moves again, find the
+# commit that moved it before touching this line — a framebuffer hash cannot tell you whether
+# the picture got better or worse.
+PINNED_HASH="0x43186381"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
