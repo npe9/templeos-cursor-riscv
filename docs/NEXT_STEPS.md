@@ -79,14 +79,17 @@ fits entirely: nothing is ever cut, everything is reachable by cycling (`n` in t
 `Pane(n)` at the prompt), and a taller terminal simply shows more blocks rather than a different
 layout. The headings carry the hint, so a block that is off the page still says how to reach it.
 
-### 1.4 AsmDoc motivation covers 36 of 244 instructions
+### 1.4 AsmDoc motivation covers 72 of 244 instructions
 
 `AsmClasses` / `AsmClass` and the REPL's `p <class>` now exist, so a family can be worked
 through one instruction at a time — which makes the missing motivation entries more visible, not
 less. The classes are curated lists in `Kernel/RVExplore.HC`.
 
-The structure is done and adding one is a single line. The remaining 208 are writing, not
-engineering — worth doing in batches by family (the float block, the atomics, the compressed set).
+The structure is done and adding one is a single line. The remaining 172 are writing, not
+engineering. The second batch covered the word-width family, the rest of the loads and stores,
+the CSR read-modify-writes, the atomics, the double-precision arithmetic and comparisons, the
+compressed forms and the system instructions. What is left is mostly aliases and the rarer
+encodings, where the motivation is often "this is the same as X with the operands swapped".
 
 ---
 

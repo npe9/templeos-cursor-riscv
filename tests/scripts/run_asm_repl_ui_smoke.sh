@@ -97,6 +97,7 @@ feed() {
      "t TraceMe",
      "t",
      "t",
+     "? addiw",
      "? sd",
      # Program PMP entry 0 as a 64 KiB NAPOT region at 0x80000000, so the decoder is exercised
      # rather than just reporting every entry OFF. addr = base>>2 | (size/8 - 1); cfg = NAPOT
@@ -307,6 +308,8 @@ need "SYNOPSIS"
 need "store doubleword"
 need "MOTIVATION"
 need "sd ra, 8(sp)             # save the return address"
+# one of the later batch, so the second half of the table is exercised too
+need "RV64 keeps 32-bit values SIGN-EXTENDED"
 need "12-bit signed immediate"
 need "addi sp, sp, -32         # open a stack frame"
 need "documented asm{} mnemonics"
