@@ -29,15 +29,6 @@ tests/simple.hc
 
 # Accidental root/test dump binaries (sources live under tests/scratch/)
 /test_*
-!/test_*.hc
-!/test_*.sh
-/dump_*
-/trace_*
-/verify_*
-/show_*
-/debug_*
-/check_*
-/analyze_*
 # Same prefixes elsewhere (harness leftovers)
 test_*
 !test_*.hc
@@ -45,15 +36,17 @@ test_*
 !tests/scratch/**/*.hc
 dump_*
 trace_*
-# Root-only. These are local scratch-script names, and unanchored they match anywhere in the
-# tree — `debug_*` swallowed docs/DEBUG_STATE_SURVEY.md on this case-insensitive filesystem
-# and hid it for a whole session, because an ignored file is not untracked: git add said
-# nothing and git status showed nothing.
-/verify_*
-/show_*
-/debug_*
-/check_*
-/analyze_*
+# Local scratch-script names, deliberately unanchored because the scratch turns up anywhere.
+# They used to swallow docs/DEBUG_STATE_SURVEY.md — case-insensitively, as this filesystem is
+# — and hid it for a whole session: an ignored file is not untracked, so git add said nothing
+# and git status showed nothing while several commits claimed to add it. Hence the docs/
+# exemption, which must stay AFTER these and BEFORE the docs/archive/ rule below.
+verify_*
+show_*
+debug_*
+check_*
+analyze_*
+!docs/**
 
 # Backup / editor junk
 *.bak
