@@ -130,6 +130,10 @@ feed() {
      "AsmList;",
      # The CSR decoders, now one shared copy: fcsr had no reader anywhere in the tree, and satp
      # was decoded only by the seed datasheet the kernel image does not link.
+     # By number, with the instruction written at run time: 0xF14 is mhartid, which must read 0
+     # on this single-hart machine, and 0x301 is misa, whose top two bits say RV64.
+     "CsrNum(0xF14);",
+     "Csr(\"0x301\");",
      "Csr(\"fcsr\");",
      "Csr(\"satp\");",
      # The stopped machine, read from the widened freeze rather than from the hardware now
@@ -319,6 +323,7 @@ need "instruction classes"
 # fcsr: read at all for the first time, and decoded. The flags are STICKY — by the time the
 # prompt is up the compiler has done its own float work, so this asserts the decode, not a
 # pristine value (it reads 0x3: inexact and underflow, accumulated since reset).
+need "csr 0x301 = 0x8"
 need "frm=0 RNE (nearest, ties to even)"
 need "(sticky)"
 need "NX inexact"

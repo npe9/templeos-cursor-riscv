@@ -595,6 +595,13 @@ public U0 Csr(U8 *name)
     Print("  f: fcsr\n");
     return;
   }
+  if (*name >= '0' && *name <= '9') {
+    // Csr("0x7B0") — any number, by writing the instruction (CsrNum). An unimplemented one
+    // faults and the REPL puts you back at the prompt, which is itself the answer.
+    v = Str2I64(name);
+    Print("csr 0x%X = 0x%X\n", v, CsrNum(v));
+    return;
+  }
   if (!StrICmp(name, "mstatus"))      { v = RVWinCsrrMstatus();    Print("mstatus=0x%X\n", v);    CsrDecodeMstatus(v); }
   else if (!StrICmp(name, "mie"))     { v = RVWinCsrrMie();        Print("mie=0x%X\n", v);        CsrDecodeMie(v); }
   else if (!StrICmp(name, "mip"))     { v = RVWinCsrrMip();        Print("mip=0x%X\n", v);        CsrDecodeMip(v); }
@@ -989,6 +996,39 @@ public U0 ArgEcho(I64 a, I64 b, I64 c)
 public I64 ArgOne()
 {
   return 0x1111;
+}
+
+// ---- reading a CSR by NUMBER ----------------------------------------------------------------
+//
+// A CSR number is an immediate inside the instruction, not an operand, so there is no such
+// thing as `csrr rd, rs`. Every reader in this tree is therefore an if-chain over hand-written
+// stubs, and about four thousand numbers are unreachable.
+//
+// This writes the instruction instead: `csrr a0, num` is 0x2573 with the number in the top
+// twelve bits, followed by `ret`. Two words into a scratch array, a fence.i so the fetch path
+// sees them, and call it.
+//
+// An unimplemented CSR raises an illegal instruction. That is survivable HERE and nowhere else:
+// this REPL recovers from faults and puts you back at the prompt with mcause=2, which is also a
+// perfectly good answer to "does this hart have that register". Do not call it from a trap
+// handler, where the fault would be the second one.
+U32 rv_csr_stub[8];
+public I64 CsrNum(I64 num)
+{
+  I64 (*fn)();
+  if (num < 0 || num > 0xFFF) {
+    Print("CsrNum: 0..0xFFF, not 0x%X\n", num);
+    return 0;
+  }
+  rv_csr_stub[0] = 0x2573 + (num << 20);
+  // csrr a0, num  ==  csrrs a0, num, x0
+  rv_csr_stub[1] = 0x00008067;
+  // ret  ==  jalr x0, 0(ra)
+  asm {
+	fencei
+  }
+  fn = rv_csr_stub;
+  return fn();
 }
 
 public U0 Uptime()

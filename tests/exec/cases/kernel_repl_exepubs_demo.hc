@@ -172,6 +172,13 @@ I64 main()
       RVExePubFunNew("Mstatus", &Mstatus, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Mcause", &Mcause, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Uptime", &Uptime, cmp.internal_types[RT_U0], 0);
+      {
+        // CsrNum(0x7B0): read a CSR by number, by writing the instruction at run time
+        CHashFun *tn;
+        tn = RVExePubFunNew("CsrNum", &CsrNum, cmp.internal_types[RT_I64], 1);
+        if (tn)
+          RVExePubAddArg(tn, "num", cmp.internal_types[RT_I64]);
+      }
       RVExePubFunNew("Pmp", &Pmp, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Pt", &Pt, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("PtDemo", &PtDemo, cmp.internal_types[RT_I64], 0);
