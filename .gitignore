@@ -45,11 +45,15 @@ test_*
 !tests/scratch/**/*.hc
 dump_*
 trace_*
-verify_*
-show_*
-debug_*
-check_*
-analyze_*
+# Root-only. These are local scratch-script names, and unanchored they match anywhere in the
+# tree — `debug_*` swallowed docs/DEBUG_STATE_SURVEY.md on this case-insensitive filesystem
+# and hid it for a whole session, because an ignored file is not untracked: git add said
+# nothing and git status showed nothing.
+/verify_*
+/show_*
+/debug_*
+/check_*
+/analyze_*
 
 # Backup / editor junk
 *.bak
@@ -112,3 +116,6 @@ templeos-riscv/include/generated/.autoconf-stamp
 # Python bytecode caches
 __pycache__/
 *.pyc
+
+# generated per-board build tree
+templeos-riscv/build/
