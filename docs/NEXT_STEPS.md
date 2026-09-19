@@ -7,9 +7,21 @@ by what was asked for and is only half done, then by size. Companion to
 
 ---
 
+See also [VERIFICATION_PLAN.md](VERIFICATION_PLAN.md) — property testing, fuzzing and the two
+or three places where a weakest-precondition argument is worth the trouble. Its first two steps
+(fuzz the host compiler; generate instructions from the catalog and check them against GNU `as`)
+are cheap enough to slot in beside any of the tiers below.
+
 ## Tier 0 — things that are wrong now
 
-### 0.1 A planted pub delivers only its first argument
+### 0.1 ~~A planted pub delivers only its first argument~~ — FIXED, and it was not that
+
+The diagnosis was wrong. Multi-argument pubs are fine; a call NESTED in an argument list
+corrupted the arguments around it, in guest codegen, for any REPL code. The backend walked back
+to the nearest `IC_CALL_START` to find a call's arguments and found the inner call's. Fixed in
+`Compiler/OptPass_RV.HC` with a nesting-aware walk; `ArgEcho` in the smoke locks both spellings.
+
+#### The original entry, for the record
 
 `PgAt(root, va, levels)` called from the REPL arrives as `(root, 0, 0)`, with or without
 declared defaults. Found while testing the page-table walker; `PtWalk` exists only to make that
@@ -24,18 +36,18 @@ build against what the guest compiler's call path expects for a `CHashFun` with 
 **This is the biggest hole in the REPL's API and should go first** — until it is fixed, no new
 function taking more than one argument can be trusted.
 
-### 0.2 `Regs;` corrupts the freeze (seed image)
+### 0.2 ~~`Regs;` corrupts the freeze (seed image)~~ — FIXED, spill moved to +0x400
 
 `RegsDumpHc` (`bootstrap/seed/csr.hc:1556`) spills ten CSRs to `0x87000400`..`0x448` — which is
 `TRAP_SNAP_X` slots x0..x9. Typing `Regs;` after a fault overwrites the low ten registers of the
 freeze that `_X0.._X9` and `DbgX` then read back. Small: give the spill its own address.
 
-### 0.3 `TrapFaultDump` prints uninitialised stack as `ra` (seed image)
+### 0.3 ~~`TrapFaultDump` prints uninitialised stack as `ra`~~ — FIXED, frame[1]
 
 `bootstrap/seed/trap.hc:535` prints `frame[0]`, but `TrapCtxSave` puts x1 at offset 8 and never
 writes slot 0. One-line fix; the value has been wrong in every fault dump.
 
-### 0.4 Trace advances by 4 through compressed instructions
+### 0.4 ~~Trace advances by 4 through compressed instructions~~ — FIXED, follows the real width
 
 `t` in the asm REPL adds 4 to the cursor whatever the instruction was, so a 2-byte RVC
 instruction lands the cursor mid-instruction and the next disassembly is garbage. The
@@ -67,6 +79,10 @@ item 6): one pane, a key to cycle registers / float / CSRs / memory, and the hea
 page you are on. That removes the whole class of "where did X go".
 
 ### 1.4 AsmDoc motivation covers 36 of 244 instructions
+
+`AsmClasses` / `AsmClass` and the REPL's `p <class>` now exist, so a family can be worked
+through one instruction at a time — which makes the missing motivation entries more visible, not
+less. The classes are curated lists in `Kernel/RVExplore.HC`.
 
 The structure is done and adding one is a single line. The remaining 208 are writing, not
 engineering — worth doing in batches by family (the float block, the atomics, the compressed set).
