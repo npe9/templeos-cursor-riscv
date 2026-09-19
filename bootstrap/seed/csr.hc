@@ -1223,52 +1223,57 @@ U0 RegsDumpHc()
     RegGprLine(i, v);
   }
   // Spill CSRs via inline csrr (HcGet* calls after the first hung on holyc AOT).
+  //
+  // The spill lands at MEM_REGS_SNAP+0x400 (0x87000700), NOT +0x100. That used to be +0x100,
+  // which is 0x87000400 — the canonical fault freeze (TRAP_SNAP_X, trap.hc). Typing `Regs;`
+  // after a fault overwrote the frozen x0..x9 that _X0.._X9 and DbgX read back, so the
+  // debugger's own registers were corrupted by the command you would type to look at them.
   asm {
 	lui	t6, 0x10E00
 	slli	t6, t6, 3
 	csrr	t5, 0x300
-	sd	t5, 0x400(t6)
+	sd	t5, 0x700(t6)
 	csrr	t5, 0x301
-	sd	t5, 0x408(t6)
+	sd	t5, 0x708(t6)
 	csrr	t5, 0x304
-	sd	t5, 0x410(t6)
+	sd	t5, 0x710(t6)
 	csrr	t5, 0x305
-	sd	t5, 0x418(t6)
+	sd	t5, 0x718(t6)
 	csrr	t5, 0x341
-	sd	t5, 0x420(t6)
+	sd	t5, 0x720(t6)
 	csrr	t5, 0x342
-	sd	t5, 0x428(t6)
+	sd	t5, 0x728(t6)
 	csrr	t5, 0x343
-	sd	t5, 0x430(t6)
+	sd	t5, 0x730(t6)
 	csrr	t5, 0x340
-	sd	t5, 0x438(t6)
+	sd	t5, 0x738(t6)
 	csrr	t5, 0x344
-	sd	t5, 0x440(t6)
+	sd	t5, 0x740(t6)
 	csrr	t5, 0xF14
-	sd	t5, 0x448(t6)
+	sd	t5, 0x748(t6)
   }
   UartStr("CSRs (CSR_* / GetMStatus… ; Reg(\"mstatus\"); Man(\"Regs\")):\n");
-  v = *(I64 *)(MEM_REGS_SNAP + 0x100);
+  v = *(I64 *)(MEM_REGS_SNAP + 0x400);
   RegLineDesc("mstatus ", v, "machine status (MIE/FS/...)");
   CsrExplainVal("mstatus", v, -1);
-  v = *(I64 *)(MEM_REGS_SNAP + 0x108);
+  v = *(I64 *)(MEM_REGS_SNAP + 0x408);
   RegLineDesc("misa    ", v, "ISA / extension bitmap (WARL)");
-  v = *(I64 *)(MEM_REGS_SNAP + 0x110);
+  v = *(I64 *)(MEM_REGS_SNAP + 0x410);
   RegLineDesc("mie     ", v, "machine interrupt enable");
-  v = *(I64 *)(MEM_REGS_SNAP + 0x118);
+  v = *(I64 *)(MEM_REGS_SNAP + 0x418);
   RegLineDesc("mtvec   ", v, "trap vector base");
-  v = *(I64 *)(MEM_REGS_SNAP + 0x120);
+  v = *(I64 *)(MEM_REGS_SNAP + 0x420);
   RegLineDesc("mepc    ", v, "exception PC (mret target)");
-  v = *(I64 *)(MEM_REGS_SNAP + 0x128);
+  v = *(I64 *)(MEM_REGS_SNAP + 0x428);
   RegLineDesc("mcause  ", v, "trap cause (interrupt|code)");
   CsrExplainVal("mcause", v, -1);
-  v = *(I64 *)(MEM_REGS_SNAP + 0x130);
+  v = *(I64 *)(MEM_REGS_SNAP + 0x430);
   RegLineDesc("mtval   ", v, "bad addr / faulting insn");
-  v = *(I64 *)(MEM_REGS_SNAP + 0x138);
+  v = *(I64 *)(MEM_REGS_SNAP + 0x438);
   RegLineDesc("mscratch", v, "M scratch");
-  v = *(I64 *)(MEM_REGS_SNAP + 0x140);
+  v = *(I64 *)(MEM_REGS_SNAP + 0x440);
   RegLineDesc("mip     ", v, "machine interrupt pending");
-  v = *(I64 *)(MEM_REGS_SNAP + 0x148);
+  v = *(I64 *)(MEM_REGS_SNAP + 0x448);
   RegLineDesc("mhartid ", v, "hardware thread id (RO)");
   v = *(I64 *)MEM_MTIME;
   RegLineDesc("mtime   ", v, "CLINT cycle (MMIO, not CSR)");

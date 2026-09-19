@@ -463,9 +463,13 @@ public U0 AsmRepl()
         step = asmui_step_fn;
         step(insn);
       }
-      asmui_trace_pc += 4;
-      // RVC would be 2; the disassembler prints the width, and a compressed instruction here
-      // simply lands the cursor mid-instruction, which the next disassembly shows plainly
+      // The instruction's own width, not four: a compressed instruction is two bytes, and
+      // stepping four through one lands the cursor mid-instruction and disassembles rubbish
+      // from there on. The bottom two bits say which it is — anything but 0b11 is compressed.
+      if ((*(U16 *)asmui_trace_pc & 3) == 3)
+        asmui_trace_pc += 4;
+      else
+        asmui_trace_pc += 2;
       AsmUiPanes;
       continue;
     }

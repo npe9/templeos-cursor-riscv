@@ -574,7 +574,10 @@ U0 TrapFaultDump(I64 *frame, I64 cause, I64 epc, I64 tval)
   UartStr("\n  pc  = ");
   TrapPutHex(epc);
   UartStr("\n  ra  = ");
-  TrapPutHex(frame[0]);
+  // frame[1], not frame[0]: TrapCtxSave stores x1 at 8(sp) and never writes slot 0, so this
+  // line printed uninitialised stack in every fault dump. TrapSnapPublish has always used
+  // frame[1] — the two disagreed and the dump was the one that was wrong.
+  TrapPutHex(frame[1]);
   UartStr("\n  (TrapDump; U(pc-16); for dig-down)\n");
 }
 

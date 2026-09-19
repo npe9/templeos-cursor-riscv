@@ -127,6 +127,14 @@ feed() {
      # paging off, so satp is Bare and there is no live table to walk. Each REPL line is its own
      # scope, so the table is built by PtDemo in the image rather than by a run of lines here.
      "PtWalk;",
+     # A call in an argument list used to corrupt the arguments around it: the backend walked
+     # back to the nearest IC_CALL_START to find them and found the INNER one. Both spellings
+     # must now deliver the same three values.
+     # (No apostrophes in here: this block is inside perl -e single quotes.)
+     "ArgEcho(0x11, 0x22, 0x33);",
+     "ArgEcho(ArgOne, 0x22, 0x33);",
+     # ...and the call that found it: three arguments, the first of them a call
+     "PgAt(PtDemo, 0x40403024, 3);",
      # evidence for the note above: a two-argument pub gets only its first argument
      "Dm(0x87000400, 32);",
      # Back at the HolyC prompt, with enough output to scroll its region right through. The
@@ -312,6 +320,10 @@ need "PMP: 16 entries"
 need "level 2  index 1"
 need "level 0  index 3"
 need "0x40403024 -> 0x80003024"   # no leading dash: grep would read it as an option
+# A call in an argument list delivers the arguments around it (guest codegen; it used to give
+# b=0x1 c=0x0 here, and shifted them by one when the fix was half done).
+need "ArgEcho: a=0x11 b=0x22 c=0x33"
+need "ArgEcho: a=0x1111 b=0x22 c=0x33"
 # The float block is not silently gone when memory has the rows — the heading says how to get it
 need "(f: float regs)"
 # ...and the NAPOT decode of the entry the asm REPL just programmed: the trailing ones of the

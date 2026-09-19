@@ -848,6 +848,24 @@ public I64 PtWalk()
   return PgAt(root, 0x40403024, 3);
 }
 
+// ArgEcho -- ArgEcho(a, b, c)
+// NAME
+//   ArgEcho - say what arrived, to tell an argument bug from a call bug
+// DESCRIPTION
+//   Temporary instrumentation: PgAt(PtDemo, va, 3) from the REPL saw its second and third
+//   arguments as zero, while the identical call from C inside PtWalk worked. Either a planted
+//   pub drops arguments past the first, or a nested CALL in an argument list clobbers the ones
+//   already marshalled. This tells them apart.
+public U0 ArgEcho(I64 a, I64 b, I64 c)
+{
+  Print("ArgEcho: a=0x%X b=0x%X c=0x%X\n", a, b, c);
+}
+
+public I64 ArgOne()
+{
+  return 0x1111;
+}
+
 public U0 Uptime()
 {
   //Hart free-running counters (Zicntr): cycle, time (mtime tick), instret.

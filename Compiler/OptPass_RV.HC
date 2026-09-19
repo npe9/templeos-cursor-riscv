@@ -139,26 +139,68 @@ Bool RVRematLeaOrAddrArg(CCmpCtrl *cc, CIntermediateCode *tmpi, CIntermediateCod
  * Host EmitLoadArgs skips N<2; Soft STK push already leaves a0 (IMM/REG).
  * FP-slot fallback for n==1 loads an empty Pass6 slot → a0=0 → Soft Call r=4
  * (IMM tip greened then Soft Compiler churn soft-failed). Skip that clobber. */
+// The IC_CALL_START that belongs to THIS call, not merely the nearest one behind it.
+//
+// A call in an argument list — Foo(Bar, x, y) — puts a whole inner call between the outer
+// CALL_START and the outer CALL. Walking back to the first CALL_START found the INNER one, and
+// every argument was then rematerialised from the wrong stack slots: the first argument (the
+// inner call's own result, already in a0) looked right and the rest arrived as rubbish.
+//
+// So the walk counts nesting: an inner CALL_END seen on the way back means an inner CALL_START
+// is still to come, and that one is not ours.
+CIntermediateCode *RVCallStartFor(CIntermediateCode *tmpi)
+{
+  CIntermediateCode *t;
+  I64 depth = 0;
+  t = OptLag(tmpi);
+  while (t) {
+    if (t->ic_code == IC_CALL_END || t->ic_code == IC_CALL_END2)
+      depth++;
+    else if (t->ic_code == IC_CALL_START) {
+      if (!depth)
+        return t;
+      depth--;
+    }
+    t = OptLag(t);
+  }
+  return NULL;
+}
+
+// TRUE while `t` is inside a nested call between `start_i` and the call being emitted. The
+// pushes of an inner call belong to it, not to us; its RESULT push — which comes after its
+// CALL_END — is ours.
+I64 RVCallArgSkip(CIntermediateCode *t, I64 *depth)
+{
+  if (t->ic_code == IC_CALL_START) {
+    *depth = *depth + 1;
+    return TRUE;
+  }
+  if (t->ic_code == IC_CALL_END || t->ic_code == IC_CALL_END2) {
+    if (*depth)
+      *depth = *depth - 1;
+    // The instruction that CLOSES a nested call carries that call's result — and the result is
+    // our argument, so it is only skipped while still inside a deeper one. Skipping it outright
+    // lost an argument and shifted every one after it down a register.
+    return *depth != 0;
+  }
+  return *depth != 0;
+}
+
 U0 RVEmitCallArgRemat(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 rip2, I64 frame_off, I64 call_push)
 {
   CIntermediateCode *start_i = NULL, *tmpi2;
   CCodeMisc *lb;
-  I64 n = 0, k = 0, rev = 0, arg_slot, call_rip, va_argv_slot = -1;
+  I64 n = 0, k = 0, rev = 0, arg_slot, call_rip, va_argv_slot = -1, skip_depth = 0;
   Bool is_va = FALSE, got_argv = FALSE;
   U8 ard;
-  tmpi2 = OptLag(tmpi);
-  while (tmpi2) {
-    if (tmpi2->ic_code == IC_CALL_START) {
-      start_i = tmpi2;
-      break;
-    }
-    tmpi2 = OptLag(tmpi2);
-  }
+  start_i = RVCallStartFor(tmpi);
   if (!start_i)
     return;
   tmpi2 = start_i->next;
+  skip_depth = 0;
   while (tmpi2 && tmpi2 != tmpi && n < 8) {
-    if (tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES))
+    if (!RVCallArgSkip(tmpi2, &skip_depth) && tmpi2->ic_code > IC_NOP2 &&
+        (tmpi2->ic_flags & ICF_PUSH_RES))
       n++;
     tmpi2 = tmpi2->next;
   }
@@ -172,8 +214,10 @@ U0 RVEmitCallArgRemat(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I
   // Without it the REPL's Print("%d",42) passed 42 as argv and StrPrintJoin ld'd from 42.
   tmpi2 = start_i->next;
   k = 0;
+  skip_depth = 0;
   while (tmpi2 && tmpi2 != tmpi && k < n) {
-    if (tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES)) {
+    if (!RVCallArgSkip(tmpi2, &skip_depth) && tmpi2->ic_code > IC_NOP2 &&
+        (tmpi2->ic_flags & ICF_PUSH_RES)) {
       if (tmpi2->ic_flags & ICF_RV_VA_ARGC) {
 	if (rev)
 	  va_argv_slot = n - k;          //(n-1-k) + 1
@@ -187,8 +231,10 @@ U0 RVEmitCallArgRemat(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I
   }
   tmpi2 = start_i->next;
   k = 0;
+  skip_depth = 0;
   while (tmpi2 && tmpi2 != tmpi && k < n) {
-    if (tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES)) {
+    if (!RVCallArgSkip(tmpi2, &skip_depth) && tmpi2->ic_code > IC_NOP2 &&
+        (tmpi2->ic_flags & ICF_PUSH_RES)) {
       if (rev)
         arg_slot = n - 1 - k;
       else
@@ -637,18 +683,14 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
           jbit++;
         }
       }
-      tmpi2 = OptLag(tmpi);
-      while (tmpi2) {
-        if (tmpi2->ic_code == IC_CALL_START) {
-          jbit = 0;
-          while (jbit < 32) {
-            if (tmpi2->ic_data & (1 << jbit))
-              call_push += 8;
-            jbit++;
-          }
-          break;
+      tmpi2 = RVCallStartFor(tmpi);
+      if (tmpi2) {
+        jbit = 0;
+        while (jbit < 32) {
+          if (tmpi2->ic_data & (1 << jbit))
+            call_push += 8;
+          jbit++;
         }
-        tmpi2 = OptLag(tmpi2);
       }
       RVEmitCallArgRemat(cc, tmpi, buf, rip, rip2, fsz, call_push);
     }
@@ -693,18 +735,14 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
           jbit++;
         }
       }
-      tmpi2 = OptLag(tmpi);
-      while (tmpi2) {
-        if (tmpi2->ic_code == IC_CALL_START) {
-          jbit = 0;
-          while (jbit < 32) {
-            if (tmpi2->ic_data & (1 << jbit))
-              call_push += 8;
-            jbit++;
-          }
-          break;
+      tmpi2 = RVCallStartFor(tmpi);
+      if (tmpi2) {
+        jbit = 0;
+        while (jbit < 32) {
+          if (tmpi2->ic_data & (1 << jbit))
+            call_push += 8;
+          jbit++;
         }
-        tmpi2 = OptLag(tmpi2);
       }
       RVEmitCallArgRemat(cc, tmpi, buf, rip, rip2, fsz, call_push);
     }
@@ -758,21 +796,28 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
     i = 0;
     
     {
-      CIntermediateCode *tmpi2 = OptLag(tmpi);
-      I64 call_push = 0;
-      while (tmpi2) {
+      CIntermediateCode *tmpi2 = OptLag(tmpi), *start_c;
+      I64 call_push = 0, back_depth = 0;
+      start_c = RVCallStartFor(tmpi);
+      // Count only pushes that are ours: an argument list containing a call has that call's
+      // own pushes in between, and counting them made the arg count too large.
+      while (tmpi2 && tmpi2 != start_c) {
         if (tmpi2->ic_code == IC_CALL_START) {
-          j = 0;
-          while (j < 32) {
-            if (tmpi2->ic_data & (1 << j))
-              call_push += 8;
-            j++;
-          }
-          break;
-        }
-        if (tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES))
+          if (back_depth)
+            back_depth--;
+        } else if (tmpi2->ic_code == IC_CALL_END || tmpi2->ic_code == IC_CALL_END2)
+          back_depth++;
+        else if (!back_depth && tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES))
           i++;
         tmpi2 = OptLag(tmpi2);
+      }
+      if (start_c) {
+        j = 0;
+        while (j < 32) {
+          if (start_c->ic_data & (1 << j))
+            call_push += 8;
+          j++;
+        }
       }
       jal_off += call_push;
     }
@@ -793,18 +838,13 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
       Bool is_va = FALSE, got_argv = FALSE;
       CMemberLst *va_m;
       U8 ard;
-      tmpi2 = OptLag(tmpi);
-      while (tmpi2) {
-        if (tmpi2->ic_code == IC_CALL_START) {
-          start_i = tmpi2;
-          break;
-        }
-        tmpi2 = OptLag(tmpi2);
-      }
+      start_i = RVCallStartFor(tmpi);
       if (start_i) {
+        I64 skip2 = 0;
         tmpi2 = start_i->next;
         while (tmpi2 && tmpi2 != tmpi && n < 8) {
-          if (tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES))
+          if (!RVCallArgSkip(tmpi2, &skip2) && tmpi2->ic_code > IC_NOP2 &&
+              (tmpi2->ic_flags & ICF_PUSH_RES))
             n++;
           tmpi2 = tmpi2->next;
         }
@@ -848,10 +888,12 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
       if (n >= 2)
         rev = 1;
       if (start_i) {
+        I64 skip3 = 0;
         tmpi2 = start_i->next;
         k = 0;
         while (tmpi2 && tmpi2 != tmpi && k < n) {
-          if (tmpi2->ic_code > IC_NOP2 && (tmpi2->ic_flags & ICF_PUSH_RES)) {
+          if (!RVCallArgSkip(tmpi2, &skip3) && tmpi2->ic_code > IC_NOP2 &&
+              (tmpi2->ic_flags & ICF_PUSH_RES)) {
             if (rev)
               arg_slot = n - 1 - k;
             else

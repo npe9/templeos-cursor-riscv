@@ -93,6 +93,23 @@ I64 DbgVCapture(I64 addr, I64 n, U8 *out, I64 max)
   return dbgv_cap_len;
 }
 
+// Where a memory dump goes. With a layout up, dbgv_mem_* name the memory pane and the dump is
+// a tile. With no memory pane in the layout (dbgv_mem_row < 0) it is PRINTED instead, so it
+// scrolls with the session like any other output — better than a floating tile at coordinates
+// that predate the layout, which is where D and Da were landing off the bottom of the screen.
+I64 DbgMemIsTile()
+{
+  return dbgv_mem_row >= 0 && dbgv_mem_rows >= 2;
+}
+
+U0 DbgMemEmit(U8 *line)
+{
+  if (DbgMemIsTile())
+    DocPutS(dbgv_mem, line);
+  else
+    "%s", line;
+}
+
 // Append captured text as document source, escaping '$' ('$$' is DolDoc's literal '$') and
 // breaking it into lines. Shared by the disassembly and memory tiles.
 U0 DbgVPutEscaped(CDoc *doc, U8 *text)
@@ -215,12 +232,12 @@ U0 DbgMemPane(I64 addr, I64 n)
   dbgv_cap_on = 0;
   cap[dbgv_cap_len] = 0;
   DocClear(dbgv_mem);
-  DocPutS(dbgv_mem, "$FG,5$memory$FG$\n");
+  DbgMemEmit("$FG,5$memory$FG$\n");
   DbgVPutEscaped(dbgv_mem, cap);
   Free(cap);
-  dbgv_mem_bytes = RVDocTextRender(dbgv_mem,
-                                   dbgv_mem_row < 0 ? DBGV_STATUS_ROW + 6 : dbgv_mem_row,
-                                   dbgv_mem_col, dbgv_mem_rows, dbgv_mem_cols);
+  if (DbgMemIsTile())
+    dbgv_mem_bytes = RVDocTextRender(dbgv_mem, dbgv_mem_row, dbgv_mem_col, dbgv_mem_rows,
+                                     dbgv_mem_cols);
 }
 
 // D -- D(addr, n)
@@ -249,7 +266,7 @@ public U0 DbgD(I64 addr, I64 n = 64)
       return;
   }
   DocClear(dbgv_mem);
-  DocPutS(dbgv_mem, "$FG,5$D (offsets from 0)$FG$\n");
+  DbgMemEmit("$FG,5$D (offsets from 0)$FG$\n");
   i = 0;
   while (i < n) {
     StrPrint(line, "%04X ", i);
@@ -259,13 +276,13 @@ public U0 DbgD(I64 addr, I64 n = 64)
       StrCat(line, cell);
       b++;
     }
-    DocPutS(dbgv_mem, line);
-    DocPutS(dbgv_mem, "\n");
+    DbgMemEmit(line);
+    DbgMemEmit("\n");
     i += 16;
   }
-  dbgv_mem_bytes = RVDocTextRender(dbgv_mem,
-                                   dbgv_mem_row < 0 ? DBGV_STATUS_ROW + 6 : dbgv_mem_row,
-                                   dbgv_mem_col, dbgv_mem_rows, dbgv_mem_cols);
+  if (DbgMemIsTile())
+    dbgv_mem_bytes = RVDocTextRender(dbgv_mem, dbgv_mem_row, dbgv_mem_col, dbgv_mem_rows,
+                                     dbgv_mem_cols);
 }
 
 // Da -- Da(addr, n)
@@ -295,7 +312,7 @@ public U0 DbgDa(I64 addr, I64 n = 16)
       return;
   }
   DocClear(dbgv_mem);
-  DocPutS(dbgv_mem, "$FG,5$Da (addresses)$FG$\n");
+  DbgMemEmit("$FG,5$Da (addresses)$FG$\n");
   i = 0;
   while (i < n) {
     v = *(I64 *)(addr + i * 8);
@@ -304,13 +321,13 @@ public U0 DbgDa(I64 addr, I64 n = 16)
       StrPrint(line, "%016X %016X $FG,2$%s$FG$", addr + i * 8, v, sym);
     else
       StrPrint(line, "%016X %016X", addr + i * 8, v);
-    DocPutS(dbgv_mem, line);
-    DocPutS(dbgv_mem, "\n");
+    DbgMemEmit(line);
+    DbgMemEmit("\n");
     i++;
   }
-  dbgv_mem_bytes = RVDocTextRender(dbgv_mem,
-                                   dbgv_mem_row < 0 ? DBGV_STATUS_ROW + 6 : dbgv_mem_row,
-                                   dbgv_mem_col, dbgv_mem_rows, dbgv_mem_cols);
+  if (DbgMemIsTile())
+    dbgv_mem_bytes = RVDocTextRender(dbgv_mem, dbgv_mem_row, dbgv_mem_col, dbgv_mem_rows,
+                                     dbgv_mem_cols);
 }
 
 // Dm -- Dm(addr, n)
@@ -355,7 +372,7 @@ public U0 DbgMemAt(I64 addr, I64 row, I64 col, I64 rows, I64 cols)
     per = 4;
   n = per * (rows - 1);
   DocClear(dbgv_mem);
-  DocPutS(dbgv_mem, "$FG,5$memory$FG$\n");
+  DbgMemEmit("$FG,5$memory$FG$\n");
   i = 0;
   while (i < n) {
     StrPrint(line, "%08X ", addr + i);
@@ -365,8 +382,8 @@ public U0 DbgMemAt(I64 addr, I64 row, I64 col, I64 rows, I64 cols)
       StrCat(line, cell);
       b++;
     }
-    DocPutS(dbgv_mem, line);
-    DocPutS(dbgv_mem, "\n");
+    DbgMemEmit(line);
+    DbgMemEmit("\n");
     i += per;
   }
   dbgv_mem_bytes = RVDocTextRender(dbgv_mem, row, col, rows, cols);

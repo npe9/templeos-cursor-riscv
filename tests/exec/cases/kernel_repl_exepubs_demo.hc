@@ -168,6 +168,16 @@ I64 main()
       RVExePubFunNew("Pt", &Pt, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("PtDemo", &PtDemo, cmp.internal_types[RT_I64], 0);
       RVExePubFunNew("PtWalk", &PtWalk, cmp.internal_types[RT_I64], 0);
+      RVExePubFunNew("ArgOne", &ArgOne, cmp.internal_types[RT_I64], 0);
+      {
+        CHashFun *te;
+        te = RVExePubFunNew("ArgEcho", &ArgEcho, cmp.internal_types[RT_U0], 3);
+        if (te) {
+          RVExePubAddArg(te, "a", cmp.internal_types[RT_I64]);
+          RVExePubAddArg(te, "b", cmp.internal_types[RT_I64]);
+          RVExePubAddArg(te, "c", cmp.internal_types[RT_I64]);
+        }
+      }
       {
         // Pg(va) walks the live satp; PgAt(root, levels, va) walks a table you hand it, which
         // is how it can be exercised on a machine with paging off — as this one has.
