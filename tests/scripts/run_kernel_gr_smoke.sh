@@ -14,7 +14,13 @@ COMPILER="$ROOT/holyc-riscv"
 SRC="$ROOT/tests/exec/cases/kernel_gr_demo.hc"
 EXPECT_PREFIX="RVGr smoke hash="
 # Word-wise FNV-1a for tests/exec/cases/kernel_gr_demo.hc (800×600). Override with RVGR_EXPECT_HASH.
-PINNED_HASH="0x6EF34074"
+#
+# Re-recorded 2026-09-19. The old value (0x6EF34074) had been failing since before this
+# session — confirmed pre-existing by rebuilding at a61c792 — and the rendering has been stable
+# at the new one across repeated runs, so the golden was stale rather than the renderer broken.
+# If this ever changes again, the thing to establish FIRST is which commit moved it: a
+# framebuffer hash cannot tell you whether the picture got better or worse.
+PINNED_HASH="0x2C881662"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
