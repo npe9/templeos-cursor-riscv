@@ -138,6 +138,30 @@ executes fully instead of being skipped.
 - `kernel-gr` compares against a stale golden hash (`want 0x6EF34074 / got 0x2C881662`). Both
   were confirmed pre-existing by rebuilding at `a61c792`.
 
+### 3.1b kernel-span hangs in SpanBridge1Init — localised, not fixed
+
+`make ci` is green except this one, which is pre-existing: it fails identically at d207eda.
+
+Localised by bisection with markers written STRAIGHT TO THE UART, because `Print` in that image
+does not reach the serial capture — markers placed with `Print` are invisible, which is what
+made this look like "no output at all" for so long.
+
+The sequence reached is: kinit, kinit-done, ramdisk, grinit, winmgr, dcfill, putdoc, spannew,
+bridge — and then nothing. So `main` runs fine and the hang is inside `SpanBridge1Init(ode)`,
+before the CtrlBttn setup.
+
+Ruled out along the way:
+- **The allocator.** A `CAlloc(256)` + `Free` immediately before it completes.
+- **An uninitialised mass queue.** `ode=0x82252AA0`, `last_mass == next_mass == 0x82252AC8` —
+  an empty ring pointing at itself, which is correct.
+- **The save dialog.** The first theory was `PopUpFileName` blocking on a headless popup, since
+  the last output is `$BG,LTCYAN$`. Wrong: that function prints a "begin" line that never
+  appears, and the hang is long before any save.
+
+So the next step is markers inside `tos/Apps/Span/SpanBridge.HC` itself — the springs, most
+likely, since the masses are just CAlloc and QueIns. That means instrumenting the stock tree,
+which is a bigger call than instrumenting a test case.
+
 ### 3.2 No full suite run in a long while
 
 `make ci` / `qemu-integration` has not run in roughly 25 commits. Everything here was verified by
