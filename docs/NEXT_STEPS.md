@@ -207,6 +207,27 @@ oracles (88 rv64, 62 rv32), the assembler differentials — but not by the whole
 
 ---
 
+## Tier 4 — later projects
+
+### 4.1 Run the JIT on Linux and macOS
+
+[HOSTED_JIT.md](HOSTED_JIT.md). The JIT only ever runs bare metal, where every hard platform
+question is either answered by us or does not arise. Running it as an ordinary userspace process
+forces it through real ABIs and APIs instead: SysV and AAPCS64, Darwin arm64 passing variadic
+arguments on the STACK (and HolyC is varargs-heavy), `MAP_JIT` and
+`pthread_jit_write_protect_np` on Apple Silicon, `sys_icache_invalidate` in place of `fence.i`,
+signals and `ucontext` in place of `mtvec`, and an `mmap` address in place of `jit.hc`'s
+hardcoded `JIT_BASE 0x84000000`.
+
+Two things it buys beyond the ABI exercise: it takes QEMU out of the inner loop, which is what
+makes the generators in [VERIFICATION_PLAN.md](VERIFICATION_PLAN.md) affordable at the case
+counts that make them worth running; and it gives the multi-arch seam a native referee, since an
+AArch64 backend can be checked against this machine rather than against an emulator's model of
+it. Staged H0..H4, with the 88 existing execution oracles as a conformance suite that does not
+have to be written.
+
+---
+
 ## If you want a recommendation
 
 0.1 first, because it is a correctness bug in the surface everything else is added to, and it is

@@ -165,6 +165,11 @@ inputs rather than the one example a test would use.
 | 2.2–2.4 fuzz the editor, assembler, walkers | robustness against the input a person actually types by accident | a day each |
 | 3.2 wrapper triple | the stepper's correctness, by construction | a day |
 
+A note on cost: every item above pays for itself per case, and the case count is what makes it
+worth doing. Under QEMU each image parks in `wfi` and waits out its own timeout, so the loop is
+slow enough that "a thousand cases per instruction" stays theoretical. [HOSTED_JIT.md](HOSTED_JIT.md)
+is the project that changes that arithmetic, and §1.1-§1.3 are its H4.
+
 **Start with 2.1 and 1.1.** They need no new theory, they reuse oracles that already exist, and
 they will find things this week. The proofs in §3 are worth doing, but they are worth doing
 *after* the generators, because a generator that disagrees with a proof usually means the model

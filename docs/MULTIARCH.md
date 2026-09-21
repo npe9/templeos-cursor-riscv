@@ -50,7 +50,10 @@ patterns — not a Linux-style “every `-M` in CI” matrix.
 - Equal CI smoke for every QEMU machine on every ISA.
 - Full TempleOS / Adam / DolDoc / graphics parity on non-RV64.
 - Binary compatibility across ISAs (or across XLEN within RISC-V).
-- Growing `bootstrap/hc_repl/jit.hc` for new arches (same freeze as RV64).
+- Growing `bootstrap/hc_repl/jit.hc` for new arches (same freeze as RV64). Note
+  [HOSTED_JIT.md](HOSTED_JIT.md) does not overturn this: it is a second HOST for the existing
+  JIT (Linux/macOS userspace, to exercise their ABIs and APIs), not a per-ISA fork of `jit.hc`
+  and not a second guest runtime.
 - Inventing a second C libc-shaped **guest runtime** per ISA (see §2).
 - Dual-maintaining a second copy of `host/parser.c` / `host/compiler.c`.
 - Renaming the host binary away from `holyc-riscv` as a port blocker (naming
