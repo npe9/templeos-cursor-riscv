@@ -364,6 +364,18 @@ typedef struct IncludeFile {
   // string is exhausted instead of lexing on from ptr.
   bool has_pending;
   int p_token; I64 p_i64; F64 p_f64; char *p_str; int p_str_len; bool p_is_char; CHashEntry *p_hash;
+  // The newline rule's bracket state, saved ONLY for a pushed default-argument string and
+  // restored when it is exhausted. That text is a complete expression, so its brackets must not
+  // be counted against the file that called it: without this, `if (Blink || x)` -- where Blink
+  // is a bare call to a function with a default argument -- loses the header's nl_ctl_paren to
+  // the parens inside the default text, and the newline after `)` then ends the `if` as an
+  // empty statement, orphaning the `else`.
+  //
+  // Macro and #include frames deliberately do NOT save this. A macro is allowed to open a
+  // bracket that its caller closes, and restoring at the pop would forget it.
+  bool has_nl_state;
+  int s_brace_depth, s_paren_depth, s_nl_asm_depth, s_nl_ctl_paren, s_nl_do_brace;
+  bool s_nl_decl, s_nl_after_ctl;
 } IncludeFile;
 
 // Lexer state stack for LexPush/LexPop

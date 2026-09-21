@@ -1496,6 +1496,13 @@ void LexPushStringPending(Compiler *cc, const char *text) {
   inc->src = lex->src; inc->src_size = lex->src_size;
   inc->ptr = lex->ptr; inc->filename = lex->filename; inc->line = lex->line; inc->col = lex->col;
   inc->has_pending = true;
+  // The default-argument text is a complete expression; its brackets belong to it, not to the
+  // file that called it. Saved here and put back when the string is exhausted.
+  inc->has_nl_state = true;
+  inc->s_brace_depth = lex->brace_depth; inc->s_paren_depth = lex->paren_depth;
+  inc->s_nl_asm_depth = lex->nl_asm_depth; inc->s_nl_ctl_paren = lex->nl_ctl_paren;
+  inc->s_nl_do_brace = lex->nl_do_brace; inc->s_nl_decl = lex->nl_decl;
+  inc->s_nl_after_ctl = lex->nl_after_ctl;
   inc->p_token = lex->token; inc->p_i64 = lex->token_i64; inc->p_f64 = lex->token_f64;
   inc->p_is_char = lex->token_is_char; inc->p_str_len = lex->token_str_len; inc->p_hash = lex->hash_entry;
   inc->p_str = lex->token_str; lex->token_str = NULL;
@@ -1519,6 +1526,12 @@ void LexAbandonPendingString(Compiler *cc) {
     lex->src = inc->src; lex->src_size = inc->src_size;
     lex->ptr = inc->ptr; lex->filename = inc->filename; lex->line = inc->line; lex->col = inc->col;
     if (pend) {
+      if (inc->has_nl_state) {
+        lex->brace_depth = inc->s_brace_depth; lex->paren_depth = inc->s_paren_depth;
+        lex->nl_asm_depth = inc->s_nl_asm_depth; lex->nl_ctl_paren = inc->s_nl_ctl_paren;
+        lex->nl_do_brace = inc->s_nl_do_brace; lex->nl_decl = inc->s_nl_decl;
+        lex->nl_after_ctl = inc->s_nl_after_ctl;
+      }
       lex->token = inc->p_token; lex->token_i64 = inc->p_i64; lex->token_f64 = inc->p_f64;
       lex->token_is_char = inc->p_is_char; lex->token_str_len = inc->p_str_len; lex->hash_entry = inc->p_hash;
       if (lex->token_str) free(lex->token_str);
@@ -1620,6 +1633,12 @@ static void LexNextInner(Compiler *cc) {
       lex->line = inc->line;
       lex->col = inc->col;
       if (inc->has_pending) {   // a pushed string ended: resume with the token held back
+        if (inc->has_nl_state) {
+          lex->brace_depth = inc->s_brace_depth; lex->paren_depth = inc->s_paren_depth;
+          lex->nl_asm_depth = inc->s_nl_asm_depth; lex->nl_ctl_paren = inc->s_nl_ctl_paren;
+          lex->nl_do_brace = inc->s_nl_do_brace; lex->nl_decl = inc->s_nl_decl;
+          lex->nl_after_ctl = inc->s_nl_after_ctl;
+        }
         lex->token = inc->p_token; lex->token_i64 = inc->p_i64; lex->token_f64 = inc->p_f64;
         lex->token_is_char = inc->p_is_char; lex->token_str_len = inc->p_str_len; lex->hash_entry = inc->p_hash;
         if (lex->token_str) free(lex->token_str);

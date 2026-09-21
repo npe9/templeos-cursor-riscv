@@ -57,5 +57,22 @@ if [ -f "$T/semis.bin" ]; then
   fi
 fi
 
+# 5. a default argument inside a control header. The pushed string that carries default-argument
+# text used to leak its brackets into the calling file, so `if (Blink || x)` -- Blink being a
+# bare call to a function with a default -- lost the header's bracket tracking, the newline after
+# `)` ended the `if` as an empty statement, and the `else` under it was orphaned. Found in
+# tos/Apps/Psalmody/PsalmodyDraw.HC:65. Must compile with the rule ON, and be identical to OFF.
+if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$CASES/newline_semi_defarg.hc" -o "$T/defarg_on.bin" >"$T/defarg.log" 2>&1; then
+  echo "FAIL newline-semi -- a default argument in a control header does not compile" >&2
+  sed 's/^/  /' "$T/defarg.log" >&2
+  fail=1
+else
+  HOLYC_NL_SEMI=0 HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$CASES/newline_semi_defarg.hc" -o "$T/defarg_off.bin" >/dev/null 2>&1
+  if ! cmp -s "$T/defarg_on.bin" "$T/defarg_off.bin"; then
+    echo "FAIL newline-semi -- the rule changed code around a default argument" >&2
+    fail=1
+  fi
+fi
+
 [ "$fail" -ne 0 ] && exit 1
-echo "Newline-semi smoke: OK (on by default; the two spellings compile byte-identical)"
+echo "Newline-semi smoke: OK (on by default; the two spellings compile byte-identical; default args safe)"

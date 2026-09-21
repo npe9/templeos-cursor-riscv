@@ -447,6 +447,10 @@ I64 main()
     Print("RVPsalmody TempoNew FAIL\n");
     return 1;
   }
+  // Same reason as kernel_span_demo: PopUp() waits on its servant with JobResGet's
+  // `while (!DONE) Yield;`, so the scheduler has to be up before any popup. The setup above
+  // runs without it, and without this the wait spins forever.
+  RVYieldInit(&Fs);
   PopUpPickDir("~/Psalmody");
   PopUpEd("::/Apps/Psalmody/Help.DD", Fs);
   Print("RVPsalmody smoke ona=%d play=%d rst=%d menu=%d tempo=%d popup_file=%d ib=%d ona_hits=%d pcm=%d notes=%d vsnd=%d\n", ona, rv_snd_play_hits, rv_snd_rst_hits, ent->arg1, !!tempo, rv_popup_file_hits, g_ib_staff[0], rv_snd_ona_hits, rv_snd_pcm_n, rv_snd_note_hits, !!rv_snd_virtio_base);
