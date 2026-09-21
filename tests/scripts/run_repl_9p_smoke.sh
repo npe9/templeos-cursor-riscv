@@ -35,14 +35,26 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/share"
 printf 'hello from 9p' >"$T/share/test.txt"
 
-input=$'NinepSmoke();\n4919;\n'
+# Paced, one line at a time: the product REPL's line editor drops characters on unpaced input
+# (run_asm_repl_smoke.sh has the same note), which turned 4919 into 919 here.
+feed() {
+  perl -e '
+    $|=1;
+    select(undef,undef,undef,3);
+    for my $x ("NinepSmoke();", "4919;") {
+      print $x,"\n";
+      select(undef,undef,undef,1.2);
+    }
+    select(undef,undef,undef,2);
+  '
+}
 log="$(mktemp)"
-printf '%s' "$input" | $TIMEOUT_CMD 90 "$QEMU" -M virt -m 256M -bios none -kernel "$ELF" -nographic \
+feed | $TIMEOUT_CMD 90 "$QEMU" -M virt -m 256M -bios none -kernel "$ELF" -nographic \
   -fsdev local,id=fsdev0,path="$T/share",security_model=none \
   -device virtio-9p-device,fsdev=fsdev0,mount_tag=hostshare >"$log" 2>&1 &
 qpid=$!
 for ((t = 0; t < 900; t++)); do
-  if grep -q 'ans=0x0000000000000000' "$log" 2>/dev/null; then break; fi
+  if grep -qE 'ans=(0|0x0+)$' "$log" 2>/dev/null; then break; fi
   kill -0 "$qpid" 2>/dev/null || break
   sleep 0.1
 done
@@ -50,7 +62,10 @@ kill "$qpid" 2>/dev/null || true
 wait "$qpid" 2>/dev/null || true
 out="$(tr -d '\r' <"$log")"
 rm -f "$log"
-if ! printf '%s\n' "$out" | grep -q 'ans=0x0000000000000000'; then
+# NinepSmoke returns 0. The guest Compiler_RV REPL prints that as `ans=0`; the hex spelling
+# belonged to the thin JIT image retired in 080f729, which is why this grep never matched again
+# once build/repl-holyc.elf became an alias for repl-cmp.elf. Accept either.
+if ! printf '%s\n' "$out" | grep -qE 'ans=(0|0x0+)$'; then
   echo "FAIL REPL-9p smoke — NinepSmoke did not return 0" >&2
   printf '%s\n' "$out" | tail -20 >&2
   exit 1

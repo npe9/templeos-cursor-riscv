@@ -39,6 +39,11 @@
 #define NINEP_TP_NONE    0
 #define NINEP_TP_MMIO    1
 #define NINEP_TP_PCI     2
+#define P9_DIALECT_NONE  0
+#define P9_DIALECT_2000  1
+// plain 9P2000 — Inferno Styx, Plan 9. Topen/Tcreate/Tstat, stat-based directory reads.
+#define P9_DIALECT_2000L 2
+// 9P2000.L — QEMU virtfs. Tlopen/Tlcreate/Tmkdir/Treaddir.
 class CNinePClient
 {
   I64 tp_kind;
@@ -46,5 +51,7 @@ class CNinePClient
   U32 msize;
   U32 root_fid;
   U32 next_fid;
+  I64 dialect;
+  // which the SERVER agreed to, not which we asked for -- see NinePClientVersion
 };
 #endif

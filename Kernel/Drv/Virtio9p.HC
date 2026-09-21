@@ -107,10 +107,25 @@ I64 Virtio9pReadPath(U8 *path, U8 *buf, I64 cap)
 
 I64 Virtio9pWritePath(U8 *path, U8 *buf, I64 len)
 {
-  // Nested Tmkdir + Tremove overwrite: prefer primary-TU / seed NinepWritePath
-  // (HolyC AOT miscompiles the fuller body under Kernel_RV.PRJ includes).
+  // A path with a separator needs its parents made, which NinePClientWritePath does not do --
+  // its own comment pointed at a NinePClientWritePathEx that had never been written, so the
+  // seed image's NinepWritePath was the only thing that could do it. That is now implemented in
+  // NinePClient.HC and this routes to it.
+  //
+  // The note that stood here said the fuller body was kept out because "HolyC AOT miscompiles
+  // the fuller body under Kernel_RV.PRJ includes". The body now lives in NinePClient.HC rather
+  // than inline here. If a nested write misbehaves in a way a single-component one does not,
+  // that old note is the first thing to re-read -- it may be a real codegen bug rather than
+  // history.
+  I64 i;
   if (!ninep_ready)
     return -1;
+  i = 0;
+  while (path[i]) {
+    if (path[i] == '/')
+      return NinePClientWritePathEx(&ninep_client, path, buf, len);
+    i++;
+  }
   return NinePClientWritePath(&ninep_client, path, buf, len);
 }
 
@@ -361,5 +376,49 @@ U0 Virtio9p()
 {
   "Virtio9p: NinePClient + virtio-mmio/pci transport (DeviceID 9)\n";
   "  Init=%d tp=%d\n", Virtio9pInit(), ninep_tp_kind;
+}
+// NinepSmoke -- NinepSmoke()
+// NAME
+//   NinepSmoke - host-virtfs oracle: read a known file, write, overwrite, nest
+// SYNOPSIS
+//   I64 NinepSmoke();
+// DESCRIPTION
+//   Returns 0 when every step succeeds, or a negative code naming the step that
+//   did not: -1 Init, -2 Version, -3 Attach, -4/-5 the read and its contents,
+//   -6 write, -7 overwrite, -8 nested write. Needs QEMU started with a virtfs
+//   share tagged `hostshare` holding test.txt = "hello from 9p".
+//
+//   Ported from bootstrap/seed/ninep.hc, which only ever existed in the thin JIT
+//   image retired in 080f729. That left repl-9p-smoke driving build/repl-holyc.elf
+//   -- aliased to the guest Compiler_RV image -- for a name no built image carried.
+//   The kernel's own 9p client was already here and already in Kernel_RV.PRJ, so
+//   this is the same sequence over Virtio9p* instead of the seed's Ninep*.
+// EXAMPLES
+//   NinepSmoke();
+// SEE ALSO
+//   Virtio9pConnect  Virtio9pReadPath  Virtio9pWritePath  Mount9p
+public I64 NinepSmoke()
+{
+  U8 buf[64];
+  I64 n;
+  if (Virtio9pInit())
+    return -1;
+  if (Virtio9pVersion())
+    return -2;
+  if (Virtio9pAttach("hostshare"))
+    return -3;
+  n = Virtio9pReadPath("test.txt", buf, 63);
+  if (n < 13)
+    return -4;
+  buf[n] = 0;
+  if (MemCmp(buf, "hello from 9p", 13))
+    return -5;
+  if (Virtio9pWritePath("export.txt", "guest->host 9p\n", 15) != 15)
+    return -6;
+  if (Virtio9pWritePath("export.txt", "overwrite-9p\n", 13) != 13)
+    return -7;
+  if (Virtio9pWritePath("Home/nest/out.hc", "nested-9p\n", 10) != 10)
+    return -8;
+  return 0;
 }
 #endif

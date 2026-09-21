@@ -25,7 +25,7 @@ I64 NinePClientCall(CNinePClient *c, I64 req_len)
 I64 NinePClientVersion(CNinePClient *c)
 {
   U8 *req, *rsp;
-  I64 off, rlen, msize;
+  I64 off, rlen, msize, vlen;
   U8 type;
   if (!c || !ninep_req_buf || !ninep_rsp_buf)
     return -1;
@@ -49,6 +49,22 @@ I64 NinePClientVersion(CNinePClient *c)
   msize = NinePGetU32(rsp, 7);
   if (msize < 512)
     return -5;
+  // What the SERVER agreed to, which need not be what we asked for. 9P says a server that does
+  // not know the requested version answers with one it does know (or "unknown"), so a client
+  // that reads only the reply type believes it negotiated .L against a plain 9P2000 server --
+  // and then hangs on the first Tlopen, because opcode 12 means nothing there.
+  //
+  // Measured against Inferno's Styx (listen + export /): we send "9P2000.L", it answers
+  // "9P2000" and msize=8192, Tattach succeeds, and Tlopen gets NO REPLY AT ALL. Recording the
+  // dialect is what lets a caller pick Topen over Tlopen instead of stalling.
+  vlen = NinePGetU16(rsp, 11);
+  c->dialect = P9_DIALECT_NONE;
+  if (vlen >= 8 && !MemCmp(rsp + 13, "9P2000.L", 8))
+    c->dialect = P9_DIALECT_2000L;
+  else if (vlen >= 6 && !MemCmp(rsp + 13, "9P2000", 6))
+    c->dialect = P9_DIALECT_2000;
+  if (c->dialect == P9_DIALECT_NONE)
+    return -6;
   c->msize = msize;
   c->tag++;
   return 0;
@@ -466,6 +482,76 @@ I64 NinePClientWritePath(CNinePClient *c, U8 *path, U8 *buf, I64 len)
   }
   n = NinePClientWriteAll(c, fid, buf, len);
   NinePClientClunk(c, fid);
+  return n;
+}
+// Walk to `name` under `parent`, creating it as a directory if it is not there. Returns a fid
+// for the directory, or 0. The walk-first order matters: Tmkdir on an existing name is an error
+// on a real server, so trying the walk is how "already there" stays a success.
+U32 NinePClientMkdirWalk(CNinePClient *c, U32 parent, U8 *name)
+{
+  U32 fid;
+  fid = NinePClientAllocFid(c);
+  if (!NinePClientWalk(c, parent, fid, name))
+    return fid;
+  NinePClientMkdir(c, parent, name, P9_MODE_DIR, 0);
+  fid = NinePClientAllocFid(c);
+  if (NinePClientWalk(c, parent, fid, name))
+    return 0;
+  return fid;
+}
+// Write `path` with as many directory components as it has, creating the parents. This is what
+// NinePClientWritePath's own comment has pointed at all along -- the name was referenced and
+// never written, so a nested write simply failed, and the seed image's NinepWritePath was the
+// only thing that could do it. Ported here when NinepSmoke moved onto the kernel's 9p client.
+I64 NinePClientWritePathEx(CNinePClient *c, U8 *path, U8 *buf, I64 len)
+{
+  U8 comp[128];
+  U32 dir, next, fid, cfid;
+  I64 i, j, rc, n;
+  if (!c || !path || !path[0] || !buf || len < 0)
+    return -1;
+  dir = c->root_fid;
+  i = 0;
+  while (TRUE) {
+    j = 0;
+    while (path[i] && path[i] != '/' && j < 127)
+      comp[j++] = path[i++];
+    comp[j] = 0;
+    if (!j)
+      return -1;
+    if (!path[i])
+      break;
+    // a separator follows, so this component is a directory on the way to the leaf
+    while (path[i] == '/')
+      i++;
+    next = NinePClientMkdirWalk(c, dir, comp);
+    if (dir != c->root_fid)
+      NinePClientClunk(c, dir);
+    if (!next)
+      return -3;
+    dir = next;
+  }
+  // comp is the leaf. Remove a stale one first: Tlcreate over an existing name fails.
+  fid = NinePClientAllocFid(c);
+  if (!NinePClientWalk(c, dir, fid, comp))
+    NinePClientRemove(c, fid);
+  cfid = NinePClientAllocFid(c);
+  if (NinePClientWalkClone(c, dir, cfid)) {
+    if (dir != c->root_fid)
+      NinePClientClunk(c, dir);
+    return -2;
+  }
+  rc = NinePClientLcreate(c, cfid, comp, P9_O_RDWR | P9_O_TRUNC, P9_MODE_FILE, 0);
+  if (rc) {
+    NinePClientClunk(c, cfid);
+    if (dir != c->root_fid)
+      NinePClientClunk(c, dir);
+    return -4;
+  }
+  n = NinePClientWriteAll(c, cfid, buf, len);
+  NinePClientClunk(c, cfid);
+  if (dir != c->root_fid)
+    NinePClientClunk(c, dir);
   return n;
 }
 #endif

@@ -1317,6 +1317,13 @@ I64 RVExePubsWireDbg(I64 *addrs)
     if (RVExePubFunNew("Dr", &Dr, cls_u0, 0))
       n++;
   }
+  // NinepSmoke: the host-virtfs oracle (Kernel/Drv/Virtio9p.HC). Ported from the thin JIT
+  // image retired in 080f729 -- repl-9p-smoke drives build/repl-holyc.elf, which is aliased to
+  // this image, and the name was in no built image at all.
+  if (!HashFind("NinepSmoke", Fs->hash_table, HTT_FUN)) {
+    if (RVExePubFunNew("NinepSmoke", &NinepSmoke, i64t, 0))
+      n++;
+  }
   return n;
 }
 
