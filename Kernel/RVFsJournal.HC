@@ -208,7 +208,7 @@ public U0 FsLog(I64 n = 32)
 //   FsChanges(2);
 // SEE ALSO
 //   FsLog  DumpChanges  FsReplay  Recover
-public U0 FsChanges(I64 since_epoch = -1, I64 flags = 0, I64 until_epoch = -1)
+public U0 FsChangesEx(I64 since_epoch = -1, I64 flags = 0, I64 until_epoch = -1)
 {
   I64 i, j, idx, jdx, n = 0, dup;
   CFsJRec *r, *q;
@@ -277,7 +277,7 @@ public U0 FsChanges(I64 since_epoch = -1, I64 flags = 0, I64 until_epoch = -1)
 //   journal's back, shows up here as a mismatch. Returns the number of mismatches.
 // SEE ALSO
 //   FsChanges  Recover  FsLog
-public I64 FsReplay(I64 since_epoch = -1)
+public I64 FsReplayEx(I64 since_epoch = -1)
 {
   I64 i, idx, bad = 0, seen = 0, sz;
   U8 *buf;
@@ -392,6 +392,26 @@ public U0 Recover()
 {
   FsRecover;
 }
+// Zero-argument spellings, which is how these are actually typed -- `FsChanges;` not
+// `FsChanges(-1)`. A planted pub carries exactly the arguments it declares, so a three-parameter
+// function reached through a one-argument pub gets GARBAGE in the other two: FsChanges printed
+// `since=-1 until=0` and took the until-branch, because until_epoch held whatever was in the
+// register. Declaring the arity the caller uses is the fix, and the Ex forms stay for a caller
+// that wants a range.
+public U0 FsChanges()
+{
+  FsChangesEx(-1, 0, -1);
+}
+
+public I64 FsReplay()
+{
+  return FsReplayEx(-1);
+}
+
+public U0 DumpChanges()
+{
+  DumpChangesEx(-1);
+}
 // Rename -- Rename(from, to)
 // NAME
 //   Rename - move a file and journal it as one record rather than two
@@ -424,6 +444,19 @@ public I64 Rename(U8 *from, U8 *to)
   FsJournal(FS_OP_RENAME, from, to, sz, 0);
   "renamed %s -> %s\n", from, to;
   return 0;
+}
+// A '$' inside a Print format string is DOLDOC MARKUP, and on this image Print goes through a
+// DolDoc console -- `"A$$B\n"` prints just `A` and swallows the rest. The dump protocol is built
+// entirely out of $-delimited markers, so every one of them is emitted with the text formatted
+// into a buffer first and the delimiters written as characters. PutChars(36) puts a literal $.
+//
+// The seed image never hit this because its Print went straight to the UART.
+U0 FsJMark(U8 *body)
+{
+  PutChars('$');
+  "%s", body;
+  PutChars('$');
+  "\n";
 }
 U8 *fsj_b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 // One base64 line per 48 input bytes (64 output chars), which keeps a frame readable in a
@@ -458,18 +491,19 @@ U0 FsJDumpB64(U8 *buf, I64 len)
   if (col)
     "\n";
 }
-// Emit one file as a $HC_DUMP frame. The $$ is a literal $ once Print has collapsed it, which
-// is how the guest writes a marker the host parser recognises.
+// Emit one file as a $HC_DUMP frame, delimiters through FsJMark so DolDoc does not eat them.
 U0 FsJDumpFile(U8 *path)
 {
   I64 sz = 0;
   U8 *buf;
+  U8 line[256];
   buf = FileRead(path, &sz);
   if (!buf)
     return;
-  "$$HC_DUMP name=%s size=%d$$\n", path, sz;
+  StrPrint(line, "HC_DUMP name=%s size=%d", path, sz);
+  FsJMark(line);
   FsJDumpB64(buf, sz);
-  "$$HC_END$$\n";
+  FsJMark("HC_END");
   Free(buf);
 }
 // DumpChanges -- DumpChanges(since)
@@ -487,14 +521,15 @@ U0 FsJDumpFile(U8 *path)
 //   DumpChanges(3);   // only since epoch 3
 // SEE ALSO
 //   FsChanges  FsLog  FsReplay  Recover
-public U0 DumpChanges(I64 since_epoch = -1)
+public U0 DumpChangesEx(I64 since_epoch = -1)
 {
   I64 i, j, idx, jdx, cnt = 0, dumps = 0, dup, sz;
   U8 *buf;
+  U8 line[256];
   CFsJRec *r, *q;
   if (!fsj_ready) {
-    "$$HC_CHANGES epoch=0..0 count=0 dumps=0$$\n";
-    "$$HC_END$$\n";
+    FsJMark("HC_CHANGES epoch=0..0 count=0 dumps=0");
+    FsJMark("HC_END");
     return;
   }
   // Two passes: the manifest has to carry the counts, so they are known before a byte of it is
@@ -536,9 +571,10 @@ public U0 DumpChanges(I64 since_epoch = -1)
     }
   }
   if (since_epoch < 0)
-    "$$HC_CHANGES epoch=0..%d count=%d dumps=%d$$\n", fsj_epoch, cnt, dumps;
+    StrPrint(line, "HC_CHANGES epoch=0..%d count=%d dumps=%d", fsj_epoch, cnt, dumps);
   else
-    "$$HC_CHANGES epoch=%d..%d count=%d dumps=%d$$\n", since_epoch, fsj_epoch, cnt, dumps;
+    StrPrint(line, "HC_CHANGES epoch=%d..%d count=%d dumps=%d", since_epoch, fsj_epoch, cnt, dumps);
+  FsJMark(line);
   i = 0;
   while (i < fsj_count) {
     idx = FsJIdx(i);
@@ -569,7 +605,7 @@ public U0 DumpChanges(I64 since_epoch = -1)
       continue;
     "%c %s\n", FsOpChar(r->op), r->path;
   }
-  "$$HC_END$$\n";
+  FsJMark("HC_END");
   // then the bodies, in the same order
   i = 0;
   while (i < fsj_count) {

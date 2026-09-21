@@ -1329,11 +1329,8 @@ I64 RVExePubsWireDbg(I64 *addrs)
   // no built image carried. FileWrite feeds the journal through fsj_write_fn, so these read a
   // record of the REAL filesystem rather than a second one nothing writes to.
   if (!HashFind("FsChanges", Fs->hash_table, HTT_FUN)) {
-    tmpf = RVExePubFunNew("FsChanges", &FsChanges, cls_u0, 1);
-    if (tmpf) {
-      RVExePubAddArg(tmpf, "since_epoch", i64t);
+    if (RVExePubFunNew("FsChanges", &FsChanges, cls_u0, 0))
       n++;
-    }
   }
   if (!HashFind("FsLog", Fs->hash_table, HTT_FUN)) {
     tmpf = RVExePubFunNew("FsLog", &FsLog, cls_u0, 1);
@@ -1343,18 +1340,12 @@ I64 RVExePubsWireDbg(I64 *addrs)
     }
   }
   if (!HashFind("FsReplay", Fs->hash_table, HTT_FUN)) {
-    tmpf = RVExePubFunNew("FsReplay", &FsReplay, i64t, 1);
-    if (tmpf) {
-      RVExePubAddArg(tmpf, "since_epoch", i64t);
+    if (RVExePubFunNew("FsReplay", &FsReplay, i64t, 0))
       n++;
-    }
   }
   if (!HashFind("DumpChanges", Fs->hash_table, HTT_FUN)) {
-    tmpf = RVExePubFunNew("DumpChanges", &DumpChanges, cls_u0, 1);
-    if (tmpf) {
-      RVExePubAddArg(tmpf, "since_epoch", i64t);
+    if (RVExePubFunNew("DumpChanges", &DumpChanges, cls_u0, 0))
       n++;
-    }
   }
   if (!HashFind("Recover", Fs->hash_table, HTT_FUN)) {
     if (RVExePubFunNew("Recover", &Recover, cls_u0, 0))
