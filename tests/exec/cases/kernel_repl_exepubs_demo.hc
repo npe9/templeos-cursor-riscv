@@ -134,6 +134,10 @@ I64 main()
       RVExePubFunNew("Cls", &Cls, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("AsmRepl", &AsmRepl, cmp.internal_types[RT_U0], 0);
       AsmReplInstallStep(&AsmStep);
+      // Start the change journal, which also installs its FileWrite hook. Until this runs
+      // fsj_write_fn is 0 and FileWrite journals nothing, so an image that does not want a
+      // journal simply does not call this.
+      FsJournalInit;
       // The pane layout is standing, not something AsmRepl puts up: the registers are live at
       // this prompt too, and a pane in the column the prompt scrolls through gets scribbled
       // over and then looks frozen. Cls puts it back rather than leaving bare rows behind.

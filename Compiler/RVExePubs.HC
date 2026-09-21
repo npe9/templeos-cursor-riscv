@@ -1324,6 +1324,58 @@ I64 RVExePubsWireDbg(I64 *addrs)
     if (RVExePubFunNew("NinepSmoke", &NinepSmoke, i64t, 0))
       n++;
   }
+  // The change journal (Kernel/RVFsJournal.HC), ported from the thin JIT image retired in
+  // 080f729 for the same reason NinepSmoke was: dump-changes-smoke drives this image for names
+  // no built image carried. FileWrite feeds the journal through fsj_write_fn, so these read a
+  // record of the REAL filesystem rather than a second one nothing writes to.
+  if (!HashFind("FsChanges", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("FsChanges", &FsChanges, cls_u0, 1);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "since_epoch", i64t);
+      n++;
+    }
+  }
+  if (!HashFind("FsLog", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("FsLog", &FsLog, cls_u0, 1);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "n", i64t);
+      n++;
+    }
+  }
+  if (!HashFind("FsReplay", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("FsReplay", &FsReplay, i64t, 1);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "since_epoch", i64t);
+      n++;
+    }
+  }
+  if (!HashFind("DumpChanges", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("DumpChanges", &DumpChanges, cls_u0, 1);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "since_epoch", i64t);
+      n++;
+    }
+  }
+  if (!HashFind("Recover", Fs->hash_table, HTT_FUN)) {
+    if (RVExePubFunNew("Recover", &Recover, cls_u0, 0))
+      n++;
+  }
+  if (!HashFind("FsRecover", Fs->hash_table, HTT_FUN)) {
+    if (RVExePubFunNew("FsRecover", &FsRecover, i64t, 0))
+      n++;
+  }
+  if (!HashFind("FsEpoch", Fs->hash_table, HTT_FUN)) {
+    if (RVExePubFunNew("FsEpoch", &FsEpoch, i64t, 0))
+      n++;
+  }
+  if (!HashFind("Rename", Fs->hash_table, HTT_FUN)) {
+    tmpf = RVExePubFunNew("Rename", &Rename, i64t, 2);
+    if (tmpf) {
+      RVExePubAddArg(tmpf, "from", u8p);
+      RVExePubAddArg(tmpf, "to", u8p);
+      n++;
+    }
+  }
   return n;
 }
 

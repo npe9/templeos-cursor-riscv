@@ -1,3 +1,7 @@
+// Set by FsJournalInit (Kernel/RVFsJournal.HC) to &FsJournalWrite, left 0 in an image that does
+// not carry the journal. The pointer runs this way round because the journal needs FileRead,
+// which is defined below -- so it is included AFTER this file and cannot be called by name here.
+I64 fsj_write_fn;
 U8 *FileRead(U8 *filename, I64 *_size = NULL, I64 *_attr = NULL)
 {
   //Read whole file from disk.
@@ -145,6 +149,16 @@ I64 FileWrite(U8 *filename, U8 *fbuf, I64 size, CDate cdt = 0, I64 attr = 0)
       HashGenericAdd(absname, HTT_FILE, AMAllocIdent(fbuf), size, 0, adam_task);
     Free(fbuf2);
     DirContextDel(dirc);
+  }
+  // Journal the write, if a journal is listening. Through a pointer because RVFsJournal.HC
+  // needs FileRead, which lives here -- so it cannot be included ahead of this file, and the
+  // dependency has to run the other way. Same shape as AsmReplInstallStep.
+  // Not directory blocks: RedSeaMkDir writes those through here too, and journaling them put a
+  // `W Home size=512` beside the file the caller actually wrote.
+  if (fsj_write_fn && c > 0 && fbuf && size > 0 && !(attr & RS_ATTR_DIR)) {
+    I64 (*jw)(U8 *path, U8 *buf, I64 size);
+    jw = fsj_write_fn;
+    jw(filename, fbuf, size);
   }
   Free(absname);
   return c;
