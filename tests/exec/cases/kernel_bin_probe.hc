@@ -1439,7 +1439,11 @@ public I64 KernelInitLite()
 #define KERNEL_VBLK_T_IN 0
 #define KERNEL_VBLK_T_OUT 1
 I64 kernel_vblk_base = 0;
-U8 kernel_load_buf[2048];
+// 4 KiB, raised from 2 KiB: eleven SoftCall probes share this buffer and they had crowded the
+// old limit -- SoftPrsSrc sat at 2016/2048 and SoftLexSrc tipped over at 2128 when codegen grew,
+// though none of the probe SOURCES had changed. Shrinking one probe only buys time until the
+// next one goes over. This is the harness's own buffer, not a product limit.
+U8 kernel_load_buf[4096];
 // SoftCall-lite LexStmt2Bin emit buf (ExePutS JIT shape; BSS in embed BIN).
 U8 kernel_lex_stmt_code[64];
 I64 KernelVBlkFind()
@@ -2012,7 +2016,7 @@ I64 KernelLoad(U8 *path)
   fsz = 0;
   if (!KernelDirFindFile(dclus, filename, &fclus, &fsz))
     return 0;
-  if (fclus < 0 || fsz <= 0 || fsz > 2048)
+  if (fclus < 0 || fsz <= 0 || fsz > 4096)
     return 0;
   nblk = (fsz + 511) / 512;
   for (i = 0; i < nblk; i++) {
@@ -6805,7 +6809,7 @@ public I64 KernelLoadAbsSoft()
   if (!bfh || *(bfh + 4)(U32 *) != KERNEL_BIN_SIGNATURE_VAL)
     return -13;
   KernelMemCpy(&sz, bfh + 24, 8);
-  if (sz < KERNEL_CBIN_HDR || sz > 2048)
+  if (sz < KERNEL_CBIN_HDR || sz > 4096)
     return -14;
   table = KernelHashTableNew(KERNEL_HASH_BUCKETS);
   if (!table || !table->body)

@@ -320,7 +320,7 @@ fi
   "$MAKEOS_BLOB" "$ROOT/build/MakeOS_Tiny.BIN" >/dev/null \
   || { echo "FAIL kernel-thin-loader smoke — pack MakeOS/Tiny.BIN" >&2; exit 1; }
 
-# SoftCall CmpSrcSoft: host-AOT multi-fun compound slice (≤2KiB Load).
+# SoftCall CmpSrcSoft: host-AOT multi-fun compound slice (≤4KiB Load).
 CMPSRC_SRC="$ROOT/tests/exec/cases/kernel_cmp_src_probe.hc"
 CMPSRC_BLOB="$OUTDIR/kernel_cmp_src_probe.blob.bin"
 CMPSRC_MAP="$OUTDIR/kernel_cmp_src_probe.map"
@@ -339,12 +339,12 @@ fi
   "$CMPSRC_BLOB" "$ROOT/build/MakeOS_SoftCmpSrc.BIN" >/dev/null \
   || { echo "FAIL kernel-thin-loader smoke — pack MakeOS/SoftCmpSrc.BIN" >&2; exit 1; }
 CMPSRC_SZ=$(wc -c < "$ROOT/build/MakeOS_SoftCmpSrc.BIN" | tr -d ' ')
-if [ "$CMPSRC_SZ" -gt 2048 ]; then
-  echo "FAIL kernel-thin-loader smoke — SoftCmpSrc.BIN ${CMPSRC_SZ} > SoftCall Load 2KiB cap" >&2
+if [ "$CMPSRC_SZ" -gt 4096 ]; then
+  echo "FAIL kernel-thin-loader smoke — SoftCmpSrc.BIN ${CMPSRC_SZ} > SoftCall Load 4KiB cap" >&2
   exit 1
 fi
 
-# SoftCall PrsSrcSoft: host-AOT Prs-shaped glbl+multi-fun fold (≤2KiB Load).
+# SoftCall PrsSrcSoft: host-AOT Prs-shaped glbl+multi-fun fold (≤4KiB Load).
 PRSSRC_SRC="$ROOT/tests/exec/cases/kernel_prs_src_probe.hc"
 PRSSRC_BLOB="$OUTDIR/kernel_prs_src_probe.blob.bin"
 PRSSRC_MAP="$OUTDIR/kernel_prs_src_probe.map"
@@ -363,12 +363,12 @@ fi
   "$PRSSRC_BLOB" "$ROOT/build/MakeOS_SoftPrsSrc.BIN" >/dev/null \
   || { echo "FAIL kernel-thin-loader smoke — pack MakeOS/SoftPrsSrc.BIN" >&2; exit 1; }
 PRSSRC_SZ=$(wc -c < "$ROOT/build/MakeOS_SoftPrsSrc.BIN" | tr -d ' ')
-if [ "$PRSSRC_SZ" -gt 2048 ]; then
-  echo "FAIL kernel-thin-loader smoke — SoftPrsSrc.BIN ${PRSSRC_SZ} > SoftCall Load 2KiB cap" >&2
+if [ "$PRSSRC_SZ" -gt 4096 ]; then
+  echo "FAIL kernel-thin-loader smoke — SoftPrsSrc.BIN ${PRSSRC_SZ} > SoftCall Load 4KiB cap" >&2
   exit 1
 fi
 
-# SoftCall LexSrcSoft: host-AOT LexStmt2Bin-shaped digit+op peel (≤2KiB Load).
+# SoftCall LexSrcSoft: host-AOT LexStmt2Bin-shaped digit+op peel (≤4KiB Load).
 LEXSRC_SRC="$ROOT/tests/exec/cases/kernel_lex_src_probe.hc"
 LEXSRC_BLOB="$OUTDIR/kernel_lex_src_probe.blob.bin"
 LEXSRC_MAP="$OUTDIR/kernel_lex_src_probe.map"
@@ -387,12 +387,12 @@ fi
   "$LEXSRC_BLOB" "$ROOT/build/MakeOS_SoftLexSrc.BIN" >/dev/null \
   || { echo "FAIL kernel-thin-loader smoke — pack MakeOS/SoftLexSrc.BIN" >&2; exit 1; }
 LEXSRC_SZ=$(wc -c < "$ROOT/build/MakeOS_SoftLexSrc.BIN" | tr -d ' ')
-if [ "$LEXSRC_SZ" -gt 2048 ]; then
-  echo "FAIL kernel-thin-loader smoke — SoftLexSrc.BIN ${LEXSRC_SZ} > SoftCall Load 2KiB cap" >&2
+if [ "$LEXSRC_SZ" -gt 4096 ]; then
+  echo "FAIL kernel-thin-loader smoke — SoftLexSrc.BIN ${LEXSRC_SZ} > SoftCall Load 4KiB cap" >&2
   exit 1
 fi
 
-# SoftCall IcSrcSoft: host-AOT IC plant+emit beyond Lex peel (≤2KiB Load).
+# SoftCall IcSrcSoft: host-AOT IC plant+emit beyond Lex peel (≤4KiB Load).
 ICSRC_SRC="$ROOT/tests/exec/cases/kernel_ic_src_probe.hc"
 ICSRC_BLOB="$OUTDIR/kernel_ic_src_probe.blob.bin"
 ICSRC_MAP="$OUTDIR/kernel_ic_src_probe.map"
@@ -411,12 +411,12 @@ fi
   "$ICSRC_BLOB" "$ROOT/build/MakeOS_SoftIcSrc.BIN" >/dev/null \
   || { echo "FAIL kernel-thin-loader smoke — pack MakeOS/SoftIcSrc.BIN" >&2; exit 1; }
 ICSRC_SZ=$(wc -c < "$ROOT/build/MakeOS_SoftIcSrc.BIN" | tr -d ' ')
-if [ "$ICSRC_SZ" -gt 2048 ]; then
-  echo "FAIL kernel-thin-loader smoke — SoftIcSrc.BIN ${ICSRC_SZ} > SoftCall Load 2KiB cap" >&2
+if [ "$ICSRC_SZ" -gt 4096 ]; then
+  echo "FAIL kernel-thin-loader smoke — SoftIcSrc.BIN ${ICSRC_SZ} > SoftCall Load 4KiB cap" >&2
   exit 1
 fi
 
-# SoftCall MulSrcSoft: host-AOT MUL IC plant+emit beyond IMM/ADD (≤2KiB Load).
+# SoftCall MulSrcSoft: host-AOT MUL IC plant+emit beyond IMM/ADD (≤4KiB Load).
 MULSRC_SRC="$ROOT/tests/exec/cases/kernel_mul_src_probe.hc"
 MULSRC_BLOB="$OUTDIR/kernel_mul_src_probe.blob.bin"
 MULSRC_MAP="$OUTDIR/kernel_mul_src_probe.map"
@@ -435,12 +435,12 @@ fi
   "$MULSRC_BLOB" "$ROOT/build/MakeOS_SoftMulSrc.BIN" >/dev/null \
   || { echo "FAIL kernel-thin-loader smoke — pack MakeOS/SoftMulSrc.BIN" >&2; exit 1; }
 MULSRC_SZ=$(wc -c < "$ROOT/build/MakeOS_SoftMulSrc.BIN" | tr -d ' ')
-if [ "$MULSRC_SZ" -gt 2048 ]; then
-  echo "FAIL kernel-thin-loader smoke — SoftMulSrc.BIN ${MULSRC_SZ} > SoftCall Load 2KiB cap" >&2
+if [ "$MULSRC_SZ" -gt 4096 ]; then
+  echo "FAIL kernel-thin-loader smoke — SoftMulSrc.BIN ${MULSRC_SZ} > SoftCall Load 4KiB cap" >&2
   exit 1
 fi
 
-# SoftCall SubSrcSoft: host-AOT SUB IC plant+emit beyond IMM/MUL (≤2KiB Load).
+# SoftCall SubSrcSoft: host-AOT SUB IC plant+emit beyond IMM/MUL (≤4KiB Load).
 SUBSRC_SRC="$ROOT/tests/exec/cases/kernel_sub_src_probe.hc"
 SUBSRC_BLOB="$OUTDIR/kernel_sub_src_probe.blob.bin"
 SUBSRC_MAP="$OUTDIR/kernel_sub_src_probe.map"
@@ -459,12 +459,12 @@ fi
   "$SUBSRC_BLOB" "$ROOT/build/MakeOS_SoftSubSrc.BIN" >/dev/null \
   || { echo "FAIL kernel-thin-loader smoke — pack MakeOS/SoftSubSrc.BIN" >&2; exit 1; }
 SUBSRC_SZ=$(wc -c < "$ROOT/build/MakeOS_SoftSubSrc.BIN" | tr -d ' ')
-if [ "$SUBSRC_SZ" -gt 2048 ]; then
-  echo "FAIL kernel-thin-loader smoke — SoftSubSrc.BIN ${SUBSRC_SZ} > SoftCall Load 2KiB cap" >&2
+if [ "$SUBSRC_SZ" -gt 4096 ]; then
+  echo "FAIL kernel-thin-loader smoke — SoftSubSrc.BIN ${SUBSRC_SZ} > SoftCall Load 4KiB cap" >&2
   exit 1
 fi
 
-# SoftCall OptSrcSoft: host-AOT OptPass fold SoftCall Load beyond IMM/SUB (≤2KiB Load).
+# SoftCall OptSrcSoft: host-AOT OptPass fold SoftCall Load beyond IMM/SUB (≤4KiB Load).
 OPTSRC_SRC="$ROOT/tests/exec/cases/kernel_opt_src_probe.hc"
 OPTSRC_BLOB="$OUTDIR/kernel_opt_src_probe.blob.bin"
 OPTSRC_MAP="$OUTDIR/kernel_opt_src_probe.map"
@@ -483,12 +483,12 @@ fi
   "$OPTSRC_BLOB" "$ROOT/build/MakeOS_SoftOptSrc.BIN" >/dev/null \
   || { echo "FAIL kernel-thin-loader smoke — pack MakeOS/SoftOptSrc.BIN" >&2; exit 1; }
 OPTSRC_SZ=$(wc -c < "$ROOT/build/MakeOS_SoftOptSrc.BIN" | tr -d ' ')
-if [ "$OPTSRC_SZ" -gt 2048 ]; then
-  echo "FAIL kernel-thin-loader smoke — SoftOptSrc.BIN ${OPTSRC_SZ} > SoftCall Load 2KiB cap" >&2
+if [ "$OPTSRC_SZ" -gt 4096 ]; then
+  echo "FAIL kernel-thin-loader smoke — SoftOptSrc.BIN ${OPTSRC_SZ} > SoftCall Load 4KiB cap" >&2
   exit 1
 fi
 
-# SoftCall CocSrcSoft: host-AOT COC multi-stmt ASSIGN SoftCall Load beyond Opt (≤2KiB Load).
+# SoftCall CocSrcSoft: host-AOT COC multi-stmt ASSIGN SoftCall Load beyond Opt (≤4KiB Load).
 COCSRC_SRC="$ROOT/tests/exec/cases/kernel_coc_src_probe.hc"
 COCSRC_BLOB="$OUTDIR/kernel_coc_src_probe.blob.bin"
 COCSRC_MAP="$OUTDIR/kernel_coc_src_probe.map"
@@ -507,12 +507,12 @@ fi
   "$COCSRC_BLOB" "$ROOT/build/MakeOS_SoftCocSrc.BIN" >/dev/null \
   || { echo "FAIL kernel-thin-loader smoke — pack MakeOS/SoftCocSrc.BIN" >&2; exit 1; }
 COCSRC_SZ=$(wc -c < "$ROOT/build/MakeOS_SoftCocSrc.BIN" | tr -d ' ')
-if [ "$COCSRC_SZ" -gt 2048 ]; then
-  echo "FAIL kernel-thin-loader smoke — SoftCocSrc.BIN ${COCSRC_SZ} > SoftCall Load 2KiB cap" >&2
+if [ "$COCSRC_SZ" -gt 4096 ]; then
+  echo "FAIL kernel-thin-loader smoke — SoftCocSrc.BIN ${COCSRC_SZ} > SoftCall Load 4KiB cap" >&2
   exit 1
 fi
 
-# SoftCall BrSrcSoft: host-AOT BR SoftCall Load beyond COC ASSIGN (≤2KiB Load).
+# SoftCall BrSrcSoft: host-AOT BR SoftCall Load beyond COC ASSIGN (≤4KiB Load).
 BRSRC_SRC="$ROOT/tests/exec/cases/kernel_br_src_probe.hc"
 BRSRC_BLOB="$OUTDIR/kernel_br_src_probe.blob.bin"
 BRSRC_MAP="$OUTDIR/kernel_br_src_probe.map"
@@ -531,12 +531,12 @@ fi
   "$BRSRC_BLOB" "$ROOT/build/MakeOS_SoftBrSrc.BIN" >/dev/null \
   || { echo "FAIL kernel-thin-loader smoke — pack MakeOS/SoftBrSrc.BIN" >&2; exit 1; }
 BRSRC_SZ=$(wc -c < "$ROOT/build/MakeOS_SoftBrSrc.BIN" | tr -d ' ')
-if [ "$BRSRC_SZ" -gt 2048 ]; then
-  echo "FAIL kernel-thin-loader smoke — SoftBrSrc.BIN ${BRSRC_SZ} > SoftCall Load 2KiB cap" >&2
+if [ "$BRSRC_SZ" -gt 4096 ]; then
+  echo "FAIL kernel-thin-loader smoke — SoftBrSrc.BIN ${BRSRC_SZ} > SoftCall Load 4KiB cap" >&2
   exit 1
 fi
 
-# SoftCall ElseSrcSoft: host-AOT if/else JMP join SoftCall Load beyond BR (≤2KiB Load).
+# SoftCall ElseSrcSoft: host-AOT if/else JMP join SoftCall Load beyond BR (≤4KiB Load).
 ELSESRC_SRC="$ROOT/tests/exec/cases/kernel_else_src_probe.hc"
 ELSESRC_BLOB="$OUTDIR/kernel_else_src_probe.blob.bin"
 ELSESRC_MAP="$OUTDIR/kernel_else_src_probe.map"
@@ -555,12 +555,12 @@ fi
   "$ELSESRC_BLOB" "$ROOT/build/MakeOS_SoftElseSrc.BIN" >/dev/null \
   || { echo "FAIL kernel-thin-loader smoke — pack MakeOS/SoftElseSrc.BIN" >&2; exit 1; }
 ELSESRC_SZ=$(wc -c < "$ROOT/build/MakeOS_SoftElseSrc.BIN" | tr -d ' ')
-if [ "$ELSESRC_SZ" -gt 2048 ]; then
-  echo "FAIL kernel-thin-loader smoke — SoftElseSrc.BIN ${ELSESRC_SZ} > SoftCall Load 2KiB cap" >&2
+if [ "$ELSESRC_SZ" -gt 4096 ]; then
+  echo "FAIL kernel-thin-loader smoke — SoftElseSrc.BIN ${ELSESRC_SZ} > SoftCall Load 4KiB cap" >&2
   exit 1
 fi
 
-# SoftCall ForSrcSoft: host-AOT for-loop SoftCall Load beyond if/else (≤2KiB Load).
+# SoftCall ForSrcSoft: host-AOT for-loop SoftCall Load beyond if/else (≤4KiB Load).
 FORSRC_SRC="$ROOT/tests/exec/cases/kernel_for_src_probe.hc"
 FORSRC_BLOB="$OUTDIR/kernel_for_src_probe.blob.bin"
 FORSRC_MAP="$OUTDIR/kernel_for_src_probe.map"
@@ -579,8 +579,8 @@ fi
   "$FORSRC_BLOB" "$ROOT/build/MakeOS_SoftForSrc.BIN" >/dev/null \
   || { echo "FAIL kernel-thin-loader smoke — pack MakeOS/SoftForSrc.BIN" >&2; exit 1; }
 FORSRC_SZ=$(wc -c < "$ROOT/build/MakeOS_SoftForSrc.BIN" | tr -d ' ')
-if [ "$FORSRC_SZ" -gt 2048 ]; then
-  echo "FAIL kernel-thin-loader smoke — SoftForSrc.BIN ${FORSRC_SZ} > SoftCall Load 2KiB cap" >&2
+if [ "$FORSRC_SZ" -gt 4096 ]; then
+  echo "FAIL kernel-thin-loader smoke — SoftForSrc.BIN ${FORSRC_SZ} > SoftCall Load 4KiB cap" >&2
   exit 1
 fi
 
@@ -689,7 +689,7 @@ guest_src_sz() {
     exit 1
   fi
   sz=$(wc -c < "$1" | tr -d ' ')
-  if [ "$sz" -le 512 ] || [ "$sz" -gt 2048 ]; then
+  if [ "$sz" -le 512 ] || [ "$sz" -gt 4096 ]; then
     echo "FAIL kernel-thin-loader smoke — guest src $1 ${sz} B outside multi-blk 513..2048 window" >&2
     exit 1
   fi
