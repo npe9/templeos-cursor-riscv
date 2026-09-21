@@ -79,14 +79,14 @@ fits entirely: nothing is ever cut, everything is reachable by cycling (`n` in t
 `Pane(n)` at the prompt), and a taller terminal simply shows more blocks rather than a different
 layout. The headings carry the hint, so a block that is off the page still says how to reach it.
 
-### 1.4 AsmDoc motivation covers 178 of 244 instructions
+### 1.4 ~~AsmDoc motivation~~ — DONE, 244 of 244
 
 `AsmClasses` / `AsmClass` and the REPL's `p <class>` now exist, so a family can be worked
 through one instruction at a time — which makes the missing motivation entries more visible, not
 less. The classes are curated lists in `Kernel/RVExplore.HC`.
 
-The structure is done and adding one is a single line. The remaining 66 are writing, not
-engineering.
+Complete: 220 example records cover all 244 catalog entries through the dot-folding fallback,
+with no orphans either way, and `make asm-catalog-check` holds it there.
 
 Validating a third batch of 89 turned up two defects in the tables themselves, which is the
 argument for VERIFICATION_PLAN P3 in miniature:
