@@ -79,14 +79,30 @@ fits entirely: nothing is ever cut, everything is reachable by cycling (`n` in t
 `Pane(n)` at the prompt), and a taller terminal simply shows more blocks rather than a different
 layout. The headings carry the hint, so a block that is off the page still says how to reach it.
 
-### 1.4 AsmDoc motivation covers 72 of 244 instructions
+### 1.4 AsmDoc motivation covers 178 of 244 instructions
 
 `AsmClasses` / `AsmClass` and the REPL's `p <class>` now exist, so a family can be worked
 through one instruction at a time — which makes the missing motivation entries more visible, not
 less. The classes are curated lists in `Kernel/RVExplore.HC`.
 
-The structure is done and adding one is a single line. The remaining 172 are writing, not
-engineering. The second batch covered the word-width family, the rest of the loads and stores,
+The structure is done and adding one is a single line. The remaining 66 are writing, not
+engineering.
+
+Validating a third batch of 89 turned up two defects in the tables themselves, which is the
+argument for VERIFICATION_PLAN P3 in miniature:
+
+- **`fence`'s record contained a `;`**, which is the RECORD SEPARATOR. Its documented semantics
+  was silently truncated at `succ-set`, and the tail became a phantom 244th record whose
+  mnemonic was ` masks use letters i/o/r/w`. `AsmComplete` with an empty word — Tab straight
+  after a bare `?`, the "show me everything" path — matched and listed it.
+- **The two tables disagreed on spelling.** The catalog carries the assembler's own form
+  (`faddd`, `fmvdx`) while the examples table and anything a person types carry the canonical one
+  (`fadd.d`, `fmv.d.x`), so each table could only be reached by the spelling it happened to use.
+  `RVAsmDocMnEqFold` now retries ignoring dots and underscores, as a FALLBACK after an exact
+  match fails, so an exact spelling still wins.
+
+`jal` was also missing from the catalog outright while `jalr` was present, so `?` never offered
+one of the two core control-flow instructions. The second batch covered the word-width family, the rest of the loads and stores,
 the CSR read-modify-writes, the atomics, the double-precision arithmetic and comparisons, the
 compressed forms and the system instructions. What is left is mostly aliases and the rarer
 encodings, where the motivation is often "this is the same as X with the operands swapped".
@@ -124,8 +140,13 @@ It also refuses instructions that write a register the stepper does not carry �
 The first attempt at tracing a real function faulted on `addi s0, sp, 0x20` in the prologue,
 which took the prompt's own frame pointer with it.
 
-**Still open:** carrying ra and s0 in the context, parked and restored like sp, so a prologue
-executes fully instead of being skipped.
+~~**Still open:** carrying ra and s0 in the context~~ — DONE. They are parked at `ASM_RA_SAVE`
+and `ASM_S0_SAVE` and restored exactly the way `sp` is, which is required rather than tidy: the
+wrapper is CALLED, so loading the context's ra over the return address strands it, and s0 is the
+calling HolyC frame pointer. `AsmUiInCtx` no longer refuses them, so a prologue steps. The
+asm-repl smoke now asserts `addi ra,ra,5`, `addi s0,s0,9` and a real `sd ra,8(sp)`, so this is
+tested rather than reasoned. gp and tp are deliberately still not carried — nothing a person
+steps writes them and they address the runtime's own globals.
 
 ---
 

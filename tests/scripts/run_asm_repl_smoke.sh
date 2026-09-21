@@ -77,6 +77,9 @@ feed() {
      "RegPaneCost;",
      "AsmStep(\"addi a2,a2,3\");",
      "RegPaneCost;",
+     "AsmStep(\"addi ra,ra,5\");",
+     "AsmStep(\"addi s0,s0,9\");",
+     "AsmStep(\"sd ra,8(sp)\");",
      "*(0(I64 *)) = 1;",
      "\x01g",
      "DbgViewCost;",
@@ -184,6 +187,11 @@ if ! printf '%s\n' "$out" | grep -qx 'ans=33'; then
   fail=1
 fi
 # Dr reads the same array: a0 shows the stepped value, and the CSR line is present
+# ra and s0 are carried in the stepper context (NEXT_STEPS 2.3). Before that they were
+# refused: the wrapper is called, so loading the context ra over the return address stranded
+# it, and s0 is the calling frame pointer. Parked and restored like sp, a prologue now steps.
+need "ra   0000000000000000 -> 0000000000000005"
+need "s0   0000000000000000 -> 0000000000000009"
 need "a0  =0000000000000021"
 need "mcause="
 # Live register pane (Kernel/RVRegPane.HC) in THIS image: DolDoc must actually be alive here

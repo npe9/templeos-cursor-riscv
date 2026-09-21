@@ -306,7 +306,7 @@ I64 AsmUiBranchTarget(U8 *text, I64 pc, I64 width)
 // instruction that writes it takes the prompt's own stack frame with it.
 I64 AsmUiInCtx(I64 n)
 {
-  if (n == 2)
+  if (n == 1 || n == 2 || n == 8)
     return TRUE;
   if (n >= 5 && n <= 7)
     return TRUE;

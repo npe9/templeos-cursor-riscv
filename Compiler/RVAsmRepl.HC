@@ -28,9 +28,18 @@
 // same base register as the integer one and costs no extra setup
 #define ASM_FREGS 32
 #define ASM_SP_SAVE 0x108
-// Offset from the context base where the wrapper parks the REPL's OWN sp while a stepped line
-// runs. It has to be within a 12-bit offset of the base register, which is why it lives here
-// rather than out with the other scratch.
+#define ASM_RA_SAVE 0x110
+#define ASM_S0_SAVE 0x118
+// Offsets from the context base where the wrapper parks the REPL's OWN sp, ra and s0 while a
+// stepped line runs. They have to be within a 12-bit offset of the base register, which is why
+// they live here rather than out with the other scratch. 0x100 is skipped: the seed image's
+// TRAP_POST_S1 is one I64 there (bootstrap/seed/debug.hc).
+//
+// ra and s0 are parked for the same reason sp is, and it is not a register-pressure reason: the
+// wrapper is CALLED, so loading the context's ra over the return address strands it, and s0 is
+// the calling HolyC frame pointer, so loading over it strands every local the caller still has.
+// gp and tp are deliberately NOT carried — nothing a person steps writes them, and they address
+// the runtime's own globals.
 #define ASM_STACK_SZ 8192
 U8 asm_stack[ASM_STACK_SZ];
 // The stepper's private stack. Without it a traced function's prologue — `sd ra,0(sp)` is the
@@ -72,9 +81,15 @@ I64 AsmCtxReg(I64 i)
     return 18 + i - 15;
   // s2..s11
   if (i == 25)
+    return 1;
+  // ra — carried so a prologue's `sd ra,0(sp)` and a `ret` are steppable
+  if (i == 26)
+    return 8;
+  // s0 — carried so `addi s0,sp,N` completes instead of being refused
+  if (i == 27)
     return 31;
   // t6 — the wrapper's own base register, which is why it needs the care below
-  if (i == 26)
+  if (i == 28)
     return 2;
   // sp — on the stepper's own stack, so a traced prologue has somewhere to push
   return -1;
@@ -132,9 +147,14 @@ U0 AsmCtxIo(U8 *dst, Bool store)
   }
   AsmCtxBase(dst);
   if (!store) {
-    // Park the REPL's own sp before the context's sp replaces it, and put it back at the end of
-    // the store block. Everything between runs on the stepper's stack.
+    // Park the REPL's own sp, ra and s0 before the context's values replace them, and put them
+    // back at the end of the store block. Everything between runs on the stepper's stack, with
+    // the stepper's return address and frame pointer held aside.
     StrPrint(line, "sd x2,%d(t6)\n", ASM_SP_SAVE);
+    StrCat(dst, line);
+    StrPrint(line, "sd x1,%d(t6)\n", ASM_RA_SAVE);
+    StrCat(dst, line);
+    StrPrint(line, "sd x8,%d(t6)\n", ASM_S0_SAVE);
     StrCat(dst, line);
   }
   i = 0;
@@ -176,7 +196,13 @@ U0 AsmCtxIo(U8 *dst, Bool store)
     StrCat(dst, "sd x2,16(t6)\n");
     StrPrint(line, "ld x2,%d(t6)\n", ASM_SP_SAVE);
     StrCat(dst, line);
-    // ...and the REPL has its own stack back
+    // ...and the REPL has its own stack back, its own return address, and its own frame pointer.
+    // Both of these come AFTER the loop above has written the stepped values into the context,
+    // so what the instruction did to ra or s0 is recorded before it is undone here.
+    StrPrint(line, "ld x1,%d(t6)\n", ASM_RA_SAVE);
+    StrCat(dst, line);
+    StrPrint(line, "ld x8,%d(t6)\n", ASM_S0_SAVE);
+    StrCat(dst, line);
   } else {
     StrPrint(line, "ld x%d,%d(t6)\n", ASM_CTX_BASE_REG, ASM_CTX_BASE_REG * 8);
     StrCat(dst, line);
