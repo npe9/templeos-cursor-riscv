@@ -30,32 +30,50 @@ python3 "$ROOT/tools/uart_recv_dump.py" --selftest
 
 make -C "$ROOT" hc-repl >/dev/null
 
-input='FileWrite("Home/dc.hc","p2body",6);
-DumpChanges;
-Rename("Home/dc.hc","Home/dc2.hc");
-FsChanges;
-U0 DcFill520() { I64 wi; for (wi = 0; wi < 520; wi++) FileWrite("Home/wrap.hc", "x", 1); }
-DcFill520;
-FsLog(32);
-FileWrite("Home/p6.hc","p6",2);
-FsReplay;
-Recover;
-FsChanges;
-4919;
-'
+# Paced, one line at a time. The product REPL's line editor drops and reorders characters on
+# unpaced input -- run_asm_repl_smoke.sh carries the same note -- which showed up here as Rename
+# running before the file it renames existed while FsChanges already reported seq=521 from the
+# fill loop further down the script. DcFill520 gets a long pause because it is 520 writes.
+feed() {
+  perl -e '
+    $|=1;
+    select(undef,undef,undef,4);
+    my @l = (
+      [q{FileWrite("Home/dc.hc","p2body",6);}, 1.5],
+      [q{DumpChanges;}, 2.0],
+      [q{Rename("Home/dc.hc","Home/dc2.hc");}, 1.5],
+      [q{FsChanges;}, 1.5],
+      [q{U0 DcFill520() { I64 wi; for (wi = 0; wi < 520; wi++) FileWrite("Home/wrap.hc", "x", 1); }}, 2.0],
+      [q{DcFill520;}, 12.0],
+      [q{FsLog(32);}, 2.0],
+      [q{FileWrite("Home/p6.hc","p6",2);}, 1.5],
+      [q{FsReplay;}, 3.0],
+      [q{Recover;}, 3.0],
+      [q{FsChanges;}, 2.0],
+      [q{4919;}, 2.0],
+    );
+    for my $e (@l) {
+      print $e->[0], "\n";
+      select(undef,undef,undef,$e->[1]);
+    }
+    select(undef,undef,undef,3);
+  '
+}
 
-printf '%s' "$input" | $TIMEOUT_CMD 90 "$QEMU" -M virt -bios none \
+feed | $TIMEOUT_CMD 180 "$QEMU" -M virt -m 256M -bios none \
   -kernel "$ROOT/build/repl-holyc.elf" -nographic >"$LOG" 2>&1 &
 qpid=$!
 for ((t = 0; t < 900; t++)); do
-  if grep -q 'ans=0x0000000000001337' "$LOG" 2>/dev/null; then break; fi
+  if grep -qE 'ans=(4919|0x0*1337)$' "$LOG" 2>/dev/null; then break; fi
   kill -0 "$qpid" 2>/dev/null || break
   sleep 0.1
 done
 kill "$qpid" 2>/dev/null || true
 wait "$qpid" 2>/dev/null || true
 
-if ! grep -q 'ans=0x0000000000001337' "$LOG"; then
+# 4919 = 0x1337. The guest Compiler_RV REPL prints it in decimal; the hex spelling belonged to
+# the thin JIT image retired in 080f729. Accept either.
+if ! grep -qE 'ans=(4919|0x0*1337)$' "$LOG"; then
   echo "FAIL dump-changes-smoke — no sentinel" >&2
   tail -n 80 "$LOG" >&2
   exit 1

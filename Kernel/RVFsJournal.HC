@@ -603,7 +603,13 @@ public U0 DumpChangesEx(I64 since_epoch = -1)
     }
     if (dup)
       continue;
-    "%c %s\n", FsOpChar(r->op), r->path;
+    // Exactly the seed's manifest shape -- two leading spaces and two between op and path.
+    // tools/uart_recv_dump.py keeps the line verbatim, and the smoke greps `W  Home/dc.hc`, so
+    // the spacing is part of the protocol rather than presentation.
+    if (r->op == FS_OP_RENAME && r->path2[0])
+      "  %c  %s -> %s\n", FsOpChar(r->op), r->path, r->path2;
+    else
+      "  %c  %s\n", FsOpChar(r->op), r->path;
   }
   FsJMark("HC_END");
   // then the bodies, in the same order
