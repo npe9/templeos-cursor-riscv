@@ -1389,6 +1389,13 @@ I64 RVExePubsWire()
   addrs[8] = &RVWinSoftHelp;
   addrs[9] = &RVWinSoftMan;
   addrs[14] = &RVWinSoftCat;
+  // The REAL kernel file I/O, not a soft shim. Slots 36 and 37 were left at zero, so the
+  // FileRead/FileWrite pubs above were never planted and `FileWrite("x","hi",2);` at the prompt
+  // quietly returned 0 -- while the same call from kernel code at boot returns 3 and FileFind
+  // then finds the file. Nothing was wrong with the filesystem; the prompt simply had no way to
+  // reach it.
+  addrs[36] = &FileRead;
+  addrs[37] = &FileWrite;
   addrs[38] = &RVWinSoftFind;
   addrs[39] = &RVWinSoftEd;
   addrs[40] = &RVWinSoftTasks;
