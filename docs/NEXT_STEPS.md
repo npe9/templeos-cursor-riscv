@@ -208,7 +208,7 @@ turned out to be wrong. Each of these was checked rather than assumed.
 | `repl-9p-smoke` | tests a retired image's feature set (below) | no |
 | `dump-changes-smoke` | same | no |
 | `kernel-psalmody-smoke` | servant needs the guest compiler | no |
-| `kernel-phase3-smoke` | `SoftCall CallIcSoft FAILED r=-85` | no |
+| `kernel-phase3-smoke` | several; see below | no |
 | `kernel-thin-loader-smoke` | `SoftLexSrc.BIN` 2128 > 2 KiB loader cap | no |
 
 **The win pair** was a real bug and is fixed. `RVExePubs.HC` plants `AsmStep` and `Dr` by
@@ -229,6 +229,26 @@ That is a product decision rather than a repair, and it should be made deliberat
 that feature set to the Compiler_RV image (the `pubs[]` + `RVExePubsWireAddrs` procedure), or
 retire the two smokes along with the image they were written for. Leaving them red costs a
 90-second timeout each and hides whatever breaks next.
+
+**`kernel-phase3-smoke` — the `r=-85` was a FALSE failure, and it hid a coverage gap.**
+`KernelCallIcSoft`'s first statement is `if (KernelForSrcSoft() != 0x4653) return -1;`, and
+`KernelForSrcSoft` returns -2 when `A:/MakeOS/SoftForSrc.BIN` is absent. Every other probe in
+that sequence is wrapped in a `KernelFileFind` skip guard; `CallIcSoft` and `GlblMemSoft` were
+not, so they ran unconditionally right after `ForSrcSoft` had been skipped for exactly that
+missing file. The inter-function CALL IC logic they exist to test therefore NEVER EXECUTED on
+that disk — the smoke reported a compiler failure it had not actually performed.
+
+They are guarded now, so they skip honestly. Two things that leaves open:
+
+- **Nothing currently exercises `CallIcSoft`/`GlblMemSoft`.** The eleven `Soft*Src.BIN` are
+  staged only by the thin-loader smoke's own disk, and the sequence that would run them lives in
+  phase3, whose image carries none of them. Staging them on phase3's RedSea image would restore
+  real coverage. Note the ordering trap: phase3 runs BEFORE thin-loader in `qemu-integration`,
+  so phase3 could only ever have found those files left over from an earlier run.
+- **phase3 is still red for a LATER reason.** With the guard it gets past the whole probe chain
+  and stops after `GuestCmpSoft skip`, without reaching
+  `RVPhase3: RedSea Kernel.BIN SoftCall OK` or any of the P6 expectations. That is a separate
+  problem and has not been diagnosed.
 
 **`kernel-thin-loader-smoke`** is also a decision, not a bug. `kernel_lex_src_probe.hc` has not
 changed since `a15ae20`; it grew past the cap because CODEGEN grew, and the 2 KiB is a real

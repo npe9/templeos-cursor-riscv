@@ -12802,18 +12802,28 @@ public I64 KernelSoftCall()
     }
   }
   // SoftCall-lite inter-fun CALL IC (real RV jal ra) past ForSrcSoft Load.
-  KernelUart("Kernel.BIN: SoftCall CallIcSoft (I64 G(){return 40;}I64 F(){return G()+2;}F() CL)...\n");
-  fr = KernelCallIcSoft();
-  if (fr != 0x434C) {
-    KernelUart("Kernel.BIN: SoftCall CallIcSoft FAILED\n");
-    return -85;
-  }
-  // SoftCall-lite glbl memory (lui/addi abs + ld/sd) past CallIcSoft.
-  KernelUart("Kernel.BIN: SoftCall GlblMemSoft (I64 g;I64 F(){g=40;return g+2;}F() GM)...\n");
-  fr = KernelGlblMemSoft();
-  if (fr != 0x474D) {
-    KernelUart("Kernel.BIN: SoftCall GlblMemSoft FAILED\n");
-    return -86;
+  // Guarded on SoftForSrc.BIN like every probe above, because CallIcSoft's FIRST statement is
+  // `if (KernelForSrcSoft() != 0x4653) return -1;` and GlblMemSoft chains through CallIcSoft in
+  // turn. Without the guard both ran unconditionally after ForSrcSoft had been SKIPPED for a
+  // missing file, and failed with r=-85 on a disk that simply does not carry the Soft*Src set --
+  // which is every disk but the thin loader's, and that smoke runs AFTER this one.
+  if (!KernelFileFind("A:/MakeOS/SoftForSrc.BIN")) {
+    KernelUart("Kernel.BIN: SoftCall CallIcSoft skip (need SoftForSrc.BIN).\n");
+    KernelUart("Kernel.BIN: SoftCall GlblMemSoft skip (need SoftForSrc.BIN).\n");
+  } else {
+    KernelUart("Kernel.BIN: SoftCall CallIcSoft (I64 G(){return 40;}I64 F(){return G()+2;}F() CL)...\n");
+    fr = KernelCallIcSoft();
+    if (fr != 0x434C) {
+      KernelUart("Kernel.BIN: SoftCall CallIcSoft FAILED\n");
+      return -85;
+    }
+    // SoftCall-lite glbl memory (lui/addi abs + ld/sd) past CallIcSoft.
+    KernelUart("Kernel.BIN: SoftCall GlblMemSoft (I64 g;I64 F(){g=40;return g+2;}F() GM)...\n");
+    fr = KernelGlblMemSoft();
+    if (fr != 0x474D) {
+      KernelUart("Kernel.BIN: SoftCall GlblMemSoft FAILED\n");
+      return -86;
+    }
   }
   // First real guest Cmp: HolyC source read off RedSea, Cmp'd in BIN, then Called.
   if (!KernelFileFind("A:/Compiler/SoftGlbl.HC")) {
