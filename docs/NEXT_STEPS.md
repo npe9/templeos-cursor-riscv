@@ -192,6 +192,49 @@ Two things this turned up that are still open:
   servant is an unconditional hang with no diagnostic. A bounded wait that returns 0 and says so
   would have made this a one-minute bug.
 
+### 3.1c The seven reds behind kernel-span, triaged
+
+`qemu-integration` stops at the first failure, so `kernel-span` had been hiding everything after
+it. With span fixed, all 85 targets were run (the 28 after psalmody individually, since psalmody
+then became the new blocker): **22 of those 28 pass, 6 fail**, plus psalmody itself.
+
+Attribution matters more than the count here, because twice this session a "pre-existing" claim
+turned out to be wrong. Each of these was checked rather than assumed.
+
+| red | cause | mine? |
+|---|---|---|
+| `kernel-win-interactive` | `win_compiler.PRJ` was missing `RVAsmRepl.HC`/`RVDbgCore.HC` | from `a4a9e7e` — FIXED |
+| `kernel-win-serial-smoke` | same | same — FIXED |
+| `repl-9p-smoke` | tests a retired image's feature set (below) | no |
+| `dump-changes-smoke` | same | no |
+| `kernel-psalmody-smoke` | servant needs the guest compiler | no |
+| `kernel-phase3-smoke` | `SoftCall CallIcSoft FAILED r=-85` | no |
+| `kernel-thin-loader-smoke` | `SoftLexSrc.BIN` 2128 > 2 KiB loader cap | no |
+
+**The win pair** was a real bug and is fixed. `RVExePubs.HC` plants `AsmStep` and `Dr` by
+ADDRESS, so the files defining them must be in the unit and ahead of it —
+`Compiler_RV_Body.PRJ` does exactly that and the win unit was never updated to match, so it died
+on `Undefined variable` at `&AsmStep`.
+
+**`repl-9p-smoke` and `dump-changes-smoke` are one root cause, not two.** Both drive
+`build/repl-holyc.elf`, which Makefile:271 aliases to `repl-cmp.elf` (the full guest
+Compiler_RV). But `NinepSmoke`, `DumpChanges`, `FsLog`, `FsReplay` and `FsChanges` are defined
+only under `bootstrap/` and planted only in `bootstrap/hc_repl/repl.hc` — the THIN JIT image,
+retired in `080f729` ("the former thin JIT image is no longer a product target"). The names are
+absent from every built image, so this is not an unplanted-symbol problem: the code was never
+ported. Both smokes fail with `Undefined identifier` and then time out waiting for an `ans=`
+line that cannot come.
+
+That is a product decision rather than a repair, and it should be made deliberately: either port
+that feature set to the Compiler_RV image (the `pubs[]` + `RVExePubsWireAddrs` procedure), or
+retire the two smokes along with the image they were written for. Leaving them red costs a
+90-second timeout each and hides whatever breaks next.
+
+**`kernel-thin-loader-smoke`** is also a decision, not a bug. `kernel_lex_src_probe.hc` has not
+changed since `a15ae20`; it grew past the cap because CODEGEN grew, and the 2 KiB is a real
+limit on what `SoftCall Load` accepts, not a test assertion to bump. Shrink the probe or raise
+the loader's capacity.
+
 ### 3.2 No full suite run in a long while
 
 `make ci` / `qemu-integration` has not run in roughly 25 commits. Everything here was verified by

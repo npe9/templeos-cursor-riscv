@@ -51,6 +51,13 @@ CUAsmGlbls	uasm;
 #include "BackB_RV"
 #include "BackC_RV"
 #include "OptPass_RV"
+// RVExePubs plants AsmStep and Dr by ADDRESS, so the files defining them have to come first --
+// the same order Compiler_RV_Body.PRJ uses. Without them this unit dies on "Undefined variable"
+// at the `&AsmStep` in RVExePubsWire, which is what took kernel-win-interactive and
+// kernel-win-serial-smoke red from a4a9e7e onward (win_compiler.PRJ reaches RVExePubs through
+// THIS file, so adding them further down the chain is too late).
+#include "RVAsmRepl"
+#include "RVDbgCore"
 // G9 seed: wire/sync helpers + CmpCtrl abs addrs for Kernel HOFYIMP1 / Menu soft Call.
 // Without this, pack_tosb cannot export RVCmpWireAsmHash/RVAotLibSync (Job ExePrint path).
 #include "RVExePubs"
