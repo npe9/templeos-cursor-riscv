@@ -250,6 +250,34 @@ They are guarded now, so they skip honestly. Two things that leaves open:
   `RVPhase3: RedSea Kernel.BIN SoftCall OK` or any of the P6 expectations. That is a separate
   problem and has not been diagnosed.
 
+**`dump-changes-smoke`: the journal is ported; writes are the blocker.**
+`Kernel/RVFsJournal.HC` implements the whole feature set and is proven working — in a kernel
+image with a live FS it auto-journals writes, collapses `FsChanges`, keeps raw history in
+`FsLog`, verifies with `FsReplay`, seals with `FsRecover`, records `R from -> to` for `Rename`,
+and `DumpChanges` ROUND-TRIPS THROUGH `tools/uart_recv_dump.py` to reconstruct the file
+byte-for-byte. At the live REPL prompt `FsChanges;` and `DumpChanges;` both print correctly.
+
+What is left is one fact about `build/repl-cmp.elf`: **`FileWrite` returns 0 there**, for
+absolute and relative paths alike, so the journal has nothing to record. Reads are fine —
+`Dir;` lists `./` and `../` from a valid mounted RedSea via `Fs->cur_dv`.
+
+Evidence gathered, and where it is uncertain:
+
+- `Let2Drv(65)`, `FileFind("A:/")` and `DirMk("A:/T")` all return 0 at the prompt, which points
+  at drive-LETTER resolution rather than the disk: `Dir` bypasses the letter and works.
+- **But those probes are themselves suspect.** `Let2Drv` takes a second `make` parameter, and a
+  planted pub carries only the arguments it declares — the same trap that made `FsChanges` print
+  `until=0`. A one-argument call may be passing garbage for `make`.
+- `addrs[37]`, the slot `RVExePubs` plants `FileWrite` from, is never assigned in
+  `RVExePubsWire` (only 38 and 39 are), yet the prompt accepts `FileWrite(...)` without an
+  "Undefined" error — so it is arriving by some other route, and which route decides whether it
+  is the real `Kernel/BlkDev/DskFile.HC` one or a soft stub.
+
+The decisive next experiment is cheap: do a `FileWrite` at BOOT in
+`kernel_repl_exepubs_demo.hc`, right after `RVMountRAMDisk`, and print the result. That
+separates "this image cannot write" from "writes cannot be reached from the prompt", and every
+other question follows from the answer.
+
 **`kernel-thin-loader-smoke`** is also a decision, not a bug. `kernel_lex_src_probe.hc` has not
 changed since `a15ae20`; it grew past the cap because CODEGEN grew, and the 2 KiB is a real
 limit on what `SoftCall Load` accepts, not a test assertion to bump. Shrink the probe or raise
