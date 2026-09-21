@@ -131,36 +131,45 @@ executes fully instead of being skipped.
 
 ## Tier 3 — housekeeping, and two decisions that are yours
 
-### 3.1 Two pre-existing reds, unchanged since before this session
+### 3.1 ~~Two pre-existing reds~~ — both cleared this session
 
-- `fmt-check` is red across 40 files. Running `make fmt` touches all of them; it wants a
-  deliberate "yes, reformat the tree" rather than being buried in a feature commit.
-- `kernel-gr` compares against a stale golden hash (`want 0x6EF34074 / got 0x2C881662`). Both
-  were confirmed pre-existing by rebuilding at `a61c792`.
+- ~~`fmt-check` red across 40 files~~ — DONE. Reformatted in its own commit, with the kernel
+  image byte-identical before and after, so the commit is provably whitespace.
+- ~~`kernel-gr` against a stale golden hash~~ — DONE. All six pinned render hashes were read at
+  HEAD and in a worktree at `d207eda` and came out identical, which proved the goldens stale
+  rather than the renderer broken; gr, cdc, netofdots and blot were re-recorded.
 
-### 3.1b kernel-span hangs in SpanBridge1Init — localised, not fixed
+### 3.1b ~~kernel-span hangs~~ — FIXED, and it was the save dialog after all
 
-`make ci` is green except this one, which is pre-existing: it fails identically at d207eda.
+`PopUp(buf, parent)` waits for its servant with `JobResGet`'s
+`while (!Bt(&rqst->flags,JOBf_DONE)) Yield;`. `main` in `tests/exec/cases/kernel_span_demo.hc`
+runs its whole setup section *deliberately without* `RVYieldInit` — the comment at the top of
+that region says so, because the GetMsg needles there work off pre-queued messages. So `Yield`
+switches to nobody, the servant never runs, the job is never DONE, and the wait spins forever at
+the first `PopUpFileName`. Everything the smoke asserts is downstream of that one call, which is
+why the failure looked like "no output at all". One line fixes it: bring the scheduler up after
+the pre-queued-message work and before the popup.
 
-Localised by bisection with markers written STRAIGHT TO THE UART, because `Print` in that image
-does not reach the serial capture — markers placed with `Print` are invisible, which is what
-made this look like "no output at all" for so long.
+**How the earlier diagnosis went wrong, because the method was the real bug.** The entry that stood here
+said the hang was inside `SpanBridge1Init` and that the save dialog was ruled out. Both were
+wrong, and the marker bisection that "proved" it was reading a truncated view: the smoke prints
+`head -40` of a run whose output is mostly DolDoc scenery, so markers past that line were invisible
+and their absence was read as "never reached". Running the image directly and reading the *whole*
+capture shows the last line is `PopUpFileName DocPopUp begin` — the original theory, discarded on
+bad evidence. It also cost two files' worth of instrumentation in the stock tree
+(`Kernel/RVDoc.HC`, `tos/Apps/Span/SpanBridge.HC`) that turned out to be innocent.
 
-The sequence reached is: kinit, kinit-done, ramdisk, grinit, winmgr, dcfill, putdoc, spannew,
-bridge — and then nothing. So `main` runs fine and the hang is inside `SpanBridge1Init(ode)`,
-before the CtrlBttn setup.
+The lesson worth keeping: **when a smoke fails, read the full capture before placing a single
+marker.** A filtered view is a claim about the output, not the output.
 
-Ruled out along the way:
-- **The allocator.** A `CAlloc(256)` + `Free` immediately before it completes.
-- **An uninitialised mass queue.** `ode=0x82252AA0`, `last_mass == next_mass == 0x82252AC8` —
-  an empty ring pointing at itself, which is correct.
-- **The save dialog.** The first theory was `PopUpFileName` blocking on a headless popup, since
-  the last output is `$BG,LTCYAN$`. Wrong: that function prints a "begin" line that never
-  appears, and the hang is long before any save.
+Two things this turned up that are still open:
 
-So the next step is markers inside `tos/Apps/Span/SpanBridge.HC` itself — the springs, most
-likely, since the masses are just CAlloc and QueIns. That means instrumenting the stock tree,
-which is a bigger call than instrumenting a test case.
+- `PopUp`'s parent path returns `raw=0` rather than the servant's string; `PopUpFileName` only
+  succeeds because its parent-side `FileNameForm` fallback runs. The servant ExePutS path
+  (`FileNameForm(...)` resolved as `HTT_FUN` in the servant hash) is still unproven.
+- `JobResGet` has no timeout. In an image where the scheduler may not be up, an un-runnable
+  servant is an unconditional hang with no diagnostic. A bounded wait that returns 0 and says so
+  would have made this a one-minute bug.
 
 ### 3.2 No full suite run in a long while
 

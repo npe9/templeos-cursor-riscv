@@ -370,6 +370,10 @@ I64 main()
     return 1;
   }
   Free(pick);
+  // PopUp() waits on its servant with JobResGet's `while (!DONE) Yield;`, so the
+  // scheduler has to be up by here — the setup above runs deliberately without it
+  // (pre-queued GetMsg), and without this the wait spins forever.
+  RVYieldInit(&Fs);
   fn = PopUpFileName("~/Span/Game.DATA");
   if (!fn) {
     Print("RVSpan PopUpFileName FAIL\n");
