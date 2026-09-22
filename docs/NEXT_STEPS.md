@@ -205,8 +205,8 @@ turned out to be wrong. Each of these was checked rather than assumed.
 |---|---|---|
 | `kernel-win-interactive` | `win_compiler.PRJ` was missing `RVAsmRepl.HC`/`RVDbgCore.HC` | from `a4a9e7e` — FIXED |
 | `kernel-win-serial-smoke` | same | same — FIXED |
-| `repl-9p-smoke` | tests a retired image's feature set (below) | no |
-| `dump-changes-smoke` | same | no |
+| ~~`repl-9p-smoke`~~ | retired image's feature set — PORTED, green | no |
+| ~~`dump-changes-smoke`~~ | same — PORTED, green | no |
 | `kernel-psalmody-smoke` | servant needs the guest compiler | no |
 | `kernel-phase3-smoke` | several; see below | no |
 | `kernel-thin-loader-smoke` | `SoftLexSrc.BIN` 2128 > 2 KiB loader cap | no |
@@ -216,67 +216,35 @@ ADDRESS, so the files defining them must be in the unit and ahead of it —
 `Compiler_RV_Body.PRJ` does exactly that and the win unit was never updated to match, so it died
 on `Undefined variable` at `&AsmStep`.
 
-**`repl-9p-smoke` and `dump-changes-smoke` are one root cause, not two.** Both drive
-`build/repl-holyc.elf`, which Makefile:271 aliases to `repl-cmp.elf` (the full guest
-Compiler_RV). But `NinepSmoke`, `DumpChanges`, `FsLog`, `FsReplay` and `FsChanges` are defined
-only under `bootstrap/` and planted only in `bootstrap/hc_repl/repl.hc` — the THIN JIT image,
-retired in `080f729` ("the former thin JIT image is no longer a product target"). The names are
-absent from every built image, so this is not an unplanted-symbol problem: the code was never
-ported. Both smokes fail with `Undefined identifier` and then time out waiting for an `ans=`
-line that cannot come.
+**~~`repl-9p-smoke` and `dump-changes-smoke`~~ — BOTH PORTED AND GREEN.** They shared one root
+cause: `NinepSmoke`, `DumpChanges`, `FsLog`, `FsReplay` and `FsChanges` lived only in the thin
+JIT image retired in `080f729`, while both smokes drive `build/repl-holyc.elf`, which
+Makefile:271 aliases to the guest Compiler_RV image. `strings` found those names in no built
+image. Ported rather than retired, which turned up five real bugs a copy would have missed:
 
-That is a product decision rather than a repair, and it should be made deliberately: either port
-that feature set to the Compiler_RV image (the `pubs[]` + `RVExePubsWireAddrs` procedure), or
-retire the two smokes along with the image they were written for. Leaving them red costs a
-90-second timeout each and hides whatever breaks next.
+- **`NinePClientWritePathEx` never existed.** `NinePClientWritePath` is single-component and its
+  own comment pointed at an `Ex` form that had never been written, so the seed's `NinepWritePath`
+  was the only thing in the tree that could create parent directories — nested 9p writes died
+  with that image. Implemented in `Kernel/NineP/NinePClient.HC`.
+- **The 9p client ignored the negotiated version.** Found by standing up a real Inferno Styx
+  server (`listen -A tcp!127.0.0.1!6703 {export / &}`; `styxlisten` needs Keyring built in,
+  `listen.dis` does not) and speaking our exact wire format at it: we send `9P2000.L`, it answers
+  `9P2000`, and `Tlopen` then gets NO REPLY. `NinePClientVersion` checked type, tag and msize and
+  never read the version string, so against any plain-9P2000 server it believed it had `.L` and
+  stalled. Now recorded in `CNinePClient.dialect`.
+- **`$` is DolDoc markup.** `"A$$B\n"` prints just `A` on this image, so the `$`-delimited dump
+  protocol emitted NOTHING at the prompt while working in a standalone image whose `Print` goes
+  straight to the UART. Markers now format into a buffer and write delimiters with `PutChars`.
+- **Pub arity.** A planted pub carries exactly the arguments it declares; a one-argument pub for
+  three-parameter `FsChanges` fed it register garbage.
+- **`addrs[36]` and `addrs[37]` were never filled.** The `FileRead`/`FileWrite` pubs are written
+  out in `RVExePubsWire` and guarded by `if (addrs[N])`, and nothing ever assigned those slots —
+  so the prompt had no route to the filesystem and `FileWrite` returned 0. It looked exactly like
+  a broken disk; a boot probe called from kernel code returned `write=3 find=1` and settled it.
 
-**`kernel-phase3-smoke` — the `r=-85` was a FALSE failure, and it hid a coverage gap.**
-`KernelCallIcSoft`'s first statement is `if (KernelForSrcSoft() != 0x4653) return -1;`, and
-`KernelForSrcSoft` returns -2 when `A:/MakeOS/SoftForSrc.BIN` is absent. Every other probe in
-that sequence is wrapped in a `KernelFileFind` skip guard; `CallIcSoft` and `GlblMemSoft` were
-not, so they ran unconditionally right after `ForSrcSoft` had been skipped for exactly that
-missing file. The inter-function CALL IC logic they exist to test therefore NEVER EXECUTED on
-that disk — the smoke reported a compiler failure it had not actually performed.
-
-They are guarded now, so they skip honestly. Two things that leaves open:
-
-- **Nothing currently exercises `CallIcSoft`/`GlblMemSoft`.** The eleven `Soft*Src.BIN` are
-  staged only by the thin-loader smoke's own disk, and the sequence that would run them lives in
-  phase3, whose image carries none of them. Staging them on phase3's RedSea image would restore
-  real coverage. Note the ordering trap: phase3 runs BEFORE thin-loader in `qemu-integration`,
-  so phase3 could only ever have found those files left over from an earlier run.
-- **phase3 is still red for a LATER reason.** With the guard it gets past the whole probe chain
-  and stops after `GuestCmpSoft skip`, without reaching
-  `RVPhase3: RedSea Kernel.BIN SoftCall OK` or any of the P6 expectations. That is a separate
-  problem and has not been diagnosed.
-
-**`dump-changes-smoke`: the journal is ported; writes are the blocker.**
-`Kernel/RVFsJournal.HC` implements the whole feature set and is proven working — in a kernel
-image with a live FS it auto-journals writes, collapses `FsChanges`, keeps raw history in
-`FsLog`, verifies with `FsReplay`, seals with `FsRecover`, records `R from -> to` for `Rename`,
-and `DumpChanges` ROUND-TRIPS THROUGH `tools/uart_recv_dump.py` to reconstruct the file
-byte-for-byte. At the live REPL prompt `FsChanges;` and `DumpChanges;` both print correctly.
-
-What is left is one fact about `build/repl-cmp.elf`: **`FileWrite` returns 0 there**, for
-absolute and relative paths alike, so the journal has nothing to record. Reads are fine —
-`Dir;` lists `./` and `../` from a valid mounted RedSea via `Fs->cur_dv`.
-
-Evidence gathered, and where it is uncertain:
-
-- `Let2Drv(65)`, `FileFind("A:/")` and `DirMk("A:/T")` all return 0 at the prompt, which points
-  at drive-LETTER resolution rather than the disk: `Dir` bypasses the letter and works.
-- **But those probes are themselves suspect.** `Let2Drv` takes a second `make` parameter, and a
-  planted pub carries only the arguments it declares — the same trap that made `FsChanges` print
-  `until=0`. A one-argument call may be passing garbage for `make`.
-- `addrs[37]`, the slot `RVExePubs` plants `FileWrite` from, is never assigned in
-  `RVExePubsWire` (only 38 and 39 are), yet the prompt accepts `FileWrite(...)` without an
-  "Undefined" error — so it is arriving by some other route, and which route decides whether it
-  is the real `Kernel/BlkDev/DskFile.HC` one or a soft stub.
-
-The decisive next experiment is cheap: do a `FileWrite` at BOOT in
-`kernel_repl_exepubs_demo.hc`, right after `RVMountRAMDisk`, and print the result. That
-separates "this image cannot write" from "writes cannot be reached from the prompt", and every
-other question follows from the answer.
+The smokes also needed two changes belonging to the retired image rather than the feature:
+`ans=` is decimal in the guest Compiler_RV REPL (hex was the thin JIT's), and the input must be
+PACED or the line editor drops and reorders characters.
 
 **`kernel-thin-loader-smoke`** is also a decision, not a bug. `kernel_lex_src_probe.hc` has not
 changed since `a15ae20`; it grew past the cap because CODEGEN grew, and the 2 KiB is a real
