@@ -192,7 +192,7 @@ Two things this turned up that are still open:
   servant is an unconditional hang with no diagnostic. A bounded wait that returns 0 and says so
   would have made this a one-minute bug.
 
-### 3.1b-bis — `kernel-span-smoke` IS RED AGAIN (found 2026-09-22 by the full suite)
+### 3.1b-bis — ~~`kernel-span-smoke` IS RED AGAIN~~ — **FIXED** (`10a0a07`), one thing still open
 
 3.1b above says span was fixed by bringing the scheduler up before `PopUpFileName` (`c15a5f7`).
 It is red again, and worse than before: the guest now produces **no output at all** before
@@ -256,15 +256,26 @@ and second `CAlloc`, leaving `blkdevs` set. From then on **every** later call ea
 the guard, and `blkdev.drvs` is NULL for the life of the image — including inside
 `RVMountRAMDisk`, which does call `RVBlkDevTablesInit` and is entitled to assume it worked.
 
-Two things to fix, and the first is worth doing whatever the second turns out to be:
+Two things, and the first is done:
 
-1. **Make the init idempotent per-field** (`if (!blkdev.blkdevs) ...; if (!blkdev.drvs) ...;`), or
-   assign `blkdevs` LAST so a half-completed run cannot latch the guard. A partially-initialised
-   table that reports itself as done is a trap regardless of what interrupted it.
-2. **Find what stops it between the two `CAlloc`s.** All three writers of `blkdev.blkdevs`
-   (`KBootRV.HC:270`, `DskAddDev.HC:240`, `DskVirtioRV.HC:248`) assign `drvs` on the very next
-   line, so something is unwinding — a throw out of `CAlloc`, or the init running on a task that
-   dies. That is the real bug; (1) only stops it being permanent and silent.
+1. ~~**Make the init idempotent per-field**~~ — DONE in `10a0a07`. Each field is guarded
+   separately, so a half-completed run no longer latches and the next caller finishes the job.
+   **`kernel-span-smoke` is GREEN** for the first time since `6471e75`. Verified against eleven
+   images that DO mount drives (`kernel-fs`, `redsea`, `dir`, `blk`, `home`, `selfboot`, `load`,
+   `fsshell`, `win-serial`, `doctext`, `ode`), where the change is a no-op.
+2. **STILL OPEN: what stops it between the two `CAlloc`s.** All three writers of
+   `blkdev.blkdevs` (`KBootRV.HC`, `DskAddDev.HC:240`, `DskVirtioRV.HC:248`) assign `drvs` on
+   the very next line, so something is unwinding — a throw out of `CAlloc`, or the init running
+   on a task that dies. **That is still the real bug.** (1) only stopped it being permanent and
+   silent; the image is still doing something surprising at boot, and the next thing it
+   interrupts may not be as recoverable. A breakpoint on the second `CAlloc` call site, or a
+   `try`/`catch` around the pair that reports rather than swallows, is where to start.
+
+**Why (1) was worth landing even though (2) is the real bug.** A table that reports itself
+initialised while half built misleads everyone downstream — it is what made this look like a
+`MemSet` bug, and what sent this session hunting through the FS journal. The failure is now
+recoverable and, when (2) recurs, it will show up as something other than a wild store into
+address 0.
 
 This is the SAME NULL `blkdev.drvs` as the psalmody crash fixed in `45d3fe2`, in a fifth
 location — reached through `Mount` rather than task reap, and so not covered by those guards.
@@ -286,6 +297,7 @@ turned out to be wrong. Each of these was checked rather than assumed.
 | ~~`dump-changes-smoke`~~ | same — PORTED, green | no |
 | `kernel-psalmody-smoke` | two NULL `blkdev.*` derefs FIXED in `45d3fe2`; now ends at `throw('Drv')` from `Let2Drv` — the DESIGNED error path, because the image has no drives. A demo/image question, no longer memory safety | no |
 | ~~`kernel-phase3-smoke`~~ | a STALE `Compiler.BIN` the smoke swallowed a failed build for — FIXED, see 3.5 | **yes**, from `6471e75` |
+| ~~`kernel-span-smoke`~~ | listed as fixed in 3.1b but RED again from `6471e75` — `RVBlkDevTablesInit` latched a half-done init; FIXED `10a0a07`, see 3.1b-bis | no |
 | ~~`kernel-thin-loader-smoke`~~ | GREEN. The cap decision was already made: `fd2bf56` raised the `SoftCall Load` buffer to 4 KiB on 2026-09-21. This row predates it | no |
 
 **The win pair broke twice for the same REASON and it is worth saying once.** `RVExePubs.HC`
