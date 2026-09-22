@@ -301,6 +301,18 @@ difference in the loaded path.
 like a source-context print going wrong. So the loaded compiler hits an error in the Menu Skip
 source and then WEDGES while reporting it.
 
+Localised by reading `Compiler/CExcept.HC`. `LexExcept` does: `Raw(ON)` + "Note: Still in boot
+phase." (seen), `PrintErr(str)` -> "Missing expression at " (seen, and the last thing that comes
+out), then `AdamErr` only `if (!IsRaw)` — which `Raw(ON)` has just made false, so it is skipped —
+then `LexPutPos(cc)`, then `throw`. `LexPutPos` calls `LexPutToken(cc)` and then
+`LexPutLine(cc, cc->lex_include_stk->line_start)`, and BOTH walk source text. So the wedge is in
+one of those two, which is consistent with a source buffer that is not NUL-terminated (the Soft
+Cmp compiles from a string staged to disk) or a pointer that did not survive the relocation the
+disk-loaded `Compiler.BIN` goes through.
+
+Next step is to instrument the loaded compiler's `LexPutPos` — the in-image one can be driven
+straight from the REPL for comparison, since the same source compiles there without error.
+
 That second half is the more serious bug, and it is what actually keeps phase3 red. A failed
 Soft Cmp is supposed to return non-zero so `RVPhase3CmpWrite` prints its BLOCKED message and the
 sequence carries on — every other probe in the ladder does exactly that. Instead the guest stops
