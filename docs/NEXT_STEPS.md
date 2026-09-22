@@ -377,6 +377,92 @@ oracles (88 rv64, 62 rv32), the assembler differentials — but not by the whole
 
 ---
 
+## Tier 3.5 — next up: instrument the loaded compiler's error path (phase3)
+
+The one remaining red, reduced to a specific question. Everything below is set up; this is a
+plan to execute, not an investigation to restart.
+
+### The question
+
+`kernel-phase3-smoke` wedges at the `Menu Skip Soft Cmp` stage. The guest prints
+`Missing expression at ` and then stops mid-message — permanently, not from a timeout
+(`PHASE3_TIMEOUT=900` and `=1800` both end at exactly **682 guest lines** with the identical
+half-written line).
+
+Two things are wrong and the SECOND is what keeps the smoke red:
+
+1. The disk-loaded compiler rejects source the in-image one accepts.
+2. Its error reporter hangs instead of returning, so `RVPhase3CmpWrite` never gets its non-zero
+   result, never prints BLOCKED, and the ladder never continues. Every other probe in that
+   sequence fails gracefully. **Fix this one first** — a compiler whose error path hangs will
+   hide whatever the next finding is.
+
+### Where it is
+
+`Compiler/CExcept.HC`. `LexExcept` runs in this order:
+
+```
+Raw(ON); "Note: Still in boot phase.\n";   <- comes out
+if (str) PrintErr(str);                    <- comes out ("Missing expression at ")
+if (!IsRaw) AdamErr(...);                  <- SKIPPED, Raw(ON) just set IsRaw
+LexPutPos(cc);                             <- nothing after this
+cc->error_cnt++; FlushMsgs; throw('Compiler');
+```
+
+and `LexPutPos` (CExcept.HC:50) calls `LexPutToken(cc)` then
+`LexPutLine(cc, cc->lex_include_stk->line_start)`. **Both walk source text**, so the wedge is in
+one of them.
+
+Two candidate causes, both testable:
+
+- The Soft Cmp source is a STRING staged to disk, not a real file, so `line_start` may point into
+  a buffer with no NUL — `LexPutLine` then walks forever.
+- The disk-loaded `Compiler.BIN` is RELOCATED, so `cc->lex_include_stk` or `full_name` may hold a
+  pointer that did not get fixed up. The in-image compiler never relocates, which is exactly the
+  difference between the two paths.
+
+### The control you already have
+
+The same source compiles **clean** through the in-image `Compiler_RV`:
+
+```
+qemu-system-riscv64 -M virt -m 256M -bios none -kernel build/repl-holyc.elf -nographic
+> U8 *RVMenuSkipCont(U8 *p){while (p && *p) {if (*p == 32 || *p == 9 || *p == 13 || *p == 10) {p++; continue;} break;} return p;}
+```
+
+So this is a diff between two compilers built from the same sources in the same run, not a
+mystery about the source.
+
+### Steps
+
+1. Add UART markers to `LexPutPos` — before `LexPutToken`, between it and `LexPutLine`, and
+   after — plus the values of `cc->lex_include_stk`, `->full_name` and `->line_start`. Which
+   marker is last tells you which of the two walkers wedges, and the pointers say whether
+   relocation is the cause.
+2. **Markers must use a raw UART path** (`RVPhase3Uart` / `KernelUart`), never `Print`. Print goes
+   through DolDoc here, and a `$` in the output is markup — see the `DumpChanges` entry above,
+   where that cost a full cycle.
+3. Rebuild and run `PHASE3_TIMEOUT=900 make kernel-phase3-smoke`, then read
+   **`/tmp/phase3_uart_final.txt`** — the complete guest capture. Do NOT read the `make` output;
+   it shows only what the smoke chose to print, and that misreading cost two separate
+   misdiagnoses in this file already.
+4. 682 guest lines is the current marker. More than that means progress.
+5. If `line_start` is the problem, bound `LexPutLine` by the source length rather than trusting a
+   terminator. If a pointer is unrelocated, the fix belongs in the loader, not the reporter.
+6. Once the reporter returns instead of hanging, phase3 will report BLOCKED on that stage and
+   carry on, and the REMAINING question — why the loaded compiler rejects what the in-image one
+   accepts — becomes visible and separately attackable.
+
+### Related, still open
+
+- **Nothing exercises `CallIcSoft`/`GlblMemSoft`.** The eleven `Soft*Src.BIN` are staged only on
+  the thin-loader smoke's disk, while the sequence consuming them runs in phase3, whose image
+  carries none — and phase3 runs BEFORE thin-loader in `qemu-integration`, so it could only ever
+  have found them left over from an earlier run. Staging them on phase3's RedSea image restores
+  real coverage.
+
+---
+
 ## Tier 4 — later projects
 
 ### 4.1 Run the JIT on Linux and macOS
@@ -400,7 +486,13 @@ have to be written.
 
 ## If you want a recommendation
 
-0.1 first, because it is a correctness bug in the surface everything else is added to, and it is
-cheap to find. Then 1.1, because the newline rule in the REPL is the thing you would feel every
-time you typed. Then 1.3, because it ends the recurring "I do not see X" — everything is on a
-page, and the page has a name.
+**Start at Tier 3.5.** It is the only red left, it is reduced to two named functions with a
+working control, and the first half of it — making the error path RETURN instead of hanging — is
+worth doing on its own merits even if the parse difference behind it turns out to be small. A
+compiler whose reporter wedges hides every finding after it.
+
+The original recommendation, from when this file was written: 0.1 first, because it is a
+correctness bug in the surface everything else is added to, and it is cheap to find. Then 1.1,
+because the newline rule in the REPL is the thing you would feel every time you typed. Then 1.3,
+because it ends the recurring "I do not see X" — everything is on a page, and the page has a
+name. All three are done.
