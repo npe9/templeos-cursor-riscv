@@ -16,12 +16,15 @@ I64 RVMenuLexOk()
 
 U8 *RVMenuSkip(U8 *p)
 {
+  // No `continue` here. This file is staged to disk and compiled BY THE GUEST compiler, and
+  // TempleOS HolyC has no continue -- CompilerA.HH defines KW_CONTINUE only for host AOT
+  // parity. The host accepted it, the guest said "Missing expression at continue", and that was
+  // the whole of the phase3 P6 Guest_Lex failure. Same loop, written in the language both
+  // compilers actually share.
   while (p && *p && RVMenuLexOk()) {
-    if (*p == 32 || *p == 9 || *p == 13 || *p == 10) {
-      p++;
-      continue;
-    }
-    break;
+    if (*p != 32 && *p != 9 && *p != 13 && *p != 10)
+      break;
+    p++;
   }
   return p;
 }

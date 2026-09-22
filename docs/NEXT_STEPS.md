@@ -266,6 +266,40 @@ Every earlier stage passes — class member StrCpy, tiny Guest Cmp, flat Menu_RV
 So what is left is the GUEST COMPILER failing to compile `Menu_RV_Guest_Lex`, not anything to do
 with the filesystem or the probe chain.
 
+**Fixed since:** `Adam/Menu_RV_Guest_Lex.HC` used `continue`, which is a HOST-COMPILER
+EXTENSION — `Compiler/CompilerA.HH` says so outright: `#define KW_CONTINUE 48 // RV: host AOT
+parity; TempleOS HolyC has no continue`. That file is staged to disk and compiled BY THE GUEST,
+so it has to stay inside the language both compilers share. The host accepted it, the guest said
+`Missing expression at "continue"`, and that was the whole `Guest_Lex` failure. Rewritten with
+an inverted condition; the guest now gets through `Guest_Lex && Soft Cmp` and
+`Guest_Lex while(1) Soft Cmp`, and the run goes from 367 guest lines to **682**.
+
+Found by testing candidate constructs straight at the REPL prompt, which runs the same guest
+compiler through `ExePutS` — four shapes compiled, the fifth reproduced the exact error. No
+rebuild per candidate.
+
+**What blocks it now is the deliberate frontier probe.** `Kernel/RVPhase3.HC:2040` says
+`// Soft tip: stock Menu Skip shape (U8* while + continue) — needs KW_CONTINUE`, and that stage
+compiles a snippet containing `continue` on purpose, to mark the feature that is not implemented
+yet. So finishing phase3 means IMPLEMENTING `continue` in the guest compiler.
+
+Sketch, from reading how `break` works. `Compiler/PrsStmt.HC:1149` is:
+
+```
+case KW_BREAK:
+  Lex(cc);
+  if (!lb_break) LexExcept(cc,"'break' not allowed\n");
+  ICAdd(cc,IC_JMP,lb_break,0);
+```
+
+`lb_break` is threaded as a PARAMETER through `PrsStmt(cc,try_cnt,lb_break)` and
+`PrsIf(cc,try_cnt,lb_break)`. `continue` needs the same treatment with a second label, and the
+target is not the same for every loop: `while` continues at the condition, but `for` must jump
+to the STEP, not the top, or the loop never advances. So each loop publishes its own
+continue-label and the signature carries both. Mechanical, but it touches the statement parser
+of the compiler everything else is built on, so it wants its own session and its own
+byte-identical check.
+
 **Read `/tmp/phase3_uart_final.txt`, not the make output.** The smoke writes the complete guest
 capture there (`PHASE3_UART_OUT`), while `make` shows only the lines the smoke chose to print. I
 spent a cycle concluding this "hangs in `KernelFileFind` on `A:/Compiler/SoftLocal.HC`" purely
