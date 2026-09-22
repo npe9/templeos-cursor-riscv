@@ -411,16 +411,33 @@ changed since `a15ae20`; it grew past the cap because CODEGEN grew, and the 2 Ki
 limit on what `SoftCall Load` accepts, not a test assertion to bump. Shrink the probe or raise
 the loader's capacity.
 
-### 3.2 ~~No full suite run in a long while~~ — DONE 2026-09-22: **83 pass, 2 fail**
+### 3.2 ~~No full suite run in a long while~~ — DONE 2026-09-22: **83 pass, 2 fail at `4d17bf7`**
 
 All 85 `qemu-integration` targets, run INDIVIDUALLY so one red could not hide the rest
 (`qemu-integration` itself stops at the first failure, which is how `kernel-span` hid everything
 behind it last time). ~2h40m wall clock.
 
+**Read the commit in that heading.** The sweep finished at 14:06 and `45d3fe2` (four kernel
+source files) landed after it, so 83/2 describes the tree at `4d17bf7`, NOT `HEAD`. The three
+commits during the run were docs-only, so the result is valid for the code it saw. `45d3fe2` was
+then spot-checked against the targets that execute `PopUp` or the drive-letter path —
+`kernel-fs`, `kernel-redsea`, `kernel-dir`, `kernel-win-serial`, `kernel-doctext`, `kernel-ode`,
+`kernel-win-smoke`, `kernel-win-interactive`: all pass; plus `psalmody` and `span`, which are
+the two reds below. That is a spot check, not a sweep.
+
+*(Saying this because the session's own lesson — [[artifact-is-not-proof-of-build]] — is that an
+artifact is not evidence the tool that makes it ran. A suite result is likewise not evidence
+about a tree that changed after it ran, and a bare "DONE, 83 pass" invites exactly that
+misreading a month from now.)*
+
 ```
 FAIL     303s  kernel-span-smoke
 FAIL     122s  kernel-psalmody-smoke
 ```
+
+The psalmody failure recorded here is the OLD one (`mcause=5 mtval=0x60`); it predates
+`45d3fe2`, which fixed that deref and two others. At `HEAD` psalmody fails later and
+differently — see 3.1c.
 
 **Everything else passed**, including the three this session fixed — `kernel-phase3-smoke`
 (949s), `kernel-win-interactive` (162s), `kernel-win-serial-smoke` (91s) — in a clean
