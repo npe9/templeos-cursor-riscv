@@ -208,7 +208,7 @@ turned out to be wrong. Each of these was checked rather than assumed.
 | ~~`repl-9p-smoke`~~ | retired image's feature set — PORTED, green | no |
 | ~~`dump-changes-smoke`~~ | same — PORTED, green | no |
 | `kernel-psalmody-smoke` | servant needs the guest compiler | no |
-| `kernel-phase3-smoke` | several; see below | no |
+| `kernel-phase3-smoke` | false -85 fixed; hangs later in FileFind — see below | no |
 | `kernel-thin-loader-smoke` | `SoftLexSrc.BIN` 2128 > 2 KiB loader cap | no |
 
 **The win pair** was a real bug and is fixed. `RVExePubs.HC` plants `AsmStep` and `Dr` by
@@ -245,6 +245,33 @@ image. Ported rather than retired, which turned up five real bugs a copy would h
 The smokes also needed two changes belonging to the retired image rather than the feature:
 `ans=` is decimal in the guest Compiler_RV REPL (hex was the thin JIT's), and the input must be
 PACED or the line editor drops and reorders characters.
+
+**`kernel-phase3-smoke` — the `r=-85` was a FALSE failure, and fixing it uncovered a hang.**
+`KernelCallIcSoft`'s first statement is `if (KernelForSrcSoft() != 0x4653) return -1;`, and
+`KernelForSrcSoft` returns -2 when `A:/MakeOS/SoftForSrc.BIN` is absent. Every other probe in
+that sequence is wrapped in a `KernelFileFind` skip guard; `CallIcSoft` and `GlblMemSoft` were
+not, so they ran unconditionally right after `ForSrcSoft` had been skipped for exactly that
+missing file. The inter-function CALL IC logic they exist to test therefore NEVER EXECUTED — the
+smoke reported a compiler failure it had not performed. Both are guarded now.
+
+With the guard it clears the whole probe chain and **hangs** after `GuestCmpSoft skip` — no
+trap, no halt, output simply stops. Localised to the next statement,
+`KernelFileFind("A:/Compiler/SoftLocal.HC")`, which is the same call that returned normally one
+line earlier for the sibling path `A:/Compiler/SoftGlbl.HC`. Confirmed a hang and not a timeout:
+`PHASE3_TIMEOUT=420` and `=1500` stop at the IDENTICAL point.
+
+Cause and effect are worth stating: before the guard the sequence returned -85 at `CallIcSoft`
+and never executed any of this, so the hang lives in code that was unreachable — the guard
+uncovered it rather than causing it. The open question is why `FileFind` loops on one missing
+path and returns on another, both under `A:/Compiler/` on a disk that carries that directory.
+
+Two more things this leaves open:
+
+- **Nothing currently exercises `CallIcSoft`/`GlblMemSoft`.** The eleven `Soft*Src.BIN` are
+  staged only on the thin-loader smoke's disk, while the sequence that consumes them runs in
+  phase3, whose image carries none. Staging them on phase3's RedSea image would restore real
+  coverage. Note the ordering trap: phase3 runs BEFORE thin-loader in `qemu-integration`, so it
+  could only ever have found those files left over from an earlier run.
 
 **`kernel-thin-loader-smoke`** is also a decision, not a bug. `kernel_lex_src_probe.hc` has not
 changed since `a15ae20`; it grew past the cap because CODEGEN grew, and the 2 KiB is a real
