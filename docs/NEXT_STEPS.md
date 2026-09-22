@@ -535,13 +535,46 @@ have to be written.
 
 ## If you want a recommendation
 
-**`kernel-psalmody-smoke` is now the only red with an unexplained cause.** Re-checked against a
-fresh compiler it fails differently from the table's old note: a `mcause=5` load-fault with
-`mtval=0x60` at `blob+0x6bc28`, immediately after `PopUpPickDir DocPopUp begin`. A near-null
-deref at offset 0x60, in the popup path — which is the same region `kernel-span` turned out to
-hang in. Start with `docs/fault_examples.md` and `HOLYC_MAP` to name the function at
-`blob+0x6bc28`. (`kernel-thin-loader-smoke` is the other red and remains a DECISION — shrink the
-probe or raise the 2 KiB `SoftCall Load` cap — not a bug.)
+**`kernel-psalmody-smoke` — DIAGNOSED: `PopUp` derefs `blkdev.drvs` without checking it.**
+Re-checked against a fresh compiler it fails differently from the table's old note ("servant
+needs the guest compiler"): `mcause=5` load-fault, `mtval=0x60`, at `blob+0x6bc28`, right after
+`PopUpPickDir DocPopUp begin`. Localised to a single instruction:
+
+```
+0x6bc1c  ld   t0,0(sp)      ; pop base
+0x6bc24  add  a0,t0,t1      ; base + member offset
+0x6bc28  ld   a0,0(a0)      ; <-- mcause=5, mtval=0x60
+```
+
+`a0` is exactly `0x60`, so the base was NULL and the member offset was `0x60`. That is
+`Kernel/Job.HC:421`, in the soft-reap loop `PopUp` runs after `Kill(task,FALSE)`:
+
+```
+for (i=0;i<DRVS_NUM;i++) {
+  dv=&blkdev.drvs[i];
+  if (dv->owning_task==task) {      // <-- offsetof(CDrv,owning_task) == 0x60
+```
+
+`CBlkDevGlbls.drvs` is a POINTER (`CDrv *drvs`), not an inline array, and it is only ever
+allocated by a mount/boot path — `CAlloc(sizeof(CDrv)*DRVS_NUM)` in `DskAddDev.HC:241`,
+`DskVirtioRV.HC:249`, `KBootRV.HC:271`. The psalmody image mounts nothing, so `blkdev.drvs`
+stays NULL and `&blkdev.drvs[0]` is NULL. Counting the CDrv members by hand puts `owning_task`
+at 0x60, which is `mtval` exactly. `blkdev.blkdevs` in the loop immediately below it is a
+pointer too and has the same exposure.
+
+The fix is a guard on each loop. Note what it is guarding: the comment above says
+*"Orphaned Drv/BlkDev locks -> FilesFind DrvLock Yield forever"*, so the loop was added to cure
+a hang and introduced a null deref for every image WITHOUT drives.
+
+**Watch the flags when you reproduce this.** The smoke compiles with `HOLYC_NO_TIER2=1`
+(`run_kernel_psalmody_smoke.sh:36`). A map regenerated without it has a completely different
+layout and resolves `blob+0x6bc28` to `FilesFindMatch` — a real function, a plausible story, and
+entirely wrong. The instruction at that offset was `li a0,0`, which cannot fault; that mismatch
+is what caught it. **Disassemble the faulting word and check it is actually a load before
+trusting any symbol.**
+
+(`kernel-thin-loader-smoke` is the other red and remains a DECISION — shrink the probe or raise
+the 2 KiB `SoftCall Load` cap — not a bug.)
 
 **Start at 3.5(a), the A4 Soft Call hang**, if you want to keep pushing phase3: it is the live
 frontier at 832 guest lines and it is a wedge rather than a slow compile, so it is reproducible
