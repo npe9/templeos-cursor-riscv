@@ -192,6 +192,44 @@ Two things this turned up that are still open:
   servant is an unconditional hang with no diagnostic. A bounded wait that returns 0 and says so
   would have made this a one-minute bug.
 
+### 3.1b-bis — `kernel-span-smoke` IS RED AGAIN (found 2026-09-22 by the full suite)
+
+3.1b above says span was fixed by bringing the scheduler up before `PopUpFileName` (`c15a5f7`).
+It is red again, and worse than before: the guest now produces **no output at all** before
+
+```
+TRAP mcause=0x07 (store-fault) mepc=0x808d54dc mtval=0x0  blob+0xd54dc
+```
+
+`blob+0xd54dc` decodes to `0x00b50023` = `sb a1,0(a0)` at **`MemSet+4`**, preceded by
+`beqz a2,+20` (the size==0 early out). So the destination is NULL with a non-zero count:
+**something calls `MemSet(NULL, x, n>0)` before span prints its first line.**
+
+**It is NOT from the 2026-09-22 session.** The span blob compiled at `HEAD` and at `59f91ec^`
+(`ea17b55`) are **byte-identical**, same length and same MD5 — which also demonstrates that the
+`KernelC.HH` declarations added in `59f91ec` perturb kernel codegen not at all, despite that
+header being included by every kernel build.
+
+So the regression is somewhere in the **24 commits `c15a5f7..ea17b55`**, and the full suite had
+not run across any of them. Ten of those touch code the span image links:
+
+```
+4976126 b1dc1e0 bb3b2aa 8147b17 6471e75 07bda3e ad7fb16 e9d7a0f 758d06e aea9631
+```
+
+**Already ruled out: the FS change journal** (`8147b17`), which was the obvious suspect because
+`FsJournalInit` sets `fsj_write_fn = &FsJournalWrite` and so puts the journal on EVERY
+`FileWrite`, and it is present in the span image. But `CFsJRec.path` is an inline
+`U8 path[FSJ_PATH]`, not a pointer, and `FsJCopyPath` is a hand-rolled byte loop — no `MemSet`
+and no null destination. Look elsewhere.
+
+**How to finish it.** Bisect `c15a5f7..ea17b55` running `make kernel-span-smoke` (~5 min a step,
+so ~5 steps). Reproduce the map with the smoke's own flags — `HOLYC_NO_TIER2=1`
+(`run_kernel_span_smoke.sh:38`) — or the symbol will be wrong; see the psalmody entry below for
+what that mistake looks like. Naming the CALLER is the hard part, since the blob carries no ELF
+symbols and there is no backtrace; the cheapest route is a marker at the top of each init the
+demo runs before its first print.
+
 ### 3.1c The seven reds behind kernel-span, triaged
 
 `qemu-integration` stops at the first failure, so `kernel-span` had been hiding everything after
