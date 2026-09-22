@@ -2473,13 +2473,13 @@ U0 RVPhase3DocInitStockLadder()
   // literals, big shift-or chains); rung E is the unmodified stock #include.
   // Late wave, so a rung hang cannot cost the StartOS Load needles.
   //
-  // Bisect result: the "hang" is a guest Cmp `ERROR: Missing expression` whose
-  // error report then blocks - not a Cmp loop. A1 (read doldoc.hash) Soft Cmp +
-  // Soft Call are green, so RVExePubInternDolDocIn's CDolDocGlbls/doldoc
-  // asm_hash plant is fine for loads. A2 adds only a *store* to that planted
-  // member (doldoc.hash = HashTableNew(512)) and dies there, so the plant is
-  // missing whatever the guest Prs needs to treat the planted glbl as an
-  // lvalue. Fix RVExePubInternDolDocIn (Compiler/RVExePubs.HC) before A3-E.
+  // Bisect result, CORRECTED 2026-09-22. The earlier note here said A2 (a *store* to the
+  // planted doldoc.hash) died and blamed RVExePubInternDolDocIn's glbl plant. That was read off
+  // a run whose Compiler.BIN was STALE -- Compiler_RV.PRJ had been failing to build for a day
+  // and the smoke repacked the last good blob (see docs/NEXT_STEPS.md 3.5). Against a fresh
+  // compiler A1-A4 Soft Cmp all pass and A1-A3 Soft Call pass, so the plant is fine for stores
+  // too. The live frontier is A4's Soft CALL (sizeof member decay), which hangs: identical
+  // output at PHASE3_TIMEOUT=600 and =1500, so it is a wedge and not a slow compile.
   U8 *prj;
   RVCmpExportOne("MemSet", &MemSet);
   RVCmpExportOne("Bt", &Bt);

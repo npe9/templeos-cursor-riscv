@@ -208,7 +208,7 @@ turned out to be wrong. Each of these was checked rather than assumed.
 | ~~`repl-9p-smoke`~~ | retired image's feature set — PORTED, green | no |
 | ~~`dump-changes-smoke`~~ | same — PORTED, green | no |
 | `kernel-psalmody-smoke` | servant needs the guest compiler | no |
-| `kernel-phase3-smoke` | false -85 fixed; now fails in guest Cmp on Menu_RV_Guest_Lex | no |
+| ~~`kernel-phase3-smoke`~~ | a STALE `Compiler.BIN` the smoke swallowed a failed build for — FIXED, see 3.5 | **yes**, from `6471e75` |
 | `kernel-thin-loader-smoke` | `SoftLexSrc.BIN` 2128 > 2 KiB loader cap | no |
 
 **The win pair** was a real bug and is fixed. `RVExePubs.HC` plants `AsmStep` and `Dr` by
@@ -377,89 +377,105 @@ oracles (88 rv64, 62 rv32), the assembler differentials — but not by the whole
 
 ---
 
-## Tier 3.5 — next up: instrument the loaded compiler's error path (phase3)
+## Tier 3.5 — ~~instrument the loaded compiler's error path~~ — DONE, and it was a STALE BINARY
 
-The one remaining red, reduced to a specific question. Everything below is set up; this is a
-plan to execute, not an investigation to restart.
+The wedge is gone. `kernel-phase3-smoke` ran **682 → 832 guest lines**, the `Menu Skip Soft Cmp`
+stage now compiles AND calls (`SkipCont='x'`), and no `LexExcept` fires at all. There was no
+relocation bug, no unterminated source buffer, and no difference between the two compilers.
+One of them was simply OLDER THAN THE SOURCE UNDER TEST.
 
-### The question
+### What was actually wrong
 
-`kernel-phase3-smoke` wedges at the `Menu Skip Soft Cmp` stage. The guest prints
-`Missing expression at ` and then stops mid-message — permanently, not from a timeout
-(`PHASE3_TIMEOUT=900` and `=1800` both end at exactly **682 guest lines** with the identical
-half-written line).
+`Compiler_RV.PRJ` — the standalone unit that becomes the disk-loaded `Compiler.BIN` — had been
+RED since `6471e75` (2026-09-21 17:37). The 9p/journal port added pubs that `RVExePubs` plants
+BY ADDRESS (`&NinepSmoke`, `&FsChanges`, `&FsLog`, `&FsReplay`, `&DumpChanges`, `&Recover`,
+`&FsRecover`, `&FsEpoch`, `&Rename`), and that unit compiles WITHOUT the Kernel bodies, so it
+died on `Undefined variable`. Exactly the shape that took the win pair red in `a4a9e7e` — and
+the entry at 3.1c even says so: *"`RVExePubs.HC` plants `AsmStep` and `Dr` by ADDRESS, so the
+files defining them must be in the unit and ahead of it."* The same trap, one file later.
 
-Two things are wrong and the SECOND is what keeps the smoke red:
-
-1. The disk-loaded compiler rejects source the in-image one accepts.
-2. Its error reporter hangs instead of returning, so `RVPhase3CmpWrite` never gets its non-zero
-   result, never prints BLOCKED, and the ladder never continues. Every other probe in that
-   sequence fails gracefully. **Fix this one first** — a compiler whose error path hangs will
-   hide whatever the next finding is.
-
-### Where it is
-
-`Compiler/CExcept.HC`. `LexExcept` runs in this order:
+The smoke then **swallowed** it:
 
 ```
-Raw(ON); "Note: Still in boot phase.\n";   <- comes out
-if (str) PrintErr(str);                    <- comes out ("Missing expression at ")
-if (!IsRaw) AdamErr(...);                  <- SKIPPED, Raw(ON) just set IsRaw
-LexPutPos(cc);                             <- nothing after this
-cc->error_cnt++; FlushMsgs; throw('Compiler');
+if HOLYC_INCLUDE_ROOT=... "$COMPILER" .../Compiler_RV.PRJ -o .../compiler_rv.blob.bin >/dev/null 2>&1; then
+  :
+fi
+if [ -f .../compiler_rv.blob.bin ] && [ -f .../compiler_rv.map ]; then
+  .../pack_compiler_bin.sh ... || true
+fi
 ```
 
-and `LexPutPos` (CExcept.HC:50) calls `LexPutToken(cc)` then
-`LexPutLine(cc, cc->lex_include_stk->line_start)`. **Both walk source text**, so the wedge is in
-one of them.
+A failed build leaves the previous blob on disk, and the pack step happily repacked it.
+`build/compiler_rv.blob.bin` was dated **2026-09-21 15:17**; `continue` landed **2026-09-22
+07:36**. So for a day phase3 loaded a compiler that had never heard of `continue`, while the
+in-image `Compiler_RV_Body` was rebuilt from source on every run. That is the whole of
+"the disk-loaded compiler rejects source the in-image one accepts".
 
-Two candidate causes, both testable:
+Fixed in `59f91ec`: the nine names are declared in `Kernel/KernelC.HH` the way `FileRead` is at
+line 373, so the standalone unit resolves them as imports and the Kernel supplies the real
+addresses at Load time. Both smokes now hard-fail instead of swallowing, and phase3 additionally
+asserts that `build/Compiler.BIN` is newer than every `Compiler/` source — the next variant of
+this is a build that succeeds while the pack step quietly does not.
 
-- The Soft Cmp source is a STRING staged to disk, not a real file, so `line_start` may point into
-  a buffer with no NUL — `LexPutLine` then walks forever.
-- The disk-loaded `Compiler.BIN` is RELOCATED, so `cc->lex_include_stk` or `full_name` may hold a
-  pointer that did not get fixed up. The in-image compiler never relocates, which is exactly the
-  difference between the two paths.
+### What the previous entry got wrong, and why
 
-### The control you already have
+Its premise was a single sentence: *"Both are built from the same sources in the same run (the
+smoke refreshes `build/Compiler.BIN` from `Compiler_RV.PRJ` before staging the image)."* The
+smoke does attempt that refresh. It just does not check whether it worked. **Every conclusion
+downstream of that sentence — relocation, `line_start` with no NUL, `LexPutToken` vs
+`LexPutLine` — was reasoning about a binary nobody had rebuilt.**
 
-The same source compiles **clean** through the in-image `Compiler_RV`:
+This is the THIRD entry in this file to be wrong for the same underlying reason: a claim read off
+output that was not what it appeared to be. `kernel-span` read a `head -40`; the
+`KernelFileFind` hang read the `make` output instead of the full capture; this one read a
+build log that was routed to `/dev/null`. The lesson generalises past "read the whole capture":
+**an artifact is not evidence that the tool which was supposed to produce it ran.** Check the
+mtime, or make the producer fail loudly.
 
-```
-qemu-system-riscv64 -M virt -m 256M -bios none -kernel build/repl-holyc.elf -nographic
-> U8 *RVMenuSkipCont(U8 *p){while (p && *p) {if (*p == 32 || *p == 9 || *p == 13 || *p == 10) {p++; continue;} break;} return p;}
-```
+Two smaller corrections to the record:
 
-So this is a diff between two compilers built from the same sources in the same run, not a
-mystery about the source.
+- The `p?? p?? p??` run before the ERROR line was not "a source-context print going wrong". It
+  is `PrintErr`'s own prefix — `Kernel/StrPrint.HC:920` formats
+  `"%,p %,p %,p %,p " ST_ERR_ST "%s"` with four `Caller` frames. Expected noise.
+- The in-image control (`1+;` at the REPL of `build/repl-holyc.elf`) takes the **non-Raw**
+  branch: `sys_run_level` has `RLf_ADAM_SERVER` there, so `LexExcept` never calls `Raw(ON)` and
+  `LexPutPos` goes through `PutFileLink`/`AdamErr` instead. phase3 takes the `IsRaw` branch. The
+  two paths are not the same, so a clean REPL recovery never proved anything about phase3.
 
-### Steps
+### Still open, in the order they now matter
 
-1. Add UART markers to `LexPutPos` — before `LexPutToken`, between it and `LexPutLine`, and
-   after — plus the values of `cc->lex_include_stk`, `->full_name` and `->line_start`. Which
-   marker is last tells you which of the two walkers wedges, and the pointers say whether
-   relocation is the cause.
-2. **Markers must use a raw UART path** (`RVPhase3Uart` / `KernelUart`), never `Print`. Print goes
-   through DolDoc here, and a `$` in the output is markup — see the `DumpChanges` entry above,
-   where that cost a full cycle.
-3. Rebuild and run `PHASE3_TIMEOUT=900 make kernel-phase3-smoke`, then read
-   **`/tmp/phase3_uart_final.txt`** — the complete guest capture. Do NOT read the `make` output;
-   it shows only what the smoke chose to print, and that misreading cost two separate
-   misdiagnoses in this file already.
-4. 682 guest lines is the current marker. More than that means progress.
-5. If `line_start` is the problem, bound `LexPutLine` by the source length rather than trusting a
-   terminator. If a pointer is unrelocated, the fix belongs in the loader, not the reporter.
-6. Once the reporter returns instead of hanging, phase3 will report BLOCKED on that stage and
-   carry on, and the REMAINING question — why the loaded compiler rejects what the in-image one
-   accepts — becomes visible and separately attackable.
+**a. The A4 Soft Call hang — the new frontier, at 832 guest lines.** The `DocInitStock` ladder
+gets rungs A1–A4 through Soft Cmp and A1–A3 through Soft Call, then wedges on A4's Soft Call
+(`sizeof member decay`). Identical output at `PHASE3_TIMEOUT=600` and `=1500`, so it is a wedge,
+not a slow compile. It is a LATE wave by design, placed after the StartOS needles precisely so a
+rung hang cannot cost them — so it does not keep the smoke red. The comment in
+`Kernel/RVPhase3.HC` that blamed `RVExePubInternDolDocIn` for an A2 failure has been corrected;
+A2 was the stale binary too.
 
-### Related, still open
+**b. The error reporter's hang was never demonstrated against a fresh compiler.** The markers
+placed in `LexExcept`/`LexPutPos` for this session fired ZERO times, because no compile error
+occurred. So the claim "its error reporter hangs instead of returning" is UNRECONFIRMED, not
+disproved — the concern stands (a reporter that wedges hides the next finding), but there is
+currently no reproduction. The way to settle it is a phase3 probe that compiles deliberately
+invalid text and asserts the stage returns BLOCKED; that is a better gate than the accidental
+one we had, and it is a separate piece of work.
 
-- **Nothing exercises `CallIcSoft`/`GlblMemSoft`.** The eleven `Soft*Src.BIN` are staged only on
-  the thin-loader smoke's disk, while the sequence consuming them runs in phase3, whose image
-  carries none — and phase3 runs BEFORE thin-loader in `qemu-integration`, so it could only ever
-  have found them left over from an earlier run. Staging them on phase3's RedSea image restores
-  real coverage.
+**c. The `*_SEED` family is not emitted by the image any more.** `EXPECT_STARTOS_SEED`
+("`RVPhase3: StartOS RedSea seed (no ELF FileWrite).`") was in the HARD gate chain from
+`3bd4279` (2026-09-11) onward while nothing in the tree emits it — `RVPhase3.HC:894` FileWrites
+`A:/Adam/StartOS.PRJ` unconditionally rather than preferring the staged RedSea seed. That alone
+made this smoke unconditionally red regardless of guest behaviour. It is now soft, alongside
+every one of its siblings (`ADAMCORE_SEED`, `MAKEOS_SEED`, `RUNTIME_*_SEED`), which are all
+equally unemitted; the live hard proof of that stage is `EXPECT_STARTOS_BIN`. **Open question:**
+whether the seed-preference path should come back at all. The seed file
+(`tests/exec/seeds/phase3_StartOS.HC`) and the kernel's own `src` are byte-identical, so the
+message only ever proved provenance — "the ELF did not have to carry it".
+
+**d. Nothing exercises `CallIcSoft`/`GlblMemSoft`** — unchanged from before. The eleven
+`Soft*Src.BIN` are staged only on the thin-loader smoke's disk, while the sequence consuming
+them runs in phase3, whose image carries none, and phase3 runs BEFORE thin-loader in
+`qemu-integration` — so it could only ever have found them left over from an earlier run.
+Staging them on phase3's RedSea image restores real coverage.
 
 ---
 
@@ -486,10 +502,20 @@ have to be written.
 
 ## If you want a recommendation
 
-**Start at Tier 3.5.** It is the only red left, it is reduced to two named functions with a
-working control, and the first half of it — making the error path RETURN instead of hanging — is
-worth doing on its own merits even if the parse difference behind it turns out to be small. A
-compiler whose reporter wedges hides every finding after it.
+**Start at 3.5(a), the A4 Soft Call hang**, if you want to keep pushing phase3: it is the live
+frontier at 832 guest lines and it is a wedge rather than a slow compile, so it is reproducible
+in one run. **Or start at 3.5(b)**, the unreconfirmed error-reporter hang, by writing the
+deliberately-invalid-source probe — that turns a thing we merely believe into something gated,
+and a reporter that wedges would hide finding (a) too.
+
+Before either, **3.2 — run the full suite.** It has not run in ~25 commits, and this session is
+the argument for it: the thing that kept phase3 red was a unit that stopped building a day
+earlier and said nothing. A green smoke is not evidence that its inputs were rebuilt.
+
+The previous recommendation stood here: *"Start at Tier 3.5. It is the only red left, it is
+reduced to two named functions with a working control."* Both halves of that were wrong — the
+two named functions were innocent, and the "working control" took a different branch. It is
+kept as a reminder of how confident a wrong diagnosis can read.
 
 The original recommendation, from when this file was written: 0.1 first, because it is a
 correctness bug in the surface everything else is added to, and it is cheap to find. Then 1.1,

@@ -17,6 +17,13 @@ EXPECT_LOAD="RVPhase3: Load() CBinFile OK"
 EXPECT_HOST="RVPhase3: Load() host Compiler.BIN OK (RedSea seed + Cmp export)."
 EXPECT_FULL="RVPhase3: Load() full Compiler.BIN OK (reloc RedSea + ExePutS)."
 EXPECT_RELOC="RVPhase3: Load() relocatable RedSea Compiler.BIN returned."
+# Soft, like every other *_SEED below it. It was ALSO in the hard AND chain from 3bd4279
+# (2026-09-11) onward, and nothing in the image has emitted it since: RVPhase3.HC:894 now
+# FileWrites A:/Adam/StartOS.PRJ unconditionally instead of preferring the RedSea seed. That
+# made this smoke unconditionally red no matter what the guest did. The live hard proof of the
+# same stage is EXPECT_STARTOS_BIN ("Runtime StartOS.BIN ready for StartOS Load."), which stays
+# in the chain. Whether the seed-preference path should come back is an open question -- the
+# seed file and the kernel's own `src` are byte-identical, so it only ever proved provenance.
 EXPECT_STARTOS_SEED="RVPhase3: StartOS RedSea seed (no ELF FileWrite)."
 EXPECT_ADAMCORE_SEED="RVPhase3: AdamCore RedSea seed (no ELF FileWrite)."
 EXPECT_MAKEOS_SEED="RVPhase3: MakeOS RedSea seed (no ELF FileWrite)."
@@ -461,7 +468,6 @@ if printf '%s\n' "$out" | grep -qF "$EXPECT" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_HOST" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_FULL" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_RELOC" && \
-   printf '%s\n' "$out" | grep -qF "$EXPECT_STARTOS_SEED" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_MAKEOS" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_RUNTIME" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_ADAMCORE" && \
