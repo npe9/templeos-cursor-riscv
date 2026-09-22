@@ -203,15 +203,26 @@ turned out to be wrong. Each of these was checked rather than assumed.
 
 | red | cause | mine? |
 |---|---|---|
-| `kernel-win-interactive` | `win_compiler.PRJ` was missing `RVAsmRepl.HC`/`RVDbgCore.HC` | from `a4a9e7e` — FIXED |
-| `kernel-win-serial-smoke` | same | same — FIXED |
+| ~~`kernel-win-interactive`~~ | FIXED TWICE: `win_compiler.PRJ` missing `RVAsmRepl.HC`/`RVDbgCore.HC`, then re-broken by the SAME `&NinepSmoke` that took phase3 — green 2026-09-22 | `a4a9e7e`, then `6471e75` |
+| ~~`kernel-win-serial-smoke`~~ | same, same | same |
 | ~~`repl-9p-smoke`~~ | retired image's feature set — PORTED, green | no |
 | ~~`dump-changes-smoke`~~ | same — PORTED, green | no |
-| `kernel-psalmody-smoke` | servant needs the guest compiler | no |
+| `kernel-psalmody-smoke` | re-checked 2026-09-22 against a FRESH compiler: no longer "servant needs the guest compiler" — it now TRAPs, `mcause=5` load-fault `mtval=0x60` at `blob+0x6bc28`, right after `PopUpPickDir DocPopUp begin` | unknown; needs its own look |
 | ~~`kernel-phase3-smoke`~~ | a STALE `Compiler.BIN` the smoke swallowed a failed build for — FIXED, see 3.5 | **yes**, from `6471e75` |
 | `kernel-thin-loader-smoke` | `SoftLexSrc.BIN` 2128 > 2 KiB loader cap | no |
 
-**The win pair** was a real bug and is fixed. `RVExePubs.HC` plants `AsmStep` and `Dr` by
+**The win pair broke twice for the same REASON and it is worth saying once.** `RVExePubs.HC`
+plants functions by ADDRESS, so every name it takes a `&` of must be resolvable in whatever unit
+includes it. First time (`a4a9e7e`) the missing ones were `AsmStep`/`Dr` and the fix was adding
+`RVAsmRepl.HC`/`RVDbgCore.HC` to `win_compiler.PRJ`. Second time (`6471e75`, and it went
+unnoticed for a day) the missing ones were `&NinepSmoke` and eight journal names, and the fix
+was declaring them in `Kernel/KernelC.HH` — the same root cause that kept phase3 red, because
+`win_compiler.PRJ` and `Compiler_RV.PRJ` both include `RVExePubs.HC` without the Kernel bodies.
+Verified by putting the pre-fix `KernelC.HH` back and recompiling the win unit: two
+`Undefined variable` at `RVExePubs.HC:1324`. **Anything added to `RVExePubs` from now on should
+be checked against `Compiler_RV.PRJ` AND `win_compiler.PRJ`, not only the in-image Body.**
+
+The first fix, for the record. `RVExePubs.HC` plants `AsmStep` and `Dr` by
 ADDRESS, so the files defining them must be in the unit and ahead of it —
 `Compiler_RV_Body.PRJ` does exactly that and the win unit was never updated to match, so it died
 on `Undefined variable` at `&AsmStep`.
@@ -501,6 +512,14 @@ have to be written.
 ---
 
 ## If you want a recommendation
+
+**`kernel-psalmody-smoke` is now the only red with an unexplained cause.** Re-checked against a
+fresh compiler it fails differently from the table's old note: a `mcause=5` load-fault with
+`mtval=0x60` at `blob+0x6bc28`, immediately after `PopUpPickDir DocPopUp begin`. A near-null
+deref at offset 0x60, in the popup path — which is the same region `kernel-span` turned out to
+hang in. Start with `docs/fault_examples.md` and `HOLYC_MAP` to name the function at
+`blob+0x6bc28`. (`kernel-thin-loader-smoke` is the other red and remains a DECISION — shrink the
+probe or raise the 2 KiB `SoftCall Load` cap — not a bug.)
 
 **Start at 3.5(a), the A4 Soft Call hang**, if you want to keep pushing phase3: it is the live
 frontier at 832 guest lines and it is a wedge rather than a slow compile, so it is reproducible
