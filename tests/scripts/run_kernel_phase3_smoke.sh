@@ -133,19 +133,44 @@ done
 make -C "$ROOT" holyc-riscv tools/pack_tosb >/dev/null
 # Refresh host-packed TOSB: full Compiler.BIN (CInit/ExePutS + CmpCtrl*/Wire exports).
 chmod +x "$ROOT/tools/compiler_bin_pack_exports.sh"
-if HOLYC_INCLUDE_ROOT="$ROOT" HOLYC_MAP="$ROOT/build/compiler_rv.map" \
-   "$COMPILER" "$ROOT/Compiler/Compiler_RV.PRJ" -o "$ROOT/build/compiler_rv.blob.bin" >/dev/null 2>&1; then
-  :
+# This build used to be `... >/dev/null 2>&1; then : fi` — a swallow. Compiler_RV.PRJ went
+# red on 2026-09-21 (an RVExePubs pub with no declaration for the Kernel body it plants), the
+# pack step below then repacked the LAST GOOD blob, and phase3 ran for a day against a
+# Compiler.BIN older than the sources under test. That is what made the disk-loaded compiler
+# "reject source the in-image one accepts": it had never seen `continue`. Hard-fail instead.
+cmp_build_log="$(mktemp)"
+if ! HOLYC_INCLUDE_ROOT="$ROOT" HOLYC_MAP="$ROOT/build/compiler_rv.map" \
+   "$COMPILER" "$ROOT/Compiler/Compiler_RV.PRJ" -o "$ROOT/build/compiler_rv.blob.bin" \
+   >"$cmp_build_log" 2>&1; then
+  echo "FAIL kernel-phase3 smoke — Compiler_RV.PRJ build failed (would stage a STALE Compiler.BIN)" >&2
+  sed -n '1,40p' "$cmp_build_log" >&2
+  rm -f "$cmp_build_log"
+  exit 1
 fi
-if [ -f "$ROOT/build/compiler_rv.blob.bin" ] && [ -f "$ROOT/build/compiler_rv.map" ]; then
-  chmod +x "$ROOT/tools/compiler_bin_pack_exports.sh" "$ROOT/tools/pack_compiler_bin.sh"
-  "$ROOT/tools/pack_compiler_bin.sh" \
-    "$ROOT/build/compiler_rv.map" "$ROOT/build/compiler_rv.blob.bin" "$ROOT/build/Compiler.BIN" \
-    >/dev/null || true
-  python3 "$ROOT/tools/gen_cmp_imports.py" >/dev/null || true
+rm -f "$cmp_build_log"
+if [ ! -f "$ROOT/build/compiler_rv.blob.bin" ] || [ ! -f "$ROOT/build/compiler_rv.map" ]; then
+  echo "FAIL kernel-phase3 smoke — Compiler_RV.PRJ produced no blob/map" >&2
+  exit 1
 fi
+chmod +x "$ROOT/tools/compiler_bin_pack_exports.sh" "$ROOT/tools/pack_compiler_bin.sh"
+if ! "$ROOT/tools/pack_compiler_bin.sh" \
+  "$ROOT/build/compiler_rv.map" "$ROOT/build/compiler_rv.blob.bin" "$ROOT/build/Compiler.BIN" \
+  >/dev/null; then
+  echo "FAIL kernel-phase3 smoke — pack_compiler_bin.sh failed" >&2
+  exit 1
+fi
+python3 "$ROOT/tools/gen_cmp_imports.py" >/dev/null || true
 if [ ! -f "$ROOT/build/Compiler.BIN" ]; then
   echo "FAIL kernel-phase3 smoke — missing build/Compiler.BIN" >&2
+  exit 1
+fi
+# Freshness: the packed BIN must be newer than every Compiler/ source. Catches the next
+# variant, where the build succeeds but the pack step quietly does not.
+stale_src="$(find "$ROOT/Compiler" -name '*.HC' -o -name '*.HH' -o -name '*.PRJ' \
+  | while read -r f; do [ "$f" -nt "$ROOT/build/Compiler.BIN" ] && echo "$f"; done | head -5)"
+if [ -n "$stale_src" ]; then
+  echo "FAIL kernel-phase3 smoke — build/Compiler.BIN is older than Compiler sources:" >&2
+  echo "$stale_src" >&2
   exit 1
 fi
 

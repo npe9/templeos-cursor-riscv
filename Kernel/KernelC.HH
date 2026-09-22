@@ -374,6 +374,20 @@ public extern U8 *FileRead(U8 *filename,I64 *_size=NULL,I64 *_attr=NULL);
 public extern I64 FileWrite(U8 *filename,
 	U8 *fbuf,I64 size,CDate cdt=0,I64 attr=0);
 
+//RV: the change journal (Kernel/RVFsJournal.HC) and the 9p oracle (Kernel/Drv/Virtio9p.HC).
+//RVExePubs plants these by ADDRESS, and Compiler_RV.PRJ compiles without the Kernel bodies,
+//so without a declaration here that unit dies on "Undefined variable" at `&NinepSmoke`. The
+//phase3 smoke then swallowed the failure and staged a STALE Compiler.BIN -- see NEXT_STEPS 3.5.
+public extern U0 FsChanges();
+public extern U0 DumpChanges();
+public extern U0 FsLog(I64 n=32);
+public extern I64 FsReplay();
+public extern I64 FsEpoch();
+public extern I64 FsRecover();
+public extern U0 Recover();
+public extern I64 Rename(U8 *from,U8 *to);
+public extern I64 NinepSmoke();
+
 #help_index "File/Program Routines;File/FileNames"
 public extern CDirEntry *FilesFind(U8 *files_find_mask,I64 fuf_flags=0);
 

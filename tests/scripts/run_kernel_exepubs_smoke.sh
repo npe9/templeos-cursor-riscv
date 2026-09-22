@@ -38,8 +38,15 @@ trap 'rm -rf "$T"' EXIT
 
 # Also refresh standalone Compiler_RV blob into the Phase-B slot path (layout / future Load).
 mkdir -p "$ROOT/build"
-if HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$ROOT/Compiler/Compiler_RV.PRJ" \
+# Not opportunistic any more: a silent red here leaves a STALE blob for whoever packs it next,
+# which is how phase3 spent a day loading a Compiler.BIN older than its own sources.
+if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$ROOT/Compiler/Compiler_RV.PRJ" \
      -o "$ROOT/build/compiler_rv.blob.bin" >/dev/null 2>&1; then
+  echo "FAIL kernel-exepubs smoke — Compiler_RV.PRJ build failed (stale build/compiler_rv.blob.bin)" >&2
+  HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$ROOT/Compiler/Compiler_RV.PRJ" -o /dev/null 2>&1 | tail -20 >&2
+  exit 1
+fi
+if true; then
   # COMP magic + blob (C kernel slot expects magic at 0x80200000; HolyC smoke uses in-image Body).
   {
     printf 'COMP'
