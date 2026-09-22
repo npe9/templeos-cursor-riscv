@@ -263,7 +263,14 @@ Two things, and the first is done:
    **`kernel-span-smoke` is GREEN** for the first time since `6471e75`. Verified against eleven
    images that DO mount drives (`kernel-fs`, `redsea`, `dir`, `blk`, `home`, `selfboot`, `load`,
    `fsshell`, `win-serial`, `doctext`, `ode`), where the change is a no-op.
-2. **STILL OPEN: what stops it between the two `CAlloc`s.** All three writers of
+2. ~~**STILL OPEN: what stops it between the two `CAlloc`s.**~~ — **ANSWERED, and it is much
+   worse than an ordering bug. Nothing stops it: `RVBlkDevTablesInit` never allocated anything,
+   because `blkdev.blkdevs` was ALREADY non-NULL when it was first called. It was non-NULL
+   because `Fs->cur_dir = StrNew("/Apps/Span")` in `Cd` had written a STRING POINTER into it.
+   See 3.1b-ter.** The text below is what I believed before reading it out, kept because the
+   inference was wrong in an instructive way.
+
+   **STILL OPEN (as previously believed):** All three writers of
    `blkdev.blkdevs` (`KBootRV.HC`, `DskAddDev.HC:240`, `DskVirtioRV.HC:248`) assign `drvs` on
    the very next line, so something is unwinding — a throw out of `CAlloc`, or the init running
    on a task that dies. **That is still the real bug.** (1) only stopped it being permanent and
@@ -279,6 +286,76 @@ address 0.
 
 This is the SAME NULL `blkdev.drvs` as the psalmody crash fixed in `45d3fe2`, in a fifth
 location — reached through `Mount` rather than task reap, and so not covered by those guards.
+
+### 3.1b-ter — THE REAL BUG: `__task` is 80 bytes and the kernel's `CTask` is not
+
+**`Fs` points at an 80-byte allocation while kernel code writes through it at offsets up to
+`sizeof(CTask)`. Every AOT-compiled kernel image has this. It is silent, it corrupts whatever
+global the linker happened to place next, and which global that is changes with the layout —
+which is why an unrelated 9p commit "caused" a span failure.**
+
+`host/compiler.c:239`:
+
+```c
+const char *names[4] = { "__try_top", "__task", "Fs", "Gs" };
+...
+g->size = i == 1 ? 80 : 8;   // __task: CTask (except_ch, catch_except, except_callers[8])
+```
+
+The host compiler bootstraps a MINIMAL `CTask` — just enough for `Fs->except_ch` and the throw
+machinery — and reserves **80 bytes (0x50)**. `Fs` is then pointed at it. But the kernel sources
+define the REAL `CTask` (`Kernel/KernelA.HH:3280`), which is over a kilobyte, and every
+`Fs->member` in kernel code compiles against THAT layout. Counting its members by hand:
+
+```
+0x00 addr   0x08 task_signature+win_inhibit   0x10 wake_jiffy   0x18 task_flags+display_flags
+0x20 code_heap   0x28 data_heap   0x30 put_doc   0x38 display_doc   0x40 border_doc
+0x48 win_left  0x50 win_right  0x58 win_top  0x60 win_bottom  0x68 cur_dv  0x70 cur_dir
+```
+
+`cur_dir` is at **0x70 — 0x20 bytes PAST the end of the 80-byte `__task`.**
+
+Read out of a live span image, which is how this was found rather than guessed:
+
+```
+Fs (global @0x80ab1ae0) = 0x80a83550   == __task
+blkdev                  = 0x80a835c0   == __task + 0x70
+Cd -> StrNew("/Apps/Span") -> 0x82000430      (MAlloc#1, the first heap chunk: 0xb bytes)
+=> Fs->cur_dir = 0x82000430   lands on   &blkdev.blkdevs
+```
+
+So `blkdev.blkdevs` held a pointer to the STRING `"/Apps/Span"`. `RVBlkDevTablesInit`'s
+`if (blkdev.blkdevs) return;` saw non-NULL, returned, and `blkdev.drvs` was never allocated —
+hence `MemSet(NULL,0,sizeof(CDrv))` in `DrvMakeFreeSlot`. Every link in the chain checks out.
+
+**Why `6471e75` is the "first bad commit".** It did not introduce this. It added
+`ninep_client`, which the linker placed at `__task + 0x50`, and that shifted `blkdev` to
+`__task + 0x70` — exactly where `Fs->cur_dir` writes. Before it, the stray store landed on
+something that did not matter. **A bisect over a layout-sensitive bug names the commit that
+re-aimed the damage, not the one that caused it.** Worth remembering the next time a bisect
+gives an answer that makes no sense against the diff.
+
+**`10a0a07` does NOT fix this.** It makes `kernel-span-smoke` green by letting a later caller
+allocate `drvs`, but `blkdev.blkdevs` STILL points at `"/Apps/Span"` afterwards, and anything
+that indexes `blkdev.blkdevs[]` reads string bytes as `CBlkDev`. The smoke passes because
+nothing in it does. **Green here is masking live corruption** — do not read that row as safe.
+
+**The fix is in the host compiler and it is not mine to land unilaterally**, because it moves
+every AOT image's data layout and so touches the byte-identical gates. Options, cheapest first:
+
+1. **Reserve enough for the real `CTask`** — raise the 80 to something that covers it (it is
+   >1 KiB; a round 4 KiB is cheap BSS and leaves headroom). Safe, one line, wastes a little
+   space in every image.
+2. **Re-size `__task` when the kernel's own `class CTask` is parsed**, so the reservation
+   tracks the real definition instead of a magic number. Correct, but the bootstrap stub is
+   created before parsing, so `__task` would have to be re-placed or forward-referenced.
+3. **Make it loud instead of silent** — have the AOT refuse, or warn, when a `Fs->` access
+   resolves past the reserved `__task` size. This is the one that would have caught it on day
+   one, and is worth doing alongside either of the above.
+
+Note (3) especially: the cost here was not the bug, it was that it was *invisible*. It presented
+as a `MemSet` fault in a demo, survived a bisect pointing at an unrelated 9p commit, and took a
+watchpoint, a `CAlloc` trace, a `MAlloc` trace and a `StrNew` trace to reach.
 
 ### 3.1c The seven reds behind kernel-span, triaged
 
