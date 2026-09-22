@@ -265,12 +265,22 @@ U0 RVBootTask2()
 U0 RVBlkDevTablesInit()
 {
   I64 i;
-  if (blkdev.blkdevs)
-    return;
-  blkdev.blkdevs = CAlloc(sizeof(CBlkDev) * BLKDEVS_NUM);
-  blkdev.drvs = CAlloc(sizeof(CDrv) * DRVS_NUM);
-  for (i = 0; i < DRVS_NUM; i++)
-    blkdev.let_to_drv[i] = &blkdev.drvs[i];
+  // Per-field, not `if (blkdev.blkdevs) return;`. That guard tested ONE field and then
+  // assigned three, so a run that stopped after the first store latched it: every later call
+  // returned immediately and blkdev.drvs stayed NULL for the life of the image. Read out of a
+  // live kernel-span image with gdb -- blkdevs=0x82000430, drvs=0, let_to_drv[0]=[1]=0 (not
+  // 0xa0, which is what &NULL[1] would give had only the drvs store been lost, so execution
+  // really did stop between the two CAllocs). RVMountRAMDisk calls this and is entitled to
+  // assume it worked; instead BlkDevAdd -> DrvMakeFreeSlot did MemSet(NULL,0,sizeof(CDrv)).
+  // Whatever unwinds between the CAllocs is still open (docs/NEXT_STEPS.md 3.1b-bis); this
+  // makes a half-done run recoverable instead of permanent and silent.
+  if (!blkdev.blkdevs)
+    blkdev.blkdevs = CAlloc(sizeof(CBlkDev) * BLKDEVS_NUM);
+  if (!blkdev.drvs) {
+    blkdev.drvs = CAlloc(sizeof(CDrv) * DRVS_NUM);
+    for (i = 0; i < DRVS_NUM; i++)
+      blkdev.let_to_drv[i] = &blkdev.drvs[i];
+  }
 }
 // G28 soft letter: plant signed CBlkDev+CDrv so Let2Drv(let) works without
 // virtio / RedSeaFmt. Type follows Let2BlkDevType (A:→BDT_RAM, P:→ISO_FILE_READ
