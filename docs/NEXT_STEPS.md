@@ -295,9 +295,18 @@ from the same sources in the same run (the smoke refreshes `build/Compiler.BIN` 
 differently from the in-image one: a stale copy on the image, a relocation issue, or a genuine
 difference in the loaded path.
 
-Note the error text in the capture is TRUNCATED (`Missing expression at ` with no token) because
-the timeout killed QEMU mid-print, so the first move is a longer `PHASE3_TIMEOUT` purely to read
-which token it names.
+**The truncation is not the timeout — the error REPORTER hangs.** `PHASE3_TIMEOUT=900` and
+`=1800` both end at exactly 682 guest lines with the same half-written
+`Missing expression at ` and no token, preceded by a run of `p?? p?? p??` garbage that looks
+like a source-context print going wrong. So the loaded compiler hits an error in the Menu Skip
+source and then WEDGES while reporting it.
+
+That second half is the more serious bug, and it is what actually keeps phase3 red. A failed
+Soft Cmp is supposed to return non-zero so `RVPhase3CmpWrite` prints its BLOCKED message and the
+sequence carries on — every other probe in the ladder does exactly that. Instead the guest stops
+dead, so no expectation after this point can ever be met no matter what else is fixed. Worth
+attacking before the underlying parse difference, because a compiler whose error path hangs will
+hide the next finding too.
 
 **The original frontier probe, for the record.** `Kernel/RVPhase3.HC:2040` says
 `// Soft tip: stock Menu Skip shape (U8* while + continue) — needs KW_CONTINUE`, and that stage
