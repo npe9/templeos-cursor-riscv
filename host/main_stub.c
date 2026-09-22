@@ -222,6 +222,14 @@ int main(int argc, char **argv) {
   Compiler *cc = CompileBuf(src, (size_t)sz, input, true);
   free(src);
 
+  // Parsing is done, so a kernel header may have replaced the bootstrap CTask with the real
+  // one. If it no longer fits __task's reservation, say so HERE rather than letting every
+  // Fs->member past the reserve corrupt the next global at run time.
+  if (!AotCheckTaskBlockReserve(cc)) {
+    CompilerFree(cc);
+    if (map_owned) free(map_path);
+    return 1;
+  }
   if (cc->error) {
     const char *file = cc->error_file ? cc->error_file : input;
     fprintf(stderr, "%s:%d:%d: error: %s\n", file, cc->error_line,

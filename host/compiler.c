@@ -18,6 +18,32 @@
 #include <unistd.h>
 #include <sys/mman.h>
 
+/* Bytes reserved for __task, the block Fs points at for the life of an image.
+ * Must be >= sizeof(CTask) as the KERNEL defines it (Kernel/KernelA.HH), not as the
+ * bootstrap stub in this file defines it -- kernel code compiles `Fs->member` against the
+ * real layout and will write at those offsets. 8 KiB is a ceiling with headroom; the real
+ * class is a little over 1 KiB. This is BSS in every AOT image, so it is cheap.
+ * AotCheckTaskBlockReserve() verifies it once the real class has actually been parsed. */
+#define TASK_BLOCK_RESERVE 8192
+
+/* Guard the reservation above against the CTask the SOURCES actually define.
+ * Called after parsing, when a kernel header may have replaced the bootstrap stub with the
+ * real class. Returns 0 and prints when the real CTask does not fit in TASK_BLOCK_RESERVE:
+ * every `Fs->member` past the reserve is an out-of-bounds write into the next global, and it
+ * is silent, layout-dependent and brutal to track down -- one such write cost a full session
+ * (docs/NEXT_STEPS.md 3.1b-ter). Diagnose it at compile time instead. */
+int AotCheckTaskBlockReserve(Compiler *cc) {
+  if (!cc || !cc->hash_table) return 1;
+  CHashClass *t = (CHashClass *)HashFind("CTask", cc->hash_table, HTT_CLASS);
+  if (!t || t->size <= TASK_BLOCK_RESERVE) return 1;
+  fprintf(stderr,
+          "error: CTask is %lld bytes but __task reserves only %d. `Fs->member` past the "
+          "reserve would write into the next global, silently. Raise TASK_BLOCK_RESERVE in "
+          "host/compiler.c (see docs/NEXT_STEPS.md 3.1b-ter).\n",
+          (long long)t->size, TASK_BLOCK_RESERVE);
+  return 0;
+}
+
 /* Visible AOT progress (stderr). Default: on when stderr is a TTY.
  * HOLYC_PROGRESS=1 forces on (pipes/CI logs); =0 forces off.
  * HOLYC_QUIET=1 forces off (smokes that must stay silent). */
@@ -236,7 +262,18 @@ Compiler *CompilerNewBuf(const char *source, size_t size, const char *filename) 
       CHashGlblVar *g = calloc(1, sizeof(CHashGlblVar));
       g->str = strdup(names[i]);
       g->type = HTT_GLBL_VAR;
-      g->size = i == 1 ? 80 : 8;   // __task: CTask (except_ch, catch_except, except_callers[8])
+      // __task backs Fs for the whole image. The bootstrap CTask below is a STUB (except_ch,
+      // catch_except, except_callers[8]) but kernel sources define the real CTask
+      // (Kernel/KernelA.HH), which is over a kilobyte, and every `Fs->member` they compile
+      // resolves against THAT layout -- e.g. cur_dir at 0x70. Reserving the stub's 80 bytes
+      // meant any such access wrote PAST __task into whichever global the linker placed next,
+      // silently, with the victim changing whenever the layout changed. That is how
+      // `Fs->cur_dir = StrNew("/Apps/Span")` in Cd came to overwrite blkdev.blkdevs and take
+      // kernel-span down; see docs/NEXT_STEPS.md 3.1b-ter for the full read-out.
+      // TASK_BLOCK_RESERVE is a ceiling for the real CTask, not a computed size: the stub is
+      // built here, before any kernel header is parsed, so there is nothing to measure yet.
+      // AotCheckTaskBlockReserve() re-checks it against the real class once that IS parsed.
+      g->size = i == 1 ? TASK_BLOCK_RESERVE : 8;
       g->element_size = 8;
       g->raw_type = RT_I64;
       if (i == 1) g->var_class = task;

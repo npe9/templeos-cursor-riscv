@@ -709,6 +709,7 @@ bool IsKeyword(const char *str);
 /* Host AOT progress on stderr (TTY by default; HOLYC_PROGRESS=1 forces on;
  * HOLYC_QUIET=1 / HOLYC_PROGRESS=0 forces off). Flush each line. No-op on bare metal. */
 #ifndef BARE_METAL
+int AotCheckTaskBlockReserve(Compiler *cc);
 int HolyProgressOn(void);
 const char *HolyProgressRel(const char *path);
 void HolyProgress(const char *fmt, ...);
