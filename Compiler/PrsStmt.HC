@@ -483,9 +483,19 @@ U0 PrsIf(CCmpCtrl *cc,I64 try_cnt,CCodeMisc *lb_break)
     ICAdd(cc,IC_LABEL,lb,0);
 }
 
+// The innermost enclosing loop's `continue` target, or NULL outside a loop. A global with
+// save/restore around each loop body rather than another PrsStmt parameter: lb_break is threaded
+// that way and it costs every call site, while the scoping `continue` needs is exactly
+// save-set-parse-restore. Nesting works because each loop restores what it found, and a `switch`
+// inside a loop leaves it alone -- so `continue` inside a `switch` continues the LOOP, which is
+// what it should do.
+//
+// The target is not the same for every loop: `while` re-tests the condition, `do` falls into its
+// own test, and `for` must land on the STEP or the loop never advances.
+CCodeMisc *prs_lb_cont;
 U0 PrsWhile(CCmpCtrl *cc,I64 try_cnt)
 {
-  CCodeMisc *lb,*lb_done;
+  CCodeMisc *lb,*lb_done,*lb_cont_old;
   if (cc->token!='(')
     LexExcept(cc,"Expecting '(' at ");
   Lex(cc);
@@ -498,18 +508,27 @@ U0 PrsWhile(CCmpCtrl *cc,I64 try_cnt)
   Lex(cc);
   lb_done=COCMiscNew(cc,CMT_LABEL);
   ICAdd(cc,IC_BR_ZERO,lb_done,0);
+  lb_cont_old=prs_lb_cont;
+  prs_lb_cont=lb;
   PrsStmt(cc,try_cnt,lb_done);
+  prs_lb_cont=lb_cont_old;
   ICAdd(cc,IC_JMP,lb,0);
   ICAdd(cc,IC_LABEL,lb_done,0);
 }
 
 U0 PrsDoWhile(CCmpCtrl *cc,I64 try_cnt)
 {
-  CCodeMisc *lb,*lb_done;
+  CCodeMisc *lb,*lb_done,*lb_cont,*lb_cont_old;
   lb=COCMiscNew(cc,CMT_LABEL);
   lb_done=COCMiscNew(cc,CMT_LABEL);
+  lb_cont=COCMiscNew(cc,CMT_LABEL);
   ICAdd(cc,IC_LABEL,lb,0);
+  lb_cont_old=prs_lb_cont;
+  prs_lb_cont=lb_cont;
   PrsStmt(cc,try_cnt,lb_done);
+  prs_lb_cont=lb_cont_old;
+  // continue lands here, immediately before the `while` test the body falls into
+  ICAdd(cc,IC_LABEL,lb_cont,0);
   if (PrsKeyWord(cc)!=KW_WHILE)
     LexExcept(cc,"Missing 'while' at");
   if (Lex(cc)!='(')
@@ -529,7 +548,7 @@ U0 PrsDoWhile(CCmpCtrl *cc,I64 try_cnt)
 U0 PrsFor(CCmpCtrl *cc,I64 try_cnt)
 {
   CCodeCtrl *tmpcbh;
-  CCodeMisc *lb,*lb_done;
+  CCodeMisc *lb,*lb_done,*lb_cont,*lb_cont_old;
 
   if (cc->token!='(')
     LexExcept(cc,"Expecting '(' at ");
@@ -537,6 +556,7 @@ U0 PrsFor(CCmpCtrl *cc,I64 try_cnt)
   PrsStmt(cc,try_cnt,NULL,CMPF_PRS_SEMICOLON|CMPF_ONE_STMT);
 
   lb=COCMiscNew(cc,CMT_LABEL);
+  lb_cont=COCMiscNew(cc,CMT_LABEL);
   ICAdd(cc,IC_LABEL,lb,0);
   if (!PrsExpression(cc,NULL,FALSE))
     throw('Compiler');
@@ -557,7 +577,13 @@ U0 PrsFor(CCmpCtrl *cc,I64 try_cnt)
     LexExcept(cc,"Missing ')' at ");
   Lex(cc);
 
+  lb_cont_old=prs_lb_cont;
+  prs_lb_cont=lb_cont;
   PrsStmt(cc,try_cnt,lb_done);
+  prs_lb_cont=lb_cont_old;
+  // continue lands on the STEP. Jumping to `lb` instead would skip it and the loop would never
+  // advance -- a `for` that hangs rather than one that miscounts.
+  ICAdd(cc,IC_LABEL,lb_cont,0);
   COCAppend(cc,tmpcbh);
   ICAdd(cc,IC_JMP,lb,0);
   ICAdd(cc,IC_LABEL,lb_done,0);
@@ -1151,6 +1177,12 @@ sm_import:
 		  if (!lb_break)
 		    LexExcept(cc,"'break' not allowed\n");
 		  ICAdd(cc,IC_JMP,lb_break,0);
+		  goto sm_semicolon;
+		case KW_CONTINUE:
+		  Lex(cc);
+		  if (!prs_lb_cont)
+		    LexExcept(cc,"'continue' not allowed\n");
+		  ICAdd(cc,IC_JMP,prs_lb_cont,0);
 		  goto sm_semicolon;
 		case KW_NO_WARN:
 		  Lex(cc);
