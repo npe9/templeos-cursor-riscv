@@ -245,9 +245,9 @@ turned out to be wrong. Each of these was checked rather than assumed.
 | ~~`kernel-win-serial-smoke`~~ | same, same | same |
 | ~~`repl-9p-smoke`~~ | retired image's feature set — PORTED, green | no |
 | ~~`dump-changes-smoke`~~ | same — PORTED, green | no |
-| `kernel-psalmody-smoke` | re-checked 2026-09-22 against a FRESH compiler: no longer "servant needs the guest compiler" — it now TRAPs, `mcause=5` load-fault `mtval=0x60` at `blob+0x6bc28`, right after `PopUpPickDir DocPopUp begin` | unknown; needs its own look |
+| `kernel-psalmody-smoke` | two NULL `blkdev.*` derefs FIXED in `45d3fe2`; now ends at `throw('Drv')` from `Let2Drv` — the DESIGNED error path, because the image has no drives. A demo/image question, no longer memory safety | no |
 | ~~`kernel-phase3-smoke`~~ | a STALE `Compiler.BIN` the smoke swallowed a failed build for — FIXED, see 3.5 | **yes**, from `6471e75` |
-| `kernel-thin-loader-smoke` | `SoftLexSrc.BIN` 2128 > 2 KiB loader cap | no |
+| ~~`kernel-thin-loader-smoke`~~ | GREEN. The cap decision was already made: `fd2bf56` raised the `SoftCall Load` buffer to 4 KiB on 2026-09-21. This row predates it | no |
 
 **The win pair broke twice for the same REASON and it is worth saying once.** `RVExePubs.HC`
 plants functions by ADDRESS, so every name it takes a `&` of must be resolvable in whatever unit
@@ -411,11 +411,33 @@ changed since `a15ae20`; it grew past the cap because CODEGEN grew, and the 2 Ki
 limit on what `SoftCall Load` accepts, not a test assertion to bump. Shrink the probe or raise
 the loader's capacity.
 
-### 3.2 No full suite run in a long while
+### 3.2 ~~No full suite run in a long while~~ — DONE 2026-09-22: **83 pass, 2 fail**
 
-`make ci` / `qemu-integration` has not run in roughly 25 commits. Everything here was verified by
-the affected smokes — the asm REPL UI, both trap-frame smokes, hc_repl, repl-exepubs, the
-oracles (88 rv64, 62 rv32), the assembler differentials — but not by the whole thing at once.
+All 85 `qemu-integration` targets, run INDIVIDUALLY so one red could not hide the rest
+(`qemu-integration` itself stops at the first failure, which is how `kernel-span` hid everything
+behind it last time). ~2h40m wall clock.
+
+```
+FAIL     303s  kernel-span-smoke
+FAIL     122s  kernel-psalmody-smoke
+```
+
+**Everything else passed**, including the three this session fixed — `kernel-phase3-smoke`
+(949s), `kernel-win-interactive` (162s), `kernel-win-serial-smoke` (91s) — in a clean
+from-scratch sweep rather than a targeted re-run.
+
+**The 3.1c triage table was wrong in three places**, all now corrected there:
+
+- the win pair and phase3 are green (this session's `KernelC.HH` fix);
+- **`kernel-thin-loader-smoke` is green** and was NOT an open decision. The table framed it as
+  "`SoftLexSrc.BIN` 2128 > 2 KiB loader cap — shrink the probe or raise the cap". That decision
+  had ALREADY been made and shipped in `fd2bf56` ("thin-loader: raise the SoftCall Load buffer
+  to 4 KiB", 2026-09-21), which is in HEAD's history. The row simply predates it;
+- `kernel-span-smoke` is red while listed as fixed — see 3.1b-bis.
+
+The lesson is the one this file keeps relearning in a new costume: **a table of reds decays, and
+nothing tells you which rows went stale.** Two rows had been fixed and one had broken, and the
+only thing that distinguished them was running all 85.
 
 ### 3.3 Small
 
@@ -573,7 +595,17 @@ have to be written.
 
 ## If you want a recommendation
 
-**`kernel-psalmody-smoke` — DIAGNOSED: `PopUp` derefs `blkdev.drvs` without checking it.**
+**`kernel-psalmody-smoke` — two NULL derefs FIXED (`45d3fe2`); what is left is not a bug in
+the kernel.** After the guards the run advances twice and ends at `throw('Drv')` from
+`Let2Drv`: `Let2Let('~')` now returns `blkdev.boot_drv_let`, which is 0 in an image that mounts
+nothing, so no letter is in `'A'..'Z'` and the designed error path fires. That is a
+diagnosable throw where there were two wild stores into low memory. Finishing the smoke is a
+DEMO/IMAGE question — psalmody drives a drive-dependent popup path (`PopUpPickDir`) in a
+driveless image — so either give the image a drive or have the demo not take that path.
+
+The diagnosis below is kept because the METHOD is the reusable part.
+
+**How it was found: `PopUp` derefs `blkdev.drvs` without checking it.**
 Re-checked against a fresh compiler it fails differently from the table's old note ("servant
 needs the guest compiler"): `mcause=5` load-fault, `mtval=0x60`, at `blob+0x6bc28`, right after
 `PopUpPickDir DocPopUp begin`. Localised to a single instruction:
