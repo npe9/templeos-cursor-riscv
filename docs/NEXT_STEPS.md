@@ -223,12 +223,51 @@ not run across any of them. Ten of those touch code the span image links:
 `U8 path[FSJ_PATH]`, not a pointer, and `FsJCopyPath` is a hand-rolled byte loop — no `MemSet`
 and no null destination. Look elsewhere.
 
-**How to finish it.** Bisect `c15a5f7..ea17b55` running `make kernel-span-smoke` (~5 min a step,
-so ~5 steps). Reproduce the map with the smoke's own flags — `HOLYC_NO_TIER2=1`
-(`run_kernel_span_smoke.sh:38`) — or the symbol will be wrong; see the psalmody entry below for
-what that mistake looks like. Naming the CALLER is the hard part, since the blob carries no ELF
-symbols and there is no backtrace; the cheapest route is a marker at the top of each init the
-demo runs before its first print.
+**BISECTED and DIAGNOSED (still unfixed).** `git bisect run` over `c15a5f7..ea17b55` with a
+70s QEMU window (the fault is immediate and silent, so the smoke's 300s wall is wasted on every
+bad commit) names **`6471e75` as the first bad commit** — the SAME commit that broke
+`Compiler_RV.PRJ` and so kept phase3 and the win pair red. One commit caused every red in the
+tree.
+
+The mechanism, read out under `riscv64-elf-gdb` (`-S -s`, breakpoints on raw addresses, since
+the blob carries no ELF symbols — `$ra` at a breakpoint is how you get a caller here):
+
+```
+MemSet(NULL, 0, 0xa0)           <- a2=0xa0 == sizeof(CDrv), which identifies the call site
+  <- DrvMakeFreeSlot    `res=&blkdev.drvs[i]; MemSet(res,0,sizeof(CDrv));`
+  <- BlkDevAdd          drv_let = 'A'  (a0=0x41)
+  <- the RAM-disk mount path
+```
+
+and at that breakpoint the globals read:
+
+```
+blkdev.blkdevs   = 0x82000430   <- SET (the first heap chunk)
+blkdev.drvs      = 0x0
+blkdev.let_to_drv[0] = 0x0,  [1] = 0x0
+```
+
+**`RVBlkDevTablesInit` (`Kernel/KBootRV.HC:265`) is not atomic, and its guard tests the wrong
+thing.** It opens `if (blkdev.blkdevs) return;` and then assigns `blkdevs`, `drvs` and
+`let_to_drv` in that order. Execution reached the `blkdevs` store and got no further — `drvs`
+AND `let_to_drv[1]` are both zero, and if only the `drvs` store had been lost then
+`let_to_drv[1]` would read `0xa0` (`&NULL[1]`), not 0. So the function stopped between its first
+and second `CAlloc`, leaving `blkdevs` set. From then on **every** later call early-returns on
+the guard, and `blkdev.drvs` is NULL for the life of the image — including inside
+`RVMountRAMDisk`, which does call `RVBlkDevTablesInit` and is entitled to assume it worked.
+
+Two things to fix, and the first is worth doing whatever the second turns out to be:
+
+1. **Make the init idempotent per-field** (`if (!blkdev.blkdevs) ...; if (!blkdev.drvs) ...;`), or
+   assign `blkdevs` LAST so a half-completed run cannot latch the guard. A partially-initialised
+   table that reports itself as done is a trap regardless of what interrupted it.
+2. **Find what stops it between the two `CAlloc`s.** All three writers of `blkdev.blkdevs`
+   (`KBootRV.HC:270`, `DskAddDev.HC:240`, `DskVirtioRV.HC:248`) assign `drvs` on the very next
+   line, so something is unwinding — a throw out of `CAlloc`, or the init running on a task that
+   dies. That is the real bug; (1) only stops it being permanent and silent.
+
+This is the SAME NULL `blkdev.drvs` as the psalmody crash fixed in `45d3fe2`, in a fifth
+location — reached through `Mount` rather than task reap, and so not covered by those guards.
 
 ### 3.1c The seven reds behind kernel-span, triaged
 
