@@ -208,7 +208,7 @@ turned out to be wrong. Each of these was checked rather than assumed.
 | ~~`repl-9p-smoke`~~ | retired image's feature set — PORTED, green | no |
 | ~~`dump-changes-smoke`~~ | same — PORTED, green | no |
 | `kernel-psalmody-smoke` | servant needs the guest compiler | no |
-| `kernel-phase3-smoke` | false -85 fixed; hangs later in FileFind — see below | no |
+| `kernel-phase3-smoke` | false -85 fixed; now fails in guest Cmp on Menu_RV_Guest_Lex | no |
 | `kernel-thin-loader-smoke` | `SoftLexSrc.BIN` 2128 > 2 KiB loader cap | no |
 
 **The win pair** was a real bug and is fixed. `RVExePubs.HC` plants `AsmStep` and `Dr` by
@@ -254,16 +254,24 @@ not, so they ran unconditionally right after `ForSrcSoft` had been skipped for e
 missing file. The inter-function CALL IC logic they exist to test therefore NEVER EXECUTED — the
 smoke reported a compiler failure it had not performed. Both are guarded now.
 
-With the guard it clears the whole probe chain and **hangs** after `GuestCmpSoft skip` — no
-trap, no halt, output simply stops. Localised to the next statement,
-`KernelFileFind("A:/Compiler/SoftLocal.HC")`, which is the same call that returned normally one
-line earlier for the sibling path `A:/Compiler/SoftGlbl.HC`. Confirmed a hang and not a timeout:
-`PHASE3_TIMEOUT=420` and `=1500` stop at the IDENTICAL point.
+With the guard it clears the whole probe chain and runs on for **367 guest lines**, failing at
+the very end of the P6 bisect:
 
-Cause and effect are worth stating: before the guard the sequence returned -85 at `CallIcSoft`
-and never executed any of this, so the hang lives in code that was unreachable — the guard
-uncovered it rather than causing it. The open question is why `FileFind` loops on one missing
-path and returns on another, both under `A:/Compiler/` on a disk that carries that directory.
+```
+RVPhase3: P6 bisect — Guest_Lex index hand Lex Cmp...
+    ERROR: Missing expression
+```
+
+Every earlier stage passes — class member StrCpy, tiny Guest Cmp, flat Menu_RV_Guest, Lex stub.
+So what is left is the GUEST COMPILER failing to compile `Menu_RV_Guest_Lex`, not anything to do
+with the filesystem or the probe chain.
+
+**Read `/tmp/phase3_uart_final.txt`, not the make output.** The smoke writes the complete guest
+capture there (`PHASE3_UART_OUT`), while `make` shows only the lines the smoke chose to print. I
+spent a cycle concluding this "hangs in `KernelFileFind` on `A:/Compiler/SoftLocal.HC`" purely
+because the make output stopped there — markers placed either side of that call both appear in
+the full capture, at lines 90 and 91. That is the SAME mistake as the kernel-span misdiagnosis
+at the top of this file, made again at the other end of the same session.
 
 Two more things this leaves open:
 
