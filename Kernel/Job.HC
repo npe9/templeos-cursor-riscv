@@ -419,14 +419,17 @@ I64 PopUp(U8 *buf,CTask *parent=NULL,CTask **_pu_task=NULL)
     // Soft-reap like RVWinTaskSoftKill: drop locks, unlink, invalidate.
     // Orphaned Drv/BlkDev locks → FilesFind DrvLock Yield forever.
     if (task) {
-      for (i=0;i<DRVS_NUM;i++) {
+      // See docs/NEXT_STEPS.md 3.1c: blkdev.drvs is a POINTER allocated by a mount/boot
+      // path, so an image that mounts nothing leaves it NULL and this loop loads
+      // offsetof(CDrv,owning_task)==0x60 off NULL.
+      for (i=0;blkdev.drvs&&i<DRVS_NUM;i++) {
 	dv=&blkdev.drvs[i];
 	if (dv->owning_task==task) {
 	  dv->owning_task=NULL;
 	  LBtr(&dv->locked_flags,DVlf_LOCKED);
 	}
       }
-      for (i=0;i<BLKDEVS_NUM;i++) {
+      for (i=0;blkdev.blkdevs&&i<BLKDEVS_NUM;i++) {
 	bd=&blkdev.blkdevs[i];
 	if (bd->owning_task==task) {
 	  bd->owning_task=NULL;

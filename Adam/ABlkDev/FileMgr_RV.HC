@@ -354,14 +354,15 @@ U0 FileMgrPopUpSrvKill(CTask *task)
   I64 i;
   if (!TaskValidate(task))
     return;
-  for (i = 0; i < DRVS_NUM; i++) {
+  // Same NULL exposure as PopUp's reap loop (Kernel/Job.HC).
+  for (i = 0; blkdev.drvs && i < DRVS_NUM; i++) {
     dv = &blkdev.drvs[i];
     if (dv->owning_task == task) {
       dv->owning_task = NULL;
       LBtr(&dv->locked_flags, DVlf_LOCKED);
     }
   }
-  for (i = 0; i < BLKDEVS_NUM; i++) {
+  for (i = 0; blkdev.blkdevs && i < BLKDEVS_NUM; i++) {
     bd = &blkdev.blkdevs[i];
     if (bd->owning_task == task) {
       bd->owning_task = NULL;

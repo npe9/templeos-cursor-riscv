@@ -192,7 +192,11 @@ U8 Let2Let(U8 drv_let = 0)
   else if (drv_let == ':')
     drv_let = blkdev.boot_drv_let;
   else if (drv_let == '~')
-    drv_let = *blkdev.home_dir;
+    // RVHomeBringUp (Kernel/KBootRV.HC) early-returns when there is no cur_dv, so an image
+    // that mounts nothing leaves home_dir NULL and this deref takes mcause=5 mtval=0. The
+    // note on RVHomeBringUp records the Cd("~") form of the same crash. No home configured
+    // means fall back to the boot drive, which is what ':' just above already does.
+    drv_let = blkdev.home_dir ? *blkdev.home_dir : blkdev.boot_drv_let;
   return ToUpper(drv_let);
 }
 

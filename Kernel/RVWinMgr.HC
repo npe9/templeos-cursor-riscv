@@ -1064,14 +1064,15 @@ U0 RVWinTaskSoftKill(CTask *t)
   if (!t || t == adam_task || t == Fs || t == sys_winmgr_task)
     return;
   // Drop blk/drv locks owned by the dying task (TaskEnd would DrvsRelease as Fs).
-  for (i = 0; i < DRVS_NUM; i++) {
+  // Same NULL exposure as PopUp's reap loop (Kernel/Job.HC) -- this is the one it mirrors.
+  for (i = 0; blkdev.drvs && i < DRVS_NUM; i++) {
     dv = &blkdev.drvs[i];
     if (dv->owning_task == t) {
       dv->owning_task = NULL;
       LBtr(&dv->locked_flags, DVlf_LOCKED);
     }
   }
-  for (i = 0; i < BLKDEVS_NUM; i++) {
+  for (i = 0; blkdev.blkdevs && i < BLKDEVS_NUM; i++) {
     bd = &blkdev.blkdevs[i];
     if (bd->owning_task == t) {
       bd->owning_task = NULL;
