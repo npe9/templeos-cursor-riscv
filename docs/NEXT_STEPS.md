@@ -455,13 +455,35 @@ Two smaller corrections to the record:
 
 ### Still open, in the order they now matter
 
-**a. The A4 Soft Call hang — the new frontier, at 832 guest lines.** The `DocInitStock` ladder
-gets rungs A1–A4 through Soft Cmp and A1–A3 through Soft Call, then wedges on A4's Soft Call
-(`sizeof member decay`). Identical output at `PHASE3_TIMEOUT=600` and `=1500`, so it is a wedge,
-not a slow compile. It is a LATE wave by design, placed after the StartOS needles precisely so a
-rung hang cannot cost them — so it does not keep the smoke red. The comment in
+**a. The A4 hang — the new frontier, at 832 guest lines.** The `DocInitStock` ladder gets rungs
+A1–A4 through Soft Cmp and A1–A3 through Soft Call, then wedges after printing
+`A4 (sizeof member decay) Soft Cmp OK.` Identical output at `PHASE3_TIMEOUT=600` and `=1500`, so
+it is a wedge, not a slow compile. It is a LATE wave by design, placed after the StartOS needles
+precisely so a rung hang cannot cost them — so it does not keep the smoke red. The comment in
 `Kernel/RVPhase3.HC` that blamed `RVExePubInternDolDocIn` for an A2 failure has been corrected;
 A2 was the stale binary too.
+
+**Do not call this "the A4 Soft Call hang" yet — that is the assumption this file keeps making.**
+`RVPhase3DocInitStockRung` does `Load(bin,...)`, THEN checks the signature, THEN the guarded
+call. The last output is from before all three, so the wedge is in `Load` or in the call, and
+nothing so far distinguishes them. One UART marker between `Load` and `RVPhase3CallExport`
+settles it, and it should be placed before any theory is built on either.
+
+Two suspects, one for each side of that marker:
+
+- **`Load`.** A4 is the FIRST rung whose BIN carries an import (`import U8 *MemSet(...)`); A1–A3
+  have none at all. So A4 is also the first time Load has to resolve an import for a rung. The
+  ladder does `RVCmpExportOne("MemSet", &MemSet)` up front, so the name should be there — but
+  "should be" is what needs checking, and it is a clean A3/A4 difference that has nothing to do
+  with the rung's stated subject.
+- **The call, via array-member decay.** `sizeof(doldoc.dft_de_flags)` is guarded exactly
+  (`!= 8 * DOCT_TYPES_NUM` returns 2), and the plant in `Compiler/RVExePubs.HC` does set both
+  `m->size = 8*43` and `RVExePubMemberDim(m, 43)`, so a wrong `sizeof` would soft-fail with
+  `r=2` rather than hang. That leaves `MemSet(doldoc.dft_de_flags, 0, ...)` — the array member
+  DECAYING to an address as a `CALL_IMPORT` argument. If the guest emits a LOAD of the member
+  instead of its ADDRESS, MemSet gets a stored value as its destination and writes 344 bytes
+  somewhere wild. A3 proves the member's base address is right for a const-index store, so
+  decay-as-argument is the untested part.
 
 **b. The error reporter's hang was never demonstrated against a fresh compiler.** The markers
 placed in `LexExcept`/`LexPutPos` for this session fired ZERO times, because no compile error
