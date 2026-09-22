@@ -278,7 +278,28 @@ Found by testing candidate constructs straight at the REPL prompt, which runs th
 compiler through `ExePutS` — four shapes compiled, the fifth reproduced the exact error. No
 rebuild per candidate.
 
-**What blocks it now is the deliberate frontier probe.** `Kernel/RVPhase3.HC:2040` says
+**`continue` is now IMPLEMENTED in the guest compiler** (`Compiler/PrsStmt.HC`), which was the
+frontier the probe marked. Smaller than it looked: the keyword was already registered
+(`Compiler/AsmInit.HC`, index 48) so the lexer knew it, and only the parser case was missing.
+A global with save/restore around each loop body rather than another `PrsStmt` parameter, and
+the target differs per loop — `while` re-tests the condition, `do` gets a label after the body,
+and `for` must land on the STEP or it hangs instead of miscounting. Verified at the REPL in all
+three forms (each returns 3), and gated on exec-oracle's 88 cases plus both REPL smokes.
+
+**phase3 still stops at the Menu Skip probe, and the remaining difference is WHICH COMPILER.**
+The same `RVMenuSkipCont` source with `continue` compiles clean at the REPL prompt, which runs
+the in-image `Compiler_RV` through `ExePutS`. phase3's `RVPhase3CmpWrite` instead calls through
+`rv_phase3_loaded_cmp` — a `Compiler.BIN` LOADED FROM THE REDSEA DISK at runtime. Both are built
+from the same sources in the same run (the smoke refreshes `build/Compiler.BIN` from
+`Compiler_RV.PRJ` before staging the image), so the next question is why the loaded one behaves
+differently from the in-image one: a stale copy on the image, a relocation issue, or a genuine
+difference in the loaded path.
+
+Note the error text in the capture is TRUNCATED (`Missing expression at ` with no token) because
+the timeout killed QEMU mid-print, so the first move is a longer `PHASE3_TIMEOUT` purely to read
+which token it names.
+
+**The original frontier probe, for the record.** `Kernel/RVPhase3.HC:2040` says
 `// Soft tip: stock Menu Skip shape (U8* while + continue) — needs KW_CONTINUE`, and that stage
 compiles a snippet containing `continue` on purpose, to mark the feature that is not implemented
 yet. So finishing phase3 means IMPLEMENTING `continue` in the guest compiler.
