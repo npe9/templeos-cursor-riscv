@@ -333,6 +333,7 @@ python3 "$ROOT/tools/mk_redsea_seed_img.py" "$REDSEA_IMG" \
   "Compiler/LiteDocInitA2.PRJ=$SEEDS/phase3_LiteDocInitA2.HC" \
   "Compiler/LiteDocInitA3.PRJ=$SEEDS/phase3_LiteDocInitA3.HC" \
   "Compiler/LiteDocInitA4a.PRJ=$SEEDS/phase3_LiteDocInitA4a.HC" \
+  "Compiler/LiteDocInitA4b.PRJ=$SEEDS/phase3_LiteDocInitA4b.HC" \
   "Compiler/LiteDocInitA4.PRJ=$SEEDS/phase3_LiteDocInitA4.HC" \
   "Compiler/LiteDocInitKernPlant.PRJ=$SEEDS/phase3_LiteDocInitKernPlant.HC" \
   "Compiler/LiteDocInitTmph.PRJ=$SEEDS/phase3_LiteDocInitTmph.HC" \

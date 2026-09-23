@@ -2555,6 +2555,10 @@ U0 RVPhase3DocInitStockLadder()
   // rung in the ladder that imports anything.
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA4a.PRJ", NULL, NULL, NULL);
   RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA4a.BIN", "RVDocInitA4aSelfTest", "A4a (sizeof only, no import)");
+  // A4b: the same import CALL with a plain global array, no doldoc at all. Splits "the call
+  // through an import" from "the planted member", and if it fails the repro leaves phase3.
+  prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA4b.PRJ", NULL, NULL, NULL);
+  RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA4b.BIN", "RVDocInitA4bSelfTest", "A4b (import call, plain global array)");
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA4.PRJ", NULL, NULL, NULL);
   RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA4.BIN", "RVDocInitA4SelfTest", "A4 (sizeof member decay)");
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitKernPlant.PRJ", NULL, NULL, NULL);
