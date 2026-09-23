@@ -923,7 +923,8 @@ public I64 KernelTrapProbe()
 // TrapIrq/TrapTimer/TrapDisp live-fire IRQs. Pattern mirrors trap.hc
 // TrapBareMtvec: clear MIE/mie, csrw mtvec, fence.i. SoftCall encodings
 // gas-checked (riscv64-unknown-elf-as).
-U32 kernel_trap_vec[64];
+U32 kernel_trap_vec[96];
+// 0..52 handler, 53..68 the unhandled-exception marker below
 U32 kernel_csr_wstub[8];
 U32 kernel_ecall_stub[6];
 U0 KernelCsrWrite(I64 csr_insn, I64 val)
@@ -1079,8 +1080,45 @@ U0 KernelTrapVecPlant()
   // jalr ra,0(t6)
   kernel_trap_vec[52] = 0xF99FF06F;
   // j restore (−104)
+  // Unhandled SYNCHRONOUS exception lands here: slots 45-52 are the IRQ fast path, so an
+  // illegal instruction / fault / misaligned access just falls through. This used to be a bare
+  // `j hang` and that silence cost a full investigation -- phase3's A4 rung looked like an
+  // infinite loop for a day when it was really mcause=2 at a zeroed address, parked here.
+  // Now it says so. Raw UART stores only: no frame, no calls, nothing that can itself fault.
+  // t0/t1 are already spilled by the prologue above, so clobbering them is safe.
+  // mcause is in mscratch (saved above) -- attach gdb to :1234 and read it, plus mepc/mtval.
+  // lui t0,0x10000   (t0 = UART @ 0x10000000)
+  kernel_trap_vec[53] = 0x100002B7;
+  // addi t1,x0,'\n'
+  kernel_trap_vec[54] = 0x00A00313;
+  // sb t1,0(t0)
+  kernel_trap_vec[55] = 0x00628023;
+  // addi t1,x0,'K'
+  kernel_trap_vec[56] = 0x04B00313;
+  // sb t1,0(t0)
+  kernel_trap_vec[57] = 0x00628023;
+  // addi t1,x0,'T'
+  kernel_trap_vec[58] = 0x05400313;
+  // sb t1,0(t0)
+  kernel_trap_vec[59] = 0x00628023;
+  // addi t1,x0,'R'
+  kernel_trap_vec[60] = 0x05200313;
+  // sb t1,0(t0)
+  kernel_trap_vec[61] = 0x00628023;
+  // addi t1,x0,'A'
+  kernel_trap_vec[62] = 0x04100313;
+  // sb t1,0(t0)
+  kernel_trap_vec[63] = 0x00628023;
+  // addi t1,x0,'P'
+  kernel_trap_vec[64] = 0x05000313;
+  // sb t1,0(t0)
+  kernel_trap_vec[65] = 0x00628023;
+  // addi t1,x0,'\n'
+  kernel_trap_vec[66] = 0x00A00313;
+  // sb t1,0(t0)
+  kernel_trap_vec[67] = 0x00628023;
   // hang: j hang
-  kernel_trap_vec[53] = 0x0000006F;
+  kernel_trap_vec[68] = 0x0000006F;
   KernelFenceI;
 }
 
