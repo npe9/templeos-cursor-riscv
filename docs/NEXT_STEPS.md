@@ -713,6 +713,41 @@ Two smaller corrections to the record:
 
 ### Still open, in the order they now matter
 
+**a-ROOT CAUSE (2026-09-23, final for this session): a PLANTED GLOBAL resolves
+MODULE-RELATIVE in guest-compiled BINs, and A1-A3 were FALSE PASSES.**
+
+Proved read-only by rung A4c, which returns the decayed address and writes nothing:
+
+```
+kernel &doldoc.dft_de_flags = 0x80A708A0
+guest  returned             = 0x832F3018     <- heap/module region
+```
+
+`Compiler/PrsExp.HC` ~910, AOT path, routes a global three ways -- `GVF_IMPORT` ->
+`IC_ADDR_IMPORT`, `GVF_DATA_HEAP` -> `IC_HEAP_GLBL`, else ->
+`ICAdd(cc,IC_ABS_ADDR,tmpg->data_addr_rip,tmpc)`. The plant
+(`Compiler/RVExePubs.HC:449,1171`) sets `tmpg->flags = GVF_ALIAS` and fills `data_addr`
+but never `data_addr_rip`, so it falls to the ABS_ADDR branch, gets patched with
+`module_base` at Load, and points inside the module. A4 then `MemSet`s 344 bytes over its
+own code with that pointer, which is the entire "hang".
+
+**A1-A3 have been passing against the wrong memory.** They only check SELF-CONSISTENCY --
+store then read back, or non-zero -- which a uniformly wrong base satisfies. This is not a
+hypothesis: the experiment below corrected the address and **A1 immediately began failing
+honestly** with `r=2` (`!doldoc.hash`), because the real `doldoc.hash` is 0 there while the
+module bytes it used to read were not. A ladder whose rungs compare a value with itself can
+be green all the way up a wall that is not there.
+
+**ATTEMPTED FIX, REVERTED, and worth repeating properly.** Marking the plant
+`GVF_ALIAS | GVF_IMPORT` at both sites routes it through `IC_ADDR_IMPORT`, which
+`LoadOneImport` already resolves for `HTT_GLBL_VAR` by name to `->data_addr` -- the
+machinery is all there. Result: A1 failed honestly (above), A2 and A3 still passed, and
+**A4a then KTRAPed during Soft Cmp** -- the guest compiler itself faults while compiling
+against an import-flagged planted global. So the direction is right and the emit path is
+not ready for it. Next session: find why `IC_ADDR_IMPORT` on a planted `HTT_GLBL_VAR`
+faults the compiler, fix that, then re-apply the two-site flag change and run the full
+suite, expecting A1 to need a real fix rather than its old false pass.
+
 **a-CORRECTION #2 (2026-09-23, supersedes both notes below): the BIN on DISK is COMPLETE.
 `Load` loses the body. It is not a codegen bug and not a parser bug.**
 
