@@ -2580,6 +2580,11 @@ U0 RVPhase3DocInitStockLadder()
   // through an import" from "the planted member", and if it fails the repro leaves phase3.
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA4b.PRJ", NULL, NULL, NULL);
   RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA4b.BIN", "RVDocInitA4bSelfTest", "A4b (import call, plain global array)");
+  // Ground truth for A4c: what the decayed &doldoc.dft_de_flags MUST be.
+  RVPhase3UartHex64("RVPhase3: kernel &doldoc=0x", &doldoc);
+  RVPhase3UartHex64("RVPhase3: kernel &doldoc.dft_de_flags=0x", &doldoc.dft_de_flags);
+  prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA4c.PRJ", NULL, NULL, NULL);
+  RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA4c.BIN", "RVDocInitA4cSelfTest", "A4c (return decayed member addr)");
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA4.PRJ", NULL, NULL, NULL);
   RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA4.BIN", "RVDocInitA4SelfTest", "A4 (sizeof member decay)");
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitKernPlant.PRJ", NULL, NULL, NULL);
