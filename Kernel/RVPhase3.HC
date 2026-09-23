@@ -45,6 +45,28 @@ U0 RVPhase3Uart(U8 *msg)
     *uart = *msg++;
 }
 
+I64 RVPhase3ExportAddr(U8 *name, I64 *_kind)
+{
+  //Resolve an export to the address RVPhase3CallExport would call, WITHOUT calling it.
+  //*_kind: 1 = HTT_FUN exe_addr, 0 = export val, -1 = not found. Exists so a rung can say
+  //WHAT it is about to jump to -- "Load OK" plus a crash told us nothing about the address.
+  CHashExport *tmpex;
+  *_kind = -1;
+  if (!name)
+    return 0;
+  tmpex = HashFind(name, Fs->hash_table, HTT_EXPORT_SYS_SYM);
+  if (!tmpex)
+    tmpex = HashFind(name, Fs->hash_table, HTT_FUN);
+  if (!tmpex)
+    return 0;
+  if (tmpex->type & HTT_FUN) {
+    *_kind = 1;
+    return tmpex(CHashFun *)->exe_addr;
+  }
+  *_kind = 0;
+  return tmpex->val;
+}
+
 I64 RVPhase3CallExport(U8 *name)
 {
   //Call HTT_EXPORT_SYS_SYM or HTT_FUN by name; -1 if missing.
@@ -2427,7 +2449,7 @@ U0 RVPhase3DocInitStockRung(U8 *prj, U8 *bin, U8 *export, U8 *tag)
   // before Soft Cmp, so a hang leaves the previous rung's OK as the last line
   // and names the culprit without needing a run per rung.
   CBinFile *bfh;
-  I64 r;
+  I64 r, ex_addr, ex_kind;
   RVPhase3Uart("RVPhase3: P6 bisect — DocInitStock ladder ");
   RVPhase3Uart(tag);
   RVPhase3Uart(" Soft Cmp...\n");
@@ -2450,7 +2472,12 @@ U0 RVPhase3DocInitStockRung(U8 *prj, U8 *bin, U8 *export, U8 *tag)
   RVPhase3Uart("RVPhase3: P6 bisect — DocInitStock ladder ");
   RVPhase3Uart(tag);
   RVPhase3Uart(" Load...\n");
-  bfh = Load(bin, LDF_JUST_LOAD | LDF_SILENT);
+  // NOT LDF_SILENT. LoadOneImport (Kernel/KLoad.HC) prints "Unresolved Reference:<name>"
+  // only when that flag is clear, and when an import does not resolve it ALSO skips the patch
+  // and leaves the call site pointing at nothing -- while Load still returns a valid CBinFile.
+  // The A4 rung jumped into one of those and took mcause=2 at a zeroed address. Silencing the
+  // loader inside a BISECT ladder hides the one thing the ladder exists to find.
+  bfh = Load(bin, LDF_JUST_LOAD);
   if (!bfh) {
     // Was a silent `return`: a failed Load looked exactly like a hang from the outside.
     RVPhase3Uart("RVPhase3: P6 bisect — DocInitStock ladder ");
@@ -2467,6 +2494,14 @@ U0 RVPhase3DocInitStockRung(U8 *prj, U8 *bin, U8 *export, U8 *tag)
   RVPhase3Uart("RVPhase3: P6 bisect — DocInitStock ladder ");
   RVPhase3Uart(tag);
   RVPhase3Uart(" Load OK; Call...\n");
+  // What are we about to jump to? A4 reached a zeroed address while Load reported OK,
+  // and nothing in the output said so. Print the resolved target and the image it should
+  // be inside, so an out-of-image or stale address names itself.
+  ex_addr = RVPhase3ExportAddr(export, &ex_kind);
+  RVPhase3UartI64("RVPhase3:   export kind=", ex_kind);
+  RVPhase3UartHex64("RVPhase3:   export addr=0x", ex_addr);
+  RVPhase3UartHex64("RVPhase3:   module_base=0x", bfh(I64));
+  RVPhase3UartI64("RVPhase3:   file_size=", bfh->file_size);
   try {
     r = RVPhase3CallExport(export);
   } catch {
@@ -2515,6 +2550,11 @@ U0 RVPhase3DocInitStockLadder()
   RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA2.BIN", "RVDocInitA2SelfTest", "A2 (doldoc.hash write)");
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA3.PRJ", NULL, NULL, NULL);
   RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA3.BIN", "RVDocInitA3SelfTest", "A3 (dft_de_flags const idx)");
+  // A4a before A4: same sizeof check with no import and no call, so a fault in A4 can be
+  // attributed to the import call rather than to sizeof on the planted member. A4 is the only
+  // rung in the ladder that imports anything.
+  prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA4a.PRJ", NULL, NULL, NULL);
+  RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA4a.BIN", "RVDocInitA4aSelfTest", "A4a (sizeof only, no import)");
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA4.PRJ", NULL, NULL, NULL);
   RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA4.BIN", "RVDocInitA4SelfTest", "A4 (sizeof member decay)");
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitKernPlant.PRJ", NULL, NULL, NULL);
