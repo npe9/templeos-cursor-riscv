@@ -2444,9 +2444,29 @@ U0 RVPhase3DocInitStockRung(U8 *prj, U8 *bin, U8 *export, U8 *tag)
   RVPhase3Uart("RVPhase3: P6 bisect — DocInitStock ladder ");
   RVPhase3Uart(tag);
   RVPhase3Uart(" Soft Cmp OK.\n");
+  // Load and Call are reported separately on purpose. The ladder used to print "Soft Cmp OK"
+  // and then nothing, and that was read as "the Soft CALL hangs" -- but Load, the signature
+  // check and the call all sit behind that one silent gap, so nothing distinguished them.
+  RVPhase3Uart("RVPhase3: P6 bisect — DocInitStock ladder ");
+  RVPhase3Uart(tag);
+  RVPhase3Uart(" Load...\n");
   bfh = Load(bin, LDF_JUST_LOAD | LDF_SILENT);
-  if (!bfh || bfh->bin_signature != BIN_SIGNATURE_VAL)
+  if (!bfh) {
+    // Was a silent `return`: a failed Load looked exactly like a hang from the outside.
+    RVPhase3Uart("RVPhase3: P6 bisect — DocInitStock ladder ");
+    RVPhase3Uart(tag);
+    RVPhase3Uart(" Load FAILED (no CBinFile).\n");
     return;
+  }
+  if (bfh->bin_signature != BIN_SIGNATURE_VAL) {
+    RVPhase3Uart("RVPhase3: P6 bisect — DocInitStock ladder ");
+    RVPhase3Uart(tag);
+    RVPhase3UartHex64(" Load bad signature=0x", bfh->bin_signature);
+    return;
+  }
+  RVPhase3Uart("RVPhase3: P6 bisect — DocInitStock ladder ");
+  RVPhase3Uart(tag);
+  RVPhase3Uart(" Load OK; Call...\n");
   try {
     r = RVPhase3CallExport(export);
   } catch {
