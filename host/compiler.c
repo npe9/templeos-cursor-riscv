@@ -21,10 +21,13 @@
 /* Bytes reserved for __task, the block Fs points at for the life of an image.
  * Must be >= sizeof(CTask) as the KERNEL defines it (Kernel/KernelA.HH), not as the
  * bootstrap stub in this file defines it -- kernel code compiles `Fs->member` against the
- * real layout and will write at those offsets. 8 KiB is a ceiling with headroom; the real
- * class is a little over 1 KiB. This is BSS in every AOT image, so it is cheap.
- * AotCheckTaskBlockReserve() verifies it once the real class has actually been parsed. */
-#define TASK_BLOCK_RESERVE 8192
+ * real layout and will write at those offsets. The real class measures 1192 bytes today, so
+ * this is snug ON PURPOSE: the reservation is emitted as DATA in every blob and an
+ * over-generous one is not free. An 8 KiB first attempt pushed SoftCmpSrc.BIN from 2128 to
+ * 9504 bytes and blew kernel-thin-loader's 4 KiB SoftCall Load cap.
+ * AotCheckTaskBlockReserve() verifies it once the real class has actually been parsed, so
+ * growing CTask past this is a compile error rather than silent corruption. */
+#define TASK_BLOCK_RESERVE 1280
 
 /* Guard the reservation above against the CTask the SOURCES actually define.
  * Called after parsing, when a kernel header may have replaced the bootstrap stub with the
