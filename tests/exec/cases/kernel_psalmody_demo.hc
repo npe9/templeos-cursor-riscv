@@ -402,6 +402,15 @@ I64 main()
   adam->gs = gs;
   Gs = gs;
   RVKernelInit();
+  // Psalmody's own menu reaches PopUpPickDir (tos/Apps/Psalmody/PsalmodyMain.HC:465), which
+  // needs a drive to pick a directory from. Without one Let2Let('~') falls back to
+  // boot_drv_let=0, no letter is in 'A'..'Z', and Let2Drv throws 'Drv' into an unhandled
+  // ebreak. kernel_span_demo mounts the same RAM disk for the same reason.
+  RVMountRAMDisk('A', 4096);
+  // ...and a home, because the picker resolves '~': Let2Let('~') reads *blkdev.home_dir,
+  // which RVHomeBringUp is what sets. Its own note says soft/win images keep leaving it NULL;
+  // without it Let2Let falls back to boot_drv_let=0 and Let2Drv throws 'Drv'.
+  RVHomeBringUp('A');
   if (!RVGrInit(640, 480)) {
     Print("RVPsalmody init FAIL\n");
     return 1;
