@@ -2449,7 +2449,9 @@ U0 RVPhase3DocInitStockRung(U8 *prj, U8 *bin, U8 *export, U8 *tag)
   // before Soft Cmp, so a hang leaves the previous rung's OK as the last line
   // and names the culprit without needing a run per rung.
   CBinFile *bfh;
-  I64 r, ex_addr, ex_kind;
+  I64 r, ex_addr, ex_kind, rd_sz;
+  U8 *rd_buf;
+  U32 *code_w;
   RVPhase3Uart("RVPhase3: P6 bisect — DocInitStock ladder ");
   RVPhase3Uart(tag);
   RVPhase3Uart(" Soft Cmp...\n");
@@ -2472,6 +2474,16 @@ U0 RVPhase3DocInitStockRung(U8 *prj, U8 *bin, U8 *export, U8 *tag)
   RVPhase3Uart("RVPhase3: P6 bisect — DocInitStock ladder ");
   RVPhase3Uart(tag);
   RVPhase3Uart(" Load...\n");
+  // LoadPass does MemCpy(bfh_addr, bfh, size) with size from FileRead -- NOT from the
+  // header. A4 arrives with its header intact and only 8 of 168 code bytes, so read the
+  // file here and say how many bytes the filesystem actually hands back. If this is less
+  // than the header's file_size the bug is FileRead/RedSea, not the loader and not Cmp.
+  rd_buf = FileRead(bin, &rd_sz, NULL);
+  if (rd_buf) {
+    RVPhase3UartI64("RVPhase3:   FileRead bytes=", rd_sz);
+    Free(rd_buf);
+  } else
+    RVPhase3Uart("RVPhase3:   FileRead returned NULL.\n");
   // NOT LDF_SILENT. LoadOneImport (Kernel/KLoad.HC) prints "Unresolved Reference:<name>"
   // only when that flag is clear, and when an import does not resolve it ALSO skips the patch
   // and leaves the call site pointing at nothing -- while Load still returns a valid CBinFile.
@@ -2502,6 +2514,15 @@ U0 RVPhase3DocInitStockRung(U8 *prj, U8 *bin, U8 *export, U8 *tag)
   RVPhase3UartHex64("RVPhase3:   export addr=0x", ex_addr);
   RVPhase3UartHex64("RVPhase3:   module_base=0x", bfh(I64));
   RVPhase3UartI64("RVPhase3:   file_size=", bfh->file_size);
+  // The zeros were sampled AT THE HANG, i.e. after the call. Print the first code words
+  // BEFORE calling: if they are real here and zeros afterwards, the function erased its
+  // own module -- which is what a wrong decayed pointer into MemSet would do.
+  code_w = ex_addr;
+  if (ex_addr) {
+    RVPhase3UartHex64("RVPhase3:   pre-call word0=0x", code_w[0]);
+    RVPhase3UartHex64("RVPhase3:   pre-call word2=0x", code_w[2]);
+    RVPhase3UartHex64("RVPhase3:   pre-call word8=0x", code_w[8]);
+  }
   try {
     r = RVPhase3CallExport(export);
   } catch {
