@@ -721,6 +721,32 @@ precisely so a rung hang cannot cost them — so it does not keep the smoke red.
 `Kernel/RVPhase3.HC` that blamed `RVExePubInternDolDocIn` for an A2 failure has been corrected;
 A2 was the stale binary too.
 
+**ANSWERED (2026-09-23), and it was neither of the two suspects below.** `24f893e` reports
+`Load` and `Call` separately (and removes two silent `return`s where a failed Load looked
+identical to a hang). A4 prints `Load OK; Call...` and then stops, so `Load` and the signature
+are fine. **But it is not a hang at all.** Sampling the spinning guest under gdb -- attach to
+`:1234` mid-run and read `$pc`, three times, all identical -- gives:
+
+```
+=> 0x820cf694:  j 0x820cf694                          <- park loop, jump to self
+   MCAUSE=0x2 (illegal instruction) MEPC=0x832b0008 MTVAL=0x0
+   0x832b0000: unimp unimp unimp unimp                <- zeros, not code
+```
+
+Control reached `0x832b0008`, which holds ZEROS, took an illegal-instruction trap, and the
+handler parked forever. `ra == mepc`, so it is a return or jump into a non-code address: **the
+A4 export is not resolving to loaded code.** Why that address is wrong when `Load` reports OK
+and the signature checks out is the open question, and it is a different question from the one
+this entry started with.
+
+**The park is the real lesson.** It is why this read as a hang through an entire investigation,
+and it is the same shape as everything else in this file: silence that looks like progress.
+**Fix that first** -- phase3's trap path should print `mcause`/`mepc`/`mtval` the way
+`tests/exec/harness/crt0.S` already does instead of spinning in `j .`. Every future phase3
+crash then names itself, and this entry would have been one line instead of a day.
+
+The original caution, which was right to make but resolved the other way:
+
 **Do not call this "the A4 Soft Call hang" yet — that is the assumption this file keeps making.**
 `RVPhase3DocInitStockRung` does `Load(bin,...)`, THEN checks the signature, THEN the guarded
 call. The last output is from before all three, so the wedge is in `Load` or in the call, and
