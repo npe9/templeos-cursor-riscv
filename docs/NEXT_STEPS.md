@@ -1,5 +1,85 @@
 # What is left
 
+## START HERE (handoff, 2026-09-23)
+
+Tiers 0-3 and 3.5 are closed. The suite was **85 pass / 0 fail at `58f088a`**. Everything below
+is the one live thread, in order. Read 3.1b-ter and 3.5(a) for the evidence behind it.
+
+### 0. Re-run the suite first (~2h40m, unattended)
+
+**It has not run since `58f088a` and there are ~15 commits on top**, including a `Kernel.BIN`
+trap-vector change that every kernel image carries and several `RVPhase3.HC` ladder changes.
+`kernel-phase3-smoke` has been run green many times since, but nothing else has.
+
+```sh
+sed -n '/^qemu-integration:/,/^$/p' Makefile | grep -oE '\$\(MAKE\) [a-z0-9-]+' | sed 's/.*) //' > /tmp/t.txt
+while read -r t; do PHASE3_TIMEOUT=900 make "$t" >/tmp/log_$t 2>&1 \
+  && echo "PASS $t" || echo "FAIL $t"; done < /tmp/t.txt
+```
+
+Run targets INDIVIDUALLY like that. `make qemu-integration` stops at the first failure, which is
+how one red hid everything behind it last time. **Do not edit sources while it runs** -- a
+mid-sweep edit invalidated a 77/85 run this session and it had to be thrown away.
+
+### 1. The live bug: `IC_ADDR_IMPORT` on a planted `HTT_GLBL_VAR` faults the guest compiler
+
+A planted global (`doldoc`) resolves MODULE-RELATIVE inside guest-compiled BINs: measured
+`0x832F3018` against a true `0x80A708A0`. Cause is in `Compiler/PrsExp.HC` ~910 (AOT path) --
+the plant sets `GVF_ALIAS` and fills `data_addr` but never `data_addr_rip`, so it falls to
+`ICAdd(cc,IC_ABS_ADDR,tmpg->data_addr_rip,tmpc)` and gets patched with `module_base` at Load.
+
+The one-line fix is known and **already tried and reverted**: set
+`tmpg->flags = GVF_ALIAS | GVF_IMPORT;` at `Compiler/RVExePubs.HC:449` and `:1171`.
+`LoadOneImport` already resolves `HTT_GLBL_VAR` by name to `->data_addr`, so the machinery
+exists. With it applied:
+
+- the address is corrected, and rung **A1 starts failing honestly** (`r=2`, `!doldoc.hash`) --
+  it had been a FALSE PASS reading module bytes;
+- rung **A4a then KTRAPs during Soft Cmp**. That is the blocker: the guest compiler faults
+  while compiling against an import-flagged planted global.
+
+**So: reproduce that KTRAP, find it, fix it.** `make kernel-phase3-smoke` with the two-site flag
+change is a ~15 minute repro. The compiler is the one running, so the fault is in the guest
+`Compiler_RV` emit path for `IC_ADDR_IMPORT` against a `HTT_GLBL_VAR` that has no module-local
+storage.
+
+### 2. Then, in order
+
+1. Re-apply the two-site flag change.
+2. Fix A1 for real -- it will fail honestly, because `doldoc.hash` is genuinely 0 at that point.
+   That is a plant/init-order question, not a compiler one.
+3. A4 should then pass, and the ladder continues into rungs A, B, C, D and E (E is the
+   unmodified stock `#include`, which is the actual Track B milestone).
+4. Full suite as the gate, with a byte-identical kernel check if the change reaches codegen.
+
+### Tools that work here (all proven this session)
+
+- **gdb on a live guest.** `qemu ... -s`, then `riscv64-elf-gdb -q -batch -x cmds` with
+  `target remote :1234`. The blob has NO ELF symbols, so break on raw addresses and read `$ra`
+  to get a caller. Sampling `$pc` three times identically means a stationary spin.
+- **`HOLYC_MAP=file`** turns a `blob+0x...` offset into a function name -- but **build the map
+  with the smoke's own flags** (`grep -nE "HOLYC_[A-Z0-9_]*=" tests/scripts/<smoke>.sh`), and
+  **disassemble the faulting word to confirm it is a memory access** before trusting the symbol.
+  A map built without `HOLYC_NO_TIER2=1` named a plausible, entirely wrong function.
+- **Keep the disk.** Run phase3 against a copy of `build/exec/phase3_redsea.img` that is not
+  deleted, then read the BIN off it on the host. That is what proved the compiler output was
+  fine when two commits had already blamed it.
+- **Ladder rungs are cheap and decisive.** A4a/A4b/A4c each cost one run and eliminated a whole
+  hypothesis. Prefer adding a rung over reasoning about the parser.
+- The **REPL is not a fast loop for this** -- no planted `doldoc`, and `import` is rejected
+  because `MemSet` is already a real symbol there.
+
+### The failure mode this repo keeps producing
+
+Every red this session was a **failure path that reported success**: a swallowed compiler build,
+`LDF_SILENT` hiding an unresolved reference while skipping the patch, a trap handler parking in
+`j .`, a gate script untracked because `check_*` ignored it, and three ladder rungs that checked
+only self-consistency against a wrong base. When something looks impossible, suspect that a
+success was manufactured, and **inspect the artifact at every stage it passes through before
+blaming the stage that produced it** -- that rule alone would have saved two wrong commits here.
+
+---
+
 Written 2026-09-18, at the end of the session that built the register sidebar, merged the CSR
 decoders, widened the freeze and added the newline rule. Ordered by what is *wrong* first, then
 by what was asked for and is only half done, then by size. Companion to
