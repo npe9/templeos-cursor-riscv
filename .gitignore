@@ -47,6 +47,18 @@ debug_*
 check_*
 analyze_*
 !docs/**
+# ...and tests/scripts/, for the same reason docs/ is exempt. It holds 151 TRACKED gate
+# scripts, not scratch, and `check_*` had silently swallowed two that the Makefile depends on:
+# check_no_debug_probes.sh (Makefile:66) and check_asm_catalog.py (Makefile:724). Both were
+# untracked for who knows how long, so a fresh clone could not run either gate while every
+# local run passed. An ignored file is not untracked: `git add` says nothing and `git status`
+# shows nothing, which is exactly how docs/DEBUG_STATE_SURVEY.md went missing above.
+!tests/scripts/**
+# The two genuine scratch scripts in there, by EXACT PATH. Named individually on purpose: a
+# glob here is what hid the gates above, and an exact path cannot swallow a file nobody has
+# written yet.
+tests/scripts/analyze_source_tree.sh
+tests/scripts/trace_add_call.sh
 
 # Backup / editor junk
 *.bak
