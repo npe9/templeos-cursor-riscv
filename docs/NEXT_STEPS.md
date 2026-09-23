@@ -390,7 +390,7 @@ turned out to be wrong. Each of these was checked rather than assumed.
 | ~~`kernel-win-serial-smoke`~~ | same, same | same |
 | ~~`repl-9p-smoke`~~ | retired image's feature set — PORTED, green | no |
 | ~~`dump-changes-smoke`~~ | same — PORTED, green | no |
-| `kernel-psalmody-smoke` | two NULL `blkdev.*` derefs FIXED in `45d3fe2`; now ends at `throw('Drv')` from `Let2Drv` — the DESIGNED error path, because the image has no drives. A demo/image question, no longer memory safety | no |
+| ~~`kernel-psalmody-smoke`~~ | GREEN (`58f088a`). NULL `blkdev.*` derefs fixed, then the real cause: the image mounted nothing, so the app's `PopUpPickDir` resolved `~` into `throw('Drv')`. Demo now does `RVMountRAMDisk` + `RVHomeBringUp` like its sibling | no |
 | ~~`kernel-phase3-smoke`~~ | a STALE `Compiler.BIN` the smoke swallowed a failed build for — FIXED, see 3.5 | **yes**, from `6471e75` |
 | ~~`kernel-span-smoke`~~ | listed as fixed in 3.1b but RED again — real cause was `__task` reserving 80 bytes for a 1192-byte `CTask`, so `Fs->cur_dir` overwrote `blkdev.blkdevs`. FIXED in the host compiler, see 3.1b-ter | no |
 | ~~`kernel-thin-loader-smoke`~~ | GREEN. The cap decision was already made: `fd2bf56` raised the `SoftCall Load` buffer to 4 KiB on 2026-09-21. This row predates it | no |
@@ -557,7 +557,23 @@ changed since `a15ae20`; it grew past the cap because CODEGEN grew, and the 2 Ki
 limit on what `SoftCall Load` accepts, not a test assertion to bump. Shrink the probe or raise
 the loader's capacity.
 
-### 3.2 ~~No full suite run in a long while~~ — DONE. Latest: **84 pass, 1 fail at `4405a89`**
+### 3.2 ~~No full suite run in a long while~~ — DONE. **85 pass, 0 fail at `58f088a`**
+
+**The whole suite is green.** All 85 `qemu-integration` targets, run individually, at
+`58f088a` with the tree frozen for the entire sweep (HEAD committed 06:53, suite 07:35–09:59,
+working tree clean throughout), so this describes `HEAD` exactly.
+
+Nothing is red. That includes every target this session touched — `kernel-phase3-smoke` (949s),
+`kernel-span-smoke` (302s), `kernel-psalmody-smoke` (122s), `kernel-thin-loader-smoke` (92s),
+the win trio — and the two gates that matter most for the `__task` layout change:
+`exec-oracle`'s 88 execution cases (774s) and `kernel-gr-smoke`'s six pinned render hashes.
+
+Where it started, for scale: this file opened the session describing **seven reds**, with
+`kernel-phase3-smoke` red for eleven days behind a diagnosis that turned out to be built on a
+stale binary. Three of those seven rows were already wrong — two fixed, one newly broken — and
+only running all 85 could tell them apart.
+
+#### The previous run — **84 pass, 1 fail at `4405a89`**
 
 **Re-run clean after the `__task` fix**, with the tree frozen for the whole run (HEAD committed
 20:35, suite 20:36–22:55, working tree clean throughout), so this one describes `HEAD` exactly:
