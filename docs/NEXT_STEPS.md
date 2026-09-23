@@ -713,6 +713,53 @@ Two smaller corrections to the record:
 
 ### Still open, in the order they now matter
 
+**a-CORRECTION (2026-09-23): A4 is a guest CODEGEN bug, and my first parser lead was wrong.**
+The loaded A4 image is an 8-byte prologue followed by zeros, while guest Cmp reports
+`Errs:0 Warns:0 Code:A8` -- it saved `ra`, knew a call was coming, and emitted no body. Read
+out of a live guest under gdb; see `62bbf70`.
+
+Triangulated by two new rungs so the trigger is pinned, not described:
+
+| rung | shape | result |
+|---|---|---|
+| A4a | `sizeof` on the planted member, no call | OK |
+| A4b | import call, plain global array argument | OK |
+| A4  | import call, PLANTED MEMBER array as argument | empty body |
+
+A3 (indexed store into the same member) also passes, so the plant's size/dims/stride are fine.
+What A4 uniquely needs is the member's ADDRESS -- array decay -- as a call argument.
+
+**`875367a` named `PrsExp.HC` ~805/~828 and its hardcoded `StrCmp(tmpm->str,"argv")`
+exception as the candidate. That is the WRONG SITE.** Those lines are the `IC_RBP`
+local-variable member path; `doldoc` is a global, so `doldoc.dft_de_flags` goes through the
+`um_join` / `.` case at ~1027 instead, which behaves the opposite way -- it KEEPS `CCF_ARRAY`
+and materialises the address:
+
+```
+tmpc1 = tmpm->member_class+1;
+ICAdd(cc,IC_IMM_I64,tmpm->offset,tmpc1);
+cc->flags &= ~(CCF_RAX|CCF_ARRAY|CCF_FUN_EXP);
+if (tmpm->dim.next) { *_tmpad=tmpm->dim.next; cc->flags|=CCF_ARRAY; }   // stays SET
+ICAdd(cc,IC_ADD,0,tmpc1);
+```
+
+So the `argv` exception is not on this path at all. Correcting it here rather than leaving it
+because a plausible-but-wrong lead is exactly what this file keeps paying for -- the same
+mistake as the `FilesFindMatch` symbol and the `RVExePubInternDolDocIn` note.
+
+**The next step needs INSTRUMENTATION, not more reading.** Three plausible sites have now been
+read and two eliminated by argument alone, which is how the last three wrong diagnoses in this
+file were produced. `Kernel/RVPhase3.HC` already carries machinery for exactly this
+(`RVPhase3DumpOpt6IdentFus`, the `PrsIdent DEREF.cls_raw` / `AsgIdent pt` / `Opt6Fus` dumps):
+add one that dumps the IC stream for the A4 argument expression, and let the compiler say what
+it emitted instead of inferring it from source.
+
+**Fast-loop warning.** The REPL does NOT work for this, though the `continue` frontier was
+cracked that way. `build/repl-holyc.elf` has no planted `doldoc` (member reads echo and never
+evaluate) and rejects the `import` with "import not needed", because `MemSet` is already a
+real symbol there. That precedent was plain language constructs; this needs a planted global
+AND an import, and only phase3 has both.
+
 **a. The A4 hang — the new frontier, at 832 guest lines.** The `DocInitStock` ladder gets rungs
 A1–A4 through Soft Cmp and A1–A3 through Soft Call, then wedges after printing
 `A4 (sizeof member decay) Soft Cmp OK.` Identical output at `PHASE3_TIMEOUT=600` and `=1500`, so
