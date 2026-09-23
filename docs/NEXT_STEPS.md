@@ -713,6 +713,47 @@ Two smaller corrections to the record:
 
 ### Still open, in the order they now matter
 
+**a-CORRECTION #2 (2026-09-23, supersedes both notes below): the BIN on DISK is COMPLETE.
+`Load` loses the body. It is not a codegen bug and not a parser bug.**
+
+Ran phase3 keeping the disk image, then read the BIN as guest `Cmp` wrote it, before `Load`
+ever touched it. The code at `0x2578a4`, immediately followed by the export name
+`RVDocInitA4SelfTest` so it is unambiguously this BIN, decodes to a whole function:
+
+```
+e7 80 02 00   jalr ra,0(t0)      <- the call
+13 01 84 fd   addi sp,s0,-40
+13 01 81 01   addi sp,sp,24
+13 05 10 00   li   a0,1          <- return 1
+83 30 01 00   ld   ra,0(sp)
+03 34 81 00   ld   s0,8(sp)
+13 01 01 01   addi sp,sp,16
+67 80 00 00   ret
+```
+
+Corroborating: scanning the whole disk for the `addi sp,sp,-16; sd ra,0(sp)` prologue finds
+**118 occurrences and not one is followed by zeros**. There is no "empty function" anywhere on
+that disk. The zeros exist only in the LOADED image.
+
+So `62bbf70`'s "guest codegen bug -- the BIN's function body is empty" is WRONG, and so is the
+whole parser hunt that followed from it. **Look at `Load` / `LoadOneImport` in
+`Kernel/KLoad.HC`**, and at why A4 specifically loses its body when A4b (also an import call,
+plain global array) does not -- the difference is the relocation/patch entries the two BINs
+carry, which is squarely loader territory.
+
+Cheap next probe, in the same style that produced this: the on-disk BIN and the loaded image
+can both be dumped, so diff them. If the loaded copy is truncated at a fixed offset, the copy
+loop is wrong; if it is patched to zeros, a relocation is writing over code.
+
+**Method note, because this is the third wrong turn in this entry alone.** "The loaded image is
+zeros" was a real measurement, and I generalised it to "the compiler emitted nothing" without
+checking the artifact one step upstream. Reading the BIN off the disk cost ONE run and
+invalidated two commits' worth of reasoning. **When an artifact looks wrong, inspect it at
+every stage it passes through before blaming the stage that produced it.**
+
+The superseded notes follow, kept because the eliminations in them still hold (A4a and A4b are
+good rungs, and the `argv` site really is the wrong site):
+
 **a-CORRECTION (2026-09-23): A4 is a guest CODEGEN bug, and my first parser lead was wrong.**
 The loaded A4 image is an 8-byte prologue followed by zeros, while guest Cmp reports
 `Errs:0 Warns:0 Code:A8` -- it saved `ra`, knew a call was coming, and emitted no body. Read
