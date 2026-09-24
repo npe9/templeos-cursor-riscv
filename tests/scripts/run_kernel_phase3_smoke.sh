@@ -104,6 +104,12 @@ EXPECT_P6_DIR="RVPhase3: P6 bisect — DirMk Cmp OK."
 EXPECT_P6_DIR_CALL="RVPhase3: P6 bisect — DirMk Call OK."
 EXPECT_P6_STR_CALL="RVPhase3: P6 bisect — StrCpy Call OK."
 EXPECT_P6_LITE="RVPhase3: P6 MakeAdam_RV_Lite Load→Call OK (menu_n=8 Lex+Guest, LITE.TXT)."
+# HARD needles for the DocInitStock ladder. These used to be `soft_extra` only -- the smoke
+# reported OK whether the ladder was green, red, or never ran, so neither this smoke nor the
+# 86-target suite could catch a regression in it. Measured: with the IC_ADDR_IMPORT fix
+# reverted, A4c returns a module-relative address and rung E never runs, and the smoke still
+# said OK. Rung E is the unmodified stock #include of Adam/DolDoc/DocInit_RV.HC.
+EXPECT_LADDER_E="RVPhase3: P6 bisect — DocInitStock ladder E (stock #include) Soft Call OK."
 EXPECT_P6_LITE_PLANT="RVPhase3: P6 MakeAdam_RV_Lite Load→Call OK (menu_n=8 Lex+Guest, LITE.TXT plant)."
 EXPECT_P6_LITE_MENUFREE="RVPhase3: P6 MakeAdam_RV_Lite Load→Call OK (menu_n=8 Menu_RV, LITE.TXT)."
 EXPECT_P6_LITE_MENUFREE2="RVPhase3: P6 MakeAdam_RV_Lite Load→Call OK (menu_n=8 Menu_RV, LITE.TXT plant)."
@@ -494,6 +500,21 @@ printf '%s\n' "$out" > "$PHASE3_UART_OUT" || true
 if [ "$PHASE3_UART_OUT" != /tmp/phase3_uart_final.txt ]; then
   printf '%s\n' "$out" > /tmp/phase3_uart_final.txt || true
 fi
+# A4c hands back the DECAYED address of the planted doldoc member; the kernel prints the true
+# &doldoc.dft_de_flags just before it. Comparing them is the only check in this smoke that tests
+# an address against GROUND TRUTH rather than against itself -- rungs A1-A3 were green for
+# months while reading module-relative memory, because they only ever compared a value with
+# itself. LC_ALL=C: the capture is not UTF-8 and awk aborts on it without this.
+ladder_a4c="$(printf '%s\n' "$out" | LC_ALL=C awk '
+  /kernel &doldoc.dft_de_flags=0x/ { s=$0; sub(/.*=0x/,"",s); truth=tolower(s) }
+  /ladder A4c .* Soft Call/        { s=$0; sub(/.*r=/,"",s);  got=sprintf("%x", s+0) }
+  END { if (truth != "" && truth == got) print "MATCH"; else printf "MISMATCH truth=0x%s a4c=0x%s", truth, got }
+')"
+if [ "$ladder_a4c" != MATCH ]; then
+  echo "FAIL kernel-phase3 smoke — planted doldoc address wrong: $ladder_a4c" >&2
+  exit 1
+fi
+
 if printf '%s\n' "$out" | grep -qF "$EXPECT" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_LOAD" && \
    printf '%s\n' "$out" | grep -qF "$EXPECT_HOST" && \
@@ -522,7 +543,8 @@ if printf '%s\n' "$out" | grep -qF "$EXPECT" && \
    (printf '%s\n' "$out" | grep -qF "$EXPECT_P6_LITE" || \
     printf '%s\n' "$out" | grep -qF "$EXPECT_P6_LITE_PLANT" || \
     printf '%s\n' "$out" | grep -qF "$EXPECT_P6_LITE_MENUFREE" || \
-    printf '%s\n' "$out" | grep -qF "$EXPECT_P6_LITE_MENUFREE2"); then
+    printf '%s\n' "$out" | grep -qF "$EXPECT_P6_LITE_MENUFREE2") && \
+   printf '%s\n' "$out" | grep -qF "$EXPECT_LADDER_E"; then
   soft_extra=""
   if printf '%s\n' "$out" | grep -qF "$EXPECT_P6_GUEST_LEX"; then
     soft_extra="${soft_extra}+guestlex"
