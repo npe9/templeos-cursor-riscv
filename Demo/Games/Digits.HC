@@ -77,4 +77,6 @@ dg_done:
   SettingsPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Digits;
+#endif

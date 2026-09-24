@@ -1770,6 +1770,16 @@ static bool ParseUnary(Compiler *cc) {
     return true;
   }
   
+  if (cc->lex.token == '+') {
+    // Unary plus: the value unchanged. C and HolyC both allow it, and stock TempleOS uses it
+    // for column alignment in tables of signed constants — Demo/Games/Maze.HC's
+    // `I64 dir_x[4]={ 0,+1, 0,-1}` failed to compile without this, in the initializer AND in
+    // ordinary expressions (`a=+1`). No IC: `+x` is x.
+    LexNext(cc);
+    if (!ParseUnary(cc)) return false;
+    return true;
+  }
+
   if (cc->lex.token == '!') {
     LexNext(cc);
     if (!ParseUnary(cc)) return false;
@@ -5285,6 +5295,7 @@ static I64 CEPrimary(Compiler *cc, I64 dollar, bool *ok) {
   if (cc->lex.token == TK_DOLLAR) { LexNext(cc); return dollar; }
   if (cc->lex.token == '(') { LexNext(cc); I64 v = CEOr(cc, dollar, ok); if (!LexExpect(cc, ')')) *ok = false; return v; }
   if (cc->lex.token == '-') { LexNext(cc); return -CEPrimary(cc, dollar, ok); }
+  if (cc->lex.token == '+') { LexNext(cc); return  CEPrimary(cc, dollar, ok); } // unary plus: identity
   if (cc->lex.token == '~') { LexNext(cc); return ~CEPrimary(cc, dollar, ok); }
   if (cc->lex.token == '!') { LexNext(cc); return !CEPrimary(cc, dollar, ok); }
   if (cc->lex.token == KW_SIZEOF) {

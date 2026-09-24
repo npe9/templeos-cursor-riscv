@@ -2680,6 +2680,16 @@ public Bool DocCursor(Bool show = OFF, CDoc *doc = NULL)
   return !LBEqu(&doc->flags, DOCf_HIDE_CURSOR, !show);
 }
 
+public Bool DocScroll(Bool val = OFF, CDoc *doc = NULL)
+{
+  //TempleOS DocScroll soft — turn scroll bars OFF/ON, same shape as DocCursor above and as
+  //stock Adam/DolDoc/DocRecalcLib.HC:150. Stock games set it up front (Demo/Games/BigGuns.HC
+  //does DocCursor/DocClear/DocScroll in a row); without it that whole file would not compile.
+  if (!doc && !(doc = DocPut))
+    return FALSE;
+  return !LBEqu(&doc->flags, DOCf_NO_SCROLL_BARS, !val);
+}
+
 U0 DocClear(CDoc *doc = NULL, Bool clear_holds = FALSE)
 {
   //TempleOS DocClear — stock inserts $$CL$$ then DocRecalc→DocDelToEntry.

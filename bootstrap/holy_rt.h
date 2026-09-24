@@ -168,6 +168,7 @@ static HRT_I64 HolyMemSet(HRT_U8 *d, HRT_I64 c, HRT_I64 n) { for (HRT_I64 i = 0;
 static HRT_I64 HolyMemCmp(HRT_U8 *a, HRT_U8 *b, HRT_I64 n) { for (HRT_I64 i = 0; i < n; i++) if (a[i] != b[i]) return (HRT_I64)a[i] - (HRT_I64)b[i]; return 0; }
 static HRT_I64 HolyMemSetI64(HRT_I64 *d, HRT_I64 v, HRT_I64 n) { for (HRT_I64 i = 0; i < n; i++) d[i] = v; return (HRT_I64)d; }
 static HRT_I64 HolyAbsI64(HRT_I64 v) { return v < 0 ? -v : v; }
+static HRT_I64 HolySignI64(HRT_I64 v) { return v > 0 ? 1 : v < 0 ? -1 : 0; }
 static HRT_I64 HolyMaxI64(HRT_I64 a, HRT_I64 b) { return a > b ? a : b; }
 static HRT_I64 HolyMinI64(HRT_I64 a, HRT_I64 b) { return a < b ? a : b; }
 static HRT_I64 HolyToUpper(HRT_I64 c) { return (c >= 'a' && c <= 'z') ? c - 32 : c; }

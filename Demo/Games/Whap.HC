@@ -170,4 +170,6 @@ U0 Whap()
   MenuPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Whap;
+#endif

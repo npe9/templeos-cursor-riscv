@@ -7,7 +7,7 @@
   X(Print, 1) X(PutS, 1) X(PutChars, 1) \
   X(StrLen, 1) X(StrCpy, 2) X(StrCmp, 2) X(StrCat, 2) X(StrNew, 1) \
   X(MemCpy, 3) X(MemSet, 3) X(MemCmp, 3) X(MemSetI64, 3) \
-  X(AbsI64, 1) X(MaxI64, 2) X(MinI64, 2) X(ToUpper, 1) X(ToLower, 1) \
+  X(AbsI64, 1) X(SignI64, 1) X(MaxI64, 2) X(MinI64, 2) X(ToUpper, 1) X(ToLower, 1) \
   X(RandU16, 0) X(RandI64, 0) X(Seed, 1) X(YorN, 0) X(tS, 0) X(D, 2) \
   X(Pow, 2) X(Sqrt, 1) X(Exp, 1) X(Ln, 1) X(Log10, 1) X(Log2, 1) \
   X(Floor, 1) X(Ceil, 1) X(Round, 1) X(Trunc, 1) X(Sin, 1) X(Cos, 1) X(Tan, 1) X(ATan, 1) \

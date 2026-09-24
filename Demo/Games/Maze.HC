@@ -109,4 +109,6 @@ U0 Maze()
   SettingsPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Maze;
+#endif

@@ -122,4 +122,6 @@ U0 TicTacToe()
   DCFill;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 TicTacToe;
+#endif
