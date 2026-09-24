@@ -102,6 +102,38 @@ must own nothing.**
 2. Then DolDoc itself: with stock `DocInit` running in the guest, the next question is what
    `RVDocPrsDollarCmd` does with a real `doldoc.hash`.
 
+### Gates added 2026-09-24, and what they cost
+
+- **The picture is now proved to reach the SCREEN.** Every pixel assertion here used to be
+  `RVFbHash`, an FNV-1a over `rv_fb.pixels` — the guest's own COMPOSE buffer, as its comment
+  admits. `tools/fb_scanout_hash.py` screendumps a live QEMU over QMP and hashes the display
+  surface in the guest's U32 layout (X=0; PPM has no X byte), so the two are comparable.
+  `kernel-fb-smoke` and `kernel-win-smoke` require them equal. Proof it bites: remove
+  `RVFbPresent()` from the fb demo and the compose hash is UNCHANGED at `0x28921CB5` while the
+  scanout reads `0xAB6D151D`. `--png` writes the scanout out — **look at it**; a hash says the
+  picture is stable, never that it is right.
+- **A regression floor over the phase3 smoke's 266 optional needles**
+  (`tests/exec/fixtures/phase3_soft_needles.txt`). They were all `soft_extra`: appended to the
+  OK line, required by nothing. Superset test — new stages are free, a stage that silently
+  stops running fails. Re-record with `PHASE3_RERECORD=1`, and say why in the commit.
+- **Three smokes stopped billing a fixed timeout.** phase3 1825s → 62s, fb 42s → 4s, win
+  42s → 4s, because each now waits for its completion line instead of running `timeout N qemu`
+  to the cap. If you add a smoke, do not let the timeout become the runtime.
+
+Suite: **86 pass / 0 fail at `acbd441`**, clean tree, 2h18m.
+
+### What the scanout PNG shows, and the one thing it revealed
+
+Three windows on the blue field — Adam (red border), DocTerm (green), and HOME.DD rendering a
+live DolDoc with coloured links, an expanded `+] Adam` tree and a collapsed node — plus the
+status and hint bars. It looks like TempleOS.
+
+It also shows **overlapping text runs in the two top windows**, which no hash would ever have
+reported. That is consistent with the known compositor gap: `win_z_buf` is filled
+(`RVWinMgr.HC:3503`, `:3541`) but **read by nothing** — `GrPlot0` (`Kernel/RVGr.HC:672`) clips
+only to `dc->clip_*` — and `RVWinMgrDrawIts` (`:1791`) iterates array index, not z order. Wire
+z into the clip test and iterate in z order; then re-shoot the PNG and compare.
+
 ### Standing rule this session earned again
 
 Every red here was **a failure path that reported success**, or a measurement read one stage
