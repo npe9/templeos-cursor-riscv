@@ -11,7 +11,13 @@ import Bool Bt(U8 *bf, I64 n);
 import Bool Bts(U8 *bf, I64 n);
 import I64 DefineLoad(U8 *dname, U8 *st);
 import I64 DefineLstLoad(U8 *dname, U8 *lst);
-import I64 HashFind(U8 *needle, I64 table, I64 mask);
+// 4 params, not 3: the real HashFind is HashFind(needle,table,mask,instance=1) and it
+// returns NULL outright when instance<=0, so a 3-arg import leaves a3 holding junk and
+// every lookup fails. That is what made this rung return 3 -- stock DocInit's line 68
+// HashFind("ST_DOC_CMDS",...) failed, so HashLstAdd never ran and "TX" was never added.
+// The other eight phase3 seeds still declare the 3-arg form; they are only checked for
+// NEGATIVE results, so it has not shown there. See docs/NEXT_STEPS.md.
+import I64 HashFind(U8 *needle, I64 table, I64 mask, I64 instance = 1);
 import I64 HashTableNew(I64 size, I64 mem_task = 0);
 import I64 HashLstAdd(U8 *lst, I64 type, I64 table);
 // Soft tip lite layout: CHash(24)+CHashSrcSym(40)=64 so data matches stock offset.

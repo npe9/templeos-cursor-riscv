@@ -125,13 +125,9 @@ GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
 LD="${RISCV_LD:-riscv64-unknown-elf-ld}"
 QEMU="${QEMU_SYSTEM:-qemu-system-riscv64}"
-TIMEOUT="timeout"
-if command -v gtimeout >/dev/null 2>&1; then
-  TIMEOUT="gtimeout"
-elif ! command -v timeout >/dev/null 2>&1; then
-  echo "SKIP kernel-phase3 smoke — missing timeout/gtimeout" >&2
-  exit 0
-fi
+# No timeout/gtimeout dependency: the capture below caps the guest with its own wait loop.
+# This used to `exit 0` when neither was installed — a SKIP that reports success while testing
+# nothing, on a box where every other tool was present.
 
 for t in "$GCC" "$OBJCOPY" "$LD" "$QEMU"; do
   command -v "$t" >/dev/null 2>&1 || { echo "SKIP kernel-phase3 smoke — missing $t" >&2; exit 0; }
@@ -166,7 +162,10 @@ if ! "$ROOT/tools/pack_compiler_bin.sh" \
   echo "FAIL kernel-phase3 smoke — pack_compiler_bin.sh failed" >&2
   exit 1
 fi
-python3 "$ROOT/tools/gen_cmp_imports.py" >/dev/null || true
+# Must not be `|| true`: a swallowed failure here leaves Kernel/RVCmpRtPatch.HH STALE, and
+# the kernel then patches the loaded Compiler module at the wrong offsets.
+python3 "$ROOT/tools/gen_cmp_imports.py" >/dev/null \
+  || { echo "FAIL kernel-phase3 smoke — gen_cmp_imports" >&2; exit 1; }
 if [ ! -f "$ROOT/build/Compiler.BIN" ]; then
   echo "FAIL kernel-phase3 smoke — missing build/Compiler.BIN" >&2
   exit 1
@@ -417,7 +416,14 @@ if [ "${PHASE3_LINK_COMPILER_BIN:-0}" = "1" ]; then
 fi
 
 T="$(mktemp -d)"
-trap 'rm -rf "$T"' EXIT
+# PHASE3_KEEP=1 keeps the work dir, and with it the RedSea image the GUEST wrote its BINs
+# to. Reading a BIN off that disk is the only way to see what Cmp emitted before Load
+# touched it -- it is what proved the "empty function body" was a loader bug, not codegen.
+if [ -n "${PHASE3_KEEP:-}" ]; then
+  echo "phase3: keeping work dir $T"
+else
+  trap 'rm -rf "$T"' EXIT
+fi
 
 if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then
   echo "FAIL kernel-phase3 smoke — compile error" >&2
@@ -453,13 +459,35 @@ fi
 # UART-only CI path (-nographic). Interactive FB: add -device ramfb -display cocoa.
 # Soft P6 bisect can exceed 180s if guest Cmp is slow on class/Menu surfaces.
 # -m 256M: virtio driver RAM @ CONFIG_VIRTIO_DRV_RAM_BASE (0x88000000).
-PHASE3_TIMEOUT="${PHASE3_TIMEOUT:-420}"
+# A CAP, not the cost of a run. The guest never exits on its own, so capturing through
+# `timeout N qemu` made every run take exactly N seconds — which is why the default was kept
+# low enough (420) to cut the late-wave ladder off in silence. Watch for the completion line
+# instead and stop there; a guest that dies early still just falls back to the cap.
+PHASE3_TIMEOUT="${PHASE3_TIMEOUT:-1800}"
+PHASE3_DONE_MARK="RVKMain: phase3 smoke complete"
 # macOS bash 3.2 + set -u: a failed pipeline in $(...) can leave the name
 # unset and then report "out: unbound variable" on this line — pre-init + || true.
 out=""
-out=$(LC_ALL=C $TIMEOUT "$PHASE3_TIMEOUT" "$QEMU" -M virt -m 256M -bios none -kernel "$T/kp.elf" -nographic \
+phase3_raw="$T/uart_raw.txt"
+: > "$phase3_raw"
+LC_ALL=C "$QEMU" -M virt -m 256M -bios none -kernel "$T/kp.elf" -nographic \
   -drive file="$T/phase3_redsea.img",if=none,format=raw,id=hd0 \
-  -device virtio-blk-device,drive=hd0 </dev/null 2>&1 | LC_ALL=C tr -d '\r') || true
+  -device virtio-blk-device,drive=hd0 </dev/null > "$phase3_raw" 2>&1 &
+phase3_qpid=$!
+phase3_waited=0
+while [ "$phase3_waited" -lt "$PHASE3_TIMEOUT" ]; do
+  kill -0 "$phase3_qpid" 2>/dev/null || break
+  if grep -qF "$PHASE3_DONE_MARK" "$phase3_raw" 2>/dev/null; then
+    sleep 3   # let the last lines (ORACLE …) flush before the kill
+    break
+  fi
+  sleep 1
+  phase3_waited=$((phase3_waited + 1))
+done
+kill "$phase3_qpid" 2>/dev/null || true
+wait "$phase3_qpid" 2>/dev/null || true
+echo "phase3: guest ran ${phase3_waited}s (cap ${PHASE3_TIMEOUT}s)" >&2
+out=$(LC_ALL=C tr -d '\r' < "$phase3_raw") || true
 # Optional private UART path (agent races share /tmp/phase3_uart_final.txt).
 PHASE3_UART_OUT="${PHASE3_UART_OUT:-/tmp/phase3_uart_final.txt}"
 printf '%s\n' "$out" > "$PHASE3_UART_OUT" || true

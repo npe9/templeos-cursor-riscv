@@ -1,96 +1,114 @@
 # What is left
 
-## START HERE (handoff, 2026-09-23)
+## START HERE (handoff, 2026-09-24)
 
-Tiers 0-3 and 3.5 are closed. The suite was **85 pass / 0 fail at `58f088a`**. Everything below
-is the one live thread, in order. Read 3.1b-ter and 3.5(a) for the evidence behind it.
+Tiers 0-3 and 3.5 are closed. The suite ran **85 pass / 0 fail at `7312388`** (serial, 2h33m) to
+re-establish the baseline, then **86 pass / 0 fail on the UNCOMMITTED working tree at that same
+`7312388`** (2h31m). Two sweep results, one SHA -- the second one is the nine changed files
+listed below, not the commit. The extra target is `kernel-win-serial-smoke`, which reaches
+`RVExePubs` through `Compiler_RV.PRJ` and so is exposed to these changes without being in
+`qemu-integration`.
 
-### 0. Re-run the suite first (~2h40m, unattended)
+**The live thread from the previous handoff is CLOSED, and the Track B milestone is DONE.** The
+whole DocInitStock ladder is green -- A4c, A1, A2, A3, A4a, A4b, A4, A, B, C, D **and rung E,
+the unmodified stock `#include` of `Adam/DolDoc/DocInit_RV.HC`**, which now both compiles under
+the guest compiler and runs correctly.
 
-**It has not run since `58f088a` and there are ~15 commits on top**, including a `Kernel.BIN`
-trap-vector change that every kernel image carries and several `RVPhase3.HC` ladder changes.
-`kernel-phase3-smoke` has been run green many times since, but nothing else has.
+### What was actually wrong: TWO bugs in series
 
-```sh
-sed -n '/^qemu-integration:/,/^$/p' Makefile | grep -oE '\$\(MAKE\) [a-z0-9-]+' | sed 's/.*) //' > /tmp/t.txt
-while read -r t; do PHASE3_TIMEOUT=900 make "$t" >/tmp/log_$t 2>&1 \
-  && echo "PASS $t" || echo "FAIL $t"; done < /tmp/t.txt
-```
+Neither one alone explains the symptoms, which is why the previous handoff's one-line fix was
+tried and reverted twice.
 
-Run targets INDIVIDUALLY like that. `make qemu-integration` stops at the first failure, which is
-how one red hid everything behind it last time. **Do not edit sources while it runs** -- a
-mid-sweep edit invalidated a 77/85 run this session and it had to be thrown away.
+**1. The guest compiler could not carry a planted global's address at all.**
+`Compiler/OptPass_RV.HC`'s `IC_ADDR_IMPORT` was `RVLi(reg, tmpi->ic_data)` -- and `ic_data` is
+the `CHashGlblVar` ITSELF, with no relocation registered. Emitted code used the address of the
+hash entry as the address of the global, so A2/A3's stores wrote into the compiler's own heap
+and the NEXT compile (A4a) KTRAPed. Compare x86 (`OptPass789A.HC:124`), which emits a
+placeholder and hangs an `IET_IMM_U32` record on `tmpg->ie_lst`.
 
-### 1. The live bug: `IC_ADDR_IMPORT` on a planted `HTT_GLBL_VAR` faults the guest compiler
+Fixed in two places:
 
-A planted global (`doldoc`) resolves MODULE-RELATIVE inside guest-compiled BINs: measured
-`0x832F3018` against a true `0x80A708A0`. Cause is in `Compiler/PrsExp.HC` ~910 (AOT path) --
-the plant sets `GVF_ALIAS` and fills `data_addr` but never `data_addr_rip`, so it falls to
-`ICAdd(cc,IC_ABS_ADDR,tmpg->data_addr_rip,tmpc)` and gets patched with `module_base` at Load.
+- `Compiler/OptPass_RV.HC` -- emit `auipc r,0; ld r,12(r); jal x0,12; .dword 0` plus an
+  `IET_IMM_I64` record at the `.dword`, exactly as `IC_CALL_IMPORT` does for a callee slot.
+  Leave `tmpie->aot` NULL or `CMain.HC`'s imports writer adds `aot->rip2` a second time.
+- `Compiler/PrsLib.HC` + `PrsExp.HC` -- `PrsGlblImportAlias` makes a PER-COMPILE import alias
+  in `cc->htc.glbl_hash_table`. **The record can never hang on the plant itself**:
+  `AsmResolve.HC:134` iterates `glbl_hash_table->body[i]` and never follows `->next`, and the
+  plant lives in `cmp.asm_hash`, which outlives every compile. That is why
+  `tmpg->flags = GVF_ALIAS | GVF_IMPORT` on the plant is structurally dead. Do not try it again.
 
-The one-line fix is known and **already tried and reverted**: set
-`tmpg->flags = GVF_ALIAS | GVF_IMPORT;` at `Compiler/RVExePubs.HC:449` and `:1171`.
-`LoadOneImport` already resolves `HTT_GLBL_VAR` by name to `->data_addr`, so the machinery
-exists. With it applied:
+**2. The address the plant was handing out was a MODULE-LOCAL DUMMY.**
+`Compiler/RVExePubs.HC` had `extern U8 doldoc;` for the standalone build. In
+`Compiler_RV.PRJ`, `OPTf_EXTERNS_TO_IMPORTS` is ON only around the `KernelB/C.HH` includes, so
+that extern did NOT become an import -- it created module-local storage, and `&doldoc` was an
+address inside the loaded Compiler module. Measured `0x823C9B90` against a true `0x80A709C0`.
 
-- the address is corrected, and rung **A1 starts failing honestly** (`r=2`, `!doldoc.hash`) --
-  it had been a FALSE PASS reading module bytes;
-- rung **A4a then KTRAPs during Soft Cmp**. That is the blocker: the guest compiler faults
-  while compiling against an import-flagged planted global.
+Fixed the way `Fs`/`Gs`/`blkdev`/`char_bmp_*` already do it: `rv_cmp_doldoc`, a pointer the
+kernel fills at Load through `RV_CMP_DOLDOC_OFF` (`tools/gen_cmp_imports.py` ->
+`Kernel/RVCmpRtPatch.HH`, written in the wiring block at `Kernel/RVPhase3.HC`). When it is
+unwired, `RVExePubInternDolDocIn` **refuses to plant** instead of planting a wrong address.
 
-**So: reproduce that KTRAP, find it, fix it.** `make kernel-phase3-smoke` with the two-site flag
-change is a ~15 minute repro. The compiler is the one running, so the fault is in the guest
-`Compiler_RV` emit path for `IC_ADDR_IMPORT` against a `HTT_GLBL_VAR` that has no module-local
-storage.
+### The proof, and the tools that produced it
 
-### 2. Then, in order
+- **A4c returns `0x80A709C8`, which is `&doldoc.dft_de_flags` exactly.** A4c was moved ahead of
+  A1 in the ladder and should stay there: it is the only rung that checks against ground truth,
+  and A2/A3 STORE through the address under test, so they must not run first.
+- **`PHASE3_KEEP=1`** keeps the smoke's work dir, and **`tools/read_tosb.py`** dumps a BIN's
+  patch table and code words off the guest's own RedSea image. That is what showed the BIN was
+  already correct (`IMM_I64 doldoc -> rip 36`, pointing at the `.dword`) while the value it
+  received was not -- separating the compiler from the plant in one run.
+- **A control run is worth its wall clock.** Stashing only the three compiler-side files, with
+  the plant wiring still applied, is what proved an A2 wedge was mine and not pre-existing. The
+  claim in the old notes that "A1-A4 Soft Cmp all pass" was not evidence; it predated too much.
+- `grep -a`. The phase3 UART capture is not UTF-8, so plain `grep` silently matches nothing and
+  looks exactly like "the marker is not there".
 
-1. Re-apply the two-site flag change.
-2. Fix A1 for real -- it will fail honestly, because `doldoc.hash` is genuinely 0 at that point.
-   That is a plant/init-order question, not a compiler one.
-3. A4 should then pass, and the ladder continues into rungs A, B, C, D and E (E is the
-   unmodified stock `#include`, which is the actual Track B milestone).
-4. Full suite as the gate, with a byte-identical kernel check if the change reaches codegen.
+### The bug I introduced and fixed, because the shape will recur
 
-### Tools that work here (all proven this session)
+The per-compile alias first cleared `GVF_ALIAS`. `HashDel` (`Kernel/KHashB.HC:77`) frees a
+`HTT_GLBL_VAR`'s `data_addr` **unless `GVF_ALIAS` is set**, and also `LinkedLstDel`s `dim.next`
+and `HashDel`s `fun_ptr`. So every compile's `HashTableDel` called `Free()` on the kernel's
+static `doldoc` and released two pointers it shared with the plant. The wedge then appeared two
+rungs later, at the third compile, with nothing wrong at the site of the bug. **An alias entry
+must own nothing.**
 
-- **gdb on a live guest.** `qemu ... -s`, then `riscv64-elf-gdb -q -batch -x cmds` with
-  `target remote :1234`. The blob has NO ELF symbols, so break on raw addresses and read `$ra`
-  to get a caller. Sampling `$pc` three times identically means a stationary spin.
-- **`HOLYC_MAP=file`** turns a `blob+0x...` offset into a function name -- but **build the map
-  with the smoke's own flags** (`grep -nE "HOLYC_[A-Z0-9_]*=" tests/scripts/<smoke>.sh`), and
-  **disassemble the faulting word to confirm it is a memory access** before trusting the symbol.
-  A map built without `HOLYC_NO_TIER2=1` named a plausible, entirely wrong function.
-- **Keep the disk.** Run phase3 against a copy of `build/exec/phase3_redsea.img` that is not
-  deleted, then read the BIN off it on the host. That is what proved the compiler output was
-  fine when two commits had already blamed it.
-- **Ladder rungs are cheap and decisive.** A4a/A4b/A4c each cost one run and eliminated a whole
-  hypothesis. Prefer adding a rung over reasoning about the parser.
-- The **REPL is not a fast loop for this** -- no planted `doldoc`, and `import` is rejected
-  because `MemSet` is already a real symbol there.
+### What is next, in order
 
-### The failure mode this repo keeps producing
+1. **Do NOT simply "fix" the eight remaining seeds' `HashFind` arity. It was TRIED and
+   REVERTED on 2026-09-24.** They declare `import I64 HashFind(U8 *needle, I64 table, I64 mask)`
+   with three parameters, while the real one is `HashFind(needle, table, mask, instance = 1)`
+   and returns NULL outright when `instance <= 0` -- so a 3-arg import leaves `a3` holding junk
+   and every lookup fails. That really was the whole of rung E's old `r=3`, and adding the
+   fourth parameter to `phase3_LiteDocInitStock.HC` alone took rung E green.
 
-Every red this session was a **failure path that reported success**: a swallowed compiler build,
-`LDF_SILENT` hiding an unresolved reference while skipping the patch, a trap handler parking in
-`j .`, a gate script untracked because `check_*` ignored it, and three ladder rungs that checked
-only self-consistency against a wrong base. When something looks impossible, suspect that a
-success was manufactured, and **inspect the artifact at every stage it passes through before
-blaming the stage that produced it** -- that rule alone would have saved two wrong commits here.
+   Adding it to the other eight turns rungs **A, B and C from OK to `r=3`**, because those
+   rungs were passing *because* the lookup was broken. Each has stock DocInit's idempotent
+   warm path at the top:
 
----
+   ```
+   if (doldoc.hash && HashFind("TX", doldoc.hash, DHT_DOC_CMD)) return;
+   ```
 
-Written 2026-09-18, at the end of the session that built the register sidebar, merged the CSR
-decoders, widened the freeze and added the newline rule. Ordered by what is *wrong* first, then
-by what was asked for and is only half done, then by size. Companion to
-[MACHINE_STATE_SURVEY.md](MACHINE_STATE_SURVEY.md), which is the inventory this draws from.
+   With a working `HashFind` that guard fires and the body correctly does nothing -- but rung
+   **A4 `MemSet`s `doldoc.dft_de_flags` to zero** earlier in the ladder and never restores it,
+   so the warm path returns leaving `dft_de_flags[DOCT_TEXT]` at 0 and each self-test's
+   `!= DOCEF_TAG` check fails. The rungs assert state that the warm path deliberately does not
+   re-establish.
 
----
+   So this is a LADDER-ORDER problem, not an arity problem. Fixing it properly means one of:
+   have A4 restore what it wipes; move the wiping rungs after the A-E rungs; or relax those
+   three self-tests to accept the warm path. Pick one, then fix all nine seeds together.
 
-See also [VERIFICATION_PLAN.md](VERIFICATION_PLAN.md) — property testing, fuzzing and the two
-or three places where a weakest-precondition argument is worth the trouble. Its first two steps
-(fuzz the host compiler; generate instructions from the catalog and check them against GNU `as`)
-are cheap enough to slot in beside any of the tiers below.
+2. Then DolDoc itself: with stock `DocInit` running in the guest, the next question is what
+   `RVDocPrsDollarCmd` does with a real `doldoc.hash`.
+
+### Standing rule this session earned again
+
+Every red here was **a failure path that reported success**, or a measurement read one stage
+downstream of its cause. `gen_cmp_imports.py` ran under `|| true` in the phase3 smoke, which
+would have left `RVCmpRtPatch.HH` stale and patched the module at the wrong offsets without a
+word; that is now a hard failure. **Inspect the artifact at every stage it passes through
+before blaming the stage that produced it** -- `tools/read_tosb.py` exists to make that cheap.
 
 ## Tier 0 — things that are wrong now
 
@@ -792,6 +810,11 @@ Two smaller corrections to the record:
   two paths are not the same, so a clean REPL recovery never proved anything about phase3.
 
 ### Still open, in the order they now matter
+
+**RESOLVED 2026-09-24 — see START HERE.** The diagnosis below is right about the symptom and
+wrong about the cure: it was TWO bugs in series, and the proposed one-line flag change cannot
+work (`AsmResolve` never drains a record hung on an `cmp.asm_hash` entry). A4c now returns
+ground truth and rungs A1-D pass. The entry is kept because the eliminations in it hold.
 
 **a-ROOT CAUSE (2026-09-23, final for this session): a PLANTED GLOBAL resolves
 MODULE-RELATIVE in guest-compiled BINs, and A1-A3 were FALSE PASSES.**
