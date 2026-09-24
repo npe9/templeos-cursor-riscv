@@ -30,6 +30,29 @@ static U8 ParseType(Compiler *cc);
 
 // Walk cls and its base_class chain (TempleOS MemberFind). Needed so
 // `CHashClass *p; p->str` resolves to CHash.str, not silent offset 0.
+/* A member the class does not have used to resolve SILENTLY to offset 0, i.e. the aggregate's
+ * own address used as if it were the field — a wild read with no diagnostic. Demo/Games/Maze.HC
+ * reads `gr.text_base`, and RV's `gr` is a CGrMsGlbls whose only member is fp_draw_ms, so the
+ * game took a load fault with nothing to point at.
+ *
+ * HOLYC_STRICT_MEMBERS=0 downgrades this to a warning, for working through a tree that has
+ * leaned on the old behaviour. Default is a hard error: silence here is how a port hides the
+ * fields it has not implemented yet. */
+static void HostUnknownMember(Compiler *cc, CHashClass *cls, const char *name, char op) {
+  const char *env = getenv("HOLYC_STRICT_MEMBERS");
+  bool strict = !(env && env[0] == '0');
+  const char *cname = (cls && cls->str) ? cls->str : "<anon>";
+  if (strict) {
+    char msg[256];
+    snprintf(msg, sizeof msg, "No member '%s' in class '%s' (%s)", name, cname,
+             op == '.' ? "." : "->");
+    Error(cc, msg);
+  } else {
+    fprintf(stderr, "WARN: no member '%s' in class '%s' (%s)\n", name, cname,
+            op == '.' ? "." : "->");
+  }
+}
+
 static CMemberLst *HostMemberFind(CHashClass *cls, const char *name) {
   for (; cls; cls = cls->base_class) {
     for (CMemberLst *m = cls->member_lst; m; m = m->next)
@@ -2142,6 +2165,8 @@ static bool ParsePostfix(Compiler *cc) {
             member_class = member->member_class;
             bit_width = member->bit_width;
             bit_offset = member->bit_offset;
+          } else {
+            HostUnknownMember(cc, cls, member_name, '.');
           }
         }
       }
@@ -2247,6 +2272,8 @@ static bool ParsePostfix(Compiler *cc) {
           member_offset = member->offset;
           found = member;
           member_class = member->member_class;
+        } else {
+          HostUnknownMember(cc, cc->last_expr_class, member_name, '>');
         }
       }
       

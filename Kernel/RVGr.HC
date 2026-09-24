@@ -136,6 +136,11 @@ U0 RVDrawMsNull(CDC *dc, I64 x, I64 y)
 class CGrMsGlbls
 {
   U0 (*fp_draw_ms)(CDC *dc, I64 x, I64 y);
+  U32 *text_base;
+  //Stock gr.text_base — the TextBase Layer cell grid. RVWinMgr owns the storage and points
+  //this at rv_winmgr.text_base when it comes up (RVGr is included BEFORE RVWinMgr, so it
+  //cannot name it here). Stock code indexes it directly: Demo/Games/Maze.HC does
+  //MemCpy(gr.text_base+TEXT_COLS,…) and Adam/Win.HC XORs a cell to draw the text cursor.
 };
 CGrMsGlbls gr;
 // screen DC storage (aliases rv_fb.pixels compose after RVGrInit)

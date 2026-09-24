@@ -3549,6 +3549,16 @@ public class CSysFixedArea
 #define RWF_SHOW_DOLLAR	4
 #define RWF_SCROLL	8
 
+//TempleOS's TextBase Layer dimensions, for stock code that indexes gr.text_base directly
+//(Demo/Games/Maze.HC, Adam/Win.HC). 8x8 font over the 640x480 default FB. Guarded: 
+//Adam/MakeAdam_RV.PRJ defines TEXT_COLS itself.
+#ifndef TEXT_COLS
+#define TEXT_COLS	80
+#endif
+#ifndef TEXT_ROWS
+#define TEXT_ROWS	60
+#endif
+
 public class CTextGlbls
 {
   I64	raw_col,raw_flags;

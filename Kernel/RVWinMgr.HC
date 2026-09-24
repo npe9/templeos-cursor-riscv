@@ -709,6 +709,7 @@ Bool RVWinMgrLiteInit()
   rv_winmgr.cols = cols;
   rv_winmgr.rows = rows;
   rv_winmgr.text_base = rv_text_base_store;
+  gr.text_base = rv_winmgr.text_base; //stock gr.text_base alias (Maze, Win.HC)
   MemSet(rv_winmgr.text_base, 0, cells *sizeof(U32));
   rv_winmgr.win_z_buf = NULL;
   rv_winmgr.win_z_highest = 0;
@@ -759,6 +760,7 @@ Bool RVWinMgrInit()
     if (!rv_winmgr.text_base)
       return FALSE;
   }
+  gr.text_base = rv_winmgr.text_base; //stock gr.text_base alias (Maze, Adam/Win.HC)
   MemSet(rv_winmgr.text_base, 0, cells *sizeof(U32));
   rv_winmgr.win_z_buf = MAlloc(cells *sizeof(U16));
   if (!rv_winmgr.win_z_buf)
