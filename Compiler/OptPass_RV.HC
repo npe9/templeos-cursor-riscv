@@ -1371,6 +1371,31 @@ U0 ICToRISCV(CCmpCtrl *cc, CIntermediateCode *tmpi, U8 *buf, I64 rip, I64 *_rip2
     }
     break;
     case IC_ADDR_IMPORT :
+    /* The ADDRESS of an imported global. ic_data is the CHashGlblVar, NOT a value —
+     * RVLi here embedded the hash entry's own address as the global's address and
+     * registered no relocation at all, so a store through it wrote into the compiler's
+     * heap. Emit the same PC-relative inline .dword the CALL_IMPORT callee slot uses and
+     * let Load patch it: LoadOneImport resolves HTT_GLBL_VAR by name to ->data_addr.
+     * Leave tmpie->aot NULL — CMain's imports writer adds aot->rip2 again if it is set. */
+    if (tmpi->res.type & MDF_REG)
+      i = tmpi->res.reg;
+    else
+      i = RV_REG_T0;
+    RVAuipc(tmpi, i, 0);
+    RVLd(tmpi, i, i, 12);
+    RVJal(tmpi, RV_REG_ZERO, 12);
+    call_rip = tmpi->ic_cnt; //patch offset of the .dword within this IC
+    ICU64(tmpi, 0);
+    if (buf && cc->flags & CCF_AOT_COMPILE && tmpi->ic_data) {
+      tmpie = CAlloc(sizeof(CAOTImportExport));
+      tmpie->type = IET_IMM_I64;
+      tmpie->rip = rip2 + call_rip;
+      tmpie->next = tmpi->ic_data(CHashGlblVar *)->ie_lst;
+      tmpi->ic_data(CHashGlblVar *)->ie_lst = tmpie;
+    }
+    if (!(tmpi->res.type & MDF_REG))
+      ICMov(tmpi, tmpi->res.type, tmpi->res.reg, tmpi->res.disp, MDF_REG + RT_I64, RV_REG_T0, 0, rip2);
+    break;
     case IC_HEAP_GLBL :
     if (tmpi->res.type & MDF_REG)
       RVLi(tmpi, tmpi->res.reg, tmpi->ic_data);

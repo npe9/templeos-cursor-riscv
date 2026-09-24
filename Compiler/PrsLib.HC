@@ -329,3 +329,42 @@ U8 *COCCompile(CCmpCtrl *cc, I64 *_code_size, CDbgInfo **_dbg, I64 *_type)
   cc->saved_pass_trace = cc->pass_trace;
   return res;
 }
+
+/* A PLANTED global (Compiler/RVExePubs.HC) lives in cmp.asm_hash with a real absolute
+ * data_addr and NO module-relative storage, so the AOT path in PrsExp used to hand it to
+ * IC_ABS_ADDR and Load then added module_base -- the address came out MODULE-relative
+ * (measured 0x832F3018 against a true 0x80A708A0). It has to be an IMPORT instead.
+ *
+ * The record CANNOT hang on the plant itself: AsmResolve's drain walks only
+ * cc->htc.glbl_hash_table->body[i] and never follows ->next, and cmp.asm_hash outlives
+ * every compile, so records hung there would never drain AND would accumulate. Make a
+ * per-compile alias in glbl_hash_table shaped exactly like PrsStmt's `import` global
+ * (type HTF_IMPORT + import_name + GVF_IMPORT); LoadOneImport then resolves it by name
+ * to ->data_addr. */
+CHashGlblVar *PrsGlblImportAlias(CCmpCtrl *cc, CHashGlblVar *tmpg)
+{
+  // HashFind searches glbl_hash_table before the chained cmp.asm_hash, so an alias already
+  // made for this compile wins; anything else it finds is the plant itself.
+  CHashGlblVar *tmpg2 = HashFind(tmpg->str, cc->htc.glbl_hash_table, HTT_GLBL_VAR);
+  if (!tmpg2 || !(tmpg2->type & HTF_IMPORT)) {
+    tmpg2 = CAlloc(sizeof(CHashGlblVar));
+    tmpg2->str = StrNew(tmpg->str);
+    tmpg2->type = HTT_GLBL_VAR | HTF_IMPORT;
+    tmpg2->import_name = StrNew(tmpg->str);
+    /* The alias OWNS NOTHING. HashDel (Kernel/KHashB.HC) frees a HTT_GLBL_VAR's
+     * data_addr unless GVF_ALIAS is set, LinkedLstDels its dim chain and HashDels its
+     * fun_ptr -- so keep GVF_ALIAS, and do NOT copy the plant's dim chain or fun_ptr.
+     * Clearing GVF_ALIAS here made every compile's HashTableDel call Free() on the
+     * KERNEL's static `doldoc`; the third compile after that wedged, two rungs away
+     * from the cause. Nothing downstream needs dims or fun_ptr: the alias is only the
+     * ICAdd operand and the hook AsmResolve drains ie_lst from, and PrsExp keeps using
+     * the ORIGINAL entry for the array/dim/GVF_FUN handling around the call. */
+    tmpg2->flags = tmpg->flags | GVF_IMPORT;
+    tmpg2->var_class = tmpg->var_class;
+    tmpg2->size = tmpg->size;
+    tmpg2->data_addr = tmpg->data_addr;
+    HashAdd(tmpg2, cc->htc.glbl_hash_table);
+  }
+  tmpg2->use_cnt++; // AsmResolve drains ie_lst only when use_cnt is non-zero
+  return tmpg2;
+}

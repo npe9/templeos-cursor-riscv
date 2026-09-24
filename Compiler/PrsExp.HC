@@ -913,6 +913,11 @@ pu_export_sys_sym:
 	    else {
 	      if (tmpg->flags & GVF_IMPORT)
 		ICAdd(cc,IC_ADDR_IMPORT,tmpg,tmpc);
+	      else if (tmpg->flags & GVF_ALIAS && tmpg->data_addr &&
+		    !tmpg->data_addr_rip && !(tmpg->flags & GVF_DATA_HEAP))
+		//A PLANT (RVExePubs): absolute data_addr, no module storage. ABS_ADDR
+		//would get module_base added at Load. See PrsGlblImportAlias.
+		ICAdd(cc,IC_ADDR_IMPORT,PrsGlblImportAlias(cc,tmpg),tmpc);
 	      else {
 		if (tmpg->flags&GVF_DATA_HEAP)
 		  ICAdd(cc,IC_HEAP_GLBL,tmpg->heap_glbl,tmpc);
