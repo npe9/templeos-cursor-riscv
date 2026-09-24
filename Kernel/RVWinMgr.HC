@@ -1793,32 +1793,53 @@ U0 RVWinMgrDrawIts()
   //GrUpdateTaskWin analogue: per-window draw_it with DC clip to client pixels.
   // Prefer stock CTask.draw_it(task,dc) (MassSpring); fall back to CRVWin.draw_it.
   // Paint target: full-screen is_u8 when RVGrU8ComposeActive, else 32-bpp screen DC.
-  I64 i, x1, y1, x2, y2;
+  I64 i, x1, y1, x2, y2, zpass, any = FALSE;
   CRVWin *w;
   CRVDC *dc = RVGrPaintDC;
   CTask *task;
   if (!dc)
     return;
+  // Paint BACK TO FRONT, by z — not in array index order. A window's array index says nothing
+  // about what is on top of it, so index order let a window at a higher index paint straight
+  // over one in front of it, and the per-window rect clip cannot catch that (it only knows
+  // the window's own bounds). tests/exec/cases/kernel_win_zorder.hc is the case that sees it.
   for (i = 0; i < RV_WIN_MAX; i++) {
     w = &rv_winmgr.wins[i];
     if (!w->used || !w->show)
       continue;
     task = w->task;
-    if (!(task && TaskValidate(task) && task->draw_it) && !w->draw_it)
-      continue;
-    x1 = w->left *FONT_WIDTH;
-    y1 = w->top *FONT_HEIGHT;
-    x2 = (w->right + 1) * FONT_WIDTH;
-    y2 = (w->bottom + 1) * FONT_HEIGHT;
-    RVDCClipSet(dc, x1, y1, x2, y2);
-    dc->x0 = x1;
-    dc->y0 = y1;
-    if (task && TaskValidate(task) && task->draw_it)
-      (*task->draw_it)(task, dc(CDC *));
-    else if (w->draw_it)
-      (*w->draw_it)(w, dc);
-    // P3: Bttn/Slider subset (Ctrls_RV; no-op until RVCtrlsDemoInstall).
-    RVCtrlsDrawWin(i, dc);
+    if (task && TaskValidate(task) && task->draw_it || w->draw_it) {
+      any = TRUE;
+      break;
+    }
+  }
+  if (!any)
+    return; //nothing draws: skip the z work entirely (the DocTerm desktop's case)
+  // Keep win_z_buf current: it is otherwise only filled on WinToTop / layout, and z order
+  // below depends on the same assignment pass.
+  WinZBufUpdate();
+  for (zpass = 1; zpass <= rv_winmgr.win_z_highest; zpass++) {
+    for (i = 0; i < RV_WIN_MAX; i++) {
+      w = &rv_winmgr.wins[i];
+      if (!w->used || !w->show || w->z != zpass)
+        continue;
+      task = w->task;
+      if (!(task && TaskValidate(task) && task->draw_it) && !w->draw_it)
+        continue;
+      x1 = w->left *FONT_WIDTH;
+      y1 = w->top *FONT_HEIGHT;
+      x2 = (w->right + 1) * FONT_WIDTH;
+      y2 = (w->bottom + 1) * FONT_HEIGHT;
+      RVDCClipSet(dc, x1, y1, x2, y2);
+      dc->x0 = x1;
+      dc->y0 = y1;
+      if (task && TaskValidate(task) && task->draw_it)
+        (*task->draw_it)(task, dc(CDC *));
+      else if (w->draw_it)
+        (*w->draw_it)(w, dc);
+      // P3: Bttn/Slider subset (Ctrls_RV; no-op until RVCtrlsDemoInstall).
+      RVCtrlsDrawWin(i, dc);
+    }
   }
   RVDCClipRst(dc);
   dc->x0 = 0;

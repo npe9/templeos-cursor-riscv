@@ -134,6 +134,32 @@ reported. That is consistent with the known compositor gap: `win_z_buf` is fille
 only to `dc->clip_*` — and `RVWinMgrDrawIts` (`:1791`) iterates array index, not z order. Wire
 z into the clip test and iterate in z order; then re-shoot the PNG and compare.
 
+### Overlapping windows composite by Z now — and a trap found on the way
+
+`RVWinMgrDrawIts` walked windows in ARRAY INDEX order, so a window at a higher index painted
+straight over one in front of it; the per-window rect clip cannot catch that, since it only
+knows the window's own bounds. Nothing could see it: the DocTerm desktop tiles its windows and
+sets `draw_it = NULL`. `tests/exec/cases/kernel_win_zorder.hc` (`make kernel-win-zorder-smoke`)
+builds the overlap on purpose — front window at the LOWER array index, focused, so it has the
+higher z — and reads the overlap pixel. Before the fix: `got=0x00FF00` (the BACK window's
+colour). After: `0xFF00FF`. DrawIts now paints back-to-front by z.
+
+**The per-cell `win_z_buf` clip in `GrPlot0` is still NOT done, and here is the trap.** It
+needs the DC to carry the z context (`RVGr` is included before `RVWinMgr`, so `GrPlot0` cannot
+see `rv_winmgr`) — i.e. new fields on `CRVDC`. **Growing `CRVDC` by 32 bytes changes what the
+Blot demo renders**, moving 688 of 480 000 pixels and taking `kernel-demo-blot-smoke` from
+`0x43186381` to `0xE1F4B00D`.
+
+That is not a z bug. It was isolated to pure layout: four `I64 probe_pad` fields, no logic
+whatsoever, reproduce `0xE1F4B00D` exactly. **`Demo/Graphics/Blot.HC`'s render depends on heap
+layout — probably uninitialised memory under its flood fill — so its pinned hash is not a
+function of the code alone and will break on any change that shifts an allocation size.** Fix
+that before adding fields to `CRVDC`, or the clip's first symptom will be an unrelated red.
+
+Worth knowing regardless: the before/after PNGs are what settled this in minutes
+(`tools/fb_scanout_hash.py --png`). Both Blot renders are two blue lines on black, which is
+itself suspicious for a demo whose job is a flood-filled blot — that is a separate thread.
+
 ### Standing rule this session earned again
 
 Every red here was **a failure path that reported success**, or a measurement read one stage
