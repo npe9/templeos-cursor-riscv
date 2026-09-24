@@ -26,16 +26,33 @@ extern U0 Mstatus();
 extern U0 Mcause();
 extern U0 Csr(U8 *name);
 extern U0 Uptime();
-// Soft tip Soft #include stock DocInit_RV: Kernel doldoc abs addr (Compiler unit).
+// The address of the Kernel's `doldoc`, for the plant that lets guest BINs compile stock
+// DocInit_RV. RV_DOC_ED_KEY_MAX comes from Kernel/RVDoc.HC, so its absence means this is a
+// standalone Compiler_RV build with no kernel linked in.
 //
-// ONLY when the kernel is absent. Kernel/RVDoc.HC defines the real `doldoc`; declaring it
-// extern on top of that definition turns the global into an unresolved import for the WHOLE
-// unit, so every reference — including DocInit's own, compiled earlier — materializes as
-// address 0 (`addi a0,zero,0; ld a0,0(a0)`) and takes a load fault the first time any document
-// is created. That is what kept DolDoc dead in the REPL image. RV_DOC_ED_KEY_MAX comes from
-// Kernel/RVDoc.HC, so its absence means this is a standalone Compiler_RV build.
-#ifndef RV_DOC_ED_KEY_MAX
-extern U8 doldoc;
+// Do NOT declare `extern U8 doldoc;` for the in-image build: extern on top of RVDoc.HC's
+// definition turns the global into an unresolved import for the WHOLE unit, so every
+// reference — including DocInit's own, compiled earlier — materializes as address 0
+// (`addi a0,zero,0; ld a0,0(a0)`) and faults the first time a document is created. That is
+// what kept DolDoc dead in the REPL image.
+#ifdef RV_DOC_ED_KEY_MAX
+U8 *RVExePubDolDocAddr()
+{//In-image (Compiler_RV_Body linked with the Kernel): the real global.
+  return &doldoc;
+}
+#else
+// Standalone Compiler_RV.PRJ. `extern U8 doldoc;` here does NOT become an import --
+// OPTf_EXTERNS_TO_IMPORTS is on only around the KernelB/C.HH includes -- it makes a
+// MODULE-LOCAL dummy, and the plant below then handed every guest BIN the address of THAT
+// (measured 0x823C9B90 against a true 0x80A70890; map has `0016c640 doldoc`). The kernel
+// writes the real address into this pointer when it loads the module, the same way it
+// points Fs/Gs/blkdev at live objects -- Kernel/RVPhase3.HC, RV_CMP_DOLDOC_OFF from
+// tools/gen_cmp_imports.py.
+U8 *rv_cmp_doldoc;
+U8 *RVExePubDolDocAddr()
+{
+  return rv_cmp_doldoc; //NULL until the kernel wires it
+}
 #endif
 U0 RVExePubMemberLink(CHashFun *tmpf, CMemberLst *tmpm)
 {
@@ -436,8 +453,12 @@ I64 RVExePubInternDolDocIn(CHashTable *table)
 {
   CHashClass *tmpc;
   CHashGlblVar *tmpg;
+  U8 *addr;
   if (!table)
     return 0;
+  addr = RVExePubDolDocAddr();
+  if (!addr)
+    return 0; //UNWIRED: refuse to plant rather than hand out a wrong address
   tmpc = RVExePubCDolDocGlblsLiteIn(table);
   if (!tmpc)
     return 0;
@@ -449,7 +470,7 @@ I64 RVExePubInternDolDocIn(CHashTable *table)
   tmpg->flags = GVF_ALIAS;
   tmpg->var_class = tmpc;
   tmpg->size = tmpc->size;
-  tmpg->data_addr = &doldoc;
+  tmpg->data_addr = addr;
   HashAdd(tmpg, table);
   return 1;
 }

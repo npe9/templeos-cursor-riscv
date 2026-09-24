@@ -731,6 +731,14 @@ Bool RVPhase3LoadFullCompiler()
       (mod + RV_CMP_GS_OFF)(CCPU **) = Gs;
     if (RV_CMP_BLKDEV_OFF)
       MemCpy(mod + RV_CMP_BLKDEV_OFF, &blkdev, sizeof(CBlkDevGlbls));
+    /* The standalone module has no `doldoc` of its own to take the address of, so its
+     * asm_hash plant handed guest BINs a MODULE-LOCAL dummy. Give it the real one.
+     * Unwired, RVExePubInternDolDocIn refuses to plant rather than plant a wrong address. */
+    if (RV_CMP_DOLDOC_OFF) {
+      (mod + RV_CMP_DOLDOC_OFF)(U8 **) = &doldoc;
+      RVPhase3UartHex64("RVPhase3: wired compiler rv_cmp_doldoc = 0x", &doldoc);
+    } else
+      RVPhase3Uart("RVPhase3: RV_CMP_DOLDOC_OFF is 0 — compiler doldoc UNWIRED (no plant).\n");
     RVCmpPatchCharBmps(mod);
   }
   RVPhase3Uart("RVPhase3: calling loaded CInit...\n");
@@ -2565,6 +2573,14 @@ U0 RVPhase3DocInitStockLadder()
   RVCmpExportOne("HashFind", &HashFind);
   RVCmpExportOne("HashTableNew", &HashTableNew);
   RVCmpExportOne("HashLstAdd", &HashLstAdd);
+  // A4c FIRST: it is the only rung that checks the planted address against GROUND TRUTH.
+  // A2/A3 STORE through that address, so if it is wrong they corrupt whatever it points at
+  // and every later reading is suspect. Read before writing.
+  // Ground truth for A4c: what the decayed &doldoc.dft_de_flags MUST be.
+  RVPhase3UartHex64("RVPhase3: kernel &doldoc=0x", &doldoc);
+  RVPhase3UartHex64("RVPhase3: kernel &doldoc.dft_de_flags=0x", &doldoc.dft_de_flags);
+  prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA4c.PRJ", NULL, NULL, NULL);
+  RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA4c.BIN", "RVDocInitA4cSelfTest", "A4c (return decayed member addr)");
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA1.PRJ", NULL, NULL, NULL);
   RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA1.BIN", "RVDocInitA1SelfTest", "A1 (doldoc.hash read)");
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA2.PRJ", NULL, NULL, NULL);
@@ -2580,11 +2596,6 @@ U0 RVPhase3DocInitStockLadder()
   // through an import" from "the planted member", and if it fails the repro leaves phase3.
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA4b.PRJ", NULL, NULL, NULL);
   RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA4b.BIN", "RVDocInitA4bSelfTest", "A4b (import call, plain global array)");
-  // Ground truth for A4c: what the decayed &doldoc.dft_de_flags MUST be.
-  RVPhase3UartHex64("RVPhase3: kernel &doldoc=0x", &doldoc);
-  RVPhase3UartHex64("RVPhase3: kernel &doldoc.dft_de_flags=0x", &doldoc.dft_de_flags);
-  prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA4c.PRJ", NULL, NULL, NULL);
-  RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA4c.BIN", "RVDocInitA4cSelfTest", "A4c (return decayed member addr)");
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitA4.PRJ", NULL, NULL, NULL);
   RVPhase3DocInitStockRung(prj, "A:/Adam/LiteDocInitA4.BIN", "RVDocInitA4SelfTest", "A4 (sizeof member decay)");
   prj = RVPhase3PreferLitePrj("A:/Compiler/LiteDocInitKernPlant.PRJ", NULL, NULL, NULL);

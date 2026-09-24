@@ -106,7 +106,7 @@ lines += [
 ]
 out.write_text("\n".join(lines))
 
-fs_off = adam_off = gs_off = blkdev_off = None
+fs_off = adam_off = gs_off = blkdev_off = doldoc_off = None
 char_bmps = {}
 CHAR_BMP_NAMES = [
     "char_bmp_alpha",
@@ -141,6 +141,10 @@ if map_path.exists():
             gs_off = off
         elif sym == "blkdev":
             blkdev_off = off
+        elif sym == "rv_cmp_doldoc":
+            # Standalone Compiler.BIN has no kernel `doldoc`; the kernel writes its address
+            # into this pointer at Load (Compiler/RVExePubs.HC RVExePubDolDocAddr).
+            doldoc_off = off
         elif sym in CHAR_BMP_NAMES:
             char_bmps[sym] = off
 rt_lines = [
@@ -150,6 +154,7 @@ rt_lines = [
     f"#define RV_CMP_ADAM_TASK_OFF\t0x{(adam_off or 0):x}",
     f"#define RV_CMP_GS_OFF\t\t0x{(gs_off or 0):x}",
     f"#define RV_CMP_BLKDEV_OFF\t0x{(blkdev_off or 0):x}",
+    f"#define RV_CMP_DOLDOC_OFF\t0x{(doldoc_off or 0):x}",
     "",
 ]
 for n in CHAR_BMP_NAMES:
@@ -167,4 +172,4 @@ for n in CHAR_BMP_NAMES:
 rt_lines += ["}", ""]
 rt_out.write_text("\n".join(rt_lines))
 print(f"gen_cmp_imports: {len(names)} → {out} (wrappers={len(INTERN_WRAPPERS)})")
-print(f"gen_cmp_imports: Fs={fs_off} adam_task={adam_off} Gs={gs_off} blkdev={blkdev_off} char_bmps={len(char_bmps)} → {rt_out}")
+print(f"gen_cmp_imports: Fs={fs_off} adam_task={adam_off} Gs={gs_off} blkdev={blkdev_off} char_bmps={len(char_bmps)} rv_cmp_doldoc={doldoc_off} → {rt_out}")
