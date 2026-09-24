@@ -1,0 +1,87 @@
+# Regression FLOOR for the phase3 smoke's `soft_extra` observations.
+#
+# That smoke appends ~266 optional tokens to its OK line and requires NONE of them, so any
+# stage could stop passing and the smoke still printed OK — which is exactly how the
+# DocInitStock ladder stayed unprotected while it was the live thread. Rather than promote
+# each token to a hard needle (many are genuinely mutually exclusive variants, and some are
+# deliberate soft-skips), require that every token listed here still appears. New tokens are
+# always allowed: the check is a SUPERSET test, so adding a stage never fails it, and a stage
+# that silently stops running always does.
+#
+# Recorded from a green run at 9ef2f31. To re-record after an intentional change:
+#   PHASE3_RERECORD=1 make kernel-phase3-smoke
+# and commit the diff, saying in the message WHY a token went away.
+cmenu
+cmenucall
+ctrlssoftskip
+docflag
+docguest
+docinita1call
+docinita2call
+docinita3call
+docinita4call
+docinitinccmp
+docinitladder
+docinitrungacall
+docinitrungbcall
+docinitrungccall
+docinitrungdcall
+docinitrvredsea
+docinitrvstockredsea
+docinitstockcall
+docinitstockskip
+docprint
+docprintstock
+docprintva
+docstock
+docterm
+doctermnew
+doctermstock
+guestlex
+guestlexand
+guestlexcall
+guestlexcont
+guestlexw1
+ident
+latesoftcallskip
+lexelem
+lexfold
+lexplant
+lexplanthoist
+lexplantidx
+litedocinitincredsea
+litelexplantredsea
+litemenufpokredsea
+litemenulexi64softredsea
+litemenunewcmpctrlredsea
+litemenunewcmpredsea
+litemenunewsubcmpredsea
+litepopupsoftwinfpredsea
+locptr
+mem
+menuentry
+menufpok
+menufpokcall
+menuguest
+menuinc
+menulexi64soft
+menulexi64softcall
+menunewcmp
+menunewcmpcall
+menunewcmpctrl
+menunewcmpctrlcall
+menunewsubcmp
+menunewsubcmpcall
+menuskip
+popupcrvskip
+popupguest
+popupsoftwinfp
+scalar
+spandir
+starlit
+startossoftskip
+storefw
+winmgrliteskip
+winmgrspawnskip
+winmgrtaskskip
+winmgrtickskip

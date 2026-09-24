@@ -1273,6 +1273,32 @@ if printf '%s\n' "$out" | grep -qF "$EXPECT" && \
     echo "FAIL kernel-phase3 smoke — fell back to fixed VMA LoadPass @0x81000000" >&2
     exit 1
   fi
+  # Regression FLOOR over the soft tokens. They are all optional individually -- 266 appends,
+  # none required -- so any stage could stop passing while this smoke still said OK. Require
+  # instead that every token from a recorded green run is still present. SUPERSET test: adding
+  # a stage never fails it; a stage that silently stops running always does.
+  soft_floor="$ROOT/tests/exec/fixtures/phase3_soft_needles.txt"
+  if [ -n "${PHASE3_RERECORD:-}" ]; then
+    {
+      LC_ALL=C sed -n '1,/^[^#]/p' "$soft_floor" | LC_ALL=C grep '^#'
+      printf '%s' "$soft_extra" | LC_ALL=C tr '+' '\n' | LC_ALL=C sed '/^$/d' | LC_ALL=C sort -u
+    } > "$soft_floor.new" && mv "$soft_floor.new" "$soft_floor"
+    echo "phase3: re-recorded soft-needle floor ($(LC_ALL=C grep -cv '^#' "$soft_floor") tokens)" >&2
+  elif [ -f "$soft_floor" ]; then
+    soft_missing=""
+    while IFS= read -r tok; do
+      case "$tok" in ''|'#'*) continue ;; esac
+      case "+${soft_extra}+" in
+        *"+$tok+"*) ;;
+        *) soft_missing="$soft_missing $tok" ;;
+      esac
+    done < "$soft_floor"
+    if [ -n "$soft_missing" ]; then
+      echo "FAIL kernel-phase3 smoke — stage(s) that used to pass no longer do:$soft_missing" >&2
+      echo "  (floor: $soft_floor — if this is intentional, PHASE3_RERECORD=1 and say why)" >&2
+      exit 1
+    fi
+  fi
   if printf '%s\n' "$out" | grep -qF "$EXPECT_P6_INCLUDE" || \
      printf '%s\n' "$out" | grep -qF "$EXPECT_P6_INCLUDE_ABS"; then
     printf 'Kernel-phase3 smoke: OK (G9 RedSea Compiler.BIN+Kernel.BIN + AdamLite Call%s)\n' "$soft_extra"
