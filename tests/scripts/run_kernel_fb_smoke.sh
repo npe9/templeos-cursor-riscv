@@ -50,8 +50,33 @@ fi
 cp "$T/fb.elf" "$OUTDIR/fb.elf"
 
 # -m 128M: FB at 0x86100000. ramfb needs fw_cfg DMA (virt provides it).
-out="$($TIMEOUT 40 "$QEMU" -M virt -m 128M -bios none -kernel "$T/fb.elf" \
-  -device ramfb -display none -serial stdio </dev/null 2>&1 | tr -d '\r')"
+# Background QEMU with a QMP socket, so the SCANOUT can be captured while the guest is still
+# up. Everything in this tree until now hashed rv_fb.pixels -- the guest's own COMPOSE buffer
+# -- which proves the guest drew the right picture but not that any of it reached a display
+# surface. See tools/fb_scanout_hash.py.
+ser="$T/ser.txt"
+: > "$ser"
+"$QEMU" -M virt -m 128M -bios none -kernel "$T/fb.elf" \
+  -device ramfb -display none -serial "file:$ser" \
+  -qmp "unix:$T/qmp.sock,server,nowait" </dev/null >"$T/qemu.err" 2>&1 &
+qpid=$!
+waited=0
+while [ "$waited" -lt 40 ]; do
+  kill -0 "$qpid" 2>/dev/null || break
+  grep -qF "$EXPECT_PREFIX" "$ser" 2>/dev/null && break
+  sleep 1
+  waited=$((waited + 1))
+done
+# Capture the scanout BEFORE killing QEMU; a failure here must not fail the smoke on its own
+# (old QEMU may lack screendump over QMP), so it is reported and checked only when present.
+scanout=""
+if kill -0 "$qpid" 2>/dev/null && [ -S "$T/qmp.sock" ]; then
+  scanout="$(python3 "$ROOT/tools/fb_scanout_hash.py" "$T/qmp.sock" "$T/scanout.ppm" 2>"$T/scanout.err" \
+    | sed -n 's/^scanout_hash=//p')"
+fi
+kill "$qpid" 2>/dev/null || true
+wait "$qpid" 2>/dev/null || true
+out="$(tr -d '\r' < "$ser")"
 
 if ! printf '%s\n' "$out" | grep -qF "$EXPECT_PREFIX"; then
   echo "FAIL kernel-fb smoke — no hash line:" >&2
@@ -84,11 +109,27 @@ if [ "$hash" != "$want" ]; then
   exit 1
 fi
 
+# SCANOUT check: the display surface must carry the very bytes the guest hashed. This is the
+# only assertion in the tree that distinguishes "drew the right picture" from "the picture
+# reached the screen"; the compose-buffer hash above cannot tell those apart.
+if [ -n "$scanout" ]; then
+  scanout="$(printf '%s' "$scanout" | tr 'abcdef' 'ABCDEF')"
+  if [ "$scanout" != "$hash" ]; then
+    echo "FAIL kernel-fb smoke — scanout does not match the guest's framebuffer:" >&2
+    echo "  guest compose: $hash" >&2
+    echo "  host scanout:  $scanout   ($T/scanout.ppm)" >&2
+    exit 1
+  fi
+else
+  echo "kernel-fb smoke: scanout capture unavailable, compose hash only" >&2
+  [ -s "$T/scanout.err" ] && sed 's/^/  /' "$T/scanout.err" >&2
+fi
+
 # Prefer present=1 (ramfb configured); still pass on soft-only if hash matches (old QEMU).
 if ! printf '%s\n' "$out" | grep -qF "RVFb simplefb OK"; then
   echo "FAIL kernel-fb smoke — simplefb bind/present missing:" >&2
   printf '%s\n' "$out" | grep -i simplefb | head -5 | sed 's/^/  got: /' >&2
   exit 1
 fi
-echo "Kernel-fb smoke: OK ($line)"
+echo "Kernel-fb smoke: OK ($line; scanout=${scanout:-unavailable})"
 exit 0

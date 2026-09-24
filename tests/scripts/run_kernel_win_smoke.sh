@@ -52,8 +52,30 @@ fi
 
 cp "$T/win.elf" "$OUTDIR/win.elf"
 
-out="$($TIMEOUT 40 "$QEMU" -M virt -m 128M -bios none -kernel "$T/win.elf" \
-  -device ramfb -display none -serial stdio </dev/null 2>&1 | tr -d '\r')"
+# Background QEMU with a QMP socket so the SCANOUT can be captured while the guest is up --
+# the hash below is over the guest's COMPOSE buffer and cannot tell "drew the right desktop"
+# from "the desktop reached a display surface". See tools/fb_scanout_hash.py.
+ser="$T/ser.txt"
+: > "$ser"
+"$QEMU" -M virt -m 128M -bios none -kernel "$T/win.elf" \
+  -device ramfb -display none -serial "file:$ser" \
+  -qmp "unix:$T/qmp.sock,server,nowait" </dev/null >"$T/qemu.err" 2>&1 &
+qpid=$!
+waited=0
+while [ "$waited" -lt 40 ]; do
+  kill -0 "$qpid" 2>/dev/null || break
+  grep -qF "$EXPECT_PREFIX" "$ser" 2>/dev/null && break
+  sleep 1
+  waited=$((waited + 1))
+done
+scanout=""
+if kill -0 "$qpid" 2>/dev/null && [ -S "$T/qmp.sock" ]; then
+  scanout="$(python3 "$ROOT/tools/fb_scanout_hash.py" "$T/qmp.sock" "$T/scanout.ppm" 2>"$T/scanout.err" \
+    | sed -n 's/^scanout_hash=//p')"
+fi
+kill "$qpid" 2>/dev/null || true
+wait "$qpid" 2>/dev/null || true
+out="$(tr -d '\r' < "$ser")"
 
 if ! printf '%s\n' "$out" | grep -qF "$EXPECT_PREFIX"; then
   echo "FAIL kernel-win smoke — no hash line:" >&2
@@ -110,5 +132,19 @@ if [ "$hash" != "$want" ]; then
   exit 1
 fi
 
-echo "Kernel-win smoke: OK ($line)"
+# SCANOUT: the display surface must carry the bytes the guest composed.
+if [ -n "$scanout" ]; then
+  scanout="$(printf '%s' "$scanout" | tr 'abcdef' 'ABCDEF')"
+  if [ "$scanout" != "$hash" ]; then
+    echo "FAIL kernel-win smoke — scanout does not match the composed desktop:" >&2
+    echo "  guest compose: $hash" >&2
+    echo "  host scanout:  $scanout   ($T/scanout.ppm)" >&2
+    exit 1
+  fi
+else
+  echo "kernel-win smoke: scanout capture unavailable, compose hash only" >&2
+  [ -s "$T/scanout.err" ] && sed 's/^/  /' "$T/scanout.err" >&2
+fi
+
+echo "Kernel-win smoke: OK ($line; scanout=${scanout:-unavailable})"
 exit 0
