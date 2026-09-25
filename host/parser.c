@@ -1414,7 +1414,19 @@ static bool ParsePrimary(Compiler *cc) {
           }
           if (cc->lex.token == ',' || cc->lex.token == ')') {
             if (!pre_fn || arg_count >= pre_fn->param_cnt || arg_count >= 16 || !pre_fn->param_has_default[arg_count]) {
-              Error(cc, "Omitted argument has no default value");
+              // Name the callee and say which of the two it is. `DocFind(doc,,needle,n)` on a
+              // function the port does not have read as a plain "Omitted argument has no default
+              // value", which looks like a lost default on a function that exists — nine demos
+              // showed it and the real answer was usually a missing declaration.
+              char umsg[192];
+              if (!pre_fn || !pre_fn->param_typed)
+                snprintf(umsg, sizeof umsg,
+                         "Argument %d omitted, but '%s' has no declaration here to take a default from",
+                         arg_count + 1, name);
+              else
+                snprintf(umsg, sizeof umsg, "Argument %d of '%s' omitted and has no default value",
+                         arg_count + 1, name);
+              Error(cc, umsg);
               free(name);
               return false;
             }

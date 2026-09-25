@@ -43,6 +43,10 @@ c="$SP/$n.hc"; l="$SP/$n.log"; T=$(mktemp -d)
   echo '  RVJiffiesInit(CONFIG_TIMEBASE_FREQ / 1000);'
   echo '  RVKernelInit();'
   echo '  RVGrInit(640, 480);'
+  # The text grid, as KMain.HC:67 sets it. Without it text.font is NULL and a demo that indexes
+  # it stores to 255*8 = 0x7f8 (Demo/ExtChars.HC). Only RVWinMgrInit does this in a real boot.
+  echo '  text.cols = 80; text.rows = 60;'
+  echo '  text.font = sys_font_std; text.aux_font = sys_font_cyrillic;'
   echo '  Fs->win_left = 0; Fs->win_right = 79; Fs->win_top = 0; Fs->win_bottom = 59;'
   echo '  WinDerivedValsUpdate(Fs);'
   echo '}'
