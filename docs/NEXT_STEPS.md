@@ -185,8 +185,33 @@ only the down wedges the game and posting a down/up PAIR works: BattleLines' `'2
 the trooper lands somewhere different with the pointer inside its tap radius than with it far
 away. Two things learned while getting there: the pointer exactly ON a trooper is the one
 degenerate spot (`d==0` fails the `(d && d<R^2)` guard, so nothing happens), and the tap
-intensity is `((R^2-d)^2)^2`, which here throws a trooper to x=566015508. That smells like a
-fixed-point overflow and is NOT pinned by the smoke — only the divergence is.
+intensity is `((R^2-d)^2)^2`, which throws a trooper to x=566015508.
+
+That last one is NOT a bug — checked, don't re-chase it. The arithmetic was run in isolation
+against hand-computed values and is exact: `SqrI64(50)=2500`, `SqrI64(2100)=4410000`,
+`intensity=19448100000000`, `intensity*dx/d=-972405000000`. The tap profile is simply enormous
+near the centre and gentle at the radius edge, so a pointer 20px from a trooper really does
+launch it. The smoke pins divergence, not magnitudes.
+
+### The next ScanChar game crashes: JobsHndlr on a fresh spawned task
+
+`Demo/Graphics/Lines.HC` (`while (!ScanChar) { GrLine…; Sleep(1); }`) is the obvious next game
+— it compiles, and any key stops it. Driven as a spawned task it takes a load fault at
+`JobsHndlr +0x21c`, `mtval=0x18`, WITH NO MESSAGES POSTED AT ALL.
+
+Localised: `JobsHndlr` does `tmpc = task->srv_ctrl.next_waiting` and then `tmpc->job_code`, and
+`offset(CJob.job_code)` is exactly 0x18 — so `next_waiting` is NULL, i.e. that task's job
+control was never QueInit'd. Both TaskInits (`KTask.HC:184` and `KThinTaskStubs.HC`) do call
+`JobCtrlInit(&task->srv_ctrl)`, and neither has an early return that skips it, so the
+contradiction is unresolved. The parent cannot even print the field: the task runs and faults
+during Spawn, before the next statement.
+
+Why BattleLines and MassSpring survive the same treatment: both have long prologues
+(MenuPush/SettingsPush/PopUpOk/Init) before their first ScanChar/GetMsg, so something in there
+warms the queue. Lines' prologue is a single DCAlias. That contrast is the lever — diff what
+PopUpOk touches against a bare spawn.
+
+
 
 `ms.pos` is published now (`RVWinMgrPublishMs`) but is CELL-granular, so it lands on multiples
 of 8. Whether that is enough for BattleLines/Whap is untested.
