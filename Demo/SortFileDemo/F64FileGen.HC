@@ -23,4 +23,6 @@ U0 F64FileGenDAT(U8 *filename,I64 n)
   FileWrite(filename,a,n*sizeof(F64));
   Free(a);
 }
+#ifndef RV_NO_DEMO_AUTORUN
 F64FileGenDAT("~/DemoUnsortedF64.DATA.Z",10);
+#endif

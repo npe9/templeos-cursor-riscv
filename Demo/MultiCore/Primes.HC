@@ -72,4 +72,6 @@ I64 Primes(I64 range,I64 _my_mp_cnt)
 Primes(100,1);
 Primes(100,mp_cnt);
 Primes(1000000,1);
+#ifndef RV_NO_DEMO_AUTORUN
 Primes(1000000,mp_cnt);
+#endif

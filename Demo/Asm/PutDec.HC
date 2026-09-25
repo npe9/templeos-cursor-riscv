@@ -46,4 +46,6 @@ _DO_IT::	//The convention is C-callable routines have underscores.
 	RET
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Call(_DO_IT);
+#endif

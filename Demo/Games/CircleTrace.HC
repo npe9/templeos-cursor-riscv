@@ -125,4 +125,6 @@ U0 CircleTrace()
   RegWrite("TempleOS/CircleTrace","F64 best_score=%5.4f;\n",best_score);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 CircleTrace;  //Execute when #included
+#endif

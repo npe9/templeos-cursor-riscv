@@ -59,4 +59,6 @@ U0 SymmetryDemo()
   SettingsPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 SymmetryDemo;  //Execute when #included
+#endif

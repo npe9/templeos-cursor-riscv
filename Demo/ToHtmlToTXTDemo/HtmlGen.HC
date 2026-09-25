@@ -17,4 +17,6 @@ You can pass html meta data as args to $LK,"ToHtml",A="FF:::/Demo/ToHtmlToTXTDem
 Cd(__DIR__);;
 #include "ToHtml"
 
+#ifndef RV_NO_DEMO_AUTORUN
 ToHtml("DemoInPage.DD.Z","~/DemoOutPage");
+#endif

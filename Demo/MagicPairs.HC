@@ -372,4 +372,6 @@ I64 MagicPairs(I64 N)
   return res;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 MagicPairs(1000000);
+#endif

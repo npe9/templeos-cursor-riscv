@@ -44,4 +44,6 @@ U0 Doodle()
   SettingsPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Doodle;  //Execute when #included
+#endif

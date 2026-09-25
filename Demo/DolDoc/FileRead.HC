@@ -77,4 +77,6 @@ are useful.
 */
 
 DocProfile("::/Doc/Welcome.DD",0);
+#ifndef RV_NO_DEMO_AUTORUN
 DocProfile("::/Doc/Welcome.DD",DOCF_PLAIN_TEXT);
+#endif

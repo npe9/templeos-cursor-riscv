@@ -77,4 +77,6 @@ t2.age=22;
 t2.rank=2;
 t2.serial_num=55555;
 
+#ifndef RV_NO_DEMO_AUTORUN
 DumpStruct(&t2);
+#endif

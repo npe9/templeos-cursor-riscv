@@ -19,4 +19,6 @@ U0 Rev(U8 *in_name,U8 *out_name)
   DocWrite(doc_out);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Rev("DemoPoemBwd.DD.Z","~/DemoPoemFwd.DD.Z");
+#endif

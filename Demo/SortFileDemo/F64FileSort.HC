@@ -69,4 +69,6 @@ U0 F64FileDumpDAT(U8 *in_name)
   Free(a);
 }
 F64FileDumpDAT("~/DemoUnsortedF64.DATA.Z");
+#ifndef RV_NO_DEMO_AUTORUN
 F64FileDumpDAT("~/DemoSortedF64.DATA.Z");
+#endif

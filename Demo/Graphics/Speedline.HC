@@ -47,4 +47,6 @@ public U0 SpeedLineDemo()
   SettingsPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 SpeedLineDemo;	//Execute when #included
+#endif

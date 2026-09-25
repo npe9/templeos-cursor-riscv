@@ -47,4 +47,6 @@ _HELLO_WORLD::
 	RET
 };
 
+#ifndef RV_NO_DEMO_AUTORUN
 Call(_HELLO_WORLD);
+#endif
