@@ -46,4 +46,6 @@ U0 PopUpJiffiesCallBack(I64 i)
 
 PopUpJiffiesCallBack(3);
 PopUpJiffiesCallBack(2);
+#ifndef RV_NO_DEMO_AUTORUN
 PopUpJiffiesCallBack(1);
+#endif
