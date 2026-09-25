@@ -34,84 +34,59 @@ Four tools exist so none of those can happen quietly again, and each one earned 
 | `tools/guard_demo_autoruns.py` | whether any autorun is still unguarded. Reports nothing to do on a clean tree |
 | `tools/check_prj_collisions.py <Adam/X.HC>` | whether adding a file to `Kernel_RV.PRJ` would give one function two bodies. "It compiles clean" does not mean safe |
 
+### Closed this session
+
+1. **A survey harness with a disk** — two lines, not a second harness.
+   `Kernel/KBootRV.HC` already had the runtime half of `BlkDevsInitAll`, so `SurveyBoot` does
+   `RVMountRAMDisk('B',8192); RVHomeBringUp('B');`. No disk image, no `-drive`. `FileRead.HC` and
+   `F64FileGen.HC` went L1-TRAP → L1-OK. Nothing is POPULATED on that disk, so a demo that reads a
+   distribution file still fails, by name; putting the repo's `tos/Doc` tree on it is the next step
+   of the same idea and `make tos` builds exactly that image.
+2. **`JobQue` returned NULL** → `Kernel/RVJob.HC`, a single-hart JobQue that runs the job and hands
+   back a finished `CJob`. `Demo/MultiCore/Lock.HC` L1-HANG → L1-OK — and then printed
+   `Actual Cnt:2` where it should print `2000000`, which was the newline-semicolon rule ending the
+   statement after a bare `lock`: the two AMOs bracketed nothing and `glbl++` moved out of the loop.
+   Fixed in `host/lexer.c`, gated by `tests/exec/cases/e_lock_stmt_newline.hc` (verified it fails
+   without the fix). **Still not parallel** — on one hart both totals are correct by construction,
+   so `Lock.HC` can no longer demonstrate the race it was written for. Seth tasks per hart are the
+   real answer; `Kernel/Drv/RVSmp.HC` has the hart wake.
+3. **`Adam/DolDoc/DocLink.HC`, `DocFind.HC`, `CPURep.HC`, `Gr/GrMath.HC`, `Gr/GrPalette.HC`** into
+   the PRJ. `GrMath` needed `GR_SCALE`, whose value `::/Doc/Transform.DD` states rather than leaving
+   to guesswork, and it carried `DCSymmetrySet` and `Mat4x4*` as well — seven demos on that one file.
+
 ### What is next, in order — measured, not guessed
 
-1. ~~**A survey harness with a disk.**~~ **DONE, and it was two lines, not a second harness.**
-   `Kernel/KBootRV.HC` already has the runtime half of `BlkDevsInitAll`, so `SurveyBoot` now does
-   `RVMountRAMDisk('B',8192); RVHomeBringUp('B');` — no disk image, no `-drive`, no second script.
-   `Demo/DolDoc/FileRead.HC` and `Demo/SortFileDemo/F64FileGen.HC` went L1-TRAP → L1-OK, and
-   `F64FileSort.HC`'s fault stopped being "no drive" and turned out not to be a port bug at all: it
-   reads what its sibling `F64FileGen.HC` writes, `F64FileGenDAT` is that file's LAST statement, so
-   the autorun guard suppresses exactly the call that creates it. Generate the file in the same
-   image and the demo sorts, writes and dumps ten real F64s — `FileRead`, `FileWrite`, `QSortI64`
-   and the `.Z` compression all work. Nothing is POPULATED on the RAM disk, so a demo that reads a
-   distribution file still fails, by name. Putting the repo's `tos/Doc` tree on it is the next step
-   of the same idea, and `make tos` builds exactly that image.
+1. **The struct-member group, and it is a trap.** `Adam/Gr/GrDC.HC` (2 demos),
+   `Adam/Gr/SpriteCode.HC` (1) and `Adam/Win.HC` (1) each need a MEMBER of `CRVDC` or
+   `CGrMsGlbls`, not a symbol — and declaring one would be worse than leaving it out.
+   `Adam/Gr/SpriteCode.HC:578` does `HashFind(cc->cur_str, gr.sprite_hash, SPHT_ELEM_CODE)`, so a
+   field nobody populates makes the unit compile and then look up in NULL. Adding a field also moves
+   `sizeof(CRVDC)`, and `kernel-demo-blot-smoke` pins a framebuffer hash that has needed re-pinning
+   for exactly that. Each is "port the feature".
 
-2. ~~**`JobQue` returns NULL.**~~ **DONE — `Kernel/RVJob.HC`, and it found a compiler bug.**
-   A single-hart JobQue runs the job and hands back a finished `CJob`, so `JobResGet` returns
-   instead of spinning. `Demo/MultiCore/Lock.HC` went L1-HANG → L1-OK and then printed
-   `Actual Cnt:2` where it should print `2000000` — which turned out to be the newline-semicolon
-   rule ending the statement after a bare `lock`, so the two AMOs bracketed nothing and `glbl++`
-   moved out of the loop. Fixed in `host/lexer.c`, gated by
-   `tests/exec/cases/e_lock_stmt_newline.hc` (checked that it fails without the fix), and the demo
-   now prints the right answer twice. **It is still not parallel** — on one hart both totals are
-   correct by construction, so `Lock.HC` can no longer demonstrate the race it was written for.
-   Seth tasks per hart are the real answer; `Kernel/Drv/RVSmp.HC` has the hart wake.
-
-3. **More `Adam/` units into the PRJ.** This is still the largest L0 group. `CPURep`, `DocFind` and
-   `DocLink` went in at `8687a21c`; each remaining candidate needs a symbol the port lacks first:
-
-   | unit | demos | what it needs | kind |
-   |---|---|---|---|
-   | ~~`Adam/Gr/GrMath.HC`~~ | 6 | ~~`GR_SCALE`~~ | **DONE** — and it brought `DCSymmetrySet` too |
-   | ~~`Adam/Gr/GrPalette.HC`~~ | — | — | **DONE** |
-   | `Adam/Gr/GrDC.HC` | 2 | `CRVDC.dc_signature`, `.palette` | a struct MEMBER |
-   | `Adam/Gr/SpriteCode.HC` | 1 | `CGrMsGlbls.sprite_hash` | a struct MEMBER |
-   | `Adam/Win.HC` | 1 | `CGrMsGlbls.fp_draw_grab_ms` | a struct MEMBER |
-   | `Adam/DolDoc/DocEd.HC` | 2 | `DocGetKey` | a function |
-   | `Adam/InFile.HC` | 1 | `View` | a function |
-   | `Adam/Snd/SndMath.HC` | 1 | `CSndWaveCtrl` | a class |
-   | `Adam/Opt/Boot/BootRAM.HC` | 1 | a parse error | compiler |
-
-   **The three struct members are not one-liners, and declaring them would be worse than
-   leaving them out.** `gr.sprite_hash` is a live hash table — `Adam/Gr/SpriteCode.HC:578` does
-   `HashFind(cc->cur_str, gr.sprite_hash, SPHT_ELEM_CODE)` — so a field nobody populates makes the
-   unit compile and then look up in NULL. Adding a field also moves `sizeof(CRVDC)`, and
-   `kernel-demo-blot-smoke` pins a framebuffer hash that has had to be re-pinned for exactly that
-   before. Each of these three is "port the feature", not "declare the field".
+2. **Two missing functions, one class, one parse error** — `DocGetKey` (`Adam/DolDoc/DocEd.HC`,
+   2 demos), `View` (`Adam/InFile.HC`, 1), `CSndWaveCtrl` (`Adam/Snd/SndMath.HC`, 1),
+   `Adam/Opt/Boot/BootRAM.HC` (1, a parse error in the compiler).
 
    `Adam/ARegistry.HC`, `Adam/ASnd.HC`, `Adam/DolDoc/DocRecalcLib.HC` and `DocDblBuf.HC` compile
-   clean and must NOT be added — they each redefine a function this image already has. The PRJ
-   records which, and the checker proves it.
+   clean and must NOT be added — each redefines a function this image already has. The PRJ records
+   which, and `tools/check_prj_collisions.py` proves it.
+
+3. **The compiler-feature blockers**, by number of demos, from the current survey:
+   `Expected constant array size` (6 — mostly `b_head[mp_cnt]`, a global array sized by a RUNTIME
+   global, which TempleOS gets away with because its JIT knows the core count while it compiles),
+   `parse error` (5), `unknown class member` (4), `duplicate global with a different type` (2).
+   `Demo/Games/TreeCheckers.HC` needs `DefinePrint("UNITS_NUM",…)` whose value comes from a pop-up
+   — not AOT-able at all.
 
 4. **`IC_CARRY` has no RISC-V case.** `Demo/Carry.HC` printed 470,109 lines in 40s with `hi` never
    leaving zero. RISC-V has no carry flag, so this means emitting `sltu` after each add in any
-   function that names `Carry` — `Compiler/OptPass_RV.HC` and `host/parser.c` both. One demo, so
-   it is real but small.
+   function that names `Carry` — `Compiler/OptPass_RV.HC` and `host/parser.c` both. One demo.
 
-5. **Unported kernel graphics globals.** `gr_x_offsets` (3 demos), `gr_rainbow_10`,
-   `gr_palette_gray` — the whole blocker for `FlatTops`, `Varoom`, `EdSprite`, `Hanoi`, `PoleZeros`.
-
-6. **The remaining compiler-feature blockers**, by number of demos: `Expected constant array size`
-   (6 — mostly `b_head[mp_cnt]`, a global array sized by a RUNTIME global, which TempleOS gets away
-   with because its JIT knows the core count while it compiles), `parse error` (5), `unknown class
-   member` (4), `duplicate global with a different type` (2). `Demo/Games/TreeCheckers.HC` needs
-   `DefinePrint("UNITS_NUM",…)` whose value comes from a pop-up — not AOT-able at all.
-
-7. **Only four demos are driven with scripted input** and checked for a real response (Halogen,
-   MassSpring, BattleLines, Lines). Everything else in L1-OK is untested above "it runs". Growing
-   that set is worth more than growing L1-OK.
-
-### Gate used for the compiler and layout changes this session
-
-`make kernel-boot-smoke kernel-print-smoke kernel-puts-smoke kernel-demo-blot-smoke
-kernel-gr-smoke kernel-cdc-smoke kernel-fb-smoke kernel-win-smoke` — eight targets, ~12 minutes,
-and `kernel-demo-blot-smoke` is the pinned-framebuffer-hash one that catches a global-layout move.
-Add `kernel-doctext-smoke` for a DolDoc change and `kernel-span-smoke` for anything that touches
-`tos/Apps`. It passed four times: after `Kernel/RVRegistry.HC` added `rv_reg_entries[64]` to every
-image, after `ParseParamDefault` refactored the default-argument path every kernel function goes
-through, after the omitted-argument diagnostic, and after three `Adam/` units joined the PRJ.
+5. **Only four demos are driven with scripted input** and checked for a real response (Halogen,
+   MassSpring, BattleLines, Lines). 158 programs "run"; four are known to WORK. Growing that set is
+   worth more than growing L1-OK, and `Demo/MultiCore/Lock.HC` is the proof: it ran for an hour
+   printing `Actual Cnt:2` before anyone looked at the number.
 
 ### A measured speedup nobody has taken
 
