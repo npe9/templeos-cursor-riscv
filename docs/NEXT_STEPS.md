@@ -1,6 +1,94 @@
 # What is left
 
-## START HERE (handoff, 2026-09-24)
+## START HERE (handoff, 2026-09-25)
+
+Every stock demo is measured, per program, in `docs/DEMO_SURVEY.md`. **Read it before picking
+anything up** — every remaining failure has a file name and most have a function name.
+
+| | at `e8abb73b` | now |
+|---|---|---|
+| **L1-OK** — loads into a real image, boots, runs its own top-level code, reaches the end | 107 | **140** |
+| L0-FAIL — does not compile | 65 | 51 |
+| L1-TRAP — compiles, boots, faults | 32 | 6 |
+| L1-HANG — does not finish in the window | (not split out) | 7 |
+
+Of that gain, **26 was the harness measuring the wrong thing** and 9 was one real compiler fix.
+Each harness bug had been written down as a kernel bug first:
+
+- the survey booted the kernel inside `main()`, but a demo's top-level statements run at LOAD and
+  many print, and `PutS` dereferences `Fs` — 18 of the 32 traps were that;
+- 16 demos still ended in an unguarded autorun (the first pass matched only a bare `Name;` alone
+  on a line, missing `Name;  //comment` and `Name(args);`), so INCLUDING one RAN it;
+- the trap list was once read out of a stale scratch directory, which put a fault in the document
+  that no current build produces.
+
+`tools/traploc.sh` and `tools/guard_demo_autoruns.py` exist so none of those can happen quietly
+again: the first turns the harness's `blob+0x<off>` into a symbol via `HOLYC_MAP`, the second
+reports nothing to do when every autorun is guarded.
+
+### What is next, in order — measured, not guessed
+
+1. **Three traps are the harness having no drive, and one is the harness not booting the window
+   manager.**
+   - `Demo/ExtChars.HC` stores to `text.font[255]` with `text.font` NULL (255*8 IS the 0x7f8 in
+     `mtval`). Only `RVWinMgrInit` sets it (`Kernel/RVWinMgr.HC:734`); `SurveyBoot` calls
+     `RVGrInit` alone. Setting `text.cols/rows/font/aux_font` the way `KMain.HC:67` does is the
+     small fix; calling the real `RVWinMgrInit` is the interesting one, and it is on the
+     windowing path the user asked for.
+   - `Demo/DolDoc/FileRead.HC` and both `SortFileDemo` programs have several top-level file-I/O
+     calls, and the guard only covers the trailing statement. They reach `Let2Drv+0x184`
+     (`throw('Drv')`) and `StrLen+0x4`. The real answer is a survey harness with a disk —
+     `make tos` already boots from a RedSea virtio-blk image.
+
+2. **`JobQue` returns NULL** (`Kernel/KStartRV.HC:113`), so `JobResGet(NULL)` spins forever in
+   `while (tmpc1==tmpc1->next) Yield;`. That is `Demo/MultiCore/Lock.HC`'s hang, and it is why
+   `Demo/MultiCore/Primes.HC` runs while measuring nothing. A single-hart JobQue that runs the job
+   inline and returns a done `CJob` on `Fs->srv_ctrl.next_done` would make the MultiCore demos
+   compute real answers. The obstacle is include order: `KStartRV` is `Kernel_RV.PRJ:26`, before
+   `KUtils`, `KernelB.HH` and `Job`, so the body cannot see `CAlloc`/`QueIns`/`Fs`. Put the
+   implementation in a file included after `Job` and gate the stub.
+
+3. **`Adam/DolDoc/DocLink.HC` is in the repo and not in `Kernel_RV.PRJ`.** It defines `LK_FILE`,
+   `LK_FILE_LINE`, `LK_PLAIN_LINE` — the whole remaining blocker for
+   `Demo/ToHtmlToTXTDemo/ToHtml.HC` and `Demo/AcctExample/TOS/TOSToHtml.HC`.
+
+4. **`IC_CARRY` has no RISC-V case.** `Demo/Carry.HC` printed 470,109 lines in 40s with `hi`
+   never leaving zero. RISC-V has no carry flag, so this means emitting `sltu` after each add in
+   any function that names `Carry` — `Compiler/OptPass_RV.HC` and `host/parser.c` both.
+
+5. **Two silent hangs with no explanation:** `Demo/Games/BlackDiamond.HC` and
+   `Demo/Games/TheDead.HC`. Neither has top-level executable code beyond globals, and
+   BlackDiamond's `RegDft`/`RegExe` run correctly in isolation against this image.
+
+6. **The 51 that do not compile.** After `best_score` (fixed) no symbol accounts for more than
+   six demos, so this is a long tail — `CPURep` (6), then `DocMax`, `TOS_HDS`, `gr_x_offsets` (3
+   each). The remaining compiler-feature blockers, by number of demos:
+   - `Omitted argument has no default value` (9) — each a kernel declaration that lost its
+     `=gr.dc`-style default: `Touch`, `DocFind`, `PopUpRangeI64`, `Sprite2Code`, `InSetMs`,
+     `DCSymmetrySet`, `FifoU8Flush`, `JukeSongsPuppet`.
+   - `Expected constant array size` (6) — mostly `b_head[mp_cnt]`: a global array sized by a
+     RUNTIME global. TempleOS gets away with it because its JIT knows the core count while it
+     compiles. Either the compiler treats `mp_cnt` as `MP_PROCESSORS_NUM` in a constant context
+     (a magic name in the compiler) or these stay unsupported and say so.
+   - `parse error` (5), `unknown class member` (4), `duplicate global with a different type` (2).
+   - `Demo/Games/TreeCheckers.HC` needs `DefinePrint("UNITS_NUM",...)` — the same compile-time
+     metaprogramming family as `RegDft`, but its value comes from a `PopUp`, so it is not
+     AOT-able at all.
+
+7. **Only four demos are driven with scripted input** and checked for a real response (Halogen,
+   MassSpring, BattleLines, Lines). Everything else in L1-OK is untested above "it runs". Growing
+   that set is worth more than growing L1-OK.
+
+### Gate used for the compiler and layout changes this session
+
+`make kernel-boot-smoke kernel-print-smoke kernel-puts-smoke kernel-demo-blot-smoke
+kernel-gr-smoke kernel-cdc-smoke kernel-fb-smoke kernel-win-smoke` — eight targets, ~12 minutes,
+and `kernel-demo-blot-smoke` is the pinned-framebuffer-hash one that catches a global-layout
+move. It passed twice: once after `Kernel/RVRegistry.HC` added `rv_reg_entries[64]` to every
+image, once after `ParseParamDefault` refactored the default-argument path every kernel function
+goes through. The full `make qemu-integration` (2.5h) has NOT run since `7312388`.
+
+## Previous handoff (2026-09-24) — kept, it is where the planted-global work is written down
 
 Tiers 0-3 and 3.5 are closed. The suite ran **85 pass / 0 fail at `7312388`** (serial, 2h33m) to
 re-establish the baseline, then **86 pass / 0 fail on the UNCOMMITTED working tree at that same
