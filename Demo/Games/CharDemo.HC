@@ -188,4 +188,6 @@ sq_done: //Don't goto out of try
   MenuPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 CharDemo;
+#endif

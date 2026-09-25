@@ -65,5 +65,7 @@ U0 MulByHand()
   "0x0123466789ABCDEF*0x1000001=0x%016X%016X\n",p.hi,p.lo;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 MulByHand;
+#endif
 

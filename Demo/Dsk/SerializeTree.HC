@@ -32,4 +32,6 @@ U0 SerializeTree()
   DirTreeDel(tmpde);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 SerializeTree;
+#endif

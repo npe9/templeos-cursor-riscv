@@ -151,4 +151,6 @@ U0 Hanoi()
   SettingsPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Hanoi;
+#endif

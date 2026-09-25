@@ -442,7 +442,9 @@ dg_done:
   RegWrite("TempleOS/DunGen","F64 best_score=%5.4f;\n",best_score);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 DunGen;
+#endif
         £        
       7      
 7   üÿÿÿ7      

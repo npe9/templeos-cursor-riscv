@@ -45,4 +45,6 @@ U0 Main()
     Yield;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Main;
+#endif

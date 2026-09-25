@@ -22,5 +22,7 @@ U0 DbgDemo()
       ".";
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 DbgDemo;
+#endif
 

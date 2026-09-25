@@ -28,7 +28,9 @@ U0 SrcExample()
   "fÿÿ=%d\n",fÿÿ;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 SrcExample;
+#endif
 //See $LK,"::/Demo/ScrnCodes.HC"$, $LK,"::/Demo/Graphics/CharAnimation.HC"$,
 //$LK,"::/Demo/Games/CharDemo.HC"$ and $LK,"::/Demo/Graphics/FontEd.HC"$.
 

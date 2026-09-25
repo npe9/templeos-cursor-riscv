@@ -8,4 +8,6 @@ U0 Mouse()
   DCFill;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Mouse;
+#endif

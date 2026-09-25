@@ -59,4 +59,6 @@ U0 Spy()
   '\n';
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Spy;
+#endif

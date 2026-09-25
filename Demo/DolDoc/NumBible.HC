@@ -26,4 +26,6 @@ U0 NumBible()
   DocDel(doc_in);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 NumBible;
+#endif

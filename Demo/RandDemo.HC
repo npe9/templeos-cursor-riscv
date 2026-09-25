@@ -61,4 +61,6 @@ U0 RandDemo()
   Seed; //Dft should be kept to zero.
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 RandDemo;
+#endif

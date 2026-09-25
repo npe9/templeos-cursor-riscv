@@ -82,4 +82,6 @@ U0 AsmAndC2()
   Snd;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 AsmAndC2;
+#endif

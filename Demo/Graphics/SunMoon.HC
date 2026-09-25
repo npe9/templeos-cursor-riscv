@@ -40,4 +40,6 @@ U0 SunMoon()
   Fs->text_attr=WHITE<<4+BLUE;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 SunMoon;
+#endif

@@ -7,4 +7,6 @@ U0 Main()
   RegWrite("MyCompany/MyApp","F64 best_score=%5.4f;\n",best_score);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Main;
+#endif

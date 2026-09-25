@@ -35,7 +35,9 @@ U0 TimeIns()
 	ToF64(test_time-overhead_time)/SAMPLE_SIZE;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 TimeIns;
+#endif
 
 /*  Program Output$HL,0$$WW+H,1$$FD,1$
 8 Cores 2.660GHz

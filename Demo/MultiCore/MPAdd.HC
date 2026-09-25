@@ -82,4 +82,6 @@ U0 MPAdd()
   DCDel(dc);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 MPAdd;
+#endif

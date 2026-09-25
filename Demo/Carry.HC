@@ -42,4 +42,6 @@ U0 Branch()
   '\n';
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Branch;
+#endif

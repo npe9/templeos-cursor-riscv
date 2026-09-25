@@ -20,4 +20,6 @@ U0 ScrollBars()
   SettingsPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 ScrollBars;
+#endif

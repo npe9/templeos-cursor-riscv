@@ -44,4 +44,6 @@ U0 Bounce()
   DCDel(dc);
 }
  
+#ifndef RV_NO_DEMO_AUTORUN
 Bounce;
+#endif

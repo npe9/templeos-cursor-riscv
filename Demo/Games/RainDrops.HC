@@ -186,4 +186,6 @@ U0 RainDrops()
   DCDel(cur_dc);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 RainDrops;
+#endif

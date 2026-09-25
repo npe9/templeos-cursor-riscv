@@ -38,4 +38,6 @@ U0 Song()
   Snd;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Song;
+#endif

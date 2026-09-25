@@ -24,4 +24,6 @@ U0 ScrnCodes()
   SettingsPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 ScrnCodes;
+#endif

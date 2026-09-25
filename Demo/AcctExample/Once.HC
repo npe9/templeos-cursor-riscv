@@ -36,4 +36,6 @@ U0 Tmp()
   }
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Tmp;
+#endif

@@ -14,7 +14,9 @@ U0 CursorMovementDemo()
   "$$CM+LX,0,+10$$\n";
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 CursorMovementDemo;
+#endif
 
 /*The word-wrap Off and On cmds are
 $$WW,0$$ and $$WW,1$$.

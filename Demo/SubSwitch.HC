@@ -18,4 +18,6 @@ U0 SubSwitch()
   '\n';
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 SubSwitch;
+#endif

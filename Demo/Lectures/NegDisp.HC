@@ -53,4 +53,6 @@ U0 OffsetDemo2()
 }
 
 U(&OffsetDemo2,34);
+#ifndef RV_NO_DEMO_AUTORUN
 PressAKey;
+#endif

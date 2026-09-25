@@ -1230,7 +1230,9 @@ U0 Talons()
   RegWrite("TempleOS/Talons","F64 best_score=%5.4f;\n",best_score);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Talons;
+#endif
                   
    àÿÿÿıÿÿÿ   
 ıÿÿÿ      "   

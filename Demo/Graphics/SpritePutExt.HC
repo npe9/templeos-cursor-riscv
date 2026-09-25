@@ -23,4 +23,6 @@ U0 SpritePutExt()
   }
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 SpritePutExt;
+#endif

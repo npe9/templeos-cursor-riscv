@@ -14,4 +14,6 @@ U0 MPPrintDemo()
   "$$FG$$\n";
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 MPPrintDemo;
+#endif

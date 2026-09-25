@@ -66,4 +66,6 @@ U0 LogScrambleDemo()
     WebLogScramble("*.log*");
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 LogScrambleDemo;
+#endif

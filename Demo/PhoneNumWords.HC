@@ -60,4 +60,6 @@ U0 PNWDemo()
   Free(st);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 PNWDemo;
+#endif

@@ -103,4 +103,6 @@ U0 SndMathDemo()
   DCDel(dc);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 SndMathDemo;
+#endif

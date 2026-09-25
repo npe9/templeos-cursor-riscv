@@ -170,4 +170,6 @@ pz_done:
   DCFill;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 PoleZeros;
+#endif

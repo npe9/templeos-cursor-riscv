@@ -70,4 +70,6 @@ U0 Main()
   ProgressBarsRst;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Main;
+#endif

@@ -29,5 +29,7 @@ U0 StadiumGen()
   DocClear;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 StadiumGen;
+#endif
 

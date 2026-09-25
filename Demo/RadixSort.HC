@@ -59,4 +59,6 @@ U0 RadixSort()
   DumpOut;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 RadixSort;
+#endif

@@ -107,4 +107,6 @@ U0 Main()
   DocBottom;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Main;
+#endif

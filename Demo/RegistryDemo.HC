@@ -24,4 +24,6 @@ U0 Game()
   RegWrite("DemoCompany/Game1/SimpleVal","%d;\n",i);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Game;
+#endif

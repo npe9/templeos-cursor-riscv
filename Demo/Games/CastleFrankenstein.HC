@@ -593,7 +593,9 @@ fs_done:
 	best_score);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 CastleFrankenstein;
+#endif
         &        
              
               

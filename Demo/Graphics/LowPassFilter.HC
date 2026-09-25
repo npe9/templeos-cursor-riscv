@@ -80,4 +80,6 @@ U0 LowPassFilterDemo()
   DCFill;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 LowPassFilterDemo;
+#endif

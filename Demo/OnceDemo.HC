@@ -7,6 +7,8 @@ U0 OnceDemo()
     BootRAM;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 OnceDemo;
+#endif
 
 //There are variants for adam $LK,"AOnce",A="MN:AOnce"$().

@@ -35,4 +35,6 @@ U0 SpriteRawDemo()
   "%h13c",'\n';
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 SpriteRawDemo;
+#endif

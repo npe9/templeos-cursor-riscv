@@ -32,4 +32,6 @@ U0 PanText()
   }
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 PanText;
+#endif

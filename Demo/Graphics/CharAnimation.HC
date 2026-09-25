@@ -27,4 +27,6 @@ U0 AnimateTask(I64)
 }
 
 Spawn(&AnimateTask,NULL,"Animate",,Fs);
+#ifndef RV_NO_DEMO_AUTORUN
 TaskRep;
+#endif

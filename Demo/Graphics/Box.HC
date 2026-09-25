@@ -47,4 +47,6 @@ U0 Box()
   SettingsPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Box;
+#endif

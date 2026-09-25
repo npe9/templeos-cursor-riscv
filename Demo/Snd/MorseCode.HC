@@ -173,4 +173,6 @@ U0 Morse()
   Snd;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Morse;
+#endif

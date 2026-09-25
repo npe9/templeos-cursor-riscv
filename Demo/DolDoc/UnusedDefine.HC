@@ -79,4 +79,6 @@ U0 UnusedDefineScan()
   ProgressBarsRst;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 UnusedDefineScan;
+#endif

@@ -646,5 +646,7 @@ lt_done:
   MenuPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 LightTable;
+#endif
         ª      F   0   *      G   1   H      G   1       H   P      é$SY,3$n$SY,0$ G   2   H   N   K   <   ã+é$SY,3$n$SY,0$ 1   	   é$SY,3$in$SY,0$ %   F   é$SY,3$out$SY,0$  

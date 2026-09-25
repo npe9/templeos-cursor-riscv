@@ -112,7 +112,9 @@ U0 TreeCommonAncestor()
   SettingsPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 TreeCommonAncestor;
+#endif
 /*Be careful with recursive routines in TempleOS
 because the stack does not grow and will overflow.
 

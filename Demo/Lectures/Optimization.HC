@@ -73,7 +73,9 @@ _extern _WELL_OPTIMIZED3   I64 Loop4();
 I64 i;
 F64 t0;
 
+#ifndef RV_NO_DEMO_AUTORUN
 CPURep;
+#endif
 
 "Bad Code\n";
 t0=tS;

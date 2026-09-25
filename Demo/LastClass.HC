@@ -26,7 +26,9 @@ PressAKey;
 
 //lastclass is used in $LK,"ClassRep",A="MN:ClassRep"$() and $LK,"ClassRepD",A="MN:ClassRepD"$().
 ClassRepD(Gs);
+#ifndef RV_NO_DEMO_AUTORUN
 PressAKey;
+#endif
 
 ClassRep(Fs);
 

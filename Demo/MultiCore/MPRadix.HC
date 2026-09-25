@@ -130,7 +130,9 @@ U0 MPRadixSortDemo(I64 dummy=0)
     Free(b[i]);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 MPRadixSortDemo;
+#endif
 
 /*$HL,0$ Results on 8 Cores 3.397GHz Core i7:
 $FG,2$QSort$FG$

@@ -174,4 +174,6 @@ U0 Main()
   ViewAnglesDel;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Main;
+#endif

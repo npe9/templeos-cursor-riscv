@@ -41,7 +41,9 @@ U0 Cartesian()
   DCDel(dc);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Cartesian;
+#endif
 
 //For better performance, compile the expression entered by the
 //user one time with $LK,"LexExpression2Bin",A="MN:LexExpression2Bin"$() and use $LK,"Call",A="MN:Call"$().

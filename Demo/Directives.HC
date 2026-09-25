@@ -10,4 +10,6 @@ U0 Directives()
   "Inst2\t:%P:%08X\n",$$,$$;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Directives;
+#endif

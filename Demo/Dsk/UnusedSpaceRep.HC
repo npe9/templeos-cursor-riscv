@@ -9,4 +9,6 @@ U0 UnusedSpaceRep()
 	    Drv2Let(dv),DrvUnused(Drv2Let(dv))*100.0/(dv->size*BLK_SIZE);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 UnusedSpaceRep;
+#endif

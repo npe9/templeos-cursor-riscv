@@ -58,6 +58,8 @@ U0 DataDemo()
     DocUnlock(doc);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 DataDemo;
+#endif
 
 //See $LK,"PopUpExtents",A="MN:PopUpExtents"$().

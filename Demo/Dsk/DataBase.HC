@@ -61,4 +61,6 @@ U0 DatabaseDemo()
   } while (ch!=CH_SHIFT_ESC && ch!=CH_ESC);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 DatabaseDemo;
+#endif

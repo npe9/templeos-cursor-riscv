@@ -22,4 +22,6 @@ U0 PromptDemo()
   "Date=%D\n",cdt;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 PromptDemo;
+#endif

@@ -46,4 +46,6 @@ U0 FPrintFDemo(U8 *output_filename=NULL)
   DocDel(doc);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 FPrintFDemo;
+#endif

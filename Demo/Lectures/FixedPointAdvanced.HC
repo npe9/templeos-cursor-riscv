@@ -142,7 +142,9 @@ U0 Main()
 
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Main;
+#endif
 
 /*  Program Output$HL,0$$WW+H,1$$FD,1$
 

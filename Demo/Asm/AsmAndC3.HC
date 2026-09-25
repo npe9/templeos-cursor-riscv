@@ -20,4 +20,6 @@ U0 AsmAndC3()
   }
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 AsmAndC3;
+#endif

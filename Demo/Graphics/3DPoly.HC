@@ -114,4 +114,6 @@ U0 Main()
   DCDel(dc);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Main;
+#endif

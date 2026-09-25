@@ -10,4 +10,6 @@ U0 BlkDevRep()
       //See $LK,"::/Demo/LastClass.HC"$.
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 BlkDevRep;
+#endif

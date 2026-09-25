@@ -33,4 +33,6 @@ Bool Quit()
   return res;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Quit;
+#endif

@@ -18,6 +18,8 @@ U0 MsgLoop()
   Fs->win_inhibit=WIG_USER_TASK_DFT;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 MsgLoop;
+#endif
 
 // Press <CTRL-SHIFT-L> and "Insert $LK,"ASCII",A="MN:CH_CTRLA"$/$LK,"ScanCode",A="FI:::/Doc/CharOverview.DD"$".

@@ -59,6 +59,8 @@ $$HL,0$$$$FG$$
   "\n\n";
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 MemDemo;
+#endif
 
 

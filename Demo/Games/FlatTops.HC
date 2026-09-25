@@ -849,7 +849,9 @@ nv_done:
   MenuPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 FlatTops;
+#endif
 
 
 

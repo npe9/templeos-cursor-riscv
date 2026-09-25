@@ -149,4 +149,6 @@ fe_done:
   SettingsPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 FontEd;
+#endif

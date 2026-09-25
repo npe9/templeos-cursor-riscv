@@ -61,4 +61,6 @@ U0 UndoIt()
   DocClear(Fs->border_doc);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 DoIt;
+#endif

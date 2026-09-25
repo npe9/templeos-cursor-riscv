@@ -48,4 +48,6 @@ U0 FormDemo()
   //See also $LK,"ClassRepD",A="MN:ClassRepD"$().
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 FormDemo;
+#endif

@@ -125,7 +125,9 @@ This bit tells TempleOS to update whole scrn.
   VGAFlush;
 }
  
+#ifndef RV_NO_DEMO_AUTORUN
 MiniGrLibDemo;
+#endif
 
 //See $LK,"RawPutChar",A="MN:RawPutChar"$() for text.
 //See $LK,"::/Demo/Lectures/ScrnMemory.HC"$ for color.

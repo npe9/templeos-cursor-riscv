@@ -354,4 +354,6 @@ cn_done:
   MenuPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 TreeCheckers;
+#endif

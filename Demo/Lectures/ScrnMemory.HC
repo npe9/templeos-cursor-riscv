@@ -43,7 +43,9 @@ That means no read-modify-writes, too.
   VGAFlush;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Main;
+#endif
 
 //See $LK,"::/Demo/Lectures/GraphicsCPULoad.HC"$.
 

@@ -42,6 +42,8 @@ if (DrvIsWritable(':')) {
   DirMk("::/Tmp/ScrnShots");
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 StartUpTasks;
+#endif
 
 "\nTempleOS V%5.3f\t%D %T\n\n",sys_os_version,sys_compile_time,sys_compile_time;

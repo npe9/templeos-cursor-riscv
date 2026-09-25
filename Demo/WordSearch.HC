@@ -150,4 +150,6 @@ U0 WordSearch()
   FancyWordSearch;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 WordSearch;
+#endif

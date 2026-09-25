@@ -14,4 +14,6 @@ U0 ForLoopDemo()
   "for (;i<4;i++) sum = %d (expect 6)\n",s;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 ForLoopDemo;
+#endif

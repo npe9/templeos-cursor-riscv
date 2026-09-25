@@ -68,7 +68,9 @@ U0 Main2()
   "Time 4:%d\n",s2[1].time;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Main2;
+#endif
 
 #exe {Option(OPTf_GLBLS_ON_DATA_HEAP,ON);};
 #endif

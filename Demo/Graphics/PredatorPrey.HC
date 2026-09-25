@@ -78,4 +78,6 @@ U0 PredatorPrey()
   DCDel(dc);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 PredatorPrey;
+#endif

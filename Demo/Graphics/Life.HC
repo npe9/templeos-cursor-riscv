@@ -95,4 +95,6 @@ public U0 Life()
   DCDel(dc[1]);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Life;
+#endif

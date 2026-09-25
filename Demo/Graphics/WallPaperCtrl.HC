@@ -105,4 +105,6 @@ U0 SliderDel(CCtrl *c)
   Free(c);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 SliderNew;
+#endif

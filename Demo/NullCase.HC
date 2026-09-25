@@ -16,4 +16,6 @@ U0 NullCase()
     }
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 NullCase;
+#endif

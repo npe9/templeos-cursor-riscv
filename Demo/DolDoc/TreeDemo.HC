@@ -36,4 +36,6 @@ U0 TreeDemo()
   DocDel(doc);
 }
  
+#ifndef RV_NO_DEMO_AUTORUN
 TreeDemo;
+#endif

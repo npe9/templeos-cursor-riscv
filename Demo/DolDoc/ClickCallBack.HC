@@ -25,7 +25,9 @@ U0 ClickCallBack()
   DocUnlock(DocPut);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 ClickCallBack;
+#endif
 
 I64 MyLeftCB2(CDoc *,CDocEntry *)
 {

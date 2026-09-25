@@ -76,7 +76,9 @@ U0 TimeIns()
   IntEntrySet(I_F_UNARY_MINUS,old_irq,IDTET_IRQ);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 TimeIns;
+#endif
 
 /*  Program Output$HL,0$$WW+H,1$$FD,1$
 $PT$$FG$$BG$6 Cores 3.395GHz

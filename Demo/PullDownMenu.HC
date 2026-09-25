@@ -86,4 +86,6 @@ U0 PullDownMenuDemo()
   MenuPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 PullDownMenuDemo;
+#endif

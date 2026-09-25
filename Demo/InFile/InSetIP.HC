@@ -10,4 +10,6 @@ U0 InSetMsDemo()
   MsSet(,,,FALSE,FALSE);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 InSetMsDemo;
+#endif

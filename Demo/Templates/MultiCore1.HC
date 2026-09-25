@@ -26,4 +26,6 @@ U0 Main()
   "Grand total:%d\n",grand_total;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Main;
+#endif

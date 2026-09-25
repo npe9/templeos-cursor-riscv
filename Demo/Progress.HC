@@ -77,4 +77,6 @@ _PROGRESS_DEMO::
 	RET
 }
 _extern _PROGRESS_DEMO U0 AsmProgressDemo();
+#ifndef RV_NO_DEMO_AUTORUN
 AsmProgressDemo;
+#endif

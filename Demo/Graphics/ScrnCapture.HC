@@ -12,4 +12,6 @@ U0 Main()
   DCFill;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Main;
+#endif

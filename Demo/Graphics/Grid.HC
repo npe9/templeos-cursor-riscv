@@ -27,4 +27,6 @@ U0 GridDemo()
   MemCpy(&ms_grid,&old_grid,sizeof(CGridGlbls));
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 GridDemo;
+#endif

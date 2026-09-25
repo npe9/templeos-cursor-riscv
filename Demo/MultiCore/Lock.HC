@@ -49,4 +49,6 @@ U0 LockedInc()
 }
 
 UnlockedInc;
+#ifndef RV_NO_DEMO_AUTORUN
 LockedInc;
+#endif

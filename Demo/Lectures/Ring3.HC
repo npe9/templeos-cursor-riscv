@@ -72,4 +72,6 @@ U0 Ring3Demo()
   "Progress1 After :%X\n",progress1;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Ring3Demo;
+#endif

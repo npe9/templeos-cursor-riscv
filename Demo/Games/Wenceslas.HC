@@ -589,7 +589,9 @@ ws_done:
   RegWrite("TempleOS/Wenceslas","F64 best_score=%5.4f;\n",best_score);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Wenceslas;
+#endif
         y      
 þÿÿÿ        Úÿÿÿ
     Êÿÿÿ        

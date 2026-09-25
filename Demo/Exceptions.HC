@@ -44,4 +44,6 @@ U0 Demo()
   }
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Demo;
+#endif

@@ -267,7 +267,9 @@ U0 UpdateISODocDefines()
   } catch
     Fs->catch_except=TRUE;
 }
+#ifndef RV_NO_DEMO_AUTORUN
 UpdateISODocDefines;
+#endif
 
 
 I64 tos_progress;

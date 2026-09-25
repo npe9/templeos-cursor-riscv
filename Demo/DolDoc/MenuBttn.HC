@@ -72,4 +72,6 @@ U0 MenuBttn()
   Snd;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 MenuBttn;
+#endif

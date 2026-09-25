@@ -35,7 +35,9 @@ U0 RawAccess(I64 drv_let=0)
   Free(buf);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 RawAccess;
+#endif
 
 //See $LK,"BlkRead",A="MN:BlkRead"$(), $LK,"BlkWrite",A="MN:BlkWrite"$(), $LK,"DrvLock",A="MN:DrvLock"$(), $LK,"DrvUnlock",A="MN:DrvUnlock"$()
 //$LK,"DBlk",A="MN:DBlk"$(), $LK,"DClus",A="MN:DClus"$(), $LK,"BlkDevLock",A="MN:BlkDevLock"$() and $LK,"BlkDevUnlock",A="MN:BlkDevUnlock"$().

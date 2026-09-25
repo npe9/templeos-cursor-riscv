@@ -32,4 +32,6 @@ U0 BSplineDemo()
   DCFill;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 BSplineDemo;
+#endif

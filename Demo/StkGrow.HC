@@ -48,6 +48,8 @@ U0 StkGrowDemo()
   "Time:%7.5fs\n",tS-t0;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 StkGrowDemo;
+#endif
 
 //Be careful because you can fragment memory.

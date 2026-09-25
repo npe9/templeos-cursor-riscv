@@ -35,4 +35,6 @@ U0 Balloon()
   VGAFlush;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Balloon;
+#endif

@@ -232,5 +232,7 @@ U0 Main()
   Free(code);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Main;
+#endif
 

@@ -700,7 +700,9 @@ vr_done: //Don't goto out of try
   RegWrite("TempleOS/Varoom","F64 best_score=%5.4f;\n",best_score);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 Varoom;
+#endif
         ö         
    þÿÿÿ    èÿÿÿ
     ôÿÿÿ   êÿÿÿ

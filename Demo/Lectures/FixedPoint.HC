@@ -78,7 +78,9 @@ features, see $LK,"::/Doc/HolyC.DD"$.
 
 CPURep;
 Main;
+#ifndef RV_NO_DEMO_AUTORUN
 DoIt2;
+#endif
 
 //See $LK,"::/Demo/Lectures/FixedPointAdvanced.HC"$
 

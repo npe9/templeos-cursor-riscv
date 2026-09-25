@@ -24,4 +24,6 @@ U0 PaletteDemo()
   SettingsPop;
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 PaletteDemo;
+#endif

@@ -20,4 +20,6 @@ U0 IntTest()
   MPInt(I_USER+1,1);
 }
 
+#ifndef RV_NO_DEMO_AUTORUN
 IntTest;
+#endif

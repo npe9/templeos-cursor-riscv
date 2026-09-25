@@ -32,4 +32,6 @@ U0 TimeIns()
 
 TimeIns;
 TimeIns;
+#ifndef RV_NO_DEMO_AUTORUN
 TimeIns;
+#endif
