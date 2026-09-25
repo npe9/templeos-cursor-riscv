@@ -160,6 +160,37 @@ Worth knowing regardless: the before/after PNGs are what settled this in minutes
 (`tools/fb_scanout_hash.py --png`). Both Blot renders are two blue lines on black, which is
 itself suspicious for a demo whose job is a flood-filled blot — that is a separate thread.
 
+### Driving stock games: what works, and two traps
+
+Two games are gated end to end — `kernel-game-input-smoke` (Halogen, keyboard) and
+`kernel-game-mouse-smoke` (MassSpring, mouse). Both run the game's OWN loop. The pattern that
+works: `Spawn` the game as a CTask, post `TaskMsg` events, and **sample while it is alive**.
+
+**Trap 1 — measure before the epilogue.** `MassSpringDemo` ends with `CleanUp`, which QueDels
+every mass and spring. Run the loop and count afterwards and you get 0/0, which reads as "the
+clicks did nothing". Running it as a task gives a point to measure from.
+
+**Trap 2 — a sleeping task needs REAL TIME, not Yields.** BattleLines `Sleep(40)`s each turn.
+6000 `Yield`s in the driver run in microseconds, so the task stays asleep and the simulation
+appears frozen. `Sleep(100)` x N in the driver makes it tick. MassSpring hid this because it
+blocks on `GetMsg`, which a posted message satisfies at once.
+
+**`ScanChar` does not receive `TaskMsg(MSG_KEY_DOWN)`.** It is real code (it is absent from the
+load-time unresolved list, unlike `DCSymmetrySet` and `SpriteInterpolate`), but it is not
+defined anywhere in the tree, and keys posted as messages do not reach it — BattleLines' `'2'`
+never toggled `tap_mode` while its loop was demonstrably ticking. Find what queue `ScanChar`
+reads before trying to drive any `ScanChar` game (Maze, Spy, Hanoi, Lines, PredatorPrey…).
+
+**BattleLines is NOT working, despite appearances.** It spawns, `Init` places troopers at the
+right coordinates, the loop ticks and a trooper moves. But it moves the SAME way with the
+pointer far left and far right (delta -2 either way), so it is formation drift, not the command
+force — the game is not reading `ms.pos` as intended. Do not write a smoke that asserts only
+"a trooper moved": that passes without the input working. The honest assertion is divergence
+between two pointer positions, and it currently fails.
+
+`ms.pos` is published now (`RVWinMgrPublishMs`) but is CELL-granular, so it lands on multiples
+of 8. Whether that is enough for BattleLines/Whap is untested.
+
 ### Standing rule this session earned again
 
 Every red here was **a failure path that reported success**, or a measurement read one stage
