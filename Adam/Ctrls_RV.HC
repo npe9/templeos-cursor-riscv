@@ -102,20 +102,20 @@ U0 DrawCtrlBttn(CDC *_dc, CCtrl *c)
   s = c->state(CCtrlBttnState *);
   if (!s)
     return;
-  dc->color = RVColor(BLACK);
+  dc->color = BLACK;
   GrRect(dc, c->left, c->top, c->right - c->left + 1, c->bottom - c->top + 1);
   st = LstSub(s->state, s->state_texts);
   if (!st)
     st = s->state_texts;
   if (s->state_colors)
-    dc->color = RVColor(s->state_colors[s->state] & 15);
+    dc->color = s->state_colors[s->state] & 15;
   else if (s->state)
-    dc->color = RVColor(LTGREEN);
+    dc->color = LTGREEN;
   else
-    dc->color = RVColor(LTRED);
+    dc->color = LTRED;
   GrRect(dc, c->left + RV_CTRL_BTTN_BORDER, c->top + RV_CTRL_BTTN_BORDER, c->right - c->left + 1 - RV_CTRL_BTTN_BORDER * 2, c->bottom - c->top + 1 - RV_CTRL_BTTN_BORDER * 2);
   l = StrLen(st);
-  dc->color = RVColor(YELLOW);
+  dc->color = YELLOW;
   GrPrint(dc, (c->left + c->right + 1 - l *FONT_WIDTH) >> 1, (c->top + c->bottom + 1 - FONT_HEIGHT) >> 1, "%s", st);
 }
 
@@ -144,11 +144,11 @@ U0 DrawCtrlSlider(CDC *_dc, CCtrl *c)
   s = c->state(CCtrlSliderState *);
   if (!s)
     return;
-  dc->color = RVColor(LTRED);
+  dc->color = LTRED;
   GrRect(dc, c->left, c->top, c->right - c->left + 1, c->bottom - c->top + 1);
-  dc->color = RVColor(BLUE);
+  dc->color = BLUE;
   GrRect(dc, c->left + 2, c->top + 2, c->right - c->left - 3, c->bottom - c->top - 3);
-  dc->color = RVColor(BLACK);
+  dc->color = BLACK;
   mid = (c->left + c->right) / 2;
   GrLine(dc, mid, c->top + 4, mid, c->bottom - 4);
   th = s->value;
@@ -157,9 +157,9 @@ U0 DrawCtrlSlider(CDC *_dc, CCtrl *c)
   if (th > s->range)
     th = s->range;
   lab_y = c->bottom - 4 - th;
-  dc->color = RVColor(LTRED);
+  dc->color = LTRED;
   GrRect(dc, mid - 4, lab_y - 2, 9, 5);
-  dc->color = RVColor(YELLOW);
+  dc->color = YELLOW;
   GrPrint(dc, c->left - 2, c->bottom + 2, "%s%d", s->label, th);
 }
 
@@ -407,13 +407,13 @@ U0 DrawWinScroll(CDC *_dc, CCtrl *c)
     col = s->color >> 4;
   else
     col = s->color & 15;
-  dc->color = RVColor(col);
+  dc->color = col;
   GrRect(dc, c->left, c->top, c->right - c->left + 1, c->bottom - c->top + 1);
   if (c->flags & CTRLF_CLICKED)
     col = s->color & 15;
   else
     col = s->color >> 4;
-  dc->color = RVColor(col);
+  dc->color = col;
   GrRect(dc, c->left + 2, c->top + 2, c->right - c->left - 3, c->bottom - c->top - 3);
 }
 
@@ -569,15 +569,15 @@ U0 DrawViewAnglesCtrl(CDC *_dc, CCtrl *c)
   s = c->state(CViewAngles *);
   if (!s)
     return;
-  dc->color = RVColor(s->cbd & 15);
+  dc->color = s->cbd & 15;
   GrRect(dc, c->left, c->top, VIEWANGLES_SPACING * 4 + 3, VIEWANGLES_SPACING * 2 + VIEWANGLES_RANGE);
-  dc->color = RVColor(s->cbg & 15);
+  dc->color = s->cbg & 15;
   GrRect(dc, c->left + VIEWANGLES_BORDER, c->top + VIEWANGLES_BORDER, VIEWANGLES_SPACING * 4 + 3 - 2 * VIEWANGLES_BORDER, VIEWANGLES_SPACING * 2 + VIEWANGLES_RANGE - 2 * VIEWANGLES_BORDER);
-  dc->color = RVColor(s->cfg & 15);
+  dc->color = s->cfg & 15;
   GrLine(dc, c->left + VIEWANGLES_SPACING, c->top + VIEWANGLES_SPACING, c->left + VIEWANGLES_SPACING, c->top + VIEWANGLES_SPACING + VIEWANGLES_RANGE - 1);
   GrLine(dc, c->left + 2 * VIEWANGLES_SPACING + 1, c->top + VIEWANGLES_SPACING, c->left + 2 * VIEWANGLES_SPACING + 1, c->top + VIEWANGLES_SPACING + VIEWANGLES_RANGE - 1);
   GrLine(dc, c->left + 3 * VIEWANGLES_SPACING + 2, c->top + VIEWANGLES_SPACING, c->left + 3 * VIEWANGLES_SPACING + 2, c->top + VIEWANGLES_SPACING + VIEWANGLES_RANGE - 1);
-  dc->color = RVColor(s->cx & 15);
+  dc->color = s->cx & 15;
   GrPrint(dc, c->left + VIEWANGLES_SPACING - FONT_WIDTH / 2, c->top + VIEWANGLES_SPACING - (1 + FONT_HEIGHT), "X");
   StrPrint(buf, "%3d", s->sx * 360 / VIEWANGLES_RANGE);
   GrPrint(dc, c->left + VIEWANGLES_SPACING - 3 * FONT_WIDTH / 2, c->top + VIEWANGLES_SPACING + VIEWANGLES_RANGE + 3, buf);
@@ -590,7 +590,7 @@ U0 DrawViewAnglesCtrl(CDC *_dc, CCtrl *c)
   GrRect(dc, i - 3, j - 2, 7, 5);
   dc->color = RVColor ((s->cx & 15) ^ 8);
   GrRect(dc, i - 2, j - 1, 5, 3);
-  dc->color = RVColor(s->cy & 15);
+  dc->color = s->cy & 15;
   GrPrint(dc, c->left + 2 * VIEWANGLES_SPACING + 1 - FONT_WIDTH / 2, c->top + VIEWANGLES_SPACING - (1 + FONT_HEIGHT), "Y");
   StrPrint(buf, "%3d", s->sy * 360 / VIEWANGLES_RANGE);
   GrPrint(dc, c->left + 2 * VIEWANGLES_SPACING + 1 - 3 * FONT_WIDTH / 2, c->top + VIEWANGLES_SPACING + VIEWANGLES_RANGE + 3, buf);
@@ -603,7 +603,7 @@ U0 DrawViewAnglesCtrl(CDC *_dc, CCtrl *c)
   GrRect(dc, i - 3, j - 2, 7, 5);
   dc->color = RVColor ((s->cy & 15) ^ 8);
   GrRect(dc, i - 2, j - 1, 5, 3);
-  dc->color = RVColor(s->cz & 15);
+  dc->color = s->cz & 15;
   GrPrint(dc, c->left + 3 * VIEWANGLES_SPACING + 2 - FONT_WIDTH / 2, c->top + VIEWANGLES_SPACING - (1 + FONT_HEIGHT), "Z");
   StrPrint(buf, "%3d", s->sz * 360 / VIEWANGLES_RANGE);
   GrPrint(dc, c->left + 3 * VIEWANGLES_SPACING + 2 - 3 * FONT_WIDTH / 2, c->top + VIEWANGLES_SPACING + VIEWANGLES_RANGE + 3, buf);

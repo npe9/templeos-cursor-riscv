@@ -195,6 +195,16 @@ U0 SPeekWrite(CRVDC *dc)
       dc->color = GrPeek(dc, x + 4, y + 4);
       GrPlot(dc, x + 40, y + 4);
     }
+  //The hash alone cannot say whether a round trip is EXACT, only that it changed. Assert the
+  //property too: stock GrPeek returns a palette index, so the copy must equal the original.
+  for (y = 0; y < 16; y++)
+    for (x = 0; x < 16; x++)
+      if (GrPeek(dc, x + 4, y + 4) != GrPeek(dc, x + 40, y + 4)) {
+        "GRSCENE-PROP peek_write ROUND-TRIP-LOSSY at %d,%d: %08X vs %08X\n",
+              x, y, GrPeek(dc, x + 4, y + 4), GrPeek(dc, x + 40, y + 4);
+        return;
+      }
+  "GRSCENE-PROP peek_write round-trip-exact\n";
 }
 
 U0 RunScene(U8 *name, U0 (*fp)(CRVDC *dc))

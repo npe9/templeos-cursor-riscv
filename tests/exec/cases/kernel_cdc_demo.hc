@@ -238,10 +238,14 @@ I64 main()
     body8_live = DCBody8(dc8);
     DCFill(tmp32, 0);
     blot8_n = GrBlot(tmp32, 0, 0, dc8);
-    if (GrPeek(dc8, 5, 5) == RVColor(RED) && GrPeek(dc8, 12, 12) == RVColor(RED) && GrPeek(dc8, 24, 23) == RVColor(BLUE) && ff8_n > 0 && GrPeek(dc8, 36, 12) == RVColor(GREEN) && body8_live && body8_live[5 * wi8 + 5] == RED && body8_live[12 * wi8 + 36] == GREEN && blot8_n > 0 && GrPeek(tmp32, 5, 5) == RVColor(RED) && GrPeek(tmp32, 12, 12) == RVColor(RED) && GrPeek(tmp32, 36, 12) == RVColor(GREEN))
+    // STOCK: GrPeek returns a palette INDEX from an 8-bit DC (Adam/Gr/GrBitMap.HC:64) and the
+    // 32-bpp pixel from a 32-bpp one. This line used to expect RVColor(RED) from dc8 — the
+    // port's old XRGB-from-an-8-bit-DC behaviour — while ALREADY checking the raw body byte
+    // against the bare index two terms later. tmp32 is 32-bpp, so those keep RVColor().
+    if (GrPeek(dc8, 5, 5) == RED && GrPeek(dc8, 12, 12) == RED && GrPeek(dc8, 24, 23) == BLUE && ff8_n > 0 && GrPeek(dc8, 36, 12) == GREEN && body8_live && body8_live[5 * wi8 + 5] == RED && body8_live[12 * wi8 + 36] == GREEN && blot8_n > 0 && GrPeek(tmp32, 5, 5) == RVColor(RED) && GrPeek(tmp32, 12, 12) == RVColor(RED) && GrPeek(tmp32, 36, 12) == RVColor(GREEN))
       u8ok = 1;
   }
-  dc->color = RVColor(WHITE);
+  dc->color = WHITE;
   GrPrint(dc, 40, 180, "FloodFill/brush/GrBlot/mesh/ScrnCast");
   RVGrRefresh();
   h = RVFbHash() & 0xFFFFFFFF;

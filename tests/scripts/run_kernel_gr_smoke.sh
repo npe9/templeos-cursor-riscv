@@ -20,7 +20,14 @@ EXPECT_PREFIX="RVGr smoke hash="
 # at the new one across repeated runs, so the golden was stale rather than the renderer broken.
 # If this ever changes again, the thing to establish FIRST is which commit moved it: a
 # framebuffer hash cannot tell you whether the picture got better or worse.
-PINNED_HASH="0x2C881662"
+# Re-pinned 2026-09-25 for parity phase 2 (a pen is a palette INDEX, as stock). The picture DID
+# change and was checked, not assumed: tools/fb_scanout_hash.py --png before and after, then a
+# per-pixel PPM diff. 109,278 pixels (22.8%) differ and EVERY one lands on its palette
+# equivalent with ZERO going black — dc3030->ff5555 (LTRED), 202838->555555 (DKGRAY),
+# 183060->0000ff (BLUE), 607090->aaaaaa, 4890ff->5555ff, 30c848->55ff55, ffdc40->ffff55.
+# An earlier attempt DID turn reds black (a custom pixel's low byte read as an index); the
+# pixel diff is what caught it, not this hash. This value also equals the scanout hash.
+PINNED_HASH="0x0B947A17"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"

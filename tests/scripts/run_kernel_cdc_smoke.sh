@@ -21,7 +21,16 @@ EXPECT_PREFIX="RVCDC smoke hash="
 # fails identically at d207eda, before any of this session's work, so the golden was stale and
 # the rendering has not moved. If it moves again, find the commit that moved it before touching
 # this line — a framebuffer hash cannot tell you whether the picture got better or worse.
-PINNED_HASH="0x95A09C04"
+# Re-pinned 2026-09-25 for parity phase 2 (a pen is a palette INDEX, as stock). The SCANOUT did
+# NOT change: tools/fb_scanout_hash.py gives 0x7D95B6D8 before and after and the PNGs are
+# byte-identical. Only this number moved — which is worth knowing about this smoke: its hash is
+# NOT the screen (the screen is 0x7D95B6D8). Two of its sub-checks were also hollow — u8ok
+# asserted the port's old "GrPeek returns a pixel from an 8-bit DC" while checking the raw body
+# byte against a bare index two terms later, and sprite_peek compares a screen pixel against
+# RVColor(CYAN) after the test rewrites rv_palette_std, so both sides move together and it
+# agrees whatever happens (the SPT_FLOOD_FILL path it claims to prove is skipped outright,
+# Kernel/RVSprite.HC:207).
+PINNED_HASH="0x7E768244"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"

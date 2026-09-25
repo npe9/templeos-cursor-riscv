@@ -6,31 +6,31 @@ U0 DrawIt(CRVDC *dc)
 {
   //Minimal draw_it: window chrome + geometry + blot on the screen DC.
   I64 saved_x1, saved_y1, saved_x2, saved_y2;
-  RVWinFill(16, 16, 360, 220, RV_RGB(32, 40, 56), RV_RGB(96, 112, 144), "RVGr P4");
+  RVWinFill(16, 16, 360, 220, DKGRAY, LTGRAY, "RVGr P4");
   // Clip to chrome client so the intentional overflow rect cannot paint the soft term.
   saved_x1 = dc->clip_x1;
   saved_y1 = dc->clip_y1;
   saved_x2 = dc->clip_x2;
   saved_y2 = dc->clip_y2;
   RVDCClipSet(dc, 20, 40, 370, 230);
-  dc->color = RV_RGB(220, 48, 48);
+  dc->color = LTRED;
   GrRect(dc, 40, 56, 80, 48);
-  dc->color = RV_RGB(48, 200, 72);
+  dc->color = LTGREEN;
   GrRect(dc, 100, 80, 80, 48);
-  dc->color = RV_RGB(72, 144, 255);
+  dc->color = LTBLUE;
   GrRect(dc, 70, 104, 80, 48);
-  dc->color = RV_RGB(255, 220, 64);
+  dc->color = YELLOW;
   dc->thick = 2;
   GrLine(dc, 40, 180, 340, 60);
   dc->thick = 1;
-  dc->color = RVColor(WHITE);
+  dc->color = WHITE;
   GrCircle(dc, 280, 120, 28);
   if (g_img)
     GrBlot(dc, 300, 150, g_img);
   // Outside clip — must not appear (hash stable vs unclipped magenta).
-  dc->color = RV_RGB(255, 0, 255);
+  dc->color = PURPLE;   //RV_RGB(255,0,255) IS palette 5 exactly
   GrRect(dc, 0, 0, 12, 12);
-  dc->color = RVColor(WHITE);
+  dc->color = WHITE;
   GrPrint(dc, 40, 190, "GrPlot/Blot/Circle");
   GrPlot(dc, 200, 120);
   GrPlot(dc, 201, 121);
@@ -52,7 +52,7 @@ I64 main()
   g_img = RVDCNew(24, 24);
   if (g_img) {
     RVDCFill(g_img, RV_TRANSPARENT);
-    g_img->color = RV_RGB(255, 128, 32);
+    g_img->color = BROWN;
     for (y = 0; y < 24; y++)
       for (x = 0; x < 24; x++)
         if (AbsI64(x - 12) + AbsI64(y - 12) < 10)
@@ -64,7 +64,7 @@ I64 main()
   rv_term.ox = 16;
   rv_term.oy = 400;
   rv_term.fg = RVColor(WHITE);
-  rv_term.bg = RV_RGB(24, 48, 96);
+  rv_term.bg = BLUE;
   RVTermClear();
   RVTermPutS("TempleOS/RV soft term\n");
   RVTermPutS("RVGrRefresh -> RVFbPresent\n");

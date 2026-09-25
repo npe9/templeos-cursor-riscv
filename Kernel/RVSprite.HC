@@ -125,7 +125,7 @@ U0 RVSpriteBlotBitmap(CRVDC *dc, I64 x, I64 y, I64 w, I64 h, U8 *body, I64 width
       c = body[iy *width_internal + ix];
       if (c == TRANSPARENT)
         continue;
-      dc->color = RVColor(c);
+      dc->color = c;
       GrPlot(dc, dx, dy);
     }
   }
@@ -158,7 +158,7 @@ U0 Sprite3(CRVDC *dc = NULL, I64 x, I64 y, I64 z, U8 *elems, Bool just_one_elem 
       break;
     switch (t) {
       case SPT_COLOR :
-      dc->color = RVColor(tmpg->c.color);
+      dc->color = tmpg->c.color;
       break;
       case SPT_THICK :
       dc->thick = tmpg->t.thick;

@@ -69,9 +69,9 @@ U0 RVDCRst(CRVDC *dc)
 {
   if (!dc)
     return;
-  dc->color = RVColor(WHITE);
-  dc->color2 = RVColor(BLACK);
-  dc->bkcolor = RVColor(BLACK);
+  dc->color = WHITE;
+  dc->color2 = BLACK;
+  dc->bkcolor = BLACK;
   dc->thick = 1;
   dc->flags = 0;
   dc->brush = NULL;
@@ -297,28 +297,34 @@ I64 RVColorNearestIdx(U32 c)
 
 U8 RVDCPenIdx(CRVDC *dc)
 {
-  //Palette index for is_u8 Plot/Fill (TempleOS CDC pen).
+  //Palette index for is_u8 Plot/Fill (TempleOS CDC pen). Stock keeps it in color.c0.color.
+  U8 idx;
   if (!dc)
     return 0;
-  if (dc->color == COLOR_MONO || dc->color == TRANSPARENT)
+  idx = dc->color.c0.color;
+  if (idx == COLOR_MONO || idx == TRANSPARENT)
     return COLOR_MONO;
-  if (dc->color < COLORS_NUM)
-    return dc->color;
-  return RVColorNearestIdx(dc->color);
+  return idx & (COLORS_NUM - 1);   //PARENTHESES REQUIRED: HolyC binds binary ops LEFT TO RIGHT,
+                                   //so `idx & COLORS_NUM - 1` is `(idx & 16) - 1` = -1, whose low
+                                   //byte is 0xFF = COLOR_MONO. Every pen became the mono sentinel;
+                                   //the scene gate caught it as 5 of 13 hashes moving.
 }
 
 U32 GrPeek(CRVDC *dc = NULL, I64 x, I64 y)
 {
-  U8 c8;
   if (!dc)
     dc = rv_gr.dc;
   if (!dc || !dc->body || x < 0 || y < 0 || x >= dc->width || y >= dc->height)
     return RV_TRANSPARENT;
   if (dc->is_u8) {
-    c8 = dc->body(U8 *)[y *dc->width_internal + x];
-    if (c8 == TRANSPARENT)
-      return RV_TRANSPARENT;
-    return RVColor(c8);
+    //STOCK: GrPeek returns a PALETTE INDEX. Adam/Gr/GrBitMap.HC:64 is
+    //  `public I64 GrPeek0(CDC *dc=gr.dc,I64 x,I64 y) { return dc->body[dc->width_internal*y+x]; }`
+    //— the raw byte — and its callers compare the result to bkcolor and TRANSPARENT, which are
+    //indices (Adam/Gr/SpriteBitMap.HC:106). This used to return RVColor(c8), an XRGB PIXEL, which
+    //made `dc->color = GrPeek(dc,x,y)` a lossy round trip: the old pen path mapped the pixel back
+    //with RVColorNearestIdx, and once the pen became a stock index that turned into the pixel's low
+    //nibble. The peek_write scene is what caught it.
+    return dc->body(U8 *)[y *dc->width_internal + x];
   }
   return dc->body[y *dc->width_internal + x];
 }
@@ -350,8 +356,11 @@ Bool RVGrInit(I64 width = RV_FB_W_DEFAULT, I64 height = RV_FB_H_DEFAULT, U32 *pi
     rv_term.rows = 1;
   rv_term.cur_r = 0;
   rv_term.cur_c = 0;
-  rv_term.fg = RVColor(WHITE);
-  rv_term.bg = RV_RGB(32, 64, 128);
+  // Stock has 16 colours and a pen is an index, so the soft terminal names them by index. The
+  // navy this used to be, RV_RGB(32,64,128), is not expressible as a PEN in TempleOS — a custom
+  // colour is a palette entry (CDC.palette / GrPaletteSet), which is parity-plan phase 6.
+  rv_term.fg = WHITE;
+  rv_term.bg = BLUE;
   rv_term.ox = 0;
   rv_term.oy = 0;
   return TRUE;
@@ -1336,7 +1345,7 @@ U0 RVWinFill(I64 x, I64 y, I64 w, I64 h, U32 face, U32 border, U8 *title = NULL)
   dc->color = border;
   GrRect(dc, x, y, w, FONT_HEIGHT + 4);
   if (title) {
-    dc->color = RVColor(YELLOW);
+    dc->color = YELLOW;
     GrPrint(dc, x + 4, y + 2, title);
   }
 }
@@ -1984,7 +1993,7 @@ I64 Gr3Mesh(CRVDC *dc = NULL, I64 vertex_cnt, CD3I32 *p, I64 tri_cnt, CMeshTri *
       continue;
     if (t->nums[2] < 0 || t->nums[2] >= vertex_cnt)
       continue;
-    dc->color = RVColor(t->color);
+    dc->color = t->color;
     res += GrFillTri0(dc, &p[t->nums[0]], &p[t->nums[1]], &p[t->nums[2]]);
   }
   dc->color = old_color;

@@ -12,7 +12,8 @@
 class CRVDC
 {
   //32-bpp CDC bridge by default; optional is_u8 ⇒ body is U8 palette (TempleOS CDC).
-  // color may be palette index or XRGB U32 (RVDCPenColor / RVDCPenIdx).
+  // color is a PALETTE INDEX in color.c0.color, as stock (RVDCPenIdx); RVDCPenColor maps it
+  // to XRGB for a 32-bpp body at the point of the write.
   U32 *body;
   // start/end bracket the serialisable scalar header, matching stock CDC's markers so
   // `offset(CDC.end)-offset(CDC.start)` resolves under `#define CDC CRVDC` (that is
@@ -24,9 +25,14 @@ class CRVDC
   I64 height;
   I64 width_internal;
   // pixels per row (U32 elems) or byte stride when is_u8 ((width+7)&~7)
-  U32 color;
-  U32 color2;
-  U32 bkcolor;
+  // STOCK: CDC.color/bkcolor/color2 are CColorROPU32 — two CColorROPU16 halves of {color, rop}.
+  // The pen is a PALETTE INDEX in c0.color, never a pixel. This port used to put an XRGB value
+  // here and discriminate by `< COLORS_NUM`; stock cannot express that (c0.color is ONE BYTE) and
+  // the overload cost the rop byte, which is where ROPF_DITHER / ROPB_MONO / ROPB_COLLISION live.
+  // Same 32 bits, so no offset moves. Index → pixel now happens only at the write.
+  CColorROPU32 color;
+  CColorROPU32 color2;
+  CColorROPU32 bkcolor;
   I64 thick;
   I64 flags;
   U0 end;
@@ -87,15 +93,16 @@ class CRVDC
 
 U32 RVDCPenColor(CRVDC *dc)
 {
-  //Stock demos assign palette indices (dc->color=RED); RV paths may store full XRGB.
+  //The XRGB pixel for a 32-bpp body. The pen is always a palette index (stock), so this is always
+  // a palette lookup — there is no pass-through any more.
   // COLOR_MONO/TRANSPARENT (0xFF) → non-zero ink for brush templates (Adam GrInitB shape).
+  U8 idx;
   if (!dc)
     return 0;
-  if (dc->color == COLOR_MONO || dc->color == TRANSPARENT)
+  idx = dc->color.c0.color;
+  if (idx == COLOR_MONO || idx == TRANSPARENT)
     return COLOR_MONO;
-  if (dc->color < COLORS_NUM)
-    return RVColor(dc->color);
-  return dc->color;
+  return RVColor(idx & (COLORS_NUM - 1));   //parenthesised: see RVDCPenIdx in RVGr.HC
 }
 
 I64 PressAKey()
