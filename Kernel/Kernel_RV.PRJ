@@ -217,6 +217,11 @@ kernel_cfg = KCfgNew;
 #endif
 #include "/Adam/DolDoc/DocFind.HC"
 #include "/Adam/DolDoc/DocLink.HC"
+// Adam graphics tables the demos name: gr_x_offsets/gr_y_offsets (the 8 neighbours, GrPeek loops),
+// gr_rainbow_10 and gr_palette_gray. GrMath also brings Mat4x4* — the fixed-point transform — which
+// needed GR_SCALE, whose value ::/Doc/Transform.DD states rather than leaving to guesswork.
+#include "/Adam/Gr/GrMath.HC"
+#include "/Adam/Gr/GrPalette.HC"
 // NOT added, although each compiles clean: DocDblBuf, DocRecalcLib, ARegistry and ASnd each define
 // a function this image already defines, and a second body for one name wins silently. Check with
 // tools/check_prj_collisions.py before adding an Adam unit.

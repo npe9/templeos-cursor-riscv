@@ -3581,6 +3581,13 @@ public class CTextGlbls
 //GR_Z_ALL is set to half of the Z-range which is an I32.
 #define GR_Z_ALL	(I32_MAX/2)
 
+//The fixed-point unit of the 4x4 transform matrix: r[15] is the homogeneous 1.0 and Mat4x4Mul
+//divides each product by it. The value is not guessed — ::/Doc/Transform.DD states it:
+//"The matrix consists of ints that have been scaled 32 bits ($LK,"GR_SCALE",A="MN:GR_SCALE"$)."
+//See $LK,"::/Demo/Lectures/FixedPoint.HC"$ for why 32 bits. Named by Adam/Gr/GrMath.HC,
+//Adam/DolDoc/DocGr.HC and Demo/Graphics/Shadow.HC.
+#define GR_SCALE	0x100000000
+
 #help_index "Graphics/Device Contexts"
 //Low 8 bits reserved for flags that go into saved bitmaps
 #define DCF_COMPRESSED		1
