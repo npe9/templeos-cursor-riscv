@@ -763,6 +763,7 @@ Bool RVWinMgrInit()
   gr.text_base = rv_winmgr.text_base; //stock gr.text_base alias (Maze, Adam/Win.HC)
   MemSet(rv_winmgr.text_base, 0, cells *sizeof(U32));
   rv_winmgr.win_z_buf = MAlloc(cells *sizeof(U16));
+  gr.win_z_buf = rv_winmgr.win_z_buf; //stock gr.win_z_buf alias (Adam/Gr per-cell z clip)
   if (!rv_winmgr.win_z_buf)
     return FALSE;
   MemSet(rv_winmgr.win_z_buf, 0, cells *sizeof(U16));

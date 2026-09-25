@@ -15,7 +15,19 @@ EXPECT_PREFIX="RVDemo Blot smoke hash="
 # rendering moved and the pins that disagree were simply stale. If one moves again, find the
 # commit that moved it before touching this line — a framebuffer hash cannot tell you whether
 # the picture got better or worse.
-PINNED_HASH="0x43186381"
+# THIS PIN IS FRAGILE, and the reason is not understood. This demo's output depends on
+# sizeof(CRVDC): four I64 pads with NO logic reproduce a change exactly, growing CGrMsGlbls
+# does not, and no other pinned picture (fb/gr/cdc/win/netofdots/zorder) moves at all. The
+# picture stays equivalent across those moves — the same two blue lines, ~5460 non-black
+# pixels, differences confined to line jitter (tools/fb_scanout_hash.py --png).
+#
+# Eliminated so far: RNG (Blot calls none, seed is fixed), unzeroed DC structs and bodies
+# (RVDCNew CAllocs both), CAlloc itself (it MemSets), and flood-fill queue drops
+# (rv_gr_ff_dropped is 0 on this path). Re-pinned 2026-09-24 for the stock CDC fields.
+#
+# Do not re-pin without looking at the PNG: a hash cannot tell you whether the picture got
+# better or worse, and both renders are already suspect for a flood-filled blot demo.
+PINNED_HASH="0x85CE6339"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"

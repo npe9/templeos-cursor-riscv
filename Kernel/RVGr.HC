@@ -89,6 +89,38 @@ class CRVDC
   Bool is_u8;
   // TRUE ⇒ body is U8 palette indices (offscreen + opt-in WinMgr paint DC). Trailing
   // so brush/clip offsets match pre-8bit CRVDC layout.
+
+  /* Stock CDC fields that stock code reads directly. A survey of all 204 Demo programs found
+   * 16 of them failing to compile on a missing CRVDC member, the most common single cause.
+   * Names and meanings follow CDC in Kernel/KernelA.HH:3620; widths are I64 here because RV
+   * has no reason to pack to I32. All TRAILING, like is_u8, so no existing offset moves.
+   * Storage now, behaviour as the Gr3 work lands: `r`/`r_norm` are DCMat4x4Set's matrix,
+   * `depth_buf`/`db_z` are DCDepthBufAlloc's z buffer, `win_task` is what a per-cell z clip
+   * in GrPlot0 tests against gr.win_z_buf. */
+  I64 *r;
+  I64 r_norm;
+  I64 x;
+  I64 y;
+  I64 z;
+  I64 cur_x;
+  I64 cur_y;
+  I64 cur_z;
+  I64 collision_cnt;
+  CTask *mem_task;
+  CTask *win_task;
+  I32 *depth_buf;
+  I64 db_z;
+  CD3I32 ls;
+  //light source, normalized to 65536 (stock CDC.ls)
+  U64 dither_probability_u16;
+  //ROPF_PROBABILITY_DITHER blend (Demo/Graphics/SunMoon.HC, Shading.HC)
+  I64 nearest_dist;
+  CGrSym sym;
+  //DCSymmetrySet / DCSymmetry3Set
+  U0 (*transform)(CDC *dc, I64 *x, I64 *y, I64 *z);
+  //overridable, default DCTransform
+  U0 (*lighting)(CDC *dc, CD3I32 *p1, CD3I32 *p2, CD3I32 *p3, CColorROPU32 color);
+  //overridable, default DCLighting
 };
 
 U32 RVDCPenColor(CRVDC *dc)
@@ -141,6 +173,22 @@ class CGrMsGlbls
   //this at rv_winmgr.text_base when it comes up (RVGr is included BEFORE RVWinMgr, so it
   //cannot name it here). Stock code indexes it directly: Demo/Games/Maze.HC does
   //MemCpy(gr.text_base+TEXT_COLS,…) and Adam/Win.HC XORs a cell to draw the text cursor.
+
+  /* The rest of stock CGrGlbls that stock code reads. 9 of the 204 Demo programs failed to
+   * compile on one of these — second only to CRVDC. dc/dc2 are the screen and compose DCs
+   * (RVGrInit points them at rv_gr.dc), win_z_buf is the per-cell window-owner grid the
+   * WinMgr fills. */
+  CDC *dc;
+  CDC *dc2;
+  U16 *win_z_buf;
+  Bool to_8_bits;
+  I64 hide_col;
+  I64 pan_text_x;
+  I64 pan_text_y;
+  U0 (*fp_final_scrn_update)(CDC *dc);
+  I64 hide_row;
+  Bool to_8_colors;
+  U0 (*fp_wall_paper)(CDC *dc);
 };
 CGrMsGlbls gr;
 // screen DC storage (aliases rv_fb.pixels compose after RVGrInit)
@@ -424,6 +472,10 @@ Bool RVGrInit(I64 width = RV_FB_W_DEFAULT, I64 height = RV_FB_H_DEFAULT, U32 *pi
   if (!RVFbInit(width, height, pixels))
     return FALSE;
   rv_gr.dc = &rv_scrn_dc;
+  //Stock gr.dc / gr.dc2: the screen DC. TempleOS composes into dc2 and flips; RV composes in
+  //rv_fb (RVFbFlip), so both name the same bound screen DC here rather than inventing a second.
+  gr.dc = rv_gr.dc(CDC *);
+  gr.dc2 = rv_gr.dc(CDC *);
   if (!RVDCScrnBind(rv_gr.dc))
     return FALSE;
   rv_gr.fp_draw_it = NULL;
@@ -937,6 +989,12 @@ class CRVFFPt
   I16 y;
 };
 
+/* Points the scanline BFS could not queue because the queue was full and the heap would not
+ * grow it. Each one is a HOLE in the fill. It used to happen silently, which made the render
+ * depend on heap pressure: growing CRVDC by 32 bytes moved 688 pixels of Demo/Graphics/Blot.HC
+ * and nobody could say why. Reset per fill; a smoke can assert it is zero. */
+I64 rv_gr_ff_dropped;
+
 I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
 {
   //Adam GrFloodFill shape on 32-bpp CRVDC + optional is_u8 palette body (scanline BFS; no depth_buf).
@@ -994,6 +1052,7 @@ I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
   // Guard against corrupt geometry writing past the body (OOB would inflate res).
   if (dc->width > 4096 || dc->height > 4096 || wi < dc->width)
     goto ff_done;
+  rv_gr_ff_dropped = 0;
   qcap = dc->width << 3;
   if (qcap < 4096)
     qcap = 4096;
@@ -1093,6 +1152,15 @@ I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
             if (new_cap > n)
               new_cap = n;
             q2 = MAlloc(sizeof(CRVFFPt) * new_cap);
+            if (!q2) {
+              //Doubling failed: take whatever growth the heap will still give before dropping
+              //work. A dropped point is a HOLE in the fill, and it used to happen silently.
+              new_cap = qcap + (qcap >> 2);
+              if (new_cap > n)
+                new_cap = n;
+              if (new_cap > qcap)
+                q2 = MAlloc(sizeof(CRVFFPt) * new_cap);
+            }
             if (q2) {
               MemCpy(q2, q, sizeof(CRVFFPt) * qcap);
               Free(q);
@@ -1104,7 +1172,8 @@ I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
             q[tail].x = xx;
             q[tail].y = yy - 1;
             tail++;
-          }
+          } else
+            rv_gr_ff_dropped++;
         }
       }
       if (yy + 1 < dc->height) {
@@ -1120,6 +1189,13 @@ I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
             if (new_cap > n)
               new_cap = n;
             q2 = MAlloc(sizeof(CRVFFPt) * new_cap);
+            if (!q2) {
+              new_cap = qcap + (qcap >> 2); //same partial-growth fallback as the yy-1 push
+              if (new_cap > n)
+                new_cap = n;
+              if (new_cap > qcap)
+                q2 = MAlloc(sizeof(CRVFFPt) * new_cap);
+            }
             if (q2) {
               MemCpy(q2, q, sizeof(CRVFFPt) * qcap);
               Free(q);
@@ -1131,7 +1207,8 @@ I64 GrFloodFill(CRVDC *dc = NULL, I64 x, I64 y, Bool not_color = FALSE)
             q[tail].x = xx;
             q[tail].y = yy + 1;
             tail++;
-          }
+          } else
+            rv_gr_ff_dropped++;
         }
       }
     }

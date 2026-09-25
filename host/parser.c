@@ -5842,6 +5842,10 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
   // Create global variable hash entry
   // `extern I64 x;` then `I64 x = 3;` (or a REPL redefinition): reuse the existing entry.
   CHashGlblVar *existing = (CHashGlblVar *)HashFind(var_name, cc->hash_table, HTT_GLBL_VAR);
+  // Capture what the name meant BEFORE this declaration repurposes the entry — a redefinition
+  // with a DIFFERENT type silently re-aims every offset already compiled against the old one.
+  CHashClass *prev_class = existing ? existing->var_class : NULL;
+  I64 prev_elem = existing ? existing->element_size : 0;
   CHashGlblVar *tmpg = existing ? existing : calloc(1, sizeof(CHashGlblVar));
   tmpg->str = strdup(var_name);
   tmpg->type = HTT_GLBL_VAR;
@@ -5872,6 +5876,25 @@ static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name) {
   }
   if (cc->last_pointed_to_type) {
     base_size = 8;  // Pointers are 8 bytes
+  }
+  // A global redefined with a different type is almost always a COLLISION, not an intent.
+  // Demo/Games/Maze.HC declares `U32 text[TEXT_ROWS][TEXT_COLS]`, which lands on the kernel's
+  // `CTextGlbls text;` (KGlbls.HC:30) and re-aims the kernel's own member offsets at a U32
+  // array — the game then faulted during boot with nothing to point at. Re-declaring the SAME
+  // type stays silent: `extern I64 x;` then `I64 x = 3;` is the documented reason this path
+  // reuses the entry at all. HOLYC_STRICT_GLOBALS=0 downgrades to a warning.
+  if (existing && prev_elem && (prev_class != decl_class || prev_elem != base_size)) {
+    const char *genv = getenv("HOLYC_STRICT_GLOBALS");
+    const char *pname = prev_class && prev_class->str ? prev_class->str : "scalar";
+    const char *nname = decl_class && decl_class->str ? decl_class->str : "scalar";
+    char gmsg[256];
+    snprintf(gmsg, sizeof gmsg,
+             "Global '%s' redefined with a different type (was %s/%lld bytes, now %s/%lld)",
+             var_name, pname, (long long)prev_elem, nname, (long long)base_size);
+    if (genv && genv[0] == '0')
+      fprintf(stderr, "WARN: %s\n", gmsg);
+    else
+      Error(cc, gmsg);
   }
   tmpg->element_size = base_size;
   tmpg->size = base_size;
