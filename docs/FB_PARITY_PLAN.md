@@ -105,9 +105,33 @@ Delete `#define CDC CRVDC` and let `CDC` be the stock class. Concretely:
 4. `CDC.body` is `U8 *` — 8-bit palette indices at `width_internal` stride. The port already has this
    mode (`CRVDC.is_u8`), so the compose path has a place to stand.
 
-Gate: the phase-1 scene hashes (they WILL move — re-pin with PNG evidence, which is what this repo
-already does for `kernel-demo-blot-smoke`), plus the eight layout targets. `sizeof` changes, so the
-blot hash moves too.
+### The one thing phase 2 really costs: `dc->color` is overloaded today
+
+Measured, not guessed. `Kernel/RVGr.HC:303` is `RVDCPenIdx`:
+
+```
+if (dc->color == COLOR_MONO || dc->color == TRANSPARENT) …
+if (dc->color < COLORS_NUM) return dc->color;   // a palette INDEX
+return RVColorNearestIdx(dc->color);            // else an XRGB PIXEL, mapped to the nearest index
+```
+
+So the port stores **either** a palette index **or** a 32-bpp XRGB pixel in the same field, and
+`RVDCRst` puts an XRGB value there (`dc->color = RVColor(WHITE)`). Stock's field cannot do that: it
+is a `CColorROPU32`, two `CColorROPU16` halves of `{colour, rop}`, and the high bits are the second
+colour for dithering — `ROPF_DITHER` and `ROPF_PROBABILITY_DITHER` live in `c1.rop`.
+
+**So adopting stock `CDC` means giving up XRGB-in-the-DC**, and the index→pixel conversion moves to
+the present step. That is where phase 6 step 1 puts it anyway, so the two are coupled: you cannot
+keep a 32-bpp pen and have stock `CDC`. Decide it once, at the start of phase 2, rather than halfway
+through.
+
+There are 28 `dc->color` uses in `Kernel/RVGr.HC` and 13 more across `RVWinMgr.HC`, `RVSprite.HC` and
+`RVDoc.HC` — about 41 sites, each of which is asking one of two questions ("what index do I write"
+or "what pixel do I write"), and the answer after phase 2 is always the first.
+
+Gate: the phase-1 scene hashes (they WILL move — re-pin and say which and why, per
+`docs/GR_SCENE_HASHES.md`), plus the eight layout targets. `sizeof` changes, so the blot hash moves
+too.
 
 ## Phase 3 — adopt stock `CGrGlbls`
 
