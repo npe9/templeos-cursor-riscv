@@ -2025,6 +2025,27 @@ U0 RVWinMgrCursorUpdate()
   RVWinMgrPresent(FALSE);
 }
 
+U0 RVWinMgrPublishMs()
+{
+  /* Publish the pointer into the stock `ms` globals (CMsStateGlbls, Kernel/KGlbls.HC).
+   * Stock code reads ms.pos directly rather than taking MSG_MS_* — Demo/Games/BattleLines.HC
+   * and Whap.HC both do — and nothing was writing it on the virtio path, so they saw 0,0.
+   *
+   * GRANULARITY, stated plainly: rv_winmgr tracks the pointer in TEXT CELLS, so pos is a
+   * multiple of FONT_WIDTH/FONT_HEIGHT and the arrow moves in 8-pixel steps. Stock ms.pos is
+   * pixel-granular (Kernel/SerialDev/Mouse.HC MsUpdate clamps to GR_WIDTH-1). Making the
+   * WinMgr pointer pixel-accurate is a separate change: the REL path at the EV_REL handler
+   * already computes pixels and then divides them away, and the cell value is what the hit
+   * tests, drag and cursor save-under all use. */
+  ms.pos_text.x = rv_winmgr.ptr_x;
+  ms.pos_text.y = rv_winmgr.ptr_y;
+  ms.pos.x = rv_winmgr.ptr_x *FONT_WIDTH;
+  ms.pos.y = rv_winmgr.ptr_y *FONT_HEIGHT;
+  ms.lb = rv_winmgr.ptr_lb != 0;
+  ms.rb = rv_winmgr.ptr_rb != 0;
+  ms.show = TRUE;
+}
+
 U0 RVWinMgrPostMs(I64 msg, I64 cx, I64 cy)
 {
   //TempleOS WinMgr → TaskMsg(MSG_MS_*) with window-local pixels for GetMsg demos.
@@ -3857,6 +3878,7 @@ I64 RVWinMgrPumpInput(I64 max)
       if (ev.code == BTN_LEFT) {
         if (ev.value) {
           rv_winmgr.ptr_lb = 1;
+          RVWinMgrPublishMs;
           // Modal PopUp / PersonalMenu consume clicks first.
           if (RVPopUpClick(nx, ny)) {
             content_dirty = TRUE;
@@ -3936,6 +3958,7 @@ I64 RVWinMgrPumpInput(I64 max)
           else if (rv_winmgr.drag_mode == RV_DRAG_SCROLL)
             rv_winmgr.scroll_drags++;
           rv_winmgr.ptr_lb = 0;
+          RVWinMgrPublishMs;
           rv_winmgr.drag_mode = RV_DRAG_NONE;
           rv_winmgr.drag_idx = -1;
           content_dirty = TRUE;
@@ -3946,6 +3969,7 @@ I64 RVWinMgrPumpInput(I64 max)
         // Stock MassSpring GetMsg: MSG_MS_R_DOWN / R_UP.
         if (ev.value) {
           rv_winmgr.ptr_rb = 1;
+          RVWinMgrPublishMs;
           hit = RVWinHitTest(nx, ny);
           if (hit >= 0) {
             rv_winmgr.ptr_x = nx;
@@ -3959,6 +3983,7 @@ I64 RVWinMgrPumpInput(I64 max)
           if (rv_winmgr.ptr_rb)
             RVWinMgrPostMs(MSG_MS_R_UP, nx, ny);
           rv_winmgr.ptr_rb = 0;
+          RVWinMgrPublishMs;
           content_dirty = TRUE;
         }
         continue;
@@ -4049,6 +4074,7 @@ I64 RVWinMgrPumpInput(I64 max)
       if (nx != rv_winmgr.ptr_x || ny != rv_winmgr.ptr_y) {
         rv_winmgr.ptr_x = nx;
         rv_winmgr.ptr_y = ny;
+        RVWinMgrPublishMs;
         ptr_dirty = TRUE;
         if (rv_winmgr.ptr_lb && rv_winmgr.drag_mode != RV_DRAG_NONE) {
           RVWinDragApply(nx, ny);
