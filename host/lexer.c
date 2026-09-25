@@ -6,6 +6,12 @@
 #define IS_ALPHA_CHAR(c) (((c) >= 'a' && (c) <= 'z') || ((c) >= 'A' && (c) <= 'Z'))
 #define IS_DIGIT_CHAR(c) ((c) >= '0' && (c) <= '9')
 #define IS_ALNUM_CHAR(c) (IS_ALPHA_CHAR(c) || IS_DIGIT_CHAR(c) || (c) == '_')
+// A #define/#ifdef/#undef NAME is scanned by the preprocessor, and an identifier TOKEN is scanned
+// by LexIdentifier, whose IS_IDENT_CHAR accepts every byte >= 128 (the TempleOS charset). The two
+// have to agree or a name that contains one splits: `#define SA_SET_\xE9 3` registered `SA_SET_`
+// with the body "\xE9 3", and `case SA_SET_\xE9:` then failed with "Expected integer constant in
+// case" — Demo/Games/FlatTops.HC and three other demos.
+#define IS_IDENT_BYTE(c) (IS_ALNUM_CHAR(c) || (unsigned char)(c) >= 128)
 
 #define MAX_INCLUDE_PATH 1024
 
@@ -627,7 +633,7 @@ static void HandlePreprocessor(Compiler *cc) {
     // Get macro name
     char name[256];
     i = 0;
-    while ((IS_ALNUM_CHAR(*lex->ptr)) && i < 255) {
+    while ((IS_IDENT_BYTE(*lex->ptr)) && i < 255) {
       name[i++] = *lex->ptr++;
       lex->col++;
     }
@@ -814,7 +820,7 @@ static void HandlePreprocessor(Compiler *cc) {
       while (*lex->ptr == ' ' || *lex->ptr == '\t') { lex->ptr++; lex->col++; }
       char name[256];
       i = 0;
-      while ((IS_ALNUM_CHAR(*lex->ptr)) && i < 255) {
+      while ((IS_IDENT_BYTE(*lex->ptr)) && i < 255) {
         name[i++] = *lex->ptr++;
         lex->col++;
       }
@@ -891,7 +897,7 @@ static void HandlePreprocessor(Compiler *cc) {
     // Get macro name
     char name[256];
     i = 0;
-  while ((IS_ALNUM_CHAR(*lex->ptr)) && i < 255) {
+  while ((IS_IDENT_BYTE(*lex->ptr)) && i < 255) {
       name[i++] = *lex->ptr++;
       lex->col++;
     }
