@@ -52,6 +52,9 @@ c="$SP/$n.hc"; l="$SP/$n.log"; T=$(mktemp -d)
   echo '}'
   echo '// Boot BEFORE the include — the demo`s top-level code runs at load and may print.'
   echo 'SurveyBoot;'
+  # Demo/AcctExample is a personal Home account and names values that lived in its own ~/. The
+  # placeholder set stands in for them; see docs/ACCT_EXAMPLE.md.
+  case "$f" in Demo/AcctExample/*) echo '#include "/tos/HomeAcctExample.HH"' ;; esac
   echo '#define RV_NO_DEMO_AUTORUN'
   echo "#include \"/$f\""
   echo 'I64 main() { Print("L1-LOADED\n"); return 0; }'

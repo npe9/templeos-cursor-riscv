@@ -76,7 +76,14 @@ Internal names stay hierarchical slash paths (`Home/…`, `Tutorials/…`) — n
 | `/Kernel/…`, `::/Kernel/…`, `A:/Kernel/…` | `$ROOT/Kernel/…` |
 | `::/Apps/…`, `A:/Apps/…` | `$ROOT/Apps/…` then **`$ROOT/tos/Apps/…`** |
 | `/tos/Apps/…` | `$ROOT/tos/Apps/…` (host layout escape hatch) |
+| `~/HomeLocalize` | `$HOLYC_HOME_ROOT/HomeLocalize` (default `/Home/…`) then `/HomeLocalize` |
 | relative | directory of current file |
+
+`~` is the logged-in account's Home directory. There is no logged-in account on the host, so
+`HOLYC_HOME_ROOT` names one. The fallback to the distribution root is the rule stated in
+`MakeHome.HC`: "If these are not present in /Home, it uses the version in the root dir." In this
+repo the shipped templates are `tos/HomeLocalize.HC` and friends, reached as `/HomeLocalize` →
+`$ROOT/tos/HomeLocalize.HC` through the `::/` adapter above. See `docs/ACCT_EXAMPLE.md`.
 
 Guest Soft Cmp (`Compiler/Lex.HC` `#include`): relative names (no `A:`/`::`/`/`)
 also join the **including file's directory** from `lex_include_stk->full_name`

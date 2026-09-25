@@ -299,6 +299,29 @@ static bool LoadIncludeFile(Compiler *cc,
   /* `::/Adam/…`, `A:/Kernel/…`, `:/Demo/…` → distribution-rooted absolute. */
   filename = StripTempleOSPathPrefix(filename);
 
+  /* `~/HomeLocalize` is the CURRENT USER'S Home directory — where a TempleOS account keeps the
+   * files it overrides (see docs/ACCT_EXAMPLE.md). On the host there is no logged-in account, so
+   * HOLYC_HOME_ROOT names one; it defaults to the distribution's `/Home`, which is `tos/` in this
+   * repo and holds the shipped templates. Without this, Demo/AcctExample/MakeHome.HC could not be
+   * read at all. */
+  if (filename[0] == '~' && (filename[1] == '/' || filename[1] == '\\')) {
+#ifndef BARE_METAL
+    const char *home = getenv("HOLYC_HOME_ROOT");
+#else
+    const char *home = NULL;
+#endif
+    /* MakeHome.HC: "If these are not present in /Home, it uses the version in the root dir." */
+    const char *roots[2] = { (home && *home) ? home : "/Home", "" };
+    for (int r = 0; r < 2; r++) {
+      char home_buf[MAX_INCLUDE_PATH];
+      int wh = StrPrintF(home_buf, sizeof(home_buf), "%s%s", roots[r], filename + 1);
+      if (wh > 0 && wh < (int)sizeof(home_buf) &&
+          LoadIncludeFile(cc, home_buf, out_src, out_size, resolved_path, resolved_size))
+        return true;
+    }
+    return false;
+  }
+
   if (IsAbsolutePath(filename)) {
     // TempleOS paths are rooted at the distribution ("/Kernel/KernelA.HH"): HOLYC_INCLUDE_ROOT
     // names that directory on the host (the exec scripts point it at the repo root).
