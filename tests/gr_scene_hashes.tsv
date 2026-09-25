@@ -1,0 +1,19 @@
+# Framebuffer-parity scene hashes — docs/FB_PARITY_PLAN.md phase 1.
+# FNV-1a over width_internal*height bytes of an offscreen 8-bit DC body, padding included.
+# Regenerate: GR_SCENE_PIN=1 make kernel-gr-scenes-smoke
+# The x86 column is blank until someone boots stock TempleOS and runs the same case;
+# when it is filled, a row where the two differ IS the parity gap for that primitive.
+#scene	rv_hash	x86_hash
+plot	FEF2B216062799A5	
+hline	03912ECA0862DA09	
+line	A1D8FD34756C6783	
+line_thick	50C492B35261905B	
+rect	78C7E455F7E16765	
+circle	9E5015D620BB8225	
+fill_circle	6E431751526DE325	
+flood_fill	67526A585B9B7585	
+tri	65ACF61ABE314A36	
+blot	67B30BA9F54F4C25	
+print	1645FDF7D06830B6	
+fill	48997CA74B46E325	
+peek_write	63B8AA7921A60225	

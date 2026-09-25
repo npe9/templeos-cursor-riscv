@@ -715,6 +715,13 @@ kernel-demo-blot-smoke:
 	@chmod +x tests/scripts/run_kernel_demo_blot_smoke.sh
 	@tests/scripts/run_kernel_demo_blot_smoke.sh
 
+# The framebuffer-parity oracle: one fixed scene per Gr primitive drawn into an OFFSCREEN 8-bit DC,
+# hashed, diffed against tests/gr_scene_hashes.tsv. See docs/FB_PARITY_PLAN.md.
+# GR_SCENE_PIN=1 rewrites the table.
+kernel-gr-scenes-smoke:
+	@chmod +x tests/scripts/run_kernel_gr_scenes_smoke.sh
+	@tests/scripts/run_kernel_gr_scenes_smoke.sh
+
 # Stock Apps/Span Load (Cd(__DIR__) + Bridge/FloodFill + GetMsg/PopUpFileName).
 newline-semi-smoke:
 	@chmod +x tests/scripts/run_newline_semi_smoke.sh
