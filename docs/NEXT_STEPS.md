@@ -88,6 +88,21 @@ Four tools exist so none of those can happen quietly again, and each one earned 
    worth more than growing L1-OK, and `Demo/MultiCore/Lock.HC` is the proof: it ran for an hour
    printing `Actual Cnt:2` before anyone looked at the number.
 
+### Framebuffer parity with x86 TempleOS — the plan is `docs/FB_PARITY_PLAN.md`
+
+Measured while writing it, and it reshapes what the job is: **stock `CDC` already compiles on this
+compiler with x86 packing** (`sizeof=408`, every `I32` pair packed, stock's own `#assert !($$&7)`
+passes), and **the whole stock `Adam/Gr` chain is 16 errors away from the real kernel** — of which
+five are `dc->color` being a plain `U32` instead of the `CColorROPU32` union that is already in
+`KernelA.HH`, two are `gr` being 90 bytes here and 10,507 in stock, three are missing `CDC` members,
+and six are unrelated stragglers. Not one is a graphics primitive. `GrPlot`, `GrLine`,
+`GrFillPoly3`, `Sprite3`, `DCTransform` and the sprite machinery all compile already.
+
+So parity is a port-the-files job blocked on two TYPES, not a compiler-layout job. The plan's phase 1
+is an oracle that needs no ISO — a scene program that draws into an OFFSCREEN DC and hashes the
+bitmap, pinned on this side first, so every file swapped in afterwards is a diff rather than a
+screenshot someone eyeballs.
+
 ### A measured speedup nobody has taken
 
 Every exec case burns its full qemu timeout. `tests/exec/harness/crt0.S:31` parks in `wfi; j halt`
