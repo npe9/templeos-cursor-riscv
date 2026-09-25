@@ -1,3 +1,7 @@
+//GetKey is defined in Kernel/RVKeyIn.HC, after the UART driver it reads from; this unit is
+//included before that, so forward-declare it (same-module forward call, patched at resolve).
+I64 GetKey(I64 *_scan_code = NULL, Bool echo = TRUE, Bool raw = FALSE);
+
 class CLine
 {
   CLine *next,*last;

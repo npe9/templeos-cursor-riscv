@@ -155,6 +155,7 @@ kernel_cfg = KCfgNew;
 #include "Drv/RVSifiveGem.HC"  // Cadence GEM TX/RX (Yes on sifive_u ETH_BASE)
 #endif
 #include "Drv/RVUart.HC"       // Kconfig UART (16550 / SiFive / HTIF stub)
+#include "RVKeyIn"            // GetKey: window MSG_KEY_DOWN then UART (EdLite fwd-decls it)
 #include "Drv/RVTimer.HC"      // CLINT mtime/mtimecmp
 #include "Drv/RVSmp.HC"        // multi-hart wake / AMO helpers (Phase G)
 #include "Drv/RVPlic.HC"       // PLIC enable/claim (no-op without CONFIG_HAS_PLIC)
