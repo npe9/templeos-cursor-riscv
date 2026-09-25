@@ -1645,7 +1645,12 @@ static bool ParsePrimary(Compiler *cc) {
         return true;
       }
       
-      Error(cc, "Undefined variable");
+      { //Name it. "Undefined variable" with no identifier cannot be triaged, and a port needs
+        //to enumerate exactly which symbols a body of stock code expects.
+        char umsg[192];
+        snprintf(umsg, sizeof umsg, "Undefined variable '%s'", name);
+        Error(cc, umsg);
+      }
       free(name);
       return false;
     }
