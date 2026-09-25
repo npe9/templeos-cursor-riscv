@@ -9,6 +9,20 @@ See also $LK,"GrUpdateScrn",A="MN:GrUpdateScrn"$().
   I64 i,row,col;
   U8 *ptr,*ptr1,*ptr2;
 
+  /* No console geometry = nothing to place a glyph on. Only RVWinMgrInit fills CTextGlbls
+   * (text.cols/rows), so in any build that prints before the window manager comes up — a plat
+   * smoke, a demo harness, EdLite — cols and rows are 0 here, and this routine DIVIDES by
+   * them. RISC-V div/rem by zero do not trap: div returns -1 and rem returns the dividend, so
+   * `row`/`col` come out as garbage and `ptr` lands at a tiny address that is then written to.
+   *
+   * Defensive only. This was briefly suspected of hanging Demo/Games/Halogen.HC's Init; it was
+   * not. That "hang" was a harness reading `head -40` of a capture whose completion line sat
+   * behind 29 legitimately blank ones. The garbage-address write is real regardless.
+   *
+   * The UART transcript does NOT come through here, so returning early costs no output. */
+  if (text.cols <= 0 || text.rows <= 0)
+    return;
+
   if (!(text.raw_flags&RWF_SHOW_DOLLAR)) {
     if (ch=='$$') {
       if (text.raw_flags&RWF_IN_DOLLAR) {
