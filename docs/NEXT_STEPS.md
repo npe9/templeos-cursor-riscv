@@ -175,18 +175,18 @@ clicks did nothing". Running it as a task gives a point to measure from.
 appears frozen. `Sleep(100)` x N in the driver makes it tick. MassSpring hid this because it
 blocks on `GetMsg`, which a posted message satisfies at once.
 
-**`ScanChar` does not receive `TaskMsg(MSG_KEY_DOWN)`.** It is real code (it is absent from the
-load-time unresolved list, unlike `DCSymmetrySet` and `SpriteInterpolate`), but it is not
-defined anywhere in the tree, and keys posted as messages do not reach it — BattleLines' `'2'`
-never toggled `tap_mode` while its loop was demonstrably ticking. Find what queue `ScanChar`
-reads before trying to drive any `ScanChar` game (Maze, Spy, Hanoi, Lines, PredatorPrey…).
+**`ScanChar` works — it waits for the key RELEASE.** An earlier note here said it does not
+receive `TaskMsg(MSG_KEY_DOWN)`. That was wrong. `Kernel/SerialDev/Message.HC:110` takes the
+down and then blocks in `GetMsg` until a `MSG_KEY_UP` with a NON-ZERO ASCII arrives, so posting
+only the down wedges the game and posting a down/up PAIR works: BattleLines' `'2'` flips
+`tap_mode`. (The definition was invisible to `grep` without `-a` — that file carries binary.)
 
-**BattleLines is NOT working, despite appearances.** It spawns, `Init` places troopers at the
-right coordinates, the loop ticks and a trooper moves. But it moves the SAME way with the
-pointer far left and far right (delta -2 either way), so it is formation drift, not the command
-force — the game is not reading `ms.pos` as intended. Do not write a smoke that asserts only
-"a trooper moved": that passes without the input working. The honest assertion is divergence
-between two pointer positions, and it currently fails.
+**BattleLines is gated now** (`kernel-game-scanchar-smoke`): the key reaches its own switch and
+the trooper lands somewhere different with the pointer inside its tap radius than with it far
+away. Two things learned while getting there: the pointer exactly ON a trooper is the one
+degenerate spot (`d==0` fails the `(d && d<R^2)` guard, so nothing happens), and the tap
+intensity is `((R^2-d)^2)^2`, which here throws a trooper to x=566015508. That smells like a
+fixed-point overflow and is NOT pinned by the smoke — only the divergence is.
 
 `ms.pos` is published now (`RVWinMgrPublishMs`) but is CELL-granular, so it lands on multiples
 of 8. Whether that is enough for BattleLines/Whap is untested.
