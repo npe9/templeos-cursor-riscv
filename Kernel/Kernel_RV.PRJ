@@ -206,6 +206,23 @@ kernel_cfg = KCfgNew;
 #include "RVDisasm"   // Disasm/U/UA/DisasmAt — seed disasm.hc port over the task hash
 #include "RVTextBase" // TextChar/TextPrint portable (DocRecalc / draw_it)
 #include "RVRegistry" // in-memory RegDft/RegExe/RegWrite (the compile-time half is in host/parser.c)
+#include "/Adam/CPURep.HC" // stock CPURep() — 6 demos name it (docs/DEMO_SURVEY.md)
+// DocFind + DocLink for the LK_* link kinds (LK_FILE_LINE, LK_PLAIN_LINE) and EdLinkCvt.
+// BIBLE_FILENAME is DocLink's only other need; stock defines it in Adam/DolDoc/MakeDoc.HC, which
+// this port replaces with MakeDoc_RV, so it is named here at its stock value. That makes DocLink
+// COMPILE; DocLink:244 opens it, so on a driveless image that path still throws('Drv').
+#ifndef BIBLE_FILENAME
+#define BIBLE_FILENAME "::/Misc/Bible.TXT.Z"
+#endif
+#include "/Adam/DolDoc/DocFind.HC"
+#include "/Adam/DolDoc/DocLink.HC"
+// NOT added, although each compiles clean: DocDblBuf, DocRecalcLib, ARegistry and ASnd each define
+// a function this image already defines, and a second body for one name wins silently. Check with
+// tools/check_prj_collisions.py before adding an Adam unit.
+//   DocDblBuf    DocBorder/DocDisplay (RVWinMgr), DocPut (RVSprite)
+//   DocRecalcLib DocClear/DocCursor/DocTop/DocBottom/DocScroll/DocCenter (RVDoc)
+//   ARegistry    RegDft/RegExe/RegWrite (RVRegistry)
+//   ASnd         Play/Beat/MusicSet*/Note2Ona/SndTaskEndCB/tM (ASnd_RV)
 #include "RVPhase3.HH"  // phase-3 forward decls (bodies after Compiler_RV_Body in phase3 demo)
 #endif
 #ifdef RV_THIN_LOADER
