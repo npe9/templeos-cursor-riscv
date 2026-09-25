@@ -7,10 +7,10 @@ anything up** — every remaining failure has a named cause, and most have a fun
 
 | | at `e8abb73b` | now |
 |---|---|---|
-| **L1-OK** — loads into a real image, boots, runs its own top-level code, reaches the end | 107 | **150** |
-| L0-FAIL — does not compile | 65 | 44 |
+| **L1-OK** — loads into a real image, boots, runs its own top-level code, reaches the end | 107 | **158** |
+| L0-FAIL — does not compile | 65 | 37 |
 | L1-TRAP — compiles, boots, faults | 32 | 4 (one of which is a demo needing its sibling) |
-| L1-HANG — does not finish in the window | (not split out) | 6 |
+| L1-HANG — does not finish in the window | (not split out) | 5 |
 
 **Most of that gain was the harness measuring the wrong thing, not the port getting better.** Four
 separate harness bugs, each written down as a kernel bug first:
@@ -48,28 +48,38 @@ Four tools exist so none of those can happen quietly again, and each one earned 
    distribution file still fails, by name. Putting the repo's `tos/Doc` tree on it is the next step
    of the same idea, and `make tos` builds exactly that image.
 
-2. **`JobQue` returns NULL** (`Kernel/KStartRV.HC:113`), so `JobResGet` spins forever —
-   `tools/hangpc.sh` samples `ra=JobResGet+0x14c` in `Demo/MultiCore/Lock.HC`, and it is why
-   `Demo/MultiCore/Primes.HC` runs while measuring nothing. A single-hart JobQue that runs the job
-   inline and returns a done `CJob` on `Fs->srv_ctrl.next_done` would make the MultiCore demos
-   compute real answers. The obstacle is include order: `KStartRV` is `Kernel_RV.PRJ:26`, before
-   `KUtils`, `KernelB.HH` and `Job`, so the body cannot see `CAlloc`/`QueIns`/`Fs`. Put the
-   implementation in a file included after `Job` and gate the stub — and run
-   `tools/check_prj_collisions.py` on it first, because `Kernel/MultiProc.HC` defines `JobQue` too.
+2. ~~**`JobQue` returns NULL.**~~ **DONE — `Kernel/RVJob.HC`, and it found a compiler bug.**
+   A single-hart JobQue runs the job and hands back a finished `CJob`, so `JobResGet` returns
+   instead of spinning. `Demo/MultiCore/Lock.HC` went L1-HANG → L1-OK and then printed
+   `Actual Cnt:2` where it should print `2000000` — which turned out to be the newline-semicolon
+   rule ending the statement after a bare `lock`, so the two AMOs bracketed nothing and `glbl++`
+   moved out of the loop. Fixed in `host/lexer.c`, gated by
+   `tests/exec/cases/e_lock_stmt_newline.hc` (checked that it fails without the fix), and the demo
+   now prints the right answer twice. **It is still not parallel** — on one hart both totals are
+   correct by construction, so `Lock.HC` can no longer demonstrate the race it was written for.
+   Seth tasks per hart are the real answer; `Kernel/Drv/RVSmp.HC` has the hart wake.
 
 3. **More `Adam/` units into the PRJ.** This is still the largest L0 group. `CPURep`, `DocFind` and
    `DocLink` went in at `8687a21c`; each remaining candidate needs a symbol the port lacks first:
 
-   | unit | demos | what it needs |
-   |---|---|---|
-   | `Adam/Gr/GrDC.HC` | 2 | `CRVDC.dc_signature`, `.palette` |
-   | `Adam/Gr/GrMath.HC` | 1 | `GR_SCALE` |
-   | `Adam/Gr/SpriteCode.HC` | 1 | `CGrMsGlbls.sprite_hash` |
-   | `Adam/DolDoc/DocEd.HC` | 2 | `DocGetKey` |
-   | `Adam/InFile.HC` | 1 | `View` |
-   | `Adam/Win.HC` | 1 | `CGrMsGlbls.fp_draw_grab_ms` |
-   | `Adam/Snd/SndMath.HC` | 1 | `CSndWaveCtrl` |
-   | `Adam/Opt/Boot/BootRAM.HC` | 1 | a parse error |
+   | unit | demos | what it needs | kind |
+   |---|---|---|---|
+   | ~~`Adam/Gr/GrMath.HC`~~ | 6 | ~~`GR_SCALE`~~ | **DONE** — and it brought `DCSymmetrySet` too |
+   | ~~`Adam/Gr/GrPalette.HC`~~ | — | — | **DONE** |
+   | `Adam/Gr/GrDC.HC` | 2 | `CRVDC.dc_signature`, `.palette` | a struct MEMBER |
+   | `Adam/Gr/SpriteCode.HC` | 1 | `CGrMsGlbls.sprite_hash` | a struct MEMBER |
+   | `Adam/Win.HC` | 1 | `CGrMsGlbls.fp_draw_grab_ms` | a struct MEMBER |
+   | `Adam/DolDoc/DocEd.HC` | 2 | `DocGetKey` | a function |
+   | `Adam/InFile.HC` | 1 | `View` | a function |
+   | `Adam/Snd/SndMath.HC` | 1 | `CSndWaveCtrl` | a class |
+   | `Adam/Opt/Boot/BootRAM.HC` | 1 | a parse error | compiler |
+
+   **The three struct members are not one-liners, and declaring them would be worse than
+   leaving them out.** `gr.sprite_hash` is a live hash table — `Adam/Gr/SpriteCode.HC:578` does
+   `HashFind(cc->cur_str, gr.sprite_hash, SPHT_ELEM_CODE)` — so a field nobody populates makes the
+   unit compile and then look up in NULL. Adding a field also moves `sizeof(CRVDC)`, and
+   `kernel-demo-blot-smoke` pins a framebuffer hash that has had to be re-pinned for exactly that
+   before. Each of these three is "port the feature", not "declare the field".
 
    `Adam/ARegistry.HC`, `Adam/ASnd.HC`, `Adam/DolDoc/DocRecalcLib.HC` and `DocDblBuf.HC` compile
    clean and must NOT be added — they each redefine a function this image already has. The PRJ

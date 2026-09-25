@@ -50,10 +50,10 @@ reported as a kernel bug first:
 
 | result | count | share |
 |---|---|---|
-| L1-OK | 150 | 74% |
-| L0-FAIL | 44 | 22% |
+| L1-OK | 158 | 77% |
+| L0-FAIL | 37 | 18% |
 | L1-TRAP | 4 | 2% |
-| L1-HANG | 6 | 3% |
+| L1-HANG | 5 | 2% |
 | **total** | **204** | |
 
 ## By directory
@@ -65,11 +65,11 @@ reported as a kernel bug first:
 | `Demo/Asm` | 6 | 8 |
 | `Demo/DolDoc` | 11 | 13 |
 | `Demo/Dsk` | 6 | 6 |
-| `Demo/Games` | 25 | 32 |
-| `Demo/Graphics` | 40 | 50 |
+| `Demo/Games` | 28 | 32 |
+| `Demo/Graphics` | 44 | 50 |
 | `Demo/InFile` | 0 | 2 |
 | `Demo/Lectures` | 9 | 12 |
-| `Demo/MultiCore` | 6 | 8 |
+| `Demo/MultiCore` | 7 | 8 |
 | `Demo/RevFileDemo` | 1 | 1 |
 | `Demo/Snd` | 4 | 4 |
 | `Demo/SortFileDemo` | 1 | 2 |
@@ -104,14 +104,14 @@ autorun reached, not the include.
 | `Demo/ToHtmlToTXTDemo/HtmlGen.HC` | L0-FAIL | L1-OK | `ToHtml(...)` — needs `Adam/DolDoc/DocLink.HC`'s `LK_*`, not in the PRJ |
 | `Demo/ToHtmlToTXTDemo/TXTGen.HC` | L1-OK | L1-OK | `ToTXT(...)` — ran |
 
-## What blocks the 44 that do not compile (L0-FAIL)
+## What blocks the 37 that do not compile (L0-FAIL)
 
 Counted by how many demos show each error, so one file with fourteen copies of one error
 counts once.
 
 | blocker | demos |
 |---|---|
-| undefined symbol | 36 |
+| undefined symbol | 30 |
 | Expected constant array size | 6 |
 | parse error | 5 |
 | unknown class member | 4 |
@@ -121,7 +121,6 @@ counts once.
 | Expected type | 1 |
 | Argument 2 omitted, but 'Sort' has no declaration here to take a defau | 1 |
 | Expected expression | 1 |
-| Argument 1 omitted, but 'DCSymmetrySet' has no declaration here to tak | 1 |
 | Argument 3 omitted, but 'PopUpRangeI64' has no declaration here to tak | 1 |
 | Expected ';' or ',' | 1 |
 | Argument 1 omitted, but 'InSetMs' has no declaration here to take a de | 1 |
@@ -132,13 +131,13 @@ A missing symbol is one of three different problems, and the split is the plan:
 
 | | demos |
 |---|---|
-| the tree HAS it — an `Adam/` or `tos/` file not in `Kernel_RV.PRJ` | 14 |
+| the tree HAS it — an `Adam/` or `tos/` file not in `Kernel_RV.PRJ` | 12 |
 | the demo also has other compiler errors | 17 |
-| nowhere in the tree | 10 |
+| nowhere in the tree | 5 |
 | a SIBLING file of the same program has it | 2 |
 | a mix of the above | 1 |
 
-**The 14 that need only a file added to the project.** This is the largest single move left;
+**The 12 that need only a file added to the project.** This is the largest single move left;
 `Adam/CPURep.HC` alone accounts for six of them.
 
 | program | where its symbols live |
@@ -147,11 +146,9 @@ A missing symbol is one of three different problems, and the split is the plan:
 | `Demo/AcctExample/Once.HC` | `Adam/ARegistry.HC`, `tos/Once.HC` |
 | `Demo/AcctExample/TOS/TOSMisc.HC` | `tos/Apps/Psalmody/JukePuppet.HC` |
 | `Demo/AcctExample/TOS/TOSToHtml.HC` | `Adam/ABlkDev/ADskA.HC` |
-| `Demo/Games/ElephantWalk.HC` | `Adam/Gr/GrMath.HC` |
 | `Demo/Games/Stadium/StadiumGen.HC` | `Adam/Gr/GrDC.HC` |
 | `Demo/Graphics/Elephant.HC` | `Adam/ABlkDev/ChkDsk.HC`, `Adam/ABlkDev/DskChk.HC`, `Adam/DolDoc/DocEd.HC`, `Adam/Gr/SpriteSideBar.HC`, `tos/Apps/ToTheFront/ToTheFront.HC` |
 | `Demo/Graphics/MathAudioDemo.HC` | `Adam/ASnd.HC`, `Adam/Snd/SndMath.HC` |
-| `Demo/Graphics/Shadow.HC` | `Adam/Gr/GrDC.HC` |
 | `Demo/Graphics/Transform.HC` | `Adam/ABlkDev/ChkDsk.HC`, `Adam/ABlkDev/DskChk.HC`, `Adam/DolDoc/DocEd.HC`, `Adam/Gr/SpriteSideBar.HC`, `tos/Apps/ToTheFront/ToTheFront.HC` |
 | `Demo/InFile/InSetIP.HC` | `Adam/InFile.HC` |
 | `Demo/OnceDemo.HC` | `Adam/Opt/Boot/BootRAM.HC` |
@@ -168,7 +165,7 @@ are not port bugs; the row above is honest about what it measured.
 | `Demo/AcctExample/HomeKeyPlugIns.HC` | `Demo/AcctExample/TOS/TOSMisc.HC` |
 | `Demo/AcctExample/TOS/TOSNIST.HC` | `Demo/AcctExample/TOS/TOSExt.HC` |
 
-**The 10 whose symbols are nowhere in the tree.** These are the genuinely unported ones —
+**The 5 whose symbols are nowhere in the tree.** These are the genuinely unported ones —
 kernel graphics globals (`gr_x_offsets`, `gr_rainbow_10`, `gr_palette_gray`), kernel link
 symbols (`SYS_KERNEL_END`), x86-isms (`STC`, `INT_TO_RING0`). The values that were personal
 are no longer here: `tos/HomeAcctExample.HH` supplies them (`docs/ACCT_EXAMPLE.md`).
@@ -178,11 +175,6 @@ are no longer here: `tos/HomeAcctExample.HH` supplies them (`docs/ACCT_EXAMPLE.m
 | `Demo/AcctExample/TOS/TOSCfg.HC` | `SYS_KERNEL_END`, `TOS_DBG_DISTRO` |
 | `Demo/Asm/AsmAndC3.HC` | `STC` |
 | `Demo/Asm/BuzzFizz.HC` | `_BUZZ_FIZZ` |
-| `Demo/Games/FlatTops.HC` | `gr_x_offsets` |
-| `Demo/Games/Varoom.HC` | `gr_x_offsets` |
-| `Demo/Graphics/EdSprite.HC` | `gr_x_offsets` |
-| `Demo/Graphics/Hanoi.HC` | `gr_rainbow_10` |
-| `Demo/Graphics/PoleZeros.HC` | `gr_palette_gray` |
 | `Demo/Lectures/InterruptDemo.HC` | `F_UNARY_MINUS_INT` |
 | `Demo/Lectures/Ring3.HC` | `INT_TO_RING0` |
 
@@ -194,7 +186,6 @@ are no longer here: `tos/HomeAcctExample.HH` supplies them (`docs/ACCT_EXAMPLE.m
 | symbol | demos |
 |---|---|
 | `DocMax` | 3 |
-| `gr_x_offsets` | 3 |
 | `AOnceFlush` | 2 |
 | `CFG_DBG_DISTRO` | 2 |
 | `CRandExtDec5Form` | 2 |
@@ -207,9 +198,9 @@ are no longer here: `tos/HomeAcctExample.HH` supplies them (`docs/ACCT_EXAMPLE.m
 | `WinTileVert` | 2 |
 | `god` | 2 |
 
-<details><summary>53 more, each named by exactly one demo</summary>
+<details><summary>49 more, each named by exactly one demo</summary>
 
-`BDVD_START`, `BHD_BLK_CNT`, `BMHD2_BLK_ARRAY`, `BORDER_X`, `BORDER_Y`, `BootRAM`, `CGodVideoForm`, `CIRCLE_RAD`, `CWebBibleForm`, `DCSymmetrySet`, `DocDblBufStart`, `DskChkAll`, `F_UNARY_MINUS_INT`, `GBP_LONG`, `GR_PEN_BRUSHES_NUM`, `GR_SCALE`, `GR_SCRN_ZOOM_MAX`, `INT_TO_RING0`, `InSetMs`, `InsRereg`, `LongLines`, `MOVE_CIRCLES`, `Mat4x4IdentNew`, `MemBIOSRep`, `OnceExe`, `PopUpRangeI64`, `STC`, `SYS_IDLE_PT`, `SYS_RAM_REBOOT_END`, `Saw`, `Sort`, `TOS_CFG`, `TOS_DISTRO_DIR`, `TOS_DVD_CFG`, `TOS_DVD_DBG_CFG`, `TOS_ISO_NAME`, `UNITS_NUM`, `_BUZZ_FIZZ`, `b`, `b_head`, `fg_on`, `gr_palette_gray`, `gr_rainbow_10`, `ins_reg`, `meter_bottoms`, `meter_tops`, `n1`, `p_root`, `registry_version`, `rj`, `stk_ptr`, `sys_msg_flags`, `words`
+`BDVD_START`, `BHD_BLK_CNT`, `BMHD2_BLK_ARRAY`, `BORDER_X`, `BORDER_Y`, `BootRAM`, `CGodVideoForm`, `CIRCLE_RAD`, `CWebBibleForm`, `DocDblBufStart`, `DskChkAll`, `F_UNARY_MINUS_INT`, `GBP_LONG`, `GR_PEN_BRUSHES_NUM`, `GR_SCRN_ZOOM_MAX`, `INT_TO_RING0`, `InSetMs`, `InsRereg`, `LongLines`, `MOVE_CIRCLES`, `Mat4x4IdentNew`, `MemBIOSRep`, `OnceExe`, `PopUpRangeI64`, `STC`, `SYS_IDLE_PT`, `SYS_RAM_REBOOT_END`, `Saw`, `Sort`, `TOS_CFG`, `TOS_DISTRO_DIR`, `TOS_DVD_CFG`, `TOS_DVD_DBG_CFG`, `TOS_ISO_NAME`, `UNITS_NUM`, `_BUZZ_FIZZ`, `b`, `b_head`, `fg_on`, `ins_reg`, `meter_bottoms`, `meter_tops`, `n1`, `p_root`, `registry_version`, `rj`, `stk_ptr`, `sys_msg_flags`, `words`
 
 </details>
 
@@ -222,7 +213,7 @@ Each one has a function name, from `tools/traploc.sh` (the harness prints `blob+
 | program | fault | where | what it means |
 |---|---|---|---|
 | `Demo/CompileDemo.HC` | 5 load-fault @ 0x10 | `CompileDemo+0x340` | `CmpCtrlNew`/`Lex`/`LexExpression2Bin` are unresolved imports here, so `cc` is NULL |
-| `Demo/DateTime.HC` | 3 breakpoint @ 0x8083a354 | `UndefinedDefine+0xa8` | `%tZ` looks a define table up BY NAME at runtime; `ST_DAYS_OF_WEEK` is not in this image |
+| `Demo/DateTime.HC` | 3 breakpoint @ 0x8083a5d0 | `UndefinedDefine+0xa8` | `%tZ` looks a define table up BY NAME at runtime; `ST_DAYS_OF_WEEK` is not in this image |
 | `Demo/Graphics/SpriteText.HC` | 5 load-fault @ 0x0 | `SpriteText+0x80` | its own `SpriteText($IB…$)` at line 47 still runs (the guard covers line 50 only) and loads from 0. Which pointer is NULL is not measured; `Sprite2Code` and `CGrMsGlbls.sprite_hash` are both unported and are the likely source |
 | `Demo/SortFileDemo/F64FileSort.HC` | 5 load-fault @ 0x0 | `ArcCompressBuf+0x1a4` | NOT a port bug: it reads a file its sibling `F64FileGen.HC` writes, and `F64FileGenDAT` is that file's LAST statement, so the autorun guard suppresses exactly the call that creates it. Generate it in the same image and this demo sorts, writes and dumps ten real values |
 
@@ -234,7 +225,9 @@ this list, `Demo/Games/TheDead.HC` and `Demo/Games/BlackDiamond.HC`, were the ha
 again: both end in `TheDead;` / `BlackDiamond;` followed by a DolDoc BINARY TAIL, so the
 guard pass — which took the last non-blank line — never saw the call. `tools/hangpc.sh`
 had TheDead spinning in `RVSnd`/`RVSndPcmFill` with `ra` in `JobsHndlr` — it was playing
-its song. Both are L1-OK now.
+its song. Both are L1-OK now. So is `Demo/MultiCore/Lock.HC`: `JobQue` returned NULL
+(`ra=JobResGet+0x14c`, sampled three times over) until `Kernel/RVJob.HC` gave it a
+single-hart implementation — which then exposed the `lock` newline bug.
 
 Where a row below says what a program is doing rather than what it last printed, that came
 from `tools/hangpc.sh`: QMP `info registers` three times a few seconds apart, each `pc`/`ra`
@@ -250,15 +243,6 @@ something. Not a port bug.
 | `Demo/Define.HC` | last printed `Spanish(y or n)? ` |
 | `Demo/InFile/InPopUp.HC` | last printed `PopUp #1:1` |
 | `Demo/Progress.HC` | last printed `PRESS A KEY`, two of its four Mains done |
-
-**A named kernel stub**
-
-`JobQue` returns NULL on RISC-V (`Kernel/KStartRV.HC:113`), so `JobResGet(NULL)` spins in
-`while (tmpc1==tmpc1->next) Yield;` on a done-queue nothing will ever post to.
-
-| program | evidence |
-|---|---|
-| `Demo/MultiCore/Lock.HC` | `JobQue(...)` → NULL, and `tools/hangpc.sh` samples `ra=JobResGet+0x14c` three times over |
 
 **Not broken — a benchmark of a billion iterations**
 
