@@ -1514,6 +1514,17 @@ static bool NewlineEndsStatement(Compiler *cc, int prev, bool after_ctl) {
   // so ask what it was rather than guessing from the spelling.
   if (prev == TK_IDENT && lex->hash_entry && (lex->hash_entry->type & HTT_CLASS))
     return false;
+  // `lock` takes a STATEMENT, and stock writes that statement on the NEXT line:
+  //     for (i=0;i<CNT;i++)
+  //         lock  //Can be used without {}
+  //           glbl++;
+  // Ending the statement at the newline makes the lock bracket NOTHING and moves `glbl++` out of
+  // the loop, where it runs once. Demo/MultiCore/Lock.HC printed `Actual Cnt:2` instead of
+  // `2000000` for exactly that reason. `lock` is an unknown identifier here (host/parser.c turns
+  // it into IC_LOCK_ENTER/IC_LOCK_LEAVE), so it has no hash entry to ask — compare the spelling.
+  // CLI/STI/PUSHFD/POPFD/PAUSE are complete statements and must keep ending at a newline.
+  if (prev == TK_IDENT && !lex->hash_entry && lex->token_str && !strcmp(lex->token_str, "lock"))
+    return false;
   if (NewlineStarterContinues(cc, lex->ptr)) return false;
   return true;
 }
