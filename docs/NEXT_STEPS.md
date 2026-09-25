@@ -7,9 +7,9 @@ anything up** — every remaining failure has a named cause, and most have a fun
 
 | | at `e8abb73b` | now |
 |---|---|---|
-| **L1-OK** — loads into a real image, boots, runs its own top-level code, reaches the end | 107 | **148** |
+| **L1-OK** — loads into a real image, boots, runs its own top-level code, reaches the end | 107 | **150** |
 | L0-FAIL — does not compile | 65 | 44 |
-| L1-TRAP — compiles, boots, faults | 32 | 6 |
+| L1-TRAP — compiles, boots, faults | 32 | 4 |
 | L1-HANG — does not finish in the window | (not split out) | 6 |
 
 **Most of that gain was the harness measuring the wrong thing, not the port getting better.** Four
@@ -21,7 +21,9 @@ separate harness bugs, each written down as a kernel bug first:
    `Name(args);`), so INCLUDING one RAN it;
 3. two more hid their autorun **behind a DolDoc binary tail** — `Demo/Games/TheDead.HC:187` and
    `BlackDiamond.HC:399` — invisible to any rule that takes "the last non-blank line";
-4. the trap list was once read out of a stale scratch directory.
+4. the trap list was once read out of a stale scratch directory;
+5. the harness had no drive, so three demos' file I/O showed up as `throw('Drv')` rather than as
+   whatever they actually do.
 
 Four tools exist so none of those can happen quietly again, and each one earned its place:
 
@@ -34,12 +36,14 @@ Four tools exist so none of those can happen quietly again, and each one earned 
 
 ### What is next, in order — measured, not guessed
 
-1. **A survey harness with a disk.** Three of the six traps are file I/O against an image with no
-   drive: `Demo/DolDoc/FileRead.HC` (`Let2Drv+0x184`) and both `SortFileDemo` programs
-   (`StrLen+0x4`). Each has several top-level calls and the guard covers only the trailing one, so
-   they genuinely run file I/O at load. `make tos` already boots from a RedSea virtio-blk image —
-   pointing the survey at that is the single biggest honest win left, and it also unblocks
-   `Demo/AcctExample/TOS/*`, which writes ISOs and blog trees.
+1. ~~**A survey harness with a disk.**~~ **DONE, and it was two lines, not a second harness.**
+   `Kernel/KBootRV.HC` already has the runtime half of `BlkDevsInitAll`, so `SurveyBoot` now does
+   `RVMountRAMDisk('B',8192); RVHomeBringUp('B');` — no disk image, no `-drive`, no second script.
+   `Demo/DolDoc/FileRead.HC` and `Demo/SortFileDemo/F64FileGen.HC` went L1-TRAP → L1-OK, and
+   `F64FileSort.HC`'s fault stopped being "no drive" and became `ArcCompressBuf` on a NULL buffer
+   after an unchecked `File not found`. Nothing is POPULATED on that disk, so a demo that reads a
+   distribution file still fails — by name. Putting the repo's `tos/Doc` tree on it is the next
+   step of the same idea, and `make tos` builds exactly that image.
 
 2. **`JobQue` returns NULL** (`Kernel/KStartRV.HC:113`), so `JobResGet` spins forever —
    `tools/hangpc.sh` samples `ra=JobResGet+0x14c` in `Demo/MultiCore/Lock.HC`, and it is why
@@ -95,6 +99,20 @@ Add `kernel-doctext-smoke` for a DolDoc change and `kernel-span-smoke` for anyth
 `tos/Apps`. It passed four times: after `Kernel/RVRegistry.HC` added `rv_reg_entries[64]` to every
 image, after `ParseParamDefault` refactored the default-argument path every kernel function goes
 through, after the omitted-argument diagnostic, and after three `Adam/` units joined the PRJ.
+
+### A measured speedup nobody has taken
+
+Every exec case burns its full qemu timeout. `tests/exec/harness/crt0.S:31` parks in `wfi; j halt`
+after `oracle_report`, so qemu never exits and the script's `timeout` always fires: a demo that
+prints `L1-LOADED` in under two seconds still costs 27 seconds wall clock, and the 204-program
+survey takes ~16 minutes at `-P 4` for perhaps 90 seconds of actual work. QEMU's `-M virt`
+implements the SiFive test finisher at `0x100000` (`0x5555` = pass), so a store there would exit
+immediately.
+
+It is NOT safe as a blanket change: some smokes need the VM alive after the blob finishes, to take a
+QMP screendump (`tools/fb_scanout_hash.py`) or to feed input (`kernel-win-interactive`). Make it
+opt-in — a flag in `oracle_out.c` that a case sets before returning — and the whole exec suite gets
+faster, not just the survey.
 
 **Never rebuild `holyc-riscv` while a gate or a survey is in flight** — it invalidates the result
 silently. One span PASS had to be thrown away and re-measured for exactly that.

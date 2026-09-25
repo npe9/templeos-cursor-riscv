@@ -47,6 +47,11 @@ c="$SP/$n.hc"; l="$SP/$n.log"; T=$(mktemp -d)
   # it stores to 255*8 = 0x7f8 (Demo/ExtChars.HC). Only RVWinMgrInit does this in a real boot.
   echo '  text.cols = 80; text.rows = 60;'
   echo '  text.font = sys_font_std; text.aux_font = sys_font_cyrillic;'
+  # A RAM-backed RedSea drive, so a demo that touches a file gets "file not found" and not
+  # throw('Drv'). Two lines from Kernel/KBootRV.HC's own bring-up — no disk image, no -drive. It
+  # took Demo/DolDoc/FileRead.HC and Demo/SortFileDemo/F64FileGen.HC from L1-TRAP to running.
+  echo "  RVMountRAMDisk('B', 8192);"
+  echo "  RVHomeBringUp('B');"
   echo '  Fs->win_left = 0; Fs->win_right = 79; Fs->win_top = 0; Fs->win_bottom = 59;'
   echo '  WinDerivedValsUpdate(Fs);'
   echo '}'
