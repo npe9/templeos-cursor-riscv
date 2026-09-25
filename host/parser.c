@@ -6671,6 +6671,130 @@ void WrapStatementsAsFrame(Compiler *cc) {
   cc->locals_size = 0;
 }
 
+// --- TempleOS registry: the declaration RegDft makes at compile time ------------------------------
+//
+// Eleven stock games and two templates open with the pair
+//
+//   RegDft("TempleOS/FlapBat","F64 best_score=9999;\n");
+//   RegExe("TempleOS/FlapBat");
+//
+// In TempleOS a top-level statement RUNS while the file is being compiled, so RegDft runs, RegExe
+// compiles the branch's text, and compiling that text is what DECLARES best_score. Every later
+// mention of best_score in the file then resolves. An AOT compiler never runs either call, so
+// without this the rest of the file is one long list of "Undefined variable 'best_score'" — the
+// single largest entry in docs/DEMO_SURVEY.md's L0 list.
+//
+// So: remember the text at RegDft, parse it as declarations at RegExe. Recording at RegDft and
+// declaring at RegExe rather than declaring at RegDft keeps a RegDft with no RegExe from
+// declaring anything, which is what TempleOS does too. Both calls are still emitted; they resolve
+// against the in-memory Kernel/RVRegistry.HC.
+typedef struct RegistryBranch {
+  char *branch;
+  char *text;
+  struct RegistryBranch *next;
+} RegistryBranch;
+// Never reset: one holyc-riscv run compiles one program, and a branch defaulted in an #include is
+// meant to be visible to the file that included it.
+static RegistryBranch *reg_branches = NULL;
+
+// The concatenation of the string literals at the current token, or NULL if there is no literal.
+// Adjacent literals join, as they do in an expression (X-Caliber's default spans four lines).
+static char *RegLexStrCat(Compiler *cc, size_t *out_len) {
+  if (cc->lex.token != TK_STR) return NULL;
+  size_t n = 0;
+  char *s = malloc(1);
+  s[0] = 0;
+  while (cc->lex.token == TK_STR) {
+    size_t k = cc->lex.token_str ? (size_t)cc->lex.token_str_len : 0;
+    s = realloc(s, n + k + 1);
+    if (k) memcpy(s + n, cc->lex.token_str, k);
+    n += k;
+    s[n] = 0;
+    LexNext(cc);
+  }
+  if (out_len) *out_len = n;
+  return s;
+}
+
+static int LexIncludeDepth(Compiler *cc) {
+  int n = 0;
+  for (IncludeFile *f = cc->lex.include_stack; f; f = f->next) n++;
+  return n;
+}
+
+// Read the two literal arguments of `RegDft(branch, text)` without consuming anything, or the one
+// of `RegExe(branch)`. Returns false when an argument is not a plain literal (a computed branch
+// name is legal HolyC and simply cannot be resolved here).
+static bool RegPeekCallArgs(Compiler *cc, bool want_two, char **a1, char **a2) {
+  *a1 = *a2 = NULL;
+  LexPush(cc);
+  LexNext(cc);                      // past the name
+  bool ok = false;
+  if (cc->lex.token == '(') {
+    LexNext(cc);
+    *a1 = RegLexStrCat(cc, NULL);
+    if (*a1) {
+      if (!want_two) {
+        ok = (cc->lex.token == ')');
+      } else if (cc->lex.token == ',') {
+        LexNext(cc);
+        *a2 = RegLexStrCat(cc, NULL);
+        ok = (*a2 && cc->lex.token == ')');
+      }
+    }
+  }
+  LexPopRestore(cc);
+  if (!ok) { free(*a1); free(*a2); *a1 = *a2 = NULL; }
+  return ok;
+}
+
+// Parse `text` here, as top-level items, then resume at the token that was held back. Any IC it
+// produces (an initializer that is not a constant) goes to the entry chunk, as ParseProgram does.
+// The loop needs the text to be complete items; all 20 RegDft call sites in the tree end in ';'.
+static bool RegParseDecls(Compiler *cc, const char *text) {
+  int depth0 = LexIncludeDepth(cc);
+  LexPushStringPending(cc, text);
+  while (LexIncludeDepth(cc) > depth0 && cc->lex.token != TK_EOF) {
+    if (!ParseTopLevel(cc)) {
+      LexAbandonPendingString(cc);
+      return false;
+    }
+    if (cc->ic_head) {
+      if (cc->aot_main_tail) cc->aot_main_tail->next = cc->ic_head;
+      else cc->aot_main_head = cc->ic_head;
+      cc->aot_main_tail = cc->ic_tail;
+      cc->ic_head = cc->ic_tail = NULL;
+    }
+  }
+  return true;
+}
+
+// At a top-level `RegDft`/`RegExe`, before the statement itself is parsed.
+static bool ParseRegistryDecls(Compiler *cc) {
+  if (cc->lex.token != TK_IDENT || !cc->lex.token_str) return true;
+  bool is_dft = !strcmp(cc->lex.token_str, "RegDft");
+  bool is_exe = !strcmp(cc->lex.token_str, "RegExe");
+  if (!is_dft && !is_exe) return true;
+  char *branch = NULL, *text = NULL;
+  if (!RegPeekCallArgs(cc, is_dft, &branch, &text)) return true;
+  if (is_dft) {
+    RegistryBranch *b = malloc(sizeof(RegistryBranch));
+    b->branch = branch;
+    b->text = text;
+    b->next = reg_branches;
+    reg_branches = b;
+    return true;
+  }
+  for (RegistryBranch *b = reg_branches; b; b = b->next) {
+    if (!strcmp(b->branch, branch)) {
+      free(branch);
+      return RegParseDecls(cc, b->text);
+    }
+  }
+  free(branch);   // RegExe on a branch this file never defaulted: nothing to declare
+  return true;
+}
+
 static bool ParseTopLevelInner(Compiler *cc);
 bool ParseTopLevel(Compiler *cc) {
   bool ok = ParseTopLevelInner(cc);
@@ -6685,6 +6809,8 @@ static bool ParseTopLevelInner(Compiler *cc) {
   cc->lex.brace_depth = 0;   // every top-level item starts outside any body
   while (cc->lex.token == ',' || cc->lex.token == ';') LexNext(cc);
   if (cc->lex.token == TK_EOF) return true;
+  // `RegDft(...)` / `RegExe(...)`: TempleOS declares globals by running these during the compile.
+  if (!ParseRegistryDecls(cc)) return false;
   // Declaration qualifiers and function attributes. `extern`/`import` mean "defined elsewhere":
   // an undefined extern function becomes a runtime import (resolved by name at load).
   bool is_extern = false;

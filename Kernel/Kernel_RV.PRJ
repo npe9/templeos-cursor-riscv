@@ -205,6 +205,7 @@ kernel_cfg = KCfgNew;
 #include "RVExplore"   // AsmList/AsmDoc/MemMap/Mstatus/Mcause — RISC-V exploration (needs RVWinCsrr*)
 #include "RVDisasm"   // Disasm/U/UA/DisasmAt — seed disasm.hc port over the task hash
 #include "RVTextBase" // TextChar/TextPrint portable (DocRecalc / draw_it)
+#include "RVRegistry" // in-memory RegDft/RegExe/RegWrite (the compile-time half is in host/parser.c)
 #include "RVPhase3.HH"  // phase-3 forward decls (bodies after Compiler_RV_Body in phase3 demo)
 #endif
 #ifdef RV_THIN_LOADER
