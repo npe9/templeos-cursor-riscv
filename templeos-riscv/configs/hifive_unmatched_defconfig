@@ -1,0 +1,42 @@
+# SiFive HiFive Unmatched — FU740-C000 (4x U74 + 1x S7), rev A00/A01.
+#
+# Same peripheral map as the FU540 (sifive_u / HiFive Unleashed) for everything
+# TempleOS/RV touches, which is why this starts from that defconfig:
+#   UART0  0x10010000  SiFive UART (NOT 16550)  IRQ 39   115200 8N1
+#   UART1  0x10011000
+#   CLINT  0x02000000  rtcclk 1 MHz
+#   PLIC   0x0C000000
+#   PRCI   0x10000000
+#   GPIO   0x10060000
+#   DDR    0x80000000  16 GiB
+# Entry 0x80200000: U-Boot SPL + OpenSBI occupy the first 2 MiB, same convention
+# as the VisionFive 2 port. FU740 additions this port does NOT use yet: PCIe
+# (Radeon slot), SPI flash, SD, Ethernet (Cadence GEM @ 0x10090000).
+#
+# No QEMU machine models the Unmatched. The nearest harness is -M sifive_u
+# (FU540), which shares UART/CLINT/PLIC — see kernel-plat-hifive-unmatched-smoke.
+CONFIG_PLATFORM_HIFIVE_UNMATCHED=y
+# CONFIG_PLATFORM_VIRT is not set
+CONFIG_UART_SIFIVE=y
+# CONFIG_UART_16550 is not set
+# CONFIG_UART_HTIF is not set
+# CONFIG_UART_STUB is not set
+CONFIG_HAS_CLINT=y
+CONFIG_HAS_PLIC=y
+# CONFIG_HAS_VIRTIO_MMIO is not set
+# CONFIG_HAS_VIRTIO_PCI is not set
+# CONFIG_HAS_FW_CFG is not set
+# CONFIG_HAS_GOLDFISH_RTC is not set
+CONFIG_TIMEBASE_FREQ=1000000
+CONFIG_DRAM_BASE=0x80000000
+CONFIG_DRAM_SIZE=0x400000000
+CONFIG_ENTRY_POINT=0x80200000
+CONFIG_KERNEL_ENTRY=0x80200000
+CONFIG_KERNEL_LINK_ADDR=0x80200000
+CONFIG_UART_BASE=0x10010000
+CONFIG_UART_REG_SHIFT=0
+CONFIG_CLINT_BASE=0x02000000
+CONFIG_PLIC_BASE=0x0C000000
+CONFIG_FB_PRESENT_NONE=y
+# CONFIG_FB_PRESENT_RAMFB is not set
+# CONFIG_FB_PRESENT_SIMPLEFB is not set

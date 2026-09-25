@@ -117,6 +117,18 @@ config PLATFORM_MILKV_MARS
 	  No native QEMU -M. UART0/CLINT/PLIC/DDR map matches VF2.
 	  Same plat-qemu.elf virt harness as VisionFive 2 (matrix).
 
+config PLATFORM_HIFIVE_UNMATCHED
+	bool "SiFive HiFive Unmatched (FU740)"
+	help
+	  Real FU740-C000 board (4x U74 + 1x S7). Same peripheral map as the
+	  FU540/sifive_u for everything this kernel touches: UART0 SiFive @
+	  0x10010000 (IRQ 39), CLINT @ 0x02000000 (rtcclk 1 MHz), PLIC @
+	  0x0C000000, DDR @ 0x80000000 (16 GiB, entry 0x80200000 after SPL +
+	  OpenSBI). No QEMU machine models this board; the plat smoke runs the
+	  image on -M sifive_u, which shares that map. JTAG is header J18 with
+	  an external probe — tests/openocd/hifive_unmatched.cfg, since OpenOCD
+	  0.12 ships no Unmatched config. Not used yet: PCIe, SD, SPI, GEM.
+
 config PLATFORM_CUSTOM
 	bool "Custom (edit addresses below)"
 	help
@@ -151,6 +163,7 @@ config PLATFORM_NAME
 	default "opentitan" if PLATFORM_OPENTITAN
 	default "visionfive2" if PLATFORM_VISIONFIVE2
 	default "milkv-mars" if PLATFORM_MILKV_MARS
+	default "hifive-unmatched" if PLATFORM_HIFIVE_UNMATCHED
 	default "host" if PLATFORM_HOST
 	default "none" if PLATFORM_NONE
 	default "custom" if PLATFORM_CUSTOM

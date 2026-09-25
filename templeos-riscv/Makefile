@@ -44,7 +44,8 @@ BOOT_S := kernel/boot.S
 TRAP_S := kernel/trap_entry.S
 
 DEFCONFIGS := virt sifive_u sifive_e spike shakti_c microchip_icicle \
-	xiangshan amd_microblaze_v opentitan visionfive2 milkv_mars host none
+	xiangshan amd_microblaze_v opentitan visionfive2 milkv_mars hifive_unmatched \
+	host none
 
 .PHONY: all image guest selfhost qemu qemu-selfhost clean check-holyc redsea-smoke-img \
 	defconfig defconfig-virt menuconfig menuconfig-test syncconfig qemu-args list-defconfigs help \

@@ -935,7 +935,8 @@ kernel-win-run: $(WIN_HOLD_ELF)
 # Artifacts: build/kernels/<machine>/plat.elf and build/exec/<machine>_plat.elf
 # Global .config / RVAutoConf.HH is restored after each build (see build_kernel_plat.sh).
 KERNEL_BUILD_MACHINES := virt sifive_u spike shakti_c sifive_e \
-	microchip_icicle xiangshan amd_microblaze_v opentitan visionfive2 milkv_mars
+	microchip_icicle xiangshan amd_microblaze_v opentitan visionfive2 milkv_mars \
+	hifive_unmatched
 # none / host: not matrix boards (empty / not a QEMU -M) — excluded, not skip=OK.
 # visionfive2 / milkv_mars: board plat.bin + plat-qemu.elf (virt JH7110-map harness).
 
@@ -968,6 +969,7 @@ list-kernels:
 	  case $$m in \
 	    virt) note="CI smoke (-M virt -bios none -kernel)" ;; \
 	    sifive_u) note="board smoke (-M sifive_u -bios none -kernel)" ;; \
+	    hifive_unmatched) note="REAL board @ 0x80200000 via JTAG; no QEMU -M (see kernel-hifive-unmatched-help)" ;; \
 	    spike) note="HTIF smoke (-M spike -bios none -kernel)" ;; \
 	    sifive_e) note="matrix: slim XIP plat.elf; full: make kernel-sifive-e-full-smoke" ;; \
 	    shakti_c) note="smoke: -bios plat.elf (RVUartShakti)" ;; \
@@ -984,9 +986,13 @@ list-kernels:
 	@printf '%-22s %-10s %s\n' "none / host" "excl." "not matrix boards (no CPU/RAM / not a -M)"
 	@echo ""
 	@echo "Also: make -C templeos-riscv qemu-args-<machine>  # no .config write"
-	@echo "Board: make kernel-visionfive2-help | kernel-milkv-mars-help"
+	@echo "Board: make kernel-visionfive2-help | kernel-milkv-mars-help | kernel-hifive-unmatched-help"
 
-.PHONY: kernel-visionfive2-help kernel-milkv-mars-help kernel-milkv-mars
+.PHONY: kernel-visionfive2-help kernel-milkv-mars-help kernel-milkv-mars kernel-hifive-unmatched-help
+kernel-hifive-unmatched-help:
+	@chmod +x tests/scripts/hifive_unmatched_board_help.sh
+	@tests/scripts/hifive_unmatched_board_help.sh
+
 kernel-visionfive2-help:
 	@chmod +x tests/scripts/visionfive2_board_help.sh
 	@tests/scripts/visionfive2_board_help.sh

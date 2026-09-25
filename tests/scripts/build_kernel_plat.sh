@@ -43,6 +43,7 @@ case "$MACHINE_IN" in
   opentitan) DEFCONFIG=opentitan ;;
   visionfive2|visionfive-2|jh7110) DEFCONFIG=visionfive2 ;;
   milkv_mars|milkv-mars|mars) DEFCONFIG=milkv_mars ;;
+  hifive_unmatched|hifive-unmatched|unmatched|fu740) DEFCONFIG=hifive_unmatched ;;
   none|host)
     echo "FAIL build kernel ($MACHINE_IN) — not a TempleOS/RV board target (excluded from plat matrix)" >&2
     exit 1 ;;
@@ -158,6 +159,9 @@ elif [ "$DEFCONFIG" = visionfive2 ]; then
   LINK_LD="$HARNESS/link_visionfive2.ld"
 elif [ "$DEFCONFIG" = milkv_mars ]; then
   LINK_LD="$HARNESS/link_milkv_mars.ld"
+elif [ "$DEFCONFIG" = hifive_unmatched ]; then
+  # FU740 board image links at 0x80200000 — SPL+OpenSBI own the first 2 MiB of DDR.
+  LINK_LD="$HARNESS/link_hifive_unmatched.ld"
 fi
 
 need_oracle=0
@@ -267,6 +271,23 @@ if [ "$DEFCONFIG" = visionfive2 ] || [ "$DEFCONFIG" = milkv_mars ]; then
   cp "$SAVE_AUTO" "$AUTOCONF"
   cp "$T/qemu/plat-qemu.elf" "$KDIR/plat-qemu.elf"
   cp "$T/qemu/plat-qemu.elf" "$EXEC_DIR/${DEFCONFIG}_plat-qemu.elf"
+fi
+
+# HiFive Unmatched twin. Unlike the JH7110 boards this needs NO config rewrite: -M sifive_u
+# already has the FU540/FU740 UART/CLINT/PLIC map, so the same blob works. The only thing that
+# differs is the link address — the board image sits at 0x80200000 because SPL+OpenSBI own the
+# first 2 MiB, while `-M sifive_u -bios none -kernel` enters at 0x80000000. Without the twin
+# the board image loads on QEMU and is simply never entered (silent, looks like a hang).
+if [ "$DEFCONFIG" = hifive_unmatched ]; then
+  mkdir -p "$T/qemu"
+  ( cd "$T/qemu" && cp ../blob.bin blob.bin && \
+    "$OBJCOPY" -I binary -O elf64-littleriscv blob.bin blob_in.o && \
+    "$LD" -T "$HARNESS/link_exec.ld" -nostdlib --no-warn-mismatch -o plat-qemu.elf \
+      "$EXEC_DIR/crt0.o" "$ORACLE_OBJ" blob_in.o ) \
+    >/dev/null 2>&1 || { echo "FAIL build kernel — link error ($DEFCONFIG plat-qemu)" >&2; exit 1; }
+  cp "$T/qemu/plat-qemu.elf" "$KDIR/plat-qemu.elf"
+  cp "$T/qemu/plat-qemu.elf" "$EXEC_DIR/${DEFCONFIG}_plat-qemu.elf"
+  echo "  + QEMU twin (-M sifive_u, entry 0x80000000): $KDIR/plat-qemu.elf"
 fi
 
 cp "$TOS/.config" "$KDIR/.config"
