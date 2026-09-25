@@ -9,7 +9,7 @@ anything up** — every remaining failure has a named cause, and most have a fun
 |---|---|---|
 | **L1-OK** — loads into a real image, boots, runs its own top-level code, reaches the end | 107 | **150** |
 | L0-FAIL — does not compile | 65 | 44 |
-| L1-TRAP — compiles, boots, faults | 32 | 4 |
+| L1-TRAP — compiles, boots, faults | 32 | 4 (one of which is a demo needing its sibling) |
 | L1-HANG — does not finish in the window | (not split out) | 6 |
 
 **Most of that gain was the harness measuring the wrong thing, not the port getting better.** Four
@@ -40,10 +40,13 @@ Four tools exist so none of those can happen quietly again, and each one earned 
    `Kernel/KBootRV.HC` already has the runtime half of `BlkDevsInitAll`, so `SurveyBoot` now does
    `RVMountRAMDisk('B',8192); RVHomeBringUp('B');` — no disk image, no `-drive`, no second script.
    `Demo/DolDoc/FileRead.HC` and `Demo/SortFileDemo/F64FileGen.HC` went L1-TRAP → L1-OK, and
-   `F64FileSort.HC`'s fault stopped being "no drive" and became `ArcCompressBuf` on a NULL buffer
-   after an unchecked `File not found`. Nothing is POPULATED on that disk, so a demo that reads a
-   distribution file still fails — by name. Putting the repo's `tos/Doc` tree on it is the next
-   step of the same idea, and `make tos` builds exactly that image.
+   `F64FileSort.HC`'s fault stopped being "no drive" and turned out not to be a port bug at all: it
+   reads what its sibling `F64FileGen.HC` writes, `F64FileGenDAT` is that file's LAST statement, so
+   the autorun guard suppresses exactly the call that creates it. Generate the file in the same
+   image and the demo sorts, writes and dumps ten real F64s — `FileRead`, `FileWrite`, `QSortI64`
+   and the `.Z` compression all work. Nothing is POPULATED on the RAM disk, so a demo that reads a
+   distribution file still fails, by name. Putting the repo's `tos/Doc` tree on it is the next step
+   of the same idea, and `make tos` builds exactly that image.
 
 2. **`JobQue` returns NULL** (`Kernel/KStartRV.HC:113`), so `JobResGet` spins forever —
    `tools/hangpc.sh` samples `ra=JobResGet+0x14c` in `Demo/MultiCore/Lock.HC`, and it is why
