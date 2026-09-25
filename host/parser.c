@@ -718,6 +718,53 @@ static bool ParseUnary(Compiler *cc);
 static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name);
 static bool ParseEnumDefinitionBody(Compiler *cc, const char *enum_name, bool register_type);
 bool ParseEnum(Compiler *cc);
+// A parameter default, at the '=' token. Either a constant (`=0x80`, `=1<<JOBf_X`) or source text
+// kept verbatim, because HolyC evaluates a non-constant default at each CALL SITE in the caller's
+// context (`=gr.dc`, `=&TOSLinkCvt1`). Shared by plain and function-pointer parameters.
+static void ParseParamDefault(Compiler *cc, U8 param_type,
+                              bool *out_has_default, I64 *out_default_val, char **out_default_src) {
+  *out_has_default = false;
+  *out_default_val = 0;
+  *out_default_src = NULL;
+  if (cc->lex.token != '=') return;
+  const char *dflt_start = cc->lex.ptr;   // the default's source text begins after '='
+  LexNext(cc);
+  if (cc->lex.token == KW_LASTCLASS) {    // `lastclass` → 0
+    *out_has_default = true;
+    LexNext(cc);
+    return;
+  }
+  bool okc = false;
+  I64 v = 0;
+  if (cc->lex.token == TK_I64 || cc->lex.token == '-' || cc->lex.token == '(' || cc->lex.token == '~' ||
+      (cc->lex.token == TK_IDENT && cc->lex.hash_entry && (cc->lex.hash_entry->type & HTT_ENUM))) {
+    LexPush(cc);   // a failed constant evaluation must not leave tokens consumed
+    okc = true;
+    v = CEOr(cc, 0, &okc);
+    if (okc && cc->lex.token != ',' && cc->lex.token != ')' && cc->lex.token != ';') okc = false;
+    if (okc) LexPopNoRestore(cc); else LexPopRestore(cc);
+  }
+  *out_has_default = true;
+  if (okc && param_type != RT_F64) {
+    *out_default_val = v;
+    return;
+  }
+  int paren_depth = 0;
+  while (cc->lex.token != TK_EOF &&
+         !(paren_depth == 0 && (cc->lex.token == ',' || cc->lex.token == ')' || cc->lex.token == ';'))) {
+    if (cc->lex.token == '(' || cc->lex.token == '[') paren_depth++;
+    else if (cc->lex.token == ')' || cc->lex.token == ']') paren_depth--;
+    LexNext(cc);
+  }
+  const char *dflt_end = cc->lex.ptr - 1;   // the one-char terminator was just lexed
+  if (dflt_end > dflt_start) {
+    size_t n = (size_t)(dflt_end - dflt_start);
+    *out_default_src = malloc(n + 1);
+    memcpy(*out_default_src, dflt_start, n);
+    (*out_default_src)[n] = 0;
+  }
+}
+
 static bool ParseFunctionPointerDeclarator(Compiler *cc, char **out_name, int *out_param_count,
                                            I64 *out_arr_cnt);
 static bool ParseLocalFunctionPointerDeclList(Compiler *cc, U8 return_type);
@@ -3286,13 +3333,26 @@ static bool ParseSwitchStatement(Compiler *cc) {
         case_val = last_case_val + 1;
       } else {
         bool okc = true;
+        // Name the identifier when the label is one: `case LK_FILE_LINE:` on a symbol the port
+        // does not have read as "Expected integer constant in case", which sent two sessions
+        // looking for a constant-folding bug instead of a missing define.
+        char *unknown = (cc->lex.token == TK_IDENT && cc->lex.token_str &&
+                         !cc->lex.hash_entry) ? strdup(cc->lex.token_str) : NULL;
         case_val = CEOr(cc, 0, &okc);   // `case -1:`, `case 'a':`, `case FLAG|2:`
         if (!okc) {
-          Error(cc, "Expected integer constant in case");
+          if (unknown) {
+            char umsg[192];
+            snprintf(umsg, sizeof umsg, "Undefined variable '%s' in case", unknown);
+            Error(cc, umsg);
+          } else {
+            Error(cc, "Expected integer constant in case");
+          }
+          free(unknown);
           cc->current_break_label = saved_break;
           cc->loop_try_depth = saved_ltd;
           return false;
         }
+        free(unknown);
       }
       I64 case_hi = case_val;
       if (cc->lex.token == TK_ELLIPSIS) {   // case lo...hi:
@@ -6182,17 +6242,19 @@ bool ParseFunction(Compiler *cc) {
             { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
           }
 
-          if (cc->lex.token == '=') {
-            free(fp_name);
-            free(name);
-            Error(cc, "Default values for function pointer parameters are not supported");
-            { SymTablePopTo(cc, fn_scope); PF_TRACE(__LINE__); return false; }
-          }
+          // `U8 (*link_cvt)(U8 *st)=&TOSLinkCvt1`: a function-pointer parameter may carry a
+          // default like any other. It is never an integer constant, so it keeps its source text
+          // and is re-read at each call site (Demo/ToHtmlToTXTDemo/ToHtml.HC and two others).
+          bool fp_has_default = false;
+          I64 fp_default_val = 0;
+          char *fp_default_src = NULL;
+          ParseParamDefault(cc, RT_I64, &fp_has_default, &fp_default_val, &fp_default_src);
 
           Symbol *param = SymbolDefine(cc, fp_name, SYM_VAR);
           param->data_type = RT_I64;
-          param->has_default = false;
-          param->default_val = 0;
+          param->has_default = fp_has_default;
+          param->default_val = fp_default_val;
+          param->default_src = fp_default_src;
           param->extra = NULL;
           param->pointed_to_type = RT_I64;
           param->is_function_pointer = true;
@@ -6250,52 +6312,8 @@ bool ParseFunction(Compiler *cc) {
       // Handle default parameter values
       bool has_default = false;
       I64 default_val = 0;
-      
       char *default_src = NULL;
-      if (cc->lex.token == '=') {
-        const char *dflt_start = cc->lex.ptr;   // the default's source text begins after '='
-        LexNext(cc);
-        
-        // Constant-expression defaults (`=0x80`, `=I64_MIN`, `=1<<JOBf_X`, `=-1`); `lastclass` → 0
-        if (cc->lex.token == KW_LASTCLASS) {
-          has_default = true;
-          default_val = 0;
-          LexNext(cc);
-        } else {
-          bool okc = false;
-          I64 v = 0;
-          if (cc->lex.token == TK_I64 || cc->lex.token == '-' || cc->lex.token == '(' || cc->lex.token == '~' ||
-              (cc->lex.token == TK_IDENT && cc->lex.hash_entry && (cc->lex.hash_entry->type & HTT_ENUM))) {
-            LexPush(cc);   // a failed constant evaluation must not leave tokens consumed
-            okc = true;
-            v = CEOr(cc, 0, &okc);
-            if (okc && cc->lex.token != ',' && cc->lex.token != ')' && cc->lex.token != ';') okc = false;
-            if (okc) LexPopNoRestore(cc); else LexPopRestore(cc);
-          }
-          has_default = true;
-          if (okc && param_type != RT_F64) {
-            default_val = v;
-          } else {
-            // Anything else (`=gr.dc`, `=2.75`, `=-π`): HolyC evaluates the default at each
-            // call site, in the caller's context — keep its source text for that.
-            int paren_depth = 0;
-            while (cc->lex.token != TK_EOF &&
-                   !(paren_depth == 0 && (cc->lex.token == ',' || cc->lex.token == ')' || cc->lex.token == ';'))) {
-              if (cc->lex.token == '(' || cc->lex.token == '[') paren_depth++;
-              else if (cc->lex.token == ')' || cc->lex.token == ']') paren_depth--;
-              LexNext(cc);
-            }
-            const char *dflt_end = cc->lex.ptr - 1;   // the one-char terminator was just lexed
-            if (dflt_end > dflt_start) {
-              size_t n = (size_t)(dflt_end - dflt_start);
-              default_src = malloc(n + 1);
-              memcpy(default_src, dflt_start, n);
-              default_src[n] = 0;
-            }
-            default_val = 0;
-          }
-        }
-      }
+      ParseParamDefault(cc, param_type, &has_default, &default_val, &default_src);
       
       // Define parameter as local variable
       // ALL parameters go on stack (spilled in prologue)
