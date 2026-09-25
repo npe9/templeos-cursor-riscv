@@ -96,3 +96,16 @@ I64 JobsHndlr(I64 run_flags, CTask *task = NULL)
   return 0;
 }
 #endif
+
+// Thin loader has no heap and no CJob queues. The real single-hart JobQue is Kernel/RVJob.HC.
+CJob *JobQue(I64 (*fp_addr)(U8 *data), U8 *data = NULL, I64 target_cpu = 0, I64 flags = 0,
+             I64 aux1 = 0, I64 aux2 = 0)
+{
+  no_warn fp_addr;
+  no_warn data;
+  no_warn target_cpu;
+  no_warn flags;
+  no_warn aux1;
+  no_warn aux2;
+  return NULL;
+}

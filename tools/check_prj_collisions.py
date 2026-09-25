@@ -77,8 +77,16 @@ def main():
     args = [a for a in sys.argv[1:]]
     defined = {a[2:] for a in args if a.startswith("-D")}
     cands = [ROOT / a.lstrip("/") for a in args if not a.startswith("-D")]
-    exclude = tuple(str(c.relative_to(ROOT)) for c in cands)
-    exclude += tuple("/" + e for e in exclude)
+    # A candidate may ALREADY be in the PRJ (you added it, then checked). Exclude it from the PRJ
+    # scan under every spelling the PRJ uses: `/Adam/X.HC`, `Adam/X.HC`, and the bare `X` that
+    # `#include "RVJob"` writes — otherwise the file collides with itself and the report says so
+    # twice.
+    exclude = set()
+    for c in cands:
+        rel = str(c.relative_to(ROOT))
+        exclude |= {rel, "/" + rel, rel[:-3] if rel.endswith(".HC") else rel,
+                    c.stem, "/" + c.stem}
+    exclude = tuple(exclude)
     files = prj_files(defined, exclude)
     owner, bad = {}, []
     for p in files:

@@ -111,10 +111,10 @@ U0 TSSBusy(I64 tr, Bool val = OFF)
 {
 }
 
-CJob *JobQue(I64 (*fp_addr)(U8 *data), U8 *data = NULL, I64 target_cpu = 0, I64 flags = 0, I64 aux1 = 0, I64 aux2 = 0)
-{
-  return NULL;
-}
+// JobQue is NOT here any more. The real single-hart one is Kernel/RVJob.HC, included after Job.HC
+// because its body needs CAlloc/QueIns/Fs; the thin-loader stub is in KThinJobStubs.HC with the
+// other thin job stubs. Keeping it here behind an #ifdef would have hidden it from
+// tools/check_prj_collisions.py, which reads the PRJ's #ifdefs and not each file's.
 
 CTask *SpawnQue(U0 (*fp_addr)(U8 *data), U8 *data = NULL, U8 *task_name = NULL, I64 target_cpu = 0, CTask *parent = NULL, I64 stk_size = 0, I64 flags = 0)
 {
