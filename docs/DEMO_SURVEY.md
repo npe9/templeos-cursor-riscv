@@ -136,18 +136,42 @@ in `docs/NEXT_STEPS.md`).
 
 ## Does not finish (L1-HANG)
 
-Not necessarily broken — `Demo/Carry.HC` and `Demo/Define.HC` simply print a great deal of
-top-level output. Needs a per-demo look.
+Re-run at 40s with the whole serial log read, which splits them three ways.
 
-- `Demo/Carry.HC`
-- `Demo/Define.HC`
+**Waiting for a key that never comes** — the harness gives them no stdin. Not a port bug; they
+stop exactly where a person would be asked something.
+
+| program | last thing it printed |
+|---|---|
+| `Demo/Define.HC` | `Spanish(y or n)? ` |
+| `Demo/Progress.HC` | `PRESS A KEY` (it got through two of the four Mains) |
+| `Demo/InFile/InPopUp.HC` | `PopUp #1:1` |
+
+**A named compiler gap** — `Carry` is not implemented on RISC-V.
+
+`Demo/Carry.HC` printed 470,109 lines in 40s and never advanced:
+
+```
+0000000000000000 9800000000000000
+0000000000000000 9C00000000000000
+0000000000000000 A000000000000000
+```
+
+`hi` is the left column and it never leaves zero. `BigCnt` is `lo+=1<<58; hi+=Carry;` and loops
+`while (hi<0x10)`, so a `Carry` of zero is an infinite loop. `Carry` is declared
+`public _intern IC_CARRY I64 Carry();` in `Kernel/KernelB.HH`, and `IC_CARRY` has no case in
+`Compiler/OptPass_RV.HC`; `host/parser.c` skips the `IC_CARRY` token and leaves `Carry` an
+ordinary undefined function, so it loads as an unresolved import that returns 0. RISC-V has no
+carry flag, so implementing it means the code generator emitting `sltu` after each add in any
+function that names `Carry` — worth doing, but it is one demo.
+
+**Silent — nothing printed at all.** Each of these needs its own look.
+
 - `Demo/Games/TheDead.HC`
 - `Demo/Graphics/Doodle.HC`
 - `Demo/Graphics/Speedline.HC`
 - `Demo/Graphics/Symmetry.HC`
-- `Demo/InFile/InPopUp.HC`
-- `Demo/MultiCore/Lock.HC`
-- `Demo/Progress.HC`
+- `Demo/MultiCore/Lock.HC` — `JobQue` onto core 1, and 0x1000000 iterations four times over
 
 ## Runs (L1-OK)
 
