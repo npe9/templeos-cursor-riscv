@@ -21,10 +21,12 @@ EXPECT_PREFIX="RVCDC smoke hash="
 # fails identically at d207eda, before any of this session's work, so the golden was stale and
 # the rendering has not moved. If it moves again, find the commit that moved it before touching
 # this line — a framebuffer hash cannot tell you whether the picture got better or worse.
-# Re-pinned 2026-09-25 for parity phase 2 (a pen is a palette INDEX, as stock). The SCANOUT did
-# NOT change: tools/fb_scanout_hash.py gives 0x7D95B6D8 before and after and the PNGs are
-# byte-identical. Only this number moved — which is worth knowing about this smoke: its hash is
-# NOT the screen (the screen is 0x7D95B6D8). Two of its sub-checks were also hollow — u8ok
+# Re-pinned 2026-09-25 for parity phase 2 (a pen is a palette INDEX, as stock).
+# tools/fb_scanout_hash.py gives 0x7D95B6D8 before AND after, PNGs byte-identical — so this smoke's
+# hash is NOT the screen (the screen is 0x7D95B6D8). Do not read the identical scanout as proof the
+# picture is unchanged: this demo fills 800x600 through a pen, and that fill DID change, so the
+# captured frame evidently does not show it (something presents over it). The in-guest hash is the
+# only signal here that responds to the drawing at all. Two of its sub-checks were also hollow — u8ok
 # asserted the port's old "GrPeek returns a pixel from an 8-bit DC" while checking the raw body
 # byte against a bare index two terms later, and sprite_peek compares a screen pixel against
 # RVColor(CYAN) after the test rewrites rv_palette_std, so both sides move together and it

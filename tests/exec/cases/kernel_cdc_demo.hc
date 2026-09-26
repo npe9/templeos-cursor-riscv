@@ -98,7 +98,11 @@ I64 main()
   GrLine3(img, 112, 16, 0, 16, 112, 0);
   img->color = YELLOW;
   GrRect(img, 54, 54, 20, 20);
-  dc->color = RV_RGB(24, 32, 48);
+  //A pen is a palette INDEX (stock). This was RV_RGB(24,32,48) = 0x182030, and since phase 2 its
+  //low byte WAS already being read as an index — 0x30 = 48, 48 & 15 = 0 — so this 800x600 fill
+  //has been painting BLACK accidentally. BLACK is also the nearest palette colour to 0x182030
+  //(distance 3904 vs 7899 to DKGRAY), so saying it outright changes no pixel, only the source.
+  dc->color = BLACK;
   GrRect(dc, 0, 0, 800, 600);
   blot_n = GrBlot(dc, 40, 40, img);
   // SpriteRaw triangle + flood + circle (COLOR/LINE/FLOOD_FILL/CIRCLE/END).
