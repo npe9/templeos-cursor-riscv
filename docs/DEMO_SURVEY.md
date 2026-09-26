@@ -104,6 +104,22 @@ autorun reached, not the include.
 | `Demo/ToHtmlToTXTDemo/HtmlGen.HC` | L0-FAIL | L1-OK | `ToHtml(...)` — needs `Adam/DolDoc/DocLink.HC`'s `LK_*`, not in the PRJ |
 | `Demo/ToHtmlToTXTDemo/TXTGen.HC` | L1-OK | L1-OK | `ToTXT(...)` — ran |
 
+## What L1-OK does not mean — read this before using the totals
+
+L1-OK means compiled, linked, booted, ran its top-level code, reached the end. It does **not** mean
+the demo did its job, and the gap is measurable: of the twelve demos whose `asm{}` blocks are x86,
+**eight are L1-OK**, and only `Demo/Asm/DivByHand.HC` and `Demo/Asm/MulByHand.HC` — translated to
+RISC-V and checked by `tests/exec/cases/e_demo_asm_{div,mul}.hc` — actually do anything. For the
+other six the assembler drops the block, so the payload is absent from the image;
+`HOLYC_ASM_SKIPS=1` on `Demo/Asm/AsmHelloWorld.HC` names the dropped block and `HOLYC_MAP` contains
+no `_HELLO_WORLD` at all. They score L1-OK because this harness compiles with `RV_NO_DEMO_AUTORUN`
+defined, which guards off the one statement that would have used it — nothing is left to fail.
+
+Six is a floor: it is only the demos whose blocker happened to be assembly.
+
+Use these totals for triage, not as a score. `tests/exec/oracle_manifest.tsv` is the scoreboard,
+because a row there asserts a computed value. See `docs/DEMO_100.md`.
+
 ## Two things to know before working the L0-FAIL list
 
 **1. The ceiling is not 204.** Twelve demos contain x86 assembly in an `asm{}` block —

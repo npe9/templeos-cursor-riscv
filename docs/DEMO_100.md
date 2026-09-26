@@ -17,7 +17,37 @@ that was a regression:
 | translate `Demo/Asm/DivByHand.HC` and stop at L1-OK | 1 demo L0-FAIL → L1-OK | **it did**, while dividing everything to zero — `_extern _LABEL` did not bind |
 
 The third was caught only because the translation was checked by computing `123456/10` instead of
-by reading the survey. So:
+by reading the survey.
+
+### Measured, not argued: at least 6 of the 158 are L1-OK with their whole point missing
+
+Of the twelve demos whose `asm{}` blocks are x86, **eight are L1-OK** — and only the two that were
+translated and checked by computation actually do anything:
+
+| demo | survey | reality |
+|---|---|---|
+| `Asm/DivByHand` | L1-OK | **works** — translated, 7 assertions |
+| `Asm/MulByHand` | L1-OK | **works** — translated, 8 assertions |
+| `Asm/AsmHelloWorld` | L1-OK | block dropped; `_HELLO_WORLD` is **not in the map at all** |
+| `Asm/PutDec` | L1-OK | block dropped |
+| `Asm/AsmAndC1`, `Asm/AsmAndC2` | L1-OK | blocks dropped |
+| `Lectures/FixedPointAdvanced`, `Lectures/Optimization` | L1-OK | blocks dropped |
+
+`HOLYC_ASM_SKIPS=1` on `AsmHelloWorld` prints
+`Demo/Asm/AsmHelloWorld.HC:22: asm{} block _HELLO_WORLD`, and `HOLYC_MAP` contains zero occurrences
+of that symbol. The demo scores L1-OK because the survey compiles with `RV_NO_DEMO_AUTORUN`, which
+guards off the one statement that would have used it. Nothing is left to fail.
+
+Six is a floor, not a total — that is only the demos whose blocker happened to be assembly. The same
+shape applies anywhere a demo's payload sits behind the guarded statement.
+
+**Corollary, and the reason this plan leads with the metric:** a day of real fixes (the
+`_extern _LABEL` binding that 117 declarations depend on, `la`, the RISC-V print helpers, two demos
+translated) moved the survey from 158 to **158**. DivByHand was L1-OK before the fix while dividing
+everything to zero, and L1-OK after while dividing correctly. The number cannot see the difference,
+in either direction.
+
+So:
 
 **Rule for this whole plan: a demo counts as done when a test asserts what it computes or draws,
 not when the survey says L1-OK.** The survey is a triage tool. It compiles with
@@ -35,16 +65,37 @@ first, because each tier unblocks the next.
 
 | # | blocker | demos | kind of work |
 |---|---|---|---|
-| 1 | a real-bodied `Adam/`/`tos/` file is not in `Kernel_RV.PRJ` | ~12 | add + gate, screened |
+| 1 | a real-bodied `Adam/`/`tos/` file is not in `Kernel_RV.PRJ` | ~12, **plus the 7 below** | add + gate, screened |
 | 2 | `asm{}` cannot emit data (`DU8`/`DU64`) | 4 | assembler feature |
 | 3 | `asm{}` allows only ONE `call` per block | 8 | compiler-internals fix |
 | 4 | a sibling file of the same program defines it | 2 | harness: compile the program, not the file |
 | 5 | genuinely absent from the tree | 5 | write it, or declare out of scope |
 | 6 | x86-only concepts | 2–3 | **out of scope, and say so** |
-| 7 | other compile errors (parse, array size, arg defaults) | ~13 | one compiler bug each |
+| 7 | other compile errors (parse error, constant array size) | ~11 | one compiler bug each |
 
 Items overlap — 17 demos have a missing symbol *and* another error — so the counts do not sum to
 46. The dependency order is what matters.
+
+**The `Argument N omitted` family is NOT a compiler bug — it is tier 1 wearing a different error
+message.** That error fires at `host/parser.c:1447` when the callee has no declaration in scope, so
+its defaults are unknown; the wording even says "has no declaration here to take a default from".
+Where the seven callees actually live:
+
+| callee | demos | defined in | status |
+|---|---|---|---|
+| `Touch` | 2 | `Adam/ABlkDev/ADskA.HC` | already screened for tier 1 |
+| `Sort` | 1 | `Adam/Opt/Utils/StrUtils.HC` | already screened for tier 1 |
+| `InSetMs` | 1 | `Adam/InFile.HC` | already screened for tier 1 |
+| `PopUpRangeI64` | 1 | `Adam/DolDoc/DocPopUp.HC` | collides on 8 `PopUp*` names — lift the one function |
+| `JukeSongsPuppet` | 2 | `tos/Apps/Psalmody/JukePuppet.HC` | not screened |
+
+So four of those seven demos are already covered by files in the tier 1 table, and no compiler work
+is needed for any of them. That removes a whole tier from this plan and makes tier 1 the clear first
+move: it is now worth roughly 12 + 7 demos rather than 12, for the same effort.
+
+(Worth noticing how this was found: by reading what the error actually *says* before believing the
+survey's grouping of it. The survey bucketed these as their own blocker because they have their own
+message.)
 
 ## 2. Tier 1 — files that are already screened (do this first)
 
@@ -135,13 +186,14 @@ a single mechanism and may be one fix for all seven.
 
 ## 8. Order, and why
 
-1. **Tier 1** — 5 screened files. Cheapest, and it exercises the two-screen procedure.
-2. **Tier 7's argument-default family** — 7 demos, plausibly one fix.
-3. **Tier 7's `Expected constant array size`** — 6 demos, plausibly one fix.
-4. **Tier 2** — `DU*`. Unblocks 4 and completes the asm-data story `la` started.
-5. **Tier 3** — asm multi-call. Unblocks 8, the largest group, but the riskiest change.
-6. **Tier 4** — harness unit fix. 2 demos, no code risk.
-7. **Tier 5/6** — write the few that are missing; formally scope out the x86-only ones.
+1. **Tier 1** — the 5 screened files, plus `JukePuppet.HC` screened and `PopUpRangeI64` lifted out
+   of `DocPopUp.HC`. Worth ~19 demos, not ~12, now that the argument-default family is known to be
+   the same cause. Cheapest work in the plan and it exercises the two-screen procedure.
+2. **`Expected constant array size`** — 6 demos, plausibly one cause in the constant folder.
+3. **Tier 2** — `DU*`. Unblocks 4 and completes the asm-data story `la` started.
+4. **Tier 3** — asm multi-call. Unblocks 8, the largest group, but the riskiest change.
+5. **Tier 4** — harness unit fix. 2 demos, no code risk.
+6. **Tier 5/6** — write the few that are missing; formally scope out the x86-only ones.
 
 Tiers 2 and 3 together also finish the 10 untranslated x86-asm demos, which is why they sit in the
 middle rather than last: they are the only route to that group, and `DivByHand`/`MulByHand` are
