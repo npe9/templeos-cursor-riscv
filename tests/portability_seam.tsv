@@ -59,4 +59,3 @@ DocDataScan	MISSING	nothing — Adam/DolDoc/DocForm.HC, collides
 DocFormBwd	MISSING	nothing — Adam/DolDoc/DocForm.HC, collides; U0, and a no-op unless DOCF_FORM
 DocFormFwd	MISSING	nothing — Adam/DolDoc/DocForm.HC, collides; U0, and a no-op unless DOCF_FORM
 PopUpPickLst	MISSING	nothing — Adam/DolDoc/DocPopUp.HC, collides on eight PopUp* names
-DocSplitTag	MISSING	nothing — Adam/DolDoc/DocRecalc.HC, not included

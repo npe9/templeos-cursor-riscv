@@ -1205,6 +1205,43 @@ CDocEntry *DocEntryNewTag(CDoc *doc, CDocEntry *doc_ce, U8 *tag)
   return res;
 }
 
+// Lifted VERBATIM from Adam/DolDoc/DocRecalc.HC, for the same reason as the two above: that unit
+// also defines DocRecalc, which this file defines, and the later body would win silently.
+//
+// This one is not a cosmetic gap. Adam/DolDoc/DocFind.HC:463 does
+//     doc_e = doc_marker = DocSplitTag(...);
+//     do { if (doc_e==doc) ... else doc_e->...
+// so the stub's 0 is DEREFERENCED — EdFindReplace traps rather than silently doing nothing.
+// Every callee here is already resolved in the image: MAllocIdent, StrNew, QueIns, Free, MemCpy,
+// StrLen and the DocEntryNewBase above.
+CDocEntry *DocSplitTag(CDoc *doc, CDocEntry *doc_e, I64 i, I64 x, I64 y, I64 type_u8)
+{//Split tag at i, insert DOCT_SOFT_NEW_LINE, DOCT_MARKER or DOCT_CURSOR
+  U8 *ptr;
+  CDocEntry *doc_e2;
+  if (doc_e->type_u8 == DOCT_TEXT && i) {
+    if (i < StrLen(doc_e->tag)) {
+      doc_e2 = MAllocIdent(doc_e, doc->mem_task);
+      doc_e2->tag = StrNew(doc_e->tag + i, doc->mem_task);
+      doc_e2->de_flags = doc_e->de_flags & ~DOCEG_HAS_ALLOC | DOCEF_TAG;
+      QueIns(doc_e2, doc_e);
+      if (doc->cur_entry == doc_e && doc->cur_col >= i) {
+	doc->cur_entry = doc_e2;
+	doc->cur_col = doc->cur_col - i;
+      }
+      doc_e->tag[i] = 0;
+      ptr = StrNew(doc_e->tag, doc->mem_task);
+      Free(doc_e->tag);
+      doc_e->tag = ptr;
+    }
+  } else
+    doc_e = doc_e->last;
+  doc_e2 = DocEntryNewBase(doc, type_u8 | doc_e->type & 0xFFFFFF00,
+	doc_e->de_flags & ~DOCEG_HAS_ARG, x, y, doc_e->page_line_num);
+  MemCpy(&doc_e2->settings, &doc_e->settings, sizeof(CDocSettings));
+  QueIns(doc_e2, doc_e);
+  return doc_e2;
+}
+
 U0 DocEntryDel(CDoc *doc, CDocEntry *doc_e)
 {
   if (!doc || !doc_e || doc == doc_e)

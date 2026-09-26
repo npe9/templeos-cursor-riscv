@@ -201,8 +201,36 @@ form and popup navigation:
 | `PopUpPickLst` | `DocPopUp.HC` | the list-picker popup |
 
 `DocForm.HC` collides on `DocForm`/`DocMenu`/`PopUpMenu` and `DocPopUp.HC` on eight `PopUp*` names,
-so neither can go in whole; these five need lifting or reconciling, like `DocSplitTag`,
-`DocRemSoftNewLines` and `DocCollapse`.
+so neither can go in whole; these five need lifting or reconciling, like `DocRemSoftNewLines` and
+`DocCollapse`.
+
+### Done: DocSplitTag — the one that was a crash, not a no-op
+
+`DocSplitTag` was the next item by severity, and it is the first MISSING name whose stub was
+**dereferenced** rather than ignored. `Adam/DolDoc/DocFind.HC:463`:
+
+```
+doc_e = doc_marker = DocSplitTag(doc, doc->cur_entry, doc->cur_col, …);
+do { if (doc_e==doc) … else doc_e->…
+```
+
+A 0 from the stub is a null pointer walked immediately. Measured at the parent commit,
+`tests/exec/cases/e_kernel_doldoc_replace.hc` does not merely return a wrong value:
+
+```
+[unresolved import]
+TRAP mcause=0x5 (load-fault) mepc=0x80a3130c mtval=0x18 blob+0x23130c
+```
+
+`mtval=0x18` is a field offset from 0, and `HOLYC_MAP` resolves the PC to **`EdFindReplace+0x14a4`**.
+So DolDoc find-and-replace crashed the kernel, and nothing said so — the smokes do not drive it and
+the load-time `[import unresolved: DocSplitTag]` line is filtered out of the diagnostics.
+
+Lifted verbatim into `Kernel/RVDoc.HC` (its unit also defines `DocRecalc`, which `RVDoc.HC` defines,
+so the unit itself still cannot go in). Every callee it needs — `MAllocIdent`, `StrNew`, `QueIns`,
+`Free`, `MemCpy`, `StrLen`, `DocEntryNewBase` — was already resolved in the image; I checked each
+against the trailer before lifting rather than after. `EdReplace` is the non-interactive way in
+(`find_replace->pmt=FALSE`), so the test needs no popup: **42 → 41 unresolved, MISSING 9 → 8.**
 
 **What the stub actually cost is worth stating, because it was not a degraded search.**
 `EdCursorRight` is what advances `doc->cur_entry`, and `EdGoToFun`'s loop is
