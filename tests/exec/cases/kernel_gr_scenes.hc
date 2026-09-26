@@ -207,6 +207,41 @@ U0 SPeekWrite(CRVDC *dc)
   "GRSCENE-PROP peek_write round-trip-exact\n";
 }
 
+class CSceneSprite
+{//A contiguous Sprite3 element list. At file scope because a local anonymous `class {…} s;` does
+ //not parse in HolyC — kernel_cdc_demo.hc declares its sprite the same way.
+  CSpriteColor color;
+  CSpritePtPt  line1;
+  CSpritePtPt  line2;
+  CSpriteT     thick;
+  CSpriteColor color2;
+  CSpritePtRad circ;
+  CSpriteBase  end;
+};
+
+U0 SSprite(CRVDC *dc)
+{//Sprite3 over a hand-built element list, the Demo/Graphics/SpriteRaw.HC shape.
+ //Phase 2 needed this scene and did not have it: 23 sites assigned a PIXEL to a pen, and the one in
+ //RVSprite.HC's SPT_COLOR case was invisible to all 13 scenes because none of them drew a sprite.
+ //SPT_FLOOD_FILL is deliberately absent — Kernel/RVSprite.HC:207 skips it, so a scene using it
+ //would pin "nothing happened" and call it coverage.
+  CSceneSprite s;
+  MemSet(&s, 0, sizeof(s));
+  s.color.type  = SPT_COLOR;  s.color.color = CYAN;
+  s.line1.type  = SPT_LINE;   s.line1.x1 = 4;  s.line1.y1 = 4;  s.line1.x2 = 60; s.line1.y2 = 40;
+  s.line2.type  = SPT_LINE;   s.line2.x1 = 60; s.line2.y1 = 4;  s.line2.x2 = 4;  s.line2.y2 = 40;
+  s.thick.type  = SPT_THICK;  s.thick.thick = 3;
+  s.color2.type = SPT_COLOR;  s.color2.color = YELLOW;
+  s.circ.type   = SPT_CIRCLE; s.circ.x1 = 32; s.circ.y1 = 22; s.circ.radius = 14;
+  s.end.type    = SPT_END;
+  Sprite3(dc, 20, 20, 0, &s.color);
+  //A sprite that painted nothing would still hash consistently, so assert it painted.
+  if (GrPeek(dc, 24, 24) == 0 && GrPeek(dc, 52, 42) == 0)
+    "GRSCENE-PROP sprite NOTHING-PAINTED\n";
+  else
+    "GRSCENE-PROP sprite painted\n";
+}
+
 U0 RunScene(U8 *name, U0 (*fp)(CRVDC *dc))
 {
   CRVDC *dc = SCENE_DC_NEW(SCENE_W, SCENE_H);
@@ -236,6 +271,7 @@ I64 main()
   RunScene("print",       &SPrint);
   RunScene("fill",        &SFill);
   RunScene("peek_write",  &SPeekWrite);
+  RunScene("sprite",      &SSprite);
   "GRSCENE-END\n";
   return 0;
 }

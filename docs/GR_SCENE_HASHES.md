@@ -44,6 +44,35 @@ phase 2 adopts stock `CDC`, plain `DCNew` *is* that shape and only that define c
 | `print` | `GrPrint` — the font and the glyph blit |
 | `fill` | `DCFill` — the whole body, padding included |
 | `peek_write` | a ROUND TRIP: plot a pattern, `GrPeek` it back, re-plot. A read/write asymmetry cannot pass |
+| `sprite` | `Sprite3` over a hand-built element list — `SPT_COLOR`/`LINE`/`THICK`/`CIRCLE` |
+
+### Two scenes assert a PROPERTY, not just a hash
+
+A hash says *that* something changed. It never says anything happened at all — a primitive that
+draws nothing hashes just as consistently as one that draws correctly. So two scenes print a verdict
+as well:
+
+```
+GRSCENE-PROP peek_write round-trip-exact
+GRSCENE-PROP sprite painted
+```
+
+`peek_write` compares the `GrPeek`-copied block against the original pixel by pixel, and `sprite`
+checks that two pixels inside the sprite are non-zero. Both were added because the alternative
+already exists in the tree: `kernel-cdc-smoke`'s `sprite_peek` compares a screen pixel against
+`RVColor(CYAN)` *after the test has rewritten the palette*, so both sides move together and it agrees
+whatever happens — while claiming to "prove SPT_FLOOD_FILL painted triangle interior", a path
+`Kernel/RVSprite.HC:207` skips outright.
+
+`sprite` deliberately does NOT use `SPT_FLOOD_FILL` for that reason: a scene built on a skipped code
+path would pin "nothing happened" and call it coverage.
+
+### Why `sprite` exists at all
+
+Parity phase 2 changed 23 sites that assigned a PIXEL to a pen, across four files. Thirteen scenes
+did not notice, because none of them drew a sprite — the `SPT_COLOR` case in `Kernel/RVSprite.HC`
+was found by a whole-framebuffer smoke instead. A per-primitive oracle only covers the primitives it
+actually calls, and that gap is worth re-checking whenever a phase touches something new.
 
 ## The rule about re-pinning
 
