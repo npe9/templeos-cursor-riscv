@@ -108,6 +108,27 @@ just an inventory, it is the checklist for the next phase: each `platform` row e
 kernel as HolyC/RISC-V asm, or the decision gets revisited on purpose rather than by default.
 `make portability-seam-check` fails in both directions, so the list cannot drift while that happens.
 
+### Tier 3 sized — a boot-path change, and the next real piece of work
+
+Worth writing down before anyone starts it, because it is a different kind of job from tiers 1-2.
+
+The kernel already **reads** mtvec — `RVWinCsrrMtvec`, `Kernel/RVDbgView.HC:454`, `Kernel/RVRegPane.HC:263`
+all display it — but **never writes it**. The C owns installation end to end:
+`HolyRVTrapInit` does `csrw mtvec, &HolyTrapVector` plus `csrs mstatus, MIE`, and
+`tests/exec/harness/crt0.S:17` installs an earlier `trap_entry` before that, covering the window
+before anything else is up. The six `RVTrapRecover*` names are accessors over globals that
+`HolyTrapVector` freezes at trap entry.
+
+So tier 3 is not "port six small functions" — it is the kernel taking ownership of the trap vector:
+the save/restore, the frozen register set, and the boot-order question of what handles a fault
+*before* HolyC exists. The instructions are not the obstacle (`csrw`/`csrs`/`csrr` are all in
+`host/parser.c`); the sequencing is.
+
+One detail to preserve if it moves, from the C's own comment: `ra` is frozen deliberately, because
+"a fault inside a leaf (`MemCpy`, `StrLen`, a stub) traps before that function has saved `ra`, so
+`ra` still holds its caller — which is the question *who passed the bad pointer?* that `mepc` alone
+cannot answer." That is also the narrow-trap-frame gap the UART debugger work has open.
+
 ### The real reason to move them: the C runtime is a divergent copy of the platform description
 
 This is a better argument than plan compliance, and it only became visible while sizing tier 2.
@@ -123,15 +144,30 @@ equivalent in `Kernel/RVAutoConf.HH`:
 | UART register stride | **no such concept** | `CONFIG_UART_REG_SHIFT` |
 | timebase frequency | **no such concept** | `CONFIG_TIMEBASE_FREQ` |
 
-`RVAutoConf.HH` is generated per board — `templeos-riscv/configs/` has defconfigs for HiFive
-Unmatched, Milk-V Mars, Microchip Icicle, OpenTitan, AMD MicroBlaze-V and more. The C copy is
-hand-frozen at QEMU virt and lacks concepts the kernel needs at all: register stride matters where
-UART registers are not byte-adjacent, and the timebase frequency differs per board.
+`RVAutoConf.HH` is generated per board and `templeos-riscv/configs/` carries fourteen defconfigs.
+The C copy is hand-frozen at QEMU virt and lacks concepts the kernel needs at all: register stride
+matters where UART registers are not byte-adjacent, and the timebase frequency differs per board.
 
-So every `platform` row that touches a device address is **pinned to QEMU virt by construction**, on
-a port that already carries seven board configs. Moving `RVJiffies` into HolyC is therefore not a
-relocation — it would read `CONFIG_CLINT_BASE` and be correct on Milk-V Mars, where the C version is
-not. `Kernel/RVDocVT.HC:423` already reads `mtime` exactly that way, so the idiom is established.
+**How much it actually diverges, measured across those defconfigs — because my first statement of
+this was wrong.** I claimed moving `RVJiffies` would make it "correct on Milk-V Mars, where the C
+version is not". It would not: Milk-V Mars has `CONFIG_CLINT_BASE=0x02000000`, exactly what the C
+hardcodes. The honest split:
+
+| | boards that differ from the C's hardcoded value |
+|---|---|
+| `CLINT_BASE` | **one** — XiangShan (`0x38000000`). Every other board with a CLINT uses `0x02000000` |
+| `UART_BASE` | **six or more** — AMD MicroBlaze-V `0x40600000`, HiFive Unmatched `0x10010000`, Microchip Icicle `0x20000000`, OpenTitan `0x40000000`, Shakti C `0x00011300`, XiangShan `0x310B0000` |
+
+So the argument is real but it lands on a different tier than I first said. For **tier 2**
+(`RVJiffies`) the hardcoded CLINT address is wrong on exactly one board, and the divisor is already
+platform-aware because callers pass `CONFIG_TIMEBASE_FREQ / 1000` themselves. For **tier 5** (the
+UART rows) the C's `HOLY_UART_BASE` is wrong on most non-QEMU boards, and it has no notion of
+`CONFIG_UART_REG_SHIFT` at all.
+
+That inverts the staging's urgency ordering, though not its dependency ordering: tier 5 was listed
+last as "driver-shaped, least urgent", and by coupling it still moves last, but it is where the
+duplicated board description actually bites. `Kernel/RVDocVT.HC:423` already reads `mtime` through
+`CONFIG_CLINT_BASE`, so the idiom for all of them is established.
 
 That reframes the migration: it is not tidying, and it does not depend on the multi-arch plan's
 "no per-arch C runtime" decision to be worth doing. It removes a second, inferior, silently
@@ -145,15 +181,28 @@ obstacle. Coupling is. Grouped by what has to move together:
 | tier | rows | why |
 |---|---|---|
 | **1 — DONE** | `SysHlt`, `Call` | one instruction each, and the assembler already had both. `HolySysHlt` is `wfi`, which `host/parser.c:4756` encodes as `0x10500073`. `HolyCall` is a `fence.i` then an indirect jump, and `fencei` is already a recognised mnemonic — the C even uses `.word 0x0000100f` by hand because `-march=rv64imafdc` omits Zifencei |
-| **2 — small pairs** | `RVJiffies` + `RVJiffiesInit` | reads MMIO `mtime` and divides by a value the Init sets; move the pair and the global goes with them |
-| **3 — the trap bundle, indivisible** | `RVTrapInit`, `RVTrapRecoverArm`/`Disarm`/`Cause`/`Epc`/`Ra`/`Tval` | the four `Recover*` readers are bare accessors over C globals that the trap vector in `crt0.S` writes. They cannot move one at a time: the vector moves or none of them do |
+| **2 — DONE** | `RVJiffies` + `RVJiffiesInit` | the first row where moving it FIXED something — see below |
+| **3 — the trap bundle, indivisible** | `RVTrapInit`, `RVTrapRecoverArm`/`Disarm`/`Cause`/`Epc`/`Ra`/`Tval` | the `Recover*` readers are bare accessors over C globals the trap vector writes. The vector moves or none of them do — sized below |
 | **4 — scheduling** | `RVTaskSwitch`, `Yield`, `TaskEndNow`, `RVYieldInit`, `RVPreemptReal` | context save/restore and the preempt timer; `RVTaskSwitch` is the x86 `_TASK_CONTEXT_RESTORE`'s counterpart |
 | **5 — devices** | `RVUartIrqInit`/`Off`/`GetBuffered`, `RVVirtioPciIsrReg`, `RVCrashMon`/`Init` | driver-shaped, and the least urgent: a new architecture wants its own anyway |
 
-Tier 1 is the honest next step — two rows off the seam with the assembler exactly as it is, no new
-support needed, and it proves the migration path end to end before anything couples to the trap
-vector. Note the ordering principle differs from the DolDoc work: there, severity ranked the list
-because every row was a live defect; here nothing is broken, so **coupling** ranks it.
+Tiers 1 and 2 are done. Note the ordering principle differs from the DolDoc work: there, severity
+ranked the list because every row was a live defect; here nothing was visibly broken, so **coupling**
+ranked it.
+
+**Tier 2 is the first row where moving it FIXED something.** The C read mtime at a hardcoded
+`0x02000000+0xBFF8`. XiangShan puts its CLINT at `0x38000000`; OpenTitan and AMD MicroBlaze-V have
+no CLINT at all (`# CONFIG_HAS_CLINT is not set`) and the C would read `0x02000000` regardless,
+taking a fault or garbage. The HolyC version reads `CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF` and
+`#ifdef`s the no-CLINT case to 0. Only the address was ever frozen — the divisor was already
+per-board, because every caller passes `CONFIG_TIMEBASE_FREQ / 1000` itself.
+
+`tests/exec/cases/e_kernel_jiffies.hc` is also the first of these cases that **can** fail on a
+broken implementation, because its assertions are about behaviour over time rather than a value the
+C also computes correctly: uninitialised reads 0, an initialised clock is non-zero, it MOVES, and it
+never moves backwards. Confirmed by pointing mtime at XiangShan's base while running on QEMU virt —
+no ORACLE line. The same address that makes the C wrong on XiangShan makes XiangShan's address wrong
+here, and the case catches both directions.
 
 The precedent for the move is already in the tree and was extended twice this session:
 `Kernel/KUtilsRV.HC` took `MemSet`/`MemCpy`/`StrLen`/… off the C runtime years of commits ago, then

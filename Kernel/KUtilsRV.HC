@@ -29,6 +29,37 @@ asm {
 	mc_done:
 	ret
 }
+// I64 RVJiffies(); I64 RVJiffiesInit(I64 mtime_ticks_per_jiffy);
+// Tier 2 of the platform seam. These were HolyRVJiffies/HolyRVJiffiesInit in bootstrap/holy_rt.h,
+// which reads mtime at a HARDCODED 0x02000000+0xBFF8. The kernel has the address per board, from
+// Kconfig via RVAutoConf.HH, so in HolyC it is simply correct where the C is not:
+//
+//   * XiangShan puts the CLINT at 0x38000000, not 0x02000000 (the only board that moves it).
+//   * OpenTitan and AMD MicroBlaze-V have NO CLINT — `# CONFIG_HAS_CLINT is not set` — where the C
+//     would read 0x02000000 anyway and get a fault or garbage. The #ifdef below returns 0 instead.
+//
+// The divisor was already platform-aware: every caller passes CONFIG_TIMEBASE_FREQ / 1000 itself
+// (Kernel/RVKMain.HC:41, Adam/ASnd_RV.HC:78,234). Only the address was frozen.
+// Same idiom as Kernel/RVDocVT.HC:423, which already reads mtime this way.
+I64 rv_jiffy_div = 0;
+
+I64 RVJiffiesInit(I64 mtime_ticks_per_jiffy)
+{
+  rv_jiffy_div = mtime_ticks_per_jiffy;
+  return 0;
+}
+
+I64 RVJiffies()
+{
+  if (!rv_jiffy_div)
+    return 0;
+#ifdef CONFIG_HAS_CLINT
+  return *(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) / rv_jiffy_div;
+#else
+  return 0;
+#endif
+}
+
 // I64 Call(U8 *machine_code=a0); jump to freshly written code and return what it returns.
 // Tier 1 of the platform seam (docs/ASM_PORTABILITY.md): this was HolyCall in bootstrap/holy_rt.h,
 // so every image took it from the C runtime. It is load-bearing — Kernel/KLoad.HC:183 calls it to
