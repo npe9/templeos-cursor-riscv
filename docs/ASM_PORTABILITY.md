@@ -204,6 +204,41 @@ form and popup navigation:
 so neither can go in whole; these five need lifting or reconciling, like `DocRemSoftNewLines` and
 `DocCollapse`.
 
+## Done: the `libm` five — and a bug in the gate itself
+
+`Sin Cos Tan ATan Ceil` had **no HolyC body anywhere in the port**. The C runtime answered for all
+five — including for `Kernel/KUtilsRV.HC`'s own `RVF64Sin`/`Cos`/`Tan`/`ATan`, wrappers whose entire
+purpose is to hand the guest JIT a callable `Sin`, and which were therefore forwarding to C.
+
+Now ported from `rt_sin`/`rt_atan` in `bootstrap/holy_rt.h` loop-for-loop onto the native FPU, the
+same way `Exp` and `Ln` already were in that file, so results agree with what callers were getting.
+`Ceil` is `-Floor(-x)` — exact, and `Floor` is already a native `fcvt.l.d` with `rdn`, so it needs no
+new assembler support. **39 → 34 unresolved; the `libm` category is now empty.**
+
+`tests/exec/cases/e_kernel_libm.hc` checks ten properties against CPython's `math` — an independent
+reference, not a re-pin of the port's own output — including both `ATan` branches and the
+out-of-range reduction. It passes at the parent commit too, **measured not assumed**, because C libm
+is also correct; its header says so and points at the blob gate.
+
+### The gate was lying, and only the negative control found it
+
+Extending `check_blob_imports.sh` from five names to ten, the fail-on-purpose run at the parent
+commit **passed** — at a commit where all five were provably unresolved. The cause was in
+`tools/blob_imports.py`:
+
+```python
+want_absent = [a for i, a in enumerate(argv) if i and argv[i - 1] == '--absent']
+```
+
+Only the argument immediately after `--absent` satisfies that. `--absent Abs Sqr Floor Trunc Round`
+checked **only `Abs`** and silently ignored four names, while the caller printed
+"5 name(s) resolved". A gate that reports success without checking — the same family as the
+`while read` inside a pipeline that printed FAIL and exited 0.
+
+It shipped in the commit that introduced it and survived one whole commit afterwards. The lesson is
+narrow and worth keeping: **when a negative control unexpectedly passes, suspect the harness before
+believing the result.**
+
 ### Done: DocRemSoftNewLines and DocCollapse — the quiet two
 
 Both `U0`, so unlike `DocSplitTag` their stubs could not trap; they were wrongness with no symptom.

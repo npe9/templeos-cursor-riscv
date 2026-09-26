@@ -9,7 +9,6 @@
 # Gate:        make portability-seam-check
 #
 # category   meaning
-#   libm       a real gap: FP math with no HolyC or RISC-V asm body; C libm stands in
 #   strmem     a real gap: a string/memory primitive that exists only as x86 asm
 #   platform   the port layer ON PURPOSE — trap/IRQ/timer/task primitives the C harness owns.
 #              These are what a new architecture must supply; they are not bugs.
@@ -18,11 +17,6 @@
 #              by NOTHING. Calling it prints "[unresolved import]" and returns 0.
 #
 # name	category	provider today
-ATan	libm	bootstrap/holy_rt_names.h
-Ceil	libm	bootstrap/holy_rt_names.h
-Cos	libm	bootstrap/holy_rt_names.h
-Sin	libm	bootstrap/holy_rt_names.h
-Tan	libm	bootstrap/holy_rt_names.h
 MemCmp	strmem	bootstrap/holy_rt_names.h
 MinI64	strmem	bootstrap/holy_rt_names.h
 StrCat	strmem	bootstrap/holy_rt_names.h

@@ -13,7 +13,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-MUST_BE_IN_BLOB=(Abs Sqr Floor Trunc Round)
+# Abs/Sqr/Floor/Trunc/Round: the fabs.d asm-block drop. Sin/Cos/Tan/ATan/Ceil: the libm five, which
+# had no HolyC body at all until Kernel/KUtilsRV.HC grew one — their behavioural test passes either
+# way, because C libm is also correct, so this list is the only thing that can tell them apart.
+MUST_BE_IN_BLOB=(Abs Sqr Floor Trunc Round Sin Cos Tan ATan Ceil)
 
 SRC="$ROOT/tests/exec/cases/e_kernel_fabs.hc"
 OUT="$ROOT/build/exec/blob_imports_check.bin"

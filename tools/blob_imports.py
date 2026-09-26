@@ -35,7 +35,11 @@ def main(argv):
     if len(argv) < 2:
         raise SystemExit(__doc__)
     names = imports(argv[1])
-    want_absent = [a for i, a in enumerate(argv) if i and argv[i - 1] == '--absent']
+    # EVERY argument after --absent, not just the one right after it. The first version of this line
+    # tested `argv[i-1] == '--absent'`, so `--absent Abs Sqr Floor Trunc Round` checked ONLY Abs and
+    # silently ignored four names while the caller printed "5 name(s) resolved". A fail-on-purpose run
+    # is what exposed it: the gate passed at a commit where Sin/Cos/Tan/ATan/Ceil were all unresolved.
+    want_absent = argv[argv.index('--absent') + 1:] if '--absent' in argv else []
     if want_absent:
         bad = sorted(set(want_absent) & set(names))
         for nm in bad:

@@ -988,6 +988,72 @@ F64 Pow(F64 a, F64 b)
   // nan
   return Exp(b *Ln(a));
 }
+// Trigonometry and Ceil, ported from bootstrap/holy_rt.h loop-for-loop the way Exp and Ln above
+// were. Until this landed, Sin/Cos/Tan/ATan/Ceil were UNRESOLVED IMPORTS in every image: nothing in
+// the port defined them, so the C runtime answered — which is why the RVF64* wrappers below, whose
+// whole purpose is to give the guest JIT a callable Sin, were forwarding to C. tests/portability_seam.tsv
+// tracked them under category `libm`. Series lengths and the range reduction match rt_sin/rt_atan
+// exactly, so results agree with what the C runtime was returning.
+#define RV_PI 3.141592653589793
+
+F64 Sin(F64 x)
+{
+  F64 t, sum, x2;
+  I64 i;
+  // Range-reduce to [-PI,PI]: the Taylor series is only accurate near 0.
+  x = x - 2 * RV_PI * ToF64(ToI64(x / (2 * RV_PI)));
+  if (x > RV_PI)
+    x -= 2 * RV_PI;
+  if (x < -RV_PI)
+    x += 2 * RV_PI;
+  t = x;
+  sum = x;
+  x2 = x * x;
+  for (i = 1; i < 12; i++) {
+    t *= -x2 / ((2 * i) * (2 * i + 1));
+    sum += t;
+  }
+  return sum;
+}
+
+F64 Cos(F64 x)
+{
+  return Sin(x + RV_PI / 2);
+}
+
+F64 Tan(F64 x)
+{
+  return Sin(x) / Cos(x);
+}
+
+F64 ATan(F64 x)
+{
+  // atan x = 2 atan(x/(1+sqrt(1+x^2))) halves the argument into the series' good range, and the
+  // reciprocal identity folds |x|>1 back in. Sqrt is native RISC-V asm above.
+  F64 y, y2, t, sum;
+  I64 i;
+  if (x > 1.0)
+    return RV_PI / 2 - ATan(1.0 / x);
+  if (x < -1.0)
+    return -RV_PI / 2 - ATan(1.0 / x);
+  y = x / (1.0 + Sqrt(1.0 + x * x));
+  y2 = y * y;
+  t = y;
+  sum = y;
+  for (i = 1; i < 40; i++) {
+    t *= -y2;
+    sum += t / (2 * i + 1);
+  }
+  return 2 * sum;
+}
+
+F64 Ceil(F64 x)
+{
+  // -Floor(-x) is exact, and Floor is already a native fcvt.l.d with rdn rounding above — so this
+  // needs no new assembler support and no I64 round-trip of its own.
+  return -Floor(-x);
+}
+
 /* Guest-JIT entry points for the _intern F64 ICs (IC_SIN/COS/TAN/ATAN/POWER):
  * the host AOT lowers Sin() etc. to its runtime, so the guest backend calls these. */
 public F64 RVF64Sin(F64 x)

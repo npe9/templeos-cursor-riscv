@@ -53,6 +53,7 @@ tests/exec/cases/e_kernel_fabs.hc	000000000000003f
 tests/exec/cases/e_kernel_doldoc_edcur.hc	000000000000000f
 tests/exec/cases/e_kernel_doldoc_replace.hc	000000000000000f
 tests/exec/cases/e_kernel_doldoc_collapse.hc	000000000000000f
+tests/exec/cases/e_kernel_libm.hc	00000000000003ff
 tests/exec/cases/e_f64_array_decay.hc	000000000000003f
 tests/exec/cases/e_indirect_sibling_args.hc	000000000000001f
 tests/exec/cases/e_postfix_cast_store.hc	000000000000007f
