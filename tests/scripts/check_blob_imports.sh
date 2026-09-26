@@ -16,7 +16,10 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Abs/Sqr/Floor/Trunc/Round: the fabs.d asm-block drop. Sin/Cos/Tan/ATan/Ceil: the libm five, which
 # had no HolyC body at all until Kernel/KUtilsRV.HC grew one — their behavioural test passes either
 # way, because C libm is also correct, so this list is the only thing that can tell them apart.
-MUST_BE_IN_BLOB=(Abs Sqr Floor Trunc Round Sin Cos Tan ATan Ceil)
+# MemCmp/StrCat/MinI64: the strmem three, native RISC-V asm in KUtilsRV.HC beside the nine that
+# were already there. Same situation as the libm five — C also computes them correctly, so only
+# this list can tell whose code is in the image.
+MUST_BE_IN_BLOB=(Abs Sqr Floor Trunc Round Sin Cos Tan ATan Ceil MemCmp StrCat MinI64)
 
 SRC="$ROOT/tests/exec/cases/e_kernel_fabs.hc"
 OUT="$ROOT/build/exec/blob_imports_check.bin"

@@ -29,6 +29,49 @@ asm {
 	mc_done:
 	ret
 }
+// I64 MemCmp(U8 *p1=a0, U8 *p2=a1, I64 cnt=a2); 0 if the runs are equal, else the UNSIGNED byte
+// difference at the first mismatch. Matches HolyMemCmp in bootstrap/holy_rt.h, which is what every
+// caller in this image was getting until this block existed — Kernel/KUtils.HC's _MEMCMP is x86 and
+// is dropped whole, so MemCmp was an unresolved import and the C runtime answered.
+asm {
+	MemCmp::
+	mcmp_loop:
+	beq	a2,zero,mcmp_eq
+	lbu	t0,0(a0)
+	lbu	t1,0(a1)
+	bne	t0,t1,mcmp_diff
+	addi	a0,a0,1
+	addi	a1,a1,1
+	addi	a2,a2,-1
+	j	mcmp_loop
+	mcmp_diff:
+	sub	a0,t0,t1
+	ret
+	mcmp_eq:
+	li	a0,0
+	ret
+}
+// U8 *StrCat(U8 *dst=a0, U8 *src=a1); appends src at dst's NUL, returns dst. Two loops: walk dst to
+// its terminator, then copy src THROUGH its NUL so the result stays terminated.
+asm {
+	StrCat::
+	mv	t2,a0
+	sct_find:
+	lb	t0,0(a0)
+	beq	t0,zero,sct_copy
+	addi	a0,a0,1
+	j	sct_find
+	sct_copy:
+	lb	t0,0(a1)
+	sb	t0,0(a0)
+	beq	t0,zero,sct_done
+	addi	a0,a0,1
+	addi	a1,a1,1
+	j	sct_copy
+	sct_done:
+	mv	a0,t2
+	ret
+}
 // I64 StrLen(U8 *s=a0); returns the length (bytes before the NUL).
 asm {
 	StrLen::
@@ -277,6 +320,18 @@ asm {
 	blt	a0,a1,max_b
 	ret
 	max_b:
+	mv	a0,a1
+	ret
+}
+
+// I64 MinI64(I64 a=a0, I64 b=a1). MaxI64 above has been here since the port began; MinI64 never was,
+// and it is the one of the four that something actually calls — MaxU64 and MinU64 are declared in
+// KernelB.HH but have no call site anywhere, which is why they never appear in the import trailer.
+asm {
+	MinI64::
+	blt	a1,a0,min_b
+	ret
+	min_b:
 	mv	a0,a1
 	ret
 }

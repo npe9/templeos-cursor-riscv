@@ -105,18 +105,24 @@ provides never reaches the trailer in a real link but does in a one-unit compile
 
 | gate | asserts |
 |---|---|
-| `make blob-imports-check` | `Abs Sqr Floor Trunc Round` are resolved INSIDE the blob |
+| `make blob-imports-check` | 13 named primitives are resolved INSIDE the blob, not taken from C |
 | `make portability-seam-check` | the linked image's unresolved set equals the pin, exactly |
 
-### What the 41 turned out to be
+### What the 41 turned out to be — and where they went
 
-| category | n | what it means |
-|---|---|---|
-| `platform` | 22 | the port layer **on purpose** — trap/IRQ/timer/task/yield primitives the C harness owns. This is the seam a new architecture must fill, and naming it is most of the portability work already done |
-| `libm` | 5 | `ATan Ceil Cos Sin Tan` — a real gap, C libm standing in |
-| `strmem` | 3 | `MemCmp MinI64 StrCat` — primitives that exist only as x86 asm |
-| `x86-only` | 3 | `FarCall32 GetRAX SaveExceptRegs` — stubbed, correctly |
-| `MISSING` | 8 | **provided by nothing at all** |
+The first measurement found 41. The sections below work through them; this is the scoreboard.
+
+| category | at first | now | what it means |
+|---|---|---|---|
+| `platform` | 22 | **22** | the port layer **on purpose** — trap/IRQ/timer/task/yield primitives the C harness owns. This is the seam a new architecture must fill, and naming it is most of the portability work already done. Not a defect and not shrinking |
+| `libm` | 5 | **0** | `ATan Ceil Cos Sin Tan` — had no HolyC body at all; now native |
+| `strmem` | 3 | **0** | `MemCmp MinI64 StrCat` — now native RISC-V asm beside the nine already there |
+| `x86-only` | 3 | 3 | `FarCall32 GetRAX SaveExceptRegs` — stubbed, correctly |
+| `MISSING` | 8 | **6** | provided by nothing at all; the remaining six are benign, see below |
+| **total** | **41** | **31** | |
+
+Both categories that represented a *real gap* are now empty. What is left is the deliberate seam,
+three x86 concepts with no meaning here, and six names whose stubs have no reachable consequence.
 
 The last row is the find. Seven of the eight are called by units that ARE in the image while the
 unit defining each is one the project does not include; the eighth, `GetMcause`, I cannot account
@@ -203,6 +209,45 @@ form and popup navigation:
 `DocForm.HC` collides on `DocForm`/`DocMenu`/`PopUpMenu` and `DocPopUp.HC` on eight `PopUp*` names,
 so neither can go in whole; these five need lifting or reconciling, like `DocRemSoftNewLines` and
 `DocCollapse`.
+
+## Done: the `strmem` three — the original ask, exactly
+
+`MemCmp`, `StrCat` and `MinI64`, written as native RISC-V `asm{}` in `Kernel/KUtilsRV.HC`. This is
+the plainest instance of "translate the x86 primitive" in the whole list, because the pattern was
+already there and these were the holes in it: that file holds nine such blocks — `MemSet` `MemCpy`
+`StrLen` `StrCpy` `StrCmp` `StrNCmp` `StrICmp` `StrMatch` `StrIMatch` — translated off the x86 in
+`Kernel/KUtils.HC`, and `MinI64` was missing beside a `MaxI64` that has been there since the port
+began. Semantics match `HolyMemCmp`/`HolyStrCat`/`HolyMinI64` exactly, so no caller moves.
+
+**34 → 31 unresolved; `strmem` is empty too.** Both real-gap categories are now closed.
+
+`tests/exec/cases/e_kernel_strmem.hc` is aimed at the hand-written assembly rather than the happy
+path: zero counts, both orders of difference, a difference past the count, appending to and of the
+empty string, and `MinI64` across zero and at equality. The sharp one is **unsigned** comparison —
+`0x80` must compare above `0x01`, which a signed byte load gets backwards. Mutating `lbu` to `lb`
+in `MemCmp` turns `0x1fff` into `0x1fdf`: exactly that bit and no other, so the property is really
+load-width-sensitive and not incidentally satisfied.
+
+### The `x86-only` three are stubs on purpose, and one of them is checked
+
+`SaveExceptRegs` looked alarming when traced: `Kernel/KExcept.HC:73` calls it from `SysTry`, so
+**every `try` block in the image** calls a stub that does nothing. Its job on x86 is to save the
+callee-saved registers into the `CExcept` for `TakeExcept` to restore — and `TakeExcept` is itself
+one of the 13 dropped blocks, categorised here as an op hook.
+
+It is nonetheless benign, and that is demonstrated rather than argued: `tests/exec/cases/e_try_catch.hc`
+and `e_try_toplevel.hc` are in the permanent oracle manifest and pass, so the port's `try`/`throw`
+does not depend on the x86 register unwind. Note also that `TakeExcept` and `TestExcept` never
+appear in the trailer at all, unlike `SaveExceptRegs` — they are statement forms the compiler
+handles, not calls. `FarCall32` is only reached from `Kernel/PCIBIOS.HC`, the x86 PCI BIOS, and
+`GetRAX` has no call site.
+
+### A rule the trailer obeys, worth knowing before reading any row
+
+`MaxU64` and `MinU64` are declared in `KernelB.HH`, defined nowhere, and appear in neither the image
+nor the trailer — because **nothing calls them**. A slot exists only where a compiled call site
+does. That is the same rule that explained `GetMcause` (a slot for a body nothing calls), and it
+cuts both ways: the trailer is an inventory of call sites, never of declarations.
 
 ## Done: the `libm` five — and a bug in the gate itself
 

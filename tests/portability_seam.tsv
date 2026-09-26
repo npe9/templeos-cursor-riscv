@@ -9,7 +9,6 @@
 # Gate:        make portability-seam-check
 #
 # category   meaning
-#   strmem     a real gap: a string/memory primitive that exists only as x86 asm
 #   platform   the port layer ON PURPOSE — trap/IRQ/timer/task primitives the C harness owns.
 #              These are what a new architecture must supply; they are not bugs.
 #   x86-only   a concept with no meaning off x86; the runtime stubs it
@@ -17,9 +16,6 @@
 #              by NOTHING. Calling it prints "[unresolved import]" and returns 0.
 #
 # name	category	provider today
-MemCmp	strmem	bootstrap/holy_rt_names.h
-MinI64	strmem	bootstrap/holy_rt_names.h
-StrCat	strmem	bootstrap/holy_rt_names.h
 Call	platform	bootstrap/holy_rt_names.h + crt0.S
 SysHlt	platform	bootstrap/holy_rt_names.h
 Yield	platform	bootstrap/holy_rt.h
