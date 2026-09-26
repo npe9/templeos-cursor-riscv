@@ -108,6 +108,36 @@ just an inventory, it is the checklist for the next phase: each `platform` row e
 kernel as HolyC/RISC-V asm, or the decision gets revisited on purpose rather than by default.
 `make portability-seam-check` fails in both directions, so the list cannot drift while that happens.
 
+### Tier 5 does not depend on tier 3, and it is where the damage is
+
+Two corrections to my own staging, both found by checking rather than reasoning.
+
+**It is not one group.** `RVUartIrqInit`/`RVUartIrqOff` are MMIO register writes plus `csrs mie` —
+they enable interrupt *sources* and never touch the vector, so they do not depend on tier 3 at all.
+`RVUartGetBuffered` reads `holy_urx`, a ring the trap handler fills, so that one genuinely is
+tier-3 coupled. "Driver-shaped therefore last" was an assumption about coupling I never checked.
+
+**The C applies one UART's register map to seven UARTs.** `HolyRVUartIrqInit` writes
+`*(U8 *)(HOLY_UART_BASE + 1) = 1` for the interrupt-enable register. That is the NS16550 layout.
+`Kernel/Drv/` carries seven drivers — `RVUart16550`, `RVUartSifive`, `RVUartHtif`, `RVUartIbex`,
+`RVUartShakti`, `RVUartUartlite`, `RVUartStub` — and the defconfigs select 5x 16550, 3x SiFive,
+1x HTIF plus the rest. On a SiFive UART, `base + 1` is not the IE register.
+
+On top of that, four boards set `CONFIG_UART_REG_SHIFT=2` (Microchip Icicle, Milk-V Mars,
+VisionFive2, XiangShan): word-spaced registers, so even on a 16550 the IER is at `base + 4` and the
+C's `base + 1` pokes a byte of RBR/THR instead. The kernel has had this right all along —
+`Kernel/Drv/RVUart16550.HC:22-39` has `RVUartReg`/`RVUartIn`/`RVUartOut`, which apply the shift AND
+switch to U32 access when it is >= 2, with the comment "word-spaced maps often ignore byte MMIO".
+
+**Why this is documented and not done.** Every constant needed is already in `RVAutoConf.HH`
+(`CONFIG_UART_BASE`, `CONFIG_UART_IRQ`, `CONFIG_PLIC_BASE`, `CONFIG_PLIC_ENABLE_OFF`,
+`CONFIG_PLIC_THRESHOLD_OFF`, `CONFIG_UART_REG_SHIFT`), the `csrs mie` idiom already exists in HolyC
+at `Kernel/Drv/RVSmp.HC:57`, and `Kernel/Drv/RVUart.HC` → the generated `RVUartSelected.HH` is
+already the per-board selection seam. But the placement is a real design decision: the IE write
+belongs in each driver (seven of them, each with its own register map) while the PLIC lines are
+shared, and it affects fourteen board configs none of which can be tested here. That is a choice to
+make deliberately, not a refactor to slip into a session that has already moved four names.
+
 ### Tier 3 sized — a boot-path change, and the next real piece of work
 
 Worth writing down before anyone starts it, because it is a different kind of job from tiers 1-2.
@@ -184,7 +214,7 @@ obstacle. Coupling is. Grouped by what has to move together:
 | **2 — DONE** | `RVJiffies` + `RVJiffiesInit` | the first row where moving it FIXED something — see below |
 | **3 — the trap bundle, indivisible** | `RVTrapInit`, `RVTrapRecoverArm`/`Disarm`/`Cause`/`Epc`/`Ra`/`Tval` | the `Recover*` readers are bare accessors over C globals the trap vector writes. The vector moves or none of them do — sized below |
 | **4 — scheduling** | `RVTaskSwitch`, `Yield`, `TaskEndNow`, `RVYieldInit`, `RVPreemptReal` | context save/restore and the preempt timer; `RVTaskSwitch` is the x86 `_TASK_CONTEXT_RESTORE`'s counterpart |
-| **5 — devices** | `RVUartIrqInit`/`Off`/`GetBuffered`, `RVVirtioPciIsrReg`, `RVCrashMon`/`Init` | driver-shaped, and the least urgent: a new architecture wants its own anyway |
+| **5 — devices, and it SPLITS** | `RVUartIrqInit`/`Off` (independent of tier 3), `RVUartGetBuffered` (tier-3 coupled), `RVVirtioPciIsrReg`, `RVCrashMon`/`Init` | I called this "least urgent" and was wrong twice over — see below |
 
 Tiers 1 and 2 are done. Note the ordering principle differs from the DolDoc work: there, severity
 ranked the list because every row was a live defect; here nothing was visibly broken, so **coupling**
