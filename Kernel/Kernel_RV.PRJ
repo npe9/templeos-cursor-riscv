@@ -236,6 +236,15 @@ kernel_cfg = KCfgNew;
 #include "/Adam/DolDoc/DocRun.HC"   // DocEntryRun
 #include "/Adam/DolDoc/DocFind.HC"
 #include "/Adam/DolDoc/DocLink.HC"
+// Sort() and LongLines() — the two cmd-line string utilities Demo/AcctExample/TOS/TOSIns.HC and
+// TOSDistro.HC name. AFTER the DolDoc block above because every call in it lands there or earlier:
+// DocRead/DocWrite/DocPrint/DocNew/DocDel/DocEntryDel (RVDoc + DocChar), QSort (QSort.HC),
+// FilesFind/DirTreeDel (BlkDev/MakeBlkDev), Define (KDefine), MStrUtil/ExtDft (StrA/StrB) and
+// char_bmp_alpha (KGlbls). Measured with tools/blob_imports.py: adding it leaves exactly ONE new
+// unresolved name, DocInsDoc — U0, so its stub returning 0 cannot trap or poison a value, and the
+// only call to it in this unit is the last line of Words(), which neither demo reaches.
+// (DocInsDoc's body is in Adam/DolDoc/DocFile.HC, which is not in the closure.)
+#include "/Adam/Opt/Utils/StrUtils.HC"
 // Adam graphics tables the demos name: gr_x_offsets/gr_y_offsets (the 8 neighbours, GrPeek loops),
 // gr_rainbow_10 and gr_palette_gray. GrMath also brings Mat4x4* — the fixed-point transform — which
 // needed GR_SCALE, whose value ::/Doc/Transform.DD states rather than leaving to guesswork.

@@ -45,3 +45,4 @@ DocDataScan	MISSING	nothing — Adam/DolDoc/DocForm.HC, collides
 DocFormBwd	MISSING	nothing — Adam/DolDoc/DocForm.HC, collides; U0, and a no-op unless DOCF_FORM
 DocFormFwd	MISSING	nothing — Adam/DolDoc/DocForm.HC, collides; U0, and a no-op unless DOCF_FORM
 PopUpPickLst	MISSING	nothing — Adam/DolDoc/DocPopUp.HC, collides on eight PopUp* names
+DocInsDoc	MISSING	nothing — Adam/DolDoc/DocFile.HC, not in the closure; U0, and the only call is the last line of Words() in Adam/Opt/Utils/StrUtils.HC
