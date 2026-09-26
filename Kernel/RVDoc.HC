@@ -1282,6 +1282,61 @@ U0 DocInsEntry(CDoc *doc, CDocEntry *doc_e)
     DocUnlock(doc);
 }
 Bool DocRecalc(CDoc *doc, I64 recalc_flags = RECALCt_NORMAL);
+
+// The last two MISSING DolDoc names, lifted VERBATIM for the same reason as the three above —
+// Adam/DolDoc/DocNew.HC redefines seven names this file defines and DocRecalcLib.HC six.
+//
+// Unlike DocSplitTag these two are U0, so their stubs could not trap; both were quiet wrongness:
+//   * DocRemSoftNewLines (DocFind.HC:514, only when cmd!=RSAC_ALL — the interactive per-hit replace)
+//     left stale DOCT_SOFT_NEW_LINE entries behind, so re-wrap was wrong until the next full recalc.
+//   * DocCollapse (DocLink.HC:123,125) meant link activation with EDf_COLLAPSE/EDf_UNCOLLAPSE did
+//     not collapse the tree widgets.
+// Placed here, immediately after DocRecalc's forward declaration, so every name they call is
+// already declared: DocEntryDel and DocLock/DocUnlock are defined above, DocRecalc is declared on
+// the line above and defined later. An earlier placement compiled too, but only because DocRecalc
+// happened to bind anyway — this spot does not depend on that.
+U0 DocRemSoftNewLines(CDoc *doc = NULL, CDocEntry *doc_e = NULL)
+{
+  CDocEntry *doc_e2, *saved_ll = doc_e;
+  Bool unlock;
+  if (!doc && !(doc = DocPut))
+    return;
+  unlock = DocLock(doc);
+  if (!doc_e) doc_e = doc->head.next;
+  while (doc_e != doc) {
+    doc_e2 = doc_e->next;
+    if (doc_e->type_u8 == DOCT_SOFT_NEW_LINE) {
+      if (doc->cur_entry == doc_e) {
+	doc->cur_entry = doc_e2;
+	doc->cur_col = doc->cur_entry->min_col;
+      }
+      DocEntryDel(doc, doc_e);
+    } else if (saved_ll && doc_e->type_u8 == DOCT_NEW_LINE)
+      break;
+    doc_e = doc_e2;
+  }
+  if (unlock)
+    DocUnlock(doc);
+}
+
+public U0 DocCollapse(Bool collapse = TRUE, CDoc *doc = NULL)
+{//Collapse or uncollapse all tree widgets.
+  CDocEntry *doc_e;
+  Bool unlock;
+  if (!doc && !(doc = DocPut))
+    return;
+  unlock = DocLock(doc);
+  doc_e = doc->head.next;
+  while (doc_e != doc) {
+    if (doc_e->de_flags & DOCEF_TREE)
+      BEqu(&doc_e->de_flags, DOCEf_CHECKED_COLLAPSED, collapse);
+    doc_e = doc_e->next;
+  }
+  DocRecalc(doc);
+  if (unlock)
+    DocUnlock(doc);
+}
+
 U0 DocTop(CDoc *doc = NULL)
 {
   Bool unlock;

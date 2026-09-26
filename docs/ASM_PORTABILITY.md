@@ -204,6 +204,29 @@ form and popup navigation:
 so neither can go in whole; these five need lifting or reconciling, like `DocRemSoftNewLines` and
 `DocCollapse`.
 
+### Done: DocRemSoftNewLines and DocCollapse — the quiet two
+
+Both `U0`, so unlike `DocSplitTag` their stubs could not trap; they were wrongness with no symptom.
+`DocCollapse` (`DocLink.HC:123,125`) meant link activation with `EDf_COLLAPSE`/`EDf_UNCOLLAPSE`
+never collapsed a tree widget. `DocRemSoftNewLines` (`DocFind.HC:514`, only on the
+`cmd!=RSAC_ALL` interactive per-hit branch) left stale `DOCT_SOFT_NEW_LINE` entries, so re-wrap was
+wrong until the next full recalc.
+
+A `U0` gives nothing to compare, so `tests/exec/cases/e_kernel_doldoc_collapse.hc` asserts a **state
+change the stub cannot produce**: `DOCEf_CHECKED_COLLAPSED` appearing on a `DOCEF_TREE` entry and
+then clearing, and a hand-inserted `DOCT_SOFT_NEW_LINE` being gone from the stream afterwards. At the
+parent commit it returns `0x6`, not `0xf` — and the two bits that *do* pass are the vacuous ones
+(`cleared`, because the flag was never set; `soft_before==1`, which is just the setup). That is worth
+noticing: half of a four-part assertion agreed with a completely broken implementation.
+
+Placement matters here in a way the earlier lifts did not need. `DocCollapse` calls `DocRecalc`,
+which `RVDoc.HC` only forward-declares partway down the file, so both went in immediately after that
+declaration. An earlier placement did compile — `DocRecalc` bound anyway and never appeared in the
+trailer — but depending on that is not the same as knowing it.
+
+**41 → 39 unresolved, MISSING 8 → 6.** All six that remain are the benign form/popup group plus
+`GetMcause`'s dead body.
+
 ### Done: DocSplitTag — the one that was a crash, not a no-op
 
 `DocSplitTag` was the next item by severity, and it is the first MISSING name whose stub was
