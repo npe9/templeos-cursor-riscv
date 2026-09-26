@@ -21,6 +21,34 @@ the console dance (catch autoboot through the user's `screen`, poke the payload 
 with `md.l`, take over). `tools/unmatched/hello.S` is the payload; `srst_only.cfg` pulses the board
 reset through the FTDI (it did not reset the board in the one test — the button did).
 
+## The kernel platform image, same way
+
+`tools/unmatched/load_and_takeover.sh <flat.bin>` is the whole cycle, hands-free except the reset
+button: catch U-Boot's autoboot through the user's `screen`, `loady 0x80200000` fed by
+`sz --ymodem` through the same window (~50 s for 323 KB), **`crc32` the DDR against the file**, then
+the takeover. Run against the hifive_unmatched `plat.bin` (crt0 boots on hart 1), captured from a
+cleared window so it is a single run:
+
+```
+halted    dcsr=0x400000c1 (prv=1)  dpc=0xfff93c42        <- inside relocated U-Boot
+mie=0  mstatus.MIE=0  dcsr prv=3  dpc=0x80200000  resumed
+plat-smoke: machine=hifive-unmatched
+plat-smoke: uart_ok  clint_ok  clint_adv_ok  sifive_api  sifive_clint_ok
+plat-smoke: sifive_no_hw_reset  sifive_plic_ok  plic_ok  memmap_ok
+plat-smoke: PASS
+ORACLE 0000000000000000
+```
+
+UART, CLINT (and that it advances), PLIC and the memory map, checked by the kernel's own HolyC on
+the FU740. Two notes: the console emits LF without CR (cosmetic, but a real terminal staircases);
+and one earlier run showed the sequence twice with `dpc` already in the image's idle loop at halt
+time — not reproduced, not explained, recorded.
+
+**A trap that did not fire:** `crt0.S` used to park every hart with `mhartid != 0`, and the takeover
+lands on hart 1 (hart 0 is the S7). The image tested here already boots on hart 1 (`li t1,1; bne
+t0,t1,halt`). Had it not, the fix planned was to enter at the instruction after the check — which on
+this build would have been mid-instruction. Disassemble the image you are about to jump into.
+
 ## The board, from the schematic (rev 3, sheets 4 and 16)
 
 | | |
