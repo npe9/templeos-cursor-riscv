@@ -111,6 +111,85 @@ still describe what the seed pokes today):
 - **Boot** is still per-seed `Run` (`repl_boot_blob` embed is unused for boot).
 - **`holy_rt`** = AOT / oracle helpers — **not** REPL OS APIs.
 
+### MEASURED (2026-09-26): what `holy_rt` actually supplies, and it is not only AOT/oracle
+
+The audit above says "`holy_rt` = AOT / oracle helpers — **not** REPL OS APIs." That is
+understated, and the correction is measurable rather than arguable. `tools/blob_imports.py` reads
+the HOFYIMP1 trailer of the LINKED image (`build/aot/win/win_tos.blob.bin`) — every name the image
+calls that no HolyC unit defines. `tests/portability_seam.tsv` pins the set and
+`make portability-seam-check` fails if it moves in either direction.
+
+**29 names, of which 20 are `platform`** — trap/IRQ/timer/task primitives the kernel calls and
+`bootstrap/holy_rt.h` + `tests/exec/harness/crt0.S` answer:
+
+```
+RVTaskSwitch RVYieldInit RVPreemptReal RVJiffies RVJiffiesInit RVTrapInit
+RVTrapRecoverArm/Cause/Disarm/Epc/Ra/Tval RVUartIrqInit RVUartIrqOff
+RVUartGetBuffered RVVirtioPciIsrReg RVCrashMon RVCrashMonInit Yield TaskEndNow
+```
+
+**This is the C runtime a new ISA would otherwise have to rewrite**, which is exactly what §2
+forbids. So the pin is this section's checklist, not a curiosity: every `platform` row either
+moves into the kernel as HolyC/asm, or the mandate gets revised deliberately.
+
+Progress so far: `Call` and `SysHlt` moved (tier 1, commit `21bd66a2`), and the `libm` five
+(`Sin Cos Tan ATan Ceil`) and `strmem` three (`MemCmp StrCat MinI64`) are gone entirely — both
+of those categories are now zero.
+
+**There is a second, stronger reason than the mandate.** The C copy is a *divergent board
+description*. Every device address in `holy_rt.h` is hardcoded while `Kernel/RVAutoConf.HH` has a
+Kconfig-generated equivalent, and two concepts the C lacks entirely:
+
+| | `holy_rt.h` | `RVAutoConf.HH` |
+|---|---|---|
+| UART base | `0x10000000` | `CONFIG_UART_BASE` — differs on 6+ of 14 boards |
+| CLINT base | `0x02000000` | `CONFIG_CLINT_BASE` — differs on XiangShan; absent on OpenTitan and MicroBlaze-V |
+| PLIC | `0x0C000000` | `CONFIG_PLIC_BASE` |
+| UART register stride | **no such concept** | `CONFIG_UART_REG_SHIFT` — 2 on Icicle, Milk-V Mars, VisionFive2, XiangShan |
+
+`HolyRVUartIrqInit` writes `HOLY_UART_BASE + 1` as the interrupt-enable register: the NS16550
+layout, applied to all seven drivers in `Kernel/Drv/` (5 boards select 16550, 3 SiFive, 1 HTIF).
+On a SiFive UART that is not the IE register; with stride 2 it is not even the right offset on a
+16550. The kernel has always had this right — `Kernel/Drv/RVUart16550.HC`'s `RVUartOut` applies
+the shift and widens to U32 when it is >= 2.
+
+### Staging, and the one that already failed
+
+Group by **shared state**, not shared implementation — learned by getting it wrong:
+
+| tier | rows | note |
+|---|---|---|
+| 1 — done | `SysHlt`, `Call` | one instruction each; `wfi` and `fence.i` were already in the assembler |
+| 2 — **reverted** | `RVJiffies`, `RVJiffiesInit` | belongs to tier 4; see below |
+| 3 | `RVTrapInit` + 6 `RVTrapRecover*` | indivisible: the readers are accessors over globals the `crt0.S` vector writes. Taking this means the kernel owns the trap vector, including what handles a fault before HolyC is up |
+| 4 | `RVTaskSwitch`, `Yield`, `TaskEndNow`, `RVYieldInit`, `RVPreemptReal`, and tier 2 | |
+| 5 | `RVUartIrqInit`/`Off` (independent of tier 3), `RVUartGetBuffered` (tier-3 coupled), `RVVirtioPciIsrReg`, `RVCrashMon`/`Init` | where the divergent board description actually bites |
+
+**Tier 2 was tried, gated 11/11, shipped, and reverted** (`34462dc3` → `0d483f00`). Moving
+`RVJiffies`/`RVJiffiesInit` into HolyC broke `kernel-ctask-sleep-smoke`, because
+`bootstrap/holy_rt.h:1506` is `if (holy_jiffy_div && wake > HolyRVJiffies())` — **the C scheduler
+reads the global the Init sets**. Move the setter and it stays 0 forever; every sleeping task
+becomes runnable.
+
+Three rules fall out of that, and they apply to every row above:
+
+1. **Grep `bootstrap/holy_rt.h` for the globals a row WRITES**, not just for its callers. The
+   trailer shows what the image does not provide; it cannot show who else consumes what a row sets.
+2. **A property test of the moved function cannot see what the move orphaned.** The jiffies test
+   asserted the clock reads 0 uninitialised, is non-zero after init, moves, and never goes
+   backwards — all still true after the breaking change. Only the full suite caught it.
+3. A targeted gate chosen for "what the change drives" is not a substitute for
+   `make -k qemu-integration` on anything touching the seam.
+
+### A prerequisite the seam work does not cover: `_extern SYMBOL` does not bind
+
+`host/parser.c` skips the link symbol in `_extern _LABEL type Name(...)` instead of binding to it,
+so the TempleOS idiom for making an `asm{}` routine C-callable produces an import slot rather than
+an alias. **117 such declarations across 20 files.** The RV port works around it by naming asm
+labels after the HolyC function (`StrCmp::`, not `_STRCMP::`), which every new ISA would have to
+repeat. Asm `::` labels already become first-class `CHashFun` entries with `entry_label` set
+(`parser.c:4529-4543`), so the fix is to alias rather than fall through to `MakeImportSlot`.
+
 ### Kill order (prioritized)
 
 | # | Kill | Notes |

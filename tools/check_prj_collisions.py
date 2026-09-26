@@ -115,6 +115,25 @@ def main():
                 print("  %-26s %s  AND  %s" % (n, a, b))
             return 1
         print("candidate(s) add no collision (%d PRJ files scanned)" % len(files))
+        # "No collision" is not the same as "safe to add". A file that is only `extern`
+        # declarations adds NO bodies and, because the PRJ compiles with
+        # OPTf_EXTERNS_TO_IMPORTS on, every name in it becomes an unresolved import that
+        # bootstrap/holy_rt.h stubs to a function returning 0. Adam/AExts.HC is 89 externs and
+        # zero bodies: adding it would make several demos COMPILE and then silently do nothing,
+        # which is worse than the L0-FAIL it cures. See docs/ASM_PORTABILITY.md.
+        warned = 0
+        for c in cands:
+            txt = (ROOT / c).read_text(errors="replace").splitlines()
+            ext = sum(1 for l in txt if l.startswith("extern ") or l.startswith("public extern "))
+            bodies = sum(1 for l in txt if l.startswith("}"))
+            if ext and not bodies:
+                if not warned:
+                    print("")
+                    print("WARNING — declarations only, so adding this defines NOTHING:")
+                warned = 1
+                print("  %-34s %d extern decl(s), 0 bodies -> %d phantom import slot(s)" % (c, ext, ext))
+        if warned:
+            print("  Each becomes a stub returning 0. Check tools/blob_imports.py after adding.")
         return 0
     # No candidate: this is a report, not a gate. Pre-existing duplicates are recorded above.
     if not existing:

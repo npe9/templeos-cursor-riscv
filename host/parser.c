@@ -973,9 +973,32 @@ static void SkipRegQualifier(Compiler *cc) {
   }
 }
 
+static void RewriteForwardImportCalls(Compiler *cc, CHashFun *fn);   // defined below
+
 // Declared (or merely called) but not defined here: calls go through an import slot the
 // loader fills by name (`__imp_<name>`).
 void MakeImportSlot(Compiler *cc, CHashFun *f) {
+  // `_extern _LABEL type Name(...)`: the declaration is an ALIAS for an asm{} label, not a
+  // reference to something outside the image. An exported `_LABEL::` is already a first-class
+  // CHashFun with entry_label set and is_extern FALSE (see the `::` handling in the asm block
+  // parser), so bind straight to it. Without this the name became __imp_<Name>, the loader
+  // filled it with a stub returning 0, and every stock asm routine silently answered 0 —
+  // Demo/Asm/DivByHand.HC compiled, linked, reported L1-OK and divided everything to zero.
+  if (cc->pending_link_symbol && cc->hash_table) {
+    CHashEntry *e = HashFind(cc->pending_link_symbol, cc->hash_table, HTT_FUN);
+    if (e && (e->type & HTT_FUN)) {
+      CHashFun *tgt = (CHashFun *)e;
+      if (tgt != f && tgt->entry_label && tgt->entry_label_defined) {
+        f->entry_label = tgt->entry_label;
+        f->entry_label_defined = 1;
+        f->is_extern = FALSE;
+        RewriteForwardImportCalls(cc, f);
+        free(cc->pending_link_symbol);
+        cc->pending_link_symbol = NULL;
+        return;
+      }
+    }
+  }
   CHashGlblVar *slot = calloc(1, sizeof(CHashGlblVar));
   char nm[80]; int k = 0;
   const char *pre = "__imp_";
@@ -6904,7 +6927,17 @@ static bool ParseTopLevelInner(Compiler *cc) {
     LexPopRestore(cc);
     // Do not skip a leading type name (`U32i union U32`): INTERNAL `U32i` can lex as TK_IDENT
     // and would be eaten here, dropping the scalar base so the union stays raw_type RT_I64.
-    if (type_follows && !IsTypeStartToken(cc)) LexNext(cc);
+    if (type_follows && !IsTypeStartToken(cc)) {
+      // Skipping is right — the symbol is not part of the type — but REMEMBER it. For
+      // `_extern _DIV_U64_BY_U64 I64 DivU64ByU64(...)` the symbol names an asm{} label that
+      // this declaration is an alias FOR, which is how TempleOS makes an asm routine
+      // C-callable (117 such declarations across 20 files). Dropping it on the floor turned
+      // every one of them into an unresolved import. MakeImportSlot consumes this.
+      free(cc->pending_link_symbol);
+      cc->pending_link_symbol = (cc->lex.token == TK_IDENT && cc->lex.token_str)
+                                  ? strdup(cc->lex.token_str) : NULL;
+      LexNext(cc);
+    }
   }
   // `extern CUAsmGlbls uasm;` before the class is defined: forward-declare the class.
   if (is_extern && cc->lex.token == TK_IDENT && !IsTypeStartToken(cc)) {

@@ -104,6 +104,54 @@ autorun reached, not the include.
 | `Demo/ToHtmlToTXTDemo/HtmlGen.HC` | L0-FAIL | L1-OK | `ToHtml(...)` — needs `Adam/DolDoc/DocLink.HC`'s `LK_*`, not in the PRJ |
 | `Demo/ToHtmlToTXTDemo/TXTGen.HC` | L1-OK | L1-OK | `ToTXT(...)` — ran |
 
+## Two things to know before working the L0-FAIL list
+
+**1. The ceiling is not 204.** Twelve demos contain x86 assembly in an `asm{}` block —
+`Demo/Asm/*` (8 of them), `Demo/Lectures/FixedPointAdvanced.HC`, `Optimization.HC`, `Ring3.HC`,
+and `Demo/Progress.HC`. The RISC-V assembler rejects those blocks whole, so the code is simply not
+in the image. `Demo/Asm/AsmHelloWorld.HC` is the clearest case: its block is `PUSH RSI` /
+`MOV RCX,10` / `CALL PUT_HEX_U8` / `LOOP @@05`, and the file ends with `Call(_HELLO_WORLD)`.
+
+The survey records that one as L0-FAIL because `_HELLO_WORLD` is an `asm{}` label a statement
+cannot name. **Do not "fix" that by making statements name asm labels.** The label belongs to a
+dropped block, so the call would resolve to nothing, take a stub returning 0, and print nothing —
+the demo would move from L0-FAIL to L1-OK while doing strictly less than before. These twelve
+need their assembly translated, which is a different project from adding files to the PRJ.
+
+**2. A file full of `extern` declarations makes things worse, not better.** `Adam/AExts.HC` looks
+like the single highest-value addition: it names `DocMax` (3 demos) and `View` (2), and
+`tools/check_prj_collisions.py` says it collides with nothing. It is 89 `extern` lines and **zero
+bodies**. The PRJ compiles with `OPTf_EXTERNS_TO_IMPORTS` on, so every one of those names would
+become an unresolved import that `bootstrap/holy_rt.h` stubs to a function returning 0 — see
+`docs/ASM_PORTABILITY.md`. Several demos would compile and then silently do nothing.
+
+The collision checker now warns about this, because "no collision" and "safe to add" are not the
+same question. Screen a candidate on **bodies**, not on name clashes:
+
+```sh
+$ tools/check_prj_collisions.py Adam/AExts.HC
+candidate(s) add no collision (72 PRJ files scanned)
+
+WARNING — declarations only, so adding this defines NOTHING:
+  Adam/AExts.HC   89 extern decl(s), 0 bodies -> 89 phantom import slot(s)
+```
+
+### Candidates screened for real bodies AND resolvable dependencies
+
+| file | cost of adding | unblocks |
+|---|---|---|
+| `Adam/Opt/Boot/BootRAM.HC` | nothing missing | `Demo/OnceDemo.HC` |
+| `Adam/InFile.HC` | nothing missing | `Demo/InFile/InSetIP.HC` |
+| `Adam/Opt/Utils/StrUtils.HC` | one phantom, `DocInsDoc`, reached only by its own `Words()` | `Sort`, `LongLines` |
+| `Adam/ABlkDev/ADskA.HC` | `DocD` is in `Adam/DolDoc/DocPutS.HC`, not in the closure | `Touch` (2 demos) |
+| `Adam/Gr/GrDC.HC` | `GrBitMap4ToBitMap8` has **no body anywhere** — only an `extern` in `GrExt.HC` | `DCScrnCapture`, StadiumGen |
+
+`DocInsDoc` is worth one note as a worked example of when to stop chasing a dependency chain. It
+lives in `Adam/DolDoc/DocFile.HC` (6 collisions, cannot be added whole) and needs
+`DocRemSoftNewLines` and `DocEntryNewTag` — both already lifted into `Kernel/RVDoc.HC` — plus
+`DocEntryCopy`, which lives in `Adam/DolDoc/DocNew.HC` (7 collisions). The chain ends at a wall,
+and no demo on this list calls `Words()`, so one documented phantom beats the cascade.
+
 ## What blocks the 37 that do not compile (L0-FAIL)
 
 Counted by how many demos show each error, so one file with fourteen copies of one error

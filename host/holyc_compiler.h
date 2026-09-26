@@ -628,6 +628,10 @@ typedef struct {
   struct HolyAsmSkip *asm_skips;       // ONE registry of every dropped construct, in order
   struct HolyAsmSkip *asm_skips_tail;
   I64 asm_funcs_translated;            // x86 asm functions translated to RISC-V
+  // `_extern _LABEL type Name(...)` — TempleOS's way to make an asm{} routine C-callable. The
+  // link symbol is captured here while the declaration is parsed, so MakeImportSlot can bind
+  // Name to that already-defined asm label instead of creating an unresolved import for it.
+  char *pending_link_symbol;
   U8 class_base_type;                  // `I64 class X {…}`: the class is that scalar; members overlay it
   int in_class_body;                   // `$$` lexes as TK_DOLLAR (current offset) while > 0
   U8 current_fn_ret_type;

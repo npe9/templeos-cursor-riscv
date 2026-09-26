@@ -741,8 +741,13 @@ blob-imports-check:
 # The same trailer read on the REAL multi-module image: its unresolved set is the port's seam, and
 # it is pinned so neither a new hole nor a filled one passes silently. SKIPs if the blob is absent.
 # The prerequisite is the point: without it the script's missing-blob SKIP makes the gate inert on
-# a fresh checkout, which is exactly what CI is.
-portability-seam-check: $(WIN_AOT_BLOB_TOS)
+# a fresh checkout, which is exactly what CI is — and it must be the LITERAL path, not
+# $(WIN_AOT_BLOB_TOS). That variable is assigned further down this file, so at this line it expands
+# to nothing and the rule silently has no prerequisite at all: the gate then reads whatever stale
+# blob happens to be on disk. It did exactly that once, reporting RVJiffies as resolved from an
+# artifact built three hours and one revert earlier. `make -n portability-seam-check` must show the
+# blob rule, not just the script.
+portability-seam-check: build/aot/win/win_tos.blob.bin
 	@chmod +x tests/scripts/check_portability_seam.sh
 	@tests/scripts/check_portability_seam.sh
 
