@@ -182,9 +182,44 @@ before adding any Adam unit:
 | `Adam/DolDoc/DocNew.HC` | 7 — `DocNew DocDel DocRst DocLock DocInsEntry DocEntryDel DocEntryNewBase` all vs `RVDoc.HC` | lift `DocRemSoftNewLines` out; the unit cannot go in whole |
 | `Adam/DolDoc/DocRecalcLib.HC` | 6 (already recorded in the PRJ) | lift `DocCollapse` out |
 
-So four of the seven close by adding two units that collide with nothing, and three need one
-function lifted. Do the two units first and re-pin `tests/portability_seam.tsv`; the gate will
-insist on the re-pin, which is the point of pinning in both directions.
+### Done: DocChar + DocRun added — and the count went UP
+
+Both units went in, and the gate immediately made the real shape visible: four names closed
+(`EdCurU8`, `EdCursorLeft`, `EdCursorRight`, `DocEntryRun`) and **seven new ones opened**, because
+those two units have their own unmet dependencies. Two of the seven were tiny enough to lift
+verbatim into `Kernel/RVDoc.HC` — `IsEditableText` (which `DocChar` calls 16 times) and
+`DocEntryNewTag` (11 times), whose `DocEntryNewBase` already exists there with stock's signature.
+
+Net: **41 unresolved → 42, MISSING 8 → 9.** The count went up and the severity went down, which is
+the trade worth making. What was closed was a no-op *accessor* causing a hang; what is open now is
+form and popup navigation:
+
+| name | in | consequence of the stub |
+|---|---|---|
+| `DocFormFwd`, `DocFormBwd` | `DocForm.HC` | `U0`, and both **return immediately unless `doc->flags & DOCF_FORM`** — so for a non-form doc the stub and the real function are identical. Only form docs lose tab-between-fields |
+| `DocDataFmt`, `DocDataScan` | `DocForm.HC` | form field format/parse |
+| `PopUpPickLst` | `DocPopUp.HC` | the list-picker popup |
+
+`DocForm.HC` collides on `DocForm`/`DocMenu`/`PopUpMenu` and `DocPopUp.HC` on eight `PopUp*` names,
+so neither can go in whole; these five need lifting or reconciling, like `DocSplitTag`,
+`DocRemSoftNewLines` and `DocCollapse`.
+
+**What the stub actually cost is worth stating, because it was not a degraded search.**
+`EdCursorRight` is what advances `doc->cur_entry`, and `EdGoToFun`'s loop is
+`while (doc->cur_entry!=doc) { ch=EdCurU8(doc); … EdCursorRight(doc); }`. A no-op there never
+changes the condition: **an infinite loop**. `tests/exec/cases/e_kernel_doldoc_edcur.hc` pins it,
+and at the parent commit it does not merely return a wrong value — it produces no ORACLE line at
+all, after the loader prints
+
+```
+[import unresolved: EdCurU8]
+…
+[unresolved import]
+[unresolved import]
+```
+
+one line per `EdCurU8` call, and then hangs. And `EdCurU8` returns **-1** for a non-text entry,
+never 0, so the stub's 0 was not even a value the function can produce.
 
 ## How to work an item
 

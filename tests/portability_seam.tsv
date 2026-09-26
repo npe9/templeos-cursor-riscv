@@ -53,9 +53,10 @@ GetRAX	x86-only	bootstrap/holy_rt_names.h (stub)
 SaveExceptRegs	x86-only	bootstrap/holy_rt_names.h (stub)
 GetMcause	MISSING	nothing — bootstrap/seed/csr_decode.hc:317 calls it from CsrDecodeMtval, a body nothing calls
 DocCollapse	MISSING	nothing — Adam/DolDoc/DocRecalcLib.HC, excluded for collisions
-DocEntryRun	MISSING	nothing — Adam/DolDoc/DocRun.HC, not included
 DocRemSoftNewLines	MISSING	nothing — Adam/DolDoc/DocNew.HC, not included
+DocDataFmt	MISSING	nothing — Adam/DolDoc/DocForm.HC, collides (DocForm, DocMenu, PopUpMenu)
+DocDataScan	MISSING	nothing — Adam/DolDoc/DocForm.HC, collides
+DocFormBwd	MISSING	nothing — Adam/DolDoc/DocForm.HC, collides; U0, and a no-op unless DOCF_FORM
+DocFormFwd	MISSING	nothing — Adam/DolDoc/DocForm.HC, collides; U0, and a no-op unless DOCF_FORM
+PopUpPickLst	MISSING	nothing — Adam/DolDoc/DocPopUp.HC, collides on eight PopUp* names
 DocSplitTag	MISSING	nothing — Adam/DolDoc/DocRecalc.HC, not included
-EdCurU8	MISSING	nothing — Adam/DolDoc/DocChar.HC, not included
-EdCursorLeft	MISSING	nothing — Adam/DolDoc/DocChar.HC, not included
-EdCursorRight	MISSING	nothing — Adam/DolDoc/DocChar.HC, not included

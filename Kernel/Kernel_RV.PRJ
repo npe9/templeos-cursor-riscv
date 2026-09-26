@@ -220,6 +220,16 @@ kernel_cfg = KCfgNew;
 #ifndef BIBLE_FILENAME
 #define BIBLE_FILENAME "::/Misc/Bible.TXT.Z"
 #endif
+// DocChar + DocRun BEFORE DocFind/DocLink, which call into them. Without these two units the
+// calls became unresolved imports and bootstrap/holy_rt.h wrote a stub that returns 0 into each
+// slot — silently, since nothing provides those names. EdCurU8 was the damaging one: it is an
+// ACCESSOR, returning the character under the cursor, so a 0 makes every EdCurU8(doc)==':' in
+// DocFind false and abort_on_dbl_colon — DolDoc's Func:: dig-down — can never fire.
+// tools/check_prj_collisions.py says neither unit collides with anything here; the three other
+// units that define the remaining MISSING names (DocRecalc, DocNew, DocRecalcLib) all do.
+// tests/portability_seam.tsv records the four names this closes.
+#include "/Adam/DolDoc/DocChar.HC"  // EdCurU8, EdCursorLeft, EdCursorRight
+#include "/Adam/DolDoc/DocRun.HC"   // DocEntryRun
 #include "/Adam/DolDoc/DocFind.HC"
 #include "/Adam/DolDoc/DocLink.HC"
 // Adam graphics tables the demos name: gr_x_offsets/gr_y_offsets (the 8 neighbours, GrPeek loops),

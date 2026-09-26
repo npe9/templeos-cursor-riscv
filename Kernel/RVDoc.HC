@@ -1179,6 +1179,32 @@ CDocEntry *DocEntryNewBase(CDoc *doc, I64 type, I64 de_flags = 0, I64 x = 0, I64
   return res;
 }
 
+// Lifted VERBATIM from Adam/DolDoc/DocNew.HC. That unit cannot be included — it defines seven names
+// this file already defines (DocNew DocDel DocRst DocLock DocInsEntry DocEntryDel DocEntryNewBase)
+// and the later body would win silently. But Adam/DolDoc/DocChar.HC needs these two: IsEditableText
+// 16 times and DocEntryNewTag 11, and without them each call took a stub returning 0.
+// DocEntryNewTag's own DocEntryNewBase is the one directly above, same signature as stock's.
+Bool IsEditableText(CDocEntry *doc_e)
+{
+  if (doc_e->type_u8 == DOCT_TEXT && !(doc_e->de_flags & DOCEG_DONT_EDIT))
+    return TRUE;
+  else
+    return FALSE;
+}
+
+CDocEntry *DocEntryNewTag(CDoc *doc, CDocEntry *doc_ce, U8 *tag)
+{
+  I64 l = StrLen(tag);
+  CDocEntry *res = DocEntryNewBase(doc, doc_ce->type, doc_ce->de_flags,
+                                   doc_ce->x, doc_ce->y, doc_ce->page_line_num);
+  res->de_flags = doc_ce->de_flags; //Override
+  res->max_col = l;
+  res->tag = MAlloc(l + 1, doc->mem_task);
+  MemCpy(res->tag, tag, l + 1);
+  MemCpy(&res->settings, &doc_ce->settings, sizeof(CDocSettings));
+  return res;
+}
+
 U0 DocEntryDel(CDoc *doc, CDocEntry *doc_e)
 {
   if (!doc || !doc_e || doc == doc_e)
