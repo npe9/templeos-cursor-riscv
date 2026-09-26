@@ -1,0 +1,524 @@
+# HiFive Unmatched (SiFive FU740-C000) — what it takes, and what is actually verified
+
+Status line first, because the rest of this document is detail:
+
+| claim | how |
+|---|---|
+| The board image builds and runs at its real link address | `make kernel-plat-hifive-unmatched-smoke` — real `plat.bin` at 0x80200000 on `-M sifive_u` |
+| That gate can fail | `make kernel-plat-hifive-unmatched-controls` — five controls, each must fail |
+| The JTAG takeover procedure works | `make unmatched-takeover-smoke` — OpenSBI in the chain, hart halted in S-mode, gdb takes it |
+| That gate can fail | four `TOS_TAKEOVER_BREAK=` controls, each must fail |
+| The board's JTAG TAP scans, and raw DMI reads work | measured on a live board (IDCODE 0x20000913; raw `dmi_read` 0/30 bad) |
+| An OpenOCD **examine or halt** completes reliably | **NO.** A ~2-3% per-scan DMI corruption floor that no setting reaches zero on — §7 |
+| The board image runs on real FU740 silicon | **NOT VERIFIED.** Nothing has been loaded or run on hardware. |
+
+Nothing below distinguishes "I reasoned this" from "I measured this" by tone — measurements
+are quoted with the numbers.
+
+---
+
+## 0. Corrections to earlier notes in this tree
+
+Six things that were written down before and are wrong.
+
+**`CONFIG_UART_REG_SHIFT` is not just wrong for this board, it is inapplicable.**
+`tests/scripts/hifive_unmatched_board_help.sh` claimed `REG_SHIFT=2`. `templeos-riscv/Kconfig`
+has `config UART_REG_SHIFT` with `depends on UART_16550`, and this board is `CONFIG_UART_SIFIVE=y`.
+A SiFive UART has no register-shift concept at all. The line was copy-paste from the JH7110
+siblings, along with `ENTRY 0x40200000`, `go 0x40200000`, `load_image … 0x40200000`,
+`FB_PRESENT_SIMPLEFB` and `-M virt`. All fixed. `tests/openocd/hifive_unmatched_load_plat.tcl`
+was already correct at 0x80200000; only the help text was wrong.
+
+**A QEMU machine model is not needed, and the reason is stronger than "the maps match".**
+`-M sifive_u` models the FU540, and for UART/CLINT/PLIC the FU740 is the same
+(UART0 0x10010000 SiFive, CLINT 0x02000000, PLIC 0x0C000000, DRAM 0x80000000). But the
+better reason is that it models the same *topology*: one management core plus N application
+cores, with different ISAs. That is the property this port was getting wrong.
+
+**"The wrong UART harness blocks output" was overstated for the plat demo and understated
+for everything else.** `tests/exec/cases/kernel_plat_demo.hc` prints exclusively through
+HolyC `RVUartPutS`, which uses `CONFIG_UART_BASE` and was always correct. So
+`plat-smoke: PASS` appeared on `-M sifive_u` with the C harness writing bytes into the
+PRCI — and a gate that checked only that needle passed. What the broken C harness actually
+silenced was `trap_report`, the crash monitor, and the `^C` RX path: i.e. every diagnostic,
+which is the worst possible thing to lose on a first bring-up. The plat demo's own header
+says as much: *"Never call RVMemMap() here — harness Print is virt UART @ 0x10000000."*
+
+**Polled REPL input was never the problem.** `Kernel/Drv/RVUartSifive.HC` routes
+`RVUartGetC` to `RVSifiveUartGetC`, which is SiFive-correct, and `Kernel/RVLineEd.HC:177`
+calls `RVUartGetC`. The 16550-shaped RX code is only in the C runtime
+(`bootstrap/holy_rt.h`): `holy_crash_getc` (the crash monitor) and the PLIC RX IRQ path
+(`^C`). Both are now SiFive-capable, but neither was ever in the polled REPL's way.
+
+**`CONFIG_UART_IRQ` was 0.** Kconfig's own help text for the board said "IRQ 39" while
+`UART_IRQ` had no `PLATFORM_HIFIVE_UNMATCHED` default, so it fell through to 0 — the
+"no interrupt" source. 39 is confirmed twice over: FU740-C000 manual v1p6 §13.2 Table 59
+("39 39 UART 0"), and `fu740-c000.dtsi`'s `uart0: serial@10010000 { … interrupts = <39>; }`.
+Now 39. Note `-M sifive_u` wires UART0 to PLIC source 4, so the PLIC path in the plat demo
+is *vacuous under emulation* for this board — it enables a source nothing drives. That is
+the honest state: correct for hardware, untested by the emulated gate.
+
+**`0x80200000` was an assertion in a comment. It is now evidenced** — see §2. It survived.
+
+---
+
+## 1. The two defects that made a good image look dead
+
+### 1a. The C half of every board image described QEMU's `virt`
+
+`tests/exec/harness/oracle_out.c` did `*(volatile unsigned char *)UART_BASE = c` with
+`UART_BASE` defaulting to `0x10000000`, and `bootstrap/holy_rt.h` defaulted
+`HOLY_UART_BASE` to the same with 16550 offsets (IER at +1, LSR at +5). On the FU740:
+
+* `0x10010000` is a **SiFive** UART: 32-bit `TXDATA` at +0 with FULL in bit 31, `RXDATA`
+  at +4 with EMPTY in bit 31, `ie` at +0x10. A byte store at +0 is not "the same write,
+  narrower".
+* `0x10000000` is the **PRCI** — the clock controller. Those writes went into clock
+  registers.
+
+`-DHOLY_UART_BASE=` could move the address but not change the device. Measured, with a
+throwaway `_start` that calls `oracle_report(0x1234)`, linked at 0x80200000, on `-M sifive_u`:
+
+```
+A: default oracle (byte store @ 0x10000000)          -> (nothing)
+B: -DHOLY_UART_SIFIVE=1 -DUART_BASE=0x10010000UL     -> ORACLE 0000000000001234
+```
+
+Fix: a `HOLY_UART_SIFIVE` knob, default 0, in both files, plus `HOLY_UART_IRQ` made
+overridable (it was an unguarded `#define … 10`, i.e. virt's, on every board) and the PLIC
+enable write corrected — it was `1u << irq`, which is the wrong word *and* undefined
+behaviour for FU740 UART0's 39. `tests/scripts/build_kernel_plat.sh` now reads
+`CONFIG_UART_SIFIVE/BASE/IRQ`, `CONFIG_CLINT_BASE` and `CONFIG_PLIC_BASE` out of the
+applied `.config` and passes them through for any SiFive-UART board.
+
+Two things guard the blast radius. The default path is **byte-identical**: disassembling
+`oracle_out.o` built from the pre-change and post-change sources gives identical output.
+And the variant gets its own object path (`oracle_out-sfu-<base>-irq<n>.o`) because the
+staleness test in that script is mtime-only — a shared `oracle_out.o` would have been
+handed to the next board with the wrong flags baked in, which is precisely the class of
+bug this tree keeps getting bitten by.
+
+`make kernel-plat-matrix`: **ok=12 fail=0** (up from 11 — `hifive_unmatched` was built by
+the matrix but never run; it is a member now).
+
+### 1b. The image was pinned to the one hart that cannot execute it
+
+`tests/exec/harness/crt0.S` gated on `csrr t0, mhartid; bnez t0, halt`. On the FU740,
+hart 0 is the **S7** and harts 1–4 are **U74s**; the S7 is rv64imac — no F, no D. The image
+is `-march=rv64imafdc -mabi=lp64d`. The gate pinned it to the only core that cannot run it.
+
+`-M sifive_u` reproduces this exactly. Measured:
+
+```
+CPU #0: model=sifive-e51   misa=0x8000000000101105   (D clear)
+CPU #1: model=sifive-u54   misa=0x800000000014112d   (D set)
+```
+
+It "worked" until now only because `kernel_plat_demo.hc` happens to emit no FP instruction.
+Anything larger — certainly the compiler and the REPL — would have taken an illegal
+instruction on its first double, on hardware, with `trap_report` writing into the PRCI and
+therefore printing nothing.
+
+`crt0.S` now takes `-DBOOT_HARTID`; `hifive_unmatched` and `sifive_u` build with 1. The
+variant gets its own object path for the same reason as above.
+
+Independent confirmation from OpenSBI itself, which picks the boot hart on this machine:
+
+```
+Domain0 Boot HART         : 1
+Boot HART Base ISA        : rv64imafdc
+```
+
+---
+
+## 2. The load address, measured rather than assumed
+
+Two independent lines of evidence, and they agree.
+
+**From the firmware's own mouth, on the emulated leg.** `-M sifive_u`'s default `-bios` is
+`opensbi-riscv64-generic-fw_dynamic.bin` (OpenSBI v1.5.1 as shipped with QEMU 10.1.3). Its
+banner reports its footprint, and its domain table reports exactly what it fences off:
+
+```
+Firmware Base             : 0x80000000
+Firmware Size             : 337 KB
+Firmware RW Offset        : 0x40000
+Domain0 Region00          : 0x0000000002000000-0x000000000200ffff M: (I,R,W) S/U: ()
+Domain0 Region01          : 0x0000000080040000-0x000000008005ffff M: (R,W)   S/U: ()
+Domain0 Region02          : 0x0000000080000000-0x000000008003ffff M: (R,X)   S/U: ()
+Domain0 Region03          : 0x000000000c000000-0x000000000fffffff M: (I,R,W) S/U: (R,W)
+Domain0 Region04          : 0x0000000000000000-0xffffffffffffffff M: ()      S/U: (R,W,X)
+Domain0 Next Arg1         : 0x0000000087e00000        <- the DTB it hands on
+Boot HART MIDELEG         : 0x0000000000000222
+Boot HART MEDELEG         : 0x000000000000b109
+```
+
+Firmware occupies `0x80000000..0x8005FFFF` — 384 KiB. `0x80200000` is clear by 1.6 MiB.
+And the same numbers appear as PMP registers on the boot hart, read over gdb (§3).
+
+**From the board's own tooling, for the real thing.** Mainline U-Boot, `board/sifive/unmatched/Kconfig`:
+`TEXT_BASE` is `0x80200000 if RISCV_SMODE` (which is what this board builds) and
+`SPL_OPENSBI_LOAD_ADDR` is `0x80000000`; `arch/riscv/dts/binman.dtsi` places `opensbi` at
+`SPL_OPENSBI_LOAD_ADDR` and `uboot` at `TEXT_BASE` in the FIT. **That bounds firmware to the
+2 MiB below 0x80200000 as a hard constraint** — if it overran, the stock image would not boot.
+`sifive_unmatched_defconfig` sets `CONFIG_SYS_LOAD_ADDR=0x80200000`, so `$loadaddr` is the
+same address. SPL itself never touches low DRAM: `SPL_TEXT_BASE` is `0x08000000`, the L2
+LIM, and `CONFIG_SPL_STACK=0x81cfe60` is `0x081C_FE60` in that LIM — **not** `0x81CF_E060`
+in DRAM, a misreading worth naming because it would move the answer. And U-Boot's own
+Unmatched boot log shows Linux at exactly this address:
+
+```
+OF: fdt: Ignoring memory range 0x80000000 - 0x80200000
+node   0: [mem 0x0000000080200000-0x000000027fffffff]
+```
+
+**Where live U-Boot ends up.** `arch/riscv/cpu/fu740/dram.c` overrides
+`board_get_usable_ram_top` and returns `SZ_4G` if `ram_top` is above it, so relocated U-Boot
+sits just under `0x1_0000_0000` — roughly `0xFF00_0000..0x1_0000_0000` once its 8 MiB
+malloc arena, gd, fdt and stacks are reserved. **Not** near the top of the 16 GiB
+(`0x4_8000_0000`), which is where the risk was assumed to be. Either way our payload is
+~2 GiB clear of it.
+
+**Conclusion: 0x80200000 stands, and it is the address the board's own tooling designates.**
+`0x84000000..0x84400000` also works but is worse: it is `CONFIG_SPL_LOAD_FIT_ADDRESS` and, on
+2022-era firmware, `kernel_addr_r`.
+
+### The thing that is NOT at 0x80200000, and matters more
+
+**The image is position-independent, so the load address barely constrains correctness — but
+its FIXED absolute addresses do.** Everything is `-mcmodel=medany` and `auipc`-relative;
+measured, the same `plat.bin` runs unchanged at several addresses:
+
+```
+0x80000000 PASS   0x80200000 PASS   0x81000000 PASS   0x84000000 PASS   0x90000000 no
+```
+
+(the last only because it is past the end of `-M sifive_u`'s default DRAM). This is why the
+gate asserts the ELF entry point *structurally* instead of inferring it from output — "did
+it print?" cannot tell a right load address from a wrong one here. It also means the real
+memory hazard is elsewhere: the Kconfig fixed areas, which are absolute no matter where the
+image is loaded.
+
+```
+CONFIG_HEAP_BASE      0x86000000     CONFIG_SYS_FIXED_AREA 0x87000000
+CONFIG_FB_SOFT_BASE   0x86100000     CONFIG_MEMFS_BASE     0x87800000
+CONFIG_STACK_BASE     0x87F00000     CONFIG_TOS_API_ADDR   0x80300000
+```
+
+So the image writes to `0x86000000..0x88000000` wherever you put it. Against the measured
+map that is safe — it is above SPL's dead BSS at `0x85000000` and below both eras'
+`fdt_addr_r` — with one specific collision to know about: **OpenSBI hands the DTB at
+`0x87e00000` (`Domain0 Next Arg1`), which is inside the MEMFS window.** Harmless here,
+because after an M-mode takeover we never read that DTB. It would not be harmless if this
+port ever starts consuming the firmware's device tree.
+
+Also note `CONFIG_TOS_API_ADDR=0x80300000` is only 1 MiB above the load address, and the
+board `plat.bin` is 323 KB today. Not a collision now; it would become one if the image grew
+past 1 MiB.
+
+---
+
+## 3. What OpenSBI leaves behind, and why M-mode takeover is the *small* change
+
+Read over gdb from the boot hart, after OpenSBI ran, on `-M sifive_u -smp 2`:
+
+```
+mhartid=1  priv=1  misa=0x800000000014112d  mstatus=0x8000000a00006080
+mtvec=0x800003c8                 <- OpenSBI's trap handler
+mie=0x8                          <- MSIE, for its IPIs; mstatus.MIE=0
+pmpcfg0=0x1f1b181818
+pmpaddr0=0x801fff     -> 0x02000000 +64K   CLINT,        S/U: none
+pmpaddr1=0x20013fff   -> 0x80040000 +128K  firmware RW,  S/U: none
+pmpaddr2=0x20007fff   -> 0x80000000 +256K  firmware R+X, S/U: none
+pmpaddr3=0x37fffff    -> 0x0C000000 +64M   PLIC,         S/U: R+W
+pmpaddr4=0xffffffffffffffff -> whole space, S/U: R+W+X
+a1=0x87e00000         -> the DTB
+satp=0x0              -> bare; gdb's `load` needs no translation
+```
+
+Four conclusions:
+
+1. **PMP does not have to be undone.** No `pmpcfg` byte has the lock bit `0x80` set, so none
+   of it applies to M-mode. After the privilege raise we inherit a machine we can fully
+   drive. Nothing in the kernel needs a PMP-aware startup path.
+2. **S-mode entry is not the cheaper option it sounds like.** PMP entry 0 denies S/U access
+   to the CLINT at `0x02000000`, and `RVClintMtime()` is the second thing the plat demo
+   touches after the UART. It would fault immediately. This is on top of the structural
+   argument, which holds: `crt0.S` writes `mtvec`, `HolyRVTrapInit` sets `mtvec`+`mstatus.MIE`,
+   `RVUartIrqInit` sets `mie.MEIE`, the trap-recover set reads `mcause/mepc/mtval`, and
+   `Kernel/RVDbgView.HC` / `RVRegPane.HC` display machine CSRs. An S-mode port means an
+   `stvec/scause/sepc/stval` variant of the whole trap layer. **No evidence was found of this
+   port making any SBI call** — `ecall` appears only as a trap *cause* to report. So the
+   coordinator's read is confirmed: M-mode takeover is the smaller change, and it is what the
+   port already is.
+3. **`mtvec` is self-healing but observably so.** `crt0.S` installs its own vector first
+   thing. When something goes wrong before that, you see OpenSBI's handler instead — the
+   wrong-pc negative control lands in `sbi_trap_error: hart1: trap0: …`, which is exactly
+   OpenSBI's `mtvec` still being in charge. Useful, not a problem.
+4. **`mie=0x8` must be cleared.** A machine software interrupt left enabled fires the moment
+   the kernel sets `mstatus.MIE`, into a handler that knows nothing of OpenSBI's IPI
+   protocol. The takeover script clears `mie`/`mip`.
+
+**Secondary harts.** OpenSBI parks the others in its HSM wait loop, in M-mode, with PMP
+*not yet* programmed (measured: hart 0 `pmpcfg0=0x0`). After the takeover they are still
+OpenSBI's, spinning in firmware we have overwritten only at `0x80200000` — which they are
+not executing. `crt0.S`'s `BOOT_HARTID` gate means they would park in our own `wfi` loop if
+they ever did arrive. This is fine for bring-up and is **not** a multi-hart story: nothing
+brings those harts under the kernel's control, and `kernel-smp-smoke` is a `-M virt` thing.
+
+---
+
+## 4. The takeover procedure — one script, two targets
+
+`tests/gdb/unmatched_takeover.gdb` holds everything that touches machine state, and it is
+byte-identical between the two legs:
+
+```
+  <halt>                          # leg-specific, see below
+  eval "file %s", $tos_elf        # AFTER selecting the hart -- see the flen note
+  load
+  set $priv = 3
+  set $mie = 0
+  set $mip = 0
+  set $pc = _start
+  <resume>                        # leg-specific
+```
+
+What differs is only how each server is *driven*, and each difference is written out in its
+own wrapper rather than hidden:
+
+| | QEMU (`unmatched_takeover_qemu.gdb`) | OpenOCD (`unmatched_takeover_openocd.gdb`) |
+|---|---|---|
+| port | `:1234` | `:3333` |
+| pick a hart | `add-inferior; inferior 2; attach 2; thread 2.1` | `thread 2` (harts are targets, not inferiors) |
+| halt | `tbreak *$tos_fw_done; continue` | `monitor halt` |
+| resume | `detach inferiors 1-2` | `detach` |
+| verified | **yes**, gated | **no board was attached** |
+
+Four things that cost a run each and are worth knowing before you touch the hardware:
+
+**The ELF cannot be on the gdb command line.** Both servers describe the hart you first land
+on, and on both that is the FPU-less management core. gdb compares its `flen` against the
+ELF's and refuses outright: `bfd requires flen 8, but target has flen 0`. Connect, select a
+U74, *then* `file`.
+
+**`interrupt` is useless in a batch script.** It is asynchronous, gdb never settles, and every
+following command fails with `Cannot execute this command while the target is running`.
+Tried four ways (`interrupt`, `interrupt -a`, detaching the other inferior,
+`schedule-multiple on`) — all four. The synchronous equivalent of "the board is sitting at
+the prompt" is a temporary breakpoint: let firmware run, stop exactly there. On the real
+board you do not need this at all, because the board really is already halted — which is why
+`tos_halt` is leg-specific.
+
+**`set schedule-multiple on` is load-bearing on the QEMU leg.** Without it the `continue`
+inside `tos_halt` resumes only inferior 2, OpenSBI's boot hart never runs, and the breakpoint
+is never reached.
+
+**The final resume is `detach`, not `continue`.** `continue` never returns in a script, and
+over QEMU's gdbstub it races with the stub's own bookkeeping (the hart is marked `[running]`
+the moment `pc` is written) and reports the same "target is running" error while the guest
+runs anyway. `detach` means "resume and stop debugging", which is the last act of a takeover.
+Interactively you would type `continue` and keep `^C`.
+
+### The gap that had to be closed to make this apples-to-apples
+
+The first working version of this gate was **not** testing the privilege raise. Under QEMU
+with OpenSBI and no payload, OpenSBI has nothing to `mret` into: it faults jumping to
+next-address `0x0` and stays in M-mode. So a hart halted under QEMU was *already* `priv=3`,
+`set $priv = 3` was a no-op, and the `nopriv` negative control **passed** — while on the
+board the hart will be in S-mode, running U-Boot proper. That is exactly the
+"works one way in QEMU and another on the board" failure that would have voided the exercise.
+
+`tests/exec/harness/smode_idle.S` closes it: 20 lines of RV64 that print a banner and then
+`wfi` forever, linked at `0x80400000` (deliberately not `0x80200000`), handed to QEMU as
+`-kernel`. OpenSBI `mret`s into it in S-mode, and the emulated hart is now in the same
+privilege state as a board at the U-Boot prompt. Measured, from the passing gate:
+
+```
+[takeover] mhartid=1 priv=1 pc=0x80400024
+[takeover] misa=0x800000000014112d mstatus=0x8000000a00006080
+[takeover] inherited mtvec=0x800003c8 mie=0x8 (firmware's)
+[takeover] inherited pmpcfg0=0x1f1b181818 pmpaddr0=0x801fff (no L bit => M-mode unrestricted)
+[takeover] load
+[takeover] entering at 0x80200000 with priv=3 mie=0x0
+```
+
+The gate requires OpenSBI's banner *and* the S-mode stub's banner on the UART, so a run that
+quietly lost its firmware cannot pass.
+
+---
+
+## 5. Gates, and each one seen to fail
+
+`make kernel-plat-hifive-unmatched-controls` — five controls on the board-image gate:
+
+1. **Wrong load address.** The obvious form of this control *does not work*, and finding that
+   out was worth more than the control: the image is position-independent (§2), so loading it
+   at 0x80000000 still prints `plat-smoke: PASS`. The gate therefore asserts the ELF entry
+   point, and the control breaks *that* rule by feeding it `plat-qemu.elf`, the same image
+   linked at 0x80000000.
+2. **Wrong machine.** Same bytes on `-M virt`, same `-smp 2`, same boot hart — only the
+   console device differs. Output vanishes, which is what proves it is coming through the
+   SiFive UART at 0x10010000.
+3. **The C harness needle.** Relink the *same* HolyC blob against the default 16550 oracle.
+   `plat-smoke: PASS` still appears (HolyC, `CONFIG_UART_BASE`) and `ORACLE ` disappears.
+   This is the bug from §1a reproduced on demand; a one-needle gate passes here.
+4. **The needle rule itself.** Feed the checker `PASS` without `ORACLE` and require a
+   non-zero exit.
+5. **Wrong hart.** Reset PC on hart 0. Silence — the `BOOT_HARTID` gate holds.
+
+`make unmatched-takeover-smoke` — four controls, via `TOS_TAKEOVER_BREAK=`:
+
+| control | what it breaks | expected |
+|---|---|---|
+| `badpc` | enters at 0x80800000 | fails; lands in OpenSBI's `sbi_trap_error` dump |
+| `nopriv` | skips `set $priv = 3` | fails — and it is the reason `smode_idle.S` exists |
+| `wronghart` | takes over the E51 instead of a U54 | fails |
+| `nofirmware` | `-bios none` | fails: the firmware markers are missing |
+
+`make -n` was used as the negative control for every new Makefile target — this tree has had
+a prerequisite that expanded to empty because it referenced a variable assigned 67 lines
+later.
+
+---
+
+## 6. What remains for the physical board
+
+**Nothing needs to be built.** No U-Boot, no OpenSBI, no SD card. The board's own firmware
+in SPI flash does the one job we cannot do ourselves (train DDR), and then we take the
+machine away from it over JTAG. QEMU ships the OpenSBI binary used for the emulated leg
+(`/opt/homebrew/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin`); nothing was cross-built.
+
+**And no external probe is needed either — but see §7, because the on-board one is
+currently the blocker.** The Unmatched's debug interface is an FT2232H on the board,
+reached through the *same micro-USB that carries the console*:
+
+* channel A → JTAG, channel B → console at 115200 8N1.
+* It enumerates as "Dual RS232-HS", `0403:6010`, with **no USB serial number**, so macOS
+  names the two ports by USB location rather than by serial. The lower of the pair is
+  channel A. The numbers move with the physical port, so identify them by ordering.
+* This supersedes `tests/openocd/hifive_unmatched.cfg`, which assumes an external Olimex
+  ARM-USB-TINY-H on header **J18**. The measured configs are
+  `tests/openocd/hifive_unmatched_ft2232h.cfg` and `hifive_unmatched_hart1.cfg`.
+* Earlier notes in this tree said the micro-USB was "the CP2105 console". It is not a
+  CP2105 and it is not only a console.
+
+**Order**: power on and let the board's own ZSBL → U-Boot SPL → OpenSBI run (SPL is what
+trains DDR), then stop at the **U-Boot prompt**. Prefer that over a booted Linux, for three
+measured reasons: under Linux the MMU is on, so `satp` is non-zero and gdb's memory writes
+are translated — a `load` to 0x80200000 may not land at physical 0x80200000; Linux runs SMP
+on all four U74s, so stealing one leaves three to RCU-stall and panic; and a getty owns the
+console. **Never `reset halt` a cold board** — that halts the FU740 before DDR exists and
+`load` writes into nothing.
+
+Then, and only after the §7 pre-flight:
+
+```
+openocd -f tests/openocd/hifive_unmatched_hart1.cfg &
+tests/scripts/unmatched_jtag_floor_check.sh 300 0
+make kernel-hifive_unmatched && make hello-unmatched
+riscv64-elf-gdb -q -batch -ex 'set $tos_elf = ".../hello.elf"' \
+    -x tests/gdb/unmatched_takeover_openocd.gdb
+```
+
+**Start with `hello.elf`, not the kernel.** 745 bytes of assembly that prints before
+touching any CSR (so it survives being entered in S-mode by mistake), then `mhartid`,
+`misa`, and an actual `fadd.d`. It separates "can we get code running at all" from "does
+the kernel work", and it names the two failures most likely on this board instead of
+hanging:
+
+```
+TempleOS/RISC-V: hello from the HiFive Unmatched (FU740)
+hello: mhartid=1
+hello: misa=0x800000000014112d
+hello: misa.D set (U74) - running the FPU probe
+hello: fadd.d 2.0+3.0 = 5
+hello-unmatched: OK
+```
+
+and on the wrong hart:
+
+```
+hello: misa.D CLEAR - this hart has no FPU
+hello: WRONG HART - this is the S7 (hart 0). TempleOS/RV is rv64imafdc/lp64d;
+       load and resume on a U74 (hart 1..4) instead.
+```
+
+---
+
+## 7. The actual blocker on hardware: a JTAG DMI corruption floor
+
+This is the honest state of the board as of this writing, and it is the reason nothing has
+been loaded on it. It is also the most misleading kind of failure, so the numbers matter.
+
+**Adapter speed is not an optimisation, and slower is worse.** Measured over 300+
+alternating `dmstatus`/`abstractcs`/`dmcontrol` scans per setting, in one held OpenOCD
+session, through the on-board FT2232H:
+
+| setting | stray values in 300+ scans |
+|---|---|
+| 10 MHz, `tdo_sample_edge falling` | 9 |
+| 8 MHz, falling | 6 |
+| 8 MHz, rising | 8 (+1 hard error) |
+| 6 MHz, falling | 7 |
+| 3 MHz | OpenOCD **asserts** (`riscv-013.c:499: info->abits != 0`) |
+| 1–2 MHz | total collapse — 0 of 30 reads parse |
+
+So there is a ~2-3% per-scan floor that **no setting reaches zero on**, and below about
+4 MHz it is not a floor but a collapse. The original `hifive_unmatched.cfg` advice — "1 MHz
+to start, raise to 10 MHz once proven" — was itself the bug.
+
+**Why small probes lie, and why this needed a dedicated check.** Raw
+`riscv dmi_write`/`dmi_read` pairs come back 0-bad-out-of-30, and a 60-operation probe looks
+perfect. An OpenOCD *target examine* or a *halt* issues **hundreds** of DMI operations, and
+OpenOCD treats a single bad DMI status as **fatal, with no retry**. At a 2-3% floor that is
+a near-certain failure. This is exactly why an earlier report of "24/24 clean IDCODE reads"
+and "found 5 harts" was both true and misleading: those succeeded, and the operations that
+matter do not.
+
+`tests/scripts/unmatched_jtag_floor_check.sh` is the pre-flight that reproduces this: 300
+`dmstatus` reads over OpenOCD's TCL RPC port, counting everything that is not the modal
+value. Run it before `load`, because the alternative is finding out through an assert
+half-way through writing to DDR.
+
+**Already ruled out, so do not re-chase them:** macOS FTDI driver contention (identical
+under `sudo` after a clean detach), the TDO sample edge (both measured above), TRST/SRST
+levels, and the cable and host port (identical after swapping both — a further cable swap
+is in progress).
+
+**The fallback if the floor does not drop** is the external Olimex ARM-USB-TINY-H on header
+J18 — an independent JTAG path that bypasses the on-board FT2232H entirely. Use the
+original `hifive_unmatched.cfg` for it, but at **10 MHz with falling TDO sample edge**, not
+its 1 MHz default.
+
+**One state to recognise:** `dmstatus 0x30382` is `allhalted|anyhalted|resumeack`, i.e. a
+hart left halted by an earlier session whose resume never ran. That looks like a dead board
+and is not one. The floor-check script names it.
+
+---
+
+## 8. Specific things that could still differ on real silicon
+
+Listed because "it works in QEMU" is not a claim about hardware:
+
+* **Everything in §7.** Until an examine and a halt complete reliably, the takeover cannot
+  be attempted at all, let alone verified.
+* **Hart selection and `set $priv = 3` through OpenOCD.** The only parts of the takeover
+  that are not the same code the emulated gate exercises. Check `p/x $mhartid` before
+  resuming. If the privilege write is refused, `monitor reg priv 3` is the fallback; if
+  *neither* works, stop — S-mode entry is not a fallback (§3).
+* **The PLIC/`^C` path is untested for this board even under emulation.**
+  `CONFIG_UART_IRQ` is now 39, which is right for the FU740 and wrong for `-M sifive_u`
+  (which wires UART0 to source 4). So the SiFive-correct `HolyRVUartIrqInit` code is
+  compiled and reachable but has never had a real interrupt delivered to it. **Treat `^C`
+  in the REPL as unverified.** Polled input does not depend on it (§0).
+* **U-Boot generation matters for one thing.** On mainline U-Boot `kernel_addr_r=0x80200000`
+  — the same address as our payload. Do not run a boot command after loading, or
+  `setenv kernel_addr_r 0x84000000` first. On 2022-era firmware `kernel_addr_r` is already
+  `0x84000000` and this does not apply.
+* **PCIe, SD, SPI, the Cadence GEM and the framebuffer are all untouched.**
+  `CONFIG_SIFIVE_ETH_BASE` is deliberately left 0: the FU740 does have a GEM at 0x10090000,
+  but a non-zero base selects `RVSifiveGemYes`, whose loopback self-test has only ever run
+  against QEMU's model. `CONFIG_SIFIVE_GPIO_RESET_PIN` stays 32 (none) for the same
+  reason — the board's reset pin is unverified, and `RVSifiveCanReset` reporting
+  `sifive_no_hw_reset` is the correct answer until someone checks.
