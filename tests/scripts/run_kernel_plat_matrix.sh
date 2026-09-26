@@ -12,6 +12,9 @@ ran=0
 # none/host are not matrix targets (excluded, not skip=OK).
 # visionfive2 / milkv_mars: no native -M; smoke via plat-qemu.elf on virt
 # (JH7110 UART/CLINT/PLIC base overlap — see PLATFORM.md).
+# hifive_unmatched: no native -M either, but the FU540 that -M sifive_u models shares
+# the FU740 UART/CLINT/PLIC map, so this one smokes the REAL board plat.bin at its own
+# 0x80200000 via -device loader, on hart 1 (hart 0 is the FPU-less S7/E51).
 MACHINES=(
   virt
   sifive_u
@@ -24,6 +27,7 @@ MACHINES=(
   opentitan
   visionfive2
   milkv_mars
+  hifive_unmatched
 )
 
 echo "=== kernel plat machine matrix ==="
