@@ -111,6 +111,26 @@ Linux configures the clock itself, which is why Linux networking works on the sa
 So tftp from THIS U-Boot needs one of: a 100 Mb switch/hub between board and router (the partner
 then cannot offer gigabit), a newer U-Boot on the SD card, or a different transport.
 
+## Fixed: U-Boot 2025.01 installed on p2 — tftp works
+
+Built in Docker (`ubuntu:24.04`, `gcc-riscv64-linux-gnu`, `sifive_unmatched_defconfig`,
+`OPENSBI=` QEMU's shipped generic `fw_dynamic.bin`): `u-boot-spl.bin` 87 KB, `u-boot.itb` 960 KB.
+Written to the SD card from the Mac's reader by `~/uboot-unmatched/install_uboot_sd.sh` — finds the
+card by the SiFive partition-type GUIDs (`5b193300…` = SPL = p1, `2e54b353…` = ITB = p2), backs both
+up, writes **p2 only**, reads back and `cmp`s. SPL was left at 2021.01 on purpose; the banner now
+reads `U-Boot SPL 2021.01` then `U-Boot 2025.01`, and the mixed pair boots fine.
+
+Result on the board: `link up, 1000Mbps full-duplex`, `DHCP client bound to address 192.168.8.178
+(254 ms)`, `TFTP from server 192.168.8.233 … Bytes transferred = 323224`, `crc32 … c4ee5f01`, then
+the takeover and `plat-smoke: PASS`. Reset-to-PASS is under a minute.
+
+One trap on the way: U-Boot's `dhcp` **overwrites `serverip`** with the DHCP server's address, so a
+`setenv serverip` issued before it silently redirects tftp to the router. Name the server in the
+request (`tftpboot 0x80200000 192.168.8.233:plat.bin`); the script does.
+
+The router path was tried first and is closed with evidence: the LAN switch is an RTL8372N under
+`swconfig` whose per-port attributes are `disable`, `pvid` and a read-only `link` — no speed forcing.
+
 ## Loading the real image
 
 `mw.l` through the console carried the 82-byte hello; `loady` (ymodem, `lrzsz`) carried the 323 KB

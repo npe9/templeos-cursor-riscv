@@ -20,10 +20,11 @@ if [ "$XFER" = tftp ]; then
   NAME=$(basename "$IMG"); SRV="${UNMATCHED_SERVERIP:?Mac IP that runs tftpd}"
   [ -f "/private/tftpboot/$NAME" ] || { echo "/private/tftpboot/$NAME missing (cp it there first)"; exit 1; }
   cmp -s "$IMG" "/private/tftpboot/$NAME" || { echo "/private/tftpboot/$NAME differs from $IMG"; exit 1; }
+  # `dhcp` OVERWRITES serverip with the DHCP server (the router), so a setenv before it is lost and
+  # the request goes to the wrong host. Name the server inline instead: host:file is always honoured.
   screen -S $SPID -X stuff $'setenv autoload no\r'; sleep 0.5
-  screen -S $SPID -X stuff "setenv serverip $SRV"$'\r'; sleep 0.5
   screen -S $SPID -X stuff $'dhcp\r'; sleep 6
-  screen -S $SPID -X stuff "tftpboot 0x80200000 $NAME"$'\r'
+  screen -S $SPID -X stuff "tftpboot 0x80200000 $SRV:$NAME"$'\r'
   for i in $(seq 1 120); do sleep 2; screen -S $SPID -X hardcopy $S/win.txt; grep -qE "Bytes transferred|Retry count exceeded|TFTP error|not found" $S/win.txt && break; done
   grep -E "DHCP client bound|Bytes transferred|Retry count exceeded|TFTP error|not found" $S/win.txt | tail -3
   grep -q "Bytes transferred" $S/win.txt || { echo "tftp did not complete"; exit 1; }
