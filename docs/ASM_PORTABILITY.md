@@ -108,6 +108,35 @@ just an inventory, it is the checklist for the next phase: each `platform` row e
 kernel as HolyC/RISC-V asm, or the decision gets revisited on purpose rather than by default.
 `make portability-seam-check` fails in both directions, so the list cannot drift while that happens.
 
+### The real reason to move them: the C runtime is a divergent copy of the platform description
+
+This is a better argument than plan compliance, and it only became visible while sizing tier 2.
+
+Every device address the C runtime uses is **hardcoded**, and the kernel already has a *generated*
+equivalent in `Kernel/RVAutoConf.HH`:
+
+| | `bootstrap/holy_rt.h` | `Kernel/RVAutoConf.HH` |
+|---|---|---|
+| UART base | `HOLY_UART_BASE 0x10000000` | `CONFIG_UART_BASE` |
+| CLINT base | `HOLY_CLINT_BASE 0x02000000` | `CONFIG_CLINT_BASE` |
+| PLIC | `HOLY_PLIC 0x0C000000` | `CONFIG_PLIC_BASE` |
+| UART register stride | **no such concept** | `CONFIG_UART_REG_SHIFT` |
+| timebase frequency | **no such concept** | `CONFIG_TIMEBASE_FREQ` |
+
+`RVAutoConf.HH` is generated per board — `templeos-riscv/configs/` has defconfigs for HiFive
+Unmatched, Milk-V Mars, Microchip Icicle, OpenTitan, AMD MicroBlaze-V and more. The C copy is
+hand-frozen at QEMU virt and lacks concepts the kernel needs at all: register stride matters where
+UART registers are not byte-adjacent, and the timebase frequency differs per board.
+
+So every `platform` row that touches a device address is **pinned to QEMU virt by construction**, on
+a port that already carries seven board configs. Moving `RVJiffies` into HolyC is therefore not a
+relocation — it would read `CONFIG_CLINT_BASE` and be correct on Milk-V Mars, where the C version is
+not. `Kernel/RVDocVT.HC:423` already reads `mtime` exactly that way, so the idiom is established.
+
+That reframes the migration: it is not tidying, and it does not depend on the multi-arch plan's
+"no per-arch C runtime" decision to be worth doing. It removes a second, inferior, silently
+diverging copy of the board description.
+
 ### Staging the 22, by coupling rather than by size
 
 The C bodies are small — 5 to 28 lines each, maybe 200 lines in total — so volume is not the
@@ -115,7 +144,7 @@ obstacle. Coupling is. Grouped by what has to move together:
 
 | tier | rows | why |
 |---|---|---|
-| **1 — movable today** | `SysHlt`, `Call` | one instruction each, and the assembler already has both. `HolySysHlt` is `wfi`, which `host/parser.c:4756` encodes as `0x10500073`. `HolyCall` is a `fence.i` then an indirect jump, and `fencei` is already a recognised mnemonic — the C even uses `.word 0x0000100f` by hand because `-march=rv64imafdc` omits Zifencei |
+| **1 — DONE** | `SysHlt`, `Call` | one instruction each, and the assembler already had both. `HolySysHlt` is `wfi`, which `host/parser.c:4756` encodes as `0x10500073`. `HolyCall` is a `fence.i` then an indirect jump, and `fencei` is already a recognised mnemonic — the C even uses `.word 0x0000100f` by hand because `-march=rv64imafdc` omits Zifencei |
 | **2 — small pairs** | `RVJiffies` + `RVJiffiesInit` | reads MMIO `mtime` and divides by a value the Init sets; move the pair and the global goes with them |
 | **3 — the trap bundle, indivisible** | `RVTrapInit`, `RVTrapRecoverArm`/`Disarm`/`Cause`/`Epc`/`Ra`/`Tval` | the four `Recover*` readers are bare accessors over C globals that the trap vector in `crt0.S` writes. They cannot move one at a time: the vector moves or none of them do |
 | **4 — scheduling** | `RVTaskSwitch`, `Yield`, `TaskEndNow`, `RVYieldInit`, `RVPreemptReal` | context save/restore and the preempt timer; `RVTaskSwitch` is the x86 `_TASK_CONTEXT_RESTORE`'s counterpart |
@@ -306,12 +335,32 @@ appear in the trailer at all, unlike `SaveExceptRegs` — they are statement for
 handles, not calls. `FarCall32` is only reached from `Kernel/PCIBIOS.HC`, the x86 PCI BIOS, and
 `GetRAX` has no call site.
 
-### A rule the trailer obeys, worth knowing before reading any row
+### What decides whether a name gets a slot — NOT yet established
 
-`MaxU64` and `MinU64` are declared in `KernelB.HH`, defined nowhere, and appear in neither the image
-nor the trailer — because **nothing calls them**. A slot exists only where a compiled call site
-does. That is the same rule that explained `GetMcause` (a slot for a body nothing calls), and it
-cuts both ways: the trailer is an inventory of call sites, never of declarations.
+I wrote here that "a slot exists only where a compiled call site does." **That is false**, and the
+counter-example is in this very section's subject matter. Measured against the kernel unit's
+167-file include closure (`tr ' \\' '\n\n' < build/aot/win/kernel.d`):
+
+| name | declared as | referenced in the closure? | in the trailer? |
+|---|---|---|---|
+| `SysHlt` | `_extern _SYS_HLT` | **no** — only `KernelB.HH:270` | **yes** |
+| `GetRAX` | `_intern IC_GET_RAX` | **no** — only `KernelB.HH:252` | **yes** |
+| `MaxU64` | `_intern IC_MAX_U64` | no — only `KernelB.HH:100` | **no** |
+| `MinU64` | `_intern IC_MIN_U64` | no — only `KernelB.HH:102` | **no** |
+| `MaxI64` | `_intern IC_MAX_I64` | yes | no — `KUtilsRV.HC` defines `MaxI64::` |
+| `GetMcause` | plain HolyC | yes, from a body nothing calls | **yes** |
+
+So a declaration alone CAN produce a slot (`SysHlt`, `GetRAX`), and two declarations of the same
+`_intern` shape sitting 150 lines apart in the same header behave differently. Being defined
+somewhere in the image clearly removes the slot (`MaxI64`); what decides the rest is not something
+I have established, and guessing at it would be worse than saying so.
+
+**What this changes:** treat the trailer as the authoritative list of *what the image does not
+provide* — that much is solid and is what both gates rest on — but do not infer from a row that
+something calls it. Check the call sites separately, in the closure, before claiming any
+functional consequence. The `DocSplitTag` trap and the `EdGoToFun` hang were established that way
+and stand; the earlier gloss that `GetMcause` is slotted "because a compiled-but-uncalled body
+calls it" is one possible reading of an effect I cannot yet fully explain.
 
 ## Done: the `libm` five — and a bug in the gate itself
 

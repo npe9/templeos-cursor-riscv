@@ -16,8 +16,6 @@
 #              by NOTHING. Calling it prints "[unresolved import]" and returns 0.
 #
 # name	category	provider today
-Call	platform	bootstrap/holy_rt_names.h + crt0.S
-SysHlt	platform	bootstrap/holy_rt_names.h
 Yield	platform	bootstrap/holy_rt.h
 TaskEndNow	platform	bootstrap/holy_rt.h
 RVTaskSwitch	platform	bootstrap/holy_rt.h

@@ -29,6 +29,42 @@ asm {
 	mc_done:
 	ret
 }
+// I64 Call(U8 *machine_code=a0); jump to freshly written code and return what it returns.
+// Tier 1 of the platform seam (docs/ASM_PORTABILITY.md): this was HolyCall in bootstrap/holy_rt.h,
+// so every image took it from the C runtime. It is load-bearing — Kernel/KLoad.HC:183 calls it to
+// enter a freshly loaded module, KTask.HC:356 and KCmpStubsRV.HC:214 to run just-compiled code.
+//
+// The fence.i is the whole point: the caller has just WRITTEN these bytes as data, and RISC-V does
+// not guarantee the instruction fetch sees them without one. The C could not write the mnemonic —
+// -march=rv64imafdc leaves Zifencei out, so it emitted `.word 0x0000100f` by hand — but this
+// assembler has `fencei` (host/parser.c:4787, same encoding).
+//
+// A real call, not a tail `jr`: `jalr a0` sets ra, so the callee returns HERE and the frame
+// behaves exactly as the C version's indirect call did. Its result is already in a0.
+asm {
+	Call::
+	beq	a0,zero,call_null
+	addi	sp,sp,-16
+	sd	ra,8(sp)
+	fencei
+	jalr	a0
+	ld	ra,8(sp)
+	addi	sp,sp,16
+	ret
+	call_null:
+	li	a0,0
+	ret
+}
+// U0 SysHlt(); one wfi, matching HolySysHlt — NOT the x86 "loops doing HLT" its KernelB.HH comment
+// describes. Nothing in the kernel's 167-file include closure calls it (its only caller,
+// Kernel/KInts.HC:161, is an x86 unit the project excludes), so moving it off the C runtime is
+// bookkeeping rather than a behaviour change. It is here because it is one instruction and it
+// takes a name off the seam.
+asm {
+	SysHlt::
+	wfi
+	ret
+}
 // I64 MemCmp(U8 *p1=a0, U8 *p2=a1, I64 cnt=a2); 0 if the runs are equal, else the UNSIGNED byte
 // difference at the first mismatch. Matches HolyMemCmp in bootstrap/holy_rt.h, which is what every
 // caller in this image was getting until this block existed — Kernel/KUtils.HC's _MEMCMP is x86 and
