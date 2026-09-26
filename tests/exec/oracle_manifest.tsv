@@ -98,3 +98,4 @@ tests/exec/cases/e_addr_of_extern_fn.hc	000000000000002b
 tests/exec/cases/e_lock_stmt_newline.hc	000000000000002b
 tests/exec/cases/e_demo_asm_div.hc	000000000000007f
 tests/exec/cases/e_demo_asm_mul.hc	00000000000000ff
+tests/exec/cases/e_asm_la.hc	0000000000000003

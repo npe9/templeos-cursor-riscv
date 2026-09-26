@@ -3981,7 +3981,7 @@ static U32 RvJalr(int rd,int rs1,int imm){ return 0x67u|(rd<<7)|(0u<<12)|(rs1<<1
 static U32 RvU(U32 opc,int rd,int imm20){ return opc|(rd<<7)|(((U32)imm20&0xFFFFFu)<<12); }
 static U32 RvA(U32 f5,U32 aqrl,U32 f3,int rd,int rs1,int rs2){ return 0x2Fu|(rd<<7)|(f3<<12)|(rs1<<15)|(rs2<<20)|(aqrl<<25)|(f5<<27); }
 
-typedef struct { char mn[16]; int rd,rs1,rs2,imm,rm; char label[48]; int kind; } RvI2;  // kind: 0 none,1 branch,2 jump; rm=rounding mode (default 7=dyn)
+typedef struct { char mn[16]; int rd,rs1,rs2,imm,rm; char label[48]; int kind; } RvI2;  // kind: 0 none,1 branch,2 jump,3 call,4 la-hi (auipc),5 la-lo (addi); rm=rounding mode (default 7=dyn)
 // Parse an optional trailing ", <rm>" rounding mode. Returns rm code (0..7) or -1 if none.
 // rne=0 rtz=1 rdn=2 rup=3 rmm=4 dyn=7. Errors on a bad name after the comma.
 static int RvParseOptRm(Compiler *cc) {
@@ -4250,6 +4250,29 @@ static bool TryAssembleRiscV(Compiler *cc) {
         if (v >= -2048 && v <= 2047) { I->rd=rd; I->imm=(int)v; nins++; continue; }
         if (!RvExpandLi(ins,&nins,rd,v)) return false;
       }
+      continue;
+    }
+    // `la rd,label` — the address of a label in this block, PC-relative. Without it an asm{} block
+    // cannot reference DATA at all: `auipc` takes a raw 20-bit field, and there was no pseudo that
+    // resolves a label. That is what blocks Demo/Asm/AsmHelloWorld.HC's `MOV RSI,MY_WORLD_MSG`
+    // (and PutDec/BuzzFizz) from being translated — a DU8 string in the block had no reachable
+    // address. Emitted as the standard pair, both entries fixed up in the emit pass below:
+    //     auipc rd, hi20(delta)   ; delta measured from THIS instruction
+    //     addi  rd, rd, lo12(delta)
+    if (!strcmp(w,"la")) {
+      int rd=RvRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      if (cc->lex.token!=TK_IDENT || rd<0) return false;
+      char lbl[48]; { int _i=0; for(;cc->lex.token_str[_i]&&_i<47;_i++) lbl[_i]=cc->lex.token_str[_i]; lbl[_i]=0; }
+      LexNext(cc);
+      if (nins+2 > 256) return false;
+      { RvI2 *H=&ins[nins]; char *_p=(char*)H; for(unsigned _j=0;_j<sizeof(RvI2);_j++) _p[_j]=0;
+        H->mn[0]='a';H->mn[1]='u';H->mn[2]='i';H->mn[3]='p';H->mn[4]='c';H->mn[5]=0;
+        H->rd=rd; H->kind=4; { int _i=0; for(;lbl[_i];_i++) H->label[_i]=lbl[_i]; H->label[_i]=0; }
+        nins++; }
+      { RvI2 *L=&ins[nins]; char *_p=(char*)L; for(unsigned _j=0;_j<sizeof(RvI2);_j++) _p[_j]=0;
+        L->mn[0]='a';L->mn[1]='d';L->mn[2]='d';L->mn[3]='i';L->mn[4]=0;
+        L->rd=rd; L->rs1=rd; L->kind=5; { int _i=0; for(;lbl[_i];_i++) L->label[_i]=lbl[_i]; L->label[_i]=0; }
+        nins++; }
       continue;
     }
     if (!strcmp(w,"j")) {                                                   // j label
@@ -4601,6 +4624,23 @@ static bool TryAssembleRiscV(Compiler *cc) {
       }
       boff = (t - i) * 4;
     }
+    // `la rd,label` halves. The delta is measured from the AUIPC, so the addi (kind 5, one slot
+    // later) subtracts one extra word. The +0x800 before the shift is the usual carry correction:
+    // addi's 12-bit immediate is SIGN-extended, so when lo12 would be negative the hi20 must be
+    // one larger to compensate.
+    if (I->kind == 4 || I->kind == 5) {
+      int t = RV_LBL(I->label);
+      if (t < 0) {
+        if (!inline_mode) { cc->ic_head=asm_prev_head; cc->ic_tail=asm_prev_tail; }
+        return false;
+      }
+      int delta = (I->kind == 4) ? (t - i) * 4 : (t - (i - 1)) * 4;
+      U32 hi = ((U32)delta + 0x800u) >> 12;
+      int lo = delta - (int)(hi << 12);
+      if (I->kind == 4) { word = RvU(0x17u, I->rd, (int)(hi & 0xFFFFFu)); goto rv_word_done; }
+      word = RvI(0, I->rd, I->rs1, lo);
+      goto rv_word_done;
+    }
     if (!strcmp(m,"ret"))       word = RvJalr(0,1,0);
     else if (!strcmp(m,"unimp")) word = 0xC0001073u;   // csrrw x0,cycle,x0 — illegal (cycle is RO)
     else if (!strcmp(m,"nop"))  word = RvI(0,0,0,0);
@@ -4808,6 +4848,7 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"amominu.w")||!strcmp(m,"amominuw")) word = RvA(0x18,0,0x2,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"amomaxu.w")||!strcmp(m,"amomaxuw")) word = RvA(0x1C,0,0x2,I->rd,I->rs1,I->rs2);
     else if (!strcmp(m,"fencei"))     word = 0x0000100Fu;
+    rv_word_done:
     ICAdd(cc, IC_RAW_RV, (I64)word, RT_I64);
   }
   #undef RV_LBL

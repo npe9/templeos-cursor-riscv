@@ -148,6 +148,10 @@ kernel_cfg = KCfgNew;
 #include "KMain"
 #endif
 #include "KUtilsRV"   // native RISC-V ports of KUtils.HC low-level primitives (MemSet/MemCpy)
+// The asm-CALLABLE print helpers (PUT_CHARS/PUT_STR/PUT_HEX_*), which Kernel/StrA.HC writes in
+// x86 and this assembler therefore drops. Demo/Asm/* advertise them as "useful kernel routines
+// intended to be called from asm". Must follow PutHex (StrA.HC) and PutChars/PutS (KeyDev.HC).
+#include "StrA_RV"
 #ifdef RV_THIN_LOADER
 #include "KThinMapFatStubs" // TimeCal/Pow/QueVect/Fifo/D3/Rand/ScanFlags/PutExcept/Endian
 #endif
