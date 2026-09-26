@@ -111,7 +111,27 @@ fi
 # --- the HolyC half -----------------------------------------------------------------
 if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then
   echo "FAIL repl-unmatched — HolyC compile error" >&2
-  HOLYC_INCLUDE_ROOT="$ROOT" HOLYC_ALL_ERRORS=1 "$COMPILER" "$SRC" -o /dev/null 2>&1 | tail -25 >&2
+  HOLYC_INCLUDE_ROOT="$ROOT" HOLYC_ALL_ERRORS=1 "$COMPILER" "$SRC" -o /dev/null 2>&1 \
+    | tail -25 >"$T/errs.txt"
+  cat "$T/errs.txt" >&2
+  if grep -q "MEM_VIRTIO\|BDT_VIRTIO" "$T/errs.txt"; then
+    cat >&2 <<'EOF'
+
+  ^ This is the KNOWN blocker, not a regression in this script. See
+    docs/HIFIVE_UNMATCHED.md §9a. The REPL pulls in Kernel_RV.PRJ, whose virtio block
+    driver body is compiled unconditionally while its constants are Kconfig-gated:
+      MEM_VIRTIO  kconfig.py mem_aliases emits nothing when CONFIG_VIRTIO_MMIO_BASE is
+                  absent (it depends on HAS_VIRTIO_MMIO), though the SIBLING generated
+                  header already emits MEM_VIRTIO 0 -- the two disagree.
+      BDT_VIRTIO  #ifdef RISCV_VIRT in Kernel/KernelA.HH, as are all six consumers, but
+                  DskVirtioRV.HC's body is not, and wrapping a HolyC body in #ifdef turns
+                  it into an unresolved import.
+    Measured: defining both unconditionally is enough to compile. It is a two-line change
+    to SHARED code (KernelA.HH is the stock x86 distro's too, and BDT_TYPES_NUM 6->7 sizes
+    arrays there), so it needs its own change and its own 12-board matrix gate.
+    Past that lies §9b: GetTSC's `rdtime` is illegal on SiFive cores.
+EOF
+  fi
   exit 1
 fi
 
