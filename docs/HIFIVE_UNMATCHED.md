@@ -9,10 +9,11 @@ Status line first, because the rest of this document is detail:
 | The JTAG takeover procedure works | `make unmatched-takeover-smoke` — OpenSBI in the chain, hart halted in S-mode, gdb takes it |
 | …in the mode the board will actually use | `make unmatched-takeover-preloaded` — image already in DDR, JTAG does only the dozen ops |
 | Those gates can fail | four `TOS_TAKEOVER_BREAK=` controls, in both load modes, each must fail |
-| The HolyC **REPL** image for this board | **NO — blocked by two kernel bugs, both located and quantified in §9** |
-| The board's JTAG TAP scans, and raw DMI reads work | measured on a live board (IDCODE 0x20000913; raw `dmi_read` 0/30 bad) |
-| An OpenOCD **examine or halt** completes reliably | **NO.** A ~2-3% per-scan DMI corruption floor that no setting reaches zero on — §7 |
-| The board image runs on real FU740 silicon | **NOT VERIFIED.** Nothing has been loaded or run on hardware. |
+| The HolyC **REPL** image for this board | in progress — the two kernel bugs that blocked it (§9) are being fixed with their own gates |
+| The board's JTAG TAP scans, and raw DMI reads work | measured on a live board (IDCODE 0x20000913) |
+| An OpenOCD **examine or halt** completes reliably | **NO.** A 1-5% per-scan DMI corruption floor no setting removes — §7. Use raw DMI with consensus reads. |
+| **The plat kernel runs on real FU740 silicon** | **YES.** ymodem into DDR at 0x80200000, crc32-verified, raw-DMI takeover from the U-Boot prompt, hart 1, `dcsr.prv=3` — every `plat-smoke` line once and `PASS`, plus `ORACLE 0`. §10 |
+| The **REPL** runs on real silicon | not yet — the image is now buildable (§9 fixed); handoff details in §10 |
 
 Nothing below distinguishes "I reasoned this" from "I measured this" by tone — measurements
 are quoted with the numbers.
@@ -575,7 +576,7 @@ Listed because "it works in QEMU" is not a claim about hardware:
 
 ---
 
-## 9. The REPL for this board: blocked, with both causes located
+## 9. The REPL for this board: two kernel bugs, both located
 
 Deliverable-wise this is the one thing that does **not** work, so here is exactly why rather
 than a summary. `tests/scripts/run_repl_unmatched_smoke.sh` and
@@ -646,3 +647,76 @@ matrix as its gate.
 fixed; neither is about the board description, the UART, the link address or the hart, all of
 which are now correct and gated. The plat kernel, which exercises UART + CLINT + PLIC +
 MemMap through the full takeover, does run.
+
+---
+
+## 10. It runs on the hardware
+
+The plat kernel built here — SiFive-UART C harness, linked at 0x80200000, hart 1 — has run on
+a real HiFive Unmatched. Recorded because it settles several of the questions above
+empirically, and because the procedure is now repeatable.
+
+**What was done** (the tooling lives on the main tree: `tools/unmatched/load_and_takeover.sh`,
+`dmi_takeover.py`, and `docs/UNMATCHED_JTAG.md`, which is the measured record):
+
+1. Reset-catch into the U-Boot prompt, so SPL + OpenSBI had trained DDR.
+2. `loady 0x80200000` in U-Boot + `sz --ymodem` on the host — ~50 s for 323 KB at 115200.
+3. `crc32` in U-Boot over the DDR range, compared against the file. This step is not
+   optional; see the note about SPL below.
+4. A **raw-DMI** takeover (not OpenOCD's target layer): halt hart 1, `mie = 0`,
+   `mstatus.MIE = 0`, `dcsr.prv = 3`, `dpc = 0x80200000`, resume.
+5. Output on UART0: every `plat-smoke` line exactly once, `plat-smoke: PASS`, and
+   `ORACLE 0000000000000000`.
+
+**What that confirms.** The SiFive UART harness (the `ORACLE` line is the C half, §1a), the
+hart-1 `crt0` gate (§1b — the alternative plan of entering at `0x80200008` to skip a hart-0
+check would have landed mid-instruction on this image), the 0x80200000 load address (§2), and
+M-mode entry over an inherited OpenSBI machine with its PMP untouched (§3). The hart was
+halted at `prv=1`, `pc=0xfff93c42` — inside relocated U-Boot — so the S-mode-to-M-mode switch
+the emulated gate rehearses is exactly the switch the hardware needed.
+
+### The verified memory map, from the board
+
+`bdinfo` / `printenv` on the board, with U-Boot 2021.01:
+
+| region | contents |
+|---|---|
+| `0x80000000`–`0x80040000` | OpenSBI, reserved (matches the 337 KB / Domain0 regions in §2) |
+| **`0x80200000`** | **our payload.** Clear — but see the warning below |
+| `0x84000000` | U-Boot `kernel_addr_r` |
+| `0x88000000` / `0x88300000` | U-Boot `fdt_addr_r` / `ramdisk_addr_r` |
+| `0xff73d0e0` | the FDT U-Boot passes on |
+| `0xfff63000` | **relocated U-Boot** — i.e. just under 4 GiB, exactly as `arch/riscv/cpu/fu740/dram.c`'s `SZ_4G` cap predicts (§2), not near the top of the 16 GiB |
+| `0x80000000` + 16 GiB | DRAM |
+
+**The warning, learned the hard way: SPL reuses 0x80200000 as its FIT load address on every
+boot.** So anything placed there is gone after a reset and must be re-loaded — and a takeover
+that skips the re-load lands in *leftover image bytes* from the previous cycle, which looks
+like a successful run of the wrong thing. That is what the `crc32` step in the procedure is
+for, and it is why 0x80200000 being "clear" means clear *while the board sits at the prompt*,
+not reserved for us.
+
+### Why the takeover must not trust a single DMI read
+
+Two real failures on hardware made this non-negotiable, and they are worth knowing because
+both looked like something else:
+
+* A **silently lost `command` write** left `dpc` holding a previous `x8` value, so the hart
+  resumed to `0x4000b0c2` and took `mcause=1`. It looked like a bad payload.
+* `dmstatus` came back `0x80018642` — corrupt, but with the `allhalted` bit set — and passed a
+  bare mask check while the hart was **still running**.
+
+So every read is the consensus of two consecutive identical plausible reads, and every write
+is read back. The takeover is ~40 raw DMI operations under that rule. Also note the FU740's
+debug module **rejects abstract CSR access** (`cmderr=2`): CSRs are read through the **program
+buffer** (`csrr s0, CSR; ebreak` + postexec, value out via GPR `x8`).
+
+### Two things the emulated gate could not have told us
+
+* **CRLF.** The console showed a staircase: every line fed but never returned. QEMU
+  `-nographic` cooks its own output and hides this completely. Fixed in
+  `Kernel/Drv/RVSifiveYes.HC`'s `RVSifiveUartPutS` — the driver, not a hundred format
+  strings.
+* **Enter at `_start`, never at an offset.** `crt0.S` now masks interrupts before installing
+  `mtvec` (two instructions), so every offset inside the prologue has moved. `0x80200000` is
+  the only entry point.
