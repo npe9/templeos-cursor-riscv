@@ -47,16 +47,24 @@ Three outcomes, and most of the list is the first:
 ## The dropped-construct list — 13 in a plain `Kernel_RV.PRJ` build
 
 Was 17: the `fabs.d` fix removed one and deleting the three all-dead files removed three more. The
-rows marked DONE are kept because the reasoning is the template for the rest.
+rows marked DONE are kept because the reasoning is the template for the rest. (Sixteen rows, but
+two of them list two constructs each — `KTask.HC:121,:141` and the two `CLD`s — so thirteen.)
+
+**A dropped block is not automatically a hole.** Cross-check every row against
+`tests/portability_seam.tsv` before working it: if nothing the block defines appears in the
+trailer, a live HolyC or RISC-V body already provides it and the x86 is simply inert. That is true
+of every remaining row except the op hooks, which is why the list below is now almost entirely
+"op hook" and "not applicable" — the genuinely missing code was never in this list at all, it was
+in the trailer.
 
 | construct | operation | fix |
 |---|---|---|
 | `KMathA.HC:1` `_D3_NORM_SQR` | 3-vector norm² | **DONE — file removed from `Kernel_RV.PRJ`.** 648 of its 649 lines are that one block; removing it leaves the image byte-identical (measured). `Kernel/KMathA_RV.HC` has the HolyC `D3*` |
 | `KUtils.HC:1` `_MEMSET_U16` | fill 16-bit units | **DONE — removed, byte-identical.** 471 of 472 lines in the block; `Kernel/KUtilsRV.HC` has the RISC-V primitives |
-| `StrA.HC:20` `PUT_HEX_U32` | format a U32 as hex | portable HolyC |
-| `Mem/MAllocFree.HC:1` `_FREE` | allocator free fast path | portable HolyC |
+| `StrA.HC:20` `PUT_HEX_U32` | format a U32 as hex | **already covered** — nothing it defines is in the trailer, so a live HolyC body exists. Unlike the three removed above, `StrA.HC` has 359 live lines outside the block, so the FILE stays |
+| `Mem/MAllocFree.HC:1` `_FREE` | allocator free fast path | **already covered** — `Free` is not in the trailer. 381 of 465 lines are the block but 9 are live, so the file stays |
 | `KHashA.HC:1` `SYS_HASH_SINGLE_TABLE_FIND1` | hash lookup | **DONE — removed, byte-identical.** `Kernel/KHashRV.HC` is what runs |
-| `SerialDev/Keyboard.HC:1` `SHIFT_KEY_SCAN_DECODE_TABLE` | **a data table written in asm** | portable data, not code |
+| `SerialDev/Keyboard.HC:1` `SHIFT_KEY_SCAN_DECODE_TABLE` | **a data table written in asm** | portable data, not code. Nothing unresolved, so the port supplies its own |
 | `Sched.HC:54` `_TASK_CONTEXT_RESTORE` | restore a task's registers | **op hook** |
 | `KExcept.HC:1` `_TAKE_EXCEPT` | unwind to a handler | **op hook** |
 | `Mem/PageTables.HC:1` `SYS_INIT_PAGE_TABLES` | build the initial page tables | **op hook** (x86 paging vs Sv39). NOT removable, unlike the three above: removing it changes the image by 304 bytes, because `MemPageTable` at line 199 is live HolyC outside the block — and it reads `MEM_PML3`/`MEM_PML2`, x86 four-level paging, for callers in `Mem/MemPhysical.HC:117,144`. `Kernel/KThinMemStubs.HC:170` has a second body for the same name |
@@ -66,6 +74,44 @@ rows marked DONE are kept because the reasoning is the template for the rest.
 | `SerialDev/Keyboard.HC:413`, `Mouse.HC:92` `CLD` | clear the x86 direction flag | **not applicable** — nothing to write |
 | `PCIBIOS.HC:1` `SYS_PCIBIOS_SERVICE_DIR` | call the x86 PCI BIOS | **not applicable** |
 | `KUtilsRV.HC:587` `Abs::` | absolute value | **OUR BUG, not stock** — see below |
+
+## The two lists are the same seam, seen from opposite sides
+
+This took a while to see and it is the shape of the whole problem.
+
+The **skip list** above says *"here is the x86 implementation of an operation, and it was dropped."*
+The **import trailer** says *"here is an operation the image calls and no HolyC unit provides."*
+For the op-hook rows these are the same operations, described from the two ends:
+
+| operation | x86 side (dropped) | RISC-V side (in the trailer) | who implements it today |
+|---|---|---|---|
+| switch a task's context | `Sched.HC:54` `_TASK_CONTEXT_RESTORE` | `RVTaskSwitch` (called at `Kernel/KBootRV.HC:116`) | `bootstrap/holy_rt.h` |
+| enter/leave a fault handler | `KExcept.HC:1` `_TAKE_EXCEPT` | `RVTrapInit`, `RVTrapRecover*` (7) | `bootstrap/holy_rt.h` + `crt0.S` |
+| the faulting address | `KDbg.HC:628` `MOV_RAX_CR2` | `mtval`, via `RVTrapRecoverTval` | `bootstrap/holy_rt.h` |
+| build the initial page tables | `Mem/PageTables.HC:1` `SYS_INIT_PAGE_TABLES` | — Sv39 set up in `KStartRV` | the port |
+
+So **the factoring the port needs already exists.** It is not missing; it is just implemented in C
+in the harness rather than in HolyC or RISC-V asm in the kernel, and until this document nothing
+named it. `tests/portability_seam.tsv`'s 22 `platform` rows ARE that seam, enumerated and pinned:
+they are precisely the list a new architecture has to satisfy, and the gate now fails if that list
+changes in either direction.
+
+That reframes the remaining work. "Translate the x86 to RISC-V" was the wrong goal for these rows —
+the RISC-V side already exists and works. The question is whether each should keep living in the C
+harness or move into the kernel as HolyC/asm.
+
+**And that question is already answered.** `docs/MULTIARCH.md` and the approved retarget plan record
+the decision "HolyC-only runtime (**no new per-arch C runtime**)". As things stand those 22 names
+live in `bootstrap/holy_rt.h` and `tests/exec/harness/crt0.S`, so bringing up AArch64 or ARM32 would
+mean writing a C runtime for each of them — exactly what that decision rules out. So the pin is not
+just an inventory, it is the checklist for the next phase: each `platform` row either moves into the
+kernel as HolyC/RISC-V asm, or the decision gets revisited on purpose rather than by default.
+`make portability-seam-check` fails in both directions, so the list cannot drift while that happens.
+
+The precedent for the move is already in the tree and was extended twice this session:
+`Kernel/KUtilsRV.HC` took `MemSet`/`MemCpy`/`StrLen`/… off the C runtime years of commits ago, then
+`Exp`/`Ln`, then the libm five and the strmem three. The `platform` rows are harder — they touch
+CSRs and the trap frame rather than pure computation — but the pattern and the gate are the same.
 
 ## `KUtilsRV.HC:587` was ours — FIXED, and the fix taught the bigger lesson
 
@@ -354,10 +400,27 @@ never 0, so the stub's 0 was not even a value the function can produce.
 
 ## How to work an item
 
-1. `HOLYC_ASM_SKIPS=1` on a case that includes the file, to confirm it is still dropped.
-2. Read the block and name the OPERATION, not the instructions.
-3. Portable HolyC where possible. A `holyc_target` hook only when the operation genuinely differs
-   per architecture — and then implement it for rv64 first, leaving the hook NULL elsewhere, which
-   is the pattern `host/holyc_target.h` already describes.
-4. Check the symbol actually appears in `HOLYC_MAP` afterwards. Compiling is not working: that is
-   the whole reason this document exists.
+Order matters here — steps 1 and 2 are what this session learned the hard way.
+
+1. **Start at `tests/portability_seam.tsv`, not at the skip list.** A dropped `asm{}` block whose
+   symbols are absent from the trailer is INERT: a live HolyC or RISC-V body already provides them.
+   Every "portable HolyC" row above turned out to be in that state. The dropped-construct list tells
+   you what was thrown away; only the trailer tells you what is missing.
+2. **Check the return type before assuming a stub is harmless.** `U0` cannot hurt. A pointer that
+   gets dereferenced is a trap (`DocSplitTag` → `EdFindReplace`, `mcause=5`). And a no-op that is
+   supposed to advance a loop variable is a hang, not a slow path (`EdCursorRight` → `EdGoToFun`).
+   Severity, not count, decides the order — closing `DocChar`+`DocRun` took the total UP by three
+   and was still right.
+3. Read the block and name the OPERATION, not the instructions. Then ask which side of the seam it
+   belongs on (see "the two lists are the same seam" above) — for the `platform` rows the RISC-V
+   implementation already exists in C, so the work is moving it, not writing it.
+4. Verify every callee of what you are about to lift is already resolved, BEFORE lifting. One
+   `tools/blob_imports.py` run answers it, and it is cheaper than discovering it from a trap.
+5. `tools/check_prj_collisions.py` before adding any Adam unit. A second body for one name wins
+   silently, and five of the DolDoc units that define MISSING names collide with `Kernel/RVDoc.HC`.
+6. **Prove the gate fails.** Twice this session a behavioural test passed at the parent commit
+   because the C runtime is also correct — measured, not assumed, and both headers say so. Once the
+   gate tool itself was broken (`--absent` checked only its first argument) and only an unexpectedly
+   passing negative control revealed it. When a negative control passes, suspect the harness.
+7. Re-pin against a **relinked** `win_tos.blob.bin`, deleted first. A stale blob makes the gate agree
+   with a measurement that predates your change; byte-identity on an exec case does not cover it.
