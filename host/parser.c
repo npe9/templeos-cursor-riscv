@@ -4386,6 +4386,14 @@ static bool TryAssembleRiscV(Compiler *cc) {
       { int _r=RvParseOptRm(cc); if(_r>=0) I->rm=_r; }
       nins++; continue;
     }
+    if (!strcmp(w,"fabs.d")||!strcmp(w,"fabsd")||!strcmp(w,"fneg.d")||!strcmp(w,"fnegd")||
+        !strcmp(w,"fmv.d")||!strcmp(w,"fmvd")||!strcmp(w,"fabs.s")||!strcmp(w,"fabss")||
+        !strcmp(w,"fneg.s")||!strcmp(w,"fnegs")||!strcmp(w,"fmv.s")||!strcmp(w,"fmvs")) {
+      // fd, fs — the pseudo's single source fills BOTH register fields of the real fsgnj*.
+      I->rd=RvFRegTok(cc); if (cc->lex.token!=',') return false; LexNext(cc);
+      I->rs1=RvFRegTok(cc); I->rs2=I->rs1;
+      nins++; continue;
+    }
     if (!strcmp(w,"faddd")||!strcmp(w,"fsubd")||!strcmp(w,"fmuld")||!strcmp(w,"fdivd")||
         !strcmp(w,"fsgnj.d")||!strcmp(w,"fsgnjn.d")||!strcmp(w,"fsgnjx.d")||!strcmp(w,"fmin.d")||!strcmp(w,"fmax.d")||
         !strcmp(w,"fadd.s")||!strcmp(w,"fsub.s")||!strcmp(w,"fmul.s")||!strcmp(w,"fdiv.s")||
@@ -4664,6 +4672,29 @@ static bool TryAssembleRiscV(Compiler *cc) {
     else if (!strcmp(m,"fcvtld_rdn")) word = 0xC2000053u | (I->rd<<7)  | (2u<<12) | (I->rs1<<15) | (2u<<20);
     else if (!strcmp(m,"fcvtld_rmm")) word = 0xC2000053u | (I->rd<<7)  | (4u<<12) | (I->rs1<<15) | (2u<<20);
     else if (!strcmp(m,"fcvtdl"))     word = 0xD2000053u | (I->rd<<7)  | ((U32)I->rm<<12) | (I->rs1<<15) | (2u<<20);
+    // RISC-V FP pseudo-instructions: fabs.d rd,rs IS fsgnjx.d rd,rs,rs (sign-inject XOR with
+    // itself clears the sign bit), fneg.d IS fsgnjn.d rd,rs,rs, fmv.d IS fsgnj.d rd,rs,rs. There
+    // is no fabs.d opcode. Kernel/KUtilsRV.HC's own Abs:: block wrote `fabsd`, so the WHOLE BLOCK
+    // was rejected and dropped, while Floor and Trunc — written the same way immediately below it —
+    // assembled. What that cost is measurable and was measured: `Abs` left the blob entirely and
+    // became an UNRESOLVED HOST-IMPORT in the HOFYIMP1 trailer, which every harness linking
+    // tests/exec/harness/oracle_out.c then satisfied from the C `Abs` in bootstrap/holy_rt_names.h.
+    // So it behaved correctly in all 81 such gates and no test could see it. The blob is the only
+    // witness: tools/blob_imports.py, and tests/scripts/check_blob_imports.sh pins it.
+    // (Not claimed: what a bare image with no C runtime does with that slot. Not measured.)
+    // Undotted spellings too, because that file uses them throughout (fmvdx, fmvxd, faddd).
+    else if (!strcmp(m,"fmv.d")||!strcmp(m,"fmvd"))
+                                      word = 0x22000053u | (I->rd<<7)  | (0u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fneg.d")||!strcmp(m,"fnegd"))
+                                      word = 0x22000053u | (I->rd<<7)  | (1u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fabs.d")||!strcmp(m,"fabsd"))
+                                      word = 0x22000053u | (I->rd<<7)  | (2u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fmv.s")||!strcmp(m,"fmvs"))
+                                      word = 0x20000053u | (I->rd<<7)  | (0u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fneg.s")||!strcmp(m,"fnegs"))
+                                      word = 0x20000053u | (I->rd<<7)  | (1u<<12) | (I->rs1<<15) | (I->rs2<<20);
+    else if (!strcmp(m,"fabs.s")||!strcmp(m,"fabss"))
+                                      word = 0x20000053u | (I->rd<<7)  | (2u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fsgnj.d"))    word = 0x22000053u | (I->rd<<7)  | (0u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fsgnjn.d"))   word = 0x22000053u | (I->rd<<7)  | (1u<<12) | (I->rs1<<15) | (I->rs2<<20);
     else if (!strcmp(m,"fsgnjx.d"))   word = 0x22000053u | (I->rd<<7)  | (2u<<12) | (I->rs1<<15) | (I->rs2<<20);
