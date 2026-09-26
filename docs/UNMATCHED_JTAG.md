@@ -97,8 +97,24 @@ The hart arrives in S-mode (`dcsr.prv=1`) or, if caught mid-SBI-call, in M-mode 
 `mtvec` still points at OpenSBI. `mstatus.MIE` was 0 both times measured; `mie` is zeroed anyway.
 A real kernel entry must write `mtvec` first and own PMP before touching anything.
 
+## U-Boot networking on this board does not work at gigabit (measured)
+
+The stock U-Boot 2021.01 on the SD card: PHY answers over MDIO (OUI 0x01C1 model 0x37), `BMSR=0x796d`
+link up, autoneg complete, `link up, 1000Mbps full-duplex` — and the first packet gets
+`ethernet@10090000: TX timeout`, every time, into the BOOTP retry loop (and once wedged hard enough
+that only the reset button got out). This is the known FU740 GEM TX-clock issue in U-Boot before
+2021.04. Forcing the PHY to 100 Mb with `mii write` does not survive: the macb driver re-runs
+autonegotiation from its own defaults on every `dhcp`, so `mii write 0 0 0x2100` and clearing the
+1000BASE-T advertisement (`mii write 0 9 0`, `mii write 0 4 0x0101`) both came back as 1000 Mbps.
+Linux configures the clock itself, which is why Linux networking works on the same board.
+
+So tftp from THIS U-Boot needs one of: a 100 Mb switch/hub between board and router (the partner
+then cannot offer gigabit), a newer U-Boot on the SD card, or a different transport.
+
 ## Loading the real image
 
-`mw.l` through the console carried the 82-byte hello. It will not carry 8 MB. Options: tftp (macOS
-has a built-in tftpd; the board has Ethernet and `dhcp` in `boot_targets`) or `loady` over the
-console (needs `lrzsz`; ~13 minutes for 8 MB at 115200).
+`mw.l` through the console carried the 82-byte hello; `loady` (ymodem, `lrzsz`) carried the 323 KB
+platform image in ~50 s and is the proven path; the 10.7 MB REPL image over ymodem is ~17 minutes.
+tftp is scripted (`UNMATCHED_XFER=tftp`) but blocked by the U-Boot gigabit TX bug above. The other
+transport that avoids U-Boot networking entirely: boot the board's Linux, copy the image onto the
+SD boot partition over Linux's (working) network, reset, and `load mmc` it from U-Boot.
