@@ -15,10 +15,17 @@ EXPECT_PREFIX="RVDemo Blot smoke hash="
 # rendering moved and the pins that disagree were simply stale. If one moves again, find the
 # commit that moved it before touching this line — a framebuffer hash cannot tell you whether
 # the picture got better or worse.
-# THIS PIN IS FRAGILE, and the reason is not understood. This demo's output depends on
-# sizeof(CRVDC): four I64 pads with NO logic reproduce a change exactly, growing CGrMsGlbls
-# does not, and no other pinned picture (fb/gr/cdc/win/netofdots/zorder) moves at all. The
-# picture stays equivalent across those moves — the same two blue lines, ~5460 non-black
+# THIS PIN IS SENSITIVE TO ONE STRUCT'S SIZE, and that is now measured rather than suspected.
+# Four I64 pads in CRVDC with NO logic reproduce a change exactly; growing the gr globals does
+# not. Parity phase 3 ran that second experiment at 300x the magnitude — stock CGrGlbls replaced
+# CGrMsGlbls and `gr` went from 96 to 10,512 bytes (measured from HOLYC_MAP: gr@0x2ce298, next
+# global c32_eflags@0x2d0ba8), shifting every global after it by 10,416 bytes — and this hash did
+# not move, nor did any scene hash or any other pinned picture. Parity phase 2 gave the other half:
+# CColorROPU32 is U32-based so sizeof(CRVDC) was unchanged, and this hash held.
+#
+# So it is NOT "fragile to layout". It tracks sizeof(CRVDC) specifically, which is a much smaller
+# thing to find: the DC is what RVDCNew allocates and what the flood fill walks. Look there.
+# The picture stays equivalent across those moves — the same two blue lines, ~5460 non-black
 # pixels, differences confined to line jitter (tools/fb_scanout_hash.py --png).
 #
 # Eliminated so far: RNG (Blot calls none, seed is fixed), unzeroed DC structs and bodies

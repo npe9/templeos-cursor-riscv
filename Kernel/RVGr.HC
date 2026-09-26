@@ -49,7 +49,7 @@ U0 RVPaletteSetStd()
 
 #include "RVGr.HH"
 
-CGrMsGlbls gr;
+CGrGlbls gr;
 // screen DC storage (aliases rv_fb.pixels compose after RVGrInit)
 class CRVTerm
 {

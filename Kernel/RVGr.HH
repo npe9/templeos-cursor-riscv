@@ -134,30 +134,65 @@ U0 RVDrawMsNull(CDC *dc, I64 x, I64 y)
   no_warn y;
 }
 
-class CGrMsGlbls
+// STOCK CGrGlbls, verbatim from Adam/Gr/GrGlbls.HC — parity plan phase 3.
+//
+// The port's own CGrMsGlbls was 90 bytes and 13 fields; stock is 10,507 bytes. It cost nothing to
+// adopt, which is worth recording: the port reads exactly FIVE gr fields — text_base, dc, dc2,
+// win_z_buf, fp_draw_ms — and all five are here with identical types. The three that had diverged
+// were never read by the port at all: `to_8_bits`/`to_8_colors` were declared Bool here while stock
+// has them as I64* LOOKUP TABLES (Adam/Gr/GrInitB.HC:184 MAllocs 256 entries each), and
+// fp_wall_paper took a CDC* where stock takes a CTask*. The only mention of to_8_bits in the whole
+// port is a COMMENT in RVFb.HC:339.
+//
+// Adam/Gr/GrGlbls.HC is not #included yet because it also carries compile-time statements
+// (DefinePrint("TEXT_ROWS",…), HashPublic("GR_WIDTH",…)) which an AOT compiler turns into runtime
+// calls, and the PRJ prelude already defines TEXT_ROWS. Phase 4 swaps the file in for real.
+//
+// This also DECLARES what several stock units were missing: GR_PEN_BRUSHES_NUM and
+// GR_SCRN_ZOOM_MAX (Adam/Opt/Utils/MemRep.HC), SPHT_ELEM_CODE and sprite_hash
+// (Adam/Gr/SpriteCode.HC), fp_draw_grab_ms (Adam/Win.HC), vga_text_cache (MemRep). Declaring is NOT
+// implementing: gr.sprite_hash is a live hash table in stock and nothing populates it here yet, so
+// a unit that HashFinds in it would look up NULL. Compiling is not working.
+class CGrGlbls
 {
-  U0 (*fp_draw_ms)(CDC *dc, I64 x, I64 y);
-  U32 *text_base;
-  //Stock gr.text_base — the TextBase Layer cell grid. RVWinMgr owns the storage and points
-  //this at rv_winmgr.text_base when it comes up (RVGr is included BEFORE RVWinMgr, so it
-  //cannot name it here). Stock code indexes it directly: Demo/Games/Maze.HC does
-  //MemCpy(gr.text_base+TEXT_COLS,…) and Adam/Win.HC XORs a cell to draw the text cursor.
+  I64	*to_8_bits,*to_8_colors;
+  CDC	*scrn_image,	//Read only.
+	*dc,		//Persistent
+	*dc1,
+	*dc2,		//Updated every refresh
+	*dc_cache,
+	*zoomed_dc;
+  U32	*text_base;	//TextBase Layer. (Similar to 0xB8000 but 32 bits)
+  U16	*win_z_buf;
 
-  /* The rest of stock CGrGlbls that stock code reads. 9 of the 204 Demo programs failed to
-   * compile on one of these — second only to CRVDC. dc/dc2 are the screen and compose DCs
-   * (RVGrInit points them at rv_gr.dc), win_z_buf is the per-cell window-owner grid the
-   * WinMgr fills. */
-  CDC *dc;
-  CDC *dc2;
-  U16 *win_z_buf;
-  Bool to_8_bits;
-  I64 hide_col;
-  I64 pan_text_x;
-  I64 pan_text_y;
-  U0 (*fp_final_scrn_update)(CDC *dc);
-  I64 hide_row;
-  Bool to_8_colors;
-  U0 (*fp_wall_paper)(CDC *dc);
+  #define SPHT_ELEM_CODE	1
+  CHashTable *sprite_hash;
+
+  U16	*win_uncovered_bitmap;
+  I64	highest_uncovered;
+  U16	*vga_text_cache;
+  I64	pan_text_x,pan_text_y;	//[-7,7]
+  U0	(*fp_final_scrn_update)(CDC *dc);//Mouse cursor is handled here.
+  U0	(*fp_wall_paper)(CTask *task);
+  U0	(*fp_draw_ms)(CDC *dc,I64 x,I64 y);
+  U0	(*fp_draw_grab_ms)(CDC *dc,I64 x,I64 y,Bool closed);
+  U8	*empty_sprite;
+
+  #define GR_PEN_BRUSHES_NUM 64
+  CDC	*pen_brushes[GR_PEN_BRUSHES_NUM],
+	*collision_pen_brushes[GR_PEN_BRUSHES_NUM],
+	*even_pen_brushes[GR_PEN_BRUSHES_NUM],
+	*odd_pen_brushes[GR_PEN_BRUSHES_NUM];
+  I8	circle_lo[GR_PEN_BRUSHES_NUM][GR_PEN_BRUSHES_NUM],
+	circle_hi[GR_PEN_BRUSHES_NUM][GR_PEN_BRUSHES_NUM];
+
+  #define GR_SCRN_ZOOM_MAX	8
+  U8	*scrn_zoom_tables[GR_SCRN_ZOOM_MAX+1];
+  I64	scrn_zoom,sx,sy;
+
+  //When zoomed, this keeps the mouse centered.
+  Bool	continuous_scroll,
+	hide_row,hide_col;
 };
 
 #endif

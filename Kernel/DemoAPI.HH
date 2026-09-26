@@ -48,7 +48,7 @@ public extern U0 WinMax(CTask *task = NULL);                                    
 public extern I64 WinToTop(CTask *task = NULL, Bool update_z_buf = TRUE);                    //Kernel/RVWinMgr.HC
 public extern U0 WinZBufUpdate();                                                            //Kernel/RVWinMgr.HC
 public extern CDolDocGlbls doldoc;                                                           //Kernel/RVDoc.HC
-public extern CGrMsGlbls gr;                                                                 //Kernel/RVGr.HC
+public extern CGrGlbls gr;                                                                 //Kernel/RVGr.HC
 public extern CMusicGlbls music;                                                             //Adam/ASnd_RV.HC
 public extern CWinMgrGlbls winmgr;                                                           //Adam/AMathODE_RV.HC
 
