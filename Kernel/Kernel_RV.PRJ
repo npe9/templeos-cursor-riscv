@@ -250,6 +250,14 @@ kernel_cfg = KCfgNew;
 // needed GR_SCALE, whose value ::/Doc/Transform.DD states rather than leaving to guesswork.
 #include "/Adam/Gr/GrMath.HC"
 #include "/Adam/Gr/GrPalette.HC"
+// InSetMs(), which Demo/InFile/InSetIP.HC names and which is its ONLY error. Adam/InFile.HC cannot
+// be added whole: its InView() is `Bool res=View;` and `View` has no body anywhere in this tree
+// (the only occurrence is an extern in Adam/AExts.HC), so the unit does not compile —
+//   /Adam/InFile.HC:110:17: error: Undefined variable 'View'
+// InFile_RV.HC lifts the two functions and two globals verbatim instead. It has to come AFTER
+// GrMath.HC on the line above, because that is where Line() — the fixed-point stepper InSetMs
+// drives the mouse with — actually lives. Zero new unresolved names (tools/blob_imports.py).
+#include "/Adam/InFile_RV.HC"
 // NOT added, although each compiles clean: DocDblBuf, DocRecalcLib, ARegistry and ASnd each define
 // a function this image already defines, and a second body for one name wins silently. Check with
 // tools/check_prj_collisions.py before adding an Adam unit.
