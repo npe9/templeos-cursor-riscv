@@ -21,6 +21,8 @@ TaskEndNow	platform	bootstrap/holy_rt.h
 RVTaskSwitch	platform	bootstrap/holy_rt.h
 RVYieldInit	platform	bootstrap/holy_rt.h
 RVPreemptReal	platform	bootstrap/holy_rt_names.h + crt0.S
+RVJiffies	platform	bootstrap/holy_rt_names.h
+RVJiffiesInit	platform	bootstrap/holy_rt_names.h
 RVTrapInit	platform	bootstrap/holy_rt.h + crt0.S
 RVTrapRecoverArm	platform	bootstrap/holy_rt.h
 RVTrapRecoverCause	platform	bootstrap/holy_rt_names.h

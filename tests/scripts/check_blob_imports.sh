@@ -21,7 +21,7 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # this list can tell whose code is in the image.
 # Call/SysHlt: tier 1 of the platform seam. Call is load-bearing — KLoad.HC:183 enters a freshly
 # loaded module through it — and its fence.i is what makes just-written bytes fetchable.
-MUST_BE_IN_BLOB=(Abs Sqr Floor Trunc Round Sin Cos Tan ATan Ceil MemCmp StrCat MinI64 Call SysHlt RVJiffies RVJiffiesInit)
+MUST_BE_IN_BLOB=(Abs Sqr Floor Trunc Round Sin Cos Tan ATan Ceil MemCmp StrCat MinI64 Call SysHlt)
 
 SRC="$ROOT/tests/exec/cases/e_kernel_fabs.hc"
 OUT="$ROOT/build/exec/blob_imports_check.bin"

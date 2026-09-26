@@ -108,6 +108,39 @@ just an inventory, it is the checklist for the next phase: each `platform` row e
 kernel as HolyC/RISC-V asm, or the decision gets revisited on purpose rather than by default.
 `make portability-seam-check` fails in both directions, so the list cannot drift while that happens.
 
+### Tier 2 was wrong, and the way it was wrong is the important part
+
+I moved `RVJiffies`/`RVJiffiesInit` into HolyC, gated it 11/11 on the timing smokes, and shipped it.
+It broke `kernel-ctask-sleep-smoke`: `sleep test done A=3 B=3 elapsed=1ms BAD`, wanting 60-600ms.
+Reverted in the commit that follows it.
+
+`bootstrap/holy_rt.h:1506`, inside the C task scheduler:
+
+```c
+if (holy_jiffy_div && *(HRT_I64 *)(t + HOLY_CTASK_WAKE) > HolyRVJiffies())
+```
+
+`RVJiffiesInit` does not merely return a value — it **sets state the C runtime itself reads**. Move
+the setter to HolyC and `holy_jiffy_div` stays 0 forever, the `&&` short-circuits, and every
+sleeping task is treated as runnable. The clock was fine; the scheduler stopped believing anyone
+was asleep.
+
+**Three things this says about the rest of the seam.**
+
+1. A seam row that *writes state* is coupled to every C-side reader of that state, and **the import
+   trailer cannot show that**. The trailer lists what the image does not provide; it says nothing
+   about who else consumes what a row sets. Before moving any row, grep `bootstrap/holy_rt.h` for
+   its globals, not just its callers.
+2. So `RVJiffies`/`RVJiffiesInit` are not a standalone tier — they belong with **tier 4**, and move
+   when `Yield`/`RVTaskSwitch` do. My "coupling ranks the tiers" principle was right and I applied
+   it to the wrong kind of coupling: I checked which rows share an *implementation*, not which
+   share *state*.
+3. The property test did not catch it, and could not have. `e_kernel_jiffies.hc` asserted the clock
+   reads 0 uninitialised, is non-zero after init, moves, and never goes backwards — all true, all
+   still true after the change. It exercised the function; the breakage was in a C consumer of a
+   global the function sets. **A test of the moved thing cannot see what the move orphaned.** The
+   gate that caught it was the full suite, which is why targeted gates are not a substitute for it.
+
 ### Tier 5 does not depend on tier 3, and it is where the damage is
 
 Two corrections to my own staging, both found by checking rather than reasoning.
@@ -178,26 +211,17 @@ equivalent in `Kernel/RVAutoConf.HH`:
 The C copy is hand-frozen at QEMU virt and lacks concepts the kernel needs at all: register stride
 matters where UART registers are not byte-adjacent, and the timebase frequency differs per board.
 
-**How much it actually diverges, measured across those defconfigs — because my first statement of
-this was wrong.** I claimed moving `RVJiffies` would make it "correct on Milk-V Mars, where the C
-version is not". It would not: Milk-V Mars has `CONFIG_CLINT_BASE=0x02000000`, exactly what the C
-hardcodes. The honest split:
+**How much it actually diverges, measured — because my first statement of this was wrong.** I
+claimed moving `RVJiffies` would make it "correct on Milk-V Mars, where the C version is not". It
+would not: Milk-V Mars has `CONFIG_CLINT_BASE=0x02000000`, exactly what the C hardcodes.
 
-| | boards that differ from the C's hardcoded value |
+| | boards differing from the C's hardcoded value |
 |---|---|
 | `CLINT_BASE` | **one** — XiangShan (`0x38000000`). Every other board with a CLINT uses `0x02000000` |
 | `UART_BASE` | **six or more** — AMD MicroBlaze-V `0x40600000`, HiFive Unmatched `0x10010000`, Microchip Icicle `0x20000000`, OpenTitan `0x40000000`, Shakti C `0x00011300`, XiangShan `0x310B0000` |
 
-So the argument is real but it lands on a different tier than I first said. For **tier 2**
-(`RVJiffies`) the hardcoded CLINT address is wrong on exactly one board, and the divisor is already
-platform-aware because callers pass `CONFIG_TIMEBASE_FREQ / 1000` themselves. For **tier 5** (the
-UART rows) the C's `HOLY_UART_BASE` is wrong on most non-QEMU boards, and it has no notion of
-`CONFIG_UART_REG_SHIFT` at all.
-
-That inverts the staging's urgency ordering, though not its dependency ordering: tier 5 was listed
-last as "driver-shaped, least urgent", and by coupling it still moves last, but it is where the
-duplicated board description actually bites. `Kernel/RVDocVT.HC:423` already reads `mtime` through
-`CONFIG_CLINT_BASE`, so the idiom for all of them is established.
+So the argument is real but lands on tier 5, not tier 2. `Kernel/RVDocVT.HC:423` already reads
+`mtime` through `CONFIG_CLINT_BASE`, so the idiom is established whenever these do move.
 
 That reframes the migration: it is not tidying, and it does not depend on the multi-arch plan's
 "no per-arch C runtime" decision to be worth doing. It removes a second, inferior, silently
@@ -211,28 +235,15 @@ obstacle. Coupling is. Grouped by what has to move together:
 | tier | rows | why |
 |---|---|---|
 | **1 — DONE** | `SysHlt`, `Call` | one instruction each, and the assembler already had both. `HolySysHlt` is `wfi`, which `host/parser.c:4756` encodes as `0x10500073`. `HolyCall` is a `fence.i` then an indirect jump, and `fencei` is already a recognised mnemonic — the C even uses `.word 0x0000100f` by hand because `-march=rv64imafdc` omits Zifencei |
-| **2 — DONE** | `RVJiffies` + `RVJiffiesInit` | the first row where moving it FIXED something — see below |
-| **3 — the trap bundle, indivisible** | `RVTrapInit`, `RVTrapRecoverArm`/`Disarm`/`Cause`/`Epc`/`Ra`/`Tval` | the `Recover*` readers are bare accessors over C globals the trap vector writes. The vector moves or none of them do — sized below |
+| **2 — BELONGS TO TIER 4** | `RVJiffies` + `RVJiffiesInit` | tried, shipped, REVERTED — the C scheduler reads the global that Init sets. See below |
+| **3 — the trap bundle, indivisible** | `RVTrapInit`, `RVTrapRecoverArm`/`Disarm`/`Cause`/`Epc`/`Ra`/`Tval` | the four `Recover*` readers are bare accessors over C globals that the trap vector in `crt0.S` writes. They cannot move one at a time: the vector moves or none of them do |
 | **4 — scheduling** | `RVTaskSwitch`, `Yield`, `TaskEndNow`, `RVYieldInit`, `RVPreemptReal` | context save/restore and the preempt timer; `RVTaskSwitch` is the x86 `_TASK_CONTEXT_RESTORE`'s counterpart |
 | **5 — devices, and it SPLITS** | `RVUartIrqInit`/`Off` (independent of tier 3), `RVUartGetBuffered` (tier-3 coupled), `RVVirtioPciIsrReg`, `RVCrashMon`/`Init` | I called this "least urgent" and was wrong twice over — see below |
 
-Tiers 1 and 2 are done. Note the ordering principle differs from the DolDoc work: there, severity
-ranked the list because every row was a live defect; here nothing was visibly broken, so **coupling**
-ranked it.
-
-**Tier 2 is the first row where moving it FIXED something.** The C read mtime at a hardcoded
-`0x02000000+0xBFF8`. XiangShan puts its CLINT at `0x38000000`; OpenTitan and AMD MicroBlaze-V have
-no CLINT at all (`# CONFIG_HAS_CLINT is not set`) and the C would read `0x02000000` regardless,
-taking a fault or garbage. The HolyC version reads `CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF` and
-`#ifdef`s the no-CLINT case to 0. Only the address was ever frozen — the divisor was already
-per-board, because every caller passes `CONFIG_TIMEBASE_FREQ / 1000` itself.
-
-`tests/exec/cases/e_kernel_jiffies.hc` is also the first of these cases that **can** fail on a
-broken implementation, because its assertions are about behaviour over time rather than a value the
-C also computes correctly: uninitialised reads 0, an initialised clock is non-zero, it MOVES, and it
-never moves backwards. Confirmed by pointing mtime at XiangShan's base while running on QEMU virt —
-no ORACLE line. The same address that makes the C wrong on XiangShan makes XiangShan's address wrong
-here, and the case catches both directions.
+Tier 1 is the honest next step — two rows off the seam with the assembler exactly as it is, no new
+support needed, and it proves the migration path end to end before anything couples to the trap
+vector. Note the ordering principle differs from the DolDoc work: there, severity ranked the list
+because every row was a live defect; here nothing is broken, so **coupling** ranks it.
 
 The precedent for the move is already in the tree and was extended twice this session:
 `Kernel/KUtilsRV.HC` took `MemSet`/`MemCpy`/`StrLen`/… off the C runtime years of commits ago, then
