@@ -1,0 +1,61 @@
+# Every name the LINKED TempleOS/RISC-V image (build/aot/win/win_tos.blob.bin) calls but no HolyC
+# unit in it defines. host/aot_link.c leaves each in a HOFYIMP1 trailer; whoever links the blob
+# fills the slot. This is the port's seam, measured rather than asserted — and the only place a
+# missing primitive shows up, because a dropped asm{} block is not a build failure and the C
+# runtime answers for the symbol correctly.
+#
+# Pinned so that a NEW name cannot appear unnoticed, and so that implementing one forces a re-pin.
+# Regenerate:  tools/blob_imports.py build/aot/win/win_tos.blob.bin
+# Gate:        make portability-seam-check
+#
+# category   meaning
+#   libm       a real gap: FP math with no HolyC or RISC-V asm body; C libm stands in
+#   strmem     a real gap: a string/memory primitive that exists only as x86 asm
+#   platform   the port layer ON PURPOSE — trap/IRQ/timer/task primitives the C harness owns.
+#              These are what a new architecture must supply; they are not bugs.
+#   x86-only   a concept with no meaning off x86; the runtime stubs it
+#   MISSING    called by this image, defined in a unit this image does not include, and provided
+#              by NOTHING. Calling it prints "[unresolved import]" and returns 0.
+#
+# name	category	provider today
+ATan	libm	bootstrap/holy_rt_names.h
+Ceil	libm	bootstrap/holy_rt_names.h
+Cos	libm	bootstrap/holy_rt_names.h
+Sin	libm	bootstrap/holy_rt_names.h
+Tan	libm	bootstrap/holy_rt_names.h
+MemCmp	strmem	bootstrap/holy_rt_names.h
+MinI64	strmem	bootstrap/holy_rt_names.h
+StrCat	strmem	bootstrap/holy_rt_names.h
+Call	platform	bootstrap/holy_rt_names.h + crt0.S
+SysHlt	platform	bootstrap/holy_rt_names.h
+Yield	platform	bootstrap/holy_rt.h
+TaskEndNow	platform	bootstrap/holy_rt.h
+RVTaskSwitch	platform	bootstrap/holy_rt.h
+RVYieldInit	platform	bootstrap/holy_rt.h
+RVPreemptReal	platform	bootstrap/holy_rt_names.h + crt0.S
+RVJiffies	platform	bootstrap/holy_rt_names.h
+RVJiffiesInit	platform	bootstrap/holy_rt_names.h
+RVTrapInit	platform	bootstrap/holy_rt.h + crt0.S
+RVTrapRecoverArm	platform	bootstrap/holy_rt.h
+RVTrapRecoverCause	platform	bootstrap/holy_rt_names.h
+RVTrapRecoverDisarm	platform	bootstrap/holy_rt_names.h
+RVTrapRecoverEpc	platform	bootstrap/holy_rt_names.h
+RVTrapRecoverRa	platform	bootstrap/holy_rt_names.h
+RVTrapRecoverTval	platform	bootstrap/holy_rt_names.h
+RVUartGetBuffered	platform	bootstrap/holy_rt_names.h
+RVUartIrqInit	platform	bootstrap/holy_rt_names.h
+RVUartIrqOff	platform	bootstrap/holy_rt_names.h
+RVVirtioPciIsrReg	platform	bootstrap/holy_rt_names.h
+RVCrashMon	platform	bootstrap/holy_rt_names.h
+RVCrashMonInit	platform	bootstrap/holy_rt.h
+FarCall32	x86-only	bootstrap/holy_rt_names.h (stub)
+GetRAX	x86-only	bootstrap/holy_rt_names.h (stub)
+SaveExceptRegs	x86-only	bootstrap/holy_rt_names.h (stub)
+GetMcause	MISSING	nothing — bootstrap/seed/csr_decode.hc:317 calls it from CsrDecodeMtval, a body nothing calls
+DocCollapse	MISSING	nothing — Adam/DolDoc/DocRecalcLib.HC, excluded for collisions
+DocEntryRun	MISSING	nothing — Adam/DolDoc/DocRun.HC, not included
+DocRemSoftNewLines	MISSING	nothing — Adam/DolDoc/DocNew.HC, not included
+DocSplitTag	MISSING	nothing — Adam/DolDoc/DocRecalc.HC, not included
+EdCurU8	MISSING	nothing — Adam/DolDoc/DocChar.HC, not included
+EdCursorLeft	MISSING	nothing — Adam/DolDoc/DocChar.HC, not included
+EdCursorRight	MISSING	nothing — Adam/DolDoc/DocChar.HC, not included

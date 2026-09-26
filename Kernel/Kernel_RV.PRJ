@@ -24,8 +24,12 @@ kernel_cfg = KCfgNew;
 // RISCV_VIRT is set by RVAutoConf on PLATFORM_VIRT (Goldfish RTC path in KDate, etc.).
 #include "KernelA.HH"
 #include "KStartRV"   // RISC-V stand-in for KStart16/32/64, KInts, MultiProc, FunSeg (needs KernelA.HH types)
-#include "KMathA"
-#include "KUtils"
+// x86: #include "KMathA"  — 648 of its 649 lines are ONE asm{} block of x87/SSE, which this
+// x86: #include "KUtils"  — assembler rejects whole, and KUtils is 471 of 472 the same way. So
+//   both contributed NOTHING: removing each leaves the exec-case blob BYTE-IDENTICAL (measured,
+//   one at a time, 2,668,832 bytes either way — tests/exec/cases/e_kernel_fabs.hc). Their symbols come from HolyC twins —
+//   KMathA_RV.HC (D3NormSqr, Sqr, Abs, Floor, Trunc, Round) and KUtilsRV.HC — and the `_extern`
+//   declarations in KernelB.HH that used to aim at the x86 labels now resolve there.
 #exe {Option(OPTf_KEEP_PRIVATE,ON);};
 #include "/Compiler/CompilerA.HH"
 #exe {Option(OPTf_EXTERNS_TO_IMPORTS,ON);};
@@ -56,7 +60,8 @@ kernel_cfg = KCfgNew;
 #ifdef RV_THIN_LOADER
 #include "KThinHashStubs" // lite HashAdd/Find/TableNew for thin Jump; Define stubbed
 #else
-#include "KHashA"
+// x86: #include "KHashA" — 252 of 269 lines in one dropped asm{} block; removing it leaves the
+//   exec-case blob byte-identical. KHashRV.HC below is what actually runs.
 #include "KHashRV" // RV HolyC HashStr/HashAdd/HashFind BEFORE KHashB (HashDefineLstAdd needs live HashFind)
 #endif
 //x86: #include "KInts"
