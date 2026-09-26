@@ -35,7 +35,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop asm-gnu-diff compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration a3-flip-check repl-smoke dbg-smoke hwdbg-smoke gdb-uart-smoke trap-smoke trap-frame-smoke kernel-trapframe-smoke dbg-regs-smoke asm-repl-smoke asm-repl-ui-smoke kernel-doctext-smoke repl-blob repl-regression repl-holyc repl-holyc-smoke repl-holyc-regression hc-repl hc-repl-full hc-repl-smoke path-namespace-smoke term-probe-pty repl-uart-echo-pty repl-uart-xon-pty zmodem-smoke trzsz-smoke dump-changes-smoke baremetal baremetal-plat baremetal-smoke repl-payload bootloader bootloader-repl bootloader-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke rv32-uart-smoke kernel-selfboot-smoke kernel-home-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtio-pci-irq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-vt-smoke kernel-vt-demo kernel-vt-repl kernel-vt-holyc mux-smoke kernel-cdc-smoke kernel-demo-netofdots-smoke kernel-demo-blot-smoke kernel-span-smoke newline-semi-smoke asm-catalog-check blob-imports-check portability-seam-check kernel-psalmody-smoke kernel-ode-smoke kernel-win-smoke kernel-win-zorder-smoke kernel-game-input-smoke kernel-game-mouse-smoke kernel-game-scanchar-smoke kernel-game-lines-smoke kernel-win-interactive kernel-win-serial-smoke kernel-win-run kernel-win-rebuild kernel-tos tos kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-plat-hifive-unmatched-smoke kernel-plat-hifive-unmatched-controls hello-unmatched hello-unmatched-smoke unmatched-takeover-smoke unmatched-takeover-controls kernel-sifive-gem-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-sifive-e-full kernel-sifive-e-full-smoke kernel-smp-smoke kernel-exepubs-smoke kernel-repl-exepubs-smoke repl-cmp repl-cmp-smoke kernel-phase3-smoke kernel-thin-loader-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
+.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop asm-gnu-diff compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration a3-flip-check repl-smoke dbg-smoke hwdbg-smoke gdb-uart-smoke trap-smoke trap-frame-smoke kernel-trapframe-smoke dbg-regs-smoke asm-repl-smoke asm-repl-ui-smoke kernel-doctext-smoke repl-blob repl-regression repl-holyc repl-holyc-smoke repl-holyc-regression hc-repl hc-repl-full hc-repl-smoke path-namespace-smoke term-probe-pty repl-uart-echo-pty repl-uart-xon-pty zmodem-smoke trzsz-smoke dump-changes-smoke baremetal baremetal-plat baremetal-smoke repl-payload bootloader bootloader-repl bootloader-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke rv32-uart-smoke kernel-selfboot-smoke kernel-home-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtio-pci-irq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-vt-smoke kernel-vt-demo kernel-vt-repl kernel-vt-holyc mux-smoke kernel-cdc-smoke kernel-demo-netofdots-smoke kernel-demo-blot-smoke kernel-span-smoke newline-semi-smoke asm-catalog-check blob-imports-check portability-seam-check kernel-psalmody-smoke kernel-ode-smoke kernel-win-smoke kernel-win-zorder-smoke kernel-game-input-smoke kernel-game-mouse-smoke kernel-game-scanchar-smoke kernel-game-lines-smoke kernel-win-interactive kernel-win-serial-smoke kernel-win-run kernel-win-rebuild kernel-tos tos kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-plat-hifive-unmatched-smoke kernel-plat-hifive-unmatched-controls hello-unmatched hello-unmatched-smoke unmatched-takeover-smoke unmatched-takeover-preloaded unmatched-takeover-controls kernel-sifive-gem-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-sifive-e-full kernel-sifive-e-full-smoke kernel-smp-smoke kernel-exepubs-smoke kernel-repl-exepubs-smoke repl-cmp repl-cmp-smoke kernel-phase3-smoke kernel-thin-loader-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -1100,12 +1100,20 @@ unmatched-takeover-smoke:
 	@chmod +x tests/scripts/run_unmatched_takeover_smoke.sh
 	@tests/scripts/run_unmatched_takeover_smoke.sh $(or $(TAKEOVER),hello)
 
+# The mode the Unmatched will ACTUALLY use: the image is already in DDR (U-Boot tftp or SD)
+# and JTAG does only the dozen ops it alone can do -- halt, force M-mode, set pc, resume.
+# A gdb `load` of megabytes over that board's 1-5%-per-scan debug link does not complete,
+# so this is the path the privilege switch has to work on.
+unmatched-takeover-preloaded:
+	@chmod +x tests/scripts/run_unmatched_takeover_smoke.sh
+	@TOS_TAKEOVER_LOAD=pre tests/scripts/run_unmatched_takeover_smoke.sh $(or $(TAKEOVER),hello)
+
 # The takeover gate broken four ways: wrong pc, no privilege raise, wrong hart, and
 # -bios none (no firmware at all). Every one must fail.
 unmatched-takeover-controls:
 	@chmod +x tests/scripts/run_unmatched_takeover_smoke.sh
 	@set -e; rc=0; for c in badpc nopriv wronghart nofirmware; do \
-	  if TOS_TAKEOVER_BREAK=$$c tests/scripts/run_unmatched_takeover_smoke.sh hello >/dev/null 2>&1; then \
+	  if TOS_TAKEOVER_LOAD=$(or $(TAKEOVER_LOAD),gdb) TOS_TAKEOVER_BREAK=$$c tests/scripts/run_unmatched_takeover_smoke.sh hello >/dev/null 2>&1; then \
 	    echo "FAIL control $$c - it PASSED; the takeover gate does not test it" >&2; rc=1; \
 	  else \
 	    echo "control $$c: correctly fails"; \
@@ -1348,6 +1356,7 @@ help:
 	@echo "  kernel-plat-hifive-unmatched-controls - the same gate broken 5 ways (must fail)"
 	@echo "  hello-unmatched-smoke - 745-byte FU740 asm probe: OK on a U74, refuses on the S7"
 	@echo "  unmatched-takeover-smoke - the real JTAG gdb takeover, rehearsed on QEMU+OpenSBI"
+	@echo "  unmatched-takeover-preloaded - same, but image already in DDR (the viable board path)"
 	@echo "  unmatched-takeover-controls - that takeover broken 4 ways (must fail)"
 	@echo "  kernel-sifive-gem-smoke - HolyC Cadence GEM TX+RX loopback on -M sifive_u"
 	@echo "  kernel-plat-spike-smoke - HolyC plat smoke on -M spike"

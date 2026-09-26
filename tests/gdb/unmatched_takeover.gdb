@@ -50,6 +50,27 @@
 #    the moment the kernel sets mstatus.MIE, into a handler that knows nothing about
 #    OpenSBI's IPI protocol, so mie/mip are cleared here rather than left to luck.
 #
+# TWO MODES, AND ON REAL HARDWARE ONLY ONE OF THEM IS VIABLE.
+#
+#   $tos_skip_load = 0 (default)  gdb `load`s the image itself.
+#   $tos_skip_load = 1            the image is ALREADY in DDR; gdb only halts, raises the
+#                                 privilege level, sets pc and resumes.
+#
+# The second is the one the Unmatched will actually use, and the reason is measured. This
+# board's on-board FT2232H debug path carries a 1-5% per-DMI-scan corruption floor that no
+# OpenOCD setting removes (schematics rev 3: FT2232HL ADBUS0-3 -> U4 TXB0104 auto-direction
+# 3.3<->1.8 V shifter -> 33R series -> the TS3A5018 mux -> SoC; that level-shifter chain is
+# the plausible origin and it is not addressable from software). A gdb `load` of a
+# multi-megabyte image is hundreds of thousands of DMI operations, and OpenOCD treats a
+# single bad DMI status as fatal with no retry. That is not a thing that completes.
+#
+# So on hardware: let U-Boot put the image in DDR (tftp, or from SD), and let JTAG do only
+# the dozen operations it alone can do -- halt, force M-mode, set pc, resume. That dozen can
+# be retried by hand; a `load` cannot. `$tos_skip_load = 1` is exactly that dozen, and it is
+# what the emulated gate exercises, with QEMU's `-device loader` standing in for U-Boot's
+# tftp. (The other hardware option avoids JTAG entirely: package the M-mode kernel as the
+# SPL's next stage, so nothing has to be taken over at all.)
+#
 # WHAT THIS DELIBERATELY DOES NOT DO: `monitor reset halt`. On a cold board that halts
 # the FU740 before its DDR controller has been trained, and `load` then writes into a
 # memory system that is not there. The premise is the opposite: let the board's own
@@ -98,9 +119,16 @@ define tos_takeover
   tos_pick_hart
   tos_show_inherited
   # Only now is it safe to open the image: we are on a hart whose flen matches it.
+  # `file` reads symbols on the host and touches the target not at all, so it is safe in
+  # both modes -- it is what makes `_start` a name rather than an address you look up.
   eval "file %s", $tos_elf
-  echo [takeover] load\n
-  load
+  if $_isvoid($tos_skip_load) || !$tos_skip_load
+    echo [takeover] load (gdb writes the image -- see the DMI-floor note above)\n
+    load
+  else
+    echo [takeover] load SKIPPED: image already in DDR (U-Boot tftp / SD).\n
+    echo [takeover] Only the dozen ops JTAG alone can do follow.\n
+  end
   set $priv = 3
   set $mie = 0
   set $mip = 0

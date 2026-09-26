@@ -28,16 +28,32 @@
 #   tests/scripts/unmatched_jtag_floor_check.sh 300 0          # 300 dmstatus scans
 #
 # Any stray reads mean an examine/halt will probably not complete. DO NOT lower the adapter
-# speed in response — below ~4 MHz this link collapses outright, and the original
-# hifive_unmatched.cfg's 1 MHz default was itself the bug. Try tdo_sample_edge falling at
-# 8-10 MHz, a different micro-USB cable, and failing that the external Olimex
-# ARM-USB-TINY-H on header J18: an independent JTAG path that bypasses the on-board
-# FT2232H entirely (use hifive_unmatched.cfg, but at 10 MHz falling, not its 1 MHz).
+# speed in response -- below ~4 MHz this link collapses outright, and the original
+# hifive_unmatched.cfg's 1 MHz default was itself the bug. Best measured setting is 8-9 MHz
+# with `tdo_sample_edge falling` (~1-2%).
+#
+# AND THERE IS NO PROBE FALLBACK WITH THE HARDWARE ON HAND. From the schematics (rev 3,
+# sheets 4 and 16):
+#   * J18 is a 2-pin JTAG MUX SELECT jumper (TS3A5018 mux U12, 100K pull-down). No jumper =
+#     the on-board FT2232H over micro-USB, which is the default. Jumper = external header J6.
+#     There is no "2x6 0.05in JTAG header J18"; the repo used to say there was.
+#   * J6 is the external header: 2x5, Cortex-10 pinout (1 VDD_1V8/VTref, 2 TMS, 3 GND,
+#     4 TCK, 5 GND, 6 TDO, 7 key, 8 TDI, 9 GND, 10 RESET_N).
+#   * The FU740's JTAG is 1.8 V. An Olimex ARM-USB-TINY-H is a 2.0-5.0 V probe and MUST NOT
+#     be connected to J6. Earlier notes in this tree suggested it as the fallback; it is not
+#     one, and using it risks the SoC.
+#   * ADBUS4 = FT_JTAG_SRST, ACTIVE HIGH through Q8B onto RESET_N. A layout_init that drives
+#     ADBUS4 high RESETS THE BOARD (0x0038 does; 0x0008/0x001b keeps it low). ADBUS5-7 are
+#     NC, so SiFive's "nSRST -oe 0x0020" line is inert here.
+# The floor is most likely the FT2232HL -> U4 TXB0104 auto-direction 3.3<->1.8 V shifter ->
+# 33R series -> mux chain, which is not addressable from OpenOCD at all.
 # ---------------------------------------------------------------------------------------
 #
 # SETUP
 #   openocd -f tests/openocd/hifive_unmatched_hart1.cfg
 #   screen /dev/cu.usbserial-<loc>1 115200    # channel B of the SAME micro-USB bridge
+#                                             # (FT2232H ch B -> TXS0102 -> UART0 at 1.8 V;
+#                                             #  there is no CP2105 on this board)
 #   riscv64-elf-gdb -q -batch \
 #       -ex 'set $tos_elf = "build/kernels/hifive_unmatched/hello.elf"' \
 #       -x tests/gdb/unmatched_takeover_openocd.gdb
@@ -67,6 +83,17 @@
 #                            and never resumed it. The floor-check script names this.
 
 set $tos_port = 3333
+
+# THE LOAD IS SKIPPED ON THIS BOARD BY DEFAULT, and that is not timidity. A gdb `load` of a
+# multi-megabyte image is hundreds of thousands of DMI operations over a link with a 1-5%
+# per-scan corruption floor, and OpenOCD treats one bad status as fatal with no retry. Put
+# the image in DDR with U-Boot first:
+#     => tftp 0x80200000 plat.bin          (or load it from SD)
+# and let JTAG do only the dozen operations it alone can do. Override with
+#   -ex 'set $tos_skip_load = 0'
+# if you have a link good enough, which as of this writing nobody has demonstrated.
+set $tos_skip_load = 1
+
 eval "target extended-remote :%d", $tos_port
 
 # -- hart selection ------------------------------------------------------------------

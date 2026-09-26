@@ -7,7 +7,9 @@ Status line first, because the rest of this document is detail:
 | The board image builds and runs at its real link address | `make kernel-plat-hifive-unmatched-smoke` — real `plat.bin` at 0x80200000 on `-M sifive_u` |
 | That gate can fail | `make kernel-plat-hifive-unmatched-controls` — five controls, each must fail |
 | The JTAG takeover procedure works | `make unmatched-takeover-smoke` — OpenSBI in the chain, hart halted in S-mode, gdb takes it |
-| That gate can fail | four `TOS_TAKEOVER_BREAK=` controls, each must fail |
+| …in the mode the board will actually use | `make unmatched-takeover-preloaded` — image already in DDR, JTAG does only the dozen ops |
+| Those gates can fail | four `TOS_TAKEOVER_BREAK=` controls, in both load modes, each must fail |
+| The HolyC **REPL** image for this board | **NO — blocked by two kernel bugs, both located and quantified in §9** |
 | The board's JTAG TAP scans, and raw DMI reads work | measured on a live board (IDCODE 0x20000913; raw `dmi_read` 0/30 bad) |
 | An OpenOCD **examine or halt** completes reliably | **NO.** A ~2-3% per-scan DMI corruption floor that no setting reaches zero on — §7 |
 | The board image runs on real FU740 silicon | **NOT VERIFIED.** Nothing has been loaded or run on hardware. |
@@ -389,19 +391,31 @@ in SPI flash does the one job we cannot do ourselves (train DDR), and then we ta
 machine away from it over JTAG. QEMU ships the OpenSBI binary used for the emulated leg
 (`/opt/homebrew/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin`); nothing was cross-built.
 
-**And no external probe is needed either — but see §7, because the on-board one is
-currently the blocker.** The Unmatched's debug interface is an FT2232H on the board,
-reached through the *same micro-USB that carries the console*:
+**And no external probe is needed — but see §7, because the on-board one is the blocker.**
+From the schematics (rev 3, sheets 4 and 16), which replace what this tree used to say:
 
-* channel A → JTAG, channel B → console at 115200 8N1.
-* It enumerates as "Dual RS232-HS", `0403:6010`, with **no USB serial number**, so macOS
-  names the two ports by USB location rather than by serial. The lower of the pair is
-  channel A. The numbers move with the physical port, so identify them by ordering.
-* This supersedes `tests/openocd/hifive_unmatched.cfg`, which assumes an external Olimex
-  ARM-USB-TINY-H on header **J18**. The measured configs are
-  `tests/openocd/hifive_unmatched_ft2232h.cfg` and `hifive_unmatched_hart1.cfg`.
-* Earlier notes in this tree said the micro-USB was "the CP2105 console". It is not a
-  CP2105 and it is not only a console.
+* **The debug interface is an FT2232H on the board**, behind the same micro-USB that carries
+  the console: channel A → JTAG, channel B → console. Channel B goes through a TXS0102 to
+  UART0 at 1.8 V, 115200. **There is no CP2105 on this board**, and earlier notes calling the
+  micro-USB "the CP2105 console" were wrong twice over.
+* It enumerates as "Dual RS232-HS", `0403:6010`, with **no USB serial number**, so macOS names
+  the two ports by USB location. The lower of the pair is channel A; the numbers move with
+  the physical port, so identify them by ordering.
+* **`J18` is not a JTAG header.** It is a 2-pin **JTAG mux select jumper** (TS3A5018 mux U12,
+  100 K pull-down): no jumper selects the on-board FT2232H (the default), a jumper selects the
+  external header. This tree used to describe a "2x6 0.05in JTAG header J18". There is none.
+* **`J6` is the external header**: 2x5, Cortex-10 pinout — 1 VDD_1V8 (VTref), 2 TMS, 3 GND,
+  4 TCK, 5 GND, 6 TDO, 7 key, 8 TDI, 9 GND, 10 RESET_N.
+* **There is no probe fallback with the hardware on hand.** The FU740's JTAG is **1.8 V**; an
+  Olimex ARM-USB-TINY-H is a 2.0–5.0 V probe and **must not be connected to J6**. An earlier
+  note in this document suggested exactly that as the fallback. It is not one, and it risks
+  the SoC.
+* **`ADBUS4` = `FT_JTAG_SRST`, active HIGH** through Q8B onto RESET_N. A `layout_init` that
+  drives ADBUS4 high **resets the board** — `0x0038` does; the correct `0x0008 0x001b` keeps
+  it low. ADBUS5-7 are NC, so SiFive's `nSRST -oe 0x0020` line is inert here.
+
+The measured OpenOCD configs live on the main tree (`hifive_unmatched_ft2232h.cfg`,
+`hifive_unmatched_hart1.cfg`); this document does not duplicate them.
 
 **Order**: power on and let the board's own ZSBL → U-Boot SPL → OpenSBI run (SPL is what
 trains DDR), then stop at the **U-Boot prompt**. Prefer that over a booted Linux, for three
@@ -486,10 +500,45 @@ under `sudo` after a clean detach), the TDO sample edge (both measured above), T
 levels, and the cable and host port (identical after swapping both — a further cable swap
 is in progress).
 
-**The fallback if the floor does not drop** is the external Olimex ARM-USB-TINY-H on header
-J18 — an independent JTAG path that bypasses the on-board FT2232H entirely. Use the
-original `hifive_unmatched.cfg` for it, but at **10 MHz with falling TDO sample edge**, not
-its 1 MHz default.
+**Where the floor probably comes from, and why no OpenOCD setting fixes it.** The schematic
+path is FT2232HL `ADBUS0-3` → **U4, a TXB0104 auto-direction 3.3↔1.8 V level shifter** →
+33 R series resistors → the TS3A5018 mux → the SoC. An auto-direction shifter in a
+bidirectional JTAG path is a plausible origin for exactly this kind of sporadic sampling
+failure, and none of it is reachable from software. Best measured setting is **8–9 MHz with
+`tdo_sample_edge falling`** (~1–2%).
+
+**And there is no probe fallback.** See §6: J6 is 1.8 V and the available Olimex probe is
+2.0–5.0 V.
+
+**So the plan changed, and this is the important consequence.** A gdb `load` of a
+multi-megabyte image is *hundreds of thousands* of DMI operations. At a 1-5% per-scan floor
+with no retry, that will not complete — and it is not worth trying to make it. The two
+viable hardware paths are:
+
+1. **U-Boot puts the image in DDR** (`tftp 0x80200000 plat.bin`, or from SD) **and JTAG does
+   only the dozen operations it alone can do**: halt, force M-mode, set pc, resume. A dozen
+   can be retried by hand; a `load` cannot.
+2. **Package the M-mode kernel as the SPL's next stage**, so it runs with no debugger at all.
+   No takeover, no JTAG — but also no ability to halt and inspect.
+
+Path 1 is what the emulated gate now exercises: `make unmatched-takeover-preloaded` places
+the image with QEMU's `-device loader` (standing in for U-Boot's tftp) and then runs the
+*same* takeover script with `$tos_skip_load = 1`, so gdb writes nothing and only the
+privilege switch, pc and resume happen. Measured:
+
+```
+takeover: LOAD=pre -- image placed at 0x80200000 before boot (stands in for U-Boot tftp)
+[takeover] mhartid=1 priv=1 pc=0x80400024
+[takeover] load SKIPPED: image already in DDR (U-Boot tftp / SD).
+[takeover] Only the dozen ops JTAG alone can do follow.
+[takeover] entering at 0x80200000 with priv=3 mie=0x0
+  -> plat-smoke: PASS, ORACLE 0000000000000000
+```
+
+The gate asserts gdb wrote nothing (no `Loading section` lines), or the mode would be
+indistinguishable from the default and would prove nothing about the hardware path. All four
+negative controls still fail in this mode, including `nopriv` — which matters most here,
+because the privilege switch is the one step JTAG has to do either way.
 
 **One state to recognise:** `dmstatus 0x30382` is `allhalted|anyhalted|resumeack`, i.e. a
 hart left halted by an earlier session whose resume never ran. That looks like a dead board
@@ -507,6 +556,7 @@ Listed because "it works in QEMU" is not a claim about hardware:
   that are not the same code the emulated gate exercises. Check `p/x $mhartid` before
   resuming. If the privilege write is refused, `monitor reg priv 3` is the fallback; if
   *neither* works, stop — S-mode entry is not a fallback (§3).
+* **The REPL.** Blocked on two located kernel bugs, not on anything board-specific — §9.
 * **The PLIC/`^C` path is untested for this board even under emulation.**
   `CONFIG_UART_IRQ` is now 39, which is right for the FU740 and wrong for `-M sifive_u`
   (which wires UART0 to source 4). So the SiFive-correct `HolyRVUartIrqInit` code is
@@ -522,3 +572,77 @@ Listed because "it works in QEMU" is not a claim about hardware:
   against QEMU's model. `CONFIG_SIFIVE_GPIO_RESET_PIN` stays 32 (none) for the same
   reason — the board's reset pin is unverified, and `RVSifiveCanReset` reporting
   `sifive_no_hw_reset` is the correct answer until someone checks.
+
+---
+
+## 9. The REPL for this board: blocked, with both causes located
+
+Deliverable-wise this is the one thing that does **not** work, so here is exactly why rather
+than a summary. `tests/scripts/run_repl_unmatched_smoke.sh` and
+`tests/exec/harness/link_exepubs_hifive_unmatched.ld` are in place and correct — the REPL
+image links at 0x80200000, against the SiFive harness, entered on hart 1 — and it still does
+not run. Two independent kernel bugs, both pre-existing, both outside this board's own port.
+
+### 9a. The virtio block driver's constants are Kconfig-gated but its body is not
+
+A non-virtio board cannot compile the REPL at all. Three errors:
+
+```
+Kernel/RVDisasm.HC:265:23:            Undefined variable 'MEM_VIRTIO'
+Kernel/BlkDev/DskVirtioRV.HC:260:25:  Undefined variable 'BDT_VIRTIO'
+Kernel/BlkDev/DskVirtioRV.HC:311:60:  Undefined variable 'BDT_VIRTIO'
+```
+
+* `MEM_VIRTIO` comes from `kconfig.py`'s `mem_aliases` loop, which only emits an alias when
+  the symbol is in `.config`. `CONFIG_VIRTIO_MMIO_BASE` `depends on HAS_VIRTIO_MMIO`, so on
+  this board it is absent and the alias is never defined. Note the *sibling* generated header
+  does emit `MEM_VIRTIO 0` via `_mem_hex(virtio)` — so the two headers already disagree, and
+  making `RVAutoConf.HH` match is a bug fix, not a workaround.
+* `BDT_VIRTIO` is defined in `Kernel/KernelA.HH:2610` under `#ifdef RISCV_VIRT`, and
+  `RISCV_VIRT` is emitted only for `PLATFORM_VIRT`. Every *consumer* is likewise `#ifdef
+  RISCV_VIRT` (6 sites, all in `Kernel/BlkDev/`), but `DskVirtioRV.HC`'s **body is compiled
+  unconditionally** — and it cannot simply be wrapped, because this tree's own rule is that
+  `#ifdef` around HolyC function bodies turns them into unresolved imports.
+
+**Measured fix, as an experiment (not committed):** defining `MEM_VIRTIO 0` when virtio is
+absent, and making `BDT_VIRTIO`/`BDT_TYPES_NUM` unconditional, is enough to compile. Two
+lines. It was not landed because `KernelA.HH` is shared with the stock x86 distro and
+`BDT_TYPES_NUM` 6 → 7 sizes arrays there; that deserves its own change and its own 12-board
+matrix gate, not a rider on this one.
+
+### 9b. `GetTSC` reads the `time` CSR, which SiFive cores do not implement
+
+With 9a patched, the image builds (10.7 MB flat) and then traps immediately:
+
+```
+TRAP mcause=0x2 (illegal-insn) mepc=0x808cba64 mtval=0xc0102573 blob+0xcba64
+```
+
+`0xc0102573` decodes as `csrrs a0, 0xc01, zero` — `csrr a0, time`. The source is
+`Kernel/KUtilsRV.HC:714`:
+
+```
+asm {
+        GetTSC::
+        rdtime  a0
+        ret
+}
+```
+
+This works on `-M virt` (whose default CPU is the generic `rv64`) and is illegal on
+`-M sifive_u` (`sifive-u54`), which is why no existing gate caught it. **It is not merely a
+QEMU-model artifact:** SiFive's U-series cores do not implement the `time` CSR in the core
+either — `rdtime` traps and is conventionally emulated by M-mode firmware. Since an M-mode
+takeover replaces `mtvec` with our own, nothing emulates it, so this would trap on real FU740
+silicon too.
+
+The fix is to read the CLINT's memory-mapped `mtime` (`MEM_CLINT + CONFIG_CLINT_MTIME_OFF`,
+which `RVClintMtime()` already does) instead of `rdtime` whenever the platform is not virt.
+That is also a shared-kernel change touching every board's timestamp path — `GetTSC` feeds
+RedSea `unique_id` and mouse/keyboard timing — so, like 9a, it wants its own change with the
+matrix as its gate.
+
+**What this means for the goal.** `hc_repl` on an Unmatched over serial needs 9a and 9b
+fixed; neither is about the board description, the UART, the link address or the hart, all of
+which are now correct and gated. The plat kernel, which exercises UART + CLINT + PLIC +
+MemMap through the full takeover, does run.
