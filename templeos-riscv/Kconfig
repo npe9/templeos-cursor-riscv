@@ -344,6 +344,7 @@ config UART_IRQ
 	int "UART PLIC IRQ number"
 	default 10 if PLATFORM_VIRT || PLATFORM_XIANGSHAN
 	default 4 if PLATFORM_SIFIVE_U || PLATFORM_AMD_MICROBLAZE_V
+	default 39 if PLATFORM_HIFIVE_UNMATCHED
 	default 3 if PLATFORM_SIFIVE_E
 	default 32 if PLATFORM_VISIONFIVE2 || PLATFORM_MILKV_MARS
 	default 90 if PLATFORM_MICROCHIP_ICICLE
@@ -390,7 +391,7 @@ config SIFIVE_AON_BASE
 
 config SIFIVE_GPIO_BASE
 	hex "SiFive GPIO base (0 = absent)"
-	default 0x10060000 if PLATFORM_SIFIVE_U
+	default 0x10060000 if PLATFORM_SIFIVE_U || PLATFORM_HIFIVE_UNMATCHED
 	default 0x10012000 if PLATFORM_SIFIVE_E
 	default 0
 	help
@@ -406,7 +407,7 @@ config SIFIVE_GPIO_RESET_PIN
 
 config SIFIVE_UART1_BASE
 	hex "SiFive UART1 base (0 = absent)"
-	default 0x10011000 if PLATFORM_SIFIVE_U
+	default 0x10011000 if PLATFORM_SIFIVE_U || PLATFORM_HIFIVE_UNMATCHED
 	default 0
 	help
 	  Second SiFive UART0-compatible port (FU540 UART1). Legend / future
@@ -414,7 +415,7 @@ config SIFIVE_UART1_BASE
 
 config SIFIVE_PRCI_BASE
 	hex "SiFive PRCI base (0 = absent)"
-	default 0x10000000 if PLATFORM_SIFIVE_U
+	default 0x10000000 if PLATFORM_SIFIVE_U || PLATFORM_HIFIVE_UNMATCHED
 	default 0
 	help
 	  Power Reset Clock Interface (FU540). MemMap legend only — do not
@@ -427,6 +428,10 @@ config SIFIVE_ETH_BASE
 	help
 	  Cadence GEM on FU540 @ 0x10090000. Non-zero selects RVSifiveGemYes
 	  (poll TX/RX + local-loopback self-test). Zero → RVSifiveGemNo.
+	  The FU740 has a GEM at the same address, but hifive_unmatched leaves
+	  this 0 on purpose: the driver has only ever been run against QEMU's
+	  model, and a loopback self-test against an untested PHY is not
+	  something a first board bring-up should do.
 
 endmenu
 

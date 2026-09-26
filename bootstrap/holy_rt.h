@@ -405,6 +405,20 @@ static HRT_I64 HolyFarCall32(HRT_I64 a, HRT_I64 b, HRT_I64 c, HRT_I64 d) { (void
 #ifndef HOLY_UART_BASE
 #define HOLY_UART_BASE       0x10000000ULL
 #endif
+/* Console register layout. See the same knob in tests/exec/harness/oracle_out.c:
+ * the base is an address, this is the device. 0 = 16550 (virt/JH7110/icicle),
+ * 1 = SiFive UART (FU540/FU740/FE310: 32-bit TXDATA/RXDATA at +0/+4, ie at +0x10).
+ * Default 0 so every existing 16550 build is unchanged. */
+#ifndef HOLY_UART_SIFIVE
+#define HOLY_UART_SIFIVE 0
+#endif
+#if HOLY_UART_SIFIVE
+#define HOLY_SFU_TXDATA  (HOLY_UART_BASE + 0x00)  /* bit31 FULL */
+#define HOLY_SFU_RXDATA  (HOLY_UART_BASE + 0x04)  /* bit31 EMPTY, [7:0] data */
+#define HOLY_SFU_TXCTRL  (HOLY_UART_BASE + 0x08)
+#define HOLY_SFU_RXCTRL  (HOLY_UART_BASE + 0x0C)  /* bit0 rxen */
+#define HOLY_SFU_IE      (HOLY_UART_BASE + 0x10)  /* bit0 txwm, bit1 rxwm */
+#endif
 #ifndef HOLY_CLINT_BASE
 #define HOLY_CLINT_BASE      0x02000000ULL
 #endif
@@ -518,11 +532,20 @@ static int holy_crash_in_ram(HRT_I64 a) {
 }
 
 static HRT_I64 holy_crash_getc(void) {
+#if HOLY_UART_SIFIVE
+  volatile HRT_U32 *rx = (volatile HRT_U32 *)HOLY_SFU_RXDATA;
+  HRT_U32 v;
+  do {
+    v = *rx;
+  } while (v & 0x80000000u); /* RXDATA.EMPTY */
+  return (HRT_I64)(v & 0xFF);
+#else
   volatile HRT_U8 *rbr = (volatile HRT_U8 *)HOLY_UART_BASE;
   volatile HRT_U8 *lsr = (volatile HRT_U8 *)(HOLY_UART_BASE + 5);
   while (!(*lsr & 1))
     ;
   return (HRT_I64)(*rbr & 0xFF);
+#endif
 }
 
 static void holy_crash_gets(char *buf, int max) {
@@ -1253,7 +1276,16 @@ static HRT_I64 HolyRVSleep(HRT_I64 ticks) {
 #ifndef HOLY_PLIC_CLAIM_OFF
 #define HOLY_PLIC_CLAIM_OFF      0x200004
 #endif
+/* virt = 10. Board overrides come from Kconfig CONFIG_UART_IRQ via -D (sifive_u = 4,
+ * FU740 = 39, JH7110 = 32, icicle = 90) — an unguarded 10 silently enabled the wrong
+ * PLIC source on every non-virt board. */
+#ifndef HOLY_UART_IRQ
 #define HOLY_UART_IRQ   10
+#endif
+/* PLIC enable is a bitmap of 32-bit words; IRQ 32.. (FU740 UART0 = 39) lives in word 1,
+ * so `1u << irq` alone is undefined shift / wrong word. */
+#define HOLY_PLIC_ENABLE_WORD (HOLY_PLIC + HOLY_PLIC_ENABLE_OFF + (HOLY_UART_IRQ / 32) * 4)
+#define HOLY_PLIC_ENABLE_BIT  (1u << (HOLY_UART_IRQ % 32))
 static char holy_urx[4096];   /* pasted REPL lines burst well past the 16-byte 16550 FIFO */
 static int  holy_urx_head = 0, holy_urx_tail = 0;
 
@@ -1281,10 +1313,20 @@ static void HolyServiceExternal(void) {
   volatile HRT_U32 *claim = (volatile HRT_U32 *)(HOLY_PLIC + HOLY_PLIC_CLAIM_OFF);
   HRT_U32 irq = *claim;
   if (irq == HOLY_UART_IRQ) {
+#if HOLY_UART_SIFIVE
+    volatile HRT_U32 *rx = (volatile HRT_U32 *)HOLY_SFU_RXDATA;
+    for (;;) {                                                             /* drain the RX FIFO */
+      HRT_U32 rv = *rx;
+      char c;
+      if (rv & 0x80000000u)                                                /* RXDATA.EMPTY */
+        break;
+      c = (char)(rv & 0xFF);
+#else
     volatile HRT_U8 *rbr = (volatile HRT_U8 *)HOLY_UART_BASE;
     volatile HRT_U8 *lsr = (volatile HRT_U8 *)(HOLY_UART_BASE + 5);
     while (*lsr & 1) {                                                     /* drain the RX FIFO */
       char c = (char)*rbr;
+#endif
       if (c == 3 && holy_repl_recover_armed) { holy_break_req = 1; continue; }  /* ^C: break out */
       if (holy_urx_sink) { holy_urx_sink((HRT_I64)(HRT_U8)c); continue; }       /* kernel's ring */
       int nh = (holy_urx_head + 1) & 4095;
@@ -1312,9 +1354,14 @@ static void HolyServiceExternal(void) {
 static HRT_I64 HolyRVVirtioIrqs(void) { return holy_virtio_irqs; }
 
 static HRT_I64 HolyRVUartIrqInit(void) {
+#if HOLY_UART_SIFIVE
+  *(volatile HRT_U32 *)HOLY_SFU_RXCTRL = 1;                                /* rxen, watermark 0 */
+  *(volatile HRT_U32 *)HOLY_SFU_IE = 2;                                    /* ie.rxwm */
+#else
   *(volatile HRT_U8 *)(HOLY_UART_BASE + 1) = 1;                                      /* UART IER: RX-data interrupt */
+#endif
   *(volatile HRT_U32 *)(HOLY_PLIC + HOLY_UART_IRQ*4) = 1;                  /* PLIC priority[irq] = 1 */
-  *(volatile HRT_U32 *)(HOLY_PLIC + HOLY_PLIC_ENABLE_OFF) |= (1u << HOLY_UART_IRQ);
+  *(volatile HRT_U32 *)HOLY_PLIC_ENABLE_WORD |= HOLY_PLIC_ENABLE_BIT;
   *(volatile HRT_U32 *)(HOLY_PLIC + HOLY_PLIC_THRESHOLD_OFF) = 0;
   __asm__ volatile("csrs mie, %0" :: "r"((HRT_I64)(1<<11)));              /* MEIE: machine external int */
   return 0;
@@ -1324,8 +1371,12 @@ static HRT_I64 HolyRVUartIrqInit(void) {
  * active the ISR and the poller race for the same FIFO and keystrokes vanish — the more the
  * kernel printed, the more often the ISR won. */
 static HRT_I64 HolyRVUartIrqOff(void) {
+#if HOLY_UART_SIFIVE
+  *(volatile HRT_U32 *)HOLY_SFU_IE = 0;                                    /* ie.rxwm off */
+#else
   *(volatile HRT_U8 *)(HOLY_UART_BASE + 1) = 0;                            /* IER: RX int off */
-  *(volatile HRT_U32 *)(HOLY_PLIC + HOLY_PLIC_ENABLE_OFF) &= ~(1u << HOLY_UART_IRQ);
+#endif
+  *(volatile HRT_U32 *)HOLY_PLIC_ENABLE_WORD &= ~HOLY_PLIC_ENABLE_BIT;
   return 0;
 }
 static HRT_I64 HolyRVUartHasInput(void) { return holy_urx_head != holy_urx_tail; }

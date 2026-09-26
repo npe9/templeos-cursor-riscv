@@ -35,7 +35,7 @@ COMPILER_BIN = holyc-riscv
 # Test programs
 TEST_SOURCES = $(wildcard tests/*.hc)
 
-.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop asm-gnu-diff compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration a3-flip-check repl-smoke dbg-smoke hwdbg-smoke gdb-uart-smoke trap-smoke trap-frame-smoke kernel-trapframe-smoke dbg-regs-smoke asm-repl-smoke asm-repl-ui-smoke kernel-doctext-smoke repl-blob repl-regression repl-holyc repl-holyc-smoke repl-holyc-regression hc-repl hc-repl-full hc-repl-smoke path-namespace-smoke term-probe-pty repl-uart-echo-pty repl-uart-xon-pty zmodem-smoke trzsz-smoke dump-changes-smoke baremetal baremetal-plat baremetal-smoke repl-payload bootloader bootloader-repl bootloader-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke rv32-uart-smoke kernel-selfboot-smoke kernel-home-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtio-pci-irq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-vt-smoke kernel-vt-demo kernel-vt-repl kernel-vt-holyc mux-smoke kernel-cdc-smoke kernel-demo-netofdots-smoke kernel-demo-blot-smoke kernel-span-smoke newline-semi-smoke asm-catalog-check blob-imports-check portability-seam-check kernel-psalmody-smoke kernel-ode-smoke kernel-win-smoke kernel-win-zorder-smoke kernel-game-input-smoke kernel-game-mouse-smoke kernel-game-scanchar-smoke kernel-game-lines-smoke kernel-win-interactive kernel-win-serial-smoke kernel-win-run kernel-win-rebuild kernel-tos tos kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-sifive-gem-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-sifive-e-full kernel-sifive-e-full-smoke kernel-smp-smoke kernel-exepubs-smoke kernel-repl-exepubs-smoke repl-cmp repl-cmp-smoke kernel-phase3-smoke kernel-thin-loader-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
+.PHONY: all clean test fmt fmt-check fmt-test asm-stress asm-prop asm-gnu-diff compiler-stress compiler-prop stress validator help cicl-riscv ci compliance compliance-exec exec-oracle lint-sh syntax-sh qemu-integration a3-flip-check repl-smoke dbg-smoke hwdbg-smoke gdb-uart-smoke trap-smoke trap-frame-smoke kernel-trapframe-smoke dbg-regs-smoke asm-repl-smoke asm-repl-ui-smoke kernel-doctext-smoke repl-blob repl-regression repl-holyc repl-holyc-smoke repl-holyc-regression hc-repl hc-repl-full hc-repl-smoke path-namespace-smoke term-probe-pty repl-uart-echo-pty repl-uart-xon-pty zmodem-smoke trzsz-smoke dump-changes-smoke baremetal baremetal-plat baremetal-smoke repl-payload bootloader bootloader-repl bootloader-smoke firmware bios firmware-smoke bios-smoke kernel-print-smoke kernel-puts-smoke kernel-boot-smoke kernel-calc-smoke kernel-sched-smoke kernel-timer-smoke kernel-preempt-smoke kernel-crit-smoke kernel-sleep-smoke kernel-uartirq-smoke kernel-monitor-smoke kernel-blk-smoke kernel-fs-smoke kernel-shell-smoke kernel-ctask-smoke kernel-heap-smoke kernel-spawn-smoke kernel-ctask-preempt-smoke kernel-ctask-sleep-smoke rv32-uart-smoke kernel-selfboot-smoke kernel-home-smoke kernel-redsea-smoke kernel-strprint-smoke kernel-dir-smoke kernel-fsshell-smoke kernel-load-smoke kernel-virtio-smoke kernel-virtiofs-smoke kernel-virtioirq-smoke kernel-virtio-pci-irq-smoke kernel-virtioasync-smoke kernel-virtiopersist-smoke kernel-virtioexec-smoke kernel-virtioshell-smoke kernel-virtio-net-smoke kernel-virtio-input-smoke kernel-fb-smoke kernel-gr-smoke kernel-vt-smoke kernel-vt-demo kernel-vt-repl kernel-vt-holyc mux-smoke kernel-cdc-smoke kernel-demo-netofdots-smoke kernel-demo-blot-smoke kernel-span-smoke newline-semi-smoke asm-catalog-check blob-imports-check portability-seam-check kernel-psalmody-smoke kernel-ode-smoke kernel-win-smoke kernel-win-zorder-smoke kernel-game-input-smoke kernel-game-mouse-smoke kernel-game-scanchar-smoke kernel-game-lines-smoke kernel-win-interactive kernel-win-serial-smoke kernel-win-run kernel-win-rebuild kernel-tos tos kernel-plat-smoke kernel-plat-sifive-u-smoke kernel-plat-hifive-unmatched-smoke kernel-plat-hifive-unmatched-controls kernel-sifive-gem-smoke kernel-plat-spike-smoke kernel-plat-matrix kernel-sifive-e-full kernel-sifive-e-full-smoke kernel-smp-smoke kernel-exepubs-smoke kernel-repl-exepubs-smoke repl-cmp repl-cmp-smoke kernel-phase3-smoke kernel-thin-loader-smoke coverage templeos-riscv templeos-smoke menuconfig-rv kernels list-kernels
 
 all: $(COMPILER_BIN) cicl-riscv
 
@@ -1074,6 +1074,18 @@ kernel-plat-milkv-mars-smoke:
 	@chmod +x tests/scripts/run_kernel_plat_smoke.sh
 	@tests/scripts/run_kernel_plat_smoke.sh milkv_mars
 
+# HiFive Unmatched: the REAL board plat.bin at its real 0x80200000 on -M sifive_u
+# (FU540 shares the FU740 UART/CLINT/PLIC map). Requires both needles — HolyC's
+# plat-smoke: PASS and the C harness's ORACLE line through the SiFive UART.
+kernel-plat-hifive-unmatched-smoke:
+	@chmod +x tests/scripts/run_kernel_plat_smoke.sh
+	@tests/scripts/run_kernel_plat_smoke.sh hifive_unmatched
+
+# The same gate, broken four ways on purpose. Fails if any control PASSES.
+kernel-plat-hifive-unmatched-controls:
+	@chmod +x tests/scripts/hifive_unmatched_negative_controls.sh
+	@tests/scripts/hifive_unmatched_negative_controls.sh
+
 # FE310 dual artifact: slim plat.elf stays matrix path; fuller Kernel_FE310.PRJ
 # is XIP Kernel + DTIM bootloader (16 KiB RAM — no external DRAM). Not in qemu-integration.
 kernel-sifive-e-full:
@@ -1304,6 +1316,8 @@ help:
 	@echo "  kernel-virtio-scsi-smoke - HolyC VirtioScsi INQUIRY+READ smoke"
 	@echo "  kernel-virtio-snd-smoke - HolyC VirtioSnd PCM TX smoke (virtio-sound + audiodev none)"
 	@echo "  kernel-plat-sifive-u-smoke - HolyC plat smoke on -M sifive_u (PLATFORM.md)"
+	@echo "  kernel-plat-hifive-unmatched-smoke - FU740 board image @ 0x80200000 on -M sifive_u"
+	@echo "  kernel-plat-hifive-unmatched-controls - the same gate broken 4 ways (must fail)"
 	@echo "  kernel-sifive-gem-smoke - HolyC Cadence GEM TX+RX loopback on -M sifive_u"
 	@echo "  kernel-plat-spike-smoke - HolyC plat smoke on -M spike"
 	@echo "  kernel-plat-matrix - every known -M board: must OK (skips not allowed)"

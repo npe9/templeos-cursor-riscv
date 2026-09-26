@@ -4,9 +4,24 @@
 .section .text.init
 .global _start
 
+/* Which hart runs the image. 0 on every board where hart 0 is a full application
+ * core. NOT the FU740/FU540: there hart 0 is the S7/E51 management core, which is
+ * rv64imac — no F, no D — while harts 1..4 are U74/U54 (rv64gc). This image is built
+ * -march=rv64imafdc -mabi=lp64d, so on those SoCs it must run on hart 1, and a
+ * `bnez t0, halt` gate would pin it to precisely the hart that cannot execute it.
+ * Verified under -M sifive_u: cpu 0 misa=0x8000000000101105 (D clear),
+ * cpu 1 misa=0x800000000014112d (D set). See tests/exec/harness/hello_unmatched.S. */
+#ifndef BOOT_HARTID
+#define BOOT_HARTID 0
+#endif
 _start:
     csrr t0, mhartid
+#if BOOT_HARTID == 0
     bnez t0, halt
+#else
+    li t1, BOOT_HARTID
+    bne t0, t1, halt
+#endif
     # Install a trap vector FIRST. Without one, mtvec is 0, so any fault jumps to
     # address 0, faults again fetching there, and loops forever — a silent hang with
     # no output, indistinguishable from an infinite loop.
