@@ -150,7 +150,26 @@ GrPrimatives GrComposites ScrnCast`, then the Sprite chain. `GrMath` and `GrPale
 (`c405e5ce`). For each file: run `tools/check_prj_collisions.py` first, add it, delete the matching
 substitute from `Kernel/RVGr.HC`, re-run the scene hashes.
 
-`GrAsm.HC` is the one to expect trouble from — the name says x86.
+**`Adam/Gr/GrAsm.HC` must NOT be added on the strength of a clean compile.** It is 410 lines
+containing 121 x86 mnemonics in one `asm{}` block (`PUSH RBP`, `MOV RBP,RSP`, `LODSQ`,
+`SF_ARG2[RBP]`, `@@05:` labels) — VGA plane writing. It compiles with exit 0 and no diagnostic,
+adds **40 bytes** to the blob, and defines **no symbols**: `_GR_UPDATE_LINE64` is absent from
+`HOLYC_MAP`. `host/parser.c:5229` soft-skips an `asm{}` block it cannot assemble, deliberately, so
+that the port can compile stock files full of x86 (`CallExtStr`, `PCIBIOS`) — and it counts them in
+`cc->asm_blocks_skipped`.
+
+**A plain `Kernel_RV.PRJ` build already drops 17 such blocks.** That count was only ever printed in
+`!quiet`, and every script runs quiet, so nobody has seen it. `HOLYC_ASM_SKIPS=1` now prints it to
+stderr:
+
+```sh
+HOLYC_ASM_SKIPS=1 ./holyc-riscv case.hc -o /dev/null
+note: 17 x86 asm block(s) skipped — that code is NOT in the image
+```
+
+Use it whenever a stock file "compiles clean": for anything containing assembly, a clean compile
+cannot distinguish *ported* from *silently empty*. `GrAsm` needs a RISC-V rewrite, and the pixel path
+it serves (`GrUpdateVGAGraphics`) belongs to phase 6 anyway.
 
 ## Phase 5 — the five stragglers
 

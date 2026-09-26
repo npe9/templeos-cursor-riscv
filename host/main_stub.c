@@ -277,6 +277,19 @@ int main(int argc, char **argv) {
   if (quiet && getenv("HOLYC_PRINT_SIZE"))
     printf("Code size: %lld bytes\n", cc->code_size);
 
+  // A skipped asm{} block means code that is NOT in the image, and a compile that reports nothing
+  // cannot be told apart from a working port. Adam/Gr/GrAsm.HC is 410 lines and 121 x86 mnemonics:
+  // including it "compiles clean", adds 40 bytes, and defines no symbols — _GR_UPDATE_LINE64 is
+  // absent from HOLYC_MAP. The count already existed here but only in !quiet, and every script runs
+  // quiet, so it was never seen. On stderr because the comment above wants captured STDOUT shapes
+  // left alone. Silence about dropped code is the port's central risk: compiling is not working.
+  // Opt-in, like HOLYC_PRINT_SIZE above, because the baseline is NOT zero: a plain
+  // Kernel_RV.PRJ build already drops 17 (CallExtStr, PCIBIOS and friends), so an
+  // unconditional line would appear in every one of the ~100 smokes and become wallpaper.
+  if (quiet && cc->asm_blocks_skipped && getenv("HOLYC_ASM_SKIPS"))
+    fprintf(stderr, "note: %lld x86 asm block(s) skipped — that code is NOT in the image\n",
+            (long long)cc->asm_blocks_skipped);
+
   if (!quiet) {
     printf("✓ Compiled successfully (AOT mode)\n");
     if (cc->asm_blocks_skipped)
