@@ -56,6 +56,11 @@ reported as a kernel bug first:
 | L1-HANG | 5 | 2% |
 | **total** | **204** | |
 
+Not re-run since `Demo/InFile/InSetIP.HC` went L0-FAIL → L1-OK (the `InSetMs` lift, asserted by
+`tests/exec/cases/e_kernel_insetms.hc`). That is one row, so L1-OK is 159 and L0-FAIL 36 **if**
+nothing else moved — which was not measured, so the table above is left at its last full run rather
+than arithmetically nudged. Regenerate with the command at the top of this file.
+
 ## By directory
 
 | directory | runs | of |
@@ -154,13 +159,17 @@ WARNING — declarations only, so adding this defines NOTHING:
 
 ### Candidates screened for real bodies AND resolvable dependencies
 
-| file | cost of adding | unblocks |
-|---|---|---|
-| `Adam/Opt/Boot/BootRAM.HC` | nothing missing | `Demo/OnceDemo.HC` |
-| `Adam/InFile.HC` | nothing missing | `Demo/InFile/InSetIP.HC` |
-| `Adam/Opt/Utils/StrUtils.HC` | one phantom, `DocInsDoc`, reached only by its own `Words()` | `Sort`, `LongLines` |
-| `Adam/ABlkDev/ADskA.HC` | `DocD` is in `Adam/DolDoc/DocPutS.HC`, not in the closure | `Touch` (2 demos) |
-| `Adam/Gr/GrDC.HC` | `GrBitMap4ToBitMap8` has **no body anywhere** — only an `extern` in `GrExt.HC` | `DCScrnCapture`, StadiumGen |
+**These five rows were screened by READING, and four of them were wrong.** The screens were then
+actually run; `docs/DEMO_100.md` §2 records what each one measured and why. Short version, so nobody
+trusts this table again:
+
+| file | claimed | measured | outcome |
+|---|---|---|---|
+| `Adam/Opt/Boot/BootRAM.HC` | nothing missing | does not compile (`KERNEL_BIN_C` undefined at line 39; `SYS_RAM_REBOOT*` are labels in the x86 `KStart64.HC`), and `OnceDemo`'s `Once()` is an unresolved import either way | left out |
+| `Adam/InFile.HC` | nothing missing | does not compile — `InView()` reads `View`, which has no body in the tree | `InSetMs` lifted to `Adam/InFile_RV.HC`; `Demo/InFile/InSetIP.HC` now **L1-OK** |
+| `Adam/Opt/Utils/StrUtils.HC` | one phantom, `DocInsDoc` | correct; added. `LongLines` works, `Sort` traps on a compiler `sizeof(<class> *)` bug | added |
+| `Adam/ABlkDev/ADskA.HC` | `DocD` not in the closure | **collides** (exit 1) on `CopyTree`/`DelTree`/`Move` with `Adam/ABlkDev/FileMgr_RV.HC`; `Touch` is 1 demo, not 2 | `Touch`/`TouchFile` lifted into `FileMgr_RV.HC` |
+| `Adam/Gr/GrDC.HC` | `GrBitMap4ToBitMap8` has no body anywhere | it does, `Adam/Gr/GrBitMap.HC:590`. The real blocker is **seven collisions** with the port's 32-bpp `Kernel/RVGr.HC` (`DCAlias DCCopy DCExtentsInit DCLoad DCSave GRRead GRWrite`) | left out |
 
 `DocInsDoc` is worth one note as a worked example of when to stop chasing a dependency chain. It
 lives in `Adam/DolDoc/DocFile.HC` (6 collisions, cannot be added whole) and needs
@@ -209,12 +218,12 @@ A missing symbol is one of three different problems, and the split is the plan:
 | `Demo/AcctExample/HomeSys.HC` | `Adam/Win.HC`, `tos/HomeKeyPlugIns.HC`, `tos/HomeSys.HC` |
 | `Demo/AcctExample/Once.HC` | `Adam/ARegistry.HC`, `tos/Once.HC` |
 | `Demo/AcctExample/TOS/TOSMisc.HC` | `tos/Apps/Psalmody/JukePuppet.HC` |
-| `Demo/AcctExample/TOS/TOSToHtml.HC` | `Adam/ABlkDev/ADskA.HC` |
+| `Demo/AcctExample/TOS/TOSToHtml.HC` | `Adam/ABlkDev/ADskA.HC` → `Touch` lifted into `Adam/ABlkDev/FileMgr_RV.HC` (asserted by `tests/exec/cases/e_kernel_touch.hc`); that error is gone and one more, `BLOG_BASE`, is now the blocker |
 | `Demo/Games/Stadium/StadiumGen.HC` | `Adam/Gr/GrDC.HC` |
 | `Demo/Graphics/Elephant.HC` | `Adam/ABlkDev/ChkDsk.HC`, `Adam/ABlkDev/DskChk.HC`, `Adam/DolDoc/DocEd.HC`, `Adam/Gr/SpriteSideBar.HC`, `tos/Apps/ToTheFront/ToTheFront.HC` |
 | `Demo/Graphics/MathAudioDemo.HC` | `Adam/ASnd.HC`, `Adam/Snd/SndMath.HC` |
 | `Demo/Graphics/Transform.HC` | `Adam/ABlkDev/ChkDsk.HC`, `Adam/ABlkDev/DskChk.HC`, `Adam/DolDoc/DocEd.HC`, `Adam/Gr/SpriteSideBar.HC`, `tos/Apps/ToTheFront/ToTheFront.HC` |
-| `Demo/InFile/InSetIP.HC` | `Adam/InFile.HC` |
+| ~~`Demo/InFile/InSetIP.HC`~~ **done — L1-OK** | `Adam/InFile.HC` → lifted to `Adam/InFile_RV.HC`; asserted by `tests/exec/cases/e_kernel_insetms.hc` |
 | `Demo/OnceDemo.HC` | `Adam/Opt/Boot/BootRAM.HC` |
 | `Demo/Spy.HC` | `Adam/DolDoc/DocDblBuf.HC` |
 | `Demo/WebLogDemo/WebLogRep.HC` | `Adam/ADbg.HC`, `Adam/DolDoc/DocRecalcLib.HC`, `Adam/Training.HC`, `tos/Apps/Budget/BgtMain.HC`, `tos/Apps/ToTheFront/ToTheFront.HC` |

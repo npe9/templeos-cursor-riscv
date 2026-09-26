@@ -487,4 +487,72 @@ public U8 *PopUpPickDir(U8 *dir = NULL)
   Print("PopUpPickDir soft accept: %s\n", dir);
   return StrNew(dir);
 }
+// Touch() and TouchFile(), lifted VERBATIM out of Adam/ABlkDev/ADskA.HC.
+//
+// `Demo/AcctExample/TOS/TOSToHtml.HC` fails with exactly ONE error —
+//   "Argument 3 omitted, but 'Touch' has no declaration here to take a default from"
+// which docs/DEMO_100.md §1 identifies as a callee with no declaration in scope, not a compiler
+// bug. The obvious fix is `#include "/Adam/ABlkDev/ADskA.HC"` in Kernel_RV.PRJ. That is NOT safe,
+// and tools/check_prj_collisions.py says why — exit 1, three collisions, all against THIS file:
+//   CopyTree   DelTree   Move
+// A second body for one name wins silently, so adding the unit whole would replace this port's own
+// three with ADskA's x86-era versions. Same treatment as Kernel/RVDoc.HC's five DolDoc lifts:
+// take the two functions, leave the unit out.
+//
+// Measured with tools/blob_imports.py: this lift introduces ZERO new unresolved names. Every callee
+// is already in the image — Let2Drv/FileFind/DirNew/FilesFind/DirTreeDel (Kernel/BlkDev),
+// ScanFlags/StrPrintFlags/StrFirstRem/StrLastRem (Kernel/StrB), Define (KDefine) and Now (KDate).
+// Placed in this file because FileMgr_RV.HC is already the port's ABlkDev unit and is included
+// after BlkDev/MakeBlkDev, so all of those are declared by the time these bodies are compiled.
+//
+// Note for whoever reads this next: `Touch` scans with FilesFind("+f+F"), which does NOT set
+// FUF_RECURSE. That matters — FilesFind with FUF_RECURSE traps in DirNameAbs+0x48 (mcause=5,
+// mtval=0x70) in this image, for any mask, so the recursive file utilities in ADskA would not have
+// run even if the unit had been addable.
+U0 TouchFile(U8 *filename,U8 *attr,CDate cdt=I64_MIN)
+{
+  CDrv *dv=Let2Drv(*filename);
+  CDirEntry de;
+  U8 *cur_dir=StrNew(filename),buf[STR_LEN];
+  if (FileFind(filename,&de,FUF_JUST_FILES)) {
+    Free(de.full_name);
+    if (!StrCmp(attr,"+?"))
+      "%-48ts %s\n",filename,StrPrintFlags(buf,Define("ST_FILE_ATTRS"),de.attr);
+    else {
+      StrFirstRem(cur_dir,":");
+      StrLastRem(cur_dir,"/");
+      if (!*cur_dir)
+	StrCpy(cur_dir,"/");
+      ScanFlags(&de.attr,Define("ST_FILE_ATTRS"),attr);
+      if (cdt==I64_MIN)
+	de.datetime=Now;
+      else
+	de.datetime=cdt;
+      DirNew(dv,cur_dir,&de,FALSE);
+    }
+  } else
+    PrintErr("File not found: \"%s\".\n",filename);
+  Free(cur_dir);
+}
+
+public U0 Touch(U8 *files_find_mask="*",U8 *attr="+?",
+	U8 *fu_flags=NULL,CDate cdt=I64_MIN)
+{/*Touch file attributes and DateTime.
+Default lists attributes.
+attr: "+?" =show current
+"+T" =resident
+To Set DateL:
+Touch(filename,"",,datetime);
+*/
+  I64 fuf_flags=0;
+  CDirEntry *tmpde,*tmpde1;
+  ScanFlags(&fuf_flags,Define("ST_FILE_UTIL_FLAGS"),"+f+F");
+  ScanFlags(&fuf_flags,Define("ST_FILE_UTIL_FLAGS"),fu_flags);
+  tmpde=tmpde1=FilesFind(files_find_mask,fuf_flags);
+  while (tmpde) {
+    TouchFile(tmpde->full_name,attr,cdt);
+    tmpde=tmpde->next;
+  }
+  DirTreeDel(tmpde1);
+}
 #endif

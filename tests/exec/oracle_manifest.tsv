@@ -101,3 +101,4 @@ tests/exec/cases/e_demo_asm_mul.hc	00000000000000ff
 tests/exec/cases/e_asm_la.hc	0000000000000003
 tests/exec/cases/e_kernel_strutils_longlines.hc	0000000000000700
 tests/exec/cases/e_kernel_insetms.hc	000000000000003f
+tests/exec/cases/e_kernel_touch.hc	000000000000000f

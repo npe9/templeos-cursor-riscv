@@ -105,19 +105,53 @@ Two screens, both necessary, and `tools/check_prj_collisions.py` now runs both:
 2. **Bodies.** A candidate that is only `extern` declarations defines nothing and, because the PRJ
    compiles with `OPTf_EXTERNS_TO_IMPORTS`, turns every name into a stub returning 0.
 
-Already screened and clear:
+### What the screening table said, and what running the screens found
 
-| file | cost | unblocks |
-|---|---|---|
-| `Adam/Opt/Boot/BootRAM.HC` | nothing missing | `OnceDemo` |
-| `Adam/InFile.HC` | nothing missing | `InFile/InSetIP` |
-| `Adam/Opt/Utils/StrUtils.HC` | 1 phantom (`DocInsDoc`, only its own `Words()` reaches it) | `Sort`, `LongLines` |
-| `Adam/ABlkDev/ADskA.HC` | `DocD` not in the closure | `Touch` (2 demos) |
-| `Adam/Gr/GrDC.HC` | `GrBitMap4ToBitMap8` has **no body anywhere** | `DCScrnCapture`, `StadiumGen` |
+The table below is the ORIGINAL claim, kept because the corrections are the interesting part: **four
+of the five rows were wrong, and the two screens plus one compile found it in under an hour.** The
+lesson is the same as §0's — a candidate list assembled by reading is not a screened list.
+
+| file | claimed cost | what the screens measured | done? |
+|---|---|---|---|
+| `Adam/Opt/Boot/BootRAM.HC` | nothing missing | **does not compile.** `BootRAM.HC:39` is `filename="::/" KERNEL_BIN_C;` and `KERNEL_BIN_C` is defined only in `Adam/Opt/Boot/BootDVDIns.HC`, which is not in the closure. `SYS_RAM_REBOOT`/`SYS_RAM_REBOOT_END` are labels in `Kernel/KStart64.HC`, an x86 file `KStartRV` replaces, and `HiCall`/`HiMemCpy` aim at `_extern` labels in a dropped x86 asm block. Separately: `OnceDemo`'s payload is two `Once()` calls, and `Once` lives only in `Adam/ARegistry.HC` (collides) — measured as an unresolved import, so the demo would score L1-OK with its whole point stubbed to 0, §0's first trap row exactly | **no** |
+| `Adam/InFile.HC` | nothing missing | **does not compile.** `InFile.HC:110` is `Bool res=View;` and `View` has no body anywhere in the tree — the only occurrence is `extern Bool View();` in `Adam/AExts.HC`. `InSetMs` lifted into `Adam/InFile_RV.HC` instead | **yes, by lift** |
+| `Adam/Opt/Utils/StrUtils.HC` | 1 phantom (`DocInsDoc`) | correct — one phantom, `DocInsDoc`, `U0`, reached only by `Words()`. Added. But only `LongLines` works: `Sort` traps, because `sizeof(CDocEntry *)` is 208 (see below) | **added; `LongLines` proved** |
+| `Adam/ABlkDev/ADskA.HC` | `DocD` not in the closure | **collides**, `check_prj_collisions.py` exit 1: `CopyTree`, `DelTree`, `Move` all have bodies in `Adam/ABlkDev/FileMgr_RV.HC`. And `Touch` is 1 demo, not 2 — `TOSToHtml.HC`; `TOSDistro.HC`'s two calls sit behind 15 other errors. `Touch`/`TouchFile` lifted into `FileMgr_RV.HC` | **yes, by lift** |
+| `Adam/Gr/GrDC.HC` | `GrBitMap4ToBitMap8` has no body anywhere | **collides**, exit 1, on seven names — `DCAlias DCCopy DCExtentsInit DCLoad DCSave GRRead GRWrite` — every one of them this port's own 32-bpp `Kernel/RVGr.HC`. Adding it whole would silently replace the port's device contexts with stock 4-bpp x86 ones. (`GrBitMap4ToBitMap8` does have a body, at `Adam/Gr/GrBitMap.HC:590`; it is not the blocker.) Lifting `DCScrnCapture` alone is pointless: its job is 4-bpp→8-bpp conversion of a planar framebuffer this port does not have, and `StadiumGen`'s whole payload is `GRWrite` of that capture | **no — out of scope until the DC layer is reconciled** |
+
+Two findings from doing this that are worth more than the tier they came from:
+
+- **`sizeof(<class> *)` returns `sizeof(<class>)`.** Measured: `sizeof(U8 *)`==8 but
+  `sizeof(CDocEntry *)`==208. `host/parser.c`'s `KW_SIZEOF` arm calls `ParseType`, which records the
+  pointer depth in `cc->last_ptr_depth` and returns `RT_I64`, but the arm then prefers
+  `type_class->size` and never looks at the depth. That is why `Sort` traps —
+  `QSort(a,cnt/entry_lines,entry_lines*sizeof(CDocEntry *),&DEPtrCompare)` passes width 208, `QSort`
+  takes its `width!=8` branch, and `DEPtrCompare+0x84` dereferences NULL (`mcause=5`,
+  `mtval=0x10`). It is **tier 7, not tier 1**: `Compiler/RVExePubs.HC` has four live
+  `m->size = sizeof(C… *)` sites, so the fix changes member descriptors the REPL hands out and needs
+  its own gate. Repro is a five-line `sizeof` print.
+- **`FilesFind(mask, FUF_RECURSE)` traps in `DirNameAbs+0x48`** (`mcause=5`, `mtval=0x70`), for any
+  mask, with no Adam code involved. Bisected: `"+f"` and `"+f+F"` return the file, `"+r"` alone
+  traps. That silently breaks every recursive file utility in the tree — `LongLines`, `Words`, `SU`,
+  `DelTree`, `JukeSongsPuppet` — and it is the reason `LongLines()` itself cannot be asserted while
+  `LongLinesFile()` can.
 
 Procedure per file: collisions → bodies → add → compile → `tools/blob_imports.py` to see exactly
 which names the addition left unresolved → decide whether each phantom is acceptable and record why
 → the 8-target layout gate → a manifest row that checks what the demo computes.
+
+### Screened clean but deliberately NOT added
+
+`tos/Apps/Psalmody/JukePuppet.HC` (for `JukeSongsPuppet`, the ONE error in
+`Demo/AcctExample/TOS/TOSMisc.HC`) passes both screens and introduces **zero** new unresolved names.
+It is still left out, because nothing about it can be asserted here and adding it would move a
+survey row and nothing else: `JukeSongsPuppet`'s first two statements are
+`User("JukeBox(0x%X);\n",dirname)` — spawning a task that needs the runtime compiler — and
+`FilesFind("*",FUF_RECURSE|…)`, which traps as above. Under §0's rule that is not progress.
+
+`PopUpRangeI64` is likewise not lifted: its only caller, `Demo/Games/TreeCheckers.HC`, has six other
+errors (`Expected constant array size`, `BORDER_Y`, `CIRCLE_RAD`, `UNITS_NUM`), so the lift moves
+nothing measurable.
 
 ## 3. Tier 2 — `DU*` data in an `asm{}` block
 
