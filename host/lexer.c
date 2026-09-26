@@ -606,7 +606,7 @@ static void LexEmitDocBin(Compiler *cc, int want_size) {
     if (lex->token_str) free(lex->token_str);
     lex->token_str = strdup("");
     lex->token_str_len = 0;
-    cc->asm_blocks_skipped++;
+    HolyAsmSkipNote(cc, 0, "$IB missing-bin asm", NULL);
   }
 }
 
@@ -1530,6 +1530,29 @@ static bool NewlineEndsStatement(Compiler *cc, int prev, bool after_ctl) {
 }
 // Read `text` as the next tokens, holding the current token back until the text is exhausted
 // (default arguments are expressions evaluated at each call site).
+/* The ONE place a dropped x86 construct is recorded. Four call sites feed it — two bare-opcode
+ * paths and two asm{} paths — so `HOLYC_ASM_SKIPS=1` can print a worklist rather than a number.
+ * A dropped construct is code that is NOT in the image, and the point of naming each one is that
+ * the fix is per-OPERATION: express it portably in HolyC, or add a holyc_target op hook so every
+ * architecture supplies it. See docs/ASM_PORTABILITY.md. */
+void HolyAsmSkipNote(Compiler *cc, I64 line, const char *what, const char *label) {
+  if (!cc) return;
+  cc->asm_blocks_skipped++;
+#ifndef BARE_METAL
+  HolyAsmSkip *s = calloc(1, sizeof(HolyAsmSkip));
+  if (!s) return;
+  s->file  = cc->lex.filename ? strdup(cc->lex.filename) : NULL;
+  s->line  = line > 0 ? line : cc->lex.line;
+  s->what  = what ? strdup(what) : NULL;
+  s->label = label ? strdup(label) : NULL;
+  if (cc->asm_skips_tail) cc->asm_skips_tail->next = s;
+  else cc->asm_skips = s;
+  cc->asm_skips_tail = s;
+#else
+  (void)what; (void)label;
+#endif
+}
+
 void LexPushStringPending(Compiler *cc, const char *text) {
   Lexer *lex = &cc->lex;
   IncludeFile *inc = calloc(1, sizeof(IncludeFile));

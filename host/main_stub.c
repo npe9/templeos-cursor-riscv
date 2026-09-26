@@ -286,9 +286,15 @@ int main(int argc, char **argv) {
   // Opt-in, like HOLYC_PRINT_SIZE above, because the baseline is NOT zero: a plain
   // Kernel_RV.PRJ build already drops 17 (CallExtStr, PCIBIOS and friends), so an
   // unconditional line would appear in every one of the ~100 smokes and become wallpaper.
-  if (quiet && cc->asm_blocks_skipped && getenv("HOLYC_ASM_SKIPS"))
-    fprintf(stderr, "note: %lld x86 asm block(s) skipped — that code is NOT in the image\n",
+  if (cc->asm_blocks_skipped && getenv("HOLYC_ASM_SKIPS")) {
+    // A worklist, not a number: each line is one operation that needs expressing portably or
+    // behind a holyc_target op hook. See docs/ASM_PORTABILITY.md.
+    fprintf(stderr, "note: %lld x86 construct(s) dropped — that code is NOT in the image\n",
             (long long)cc->asm_blocks_skipped);
+    for (HolyAsmSkip *s = cc->asm_skips; s; s = s->next)
+      fprintf(stderr, "  %s:%lld: %s%s%s\n", s->file ? s->file : "?", (long long)s->line,
+              s->what ? s->what : "?", s->label ? " " : "", s->label ? s->label : "");
+  }
 
   if (!quiet) {
     printf("✓ Compiled successfully (AOT mode)\n");

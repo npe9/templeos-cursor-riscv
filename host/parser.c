@@ -4865,7 +4865,7 @@ bool ParseStatement(Compiler *cc) {
                !strcmp(cc->lex.token_str, "MOV_RAX_CR2") || !strcmp(cc->lex.token_str, "MOV_CR2_RAX") ||
                !strcmp(cc->lex.token_str, "MOV_RAX_CR3") || !strcmp(cc->lex.token_str, "MOV_CR3_RAX") ||
                !strcmp(cc->lex.token_str, "WBINVD") || !strcmp(cc->lex.token_str, "INVD")) {
-        cc->asm_blocks_skipped++;
+        HolyAsmSkipNote(cc, 0, cc->lex.token_str, NULL);
         LexNext(cc);
         if (cc->lex.token == ';') LexNext(cc);
         return true;
@@ -4884,8 +4884,10 @@ bool ParseStatement(Compiler *cc) {
           LexPopRestore(cc);
           if (operand) {
             int start_line = cc->lex.line;
+            char *mnem = strdup(cc->lex.token_str);
             while (cc->lex.token != TK_EOF && cc->lex.line == start_line) LexNext(cc);
-            cc->asm_blocks_skipped++;
+            HolyAsmSkipNote(cc, start_line, mnem, NULL);
+            free(mnem);
             return true;
           }
         }
@@ -5183,6 +5185,8 @@ bool ParseStatement(Compiler *cc) {
     
     // Asm block (following PrsStmt.HC:949-955)
     if (cc->lex.token == KW_ASM) {
+      I64 asm_start_line = cc->lex.line;   // the construct STARTS here; after the skip loop the
+                                           // lexer sits on the closing brace
       LexNext(cc);
       
       // Expect opening brace
@@ -5212,11 +5216,19 @@ bool ParseStatement(Compiler *cc) {
         if (asm_saved_tail) { asm_saved_tail->next = NULL; cc->ic_tail = asm_saved_tail; }
         else { cc->ic_head = cc->ic_tail = NULL; }
         int brace_count = 1;
+        char *first_label = NULL;   // `_GR_UPDATE_LINE64::` — the name the block would have exported
+        char *prev_ident = NULL;
         while (brace_count > 0 && cc->lex.token != TK_EOF) {
           if (cc->lex.token == '{') brace_count++;
           if (cc->lex.token == '}') brace_count--;
+          if (!first_label && cc->lex.token == TK_DBL_COLON && prev_ident) first_label = strdup(prev_ident);
+          if (cc->lex.token == TK_IDENT && cc->lex.token_str) {
+            free(prev_ident);
+            prev_ident = strdup(cc->lex.token_str);
+          }
           if (brace_count > 0) LexNext(cc);
         }
+        free(prev_ident);
 #ifdef BARE_METAL
         if (want_inline) {
           // TryAssembleRiscV may already have set a specific hint (e.g. sub+imm → addi).
@@ -5226,7 +5238,8 @@ bool ParseStatement(Compiler *cc) {
           return false;
         }
 #endif
-        cc->asm_blocks_skipped++;
+        HolyAsmSkipNote(cc, asm_start_line, "asm{} block", first_label);
+        free(first_label);
       }
       // Skip closing brace
       if (cc->lex.token == '}') {

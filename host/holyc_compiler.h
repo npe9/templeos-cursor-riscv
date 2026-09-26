@@ -497,6 +497,19 @@ typedef struct AOTFnICChunk {
 
 // Compiler flags (match original CCF_* from TempleOS)
 #define CCF_RAX         0x01  // Result in RAX/a0, skip auto-deref
+/* A construct the backend DROPPED instead of translating: an x86 asm{} block, or a bare x86
+ * opcode statement. RECORDED rather than merely counted, because a count cannot be worked through
+ * and a dropped block is code that is NOT in the image — Adam/Gr/GrAsm.HC "compiles clean", adds
+ * 40 bytes and defines no symbols. One registry, four call sites, so enumerating the work does not
+ * depend on which site did the dropping. See docs/ASM_PORTABILITY.md. */
+typedef struct HolyAsmSkip {
+  char  *file;                          /* source file, as the lexer knew it */
+  I64    line;                          /* line of the dropped construct */
+  char  *what;                          /* "asm{} block", "MOV", "CLD", … */
+  char  *label;                         /* first `Name::` inside an asm{} block, else NULL */
+  struct HolyAsmSkip *next;
+} HolyAsmSkip;
+
 #define CCF_ARRAY       0x02  // Result is array address
 #define CCF_PAREN       0x04  // Inside parentheses
 
@@ -611,7 +624,9 @@ typedef struct {
   struct CHashGlblVar *fs_var;         // Fs: pointer to the task block (__task); Fs->except_ch
   struct CMemberLst *last_member;      // member just accessed by . or -> (typing for [ ] and *)
   U8 call_ret_type;                    // raw_type of the function just called (F64 → F64 result)
-  I64 asm_blocks_skipped;              // x86 asm {} blocks parsed and dropped
+  I64 asm_blocks_skipped;              // count of dropped x86 constructs (see asm_skips)
+  struct HolyAsmSkip *asm_skips;       // ONE registry of every dropped construct, in order
+  struct HolyAsmSkip *asm_skips_tail;
   I64 asm_funcs_translated;            // x86 asm functions translated to RISC-V
   U8 class_base_type;                  // `I64 class X {…}`: the class is that scalar; members overlay it
   int in_class_body;                   // `$$` lexes as TK_DOLLAR (current offset) while > 0
@@ -654,6 +669,12 @@ typedef struct StringLiteral {
 // Lexer
 Compiler *CompilerNew(const char *source, const char *filename);
 Compiler *CompilerNewBuf(const char *source, size_t size, const char *filename);
+/* Record a dropped x86 construct. The ONLY place that touches asm_blocks_skipped. */
+/* `line` is where the construct STARTS. Passing 0 means "use the current lexer line", which is
+ * only right for a single-line construct: after skipping an asm{} block the lexer sits on the
+ * CLOSING BRACE, and reporting that line made Kernel/KUtilsRV.HC's failing Abs:: block look
+ * like the Floor:: block below it. */
+void HolyAsmSkipNote(Compiler *cc, I64 line, const char *what, const char *label);
 void LexPushStringPending(Compiler *cc, const char *text);
 void LexAbandonPendingString(Compiler *cc);
 void MakeImportSlot(Compiler *cc, CHashFun *f);   // parser.c: `__imp_<name>` slot, calls go through it
