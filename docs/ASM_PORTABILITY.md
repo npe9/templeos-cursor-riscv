@@ -108,6 +108,24 @@ just an inventory, it is the checklist for the next phase: each `platform` row e
 kernel as HolyC/RISC-V asm, or the decision gets revisited on purpose rather than by default.
 `make portability-seam-check` fails in both directions, so the list cannot drift while that happens.
 
+### Staging the 22, by coupling rather than by size
+
+The C bodies are small — 5 to 28 lines each, maybe 200 lines in total — so volume is not the
+obstacle. Coupling is. Grouped by what has to move together:
+
+| tier | rows | why |
+|---|---|---|
+| **1 — movable today** | `SysHlt`, `Call` | one instruction each, and the assembler already has both. `HolySysHlt` is `wfi`, which `host/parser.c:4756` encodes as `0x10500073`. `HolyCall` is a `fence.i` then an indirect jump, and `fencei` is already a recognised mnemonic — the C even uses `.word 0x0000100f` by hand because `-march=rv64imafdc` omits Zifencei |
+| **2 — small pairs** | `RVJiffies` + `RVJiffiesInit` | reads MMIO `mtime` and divides by a value the Init sets; move the pair and the global goes with them |
+| **3 — the trap bundle, indivisible** | `RVTrapInit`, `RVTrapRecoverArm`/`Disarm`/`Cause`/`Epc`/`Ra`/`Tval` | the four `Recover*` readers are bare accessors over C globals that the trap vector in `crt0.S` writes. They cannot move one at a time: the vector moves or none of them do |
+| **4 — scheduling** | `RVTaskSwitch`, `Yield`, `TaskEndNow`, `RVYieldInit`, `RVPreemptReal` | context save/restore and the preempt timer; `RVTaskSwitch` is the x86 `_TASK_CONTEXT_RESTORE`'s counterpart |
+| **5 — devices** | `RVUartIrqInit`/`Off`/`GetBuffered`, `RVVirtioPciIsrReg`, `RVCrashMon`/`Init` | driver-shaped, and the least urgent: a new architecture wants its own anyway |
+
+Tier 1 is the honest next step — two rows off the seam with the assembler exactly as it is, no new
+support needed, and it proves the migration path end to end before anything couples to the trap
+vector. Note the ordering principle differs from the DolDoc work: there, severity ranked the list
+because every row was a live defect; here nothing is broken, so **coupling** ranks it.
+
 The precedent for the move is already in the tree and was extended twice this session:
 `Kernel/KUtilsRV.HC` took `MemSet`/`MemCpy`/`StrLen`/… off the C runtime years of commits ago, then
 `Exp`/`Ln`, then the libm five and the strmem three. The `platform` rows are harder — they touch
