@@ -170,3 +170,13 @@ partition not found). Cause: the microSD was not fully seated after the Mac-read
 Re-seating it fixed it; nothing on the card was changed. Two lessons: the ZSBL's UART runs at
 57600, not 115200 (the `div=0xe1` the peek read is 57600 from the un-PLLed clock; my 26 MHz pclk
 arithmetic was 2× off), and read the ROM's error code before suspecting the card's contents.
+
+## Hands-free reset: `ndmreset`, in two sessions
+
+`tools/unmatched/reset.sh` (used by the loader with `UNMATCHED_AUTO_RESET=1`). Writing
+`dmcontrol.ndmreset` resets the debug module along with the chip on this board: the writing session
+never gets another DMI answer (`DMI operation didn't complete in 2 seconds`, eight times), the console
+goes silent, and the board sits **held in reset** — the first attempt looked like a wedge and needed
+the button. A fresh OpenOCD session fixes it: three blind writes of `dmcontrol=dmactive` read back as
+`0x1`, `dmstatus` is sane, and the console shows `U-Boot SPL 2021.01 … U-Boot 2025.01` from the mask
+ROM. Verified with the window cleared before the write and nobody at the button. Prompt in ~15 s.

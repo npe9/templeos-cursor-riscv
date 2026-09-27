@@ -4,6 +4,9 @@ SPID="${UNMATCHED_SCREEN_PID:?pid of the screen session on the console port}"; S
 IMG="${1:?path to the flat binary to load at 0x80200000}"; SZ=$(printf '0x%x' $(wc -c < $IMG)); CRC=$(python3 -c "import zlib;print('%08x'%(zlib.crc32(open('$IMG','rb').read())&0xffffffff))")
 cd /Users/npe/src/templeos-cursor-riscv
 screen -S $SPID -X clear; sleep 0.3; seen_boot=0
+# UNMATCHED_AUTO_RESET=1: cold-reset the board over JTAG first (tools/unmatched/reset.sh) instead of
+# waiting for a hand on the button; the banner wait below then sees the fresh boot.
+[ -n "$UNMATCHED_AUTO_RESET" ] && { UNMATCHED_SCRATCH="$S" tools/unmatched/reset.sh || exit 1; }
 # UNMATCHED_NO_RESET=1: the board is already parked at a clean U-Boot prompt (nothing was run since
 # the last boot), so do not make a human press reset just to see the banner again — the DDR image
 # is rewritten by tftp anyway. Still verify that a prompt answers. NEVER a bare Enter here: hush
