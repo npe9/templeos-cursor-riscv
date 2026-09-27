@@ -22,6 +22,25 @@ _start:
     li t1, BOOT_HARTID
     bne t0, t1, halt
 #endif
+    # Mask interrupts before anything else, because this image is no longer only ever
+    # entered from reset. A JTAG takeover (tests/gdb/unmatched_takeover.gdb) enters it on
+    # a hart that firmware was using, and on the Unmatched OpenSBI leaves mie=0x8 (MSIE,
+    # for its IPIs) and its own mtvec installed. If mstatus.MIE is then set — which
+    # RVTrapInit does — a pending machine software interrupt fires into a handler that
+    # knows nothing about OpenSBI's IPI protocol. The takeover script masks these too,
+    # but doing it here is what makes the image safe to enter from ANY prior state,
+    # including as the SPL's next stage with no debugger involved. From reset these are
+    # already zero, so this costs two instructions and changes nothing on any board that
+    # boots normally.
+    csrw mie, zero            # no source enabled
+    csrci mstatus, 8          # mstatus.MIE = 0 (global gate off)
+    # PMP is deliberately NOT touched. After a takeover we inherit OpenSBI's entries
+    # (measured: pmpcfg0=0x1f1b181818 fencing the CLINT and firmware off from S/U), and
+    # none of them has the L (lock) bit 0x80 set — so they do not apply to M-mode, which
+    # is the only mode this kernel ever runs in. There is nothing to undo, and writing
+    # PMP here would only risk locking ourselves out of the firmware region we are
+    # allowed to reuse.
+    #
     # Install a trap vector FIRST. Without one, mtvec is 0, so any fault jumps to
     # address 0, faults again fetching there, and loops forever — a silent hang with
     # no output, indistinguishable from an infinite loop.

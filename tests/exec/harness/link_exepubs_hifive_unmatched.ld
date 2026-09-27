@@ -6,13 +6,21 @@
  * 0x80000000-0x8005ffff off from S/U). 0x80200000 is the board's own S-mode payload slot;
  * see docs/HIFIVE_UNMATCHED.md §2 for the evidence.
  *
- * The fixed VMAs below are deliberately unchanged from link_exepubs.ld. They are absolute
- * and the image would use them wherever it were loaded, so they are a property of the
- * Kconfig memory map, not of the link address:
- *   0x80800000  the AOT blob        0x81000000  optional packed TOSB
- *   0x87F00000  stack top           (heap/CHeapCtrl come from CONFIG_* at runtime)
- * That leaves 6 MiB for text+rodata+data+bss between 0x80200000 and the blob, versus 8 MiB
- * in the virt build. The REPL image is well inside that.
+ * The blob VMA is moved DOWN, and that is about transfer time, not layout. link_exepubs.ld
+ * puts the AOT blob at 0x80800000; with text starting at 0x80200000 that leaves a ~6 MiB
+ * hole, and `objcopy -O binary` emits the hole as zeros. Measured on the first build: a
+ * 10,732,328-byte flat image of which 7,241,518 bytes were zero — 67% padding. On this board
+ * the image has to cross a 115200 serial link or a tftp hop, so those zeros are minutes.
+ *
+ * Safe to move because nothing refers to the blob by absolute address: crt0.S reaches it
+ * through `la` (auipc-relative), the import trailer's slots are blob-relative offsets, and a
+ * scan of the built image for 8-byte words pointing into 0x80800000..0x80a00000 found ZERO.
+ * 0x80300000 leaves 1 MiB for text+rodata+data+bss; the plat image's whole C half is ~20 KiB.
+ *
+ * Still absolute, and deliberately unchanged, because these are properties of the Kconfig
+ * memory map rather than of the link address:
+ *   0x81000000  optional packed TOSB
+ *   0x87F00000  stack top       (heap / CHeapCtrl come from CONFIG_* at runtime)
  */
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
@@ -49,7 +57,7 @@ SECTIONS {
     __bss_end = .;
   } > RAM
 
-  .user_blob 0x80800000 : {
+  .user_blob 0x80300000 : {
     *blob_in.o(.data)
   } > RAM
 

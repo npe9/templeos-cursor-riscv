@@ -9,7 +9,7 @@ Status line first, because the rest of this document is detail:
 | The JTAG takeover procedure works | `make unmatched-takeover-smoke` — OpenSBI in the chain, hart halted in S-mode, gdb takes it |
 | …in the mode the board will actually use | `make unmatched-takeover-preloaded` — image already in DDR, JTAG does only the dozen ops |
 | Those gates can fail | four `TOS_TAKEOVER_BREAK=` controls, in both load modes, each must fail |
-| The HolyC **REPL** image for this board | in progress — the two kernel bugs that blocked it (§9) are being fixed with their own gates |
+| The HolyC **REPL** image for this board | **builds and evaluates `2+3` = 5** under the full OpenSBI → S-mode → JTAG-takeover chain — §11 |
 | The board's JTAG TAP scans, and raw DMI reads work | measured on a live board (IDCODE 0x20000913) |
 | An OpenOCD **examine or halt** completes reliably | **NO.** A 1-5% per-scan DMI corruption floor no setting removes — §7. Use raw DMI with consensus reads. |
 | **The plat kernel runs on real FU740 silicon** | **YES.** ymodem into DDR at 0x80200000, crc32-verified, raw-DMI takeover from the U-Boot prompt, hart 1, `dcsr.prv=3` — every `plat-smoke` line once and `PASS`, plus `ORACLE 0`. §10 |
@@ -711,6 +711,27 @@ is read back. The takeover is ~40 raw DMI operations under that rule. Also note 
 debug module **rejects abstract CSR access** (`cmderr=2`): CSRs are read through the **program
 buffer** (`csrr s0, CSR; ebreak` + postexec, value out via GPR `x8`).
 
+### Getting a multi-megabyte image onto the board
+
+Two transports, and the one you would reach for first does not work on the stock card.
+
+**tftp is blocked by a U-Boot bug, not by the network.** U-Boot 2021.01 — what ships on the
+SD card — cannot transmit at gigabit on this SoC: the FU740 GEM has a TX-clock bug that was
+fixed upstream in **2021.04**. The symptom is specific and misleading, because the link looks
+perfectly healthy: PHY negotiates **1000FDX, link up**, and then every BOOTP packet dies with
+`TX timeout`. Forcing 100 Mb with `mii` does not survive, either — the `macb` driver
+re-autonegotiates on each `dhcp`, so the force is undone before the transfer starts. So tftp
+needs **either a switch port forced to 100 Mb, or a newer U-Boot**. A v2025.01 build for
+`sifive_unmatched` is the fix in progress; on this card SPL goes to the GPT partition of type
+`5b193300` (p1) and `u-boot.itb` to type `2e54b353` (p2).
+
+**ymodem works today and is the fallback.** `loady 0x80200000` in U-Boot plus `sz --ymodem`
+on the host: measured ~50 s for 323 KB, so roughly **6 minutes for 3.5 MB** at 115200.
+Acceptable, and it needs nothing but the console that is already attached.
+
+Either way, `crc32` in U-Boot over the loaded range, compared against the file, before the
+takeover — see the SPL warning above for why that is not optional.
+
 ### Two things the emulated gate could not have told us
 
 * **CRLF.** The console showed a staircase: every line fed but never returned. QEMU
@@ -720,3 +741,99 @@ buffer** (`csrr s0, CSR; ebreak` + postexec, value out via GPR `x8`).
 * **Enter at `_start`, never at an offset.** `crt0.S` now masks interrupts before installing
   `mtvec` (two instructions), so every offset inside the prologue has moved. `0x80200000` is
   the only entry point.
+
+---
+
+## 11. The REPL image
+
+`make unmatched-takeover-preloaded TAKEOVER=repl` takes the REPL image over from OpenSBI on
+hart 1 in S-mode and reaches its prompt. `tests/scripts/run_repl_unmatched_smoke.sh` builds it
+and requires **`ans=5`** out for `2+3;` in — the REPL having *compiled and evaluated*, not
+merely printed a prompt.
+
+Three board-specific things and nothing else: the FU740 Kconfig applied (so the HolyC half's
+`CONFIG_UART_BASE` is 0x10010000), the C harness built for the SiFive register layout at that
+base, and linked at 0x80200000 entering on hart 1.
+
+### The third virt-hardwired console, and the assertion that was checking the wrong file
+
+§1a fixed the C harness. §9 fixed two kernel bugs. There was a **third**, and it is the one
+that actually killed the first image on hardware — in the *test case itself*:
+
+```
+tests/exec/cases/kernel_repl_exepubs_demo.hc:18
+    #define MEM_UART 0x10000000
+    U0 UartPutC(I64 ch) { U8 *uart = MEM_UART; *uart = ch; }
+```
+
+That overrides the Kconfig-generated `MEM_UART` with virt's 16550 base and byte-stores to it.
+On an FU740 that address is the PRCI, so every banner the demo prints — `A2 ExePutS REPL`
+included — was a byte store into the clock controller. Invisible on `-M virt`, where the
+address really *is* the UART, which is why `make repl-cmp-smoke` passes there and why this
+needed hardware (or an honest board model) to find.
+
+The case is owned elsewhere, so the build does not edit it: it writes a variant whose
+`UartPutC` delegates to the Kconfig-selected driver (SiFive-correct and CRLF-correct on every
+board) and **asserts the substitution happened** — a silent no-op would put the fault straight
+back. It also asserts the variant contains no `0x10000000` at all, which promptly caught the
+literal in my own explanatory comment.
+
+**Three process lessons, each of which cost a cycle:**
+
+* **Assert on the artifact the compiler reads.** The script checked `templeos-riscv/.config`
+  and reported the base as correct while `Kernel/RVAutoConf.HH` — what `#include` actually
+  pulls in — could disagree. It now asserts on `RVAutoConf.HH` *and* on
+  `Kernel/Drv/RVUartSelected.HH` / `RVSifiveSelected.HH`, because the driver selection is a
+  third artifact that can disagree with both.
+* **A map from a different board's config mis-attributes every address.** Resolving the fault
+  through a map built with virt's headers named `RVExePubsWireDbg`; a map built with the
+  board's headers named `UartPutC+0x60`, which was correct. The build now emits
+  `build/exec/repl_unmatched.map` beside the binary and the smoke resolves fault addresses
+  through it automatically.
+* **Scaffolding can collide with the payload.** The S-mode stub sat at 0x80400000, fine for the
+  323 KB plat image and silently clobbered by the 5.4 MB REPL image, which presents as the
+  whole takeover failing with no S-mode banner and no obvious cause. Moved to 0x84000000, and
+  the runner now asserts payload and stub do not overlap.
+
+### Size
+
+5,489,712 bytes flat, 36% of it zero. The blob VMA moved from `link_exepubs.ld`'s 0x80800000
+down to 0x80300000, which cut ~7.2 MB of linker-gap zeros — safe because nothing refers to the
+blob by absolute address (crt0 reaches it with `la`, import slots are blob-relative, and a scan
+for 8-byte words pointing into the old blob window found zero).
+
+### Residual imports: 8 symbols the C runtime stubs to 0
+
+`tools/blob_imports.py` reports 32 lines; eight print `[import unresolved: …]` at boot and are
+stubbed to return 0. **None is dereferenced as a pointer, so none traps** — but two return
+wrong *values*, which is worth knowing before reading anything they feed:
+
+| symbol | type | consequence |
+|---|---|---|
+| `RVUartSoftEnqueue` | `U0` | harmless |
+| `DocFormBwd`, `DocFormFwd` | `U0` | harmless — interactive DolDoc form editing, not reachable from a serial REPL |
+| `DocDataFmt`, `DocDataScan` | `U0` | harmless, same |
+| `PopUpPickLst` | `I64` | returns 0, i.e. "picked item 0"; needs a window to reach at all |
+| `ToU64` | `U64` | **returns 0**, so the asm-UI's unsigned branch-taken display compares 0 with 0 and is wrong |
+| `GetMcause` | `I64` | **returns 0**, so anything displaying it reads mcause=0. The REPL's own fault path uses `RVTrapRecoverCause()`, not this. |
+
+### What in the image still assumes virt: at driver level, nothing
+
+The board's Kconfig selects `RVVirtioMmioNo`, `RVFbKindNone`, `RVUartSifive`, `RVTimerClint`,
+`RVPlicHw`, `RVSifiveYes`, and `HAS_FW_CFG` / `FB_PRESENT_RAMFB` / `HAS_GOLDFISH_RTC` /
+every `HAS_VIRTIO_*` are off. So virtio, fw_cfg, ramfb and the goldfish RTC are all compiled
+out or stubbed rather than reachable. The residual risk is the eight symbols above.
+
+### It wants nothing in a0/a1
+
+`crt0.S` never reads them, `resolve_imports(void)` takes no arguments, and the blob is entered
+by `jalr` with no argument setup. No DTB either — every address comes from Kconfig at compile
+time, which is also why the firmware's device tree at 0x87e00000 being inside the MEMFS window
+does not matter.
+
+### Enter at `_start`, never at an offset
+
+`crt0.S` masks interrupts (`csrw mie, zero; csrci mstatus, 8`) before installing `mtvec`,
+verified by disassembly, so the image is safe entered from any prior state — including as the
+SPL's next stage with no debugger. That also moved every offset inside the prologue.
+0x80200000 is the only entry point.

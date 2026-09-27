@@ -84,7 +84,37 @@ if [ "$((got_base))" -ne "$((UART_BASE))" ]; then
   exit 1
 fi
 grep -q '^CONFIG_UART_SIFIVE=y' "$TOS/.config" || {
-  echo "FAIL repl-unmatched — CONFIG_UART_SIFIVE not set" >&2; exit 1; }
+  echo "FAIL repl-unmatched -- CONFIG_UART_SIFIVE not set" >&2; exit 1; }
+# ...and now assert the same thing about the file the HolyC COMPILER actually reads.
+# .config is an INPUT to the generator; Kernel/RVAutoConf.HH is what #include pulls in, and the
+# two can disagree -- the kconfig snapshot machinery exists precisely to pin those headers.
+# Checking only .config is how a REPL image got built against virt's 0x10000000 while this
+# script cheerfully reported the base as correct. It cost a debugging cycle: the image ran,
+# reached the register pane, and died on `sb a0,0(t0)` with t0=0x10000000, which on this board
+# is the PRCI, not a UART.
+AUTOCONF="$ROOT/Kernel/RVAutoConf.HH"
+hh_base="$(sed -n 's/^#define CONFIG_UART_BASE //p' "$AUTOCONF" | tail -1)"
+if [ -z "$hh_base" ] || [ "$((hh_base))" -ne "$((UART_BASE))" ]; then
+  echo "FAIL repl-unmatched -- Kernel/RVAutoConf.HH has CONFIG_UART_BASE '$hh_base', expected $UART_BASE" >&2
+  echo "  (.config said $got_base; the generated header did not follow it)" >&2
+  exit 1
+fi
+grep -q '^#define CONFIG_UART_SIFIVE 1' "$AUTOCONF" || {
+  echo "FAIL repl-unmatched -- Kernel/RVAutoConf.HH does not select the SiFive UART" >&2; exit 1; }
+echo "repl-unmatched: RVAutoConf.HH CONFIG_UART_BASE=$hh_base UART_SIFIVE=1 (the header the compiler reads)"
+# And the DRIVER selection, which is a third artifact that can disagree with both of the
+# above. Kernel/Drv/*Selected.HH is what actually decides whether RVUartPutS is the SiFive
+# 32-bit TXDATA writer or the 16550 one -- a board can have the right base in RVAutoConf.HH
+# and still compile the wrong driver against it.
+for pair in "RVUartSelected.HH:RVUartSifive.HC" "RVSifiveSelected.HH:RVSifiveYes.HC"; do
+  hdr="${pair%%:*}"; want="${pair##*:}"
+  got="$(sed -n 's/.*#include "\(.*\)".*/\1/p' "$ROOT/Kernel/Drv/$hdr" | tail -1)"
+  if [ "$got" != "$want" ]; then
+    echo "FAIL repl-unmatched -- Kernel/Drv/$hdr selects '$got', expected '$want'" >&2
+    exit 1
+  fi
+  echo "repl-unmatched: Kernel/Drv/$hdr -> $got"
+done
 
 # --- the C half, for the SiFive UART at the board's base ----------------------------
 # Distinct object paths: the shared oracle_out.o / crt0.o are mtime-cached and would
@@ -109,7 +139,57 @@ fi
   || { echo "FAIL repl-unmatched — crt0" >&2; exit 1; }
 
 # --- the HolyC half -----------------------------------------------------------------
-if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then
+# --- the case's own console is virt-hardwired; build a board variant of it --------------
+# tests/exec/cases/kernel_repl_exepubs_demo.hc contains:
+#     #define MEM_UART 0x10000000
+#     U0 UartPutC(I64 ch) { U8 *uart = MEM_UART; *uart = ch; }
+# i.e. it overrides the Kconfig-generated MEM_UART with virt's 16550 base and byte-stores to
+# it. On an FU740 that address is the PRCI, so every banner the demo prints -- including
+# "A2 ExePutS REPL" -- was a byte store into the clock controller. Measured: store access
+# fault, mepc=0x806CB344, mtval=0x10000000, resolved through a board-config HOLYC_MAP to
+# UartPutC+0x60. It is invisible on -M virt, where that address really is the UART, which is
+# why `make repl-cmp-smoke` passes there.
+#
+# The case is shared and owned elsewhere, so this does not edit it. It builds a variant whose
+# UartPutC delegates to the kernel's own selected UART driver -- which is SiFive-correct,
+# CRLF-correct, and right on every board -- and ASSERTS the substitution happened, because a
+# silent no-op here would put the fault straight back.
+CASE_SRC="$SRC"
+SRC="$T/kernel_repl_unmatched_demo.hc"
+python3 - "$CASE_SRC" "$SRC" <<'PYEOF' || { echo "FAIL repl-unmatched -- case rewrite" >&2; exit 1; }
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+t = open(src).read()
+old_def = "#define MEM_UART 0x10000000\n"
+old_fn = ("U0 UartPutC(I64 ch)\n"
+          "{\n"
+          "  U8 *uart = MEM_UART;\n"
+          "  *uart = ch;\n"
+          "}\n")
+missing = [n for n, x in (("MEM_UART define", old_def), ("UartPutC body", old_fn)) if t.count(x) != 1]
+if missing:
+    sys.exit("expected exactly one of each, missing/duplicated: " + ", ".join(missing))
+t = t.replace(old_def, "// MEM_UART override removed for this board (see run_repl_unmatched_smoke.sh)\n")
+t = t.replace(old_fn,
+              "U0 UartPutC(I64 ch)\n"
+              "{\n"
+              "  // Through the Kconfig-selected driver, not a hardcoded base: on this board the\n"
+              "  // UART is a SiFive one (32-bit TXDATA at +0, FULL in bit 31) and the address\n"
+              "  // the case hardcoded is this SoC's clock controller.\n"
+              "  U8 e[2];\n"
+              "  e[0] = ch;\n"
+              "  e[1] = 0;\n"
+              "  RVUartPutS(e);\n"
+              "}\n")
+open(dst, "w").write(t)
+print("repl-unmatched: case variant written (UartPutC -> RVUartPutS, MEM_UART override dropped)")
+PYEOF
+grep -q "RVUartPutS(e);" "$SRC" || { echo "FAIL repl-unmatched -- variant missing the driver call" >&2; exit 1; }
+grep -q "0x10000000" "$SRC" && { echo "FAIL repl-unmatched -- variant still contains 0x10000000" >&2; exit 1; }
+
+MAPFILE="$OUTDIR/repl_unmatched.map"
+rm -f "$MAPFILE"
+if ! HOLYC_MAP="$MAPFILE" HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC" -o "$T/blob.bin" >/dev/null 2>&1; then
   echo "FAIL repl-unmatched — HolyC compile error" >&2
   HOLYC_INCLUDE_ROOT="$ROOT" HOLYC_ALL_ERRORS=1 "$COMPILER" "$SRC" -o /dev/null 2>&1 \
     | tail -25 >"$T/errs.txt"
@@ -204,9 +284,45 @@ for n in "A2 ExePutS REPL" "ans=5"; do
     rc=1
   fi
 done
-if grep -qF "TRAP mcause" "$R/out.txt"; then
-  echo "FAIL repl-unmatched — the image trapped:" >&2
-  grep -F "TRAP" "$R/out.txt" | head -4 | sed 's/^/  /' >&2
+# The guest's own debugger pane reports faults as "mepc=<hex>", the C harness as
+# "TRAP mcause=... mepc=...". Catch both, and name the function -- an address alone is not
+# actionable, and the blob carries no ELF symbols (it is objcopy -I binary'd in).
+FAULT_ADDRS="$( { grep -oE 'mepc=0*[0-9A-Fa-f]{6,16}' "$R/out.txt" || true; } | sed 's/mepc=//' | sort -u | head -4)"
+if [ -n "$FAULT_ADDRS" ]; then
+  echo "FAIL repl-unmatched -- the image faulted:" >&2
+  { grep -oE 'store access fault|load access fault|illegal instruction|TRAP mcause=[^ ]*' "$R/out.txt" || true; } \
+    | sort -u | sed 's/^/  /' >&2
+  for fa in $FAULT_ADDRS; do
+    printf '  mepc=0x%s' "$fa" >&2
+    if [ -f "$MAPFILE" ]; then
+      BLOB_VMA=0x80300000 python3 - "$MAPFILE" "$fa" >&2 <<'PYEOF' || true
+import bisect, os, sys
+mapfile, fa = sys.argv[1], int(sys.argv[2], 16)
+blob = int(os.environ.get("BLOB_VMA", "0x80300000"), 16)
+rows = []
+for ln in open(mapfile):
+    p = ln.split()
+    if len(p) < 2:
+        continue
+    try:
+        rows.append((int(p[0], 16), p[1]))
+    except ValueError:
+        pass
+rows.sort()
+off = fa - blob
+if off < 0 or not rows:
+    print("  (not inside the blob at 0x%x)" % blob)
+    sys.exit(0)
+i = bisect.bisect_right([r[0] for r in rows], off) - 1
+if i < 0:
+    print("  (before the first mapped function)")
+else:
+    print("  = blob+0x%x = %s+0x%x" % (off, rows[i][1], off - rows[i][0]))
+PYEOF
+    else
+      echo "  (no map: $MAPFILE missing)" >&2
+    fi
+  done
   rc=1
 fi
 

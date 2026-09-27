@@ -67,8 +67,12 @@ case "$WHICH" in
     ELF="$ROOT/build/kernels/hifive_unmatched/plat.elf"
     NEEDLES=("plat-smoke: machine=hifive-unmatched" "plat-smoke: PASS" "ORACLE ") ;;
   repl)
+    # Built by run_repl_unmatched_smoke.sh (it applies the board Kconfig, so it is not
+    # rebuilt here -- the point of this target is to take over the artifact as it stands).
     ELF="$ROOT/build/exec/repl_unmatched.elf"
-    NEEDLES=("A2 ExePutS REPL") ;;
+    # "A2 ExePutS REPL" alone only proves it printed. ans=42 is the in-image probe having
+    # COMPILED and EVALUATED 40+2 through the guest compiler.
+    NEEDLES=("A2: Compiler_RV owns ExePutS" "A2 ExePutS REPL" "ans=42") ;;
   *)
     echo "usage: $0 [hello|plat|repl]" >&2; exit 2 ;;
 esac
@@ -99,7 +103,7 @@ OBJCOPY_BIN="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
 ENTRY_ADDR="$(riscv64-unknown-elf-readelf -h "$ELF" | sed -n 's/.*Entry point address: *//p')"
 [ -n "$ENTRY_ADDR" ] || { echo "FAIL takeover -- no entry point in $ELF" >&2; exit 1; }
 STUB="$ROOT/build/kernels/hifive_unmatched/smode_idle.elf"
-STUB_ENTRY=0x80400000
+STUB_ENTRY=0x84000000
 mkdir -p "$ROOT/build/kernels/hifive_unmatched"
 "$GCC" -march=rv64imac -mabi=lp64 -nostdlib -ffreestanding -fno-builtin \
   -c "$ROOT/tests/exec/harness/smode_idle.S" -o "$T/smode_idle.o" \
@@ -111,6 +115,19 @@ mkdir -p "$ROOT/build/kernels/hifive_unmatched"
 stub_entry="$(riscv64-unknown-elf-readelf -h "$STUB" | sed -n 's/.*Entry point address: *//p')"
 if [ "$((stub_entry))" -ne "$((STUB_ENTRY))" ]; then
   echo "FAIL takeover -- S-mode stub entry $stub_entry != $STUB_ENTRY" >&2; exit 1
+fi
+# The payload must not reach the stub. A 5.4 MB image at 0x80200000 runs past 0x80400000,
+# where the stub used to live, and clobbered it before OpenSBI could enter -- which presents
+# as the entire takeover failing with no S-mode banner and no obvious cause.
+payload_bytes="$(wc -c <"${ELF%.elf}.bin" 2>/dev/null || echo 0)"
+if [ "$payload_bytes" -gt 0 ]; then
+  payload_end=$(( $((ENTRY_ADDR)) + payload_bytes ))
+  if [ "$payload_end" -gt "$((STUB_ENTRY))" ]; then
+    printf 'FAIL takeover -- payload %s..0x%x overlaps the S-mode stub at %s\n' \
+      "$ENTRY_ADDR" "$payload_end" "$STUB_ENTRY" >&2
+    echo "  move the stub (tests/exec/harness/link_smode_idle.ld) above the payload" >&2
+    exit 1
+  fi
 fi
 # Break at the stub's idle loop, NOT its entry: at the entry it has not printed yet, and
 # its banner is the gate's only evidence that firmware actually mret'd into S-mode.
