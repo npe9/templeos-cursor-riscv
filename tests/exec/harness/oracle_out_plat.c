@@ -9,9 +9,16 @@
 
 #define HOLY_IMPORT_MAGIC 0x31504D4959464F48ULL /* "HOFYIMP1" */
 
-/* SiFive UART: TXDATA @ +0 (bit31 FULL). */
+/* SiFive UART: TXDATA @ +0 (bit31 FULL). LF -> CRLF for the same reason as
+ * Kernel/Drv/RVSifiveYes.HC: a bare "\n" staircases on a real terminal, and this file is
+ * the other half of the same console on sifive_e. */
 static void putc_uart(int c) {
   volatile uint32_t *tx = (volatile uint32_t *)UART_BASE;
+  if (c == '\n') {
+    while (*tx & 0x80000000u)
+      ;
+    *tx = (uint32_t)'\r';
+  }
   while (*tx & 0x80000000u)
     ;
   *tx = (uint32_t)(unsigned char)c;

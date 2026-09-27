@@ -16,8 +16,17 @@
 #define HOLY_UART_SIFIVE 0
 #endif
 #if HOLY_UART_SIFIVE
+/* LF -> CRLF, matching Kernel/Drv/RVSifiveYes.HC's RVSifiveUartPutS. Both halves of the
+ * image write to one terminal, and translating in only one of them staggers the C runtime's
+ * ORACLE and TRAP lines while the HolyC lines come out straight -- which reads like two
+ * separate bugs. Only the SiFive branch: the 16550 default stays byte-identical. */
 static void putc_uart(int c) {
   volatile uint32_t *tx = (volatile uint32_t *)UART_BASE;
+  if (c == '\n') {
+    while (*tx & 0x80000000u)
+      ;
+    *tx = (uint32_t)'\r';
+  }
   while (*tx & 0x80000000u) /* TXDATA.FULL */
     ;
   *tx = (uint32_t)(unsigned char)c;

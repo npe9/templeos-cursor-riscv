@@ -101,8 +101,20 @@ U0 RVSifiveUartInit()
 
 Bool RVSifiveUartPutS(U8 *st)
 {
+  // LF -> CRLF. Every caller in the tree writes a bare "\n", which a real serial terminal
+  // renders as a staircase: line feed with no carriage return, so each line begins under the
+  // END of the previous one. Measured on a HiFive Unmatched over its FT2232H console.
+  // QEMU -nographic hides it completely because it cooks the output itself, which is exactly
+  // why this survived until hardware. Translating in the driver rather than in a hundred
+  // format strings is the only place it belongs; every consumer of this UART's output in
+  // tests/scripts already pipes through `tr -d '\r'`.
   U32 *u = CONFIG_UART_BASE;
   while (*st) {
+    if (*st == '\n') {
+      while (u[0] & 0x80000000)
+        ;
+      u[0] = '\r';
+    }
     while (u[0] & 0x80000000)
       ;
     u[0] = *st++;
