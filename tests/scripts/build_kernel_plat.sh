@@ -195,10 +195,6 @@ fi
 if [ -n "$CFG_PLIC_BASE" ]; then
   ORACLE_DEFS="$ORACLE_DEFS -DHOLY_PLIC=${CFG_PLIC_BASE}"
 fi
-# The flags are in the object path for the same reason as below: the staleness test is
-# mtime-only, so a differently-flagged object would be served to the next board unchanged.
-ORACLE_OBJ="$EXEC_DIR/oracle_out-${ORACLE_TAG}.o"
-
 # SiFive-UART boards (not sifive_e, which already has its own slim SiFive oracle):
 # compile the full oracle for the SiFive register LAYOUT at the board's own base.
 # -DHOLY_UART_BASE alone cannot do this — TXDATA is a 32-bit word at +0 with a FULL
@@ -206,8 +202,17 @@ ORACLE_OBJ="$EXEC_DIR/oracle_out-${ORACLE_TAG}.o"
 if [ "$CFG_UART_SIFIVE" = y ] && [ "$DEFCONFIG" != sifive_e ]; then
   ORACLE_DEFS="$ORACLE_DEFS -DHOLY_UART_SIFIVE=1 -DUART_BASE=${CFG_UART_BASE}UL -DHOLY_UART_BASE=${CFG_UART_BASE}ULL"
   ORACLE_DEFS="$ORACLE_DEFS -DHOLY_UART_IRQ=${CFG_UART_IRQ:-0}"
-  ORACLE_OBJ="$EXEC_DIR/oracle_out-sfu-${CFG_UART_BASE}-irq${CFG_UART_IRQ:-0}-${ORACLE_TAG}.o"
+  ORACLE_TAG="sfu${CFG_UART_BASE}-irq${CFG_UART_IRQ:-0}-${ORACLE_TAG}"
 fi
+
+# ONE place computes the object path, and it is derived from BOTH the source file and every
+# -D that goes with it. Keying it on the flags alone is not enough and cost a matrix failure:
+# sifive_e compiles the SLIM oracle_out_plat.c while virt and friends compile the full
+# oracle_out.c, and both have their CLINT at 0x02000000 -- so they collided on one path, and
+# because the staleness test below is mtime-only, sifive_e was handed the full oracle and blew
+# its 16 KiB DTIM budget at link time. Same hazard this script already documents for the UART
+# flags, arrived at from a different direction.
+ORACLE_OBJ="$EXEC_DIR/$(basename "$ORACLE_SRC" .c)-${ORACLE_TAG}.o"
 
 need_oracle=0
 if [ ! -f "$ORACLE_OBJ" ] || [ "$ORACLE_SRC" -nt "$ORACLE_OBJ" ] || \
