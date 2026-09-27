@@ -6,9 +6,10 @@ cd /Users/npe/src/templeos-cursor-riscv
 screen -S $SPID -X clear; sleep 0.3; seen_boot=0
 # UNMATCHED_NO_RESET=1: the board is already parked at a clean U-Boot prompt (nothing was run since
 # the last boot), so do not make a human press reset just to see the banner again — the DDR image
-# is rewritten by tftp anyway. Still verify that a prompt answers.
+# is rewritten by tftp anyway. Still verify that a prompt answers. NEVER a bare Enter here: hush
+# REPEATS the last command on an empty line, and tftpboot is repeatable. Ctrl-U + `true` instead.
 if [ -n "$UNMATCHED_NO_RESET" ]; then
-  screen -S $SPID -X stuff $'\r'; sleep 1; screen -S $SPID -X hardcopy $S/win.txt
+  screen -S $SPID -X stuff $'\x15true\r'; sleep 1; screen -S $SPID -X hardcopy $S/win.txt
   [ "$(grep -vE '^\s*$' $S/win.txt | tail -1)" = "=>" ] && seen_boot=1 || { echo "UNMATCHED_NO_RESET set but no => prompt answers"; exit 1; }
 fi
 for i in $(seq 1 600); do
@@ -40,7 +41,7 @@ if [ "$XFER" = tftp ]; then
   fi
   # `dhcp` OVERWRITES serverip with the DHCP server (the router), so a setenv before it is lost and
   # the request goes to the wrong host. Name the server inline instead: host:file is always honoured.
-  screen -S $SPID -X stuff $'\r'; sleep 0.3; screen -S $SPID -X stuff $'setenv autoload no\r'; sleep 0.5
+  screen -S $SPID -X stuff $'\x15true\r'; sleep 0.3; screen -S $SPID -X stuff $'setenv autoload no\r'; sleep 0.5
   screen -S $SPID -X stuff $'dhcp\r'; sleep 6
   screen -S $SPID -X stuff "tftpboot 0x80200000 $SRV:$NAME"$'\r'
   for i in $(seq 1 600); do sleep 2; screen -S $SPID -X hardcopy $S/win.txt; grep -qE "Bytes transferred|Retry count exceeded|TFTP error|not found" $S/win.txt && break; done

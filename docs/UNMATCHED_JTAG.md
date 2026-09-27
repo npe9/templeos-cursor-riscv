@@ -156,7 +156,7 @@ and blocks the prompt for ~40 s of `T`s.
 Two console traps that cost twenty minutes here. After a `Ctrl-C` abort, U-Boot's line editor can
 be left holding a fragment (`=> setenv`), and the next line typed is **appended** to it — `setenv
 tftpboot 0x80200000 …` silently defined a variable and the crc32 that followed read stale DDR.
-Send a bare newline and check the prompt is empty before typing after any abort. And a `Ctrl-C`
+Do **not** flush it with a bare Enter — hush **repeats the last command on an empty line**, and `tftpboot` is repeatable (that is how one stray Enter restarted a transfer under a running script). Flush with Ctrl-U (kill line) then `true`. And a `Ctrl-C`
 stuffed through `screen` can land late and abort the *next* command's transfer.
 
 ## The mask ROM speaks at 57600: `Error 0x0000000000000005`
