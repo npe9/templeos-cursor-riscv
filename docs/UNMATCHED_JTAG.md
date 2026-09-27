@@ -180,3 +180,10 @@ goes silent, and the board sits **held in reset** — the first attempt looked l
 the button. A fresh OpenOCD session fixes it: three blind writes of `dmcontrol=dmactive` read back as
 `0x1`, `dmstatus` is sane, and the console shows `U-Boot SPL 2021.01 … U-Boot 2025.01` from the mask
 ROM. Verified with the window cleared before the write and nobody at the button. Prompt in ~15 s.
+
+Proven end to end the same night, nobody at the bench: `UNMATCHED_AUTO_RESET=1 UNMATCHED_SCREEN_PID=<pid>
+tools/unmatched/load_and_takeover.sh build/…/plat.bin` → JTAG reset → `U-Boot SPL 2021.01` → router tftp
+→ `crc32` match → takeover → `plat-smoke: PASS`, `ORACLE 0`, in about two minutes. The REPL image
+(agent build 20:13, 5,489,672 B) went through the same pipeline and died on silicon exactly as on the
+model — `TRAP mcause=5 load-fault mtval=0x1f blob+0x115f20` — which is the useful result: the QEMU
+`hifive-unmatched` model reproduces the board, so the fix can be made and gated there.
