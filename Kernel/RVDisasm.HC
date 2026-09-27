@@ -262,7 +262,9 @@ U8 *MmN(I64 a)
     return "PLIC";
   if (a == MEM_UART)
     return "UART0";
-  if (a == MEM_VIRTIO)
+  // MEM_VIRTIO is 0 on a board without virtio, and 0 is a perfectly ordinary address to be
+  // disassembling a reference to — so test the device is present before naming it.
+  if (MEM_VIRTIO && a == MEM_VIRTIO)
     return "VIRTIO";
   if (a == MEM_RAM)
     return "DRAM";
