@@ -94,6 +94,19 @@ csr_set(0x304,0,name="mie")
 csr_set(0x300,mstatus&~(1<<3),name="mstatus")
 csr_set(0x7b0,(dcsr&~3)|3,name="dcsr")
 csr_set(0x7b1,ENTRY,name="dpc")
+# Park every other hart first. OpenSBI picks the boot hart by lottery, so U-Boot may be alive on
+# hart 2/3/4 (measured: one boot found hart 1 in OpenSBI's wait loop, the next found it in U-Boot).
+# A live U-Boot keeps polling the same UART and answers the REPL's input with "Unknown command".
+# Halted harts stay halted after OpenOCD disconnects; nothing here ever resumes them.
+if "--no-park" not in sys.argv:
+    for h in (0, 2, 3, 4):
+        wr(0x10, HALTREQ|DMACTIVE|(h<<16), verify=False)
+        try:
+            wait_status(1<<9, 1<<9, 3.0); print("parked hart %d"%h)
+        except SystemExit as e:
+            print("hart %d: not confirmed halted (%s)"%(h, e))
+        wr(0x10, DMACTIVE|(h<<16), verify=False)
+    wr(0x10, DMACTIVE|HARTSEL, verify=False)   # back to hart 1
 wr(0x10, RESUMEREQ|DMACTIVE|HARTSEL, verify=False)
 st=wait_status(1<<17,1<<17); print("resumed         : dmstatus=0x%x"%st)
 wr(0x10, DMACTIVE|HARTSEL, verify=False)

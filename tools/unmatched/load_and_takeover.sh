@@ -59,6 +59,15 @@ fi
 screen -S $SPID -X stuff "crc32 0x80200000 $SZ"$'\r'; sleep 4; screen -S $SPID -X hardcopy $S/win.txt
 got=$(grep -A1 "^=> crc32" $S/win.txt | tail -1 | awk '{print $NF}'); echo "crc32 ddr=$got file=$CRC"
 [ "$got" = "$CRC" ] || { echo "CRC MISMATCH — not taking over"; exit 1; }
+# UNMATCHED_UBOOT_PRE: U-Boot commands to run after the image is in DDR and before the takeover,
+# e.g. `mw.q 0x80740000 0 0xf18000` to zero DDR above the image (QEMU's RAM is zero for free; the
+# board's is whatever the last boot left, and the kernel finds out the hard way).
+if [ -n "$UNMATCHED_UBOOT_PRE" ]; then
+  screen -S $SPID -X stuff "$UNMATCHED_UBOOT_PRE"$'\r'; sleep 3
+  screen -S $SPID -X stuff $'\x15true\r'; sleep 1; screen -S $SPID -X hardcopy $S/win.txt
+  [ "$(grep -vE '^\s*$' $S/win.txt | tail -1)" = "=>" ] || { echo "U-Boot did not come back from: $UNMATCHED_UBOOT_PRE"; exit 1; }
+  echo "pre-cmd done: $UNMATCHED_UBOOT_PRE"
+fi
 screen -S $SPID -X clear; sleep 0.3
 (timeout 120 openocd -f tests/openocd/hifive_unmatched_hart1.cfg -c "init" > $S/oocd_plat2.log 2>&1 &); sleep 4
 python3 tools/unmatched/dmi_takeover.py 0x80200000; rc=$?
