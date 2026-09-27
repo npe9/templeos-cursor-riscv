@@ -141,7 +141,8 @@ Measured rates, same `plat.bin`, same board, `crc32` correct every time:
 |-------------------------------------------|------------|----------------------------------------------------------------------------|
 | the Mac, on **Wi-Fi** (`route get` → en0) | 11.7 KiB/s | TFTP is lock-step: one 1468-byte block per RTT, and the Wi-Fi RTT is 4–85 ms |
 | same, `tftpwindowsize 8`                  | 8.8 KiB/s  | timeouts and whole-window retransmits on the jittery link                  |
-| **the router** (dnsmasq TFTP, wired)      | 62.5 KiB/s | sub-ms RTT; the remaining ~23 ms/packet is the board or dnsmasq, not the link |
+| the Mac, **wired** (USB-C LAN, RTT 0.6 ms) | 40 KiB/s   | so the per-packet cost is macOS tftpd itself (~36 ms/packet), not the link |
+| **the router** (dnsmasq TFTP, wired)      | 62.5 KiB/s | dnsmasq is the faster server (~23 ms/packet); the board is not the limit either way |
 
 `tftpblocksize` and `tftpwindowsize` changed nothing on the wire (2025.01 already defaults to
 1468-byte blocks; every run moved the same 23 block-groups). The router serves from `/tmp/tftp`
