@@ -1135,6 +1135,9 @@ static bool ParsePrimary(Compiler *cc) {
     if (had_paren && IsTypeStartToken(cc)) {
       U8 type = ParseType(cc);
       CHashClass *type_class = cc->last_type_class;
+      // ParseType leaves the class in last_type_class for `Class *` too (p->member needs it), so
+      // the star count has to be honoured here or sizeof(CDocEntry *) answers sizeof(CDocEntry).
+      bool is_ptr = cc->last_ptr_depth > 0;
       I64 msize = -1;
       while (cc->lex.token == '.' && type_class) {   // sizeof(Class.member)
         LexNext(cc);
@@ -1152,6 +1155,8 @@ static bool ParsePrimary(Compiler *cc) {
 
       if (msize >= 0) {
         size = msize;
+      } else if (is_ptr) {
+        size = 8;
       } else if (type_class && type_class->size > 0) {
         size = type_class->size;
       } else {
@@ -5517,7 +5522,7 @@ static I64 CEPrimary(Compiler *cc, I64 dollar, bool *ok) {
     I64 sz = 8;
     if (IsTypeStartToken(cc)) {
       U8 t = ParseType(cc);
-      sz = cc->last_pointed_to_type ? 8 : (cc->last_type_class && cc->last_type_class->size > 0 ? cc->last_type_class->size : PrimitiveTypeSize(t));
+      sz = cc->last_ptr_depth ? 8 : (cc->last_type_class && cc->last_type_class->size > 0 ? cc->last_type_class->size : PrimitiveTypeSize(t));   // depth, not pointed-to type: U0 * has base type 0
       CHashClass *mc = cc->last_type_class;
       while (cc->lex.token == '.' && mc) {   // sizeof(Class.member)
         LexNext(cc);
