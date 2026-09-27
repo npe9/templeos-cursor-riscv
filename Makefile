@@ -94,6 +94,11 @@ asm-gnu-diff: $(COMPILER_BIN)
 	@tests/scripts/run_asm_gnu_diff.sh
 
 # Host HolyC→RISC-V codegen semantics (curated exec oracles + negatives + soft patterns).
+# Host unit test for the M-mode misaligned load/store emulator (bootstrap/holy_misaligned.h).
+# QEMU never traps a plain misaligned access, so the decoder is proven here and the hook on the board.
+misaligned-emu-test:
+	@mkdir -p build && $(CC) -Wall -Wextra -Werror -o build/misaligned_emu_test tests/host/misaligned_emu_test.c && build/misaligned_emu_test
+
 compiler-stress: $(COMPILER_BIN)
 	@chmod +x tests/scripts/run_compiler_stress.sh
 	@tests/scripts/run_compiler_stress.sh

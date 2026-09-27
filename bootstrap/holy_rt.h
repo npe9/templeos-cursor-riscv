@@ -398,6 +398,7 @@ static HRT_I64 HolyCall(HRT_I64 addr) {
   return ((HRT_I64 (*)(void))addr)();
 }
 static HRT_I64 HolyFarCall32(HRT_I64 a, HRT_I64 b, HRT_I64 c, HRT_I64 d) { (void)a; (void)b; (void)c; (void)d; return 0; }
+#include "holy_misaligned.h"
 /* --- RISC-V machine-mode traps + CLINT timer (QEMU virt) -----------------------------------------
  * A trap vector that saves the caller-saved registers, calls a C dispatcher, restores, and mrets.
  * The dispatcher counts machine-timer interrupts and re-arms mtimecmp; this is the interrupt-driven
@@ -976,6 +977,15 @@ __attribute__((used)) static HRT_I64 HolyTrapDispatch(HRT_I64 *frame) {
     HRT_I64 mepc, mtval;
     __asm__ volatile("csrr %0, mepc" : "=r"(mepc));
     __asm__ volatile("csrr %0, mtval" : "=r"(mtval));
+    /* Misaligned load/store: emulate and resume. Real silicon (U74) traps these; QEMU never
+     * does, so this path is exercised on the board and unit-tested on the host, not by virt. */
+    if (mcause == 4 || mcause == 6) {
+      int len = HolyMisalignedEmu(frame, (unsigned long)mepc, (unsigned long)mtval);
+      if (len) {
+        __asm__ volatile("csrw mepc, %0" :: "r"(mepc + len));
+        return 0;
+      }
+    }
     /* Freeze first: the recover trampoline and the crash monitor both want it, and a
      * debugger attached later reads the same two views as in the seed image. */
     HolyTrapSnapPublish(frame, mcause, mepc, mtval);
