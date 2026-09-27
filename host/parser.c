@@ -1968,6 +1968,18 @@ static bool ParseUnary(Compiler *cc) {
         CHashClass *pc = cc->last_global_var->var_class;
         if (pc && pc->size > 0) pointee = ScalarTypeForSize(pointee, pc->size);
       }
+    } else if (!cc->last_var_symbol && !cc->last_global_var && cc->last_member && cc->last_member->is_array) {
+      // `*p->arr` / `*s.arr`: a member array decays to element*, exactly like the local-array case
+      // above. The member branch below only knew pointer members, so deref_type fell to RT_I64:
+      // RedSeaFilesFind's `*tmpde->name!='.'` read 8 bytes of ".." (0x2e2e != '.'), sent ".." down
+      // the recurse branch, and every FilesFind(FUF_RECURSE) recursed into its own parent until the
+      // heap died. An array of pointers dereferences to a pointer (depth stays > 1 -> RT_I64).
+      CMemberLst *mb = cc->last_member;
+      if (mb->pointed_to_type) { pointee = mb->pointed_to_type; depth = (U8)(mb->ptr_depth + 1); }
+      else {
+        I64 esz = mb->elem_size > 0 ? mb->elem_size : PrimitiveTypeSize(mb->raw_type);
+        pointee = ScalarTypeForSize(mb->raw_type, esz); depth = 1;
+      }
     } else if (!cc->last_var_symbol && !cc->last_global_var && cc->last_member && cc->last_member->pointed_to_type) {
       pointee = cc->last_member->pointed_to_type; depth = cc->last_member->ptr_depth;
     } else if (cc->expr_ptr_depth) {   // `**pp`: the inner deref left a pointer
