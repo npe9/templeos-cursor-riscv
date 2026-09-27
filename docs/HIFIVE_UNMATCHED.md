@@ -10,6 +10,7 @@ Status line first, because the rest of this document is detail:
 | …in the mode the board will actually use | `make unmatched-takeover-preloaded` — image already in DDR, JTAG does only the dozen ops |
 | Those gates can fail | four `TOS_TAKEOVER_BREAK=` controls, in both load modes, each must fail |
 | The HolyC **REPL** image for this board | **builds and evaluates `2+3` = 5** under the full OpenSBI → S-mode → JTAG-takeover chain — §11 |
+| **The REPL runs on real FU740 silicon** | **YES** — reached its prompt and evaluated `10*7` = 70, with no memory pre-clear. §12 |
 | The board's JTAG TAP scans, and raw DMI reads work | measured on a live board (IDCODE 0x20000913) |
 | An OpenOCD **examine or halt** completes reliably | **NO.** A 1-5% per-scan DMI corruption floor no setting removes — §7. Use raw DMI with consensus reads. |
 | **The plat kernel runs on real FU740 silicon** | **YES.** ymodem into DDR at 0x80200000, crc32-verified, raw-DMI takeover from the U-Boot prompt, hart 1, `dcsr.prv=3` — every `plat-smoke` line once and `PASS`, plus `ORACLE 0`. §10 |
@@ -837,3 +838,48 @@ does not matter.
 verified by disassembly, so the image is safe entered from any prior state — including as the
 SPL's next stage with no debugger. That also moved every offset inside the prologue.
 0x80200000 is the only entry point.
+
+---
+
+## 12. Confirmed on silicon, and three things worth keeping
+
+The REPL image reached its prompt on a real HiFive Unmatched and evaluated `10*7` → 70, **with
+no `mw.q` pre-clear** — i.e. the crt0 zeroing in §11's follow-up is what made the board's DDR
+irrelevant. The dirty-DDR gate was run first and passed, then the board agreed. That ordering is
+the point: the model reproduced `mcause=0x5 mtval=0x1f blob+0x115f20` byte for byte, which is
+what made a change to every board's crt0 trustworthy rather than hopeful.
+
+### A bug that looked like the kernel was a bug in the compiler
+
+The `FilesFind(FUF_RECURSE)` trap that had been blamed on the kernel was **`*p->arr` on a
+MEMBER array loading 8 bytes** — the earlier narrow-array fix covered only *local* arrays. So
+`RedSeaFilesFind`'s `*tmpde->name != '.'` read `".."` as `0x2e2e`, never matched, and recursed
+into its own parent until it had overwritten `the_heap` itself. Fixed in `host/parser.c`, with
+`e_deref_member_array.hc` and `e_kernel_filesfind_recurse.hc` pinned as manifest rows.
+
+Worth recording next to the DDR bug because the two rhyme: both presented as "the allocator is
+broken", and in both cases the allocator was the *victim*. When `the_heap` looks corrupt, ask
+what wrote over it before asking what it did wrong.
+
+### This script mutates the shared tree, and that is a real hazard
+
+`run_repl_unmatched_smoke.sh` applies the FU740 Kconfig, which rewrites
+`Kernel/RVAutoConf.HH` and `Kernel/Drv/*Selected.HH` **for the whole tree**, and restores them
+on exit. Correct in isolation, and its lock only excludes scripts that take the same lock — so
+any kernel compile from another process in that window silently inherits the SiFive UART at
+0x10010000. Observed: `kernel-fsshell-smoke` store-faulted at 0x10010008 on `-M virt` during a
+concurrent `qemu-integration`, and passed on its own.
+
+**Never overlap it with another kernel compile.** The script now says so at the point of
+mutation. The real fix is to stop mutating the shared tree — compile the variant against a
+private `HOLYC_INCLUDE_ROOT` copy with its own generated headers — which wants its own change
+and its own gate.
+
+### Open: the first keystroke after the banner is swallowed
+
+On the board, `2+3;` typed immediately after the prompt evaluates as `+3;`; everything after is
+exact. A startup RX race in the polled SiFive UART path — the driver is reading before the line
+editor is ready to keep what it reads, or a stale RXDATA is consumed once. Not reproduced under
+emulation, because the smoke paces its input and deliberately waits before sending (the REPL's
+line editor drops characters on unpaced input, so the harness was already sleeping past exactly
+the window where this happens). A model repro would need to send a byte *during* `CInit`.

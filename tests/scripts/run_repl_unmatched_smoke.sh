@@ -59,6 +59,20 @@ mkdir -p "$OUTDIR"
 # --- apply the FU740 Kconfig, and put back exactly what was there -------------------
 # Same discipline as build_kernel_plat.sh: this rewrites global generated headers, so it
 # is serialised against concurrent plat builds and restores content AND mtime.
+#
+# *** DO NOT RUN THIS CONCURRENTLY WITH ANY OTHER KERNEL COMPILE. ***
+# The lock below only excludes scripts that TAKE the lock. Between defconfig-hifive_unmatched
+# and the restoring trap, Kernel/RVAutoConf.HH and Kernel/Drv/*Selected.HH describe an FU740 for
+# the WHOLE TREE, so any kernel compile from another process in that window silently inherits
+# the SiFive UART at 0x10010000. Observed: kernel-fsshell-smoke store-faulted at 0x10010008 on
+# -M virt during a concurrent qemu-integration, and passed on its own. The symptom looks like a
+# kernel bug in whatever else was building, not like a problem here, which is what makes it
+# expensive.
+#
+# The real fix is to stop mutating the shared tree at all: compile the variant against a private
+# HOLYC_INCLUDE_ROOT copy with its own generated headers, so nothing outside this script can see
+# the board's config. Deliberately not done yet — it wants its own change and its own gate, and
+# it must not be started while a full qemu-integration is in flight.
 LOCKDIR="$ROOT/build/.kernel-plat.lock"
 mkdir -p "$ROOT/build"
 while ! mkdir "$LOCKDIR" 2>/dev/null; do sleep 0.1; done
