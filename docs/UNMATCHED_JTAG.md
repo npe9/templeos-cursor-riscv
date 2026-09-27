@@ -133,8 +133,39 @@ The router path was tried first and is closed with evidence: the LAN switch is a
 
 ## Loading the real image
 
-`mw.l` through the console carried the 82-byte hello; `loady` (ymodem, `lrzsz`) carried the 323 KB
-platform image in ~50 s and is the proven path; the 10.7 MB REPL image over ymodem is ~17 minutes.
-tftp is scripted (`UNMATCHED_XFER=tftp`) but blocked by the U-Boot gigabit TX bug above. The other
-transport that avoids U-Boot networking entirely: boot the board's Linux, copy the image onto the
-SD boot partition over Linux's (working) network, reset, and `load mmc` it from U-Boot.
+tftp is the transport (`UNMATCHED_XFER=tftp`, now the script's default); `loady` (ymodem) remains
+as the fallback that needs no network at all (~50 s per 323 KB, so ~17 minutes for a 10 MB image).
+Measured rates, same `plat.bin`, same board, `crc32` correct every time:
+
+| server                                    | rate       | why                                                                        |
+|-------------------------------------------|------------|----------------------------------------------------------------------------|
+| the Mac, on **Wi-Fi** (`route get` → en0) | 11.7 KiB/s | TFTP is lock-step: one 1468-byte block per RTT, and the Wi-Fi RTT is 4–85 ms |
+| same, `tftpwindowsize 8`                  | 8.8 KiB/s  | timeouts and whole-window retransmits on the jittery link                  |
+| **the router** (dnsmasq TFTP, wired)      | 62.5 KiB/s | sub-ms RTT; the remaining ~23 ms/packet is the board or dnsmasq, not the link |
+
+`tftpblocksize` and `tftpwindowsize` changed nothing on the wire (2025.01 already defaults to
+1468-byte blocks; every run moved the same 23 block-groups). The router serves from `/tmp/tftp`
+(RAM — restage after a router reboot): `uci set dhcp.@dnsmasq[0].enable_tftp=1; uci set
+dhcp.@dnsmasq[0].tftp_root=/tmp/tftp; uci commit dhcp; /etc/init.d/dnsmasq restart`, then
+`scp -O file root@192.168.8.1:/tmp/tftp/` and `tftpboot 0x80200000 192.168.8.1:file`. The script
+does the scp itself (`UNMATCHED_TFTP_SSH`, default `root@192.168.8.1`). The board must never
+`autoload`: a bare `dhcp` on U-Boot 2025.01 immediately tftps `C0A808B2.img` from the DHCP server
+and blocks the prompt for ~40 s of `T`s.
+
+Two console traps that cost twenty minutes here. After a `Ctrl-C` abort, U-Boot's line editor can
+be left holding a fragment (`=> setenv`), and the next line typed is **appended** to it — `setenv
+tftpboot 0x80200000 …` silently defined a variable and the crc32 that followed read stale DDR.
+Send a bare newline and check the prompt is empty before typing after any abort. And a `Ctrl-C`
+stuffed through `screen` can land late and abort the *next* command's transfer.
+
+## The mask ROM speaks at 57600: `Error 0x0000000000000005`
+
+After a power cycle the console showed garbage at 115200 and nothing that looked like U-Boot; the
+DMI peek found hart 1 parked in the boot ROM (`dpc=0x101d8`, prv=3, PRCI PLLs bypassed) — SPL had
+never run. At **57600 baud** the text was `Error 0x0000000000000005`: the FU740 ZSBL's SD error
+ladder, where `0x5` = **CMD0 (`GO_IDLE_STATE`) got no reply** — the ROM never reached the GPT, let
+alone SPL (`0x6` CMD8, `0x7` ACMD41, `0x8` CMD58, `0x9` CMD16, `0xa` bad GPT header, `0x3` SPL
+partition not found). Cause: the microSD was not fully seated after the Mac-reader round trip.
+Re-seating it fixed it; nothing on the card was changed. Two lessons: the ZSBL's UART runs at
+57600, not 115200 (the `div=0xe1` the peek read is 57600 from the un-PLLed clock; my 26 MHz pclk
+arithmetic was 2× off), and read the ROM's error code before suspecting the card's contents.

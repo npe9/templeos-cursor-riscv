@@ -1,5 +1,5 @@
 #!/bin/bash
-# Reset -> U-Boot prompt -> loady the platform image -> crc32 -> JTAG takeover into M-mode -> capture.
+# Reset -> U-Boot prompt -> tftp (or loady) the image -> crc32 -> JTAG takeover into M-mode -> capture.
 SPID="${UNMATCHED_SCREEN_PID:?pid of the screen session on the console port}"; S="${UNMATCHED_SCRATCH:-/tmp/unmatched}"; mkdir -p "$S"
 IMG="${1:?path to the flat binary to load at 0x80200000}"; SZ=$(printf '0x%x' $(wc -c < $IMG)); CRC=$(python3 -c "import zlib;print('%08x'%(zlib.crc32(open('$IMG','rb').read())&0xffffffff))")
 cd /Users/npe/src/templeos-cursor-riscv
@@ -12,20 +12,30 @@ for i in $(seq 1 600); do
   fi
 done
 [ "$seen_boot" = 1 ] || { echo "no reset seen in 3 min"; exit 1; }
-# Transport: UNMATCHED_XFER=ymodem (default; ~50 s per 323 KB, fine up to ~1 MB) or =tftp
-# (the 10.7 MB REPL image; needs macOS tftpd on and the file in /private/tftpboot, the board's
-# RJ45 on the Mac's LAN, and UNMATCHED_SERVERIP set to the Mac's address).
-XFER="${UNMATCHED_XFER:-ymodem}"
+# Transport: UNMATCHED_XFER=tftp (default) or =ymodem (no network needed; ~50 s per 323 KB).
+# tftp serves from the ROUTER by default: the image is scp'd to UNMATCHED_TFTP_SSH:UNMATCHED_TFTP_DIR
+# (dnsmasq TFTP, wired to the board: 62.5 KiB/s measured) and the board is told to fetch it from
+# UNMATCHED_SERVERIP. Set UNMATCHED_TFTP_SSH= (empty) to serve from the Mac's own tftpd instead
+# (/private/tftpboot, UNMATCHED_SERVERIP=<Mac IP>) — 11.7 KiB/s when the Mac is on Wi-Fi, because
+# TFTP is one block per round trip.
+XFER="${UNMATCHED_XFER:-tftp}"
 if [ "$XFER" = tftp ]; then
-  NAME=$(basename "$IMG"); SRV="${UNMATCHED_SERVERIP:?Mac IP that runs tftpd}"
-  [ -f "/private/tftpboot/$NAME" ] || { echo "/private/tftpboot/$NAME missing (cp it there first)"; exit 1; }
-  cmp -s "$IMG" "/private/tftpboot/$NAME" || { echo "/private/tftpboot/$NAME differs from $IMG"; exit 1; }
+  NAME=$(basename "$IMG"); TSSH="${UNMATCHED_TFTP_SSH-root@192.168.8.1}"; TDIR="${UNMATCHED_TFTP_DIR:-/tmp/tftp}"
+  if [ -n "$TSSH" ]; then
+    SRV="${UNMATCHED_SERVERIP:-${TSSH#*@}}"
+    scp -q -O "$IMG" "$TSSH:$TDIR/$NAME" || { echo "scp to $TSSH:$TDIR failed (is dnsmasq TFTP enabled there?)"; exit 1; }
+    rsz=$(ssh -o BatchMode=yes "$TSSH" "wc -c < $TDIR/$NAME" | tr -d ' '); [ "$rsz" = "$(wc -c < $IMG | tr -d ' ')" ] || { echo "staged size $rsz != local"; exit 1; }
+  else
+    SRV="${UNMATCHED_SERVERIP:?Mac IP that runs tftpd}"
+    [ -f "/private/tftpboot/$NAME" ] || { echo "/private/tftpboot/$NAME missing (cp it there first)"; exit 1; }
+    cmp -s "$IMG" "/private/tftpboot/$NAME" || { echo "/private/tftpboot/$NAME differs from $IMG"; exit 1; }
+  fi
   # `dhcp` OVERWRITES serverip with the DHCP server (the router), so a setenv before it is lost and
   # the request goes to the wrong host. Name the server inline instead: host:file is always honoured.
-  screen -S $SPID -X stuff $'setenv autoload no\r'; sleep 0.5
+  screen -S $SPID -X stuff $'\r'; sleep 0.3; screen -S $SPID -X stuff $'setenv autoload no\r'; sleep 0.5
   screen -S $SPID -X stuff $'dhcp\r'; sleep 6
   screen -S $SPID -X stuff "tftpboot 0x80200000 $SRV:$NAME"$'\r'
-  for i in $(seq 1 120); do sleep 2; screen -S $SPID -X hardcopy $S/win.txt; grep -qE "Bytes transferred|Retry count exceeded|TFTP error|not found" $S/win.txt && break; done
+  for i in $(seq 1 600); do sleep 2; screen -S $SPID -X hardcopy $S/win.txt; grep -qE "Bytes transferred|Retry count exceeded|TFTP error|not found" $S/win.txt && break; done
   grep -E "DHCP client bound|Bytes transferred|Retry count exceeded|TFTP error|not found" $S/win.txt | tail -3
   grep -q "Bytes transferred" $S/win.txt || { echo "tftp did not complete"; exit 1; }
 else
