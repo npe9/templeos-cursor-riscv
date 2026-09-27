@@ -187,3 +187,35 @@ tools/unmatched/load_and_takeover.sh build/…/plat.bin` → JTAG reset → `U-B
 (agent build 20:13, 5,489,672 B) went through the same pipeline and died on silicon exactly as on the
 model — `TRAP mcause=5 load-fault mtval=0x1f blob+0x115f20` — which is the useful result: the QEMU
 `hifive-unmatched` model reproduces the board, so the fix can be made and gated there.
+
+## The REPL runs on the FU740 (2026-09-26, late)
+
+`A2 reg pane wired … probe ans=42 … A2: Cmp compiled 40+2 … >` on the board's UART, then `2+3;` →
+`ans=5`, `10*7;` → `ans=70`, `1+1;` → `ans=2`: the guest HolyC compiler compiles and evaluates on
+real silicon. Image: `tests/scripts/run_repl_unmatched_smoke.sh` (5,503,248 B, crc32 `8de8d2fd`),
+run as `UNMATCHED_UBOOT_PRE='mw.q 0x80740000 0 0xf18000' UNMATCHED_AUTO_RESET=1
+UNMATCHED_SCREEN_PID=<pid> tools/unmatched/load_and_takeover.sh build/exec/repl_unmatched.bin`.
+Getting from "dies at blob+0x115f20" to the prompt was **four** board-only bugs, none visible on
+any QEMU machine; each is named here with its evidence because the next port will hit the same four.
+
+1. **The demo's own UART.** `kernel_repl_exepubs_demo.hc` byte-stored banners to virt's
+   `0x10000000`, which on the FU740 is the PRCI (clock controller). Found by the board agent from an
+   in-sync map; the build now writes a variant that delegates to the selected driver and asserts it.
+2. **Memory assumed zero.** `MAlloc+0x168`: `ld a0,32(s1)` with `s1 = -1` → `mtval=0x1f`. A
+   heap-control pointer read from DDR the image never wrote: QEMU's RAM is zero, the board's holds
+   what the last boot left (`0xff…` here). Proven by `mw.q 0x80740000 0 0xf18000` in U-Boot before
+   the takeover, which moved the fault to bug 3. Workaround is that pre-command; the kernel fix
+   (zero what it assumes zero) is still owed.
+3. **Misaligned loads trap.** `BlkDevLock+0x114`, `mcause=4`, `mtval=0x82044834`: an I64 at
+   offset 100 of a packed class. The U74 traps misaligned accesses; OpenSBI emulates them only for
+   S-mode; QEMU never traps. Fixed for good in the C runtime: `bootstrap/holy_misaligned.h` emulates
+   integer/FP, 32-bit/compressed loads and stores byte-wise in `HolyTrapDispatch` (`make
+   misaligned-emu-test`, 36 host checks; AMOs still fall to the crash path).
+4. **Hart 1 is not always U-Boot's hart.** OpenSBI's boot-hart lottery: one boot had hart 1 in
+   OpenSBI's wait loop, the next had it in U-Boot; when U-Boot lives on another U74 it keeps
+   polling the UART and answered `2+3;` with `Unknown command '2+3' - try 'help'`. The takeover
+   now halts harts 0,2,3,4 and leaves them halted.
+
+Also learned: after a takeover, `dmi_csrs`-style reads of `dpc/mcause/mepc/mtval` with the hart
+briefly halted are the fastest diagnosis on this board — every one of the four above was named
+that way within minutes, where the console alone said nothing.
