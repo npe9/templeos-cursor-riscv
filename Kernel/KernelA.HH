@@ -2607,12 +2607,15 @@ public class CDirEntry
 #define BDT_ISO_FILE_READ	3
 #define BDT_ISO_FILE_WRITE	4
 #define BDT_ATAPI		5
-#ifdef RISCV_VIRT
+//BDT_VIRTIO is deliberately NOT gated on RISCV_VIRT. Its driver body
+//(Kernel/BlkDev/DskVirtioRV.HC) is in the project unconditionally and cannot be #ifdef'd
+//out -- wrapping a HolyC function body turns it into an unresolved import -- so gating only
+//the constant made every NON-virt RISC-V board fail to compile the moment it pulled in
+//Kernel_RV.PRJ. The type number is harmless where there is no virtio: nothing registers a
+//device with it, so every `bd->type == BDT_VIRTIO` arm is simply never taken. On x86 the
+//only effect is that DskDrv.HC's blkdev_text_attr[] gains a 7th, zero-filled entry.
 #define BDT_VIRTIO		6		//RISC-V: native legacy virtio-mmio block device (DskVirtioRV.HC)
 #define BDT_TYPES_NUM		7
-#else
-#define BDT_TYPES_NUM		6
-#endif
 
 #define BDF_REMOVABLE		0x001
 #define BDF_INITIALIZED		0x002

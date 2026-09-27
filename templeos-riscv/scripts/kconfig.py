@@ -616,6 +616,15 @@ def write_autoconf(vals: Dict[str, Any], symbols: Dict[str, Symbol]) -> None:
         if key in vals and symbols.get(key) and symbols[key].type == "hex":
             h_lines.append(f"#define {dst} CONFIG_{key}")
             hc_lines.append(f"#define {dst} CONFIG_{key}")
+    # An absent device is 0, not undefined. CONFIG_VIRTIO_MMIO_BASE depends on
+    # HAS_VIRTIO_MMIO, so on a board without virtio the alias above emits nothing and every
+    # MEM_VIRTIO reference fails to compile -- which is how the REPL became unbuildable for
+    # any non-virt board, since Kernel/BlkDev/DskVirtioRV.HC's body is in the project
+    # unconditionally. The seed-style header further down ALREADY emits MEM_VIRTIO 0 via
+    # _mem_hex(virtio); the two generated headers simply disagreed.
+    if not vals.get("HAS_VIRTIO_MMIO"):
+        h_lines.append("#define MEM_VIRTIO 0   /* no virtio on this board */")
+        hc_lines.append("#define MEM_VIRTIO 0   // no virtio on this board")
 
     # RISCV_VIRT kept for existing #ifdef RISCV_VIRT sites (legacy; RTC uses CONFIG_HAS_GOLDFISH_RTC)
     if vals.get("PLATFORM_VIRT"):

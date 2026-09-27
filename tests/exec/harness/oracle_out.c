@@ -3,10 +3,40 @@
 #ifndef UART_BASE
 #define UART_BASE 0x10000000UL
 #endif
+/* Console register LAYOUT, not just its address. -DHOLY_UART_BASE= moves the
+ * address but cannot change the layout, and the two are different devices:
+ *   16550  (virt, JH7110, icicle): THR is a BYTE at +0; LSR at +5.
+ *   SiFive (FU540/FU740/FE310):    TXDATA is a 32-bit word at +0, bit31 = FULL.
+ * A byte store at +0 of a SiFive UART is not "the same write, narrower" — it is
+ * a partial write to TXDATA that QEMU's min_access_size=4 region does not
+ * accept as a character, and on real silicon is undefined. Boards whose
+ * CONFIG_UART_SIFIVE=y must compile this file with -DHOLY_UART_SIFIVE=1.
+ * Default 0 keeps every existing 16550 smoke byte-identical. */
+#ifndef HOLY_UART_SIFIVE
+#define HOLY_UART_SIFIVE 0
+#endif
+#if HOLY_UART_SIFIVE
+/* LF -> CRLF, matching Kernel/Drv/RVSifiveYes.HC's RVSifiveUartPutS. Both halves of the
+ * image write to one terminal, and translating in only one of them staggers the C runtime's
+ * ORACLE and TRAP lines while the HolyC lines come out straight -- which reads like two
+ * separate bugs. Only the SiFive branch: the 16550 default stays byte-identical. */
+static void putc_uart(int c) {
+  volatile uint32_t *tx = (volatile uint32_t *)UART_BASE;
+  if (c == '\n') {
+    while (*tx & 0x80000000u)
+      ;
+    *tx = (uint32_t)'\r';
+  }
+  while (*tx & 0x80000000u) /* TXDATA.FULL */
+    ;
+  *tx = (uint32_t)(unsigned char)c;
+}
+#else
 volatile unsigned char *const uart = (volatile unsigned char *)UART_BASE;
 static void putc_uart(int c) {
   *uart = (unsigned char)c;
 }
+#endif
 /* Bump heap for the runtime's MAlloc (the blob's own data lives in .user_blob). */
 /* Bump heap for imported MAlloc — Kernel boot + Compiler_RV CInit need far more than 1MB
  * (AsmHashLoad HashTableNew + defines). Prefer guest Kernel MAlloc once self-resolved. */

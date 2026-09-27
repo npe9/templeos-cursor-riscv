@@ -4,9 +4,43 @@
 .section .text.init
 .global _start
 
+/* Which hart runs the image. 0 on every board where hart 0 is a full application
+ * core. NOT the FU740/FU540: there hart 0 is the S7/E51 management core, which is
+ * rv64imac — no F, no D — while harts 1..4 are U74/U54 (rv64gc). This image is built
+ * -march=rv64imafdc -mabi=lp64d, so on those SoCs it must run on hart 1, and a
+ * `bnez t0, halt` gate would pin it to precisely the hart that cannot execute it.
+ * Verified under -M sifive_u: cpu 0 misa=0x8000000000101105 (D clear),
+ * cpu 1 misa=0x800000000014112d (D set). See tests/exec/harness/hello_unmatched.S. */
+#ifndef BOOT_HARTID
+#define BOOT_HARTID 0
+#endif
 _start:
     csrr t0, mhartid
+#if BOOT_HARTID == 0
     bnez t0, halt
+#else
+    li t1, BOOT_HARTID
+    bne t0, t1, halt
+#endif
+    # Mask interrupts before anything else, because this image is no longer only ever
+    # entered from reset. A JTAG takeover (tests/gdb/unmatched_takeover.gdb) enters it on
+    # a hart that firmware was using, and on the Unmatched OpenSBI leaves mie=0x8 (MSIE,
+    # for its IPIs) and its own mtvec installed. If mstatus.MIE is then set — which
+    # RVTrapInit does — a pending machine software interrupt fires into a handler that
+    # knows nothing about OpenSBI's IPI protocol. The takeover script masks these too,
+    # but doing it here is what makes the image safe to enter from ANY prior state,
+    # including as the SPL's next stage with no debugger involved. From reset these are
+    # already zero, so this costs two instructions and changes nothing on any board that
+    # boots normally.
+    csrw mie, zero            # no source enabled
+    csrci mstatus, 8          # mstatus.MIE = 0 (global gate off)
+    # PMP is deliberately NOT touched. After a takeover we inherit OpenSBI's entries
+    # (measured: pmpcfg0=0x1f1b181818 fencing the CLINT and firmware off from S/U), and
+    # none of them has the L (lock) bit 0x80 set — so they do not apply to M-mode, which
+    # is the only mode this kernel ever runs in. There is nothing to undo, and writing
+    # PMP here would only risk locking ourselves out of the firmware region we are
+    # allowed to reuse.
+    #
     # Install a trap vector FIRST. Without one, mtvec is 0, so any fault jumps to
     # address 0, faults again fetching there, and loops forever — a silent hang with
     # no output, indistinguishable from an infinite loop.
