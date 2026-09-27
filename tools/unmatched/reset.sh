@@ -27,12 +27,22 @@ try:
     else:
         for _ in range(3): tcl("riscv dmi_write 0x10 0x1")
         dc=tcl("riscv dmi_read 0x10"); ds=tcl("riscv dmi_read 0x11"); print("released: dmcontrol=%s dmstatus=%s"%(dc,ds))
-        sys.exit(0 if dc.lower()=="0x1" else 1)
+        # dmstatus.anyhavereset (bit 18) is the DM's own record that the hart was reset since the
+        # last ack. Without it the assert was lost to the DMI floor (it happened: "released" and
+        # then no SPL for three minutes) and the caller must assert again.
+        try: hr=(int(ds,16)>>18)&1
+        except ValueError: hr=0
+        print("havereset=%d"%hr)
+        sys.exit(0 if dc.lower()=="0x1" and hr else 1)
 except Exception as e: print("dmi:",e); sys.exit(1)
 PY
 }
-(timeout 30 openocd -f $CFG -c init > $S/oocd_rst_a.log 2>&1 &); sleep 5; dmi assert
-pkill -f "openocd -f $CFG"; sleep 2
-(timeout 30 openocd -f $CFG -c init > $S/oocd_rst_b.log 2>&1 &); sleep 5; dmi release; rc=$?
-pkill -f "openocd -f $CFG"; sleep 1
-[ $rc = 0 ] && echo "reset: released; expect SPL on the console within ~5 s" || { echo "reset: release NOT confirmed (rc=$rc) — the board may be held in reset; rerun"; exit 1; }
+for attempt in 1 2 3; do
+  (timeout 30 openocd -f $CFG -c init > $S/oocd_rst_a.log 2>&1 &); sleep 5; dmi assert
+  pkill -f "openocd -f $CFG"; sleep 2
+  (timeout 30 openocd -f $CFG -c init > $S/oocd_rst_b.log 2>&1 &); sleep 5; dmi release; rc=$?
+  pkill -f "openocd -f $CFG"; sleep 1
+  [ $rc = 0 ] && { echo "reset: confirmed (havereset) on attempt $attempt; expect SPL on the console within ~5 s"; exit 0; }
+  echo "reset: attempt $attempt not confirmed (rc=$rc) — asserting again"
+done
+echo "reset: NOT confirmed after 3 attempts — the board may be held in reset or the assert keeps getting lost"; exit 1

@@ -201,11 +201,16 @@ any QEMU machine; each is named here with its evidence because the next port wil
 1. **The demo's own UART.** `kernel_repl_exepubs_demo.hc` byte-stored banners to virt's
    `0x10000000`, which on the FU740 is the PRCI (clock controller). Found by the board agent from an
    in-sync map; the build now writes a variant that delegates to the selected driver and asserts it.
-2. **Memory assumed zero.** `MAlloc+0x168`: `ld a0,32(s1)` with `s1 = -1` → `mtval=0x1f`. A
-   heap-control pointer read from DDR the image never wrote: QEMU's RAM is zero, the board's holds
-   what the last boot left (`0xff…` here). Proven by `mw.q 0x80740000 0 0xf18000` in U-Boot before
-   the takeover, which moved the fault to bug 3. Workaround is that pre-command; the kernel fix
-   (zero what it assumes zero) is still owed.
+2. **Memory assumed zero.** `MAlloc+0x168`: `ld a0,32(s1)` with `s1 = -1` → `mtval=0x1f`. Root
+   cause (board agent, reproduced on the model byte for byte with a `-device loader` 0xff fill):
+   `Kernel/KBootRV.HC` puts `the_heap`'s 1 KiB control block at a **fixed 0x82000000** that no
+   section covers and nothing zeroes; QEMU's RAM is zero, the board's held `0xff`, and MAlloc read
+   a free-list head of -1. Fixed in `tests/exec/harness/crt0.S`: zero `__bss_start..__bss_end`
+   (NOBITS, only ever zero by layout luck) and a `ZERO_BASE/ZERO_LEN` window, before `sp` is set.
+   Gate: `TOS_REPL_DIRTY_DDR=1 tests/scripts/run_repl_unmatched_smoke.sh` pre-fills the window with
+   `0xff` and still requires `2+3` → `5`; it fails on purpose with the zeroing removed. Proven on
+   the board the same night with no `mw.q` pre-command. (The `UNMATCHED_UBOOT_PRE` hook stays as a
+   diagnostic lever — it is how the class was proven — but nothing needs it now.)
 3. **Misaligned loads trap.** `BlkDevLock+0x114`, `mcause=4`, `mtval=0x82044834`: an I64 at
    offset 100 of a packed class. The U74 traps misaligned accesses; OpenSBI emulates them only for
    S-mode; QEMU never traps. Fixed for good in the C runtime: `bootstrap/holy_misaligned.h` emulates
@@ -219,3 +224,19 @@ any QEMU machine; each is named here with its evidence because the next port wil
 Also learned: after a takeover, `dmi_csrs`-style reads of `dpc/mcause/mepc/mtval` with the hart
 briefly halted are the fastest diagnosis on this board — every one of the four above was named
 that way within minutes, where the console alone said nothing.
+
+## Also found on the way (not board-specific)
+
+- **`*p->arr` on a member array loaded 8 bytes** (`host/parser.c`, commit `896e92ab`): the
+  2026-08-27 deref fix covered local arrays only. `RedSeaFilesFind`'s `*tmpde->name!='.'` read
+  `".."` as `0x2e2e`, sent the parent entry down the recurse branch, and every
+  `FilesFind(FUF_RECURSE)` recursed into its own parent until `the_heap` itself was overwritten —
+  the tier-1 agent's `DirNameAbs mtval=0x70`. Found with `the_heap` markers compiled from a scratch
+  copy of the include tree (`HOLYC_INCLUDE_ROOT=<copy>`), after gdb watchpoints proved unusable in
+  batch mode against QEMU's stub (`continue` returns at once: "target is running").
+- **The REPL swallows the first keystroke after its banner** on the board (`2+3;` evaluates as
+  `+3;` → `ans=3`; everything after is exact). Startup RX race, not arithmetic; open.
+- **Do not run `run_repl_unmatched_smoke.sh` while anything else compiles the kernel.** It swaps
+  `Kernel/RVAutoConf.HH` and `Kernel/Drv/*Selected.HH` to the SiFive UART under a restoring trap;
+  a kernel compile from another process in that window inherits the SiFive UART and store-faults
+  at `0x10010008` on `virt` (`kernel-fsshell-smoke` did, during a concurrent `qemu-integration`).

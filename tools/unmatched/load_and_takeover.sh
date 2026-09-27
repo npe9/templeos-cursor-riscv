@@ -56,8 +56,10 @@ else
   for i in $(seq 1 60); do sleep 3; screen -S $SPID -X hardcopy $S/win.txt; grep -qE "Total Size|abort|error" $S/win.txt && break; done
   grep -E "Total Size" $S/win.txt | tail -1
 fi
-screen -S $SPID -X stuff "crc32 0x80200000 $SZ"$'\r'; sleep 4; screen -S $SPID -X hardcopy $S/win.txt
-got=$(grep -A1 "^=> crc32" $S/win.txt | tail -1 | awk '{print $NF}'); echo "crc32 ddr=$got file=$CRC"
+# U-Boot's crc32 over a 5 MB image takes longer than a fixed sleep: poll for the "==>" line (up to 60 s).
+screen -S $SPID -X clear; sleep 0.3; screen -S $SPID -X stuff "crc32 0x80200000 $SZ"$'\r'
+got=""; for i in $(seq 1 30); do sleep 2; screen -S $SPID -X hardcopy $S/win.txt; got=$(grep -E "^crc32 for .* ==> " $S/win.txt | tail -1 | awk '{print $NF}'); [ -n "$got" ] && break; done
+echo "crc32 ddr=$got file=$CRC (after $((i*2)) s)"
 [ "$got" = "$CRC" ] || { echo "CRC MISMATCH — not taking over"; exit 1; }
 # UNMATCHED_UBOOT_PRE: U-Boot commands to run after the image is in DDR and before the takeover,
 # e.g. `mw.q 0x80740000 0 0xf18000` to zero DDR above the image (QEMU's RAM is zero for free; the
