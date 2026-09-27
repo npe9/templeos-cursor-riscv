@@ -18,6 +18,14 @@
 # Usage: run_repl_unmatched_smoke.sh
 # Artifacts: build/exec/repl_unmatched.elf / .bin
 #
+# TOS_REPL_DIRTY_DDR=1 pre-fills the heap-control window with 0xff before the image runs.
+# QEMU hands out ZEROED RAM, so every gate in this tree has been testing against pristine
+# memory that no real board provides -- and Kernel/KBootRV.HC puts `CHeapCtrl *the_heap` at a
+# fixed 0x82000000 that nothing ever zeroes. This mode is the model of a board's DDR, and it
+# reproduced the exact failure a HiFive Unmatched showed (blob+0x115f20, MAlloc+0x168,
+# `ld a0,32(s1)` with s1 = -1) before crt0 started zeroing that window. Run it this way and the
+# image must STILL reach the prompt.
+#
 # NEGATIVE CONTROL: TOS_REPL_BREAK=dflt16550 links the same blob against the default 16550
 # harness. The REPL's own output goes through the C runtime's HOLY_RT_PUTC, so unlike the
 # plat demo it should go completely silent — which is the difference between this board's C
@@ -37,6 +45,7 @@ READELF="${RISCV_READELF:-riscv64-unknown-elf-readelf}"
 QEMU="${QEMU_SYSTEM:-qemu-system-riscv64}"
 TIMEOUT="timeout"; command -v gtimeout >/dev/null 2>&1 && TIMEOUT="gtimeout"
 BREAK="${TOS_REPL_BREAK:-}"
+DIRTY="${TOS_REPL_DIRTY_DDR:-}"
 ENTRY=0x80200000
 UART_BASE=0x10010000
 UART_IRQ=39
@@ -135,8 +144,19 @@ fi
 "$GCC" $CFLAGS $ORACLE_DEFS -c "$HARNESS/oracle_out.c" -o "$ORACLE_OBJ" \
   || { echo "FAIL repl-unmatched — harness compile" >&2; exit 1; }
 # shellcheck disable=SC2086
-"$GCC" $CFLAGS -DBOOT_HARTID=1 -c "$HARNESS/crt0.S" -o "$CRT_OBJ" \
-  || { echo "FAIL repl-unmatched — crt0" >&2; exit 1; }
+# Kernel/KBootRV.HC puts `CHeapCtrl *the_heap` at a FIXED 0x82000000 with heap_next at
+# 0x82000400 -- a 1 KiB control block that no section covers and nothing ever zeroes. MAlloc's
+# first act is to read the_heap->malloc_free_lst: 0 means "empty free list" and takes the bump
+# path, 0xff means a list head of -1 and `f->size` then loads through -1. QEMU hands out zeroed
+# RAM so this was invisible for the whole port; the board's DDR held 0xff and the image died at
+# MAlloc+0x168 with s1 = -1. crt0 now zeroes it.
+HEAPCTL_BASE=0x82000000
+HEAPCTL_LEN=0x400
+CRT_OBJ="$OUTDIR/crt0-hart1-zero${HEAPCTL_BASE}.o"
+# shellcheck disable=SC2086
+"$GCC" $CFLAGS -DBOOT_HARTID=1 -DZERO_BASE=${HEAPCTL_BASE} -DZERO_LEN=${HEAPCTL_LEN} \
+  -c "$HARNESS/crt0.S" -o "$CRT_OBJ" \
+  || { echo "FAIL repl-unmatched -- crt0" >&2; exit 1; }
 
 # --- the HolyC half -----------------------------------------------------------------
 # --- the case's own console is virt-hardwired; build a board variant of it --------------
@@ -268,7 +288,16 @@ feed() {
     select(undef,undef,undef,3);
   '
 }
-feed | $TIMEOUT 75 "$QEMU" -M sifive_u -smp 2 -bios none \
+# Poison the heap-control window first, so the payload loader that follows wins everywhere
+# the two overlap and only the window the image treats as pristine is left dirty.
+DIRTY_ARGS=""
+if [ -n "$DIRTY" ]; then
+  python3 -c "open('$R/ff.bin','wb').write(b'\xff' * 0x10000)"
+  DIRTY_ARGS="-device loader,file=$R/ff.bin,addr=0x82000000"
+  echo "repl-unmatched: DIRTY DDR -- 0xff at 0x82000000 +0x10000 (the_heap's control block)"
+fi
+# shellcheck disable=SC2086
+feed | $TIMEOUT 75 "$QEMU" -M sifive_u -smp 2 -bios none $DIRTY_ARGS \
   -device "loader,file=$OUTDIR/repl_unmatched.bin,addr=$ENTRY" \
   -device "loader,addr=$ENTRY,cpu-num=1" -nographic >"$R/out.log" 2>&1
 tr -d '\r' <"$R/out.log" >"$R/out.txt"
@@ -327,7 +356,11 @@ PYEOF
 fi
 
 if [ "$rc" -eq 0 ]; then
-  echo "repl-unmatched: OK — FU740 REPL image evaluated 2+3 to 5 over the SiFive UART"
+  if [ -n "$DIRTY" ]; then
+    echo "repl-unmatched: OK (dirty DDR) -- evaluated 2+3 to 5 with 0xff in the heap window"
+  else
+    echo "repl-unmatched: OK -- FU740 REPL image evaluated 2+3 to 5 over the SiFive UART"
+  fi
 else
   echo "repl-unmatched: FAIL" >&2
 fi

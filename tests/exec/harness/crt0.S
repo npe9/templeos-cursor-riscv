@@ -50,6 +50,41 @@ _start:
     # which is where the faults nobody could see were happening.
     la t0, trap_entry         # 4-aligned => mtvec MODE=0 (direct)
     csrw mtvec, t0
+    # Zero the memory this image ASSUMES is zero, because on real DRAM it is not.
+    #
+    # QEMU hands out zeroed RAM, so every gate in this tree has been testing against pristine
+    # memory. A HiFive Unmatched's DDR held 0xff and the REPL image died in MAlloc reading a
+    # heap-control pointer out of a window nobody had written: Kernel/KBootRV.HC puts
+    # `CHeapCtrl *the_heap` at a FIXED 0x82000000 and MAlloc's first act is
+    # `the_heap->malloc_free_lst`. Zero reads as an empty free list and takes the bump path;
+    # 0xff reads as a list head of -1, and `f->size` then loads through -1. Reproduced on the
+    # model by pre-filling 0x82000000..0x86000000 with 0xff via -device loader: the same
+    # blob+0x115f20 the board reported.
+    #
+    # Two ranges. Both are done BEFORE sp is set, so the loop can never be zeroing the stack
+    # it is standing on.
+    #
+    #   __bss_start/__bss_end  .bss is NOBITS, so `objcopy -O binary` emits nothing for it. It
+    #                          has only ever been zero because it happens to sit BELOW a later
+    #                          fixed-VMA section, which makes objcopy pad the gap — layout luck,
+    #                          not a guarantee. Every linker script that uses this crt0 defines
+    #                          these two symbols, and until now nothing referenced them.
+    #   ZERO_BASE/ZERO_LEN     a window the image treats as pristine that no section covers, so
+    #                          no linker symbol can describe it. Passed as -D (materialised with
+    #                          li, which handles a full 64-bit address — `la` on a weak
+    #                          undefined symbol would be a PC-relative range error). Default 0,
+    #                          which emits no second loop at all.
+    la t0, __bss_start
+    la t1, __bss_end
+    call zero_range
+#ifndef ZERO_LEN
+#define ZERO_LEN 0
+#endif
+#if ZERO_LEN > 0
+    li t0, ZERO_BASE
+    li t1, ZERO_BASE + ZERO_LEN
+    call zero_range
+#endif
     li t0, (1 << 13)          # mstatus.FS = Initial: F64 code traps otherwise
     csrs mstatus, t0
     la sp, __stack_top
@@ -65,6 +100,19 @@ after_user:
 halt:
     wfi
     j halt
+
+# zero_range(t0 = start, t1 = end): byte loop, so it needs no alignment guarantee from the
+# linker script and cannot overrun the end. Uses NO STACK — it is called before sp exists —
+# and clobbers only t0. 284 KiB of .bss is a few hundred thousand stores, which is nothing
+# once at boot and is the difference between running on real DRAM and not.
+zero_range:
+    bgeu t0, t1, 2f
+1:
+    sb zero, 0(t0)
+    addi t0, t0, 1
+    bltu t0, t1, 1b
+2:
+    ret
 
 # Fatal-fault handler: report mcause/mepc/mtval and stop. Runs on its own stack
 # because the faulting sp may be exactly what is broken. Does not return — a trap
