@@ -709,13 +709,34 @@ asm {
 	fmvxd	a0,fa0
 	ret
 }
-// GetTSC: read the RISC-V time CSR (rdtime = csrrs a0,time,x0), replacing x86 RDTSC. Used for
-// timestamps/unique ids (FileSysRedSea unique_id, Mouse/Keyboard timing).
+// GetTSC: a monotonic tick count, replacing x86 RDTSC. Used for timestamps and unique ids
+// (FileSysRedSea unique_id, Mouse/Keyboard timing).
+//
+// This was `rdtime a0`, and that is an ILLEGAL INSTRUCTION on a SiFive core. SiFive's
+// U-series does not implement the `time` CSR in the core at all: `rdtime` traps, and the
+// convention is that M-mode firmware emulates it for S-mode. TempleOS/RV is M-mode with its
+// own mtvec, so after a JTAG takeover nothing emulates it and the first timestamp is a hard
+// illegal-instruction. Measured on -M sifive_u, which reproduces the FU740 here:
+//   TRAP mcause=0x2 (illegal-insn) mtval=0xc0102573   <- csrrs a0,time,x0
+// It survived this long because -M virt's default CPU is the generic `rv64`, which DOES
+// implement `time` — so every existing gate ran on the one machine where it works.
+//
+// Where there is a CLINT, its memory-mapped mtime is the right read for an M-mode kernel:
+// same counter, no CSR, and already this tree's idiom (Kernel/RVDocVT.HC:423). Boards with
+// no CLINT at all (OpenTitan and MicroBlaze-V have `# CONFIG_HAS_CLINT is not set`) keep
+// `rdtime`, which is the only thing they have.
+#ifdef CONFIG_HAS_CLINT
+I64 GetTSC()
+{
+  return *(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF);
+}
+#else
 asm {
 	GetTSC::
 	rdtime	a0
 	ret
 }
+#endif
 // CPU status/introspection -> RISC-V CSR equivalents (replacing x86 RFLAGS/CPUID/INVLPG).
 // GetRFlags/SetRFlags read/write mstatus (the M-mode status register, RISC-V's flags analog).
 asm {

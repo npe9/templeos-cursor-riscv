@@ -175,12 +175,18 @@ static HRT_I64 HolyToUpper(HRT_I64 c) { return (c >= 'a' && c <= 'z') ? c - 32 :
 static HRT_I64 HolyToLower(HRT_I64 c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
 static HRT_U64 rt_rand_state = 0x9E3779B97F4A7C15ULL;
 static HRT_I64 HolyRandI64(void) { HRT_U64 x = rt_rand_state; x ^= x << 13; x ^= x >> 7; x ^= x << 17; rt_rand_state = x; return (HRT_I64)x; }
+/* Monotonic ticks. NOT `rdtime`: SiFive cores (FU540/FU740/FE310) do not implement the
+ * `time` CSR, so that instruction traps as illegal, and an M-mode kernel with its own mtvec
+ * has nothing to emulate it. The CLINT's memory-mapped mtime is the same counter.
+ * Defined below, next to HOLY_MTIME, whose macros it uses. */
+static HRT_U64 holy_rt_ticks(void);
+
 static HRT_I64 HolyRandU16(void) { return (HRT_I64)((HRT_U64)HolyRandI64() >> 48); }
 static HRT_I64 HolyYorN(void) { return 0; }   /* no keyboard: answer "no" */
-/* tS: seconds since boot as F64 (returned as raw bits; the compiler types it F64) */
+/* tS: seconds since boot as F64 (returned as raw bits; the compiler types it F64).
+ * CLINT mtime, not the `time` CSR — see holy_rt_ticks. */
 static HRT_I64 HolytS(void) {
-  HRT_U64 t;
-  __asm__ volatile("rdtime %0" : "=r"(t));
+  HRT_U64 t = holy_rt_ticks();
   double s = (double)t / 10000000.0;   /* QEMU virt timebase 10 MHz */
   HRT_I64 bits; HRT_U8 *sp = (HRT_U8 *)&s, *bp = (HRT_U8 *)&bits;
   for (int i = 0; i < 8; i++) bp[i] = sp[i];
@@ -322,7 +328,7 @@ static HRT_I64 HolySetRFlags(HRT_I64 f) { (void)f; return 0; }
 static HRT_I64 HolyCPUId(HRT_I64 rax, HRT_U8 *res) { (void)rax; for (int i = 0; i < 32; i++) res[i] = 0; return 0; }
 static HRT_I64 HolyInvlPg(HRT_U8 *a) { (void)a; return 0; }
 static HRT_I64 HolySysHlt(void) { __asm__ volatile("wfi"); return 0; }
-static HRT_I64 HolyGetTSC(void) { HRT_U64 t; __asm__ volatile("rdtime %0" : "=r"(t)); return (HRT_I64)t; }
+static HRT_I64 HolyGetTSC(void) { return (HRT_I64)holy_rt_ticks(); }
 static HRT_I64 HolyCaller(HRT_I64 n) { (void)n; return 0; }
 typedef struct HolyQue { struct HolyQue *next, *last; } HolyQue;
 static HRT_I64 HolyQueInit(HolyQue *h) { h->next = h->last = h; return 0; }
@@ -430,6 +436,20 @@ static HRT_I64 HolyFarCall32(HRT_I64 a, HRT_I64 b, HRT_I64 c, HRT_I64 d) { (void
 #endif
 #define HOLY_MTIME           (HOLY_CLINT_BASE + HOLY_CLINT_MTIME_OFF)
 #define HOLY_MTIMECMP        (HOLY_CLINT_BASE + HOLY_CLINT_MTIMECMP_OFF)
+
+/* Forward-declared far above, next to the other runtime accessors. Uses HOLY_MTIME rather
+ * than a literal 0xBFF8 so a board that overrides HOLY_CLINT_MTIME_OFF is still read
+ * correctly. HOLY_NO_CLINT=1 falls back to rdtime for a board that has no CLINT at all,
+ * which is the only thing such a board has. */
+static HRT_U64 holy_rt_ticks(void) {
+#ifdef HOLY_NO_CLINT
+  HRT_U64 t;
+  __asm__ volatile("rdtime %0" : "=r"(t));
+  return t;
+#else
+  return *(volatile HRT_U64 *)HOLY_MTIME;
+#endif
+}
 #ifndef HOLY_VIRTIO_MMIO_BASE
 #define HOLY_VIRTIO_MMIO_BASE 0x10001000ULL
 #endif

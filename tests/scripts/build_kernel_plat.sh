@@ -179,17 +179,34 @@ elif [ "$DEFCONFIG" = hifive_unmatched ]; then
   LINK_LD="$HARNESS/link_hifive_unmatched.ld"
 fi
 
+# Every board: tell the C harness where the CLINT and PLIC actually are. This used to be
+# passed only for SiFive-UART boards, which was enough while holy_rt.h only used the CLINT for
+# its timer. It now reads mtime as the tick source for GetTSC/tS (rdtime is an illegal
+# instruction on SiFive cores), so a wrong base is a wrong timestamp -- and xiangshan's CLINT
+# is at 0x38000000 while the header defaults to virt's 0x02000000.
+if [ -n "$CFG_CLINT_BASE" ]; then
+  ORACLE_DEFS="$ORACLE_DEFS -DHOLY_CLINT_BASE=${CFG_CLINT_BASE}ULL"
+  ORACLE_TAG="clint${CFG_CLINT_BASE}"
+else
+  # No CLINT at all (amd_microblaze_v, opentitan): rdtime is the only tick source there.
+  ORACLE_DEFS="$ORACLE_DEFS -DHOLY_NO_CLINT=1"
+  ORACLE_TAG="noclint"
+fi
+if [ -n "$CFG_PLIC_BASE" ]; then
+  ORACLE_DEFS="$ORACLE_DEFS -DHOLY_PLIC=${CFG_PLIC_BASE}"
+fi
+# The flags are in the object path for the same reason as below: the staleness test is
+# mtime-only, so a differently-flagged object would be served to the next board unchanged.
+ORACLE_OBJ="$EXEC_DIR/oracle_out-${ORACLE_TAG}.o"
+
 # SiFive-UART boards (not sifive_e, which already has its own slim SiFive oracle):
 # compile the full oracle for the SiFive register LAYOUT at the board's own base.
 # -DHOLY_UART_BASE alone cannot do this — TXDATA is a 32-bit word at +0 with a FULL
 # bit, not a byte THR, and RXDATA is at +4, not an LSR at +5.
 if [ "$CFG_UART_SIFIVE" = y ] && [ "$DEFCONFIG" != sifive_e ]; then
-  ORACLE_DEFS="-DHOLY_UART_SIFIVE=1 -DUART_BASE=${CFG_UART_BASE}UL -DHOLY_UART_BASE=${CFG_UART_BASE}ULL"
-  ORACLE_DEFS="$ORACLE_DEFS -DHOLY_UART_IRQ=${CFG_UART_IRQ:-0} -DHOLY_CLINT_BASE=${CFG_CLINT_BASE}ULL -DHOLY_PLIC=${CFG_PLIC_BASE}"
-  # The variant MUST NOT share oracle_out.o: the staleness test below is mtime-only,
-  # so a differently-flagged object would be served to the next board unchanged.
-  # Encoding the flags in the path makes that impossible.
-  ORACLE_OBJ="$EXEC_DIR/oracle_out-sfu-${CFG_UART_BASE}-irq${CFG_UART_IRQ:-0}.o"
+  ORACLE_DEFS="$ORACLE_DEFS -DHOLY_UART_SIFIVE=1 -DUART_BASE=${CFG_UART_BASE}UL -DHOLY_UART_BASE=${CFG_UART_BASE}ULL"
+  ORACLE_DEFS="$ORACLE_DEFS -DHOLY_UART_IRQ=${CFG_UART_IRQ:-0}"
+  ORACLE_OBJ="$EXEC_DIR/oracle_out-sfu-${CFG_UART_BASE}-irq${CFG_UART_IRQ:-0}-${ORACLE_TAG}.o"
 fi
 
 need_oracle=0
