@@ -4,7 +4,15 @@ SPID="${UNMATCHED_SCREEN_PID:?pid of the screen session on the console port}"; S
 IMG="${1:?path to the flat binary to load at 0x80200000}"; SZ=$(printf '0x%x' $(wc -c < $IMG)); CRC=$(python3 -c "import zlib;print('%08x'%(zlib.crc32(open('$IMG','rb').read())&0xffffffff))")
 cd /Users/npe/src/templeos-cursor-riscv
 screen -S $SPID -X clear; sleep 0.3; seen_boot=0
+# UNMATCHED_NO_RESET=1: the board is already parked at a clean U-Boot prompt (nothing was run since
+# the last boot), so do not make a human press reset just to see the banner again — the DDR image
+# is rewritten by tftp anyway. Still verify that a prompt answers.
+if [ -n "$UNMATCHED_NO_RESET" ]; then
+  screen -S $SPID -X stuff $'\r'; sleep 1; screen -S $SPID -X hardcopy $S/win.txt
+  [ "$(grep -vE '^\s*$' $S/win.txt | tail -1)" = "=>" ] && seen_boot=1 || { echo "UNMATCHED_NO_RESET set but no => prompt answers"; exit 1; }
+fi
 for i in $(seq 1 600); do
+  [ "$seen_boot" = 1 ] && [ -n "$UNMATCHED_NO_RESET" ] && break
   screen -S $SPID -X stuff $'\r'; sleep 0.3
   if [ $((i % 6)) -eq 0 ]; then screen -S $SPID -X hardcopy $S/win.txt; sleep 0.1
     grep -qE "OpenSBI|U-Boot 20|Hit any key" $S/win.txt && seen_boot=1
