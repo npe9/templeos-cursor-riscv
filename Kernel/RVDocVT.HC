@@ -410,9 +410,40 @@ public U0 RVVtResizeReports(I64 on)
 //   of the reply are pushed back, because the operator may have typed ahead.
 // SEE ALSO
 //   rv_vt_term_rows  rv_vt_term_cols  AsmUiLayout
+// Re-emit a number the probe already parsed, as the digits it was read from (leading zeros lost,
+// which no terminal sends). Only used to hand a half-read reply back to the line editor.
+U0 RVLedPushDigits(I64 v)
+{
+  U8 d[24];
+  I64 n = 0;
+  if (!v) {
+    RVUartSoftEnqueue('0');
+    return;
+  }
+  while (v > 0) {
+    d[n++] = '0' + v % 10;
+    v /= 10;
+  }
+  while (n > 0)
+    RVUartSoftEnqueue(d[--n]);
+}
+I64 rv_vt_probe_rtt_ms = 0;   // how long the terminal took to answer the last probe that it answered
+// RVVtProbeBudget -- how long a per-prompt probe may wait
+// DESCRIPTION
+//   QEMU's pty answers a DSR in under a millisecond; a real board behind FTDI, a host OS and a
+//   terminal program takes tens of milliseconds, and a probe that gives up before the reply
+//   arrives leaves "ESC[98;133R" in the input for the operator's next line. Twice the measured
+//   round trip plus slack, never under the old 40 ms.
+public I64 RVVtProbeBudget()
+{
+  I64 b = rv_vt_probe_rtt_ms * 2 + 20;
+  if (b < 40)
+    b = 40;
+  return b;
+}
 public I64 RVVtProbeSize(I64 ms = 300)
 {
-  I64 deadline, ch, r = 0, c = 0, st = 0;
+  I64 deadline, ch, r = 0, c = 0, st = 0, t0;
   RVVtSaveCur();
   RVVtGoto(998, 998);
   RVVtCsi();
@@ -420,15 +451,19 @@ public I64 RVVtProbeSize(I64 ms = 300)
   RVVtPut('n');
   RVVtRestoreCur();
   RVVtFlush;
-  deadline = *(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) + ms * (CONFIG_TIMEBASE_FREQ / 1000);
+  t0 = *(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF);
+  deadline = t0 + ms * (CONFIG_TIMEBASE_FREQ / 1000);
   while (*(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) < deadline) {
     ch = RVUartTryGet;
     if (ch < 0)
       continue;
     if (st == 0) {
-      if (ch == 27)
+      if (ch == 27) {
         st = 1;
-      else
+        // The reply has started: see it through. Giving up between its bytes is how half of
+        // it ("[98;133R") ended up in the operator's first line on the HiFive Unmatched.
+        deadline = *(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) + 200 * (CONFIG_TIMEBASE_FREQ / 1000);
+      } else
         RVUartSoftEnqueue(ch);
       continue;
     }
@@ -454,6 +489,7 @@ public I64 RVVtProbeSize(I64 ms = 300)
       continue;
     }
     if (ch == 'R' && st == 3) {
+      rv_vt_probe_rtt_ms = (*(I64 *)(CONFIG_CLINT_BASE + CONFIG_CLINT_MTIME_OFF) - t0) / (CONFIG_TIMEBASE_FREQ / 1000);
       // Sanity: a terminal smaller than this cannot hold any of these panes, and one this large
       // is a reply we misread. Either way the defaults are better than the answer.
       RVVtSizeSet(r, c);
@@ -464,6 +500,20 @@ public I64 RVVtProbeSize(I64 ms = 300)
     st = 0;
     r = 0;
     c = 0;
+  }
+  // Gave up with a reply half-read: hand back exactly what was consumed, so the line editor's own
+  // CSI parser (which understands "ESC [ r ; c R") gets the whole sequence instead of its tail.
+  // Eating the ESC and leaving "[98;133R" is how that text got pasted into the first line typed.
+  if (st >= 1) {
+    RVUartSoftEnqueue(27);
+    if (st >= 2) {
+      RVUartSoftEnqueue('[');
+      RVLedPushDigits(r);
+      if (st == 3) {
+        RVUartSoftEnqueue(';');
+        RVLedPushDigits(c);
+      }
+    }
   }
   return FALSE;
 }

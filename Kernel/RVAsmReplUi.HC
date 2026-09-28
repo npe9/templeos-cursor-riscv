@@ -442,7 +442,7 @@ U0 AsmUiPrePrompt()
   if (!asmui_ready)
     return;
   if (rv_vt_probe_ok && !rv_vt_inband)
-    RVVtProbeSize(40);
+    RVVtProbeSize(RVVtProbeBudget);   // 40 ms on QEMU's pty; what the terminal needs on a real board
   // A terminal that reports resizes in band has already told us; one that answered a probe once
   // but says nothing when it is dragged gets asked again here, cheaply, at the only moment the
   // answer can be read without stealing a keystroke. One that never answered is never asked.

@@ -122,15 +122,33 @@ Bool RVSifiveUartPutS(U8 *st)
   return TRUE;
 }
 
+// A read of rxdata POPS the FIFO (FU740 manual: "reading rxdata dequeues"), so an emptiness test
+// that reads it throws the byte away. DataReady used to do exactly that: every polled TryGet on the
+// HiFive Unmatched lost the first byte it saw and returned the second — the ESC of every terminal
+// reply the size probe waited for, which is how "[98;133R" got pasted into the first line typed.
+// The one read is kept here until GetC asks for it.
+I64 rv_sifive_rx_pending = -1;
+
 Bool RVSifiveUartDataReady()
 {
-  U32 *u = CONFIG_UART_BASE;
-  return (u[1] & 0x80000000) == 0;
+  U32 *u = CONFIG_UART_BASE, v;
+  if (rv_sifive_rx_pending >= 0)
+    return TRUE;
+  v = u[1];
+  if (v & 0x80000000)
+    return FALSE;
+  rv_sifive_rx_pending = v & 0xFF;
+  return TRUE;
 }
 
 I64 RVSifiveUartGetC()
 {
   U32 *u = CONFIG_UART_BASE, v;
+  if (rv_sifive_rx_pending >= 0) {
+    v = rv_sifive_rx_pending;
+    rv_sifive_rx_pending = -1;
+    return v;
+  }
   while (TRUE) {
     v = u[1];
     if (!(v & 0x80000000))
