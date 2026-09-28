@@ -159,6 +159,13 @@ CFG_UART_BASE="$(cfg_val CONFIG_UART_BASE)"
 CFG_UART_IRQ="$(cfg_val CONFIG_UART_IRQ)"
 CFG_CLINT_BASE="$(cfg_val CONFIG_CLINT_BASE)"
 CFG_PLIC_BASE="$(cfg_val CONFIG_PLIC_BASE)"
+# Per-hart / per-context offsets. The runtime's defaults are hart 0 / context 0; a board whose image
+# runs on hart 1 (hifive_unmatched) arms a parked hart's mtimecmp and claims on the S7's PLIC context
+# unless these follow the Kconfig the HolyC drivers already use.
+CFG_CLINT_MTIMECMP_OFF="$(cfg_val CONFIG_CLINT_MTIMECMP_OFF)"
+CFG_PLIC_ENABLE_OFF="$(cfg_val CONFIG_PLIC_ENABLE_OFF)"
+CFG_PLIC_THRESHOLD_OFF="$(cfg_val CONFIG_PLIC_THRESHOLD_OFF)"
+CFG_PLIC_CLAIM_OFF="$(cfg_val CONFIG_PLIC_CLAIM_OFF)"
 
 # Shared harness objects (machine-independent RV64).
 # sifive_e uses slim oracle_out_plat.o (16 KiB DTIM); others use full oracle_out.o.
@@ -185,15 +192,16 @@ fi
 # instruction on SiFive cores), so a wrong base is a wrong timestamp -- and xiangshan's CLINT
 # is at 0x38000000 while the header defaults to virt's 0x02000000.
 if [ -n "$CFG_CLINT_BASE" ]; then
-  ORACLE_DEFS="$ORACLE_DEFS -DHOLY_CLINT_BASE=${CFG_CLINT_BASE}ULL"
-  ORACLE_TAG="clint${CFG_CLINT_BASE}"
+  ORACLE_DEFS="$ORACLE_DEFS -DHOLY_CLINT_BASE=${CFG_CLINT_BASE}ULL -DHOLY_CLINT_MTIMECMP_OFF=${CFG_CLINT_MTIMECMP_OFF:-0x4000}ULL"
+  ORACLE_TAG="clint${CFG_CLINT_BASE}-tc${CFG_CLINT_MTIMECMP_OFF:-0x4000}"
 else
   # No CLINT at all (amd_microblaze_v, opentitan): rdtime is the only tick source there.
   ORACLE_DEFS="$ORACLE_DEFS -DHOLY_NO_CLINT=1"
   ORACLE_TAG="noclint"
 fi
 if [ -n "$CFG_PLIC_BASE" ]; then
-  ORACLE_DEFS="$ORACLE_DEFS -DHOLY_PLIC=${CFG_PLIC_BASE}"
+  ORACLE_DEFS="$ORACLE_DEFS -DHOLY_PLIC=${CFG_PLIC_BASE} -DHOLY_PLIC_ENABLE_OFF=${CFG_PLIC_ENABLE_OFF:-0x2000} -DHOLY_PLIC_THRESHOLD_OFF=${CFG_PLIC_THRESHOLD_OFF:-0x200000} -DHOLY_PLIC_CLAIM_OFF=${CFG_PLIC_CLAIM_OFF:-0x200004}"
+  ORACLE_TAG="${ORACLE_TAG}-pe${CFG_PLIC_ENABLE_OFF:-0x2000}"
 fi
 # SiFive-UART boards (not sifive_e, which already has its own slim SiFive oracle):
 # compile the full oracle for the SiFive register LAYOUT at the board's own base.

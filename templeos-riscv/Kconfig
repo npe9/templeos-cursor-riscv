@@ -353,6 +353,14 @@ config UART_IRQ
 	  PLIC source for the console UART. Icicle MMUART0 = 90. Shakti QEMU
 	  does not connect UART to PLIC — leave 0.
 
+config GEM_IRQ
+	int "Cadence GEM (SiFive ethernet) PLIC IRQ number"
+	default 55 if PLATFORM_HIFIVE_UNMATCHED
+	default 53
+	help
+	  FU740 (fu740-c000.dtsi): ethernet@10090000 interrupts = <55>; 53 there is I2C1.
+	  FU540 and QEMU sifive_u: 53.
+
 config UART_REG_SHIFT
 	int "16550 register shift (0=byte, 2=word-spaced)"
 	depends on UART_16550
@@ -465,6 +473,7 @@ config CLINT_MTIME_OFF
 
 config CLINT_MTIMECMP_OFF
 	hex "mtimecmp hart0 offset from CLINT"
+	default 0x4008 if PLATFORM_HIFIVE_UNMATCHED || PLATFORM_SIFIVE_U
 	default 0x4000
 
 config HAS_IBEX_TIMER
@@ -518,16 +527,19 @@ config PLIC_BASE
 
 config PLIC_ENABLE_OFF
 	hex "PLIC context-0 enable offset"
+	default 0x2080 if PLATFORM_HIFIVE_UNMATCHED || PLATFORM_SIFIVE_U
 	default 0x2000
 	depends on HAS_PLIC
 
 config PLIC_THRESHOLD_OFF
 	hex "PLIC context-0 threshold offset"
+	default 0x201000 if PLATFORM_HIFIVE_UNMATCHED || PLATFORM_SIFIVE_U
 	default 0x200000
 	depends on HAS_PLIC
 
 config PLIC_CLAIM_OFF
 	hex "PLIC context-0 claim/complete offset"
+	default 0x201004 if PLATFORM_HIFIVE_UNMATCHED || PLATFORM_SIFIVE_U
 	default 0x200004
 	depends on HAS_PLIC
 

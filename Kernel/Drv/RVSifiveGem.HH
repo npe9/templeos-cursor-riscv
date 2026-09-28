@@ -58,7 +58,12 @@
 #define RVSIFIVE_GEM_RX_SOF   0x00004000
 #define RVSIFIVE_GEM_RX_EOF   0x00008000
 #define RVSIFIVE_GEM_RX_LEN   0x00001FFF
+// FU540 / QEMU sifive_u: 53. FU740: 55 (53 is I2C1 there) -- from Kconfig when the board says so.
+#ifdef CONFIG_GEM_IRQ
+#define RVSIFIVE_GEM_IRQ      CONFIG_GEM_IRQ
+#else
 #define RVSIFIVE_GEM_IRQ      53
+#endif
 #define RVSIFIVE_GEM_MTU      1536
 #define RVSIFIVE_GEM_QSZ      2
 #endif

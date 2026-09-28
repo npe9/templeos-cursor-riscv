@@ -320,3 +320,43 @@ image's include closure:
   never take, and the stubs are `U0` or return cancel. The honest fix is to include those two files
   once `PopUp` windows exist on the serial port; until then this is the list to re-check whenever a
   DolDoc feature moves.
+
+## Devices, audited against the FU740 device tree (2026-09-28)
+
+Source: `fu740-c000.dtsi` from the U-Boot 2025.01 tree that runs on the board. What the image uses,
+and what it gets wrong on a kernel that runs on **hart 1**:
+
+| block | base | IRQ(s) | image's use | verdict |
+|---|---|---|---|---|
+| CLINT | `0x02000000` | — | `mtime` `+0xBFF8`; `mtimecmp` **`+0x4000`** | **wrong hart**: `mtimecmp[h]` is `+0x4000+8h` → `0x4008`; `msip[h]` `+4h` (unused) |
+| PLIC | `0x0C000000` | ndev 69 | enable `+0x2000`, threshold `+0x200000`, claim `+0x200004` | **wrong context**: contexts are `cpu0 M=0, cpu1 M=1, cpu1 S=2, cpu2 M=3 …`; hart 1 M-mode is **1**: enable `+0x2080`, threshold `+0x201000`, claim `+0x201004` |
+| UART0 | `0x10010000` | 39 | console (SiFive UART, polled + RX IRQ for break) | correct |
+| UART1 | `0x10011000` | 40 | — | — |
+| GEM | `0x10090000` | **55** | `RVSifiveGem.HH` hardcodes **53** (FU540 / QEMU `sifive_u`) | **wrong on FU740** (53 is I2C1) |
+| QSPI0/1 | `0x10040000/41000` | 41/42 | — | SPI flash (U-Boot env "bad CRC" lives here) |
+| QSPI2 | `0x10050000` | 43 | — | the SD card (`spi@10050000:mmc@0`): the path to a real RedSea disk on this board |
+| I2C0/1 | `0x10030000/31000` | 52/53 | — | — |
+| PWM0/1 | `0x10020000/21000` | 44–47 / 48–51 | — | — |
+| GPIO | `0x10060000` | 23–38 | — | — |
+| L2 cache ctrl | `0x02010000` | 19–22 | — | firmware-configured; way masking untouched |
+| PRCI | `0x10000000` | — | — | firmware-configured clocks; the demo's old `0x10000000` byte store hit this |
+| DDR ctrl | `0x100B0000` | — | — | firmware-trained; never touched |
+| PCIe | `0x0E000000` (mgmt), window `0x60000000` | 56–64 | — | U-Boot reports `Link up (Gen1-x8)`; untouched |
+
+Consequences on silicon before the fix: the timer interrupt armed a parked hart's comparator, so
+preemption, `Sleep`, and the scheduler tick never fired; PLIC enables/claims addressed the S7's
+context, so the UART RX break interrupt and GEM could never be delivered — while every polled path
+worked, which is why the REPL looked healthy. QEMU's `sifive_u` boots this image on hart 1 too
+(`cpu-num=1`) and models both facts, so the gates live there: `kernel_plat_demo.hc` now arms
+`mtimecmp` and requires `mip.MTIP` (`timer_irq_ok`), and on SiFive boards raises the UART's
+tx-watermark source and requires `claim` to return `UART_IRQ` on our context (`plic_claim_ok`).
+
+Follow-up: the JH7110 boards (VisionFive 2, Milk-V Mars) have the same S7 + 4×U74 layout, so a
+kernel entered on their hart 1 needs the same hart-1 `mtimecmp` and PLIC-context offsets; their matrix
+images run on hart 0 under QEMU, which is why the gate cannot show it there.
+
+Two risks recorded, not fixed: GEM DMA on the FU540/740 is not coherent with the L1 data cache —
+the day ethernet moves to the board, descriptors and buffers need the L2 controller's flush
+registers (`0x02010200`) or an uncached window; and everything above is what firmware left
+configured — this kernel programs no clock, PLL or DDR register, which is correct for a takeover
+and would not be for a cold boot from SPL.

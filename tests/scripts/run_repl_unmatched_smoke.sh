@@ -142,8 +142,24 @@ done
 # --- the C half, for the SiFive UART at the board's base ----------------------------
 # Distinct object paths: the shared oracle_out.o / crt0.o are mtime-cached and would
 # otherwise be served to (or taken from) a virt build with the wrong flags baked in.
-ORACLE_DEFS="-DHOLY_UART_SIFIVE=1 -DUART_BASE=${UART_BASE}UL -DHOLY_UART_BASE=${UART_BASE}ULL -DHOLY_UART_IRQ=${UART_IRQ}"
-ORACLE_OBJ="$OUTDIR/oracle_out-sfu-${UART_BASE}-irq${UART_IRQ}.o"
+# Hart-1 CLINT/PLIC offsets from the generated header (mtimecmp[1], PLIC context 1): the runtime's
+# defaults are hart 0 / context 0 and would arm a parked hart's timer and claim on the S7's context.
+TCMP_OFF="$(sed -n 's/^#define CONFIG_CLINT_MTIMECMP_OFF //p' "$AUTOCONF" | tail -1)"; TCMP_OFF="${TCMP_OFF:-0x4000}"
+PEN_OFF="$(sed -n 's/^#define CONFIG_PLIC_ENABLE_OFF //p' "$AUTOCONF" | tail -1)"; PEN_OFF="${PEN_OFF:-0x2000}"
+PTH_OFF="$(sed -n 's/^#define CONFIG_PLIC_THRESHOLD_OFF //p' "$AUTOCONF" | tail -1)"; PTH_OFF="${PTH_OFF:-0x200000}"
+PCL_OFF="$(sed -n 's/^#define CONFIG_PLIC_CLAIM_OFF //p' "$AUTOCONF" | tail -1)"; PCL_OFF="${PCL_OFF:-0x200004}"
+# Two independent encodings of "this image runs on hart 1": crt0's -DBOOT_HARTID and the CLINT/PLIC
+# offsets above. Nothing tied them, and three artifacts disagreeing silently is this port's most
+# expensive failure class (see docs/UNMATCHED_JTAG.md). mtimecmp[h] = 0x4000 + 8h; the FU540/740 PLIC
+# gives hart h>=1 M-mode context 2h-1, so enable = 0x2000 + 0x80*(2h-1).
+BOOT_HART=1
+want_tcmp=$(printf '0x%X' $((0x4000 + 8 * BOOT_HART)))
+want_pen=$(printf '0x%X' $((0x2000 + 0x80 * (2 * BOOT_HART - 1))))
+[ "$(printf '0x%X' $((TCMP_OFF)))" = "$want_tcmp" ] || { echo "FAIL repl-unmatched -- CONFIG_CLINT_MTIMECMP_OFF $TCMP_OFF is not hart $BOOT_HART's ($want_tcmp)" >&2; exit 1; }
+[ "$(printf '0x%X' $((PEN_OFF)))" = "$want_pen" ] || { echo "FAIL repl-unmatched -- CONFIG_PLIC_ENABLE_OFF $PEN_OFF is not hart $BOOT_HART's M-mode context ($want_pen)" >&2; exit 1; }
+echo "repl-unmatched: hart $BOOT_HART consistent -- mtimecmp $TCMP_OFF, PLIC enable $PEN_OFF, threshold $PTH_OFF, claim $PCL_OFF"
+ORACLE_DEFS="-DHOLY_UART_SIFIVE=1 -DUART_BASE=${UART_BASE}UL -DHOLY_UART_BASE=${UART_BASE}ULL -DHOLY_UART_IRQ=${UART_IRQ} -DHOLY_CLINT_MTIMECMP_OFF=${TCMP_OFF}ULL -DHOLY_PLIC_ENABLE_OFF=${PEN_OFF} -DHOLY_PLIC_THRESHOLD_OFF=${PTH_OFF} -DHOLY_PLIC_CLAIM_OFF=${PCL_OFF}"
+ORACLE_OBJ="$OUTDIR/oracle_out-sfu-${UART_BASE}-irq${UART_IRQ}-tc${TCMP_OFF}-pe${PEN_OFF}.o"
 CRT_OBJ="$OUTDIR/crt0-hart1.o"
 CFLAGS="-march=rv64imafdc -mabi=lp64d -mcmodel=medany -O2 -g -nostdlib -ffreestanding -fno-builtin"
 LINK_LD="$HARNESS/link_exepubs_hifive_unmatched.ld"
@@ -168,7 +184,7 @@ HEAPCTL_BASE=0x82000000
 HEAPCTL_LEN=0x400
 CRT_OBJ="$OUTDIR/crt0-hart1-zero${HEAPCTL_BASE}.o"
 # shellcheck disable=SC2086
-"$GCC" $CFLAGS -DBOOT_HARTID=1 -DZERO_BASE=${HEAPCTL_BASE} -DZERO_LEN=${HEAPCTL_LEN} \
+"$GCC" $CFLAGS -DBOOT_HARTID=$BOOT_HART -DZERO_BASE=${HEAPCTL_BASE} -DZERO_LEN=${HEAPCTL_LEN} \
   -c "$HARNESS/crt0.S" -o "$CRT_OBJ" \
   || { echo "FAIL repl-unmatched -- crt0" >&2; exit 1; }
 
