@@ -313,10 +313,29 @@ if [ -n "$DIRTY" ]; then
   DIRTY_ARGS="-device loader,file=$R/ff.bin,addr=0x82000000"
   echo "repl-unmatched: DIRTY DDR -- 0xff at 0x82000000 +0x10000 (the_heap's control block)"
 fi
+# TOS_REPL_CPR=1: replay the board's first-keystroke failure. The demo's startup size probe holds a
+# 300 ms window right after the "'q' quits" banner line; a terminal's cursor-position reply arriving
+# in it, followed at once by keystrokes, is exactly what the HiFive Unmatched's console delivered.
+# RVSifiveUartDataReady used to test the empty bit by READING rxdata, which dequeues, so the probe
+# lost the ESC and "[40;120R2+3;" was evaluated as the first line (no ans=5). The feeder here is
+# reactive — it answers the banner the moment it is printed — so the window is hit every time.
+if [ -n "${TOS_REPL_CPR:-}" ]; then
+  mkfifo "$R/in"
+  ( for i in $(seq 1 300); do sleep 0.1; grep -q "type HolyC; 'q' quits" "$R/out.log" 2>/dev/null && break; done
+    printf '\033[40;120R2+3;\n'; sleep 1.5; printf 'q\n'; sleep 3 ) > "$R/in" &
+  feeder=$!
+  # shellcheck disable=SC2086
+  $TIMEOUT 75 "$QEMU" -M sifive_u -smp 2 -bios none $DIRTY_ARGS \
+    -device "loader,file=$OUTDIR/repl_unmatched.bin,addr=$ENTRY" \
+    -device "loader,addr=$ENTRY,cpu-num=1" -nographic <"$R/in" >"$R/out.log" 2>&1
+  wait $feeder 2>/dev/null
+  echo "repl-unmatched: CPR -- terminal reply ESC[40;120R sent in the startup probe window, keystrokes right behind it"
+else
 # shellcheck disable=SC2086
 feed | $TIMEOUT 75 "$QEMU" -M sifive_u -smp 2 -bios none $DIRTY_ARGS \
   -device "loader,file=$OUTDIR/repl_unmatched.bin,addr=$ENTRY" \
   -device "loader,addr=$ENTRY,cpu-num=1" -nographic >"$R/out.log" 2>&1
+fi
 tr -d '\r' <"$R/out.log" >"$R/out.txt"
 
 echo "repl-unmatched: UART, last 25 lines:"

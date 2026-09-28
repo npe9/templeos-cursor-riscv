@@ -246,8 +246,10 @@ that way within minutes, where the console alone said nothing.
   the very first keystroke → `ans=5` (image `21e717bd`). Diagnosed by sending synthetic
   `ESC[5;7R` replies at the prompt (handled) versus during a probe (eaten), then reading the
   platform primitives. QEMU's `sifive_u` dequeues on read too; nothing there polls with a reply
-  in flight, which is why only silicon showed it — a deterministic gate (two `DataReady` calls
-  then `GetC` with two bytes queued must return the first) is still owed.
+  in flight, which is why only silicon showed it. Gate: `make repl-unmatched-cpr-smoke`
+  (`TOS_REPL_CPR=1`) — a reactive feeder answers the `'q' quits` line with `ESC[40;120R2+3;` inside
+  the startup probe's 300 ms window; with the fix `ans=5`, with the pre-fix `DataReady` the first line
+  is `[40;120R2+3;` and it fails — the board's failure, byte for byte, on `sifive_u`.
 - **Do not run `run_repl_unmatched_smoke.sh` while anything else compiles the kernel.** It swaps
   `Kernel/RVAutoConf.HH` and `Kernel/Drv/*Selected.HH` to the SiFive UART under a restoring trap;
   a kernel compile from another process in that window inherits the SiFive UART and store-faults
