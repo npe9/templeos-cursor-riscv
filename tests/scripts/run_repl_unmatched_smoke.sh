@@ -261,6 +261,9 @@ if [ -f "$ROOT/tools/blob_imports.py" ]; then
   python3 "$ROOT/tools/blob_imports.py" "$T/blob.bin" >"$T/imports.txt" 2>&1 || true
   n_imp="$(grep -c . "$T/imports.txt" 2>/dev/null || echo 0)"
   echo "repl-unmatched: blob_imports.py reports $n_imp line(s) (C-runtime-resolved symbols)"
+  # The console's push-back path must be real: a stubbed RVUartSoftEnqueue silently eats the first
+  # keystroke after the banner (RVDocVT's ESC[6n probe pushes non-reply bytes back through it).
+  grep -q 'RVUartSoftEnqueue' "$T/imports.txt" && { echo "FAIL repl-unmatched -- RVUartSoftEnqueue is an unresolved import (SiFive driver has no soft RX ring)" >&2; exit 1; }
 fi
 
 ( cd "$T" && "$OBJCOPY" -I binary -O elf64-littleriscv \
