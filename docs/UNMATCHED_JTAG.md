@@ -234,8 +234,20 @@ that way within minutes, where the console alone said nothing.
   the tier-1 agent's `DirNameAbs mtval=0x70`. Found with `the_heap` markers compiled from a scratch
   copy of the include tree (`HOLYC_INCLUDE_ROOT=<copy>`), after gdb watchpoints proved unusable in
   batch mode against QEMU's stub (`continue` returns at once: "target is running").
-- **The REPL swallows the first keystroke after its banner** on the board (`2+3;` evaluates as
-  `+3;` → `ans=3`; everything after is exact). Startup RX race, not arithmetic; open.
+- **The REPL swallowed the first keystroke after its banner** — fixed, and it was three layers:
+  (a) the SiFive driver had no soft RX ring, so `RVDocVT`'s size probe pushed bytes back into a
+  C-runtime stub that dropped them (`RVUartSoftEnqueue` was one of the "benign" unresolved
+  imports; the smoke now asserts it is resolved); with the ring in place the symptom became
+  `[98;133R2+3;` — the terminal's cursor-position reply minus its ESC — which exposed (b) a
+  probe that abandoned a half-read reply at its 40 ms QEMU-sized deadline, and finally (c) the
+  real culprit, **`RVSifiveUartDataReady` read `rxdata` to test the empty bit, and on the FU740
+  a read of `rxdata` dequeues**: every polled `TryGet` discarded the byte it saw and returned the
+  next. `DataReady` now reads once and parks the byte for `GetC`. Proof on the board: `2+3;` as
+  the very first keystroke → `ans=5` (image `21e717bd`). Diagnosed by sending synthetic
+  `ESC[5;7R` replies at the prompt (handled) versus during a probe (eaten), then reading the
+  platform primitives. QEMU's `sifive_u` dequeues on read too; nothing there polls with a reply
+  in flight, which is why only silicon showed it — a deterministic gate (two `DataReady` calls
+  then `GetC` with two bytes queued must return the first) is still owed.
 - **Do not run `run_repl_unmatched_smoke.sh` while anything else compiles the kernel.** It swaps
   `Kernel/RVAutoConf.HH` and `Kernel/Drv/*Selected.HH` to the SiFive UART under a restoring trap;
   a kernel compile from another process in that window inherits the SiFive UART and store-faults
