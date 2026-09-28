@@ -254,3 +254,18 @@ that way within minutes, where the console alone said nothing.
   `Kernel/RVAutoConf.HH` and `Kernel/Drv/*Selected.HH` to the SiFive UART under a restoring trap;
   a kernel compile from another process in that window inherits the SiFive UART and store-faults
   at `0x10010008` on `virt` (`kernel-fsshell-smoke` did, during a concurrent `qemu-integration`).
+
+## A missing Print argument is an exception, and it was invisible (2026-09-28)
+
+`for (i=0;i<10;i++) "Hello %d\n";` printed nothing and answered `ans=0`; with `,i` it printed.
+Stock `StrPrintJoin` does `throw('StrPrint')` when a format runs past its arguments — TempleOS
+semantics, kept by the port — but two things hid it. The host compiler's `throw` intrinsic stored
+the code in the planted `__task.except_ch` only, while every HolyC catcher reads `Fs->except_ch`,
+and once the kernel sets `Fs = adam` those are different cells: `PutExcept`, `DirContextNew`'s
+catch and the REPL all read 0. And `ExePutS`'s catch swallowed the exception without a word.
+Fixed: `EmitThrow` also stores through `Fs` into the real `CTask.except_ch` (offset looked up at
+emit; `e_throw_fs_except_ch.hc` 0x3, was 0x0), and `ExePutS` prints `Except:%c` for anything but
+the compiler's own errors. The unmatched smoke types `"%d %d\n",7;` and requires
+`Except:StrPrint`; on the board the line above now says exactly that. A wrong guess of mine on
+the way — that `Silent` was set — was disproved by toggling it at the prompt; the operator's
+reading ("failing because of the lack of i, but not reporting") was the right one.

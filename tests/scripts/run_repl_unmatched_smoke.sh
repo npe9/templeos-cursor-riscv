@@ -301,7 +301,7 @@ feed() {
   perl -e '
     $|=1;
     select(undef,undef,undef,6);
-    for my $x ("2+3;", "q") { print $x,"\n"; select(undef,undef,undef,1.2); }
+    for my $x ("2+3;", "\"%d %d\\n\",7;", "q") { print $x,"\n"; select(undef,undef,undef,1.2); }
     select(undef,undef,undef,3);
   '
 }
@@ -343,7 +343,9 @@ tail -25 "$R/out.txt" | sed 's/^/  uart: /'
 
 rc=0
 # "prints a prompt" is not "works". ans=5 is the REPL having COMPILED and EVALUATED 2+3.
-for n in "A2 ExePutS REPL" "ans=5"; do
+# "Except:StrPrint": a format string with more conversions than arguments THROWS (stock
+# StrPrintJoin), and the REPL must say so instead of printing nothing and ans=0.
+for n in "A2 ExePutS REPL" "ans=5" "Except:StrPrint"; do
   if ! grep -qF "$n" "$R/out.txt"; then
     echo "FAIL repl-unmatched — missing: $n" >&2
     rc=1

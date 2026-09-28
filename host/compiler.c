@@ -1273,6 +1273,24 @@ static void EmitThrow(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, C
   }
   EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->except_ch_var, data_base);
   RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_T1 << 15) | (RV_A0 << 20));                      // except_ch = a0
+  // And the cell every HolyC catcher actually reads. __task.except_ch is only Fs->except_ch while
+  // Fs still points at __task; the kernel repoints Fs at a CTask of its own (Fs = adam) and from
+  // then on PutExcept, DirContextNew's catch and the REPL all read Fs->except_ch and saw 0 -- a
+  // missing Print argument (StrPrintJoin: throw('StrPrint')) came out as silence and ans=0.
+  // The real class is parsed from the kernel headers, so its offset is looked up here, at emit.
+  {
+    CHashClass *tcls = (CHashClass *)HashFind("CTask", cc->hash_table, HTT_CLASS);
+    CMemberLst *m = NULL;
+    for (CHashClass *c = tcls; c && !m; c = c->base_class)
+      for (CMemberLst *mm = c->member_lst; mm; mm = mm->next)
+        if (mm->str && strcmp(mm->str, "except_ch") == 0) { m = mm; break; }
+    if (m && cc->fs_var && m->offset >= 0 && m->offset < 2048) {
+      EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->fs_var, data_base);                          // t1 = &Fs
+      RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (g_wd3<<12) | (RV_T1 << 15));                   // t1 = Fs
+      RVU32(pass_buf, pass_ptr, rip, 0x63 | (0 << 12) | (RV_T1 << 15) | (4 << 8));                         // beqz t1, +8
+      RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_T1 << 15) | (RV_A0 << 20) | ((m->offset & 0x1f) << 7) | ((m->offset >> 5) << 25)); // Fs->except_ch = a0
+    }
+  }
   EmitGlobalAddr(pass_buf, pass_ptr, rip, cc, RV_T1, cc->try_top_var, data_base);
   RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (g_wd3<<12) | (RV_T1 << 15));                       // ld t2, 0(t1)
   RVU32(pass_buf, pass_ptr, rip, 0x63 | (1 << 12) | (RV_T2 << 15) | (4 << 8));                           // bnez t2, +8

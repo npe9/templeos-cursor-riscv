@@ -661,6 +661,11 @@ I64 ExePutS(U8 *buf,U8 *filename=NULL,
     Fs->catch_except = TRUE;
     okay = FALSE;
     res = 0;
+    // Say what the line threw. Stock's command loop catches with PutExcept; swallowing it here
+    // made `"Hello %d\n";` (no argument: StrPrintJoin throws 'StrPrint') look like a statement
+    // that ran and printed nothing, ans=0. The compiler's own errors already printed their text.
+    if (Fs->except_ch != 'Compiler')
+      "Except:%c\n", Fs->except_ch;
   }
   QueRem(cc);
   if (okay)
