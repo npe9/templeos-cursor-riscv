@@ -374,3 +374,49 @@ the day ethernet moves to the board, descriptors and buffers need the L2 control
 registers (`0x02010200`) or an uncached window; and everything above is what firmware left
 configured — this kernel programs no clock, PLL or DDR register, which is correct for a takeover
 and would not be for a cold boot from SPL.
+
+## What the board's devices are, and what the port actually does with them
+
+From `hifive-unmatched-a00.dts` (the BOARD dts, not the SoC `.dtsi`). The 16 GPIO lines are named
+there, and they are the board's real personality:
+
+| pin | name | pin | name |
+|---|---|---|---|
+| 0 | `J29.1` | 8 | `PCIe_PERSTN` |
+| 1 | `PMICNTB` | 9 | `ULPI_RSTN` |
+| 2 | **`PMICSHDN`** (the `gpio-poweroff`, active low) | 10 | `J8.2` |
+| 3 | `J8.1` | 11 | `UHUB_RSTN` |
+| 4 | `J8.3` | 12 | **`GEMGXL_RST`** (ethernet PHY) |
+| 5 | `PCIe_PWREN` | 13 | `J8.4` |
+| 6 | `THERM` (TMP451 alert) | 14 | **`EN_VDD_SD`** |
+| 7 | `UBRDG_RSTN` | 15 | **`SD_CD`** (card detect) |
+
+Also on the board, none of which the port touches: a **DA9063 PMIC** at I2C `0x58` carrying the
+on-key, an RTC and a watchdog (this is what a real hardware reset would go through); a **TMP451**
+temperature sensor; a **24c02** EEPROM (the serial number and MAC U-Boot prints); `jedec,spi-nor`
+(the SPI flash whose env U-Boot reports as "bad CRC"); and `mmc-spi-slot` on QSPI2 — the SD card,
+gated by `EN_VDD_SD` and detected on `SD_CD`.
+
+**What has a driver in this port:** UART0 (`RVUartSifive`, console, now with a soft RX ring), CLINT
+(timer, hart-1 `mtimecmp`), PLIC (hart-1 context 1). GEM has a driver (`RVSifiveGemYes.HC`, IRQ now
+55) but `CONFIG_SIFIVE_ETH_BASE` is `0x0` for this board, so it is compiled and unwired. PRCI, UART1
+and GPIO exist only as base addresses. Everything else — PWM0/1, I2C0/1, QSPI0/1/2, the L2 cache
+controller, PCIe, the DDR controller — has no driver at all.
+
+**GPIO has no personality, and the one code path that uses it is wrong for this board.**
+`RVSifiveReset()` tries the test finisher, then the AON watchdog, then a GPIO pin — and for the
+Unmatched all three are dead ends: `TEST_BASE` and `AON_BASE` are `0x0`, and `GPIO_RESET_PIN` is 32,
+which fails the driver's own `< 32` guard. That is exactly why `plat-smoke` prints
+`sifive_no_hw_reset`, and it is honest rather than broken: pin 2 is `PMICSHDN`, which **powers the
+board off** rather than resetting it, and a true reset belongs to the DA9063 over I2C.
+
+**Nothing device-facing is callable from the REPL.** The planted pubs are all software — `Dir`,
+`Cat`, `Ed`, `FilesFind`, `FileRead/Write`, `MemMap`, `Regs`, `Csr`, `Disasm`, `Tasks`, `Uptime`,
+`AsmStep`, `Dr` — so at the board prompt you can read memory, registers and CSRs, but there is no
+verb for a GPIO pin, an I2C byte or a PLIC claim. `MemMap` is the closest thing to a device view.
+
+Cheapest ways to give these a personality, in rising order of work: a `PowerOff()` that drives GPIO
+2 low (four register writes, no I2C); the board temperature at the prompt (TMP451 on I2C0); the SD
+card through QSPI2 + `EN_VDD_SD`/`SD_CD`, which would give this board the RedSea disk that `make tos`
+already boots under virtio; then GEM, which needs `ETH_BASE`, a `GEMGXL_RST` pulse on GPIO 12, and
+the L1-coherency caveat above.
