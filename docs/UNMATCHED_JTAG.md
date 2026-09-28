@@ -341,7 +341,7 @@ and what it gets wrong on a kernel that runs on **hart 1**:
 | L2 cache ctrl | `0x02010000` | 19–22 | — | firmware-configured; way masking untouched |
 | PRCI | `0x10000000` | — | — | firmware-configured clocks; the demo's old `0x10000000` byte store hit this |
 | DDR ctrl | not in the dtsi | — | — | firmware-trained and not described to the OS; the manual's register block is not something this image verifies or touches |
-| PCIe | config `0xE00000000` (2 GiB), I/O window `0x60080000` | 56–64 | — | U-Boot reports `Link up (Gen1-x8)`; untouched. Note the config space is above 4 GiB — a 32-bit pointer cannot reach it |
+| PCIe | **config `0xDF0000000`** (256 MiB), dbi `0xE00000000`, mgmt `0x100D0000`, I/O `0x60080000` | 56–64 | `Pci` (read-only enumeration) | U-Boot reports `Link up (Gen1-x8)`. Only the middle window is config space: the dbi aliases the root port at +0, so aiming at it half-works and lies about every other device (measured) |
 
 Consequences on silicon before the fix: the timer interrupt armed a parked hart's comparator, so
 preemption, `Sleep`, and the scheduler tick never fired; PLIC enables/claims addressed the S7's

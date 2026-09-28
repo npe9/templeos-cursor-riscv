@@ -24,7 +24,9 @@ fresh (`fu740-c000.dtsi`, `hifive-unmatched-a00.dts`, and U-Boot's own output on
 | thing | value | where it comes from |
 |---|---|---|
 | root complex | `sifive,fu740-pcie` (a DesignWare core) | SoC dtsi |
-| config space | **`0xE00000000`, 2 GiB** | `reg = <0xe 0x00000000 0x0 0x80000000>` |
+| **config space (ECAM)** | **`0xDF0000000`, 256 MiB** | `reg-names` entry `"config"` |
+| DesignWare DBI | `0xE00000000`, 2 GiB | `reg-names` entry `"dbi"` — controller registers incl. the iATU, **not** config space |
+| SiFive mgmt block | `0x100D0000`, 4 KiB | `reg-names` entry `"mgmt"` |
 | I/O window | `0x60080000` | `ranges` entry `0x81000000` |
 | IRQs | 56–64 (9 of them: MSI plus the INTx legs) | dtsi `interrupts` |
 | power enable | **GPIO 5** (`PCIe_PWREN`) | board dts line names |
@@ -34,7 +36,7 @@ fresh (`fu740-c000.dtsi`, `hifive-unmatched-a00.dts`, and U-Boot's own output on
 
 Two consequences worth stating before any code is written:
 
-**The config space is above 4 GiB.** `0xE00000000` needs 35 bits, so every pointer in an ECAM walk
+**The config space is above 4 GiB.** `0xDF0000000` needs 36 bits, so every pointer in an ECAM walk
 must be a full `I64` and every offset computation must stay 64-bit. That is exactly the class of bug
 this port fixed twice in one day — `sizeof(<class> *)` answering 208 instead of 8, and `*p->arr`
 loading 8 bytes from a byte array — so an ECAM walk written in HolyC is a place to be deliberate,
@@ -48,6 +50,42 @@ cold boot from SPL would additionally owe: `PCIe_PWREN` high, ≥100 ms before r
 programming — all of which are why this is a path and not an afternoon.
 
 ## Milestones
+
+### Milestone 1, as far as the board allowed (2026-09-28)
+
+`Kernel/Drv/RVPcie.HC` + `Kernel/RVPcieUi.HC`, verb `Pci`. Read-only, and it stopped exactly where
+reads stop being enough. What the board taught us, in the order it taught us:
+
+- Aiming the enumerator at `0xE00000000` **half worked, which is worse than failing**: bus 0 dev 0
+  read `0xF15E` correctly and every other function came back as aliased controller registers
+  (`0xF15E` repeated, then `0x0100:0x0007`). That window is the **dbi**, and DesignWare aliases the
+  root port's own config space at dbi+0. The dts names all three windows; only the middle one is
+  config space.
+- Aiming it at the real config window (`0xDF0000000`) returns **all-ones**: after U-Boot finishes,
+  the iATU no longer maps config cycles, so there is nothing to read there at all.
+- So on this board a read-only pass can honestly report exactly one thing — the root port, through
+  the dbi alias: `vendor 0xF15E device 0x0000`, which matches U-Boot's own `pci` output. `Pci` now
+  prints that plus what is missing, rather than walking a window of ones and presenting controller
+  registers as devices.
+- A smaller trap worth keeping: reading the device id at dbi+4 returns `0x0007`, which looks like a
+  device id and is in fact the Command register (IO|MEM|BusMaster). Only U-Boot's independent
+  enumeration caught it. Compare against an existing enumerator whenever one is available.
+
+**Milestone 1b, the first write:** program the DesignWare iATU to map config cycles for a target bus,
+then the existing walker works unchanged — it already follows bridges to their secondary buses, which
+this board needs, since the USB controller sits two buses below the root behind an ASM2824 switch.
+The windows are `dbi 0xE00000000`, `config 0xDF0000000`, `mgmt 0x100D0000`; the ATU viewport
+registers live in the dbi. Ground truth to aim at, from U-Boot on this board:
+
+```
+00.00.00   0xf15e 0x0000  Bridge          root complex (SiFive)
+01.00.00   0x1b21 0x2824  Bridge          ASMedia ASM2824 PCIe switch
+02.00/02/03/04/08        0x1b21 0x2824    its downstream ports
+04.00.00   0x1b21 0x1142  Serial bus 0x03 ASMedia ASM1142 USB 3.1 — this is the board's USB
+```
+
+That last line is the measured proof of the claim at the top of this file: the Unmatched's USB is an
+XHCI behind PCIe, so it cannot work before the iATU does.
 
 1. **Read the config space and enumerate.** With `RVGpioRd` you can already confirm pin 5 high and
    pin 8 released from the prompt. Then a `PciCfgRd32(bus,dev,fn,off)` over ECAM at

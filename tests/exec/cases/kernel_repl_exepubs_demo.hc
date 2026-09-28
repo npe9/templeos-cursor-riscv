@@ -47,7 +47,7 @@ U0 UartPutS(U8 *s)
 public U0 Funs(U8 *filt = NULL)
 {
   UartPutS("Funs: ExePutS CInit RVTrapInit MemMap AsmList AsmDoc Mstatus Mcause\n");
-  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff\n");
+  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci\n");
 }
 I64 dbg_view_ready;
 I64 main()
@@ -122,6 +122,7 @@ I64 main()
       RVExePubFunNew("Gpio", &Gpio, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("GpioArm", &RVGpioArm, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("PowerOff", &PowerOff, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("Pci", &Pci, cmp.internal_types[RT_U0], 0);
       gp = RVExePubFunNew("GpioRd", &RVGpioRd, cmp.internal_types[RT_I64], 1);
       if (gp)
         RVExePubAddArg(gp, "pin", cmp.internal_types[RT_I64]);

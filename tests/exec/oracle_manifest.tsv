@@ -111,3 +111,4 @@ tests/exec/cases/e_kernel_getmcause.hc	0000000000000003
 tests/exec/cases/e_str_literal_index.hc	000000000000000f
 tests/exec/cases/e_str_literal_flag_scope.hc	000000000000003f
 tests/exec/cases/e_kernel_qsort_ptrs.hc	000000000000000f
+tests/exec/cases/e_kernel_pci_ecam.hc	000000000000001f

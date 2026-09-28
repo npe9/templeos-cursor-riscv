@@ -164,6 +164,7 @@ kernel_cfg = KCfgNew;
 #ifndef RV_THIN_LOADER
 #include "Drv/RVSifiveGem.HC"  // Cadence GEM TX/RX (Yes on sifive_u ETH_BASE)
 #include "Drv/RVSifiveGpio.HC" // SiFive GPIO registers (guarded writes; names in RVGpioUi)
+#include "Drv/RVPcie.HC"      // read-only PCIe config space (ECAM; I64 addresses)
 #endif
 #include "Drv/RVUart.HC"       // Kconfig UART (16550 / SiFive / HTIF stub)
 #include "RVKeyIn"            // GetKey: window MSG_KEY_DOWN then UART (EdLite fwd-decls it)
@@ -215,6 +216,7 @@ kernel_cfg = KCfgNew;
 #include "RVFsJournal" // FsChanges/FsLog/FsReplay/DumpChanges/Recover — needs FileRead/Find/Del
 #include "RVExplore"   // AsmList/AsmDoc/MemMap/Mstatus/Mcause — RISC-V exploration (needs RVWinCsrr*)
 #include "RVGpioUi"     // Gpio() / PowerOff() at the prompt (needs Print)
+#include "RVPcieUi"     // Pci() at the prompt (needs Print)
 #include "RVDisasm"   // Disasm/U/UA/DisasmAt — seed disasm.hc port over the task hash
 #include "RVTextBase" // TextChar/TextPrint portable (DocRecalc / draw_it)
 #include "RVRegistry" // in-memory RegDft/RegExe/RegWrite (the compile-time half is in host/parser.c)

@@ -650,6 +650,39 @@ config HAS_VIRTIO_PCI
 	  (modern caps + LBA read) and NinePVirtioPci find/handshake. MMIO blk/net
 	  remain the default product path.
 
+config PCIE_DBI_BASE
+	hex "PCIe DesignWare DBI base (0 if none)"
+	default 0xE00000000 if PLATFORM_HIFIVE_UNMATCHED
+	default 0x0
+	help
+	  The DesignWare controller's own register block. It aliases the ROOT PORT's config space at
+	  offset 0, which is the only config access available on the FU740 until the iATU is programmed:
+	  measured on the board, the "config" window at PCIE_ECAM_BASE returns all-ones after U-Boot has
+	  finished with it, while dbi+0 still reads vendor 0xF15E. Reading the root port through this is
+	  legitimate; reading anything else through it is not -- every other offset is a controller
+	  register wearing config space as a disguise.
+
+config PCIE_ECAM_BASE
+	hex "PCIe ECAM base for the read-only enumerator"
+	default 0xDF0000000 if PLATFORM_HIFIVE_UNMATCHED
+	default 0x30000000 if PLATFORM_VIRT
+	default 0x0
+	help
+	  Independent of PCI_ECAM_BASE, which depends on HAS_VIRTIO_PCI and so is absent on boards
+	  with real PCIe and no virtio.
+
+	  The FU740 has THREE windows and only the middle one is config space (fu740-c000.dtsi,
+	  reg-names = "dbi", "config", "mgmt"):
+	    dbi    0xE00000000  2 GiB    DesignWare controller registers, incl. the iATU
+	    config 0xDF0000000  256 MiB  ECAM -- this symbol
+	    mgmt   0x0100D0000  4 KiB    SiFive PCIe management block
+	  Pointing the enumerator at dbi is a trap that half-works: DesignWare aliases the root port's
+	  own config space at dbi+0, so bus 0 dev 0 reads correctly (0xF15E) and every other read
+	  returns controller registers dressed as config space. Measured on the board.
+
+	  Above 4 GiB either way, so every address computed from this must stay I64.
+	  0 means "this board has no PCIe I know how to reach" and the enumerator says so.
+
 config PCI_ECAM_BASE
 	hex "PCI Express ECAM base"
 	default 0x30000000
