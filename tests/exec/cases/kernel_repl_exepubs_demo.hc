@@ -18,6 +18,9 @@
 #define MEM_UART 0x10000000
 extern U0 RVTrapInit();
 extern I64 RVTrapRecoverArm();
+extern U0 RVUartIrqInit();
+extern U0 RVUartIrqOff();
+extern I64 RVUartGetBuffered();
 extern I64 RVSetDbgHook(I64 fn);
 extern U0 RVLexNewlineSemi(I64 on);
 extern U0 RVTrapRecoverDisarm();
@@ -48,7 +51,7 @@ public U0 Funs(U8 *filt = NULL)
 I64 dbg_view_ready;
 I64 main()
 {
-  I64 r, n, ok = 0;
+  I64 r, n, ok = 0, brk;
   U8 buf[64];
   U8 line[160];
   CTask *adam = 0x86900000;
@@ -360,7 +363,11 @@ I64 main()
     // expression and the rule never gets a chance to fire.
     if (StrLen(line) < 158)
       StrCat(line, "\n");
+    RVUartIrqInit();
     r = ExePutS(line);
+    RVUartIrqOff();
+    while ((brk = RVUartGetBuffered()) >= 0)
+      RVUartSoftEnqueue(brk & 0xFF);
     RVTrapRecoverDisarm();
     "ans=%d\n", r;
     ok++;
