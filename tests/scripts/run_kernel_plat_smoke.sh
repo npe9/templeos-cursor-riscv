@@ -144,6 +144,21 @@ if printf '%s\n' "$out" | grep -qF "plat-smoke: PASS"; then
     printf '%s\n' "$out" | grep -v 'import unresolved' | head -25 | sed 's/^/  got: /' >&2
     exit 1
   fi
+  # A board with a SiFive GPIO must also have run the guard check. Without this the gate is
+  # decoration: `make -s` keeps no UART log on success, so a block that silently never executed
+  # would still let the smoke pass (which is exactly what happened when this was first added).
+  GPIO_BASE="$(sed -n 's/^#define CONFIG_SIFIVE_GPIO_BASE //p' "$ROOT/build/kernels/$DEFCONFIG/RVAutoConf.HH" 2>/dev/null | tail -1)"
+  case "$GPIO_BASE" in
+    ""|0|0x0|0x00000000) ;;
+    *)
+      if ! printf '%s\n' "$out" | grep -qF "plat-smoke: gpio_guard_ok"; then
+        echo "FAIL plat smoke ($DEFCONFIG) — CONFIG_SIFIVE_GPIO_BASE is $GPIO_BASE but" >&2
+        echo "  'plat-smoke: gpio_guard_ok' never appeared: the guarded-pin check did not run," >&2
+        echo "  so nothing proves a write to PMICSHDN would be refused." >&2
+        printf '%s\n' "$out" | grep -v 'import unresolved' | head -25 | sed 's/^/  got: /' >&2
+        exit 1
+      fi ;;
+  esac
   echo "Plat smoke ($DEFCONFIG): OK"
   exit 0
 fi

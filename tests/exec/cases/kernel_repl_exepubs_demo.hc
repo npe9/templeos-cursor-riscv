@@ -47,6 +47,7 @@ U0 UartPutS(U8 *s)
 public U0 Funs(U8 *filt = NULL)
 {
   UartPutS("Funs: ExePutS CInit RVTrapInit MemMap AsmList AsmDoc Mstatus Mcause\n");
+  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff\n");
 }
 I64 dbg_view_ready;
 I64 main()
@@ -110,6 +111,36 @@ I64 main()
     dbg[6] = &RVBp;
     dbg[7] = &RVBpClr;
     StrPrint(buf, "A2 dbg pubs wired n=%d\n", RVExePubsWireDbg(dbg));
+    // Board devices at the prompt. These need no WinMgr, so they are registered before the pane
+    // block: on a board with no SiFive GPIO they all answer honestly rather than poking address 0.
+    //   Gpio;            all 16 lines, with the board's own names for them
+    //   GpioRd(pin)      level read back            GpioWr(pin,val)  drive it (1 done, 0 refused)
+    //   GpioArm;         permit ONE guarded write   GpioRelease(pin) stop driving
+    //   PowerOff;        PMICSHDN, and the board switches off
+    {
+      CHashFun *gp;
+      RVExePubFunNew("Gpio", &Gpio, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("GpioArm", &RVGpioArm, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("PowerOff", &PowerOff, cmp.internal_types[RT_U0], 0);
+      gp = RVExePubFunNew("GpioRd", &RVGpioRd, cmp.internal_types[RT_I64], 1);
+      if (gp)
+        RVExePubAddArg(gp, "pin", cmp.internal_types[RT_I64]);
+      gp = RVExePubFunNew("GpioRelease", &RVGpioRelease, cmp.internal_types[RT_I64], 1);
+      if (gp)
+        RVExePubAddArg(gp, "pin", cmp.internal_types[RT_I64]);
+      gp = RVExePubFunNew("GpioWr", &RVGpioWr, cmp.internal_types[RT_I64], 2);
+      if (gp) {
+        RVExePubAddArg(gp, "pin", cmp.internal_types[RT_I64]);
+        RVExePubAddArg(gp, "val", cmp.internal_types[RT_I64]);
+      }
+      // GpioIe(pin,on): look at a pin. Firmware leaves every input buffer off, so this is what
+      // makes GpioRd say anything -- e.g. GpioIe(15,1); GpioRd(15) asks whether a card is in the slot.
+      gp = RVExePubFunNew("GpioIe", &RVGpioIeSet, cmp.internal_types[RT_I64], 2);
+      if (gp) {
+        RVExePubAddArg(gp, "pin", cmp.internal_types[RT_I64]);
+        RVExePubAddArg(gp, "on", cmp.internal_types[RT_I64]);
+      }
+    }
     // Live register pane over the same freeze the labels alias: a DolDoc rendered straight to
     // the terminal, repainted by AsmStep's watch hook so a stepped register lights up in place.
     // DolDoc needs the WinMgr grid up, and it needed the `extern U8 doldoc` in RVExePubs.HC to

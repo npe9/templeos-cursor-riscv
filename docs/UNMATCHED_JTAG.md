@@ -420,3 +420,38 @@ Cheapest ways to give these a personality, in rising order of work: a `PowerOff(
 card through QSPI2 + `EN_VDD_SD`/`SD_CD`, which would give this board the RedSea disk that `make tos`
 already boots under virtio; then GEM, which needs `ETH_BASE`, a `GEMGXL_RST` pulse on GPIO 12, and
 the L1-coherency caveat above.
+
+## Gpio() on the board, and what it says about the machine (2026-09-28)
+
+`Kernel/Drv/RVSifiveGpio.HC` (registers) + `Kernel/RVGpioUi.HC` (the prompt-facing half). Verbs:
+`Gpio`, `GpioRd(pin)`, `GpioIe(pin,on)`, `GpioWr(pin,val)`, `GpioArm`, `GpioRelease(pin)`,
+`PowerOff`. Measured on the board with image `74d9c3db`:
+
+```
+GpioRd(15) -> 0     SD_CD is active low, so 0 means a card IS in the slot
+GpioRd(5)  -> 1     PCIe_PWREN: the slot is powered
+GpioRd(8)  -> 1     PCIe_PERSTN released — which is why U-Boot could print Link up (Gen1-x8)
+GpioRd(12) -> 1     GEMGXL_RST released: the ethernet PHY is out of reset
+GpioWr(2,0)-> 0     REFUSED. PMICSHDN untouched, and the board is still answering
+GpioIe(13,1); GpioWr(13,1); GpioRd(13) -> 1 ; GpioWr(13,0); GpioRd(13) -> 0 ; GpioRelease(13) -> 1
+```
+
+So the pins are not decoration: they read back the state firmware left, and that state corroborates
+U-Boot's own claims. Two things learned by running it rather than reasoning about it:
+
+**Firmware leaves every input buffer disabled.** A first `Gpio()` showed `in=0` for lines the board
+was itself holding high, because `input_val` reads 0 while `input_en` is clear. The dump now has an
+`ie=` column and prints `in=?` rather than a plausible lie, and `GpioIe(pin,on)` turns the buffer on —
+it is deliberately unguarded, since enabling an input buffer drives nothing.
+
+**The guard is on the output-enable transition, not the value.** These lines are active low and
+`output_val` resets to 0, so merely ENABLING output on pin 2 is the power-off whatever value was
+asked for. `plat-smoke: gpio_guard_ok` asserts the property (a guarded write refuses AND leaves
+`output_en` unchanged) and `run_kernel_plat_smoke.sh` now REQUIRES that marker on any board whose
+`CONFIG_SIFIVE_GPIO_BASE` is non-zero — without that requirement the block could silently never run,
+since `make -s` keeps no UART log on success. Weakening the guard to key on the value makes the gate
+fail, which is how it was checked.
+
+The pin names are keyed on `CONFIG_PLATFORM_HIFIVE_UNMATCHED`, not on the base address: QEMU's
+`sifive_u` has a GPIO at the same `0x10060000` and none of the same wiring, and printing "PMICSHDN"
+for a pin that is nothing of the kind is a lie an operator would act on.

@@ -13,6 +13,7 @@
 #include "/Kernel/Drv/RVTimer.HC"
 #include "/Kernel/Drv/RVPlic.HC"
 #include "/Kernel/Drv/RVMemMap.HC"
+#include "/Kernel/Drv/RVSifiveGpio.HC"
 // mip, read raw: MTIP (bit 7) is set by the CLINT whenever mtime >= mtimecmp[THIS hart], with no
 // interrupt enable involved, so it can be polled with MIE off. That makes it the one observable
 // that tells a comparator armed on our hart from one armed on a parked hart's.
@@ -158,6 +159,37 @@ I64 main()
 #endif
 #endif
     t = RVSifiveTestBase() | RVSifiveAonBase() | RVSifiveGpioBase() | RVSifiveUart1Base() | RVSifivePrciBase() | RVSifiveEthBase();
+  }
+  if (RVGpioBase) {
+    // The safety property first, and it holds on every board: a write to a GUARDED pin must refuse
+    // and must leave output_en exactly as it was. This is what fails if the guard keys on the value
+    // the caller asked for rather than on the output-enable transition -- and on this board pin 2 is
+    // PMICSHDN, where enabling output IS the power-off, whatever value was requested.
+    i = RVGpioOe(2);
+    if (RVGpioWr(2, 1) != 0 || RVGpioOe(2) != i) {
+      RVUartPutS("plat-smoke: gpio_guard_fail (a guarded pin was driven, or its output_en moved)\n");
+      return 1;
+    }
+    if (RVGpioRelease(2) != 0 || RVGpioOe(2) != i) {
+      RVUartPutS("plat-smoke: gpio_guard_fail (a guarded pin was released unarmed)\n");
+      return 1;
+    }
+    RVUartPutS("plat-smoke: gpio_guard_ok\n");
+    // Register mechanics, simulator only: CONFIG_SIFIVE_TEST_BASE is the SiFive test finisher, which
+    // exists on QEMU and not on an FU740, so this drives a pin only where no pin physically exists.
+    // On real silicon the header lines stay untouched by the automated gate; drive them by hand with
+    // GpioWr at the prompt.
+    if (CONFIG_SIFIVE_TEST_BASE) {
+      if (RVGpioWr(13, 1) != 1 || RVGpioOe(13) != 1 || RVGpioOut(13) != 1) {
+        RVUartPutS("plat-smoke: gpio_rw_fail (free pin did not take the drive)\n");
+        return 1;
+      }
+      if (RVGpioRelease(13) != 1 || RVGpioOe(13) != 0) {
+        RVUartPutS("plat-smoke: gpio_rw_fail (free pin did not release)\n");
+        return 1;
+      }
+      RVUartPutS("plat-smoke: gpio_rw_ok\n");
+    }
   }
 #ifdef CONFIG_HAS_PLIC
   RVPlicSetThreshold(0);
