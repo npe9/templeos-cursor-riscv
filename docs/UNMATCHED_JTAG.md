@@ -355,6 +355,20 @@ Follow-up: the JH7110 boards (VisionFive 2, Milk-V Mars) have the same S7 + 4×U
 kernel entered on their hart 1 needs the same hart-1 `mtimecmp` and PLIC-context offsets; their matrix
 images run on hart 0 under QEMU, which is why the gate cannot show it there.
 
+**Confirmed on silicon the same day** (image `e70a9dd5`, hart-1 offsets baked in): `plat-smoke:
+timer_irq_ok` and `plat-smoke: plic_meip_ok` alongside the rest, `PASS`, `ORACLE 0` — the timer
+interrupt now reaches the hart that runs the kernel and the PLIC raises `MEIP` on its context, so
+preemption, `Sleep` and the break interrupt are possible on this board for the first time. The REPL
+image built with the same offsets (`dab858f0`) reached its prompt and answered `2+3;` -> `ans=5`,
+and `"Hello %d\n";` -> `Except:StrPrint`.
+
+Bench lesson worth the reset it cost: a **detached** `screen -dmS` session does not accept
+`-X stuff` / `hardcopy` the way an attached one does — keys silently go nowhere, which looks exactly
+like a dead console and let an autoboot slip past. Drive the operator's attached session, or read
+and write the port directly with a single-open termios reader (`b'unmatched login: '` proved the wire
+was alive while three of my own sessions showed zero bytes). Also: never open a serial session on
+`/dev/cu.usbserial-2243*0*` — that is the JTAG channel, and holding it breaks DMI.
+
 Two risks recorded, not fixed: GEM DMA on the FU540/740 is not coherent with the L1 data cache —
 the day ethernet moves to the board, descriptors and buffers need the L2 controller's flush
 registers (`0x02010200`) or an uncached window; and everything above is what firmware left
