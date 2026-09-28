@@ -650,6 +650,22 @@ config HAS_VIRTIO_PCI
 	  (modern caps + LBA read) and NinePVirtioPci find/handshake. MMIO blk/net
 	  remain the default product path.
 
+config SIFIVE_QSPI0_BASE
+	hex "SiFive QSPI0 controller base (0 if none)"
+	default 0x10040000 if PLATFORM_HIFIVE_UNMATCHED
+	default 0x0
+	help
+	  The controller whose second window reads the SPI-NOR as memory. Only fctrl.en is touched, and
+	  only to enable the read path (see Kernel/Drv/RVSifiveQspi.HC).
+
+config SIFIVE_QSPI0_MAP_BASE
+	hex "SiFive QSPI0 direct-mapped flash window (0 if none)"
+	default 0x20000000 if PLATFORM_HIFIVE_UNMATCHED
+	default 0x0
+	help
+	  fu740-c000.dtsi gives spi@10040000 a second reg of <0x0 0x20000000 0x0 0x10000000>: 256 MiB of
+	  flash readable as ordinary memory once fctrl.en is set. Firmware leaves it clear (measured).
+
 config PCIE_DBI_BASE
 	hex "PCIe DesignWare DBI base (0 if none)"
 	default 0xE00000000 if PLATFORM_HIFIVE_UNMATCHED

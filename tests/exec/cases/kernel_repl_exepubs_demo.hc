@@ -47,7 +47,7 @@ U0 UartPutS(U8 *s)
 public U0 Funs(U8 *filt = NULL)
 {
   UartPutS("Funs: ExePutS CInit RVTrapInit MemMap AsmList AsmDoc Mstatus Mcause\n");
-  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci\n");
+  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci Dump(addr,lines) Peek(addr) PeekU32(addr) FlashMap(on)\n");
 }
 I64 dbg_view_ready;
 I64 main()
@@ -123,6 +123,25 @@ I64 main()
       RVExePubFunNew("GpioArm", &RVGpioArm, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("PowerOff", &PowerOff, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Pci", &Pci, cmp.internal_types[RT_U0], 0);
+      {
+        CHashFun *dp;
+        dp = RVExePubFunNew("Dump", &Dump, cmp.internal_types[RT_U0], 2);
+        if (dp) {
+          RVExePubAddArg(dp, "addr", cmp.internal_types[RT_U8] + 1);
+          RVExePubAddArg(dp, "lines", cmp.internal_types[RT_I64], 0, 8);
+        }
+        dp = RVExePubFunNew("Peek", &Peek, cmp.internal_types[RT_I64], 1);
+        if (dp)
+          RVExePubAddArg(dp, "addr", cmp.internal_types[RT_U8] + 1);
+        dp = RVExePubFunNew("PeekU32", &PeekU32, cmp.internal_types[RT_I64], 1);
+        if (dp)
+          RVExePubAddArg(dp, "addr", cmp.internal_types[RT_U8] + 1);
+        // FlashMap(1) turns on QSPI0's direct-mapped reader so Dump(0x20000000) shows the
+        // SPI-NOR. Firmware leaves it off; it is a read-path bit and cannot alter the flash.
+        dp = RVExePubFunNew("FlashMap", &RVQspiFlashMap, cmp.internal_types[RT_I64], 1);
+        if (dp)
+          RVExePubAddArg(dp, "on", cmp.internal_types[RT_I64]);
+      }
       gp = RVExePubFunNew("GpioRd", &RVGpioRd, cmp.internal_types[RT_I64], 1);
       if (gp)
         RVExePubAddArg(gp, "pin", cmp.internal_types[RT_I64]);

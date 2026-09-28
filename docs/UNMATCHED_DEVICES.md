@@ -134,13 +134,26 @@ Three SiFive SPI controllers, and the interesting part is the *second* `reg` ent
 
 | controller | regs | IRQ | attached | note |
 |---|---|---|---|---|
-| QSPI0 `0x10040000` | + **`0x20000000`, 256 MiB** | 41 | `jedec,spi-nor` | the window is direct-mapped flash: **reading it needs no driver at all** |
+| QSPI0 `0x10040000` | + **`0x20000000`, 256 MiB** | 41 | `jedec,spi-nor` | direct-mapped flash window — but `fctrl.en` will not set on this board, so it reads zeros (see below) |
 | QSPI1 `0x10041000` | + a window | 42 | nothing on this board | |
 | QSPI2 `0x10050000` | one reg only | 43 | `mmc-spi-slot` — **the SD card** | gated by `EN_VDD_SD` (14), detected on `SD_CD` (15) |
 
-So the SPI-NOR's contents — including the U-Boot environment whose CRC U-Boot complains about — are
-readable today as ordinary memory at `0x20000000`. A `Peek`-style verb would show it; writing needs
-the controller and a flash command set.
+**Measured, and it corrects the obvious reading of that table.** `Dump(0x20000000)` returns all
+zeros, and the reason is not the window: QSPI0's `fctrl.en` (offset `0x60`, bit 0) — the bit that
+enables direct-mapped reads — is **0 and will not take a 1**. `FlashMap(1)` writes it and reads back
+`0`. Meanwhile every other register in that block reads plausibly (`sckdiv=1`, `csdef=1`,
+`delay0=0x00010001`, and `ffmt=0x30007`, i.e. firmware did program the flash instruction format), so
+the controller is clocked and reachable — only the mapped reader refuses to arm.
+
+Candidates for why, in the order worth checking: a PRCI gate specific to the direct-map path that
+firmware leaves closed; a required `csmode`/`fmt` state the controller demands before `fctrl` latches;
+or U-Boot's SPI driver disabling the feature in a way that persists. Note the Unmatched's SPL comes
+from the SD card, not from flash, so nothing in the boot path needs this window — it may simply never
+be armed on this board.
+
+Reading the flash therefore still wants a driver: PIO through `txdata`/`rxdata` with a `0x03` read
+command, which is a small amount of code and unblocked by any of the above. `FlashMap(on)` stays as
+the one-bit experiment and an honest report of what the hardware answers.
 
 **The SD card is the best useful target on the whole board.** `mmc-spi-slot` means SD in SPI mode,
 which is a small protocol — CMD0, CMD8, ACMD41, CMD58, CMD16, then CMD17/CMD24 for single blocks.
