@@ -244,3 +244,13 @@ already done and prove the translation pattern.
 - When a negative control passes, suspect the harness. Two gates in this repo reported success
   without looking: `--absent` parsed one argument of five, and a Makefile prerequisite referenced a
   variable assigned 67 lines later so it expanded to empty. `make -n` catches the second in a second.
+
+## `Sort()` — the mechanism is now asserted (2026-09-28)
+
+Tier 1 left "`Sort()` should now work, unasserted" open. It is pinned by two cases rather than by
+running `Sort` itself (which needs a live CDoc): `e_sizeof_class_ptr.hc` fixes the cause —
+`sizeof(CDocEntry *)` answered 208, the class size, instead of 8 — and `e_kernel_qsort_ptrs.hc`
+pins the consequence, `QSort` over an array of pointers with `sizeof(<class> *)` as its width and a
+comparator that dereferences them exactly as `DEPtrCompare` does. Discriminating: with the `sizeof`
+hunk disabled the case traps, `mcause=5 mtval=0xc8` (0xc8 = 200 = the class's pad, i.e. a `tag`
+pointer read out of an element that is not there); with it, `0xf`.

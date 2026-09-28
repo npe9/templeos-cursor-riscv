@@ -338,7 +338,9 @@ fi
 if [ -n "${TOS_REPL_CPR:-}" ]; then
   mkfifo "$R/in"
   ( for i in $(seq 1 300); do sleep 0.1; grep -q "type HolyC; 'q' quits" "$R/out.log" 2>/dev/null && break; done
-    printf '\033[40;120R2+3;\n'; sleep 1.5; printf 'q\n'; sleep 3 ) > "$R/in" &
+    # Same lines as the default feeder, so one needle list serves both modes: the cursor reply glued
+    # to the first keystrokes, then the missing-argument format string that must report Except:StrPrint.
+    printf '\033[40;120R2+3;\n'; sleep 1.5; printf '"%%d %%d\\n",7;\n'; sleep 1.5; printf 'q\n'; sleep 3 ) > "$R/in" &
   feeder=$!
   # shellcheck disable=SC2086
   $TIMEOUT 75 "$QEMU" -M sifive_u -smp 2 -bios none $DIRTY_ARGS \

@@ -541,6 +541,7 @@ typedef struct {
   bool var_just_loaded;     // ParsePrimary just emitted IC_LEA for last_var_symbol
   bool global_just_loaded;  // ParsePrimary just pushed a global's address (IC_IMM_I64)
   bool call_ptr_just_loaded; // a call returned a pointer: expr_ptr_depth/expr_pointee describe it
+  bool str_lit_just_loaded;            // ParsePrimary just pushed a string literal: a U8 * value; postfix must keep its pointee for "abc"[i]
   CHashClass *last_expr_class;  // Last expression's class (for member access)
   CHashClass *last_type_class;  // Most recently parsed type's class (for decls)
   struct CHashGlblVar *last_global_var;  // Last global variable referenced

@@ -1114,7 +1114,7 @@ static bool EmitNoParenCall(Compiler *cc, CHashFun *func) {
 static bool ParsePrimary(Compiler *cc) {
   cc->var_just_loaded = false;
   cc->global_just_loaded = false;
-  cc->call_ptr_just_loaded = false;
+  cc->call_ptr_just_loaded = false; cc->str_lit_just_loaded = false;
   bool addr_of = cc->addr_of_ident;
   cc->addr_of_ident = false;
   // Default: no global variable context until we identify one
@@ -1267,6 +1267,11 @@ static bool ParsePrimary(Compiler *cc) {
     ICAdd(cc, IC_STR_CONST, (I64)sl, RT_I64);
     cc->last_expr_type = RT_I64;
     cc->last_var_symbol = NULL;    // a literal is a value: no auto-deref from a stale operand
+    // ...but a value of type U8 *: `"abc"[i]` and `*("abc"+2)` index bytes. Without this the
+    // subscript fell to its I64/8 default and read 8 bytes at 8*i (a hex-digit table printed 't').
+    cc->expr_ptr_depth = 1;
+    cc->expr_pointee = RT_U8;
+    cc->str_lit_just_loaded = true;
     cc->last_global_var = NULL;
     cc->last_member = NULL;
     LexNext(cc);
@@ -2057,7 +2062,7 @@ static bool ParsePostfix(Compiler *cc) {
   cc->cast_elem_type = 0;
   // `(**ppb)[i]` keeps the depth the parens computed; a pointer-returning call keeps
   // its pointee so `*Fn()` can size the deref.
-  if (!is_paren_expr && !cc->call_ptr_just_loaded) cc->expr_ptr_depth = 0;
+  if (!is_paren_expr && !cc->call_ptr_just_loaded && !cc->str_lit_just_loaded) cc->expr_ptr_depth = 0;   // a literal is a U8 * value too
   while (true) {
     if (cc->lex.token == '(') {
       // HolyC postfix cast: expr(type) / expr(type *), e.g. "0123456789ABCDEF"(U8 *)[i].
@@ -2101,6 +2106,9 @@ static bool ParsePostfix(Compiler *cc) {
       // Parsing the index expression overwrites cc->last_member (`m.rows[n]` re-binds it to
       // whatever `n` resolves to), so snapshot it alongside the symbol/global.
       CMemberLst *saved_member = cc->last_member;
+      // ...and the expression's own pointer typing, for a base with no name behind it (a string
+      // literal, a cast, a call): the index expression overwrites these too.
+      U8 saved_ptr_depth = cc->expr_ptr_depth, saved_pointee = cc->expr_pointee;
       // Element type/size: through a pointer it is the pointee (class or primitive); for an
       // array it is the declared element. The final DEREF is typed accordingly.
       U8 elem_type = RT_I64;
@@ -2132,6 +2140,13 @@ static bool ParsePostfix(Compiler *cc) {
         if (elem_size <= 0) elem_size = 8;
         if (mb->ndims > 1 && cc->subscript_level < mb->ndims - 1)
           elem_size = mb->dim_stride[cc->subscript_level];
+      } else if (!saved_symbol && !saved_global && !saved_member && saved_ptr_depth == 1 && saved_pointee) {
+        // no name behind the base -- a string literal, a cast, a call result typed as a pointer:
+        // the element is the expression's pointee
+        elem_type = saved_pointee;
+        elem_size = PrimitiveTypeSize(elem_type);
+        if (elem_size <= 0) elem_size = 8;
+        elem_type = ScalarTypeForSize(elem_type, elem_size);
       } else if (saved_global) {
         if (saved_global->pointed_to_type && !(saved_global->flags & GVF_ARRAY)) {
           elem_type = saved_global->pointed_to_type;
