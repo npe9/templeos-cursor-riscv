@@ -106,3 +106,5 @@ tests/exec/cases/e_sizeof_class_ptr.hc	000000000000001f
 tests/exec/cases/e_deref_member_array.hc	000000000000003b
 tests/exec/cases/e_kernel_filesfind_recurse.hc	0000000000010204
 tests/exec/cases/e_throw_fs_except_ch.hc	0000000000000003
+tests/exec/cases/e_kernel_ltu64.hc	000000000000003f
+tests/exec/cases/e_kernel_getmcause.hc	0000000000000003

@@ -283,9 +283,9 @@ I64 AsmUiBranchTarget(U8 *text, I64 pc, I64 width)
     else if (!StrCmp(mn, "bge"))
       taken = v1 >= v2;
     else if (!StrCmp(mn, "bltu"))
-      taken = ToU64(v1) < ToU64(v2);
+      taken = LtU64(v1, v2);
     else if (!StrCmp(mn, "bgeu"))
-      taken = ToU64(v1) >= ToU64(v2);
+      taken = !LtU64(v1, v2);
     else
       return 0;
   } else {

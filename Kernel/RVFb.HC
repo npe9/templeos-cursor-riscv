@@ -232,6 +232,12 @@ Bool RVFbInit(I64 width = RV_FB_W_DEFAULT, I64 height = RV_FB_H_DEFAULT, U32 *pi
   //Bind 32-bpp compose + scanout. pixels=NULL ⇒ soft double buffer at FB_SOFT_BASE.
   // Non-NULL pixels = caller's scanout (simplefb); compose uses soft RAM when distinct.
   U32 *soft = RV_FB_BASE_DEFAULT;
+  // The soft double buffer is two fixed windows (scanout @ FB_SOFT_BASE, compose @ +2 MiB) and the
+  // block pool / adam / gs sit at 0x86800000 and up: a compose buffer past 5 MiB (1280x1024 fits
+  // exactly; 1280x720 does not) would be written over them. Nothing checked this before the
+  // HiFive Unmatched memory-map audit; refuse rather than corrupt.
+  if (!pixels && width * height * 4 > 0x500000)
+    return FALSE;
   U32 *compose, *front;
   I64 nbytes;
   if (width <= 0 || height <= 0)

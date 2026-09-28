@@ -269,3 +269,54 @@ the compiler's own errors. The unmatched smoke types `"%d %d\n",7;` and requires
 `Except:StrPrint`; on the board the line above now says exactly that. A wrong guess of mine on
 the way — that `Silent` was set — was disproved by toggling it at the prompt; the operator's
 reading ("failing because of the lack of i, but not reporting") was the right one.
+
+## The memory map, audited against the board (2026-09-28)
+
+Measured from the ELF (`readelf -S`), the Kconfig windows the image compiles in, and U-Boot on the
+board (`bdinfo`, `printenv`, `md`). The linker's RAM region is `0x80200000 + 126M = 0x88000000`,
+and everything the image touches lies inside it; nothing overlaps (checked pairwise).
+
+| window | range | who |
+|---|---|---|
+| OpenSBI | `0x80000000–0x80040000` | firmware; untouched, below the image |
+| text/rodata/data/bss | `0x80200000–0x8024c8e0` | C runtime + crt0; bss zeroed by crt0 |
+| HolyC blob | `0x80300000–0x80741028` | kernel + compiler + REPL |
+| `.compiler_bin` | `0x81000000` | **not present** in this image (`MEM_COMPILER 0`) |
+| `the_heap` control block | `0x82000000` (1 KiB) | zeroed by crt0's `ZERO_BASE/LEN` |
+| heap | `0x82000400–0x86000000` | `MAlloc`; RAM disks are `AMAlloc`ed here, not in `MEM_FS` |
+| soft framebuffer | scanout `0x86100000`, compose `0x86300000`, 800×600×4 each | `RVFbInit`; must end below `0x86800000` (`w·h·4 ≤ 5 MiB`, now asserted) |
+| block pool | `0x86800000` (8 KiB) | demo `BlkPoolInit` |
+| `adam` `CTask` / `gs` `CCPU` | `0x86900000` / `0x86A00000` | demo |
+| `SYS_FIXED_AREA`, snapshots, host slots | `0x87000000–0x87002000` | trap freeze at `+0x100/+0x300/+0x400/+0xE00/+0xF00`, host slots `+0x1000` |
+| `MEM_FS` | `0x87800000` | only printed by the explorer in this image; the seed REPL's memfs lives there |
+| stack | top `0x87F00000`, grows down | crt0 `__stack_top`; ~7 MiB of free DDR beneath it |
+| U-Boot staging | `fdt_addr_r 0x8c000000`, `scriptaddr 0x8c100000`, `ramdisk_addr_r 0x8c300000` | outside; `kernel_addr_r`/`loadaddr` = `0x80200000` = ours |
+| U-Boot itself, its FDT | `0xfff56000`, `0xff72e960` | outside |
+
+Two corrections to earlier notes: **there is no DTB at `0x87e00000`** — the board reads
+`faffffff ffffffff` there, i.e. DDR nobody wrote — and `0x88000000` holds an `MZ` header, a Linux
+`Image` left by an earlier distro boot, exactly at the window's upper edge and outside it. The
+unmatched defconfig says `DRAM_SIZE 0x400000000` (16 GiB, matches `bdinfo`); the image assumes only
+its 126 MiB window of that, which is why the same map serves `sifive_u` under QEMU.
+
+## The other seven "benign" unresolved imports, audited (2026-09-28)
+
+`blob_imports.py` on the board image named eight symbols the C runtime answers with a stub. One
+(`RVUartSoftEnqueue`) turned out to eat keystrokes. The rest, by their real reference lines in the
+image's include closure:
+
+- **`ToU64` — a live bug, fixed.** Its only uses were the asm stepper's `bltu`/`bgeu` decisions
+  (`RVAsmReplUi.HC:286,288`); nothing in the tree defined it, so both sides read 0 and `bltu` was
+  never taken, `bgeu` always. Replaced by `LtU64()` (sign-bit flip, no dependence on how a `U64`
+  return is typed); `e_kernel_ltu64.hc` = `0x3f`.
+- **`GetMcause` — a wrong value, fixed.** The shared CSR decoder (`bootstrap/seed/csr_decode.hc:317`)
+  displayed the stub's 0 as the cause. Now `csrr a0,mcause` in `KUtilsRV.HC`;
+  `e_kernel_getmcause.hc` = `0x3` (5 after a recovered load fault, equal to the runtime's record).
+  Un-pinned from `tests/portability_seam.tsv`.
+- **`DocFormBwd`, `DocFormFwd`, `DocDataFmt`, `DocDataScan`, `PopUpPickLst` — benign by
+  reachability.** Their bodies are in `Adam/DolDoc/DocForm.HC` / `DocPopUp.HC`, which the image
+  does not include; every call site is on a form, data-entry or pick-list path (`DocChar`,
+  `DocPutKey`, `DocRecalc`, `DocEd`, `DocRun`, `DocMacro`, `DocPlain`) that the REPL's documents
+  never take, and the stubs are `U0` or return cancel. The honest fix is to include those two files
+  once `PopUp` windows exist on the serial port; until then this is the list to re-check whenever a
+  DolDoc feature moves.

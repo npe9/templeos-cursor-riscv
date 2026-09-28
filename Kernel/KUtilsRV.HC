@@ -1192,3 +1192,21 @@ public F64 RVF64Pow(F64 a, F64 b)
 {
   return Pow(a, b);
 }
+
+// Unsigned compare without trusting the typing of a U64 return: flipping the sign bit of both
+// operands turns unsigned order into signed order. The asm stepper's bltu/bgeu decisions used a
+// ToU64() that had no body anywhere in the tree -- the C runtime's stub returned 0 for both sides,
+// so bltu was never taken and bgeu always was (found by the HiFive Unmatched import audit).
+Bool LtU64(I64 a, I64 b)
+{
+  return (a ^ 0x8000000000000000) < (b ^ 0x8000000000000000);
+}
+
+// mcause of the last trap, for the shared CSR decoder (bootstrap/seed/csr_decode.hc). It called a
+// GetMcause() nothing defined, and the stub's 0 was displayed as the cause.
+asm {
+_GET_MCAUSE::
+	csrr	a0,mcause
+	ret
+}
+_extern _GET_MCAUSE I64 GetMcause();
