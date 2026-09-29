@@ -70,6 +70,11 @@ U0 EthAb()
   }
   base = RVSifiveGemDmaBase;
   len = RVSifiveGemDmaLen;
+  // Record what firmware had set up BEFORE overwriting it. Not a suggestion to the user: this
+  // verb destroys the only copy of that state, and the MAC-in-slot-3 discovery came from
+  // reading it. Doing it here means the before-picture exists even when nobody thought to ask.
+  Print("EthAb: state before this verb touches anything --\n");
+  Eth;
   Print("EthAb: this RESETS the GEM and re-lays its rings, taking the interface away from\n");
   Print("       whatever firmware configured. Everything else in Eth() is a read.\n");
   Print("  DMA arena 0x%08X + 0x%X (descriptors, TX buffers, RX buffers), L2 %s\n", base, len,
