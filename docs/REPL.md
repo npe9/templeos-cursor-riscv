@@ -160,6 +160,28 @@ More: [COMPILER_RV.md](../templeos-riscv/COMPILER_RV.md) (asm section).
 
 `TrapInit` enables 16550 RX IRQ + PLIC + `mie.MEIE`, so a normal `wfi` **does** wake on Ctrl-C. If you clear `mstatus.MIE` or `mie.MEIE` (or never call `TrapInit`), bare `wfi` will not see Ctrl-C until a timer or other IRQ wakes the CPU. Editors are not break-armed: `^C` is still a keystroke there.
 
+### What the interrupt source number costs you (2026-09-29)
+
+The break depends on one number that is not the same on the board and in the emulator, and that
+difference hid the whole path from testing. UART0 is PLIC source **39** on the FU740 and source
+**4** on QEMU's `-M sifive_u`. The HiFive Unmatched REPL image is built with 39, so under the
+harness its RX interrupt was enabled on a line QEMU never raises: the break could not fire, and
+nothing noticed, because no gate had ever asked it to. `make repl-unmatched-ctrlc-smoke` builds a
+QEMU twin on source 4 and wedges the REPL in `while(1)`, sends `^C`, then asks it to evaluate
+`2+3`. Both halves are asserted, because they fail for different reasons: the recovery line proves
+the interrupt reached the trampoline, and the answer after it proves the prompt is still listening.
+
+Two real defects fell out of writing that gate:
+
+- **The recovery path returned with the RX interrupt still enabled.** The trampoline lands inside
+  the `if (RVTrapRecoverArm())` branch, skipping the `RVUartIrqOff` that follows the evaluation —
+  so after any break or fault the handler kept taking every keystroke into the runtime's own ring,
+  which only the normal path drains. The prompt came back and was deaf. Both REPL loops
+  (`Kernel/RVWinSerial.HC` and the exepubs demo) now turn it off and drain on the way out.
+- **The debugger pane drew a fault that never happened.** A break publishes no trap snapshot, so
+  the pane rendered an all-zero frame and decoded `mcause` 0 as `insn address misaligned`. It is
+  now skipped for `cause < 0`, which says `^C — interrupted` instead.
+
 `uart_hw_drain` clears `mstatus.MIE` for the LSR→RBR loop so a nested IRQ (UART or the break-poll timer) cannot empty the FIFO between the data-ready check and the read — otherwise QEMU’s 16550 returns the stale last `RBR` and the ring gets a duplicate key (`aa` per keystroke). Masking only `mie.MEIE` left the timer free to re-enter drain. Check: `make repl-uart-echo-pty`.
 
 ## Honesty

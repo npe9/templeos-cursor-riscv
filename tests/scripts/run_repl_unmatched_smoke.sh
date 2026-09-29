@@ -48,7 +48,12 @@ BREAK="${TOS_REPL_BREAK:-}"
 DIRTY="${TOS_REPL_DIRTY_DDR:-}"
 ENTRY=0x80200000
 UART_BASE=0x10010000
-UART_IRQ=39
+# UART0's PLIC source on the FU740 is 39. QEMU's -M sifive_u models the FU540, where UART0 is
+# source 4 -- so an image built with 39 has its RX interrupt enabled on a line this harness never
+# raises, and anything that depends on that interrupt (the ^C break) cannot be exercised here at
+# all. TOS_REPL_CTRLC=1 below builds a QEMU twin with 4 for exactly that reason, and says so.
+UART_IRQ="${REPL_UART_IRQ:-39}"
+if [ -n "${TOS_REPL_CTRLC:-}" ]; then UART_IRQ="${REPL_UART_IRQ:-4}"; fi
 
 for t in "$GCC" "$OBJCOPY" "$LD" "$QEMU"; do
   command -v "$t" >/dev/null 2>&1 || { echo "FAIL repl-unmatched — missing $t" >&2; exit 1; }
@@ -340,7 +345,26 @@ fi
 # RVSifiveUartDataReady used to test the empty bit by READING rxdata, which dequeues, so the probe
 # lost the ESC and "[40;120R2+3;" was evaluated as the first line (no ans=5). The feeder here is
 # reactive — it answers the banner the moment it is printed — so the window is hit every time.
-if [ -n "${TOS_REPL_CPR:-}" ]; then
+# TOS_REPL_CTRLC=1: does ^C get a wedged evaluation back to the prompt? Wedge the REPL in an
+# infinite loop, send ^C, then ask it to evaluate something. Two facts have to hold, and they fail
+# separately: the recovery line proves the interrupt reached the trampoline, and the ans= after it
+# proves the prompt is still listening (the recovery path used to return with the RX interrupt
+# still enabled, which left the ISR eating every later keystroke).
+# This is a QEMU TWIN, not the board image: it is built with UART0 on PLIC source 4 because that
+# is where -M sifive_u puts it. The board's 39 is unreachable here.
+if [ -n "${TOS_REPL_CTRLC:-}" ]; then
+  mkfifo "$R/in"
+  ( for i in $(seq 1 300); do sleep 0.1; grep -q "type HolyC; 'q' quits" "$R/out.log" 2>/dev/null && break; done
+    sleep 1; printf 'I64 i; while(1) i++;\n'; sleep 4; printf '\003'; sleep 4
+    printf '2+3;\n'; sleep 3; printf 'q\n'; sleep 2 ) > "$R/in" &
+  feeder=$!
+  # shellcheck disable=SC2086
+  $TIMEOUT 75 "$QEMU" -M sifive_u -smp 2 -bios none $DIRTY_ARGS \
+    -device "loader,file=$OUTDIR/repl_unmatched.bin,addr=$ENTRY" \
+    -device "loader,addr=$ENTRY,cpu-num=1" -nographic <"$R/in" >"$R/out.log" 2>&1
+  wait $feeder 2>/dev/null
+  echo "repl-unmatched: CTRL-C -- wedged in while(1), ^C sent, then asked to evaluate 2+3"
+elif [ -n "${TOS_REPL_CPR:-}" ]; then
   mkfifo "$R/in"
   ( for i in $(seq 1 300); do sleep 0.1; grep -q "type HolyC; 'q' quits" "$R/out.log" 2>/dev/null && break; done
     # Same lines as the default feeder, so one needle list serves both modes: the cursor reply glued
@@ -368,16 +392,31 @@ rc=0
 # "prints a prompt" is not "works". ans=5 is the REPL having COMPILED and EVALUATED 2+3.
 # "Except:StrPrint": a format string with more conversions than arguments THROWS (stock
 # StrPrintJoin), and the REPL must say so instead of printing nothing and ans=0.
-for n in "A2 ExePutS REPL" "ans=5" "Except:StrPrint"; do
+# The ^C run never reaches the StrPrint line and has two obligations of its own, which fail
+# separately and mean different things: "returning to prompt" proves the interrupt reached the
+# recovery trampoline at all, and the ans= after it proves the prompt is still listening.
+NEEDLES="$(printf 'A2 ExePutS REPL\nans=5\nExcept:StrPrint\n')"
+[ -n "${TOS_REPL_CTRLC:-}" ] && NEEDLES="$(printf 'A2 ExePutS REPL\nreturning to prompt\nans=5\n')"
+while IFS= read -r n; do
+  [ -z "$n" ] && continue
   if ! grep -qF "$n" "$R/out.txt"; then
     echo "FAIL repl-unmatched — missing: $n" >&2
     rc=1
   fi
-done
+done <<NEEDLES_EOF
+$NEEDLES
+NEEDLES_EOF
 # The guest's own debugger pane reports faults as "mepc=<hex>", the C harness as
 # "TRAP mcause=... mepc=...". Catch both, and name the function -- an address alone is not
 # actionable, and the blob carries no ELF symbols (it is objcopy -I binary'd in).
 FAULT_ADDRS="$( { grep -oE 'mepc=0*[0-9A-Fa-f]{6,16}' "$R/out.txt" || true; } | sed 's/mepc=//' | sort -u | head -4)"
+# A ^C break reports mcause=-1 with a zeroed epc, and that is not an address the image jumped to.
+# Drop an all-zero mepc ONLY when the log also carries the break line that explains it, so a
+# genuine jump through a null pointer is still caught. This cost the ^C gate a false FAIL on its
+# first run, when the recovery path still drew the debugger pane over an unpublished snapshot.
+if grep -qF 'interrupted; returning to prompt' "$R/out.txt"; then
+  FAULT_ADDRS="$(printf '%s\n' "$FAULT_ADDRS" | grep -vE '^0+$' || true)"
+fi
 if [ -n "$FAULT_ADDRS" ]; then
   echo "FAIL repl-unmatched -- the image faulted:" >&2
   { grep -oE 'store access fault|load access fault|illegal instruction|TRAP mcause=[^ ]*' "$R/out.txt" || true; } \

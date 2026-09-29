@@ -454,14 +454,30 @@ I64 main()
       break;
     if (RVTrapRecoverArm()) {
       I64 cause = RVTrapRecoverCause();
+      // Same reason as Kernel/RVWinSerial.HC: the trampoline lands here from inside ExePutS,
+      // skipping the RVUartIrqOff after it. With the RX interrupt still on, the ISR eats every
+      // later keystroke into the runtime ring and the prompt goes deaf right after it recovers.
+      I64 brkc;
+      RVUartIrqOff();
+      while ((brkc = RVUartGetBuffered()) >= 0)
+        RVUartSoftEnqueue(brkc & 0xFF);
       // Through the chain, not UartPutS: printed output is kept inside the text column so it
       // cannot be written over the panes beside it.
-      "\n*** fault in that line; returning to prompt\n";
-      "    mcause=%d mepc=%X mtval=%X ra=%X\n", cause, RVTrapRecoverEpc(), RVTrapRecoverTval(), RVTrapRecoverRa();
+      // cause < 0 is a ^C, not a trap. It matters here because the break path publishes NO
+      // trap snapshot: the pane below would draw an all-zero frame and decode mcause 0 as
+      // "insn address misaligned", reporting a fault that did not happen. Measured -- that is
+      // exactly what the first run of the ^C gate printed.
+      if (cause < 0)
+        "\n*** ^C — interrupted; returning to prompt\n";
+      else {
+        "\n*** fault in that line; returning to prompt\n";
+        "    mcause=%d mepc=%X mtval=%X ra=%X\n", cause, RVTrapRecoverEpc(), RVTrapRecoverTval(), RVTrapRecoverRa();
+      }
       // Land in the debugger view: registers + the decoded fault, then back to this prompt,
       // where _A0 / Dr / U(_PC-16) / AsmStep already work. Stock TempleOS Dbg(), not a modal UI.
       if (dbg_view_ready) {
-        Dbg;
+        if (cause >= 0)
+          Dbg;
         // A fault unwinds past whatever AsmRepl was in the middle of, so the prompt would be
         // left confined to the asm layout's region with Tab still completing mnemonics. Put the
         // prompt's own layout and completion back — this is the only path out of a fault.

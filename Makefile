@@ -1112,6 +1112,12 @@ repl-unmatched-smoke:
 # rxdata to test empty (it dequeues on the FU740 and on QEMU's sifive_u alike).
 repl-unmatched-cpr-smoke:
 	TOS_REPL_CPR=1 tests/scripts/run_repl_unmatched_smoke.sh
+# Ctrl-C out of a wedged evaluation, which nothing could test until now: the board image puts
+# UART0 on PLIC source 39 and QEMU's sifive_u raises source 4, so the RX interrupt the break
+# depends on was never delivered here. This builds a QEMU twin on 4 and asserts both halves --
+# the break reaching the recovery trampoline, and the prompt still answering afterwards.
+repl-unmatched-ctrlc-smoke:
+	TOS_REPL_CTRLC=1 tests/scripts/run_repl_unmatched_smoke.sh
 
 unmatched-takeover-smoke:
 	@chmod +x tests/scripts/run_unmatched_takeover_smoke.sh

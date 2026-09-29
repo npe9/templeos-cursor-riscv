@@ -1323,10 +1323,19 @@ Bool RVWinSerialDispatch2(U8 *line)
 Bool RVWinSerialDispatch(U8 *line)
 {
   Bool res;
-  I64 cause;
+  I64 cause, brk;
   if (RVTrapRecoverArm()) {
     cause = RVTrapRecoverCause();
     RVTrapRecoverDisarm();
+    // The trampoline jumps straight here from inside the command, PAST the RVUartIrqOff below.
+    // Leaving the RX interrupt on is what made ^C look like it never worked: the break itself
+    // lands fine and prints, and then every keystroke after it is taken by the ISR into the
+    // runtime's own ring, which only the normal path ever drains — so the prompt is deaf and
+    // the escape is indistinguishable from the wedge it escaped. Undo the enable here too, and
+    // move anything already collected into the ring the pump actually reads.
+    RVUartIrqOff();
+    while ((brk = RVUartGetBuffered()) >= 0)
+      RVUartSoftEnqueue(brk & 0xFF);
     if (cause < 0) {
       Print("\n^C — interrupted, back at the prompt\n");
       return FALSE;
