@@ -82,6 +82,12 @@ Three things that came out of building it:
   than the SPL does, which makes it a fair first gate but not a complete one. The script writes a
   real `hash-1` node with the payload's crc32 into the FIT so that `iminfo` has something to check
   — without it, a pass would mean only that U-Boot found nothing to verify.
+- **The card also carries a working Linux, and Stage A takes it out.** Observed 2026-09-29: a
+  reset with nothing pressing a key autoboots the board all the way into `FreedomUSDK 2021.03.01`
+  at a login prompt, with the ethernet link up at 1 Gbps. So partition 2 is not a spare slot --
+  it holds the U-Boot that boots that system, and overwriting it ends the Linux boot as well as
+  the bootloader. That is recoverable from a card reader and it is a real cost to weigh, and it
+  is another argument for doing the 675-block demo payload on a SECOND card rather than this one.
 - **Back up partition 2 first, not afterwards.** Partition 1 stays stock, so a bad payload leaves
   the SPL running with nothing loadable, and MSEL 11 means there is no flash to fall back to.
   `tftpput` works for this only against a server that accepts writes — dnsmasq's TFTP is read-only,
