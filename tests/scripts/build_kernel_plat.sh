@@ -236,7 +236,15 @@ CRT_DEFS=""
 CRT_OBJ="$EXEC_DIR/crt0.o"
 BOOT_HARTID=0
 case "$DEFCONFIG" in
-  hifive_unmatched|sifive_u)
+  hifive_unmatched)
+    # BOOT_REPORT_UART: the board is the one target that gets loaded by something other than a
+    # debugger or QEMU -- an SPL off an SD card -- and there a wrong-hart entry is otherwise a
+    # silent dead board. Naming UART0 makes that case print "hN" instead of nothing. Distinct
+    # object path from sifive_u's below, because the staleness test here is mtime-only.
+    BOOT_HARTID=1
+    CRT_DEFS="-DBOOT_HARTID=1 -DBOOT_REPORT_UART=0x10010000"
+    CRT_OBJ="$EXEC_DIR/crt0-hart1-uart10010000.o" ;;
+  sifive_u)
     BOOT_HARTID=1
     CRT_DEFS="-DBOOT_HARTID=1"
     CRT_OBJ="$EXEC_DIR/crt0-hart1.o" ;;

@@ -17,10 +17,10 @@
 _start:
     csrr t0, mhartid
 #if BOOT_HARTID == 0
-    bnez t0, halt
+    bnez t0, wrong_hart
 #else
     li t1, BOOT_HARTID
-    bne t0, t1, halt
+    bne t0, t1, wrong_hart
 #endif
     # Mask interrupts before anything else, because this image is no longer only ever
     # entered from reset. A JTAG takeover (tests/gdb/unmatched_takeover.gdb) enters it on
@@ -99,6 +99,35 @@ after_user:
     call oracle_report
 halt:
     wfi
+    j halt
+
+# A hart that is not the boot hart stops here. Silently, until now: if whatever enters this
+# image picks a different hart than it was built for, the board simply produces nothing, which
+# looks exactly like a bad load address, a dead UART, or a wedged card. That distinction matters
+# most where there is no debugger attached -- being loaded by a bootloader off an SD card -- so
+# when the build names a UART, say which hart arrived before going quiet. Guarded, so every
+# other platform's image is byte-identical to before.
+wrong_hart:
+#ifdef BOOT_REPORT_UART
+    li t2, BOOT_REPORT_UART
+    li t3, 104                # 'h'
+1:  lw t4, 0(t2)              # txdata bit31 = FIFO full; lw sign-extends, so full => negative
+    bltz t4, 1b
+    sw t3, 0(t2)
+    andi t3, t0, 7            # t0 is still mhartid
+    addi t3, t3, 48           # -> ASCII digit
+2:  lw t4, 0(t2)
+    bltz t4, 2b
+    sw t3, 0(t2)
+    li t3, 13                 # CR
+3:  lw t4, 0(t2)
+    bltz t4, 3b
+    sw t3, 0(t2)
+    li t3, 10                 # LF
+4:  lw t4, 0(t2)
+    bltz t4, 4b
+    sw t3, 0(t2)
+#endif
     j halt
 
 # zero_range(t0 = start, t1 = end): byte loop, so it needs no alignment guarantee from the

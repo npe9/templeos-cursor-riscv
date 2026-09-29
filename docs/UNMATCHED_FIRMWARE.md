@@ -38,6 +38,62 @@ binary with a load address and an entry point, or U-Boot's raw-payload path), an
 survive being entered with DDR trained but nothing else set up — which is already true, because
 that is exactly the state the JTAG takeover leaves us in today.
 
+`tools/unmatched/mk_stage_a.sh` builds that payload and prints the console blocks to paste. It
+needs no `mkimage`: a FIT is a flattened device tree, so `dtc` makes one, and the script checks the
+result really does start `d00dfeed`. The image node is `type = "firmware"`, `os = "u-boot"`,
+`load` and `entry` both `0x80200000` — `os = "opensbi"` would have the SPL try to boot a firmware
+blob with a device tree, which is the thing being removed, whereas `"u-boot"` makes it jump in
+M-mode and stop having opinions.
+
+Three things that came out of building it:
+
+- **It does not fit, and that changes the verdict below.** The current REPL image is 5,594,328
+  bytes, so the FIT is 10,928 blocks of 512. SiFive's standard layout gives the loader2 partition
+  8,192 blocks (4 MiB). Read the real numbers off this card with `part list mmc 0` first, because
+  everything else depends on them; the script's block 1 does exactly that. If p2 really is 4 MiB,
+  there are three ways out and they are not equally cheap:
+
+  1. **Shrink the payload.** A build without the compiler, or the `RV_THIN_LOADER` configuration,
+     is the only option here that keeps the risk where this plan claims it is.
+  2. **Put a small loader in the FIT** that reads the real image off another partition with
+     `Kernel/Drv/RVSdSpi.HC`. This is Stage B3 arriving early, and it is the option that scales.
+  3. **Grow the partition.** Cheap to say and the worst of the three: it rewrites the GPT, which
+     is what the ZSBL reads to find partition 1, so a bad write takes out the stock SPL as well as
+     the payload — and MSEL `1011` means there is no flash to fall back to. Recovery is a card
+     reader, not a retry at the prompt. Do not start here.
+
+  So Stage A is small **only if the payload fits**. On a stock card the REPL image does not — but
+  something else already does. `build/kernels/hifive_unmatched/plat.bin` is 344,832 bytes, which
+  the script turns into a **675-block** FIT, comfortably inside a 4 MiB loader2. That is the
+  platform demo: it brings up the UART, the CLINT timer and the PLIC and prints `plat-smoke: PASS`.
+  Booting *it* off the card proves the entire chain — ZSBL, SPL, FIT, load address, entry, hart —
+  with nothing bigger than a reset at stake, and it needs no repartitioning and no new code:
+
+  ```
+  tools/unmatched/mk_stage_a.sh build/kernels/hifive_unmatched/plat.bin
+  ```
+
+  Do that before anything else in this section. Only once the board has powered on into TempleOS
+  code with no U-Boot does the question of where the 5.5 MB image lives become worth answering,
+  and by then it is a sizing problem rather than an unknown.
+- **The payload can be proven before the card is touched.** Block 2 tftps the FIT into RAM and
+  runs `iminfo` then `bootm` on it. That exercises the FIT structure and our entry point with the
+  card untouched, so a mistake costs a reset rather than a reinstall. U-Boot's `bootm` parses more
+  than the SPL does, which makes it a fair first gate but not a complete one. The script writes a
+  real `hash-1` node with the payload's crc32 into the FIT so that `iminfo` has something to check
+  — without it, a pass would mean only that U-Boot found nothing to verify.
+- **Back up partition 2 first, not afterwards.** Partition 1 stays stock, so a bad payload leaves
+  the SPL running with nothing loadable, and MSEL 11 means there is no flash to fall back to.
+  `tftpput` works for this only against a server that accepts writes — dnsmasq's TFTP is read-only,
+  so this one goes to the Mac's own `tftpd`, and the destination file has to exist and be writable
+  before the board sends it. Pulling the card and `dd`-ing it is the version with no caveats.
+
+A wrong-hart entry used to be silent. `crt0.S` now prints `hN` over UART0 for the hart it turns
+away, because being loaded by an SPL means no debugger is attached and "the board went quiet" would
+otherwise be indistinguishable from a bad load address. The hart-0 negative control asserts that
+string rather than asserting silence, and hart 0 does print it: the path is plain rv64i, so the
+FPU-less S7 can run it.
+
 Risk: low. Recovery: rewrite partition 2 from a card reader. **This is the stage to do first** — it
 delivers "the board boots TempleOS" without touching the hardest part.
 
@@ -53,6 +109,9 @@ LIM and jumps. It must, in order:
    UART/SPI/I2C/PWM depend on, plus the dedicated DDR and GEMGXL PLLs. Note this port currently
    assumes firmware has done this — every peripheral divisor it uses was computed for the
    post-firmware clock (the I2C prescaler reads 0x0103 for ~96 kHz off a 125 MHz PCLK).
+   `Clk()` at the prompt reports the core clock and PCLK as measurements first (`mcycle` against
+   the CLINT, and the console's own baud divisor) and only then decodes the PRCI, so it says
+   whether that 125 MHz is real before any of it is rewritten. Run it before Stage B starts.
 3. **Train DDR.** The hard part, and the only part with no existing TempleOS code: the memory
    controller at `0x100B0000`, its physical filter at `0x100B8000`, and DDR MGMT at `0x100C0000`,
    driven by a long initialisation and PHY-training sequence. The realistic route is to port
@@ -78,7 +137,7 @@ and it is independent of Stages A and B.
 
 | stage | effort | what you get |
 |---|---|---|
-| A: replace the FIT payload | small | the board powers on into TempleOS; no U-Boot, no OpenSBI |
+| A: replace the FIT payload | small *if it fits* | the board powers on into TempleOS; no U-Boot, no OpenSBI |
 | B1: PRCI clocks in our code | medium | the port stops depending on firmware's clock setup |
 | B2: DDR training | **large** | no SiFive firmware on the board at all |
 | B3: SD loader in the LIM stage | small | already have the driver |

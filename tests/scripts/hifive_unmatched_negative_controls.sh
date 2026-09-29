@@ -120,10 +120,16 @@ fi
 out="$($TIMEOUT 15 "$QEMU" -M sifive_u -smp 2 -bios none \
         -device "loader,file=$BIN,addr=0x80200000" \
         -device loader,addr=0x80200000,cpu-num=0 -nographic </dev/null 2>&1 | tr -d '\r')"
+# The gate is now also expected to SAY so. "Produces no PASS" is satisfied by a dead UART, a bad
+# load address or a hung QEMU just as well as by the gate working, so the control asserts the
+# positive fact too: crt0's BOOT_REPORT_UART path prints "h0" from the hart it turned away. That
+# path is plain rv64i (lw/sw/li/andi/addi/bltz), which is why it runs on the FPU-less S7 at all.
 if printf '%s\n' "$out" | grep -qF "plat-smoke: PASS"; then
   fail_ctl 5 "which hart runs the image (it printed from hart 0, the FPU-less S7)"
+elif printf '%s\n' "$out" | grep -qE '(^|[^0-9a-zA-Z])h0([^0-9a-zA-Z]|$)'; then
+  ok_ctl 5 "hart 0 (E51/S7) was turned away and said so: \"h0\", no PASS"
 else
-  ok_ctl 5 "reset PC on hart 0 (E51/S7) produces nothing — crt0 BOOT_HARTID gate holds"
+  fail_ctl 5 "the hart-0 gate: no PASS, but no \"h0\" either — silence proves nothing here"
 fi
 
 # --- 4. The gate's own needle logic ---------------------------------------------

@@ -182,9 +182,14 @@ fi
 # MAlloc+0x168 with s1 = -1. crt0 now zeroes it.
 HEAPCTL_BASE=0x82000000
 HEAPCTL_LEN=0x400
-CRT_OBJ="$OUTDIR/crt0-hart1-zero${HEAPCTL_BASE}.o"
+CRT_OBJ="$OUTDIR/crt0-hart1-zero${HEAPCTL_BASE}-uart${UART_BASE}.o"
+# BOOT_REPORT_UART: this is the image that gets loaded onto the board, and Stage A of
+# docs/UNMATCHED_FIRMWARE.md has an SPL enter it with no debugger attached. If that SPL picks a
+# hart this image was not built for, the crt0 gate turns it away -- and without this, the board
+# just goes quiet, which looks identical to a bad load address.
 # shellcheck disable=SC2086
-"$GCC" $CFLAGS -DBOOT_HARTID=$BOOT_HART -DZERO_BASE=${HEAPCTL_BASE} -DZERO_LEN=${HEAPCTL_LEN} \
+"$GCC" $CFLAGS -DBOOT_HARTID=$BOOT_HART -DBOOT_REPORT_UART=${UART_BASE} \
+  -DZERO_BASE=${HEAPCTL_BASE} -DZERO_LEN=${HEAPCTL_LEN} \
   -c "$HARNESS/crt0.S" -o "$CRT_OBJ" \
   || { echo "FAIL repl-unmatched -- crt0" >&2; exit 1; }
 
