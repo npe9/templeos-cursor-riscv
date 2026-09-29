@@ -47,7 +47,7 @@ U0 UartPutS(U8 *s)
 public U0 Funs(U8 *filt = NULL)
 {
   UartPutS("Funs: ExePutS CInit RVTrapInit MemMap AsmList AsmDoc Mstatus Mcause\n");
-  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci Eth Temp Rtc Sd SdRd(blk) Pwm(ch,duty) PwmOff Morse(a,b,c) Blink(ch,n) Led(r,g,b) PwmAny(ch,duty) PwmFree(ch,duty) Dump(addr,lines) Peek(addr) PeekU32(addr) FlashMap(on)\n");
+  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci Eth Temp Rtc Sd SdRd(blk) L2 Pwm(ch,duty) PwmOff Morse(a,b,c) Blink(ch,n) Led(r,g,b) PwmAny(ch,duty) PwmFree(ch,duty) Dump(addr,lines) Peek(addr) PeekU32(addr) FlashMap(on)\n");
 }
 I64 dbg_view_ready;
 I64 main()
@@ -127,6 +127,7 @@ I64 main()
       RVExePubFunNew("Temp", &Temp, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Rtc", &Rtc, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Sd", &Sd, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("L2", &L2, cmp.internal_types[RT_U0], 0);
       {
         CHashFun *sp;
         sp = RVExePubFunNew("SdRd", &SdRd, cmp.internal_types[RT_U0], 1);
