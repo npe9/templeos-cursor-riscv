@@ -263,9 +263,21 @@ gave it the right IRQ (**55** on the FU740; 53 is I2C1). What it still needs:
 - `phy-mode = "gmii"`, PHY at MDIO address 0, clocks from `GEMGXLPLL` that firmware has already set —
   another reason a takeover is easier than a cold boot.
 - The MAC: U-Boot reads it from the 24c02 EEPROM and prints it (`70:b3:d5:92:ff:1d` on this board).
-- **The question that mattered, now answered:** descriptor rings here need no cache maintenance.
-  `EthAb()` on the board shows the controller consuming an unflushed descriptor. What is left is
-  the PHY link and the GEMGXL clock, not coherency.
+- **Done: this board transmits from TempleOS.** 2026-09-29, frames caught by `tcpdump -i br-lan`
+  on the router while the board ran `EthAb`:
+
+  ```
+  14:42:31.766102 02:00:00:00:00:01 > ff:ff:ff:ff:ff:ff, ethertype 0x88b5, length 60
+      0x0000:  0e0f 1011 1213 1415 1617 1819 1a1b 1c1d
+  ```
+
+  Source MAC, ethertype and the `pkt[i] = i` payload are exactly what `RVSifiveGemTxProbe`
+  writes, so the frame on the wire is ours. Six of them arrived. `EthInit` and `EthTx` at the
+  prompt do this without the A/B ceremony.
+
+  Everything the old caveat worried about is therefore settled: rings need no cache maintenance,
+  the GEMGXL clock is right (125.124 MHz, measured), and the PHY carries what we send. Receive
+  is the remaining half.
 
 ## I2C — small, and it is where the board's personality lives
 

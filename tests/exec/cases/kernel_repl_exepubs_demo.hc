@@ -47,7 +47,7 @@ U0 UartPutS(U8 *s)
 public U0 Funs(U8 *filt = NULL)
 {
   UartPutS("Funs: ExePutS CInit RVTrapInit MemMap AsmList AsmDoc Mstatus Mcause\n");
-  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci Eth Temp Rtc Sd SdRd(blk) L2 Pwm(ch,duty) PwmOff Morse(a,b,c) Blink(ch,n) Led(r,g,b) PwmAny(ch,duty) PwmFree(ch,duty) Dump(addr,lines) Peek(addr) PeekU32(addr) PeekU64(addr) Clk EthAb FlashMap(on)\n");
+  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci Eth Temp Rtc Sd SdRd(blk) L2 Pwm(ch,duty) PwmOff Morse(a,b,c) Blink(ch,n) Led(r,g,b) PwmAny(ch,duty) PwmFree(ch,duty) Dump(addr,lines) Peek(addr) PeekU32(addr) PeekU64(addr) Clk EthAb EthInit EthTx FlashMap(on)\n");
 }
 I64 dbg_view_ready;
 I64 main()
@@ -130,6 +130,13 @@ I64 main()
       RVExePubFunNew("L2", &L2, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Clk", &Clk, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("EthAb", &EthAb, cmp.internal_types[RT_U0], 0);
+      // EthInit / EthTx: bring the controller up, then put a frame on the wire, as many times as
+      // you like. Verified 2026-09-29 -- the router's tcpdump on br-lan caught these:
+      //   02:00:00:00:00:01 > ff:ff:ff:ff:ff:ff, ethertype 0x88b5, length 60
+      // EthTx returns 0 when the controller took the descriptor, -2 if it never gave it back,
+      // -3 if it started and never completed.
+      RVExePubFunNew("EthInit", &RVSifiveGemInit, cmp.internal_types[RT_I64], 0);
+      RVExePubFunNew("EthTx", &RVSifiveGemTxProbe, cmp.internal_types[RT_I64], 0);
       {
         CHashFun *sp;
         sp = RVExePubFunNew("SdRd", &SdRd, cmp.internal_types[RT_U0], 1);
