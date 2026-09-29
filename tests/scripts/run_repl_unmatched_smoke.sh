@@ -327,7 +327,7 @@ feed() {
   perl -e '
     $|=1;
     select(undef,undef,undef,6);
-    for my $x ("2+3;", "\"%d %d\\n\",7;", "q") { print $x,"\n"; select(undef,undef,undef,1.2); }
+    for my $x ("2+3;", "\"%d %d\\n\",7;", "Clk;", "q") { print $x,"\n"; select(undef,undef,undef,1.2); }
     select(undef,undef,undef,3);
   '
 }
@@ -369,7 +369,8 @@ elif [ -n "${TOS_REPL_CPR:-}" ]; then
   ( for i in $(seq 1 300); do sleep 0.1; grep -q "type HolyC; 'q' quits" "$R/out.log" 2>/dev/null && break; done
     # Same lines as the default feeder, so one needle list serves both modes: the cursor reply glued
     # to the first keystrokes, then the missing-argument format string that must report Except:StrPrint.
-    printf '\033[40;120R2+3;\n'; sleep 1.5; printf '"%%d %%d\\n",7;\n'; sleep 1.5; printf 'q\n'; sleep 3 ) > "$R/in" &
+    printf '\033[40;120R2+3;\n'; sleep 1.5; printf '"%%d %%d\\n",7;\n'; sleep 1.5
+    printf 'Clk;\n'; sleep 1.5; printf 'q\n'; sleep 3 ) > "$R/in" &
   feeder=$!
   # shellcheck disable=SC2086
   $TIMEOUT 75 "$QEMU" -M sifive_u -smp 2 -bios none $DIRTY_ARGS \
@@ -395,7 +396,11 @@ rc=0
 # The ^C run never reaches the StrPrint line and has two obligations of its own, which fail
 # separately and mean different things: "returning to prompt" proves the interrupt reached the
 # recovery trampoline at all, and the ans= after it proves the prompt is still listening.
-NEEDLES="$(printf 'A2 ExePutS REPL\nans=5\nExcept:StrPrint\n')"
+# "mcycle vs CLINT mtime" is Clk() having actually MEASURED the core clock rather than merely
+# existing: the line only prints when the counter ratio came back non-zero, so a stopped mtime,
+# a bad CLINT base or a Clk that was never wired all fail it. Without this, Clk is code no gate
+# ever runs -- which in this tree is how instruments quietly rot.
+NEEDLES="$(printf 'A2 ExePutS REPL\nans=5\nExcept:StrPrint\nmcycle vs CLINT mtime\n')"
 [ -n "${TOS_REPL_CTRLC:-}" ] && NEEDLES="$(printf 'A2 ExePutS REPL\nreturning to prompt\nans=5\n')"
 while IFS= read -r n; do
   [ -z "$n" ] && continue
