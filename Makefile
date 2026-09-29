@@ -1074,6 +1074,12 @@ kernel-ninep-eth-smoke:
 	@chmod +x tests/scripts/run_kernel_ninep_eth_smoke.sh
 	@tests/scripts/run_kernel_ninep_eth_smoke.sh
 
+# The simulated spacecraft (Kernel/Cfs): software bus, simulated sensors, and the FDIR chain
+# sensing -> navigation -> limit check -> stored sequence -> safe mode, with fault injection.
+kernel-cfs-smoke:
+	@chmod +x tests/scripts/run_kernel_cfs_smoke.sh
+	@tests/scripts/run_kernel_cfs_smoke.sh
+
 kernel-plat-spike-smoke:
 	@chmod +x tests/scripts/run_kernel_plat_smoke.sh
 	@tests/scripts/run_kernel_plat_smoke.sh spike
