@@ -112,18 +112,26 @@ devices behind it. The config mechanics there are worth reading and partly reusa
 layer is not, because an Unmatched has no virtio hardware. Treat those files as the ECAM reference,
 not as a head start on a driver.
 
-## Caveat carried over, and now downgraded to a question
+## Caveat carried over, then measured away (2026-09-29)
 
-This document used to state flatly that GEM DMA is not coherent with the caches on the FU540/740.
-That was never measured, and the evidence runs both ways. Against coherency: only the PCIe node in
-the device tree carries `dma-coherent`. For it: Linux drove this board's ethernet for years with no
-cache maintenance whatsoever, which is hard to explain unless on-chip masters reach memory through
-the L2 front port. `EthAb()` settles it in one command — it runs the TX probe twice, once with
-`RVL2FlushRange` over the descriptor and buffer arena and once without, and prints the return code,
-the TX descriptor status word and TXSTATUS for each. If both runs fail identically, coherency is
-not the fault and the PHY link, the GEMGXL clock and the queue base are the suspects.
+This document used to state flatly that GEM DMA is not coherent with the caches on the FU540/740,
+and that descriptor rings would need the L2 controller's flush registers. That was never measured.
+`EthAb()` measured it, on the board:
 
-Until that runs, nothing here should be written as though the answer were known.
+```
+  A no flush  rc=0  txdesc[1]=0xC000803C  txstatus=0x00000021   USED|COMP
+  B flushed   rc=0  txdesc[1]=0xC000803C  txstatus=0x00000008   TXGO, sampled mid-cycle
+```
+
+Bit 31 of `txdesc[1]` is USED: the controller read a descriptor this code had just written into
+DRAM, with no cache maintenance of any kind, and completed the transmit. **FU740 on-chip DMA is
+coherent.** The absence of `dma-coherent` on this node in the device tree does not mean what it
+looks like, and the reason Linux drove this board's ethernet for years without flushing anything
+is that there was nothing to flush.
+
+So `RVL2FlushRange` is not on the path to sending a packet. What remains between here and a frame
+on the wire is the PHY link and the GEMGXL clock — and a completed transmit with no link still
+completes, so this measurement says the rings are visible, not that anything left the board.
 
 ## Clocks — the assumption this port had never checked (2026-09-29)
 
@@ -255,10 +263,9 @@ gave it the right IRQ (**55** on the FU740; 53 is I2C1). What it still needs:
 - `phy-mode = "gmii"`, PHY at MDIO address 0, clocks from `GEMGXLPLL` that firmware has already set —
   another reason a takeover is easier than a cold boot.
 - The MAC: U-Boot reads it from the 24c02 EEPROM and prints it (`70:b3:d5:92:ff:1d` on this board).
-- **The open question that matters:** whether descriptor rings here need the L2 controller's flush
-  registers at all. Every device this port has driven so far was MMIO-only or a coherent QEMU
-  model, so this is new ground and the most likely source of "it almost works" bugs — but the
-  answer is a measurement (`EthAb()`), not a deduction from the device tree.
+- **The question that mattered, now answered:** descriptor rings here need no cache maintenance.
+  `EthAb()` on the board shows the controller consuming an unflushed descriptor. What is left is
+  the PHY link and the GEMGXL clock, not coherency.
 
 ## I2C — small, and it is where the board's personality lives
 
@@ -290,5 +297,5 @@ anyone learning this port.
 1. **Now, no new driver:** read the SPI-NOR at `0x20000000`; toggle GPIO by hand.
 2. **Small and self-contained:** PWM; then I2C0 and `Temp()`.
 3. **Most useful:** SD over QSPI2 → a real RedSea disk on hardware.
-4. **Closest to done:** GEM ethernet (one config line to start, then whatever `EthAb()` says).
+4. **Closest to done:** GEM ethernet. `EthAb()` has ruled coherency out, so the remaining work is the PHY link and the GEMGXL clock.
 5. **Gated on PCIe:** enumeration (read-only) → NVMe on the M.2 → XHCI → USB devices.

@@ -1,9 +1,10 @@
 // Eth() — what the ethernet controller says about itself, without touching it.
 //
-// Read-only on purpose. Whether the GEM's DMA is coherent with the caches on the FU540/740 is an
-// open question this tree has asserted both ways and measured neither (see EthAb below, and
-// docs/UNMATCHED_DEVICES.md); until it is settled, the useful thing is to read what firmware left
-// configured without disturbing it. On the HiFive Unmatched that includes
+// Read-only on purpose. The GEM's DMA on the FU740 IS coherent with the caches -- measured
+// 2026-09-29 by EthAb below, on the board: the controller consumed a descriptor written with no
+// cache maintenance at all (see docs/UNMATCHED_DEVICES.md). This tree asserted the opposite for
+// a long time without testing it. What this verb reads is what firmware left configured, which
+// on the HiFive Unmatched includes
 // the MAC address, which U-Boot programs from the board's 24c02 EEPROM -- so this doubles as an
 // independent check of the register map: if Eth() prints the address U-Boot printed, the base and
 // the offsets are right.
@@ -43,15 +44,22 @@ U0 Eth()
   Print("  ncr   0x%08X  rx=%d tx=%d\n", ncr, (ncr & RVSIFIVE_GEM_NCR_RE) != 0, (ncr & RVSIFIVE_GEM_NCR_TE) != 0);
   Print("  ncfgr 0x%08X  (bit0 100Mb, bit1 full-duplex, bit10 gigabit)\n", ncfgr);
   Print("  rxq   0x%08X  txq 0x%08X\n", RVSifiveGemRd(RVSIFIVE_GEM_RXQBASE), RVSifiveGemRd(RVSIFIVE_GEM_TXQBASE));
-  Print("  ring coherency unsettled — run EthAb to find out whether sending needs L2 flushes\n");
+  Print("  DMA here is coherent (EthAb, on the board): rings need no L2 flush to be seen\n");
 }
 // EthAb() — does this controller need cache maintenance, or not?
 //
-// The claim "FU740 DMA is not coherent, so the rings need L2 flushes" has been in this tree's
-// comments and in a commit message without ever being tested. The evidence cuts both ways: only
-// the PCIe node in the device tree is marked dma-coherent, which argues non-coherent — but Linux
-// drove this board's ethernet for years with no cache maintenance at all, which argues that
-// on-chip masters reach memory through the L2 front port and are coherent already.
+// ANSWERED on the board, 2026-09-29: coherent. Both runs sent, and the unflushed one completed
+//   A no flush  rc=0  txdesc[1]=0xC000803C  txstatus=0x00000021   (USED|COMP)
+//   B flushed   rc=0  txdesc[1]=0xC000803C  txstatus=0x00000008   (TXGO, sampled mid-cycle)
+// txdesc[1] bit 31 is USED: the controller read a descriptor this code wrote into DRAM with no
+// cache maintenance of any kind. So the device tree's lack of dma-coherent on this node does not
+// mean what it looks like, and the reason Linux drove this board's ethernet for years without
+// flushing is that it never needed to. Kept as a verb because it is the way to re-check on any
+// other FU740-family part, and because a future DMA master may not be wired the same way.
+//
+// What it does NOT prove: that a frame reached the wire. A completed transmit with no link still
+// completes. This measures whether the controller SEES the rings, which is the coherency
+// question; the PHY and the GEMGXL clock are separate.
 //
 // So run the same TX probe twice, once with a flush of the descriptor and buffer arena and once
 // without, and print what the controller says each time. The interesting outcomes:

@@ -369,9 +369,9 @@ and write the port directly with a single-open termios reader (`b'unmatched logi
 was alive while three of my own sessions showed zero bytes). Also: never open a serial session on
 `/dev/cu.usbserial-2243*0*` — that is the JTAG channel, and holding it breaks DMI.
 
-Two risks recorded, not fixed: GEM DMA on the FU540/740 may or may not be coherent with the caches
-— `EthAb()` runs the TX probe with and without an `RVL2FlushRange` of the arena and answers it, and
-until that runs neither answer should be written down; and everything above is what firmware left
+One risk recorded, one retired: GEM DMA on the FU740 turned out to be COHERENT — `EthAb()` on the
+board had the controller consume an unflushed descriptor (`txdesc[1]=0xC000803C`, USED set), so the
+flush the old note demanded was never needed; and everything above is what firmware left
 configured — this kernel programs no clock, PLL or DDR register, which is correct for a takeover
 and would not be for a cold boot from SPL.
 
@@ -419,7 +419,7 @@ Cheapest ways to give these a personality, in rising order of work: a `PowerOff(
 2 low (four register writes, no I2C); the board temperature at the prompt (TMP451 on I2C0); the SD
 card through QSPI2 + `EN_VDD_SD`/`SD_CD`, which would give this board the RedSea disk that `make tos`
 already boots under virtio; then GEM, which needs `ETH_BASE`, a `GEMGXL_RST` pulse on GPIO 12, and
-the coherency question above answered.
+a PHY link — not the cache maintenance the old note assumed.
 
 ## Gpio() on the board, and what it says about the machine (2026-09-28)
 
