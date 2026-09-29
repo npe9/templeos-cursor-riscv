@@ -140,10 +140,16 @@ U0 RVMemMap()
 #ifdef CONFIG_HAS_APLIC
   "  IMSIC_M  0x%X  RVPlicAplic (mtopei / eithreshold; 4 KiB/hart)\n", CONFIG_IMSIC_BASE;
 #endif
-  "  VIRTIO   0x%X  %s\n", RV_MEMMAP_VIRTIO_BASE, RV_MEMMAP_DRV_VIRTIO;
+  // Only if the board HAS them. These three printed unconditionally, so a HiFive Unmatched -- which
+  // has no virtio, no fw_cfg and no goldfish RTC -- showed "VIRTIO 0x0 RVVirtioMmioNo" and invited
+  // the reader to wonder where its virtio went. A map should not list absent hardware.
+  if (RV_MEMMAP_VIRTIO_BASE)
+    "  VIRTIO   0x%X  %s\n", RV_MEMMAP_VIRTIO_BASE, RV_MEMMAP_DRV_VIRTIO;
   "  FB soft 0x%X  %s\n", CONFIG_FB_SOFT_BASE, RV_MEMMAP_DRV_FB;
-  "  FW_CFG   0x%X  %s\n", RV_MEMMAP_FW_CFG_BASE, RV_MEMMAP_DRV_FW_CFG;
-  "  RTC      0x%X  %s\n", RV_MEMMAP_RTC_BASE, RV_MEMMAP_DRV_RTC;
+  if (RV_MEMMAP_FW_CFG_BASE)
+    "  FW_CFG   0x%X  %s\n", RV_MEMMAP_FW_CFG_BASE, RV_MEMMAP_DRV_FW_CFG;
+  if (RV_MEMMAP_RTC_BASE)
+    "  RTC      0x%X  %s\n", RV_MEMMAP_RTC_BASE, RV_MEMMAP_DRV_RTC;
   if (CONFIG_SMP_MAILBOX_BASE)
     "  SMP mbx  0x%X  RVSmp\n", CONFIG_SMP_MAILBOX_BASE;
   if (CONFIG_SIFIVE_TEST_BASE)
@@ -189,6 +195,57 @@ U0 RVMemMap()
 #ifdef CONFIG_SIFIVE_L2_BASE
   if (CONFIG_SIFIVE_L2_BASE)
     "  L2 ctrl  0x%X  no driver — its flush regs are what DMA will need\n", CONFIG_SIFIVE_L2_BASE;
+#endif
+#ifdef CONFIG_PLATFORM_HIFIVE_UNMATCHED
+  // The whole SoC, from FU740-C000 Manual v1p6 Table 15 -- not from memory, and not guessed. Where
+  // this port has SEEN a region work, it says so; those are the lines you can trust twice.
+  "  -- the FU740 itself (manual v1p6, Table 15) ------------------------\n";
+  "  0x00000000  debug            (seen: the DM every JTAG takeover goes through)\n";
+  "  0x00001000  reset-vector ROM  r-x\n";
+  "  0x00004000  test status      rw\n";
+  "  0x00006000  chip select      rw\n";
+  "  0x00010000  mask ROM  32 KiB  r-x  (seen: the ZSBL — dpc landed at 0x101D8, and its\n";
+  "                                      'Error 0x5' is an SD CMD0 with no reply, printed at 57600)\n";
+  "  0x01000000  S7 DTIM   8 KiB   rwx  hart 0's tightly-integrated memory\n";
+  "  0x01700000  bus error units   rw   one per hart: S7 at +0, U74 harts 1-4 at +0x1000 each\n";
+  "  0x02000000  CLINT            (seen: mtimecmp[hart1] at +0x4008 is what made the timer fire)\n";
+  "  0x02010000  L2 cache ctrl    rw   its flush registers are what non-coherent DMA needs\n";
+  "  0x02020000  MSI              rw   message-signalled interrupts, for PCIe\n";
+  "  0x03000000  PDMA  1 MiB      rw   a DMA engine this port has never touched\n";
+  "  0x08000000  L2 LIM  2 MiB    rwx  the L2 as addressable memory; the SPL runs from here\n";
+  "  0x09000000  ROM   2 MiB      rwx\n";
+  "  0x0A000000  ROM  32 MiB      rwxca\n";
+  "  0x0C000000  PLIC             (seen: hart 1 M-mode is context 1, enable +0x2080)\n";
+  "  0x10000000  PRCI             clocks and resets; firmware owns these\n";
+  "  0x10070000  OTP              one-time programmable\n";
+  "  0x10080000  pin control      the IOF mux — which pad belongs to GPIO, PWM, SPI or UART\n";
+  "  0x100A0000  GEMGXL mgmt      (the ethernet driver does not use it yet)\n";
+  "  0x100B0000  memory ctrl 16K  the DDR controller proper\n";
+  "  0x100B8000  physical filter  rw\n";
+  "  0x100C0000  DDR mgmt         rw\n";
+  "  0x100D0000  PCIe mgmt        rw\n";
+  "  0x100E0000  order ogler      rw   (SiFive's name, not a typo of ours)\n";
+  "  0x14000000  error device 0   rwxca\n";
+  "  0x18000000  error device 1   rwxca\n";
+  "  0x20000000  SPI0 XIP 256 MiB r-x  (seen: reads zeros until QSPI0 fctrl.en sets, and it will not)\n";
+  "  0x30000000  SPI1 XIP 256 MiB r-x  nothing attached on this board\n";
+  "  0x60000000  PCIe   512 MiB   rw   I/O at +0x80000, memory above it\n";
+  "  0x80000000  DRAM up to 32 GiB rwxca  (16 GiB fitted here)\n";
+  "  0xDF0000000 PCIe config 256M rw   (seen: all-ones until the iATU maps config cycles)\n";
+  "  0xE00000000 PCIe dbi   4 GiB rwx  (seen: aliases the root port at +0 — 0xF15E:0x0000)\n";
+  "  0x2000000000 PCIe prefetch 128 GiB\n";
+  // The three core-complex PORTS are not rows in Table 15; they are how the core reaches those
+  // rows, so they are described rather than given invented address ranges. An earlier version of
+  // this map claimed a "peripheral port" at 0x20000000-0x3FFFFFFF and a "system port" at
+  // 0x60000000-0x7FFFFFFF: those ranges are real, but the manual calls them SPI XIP and PCIe.
+  "  -- ports (how the core reaches the above; manual v1p6) -------------\n";
+  "  memory port   cacheable DRAM; atomics are implemented in the data cache here\n";
+  "  system port   non-cacheable regions such as PCIe; speculative icache refill can be fenced\n";
+  "                off it with PMP plus Feature Disable bit 3\n";
+  "  peripheral port  the 0x1000xxxx device block and the SPI XIP windows\n";
+  "  front port    INBOUND only: external masters reach the full map through it, and the manual\n";
+  "                is explicit that PMP cannot police them. PCIe is an IO/one-way-coherent master\n";
+  "                into the L2 this way, which is why its DMA needs no flushes and GEM's does.\n";
 #endif
 }
 

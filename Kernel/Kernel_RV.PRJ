@@ -166,6 +166,8 @@ kernel_cfg = KCfgNew;
 #include "Drv/RVSifiveGpio.HC" // SiFive GPIO registers (guarded writes; names in RVGpioUi)
 #include "Drv/RVPcie.HC"      // read-only PCIe config space (ECAM; I64 addresses)
 #include "Drv/RVSifiveQspi.HC" // QSPI0 fctrl.en: the direct-mapped flash reader
+#include "Drv/RVSifiveI2c.HC" // OpenCores I2C master, reads only, short address allow-list
+#include "Drv/RVSifivePwm.HC" // PWM compare channels (LED/fan headers)
 #endif
 #include "Drv/RVUart.HC"       // Kconfig UART (16550 / SiFive / HTIF stub)
 #include "RVKeyIn"            // GetKey: window MSG_KEY_DOWN then UART (EdLite fwd-decls it)
@@ -220,6 +222,9 @@ kernel_cfg = KCfgNew;
 #include "RVPcieUi"     // Pci() at the prompt (needs Print)
 #include "RVPeekUi"     // Dump()/Peek() at the prompt (needs Print)
 #include "RVEthUi"      // Eth() at the prompt (needs Print)
+#include "RVTempUi"     // Temp() at the prompt (needs Print)
+#include "RVRtcUi"      // Rtc() at the prompt — the PMIC's battery-backed clock
+#include "RVMorseUi"    // Morse() — a letter per LED (needs Print + CLINT)
 #include "RVDisasm"   // Disasm/U/UA/DisasmAt — seed disasm.hc port over the task hash
 #include "RVTextBase" // TextChar/TextPrint portable (DocRecalc / draw_it)
 #include "RVRegistry" // in-memory RegDft/RegExe/RegWrite (the compile-time half is in host/parser.c)

@@ -47,7 +47,7 @@ U0 UartPutS(U8 *s)
 public U0 Funs(U8 *filt = NULL)
 {
   UartPutS("Funs: ExePutS CInit RVTrapInit MemMap AsmList AsmDoc Mstatus Mcause\n");
-  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci Eth Dump(addr,lines) Peek(addr) PeekU32(addr) FlashMap(on)\n");
+  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci Eth Temp Rtc Pwm(ch,duty) PwmOff Morse(a,b,c) Blink(ch,n) Led(r,g,b) PwmAny(ch,duty) PwmFree(ch,duty) Dump(addr,lines) Peek(addr) PeekU32(addr) FlashMap(on)\n");
 }
 I64 dbg_view_ready;
 I64 main()
@@ -124,6 +124,57 @@ I64 main()
       RVExePubFunNew("PowerOff", &PowerOff, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Pci", &Pci, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Eth", &Eth, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("Temp", &Temp, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("Rtc", &Rtc, cmp.internal_types[RT_U0], 0);
+      {
+        CHashFun *wp;
+        // Pwm(ch,duty): which channel reaches which LED or fan header is undocumented on this
+        // board, so this is the instrument for finding out. Pwm(ch,0) or PwmOff to stop.
+        wp = RVExePubFunNew("Pwm", &RVPwmSet, cmp.internal_types[RT_I64], 2);
+        if (wp) {
+          RVExePubAddArg(wp, "ch", cmp.internal_types[RT_I64]);
+          RVExePubAddArg(wp, "duty", cmp.internal_types[RT_I64]);
+        }
+        RVExePubFunNew("PwmOff", &RVPwmOff, cmp.internal_types[RT_I64], 0);
+        // PwmAny(ch,duty): ch 0..7 spans BOTH pwm blocks (0-3 = pwm0, 4-7 = pwm1), for finding
+        // out what the four unexplored channels of the second block reach.
+        wp = RVExePubFunNew("PwmAny", &RVPwmAnySet, cmp.internal_types[RT_I64], 2);
+        if (wp) {
+          RVExePubAddArg(wp, "ch", cmp.internal_types[RT_I64]);
+          RVExePubAddArg(wp, "duty", cmp.internal_types[RT_I64]);
+        }
+        // PwmFree(ch,duty): pwm0 with the counter free-running, so channel 0 — the D12 LED —
+        // becomes an ordinary brightness instead of a pulse at each period wrap.
+        wp = RVExePubFunNew("PwmFree", &RVPwmFreeSet, cmp.internal_types[RT_I64], 2);
+        if (wp) {
+          RVExePubAddArg(wp, "ch", cmp.internal_types[RT_I64]);
+          RVExePubAddArg(wp, "duty", cmp.internal_types[RT_I64]);
+        }
+        // Morse(c1,c2,c3,reps): a different letter blinking on each LED at once. Defaults spell
+        // the first three letters of the system that is blinking them.
+        wp = RVExePubFunNew("Morse", &Morse, cmp.internal_types[RT_U0], 4);
+        if (wp) {
+          RVExePubAddArg(wp, "c1", cmp.internal_types[RT_I64], 0, 'T');
+          RVExePubAddArg(wp, "c2", cmp.internal_types[RT_I64], 0, 'E');
+          RVExePubAddArg(wp, "c3", cmp.internal_types[RT_I64], 0, 'M');
+          RVExePubAddArg(wp, "reps", cmp.internal_types[RT_I64], 0, 3);
+          RVExePubAddArg(wp, "unit", cmp.internal_types[RT_I64], 0, 500);
+        }
+        // Led(r,g,b): the board's RGB LED by colour rather than by channel number. The mapping
+        // green=1 red=2 blue=3 was measured by driving each channel and looking at the board.
+        wp = RVExePubFunNew("Led", &Led, cmp.internal_types[RT_U0], 3);
+        if (wp) {
+          RVExePubAddArg(wp, "r", cmp.internal_types[RT_I64], 0, 0);
+          RVExePubAddArg(wp, "g", cmp.internal_types[RT_I64], 0, 0);
+          RVExePubAddArg(wp, "b", cmp.internal_types[RT_I64], 0, 0);
+        }
+        // Blink(ch,times): the unambiguous version — one LED, 1 Hz, nothing clever.
+        wp = RVExePubFunNew("Blink", &Blink, cmp.internal_types[RT_U0], 2);
+        if (wp) {
+          RVExePubAddArg(wp, "ch", cmp.internal_types[RT_I64], 0, 1);
+          RVExePubAddArg(wp, "times", cmp.internal_types[RT_I64], 0, 10);
+        }
+      }
       {
         CHashFun *dp;
         dp = RVExePubFunNew("Dump", &Dump, cmp.internal_types[RT_U0], 2);

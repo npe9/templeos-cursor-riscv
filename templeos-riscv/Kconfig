@@ -664,6 +664,14 @@ config SIFIVE_PWM0_BASE
 	default 0x10020000 if PLATFORM_HIFIVE_UNMATCHED
 	default 0x0
 
+config SIFIVE_PWM1_BASE
+	hex "SiFive PWM1 base (0 if none)"
+	default 0x10021000 if PLATFORM_HIFIVE_UNMATCHED
+	default 0x0
+	help
+	  The second PWM block. Both are enabled in the board dts with no consumer named, so what each
+	  channel reaches is found by driving it and looking at the board.
+
 config SIFIVE_L2_BASE
 	hex "SiFive L2 cache controller base (0 if none)"
 	default 0x02010000 if PLATFORM_HIFIVE_UNMATCHED
