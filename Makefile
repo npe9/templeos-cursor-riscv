@@ -1080,6 +1080,12 @@ kernel-cfs-smoke:
 	@chmod +x tests/scripts/run_kernel_cfs_smoke.sh
 	@tests/scripts/run_kernel_cfs_smoke.sh
 
+# Differential oracle for the NASA cFS -> HolyC translation: run the unmodified C and the
+# translation, require identical transcripts. Needs tools/cfs/fetch.sh first.
+cfs-xlat-smoke:
+	@chmod +x tests/scripts/run_cfs_xlat_smoke.sh
+	@tests/scripts/run_cfs_xlat_smoke.sh
+
 kernel-plat-spike-smoke:
 	@chmod +x tests/scripts/run_kernel_plat_smoke.sh
 	@tests/scripts/run_kernel_plat_smoke.sh spike

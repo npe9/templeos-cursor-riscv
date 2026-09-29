@@ -130,3 +130,8 @@ __pycache__/
 
 # generated per-board build tree
 templeos-riscv/build/
+
+# NASA cFS upstream sources: fetched by tools/cfs/fetch.sh at pinned commits, not vendored.
+# vendor/shim IS committed — it is hand-written port glue, not upstream code.
+vendor/cFE/
+vendor/osal/
