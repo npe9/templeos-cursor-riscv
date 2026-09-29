@@ -47,7 +47,7 @@ U0 UartPutS(U8 *s)
 public U0 Funs(U8 *filt = NULL)
 {
   UartPutS("Funs: ExePutS CInit RVTrapInit MemMap AsmList AsmDoc Mstatus Mcause\n");
-  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci Dump(addr,lines) Peek(addr) PeekU32(addr) FlashMap(on)\n");
+  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci Eth Dump(addr,lines) Peek(addr) PeekU32(addr) FlashMap(on)\n");
 }
 I64 dbg_view_ready;
 I64 main()
@@ -123,6 +123,7 @@ I64 main()
       RVExePubFunNew("GpioArm", &RVGpioArm, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("PowerOff", &PowerOff, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Pci", &Pci, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("Eth", &Eth, cmp.internal_types[RT_U0], 0);
       {
         CHashFun *dp;
         dp = RVExePubFunNew("Dump", &Dump, cmp.internal_types[RT_U0], 2);

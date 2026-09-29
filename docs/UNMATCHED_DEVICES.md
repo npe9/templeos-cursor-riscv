@@ -161,7 +161,31 @@ Those are exactly the commands the mask ROM's error ladder enumerates, which thi
 decoded the hard way from `Error 0x0000000000000005`. It would give the board the RedSea disk that
 `make tos` already boots under virtio, which is the difference between a REPL and a system.
 
-## Ethernet — the closest of all of these to working
+## Ethernet — reachable and readable from the prompt (2026-09-28)
+
+`CONFIG_SIFIVE_ETH_BASE` is now `0x10090000` for this board and `Eth` reports the controller without
+touching it. On the board, straight after a takeover:
+
+```
+GEM @ 0x10090000  irq 55
+  MAC 70:B3:D5:92:FF:1D   (slot 3, programmed by firmware from the board EEPROM)
+  ncr   0x00000000  rx=0 tx=0          U-Boot halts the controller after a transfer
+  ncfgr 0x00100402  full-duplex, gigabit
+  rxq   0xFF749F70  txq 0xFF74A1C0     U-Boot's rings, in its relocated memory
+```
+
+That MAC matches the one U-Boot prints, which is the register map confirmed independently. Two traps
+on the way, both found by contradicting a plausible reading with a raw `Dump`:
+
+- `sifive_gem_base` was set **only** by `RVSifiveGemInit`, so every access before init went to
+  address 0. Reads returned zeros -- `Eth` reported a perfectly configured controller as dead -- and
+  `RVSifiveGemWr` would have written into the mask-ROM region. The accessors now default the base
+  from Kconfig and refuse when the board has no GEM.
+- The MAC is **not in slot 1**. Cadence GEM has four specific-address slots (`0x88`, `0x90`, `0x98`,
+  `0xA0`); U-Boot leaves the address in slot 3 on this board, so a reader hardwired to `SA1B` sees
+  zeros. `Eth` scans all four and names the one it found.
+
+## Ethernet — what is still needed to send a packet
 
 The driver already exists: `Kernel/Drv/RVSifiveGemYes.HC` (Cadence GEM), and today's device audit
 gave it the right IRQ (**55** on the FU740; 53 is I2C1). What it still needs:

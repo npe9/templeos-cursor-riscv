@@ -560,6 +560,11 @@ public U0 MemMap()
   Print("    0x%08X  MemFS base\n", CONFIG_MEMFS_BASE);
   Print("    0x%08X  stack base\n", CONFIG_STACK_BASE);
   Print("  0x%08X  DRAM top\n", CONFIG_DRAM_BASE + CONFIG_DRAM_SIZE);
+  // ...and the DEVICES. These lived in RVMemMap() in Kernel/Drv, which no verb ever reached, so an
+  // operator typing MemMap saw the DRAM windows and reasonably concluded the port did not know about
+  // the board's GPIO, PCIe, QSPI or ethernet. It did; the map just had two halves and only one door.
+  Print("\n");
+  RVMemMap;
 }
 // The CSR decoders live in bootstrap/seed/csr_decode.hc now — one copy, shared with the seed
 // image, included at the top of this file. The fork that used to sit here knew fewer mstatus

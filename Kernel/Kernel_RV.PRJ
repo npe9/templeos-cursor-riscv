@@ -219,6 +219,7 @@ kernel_cfg = KCfgNew;
 #include "RVGpioUi"     // Gpio() / PowerOff() at the prompt (needs Print)
 #include "RVPcieUi"     // Pci() at the prompt (needs Print)
 #include "RVPeekUi"     // Dump()/Peek() at the prompt (needs Print)
+#include "RVEthUi"      // Eth() at the prompt (needs Print)
 #include "RVDisasm"   // Disasm/U/UA/DisasmAt — seed disasm.hc port over the task hash
 #include "RVTextBase" // TextChar/TextPrint portable (DocRecalc / draw_it)
 #include "RVRegistry" // in-memory RegDft/RegExe/RegWrite (the compile-time half is in host/parser.c)

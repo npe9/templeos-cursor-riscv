@@ -151,13 +151,45 @@ U0 RVMemMap()
   if (CONFIG_SIFIVE_AON_BASE)
     "  AON      0x%X  RVSifivePlat AON/WDT\n", CONFIG_SIFIVE_AON_BASE;
   if (CONFIG_SIFIVE_GPIO_BASE)
-    "  GPIO     0x%X  RVSifivePlat (reset pin)\n", CONFIG_SIFIVE_GPIO_BASE;
+    "  GPIO     0x%X  RVSifiveGpio — Gpio/GpioRd/GpioWr (16 named lines)\n", CONFIG_SIFIVE_GPIO_BASE;
   if (CONFIG_SIFIVE_UART1_BASE)
     "  UART1    0x%X  RVSifivePlat (legend)\n", CONFIG_SIFIVE_UART1_BASE;
   if (CONFIG_SIFIVE_PRCI_BASE)
     "  PRCI     0x%X  RVSifivePlat (legend)\n", CONFIG_SIFIVE_PRCI_BASE;
   if (CONFIG_SIFIVE_ETH_BASE)
-    "  ETH/GEM  0x%X  RVSifiveGem\n", CONFIG_SIFIVE_ETH_BASE;
+    "  ETH/GEM  0x%X  RVSifiveGem — Eth (read-only; DMA needs L2 flushes)\n", CONFIG_SIFIVE_ETH_BASE;
+  // Everything below was missing from this map for as long as the port only spoke to QEMU's virt:
+  // the map listed what the kernel drove, so a device with no driver had no line, and a device whose
+  // Kconfig base was 0 was silently skipped. A map that omits the hardware is worse than no map, so
+  // these print whenever the board defines them, driver or not, and say which verb reaches them.
+#ifdef CONFIG_PCIE_ECAM_BASE
+  if (CONFIG_PCIE_ECAM_BASE)
+    "  PCIe cfg 0x%X  RVPcie — Pci (needs the iATU for buses below 0)\n", CONFIG_PCIE_ECAM_BASE;
+#endif
+#ifdef CONFIG_PCIE_DBI_BASE
+  if (CONFIG_PCIE_DBI_BASE)
+    "  PCIe dbi 0x%X  DesignWare regs; aliases the root port at +0\n", CONFIG_PCIE_DBI_BASE;
+#endif
+#ifdef CONFIG_SIFIVE_QSPI0_BASE
+  if (CONFIG_SIFIVE_QSPI0_BASE)
+    "  QSPI0    0x%X  RVSifiveQspi — FlashMap (SPI-NOR controller)\n", CONFIG_SIFIVE_QSPI0_BASE;
+#endif
+#ifdef CONFIG_SIFIVE_QSPI0_MAP_BASE
+  if (CONFIG_SIFIVE_QSPI0_MAP_BASE)
+    "  QSPI0 map 0x%X  flash as memory once fctrl.en sets (it does not, yet)\n", CONFIG_SIFIVE_QSPI0_MAP_BASE;
+#endif
+#ifdef CONFIG_SIFIVE_I2C0_BASE
+  if (CONFIG_SIFIVE_I2C0_BASE)
+    "  I2C0     0x%X  no driver — TMP451 0x4c, DA9063 PMIC 0x58, EEPROM 0x50\n", CONFIG_SIFIVE_I2C0_BASE;
+#endif
+#ifdef CONFIG_SIFIVE_PWM0_BASE
+  if (CONFIG_SIFIVE_PWM0_BASE)
+    "  PWM0     0x%X  no driver\n", CONFIG_SIFIVE_PWM0_BASE;
+#endif
+#ifdef CONFIG_SIFIVE_L2_BASE
+  if (CONFIG_SIFIVE_L2_BASE)
+    "  L2 ctrl  0x%X  no driver — its flush regs are what DMA will need\n", CONFIG_SIFIVE_L2_BASE;
+#endif
 }
 
 U8 *RVMemMapDrvUart()

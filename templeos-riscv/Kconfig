@@ -431,7 +431,7 @@ config SIFIVE_PRCI_BASE
 
 config SIFIVE_ETH_BASE
 	hex "SiFive GEM ethernet base (0 = absent / stub)"
-	default 0x10090000 if PLATFORM_SIFIVE_U
+	default 0x10090000 if PLATFORM_SIFIVE_U || PLATFORM_HIFIVE_UNMATCHED
 	default 0
 	help
 	  Cadence GEM on FU540 @ 0x10090000. Non-zero selects RVSifiveGemYes
@@ -649,6 +649,28 @@ config HAS_VIRTIO_PCI
 	  QEMU virt PCI ECAM + virtio-pci. HolyC: VirtioPci.HC / VirtioPciBlk.HC
 	  (modern caps + LBA read) and NinePVirtioPci find/handshake. MMIO blk/net
 	  remain the default product path.
+
+config SIFIVE_I2C0_BASE
+	hex "SiFive I2C0 base (0 if none)"
+	default 0x10030000 if PLATFORM_HIFIVE_UNMATCHED
+	default 0x0
+	help
+	  OpenCores-style master, 8-bit registers at a 4-byte stride (reg-shift 2, reg-io-width 1).
+	  On the HiFive Unmatched this bus carries the TMP451 thermometer at 0x4c, the DA9063 PMIC at
+	  0x58 (which owns the only real hardware reset) and the 24c02 EEPROM holding the MAC.
+
+config SIFIVE_PWM0_BASE
+	hex "SiFive PWM0 base (0 if none)"
+	default 0x10020000 if PLATFORM_HIFIVE_UNMATCHED
+	default 0x0
+
+config SIFIVE_L2_BASE
+	hex "SiFive L2 cache controller base (0 if none)"
+	default 0x02010000 if PLATFORM_HIFIVE_UNMATCHED
+	default 0x0
+	help
+	  Its flush registers are what GEM and any PCIe DMA will need: the FU540/740 do not keep DMA
+	  coherent with L1.
 
 config SIFIVE_QSPI0_BASE
 	hex "SiFive QSPI0 controller base (0 if none)"

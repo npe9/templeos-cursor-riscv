@@ -18,15 +18,30 @@
 I64 sifive_gem_base;
 I64 sifive_gem_rx_pkts;
 U0 (*sifive_gem_rx_cb)(U8 *pkt, I64 len);
+// sifive_gem_base used to be set only by RVSifiveGemInit, so every access before init went to
+// ADDRESS 0: reads returned zeros -- which made Eth() report a perfectly configured controller as
+// dead, when a raw Dump of 0x10090000 showed ncfgr=0x00100402 and U-Boot's descriptor rings -- and
+// a write would have landed in the mask-ROM region. Default it from Kconfig on first use, and
+// refuse when the board has no GEM rather than dereferencing 0.
 U0 RVSifiveGemWr(I64 off, U32 v)
 {
-  U32 *p = sifive_gem_base + off;
+  U32 *p;
+  if (!sifive_gem_base)
+    sifive_gem_base = CONFIG_SIFIVE_ETH_BASE;
+  if (!sifive_gem_base)
+    return;
+  p = sifive_gem_base + off;
   *p = v;
 }
 
 U32 RVSifiveGemRd(I64 off)
 {
-  U32 *p = sifive_gem_base + off;
+  U32 *p;
+  if (!sifive_gem_base)
+    sifive_gem_base = CONFIG_SIFIVE_ETH_BASE;
+  if (!sifive_gem_base)
+    return 0;
+  p = sifive_gem_base + off;
   return *p;
 }
 
