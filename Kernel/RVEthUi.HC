@@ -69,6 +69,51 @@ U0 Eth()
 //   both succeed               -> coherent, and the flushes are not needed
 // This WRITES to the GEM: it resets the controller and re-lays the rings, which means it takes
 // the interface away from whatever firmware configured. Everything else in this file is a read.
+// EthRx() — the other half. Poll the RX ring for one frame and say what arrived.
+//
+// The rings this port lays use MAC 02:00:00:00:00:01, not the board's own address from the EEPROM,
+// so unicast traffic for the board will NOT match. Broadcast will: the controller accepts it
+// unless NCR's no-broadcast bit is set, and a LAN is never quiet for long (ARP, DHCP, mDNS). Run
+// EthInit first; on a silent segment, make traffic (`arping -c 3 <unused-ip>` from another host).
+U0 EthRx()
+{
+  U8 pkt[1514];
+  I64 n, i, spin, seen;
+  if (!RVSifiveGemPresent) {
+    Print("EthRx: no GEM on this board\n");
+    return;
+  }
+  seen = 0;
+  // Bounded poll. The count is deliberately large and the loop deliberately dumb: there is no
+  // sleep here, because a verb that blocks on a quiet network is worse than one that returns.
+  for (spin = 0; spin < 40000000; spin++) {
+    if (RVSifiveGemRxPending) {
+      seen = 1;
+      break;
+    }
+  }
+  if (!seen) {
+    Print("EthRx: nothing arrived. EthInit first, and check something is broadcasting.\n");
+    return;
+  }
+  n = RVSifiveGemRx(pkt, 1514);
+  if (n <= 0) {
+    Print("EthRx: the descriptor said OWN but the read returned %d\n", n);
+    return;
+  }
+  Print("EthRx: %d bytes\n", n);
+  Print("  dst %02X:%02X:%02X:%02X:%02X:%02X  src %02X:%02X:%02X:%02X:%02X:%02X  type %02X%02X\n",
+        pkt[0], pkt[1], pkt[2], pkt[3], pkt[4], pkt[5],
+        pkt[6], pkt[7], pkt[8], pkt[9], pkt[10], pkt[11], pkt[12], pkt[13]);
+  Print("  ");
+  i = 14;
+  while (i < n && i < 30) {
+    Print("%02X ", pkt[i]);
+    i++;
+  }
+  Print("\n  frames so far: %d\n", sifive_gem_rx_pkts);
+}
+
 U0 EthAb()
 {
   I64 a_rc, b_rc, a_d1, b_d1, a_st, b_st, base, len;

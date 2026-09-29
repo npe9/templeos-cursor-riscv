@@ -275,9 +275,25 @@ gave it the right IRQ (**55** on the FU740; 53 is I2C1). What it still needs:
   writes, so the frame on the wire is ours. Six of them arrived. `EthInit` and `EthTx` at the
   prompt do this without the A/B ceremony.
 
-  Everything the old caveat worried about is therefore settled: rings need no cache maintenance,
-  the GEMGXL clock is right (125.124 MHz, measured), and the PHY carries what we send. Receive
-  is the remaining half.
+- **And it receives.** `EthRx` on the board, while the router broadcast ARP requests:
+
+  ```
+  EthRx: 60 bytes
+    dst FF:FF:FF:FF:FF:FF  src 94:83:C4:DB:E1:F4  type 0806
+    00 01 08 00 06 04 00 01 94 83 C4 DB E1 F4 C0 A8
+  ```
+
+  `94:83:C4:DB:E1:F4` is the router's `br-lan` address, and the payload decodes as an ARP request
+  (hw Ethernet, proto IPv4, hlen 6, plen 4, op 1) from that same address with a 192.168 sender IP.
+  So this is a frame another machine put on the wire, not a loopback and not one of ours.
+
+  Note the filter: `RVSifiveGemInit` programs MAC `02:00:00:00:00:01`, not the board's EEPROM
+  address, so unicast traffic aimed at the board does not match. Broadcast does. On a quiet
+  segment, `arping -c 1 -I br-lan <unused-ip>` from another host is enough to make some.
+
+  Everything the old caveat worried about is settled, and both directions work: rings need no
+  cache maintenance, the GEMGXL clock is right (125.124 MHz, measured), and the PHY carries
+  frames both ways.
 
 ## I2C — small, and it is where the board's personality lives
 

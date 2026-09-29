@@ -47,7 +47,7 @@ U0 UartPutS(U8 *s)
 public U0 Funs(U8 *filt = NULL)
 {
   UartPutS("Funs: ExePutS CInit RVTrapInit MemMap AsmList AsmDoc Mstatus Mcause\n");
-  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci Eth Temp Rtc Sd SdRd(blk) L2 Pwm(ch,duty) PwmOff Morse(a,b,c) Blink(ch,n) Led(r,g,b) PwmAny(ch,duty) PwmFree(ch,duty) Dump(addr,lines) Peek(addr) PeekU32(addr) PeekU64(addr) Clk EthAb EthInit EthTx FlashMap(on)\n");
+  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci Eth Temp Rtc Sd SdRd(blk) L2 Pwm(ch,duty) PwmOff Morse(a,b,c) Blink(ch,n) Led(r,g,b) PwmAny(ch,duty) PwmFree(ch,duty) Dump(addr,lines) Peek(addr) PeekU32(addr) PeekU64(addr) Clk EthAb EthInit EthTx EthRx FlashMap(on)\n");
 }
 I64 dbg_view_ready;
 I64 main()
@@ -137,6 +137,7 @@ I64 main()
       // -3 if it started and never completed.
       RVExePubFunNew("EthInit", &RVSifiveGemInit, cmp.internal_types[RT_I64], 0);
       RVExePubFunNew("EthTx", &RVSifiveGemTxProbe, cmp.internal_types[RT_I64], 0);
+      RVExePubFunNew("EthRx", &EthRx, cmp.internal_types[RT_U0], 0);
       {
         CHashFun *sp;
         sp = RVExePubFunNew("SdRd", &SdRd, cmp.internal_types[RT_U0], 1);
