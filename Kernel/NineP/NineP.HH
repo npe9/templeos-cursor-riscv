@@ -39,6 +39,16 @@
 #define NINEP_TP_NONE    0
 #define NINEP_TP_MMIO    1
 #define NINEP_TP_PCI     2
+#define NINEP_TP_ETH     3
+// 9P over raw Ethernet. 0x88B6 is in the IEEE 802.1 local-experimental range, and one step up from
+// the 0x88B5 the GEM TX probe uses so a capture can tell the two apart at a glance.
+#define NINEP_ETH_TYPE   0x88B6
+// One 9P message per Ethernet frame, so the transport never fragments. 1500 - 14 = 1486 usable;
+// keep a round number under it. The client honours whatever msize the server agrees to in
+// Rversion (NinePClientVersion stores it), so capping here needs no client change at all -- it
+// only requires the server to answer with something this size or smaller, and >= 512.
+#define NINEP_ETH_MSIZE  1280
+#define NINEP_ETH_CAP    1486
 #define P9_DIALECT_NONE  0
 #define P9_DIALECT_2000  1
 // plain 9P2000 — Inferno Styx, Plan 9. Topen/Tcreate/Tstat, stat-based directory reads.

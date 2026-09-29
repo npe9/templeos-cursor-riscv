@@ -18,6 +18,38 @@ Sources: `Kernel/NineP/*`, `Kernel/Drv/Virtio9p.HC`, `NinePVirtioMmio.HC`,
 
 ---
 
+## Transports: virtio-mmio, virtio-PCI, and raw Ethernet
+
+`NinePTransport` is a four-function seam — `SendRecv`, `MountTag`, and the two buffers — and the
+client above it is transport-agnostic. That is what makes the HiFive Unmatched reachable: the
+board has no virtio at all, but its GEM transmits and receives, so `Kernel/NineP/NinePEth.HC`
+carries 9P in raw Ethernet frames and everything above it is unchanged.
+
+Two properties of 9P keep that transport small. Messages are **self-delimiting** (the first four
+bytes are the total size), so a datagram link invents no framing of its own. And 9P is strictly
+request/response with a 16-bit tag, so reliability is a timeout and a retry matched on that tag —
+no sequence numbers, no TCP, no IP. There is no network stack here: the peer is found by sending
+the first request to broadcast and remembering who answers.
+
+One 9P message per frame, so nothing fragments. The server clamps `msize` to 1280 in its
+`Rversion`, and the client honours whatever the server agrees to, so this needs no client change.
+
+`tools/ninep/eth9p.py` is the peer. `--mode qemu` speaks QEMU's socket-netdev framing (4-byte
+big-endian length, then a raw frame), which is what lets `make kernel-ninep-eth-smoke` run with no
+tap device and no privileges. `--mode raw` uses `AF_PACKET` for the real board.
+
+### The bug this transport found
+
+Every request in `NinePClient.HC` wrote `size[4]` as **four bytes short** — 9P's size counts
+itself, and the code subtracted the header. It survived indefinitely because the virtio transports
+never made it matter: QEMU's 9pfs takes the length from the virtqueue descriptor, not from the
+field. A datagram carries no length of its own, so this was the first transport to honour it, and
+the server truncated every request by four bytes. `Tversion` still appeared to work because its
+trailing string is not validated; `Twalk` lost the tail of the filename and came back `Rlerror`.
+
+Worth keeping as a lesson about transports generally: a new one is not just plumbing, it is a
+second opinion about the layer above it.
+
 ## Why not just ZMODEM? (or terminal mode)
 
 **Rule of thumb** (paired with [UART.md](UART.md)): the UART is a **console**

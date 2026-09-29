@@ -6,6 +6,7 @@
 #include "../NineP/NinePCodec.HC"
 #include "NinePVirtioMmio.HC"
 #include "NinePVirtioPci.HC"
+#include "../NineP/NinePEth.HC"
 #include "../NineP/NinePTransport.HC"
 #include "../NineP/NinePClient.HC"
 CNinePClient ninep_client;
@@ -189,6 +190,18 @@ I64 NineExportAs(U8 *local_path, U8 *host_name)
       return -2;
   }
   return Virtio9pExportFile(local_path, host_name);
+}
+
+// Mount9pEth — mount over raw Ethernet instead of virtio. This is the board's path: pin the
+// transport, do the ordinary mount, unpin. Everything between is the same code the virtio gates
+// exercise, which is the point of a transport seam.
+I64 Mount9pEth(U8 *prefix, U8 *tag)
+{
+  I64 rc;
+  ninep_force_tp = NINEP_TP_ETH;
+  rc = Mount9p(prefix, tag);
+  ninep_force_tp = 0;
+  return rc;
 }
 
 I64 Mount9p(U8 *prefix, U8 *tag)

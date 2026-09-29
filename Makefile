@@ -1068,6 +1068,12 @@ kernel-sifive-gem-smoke:
 	@chmod +x tests/scripts/run_kernel_sifive_gem_smoke.sh
 	@tests/scripts/run_kernel_sifive_gem_smoke.sh
 
+# 9P over raw Ethernet: the third NinePTransport, against tools/ninep/eth9p.py through QEMU's
+# socket netdev. No tap device and no privileges, so it runs as an ordinary gate.
+kernel-ninep-eth-smoke:
+	@chmod +x tests/scripts/run_kernel_ninep_eth_smoke.sh
+	@tests/scripts/run_kernel_ninep_eth_smoke.sh
+
 kernel-plat-spike-smoke:
 	@chmod +x tests/scripts/run_kernel_plat_smoke.sh
 	@tests/scripts/run_kernel_plat_smoke.sh spike

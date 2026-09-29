@@ -35,7 +35,13 @@ I64 NinePClientVersion(CNinePClient *c)
   NinePPutU32(req, off, c->msize);
   off += 4;
   off = NinePPutStr(req, off, "9P2000.L");
-  NinePPutU32(req, 0, off - 4);
+  // size[4] in 9P COUNTS ITSELF. This wrote off-4 for every message type in this file, which is
+  // four bytes short, and it survived because the virtio transports never made it matter: QEMU's
+  // 9pfs takes the length from the virtqueue descriptor, not from the field. The first transport
+  // that honours the field -- NinePEth, where a datagram carries no length of its own -- had the
+  // server truncating every request by four bytes. Tversion still "worked" because its trailing
+  // string is not validated; Twalk lost the tail of the filename and came back Rlerror.
+  NinePPutU32(req, 0, off);
   req[4] = P9_TVERSION;
   NinePPutU16(req, 5, c->tag);
   rlen = NinePClientCall(c, off);
@@ -88,7 +94,7 @@ I64 NinePClientAttach(CNinePClient *c, U8 *aname, U8 *uname)
   off = NinePPutStr(req, off, aname);
   NinePPutU32(req, off, 0);
   off += 4;
-  NinePPutU32(req, 0, off - 4);
+  NinePPutU32(req, 0, off);
   req[4] = P9_TATTACH;
   NinePPutU16(req, 5, c->tag);
   rlen = NinePClientCall(c, off);
@@ -117,7 +123,7 @@ I64 NinePClientWalk(CNinePClient *c, U32 fid, U32 newfid, U8 *name)
   NinePPutU32(req, 11, newfid);
   NinePPutU16(req, 15, 1);
   off = NinePPutStr(req, off, name);
-  NinePPutU32(req, 0, off - 4);
+  NinePPutU32(req, 0, off);
   req[4] = P9_TWALK;
   NinePPutU16(req, 5, c->tag);
   rlen = NinePClientCall(c, off);
@@ -147,7 +153,7 @@ I64 NinePClientWalkClone(CNinePClient *c, U32 fid, U32 newfid)
   NinePPutU32(req, 7, fid);
   NinePPutU32(req, 11, newfid);
   NinePPutU16(req, 15, 0);
-  NinePPutU32(req, 0, off - 4);
+  NinePPutU32(req, 0, off);
   req[4] = P9_TWALK;
   NinePPutU16(req, 5, c->tag);
   rlen = NinePClientCall(c, off);
@@ -175,7 +181,7 @@ I64 NinePClientClunk(CNinePClient *c, U32 fid)
   rsp = ninep_rsp_buf;
   off = 7 + 4;
   NinePPutU32(req, 7, fid);
-  NinePPutU32(req, 0, off - 4);
+  NinePPutU32(req, 0, off);
   req[4] = P9_TCLUNK;
   NinePPutU16(req, 5, c->tag);
   rlen = NinePClientCall(c, off);
@@ -202,7 +208,7 @@ I64 NinePClientLopen(CNinePClient *c, U32 fid, U32 flags)
   off = 7 + 4 + 4;
   NinePPutU32(req, 7, fid);
   NinePPutU32(req, 11, flags);
-  NinePPutU32(req, 0, off - 4);
+  NinePPutU32(req, 0, off);
   req[4] = P9_TLOPEN;
   NinePPutU16(req, 5, c->tag);
   rlen = NinePClientCall(c, off);
@@ -235,7 +241,7 @@ I64 NinePClientLcreate(CNinePClient *c, U32 fid, U8 *name, U32 flags, U32 mode, 
   off += 4;
   NinePPutU32(req, off, gid);
   off += 4;
-  NinePPutU32(req, 0, off - 4);
+  NinePPutU32(req, 0, off);
   req[4] = P9_TLCREATE;
   NinePPutU16(req, 5, c->tag);
   rlen = NinePClientCall(c, off);
@@ -266,7 +272,7 @@ I64 NinePClientMkdir(CNinePClient *c, U32 dfid, U8 *name, U32 mode, U32 gid)
   off += 4;
   NinePPutU32(req, off, gid);
   off += 4;
-  NinePPutU32(req, 0, off - 4);
+  NinePPutU32(req, 0, off);
   req[4] = P9_TMKDIR;
   NinePPutU16(req, 5, c->tag);
   rlen = NinePClientCall(c, off);
@@ -292,7 +298,7 @@ I64 NinePClientRemove(CNinePClient *c, U32 fid)
   rsp = ninep_rsp_buf;
   off = 7 + 4;
   NinePPutU32(req, 7, fid);
-  NinePPutU32(req, 0, off - 4);
+  NinePPutU32(req, 0, off);
   req[4] = P9_TREMOVE;
   NinePPutU16(req, 5, c->tag);
   rlen = NinePClientCall(c, off);
@@ -322,7 +328,7 @@ I64 NinePClientRead(CNinePClient *c, U32 fid, U64 offset, U8 *buf, I64 cap)
   NinePPutU32(req, 11, offset & 0xFFFFFFFF);
   NinePPutU32(req, 15, (offset >> 32) & 0xFFFFFFFF);
   NinePPutU32(req, 19, cap);
-  NinePPutU32(req, 0, off - 4);
+  NinePPutU32(req, 0, off);
   req[4] = P9_TREAD;
   NinePPutU16(req, 5, c->tag);
   rlen = NinePClientCall(c, off);
@@ -369,7 +375,7 @@ I64 NinePClientWrite(CNinePClient *c, U32 fid, U64 offset, U8 *buf, I64 len)
   for (i = 0; i < chunk; i++)
     req[23 + i] = buf[i];
   off = 23 + chunk;
-  NinePPutU32(req, 0, off - 4);
+  NinePPutU32(req, 0, off);
   req[4] = P9_TWRITE;
   NinePPutU16(req, 5, c->tag);
   rlen = NinePClientCall(c, off);
@@ -400,7 +406,7 @@ I64 NinePClientReaddir(CNinePClient *c, U32 fid, U64 offset, U8 *buf, I64 cap)
   NinePPutU32(req, 11, offset & 0xFFFFFFFF);
   NinePPutU32(req, 15, (offset >> 32) & 0xFFFFFFFF);
   NinePPutU32(req, 19, cap);
-  NinePPutU32(req, 0, off - 4);
+  NinePPutU32(req, 0, off);
   req[4] = P9_TREADDIR;
   NinePPutU16(req, 5, c->tag);
   rlen = NinePClientCall(c, off);
