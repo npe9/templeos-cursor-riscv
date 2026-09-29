@@ -650,6 +650,14 @@ config HAS_VIRTIO_PCI
 	  (modern caps + LBA read) and NinePVirtioPci find/handshake. MMIO blk/net
 	  remain the default product path.
 
+config SIFIVE_QSPI2_BASE
+	hex "SiFive QSPI2 base — the SD card (0 if none)"
+	default 0x10050000 if PLATFORM_HIFIVE_UNMATCHED
+	default 0x0
+	help
+	  hifive-unmatched-a00.dts hangs an `mmc-spi-slot` off spi@10050000: the microSD, in SPI mode.
+	  The driver above it is read-only on purpose -- this card holds the board's SPL and U-Boot.
+
 config SIFIVE_I2C0_BASE
 	hex "SiFive I2C0 base (0 if none)"
 	default 0x10030000 if PLATFORM_HIFIVE_UNMATCHED
