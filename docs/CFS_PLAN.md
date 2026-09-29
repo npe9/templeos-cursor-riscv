@@ -134,6 +134,73 @@ discovery that cost a day of debugging is the behaviour cFE wants.
   destroy that. Treat generated files as build output.
 - **Single core.** Harts 0 and 2–4 are parked. Fine for cFS; note it rather than discovering it.
 
+## The target is not sample_app
+
+The goal is a small coherent spacecraft — sensing, navigation, payload, onboard storage,
+autonomous fault response, telemetry — not the `sample_app`/`ci_lab`/`to_lab` bundle. That changes
+what the platform layer has to provide, because the real apps lean on parts of cFE that a demo
+never touches. Mapped against what this port actually has today:
+
+| app | what it demands of the platform | status here |
+|---|---|---|
+| **SCH** scheduler | a periodic tick with low jitter, and real task accounting | tick exists; **cooperative scheduling means minor frames will jitter** — this is the app that forces P6 earliest |
+| **SC / SCA** stored command | absolute spacecraft time, and **files** for ATS/RTS tables | TIME can come from CLINT `mtime` plus the battery RTC; files now exist over 9P |
+| **LC** limit checker | TBL plus SB; little else | cheap once TBL works |
+| **HS** health & safety | per-app execution counters, task introspection, watchdog servicing | **the weakest fit**: detecting "an app stopped running" needs real task accounting, which cooperative scheduling does not give |
+| **CS** checksum | memory ranges and file checksums from the PSP | good fit, and `Dump`/`Peek` already exist for the corruption experiments |
+| **MM / MD** memory manager, dwell | commandable memory **write** | reads exist (`Peek`, `PeekU32`, `PeekU64`, `Dump`); there is deliberately **no Poke**, and MM means revisiting that on purpose |
+| **FM** file manager | the OSAL file API | unlocked by 9P |
+| **DS** data storage | writable files, and ideally ones that survive link loss | 9P works but is host-dependent; a real recorder eventually wants local storage |
+| **SBN** software bus network | a datagram link between nodes | **nearly free now** — see below |
+| **CF / BP** DTN | bundle protocol library | large, and last |
+
+Two entries there are load-bearing and worth saying plainly. **HS and SCH are what make cooperative
+scheduling untenable**, not a stylistic objection: HS exists to notice that an app stopped
+executing, and SCH exists to run things on time. Both are meaningless without preemption and per-
+task accounting. So P6 is not optional polish for this target — it moves up.
+
+And **MM is a safety decision, not a feature**. `Kernel/RVPeekUi.HC` has no `Poke` on purpose, and
+`Kernel/Drv/RVSifiveI2c.HC` is read-only with an allow-list because pin 2 of the PMIC powers the
+board off. An app whose whole job is commandable memory and device writes has to reopen both of
+those deliberately, with the reasoning written down, not by quietly adding a write path.
+
+## SBN is nearly free, and it is the most interesting piece
+
+`Kernel/NineP/NinePEth.HC` is already a request/response datagram transport over a custom
+ethertype, with peer discovery by broadcast and tag-matched retry. SBN over a second ethertype is
+the same pattern with a different payload. That makes the multi-node experiment — Unmatched as one
+flight computer, an STM32 as another — reachable much sooner than the sensor work, and it needs no
+IP stack.
+
+## Revised order, and why it differs from the obvious one
+
+The instinct to skip `sample_app` is right. But of the five targets, **FDIR should come first, not
+last**, because it is the only one that needs no new driver at all:
+
+1. **FDIR with synthetic apps** — HS + LC + SC, with fake sensor apps publishing on the software
+   bus. Inject the whole fault list (app stops publishing, app hangs, queue fills, value out of
+   limits) with no GNSS, no IMU and no SDR attached. This exercises cFE harder than any sensor
+   app, and every fault is reproducible, which a real sensor's failure is not.
+2. **Recorder (DS)** — the second thing that needs no new hardware, now that files exist.
+3. **IMU over I²C** — first real sensor, and the first time the read-only I²C decision has to be
+   revisited.
+4. **GNSS over UART** — needs UART1 at `0x10011000`; whether it is on a header on this board is
+   **unverified** and should be checked before planning around it, since UART0 is the console.
+5. **SDR and FPGA over PCIe** — largest by far: the iATU work is milestone 1b and has not started.
+   Everything else should be working before this begins.
+
+The EPS node in the sketch has no direct path on this board: the FU740 has no CAN, so it would be
+an external controller over I²C, SPI or UART, or another cFS node behind SBN.
+
+## An honest note on scale
+
+Sensing → navigation → payload → storage → autonomy → telemetry, translated into HolyC, on a port
+that got its ethernet working today, is a multi-year project. That is not an argument against it.
+It is an argument for the ordering above: every step from FDIR through the recorder produces
+something demonstrable on its own, and none of them is blocked on the two hardest pieces
+(preemption and PCIe). The fastest way to learn whether the whole thing is real is still P0 — one
+translated CCSDS header unit with a byte-exact differential oracle.
+
 ## What to do first
 
 P0, then stop and decide. One hand-translated CCSDS header unit with a byte-exact differential
