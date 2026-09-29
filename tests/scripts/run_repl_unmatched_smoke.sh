@@ -327,7 +327,7 @@ feed() {
   perl -e '
     $|=1;
     select(undef,undef,undef,6);
-    for my $x ("2+3;", "\"%d %d\\n\",7;", "Clk;", "q") { print $x,"\n"; select(undef,undef,undef,1.2); }
+    for my $x ("2+3;", "\"%d %d\\n\",7;", "Clk;", "EthAb;", "9*9;", "q") { print $x,"\n"; select(undef,undef,undef,1.2); }
     select(undef,undef,undef,3);
   '
 }
@@ -370,7 +370,8 @@ elif [ -n "${TOS_REPL_CPR:-}" ]; then
     # Same lines as the default feeder, so one needle list serves both modes: the cursor reply glued
     # to the first keystrokes, then the missing-argument format string that must report Except:StrPrint.
     printf '\033[40;120R2+3;\n'; sleep 1.5; printf '"%%d %%d\\n",7;\n'; sleep 1.5
-    printf 'Clk;\n'; sleep 1.5; printf 'q\n'; sleep 3 ) > "$R/in" &
+    printf 'Clk;\n'; sleep 1.5; printf 'EthAb;\n'; sleep 2.5
+    printf '9*9;\n'; sleep 1.5; printf 'q\n'; sleep 3 ) > "$R/in" &
   feeder=$!
   # shellcheck disable=SC2086
   $TIMEOUT 75 "$QEMU" -M sifive_u -smp 2 -bios none $DIRTY_ARGS \
@@ -400,7 +401,13 @@ rc=0
 # existing: the line only prints when the counter ratio came back non-zero, so a stopped mtime,
 # a bad CLINT base or a Clk that was never wired all fail it. Without this, Clk is code no gate
 # ever runs -- which in this tree is how instruments quietly rot.
-NEEDLES="$(printf 'A2 ExePutS REPL\nans=5\nExcept:StrPrint\nmcycle vs CLINT mtime\n')"
+# "DMA arena 0x" is EthAb having run at all, and "ans=81" is the REPL still working AFTERWARDS --
+# EthAb resets the GEM and writes descriptor rings into DRAM, so "it printed" and "it did not
+# wreck anything" are separate claims. Deliberately NOT a needle on its coherency verdict: under
+# QEMU both runs succeed because the model is coherent, and pinning that would put an answer
+# about the emulator into the log of a gate whose whole point is that the board's answer is
+# unknown.
+NEEDLES="$(printf 'A2 ExePutS REPL\nans=5\nExcept:StrPrint\nmcycle vs CLINT mtime\nDMA arena 0x\nans=81\n')"
 [ -n "${TOS_REPL_CTRLC:-}" ] && NEEDLES="$(printf 'A2 ExePutS REPL\nreturning to prompt\nans=5\n')"
 while IFS= read -r n; do
   [ -z "$n" ] && continue
