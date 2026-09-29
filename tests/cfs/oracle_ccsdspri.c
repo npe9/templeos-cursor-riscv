@@ -6,10 +6,19 @@
  * both look identical from the outside. */
 #include <stdio.h>
 #include "cfe_msg.h"
+#include "cfe_sb.h"
 
 /* Decimal only, one byte per field, space separated. Formatting is the one thing that would
  * differ between C's printf and HolyC for reasons that have nothing to do with the translation
  * being right, so it is removed from the comparison entirely. */
+/* The one PSP symbol cfe_sb_msg_id_util.c's translation unit pulls in. The PSP is the layer a
+ * port supplies, and the HolyC side has none either, so stubbing it here keeps both sides
+ * comparing the same thing. None of the functions under test calls it. */
+uint32 CFE_PSP_GetProcessorId(void)
+{
+    return 1;
+}
+
 static void dump(const char *tag, CFE_MSG_Message_t *m)
 {
     printf("%s %d %d %d %d %d %d\n", tag, m->CCSDS.Pri.StreamId[0], m->CCSDS.Pri.StreamId[1],
@@ -67,5 +76,25 @@ int main(void)
     printf("badnull  rc=%ld\n", (long)CFE_MSG_GetType(NULL, &type));
     printf("badsize  rc=%ld\n", (long)CFE_MSG_SetSize(&msg, 0));
     dump("final", &msg);
+
+    /* --- cfe_msg_msgid_v1.c, plus the SB opaque-id helpers it calls ------------------- */
+    {
+        CFE_SB_MsgId_t mid;
+        for (i = 0; i < (int)sizeof(msg); i++)
+            ((unsigned char *)&msg)[i] = 0;
+        printf("setmid   rc=%ld\n", (long)CFE_MSG_SetMsgId(&msg, CFE_SB_ValueToMsgId(0x0801)));
+        dump("aftermid", &msg);
+        printf("getmid   rc=%ld m=%lu\n", (long)CFE_MSG_GetMsgId(&msg, &mid),
+               (unsigned long)CFE_SB_MsgIdToValue(mid));
+        /* Zero is CFE_SB_INVALID_MSG_ID, and above the platform bound is out of range. Both
+         * must be refused, which is the behaviour that makes the opaque type worth having. */
+        printf("midzero  rc=%ld\n", (long)CFE_MSG_SetMsgId(&msg, CFE_SB_ValueToMsgId(0)));
+        printf("midhigh  rc=%ld\n", (long)CFE_MSG_SetMsgId(&msg, CFE_SB_ValueToMsgId(0x2000)));
+        printf("midnull  rc=%ld\n", (long)CFE_MSG_GetMsgId(NULL, &mid));
+        printf("midvalid v=%d z=%d h=%d\n", (int)CFE_SB_IsValidMsgId(CFE_SB_ValueToMsgId(0x1FFF)),
+               (int)CFE_SB_IsValidMsgId(CFE_SB_ValueToMsgId(0)),
+               (int)CFE_SB_IsValidMsgId(CFE_SB_ValueToMsgId(0x2000)));
+        dump("midfinal", &msg);
+    }
     return 0;
 }

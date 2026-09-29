@@ -6,6 +6,7 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 V="$ROOT/vendor"
 CFE_SHA="546a002515be5a1e3b66f9ae2c14f948d9cec76f"
+PSP_SHA="53df1d54c3d29fd23832c59df1104de07a043af2"
 OSAL_SHA="dad0ee99c121f2ecc11f8c0798c1e836e41d8ab1"
 mkdir -p "$V"
 fetch() {
@@ -22,4 +23,5 @@ fetch() {
 }
 fetch cFE  https://github.com/nasa/cFE.git  "$CFE_SHA"
 fetch osal https://github.com/nasa/osal.git "$OSAL_SHA"
+fetch PSP  https://github.com/nasa/PSP.git  "$PSP_SHA"
 echo "vendor/shim is committed in this repo: it stands in for the headers CMake would generate."

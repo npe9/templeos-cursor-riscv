@@ -135,3 +135,5 @@ templeos-riscv/build/
 # vendor/shim IS committed — it is hand-written port glue, not upstream code.
 vendor/cFE/
 vendor/osal/
+
+vendor/PSP/

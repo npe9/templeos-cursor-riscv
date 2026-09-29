@@ -2,7 +2,7 @@
 // accessors and prints the same transcript as tests/cfs/oracle_ccsdspri.c does against the
 // unmodified C. The gate diffs the two. Standalone on purpose -- no kernel includes -- so the
 // only thing under test is the translation and the compiler.
-#include "/Kernel/Cfs/cfe/cfe_msg_ccsdspri.HC"
+#include "/Kernel/Cfs/cfe/cfe_msg_msgid_v1.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -133,5 +133,40 @@ I64 main()
   Rc("badnull ", CFE_MSG_GetType(NULL, &type));
   Rc("badsize ", CFE_MSG_SetSize(&msg, 0));
   Dump("final", &msg);
+
+  // --- cfe_msg_msgid_v1.c plus the SB opaque-id helpers -------------------------------
+  // Every CFE_SB_ValueToMsgId result is hoisted into a local rather than passed inline. The
+  // result is a class BY VALUE, and nested calls in a non-variadic argument list are a known
+  // codegen hazard in this compiler (see the ptr-assign scaling fix). Hoisting costs nothing
+  // and keeps the translation's correctness separate from that question.
+  {
+    CFE_SB_MsgId mid, t;
+    for (i = 0; i < sizeof(CFE_MSG_Message); i++)
+      p[i] = 0;
+    t = CFE_SB_ValueToMsgId(0x0801);
+    Rc("setmid  ", CFE_MSG_SetMsgId(&msg, t));
+    Dump("aftermid", &msg);
+    S("getmid   rc=");
+    D(CFE_MSG_GetMsgId(&msg, &mid));
+    S(" m=");
+    D(CFE_SB_MsgIdToValue(mid));
+    S("\n");
+    t = CFE_SB_ValueToMsgId(0);
+    Rc("midzero ", CFE_MSG_SetMsgId(&msg, t));
+    t = CFE_SB_ValueToMsgId(0x2000);
+    Rc("midhigh ", CFE_MSG_SetMsgId(&msg, t));
+    Rc("midnull ", CFE_MSG_GetMsgId(NULL, &mid));
+    S("midvalid v=");
+    t = CFE_SB_ValueToMsgId(0x1FFF);
+    D(CFE_SB_IsValidMsgId(t));
+    S(" z=");
+    t = CFE_SB_ValueToMsgId(0);
+    D(CFE_SB_IsValidMsgId(t));
+    S(" h=");
+    t = CFE_SB_ValueToMsgId(0x2000);
+    D(CFE_SB_IsValidMsgId(t));
+    S("\n");
+    Dump("midfinal", &msg);
+  }
   return 0;
 }
