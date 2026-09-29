@@ -3,6 +3,7 @@
 // unmodified C. The gate diffs the two. Standalone on purpose -- no kernel includes -- so the
 // only thing under test is the translation and the compiler.
 #include "/Kernel/Cfs/cfe/cfe_msg_msgid_v1.HC"
+#include "/Kernel/Cfs/cfe/cfe_msg_sechdr_fc.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -60,11 +61,25 @@ U0 Rc(U8 *label, I32 rc)
   D(rc);
   S("\n");
 }
+// Same, for the lines that print a status AND an out-parameter. The status goes through an I32
+// parameter for the reason above.
+U0 Rcv(U8 *label, I32 rc, U8 *key, I64 v)
+{
+  S(label);
+  S(" rc=");
+  D(rc);
+  S(" ");
+  S(key);
+  S("=");
+  D(v);
+  S("\n");
+}
 
 I64 main()
 {
   CFE_MSG_Message msg;
   U16 ver, apid, seq;
+  I32 rc32;
   I64 type, segf, size;
   Bool hassec;
   I64 i;
@@ -75,57 +90,36 @@ I64 main()
 
   Rc("setver  ", CFE_MSG_SetHeaderVersion(&msg, 1));
   Dump("afterver", &msg);
-  S("getver   rc=");
-  D(CFE_MSG_GetHeaderVersion(&msg, &ver));
-  S(" v=");
-  D(ver);
-  S("\n");
+  rc32 = CFE_MSG_GetHeaderVersion(&msg, &ver);
+  Rcv("getver  ", rc32, "v", ver);
 
   Rc("settype ", CFE_MSG_SetType(&msg, CFE_MSG_Type_Cmd));
   Dump("aftertype", &msg);
-  S("gettype  rc=");
-  D(CFE_MSG_GetType(&msg, &type));
-  S(" t=");
-  D(type);
-  S("\n");
+  rc32 = CFE_MSG_GetType(&msg, &type);
+  Rcv("gettype ", rc32, "t", type);
 
   Rc("setapid ", CFE_MSG_SetApId(&msg, 0x1AB));
   Dump("afterapid", &msg);
-  S("getapid  rc=");
-  D(CFE_MSG_GetApId(&msg, &apid));
-  S(" a=");
-  D(apid);
-  S("\n");
+  rc32 = CFE_MSG_GetApId(&msg, &apid);
+  Rcv("getapid ", rc32, "a", apid);
 
   Rc("setsec  ", CFE_MSG_SetHasSecondaryHeader(&msg, TRUE));
-  S("getsec   rc=");
-  D(CFE_MSG_GetHasSecondaryHeader(&msg, &hassec));
-  S(" s=");
-  D(hassec);
-  S("\n");
+  rc32 = CFE_MSG_GetHasSecondaryHeader(&msg, &hassec);
+  Rcv("getsec  ", rc32, "s", hassec);
   Dump("aftersec", &msg);
 
   Rc("setseg  ", CFE_MSG_SetSegmentationFlag(&msg, CFE_MSG_SegFlag_Unsegmented));
-  S("getseg   rc=");
-  D(CFE_MSG_GetSegmentationFlag(&msg, &segf));
-  S(" g=");
-  D(segf);
-  S("\n");
+  rc32 = CFE_MSG_GetSegmentationFlag(&msg, &segf);
+  Rcv("getseg  ", rc32, "g", segf);
 
   Rc("setseq  ", CFE_MSG_SetSequenceCount(&msg, 0x2345));
-  S("getseq   rc=");
-  D(CFE_MSG_GetSequenceCount(&msg, &seq));
-  S(" q=");
-  D(seq);
-  S("\n");
+  rc32 = CFE_MSG_GetSequenceCount(&msg, &seq);
+  Rcv("getseq  ", rc32, "q", seq);
   Dump("afterseq", &msg);
 
   Rc("setsize ", CFE_MSG_SetSize(&msg, 0x100));
-  S("getsize  rc=");
-  D(CFE_MSG_GetSize(&msg, &size));
-  S(" z=");
-  D(size);
-  S("\n");
+  rc32 = CFE_MSG_GetSize(&msg, &size);
+  Rcv("getsize ", rc32, "z", size);
   Dump("aftersize", &msg);
 
   Rc("badver  ", CFE_MSG_SetHeaderVersion(&msg, 0xFF));
@@ -141,16 +135,14 @@ I64 main()
   // and keeps the translation's correctness separate from that question.
   {
     CFE_SB_MsgId mid, t;
+    I32 rc32;
     for (i = 0; i < sizeof(CFE_MSG_Message); i++)
       p[i] = 0;
     t = CFE_SB_ValueToMsgId(0x0801);
     Rc("setmid  ", CFE_MSG_SetMsgId(&msg, t));
     Dump("aftermid", &msg);
-    S("getmid   rc=");
-    D(CFE_MSG_GetMsgId(&msg, &mid));
-    S(" m=");
-    D(CFE_SB_MsgIdToValue(mid));
-    S("\n");
+    rc32 = CFE_MSG_GetMsgId(&msg, &mid);
+    Rcv("getmid  ", rc32, "m", CFE_SB_MsgIdToValue(mid));
     t = CFE_SB_ValueToMsgId(0);
     Rc("midzero ", CFE_MSG_SetMsgId(&msg, t));
     t = CFE_SB_ValueToMsgId(0x2000);
@@ -167,6 +159,47 @@ I64 main()
     D(CFE_SB_IsValidMsgId(t));
     S("\n");
     Dump("midfinal", &msg);
+  }
+
+  // --- cfe_msg_sechdr_fc.c -------------------------------------------------------------
+  {
+    CFE_MSG_CommandHeader cmd;
+    U16 fc;
+    I32 rc32;
+    U8 *cp = &cmd;
+    for (i = 0; i < sizeof(CFE_MSG_CommandHeader); i++)
+      cp[i] = 0;
+    CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Cmd);
+    CFE_MSG_SetHasSecondaryHeader(&cmd.Msg, TRUE);
+    Rc("setfc   ", CFE_MSG_SetFcnCode(&cmd.Msg, 0x12));
+    rc32 = CFE_MSG_GetFcnCode(&cmd.Msg, &fc);
+    Rcv("getfc   ", rc32, "f", fc);
+    S("cmdhdr ");
+    D(cmd.Msg.CCSDS.Pri.StreamId[0]);
+    S(" ");
+    D(cmd.Msg.CCSDS.Pri.StreamId[1]);
+    S(" ");
+    D(cmd.Msg.CCSDS.Pri.Sequence[0]);
+    S(" ");
+    D(cmd.Msg.CCSDS.Pri.Sequence[1]);
+    S(" ");
+    D(cmd.Msg.CCSDS.Pri.Length[0]);
+    S(" ");
+    D(cmd.Msg.CCSDS.Pri.Length[1]);
+    S(" ");
+    D(cmd.Sec.FunctionCode);
+    S(" ");
+    D(cmd.Sec.Checksum);
+    S("\n");
+    Rc("fcbig   ", CFE_MSG_SetFcnCode(&cmd.Msg, 0x80));
+    CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Tlm);
+    fc = 0x55;
+    rc32 = CFE_MSG_GetFcnCode(&cmd.Msg, &fc);
+    Rcv("fctlm   ", rc32, "f", fc);
+    CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Cmd);
+    CFE_MSG_SetHeaderVersion(&cmd.Msg, 1);
+    Rc("fcver   ", CFE_MSG_SetFcnCode(&cmd.Msg, 0x7F));
+    Rc("fcnull  ", CFE_MSG_GetFcnCode(NULL, &fc));
   }
   return 0;
 }

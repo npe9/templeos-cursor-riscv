@@ -96,5 +96,33 @@ int main(void)
                (int)CFE_SB_IsValidMsgId(CFE_SB_ValueToMsgId(0x2000)));
         dump("midfinal", &msg);
     }
+
+    /* --- cfe_msg_sechdr_fc.c ---------------------------------------------------------- */
+    {
+        CFE_MSG_CommandHeader_t cmd;
+        CFE_MSG_FcnCode_t fc;
+        for (i = 0; i < (int)sizeof(cmd); i++)
+            ((unsigned char *)&cmd)[i] = 0;
+        /* A function code only exists on a version-1 CCSDS command that declares a secondary
+         * header. Version 1 is the bit pattern 000, so the field stays 0. */
+        CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Cmd);
+        CFE_MSG_SetHasSecondaryHeader(&cmd.Msg, true);
+        printf("setfc    rc=%ld\n", (long)CFE_MSG_SetFcnCode(&cmd.Msg, 0x12));
+        printf("getfc    rc=%ld f=%u\n", (long)CFE_MSG_GetFcnCode(&cmd.Msg, &fc), (unsigned)fc);
+        printf("cmdhdr %d %d %d %d %d %d %d %d\n", cmd.Msg.CCSDS.Pri.StreamId[0],
+               cmd.Msg.CCSDS.Pri.StreamId[1], cmd.Msg.CCSDS.Pri.Sequence[0],
+               cmd.Msg.CCSDS.Pri.Sequence[1], cmd.Msg.CCSDS.Pri.Length[0],
+               cmd.Msg.CCSDS.Pri.Length[1], cmd.Sec.FunctionCode, cmd.Sec.Checksum);
+        printf("fcbig    rc=%ld\n", (long)CFE_MSG_SetFcnCode(&cmd.Msg, 0x80));
+        /* Flip it to telemetry: the same call must now refuse, and zero the out-param. */
+        CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Tlm);
+        fc = 0x55;
+        printf("fctlm    rc=%ld f=%u\n", (long)CFE_MSG_GetFcnCode(&cmd.Msg, &fc), (unsigned)fc);
+        /* And a wrong CCSDS version refuses too, even as a command with a secondary header. */
+        CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Cmd);
+        CFE_MSG_SetHeaderVersion(&cmd.Msg, 1);
+        printf("fcver    rc=%ld\n", (long)CFE_MSG_SetFcnCode(&cmd.Msg, 0x7F));
+        printf("fcnull   rc=%ld\n", (long)CFE_MSG_GetFcnCode(NULL, &fc));
+    }
     return 0;
 }

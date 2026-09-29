@@ -19,7 +19,8 @@ PSP="$ROOT/vendor/PSP"
 # advances: one file, one set of transcript lines, one diff.
 SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/msg/fsw/src/cfe_msg_msgid_v1.c
-       $CFE/modules/sb/fsw/src/cfe_sb_msg_id_util.c"
+       $CFE/modules/sb/fsw/src/cfe_sb_msg_id_util.c
+       $CFE/modules/msg/fsw/src/cfe_msg_sechdr_fc.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"

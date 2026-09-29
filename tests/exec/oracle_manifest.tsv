@@ -114,3 +114,4 @@ tests/exec/cases/e_kernel_qsort_ptrs.hc	000000000000000f
 tests/exec/cases/e_kernel_pci_ecam.hc	000000000000001f
 tests/exec/cases/e_kernel_peek.hc	000000000000001f
 tests/exec/cases/e_ptr_assign_const_base.hc	000000000000000f
+tests/exec/cases/e_i32_ret_widen.hc	0000000000000002
