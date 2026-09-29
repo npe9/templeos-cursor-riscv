@@ -2636,6 +2636,29 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
           RVU32(buf, pptr, prip, 0x13 | (RV_SP<<7) | (RV_SP<<15) | (8<<20)); // addi sp, sp, 8
           (*psd)--;
         }
+        // Convert to the DECLARED return type HERE, after the eval-stack pop -- not before it.
+        // HolyC otherwise gets its narrowing from typed STORES and the sign-extending loads that
+        // follow, so a value that never visits memory is never converted: an I32 status came back
+        // ZERO-extended, making `f() < 0` false for a negative code, while the same value read
+        // from an I32 variable compared correctly. ic_data carries the RT_ type, 0 for none.
+        if (ic->ic_data) {
+          U8 rsh = 0;
+          Bool rsgn = TRUE;
+          switch (ic->ic_data) {
+          case RT_I8:  rsh = 56; rsgn = TRUE;  break;
+          case RT_U8:  rsh = 56; rsgn = FALSE; break;
+          case RT_I16: rsh = 48; rsgn = TRUE;  break;
+          case RT_U16: rsh = 48; rsgn = FALSE; break;
+          case RT_I32: rsh = 32; rsgn = TRUE;  break;
+          case RT_U32: rsh = 32; rsgn = FALSE; break;
+          default:     rsh = 0;  break;
+          }
+          if (rsh) {
+            RVU32(buf, pptr, prip, 0x13 | (RV_A0 << 7) | (1 << 12) | (RV_A0 << 15) | ((U32)rsh << 20));
+            RVU32(buf, pptr, prip, 0x13 | (RV_A0 << 7) | (5 << 12) | (RV_A0 << 15)
+                                   | ((U32)rsh << 20) | (rsgn ? (0x20u << 25) : 0u));
+          }
+        }
         // Value is now in a0, ready for return
         // Do NOT adjust sp further - the epilogue expects sp at frame_base
         (*psd) = 0;

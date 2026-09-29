@@ -14,8 +14,10 @@
 // missing is the conversion of the value TO the declared return type on the way out. C converts
 // `return 0xCA00000D` from an int32 function to -905969651 and the ABI keeps it sign-extended.
 //
-// Expect 0x2 TODAY: only the via-variable path sign-extends. When the return path is fixed this
-// becomes 0xf and the manifest entry changes with it -- that flip is the point of the case.
+// FIXED. IC_RETURN_VAL now converts a0 to the declared return type, AFTER the eval-stack pop --
+// before it, the conversion landed on a register the pop then overwrote. Expect 0xf: all four
+// paths agree. This returned 0x2 while the defect was live; the case stays because a regression
+// here is invisible everywhere else.
 //   bit 1  direct return used as I64 is negative
 //   bit 2  same value through an I32 variable is negative
 //   bit 4  the two agree

@@ -5184,7 +5184,19 @@ bool ParseStatement(Compiler *cc) {
         if (!ParseExpression(cc)) return false;
         if (cc->current_fn_ret_type == RT_F64 && cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
         else if (cc->current_fn_ret_type != RT_F64 && cc->last_expr_type == RT_F64) ICAdd(cc, IC_TO_I64, 0, RT_I64);
-        ICAdd(cc, IC_RETURN_VAL, 0, RT_I64);
+        // Convert to the DECLARED return type. C does this ("return 0xCA00000D" from an int32
+        // function yields -905969651) and the RISC-V ABI expects a properly extended value in a0.
+        // Without it a narrow return was whatever the expression happened to leave behind: an I32
+        // status came back zero-extended, so `f() < 0` was false for a negative code while the
+        // same value stored in an I32 variable compared correctly.
+        {
+          I64 retconv = 0;
+          if (cc->current_fn_ret_type == RT_I8 || cc->current_fn_ret_type == RT_U8 ||
+              cc->current_fn_ret_type == RT_I16 || cc->current_fn_ret_type == RT_U16 ||
+              cc->current_fn_ret_type == RT_I32 || cc->current_fn_ret_type == RT_U32)
+            retconv = cc->current_fn_ret_type;
+          ICAdd(cc, IC_RETURN_VAL, retconv, RT_I64);
+        }
       }
       
       // Leaving open try blocks by return: pop their handler contexts first.
