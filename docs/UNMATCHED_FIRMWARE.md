@@ -108,10 +108,15 @@ LIM and jumps. It must, in order:
    `corepll` (1.0 GHz recommended, 1.5 GHz possible), `hfpclkpll` for the peripheral clocks that
    UART/SPI/I2C/PWM depend on, plus the dedicated DDR and GEMGXL PLLs. Note this port currently
    assumes firmware has done this — every peripheral divisor it uses was computed for the
-   post-firmware clock (the I2C prescaler reads 0x0103 for ~96 kHz off a 125 MHz PCLK).
+   post-firmware clock. Measured 2026-09-29: PCLK is **130 MHz** (hfpclkpll 260 MHz / 2), so the
+   I2C prescaler `0x0103` is exactly 100 kHz and the "125 MHz" this tree assumed was wrong.
    `Clk()` at the prompt reports the core clock and PCLK as measurements first (`mcycle` against
    the CLINT, and the console's own baud divisor) and only then decodes the PRCI, so it says
-   whether that 125 MHz is real before any of it is rewritten. Run it before Stage B starts.
+   whether those numbers are real before any of them is rewritten. Running it is what found both
+   the 130 MHz and a bug in the port's own PLL decode.
+
+   The values Stage B has to reproduce, all measured on this board: corepll 1196 MHz, ddrpll
+   923 MHz, gemgxlpll 125.125 MHz, hfpclkpll 260 MHz, PCLK 130 MHz, off a 26 MHz crystal.
 3. **Train DDR.** The hard part, and the only part with no existing TempleOS code: the memory
    controller at `0x100B0000`, its physical filter at `0x100B8000`, and DDR MGMT at `0x100C0000`,
    driven by a long initialisation and PHY-training sequence. The realistic route is to port

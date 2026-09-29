@@ -130,12 +130,22 @@ U0 Clk()
     RVClkPrintHz("gemgxlpll                    ", gem);
     RVClkPrintHz("hfpclkpll                    ", hfp);
     RVClkPrintHz("pclk = hfpclk / hfpclkdiv    ", dpclk);
-    Print("  raw: corepllcfg 0x%08X out 0x%08X  clksel %d pllsel %d\n",
-          RVPrciRd(RV_PRCI_COREPLLCFG), RVPrciRd(RV_PRCI_COREPLLOUTDIV),
-          RVPrciRd(RV_PRCI_CORECLKSEL) & 1, RVPrciRd(RV_PRCI_COREPLLSEL) & 1);
-    Print("  raw: hfpclkcfg  0x%08X out 0x%08X  div 0x%03X sel %d\n",
-          RVPrciRd(RV_PRCI_HFPCLKPLLCFG), RVPrciRd(RV_PRCI_HFPCLKPLLOUTDIV),
-          RVPrciRd(RV_PRCI_HFPCLKDIV) & 0xFFF, RVPrciRd(RV_PRCI_HFPCLKPLLSEL) & 1);
+    // Hoisted for the same reason as the accessors in RVSifivePrci.HC: nested calls in an
+    // argument list hand the callee one repeated value. Printed the obvious way, this line
+    // claimed corepllcfg was 0x80000000 when a raw Peek of 0x10000004 says 0x820544C2.
+    {
+      U32 r0, r1, r2, r3;
+      r0 = RVPrciRd(RV_PRCI_COREPLLCFG);
+      r1 = RVPrciRd(RV_PRCI_COREPLLOUTDIV);
+      r2 = RVPrciRd(RV_PRCI_CORECLKSEL) & 1;
+      r3 = RVPrciRd(RV_PRCI_COREPLLSEL) & 1;
+      Print("  raw: corepllcfg 0x%08X out 0x%08X  clksel %d pllsel %d\n", r0, r1, r2, r3);
+      r0 = RVPrciRd(RV_PRCI_HFPCLKPLLCFG);
+      r1 = RVPrciRd(RV_PRCI_HFPCLKPLLOUTDIV);
+      r2 = RVPrciRd(RV_PRCI_HFPCLKDIV) & 0xFFF;
+      r3 = RVPrciRd(RV_PRCI_HFPCLKPLLSEL) & 1;
+      Print("  raw: hfpclkcfg  0x%08X out 0x%08X  div 0x%03X sel %d\n", r0, r1, r2, r3);
+    }
     // The decode checks itself against the measurement. Within 2% is agreement; outside it,
     // the offsets above are the thing to doubt, not the counters.
     if (core && dcore) {
@@ -157,13 +167,16 @@ U0 Clk()
     }
   }
 #endif
-  // Every peripheral divisor this port hard-codes was computed for a nominal 125 MHz PCLK.
-  // If the measurement above is not that, they are wrong and not merely undocumented.
+  // PCLK on this board is 130 MHz, and that is measured twice over: hfpclkpll decodes to 260 MHz
+  // and the console's own divisor (1128 -> 115200 * 1129) gives 130.06 MHz. The OpenCores I2C
+  // prescaler 0x0103 = 259 then yields PCLK/(5*260) = exactly 100 kHz -- so the divisor was
+  // always right for this board, and it was this tree's "~96 kHz off 125 MHz" note that was
+  // wrong. Report the real SCL rate if PCLK ever turns out to be something else.
   if (pclk) {
-    if (pclk < 123000000 || pclk > 127000000) {
-      Print("NOTE: this port's I2C prescaler (0x0103) and other divisors assume ~125 MHz PCLK.\n");
-      Print("      Measured %d Hz, so those divisors are off by %d%%.\n", pclk,
-            (pclk - 125000000) * 100 / 125000000);
+    if (pclk < 128000000 || pclk > 132000000) {
+      Print("NOTE: the I2C prescaler (0x0103) is exactly 100 kHz at the 130 MHz PCLK this\n");
+      Print("      board runs. Measured %d Hz, so I2C is actually at %d Hz.\n", pclk,
+            pclk / 1300);
     }
   }
 }

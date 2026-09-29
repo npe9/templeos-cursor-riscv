@@ -6,7 +6,8 @@
 // register POINTER is ever written, which every device on this bus treats as a read setup.
 //
 // Registers are 8 bits at a 4-byte stride (dts: reg-shift = 2, reg-io-width = 1). Firmware leaves
-// the core enabled with the prescaler already set (measured: CTR=0x80, PRER=0x0103 ~ 96 kHz), so
+// the core enabled with the prescaler already set (measured: CTR=0x80, PRER=0x0103, which is
+// PCLK/(5*260) = exactly 100 kHz once you know PCLK is 130 MHz and not the 125 this tree assumed), so
 // this programs neither -- if a board ever arrives with the core disabled, that is a visible
 // failure (RVI2cRd8 returns -1 on a bus that never goes idle) rather than a silent wrong answer.
 #ifndef RV_DRV_SIFIVE_I2C_HC

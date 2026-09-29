@@ -1,8 +1,10 @@
 // SiFive PRCI — the clock tree, read-only, and a measurement that does not trust it.
 //
 // This port has always ASSUMED firmware's clocks. Every peripheral divisor it uses was computed
-// for the post-U-Boot state (the I2C prescaler is 0x0103 for ~96 kHz off a nominal 125 MHz PCLK),
-// and nothing ever checked that assumption against the machine. Becoming the SPL means configuring
+// for the post-U-Boot state, and nothing ever checked that assumption against the machine. When
+// something finally did, the assumption was wrong in a harmless direction: PCLK is 130 MHz, not
+// the 125 MHz this tree wrote down, which makes the I2C prescaler 0x0103 exactly 100 kHz rather
+// than the "~96 kHz" the comments claimed. Becoming the SPL means configuring
 // these PLLs ourselves, and the first honest step is to find out what they are actually set to.
 //
 // Two independent sources are read here on purpose, because neither alone is trustworthy:
@@ -49,20 +51,43 @@ I64 RVPrciBase()
   return CONFIG_SIFIVE_PRCI_BASE;
 }
 
+// The cast form, not `U32 *p; p = CONFIG_SIFIVE_PRCI_BASE + off;`. That obvious spelling is
+// MISCOMPILED by the host compiler: assigning `<integer constant> + <variable>` to an
+// already-declared pointer scales the variable by the pointee size. Disassembled from the host
+// compiler's own output for exactly that line:
+//     lui  a0,0x10000      # the base
+//     mv   a0,s1           # off
+//     li   a0,4            # sizeof(U32), from nowhere in the source
+//     mul  a0,t0,t1        # off * 4
+//     add  a0,t0,t1        # base + off*4
+// So RVPrciRd(0x04) read 0x10000010 and Clk reported 52 MHz for every PLL on the board while
+// mcycle said 1.196 GHz. The same expression in an INITIALIZER, or with a variable base, does
+// not scale -- which is why Kernel/Drv/RVSifiveYes.HC's PLIC reads and the GEM driver were never
+// bitten. The guest compiler does not scale in any of the three forms, so the two disagree.
+// tests/exec/cases/e_ptr_assign_const_base.hc pins all three.
 U32 RVPrciRd(I64 off)
 {
-  U32 *p;
   if (!CONFIG_SIFIVE_PRCI_BASE)
     return 0;
-  p = CONFIG_SIFIVE_PRCI_BASE + off;
-  return *p;
+  return *((CONFIG_SIFIVE_PRCI_BASE + off)(U32 *));
 }
 // Decode one SiFive PLL. cfg fields: divr[5:0] divf[14:6] divq[17:15] range[20:18]
 // bypass[24] fse[25] lock[31]. fvco = fin/(divr+1) * 2 * (divf+1); fout = fvco >> divq.
-// outdiv: div[7:0], divby1[8]; when divby1 is clear the output is fout / (2*(div+1)).
+//
+// The `outdiv` register is NOT a rate divider on the output, which is what this port first assumed
+// and the board disproved. Measured on the FU740 (raw words from Dump(0x10000000,6)):
+//   corepllcfg   0x820544C2 -> divr 2 divf 275 divq 2 -> 26/3*2*276 = 4784 MHz >> 2 = 1196 MHz
+//   coreplloutdiv 0x00000000
+//   gemgxlpllcfg 0x8206B982 -> divr 2 divf 230 divq 5 -> 4004 MHz >> 5 = 125.125 MHz
+//   gemgxlplloutdiv 0x80000000
+// Treating outdiv as "divide by 2*(div+1)" would make the core 598 MHz -- but mcycle against the
+// CLINT says 1.19 GHz, and 125.125 MHz is exactly the GMII clock a gigabit PHY needs, so neither
+// output is divided. Bit 31 is a clock ENABLE, and Linux's fu740-prci agrees: it registers each
+// of these as the bare WRPLL output. So the outdiv argument is kept for the raw dump and for the
+// enable bit, and no division is applied.
 I64 RVPrciPllHz(U32 cfg, U32 outdiv, I64 fin)
 {
-  I64 divr, divf, divq, fvco, fout, d;
+  I64 divr, divf, divq, fvco;
   if (!fin)
     return 0;
   if (cfg & 0x01000000)
@@ -71,11 +96,13 @@ I64 RVPrciPllHz(U32 cfg, U32 outdiv, I64 fin)
   divf = (cfg >> 6) & 0x1FF;
   divq = (cfg >> 15) & 7;
   fvco = fin / (divr + 1) * 2 * (divf + 1);
-  fout = fvco >> divq;
-  if (outdiv & 0x100)
-    return fout;
-  d = outdiv & 0xFF;
-  return fout / (2 * (d + 1));
+  return fvco >> divq;
+}
+
+Bool RVPrciPllOutEnabled(U32 outdiv)
+{
+  //Bit 31 of a *_plloutdiv register is the output clock enable.
+  return (outdiv & 0x80000000) != 0;
 }
 
 Bool RVPrciPllLocked(U32 cfg)
@@ -83,36 +110,54 @@ Bool RVPrciPllLocked(U32 cfg)
   return (cfg & 0x80000000) != 0;
 }
 
+// Every RVPrciRd below is HOISTED into a local, and that is not style. Nested calls in the
+// argument list of a non-variadic callee are broken in this compiler -- Kernel/RVWinSerial.HC
+// carries the same workaround for RVWinMcausePrint. Written the obvious way,
+//   RVPrciPllHz(RVPrciRd(CFG), RVPrciRd(OUTDIV), HFCLK)
+// every nested read delivered the SAME value, so all four PLLs decoded from cfg = 0 and Clk
+// reported 52 MHz for each of them on the board while the counters said 1.196 GHz. QEMU hid it
+// completely: its PRCI reads back zeros, so cfg was legitimately 0 there and the wrong answer
+// and the right answer were the same number.
 I64 RVPrciCorePllHz()
 {
-  return RVPrciPllHz(RVPrciRd(RV_PRCI_COREPLLCFG), RVPrciRd(RV_PRCI_COREPLLOUTDIV),
-                     RV_PRCI_HFCLK_HZ);
+  U32 cfg, od;
+  cfg = RVPrciRd(RV_PRCI_COREPLLCFG);
+  od = RVPrciRd(RV_PRCI_COREPLLOUTDIV);
+  return RVPrciPllHz(cfg, od, RV_PRCI_HFCLK_HZ);
 }
 
 I64 RVPrciDdrPllHz()
 {
-  return RVPrciPllHz(RVPrciRd(RV_PRCI_DDRPLLCFG), RVPrciRd(RV_PRCI_DDRPLLOUTDIV),
-                     RV_PRCI_HFCLK_HZ);
+  U32 cfg, od;
+  cfg = RVPrciRd(RV_PRCI_DDRPLLCFG);
+  od = RVPrciRd(RV_PRCI_DDRPLLOUTDIV);
+  return RVPrciPllHz(cfg, od, RV_PRCI_HFCLK_HZ);
 }
 
 I64 RVPrciGemgxlPllHz()
 {
-  return RVPrciPllHz(RVPrciRd(RV_PRCI_GEMGXLPLLCFG), RVPrciRd(RV_PRCI_GEMGXLPLLOUTDIV),
-                     RV_PRCI_HFCLK_HZ);
+  U32 cfg, od;
+  cfg = RVPrciRd(RV_PRCI_GEMGXLPLLCFG);
+  od = RVPrciRd(RV_PRCI_GEMGXLPLLOUTDIV);
+  return RVPrciPllHz(cfg, od, RV_PRCI_HFCLK_HZ);
 }
 
 I64 RVPrciHfpclkPllHz()
 {
-  return RVPrciPllHz(RVPrciRd(RV_PRCI_HFPCLKPLLCFG), RVPrciRd(RV_PRCI_HFPCLKPLLOUTDIV),
-                     RV_PRCI_HFCLK_HZ);
+  U32 cfg, od;
+  cfg = RVPrciRd(RV_PRCI_HFPCLKPLLCFG);
+  od = RVPrciRd(RV_PRCI_HFPCLKPLLOUTDIV);
+  return RVPrciPllHz(cfg, od, RV_PRCI_HFCLK_HZ);
 }
-// PCLK is hfpclk divided again by hfpclkdiv: pclk = hfpclk / (2*(div+1)).
+// PCLK is hfpclkpll divided by a FIXED 2 -- not by hfpclkdiv, which reads 0 on this board and is
+// not what sets the rate. Measured: hfpclkpll decodes to 260 MHz and the console's own divisor
+// (1128, so 115200 * 1129) puts PCLK at 130.06 MHz. 260/2 = 130. Linux's fu740-prci models pclk
+// the same way, as a fixed /2 from hfpclkpll.
 I64 RVPrciPclkHz()
 {
-  I64 d = RVPrciRd(RV_PRCI_HFPCLKDIV) & 0xFFF;
   I64 f = RVPrciHfpclkPllHz;
   if (RVPrciRd(RV_PRCI_HFPCLKPLLSEL) & 1)
     f = RV_PRCI_HFCLK_HZ;
-  return f / (2 * (d + 1));
+  return f / 2;
 }
 #endif

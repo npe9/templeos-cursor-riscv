@@ -144,8 +144,36 @@ The decode checks itself against the measurement and says `DISAGREE` when they d
 for the drivers already in the tree: if PCLK is not about 125 MHz, the I2C prescaler of `0x0103`
 and everything else derived from that number are wrong rather than merely undocumented.
 
-Configuring these PLLs is step 2 of Stage B in `UNMATCHED_FIRMWARE.md`. Reading them honestly is
-the prerequisite.
+### What the board actually answered (2026-09-29)
+
+Measured on the hardware, at the prompt, from `Dump(0x10000000,6)` plus the console divisor and a
+`mcycle`-against-`mtime` window:
+
+| clock | decoded from PRCI | cross-check |
+|---|---|---|
+| corepll | 1196 MHz (divr 2, divf 275, divq 2) | ~1.19 GHz measured over a 17 s window |
+| ddrpll | 923 MHz (divr 0, divf 70, divq 2) | — |
+| gemgxlpll | 125.125 MHz (divr 2, divf 230, divq 5) | exactly the GMII clock gigabit needs |
+| hfpclkpll | 260 MHz (divr 2, divf 239, divq 4) | — |
+| PCLK | 130 MHz (hfpclkpll / 2) | console divisor 1128, so 115200 × 1129 = 130.06 MHz |
+
+Four things came out of that, and two of them were this port being wrong:
+
+- **The offset table is right.** `gemgxlpll` decoding to 125.125 MHz is not a coincidence a wrong
+  table produces, and `corepll` matching the measured core clock settles it.
+- **The output-divider model was wrong.** `RVPrciPllHz` treated `*_plloutdiv` as a rate divider,
+  which made the core 598 MHz. `coreplloutdiv` reads 0 and the core runs at 1.196 GHz, so no
+  division happens; bit 31 is a clock enable. Linux's `fu740-prci` models these as the bare PLL
+  output too. Fixed, and `Clk`'s self-check is what would have caught it on sight.
+- **PCLK is 130 MHz, not the 125 MHz written down all over this tree.** Harmless in the direction
+  it was wrong: the OpenCores I²C prescaler `0x0103` gives `PCLK/(5×260)`, which at 130 MHz is
+  *exactly* 100 kHz. The divisor was always right for this board; the comments calling it
+  "~96 kHz" were the error. The SPI comment (`~400 kHz`, `12.5 MHz`) is likewise 417 kHz and
+  13 MHz, both still fine for an SD card.
+- **`mtime` really is 1 MHz.** Two reads 3 s apart differed by 3,128,544 ticks.
+
+Configuring these PLLs is step 2 of Stage B in `UNMATCHED_FIRMWARE.md`. Reading them honestly was
+the prerequisite, and it has now paid for itself twice before a single PLL was written.
 
 ## USB — blocked behind PCIe, then large
 

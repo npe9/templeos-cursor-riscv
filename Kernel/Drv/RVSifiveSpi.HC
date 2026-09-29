@@ -42,7 +42,8 @@ U0 RVSpiWr(I64 off, U32 v)
 
 U0 RVSpiSpeed(I64 div)
 {
-  //sck = pclk / (2 * (div + 1)). pclk is 125 MHz here, so div 155 is ~400 kHz, div 4 is 12.5 MHz.
+  //sck = pclk / (2 * (div + 1)). pclk is 130 MHz here (measured, not the 125 once assumed), so
+  //div 155 is ~417 kHz and div 4 is 13 MHz -- both still inside what an SD card accepts.
   RVSpiWr(RV_SPI_SCKDIV, div);
 }
 

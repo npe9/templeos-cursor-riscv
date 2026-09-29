@@ -47,7 +47,7 @@ U0 UartPutS(U8 *s)
 public U0 Funs(U8 *filt = NULL)
 {
   UartPutS("Funs: ExePutS CInit RVTrapInit MemMap AsmList AsmDoc Mstatus Mcause\n");
-  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci Eth Temp Rtc Sd SdRd(blk) L2 Pwm(ch,duty) PwmOff Morse(a,b,c) Blink(ch,n) Led(r,g,b) PwmAny(ch,duty) PwmFree(ch,duty) Dump(addr,lines) Peek(addr) PeekU32(addr) FlashMap(on)\n");
+  UartPutS("Board: Gpio GpioRd(pin) GpioIe(pin,on) GpioWr(pin,val) GpioArm GpioRelease(pin) PowerOff Pci Eth Temp Rtc Sd SdRd(blk) L2 Pwm(ch,duty) PwmOff Morse(a,b,c) Blink(ch,n) Led(r,g,b) PwmAny(ch,duty) PwmFree(ch,duty) Dump(addr,lines) Peek(addr) PeekU32(addr) PeekU64(addr) Clk EthAb FlashMap(on)\n");
 }
 I64 dbg_view_ready;
 I64 main()
@@ -196,6 +196,12 @@ I64 main()
         if (dp)
           RVExePubAddArg(dp, "addr", cmp.internal_types[RT_U8] + 1);
         dp = RVExePubFunNew("PeekU32", &PeekU32, cmp.internal_types[RT_I64], 1);
+        if (dp)
+          RVExePubAddArg(dp, "addr", cmp.internal_types[RT_U8] + 1);
+        // PeekU64 existed in Kernel/RVPeekUi.HC from the start and was never wired here, so at
+        // the prompt it was simply an undefined identifier. Found by reaching for it on the
+        // board to read the CLINT's 64-bit mtime, which is exactly what it is for.
+        dp = RVExePubFunNew("PeekU64", &PeekU64, cmp.internal_types[RT_I64], 1);
         if (dp)
           RVExePubAddArg(dp, "addr", cmp.internal_types[RT_U8] + 1);
         // FlashMap(1) turns on QSPI0's direct-mapped reader so Dump(0x20000000) shows the
