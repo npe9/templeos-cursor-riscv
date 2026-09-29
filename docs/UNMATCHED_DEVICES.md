@@ -112,12 +112,40 @@ devices behind it. The config mechanics there are worth reading and partly reusa
 layer is not, because an Unmatched has no virtio hardware. Treat those files as the ECAM reference,
 not as a head start on a driver.
 
-## Caveat carried over
+## Caveat carried over, and now downgraded to a question
 
-GEM's DMA is not coherent with the L1 data cache on the FU540/740, and nothing suggests the PCIe
-core's DMA is either. Any descriptor ring shared with a real device will need the L2 controller's
-flush registers (`0x02010000`) or an uncached window — a problem this port has never had to solve,
-because every device it has driven so far was either MMIO-only or a QEMU model with a coherent bus.
+This document used to state flatly that GEM DMA is not coherent with the caches on the FU540/740.
+That was never measured, and the evidence runs both ways. Against coherency: only the PCIe node in
+the device tree carries `dma-coherent`. For it: Linux drove this board's ethernet for years with no
+cache maintenance whatsoever, which is hard to explain unless on-chip masters reach memory through
+the L2 front port. `EthAb()` settles it in one command — it runs the TX probe twice, once with
+`RVL2FlushRange` over the descriptor and buffer arena and once without, and prints the return code,
+the TX descriptor status word and TXSTATUS for each. If both runs fail identically, coherency is
+not the fault and the PHY link, the GEMGXL clock and the queue base are the suspects.
+
+Until that runs, nothing here should be written as though the answer were known.
+
+## Clocks — the assumption this port had never checked (2026-09-29)
+
+Every divisor in this port was computed for the clocks U-Boot leaves behind, and nothing ever
+verified them. That is fine while firmware boots the board and fatal the moment we are the
+firmware, so `Clk()` reports the clock tree measurement-first:
+
+- **Core frequency** from `mcycle` against the CLINT's `mtime` over 100 ms. `mtime` counts rtcclk
+  at 1 MHz, a rate the board documents, so this needs no register map to be right.
+- **PCLK** from the console's own baud divisor: the SiFive UART's seventh word, and
+  `pclk = 115200 * (div + 1)`. The console is demonstrably working, so this is a fact about the
+  hardware rather than a reading of a table.
+- **Then** the PRCI decode — corepll, ddrpll, gemgxlpll, hfpclkpll and the PCLK divider, using
+  U-Boot's `fu740-prci` offsets, with the raw register words printed beside them.
+
+The decode checks itself against the measurement and says `DISAGREE` when they differ by more than
+2%, because the offsets are the part most likely to be wrong. It also flags the case that matters
+for the drivers already in the tree: if PCLK is not about 125 MHz, the I2C prescaler of `0x0103`
+and everything else derived from that number are wrong rather than merely undocumented.
+
+Configuring these PLLs is step 2 of Stage B in `UNMATCHED_FIRMWARE.md`. Reading them honestly is
+the prerequisite.
 
 ## USB — blocked behind PCIe, then large
 
@@ -199,10 +227,10 @@ gave it the right IRQ (**55** on the FU740; 53 is I2C1). What it still needs:
 - `phy-mode = "gmii"`, PHY at MDIO address 0, clocks from `GEMGXLPLL` that firmware has already set —
   another reason a takeover is easier than a cold boot.
 - The MAC: U-Boot reads it from the 24c02 EEPROM and prints it (`70:b3:d5:92:ff:1d` on this board).
-- **The caveat that matters:** GEM DMA is not coherent with the L1 data cache on the FU540/740, so
-  descriptor rings need the L2 controller's flush registers (`0x02010000`) or an uncached window.
-  Every device this port has driven so far was MMIO-only or a coherent QEMU model, so this is new
-  ground and the most likely source of "it almost works" bugs.
+- **The open question that matters:** whether descriptor rings here need the L2 controller's flush
+  registers at all. Every device this port has driven so far was MMIO-only or a coherent QEMU
+  model, so this is new ground and the most likely source of "it almost works" bugs — but the
+  answer is a measurement (`EthAb()`), not a deduction from the device tree.
 
 ## I2C — small, and it is where the board's personality lives
 
@@ -234,5 +262,5 @@ anyone learning this port.
 1. **Now, no new driver:** read the SPI-NOR at `0x20000000`; toggle GPIO by hand.
 2. **Small and self-contained:** PWM; then I2C0 and `Temp()`.
 3. **Most useful:** SD over QSPI2 → a real RedSea disk on hardware.
-4. **Closest to done:** GEM ethernet (one config line to start, then the L2 coherency work).
+4. **Closest to done:** GEM ethernet (one config line to start, then whatever `EthAb()` says).
 5. **Gated on PCIe:** enumeration (read-only) → NVMe on the M.2 → XHCI → USB devices.

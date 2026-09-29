@@ -58,3 +58,18 @@ I64 RVSifiveGemRxSelfTest()
 {
   return -1;
 }
+
+I64 RVSifiveGemDmaBase()
+{
+  return 0;
+}
+
+I64 RVSifiveGemDmaLen()
+{
+  return 0;
+}
+
+I64 RVSifiveGemTxDescW1()
+{
+  return 0;
+}

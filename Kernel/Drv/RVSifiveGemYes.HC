@@ -247,3 +247,25 @@ I64 RVSifiveGemRxSelfTest()
   RVSifiveGemWr(RVSIFIVE_GEM_NCR, RVSIFIVE_GEM_NCR_RE | RVSIFIVE_GEM_NCR_TE);
   return 0;
 }
+// The DMA arena, so callers outside this file can flush it. GEM_TX_DESC sits at +0, GEM_RX_DESC
+// at +0x100, the TX buffers at +0x1000 and the RX buffers at +0x2000, so the span that any cache
+// maintenance has to cover runs to the end of the RX buffers.
+I64 RVSifiveGemDmaBase()
+{
+  return CONFIG_SIFIVE_GEM_RAM_BASE;
+}
+
+I64 RVSifiveGemDmaLen()
+{
+  return 0x2000 + RVSIFIVE_GEM_QSZ * RVSIFIVE_GEM_MTU;
+}
+// The first TX descriptor's status word, which is where the controller reports that it took the
+// buffer (USED). Reading it from outside is how the A/B below tells "GEM never saw the
+// descriptor" apart from "GEM saw it and the link did not come up".
+I64 RVSifiveGemTxDescW1()
+{
+  U32 *td = GEM_TX_DESC;
+  if (!sifive_gem_base)
+    return 0;
+  return td[1];
+}

@@ -22,7 +22,8 @@ U0 L2()
   Print("  WayEnable %d: ways 0..%d are cache\n", we, we);
   if (we >= ways - 1) {
     Print("  every way is cache, so the LIM at 0x08000000 is gone — and ways cannot be taken\n");
-    Print("  back without a reset, so DMA here needs Flush64, not a scratchpad\n");
+    Print("  back without a reset. Whether DMA here then needs Flush64 is still unmeasured:\n");
+    Print("  FU740 on-chip masters may reach memory coherently through the L2 front port.\n");
   } else
     Print("  %d way(s) are still LIM at 0x08000000 (%d KiB)\n", ways - 1 - we,
           (ways - 1 - we) * banks * sets * blk / 1024);

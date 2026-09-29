@@ -128,6 +128,8 @@ I64 main()
       RVExePubFunNew("Rtc", &Rtc, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("Sd", &Sd, cmp.internal_types[RT_U0], 0);
       RVExePubFunNew("L2", &L2, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("Clk", &Clk, cmp.internal_types[RT_U0], 0);
+      RVExePubFunNew("EthAb", &EthAb, cmp.internal_types[RT_U0], 0);
       {
         CHashFun *sp;
         sp = RVExePubFunNew("SdRd", &SdRd, cmp.internal_types[RT_U0], 1);
