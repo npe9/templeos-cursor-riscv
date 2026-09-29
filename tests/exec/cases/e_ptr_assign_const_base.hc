@@ -20,9 +20,10 @@
 // `U32 *p; I64 o; o=4; p = 0x10000000 + o; p;` answers 0x10000004). So the two compilers in this
 // tree disagree about this expression, which matters for self-hosting.
 //
-// Expect 0x7: bits 1, 2 and 4 set, bit 8 CLEAR because the bug is present. When the host
-// compiler is fixed, this returns 0xf and the manifest entry must change with it -- that flip is
-// the point of the case.
+// FIXED. ParseAssignment now clears last_var_symbol/last_global_var/last_member/expr_ptr_depth
+// after consuming `=` and before parsing the RHS, so the target no longer leaks into it. This
+// case returned 0x7 while the bug was live and returns 0xf now; it stays because all four
+// spellings still have to agree, and because a regression here is silent everywhere else.
 // Each address is moved into an I64 BEFORE it is compared. Comparing a pointer against
 // `PB + 4` directly does not work as a control here: that comparison is itself pointer-typed,
 // so the scaling under test contaminates the test's own yardstick. The first draft of this case
@@ -42,9 +43,20 @@ I64 main()
   a_var = var;
   a_cast = (PB + off)(U32 *);
   a_asg = asg;
-  if (a_init == PB4) r |= 1;   // initializer: correct
-  if (a_var == PB4)  r |= 2;   // variable base: correct
-  if (a_cast == PB4) r |= 4;   // cast form: correct, and what drivers should use
-  if (a_asg == PB4)  r |= 8;   // assignment + constant base: WRONG today
+  if (a_init == PB4) r |= 1;   // initializer, with nothing pointer-typed before it
+  if (a_var == PB4)  r |= 2;   // variable base
+  if (a_cast == PB4) r |= 4;   // cast form, and what drivers should use
+  if (a_asg == PB4)  r |= 8;   // assignment + constant base
+  // The four bits above are the whole rule, and a third real site confirmed it. Diffing the
+  // compiler's output across the fix changed exactly two bytes in the platform demo's blob:
+  //     old  lui a0,0xc008 ; addi a0,a0,512  -> 0x0C008200
+  //     new  lui a0,0xc002 ; addi a0,a0,128  -> 0x0C002080
+  // and the instruction after it stores to a local that is then used as `u[0] = 0`, so the site
+  // is kernel_plat_demo.hc's PLIC cleanup, `u = CONFIG_PLIC_BASE + CONFIG_PLIC_ENABLE_OFF;` --
+  // an ASSIGNMENT to an existing pointer, bit 8's shape exactly. RVSifivePlicEnable's own
+  //     U32 *en = CONFIG_PLIC_BASE + CONFIG_PLIC_ENABLE_OFF;
+  // sits in the same blob and did NOT change, because it is an initializer. So enabling PLIC
+  // sources always worked and the plic_meip gate was honest; what silently failed was the
+  // cleanup after it, which zeroed 0x0C008200 and left all 63 sources enabled.
   return r;
 }

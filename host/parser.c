@@ -2899,6 +2899,21 @@ static bool ParseAssignment(Compiler *cc) {
     EnsureLvalueAddressPushed(cc);
     
     LexNext(cc);
+    // The LHS must not leak into the RHS. ParseAdd reads the LEFT operand's pointer info with
+    // PtrElemInfo AFTER parsing it, and that keys off last_var_symbol; a numeric constant sets
+    // none of these, so it inherits whatever was current. In `p = 0x10000000 + off` that is the
+    // assignment target itself, and the offset came out scaled by sizeof(*p) -- which is how
+    // RVQspiFlashMap spent weeks writing 0x10040180 instead of 0x10040060 and the port recorded
+    // "fctrl.en won't set" as a hardware quirk. ParseAdd already clears this state BETWEEN its
+    // two operands for exactly this reason; nothing cleared it before the first one.
+    //
+    // Safe here because store_type is captured above, before this point, and because `p = p + 4`
+    // re-establishes the state when the RHS's own `p` is parsed.
+    // tests/exec/cases/e_ptr_assign_const_base.hc pins the four forms.
+    cc->last_var_symbol = NULL;
+    cc->last_global_var = NULL;
+    cc->last_member = NULL;
+    cc->expr_ptr_depth = 0;
     if (!ParseAssignment(cc)) return false;
     if (store_type == RT_F64 && cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
     else if (store_type != RT_F64 && cc->last_expr_type == RT_F64) ICAdd(cc, IC_TO_I64, 0, RT_I64);
