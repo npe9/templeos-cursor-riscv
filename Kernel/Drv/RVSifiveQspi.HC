@@ -47,14 +47,21 @@ I64 RVQspiFfmt()
 I64 RVQspiFlashMap(I64 on)
 {
   //Turn the direct-mapped flash reader on or off. Returns the new fctrl, or -1 if this board has none.
-  U32 *fctrl;
+  // The cast form, deliberately. This function used to say
+  //     U32 *fctrl; fctrl = CONFIG_SIFIVE_QSPI0_BASE + RV_QSPI_FCTRL;
+  // and the host compiler scaled the offset by the pointee size: 0x10040000 + 0x60 came out as
+  // 0x10040180, disassembled straight out of the compiler. So every read-modify-write in here
+  // went to the wrong register in the QSPI block, while RVQspiFctrl above -- which already used
+  // the cast form -- read the right one. That is precisely the "fctrl.en won't set on this
+  // board" this port recorded as a hardware quirk: the bit was being written somewhere else and
+  // then read back, correctly, as still zero. See tests/exec/cases/e_ptr_assign_const_base.hc.
+  I64 fc = CONFIG_SIFIVE_QSPI0_BASE + RV_QSPI_FCTRL;
   if (!CONFIG_SIFIVE_QSPI0_BASE)
     return -1;
-  fctrl = CONFIG_SIFIVE_QSPI0_BASE + RV_QSPI_FCTRL;
   if (on)
-    *fctrl = *fctrl | 1;
+    *(fc(U32 *)) = *(fc(U32 *)) | 1;
   else
-    *fctrl = *fctrl & ~1;
-  return *fctrl;
+    *(fc(U32 *)) = *(fc(U32 *)) & ~1;
+  return *(fc(U32 *));
 }
 #endif

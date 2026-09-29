@@ -143,7 +143,14 @@ I64 VirtioNetInit()
   VirtioNetSetupQueue(r, 1, VNET_TX_VQ);
   // One RX buffer per descriptor: [virtio_net_hdr | eth frame]
   desc = VNET_RX_VQ;
-  avail = VNET_RX_VQ + 128;
+  // Cast form, not `avail = VNET_RX_VQ + 128`. The host compiler scales the offset of an
+  // ASSIGNMENT whose base is a constant by the pointee size, so that spelling landed at
+  // VNET_RX_VQ + 128*sizeof(CVnetAvail) instead of +128. Line 217 below does the same thing as
+  // an INITIALIZER and is therefore correct -- the two spellings in one file are the contrast
+  // that makes this easy to believe. Every other pointer built this way in the virtio drivers
+  // is a U8 *, where the scale is 1 and the bug is invisible; this was the only one that is not.
+  // See tests/exec/cases/e_ptr_assign_const_base.hc.
+  avail = (VNET_RX_VQ + 128)(CVnetAvail *);
   for (i = 0; i < VNET_QSZ; i++) {
     desc[i].addr = VNET_RX_BUF + i *VNET_BUF_STRIDE;
     desc[i].len = VNET_BUF_STRIDE;
