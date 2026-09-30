@@ -6293,6 +6293,31 @@ bool ParseFunction(Compiler *cc) {
   // function derefs 8 bytes instead of 4 (see ParseUnary's deref width sources).
   U8 ret_pointee = cc->last_pointed_to_type;
   U8 ret_depth = cc->last_ptr_depth;
+  CHashClass *ret_class = cc->last_type_class;
+
+  // RETURNING A CLASS BY VALUE IS ONLY IMPLEMENTED UP TO 8 BYTES, and this refuses the rest
+  // rather than miscompiling it. There is no struct-return ABI here at all: a return loads the
+  // value into a0 with one `ld` and the caller stores it with one `sd`, which happens to be
+  // exactly right for a class of 8 bytes or fewer and silently truncates everything larger.
+  // Measured: a 4-byte and an 8-byte class return correctly; a 12-byte one loses its third
+  // field and a 16-byte one hands back a field pair where a pointer was expected, which faults
+  // on first use. The RISC-V ABI wants a0+a1 for up to 16 bytes and a hidden destination
+  // pointer beyond that; implementing that is a calling-convention change and is not done.
+  //
+  // This diagnostic is the safe half: nothing correct depends on the broken behaviour, because
+  // the broken behaviour has never produced a right answer. It does flag one piece of stock
+  // TempleOS -- `CDirEntry MGFind(...)` in Adam/Opt/Utils/Merge.HC, which returns a ~100-byte
+  // class by value and is not in any build here. That file has been quietly uncompilable-
+  // correctly all along; now it says so.
+  if (ret_class && ret_depth == 0 && ret_class->size > 8) {
+    char msg[192];
+    snprintf(msg, sizeof(msg),
+             "Returning class '%s' by value needs %lld bytes; only 8 are supported "
+             "(no struct-return ABI). Return a pointer, or pass a destination as an argument.",
+             ret_class->str ? ret_class->str : "?", (long long)ret_class->size);
+    Error(cc, msg);
+    { PF_TRACE(__LINE__); return false; }
+  }
 
   // Parse function name
   if (cc->lex.token == KW_THROW) {

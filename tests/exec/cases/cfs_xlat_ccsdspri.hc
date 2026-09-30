@@ -13,6 +13,7 @@
 #include "/Kernel/Cfs/cfe/cfe_sb_util.HC"
 #include "/Kernel/Cfs/cfe/cfe_sbr_map_hash.HC"
 #include "/Kernel/Cfs/cfe/cfe_sbr_objtab.HC"
+#include "/Kernel/Cfs/cfe/cfe_config.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -97,6 +98,17 @@ I32 CFE_ES_WriteToSysLog(U8 *Msg)
   return 0;
 }
 
+// The C declares this `static const uint32 ARR[3] = {11, 22, 33}` inside its block -- static,
+// so not on the stack. File scope is the faithful HolyC equivalent.
+U32 CFG_ARR[3];
+
+// Counts entries CFE_Config_IterateAll visits.
+I64 cfg_visits;
+U0 cfg_count_cb(U8 *Arg, U32 Id, U8 *Name)
+{
+  cfg_visits++;
+}
+
 // Counts how many route ids ForEachRouteId hands back.
 I64 sbr_visits;
 U0 sbr_count_cb(CFE_SBR_RouteId RouteId, U8 *ArgPtr)
@@ -127,6 +139,19 @@ CFE_TIME_SysTime CFE_TIME_GetTime()
   t.Seconds = 0x20304050;
   t.Subseconds = 0x60708090;
   return t;
+}
+
+// Six lowercase hex digits, to match the C oracle's %06lx.
+U0 Hx6(I64 v)
+{
+  U8 *hx = "0123456789abcdef";
+  U8 one[2];
+  I64 i;
+  one[1] = 0;
+  for (i = 20; i >= 0; i -= 4) {
+    one[0] = hx[(v >> i) & 15];
+    S(one);
+  }
 }
 
 // Four lowercase hex digits, twice on a line, to match the C oracle's %04lx.
@@ -772,6 +797,106 @@ I64 main()
     S("\n");
     S("sbr_obj ");
     S(CFE_SBR_ModuleEntry.Name);
+    S("\n");
+  }
+  // --- cfe_config_{lookup,get,set,eds_disabled}.c -------------------------------------
+  {
+    U32 cid;
+    CFE_Config_ArrayValue av, avget;
+    U8 vbuf[64];
+    // Init is not translated (it needs the build-generated GLOBAL_CONFIGDATA), so the one thing
+    // it would have set is set here on both sides. Everything below is the real API driving the
+    // real table.
+    CFE_Config_Global.UnknownString = "UNKNOWN";
+    cid = CFE_Config_GetIdByName("CORE_VERSION_MAJOR");
+    S("cfg_id 0x");
+    Hx6(cid);
+    S(" ");
+    S(CFE_Config_GetName(cid));
+    S("\n");
+    S("cfg_nosuch ");
+    D(CFE_Config_GetIdByName("NOT_A_KEY"));
+    S(" ");
+    D(CFE_Config_GetIdByName(NULL));
+    S("\n");
+    // An id below the base underflows the unsigned offset and is refused by the same bounds
+    // check that catches one above the top -- the CFE_ResourceId_ToIndex trick again.
+    S("cfg_oob ");
+    S(CFE_Config_GetName(CFE_ResourceId_FromInteger(1)));
+    S("\n");
+    CFE_Config_SetValue(cid, 7);
+    S("cfg_val ");
+    D(CFE_Config_GetValue(cid));
+    S("\n");
+    S("cfg_wrongtype ");
+    D(CFE_Config_GetString(cid) == CFE_Config_Global.UnknownString);
+    S(" ");
+    D(CFE_Config_GetObjPointer(cid) == NULL);
+    S("\n");
+    CFE_Config_SetString(CFE_Config_GetIdByName("MISSION_NAME"), "benchtop");
+    S("cfg_str ");
+    S(CFE_Config_GetString(CFE_Config_GetIdByName("MISSION_NAME")));
+    S("\n");
+    S("cfg_strptr ");
+    D(CFE_Config_GetObjPointer(CFE_Config_GetIdByName("MISSION_NAME")) != NULL);
+    S("\n");
+    CFG_ARR[0] = 11;
+    CFG_ARR[1] = 22;
+    CFG_ARR[2] = 33;
+    av.NumElements = 3;
+    // NOT ARR(U8 *). A HolyC cast on an lvalue relabels the storage, so that form re-reads
+    // eight bytes AT the array instead of taking its address. An array name is already a
+    // pointer here, so it needs no cast at all -- the same trap that cost this port a
+    // translated timestamp earlier today.
+    av.ElementPtr = CFG_ARR;
+    CFE_Config_SetArrayValue(CFE_Config_GetIdByName("TA_AFFINITY_TABLE"), &av);
+    // Out-parameter, not a return value -- see cfe_config.HC for why that one signature
+    // deviates. The printed numbers are the same, which is what the transcript compares.
+    CFE_Config_GetArrayValue(CFE_Config_GetIdByName("TA_AFFINITY_TABLE"), &avget);
+    S("cfg_arr n=");
+    D(avget.NumElements);
+    S(" first=");
+    D(*(avget.ElementPtr(U32 *)));
+    S("\n");
+    CFE_Config_GetArrayValue(cid, &avget);
+    S("cfg_arrbad n=");
+    D(avget.NumElements);
+    S(" p=");
+    D(avget.ElementPtr == NULL);
+    S("\n");
+    cfg_visits = 0;
+    CFE_Config_IterateAll(NULL, &cfg_count_cb);
+    S("cfg_iter ");
+    D(cfg_visits);
+    S(" of ");
+    D(CFE_ConfigIdOffset_MAX);
+    S("\n");
+    // The version-string helpers, the only formatted output in the module. Mission revision 0
+    // is an official release, 0xFF a development build, anything else a user customisation --
+    // three different strings out of one uint8.
+    CFE_Config_GetMissionRevString(vbuf, sizeof(vbuf), 0, "v7.0.0");
+    S("cfg_rev0 ");
+    S(vbuf);
+    S("\n");
+    CFE_Config_GetMissionRevString(vbuf, sizeof(vbuf), 0xFF, "v7.0.0");
+    S("cfg_revff ");
+    S(vbuf);
+    S("\n");
+    CFE_Config_GetMissionRevString(vbuf, sizeof(vbuf), 42, "v7.0.0");
+    S("cfg_rev42 ");
+    S(vbuf);
+    S("\n");
+    // Truncation, which is snprintf's contract and therefore this translation's.
+    CFE_Config_GetMissionRevString(vbuf, 10, 42, "v7.0.0");
+    S("cfg_trunc [");
+    S(vbuf);
+    S("]\n");
+    CFE_Config_GetVersionString(vbuf, sizeof(vbuf), "cFE", "1.2.3", "Draco", "v7.0.0");
+    S("cfg_ver ");
+    S(vbuf);
+    S("\n");
+    S("cfg_eds ");
+    S(CFE_Config_EdsState("cFE"));
     S("\n");
   }
   // --- cfe_msg_objtab.c ---------------------------------------------------------------

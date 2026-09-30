@@ -9,6 +9,10 @@
 #include "cfe_sb.h"
 #include "target_objtab.h"
 #include "cfe_sbr.h"
+#include "cfe_config.h"
+#include "cfe_config_priv.h"
+#include "cfe_config_ids.h"
+#include "cfe_config_eds.h" /* module-private; declares CFE_Config_EdsState */
 #include "cfe_resourceid.h"
 #include "cfe_resourceid_basevalue.h"
 
@@ -70,6 +74,16 @@ CFE_TIME_SysTime_t CFE_TIME_GetTime(void)
     return t;
 }
 
+/* Counts entries CFE_Config_IterateAll visits. */
+static int cfg_visits;
+static void cfg_count_cb(void *Arg, CFE_ConfigId_t Id, const char *Name)
+{
+    (void)Arg;
+    (void)Id;
+    (void)Name;
+    cfg_visits++;
+}
+
 /* Counts how many route ids ForEachRouteId hands back. */
 static int sbr_visits;
 static void sbr_count_cb(CFE_SBR_RouteId_t RouteId, void *ArgPtr)
@@ -85,6 +99,11 @@ extern const Target_ObjectTable_t CFE_SBR_ModuleEntry;
  * cfe_sbr_priv.h, which declares only Init_Map and SetRouteId. Declared here because the hash is
  * the part of this module most worth pinning: it is pure 32-bit overflow arithmetic. */
 CFE_SB_MsgId_Atom_t CFE_SBR_MsgIdHash(CFE_SB_MsgId_t MsgId);
+
+/* Also non-static and declared in no header anywhere -- the second such function found while
+ * translating (see docs/CFS_UPSTREAM_NOTES.md). Its sibling CFE_Config_GetVersionString, which
+ * is its only in-tree caller, is properly declared in cfe_config.h. */
+void CFE_Config_GetMissionRevString(char *Buf, size_t Size, uint8 MissionRev, const char *LastOffcRel);
 
 static void dump(const char *tag, CFE_MSG_Message_t *m)
 {
@@ -540,6 +559,72 @@ int main(void)
         CFE_SBR_ForEachRouteId(sbr_count_cb, NULL, &thr);
         printf("sbr_thr2 n=%d next=%lu\n", sbr_visits, (unsigned long)thr.NextIndex);
         printf("sbr_obj %s\n", CFE_SBR_ModuleEntry.Name);
+    }
+
+    /* --- cfe_config_{lookup,get,set,eds_disabled}.c ----------------------------------- */
+    {
+        CFE_ConfigId_t          cid;
+        CFE_Config_ArrayValue_t av, avget;
+        char                    vbuf[64];
+        static const uint32     ARR[3] = {11, 22, 33};
+
+        /* Init is not translated (it needs the build-generated GLOBAL_CONFIGDATA), so the one
+         * thing it would have set is set here on both sides. Everything else below is the
+         * module's real API driving its real table. */
+        CFE_Config_Global.UnknownString = "UNKNOWN";
+
+        cid = CFE_Config_GetIdByName("CORE_VERSION_MAJOR");
+        printf("cfg_id 0x%06lx %s\n", (unsigned long)CFE_RESOURCEID_TO_ULONG(cid),
+               CFE_Config_GetName(cid));
+        /* A name that is not in the generated table, and a NULL name. */
+        printf("cfg_nosuch %lu %lu\n",
+               (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_Config_GetIdByName("NOT_A_KEY")),
+               (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_Config_GetIdByName(NULL)));
+        /* An id below the base underflows the unsigned offset and is refused by the same
+         * bounds check that catches one above the top -- the CFE_ResourceId_ToIndex trick. */
+        printf("cfg_oob %s\n", CFE_Config_GetName(CFE_CONFIGID_C(CFE_ResourceId_FromInteger(1))));
+
+        CFE_Config_SetValue(cid, 7);
+        printf("cfg_val %lu\n", (unsigned long)CFE_Config_GetValue(cid));
+        /* Reading the wrong type gives the type's zero, not the stored bits. */
+        printf("cfg_wrongtype %d %d\n", (int)(CFE_Config_GetString(cid) == CFE_Config_Global.UnknownString),
+               (int)(CFE_Config_GetObjPointer(cid) == NULL));
+
+        CFE_Config_SetString(CFE_Config_GetIdByName("MISSION_NAME"), "benchtop");
+        printf("cfg_str %s\n", CFE_Config_GetString(CFE_Config_GetIdByName("MISSION_NAME")));
+        /* A STRING also reads back through GetObjPointer -- the one place two types overlap. */
+        printf("cfg_strptr %d\n",
+               (int)(CFE_Config_GetObjPointer(CFE_Config_GetIdByName("MISSION_NAME")) != NULL));
+
+        av.NumElements = 3;
+        av.ElementPtr  = ARR;
+        CFE_Config_SetArrayValue(CFE_Config_GetIdByName("TA_AFFINITY_TABLE"), &av);
+        avget = CFE_Config_GetArrayValue(CFE_Config_GetIdByName("TA_AFFINITY_TABLE"));
+        printf("cfg_arr n=%lu first=%lu\n", (unsigned long)avget.NumElements,
+               (unsigned long)(*(const uint32 *)avget.ElementPtr));
+        avget = CFE_Config_GetArrayValue(cid);
+        printf("cfg_arrbad n=%lu p=%d\n", (unsigned long)avget.NumElements,
+               (int)(avget.ElementPtr == NULL));
+
+        cfg_visits = 0;
+        CFE_Config_IterateAll(NULL, cfg_count_cb);
+        printf("cfg_iter %d of %d\n", cfg_visits, (int)CFE_ConfigIdOffset_MAX);
+
+        /* The version-string helpers, which are the only formatted output in the module. Mission
+         * revision 0 means an official release, 0xFF a development build, anything else a user
+         * customisation -- three different strings from one uint8. */
+        CFE_Config_GetMissionRevString(vbuf, sizeof(vbuf), 0, "v7.0.0");
+        printf("cfg_rev0 %s\n", vbuf);
+        CFE_Config_GetMissionRevString(vbuf, sizeof(vbuf), 0xFF, "v7.0.0");
+        printf("cfg_revff %s\n", vbuf);
+        CFE_Config_GetMissionRevString(vbuf, sizeof(vbuf), 42, "v7.0.0");
+        printf("cfg_rev42 %s\n", vbuf);
+        /* Truncation, which is snprintf's contract and therefore the translation's. */
+        CFE_Config_GetMissionRevString(vbuf, 10, 42, "v7.0.0");
+        printf("cfg_trunc [%s]\n", vbuf);
+        CFE_Config_GetVersionString(vbuf, sizeof(vbuf), "cFE", "1.2.3", "Draco", "v7.0.0");
+        printf("cfg_ver %s\n", vbuf);
+        printf("cfg_eds %s\n", CFE_Config_EdsState("cFE"));
     }
 
     /* --- cfe_msg_objtab.c ------------------------------------------------------------- */

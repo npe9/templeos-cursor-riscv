@@ -63,11 +63,11 @@ which is in `make ci`. It asserts three different things, because each is blind 
 others catch:
 
 1. **Completeness** — every function defined in a gated NASA `.c` exists in the translation.
-   58 functions across 17 sources today. The transcript cannot see this: a function nobody calls
+   72 functions across 21 sources today. The transcript cannot see this: a function nobody calls
    is linked from NASA's source on the C side, absent on the HolyC side, and the diff stays
    empty. `CFE_MSG_GetNextSequenceCount` was missing exactly that way for four commits, while
    two commit messages called the module complete.
-2. **Behaviour** — **119 transcript lines required to be byte-identical** between NASA's
+2. **Behaviour** — **135 transcript lines required to be byte-identical** between NASA's
    unmodified C compiled natively and the HolyC translation run under QEMU.
 3. **Linkage** — an empty import trailer, so no call silently resolves to the C runtime. An
    undefined prototype compiles clean and binds to whatever the linker finds; measured, a
@@ -75,14 +75,14 @@ others catch:
 Growing the source list and the transcript together is how this advances — one file, one set of
 lines, one diff, one negative control.
 
-**~1,965 lines of NASA C, out of 41,765 in cFE's flight source.** The honest denominator matters:
+**~2,454 lines of NASA C, out of 41,765 in cFE's flight source.** The honest denominator matters:
 
 | cFE module | NASA lines | translated | note |
 |---|---|---|---|
 | `msg` | 1,491 | **1,065** | all 8 unconditional sources plus the two v1/pri variants — complete for this configuration |
 | `resourceid` | 228 | **228** | complete, SIMPLE variant |
 | `sb` | 6,086 | **432** | `cfe_sb_msg_id_util.c` and `cfe_sb_util.c` complete; api/priv/task are the other 5,650 |
-| `config` | 782 | 0 | no OSAL, but needs the CMake-generated nametable — **the next one** |
+| `config` | 782 | **489** | get/set/lookup/eds complete; `init.c` (241) and its objtab wait for the build-generated GLOBAL_CONFIGDATA |
 | `es` `tbl` `time` `evs` `fs` `ta` | 32,643 | 0 | blocked on OSAL |
 | `sbr` | 535 | **434** | complete for the default HASH map; `map_direct` is the alternative |
 
@@ -104,6 +104,20 @@ to the same architecture; it is not a translation of anything, and it says so.
 
 Things noticed in NASA's source along the way are in `docs/CFS_UPSTREAM_NOTES.md`, reproduced
 rather than fixed, each pinned by the transcript.
+
+**What the translation has cost the compiler so far**, in `docs/HOLYC_STRUCT_LIMITS.md`: cFS is
+the first code in this tree to pass structs around by value, and it found three limits in an
+afternoon. Returning a class larger than 8 bytes was silent corruption and is now a compile
+error (`make struct-refusals-check` pins both sides of that boundary). `*dst = *src` on a large
+class copies only 8 bytes and is still open — a fix was attempted and reverted because it broke
+member stores. And one local-array anomaly is recorded as *not characterised*, because four
+reduction attempts failed to reproduce it and saying otherwise would be guessing.
+
+The config module's key set is generated, not invented: `tools/cfs/gen_configid_table.py` does
+`configure_file`'s job from NASA's own `config_ids_base.cmake`, `config_ids_dynamic.cmake` and
+templates, emitting both the C a real build compiles and the HolyC half, so the two cannot
+disagree about which ids exist — a disagreement the transcript could not have caught, since a
+missing id prints nothing on either side.
 
 What the excluded `msg` sources are: `ccsdsext`, `initdefaulthdr_priext` and `msgid_v2` are
 selected only when `MISSION_INCLUDE_CCSDSEXT_HEADER` is set, which this port does not set. That
