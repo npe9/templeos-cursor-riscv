@@ -48,6 +48,7 @@ U0 OS_printf(U8 *fmt)
 }
 
 #include "/Kernel/Cfs/osal/osapi_errors.HC"
+#include "/Kernel/Cfs/osal/osapi_version.HC"
 
 U0 Nm(U8 *label, I32 rc, U8 *nm)
 {
@@ -92,5 +93,28 @@ I64 main()
   S("statusn [");
   D(OS_StatusToString(-1, NULL) == NULL);
   S("]\n");
+  // --- osapi-version.c ---------------------------------------------------------------
+  {
+    U8 vn[4];
+    OS_GetVersionNumber(vn);
+    S("ver     [");
+    S(OS_GetVersionString);
+    S("]\n");
+    S("codename[");
+    S(OS_GetVersionCodeName);
+    S("]\n");
+    S("vernum  ");
+    D(vn[0]);
+    S(".");
+    D(vn[1]);
+    S(".");
+    D(vn[2]);
+    S(".");
+    D(vn[3]);
+    S("\n");
+    S("build   ");
+    D(OS_GetBuildNumber);
+    S("\n");
+  }
   return 0;
 }

@@ -28,7 +28,8 @@ GENDIR="$ROOT/build/cfs"
 python3 "$ROOT/tools/cfs/gen_osconfig.py" "$GENDIR" >/dev/null || {
   echo "FAIL osal-xlat — could not generate osconfig.h" >&2; exit 1; }
 
-SRC_C="$OSAL/src/os/shared/src/osapi-errors.c"
+SRC_C="$OSAL/src/os/shared/src/osapi-errors.c
+       $OSAL/src/os/shared/src/osapi-version.c"
 SRC_HC="$ROOT/tests/exec/cases/osal_xlat_errors.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"

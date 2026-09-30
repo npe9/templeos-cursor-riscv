@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include "osapi.h"
 #include "os-shared-errors.h"
+#include "osapi-version.h"
 
 /* The backend's error-name table. A bare-metal target contributes no OS-specific errors, so
  * this is empty -- and empty is the interesting case, because it is the one that makes
@@ -55,5 +56,15 @@ int main(void)
     printf("status  [%s]\n", OS_StatusToString(-42, &st));
     printf("status0 [%s]\n", OS_StatusToString(0, &st));
     printf("statusn [%d]\n", (int)(OS_StatusToString(-1, NULL) == NULL));
+
+    /* --- osapi-version.c ------------------------------------------------------------- */
+    {
+        uint8 vn[4];
+        OS_GetVersionNumber(vn);
+        printf("ver     [%s]\n", OS_GetVersionString());
+        printf("codename[%s]\n", OS_GetVersionCodeName());
+        printf("vernum  %d.%d.%d.%d\n", vn[0], vn[1], vn[2], vn[3]);
+        printf("build   %lu\n", (unsigned long)OS_GetBuildNumber());
+    }
     return 0;
 }
