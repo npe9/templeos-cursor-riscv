@@ -23,6 +23,7 @@
 #include "os-shared-task-affinity.h"
 #include "os-shared-filesys.h"
 #include "os-shared-file.h"
+#include "os-shared-dir.h"
 #include "osapi-task-affinity.h"
 #include "os-shared-countsem.h"
 #include "os-shared-mutex.h"
@@ -36,6 +37,7 @@
 #include "os-shared-task-affinity.h"
 #include "os-shared-filesys.h"
 #include "os-shared-file.h"
+#include "os-shared-dir.h"
 #include "osapi-task-affinity.h"
 
 /* The backend's error-name table. A bare-metal target contributes no OS-specific errors, so
@@ -167,6 +169,45 @@ static uint32 stub_cs_options;
 static int    stub_cs_gives;
 static int    stub_cs_takes;
 static uint32 stub_cs_last_msecs;
+
+/* --- osapi-dir.c backend ------------------------------------------------------------------ */
+static int  stub_d_creates, stub_d_opens, stub_d_closes, stub_d_reads, stub_d_rewinds, stub_d_removes;
+static int  stub_d_pos;
+static char stub_d_lastpath[OS_MAX_LOCAL_PATH_LEN];
+static const char *stub_d_names[3] = {"alpha", "beta", "gamma"};
+
+int32 OS_DirCreate_Impl(const char *local_path, uint32 access)
+{
+    ++stub_d_creates;
+    strncpy(stub_d_lastpath, local_path, sizeof(stub_d_lastpath) - 1);
+    return OS_SUCCESS;
+}
+int32 OS_DirOpen_Impl(const OS_object_token_t *token, const char *local_path)
+{
+    ++stub_d_opens;
+    strncpy(stub_d_lastpath, local_path, sizeof(stub_d_lastpath) - 1);
+    stub_d_pos = 0;
+    return OS_SUCCESS;
+}
+int32 OS_DirClose_Impl(const OS_object_token_t *token) { ++stub_d_closes; return OS_SUCCESS; }
+int32 OS_DirRead_Impl(const OS_object_token_t *token, os_dirent_t *dirent)
+{
+    ++stub_d_reads;
+    if (stub_d_pos >= 3)
+    {
+        return OS_ERROR;
+    }
+    strncpy(dirent->FileName, stub_d_names[stub_d_pos], sizeof(dirent->FileName) - 1);
+    ++stub_d_pos;
+    return OS_SUCCESS;
+}
+int32 OS_DirRewind_Impl(const OS_object_token_t *token)
+{
+    ++stub_d_rewinds;
+    stub_d_pos = 0;
+    return OS_SUCCESS;
+}
+int32 OS_DirRemove_Impl(const char *local_path) { ++stub_d_removes; return OS_SUCCESS; }
 
 /* --- osapi-file.c backend ----------------------------------------------------------------
  * A simulated file, because OS_cp is a READ/WRITE LOOP and the only way to test it is to make
@@ -1269,6 +1310,50 @@ int main(void)
             printf("f_bynone  rc=%d\n", (int)OS_CloseFileByName("/mnt/nope.txt"));
             printf("f_all     rc=%d closes=%d\n", (int)OS_CloseAllFiles(), stub_f_closes);
             printf("f_allagain rc=%d\n", (int)OS_CloseAllFiles());
+        }
+
+        /* --- osapi-dir.c ------------------------------------------------------------------
+         * THREE DIFFERENT LOCK MODES in one module, and the transcript can see them because
+         * of how references are accounted:
+         *   Close  EXCLUSIVE -- deletes the record
+         *   Read   GLOBAL    -- and releases afterwards
+         *   Rewind NONE      -- and does NOT release, because NONE took nothing
+         * Rewinding several times and then closing is the test: if Rewind took a real lock
+         * without releasing it, each call would leak a reference and the EXCLUSIVE close
+         * afterwards could not succeed.
+         */
+        {
+            osal_id_t   did;
+            os_dirent_t dent;
+            int         i;
+
+            OS_DirAPI_Init();
+            printf("d_init    rc=%d\n", (int)OS_DirAPI_Init());
+            printf("d_mkdir   rc=%d n=%d [%s]\n", (int)OS_mkdir("/mnt/sub", 0), stub_d_creates,
+                   stub_d_lastpath);
+            printf("d_mkbad   rc=%d\n", (int)OS_mkdir("relative", 0));
+            printf("d_nullid  rc=%d\n", (int)OS_DirectoryOpen(NULL, "/mnt/sub"));
+            printf("d_open    rc=%d n=%d [%s]\n", (int)OS_DirectoryOpen(&did, "/mnt/sub"),
+                   stub_d_opens, stub_d_lastpath);
+            printf("d_nullent rc=%d\n", (int)OS_DirectoryRead(did, NULL));
+            for (i = 0; i < 4; ++i)
+            {
+                memset(&dent, 0, sizeof(dent));
+                printf("d_read%d   rc=%d [%s]\n", i, (int)OS_DirectoryRead(did, &dent),
+                       OS_DIRENTRY_NAME(dent));
+            }
+            /* Rewind, then read again: the listing must start over. */
+            printf("d_rew     rc=%d n=%d\n", (int)OS_DirectoryRewind(did), stub_d_rewinds);
+            memset(&dent, 0, sizeof(dent));
+            printf("d_reread  rc=%d [%s]\n", (int)OS_DirectoryRead(did, &dent),
+                   OS_DIRENTRY_NAME(dent));
+            /* Several more rewinds, then close. A leaked reference per rewind would show here. */
+            for (i = 0; i < 5; ++i) OS_DirectoryRewind(did);
+            printf("d_rew5    n=%d\n", stub_d_rewinds);
+            printf("d_close   rc=%d n=%d\n", (int)OS_DirectoryClose(did), stub_d_closes);
+            printf("d_stale   rc=%d\n", (int)OS_DirectoryClose(did));
+            printf("d_rewbad  rc=%d\n", (int)OS_DirectoryRewind(did));
+            printf("d_rmdir   rc=%d n=%d\n", (int)OS_rmdir("/mnt/sub"), stub_d_removes);
         }
 
     }

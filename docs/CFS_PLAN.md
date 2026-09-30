@@ -125,7 +125,7 @@ to the same architecture; it is not a translation of anything, and it says so.
 
 ### OSAL, measured the same way
 
-**6,198 lines of NASA's 9,447-line shared layer, gated** (66%), computed by
+**6,435 lines of NASA's 9,447-line shared layer, gated** (68%), computed by
 `tools/cfs/check_manifest.py` on every gate run rather than counted here. The denominator is the portable half
 only; the three vendored backends (posix 4,598, vxworks 3,984, rtems 3,543) are reference
 implementations of the seam, not things to translate.

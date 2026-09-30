@@ -368,6 +368,7 @@ U0 task_entry_a() { ++stub_t_startups; }
 #include "/Kernel/Cfs/osal/osapi_task_affinity.HC"
 #include "/Kernel/Cfs/osal/os_shared_filesys.HC"
 #include "/Kernel/Cfs/osal/os_shared_file.HC"
+#include "/Kernel/Cfs/osal/os_shared_dir.HC"
 
 // --- osapi-network.c / osapi-shell.c / osapi-task-affinity.c backends -------------------------
 // Three small modules that are almost pure dispatch: what the transcript pins is which checks
@@ -419,6 +420,51 @@ I32 OS_TaskAffinityGetAffinity_Impl(OS_object_token_t *token, OS_cpuset_t *cpuse
 
 #include "/Kernel/Cfs/osal/osapi_filesys.HC"
 #include "/Kernel/Cfs/osal/osapi_file.HC"
+#include "/Kernel/Cfs/osal/osapi_dir.HC"
+
+// --- osapi-dir.c backend ------------------------------------------------------------------
+I64 stub_d_creates, stub_d_opens, stub_d_closes, stub_d_reads, stub_d_rewinds, stub_d_removes;
+I64 stub_d_pos;
+U8 stub_d_lastpath[OS_MAX_LOCAL_PATH_LEN];
+
+I32 OS_DirCreate_Impl(U8 *local_path, U32 access)
+{
+  ++stub_d_creates;
+  StrNCpy(stub_d_lastpath, local_path, OS_MAX_LOCAL_PATH_LEN - 1);
+  return OS_SUCCESS;
+}
+I32 OS_DirOpen_Impl(OS_object_token_t *token, U8 *local_path)
+{
+  ++stub_d_opens;
+  StrNCpy(stub_d_lastpath, local_path, OS_MAX_LOCAL_PATH_LEN - 1);
+  stub_d_pos = 0;
+  return OS_SUCCESS;
+}
+I32 OS_DirClose_Impl(OS_object_token_t *token) { ++stub_d_closes; return OS_SUCCESS; }
+I32 OS_DirRead_Impl(OS_object_token_t *token, os_dirent_t *dirent)
+{
+  ++stub_d_reads;
+  if (stub_d_pos >= 3)
+    return OS_ERROR;
+  // The C uses a static array of three names; HolyC has no array-of-string-literals syntax, so
+  // the same three names are selected here. Same bytes either way.
+  if (stub_d_pos == 0)
+    StrNCpy(dirent->FileName, "alpha", OS_MAX_FILE_NAME - 1);
+  else if (stub_d_pos == 1)
+    StrNCpy(dirent->FileName, "beta", OS_MAX_FILE_NAME - 1);
+  else
+    StrNCpy(dirent->FileName, "gamma", OS_MAX_FILE_NAME - 1);
+  ++stub_d_pos;
+  return OS_SUCCESS;
+}
+I32 OS_DirRewind_Impl(OS_object_token_t *token)
+{
+  ++stub_d_rewinds;
+  stub_d_pos = 0;
+  return OS_SUCCESS;
+}
+I32 OS_DirRemove_Impl(U8 *local_path) { ++stub_d_removes; return OS_SUCCESS; }
+
 
 // --- osapi-file.c backend ----------------------------------------------------------------
 // A simulated file, because OS_cp is a READ/WRITE LOOP and the only way to test it is to make
@@ -2172,6 +2218,105 @@ I64 main()
     S("\n");
     S("f_allagain rc=");
     D(OS_CloseAllFiles);
+    S("\n");
+  }
+
+  // --- osapi-dir.c ----------------------------------------------------------------------------
+  // THREE DIFFERENT LOCK MODES in one module, and the transcript can see them through the
+  // reference accounting: Close is EXCLUSIVE, Read is GLOBAL and releases, Rewind is NONE and
+  // does NOT release because NONE took nothing. Rewinding several times and then closing is the
+  // test -- a real lock without a release would leak a reference each call and the EXCLUSIVE
+  // close afterwards could not succeed.
+  {
+    U32 did;
+    os_dirent_t dent;
+    I64 i;
+    I32 rA;
+
+    OS_DirAPI_Init;
+    S("d_init    rc=");
+    D(OS_DirAPI_Init);
+    S("\n");
+    rA = OS_mkdir("/mnt/sub", 0);
+    S("d_mkdir   rc=");
+    D(rA);
+    S(" n=");
+    D(stub_d_creates);
+    S(" [");
+    S(stub_d_lastpath);
+    S("]\n");
+    S("d_mkbad   rc=");
+    D(OS_mkdir("relative", 0));
+    S("\n");
+    rA = OS_DirectoryOpen(NULL, "/mnt/sub");
+    S("d_nullid  rc=");
+    D(rA);
+    S("\n");
+    rA = OS_DirectoryOpen(&did, "/mnt/sub");
+    S("d_open    rc=");
+    D(rA);
+    S(" n=");
+    D(stub_d_opens);
+    S(" [");
+    S(stub_d_lastpath);
+    S("]\n");
+    rA = OS_DirectoryRead(did, NULL);
+    S("d_nullent rc=");
+    D(rA);
+    S("\n");
+    i = 0;
+    while (i < 4) {
+      MemSet(&dent, 0, sizeof(dent));
+      rA = OS_DirectoryRead(did, &dent);
+      S("d_read");
+      D(i);
+      S("   rc=");
+      D(rA);
+      S(" [");
+      S(dent.FileName);
+      S("]\n");
+      ++i;
+    }
+    // Rewind, then read again: the listing must start over.
+    rA = OS_DirectoryRewind(did);
+    S("d_rew     rc=");
+    D(rA);
+    S(" n=");
+    D(stub_d_rewinds);
+    S("\n");
+    MemSet(&dent, 0, sizeof(dent));
+    rA = OS_DirectoryRead(did, &dent);
+    S("d_reread  rc=");
+    D(rA);
+    S(" [");
+    S(dent.FileName);
+    S("]\n");
+    // Several more rewinds, then close. A leaked reference per rewind would show here.
+    i = 0;
+    while (i < 5) {
+      OS_DirectoryRewind(did);
+      ++i;
+    }
+    S("d_rew5    n=");
+    D(stub_d_rewinds);
+    S("\n");
+    rA = OS_DirectoryClose(did);
+    S("d_close   rc=");
+    D(rA);
+    S(" n=");
+    D(stub_d_closes);
+    S("\n");
+    S("d_stale   rc=");
+    D(OS_DirectoryClose(did));
+    S("\n");
+    S("d_rewbad  rc=");
+    D(OS_DirectoryRewind(did));
+    S("\n");
+    rA = OS_rmdir("/mnt/sub");
+    S("d_rmdir   rc=");
+    D(rA);
+    S(" n=");
+    D(stub_d_removes);
     S("\n");
   }
   return 0;
