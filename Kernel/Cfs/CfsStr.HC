@@ -80,19 +80,16 @@ U8 *StrNCpy(U8 *dst, U8 *src, I64 n)
 //
 // HolyC has variadics, but a fixed arity with defaults is enough and reads better: the widest
 // translated call passes five arguments.
-I64 StrPrintN(U8 *Buf, I64 Size, U8 *Fmt, I64 a0=0, I64 a1=0, I64 a2=0, I64 a3=0, I64 a4=0)
+// The core, taking the (fmt, argc, argv) triple that a HolyC variadic function receives -- the
+// same shape TempleOS's own StrPrintJoin takes, so OS_printf can hand its varargs straight
+// through. StrPrintN below is the fixed-arity convenience that packs into the same call.
+I64 StrPrintNV(U8 *Buf, I64 Size, U8 *Fmt, I64 nargs, I64 *args)
 {
-  I64 args[5];
   I64 ai = 0, n = 0, i;
   U8 dig[24];
   U8 *sp;
   U64 uv;
   I64 sv;
-  args[0] = a0;
-  args[1] = a1;
-  args[2] = a2;
-  args[3] = a3;
-  args[4] = a4;
   while (*Fmt) {
     if (*Fmt != '%') {
       if (Size > 0 && n < Size - 1)
@@ -103,7 +100,10 @@ I64 StrPrintN(U8 *Buf, I64 Size, U8 *Fmt, I64 a0=0, I64 a1=0, I64 a2=0, I64 a3=0
     }
     Fmt++;
     if (*Fmt == 's') {
-      sp = args[ai++](U8 *);
+      sp = NULL;
+      if (ai < nargs)
+        sp = args[ai](U8 *);
+      ai++;
       if (sp == NULL)
         sp = "(null)";
       while (*sp) {
@@ -120,7 +120,10 @@ I64 StrPrintN(U8 *Buf, I64 Size, U8 *Fmt, I64 a0=0, I64 a1=0, I64 a2=0, I64 a3=0
         if (*Fmt != 'd' && *Fmt != 'u')
           Fmt--;            // not %ld/%lu after all: let the default branch see it
       }
-      sv = args[ai++];
+      sv = 0;
+      if (ai < nargs)
+        sv = args[ai];
+      ai++;
       if (sv < 0) {
         if (Size > 0 && n < Size - 1)
           Buf[n] = '-';
@@ -142,7 +145,10 @@ I64 StrPrintN(U8 *Buf, I64 Size, U8 *Fmt, I64 a0=0, I64 a1=0, I64 a2=0, I64 a3=0
         n++;
       }
     } else if (*Fmt == 'u') {
-      uv = args[ai++];
+      uv = 0;
+      if (ai < nargs)
+        uv = args[ai];
+      ai++;
       i = 0;
       if (!uv)
         dig[i++] = '0';
@@ -176,5 +182,19 @@ I64 StrPrintN(U8 *Buf, I64 Size, U8 *Fmt, I64 a0=0, I64 a1=0, I64 a2=0, I64 a3=0
       Buf[Size - 1] = 0;
   }
   return n;
+}
+
+// Fixed arity with defaults, for the translated call sites that pass a known argument list. It
+// packs five slots and passes nargs=5 exactly as the previous single-function version did, so
+// its output is unchanged -- the cFE gate's 135 identical lines are the check on that.
+I64 StrPrintN(U8 *Buf, I64 Size, U8 *Fmt, I64 a0=0, I64 a1=0, I64 a2=0, I64 a3=0, I64 a4=0)
+{
+  I64 args[5];
+  args[0] = a0;
+  args[1] = a1;
+  args[2] = a2;
+  args[3] = a3;
+  args[4] = a4;
+  return StrPrintNV(Buf, Size, Fmt, 5, args);
 }
 #endif

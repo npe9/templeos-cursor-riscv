@@ -84,6 +84,29 @@ for n in "cfs-sim: sbr_routes=5" \
          "cfs-sim: imu_runs=200" "cfs-sim: nav_runs=100"; do
   printf '%s\n' "$out" | grep -qF "$n" || { echo "FAIL cfs smoke — timing changed, expected: $n" >&2; rc=1; }
 done
+# The remaining counters were being PRINTED and not asserted, so they could drift without
+# failing anything -- the same "a gate that only prints is not a gate" trap as a pinned hash
+# with no property behind it. Two groups, and the difference is stated rather than blurred.
+#
+# DERIVED. Each of these is what the scenario constructs, not merely what it printed once:
+#   hs_deaths=1     exactly one app is injected as stopped, and the death path sets
+#                   declared_dead and starts an RTS, so it cannot re-fire for that app.
+#   cs_faults=1     exactly one checksum corruption is injected, and CfsAppCs re-baselines
+#                   cfs_cs_ref on detection, so a second cycle does not count it again.
+#   ccsds_terr_us=0 the packet timestamp must match the publish time EXACTLY; any nonzero
+#                   value is a real defect, not drift.
+for n in "cfs-sim: hs_deaths=1" "cfs-sim: cs_faults=1" "cfs-sim: ccsds_terr_us=0"; do
+  printf '%s\n' "$out" | grep -qF "$n" || { echo "FAIL cfs smoke — expected: $n" >&2; rc=1; }
+done
+# CAPTURED. These four are drift detectors: the values are what this deterministic scenario
+# produces today, recorded so a change has to be deliberate. They are NOT independently
+# derived, and this comment is here so nobody later mistakes them for a specification. If one
+# of them changes, the question to ask is which commit changed the scenario, not whether the
+# new number is "right".
+for n in "cfs-sim: ds_records=158" "cfs-sim: sb_sent=1428" \
+         "cfs-sim: nav_dropped=57" "cfs-sim: evs_crit=4"; do
+  printf '%s\n' "$out" | grep -qF "$n" || { echo "FAIL cfs smoke — a counter drifted, expected: $n" >&2; rc=1; }
+done
 if printf '%s\n' "$out" | grep -q '_FAIL'; then
   echo "FAIL cfs smoke — a phase reported _FAIL" >&2
   printf '%s\n' "$out" | grep '_FAIL' | sed 's/^/  /' >&2

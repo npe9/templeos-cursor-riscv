@@ -125,7 +125,7 @@ to the same architecture; it is not a translation of anything, and it says so.
 
 ### OSAL, measured the same way
 
-**4,107 lines of NASA's 9,523-line shared layer, gated.** The denominator is the portable half
+**4,443 lines of NASA's 9,523-line shared layer, gated.** The denominator is the portable half
 only; the three vendored backends (posix 4,598, vxworks 3,984, rtems 3,543) are reference
 implementations of the seam, not things to translate.
 
@@ -137,6 +137,7 @@ implementations of the seam, not things to translate.
 | `osapi-binsem.c` | 277 | **yes** | |
 | `osapi-queue.c` | 274 | **yes** | Get and Put reject on OPPOSITE sides of `max_size` |
 | `osapi-task.c` | 461 | **yes** | the delete hook, and the priority store the backend can veto |
+| `osapi-printf.c` | 336 | **yes** | the console ring buffer; gated separately, see below |
 | `osapi-mutex.c` | 256 | **yes** | |
 | `osapi-countsem.c` | 249 | **yes** | the template the other four were generated from |
 | `osapi-errors.c` | 164 | **yes** | |
@@ -150,8 +151,44 @@ implementations of the seam, not things to translate.
 | `osapi-timebase.c` | 538 | no | |
 | `osapi-module.c` | 472 | no | |
 | `osapi-common.c` | 460 | partial | deliberately last and deliberately ungated: every module translated first is one fewer stub in it |
-| `osapi-printf.c` | 336 | no | defines the real `OS_printf`, which the oracle currently stubs |
 | `osapi-dir.c` `-select.c` `-task-affinity.c` `-network.c` `-debug.c` `-shell.c` | 816 | no | |
+
+#### Why printf needs its own gate
+
+`osapi-printf.c` is gated by `tests/scripts/run_osal_printf_smoke.sh`, not by the main OSAL
+gate, and the reason is a genuine limit rather than convenience.
+
+The main gate stubs `OS_printf` to print a fixed `bugcheck` marker, because OSAL's `BUGCHECK`
+logs through it:
+
+    BUGREPORT("\n**BUG** %s():%d:check '%s' FAILED --> %s\n\n", __func__, __LINE__, #cond, #errcode)
+
+HolyC has no `__func__`, no `__LINE__` and no stringification, so the translation keeps the check
+and the return and does not reproduce the wording. That marker is load-bearing: it is the only
+thing distinguishing a `BUGCHECK` (which logs) from an `ARGCHECK` (which is silent) when both
+return a code, and a negative control on exactly that distinction has fired before.
+
+Once `osapi-printf.c` is in the build, `OS_printf` is NASA's real one and the stub cannot exist —
+one definition per program. The C side would emit the full `**BUG**` text where HolyC emits
+nothing comparable, and every marker line would diverge over C preprocessor machinery rather
+than over the translation.
+
+So the second gate is **scoped**: it links `osapi-printf.c` and `osapi-idmap.c`, drives the
+console ring buffer directly, and its driver never triggers a `BUGCHECK`. In particular it never
+calls `OS_printf(NULL)` — `BUGCHECK_VOID` would call `BUGREPORT`, which calls `OS_printf`, which
+is the function under test. 16 transcript lines, and what they pin is the ring buffer: the
+all-or-nothing write, the wraparound, the overflow counter, the `PrintfEnabled` gate, the
+pre-`OS_API_Init` discard, and truncation at `OS_BUFFER_SIZE`.
+
+Two numbers there are derived rather than observed. The buffer is
+`(sizeof("") + OS_BUFFER_SIZE) * OS_BUFFER_MSG_DEPTH` = `(1 + 172) * 100` = **17,300** bytes,
+and the transcript prints it. And the fill loop runs 400 times, not 200: at 71 bytes a message
+the ring takes about 244 writes to fill, and at 200 the loop ran out first — the overflow path
+was never reached, `ovf=0`, and the all-or-nothing check underneath it was measuring nothing. A
+control that cannot fire is worse than no control, so the bound comes from the buffer size.
+
+`OS_printf`'s formatting goes through `StrPrintNV`, the `(fmt, argc, argv)` form — the same
+triple TempleOS's own `StrPrintJoin` takes, which is what a HolyC variadic receives.
 
 Four properties are gated independently, because each is blind to what the others catch:
 

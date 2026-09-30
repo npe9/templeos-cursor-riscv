@@ -101,3 +101,26 @@ disagree, and the gate says which line.
 `SourceMaxSize == 0` is safe, but NULL with a nonzero size faults. Its sibling
 `CFE_SB_MessageStringSet` does check both. Translated as written; the oracle exercises only the
 paths that are safe to exercise in both languages.
+
+## 3. OS_ConsoleWrite is a public function with no declaration anywhere
+
+`src/os/shared/src/osapi-printf.c` defines
+
+    int32 OS_ConsoleWrite(osal_id_t console_id, const char *Str)
+
+with external linkage, directly under a banner comment reading
+
+    /*
+     *********************************************************************************
+     *          PUBLIC API (application-callable functions)
+     *********************************************************************************
+     */
+
+and it is declared in **no** header — checked across the whole of `src/os` (`inc/`,
+`shared/inc/`, every backend). So a caller outside the module has to write its own prototype,
+which is exactly what `tests/osal/oracle_printf.c` does and says so at the declaration.
+
+It is not a latent bug the way finding 1 is — nothing in-tree calls it from outside
+`osapi-printf.c`, where the definition precedes every use — but it means the function is either
+public and under-declared, or internal and should be `static`. Reproduced, not fixed: the
+translation keeps it non-static so the two sides have the same linkage.

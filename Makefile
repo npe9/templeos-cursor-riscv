@@ -125,6 +125,7 @@ ci: $(COMPILER_BIN)
 	@$(MAKE) struct-refusals-check
 	@$(MAKE) cfs-xlat-smoke
 	@$(MAKE) osal-xlat-smoke
+	@$(MAKE) osal-printf-smoke
 	@$(MAKE) portability-seam-check
 	@$(MAKE) compliance
 	@$(MAKE) fmt-test
@@ -1103,6 +1104,10 @@ struct-refusals-check:
 osal-xlat-smoke:
 	@chmod +x tests/scripts/run_osal_xlat_smoke.sh
 	@tests/scripts/run_osal_xlat_smoke.sh
+
+osal-printf-smoke:
+	@chmod +x tests/scripts/run_osal_printf_smoke.sh
+	@tests/scripts/run_osal_printf_smoke.sh
 
 cfs-xlat-smoke:
 	@chmod +x tests/scripts/run_cfs_xlat_smoke.sh
