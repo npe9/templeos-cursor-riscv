@@ -2851,6 +2851,35 @@ static void EnsureLvalueAddressPushed(Compiler *cc) {
   }
 }
 
+/* The width a COMPOUND assignment (`x += y`, `x *= y`, ...) must load and store.
+ *
+ * The plain `=` path has computed this for a long time; the compound paths did not, and passed
+ * RT_I64 unconditionally. That made every `field -= n` on a narrow struct member a 64-BIT
+ * read-modify-write spanning the NEXT field. It usually looked correct: `a += 5` only disturbs
+ * the neighbour when the addition carries out of bit 31. It is wrong whenever it does --
+ * `a -= 3` with a == 0 borrows and decrements the next field, and `a *= 2` multiplies the
+ * neighbour too.
+ *
+ * Found by the cFS OSAL timer translation: OS_TimeBase_CallbackThread does
+ * `timecb->wait_time -= tick_time` on an int32 field whose neighbour is `interval_time`, and a
+ * one-shot timer (interval 0) fired three times instead of once because the borrow turned its
+ * interval negative. tests/exec/cases/e_compound_assign_width.hc pins it.
+ *
+ * Same derivation as the `=` path, deliberately: read the width off the IC_DEREF that produced
+ * the lvalue, and fall back to a bare global's own width only when the deref carries no
+ * explicit pointed-to type. */
+static U8 CompoundStoreType(Compiler *cc) {
+  CIntermediateCode *lval_ic = cc->ic_tail;
+  U8 store_type = RT_I64;
+  if (lval_ic && lval_ic->ic_code == IC_DEREF) {
+    store_type = lval_ic->arg1_type_pointed_to;
+    if ((store_type == 0 || store_type == RT_I64) && cc->last_global_var)
+      store_type = cc->last_global_var->raw_type ? cc->last_global_var->raw_type : RT_I64;
+  }
+  if (!store_type) store_type = RT_I64;
+  return store_type;
+}
+
 static bool ParseAssignment(Compiler *cc) {
   
   // Parse left-hand side
@@ -2936,72 +2965,88 @@ static bool ParseAssignment(Compiler *cc) {
   if (cc->lex.token == TK_SHL_EQU || cc->lex.token == TK_SHR_EQU || cc->lex.token == TK_MOD_EQU) {
     int op = cc->lex.token == TK_SHL_EQU ? IC_SHL_EQU : cc->lex.token == TK_SHR_EQU ? IC_SHR_EQU : IC_MOD_EQU;
     LexNext(cc);
+    U8 cw = CompoundStoreType(cc);
     EnsureLvalueAddressPushed(cc);
     if (!ParseAssignment(cc)) return false;
     ICAdd(cc, op, 0, RT_I64);
+    cc->ic_tail->arg1_type_pointed_to = cw;
     return true;
   }
   if (cc->lex.token == TK_ADD_EQU) {
     bool f64 = (cc->last_expr_type == RT_F64);
     LexNext(cc);
+    U8 cw = CompoundStoreType(cc);
     EnsureLvalueAddressPushed(cc);
     if (!ParseAssignment(cc)) return false;
     if (f64) { if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64); ICAdd(cc, IC_FADD_EQU, 0, RT_F64); cc->last_expr_type = RT_F64; }
     else ICAdd(cc, IC_ADD_EQU, 0, RT_I64);
+    cc->ic_tail->arg1_type_pointed_to = cw;
     return true;
   }
   
   if (cc->lex.token == TK_SUB_EQU) {
     bool f64 = (cc->last_expr_type == RT_F64);
     LexNext(cc);
+    U8 cw = CompoundStoreType(cc);
     EnsureLvalueAddressPushed(cc);
     if (!ParseAssignment(cc)) return false;
     if (f64) { if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64); ICAdd(cc, IC_FSUB_EQU, 0, RT_F64); cc->last_expr_type = RT_F64; }
     else ICAdd(cc, IC_SUB_EQU, 0, RT_I64);
+    cc->ic_tail->arg1_type_pointed_to = cw;
     return true;
   }
   
   if (cc->lex.token == TK_MUL_EQU) {
     bool f64 = (cc->last_expr_type == RT_F64);
     LexNext(cc);
+    U8 cw = CompoundStoreType(cc);
     EnsureLvalueAddressPushed(cc);
     if (!ParseAssignment(cc)) return false;
     if (f64) { if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64); ICAdd(cc, IC_FMUL_EQU, 0, RT_F64); cc->last_expr_type = RT_F64; return true; }
     ICAdd(cc, IC_MUL_EQU, 0, RT_I64);
+    cc->ic_tail->arg1_type_pointed_to = cw;
     return true;
   }
   
   if (cc->lex.token == TK_DIV_EQU) {
     bool f64 = (cc->last_expr_type == RT_F64);
     LexNext(cc);
+    U8 cw = CompoundStoreType(cc);
     EnsureLvalueAddressPushed(cc);
     if (!ParseAssignment(cc)) return false;
     if (f64) { if (cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64); ICAdd(cc, IC_FDIV_EQU, 0, RT_F64); cc->last_expr_type = RT_F64; return true; }
     ICAdd(cc, IC_DIV_EQU, 0, RT_I64);
+    cc->ic_tail->arg1_type_pointed_to = cw;
     return true;
   }
   
   if (cc->lex.token == TK_AND_EQU) {
     LexNext(cc);
+    U8 cw = CompoundStoreType(cc);
     EnsureLvalueAddressPushed(cc);
     if (!ParseAssignment(cc)) return false;
     ICAdd(cc, IC_AND_EQU, 0, RT_I64);
+    cc->ic_tail->arg1_type_pointed_to = cw;
     return true;
   }
   
   if (cc->lex.token == TK_OR_EQU) {
     LexNext(cc);
+    U8 cw = CompoundStoreType(cc);
     EnsureLvalueAddressPushed(cc);
     if (!ParseAssignment(cc)) return false;
     ICAdd(cc, IC_OR_EQU, 0, RT_I64);
+    cc->ic_tail->arg1_type_pointed_to = cw;
     return true;
   }
   
   if (cc->lex.token == TK_XOR_EQU) {
     LexNext(cc);
+    U8 cw = CompoundStoreType(cc);
     EnsureLvalueAddressPushed(cc);
     if (!ParseAssignment(cc)) return false;
     ICAdd(cc, IC_XOR_EQU, 0, RT_I64);
+    cc->ic_tail->arg1_type_pointed_to = cw;
     return true;
   }
   

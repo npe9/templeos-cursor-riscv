@@ -90,3 +90,31 @@ downstream.
 
 **Every `OS_global_*_table` in this port is such a macro.** They are all used through a local
 base pointer for this reason, and any new one must be too.
+
+## 5. Compound assignment to a narrow struct field — FIXED
+
+`x op= y` used to be emitted as a 64-bit read-modify-write whatever the destination's width.
+On a 4-byte field that reads and writes 8 bytes, so the field NEXT to it takes part in the
+arithmetic.
+
+It hid well, because it only shows when the operation crosses bit 31:
+
+| written | destination | neighbour |
+|---|---|---|
+| `a += 5` (a=10, b=20) | 15 | 20 — looks correct, the addend does not carry |
+| `a *= 2` (a=10, b=20) | 20 | **40** — multiplied too |
+| `a -= 3` (a=0, b=7) | -3 | **6** — the borrow came out of it |
+
+The plain `=` path had computed the real store width for a long time (see the comment in
+`ParseAssignment` about MMIO and the SiFive test finisher); every compound path passed
+`RT_I64` instead. The fix gives them the same derivation, in `CompoundStoreType()`, and
+narrows the load and the store in `EmitCompoundAssign` while leaving the arithmetic 64-bit.
+
+Found by the cFS OSAL timer translation rather than by reasoning: `OS_TimeBase_CallbackThread`
+does `timecb->wait_time -= tick_time` on an `int32` whose neighbour is `interval_time`, so a
+ONE-SHOT timer — the one whose `interval_time` is 0 — had its interval borrowed to -1 and
+fired on every later tick instead of once. The differential gate reported it as `t2` firing 3
+times where NASA's own C fired it once.
+
+Pinned by `tests/exec/cases/e_compound_assign_width.hc`, which returns 20070903 with the fix
+and 40060803 without it.

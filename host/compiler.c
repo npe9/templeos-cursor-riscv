@@ -865,7 +865,13 @@ static void EmitUnaryOp(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth,
 // Compound assignment: stack holds [..., lvalue address, rhs value] (parser pushes the address,
 // see EnsureLvalueAddressPushed). Load, apply `rtype` (R-type opcode with rd/rs1/rs2 = 0), store,
 // and leave the new value in a0 and on the stack.
-static void EmitCompoundAssign(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, U32 rtype) {
+/* pty is the WIDTH of the destination. It used to be implicit (always 64-bit), which made a
+ * compound assignment to a narrow struct field a read-modify-write over the neighbouring field
+ * as well -- see CompoundStoreType() in host/parser.c for how that was found. The arithmetic
+ * stays 64-bit; only the load and the store narrow. */
+static void EmitCompoundAssign(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack_depth, U32 rtype,
+                               U8 pty) {
+  if (!pty) pty = RT_I64;
   if (*stack_depth >= 2) {
     RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T1 << 7) | (g_wd3<<12) | (RV_SP << 15));            // ld t1, 0(sp)
     RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));            // addi sp, sp, 8
@@ -876,9 +882,9 @@ static void EmitCompoundAssign(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack
   RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T0 << 7) | (g_wd3<<12) | (RV_SP << 15));              // ld t0, 0(sp)
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (8 << 20));              // addi sp, sp, 8
   if (*stack_depth > 0) (*stack_depth)--;
-  RVU32(pass_buf, pass_ptr, rip, 0x03 | (RV_T2 << 7) | (g_wd3<<12) | (RV_T0 << 15));              // ld t2, 0(t0)
+  RVU32(pass_buf, pass_ptr, rip, LoadRdFromRs1(pty, RV_T2, RV_T0));                             // l{b,h,w,d} t2, 0(t0)
   RVU32(pass_buf, pass_ptr, rip, rtype | (RV_T2 << 7) | (RV_T2 << 15) | (RV_T1 << 20));         // op t2, t2, t1
-  RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_T0 << 15) | (RV_T2 << 20));             // sd t2, 0(t0)
+  RVU32(pass_buf, pass_ptr, rip, StoreRs2ToRs1(pty, RV_T0, RV_T2));                             // s{b,h,w,d} t2, 0(t0)
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_A0 << 7) | (RV_T2 << 15));                          // mv a0, t2
   RVU32(pass_buf, pass_ptr, rip, 0x13 | (RV_SP << 7) | (RV_SP << 15) | (0xFF8 << 20));          // addi sp, sp, -8
   RVU32(pass_buf, pass_ptr, rip, 0x23 | (g_wd3<<12) | (RV_SP << 15) | (RV_A0 << 20));             // sd a0, 0(sp)
@@ -2519,16 +2525,16 @@ static void EmitOneIC(Compiler *cc, CIntermediateCode *ic,
         RVU32(buf, pptr, prip, 0x23 | (g_wd3<<12) | (RV_SP<<15) | (RV_A0<<20));
         (*psd)++;
         break;
-      case IC_ADD_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_ADD); break;
-      case IC_SUB_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_SUB); break;
-      case IC_MUL_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_MUL); break;
-      case IC_DIV_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_DIV); break;
-      case IC_AND_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_AND); break;
-      case IC_OR_EQU:  EmitCompoundAssign(buf, pptr, prip, psd, RV_R_OR);  break;
-      case IC_XOR_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_XOR); break;
-      case IC_SHL_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_SLL); break;
-      case IC_SHR_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_SRA); break;
-      case IC_MOD_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_REM); break;
+      case IC_ADD_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_ADD, ic->arg1_type_pointed_to); break;
+      case IC_SUB_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_SUB, ic->arg1_type_pointed_to); break;
+      case IC_MUL_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_MUL, ic->arg1_type_pointed_to); break;
+      case IC_DIV_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_DIV, ic->arg1_type_pointed_to); break;
+      case IC_AND_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_AND, ic->arg1_type_pointed_to); break;
+      case IC_OR_EQU:  EmitCompoundAssign(buf, pptr, prip, psd, RV_R_OR, ic->arg1_type_pointed_to);  break;
+      case IC_XOR_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_XOR, ic->arg1_type_pointed_to); break;
+      case IC_SHL_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_SLL, ic->arg1_type_pointed_to); break;
+      case IC_SHR_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_SRA, ic->arg1_type_pointed_to); break;
+      case IC_MOD_EQU: EmitCompoundAssign(buf, pptr, prip, psd, RV_R_REM, ic->arg1_type_pointed_to); break;
       case IC_FADD_EQU: case IC_FSUB_EQU: case IC_FMUL_EQU: case IC_FDIV_EQU: EmitF64CompoundAssign(buf, pptr, prip, psd, ic->ic_code); break;
       case IC_PAUSE:   RVU32(buf, pptr, prip, 0x13); break;
       case IC_FN_ADDR:

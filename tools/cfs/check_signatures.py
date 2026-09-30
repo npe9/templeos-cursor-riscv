@@ -51,6 +51,9 @@ C_TYPES = [(r'\bconst\b', ' '),
            # pointed at cFE, where CFE_ResourceId_ToIndex takes one.
            (r'\buint32\s*\*', ' PTRNUM '), (r'\buint16\s*\*', ' PTRNUM '),
            (r'\bint32\s*\*', ' PTRNUM '), (r'\bbool\s*\*', ' PTRNUM '),
+           # Plain `int *`, not int32 * -- OS_Milli2Ticks takes one, and `int` is
+           # 32-bit on this target so the translation's I32 * is the same thing.
+           (r'\bint\s*\*', ' PTRNUM '),
            # cFE's own opaque types, by the same logic as OSAL's.
            (r'\bCFE_MSG_Message_t\s*\*', ' PTRB '),
            # cFE's sizes and enums. The translation spells all of these I64, so the C maps to
@@ -117,7 +120,7 @@ DEVIATIONS = {
 KEYWORDS = {'if', 'for', 'while', 'switch', 'return', 'else', 'do', 'sizeof'}
 
 FN_TYPEDEF = re.compile(r'\b(?:(?:OS|CFE)_\w*(?:Callback|MatchFunc|CheckFunc|IncrementFunc|Func)\w*_t'
-                        r'|osal_task_entry)\b')
+                        r'|osal_task_entry|OS_TimerSync_t)\b')
 FN_SPELLED = re.compile(r'\(\s*\*+\s*\w*\s*\)\s*\([^)]*\)')
 
 # Any type spelling, C or HolyC. The old version listed the return types one at a time and

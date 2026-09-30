@@ -26,6 +26,8 @@
 #include "os-shared-dir.h"
 #include "os-shared-select.h"
 #include "os-shared-module.h"
+#include "os-shared-timebase.h"
+#include "os-shared-time.h"
 #include "osapi-task-affinity.h"
 #include "os-shared-countsem.h"
 #include "os-shared-mutex.h"
@@ -42,6 +44,8 @@
 #include "os-shared-dir.h"
 #include "os-shared-select.h"
 #include "os-shared-module.h"
+#include "os-shared-timebase.h"
+#include "os-shared-time.h"
 #include "osapi-task-affinity.h"
 
 /* The backend's error-name table. A bare-metal target contributes no OS-specific errors, so
@@ -173,6 +177,127 @@ static uint32 stub_cs_options;
 static int    stub_cs_gives;
 static int    stub_cs_takes;
 static uint32 stub_cs_last_msecs;
+
+/* --- osapi-timebase.c / osapi-time.c backend ---------------------------------------------
+ * OS_TaskRegister_Impl is given real meaning here: the callback thread registers itself with
+ * the timebase id, and a real OS then makes OS_TaskGetId_Impl return that id from inside the
+ * thread. Emulating that is what lets the transcript prove the DEADLOCK GUARD -- every timer
+ * API call checks OS_ObjectIdToType_Impl(OS_TaskGetId_Impl()) and refuses if it is a TIMEBASE.
+ */
+static int    stub_tb_creates, stub_tb_deletes, stub_tb_sets, stub_tb_infos;
+static int    stub_tb_locks, stub_tb_unlocks, stub_tb_syncs, stub_tb_delays;
+static uint32 stub_tb_last_start, stub_tb_last_interval;
+static int    stub_cb_fired[8];
+static int    stub_cb_total;
+static int    stub_tb_from_cb_rc;      /* what a timer call from inside a callback returned */
+static osal_id_t stub_tb_running;      /* the timebase whose thread is running */
+static int    stub_sync_script[12];    /* tick counts the sync function hands back */
+static int    stub_sync_n, stub_sync_len;
+
+int32 OS_TimeBaseCreate_Impl(const OS_object_token_t *token) { ++stub_tb_creates; return OS_SUCCESS; }
+int32 OS_TimeBaseDelete_Impl(const OS_object_token_t *token) { ++stub_tb_deletes; return OS_SUCCESS; }
+int32 OS_TimeBaseSet_Impl(const OS_object_token_t *token, uint32 start_time, uint32 interval_time)
+{
+    ++stub_tb_sets;
+    stub_tb_last_start    = start_time;
+    stub_tb_last_interval = interval_time;
+    return OS_SUCCESS;
+}
+int32 OS_TimeBaseGetInfo_Impl(const OS_object_token_t *token, OS_timebase_prop_t *p)
+{
+    ++stub_tb_infos;
+    return OS_SUCCESS;
+}
+void OS_TimeBaseLock_Impl(const OS_object_token_t *token) { ++stub_tb_locks; }
+void OS_TimeBaseUnlock_Impl(const OS_object_token_t *token) { ++stub_tb_unlocks; }
+
+/* The scripted tick source. It also ENDS the callback thread, by clearing the global record's
+ * active_id -- which is precisely the condition the thread checks to notice it was deleted. */
+static uint32 stub_sync_fn(osal_id_t tbid)
+{
+    osal_index_t idx;
+    uint32       ticks;
+
+    ++stub_tb_syncs;
+    if (stub_sync_n >= stub_sync_len)
+    {
+        if (OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_TIMEBASE, tbid, &idx) == OS_SUCCESS)
+        {
+            OS_global_timebase_table[idx].active_id = OS_OBJECT_ID_UNDEFINED;
+        }
+        return 1;
+    }
+    ticks = (uint32)stub_sync_script[stub_sync_n];
+    ++stub_sync_n;
+
+    /* On the first tick, try to use the timer API from inside this thread. A real application
+     * must not, and the shared layer is supposed to refuse -- this records what it returned. */
+    if (stub_sync_n == 1)
+    {
+        osal_id_t dummy;
+        stub_tb_from_cb_rc = OS_TimerGetIdByName(&dummy, "t1");
+    }
+    return ticks;
+}
+
+/* A no-argument OS_TimerCallback_t, for OS_TimerCreate. NASA's OS_Timer_NoArgCallback is
+ * static to osapi-time.c, so a caller supplies its own. */
+static int stub_noarg_fired;
+static void tcb_noarg(osal_id_t objid) { ++stub_noarg_fired; }
+
+static void cb_mark(osal_id_t objid, void *arg)
+{
+    osal_index_t idx;
+    ++stub_cb_total;
+    if (getenv("TRACE_CB"))
+    {
+        osal_index_t j;
+        OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_TIMECB, objid, &j);
+        printf("    [fire %d]\n", (int)j);
+    }
+    if (OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_TIMECB, objid, &idx) == OS_SUCCESS && idx < 8)
+    {
+        ++stub_cb_fired[idx];
+    }
+}
+
+/* Walks the callback ring from first_cb and prints the indices in order, stopping if it does
+ * not come back round -- a broken splice shows up as a short walk or a wrong order rather than
+ * as a hang. */
+static void ring_dump(const char *tag, osal_id_t tb_id)
+{
+    osal_index_t tbidx, idx;
+    osal_id_t    cur;
+    int          steps;
+
+    if (OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_TIMEBASE, tb_id, &tbidx) != OS_SUCCESS)
+    {
+        printf("%s <no timebase>\n", tag);
+        return;
+    }
+    cur = OS_timebase_table[tbidx].first_cb;
+    printf("%s first=", tag);
+    if (!OS_ObjectIdDefined(cur))
+    {
+        printf("none\n");
+        return;
+    }
+    for (steps = 0; steps < 8; ++steps)
+    {
+        if (OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_TIMECB, cur, &idx) != OS_SUCCESS)
+        {
+            printf(" BAD");
+            break;
+        }
+        printf("%s%d", steps ? " -> " : "", (int)idx);
+        cur = OS_timecb_table[idx].next_cb;
+        if (OS_ObjectIdEqual(cur, OS_timebase_table[tbidx].first_cb))
+        {
+            break;
+        }
+    }
+    printf(" (%d)\n", steps + 1);
+}
 
 /* --- osapi-module.c backend ---------------------------------------------------------------
  * OS_SymbolLookup_Impl returns a DISTINCT error so the transcript can show which of the two
@@ -517,7 +642,15 @@ int32 OS_TaskSetPriority_Impl(const OS_object_token_t *token, osal_priority_t p)
 osal_id_t OS_TaskGetId_Impl(void) { return stub_t_current; }
 int32 OS_TaskGetInfo_Impl(const OS_object_token_t *token, OS_task_prop_t *p) { return OS_SUCCESS; }
 int32 OS_TaskMatch_Impl(const OS_object_token_t *token) { ++stub_t_matches; return OS_SUCCESS; }
-int32 OS_TaskRegister_Impl(osal_id_t id) { ++stub_t_registers; return OS_SUCCESS; }
+int32 OS_TaskRegister_Impl(osal_id_t id)
+{
+    ++stub_t_registers;
+    /* A real OS makes OS_TaskGetId_Impl() return this id from inside the registering thread.
+     * Emulating that is what lets the timer deadlock guard be exercised: the callback thread
+     * registers as the TIMEBASE, so any timer API call from inside it must be refused. */
+    stub_t_current = id;
+    return OS_SUCCESS;
+}
 int32 OS_TaskValidateSystemData_Impl(const void *sysdata, size_t sysdata_size)
 {
     /* Only the backend knows what a system task handle looks like, so the size rule is the
@@ -1545,6 +1678,123 @@ int main(void)
             printf("m_unload  rc=%d n=%d\n", (int)OS_ModuleUnload(mid), stub_m_unloads);
             printf("m_unload2 rc=%d\n", (int)OS_ModuleUnload(mid));
             (void)mid2;
+        }
+
+        /* --- osapi-timebase.c and osapi-time.c ---------------------------------------------
+         * These two are one subject: osapi-time.c builds a CIRCULAR DOUBLY LINKED RING of
+         * timers per time base, and osapi-timebase.c's callback thread walks it. The ring is
+         * dumped after each change, because a wrong splice shows up as a short walk or a wrong
+         * order, not as an error code.
+         *
+         * The callback thread is a `while (1)`. It is drivable because the SYNC FUNCTION is
+         * ours: it hands back a scripted tick count and, when the script runs out, clears the
+         * global record's active_id -- which is exactly the condition the thread checks to
+         * notice it was deleted, and its only way out.
+         */
+        {
+            osal_id_t          tb, t1, t2, t3, dedicated;
+            OS_timebase_prop_t tbprop;
+            OS_timer_prop_t    tprop;
+            uint32             accuracy, freerun;
+            osal_index_t       i1, i2, i3;
+            int                m2t;
+
+            OS_TimeBaseAPI_Init();
+            OS_TimerCbAPI_Init();
+            OS_SharedGlobalVars.MicroSecPerTick = 10000;
+            OS_SharedGlobalVars.TicksPerSecond  = 100;
+
+            /* accuracy depends on whether a sync function was supplied. */
+            printf("tb_ext    rc=%d\n", (int)OS_TimeBaseCreate(&tb, "tbExt", stub_sync_fn));
+            printf("tb_info   rc=%d acc=%lu n=%d\n", (int)OS_TimeBaseGetInfo(tb, &tbprop),
+                   (unsigned long)tbprop.accuracy, stub_tb_infos);
+            printf("tb_badnm  rc=%d\n", (int)OS_TimeBaseCreate(&tb, NULL, NULL));
+            printf("tb_set    rc=%d start=%lu int=%lu\n", (int)OS_TimeBaseSet(tb, 100, 200),
+                   (unsigned long)stub_tb_last_start, (unsigned long)stub_tb_last_interval);
+            printf("tb_setbig rc=%d\n", (int)OS_TimeBaseSet(tb, 1000000000, 200));
+            printf("tb_info2  rc=%d int=%lu\n", (int)OS_TimeBaseGetInfo(tb, &tbprop),
+                   (unsigned long)tbprop.nominal_interval_time);
+
+            /* Three timers on one time base: the ring order is the observable. */
+            printf("t_add1    rc=%d\n", (int)OS_TimerAdd(&t1, "t1", tb, cb_mark, NULL));
+            ring_dump("ring1   ", tb);
+            printf("t_add2    rc=%d\n", (int)OS_TimerAdd(&t2, "t2", tb, cb_mark, NULL));
+            ring_dump("ring2   ", tb);
+            printf("t_add3    rc=%d\n", (int)OS_TimerAdd(&t3, "t3", tb, cb_mark, NULL));
+            ring_dump("ring3   ", tb);
+            OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_TIMECB, t1, &i1);
+            OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_TIMECB, t2, &i2);
+            OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_TIMECB, t3, &i3);
+            printf("t_idx     %d %d %d\n", (int)i1, (int)i2, (int)i3);
+
+            /* t1 repeats every 4 ticks; t2 is ONE-SHOT at 5 (interval 0); t3 repeats every 2. */
+            printf("t_set1    rc=%d\n", (int)OS_TimerSet(t1, 4, 4));
+            printf("t_set2    rc=%d\n", (int)OS_TimerSet(t2, 5, 0));
+            printf("t_set3    rc=%d\n", (int)OS_TimerSet(t3, 2, 2));
+            printf("t_setzero rc=%d\n", (int)OS_TimerSet(t1, 0, 0));
+            printf("t_setbig  rc=%d\n", (int)OS_TimerSet(t1, 0x80000000u, 0));
+
+            /* Run the thread: four ticks of 3, then the script ends and it exits. */
+            stub_sync_script[0] = 3;
+            stub_sync_script[1] = 3;
+            stub_sync_script[2] = 3;
+            stub_sync_script[3] = 3;
+            stub_sync_len       = 4;
+            stub_sync_n         = 0;
+            stub_tb_running     = tb;
+            OS_TimeBase_CallbackThread(tb);
+            printf("cbt_sync  n=%d locks=%d unlocks=%d\n", stub_tb_syncs, stub_tb_locks,
+                   stub_tb_unlocks);
+            printf("cbt_fired total=%d t1=%d t2=%d t3=%d\n", stub_cb_total,
+                   stub_cb_fired[i1], stub_cb_fired[i2], stub_cb_fired[i3]);
+            /* The per-timer state after the run, which localises any disagreement in the
+             * wait_time arithmetic to a specific timer rather than to a total. */
+            printf("cbt_t1    wait=%d int=%d backlog=%lu\n", (int)OS_timecb_table[i1].wait_time,
+                   (int)OS_timecb_table[i1].interval_time,
+                   (unsigned long)OS_timecb_table[i1].backlog_resets);
+            printf("cbt_t2    wait=%d int=%d backlog=%lu\n", (int)OS_timecb_table[i2].wait_time,
+                   (int)OS_timecb_table[i2].interval_time,
+                   (unsigned long)OS_timecb_table[i2].backlog_resets);
+            printf("cbt_t3    wait=%d int=%d backlog=%lu\n", (int)OS_timecb_table[i3].wait_time,
+                   (int)OS_timecb_table[i3].interval_time,
+                   (unsigned long)OS_timecb_table[i3].backlog_resets);
+            /* The deadlock guard: a timer call from inside the thread must be refused. */
+            printf("cbt_guard rc=%d\n", stub_tb_from_cb_rc);
+            /* Initialised, because this call FAILS (the sync function cleared active_id) and
+             * therefore never writes *freerun_val -- printing it uninitialised compared two
+             * different stacks, not two implementations. */
+            freerun = 0xEE;
+            printf("cbt_free  rc=%d val=%lu\n", (int)OS_TimeBaseGetFreeRun(tb, &freerun),
+                   (unsigned long)freerun);
+            stub_t_current = OS_ObjectIdFromInteger(0x10001);
+
+            /* Deleting the MIDDLE of the ring must re-link the two either side. */
+            printf("t_del2    rc=%d\n", (int)OS_TimerDelete(t2));
+            ring_dump("ring_d2 ", tb);
+            printf("t_del1    rc=%d\n", (int)OS_TimerDelete(t1));
+            ring_dump("ring_d1 ", tb);
+            printf("t_del3    rc=%d\n", (int)OS_TimerDelete(t3));
+            ring_dump("ring_d3 ", tb);
+
+            /* OS_TimerCreate makes its OWN time base and deleting the timer deletes it too. */
+            printf("t_create  rc=%d acc=%lu tbc=%d\n",
+                   (int)OS_TimerCreate(&dedicated, "tDed", &accuracy, tcb_noarg),
+                   (unsigned long)accuracy, stub_tb_creates);
+            printf("t_getinfo rc=%d [%s] acc=%lu\n", (int)OS_TimerGetInfo(dedicated, &tprop),
+                   tprop.name, (unsigned long)tprop.accuracy);
+            printf("t_byname  rc=%d\n", (int)OS_TimerGetIdByName(&t1, "tDed"));
+            printf("t_deldedi rc=%d tbd=%d\n", (int)OS_TimerDelete(dedicated), stub_tb_deletes);
+            printf("tb_del    rc=%d tbd=%d\n", (int)OS_TimeBaseDelete(tb), stub_tb_deletes);
+
+            printf("m2t_ok    rc=%d ticks=%d\n", (int)OS_Milli2Ticks(1000, &m2t), m2t);
+            printf("m2t_round rc=%d ticks=%d\n", (int)OS_Milli2Ticks(1, &m2t), m2t);
+            /* The overflow branch CANNOT be reached at 100 ticks/sec: the largest possible
+             * result is 0xFFFFFFFF * 100 / 1000 = 429,496,730, well under INT_MAX. Raising the
+             * tick rate for one call is what makes that branch reachable at all -- otherwise
+             * this line would be a test that can never fail. */
+            OS_SharedGlobalVars.TicksPerSecond = 1000000;
+            printf("m2t_over  rc=%d ticks=%d\n", (int)OS_Milli2Ticks(0xFFFFFFFFu, &m2t), m2t);
+            OS_SharedGlobalVars.TicksPerSecond = 100;
         }
 
     }
