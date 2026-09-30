@@ -77,6 +77,10 @@ C_TYPES = [(r'\bconst\b', ' '),
            # osal_*_t rule below, which would otherwise call it unsigned. That masked a real
            # find: OS_StatusToString was the one place an int32 had been translated as I64.
            (r'\bosal_status_t\b', ' SNUM '),
+           # osal_offset_t is `typedef long` -- a SIGNED 64-bit scalar, which is the I64
+           # the translation uses. The generic osal_*_t rule below would call it a plain
+           # unsigned NUM, so like osal_status_t it has to be matched first.
+           (r'\bosal_offset_t\b', ' SZ '),
            (r'\bosal_\w+_t\b', ' NUM '),
            # An ENUM parameter. HolyC has no enum, so the translation spells these I64 and this
            # maps the C to the same token. That is a deliberate representation choice, not a

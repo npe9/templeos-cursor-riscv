@@ -22,6 +22,7 @@
 #include "os-shared-shell.h"
 #include "os-shared-task-affinity.h"
 #include "os-shared-filesys.h"
+#include "os-shared-file.h"
 #include "osapi-task-affinity.h"
 #include "os-shared-countsem.h"
 #include "os-shared-mutex.h"
@@ -34,6 +35,7 @@
 #include "os-shared-shell.h"
 #include "os-shared-task-affinity.h"
 #include "os-shared-filesys.h"
+#include "os-shared-file.h"
 #include "osapi-task-affinity.h"
 
 /* The backend's error-name table. A bare-metal target contributes no OS-specific errors, so
@@ -165,6 +167,86 @@ static uint32 stub_cs_options;
 static int    stub_cs_gives;
 static int    stub_cs_takes;
 static uint32 stub_cs_last_msecs;
+
+/* --- osapi-file.c backend ----------------------------------------------------------------
+ * A simulated file, because OS_cp is a READ/WRITE LOOP and the only way to test it is to make
+ * reads and writes behave like real ones. Two details are deliberate:
+ *
+ *   GenericWrite_Impl writes AT MOST stub_f_wrchunk bytes and returns that count, which is
+ *   what a real write does under pressure. OS_cp has an inner `while (wr_total < rd_size)`
+ *   loop for exactly this, and with a chunk smaller than a block that loop is the only thing
+ *   standing between a correct copy and silent data loss.
+ *
+ *   GenericRead_Impl returns short at end of file and then 0, which is what terminates OS_cp's
+ *   outer loop.
+ */
+#define STUB_F_SRC_LEN 1000
+static uint8 stub_f_src[STUB_F_SRC_LEN];
+static uint8 stub_f_dst[STUB_F_SRC_LEN * 2];
+static size_t stub_f_rdpos, stub_f_wrpos;
+static size_t stub_f_wrchunk = 100;
+static int    stub_f_opens, stub_f_closes, stub_f_removes, stub_f_renames, stub_f_chmods;
+static int    stub_f_stats, stub_f_seeks, stub_f_allocs, stub_f_truncs;
+static int32  stub_f_open_rc = OS_SUCCESS;
+static char   stub_f_lastpath[OS_MAX_LOCAL_PATH_LEN];
+
+int32 OS_FileOpen_Impl(const OS_object_token_t *token, const char *local_path, int32 flags,
+                       int32 access_mode)
+{
+    ++stub_f_opens;
+    strncpy(stub_f_lastpath, local_path, sizeof(stub_f_lastpath) - 1);
+    return stub_f_open_rc;
+}
+int32 OS_GenericClose_Impl(const OS_object_token_t *token) { ++stub_f_closes; return OS_SUCCESS; }
+int32 OS_GenericRead_Impl(const OS_object_token_t *token, void *buffer, size_t nbytes,
+                          OS_time_t abstime)
+{
+    size_t n = STUB_F_SRC_LEN - stub_f_rdpos;
+    if (n > nbytes)
+    {
+        n = nbytes;
+    }
+    memcpy(buffer, &stub_f_src[stub_f_rdpos], n);
+    stub_f_rdpos += n;
+    return (int32)n;
+}
+int32 OS_GenericWrite_Impl(const OS_object_token_t *token, const void *buffer, size_t nbytes,
+                           OS_time_t abstime)
+{
+    size_t n = nbytes;
+    if (n > stub_f_wrchunk)
+    {
+        n = stub_f_wrchunk;
+    }
+    memcpy(&stub_f_dst[stub_f_wrpos], buffer, n);
+    stub_f_wrpos += n;
+    return (int32)n;
+}
+int32 OS_GenericSeek_Impl(const OS_object_token_t *token, osal_offset_t offset, uint32 whence)
+{
+    ++stub_f_seeks;
+    return (int32)offset;
+}
+int32 OS_FileChmod_Impl(const char *local_path, uint32 access_mode) { ++stub_f_chmods; return OS_SUCCESS; }
+int32 OS_FileStat_Impl(const char *local_path, os_fstat_t *filestat)
+{
+    ++stub_f_stats;
+    filestat->FileModeBits = OS_FILESTAT_MODE_READ | OS_FILESTAT_MODE_WRITE;
+    filestat->FileSize     = 4321;
+    return OS_SUCCESS;
+}
+int32 OS_FileRemove_Impl(const char *local_path) { ++stub_f_removes; return OS_SUCCESS; }
+int32 OS_FileRename_Impl(const char *old_path, const char *new_path) { ++stub_f_renames; return OS_SUCCESS; }
+int32 OS_FileAllocate_Impl(const OS_object_token_t *token, osal_offset_t offset, osal_offset_t length)
+{
+    ++stub_f_allocs;
+    return OS_SUCCESS;
+}
+int32 OS_FileTruncate_Impl(const OS_object_token_t *token, osal_offset_t length)
+{
+    ++stub_f_truncs;
+    return OS_SUCCESS;
+}
 
 /* --- osapi-filesys.c backend -------------------------------------------------------------
  * A real backend is what gives a volume its host-side mount point, so StartVolume_Impl does
@@ -1104,6 +1186,89 @@ int main(void)
             printf("tp_after  rc=%d\n", (int)OS_TranslatePath("/mnt/file.txt", local));
             printf("fs_rmfs   rc=%d\n", (int)OS_rmfs("/dev/ram0"));
             printf("fs_rmfs2  rc=%d\n", (int)OS_rmfs("/dev/ram0"));
+        }
+
+        /* --- osapi-file.c -----------------------------------------------------------------
+         * OS_cp is the centrepiece: a read/write loop where the backend returns SHORT writes,
+         * so the inner `while (wr_total < rd_size)` retry loop is what stands between a
+         * correct copy and silent data loss. 1000 bytes, 512-byte blocks, 100-byte writes --
+         * so both loops run several times and neither divides evenly into the other.
+         *
+         * This section also makes OS_ShellOutputToFile's REFCOUNT lock mode reachable for the
+         * first time: until osapi-file.c was translated nothing could allocate a stream, so
+         * that call only ever hit its bad-id path.
+         */
+        {
+            osal_id_t      fd, fd2;
+            OS_file_prop_t fprop;
+            os_fstat_t     fstat;
+            int            i;
+            long           sum;
+
+            for (i = 0; i < STUB_F_SRC_LEN; ++i) stub_f_src[i] = (uint8)(i * 7 + 3);
+            OS_FileAPI_Init();
+            printf("f_init    rc=%d\n", (int)OS_FileAPI_Init());
+
+            /* /mnt is not mounted at this point in the transcript -- fs_unmnt ran above -- so
+             * remount it, otherwise every path here fails translation instead of testing the
+             * file layer. */
+            printf("f_remount rc=%d\n", (int)OS_mount("/dev/ram1", "/mnt"));
+
+            printf("f_badmode rc=%d\n", (int)OS_OpenCreate(&fd, "/mnt/a.txt", OS_FILE_FLAG_NONE, 99));
+            printf("f_nullfd  rc=%d\n", (int)OS_OpenCreate(NULL, "/mnt/a.txt", OS_FILE_FLAG_NONE, OS_READ_ONLY));
+            printf("f_badpath rc=%d\n", (int)OS_OpenCreate(&fd, "relative", OS_FILE_FLAG_NONE, OS_READ_ONLY));
+            printf("f_open    rc=%d opens=%d [%s]\n",
+                   (int)OS_OpenCreate(&fd, "/mnt/a.txt", OS_FILE_FLAG_NONE, OS_READ_ONLY),
+                   stub_f_opens, stub_f_lastpath);
+            printf("f_fdinfo  rc=%d [%s] valid=%d\n", (int)OS_FDGetInfo(fd, &fprop), fprop.Path,
+                   (int)fprop.IsValid);
+            printf("f_opencheck  found=%d missing=%d\n", (int)OS_FileOpenCheck("/mnt/a.txt"),
+                   (int)OS_FileOpenCheck("/mnt/zz.txt"));
+
+            /* The shell now has a real stream to write to: REFCOUNT is finally exercised. */
+            printf("f_shell   rc=%d n=%d\n", (int)OS_ShellOutputToFile("ls", fd), stub_sh_calls);
+
+            printf("f_seek    rc=%d n=%d\n", (int)OS_lseek(fd, 1234, 0), stub_f_seeks);
+            printf("f_alloc   rc=%d n=%d\n", (int)OS_FileAllocate(fd, 0, 64), stub_f_allocs);
+            printf("f_trunc   rc=%d n=%d\n", (int)OS_FileTruncate(fd, 32), stub_f_truncs);
+            printf("f_stat    rc=%d size=%ld mode=%lu n=%d\n", (int)OS_stat("/mnt/a.txt", &fstat),
+                   (long)fstat.FileSize, (unsigned long)fstat.FileModeBits, stub_f_stats);
+            printf("f_chmod   rc=%d n=%d\n", (int)OS_chmod("/mnt/a.txt", 0), stub_f_chmods);
+            printf("f_remove  rc=%d n=%d\n", (int)OS_remove("/mnt/a.txt"), stub_f_removes);
+
+            /* rename rewrites the recorded name of any OPEN stream naming the old file. */
+            printf("f_rename  rc=%d n=%d\n", (int)OS_rename("/mnt/a.txt", "/mnt/b.txt"),
+                   stub_f_renames);
+            printf("f_renamed rc=%d [%s]\n", (int)OS_FDGetInfo(fd, &fprop), fprop.Path);
+            printf("f_oc_new  found=%d old=%d\n", (int)OS_FileOpenCheck("/mnt/b.txt"),
+                   (int)OS_FileOpenCheck("/mnt/a.txt"));
+            printf("f_close   rc=%d n=%d\n", (int)OS_close(fd), stub_f_closes);
+            printf("f_stale   rc=%d\n", (int)OS_close(fd));
+
+            /* THE COPY. Short writes make the inner loop load-bearing. */
+            stub_f_rdpos = 0;
+            stub_f_wrpos = 0;
+            printf("f_cp      rc=%d wrote=%ld opens=%d closes=%d\n",
+                   (int)OS_cp("/mnt/src.bin", "/mnt/dst.bin"), (long)stub_f_wrpos,
+                   stub_f_opens, stub_f_closes);
+            sum = 0;
+            for (i = 0; i < STUB_F_SRC_LEN; ++i) sum += (stub_f_dst[i] == stub_f_src[i]) ? 1 : 0;
+            printf("f_cpsame  bytes=%ld of %d\n", sum, STUB_F_SRC_LEN);
+            printf("f_cpnull  rc=%d\n", (int)OS_cp(NULL, "/mnt/x"));
+
+            /* mv tries rename first and only falls back to copy when it fails. */
+            stub_f_rdpos = 0;
+            stub_f_wrpos = 0;
+            printf("f_mv      rc=%d renames=%d wrote=%ld\n", (int)OS_mv("/mnt/s2", "/mnt/d2"),
+                   stub_f_renames, (long)stub_f_wrpos);
+
+            /* Open two, then close by name and close-all. */
+            OS_OpenCreate(&fd, "/mnt/one.txt", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            OS_OpenCreate(&fd2, "/mnt/two.txt", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            printf("f_byname  rc=%d\n", (int)OS_CloseFileByName("/mnt/one.txt"));
+            printf("f_bynone  rc=%d\n", (int)OS_CloseFileByName("/mnt/nope.txt"));
+            printf("f_all     rc=%d closes=%d\n", (int)OS_CloseAllFiles(), stub_f_closes);
+            printf("f_allagain rc=%d\n", (int)OS_CloseAllFiles());
         }
 
     }

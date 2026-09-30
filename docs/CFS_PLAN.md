@@ -125,7 +125,7 @@ to the same architecture; it is not a translation of anything, and it says so.
 
 ### OSAL, measured the same way
 
-**5,513 lines of NASA's 9,447-line shared layer, gated** (58%), computed by
+**6,198 lines of NASA's 9,447-line shared layer, gated** (66%), computed by
 `tools/cfs/check_manifest.py` on every gate run rather than counted here. The denominator is the portable half
 only; the three vendored backends (posix 4,598, vxworks 3,984, rtems 3,543) are reference
 implementations of the seam, not things to translate.
@@ -154,7 +154,7 @@ recipe, not from `ls`.
 | `osapi-heap.c` | 53 | **yes** | |
 | `osapi-filesys.c` | 788 | **yes** | path translation, the mount-point prefix trap, and the mount/unmount flag arithmetic |
 | `osapi-sockets.c` | 773 | no | |
-| `osapi-file.c` | 685 | no | |
+| `osapi-file.c` | 685 | **yes** | `OS_cp`'s short-write retry loop; path translation at the backend boundary |
 | `osapi-time.c` | 548 | no | |
 | `osapi-timebase.c` | 538 | no | |
 | `osapi-module.c` | 472 | no | |
@@ -201,12 +201,8 @@ triple TempleOS's own `StrPrintJoin` takes, which is what a HolyC variadic recei
 
 #### What the OSAL transcript does NOT cover, stated rather than implied
 
-- **`OS_ShellOutputToFile`'s lock mode.** NASA takes the stream with `OS_LOCK_MODE_REFCOUNT`,
-  not `OS_LOCK_MODE_GLOBAL`, and the translation matches. But nothing can currently allocate a
-  stream: `osapi-file.c` is not translated, so no `OS_OBJECT_TYPE_OS_STREAM` object exists and
-  the call can only be driven down its bad-id path, which returns before the lock mode matters.
-  Changing `REFCOUNT` to `GLOBAL` would not fail the gate today. It becomes testable when
-  `osapi-file.c` lands.
+- ~~**`OS_ShellOutputToFile`'s lock mode.**~~ Closed: `osapi-file.c` now provides real streams,
+  so `f_shell` drives the call down its success path with an open file descriptor.
 - **`flags |= OS_ADD_TASK_FLAGS`** in `OS_TaskCreate`. `OS_ADD_TASK_FLAGS` is 0 in this
   configuration, so deleting the line entirely prints the same `fl=0x11`.
 - ~~**Struct field parity.**~~ Closed by `tools/cfs/check_structs.py`, which found two more
