@@ -12,6 +12,8 @@
 #include "osapi.h"
 #include "os-shared-errors.h"
 #include "osapi-version.h"
+#include "os-shared-clock.h"
+#include "os-shared-heap.h"
 
 /* The backend's error-name table. A bare-metal target contributes no OS-specific errors, so
  * this is empty -- and empty is the interesting case, because it is the one that makes
@@ -31,6 +33,39 @@ void OS_printf(const char *fmt, ...)
 {
     (void)fmt;
     printf("bugcheck\n");
+}
+
+/* THE RECORDING STUB BACKEND. This is what makes the portable layer testable with no OS: the
+ * clock returns a fixed, made-up time and the heap fixed numbers, so the transcript below
+ * asserts the layer's VALIDATION AND DISPATCH -- which argument checks fire, which _Impl gets
+ * called, what it does with the result -- rather than anything about a real clock. A real clock
+ * would make the transcript unreproducible, which is the opposite of what a gate needs. */
+static int stub_setlocal_calls;
+
+int32 OS_GetMonotonicTime_Impl(OS_time_t *time_struct)
+{
+    time_struct->ticks = 1234500000; /* 123.45 s at 100 ns per tick */
+    return OS_SUCCESS;
+}
+
+int32 OS_GetLocalTime_Impl(OS_time_t *time_struct)
+{
+    time_struct->ticks = 500000000; /* 50 s */
+    return OS_SUCCESS;
+}
+
+int32 OS_SetLocalTime_Impl(const OS_time_t *time_struct)
+{
+    ++stub_setlocal_calls;
+    return OS_SUCCESS;
+}
+
+int32 OS_HeapGetInfo_Impl(OS_heap_prop_t *heap_prop)
+{
+    heap_prop->free_bytes         = 4096;
+    heap_prop->free_blocks        = 7;
+    heap_prop->largest_free_block = 2048;
+    return OS_SUCCESS;
 }
 
 int main(void)
@@ -65,6 +100,51 @@ int main(void)
         printf("codename[%s]\n", OS_GetVersionCodeName());
         printf("vernum  %d.%d.%d.%d\n", vn[0], vn[1], vn[2], vn[3]);
         printf("build   %lu\n", (unsigned long)OS_GetBuildNumber());
+    }
+
+    /* --- osapi-clock.c --------------------------------------------------------------- */
+    {
+        OS_time_t      t;
+        OS_heap_prop_t hp;
+
+        t.ticks = 0;
+        printf("mono    rc=%d ticks=%ld\n", (int)OS_GetMonotonicTime(&t), (long)t.ticks);
+        t.ticks = 0;
+        printf("local   rc=%d ticks=%ld\n", (int)OS_GetLocalTime(&t), (long)t.ticks);
+        printf("setloc  rc=%d n=%d\n", (int)OS_SetLocalTime(&t), stub_setlocal_calls);
+        printf("clknull %d %d %d\n", (int)OS_GetMonotonicTime(NULL), (int)OS_GetLocalTime(NULL),
+               (int)OS_SetLocalTime(NULL));
+
+        /* The three branches of FromRelativeMilliseconds: poll, a real delay measured from the
+         * stub clock, and the indefinite-block sentinel. */
+        printf("rel0    %ld\n", (long)OS_TimeFromRelativeMilliseconds(OS_CHECK).ticks);
+        printf("rel100  %ld\n", (long)OS_TimeFromRelativeMilliseconds(100).ticks);
+        printf("relneg  %ld\n", (long)OS_TimeFromRelativeMilliseconds(-5).ticks);
+
+        /* And back. A time in the past collapses to OS_CHECK; OS_TIME_MAX stays a block. */
+        t.ticks = 0;
+        printf("torel0  %d\n", (int)OS_TimeToRelativeMilliseconds(t));
+        t = OS_TIME_MAX;
+        printf("torelmx %d\n", (int)OS_TimeToRelativeMilliseconds(t));
+        t.ticks = 500000000 + (250 * OS_TIME_TICKS_PER_MSEC); /* 250 ms past the stub clock */
+        printf("torel250 %d\n", (int)OS_TimeToRelativeMilliseconds(t));
+
+        /* The arithmetic helpers, which are where a tick-rate mistake would show. */
+        printf("ticks   %d %d\n", (int)OS_TIME_TICKS_PER_MSEC, (int)OS_TIME_TICKS_PER_SECOND);
+        printf("sign    %d %d %d\n", OS_TimeGetSign(OS_TimeFromTotalMilliseconds(5)),
+               OS_TimeGetSign(OS_TimeFromTotalMilliseconds(0)),
+               OS_TimeGetSign(OS_TimeFromTotalMilliseconds(-5)));
+        printf("addsub  %ld %ld\n",
+               (long)OS_TimeAdd(OS_TimeFromTotalMilliseconds(3), OS_TimeFromTotalMilliseconds(4)).ticks,
+               (long)OS_TimeSubtract(OS_TimeFromTotalMilliseconds(3), OS_TimeFromTotalMilliseconds(4)).ticks);
+        printf("cmp     %d %d\n", OS_TimeCompare(OS_TimeFromTotalMilliseconds(3), OS_TimeFromTotalMilliseconds(4)),
+               (int)OS_TimeEqual(OS_TimeFromTotalMilliseconds(3), OS_TimeFromTotalMilliseconds(3)));
+
+        /* --- osapi-heap.c ------------------------------------------------------------ */
+        hp.free_bytes = 0;
+        printf("heap    rc=%d %ld %ld %ld\n", (int)OS_HeapGetInfo(&hp), (long)hp.free_bytes,
+               (long)hp.free_blocks, (long)hp.largest_free_block);
+        printf("heapnull %d\n", (int)OS_HeapGetInfo(NULL));
     }
     return 0;
 }
