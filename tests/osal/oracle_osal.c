@@ -18,6 +18,7 @@
 #include "os-shared-idmap.h"
 #include "os-shared-common.h"
 #include "os-shared-task.h"
+#include "os-shared-countsem.h"
 
 /* The backend's error-name table. A bare-metal target contributes no OS-specific errors, so
  * this is empty -- and empty is the interesting case, because it is the one that makes
@@ -142,6 +143,35 @@ osal_id_t OS_TaskGetId_Impl(void)
 osal_id_t OS_TaskGetId(void)
 {
     return OS_ObjectIdFromInteger(0x10001);
+}
+
+/* The countsem backend. Records what it was asked to do and reports a value back through
+ * GetInfo, so the transcript can show the portable layer passing arguments down and results up
+ * without any real semaphore existing. */
+static uint32 stub_cs_initial;
+static uint32 stub_cs_options;
+static int    stub_cs_gives;
+static int    stub_cs_takes;
+static uint32 stub_cs_last_msecs;
+
+int32 OS_CountSemCreate_Impl(const OS_object_token_t *token, uint32 sem_initial_value, uint32 options)
+{
+    stub_cs_initial = sem_initial_value;
+    stub_cs_options = options;
+    return OS_SUCCESS;
+}
+int32 OS_CountSemDelete_Impl(const OS_object_token_t *token) { return OS_SUCCESS; }
+int32 OS_CountSemGive_Impl(const OS_object_token_t *token) { ++stub_cs_gives; return OS_SUCCESS; }
+int32 OS_CountSemTake_Impl(const OS_object_token_t *token) { ++stub_cs_takes; return OS_SUCCESS; }
+int32 OS_CountSemTimedWait_Impl(const OS_object_token_t *token, uint32 msecs)
+{
+    stub_cs_last_msecs = msecs;
+    return OS_SEM_TIMEOUT;
+}
+int32 OS_CountSemGetInfo_Impl(const OS_object_token_t *token, OS_count_sem_prop_t *count_prop)
+{
+    count_prop->value = 42;
+    return OS_SUCCESS;
 }
 
 /* Counts what OS_ForEachObject visits. */
@@ -346,6 +376,46 @@ int main(void)
 
         /* The lock bookkeeping should balance out to zero depth. */
         printf("locks   depth=%d waits=%d\n", stub_lock_depth, stub_wait_calls);
+    }
+
+    /* --- osapi-countsem.c ------------------------------------------------------------- */
+    {
+        osal_id_t           sid, found;
+        OS_count_sem_prop_t prop;
+        char                longname[OS_MAX_API_NAME + 8];
+        int                 k;
+
+        OS_CountSemAPI_Init();
+        printf("cs_create rc=%d init=%lu opt=%lu\n",
+               (int)OS_CountSemCreate(&sid, "csA", 7, 0x1234), (unsigned long)stub_cs_initial,
+               (unsigned long)stub_cs_options);
+        printf("cs_type  %lu\n", (unsigned long)OS_ObjectIdToType_Impl(sid));
+        printf("cs_give  rc=%d n=%d\n", (int)OS_CountSemGive(sid), stub_cs_gives);
+        printf("cs_take  rc=%d n=%d\n", (int)OS_CountSemTake(sid), stub_cs_takes);
+        printf("cs_wait  rc=%d ms=%lu\n", (int)OS_CountSemTimedWait(sid, 250),
+               (unsigned long)stub_cs_last_msecs);
+
+        /* GetInfo fills the name from the COMMON record and the value from the backend -- two
+         * different sources meeting in one struct, which is the whole point of the layer. */
+        printf("cs_info  rc=%d [%s] val=%d creator=%d\n", (int)OS_CountSemGetInfo(sid, &prop),
+               prop.name, (int)prop.value, (int)OS_ObjectIdEqual(prop.creator, OS_TaskGetId()));
+        printf("cs_byname rc=%d match=%d\n", (int)OS_CountSemGetIdByName(&found, "csA"),
+               (int)OS_ObjectIdEqual(found, sid));
+        printf("cs_byname_miss rc=%d\n", (int)OS_CountSemGetIdByName(&found, "nope"));
+
+        /* The two argument checks that behave differently: NULL logs, too-long is silent. */
+        printf("cs_nullid  rc=%d\n", (int)OS_CountSemCreate(NULL, "x", 0, 0));
+        printf("cs_nullname rc=%d\n", (int)OS_CountSemCreate(&sid, NULL, 0, 0));
+        for (k = 0; k < (int)sizeof(longname) - 1; ++k)
+        {
+            longname[k] = 'L';
+        }
+        longname[sizeof(longname) - 1] = 0;
+        printf("cs_longname rc=%d\n", (int)OS_CountSemCreate(&sid, longname, 0, 0));
+        printf("cs_nullprop rc=%d\n", (int)OS_CountSemGetInfo(sid, NULL));
+
+        printf("cs_delete rc=%d\n", (int)OS_CountSemDelete(sid));
+        printf("cs_stale  rc=%d\n", (int)OS_CountSemGive(sid));
     }
     return 0;
 }

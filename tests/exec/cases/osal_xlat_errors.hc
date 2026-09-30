@@ -87,6 +87,40 @@ U32 OS_TaskGetId()
 }
 
 #include "/Kernel/Cfs/osal/osapi_idmap.HC"
+// The types the backend below must see before it can declare itself -- see that file for why
+// include order stands in for a header here.
+#include "/Kernel/Cfs/osal/os_shared_countsem.HC"
+
+// The countsem backend. Records what it was asked to do and reports a value back through
+// GetInfo, so the transcript shows the portable layer passing arguments down and results up
+// with no real semaphore anywhere.
+U32 stub_cs_initial;
+U32 stub_cs_options;
+I64 stub_cs_gives;
+I64 stub_cs_takes;
+U32 stub_cs_last_msecs;
+
+I32 OS_CountSemCreate_Impl(OS_object_token_t *token, U32 sem_initial_value, U32 options)
+{
+  stub_cs_initial = sem_initial_value;
+  stub_cs_options = options;
+  return OS_SUCCESS;
+}
+I32 OS_CountSemDelete_Impl(OS_object_token_t *token) { return OS_SUCCESS; }
+I32 OS_CountSemGive_Impl(OS_object_token_t *token) { ++stub_cs_gives; return OS_SUCCESS; }
+I32 OS_CountSemTake_Impl(OS_object_token_t *token) { ++stub_cs_takes; return OS_SUCCESS; }
+I32 OS_CountSemTimedWait_Impl(OS_object_token_t *token, U32 msecs)
+{
+  stub_cs_last_msecs = msecs;
+  return OS_SEM_TIMEOUT;
+}
+I32 OS_CountSemGetInfo_Impl(OS_object_token_t *token, OS_count_sem_prop_t *count_prop)
+{
+  count_prop->value = 42;
+  return OS_SUCCESS;
+}
+
+#include "/Kernel/Cfs/osal/osapi_countsem.HC"
 
 // Counts what OS_ForEachObject visits.
 I64 foreach_count;
@@ -492,6 +526,92 @@ I64 main()
     D(stub_lock_depth);
     S(" waits=");
     D(stub_wait_calls);
+    S("\n");
+  }
+
+  // --- osapi-countsem.c ----------------------------------------------------------------
+  {
+    U32 sid, found;
+    OS_count_sem_prop_t prop;
+    U8 longname[OS_MAX_API_NAME + 8];
+    I64 k;
+    I32 r2;
+    OS_CountSemAPI_Init;
+    r2 = OS_CountSemCreate(&sid, "csA", 7, 0x1234);
+    S("cs_create rc=");
+    D(r2);
+    S(" init=");
+    D(stub_cs_initial);
+    S(" opt=");
+    D(stub_cs_options);
+    S("\n");
+    S("cs_type  ");
+    D(OS_ObjectIdToType_Impl(sid));
+    S("\n");
+    r2 = OS_CountSemGive(sid);
+    S("cs_give  rc=");
+    D(r2);
+    S(" n=");
+    D(stub_cs_gives);
+    S("\n");
+    r2 = OS_CountSemTake(sid);
+    S("cs_take  rc=");
+    D(r2);
+    S(" n=");
+    D(stub_cs_takes);
+    S("\n");
+    r2 = OS_CountSemTimedWait(sid, 250);
+    S("cs_wait  rc=");
+    D(r2);
+    S(" ms=");
+    D(stub_cs_last_msecs);
+    S("\n");
+    // GetInfo fills the name from the COMMON record and the value from the backend -- two
+    // different sources meeting in one struct, which is the point of the layer.
+    r2 = OS_CountSemGetInfo(sid, &prop);
+    S("cs_info  rc=");
+    D(r2);
+    S(" [");
+    S(prop.name);
+    S("] val=");
+    D(prop.value);
+    S(" creator=");
+    D(OS_ObjectIdEqual(prop.creator, OS_TaskGetId));
+    S("\n");
+    r2 = OS_CountSemGetIdByName(&found, "csA");
+    S("cs_byname rc=");
+    D(r2);
+    S(" match=");
+    D(OS_ObjectIdEqual(found, sid));
+    S("\n");
+    S("cs_byname_miss rc=");
+    D(OS_CountSemGetIdByName(&found, "nope"));
+    S("\n");
+    // The two argument checks that behave differently: NULL logs, too-long is silent. Hoisted,
+    // because the markers belong before their lines as C's argument evaluation puts them.
+    r2 = OS_CountSemCreate(NULL, "x", 0, 0);
+    S("cs_nullid  rc=");
+    D(r2);
+    S("\n");
+    r2 = OS_CountSemCreate(&sid, NULL, 0, 0);
+    S("cs_nullname rc=");
+    D(r2);
+    S("\n");
+    for (k = 0; k < OS_MAX_API_NAME + 7; ++k)
+      longname[k] = 'L';
+    longname[OS_MAX_API_NAME + 7] = 0;
+    S("cs_longname rc=");
+    D(OS_CountSemCreate(&sid, longname, 0, 0));
+    S("\n");
+    r2 = OS_CountSemGetInfo(sid, NULL);
+    S("cs_nullprop rc=");
+    D(r2);
+    S("\n");
+    S("cs_delete rc=");
+    D(OS_CountSemDelete(sid));
+    S("\n");
+    S("cs_stale  rc=");
+    D(OS_CountSemGive(sid));
     S("\n");
   }
   return 0;

@@ -67,3 +67,26 @@ declares `static const uint32 ARR[3]`, which is not on the stack, so the faithfu
 file-scope array and that is what the transcript uses.
 
 **If you hit "an array reads back zero and its address looks right", start here.**
+
+## 4. Indexing a parenthesised `&array[N]` expression is off by one — OPEN
+
+    class Rec { I64 a; I64 b; };
+    Rec tbl[10];
+    #define SLICE (&tbl[4])
+
+    tbl[6].a     -> 6      correct
+    base = &tbl[4]; base[2].a -> 6      correct
+    SLICE[2].a   -> 5      WRONG, and silently so
+
+Taking the base into a local variable first is correct; indexing the parenthesised expression
+directly is not. The mechanism is not characterised here — only the measurement, which is
+reproducible with the snippet above.
+
+This is how OSAL's `OS_OBJECT_TABLE_GET(OS_global_count_sem_table, token)` went wrong. That macro
+expands to `&tbl[OS_ObjectIndexFromToken(&tok)]` where the table itself is
+`(&OS_common_table[OS_COUNTSEM_BASE])`, so the record came back one slot low, its `name_entry`
+was NULL, and `strncpy` faulted on it. Nothing announced the off-by-one; the fault was two steps
+downstream.
+
+**Every `OS_global_*_table` in this port is such a macro.** They are all used through a local
+base pointer for this reason, and any new one must be too.
