@@ -45,3 +45,4 @@ DocFormBwd	MISSING	nothing — Adam/DolDoc/DocForm.HC, collides; U0, and a no-op
 DocFormFwd	MISSING	nothing — Adam/DolDoc/DocForm.HC, collides; U0, and a no-op unless DOCF_FORM
 PopUpPickLst	MISSING	nothing — Adam/DolDoc/DocPopUp.HC, collides on eight PopUp* names
 DocInsDoc	MISSING	nothing — Adam/DolDoc/DocFile.HC, not in the closure; U0, and the only call is the last line of Words() in Adam/Opt/Utils/StrUtils.HC
+RVSifiveGemRd	MISSING	nothing — Kernel/Drv/RVSifiveGemYes.HC, not in this image's closure; guarded by RVSifiveGemPresent, which is 0 here, so Eth() returns before reaching it

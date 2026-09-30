@@ -3,7 +3,6 @@
 // Standalone on purpose -- no kernel includes -- so the only things under test are the
 // translation and the compiler.
 #include "/Kernel/Cfs/osal/os_shared_errors.HC"
-
 // --- the four TempleOS primitives the KERNEL provides ------------------------------------------
 // This harness is standalone by design -- no kernel is linked, because the only thing under test
 // is the translation -- so MemSet, MemCpy, StrCmp and StrLen have to be supplied here. They are
@@ -29,6 +28,7 @@ U8 *MemSet(U8 *dst, I64 dat, I64 size)
   }
   return dst;
 }
+
 U8 *MemCpy(U8 *dst, U8 *src, I64 size)
 {
   I64 i = 0;
@@ -38,6 +38,7 @@ U8 *MemCpy(U8 *dst, U8 *src, I64 size)
   }
   return dst;
 }
+
 I64 StrLen(U8 *st)
 {
   I64 n = 0;
@@ -45,6 +46,7 @@ I64 StrLen(U8 *st)
     n++;
   return n;
 }
+
 I64 StrCmp(U8 *st1, U8 *st2)
 {
   I64 i = 0;
@@ -60,7 +62,6 @@ I64 StrCmp(U8 *st1, U8 *st2)
     return 1;
   return 0;
 }
-
 // Three more the kernel provides, needed once osapi-filesys.c is in the build. The blob's
 // import trailer is what caught their absence: without these they bound silently to the host C
 // runtime and the transcript would still have passed.
@@ -161,24 +162,20 @@ U0 D(I64 v)
     S(one);
   }
 }
-
 // The backend's error-name table, empty as a bare-metal target's is. It must be defined BEFORE
 // the portable layer that walks it -- see os_shared_errors.HC for why include order does a
 // linker's job here.
 OS_ErrorTable_Entry OS_IMPL_ERROR_NAME_TABLE[1] = {{0, NULL}};
-
 // Stands in for osapi-printf.c, which is part of the shared layer and not translated yet. The C
 // oracle's stub prints the same fixed marker: what the transcript pins is which checks fire.
 U0 OS_printf(U8 *fmt)
 {
   S("bugcheck\n");
 }
-
 #include "/Kernel/Cfs/osal/osapi_errors.HC"
 #include "/Kernel/Cfs/osal/osapi_version.HC"
 #include "/Kernel/Cfs/osal/osapi_clock.HC"
 #include "/Kernel/Cfs/osal/osapi_heap.HC"
-
 // The four real backend calls osapi-idmap.c makes. The locks are no-ops here because the
 // transcript runs single-threaded -- what is asserted is the LOCK BOOKKEEPING the portable
 // layer does around them (the key it computes, the owner it records, the refcount it adjusts),
@@ -186,7 +183,6 @@ U0 OS_printf(U8 *fmt)
 I64 stub_lock_depth;
 I64 stub_lock_calls;
 I64 stub_wait_calls;
-
 U0 OS_Lock_Global_Impl(U32 idtype)
 {
   ++stub_lock_depth;
@@ -202,17 +198,14 @@ U0 OS_WaitForStateChange_Impl(U32 idtype, U32 attempts)
 {
   ++stub_wait_calls;
 }
-
 // OS_TaskGetId_Impl moved down to the task backend, and OS_TaskGetId deleted outright: now
 // that osapi-task.c is translated, the REAL one comes from osapi_task.HC. It is what idmap
 // calls to stamp `creator` on every record, so the stub's fixed 0x10001 becomes the initial
 // value of stub_t_current instead, and every creator line before the task section is unchanged.
-
 #include "/Kernel/Cfs/osal/osapi_idmap.HC"
 // The types the backend below must see before it can declare itself -- see that file for why
 // include order stands in for a header here.
 #include "/Kernel/Cfs/osal/os_shared_countsem.HC"
-
 // The countsem backend. Records what it was asked to do and reports a value back through
 // GetInfo, so the transcript shows the portable layer passing arguments down and results up
 // with no real semaphore anywhere.
@@ -221,27 +214,41 @@ U32 stub_cs_options;
 I64 stub_cs_gives;
 I64 stub_cs_takes;
 U32 stub_cs_last_msecs;
-
 I32 OS_CountSemCreate_Impl(OS_object_token_t *token, U32 sem_initial_value, U32 options)
 {
   stub_cs_initial = sem_initial_value;
   stub_cs_options = options;
   return OS_SUCCESS;
 }
-I32 OS_CountSemDelete_Impl(OS_object_token_t *token) { return OS_SUCCESS; }
-I32 OS_CountSemGive_Impl(OS_object_token_t *token) { ++stub_cs_gives; return OS_SUCCESS; }
-I32 OS_CountSemTake_Impl(OS_object_token_t *token) { ++stub_cs_takes; return OS_SUCCESS; }
+
+I32 OS_CountSemDelete_Impl(OS_object_token_t *token)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_CountSemGive_Impl(OS_object_token_t *token)
+{
+  ++stub_cs_gives;
+  return OS_SUCCESS;
+}
+
+I32 OS_CountSemTake_Impl(OS_object_token_t *token)
+{
+  ++stub_cs_takes;
+  return OS_SUCCESS;
+}
+
 I32 OS_CountSemTimedWait_Impl(OS_object_token_t *token, U32 msecs)
 {
   stub_cs_last_msecs = msecs;
   return OS_SEM_TIMEOUT;
 }
+
 I32 OS_CountSemGetInfo_Impl(OS_object_token_t *token, OS_count_sem_prop_t *count_prop)
 {
   count_prop->value = 42;
   return OS_SUCCESS;
 }
-
 // Types first, then the backends that need them, then the modules -- include order doing a
 // linker's job, as everywhere else here.
 #include "/Kernel/Cfs/osal/os_shared_mutex.HC"
@@ -250,45 +257,142 @@ I32 OS_CountSemGetInfo_Impl(OS_object_token_t *token, OS_count_sem_prop_t *count
 #include "/Kernel/Cfs/osal/os_shared_condvar.HC"
 #include "/Kernel/Cfs/osal/os_shared_queue.HC"
 #include "/Kernel/Cfs/osal/os_shared_task.HC"
-
 // The other four resource backends, matching the C oracle's.
 U32 stub_last_options;
+I32 OS_MutSemCreate_Impl(OS_object_token_t *t, U32 options)
+{
+  stub_last_options = options;
+  return OS_SUCCESS;
+}
 
-I32 OS_MutSemCreate_Impl(OS_object_token_t *t, U32 options) { stub_last_options = options; return OS_SUCCESS; }
-I32 OS_MutSemDelete_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_MutSemGetInfo_Impl(OS_object_token_t *t, OS_mut_sem_prop_t *p) { return OS_SUCCESS; }
+I32 OS_MutSemDelete_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
 
-I32 OS_BinSemCreate_Impl(OS_object_token_t *t, U32 v, U32 options) { stub_last_options = options; return OS_SUCCESS; }
-I32 OS_BinSemDelete_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_BinSemGive_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_BinSemFlush_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_BinSemTake_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_BinSemTimedWait_Impl(OS_object_token_t *t, U32 ms) { return OS_SEM_TIMEOUT; }
-I32 OS_BinSemGetInfo_Impl(OS_object_token_t *t, OS_bin_sem_prop_t *p) { p->value = 9; return OS_SUCCESS; }
+I32 OS_MutSemGetInfo_Impl(OS_object_token_t *t, OS_mut_sem_prop_t *p)
+{
+  return OS_SUCCESS;
+}
 
-I32 OS_RwLockCreate_Impl(OS_object_token_t *t, U32 options) { stub_last_options = options; return OS_SUCCESS; }
-I32 OS_RwLockDelete_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_RwLockReadGive_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_RwLockReadTake_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_RwLockWriteTake_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_RwLockGetInfo_Impl(OS_object_token_t *t, OS_rwlock_prop_t *p) { return OS_SUCCESS; }
+I32 OS_BinSemCreate_Impl(OS_object_token_t *t, U32 v, U32 options)
+{
+  stub_last_options = options;
+  return OS_SUCCESS;
+}
 
-I32 OS_CondVarCreate_Impl(OS_object_token_t *t, U32 options) { stub_last_options = options; return OS_SUCCESS; }
-I32 OS_CondVarDelete_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_CondVarLock_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_CondVarUnlock_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_CondVarSignal_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_CondVarBroadcast_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_CondVarWait_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
-I32 OS_CondVarTimedWait_Impl(OS_object_token_t *t, OS_time_t *abs) { return OS_SEM_TIMEOUT; }
-I32 OS_CondVarGetInfo_Impl(OS_object_token_t *t, OS_condvar_prop_t *p) { return OS_SUCCESS; }
+I32 OS_BinSemDelete_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
 
+I32 OS_BinSemGive_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_BinSemFlush_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_BinSemTake_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_BinSemTimedWait_Impl(OS_object_token_t *t, U32 ms)
+{
+  return OS_SEM_TIMEOUT;
+}
+
+I32 OS_BinSemGetInfo_Impl(OS_object_token_t *t, OS_bin_sem_prop_t *p)
+{
+  p->value = 9;
+  return OS_SUCCESS;
+}
+
+I32 OS_RwLockCreate_Impl(OS_object_token_t *t, U32 options)
+{
+  stub_last_options = options;
+  return OS_SUCCESS;
+}
+
+I32 OS_RwLockDelete_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_RwLockReadGive_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_RwLockReadTake_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_RwLockWriteTake_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_RwLockGetInfo_Impl(OS_object_token_t *t, OS_rwlock_prop_t *p)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_CondVarCreate_Impl(OS_object_token_t *t, U32 options)
+{
+  stub_last_options = options;
+  return OS_SUCCESS;
+}
+
+I32 OS_CondVarDelete_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_CondVarLock_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_CondVarUnlock_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_CondVarSignal_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_CondVarBroadcast_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_CondVarWait_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_CondVarTimedWait_Impl(OS_object_token_t *t, OS_time_t *abs)
+{
+  return OS_SEM_TIMEOUT;
+}
+
+I32 OS_CondVarGetInfo_Impl(OS_object_token_t *t, OS_condvar_prop_t *p)
+{
+  return OS_SUCCESS;
+}
 #include "/Kernel/Cfs/osal/osapi_countsem.HC"
 #include "/Kernel/Cfs/osal/osapi_mutex.HC"
 #include "/Kernel/Cfs/osal/osapi_binsem.HC"
 #include "/Kernel/Cfs/osal/osapi_rwlock.HC"
 #include "/Kernel/Cfs/osal/osapi_condvar.HC"
-
 // Defined AFTER the modules: these read OS_mutex_table / OS_rwlock_table, which
 // osapi_mutex.HC and osapi_rwlock.HC define. Their forward declarations at the top of
 // those files are what make a definition down here legal.
@@ -301,21 +405,19 @@ I32 OS_MutSemGive_Impl(OS_object_token_t *t)
   stub_mx_owner_at_give = OS_mutex_table[OS_ObjectIndexFromToken(t)].last_owner;
   return OS_SUCCESS;
 }
+
 I32 OS_MutSemTake_Impl(OS_object_token_t *t)
 {
   stub_mx_owner_at_take = OS_mutex_table[OS_ObjectIndexFromToken(t)].last_owner;
   return OS_SUCCESS;
 }
-
 U32 stub_rw_writer_at_give;
 I32 OS_RwLockWriteGive_Impl(OS_object_token_t *t)
 {
   stub_rw_writer_at_give = OS_rwlock_table[OS_ObjectIndexFromToken(t)].last_writer;
   return OS_SUCCESS;
 }
-
 #include "/Kernel/Cfs/osal/osapi_task.HC"
-
 // --- osapi-task.c backend --------------------------------------------------------------------
 // OS_TaskGetId_Impl is the "who am I" the OS would answer; here the driver sets it, which is
 // what makes OS_TaskExit, OS_TaskGetId and OS_TaskInstallDeleteHandler drivable at all.
@@ -325,26 +427,64 @@ I64 stub_t_creates, stub_t_deletes, stub_t_detaches, stub_t_exits;
 I64 stub_t_registers, stub_t_matches, stub_t_hookcalls, stub_t_startups;
 I32 stub_t_setprio_rc;
 U32 stub_t_sysdata_want;
-
 I32 OS_TaskCreate_Impl(OS_object_token_t *t, U32 flags)
 {
   stub_t_flags = flags;
   ++stub_t_creates;
   return OS_SUCCESS;
 }
-I32 OS_TaskDelete_Impl(OS_object_token_t *t) { ++stub_t_deletes; return OS_SUCCESS; }
-I32 OS_TaskDetach_Impl(OS_object_token_t *t) { ++stub_t_detaches; return OS_SUCCESS; }
-U0 OS_TaskExit_Impl() { ++stub_t_exits; }   // the real one never returns
-I32 OS_TaskDelay_Impl(U32 ms) { stub_t_delay = ms; return OS_SUCCESS; }
+
+I32 OS_TaskDelete_Impl(OS_object_token_t *t)
+{
+  ++stub_t_deletes;
+  return OS_SUCCESS;
+}
+
+I32 OS_TaskDetach_Impl(OS_object_token_t *t)
+{
+  ++stub_t_detaches;
+  return OS_SUCCESS;
+}
+
+U0 OS_TaskExit_Impl()
+{
+  ++stub_t_exits;
+}
+// the real one never returns
+I32 OS_TaskDelay_Impl(U32 ms)
+{
+  stub_t_delay = ms;
+  return OS_SUCCESS;
+}
+
 I32 OS_TaskSetPriority_Impl(OS_object_token_t *t, U8 p)
 {
   stub_t_prio = p;
   return stub_t_setprio_rc;
 }
-U32 OS_TaskGetId_Impl() { return stub_t_current; }
-I32 OS_TaskGetInfo_Impl(OS_object_token_t *t, OS_task_prop_t *p) { return OS_SUCCESS; }
-I32 OS_TaskMatch_Impl(OS_object_token_t *t) { ++stub_t_matches; return OS_SUCCESS; }
-I32 OS_TaskRegister_Impl(U32 id) { ++stub_t_registers; return OS_SUCCESS; }
+
+U32 OS_TaskGetId_Impl()
+{
+  return stub_t_current;
+}
+
+I32 OS_TaskGetInfo_Impl(OS_object_token_t *t, OS_task_prop_t *p)
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_TaskMatch_Impl(OS_object_token_t *t)
+{
+  ++stub_t_matches;
+  return OS_SUCCESS;
+}
+
+I32 OS_TaskRegister_Impl(U32 id)
+{
+  ++stub_t_registers;
+  return OS_SUCCESS;
+}
+
 I32 OS_TaskValidateSystemData_Impl(U8 *sysdata, I64 sysdata_size)
 {
   // Only the backend knows what a system task handle looks like, so the size rule is the
@@ -354,22 +494,29 @@ I32 OS_TaskValidateSystemData_Impl(U8 *sysdata, I64 sysdata_size)
     return OS_ERR_INVALID_SIZE;
   return OS_SUCCESS;
 }
+
 Bool OS_TaskIdMatchSystemData_Impl(U8 *ref, OS_object_token_t *t, OS_common_record_t *obj)
 {
   U32 *want;
   want = ref;
   return obj->active_id == *want;
 }
-U0 task_delete_hook() { ++stub_t_hookcalls; }
-U0 task_entry_a() { ++stub_t_startups; }
 
+U0 task_delete_hook()
+{
+  ++stub_t_hookcalls;
+}
+
+U0 task_entry_a()
+{
+  ++stub_t_startups;
+}
 #include "/Kernel/Cfs/osal/osapi_network.HC"
 #include "/Kernel/Cfs/osal/osapi_shell.HC"
 #include "/Kernel/Cfs/osal/osapi_task_affinity.HC"
 #include "/Kernel/Cfs/osal/os_shared_filesys.HC"
 #include "/Kernel/Cfs/osal/os_shared_file.HC"
 #include "/Kernel/Cfs/osal/os_shared_dir.HC"
-
 // --- osapi-network.c / osapi-shell.c / osapi-task-affinity.c backends -------------------------
 // Three small modules that are almost pure dispatch: what the transcript pins is which checks
 // fire, what gets handed to the backend, and what each does with a failure.
@@ -377,7 +524,6 @@ I64 stub_n_hostcalls, stub_n_idcalls, stub_sh_calls, stub_af_sets, stub_af_gets,
 I32 stub_n_host_rc, stub_n_id_rc;
 U8 stub_sh_cmd[32];
 U8 stub_af_mask;
-
 I32 OS_NetworkGetHostName_Impl(U8 *host_name, I64 name_len)
 {
   ++stub_n_hostcalls;
@@ -388,42 +534,45 @@ I32 OS_NetworkGetHostName_Impl(U8 *host_name, I64 name_len)
   StrNCpy(host_name, "sat1", name_len - 1);
   return OS_SUCCESS;
 }
+
 I32 OS_NetworkGetID_Impl(I32 *IdBuf)
 {
   ++stub_n_idcalls;
   *IdBuf = 4242;
   return stub_n_id_rc;
 }
+
 I32 OS_ShellOutputToFile_Impl(OS_object_token_t *token, U8 *Cmd)
 {
   ++stub_sh_calls;
   StrNCpy(stub_sh_cmd, Cmd, sizeof(stub_sh_cmd) - 1);
   return OS_SUCCESS;
 }
+
 U32 OS_TaskAffinityGetCoresConfigured_Impl()
 {
   ++stub_af_cores;
   return 3;
 }
+
 I32 OS_TaskAffinitySetAffinity_Impl(OS_object_token_t *token, OS_cpuset_t cpuset)
 {
   ++stub_af_sets;
   stub_af_mask = cpuset.affinity_mask[0];
   return OS_SUCCESS;
 }
+
 I32 OS_TaskAffinityGetAffinity_Impl(OS_object_token_t *token, OS_cpuset_t *cpuset)
 {
   ++stub_af_gets;
   cpuset->affinity_mask[0] = 0x5A;
   return OS_SUCCESS;
 }
-
 #include "/Kernel/Cfs/osal/osapi_filesys.HC"
 #include "/Kernel/Cfs/osal/osapi_file.HC"
 #include "/Kernel/Cfs/osal/osapi_dir.HC"
 #include "/Kernel/Cfs/osal/os_shared_module.HC"
 #include "/Kernel/Cfs/osal/osapi_module.HC"
-
 // --- osapi-module.c backend ---------------------------------------------------------------
 // OS_SymbolLookup_Impl returns a DISTINCT error so the transcript can show which of the two
 // lookups produced the final code: NASA only overwrites the backend's error when the STATIC
@@ -432,14 +581,19 @@ I64 stub_m_loads, stub_m_unloads, stub_m_infos, stub_m_syms, stub_m_modsyms, stu
 U8 stub_m_lastpath[OS_MAX_LOCAL_PATH_LEN];
 I64 stub_m_dumplimit;
 I32 stub_m_sym_rc;
-
 I32 OS_ModuleLoad_Impl(OS_object_token_t *token, U8 *translated_path)
 {
   ++stub_m_loads;
   StrNCpy(stub_m_lastpath, translated_path, OS_MAX_LOCAL_PATH_LEN - 1);
   return OS_SUCCESS;
 }
-I32 OS_ModuleUnload_Impl(OS_object_token_t *token) { ++stub_m_unloads; return OS_SUCCESS; }
+
+I32 OS_ModuleUnload_Impl(OS_object_token_t *token)
+{
+  ++stub_m_unloads;
+  return OS_SUCCESS;
+}
+
 I32 OS_ModuleGetInfo_Impl(OS_object_token_t *token, OS_module_prop_t *module_prop)
 {
   ++stub_m_infos;
@@ -448,6 +602,7 @@ I32 OS_ModuleGetInfo_Impl(OS_object_token_t *token, OS_module_prop_t *module_pro
   module_prop->addr.code_size = 256;
   return OS_SUCCESS;
 }
+
 I32 OS_SymbolLookup_Impl(U64 *SymbolAddress, U8 *SymbolName)
 {
   ++stub_m_syms;
@@ -457,11 +612,13 @@ I32 OS_SymbolLookup_Impl(U64 *SymbolAddress, U8 *SymbolName)
   }
   return stub_m_sym_rc;
 }
+
 I32 OS_ModuleSymbolLookup_Impl(OS_object_token_t *token, U64 *SymbolAddress, U8 *SymbolName)
 {
   ++stub_m_modsyms;
   return stub_m_sym_rc;
 }
+
 I32 OS_SymbolTableDump_Impl(U8 *filename, I64 size_limit)
 {
   ++stub_m_dumps;
@@ -470,12 +627,10 @@ I32 OS_SymbolTableDump_Impl(U8 *filename, I64 size_limit)
   return OS_SUCCESS;
 }
 #include "/Kernel/Cfs/osal/osapi_select.HC"
-
 // --- osapi-select.c backend ---------------------------------------------------------------
 I64 stub_sel_singles, stub_sel_multiples;
 U32 stub_sel_flags_in;
 I64 stub_sel_lastabs;
-
 I32 OS_SelectSingle_Impl(OS_object_token_t *token, U32 *StateFlags, OS_time_t abs_timeout)
 {
   ++stub_sel_singles;
@@ -484,25 +639,24 @@ I32 OS_SelectSingle_Impl(OS_object_token_t *token, U32 *StateFlags, OS_time_t ab
   *StateFlags = OS_STREAM_STATE_READABLE;
   return OS_SUCCESS;
 }
+
 I32 OS_SelectMultiple_Impl(OS_FdSet *ReadSet, OS_FdSet *WriteSet, OS_time_t abs_timeout)
 {
   ++stub_sel_multiples;
   stub_sel_lastabs = abs_timeout.ticks;
   return OS_SUCCESS;
 }
-
-
 // --- osapi-dir.c backend ------------------------------------------------------------------
 I64 stub_d_creates, stub_d_opens, stub_d_closes, stub_d_reads, stub_d_rewinds, stub_d_removes;
 I64 stub_d_pos;
 U8 stub_d_lastpath[OS_MAX_LOCAL_PATH_LEN];
-
 I32 OS_DirCreate_Impl(U8 *local_path, U32 access)
 {
   ++stub_d_creates;
   StrNCpy(stub_d_lastpath, local_path, OS_MAX_LOCAL_PATH_LEN - 1);
   return OS_SUCCESS;
 }
+
 I32 OS_DirOpen_Impl(OS_object_token_t *token, U8 *local_path)
 {
   ++stub_d_opens;
@@ -510,7 +664,13 @@ I32 OS_DirOpen_Impl(OS_object_token_t *token, U8 *local_path)
   stub_d_pos = 0;
   return OS_SUCCESS;
 }
-I32 OS_DirClose_Impl(OS_object_token_t *token) { ++stub_d_closes; return OS_SUCCESS; }
+
+I32 OS_DirClose_Impl(OS_object_token_t *token)
+{
+  ++stub_d_closes;
+  return OS_SUCCESS;
+}
+
 I32 OS_DirRead_Impl(OS_object_token_t *token, os_dirent_t *dirent)
 {
   ++stub_d_reads;
@@ -527,15 +687,19 @@ I32 OS_DirRead_Impl(OS_object_token_t *token, os_dirent_t *dirent)
   ++stub_d_pos;
   return OS_SUCCESS;
 }
+
 I32 OS_DirRewind_Impl(OS_object_token_t *token)
 {
   ++stub_d_rewinds;
   stub_d_pos = 0;
   return OS_SUCCESS;
 }
-I32 OS_DirRemove_Impl(U8 *local_path) { ++stub_d_removes; return OS_SUCCESS; }
 
-
+I32 OS_DirRemove_Impl(U8 *local_path)
+{
+  ++stub_d_removes;
+  return OS_SUCCESS;
+}
 // --- osapi-file.c backend ----------------------------------------------------------------
 // A simulated file, because OS_cp is a READ/WRITE LOOP and the only way to test it is to make
 // reads and writes behave like real ones. Two details are deliberate:
@@ -555,14 +719,19 @@ I64 stub_f_opens, stub_f_closes, stub_f_removes, stub_f_renames, stub_f_chmods;
 I64 stub_f_stats, stub_f_seeks, stub_f_allocs, stub_f_truncs;
 I32 stub_f_open_rc;
 U8 stub_f_lastpath[OS_MAX_LOCAL_PATH_LEN];
-
 I32 OS_FileOpen_Impl(OS_object_token_t *token, U8 *local_path, I32 flags, I32 access_mode)
 {
   ++stub_f_opens;
   StrNCpy(stub_f_lastpath, local_path, OS_MAX_LOCAL_PATH_LEN - 1);
   return stub_f_open_rc;
 }
-I32 OS_GenericClose_Impl(OS_object_token_t *token) { ++stub_f_closes; return OS_SUCCESS; }
+
+I32 OS_GenericClose_Impl(OS_object_token_t *token)
+{
+  ++stub_f_closes;
+  return OS_SUCCESS;
+}
+
 I32 OS_GenericRead_Impl(OS_object_token_t *token, U8 *buffer, I64 nbytes, OS_time_t abstime)
 {
   I64 n = STUB_F_SRC_LEN - stub_f_rdpos;
@@ -572,6 +741,7 @@ I32 OS_GenericRead_Impl(OS_object_token_t *token, U8 *buffer, I64 nbytes, OS_tim
   stub_f_rdpos += n;
   return n;
 }
+
 I32 OS_GenericWrite_Impl(OS_object_token_t *token, U8 *buffer, I64 nbytes, OS_time_t abstime)
 {
   I64 n = nbytes;
@@ -581,12 +751,19 @@ I32 OS_GenericWrite_Impl(OS_object_token_t *token, U8 *buffer, I64 nbytes, OS_ti
   stub_f_wrpos += n;
   return n;
 }
+
 I32 OS_GenericSeek_Impl(OS_object_token_t *token, I64 offset, U32 whence)
 {
   ++stub_f_seeks;
   return offset;
 }
-I32 OS_FileChmod_Impl(U8 *local_path, U32 access_mode) { ++stub_f_chmods; return OS_SUCCESS; }
+
+I32 OS_FileChmod_Impl(U8 *local_path, U32 access_mode)
+{
+  ++stub_f_chmods;
+  return OS_SUCCESS;
+}
+
 I32 OS_FileStat_Impl(U8 *local_path, os_fstat_t *filestat)
 {
   ++stub_f_stats;
@@ -594,20 +771,30 @@ I32 OS_FileStat_Impl(U8 *local_path, os_fstat_t *filestat)
   filestat->FileSize = 4321;
   return OS_SUCCESS;
 }
-I32 OS_FileRemove_Impl(U8 *local_path) { ++stub_f_removes; return OS_SUCCESS; }
-I32 OS_FileRename_Impl(U8 *old_path, U8 *new_path) { ++stub_f_renames; return OS_SUCCESS; }
+
+I32 OS_FileRemove_Impl(U8 *local_path)
+{
+  ++stub_f_removes;
+  return OS_SUCCESS;
+}
+
+I32 OS_FileRename_Impl(U8 *old_path, U8 *new_path)
+{
+  ++stub_f_renames;
+  return OS_SUCCESS;
+}
+
 I32 OS_FileAllocate_Impl(OS_object_token_t *token, I64 offset, I64 length)
 {
   ++stub_f_allocs;
   return OS_SUCCESS;
 }
+
 I32 OS_FileTruncate_Impl(OS_object_token_t *token, I64 length)
 {
   ++stub_f_truncs;
   return OS_SUCCESS;
 }
-
-
 // --- osapi-filesys.c backend -------------------------------------------------------------
 // A real backend is what gives a volume its host-side mount point, so StartVolume_Impl does
 // that here: without it system_mountpt stays empty and OS_mount can never get past its
@@ -615,7 +802,6 @@ I32 OS_FileTruncate_Impl(OS_object_token_t *token, I64 length)
 I64 stub_fs_starts, stub_fs_stops, stub_fs_formats, stub_fs_mounts, stub_fs_unmounts;
 I64 stub_fs_checks, stub_fs_stats, stub_fs_repair;
 I32 stub_fs_format_rc, stub_fs_mount_rc;
-
 I32 OS_FileSysStartVolume_Impl(OS_object_token_t *token)
 {
   OS_filesys_internal_record_t *fs;
@@ -627,24 +813,38 @@ I32 OS_FileSysStartVolume_Impl(OS_object_token_t *token)
     StrNCpy(fs->system_mountpt, "/host/ram", OS_MAX_LOCAL_PATH_LEN - 1);
   return OS_SUCCESS;
 }
-I32 OS_FileSysStopVolume_Impl(OS_object_token_t *token) { ++stub_fs_stops; return OS_SUCCESS; }
+
+I32 OS_FileSysStopVolume_Impl(OS_object_token_t *token)
+{
+  ++stub_fs_stops;
+  return OS_SUCCESS;
+}
+
 I32 OS_FileSysFormatVolume_Impl(OS_object_token_t *token)
 {
   ++stub_fs_formats;
   return stub_fs_format_rc;
 }
+
 I32 OS_FileSysMountVolume_Impl(OS_object_token_t *token)
 {
   ++stub_fs_mounts;
   return stub_fs_mount_rc;
 }
-I32 OS_FileSysUnmountVolume_Impl(OS_object_token_t *token) { ++stub_fs_unmounts; return OS_SUCCESS; }
+
+I32 OS_FileSysUnmountVolume_Impl(OS_object_token_t *token)
+{
+  ++stub_fs_unmounts;
+  return OS_SUCCESS;
+}
+
 I32 OS_FileSysCheckVolume_Impl(OS_object_token_t *token, Bool repair)
 {
   ++stub_fs_checks;
   stub_fs_repair = repair;
   return OS_SUCCESS;
 }
+
 I32 OS_FileSysStatVolume_Impl(OS_object_token_t *token, OS_statvfs_t *statbuf)
 {
   ++stub_fs_stats;
@@ -653,7 +853,6 @@ I32 OS_FileSysStatVolume_Impl(OS_object_token_t *token, OS_statvfs_t *statbuf)
   statbuf->blocks_free = 640;
   return OS_SUCCESS;
 }
-
 // Dumps every filesys entry in use, in index order. An earlier draft printed
 // OS_filesys_table[0] and [1] directly and was off by one: OS_ObjectIdFindNextFree starts its
 // search at last_alloc + 1, so the FIRST volume allocated lands at index 1 and slot 0 stays
@@ -681,9 +880,7 @@ U0 fs_dump(U8 *tag)
     ++i;
   }
 }
-
 #include "/Kernel/Cfs/osal/osapi_queue.HC"
-
 // --- osapi-queue.c backend ------------------------------------------------------------------
 // OS_QueueCreate_Impl is handed only (token, flags); the depth and data size the caller passed
 // went into the table record, and a real backend reads them back through the token. The stub
@@ -692,7 +889,6 @@ U0 fs_dump(U8 *tag)
 U32 stub_q_flags, stub_q_put_flags;
 I64 stub_q_depth, stub_q_size, stub_q_put_size, stub_q_timeout;
 I64 stub_q_gets, stub_q_puts;
-
 I32 OS_QueueCreate_Impl(OS_object_token_t *t, U32 flags)
 {
   OS_queue_internal_record_t *q;
@@ -702,7 +898,12 @@ I32 OS_QueueCreate_Impl(OS_object_token_t *t, U32 flags)
   stub_q_size = q->max_size;
   return OS_SUCCESS;
 }
-I32 OS_QueueDelete_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+
+I32 OS_QueueDelete_Impl(OS_object_token_t *t)
+{
+  return OS_SUCCESS;
+}
+
 I32 OS_QueueGet_Impl(OS_object_token_t *t, U8 *data, I64 size, I64 *size_copied, I32 timeout)
 {
   *size_copied = size;
@@ -710,6 +911,7 @@ I32 OS_QueueGet_Impl(OS_object_token_t *t, U8 *data, I64 size, I64 *size_copied,
   ++stub_q_gets;
   return OS_SUCCESS;
 }
+
 I32 OS_QueuePut_Impl(OS_object_token_t *t, U8 *data, I64 size, U32 flags)
 {
   stub_q_put_size = size;
@@ -717,8 +919,6 @@ I32 OS_QueuePut_Impl(OS_object_token_t *t, U8 *data, I64 size, U32 flags)
   ++stub_q_puts;
   return OS_SUCCESS;
 }
-
-
 // Counts what OS_ForEachObject visits.
 I64 foreach_count;
 U0 foreach_cb(U32 id, U8 *arg)
@@ -743,22 +943,22 @@ U0 Hx(U8 *tag, I64 v)
     }
   }
 }
-
 // THE RECORDING STUB BACKEND, matching the C oracle's. A fixed, made-up clock and fixed heap
 // numbers, so the transcript asserts the portable layer's validation and dispatch rather than
 // anything about a real clock -- a real one would make the transcript unreproducible, which is
 // the opposite of what a gate needs.
 I64 stub_setlocal_calls;
-
 I32 OS_GetMonotonicTime_Impl(OS_time_t *time_struct)
 {
-  time_struct->ticks = 1234500000; // 123.45 s at 100 ns per tick
+  time_struct->ticks = 1234500000;
+  // 123.45 s at 100 ns per tick
   return OS_SUCCESS;
 }
 
 I32 OS_GetLocalTime_Impl(OS_time_t *time_struct)
 {
-  time_struct->ticks = 500000000; // 50 s
+  time_struct->ticks = 500000000;
+  // 50 s
   return OS_SUCCESS;
 }
 
@@ -824,6 +1024,7 @@ I64 main()
   D(OS_StatusToString(-1, NULL) == NULL);
   S("]\n");
   // --- osapi-version.c ---------------------------------------------------------------
+  
   {
     U8 vn[4];
     OS_GetVersionNumber(vn);
@@ -846,8 +1047,8 @@ I64 main()
     D(OS_GetBuildNumber);
     S("\n");
   }
-
   // --- osapi-clock.c -----------------------------------------------------------------
+  
   {
     OS_time_t t, a, b, r;
     OS_heap_prop_t hp;
@@ -906,7 +1107,8 @@ I64 main()
     S("torelmx ");
     D(OS_TimeToRelativeMilliseconds(t));
     S("\n");
-    t.ticks = 500000000 + 250 * OS_TIME_TICKS_PER_MSEC; // 250 ms past the stub clock
+    t.ticks = 500000000 + 250 * OS_TIME_TICKS_PER_MSEC;
+    // 250 ms past the stub clock
     S("torel250 ");
     D(OS_TimeToRelativeMilliseconds(t));
     S("\n");
@@ -953,8 +1155,8 @@ I64 main()
     D(rc);
     S("\n");
   }
-
   // --- osapi-idmap.c -------------------------------------------------------------------
+  
   {
     OS_object_token_t token;
     OS_object_token_t token2;
@@ -1078,8 +1280,7 @@ I64 main()
     D(foreach_count);
     S("\n");
     foreach_count = 0;
-    OS_ForEachObjectOfType(OS_OBJECT_TYPE_OS_TASK, OS_ObjectIdFromInteger(0x99999), &foreach_cb,
-                           NULL);
+    OS_ForEachObjectOfType(OS_OBJECT_TYPE_OS_TASK, OS_ObjectIdFromInteger(0x99999), &foreach_cb, NULL);
     S("foreach_other ");
     D(foreach_count);
     S("\n");
@@ -1103,6 +1304,7 @@ I64 main()
     // per allocation and starts at 0, so crossing 0xFFFF takes 65535 of them. After the reset
     // the serial is small again; without it, it climbs past the 16-bit field and corrupts the
     // type bits above it.
+    
     {
       I64 n;
       U32 wrapped = 0;
@@ -1110,8 +1312,7 @@ I64 main()
         if (OS_ObjectIdAllocateNew(OS_OBJECT_TYPE_OS_TASK, NULL, &token) != OS_SUCCESS)
           break;
         OS_ObjectIdFinalizeNew(OS_SUCCESS, &token, &wrapped);
-        if (OS_ObjectIdGetById(OS_LOCK_MODE_EXCLUSIVE, OS_OBJECT_TYPE_OS_TASK, wrapped, &token) ==
-            OS_SUCCESS)
+        if (OS_ObjectIdGetById(OS_LOCK_MODE_EXCLUSIVE, OS_OBJECT_TYPE_OS_TASK, wrapped, &token) == OS_SUCCESS)
           OS_ObjectIdFinalizeDelete(OS_SUCCESS, &token);
       }
       S("wrap_n  ");
@@ -1129,8 +1330,8 @@ I64 main()
     D(stub_wait_calls);
     S("\n");
   }
-
   // --- osapi-countsem.c ----------------------------------------------------------------
+  
   {
     U32 sid, found;
     OS_count_sem_prop_t prop;
@@ -1215,10 +1416,10 @@ I64 main()
     D(OS_CountSemGive(sid));
     S("\n");
   }
-
   // --- the rest of the resource family --------------------------------------------------
   // Five modules identical in shape from outside, driven through the same sequence so a
   // divergence in any one shows up against its siblings.
+  
   {
     U32 mid, bid, rid, vid, found;
     OS_mut_sem_prop_t mprop;
@@ -1355,7 +1556,6 @@ I64 main()
     D(OS_CondVarDelete(vid));
     S("\n");
   }
-
   // --- osapi-queue.c -------------------------------------------------------------------------
   // The Get and Put size checks are ASYMMETRIC and easy to get backwards:
   //     Get rejects a buffer SMALLER than max_size  (size < max_size)
@@ -1364,6 +1564,7 @@ I64 main()
   // max_size-1, max_size and max_size+1, and the RETURN CODE is printed rather than pass/fail,
   // because the size-parameter check returns OS_ERR_INVALID_SIZE while the max_size mismatch
   // returns OS_QUEUE_INVALID_SIZE -- confusing the two would survive any "it rejected it" test.
+  
   {
     U32 qid, qid2, qfound;
     OS_queue_prop_t qprop;
@@ -1372,7 +1573,6 @@ I64 main()
     U8 qlong[OS_MAX_API_NAME + 8];
     I64 i;
     I32 r3, r4;
-
     OS_QueueAPI_Init;
     r3 = OS_QueueCreate(&qid, "qA", 4, 16, 0xA5);
     S("q_create rc=");
@@ -1383,7 +1583,6 @@ I64 main()
     S(" size=");
     D(stub_q_size);
     S("\n");
-
     S("q_put_lt rc=");
     D(OS_QueuePut(qid, "p", 15, 0x77));
     S("\n");
@@ -1399,7 +1598,6 @@ I64 main()
     D(stub_q_put_size);
     Hx(" fl=", stub_q_put_flags);
     S("\n");
-
     // Poisoned, not zeroed: OS_QueueGet writes *size_copied = 0 on the reject path, and a
     // destination that started at 0 would let a missing store pass blind.
     cp = 0xEE;
@@ -1428,7 +1626,6 @@ I64 main()
     S(" timeout=");
     D(stub_q_timeout);
     S("\n");
-
     // A BAD SIZE is a different code from a size that merely mismatches max_size.
     cp = 0xEE;
     r3 = OS_QueuePut(qid, "p", 0, 0);
@@ -1449,7 +1646,6 @@ I64 main()
     S(" get=");
     D(r4);
     S("\n");
-
     r3 = OS_QueueCreate(NULL, "x", 4, 16, 0);
     S("q_nullid   rc=");
     D(r3);
@@ -1488,7 +1684,6 @@ I64 main()
     S("q_nullcp   rc=");
     D(r3);
     S("\n");
-
     r3 = OS_QueueGetIdByName(&qfound, "qA");
     S("q_byname   rc=");
     D(r3);
@@ -1515,7 +1710,6 @@ I64 main()
     D(OS_QueuePut(qid, "p", 4, 0));
     S("\n");
   }
-
   // --- osapi-task.c --------------------------------------------------------------------------
   // Three things here are easy to get wrong and invisible to a "did it return 0" test:
   //   - SetPriority writes the table ONLY when the backend succeeded, so the failing case must
@@ -1525,6 +1719,7 @@ I64 main()
   //     it after FinalizeDelete and the transcript did not change.);
   //   - FindIdBySystemData returns the backend's validation error EARLY, before any search, so
   //     a wrong size must not reach the match function.
+  
   {
     U32 tid, tid2, tfound;
     OS_task_prop_t tprop;
@@ -1532,12 +1727,10 @@ I64 main()
     U32 want;
     I64 i;
     I32 r5;
-
     // The C gives these static initialisers; HolyC globals are zero-filled, so the two that are
     // not zero have to be set here or the transcripts diverge for a harness reason.
     stub_t_setprio_rc = OS_SUCCESS;
     stub_t_sysdata_want = 4;
-
     OS_TaskAPI_Init;
     r5 = OS_TaskCreate(&tid, "tA", &task_entry_a, NULL, 4096, 100, 0x11);
     S("t_create  rc=");
@@ -1556,7 +1749,6 @@ I64 main()
     S(" prio=");
     D(tprop.priority);
     S("\n");
-
     r5 = OS_TaskCreate(NULL, "x", &task_entry_a, NULL, 16, 1, 0);
     S("t_nullid   rc=");
     D(r5);
@@ -1581,7 +1773,6 @@ I64 main()
     S("t_zerostk  rc=");
     D(OS_TaskCreate(&tid2, "tB", &task_entry_a, NULL, 0, 1, 0));
     S("\n");
-
     r5 = OS_TaskGetIdByName(&tfound, "tA");
     S("t_byname   rc=");
     D(r5);
@@ -1591,7 +1782,6 @@ I64 main()
     S("t_byname_miss rc=");
     D(OS_TaskGetIdByName(&tfound, "nope"));
     S("\n");
-
     // Priority: the backend succeeds, so the table must take the new value.
     r5 = OS_TaskSetPriority(tid, 55);
     S("t_prio_ok  rc=");
@@ -1616,14 +1806,12 @@ I64 main()
     D(tprop.priority);
     S("\n");
     stub_t_setprio_rc = OS_SUCCESS;
-
     r5 = OS_TaskDelay(250);
     S("t_delay    rc=");
     D(r5);
     S(" ms=");
     D(stub_t_delay);
     S("\n");
-
     // "Who am I" drives GetId and InstallDeleteHandler, both of which ask the backend.
     stub_t_current = tid;
     S("t_getid    match=");
@@ -1632,7 +1820,6 @@ I64 main()
     S("t_hook_in  rc=");
     D(OS_TaskInstallDeleteHandler(&task_delete_hook));
     S("\n");
-
     // FindIdBySystemData: the wrong size must not reach the match function.
     want = OS_ObjectIdToInteger(tid);
     S("t_sysbad   rc=");
@@ -1648,7 +1835,6 @@ I64 main()
     S("t_sysnull  rc=");
     D(r5);
     S("\n");
-
     // Delete runs the hook that was installed above, exactly once.
     r5 = OS_TaskDelete(tid);
     S("t_delete   rc=");
@@ -1661,7 +1847,6 @@ I64 main()
     S("t_stale    rc=");
     D(OS_TaskDelete(tid));
     S("\n");
-
     // OS_TaskEntryPoint is what the backend calls in the new thread: it prepares the task, runs
     // the entry function, then exits -- which detaches and finalizes.
     OS_TaskCreate(&tid2, "tB", &task_entry_a, NULL, 2048, 60, 0);
@@ -1683,7 +1868,6 @@ I64 main()
     D(r5);
     S("\n");
   }
-
   // --- osapi-network.c, osapi-shell.c, osapi-task-affinity.c -----------------------------------
   // Each of these has one thing worth asserting beyond "it dispatched":
   //   network: on backend FAILURE, OS_NetworkGetHostName blanks the caller's buffer, and
@@ -1692,15 +1876,14 @@ I64 main()
   //   affinity: OS_TaskAffinityGetCoresConfigured asks the BACKEND while
   //            OS_TaskAffinityCoresConfigured returns what OSAL recorded -- two functions one
   //            character apart in meaning, exactly the kind of pair a template gets wrong.
+  
   {
     U8 hname[32];
     OS_cpuset_t cpuset;
     U32 atid;
     I32 r6;
-
     stub_n_host_rc = OS_SUCCESS;
     stub_n_id_rc = OS_SUCCESS;
-
     S("net_init  rc=");
     D(OS_NetworkAPI_Init);
     S("\n");
@@ -1744,7 +1927,6 @@ I64 main()
     D(stub_n_idcalls);
     S("\n");
     stub_n_id_rc = OS_SUCCESS;
-
     r6 = OS_ShellOutputToFile(NULL, 1);
     S("sh_null   rc=");
     D(r6);
@@ -1754,7 +1936,6 @@ I64 main()
     S(" n=");
     D(stub_sh_calls);
     S("\n");
-
     S("af_cores  impl=");
     D(OS_TaskAffinityGetCoresConfigured);
     S(" recorded=");
@@ -1797,7 +1978,6 @@ I64 main()
     D(stub_af_gets);
     S("\n");
   }
-
   // --- mutex and rwlock OWNERSHIP ---------------------------------------------------------------
   // These fields, and every check that reads them, were MISSING from the translation and no
   // behavioural gate noticed: nothing exposes last_owner through the public API, and the
@@ -1807,16 +1987,15 @@ I64 main()
   // So the backend reads them, as a real one can. Take must RECORD the caller and Give must
   // CLEAR it -- and the order matters: Take_Impl runs BEFORE the store so it sees the old
   // value, while Give_Impl runs AFTER the clear and sees UNDEFINED.
+  
   {
     U32 owner_mid, owner_rid, mxi, rwi;
     I32 r7;
-
     stub_t_current = 0x10007;
     OS_MutSemCreate(&owner_mid, "mxOwn", 0);
     OS_RwLockCreate(&owner_rid, "rwOwn", 0);
     OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_MUTEX, owner_mid, &mxi);
     OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_RWLOCK, owner_rid, &rwi);
-
     r7 = OS_MutSemTake(owner_mid);
     S("mx_take   rc=");
     D(r7);
@@ -1832,7 +2011,6 @@ I64 main()
     S(" seen_after=");
     D(stub_mx_owner_at_give);
     S("\n");
-
     // Taken by one task, given by another: NASA logs a warning (a no-op here) and clears
     // last_owner regardless, so the clear must still happen.
     OS_MutSemTake(owner_mid);
@@ -1843,7 +2021,6 @@ I64 main()
     S(" seen_after=");
     D(stub_mx_owner_at_give);
     S("\n");
-
     S("rw_wtake  rc=");
     D(OS_RwLockWriteTake(owner_rid));
     S("\n");
@@ -1867,12 +2044,12 @@ I64 main()
     S("\n");
     stub_t_current = 0x10001;
   }
-
   // --- osapi-filesys.c ---------------------------------------------------------------------
   // The richest part is OS_TranslatePath, pure string logic with several ways to fail, and
   // OS_FileSys_FindVirtMountPoint underneath it -- whose whole reason for existing is that a
   // mount point of /mnt must NOT match a target of /mntx. The flag arithmetic in
   // mount/unmount is the other half: both mask out FIXED and then demand an EXACT flag set.
+  
   {
     U32 fsid;
     OS_statvfs_t sb;
@@ -1882,15 +2059,12 @@ I64 main()
     U8 longpath[OS_MAX_PATH_LEN + 8];
     I64 i;
     I32 r8;
-
     stub_fs_format_rc = OS_SUCCESS;
     stub_fs_mount_rc = OS_SUCCESS;
-
     OS_FileSysAPI_Init;
     S("fs_init   rc=");
     D(OS_FileSysAPI_Init);
     S("\n");
-
     // mkfs FORMATS, initfs does not -- the one difference between them.
     r8 = OS_mkfs(NULL, "/dev/ram0", "RAMDISK", 512, 1000);
     S("fs_mkfs   rc=");
@@ -1911,7 +2085,6 @@ I64 main()
     // RAM-disk detection: volname beginning "RAM" OR a non-NULL address. "OTHER" above got
     // neither, so the two entries must differ in fstype.
     fs_dump("fs_tbl  ");
-
     // Same device again: ALLOCATE fails and the historic code is substituted.
     S("fs_again  rc=");
     D(OS_mkfs(NULL, "/dev/ram0", "RAMDISK", 512, 1000));
@@ -1923,7 +2096,6 @@ I64 main()
     S("fs_nulldv rc=");
     D(r8);
     S("\n");
-
     // A failed format must STOP the volume again rather than leave it half-made.
     stub_fs_format_rc = OS_ERROR;
     r8 = OS_mkfs(NULL, "/dev/ram2", "RAMDISK", 512, 1000);
@@ -1933,7 +2105,6 @@ I64 main()
     D(stub_fs_stops);
     S("\n");
     stub_fs_format_rc = OS_SUCCESS;
-
     // mount: every failure is collapsed to OS_ERR_NAME_NOT_FOUND, including the
     // INCORRECT_OBJ_STATE and PATH_INVALID computed inside.
     S("fs_mntbad rc=");
@@ -1948,7 +2119,6 @@ I64 main()
     S("fs_mnttwi rc=");
     D(OS_mount("/dev/ram0", "/mnt"));
     S("\n");
-
     // TranslatePath, once something is mounted at /mnt.
     MemSet(local, 0, sizeof(local));
     r8 = OS_TranslatePath("/mnt/file.txt", local);
@@ -1998,7 +2168,6 @@ I64 main()
     S("tp_prefix rc=");
     D(OS_TranslatePath("/mntx/file", local));
     S("\n");
-
     r8 = OS_FS_GetPhysDriveName(phys, "/mnt");
     S("fs_phys   rc=");
     D(r8);
@@ -2026,7 +2195,6 @@ I64 main()
     S(" n=");
     D(stub_fs_checks);
     S("\n");
-
     r8 = OS_GetFsInfo(&fsinfo);
     S("fs_info   rc=");
     D(r8);
@@ -2037,7 +2205,6 @@ I64 main()
     S(" maxfd=");
     D(fsinfo.MaxFds);
     S("\n");
-
     // A fixed map sets FIXED|READY|MOUNTED_* in one go and keeps its phys_path.
     S("fs_fixed  rc=");
     D(OS_FileSysAddFixedMap(&fsid, "/host/eeprom", "/eeprom"));
@@ -2050,7 +2217,6 @@ I64 main()
     S(" [");
     S(local);
     S("]\n");
-
     // FIXED is MASKED OUT of mount's flag check rather than rejected -- NASA's comment says
     // fixed maps "don't support mount/unmount" but that this is not enforced, to support
     // abstraction. Unmounting the fixed map leaves its flags at exactly FIXED|READY, which is
@@ -2085,7 +2251,6 @@ I64 main()
     D(OS_rmfs("/dev/ram0"));
     S("\n");
   }
-
   // --- osapi-file.c ---------------------------------------------------------------------------
   // OS_cp is the centrepiece: a read/write loop where the backend returns SHORT writes, so the
   // inner `while (wr_total < rd_size)` retry loop is what stands between a correct copy and
@@ -2095,13 +2260,13 @@ I64 main()
   // This section also makes OS_ShellOutputToFile's REFCOUNT lock mode reachable for the first
   // time: until osapi-file.c was translated nothing could allocate a stream, so that call only
   // ever hit its bad-id path.
+  
   {
     U32 fd, fd2;
     OS_file_prop_t fprop;
     os_fstat_t fstat;
     I64 i, sum;
     I32 r9;
-
     stub_f_wrchunk = 100;
     stub_f_open_rc = OS_SUCCESS;
     i = 0;
@@ -2113,13 +2278,11 @@ I64 main()
     S("f_init    rc=");
     D(OS_FileAPI_Init);
     S("\n");
-
     // /mnt is not mounted at this point -- fs_unmnt ran above -- so remount it, otherwise every
     // path here fails translation instead of testing the file layer.
     S("f_remount rc=");
     D(OS_mount("/dev/ram1", "/mnt"));
     S("\n");
-
     S("f_badmode rc=");
     D(OS_OpenCreate(&fd, "/mnt/a.txt", OS_FILE_FLAG_NONE, 99));
     S("\n");
@@ -2151,7 +2314,6 @@ I64 main()
     S(" missing=");
     D(OS_FileOpenCheck("/mnt/zz.txt"));
     S("\n");
-
     // The shell now has a real stream to write to: REFCOUNT is finally exercised.
     r9 = OS_ShellOutputToFile("ls", fd);
     S("f_shell   rc=");
@@ -2159,7 +2321,6 @@ I64 main()
     S(" n=");
     D(stub_sh_calls);
     S("\n");
-
     r9 = OS_lseek(fd, 1234, 0);
     S("f_seek    rc=");
     D(r9);
@@ -2200,7 +2361,6 @@ I64 main()
     S(" n=");
     D(stub_f_removes);
     S("\n");
-
     // rename rewrites the recorded name of any OPEN stream naming the old file.
     r9 = OS_rename("/mnt/a.txt", "/mnt/b.txt");
     S("f_rename  rc=");
@@ -2228,7 +2388,6 @@ I64 main()
     S("f_stale   rc=");
     D(OS_close(fd));
     S("\n");
-
     // THE COPY. Short writes make the inner loop load-bearing.
     stub_f_rdpos = 0;
     stub_f_wrpos = 0;
@@ -2258,7 +2417,6 @@ I64 main()
     S("f_cpnull  rc=");
     D(r9);
     S("\n");
-
     // mv tries rename first and only falls back to copy when it fails.
     stub_f_rdpos = 0;
     stub_f_wrpos = 0;
@@ -2270,7 +2428,6 @@ I64 main()
     S(" wrote=");
     D(stub_f_wrpos);
     S("\n");
-
     // Open two, then close by name and close-all.
     OS_OpenCreate(&fd, "/mnt/one.txt", OS_FILE_FLAG_NONE, OS_READ_ONLY);
     OS_OpenCreate(&fd2, "/mnt/two.txt", OS_FILE_FLAG_NONE, OS_READ_ONLY);
@@ -2290,19 +2447,18 @@ I64 main()
     D(OS_CloseAllFiles);
     S("\n");
   }
-
   // --- osapi-dir.c ----------------------------------------------------------------------------
   // THREE DIFFERENT LOCK MODES in one module, and the transcript can see them through the
   // reference accounting: Close is EXCLUSIVE, Read is GLOBAL and releases, Rewind is NONE and
   // does NOT release because NONE took nothing. Rewinding several times and then closing is the
   // test -- a real lock without a release would leak a reference each call and the EXCLUSIVE
   // close afterwards could not succeed.
+  
   {
     U32 did;
     os_dirent_t dent;
     I64 i;
     I32 rA;
-
     OS_DirAPI_Init;
     S("d_init    rc=");
     D(OS_DirAPI_Init);
@@ -2389,19 +2545,18 @@ I64 main()
     D(stub_d_removes);
     S("\n");
   }
-
   // --- osapi-select.c -------------------------------------------------------------------------
   // Bit arithmetic over a fixed set: local_id >> 3 picks the byte and (local_id & 0x7) the bit.
   // The four stream ids used here land at indices 6, 7, 8 and 9 -- deliberately spanning a byte
   // boundary, because an index split using the wrong shift or mask would put two of them in the
   // same place and adding one would appear to add another.
+  
   {
     OS_FdSet rset;
     U32 sfd[4];
     U32 flags;
     I64 i;
     I32 rB, rC, rD, rE;
-
     S("sel_zero  rc=");
     D(OS_SelectFdZero(&rset));
     S("\n");
@@ -2468,7 +2623,6 @@ I64 main()
     S(" isset=");
     D(OS_SelectFdIsSet(&rset, 0x66009999));
     S("\n");
-
     flags = OS_STREAM_STATE_WRITABLE;
     rB = OS_SelectSingle(sfd[0], &flags, 250);
     S("sel_single rc=");
@@ -2510,18 +2664,17 @@ I64 main()
       ++i;
     }
   }
-
   // --- osapi-module.c -------------------------------------------------------------------------
   // OSAL_CONFIG_INCLUDE_STATIC_LOADER is not set here, so the static symbol table pointer is
   // NULL, both `while (StaticSym != NULL)` loops never run, and the two helpers return their
   // INITIAL values. Those initialisers are the whole observable behaviour of static lookup in
   // this configuration, so the transcript pins them directly rather than inferring them.
+  
   {
     U32 mid;
     OS_module_prop_t minfo;
     U64 addr;
     I32 rF;
-
     stub_m_sym_rc = OS_ERR_NOT_IMPLEMENTED;
     OS_ModuleAPI_Init;
     S("m_init    rc=");
@@ -2534,7 +2687,6 @@ I64 main()
     S("m_stload  rc=");
     D(OS_ModuleLoad_Static("any"));
     S("\n");
-
     rF = OS_ModuleLoad(NULL, "m1", "/mnt/m1.o", 0);
     S("m_nullid  rc=");
     D(rF);
@@ -2577,7 +2729,6 @@ I64 main()
     S("m_nullinfo rc=");
     D(rF);
     S("\n");
-
     // Symbol lookup: the backend's error survives, because the static table never succeeds and
     // NASA only overwrites on success.
     addr = 0;
@@ -2617,7 +2768,6 @@ I64 main()
     S("m_modsymbad rc=");
     D(OS_ModuleSymbolLookup(0x0A009999, &addr, "s"));
     S("\n");
-
     rF = OS_SymbolTableDump("/mnt/syms.txt", 4096);
     S("m_dump    rc=");
     D(rF);
@@ -2634,7 +2784,6 @@ I64 main()
     S(" n=");
     D(stub_m_dumps);
     S("\n");
-
     // A DYNAMIC module calls the backend on unload; a static one would not.
     rF = OS_ModuleUnload(mid);
     S("m_unload  rc=");

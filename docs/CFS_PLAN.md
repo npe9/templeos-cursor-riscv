@@ -214,6 +214,19 @@ triple TempleOS's own `StrPrintJoin` takes, which is what a HolyC variadic recei
   `last_writer`, and with them the entire ownership-tracking logic in `OS_MutSemGive`/`Take`
   and the rwlock give/take paths. All four earlier checks passed on that code.
 
+#### `Kernel/Cfs/**` is exempt from the HolyC formatter
+
+`tests/scripts/holyc_fmt_paths.sh` enforces `holyc-riscv --fmt` over 487 files and **none** of
+them is under `Kernel/Cfs/`. That is worth stating because it is a real gap in a large body of
+code — about 7,000 translated lines — and because there is a defensible reason for it: the
+formatter reflows code, and a 1:1 translation is read side by side with NASA's C, so keeping
+NASA's line structure is worth more here than house style. If that exemption is ever removed,
+expect the whole translation to reflow in one commit.
+
+The oracle DRIVERS under `tests/exec/cases/` are NOT exempt, and three of them had drifted out
+of format while being appended to all day. Formatting them changed `osal_xlat_errors.hc` by 149
+lines, so all three gates were re-run afterwards: 135, 316 and 16 identical lines, unchanged.
+
 Six properties are gated independently, because each is blind to what the others catch:
 
 | check | what it proves | what it cannot see |

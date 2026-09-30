@@ -5,7 +5,6 @@
 // "bugcheck" marker stub cannot coexist with it. This driver never triggers a BUGCHECK.
 // Standalone on purpose -- no kernel includes.
 #include "/Kernel/Cfs/osal/os_shared_errors.HC"
-
 // --- the four TempleOS primitives the KERNEL provides ------------------------------------------
 // This harness is standalone by design -- no kernel is linked, because the only thing under test
 // is the translation -- so MemSet, MemCpy, StrCmp and StrLen have to be supplied here. They are
@@ -31,6 +30,7 @@ U8 *MemSet(U8 *dst, I64 dat, I64 size)
   }
   return dst;
 }
+
 U8 *MemCpy(U8 *dst, U8 *src, I64 size)
 {
   I64 i = 0;
@@ -40,6 +40,7 @@ U8 *MemCpy(U8 *dst, U8 *src, I64 size)
   }
   return dst;
 }
+
 I64 StrLen(U8 *st)
 {
   I64 n = 0;
@@ -47,6 +48,7 @@ I64 StrLen(U8 *st)
     n++;
   return n;
 }
+
 I64 StrCmp(U8 *st1, U8 *st2)
 {
   I64 i = 0;
@@ -93,44 +95,57 @@ U0 D(I64 v)
     S(one);
   }
 }
-
 // The backend's error-name table, empty as a bare-metal target's is. It must be defined BEFORE
 // the portable layer that walks it -- see os_shared_errors.HC for why include order does a
 // linker's job here.
 OS_ErrorTable_Entry OS_IMPL_ERROR_NAME_TABLE[1] = {{0, NULL}};
-
-
 // OS_SharedGlobalVars, OS_NotifyEvent, OS_strnlen, OS_MAX_EVENT_HANDLER and
 // OS_INIT_MAGIC_NUMBER all come from osapi_common.HC, which osapi_idmap.HC includes. An earlier
 // draft of this file declared its own stand-ins for them, as the C oracle must, and they
 // collided: HolyC has no separate compilation, so the include order already supplies them.
-
 #include "/Kernel/Cfs/osal/osapi_errors.HC"
-
 // The real backend calls osapi-idmap.c makes; no-ops, single-threaded transcript.
-U0 OS_Lock_Global_Impl(U32 idtype) { }
-U0 OS_Unlock_Global_Impl(U32 idtype) { }
-U0 OS_WaitForStateChange_Impl(U32 idtype, U32 attempts) { }
-U32 OS_TaskGetId_Impl() { return 0x10001; }
-U32 OS_TaskGetId() { return 0x10001; }
+U0 OS_Lock_Global_Impl(U32 idtype)
+{
+}
 
+U0 OS_Unlock_Global_Impl(U32 idtype)
+{
+}
+
+U0 OS_WaitForStateChange_Impl(U32 idtype, U32 attempts)
+{
+}
+
+U32 OS_TaskGetId_Impl()
+{
+  return 0x10001;
+}
+
+U32 OS_TaskGetId()
+{
+  return 0x10001;
+}
 #include "/Kernel/Cfs/osal/osapi_idmap.HC"
 #include "/Kernel/Cfs/osal/os_shared_console.HC"
 #include "/Kernel/Cfs/osal/osapi_printf.HC"
-
 // --- the console backend ----------------------------------------------------------------------
 // A real backend drains the ring from ReadPos to WritePos and pushes the bytes at the device.
 // This one does the same, and can be told to STOP draining -- which is what a slow consumer
 // looks like, and the only way to reach the ring-full path with a 17,300 byte buffer.
 I64 stub_c_creates, stub_c_wakeups, stub_c_outputs, stub_c_drain, stub_c_drained;
 U8 stub_c_last[64];
-
 I32 OS_ConsoleCreate_Impl(OS_object_token_t *token)
 {
   ++stub_c_creates;
   return OS_SUCCESS;
 }
-U0 OS_ConsoleWakeup_Impl(OS_object_token_t *token) { ++stub_c_wakeups; }
+
+U0 OS_ConsoleWakeup_Impl(OS_object_token_t *token)
+{
+  ++stub_c_wakeups;
+}
+
 U0 OS_ConsoleOutput_Impl(OS_object_token_t *token)
 {
   OS_console_internal_record_t *console;
@@ -155,7 +170,6 @@ U0 OS_ConsoleOutput_Impl(OS_object_token_t *token)
   stub_c_last[n] = 0;
 }
 
-
 I64 main()
 {
   OS_console_internal_record_t *c;
@@ -163,9 +177,7 @@ I64 main()
   I64 i, wp;
   I32 r;
   U8 big[400];
-
   stub_c_drain = 1;
-
   // OS_printf BEFORE init. GlobalState is not the magic number yet, so NASA routes the message
   // to OS_DEBUG -- a no-op unless OSAL_CONFIG_DEBUG_PRINTF is set, and it is not in this build.
   OS_printf("dropped before init\n");
@@ -174,7 +186,6 @@ I64 main()
   S(" drained=");
   D(stub_c_drained);
   S("\n");
-
   OS_SharedGlobalVars.GlobalState = OS_INIT_MAGIC_NUMBER;
   OS_ObjectIdInit;
   r = OS_ConsoleAPI_Init;
@@ -193,7 +204,6 @@ I64 main()
   S(" name0=");
   D(c->device_name[0]);
   S("\n");
-
   // A formatted write. The BYTES are checked, not just the counters -- the point of routing
   // through the real ring buffer.
   OS_printf("hi %s %d %u\n", "there", -7, 42);
@@ -211,7 +221,6 @@ I64 main()
   S(" ovf=");
   D(c->OverflowEvents);
   S("\n");
-
   // Disabled: PrintfEnabled gates at the top of OS_printf, so nothing reaches the ring.
   OS_printf_disable;
   OS_printf("must not appear\n");
@@ -229,13 +238,11 @@ I64 main()
   S(" [");
   S(stub_c_last);
   S("]\n");
-
   // A bad console id never reaches the ring.
   badid = 0x12345678;
   S("badid     rc=");
   D(OS_ConsoleWrite(badid, "x"));
   S("\n");
-
   // THE RING-FULL PATH. Stop draining, then write until a message does not fit. The property is
   // ALL-OR-NOTHING: on the failing write, OverflowEvents goes up and WritePos does NOT move, so
   // the ring holds whole messages only and never a truncated tail.
@@ -262,7 +269,6 @@ I64 main()
   S(" ovf=");
   D(c->OverflowEvents);
   S("\n");
-
   // Drain it all, then confirm the ring is reusable and WRAPS: ReadPos and WritePos come back to
   // the same place only if the modular arithmetic in CopyOut is right.
   stub_c_drain = 1;
@@ -280,7 +286,6 @@ I64 main()
   S(" wr=");
   D(c->WritePos);
   S("\n");
-
   // Truncation: OS_BUFFER_SIZE is 172, so a longer message is cut to 171 characters plus a NUL.
   // The count is what proves the cut, and it is NASA's constant doing it.
   MemSet(big, 'A', sizeof(big) - 1);

@@ -3,7 +3,6 @@
 // unmodified C. The gate diffs the two. Standalone on purpose -- no kernel includes -- so the
 // only thing under test is the translation and the compiler.
 #include "/Kernel/Cfs/cfe/cfe_msg_msgid_v1.HC"
-
 // --- the four TempleOS primitives the KERNEL provides ------------------------------------------
 // This harness is standalone by design -- no kernel is linked, because the only thing under test
 // is the translation -- so MemSet, MemCpy, StrCmp and StrLen have to be supplied here. They are
@@ -29,6 +28,7 @@ U8 *MemSet(U8 *dst, I64 dat, I64 size)
   }
   return dst;
 }
+
 U8 *MemCpy(U8 *dst, U8 *src, I64 size)
 {
   I64 i = 0;
@@ -38,6 +38,7 @@ U8 *MemCpy(U8 *dst, U8 *src, I64 size)
   }
   return dst;
 }
+
 I64 StrLen(U8 *st)
 {
   I64 n = 0;
@@ -45,6 +46,7 @@ I64 StrLen(U8 *st)
     n++;
   return n;
 }
+
 I64 StrCmp(U8 *st1, U8 *st2)
 {
   I64 i = 0;
@@ -141,7 +143,6 @@ U0 Rcv(U8 *label, I32 rc, U8 *key, I64 v)
   D(v);
   S("\n");
 }
-
 // The two symbols the translated units declare and leave to whoever links them. Same values as
 // the C oracle's stubs, so the comparison stays about cFE and not about the platform.
 U32 CFE_PSP_GetProcessorId()
@@ -154,25 +155,21 @@ I32 CFE_ES_WriteToSysLog(U8 *Msg)
   S("syslog\n");
   return 0;
 }
-
 // The C declares this `static const uint32 ARR[3] = {11, 22, 33}` inside its block -- static,
 // so not on the stack. File scope is the faithful HolyC equivalent.
 U32 CFG_ARR[3];
-
 // Counts entries CFE_Config_IterateAll visits.
 I64 cfg_visits;
 U0 cfg_count_cb(U8 *Arg, U32 Id, U8 *Name)
 {
   cfg_visits++;
 }
-
 // Counts how many route ids ForEachRouteId hands back.
 I64 sbr_visits;
 U0 sbr_count_cb(CFE_SBR_RouteId RouteId, U8 *ArgPtr)
 {
   sbr_visits++;
 }
-
 // Check functions for CFE_ResourceId_FindNext. "In use" is serial 6 or 7, chosen so the search
 // has to step over two occupied slots and land on the third -- one occupied slot would pass even
 // if the do-while ran once instead of looping.
@@ -186,7 +183,6 @@ Bool rid_all_in_use(U32 id)
 {
   return TRUE;
 }
-
 // cfe_msg_integrity.HC declares this and the harness supplies it -- the TIME module is not
 // translated yet, and nothing under test depends on what the clock says. Same fixed values as
 // the C oracle's stub.
@@ -197,7 +193,6 @@ CFE_TIME_SysTime CFE_TIME_GetTime()
   t.Subseconds = 0x60708090;
   return t;
 }
-
 // Six lowercase hex digits, to match the C oracle's %06lx.
 U0 Hx6(I64 v)
 {
@@ -210,7 +205,6 @@ U0 Hx6(I64 v)
     S(one);
   }
 }
-
 // Four lowercase hex digits, twice on a line, to match the C oracle's %04lx.
 U0 Hx4(I64 v)
 {
@@ -234,7 +228,6 @@ U0 Hx2(U8 *l1, I64 v1, U8 *l2, I64 v2)
   Hx4(v2);
   S("\n");
 }
-
 // Two out-parameters on one line, for the time round trip.
 U0 Rcv2(U8 *label, I32 rc, U8 *k1, I64 v1, U8 *k2, I64 v2)
 {
@@ -264,52 +257,44 @@ I64 main()
   for (i = 0; i < sizeof(CFE_MSG_Message); i++)
     p[i] = 0;
   Dump("zero", &msg);
-
   Rc("setver  ", CFE_MSG_SetHeaderVersion(&msg, 1));
   Dump("afterver", &msg);
   rc32 = CFE_MSG_GetHeaderVersion(&msg, &ver);
   Rcv("getver  ", rc32, "v", ver);
-
   Rc("settype ", CFE_MSG_SetType(&msg, CFE_MSG_Type_Cmd));
   Dump("aftertype", &msg);
   rc32 = CFE_MSG_GetType(&msg, &type);
   Rcv("gettype ", rc32, "t", type);
-
   Rc("setapid ", CFE_MSG_SetApId(&msg, 0x1AB));
   Dump("afterapid", &msg);
   rc32 = CFE_MSG_GetApId(&msg, &apid);
   Rcv("getapid ", rc32, "a", apid);
-
   Rc("setsec  ", CFE_MSG_SetHasSecondaryHeader(&msg, TRUE));
   rc32 = CFE_MSG_GetHasSecondaryHeader(&msg, &hassec);
   Rcv("getsec  ", rc32, "s", hassec);
   Dump("aftersec", &msg);
-
   Rc("setseg  ", CFE_MSG_SetSegmentationFlag(&msg, CFE_MSG_SegFlag_Unsegmented));
   rc32 = CFE_MSG_GetSegmentationFlag(&msg, &segf);
   Rcv("getseg  ", rc32, "g", segf);
-
   Rc("setseq  ", CFE_MSG_SetSequenceCount(&msg, 0x2345));
   rc32 = CFE_MSG_GetSequenceCount(&msg, &seq);
   Rcv("getseq  ", rc32, "q", seq);
   Dump("afterseq", &msg);
-
   Rc("setsize ", CFE_MSG_SetSize(&msg, 0x100));
   rc32 = CFE_MSG_GetSize(&msg, &size);
   Rcv("getsize ", rc32, "z", size);
   Dump("aftersize", &msg);
-
   Rc("badver  ", CFE_MSG_SetHeaderVersion(&msg, 0xFF));
   Rc("badapid ", CFE_MSG_SetApId(&msg, 0xFFFF));
   Rc("badnull ", CFE_MSG_GetType(NULL, &type));
   Rc("badsize ", CFE_MSG_SetSize(&msg, 0));
   Dump("final", &msg);
-
   // --- cfe_msg_msgid_v1.c plus the SB opaque-id helpers -------------------------------
   // Every CFE_SB_ValueToMsgId result is hoisted into a local rather than passed inline. The
   // result is a class BY VALUE, and nested calls in a non-variadic argument list are a known
   // codegen hazard in this compiler (see the ptr-assign scaling fix). Hoisting costs nothing
   // and keeps the translation's correctness separate from that question.
+  
   {
     CFE_SB_MsgId mid, t;
     I32 rc32;
@@ -337,8 +322,8 @@ I64 main()
     S("\n");
     Dump("midfinal", &msg);
   }
-
   // --- cfe_msg_sechdr_fc.c -------------------------------------------------------------
+  
   {
     CFE_MSG_CommandHeader cmd;
     U16 fc;
@@ -389,6 +374,7 @@ I64 main()
   D(sizeof(CFE_MSG_TelemetryHeader));
   S("\n");
   // --- cfe_msg_sechdr_time.c ----------------------------------------------------------
+  
   {
     CFE_MSG_TelemetryHeader tlm;
     CFE_TIME_SysTime t;
@@ -447,6 +433,7 @@ I64 main()
     S("\n");
   }
   // --- cfe_msg_sechdr_checksum.c ------------------------------------------------------
+  
   {
     CFE_MSG_CommandHeader cmd;
     Bool valid;
@@ -475,6 +462,7 @@ I64 main()
     Rc("csumnull", rc32);
   }
   // --- cfe_msg_init.c, cfe_msg_initdefaulthdr_pri.c, cfe_msg_msgid_shared.c -----------
+  
   {
     U8 buf[32];
     CFE_MSG_Message *mp = buf(CFE_MSG_Message *);
@@ -513,6 +501,7 @@ I64 main()
     Rc("typenull", rc32);
   }
   // --- cfe_msg_integrity.c ------------------------------------------------------------
+  
   {
     CFE_MSG_TelemetryHeader tlm;
     CFE_MSG_CommandHeader cmd;
@@ -565,6 +554,7 @@ I64 main()
     Rc("verinull", rc32);
   }
   // --- cfe_resourceid_api.c -----------------------------------------------------------
+  
   {
     U32 rid;
     U32 idx;
@@ -573,7 +563,7 @@ I64 main()
     // constant is a numeric limit AND a bit mask. HolyC has no static assert, so the property
     // is checked here rather than being silently dropped in translation.
     S("ridmask ");
-    D(((CFE_RESOURCEID_MAX + 1) & CFE_RESOURCEID_MAX) == 0);
+    D (((CFE_RESOURCEID_MAX + 1) & CFE_RESOURCEID_MAX) == 0);
     S("\n");
     S("ridbase ");
     D(base);
@@ -625,8 +615,7 @@ I64 main()
     S("\n");
     // A serial at the top of its range wraps modulo the table size, not to zero.
     S("ridwrap  ");
-    D(CFE_ResourceId_ToInteger(CFE_ResourceId_FindNext(
-        CFE_ResourceId_FromInteger(base + CFE_RESOURCEID_MAX - 1), 4, &rid_in_use)));
+    D(CFE_ResourceId_ToInteger(CFE_ResourceId_FindNext(CFE_ResourceId_FromInteger(base + CFE_RESOURCEID_MAX - 1), 4, &rid_in_use)));
     S("\n");
     S("ridnull  ");
     D(CFE_ResourceId_ToInteger(CFE_ResourceId_FindNextEx(rid, NULL, NULL, &rid_in_use)));
@@ -640,6 +629,7 @@ I64 main()
     S("\n");
   }
   // --- cfe_sb_msg_id_util.c and cfe_sb_util.c ------------------------------------------
+  
   {
     CFE_MSG_CommandHeader cmd;
     CFE_MSG_TelemetryHeader tlm;
@@ -686,6 +676,7 @@ I64 main()
     // HOISTED, not inlined into the prints. GetUserData(NULL) logs through the ES stub, and C
     // evaluates a printf's arguments before printf emits anything -- so the C transcript has
     // "syslog" BEFORE this line and an inline HolyC version puts it in the middle of it.
+    
     {
       Bool nulldata;
       I64 nulllen;
@@ -748,12 +739,11 @@ I64 main()
     // 5, so the type bit of the returned stream id says telemetry. Pinned deliberately.
     Hx2("topic_cmd  i0=", CFE_SB_CmdTopicIdToMsgId(5, 0), " i1=", CFE_SB_CmdTopicIdToMsgId(5, 1));
     Hx2("topic_tlm  i0=", CFE_SB_TlmTopicIdToMsgId(5, 0), " i1=", CFE_SB_TlmTopicIdToMsgId(5, 1));
-    Hx2("topic_glob c=", CFE_SB_GlobalCmdTopicIdToMsgId(5), " t=",
-        CFE_SB_GlobalTlmTopicIdToMsgId(5));
-    Hx2("topic_locl c=", CFE_SB_LocalCmdTopicIdToMsgId(5), " t=",
-        CFE_SB_LocalTlmTopicIdToMsgId(5));
+    Hx2("topic_glob c=", CFE_SB_GlobalCmdTopicIdToMsgId(5), " t=", CFE_SB_GlobalTlmTopicIdToMsgId(5));
+    Hx2("topic_locl c=", CFE_SB_LocalCmdTopicIdToMsgId(5), " t=", CFE_SB_LocalTlmTopicIdToMsgId(5));
   }
   // --- cfe_sbr_map_hash.c and cfe_sbr_route_unsorted.c --------------------------------
+  
   {
     CFE_SBR_RouteId rid, rid2;
     CFE_SBR_Throttle thr;
@@ -764,7 +754,7 @@ I64 main()
     // wrap mask. HolyC's preprocessor has no #error, so the property is checked here rather
     // than quietly dropped in translation.
     S("sbr_pow2 ");
-    D((1024 & (1024 - 1)) == 0);
+    D ((1024 & (1024 - 1)) == 0);
     S("\n");
     // THE HASH IS 32-BIT ARITHMETIC: each step multiplies by 0x45d9f3b and overflows, and the
     // wrap IS the algorithm. A spread on purpose -- 0x0001 hashes the same with and without the
@@ -857,6 +847,7 @@ I64 main()
     S("\n");
   }
   // --- cfe_config_{lookup,get,set,eds_disabled}.c -------------------------------------
+  
   {
     U32 cid;
     CFE_Config_ArrayValue av, avget;
@@ -913,7 +904,7 @@ I64 main()
     S("cfg_arr n=");
     D(avget.NumElements);
     S(" first=");
-    D(*(avget.ElementPtr(U32 *)));
+    D (*(avget.ElementPtr(U32 *)));
     S("\n");
     CFE_Config_GetArrayValue(cid, &avget);
     S("cfg_arrbad n=");
