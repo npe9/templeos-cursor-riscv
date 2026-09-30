@@ -137,3 +137,10 @@ vendor/cFE/
 vendor/osal/
 
 vendor/PSP/
+
+# Claude Code agent worktrees: throwaway checkouts of THIS repo that subagents run in. They
+# contain full copies of the tree, so leaving them untracked but visible makes `git status` and
+# every recursive grep noisy and, worse, makes a stray edit in one look like a real change.
+# ANCHORED to the exact path -- an unanchored `worktrees` or `.claude` pattern has hidden real
+# tooling in this repo three times before.
+/.claude/worktrees/
