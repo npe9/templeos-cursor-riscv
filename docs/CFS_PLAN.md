@@ -125,7 +125,7 @@ to the same architecture; it is not a translation of anything, and it says so.
 
 ### OSAL, measured the same way
 
-**6,656 lines of NASA's 9,447-line shared layer, gated** (70%), computed by
+**7,128 lines of NASA's 9,447-line shared layer, gated** (75%), computed by
 `tools/cfs/check_manifest.py` on every gate run rather than counted here. The denominator is the portable half
 only; the three vendored backends (posix 4,598, vxworks 3,984, rtems 3,543) are reference
 implementations of the seam, not things to translate.
@@ -157,7 +157,7 @@ recipe, not from `ls`.
 | `osapi-file.c` | 685 | **yes** | `OS_cp`'s short-write retry loop; path translation at the backend boundary |
 | `osapi-time.c` | 548 | no | |
 | `osapi-timebase.c` | 538 | no | |
-| `osapi-module.c` | 472 | no | |
+| `osapi-module.c` | 472 | **yes** | the empty static symbol table, and which error survives a failed lookup |
 | `osapi-common.c` | 460 | partial | deliberately last and deliberately ungated: every module translated first is one fewer stub in it |
 | `osapi-dir.c` `-select.c` `-task-affinity.c` `-network.c` `-shell.c` | 740 | no | |
 | `osapi-debug.c` | 76 | **n/a** | NOT in this configuration: `OSAL_SRCLIST` appends it only under `OSAL_CONFIG_DEBUG_PRINTF`, which is `#undef` here — which is also why `OS_DEBUG` is a no-op and pre-init `OS_printf` output is silently discarded |
@@ -205,6 +205,10 @@ triple TempleOS's own `StrPrintJoin` takes, which is what a HolyC variadic recei
   so `f_shell` drives the call down its success path with an open file descriptor.
 - **`flags |= OS_ADD_TASK_FLAGS`** in `OS_TaskCreate`. `OS_ADD_TASK_FLAGS` is 0 in this
   configuration, so deleting the line entirely prints the same `fl=0x11`.
+- **`OS_ModuleUnload`'s static/dynamic guard.** It calls `OS_ModuleUnload_Impl` only for a
+  `DYNAMIC` module, because a `STATIC` one is a placeholder with no file behind it. Nothing can
+  create a static module in this configuration -- the static symbol table is empty -- so the
+  guard cannot be exercised and removing it would not fail the gate.
 - ~~**Struct field parity.**~~ Closed by `tools/cfs/check_structs.py`, which found two more
   omissions the moment it ran: the mutex record was missing `last_owner` and the rwlock record
   `last_writer`, and with them the entire ownership-tracking logic in `OS_MutSemGive`/`Take`

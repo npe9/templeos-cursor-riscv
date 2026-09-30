@@ -421,6 +421,54 @@ I32 OS_TaskAffinityGetAffinity_Impl(OS_object_token_t *token, OS_cpuset_t *cpuse
 #include "/Kernel/Cfs/osal/osapi_filesys.HC"
 #include "/Kernel/Cfs/osal/osapi_file.HC"
 #include "/Kernel/Cfs/osal/osapi_dir.HC"
+#include "/Kernel/Cfs/osal/os_shared_module.HC"
+#include "/Kernel/Cfs/osal/osapi_module.HC"
+
+// --- osapi-module.c backend ---------------------------------------------------------------
+// OS_SymbolLookup_Impl returns a DISTINCT error so the transcript can show which of the two
+// lookups produced the final code: NASA only overwrites the backend's error when the STATIC
+// table succeeds, and with the static loader disabled it never does.
+I64 stub_m_loads, stub_m_unloads, stub_m_infos, stub_m_syms, stub_m_modsyms, stub_m_dumps;
+U8 stub_m_lastpath[OS_MAX_LOCAL_PATH_LEN];
+I64 stub_m_dumplimit;
+I32 stub_m_sym_rc;
+
+I32 OS_ModuleLoad_Impl(OS_object_token_t *token, U8 *translated_path)
+{
+  ++stub_m_loads;
+  StrNCpy(stub_m_lastpath, translated_path, OS_MAX_LOCAL_PATH_LEN - 1);
+  return OS_SUCCESS;
+}
+I32 OS_ModuleUnload_Impl(OS_object_token_t *token) { ++stub_m_unloads; return OS_SUCCESS; }
+I32 OS_ModuleGetInfo_Impl(OS_object_token_t *token, OS_module_prop_t *module_prop)
+{
+  ++stub_m_infos;
+  module_prop->entry_point = 0xC0DE;
+  module_prop->addr.valid = 1;
+  module_prop->addr.code_size = 256;
+  return OS_SUCCESS;
+}
+I32 OS_SymbolLookup_Impl(U64 *SymbolAddress, U8 *SymbolName)
+{
+  ++stub_m_syms;
+  if (StrCmp(SymbolName, "known") == 0) {
+    *SymbolAddress = 0xBEEF;
+    return OS_SUCCESS;
+  }
+  return stub_m_sym_rc;
+}
+I32 OS_ModuleSymbolLookup_Impl(OS_object_token_t *token, U64 *SymbolAddress, U8 *SymbolName)
+{
+  ++stub_m_modsyms;
+  return stub_m_sym_rc;
+}
+I32 OS_SymbolTableDump_Impl(U8 *filename, I64 size_limit)
+{
+  ++stub_m_dumps;
+  StrNCpy(stub_m_lastpath, filename, OS_MAX_LOCAL_PATH_LEN - 1);
+  stub_m_dumplimit = size_limit;
+  return OS_SUCCESS;
+}
 #include "/Kernel/Cfs/osal/osapi_select.HC"
 
 // --- osapi-select.c backend ---------------------------------------------------------------
@@ -2461,6 +2509,142 @@ I64 main()
       OS_close(sfd[i]);
       ++i;
     }
+  }
+
+  // --- osapi-module.c -------------------------------------------------------------------------
+  // OSAL_CONFIG_INCLUDE_STATIC_LOADER is not set here, so the static symbol table pointer is
+  // NULL, both `while (StaticSym != NULL)` loops never run, and the two helpers return their
+  // INITIAL values. Those initialisers are the whole observable behaviour of static lookup in
+  // this configuration, so the transcript pins them directly rather than inferring them.
+  {
+    U32 mid;
+    OS_module_prop_t minfo;
+    U64 addr;
+    I32 rF;
+
+    stub_m_sym_rc = OS_ERR_NOT_IMPLEMENTED;
+    OS_ModuleAPI_Init;
+    S("m_init    rc=");
+    D(OS_ModuleAPI_Init);
+    S("\n");
+    addr = 0;
+    S("m_stsym   rc=");
+    D(OS_SymbolLookup_Static(&addr, "any", NULL));
+    S("\n");
+    S("m_stload  rc=");
+    D(OS_ModuleLoad_Static("any"));
+    S("\n");
+
+    rF = OS_ModuleLoad(NULL, "m1", "/mnt/m1.o", 0);
+    S("m_nullid  rc=");
+    D(rF);
+    S("\n");
+    rF = OS_ModuleLoad(&mid, NULL, "/mnt/m1.o", 0);
+    S("m_nullnm  rc=");
+    D(rF);
+    S("\n");
+    // A bad FILENAME is only enforced after the static lookup misses -- and the object has
+    // already been allocated by then, so the id is consumed either way.
+    rF = OS_ModuleLoad(&mid, "mbad", "relative", 0);
+    S("m_badfile rc=");
+    D(rF);
+    S(" loads=");
+    D(stub_m_loads);
+    S("\n");
+    rF = OS_ModuleLoad(&mid, "m1", "/mnt/m1.o", 0x55);
+    S("m_load    rc=");
+    D(rF);
+    S(" loads=");
+    D(stub_m_loads);
+    S(" [");
+    S(stub_m_lastpath);
+    S("]\n");
+    rF = OS_ModuleInfo(mid, &minfo);
+    S("m_info    rc=");
+    D(rF);
+    S(" [");
+    S(minfo.name);
+    S("] [");
+    S(minfo.filename);
+    S("] ep=");
+    D(minfo.entry_point);
+    S(" valid=");
+    D(minfo.addr.valid);
+    S(" n=");
+    D(stub_m_infos);
+    S("\n");
+    rF = OS_ModuleInfo(mid, NULL);
+    S("m_nullinfo rc=");
+    D(rF);
+    S("\n");
+
+    // Symbol lookup: the backend's error survives, because the static table never succeeds and
+    // NASA only overwrites on success.
+    addr = 0;
+    rF = OS_SymbolLookup(&addr, "known");
+    S("m_sym_ok  rc=");
+    D(rF);
+    S(" addr=");
+    D(addr);
+    S(" n=");
+    D(stub_m_syms);
+    S("\n");
+    rF = OS_SymbolLookup(&addr, "missing");
+    S("m_sym_no  rc=");
+    D(rF);
+    S(" n=");
+    D(stub_m_syms);
+    S("\n");
+    stub_m_sym_rc = OS_ERROR;
+    S("m_sym_err rc=");
+    D(OS_SymbolLookup(&addr, "missing"));
+    S("\n");
+    stub_m_sym_rc = OS_ERR_NOT_IMPLEMENTED;
+    rF = OS_SymbolLookup(NULL, "x");
+    S("m_sym_nulla rc=");
+    D(rF);
+    S("\n");
+    rF = OS_SymbolLookup(&addr, NULL);
+    S("m_sym_nulln rc=");
+    D(rF);
+    S("\n");
+    rF = OS_ModuleSymbolLookup(mid, &addr, "s");
+    S("m_modsym  rc=");
+    D(rF);
+    S(" n=");
+    D(stub_m_modsyms);
+    S("\n");
+    S("m_modsymbad rc=");
+    D(OS_ModuleSymbolLookup(0x0A009999, &addr, "s"));
+    S("\n");
+
+    rF = OS_SymbolTableDump("/mnt/syms.txt", 4096);
+    S("m_dump    rc=");
+    D(rF);
+    S(" [");
+    S(stub_m_lastpath);
+    S("] limit=");
+    D(stub_m_dumplimit);
+    S(" n=");
+    D(stub_m_dumps);
+    S("\n");
+    rF = OS_SymbolTableDump("relative", 4096);
+    S("m_dumpbad rc=");
+    D(rF);
+    S(" n=");
+    D(stub_m_dumps);
+    S("\n");
+
+    // A DYNAMIC module calls the backend on unload; a static one would not.
+    rF = OS_ModuleUnload(mid);
+    S("m_unload  rc=");
+    D(rF);
+    S(" n=");
+    D(stub_m_unloads);
+    S("\n");
+    S("m_unload2 rc=");
+    D(OS_ModuleUnload(mid));
+    S("\n");
   }
   return 0;
 }

@@ -25,6 +25,7 @@
 #include "os-shared-file.h"
 #include "os-shared-dir.h"
 #include "os-shared-select.h"
+#include "os-shared-module.h"
 #include "osapi-task-affinity.h"
 #include "os-shared-countsem.h"
 #include "os-shared-mutex.h"
@@ -40,6 +41,7 @@
 #include "os-shared-file.h"
 #include "os-shared-dir.h"
 #include "os-shared-select.h"
+#include "os-shared-module.h"
 #include "osapi-task-affinity.h"
 
 /* The backend's error-name table. A bare-metal target contributes no OS-specific errors, so
@@ -171,6 +173,55 @@ static uint32 stub_cs_options;
 static int    stub_cs_gives;
 static int    stub_cs_takes;
 static uint32 stub_cs_last_msecs;
+
+/* --- osapi-module.c backend ---------------------------------------------------------------
+ * OS_SymbolLookup_Impl returns a DISTINCT error so the transcript can show which of the two
+ * lookups produced the final code: NASA only overwrites the backend's error when the STATIC
+ * table succeeds, and with the static loader disabled it never does.
+ */
+static int    stub_m_loads, stub_m_unloads, stub_m_infos, stub_m_syms, stub_m_modsyms, stub_m_dumps;
+static char   stub_m_lastpath[OS_MAX_LOCAL_PATH_LEN];
+static int64  stub_m_dumplimit;
+static int32  stub_m_sym_rc = OS_ERR_NOT_IMPLEMENTED;
+
+int32 OS_ModuleLoad_Impl(const OS_object_token_t *token, const char *translated_path)
+{
+    ++stub_m_loads;
+    strncpy(stub_m_lastpath, translated_path, sizeof(stub_m_lastpath) - 1);
+    return OS_SUCCESS;
+}
+int32 OS_ModuleUnload_Impl(const OS_object_token_t *token) { ++stub_m_unloads; return OS_SUCCESS; }
+int32 OS_ModuleGetInfo_Impl(const OS_object_token_t *token, OS_module_prop_t *module_prop)
+{
+    ++stub_m_infos;
+    module_prop->entry_point    = 0xC0DE;
+    module_prop->addr.valid     = 1;
+    module_prop->addr.code_size = 256;
+    return OS_SUCCESS;
+}
+int32 OS_SymbolLookup_Impl(cpuaddr *SymbolAddress, const char *SymbolName)
+{
+    ++stub_m_syms;
+    if (strcmp(SymbolName, "known") == 0)
+    {
+        *SymbolAddress = 0xBEEF;
+        return OS_SUCCESS;
+    }
+    return stub_m_sym_rc;
+}
+int32 OS_ModuleSymbolLookup_Impl(const OS_object_token_t *token, cpuaddr *SymbolAddress,
+                                 const char *SymbolName)
+{
+    ++stub_m_modsyms;
+    return stub_m_sym_rc;
+}
+int32 OS_SymbolTableDump_Impl(const char *filename, size_t size_limit)
+{
+    ++stub_m_dumps;
+    strncpy(stub_m_lastpath, filename, sizeof(stub_m_lastpath) - 1);
+    stub_m_dumplimit = (int64)size_limit;
+    return OS_SUCCESS;
+}
 
 /* --- osapi-select.c backend --------------------------------------------------------------- */
 static int    stub_sel_singles, stub_sel_multiples;
@@ -1432,6 +1483,68 @@ int main(void)
             {
                 OS_close(sfd[i]);
             }
+        }
+
+        /* --- osapi-module.c ---------------------------------------------------------------
+         * OSAL_CONFIG_INCLUDE_STATIC_LOADER is not set here, so the static symbol table
+         * pointer is NULL, both `while (StaticSym != NULL)` loops never run, and the two
+         * helpers return their INITIAL values. Those initialisers are the whole observable
+         * behaviour of static lookup in this configuration, so the transcript pins them
+         * directly rather than inferring them.
+         */
+        {
+            osal_id_t        mid, mid2;
+            OS_module_prop_t minfo;
+            cpuaddr          addr;
+
+            OS_ModuleAPI_Init();
+            printf("m_init    rc=%d\n", (int)OS_ModuleAPI_Init());
+            /* The two static helpers, called directly. */
+            addr = 0;
+            printf("m_stsym   rc=%d\n", (int)OS_SymbolLookup_Static(&addr, "any", NULL));
+            printf("m_stload  rc=%d\n", (int)OS_ModuleLoad_Static("any"));
+
+            printf("m_nullid  rc=%d\n", (int)OS_ModuleLoad(NULL, "m1", "/mnt/m1.o", 0));
+            printf("m_nullnm  rc=%d\n", (int)OS_ModuleLoad(&mid, NULL, "/mnt/m1.o", 0));
+            /* A bad FILENAME is only enforced after the static lookup misses -- and the object
+             * has already been allocated by then, so the id is consumed either way. */
+            printf("m_badfile rc=%d loads=%d\n", (int)OS_ModuleLoad(&mid, "mbad", "relative", 0),
+                   stub_m_loads);
+            printf("m_load    rc=%d loads=%d [%s]\n",
+                   (int)OS_ModuleLoad(&mid, "m1", "/mnt/m1.o", 0x55), stub_m_loads,
+                   stub_m_lastpath);
+            printf("m_info    rc=%d [%s] [%s] ep=%lu valid=%lu n=%d\n",
+                   (int)OS_ModuleInfo(mid, &minfo), minfo.name, minfo.filename,
+                   (unsigned long)minfo.entry_point, (unsigned long)minfo.addr.valid,
+                   stub_m_infos);
+            printf("m_nullinfo rc=%d\n", (int)OS_ModuleInfo(mid, NULL));
+
+            /* Symbol lookup: the backend's error survives, because the static table never
+             * succeeds and NASA only overwrites on success. */
+            addr = 0;
+            printf("m_sym_ok  rc=%d addr=%lu n=%d\n", (int)OS_SymbolLookup(&addr, "known"),
+                   (unsigned long)addr, stub_m_syms);
+            printf("m_sym_no  rc=%d n=%d\n", (int)OS_SymbolLookup(&addr, "missing"), stub_m_syms);
+            stub_m_sym_rc = OS_ERROR;
+            printf("m_sym_err rc=%d\n", (int)OS_SymbolLookup(&addr, "missing"));
+            stub_m_sym_rc = OS_ERR_NOT_IMPLEMENTED;
+            printf("m_sym_nulla rc=%d\n", (int)OS_SymbolLookup(NULL, "x"));
+            printf("m_sym_nulln rc=%d\n", (int)OS_SymbolLookup(&addr, NULL));
+            printf("m_modsym  rc=%d n=%d\n", (int)OS_ModuleSymbolLookup(mid, &addr, "s"),
+                   stub_m_modsyms);
+            printf("m_modsymbad rc=%d\n",
+                   (int)OS_ModuleSymbolLookup(OS_ObjectIdFromInteger(0x0A009999), &addr, "s"));
+
+            printf("m_dump    rc=%d [%s] limit=%ld n=%d\n",
+                   (int)OS_SymbolTableDump("/mnt/syms.txt", 4096), stub_m_lastpath,
+                   (long)stub_m_dumplimit, stub_m_dumps);
+            printf("m_dumpbad rc=%d n=%d\n", (int)OS_SymbolTableDump("relative", 4096),
+                   stub_m_dumps);
+
+            /* A DYNAMIC module calls the backend on unload; a static one would not. */
+            printf("m_unload  rc=%d n=%d\n", (int)OS_ModuleUnload(mid), stub_m_unloads);
+            printf("m_unload2 rc=%d\n", (int)OS_ModuleUnload(mid));
+            (void)mid2;
         }
 
     }
