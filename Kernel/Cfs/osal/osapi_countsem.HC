@@ -51,7 +51,7 @@ OS_count_sem_internal_record_t OS_count_sem_table[LOCAL_NUM_OBJECTS_COUNTSEM];
 
 I32 OS_CountSemAPI_Init()
 {
-  memset(OS_count_sem_table, 0, sizeof(OS_count_sem_table));
+  MemSet(OS_count_sem_table, 0, sizeof(OS_count_sem_table));
   return OS_SUCCESS;
 }
 
@@ -70,7 +70,7 @@ I32 OS_CountSemCreate(U32 *sem_id, U8 *sem_name, U32 sem_initial_value, U32 opti
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  if (memchr(sem_name, 0, OS_MAX_API_NAME) == NULL)
+  if (MemChr(sem_name, 0, OS_MAX_API_NAME) == NULL)
     return OS_ERR_NAME_TOO_LONG;
   // Note - the common ObjectIdAllocate routine will lock the object type and leave it locked.
   return_code = OS_ObjectIdAllocateNew(LOCAL_OBJID_TYPE_COUNTSEM, sem_name, &token);
@@ -79,8 +79,8 @@ I32 OS_CountSemCreate(U32 *sem_id, U8 *sem_name, U32 sem_initial_value, U32 opti
     // OS_OBJECT_INIT(token, countsem, obj_name, sem_name): reset the table entry, copy the
     // name into it, and point the COMMON record's name_entry at that copy. This is where a
     // name enters the system at all -- idmap itself never stores one.
-    memset(countsem, 0, sizeof(OS_count_sem_internal_record_t));
-    strncpy(countsem->obj_name, sem_name, OS_MAX_API_NAME - 1);
+    MemSet(countsem, 0, sizeof(OS_count_sem_internal_record_t));
+    StrNCpy(countsem->obj_name, sem_name, OS_MAX_API_NAME - 1);
     grec = OS_ObjectIdGlobalFromToken(&token);
     grec->name_entry = countsem->obj_name;
     // Now call the OS-specific implementation. This reads info from the table.
@@ -161,7 +161,7 @@ I32 OS_CountSemGetInfo(U32 sem_id, OS_count_sem_prop_t *count_prop)
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  memset(count_prop, 0, sizeof(OS_count_sem_prop_t));
+  MemSet(count_prop, 0, sizeof(OS_count_sem_prop_t));
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_GLOBAL, LOCAL_OBJID_TYPE_COUNTSEM, sem_id, &token);
   if (return_code == OS_SUCCESS) {
     // OS_OBJECT_TABLE_GET(OS_global_count_sem_table, token). The base is taken into a local
@@ -169,7 +169,7 @@ I32 OS_CountSemGetInfo(U32 sem_id, OS_count_sem_prop_t *count_prop)
     // not produce the right address in HolyC -- it faulted reading a NULL name_entry.
     base = &OS_common_table[OS_COUNTSEM_BASE];
     record = &base[OS_ObjectIndexFromToken(&token)];
-    strncpy(count_prop->name, record->name_entry, OS_MAX_API_NAME - 1);
+    StrNCpy(count_prop->name, record->name_entry, OS_MAX_API_NAME - 1);
     count_prop->creator = record->creator;
     return_code = OS_CountSemGetInfo_Impl(&token, count_prop);
     OS_ObjectIdRelease(&token);

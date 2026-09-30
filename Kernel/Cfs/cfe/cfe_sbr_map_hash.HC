@@ -64,7 +64,7 @@ U32 CFE_SBR_MsgIdHash(CFE_SB_MsgId MsgId)
 U0 CFE_SBR_Init_Map()
 {
   // Clear the shared data
-  memset(&CFE_SBR_MSGMAP, 0, sizeof(CFE_SBR_MSGMAP));
+  MemSet(&CFE_SBR_MSGMAP, 0, sizeof(CFE_SBR_MSGMAP));
 }
 
 U32 CFE_SBR_SetRouteId(CFE_SB_MsgId MsgId, CFE_SBR_RouteId RouteId)

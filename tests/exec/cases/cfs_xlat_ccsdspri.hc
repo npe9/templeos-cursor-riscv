@@ -3,6 +3,63 @@
 // unmodified C. The gate diffs the two. Standalone on purpose -- no kernel includes -- so the
 // only thing under test is the translation and the compiler.
 #include "/Kernel/Cfs/cfe/cfe_msg_msgid_v1.HC"
+
+// --- the four TempleOS primitives the KERNEL provides ------------------------------------------
+// This harness is standalone by design -- no kernel is linked, because the only thing under test
+// is the translation -- so MemSet, MemCpy, StrCmp and StrLen have to be supplied here. They are
+// the kernel's, not C's, and the semantics are matched deliberately:
+//
+//   MemSet/MemCpy  RVMemSet(dst,dat,size) / RVMemCpy(dst,src,size) in Kernel/KCmpStubsRV.HC --
+//                  C's argument order, returning dst.
+//   StrCmp         _STRCMP in Kernel/StrA.HC:85 returns only -1, 0 or +1, NOT a byte
+//                  difference. Reproduced exactly: if this returned a difference while the
+//                  kernel returns +-1, the oracle would be validating behaviour that does not
+//                  ship. Every cFS call site compares against zero, so the two agree there.
+//   StrLen         RVStrLen.
+//
+// These names would otherwise resolve against the host C runtime (they are in
+// bootstrap/holy_rt_names.h) and the blob's import trailer is what would catch that -- the gate
+// asserts the trailer is empty for exactly this reason.
+U8 *MemSet(U8 *dst, I64 dat, I64 size)
+{
+  I64 i = 0;
+  while (i < size) {
+    dst[i] = dat & 0xFF;
+    i++;
+  }
+  return dst;
+}
+U8 *MemCpy(U8 *dst, U8 *src, I64 size)
+{
+  I64 i = 0;
+  while (i < size) {
+    dst[i] = src[i];
+    i++;
+  }
+  return dst;
+}
+I64 StrLen(U8 *st)
+{
+  I64 n = 0;
+  while (st[n])
+    n++;
+  return n;
+}
+I64 StrCmp(U8 *st1, U8 *st2)
+{
+  I64 i = 0;
+  while (st2[i]) {
+    if (st1[i] != st2[i]) {
+      if (st2[i] > st1[i])
+        return -1;
+      return 1;
+    }
+    i++;
+  }
+  if (st1[i])
+    return 1;
+  return 0;
+}
 #include "/Kernel/Cfs/cfe/cfe_msg_sechdr_fc.HC"
 #include "/Kernel/Cfs/cfe/cfe_msg_sechdr_time.HC"
 #include "/Kernel/Cfs/cfe/cfe_msg_sechdr_checksum.HC"

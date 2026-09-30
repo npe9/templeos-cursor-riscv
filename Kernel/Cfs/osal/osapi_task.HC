@@ -88,7 +88,7 @@ U0 OS_TaskEntryPoint(U32 task_id)
 
 I32 OS_TaskAPI_Init()
 {
-  memset(OS_task_table, 0, sizeof(OS_task_table));
+  MemSet(OS_task_table, 0, sizeof(OS_task_table));
   return OS_SUCCESS;
 }
 
@@ -113,7 +113,7 @@ I32 OS_TaskCreate(U32 *task_id, U8 *task_name, U0 (*function_pointer)(), U8 *sta
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  if (memchr(task_name, 0, OS_MAX_API_NAME) == NULL)
+  if (MemChr(task_name, 0, OS_MAX_API_NAME) == NULL)
     return OS_ERR_NAME_TOO_LONG;
   if (!(stack_size > 0 && stack_size < 0x7FFFFFFF))
     return OS_ERR_INVALID_SIZE;
@@ -122,8 +122,8 @@ I32 OS_TaskCreate(U32 *task_id, U8 *task_name, U0 (*function_pointer)(), U8 *sta
   if (return_code == OS_SUCCESS) {
     task = &OS_task_table[OS_ObjectIndexFromToken(&token)];
     // OS_OBJECT_INIT(token, task, task_name, task_name)
-    memset(task, 0, sizeof(OS_task_internal_record_t));
-    strncpy(task->task_name, task_name, OS_MAX_API_NAME - 1);
+    MemSet(task, 0, sizeof(OS_task_internal_record_t));
+    StrNCpy(task->task_name, task_name, OS_MAX_API_NAME - 1);
     grec = OS_ObjectIdGlobalFromToken(&token);
     grec->name_entry = task->task_name;
     task->stack_size = stack_size;
@@ -232,7 +232,7 @@ I32 OS_TaskGetInfo(U32 task_id, OS_task_prop_t *task_prop)
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  memset(task_prop, 0, sizeof(OS_task_prop_t));
+  MemSet(task_prop, 0, sizeof(OS_task_prop_t));
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_GLOBAL, LOCAL_OBJID_TYPE_TASK, task_id, &token);
   if (return_code == OS_SUCCESS) {
     // Base into a local first: indexing the parenthesised OS_global_*_table macro directly is
@@ -243,7 +243,7 @@ I32 OS_TaskGetInfo(U32 task_id, OS_task_prop_t *task_prop)
     // Unlike the semaphore family, this one GUARDS the name copy -- an unnamed record leaves
     // task_prop->name as the memset zeros rather than dereferencing NULL.
     if (record->name_entry != NULL) {
-      strncpy(task_prop->name, record->name_entry, OS_MAX_API_NAME - 1);
+      StrNCpy(task_prop->name, record->name_entry, OS_MAX_API_NAME - 1);
       task_prop->name[OS_MAX_API_NAME - 1] = 0;
     }
     task_prop->creator = record->creator;

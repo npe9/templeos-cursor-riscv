@@ -28,7 +28,7 @@
 #ifndef CFE_MSG_SECHDR_TIME_HC
 #define CFE_MSG_SECHDR_TIME_HC
 #include "cfe_msg_sechdr_fc.HC"
-#include "cfe_xlat_libc.HC"
+#include "../CfsStr.HC"
 // --- default_cfe_time_extern_typedefs.h -----------------------------------------------------
 class CFE_TIME_SysTime
 {
@@ -73,7 +73,7 @@ I32 CFE_MSG_GetMsgTime(CFE_MSG_Message *MsgPtr, CFE_TIME_SysTime *Time)
   CFE_MSG_GetHeaderVersion(MsgPtr, &version);
   CFE_MSG_GetType(MsgPtr, &type);
   if (version != CFE_MISSION_CCSDSVER || type != CFE_MSG_Type_Tlm || !hassechdr) {
-    memset(Time, 0, sizeof(CFE_TIME_SysTime));
+    MemSet(Time, 0, sizeof(CFE_TIME_SysTime));
     return CFE_MSG_WRONG_MSG_TYPE;
   }
   // Get big endian time fields with default 32/16 layout

@@ -44,7 +44,7 @@ OS_condvar_internal_record_t OS_condvar_table[OS_MAX_CONDVARS];
 
 I32 OS_CondVarAPI_Init()
 {
-  memset(OS_condvar_table, 0, sizeof(OS_condvar_table));
+  MemSet(OS_condvar_table, 0, sizeof(OS_condvar_table));
   return OS_SUCCESS;
 }
 
@@ -62,15 +62,15 @@ I32 OS_CondVarCreate(U32 *var_id, U8 *var_name, U32 options)
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  if (memchr(var_name, 0, OS_MAX_API_NAME) == NULL)
+  if (MemChr(var_name, 0, OS_MAX_API_NAME) == NULL)
     return OS_ERR_NAME_TOO_LONG;
   // the common ObjectIdAllocate routine leaves the object type locked
   return_code = OS_ObjectIdAllocateNew(OS_OBJECT_TYPE_OS_CONDVAR, var_name, &token);
   if (return_code == OS_SUCCESS) {
     rec = &OS_condvar_table[OS_ObjectIndexFromToken(&token)];
     // OS_OBJECT_INIT: clear the record, copy the name in, point the COMMON record at that copy
-    memset(rec, 0, sizeof(OS_condvar_internal_record_t));
-    strncpy(rec->obj_name, var_name, OS_MAX_API_NAME - 1);
+    MemSet(rec, 0, sizeof(OS_condvar_internal_record_t));
+    StrNCpy(rec->obj_name, var_name, OS_MAX_API_NAME - 1);
     grec = OS_ObjectIdGlobalFromToken(&token);
     grec->name_entry = rec->obj_name;
     return_code = OS_CondVarCreate_Impl(&token, options);
@@ -184,17 +184,17 @@ I32 OS_CondVarGetInfo(U32 var_id, OS_condvar_prop_t *condvar_prop)
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  memset(condvar_prop, 0, sizeof(OS_condvar_prop_t));
+  MemSet(condvar_prop, 0, sizeof(OS_condvar_prop_t));
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_GLOBAL, OS_OBJECT_TYPE_OS_CONDVAR, var_id, &token);
   if (return_code == OS_SUCCESS) {
     // Base into a local first: indexing the parenthesised OS_global_*_table macro directly is
     // off by one in this compiler (docs/HOLYC_STRUCT_LIMITS.md).
     base = &OS_common_table[OS_CONDVAR_BASE];
     record = &base[OS_ObjectIndexFromToken(&token)];
-    // NOTE: this module uses snprintf("%s") where its four siblings use strncpy. Same
+    // NOTE: this module uses StrPrintN("%s") where its four siblings use strncpy. Same
     // intent, different truncation rule -- snprintf always terminates, strncpy does not --
     // and translated as written rather than made uniform.
-  snprintf(condvar_prop->name, OS_MAX_API_NAME, "%s", record->name_entry);
+  StrPrintN(condvar_prop->name, OS_MAX_API_NAME, "%s", record->name_entry);
     condvar_prop->creator = record->creator;
     return_code = OS_CondVarGetInfo_Impl(&token, condvar_prop);
     OS_ObjectIdRelease(&token);

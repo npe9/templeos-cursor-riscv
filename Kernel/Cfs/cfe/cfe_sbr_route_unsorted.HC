@@ -32,7 +32,7 @@
 #ifndef CFE_SBR_ROUTE_UNSORTED_HC
 #define CFE_SBR_ROUTE_UNSORTED_HC
 #include "cfe_sb_msgid.HC"
-#include "cfe_xlat_libc.HC"
+#include "../CfsStr.HC"
 // From cmake/sample_defs/example_platform_cfg.h, reaching the module as
 // CFE_PLATFORM_SB_CFGVAL(MAX_MSG_IDS).
 #define CFE_PLATFORM_SB_MAX_MSG_IDS 256
@@ -112,7 +112,7 @@ U0 CFE_SBR_Init()
 {
   U16 routeidx;
   // Clear the shared data
-  memset(&CFE_SBR_RDATA, 0, sizeof(cfe_sbr_route_data));
+  MemSet(&CFE_SBR_RDATA, 0, sizeof(cfe_sbr_route_data));
   // Only non-zero value for shared data initialization is the invalid MsgId
   for (routeidx = 0; routeidx < CFE_PLATFORM_SB_MAX_MSG_IDS; routeidx++)
     CFE_SBR_RDATA.RoutingTbl[routeidx].MsgId = CFE_SB_InvalidMsgId;

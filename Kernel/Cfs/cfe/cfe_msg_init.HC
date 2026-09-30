@@ -29,14 +29,14 @@
 #ifndef CFE_MSG_INIT_HC
 #define CFE_MSG_INIT_HC
 #include "cfe_msg_msgid_v1.HC"
-#include "cfe_xlat_libc.HC"
+#include "../CfsStr.HC"
 // --- cfe_msg_msgid_shared.c -----------------------------------------------------------------
 I32 CFE_MSG_GetTypeFromMsgId(CFE_SB_MsgId MsgId, I64 *Type)
 {
   CFE_MSG_Message msg;
   I32 Status;
   // Memset to initialize avoids possible GCC bug 53119
-  memset(&msg, 0, sizeof(CFE_MSG_Message));
+  MemSet(&msg, 0, sizeof(CFE_MSG_Message));
   if (Type == NULL)
     return CFE_MSG_BAD_ARGUMENT;
   Status = CFE_MSG_SetMsgId(&msg, MsgId);
@@ -58,7 +58,7 @@ I32 CFE_MSG_Init(CFE_MSG_Message *MsgPtr, CFE_SB_MsgId MsgId, I64 Size)
   if (MsgPtr == NULL)
     return CFE_MSG_BAD_ARGUMENT;
   // Clear and set defaults
-  memset(MsgPtr, 0, Size);
+  MemSet(MsgPtr, 0, Size);
   CFE_MSG_InitDefaultHdr(MsgPtr);
   // Set values input
   // Allow "CFE_SB_INVALID_MSG_ID" here - in some cases the real msgid is filled in later

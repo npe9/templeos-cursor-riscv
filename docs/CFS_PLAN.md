@@ -168,6 +168,52 @@ Each of these was added because something got through the ones that already exis
 returning `U0` where NASA's header says `int32`, which only the host C compiler noticed, and
 only because the oracle happens to include that header.
 
+### The C library is TempleOS's, not a private copy of libc
+
+For a while the translation carried `cfe_xlat_libc.HC`: HolyC reimplementations of `memset`,
+`memcpy`, `strcmp`, `strncpy`, `memchr` and a mini `snprintf`. That was a mistake, and the
+reason it was a mistake is that TempleOS already has all of it. Confirmed by grepping the stock
+distro rather than assumed, its set is
+
+    MemCpy MemSet MemRep StrCpy StrLen StrCmp StrNCmp StrMatch StrPrint StrPrintJoin StrNew StrOcc
+
+and `Kernel/StrPrint.HC` is a 934-line formatter handling `, " / % 0 b B c C d D e f F g h l n p
+P q Q r s S t T u x X z Z` — a superset of what cFS uses — driven by the same `argc`/`argv`
+varargs convention a hand-rolled `vsnprintf` would have needed.
+
+So the translation calls TempleOS's functions directly. The mapping is exact, not approximate,
+and each was checked rather than assumed:
+
+| NASA's C | TempleOS | why it is safe |
+|---|---|---|
+| `memset(d,c,n)` | `MemSet` | `RVMemSet(dst,dat,size)` — C's argument order, returns `dst` |
+| `memcpy(d,s,n)` | `MemCpy` | `RVMemCpy(dst,src,size)` — likewise |
+| `strlen(s)` | `StrLen` | `RVStrLen` |
+| `strcmp(a,b)` | `StrCmp` | **sign**-compatible: `_STRCMP` (`Kernel/StrA.HC:85`) holds `st2` in RSI and `st1` in RDI and `JA -> -1`, so `st1 < st2` is negative. The magnitude is only ever ±1, never a byte difference; every cFS call site compares against zero, so they agree there, and a future call site wanting the difference must not use it |
+
+Three have no TempleOS equivalent anywhere in the distro and are written in `Kernel/Cfs/CfsStr.HC`
+as additions in TempleOS style, not as renames of something that existed: `MemChr` (the bounded
+"is there a NUL in the first n bytes" test, which `StrLen` cannot do because on an unterminated
+buffer `StrLen` is what runs off the end — which is why NASA uses `memchr` here), `StrNCpy`
+(C's semantics including the sharp edges, because the call sites depend on them), and
+`StrPrintN`, a size-bounded formatter.
+
+`StrPrintN` follows **C's** conversions rather than TempleOS's, deliberately: the format strings
+it is handed are NASA's own, verbatim, because they are part of the translated source. Handing
+`"%ld"` to TempleOS's `StrPrint` would be handing it a string it does not speak, and rewriting
+the format strings would mean the translation no longer says what NASA wrote. So the spelling is
+TempleOS and the conversions are C, because the input is C. TempleOS's own `StrPrint`/
+`StrPrintJoin` are the right thing in the kernel, but neither is size-bounded and
+`StrPrintJoin` allocates.
+
+The standalone oracle harness has no kernel linked — that is the point of it — so it supplies
+`MemSet`, `MemCpy`, `StrCmp` and `StrLen` itself, with the kernel's semantics reproduced
+exactly, `StrCmp`'s ±1 included: a harness that returned a byte difference would be validating
+behaviour that does not ship. These names are in `bootstrap/holy_rt_names.h`, so without those
+definitions they would bind silently to the host C runtime; the gate's empty-import-trailer
+assertion is what catches that, and both gates kept their exact line counts (135 and 154)
+across the change, which is the evidence the rename changed no behaviour.
+
 Things noticed in NASA's source along the way are in `docs/CFS_UPSTREAM_NOTES.md`, reproduced
 rather than fixed, each pinned by the transcript.
 

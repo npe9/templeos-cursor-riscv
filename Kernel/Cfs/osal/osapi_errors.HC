@@ -29,7 +29,7 @@
 // are 45 of them and a single wrong digit would be invisible until something compared against it.
 #ifndef OSAPI_ERRORS_HC
 #define OSAPI_ERRORS_HC
-#include "../cfe/cfe_xlat_libc.HC"
+#include "../CfsStr.HC"
 #include "os_shared_errors.HC"
 // From osapi-printf.h. That module is part of the shared layer and not translated yet; whoever
 // links this supplies it, and the gate asserts an empty import trailer so it cannot go missing.
@@ -150,7 +150,7 @@ U8 *OS_StatusToString(I32 status, U8 *status_string)
   if (status_string != NULL) {
     // SAD: No need to check snprintf return; OS_STATUS_STRING_LENGTH (12) is ample for all
     // status values
-    snprintf(status_string, OS_STATUS_STRING_LENGTH, "%ld", OS_StatusToInteger(status));
+    StrPrintN(status_string, OS_STATUS_STRING_LENGTH, "%ld", OS_StatusToInteger(status));
     string = status_string;
   }
   return string;
@@ -180,11 +180,11 @@ I32 OS_GetErrorName(I32 error_num, U8 *err_name)
       ++Error;
   }
   if (Error->Number == error_num && Error->Name != NULL) {
-    strncpy(err_name, Error->Name, OS_ERROR_NAME_LENGTH - 1);
+    StrNCpy(err_name, Error->Name, OS_ERROR_NAME_LENGTH - 1);
     err_name[OS_ERROR_NAME_LENGTH - 1] = 0;
     return_code = OS_SUCCESS;
   } else {
-    snprintf(err_name, OS_ERROR_NAME_LENGTH, "OS_UNKNOWN(%d)", error_num);
+    StrPrintN(err_name, OS_ERROR_NAME_LENGTH, "OS_UNKNOWN(%d)", error_num);
     return_code = OS_ERROR;
   }
   err_name[OS_ERROR_NAME_LENGTH - 1] = 0;

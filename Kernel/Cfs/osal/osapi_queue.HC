@@ -40,7 +40,7 @@ OS_queue_internal_record_t OS_queue_table[OS_MAX_QUEUES];
 
 I32 OS_QueueAPI_Init()
 {
-  memset(OS_queue_table, 0, sizeof(OS_queue_table));
+  MemSet(OS_queue_table, 0, sizeof(OS_queue_table));
   return OS_SUCCESS;
 }
 
@@ -60,7 +60,7 @@ I32 OS_QueueCreate(U32 *queue_id, U8 *queue_name, I64 queue_depth, I64 data_size
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  if (memchr(queue_name, 0, OS_MAX_API_NAME) == NULL)
+  if (MemChr(queue_name, 0, OS_MAX_API_NAME) == NULL)
     return OS_ERR_NAME_TOO_LONG;
   if (!(data_size > 0 && data_size < 0x7FFFFFFF))
     return OS_ERR_INVALID_SIZE;
@@ -72,8 +72,8 @@ I32 OS_QueueCreate(U32 *queue_id, U8 *queue_name, I64 queue_depth, I64 data_size
     queue = &OS_queue_table[OS_ObjectIndexFromToken(&token)];
     // OS_OBJECT_INIT(token, queue, queue_name, queue_name) -- the field and the argument
     // happen to share a name here, which is why the macro takes the field explicitly.
-    memset(queue, 0, sizeof(OS_queue_internal_record_t));
-    strncpy(queue->queue_name, queue_name, OS_MAX_API_NAME - 1);
+    MemSet(queue, 0, sizeof(OS_queue_internal_record_t));
+    StrNCpy(queue->queue_name, queue_name, OS_MAX_API_NAME - 1);
     grec = OS_ObjectIdGlobalFromToken(&token);
     grec->name_entry = queue->queue_name;
     queue->max_depth = queue_depth;
@@ -179,13 +179,13 @@ I32 OS_QueueGetInfo(U32 queue_id, OS_queue_prop_t *queue_prop)
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  memset(queue_prop, 0, sizeof(OS_queue_prop_t));
+  MemSet(queue_prop, 0, sizeof(OS_queue_prop_t));
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_GLOBAL, LOCAL_OBJID_TYPE_QUEUE, queue_id, &token);
   if (return_code == OS_SUCCESS) {
     // Base into a local first: indexing the parenthesised macro is off by one here.
     base = &OS_common_table[OS_QUEUE_BASE];
     record = &base[OS_ObjectIndexFromToken(&token)];
-    strncpy(queue_prop->name, record->name_entry, OS_MAX_API_NAME - 1);
+    StrNCpy(queue_prop->name, record->name_entry, OS_MAX_API_NAME - 1);
     queue_prop->creator = record->creator;
     OS_ObjectIdRelease(&token);
   }

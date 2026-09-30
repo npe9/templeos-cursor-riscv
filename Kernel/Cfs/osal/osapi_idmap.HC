@@ -41,7 +41,7 @@
 #define OSAPI_IDMAP_HC
 #include "os_shared_idmap.HC"
 #include "osapi_common.HC"
-#include "../cfe/cfe_xlat_libc.HC"
+#include "../CfsStr.HC"
 // --- osapi-idmap.c ----------------------------------------------------------------------------
 #define OS_LOCK_KEY_FIXED_VALUE 0x4D000000
 
@@ -99,8 +99,8 @@ I32 OS_ObjectIdToArrayIndex(U32 idtype, U32 object_id, U32 *ArrayIndex);
 
 I32 OS_ObjectIdInit()
 {
-  memset(OS_common_table, 0, sizeof(OS_common_table));
-  memset(OS_objtype_state, 0, sizeof(OS_objtype_state));
+  MemSet(OS_common_table, 0, sizeof(OS_common_table));
+  MemSet(OS_objtype_state, 0, sizeof(OS_objtype_state));
   return OS_SUCCESS;
 }
 
@@ -204,12 +204,12 @@ OS_common_record_t *OS_ObjectIdGlobalFromToken(OS_object_token_t *token)
 
 Bool OS_ObjectNameMatch(U8 *ref, OS_object_token_t *token, OS_common_record_t *obj)
 {
-  return obj->name_entry != NULL && strcmp(ref, obj->name_entry) == 0;
+  return obj->name_entry != NULL && StrCmp(ref, obj->name_entry) == 0;
 }
 
 I32 OS_ObjectIdTransactionInit(I64 lock_mode, U32 idtype, OS_object_token_t *token)
 {
-  memset(token, 0, sizeof(OS_object_token_t));
+  MemSet(token, 0, sizeof(OS_object_token_t));
   // Transactions are only allowed once the API is initialised, and only an EXCLUSIVE one
   // (i.e. a delete) is allowed while shutting down.
   if (OS_SharedGlobalVars.GlobalState != OS_INIT_MAGIC_NUMBER &&
@@ -494,7 +494,7 @@ I32 OS_ObjectIdFindByName(U32 idtype, U8 *name, U32 *object_id)
   OS_object_token_t token;
   // ARGCHECK(name, OS_ERR_NAME_NOT_FOUND) and
   // LENGTHCHECK(name, OS_MAX_API_NAME, OS_ERR_NAME_TOO_LONG). LENGTHCHECK is
-  // ARGCHECK(memchr(str, 0, len), ...) -- the name must be NUL-terminated WITHIN the limit,
+  // ARGCHECK(MemChr(str, 0, len), ...) -- the name must be NUL-terminated WITHIN the limit,
   // which is a length check written as a search.
   //
   // ARGCHECK IS SILENT. Unlike BUGCHECK it only returns -- no OS_printf. The first draft
@@ -503,7 +503,7 @@ I32 OS_ObjectIdFindByName(U32 idtype, U8 *name, U32 *object_id)
   // failed BUGCHECK being "almost certainly a bug" in OSAL itself.
   if (name == NULL)
     return OS_ERR_NAME_NOT_FOUND;
-  if (memchr(name, 0, OS_MAX_API_NAME) == NULL)
+  if (MemChr(name, 0, OS_MAX_API_NAME) == NULL)
     return OS_ERR_NAME_TOO_LONG;
   return_code = OS_ObjectIdGetByName(OS_LOCK_MODE_GLOBAL, idtype, name, &token);
   if (return_code == OS_SUCCESS) {
@@ -730,7 +730,7 @@ I32 OS_GetResourceName(U32 object_id, U8 *buffer, I64 buffer_size)
         return_code = OS_ERR_NAME_TOO_LONG;
         name_len = buffer_size - 1;
       }
-      memcpy(buffer, record->name_entry, name_len);
+      MemCpy(buffer, record->name_entry, name_len);
       buffer[name_len] = 0;
     }
     OS_ObjectIdRelease(&token);

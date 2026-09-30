@@ -40,7 +40,7 @@ OS_rwlock_internal_record_t OS_rwlock_table[OS_MAX_RWLOCKS];
 
 I32 OS_RwLockAPI_Init()
 {
-  memset(OS_rwlock_table, 0, sizeof(OS_rwlock_table));
+  MemSet(OS_rwlock_table, 0, sizeof(OS_rwlock_table));
   return OS_SUCCESS;
 }
 
@@ -58,15 +58,15 @@ I32 OS_RwLockCreate(U32 *rw_id, U8 *rw_name, U32 options)
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  if (memchr(rw_name, 0, OS_MAX_API_NAME) == NULL)
+  if (MemChr(rw_name, 0, OS_MAX_API_NAME) == NULL)
     return OS_ERR_NAME_TOO_LONG;
   // the common ObjectIdAllocate routine leaves the object type locked
   return_code = OS_ObjectIdAllocateNew(OS_OBJECT_TYPE_OS_RWLOCK, rw_name, &token);
   if (return_code == OS_SUCCESS) {
     rec = &OS_rwlock_table[OS_ObjectIndexFromToken(&token)];
     // OS_OBJECT_INIT: clear the record, copy the name in, point the COMMON record at that copy
-    memset(rec, 0, sizeof(OS_rwlock_internal_record_t));
-    strncpy(rec->obj_name, rw_name, OS_MAX_API_NAME - 1);
+    MemSet(rec, 0, sizeof(OS_rwlock_internal_record_t));
+    StrNCpy(rec->obj_name, rw_name, OS_MAX_API_NAME - 1);
     grec = OS_ObjectIdGlobalFromToken(&token);
     grec->name_entry = rec->obj_name;
     return_code = OS_RwLockCreate_Impl(&token, options);
@@ -152,14 +152,14 @@ I32 OS_RwLockGetInfo(U32 rw_id, OS_rwlock_prop_t *rw_prop)
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  memset(rw_prop, 0, sizeof(OS_rwlock_prop_t));
+  MemSet(rw_prop, 0, sizeof(OS_rwlock_prop_t));
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_GLOBAL, OS_OBJECT_TYPE_OS_RWLOCK, rw_id, &token);
   if (return_code == OS_SUCCESS) {
     // Base into a local first: indexing the parenthesised OS_global_*_table macro directly is
     // off by one in this compiler (docs/HOLYC_STRUCT_LIMITS.md).
     base = &OS_common_table[OS_RWLOCK_BASE];
     record = &base[OS_ObjectIndexFromToken(&token)];
-  strncpy(rw_prop->name, record->name_entry, OS_MAX_API_NAME - 1);
+  StrNCpy(rw_prop->name, record->name_entry, OS_MAX_API_NAME - 1);
     rw_prop->creator = record->creator;
     return_code = OS_RwLockGetInfo_Impl(&token, rw_prop);
     OS_ObjectIdRelease(&token);

@@ -38,7 +38,7 @@ OS_mutex_internal_record_t OS_mutex_table[OS_MAX_MUTEXES];
 
 I32 OS_MutexAPI_Init()
 {
-  memset(OS_mutex_table, 0, sizeof(OS_mutex_table));
+  MemSet(OS_mutex_table, 0, sizeof(OS_mutex_table));
   return OS_SUCCESS;
 }
 
@@ -56,15 +56,15 @@ I32 OS_MutSemCreate(U32 *sem_id, U8 *sem_name, U32 options)
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  if (memchr(sem_name, 0, OS_MAX_API_NAME) == NULL)
+  if (MemChr(sem_name, 0, OS_MAX_API_NAME) == NULL)
     return OS_ERR_NAME_TOO_LONG;
   // the common ObjectIdAllocate routine leaves the object type locked
   return_code = OS_ObjectIdAllocateNew(OS_OBJECT_TYPE_OS_MUTEX, sem_name, &token);
   if (return_code == OS_SUCCESS) {
     rec = &OS_mutex_table[OS_ObjectIndexFromToken(&token)];
     // OS_OBJECT_INIT: clear the record, copy the name in, point the COMMON record at that copy
-    memset(rec, 0, sizeof(OS_mutex_internal_record_t));
-    strncpy(rec->obj_name, sem_name, OS_MAX_API_NAME - 1);
+    MemSet(rec, 0, sizeof(OS_mutex_internal_record_t));
+    StrNCpy(rec->obj_name, sem_name, OS_MAX_API_NAME - 1);
     grec = OS_ObjectIdGlobalFromToken(&token);
     grec->name_entry = rec->obj_name;
     return_code = OS_MutSemCreate_Impl(&token, options);
@@ -130,14 +130,14 @@ I32 OS_MutSemGetInfo(U32 sem_id, OS_mut_sem_prop_t *mutex_prop)
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  memset(mutex_prop, 0, sizeof(OS_mut_sem_prop_t));
+  MemSet(mutex_prop, 0, sizeof(OS_mut_sem_prop_t));
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_GLOBAL, OS_OBJECT_TYPE_OS_MUTEX, sem_id, &token);
   if (return_code == OS_SUCCESS) {
     // Base into a local first: indexing the parenthesised OS_global_*_table macro directly is
     // off by one in this compiler (docs/HOLYC_STRUCT_LIMITS.md).
     base = &OS_common_table[OS_MUTEX_BASE];
     record = &base[OS_ObjectIndexFromToken(&token)];
-  strncpy(mutex_prop->name, record->name_entry, OS_MAX_API_NAME - 1);
+  StrNCpy(mutex_prop->name, record->name_entry, OS_MAX_API_NAME - 1);
     mutex_prop->creator = record->creator;
     return_code = OS_MutSemGetInfo_Impl(&token, mutex_prop);
     OS_ObjectIdRelease(&token);

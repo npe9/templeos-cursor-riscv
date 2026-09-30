@@ -44,7 +44,7 @@
 #ifndef CFE_CONFIG_HC
 #define CFE_CONFIG_HC
 #include "cfe_resourceid.HC"
-#include "cfe_xlat_libc.HC"
+#include "../CfsStr.HC"
 #include "cfe_configid_offset.HC"
 // From cfe_core_resourceid_basevalues.h: CFE_RESOURCEID_MAKE_BASE(OS_OBJECT_TYPE_USER + 7),
 // which with OS_OBJECT_TYPE_USER 0x10 and the SIMPLE variant's MARK of 0 is (0x17 << 16).
@@ -196,7 +196,7 @@ U32 CFE_Config_GetIdByName(U8 *Name)
     return CFE_CONFIGID_UNDEFINED;
   for (OffsetVal = 0; OffsetVal < CFE_ConfigIdOffset_MAX; OffsetVal++) {
     if (CFE_CONFIGID_NAMETABLE[OffsetVal] != NULL &&
-        strcmp(CFE_CONFIGID_NAMETABLE[OffsetVal], Name) == 0)
+        StrCmp(CFE_CONFIGID_NAMETABLE[OffsetVal], Name) == 0)
       break;
   }
   if (OffsetVal >= CFE_ConfigIdOffset_MAX)
@@ -212,24 +212,25 @@ U0 CFE_Config_IterateAll(U8 *Arg, U0 (*Callback)(U8 *, U32, U8 *))
       Callback(Arg, CFE_Config_OffsetToId(OffsetVal), CFE_CONFIGID_NAMETABLE[OffsetVal]);
   }
 }
-// The two version-string helpers. They are the only place in the translated sources that needs
-// printf-style formatting, which is why cfe_xlat_libc.HC carries a minimal snprintf: the call
-// sites below are then character-for-character what NASA wrote, instead of hand-built strings
-// that merely produce the same bytes.
+// The two version-string helpers -- the widest use of formatting in the translated sources.
+// They call StrPrintN (Kernel/Cfs/CfsStr.HC), the size-bounded formatter, so the call sites
+// below stay character-for-character what NASA wrote, format strings included, instead of
+// hand-built strings that merely produce the same bytes. TempleOS's own StrPrint/StrPrintJoin
+// are the right thing in the kernel but neither is size-bounded and StrPrintJoin allocates.
 U0 CFE_Config_GetMissionRevString(U8 *Buf, I64 Size, U8 MissionRev, U8 *LastOffcRel)
 {
   if (MissionRev == 0) {
     // Mission Revision 0 is reserved only for official releases from the CFS development team
     // that have gone through the full release process
-    snprintf(Buf, Size, "%s Official Release", LastOffcRel);
+    StrPrintN(Buf, Size, "%s Official Release", LastOffcRel);
   } else if (MissionRev == 0xFF) {
     // Mission Revision 255 (0xFF) is reserved for use by the CFS development team for
     // evaluation builds (refer to git commit ID for more specific information about the build).
-    snprintf(Buf, Size, "DEV BUILD, based on %s", LastOffcRel);
+    StrPrintN(Buf, Size, "DEV BUILD, based on %s", LastOffcRel);
   } else {
     // Mission Rev values 1-254 are for user customizations. CFS users are free to set this
     // value in any way that is meaningful to them.
-    snprintf(Buf, Size, "M%u, based on %s", MissionRev, LastOffcRel);
+    StrPrintN(Buf, Size, "M%u, based on %s", MissionRev, LastOffcRel);
   }
 }
 
@@ -238,7 +239,7 @@ U0 CFE_Config_GetVersionString(U8 *Buf, I64 Size, U8 *Component, U8 *SrcVersion,
 {
   U8 RevInfo[32];
   CFE_Config_GetMissionRevString(RevInfo, sizeof(RevInfo), CFE_MISSION_REV, LastOffcRel);
-  snprintf(Buf, Size, "%s %s (%s) %s, EDS %s", Component, SrcVersion, CodeName, RevInfo,
+  StrPrintN(Buf, Size, "%s %s (%s) %s, EDS %s", Component, SrcVersion, CodeName, RevInfo,
            CFE_Config_EdsState(Component));
 }
 // --- cfe_config_set.c ------------------------------------------------------------------------

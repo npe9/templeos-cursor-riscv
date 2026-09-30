@@ -48,7 +48,7 @@
 #define CFE_RESOURCEID_HC
 #include "cfe_msg_ccsdspri.HC"
 #include "cfe_msg_objtab.HC"
-#include "cfe_xlat_libc.HC"
+#include "../CfsStr.HC"
 // --- cfe_error.h ----------------------------------------------------------------------------
 #define CFE_ES_ERR_RESOURCEID_NOT_VALID 0xC4000001
 #define CFE_ES_BAD_ARGUMENT             0xC400000A
@@ -177,7 +177,7 @@ U32 CFE_ResourceId_FindNextEx(U32 StartId, U32 (*IncrFunc)(U32, U8 *), U8 *IncrA
 U32 CFE_ResourceId_FindNext(U32 StartId, U32 TableSize, Bool (*CheckFunc)(U32))
 {
   CFE_ResourceId_DefaultIncrementState State;
-  memset(&State, 0, sizeof(CFE_ResourceId_DefaultIncrementState));
+  MemSet(&State, 0, sizeof(CFE_ResourceId_DefaultIncrementState));
   State.ResourceType = CFE_ResourceId_GetBase(StartId);
   State.TableSize = TableSize;
   State.RemainingCount = TableSize;

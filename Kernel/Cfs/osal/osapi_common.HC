@@ -30,7 +30,7 @@
 #ifndef OSAPI_COMMON_HC
 #define OSAPI_COMMON_HC
 #include "os_shared_idmap.HC"
-#include "../cfe/cfe_xlat_libc.HC"
+#include "../CfsStr.HC"
 // --- os-shared-common.h ------------------------------------------------------------------------
 #define OS_INIT_MAGIC_NUMBER     0xBE57C0DE
 #define OS_SHUTDOWN_MAGIC_NUMBER 0xABADC0DE
@@ -91,7 +91,7 @@ I32 OS_NotifyEvent(I64 event, U32 object_id, U8 *data)
 // freestanding target may not have it -- which is exactly this port's situation.
 I64 OS_strnlen(U8 *s, I64 maxlen)
 {
-  U8 *end = memchr(s, 0, maxlen);
+  U8 *end = MemChr(s, 0, maxlen);
   if (end != NULL) {
     // actual length is where the terminator was found
     maxlen = end - s;

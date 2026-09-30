@@ -40,7 +40,7 @@ OS_bin_sem_internal_record_t OS_bin_sem_table[OS_MAX_BIN_SEMAPHORES];
 
 I32 OS_BinSemAPI_Init()
 {
-  memset(OS_bin_sem_table, 0, sizeof(OS_bin_sem_table));
+  MemSet(OS_bin_sem_table, 0, sizeof(OS_bin_sem_table));
   return OS_SUCCESS;
 }
 
@@ -58,15 +58,15 @@ I32 OS_BinSemCreate(U32 *sem_id, U8 *sem_name, U32 sem_initial_value, U32 option
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  if (memchr(sem_name, 0, OS_MAX_API_NAME) == NULL)
+  if (MemChr(sem_name, 0, OS_MAX_API_NAME) == NULL)
     return OS_ERR_NAME_TOO_LONG;
   // the common ObjectIdAllocate routine leaves the object type locked
   return_code = OS_ObjectIdAllocateNew(OS_OBJECT_TYPE_OS_BINSEM, sem_name, &token);
   if (return_code == OS_SUCCESS) {
     rec = &OS_bin_sem_table[OS_ObjectIndexFromToken(&token)];
     // OS_OBJECT_INIT: clear the record, copy the name in, point the COMMON record at that copy
-    memset(rec, 0, sizeof(OS_bin_sem_internal_record_t));
-    strncpy(rec->obj_name, sem_name, OS_MAX_API_NAME - 1);
+    MemSet(rec, 0, sizeof(OS_bin_sem_internal_record_t));
+    StrNCpy(rec->obj_name, sem_name, OS_MAX_API_NAME - 1);
     grec = OS_ObjectIdGlobalFromToken(&token);
     grec->name_entry = rec->obj_name;
     return_code = OS_BinSemCreate_Impl(&token, sem_initial_value, options);
@@ -152,14 +152,14 @@ I32 OS_BinSemGetInfo(U32 sem_id, OS_bin_sem_prop_t *binsem_prop)
     OS_printf("bugcheck\n");
     return OS_INVALID_POINTER;
   }
-  memset(binsem_prop, 0, sizeof(OS_bin_sem_prop_t));
+  MemSet(binsem_prop, 0, sizeof(OS_bin_sem_prop_t));
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_GLOBAL, OS_OBJECT_TYPE_OS_BINSEM, sem_id, &token);
   if (return_code == OS_SUCCESS) {
     // Base into a local first: indexing the parenthesised OS_global_*_table macro directly is
     // off by one in this compiler (docs/HOLYC_STRUCT_LIMITS.md).
     base = &OS_common_table[OS_BINSEM_BASE];
     record = &base[OS_ObjectIndexFromToken(&token)];
-  strncpy(binsem_prop->name, record->name_entry, OS_MAX_API_NAME - 1);
+  StrNCpy(binsem_prop->name, record->name_entry, OS_MAX_API_NAME - 1);
     binsem_prop->creator = record->creator;
     return_code = OS_BinSemGetInfo_Impl(&token, binsem_prop);
     OS_ObjectIdRelease(&token);
