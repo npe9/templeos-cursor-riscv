@@ -240,6 +240,16 @@ I32 CFE_MSG_SetSize(CFE_MSG_Message *MsgPtr, I64 Size)
   return CFE_SUCCESS;
 }
 
+// Not an accessor: it takes a count and returns the next one, so it never touches a message.
+// The wrap is at the 14-bit CCSDS sequence field, not at the width of the type.
+U16 CFE_MSG_GetNextSequenceCount(U16 SeqCnt)
+{
+  SeqCnt++;
+  if (SeqCnt > CFE_MSG_SEQCNT_MASK)
+    SeqCnt = 0;
+  return SeqCnt;
+}
+
 // The last function in the same C file. It is declared in cfe_msg_defaults.h rather than in the
 // public API because it is module-internal.
 U0 CFE_MSG_SetDefaultCCSDSPri(CFE_MSG_Message *MsgPtr)

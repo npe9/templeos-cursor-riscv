@@ -59,9 +59,19 @@ bugs with one mechanism. Every translated cFE unit gets an entry.
 ## Where the translation actually stands
 
 Everything below runs in one gate, `make cfs-xlat-smoke` (`tests/scripts/run_cfs_xlat_smoke.sh`),
-which is in `make ci`: NASA's unmodified C compiled natively on one side, the HolyC translation
-compiled for RISC-V and run under QEMU on the other, **105 transcript lines required to be
-byte-identical**, and an empty import trailer so that no call silently resolves to the C runtime.
+which is in `make ci`. It asserts three different things, because each is blind to what the
+others catch:
+
+1. **Completeness** — every function defined in a gated NASA `.c` exists in the translation.
+   46 functions across 14 sources today. The transcript cannot see this: a function nobody calls
+   is linked from NASA's source on the C side, absent on the HolyC side, and the diff stays
+   empty. `CFE_MSG_GetNextSequenceCount` was missing exactly that way for four commits, while
+   two commit messages called the module complete.
+2. **Behaviour** — **105 transcript lines required to be byte-identical** between NASA's
+   unmodified C compiled natively and the HolyC translation run under QEMU.
+3. **Linkage** — an empty import trailer, so no call silently resolves to the C runtime. An
+   undefined prototype compiles clean and binds to whatever the linker finds; measured, a
+   missing `Abs` left the gate reporting 88 identical lines while the call ran C code.
 Growing the source list and the transcript together is how this advances — one file, one set of
 lines, one diff, one negative control.
 

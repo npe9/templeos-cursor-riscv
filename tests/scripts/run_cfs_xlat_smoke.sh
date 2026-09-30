@@ -69,6 +69,16 @@ INC="-I$CFE/modules/core_api/fsw/inc -I$CFE/modules/core_api/config
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 
+# --- completeness: every NASA function must EXIST in the translation -----------------------
+# The transcript below compares behaviour, so it only sees functions the driver calls. A
+# function nobody calls is invisible to it -- the C side links it from NASA's source, the HolyC
+# side simply lacks it, and the diff stays empty. CFE_MSG_GetNextSequenceCount was missing that
+# way for four commits while two commit messages called the module complete.
+# shellcheck disable=SC2086
+if ! python3 "$ROOT/tools/cfs/check_coverage.py" $SRC_C; then
+  exit 1
+fi
+
 # --- reference: NASA's C, unmodified -------------------------------------------------------
 # shellcheck disable=SC2086
 if ! "$HOSTCC" -O0 -w $INC -I"$ROOT/tests/cfs" -o "$T/ref" "$ROOT/tests/cfs/oracle_ccsdspri.c" $SRC_C 2>"$T/cc.log"; then
