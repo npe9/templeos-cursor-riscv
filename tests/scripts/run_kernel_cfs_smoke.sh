@@ -50,8 +50,16 @@ out="$($TIMEOUT 180 "$QEMU" -M virt -m 256M -bios none -kernel "$T/kp.elf" -nogr
         </dev/null 2>&1 | tr -d '\r')"
 
 rc=0
+# ccsds_ok and cmdcsum_ok are the two that say the bus carries NASA's format and not a look-alike.
+# The apps would keep working over any header at all, so "messages flow" proves nothing about the
+# wire: ccsds_ok decodes a packet with the translated accessors AND by reading raw bytes and
+# requires them to agree, and cmdcsum_ok requires a command's own checksum to validate -- which it
+# only does if the payload is in the packet before the origination hook runs over it.
+#
 # The FDIR chain, each stage named so a failure says which link broke.
-for n in "cfs-sim: nominal_ok" \
+for n in "cfs-sim: ccsds_ok" \
+         "cfs-sim: cmdcsum_ok" \
+         "cfs-sim: nominal_ok" \
          "cfs-sim: capture_chain_ok" \
          "cfs-sim: load_shed_ok" \
          "cfs-sim: hs_detect_ok" \
@@ -76,5 +84,5 @@ if [ "$rc" != 0 ]; then
   printf '%s\n' "$out" | grep -vE 'import unresolved' | tail -25 | sed 's/^/  /' >&2
   exit 1
 fi
-printf '%s\n' "$out" | grep -E 'cfs-sim: (imu_runs|nav_runs|ds_records|sb_sent|nav_dropped|evs_crit|hs_deaths|cs_faults)' | sed 's/^/  /'
+printf '%s\n' "$out" | grep -E 'cfs-sim: (ccsds_pri|ccsds_terr_us|imu_runs|nav_runs|ds_records|sb_sent|nav_dropped|evs_crit|hs_deaths|cs_faults)' | sed 's/^/  /'
 echo "cfs smoke: OK"

@@ -11,6 +11,14 @@
 // and a bus that cannot fail to allocate is one less fault to inject.
 #ifndef CFS_SB_HC
 #define CFS_SB_HC
+// NASA's OWN message code, 1:1-translated, sits under this bus. cfe_msg_integrity.HC brings the
+// whole chain: the CCSDS primary header accessors, the v1 message-id encoding, the command and
+// telemetry secondary headers, CFE_MSG_Init, and the origination hook that stamps a packet on
+// its way out. Every one of those is gated byte-for-byte against the unmodified C by
+// tests/scripts/run_cfs_xlat_smoke.sh, so what this bus puts on the wire is CCSDS because
+// NASA's code put it there, not because this file imitates the layout.
+#include "cfe/cfe_msg_init.HC"
+#include "cfe/cfe_msg_integrity.HC"
 #define CFS_MSG_PAYLOAD   96
 #define CFS_MAX_PIPES     12
 #define CFS_MAX_SUBS      64
@@ -18,38 +26,62 @@
 #define CFS_MAX_APPS      16
 // Message IDs. Grouped the way an APID map is: sensors 0x100, navigation 0x200, payload 0x300,
 // power 0x400, housekeeping/FDIR 0x500, commands 0x600.
-#define CFS_MID_IMU_RAW        0x0101
-#define CFS_MID_MAG_RAW        0x0102
-#define CFS_MID_GNSS_TIME      0x0103
-#define CFS_MID_GNSS_POSITION  0x0104
-#define CFS_MID_NAV_STATE      0x0201
-#define CFS_MID_ATTITUDE_QUAT  0x0202
-#define CFS_MID_ANGULAR_RATE   0x0203
-#define CFS_MID_SDR_STATUS     0x0301
-#define CFS_MID_SDR_SIGNAL     0x0302
-#define CFS_MID_SDR_CAPTURE    0x0303
-#define CFS_MID_EPS_TLM        0x0401
-#define CFS_MID_FPGA_TLM       0x0402
-#define CFS_MID_HK_TLM         0x0501
-#define CFS_MID_EVENT          0x0502
-#define CFS_MID_SAFE_MODE      0x0503
-#define CFS_MID_CMD_SDR        0x0601
-#define CFS_MID_CMD_EPS        0x0602
+//
+// THESE ARE NOW REAL CCSDS STREAM IDS, not arbitrary tags, and that is a behavioural change
+// rather than a renaming. In the cFS v1 message-id format the id IS the 16-bit stream id, so the
+// TYPE bit (0x1000) and the HAS-SECONDARY-HEADER bit (0x0800) live inside the id itself. A
+// telemetry id therefore has 0x0800 set and a command id has 0x1800, exactly as cFE's own
+// examples use 0x0801 and 0x1801. Get this wrong and nothing looks broken: subscribing to
+// 0x0101 and publishing something whose header says 0x0901 simply never matches, and a bus
+// where no one receives anything is indistinguishable from a bus with no traffic.
+//
+// The apid grouping below is unchanged -- only the two class bits are new -- so the map a ground
+// station would keep still reads the same way.
+#define CFS_TLM_MID(apid) (0x0800 | (apid))
+#define CFS_CMD_MID(apid) (0x1800 | (apid))
+#define CFS_MID_IMU_RAW        CFS_TLM_MID(0x101)
+#define CFS_MID_MAG_RAW        CFS_TLM_MID(0x102)
+#define CFS_MID_GNSS_TIME      CFS_TLM_MID(0x103)
+#define CFS_MID_GNSS_POSITION  CFS_TLM_MID(0x104)
+#define CFS_MID_NAV_STATE      CFS_TLM_MID(0x201)
+#define CFS_MID_ATTITUDE_QUAT  CFS_TLM_MID(0x202)
+#define CFS_MID_ANGULAR_RATE   CFS_TLM_MID(0x203)
+#define CFS_MID_SDR_STATUS     CFS_TLM_MID(0x301)
+#define CFS_MID_SDR_SIGNAL     CFS_TLM_MID(0x302)
+#define CFS_MID_SDR_CAPTURE    CFS_TLM_MID(0x303)
+#define CFS_MID_EPS_TLM        CFS_TLM_MID(0x401)
+#define CFS_MID_FPGA_TLM       CFS_TLM_MID(0x402)
+#define CFS_MID_HK_TLM         CFS_TLM_MID(0x501)
+#define CFS_MID_EVENT          CFS_TLM_MID(0x502)
+#define CFS_MID_SAFE_MODE      CFS_TLM_MID(0x503)
+#define CFS_MID_CMD_SDR        CFS_CMD_MID(0x601)
+#define CFS_MID_CMD_EPS        CFS_CMD_MID(0x602)
 // Event severities, cFE's four.
 #define CFS_EVS_DEBUG     0
 #define CFS_EVS_INFO      1
 #define CFS_EVS_ERROR     2
 #define CFS_EVS_CRITICAL  3
 
+// A message is now a REAL CCSDS PACKET. The header is NASA's CFE_MSG_TelemetryHeader -- six
+// bytes of primary header, six of timestamp, four spare -- and the payload follows it
+// contiguously, which is what makes CFE_MSG_SetSize's byte count mean what it says and what
+// lets CFE_MSG_ComputeCheckSum walk the whole packet. The old ad-hoc {mid, seq, len, pad,
+// met_us} is gone: every one of those five fields is now a field of the CCSDS header, read and
+// written only through the translated accessors.
+//
+// Nothing outside this file touches the header directly. CfsMsgId, CfsMsgLen and CfsMsgTimeUs
+// below are the whole interface, so the apps did not need to learn CCSDS to keep working.
 class CCfsMsg
 {
-  U16 mid;
-  U16 seq;
-  U16 len;
-  U16 pad;
-  I64 met_us;
+  CFE_MSG_TelemetryHeader Hdr;
   U8 data[CFS_MSG_PAYLOAD];
 };
+// Every slot reserves the LARGER of cFE's two headers, 16 bytes, even for a command whose real
+// CFE_MSG_CommandHeader is 8. That is this bus's choice, not cFE's: a fixed-size slot wants one
+// payload offset, and both header types begin with the same CFE_MSG_Message so the accessors do
+// not care. The consequence to know is that a command's checksum covers eight bytes it does not
+// use, consistently at both ends.
+#define CFS_MSG_HDR_BYTES sizeof(CFE_MSG_TelemetryHeader)
 
 class CCfsPipe
 {
@@ -209,10 +241,32 @@ I64 CfsSbSubscribe(U16 mid, I64 pipe)
 // Deliver to every subscriber. A full pipe DROPS and counts, it does not block and it does not
 // grow: "the queue filled" is one of the faults this system exists to detect, so it has to be a
 // real, observable outcome rather than something the bus papers over.
+// THE CLOCK cFE ASKS FOR. cfe_msg_integrity.HC declares CFE_TIME_GetTime and does not define it
+// -- in real cFS the TIME module owns it, and that module is not translated yet -- so this bus
+// supplies it from its own mission-elapsed time. Leaving it undefined would NOT have failed to
+// build: a HolyC prototype with no definition becomes an import that the link fills silently,
+// and OriginationAction would have stamped every packet with whatever answered. The cfs-xlat
+// gate now asserts an empty import trailer for exactly that reason.
+//
+// The conversion is lossy in one direction and that is CCSDS, not this code: the telemetry
+// secondary header carries 32 bits of seconds and 16 of subseconds, so the finest timestamp a
+// packet can hold is 1/65536 s, about 15.3 us. Both conversions round to nearest rather than
+// truncate, because two truncations compound and a 5 ms tick would read back as 4.989 ms.
+CFE_TIME_SysTime CFE_TIME_GetTime()
+{
+  CFE_TIME_SysTime t;
+  I64 us = CfsTimeUs;
+  t.Seconds = us / 1000000;
+  // 2^-32-second units, rounded. SetMsgTime keeps only the top 16 bits of this.
+  t.Subseconds = ((us % 1000000) * 4294967296 + 500000) / 1000000;
+  return t;
+}
+
 I64 CfsSbSend(U16 mid, U8 *data, I64 len)
 {
   I64 j, p, nh, delivered = 0;
-  I64 now = CfsTimeUs;
+  Bool acceptable;
+  CCfsMsg *slot;
   if (len < 0)
     len = 0;
   if (len > CFS_MSG_PAYLOAD)
@@ -227,12 +281,22 @@ I64 CfsSbSend(U16 mid, U8 *data, I64 len)
       cfs_pipe[p].dropped++;
       continue;
     }
-    cfs_pipe[p].slot[cfs_pipe[p].head].mid = mid;
-    cfs_pipe[p].slot[cfs_pipe[p].head].seq = cfs_seq_ctr;
-    cfs_pipe[p].slot[cfs_pipe[p].head].len = len;
-    cfs_pipe[p].slot[cfs_pipe[p].head].met_us = now;
+    slot = &cfs_pipe[p].slot[cfs_pipe[p].head];
+    // NASA's code builds the packet from here down. Init clears it, plants the CCSDS defaults
+    // (version 0, unsegmented), writes the message id into the stream id and sets the length.
+    CFE_MSG_Init(&slot->Hdr.Msg, CFE_SB_ValueToMsgId(mid), CFS_MSG_HDR_BYTES + len);
+    CFE_MSG_SetSequenceCount(&slot->Hdr.Msg, cfs_seq_ctr & CFE_MSG_SEQCNT_MASK);
+    // PAYLOAD BEFORE ORIGINATION, and the order is not cosmetic. OriginationAction checksums a
+    // COMMAND over every byte the length field covers, so copying the payload after it would
+    // checksum zeros and then overwrite them -- a packet that fails its own validation, in a
+    // sim that does not yet validate any. Real cFS has the same ordering for the same reason:
+    // an app fills its payload and only then hands the message to the bus.
     if (data && len > 0)
-      MemCpy(cfs_pipe[p].slot[cfs_pipe[p].head].data, data, len);
+      MemCpy(slot->data, data, len);
+    // The origination hook, called for its SIDE EFFECTS exactly as cFE calls it: it timestamps
+    // telemetry and checksums commands, and whichever does not apply to this packet fails
+    // harmlessly. The id's own type bit decides which, so there is no branch here.
+    CFE_MSG_OriginationAction(&slot->Hdr.Msg, sizeof(CCfsMsg), &acceptable);
     cfs_pipe[p].head = nh;
     delivered++;
   }
@@ -240,6 +304,41 @@ I64 CfsSbSend(U16 mid, U8 *data, I64 len)
   if (!delivered)
     cfs_sb_nosub++;
   return delivered;
+}
+
+// The whole interface the apps use. Each one reads the CCSDS header through the translated
+// accessors, so an app never learns the bit layout and a header-format change stays in this file.
+U16 CfsMsgId(CCfsMsg *m)
+{
+  CFE_SB_MsgId id;
+  if (!m)
+    return 0;
+  CFE_MSG_GetMsgId(&m->Hdr.Msg, &id);
+  return CFE_SB_MsgIdToValue(id);
+}
+
+I64 CfsMsgLen(CCfsMsg *m)
+{
+  I64 sz = 0;
+  if (!m)
+    return 0;
+  CFE_MSG_GetSize(&m->Hdr.Msg, &sz);
+  sz -= CFS_MSG_HDR_BYTES;
+  if (sz < 0)
+    return 0;
+  return sz;
+}
+
+// Zero for a command, which carries a checksum where telemetry carries a time. GetMsgTime says
+// so by returning WRONG_MSG_TYPE, and it zeroes the out-parameter itself.
+I64 CfsMsgTimeUs(CCfsMsg *m)
+{
+  CFE_TIME_SysTime t;
+  if (!m)
+    return 0;
+  if (CFE_MSG_GetMsgTime(&m->Hdr.Msg, &t) != CFE_SUCCESS)
+    return 0;
+  return t.Seconds * 1000000 + (t.Subseconds * 1000000 + 2147483648) / 4294967296;
 }
 
 I64 CfsSbReceive(I64 pipe, CCfsMsg *out)

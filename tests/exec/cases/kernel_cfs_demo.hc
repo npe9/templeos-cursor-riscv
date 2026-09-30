@@ -41,6 +41,28 @@ U0 SayNum(U8 *label, I64 v)
   }
   RVUartPutS("\n");
 }
+
+// One number and a trailing space. SayNum ends its own line, so it cannot be reused here.
+U0 SayNumSp(I64 v)
+{
+  U8 d[24];
+  I64 i = 0, j;
+  if (!v)
+    d[i++] = '0';
+  while (v > 0) {
+    d[i++] = '0' + v % 10;
+    v /= 10;
+  }
+  j = i;
+  while (j > 0) {
+    U8 one[2];
+    j--;
+    one[0] = d[j];
+    one[1] = 0;
+    RVUartPutS(one);
+  }
+  RVUartPutS(" ");
+}
 // A deliberately corruptible region for the checksum app to watch.
 U8 cfs_payload_region[64];
 
@@ -119,6 +141,118 @@ I64 main()
   // The SDR detection should have tripped LC and run the capture sequence.
   if (cfs_wp[0].trips > 0 && cfs_sc_completed > 0)
     Say("cfs-sim: capture_chain_ok\n");
+  // ---- is the bus actually carrying CCSDS? ----------------------------------------------
+  // The apps would keep working over any header at all, so "messages flow" proves nothing about
+  // the format. This decodes a packet TWICE -- once with NASA's accessors, once by reading raw
+  // bytes -- and requires the two to agree. A ground station parsing this stream would see a
+  // conformant CCSDS space packet, which is the whole reason for putting the translated module
+  // underneath rather than beside.
+  {
+    CCfsMsg probe;
+    U8 payload[12];
+    // NOT named pi: Kernel/KernelA.HH:50 defines pi as a #define for the F64 bit pattern of PI,
+    // so `I64 pi;` expands to `I64 (0x400921FB54442D18(F64));` and the compiler reports
+    // "<macro expansion>:1:20: Expected '*' in function pointer declarator" with no source line
+    // to look at. Short lowercase locals in kernel-including code are a hazard for this reason.
+    I64 bidx;
+    CFE_SB_MsgId pid;
+    CFE_TIME_SysTime pt;
+    I64 psize = 0, ptype = 0;
+    Bool psec = FALSE, pvalid = FALSE;
+    U16 pver = 0xFF;
+    I64 ok = 1;
+    U8 *raw = &probe;
+    // A pipe of its own, created here, so the packet received below is unambiguously the one
+    // sent below -- the NAV pipe carries real traffic by now and would hand back someone else's.
+    I64 ppipe = CfsSbCreatePipe("PROBE", 4);
+    I64 tsend, tgot, terr;
+    CfsSbSubscribe(CFS_MID_IMU_RAW, ppipe);
+    // Built byte by byte on purpose: HolyC has no \xNN string escape (measured -- "\x11"[0] is
+    // not 0x11), and a payload that quietly was not what it claimed would make the checks below
+    // agree about the wrong thing.
+    for (bidx = 0; bidx < 12; bidx++)
+      payload[bidx] = 0x11 * (bidx + 1);
+    tsend = CfsTimeUs;
+    CfsSbSend(CFS_MID_IMU_RAW, payload, 12);
+    if (!CfsSbReceive(ppipe, &probe)) {
+      Say("cfs-sim: ccsds_FAIL no packet\n");
+    } else {
+      CFE_MSG_GetMsgId(&probe.Hdr.Msg, &pid);
+      CFE_MSG_GetSize(&probe.Hdr.Msg, &psize);
+      CFE_MSG_GetType(&probe.Hdr.Msg, &ptype);
+      CFE_MSG_GetHasSecondaryHeader(&probe.Hdr.Msg, &psec);
+      CFE_MSG_GetHeaderVersion(&probe.Hdr.Msg, &pver);
+      // The six primary-header bytes, straight out of memory. These are what goes on a wire.
+      Say("cfs-sim: ccsds_pri=");
+      SayNumSp(raw[0]);
+      SayNumSp(raw[1]);
+      SayNumSp(raw[2]);
+      SayNumSp(raw[3]);
+      SayNumSp(raw[4]);
+      SayNumSp(raw[5]);
+      Say("\n");
+      // Accessors and raw bytes must agree: stream id is big-endian in bytes 0..1, and the
+      // length field is the CCSDS one -- total size minus seven, not the payload size.
+      if (CFE_SB_MsgIdToValue(pid) != CFS_MID_IMU_RAW)
+        ok = 0;
+      if (raw[0] != (CFS_MID_IMU_RAW >> 8) || raw[1] != (CFS_MID_IMU_RAW & 0xFF))
+        ok = 0;
+      if (psize != 16 + 12 || (raw[4] << 8) + raw[5] != psize - 7)
+        ok = 0;
+      if (ptype != CFE_MSG_Type_Tlm || !psec || pver != 0)
+        ok = 0;
+      // Unsegmented, which is what CFE_MSG_InitDefaultHdr plants: the top two bits of byte 2.
+      if ((raw[2] & 0xC0) != 0xC0)
+        ok = 0;
+      // A telemetry packet carries a time, and it must ROUND-TRIP to the MET the bus stamped
+      // it with. Not merely "nonzero": the first version of this check asserted nonzero and
+      // failed, because it ran before any tick and the correct answer at MET 0 is 0. Asserting
+      // a value that is only right once the clock has moved is a test of the clock, not of the
+      // packet -- so this runs after phase 1 and compares against the MET captured at send.
+      //
+      // The tolerance is CCSDS, not slop: the telemetry secondary header holds 32 bits of
+      // seconds and 16 of subseconds, so the finest representable step is 1/65536 s, about
+      // 15.3 us, and a round trip can land one tick away.
+      if (CFE_MSG_GetMsgTime(&probe.Hdr.Msg, &pt) != CFE_SUCCESS)
+        ok = 0;
+      if (tsend <= 0)
+        ok = 0; // would make the comparison below vacuous
+      tgot = CfsMsgTimeUs(&probe);
+      terr = tgot - tsend;
+      if (terr < 0)
+        terr = -terr;
+      if (terr > 16)
+        ok = 0;
+      SayNum("cfs-sim: ccsds_terr_us=", terr);
+      if (CfsMsgLen(&probe) != 12 || probe.data[0] != 0x11 || probe.data[11] != 0xCC)
+        ok = 0;
+      if (ok)
+        Say("cfs-sim: ccsds_ok\n");
+      else
+        Say("cfs-sim: ccsds_FAIL decode disagrees\n");
+    }
+    // And a COMMAND takes the other branch of the same origination hook: a checksum, no time.
+    // This is the ordering bug's witness -- checksum the packet before the payload is in it and
+    // ValidateChecksum says no.
+    {
+      CCfsMsg cprobe;
+      I64 cpipe = CfsSbCreatePipe("CMDPROBE", 4);
+      CfsSbSubscribe(CFS_MID_CMD_EPS, cpipe);
+      for (bidx = 0; bidx < 4; bidx++)
+        payload[bidx] = bidx + 1;
+      CfsSbSend(CFS_MID_CMD_EPS, payload, 4);
+      if (!CfsSbReceive(cpipe, &cprobe)) {
+        Say("cfs-sim: cmdcsum_FAIL no packet\n");
+      } else {
+        pvalid = FALSE;
+        if (CFE_MSG_ValidateChecksum(&cprobe.Hdr.Msg, &pvalid) == CFE_SUCCESS && pvalid &&
+            CfsMsgTimeUs(&cprobe) == 0 && CfsMsgId(&cprobe) == CFS_MID_CMD_EPS)
+          Say("cfs-sim: cmdcsum_ok\n");
+        else
+          Say("cfs-sim: cmdcsum_FAIL\n");
+      }
+    }
+  }
   // ---- phase 2: battery sag -> load shed ------------------------------------------------
   cfs_sim_eps_mv = 6400;
   for (cyc = 0; cyc < 200; cyc++)

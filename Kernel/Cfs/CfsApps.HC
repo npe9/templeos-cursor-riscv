@@ -99,7 +99,7 @@ U0 CfsAppNav()
   // Consume everything queued, then publish once. An app that publishes per input message
   // amplifies its own backlog, which is how a bus overload becomes unrecoverable.
   while (CfsSbReceive(cfs_nav_pipe, &m)) {
-    if (m.mid == CFS_MID_IMU_RAW) {
+    if (CfsMsgId(&m) == CFS_MID_IMU_RAW) {
       gx = CfsGetU32(m.data, 0);
       gy = CfsGetU32(m.data, 4);
       gz = CfsGetU32(m.data, 8);
@@ -216,7 +216,7 @@ U0 CfsAppLc()
   I64 i, v;
   while (CfsSbReceive(cfs_lc_pipe, &m)) {
     for (i = 0; i < CFS_MAX_WP; i++) {
-      if (!cfs_wp[i].in_use || cfs_wp[i].mid != m.mid)
+      if (!cfs_wp[i].in_use || cfs_wp[i].mid != CfsMsgId(&m))
         continue;
       // Latched, the way a cFS actionpoint is disarmed once it fires. Without this a condition
       // that stays true re-triggers on every message: the first run of this sim logged the same
@@ -224,7 +224,7 @@ U0 CfsAppLc()
       // A recovery that re-runs while its own condition is still true is also just wrong.
       if (cfs_wp[i].latched)
         continue;
-      if (cfs_wp[i].off + 4 > m.len)
+      if (cfs_wp[i].off + 4 > CfsMsgLen(&m))
         continue;
       cfs_lc_evals++;
       v = CfsGetU32(m.data, cfs_wp[i].off);
@@ -405,10 +405,10 @@ U0 CfsAppDs()
       cfs_ds_lost++;
       continue;
     }
-    CfsPutU32(cfs_ds_buf, cfs_ds_len, m.mid);
-    CfsPutU32(cfs_ds_buf, cfs_ds_len + 4, m.len);
-    CfsPutU32(cfs_ds_buf, cfs_ds_len + 8, m.met_us / 1000);
-    if (m.len >= 4)
+    CfsPutU32(cfs_ds_buf, cfs_ds_len, CfsMsgId(&m));
+    CfsPutU32(cfs_ds_buf, cfs_ds_len + 4, CfsMsgLen(&m));
+    CfsPutU32(cfs_ds_buf, cfs_ds_len + 8, CfsMsgTimeUs(&m) / 1000);
+    if (CfsMsgLen(&m) >= 4)
       CfsPutU32(cfs_ds_buf, cfs_ds_len + 12, CfsGetU32(m.data, 0));
     else
       CfsPutU32(cfs_ds_buf, cfs_ds_len + 12, 0);
