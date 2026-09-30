@@ -34,7 +34,7 @@
 #define OS_PRINTF_CONSOLE_NAME ""
 #define OS_ADD_TASK_FLAGS 0
 #define OS_MAX_CONSOLES 1
-#define OS_MODULE_FILE_EXTENSION "@CMAKE_SHARED_LIBRARY_SUFFIX@"
+#define OS_MODULE_FILE_EXTENSION ".BIN"
 #define OS_FS_DEV_NAME_LEN 32 /**< Device name length */
 #define OS_FS_PHYS_NAME_LEN 64 /**< Physical drive name length */
 #define OS_FS_VOL_NAME_LEN 32 /**< Volume name length */

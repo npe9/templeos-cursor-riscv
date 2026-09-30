@@ -43,14 +43,36 @@ def main(argv):
     # mission supplies it and it is only read when OSAL_CONFIG_INCLUDE_SHELL is on (it is off by
     # default). Silently emitting "" is right; silently emitting "" without saying so is how a
     # missing mission setting turns into a mystery later.
+    # Not every placeholder in osconfig.h.in is an OSAL_CONFIG_* one. CMake itself supplies some,
+    # and an earlier version of this generator matched only @OSAL_CONFIG_*@ -- so
+    # OS_MODULE_FILE_EXTENSION came out as the LITERAL STRING "@CMAKE_SHARED_LIBRARY_SUFFIX@" in
+    # both generated headers. The differential oracle could never catch that, because both sides
+    # carried the same wrong literal.
+    #
+    # CMAKE_SHARED_LIBRARY_SUFFIX is CMake's per-platform shared-library extension (".so",
+    # ".dylib"). This port has no shared libraries: modules are TempleOS .BIN files, which is a
+    # PORT DECISION and is why it is recorded here rather than guessed per platform.
+    PORT = {"CMAKE_SHARED_LIBRARY_SUFFIX": ".BIN"}
+
     unset = []
     def sub(m):
         name = m.group(1)
+        if name in PORT:
+            return PORT[name]
         if name not in vals:
             unset.append(name)
             return ""
         return vals[name]
     out = re.sub(r'@(OSAL_CONFIG_[A-Z_0-9]+)@', sub, tmpl)
+    out = re.sub(r'@([A-Z_][A-Z_0-9]*)@', sub, out)
+
+    # Anything still wrapped in @...@ was never substituted, and a header with a live CMake
+    # placeholder in it is wrong even when both sides agree about it. Fail loudly.
+    leftover = sorted(set(re.findall(r'@([A-Za-z_][A-Za-z_0-9]*)@', out)))
+    if leftover:
+        print("FAIL gen_osconfig — placeholders left unsubstituted in osconfig.h: "
+              + ", ".join(leftover), file=sys.stderr)
+        return 1
 
     # #cmakedefine NAME  ->  #define NAME / /* #undef NAME */, keyed on the variable's truthiness
     def cmakedef(m):

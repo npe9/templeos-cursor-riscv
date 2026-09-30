@@ -91,7 +91,11 @@ H_TYPES = [(r'\bCFE_MSG_Message\s*\*', ' PTRB '), (r'\bCFE_\w+\s*\*', ' PTRNUM '
            (r'\bI32\s*\*', ' PTRNUM '), (r'\bBool\s*\*', ' PTRNUM '),
            (r'\bU8\s*\*', ' PTRB '), (r'\bI64\s*\*', ' PTRSZ '),
            (r'\bOS_time_t\s*\*', ' TIME '), (r'\bOS_\w+_prop_t\s*\*', ' PROP '),
-           (r'\bOS_object_token_t\s*\*', ' TOK '), (r'\bI64\b', ' SZ '), (r'\bU32\b', ' NUM '),
+           (r'\bOS_object_token_t\s*\*', ' TOK '),
+           # A lowercase os_*_t POINTER, mirroring the same rule on the C side: these are
+           # os_fsinfo_t, os_err_name_t and friends, and the C normalises them to PTRB.
+           (r'\bos_\w+_t\s*\*', ' PTRB '),
+           (r'\bI64\b', ' SZ '), (r'\bU32\b', ' NUM '),
            (r'\bU16\b', ' NUM '), (r'\bU8\b', ' NUM '), (r'\bI32\b', ' SNUM ')]
 
 # A function-pointer parameter, however it is spelled. The C uses typedefs (OS_ArgCallback_t,

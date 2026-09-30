@@ -21,6 +21,7 @@
 #include "os-shared-network.h"
 #include "os-shared-shell.h"
 #include "os-shared-task-affinity.h"
+#include "os-shared-filesys.h"
 #include "osapi-task-affinity.h"
 #include "os-shared-countsem.h"
 #include "os-shared-mutex.h"
@@ -32,6 +33,7 @@
 #include "os-shared-network.h"
 #include "os-shared-shell.h"
 #include "os-shared-task-affinity.h"
+#include "os-shared-filesys.h"
 #include "osapi-task-affinity.h"
 
 /* The backend's error-name table. A bare-metal target contributes no OS-specific errors, so
@@ -163,6 +165,74 @@ static uint32 stub_cs_options;
 static int    stub_cs_gives;
 static int    stub_cs_takes;
 static uint32 stub_cs_last_msecs;
+
+/* --- osapi-filesys.c backend -------------------------------------------------------------
+ * A real backend is what gives a volume its host-side mount point, so StartVolume_Impl does
+ * that here: without it system_mountpt stays empty and OS_mount can never get past its
+ * "system mount point should be a non-empty string" check.
+ */
+static int   stub_fs_starts, stub_fs_stops, stub_fs_formats, stub_fs_mounts, stub_fs_unmounts;
+static int   stub_fs_checks, stub_fs_stats, stub_fs_repair;
+static int32 stub_fs_format_rc = OS_SUCCESS;
+static int32 stub_fs_mount_rc  = OS_SUCCESS;
+
+int32 OS_FileSysStartVolume_Impl(const OS_object_token_t *token)
+{
+    OS_filesys_internal_record_t *fs = OS_OBJECT_TABLE_GET(OS_filesys_table, *token);
+    ++stub_fs_starts;
+    /* Only give a host mount point to volumes that do not already have one: AddFixedMap sets
+     * system_mountpt itself, and overwriting it would erase the caller's phys_path. */
+    if (fs->system_mountpt[0] == 0)
+    {
+        strncpy(fs->system_mountpt, "/host/ram", sizeof(fs->system_mountpt) - 1);
+    }
+    return OS_SUCCESS;
+}
+int32 OS_FileSysStopVolume_Impl(const OS_object_token_t *token) { ++stub_fs_stops; return OS_SUCCESS; }
+int32 OS_FileSysFormatVolume_Impl(const OS_object_token_t *token)
+{
+    ++stub_fs_formats;
+    return stub_fs_format_rc;
+}
+int32 OS_FileSysMountVolume_Impl(const OS_object_token_t *token)
+{
+    ++stub_fs_mounts;
+    return stub_fs_mount_rc;
+}
+int32 OS_FileSysUnmountVolume_Impl(const OS_object_token_t *token) { ++stub_fs_unmounts; return OS_SUCCESS; }
+int32 OS_FileSysCheckVolume_Impl(const OS_object_token_t *token, bool repair)
+{
+    ++stub_fs_checks;
+    stub_fs_repair = repair;
+    return OS_SUCCESS;
+}
+int32 OS_FileSysStatVolume_Impl(const OS_object_token_t *token, OS_statvfs_t *statbuf)
+{
+    ++stub_fs_stats;
+    statbuf->block_size   = 512;
+    statbuf->total_blocks = 1000;
+    statbuf->blocks_free  = 640;
+    return OS_SUCCESS;
+}
+
+/* Dumps every filesys entry in use, in index order. The driver used to print
+ * OS_filesys_table[0] and [1] directly and was off by one: OS_ObjectIdFindNextFree starts its
+ * search at last_alloc + 1, so the FIRST volume allocated lands at index 1 and slot 0 stayed
+ * empty. Printing what is there, rather than where it was assumed to be, removes the
+ * assumption from the transcript. */
+static void fs_dump(const char *tag)
+{
+    int i;
+    for (i = 0; i < OS_MAX_FILE_SYSTEMS; ++i)
+    {
+        if (OS_filesys_table[i].device_name[0] != 0 || OS_filesys_table[i].virtual_mountpt[0] != 0)
+        {
+            printf("%s [%d] dev=%s virt=%s type=%d flags=%u\n", tag, i,
+                   OS_filesys_table[i].device_name, OS_filesys_table[i].virtual_mountpt,
+                   (int)OS_filesys_table[i].fstype, (unsigned)OS_filesys_table[i].flags);
+        }
+    }
+}
 
 /* --- osapi-network.c / osapi-shell.c / osapi-task-affinity.c backends -------------------------
  * Three small modules that are almost pure dispatch: what the transcript pins is which checks
@@ -932,6 +1002,108 @@ int main(void)
                    (unsigned long)OS_ObjectIdToInteger(stub_rw_writer_at_give),
                    (unsigned long)OS_ObjectIdToInteger(OS_rwlock_table[rwi].last_writer));
             stub_t_current = OS_ObjectIdFromInteger(0x10001);
+        }
+
+        /* --- osapi-filesys.c --------------------------------------------------------------
+         * The richest part is OS_TranslatePath, which is pure string logic with several ways
+         * to fail, and OS_FileSys_FindVirtMountPoint underneath it -- whose whole reason for
+         * existing is that a mount point of /mnt/abc must NOT match a target of /mnt/abcd.
+         * The flag arithmetic in mount/unmount is the other half: both mask out FIXED and then
+         * demand an EXACT flag set, so a single wrong bit is a state error.
+         */
+        {
+            osal_id_t    fsid;
+            OS_statvfs_t sb;
+            os_fsinfo_t  fsinfo;
+            char         local[OS_MAX_LOCAL_PATH_LEN];
+            char         phys[OS_FS_PHYS_NAME_LEN];
+            char         longpath[OS_MAX_PATH_LEN + 8];
+            int          i;
+
+            OS_FileSysAPI_Init();
+            printf("fs_init   rc=%d\n", (int)OS_FileSysAPI_Init());
+
+            /* mkfs FORMATS, initfs does not -- the one difference between them. */
+            printf("fs_mkfs   rc=%d starts=%d formats=%d\n",
+                   (int)OS_mkfs(NULL, "/dev/ram0", "RAMDISK", 512, 1000),
+                   stub_fs_starts, stub_fs_formats);
+            printf("fs_initfs rc=%d starts=%d formats=%d\n",
+                   (int)OS_initfs(NULL, "/dev/ram1", "OTHER", 512, 1000),
+                   stub_fs_starts, stub_fs_formats);
+            /* RAM-disk detection: volname beginning "RAM" OR a non-NULL address. "OTHER" above
+             * got neither, so the two entries must have DIFFERENT fstype. */
+            /* RAM-disk detection: volname beginning "RAM" OR a non-NULL address. "OTHER"
+             * above got neither, so the two entries must differ in fstype. */
+            fs_dump("fs_tbl  ");
+
+            /* Same device again: ALLOCATE fails and the historic code is substituted. */
+            printf("fs_again  rc=%d\n", (int)OS_mkfs(NULL, "/dev/ram0", "RAMDISK", 512, 1000));
+            printf("fs_noname rc=%d\n", (int)OS_mkfs(NULL, "", "RAMDISK", 512, 1000));
+            printf("fs_nulldv rc=%d\n", (int)OS_mkfs(NULL, NULL, "RAMDISK", 512, 1000));
+
+            /* A failed format must STOP the volume again rather than leave it half-made. */
+            stub_fs_format_rc = OS_ERROR;
+            printf("fs_badfmt rc=%d stops=%d\n", (int)OS_mkfs(NULL, "/dev/ram2", "RAMDISK", 512, 1000),
+                   stub_fs_stops);
+            stub_fs_format_rc = OS_SUCCESS;
+
+            /* mount: every failure is collapsed to OS_ERR_NAME_NOT_FOUND, including the
+             * INCORRECT_OBJ_STATE and PATH_INVALID computed inside. */
+            printf("fs_mntbad rc=%d\n", (int)OS_mount("/dev/nope", "/mnt"));
+            printf("fs_mount  rc=%d mounts=%d\n", (int)OS_mount("/dev/ram0", "/mnt"),
+                   stub_fs_mounts);
+            printf("fs_mnttwi rc=%d\n", (int)OS_mount("/dev/ram0", "/mnt"));
+
+            /* TranslatePath, once something is mounted at /mnt. */
+            memset(local, 0, sizeof(local));
+            printf("tp_ok     rc=%d [%s]\n", (int)OS_TranslatePath("/mnt/file.txt", local), local);
+            printf("tp_root   rc=%d [%s]\n", (int)OS_TranslatePath("/mnt/", local), local);
+            printf("tp_nodir  rc=%d\n", (int)OS_TranslatePath("nodir", local));
+            printf("tp_norel  rc=%d\n", (int)OS_TranslatePath("/mnt/../etc/x", local));
+            printf("tp_nomnt  rc=%d\n", (int)OS_TranslatePath("/other/file", local));
+            printf("tp_nullv  rc=%d\n", (int)OS_TranslatePath(NULL, local));
+            printf("tp_nulll  rc=%d\n", (int)OS_TranslatePath("/mnt/x", NULL));
+            for (i = 0; i < (int)sizeof(longpath) - 1; ++i) longpath[i] = 'p';
+            longpath[0] = '/';
+            longpath[sizeof(longpath) - 1] = 0;
+            printf("tp_long   rc=%d\n", (int)OS_TranslatePath(longpath, local));
+            /* A file name longer than OS_MAX_FILE_NAME (20) after the last '/'. */
+            printf("tp_nlong  rc=%d\n",
+                   (int)OS_TranslatePath("/mnt/abcdefghijklmnopqrstuvwxyz0123456789", local));
+            /* THE PREFIX TRAP: /mnt must not match /mntx, and the mount point is /mnt. */
+            printf("tp_prefix rc=%d\n", (int)OS_TranslatePath("/mntx/file", local));
+
+            printf("fs_phys   rc=%d [%s]\n", (int)OS_FS_GetPhysDriveName(phys, "/mnt"), phys);
+            printf("fs_physno rc=%d\n", (int)OS_FS_GetPhysDriveName(phys, "/other"));
+            printf("fs_stat   rc=%d bs=%ld free=%ld n=%d\n",
+                   (int)OS_FileSysStatVolume("/mnt", &sb), (long)sb.block_size,
+                   (long)sb.blocks_free, stub_fs_stats);
+            printf("fs_chk    rc=%d repair=%d n=%d\n", (int)OS_chkfs("/mnt", true),
+                   stub_fs_repair, stub_fs_checks);
+
+            printf("fs_info   rc=%d maxv=%lu freev=%lu maxfd=%lu\n", (int)OS_GetFsInfo(&fsinfo),
+                   (unsigned long)fsinfo.MaxVolumes, (unsigned long)fsinfo.FreeVolumes,
+                   (unsigned long)fsinfo.MaxFds);
+
+            /* A fixed map sets FIXED|READY|MOUNTED_* in one go and keeps its phys_path. */
+            printf("fs_fixed  rc=%d\n", (int)OS_FileSysAddFixedMap(&fsid, "/host/eeprom", "/eeprom"));
+            fs_dump("fs_tbl2 ");
+            memset(local, 0, sizeof(local));
+            printf("tp_fixed  rc=%d [%s]\n", (int)OS_TranslatePath("/eeprom/cfg", local), local);
+
+            /* FIXED is MASKED OUT of mount's flag check rather than rejected -- NASA's
+             * comment says fixed maps "don't support mount/unmount" but that this is not
+             * enforced, to support abstraction. Unmounting the fixed map leaves its flags at
+             * exactly FIXED|READY, which is the only state where the mask is observable:
+             * masked it reads READY and mount proceeds, unmasked it does not. */
+            printf("fx_unmnt  rc=%d\n", (int)OS_unmount("/eeprom"));
+            fs_dump("fx_tbl  ");
+            printf("fx_remnt  rc=%d mounts=%d\n", (int)OS_mount("/eeprom", "/eeprom"), stub_fs_mounts);
+            printf("fs_unmnt  rc=%d n=%d\n", (int)OS_unmount("/mnt"), stub_fs_unmounts);
+            printf("fs_unmnt2 rc=%d\n", (int)OS_unmount("/mnt"));
+            printf("tp_after  rc=%d\n", (int)OS_TranslatePath("/mnt/file.txt", local));
+            printf("fs_rmfs   rc=%d\n", (int)OS_rmfs("/dev/ram0"));
+            printf("fs_rmfs2  rc=%d\n", (int)OS_rmfs("/dev/ram0"));
         }
 
     }

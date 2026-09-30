@@ -60,6 +60,76 @@ I64 StrCmp(U8 *st1, U8 *st2)
     return 1;
   return 0;
 }
+
+// Three more the kernel provides, needed once osapi-filesys.c is in the build. The blob's
+// import trailer is what caught their absence: without these they bound silently to the host C
+// runtime and the transcript would still have passed.
+//
+// StrOcc and StrLastOcc are HolyC in Kernel/StrA.HC, so these are that code, not a rewrite of
+// it. StrNCmp and StrMatch are asm externs (_STRNCMP at StrA.HC:322, _STRMATCH at :316) and
+// these reproduce what the assembly does:
+//   StrNCmp(st1, st2, n)     st2 in RSI, st1 in RDI, JA -> -1, so st1 < st2 is negative, the
+//                            magnitude is only ever +-1, and n == 0 returns 0.
+//   StrMatch(needle, hay)    ARGUMENTS REVERSED from C's strstr. NULL for either gives NULL,
+//                            and an EMPTY needle returns the haystack pointer, as strstr does.
+I64 StrOcc(U8 *src, I64 ch)
+{
+  I64 i = 0;
+  if (!src)
+    return 0;
+  while (*src)
+    if (*src++ == ch)
+      i++;
+  return i;
+}
+
+U8 *StrLastOcc(U8 *src, U8 *marker)
+{
+  I64 ch;
+  U8 *res = NULL;
+  while (ch = *src++)
+    if (StrOcc(marker, ch))
+      res = src - 1;
+  return res;
+}
+
+I64 StrNCmp(U8 *st1, U8 *st2, I64 n)
+{
+  I64 i = 0;
+  while (i < n) {
+    if (!st2[i]) {
+      if (st1[i])
+        return 1;
+      return 0;
+    }
+    if (st1[i] != st2[i]) {
+      if (st2[i] > st1[i])
+        return -1;
+      return 1;
+    }
+    i++;
+  }
+  return 0;
+}
+
+U8 *StrMatch(U8 *needle, U8 *haystack_str)
+{
+  I64 i, j;
+  if (!needle || !haystack_str)
+    return NULL;
+  if (!*needle)
+    return haystack_str;
+  i = 0;
+  while (haystack_str[i]) {
+    j = 0;
+    while (needle[j] && haystack_str[i + j] == needle[j])
+      j++;
+    if (!needle[j])
+      return &haystack_str[i];
+    i++;
+  }
+  return NULL;
+}
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -296,6 +366,7 @@ U0 task_entry_a() { ++stub_t_startups; }
 #include "/Kernel/Cfs/osal/osapi_network.HC"
 #include "/Kernel/Cfs/osal/osapi_shell.HC"
 #include "/Kernel/Cfs/osal/osapi_task_affinity.HC"
+#include "/Kernel/Cfs/osal/os_shared_filesys.HC"
 
 // --- osapi-network.c / osapi-shell.c / osapi-task-affinity.c backends -------------------------
 // Three small modules that are almost pure dispatch: what the transcript pins is which checks
@@ -343,6 +414,82 @@ I32 OS_TaskAffinityGetAffinity_Impl(OS_object_token_t *token, OS_cpuset_t *cpuse
   ++stub_af_gets;
   cpuset->affinity_mask[0] = 0x5A;
   return OS_SUCCESS;
+}
+
+#include "/Kernel/Cfs/osal/osapi_filesys.HC"
+
+// --- osapi-filesys.c backend -------------------------------------------------------------
+// A real backend is what gives a volume its host-side mount point, so StartVolume_Impl does
+// that here: without it system_mountpt stays empty and OS_mount can never get past its
+// "system mount point should be a non-empty string" check.
+I64 stub_fs_starts, stub_fs_stops, stub_fs_formats, stub_fs_mounts, stub_fs_unmounts;
+I64 stub_fs_checks, stub_fs_stats, stub_fs_repair;
+I32 stub_fs_format_rc, stub_fs_mount_rc;
+
+I32 OS_FileSysStartVolume_Impl(OS_object_token_t *token)
+{
+  OS_filesys_internal_record_t *fs;
+  fs = &OS_filesys_table[OS_ObjectIndexFromToken(token)];
+  ++stub_fs_starts;
+  // Only give a host mount point to volumes that do not already have one: AddFixedMap sets
+  // system_mountpt itself, and overwriting it would erase the caller's phys_path.
+  if (fs->system_mountpt[0] == 0)
+    StrNCpy(fs->system_mountpt, "/host/ram", OS_MAX_LOCAL_PATH_LEN - 1);
+  return OS_SUCCESS;
+}
+I32 OS_FileSysStopVolume_Impl(OS_object_token_t *token) { ++stub_fs_stops; return OS_SUCCESS; }
+I32 OS_FileSysFormatVolume_Impl(OS_object_token_t *token)
+{
+  ++stub_fs_formats;
+  return stub_fs_format_rc;
+}
+I32 OS_FileSysMountVolume_Impl(OS_object_token_t *token)
+{
+  ++stub_fs_mounts;
+  return stub_fs_mount_rc;
+}
+I32 OS_FileSysUnmountVolume_Impl(OS_object_token_t *token) { ++stub_fs_unmounts; return OS_SUCCESS; }
+I32 OS_FileSysCheckVolume_Impl(OS_object_token_t *token, Bool repair)
+{
+  ++stub_fs_checks;
+  stub_fs_repair = repair;
+  return OS_SUCCESS;
+}
+I32 OS_FileSysStatVolume_Impl(OS_object_token_t *token, OS_statvfs_t *statbuf)
+{
+  ++stub_fs_stats;
+  statbuf->block_size = 512;
+  statbuf->total_blocks = 1000;
+  statbuf->blocks_free = 640;
+  return OS_SUCCESS;
+}
+
+// Dumps every filesys entry in use, in index order. An earlier draft printed
+// OS_filesys_table[0] and [1] directly and was off by one: OS_ObjectIdFindNextFree starts its
+// search at last_alloc + 1, so the FIRST volume allocated lands at index 1 and slot 0 stays
+// empty. Printing what is there removes the assumption from the transcript.
+U0 fs_dump(U8 *tag)
+{
+  I64 i = 0;
+  OS_filesys_internal_record_t *fs;
+  while (i < OS_MAX_FILE_SYSTEMS) {
+    fs = &OS_filesys_table[i];
+    if (fs->device_name[0] != 0 || fs->virtual_mountpt[0] != 0) {
+      S(tag);
+      S(" [");
+      D(i);
+      S("] dev=");
+      S(fs->device_name);
+      S(" virt=");
+      S(fs->virtual_mountpt);
+      S(" type=");
+      D(fs->fstype);
+      S(" flags=");
+      D(fs->flags);
+      S("\n");
+    }
+    ++i;
+  }
 }
 
 #include "/Kernel/Cfs/osal/osapi_queue.HC"
@@ -1529,6 +1676,224 @@ I64 main()
     D(OS_rwlock_table[rwi].last_writer);
     S("\n");
     stub_t_current = 0x10001;
+  }
+
+  // --- osapi-filesys.c ---------------------------------------------------------------------
+  // The richest part is OS_TranslatePath, pure string logic with several ways to fail, and
+  // OS_FileSys_FindVirtMountPoint underneath it -- whose whole reason for existing is that a
+  // mount point of /mnt must NOT match a target of /mntx. The flag arithmetic in
+  // mount/unmount is the other half: both mask out FIXED and then demand an EXACT flag set.
+  {
+    U32 fsid;
+    OS_statvfs_t sb;
+    os_fsinfo_t fsinfo;
+    U8 local[OS_MAX_LOCAL_PATH_LEN];
+    U8 phys[OS_FS_PHYS_NAME_LEN];
+    U8 longpath[OS_MAX_PATH_LEN + 8];
+    I64 i;
+    I32 r8;
+
+    stub_fs_format_rc = OS_SUCCESS;
+    stub_fs_mount_rc = OS_SUCCESS;
+
+    OS_FileSysAPI_Init;
+    S("fs_init   rc=");
+    D(OS_FileSysAPI_Init);
+    S("\n");
+
+    // mkfs FORMATS, initfs does not -- the one difference between them.
+    r8 = OS_mkfs(NULL, "/dev/ram0", "RAMDISK", 512, 1000);
+    S("fs_mkfs   rc=");
+    D(r8);
+    S(" starts=");
+    D(stub_fs_starts);
+    S(" formats=");
+    D(stub_fs_formats);
+    S("\n");
+    r8 = OS_initfs(NULL, "/dev/ram1", "OTHER", 512, 1000);
+    S("fs_initfs rc=");
+    D(r8);
+    S(" starts=");
+    D(stub_fs_starts);
+    S(" formats=");
+    D(stub_fs_formats);
+    S("\n");
+    // RAM-disk detection: volname beginning "RAM" OR a non-NULL address. "OTHER" above got
+    // neither, so the two entries must differ in fstype.
+    fs_dump("fs_tbl  ");
+
+    // Same device again: ALLOCATE fails and the historic code is substituted.
+    S("fs_again  rc=");
+    D(OS_mkfs(NULL, "/dev/ram0", "RAMDISK", 512, 1000));
+    S("\n");
+    S("fs_noname rc=");
+    D(OS_mkfs(NULL, "", "RAMDISK", 512, 1000));
+    S("\n");
+    r8 = OS_mkfs(NULL, NULL, "RAMDISK", 512, 1000);
+    S("fs_nulldv rc=");
+    D(r8);
+    S("\n");
+
+    // A failed format must STOP the volume again rather than leave it half-made.
+    stub_fs_format_rc = OS_ERROR;
+    r8 = OS_mkfs(NULL, "/dev/ram2", "RAMDISK", 512, 1000);
+    S("fs_badfmt rc=");
+    D(r8);
+    S(" stops=");
+    D(stub_fs_stops);
+    S("\n");
+    stub_fs_format_rc = OS_SUCCESS;
+
+    // mount: every failure is collapsed to OS_ERR_NAME_NOT_FOUND, including the
+    // INCORRECT_OBJ_STATE and PATH_INVALID computed inside.
+    S("fs_mntbad rc=");
+    D(OS_mount("/dev/nope", "/mnt"));
+    S("\n");
+    r8 = OS_mount("/dev/ram0", "/mnt");
+    S("fs_mount  rc=");
+    D(r8);
+    S(" mounts=");
+    D(stub_fs_mounts);
+    S("\n");
+    S("fs_mnttwi rc=");
+    D(OS_mount("/dev/ram0", "/mnt"));
+    S("\n");
+
+    // TranslatePath, once something is mounted at /mnt.
+    MemSet(local, 0, sizeof(local));
+    r8 = OS_TranslatePath("/mnt/file.txt", local);
+    S("tp_ok     rc=");
+    D(r8);
+    S(" [");
+    S(local);
+    S("]\n");
+    r8 = OS_TranslatePath("/mnt/", local);
+    S("tp_root   rc=");
+    D(r8);
+    S(" [");
+    S(local);
+    S("]\n");
+    S("tp_nodir  rc=");
+    D(OS_TranslatePath("nodir", local));
+    S("\n");
+    S("tp_norel  rc=");
+    D(OS_TranslatePath("/mnt/../etc/x", local));
+    S("\n");
+    S("tp_nomnt  rc=");
+    D(OS_TranslatePath("/other/file", local));
+    S("\n");
+    r8 = OS_TranslatePath(NULL, local);
+    S("tp_nullv  rc=");
+    D(r8);
+    S("\n");
+    r8 = OS_TranslatePath("/mnt/x", NULL);
+    S("tp_nulll  rc=");
+    D(r8);
+    S("\n");
+    i = 0;
+    while (i < sizeof(longpath) - 1) {
+      longpath[i] = 'p';
+      ++i;
+    }
+    longpath[0] = '/';
+    longpath[sizeof(longpath) - 1] = 0;
+    S("tp_long   rc=");
+    D(OS_TranslatePath(longpath, local));
+    S("\n");
+    // A file name longer than OS_MAX_FILE_NAME (20) after the last '/'.
+    S("tp_nlong  rc=");
+    D(OS_TranslatePath("/mnt/abcdefghijklmnopqrstuvwxyz0123456789", local));
+    S("\n");
+    // THE PREFIX TRAP: /mnt must not match /mntx, and the mount point is /mnt.
+    S("tp_prefix rc=");
+    D(OS_TranslatePath("/mntx/file", local));
+    S("\n");
+
+    r8 = OS_FS_GetPhysDriveName(phys, "/mnt");
+    S("fs_phys   rc=");
+    D(r8);
+    S(" [");
+    S(phys);
+    S("]\n");
+    S("fs_physno rc=");
+    D(OS_FS_GetPhysDriveName(phys, "/other"));
+    S("\n");
+    r8 = OS_FileSysStatVolume("/mnt", &sb);
+    S("fs_stat   rc=");
+    D(r8);
+    S(" bs=");
+    D(sb.block_size);
+    S(" free=");
+    D(sb.blocks_free);
+    S(" n=");
+    D(stub_fs_stats);
+    S("\n");
+    r8 = OS_chkfs("/mnt", TRUE);
+    S("fs_chk    rc=");
+    D(r8);
+    S(" repair=");
+    D(stub_fs_repair);
+    S(" n=");
+    D(stub_fs_checks);
+    S("\n");
+
+    r8 = OS_GetFsInfo(&fsinfo);
+    S("fs_info   rc=");
+    D(r8);
+    S(" maxv=");
+    D(fsinfo.MaxVolumes);
+    S(" freev=");
+    D(fsinfo.FreeVolumes);
+    S(" maxfd=");
+    D(fsinfo.MaxFds);
+    S("\n");
+
+    // A fixed map sets FIXED|READY|MOUNTED_* in one go and keeps its phys_path.
+    S("fs_fixed  rc=");
+    D(OS_FileSysAddFixedMap(&fsid, "/host/eeprom", "/eeprom"));
+    S("\n");
+    fs_dump("fs_tbl2 ");
+    MemSet(local, 0, sizeof(local));
+    r8 = OS_TranslatePath("/eeprom/cfg", local);
+    S("tp_fixed  rc=");
+    D(r8);
+    S(" [");
+    S(local);
+    S("]\n");
+
+    // FIXED is MASKED OUT of mount's flag check rather than rejected -- NASA's comment says
+    // fixed maps "don't support mount/unmount" but that this is not enforced, to support
+    // abstraction. Unmounting the fixed map leaves its flags at exactly FIXED|READY, which is
+    // the only state where the mask is observable: masked it reads READY and mount proceeds,
+    // unmasked it does not.
+    S("fx_unmnt  rc=");
+    D(OS_unmount("/eeprom"));
+    S("\n");
+    fs_dump("fx_tbl  ");
+    r8 = OS_mount("/eeprom", "/eeprom");
+    S("fx_remnt  rc=");
+    D(r8);
+    S(" mounts=");
+    D(stub_fs_mounts);
+    S("\n");
+    r8 = OS_unmount("/mnt");
+    S("fs_unmnt  rc=");
+    D(r8);
+    S(" n=");
+    D(stub_fs_unmounts);
+    S("\n");
+    S("fs_unmnt2 rc=");
+    D(OS_unmount("/mnt"));
+    S("\n");
+    S("tp_after  rc=");
+    D(OS_TranslatePath("/mnt/file.txt", local));
+    S("\n");
+    S("fs_rmfs   rc=");
+    D(OS_rmfs("/dev/ram0"));
+    S("\n");
+    S("fs_rmfs2  rc=");
+    D(OS_rmfs("/dev/ram0"));
+    S("\n");
   }
   return 0;
 }
