@@ -31,9 +31,6 @@
 #include "cfe_msg_ccsdspri.HC"
 // From cfe_msg_api_typedefs.h -> cfe_error.h: CFE_MSG_WRONG_MSG_TYPE is CFE_SB_WRONG_MSG_TYPE.
 #define CFE_MSG_WRONG_MSG_TYPE 0xCA00000D
-// From cfe_msg_defaults.h. Zero, per CCSDS 133.0-B-2 section 4.1.3.2 -- version 1 of the CCSDS
-// header is the bit pattern '000', so the "version" this code compares against is 0, not 1.
-#define CFE_MISSION_CCSDSVER 0
 #define CFE_MSG_FC_MASK 0x7F
 // --- default_cfe_msg_sechdr.h ---------------------------------------------------------------
 class CFE_MSG_CommandSecondaryHeader

@@ -124,5 +124,98 @@ int main(void)
         printf("fcver    rc=%ld\n", (long)CFE_MSG_SetFcnCode(&cmd.Msg, 0x7F));
         printf("fcnull   rc=%ld\n", (long)CFE_MSG_GetFcnCode(NULL, &fc));
     }
+
+    /* --- header sizes ------------------------------------------------------------------
+     * Not a function under test: a property. Every unit below indexes a secondary header at
+     * an offset the compiler chose, so if the two languages lay these structs out differently
+     * the transcripts would diverge somewhere far from the cause. Pin it here instead. */
+    printf("sizes %d %d %d\n", (int)sizeof(CFE_MSG_Message_t), (int)sizeof(CFE_MSG_CommandHeader_t),
+           (int)sizeof(CFE_MSG_TelemetryHeader_t));
+
+    /* --- cfe_msg_sechdr_time.c -------------------------------------------------------- */
+    {
+        CFE_MSG_TelemetryHeader_t tlm;
+        CFE_TIME_SysTime_t        t;
+        for (i = 0; i < (int)sizeof(tlm); i++)
+            ((unsigned char *)&tlm)[i] = 0;
+        CFE_MSG_SetType(&tlm.Msg, CFE_MSG_Type_Tlm);
+        CFE_MSG_SetHasSecondaryHeader(&tlm.Msg, true);
+        t.Seconds    = 0x12345678;
+        t.Subseconds = 0x9ABCDEF0;
+        printf("settime  rc=%ld\n", (long)CFE_MSG_SetMsgTime(&tlm.Msg, t));
+        printf("timebytes %d %d %d %d %d %d\n", tlm.Sec.Time[0], tlm.Sec.Time[1], tlm.Sec.Time[2],
+               tlm.Sec.Time[3], tlm.Sec.Time[4], tlm.Sec.Time[5]);
+        /* The round trip is lossy BY CONSTRUCTION: six header bytes hold a 32/16 split, so the
+         * low 16 bits of Subseconds have nowhere to go. Reading back 0x9ABC0000, not
+         * 0x9ABCDEF0, is correct behaviour and the transcript says so out loud. */
+        t.Seconds    = 0;
+        t.Subseconds = 0;
+        printf("gettime  rc=%ld s=%lu u=%lu\n", (long)CFE_MSG_GetMsgTime(&tlm.Msg, &t),
+               (unsigned long)t.Seconds, (unsigned long)t.Subseconds);
+        /* On the wrong message type it must refuse AND zero the out-param. */
+        CFE_MSG_SetType(&tlm.Msg, CFE_MSG_Type_Cmd);
+        t.Seconds    = 0x11111111;
+        t.Subseconds = 0x22222222;
+        printf("timecmd  rc=%ld s=%lu u=%lu\n", (long)CFE_MSG_GetMsgTime(&tlm.Msg, &t),
+               (unsigned long)t.Seconds, (unsigned long)t.Subseconds);
+        printf("timeset2 rc=%ld\n", (long)CFE_MSG_SetMsgTime(&tlm.Msg, t));
+        printf("timenull rc=%ld\n", (long)CFE_MSG_GetMsgTime(NULL, &t));
+    }
+
+    /* --- cfe_msg_sechdr_checksum.c ---------------------------------------------------- */
+    {
+        CFE_MSG_CommandHeader_t cmd;
+        bool                    valid;
+        for (i = 0; i < (int)sizeof(cmd); i++)
+            ((unsigned char *)&cmd)[i] = 0;
+        CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Cmd);
+        CFE_MSG_SetHasSecondaryHeader(&cmd.Msg, true);
+        CFE_MSG_SetSize(&cmd.Msg, sizeof(cmd));
+        CFE_MSG_SetFcnCode(&cmd.Msg, 0x12);
+        printf("gencsum  rc=%ld c=%u\n", (long)CFE_MSG_GenerateChecksum(&cmd.Msg),
+               (unsigned)cmd.Sec.Checksum);
+        valid = false;
+        printf("valcsum  rc=%ld v=%d\n", (long)CFE_MSG_ValidateChecksum(&cmd.Msg, &valid),
+               (int)valid);
+        /* Corrupt one byte the checksum covered. It must now fail. A gate that only ever sees
+         * the passing case would not notice a checksum that always returns "valid". */
+        cmd.Sec.FunctionCode = 0x13;
+        valid                = true;
+        printf("badcsum  rc=%ld v=%d\n", (long)CFE_MSG_ValidateChecksum(&cmd.Msg, &valid),
+               (int)valid);
+        CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Tlm);
+        printf("csumtlm  rc=%ld\n", (long)CFE_MSG_GenerateChecksum(&cmd.Msg));
+        printf("csumnull rc=%ld\n", (long)CFE_MSG_ValidateChecksum(NULL, &valid));
+    }
+
+    /* --- cfe_msg_init.c, cfe_msg_initdefaulthdr_pri.c, cfe_msg_msgid_shared.c --------- */
+    {
+        unsigned char      buf[32];
+        CFE_MSG_Message_t *mp = (CFE_MSG_Message_t *)buf;
+        CFE_MSG_Type_t     mtype;
+        for (i = 0; i < (int)sizeof(buf); i++)
+            buf[i] = 0xEE;
+        printf("init     rc=%ld\n", (long)CFE_MSG_Init(mp, CFE_SB_ValueToMsgId(0x1801), 32));
+        dump("afterinit", mp);
+        /* Init clears the WHOLE size it was given, not just the header -- byte 31 proves it. */
+        printf("initclr  b8=%d b31=%d\n", buf[8], buf[31]);
+        printf("initseg  rc=%ld g=%d\n", (long)CFE_MSG_GetSegmentationFlag(mp, &seg), (int)seg);
+        /* An invalid msgid is explicitly ALLOWED here -- the real one may be filled in later --
+         * so this must succeed while CFE_MSG_SetMsgId on the same value would refuse. */
+        printf("initinv  rc=%ld\n", (long)CFE_MSG_Init(mp, CFE_SB_INVALID_MSG_ID, 32));
+        dump("afterinv", mp);
+        /* But a bad SIZE is refused, because the size always has to be real. */
+        printf("initsz   rc=%ld\n", (long)CFE_MSG_Init(mp, CFE_SB_ValueToMsgId(0x1801), 0));
+        printf("initnull rc=%ld\n", (long)CFE_MSG_Init(NULL, CFE_SB_ValueToMsgId(0x1801), 32));
+        /* GetTypeFromMsgId decodes via a throwaway message rather than by masking a bit. */
+        printf("typecmd  rc=%ld t=%d\n",
+               (long)CFE_MSG_GetTypeFromMsgId(CFE_SB_ValueToMsgId(0x1801), &mtype), (int)mtype);
+        printf("typetlm  rc=%ld t=%d\n",
+               (long)CFE_MSG_GetTypeFromMsgId(CFE_SB_ValueToMsgId(0x0801), &mtype), (int)mtype);
+        printf("typebad  rc=%ld\n",
+               (long)CFE_MSG_GetTypeFromMsgId(CFE_SB_ValueToMsgId(0x2000), &mtype));
+        printf("typenull rc=%ld\n",
+               (long)CFE_MSG_GetTypeFromMsgId(CFE_SB_ValueToMsgId(0x1801), NULL));
+    }
     return 0;
 }

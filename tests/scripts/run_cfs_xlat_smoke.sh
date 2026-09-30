@@ -20,7 +20,12 @@ PSP="$ROOT/vendor/PSP"
 SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/msg/fsw/src/cfe_msg_msgid_v1.c
        $CFE/modules/sb/fsw/src/cfe_sb_msg_id_util.c
-       $CFE/modules/msg/fsw/src/cfe_msg_sechdr_fc.c"
+       $CFE/modules/msg/fsw/src/cfe_msg_sechdr_fc.c
+       $CFE/modules/msg/fsw/src/cfe_msg_sechdr_time.c
+       $CFE/modules/msg/fsw/src/cfe_msg_sechdr_checksum.c
+       $CFE/modules/msg/fsw/src/cfe_msg_msgid_shared.c
+       $CFE/modules/msg/fsw/src/cfe_msg_initdefaulthdr_pri.c
+       $CFE/modules/msg/fsw/src/cfe_msg_init.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"

@@ -33,6 +33,7 @@
 // diffs the output.
 #ifndef CFE_MSG_CCSDSPRI_HC
 #define CFE_MSG_CCSDSPRI_HC
+#include "cfe_msg_defaults.HC"
 // --- from cfe_error.h / cfe_msg_api_typedefs.h --------------------------------------------
 #define CFE_SUCCESS               0
 #define CFE_MSG_BAD_ARGUMENT      0xCA000003
@@ -237,5 +238,17 @@ I32 CFE_MSG_SetSize(CFE_MSG_Message *MsgPtr, I64 Size)
   MsgPtr->CCSDS.Pri.Length[0] = (Size >> 8) & 0xFF;
   MsgPtr->CCSDS.Pri.Length[1] = Size & 0xFF;
   return CFE_SUCCESS;
+}
+
+// The last function in the same C file. It is declared in cfe_msg_defaults.h rather than in the
+// public API because it is module-internal.
+U0 CFE_MSG_SetDefaultCCSDSPri(CFE_MSG_Message *MsgPtr)
+{
+  // cFS standard for CCSDS Version
+  CFE_MSG_SetHeaderVersion(MsgPtr, CFE_MISSION_CCSDSVER);
+  // Default bits of the APID, for whatever isn't set by MsgId
+  CFE_MSG_SetApId(MsgPtr, CFE_PLATFORM_DEFAULT_APID);
+  // Default to complete packets
+  CFE_MSG_SetSegmentationFlag(MsgPtr, CFE_MSG_SegFlag_Unsegmented);
 }
 #endif

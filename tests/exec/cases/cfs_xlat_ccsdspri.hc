@@ -4,6 +4,9 @@
 // only thing under test is the translation and the compiler.
 #include "/Kernel/Cfs/cfe/cfe_msg_msgid_v1.HC"
 #include "/Kernel/Cfs/cfe/cfe_msg_sechdr_fc.HC"
+#include "/Kernel/Cfs/cfe/cfe_msg_sechdr_time.HC"
+#include "/Kernel/Cfs/cfe/cfe_msg_sechdr_checksum.HC"
+#include "/Kernel/Cfs/cfe/cfe_msg_init.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -72,6 +75,23 @@ U0 Rcv(U8 *label, I32 rc, U8 *key, I64 v)
   S(key);
   S("=");
   D(v);
+  S("\n");
+}
+
+// Two out-parameters on one line, for the time round trip.
+U0 Rcv2(U8 *label, I32 rc, U8 *k1, I64 v1, U8 *k2, I64 v2)
+{
+  S(label);
+  S(" rc=");
+  D(rc);
+  S(" ");
+  S(k1);
+  S("=");
+  D(v1);
+  S(" ");
+  S(k2);
+  S("=");
+  D(v2);
   S("\n");
 }
 
@@ -200,6 +220,124 @@ I64 main()
     CFE_MSG_SetHeaderVersion(&cmd.Msg, 1);
     Rc("fcver   ", CFE_MSG_SetFcnCode(&cmd.Msg, 0x7F));
     Rc("fcnull  ", CFE_MSG_GetFcnCode(NULL, &fc));
+  }
+  // --- header sizes -------------------------------------------------------------------
+  // A property, not a function under test: if HolyC laid a class out differently from C the
+  // transcripts would diverge somewhere far from the cause. Pin it where the cause would be.
+  S("sizes ");
+  D(sizeof(CFE_MSG_Message));
+  S(" ");
+  D(sizeof(CFE_MSG_CommandHeader));
+  S(" ");
+  D(sizeof(CFE_MSG_TelemetryHeader));
+  S("\n");
+  // --- cfe_msg_sechdr_time.c ----------------------------------------------------------
+  {
+    CFE_MSG_TelemetryHeader tlm;
+    CFE_TIME_SysTime t;
+    U8 *q = &tlm;
+    for (i = 0; i < sizeof(CFE_MSG_TelemetryHeader); i++)
+      q[i] = 0;
+    CFE_MSG_SetType(&tlm.Msg, CFE_MSG_Type_Tlm);
+    CFE_MSG_SetHasSecondaryHeader(&tlm.Msg, TRUE);
+    t.Seconds = 0x12345678;
+    t.Subseconds = 0x9ABCDEF0;
+    rc32 = CFE_MSG_SetMsgTime(&tlm.Msg, t);
+    Rc("settime ", rc32);
+    S("timebytes ");
+    D(tlm.Sec.Time[0]);
+    S(" ");
+    D(tlm.Sec.Time[1]);
+    S(" ");
+    D(tlm.Sec.Time[2]);
+    S(" ");
+    D(tlm.Sec.Time[3]);
+    S(" ");
+    D(tlm.Sec.Time[4]);
+    S(" ");
+    D(tlm.Sec.Time[5]);
+    S("\n");
+    // Lossy by construction: six header bytes hold a 32/16 split, so the low 16 bits of
+    // Subseconds have nowhere to go. 0x9ABC0000 coming back is correct.
+    t.Seconds = 0;
+    t.Subseconds = 0;
+    rc32 = CFE_MSG_GetMsgTime(&tlm.Msg, &t);
+    Rcv2("gettime ", rc32, "s", t.Seconds, "u", t.Subseconds);
+    CFE_MSG_SetType(&tlm.Msg, CFE_MSG_Type_Cmd);
+    t.Seconds = 0x11111111;
+    t.Subseconds = 0x22222222;
+    rc32 = CFE_MSG_GetMsgTime(&tlm.Msg, &t);
+    Rcv2("timecmd ", rc32, "s", t.Seconds, "u", t.Subseconds);
+    rc32 = CFE_MSG_SetMsgTime(&tlm.Msg, t);
+    Rc("timeset2", rc32);
+    rc32 = CFE_MSG_GetMsgTime(NULL, &t);
+    Rc("timenull", rc32);
+  }
+  // --- cfe_msg_sechdr_checksum.c ------------------------------------------------------
+  {
+    CFE_MSG_CommandHeader cmd;
+    Bool valid;
+    U8 *q = &cmd;
+    for (i = 0; i < sizeof(CFE_MSG_CommandHeader); i++)
+      q[i] = 0;
+    CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Cmd);
+    CFE_MSG_SetHasSecondaryHeader(&cmd.Msg, TRUE);
+    CFE_MSG_SetSize(&cmd.Msg, sizeof(CFE_MSG_CommandHeader));
+    CFE_MSG_SetFcnCode(&cmd.Msg, 0x12);
+    rc32 = CFE_MSG_GenerateChecksum(&cmd.Msg);
+    Rcv("gencsum ", rc32, "c", cmd.Sec.Checksum);
+    valid = FALSE;
+    rc32 = CFE_MSG_ValidateChecksum(&cmd.Msg, &valid);
+    Rcv("valcsum ", rc32, "v", valid);
+    // Corrupt a byte the checksum covered. A gate that only ever sees the passing case would
+    // not notice a checksum that always answers "valid".
+    cmd.Sec.FunctionCode = 0x13;
+    valid = TRUE;
+    rc32 = CFE_MSG_ValidateChecksum(&cmd.Msg, &valid);
+    Rcv("badcsum ", rc32, "v", valid);
+    CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Tlm);
+    rc32 = CFE_MSG_GenerateChecksum(&cmd.Msg);
+    Rc("csumtlm ", rc32);
+    rc32 = CFE_MSG_ValidateChecksum(NULL, &valid);
+    Rc("csumnull", rc32);
+  }
+  // --- cfe_msg_init.c, cfe_msg_initdefaulthdr_pri.c, cfe_msg_msgid_shared.c -----------
+  {
+    U8 buf[32];
+    CFE_MSG_Message *mp = buf(CFE_MSG_Message *);
+    I64 mtype;
+    for (i = 0; i < 32; i++)
+      buf[i] = 0xEE;
+    rc32 = CFE_MSG_Init(mp, CFE_SB_ValueToMsgId(0x1801), 32);
+    Rc("init    ", rc32);
+    Dump("afterinit", mp);
+    // Init clears the WHOLE size it was given, not just the header -- byte 31 proves it.
+    S("initclr  b8=");
+    D(buf[8]);
+    S(" b31=");
+    D(buf[31]);
+    S("\n");
+    rc32 = CFE_MSG_GetSegmentationFlag(mp, &segf);
+    Rcv("initseg ", rc32, "g", segf);
+    // An invalid msgid is explicitly ALLOWED here -- the real one may be filled in later -- so
+    // this succeeds where CFE_MSG_SetMsgId on the same value refuses.
+    rc32 = CFE_MSG_Init(mp, CFE_SB_InvalidMsgId, 32);
+    Rc("initinv ", rc32);
+    Dump("afterinv", mp);
+    // But a bad SIZE is refused, because the size always has to be real.
+    rc32 = CFE_MSG_Init(mp, CFE_SB_ValueToMsgId(0x1801), 0);
+    Rc("initsz  ", rc32);
+    rc32 = CFE_MSG_Init(NULL, CFE_SB_ValueToMsgId(0x1801), 32);
+    Rc("initnull", rc32);
+    // GetTypeFromMsgId decodes via a throwaway message rather than by masking a bit.
+    rc32 = CFE_MSG_GetTypeFromMsgId(CFE_SB_ValueToMsgId(0x1801), &mtype);
+    Rcv("typecmd ", rc32, "t", mtype);
+    rc32 = CFE_MSG_GetTypeFromMsgId(CFE_SB_ValueToMsgId(0x0801), &mtype);
+    Rcv("typetlm ", rc32, "t", mtype);
+    rc32 = CFE_MSG_GetTypeFromMsgId(CFE_SB_ValueToMsgId(0x2000), &mtype);
+    Rc("typebad ", rc32);
+    rc32 = CFE_MSG_GetTypeFromMsgId(CFE_SB_ValueToMsgId(0x1801), NULL);
+    Rc("typenull", rc32);
   }
   return 0;
 }
