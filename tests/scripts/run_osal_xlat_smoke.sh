@@ -39,7 +39,10 @@ SRC_C="$OSAL/src/os/shared/src/osapi-errors.c
        $OSAL/src/os/shared/src/osapi-rwlock.c
        $OSAL/src/os/shared/src/osapi-condvar.c
        $OSAL/src/os/shared/src/osapi-queue.c
-       $OSAL/src/os/shared/src/osapi-task.c"
+       $OSAL/src/os/shared/src/osapi-task.c
+       $OSAL/src/os/shared/src/osapi-network.c
+       $OSAL/src/os/shared/src/osapi-shell.c
+       $OSAL/src/os/shared/src/osapi-task-affinity.c"
 SRC_HC="$ROOT/tests/exec/cases/osal_xlat_errors.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"

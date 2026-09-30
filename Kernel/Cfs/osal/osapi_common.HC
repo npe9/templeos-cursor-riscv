@@ -66,6 +66,10 @@ class OS_shared_global_vars
   U32 MicroSecPerTick;
   U32 TicksPerSecond;
   OS_EventHandlerSlot EventHandler[OS_MAX_EVENT_HANDLER];
+  // uint8 DebugLevel sits here in the C, under #ifdef OSAL_CONFIG_DEBUG_PRINTF, which this
+  // configuration does not set -- the same switch that keeps osapi-debug.c out of OSAL_SRCLIST.
+  // Omitted rather than translated, because including it would change the layout.
+  U32 CoresConfigured;
 };
 
 OS_shared_global_vars OS_SharedGlobalVars;

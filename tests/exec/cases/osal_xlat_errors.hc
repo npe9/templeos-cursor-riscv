@@ -270,6 +270,58 @@ Bool OS_TaskIdMatchSystemData_Impl(U8 *ref, OS_object_token_t *t, OS_common_reco
 U0 task_delete_hook() { ++stub_t_hookcalls; }
 U0 task_entry_a() { ++stub_t_startups; }
 
+#include "/Kernel/Cfs/osal/osapi_network.HC"
+#include "/Kernel/Cfs/osal/osapi_shell.HC"
+#include "/Kernel/Cfs/osal/osapi_task_affinity.HC"
+
+// --- osapi-network.c / osapi-shell.c / osapi-task-affinity.c backends -------------------------
+// Three small modules that are almost pure dispatch: what the transcript pins is which checks
+// fire, what gets handed to the backend, and what each does with a failure.
+I64 stub_n_hostcalls, stub_n_idcalls, stub_sh_calls, stub_af_sets, stub_af_gets, stub_af_cores;
+I32 stub_n_host_rc, stub_n_id_rc;
+U8 stub_sh_cmd[32];
+U8 stub_af_mask;
+
+I32 OS_NetworkGetHostName_Impl(U8 *host_name, I64 name_len)
+{
+  ++stub_n_hostcalls;
+  if (stub_n_host_rc != OS_SUCCESS)
+    return stub_n_host_rc;
+  // A real backend fills the buffer; this one writes a fixed name so the transcript can show
+  // that the FAILURE path overwrites it with an empty string and the success path does not.
+  StrNCpy(host_name, "sat1", name_len - 1);
+  return OS_SUCCESS;
+}
+I32 OS_NetworkGetID_Impl(I32 *IdBuf)
+{
+  ++stub_n_idcalls;
+  *IdBuf = 4242;
+  return stub_n_id_rc;
+}
+I32 OS_ShellOutputToFile_Impl(OS_object_token_t *token, U8 *Cmd)
+{
+  ++stub_sh_calls;
+  StrNCpy(stub_sh_cmd, Cmd, sizeof(stub_sh_cmd) - 1);
+  return OS_SUCCESS;
+}
+U32 OS_TaskAffinityGetCoresConfigured_Impl()
+{
+  ++stub_af_cores;
+  return 3;
+}
+I32 OS_TaskAffinitySetAffinity_Impl(OS_object_token_t *token, OS_cpuset_t cpuset)
+{
+  ++stub_af_sets;
+  stub_af_mask = cpuset.affinity_mask[0];
+  return OS_SUCCESS;
+}
+I32 OS_TaskAffinityGetAffinity_Impl(OS_object_token_t *token, OS_cpuset_t *cpuset)
+{
+  ++stub_af_gets;
+  cpuset->affinity_mask[0] = 0x5A;
+  return OS_SUCCESS;
+}
+
 #include "/Kernel/Cfs/osal/osapi_queue.HC"
 
 // --- osapi-queue.c backend ------------------------------------------------------------------
@@ -1269,6 +1321,120 @@ I64 main()
     r5 = OS_TaskGetInfo(tid2, &tprop);
     S("t_gone     rc=");
     D(r5);
+    S("\n");
+  }
+
+  // --- osapi-network.c, osapi-shell.c, osapi-task-affinity.c -----------------------------------
+  // Each of these has one thing worth asserting beyond "it dispatched":
+  //   network: on backend FAILURE, OS_NetworkGetHostName blanks the caller's buffer, and
+  //            OS_NetworkGetID returns a hardcoded -1 rather than the backend's value;
+  //   shell:   the stream is taken with LOCK_MODE_REFCOUNT, not GLOBAL;
+  //   affinity: OS_TaskAffinityGetCoresConfigured asks the BACKEND while
+  //            OS_TaskAffinityCoresConfigured returns what OSAL recorded -- two functions one
+  //            character apart in meaning, exactly the kind of pair a template gets wrong.
+  {
+    U8 hname[32];
+    OS_cpuset_t cpuset;
+    U32 atid;
+    I32 r6;
+
+    stub_n_host_rc = OS_SUCCESS;
+    stub_n_id_rc = OS_SUCCESS;
+
+    S("net_init  rc=");
+    D(OS_NetworkAPI_Init);
+    S("\n");
+    MemSet(hname, 'Z', sizeof(hname));
+    r6 = OS_NetworkGetHostName(hname, sizeof(hname));
+    S("net_host  rc=");
+    D(r6);
+    S(" [");
+    S(hname);
+    S("] n=");
+    D(stub_n_hostcalls);
+    S("\n");
+    // The failure path must BLANK the buffer, so it is poisoned with a non-empty string first --
+    // starting from the success value would let a missing blank pass.
+    stub_n_host_rc = OS_ERROR;
+    r6 = OS_NetworkGetHostName(hname, sizeof(hname));
+    S("net_hfail rc=");
+    D(r6);
+    S(" empty=");
+    D(hname[0] == 0);
+    S(" n=");
+    D(stub_n_hostcalls);
+    S("\n");
+    stub_n_host_rc = OS_SUCCESS;
+    r6 = OS_NetworkGetHostName(NULL, 8);
+    S("net_hnull rc=");
+    D(r6);
+    S("\n");
+    S("net_hzero rc=");
+    D(OS_NetworkGetHostName(hname, 0));
+    S("\n");
+    S("net_id    ");
+    D(OS_NetworkGetID);
+    S(" n=");
+    D(stub_n_idcalls);
+    S("\n");
+    stub_n_id_rc = OS_ERROR;
+    S("net_idbad ");
+    D(OS_NetworkGetID);
+    S(" n=");
+    D(stub_n_idcalls);
+    S("\n");
+    stub_n_id_rc = OS_SUCCESS;
+
+    r6 = OS_ShellOutputToFile(NULL, 1);
+    S("sh_null   rc=");
+    D(r6);
+    S("\n");
+    S("sh_badfd  rc=");
+    D(OS_ShellOutputToFile("ls", 0x66000001));
+    S(" n=");
+    D(stub_sh_calls);
+    S("\n");
+
+    S("af_cores  impl=");
+    D(OS_TaskAffinityGetCoresConfigured);
+    S(" recorded=");
+    D(OS_TaskAffinityCoresConfigured);
+    S(" n=");
+    D(stub_af_cores);
+    S("\n");
+    OS_SharedGlobalVars.CoresConfigured = 7;
+    S("af_cores2 recorded=");
+    D(OS_TaskAffinityCoresConfigured);
+    S("\n");
+    OS_TaskCreate(&atid, "tAff", &task_entry_a, NULL, 1024, 40, 0);
+    MemSet(&cpuset, 0, sizeof(cpuset));
+    cpuset.affinity_mask[0] = 0x81;
+    r6 = OS_TaskAffinitySetAffinity(atid, cpuset);
+    S("af_set    rc=");
+    D(r6);
+    S(" mask=");
+    D(stub_af_mask);
+    S(" n=");
+    D(stub_af_sets);
+    S("\n");
+    MemSet(&cpuset, 0, sizeof(cpuset));
+    r6 = OS_TaskAffinityGetAffinity(atid, &cpuset);
+    S("af_get    rc=");
+    D(r6);
+    S(" mask=");
+    D(cpuset.affinity_mask[0]);
+    S(" n=");
+    D(stub_af_gets);
+    S("\n");
+    // A bad id must not reach the backend, and the UNCONDITIONAL OS_ObjectIdRelease that
+    // follows it must be harmless -- see the note in the translation.
+    r6 = OS_TaskAffinityGetAffinity(0x11000099, &cpuset);
+    S("af_badid  rc=");
+    D(r6);
+    S(" sets=");
+    D(stub_af_sets);
+    S(" gets=");
+    D(stub_af_gets);
     S("\n");
   }
   return 0;
