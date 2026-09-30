@@ -63,11 +63,11 @@ which is in `make ci`. It asserts three different things, because each is blind 
 others catch:
 
 1. **Completeness** — every function defined in a gated NASA `.c` exists in the translation.
-   46 functions across 14 sources today. The transcript cannot see this: a function nobody calls
+   58 functions across 17 sources today. The transcript cannot see this: a function nobody calls
    is linked from NASA's source on the C side, absent on the HolyC side, and the diff stays
    empty. `CFE_MSG_GetNextSequenceCount` was missing exactly that way for four commits, while
    two commit messages called the module complete.
-2. **Behaviour** — **105 transcript lines required to be byte-identical** between NASA's
+2. **Behaviour** — **119 transcript lines required to be byte-identical** between NASA's
    unmodified C compiled natively and the HolyC translation run under QEMU.
 3. **Linkage** — an empty import trailer, so no call silently resolves to the C runtime. An
    undefined prototype compiles clean and binds to whatever the linker finds; measured, a
@@ -75,16 +75,16 @@ others catch:
 Growing the source list and the transcript together is how this advances — one file, one set of
 lines, one diff, one negative control.
 
-**~1,530 lines of NASA C, out of 41,765 in cFE's flight source.** The honest denominator matters:
+**~1,965 lines of NASA C, out of 41,765 in cFE's flight source.** The honest denominator matters:
 
 | cFE module | NASA lines | translated | note |
 |---|---|---|---|
 | `msg` | 1,491 | **1,065** | all 8 unconditional sources plus the two v1/pri variants — complete for this configuration |
 | `resourceid` | 228 | **228** | complete, SIMPLE variant |
 | `sb` | 6,086 | **432** | `cfe_sb_msg_id_util.c` and `cfe_sb_util.c` complete; api/priv/task are the other 5,650 |
+| `config` | 782 | 0 | no OSAL, but needs the CMake-generated nametable — **the next one** |
 | `es` `tbl` `time` `evs` `fs` `ta` | 32,643 | 0 | blocked on OSAL |
-| `config` | 782 | 0 | no OSAL, but needs the CMake-generated nametable |
-| `sbr` | 535 | 0 | **no OSAL, no generated data — the next one** |
+| `sbr` | 535 | **434** | complete for the default HASH map; `map_direct` is the alternative |
 
 Translated units live in `Kernel/Cfs/cfe/`, one HolyC file per C file, NASA's copyright retained,
 with the generated headers each one needs inlined and attributed in a comment.

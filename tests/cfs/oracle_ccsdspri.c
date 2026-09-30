@@ -8,6 +8,7 @@
 #include "cfe_msg.h"
 #include "cfe_sb.h"
 #include "target_objtab.h"
+#include "cfe_sbr.h"
 #include "cfe_resourceid.h"
 #include "cfe_resourceid_basevalue.h"
 
@@ -68,6 +69,22 @@ CFE_TIME_SysTime_t CFE_TIME_GetTime(void)
     t.Subseconds = 0x60708090;
     return t;
 }
+
+/* Counts how many route ids ForEachRouteId hands back. */
+static int sbr_visits;
+static void sbr_count_cb(CFE_SBR_RouteId_t RouteId, void *ArgPtr)
+{
+    (void)RouteId;
+    (void)ArgPtr;
+    sbr_visits++;
+}
+
+extern const Target_ObjectTable_t CFE_SBR_ModuleEntry;
+
+/* Non-static in cfe_sbr_map_hash.c but declared in no header at all -- not even the module's own
+ * cfe_sbr_priv.h, which declares only Init_Map and SetRouteId. Declared here because the hash is
+ * the part of this module most worth pinning: it is pure 32-bit overflow arithmetic. */
+CFE_SB_MsgId_Atom_t CFE_SBR_MsgIdHash(CFE_SB_MsgId_t MsgId);
 
 static void dump(const char *tag, CFE_MSG_Message_t *m)
 {
@@ -446,6 +463,83 @@ int main(void)
         printf("topic_locl c=0x%04lx t=0x%04lx\n",
                (unsigned long)CFE_SB_LocalCmdTopicIdToMsgId(5),
                (unsigned long)CFE_SB_LocalTlmTopicIdToMsgId(5));
+    }
+
+    /* --- cfe_sbr_map_hash.c and cfe_sbr_route_unsorted.c ------------------------------ */
+    {
+        CFE_SBR_RouteId_t  rid, rid2;
+        CFE_SBR_Throttle_t thr;
+        uint32             coll = 0xBEEF;
+        int                k;
+
+        /* The C has a #error if the map size is not a power of two, because the size doubles as
+         * the wrap mask. HolyC's preprocessor has no #error, so the property is checked here
+         * rather than quietly dropped in translation. */
+        printf("sbr_pow2 %d\n", (int)(((1024) & (1024 - 1)) == 0));
+
+        /* THE HASH IS 32-BIT ARITHMETIC. Each step multiplies by 0x45d9f3b and overflows; the
+         * wrap IS the algorithm. A spread of ids on purpose -- 0x0001 happens to hash the same
+         * with and without the wrap, so a transcript testing only that would be blind to a
+         * translation that computed in 64 bits. */
+        printf("sbr_hash");
+        for (k = 0; k < 6; k++)
+        {
+            static const uint16 ids[6] = {0x0001, 0x0801, 0x1801, 0x0865, 0x1FFF, 0x0102};
+            printf(" %lu", (unsigned long)CFE_SBR_MsgIdHash(CFE_SB_ValueToMsgId(ids[k])));
+        }
+        printf("\n");
+
+        CFE_SBR_Init();
+        /* An empty table: nothing routes, and the invalid id is what comes back. */
+        rid = CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(0x0801));
+        printf("sbr_empty v=%d\n", (int)CFE_SBR_IsValidRouteId(rid));
+
+        rid = CFE_SBR_AddRoute(CFE_SB_ValueToMsgId(0x0801), &coll);
+        printf("sbr_add   v=%d idx=%u coll=%lu\n", (int)CFE_SBR_IsValidRouteId(rid),
+               (unsigned)CFE_SBR_RouteIdToValue(rid), (unsigned long)coll);
+        /* Round trip: id -> route -> id. */
+        rid2 = CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(0x0801));
+        printf("sbr_get   idx=%u mid=%lu\n", (unsigned)CFE_SBR_RouteIdToValue(rid2),
+               (unsigned long)CFE_SB_MsgIdToValue(CFE_SBR_GetMsgId(rid2)));
+        /* A second id lands in its own slot. */
+        rid = CFE_SBR_AddRoute(CFE_SB_ValueToMsgId(0x1801), &coll);
+        printf("sbr_add2  idx=%u coll=%lu\n", (unsigned)CFE_SBR_RouteIdToValue(rid),
+               (unsigned long)coll);
+        /* An invalid message id is refused and the collision count is still written. */
+        coll = 0xBEEF;
+        rid = CFE_SBR_AddRoute(CFE_SB_ValueToMsgId(0), &coll);
+        printf("sbr_addbad v=%d coll=%lu\n", (int)CFE_SBR_IsValidRouteId(rid),
+               (unsigned long)coll);
+
+        /* The destination list head is stored and returned, never inspected. */
+        CFE_SBR_SetDestListHeadPtr(rid2, (CFE_SB_DestinationD_t *)0x1234);
+        printf("sbr_dest %d %d\n", (int)(CFE_SBR_GetDestListHeadPtr(rid2) == (void *)0x1234),
+               (int)(CFE_SBR_GetDestListHeadPtr(CFE_SBR_INVALID_ROUTE_ID) == NULL));
+
+        /* The sequence counter wraps at the 14-bit CCSDS field, not at the width of the type. */
+        for (k = 0; k < 3; k++)
+            CFE_SBR_IncrementSequenceCounter(rid2);
+        printf("sbr_seq %u\n", (unsigned)CFE_SBR_GetSequenceCounter(rid2));
+        printf("sbr_seqbad %u\n", (unsigned)CFE_SBR_GetSequenceCounter(CFE_SBR_INVALID_ROUTE_ID));
+
+        /* ForEachRouteId, unthrottled then throttled. The throttle reports where to resume, and
+         * zero when it finished the range. */
+        sbr_visits = 0;
+        CFE_SBR_ForEachRouteId(sbr_count_cb, NULL, NULL);
+        printf("sbr_each %d\n", sbr_visits);
+        sbr_visits    = 0;
+        thr.StartIndex = 0;
+        thr.MaxLoop    = 1;
+        thr.NextIndex  = 0xFFFF;
+        CFE_SBR_ForEachRouteId(sbr_count_cb, NULL, &thr);
+        printf("sbr_thr1 n=%d next=%lu\n", sbr_visits, (unsigned long)thr.NextIndex);
+        sbr_visits    = 0;
+        thr.StartIndex = 0;
+        thr.MaxLoop    = 99;
+        thr.NextIndex  = 0xFFFF;
+        CFE_SBR_ForEachRouteId(sbr_count_cb, NULL, &thr);
+        printf("sbr_thr2 n=%d next=%lu\n", sbr_visits, (unsigned long)thr.NextIndex);
+        printf("sbr_obj %s\n", CFE_SBR_ModuleEntry.Name);
     }
 
     /* --- cfe_msg_objtab.c ------------------------------------------------------------- */

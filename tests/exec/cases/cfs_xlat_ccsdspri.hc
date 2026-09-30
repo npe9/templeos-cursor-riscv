@@ -11,6 +11,8 @@
 #include "/Kernel/Cfs/cfe/cfe_msg_objtab.HC"
 #include "/Kernel/Cfs/cfe/cfe_resourceid.HC"
 #include "/Kernel/Cfs/cfe/cfe_sb_util.HC"
+#include "/Kernel/Cfs/cfe/cfe_sbr_map_hash.HC"
+#include "/Kernel/Cfs/cfe/cfe_sbr_objtab.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -93,6 +95,13 @@ I32 CFE_ES_WriteToSysLog(U8 *Msg)
 {
   S("syslog\n");
   return 0;
+}
+
+// Counts how many route ids ForEachRouteId hands back.
+I64 sbr_visits;
+U0 sbr_count_cb(CFE_SBR_RouteId RouteId, U8 *ArgPtr)
+{
+  sbr_visits++;
 }
 
 // Check functions for CFE_ResourceId_FindNext. "In use" is serial 6 or 7, chosen so the search
@@ -661,6 +670,109 @@ I64 main()
         CFE_SB_GlobalTlmTopicIdToMsgId(5));
     Hx2("topic_locl c=", CFE_SB_LocalCmdTopicIdToMsgId(5), " t=",
         CFE_SB_LocalTlmTopicIdToMsgId(5));
+  }
+  // --- cfe_sbr_map_hash.c and cfe_sbr_route_unsorted.c --------------------------------
+  {
+    CFE_SBR_RouteId rid, rid2;
+    CFE_SBR_Throttle thr;
+    U32 coll = 0xBEEF;
+    I64 k;
+    U16 ids[6];
+    // The C has a #error if the map size is not a power of two, because the size doubles as the
+    // wrap mask. HolyC's preprocessor has no #error, so the property is checked here rather
+    // than quietly dropped in translation.
+    S("sbr_pow2 ");
+    D((1024 & (1024 - 1)) == 0);
+    S("\n");
+    // THE HASH IS 32-BIT ARITHMETIC: each step multiplies by 0x45d9f3b and overflows, and the
+    // wrap IS the algorithm. A spread on purpose -- 0x0001 hashes the same with and without the
+    // wrap, so a transcript testing only that would be blind to a 64-bit translation.
+    ids[0] = 0x0001;
+    ids[1] = 0x0801;
+    ids[2] = 0x1801;
+    ids[3] = 0x0865;
+    ids[4] = 0x1FFF;
+    ids[5] = 0x0102;
+    S("sbr_hash");
+    for (k = 0; k < 6; k++) {
+      S(" ");
+      D(CFE_SBR_MsgIdHash(CFE_SB_ValueToMsgId(ids[k])));
+    }
+    S("\n");
+    CFE_SBR_Init;
+    rid = CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(0x0801));
+    S("sbr_empty v=");
+    D(CFE_SBR_IsValidRouteId(rid));
+    S("\n");
+    rid = CFE_SBR_AddRoute(CFE_SB_ValueToMsgId(0x0801), &coll);
+    S("sbr_add   v=");
+    D(CFE_SBR_IsValidRouteId(rid));
+    S(" idx=");
+    D(CFE_SBR_RouteIdToValue(rid));
+    S(" coll=");
+    D(coll);
+    S("\n");
+    rid2 = CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(0x0801));
+    S("sbr_get   idx=");
+    D(CFE_SBR_RouteIdToValue(rid2));
+    S(" mid=");
+    D(CFE_SB_MsgIdToValue(CFE_SBR_GetMsgId(rid2)));
+    S("\n");
+    rid = CFE_SBR_AddRoute(CFE_SB_ValueToMsgId(0x1801), &coll);
+    S("sbr_add2  idx=");
+    D(CFE_SBR_RouteIdToValue(rid));
+    S(" coll=");
+    D(coll);
+    S("\n");
+    coll = 0xBEEF;
+    rid = CFE_SBR_AddRoute(CFE_SB_ValueToMsgId(0), &coll);
+    S("sbr_addbad v=");
+    D(CFE_SBR_IsValidRouteId(rid));
+    S(" coll=");
+    D(coll);
+    S("\n");
+    CFE_SBR_SetDestListHeadPtr(rid2, 0x1234);
+    S("sbr_dest ");
+    D(CFE_SBR_GetDestListHeadPtr(rid2) == 0x1234);
+    S(" ");
+    D(CFE_SBR_GetDestListHeadPtr(CFE_SBR_InvalidRouteId) == NULL);
+    S("\n");
+    for (k = 0; k < 3; k++)
+      CFE_SBR_IncrementSequenceCounter(rid2);
+    S("sbr_seq ");
+    D(CFE_SBR_GetSequenceCounter(rid2));
+    S("\n");
+    S("sbr_seqbad ");
+    D(CFE_SBR_GetSequenceCounter(CFE_SBR_InvalidRouteId));
+    S("\n");
+    sbr_visits = 0;
+    CFE_SBR_ForEachRouteId(&sbr_count_cb, NULL, NULL);
+    S("sbr_each ");
+    D(sbr_visits);
+    S("\n");
+    sbr_visits = 0;
+    thr.StartIndex = 0;
+    thr.MaxLoop = 1;
+    thr.NextIndex = 0xFFFF;
+    CFE_SBR_ForEachRouteId(&sbr_count_cb, NULL, &thr);
+    S("sbr_thr1 n=");
+    D(sbr_visits);
+    S(" next=");
+    D(thr.NextIndex);
+    S("\n");
+    sbr_visits = 0;
+    thr.StartIndex = 0;
+    thr.MaxLoop = 99;
+    thr.NextIndex = 0xFFFF;
+    CFE_SBR_ForEachRouteId(&sbr_count_cb, NULL, &thr);
+    S("sbr_thr2 n=");
+    D(sbr_visits);
+    S(" next=");
+    D(thr.NextIndex);
+    S("\n");
+    S("sbr_obj ");
+    S(CFE_SBR_ModuleEntry.Name);
+    S("\n");
   }
   // --- cfe_msg_objtab.c ---------------------------------------------------------------
   // One registration entry, no task. ES walks the collected table at every lifecycle phase, so

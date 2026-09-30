@@ -30,7 +30,10 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/msg/fsw/src/cfe_msg_objtab.c
        $CFE/modules/resourceid/fsw/src/cfe_resourceid_api.c
        $CFE/modules/resourceid/fsw/src/cfe_resourceid_objtab.c
-       $CFE/modules/sb/fsw/src/cfe_sb_util.c"
+       $CFE/modules/sb/fsw/src/cfe_sb_util.c
+       $CFE/modules/sbr/fsw/src/cfe_sbr_map_hash.c
+       $CFE/modules/sbr/fsw/src/cfe_sbr_route_unsorted.c
+       $CFE/modules/sbr/fsw/src/cfe_sbr_objtab.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -64,6 +67,7 @@ INC="-I$CFE/modules/core_api/fsw/inc -I$CFE/modules/core_api/config
      -I$CFE/modules/resourceid/option_inc
      -I$CFE/modules/config/fsw/inc
      -I$CFE/modules/core_private/fsw/inc -I$CFE/modules/core_private/config
+     -I$CFE/modules/sbr/fsw/src -I$CFE/modules/sbr/private_inc
      -I$OSAL/src/os/inc -I$PSP/fsw/inc -I$CFE/cmake/sample_defs -I$CFE/cmake/target/inc -I$SHIM"
 
 T="$(mktemp -d)"
