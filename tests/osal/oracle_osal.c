@@ -679,8 +679,9 @@ int main(void)
          * Three things here are easy to get wrong and invisible to a "did it return 0" test:
          *   - SetPriority writes the table ONLY when the backend succeeded, so the failing
          *     case must show the OLD priority still in place;
-         *   - Delete saves the hook BEFORE the table is unlocked and calls it AFTER, so both
-         *     "was it called" and "was it called once" matter;
+         *   - Delete calls the hook AFTER the record is finalized, so both "was it called"
+         *     and "was it called once" matter. (The SAVE happening before is not observable:
+         *     a control moved it after FinalizeDelete and the transcript did not change.);
          *   - FindIdBySystemData returns the backend's validation error EARLY, before any
          *     search, so a wrong size must not reach the match function.
          */

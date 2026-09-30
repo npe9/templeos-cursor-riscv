@@ -148,7 +148,11 @@ I32 OS_TaskDelete(U32 task_id)
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_EXCLUSIVE, LOCAL_OBJID_TYPE_TASK, task_id, &token);
   if (return_code == OS_SUCCESS) {
     task = &OS_task_table[OS_ObjectIndexFromToken(&token)];
-    // Saved, not called, while the table is locked.
+    // NASA: "Save the delete hook, as we do not want to call it while locked". What matters
+    // is that the CALL happens after FinalizeDelete releases the lock, which it does below.
+    // The read order is NOT observable here and a control proved it: moving this line after
+    // FinalizeDelete left the transcript identical, because FinalizeDelete clears the GLOBAL
+    // record's id and never touches OS_task_table, which is zeroed only on Create.
     delete_hook = task->delete_hook_pointer;
     return_code = OS_TaskDelete_Impl(&token);
     return_code = OS_ObjectIdFinalizeDelete(return_code, &token);
