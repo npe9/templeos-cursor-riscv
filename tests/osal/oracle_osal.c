@@ -23,6 +23,7 @@
 #include "os-shared-binsem.h"
 #include "os-shared-rwlock.h"
 #include "os-shared-condvar.h"
+#include "os-shared-queue.h"
 
 /* The backend's error-name table. A bare-metal target contributes no OS-specific errors, so
  * this is empty -- and empty is the interesting case, because it is the one that makes
@@ -157,6 +158,41 @@ static uint32 stub_cs_options;
 static int    stub_cs_gives;
 static int    stub_cs_takes;
 static uint32 stub_cs_last_msecs;
+
+/* --- osapi-queue.c backend ---------------------------------------------------------------
+ * OS_QueueCreate_Impl is handed only (token, flags) -- the depth and the data size the caller
+ * passed go into the table record, and a real backend reads them back out through the token.
+ * The stub does the same, because that is the ONLY way this transcript can see that Create
+ * stored them in the right fields: OS_queue_prop_t exposes name and creator and nothing else.
+ */
+static uint32 stub_q_flags, stub_q_put_flags;
+static long   stub_q_depth, stub_q_size, stub_q_put_size, stub_q_timeout;
+static int    stub_q_gets, stub_q_puts;
+
+int32 OS_QueueCreate_Impl(const OS_object_token_t *token, uint32 flags)
+{
+    const OS_queue_internal_record_t *q = OS_OBJECT_TABLE_GET(OS_queue_table, *token);
+    stub_q_flags = flags;
+    stub_q_depth = (long)q->max_depth;
+    stub_q_size  = (long)q->max_size;
+    return OS_SUCCESS;
+}
+int32 OS_QueueDelete_Impl(const OS_object_token_t *token) { return OS_SUCCESS; }
+int32 OS_QueueGet_Impl(const OS_object_token_t *token, void *data, size_t size,
+                       size_t *size_copied, int32 timeout)
+{
+    *size_copied = size;
+    stub_q_timeout = (long)timeout;
+    ++stub_q_gets;
+    return OS_SUCCESS;
+}
+int32 OS_QueuePut_Impl(const OS_object_token_t *token, const void *data, size_t size, uint32 flags)
+{
+    stub_q_put_size  = (long)size;
+    stub_q_put_flags = flags;
+    ++stub_q_puts;
+    return OS_SUCCESS;
+}
 
 int32 OS_CountSemCreate_Impl(const OS_object_token_t *token, uint32 sem_initial_value, uint32 options)
 {
@@ -515,6 +551,80 @@ int main(void)
                (int)(OS_CondVarGetIdByName(&found, "cvA") == OS_SUCCESS));
         printf("deletes %d %d %d %d\n", (int)OS_MutSemDelete(mid), (int)OS_BinSemDelete(bid),
                (int)OS_RwLockDelete(rid), (int)OS_CondVarDelete(vid));
+
+        /* --- osapi-queue.c ---------------------------------------------------------------
+         * The Get and Put size checks are ASYMMETRIC and easy to get backwards:
+         *     Get rejects a buffer SMALLER than max_size  (size < max_size)
+         *     Put rejects a payload LARGER  than max_size  (size > max_size)
+         * One size proves nothing, because at size == max_size both operators agree. Each is
+         * driven at max_size-1, max_size and max_size+1, and the RETURN CODE is printed rather
+         * than pass/fail, because the size-parameter check returns OS_ERR_INVALID_SIZE while
+         * the max_size mismatch returns OS_QUEUE_INVALID_SIZE -- confusing the two codes would
+         * survive any "it rejected it" test.
+         */
+        {
+            osal_id_t qid, qid2, qfound;
+            OS_queue_prop_t qprop;
+            size_t cp;
+            char buf[32];
+            char qlong[OS_MAX_API_NAME + 8];
+            int i;
+
+            OS_QueueAPI_Init();
+            printf("q_create rc=%d flags=0x%lx depth=%ld size=%ld\n",
+                   (int)OS_QueueCreate(&qid, "qA", 4, 16, 0xA5), (unsigned long)stub_q_flags,
+                   stub_q_depth, stub_q_size);
+
+            printf("q_put_lt rc=%d\n", (int)OS_QueuePut(qid, "p", 15, 0x77));
+            printf("q_put_eq rc=%d\n", (int)OS_QueuePut(qid, "p", 16, 0x77));
+            printf("q_put_gt rc=%d\n", (int)OS_QueuePut(qid, "p", 17, 0x77));
+            printf("q_put_n  %d last=%ld fl=0x%lx\n", stub_q_puts, stub_q_put_size,
+                   (unsigned long)stub_q_put_flags);
+
+            /* Poisoned, not zeroed: OS_QueueGet writes *size_copied = 0 on the reject path,
+             * and a destination that started at 0 would let a missing store pass blind. */
+            cp = 0xEE;
+            printf("q_get_lt rc=%d cp=%ld\n", (int)OS_QueueGet(qid, buf, 15, &cp, 5), (long)cp);
+            cp = 0xEE;
+            printf("q_get_eq rc=%d cp=%ld\n", (int)OS_QueueGet(qid, buf, 16, &cp, 5), (long)cp);
+            cp = 0xEE;
+            printf("q_get_gt rc=%d cp=%ld\n", (int)OS_QueueGet(qid, buf, 17, &cp, 5), (long)cp);
+            printf("q_get_n  %d timeout=%ld\n", stub_q_gets, stub_q_timeout);
+
+            /* A BAD SIZE is a different code from a size that merely mismatches max_size. */
+            cp = 0xEE;
+            printf("q_zero   put=%d get=%d\n", (int)OS_QueuePut(qid, "p", 0, 0),
+                   (int)OS_QueueGet(qid, buf, 0, &cp, 0));
+            /* size is size_t (unsigned) in NASA's C and I64 (signed) in the translation. Both
+             * reject this, by different routes: too large there, negative here. */
+            cp = 0xEE;
+            printf("q_huge   put=%d get=%d\n",
+                   (int)OS_QueuePut(qid, "p", (size_t)0x8000000000000000ULL, 0),
+                   (int)OS_QueueGet(qid, buf, (size_t)0x8000000000000000ULL, &cp, 0));
+
+            printf("q_nullid   rc=%d\n", (int)OS_QueueCreate(NULL, "x", 4, 16, 0));
+            printf("q_nullname rc=%d\n", (int)OS_QueueCreate(&qid2, NULL, 4, 16, 0));
+            for (i = 0; i < (int)sizeof(qlong) - 1; ++i) qlong[i] = 'q';
+            qlong[sizeof(qlong) - 1] = '\0';
+            printf("q_longname rc=%d\n", (int)OS_QueueCreate(&qid2, qlong, 4, 16, 0));
+            printf("q_badsize  rc=%d\n", (int)OS_QueueCreate(&qid2, "qB", 4, 0, 0));
+            /* depth > OS_QUEUE_MAX_DEPTH is OS_QUEUE_INVALID_SIZE, not OS_ERR_INVALID_SIZE */
+            printf("q_deep     rc=%d\n",
+                   (int)OS_QueueCreate(&qid2, "qB", OS_QUEUE_MAX_DEPTH + 1, 16, 0));
+            cp = 0xEE;
+            printf("q_nulldata put=%d get=%d cp=%ld\n", (int)OS_QueuePut(qid, NULL, 4, 0),
+                   (int)OS_QueueGet(qid, NULL, 4, &cp, 0), (long)cp);
+            printf("q_nullcp   rc=%d\n", (int)OS_QueueGet(qid, buf, 4, NULL, 0));
+
+            printf("q_byname   rc=%d match=%d\n", (int)OS_QueueGetIdByName(&qfound, "qA"),
+                   (int)OS_ObjectIdEqual(qfound, qid));
+            printf("q_byname_miss rc=%d\n", (int)OS_QueueGetIdByName(&qfound, "nope"));
+            printf("q_info     rc=%d [%s]\n", (int)OS_QueueGetInfo(qid, &qprop), qprop.name);
+            printf("q_nullprop rc=%d\n", (int)OS_QueueGetInfo(qid, NULL));
+            printf("q_delete   rc=%d\n", (int)OS_QueueDelete(qid));
+            printf("q_stale    rc=%d\n", (int)OS_QueuePut(qid, "p", 4, 0));
+        }
+
     }
     return 0;
 }

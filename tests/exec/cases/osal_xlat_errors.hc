@@ -126,6 +126,7 @@ I32 OS_CountSemGetInfo_Impl(OS_object_token_t *token, OS_count_sem_prop_t *count
 #include "/Kernel/Cfs/osal/os_shared_binsem.HC"
 #include "/Kernel/Cfs/osal/os_shared_rwlock.HC"
 #include "/Kernel/Cfs/osal/os_shared_condvar.HC"
+#include "/Kernel/Cfs/osal/os_shared_queue.HC"
 
 // The other four resource backends, matching the C oracle's.
 U32 stub_last_options;
@@ -167,6 +168,42 @@ I32 OS_CondVarGetInfo_Impl(OS_object_token_t *t, OS_condvar_prop_t *p) { return 
 #include "/Kernel/Cfs/osal/osapi_binsem.HC"
 #include "/Kernel/Cfs/osal/osapi_rwlock.HC"
 #include "/Kernel/Cfs/osal/osapi_condvar.HC"
+#include "/Kernel/Cfs/osal/osapi_queue.HC"
+
+// --- osapi-queue.c backend ------------------------------------------------------------------
+// OS_QueueCreate_Impl is handed only (token, flags); the depth and data size the caller passed
+// went into the table record, and a real backend reads them back through the token. The stub
+// does the same, because that is the ONLY way this transcript can see Create stored them in
+// the right fields -- OS_queue_prop_t exposes name and creator and nothing else.
+U32 stub_q_flags, stub_q_put_flags;
+I64 stub_q_depth, stub_q_size, stub_q_put_size, stub_q_timeout;
+I64 stub_q_gets, stub_q_puts;
+
+I32 OS_QueueCreate_Impl(OS_object_token_t *t, U32 flags)
+{
+  OS_queue_internal_record_t *q;
+  q = &OS_queue_table[OS_ObjectIndexFromToken(t)];
+  stub_q_flags = flags;
+  stub_q_depth = q->max_depth;
+  stub_q_size = q->max_size;
+  return OS_SUCCESS;
+}
+I32 OS_QueueDelete_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_QueueGet_Impl(OS_object_token_t *t, U8 *data, I64 size, I64 *size_copied, I32 timeout)
+{
+  *size_copied = size;
+  stub_q_timeout = timeout;
+  ++stub_q_gets;
+  return OS_SUCCESS;
+}
+I32 OS_QueuePut_Impl(OS_object_token_t *t, U8 *data, I64 size, U32 flags)
+{
+  stub_q_put_size = size;
+  stub_q_put_flags = flags;
+  ++stub_q_puts;
+  return OS_SUCCESS;
+}
+
 
 // Counts what OS_ForEachObject visits.
 I64 foreach_count;
@@ -798,6 +835,166 @@ I64 main()
     D(c);
     S(" ");
     D(OS_CondVarDelete(vid));
+    S("\n");
+  }
+
+  // --- osapi-queue.c -------------------------------------------------------------------------
+  // The Get and Put size checks are ASYMMETRIC and easy to get backwards:
+  //     Get rejects a buffer SMALLER than max_size  (size < max_size)
+  //     Put rejects a payload LARGER  than max_size  (size > max_size)
+  // One size proves nothing: at size == max_size both operators agree. Each is driven at
+  // max_size-1, max_size and max_size+1, and the RETURN CODE is printed rather than pass/fail,
+  // because the size-parameter check returns OS_ERR_INVALID_SIZE while the max_size mismatch
+  // returns OS_QUEUE_INVALID_SIZE -- confusing the two would survive any "it rejected it" test.
+  {
+    U32 qid, qid2, qfound;
+    OS_queue_prop_t qprop;
+    I64 cp, huge;
+    U8 buf[32];
+    U8 qlong[OS_MAX_API_NAME + 8];
+    I64 i;
+    I32 r3, r4;
+
+    OS_QueueAPI_Init;
+    r3 = OS_QueueCreate(&qid, "qA", 4, 16, 0xA5);
+    S("q_create rc=");
+    D(r3);
+    Hx(" flags=", stub_q_flags);
+    S(" depth=");
+    D(stub_q_depth);
+    S(" size=");
+    D(stub_q_size);
+    S("\n");
+
+    S("q_put_lt rc=");
+    D(OS_QueuePut(qid, "p", 15, 0x77));
+    S("\n");
+    S("q_put_eq rc=");
+    D(OS_QueuePut(qid, "p", 16, 0x77));
+    S("\n");
+    S("q_put_gt rc=");
+    D(OS_QueuePut(qid, "p", 17, 0x77));
+    S("\n");
+    S("q_put_n  ");
+    D(stub_q_puts);
+    S(" last=");
+    D(stub_q_put_size);
+    Hx(" fl=", stub_q_put_flags);
+    S("\n");
+
+    // Poisoned, not zeroed: OS_QueueGet writes *size_copied = 0 on the reject path, and a
+    // destination that started at 0 would let a missing store pass blind.
+    cp = 0xEE;
+    r3 = OS_QueueGet(qid, buf, 15, &cp, 5);
+    S("q_get_lt rc=");
+    D(r3);
+    S(" cp=");
+    D(cp);
+    S("\n");
+    cp = 0xEE;
+    r3 = OS_QueueGet(qid, buf, 16, &cp, 5);
+    S("q_get_eq rc=");
+    D(r3);
+    S(" cp=");
+    D(cp);
+    S("\n");
+    cp = 0xEE;
+    r3 = OS_QueueGet(qid, buf, 17, &cp, 5);
+    S("q_get_gt rc=");
+    D(r3);
+    S(" cp=");
+    D(cp);
+    S("\n");
+    S("q_get_n  ");
+    D(stub_q_gets);
+    S(" timeout=");
+    D(stub_q_timeout);
+    S("\n");
+
+    // A BAD SIZE is a different code from a size that merely mismatches max_size.
+    cp = 0xEE;
+    r3 = OS_QueuePut(qid, "p", 0, 0);
+    r4 = OS_QueueGet(qid, buf, 0, &cp, 0);
+    S("q_zero   put=");
+    D(r3);
+    S(" get=");
+    D(r4);
+    S("\n");
+    // size is size_t (unsigned) in NASA's C and I64 (signed) here. Both reject this, by
+    // different routes: too large there, negative here.
+    huge = 1 << 63;
+    cp = 0xEE;
+    r3 = OS_QueuePut(qid, "p", huge, 0);
+    r4 = OS_QueueGet(qid, buf, huge, &cp, 0);
+    S("q_huge   put=");
+    D(r3);
+    S(" get=");
+    D(r4);
+    S("\n");
+
+    r3 = OS_QueueCreate(NULL, "x", 4, 16, 0);
+    S("q_nullid   rc=");
+    D(r3);
+    S("\n");
+    r3 = OS_QueueCreate(&qid2, NULL, 4, 16, 0);
+    S("q_nullname rc=");
+    D(r3);
+    S("\n");
+    i = 0;
+    while (i < sizeof(qlong) - 1) {
+      qlong[i] = 'q';
+      ++i;
+    }
+    qlong[sizeof(qlong) - 1] = 0;
+    S("q_longname rc=");
+    D(OS_QueueCreate(&qid2, qlong, 4, 16, 0));
+    S("\n");
+    S("q_badsize  rc=");
+    D(OS_QueueCreate(&qid2, "qB", 4, 0, 0));
+    S("\n");
+    // depth > OS_QUEUE_MAX_DEPTH is OS_QUEUE_INVALID_SIZE, not OS_ERR_INVALID_SIZE
+    S("q_deep     rc=");
+    D(OS_QueueCreate(&qid2, "qB", OS_QUEUE_MAX_DEPTH + 1, 16, 0));
+    S("\n");
+    cp = 0xEE;
+    r3 = OS_QueuePut(qid, NULL, 4, 0);
+    r4 = OS_QueueGet(qid, NULL, 4, &cp, 0);
+    S("q_nulldata put=");
+    D(r3);
+    S(" get=");
+    D(r4);
+    S(" cp=");
+    D(cp);
+    S("\n");
+    r3 = OS_QueueGet(qid, buf, 4, NULL, 0);
+    S("q_nullcp   rc=");
+    D(r3);
+    S("\n");
+
+    r3 = OS_QueueGetIdByName(&qfound, "qA");
+    S("q_byname   rc=");
+    D(r3);
+    S(" match=");
+    D(OS_ObjectIdEqual(qfound, qid));
+    S("\n");
+    S("q_byname_miss rc=");
+    D(OS_QueueGetIdByName(&qfound, "nope"));
+    S("\n");
+    r3 = OS_QueueGetInfo(qid, &qprop);
+    S("q_info     rc=");
+    D(r3);
+    S(" [");
+    S(qprop.name);
+    S("]\n");
+    r3 = OS_QueueGetInfo(qid, NULL);
+    S("q_nullprop rc=");
+    D(r3);
+    S("\n");
+    S("q_delete   rc=");
+    D(OS_QueueDelete(qid));
+    S("\n");
+    S("q_stale    rc=");
+    D(OS_QueuePut(qid, "p", 4, 0));
     S("\n");
   }
   return 0;

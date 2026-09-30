@@ -17,13 +17,34 @@ the apps are meant to be taken as-is. That maps cleanly onto three different job
 
 | layer | strategy | why |
 |---|---|---|
-| OSAL implementation | **hand-write in HolyC** | it is the platform layer; translated C would be wrong here even if it worked |
+| OSAL **shared layer** (`src/os/shared`) | **translate 1:1** | corrected claim -- see below; it makes no OS calls at all |
+| OSAL **backend** (the `OS_*_Impl` seam) | **hand-write in HolyC** | this is the ~4,000 lines that actually touch the machine |
 | PSP | **hand-write in HolyC** | board-specific by definition, and this port already has the pieces |
 | cFE core (ES, SB, EVS, TIME, TBL) | **transpile** from the real C | this is the volume and the heritage; hand-translation loses both |
 | apps (SCH, HS, DS, LC, CI/TO) | **transpile** | same, and they are the reason to run cFS at all |
 
 Hand-writing the bottom two and transpiling the top two is the only split that is both honest and
 finite. Hand-translating cFE is 100k+ lines and would drift from upstream the day it finished.
+
+### Correction: OSAL is not one layer, and most of it is not hand-written
+
+This table used to read "OSAL implementation -- hand-write in HolyC", on the reasoning that a
+platform layer cannot be translated. That was wrong, and measuring it is what showed the error.
+
+OSAL is already split by NASA into two halves that meet at a seam:
+
+  - `src/os/shared/` -- the portable layer. It makes **zero** direct OS calls. Every place it
+    would touch the machine, it calls one of **128** `OS_*_Impl` functions. It is the id map, the
+    name tables, the locking discipline and the argument checking, and it is the large half.
+  - `src/os/<posix|vxworks|rtems>/` -- three complete backends implementing that same seam. They
+    are what is genuinely platform-specific, and a fourth one for this kernel is the hand-written
+    work.
+
+So the shared layer is translated 1:1 like cFE, and is under the same differential oracle: a
+recording-stub backend returning fixed values makes it testable with no OS underneath at all,
+because the shared layer never asks for one. Only the backend is hand-written, and it is written
+against a seam with three reference implementations to check it against.
+
 
 ## The language gap, measured rather than assumed
 
@@ -101,6 +122,42 @@ was unchanged across that swap.
 repositories — cFE, osal, PSP. SCH, LC, HS, CS, DS, SC, MM, MD, FM, CF and SBN are each separate
 NASA repositories and none is vendored. The app layer in `Kernel/Cfs/CfsApps.HC` is hand-written
 to the same architecture; it is not a translation of anything, and it says so.
+
+### OSAL, measured the same way
+
+**3,646 lines of NASA's 9,523-line shared layer, gated.** The denominator is the portable half
+only; the three vendored backends (posix 4,598, vxworks 3,984, rtems 3,543) are reference
+implementations of the seam, not things to translate.
+
+| OSAL shared source | NASA lines | gated | note |
+|---|---|---|---|
+| `osapi-idmap.c` | 1,501 | **yes** | the keystone: every other module allocates through it |
+| `osapi-rwlock.c` | 322 | **yes** | |
+| `osapi-condvar.c` | 312 | **yes** | `TimedWait` takes an absolute time, unlike its siblings |
+| `osapi-binsem.c` | 277 | **yes** | |
+| `osapi-queue.c` | 274 | **yes** | Get and Put reject on OPPOSITE sides of `max_size` |
+| `osapi-mutex.c` | 256 | **yes** | |
+| `osapi-countsem.c` | 249 | **yes** | the template the other four were generated from |
+| `osapi-errors.c` | 164 | **yes** | |
+| `osapi-clock.c` | 161 | **yes** | |
+| `osapi-version.c` | 77 | **yes** | |
+| `osapi-heap.c` | 53 | **yes** | |
+| `osapi-filesys.c` | 788 | no | |
+| `osapi-sockets.c` | 773 | no | |
+| `osapi-file.c` | 685 | no | |
+| `osapi-time.c` | 548 | no | |
+| `osapi-timebase.c` | 538 | no | |
+| `osapi-module.c` | 472 | no | |
+| `osapi-task.c` | 461 | no | |
+| `osapi-common.c` | 460 | partial | deliberately last and deliberately ungated: every module translated first is one fewer stub in it |
+| `osapi-printf.c` | 336 | no | defines the real `OS_printf`, which the oracle currently stubs |
+| `osapi-dir.c` `-select.c` `-task-affinity.c` `-network.c` `-debug.c` `-shell.c` | 816 | no | |
+
+Three properties are gated independently, because each is blind to what the others catch:
+**completeness** (`check_coverage.py` — every function in a gated NASA source exists),
+**signatures** (`check_signatures.py` — arity and pointer-ness match), and **behaviour** (the
+transcript). A function nobody calls is invisible to the third; a wrong parameter list is
+invisible to the first and third both.
 
 Things noticed in NASA's source along the way are in `docs/CFS_UPSTREAM_NOTES.md`, reproduced
 rather than fixed, each pinned by the transcript.
