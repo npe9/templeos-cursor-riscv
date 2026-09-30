@@ -125,7 +125,7 @@ to the same architecture; it is not a translation of anything, and it says so.
 
 ### OSAL, measured the same way
 
-**7,128 lines of NASA's 9,447-line shared layer, gated** (75%), computed by
+**8,214 lines of NASA's 9,447-line shared layer, gated** (87%), computed by
 `tools/cfs/check_manifest.py` on every gate run rather than counted here. The denominator is the portable half
 only; the three vendored backends (posix 4,598, vxworks 3,984, rtems 3,543) are reference
 implementations of the seam, not things to translate.
@@ -155,8 +155,8 @@ recipe, not from `ls`.
 | `osapi-filesys.c` | 788 | **yes** | path translation, the mount-point prefix trap, and the mount/unmount flag arithmetic |
 | `osapi-sockets.c` | 773 | no | |
 | `osapi-file.c` | 685 | **yes** | `OS_cp`'s short-write retry loop; path translation at the backend boundary |
-| `osapi-time.c` | 548 | no | |
-| `osapi-timebase.c` | 538 | no | |
+| `osapi-time.c` | 548 | **yes** | the circular timer ring, and one-shot vs repeating |
+| `osapi-timebase.c` | 538 | **yes** | the callback thread, driven by a scripted sync function |
 | `osapi-module.c` | 472 | **yes** | the empty static symbol table, and which error survives a failed lookup |
 | `osapi-common.c` | 460 | partial | deliberately last and deliberately ungated: every module translated first is one fewer stub in it |
 | `osapi-dir.c` `-select.c` `-task-affinity.c` `-network.c` `-shell.c` | 740 | no | |
@@ -226,6 +226,36 @@ expect the whole translation to reflow in one commit.
 The oracle DRIVERS under `tests/exec/cases/` are NOT exempt, and three of them had drifted out
 of format while being appended to all day. Formatting them changed `osal_xlat_errors.hc` by 149
 lines, so all three gates were re-run afterwards: 135, 316 and 16 identical lines, unchanged.
+
+#### Driving a `while (1)` in a transcript
+
+`OS_TimeBase_CallbackThread` never returns on its own: it calls the time base's sync function,
+walks the ring of timers, and loops. It is testable anyway, because **the sync function belongs
+to the caller**. The driver's version hands back a scripted tick count and, when the script
+runs out, clears the global record's `active_id` — which is precisely the condition the thread
+checks each pass to notice it was deleted, and its only exit.
+
+That also made the DEADLOCK GUARD reachable. Every function in `osapi-time.c` refuses when
+`OS_ObjectIdToType_Impl(OS_TaskGetId_Impl())` says the caller is a TIMEBASE, because a timer
+callback already holds the timebase lock. The stub `OS_TaskRegister_Impl` was given the
+behaviour a real OS has — it makes `OS_TaskGetId_Impl` return the registered id — so the
+callback thread genuinely looks like a timebase from the inside, and `cbt_guard rc=-35`
+records the refusal.
+
+What the transcript pins: `cbt_fired t1=3 t2=1 t3=6` over four ticks of 3. **t2 fires exactly
+once** — it is the one-shot, set with a positive `wait_time` and a zero `interval_time`, so
+`wait_time` never goes positive again and the "only fire when it crossed from positive"
+condition holds. Getting that wrong is what the compound-assignment compiler bug did, and it
+showed up here as t2 firing three times.
+
+The ring order is dumped after every change (`ring3 first=3 -> 2 -> 1`), because a wrong splice
+shows up as a short walk or a wrong order rather than as an error code, and deleting the middle
+of a three-timer ring must leave `3 -> 1`.
+
+One number here is derived rather than observed: `OS_Milli2Ticks`'s overflow branch **cannot be
+reached** at 100 ticks/sec, since the largest possible result is `0xFFFFFFFF * 100 / 1000` =
+429,496,730, well under `INT_MAX`. The driver raises the tick rate for that one call; otherwise
+the line would be a test that can never fail.
 
 Six properties are gated independently, because each is blind to what the others catch:
 
