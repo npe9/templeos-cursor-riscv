@@ -51,10 +51,55 @@ never trust the translation — test it:
 2. compile the **transpiled HolyC** with `holyc-riscv` and run it under QEMU,
 3. require identical output.
 
-This tree already has exactly that shape in `tests/exec/oracle_manifest.tsv` — 113 cases that
+This tree already has exactly that shape in `tests/exec/oracle_manifest.tsv` — 114 cases that
 compile HolyC, run it under QEMU and compare a single value. Extending it to "same program, two
 languages, same answer" is the natural generalisation, and it catches transpiler bugs and compiler
 bugs with one mechanism. Every translated cFE unit gets an entry.
+
+## Where the translation actually stands
+
+Everything below runs in one gate, `make cfs-xlat-smoke` (`tests/scripts/run_cfs_xlat_smoke.sh`):
+NASA's unmodified C compiled natively on one side, the HolyC translation compiled for RISC-V and
+run under QEMU on the other, **88 transcript lines required to be byte-identical**. Growing the
+source list and the transcript together is how this advances — one file, one set of lines, one
+diff.
+
+| cFE module | files | status |
+|---|---|---|
+| `msg` | 8 of 8 unconditional sources | **complete** for the v1 / primary-header-only configuration |
+| `resourceid` | 2 of 2 | **complete** (SIMPLE variant) |
+| `sb` | `cfe_sb_msg_id_util.c` | the msgid helpers only; the rest of SB is 6k lines and needs ES |
+| `es`, `time`, `evs`, `tbl`, `fs` | — | untranslated |
+
+Translated units live in `Kernel/Cfs/cfe/`, one HolyC file per C file, NASA's copyright retained,
+with the generated headers each one needs inlined and attributed in a comment. `Kernel/Cfs/` also
+holds a *separate* thing — `CfsSb.HC` and `CfsApps.HC`, a hand-written simulated spacecraft — and
+the two are not yet connected. Wiring the translated message module underneath the simulated
+software bus is the obvious next structural step, and it is not done.
+
+What the excluded `msg` sources are: `ccsdsext`, `initdefaulthdr_priext` and `msgid_v2` are
+selected only when `MISSION_INCLUDE_CCSDSEXT_HEADER` is set, which this port does not set. That
+is from `modules/msg/CMakeLists.txt`, which is also the file that caught a premature "module
+finished" claim — the directory listing and the build recipe do not agree, and only one of them
+decides what a build contains.
+
+**Three findings the oracle produced that no amount of reading would have:**
+
+1. A HolyC cast on an *lvalue* relabels the storage rather than converting the value, so
+   translating C's `(uint32)byte` as `byte(U32)` reads four bytes instead of one. One transcript
+   line out of 65, on a plausible-looking number.
+2. An I32-returning function's value was not converted to its declared type, so a negative status
+   compared as positive. Found because cFE returns `0xCA00000D` as an `int32` and the two sides
+   printed different signs. Fixed in the compiler, behind a twelve-image byte diff.
+3. `ptr = <constant> + offset` scaled the offset by the pointee size — a live miscompilation that
+   had been writing the wrong QSPI register for weeks.
+
+Each is a *compiler or translation* defect that presents exactly like the other, which is the
+whole argument for the oracle.
+
+Every unit also gets a **negative control**: deliberately break it, confirm the gate fails, put it
+back. A gate that has never failed is not known to work. The controls run so far are recorded in
+the commit messages rather than automated, which is a gap.
 
 ## The compiler is on the critical path, and today proved it
 

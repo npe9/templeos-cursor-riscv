@@ -325,5 +325,5 @@ anyone learning this port.
 1. **Now, no new driver:** read the SPI-NOR at `0x20000000`; toggle GPIO by hand.
 2. **Small and self-contained:** PWM; then I2C0 and `Temp()`.
 3. **Most useful:** SD over QSPI2 → a real RedSea disk on hardware.
-4. **Closest to done:** GEM ethernet. `EthAb()` has ruled coherency out, so the remaining work is the PHY link and the GEMGXL clock.
+4. **Done:** GEM ethernet. `EthAb()` ruled coherency out, the PHY link and the GEMGXL clock are both up, and TX and RX are verified on the wire — 9P over raw ethernet (ethertype `0x88B6`) runs over it. See `docs/NINEP.md`.
 5. **Gated on PCIe:** enumeration (read-only) → NVMe on the M.2 → XHCI → USB devices.
