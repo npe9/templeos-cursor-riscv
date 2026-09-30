@@ -33,7 +33,11 @@ SRC_C="$OSAL/src/os/shared/src/osapi-errors.c
        $OSAL/src/os/shared/src/osapi-clock.c
        $OSAL/src/os/shared/src/osapi-heap.c
        $OSAL/src/os/shared/src/osapi-idmap.c
-       $OSAL/src/os/shared/src/osapi-countsem.c"
+       $OSAL/src/os/shared/src/osapi-countsem.c
+       $OSAL/src/os/shared/src/osapi-mutex.c
+       $OSAL/src/os/shared/src/osapi-binsem.c
+       $OSAL/src/os/shared/src/osapi-rwlock.c
+       $OSAL/src/os/shared/src/osapi-condvar.c"
 SRC_HC="$ROOT/tests/exec/cases/osal_xlat_errors.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"

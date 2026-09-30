@@ -19,6 +19,10 @@
 #include "os-shared-common.h"
 #include "os-shared-task.h"
 #include "os-shared-countsem.h"
+#include "os-shared-mutex.h"
+#include "os-shared-binsem.h"
+#include "os-shared-rwlock.h"
+#include "os-shared-condvar.h"
 
 /* The backend's error-name table. A bare-metal target contributes no OS-specific errors, so
  * this is empty -- and empty is the interesting case, because it is the one that makes
@@ -173,6 +177,43 @@ int32 OS_CountSemGetInfo_Impl(const OS_object_token_t *token, OS_count_sem_prop_
     count_prop->value = 42;
     return OS_SUCCESS;
 }
+
+/* The other four resource backends. Each records the last option word it was handed and
+ * reports a distinguishable value back, so the transcript shows arguments going down and
+ * results coming up through five modules that look identical from outside. */
+static uint32 stub_last_options;
+
+int32 OS_MutSemCreate_Impl(const OS_object_token_t *t, uint32 options) { stub_last_options = options; return OS_SUCCESS; }
+int32 OS_MutSemDelete_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_MutSemGive_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_MutSemTake_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_MutSemGetInfo_Impl(const OS_object_token_t *t, OS_mut_sem_prop_t *p) { return OS_SUCCESS; }
+
+int32 OS_BinSemCreate_Impl(const OS_object_token_t *t, uint32 v, uint32 options) { stub_last_options = options; return OS_SUCCESS; }
+int32 OS_BinSemDelete_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_BinSemGive_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_BinSemFlush_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_BinSemTake_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_BinSemTimedWait_Impl(const OS_object_token_t *t, uint32 ms) { return OS_SEM_TIMEOUT; }
+int32 OS_BinSemGetInfo_Impl(const OS_object_token_t *t, OS_bin_sem_prop_t *p) { p->value = 9; return OS_SUCCESS; }
+
+int32 OS_RwLockCreate_Impl(const OS_object_token_t *t, uint32 options) { stub_last_options = options; return OS_SUCCESS; }
+int32 OS_RwLockDelete_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_RwLockReadGive_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_RwLockWriteGive_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_RwLockReadTake_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_RwLockWriteTake_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_RwLockGetInfo_Impl(const OS_object_token_t *t, OS_rwlock_prop_t *p) { return OS_SUCCESS; }
+
+int32 OS_CondVarCreate_Impl(const OS_object_token_t *t, uint32 options) { stub_last_options = options; return OS_SUCCESS; }
+int32 OS_CondVarDelete_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_CondVarLock_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_CondVarUnlock_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_CondVarSignal_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_CondVarBroadcast_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_CondVarWait_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+int32 OS_CondVarTimedWait_Impl(const OS_object_token_t *t, const OS_time_t *abs) { return OS_SEM_TIMEOUT; }
+int32 OS_CondVarGetInfo_Impl(const OS_object_token_t *t, OS_condvar_prop_t *p) { return OS_SUCCESS; }
 
 /* Counts what OS_ForEachObject visits. */
 static int foreach_count;
@@ -416,6 +457,64 @@ int main(void)
 
         printf("cs_delete rc=%d\n", (int)OS_CountSemDelete(sid));
         printf("cs_stale  rc=%d\n", (int)OS_CountSemGive(sid));
+    }
+
+    /* --- the rest of the resource family --------------------------------------------- */
+    /* Five modules that are the same shape from outside. Each is driven through the same
+     * sequence so a divergence in any one of them shows up against its siblings. */
+    {
+        osal_id_t         mid, bid, rid, vid, found;
+        OS_mut_sem_prop_t mprop;
+        OS_bin_sem_prop_t bprop;
+        OS_rwlock_prop_t  rprop;
+        OS_condvar_prop_t vprop;
+        OS_time_t         wake;
+
+        OS_MutexAPI_Init();
+        OS_BinSemAPI_Init();
+        OS_RwLockAPI_Init();
+        OS_CondVarAPI_Init();
+
+        printf("mx_create rc=%d opt=%lu\n", (int)OS_MutSemCreate(&mid, "mxA", 0x11),
+               (unsigned long)stub_last_options);
+        printf("mx_type %lu give=%d take=%d\n", (unsigned long)OS_ObjectIdToType_Impl(mid),
+               (int)OS_MutSemGive(mid), (int)OS_MutSemTake(mid));
+        printf("mx_info rc=%d [%s]\n", (int)OS_MutSemGetInfo(mid, &mprop), mprop.name);
+
+        printf("bs_create rc=%d opt=%lu\n", (int)OS_BinSemCreate(&bid, "bsA", 1, 0x22),
+               (unsigned long)stub_last_options);
+        printf("bs_type %lu flush=%d wait=%d\n", (unsigned long)OS_ObjectIdToType_Impl(bid),
+               (int)OS_BinSemFlush(bid), (int)OS_BinSemTimedWait(bid, 5));
+        printf("bs_info rc=%d [%s] val=%d\n", (int)OS_BinSemGetInfo(bid, &bprop), bprop.name,
+               (int)bprop.value);
+
+        printf("rw_create rc=%d opt=%lu\n", (int)OS_RwLockCreate(&rid, "rwA", 0x33),
+               (unsigned long)stub_last_options);
+        printf("rw_type %lu rt=%d wt=%d\n", (unsigned long)OS_ObjectIdToType_Impl(rid),
+               (int)OS_RwLockReadTake(rid), (int)OS_RwLockWriteTake(rid));
+        printf("rw_info rc=%d [%s]\n", (int)OS_RwLockGetInfo(rid, &rprop), rprop.name);
+
+        printf("cv_create rc=%d opt=%lu\n", (int)OS_CondVarCreate(&vid, "cvA", 0x44),
+               (unsigned long)stub_last_options);
+        wake.ticks = 12345;
+        printf("cv_type %lu sig=%d wait=%d\n", (unsigned long)OS_ObjectIdToType_Impl(vid),
+               (int)OS_CondVarSignal(vid), (int)OS_CondVarTimedWait(vid, &wake));
+        /* CondVarTimedWait has its own OS_CHECK_POINTER that its siblings lack -- a BUGCHECK,
+         * so it logs. A generated template gave it the binsem shape and this caught it. */
+        printf("cv_nullwake rc=%d\n", (int)OS_CondVarTimedWait(vid, NULL));
+        printf("cv_info rc=%d [%s]\n", (int)OS_CondVarGetInfo(vid, &vprop), vprop.name);
+
+        /* All four ids must be distinct types out of one shared table. */
+        printf("types   %lu %lu %lu %lu\n", (unsigned long)OS_ObjectIdToType_Impl(mid),
+               (unsigned long)OS_ObjectIdToType_Impl(bid), (unsigned long)OS_ObjectIdToType_Impl(rid),
+               (unsigned long)OS_ObjectIdToType_Impl(vid));
+        printf("byname  %d %d %d %d\n",
+               (int)(OS_MutSemGetIdByName(&found, "mxA") == OS_SUCCESS),
+               (int)(OS_BinSemGetIdByName(&found, "bsA") == OS_SUCCESS),
+               (int)(OS_RwLockGetIdByName(&found, "rwA") == OS_SUCCESS),
+               (int)(OS_CondVarGetIdByName(&found, "cvA") == OS_SUCCESS));
+        printf("deletes %d %d %d %d\n", (int)OS_MutSemDelete(mid), (int)OS_BinSemDelete(bid),
+               (int)OS_RwLockDelete(rid), (int)OS_CondVarDelete(vid));
     }
     return 0;
 }

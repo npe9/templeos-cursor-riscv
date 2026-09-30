@@ -120,7 +120,53 @@ I32 OS_CountSemGetInfo_Impl(OS_object_token_t *token, OS_count_sem_prop_t *count
   return OS_SUCCESS;
 }
 
+// Types first, then the backends that need them, then the modules -- include order doing a
+// linker's job, as everywhere else here.
+#include "/Kernel/Cfs/osal/os_shared_mutex.HC"
+#include "/Kernel/Cfs/osal/os_shared_binsem.HC"
+#include "/Kernel/Cfs/osal/os_shared_rwlock.HC"
+#include "/Kernel/Cfs/osal/os_shared_condvar.HC"
+
+// The other four resource backends, matching the C oracle's.
+U32 stub_last_options;
+
+I32 OS_MutSemCreate_Impl(OS_object_token_t *t, U32 options) { stub_last_options = options; return OS_SUCCESS; }
+I32 OS_MutSemDelete_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_MutSemGive_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_MutSemTake_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_MutSemGetInfo_Impl(OS_object_token_t *t, OS_mut_sem_prop_t *p) { return OS_SUCCESS; }
+
+I32 OS_BinSemCreate_Impl(OS_object_token_t *t, U32 v, U32 options) { stub_last_options = options; return OS_SUCCESS; }
+I32 OS_BinSemDelete_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_BinSemGive_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_BinSemFlush_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_BinSemTake_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_BinSemTimedWait_Impl(OS_object_token_t *t, U32 ms) { return OS_SEM_TIMEOUT; }
+I32 OS_BinSemGetInfo_Impl(OS_object_token_t *t, OS_bin_sem_prop_t *p) { p->value = 9; return OS_SUCCESS; }
+
+I32 OS_RwLockCreate_Impl(OS_object_token_t *t, U32 options) { stub_last_options = options; return OS_SUCCESS; }
+I32 OS_RwLockDelete_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_RwLockReadGive_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_RwLockWriteGive_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_RwLockReadTake_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_RwLockWriteTake_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_RwLockGetInfo_Impl(OS_object_token_t *t, OS_rwlock_prop_t *p) { return OS_SUCCESS; }
+
+I32 OS_CondVarCreate_Impl(OS_object_token_t *t, U32 options) { stub_last_options = options; return OS_SUCCESS; }
+I32 OS_CondVarDelete_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_CondVarLock_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_CondVarUnlock_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_CondVarSignal_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_CondVarBroadcast_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_CondVarWait_Impl(OS_object_token_t *t) { return OS_SUCCESS; }
+I32 OS_CondVarTimedWait_Impl(OS_object_token_t *t, OS_time_t *abs) { return OS_SEM_TIMEOUT; }
+I32 OS_CondVarGetInfo_Impl(OS_object_token_t *t, OS_condvar_prop_t *p) { return OS_SUCCESS; }
+
 #include "/Kernel/Cfs/osal/osapi_countsem.HC"
+#include "/Kernel/Cfs/osal/osapi_mutex.HC"
+#include "/Kernel/Cfs/osal/osapi_binsem.HC"
+#include "/Kernel/Cfs/osal/osapi_rwlock.HC"
+#include "/Kernel/Cfs/osal/osapi_condvar.HC"
 
 // Counts what OS_ForEachObject visits.
 I64 foreach_count;
@@ -612,6 +658,146 @@ I64 main()
     S("\n");
     S("cs_stale  rc=");
     D(OS_CountSemGive(sid));
+    S("\n");
+  }
+
+  // --- the rest of the resource family --------------------------------------------------
+  // Five modules identical in shape from outside, driven through the same sequence so a
+  // divergence in any one shows up against its siblings.
+  {
+    U32 mid, bid, rid, vid, found;
+    OS_mut_sem_prop_t mprop;
+    OS_bin_sem_prop_t bprop;
+    OS_rwlock_prop_t rprop;
+    OS_condvar_prop_t vprop;
+    OS_time_t wake;
+    I32 a, b, c;
+    OS_MutexAPI_Init;
+    OS_BinSemAPI_Init;
+    OS_RwLockAPI_Init;
+    OS_CondVarAPI_Init;
+    a = OS_MutSemCreate(&mid, "mxA", 0x11);
+    S("mx_create rc=");
+    D(a);
+    S(" opt=");
+    D(stub_last_options);
+    S("\n");
+    a = OS_MutSemGive(mid);
+    b = OS_MutSemTake(mid);
+    S("mx_type ");
+    D(OS_ObjectIdToType_Impl(mid));
+    S(" give=");
+    D(a);
+    S(" take=");
+    D(b);
+    S("\n");
+    a = OS_MutSemGetInfo(mid, &mprop);
+    S("mx_info rc=");
+    D(a);
+    S(" [");
+    S(mprop.name);
+    S("]\n");
+    a = OS_BinSemCreate(&bid, "bsA", 1, 0x22);
+    S("bs_create rc=");
+    D(a);
+    S(" opt=");
+    D(stub_last_options);
+    S("\n");
+    a = OS_BinSemFlush(bid);
+    b = OS_BinSemTimedWait(bid, 5);
+    S("bs_type ");
+    D(OS_ObjectIdToType_Impl(bid));
+    S(" flush=");
+    D(a);
+    S(" wait=");
+    D(b);
+    S("\n");
+    a = OS_BinSemGetInfo(bid, &bprop);
+    S("bs_info rc=");
+    D(a);
+    S(" [");
+    S(bprop.name);
+    S("] val=");
+    D(bprop.value);
+    S("\n");
+    a = OS_RwLockCreate(&rid, "rwA", 0x33);
+    S("rw_create rc=");
+    D(a);
+    S(" opt=");
+    D(stub_last_options);
+    S("\n");
+    a = OS_RwLockReadTake(rid);
+    b = OS_RwLockWriteTake(rid);
+    S("rw_type ");
+    D(OS_ObjectIdToType_Impl(rid));
+    S(" rt=");
+    D(a);
+    S(" wt=");
+    D(b);
+    S("\n");
+    a = OS_RwLockGetInfo(rid, &rprop);
+    S("rw_info rc=");
+    D(a);
+    S(" [");
+    S(rprop.name);
+    S("]\n");
+    a = OS_CondVarCreate(&vid, "cvA", 0x44);
+    S("cv_create rc=");
+    D(a);
+    S(" opt=");
+    D(stub_last_options);
+    S("\n");
+    wake.ticks = 12345;
+    a = OS_CondVarSignal(vid);
+    b = OS_CondVarTimedWait(vid, &wake);
+    S("cv_type ");
+    D(OS_ObjectIdToType_Impl(vid));
+    S(" sig=");
+    D(a);
+    S(" wait=");
+    D(b);
+    S("\n");
+    // CondVarTimedWait has its own OS_CHECK_POINTER that its siblings lack -- a BUGCHECK, so
+    // it logs. Hoisted so the marker lands before the line.
+    a = OS_CondVarTimedWait(vid, NULL);
+    S("cv_nullwake rc=");
+    D(a);
+    S("\n");
+    a = OS_CondVarGetInfo(vid, &vprop);
+    S("cv_info rc=");
+    D(a);
+    S(" [");
+    S(vprop.name);
+    S("]\n");
+    S("types   ");
+    D(OS_ObjectIdToType_Impl(mid));
+    S(" ");
+    D(OS_ObjectIdToType_Impl(bid));
+    S(" ");
+    D(OS_ObjectIdToType_Impl(rid));
+    S(" ");
+    D(OS_ObjectIdToType_Impl(vid));
+    S("\n");
+    S("byname  ");
+    D(OS_MutSemGetIdByName(&found, "mxA") == OS_SUCCESS);
+    S(" ");
+    D(OS_BinSemGetIdByName(&found, "bsA") == OS_SUCCESS);
+    S(" ");
+    D(OS_RwLockGetIdByName(&found, "rwA") == OS_SUCCESS);
+    S(" ");
+    D(OS_CondVarGetIdByName(&found, "cvA") == OS_SUCCESS);
+    S("\n");
+    a = OS_MutSemDelete(mid);
+    b = OS_BinSemDelete(bid);
+    c = OS_RwLockDelete(rid);
+    S("deletes ");
+    D(a);
+    S(" ");
+    D(b);
+    S(" ");
+    D(c);
+    S(" ");
+    D(OS_CondVarDelete(vid));
     S("\n");
   }
   return 0;
