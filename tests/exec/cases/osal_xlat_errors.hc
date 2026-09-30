@@ -76,15 +76,10 @@ U0 OS_WaitForStateChange_Impl(U32 idtype, U32 attempts)
   ++stub_wait_calls;
 }
 
-U32 OS_TaskGetId_Impl()
-{
-  return OS_ObjectIdFromInteger(0x10001);
-}
-
-U32 OS_TaskGetId()
-{
-  return OS_ObjectIdFromInteger(0x10001);
-}
+// OS_TaskGetId_Impl moved down to the task backend, and OS_TaskGetId deleted outright: now
+// that osapi-task.c is translated, the REAL one comes from osapi_task.HC. It is what idmap
+// calls to stamp `creator` on every record, so the stub's fixed 0x10001 becomes the initial
+// value of stub_t_current instead, and every creator line before the task section is unchanged.
 
 #include "/Kernel/Cfs/osal/osapi_idmap.HC"
 // The types the backend below must see before it can declare itself -- see that file for why
@@ -127,6 +122,7 @@ I32 OS_CountSemGetInfo_Impl(OS_object_token_t *token, OS_count_sem_prop_t *count
 #include "/Kernel/Cfs/osal/os_shared_rwlock.HC"
 #include "/Kernel/Cfs/osal/os_shared_condvar.HC"
 #include "/Kernel/Cfs/osal/os_shared_queue.HC"
+#include "/Kernel/Cfs/osal/os_shared_task.HC"
 
 // The other four resource backends, matching the C oracle's.
 U32 stub_last_options;
@@ -168,6 +164,55 @@ I32 OS_CondVarGetInfo_Impl(OS_object_token_t *t, OS_condvar_prop_t *p) { return 
 #include "/Kernel/Cfs/osal/osapi_binsem.HC"
 #include "/Kernel/Cfs/osal/osapi_rwlock.HC"
 #include "/Kernel/Cfs/osal/osapi_condvar.HC"
+#include "/Kernel/Cfs/osal/osapi_task.HC"
+
+// --- osapi-task.c backend --------------------------------------------------------------------
+// OS_TaskGetId_Impl is the "who am I" the OS would answer; here the driver sets it, which is
+// what makes OS_TaskExit, OS_TaskGetId and OS_TaskInstallDeleteHandler drivable at all.
+U32 stub_t_current, stub_t_flags;
+I64 stub_t_prio, stub_t_delay;
+I64 stub_t_creates, stub_t_deletes, stub_t_detaches, stub_t_exits;
+I64 stub_t_registers, stub_t_matches, stub_t_hookcalls, stub_t_startups;
+I32 stub_t_setprio_rc;
+U32 stub_t_sysdata_want;
+
+I32 OS_TaskCreate_Impl(OS_object_token_t *t, U32 flags)
+{
+  stub_t_flags = flags;
+  ++stub_t_creates;
+  return OS_SUCCESS;
+}
+I32 OS_TaskDelete_Impl(OS_object_token_t *t) { ++stub_t_deletes; return OS_SUCCESS; }
+I32 OS_TaskDetach_Impl(OS_object_token_t *t) { ++stub_t_detaches; return OS_SUCCESS; }
+U0 OS_TaskExit_Impl() { ++stub_t_exits; }   // the real one never returns
+I32 OS_TaskDelay_Impl(U32 ms) { stub_t_delay = ms; return OS_SUCCESS; }
+I32 OS_TaskSetPriority_Impl(OS_object_token_t *t, U8 p)
+{
+  stub_t_prio = p;
+  return stub_t_setprio_rc;
+}
+U32 OS_TaskGetId_Impl() { return stub_t_current; }
+I32 OS_TaskGetInfo_Impl(OS_object_token_t *t, OS_task_prop_t *p) { return OS_SUCCESS; }
+I32 OS_TaskMatch_Impl(OS_object_token_t *t) { ++stub_t_matches; return OS_SUCCESS; }
+I32 OS_TaskRegister_Impl(U32 id) { ++stub_t_registers; return OS_SUCCESS; }
+I32 OS_TaskValidateSystemData_Impl(U8 *sysdata, I64 sysdata_size)
+{
+  // Only the backend knows what a system task handle looks like, so the size rule is the
+  // backend's. Making it reject one size lets the driver prove the EARLY RETURN in
+  // OS_TaskFindIdBySystemData fires before any search happens.
+  if (sysdata == NULL || sysdata_size != stub_t_sysdata_want)
+    return OS_ERR_INVALID_SIZE;
+  return OS_SUCCESS;
+}
+Bool OS_TaskIdMatchSystemData_Impl(U8 *ref, OS_object_token_t *t, OS_common_record_t *obj)
+{
+  U32 *want;
+  want = ref;
+  return obj->active_id == *want;
+}
+U0 task_delete_hook() { ++stub_t_hookcalls; }
+U0 task_entry_a() { ++stub_t_startups; }
+
 #include "/Kernel/Cfs/osal/osapi_queue.HC"
 
 // --- osapi-queue.c backend ------------------------------------------------------------------
@@ -277,6 +322,10 @@ I64 main()
   U8 nm[OS_ERROR_NAME_LENGTH];
   U8 st[OS_STATUS_STRING_LENGTH];
   I32 rc;
+  // The C gives stub_t_current a static initialiser; HolyC globals are zero-filled. It has to
+  // hold the old fixed stub's value from the FIRST line, because idmap calls OS_TaskGetId to
+  // stamp `creator` on every record created below, long before the task section runs.
+  stub_t_current = 0x10001;
   // Hoisted, because the C evaluates printf's arguments before printf emits anything and the
   // NULL case LOGS -- inline, the marker would land in the middle of its own line.
   rc = OS_GetErrorName(OS_ERR_NAME_TAKEN, nm);
@@ -995,6 +1044,173 @@ I64 main()
     S("\n");
     S("q_stale    rc=");
     D(OS_QueuePut(qid, "p", 4, 0));
+    S("\n");
+  }
+
+  // --- osapi-task.c --------------------------------------------------------------------------
+  // Three things here are easy to get wrong and invisible to a "did it return 0" test:
+  //   - SetPriority writes the table ONLY when the backend succeeded, so the failing case must
+  //     show the OLD priority still in place;
+  //   - Delete saves the hook BEFORE the table is unlocked and calls it AFTER, so both "was it
+  //     called" and "was it called once" matter;
+  //   - FindIdBySystemData returns the backend's validation error EARLY, before any search, so
+  //     a wrong size must not reach the match function.
+  {
+    U32 tid, tid2, tfound;
+    OS_task_prop_t tprop;
+    U8 tlong[OS_MAX_API_NAME + 8];
+    U32 want;
+    I64 i;
+    I32 r5;
+
+    // The C gives these static initialisers; HolyC globals are zero-filled, so the two that are
+    // not zero have to be set here or the transcripts diverge for a harness reason.
+    stub_t_setprio_rc = OS_SUCCESS;
+    stub_t_sysdata_want = 4;
+
+    OS_TaskAPI_Init;
+    r5 = OS_TaskCreate(&tid, "tA", &task_entry_a, NULL, 4096, 100, 0x11);
+    S("t_create  rc=");
+    D(r5);
+    Hx(" fl=", stub_t_flags);
+    S(" n=");
+    D(stub_t_creates);
+    S("\n");
+    r5 = OS_TaskGetInfo(tid, &tprop);
+    S("t_info    rc=");
+    D(r5);
+    S(" [");
+    S(tprop.name);
+    S("] stack=");
+    D(tprop.stack_size);
+    S(" prio=");
+    D(tprop.priority);
+    S("\n");
+
+    r5 = OS_TaskCreate(NULL, "x", &task_entry_a, NULL, 16, 1, 0);
+    S("t_nullid   rc=");
+    D(r5);
+    S("\n");
+    r5 = OS_TaskCreate(&tid2, "x", NULL, NULL, 16, 1, 0);
+    S("t_nullfn   rc=");
+    D(r5);
+    S("\n");
+    r5 = OS_TaskCreate(&tid2, NULL, &task_entry_a, NULL, 16, 1, 0);
+    S("t_nullname rc=");
+    D(r5);
+    S("\n");
+    i = 0;
+    while (i < sizeof(tlong) - 1) {
+      tlong[i] = 't';
+      ++i;
+    }
+    tlong[sizeof(tlong) - 1] = 0;
+    S("t_longname rc=");
+    D(OS_TaskCreate(&tid2, tlong, &task_entry_a, NULL, 16, 1, 0));
+    S("\n");
+    S("t_zerostk  rc=");
+    D(OS_TaskCreate(&tid2, "tB", &task_entry_a, NULL, 0, 1, 0));
+    S("\n");
+
+    r5 = OS_TaskGetIdByName(&tfound, "tA");
+    S("t_byname   rc=");
+    D(r5);
+    S(" match=");
+    D(OS_ObjectIdEqual(tfound, tid));
+    S("\n");
+    S("t_byname_miss rc=");
+    D(OS_TaskGetIdByName(&tfound, "nope"));
+    S("\n");
+
+    // Priority: the backend succeeds, so the table must take the new value.
+    r5 = OS_TaskSetPriority(tid, 55);
+    S("t_prio_ok  rc=");
+    D(r5);
+    S(" impl=");
+    D(stub_t_prio);
+    S("\n");
+    OS_TaskGetInfo(tid, &tprop);
+    S("t_prio_tbl prio=");
+    D(tprop.priority);
+    S("\n");
+    // Now the backend FAILS: the table must keep 55, not take 77.
+    stub_t_setprio_rc = OS_ERROR;
+    r5 = OS_TaskSetPriority(tid, 77);
+    S("t_prio_bad rc=");
+    D(r5);
+    S(" impl=");
+    D(stub_t_prio);
+    S("\n");
+    OS_TaskGetInfo(tid, &tprop);
+    S("t_prio_keep prio=");
+    D(tprop.priority);
+    S("\n");
+    stub_t_setprio_rc = OS_SUCCESS;
+
+    r5 = OS_TaskDelay(250);
+    S("t_delay    rc=");
+    D(r5);
+    S(" ms=");
+    D(stub_t_delay);
+    S("\n");
+
+    // "Who am I" drives GetId and InstallDeleteHandler, both of which ask the backend.
+    stub_t_current = tid;
+    S("t_getid    match=");
+    D(OS_ObjectIdEqual(OS_TaskGetId, tid));
+    S("\n");
+    S("t_hook_in  rc=");
+    D(OS_TaskInstallDeleteHandler(&task_delete_hook));
+    S("\n");
+
+    // FindIdBySystemData: the wrong size must not reach the match function.
+    want = OS_ObjectIdToInteger(tid);
+    S("t_sysbad   rc=");
+    D(OS_TaskFindIdBySystemData(&tfound, &want, 3));
+    S("\n");
+    r5 = OS_TaskFindIdBySystemData(&tfound, &want, 4);
+    S("t_sysok    rc=");
+    D(r5);
+    S(" match=");
+    D(OS_ObjectIdEqual(tfound, tid));
+    S("\n");
+    r5 = OS_TaskFindIdBySystemData(NULL, &want, 4);
+    S("t_sysnull  rc=");
+    D(r5);
+    S("\n");
+
+    // Delete runs the hook that was installed above, exactly once.
+    r5 = OS_TaskDelete(tid);
+    S("t_delete   rc=");
+    D(r5);
+    S(" del=");
+    D(stub_t_deletes);
+    S(" hook=");
+    D(stub_t_hookcalls);
+    S("\n");
+    S("t_stale    rc=");
+    D(OS_TaskDelete(tid));
+    S("\n");
+
+    // OS_TaskEntryPoint is what the backend calls in the new thread: it prepares the task, runs
+    // the entry function, then exits -- which detaches and finalizes.
+    OS_TaskCreate(&tid2, "tB", &task_entry_a, NULL, 2048, 60, 0);
+    stub_t_current = tid2;
+    OS_TaskEntryPoint(tid2);
+    S("t_entry    ran=");
+    D(stub_t_startups);
+    S(" match=");
+    D(stub_t_matches);
+    S(" reg=");
+    D(stub_t_registers);
+    S(" detach=");
+    D(stub_t_detaches);
+    S(" exit=");
+    D(stub_t_exits);
+    S("\n");
+    r5 = OS_TaskGetInfo(tid2, &tprop);
+    S("t_gone     rc=");
+    D(r5);
     S("\n");
   }
   return 0;

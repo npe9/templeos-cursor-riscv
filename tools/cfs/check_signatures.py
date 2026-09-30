@@ -64,10 +64,14 @@ C_TYPES = [(r'\bconst\b', ' '),
            (r'\bsize_t\s*\*', ' PTRSZ '), (r'\bOS_time_t\s*\*', ' TIME '),
            (r'\bOS_\w+_prop_t\s*\*', ' PROP '), (r'\bOS_object_token_t\s*\*', ' TOK '),
            (r'\bosal_id_t\b', ' NUM '), (r'\buint32\b', ' NUM '), (r'\buint16\b', ' NUM '),
+           (r'\buint8\b', ' NUM '),
            (r'\bosal_blockcount_t\b', ' SZ '), (r'\bsize_t\b', ' SZ '), (r'\bint32\b', ' SNUM '),
            # The remaining OSAL typedefs, by shape rather than one at a time. osal_index_t and
            # osal_objtype_t are 32-bit scalars; os_err_name_t and os_status_string_t are
            # char arrays, so a pointer to one is a byte pointer.
+           # osal_stackptr_t is `typedef void *` -- a POINTER, so the generic osal_*_t rule
+           # below would wrongly call it a scalar. Like osal_status_t, it must come first.
+           (r'\bosal_stackptr_t\b', ' PTRB '),
            (r'\bos_\w+_t\s*\*', ' PTRB '), (r'\bosal_\w+_t\s*\*', ' PTRNUM '),
            # osal_status_t is `typedef int32` -- SIGNED. It must be matched before the generic
            # osal_*_t rule below, which would otherwise call it unsigned. That masked a real
@@ -88,7 +92,7 @@ H_TYPES = [(r'\bCFE_MSG_Message\s*\*', ' PTRB '), (r'\bCFE_\w+\s*\*', ' PTRNUM '
            (r'\bU8\s*\*', ' PTRB '), (r'\bI64\s*\*', ' PTRSZ '),
            (r'\bOS_time_t\s*\*', ' TIME '), (r'\bOS_\w+_prop_t\s*\*', ' PROP '),
            (r'\bOS_object_token_t\s*\*', ' TOK '), (r'\bI64\b', ' SZ '), (r'\bU32\b', ' NUM '),
-           (r'\bU16\b', ' NUM '), (r'\bI32\b', ' SNUM ')]
+           (r'\bU16\b', ' NUM '), (r'\bU8\b', ' NUM '), (r'\bI32\b', ' SNUM ')]
 
 # A function-pointer parameter, however it is spelled. The C uses typedefs (OS_ArgCallback_t,
 # OS_ObjectMatchFunc_t, OS_Config_Callback_t); HolyC has no typedef so the translation writes
@@ -104,8 +108,9 @@ DEVIATIONS = {
 
 KEYWORDS = {'if', 'for', 'while', 'switch', 'return', 'else', 'do', 'sizeof'}
 
-FN_TYPEDEF = re.compile(r'\b(?:OS|CFE)_\w*(?:Callback|MatchFunc|CheckFunc|IncrementFunc|Func)\w*_t\b')
-FN_SPELLED = re.compile(r'\(\s*\*\s*\w*\s*\)\s*\([^)]*\)')
+FN_TYPEDEF = re.compile(r'\b(?:(?:OS|CFE)_\w*(?:Callback|MatchFunc|CheckFunc|IncrementFunc|Func)\w*_t'
+                        r'|osal_task_entry)\b')
+FN_SPELLED = re.compile(r'\(\s*\*+\s*\w*\s*\)\s*\([^)]*\)')
 
 # Any type spelling, C or HolyC. The old version listed the return types one at a time and
 # quietly skipped every function returning something not on the list.

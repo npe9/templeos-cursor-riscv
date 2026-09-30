@@ -35,11 +35,14 @@
 #define OS_INIT_MAGIC_NUMBER     0xBE57C0DE
 #define OS_SHUTDOWN_MAGIC_NUMBER 0xABADC0DE
 #define OS_MAX_EVENT_HANDLER     4
-// OS_Event_t values, from osapi-common.h. Only the three idmap raises are needed here.
+// OS_Event_t values, from osapi-common.h, in NASA's declaration order -- the numbering is what
+// a handler sees, so it is not free to differ.
 #define OS_EVENT_RESERVED          0
 #define OS_EVENT_RESOURCE_ALLOCATED 1
 #define OS_EVENT_RESOURCE_CREATED   2
 #define OS_EVENT_RESOURCE_DELETED   3
+#define OS_EVENT_TASK_STARTUP       4
+#define OS_EVENT_MAX                5
 
 // TWO HOLYC LIMITS SHAPE THIS, both measured rather than worked around blindly:
 //

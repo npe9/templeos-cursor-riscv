@@ -125,7 +125,7 @@ to the same architecture; it is not a translation of anything, and it says so.
 
 ### OSAL, measured the same way
 
-**3,646 lines of NASA's 9,523-line shared layer, gated.** The denominator is the portable half
+**4,107 lines of NASA's 9,523-line shared layer, gated.** The denominator is the portable half
 only; the three vendored backends (posix 4,598, vxworks 3,984, rtems 3,543) are reference
 implementations of the seam, not things to translate.
 
@@ -136,6 +136,7 @@ implementations of the seam, not things to translate.
 | `osapi-condvar.c` | 312 | **yes** | `TimedWait` takes an absolute time, unlike its siblings |
 | `osapi-binsem.c` | 277 | **yes** | |
 | `osapi-queue.c` | 274 | **yes** | Get and Put reject on OPPOSITE sides of `max_size` |
+| `osapi-task.c` | 461 | **yes** | the delete hook, and the priority store the backend can veto |
 | `osapi-mutex.c` | 256 | **yes** | |
 | `osapi-countsem.c` | 249 | **yes** | the template the other four were generated from |
 | `osapi-errors.c` | 164 | **yes** | |
@@ -148,16 +149,24 @@ implementations of the seam, not things to translate.
 | `osapi-time.c` | 548 | no | |
 | `osapi-timebase.c` | 538 | no | |
 | `osapi-module.c` | 472 | no | |
-| `osapi-task.c` | 461 | no | |
 | `osapi-common.c` | 460 | partial | deliberately last and deliberately ungated: every module translated first is one fewer stub in it |
 | `osapi-printf.c` | 336 | no | defines the real `OS_printf`, which the oracle currently stubs |
 | `osapi-dir.c` `-select.c` `-task-affinity.c` `-network.c` `-debug.c` `-shell.c` | 816 | no | |
 
-Three properties are gated independently, because each is blind to what the others catch:
-**completeness** (`check_coverage.py` — every function in a gated NASA source exists),
-**signatures** (`check_signatures.py` — arity and pointer-ness match), and **behaviour** (the
-transcript). A function nobody calls is invisible to the third; a wrong parameter list is
-invisible to the first and third both.
+Four properties are gated independently, because each is blind to what the others catch:
+
+| check | what it proves | what it cannot see |
+|---|---|---|
+| `check_coverage.py` | every function in a gated NASA source exists in the translation | its arity, its types, its body |
+| `check_signatures.py` | arity and pointer-ness match NASA's, per parameter | return types; anything named `*_Impl` |
+| `check_seam.py` | the `OS_*_Impl` declarations match NASA's headers, **return type included** | whether a backend obeys them |
+| the transcript | behaviour, byte for byte against NASA's own C | anything nothing calls |
+
+Each of these was added because something got through the ones that already existed.
+`CFE_MSG_GetNextSequenceCount` was missing for four commits with the transcript green;
+`OS_MutSemCreate` lost a parameter with coverage green; `OS_TaskDetach_Impl` was declared
+returning `U0` where NASA's header says `int32`, which only the host C compiler noticed, and
+only because the oracle happens to include that header.
 
 Things noticed in NASA's source along the way are in `docs/CFS_UPSTREAM_NOTES.md`, reproduced
 rather than fixed, each pinned by the transcript.

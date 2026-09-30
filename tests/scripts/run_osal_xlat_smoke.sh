@@ -38,7 +38,8 @@ SRC_C="$OSAL/src/os/shared/src/osapi-errors.c
        $OSAL/src/os/shared/src/osapi-binsem.c
        $OSAL/src/os/shared/src/osapi-rwlock.c
        $OSAL/src/os/shared/src/osapi-condvar.c
-       $OSAL/src/os/shared/src/osapi-queue.c"
+       $OSAL/src/os/shared/src/osapi-queue.c
+       $OSAL/src/os/shared/src/osapi-task.c"
 SRC_HC="$ROOT/tests/exec/cases/osal_xlat_errors.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -73,6 +74,13 @@ python3 "$ROOT/tools/cfs/check_coverage.py" $SRC_C || exit 1
 # OS_StatusToString translated an int32 as I64. This makes that diff a command.
 # shellcheck disable=SC2086
 python3 "$ROOT/tools/cfs/check_signatures.py" $SRC_C || exit 1
+
+# --- the backend seam ---------------------------------------------------------------------------
+# The OS_*_Impl declarations are what the hand-written TempleOS backend will be built to, and
+# neither check above can see a mistake in them: coverage looks at definitions in a .c, and
+# check_signatures skips _Impl names and never compares return types at all. osapi_task.HC
+# declared OS_TaskDetach_Impl returning U0 where NASA's header says int32.
+python3 "$ROOT/tools/cfs/check_seam.py" || exit 1
 
 # --- reference: NASA's C, unmodified ----------------------------------------------------------
 # shellcheck disable=SC2086
