@@ -122,6 +122,7 @@ ci: $(COMPILER_BIN)
 	@$(MAKE) newline-semi-smoke
 	@$(MAKE) asm-catalog-check
 	@$(MAKE) blob-imports-check
+	@$(MAKE) cfs-xlat-smoke
 	@$(MAKE) portability-seam-check
 	@$(MAKE) compliance
 	@$(MAKE) fmt-test

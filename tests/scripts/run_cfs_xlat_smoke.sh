@@ -90,12 +90,35 @@ if ! HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC_HC" -o "$T/blob.bin" >/dev/nul
   HOLYC_INCLUDE_ROOT="$ROOT" "$COMPILER" "$SRC_HC" -o "$T/blob.bin" 2>&1 | tail -20 >&2
   exit 1
 fi
+# NO UNRESOLVED IMPORTS. A HolyC prototype with no definition compiles clean and becomes an
+# import for whoever links the blob to fill. Two outcomes, and only one of them is visible:
+#   - a name the C runtime knows (bootstrap/holy_rt_names.h, 86 of them: Print, Abs, Free, Puts,
+#     Exec...) BINDS SILENTLY to the runtime's version. Measured: declaring `I64 Abs(I64 x);`
+#     without defining it and calling it leaves this gate reporting 88 identical lines and OK,
+#     while the call runs C code instead of the port's.
+#   - any other name prints "[unresolved import]" at runtime, which does reach the transcript.
+# So the transcript covers the second case by accident and cannot see the first at all. The
+# HOFYIMP1 trailer sees both (tools/blob_imports.py).
+#
+# This matters more the moment the translated units are included from the kernel rather than
+# from this driver: cfe_msg_integrity.HC DECLARES CFE_TIME_GetTime and the body lives in the
+# driver beside it, so the first kernel include without a definition is exactly this hazard.
+if [ -f "$ROOT/tools/blob_imports.py" ]; then
+  unres=$(python3 "$ROOT/tools/blob_imports.py" "$T/blob.bin" 2>/dev/null)
+  if [ -n "$unres" ]; then
+    echo "FAIL cfs-xlat — the blob has unresolved imports. Whoever links it fills these, and a" >&2
+    echo "                name the C runtime knows binds silently with the transcript still" >&2
+    echo "                passing. Define them or link them:" >&2
+    echo "$unres" | sed 's/^/  /' >&2
+    exit 1
+  fi
+fi
 ( cd "$T" && "$OBJCOPY" -I binary -O elf64-littleriscv blob.bin blob_in.o && \
   "$LD" -T "$HARNESS/link_exec.ld" -nostdlib --no-warn-mismatch -o k.elf \
     "$OUTDIR/crt0.o" "$OUTDIR/oracle_out.o" blob_in.o ) >/dev/null 2>&1 \
   || { echo "FAIL cfs-xlat — link error" >&2; exit 1; }
 $TIMEOUT 60 "$QEMU" -M virt -m 256M -bios none -kernel "$T/k.elf" -nographic </dev/null 2>&1 \
-  | tr -d '\r' | grep -vE 'import unresolved|^ORACLE|terminating on signal' > "$T/hc.txt"
+  | tr -d '\r' | grep -vE '^ORACLE|terminating on signal' > "$T/hc.txt"
 
 # --- the property -----------------------------------------------------------------------
 if ! diff -u "$T/ref.txt" "$T/hc.txt" > "$T/diff.txt"; then
