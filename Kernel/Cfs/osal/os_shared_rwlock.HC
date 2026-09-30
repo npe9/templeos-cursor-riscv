@@ -25,6 +25,9 @@
 class OS_rwlock_internal_record_t
 {
   U8 obj_name[OS_MAX_API_NAME];
+  // The task holding the WRITE lock, OS_OBJECT_ID_UNDEFINED when none does. Was MISSING
+  // here along with every check that reads it -- see os_shared_mutex.HC.
+  U32 last_writer;
 };
 
 class OS_rwlock_prop_t

@@ -87,21 +87,42 @@ I32 OS_MutSemDelete(U32 sem_id)
 
 I32 OS_MutSemGive(U32 sem_id)
 {
+  OS_mutex_internal_record_t *mutex;
   OS_object_token_t token;
   I32 return_code;
+  U32 self_task;
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_NONE, OS_OBJECT_TYPE_OS_MUTEX, sem_id, &token);
-  if (return_code == OS_SUCCESS)
+  if (return_code == OS_SUCCESS) {
+    mutex = &OS_mutex_table[OS_ObjectIndexFromToken(&token)];
+    self_task = OS_TaskGetId;
+    if (!OS_ObjectIdEqual(mutex->last_owner, self_task)) {
+      // OS_DEBUG("WARNING: Task %lu giving mutex %lu while owned by task %lu\n", ...)
+      // OS_DEBUG is a NO-OP unless OSAL_CONFIG_DEBUG_PRINTF is set, and this configuration does
+      // not set it -- the same switch that keeps osapi-debug.c out of OSAL_SRCLIST. So the
+      // warning produces no output on either side, and the branch is translated for its shape:
+      // the only OBSERVABLE effect of this whole block is last_owner being cleared below,
+      // which happens either way. A backend reading last_owner is what the gate uses.
+    }
+    mutex->last_owner = OS_OBJECT_ID_UNDEFINED;
     return_code = OS_MutSemGive_Impl(&token);
+  }
   return return_code;
 }
 
 I32 OS_MutSemTake(U32 sem_id)
 {
+  OS_mutex_internal_record_t *mutex;
   OS_object_token_t token;
   I32 return_code;
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_NONE, OS_OBJECT_TYPE_OS_MUTEX, sem_id, &token);
-  if (return_code == OS_SUCCESS)
+  if (return_code == OS_SUCCESS) {
+    mutex = &OS_mutex_table[OS_ObjectIndexFromToken(&token)];
     return_code = OS_MutSemTake_Impl(&token);
+    if (return_code == OS_SUCCESS) {
+      // Always set the owner if OS_MutSemTake_Impl() returned success
+      mutex->last_owner = OS_TaskGetId;
+    }
+  }
   return return_code;
 }
 

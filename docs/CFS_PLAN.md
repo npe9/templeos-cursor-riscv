@@ -209,20 +209,20 @@ triple TempleOS's own `StrPrintJoin` takes, which is what a HolyC variadic recei
   `osapi-file.c` lands.
 - **`flags |= OS_ADD_TASK_FLAGS`** in `OS_TaskCreate`. `OS_ADD_TASK_FLAGS` is 0 in this
   configuration, so deleting the line entirely prints the same `fl=0x11`.
-- **Struct field parity.** `check_signatures.py` compares function parameters and
-  `check_seam.py` compares seam declarations, but nothing compares a translated `class`
-  against NASA's `typedef struct` field by field. `OS_SharedGlobalVars` was missing
-  `CoresConfigured` for several commits and was found by eye while translating
-  `osapi-task-affinity.c`, not by any gate. The transcript catches a missing field only if
-  something reads it.
+- ~~**Struct field parity.**~~ Closed by `tools/cfs/check_structs.py`, which found two more
+  omissions the moment it ran: the mutex record was missing `last_owner` and the rwlock record
+  `last_writer`, and with them the entire ownership-tracking logic in `OS_MutSemGive`/`Take`
+  and the rwlock give/take paths. All four earlier checks passed on that code.
 
-Four properties are gated independently, because each is blind to what the others catch:
+Six properties are gated independently, because each is blind to what the others catch:
 
 | check | what it proves | what it cannot see |
 |---|---|---|
 | `check_coverage.py` | every function in a gated NASA source exists in the translation | its arity, its types, its body |
 | `check_signatures.py` | arity and pointer-ness match NASA's, per parameter | return types; anything named `*_Impl` |
 | `check_seam.py` | the `OS_*_Impl` declarations match NASA's headers, **return type included** | whether a backend obeys them |
+| `check_structs.py` | a translated `class` has NASA's fields, in NASA's order | field TYPES, and whether anything reads them |
+| `check_manifest.py` | everything gated is in NASA's build; reports the covered fraction | nothing about the code itself |
 | the transcript | behaviour, byte for byte against NASA's own C | anything nothing calls |
 
 Each of these was added because something got through the ones that already existed.

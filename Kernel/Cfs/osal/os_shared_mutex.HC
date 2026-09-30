@@ -25,6 +25,10 @@
 class OS_mutex_internal_record_t
 {
   U8 obj_name[OS_MAX_API_NAME];
+  // The task that most recently took the mutex, OS_OBJECT_ID_UNDEFINED when not held.
+  // Was MISSING from this translation, and with it the whole of the ownership tracking in
+  // OS_MutSemGive/Take -- found by tools/cfs/check_structs.py, not by any behavioural gate.
+  U32 last_owner;
 };
 
 class OS_mut_sem_prop_t

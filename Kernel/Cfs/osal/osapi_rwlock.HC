@@ -89,41 +89,71 @@ I32 OS_RwLockDelete(U32 rw_id)
 
 I32 OS_RwLockReadGive(U32 rw_id)
 {
+  OS_rwlock_internal_record_t *rwlock;
   OS_object_token_t token;
   I32 return_code;
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_NONE, OS_OBJECT_TYPE_OS_RWLOCK, rw_id, &token);
-  if (return_code == OS_SUCCESS)
+  if (return_code == OS_SUCCESS) {
+    rwlock = &OS_rwlock_table[OS_ObjectIndexFromToken(&token)];
+    // Ensure no write locks were held while this read lock was held. The OS_DEBUG warning is a
+    // no-op in this configuration (see osapi_mutex.HC), so this check has no observable effect
+    // and notably does NOT clear last_writer -- unlike WriteGive below.
+    if (!OS_ObjectIdEqual(rwlock->last_writer, OS_OBJECT_ID_UNDEFINED)) {
+    }
     return_code = OS_RwLockReadGive_Impl(&token);
+  }
   return return_code;
 }
 
 I32 OS_RwLockWriteGive(U32 rw_id)
 {
+  OS_rwlock_internal_record_t *rwlock;
   OS_object_token_t token;
   I32 return_code;
+  U32 self_task;
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_NONE, OS_OBJECT_TYPE_OS_RWLOCK, rw_id, &token);
-  if (return_code == OS_SUCCESS)
+  if (return_code == OS_SUCCESS) {
+    rwlock = &OS_rwlock_table[OS_ObjectIndexFromToken(&token)];
+    self_task = OS_TaskGetId;
+    // Ensure multiple write locks weren't held.
+    if (!OS_ObjectIdEqual(rwlock->last_writer, self_task)) {
+    }
+    rwlock->last_writer = OS_OBJECT_ID_UNDEFINED;
     return_code = OS_RwLockWriteGive_Impl(&token);
+  }
   return return_code;
 }
 
 I32 OS_RwLockReadTake(U32 rw_id)
 {
+  OS_rwlock_internal_record_t *rwlock;
   OS_object_token_t token;
   I32 return_code;
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_NONE, OS_OBJECT_TYPE_OS_RWLOCK, rw_id, &token);
-  if (return_code == OS_SUCCESS)
+  if (return_code == OS_SUCCESS) {
+    rwlock = &OS_rwlock_table[OS_ObjectIndexFromToken(&token)];
     return_code = OS_RwLockReadTake_Impl(&token);
+    // Ensure no write locks are being held. Note the && ordering: the check only runs when the
+    // backend SUCCEEDED, so a failed take never reads last_writer.
+    if (return_code == OS_SUCCESS &&
+        !OS_ObjectIdEqual(rwlock->last_writer, OS_OBJECT_ID_UNDEFINED)) {
+    }
+  }
   return return_code;
 }
 
 I32 OS_RwLockWriteTake(U32 rw_id)
 {
+  OS_rwlock_internal_record_t *rwlock;
   OS_object_token_t token;
   I32 return_code;
   return_code = OS_ObjectIdGetById(OS_LOCK_MODE_NONE, OS_OBJECT_TYPE_OS_RWLOCK, rw_id, &token);
-  if (return_code == OS_SUCCESS)
+  if (return_code == OS_SUCCESS) {
+    rwlock = &OS_rwlock_table[OS_ObjectIndexFromToken(&token)];
     return_code = OS_RwLockWriteTake_Impl(&token);
+    if (return_code == OS_SUCCESS)
+      rwlock->last_writer = OS_TaskGetId;
+  }
   return return_code;
 }
 

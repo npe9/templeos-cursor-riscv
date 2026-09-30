@@ -332,8 +332,21 @@ static uint32 stub_last_options;
 
 int32 OS_MutSemCreate_Impl(const OS_object_token_t *t, uint32 options) { stub_last_options = options; return OS_SUCCESS; }
 int32 OS_MutSemDelete_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
-int32 OS_MutSemGive_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
-int32 OS_MutSemTake_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+/* These read last_owner out of the table, which is the only way the transcript can see the
+ * ownership tracking in OS_MutSemGive/Take: OS_mut_sem_prop_t exposes name and creator, and the
+ * OS_DEBUG warning is a no-op in this configuration. A real backend has the same access. */
+static osal_id_t stub_mx_owner_at_give;
+static osal_id_t stub_mx_owner_at_take;
+int32 OS_MutSemGive_Impl(const OS_object_token_t *t)
+{
+    stub_mx_owner_at_give = OS_mutex_table[OS_ObjectIndexFromToken(t)].last_owner;
+    return OS_SUCCESS;
+}
+int32 OS_MutSemTake_Impl(const OS_object_token_t *t)
+{
+    stub_mx_owner_at_take = OS_mutex_table[OS_ObjectIndexFromToken(t)].last_owner;
+    return OS_SUCCESS;
+}
 int32 OS_MutSemGetInfo_Impl(const OS_object_token_t *t, OS_mut_sem_prop_t *p) { return OS_SUCCESS; }
 
 int32 OS_BinSemCreate_Impl(const OS_object_token_t *t, uint32 v, uint32 options) { stub_last_options = options; return OS_SUCCESS; }
@@ -347,7 +360,12 @@ int32 OS_BinSemGetInfo_Impl(const OS_object_token_t *t, OS_bin_sem_prop_t *p) { 
 int32 OS_RwLockCreate_Impl(const OS_object_token_t *t, uint32 options) { stub_last_options = options; return OS_SUCCESS; }
 int32 OS_RwLockDelete_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
 int32 OS_RwLockReadGive_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
-int32 OS_RwLockWriteGive_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
+static osal_id_t stub_rw_writer_at_give;
+int32 OS_RwLockWriteGive_Impl(const OS_object_token_t *t)
+{
+    stub_rw_writer_at_give = OS_rwlock_table[OS_ObjectIndexFromToken(t)].last_writer;
+    return OS_SUCCESS;
+}
 int32 OS_RwLockReadTake_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
 int32 OS_RwLockWriteTake_Impl(const OS_object_token_t *t) { return OS_SUCCESS; }
 int32 OS_RwLockGetInfo_Impl(const OS_object_token_t *t, OS_rwlock_prop_t *p) { return OS_SUCCESS; }
@@ -868,6 +886,52 @@ int main(void)
             printf("af_badid  rc=%d sets=%d gets=%d\n",
                    (int)OS_TaskAffinityGetAffinity(OS_ObjectIdFromInteger(0x11000099), &cpuset),
                    stub_af_sets, stub_af_gets);
+        }
+
+        /* --- mutex and rwlock OWNERSHIP ----------------------------------------------------
+         * These fields, and every check that reads them, were MISSING from the translation and
+         * no behavioural gate noticed: nothing exposes last_owner through the public API, and
+         * the OS_DEBUG warning that reads it is a no-op in this configuration. Found by
+         * tools/cfs/check_structs.py comparing fields against NASA's struct.
+         *
+         * So the backend reads them, as a real one can. Take must RECORD the caller, and Give
+         * must CLEAR it -- and the order matters: Take_Impl runs BEFORE the store, so it sees
+         * the old value, while Give_Impl runs AFTER the clear and sees UNDEFINED.
+         */
+        {
+            osal_id_t    owner_mid, owner_rid;
+            osal_index_t mxi, rwi;
+
+            stub_t_current = OS_ObjectIdFromInteger(0x10007);
+            OS_MutSemCreate(&owner_mid, "mxOwn", 0);
+            OS_RwLockCreate(&owner_rid, "rwOwn", 0);
+            OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_MUTEX, owner_mid, &mxi);
+            OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_RWLOCK, owner_rid, &rwi);
+
+            printf("mx_take   rc=%d seen_before=%lu\n", (int)OS_MutSemTake(owner_mid),
+                   (unsigned long)OS_ObjectIdToInteger(stub_mx_owner_at_take));
+            printf("mx_owner  stored=%lu\n",
+                   (unsigned long)OS_ObjectIdToInteger(OS_mutex_table[mxi].last_owner));
+            printf("mx_give   rc=%d seen_after=%lu\n", (int)OS_MutSemGive(owner_mid),
+                   (unsigned long)OS_ObjectIdToInteger(stub_mx_owner_at_give));
+
+            /* Taken by one task, given by another: NASA logs a warning (a no-op here) and
+             * clears last_owner regardless, so the clear must still happen. */
+            OS_MutSemTake(owner_mid);
+            stub_t_current = OS_ObjectIdFromInteger(0x10008);
+            printf("mx_cross  rc=%d seen_after=%lu\n", (int)OS_MutSemGive(owner_mid),
+                   (unsigned long)OS_ObjectIdToInteger(stub_mx_owner_at_give));
+
+            printf("rw_wtake  rc=%d\n", (int)OS_RwLockWriteTake(owner_rid));
+            printf("rw_writer stored=%lu\n",
+                   (unsigned long)OS_ObjectIdToInteger(OS_rwlock_table[rwi].last_writer));
+            /* ReadGive reads last_writer and does NOT clear it; WriteGive does. */
+            printf("rw_rgive  rc=%d still=%lu\n", (int)OS_RwLockReadGive(owner_rid),
+                   (unsigned long)OS_ObjectIdToInteger(OS_rwlock_table[rwi].last_writer));
+            printf("rw_wgive  rc=%d seen_after=%lu cleared=%lu\n", (int)OS_RwLockWriteGive(owner_rid),
+                   (unsigned long)OS_ObjectIdToInteger(stub_rw_writer_at_give),
+                   (unsigned long)OS_ObjectIdToInteger(OS_rwlock_table[rwi].last_writer));
+            stub_t_current = OS_ObjectIdFromInteger(0x10001);
         }
 
     }

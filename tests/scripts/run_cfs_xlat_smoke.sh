@@ -111,6 +111,14 @@ python3 "$ROOT/tools/cfs/check_signatures.py" $SRC_C || exit 1
 # declared OS_TaskDetach_Impl returning U0 where NASA's header says int32.
 python3 "$ROOT/tools/cfs/check_seam.py" || exit 1
 
+# --- struct fields -----------------------------------------------------------------------------
+# A translated class must have NASA's fields, in NASA's order. Nothing else here looks inside a
+# struct: coverage compares names, check_signatures compares parameters, check_seam compares the
+# seam, and the transcript sees a field only if something reads it. OS_SharedGlobalVars was
+# missing CoresConfigured, and the mutex and rwlock records were missing last_owner and
+# last_writer -- and with them the whole of the ownership tracking in Give/Take.
+python3 "$ROOT/tools/cfs/check_structs.py" || exit 1
+
 # --- reference: NASA's C, unmodified -------------------------------------------------------
 # shellcheck disable=SC2086
 if ! "$HOSTCC" -O0 -w $INC -I"$ROOT/tests/cfs" -o "$T/ref" "$ROOT/tests/cfs/oracle_ccsdspri.c" $SRC_C "$GENDIR/cfe_configid_nametable.c" 2>"$T/cc.log"; then
