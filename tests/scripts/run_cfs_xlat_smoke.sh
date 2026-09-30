@@ -29,7 +29,8 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/msg/fsw/src/cfe_msg_integrity.c
        $CFE/modules/msg/fsw/src/cfe_msg_objtab.c
        $CFE/modules/resourceid/fsw/src/cfe_resourceid_api.c
-       $CFE/modules/resourceid/fsw/src/cfe_resourceid_objtab.c"
+       $CFE/modules/resourceid/fsw/src/cfe_resourceid_objtab.c
+       $CFE/modules/sb/fsw/src/cfe_sb_util.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"

@@ -10,6 +10,7 @@
 #include "/Kernel/Cfs/cfe/cfe_msg_integrity.HC"
 #include "/Kernel/Cfs/cfe/cfe_msg_objtab.HC"
 #include "/Kernel/Cfs/cfe/cfe_resourceid.HC"
+#include "/Kernel/Cfs/cfe/cfe_sb_util.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -81,6 +82,19 @@ U0 Rcv(U8 *label, I32 rc, U8 *key, I64 v)
   S("\n");
 }
 
+// The two symbols the translated units declare and leave to whoever links them. Same values as
+// the C oracle's stubs, so the comparison stays about cFE and not about the platform.
+U32 CFE_PSP_GetProcessorId()
+{
+  return 1;
+}
+
+I32 CFE_ES_WriteToSysLog(U8 *Msg)
+{
+  S("syslog\n");
+  return 0;
+}
+
 // Check functions for CFE_ResourceId_FindNext. "In use" is serial 6 or 7, chosen so the search
 // has to step over two occupied slots and land on the third -- one occupied slot would pass even
 // if the do-while ran once instead of looping.
@@ -104,6 +118,30 @@ CFE_TIME_SysTime CFE_TIME_GetTime()
   t.Seconds = 0x20304050;
   t.Subseconds = 0x60708090;
   return t;
+}
+
+// Four lowercase hex digits, twice on a line, to match the C oracle's %04lx.
+U0 Hx4(I64 v)
+{
+  U8 *hx = "0123456789abcdef";
+  U8 one[2];
+  I64 i;
+  one[1] = 0;
+  for (i = 12; i >= 0; i -= 4) {
+    one[0] = hx[(v >> i) & 15];
+    S(one);
+  }
+}
+
+U0 Hx2(U8 *l1, I64 v1, U8 *l2, I64 v2)
+{
+  S(l1);
+  S("0x");
+  Hx4(v1);
+  S(l2);
+  S("0x");
+  Hx4(v2);
+  S("\n");
 }
 
 // Two out-parameters on one line, for the time round trip.
@@ -509,6 +547,120 @@ I64 main()
     S(" ");
     D(CFE_RESOURCEID_ModuleEntry.StackSize);
     S("\n");
+  }
+  // --- cfe_sb_msg_id_util.c and cfe_sb_util.c ------------------------------------------
+  {
+    CFE_MSG_CommandHeader cmd;
+    CFE_MSG_TelemetryHeader tlm;
+    U8 name[12];
+    U8 shortbuf[4];
+    U8 *qc = &cmd;
+    U8 *qt = &tlm;
+    I32 n;
+    for (i = 0; i < sizeof(CFE_MSG_CommandHeader); i++)
+      qc[i] = 0;
+    for (i = 0; i < sizeof(CFE_MSG_TelemetryHeader); i++)
+      qt[i] = 0;
+    // MsgHdrSize answers from the packet's own two class bits, which is how a bus can ask where
+    // a payload starts without being told what kind of message it holds.
+    S("hdrsz_none ");
+    D(CFE_SB_MsgHdrSize(&cmd.Msg));
+    S("\n");
+    CFE_MSG_SetHasSecondaryHeader(&cmd.Msg, TRUE);
+    CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Cmd);
+    CFE_MSG_SetHasSecondaryHeader(&tlm.Msg, TRUE);
+    CFE_MSG_SetType(&tlm.Msg, CFE_MSG_Type_Tlm);
+    S("hdrsz ");
+    D(CFE_SB_MsgHdrSize(&cmd.Msg));
+    S(" ");
+    D(CFE_SB_MsgHdrSize(&tlm.Msg));
+    S(" ");
+    D(CFE_SB_MsgHdrSize(NULL));
+    S("\n");
+    CFE_MSG_SetSize(&tlm.Msg, sizeof(CFE_MSG_TelemetryHeader) + 8);
+    S("userdata off=");
+    D(CFE_SB_GetUserData(&tlm.Msg) - qt);
+    S(" len=");
+    D(CFE_SB_GetUserDataLength(&tlm.Msg));
+    S("\n");
+    CFE_SB_SetUserDataLength(&tlm.Msg, 20);
+    S("setuserlen len=");
+    D(CFE_SB_GetUserDataLength(&tlm.Msg));
+    S("\n");
+    // Over the mission maximum: refused, and the size is left alone.
+    CFE_SB_SetUserDataLength(&tlm.Msg, 100000);
+    S("setuserbig len=");
+    D(CFE_SB_GetUserDataLength(&tlm.Msg));
+    S("\n");
+    // HOISTED, not inlined into the prints. GetUserData(NULL) logs through the ES stub, and C
+    // evaluates a printf's arguments before printf emits anything -- so the C transcript has
+    // "syslog" BEFORE this line and an inline HolyC version puts it in the middle of it.
+    {
+      Bool nulldata;
+      I64 nulllen;
+      nulldata = CFE_SB_GetUserData(NULL) == NULL;
+      nulllen = CFE_SB_GetUserDataLength(NULL);
+      S("userdatanull ");
+      D(nulldata);
+      S(" ");
+      D(nulllen);
+      S("\n");
+    }
+    CFE_SB_TimeStampMsg(&tlm.Msg);
+    S("stamped ");
+    D(tlm.Sec.Time[0]);
+    S(" ");
+    D(tlm.Sec.Time[1]);
+    S(" ");
+    D(tlm.Sec.Time[2]);
+    S(" ");
+    D(tlm.Sec.Time[3]);
+    S(" ");
+    D(tlm.Sec.Time[4]);
+    S(" ");
+    D(tlm.Sec.Time[5]);
+    S("\n");
+    // MessageStringSet ZERO-FILLS the remainder rather than merely terminating, so a short name
+    // completely erases a longer one. MessageStringGet reserves one byte for the NUL and falls
+    // back to the default when the source is empty.
+    for (i = 0; i < 12; i++)
+      name[i] = 'Z';
+    n = CFE_SB_MessageStringSet(name, "ABCDE", 12, 5);
+    S("strset n=");
+    D(n);
+    S(" b0=");
+    D(name[0]);
+    S(" b5=");
+    D(name[5]);
+    S(" b11=");
+    D(name[11]);
+    S("\n");
+    n = CFE_SB_MessageStringGet(shortbuf, name, NULL, 4, 12);
+    S("strget n=");
+    D(n);
+    S(" s=");
+    S(shortbuf);
+    S("\n");
+    n = CFE_SB_MessageStringGet(shortbuf, "", "dflt", 4, 0);
+    S("strdflt n=");
+    D(n);
+    S(" s=");
+    S(shortbuf);
+    S("\n");
+    S("strbad ");
+    D(CFE_SB_MessageStringGet(NULL, "x", NULL, 4, 1));
+    S(" ");
+    D(CFE_SB_MessageStringSet(NULL, "x", 4, 1));
+    S("\n");
+    // THE TOPIC-ID MAPPING, and the asymmetry in it -- see cfe_sb_msgid.HC. For instance 0 the
+    // COMMAND function returns the GLOBAL TELEMETRY value, 0x0865 rather than 0x1865 for topic
+    // 5, so the type bit of the returned stream id says telemetry. Pinned deliberately.
+    Hx2("topic_cmd  i0=", CFE_SB_CmdTopicIdToMsgId(5, 0), " i1=", CFE_SB_CmdTopicIdToMsgId(5, 1));
+    Hx2("topic_tlm  i0=", CFE_SB_TlmTopicIdToMsgId(5, 0), " i1=", CFE_SB_TlmTopicIdToMsgId(5, 1));
+    Hx2("topic_glob c=", CFE_SB_GlobalCmdTopicIdToMsgId(5), " t=",
+        CFE_SB_GlobalTlmTopicIdToMsgId(5));
+    Hx2("topic_locl c=", CFE_SB_LocalCmdTopicIdToMsgId(5), " t=",
+        CFE_SB_LocalTlmTopicIdToMsgId(5));
   }
   // --- cfe_msg_objtab.c ---------------------------------------------------------------
   // One registration entry, no task. ES walks the collected table at every lifecycle phase, so

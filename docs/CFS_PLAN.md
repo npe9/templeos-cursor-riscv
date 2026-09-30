@@ -58,24 +58,42 @@ bugs with one mechanism. Every translated cFE unit gets an entry.
 
 ## Where the translation actually stands
 
-Everything below runs in one gate, `make cfs-xlat-smoke` (`tests/scripts/run_cfs_xlat_smoke.sh`):
-NASA's unmodified C compiled natively on one side, the HolyC translation compiled for RISC-V and
-run under QEMU on the other, **88 transcript lines required to be byte-identical**. Growing the
-source list and the transcript together is how this advances — one file, one set of lines, one
-diff.
+Everything below runs in one gate, `make cfs-xlat-smoke` (`tests/scripts/run_cfs_xlat_smoke.sh`),
+which is in `make ci`: NASA's unmodified C compiled natively on one side, the HolyC translation
+compiled for RISC-V and run under QEMU on the other, **105 transcript lines required to be
+byte-identical**, and an empty import trailer so that no call silently resolves to the C runtime.
+Growing the source list and the transcript together is how this advances — one file, one set of
+lines, one diff, one negative control.
 
-| cFE module | files | status |
-|---|---|---|
-| `msg` | 8 of 8 unconditional sources | **complete** for the v1 / primary-header-only configuration |
-| `resourceid` | 2 of 2 | **complete** (SIMPLE variant) |
-| `sb` | `cfe_sb_msg_id_util.c` | the msgid helpers only; the rest of SB is 6k lines and needs ES |
-| `es`, `time`, `evs`, `tbl`, `fs` | — | untranslated |
+**~1,530 lines of NASA C, out of 41,765 in cFE's flight source.** The honest denominator matters:
+
+| cFE module | NASA lines | translated | note |
+|---|---|---|---|
+| `msg` | 1,491 | **1,065** | all 8 unconditional sources plus the two v1/pri variants — complete for this configuration |
+| `resourceid` | 228 | **228** | complete, SIMPLE variant |
+| `sb` | 6,086 | **432** | `cfe_sb_msg_id_util.c` and `cfe_sb_util.c` complete; api/priv/task are the other 5,650 |
+| `es` `tbl` `time` `evs` `fs` `ta` | 32,643 | 0 | blocked on OSAL |
+| `config` | 782 | 0 | no OSAL, but needs the CMake-generated nametable |
+| `sbr` | 535 | 0 | **no OSAL, no generated data — the next one** |
 
 Translated units live in `Kernel/Cfs/cfe/`, one HolyC file per C file, NASA's copyright retained,
-with the generated headers each one needs inlined and attributed in a comment. `Kernel/Cfs/` also
-holds a *separate* thing — `CfsSb.HC` and `CfsApps.HC`, a hand-written simulated spacecraft — and
-the two are not yet connected. Wiring the translated message module underneath the simulated
-software bus is the obvious next structural step, and it is not done.
+with the generated headers each one needs inlined and attributed in a comment.
+
+**The translated module is now load-bearing, not test-only.** `Kernel/Cfs/CfsSb.HC` — the
+hand-written simulated spacecraft's software bus — builds every packet with `CFE_MSG_Init`,
+`CFE_MSG_SetSequenceCount` and `CFE_MSG_OriginationAction`, so what goes on its bus is a
+conformant CCSDS space packet because NASA's code put it there. Its message ids are real CCSDS
+stream ids (`0x0800|apid` telemetry, `0x1800|apid` command, which is cFE's own stock mapping).
+`make kernel-cfs-smoke` asserts that with `ccsds_ok` and `cmdcsum_ok`. Every behavioural counter
+was unchanged across that swap.
+
+**What is NOT here at all:** the cFS *applications*. `tools/cfs/fetch.sh` clones exactly three
+repositories — cFE, osal, PSP. SCH, LC, HS, CS, DS, SC, MM, MD, FM, CF and SBN are each separate
+NASA repositories and none is vendored. The app layer in `Kernel/Cfs/CfsApps.HC` is hand-written
+to the same architecture; it is not a translation of anything, and it says so.
+
+Things noticed in NASA's source along the way are in `docs/CFS_UPSTREAM_NOTES.md`, reproduced
+rather than fixed, each pinned by the transcript.
 
 What the excluded `msg` sources are: `ccsdsext`, `initdefaulthdr_priext` and `msgid_v2` are
 selected only when `MISSION_INCLUDE_CCSDSEXT_HEADER` is set, which this port does not set. That

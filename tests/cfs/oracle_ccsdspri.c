@@ -16,6 +16,22 @@
 extern const Target_ObjectTable_t CFE_MSG_ModuleEntry;
 extern const Target_ObjectTable_t CFE_RESOURCEID_ModuleEntry;
 
+/* Private to the SB module (declared in modules/sb/fsw/src/cfe_sb_priv.h, which is not on the
+ * include path here and would drag in the rest of SB). Declared rather than included, because
+ * the point is to link the one real function, not to pull a module we have not translated. */
+size_t CFE_SB_MsgHdrSize(const CFE_MSG_Message_t *MsgPtr);
+
+/* cfe_sb_util.c logs through ES on its failure paths. ES is not translated, so both sides get
+ * the same stub: it records THAT a path logged, not what it said. The HolyC translation takes a
+ * plain string rather than a format -- see Kernel/Cfs/cfe/cfe_sb_util.HC for why -- so the
+ * wording is deliberately outside the comparison. */
+int32 CFE_ES_WriteToSysLog(const char *SpecStringPtr, ...)
+{
+    (void)SpecStringPtr;
+    printf("syslog\n");
+    return 0;
+}
+
 /* Check functions for CFE_ResourceId_FindNext. "In use" is serial 6 or 7, chosen so the search
  * has to step over two occupied slots and land on the third -- a single occupied slot would
  * pass even if the do-while ran once instead of looping. */
@@ -357,6 +373,79 @@ int main(void)
                (unsigned long)CFE_ResourceId_ToInteger(CFE_ResourceId_FindNextEx(rid, NULL, NULL, NULL)));
         printf("ridobj %s %lu\n", CFE_RESOURCEID_ModuleEntry.Name,
                (unsigned long)CFE_RESOURCEID_ModuleEntry.StackSize);
+    }
+
+    /* --- cfe_sb_msg_id_util.c and cfe_sb_util.c --------------------------------------- */
+    {
+        CFE_MSG_CommandHeader_t   cmd;
+        CFE_MSG_TelemetryHeader_t tlm;
+        char                      name[12];
+        char                      shortbuf[4];
+        int32                     n;
+
+        /* MsgHdrSize answers from the packet's own two class bits, which is why the bus can ask
+         * it where a payload starts without being told what kind of message it holds. */
+        for (i = 0; i < (int)sizeof(cmd); i++)
+            ((unsigned char *)&cmd)[i] = 0;
+        for (i = 0; i < (int)sizeof(tlm); i++)
+            ((unsigned char *)&tlm)[i] = 0;
+        printf("hdrsz_none %lu\n", (unsigned long)CFE_SB_MsgHdrSize(&cmd.Msg));
+        CFE_MSG_SetHasSecondaryHeader(&cmd.Msg, true);
+        CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Cmd);
+        CFE_MSG_SetHasSecondaryHeader(&tlm.Msg, true);
+        CFE_MSG_SetType(&tlm.Msg, CFE_MSG_Type_Tlm);
+        printf("hdrsz %lu %lu %lu\n", (unsigned long)CFE_SB_MsgHdrSize(&cmd.Msg),
+               (unsigned long)CFE_SB_MsgHdrSize(&tlm.Msg),
+               (unsigned long)CFE_SB_MsgHdrSize(NULL));
+
+        /* GetUserData/Length and SetUserDataLength are the payload window, measured from that. */
+        CFE_MSG_SetSize(&tlm.Msg, sizeof(tlm) + 8);
+        printf("userdata off=%ld len=%ld\n",
+               (long)((unsigned char *)CFE_SB_GetUserData(&tlm.Msg) - (unsigned char *)&tlm),
+               (long)CFE_SB_GetUserDataLength(&tlm.Msg));
+        CFE_SB_SetUserDataLength(&tlm.Msg, 20);
+        printf("setuserlen len=%ld\n", (long)CFE_SB_GetUserDataLength(&tlm.Msg));
+        /* Over the mission maximum: refused, and the size is left alone. */
+        CFE_SB_SetUserDataLength(&tlm.Msg, 100000);
+        printf("setuserbig len=%ld\n", (long)CFE_SB_GetUserDataLength(&tlm.Msg));
+        printf("userdatanull %d %ld\n", (int)(CFE_SB_GetUserData(NULL) == NULL),
+               (long)CFE_SB_GetUserDataLength(NULL));
+
+        CFE_SB_TimeStampMsg(&tlm.Msg);
+        printf("stamped %d %d %d %d %d %d\n", tlm.Sec.Time[0], tlm.Sec.Time[1], tlm.Sec.Time[2],
+               tlm.Sec.Time[3], tlm.Sec.Time[4], tlm.Sec.Time[5]);
+
+        /* MessageStringSet ZERO-FILLS the rest of the destination rather than just terminating,
+         * so a short name completely erases a longer one. MessageStringGet reserves one byte for
+         * the NUL and falls back to the default when the source is empty. */
+        for (i = 0; i < (int)sizeof(name); i++)
+            name[i] = 'Z';
+        n = CFE_SB_MessageStringSet(name, "ABCDE", sizeof(name), 5);
+        printf("strset n=%ld b0=%d b5=%d b11=%d\n", (long)n, name[0], name[5], name[11]);
+        n = CFE_SB_MessageStringGet(shortbuf, name, NULL, sizeof(shortbuf), sizeof(name));
+        printf("strget n=%ld s=%s\n", (long)n, shortbuf);
+        n = CFE_SB_MessageStringGet(shortbuf, "", "dflt", sizeof(shortbuf), 0);
+        printf("strdflt n=%ld s=%s\n", (long)n, shortbuf);
+        printf("strbad %ld %ld\n", (long)CFE_SB_MessageStringGet(NULL, "x", NULL, 4, 1),
+               (long)CFE_SB_MessageStringSet(NULL, "x", 4, 1));
+
+        /* THE TOPIC-ID MAPPING, and the asymmetry in it. For instance 0 the COMMAND function
+         * returns the GLOBAL TELEMETRY value -- 0x0865 rather than 0x1865 for topic 5 -- so the
+         * type bit of the returned stream id says telemetry. Pinned here deliberately: this is
+         * what NASA's code does today, and if upstream changes it this line will say so. */
+        printf("topic_cmd  i0=0x%04lx i1=0x%04lx\n",
+               (unsigned long)CFE_SB_CmdTopicIdToMsgId(5, 0),
+               (unsigned long)CFE_SB_CmdTopicIdToMsgId(5, 1));
+        printf("topic_tlm  i0=0x%04lx i1=0x%04lx\n",
+               (unsigned long)CFE_SB_TlmTopicIdToMsgId(5, 0),
+               (unsigned long)CFE_SB_TlmTopicIdToMsgId(5, 1));
+        printf("topic_glob c=0x%04lx t=0x%04lx\n",
+               (unsigned long)CFE_SB_GlobalCmdTopicIdToMsgId(5),
+               (unsigned long)CFE_SB_GlobalTlmTopicIdToMsgId(5));
+        /* Local* route through CFE_PSP_GetProcessorId, stubbed to 1 at the top of this file. */
+        printf("topic_locl c=0x%04lx t=0x%04lx\n",
+               (unsigned long)CFE_SB_LocalCmdTopicIdToMsgId(5),
+               (unsigned long)CFE_SB_LocalTlmTopicIdToMsgId(5));
     }
 
     /* --- cfe_msg_objtab.c ------------------------------------------------------------- */
