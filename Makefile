@@ -124,6 +124,7 @@ ci: $(COMPILER_BIN)
 	@$(MAKE) blob-imports-check
 	@$(MAKE) struct-refusals-check
 	@$(MAKE) cfs-xlat-smoke
+	@$(MAKE) osal-xlat-smoke
 	@$(MAKE) portability-seam-check
 	@$(MAKE) compliance
 	@$(MAKE) fmt-test
@@ -1096,6 +1097,12 @@ kernel-cfs-smoke:
 struct-refusals-check:
 	@chmod +x tests/scripts/check_struct_refusals.sh
 	@tests/scripts/check_struct_refusals.sh
+
+# The OSAL PORTABLE layer against NASA's C. Runs with no backend: that layer makes zero direct
+# OS calls and only dispatches, so a recording stub is enough to assert its decisions.
+osal-xlat-smoke:
+	@chmod +x tests/scripts/run_osal_xlat_smoke.sh
+	@tests/scripts/run_osal_xlat_smoke.sh
 
 cfs-xlat-smoke:
 	@chmod +x tests/scripts/run_cfs_xlat_smoke.sh

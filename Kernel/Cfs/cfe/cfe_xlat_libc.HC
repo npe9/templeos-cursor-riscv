@@ -32,6 +32,23 @@ U0 memset(U8 *dst, I64 c, I64 n)
   }
 }
 
+// C's strncpy, including the part people forget: it pads the destination with NUL to n and does
+// NOT terminate when the source is longer than n. OSAL relies on both -- it strncpy's into a
+// fixed buffer and then writes the terminator itself.
+U8 *strncpy(U8 *dst, U8 *src, I64 n)
+{
+  I64 i = 0;
+  while (i < n && src[i]) {
+    dst[i] = src[i];
+    i++;
+  }
+  while (i < n) {
+    dst[i] = 0;
+    i++;
+  }
+  return dst;
+}
+
 I64 strcmp(U8 *a, U8 *b)
 {
   while (*a && *a == *b) {
@@ -68,6 +85,7 @@ I64 snprintf(U8 *Buf, I64 Size, U8 *Fmt, I64 a0=0, I64 a1=0, I64 a2=0, I64 a3=0,
   U8 dig[24];
   U8 *sp;
   U64 uv;
+  I64 sv;
   args[0] = a0;
   args[1] = a1;
   args[2] = a2;
@@ -91,6 +109,35 @@ I64 snprintf(U8 *Buf, I64 Size, U8 *Fmt, I64 a0=0, I64 a1=0, I64 a2=0, I64 a3=0,
           Buf[n] = *sp;
         n++;
         sp++;
+      }
+    } else if (*Fmt == 'd' || *Fmt == 'l') {
+      // %d and %ld. OSAL prints status codes with both, and they are NEGATIVE -- treating them
+      // as unsigned would print 18446744073709551615 where NASA prints -1.
+      if (*Fmt == 'l') {
+        Fmt++;              // consume the length modifier; 'l' is 64-bit here either way
+        if (*Fmt != 'd' && *Fmt != 'u')
+          Fmt--;            // not %ld/%lu after all: let the default branch see it
+      }
+      sv = args[ai++];
+      if (sv < 0) {
+        if (Size > 0 && n < Size - 1)
+          Buf[n] = '-';
+        n++;
+        sv = -sv;
+      }
+      uv = sv;
+      i = 0;
+      if (!uv)
+        dig[i++] = '0';
+      while (uv > 0) {
+        dig[i++] = '0' + uv % 10;
+        uv /= 10;
+      }
+      while (i > 0) {
+        i--;
+        if (Size > 0 && n < Size - 1)
+          Buf[n] = dig[i];
+        n++;
       }
     } else if (*Fmt == 'u') {
       uv = args[ai++];

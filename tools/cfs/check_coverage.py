@@ -17,7 +17,10 @@ transcript touches. A name here with a wrong body is caught by the transcript or
 import re, sys, os, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-HCDIR = os.path.join(ROOT, "Kernel", "Cfs", "cfe")
+# Every translated unit, cFE and OSAL alike. Scanning both rather than one directory per gate
+# means a function can move between them without the check losing sight of it.
+HCDIRS = [os.path.join(ROOT, "Kernel", "Cfs", "cfe"),
+          os.path.join(ROOT, "Kernel", "Cfs", "osal")]
 
 # A C function DEFINITION at file scope: a line starting in column 1 with a type, a name, an
 # argument list, and an opening brace on that line or the next. `static inline` in a header is
@@ -47,7 +50,10 @@ def c_functions(path):
 
 def hc_defined():
     names = set()
-    for f in glob.glob(os.path.join(HCDIR, "*.HC")):
+    files = []
+    for d in HCDIRS:
+        files += glob.glob(os.path.join(d, "*.HC"))
+    for f in files:
         src = open(f, errors='replace').read()
         src = re.sub(r'//[^\n]*', '', src)
         for m in re.finditer(
