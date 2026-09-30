@@ -52,6 +52,67 @@ U0 OS_printf(U8 *fmt)
 #include "/Kernel/Cfs/osal/osapi_clock.HC"
 #include "/Kernel/Cfs/osal/osapi_heap.HC"
 
+// The four real backend calls osapi-idmap.c makes. The locks are no-ops here because the
+// transcript runs single-threaded -- what is asserted is the LOCK BOOKKEEPING the portable
+// layer does around them (the key it computes, the owner it records, the refcount it adjusts),
+// not mutual exclusion.
+I64 stub_lock_depth;
+I64 stub_lock_calls;
+I64 stub_wait_calls;
+
+U0 OS_Lock_Global_Impl(U32 idtype)
+{
+  ++stub_lock_depth;
+  ++stub_lock_calls;
+}
+
+U0 OS_Unlock_Global_Impl(U32 idtype)
+{
+  --stub_lock_depth;
+}
+
+U0 OS_WaitForStateChange_Impl(U32 idtype, U32 attempts)
+{
+  ++stub_wait_calls;
+}
+
+U32 OS_TaskGetId_Impl()
+{
+  return OS_ObjectIdFromInteger(0x10001);
+}
+
+U32 OS_TaskGetId()
+{
+  return OS_ObjectIdFromInteger(0x10001);
+}
+
+#include "/Kernel/Cfs/osal/osapi_idmap.HC"
+
+// Counts what OS_ForEachObject visits.
+I64 foreach_count;
+U0 foreach_cb(U32 id, U8 *arg)
+{
+  ++foreach_count;
+}
+
+U0 Hx(U8 *tag, I64 v)
+{
+  U8 *hx = "0123456789abcdef";
+  U8 one[2];
+  I64 i, started = 0;
+  S(tag);
+  S("0x");
+  one[1] = 0;
+  for (i = 60; i >= 0; i -= 4) {
+    I64 d = (v >> i) & 15;
+    if (d || started || i == 0) {
+      started = 1;
+      one[0] = hx[d];
+      S(one);
+    }
+  }
+}
+
 // THE RECORDING STUB BACKEND, matching the C oracle's. A fixed, made-up clock and fixed heap
 // numbers, so the transcript asserts the portable layer's validation and dispatch rather than
 // anything about a real clock -- a real one would make the transcript unreproducible, which is
@@ -255,6 +316,182 @@ I64 main()
     rc = OS_HeapGetInfo(NULL);
     S("heapnull ");
     D(rc);
+    S("\n");
+  }
+
+  // --- osapi-idmap.c -------------------------------------------------------------------
+  {
+    OS_object_token_t token;
+    OS_object_token_t token2;
+    U32 idx;
+    U32 id1, id2, found;
+    U8 namebuf[OS_MAX_API_NAME];
+    I32 r;
+    OS_ObjectIdInit;
+    // Transactions are refused until the API says it is initialised -- asserted BEFORE
+    // pretending it is, because it is a real guard and easy to translate away.
+    r = OS_ObjectIdTransactionInit(OS_LOCK_MODE_GLOBAL, OS_OBJECT_TYPE_OS_TASK, &token);
+    S("id_uninit rc=");
+    D(r);
+    S("\n");
+    OS_SharedGlobalVars.GlobalState = OS_INIT_MAGIC_NUMBER;
+    S("id_bases ");
+    D(OS_GetBaseForObjectType(OS_OBJECT_TYPE_OS_QUEUE));
+    S(" ");
+    D(OS_GetBaseForObjectType(OS_OBJECT_TYPE_OS_CONDVAR));
+    S(" ");
+    D(OS_GetMaxForObjectType(OS_OBJECT_TYPE_OS_TASK));
+    S("\n");
+    S("id_badtype ");
+    D(OS_GetMaxForObjectType(0x7F));
+    S(" ");
+    D(OS_GetBaseForObjectType(0x7F));
+    S("\n");
+    r = OS_ObjectIdAllocateNew(OS_OBJECT_TYPE_OS_TASK, "alpha", &token);
+    id1 = token.obj_id;
+    S("alloc1  rc=");
+    D(r);
+    Hx(" id=", OS_ObjectIdToInteger(id1));
+    S(" idx=");
+    D(token.obj_idx);
+    S("\n");
+    OS_ObjectIdFinalizeNew(OS_SUCCESS, &token, &id1);
+    r = OS_ObjectIdAllocateNew(OS_OBJECT_TYPE_OS_TASK, "beta", &token);
+    id2 = token.obj_id;
+    S("alloc2  rc=");
+    D(r);
+    Hx(" id=", OS_ObjectIdToInteger(id2));
+    S(" idx=");
+    D(token.obj_idx);
+    S("\n");
+    OS_ObjectIdFinalizeNew(OS_SUCCESS, &token, &id2);
+    // A duplicate name -- and it SUCCEEDS, because idmap itself never records a name:
+    // OS_ObjectIdFindNextFree sets name_entry to NULL and the resource modules fill it in
+    // later. So the duplicate search finds nothing to collide with. Real behaviour, pinned.
+    r = OS_ObjectIdAllocateNew(OS_OBJECT_TYPE_OS_TASK, "alpha", &token);
+    S("alloc_dup rc=");
+    D(r);
+    S("\n");
+    r = OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_TASK, id1, &idx);
+    S("toindex rc=");
+    D(r);
+    S(" idx=");
+    D(idx);
+    S("\n");
+    S("toindex_wrongtype rc=");
+    D(OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_QUEUE, id1, &idx));
+    S("\n");
+    r = OS_ConvertToArrayIndex(id2, &idx);
+    S("convert rc=");
+    D(r);
+    S(" idx=");
+    D(idx);
+    S("\n");
+    S("identify ");
+    D(OS_IdentifyObject(id1));
+    S(" ");
+    D(OS_IdentifyObject(OS_ObjectIdFromInteger(0)));
+    S("\n");
+    r = OS_ObjectIdFindByName(OS_OBJECT_TYPE_OS_TASK, "beta", &found);
+    S("byname  rc=");
+    D(r);
+    S(" match=");
+    D(OS_ObjectIdEqual(found, id2));
+    S("\n");
+    S("byname_miss rc=");
+    D(OS_ObjectIdFindByName(OS_OBJECT_TYPE_OS_TASK, "nope", &found));
+    S("\n");
+    S("byname_null rc=");
+    D(OS_ObjectIdFindByName(OS_OBJECT_TYPE_OS_TASK, NULL, &found));
+    S("\n");
+    r = OS_GetResourceName(id1, namebuf, OS_MAX_API_NAME);
+    S("getname rc=");
+    D(r);
+    S(" [");
+    S(namebuf);
+    S("]\n");
+    // Hoisted: OS_CHECK_POINTER is a BUGCHECK and logs, and C evaluates printf's arguments
+    // before printing, so the marker belongs before this line rather than inside it.
+    r = OS_GetResourceName(id1, NULL, OS_MAX_API_NAME);
+    S("getname_null rc=");
+    D(r);
+    S("\n");
+    S("getname_zero rc=");
+    D(OS_GetResourceName(id1, namebuf, 0));
+    S("\n");
+    // Token transfer must MOVE the lock, not copy it: the source ends up unlocked.
+    r = OS_ObjectIdGetById(OS_LOCK_MODE_GLOBAL, OS_OBJECT_TYPE_OS_TASK, id1, &token);
+    OS_ObjectIdTransferToken(&token, &token2);
+    S("transfer rc=");
+    D(r);
+    S(" from_mode=");
+    D(token.lock_mode);
+    S(" to_id=");
+    D(OS_ObjectIdEqual(token2.obj_id, id1));
+    S(" to_idx=");
+    D(token2.obj_idx);
+    S("\n");
+    OS_ObjectIdRelease(&token2);
+    foreach_count = 0;
+    OS_ForEachObjectOfType(OS_OBJECT_TYPE_OS_TASK, OS_OBJECT_CREATOR_ANY, &foreach_cb, NULL);
+    S("foreach_task ");
+    D(foreach_count);
+    S("\n");
+    foreach_count = 0;
+    OS_ForEachObject(OS_OBJECT_CREATOR_ANY, &foreach_cb, NULL);
+    S("foreach_all ");
+    D(foreach_count);
+    S("\n");
+    foreach_count = 0;
+    OS_ForEachObjectOfType(OS_OBJECT_TYPE_OS_TASK, OS_ObjectIdFromInteger(0x99999), &foreach_cb,
+                           NULL);
+    S("foreach_other ");
+    D(foreach_count);
+    S("\n");
+    r = OS_ObjectIdGetById(OS_LOCK_MODE_EXCLUSIVE, OS_OBJECT_TYPE_OS_TASK, id1, &token);
+    S("del_get rc=");
+    D(r);
+    S("\n");
+    S("del_fin rc=");
+    D(OS_ObjectIdFinalizeDelete(OS_SUCCESS, &token));
+    S("\n");
+    foreach_count = 0;
+    OS_ForEachObjectOfType(OS_OBJECT_TYPE_OS_TASK, OS_OBJECT_CREATOR_ANY, &foreach_cb, NULL);
+    S("after_del ");
+    D(foreach_count);
+    S("\n");
+    S("stale   rc=");
+    D(OS_ObjectIdGetById(OS_LOCK_MODE_GLOBAL, OS_OBJECT_TYPE_OS_TASK, id1, &token));
+    S("\n");
+    // THE SERIAL WRAP. A control that removed the `serial >= OS_OBJECT_INDEX_MASK` reset left
+    // this transcript unchanged, which meant the wrap was never reached. Serial advances by one
+    // per allocation and starts at 0, so crossing 0xFFFF takes 65535 of them. After the reset
+    // the serial is small again; without it, it climbs past the 16-bit field and corrupts the
+    // type bits above it.
+    {
+      I64 n;
+      U32 wrapped = 0;
+      for (n = 0; n < 65600; ++n) {
+        if (OS_ObjectIdAllocateNew(OS_OBJECT_TYPE_OS_TASK, NULL, &token) != OS_SUCCESS)
+          break;
+        OS_ObjectIdFinalizeNew(OS_SUCCESS, &token, &wrapped);
+        if (OS_ObjectIdGetById(OS_LOCK_MODE_EXCLUSIVE, OS_OBJECT_TYPE_OS_TASK, wrapped, &token) ==
+            OS_SUCCESS)
+          OS_ObjectIdFinalizeDelete(OS_SUCCESS, &token);
+      }
+      S("wrap_n  ");
+      D(n);
+      S("\n");
+      S("wrap_id type=");
+      D(OS_ObjectIdToType_Impl(wrapped));
+      S(" serial=");
+      D(OS_ObjectIdToSerialNumber_Impl(wrapped));
+      S("\n");
+    }
+    S("locks   depth=");
+    D(stub_lock_depth);
+    S(" waits=");
+    D(stub_wait_calls);
     S("\n");
   }
   return 0;

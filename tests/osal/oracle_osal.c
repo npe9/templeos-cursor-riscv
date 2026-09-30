@@ -9,11 +9,15 @@
  * to exercise it, and the transcript then asserts the dispatch decisions, which is the layer's
  * whole contract. No tasks, no hardware, no scheduler. */
 #include <stdio.h>
+#include <string.h>
 #include "osapi.h"
 #include "os-shared-errors.h"
 #include "osapi-version.h"
 #include "os-shared-clock.h"
 #include "os-shared-heap.h"
+#include "os-shared-idmap.h"
+#include "os-shared-common.h"
+#include "os-shared-task.h"
 
 /* The backend's error-name table. A bare-metal target contributes no OS-specific errors, so
  * this is empty -- and empty is the interesting case, because it is the one that makes
@@ -66,6 +70,85 @@ int32 OS_HeapGetInfo_Impl(OS_heap_prop_t *heap_prop)
     heap_prop->free_blocks        = 7;
     heap_prop->largest_free_block = 2048;
     return OS_SUCCESS;
+}
+
+/* THE TWO PIECES idmap BORROWS FROM osapi-common.c, defined here rather than linked.
+ * osapi-common.c's OS_API_Init calls every module's initialiser, so linking it would drag in
+ * the whole of OSAL -- which is not translated. The HolyC side carries exactly these two in a
+ * file marked PARTIAL and deliberately kept out of the coverage gate, so both sides have the
+ * same minimal common and neither claims that module is done. */
+OS_SharedGlobalVars_t OS_SharedGlobalVars;
+
+int32 OS_NotifyEvent(OS_Event_t event, osal_id_t object_id, void *data)
+{
+    int32 Status = OS_SUCCESS;
+    int32 ReturnCode;
+    int   i;
+
+    for (i = 0; i < OS_MAX_EVENT_HANDLER; i++)
+    {
+        if (OS_SharedGlobalVars.EventHandler[i] != NULL)
+        {
+            ReturnCode = OS_SharedGlobalVars.EventHandler[i](event, object_id, data);
+            if (ReturnCode != OS_SUCCESS)
+            {
+                Status = OS_ERROR;
+            }
+        }
+    }
+
+    return Status;
+}
+
+size_t OS_strnlen(const char *s, size_t maxlen)
+{
+    const char *end = (const char *)memchr(s, 0, maxlen);
+    if (end != NULL)
+    {
+        maxlen = end - s;
+    }
+    return maxlen;
+}
+
+/* The four real backend calls osapi-idmap.c makes. The locks are no-ops here because the
+ * transcript runs single-threaded -- what is being asserted is the LOCK BOOKKEEPING the portable
+ * layer does around them (the key it computes, the owner it records, the refcount it adjusts),
+ * not mutual exclusion. */
+static int stub_lock_depth;
+static int stub_lock_calls;
+static int stub_wait_calls;
+
+void OS_Lock_Global_Impl(osal_objtype_t idtype)
+{
+    ++stub_lock_depth;
+    ++stub_lock_calls;
+}
+
+void OS_Unlock_Global_Impl(osal_objtype_t idtype)
+{
+    --stub_lock_depth;
+}
+
+void OS_WaitForStateChange_Impl(osal_objtype_t idtype, uint32 attempts)
+{
+    ++stub_wait_calls;
+}
+
+osal_id_t OS_TaskGetId_Impl(void)
+{
+    return OS_ObjectIdFromInteger(0x10001);
+}
+
+osal_id_t OS_TaskGetId(void)
+{
+    return OS_ObjectIdFromInteger(0x10001);
+}
+
+/* Counts what OS_ForEachObject visits. */
+static int foreach_count;
+static void foreach_cb(osal_id_t id, void *arg)
+{
+    ++foreach_count;
 }
 
 int main(void)
@@ -145,6 +228,124 @@ int main(void)
         printf("heap    rc=%d %ld %ld %ld\n", (int)OS_HeapGetInfo(&hp), (long)hp.free_bytes,
                (long)hp.free_blocks, (long)hp.largest_free_block);
         printf("heapnull %d\n", (int)OS_HeapGetInfo(NULL));
+    }
+
+    /* --- osapi-idmap.c ---------------------------------------------------------------- */
+    {
+        OS_object_token_t token;
+        OS_object_token_t token2;
+        osal_index_t      idx;
+        osal_id_t         id1, id2, found;
+        char              namebuf[OS_MAX_API_NAME];
+        int32             rc;
+
+        OS_ObjectIdInit();
+        /* Transactions are refused until the API says it is initialised -- so assert that
+         * BEFORE pretending it is, because it is a real guard and easy to translate away. */
+        printf("id_uninit rc=%d\n", (int)OS_ObjectIdTransactionInit(OS_LOCK_MODE_GLOBAL,
+                                                                    OS_OBJECT_TYPE_OS_TASK, &token));
+        OS_SharedGlobalVars.GlobalState = OS_INIT_MAGIC_NUMBER;
+
+        printf("id_bases %lu %lu %lu\n", (unsigned long)OS_GetBaseForObjectType(OS_OBJECT_TYPE_OS_QUEUE),
+               (unsigned long)OS_GetBaseForObjectType(OS_OBJECT_TYPE_OS_CONDVAR),
+               (unsigned long)OS_GetMaxForObjectType(OS_OBJECT_TYPE_OS_TASK));
+        printf("id_badtype %lu %lu\n", (unsigned long)OS_GetMaxForObjectType(0x7F),
+               (unsigned long)OS_GetBaseForObjectType(0x7F));
+
+        /* Allocate two tasks by name and watch the ids cycle rather than repeat. */
+        rc = OS_ObjectIdAllocateNew(OS_OBJECT_TYPE_OS_TASK, "alpha", &token);
+        id1 = token.obj_id;
+        printf("alloc1  rc=%d id=0x%lx idx=%lu\n", (int)rc, OS_ObjectIdToInteger(id1),
+               (unsigned long)token.obj_idx);
+        OS_ObjectIdFinalizeNew(OS_SUCCESS, &token, &id1);
+        rc = OS_ObjectIdAllocateNew(OS_OBJECT_TYPE_OS_TASK, "beta", &token);
+        id2 = token.obj_id;
+        printf("alloc2  rc=%d id=0x%lx idx=%lu\n", (int)rc, OS_ObjectIdToInteger(id2),
+               (unsigned long)token.obj_idx);
+        OS_ObjectIdFinalizeNew(OS_SUCCESS, &token, &id2);
+
+        /* A duplicate name is refused, and that is the branch that returns OS_ERR_NAME_TAKEN
+         * only because the name search SUCCEEDED -- an inverted condition that reads oddly. */
+        rc = OS_ObjectIdAllocateNew(OS_OBJECT_TYPE_OS_TASK, "alpha", &token);
+        printf("alloc_dup rc=%d\n", (int)rc);
+
+        printf("toindex rc=%d idx=%lu\n", (int)OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_TASK, id1, &idx),
+               (unsigned long)idx);
+        printf("toindex_wrongtype rc=%d\n",
+               (int)OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_QUEUE, id1, &idx));
+        printf("convert rc=%d idx=%lu\n", (int)OS_ConvertToArrayIndex(id2, &idx), (unsigned long)idx);
+        printf("identify %lu %lu\n", (unsigned long)OS_IdentifyObject(id1),
+               (unsigned long)OS_IdentifyObject(OS_ObjectIdFromInteger(0)));
+
+        printf("byname  rc=%d match=%d\n", (int)OS_ObjectIdFindByName(OS_OBJECT_TYPE_OS_TASK, "beta", &found),
+               (int)OS_ObjectIdEqual(found, id2));
+        printf("byname_miss rc=%d\n", (int)OS_ObjectIdFindByName(OS_OBJECT_TYPE_OS_TASK, "nope", &found));
+        printf("byname_null rc=%d\n", (int)OS_ObjectIdFindByName(OS_OBJECT_TYPE_OS_TASK, NULL, &found));
+
+        printf("getname rc=%d [%s]\n", (int)OS_GetResourceName(id1, namebuf, sizeof(namebuf)), namebuf);
+        printf("getname_null rc=%d\n", (int)OS_GetResourceName(id1, NULL, sizeof(namebuf)));
+        printf("getname_zero rc=%d\n", (int)OS_GetResourceName(id1, namebuf, 0));
+
+        /* Token transfer must move the lock, not copy it: the source must end up unlocked. */
+        rc = OS_ObjectIdGetById(OS_LOCK_MODE_GLOBAL, OS_OBJECT_TYPE_OS_TASK, id1, &token);
+        OS_ObjectIdTransferToken(&token, &token2);
+        printf("transfer rc=%d from_mode=%d to_id=%d to_idx=%lu\n", (int)rc, (int)token.lock_mode,
+               (int)OS_ObjectIdEqual(token2.obj_id, id1), (unsigned long)token2.obj_idx);
+        OS_ObjectIdRelease(&token2);
+
+        /* Iterate. Two tasks were created, so two should be visited. */
+        foreach_count = 0;
+        OS_ForEachObjectOfType(OS_OBJECT_TYPE_OS_TASK, OS_OBJECT_CREATOR_ANY, foreach_cb, NULL);
+        printf("foreach_task %d\n", foreach_count);
+        foreach_count = 0;
+        OS_ForEachObject(OS_OBJECT_CREATOR_ANY, foreach_cb, NULL);
+        printf("foreach_all %d\n", foreach_count);
+        /* A creator filter that matches nothing. */
+        foreach_count = 0;
+        OS_ForEachObjectOfType(OS_OBJECT_TYPE_OS_TASK, OS_ObjectIdFromInteger(0x99999), foreach_cb, NULL);
+        printf("foreach_other %d\n", foreach_count);
+
+        /* Delete one and confirm the record returns to the pool. */
+        rc = OS_ObjectIdGetById(OS_LOCK_MODE_EXCLUSIVE, OS_OBJECT_TYPE_OS_TASK, id1, &token);
+        printf("del_get rc=%d\n", (int)rc);
+        printf("del_fin rc=%d\n", (int)OS_ObjectIdFinalizeDelete(OS_SUCCESS, &token));
+        foreach_count = 0;
+        OS_ForEachObjectOfType(OS_OBJECT_TYPE_OS_TASK, OS_OBJECT_CREATOR_ANY, foreach_cb, NULL);
+        printf("after_del %d\n", foreach_count);
+        printf("stale   rc=%d\n",
+               (int)OS_ObjectIdGetById(OS_LOCK_MODE_GLOBAL, OS_OBJECT_TYPE_OS_TASK, id1, &token));
+
+        /* THE SERIAL WRAP. A control that removed the `serial >= OS_OBJECT_INDEX_MASK` reset
+         * left this transcript unchanged, which meant the wrap was never reached -- serial
+         * starts at 0 and only two objects had been allocated. It advances by one per
+         * allocation, so crossing 0xFFFF takes 65535 of them. Allocate and delete one task in
+         * a loop until it crosses, then look at the id: after the reset the serial is small
+         * again, and without the reset it keeps climbing past the 16-bit field and corrupts
+         * the type bits above it. */
+        {
+            int      n;
+            osal_id_t wrapped;
+            for (n = 0; n < 65600; ++n)
+            {
+                if (OS_ObjectIdAllocateNew(OS_OBJECT_TYPE_OS_TASK, NULL, &token) != OS_SUCCESS)
+                {
+                    break;
+                }
+                OS_ObjectIdFinalizeNew(OS_SUCCESS, &token, &wrapped);
+                if (OS_ObjectIdGetById(OS_LOCK_MODE_EXCLUSIVE, OS_OBJECT_TYPE_OS_TASK, wrapped,
+                                       &token) == OS_SUCCESS)
+                {
+                    OS_ObjectIdFinalizeDelete(OS_SUCCESS, &token);
+                }
+            }
+            printf("wrap_n  %d\n", n);
+            printf("wrap_id type=%lu serial=%lu\n",
+                   (unsigned long)OS_ObjectIdToType_Impl(wrapped),
+                   (unsigned long)OS_ObjectIdToSerialNumber_Impl(wrapped));
+        }
+
+        /* The lock bookkeeping should balance out to zero depth. */
+        printf("locks   depth=%d waits=%d\n", stub_lock_depth, stub_wait_calls);
     }
     return 0;
 }

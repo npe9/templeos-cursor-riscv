@@ -49,6 +49,16 @@ U8 *strncpy(U8 *dst, U8 *src, I64 n)
   return dst;
 }
 
+U8 *memchr(U8 *s, I64 c, I64 n)
+{
+  I64 i;
+  for (i = 0; i < n; i++) {
+    if (s[i] == c)
+      return &s[i];
+  }
+  return NULL;
+}
+
 I64 strcmp(U8 *a, U8 *b)
 {
   while (*a && *a == *b) {
