@@ -82,6 +82,13 @@ python3 "$ROOT/tools/cfs/check_signatures.py" $SRC_C || exit 1
 # declared OS_TaskDetach_Impl returning U0 where NASA's header says int32.
 python3 "$ROOT/tools/cfs/check_seam.py" || exit 1
 
+# --- the manifest ------------------------------------------------------------------------------
+# What NASA's build actually contains, and how much of it is gated -- computed from
+# OSAL_SRCLIST rather than counted by hand, because the denominator has been wrong twice by
+# reading the directory instead of the build recipe. Also fails if a gate ever covers a source
+# the configuration excludes.
+python3 "$ROOT/tools/cfs/check_manifest.py" || exit 1
+
 # --- reference: NASA's C, unmodified ----------------------------------------------------------
 # shellcheck disable=SC2086
 if ! "$HOSTCC" -O0 -w $INC -o "$T/ref" "$ROOT/tests/osal/oracle_osal.c" $SRC_C 2>"$T/cc.log"; then

@@ -125,9 +125,16 @@ to the same architecture; it is not a translation of anything, and it says so.
 
 ### OSAL, measured the same way
 
-**4,443 lines of NASA's 9,523-line shared layer, gated.** The denominator is the portable half
+**4,443 lines of NASA's 9,447-line shared layer, gated.** The denominator is the portable half
 only; the three vendored backends (posix 4,598, vxworks 3,984, rtems 3,543) are reference
 implementations of the seam, not things to translate.
+
+The 9,447 is `OSAL_SRCLIST` in `vendor/osal/CMakeLists.txt`: **25** sources, built unconditionally.
+`osapi-debug.c` is a 26th file in the directory and is appended to that list only when
+`OSAL_CONFIG_DEBUG_PRINTF` is set, which this configuration does not set. An earlier version of
+this table counted it, giving 9,523 — the same mistake made once already with cFE's `msg` module,
+where the directory has more sources than the build uses. The denominator comes from the build
+recipe, not from `ls`.
 
 | OSAL shared source | NASA lines | gated | note |
 |---|---|---|---|
@@ -151,7 +158,8 @@ implementations of the seam, not things to translate.
 | `osapi-timebase.c` | 538 | no | |
 | `osapi-module.c` | 472 | no | |
 | `osapi-common.c` | 460 | partial | deliberately last and deliberately ungated: every module translated first is one fewer stub in it |
-| `osapi-dir.c` `-select.c` `-task-affinity.c` `-network.c` `-debug.c` `-shell.c` | 816 | no | |
+| `osapi-dir.c` `-select.c` `-task-affinity.c` `-network.c` `-shell.c` | 740 | no | |
+| `osapi-debug.c` | 76 | **n/a** | NOT in this configuration: `OSAL_SRCLIST` appends it only under `OSAL_CONFIG_DEBUG_PRINTF`, which is `#undef` here — which is also why `OS_DEBUG` is a no-op and pre-init `OS_printf` output is silently discarded |
 
 #### Why printf needs its own gate
 
