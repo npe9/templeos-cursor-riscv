@@ -19,6 +19,10 @@
 // NASA's code put it there, not because this file imitates the layout.
 #include "cfe/cfe_msg_init.HC"
 #include "cfe/cfe_msg_integrity.HC"
+// And NASA's ROUTING, so a subscription is a real route in a real hash map rather than a linear
+// scan of this file's own table. cfe_sbr_map_hash.HC is the default map implementation; the
+// route table under it is cfe_sbr_route_unsorted.HC.
+#include "cfe/cfe_sbr_map_hash.HC"
 #define CFS_MSG_PAYLOAD   96
 #define CFS_MAX_PIPES     12
 #define CFS_MAX_SUBS      64
@@ -95,15 +99,22 @@ class CCfsPipe
   CCfsMsg slot[CFS_PIPE_DEPTH];
 };
 
-class CCfsSub
+// A DESTINATION NODE, which is the shape cFE's routing expects above it. CFE_SBR stores one
+// opaque list-head pointer per route and never looks inside it -- building and walking the list
+// is the software bus's job, and this is that job. cFE's own SB does the same thing with a pool
+// of CFE_SB_DestinationD_t blocks handed out by CFE_SB_GetDestinationBlk.
+//
+// This replaces a flat table that CfsSbSend scanned in full for every single message. Routing is
+// now a hash lookup and a short walk, which is the actual reason cFE has a routing module.
+class CCfsDest
 {
-  U16 mid;
+  CCfsDest *Next;
   I64 pipe;
   I64 in_use;
 };
 
 CCfsPipe cfs_pipe[CFS_MAX_PIPES];
-CCfsSub cfs_sub[CFS_MAX_SUBS];
+CCfsDest cfs_dest[CFS_MAX_SUBS];
 I64 cfs_sb_sent;
 I64 cfs_sb_nosub;
 U16 cfs_seq_ctr;
@@ -195,8 +206,13 @@ U0 CfsSbInit()
     cfs_pipe[i].dropped = 0;
     cfs_pipe[i].received = 0;
   }
-  for (j = 0; j < CFS_MAX_SUBS; j++)
-    cfs_sub[j].in_use = 0;
+  for (j = 0; j < CFS_MAX_SUBS; j++) {
+    cfs_dest[j].in_use = 0;
+    cfs_dest[j].Next = NULL;
+  }
+  // NASA's route table and hash map. CFE_SBR_Init clears both and seeds every routing-table
+  // slot with the invalid message id, which is the one non-zero thing a zeroed table needs.
+  CFE_SBR_Init;
   cfs_sb_sent = 0;
   cfs_sb_nosub = 0;
   cfs_seq_ctr = 0;
@@ -223,16 +239,35 @@ I64 CfsSbCreatePipe(U8 *name, I64 depth)
   return -1;
 }
 
+// Subscribing is now two steps, the way cFE splits them: ask the ROUTING module for this message
+// id's route, creating it on first use, then push a destination onto that route's list. The
+// collision count CFE_SBR_AddRoute returns is a real housekeeping number in cFS, so it is kept.
+I64 cfs_sb_collisions;
+
 I64 CfsSbSubscribe(U16 mid, I64 pipe)
 {
   I64 j;
+  U32 coll = 0;
+  CFE_SBR_RouteId rid;
+  CCfsDest *node;
   if (pipe < 0 || pipe >= CFS_MAX_PIPES || !cfs_pipe[pipe].in_use)
     return -1;
+  rid = CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(mid));
+  if (!CFE_SBR_IsValidRouteId(rid)) {
+    rid = CFE_SBR_AddRoute(CFE_SB_ValueToMsgId(mid), &coll);
+    cfs_sb_collisions += coll;
+    // Out of routes, or the id is not a valid message id at all.
+    if (!CFE_SBR_IsValidRouteId(rid))
+      return -3;
+  }
   for (j = 0; j < CFS_MAX_SUBS; j++) {
-    if (!cfs_sub[j].in_use) {
-      cfs_sub[j].in_use = 1;
-      cfs_sub[j].mid = mid;
-      cfs_sub[j].pipe = pipe;
+    if (!cfs_dest[j].in_use) {
+      node = &cfs_dest[j];
+      node->in_use = 1;
+      node->pipe = pipe;
+      // Push onto the head of this route's destination list, which SBR holds for us.
+      node->Next = CFE_SBR_GetDestListHeadPtr(rid)(CCfsDest *);
+      CFE_SBR_SetDestListHeadPtr(rid, node(U8 *));
       return 0;
     }
   }
@@ -252,6 +287,19 @@ I64 CfsSbSubscribe(U16 mid, I64 pipe)
 // secondary header carries 32 bits of seconds and 16 of subseconds, so the finest timestamp a
 // packet can hold is 1/65536 s, about 15.3 us. Both conversions round to nearest rather than
 // truncate, because two truncations compound and a 5 ms tick would read back as 4.989 ms.
+// THE PSP SYMBOL THIS PORT OWES cFE. cfe_sb_msgid.HC's topic-id helpers declare it and the
+// platform supplies it -- and here the platform is us. One, matching cmake/sample_defs where
+// cpu1_PROCESSORID is 1; zero is reserved for "global" and is the value that walks into the
+// upstream defect recorded in docs/CFS_UPSTREAM_NOTES.md.
+//
+// Defining it is not optional bookkeeping. An undefined prototype becomes an import the linker
+// fills silently, so leaving it out would have put a call to whatever answered into the routing
+// path. tools/blob_imports.py is what noticed it was missing.
+U32 CFE_PSP_GetProcessorId()
+{
+  return 1;
+}
+
 CFE_TIME_SysTime CFE_TIME_GetTime()
 {
   CFE_TIME_SysTime t;
@@ -264,18 +312,34 @@ CFE_TIME_SysTime CFE_TIME_GetTime()
 
 I64 CfsSbSend(U16 mid, U8 *data, I64 len)
 {
-  I64 j, p, nh, delivered = 0;
+  I64 p, nh, delivered = 0;
   Bool acceptable;
   CCfsMsg *slot;
+  CFE_SBR_RouteId rid;
+  CCfsDest *dest;
+  U16 seq;
   if (len < 0)
     len = 0;
   if (len > CFS_MSG_PAYLOAD)
     len = CFS_MSG_PAYLOAD;
   cfs_seq_ctr++;
-  for (j = 0; j < CFS_MAX_SUBS; j++) {
-    if (!cfs_sub[j].in_use || cfs_sub[j].mid != mid)
-      continue;
-    p = cfs_sub[j].pipe;
+  // ONE HASH LOOKUP instead of a scan of every subscription. No route means nobody subscribed,
+  // which is exactly the nosub case below.
+  rid = CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(mid));
+  if (!CFE_SBR_IsValidRouteId(rid)) {
+    cfs_sb_sent++;
+    cfs_sb_nosub++;
+    return 0;
+  }
+  // PER-ROUTE SEQUENCE COUNT, which is what CCSDS actually specifies: the counter belongs to the
+  // APID, not to the bus. The old single global counter meant every stream shared one sequence,
+  // so a receiver could not detect a gap in any of them. CFE_SBR keeps one per route and
+  // CFE_MSG_GetNextSequenceCount wraps it at the 14-bit field.
+  CFE_SBR_IncrementSequenceCounter(rid);
+  seq = CFE_SBR_GetSequenceCounter(rid);
+  for (dest = CFE_SBR_GetDestListHeadPtr(rid)(CCfsDest *); dest != NULL;
+       dest = dest->Next) {
+    p = dest->pipe;
     nh = (cfs_pipe[p].head + 1) % cfs_pipe[p].depth;
     if (nh == cfs_pipe[p].tail) {
       cfs_pipe[p].dropped++;
@@ -285,7 +349,7 @@ I64 CfsSbSend(U16 mid, U8 *data, I64 len)
     // NASA's code builds the packet from here down. Init clears it, plants the CCSDS defaults
     // (version 0, unsegmented), writes the message id into the stream id and sets the length.
     CFE_MSG_Init(&slot->Hdr.Msg, CFE_SB_ValueToMsgId(mid), CFS_MSG_HDR_BYTES + len);
-    CFE_MSG_SetSequenceCount(&slot->Hdr.Msg, cfs_seq_ctr & CFE_MSG_SEQCNT_MASK);
+    CFE_MSG_SetSequenceCount(&slot->Hdr.Msg, seq);
     // PAYLOAD BEFORE ORIGINATION, and the order is not cosmetic. OriginationAction checksums a
     // COMMAND over every byte the length field covers, so copying the payload after it would
     // checksum zeros and then overwrite them -- a packet that fails its own validation, in a

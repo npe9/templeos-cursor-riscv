@@ -72,7 +72,16 @@ done
 # Exact execution counts. Simulated time makes these deterministic: 2 s of mission time at a 10 ms
 # IMU period is 200 runs and nothing else. A drifting scheduler changes these before it breaks
 # anything a boolean needle would notice.
-for n in "cfs-sim: imu_runs=200" "cfs-sim: nav_runs=100"; do
+# Routing and the packet header, pinned to the byte. sbr_routes is how many routes the
+# subscriptions created in NASA's route table -- a linear scan would have none at all. The
+# ccsds_pri line asserts four things at once: the stream id (0x0901), the unsegmented flag
+# (0xC0 in byte 2), the CCSDS length (21 = 28-7), and the SEQUENCE COUNT. That count is 201 --
+# IMU's 200 scheduled publishes plus the probe's one send -- which is only true because the
+# counter is PER ROUTE, as CCSDS specifies. A single bus-wide counter reads 824 here.
+for n in "cfs-sim: sbr_routes=5" \
+         "cfs-sim: sbr_collisions=0" \
+         "cfs-sim: ccsds_pri=9 1 192 201 0 21" \
+         "cfs-sim: imu_runs=200" "cfs-sim: nav_runs=100"; do
   printf '%s\n' "$out" | grep -qF "$n" || { echo "FAIL cfs smoke — timing changed, expected: $n" >&2; rc=1; }
 done
 if printf '%s\n' "$out" | grep -q '_FAIL'; then
@@ -84,5 +93,5 @@ if [ "$rc" != 0 ]; then
   printf '%s\n' "$out" | grep -vE 'import unresolved' | tail -25 | sed 's/^/  /' >&2
   exit 1
 fi
-printf '%s\n' "$out" | grep -E 'cfs-sim: (ccsds_pri|ccsds_terr_us|imu_runs|nav_runs|ds_records|sb_sent|nav_dropped|evs_crit|hs_deaths|cs_faults)' | sed 's/^/  /'
+printf '%s\n' "$out" | grep -E 'cfs-sim: (sbr_routes|sbr_collisions|ccsds_pri|ccsds_terr_us|imu_runs|nav_runs|ds_records|sb_sent|nav_dropped|evs_crit|hs_deaths|cs_faults)' | sed 's/^/  /'
 echo "cfs smoke: OK"

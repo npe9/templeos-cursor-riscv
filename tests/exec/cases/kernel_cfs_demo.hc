@@ -183,7 +183,12 @@ I64 main()
       CFE_MSG_GetHasSecondaryHeader(&probe.Hdr.Msg, &psec);
       CFE_MSG_GetHeaderVersion(&probe.Hdr.Msg, &pver);
       // The six primary-header bytes, straight out of memory. These are what goes on a wire.
-      Say("cfs-sim: ccsds_pri=");
+      // Routing now goes through NASA's hash map, so say so with numbers: how many routes the
+      // subscriptions created and how many hash collisions it cost. A linear scan would have
+      // neither.
+      SayNum("cfs-sim: sbr_routes=", CFE_SBR_RDATA.RouteIdxTop);
+      SayNum("cfs-sim: sbr_collisions=", cfs_sb_collisions);
+            Say("cfs-sim: ccsds_pri=");
       SayNumSp(raw[0]);
       SayNumSp(raw[1]);
       SayNumSp(raw[2]);
