@@ -421,6 +421,28 @@ I32 OS_TaskAffinityGetAffinity_Impl(OS_object_token_t *token, OS_cpuset_t *cpuse
 #include "/Kernel/Cfs/osal/osapi_filesys.HC"
 #include "/Kernel/Cfs/osal/osapi_file.HC"
 #include "/Kernel/Cfs/osal/osapi_dir.HC"
+#include "/Kernel/Cfs/osal/osapi_select.HC"
+
+// --- osapi-select.c backend ---------------------------------------------------------------
+I64 stub_sel_singles, stub_sel_multiples;
+U32 stub_sel_flags_in;
+I64 stub_sel_lastabs;
+
+I32 OS_SelectSingle_Impl(OS_object_token_t *token, U32 *StateFlags, OS_time_t abs_timeout)
+{
+  ++stub_sel_singles;
+  stub_sel_flags_in = *StateFlags;
+  stub_sel_lastabs = abs_timeout.ticks;
+  *StateFlags = OS_STREAM_STATE_READABLE;
+  return OS_SUCCESS;
+}
+I32 OS_SelectMultiple_Impl(OS_FdSet *ReadSet, OS_FdSet *WriteSet, OS_time_t abs_timeout)
+{
+  ++stub_sel_multiples;
+  stub_sel_lastabs = abs_timeout.ticks;
+  return OS_SUCCESS;
+}
+
 
 // --- osapi-dir.c backend ------------------------------------------------------------------
 I64 stub_d_creates, stub_d_opens, stub_d_closes, stub_d_reads, stub_d_rewinds, stub_d_removes;
@@ -2318,6 +2340,127 @@ I64 main()
     S(" n=");
     D(stub_d_removes);
     S("\n");
+  }
+
+  // --- osapi-select.c -------------------------------------------------------------------------
+  // Bit arithmetic over a fixed set: local_id >> 3 picks the byte and (local_id & 0x7) the bit.
+  // The four stream ids used here land at indices 6, 7, 8 and 9 -- deliberately spanning a byte
+  // boundary, because an index split using the wrong shift or mask would put two of them in the
+  // same place and adding one would appear to add another.
+  {
+    OS_FdSet rset;
+    U32 sfd[4];
+    U32 flags;
+    I64 i;
+    I32 rB, rC, rD, rE;
+
+    S("sel_zero  rc=");
+    D(OS_SelectFdZero(&rset));
+    S("\n");
+    rB = OS_SelectFdZero(NULL);
+    S("sel_nullz rc=");
+    D(rB);
+    S("\n");
+    i = 0;
+    while (i < 4) {
+      OS_OpenCreate(&sfd[i], "/mnt/sel.txt", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+      ++i;
+    }
+    rB = OS_SelectFdAdd(&rset, sfd[0]);
+    rC = OS_SelectFdAdd(&rset, sfd[1]);
+    rD = OS_SelectFdAdd(&rset, sfd[2]);
+    rE = OS_SelectFdAdd(&rset, sfd[3]);
+    S("sel_add   rc=");
+    D(rB);
+    S(" ");
+    D(rC);
+    S(" ");
+    D(rD);
+    S(" ");
+    D(rE);
+    S("\n");
+    S("sel_bytes ");
+    D(rset.object_ids[0]);
+    S(" ");
+    D(rset.object_ids[1]);
+    S(" ");
+    D(rset.object_ids[2]);
+    S("\n");
+    S("sel_isset ");
+    D(OS_SelectFdIsSet(&rset, sfd[0]));
+    S(" ");
+    D(OS_SelectFdIsSet(&rset, sfd[1]));
+    S(" ");
+    D(OS_SelectFdIsSet(&rset, sfd[2]));
+    S(" ");
+    D(OS_SelectFdIsSet(&rset, sfd[3]));
+    S("\n");
+    rB = OS_SelectFdClear(&rset, sfd[1]);
+    S("sel_clear rc=");
+    D(rB);
+    S(" then ");
+    D(OS_SelectFdIsSet(&rset, sfd[1]));
+    S(" ");
+    D(OS_SelectFdIsSet(&rset, sfd[2]));
+    S("\n");
+    S("sel_bytes2 ");
+    D(rset.object_ids[0]);
+    S(" ");
+    D(rset.object_ids[1]);
+    S(" ");
+    D(rset.object_ids[2]);
+    S("\n");
+    rB = OS_SelectFdIsSet(NULL, sfd[0]);
+    S("sel_nullset ");
+    D(rB);
+    S("\n");
+    rB = OS_SelectFdAdd(&rset, 0x66009999);
+    S("sel_badid rc=");
+    D(rB);
+    S(" isset=");
+    D(OS_SelectFdIsSet(&rset, 0x66009999));
+    S("\n");
+
+    flags = OS_STREAM_STATE_WRITABLE;
+    rB = OS_SelectSingle(sfd[0], &flags, 250);
+    S("sel_single rc=");
+    D(rB);
+    S(" in=");
+    D(stub_sel_flags_in);
+    S(" out=");
+    D(flags);
+    S(" n=");
+    D(stub_sel_singles);
+    S("\n");
+    rB = OS_SelectSingle(sfd[0], NULL, 250);
+    S("sel_snull rc=");
+    D(rB);
+    S("\n");
+    rB = OS_SelectSingle(0x66009999, &flags, 250);
+    S("sel_sbad  rc=");
+    D(rB);
+    S(" n=");
+    D(stub_sel_singles);
+    S("\n");
+    // SelectMultiple takes NO refcount and does not check its sets -- both NULL is valid and
+    // must still reach the backend.
+    rB = OS_SelectMultiple(&rset, NULL, 100);
+    S("sel_multi rc=");
+    D(rB);
+    S(" n=");
+    D(stub_sel_multiples);
+    S("\n");
+    rB = OS_SelectMultiple(NULL, NULL, 100);
+    S("sel_mnull rc=");
+    D(rB);
+    S(" n=");
+    D(stub_sel_multiples);
+    S("\n");
+    i = 0;
+    while (i < 4) {
+      OS_close(sfd[i]);
+      ++i;
+    }
   }
   return 0;
 }

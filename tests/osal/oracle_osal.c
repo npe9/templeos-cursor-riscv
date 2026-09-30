@@ -24,6 +24,7 @@
 #include "os-shared-filesys.h"
 #include "os-shared-file.h"
 #include "os-shared-dir.h"
+#include "os-shared-select.h"
 #include "osapi-task-affinity.h"
 #include "os-shared-countsem.h"
 #include "os-shared-mutex.h"
@@ -38,6 +39,7 @@
 #include "os-shared-filesys.h"
 #include "os-shared-file.h"
 #include "os-shared-dir.h"
+#include "os-shared-select.h"
 #include "osapi-task-affinity.h"
 
 /* The backend's error-name table. A bare-metal target contributes no OS-specific errors, so
@@ -169,6 +171,26 @@ static uint32 stub_cs_options;
 static int    stub_cs_gives;
 static int    stub_cs_takes;
 static uint32 stub_cs_last_msecs;
+
+/* --- osapi-select.c backend --------------------------------------------------------------- */
+static int    stub_sel_singles, stub_sel_multiples;
+static uint32 stub_sel_flags_in;
+static int64  stub_sel_lastabs;
+
+int32 OS_SelectSingle_Impl(const OS_object_token_t *token, uint32 *StateFlags, OS_time_t abs_timeout)
+{
+    ++stub_sel_singles;
+    stub_sel_flags_in = *StateFlags;
+    stub_sel_lastabs  = abs_timeout.ticks;
+    *StateFlags       = OS_STREAM_STATE_READABLE;
+    return OS_SUCCESS;
+}
+int32 OS_SelectMultiple_Impl(OS_FdSet *ReadSet, OS_FdSet *WriteSet, OS_time_t abs_timeout)
+{
+    ++stub_sel_multiples;
+    stub_sel_lastabs = abs_timeout.ticks;
+    return OS_SUCCESS;
+}
 
 /* --- osapi-dir.c backend ------------------------------------------------------------------ */
 static int  stub_d_creates, stub_d_opens, stub_d_closes, stub_d_reads, stub_d_rewinds, stub_d_removes;
@@ -1354,6 +1376,62 @@ int main(void)
             printf("d_stale   rc=%d\n", (int)OS_DirectoryClose(did));
             printf("d_rewbad  rc=%d\n", (int)OS_DirectoryRewind(did));
             printf("d_rmdir   rc=%d n=%d\n", (int)OS_rmdir("/mnt/sub"), stub_d_removes);
+        }
+
+        /* --- osapi-select.c ---------------------------------------------------------------
+         * Bit arithmetic over a fixed set: local_id >> 3 picks the byte and (local_id & 0x7)
+         * the bit. The driver adds ids that are deliberately spread across byte boundaries --
+         * 0, 7, 8 and 9 -- because an index split that used the wrong shift or mask would put
+         * two of those in the same place, and adding one would appear to add another.
+         */
+        {
+            OS_FdSet  rset;
+            osal_id_t sfd[4];
+            uint32    flags;
+            int       i;
+
+            printf("sel_zero  rc=%d\n", (int)OS_SelectFdZero(&rset));
+            printf("sel_nullz rc=%d\n", (int)OS_SelectFdZero(NULL));
+            for (i = 0; i < 4; ++i)
+            {
+                OS_OpenCreate(&sfd[i], "/mnt/sel.txt", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            }
+            /* Four consecutive stream ids; print the indices so the byte/bit split is visible. */
+            printf("sel_add   rc=%d %d %d %d\n", (int)OS_SelectFdAdd(&rset, sfd[0]),
+                   (int)OS_SelectFdAdd(&rset, sfd[1]), (int)OS_SelectFdAdd(&rset, sfd[2]),
+                   (int)OS_SelectFdAdd(&rset, sfd[3]));
+            printf("sel_bytes %u %u %u\n", (unsigned)rset.object_ids[0],
+                   (unsigned)rset.object_ids[1], (unsigned)rset.object_ids[2]);
+            printf("sel_isset %d %d %d %d\n", (int)OS_SelectFdIsSet(&rset, sfd[0]),
+                   (int)OS_SelectFdIsSet(&rset, sfd[1]), (int)OS_SelectFdIsSet(&rset, sfd[2]),
+                   (int)OS_SelectFdIsSet(&rset, sfd[3]));
+            printf("sel_clear rc=%d then %d %d\n", (int)OS_SelectFdClear(&rset, sfd[1]),
+                   (int)OS_SelectFdIsSet(&rset, sfd[1]), (int)OS_SelectFdIsSet(&rset, sfd[2]));
+            printf("sel_bytes2 %u %u %u\n", (unsigned)rset.object_ids[0],
+                   (unsigned)rset.object_ids[1], (unsigned)rset.object_ids[2]);
+            printf("sel_nullset %d\n", (int)OS_SelectFdIsSet(NULL, sfd[0]));
+            printf("sel_badid rc=%d isset=%d\n",
+                   (int)OS_SelectFdAdd(&rset, OS_ObjectIdFromInteger(0x66009999)),
+                   (int)OS_SelectFdIsSet(&rset, OS_ObjectIdFromInteger(0x66009999)));
+
+            flags = OS_STREAM_STATE_WRITABLE;
+            printf("sel_single rc=%d in=%lu out=%lu n=%d\n",
+                   (int)OS_SelectSingle(sfd[0], &flags, 250), (unsigned long)stub_sel_flags_in,
+                   (unsigned long)flags, stub_sel_singles);
+            printf("sel_snull rc=%d\n", (int)OS_SelectSingle(sfd[0], NULL, 250));
+            printf("sel_sbad  rc=%d n=%d\n",
+                   (int)OS_SelectSingle(OS_ObjectIdFromInteger(0x66009999), &flags, 250),
+                   stub_sel_singles);
+            /* SelectMultiple takes NO refcount and does not check its sets -- both NULL is
+             * valid and must still reach the backend. */
+            printf("sel_multi rc=%d n=%d\n", (int)OS_SelectMultiple(&rset, NULL, 100),
+                   stub_sel_multiples);
+            printf("sel_mnull rc=%d n=%d\n", (int)OS_SelectMultiple(NULL, NULL, 100),
+                   stub_sel_multiples);
+            for (i = 0; i < 4; ++i)
+            {
+                OS_close(sfd[i]);
+            }
         }
 
     }
