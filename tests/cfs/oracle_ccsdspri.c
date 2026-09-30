@@ -7,6 +7,11 @@
 #include <stdio.h>
 #include "cfe_msg.h"
 #include "cfe_sb.h"
+#include "target_objtab.h"
+
+/* cfe_msg_objtab.c defines this and no header declares it -- the generated cfe_es_objtab.c is
+ * what normally refers to it, by name, from the build system. */
+extern const Target_ObjectTable_t CFE_MSG_ModuleEntry;
 
 /* Decimal only, one byte per field, space separated. Formatting is the one thing that would
  * differ between C's printf and HolyC for reasons that have nothing to do with the translation
@@ -17,6 +22,17 @@
 uint32 CFE_PSP_GetProcessorId(void)
 {
     return 1;
+}
+
+/* cfe_msg_integrity.c calls into the TIME module, which is not translated yet. Both sides get
+ * the same fixed clock, so the comparison stays about the message code. Nothing under test
+ * depends on what the clock says -- only on the call happening at all. */
+CFE_TIME_SysTime_t CFE_TIME_GetTime(void)
+{
+    CFE_TIME_SysTime_t t;
+    t.Seconds    = 0x20304050;
+    t.Subseconds = 0x60708090;
+    return t;
 }
 
 static void dump(const char *tag, CFE_MSG_Message_t *m)
@@ -138,6 +154,17 @@ int main(void)
         CFE_TIME_SysTime_t        t;
         for (i = 0; i < (int)sizeof(tlm); i++)
             ((unsigned char *)&tlm)[i] = 0;
+        /* POISON THE TRAILING BYTES. The time field is Time[0..5] and Spare[] follows it, so a
+         * translation that reads FOUR bytes starting at Time[4] instead of widening the one
+         * byte there would run off the end -- and with zeros after it, come out right anyway.
+         * That is not hypothetical: the first draft of this translation had exactly that bug,
+         * the Seconds line caught it and the Subseconds line did not. Only the region after the
+         * time field is poisoned; seeding the whole struct would set the CCSDS version bits and
+         * SetMsgTime would refuse, changing the shape of the transcript instead of its values. */
+        tlm.Spare[0] = 0xEE;
+        tlm.Spare[1] = 0xEE;
+        tlm.Spare[2] = 0xEE;
+        tlm.Spare[3] = 0xEE;
         CFE_MSG_SetType(&tlm.Msg, CFE_MSG_Type_Tlm);
         CFE_MSG_SetHasSecondaryHeader(&tlm.Msg, true);
         t.Seconds    = 0x12345678;
@@ -160,6 +187,7 @@ int main(void)
                (unsigned long)t.Seconds, (unsigned long)t.Subseconds);
         printf("timeset2 rc=%ld\n", (long)CFE_MSG_SetMsgTime(&tlm.Msg, t));
         printf("timenull rc=%ld\n", (long)CFE_MSG_GetMsgTime(NULL, &t));
+        printf("timespare %d %d %d %d\n", tlm.Spare[0], tlm.Spare[1], tlm.Spare[2], tlm.Spare[3]);
     }
 
     /* --- cfe_msg_sechdr_checksum.c ---------------------------------------------------- */
@@ -217,5 +245,48 @@ int main(void)
         printf("typenull rc=%ld\n",
                (long)CFE_MSG_GetTypeFromMsgId(CFE_SB_ValueToMsgId(0x1801), NULL));
     }
+
+    /* --- cfe_msg_integrity.c ---------------------------------------------------------- */
+    {
+        CFE_MSG_TelemetryHeader_t tlm;
+        CFE_MSG_CommandHeader_t   cmd;
+        bool                      acc;
+        /* OriginationAction stamps a time AND a checksum and ignores both return values,
+         * because exactly one of them can apply to any given packet. The two cases below are
+         * the proof: telemetry comes back timestamped with the checksum call having failed
+         * harmlessly, and a command comes back checksummed with the time call having failed. */
+        for (i = 0; i < (int)sizeof(tlm); i++)
+            ((unsigned char *)&tlm)[i] = 0;
+        CFE_MSG_SetType(&tlm.Msg, CFE_MSG_Type_Tlm);
+        CFE_MSG_SetHasSecondaryHeader(&tlm.Msg, true);
+        CFE_MSG_SetSize(&tlm.Msg, sizeof(tlm));
+        acc = false;
+        printf("origtlm  rc=%ld a=%d\n", (long)CFE_MSG_OriginationAction(&tlm.Msg, sizeof(tlm), &acc),
+               (int)acc);
+        printf("origtime %d %d %d %d %d %d\n", tlm.Sec.Time[0], tlm.Sec.Time[1], tlm.Sec.Time[2],
+               tlm.Sec.Time[3], tlm.Sec.Time[4], tlm.Sec.Time[5]);
+        for (i = 0; i < (int)sizeof(cmd); i++)
+            ((unsigned char *)&cmd)[i] = 0;
+        CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Cmd);
+        CFE_MSG_SetHasSecondaryHeader(&cmd.Msg, true);
+        CFE_MSG_SetSize(&cmd.Msg, sizeof(cmd));
+        acc = false;
+        printf("origcmd  rc=%ld a=%d\n", (long)CFE_MSG_OriginationAction(&cmd.Msg, sizeof(cmd), &acc),
+               (int)acc);
+        printf("origcsum f=%d c=%d\n", cmd.Sec.FunctionCode, cmd.Sec.Checksum);
+        acc = false;
+        printf("verify   rc=%ld a=%d\n",
+               (long)CFE_MSG_VerificationAction(&cmd.Msg, sizeof(cmd), &acc), (int)acc);
+        printf("orignull rc=%ld\n", (long)CFE_MSG_OriginationAction(NULL, 8, &acc));
+        printf("verinull rc=%ld\n", (long)CFE_MSG_VerificationAction(&cmd.Msg, 8, NULL));
+    }
+
+    /* --- cfe_msg_objtab.c ------------------------------------------------------------- */
+    /* One registration entry, no task. ES walks the collected table at every lifecycle phase,
+     * so a port that skips these has modules that exist and never start. */
+    printf("objtab %s %d %d %d %lu %lu\n", CFE_MSG_ModuleEntry.Name,
+           (int)(CFE_MSG_ModuleEntry.EarlyInit == NULL), (int)(CFE_MSG_ModuleEntry.TaskMain == NULL),
+           (int)(CFE_MSG_ModuleEntry.AppCleanupCb == NULL),
+           (unsigned long)CFE_MSG_ModuleEntry.Priority, (unsigned long)CFE_MSG_ModuleEntry.StackSize);
     return 0;
 }

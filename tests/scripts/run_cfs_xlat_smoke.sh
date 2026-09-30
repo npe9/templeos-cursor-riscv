@@ -25,7 +25,9 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/msg/fsw/src/cfe_msg_sechdr_checksum.c
        $CFE/modules/msg/fsw/src/cfe_msg_msgid_shared.c
        $CFE/modules/msg/fsw/src/cfe_msg_initdefaulthdr_pri.c
-       $CFE/modules/msg/fsw/src/cfe_msg_init.c"
+       $CFE/modules/msg/fsw/src/cfe_msg_init.c
+       $CFE/modules/msg/fsw/src/cfe_msg_integrity.c
+       $CFE/modules/msg/fsw/src/cfe_msg_objtab.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -59,7 +61,7 @@ INC="-I$CFE/modules/core_api/fsw/inc -I$CFE/modules/core_api/config
      -I$CFE/modules/resourceid/option_inc
      -I$CFE/modules/config/fsw/inc
      -I$CFE/modules/core_private/fsw/inc -I$CFE/modules/core_private/config
-     -I$OSAL/src/os/inc -I$PSP/fsw/inc -I$CFE/cmake/sample_defs -I$SHIM"
+     -I$OSAL/src/os/inc -I$PSP/fsw/inc -I$CFE/cmake/sample_defs -I$CFE/cmake/target/inc -I$SHIM"
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT

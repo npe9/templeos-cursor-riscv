@@ -7,6 +7,8 @@
 #include "/Kernel/Cfs/cfe/cfe_msg_sechdr_time.HC"
 #include "/Kernel/Cfs/cfe/cfe_msg_sechdr_checksum.HC"
 #include "/Kernel/Cfs/cfe/cfe_msg_init.HC"
+#include "/Kernel/Cfs/cfe/cfe_msg_integrity.HC"
+#include "/Kernel/Cfs/cfe/cfe_msg_objtab.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -76,6 +78,17 @@ U0 Rcv(U8 *label, I32 rc, U8 *key, I64 v)
   S("=");
   D(v);
   S("\n");
+}
+
+// cfe_msg_integrity.HC declares this and the harness supplies it -- the TIME module is not
+// translated yet, and nothing under test depends on what the clock says. Same fixed values as
+// the C oracle's stub.
+CFE_TIME_SysTime CFE_TIME_GetTime()
+{
+  CFE_TIME_SysTime t;
+  t.Seconds = 0x20304050;
+  t.Subseconds = 0x60708090;
+  return t;
 }
 
 // Two out-parameters on one line, for the time round trip.
@@ -238,6 +251,13 @@ I64 main()
     U8 *q = &tlm;
     for (i = 0; i < sizeof(CFE_MSG_TelemetryHeader); i++)
       q[i] = 0;
+    // POISON THE TRAILING BYTES -- see the C oracle for why. Briefly: Spare[] follows Time[],
+    // so an over-read past Time[5] lands in zeros and comes out right by accident. The first
+    // draft of this translation had that bug and this line is what would have caught it.
+    tlm.Spare[0] = 0xEE;
+    tlm.Spare[1] = 0xEE;
+    tlm.Spare[2] = 0xEE;
+    tlm.Spare[3] = 0xEE;
     CFE_MSG_SetType(&tlm.Msg, CFE_MSG_Type_Tlm);
     CFE_MSG_SetHasSecondaryHeader(&tlm.Msg, TRUE);
     t.Seconds = 0x12345678;
@@ -272,6 +292,15 @@ I64 main()
     Rc("timeset2", rc32);
     rc32 = CFE_MSG_GetMsgTime(NULL, &t);
     Rc("timenull", rc32);
+    S("timespare ");
+    D(tlm.Spare[0]);
+    S(" ");
+    D(tlm.Spare[1]);
+    S(" ");
+    D(tlm.Spare[2]);
+    S(" ");
+    D(tlm.Spare[3]);
+    S("\n");
   }
   // --- cfe_msg_sechdr_checksum.c ------------------------------------------------------
   {
@@ -339,5 +368,73 @@ I64 main()
     rc32 = CFE_MSG_GetTypeFromMsgId(CFE_SB_ValueToMsgId(0x1801), NULL);
     Rc("typenull", rc32);
   }
+  // --- cfe_msg_integrity.c ------------------------------------------------------------
+  {
+    CFE_MSG_TelemetryHeader tlm;
+    CFE_MSG_CommandHeader cmd;
+    Bool acc;
+    U8 *q = &tlm;
+    U8 *r = &cmd;
+    // OriginationAction stamps a time AND a checksum and ignores both return values, because
+    // exactly one can apply to any given packet. Telemetry comes back timestamped with the
+    // checksum call having failed harmlessly; a command the other way round.
+    for (i = 0; i < sizeof(CFE_MSG_TelemetryHeader); i++)
+      q[i] = 0;
+    CFE_MSG_SetType(&tlm.Msg, CFE_MSG_Type_Tlm);
+    CFE_MSG_SetHasSecondaryHeader(&tlm.Msg, TRUE);
+    CFE_MSG_SetSize(&tlm.Msg, sizeof(CFE_MSG_TelemetryHeader));
+    acc = FALSE;
+    rc32 = CFE_MSG_OriginationAction(&tlm.Msg, sizeof(CFE_MSG_TelemetryHeader), &acc);
+    Rcv("origtlm ", rc32, "a", acc);
+    S("origtime ");
+    D(tlm.Sec.Time[0]);
+    S(" ");
+    D(tlm.Sec.Time[1]);
+    S(" ");
+    D(tlm.Sec.Time[2]);
+    S(" ");
+    D(tlm.Sec.Time[3]);
+    S(" ");
+    D(tlm.Sec.Time[4]);
+    S(" ");
+    D(tlm.Sec.Time[5]);
+    S("\n");
+    for (i = 0; i < sizeof(CFE_MSG_CommandHeader); i++)
+      r[i] = 0;
+    CFE_MSG_SetType(&cmd.Msg, CFE_MSG_Type_Cmd);
+    CFE_MSG_SetHasSecondaryHeader(&cmd.Msg, TRUE);
+    CFE_MSG_SetSize(&cmd.Msg, sizeof(CFE_MSG_CommandHeader));
+    acc = FALSE;
+    rc32 = CFE_MSG_OriginationAction(&cmd.Msg, sizeof(CFE_MSG_CommandHeader), &acc);
+    Rcv("origcmd ", rc32, "a", acc);
+    S("origcsum f=");
+    D(cmd.Sec.FunctionCode);
+    S(" c=");
+    D(cmd.Sec.Checksum);
+    S("\n");
+    acc = FALSE;
+    rc32 = CFE_MSG_VerificationAction(&cmd.Msg, sizeof(CFE_MSG_CommandHeader), &acc);
+    Rcv("verify  ", rc32, "a", acc);
+    rc32 = CFE_MSG_OriginationAction(NULL, 8, &acc);
+    Rc("orignull", rc32);
+    rc32 = CFE_MSG_VerificationAction(&cmd.Msg, 8, NULL);
+    Rc("verinull", rc32);
+  }
+  // --- cfe_msg_objtab.c ---------------------------------------------------------------
+  // One registration entry, no task. ES walks the collected table at every lifecycle phase, so
+  // a port that skips these has modules that exist and never start.
+  S("objtab ");
+  S(CFE_MSG_ModuleEntry.Name);
+  S(" ");
+  D(CFE_MSG_ModuleEntry.EarlyInit == NULL);
+  S(" ");
+  D(CFE_MSG_ModuleEntry.TaskMain == NULL);
+  S(" ");
+  D(CFE_MSG_ModuleEntry.AppCleanupCb == NULL);
+  S(" ");
+  D(CFE_MSG_ModuleEntry.Priority);
+  S(" ");
+  D(CFE_MSG_ModuleEntry.StackSize);
+  S("\n");
   return 0;
 }
