@@ -577,6 +577,127 @@ I32 OS_TaskAffinityGetAffinity_Impl(OS_object_token_t *token, OS_cpuset_t *cpuse
 #include "/Kernel/Cfs/osal/osapi_dir.HC"
 #include "/Kernel/Cfs/osal/os_shared_module.HC"
 #include "/Kernel/Cfs/osal/os_shared_time.HC"
+#include "/Kernel/Cfs/osal/os_shared_sockets.HC"
+#include "/Kernel/Cfs/osal/osapi_sockets.HC"
+
+// --- osapi-sockets.c backend --------------------------------------------------------------
+I64 stub_s_opens, stub_s_binds, stub_s_listens, stub_s_accepts, stub_s_connects;
+I64 stub_s_shuts, stub_s_recvs, stub_s_sends, stub_s_infos, stub_s_getopt, stub_s_setopt;
+I64 stub_s_lastmode;
+I32 stub_s_accept_rc;
+
+I32 OS_SocketOpen_Impl(OS_object_token_t *token) { ++stub_s_opens; return OS_SUCCESS; }
+I32 OS_SocketBindAddress_Impl(OS_object_token_t *token, OS_SockAddr_t *Addr)
+{
+  ++stub_s_binds;
+  return OS_SUCCESS;
+}
+I32 OS_SocketListen_Impl(OS_object_token_t *token) { ++stub_s_listens; return OS_SUCCESS; }
+I32 OS_SocketAccept_Impl(OS_object_token_t *sock_token, OS_object_token_t *conn_token,
+                         OS_SockAddr_t *Addr, OS_time_t abs_timeout)
+{
+  ++stub_s_accepts;
+  return stub_s_accept_rc;
+}
+I32 OS_SocketConnect_Impl(OS_object_token_t *token, OS_SockAddr_t *Addr, OS_time_t abs_timeout)
+{
+  ++stub_s_connects;
+  return OS_SUCCESS;
+}
+I32 OS_SocketShutdown_Impl(OS_object_token_t *token, I64 Mode)
+{
+  ++stub_s_shuts;
+  stub_s_lastmode = Mode;
+  return OS_SUCCESS;
+}
+I32 OS_SocketRecvFrom_Impl(OS_object_token_t *token, U8 *buffer, I64 buflen,
+                           OS_SockAddr_t *RemoteAddr, OS_time_t abs_timeout)
+{
+  ++stub_s_recvs;
+  return buflen;
+}
+I32 OS_SocketSendTo_Impl(OS_object_token_t *token, U8 *buffer, I64 buflen,
+                         OS_SockAddr_t *RemoteAddr)
+{
+  ++stub_s_sends;
+  return buflen;
+}
+I32 OS_SocketGetInfo_Impl(OS_object_token_t *token, OS_socket_prop_t *sock_prop)
+{
+  ++stub_s_infos;
+  return OS_SUCCESS;
+}
+// A stand-in address format: "A<n>" from the second byte, and a port in the third.
+I32 OS_SocketAddrInit_Impl(OS_SockAddr_t *Addr, I64 Domain)
+{
+  MemSet(Addr, 0, sizeof(OS_SockAddr_t));
+  Addr->ActualLength = 4;
+  Addr->AddrData.Buffer[0] = Domain;
+  return OS_SUCCESS;
+}
+I32 OS_SocketAddrToString_Impl(U8 *buffer, I64 buflen, OS_SockAddr_t *Addr)
+{
+  StrPrintN(buffer, buflen, "A%u", Addr->AddrData.Buffer[1]);
+  return OS_SUCCESS;
+}
+I32 OS_SocketAddrFromString_Impl(OS_SockAddr_t *Addr, U8 *string)
+{
+  MemSet(Addr, 0, sizeof(OS_SockAddr_t));
+  Addr->ActualLength = 4;
+  Addr->AddrData.Buffer[1] = string[0] - '0';
+  return OS_SUCCESS;
+}
+I32 OS_SocketAddrGetPort_Impl(U16 *PortNum, OS_SockAddr_t *Addr)
+{
+  *PortNum = Addr->AddrData.Buffer[2];
+  return OS_SUCCESS;
+}
+I32 OS_SocketAddrSetPort_Impl(OS_SockAddr_t *Addr, U16 PortNum)
+{
+  Addr->AddrData.Buffer[2] = PortNum;
+  return OS_SUCCESS;
+}
+I32 OS_SocketGetOption_Impl(OS_object_token_t *token, I64 opt_id, OS_socket_optval_t *optval)
+{
+  ++stub_s_getopt;
+  optval->IntVal = 46;
+  return OS_SUCCESS;
+}
+I32 OS_SocketSetOption_Impl(OS_object_token_t *token, I64 opt_id, OS_socket_optval_t *optval)
+{
+  ++stub_s_setopt;
+  return OS_SUCCESS;
+}
+
+// stream_state as separate bits, because the whole module is about which are set.
+U0 sock_state(U8 *tag, U32 sid)
+{
+  U32 idx;
+  U16 st;
+  if (OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_STREAM, sid, &idx) != OS_SUCCESS) {
+    S(tag);
+    S(" <bad id>\n");
+    return;
+  }
+  st = OS_stream_table[idx].stream_state;
+  S(tag);
+  S(" bound=");
+  D((st & OS_STREAM_STATE_BOUND) != 0);
+  S(" listen=");
+  D((st & OS_STREAM_STATE_LISTENING) != 0);
+  S(" conn=");
+  D((st & OS_STREAM_STATE_CONNECTED) != 0);
+  S(" rd=");
+  D((st & OS_STREAM_STATE_READABLE) != 0);
+  S(" wr=");
+  D((st & OS_STREAM_STATE_WRITABLE) != 0);
+  S(" dom=");
+  D(OS_stream_table[idx].socket_domain);
+  S(" typ=");
+  D(OS_stream_table[idx].socket_type);
+  S("\n");
+}
+
 #include "/Kernel/Cfs/osal/osapi_timebase.HC"
 #include "/Kernel/Cfs/osal/osapi_time.HC"
 
@@ -3141,6 +3262,219 @@ I64 main()
     D(m2t);
     S("\n");
     OS_SharedGlobalVars.TicksPerSecond = 100;
+  }
+
+  // --- osapi-sockets.c ------------------------------------------------------------------------
+  // A STATE MACHINE over stream_state. Almost every function's real content is which
+  // combination of BOUND / LISTENING / CONNECTED it demands and which it sets, and NASA
+  // distinguishes "not a socket of this kind" (OS_ERR_INCORRECT_OBJ_TYPE, -36) from "right
+  // kind, wrong state" (OS_ERR_INCORRECT_OBJ_STATE, -35). A driver that only checked for
+  // failure would not tell those apart, so every line prints the code and the state bits are
+  // dumped after each transition.
+  {
+    U32 dsock, ssock, conn;
+    OS_SockAddr_t addr;
+    OS_socket_prop_t sprop;
+    OS_socket_optval_t oval;
+    U8 abuf[32];
+    U16 port;
+    I32 rH;
+
+    stub_s_accept_rc = OS_SUCCESS;
+    OS_SocketAPI_Init;
+    S("k_init    rc=");
+    D(OS_SocketAPI_Init);
+    S("\n");
+    rH = OS_SocketOpen(NULL, OS_SocketDomain_INET, OS_SocketType_DATAGRAM);
+    S("k_nullid  rc=");
+    D(rH);
+    S("\n");
+    rH = OS_SocketOpen(&dsock, OS_SocketDomain_INET, OS_SocketType_DATAGRAM);
+    S("k_opend   rc=");
+    D(rH);
+    S(" n=");
+    D(stub_s_opens);
+    S("\n");
+    rH = OS_SocketOpen(&ssock, OS_SocketDomain_INET, OS_SocketType_STREAM);
+    S("k_opens   rc=");
+    D(rH);
+    S(" n=");
+    D(stub_s_opens);
+    S("\n");
+    sock_state("k_st_new ", ssock);
+
+    // Address helpers first, since bind needs one.
+    rH = OS_SocketAddrInit(&addr, OS_SocketDomain_INET);
+    S("k_ainit   rc=");
+    D(rH);
+    S(" len=");
+    D(addr.ActualLength);
+    S("\n");
+    S("k_afrom   rc=");
+    D(OS_SocketAddrFromString(&addr, "7"));
+    S("\n");
+    S("k_aport   rc=");
+    D(OS_SocketAddrSetPort(&addr, 99));
+    S("\n");
+    rH = OS_SocketAddrGetPort(&port, &addr);
+    S("k_agetp   rc=");
+    D(rH);
+    S(" port=");
+    D(port);
+    S("\n");
+    rH = OS_SocketAddrToString(abuf, sizeof(abuf), &addr);
+    S("k_astr    rc=");
+    D(rH);
+    S(" [");
+    S(abuf);
+    S("]\n");
+    rH = OS_SocketAddrToString(abuf, sizeof(abuf), NULL);
+    S("k_anull   rc=");
+    D(rH);
+    S("\n");
+
+    // listen before bind: right kind, wrong state.
+    rH = OS_SocketListen(ssock);
+    S("k_l_early rc=");
+    D(rH);
+    S(" n=");
+    D(stub_s_listens);
+    S("\n");
+    rH = OS_SocketBindAddress(ssock, &addr);
+    S("k_bind    rc=");
+    D(rH);
+    S(" n=");
+    D(stub_s_binds);
+    S("\n");
+    sock_state("k_st_bnd ", ssock);
+    S("k_bind2   rc=");
+    D(OS_SocketBindAddress(ssock, &addr));
+    S("\n");
+    rH = OS_SocketListen(ssock);
+    S("k_listen  rc=");
+    D(rH);
+    S(" n=");
+    D(stub_s_listens);
+    S("\n");
+    sock_state("k_st_lsn ", ssock);
+    S("k_listen2 rc=");
+    D(OS_SocketListen(ssock));
+    S("\n");
+    // A DATAGRAM socket cannot listen -- and that is a TYPE error, not a state one.
+    S("k_l_dgram rc=");
+    D(OS_SocketListen(dsock));
+    S("\n");
+
+    // The compatibility wrapper swallows exactly that type error, so binding a datagram socket
+    // reports success even though listen refused it.
+    rH = OS_SocketBind(dsock, &addr);
+    S("k_bindw   rc=");
+    D(rH);
+    S(" listens=");
+    D(stub_s_listens);
+    S("\n");
+    sock_state("k_st_dgm ", dsock);
+
+    // accept requires BOUND and not CONNECTED, tested as an exact match.
+    rH = OS_SocketAccept(ssock, &conn, &addr, 10);
+    S("k_accept  rc=");
+    D(rH);
+    S(" n=");
+    D(stub_s_accepts);
+    S("\n");
+    sock_state("k_st_cnn ", conn);
+    rH = OS_SocketGetInfo(conn, &sprop);
+    S("k_acc_inf rc=");
+    D(rH);
+    S(" [");
+    S(sprop.name);
+    S("]\n");
+    S("k_acc_dg  rc=");
+    D(OS_SocketAccept(dsock, &conn, &addr, 10));
+    S("\n");
+
+    // connect sets THREE bits at once.
+    rH = OS_SocketConnect(dsock, &addr, 10);
+    S("k_conn    rc=");
+    D(rH);
+    S(" n=");
+    D(stub_s_connects);
+    S("\n");
+    sock_state("k_st_con ", dsock);
+    // shutdown's Mode is a BITMASK: READ clears one bit, READWRITE clears both.
+    rH = OS_SocketShutdown(dsock, OS_SocketShutdownMode_SHUT_READ);
+    S("k_shut_r  rc=");
+    D(rH);
+    S(" mode=");
+    D(stub_s_lastmode);
+    S("\n");
+    sock_state("k_st_shr ", dsock);
+    S("k_shut_rw rc=");
+    D(OS_SocketShutdown(dsock, OS_SocketShutdownMode_SHUT_READWRITE));
+    S("\n");
+    sock_state("k_st_srw ", dsock);
+    rH = OS_SocketShutdown(dsock, OS_SocketShutdownMode_NONE);
+    S("k_shut_bad rc=");
+    D(rH);
+    S("\n");
+
+    // recvfrom needs DATAGRAM and BOUND; sendto needs DATAGRAM but NOT bound.
+    rH = OS_SocketRecvFrom(dsock, abuf, 8, &addr, 5);
+    S("k_recv    rc=");
+    D(rH);
+    S(" n=");
+    D(stub_s_recvs);
+    S("\n");
+    S("k_recv_st rc=");
+    D(OS_SocketRecvFrom(ssock, abuf, 8, &addr, 5));
+    S("\n");
+    S("k_recv_z  rc=");
+    D(OS_SocketRecvFrom(dsock, abuf, 0, &addr, 5));
+    S("\n");
+    rH = OS_SocketSendTo(dsock, abuf, 8, &addr);
+    S("k_send    rc=");
+    D(rH);
+    S(" n=");
+    D(stub_s_sends);
+    S("\n");
+    rH = OS_SocketSendTo(dsock, abuf, 8, NULL);
+    S("k_send_na rc=");
+    D(rH);
+    S("\n");
+
+    S("k_byname  rc=");
+    D(OS_SocketGetIdByName(&conn, "A7:99"));
+    S("\n");
+    rH = OS_SocketGetOption(dsock, OS_socket_option_IP_DSCP, &oval);
+    S("k_getopt  rc=");
+    D(rH);
+    S(" val=");
+    D(oval.IntVal);
+    S(" n=");
+    D(stub_s_getopt);
+    S("\n");
+    // A bad option id must NOT clear the caller's value and must not reach the backend.
+    oval.IntVal = 123;
+    rH = OS_SocketGetOption(dsock, OS_socket_option_MAX, &oval);
+    S("k_getbad  rc=");
+    D(rH);
+    S(" val=");
+    D(oval.IntVal);
+    S(" n=");
+    D(stub_s_getopt);
+    S("\n");
+    rH = OS_SocketSetOption(dsock, OS_socket_option_IP_DSCP, &oval);
+    S("k_setopt  rc=");
+    D(rH);
+    S(" n=");
+    D(stub_s_setopt);
+    S("\n");
+    rH = OS_SocketSetOption(dsock, OS_socket_option_MAX, &oval);
+    S("k_setbad  rc=");
+    D(rH);
+    S(" n=");
+    D(stub_s_setopt);
+    S("\n");
   }
   return 0;
 }

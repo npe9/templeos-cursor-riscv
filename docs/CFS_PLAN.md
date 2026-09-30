@@ -125,7 +125,7 @@ to the same architecture; it is not a translation of anything, and it says so.
 
 ### OSAL, measured the same way
 
-**8,214 lines of NASA's 9,447-line shared layer, gated** (87%), computed by
+**8,987 lines of NASA's 9,447-line shared layer, gated** (95%), computed by
 `tools/cfs/check_manifest.py` on every gate run rather than counted here. The denominator is the portable half
 only; the three vendored backends (posix 4,598, vxworks 3,984, rtems 3,543) are reference
 implementations of the seam, not things to translate.
@@ -153,7 +153,7 @@ recipe, not from `ls`.
 | `osapi-version.c` | 77 | **yes** | |
 | `osapi-heap.c` | 53 | **yes** | |
 | `osapi-filesys.c` | 788 | **yes** | path translation, the mount-point prefix trap, and the mount/unmount flag arithmetic |
-| `osapi-sockets.c` | 773 | no | |
+| `osapi-sockets.c` | 773 | **yes** | the stream_state machine, and TYPE vs STATE error codes |
 | `osapi-file.c` | 685 | **yes** | `OS_cp`'s short-write retry loop; path translation at the backend boundary |
 | `osapi-time.c` | 548 | **yes** | the circular timer ring, and one-shot vs repeating |
 | `osapi-timebase.c` | 538 | **yes** | the callback thread, driven by a scripted sync function |

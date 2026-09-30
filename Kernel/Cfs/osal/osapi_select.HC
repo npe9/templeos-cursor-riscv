@@ -26,13 +26,8 @@
 #define OSAPI_SELECT_HC
 #include "os_shared_file.HC"
 
-// OS_StreamState_t, an enum in src/os/inc/osapi-select.h; these are its assigned values.
-#define OS_STREAM_STATE_BOUND     0x01
-#define OS_STREAM_STATE_CONNECTED 0x02
-#define OS_STREAM_STATE_READABLE  0x04
-#define OS_STREAM_STATE_WRITABLE  0x08
-#define OS_STREAM_STATE_LISTENING 0x10
-
+// OS_StreamState_t lives in os_shared_file.HC: osapi-sockets.c needs the same bits, and
+// NASA declares them in osapi-select.h, a header both modules include.
 // OS_FdSet, from src/os/inc/osapi-select.h.
 class OS_FdSet
 {

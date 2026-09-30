@@ -28,6 +28,7 @@
 #include "os-shared-module.h"
 #include "os-shared-timebase.h"
 #include "os-shared-time.h"
+#include "os-shared-sockets.h"
 #include "osapi-task-affinity.h"
 #include "os-shared-countsem.h"
 #include "os-shared-mutex.h"
@@ -46,6 +47,7 @@
 #include "os-shared-module.h"
 #include "os-shared-timebase.h"
 #include "os-shared-time.h"
+#include "os-shared-sockets.h"
 #include "osapi-task-affinity.h"
 
 /* The backend's error-name table. A bare-metal target contributes no OS-specific errors, so
@@ -177,6 +179,116 @@ static uint32 stub_cs_options;
 static int    stub_cs_gives;
 static int    stub_cs_takes;
 static uint32 stub_cs_last_msecs;
+
+/* --- osapi-sockets.c backend -------------------------------------------------------------- */
+static int   stub_s_opens, stub_s_binds, stub_s_listens, stub_s_accepts, stub_s_connects;
+static int   stub_s_shuts, stub_s_recvs, stub_s_sends, stub_s_infos, stub_s_getopt, stub_s_setopt;
+static int   stub_s_lastmode;
+static int32 stub_s_accept_rc = OS_SUCCESS;
+
+int32 OS_SocketOpen_Impl(const OS_object_token_t *token) { ++stub_s_opens; return OS_SUCCESS; }
+int32 OS_SocketBindAddress_Impl(const OS_object_token_t *token, const OS_SockAddr_t *Addr)
+{
+    ++stub_s_binds;
+    return OS_SUCCESS;
+}
+int32 OS_SocketListen_Impl(const OS_object_token_t *token) { ++stub_s_listens; return OS_SUCCESS; }
+int32 OS_SocketAccept_Impl(const OS_object_token_t *sock_token, const OS_object_token_t *conn_token,
+                           OS_SockAddr_t *Addr, OS_time_t abs_timeout)
+{
+    ++stub_s_accepts;
+    return stub_s_accept_rc;
+}
+int32 OS_SocketConnect_Impl(const OS_object_token_t *token, const OS_SockAddr_t *Addr,
+                            OS_time_t abs_timeout)
+{
+    ++stub_s_connects;
+    return OS_SUCCESS;
+}
+int32 OS_SocketShutdown_Impl(const OS_object_token_t *token, OS_SocketShutdownMode_t Mode)
+{
+    ++stub_s_shuts;
+    stub_s_lastmode = (int)Mode;
+    return OS_SUCCESS;
+}
+int32 OS_SocketRecvFrom_Impl(const OS_object_token_t *token, void *buffer, size_t buflen,
+                             OS_SockAddr_t *RemoteAddr, OS_time_t abs_timeout)
+{
+    ++stub_s_recvs;
+    return (int32)buflen;
+}
+int32 OS_SocketSendTo_Impl(const OS_object_token_t *token, const void *buffer, size_t buflen,
+                           const OS_SockAddr_t *RemoteAddr)
+{
+    ++stub_s_sends;
+    return (int32)buflen;
+}
+int32 OS_SocketGetInfo_Impl(const OS_object_token_t *token, OS_socket_prop_t *sock_prop)
+{
+    ++stub_s_infos;
+    return OS_SUCCESS;
+}
+/* A stand-in address format: "A<n>" from the first byte, and a port in the second pair. */
+int32 OS_SocketAddrInit_Impl(OS_SockAddr_t *Addr, OS_SocketDomain_t Domain)
+{
+    memset(Addr, 0, sizeof(*Addr));
+    Addr->ActualLength       = 4;
+    Addr->AddrData.Buffer[0] = (uint8)Domain;
+    return OS_SUCCESS;
+}
+int32 OS_SocketAddrToString_Impl(char *buffer, size_t buflen, const OS_SockAddr_t *Addr)
+{
+    snprintf(buffer, buflen, "A%u", (unsigned)Addr->AddrData.Buffer[1]);
+    return OS_SUCCESS;
+}
+int32 OS_SocketAddrFromString_Impl(OS_SockAddr_t *Addr, const char *string)
+{
+    memset(Addr, 0, sizeof(*Addr));
+    Addr->ActualLength       = 4;
+    Addr->AddrData.Buffer[1] = (uint8)(string[0] - '0');
+    return OS_SUCCESS;
+}
+int32 OS_SocketAddrGetPort_Impl(uint16 *PortNum, const OS_SockAddr_t *Addr)
+{
+    *PortNum = (uint16)Addr->AddrData.Buffer[2];
+    return OS_SUCCESS;
+}
+int32 OS_SocketAddrSetPort_Impl(OS_SockAddr_t *Addr, uint16 PortNum)
+{
+    Addr->AddrData.Buffer[2] = (uint8)PortNum;
+    return OS_SUCCESS;
+}
+int32 OS_SocketGetOption_Impl(const OS_object_token_t *token, OS_socket_option_t opt_id,
+                              OS_socket_optval_t *optval)
+{
+    ++stub_s_getopt;
+    optval->IntVal = 46;
+    return OS_SUCCESS;
+}
+int32 OS_SocketSetOption_Impl(const OS_object_token_t *token, OS_socket_option_t opt_id,
+                              const OS_socket_optval_t *optval)
+{
+    ++stub_s_setopt;
+    return OS_SUCCESS;
+}
+
+/* stream_state as separate bits, because the whole module is about which are set. */
+static void sock_state(const char *tag, osal_id_t sid)
+{
+    osal_index_t idx;
+    uint16       st;
+    if (OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_STREAM, sid, &idx) != OS_SUCCESS)
+    {
+        printf("%s <bad id>\n", tag);
+        return;
+    }
+    st = OS_stream_table[idx].stream_state;
+    printf("%s bound=%d listen=%d conn=%d rd=%d wr=%d dom=%d typ=%d\n", tag,
+           (st & OS_STREAM_STATE_BOUND) != 0, (st & OS_STREAM_STATE_LISTENING) != 0,
+           (st & OS_STREAM_STATE_CONNECTED) != 0, (st & OS_STREAM_STATE_READABLE) != 0,
+           (st & OS_STREAM_STATE_WRITABLE) != 0, (int)OS_stream_table[idx].socket_domain,
+           (int)OS_stream_table[idx].socket_type);
+}
 
 /* --- osapi-timebase.c / osapi-time.c backend ---------------------------------------------
  * OS_TaskRegister_Impl is given real meaning here: the callback thread registers itself with
@@ -1795,6 +1907,106 @@ int main(void)
             OS_SharedGlobalVars.TicksPerSecond = 1000000;
             printf("m2t_over  rc=%d ticks=%d\n", (int)OS_Milli2Ticks(0xFFFFFFFFu, &m2t), m2t);
             OS_SharedGlobalVars.TicksPerSecond = 100;
+        }
+
+        /* --- osapi-sockets.c --------------------------------------------------------------
+         * A STATE MACHINE over stream_state. Almost every function's real content is which
+         * combination of BOUND / LISTENING / CONNECTED it demands and which it sets, and NASA
+         * distinguishes "not a socket of this kind" (OS_ERR_INCORRECT_OBJ_TYPE, -36) from
+         * "right kind, wrong state" (OS_ERR_INCORRECT_OBJ_STATE, -35). A driver that only
+         * checked for failure would not tell those apart, so every line prints the code and
+         * the state bits are dumped after each transition.
+         */
+        {
+            osal_id_t          dsock, ssock, conn;
+            OS_SockAddr_t      addr;
+            OS_socket_prop_t   sprop;
+            OS_socket_optval_t oval;
+            char               abuf[32];
+            uint16             port;
+
+            OS_SocketAPI_Init();
+            printf("k_init    rc=%d\n", (int)OS_SocketAPI_Init());
+            printf("k_nullid  rc=%d\n", (int)OS_SocketOpen(NULL, OS_SocketDomain_INET,
+                                                           OS_SocketType_DATAGRAM));
+            printf("k_opend   rc=%d n=%d\n", (int)OS_SocketOpen(&dsock, OS_SocketDomain_INET,
+                                                                OS_SocketType_DATAGRAM),
+                   stub_s_opens);
+            printf("k_opens   rc=%d n=%d\n", (int)OS_SocketOpen(&ssock, OS_SocketDomain_INET,
+                                                                OS_SocketType_STREAM),
+                   stub_s_opens);
+            sock_state("k_st_new ", ssock);
+
+            /* Address helpers first, since bind needs one. */
+            printf("k_ainit   rc=%d len=%d\n", (int)OS_SocketAddrInit(&addr, OS_SocketDomain_INET),
+                   (int)addr.ActualLength);
+            printf("k_afrom   rc=%d\n", (int)OS_SocketAddrFromString(&addr, "7"));
+            printf("k_aport   rc=%d\n", (int)OS_SocketAddrSetPort(&addr, 99));
+            printf("k_agetp   rc=%d port=%d\n", (int)OS_SocketAddrGetPort(&port, &addr), (int)port);
+            printf("k_astr    rc=%d [%s]\n", (int)OS_SocketAddrToString(abuf, sizeof(abuf), &addr),
+                   abuf);
+            printf("k_anull   rc=%d\n", (int)OS_SocketAddrToString(abuf, sizeof(abuf), NULL));
+
+            /* listen before bind: right kind, wrong state. */
+            printf("k_l_early rc=%d n=%d\n", (int)OS_SocketListen(ssock), stub_s_listens);
+            printf("k_bind    rc=%d n=%d\n", (int)OS_SocketBindAddress(ssock, &addr), stub_s_binds);
+            sock_state("k_st_bnd ", ssock);
+            printf("k_bind2   rc=%d\n", (int)OS_SocketBindAddress(ssock, &addr));
+            printf("k_listen  rc=%d n=%d\n", (int)OS_SocketListen(ssock), stub_s_listens);
+            sock_state("k_st_lsn ", ssock);
+            printf("k_listen2 rc=%d\n", (int)OS_SocketListen(ssock));
+            /* A DATAGRAM socket cannot listen -- and that is a TYPE error, not a state one. */
+            printf("k_l_dgram rc=%d\n", (int)OS_SocketListen(dsock));
+
+            /* The compatibility wrapper swallows exactly that type error, so binding a
+             * datagram socket reports success even though listen refused it. */
+            printf("k_bindw   rc=%d listens=%d\n", (int)OS_SocketBind(dsock, &addr),
+                   stub_s_listens);
+            sock_state("k_st_dgm ", dsock);
+
+            /* accept requires BOUND and not CONNECTED, tested as an exact match. */
+            printf("k_accept  rc=%d n=%d\n", (int)OS_SocketAccept(ssock, &conn, &addr, 10),
+                   stub_s_accepts);
+            sock_state("k_st_cnn ", conn);
+            printf("k_acc_inf rc=%d [%s]\n", (int)OS_SocketGetInfo(conn, &sprop), sprop.name);
+            printf("k_acc_dg  rc=%d\n", (int)OS_SocketAccept(dsock, &conn, &addr, 10));
+
+            /* connect sets THREE bits at once. */
+            printf("k_conn    rc=%d n=%d\n", (int)OS_SocketConnect(dsock, &addr, 10),
+                   stub_s_connects);
+            sock_state("k_st_con ", dsock);
+            /* shutdown's Mode is a BITMASK: READ clears one bit, READWRITE clears both. */
+            printf("k_shut_r  rc=%d mode=%d\n",
+                   (int)OS_SocketShutdown(dsock, OS_SocketShutdownMode_SHUT_READ),
+                   stub_s_lastmode);
+            sock_state("k_st_shr ", dsock);
+            printf("k_shut_rw rc=%d\n",
+                   (int)OS_SocketShutdown(dsock, OS_SocketShutdownMode_SHUT_READWRITE));
+            sock_state("k_st_srw ", dsock);
+            printf("k_shut_bad rc=%d\n", (int)OS_SocketShutdown(dsock, OS_SocketShutdownMode_NONE));
+
+            /* recvfrom needs DATAGRAM and BOUND; sendto needs DATAGRAM but NOT bound. */
+            printf("k_recv    rc=%d n=%d\n", (int)OS_SocketRecvFrom(dsock, abuf, 8, &addr, 5),
+                   stub_s_recvs);
+            printf("k_recv_st rc=%d\n", (int)OS_SocketRecvFrom(ssock, abuf, 8, &addr, 5));
+            printf("k_recv_z  rc=%d\n", (int)OS_SocketRecvFrom(dsock, abuf, 0, &addr, 5));
+            printf("k_send    rc=%d n=%d\n", (int)OS_SocketSendTo(dsock, abuf, 8, &addr),
+                   stub_s_sends);
+            printf("k_send_na rc=%d\n", (int)OS_SocketSendTo(dsock, abuf, 8, NULL));
+
+            printf("k_byname  rc=%d\n", (int)OS_SocketGetIdByName(&conn, "A7:99"));
+            printf("k_getopt  rc=%d val=%d n=%d\n",
+                   (int)OS_SocketGetOption(dsock, OS_socket_option_IP_DSCP, &oval),
+                   (int)oval.IntVal, stub_s_getopt);
+            /* A bad option id must NOT clear the caller's value and must not reach the backend. */
+            oval.IntVal = 123;
+            printf("k_getbad  rc=%d val=%d n=%d\n",
+                   (int)OS_SocketGetOption(dsock, OS_socket_option_MAX, &oval),
+                   (int)oval.IntVal, stub_s_getopt);
+            printf("k_setopt  rc=%d n=%d\n",
+                   (int)OS_SocketSetOption(dsock, OS_socket_option_IP_DSCP, &oval), stub_s_setopt);
+            printf("k_setbad  rc=%d n=%d\n",
+                   (int)OS_SocketSetOption(dsock, OS_socket_option_MAX, &oval), stub_s_setopt);
         }
 
     }

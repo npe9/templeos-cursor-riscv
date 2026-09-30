@@ -89,7 +89,11 @@ C_TYPES = [(r'\bconst\b', ' '),
            # maps the C to the same token. That is a deliberate representation choice, not a
            # defect: both are passed in one register. The check still catches arity and
            # pointer-ness, which is what it is for.
-           (r'\bOS_lock_mode_t\b', ' SZ '), (r'\bOS_Event_t\b', ' SZ ')]
+           (r'\bOS_lock_mode_t\b', ' SZ '), (r'\bOS_Event_t\b', ' SZ '),
+           # The socket enums, by the same rule: HolyC has no enum, the translation
+           # spells them I64, and both are passed in one register.
+           (r'\bOS_SocketDomain_t\b', ' SZ '), (r'\bOS_SocketType_t\b', ' SZ '),
+           (r'\bOS_SocketShutdownMode_t\b', ' SZ '), (r'\bOS_socket_option_t\b', ' SZ ')]
 H_TYPES = [(r'\bCFE_MSG_Message\s*\*', ' PTRB '), (r'\bCFE_\w+\s*\*', ' PTRNUM '),
            # A cFE opaque type passed BY VALUE -- CFE_SB_MsgId, CFE_SBR_RouteId. These are
            # classes wrapping one integer, so they normalise the same as the C's typedefs.

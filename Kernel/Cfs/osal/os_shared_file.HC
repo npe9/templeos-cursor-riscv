@@ -44,6 +44,13 @@
 // in a table they share, and a zeroed record is therefore a file.
 #define OS_SocketDomain_INVALID 0
 
+// OS_StreamState_t, an enum in src/os/inc/osapi-select.h; these are its assigned values.
+#define OS_STREAM_STATE_BOUND     0x01
+#define OS_STREAM_STATE_CONNECTED 0x02
+#define OS_STREAM_STATE_READABLE  0x04
+#define OS_STREAM_STATE_WRITABLE  0x08
+#define OS_STREAM_STATE_LISTENING 0x10
+
 // --- os-shared-file.h --------------------------------------------------------------------------
 class OS_stream_internal_record_t
 {
