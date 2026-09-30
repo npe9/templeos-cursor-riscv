@@ -457,6 +457,13 @@ qemu-integration: $(COMPILER_BIN)
 	@$(MAKE) repl-uart-echo-pty
 	@$(MAKE) repl-uart-xon-pty
 	@$(MAKE) dump-changes-smoke
+	# Three gates that existed for weeks in no aggregate target at all, so their properties held
+	# only when someone typed them. Found by grepping every *-smoke rule for a second mention.
+	# The two platform ones that grep also flagged (milkv-mars, visionfive2) are genuinely covered
+	# by kernel-plat-matrix, and repl-unmatched-ctrlc-smoke needs the board.
+	@$(MAKE) kernel-cfs-smoke
+	@$(MAKE) kernel-ninep-eth-smoke
+	@$(MAKE) kernel-gr-scenes-smoke
 
 # Compile a program that #includes the real kernel, formats with its StrPrintJoin, and prints
 # over the UART under QEMU — proves compiled kernel code runs and outputs on RISC-V.
