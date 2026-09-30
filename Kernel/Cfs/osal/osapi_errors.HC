@@ -144,7 +144,7 @@ OS_ErrorTable_Entry OS_GLOBAL_ERROR_NAME_TABLE[] = {
 // its sizeof(*status_string) is the array's size rather than a pointer's. HolyC has no
 // pointer-to-array type that preserves that, so the buffer is passed directly and the length is
 // the constant the C's sizeof would have yielded. Same bytes written, one fewer indirection.
-U8 *OS_StatusToString(I64 status, U8 *status_string)
+U8 *OS_StatusToString(I32 status, U8 *status_string)
 {
   U8 *string = NULL;
   if (status_string != NULL) {

@@ -96,6 +96,14 @@ if ! python3 "$ROOT/tools/cfs/check_coverage.py" $SRC_C; then
   exit 1
 fi
 
+# --- signatures --------------------------------------------------------------------------------
+# Coverage proves a NAME is present; it says nothing about arity or pointer-ness. Two generated
+# OSAL semaphore signatures were wrong while passing coverage (OS_MutSemCreate lost `options`;
+# OS_CondVarTimedWait took a relative delay where NASA takes an absolute wake time), and
+# OS_StatusToString translated an int32 as I64. This makes that diff a command.
+# shellcheck disable=SC2086
+python3 "$ROOT/tools/cfs/check_signatures.py" $SRC_C || exit 1
+
 # --- reference: NASA's C, unmodified -------------------------------------------------------
 # shellcheck disable=SC2086
 if ! "$HOSTCC" -O0 -w $INC -I"$ROOT/tests/cfs" -o "$T/ref" "$ROOT/tests/cfs/oracle_ccsdspri.c" $SRC_C "$GENDIR/cfe_configid_nametable.c" 2>"$T/cc.log"; then
