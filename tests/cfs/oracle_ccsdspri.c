@@ -8,10 +8,28 @@
 #include "cfe_msg.h"
 #include "cfe_sb.h"
 #include "target_objtab.h"
+#include "cfe_resourceid.h"
+#include "cfe_resourceid_basevalue.h"
 
 /* cfe_msg_objtab.c defines this and no header declares it -- the generated cfe_es_objtab.c is
  * what normally refers to it, by name, from the build system. */
 extern const Target_ObjectTable_t CFE_MSG_ModuleEntry;
+extern const Target_ObjectTable_t CFE_RESOURCEID_ModuleEntry;
+
+/* Check functions for CFE_ResourceId_FindNext. "In use" is serial 6 or 7, chosen so the search
+ * has to step over two occupied slots and land on the third -- a single occupied slot would
+ * pass even if the do-while ran once instead of looping. */
+static bool rid_in_use(CFE_ResourceId_t id)
+{
+    uint32 serial = CFE_ResourceId_GetSerial(id);
+    return (serial == 6 || serial == 7);
+}
+
+static bool rid_all_in_use(CFE_ResourceId_t id)
+{
+    (void)id;
+    return true;
+}
 
 /* Decimal only, one byte per field, space separated. Formatting is the one thing that would
  * differ between C's printf and HolyC for reasons that have nothing to do with the translation
@@ -279,6 +297,66 @@ int main(void)
                (long)CFE_MSG_VerificationAction(&cmd.Msg, sizeof(cmd), &acc), (int)acc);
         printf("orignull rc=%ld\n", (long)CFE_MSG_OriginationAction(NULL, 8, &acc));
         printf("verinull rc=%ld\n", (long)CFE_MSG_VerificationAction(&cmd.Msg, 8, NULL));
+    }
+
+    /* --- cfe_resourceid_api.c --------------------------------------------------------- */
+    {
+        CFE_ResourceId_t rid;
+        uint32           idx;
+        uint32           base = CFE_RESOURCEID_MAKE_BASE(1);
+
+        /* The C has a CompileTimeAssert that MAX is one less than a power of two, because the
+         * same constant is a numeric limit AND a bit mask. HolyC has no static assert, so the
+         * property is checked here instead of being silently dropped. */
+        printf("ridmask %d\n", (int)(((CFE_RESOURCEID_MAX + 1) & CFE_RESOURCEID_MAX) == 0));
+        printf("ridbase %lu %lu\n", (unsigned long)base, (unsigned long)CFE_RESOURCEID_MAX);
+
+        rid = CFE_ResourceId_FromInteger(base + 5);
+        printf("ridsplit b=%lu s=%lu i=%lu\n", (unsigned long)CFE_ResourceId_GetBase(rid),
+               (unsigned long)CFE_ResourceId_GetSerial(rid),
+               (unsigned long)CFE_ResourceId_ToInteger(rid));
+        printf("riddef d=%d u=%d\n", (int)CFE_ResourceId_IsDefined(rid),
+               (int)CFE_ResourceId_IsDefined(CFE_RESOURCEID_UNDEFINED));
+
+        idx = 0xAAAA;
+        printf("ridx     rc=%ld i=%lu\n", (long)CFE_ResourceId_ToIndex(rid, base, 8, &idx),
+               (unsigned long)idx);
+        /* Id below BaseValue. ToInteger returns unsigned long, so the subtraction is 64-bit and
+         * the result only comes back in range because it is stored into a uint32 first. */
+        idx = 0xAAAA;
+        printf("ridxlow  rc=%ld i=%lu\n",
+               (long)CFE_ResourceId_ToIndex(CFE_ResourceId_FromInteger(5), base, 8, &idx),
+               (unsigned long)idx);
+        /* THE DISCRIMINATING CASE. 5 - 0xFFFFFFFF is 0xFFFFFFFF00000006 in 64 bits, which is far
+         * above CFE_RESOURCEID_MAX and would be REJECTED -- but truncated to uint32 it is 6,
+         * which is accepted and indexes slot 6. An implementation that keeps 64-bit width here
+         * returns an error where NASA's returns success, and only this input says so. */
+        idx = 0xAAAA;
+        printf("ridxwrap rc=%ld i=%lu\n",
+               (long)CFE_ResourceId_ToIndex(CFE_ResourceId_FromInteger(5), 0xFFFFFFFF, 8, &idx),
+               (unsigned long)idx);
+        idx = 0xAAAA;
+        printf("ridxzero rc=%ld i=%lu\n", (long)CFE_ResourceId_ToIndex(rid, base, 0, &idx),
+               (unsigned long)idx);
+        printf("ridxnull rc=%ld\n", (long)CFE_ResourceId_ToIndex(rid, base, 8, NULL));
+
+        /* FindNext walks the do-while: increment first, then test. Serials 6 and 7 are taken,
+         * so starting at 5 must land on 8. */
+        printf("ridnext  %lu\n",
+               (unsigned long)CFE_ResourceId_ToInteger(CFE_ResourceId_FindNext(rid, 8, rid_in_use)));
+        /* Everything taken: RemainingCount reaches zero, the increment yields UNDEFINED, and
+         * the IsDefined check breaks the loop rather than spinning forever. */
+        printf("ridfull  %lu\n", (unsigned long)CFE_ResourceId_ToInteger(
+                                     CFE_ResourceId_FindNext(rid, 8, rid_all_in_use)));
+        /* Serial at the top of its range wraps modulo the table size, not to zero. */
+        printf("ridwrap  %lu\n",
+               (unsigned long)CFE_ResourceId_ToInteger(CFE_ResourceId_FindNext(
+                   CFE_ResourceId_FromInteger(base + CFE_RESOURCEID_MAX - 1), 4, rid_in_use)));
+        printf("ridnull  %lu %lu\n",
+               (unsigned long)CFE_ResourceId_ToInteger(CFE_ResourceId_FindNextEx(rid, NULL, NULL, rid_in_use)),
+               (unsigned long)CFE_ResourceId_ToInteger(CFE_ResourceId_FindNextEx(rid, NULL, NULL, NULL)));
+        printf("ridobj %s %lu\n", CFE_RESOURCEID_ModuleEntry.Name,
+               (unsigned long)CFE_RESOURCEID_ModuleEntry.StackSize);
     }
 
     /* --- cfe_msg_objtab.c ------------------------------------------------------------- */

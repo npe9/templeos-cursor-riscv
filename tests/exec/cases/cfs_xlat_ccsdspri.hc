@@ -9,6 +9,7 @@
 #include "/Kernel/Cfs/cfe/cfe_msg_init.HC"
 #include "/Kernel/Cfs/cfe/cfe_msg_integrity.HC"
 #include "/Kernel/Cfs/cfe/cfe_msg_objtab.HC"
+#include "/Kernel/Cfs/cfe/cfe_resourceid.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -78,6 +79,20 @@ U0 Rcv(U8 *label, I32 rc, U8 *key, I64 v)
   S("=");
   D(v);
   S("\n");
+}
+
+// Check functions for CFE_ResourceId_FindNext. "In use" is serial 6 or 7, chosen so the search
+// has to step over two occupied slots and land on the third -- one occupied slot would pass even
+// if the do-while ran once instead of looping.
+Bool rid_in_use(U32 id)
+{
+  U32 serial = CFE_ResourceId_GetSerial(id);
+  return serial == 6 || serial == 7;
+}
+
+Bool rid_all_in_use(U32 id)
+{
+  return TRUE;
 }
 
 // cfe_msg_integrity.HC declares this and the harness supplies it -- the TIME module is not
@@ -419,6 +434,81 @@ I64 main()
     Rc("orignull", rc32);
     rc32 = CFE_MSG_VerificationAction(&cmd.Msg, 8, NULL);
     Rc("verinull", rc32);
+  }
+  // --- cfe_resourceid_api.c -----------------------------------------------------------
+  {
+    U32 rid;
+    U32 idx;
+    U32 base = CFE_RESOURCEID_MAKE_BASE(1);
+    // The C has a CompileTimeAssert that MAX is one less than a power of two, because the same
+    // constant is a numeric limit AND a bit mask. HolyC has no static assert, so the property
+    // is checked here rather than being silently dropped in translation.
+    S("ridmask ");
+    D(((CFE_RESOURCEID_MAX + 1) & CFE_RESOURCEID_MAX) == 0);
+    S("\n");
+    S("ridbase ");
+    D(base);
+    S(" ");
+    D(CFE_RESOURCEID_MAX);
+    S("\n");
+    rid = CFE_ResourceId_FromInteger(base + 5);
+    S("ridsplit b=");
+    D(CFE_ResourceId_GetBase(rid));
+    S(" s=");
+    D(CFE_ResourceId_GetSerial(rid));
+    S(" i=");
+    D(CFE_ResourceId_ToInteger(rid));
+    S("\n");
+    S("riddef d=");
+    D(CFE_ResourceId_IsDefined(rid));
+    S(" u=");
+    D(CFE_ResourceId_IsDefined(CFE_RESOURCEID_UNDEFINED));
+    S("\n");
+    idx = 0xAAAA;
+    rc32 = CFE_ResourceId_ToIndex(rid, base, 8, &idx);
+    Rcv("ridx    ", rc32, "i", idx);
+    // Id below BaseValue. ToInteger yields 64 bits, so the subtraction is 64-bit and the result
+    // only lands back in range because it is stored into a U32 first.
+    idx = 0xAAAA;
+    rc32 = CFE_ResourceId_ToIndex(CFE_ResourceId_FromInteger(5), base, 8, &idx);
+    Rcv("ridxlow ", rc32, "i", idx);
+    // THE DISCRIMINATING CASE. 5 - 0xFFFFFFFF is 0xFFFFFFFF00000006 in 64 bits, far above
+    // CFE_RESOURCEID_MAX and would be REJECTED -- but truncated to U32 it is 6, which is
+    // accepted and indexes slot 6. Keep 64-bit width here and this line returns an error where
+    // NASA's returns success. No other input in this transcript tells the two apart.
+    idx = 0xAAAA;
+    rc32 = CFE_ResourceId_ToIndex(CFE_ResourceId_FromInteger(5), 0xFFFFFFFF, 8, &idx);
+    Rcv("ridxwrap", rc32, "i", idx);
+    idx = 0xAAAA;
+    rc32 = CFE_ResourceId_ToIndex(rid, base, 0, &idx);
+    Rcv("ridxzero", rc32, "i", idx);
+    rc32 = CFE_ResourceId_ToIndex(rid, base, 8, NULL);
+    Rc("ridxnull", rc32);
+    // FindNext walks the do-while: increment first, then test. Serials 6 and 7 are taken, so
+    // starting at 5 must land on 8.
+    S("ridnext  ");
+    D(CFE_ResourceId_ToInteger(CFE_ResourceId_FindNext(rid, 8, &rid_in_use)));
+    S("\n");
+    // Everything taken: RemainingCount reaches zero, the increment yields UNDEFINED, and the
+    // IsDefined check breaks the loop rather than spinning forever.
+    S("ridfull  ");
+    D(CFE_ResourceId_ToInteger(CFE_ResourceId_FindNext(rid, 8, &rid_all_in_use)));
+    S("\n");
+    // A serial at the top of its range wraps modulo the table size, not to zero.
+    S("ridwrap  ");
+    D(CFE_ResourceId_ToInteger(CFE_ResourceId_FindNext(
+        CFE_ResourceId_FromInteger(base + CFE_RESOURCEID_MAX - 1), 4, &rid_in_use)));
+    S("\n");
+    S("ridnull  ");
+    D(CFE_ResourceId_ToInteger(CFE_ResourceId_FindNextEx(rid, NULL, NULL, &rid_in_use)));
+    S(" ");
+    D(CFE_ResourceId_ToInteger(CFE_ResourceId_FindNextEx(rid, NULL, NULL, NULL)));
+    S("\n");
+    S("ridobj ");
+    S(CFE_RESOURCEID_ModuleEntry.Name);
+    S(" ");
+    D(CFE_RESOURCEID_ModuleEntry.StackSize);
+    S("\n");
   }
   // --- cfe_msg_objtab.c ---------------------------------------------------------------
   // One registration entry, no task. ES walks the collected table at every lifecycle phase, so
