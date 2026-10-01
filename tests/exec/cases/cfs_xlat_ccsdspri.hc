@@ -63,6 +63,19 @@ I64 ToUpper(I64 c)
     return c - 32;
   return c;
 }
+// MemCmp is a kernel primitive (_extern _MEMCMP in KernelB.HH) and a runtime name, so leaving
+// it out of this standalone harness binds it silently to the host C runtime -- the trailer
+// check is what said so. Reproduced to match bootstrap/holy_rt.h's HolyMemCmp: a BYTE
+// DIFFERENCE, and cFE compares it against zero.
+I64 MemCmp(U8 *a, U8 *b, I64 n)
+{
+  I64 i;
+  for (i = 0; i < n; i++) {
+    if (a[i] != b[i])
+      return a[i] - b[i];
+  }
+  return 0;
+}
 
 I64 StrNCmp(U8 *a, U8 *b, I64 n)
 {
@@ -109,6 +122,9 @@ I64 StrCmp(U8 *st1, U8 *st2)
 #include "/Kernel/Cfs/cfe/cfe_fs_priv.HC"
 #include "/Kernel/Cfs/cfe/cfe_fs_api.HC"
 #include "/Kernel/Cfs/cfe/cfe_fs_objtab.HC"
+#include "/Kernel/Cfs/cfe/cfe_ta_task.HC"
+#include "/Kernel/Cfs/cfe/cfe_ta_dispatch.HC"
+#include "/Kernel/Cfs/cfe/cfe_ta_objtab.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -525,6 +541,175 @@ U0 ci_str(U8 *tag, U8 *s)
   Sn(s);
   S("]\n");
 }
+// =========================== cFE ta module =====================================================
+// A SIMULATED OS AND BUS, identical on both sides.
+//
+// TA is the first translated module that is an APP: a task, a command pipe, a housekeeping
+// packet, and 17 event messages. SB, EVS and ES are not translated, so both sides get the same
+// recording stubs; the affinity side is a small table this driver controls, so the three-way
+// loop bound in CFE_TA_Cpu_Set and every branch of the two affinity commands can be driven.
+//
+// CFE_EVS_SendEvent is variadic in the C and takes a plain string in the translation. The
+// transcript therefore compares the event ID and the TYPE and leaves the WORDING out -- the same
+// split CFE_ES_WriteToSysLog has, for the same reason: the id is what a ground system acts on.
+I64 ta_evs_count;
+I64 ta_pipe_created, ta_subscribes, ta_transmits;
+I64 ta_evs_register_rc, ta_pipe_rc, ta_subscribe_rc;
+I64 ta_cores;
+// what OS_TaskAffinityCoresConfigured reports
+I64 ta_getid_rc, ta_setaff_rc, ta_getaff_rc;
+U8 ta_os_mask;
+// the one byte the simulated OS stores per task
+I32 CFE_EVS_Register(U8 *Filters, U16 NumFilteredEvents, U16 FilterScheme)
+{
+  return ta_evs_register_rc;
+}
+
+I32 CFE_EVS_SendEvent(U16 EventID, U16 EventType, U8 *Spec)
+{
+  ++ta_evs_count;
+  S("evs eid=");
+  D(EventID);
+  S(" type=");
+  D(EventType);
+  S("\n");
+  return CFE_SUCCESS;
+}
+
+U0 CFE_ES_PerfLogEntry(U32 Marker)
+{
+}
+
+U0 CFE_ES_PerfLogExit(U32 Marker)
+{
+}
+
+U0 CFE_ES_ExitApp(U32 ExitStatus)
+{
+  S("es_exitapp ");
+  D(ExitStatus);
+  S("\n");
+}
+
+I32 CFE_ES_WaitForSystemState(U32 MinSystemState, U32 TimeOutMilliseconds)
+{
+  return CFE_SUCCESS;
+}
+
+U0 CFE_ES_IncrementTaskCounter()
+{
+}
+
+I32 CFE_SB_CreatePipe(U32 *PipeIdPtr, U16 Depth, U8 *PipeName)
+{
+  ++ta_pipe_created;
+  *PipeIdPtr = 0x1111;
+  return ta_pipe_rc;
+}
+
+I32 CFE_SB_Subscribe(U32 MsgId, U32 PipeId)
+{
+  ++ta_subscribes;
+  return ta_subscribe_rc;
+}
+// Never reached by the transcript -- CFE_TA_TaskMain is the only caller and it is not driven
+// (it pends forever and ends in CFE_ES_ExitApp). It has to EXIST because the translation
+// declares it, and the blob import trailer is what would say so if it did not.
+I32 CFE_SB_ReceiveBuffer(CFE_SB_Buffer **BufPtr, U32 PipeId, I32 TimeOut)
+{
+  return CFE_SUCCESS;
+}
+// NOT stubbed: CFE_SB_TimeStampMsg is in cfe_sb_util.HC, which this gate already translates, so
+// the housekeeping path runs the real one -- through CFE_TIME_GetTime and CFE_MSG_SetMsgTime,
+// both translated as well. Three translated modules composing, which is new here.
+I32 CFE_SB_TransmitMsg(CFE_MSG_Message *MsgPtr, Bool IsOrigination)
+{
+  ++ta_transmits;
+  return CFE_SUCCESS;
+}
+// The simulated OS's task table: one name, one id, one stored affinity byte. Everything the two
+// affinity commands branch on is a variable here.
+I32 OS_TaskGetIdByName(U32 *task_id, U8 *task_name)
+{
+  *task_id = 0x2222;
+  return ta_getid_rc;
+}
+
+I32 OS_TaskAffinitySetAffinity(U32 task_id, OS_cpuset_t cpuset)
+{
+  if (ta_setaff_rc == OS_SUCCESS)
+    ta_os_mask = cpuset.affinity_mask[0];
+  return ta_setaff_rc;
+}
+
+I32 OS_TaskAffinityGetAffinity(U32 task_id, OS_cpuset_t *cpuset)
+{
+  OS_CPUSET_ZERO(cpuset);
+  cpuset->affinity_mask[0] = ta_os_mask;
+  return ta_getaff_rc;
+}
+
+U32 OS_TaskAffinityCoresConfigured()
+{
+  return ta_cores;
+}
+
+I32 OS_RegisterEventHandler(I32 (*handler)(I64, U32, U8 *))
+{
+  return OS_SUCCESS;
+}
+
+I32 OS_GetResourceName(U32 object_id, U8 *buffer, I64 buffer_size)
+{
+  StrNCpy(buffer, "STARTUP_TASK", buffer_size - 1);
+  return OS_SUCCESS;
+}
+// One row of the live affinity table, so the branch each command took is visible as STATE and
+// not only as an event id.
+U0 ta_row(U8 *tag, I64 i)
+{
+  S(tag);
+  S("[");
+  D(i);
+  S("] name=[");
+  S(CFE_TA_CpuTaskAffinity[i].TaskName);
+  S("] mask=");
+  Hxb(CFE_TA_CpuTaskAffinity[i].CpuMask.affinity_mask[0]);
+  S(" fromos=");
+  Hxb(CFE_TA_CpuTaskAffinity[i].CpuFromOS.affinity_mask[0]);
+  S(" type=");
+  D(CFE_TA_CpuTaskAffinity[i].Type);
+  S(" status=");
+  D(CFE_TA_CpuTaskAffinity[i].Status);
+  S("\n");
+}
+
+U0 ta_counters(U8 *tag)
+{
+  S(tag);
+  S(" cc=");
+  D(CFE_TA_Global.CommandCounter);
+  S(" cec=");
+  D(CFE_TA_Global.CommandErrorCounter);
+  S(" sc=");
+  D(CFE_TA_Global.StartupCounter);
+  S(" sec=");
+  D(CFE_TA_Global.StartupErrorCounter);
+  S(" evs=");
+  D(ta_evs_count);
+  S("\n");
+}
+// The config-supplied affinity table and the SB buffer union the dispatch test needs, at file
+// scope as the C's `static` ones are.
+CFE_TA_CpuTaskAffinity_t ta_tbl[4];
+union ta_sb_u
+{
+  CFE_SB_Buffer Buf;
+  CFE_TA_SetTaskAffinityCmd_t Set;
+  CFE_TA_QueryAllTasksCmd_t Query;
+  U8 Bytes[128];
+};
+ta_sb_u ta_sb;
 // The five objects the queue-full case needs at file scope, as the C's `static` ones are.
 CFE_FS_FileWriteMetaData_t fs_q[5];
 I64 main()
@@ -1818,5 +2003,447 @@ I64 main()
   S(" ");
   D(CFE_CONFIG_ModuleEntry.StackSize);
   S("\n");
+  // --- cfe_ta: layout -----------------------------------------------------------------
+  
+  {
+    CFE_TA_CpuTaskAffinity_t la;
+    CFE_TA_DiagInfo_t ld;
+    S("ta_lay aff=");
+    D(sizeof(CFE_TA_CpuTaskAffinity_t));
+    S(" diag=");
+    D(sizeof(CFE_TA_DiagInfo_t));
+    S(" glob=");
+    D(sizeof(CFE_TA_Global_t));
+    S(" hk=");
+    D(sizeof(CFE_TA_HousekeepingTlm_t));
+    S(" setcmd=");
+    D(sizeof(CFE_TA_SetTaskAffinityCmd_t));
+    S(" cpuset=");
+    D(sizeof(OS_cpuset_t));
+    S("\n");
+    S("ta_off name=");
+    D ((U8 *) & la.TaskName - (U8 *) & la);
+    S(" mask=");
+    D ((U8 *) & la.CpuMask - (U8 *) & la);
+    S(" fromos=");
+    D ((U8 *) & la.CpuFromOS - (U8 *) & la);
+    S(" type=");
+    D ((U8 *) & la.Type - (U8 *) & la);
+    S(" status=");
+    D ((U8 *) & la.Status - (U8 *) & la);
+    S(" | cores=");
+    D ((U8 *) & ld.CoresConfigured - (U8 *) & ld);
+    S(" arr=");
+    D ((U8 *) & ld.CpuTaskAffinity - (U8 *) & ld);
+    S("\n");
+  }
+  // --- CFE_TA_Cpu_Set -----------------------------------------------------------------
+  // Driven DIRECTLY, because nothing else can see it: OS_CPUSET_ZERO and OS_CPUSET_SET are
+  // macros in the C, so check_coverage never looks for them and check_signatures never
+  // compares them. With OS_MAX_CPUS == 1 the loop runs at most once, so the three-way bound
+  // is the whole of the behaviour and the mask byte is the whole of the output.
+  
+  {
+    OS_cpuset_t cs;
+    U8 mask[8];
+    I64 k;
+    for (k = 0; k < 8; k++)
+      mask[k] = 0xFF;
+    ta_cores = 1;
+    CFE_TA_Cpu_Set(mask, &cs);
+    S("ta_cpuset all1 cores=1 -> ");
+    Hxb(cs.affinity_mask[0]);
+    S("\n");
+    mask[0] = 0x00;
+    CFE_TA_Cpu_Set(mask, &cs);
+    S("ta_cpuset bit0clr cores=1 -> ");
+    Hxb(cs.affinity_mask[0]);
+    S("\n");
+    mask[0] = 0x01;
+    CFE_TA_Cpu_Set(mask, &cs);
+    S("ta_cpuset bit0set cores=1 -> ");
+    Hxb(cs.affinity_mask[0]);
+    S("\n");
+    // CoresConfigured is the tightest of the three bounds: at 0 the loop never runs and the
+    // mask stays zeroed however many bits the ground sent.
+    ta_cores = 0;
+    mask[0] = 0xFF;
+    CFE_TA_Cpu_Set(mask, &cs);
+    S("ta_cpuset all1 cores=0 -> ");
+    Hxb(cs.affinity_mask[0]);
+    S("\n");
+    ta_cores = 1;
+  }
+  // --- CFE_TA_EarlyInit ----------------------------------------------------------------
+  
+  {
+    I32 erc = CFE_TA_EarlyInit();
+    S("ta_early rc=");
+    D(erc);
+    S("\n");
+  }
+  ta_row("ta_early_row", 0);
+  // Now with a table, including the empty-string terminator that stops the copy early.
+  
+  {
+    I32 erc;
+    MemSet(ta_tbl, 0, sizeof(ta_tbl));
+    StrNCpy(ta_tbl[0].TaskName, "CFE_ES", CFE_MISSION_MAX_API_LEN - 1);
+    ta_tbl[0].Type = CFE_TA_Mask;
+    ta_tbl[0].CpuMask.affinity_mask[0] = 0x01;
+    StrNCpy(ta_tbl[1].TaskName, "CFE_SB", CFE_MISSION_MAX_API_LEN - 1);
+    ta_tbl[1].Type = CFE_TA_OsDefault;
+    // ta_tbl[2].TaskName is "" -- the terminator. ta_tbl[3] must NOT be copied.
+    StrNCpy(ta_tbl[3].TaskName, "NEVER", CFE_MISSION_MAX_API_LEN - 1);
+    CFE_Config_SetObjPointer(CFE_CONFIGID_TA_AFFINITY_TABLE, ta_tbl);
+    erc = CFE_TA_EarlyInit();
+    S("ta_early2 rc=");
+    D(erc);
+    S("\n");
+    ta_row("ta_early2_row", 0);
+    ta_row("ta_early2_row", 1);
+    ta_row("ta_early2_row", 2);
+    ta_row("ta_early2_row", 3);
+  }
+  // --- CFE_TA_TaskInit: the success path and all five failures -------------------------
+  
+  {
+    I32 irc;
+    ta_evs_register_rc = CFE_SUCCESS;
+    ta_pipe_rc = CFE_SUCCESS;
+    ta_subscribe_rc = CFE_SUCCESS;
+    ta_cores = 1;
+    irc = CFE_TA_TaskInit();
+    S("ta_init rc=");
+    D(irc);
+    S(" pipes=");
+    D(ta_pipe_created);
+    S(" subs=");
+    D(ta_subscribes);
+    S("\n");
+    S("ta_init_diag cores=");
+    D(CFE_TA_Global.CFE_TA_DiagInfo.CoresConfigured);
+    S(" max=");
+    D(CFE_TA_Global.CFE_TA_DiagInfo.TACoresMax);
+    S(" app=");
+    D(CFE_TA_Global.TA_AppID);
+    S("\n");
+    ta_evs_register_rc = -77;
+    irc = CFE_TA_TaskInit();
+    S("ta_init_evsfail rc=");
+    D(irc);
+    S("\n");
+    ta_evs_register_rc = CFE_SUCCESS;
+    ta_pipe_rc = -78;
+    irc = CFE_TA_TaskInit();
+    S("ta_init_pipefail rc=");
+    D(irc);
+    S("\n");
+    ta_pipe_rc = CFE_SUCCESS;
+    ta_subscribe_rc = -79;
+    irc = CFE_TA_TaskInit();
+    S("ta_init_subfail rc=");
+    D(irc);
+    S("\n");
+    ta_subscribe_rc = CFE_SUCCESS;
+  }
+  // --- the simple commands ---------------------------------------------------------------
+  
+  {
+    I32 crc = CFE_TA_NoopCmd(NULL);
+    S("ta_noop rc=");
+    D(crc);
+    S("\n");
+    CFE_TA_Global.CommandCounter = 7;
+    CFE_TA_Global.CommandErrorCounter = 8;
+    CFE_TA_Global.StartupCounter = 9;
+    CFE_TA_Global.StartupErrorCounter = 10;
+    crc = CFE_TA_ReportHousekeepingCmd(NULL);
+    S("ta_hk rc=");
+    D(crc);
+    S(" tx=");
+    D(ta_transmits);
+    S(" pay=");
+    D(CFE_TA_Global.TA_TlmPkt.Payload.CommandCounter);
+    S("/");
+    D(CFE_TA_Global.TA_TlmPkt.Payload.CommandErrorCounter);
+    S("/");
+    D(CFE_TA_Global.TA_TlmPkt.Payload.StartupCounter);
+    S("/");
+    D(CFE_TA_Global.TA_TlmPkt.Payload.StartupErrorCounter);
+    S("\n");
+    // The reset command returns NO_COUNTER_INCREMENT, not SUCCESS -- deliberately, so the
+    // dispatcher does not bump the counter it just cleared.
+    crc = CFE_TA_ResetCountersCmd(NULL);
+    S("ta_reset rc=");
+    D(crc);
+    S("\n");
+  }
+  ta_counters("ta_reset_after");
+  // --- SetTaskAffinityCmd: every branch -----------------------------------------------
+  
+  {
+    CFE_TA_SetTaskAffinityCmd_t cmd;
+    I32 crc;
+    MemSet(&cmd, 0, sizeof(CFE_TA_SetTaskAffinityCmd_t));
+    StrNCpy(cmd.Payload.TaskName, "CFE_ES", CFE_MISSION_MAX_API_LEN - 1);
+    cmd.Payload.AffinityMask[0] = 0x01;
+    ta_getid_rc = OS_SUCCESS;
+    ta_setaff_rc = OS_SUCCESS;
+    ta_getaff_rc = OS_SUCCESS;
+    ta_os_mask = 0;
+    crc = CFE_TA_SetTaskAffinityCmd(&cmd);
+    S("ta_set_ok rc=");
+    D(crc);
+    S("\n");
+    ta_row("ta_set_ok_row", 0);
+    // the OS refuses the set
+    ta_setaff_rc = -5;
+    crc = CFE_TA_SetTaskAffinityCmd(&cmd);
+    S("ta_set_setfail rc=");
+    D(crc);
+    S("\n");
+    ta_row("ta_set_setfail_row", 0);
+    ta_setaff_rc = OS_SUCCESS;
+    // the set works but the read-back does not
+    ta_getaff_rc = -6;
+    crc = CFE_TA_SetTaskAffinityCmd(&cmd);
+    S("ta_set_getfail rc=");
+    D(crc);
+    S("\n");
+    ta_row("ta_set_getfail_row", 0);
+    ta_getaff_rc = OS_SUCCESS;
+    // a task that is not in the list: the walk stops at the first empty name
+    StrNCpy(cmd.Payload.TaskName, "NOT_THERE", CFE_MISSION_MAX_API_LEN - 1);
+    crc = CFE_TA_SetTaskAffinityCmd(&cmd);
+    S("ta_set_notfound rc=");
+    D(crc);
+    S("\n");
+  }
+  ta_counters("ta_set_after");
+  // --- GetTaskAffinityCmd ---------------------------------------------------------------
+  
+  {
+    CFE_TA_GetTaskAffinityCmd_t cmd;
+    I32 crc;
+    MemSet(&cmd, 0, sizeof(CFE_TA_GetTaskAffinityCmd_t));
+    StrNCpy(cmd.Payload.TaskName, "CFE_ES", CFE_MISSION_MAX_API_LEN - 1);
+    // no discrepancy: the OS reports what the table already holds
+    ta_os_mask = CFE_TA_CpuTaskAffinity[0].CpuFromOS.affinity_mask[0];
+    crc = CFE_TA_GetTaskAffinityCmd(&cmd);
+    S("ta_get_same rc=");
+    D(crc);
+    S("\n");
+    ta_row("ta_get_same_row", 0);
+    // a discrepancy: the OS reports something else, and TA adopts it
+    ta_os_mask = 0x01;
+    CFE_TA_CpuTaskAffinity[0].CpuFromOS.affinity_mask[0] = 0x00;
+    crc = CFE_TA_GetTaskAffinityCmd(&cmd);
+    S("ta_get_diff rc=");
+    D(crc);
+    S("\n");
+    ta_row("ta_get_diff_row", 0);
+    ta_getaff_rc = -8;
+    crc = CFE_TA_GetTaskAffinityCmd(&cmd);
+    S("ta_get_fail rc=");
+    D(crc);
+    S("\n");
+    ta_row("ta_get_fail_row", 0);
+    ta_getaff_rc = OS_SUCCESS;
+    StrNCpy(cmd.Payload.TaskName, "NOT_THERE", CFE_MISSION_MAX_API_LEN - 1);
+    crc = CFE_TA_GetTaskAffinityCmd(&cmd);
+    S("ta_get_notfound rc=");
+    D(crc);
+    S("\n");
+  }
+  ta_counters("ta_get_after");
+  // --- SetStartupAffinity: the three Types, the add path, and a failed lookup -----------
+  
+  {
+    I32 src;
+    ta_getid_rc = OS_SUCCESS;
+    ta_getaff_rc = OS_SUCCESS;
+    ta_os_mask = 0x01;
+    // CFE_ES is in the list with Type == CFE_TA_Mask after the set above
+    src = CFE_TA_SetStartupAffinity("CFE_ES");
+    S("ta_startup_mask rc=");
+    D(src);
+    S("\n");
+    ta_row("ta_startup_mask_row", 0);
+    // CFE_SB is in the list with Type == CFE_TA_OsDefault
+    src = CFE_TA_SetStartupAffinity("CFE_SB");
+    S("ta_startup_osdef rc=");
+    D(src);
+    S("\n");
+    ta_row("ta_startup_osdef_row", 1);
+    // a name not in the list is ADDED at the first empty slot
+    src = CFE_TA_SetStartupAffinity("BRAND_NEW");
+    S("ta_startup_add rc=");
+    D(src);
+    S("\n");
+    ta_row("ta_startup_add_row", 2);
+    // an invalid Type
+    CFE_TA_CpuTaskAffinity[1].Type = 99;
+    src = CFE_TA_SetStartupAffinity("CFE_SB");
+    S("ta_startup_badtype rc=");
+    D(src);
+    S("\n");
+    ta_row("ta_startup_badtype_row", 1);
+    CFE_TA_CpuTaskAffinity[1].Type = CFE_TA_OsDefault;
+    // the name lookup fails: the loop never runs at all
+    ta_getid_rc = -9;
+    src = CFE_TA_SetStartupAffinity("CFE_ES");
+    S("ta_startup_noid rc=");
+    D(src);
+    S("\n");
+    ta_getid_rc = OS_SUCCESS;
+    ta_counters("ta_startup_after");
+    // and the OS event handler, which is the only caller of SetStartupAffinity in flight
+    src = CFE_TA_OS_EventHandler(OS_EVENT_RESOURCE_ALLOCATED, 1, NULL);
+    S("ta_evh_alloc rc=");
+    D(src);
+    S("\n");
+    src = CFE_TA_OS_EventHandler(OS_EVENT_RESOURCE_CREATED, 1, NULL);
+    S("ta_evh_created rc=");
+    D(src);
+    S("\n");
+    src = CFE_TA_OS_EventHandler(OS_EVENT_RESOURCE_DELETED, 1, NULL);
+    S("ta_evh_deleted rc=");
+    D(src);
+    S("\n");
+    src = CFE_TA_OS_EventHandler(OS_EVENT_TASK_STARTUP, 1, NULL);
+    S("ta_evh_startup rc=");
+    D(src);
+    S("\n");
+    ta_row("ta_evh_startup_row", 3);
+    ta_counters("ta_evh_after");
+  }
+  // --- QueryAllTasksCmd: through the TRANSLATED fs module and the simulated file --------
+  
+  {
+    CFE_TA_QueryAllTasksCmd_t cmd;
+    I32 qrc;
+    MemSet(&cmd, 0, sizeof(CFE_TA_QueryAllTasksCmd_t));
+    StrNCpy(cmd.Payload.FileName, "/ram/ta.log", CFE_MISSION_MAX_PATH_LEN - 1);
+    fs_open_fail = 0;
+    fs_wr_left = -1;
+    fs_fd = 0;
+    fs_len = 0;
+    fs_pos = 0;
+    qrc = CFE_TA_QueryAllTasksCmd(&cmd);
+    S("ta_query rc=");
+    D(qrc);
+    S(" len=");
+    D(fs_len);
+    S("\n");
+    fs_dump("ta_query_bytes", 16);
+    ta_counters("ta_query_after");
+    // the file cannot be created
+    fs_open_fail = 1;
+    qrc = CFE_TA_QueryAllTasksCmd(&cmd);
+    S("ta_query_nocreate rc=");
+    D(qrc);
+    S("\n");
+    fs_open_fail = 0;
+    // the header write comes up short
+    fs_wr_left = 4;
+    qrc = CFE_TA_QueryAllTasksCmd(&cmd);
+    S("ta_query_hdrfail rc=");
+    D(qrc);
+    S("\n");
+    // the header fits and the diagnostic packet does not
+    fs_wr_left = 64;
+    qrc = CFE_TA_QueryAllTasksCmd(&cmd);
+    S("ta_query_datafail rc=");
+    D(qrc);
+    S("\n");
+    fs_wr_left = -1;
+    ta_counters("ta_query_errs");
+  }
+  // --- cfe_ta_dispatch.c -----------------------------------------------------------------
+  // The CONDITIONAL source: CMakeLists picks this one when EDS is off, which is this port.
+  // CFE_TA_TaskMain calls CFE_TA_TaskPipe, so a port that translated only the two
+  // unconditional sources would have a task whose message loop dispatches to nothing.
+  
+  {
+    I64 cc;
+    Bool vok;
+    MemSet(&ta_sb, 0, sizeof(ta_sb_u));
+    CFE_MSG_Init(&ta_sb.Set.CommandHeader.Msg, CFE_SB_ValueToMsgId(CFE_TA_CMD_MID), sizeof(CFE_TA_SetTaskAffinityCmd_t));
+    // the length check, both ways
+    // Hoisted: the failing one emits an event, and printf evaluates its arguments before the
+    // format, so on the C side that event line comes FIRST.
+    vok = CFE_TA_VerifyCmdLength(&ta_sb.Buf.Msg, sizeof(CFE_TA_SetTaskAffinityCmd_t));
+    S("ta_len_ok ");
+    D(vok);
+    S("\n");
+    vok = CFE_TA_VerifyCmdLength(&ta_sb.Buf.Msg, 9999);
+    S("ta_len_bad ");
+    D(vok);
+    S("\n");
+    // every command code, then one that does not exist
+    for (cc = 0; cc <= 5; cc++) {
+      CFE_MSG_SetFcnCode(&ta_sb.Buf.Msg, cc);
+      // give each command the length IT expects, so the routing rather than the length check
+      // is what the transcript shows
+      switch (cc) {
+        case CFE_TA_NOOP_CC :
+        case CFE_TA_RESET_COUNTERS_CC :
+        CFE_MSG_SetSize(&ta_sb.Buf.Msg, sizeof(CFE_TA_NoopCmd_t));
+        break;
+        case CFE_TA_QUERY_ALL_TASKS_CC :
+        CFE_MSG_SetSize(&ta_sb.Buf.Msg, sizeof(CFE_TA_QueryAllTasksCmd_t));
+        break;
+        case CFE_TA_SET_TASK_AFFINITY_CC :
+        CFE_MSG_SetSize(&ta_sb.Buf.Msg, sizeof(CFE_TA_SetTaskAffinityCmd_t));
+        break;
+        case CFE_TA_GET_TASK_AFFINITY_CC :
+        CFE_MSG_SetSize(&ta_sb.Buf.Msg, sizeof(CFE_TA_GetTaskAffinityCmd_t));
+        break;
+        default:
+        break;
+      }
+      S("ta_cc ");
+      D(cc);
+      S(":\n");
+      CFE_TA_ProcessGroundCommand(&ta_sb.Buf, CFE_SB_ValueToMsgId(CFE_TA_CMD_MID));
+    }
+    ta_counters("ta_cc_after");
+    // TaskPipe: the housekeeping id, the command id, and one that is neither
+    CFE_MSG_SetFcnCode(&ta_sb.Buf.Msg, CFE_TA_NOOP_CC);
+    CFE_MSG_SetSize(&ta_sb.Buf.Msg, sizeof(CFE_TA_NoopCmd_t));
+    CFE_MSG_SetMsgId(&ta_sb.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TA_SEND_HK_MID));
+    S("ta_pipe_hk:\n");
+    CFE_TA_TaskPipe(&ta_sb.Buf);
+    CFE_MSG_SetMsgId(&ta_sb.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TA_CMD_MID));
+    S("ta_pipe_cmd:\n");
+    CFE_TA_TaskPipe(&ta_sb.Buf);
+    CFE_MSG_SetMsgId(&ta_sb.Buf.Msg, CFE_SB_ValueToMsgId(0x1FFF));
+    S("ta_pipe_unknown:\n");
+    CFE_TA_TaskPipe(&ta_sb.Buf);
+    ta_counters("ta_pipe_after");
+  }
+  // --- cfe_ta_objtab.c ---------------------------------------------------------------------
+  // The first entry here with every field filled in: TA is an app, not a library.
+  S("ta_objtab ");
+  S(CFE_TA_ModuleEntry.Name);
+  S(" ");
+  D(CFE_TA_ModuleEntry.EarlyInit == NULL);
+  S(" ");
+  D(CFE_TA_ModuleEntry.TaskMain == NULL);
+  S(" ");
+  D(CFE_TA_ModuleEntry.AppCleanupCb == NULL);
+  S(" ");
+  D(CFE_TA_ModuleEntry.Priority);
+  S(" ");
+  D(CFE_TA_ModuleEntry.StackSize);
+  S("\n");
+  
+  {
+    I32 clr = CFE_TA_CleanUpApp(1);
+    S("ta_cleanup rc=");
+    D(clr);
+    S("\n");
+  }
   return 0;
 }

@@ -87,7 +87,7 @@ HDRS = [
     "os-shared-rwlock.h",
     "cfe_fs_module_all.h", "cfe_fs_priv.h", "cfe_msg.h", "cfe_sb.h", "cfe_sbr.h",
     "cfe_config.h", "cfe_config_priv.h", "cfe_config_nametable.h", "cfe_resourceid.h",
-    "cfe_time.h",
+    "cfe_time.h", "cfe_ta_task.h", "cfe_ta_tasklist.h",
     "target_config.h", "target_objtab.h",
 ]
 

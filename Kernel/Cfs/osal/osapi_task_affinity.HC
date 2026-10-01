@@ -26,11 +26,9 @@
 #ifndef OSAPI_TASK_AFFINITY_HC
 #define OSAPI_TASK_AFFINITY_HC
 #include "osconfig.HC"
-
-class OS_cpuset_t
-{
-  U8 affinity_mask[(OS_MAX_CPUS + 7) / 8];
-};
+// The type, the four cpu-set macros and the public prototypes live beside this file so cFE's
+// task affinity module can have the TYPE without the implementation -- see that file.
+#include "os_shared_task_affinity.HC"
 
 U32 OS_TaskAffinityGetCoresConfigured_Impl();
 I32 OS_TaskAffinitySetAffinity_Impl(OS_object_token_t *token, OS_cpuset_t cpuset);

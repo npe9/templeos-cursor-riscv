@@ -25,6 +25,12 @@
 #include "cfe_config_eds.h" /* module-private; declares CFE_Config_EdsState */
 #include "cfe_config_init.h"      /* module-private; the init helpers */
 #include "cfe_config_core_internal.h"
+#include "cfe_ta_task.h"
+#include "cfe_ta_msgids.h"
+#include "cfe_ta_fcncodes.h"
+#include "cfe_perfids.h"
+#include "cfe_ta_dispatch.h"
+
 #include "cfe_resourceid.h"
 #include "cfe_resourceid_basevalue.h"
 
@@ -34,6 +40,21 @@ extern const Target_ObjectTable_t CFE_MSG_ModuleEntry;
 extern const Target_ObjectTable_t CFE_RESOURCEID_ModuleEntry;
 extern const Target_ObjectTable_t CFE_FS_ModuleEntry;
 extern const Target_ObjectTable_t CFE_CONFIG_ModuleEntry;
+extern const Target_ObjectTable_t CFE_TA_ModuleEntry;
+/* module-private, declared in no header on the include path */
+extern CFE_TA_CpuTaskAffinity_t CFE_TA_CpuTaskAffinity[OS_MAX_TASKS];
+int32 CFE_TA_TaskInit(void);
+int32 CFE_TA_NoopCmd(const CFE_TA_NoopCmd_t *data);
+int32 CFE_TA_ResetCountersCmd(const CFE_TA_ResetCountersCmd_t *data);
+int32 CFE_TA_ReportHousekeepingCmd(const CFE_TA_SendHkCmd_t *data);
+int32 CFE_TA_QueryAllTasksCmd(const CFE_TA_QueryAllTasksCmd_t *data);
+void  CFE_TA_Cpu_Set(const uint8 *AffinityMask, OS_cpuset_t *cpuset);
+int32 CFE_TA_SetTaskAffinityCmd(const CFE_TA_SetTaskAffinityCmd_t *data);
+int32 CFE_TA_GetTaskAffinityCmd(const CFE_TA_GetTaskAffinityCmd_t *data);
+int32 CFE_TA_SetStartupAffinity(const char *taskname);
+int32 CFE_TA_OS_EventHandler(OS_Event_t event, osal_id_t object_id, void *data);
+bool  CFE_TA_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLength);
+void  CFE_TA_ProcessGroundCommand(const CFE_SB_Buffer_t *SBBufPtr, CFE_SB_MsgId_t MsgId);
 
 /* Private to the SB module (declared in modules/sb/fsw/src/cfe_sb_priv.h, which is not on the
  * include path here and would drag in the rest of SB). Declared rather than included, because
@@ -280,6 +301,139 @@ static void fs_onevent(void *Meta, CFE_FS_FileWriteEvent_t Event, int32 Status, 
            (unsigned long)RecordNum, (unsigned long)BlockSize, (unsigned long)Position);
 }
 
+
+/* =========================== cFE ta module =====================================================
+ * A SIMULATED OS AND BUS, identical on both sides.
+ *
+ * TA is the first translated module that is an APP: a task, a command pipe, a housekeeping
+ * packet, and 17 event messages. SB, EVS and ES are not translated, so both sides get the same
+ * recording stubs; the affinity side is a small table this driver controls, so the three-way
+ * loop bound in CFE_TA_Cpu_Set and every branch of the two affinity commands can be driven.
+ *
+ * CFE_EVS_SendEvent is variadic in the C and takes a plain string in the translation. The
+ * transcript therefore compares the event ID and the TYPE and leaves the WORDING out -- the same
+ * split CFE_ES_WriteToSysLog has, for the same reason: the id is what a ground system acts on. */
+static int      ta_evs_count;
+static int      ta_perf_depth;
+static int      ta_pipe_created, ta_subscribes, ta_transmits;
+static int      ta_evs_register_rc, ta_pipe_rc, ta_subscribe_rc, ta_getappid_rc, ta_msginit_rc;
+static int      ta_cores;            /* what OS_TaskAffinityCoresConfigured reports */
+static int      ta_getid_rc, ta_setaff_rc, ta_getaff_rc;
+static unsigned char ta_os_mask;     /* the one byte the simulated OS stores per task */
+
+CFE_Status_t CFE_EVS_Register(const void *Filters, uint16 NumFilteredEvents,
+                              CFE_EVS_EventFilter_Enum_t FilterScheme)
+{
+    (void)Filters; (void)NumFilteredEvents; (void)FilterScheme;
+    return ta_evs_register_rc;
+}
+
+int32 CFE_EVS_SendEvent(uint16 EventID, uint16 EventType, const char *Spec, ...)
+{
+    (void)Spec;
+    ++ta_evs_count;
+    printf("evs eid=%u type=%u\n", (unsigned)EventID, (unsigned)EventType);
+    return CFE_SUCCESS;
+}
+
+void  CFE_ES_PerfLogAdd(uint32 Marker, uint32 EntryExit) { (void)Marker; (void)EntryExit; }
+void  CFE_ES_ExitApp(uint32 ExitStatus) { printf("es_exitapp %lu\n", (unsigned long)ExitStatus); }
+int32 CFE_ES_WaitForSystemState(uint32 MinSystemState, uint32 TimeOutMilliseconds)
+{
+    (void)MinSystemState; (void)TimeOutMilliseconds;
+    return CFE_SUCCESS;
+}
+void CFE_ES_IncrementTaskCounter(void) {}
+
+int32 CFE_SB_CreatePipe(CFE_SB_PipeId_t *PipeIdPtr, uint16 Depth, const char *PipeName)
+{
+    (void)Depth; (void)PipeName;
+    ++ta_pipe_created;
+    *PipeIdPtr = CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(0x1111));
+    return ta_pipe_rc;
+}
+
+int32 CFE_SB_Subscribe(CFE_SB_MsgId_t MsgId, CFE_SB_PipeId_t PipeId)
+{
+    (void)MsgId; (void)PipeId;
+    ++ta_subscribes;
+    return ta_subscribe_rc;
+}
+
+/* Never reached by the transcript -- CFE_TA_TaskMain is the only caller and it is not driven
+ * (it pends forever and ends in CFE_ES_ExitApp). It has to EXIST because the C side links
+ * cfe_ta_task.c, which is the same reason the HolyC side declares it. */
+CFE_Status_t CFE_SB_ReceiveBuffer(CFE_SB_Buffer_t **BufPtr, CFE_SB_PipeId_t PipeId,
+                                  int32 TimeOut)
+{
+    (void)BufPtr; (void)PipeId; (void)TimeOut;
+    return CFE_SUCCESS;
+}
+
+/* NOT stubbed: CFE_SB_TimeStampMsg is in cfe_sb_util.c, which this gate already translates, so
+ * the housekeeping path runs the real one -- through CFE_TIME_GetTime and CFE_MSG_SetMsgTime,
+ * both translated as well. Three translated modules composing, which is new here. */
+CFE_Status_t CFE_SB_TransmitMsg(const CFE_MSG_Message_t *MsgPtr, bool IsOrigination)
+{
+    (void)MsgPtr; (void)IsOrigination;
+    ++ta_transmits;
+    return CFE_SUCCESS;
+}
+
+/* The simulated OS's task table: one name, one id, one stored affinity byte. Everything the two
+ * affinity commands branch on is a variable here. */
+int32 OS_TaskGetIdByName(osal_id_t *task_id, const char *task_name)
+{
+    (void)task_name;
+    *task_id = 0x2222;
+    return ta_getid_rc;
+}
+
+int32 OS_TaskAffinitySetAffinity(osal_id_t task_id, OS_cpuset_t cpuset)
+{
+    (void)task_id;
+    if (ta_setaff_rc == OS_SUCCESS)
+    {
+        ta_os_mask = cpuset.affinity_mask[0];
+    }
+    return ta_setaff_rc;
+}
+
+int32 OS_TaskAffinityGetAffinity(osal_id_t task_id, OS_cpuset_t *cpuset)
+{
+    (void)task_id;
+    OS_CPUSET_ZERO(cpuset);
+    cpuset->affinity_mask[0] = ta_os_mask;
+    return ta_getaff_rc;
+}
+
+uint32 OS_TaskAffinityCoresConfigured(void) { return (uint32)ta_cores; }
+
+int32 OS_RegisterEventHandler(OS_EventHandler_t handler) { (void)handler; return OS_SUCCESS; }
+
+int32 OS_GetResourceName(osal_id_t object_id, char *buffer, size_t buffer_size)
+{
+    (void)object_id;
+    strncpy(buffer, "STARTUP_TASK", buffer_size - 1);
+    return OS_SUCCESS;
+}
+
+/* One row of the live affinity table, so the branch each command took is visible as STATE and
+ * not only as an event id. */
+static void ta_row(const char *tag, int i)
+{
+    printf("%s[%d] name=[%s] mask=%02x fromos=%02x type=%d status=%d\n", tag, i,
+           CFE_TA_CpuTaskAffinity[i].TaskName, CFE_TA_CpuTaskAffinity[i].CpuMask.affinity_mask[0],
+           CFE_TA_CpuTaskAffinity[i].CpuFromOS.affinity_mask[0],
+           (int)CFE_TA_CpuTaskAffinity[i].Type, (int)CFE_TA_CpuTaskAffinity[i].Status);
+}
+
+static void ta_counters(const char *tag)
+{
+    printf("%s cc=%u cec=%u sc=%u sec=%u evs=%d\n", tag, CFE_TA_Global.CommandCounter,
+           CFE_TA_Global.CommandErrorCounter, CFE_TA_Global.StartupCounter,
+           CFE_TA_Global.StartupErrorCounter, ta_evs_count);
+}
 
 /* ---- cfe_config_init.c helpers ------------------------------------------------------------- */
 /* Two module lists and a key/value list, so FindTargetKeyValue, IsModuleInList, IsPspModule and
@@ -1275,7 +1429,326 @@ int main(void)
            (int)(CFE_CONFIG_ModuleEntry.AppCleanupCb == NULL),
            (unsigned long)CFE_CONFIG_ModuleEntry.Priority,
            (unsigned long)CFE_CONFIG_ModuleEntry.StackSize);
+
+    /* --- cfe_ta: layout ----------------------------------------------------------------- */
+    printf("ta_lay aff=%zu diag=%zu glob=%zu hk=%zu setcmd=%zu cpuset=%zu\n",
+           sizeof(CFE_TA_CpuTaskAffinity_t), sizeof(CFE_TA_DiagInfo_t), sizeof(CFE_TA_Global_t),
+           sizeof(CFE_TA_HousekeepingTlm_t), sizeof(CFE_TA_SetTaskAffinityCmd_t),
+           sizeof(OS_cpuset_t));
+    printf("ta_off name=%zu mask=%zu fromos=%zu type=%zu status=%zu | cores=%zu arr=%zu\n",
+           offsetof(CFE_TA_CpuTaskAffinity_t, TaskName),
+           offsetof(CFE_TA_CpuTaskAffinity_t, CpuMask),
+           offsetof(CFE_TA_CpuTaskAffinity_t, CpuFromOS),
+           offsetof(CFE_TA_CpuTaskAffinity_t, Type), offsetof(CFE_TA_CpuTaskAffinity_t, Status),
+           offsetof(CFE_TA_DiagInfo_t, CoresConfigured),
+           offsetof(CFE_TA_DiagInfo_t, CpuTaskAffinity));
+
+    /* --- CFE_TA_Cpu_Set ----------------------------------------------------------------- */
+    /* Driven DIRECTLY, because nothing else can see it: OS_CPUSET_ZERO and OS_CPUSET_SET are
+     * macros in the C, so check_coverage never looks for them and check_signatures never
+     * compares them. With OS_MAX_CPUS == 1 the loop runs at most once, so the three-way bound
+     * is the whole of the behaviour and the mask byte is the whole of the output. */
+    {
+        OS_cpuset_t   cs;
+        unsigned char mask[8];
+        int           k;
+
+        for (k = 0; k < 8; k++)
+        {
+            mask[k] = 0xFF;
+        }
+        ta_cores = 1;
+        CFE_TA_Cpu_Set(mask, &cs);
+        printf("ta_cpuset all1 cores=1 -> %02x\n", cs.affinity_mask[0]);
+
+        mask[0] = 0x00;
+        CFE_TA_Cpu_Set(mask, &cs);
+        printf("ta_cpuset bit0clr cores=1 -> %02x\n", cs.affinity_mask[0]);
+
+        mask[0] = 0x01;
+        CFE_TA_Cpu_Set(mask, &cs);
+        printf("ta_cpuset bit0set cores=1 -> %02x\n", cs.affinity_mask[0]);
+
+        /* CoresConfigured is the tightest of the three bounds: at 0 the loop never runs and the
+         * mask stays zeroed however many bits the ground sent. */
+        ta_cores = 0;
+        mask[0]  = 0xFF;
+        CFE_TA_Cpu_Set(mask, &cs);
+        printf("ta_cpuset all1 cores=0 -> %02x\n", cs.affinity_mask[0]);
+        ta_cores = 1;
+    }
+
+    /* --- CFE_TA_EarlyInit ---------------------------------------------------------------- */
+    /* With no table in the config registry: the live array stays empty. The id was set to the
+     * TA affinity table pointer by CFE_Config_Init above, which for this port is NULL. */
+    printf("ta_early rc=%ld\n", (long)CFE_TA_EarlyInit());
+    ta_row("ta_early_row", 0);
+
+    /* Now with a table, including the empty-string terminator that stops the copy early. */
+    {
+        static CFE_TA_CpuTaskAffinity_t tbl[4];
+        memset(tbl, 0, sizeof(tbl));
+        strncpy(tbl[0].TaskName, "CFE_ES", sizeof(tbl[0].TaskName) - 1);
+        tbl[0].Type = CFE_TA_Mask;
+        tbl[0].CpuMask.affinity_mask[0] = 0x01;
+        strncpy(tbl[1].TaskName, "CFE_SB", sizeof(tbl[1].TaskName) - 1);
+        tbl[1].Type = CFE_TA_OsDefault;
+        /* tbl[2].TaskName is "" -- the terminator. tbl[3] must NOT be copied. */
+        strncpy(tbl[3].TaskName, "NEVER", sizeof(tbl[3].TaskName) - 1);
+        CFE_Config_SetObjPointer(CFE_CONFIGID_TA_AFFINITY_TABLE, tbl);
+        printf("ta_early2 rc=%ld\n", (long)CFE_TA_EarlyInit());
+        ta_row("ta_early2_row", 0);
+        ta_row("ta_early2_row", 1);
+        ta_row("ta_early2_row", 2);
+        ta_row("ta_early2_row", 3);
+    }
+
+    /* --- CFE_TA_TaskInit: the success path and all five failures ------------------------- */
+    ta_evs_register_rc = CFE_SUCCESS;
+    ta_pipe_rc         = CFE_SUCCESS;
+    ta_subscribe_rc    = CFE_SUCCESS;
+    ta_cores           = 1;
+    printf("ta_init rc=%ld pipes=%d subs=%d\n", (long)CFE_TA_TaskInit(), ta_pipe_created,
+           ta_subscribes);
+    printf("ta_init_diag cores=%u max=%u app=%lu\n", CFE_TA_Global.CFE_TA_DiagInfo.CoresConfigured,
+           CFE_TA_Global.CFE_TA_DiagInfo.TACoresMax,
+           (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_TA_Global.TA_AppID));
+
+    ta_evs_register_rc = -77;
+    printf("ta_init_evsfail rc=%ld\n", (long)CFE_TA_TaskInit());
+    ta_evs_register_rc = CFE_SUCCESS;
+    ta_pipe_rc = -78;
+    printf("ta_init_pipefail rc=%ld\n", (long)CFE_TA_TaskInit());
+    ta_pipe_rc = CFE_SUCCESS;
+    ta_subscribe_rc = -79;
+    printf("ta_init_subfail rc=%ld\n", (long)CFE_TA_TaskInit());
+    ta_subscribe_rc = CFE_SUCCESS;
+
+    /* --- the simple commands -------------------------------------------------------------- */
+    printf("ta_noop rc=%ld\n", (long)CFE_TA_NoopCmd(NULL));
+    CFE_TA_Global.CommandCounter      = 7;
+    CFE_TA_Global.CommandErrorCounter = 8;
+    CFE_TA_Global.StartupCounter      = 9;
+    CFE_TA_Global.StartupErrorCounter = 10;
+    printf("ta_hk rc=%ld tx=%d pay=%u/%u/%u/%u\n", (long)CFE_TA_ReportHousekeepingCmd(NULL),
+           ta_transmits, CFE_TA_Global.TA_TlmPkt.Payload.CommandCounter,
+           CFE_TA_Global.TA_TlmPkt.Payload.CommandErrorCounter,
+           CFE_TA_Global.TA_TlmPkt.Payload.StartupCounter,
+           CFE_TA_Global.TA_TlmPkt.Payload.StartupErrorCounter);
+    /* The reset command returns NO_COUNTER_INCREMENT, not SUCCESS -- deliberately, so the
+     * dispatcher does not bump the counter it just cleared. */
+    printf("ta_reset rc=%ld\n", (long)CFE_TA_ResetCountersCmd(NULL));
+    ta_counters("ta_reset_after");
+
+    /* --- SetTaskAffinityCmd: every branch -------------------------------------------------- */
+    {
+        CFE_TA_SetTaskAffinityCmd_t cmd;
+
+        memset(&cmd, 0, sizeof(cmd));
+        strncpy(cmd.Payload.TaskName, "CFE_ES", sizeof(cmd.Payload.TaskName) - 1);
+        cmd.Payload.AffinityMask[0] = 0x01;
+
+        ta_getid_rc = OS_SUCCESS;
+        ta_setaff_rc = OS_SUCCESS;
+        ta_getaff_rc = OS_SUCCESS;
+        ta_os_mask = 0;
+        printf("ta_set_ok rc=%ld\n", (long)CFE_TA_SetTaskAffinityCmd(&cmd));
+        ta_row("ta_set_ok_row", 0);
+
+        /* the OS refuses the set */
+        ta_setaff_rc = -5;
+        printf("ta_set_setfail rc=%ld\n", (long)CFE_TA_SetTaskAffinityCmd(&cmd));
+        ta_row("ta_set_setfail_row", 0);
+        ta_setaff_rc = OS_SUCCESS;
+
+        /* the set works but the read-back does not */
+        ta_getaff_rc = -6;
+        printf("ta_set_getfail rc=%ld\n", (long)CFE_TA_SetTaskAffinityCmd(&cmd));
+        ta_row("ta_set_getfail_row", 0);
+        ta_getaff_rc = OS_SUCCESS;
+
+        /* a task that is not in the list: the walk stops at the first empty name */
+        strncpy(cmd.Payload.TaskName, "NOT_THERE", sizeof(cmd.Payload.TaskName) - 1);
+        printf("ta_set_notfound rc=%ld\n", (long)CFE_TA_SetTaskAffinityCmd(&cmd));
+        ta_counters("ta_set_after");
+    }
+
+    /* --- GetTaskAffinityCmd ---------------------------------------------------------------- */
+    {
+        CFE_TA_GetTaskAffinityCmd_t cmd;
+
+        memset(&cmd, 0, sizeof(cmd));
+        strncpy(cmd.Payload.TaskName, "CFE_ES", sizeof(cmd.Payload.TaskName) - 1);
+
+        /* no discrepancy: the OS reports what the table already holds */
+        ta_os_mask = CFE_TA_CpuTaskAffinity[0].CpuFromOS.affinity_mask[0];
+        printf("ta_get_same rc=%ld\n", (long)CFE_TA_GetTaskAffinityCmd(&cmd));
+        ta_row("ta_get_same_row", 0);
+
+        /* a discrepancy: the OS reports something else, and TA adopts it */
+        ta_os_mask = 0x01;
+        CFE_TA_CpuTaskAffinity[0].CpuFromOS.affinity_mask[0] = 0x00;
+        printf("ta_get_diff rc=%ld\n", (long)CFE_TA_GetTaskAffinityCmd(&cmd));
+        ta_row("ta_get_diff_row", 0);
+
+        ta_getaff_rc = -8;
+        printf("ta_get_fail rc=%ld\n", (long)CFE_TA_GetTaskAffinityCmd(&cmd));
+        ta_row("ta_get_fail_row", 0);
+        ta_getaff_rc = OS_SUCCESS;
+
+        strncpy(cmd.Payload.TaskName, "NOT_THERE", sizeof(cmd.Payload.TaskName) - 1);
+        printf("ta_get_notfound rc=%ld\n", (long)CFE_TA_GetTaskAffinityCmd(&cmd));
+        ta_counters("ta_get_after");
+    }
+
+    /* --- SetStartupAffinity: the three Types, the add path, and a failed lookup ------------ */
+    {
+        ta_getid_rc  = OS_SUCCESS;
+        ta_getaff_rc = OS_SUCCESS;
+        ta_os_mask   = 0x01;
+
+        /* CFE_ES is in the list with Type == CFE_TA_Mask after the set above */
+        printf("ta_startup_mask rc=%ld\n", (long)CFE_TA_SetStartupAffinity("CFE_ES"));
+        ta_row("ta_startup_mask_row", 0);
+
+        /* CFE_SB is in the list with Type == CFE_TA_OsDefault */
+        printf("ta_startup_osdef rc=%ld\n", (long)CFE_TA_SetStartupAffinity("CFE_SB"));
+        ta_row("ta_startup_osdef_row", 1);
+
+        /* a name not in the list is ADDED at the first empty slot */
+        printf("ta_startup_add rc=%ld\n", (long)CFE_TA_SetStartupAffinity("BRAND_NEW"));
+        ta_row("ta_startup_add_row", 2);
+
+        /* an invalid Type */
+        CFE_TA_CpuTaskAffinity[1].Type = 99;
+        printf("ta_startup_badtype rc=%ld\n", (long)CFE_TA_SetStartupAffinity("CFE_SB"));
+        ta_row("ta_startup_badtype_row", 1);
+        CFE_TA_CpuTaskAffinity[1].Type = CFE_TA_OsDefault;
+
+        /* the name lookup fails: the loop never runs at all */
+        ta_getid_rc = -9;
+        printf("ta_startup_noid rc=%ld\n", (long)CFE_TA_SetStartupAffinity("CFE_ES"));
+        ta_getid_rc = OS_SUCCESS;
+        ta_counters("ta_startup_after");
+
+        /* and the OS event handler, which is the only caller of SetStartupAffinity in flight */
+        printf("ta_evh_alloc rc=%ld\n", (long)CFE_TA_OS_EventHandler(OS_EVENT_RESOURCE_ALLOCATED, 1, NULL));
+        printf("ta_evh_created rc=%ld\n", (long)CFE_TA_OS_EventHandler(OS_EVENT_RESOURCE_CREATED, 1, NULL));
+        printf("ta_evh_deleted rc=%ld\n", (long)CFE_TA_OS_EventHandler(OS_EVENT_RESOURCE_DELETED, 1, NULL));
+        printf("ta_evh_startup rc=%ld\n", (long)CFE_TA_OS_EventHandler(OS_EVENT_TASK_STARTUP, 1, NULL));
+        ta_row("ta_evh_startup_row", 3);
+        ta_counters("ta_evh_after");
+    }
+
+    /* --- QueryAllTasksCmd: through the TRANSLATED fs module and the simulated file ---------- */
+    {
+        CFE_TA_QueryAllTasksCmd_t cmd;
+
+        memset(&cmd, 0, sizeof(cmd));
+        strncpy(cmd.Payload.FileName, "/ram/ta.log", sizeof(cmd.Payload.FileName) - 1);
+
+        fs_open_fail = 0;
+        fs_wr_left   = -1;
+        fs_fd        = 0;
+        fs_len       = 0;
+        fs_pos       = 0;
+        printf("ta_query rc=%ld len=%ld\n", (long)CFE_TA_QueryAllTasksCmd(&cmd), fs_len);
+        fs_dump("ta_query_bytes", 16);
+        ta_counters("ta_query_after");
+
+        /* the file cannot be created */
+        fs_open_fail = 1;
+        printf("ta_query_nocreate rc=%ld\n", (long)CFE_TA_QueryAllTasksCmd(&cmd));
+        fs_open_fail = 0;
+
+        /* the header write comes up short */
+        fs_wr_left = 4;
+        printf("ta_query_hdrfail rc=%ld\n", (long)CFE_TA_QueryAllTasksCmd(&cmd));
+
+        /* the header fits and the diagnostic packet does not */
+        fs_wr_left = 64;
+        printf("ta_query_datafail rc=%ld\n", (long)CFE_TA_QueryAllTasksCmd(&cmd));
+        fs_wr_left = -1;
+        ta_counters("ta_query_errs");
+    }
+
+    /* --- cfe_ta_dispatch.c ------------------------------------------------------------------ */
+    /* The CONDITIONAL source: CMakeLists picks this one when EDS is off, which is this port.
+     * CFE_TA_TaskMain calls CFE_TA_TaskPipe, so a port that translated only the two
+     * unconditional sources would have a task whose message loop dispatches to nothing. */
+    {
+        union
+        {
+            CFE_SB_Buffer_t             Buf;
+            CFE_TA_SetTaskAffinityCmd_t Set;
+            CFE_TA_QueryAllTasksCmd_t   Query;
+            unsigned char               Bytes[128];
+        } sb;
+        int cc;
+
+        memset(&sb, 0, sizeof(sb));
+        CFE_MSG_Init(CFE_MSG_PTR(sb.Set.CommandHeader), CFE_SB_ValueToMsgId(CFE_TA_CMD_MID),
+                     sizeof(CFE_TA_SetTaskAffinityCmd_t));
+
+        /* the length check, both ways */
+        printf("ta_len_ok %d\n",
+               (int)CFE_TA_VerifyCmdLength(&sb.Buf.Msg, sizeof(CFE_TA_SetTaskAffinityCmd_t)));
+        printf("ta_len_bad %d\n", (int)CFE_TA_VerifyCmdLength(&sb.Buf.Msg, 9999));
+
+        /* every command code, then one that does not exist */
+        for (cc = 0; cc <= 5; cc++)
+        {
+            CFE_MSG_SetFcnCode(&sb.Buf.Msg, cc);
+            /* give each command the length IT expects, so the routing rather than the length
+             * check is what the transcript shows */
+            switch (cc)
+            {
+                case CFE_TA_NOOP_CC:
+                case CFE_TA_RESET_COUNTERS_CC:
+                    CFE_MSG_SetSize(&sb.Buf.Msg, sizeof(CFE_TA_NoopCmd_t));
+                    break;
+                case CFE_TA_QUERY_ALL_TASKS_CC:
+                    CFE_MSG_SetSize(&sb.Buf.Msg, sizeof(CFE_TA_QueryAllTasksCmd_t));
+                    break;
+                case CFE_TA_SET_TASK_AFFINITY_CC:
+                    CFE_MSG_SetSize(&sb.Buf.Msg, sizeof(CFE_TA_SetTaskAffinityCmd_t));
+                    break;
+                case CFE_TA_GET_TASK_AFFINITY_CC:
+                    CFE_MSG_SetSize(&sb.Buf.Msg, sizeof(CFE_TA_GetTaskAffinityCmd_t));
+                    break;
+                default:
+                    break;
+            }
+            printf("ta_cc %d:\n", cc);
+            CFE_TA_ProcessGroundCommand(&sb.Buf, CFE_SB_ValueToMsgId(CFE_TA_CMD_MID));
+        }
+        ta_counters("ta_cc_after");
+
+        /* TaskPipe: the housekeeping id, the command id, and one that is neither */
+        CFE_MSG_SetFcnCode(&sb.Buf.Msg, CFE_TA_NOOP_CC);
+        CFE_MSG_SetSize(&sb.Buf.Msg, sizeof(CFE_TA_NoopCmd_t));
+        CFE_MSG_SetMsgId(&sb.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TA_SEND_HK_MID));
+        printf("ta_pipe_hk:\n");
+        CFE_TA_TaskPipe(&sb.Buf);
+        CFE_MSG_SetMsgId(&sb.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TA_CMD_MID));
+        printf("ta_pipe_cmd:\n");
+        CFE_TA_TaskPipe(&sb.Buf);
+        CFE_MSG_SetMsgId(&sb.Buf.Msg, CFE_SB_ValueToMsgId(0x1FFF));
+        printf("ta_pipe_unknown:\n");
+        CFE_TA_TaskPipe(&sb.Buf);
+        ta_counters("ta_pipe_after");
+    }
+
+    /* --- cfe_ta_objtab.c --------------------------------------------------------------------- */
+    /* The first entry here with every field filled in: TA is an app, not a library. */
+    printf("ta_objtab %s %d %d %d %lu %lu\n", CFE_TA_ModuleEntry.Name,
+           (int)(CFE_TA_ModuleEntry.EarlyInit == NULL), (int)(CFE_TA_ModuleEntry.TaskMain == NULL),
+           (int)(CFE_TA_ModuleEntry.AppCleanupCb == NULL),
+           (unsigned long)CFE_TA_ModuleEntry.Priority,
+           (unsigned long)CFE_TA_ModuleEntry.StackSize);
+    printf("ta_cleanup rc=%ld\n", (long)CFE_TA_CleanUpApp(1));
     return 0;
 }
+
 
 

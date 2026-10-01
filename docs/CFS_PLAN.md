@@ -297,11 +297,31 @@ rather than counted as always-built:
 | `config` | 5 | 697 | **100%** |
 | `sb` | 7 | 5,278 | 4% |
 | `fs` | 3 | 1,249 | **100%** |
-| `ta` | 2 | 892 | 0% |
+| `ta` | 2 | 892 | **100%** (plus `cfe_ta_dispatch.c`, 159, which is conditional — see below) |
 | `evs` | 5 | 2,787 | 0% |
 | `time` | 5 | 4,383 | 0% |
 | `tbl` | 15 | 7,780 | 0% |
 | `es` | 17 | 12,734 | 0% |
+
+#### A conditional source can hide behind a 100%
+
+`ta` is the first module where the percentage above is not the whole story.
+`modules/ta/CMakeLists.txt` picks its dispatcher with
+
+```cmake
+if (CFE_EDS_ENABLED)  cfe_ta_eds_dispatch.c   else  cfe_ta_dispatch.c
+```
+
+so `cfe_ta_dispatch.c` (159 lines) **is** in this configuration's build, and
+`check_manifest.py` counts only depth-0 sources — conditional ones are listed with their guard
+for a person to judge, which is the right default and is why the denominator stopped being
+wrong twice before. But `CFE_TA_TaskMain` calls `CFE_TA_TaskPipe`, which lives in that file.
+Translating the two unconditional sources would have reported `ta 100%` with a task whose
+message loop dispatches to nothing.
+
+It is translated and gated, and the manifest line shows it as `GATED` under its guard. Any
+module with a conditional source needs the same read: the percentage covers the unconditional
+ones and the lines underneath it are not decoration.
 
 #### How `config` got from 61% to 100%: build-system emulation, not translation
 

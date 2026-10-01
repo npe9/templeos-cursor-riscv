@@ -62,7 +62,10 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/fs/fsw/src/cfe_fs_priv.c
        $CFE/modules/fs/fsw/src/cfe_fs_objtab.c
        $CFE/modules/config/fsw/src/cfe_config_init.c
-       $CFE/modules/config/fsw/src/cfe_config_objtab.c"
+       $CFE/modules/config/fsw/src/cfe_config_objtab.c
+       $CFE/modules/ta/fsw/src/cfe_ta_task.c
+       $CFE/modules/ta/fsw/src/cfe_ta_dispatch.c
+       $CFE/modules/ta/fsw/src/cfe_ta_objtab.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -91,7 +94,7 @@ INC="-I$CFE/modules/core_api/fsw/inc -I$CFE/modules/core_api/config
      -I$CFE/modules/tbl/config -I$CFE/modules/tbl/fsw/inc
      -I$CFE/modules/time/config -I$CFE/modules/time/fsw/inc
      -I$CFE/modules/fs/config -I$CFE/modules/fs/fsw/inc -I$CFE/modules/fs/fsw/src
-     -I$CFE/modules/ta/config -I$CFE/modules/ta/fsw/inc
+     -I$CFE/modules/ta/config -I$CFE/modules/ta/fsw/inc -I$CFE/modules/ta/fsw/src
      -I$CFE/modules/resourceid/fsw/inc -I$CFE/modules/resourceid/config
      -I$CFE/modules/resourceid/option_inc
      -I$CFE/modules/config/fsw/inc
