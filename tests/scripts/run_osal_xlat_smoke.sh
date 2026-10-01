@@ -50,7 +50,8 @@ SRC_C="$OSAL/src/os/shared/src/osapi-errors.c
        $OSAL/src/os/shared/src/osapi-module.c
        $OSAL/src/os/shared/src/osapi-timebase.c
        $OSAL/src/os/shared/src/osapi-time.c
-       $OSAL/src/os/shared/src/osapi-sockets.c"
+       $OSAL/src/os/shared/src/osapi-sockets.c
+       $OSAL/src/os/shared/src/osapi-common.c"
 SRC_HC="$ROOT/tests/exec/cases/osal_xlat_errors.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"

@@ -125,7 +125,7 @@ to the same architecture; it is not a translation of anything, and it says so.
 
 ### OSAL, measured the same way
 
-**8,987 lines of NASA's 9,447-line shared layer, gated** (95%), computed by
+**ALL 9,447 lines of NASA's shared layer, gated** (100%, 25 of 25 sources), computed by
 `tools/cfs/check_manifest.py` on every gate run rather than counted here. The denominator is the portable half
 only; the three vendored backends (posix 4,598, vxworks 3,984, rtems 3,543) are reference
 implementations of the seam, not things to translate.
@@ -158,7 +158,7 @@ recipe, not from `ls`.
 | `osapi-time.c` | 548 | **yes** | the circular timer ring, and one-shot vs repeating |
 | `osapi-timebase.c` | 538 | **yes** | the callback thread, driven by a scripted sync function |
 | `osapi-module.c` | 472 | **yes** | the empty static symbol table, and which error survives a failed lookup |
-| `osapi-common.c` | 460 | partial | deliberately last and deliberately ungated: every module translated first is one fewer stub in it |
+| `osapi-common.c` | 460 | **yes** | the integration point: `OS_API_Init` calls every other module's initialiser, which is why it went last |
 | `osapi-dir.c` `-select.c` `-task-affinity.c` `-network.c` `-shell.c` | 740 | no | |
 | `osapi-debug.c` | 76 | **n/a** | NOT in this configuration: `OSAL_SRCLIST` appends it only under `OSAL_CONFIG_DEBUG_PRINTF`, which is `#undef` here — which is also why `OS_DEBUG` is a no-op and pre-init `OS_printf` output is silently discarded |
 
@@ -256,6 +256,32 @@ One number here is derived rather than observed: `OS_Milli2Ticks`'s overflow bra
 reached** at 100 ticks/sec, since the largest possible result is `0xFFFFFFFF * 100 / 1000` =
 429,496,730, well under `INT_MAX`. The driver raises the tick rate for that one call; otherwise
 the line would be a test that can never fail.
+
+#### The shared layer is complete
+
+Every source in `OSAL_SRCLIST` is translated and gated: **25 of 25, 9,447 of 9,447 lines**.
+`tools/cfs/check_manifest.py` computes that on every gate run, so it cannot drift.
+
+`osapi-common.c` was deliberately last. Its `OS_API_Init` calls every other module's
+initialiser and its `OS_CleanUpObject` calls every module's delete, so each module finished
+before it removed a stub from it — by the time it was written, there were none left.
+
+**Include position is load-bearing, and not free.** `osapi_idmap.HC` includes
+`osapi_common.HC`, because idmap needs `OS_SharedGlobalVars` and `OS_NotifyEvent` — which puts
+the whole of common very early, long before the modules `OS_API_Init` drives. That works
+because the compiler patches forward references through the blob's import slots, filling each
+from the definition's own address once the unit is complete. Moving it later does **not** work:
+the AOT entry chunk is emitted first and performs those patch-ups, so a definition appearing
+after it is never wired and the program returns without ever reaching `main`. Splitting the
+file in two was tried and reverted — every placement of the second half traded one set of
+unresolved imports for another. The blob's empty-import-trailer assertion is what made each
+attempt fail loudly instead of silently.
+
+One consequence worth stating: the separately-scoped printf gate links only `osapi-printf.c`
+and `osapi-idmap.c`, but inherits `OS_API_Init`'s whole call graph through that same include.
+It stubs the thirty functions rather than linking the modules, because linking them would make
+it a copy of the main gate and lose the one thing it exists for — a real `OS_printf`, which
+cannot coexist with the fixed `bugcheck` marker the main gate depends on.
 
 Six properties are gated independently, because each is blind to what the others catch:
 

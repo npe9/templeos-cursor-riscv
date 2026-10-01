@@ -124,3 +124,26 @@ It is not a latent bug the way finding 1 is — nothing in-tree calls it from ou
 `osapi-printf.c`, where the definition precedes every use — but it means the function is either
 public and under-declared, or internal and should be `static`. Reproduced, not fixed: the
 translation keeps it non-static so the two sides have the same linkage.
+
+## 4. OS_DeleteAllObjects leaves rwlocks and filesystems behind
+
+`OS_CleanUpObject` in `src/os/shared/src/osapi-common.c` switches on the object type and
+deletes it. It has cases for TASK, QUEUE, BINSEM, COUNTSEM, MUTEX, MODULE, TIMEBASE, TIMECB,
+STREAM, DIR and CONDVAR — and **none for RWLOCK or FILESYS**. Both fall to `default: break`.
+
+`OS_DeleteAllObjects` loops until a pass deletes nothing, so the leftovers do not even extend
+the loop; it simply returns with them still there. `OS_API_Teardown` then sets the shutdown
+flag, after which nothing can be created *or iterated*, so the leftovers become unreachable
+rather than cleaned.
+
+The gated transcript shows it directly:
+
+    c_delall  before=12 after=3
+    c_left    rwlock=1 filesys=2 task=0 queue=0
+
+A filesystem arguably should outlive a teardown — it is closer to a mount than to a resource.
+A read/write lock is harder to justify: it is the same kind of object as a mutex, and mutexes
+*are* deleted. `OS_OBJECT_TYPE_OS_RWLOCK` is one of the newer types, and the switch looks like
+it was simply not extended with it.
+
+Reproduced, not fixed. If upstream adds the cases, `c_left` changes and the gate says so.

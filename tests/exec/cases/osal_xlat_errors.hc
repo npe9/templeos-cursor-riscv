@@ -580,6 +580,50 @@ I32 OS_TaskAffinityGetAffinity_Impl(OS_object_token_t *token, OS_cpuset_t *cpuse
 #include "/Kernel/Cfs/osal/os_shared_sockets.HC"
 #include "/Kernel/Cfs/osal/osapi_sockets.HC"
 
+// --- osapi-common.c backend ---------------------------------------------------------------
+// OS_API_Init calls OS_ConsoleAPI_Init, which lives in osapi-printf.c -- the ONE module this
+// gate cannot include, because the real OS_printf would displace the fixed "bugcheck" marker
+// that pins which argument checks fire. So the console initialiser is stubbed here and
+// osapi-printf.c is gated separately; OS_API_Init's console branch is covered THERE, not here.
+I64 stub_impl_inits, stub_idle_spins, stub_shutdown_hooks, stub_console_inits;
+I32 stub_impl_init_rc;
+I64 stub_ev_calls;
+I32 stub_ev_rc;
+U32 stub_left[OS_OBJECT_TYPE_USER];
+
+I32 OS_API_Impl_Init(U32 idtype)
+{
+  ++stub_impl_inits;
+  // A real backend sets these from the platform timer; OS_API_Init fails if they are zero.
+  OS_SharedGlobalVars.MicroSecPerTick = 10000;
+  OS_SharedGlobalVars.TicksPerSecond = 100;
+  return stub_impl_init_rc;
+}
+I32 OS_ConsoleAPI_Init() { ++stub_console_inits; return OS_SUCCESS; }
+U0 OS_IdleLoop_Impl() { ++stub_idle_spins; }
+U0 OS_ApplicationShutdown_Impl() { ++stub_shutdown_hooks; }
+
+I32 ev_handler(I64 event, U32 object_id, U8 *data)
+{
+  ++stub_ev_calls;
+  return stub_ev_rc;
+}
+U0 count_obj(U32 object_id, U8 *arg)
+{
+  U32 *n = arg;
+  ++(*n);
+}
+// Counts what SURVIVES a delete-all, by type. OS_CleanUpObject's switch has no case for
+// RWLOCK or FILESYS, so objects of those types are left behind -- and an unexplained
+// "after=3" would hide that, while a per-type tally states it.
+U0 tally_obj(U32 object_id, U8 *arg)
+{
+  U32 t = OS_IdentifyObject(object_id);
+  if (t < OS_OBJECT_TYPE_USER)
+    ++stub_left[t];
+}
+
+
 // --- osapi-sockets.c backend --------------------------------------------------------------
 I64 stub_s_opens, stub_s_binds, stub_s_listens, stub_s_accepts, stub_s_connects;
 I64 stub_s_shuts, stub_s_recvs, stub_s_sends, stub_s_infos, stub_s_getopt, stub_s_setopt;
@@ -1409,7 +1453,24 @@ I64 main()
     S("id_uninit rc=");
     D(r);
     S("\n");
-    OS_SharedGlobalVars.GlobalState = OS_INIT_MAGIC_NUMBER;
+    // The REAL init now, not a hand-set flag: OS_API_Init wipes the globals, calls
+  // OS_ObjectIdInit, then every per-type initialiser in turn.
+  stub_impl_init_rc = OS_SUCCESS;
+  stub_ev_rc = OS_SUCCESS;
+  rc = OS_API_Init;
+  S("c_apiinit rc=");
+  D(rc);
+  S(" impl=");
+  D(stub_impl_inits);
+  S(" console=");
+  D(stub_console_inits);
+  S("\n");
+  rc = OS_API_Init;
+  S("c_again   rc=");
+  D(rc);
+  S(" impl=");
+  D(stub_impl_inits);
+  S("\n");
     S("id_bases ");
     D(OS_GetBaseForObjectType(OS_OBJECT_TYPE_OS_QUEUE));
     S(" ");
@@ -3474,6 +3535,127 @@ I64 main()
     D(rH);
     S(" n=");
     D(stub_s_setopt);
+    S("\n");
+  }
+
+  // --- osapi-common.c -------------------------------------------------------------------------
+  // The integration point, and the reason it was translated LAST: OS_API_Init calls every
+  // other module's initialiser, so each module done before it removed a stub.
+  //
+  // This section runs at the END because OS_DeleteAllObjects really does delete everything,
+  // which would pull the ground out from under every section above it.
+  {
+    U32 before, after;
+    U32 tmp;
+    I32 rI;
+
+    // Hoisted: this one LOGS, and the C evaluates printf's argument before printf emits, so
+    // the marker must land before the line rather than inside it.
+    rI = OS_RegisterEventHandler(NULL);
+    S("c_handler rc=");
+    D(rI);
+    S("\n");
+    S("c_reg1    rc=");
+    D(OS_RegisterEventHandler(&ev_handler));
+    S("\n");
+    S("c_reg2    rc=");
+    D(OS_RegisterEventHandler(&ev_handler));
+    S("\n");
+    S("c_reg3    rc=");
+    D(OS_RegisterEventHandler(&ev_handler));
+    S("\n");
+    S("c_reg4    rc=");
+    D(OS_RegisterEventHandler(&ev_handler));
+    S("\n");
+    // Five into four slots: the table is full and the initial OS_ERROR survives.
+    S("c_reg5    rc=");
+    D(OS_RegisterEventHandler(&ev_handler));
+    S("\n");
+    // Each registered handler sees every event, so one notify fires all four.
+    stub_ev_calls = 0;
+    rI = OS_NotifyEvent(OS_EVENT_RESOURCE_CREATED, 1, NULL);
+    S("c_notify  rc=");
+    D(rI);
+    S(" calls=");
+    D(stub_ev_calls);
+    S("\n");
+    // A handler that fails makes the whole notify report OS_ERROR, but the others still run --
+    // the loop does not stop at the first failure.
+    stub_ev_rc = OS_ERROR;
+    stub_ev_calls = 0;
+    rI = OS_NotifyEvent(OS_EVENT_RESOURCE_DELETED, 1, NULL);
+    S("c_notfail rc=");
+    D(rI);
+    S(" calls=");
+    D(stub_ev_calls);
+    S("\n");
+    stub_ev_rc = OS_SUCCESS;
+
+    S("c_strnlen ");
+    D(OS_strnlen("abc", 10));
+    S(" ");
+    D(OS_strnlen("abc", 2));
+    S(" ");
+    D(OS_strnlen("", 4));
+    S("\n");
+
+    // THE TEARDOWN, in the order OS_API_Teardown itself uses: delete everything FIRST, then
+    // set the shutdown flag. The order is not cosmetic -- OS_ObjectIdTransactionInit refuses
+    // every non-EXCLUSIVE operation once the flag is set, and that includes the ITERATION
+    // OS_DeleteAllObjects walks with. Counting after the flag would report 0 whether the
+    // objects were deleted or merely invisible.
+    S("c_mk1     rc=");
+    D(OS_CountSemCreate(&tmp, "csEnd", 1, 0));
+    S("\n");
+    S("c_mk2     rc=");
+    D(OS_MutSemCreate(&tmp, "mxEnd", 0));
+    S("\n");
+    S("c_mk3     rc=");
+    D(OS_QueueCreate(&tmp, "qEnd", 4, 16, 0));
+    S("\n");
+    before = 0;
+    OS_ForEachObject(OS_OBJECT_CREATOR_ANY, &count_obj, &before);
+    OS_DeleteAllObjects;
+    after = 0;
+    OS_ForEachObject(OS_OBJECT_CREATOR_ANY, &count_obj, &after);
+    S("c_delall  before=");
+    D(before);
+    S(" after=");
+    D(after);
+    S("\n");
+    MemSet(stub_left, 0, sizeof(stub_left));
+    OS_ForEachObject(OS_OBJECT_CREATOR_ANY, &tally_obj, NULL);
+    S("c_left    rwlock=");
+    D(stub_left[OS_OBJECT_TYPE_OS_RWLOCK]);
+    S(" filesys=");
+    D(stub_left[OS_OBJECT_TYPE_OS_FILESYS]);
+    S(" task=");
+    D(stub_left[OS_OBJECT_TYPE_OS_TASK]);
+    S(" queue=");
+    D(stub_left[OS_OBJECT_TYPE_OS_QUEUE]);
+    S("\n");
+
+    // Now the shutdown flag, and what it blocks.
+    stub_shutdown_hooks = 0;
+    OS_ApplicationShutdown(TRUE);
+    S("c_shutdn  hooks=");
+    D(stub_shutdown_hooks);
+    S("\n");
+    OS_IdleLoop;
+    S("c_idle    spins=");
+    D(stub_idle_spins);
+    S(" state=");
+    D(OS_SharedGlobalVars.GlobalState == OS_SHUTDOWN_MAGIC_NUMBER);
+    S("\n");
+    // flag=FALSE does NOT change the state, but still calls the hook.
+    OS_ApplicationShutdown(FALSE);
+    S("c_shutdn0 hooks=");
+    D(stub_shutdown_hooks);
+    S("\n");
+    // ONLY EXCLUSIVE operations survive the flag: a create is refused, which is what lets a
+    // teardown finish without new objects appearing behind it.
+    S("c_mkafter rc=");
+    D(OS_CountSemCreate(&tmp, "csLate", 1, 0));
     S("\n");
   }
   return 0;

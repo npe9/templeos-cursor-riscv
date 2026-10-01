@@ -124,7 +124,7 @@ DEVIATIONS = {
 KEYWORDS = {'if', 'for', 'while', 'switch', 'return', 'else', 'do', 'sizeof'}
 
 FN_TYPEDEF = re.compile(r'\b(?:(?:OS|CFE)_\w*(?:Callback|MatchFunc|CheckFunc|IncrementFunc|Func)\w*_t'
-                        r'|osal_task_entry|OS_TimerSync_t)\b')
+                        r'|osal_task_entry|OS_TimerSync_t|OS_EventHandler_t)\b')
 FN_SPELLED = re.compile(r'\(\s*\*+\s*\w*\s*\)\s*\([^)]*\)')
 
 # Any type spelling, C or HolyC. The old version listed the return types one at a time and

@@ -104,6 +104,47 @@ OS_ErrorTable_Entry OS_IMPL_ERROR_NAME_TABLE[1] = {{0, NULL}};
 // draft of this file declared its own stand-ins for them, as the C oracle must, and they
 // collided: HolyC has no separate compilation, so the include order already supplies them.
 #include "/Kernel/Cfs/osal/osapi_errors.HC"
+
+// --- what OS_API_Init drags in -------------------------------------------------------------
+// This gate links osapi-printf.c and osapi-idmap.c and nothing else, on purpose. But
+// osapi_idmap.HC includes osapi_common.HC, and that now carries the COMPLETE osapi-common.c
+// -- including OS_API_Init, which calls every module's initialiser, and OS_CleanUpObject,
+// which calls every module's delete. None of those modules is in this gate.
+//
+// They are stubbed rather than linked, because linking them would make this gate a copy of
+// run_osal_xlat_smoke.sh and lose the one thing it exists for: a REAL OS_printf, which cannot
+// coexist with the fixed "bugcheck" marker the main gate needs. Nothing here calls any of
+// them -- this driver never calls OS_API_Init -- so they exist only to keep the blob's import
+// trailer empty, which is itself a gate.
+I32 OS_API_Impl_Init(U32 idtype) { return OS_SUCCESS; }
+U0 OS_IdleLoop_Impl() { }
+U0 OS_ApplicationShutdown_Impl() { }
+I32 OS_TaskAPI_Init() { return OS_SUCCESS; }
+I32 OS_QueueAPI_Init() { return OS_SUCCESS; }
+I32 OS_BinSemAPI_Init() { return OS_SUCCESS; }
+I32 OS_CountSemAPI_Init() { return OS_SUCCESS; }
+I32 OS_MutexAPI_Init() { return OS_SUCCESS; }
+I32 OS_ModuleAPI_Init() { return OS_SUCCESS; }
+I32 OS_TimeBaseAPI_Init() { return OS_SUCCESS; }
+I32 OS_TimerCbAPI_Init() { return OS_SUCCESS; }
+I32 OS_FileAPI_Init() { return OS_SUCCESS; }
+I32 OS_DirAPI_Init() { return OS_SUCCESS; }
+I32 OS_FileSysAPI_Init() { return OS_SUCCESS; }
+I32 OS_CondVarAPI_Init() { return OS_SUCCESS; }
+I32 OS_NetworkAPI_Init() { return OS_SUCCESS; }
+I32 OS_SocketAPI_Init() { return OS_SUCCESS; }
+I32 OS_TaskDelete(U32 id) { return OS_SUCCESS; }
+I32 OS_QueueDelete(U32 id) { return OS_SUCCESS; }
+I32 OS_BinSemDelete(U32 id) { return OS_SUCCESS; }
+I32 OS_CountSemDelete(U32 id) { return OS_SUCCESS; }
+I32 OS_MutSemDelete(U32 id) { return OS_SUCCESS; }
+I32 OS_ModuleUnload(U32 id) { return OS_SUCCESS; }
+I32 OS_TimeBaseDelete(U32 id) { return OS_SUCCESS; }
+I32 OS_TimerDelete(U32 id) { return OS_SUCCESS; }
+I32 OS_close(U32 id) { return OS_SUCCESS; }
+I32 OS_DirectoryClose(U32 id) { return OS_SUCCESS; }
+I32 OS_CondVarDelete(U32 id) { return OS_SUCCESS; }
+I32 OS_TaskDelay(U32 ms) { return OS_SUCCESS; }
 // The real backend calls osapi-idmap.c makes; no-ops, single-threaded transcript.
 U0 OS_Lock_Global_Impl(U32 idtype)
 {
