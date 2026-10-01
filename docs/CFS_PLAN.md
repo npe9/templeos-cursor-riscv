@@ -283,6 +283,42 @@ It stubs the thirty functions rather than linking the modules, because linking t
 it a copy of the main gate and lose the one thing it exists for — a real `OS_printf`, which
 cannot coexist with the fixed `bugcheck` marker the main gate depends on.
 
+### cFE, measured the same way
+
+`tools/cfs/check_manifest.py --cfe` runs in the cFE gate and reports every module from its own
+CMakeLists, splitting sources by `if()` depth so a conditional one is listed with its guard
+rather than counted as always-built:
+
+| module | uncond. sources | lines | gated |
+|---|---|---|---|
+| `msg` | 8 | 962 | **100%** |
+| `resourceid` | 2 | 228 | **100%** |
+| `sbr` | 1 | 33 | **100%** (its map and route sources are conditional; the HASH default is gated) |
+| `config` | 5 | 697 | 61% |
+| `sb` | 7 | 5,278 | 4% |
+| `fs` | 3 | 1,249 | 0% |
+| `ta` | 2 | 892 | 0% |
+| `evs` | 5 | 2,787 | 0% |
+| `time` | 5 | 4,383 | 0% |
+| `tbl` | 15 | 7,780 | 0% |
+| `es` | 17 | 12,734 | 0% |
+
+#### Why `config` stops at 61%
+
+Its two remaining sources are blocked on BUILD-GENERATED artifacts, not on translation effort:
+
+- `cfe_config_init.c` reads `GLOBAL_CONFIGDATA`, whose tables (`CFE_CORE_MODULE_LIST`,
+  `CFE_BUILD_ENV_TABLE`, `CFE_MODULE_VERSION_TABLE`, `CFE_PSP_MODULE_LIST`,
+  `CFE_CORE_MODULE_OBJTAB`, `CFE_STATIC_APP_LIST`) CMake emits per target.
+- It also calls `CFE_Config_SetupPlatformConfigInfo`, which is **declared in
+  `cfe_config_external.h` and defined nowhere in the tree** — CMake generates it, one
+  `CFE_Config_SetValue` per `CFE_PLATFORM_*` macro.
+
+Both are the same shape as `osconfig.h` and the config-id nametable, which this port already
+generates (`tools/cfs/gen_osconfig.py`, `tools/cfs/gen_configid_table.py`), so the path is
+known. It is build-system emulation rather than translation, and it is worth doing when the
+startup path needs it rather than for the percentage.
+
 Six properties are gated independently, because each is blind to what the others catch:
 
 | check | what it proves | what it cannot see |
