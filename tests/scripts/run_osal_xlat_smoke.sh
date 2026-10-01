@@ -112,6 +112,15 @@ python3 "$ROOT/tools/cfs/check_structs.py" || exit 1
 # every token 24 bytes against NASA's 20.
 python3 "$ROOT/tools/cfs/check_padding.py" || exit 1
 
+# --- function-pointer MEMBERS -------------------------------------------------------------------
+# Both checks above are blind here by construction: a function pointer is eight bytes whatever it
+# points at, so the layout agrees, and check_structs compares names rather than types. Four of the
+# twelve members this covers are OSAL's -- the task entry and delete hook, the timebase's external
+# sync and the timer callback -- and two of them are written `typedef osal_task((*f)(void))`,
+# which is the spelling that made the tool report them as having no counterpart on a run it called
+# a pass. Unpaired is a FAILURE now. See tools/cfs/check_fnptr_members.py.
+python3 "$ROOT/tools/cfs/check_fnptr_members.py" || exit 1
+
 # --- the constants ------------------------------------------------------------------------------
 # HolyC has no enum and no CMake, so the translation re-states hundreds of numbers by hand:
 # event ids, message ids, bit masks, array bounds, error codes. Nothing above checks one. A

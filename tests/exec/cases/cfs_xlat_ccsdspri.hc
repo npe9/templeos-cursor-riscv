@@ -139,6 +139,10 @@ I64 StrCmp(U8 *st1, U8 *st2)
 #include "/Kernel/Cfs/cfe/cfe_es_resetdata.HC"
 #include "/Kernel/Cfs/cfe/cfe_time_utils.HC"
 #include "/Kernel/Cfs/cfe/cfe_time_api.HC"
+#include "/Kernel/Cfs/cfe/cfe_time_tone.HC"
+#include "/Kernel/Cfs/cfe/cfe_time_task.HC"
+#include "/Kernel/Cfs/cfe/cfe_time_dispatch.HC"
+#include "/Kernel/Cfs/cfe/cfe_time_objtab.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -725,15 +729,108 @@ I32 OS_TaskDelay(U32 millisecond)
   evs_delay_ms += millisecond;
   return OS_SUCCESS;
 }
-// cfe_time_tone.c is not gated, and CFE_TIME_ExternalTone's whole body is a call to this.
-I64 evs_tone_isrs;
-U0 CFE_TIME_Tone1HzISR()
-{
-  ++evs_tone_isrs;
-}
-
+// CFE_TIME_Tone1HzISR used to be stubbed here, because cfe_time_tone.c was not gated and
+// CFE_TIME_ExternalTone's whole body is a call to it. It is gated now, so the REAL one runs --
+// and the stub had to go on both sides at once, which is the shape every one of these removals
+// has had: the stub is what the gate was measuring until the translation arrived.
 U0 CFE_ES_IncrementTaskCounter()
 {
+}
+// The simulated OS's semaphores, child tasks and timebase, for CFE_TIME_TaskInit. Every value
+// TaskInit branches on is a variable here, so the gate can walk the failure paths as well as the
+// happy one -- TaskInit has five of them and each returns a different status.
+//
+// time_sem_take_budget is a BUDGET, not a constant, and that is the whole reason the two 1Hz
+// child tasks are drivable at all: CFE_TIME_Tone1HzTask and CFE_TIME_Local1HzTask are
+// `while (TRUE)` loops that exit only when OS_BinSemTake fails, so NASA's own loop termination is
+// what ends them. A stub that always succeeded would hang the oracle.
+I64 time_sems_created;
+I64 time_sem_gives;
+I64 time_sem_takes;
+I64 time_childtasks;
+I64 time_sub_local;
+I64 time_tb_lookups;
+I64 time_timer_adds;
+I64 time_timer_sets;
+I64 time_synch_calls;
+I32 time_binsem_rc;
+I32 time_childtask_rc;
+I32 time_sublocal_rc;
+I32 time_tb_rc;
+I32 time_timeradd_rc;
+I32 time_timerset_rc;
+I64 time_sem_take_budget;
+// OS_SUCCESS reaches this file through cfe_fs_priv.HC; OS_ERROR does not, because nothing
+// translated so far needed it. osapi_errors.HC defines it as -1 and is NOT included here -- this
+// gate is deliberately standalone -- so the one value is spelled out, and check_constants.py
+// compares it against NASA's own header like every other number in the translation.
+#ifndef OS_ERROR
+#define OS_ERROR -1
+#endif
+I32 OS_BinSemCreate(U32 *sem_id, U8 *sem_name, U32 sem_initial_value, U32 options)
+{
+  ++time_sems_created;
+  *sem_id = 0x3330 + time_sems_created;
+  return time_binsem_rc;
+}
+
+I32 OS_BinSemGive(U32 sem_id)
+{
+  ++time_sem_gives;
+  return OS_SUCCESS;
+}
+
+I32 OS_BinSemTake(U32 sem_id)
+{
+  ++time_sem_takes;
+  if (time_sem_take_budget <= 0)
+    return OS_ERROR;
+  --time_sem_take_budget;
+  return OS_SUCCESS;
+}
+
+I32 CFE_ES_CreateChildTask(U32 *TaskIdPtr, U8 *TaskName, U0 (*FunctionPtr)(), U32 *StackPtr, U32 StackSize, U32 Priority, U32 Flags)
+{
+  ++time_childtasks;
+  *TaskIdPtr = 0x4440 + time_childtasks;
+  return time_childtask_rc;
+}
+
+I32 CFE_SB_SubscribeLocal(U32 MsgId, U32 PipeId, U16 MsgLim)
+{
+  ++time_sub_local;
+  return time_sublocal_rc;
+}
+// Defaults to FAILING, which is NASA's documented expectation and not a shortcut: the comment on
+// CFE_TIME_TaskInit_Setup1HzTimer says a PSP that did not set up a timebase returns
+// OS_ERR_NAME_NOT_FOUND and the lookup failure is deliberately NOT reported. The gate drives both
+// answers.
+I32 OS_TimeBaseGetIdByName(U32 *timebase_id, U8 *timebase_name)
+{
+  ++time_tb_lookups;
+  *timebase_id = 0x5551;
+  return time_tb_rc;
+}
+
+I32 OS_TimerAdd(U32 *timer_id, U8 *timer_name, U32 timebase_id, U0 (*callback_ptr)(), U8 *callback_arg)
+{
+  ++time_timer_adds;
+  *timer_id = 0x6661;
+  return time_timeradd_rc;
+}
+
+I32 OS_TimerSet(U32 timer_id, U32 start_time, U32 interval_time)
+{
+  ++time_timer_sets;
+  return time_timerset_rc;
+}
+// A registered 1Hz synchronisation callback. CFE_TIME_NotifyTimeSynchApps walks the registry and
+// calls through a function POINTER, which is the one thing in TIME that cannot be checked by
+// reading a counter afterwards unless the callback itself bumps one.
+I32 TimeSynchProbe()
+{
+  ++time_synch_calls;
+  return CFE_SUCCESS;
 }
 
 I32 CFE_SB_CreatePipe(U32 *PipeIdPtr, U16 Depth, U8 *PipeName)
@@ -3677,6 +3774,531 @@ I64 main()
     D(CFE_EVS_ModuleEntry.Priority);
     S(" ");
     D(CFE_EVS_ModuleEntry.StackSize);
+    S("\n");
+  }
+  // --- cfe_time_task.c, cfe_time_tone.c, cfe_time_dispatch.c, cfe_time_objtab.c ---------
+  //
+  // TIME AS A TASK, and before this block the module was only ever reached SIDEWAYS: EVS and TA
+  // housekeeping call CFE_SB_TimeStampMsg, which calls CFE_TIME_GetTime, and CFE_TIME_Print
+  // rendered the timestamps. So cfe_time_api.c and cfe_time_utils.c were gated for coverage,
+  // signatures, constants and byte layout while the transcript exercised a handful of their
+  // functions. The three sources below are the module's own behaviour, and they are the ones
+  // where getting it wrong does not look like a crash.
+  //
+  // THE LOCAL CLOCK IS A VARIABLE IN THIS FILE (evs_psp_ns, read by CFE_PSP_GetTime), so every
+  // number here is determined. That matters more for TIME than anywhere else in this gate: tone
+  // validation is a COMPARISON of two latched clock values against a window, so a wall-clock
+  // would make the answers un-pinnable.
+  
+  {
+    CFE_TIME_ReferenceState_t *rs;
+    U8 tcbuf[256];
+    CFE_SB_Buffer *tb = tcbuf;
+    CFE_TIME_SetLeapSecondsCmd_t *c_leaps = tcbuf;
+    CFE_TIME_SetMETCmd_t *c_met = tcbuf;
+    CFE_TIME_SetStateCmd_t *c_state = tcbuf;
+    CFE_TIME_AddOneHzAdjustmentCmd_t *c_1hz = tcbuf;
+    CFE_TIME_SetSourceCmd_t *c_source = tcbuf;
+    CFE_TIME_SetSignalCmd_t *c_signal = tcbuf;
+    CFE_TIME_AddDelayCmd_t *c_delay = tcbuf;
+    time_binsem_rc = OS_SUCCESS;
+    time_childtask_rc = CFE_SUCCESS;
+    time_sublocal_rc = CFE_SUCCESS;
+    time_tb_rc = OS_ERROR;
+    time_timeradd_rc = OS_SUCCESS;
+    time_timerset_rc = OS_SUCCESS;
+    // --- cfe_time_task.c: EarlyInit is CFE_TIME_InitData ------------------------------
+    Rc("tim_earlyinit", CFE_TIME_EarlyInit());
+    rs = CFE_TIME_GetReferenceState();
+    S("tim_init src=");
+    D(CFE_TIME_Global.ClockSource);
+    S(" sig=");
+    D(CFE_TIME_Global.ClockSignal);
+    S(" fly=");
+    D(CFE_TIME_Global.ServerFlyState);
+    S(" vmet=");
+    D(CFE_TIME_Global.VirtualMET);
+    S(" minel=");
+    D(CFE_TIME_Global.MinElapsed);
+    S(" maxel=");
+    D(CFE_TIME_Global.MaxElapsed);
+    S("\n");
+    S("tim_init2 maxlocal=");
+    D(CFE_TIME_Global.MaxLocalClock.Seconds);
+    S(".");
+    D(CFE_TIME_Global.MaxLocalClock.Subseconds);
+    S(" over=");
+    D(CFE_TIME_Global.ToneOverLimit);
+    S(" under=");
+    D(CFE_TIME_Global.ToneUnderLimit);
+    S(" setstate=");
+    D(rs->ClockSetState);
+    S(" flystate=");
+    D(rs->ClockFlyState);
+    S("\n");
+    // --- cfe_time_task.c: TaskInit, and its five failure paths ------------------------
+    // Each of the five is reached by making exactly one stub fail, and each returns a DIFFERENT
+    // status -- which is the property worth pinning, because a TaskInit that returned
+    // CFE_SUCCESS from a failed semaphore create would start two child tasks that pend on
+    // nothing. The statuses print as SIGNED DECIMAL for the reason the C half records.
+    time_binsem_rc = OS_ERROR;
+    // THE CALL FIRST, THEN THE LABEL. printf evaluates its arguments before it emits anything,
+    // so the C half's syslog lines come out ahead of the tim_ line; `S("label"); D(f())` emits
+    // the label and then runs f, which drops f's own output into the middle of this line. That
+    // is what the first version of this block did, and the diff showed the syslog text spliced
+    // in after `rc=`. Every call below is hoisted for the same reason.
+    rc32 = CFE_TIME_TaskInit();
+    S("tim_init_semfail rc=");
+    D(rc32);
+    S(" sems=");
+    D(time_sems_created);
+    S("\n");
+    time_binsem_rc = OS_SUCCESS;
+    time_childtask_rc = CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
+    rc32 = CFE_TIME_TaskInit();
+    S("tim_init_taskfail rc=");
+    D(rc32);
+    S(" tasks=");
+    D(time_childtasks);
+    S("\n");
+    time_childtask_rc = CFE_SUCCESS;
+    ta_pipe_rc = CFE_SB_BAD_ARGUMENT;
+    rc32 = CFE_TIME_TaskInit();
+    S("tim_init_pipefail rc=");
+    D(rc32);
+    S("\n");
+    ta_pipe_rc = CFE_SUCCESS;
+    time_sublocal_rc = CFE_SB_BAD_ARGUMENT;
+    rc32 = CFE_TIME_TaskInit();
+    S("tim_init_subfail rc=");
+    D(rc32);
+    S(" sublocal=");
+    D(time_sub_local);
+    S("\n");
+    time_sublocal_rc = CFE_SUCCESS;
+    rc32 = CFE_TIME_TaskInit();
+    S("tim_init rc=");
+    D(rc32);
+    S(" sems=");
+    D(time_sems_created);
+    S(" tasks=");
+    D(time_childtasks);
+    S(" sublocal=");
+    D(time_sub_local);
+    S(" tb=");
+    D(time_tb_lookups);
+    S(" timers=");
+    D(time_timer_adds);
+    S("\n");
+    // ...and again with a timebase present, which is the only way OS_TimerAdd/OS_TimerSet are
+    // reached at all.
+    time_tb_rc = OS_SUCCESS;
+    rc32 = CFE_TIME_TaskInit();
+    S("tim_init_tb rc=");
+    D(rc32);
+    S(" adds=");
+    D(time_timer_adds);
+    S(" sets=");
+    D(time_timer_sets);
+    S("\n");
+    time_timerset_rc = OS_ERROR;
+    rc32 = CFE_TIME_TaskInit();
+    S("tim_init_tbsetfail rc=");
+    D(rc32);
+    S(" sets=");
+    D(time_timer_sets);
+    S("\n");
+    time_timerset_rc = OS_SUCCESS;
+    time_tb_rc = OS_ERROR;
+    // --- cfe_time_tone.c: the 1Hz tone interrupt -------------------------------------
+    // A tone is VALID when it lands about one second after the previous one, and the window is
+    // ToneUnderLimit..ToneOverLimit in subseconds. Three tones: one that establishes the
+    // previous latch, one a clean second later, and one only half a second later.
+    //
+    // ONE SECOND IS 10,000,000 TICKS, not 1,000,000,000: OS_TIME_TICKS_PER_SECOND is 1e7 because
+    // a tick is 100 ns. The first draft stepped by 1e9 and every tone came back INVALID with the
+    // window never reached, which looked like a translation bug and was an arithmetic one in the
+    // DRIVER. Everything here also stays under MaxLocalClock, 27 seconds, because past that the
+    // local clock rolls over and TimeSinceTone stops meaning what the names say.
+    evs_psp_ns = 10000000;
+    CFE_TIME_Tone1HzISR();
+    S("tim_tone1 int=");
+    D(CFE_TIME_Global.ToneIntCounter);
+    S(" err=");
+    D(CFE_TIME_Global.ToneIntErrorCounter);
+    S(" vmet=");
+    D(CFE_TIME_Global.VirtualMET);
+    S(" good=");
+    D(CFE_TIME_Global.IsToneGood);
+    S("\n");
+    evs_psp_ns += 10000000;
+    CFE_TIME_Tone1HzISR();
+    S("tim_tone2 int=");
+    D(CFE_TIME_Global.ToneIntCounter);
+    S(" err=");
+    D(CFE_TIME_Global.ToneIntErrorCounter);
+    S(" vmet=");
+    D(CFE_TIME_Global.VirtualMET);
+    S(" good=");
+    D(CFE_TIME_Global.IsToneGood);
+    S(" gives=");
+    D(time_sem_gives);
+    S("\n");
+    evs_psp_ns += 5000000;
+    CFE_TIME_Tone1HzISR();
+    S("tim_tone_early int=");
+    D(CFE_TIME_Global.ToneIntCounter);
+    S(" err=");
+    D(CFE_TIME_Global.ToneIntErrorCounter);
+    S(" vmet=");
+    D(CFE_TIME_Global.VirtualMET);
+    S(" good=");
+    D(CFE_TIME_Global.IsToneGood);
+    S("\n");
+    // --- cfe_time_tone.c: ToneSend builds the "time at the tone" packet --------------
+    CFE_TIME_ToneSend();
+    S("tim_tonesend internal=");
+    D(CFE_TIME_Global.InternalCount);
+    S(" met=");
+    D(CFE_TIME_Global.ToneDataCmd.Payload.AtToneMET.Seconds);
+    S(".");
+    D(CFE_TIME_Global.ToneDataCmd.Payload.AtToneMET.Subseconds);
+    S(" stcf=");
+    D(CFE_TIME_Global.ToneDataCmd.Payload.AtToneSTCF.Seconds);
+    S(".");
+    D(CFE_TIME_Global.ToneDataCmd.Payload.AtToneSTCF.Subseconds);
+    S(" leaps=");
+    D(CFE_TIME_Global.ToneDataCmd.Payload.AtToneLeapSeconds);
+    S(" state=");
+    D(CFE_TIME_Global.ToneDataCmd.Payload.AtToneState);
+    S("\n");
+    // --- cfe_time_tone.c: ToneData, ToneVerify and the DUPLICATE REJECTION ------------
+    // The second call passes the IDENTICAL pair, and NASA's two function-static PrevTime1 /
+    // PrevTime2 are what notice. That is the only place in TIME whose correctness depends on a
+    // static local keeping its value between calls, so the match counter not moving on the
+    // second call is what says the statics work (tests/exec/cases/e_static_local_class_zero.hc
+    // gates the compiler property itself).
+    CFE_TIME_ToneData(&CFE_TIME_Global.ToneDataCmd.Payload);
+    S("tim_tonedata data=");
+    D(CFE_TIME_Global.ToneDataCounter);
+    S(" match=");
+    D(CFE_TIME_Global.ToneMatchCounter);
+    S(" matcherr=");
+    D(CFE_TIME_Global.ToneMatchErrorCounter);
+    S(" pend=");
+    D(CFE_TIME_Global.PendingMET.Seconds);
+    S(".");
+    D(CFE_TIME_Global.PendingMET.Subseconds);
+    S(" pstate=");
+    D(CFE_TIME_Global.PendingState);
+    S("\n");
+    CFE_TIME_ToneData(&CFE_TIME_Global.ToneDataCmd.Payload);
+    S("tim_tonedup data=");
+    D(CFE_TIME_Global.ToneDataCounter);
+    S(" match=");
+    D(CFE_TIME_Global.ToneMatchCounter);
+    S(" matcherr=");
+    D(CFE_TIME_Global.ToneMatchErrorCounter);
+    S("\n");
+    CFE_TIME_ToneSignal();
+    S("tim_tonesig sig=");
+    D(CFE_TIME_Global.ToneSignalCounter);
+    S("\n");
+    // --- cfe_time_tone.c: the local 1Hz ISR and the two child-task loops --------------
+    CFE_TIME_Local1HzISR();
+    S("tim_local1hz lint=");
+    D(CFE_TIME_Global.LocalIntCounter);
+    S(" gives=");
+    D(time_sem_gives);
+    S("\n");
+    time_sem_take_budget = 2;
+    CFE_TIME_Tone1HzTask();
+    S("tim_tonetask tasks=");
+    D(CFE_TIME_Global.ToneTaskCounter);
+    S(" takes=");
+    D(time_sem_takes);
+    S("\n");
+    time_sem_take_budget = 2;
+    CFE_TIME_Local1HzTask();
+    S("tim_localtask tasks=");
+    D(CFE_TIME_Global.LocalTaskCounter);
+    S(" takes=");
+    D(time_sem_takes);
+    S(" autofly=");
+    D(CFE_TIME_Global.AutoStartFly);
+    S("\n");
+    // --- cfe_time_tone.c: Local1HzStateMachine enters FLYWHEEL -----------------------
+    // CFE_PLATFORM_TIME_CFG_START_FLY is 2 seconds since the last tone, so the clock jumps three
+    // seconds forward and the state machine has to notice by itself.
+    evs_psp_ns += 30000000;
+    CFE_TIME_Local1HzStateMachine();
+    rs = CFE_TIME_GetReferenceState();
+    S("tim_fly fly=");
+    D(rs->ClockFlyState);
+    S(" autofly=");
+    D(CFE_TIME_Global.AutoStartFly);
+    S(" serverfly=");
+    D(CFE_TIME_Global.ServerFlyState);
+    S("\n");
+    // ...and LATCH_FLY (8 s) rolls the time-at-tone forward while flywheeling.
+    evs_psp_ns += 90000000;
+    CFE_TIME_Local1HzStateMachine();
+    rs = CFE_TIME_GetReferenceState();
+    S("tim_fly_latch met=");
+    D(rs->AtToneMET.Seconds);
+    S(".");
+    D(rs->AtToneMET.Subseconds);
+    S(" latch=");
+    D(rs->AtToneLatch.Seconds);
+    S(".");
+    D(rs->AtToneLatch.Subseconds);
+    S("\n");
+    // --- cfe_time_tone.c: NotifyTimeSynchApps calls through a function pointer --------
+    CFE_TIME_Global.SynchCallback[0].Ptr = &TimeSynchProbe;
+    CFE_TIME_Global.IsToneGood = FALSE;
+    CFE_TIME_NotifyTimeSynchApps();
+    S("tim_synch_badtone calls=");
+    D(time_synch_calls);
+    S("\n");
+    CFE_TIME_Global.IsToneGood = TRUE;
+    CFE_TIME_NotifyTimeSynchApps();
+    S("tim_synch calls=");
+    D(time_synch_calls);
+    S("\n");
+    CFE_TIME_Global.SynchCallback[0].Ptr = NULL;
+    // --- cfe_time_dispatch.c: the GROUND COMMANDS ------------------------------------
+    // Two levels of routing, and the counters are what tell them apart: an unrecognised MESSAGE
+    // ID is an event and nothing else, while an unrecognised COMMAND CODE and a wrong LENGTH
+    // both bump CommandErrorCounter.
+    CFE_TIME_Global.CommandCounter = 0;
+    CFE_TIME_Global.CommandErrorCounter = 0;
+    MemSet(tcbuf, 0, sizeof(tcbuf));
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_CMD_MID), sizeof(CFE_TIME_NoopCmd_t));
+    CFE_MSG_SetFcnCode(&tb->Msg, CFE_TIME_NOOP_CC);
+    CFE_TIME_TaskPipe(tb);
+    S("tim_cmd_noop ok=");
+    D(CFE_TIME_Global.CommandCounter);
+    S(" err=");
+    D(CFE_TIME_Global.CommandErrorCounter);
+    S("\n");
+    // a recognised code with the WRONG length
+    CFE_MSG_SetSize(&tb->Msg, sizeof(CFE_TIME_NoopCmd_t) + 4);
+    CFE_TIME_TaskPipe(tb);
+    S("tim_cmd_badlen ok=");
+    D(CFE_TIME_Global.CommandCounter);
+    S(" err=");
+    D(CFE_TIME_Global.CommandErrorCounter);
+    S("\n");
+    // an unrecognised command code
+    CFE_MSG_SetSize(&tb->Msg, sizeof(CFE_TIME_NoopCmd_t));
+    CFE_MSG_SetFcnCode(&tb->Msg, 99);
+    CFE_TIME_TaskPipe(tb);
+    S("tim_cmd_badcc ok=");
+    D(CFE_TIME_Global.CommandCounter);
+    S(" err=");
+    D(CFE_TIME_Global.CommandErrorCounter);
+    S("\n");
+    // an unrecognised MESSAGE id: an event, and NEITHER counter moves
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(0x18FF), sizeof(CFE_TIME_NoopCmd_t));
+    CFE_TIME_TaskPipe(tb);
+    S("tim_cmd_badmid ok=");
+    D(CFE_TIME_Global.CommandCounter);
+    S(" err=");
+    D(CFE_TIME_Global.CommandErrorCounter);
+    S("\n");
+    // the four non-ground message ids this task subscribes to
+    MemSet(tcbuf, 0, sizeof(tcbuf));
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_SEND_HK_MID), sizeof(CFE_TIME_SendHkCmd_t));
+    CFE_TIME_TaskPipe(tb);
+    S("tim_cmd_hk ok=");
+    D(CFE_TIME_Global.CommandCounter);
+    S(" err=");
+    D(CFE_TIME_Global.CommandErrorCounter);
+    S(" transmits=");
+    D(ta_transmits);
+    S("\n");
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_TONE_CMD_MID), sizeof(CFE_TIME_ToneSignalCmd_t));
+    CFE_TIME_TaskPipe(tb);
+    S("tim_cmd_tonesig sig=");
+    D(CFE_TIME_Global.ToneSignalCounter);
+    S("\n");
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_SEND_CMD_MID), sizeof(CFE_TIME_FakeToneCmd_t));
+    CFE_TIME_TaskPipe(tb);
+    S("tim_cmd_tonesend internal=");
+    D(CFE_TIME_Global.InternalCount);
+    S("\n");
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_ONEHZ_CMD_MID), sizeof(CFE_TIME_OneHzCmd_t));
+    CFE_TIME_TaskPipe(tb);
+    S("tim_cmd_onehz lint=");
+    D(CFE_TIME_Global.LocalIntCounter);
+    S(" int=");
+    D(CFE_TIME_Global.ToneIntCounter);
+    S(" err=");
+    D(CFE_TIME_Global.ToneIntErrorCounter);
+    S("\n");
+    // --- cfe_time_task.c: the SERVER commands this build really executes --------------
+    MemSet(tcbuf, 0, sizeof(tcbuf));
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_CMD_MID), sizeof(CFE_TIME_SetLeapSecondsCmd_t));
+    CFE_MSG_SetFcnCode(&tb->Msg, CFE_TIME_SET_LEAP_SECONDS_CC);
+    c_leaps->Payload.LeapSeconds = 37;
+    CFE_TIME_TaskPipe(tb);
+    rs = CFE_TIME_GetReferenceState();
+    S("tim_setleaps ok=");
+    D(CFE_TIME_Global.CommandCounter);
+    S(" leaps=");
+    D(rs->AtToneLeapSeconds);
+    S("\n");
+    MemSet(tcbuf, 0, sizeof(tcbuf));
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_CMD_MID), sizeof(CFE_TIME_SetMETCmd_t));
+    CFE_MSG_SetFcnCode(&tb->Msg, CFE_TIME_SET_MET_CC);
+    c_met->Payload.Seconds = 1000;
+    c_met->Payload.MicroSeconds = 500000;
+    CFE_TIME_TaskPipe(tb);
+    rs = CFE_TIME_GetReferenceState();
+    S("tim_setmet ok=");
+    D(CFE_TIME_Global.CommandCounter);
+    S(" met=");
+    D(rs->AtToneMET.Seconds);
+    S(".");
+    D(rs->AtToneMET.Subseconds);
+    S("\n");
+    // and the rejected form: a microseconds value that is not microseconds
+    c_met->Payload.MicroSeconds = 1000000;
+    CFE_TIME_TaskPipe(tb);
+    S("tim_setmet_bad ok=");
+    D(CFE_TIME_Global.CommandCounter);
+    S(" err=");
+    D(CFE_TIME_Global.CommandErrorCounter);
+    S("\n");
+    MemSet(tcbuf, 0, sizeof(tcbuf));
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_CMD_MID), sizeof(CFE_TIME_SetStateCmd_t));
+    CFE_MSG_SetFcnCode(&tb->Msg, CFE_TIME_SET_STATE_CC);
+    c_state->Payload.ClockState = CFE_TIME_ClockState_VALID;
+    CFE_TIME_TaskPipe(tb);
+    rs = CFE_TIME_GetReferenceState();
+    S("tim_setstate ok=");
+    D(CFE_TIME_Global.CommandCounter);
+    S(" setstate=");
+    D(rs->ClockSetState);
+    S("\n");
+    c_state->Payload.ClockState = 99;
+    CFE_TIME_TaskPipe(tb);
+    S("tim_setstate_bad err=");
+    D(CFE_TIME_Global.CommandErrorCounter);
+    S("\n");
+    MemSet(tcbuf, 0, sizeof(tcbuf));
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_CMD_MID), sizeof(CFE_TIME_AddOneHzAdjustmentCmd_t));
+    CFE_MSG_SetFcnCode(&tb->Msg, CFE_TIME_ADD_ONE_HZ_ADJUSTMENT_CC);
+    c_1hz->Payload.Seconds = 1;
+    c_1hz->Payload.Subseconds = 0x20000000;
+    CFE_TIME_TaskPipe(tb);
+    S("tim_add1hz ok=");
+    D(CFE_TIME_Global.CommandCounter);
+    S(" adj=");
+    D(CFE_TIME_Global.OneHzAdjust.Seconds);
+    S(".");
+    D(CFE_TIME_Global.OneHzAdjust.Subseconds);
+    S(" dir=");
+    D(CFE_TIME_Global.OneHzDirection);
+    S("\n");
+    // the 1Hz adjustment is APPLIED by the state machine, not by the command
+    CFE_TIME_Local1HzStateMachine();
+    rs = CFE_TIME_GetReferenceState();
+    S("tim_1hz_applied stcf=");
+    D(rs->AtToneSTCF.Seconds);
+    S(".");
+    D(rs->AtToneSTCF.Subseconds);
+    S("\n");
+    CFE_TIME_Global.OneHzAdjust.Seconds = 0;
+    CFE_TIME_Global.OneHzAdjust.Subseconds = 0;
+    // --- cfe_time_task.c: the four commands this CONFIGURATION disables ---------------
+    // SetSource and SetSignal need CFE_PLATFORM_TIME_CFG_SOURCE / _SIGNAL, and the two delay
+    // commands need _CLIENT. All three are 0 here, so the branch that runs is NASA's "invalid
+    // without ..." one -- which still COUNTS the command and reports it. That branch is the one
+    // this build exercises, and it is easy to mistake for unimplemented.
+    MemSet(tcbuf, 0, sizeof(tcbuf));
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_CMD_MID), sizeof(CFE_TIME_SetSourceCmd_t));
+    CFE_MSG_SetFcnCode(&tb->Msg, CFE_TIME_SET_SOURCE_CC);
+    c_source->Payload.TimeSource = CFE_TIME_SourceSelect_EXTERNAL;
+    CFE_TIME_TaskPipe(tb);
+    S("tim_setsource_cfg ok=");
+    D(CFE_TIME_Global.CommandCounter);
+    S(" err=");
+    D(CFE_TIME_Global.CommandErrorCounter);
+    S("\n");
+    c_source->Payload.TimeSource = 99;
+    CFE_TIME_TaskPipe(tb);
+    S("tim_setsource_bad err=");
+    D(CFE_TIME_Global.CommandErrorCounter);
+    S("\n");
+    MemSet(tcbuf, 0, sizeof(tcbuf));
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_CMD_MID), sizeof(CFE_TIME_SetSignalCmd_t));
+    CFE_MSG_SetFcnCode(&tb->Msg, CFE_TIME_SET_SIGNAL_CC);
+    c_signal->Payload.ToneSource = CFE_TIME_ToneSignalSelect_REDUNDANT;
+    CFE_TIME_TaskPipe(tb);
+    S("tim_setsignal_cfg err=");
+    D(CFE_TIME_Global.CommandErrorCounter);
+    S("\n");
+    MemSet(tcbuf, 0, sizeof(tcbuf));
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_CMD_MID), sizeof(CFE_TIME_AddDelayCmd_t));
+    CFE_MSG_SetFcnCode(&tb->Msg, CFE_TIME_ADD_DELAY_CC);
+    c_delay->Payload.Seconds = 0;
+    c_delay->Payload.MicroSeconds = 1000;
+    CFE_TIME_TaskPipe(tb);
+    S("tim_adddelay_cfg err=");
+    D(CFE_TIME_Global.CommandErrorCounter);
+    S("\n");
+    c_delay->Payload.MicroSeconds = 1000000;
+    CFE_TIME_TaskPipe(tb);
+    S("tim_adddelay_bad err=");
+    D(CFE_TIME_Global.CommandErrorCounter);
+    S("\n");
+    // --- cfe_time_task.c: diagnostics and ResetCounters ------------------------------
+    MemSet(tcbuf, 0, sizeof(tcbuf));
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_CMD_MID), sizeof(CFE_TIME_SendDiagnosticCmd_t));
+    CFE_MSG_SetFcnCode(&tb->Msg, CFE_TIME_SEND_DIAGNOSTIC_CC);
+    CFE_TIME_TaskPipe(tb);
+    S("tim_diag ok=");
+    D(CFE_TIME_Global.CommandCounter);
+    S(" atmet=");
+    D(CFE_TIME_Global.DiagPacket.Payload.AtToneMET.Seconds);
+    S(".");
+    D(CFE_TIME_Global.DiagPacket.Payload.AtToneMET.Subseconds);
+    S(" leaps=");
+    D(CFE_TIME_Global.DiagPacket.Payload.AtToneLeapSeconds);
+    S(" state=");
+    D(CFE_TIME_Global.DiagPacket.Payload.ClockStateAPI);
+    S("\n");
+    MemSet(tcbuf, 0, sizeof(tcbuf));
+    CFE_MSG_Init(&tb->Msg, CFE_SB_ValueToMsgId(CFE_TIME_CMD_MID), sizeof(CFE_TIME_ResetCountersCmd_t));
+    CFE_MSG_SetFcnCode(&tb->Msg, CFE_TIME_RESET_COUNTERS_CC);
+    CFE_TIME_TaskPipe(tb);
+    S("tim_reset ok=");
+    D(CFE_TIME_Global.CommandCounter);
+    S(" err=");
+    D(CFE_TIME_Global.CommandErrorCounter);
+    S(" tone=");
+    D(CFE_TIME_Global.ToneMatchCounter);
+    S(" toneerr=");
+    D(CFE_TIME_Global.ToneMatchErrorCounter);
+    S(" int=");
+    D(CFE_TIME_Global.ToneIntCounter);
+    S(" internal=");
+    D(CFE_TIME_Global.InternalCount);
+    S("\n");
+    // --- cfe_time_objtab.c ------------------------------------------------------------
+    S("tim_objtab ");
+    S(CFE_TIME_ModuleEntry.Name);
+    S(" ");
+    D(CFE_TIME_ModuleEntry.EarlyInit == NULL);
+    S(" ");
+    D(CFE_TIME_ModuleEntry.TaskMain == NULL);
+    S(" ");
+    D(CFE_TIME_ModuleEntry.AppCleanupCb == NULL);
+    S(" ");
+    D(CFE_TIME_ModuleEntry.Priority);
+    S(" ");
+    D(CFE_TIME_ModuleEntry.StackSize);
     S("\n");
   }
   return 0;

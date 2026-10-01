@@ -36,6 +36,9 @@ CONFIG_EXCLUDED = {
     ("cfe_time_api.c",   "CFE_TIME_ExternalMET"):  "CFE_PLATFORM_TIME_CFG_SRC_MET",
     ("cfe_time_api.c",   "CFE_TIME_ExternalGPS"):  "CFE_PLATFORM_TIME_CFG_SRC_GPS",
     ("cfe_time_api.c",   "CFE_TIME_ExternalTime"): "CFE_PLATFORM_TIME_CFG_SRC_TIME",
+    ("cfe_time_tone.c",  "CFE_TIME_ToneSendMET"):  "CFE_PLATFORM_TIME_CFG_SRC_MET",
+    ("cfe_time_tone.c",  "CFE_TIME_ToneSendGPS"):  "CFE_PLATFORM_TIME_CFG_SRC_GPS",
+    ("cfe_time_tone.c",  "CFE_TIME_ToneSendTime"): "CFE_PLATFORM_TIME_CFG_SRC_TIME",
 }
 
 

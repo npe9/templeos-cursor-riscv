@@ -194,7 +194,16 @@ def emit_hc():
     L.append("class Target_CfeConfigData")
     L.append("{")
     L.append("  U0 (*System1HzISR)();")
-    L.append("  U0 (*SystemMain)();")
+    # NASA's System_MainFunc_t takes FOUR parameters -- see cmake/target/inc/target_config.h:
+    #   typedef void (*System_MainFunc_t)(uint32 StartType, uint32 StartSubtype, uint32 ModeId,
+    #                                     const char *StartFilePath);
+    # This generator emitted an empty list for several commits, and nothing could see it:
+    # check_structs compares field NAMES, check_padding compares BYTES and a function pointer is
+    # eight bytes whatever it points at, and check_signatures compares function PARAMETERS rather
+    # than the types of class MEMBERS. tools/cfs/check_fnptr_members.py is the gate that looks,
+    # and this is the line it found. System1HzISR and SystemNotify really do take none.
+    L.append("  U0 (*SystemMain)(U32 StartType, U32 StartSubtype, U32 ModeId, "
+             "U8 *StartFilePath);")
     L.append("  U0 (*SystemNotify)();")
     L.append("  U32 CdsSize;")
     L.append("  U32 ResetAreaSize;")

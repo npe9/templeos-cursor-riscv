@@ -79,6 +79,13 @@ C_TYPES = [(r'\bconst\b', ' '),
            (r'\bosal_id_t\b', ' NUM '), (r'\buint32\b', ' NUM '), (r'\buint16\b', ' NUM '),
            (r'\buint8\b', ' NUM '),
            (r'\bosal_blockcount_t\b', ' SZ '), (r'\bsize_t\b', ' SZ '), (r'\bint32\b', ' SNUM '),
+           # int16 used to normalise to NOTHING on this side and I16 to nothing on the other, so
+           # the two matched by both being invisible -- which also meant a translation that got
+           # the WIDTH or the SIGNEDNESS of an int16 parameter wrong would have passed. Both get
+           # a token now. This is what caught cfe_time_task.c's three *Impl helpers: NASA's
+           # Direction there is CFE_TIME_AdjustDirection_Enum_t, a uint8, and the translation had
+           # written I16 by analogy with cfe_time_utils.c -- where NASA really does write int16.
+           (r'\bint16\b', ' SNUM '),
            # The remaining OSAL typedefs, by shape rather than one at a time. osal_index_t and
            # osal_objtype_t are 32-bit scalars; os_err_name_t and os_status_string_t are
            # char arrays, so a pointer to one is a byte pointer.
@@ -117,7 +124,8 @@ H_TYPES = [(r'\bCFE_MSG_Message\s*\*', ' PTRB '), (r'\bCFE_\w+\s*\*', ' PTRNUM '
            # os_fsinfo_t, os_err_name_t and friends, and the C normalises them to PTRB.
            (r'\bos_\w+_t\s*\*', ' PTRB '),
            (r'\bI64\b', ' SZ '), (r'\bU32\b', ' NUM '),
-           (r'\bU16\b', ' NUM '), (r'\bU8\b', ' NUM '), (r'\bI32\b', ' SNUM ')]
+           (r'\bU16\b', ' NUM '), (r'\bU8\b', ' NUM '), (r'\bI32\b', ' SNUM '),
+           (r'\bI16\b', ' SNUM ')]
 
 # A function-pointer parameter, however it is spelled. The C uses typedefs (OS_ArgCallback_t,
 # OS_ObjectMatchFunc_t, OS_Config_Callback_t); HolyC has no typedef so the translation writes

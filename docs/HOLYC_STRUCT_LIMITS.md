@@ -575,3 +575,70 @@ The remaining audit result is the real one: outside the test cases, the only aff
 tree was `cfe_time_api.HC`'s `Y`. Nothing in this kernel names a LOCAL in capitals.
 
 
+
+## 15. `#if <expr>` is UNCONDITIONALLY TRUE — OPEN
+
+```c
+#define Z 0
+#if Z
+  r += 1;      // taken
+#else
+  r += 2;      // skipped
+#endif
+```
+
+`host/lexer.c`'s directive handler says it outright: *"#if — only literal 0 / non-zero"*. It
+looks at the first non-blank character after the directive, treats a literal `0` as false, and
+treats **anything else** as true. So `#if 0` works, and
+
+- `#if MACRO` where `MACRO` is `0` — **true**
+- `#if MACRO` where `MACRO` is `FALSE` — **true**
+- `#if UNDEFINED_NAME` — **true**
+- `#if (MACRO == 1)` where `MACRO` is `0` — **true**
+
+`#ifdef` and `#ifndef` are evaluated properly, and the `#else` arm is correctly skipped. That last
+part is what makes this quiet rather than loud: the file compiles, one branch runs, and it is the
+wrong one. There is no diagnostic.
+
+**What it costs in the kernel, which is not a hypothetical.** `Kernel/KernelA.HH:2785`:
+
+```c
+#define _CFG_HEAP_DBG FALSE
+
+#if _CFG_HEAP_DBG
+class CMemUsed { CHeapCtrl *hc; U8 *caller1,*caller2; CMemUsed *next,*last; I64 size; U0 start; };
+#else
+class CMemUsed { CHeapCtrl *hc; U0 caller1,caller2;   U0 next,last;         I64 size; U0 start; };
+#endif
+```
+
+The `FALSE` is ignored, so this kernel uses the DEBUG layout — a 48-byte heap header where the
+configuration asks for 16 — and the three matching `#if _CFG_HEAP_DBG` blocks in
+`Kernel/Mem/MAllocFree.HC` maintain the debug queue that goes with it. It is self-consistent and
+it boots, which is exactly why nobody noticed. `Adam/AMem.HC` and `tos/Misc/OSInstall.HC` have one
+site each.
+
+**What it cost in cFS, and how it surfaced.** `cfe_time_tone.c`, `cfe_time_task.c` and
+`cfe_time_dispatch.c` between them carry 35 configuration directives, and the first version of the
+translation kept them. Every one was compiled in, including the time-CLIENT branches and the three
+external-source branches this port does not build, so the blob referenced `CFE_TIME_SetDelay`,
+`CFE_TIME_SetSignal`, `CFE_TIME_SetSource`, `OS_GetLocalMET` and `OS_SelectTone` — none of which
+exist here. **The blob's import trailer is what caught it** ([[blob-import-trailer-witness]]);
+nothing else would have, because each of those names is one a C runtime could plausibly bind.
+
+**Until it is implemented**, the translation resolves NASA's configuration directives BY HAND and
+each one leaves a bracketed comment naming the guard, its value and which branch survived — so the
+HolyC can still be read against the C line for line. `cfe_time_utils.HC` and every earlier TIME
+file already did this; what changed is that these three had enough configuration in them to make
+the silence dangerous rather than untidy.
+
+**GATE: `tests/exec/cases/e_pp_if_known_wrong.hc`, and it is pinned to the WRONG value on
+purpose.** It expects `0x457`, which is every `#if` branch taken; C would give `0x4c6`. If the
+case starts failing, `#if` has been implemented and the pin should become `0x4c6` — not be made to
+reproduce `0x457`. The manifest says so on the line above it. The case also includes a genuinely
+true `#if 1`, so a "fix" that made every `#if` false would be caught too.
+
+**When it is fixed, expect the kernel's heap layout to change** — `CMemUsed` goes from 48 bytes to
+16 and the debug queue stops being maintained. That is the correct behaviour and it is still a
+behavioural change to a running allocator, so it wants its own commit and its own measurement
+rather than being folded into whatever implements the directive.

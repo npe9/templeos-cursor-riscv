@@ -413,9 +413,16 @@ class CFE_TIME_Reference_t
 };
 // One entry of the 1Hz callback registry. NASA's member is
 // `volatile CFE_TIME_SynchCallbackPtr_t Ptr` -- a function pointer, and HolyC has those.
+//
+// `I32 (*Ptr)()`, and this was `U0 (*Ptr)()` until the TIME driver tried to assign a real
+// callback to it. NASA's typedef is `int32 (*)(void)` -- the callback RETURNS a status, which
+// CFE_TIME_NotifyTimeSynchApps discards. Nothing in this port's nine gates could see the error:
+// a function pointer is eight bytes either way, so check_padding and check_structs agree, and
+// check_signatures looks at function PARAMETERS, not at the types of class members. What found
+// it was the C compiler refusing the assignment on the oracle's side.
 class CFE_TIME_SynchCallbackRegEntry_t
 {
-  U0 (*Ptr)();
+  I32 (*Ptr)();
 };
 // ONE SLOT OF THE LOCK-FREE RING. StateVersion is the sequence number a reader checks before and
 // after copying, so a slot that was overwritten mid-read is detected and the read retried. That

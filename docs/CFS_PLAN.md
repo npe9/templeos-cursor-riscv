@@ -299,7 +299,7 @@ rather than counted as always-built:
 | `fs` | 3 | 1,249 | **100%** |
 | `ta` | 2 | 892 | **100%** (plus `cfe_ta_dispatch.c`, 159, which is conditional — see below) |
 | `evs` | 5 | 2,787 | **100%** (six of six; the `_dispatch` one is conditional — see below) |
-| `time` | 5 | 4,383 | **41%** (api and utils; task, tone and objtab remain) |
+| `time` | 5 | 4,383 | **100%** (plus `cfe_time_dispatch.c`, 294, which is conditional — see below) |
 | `tbl` | 15 | 7,780 | 0% |
 | `es` | 17 | 12,734 | 0% |
 
@@ -523,7 +523,7 @@ as 2,156,050,768). Three lines away in NASA's own code, `CFE_Config_SetupBasicBu
 a **local** `VersionString` into `CFE_CONFIGID_CORE_VERSION_DESCRIPTION` and has the same defect
 — see `docs/CFS_UPSTREAM_NOTES.md` #8, where it is measured.
 
-Nine properties are gated independently, because each is blind to what the others catch:
+Ten properties are gated independently, because each is blind to what the others catch:
 
 | check | what it proves | what it cannot see |
 |---|---|---|
@@ -532,6 +532,7 @@ Nine properties are gated independently, because each is blind to what the other
 | `check_seam.py` | the `OS_*_Impl` declarations match NASA's headers, **return type included** | whether a backend obeys them |
 | `check_structs.py` | a translated `class` has NASA's fields, in NASA's order | field TYPES, and where the fields actually sit |
 | `check_padding.py` | a translated `class` has NASA's BYTE LAYOUT — every offset and the size | whether anything reads those fields correctly |
+| `check_fnptr_members.py` | a function-pointer MEMBER has NASA's return kind and parameter count | the parameter TYPES, and the type of any other member |
 | `check_constants.py` | every number the translation spells out has NASA's value, INCLUDING the ones NASA spells as enumerators | whether anything uses it, or uses it correctly |
 | `check_variadic.py` | a variadic function's declarations agree with NASA's and with each other, and none is called before one is seen | whether the ARGUMENTS at a call site are the right ones |
 | `check_manifest.py` | everything gated is in NASA's build; reports the covered fraction | nothing about the code itself |
@@ -817,7 +818,59 @@ P0, then stop and decide. One hand-translated CCSDS header unit with a byte-exac
 oracle answers the only question that matters — whether translated cFS behaves identically — before
 a transpiler or a line of OSAL exists.
 
-#### `time`: 41%, and the two gates that had to grow to take it
+#### `time`: 100%, and a preprocessor directive that was never evaluated
+
+`cfe_time_tone.c` (1,333), `cfe_time_task.c` (1,234), `cfe_time_dispatch.c` (294) and
+`cfe_time_objtab.c` (38) complete the module. The transcript goes 657 → **728 lines**, and the 48
+new ones are TIME's own behaviour rather than TIME seen through someone else's housekeeping —
+which is what it was before. That gap is worth naming: `cfe_time_api.c` and `cfe_time_utils.c`
+had been gated for coverage, signatures, constants and byte layout while the only things CALLING
+them were `CFE_SB_TimeStampMsg` and a handful of rendered timestamps. Six of the nine properties
+were green on a module nothing drove.
+
+The new block drives it directly, and the local clock is a variable in the driver
+(`evs_psp_ns`), so every number is determined. Three tone interrupts — one that establishes the
+previous latch, one a clean second later, one only half a second later — then `ToneSend` building
+the time-at-the-tone packet, `ToneData` accepting it, the IDENTICAL pair being rejected by
+NASA's two function-static `PrevTime1`/`PrevTime2`, both 1Hz child-task loops run to their own
+`OS_BinSemTake` failure, flywheel entry by `START_FLY` and the time-at-tone roll-forward by
+`LATCH_FLY`, the synch callback through a function pointer, and the dispatcher's two levels of
+routing including a wrong length, an unknown command code and an unknown message id.
+
+**THE ONE THAT MATTERS MOST: `#if <expr>` IS UNCONDITIONALLY TRUE IN THIS COMPILER.** The three
+new sources carry 35 configuration directives and the first version of the translation kept them.
+`host/lexer.c` evaluates only a literal `0`, so every one of them was compiled in — the time-CLIENT
+branches and the three external-source branches included — and the blob referenced
+`CFE_TIME_SetDelay`, `CFE_TIME_SetSignal`, `CFE_TIME_SetSource`, `OS_GetLocalMET` and
+`OS_SelectTone`, none of which this port builds. **The blob's import trailer caught it and nothing
+else would have**, because each of those is a name a C runtime could plausibly bind. The same
+directive makes `#define _CFG_HEAP_DBG FALSE` a no-op in `Kernel/KernelA.HH`, so this kernel runs
+with 48-byte heap headers where its configuration asks for 16. `docs/HOLYC_STRUCT_LIMITS.md` #15
+has the mechanism, the gate and what to expect when it is implemented.
+
+**Three defects the gates found on the way in, each in a different gate's blind spot:**
+
+- `CFE_TIME_SynchCallbackRegEntry_t.Ptr` was `U0 (*)()` and NASA's is `int32 (*)(void)`. A
+  function pointer is eight bytes either way, so `check_structs` and `check_padding` agreed;
+  `check_signatures` reads function PARAMETERS, not the types of class members. What refused it
+  was the C compiler, on the oracle's side, when the driver assigned a real callback.
+- `int16` on NASA's side and `I16` on the translation's **both normalised to nothing**, so they
+  matched by being equally invisible — and so would a parameter whose width or signedness was
+  wrong. Both have a token now, and the three `*Impl` helpers in `cfe_time_task.c` turned red:
+  NASA's `Direction` there is `CFE_TIME_AdjustDirection_Enum_t`, a **uint8**, while
+  `cfe_time_utils.c` really does declare `int16`. The translation had written `I16` in all five by
+  analogy.
+- The driver's own tone steps were 100× too large. One second is 10,000,000 ticks, not
+  1,000,000,000, because a tick is 100 ns — so every tone fell outside the validation window and
+  came back INVALID, which reads exactly like a translation defect and was arithmetic in the
+  test.
+
+HolyC has no `static` on a FUNCTION either (distinct from #12, which was about a static LOCAL):
+the compiler refuses the declaration, so `cfe_time_task.c`'s five `TaskInit_*` helpers lose the
+keyword and have unit scope instead of file scope, which is the deviation `cfe_evs_utils.HC`'s
+`EVS_*` helpers already carry.
+
+#### `time`: how the first half landed, and the two gates that had to grow to take it
 
 `cfe_time_api.c` (737) and `cfe_time_utils.c` (1,041) are gated — 1,778 of 4,383 lines. The
 remaining three are `cfe_time_task.c` (1,234), `cfe_time_tone.c` (1,333) and `cfe_time_objtab.c`

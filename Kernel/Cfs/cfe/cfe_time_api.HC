@@ -432,7 +432,7 @@ U0 CFE_TIME_ExternalTone()
   CFE_TIME_Tone1HzISR();
 }
 
-I32 CFE_TIME_RegisterSynchCallback(U0 (*CallbackFuncPtr)())
+I32 CFE_TIME_RegisterSynchCallback(I32 (*CallbackFuncPtr)())
 {
   I32 Status;
   U32 AppId;
@@ -457,7 +457,7 @@ I32 CFE_TIME_RegisterSynchCallback(U0 (*CallbackFuncPtr)())
   return Status;
 }
 
-I32 CFE_TIME_UnregisterSynchCallback(U0 (*CallbackFuncPtr)())
+I32 CFE_TIME_UnregisterSynchCallback(I32 (*CallbackFuncPtr)())
 {
   I32 Status;
   U32 AppId;

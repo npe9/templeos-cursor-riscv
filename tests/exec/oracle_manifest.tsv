@@ -124,3 +124,6 @@ tests/exec/cases/e_static_local_scope.hc	000053d3d67b7578
 tests/exec/cases/e_struct_assign_member.hc	00003f9cc92801c9
 tests/exec/cases/e_upper_name_stmt.hc	0000d05f000bccd3
 tests/exec/cases/e_static_local_class_zero.hc	000000000207fd31
+# KNOWN WRONG, pinned on purpose: #if <expr> is unconditionally true (HOLYC_STRUCT_LIMITS.md #15).
+# When #if is implemented this must become 00000000000004c6; read the case before re-pinning.
+tests/exec/cases/e_pp_if_known_wrong.hc	0000000000000457

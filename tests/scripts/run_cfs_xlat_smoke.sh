@@ -73,7 +73,11 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/evs/fsw/src/cfe_evs_dispatch.c
        $CFE/modules/evs/fsw/src/cfe_evs_objtab.c
        $CFE/modules/time/fsw/src/cfe_time_utils.c
-       $CFE/modules/time/fsw/src/cfe_time_api.c"
+       $CFE/modules/time/fsw/src/cfe_time_api.c
+       $CFE/modules/time/fsw/src/cfe_time_tone.c
+       $CFE/modules/time/fsw/src/cfe_time_task.c
+       $CFE/modules/time/fsw/src/cfe_time_dispatch.c
+       $CFE/modules/time/fsw/src/cfe_time_objtab.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -112,8 +116,9 @@ INC="-I$CFE/modules/core_api/fsw/inc -I$CFE/modules/core_api/config
      -I$CFE/modules/time/fsw/src -I$CFE/modules/time/fsw/inc -I$CFE/modules/time/config
      -I$OSAL/src/os/inc -I$PSP/fsw/inc -I$CFE/cmake/sample_defs -I$CFE/cmake/target/inc -I$SHIM"
 
-T="$(mktemp -d)"
-trap 'rm -rf "$T"' EXIT
+T="${CFS_XLAT_KEEP_DIR:-$(mktemp -d)}"
+mkdir -p "$T"
+[ -n "${CFS_XLAT_KEEP_DIR:-}" ] || trap 'rm -rf "$T"' EXIT
 
 # --- completeness: every NASA function must EXIST in the translation -----------------------
 # The transcript below compares behaviour, so it only sees functions the driver calls. A
@@ -158,6 +163,17 @@ python3 "$ROOT/tools/cfs/check_structs.py" || exit 1
 # every token 24 bytes against NASA's 20.
 python3 "$ROOT/tools/cfs/check_padding.py" || exit 1
 
+# --- function-pointer MEMBERS -------------------------------------------------------------------
+# The two checks above are both blind here by construction: check_structs compares field names and
+# order, check_padding compares offsets and sizes, and a function pointer is eight bytes whatever
+# it points at. check_signatures compares function PARAMETERS, not the types of class members. So
+# CFE_TIME_SynchCallbackRegEntry_t.Ptr was `U0 (*Ptr)()` for three commits where NASA's typedef is
+# `int32 (*)(void)`, with every gate green; the host C compiler refused it on the ORACLE's side the
+# first time a driver assigned a real callback. This compares the RETURN KIND and the PARAMETER
+# COUNT, and treats a member it cannot pair with NASA's as a FAILURE -- not finding the upstream
+# declaration is the outcome that looks like success.
+python3 "$ROOT/tools/cfs/check_fnptr_members.py" || exit 1
+
 # --- the constants ------------------------------------------------------------------------------
 # HolyC has no enum and no CMake, so the translation re-states hundreds of numbers by hand:
 # event ids, message ids, bit masks, array bounds, error codes. Nothing above checks one. A
@@ -189,7 +205,7 @@ python3 "$ROOT/tools/cfs/check_variadic.py" || exit 1
 if ! "$HOSTCC" -O0 -w $INC -I"$ROOT/tests/cfs" -o "$T/ref" "$ROOT/tests/cfs/oracle_ccsdspri.c" $SRC_C "$GENDIR/cfe_configid_nametable.c" "$GENDIR/cfe_target_config.c" \
      "$GENDIR/cfe_platformcfg_tables.c" 2>"$T/cc.log"; then
   echo "FAIL cfs-xlat — the C reference did not build" >&2
-  tail -12 "$T/cc.log" | sed 's/^/  /' >&2
+  tail -40 "$T/cc.log" | sed 's/^/  /' >&2
   exit 1
 fi
 "$T/ref" > "$T/ref.txt" || { echo "FAIL cfs-xlat — the C reference did not run" >&2; exit 1; }

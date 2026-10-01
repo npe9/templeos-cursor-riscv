@@ -27,7 +27,7 @@ class CFE_StaticModuleLoadEntry_t
 class Target_CfeConfigData
 {
   U0 (*System1HzISR)();
-  U0 (*SystemMain)();
+  U0 (*SystemMain)(U32 StartType, U32 StartSubtype, U32 ModeId, U8 *StartFilePath);
   U0 (*SystemNotify)();
   U32 CdsSize;
   U32 ResetAreaSize;
