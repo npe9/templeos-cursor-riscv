@@ -205,3 +205,53 @@ set(fs_SOURCES
 Harmless — CMake compiles each source once per target regardless — and noted only because it is
 exactly the shape that would fool a manifest parser into reporting five sources where there are
 three. `tools/cfs/check_manifest.py` deduplicates, and it reports `fs 3 uncond 1249 lines`.
+
+## 8. The core version description is a pointer into dead stack
+
+`CFE_Config_SetupBasicBuildInfo` in `modules/config/fsw/src/cfe_config_init.c` builds the
+version string into a **local array** and stores it:
+
+```c
+char VersionString[CFE_CFG_MAX_VERSION_STR_LEN];
+...
+CFE_Config_GetVersionString(VersionString, CFE_CFG_MAX_VERSION_STR_LEN, "cFE", CFE_SRC_VERSION,
+                            CFE_BUILD_CODENAME, CFE_LAST_OFFICIAL);
+CFE_Config_SetString(CFE_CONFIGID_CORE_VERSION_DESCRIPTION, VersionString);
+```
+
+and `CFE_Config_SetString` copies nothing:
+
+```c
+Entry->ActualType      = CFE_ConfigType_STRING;
+Entry->Datum.AsPointer = Ptr;
+```
+
+So from the moment `CFE_Config_SetupBasicBuildInfo` returns,
+`CFE_CONFIGID_CORE_VERSION_DESCRIPTION` holds a pointer into a dead stack frame. Every other
+string the registry holds is a literal or a pointer into `GLOBAL_CONFIGDATA`, both of which
+have static storage; this is the only one that does not.
+
+Measured, with NASA's unmodified C in the oracle, reading the id a few calls later:
+
+    [cFE v7.0.1+de251(Draco) DEV BUILD, based on v7.0.1, EDS disa]
+
+where the string written was
+
+    [cFE v7.0.1+dev1 (Draco) DEV BUILD, based on v7.0.1, EDS disabled]
+
+`"v7.0.1+dev1 "` has become `"v7.0.1+de251"` and the tail is cut: the frame was reused. The
+value is whatever happens to be on the stack, so it is not reproducible across machines, which
+is why this one id is **excluded from the differential transcript** — both sides would print
+different garbage and the gate would fail for a reason that has nothing to do with the
+translation. What the transcript does assert is that the id was SET at all, i.e. that it does
+not read back as the registry's `"[unknown]"` fallback.
+
+It matters in flight: `ES_NOOP` and the `CFE_ES_HousekeepingTlm` version fields read this id.
+cFE's own generated platform table shows the right pattern three lines away —
+`cfe_platform_cfg.c.in` declares each array descriptor `static const` precisely because
+`CFE_Config_SetArrayValue` retains the pointer. The fix would be a `static` on
+`VersionString`, and it is NASA's to make.
+
+Reproduced, not fixed. (The translation hit the same hazard independently: the first version of
+`tools/cfs/gen_platform_config.py` reused one local descriptor for all three arrays, and the
+transcript read `NumElements` as 2156050768.)

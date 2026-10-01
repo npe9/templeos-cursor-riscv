@@ -22,7 +22,7 @@ and those differences are not defects:
     int32                         ->  SNUM
     OS_time_t *                   ->  TIME
     OS_<x>_prop_t *               ->  PROP
-    <any> name[N]                 ->  PTRB       (an array parameter IS a pointer in C)
+    <any> name[N]                 ->  same as <any> *name (an array parameter IS a pointer)
     OS_ArgCallback_t / a spelled-out function pointer  ->  FN
 
 What it does NOT normalise is how many parameters there are or whether one is a pointer, which
@@ -167,9 +167,19 @@ def sigs(path, ret_pat, prefix, types):
             if FN_TYPEDEF.search(a) or FN_SPELLED.search(a):
                 norm.append('FN')
                 continue
-            if re.search(r'\[\s*\d*\s*\]', a):   # an array parameter is a pointer
-                norm.append('PTRB')
-                continue
+            # An array parameter IS a pointer in C, so turn `T x[N]` into `T *x` and let the
+            # type rules classify it. An earlier version returned PTRB unconditionally, which
+            # threw the ELEMENT type away: `CFE_ConfigName_t *ModuleListSet[]` normalised to
+            # PTRB while the identical `CFE_ConfigName_t **ModuleListSet` -- which is what C
+            # passes and what the translation writes -- normalised to PTRNUM, and the checker
+            # reported two spellings of one type as a mismatch.
+            # The star has to go where the TYPE rules can see it, i.e. in front of the
+            # parameter name, not at the end of the declarator. Appending it produced
+            # `uint8 VersionNumbers *`, which `\buint8\s*\*` does not match, so
+            # OS_GetVersionNumber's parameter fell through to the bare `uint8` rule and the OSAL
+            # gate reported NASA as NUM against the translation's PTRB.
+            if re.search(r'\[\s*\w*\s*\]', a):
+                a = re.sub(r'([A-Za-z_]\w*)\s*\[\s*\w*\s*\]', r'* \1', a)
             for pat, rep in types:
                 a = re.sub(pat, rep, a)
             # Drop the parameter NAME but not the tokens substituted above -- an earlier

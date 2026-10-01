@@ -61,7 +61,20 @@ RAMDISK_TOTAL_SECTORS = 4096
 # config-id name table looking for MOD_SRCVER_<name> and only records a version for a module
 # that appears in one of these lists, so listing a module this port does not have would
 # manufacture a version for something that is not here.
-CORE_MODULE_LIST = ["CFE_MSG", "CFE_RESOURCEID", "CFE_SBR", "CFE_CONFIG"]
+#
+# LOWERCASE, NO CFE_ PREFIX, and in NASA's order. These are MISSION_CORE_MODULES names
+# (cmake/mission_defaults.cmake: "config" "es" "evs" "fs" "sb" "tbl" "time" "osal" "psp" "msg"
+# "sbr" "resourceid"), which is also the initialisation order, and the same names key
+# CFE_MODULE_VERSION_TABLE. They are NOT the objtab .Name fields, which are "CFE_MSG" and so
+# on -- a different list (CFE_CORE_MODULE_OBJTAB) for a different purpose.
+#
+# This was wrong here first, as ["CFE_MSG", ...]. The config-id names are MOD_SRCVER_MSG and
+# MOD_SRCVER_CONFIG, so after stripping the prefix SetupModuleVersions looks for "MSG", which
+# never matched "CFE_MSG" and left every module version unset. NASA's own comment says why the
+# comparison is case-insensitive -- "The define names are uppercase while the module names are
+# likely lowercase" -- which is the hint that the names are bare. Caught by a transcript line
+# reading [unknown] where a version belonged.
+CORE_MODULE_LIST = ["config", "fs", "msg", "sbr", "resourceid"]
 STATIC_APP_LIST = []
 PSP_MODULE_LIST = []
 

@@ -187,7 +187,7 @@ U8 *CFE_Config_GetName(U32 ConfigId)
   OffsetVal = CFE_Config_IdToOffset(ConfigId);
   if (OffsetVal >= CFE_ConfigIdOffset_MAX)
     return CFE_Config_Global.UnknownString;
-  return CFE_CONFIGID_NAMETABLE[OffsetVal];
+  return CFE_CONFIGID_NAMETABLE[OffsetVal].Name;
 }
 
 U32 CFE_Config_GetIdByName(U8 *Name)
@@ -196,8 +196,8 @@ U32 CFE_Config_GetIdByName(U8 *Name)
   if (Name == NULL)
     return CFE_CONFIGID_UNDEFINED;
   for (OffsetVal = 0; OffsetVal < CFE_ConfigIdOffset_MAX; OffsetVal++) {
-    if (CFE_CONFIGID_NAMETABLE[OffsetVal] != NULL &&
-        StrCmp(CFE_CONFIGID_NAMETABLE[OffsetVal], Name) == 0)
+    if (CFE_CONFIGID_NAMETABLE[OffsetVal].Name != NULL &&
+        StrCmp(CFE_CONFIGID_NAMETABLE[OffsetVal].Name, Name) == 0)
       break;
   }
   if (OffsetVal >= CFE_ConfigIdOffset_MAX)
@@ -210,7 +210,7 @@ U0 CFE_Config_IterateAll(U8 *Arg, U0 (*Callback)(U8 *, U32, U8 *))
   U32 OffsetVal;
   for (OffsetVal = 0; OffsetVal < CFE_ConfigIdOffset_MAX; OffsetVal++) {
     if (CFE_Config_Global.Table[OffsetVal].ActualType != CFE_ConfigType_UNDEFINED)
-      Callback(Arg, CFE_Config_OffsetToId(OffsetVal), CFE_CONFIGID_NAMETABLE[OffsetVal]);
+      Callback(Arg, CFE_Config_OffsetToId(OffsetVal), CFE_CONFIGID_NAMETABLE[OffsetVal].Name);
   }
 }
 // The two version-string helpers -- the widest use of formatting in the translated sources.

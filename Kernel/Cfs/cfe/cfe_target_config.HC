@@ -71,21 +71,22 @@ class Target_ConfigData
 // HolyC has no designated initialisers and no initialised aggregates at file scope,
 // so the tables are filled by a function the harness calls once. Same values, same
 // order, same NULL terminators as the C.
-CFE_ConfigName_t CFE_CORE_MODULE_LIST[5];
+CFE_ConfigName_t CFE_CORE_MODULE_LIST[6];
 CFE_ConfigName_t CFE_STATIC_APP_LIST[1];
 CFE_StaticModuleLoadEntry_t CFE_PSP_MODULE_LIST[1];
 CFE_ConfigKeyValue_t CFE_BUILD_ENV_TABLE[4];
-CFE_ConfigKeyValue_t CFE_MODULE_VERSION_TABLE[6];
+CFE_ConfigKeyValue_t CFE_MODULE_VERSION_TABLE[7];
 Target_CfeConfigData GLOBAL_CFE_CONFIGDATA;
 Target_ConfigData GLOBAL_CONFIGDATA;
 
 U0 CFE_TargetConfigInit()
 {
-  CFE_CORE_MODULE_LIST[0].Name = "CFE_MSG";
-  CFE_CORE_MODULE_LIST[1].Name = "CFE_RESOURCEID";
-  CFE_CORE_MODULE_LIST[2].Name = "CFE_SBR";
-  CFE_CORE_MODULE_LIST[3].Name = "CFE_CONFIG";
-  CFE_CORE_MODULE_LIST[4].Name = NULL;
+  CFE_CORE_MODULE_LIST[0].Name = "config";
+  CFE_CORE_MODULE_LIST[1].Name = "fs";
+  CFE_CORE_MODULE_LIST[2].Name = "msg";
+  CFE_CORE_MODULE_LIST[3].Name = "sbr";
+  CFE_CORE_MODULE_LIST[4].Name = "resourceid";
+  CFE_CORE_MODULE_LIST[5].Name = NULL;
   CFE_STATIC_APP_LIST[0].Name = NULL;
   CFE_PSP_MODULE_LIST[0].Name = NULL;
   CFE_BUILD_ENV_TABLE[0].Key = "BUILDDATE";
@@ -97,15 +98,17 @@ U0 CFE_TargetConfigInit()
   CFE_BUILD_ENV_TABLE[3].Key = NULL;
   CFE_MODULE_VERSION_TABLE[0].Key = "MISSION";
   CFE_MODULE_VERSION_TABLE[0].Value = "v1.0.0-templeos";
-  CFE_MODULE_VERSION_TABLE[1].Key = "CFE_MSG";
+  CFE_MODULE_VERSION_TABLE[1].Key = "config";
   CFE_MODULE_VERSION_TABLE[1].Value = "v7.0.1+dev";
-  CFE_MODULE_VERSION_TABLE[2].Key = "CFE_RESOURCEID";
+  CFE_MODULE_VERSION_TABLE[2].Key = "fs";
   CFE_MODULE_VERSION_TABLE[2].Value = "v7.0.1+dev";
-  CFE_MODULE_VERSION_TABLE[3].Key = "CFE_SBR";
+  CFE_MODULE_VERSION_TABLE[3].Key = "msg";
   CFE_MODULE_VERSION_TABLE[3].Value = "v7.0.1+dev";
-  CFE_MODULE_VERSION_TABLE[4].Key = "CFE_CONFIG";
+  CFE_MODULE_VERSION_TABLE[4].Key = "sbr";
   CFE_MODULE_VERSION_TABLE[4].Value = "v7.0.1+dev";
-  CFE_MODULE_VERSION_TABLE[5].Key = NULL;
+  CFE_MODULE_VERSION_TABLE[5].Key = "resourceid";
+  CFE_MODULE_VERSION_TABLE[5].Value = "v7.0.1+dev";
+  CFE_MODULE_VERSION_TABLE[6].Key = NULL;
   GLOBAL_CFE_CONFIGDATA.CdsSize = 131072;
   GLOBAL_CFE_CONFIGDATA.ResetAreaSize = 170000;
   GLOBAL_CFE_CONFIGDATA.UserReservedSize = 1048576;

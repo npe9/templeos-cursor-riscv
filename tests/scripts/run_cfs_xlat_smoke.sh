@@ -29,6 +29,12 @@ python3 "$ROOT/tools/cfs/gen_configid_table.py" "$GENDIR" || {
 # translation uses, so the two cannot disagree about a mount point.
 python3 "$ROOT/tools/cfs/gen_target_config.py" "$GENDIR" >/dev/null || {
   echo "FAIL cfs-xlat — could not generate the target config" >&2; exit 1; }
+# CFE_Config_SetupPlatformConfigInfo is declared in cfe_config_external.h and DEFINED NOWHERE in
+# the tree -- cFE's build emits it per target. cFE ships the generator for it, a native C tool
+# under modules/config/tool, so this compiles and runs NASA's own tool rather than guessing at
+# what it would have produced; the HolyC half carries the same values as resolved integers.
+python3 "$ROOT/tools/cfs/gen_platform_config.py" "$GENDIR" >/dev/null || {
+  echo "FAIL cfs-xlat — could not generate the platform config" >&2; exit 1; }
 # Every cFE source under test. Growing this list and the transcript together is how a translation
 # advances: one file, one set of transcript lines, one diff.
 SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
@@ -54,7 +60,9 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/config/fsw/src/cfe_config_eds_disabled.c
        $CFE/modules/fs/fsw/src/cfe_fs_api.c
        $CFE/modules/fs/fsw/src/cfe_fs_priv.c
-       $CFE/modules/fs/fsw/src/cfe_fs_objtab.c"
+       $CFE/modules/fs/fsw/src/cfe_fs_objtab.c
+       $CFE/modules/config/fsw/src/cfe_config_init.c
+       $CFE/modules/config/fsw/src/cfe_config_objtab.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -146,7 +154,8 @@ python3 "$ROOT/tools/cfs/check_manifest.py" --cfe || exit 1
 
 # --- reference: NASA's C, unmodified -------------------------------------------------------
 # shellcheck disable=SC2086
-if ! "$HOSTCC" -O0 -w $INC -I"$ROOT/tests/cfs" -o "$T/ref" "$ROOT/tests/cfs/oracle_ccsdspri.c" $SRC_C "$GENDIR/cfe_configid_nametable.c" "$GENDIR/cfe_target_config.c" 2>"$T/cc.log"; then
+if ! "$HOSTCC" -O0 -w $INC -I"$ROOT/tests/cfs" -o "$T/ref" "$ROOT/tests/cfs/oracle_ccsdspri.c" $SRC_C "$GENDIR/cfe_configid_nametable.c" "$GENDIR/cfe_target_config.c" \
+     "$GENDIR/cfe_platformcfg_tables.c" 2>"$T/cc.log"; then
   echo "FAIL cfs-xlat — the C reference did not build" >&2
   tail -12 "$T/cc.log" | sed 's/^/  /' >&2
   exit 1

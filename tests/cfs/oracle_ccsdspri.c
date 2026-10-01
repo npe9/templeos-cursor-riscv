@@ -23,6 +23,8 @@
 #include "cfe_config_priv.h"
 #include "cfe_config_ids.h"
 #include "cfe_config_eds.h" /* module-private; declares CFE_Config_EdsState */
+#include "cfe_config_init.h"      /* module-private; the init helpers */
+#include "cfe_config_core_internal.h"
 #include "cfe_resourceid.h"
 #include "cfe_resourceid_basevalue.h"
 
@@ -31,6 +33,7 @@
 extern const Target_ObjectTable_t CFE_MSG_ModuleEntry;
 extern const Target_ObjectTable_t CFE_RESOURCEID_ModuleEntry;
 extern const Target_ObjectTable_t CFE_FS_ModuleEntry;
+extern const Target_ObjectTable_t CFE_CONFIG_ModuleEntry;
 
 /* Private to the SB module (declared in modules/sb/fsw/src/cfe_sb_priv.h, which is not on the
  * include path here and would drag in the rest of SB). Declared rather than included, because
@@ -275,6 +278,23 @@ static void fs_onevent(void *Meta, CFE_FS_FileWriteEvent_t Event, int32 Status, 
     ++fs_events;
     printf("fs_event ev=%d st=%ld rec=%lu blk=%lu pos=%lu\n", (int)Event, (long)Status,
            (unsigned long)RecordNum, (unsigned long)BlockSize, (unsigned long)Position);
+}
+
+
+/* ---- cfe_config_init.c helpers ------------------------------------------------------------- */
+/* Two module lists and a key/value list, so FindTargetKeyValue, IsModuleInList, IsPspModule and
+ * FindStaticModName are exercised on data this driver controls rather than only on the generated
+ * target config. The NULL terminators are what the walks stop on. */
+static CFE_ConfigName_t ci_core[3] = {{"CFE_ES"}, {"CFE_SB"}, {NULL}};
+static CFE_ConfigName_t ci_apps[2] = {{"ci_lab"}, {NULL}};
+static CFE_StaticModuleLoadEntry_t ci_psp[3] = {{"soft_timebase", NULL}, {"eeprom_direct", NULL},
+                                                {NULL, NULL}};
+static CFE_ConfigKeyValue_t ci_kv[4] = {{"CFE_ES", "1.2.3"}, {"ci_lab", "4.5.6"},
+                                        {"SOFT_TIMEBASE", "7.8.9"}, {NULL, NULL}};
+
+static void ci_str(const char *tag, const char *s)
+{
+    printf("%s [%s]\n", tag, s == NULL ? "(null)" : s);
 }
 
 /* The file's bytes, so the big-endian conversion in WriteHeader is in the transcript rather than
@@ -1156,6 +1176,106 @@ int main(void)
            (int)(CFE_FS_ModuleEntry.EarlyInit == NULL), (int)(CFE_FS_ModuleEntry.TaskMain == NULL),
            (int)(CFE_FS_ModuleEntry.AppCleanupCb == NULL),
            (unsigned long)CFE_FS_ModuleEntry.Priority, (unsigned long)CFE_FS_ModuleEntry.StackSize);
+
+    /* --- cfe_config_init.c ------------------------------------------------------------- */
+    /* The last piece of the config module, and it was blocked on build output rather than on
+     * translation: GLOBAL_CONFIGDATA, the CFE_CONFIGID_* id macros and
+     * CFE_Config_SetupPlatformConfigInfo, which is declared in cfe_config_external.h and
+     * defined nowhere in the tree. tools/cfs/gen_platform_config.py compiles and runs NASA's
+     * OWN generator for the last one. */
+    {
+        CFE_ConfigName_t *ci_set[2];
+        int32             rc;
+
+        /* the case-insensitive comparison, including the two ways it can be unequal */
+        printf("ci_eq %d %d %d %d %d %d\n", (int)CFE_Config_StrCaseEq("CFE_ES", "cfe_es"),
+               (int)CFE_Config_StrCaseEq("CFE_ES", "CFE_ES"),
+               (int)CFE_Config_StrCaseEq("CFE_ES", "CFE_SB"),
+               (int)CFE_Config_StrCaseEq("CFE", "CFE_ES"),      /* prefix: shorter first */
+               (int)CFE_Config_StrCaseEq("CFE_ES", "CFE"),      /* prefix: longer first */
+               (int)CFE_Config_StrCaseEq("", ""));
+
+        ci_str("ci_kv_hit", CFE_Config_FindTargetKeyValue(ci_kv, "cfe_es"));
+        ci_str("ci_kv_miss", CFE_Config_FindTargetKeyValue(ci_kv, "CFE_EVS"));
+        ci_str("ci_kv_nulllist", CFE_Config_FindTargetKeyValue(NULL, "CFE_ES"));
+        ci_str("ci_kv_nullkey", CFE_Config_FindTargetKeyValue(ci_kv, NULL));
+
+        ci_str("ci_mod_hit", CFE_Config_IsModuleInList(ci_core, "cfe_sb"));
+        ci_str("ci_mod_miss", CFE_Config_IsModuleInList(ci_core, "CFE_TBL"));
+        ci_str("ci_mod_null", CFE_Config_IsModuleInList(NULL, "CFE_SB"));
+
+        ci_str("ci_psp_hit", CFE_Config_IsPspModule(ci_psp, "EEPROM_DIRECT"));
+        ci_str("ci_psp_miss", CFE_Config_IsPspModule(ci_psp, "nope"));
+        ci_str("ci_psp_null", CFE_Config_IsPspModule(NULL, "x"));
+
+        /* the set walk: found in the FIRST list, found in the SECOND, and in neither */
+        ci_set[0] = ci_core;
+        ci_set[1] = ci_apps;
+        ci_str("ci_set_first", CFE_Config_FindStaticModName(ci_set, 2, "cfe_es"));
+        ci_str("ci_set_second", CFE_Config_FindStaticModName(ci_set, 2, "CI_LAB"));
+        ci_str("ci_set_none", CFE_Config_FindStaticModName(ci_set, 2, "nothing"));
+        ci_str("ci_set_zerolen", CFE_Config_FindStaticModName(ci_set, 0, "cfe_es"));
+
+        /* and the whole initialisation. Note this MEMSETS the registry, so it has to come after
+         * the config get/set lines above. */
+        rc = CFE_Config_Init();
+        printf("ci_init rc=%ld\n", (long)rc);
+        ci_str("ci_mission", CFE_Config_GetString(CFE_CONFIGID_MISSION_NAME));
+        ci_str("ci_missionver", CFE_Config_GetString(CFE_CONFIGID_MISSION_SRCVER));
+        printf("ci_ver %lu %lu %lu %lu %lu\n",
+               (unsigned long)CFE_Config_GetValue(CFE_CONFIGID_CORE_VERSION_MAJOR),
+               (unsigned long)CFE_Config_GetValue(CFE_CONFIGID_CORE_VERSION_MINOR),
+               (unsigned long)CFE_Config_GetValue(CFE_CONFIGID_CORE_VERSION_REVISION),
+               (unsigned long)CFE_Config_GetValue(CFE_CONFIGID_CORE_VERSION_MISSION_REV),
+               (unsigned long)CFE_Config_GetValue(CFE_CONFIGID_CORE_VERSION_BUILDNUM));
+        ci_str("ci_baseline", CFE_Config_GetString(CFE_CONFIGID_CORE_VERSION_BASELINE));
+        /* CFE_CONFIGID_CORE_VERSION_DESCRIPTION is DELIBERATELY NOT PRINTED. NASA builds the
+         * string into a LOCAL array in CFE_Config_SetupBasicBuildInfo and hands it to
+         * CFE_Config_SetString, which stores the POINTER and copies nothing -- so the id holds
+         * a pointer into dead stack the moment that function returns. Measured here before it
+         * was removed: [cFE v7.0.1+de251(Draco) DEV BUILD, based on v7.0.1, EDS disa] where
+         * "v7.0.1+dev1 " and "disabled" belonged. Printing it would put stack contents in a
+         * transcript that has to match byte for byte between two different machines.
+         * docs/CFS_UPSTREAM_NOTES.md #8. The formatter itself is covered by cfg_ver above.
+         * What IS checked is that the id was set at all, i.e. that it is not the fallback: */
+        printf("ci_desc_set %d\n",
+               (int)(CFE_Config_GetString(CFE_CONFIGID_CORE_VERSION_DESCRIPTION) !=
+                     CFE_Config_Global.UnknownString));
+        ci_str("ci_date", CFE_Config_GetString(CFE_CONFIGID_CORE_BUILDINFO_DATE));
+        ci_str("ci_user", CFE_Config_GetString(CFE_CONFIGID_CORE_BUILDINFO_USER));
+        ci_str("ci_host", CFE_Config_GetString(CFE_CONFIGID_CORE_BUILDINFO_HOST));
+        /* the MOD_SRCVER_* ids: set only for modules that are BOTH in the name table and in a
+         * static module list, which is how SetupModuleVersions skips dynamically loaded ones */
+        ci_str("ci_mod_msg", CFE_Config_GetString(CFE_CONFIGID_MOD_SRCVER_MSG));
+        ci_str("ci_mod_es", CFE_Config_GetString(CFE_CONFIGID_MOD_SRCVER_ES));
+        /* and the three platform arrays the generated code installs */
+        {
+            CFE_Config_ArrayValue_t av;
+            av = CFE_Config_GetArrayValue(CFE_CONFIGID_PLATFORM_ES_MEM_BLOCK_SIZE);
+            printf("ci_arr_es n=%lu first=%lu last=%lu\n", (unsigned long)av.NumElements,
+                   (unsigned long)((const size_t *)av.ElementPtr)[0],
+                   (unsigned long)((const size_t *)av.ElementPtr)[av.NumElements - 1]);
+            av = CFE_Config_GetArrayValue(CFE_CONFIGID_PLATFORM_ES_CDS_MEM_BLOCK_SIZE);
+            printf("ci_arr_cds n=%lu first=%lu last=%lu\n", (unsigned long)av.NumElements,
+                   (unsigned long)((const size_t *)av.ElementPtr)[0],
+                   (unsigned long)((const size_t *)av.ElementPtr)[av.NumElements - 1]);
+            av = CFE_Config_GetArrayValue(CFE_CONFIGID_PLATFORM_SB_MEM_BLOCK_SIZE);
+            printf("ci_arr_sb n=%lu first=%lu last=%lu\n", (unsigned long)av.NumElements,
+                   (unsigned long)((const size_t *)av.ElementPtr)[0],
+                   (unsigned long)((const size_t *)av.ElementPtr)[av.NumElements - 1]);
+        }
+    }
+
+    /* --- cfe_config_objtab.c ---------------------------------------------------------- */
+    /* CONFIG's EarlyInit runs FIRST of all modules: the registry has to exist before anything
+     * else in the startup sequence can read a value out of it. */
+    printf("ci_objtab %s %d %d %d %lu %lu\n", CFE_CONFIG_ModuleEntry.Name,
+           (int)(CFE_CONFIG_ModuleEntry.EarlyInit == NULL),
+           (int)(CFE_CONFIG_ModuleEntry.TaskMain == NULL),
+           (int)(CFE_CONFIG_ModuleEntry.AppCleanupCb == NULL),
+           (unsigned long)CFE_CONFIG_ModuleEntry.Priority,
+           (unsigned long)CFE_CONFIG_ModuleEntry.StackSize);
     return 0;
 }
+
 

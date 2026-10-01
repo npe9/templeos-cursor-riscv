@@ -86,7 +86,8 @@ HDRS = [
     "os-shared-mutex.h", "os-shared-clock.h", "os-shared-errors.h", "os-shared-heap.h",
     "os-shared-rwlock.h",
     "cfe_fs_module_all.h", "cfe_fs_priv.h", "cfe_msg.h", "cfe_sb.h", "cfe_sbr.h",
-    "cfe_config.h", "cfe_config_priv.h", "cfe_resourceid.h", "cfe_time.h",
+    "cfe_config.h", "cfe_config_priv.h", "cfe_config_nametable.h", "cfe_resourceid.h",
+    "cfe_time.h",
     "target_config.h", "target_objtab.h",
 ]
 
@@ -384,9 +385,30 @@ def main(argv):
         print("  match perfectly while the two sides describe different objects.", file=sys.stderr)
         print("\n".join(bad), file=sys.stderr)
         return 1
-    for s in sorted(unmeasured):
-        print("  UNMEASURED: %s — no header in check_padding.py's list defines it, so its "
-              "layout is not under this gate" % s)
+    # UNMEASURED IS A FAILURE, not a note. A gate that prints "I could not check this" and
+    # exits 0 is the thing this project's own gate scripts forbid -- it scrolls past in a CI log
+    # and the class is simply not covered. It was benign while every instance was chased by hand
+    # (os-shared-rwlock.h for the header list, then CSRC for the three modules that declare a
+    # context struct inside the .c); it stops being benign at es/tbl/evs, which are 37 sources
+    # between them and declare private state structs in .c files throughout.
+    if unmeasured:
+        print("FAIL cfs-padding — a translated class's layout could not be MEASURED, which is",
+              file=sys.stderr)
+        print("  not the same as matching. Add the header that defines it to HDRS, or, if NASA",
+              file=sys.stderr)
+        print("  declares it inside a .c, add that source to CSRC:", file=sys.stderr)
+        for s in sorted(unmeasured):
+            print("    %s" % s, file=sys.stderr)
+        return 1
+    # And the two struct gates must cover the SAME set. They agree today; that is luck, not a
+    # property -- check_structs maps a class the moment a NASA header or .c declares it, while
+    # this one also needs it to be reachable from HDRS/CSRC.
+    if checked != len(pairs):
+        print("FAIL cfs-padding — check_structs.py maps %d classes, this gate measured %d. The"
+              % (len(pairs), checked), file=sys.stderr)
+        print("  two must cover the same set, or a class is under one gate and not the other.",
+              file=sys.stderr)
+        return 1
     for s, f in absent_fields:
         print("  not in this configuration: %s.%s (an #ifdef excludes it)" % (s, f))
     print("cfs-padding: %d translated classes have NASA's byte layout%s" %

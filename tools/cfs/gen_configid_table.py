@@ -95,9 +95,33 @@ def main(argv):
         hc.append(f'#define CFE_ConfigIdOffset_{i} {n}')
     hc.append(f'#define CFE_ConfigIdOffset_MAX {len(ids)}')
     hc.append('')
-    hc.append('U8 *CFE_CONFIGID_NAMETABLE[CFE_ConfigIdOffset_MAX] = {')
+    # The id macros, mirroring the generated cfe_config_ids.h one for one. The C's
+    # CFE_CONFIGID_FROM_OFFSET(x) expands to
+    #     CFE_CONFIGID_C(CFE_ResourceId_FromInteger(CFE_CONFIGID_BASE + CFE_ConfigIdOffset_##x))
+    # and CFE_Config_OffsetToId is that expression as a function, with CFE_CONFIGID_C the
+    # identity for the SIMPLE resourceid variant. cfe_config_init.c uses these by name
+    # (CFE_CONFIGID_MISSION_NAME and so on), which is why they are generated rather than
+    # written out in the translation: the id SET has to come from one place.
+    hc.append('// The id macros of the generated cfe_config_ids.h. A #define is not evaluated')
+    hc.append('// where it is written, so these may name CFE_Config_OffsetToId before')
+    hc.append('// cfe_config.HC defines it.')
     for i in ids:
-        hc.append(f'  "{i}",')
+        hc.append(f'#define CFE_CONFIGID_{i} CFE_Config_OffsetToId(CFE_ConfigIdOffset_{i})')
+    hc.append('')
+    # NASA's table is an array of a ONE-MEMBER STRUCT, not an array of pointers:
+    #     typedef struct CFE_Config_IdNameEntry { const char *Name; } CFE_Config_IdNameEntry_t;
+    # Same storage and the same layout, but cfe_config_init.c walks it with a pointer and
+    # `NamePtr->Name`, so flattening it to U8 *[] -- which this generator used to do -- makes
+    # that function untranslatable as written. The class also brings the table under
+    # check_structs.py and check_padding.py, which an anonymous pointer array never was.
+    hc.append('class CFE_Config_IdNameEntry')
+    hc.append('{')
+    hc.append('  U8 *Name;')
+    hc.append('};')
+    hc.append('')
+    hc.append('CFE_Config_IdNameEntry CFE_CONFIGID_NAMETABLE[CFE_ConfigIdOffset_MAX] = {')
+    for i in ids:
+        hc.append(f'  {{"{i}"}},')
     hc.append('};')
     hc.append('#endif')
     # The HolyC half lives with the other translated units, not in the build directory, because

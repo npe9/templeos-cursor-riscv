@@ -294,7 +294,7 @@ rather than counted as always-built:
 | `msg` | 8 | 962 | **100%** |
 | `resourceid` | 2 | 228 | **100%** |
 | `sbr` | 1 | 33 | **100%** (its map and route sources are conditional; the HASH default is gated) |
-| `config` | 5 | 697 | 61% |
+| `config` | 5 | 697 | **100%** |
 | `sb` | 7 | 5,278 | 4% |
 | `fs` | 3 | 1,249 | **100%** |
 | `ta` | 2 | 892 | 0% |
@@ -303,21 +303,37 @@ rather than counted as always-built:
 | `tbl` | 15 | 7,780 | 0% |
 | `es` | 17 | 12,734 | 0% |
 
-#### Why `config` stops at 61%
+#### How `config` got from 61% to 100%: build-system emulation, not translation
 
-Its two remaining sources are blocked on BUILD-GENERATED artifacts, not on translation effort:
+Its last two sources were never blocked on translation effort. They needed build output:
 
-- `cfe_config_init.c` reads `GLOBAL_CONFIGDATA`, whose tables (`CFE_CORE_MODULE_LIST`,
-  `CFE_BUILD_ENV_TABLE`, `CFE_MODULE_VERSION_TABLE`, `CFE_PSP_MODULE_LIST`,
-  `CFE_CORE_MODULE_OBJTAB`, `CFE_STATIC_APP_LIST`) CMake emits per target.
-- It also calls `CFE_Config_SetupPlatformConfigInfo`, which is **declared in
-  `cfe_config_external.h` and defined nowhere in the tree** — CMake generates it, one
-  `CFE_Config_SetValue` per `CFE_PLATFORM_*` macro.
+- `cfe_config_init.c` reads `GLOBAL_CONFIGDATA`, whose tables CMake emits per target —
+  `tools/cfs/gen_target_config.py`.
+- It uses the `CFE_CONFIGID_*` id macros from the generated `cfe_config_ids.h` —
+  `tools/cfs/gen_configid_table.py`, which now emits them in the HolyC half too.
+- It calls `CFE_Config_SetupPlatformConfigInfo`, **declared in `cfe_config_external.h` and
+  defined nowhere in the tree**.
 
-Both are the same shape as `osconfig.h` and the config-id nametable, which this port already
-generates (`tools/cfs/gen_osconfig.py`, `tools/cfs/gen_configid_table.py`), so the path is
-known. It is build-system emulation rather than translation, and it is worth doing when the
-startup path needs it rather than for the percentage.
+The third one is the interesting one, and the answer was not to write a generator.
+**cFE ships the generator**: `modules/config/tool/` is a native C program, compiled for the
+build host rather than the target, that emits the array contents and the entry list, and
+`modules/config/cmake/cfe_platform_cfg.c.in` is the template they go into.
+`tools/cfs/gen_platform_config.py` compiles and runs NASA's own tool and fills NASA's own
+template, so the C the oracle links is not a reimplementation of cFE's build — it IS cFE's
+build, driven by something other than CMake. Only the HolyC half is this port's, and it carries
+the resolved integers because HolyC has no `cfe_platform_cfg.h` to expand the macro names from.
+
+In this configuration the tool emits **three** array entries, not five:
+`CFE_PLATFORM_TBL_VALID_SCID` and `_PRID` have a count of 0 and an empty list is skipped. A
+hand-written generator would have emitted two empty arrays and nothing would have noticed.
+
+Two bugs came out of it, one upstream and one mine, and they are the same bug:
+`CFE_Config_SetArrayValue` and `CFE_Config_SetString` retain the pointer and copy nothing.
+NASA's template declares each array descriptor `static const` for that reason; my generator
+reused one local and all three ids pointed at the same dead stack slot (`NumElements` read back
+as 2,156,050,768). Three lines away in NASA's own code, `CFE_Config_SetupBasicBuildInfo` stores
+a **local** `VersionString` into `CFE_CONFIGID_CORE_VERSION_DESCRIPTION` and has the same defect
+— see `docs/CFS_UPSTREAM_NOTES.md` #8, where it is measured.
 
 Seven properties are gated independently, because each is blind to what the others catch:
 
