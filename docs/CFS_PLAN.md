@@ -355,7 +355,7 @@ as 2,156,050,768). Three lines away in NASA's own code, `CFE_Config_SetupBasicBu
 a **local** `VersionString` into `CFE_CONFIGID_CORE_VERSION_DESCRIPTION` and has the same defect
 — see `docs/CFS_UPSTREAM_NOTES.md` #8, where it is measured.
 
-Seven properties are gated independently, because each is blind to what the others catch:
+Eight properties are gated independently, because each is blind to what the others catch:
 
 | check | what it proves | what it cannot see |
 |---|---|---|
@@ -364,8 +364,28 @@ Seven properties are gated independently, because each is blind to what the othe
 | `check_seam.py` | the `OS_*_Impl` declarations match NASA's headers, **return type included** | whether a backend obeys them |
 | `check_structs.py` | a translated `class` has NASA's fields, in NASA's order | field TYPES, and where the fields actually sit |
 | `check_padding.py` | a translated `class` has NASA's BYTE LAYOUT — every offset and the size | whether anything reads those fields correctly |
+| `check_constants.py` | every number the translation spells out has NASA's value | whether anything uses it, or uses it correctly |
 | `check_manifest.py` | everything gated is in NASA's build; reports the covered fraction | nothing about the code itself |
 | the transcript | behaviour, byte for byte against NASA's own C | anything nothing calls |
+
+`check_constants.py` is the newest and exists because HolyC has neither `enum` nor CMake: the
+translation re-states hundreds of numbers by hand — event ids, message ids, bit masks, array
+bounds, error codes — and nothing above looked at one. A wrong array *bound* surfaces in
+`check_padding` because it sizes a struct; a wrong *message id* that nothing routes, or an event
+id no branch reaches, is invisible to every gate including the transcript. Its first run found
+five of ninety wrong in the EVS declarations: three message ids, a buffer length guessed as
+`MAX_MESSAGE_LENGTH + 30` where NASA writes `+ OS_MAX_API_NAME + 19`, and
+`CFE_MISSION_ES_MAX_APPLICATIONS` (16) confused with `CFE_PLATFORM_ES_MAX_APPLICATIONS` (32) —
+the mission limit sizes the array that goes out in telemetry, which is an interface a ground
+system parses.
+
+Its own first negative control did not fire, and fixing that is most of what the tool is.
+Changing a message id by one still passed, because the probe's header list could not see
+`CFE_EVS_HK_TLM_MID` at all and the name landed in a "NASA does not define it" bucket that was
+merely *counted*. A name NASA defines somewhere in the vendor tree but the probe cannot see is
+now a FAILURE naming the file, which immediately surfaced six more. The bucket that remains is
+genuine: a C enumerator is not a `#define`, so `CFE_EVS_EventType_ERROR` exists only here and
+there is nothing to compare it against.
 
 Each of these was added because something got through the ones that already existed.
 `CFE_MSG_GetNextSequenceCount` was missing for four commits with the transcript green;

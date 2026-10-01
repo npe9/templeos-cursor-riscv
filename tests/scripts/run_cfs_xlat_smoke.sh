@@ -149,6 +149,15 @@ python3 "$ROOT/tools/cfs/check_structs.py" || exit 1
 # every token 24 bytes against NASA's 20.
 python3 "$ROOT/tools/cfs/check_padding.py" || exit 1
 
+# --- the constants ------------------------------------------------------------------------------
+# HolyC has no enum and no CMake, so the translation re-states hundreds of numbers by hand:
+# event ids, message ids, bit masks, array bounds, error codes. Nothing above checks one. A
+# wrong array BOUND shows up in check_padding because it sizes a struct; a wrong MESSAGE ID that
+# nothing routes, or an event id no branch reaches, is invisible to every gate including the
+# transcript. Its first run found five of ninety wrong in the EVS declarations -- three message
+# ids, a buffer length, and CFE_MISSION_ES_MAX_APPLICATIONS confused with the PLATFORM one.
+python3 "$ROOT/tools/cfs/check_constants.py" || exit 1
+
 # --- the manifest ------------------------------------------------------------------------------
 # What NASA's build contains per cFE module, and how much of it is gated -- parsed from each
 # module's CMakeLists by if()-DEPTH, so a source inside a branch is reported with its guard
