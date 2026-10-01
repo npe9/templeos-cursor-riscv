@@ -425,3 +425,54 @@ One thing it does NOT do: retire the LAST function's statics, because nothing fo
 bare names stay visible to file-scope code after that function — wrong, harmless, and written
 down here rather than left to be rediscovered.
 
+
+## 13. Re-including an already-included guarded file can lose the rest of the including file — OPEN
+
+```
+// m.hc
+#include "u.HC"        // first time: read normally
+#include "p.HC"        // p.HC also does #include "u.HC"
+```
+
+When `u.HC`'s guard is already satisfied, the re-include from inside `p.HC` is skipped — and
+**everything after that line in `p.HC` is skipped with it.** No diagnostic, exit status 0, and the
+functions simply are not in the binary.
+
+Measured on the real thing, not on a model: `cfe_time_api.HC` included `cfe_time_utils.HC`, which
+the driver had already included, and all forty-six of the API's functions vanished.
+`tools/blob_imports.py` was what noticed — `CFE_TIME_Add` appeared as an UNRESOLVED IMPORT in a
+unit that visibly defines it, which is not a state that should exist. `HOLYC_MAP` then confirmed
+the file contributed nothing at all, and planting three marker functions at the top, middle and
+end of it showed none of them arriving.
+
+**Bisected to four comment lines.** Cutting `cfe_time_utils.HC` at balanced-brace boundaries and
+re-testing each cut narrows it to these:
+
+```
+//   CFE_TIME_SetSource   #if CFE_PLATFORM_TIME_CFG_SOURCE == true   (0 here)
+//   CFE_TIME_SetSignal   #if CFE_PLATFORM_TIME_CFG_SIGNAL == true   (0 here)
+//   CFE_TIME_SetDelay    #if CFE_PLATFORM_TIME_CFG_CLIENT == true   (0 here)
+// All three are whole-function #if bodies in cfe_time_utils.c, so ...
+```
+
+Rewording all four so the text does not contain `#if` fixes it, deterministically and
+repeatably: with them, the API contributes 0 functions; without them, 46. That makes the
+conditional-skip scanner counting directives inside COMMENTS the obvious suspect — the four
+unmatched `#if`s would make the skip run past the file's own `#endif` and keep going.
+
+**NOT YET CHARACTERISED, and that is said rather than papered over.** A synthetic file with one,
+and then with four, `#if`-mentioning comments does NOT reproduce it, so the obvious mechanism is
+not the whole story — position in the file, interaction with the nested `#ifndef CFE_PSP_SUCCESS`,
+or file length may all matter. Anyone fixing this should start from
+`cfe_time_utils.HC` at commit time and the bisect harness in the session log rather than from a
+small case, because the small case is what misled this diagnosis for an hour.
+
+**Workaround in use, and it is the better style anyway:** a translated unit does not include its
+siblings. `cfe_time_api.HC` states its required include order in its header comment, as every
+other file in `Kernel/Cfs` does, and the driver provides it. The comments are also reworded, so
+the file is not relying on that alone.
+
+**The real cost is the SILENCE.** A file that contributes nothing, with a clean exit, is the worst
+shape a compiler bug can take. What caught it was an invariant, not a test: the import trailer
+must not list a name the unit defines. That check already existed for a different reason --
+`docs/CFS_PLAN.md` has the measurement where it caught a silent bind to the host C runtime.

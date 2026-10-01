@@ -60,6 +60,55 @@
 #define CFE_MISSION_TIME_CFG_FAKE_TONE 1
 #define CFE_MISSION_TIME_AT_TONE_WAS   1
 #define CFE_MISSION_TIME_EPOCH_YEAR    1980
+// Which of the two the API's "GetTime" means. TAI here, so CFE_TIME_GetTime returns MET+STCF
+// WITHOUT removing the leap seconds -- and CFE_TIME_SetTime does not add them back.
+#define CFE_MISSION_TIME_CFG_DEFAULT_TAI 1
+#define CFE_MISSION_TIME_CFG_DEFAULT_UTC 0
+// --- cfe_time_internal_cfg.h / cfe_mission_cfg.h: the numbers the module computes with -------
+// CFG_SOURCE is 0, the same answer as the three CFG_SRC_* above: this port has no external time
+// source, so every range check against MaxDelta is compiled out.
+#define CFE_PLATFORM_TIME_CFG_SOURCE       0
+#define CFE_MISSION_TIME_MIN_ELAPSED       0
+#define CFE_MISSION_TIME_MAX_ELAPSED       200000
+#define CFE_MISSION_TIME_DEF_MET_SECS      1000
+#define CFE_MISSION_TIME_DEF_MET_SUBS      0
+#define CFE_MISSION_TIME_DEF_STCF_SECS     1000000
+#define CFE_MISSION_TIME_DEF_STCF_SUBS     0
+#define CFE_MISSION_TIME_DEF_LEAPS         37
+#define CFE_PLATFORM_TIME_MAX_LOCAL_SECS   27
+#define CFE_PLATFORM_TIME_MAX_LOCAL_SUBS   0
+#define CFE_PLATFORM_TIME_MAX_DELTA_SECS   0
+#define CFE_PLATFORM_TIME_MAX_DELTA_SUBS   500000
+#define CFE_PLATFORM_TIME_CFG_TONE_LIMIT   20000
+#define CFE_PLATFORM_TIME_START_TASK_PRIORITY   60
+#define CFE_PLATFORM_TIME_START_TASK_STACK_SIZE 8192
+// The reset-area validation word. It is what tells a processor reset's surviving clock data from
+// a blank area, so it is the one value in this file that must not be approximated.
+#define CFE_TIME_RESET_SIGNATURE 0xA5A55A5A
+// --- cfe_time_msgids.h -----------------------------------------------------------------------
+// Eight message ids. Four of them -- TONE, DATA, SEND and ONEHZ -- are messages TIME sends to
+// ITSELF, which is why the global carries the command packets for them.
+#define CFE_TIME_HK_TLM_MID   0x0805
+#define CFE_TIME_DIAG_TLM_MID 0x0806
+#define CFE_TIME_CMD_MID      0x1805
+#define CFE_TIME_SEND_HK_MID  0x180D
+#define CFE_TIME_TONE_CMD_MID 0x1810
+#define CFE_TIME_ONEHZ_CMD_MID 0x1811
+#define CFE_TIME_DATA_CMD_MID 0x1860
+#define CFE_TIME_SEND_CMD_MID 0x1862
+// --- cfe_error.h: TIME's status codes --------------------------------------------------------
+// The (I32) is NASA's own cast; see the note in cfe_evs_global.HC for what dropping it did.
+#define CFE_TIME_INTERNAL_ONLY            0xCE000001(I32)
+#define CFE_TIME_TOO_MANY_SYNCH_CALLBACKS 0xCE000003(I32)
+#define CFE_TIME_CALLBACK_NOT_REGISTERED  0xCE000004(I32)
+#define CFE_TIME_BAD_ARGUMENT             0xCE000005(I32)
+#define CFE_TIME_NOT_IMPLEMENTED          0xCE00FFFF(I32)
+// --- cfe_time_api_typedefs.h: CFE_TIME_Compare_t ---------------------------------------------
+// A three-valued comparison, and A_LT_B is NEGATIVE -- which is why CFE_TIME_Compare returns it
+// as a signed value and not as a bare flag.
+#define CFE_TIME_A_LT_B -1
+#define CFE_TIME_EQUAL  0
+#define CFE_TIME_A_GT_B 1
 // --- cfe_time_utils.h: limits ---------------------------------------------------------------
 // The reference buffer is a 4-deep ring that readers walk WITHOUT a lock: a writer fills the
 // next slot and then publishes it by bumping LastVersionCounter, so a reader that is overtaken
@@ -478,4 +527,15 @@ class CFE_TIME_Global_t
 // NASA's definition is in cfe_time_task.c; see the note at the top of this file for why the
 // translation's has to come before its first use instead.
 CFE_TIME_Global_t CFE_TIME_Global;
+// --- cfe_time.h: CFE_TIME_Copy ---------------------------------------------------------------
+// A MACRO upstream, and a function here -- the same move os_shared_task_affinity.HC records for
+// OSAL's cpu-set macros. NASA's comment says the macro is preferred BECAUSE it does not require
+// the two arguments to have the same type: it will take any two structures with Seconds and
+// Subseconds members. Every call site in TIME passes CFE_TIME_SysTime on both sides, so a typed
+// function is exact here; a future caller that wants the loose form has to say so.
+U0 CFE_TIME_Copy(CFE_TIME_SysTime *m, CFE_TIME_SysTime *t)
+{
+  m->Seconds = t->Seconds;
+  m->Subseconds = t->Subseconds;
+}
 #endif

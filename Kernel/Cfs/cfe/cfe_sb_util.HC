@@ -24,7 +24,8 @@
 // grepping it for CFE_<other module>_ symbols rather than by reading its includes -- it pulls
 // the umbrella header cfe_sb_module_all.h, which makes an include-based dependency count say
 // zero and mean nothing):
-//   CFE_TIME_GetTime        declared in cfe_time_api.HC, supplied by whoever links this
+//   CFE_TIME_GetTime        declared in cfe_time_decl.HC, defined in cfe_time_api.HC once
+//                           the time module is in the build, and supplied by the driver until then
 //   CFE_ES_WriteToSysLog    a printf-style log sink, declared here and stubbed by the harness
 //
 // CFE_ES_WriteToSysLog IS VARIADIC HERE, and every call site passes NASA's own arguments. It
@@ -35,7 +36,7 @@
 // that name, so the two produce the same characters, and the transcript compares them.
 #ifndef CFE_SB_UTIL_HC
 #define CFE_SB_UTIL_HC
-#include "cfe_time_api.HC"
+#include "cfe_time_decl.HC"
 #include "cfe_sb_msgid.HC"
 // From cfe_error.h.
 #define CFE_SB_BAD_ARGUMENT 0xCA000003(I32)
