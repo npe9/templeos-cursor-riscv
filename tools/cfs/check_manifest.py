@@ -33,6 +33,8 @@ GATES = [
     os.path.join(ROOT, "tests", "scripts", "run_osal_xlat_smoke.sh"),
     os.path.join(ROOT, "tests", "scripts", "run_osal_printf_smoke.sh"),
 ]
+CFE_GATE = os.path.join(ROOT, "tests", "scripts", "run_cfs_xlat_smoke.sh")
+CFE_MODULES = os.path.join(ROOT, "vendor", "cFE", "modules")
 
 
 def osal_build_sources():
@@ -59,6 +61,92 @@ def gated_sources():
         for m in re.finditer(r'SRC_C="(.*?)"', txt, re.S):
             out.update(re.findall(r"osapi-[A-Za-z0-9_-]+\.c", m.group(1)))
     return out
+
+
+def cfe_module_sources(mod_dir):
+    """A cFE module's sources, split into the ones CMake always builds and the ones it builds
+    only under a condition.
+
+    This does NOT evaluate CMake. It walks the file tracking if()/else()/endif() DEPTH: a
+    source named at depth 0 is unconditional, and one inside any branch is reported with the
+    condition guarding it. Judging which branch a configuration takes is left to a person.
+
+    Depth is what matters, not the variable name. An earlier version matched the first
+    `set(..._SRC ...)` it found and called that the base list, which got sbr exactly backwards:
+    that module has NO unconditional set() at all -- it picks between a DIRECT and a HASH
+    message map, defaulting to HASH -- so the parser reported the DIRECT branch as the build
+    and cfe_sbr_map_direct.c as a missing 101 lines, when it is not in this configuration at
+    all. A tool that exists to stop a wrong denominator must not invent one.
+    """
+    cm = os.path.join(mod_dir, "CMakeLists.txt")
+    if not os.path.exists(cm):
+        return [], []
+    txt = re.sub(r"#[^\n]*", "", open(cm, errors="replace").read())
+    base, cond, depth, guards = [], [], 0, []
+    for line in txt.split("\n"):
+        opened = re.match(r"\s*if\s*\(\s*(?:NOT\s+)?([A-Za-z0-9_]+)", line)
+        elsed = re.match(r"\s*(?:else|elseif)\s*\(\s*([A-Za-z0-9_]*)", line)
+        if opened:
+            depth += 1
+            guards.append(opened.group(1))
+        elif elsed and depth:
+            guards[-1] = (elsed.group(1) or ("else of " + guards[-1]))
+        elif re.match(r"\s*endif\s*\(", line):
+            depth = max(0, depth - 1)
+            if guards:
+                guards.pop()
+        for f in re.findall(r"fsw/src/([A-Za-z0-9_.-]+\.c)", line):
+            if depth == 0:
+                if f not in base:
+                    base.append(f)
+            else:
+                cond.append((f, guards[-1] if guards else "?"))
+    return base, cond
+
+
+def cfe_report():
+    if not os.path.isdir(CFE_MODULES):
+        return
+    gated = set()
+    if os.path.exists(CFE_GATE):
+        txt = open(CFE_GATE, errors="replace").read()
+        for m in re.finditer(r'SRC_C="(.*?)"', txt, re.S):
+            gated.update(re.findall(r"([A-Za-z0-9_-]+\.c)", m.group(1)))
+    rows = []
+    for mod in sorted(os.listdir(CFE_MODULES)):
+        d = os.path.join(CFE_MODULES, mod)
+        if not os.path.isdir(d):
+            continue
+        base, cond = cfe_module_sources(d)
+        if not base and not cond:
+            continue
+        src = os.path.join(d, "fsw", "src")
+        def nl(f):
+            pth = os.path.join(src, f)
+            try:
+                with open(pth, errors="replace") as fh:
+                    return sum(1 for _ in fh)
+            except OSError:
+                return 0
+        # Resolve the line counts HERE, not later: nl() closes over `src`, which moves on to
+        # the next module before the printing loop runs, and every count came out 0.
+        sizes = {f: nl(f) for f in base}
+        sizes.update({f: nl(f) for f, _ in cond})
+        tot = sum(sizes[f] for f in base)
+        done = sum(sizes[f] for f in base if f in gated)
+        rows.append((mod, base, cond, tot, done, sizes))
+    print("cfe-manifest: per module. UNCONDITIONAL sources first; sources CMake selects with a")
+    print("              condition are listed under them with the guard, because which branch a")
+    print("              configuration takes is not something this tool decides.")
+    for mod, base, cond, tot, done, sizes in rows:
+        pct = (100.0 * done / tot) if tot else 0.0
+        print(f"    {mod:<12} {len(base):>2} uncond {tot:>6} lines  {done:>6} gated ({pct:>3.0f}%)")
+        for f in base:
+            if f not in gated:
+                print(f"        -      {f:<34} {sizes[f]:>5}")
+        for f, g in cond:
+            mark = "GATED " if f in gated else "  -   "
+            print(f"        {mark} {f:<34} {sizes[f]:>5}  [{g}]")
 
 
 def lines_of(name):
@@ -100,6 +188,9 @@ def main(argv):
 
     print(f"cfs-manifest: OSAL_SRCLIST has {len(build)} sources, {total:,} lines; "
           f"{len(gated)} gated, {done:,} lines ({100.0 * done / total:.0f}%)")
+    if "--cfe" in argv:
+        cfe_report()
+        return 0
     if remaining:
         print("  remaining, largest first:")
         for n_lines, name in sorted(remaining, reverse=True):

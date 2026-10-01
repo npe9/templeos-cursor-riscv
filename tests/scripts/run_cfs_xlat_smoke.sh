@@ -119,6 +119,12 @@ python3 "$ROOT/tools/cfs/check_seam.py" || exit 1
 # last_writer -- and with them the whole of the ownership tracking in Give/Take.
 python3 "$ROOT/tools/cfs/check_structs.py" || exit 1
 
+# --- the manifest ------------------------------------------------------------------------------
+# What NASA's build contains per cFE module, and how much of it is gated -- parsed from each
+# module's CMakeLists by if()-DEPTH, so a source inside a branch is reported with its guard
+# rather than counted as if it were always built. The denominator here has been wrong before.
+python3 "$ROOT/tools/cfs/check_manifest.py" --cfe || exit 1
+
 # --- reference: NASA's C, unmodified -------------------------------------------------------
 # shellcheck disable=SC2086
 if ! "$HOSTCC" -O0 -w $INC -I"$ROOT/tests/cfs" -o "$T/ref" "$ROOT/tests/cfs/oracle_ccsdspri.c" $SRC_C "$GENDIR/cfe_configid_nametable.c" 2>"$T/cc.log"; then
