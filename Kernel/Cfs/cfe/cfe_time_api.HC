@@ -347,19 +347,20 @@ U0 CFE_TIME_UnixToCalendar(I64 UnixSeconds, I64 *Year, I64 *YearDay, I64 *Hour, 
     Rem += 86400;
     Days -= 1;
   }
-  // `Y = Y + 1` and `Days = Days - YearLen`, NOT `Y++` and `Days -= YearLen`. Measured: the
-  // increment form left Y at 1970 here, so every year was treated as 365 days and this function
-  // returned 1970-003 where glibc's gmtime_r returns 1980-001 -- which the differential
-  // transcript caught, on the very first run with TIME gated. The explicit forms work.
-  // docs/HOLYC_STRUCT_LIMITS.md #14.
+  // `Y++` here was silently DISCARDED for a while, and the reason is worth knowing because it
+  // is not about this code: a statement starting with an all-upper-case name was being taken
+  // for a bare x86 instruction and its whole line skipped, and `Y` is all upper case. Every
+  // year was then 365 days, the walk from 1970 ended where it started, and CFE_TIME_Print
+  // returned 1970-003 where glibc returns 1980-001. Fixed in the compiler, not worked around
+  // here -- docs/HOLYC_STRUCT_LIMITS.md #14 and tests/exec/cases/e_upper_name_stmt.hc.
   while (TRUE) {
     YearLen = 365;
     if (CFE_TIME_IsLeapYear(Y))
       YearLen = 366;
     if (Days < YearLen)
       break;
-    Days = Days - YearLen;
-    Y = Y + 1;
+    Days -= YearLen;
+    Y++;
   }
   *Year = Y;
   *YearDay = Days + 1;

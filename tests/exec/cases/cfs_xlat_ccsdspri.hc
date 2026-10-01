@@ -601,7 +601,6 @@ U0 CFE_PSP_GetTime(OS_time_t *LocalTime)
 {
   LocalTime->ticks = evs_psp_ns;
 }
-
 // OSAL's time arithmetic. Reproduced rather than included, for the reason cfe_evs_utils.HC
 // records: osapi_clock.HC reaches OS_GetLocalTime_Impl and the error-name tables. These two
 // are the whole of what EVS uses, and they are exact -- a tick is a nanosecond here.
@@ -728,7 +727,6 @@ I32 OS_TaskDelay(U32 millisecond)
 }
 // cfe_time_tone.c is not gated, and CFE_TIME_ExternalTone's whole body is a call to this.
 I64 evs_tone_isrs;
-
 U0 CFE_TIME_Tone1HzISR()
 {
   ++evs_tone_isrs;

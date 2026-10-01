@@ -477,43 +477,101 @@ shape a compiler bug can take. What caught it was an invariant, not a test: the 
 must not list a name the unit defines. That check already existed for a different reason --
 `docs/CFS_PLAN.md` has the measurement where it caught a silent bind to the host C runtime.
 
-## 14. `x++` and `x += n` on a local can be silently dropped — OPEN, trigger not isolated
+## 14. A statement starting with an ALL-UPPER-CASE variable name was discarded — FIXED
 
 ```
 I64 Y = 10;
-I64 q = 10;
-Y++;
-q++;        //  Y stays 10.  q becomes 11.
-Y += 5;     //  Y stays 10.
-Y = Y + 1;  //  Y becomes 11.
+Y++;        //  discarded.  Y stays 10.
+Y += 5;     //  discarded.
+Y = Y + 1;  //  works.
 ```
 
-Measured, in that order, in one function with no loop and no calls between the statements. A
-plain `=` always works; `++` and `+=` on the same variable in the same function do not.
+HolyC lets an x86 instruction be written bare in source (`MOV U64 [RSI],R13`), and `parser.c`
+recognised one at statement start by its SHAPE: an all-upper-case name whose next token is not
+one of `( = ; . -> , )`. Anything else was taken for an opcode with an operand and **the whole
+line was skipped**, with a note and a clean exit. `++` is not in that list, so `Y++;` was an
+instruction as far as the parser was concerned.
 
-**It is not the name.** Renaming `Y` to `Yr` in a failing case makes it work, which looked
-conclusive — and then a case with ten locals named `A B X Y Z N M L J K`, all incremented, lost
-ALL TEN. So the name is a symptom of position or frame layout, not a reserved word.
+Lower-case and mixed-case names were never affected, which is why this survived: almost nothing
+in the kernel names a variable in capitals, and neither does cFS. The one that did was mine.
 
-**It is not the loop, the initial value, the number of locals, or pre- versus post-increment.**
-Each of those was varied on its own and a passing case exists for every value of each. Two cases
-differing only in a variable's name and its initialiser disagree, and a near-identical pair
-(`x++; y++;` in a `while` with two locals) PASSES where (`n++; Y++;` in a `while` with two
-locals) FAILS. The trigger is something the bisects above did not reach.
+**What found it was not a test.** `CFE_TIME_UnixToCalendar` walks a year at a time from the UNIX
+epoch with `Y++`. With the increment gone every year was 365 days, so the walk from 1970 ended
+where it started and `CFE_TIME_Print` rendered `1970-003` where glibc's `strftime` renders
+`1980-001`. The differential transcript compared those two strings. A plausible date, not a
+crash, in the one function whose output is a packet payload.
 
-**How it was found, which is the part worth keeping.** Not by a unit test -- by the differential
-transcript. `CFE_TIME_Print` rendered `1970-003` where glibc's `gmtime_r` renders `1980-001`, on
-the first run with the TIME module gated. Working back: `CFE_TIME_UnixToCalendar`'s year loop
-does `Days = Days - YearLen; Y++;` and the `Y++` never took effect, so every year was treated as
-365 days and the ten-year walk from the UNIX epoch ended where it started. The symptom was a
-plausible date, not a crash.
+**And it took an hour longer than it should have**, because every small reproduction disagreed
+with the next: varying the loop form, the initial value, the number of locals and pre- versus
+post-increment each produced a passing case, and two near-identical functions differing only in a
+variable's name behaved differently. The step that settled it was DISASSEMBLING the four-line
+case and counting `addi rd,rs,1` instructions -- one emitted where two were written -- and then
+sweeping all twenty-six letters, which showed twenty-five failing and lower case untouched. Read
+the emitted code earlier than feels necessary; a shape this odd is a parser decision, not an
+arithmetic one.
 
-**Workaround in use:** the two statements in that loop are written `Y = Y + 1` and
-`Days = Days - YearLen`, with a comment at the site. No other translated line relies on `++` or
-`+=` of a local in a way the transcript does not already cover -- which is worth saying plainly:
-this limit is only tolerable because the transcript is wide enough to have caught it once.
+**The fix has two halves:**
 
-**For whoever fixes it:** start from `tests/exec/cases/` plus the real
-`CFE_TIME_UnixToCalendar`, not from a small case. The small cases are what made this take an hour
-and still not converge -- the same mistake #13 records. The two reproductions that do fail
-reliably are the four-statement one at the top of this entry and the ten-letter one.
+- every modifying operator that can follow a name is excluded: `++ -- += -= *= /= &= |= ^= <<= >>= %=`
+- **a name the compiler already knows as a local is not an instruction** -- the general guard,
+  and the reason a future operator added to the lexer cannot reopen this
+
+A first version also tested `cc->lex.hash_entry->type & HTT_GLBL_VAR`. Dropping that clause
+changes nothing any gate can see -- all five probes, the exec case, the refusal and
+`newline-semi-smoke` are identical with and without it -- because a global never reaches the
+branch in the first place. It is not in the fix. An unwitnessed clause in a parser is a
+liability, not insurance, which is the same rule [[hash-gates-need-properties]] states for gates.
+
+**Each half has a gate that fails when only that half is removed, and finding them took a
+second look.** The first version of the oracle was `Y++` and its eleven siblings, and that case
+passes with EITHER half present -- so it witnessed the conjunction and nothing else. Someone
+could delete the symbol check later and the gate would stay green. Two cases separate them:
+
+- `tests/exec/cases/e_upper_name_stmt.hc` declares an all-caps ARRAY and assigns through it,
+  `ARR[0] = 7;`. `[` is not an operator, so it is in neither list -- only the symbol-table guard
+  keeps those lines. Remove that guard alone and this case fails.
+- `tests/holyc/refused/upper_name_undeclared.hc` is a bare `FOO++;` on a name nothing declared,
+  and the compiler must REFUSE it. The symbol check cannot fire on an undeclared name, so only
+  the operator list makes the compiler look at the line at all; remove the list alone and the
+  file compiles clean with the typo discarded. Checked by `make struct-refusals-check`.
+
+An exec oracle can only witness the symbol guard and a refusal can only witness the operator
+list, because the two halves differ in exactly that: whether the name is declared. The exec case
+also includes a real `CLD` statement, so a "fix" that disabled the feature would be caught.
+
+**IT IS LOCALS ONLY, AND THAT WAS WORTH MEASURING RATHER THAN ASSUMING.** Five one-function
+probes, each the smallest program that can show one shape, run against the PRE-FIX compiler:
+
+| probe | shape | pre-fix result |
+|---|---|---|
+| `p_loc_inc` | `I64 Y = 10; Y++;` | **10** — broken |
+| `p_loc_arr` | `I64 ARR[3]; ARR[0] = 7;` | **0x808000e8** — broken, and reading uninitialised stack |
+| `p_glb_inc` | `I64 GCTR; GCTR++;` | 11 — correct |
+| `p_glb_arr` | `I64 GARR[3]; GARR[0] = 7;` | 7 — correct |
+| `p_glb_memb` | `P GTAB[2]; GTAB[0].a = 7;` | 7 — correct |
+
+A GLOBAL never reached that branch: it has a hash entry, so the parser took a different route
+before the shape test could see it. A LOCAL does not, which is why `Y` inside
+`CFE_TIME_UnixToCalendar` was the shape that broke and why nothing else in the tree was.
+`CFG_ARR[0] = 11;` has been in the cFS differential oracle for several commits with a
+byte-identical transcript, `RVDisasm.HC` fills `RN[0] = "zero"` through `RN[31]`, and
+`cfe_target_config.HC` writes `CFE_CORE_MODULE_LIST[0].Name` — all globals, all always correct.
+
+**AND A FINDING THAT DID NOT SURVIVE THE MEASUREMENT, recorded because the way it failed is the
+reusable part.** An audit for an all-caps name followed by a modifying operator turned up
+`bootstrap/seed/vim.hc:927` -- `VN++` inside the editor's file loader -- and with that increment
+discarded the loader would write every line into `VLn[0]`, leave `VN` at 0, and the `VN < 1`
+guard would then replace the lot with one blank line: opening a file with content would show an
+empty buffer. It was written up as a second, independent instance of the same compiler bug.
+
+It is not one. `VN` is declared at file scope on line 8 of that file, so it is a GLOBAL, and the
+table above says globals were never affected. The editor was always fine. What produced the wrong
+conclusion was reasoning from the SHAPE of the source line -- all caps, followed by `++` -- which
+is the same reasoning the parser was doing wrong, and applying it without checking the one
+property that turned out to decide the outcome. The grep was correct and the inference from it
+was not.
+
+The remaining audit result is the real one: outside the test cases, the only affected site in the
+tree was `cfe_time_api.HC`'s `Y`. Nothing in this kernel names a LOCAL in capitals.
+
+

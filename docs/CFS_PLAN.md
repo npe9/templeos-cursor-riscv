@@ -876,7 +876,18 @@ so the transcript was never going to see them.
 **And one compiler bug the transcript caught that nothing else could.** `CFE_TIME_UnixToCalendar`
 incremented its year with `Y++`, and the increment was silently dropped — every year treated as
 365 days, so the walk from 1970 ended where it started and `CFE_TIME_Print` returned `1970-003`.
-`docs/HOLYC_STRUCT_LIMITS.md` #14 has what is known, which is less than a mechanism: the trigger
-survived bisecting the loop form, the initial value, the local count, the variable name and pre-
-versus post-increment. Written as `Y = Y + 1` it works, and that is what the translation does,
-with the reason at the site.
+
+The cause is `docs/HOLYC_STRUCT_LIMITS.md` #14: HolyC lets an x86 instruction be written bare at
+statement start, `parser.c` recognised one by its SHAPE — an all-upper-case name whose next token
+was not one of `( = ; . -> , )` — and `Y` is all upper case, so `Y++;` was an opcode with an
+operand and the whole line was skipped with a clean exit. It affects **locals only**, measured
+with five one-function probes against the pre-fix compiler: a global has a hash entry and never
+reaches that branch, which is why `CFG_ARR[0] = 11;` has been in this very oracle for several
+commits with a byte-identical transcript. Nothing in this kernel names a LOCAL in capitals and
+cFS does it exactly once — this function. Fixed in the compiler, and the translation is back to
+NASA's exact spelling with the reason recorded at the site.
+
+What is worth carrying forward is that **the transcript was the only thing that could have found
+it.** Six of the nine properties look at shape — a name exists, an arity matches, an offset is
+right — and all six were green, because the declaration and the layout were never wrong. The
+seventh ran the code and compared a string against glibc's, and the string was a plausible date.

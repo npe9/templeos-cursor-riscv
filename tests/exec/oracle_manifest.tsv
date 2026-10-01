@@ -122,3 +122,5 @@ tests/exec/cases/e_paren_base_subscript.hc	00006352be825711
 tests/exec/cases/e_strprint_hex.hc	00000000faf9f20a
 tests/exec/cases/e_static_local_scope.hc	000053d3d67b7578
 tests/exec/cases/e_struct_assign_member.hc	00003f9cc92801c9
+tests/exec/cases/e_upper_name_stmt.hc	0000d05f000bccd3
+tests/exec/cases/e_static_local_class_zero.hc	000000000207fd31

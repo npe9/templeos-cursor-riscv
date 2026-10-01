@@ -5315,11 +5315,40 @@ bool ParseStatement(Compiler *cc) {
         bool upper = true;
         for (const char *q = cc->lex.token_str; *q; q++)
           if (!((*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '_')) { upper = false; break; }
+        // A NAME THE COMPILER ALREADY KNOWS AS A LOCAL IS NOT AN INSTRUCTION. Without this, a
+        // LOCAL whose name is all upper case -- `Y`, `AB`, `A1`, `ARR` -- had the WHOLE LINE
+        // discarded at statement start whenever the next token was not one of the few in the
+        // list below. `Y++;` was the case that found it: `++` is not in that list, so the
+        // statement was skipped silently, and CFE_TIME_UnixToCalendar's year loop treated every
+        // year as 365 days and made CFE_TIME_Print return 1970-003 for 1980-001.
+        //
+        // LOCALS ONLY, and that was measured rather than assumed: a GLOBAL has a hash entry and
+        // never reaches this branch, so `GCTR++`, `GARR[0] = 7` and `GTAB[0].a = 7` were all
+        // correct before this fix. A first version of this guard also tested
+        // `cc->lex.hash_entry->type & HTT_GLBL_VAR`; dropping that clause changes nothing that
+        // any gate can see, so it is not here -- an unwitnessed clause in a parser is a liability,
+        // not insurance. The five per-shape probes are in docs/HOLYC_STRUCT_LIMITS.md #14.
+        //
+        // Lower-case and mixed-case names were never affected either, which is why this survived:
+        // nothing in this kernel names a LOCAL in capitals, and cFS does it exactly once.
+        if (upper && SymbolLookup(cc, cc->lex.token_str))
+          upper = false;
         if (upper) {
           LexPush(cc);
           LexNext(cc);
+          // `++`, `--` and every compound assignment say this is a VARIABLE being modified, not
+          // an opcode with an operand. No x86 mnemonic is followed by any of them. They are
+          // listed as well as the symbol-table check above, because a bare `FOO++` on a name
+          // nothing declared should still be a parse error rather than a silently skipped line.
           bool operand = (cc->lex.token != '(' && cc->lex.token != '=' && cc->lex.token != ';' && cc->lex.token != '.' &&
-                          cc->lex.token != TK_ARROW && cc->lex.token != ',' && cc->lex.token != ')');
+                          cc->lex.token != TK_ARROW && cc->lex.token != ',' && cc->lex.token != ')' &&
+                          cc->lex.token != TK_ADD_ADD && cc->lex.token != TK_SUB_SUB &&
+                          cc->lex.token != TK_PLUS_PLUS && cc->lex.token != TK_MINUS_MINUS &&
+                          cc->lex.token != TK_ADD_EQU && cc->lex.token != TK_SUB_EQU &&
+                          cc->lex.token != TK_MUL_EQU && cc->lex.token != TK_DIV_EQU &&
+                          cc->lex.token != TK_AND_EQU && cc->lex.token != TK_OR_EQU &&
+                          cc->lex.token != TK_XOR_EQU && cc->lex.token != TK_SHL_EQU &&
+                          cc->lex.token != TK_SHR_EQU && cc->lex.token != TK_MOD_EQU);
           LexPopRestore(cc);
           if (operand) {
             int start_line = cc->lex.line;
