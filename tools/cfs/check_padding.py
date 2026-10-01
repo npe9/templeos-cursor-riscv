@@ -101,6 +101,9 @@ HDRS = [
     # long and the dispatcher rejected it on length, which the transcript DID catch, three
     # modules later. This is what catches it at the declaration.
     "cfe_evs_module_all.h",
+    # TIME's own, for the same reason: its twenty-three messages, the seven enum typedefs their
+    # fields are spelled with, and CFE_TIME_Global's internal types.
+    "cfe_time_module_all.h", "cfe_time_utils.h",
 ]
 
 # NASA .c files whose FILE-SCOPE typedefs have to be lifted into the probe. A module's private
