@@ -73,6 +73,9 @@ I64 StrCmp(U8 *st1, U8 *st2)
 #include "/Kernel/Cfs/cfe/cfe_sbr_map_hash.HC"
 #include "/Kernel/Cfs/cfe/cfe_sbr_objtab.HC"
 #include "/Kernel/Cfs/cfe/cfe_config.HC"
+#include "/Kernel/Cfs/cfe/cfe_fs_priv.HC"
+#include "/Kernel/Cfs/cfe/cfe_fs_api.HC"
+#include "/Kernel/Cfs/cfe/cfe_fs_objtab.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -244,7 +247,238 @@ U0 Rcv2(U8 *label, I32 rc, U8 *k1, I64 v1, U8 *k2, I64 v2)
   D(v2);
   S("\n");
 }
+// =========================== cFE fs module ======================================================
+// A SIMULATED FILE, identical on both sides of the oracle.
+//
+// fs is the first translated module that calls OSAL, and OSAL has a gate of its own (423
+// transcript lines, its own stub backend). Linking the two together here would make this
+// transcript depend on both at once and stop telling us which one moved. So both sides get the
+// same tiny in-memory file instead, and this gate stays about fs.
+//
+// The injection flags exist because three of the five Meta->OnEvent call sites are error paths.
+// A file that always succeeds would leave the function-pointer-member call -- the compiler
+// feature this module needed -- exercised on two sites out of five by the transcript that is
+// supposed to validate it. So the driver drives one create failure, one short header write and
+// one short record write, and all four event codes appear below.
+U8 fs_data[256];
+I64 fs_len;
+// bytes written so far
+I64 fs_pos;
+// current position
+U32 fs_fd;
+// 0 is OS_OBJECT_ID_UNDEFINED
+I64 fs_open_fail;
+// make OS_OpenCreate fail
+// fs_wr_left is the number of bytes the file will still accept, not a per-call cap. A per-call
+// cap of 64 looked like it would make a record write fail and did not: the header write is 64
+// and every record is 10, so each individual write still fit and the run reported COMPLETE.
+I64 fs_wr_left;
+// < 0 = unlimited
+I64 fs_mut_create, fs_mut_take, fs_mut_give, fs_wakeups;
+I32 OS_OpenCreate(U32 *filedes, U8 *path, I32 flags, I32 access_mode)
+{
+  if (fs_open_fail)
+    return -1;
+  // OS_ERROR
+  fs_fd = 7;
+  *filedes = 7;
+  fs_len = 0;
+  fs_pos = 0;
+  return OS_SUCCESS;
+}
 
+I32 OS_close(U32 filedes)
+{
+  fs_fd = 0;
+  return OS_SUCCESS;
+}
+
+I32 OS_read(U32 filedes, U8 *buffer, I64 nbytes)
+{
+  I64 n = nbytes;
+  if (n > fs_len - fs_pos)
+    n = fs_len - fs_pos;
+  if (n < 0)
+    n = 0;
+  MemCpy(buffer, &fs_data[fs_pos], n);
+  fs_pos += n;
+  return n;
+}
+
+I32 OS_write(U32 filedes, U8 *buffer, I64 nbytes)
+{
+  I64 n = nbytes;
+  if (fs_wr_left >= 0) {
+    if (n > fs_wr_left)
+      n = fs_wr_left;
+    fs_wr_left -= n;
+  }
+  if (fs_pos + n > sizeof(fs_data))
+    n = sizeof(fs_data) - fs_pos;
+  MemCpy(&fs_data[fs_pos], buffer, n);
+  fs_pos += n;
+  if (fs_pos > fs_len)
+    fs_len = fs_pos;
+  return n;
+}
+
+I32 OS_lseek(U32 filedes, I64 offset, U32 whence)
+{
+  fs_pos = offset;
+  return offset;
+}
+
+Bool OS_ObjectIdDefined(U32 object_id)
+{
+  return object_id != 0;
+}
+
+I32 OS_MutSemCreate(U32 *sem_id, U8 *sem_name, U32 options)
+{
+  ++fs_mut_create;
+  *sem_id = 3;
+  return OS_SUCCESS;
+}
+
+I32 OS_MutSemTake(U32 sem_id)
+{
+  ++fs_mut_take;
+  return OS_SUCCESS;
+}
+
+I32 OS_MutSemGive(U32 sem_id)
+{
+  ++fs_mut_give;
+  return OS_SUCCESS;
+}
+
+I32 CFE_ES_GetAppID(U32 *AppIdPtr)
+{
+  *AppIdPtr = 0x4321;
+  return CFE_SUCCESS;
+}
+
+U0 CFE_ES_BackgroundWakeup()
+{
+  ++fs_wakeups;
+}
+
+U32 CFE_PSP_GetSpacecraftId()
+{
+  return 0x5A5A;
+}
+// The requester's two callbacks. Three records of ten bytes, with record 1 deliberately EMPTY --
+// NASA's loop keeps going on a zero-size record, for holes in a table, and a getter that never
+// returns 0 would not exercise that.
+U8 fs_rec[16];
+I64 fs_events;
+Bool fs_getdata(U8 *Meta, U32 RecordNum, U8 **Buffer, I64 *BufSize)
+{
+  I64 i;
+  for (i = 0; i < 10; i++)
+    fs_rec[i] = 0xA0 + RecordNum * 16 + i;
+  *Buffer = fs_rec;
+  if (RecordNum == 1)
+    *BufSize = 0;
+  else
+    *BufSize = 10;
+  return RecordNum >= 3;
+}
+
+U0 fs_onevent(U8 *Meta, I32 Event, I32 Status, U32 RecordNum, I64 BlockSize, I64 Position)
+{
+  ++fs_events;
+  S("fs_event ev=");
+  D(Event);
+  S(" st=");
+  D(Status);
+  S(" rec=");
+  D(RecordNum);
+  S(" blk=");
+  D(BlockSize);
+  S(" pos=");
+  D(Position);
+  S("\n");
+}
+// Eight lowercase hex digits, to match the C oracle's %08lx.
+U0 Hx8(I64 v)
+{
+  U8 *hx = "0123456789abcdef";
+  U8 one[2];
+  I64 i;
+  one[1] = 0;
+  for (i = 28; i >= 0; i -= 4) {
+    one[0] = hx[(v >> i) & 15];
+    S(one);
+  }
+}
+// One byte as two lowercase hex digits, to match %02x.
+U0 Hxb(I64 v)
+{
+  U8 *hx = "0123456789abcdef";
+  U8 one[2];
+  one[1] = 0;
+  one[0] = hx[(v >> 4) & 15];
+  S(one);
+  one[0] = hx[v & 15];
+  S(one);
+}
+// A string that may be NULL, printed the way C's %s with a ternary does it here.
+U0 Sn(U8 *s)
+{
+  if (s == NULL)
+    S("(null)");
+  else
+    S(s);
+}
+// The file's bytes, so the big-endian conversion in WriteHeader is in the transcript rather than
+// merely implied by a return value.
+U0 fs_dump(U8 *tag, I64 n)
+{
+  I64 i;
+  S(tag);
+  for (i = 0; i < n; i++) {
+    S(" ");
+    Hxb(fs_data[i]);
+  }
+  S("\n");
+}
+
+U0 fs_hdr(U8 *tag, CFE_FS_Header_t *h)
+{
+  S(tag);
+  S(" ct=");
+  Hx8(h->ContentType);
+  S(" sub=");
+  D(h->SubType);
+  S(" len=");
+  D(h->Length);
+  S(" sc=");
+  D(h->SpacecraftID);
+  S(" pr=");
+  D(h->ProcessorID);
+  S(" app=");
+  D(h->ApplicationID);
+  S(" ts=");
+  Hx8(h->TimeSeconds);
+  S(" tss=");
+  Hx8(h->TimeSubSeconds);
+  S(" d=[");
+  S(h->Description);
+  S("]\n");
+}
+
+U0 fs_parse_out(U8 *tag, U8 *out, I32 rc)
+{
+  S(tag);
+  S(" rc=");
+  D(rc);
+  S(" [");
+  S(out);
+  S("]\n");
+}
+// The five objects the queue-full case needs at file scope, as the C's `static` ones are.
+CFE_FS_FileWriteMetaData_t fs_q[5];
 I64 main()
 {
   CFE_MSG_Message msg;
@@ -962,6 +1196,450 @@ I64 main()
   D(CFE_MSG_ModuleEntry.Priority);
   S(" ");
   D(CFE_MSG_ModuleEntry.StackSize);
+  S("\n");
+  // cFE's target configuration. The C half is designated initialisers, which are in place
+  // before main runs; HolyC has no initialised aggregates at file scope, so the same values are
+  // written by a function that has to be CALLED. fs is the first module to read
+  // GLOBAL_CFE_CONFIGDATA, which is why nothing missed this until now -- and the symptom was
+  // five mount points reading (null) rather than any kind of error.
+  CFE_TargetConfigInit();
+  // --- cfe_fs: layout ------------------------------------------------------------------
+  // sizeof and the offsets of every translated class, on both sides. check_padding.py already
+  // compares these against the host C compiler, but that is a MODEL on the HolyC side; this
+  // puts the really compiled layout under the byte-identical transcript, which is stronger.
+  //
+  // CFE_FS_ParseContext_t is deliberately absent: it lives inside cfe_fs_api.c, so the C driver
+  // cannot see it and a hand-written literal there would compare nothing. check_padding.py
+  // lifts that typedef out of the .c and measures it for real.
+  
+  {
+    CFE_FS_FileWriteMetaData_t lm;
+    CFE_FS_CurrentFileState_t lc;
+    S("fs_lay hdr=");
+    D(sizeof(CFE_FS_Header_t));
+    S(" meta=");
+    D(sizeof(CFE_FS_FileWriteMetaData_t));
+    S(" ent=");
+    D(sizeof(CFE_FS_BackgroundFileDumpEntry_t));
+    S(" cur=");
+    D(sizeof(CFE_FS_CurrentFileState_t));
+    S(" dump=");
+    D(sizeof(CFE_FS_BackgroundFileDumpState_t));
+    S(" glob=");
+    D(sizeof(CFE_FS_Global_t));
+    S("\n");
+    S("fs_off pend=");
+    D ((U8 *) & lm.IsPending - (U8 *) & lm);
+    S(" name=");
+    D ((U8 *) & lm.FileName - (U8 *) & lm);
+    S(" sub=");
+    D ((U8 *) & lm.FileSubType - (U8 *) & lm);
+    S(" desc=");
+    D ((U8 *) & lm.Description - (U8 *) & lm);
+    S(" get=");
+    D ((U8 *) & lm.GetData - (U8 *) & lm);
+    S(" ev=");
+    D ((U8 *) & lm.OnEvent - (U8 *) & lm);
+    S("\n");
+    S("fs_off2 mut=");
+    D ((U8 *) & CFE_FS_Global.SharedDataMutexId - (U8 *) & CFE_FS_Global);
+    S(" fdump=");
+    D ((U8 *) & CFE_FS_Global.FileDump - (U8 *) & CFE_FS_Global);
+    S(" req=");
+    D ((U8 *) & CFE_FS_Global.FileDump.RequestCount - (U8 *) & CFE_FS_Global.FileDump);
+    S(" comp=");
+    D ((U8 *) & CFE_FS_Global.FileDump.CompleteCount - (U8 *) & CFE_FS_Global.FileDump);
+    S(" entries=");
+    D ((U8 *) & CFE_FS_Global.FileDump.Entries - (U8 *) & CFE_FS_Global.FileDump);
+    S(" curr=");
+    D ((U8 *) & CFE_FS_Global.FileDump.Current - (U8 *) & CFE_FS_Global.FileDump);
+    S(" fd=");
+    D ((U8 *) & lc.Fd - (U8 *) & lc);
+    S(" cred=");
+    D ((U8 *) & lc.Credit - (U8 *) & lc);
+    S(" recn=");
+    D ((U8 *) & lc.RecordNum - (U8 *) & lc);
+    S(" fsz=");
+    D ((U8 *) & lc.FileSize - (U8 *) & lc);
+    S("\n");
+  }
+  // --- cfe_fs_priv.c ------------------------------------------------------------------
+  
+  {
+    I32 irc = CFE_FS_EarlyInit();
+    // logs on failure; hoisted for the same reason as the rest
+    S("fs_init rc=");
+    D(irc);
+  }
+  S(" create=");
+  D(fs_mut_create);
+  S(" mut=");
+  D(CFE_FS_Global.SharedDataMutexId);
+  S("\n");
+  CFE_FS_LockSharedData("drv");
+  CFE_FS_UnlockSharedData("drv");
+  S("fs_lock take=");
+  D(fs_mut_take);
+  S(" give=");
+  D(fs_mut_give);
+  S("\n");
+  // --- cfe_fs_api.c: the default locations -------------------------------------------
+  // Every category, including the two that have no mount point and the three that have no
+  // extension -- those return NULL, and a translation that returned "" instead would pass a
+  // test that only looked at the five real ones.
+  
+  {
+    I64 cat;
+    for (cat = 0; cat <= CFE_FS_FileCategory_MAX; cat++) {
+      S("fs_cat ");
+      D(cat);
+      S(" mp=[");
+      Sn(CFE_FS_GetDefaultMountPoint(cat));
+      S("] ex=[");
+      Sn(CFE_FS_GetDefaultExtension(cat));
+      S("]\n");
+    }
+  }
+  // --- the byte swappers --------------------------------------------------------------
+  
+  {
+    U32 u = 0x11223344;
+    CFE_FS_Header_t h;
+    CFE_FS_ByteSwapUint32(&u);
+    S("fs_swap32 ");
+    Hx8(u);
+    S("\n");
+    MemSet(&h, 0, sizeof(CFE_FS_Header_t));
+    h.ContentType = 0x01020304;
+    h.SubType = 0x05060708;
+    h.Length = 0x090a0b0c;
+    h.SpacecraftID = 0x0d0e0f10;
+    h.ProcessorID = 0x11121314;
+    h.ApplicationID = 0x15161718;
+    h.TimeSeconds = 0x191a1b1c;
+    h.TimeSubSeconds = 0x1d1e1f20;
+    CFE_FS_ByteSwapCFEHeader(&h);
+    fs_hdr("fs_swaphdr", &h);
+    CFE_FS_ByteSwapCFEHeader(&h);
+    fs_hdr("fs_swapback", &h);
+  }
+  // --- InitHeader / WriteHeader / ReadHeader / SetTimestamp --------------------------
+  
+  {
+    CFE_FS_Header_t h;
+    CFE_FS_Header_t rb;
+    I32 rc;
+    CFE_TIME_SysTime ts;
+    CFE_FS_InitHeader(NULL, "x", 1);
+    // both NULL paths log and return
+    CFE_FS_InitHeader(&h, NULL, 1);
+    // A description LONGER than the field, so strncpy's no-terminator edge is in the
+    // transcript: 31 chars plus the NUL the prior MemSet left.
+    CFE_FS_InitHeader(&h, "0123456789abcdefghijklmnopqrstuvwxyz", CFE_FS_SubType_ES_SYSLOG);
+    fs_hdr("fs_inithdr", &h);
+    S("fs_wrhdr_null rc=");
+    D(CFE_FS_WriteHeader(7, NULL));
+    S("\n");
+    S("fs_rdhdr_null rc=");
+    D(CFE_FS_ReadHeader(NULL, 7));
+    S("\n");
+    fs_wr_left = -1;
+    fs_fd = 7;
+    fs_len = 0;
+    fs_pos = 0;
+    rc = CFE_FS_WriteHeader(7, &h);
+    S("fs_wrhdr rc=");
+    D(rc);
+    S(" len=");
+    D(fs_len);
+    S("\n");
+    // The header on DISK is big endian; the caller's copy is restored to native.
+    fs_dump("fs_bytes", 32);
+    fs_hdr("fs_after", &h);
+    rc = CFE_FS_ReadHeader(&rb, 7);
+    S("fs_rdhdr rc=");
+    D(rc);
+    S("\n");
+    fs_hdr("fs_readback", &rb);
+    // A short read: truncate the file so OS_read cannot deliver 64 bytes.
+    fs_len = 20;
+    S("fs_rdhdr_short rc=");
+    D(CFE_FS_ReadHeader(&rb, 7));
+    S("\n");
+    // SetTimestamp seeks to the byte offset of TimeSeconds, which NASA computes from the struct
+    // with two char * casts -- without them C scales by sizeof(uint32) and gets 6.
+    fs_len = 64;
+    fs_pos = 0;
+    ts.Seconds = 0x01234567;
+    ts.Subseconds = 0x89abcdef;
+    rc = CFE_FS_SetTimestamp(7, ts);
+    S("fs_setts rc=");
+    D(rc);
+    S(" pos=");
+    D(fs_pos);
+    S("\n");
+    fs_dump("fs_tsbytes", 32);
+    // And the failure path: a write budget of 4 makes it a short write.
+    fs_wr_left = 4;
+    rc = CFE_FS_SetTimestamp(7, ts);
+    // logs, so it must run BEFORE the prefix is printed
+    S("fs_setts_short rc=");
+    D(rc);
+    S("\n");
+    fs_wr_left = -1;
+  }
+  // --- ParseInputFileNameEx ----------------------------------------------------------
+  
+  {
+    U8 o[32];
+    S("fs_parse_nullbuf rc=");
+    D(CFE_FS_ParseInputFileNameEx(NULL, NULL, 32, 0, "x", "/cf", ".bin"));
+    S("\n");
+    S("fs_parse_zerosz rc=");
+    D(CFE_FS_ParseInputFileNameEx(o, NULL, 0, 0, "x", "/cf", ".bin"));
+    S("\n");
+    // no input at all: NULL buffer AND NULL default, so the loop never runs
+    fs_parse_out("fs_parse_noinput", o, CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, NULL, "/cf", ".bin"));
+    // bare name: default path and default extension both supplied
+    fs_parse_out("fs_parse_bare", o, CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "log", "/cf", ".bin"));
+    // name with its own extension: the default extension is not used
+    fs_parse_out("fs_parse_ext", o, CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "log.txt", "/cf", ".bin"));
+    // name with its own path: the default path is not used
+    fs_parse_out("fs_parse_path", o, CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "/ram/log", "/cf", ".bin"));
+    // duplicate separators, which the separator component collapses from both sides
+    fs_parse_out("fs_parse_dup", o, CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "/ram//sub///log..txt", "/cf", ".bin"));
+    // a multi-level path: the pathname component repeats until the LAST separator
+    fs_parse_out("fs_parse_deep", o, CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "/a/b/c/log.txt", "/cf", ".bin"));
+    // no default extension and none in the input: the parse ends early
+    fs_parse_out("fs_parse_noext", o, CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "log", "/cf", NULL));
+    // no default path and none in the input
+    fs_parse_out("fs_parse_nopath", o, CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "log", NULL, ".bin"));
+    // an EMPTY filename: the status stays INVALID_PATH even though a path was produced
+    fs_parse_out("fs_parse_empty", o, CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "/ram/", "/cf", ".bin"));
+    // too long for the output buffer: FNAME_TOO_LONG, and the result is still terminated
+    fs_parse_out("fs_parse_long", o, CFE_FS_ParseInputFileNameEx(o, NULL, 12, 0, "/ram/averylongfilename.txt", "/cf", ".bin"));
+    // the InputBuffer form, which is NOT null terminated: 10 bytes of a longer buffer
+    fs_parse_out("fs_parse_buf", o, CFE_FS_ParseInputFileNameEx(o, "/ram/ab.cdEXTRA", sizeof(o), 10, "unused", "/cf", ".bin"));
+    // an empty InputBuffer falls back to DefaultInput
+    fs_parse_out("fs_parse_bufempty", o, CFE_FS_ParseInputFileNameEx(o, "", sizeof(o), 4, "fallback", "/cf", ".bin"));
+    // the category wrapper, for every category
+    
+    {
+      I64 cat;
+      for (cat = 0; cat <= CFE_FS_FileCategory_MAX; cat++) {
+        I32 rc2 = CFE_FS_ParseInputFileName(o, "nm", sizeof(o), cat);
+        S("fs_parsecat ");
+        D(cat);
+        S(" rc=");
+        D(rc2);
+        S(" [");
+        S(o);
+        S("]\n");
+      }
+    }
+  }
+  // --- ExtractFilenameFromPath -------------------------------------------------------
+  
+  {
+    U8 o[80];
+    I32 rc;
+    S("fs_xf_null rc=");
+    D(CFE_FS_ExtractFilenameFromPath(NULL, o));
+    S("\n");
+    S("fs_xf_null2 rc=");
+    D(CFE_FS_ExtractFilenameFromPath("/a/b", NULL));
+    S("\n");
+    o[0] = 0;
+    rc = CFE_FS_ExtractFilenameFromPath("/cf/apps/ci_lab.so", o);
+    fs_parse_out("fs_xf", o, rc);
+    // no separator at all
+    o[0] = 0;
+    rc = CFE_FS_ExtractFilenameFromPath("bare.txt", o);
+    fs_parse_out("fs_xf_bare", o, rc);
+    // the ONLY separator is at index 0, so DirMarkIdx == 0 and NASA's test is > 0:
+    // "/name" is rejected as INVALID_PATH rather than yielding "name"
+    o[0] = 0;
+    rc = CFE_FS_ExtractFilenameFromPath("/name", o);
+    fs_parse_out("fs_xf_root", o, rc);
+    // a trailing separator: an empty filename, which is still CFE_SUCCESS
+    o[0] = 0;
+    rc = CFE_FS_ExtractFilenameFromPath("/a/b/", o);
+    fs_parse_out("fs_xf_trail", o, rc);
+    // the tail is OS_MAX_PATH_LEN or longer: FNAME_TOO_LONG
+    o[0] = 0;
+    rc = CFE_FS_ExtractFilenameFromPath("/x/0123456789012345678901234567890123456789012345678901234567890123", o);
+    fs_parse_out("fs_xf_long", o, rc);
+  }
+  // --- the background file dump queue ------------------------------------------------
+  
+  {
+    CFE_FS_FileWriteMetaData_t m;
+    CFE_FS_FileWriteMetaData_t m2;
+    I64 i;
+    I64 k;
+    Bool more1;
+    MemSet(&m, 0, sizeof(CFE_FS_FileWriteMetaData_t));
+    S("fs_req_null rc=");
+    D(CFE_FS_BackgroundFileDumpRequest(NULL));
+    S("\n");
+    S("fs_pend_null ");
+    D(CFE_FS_BackgroundFileDumpIsPending(NULL));
+    S("\n");
+    // GetData and OnEvent must both be set, and they are checked together
+    S("fs_req_nogetdata rc=");
+    D(CFE_FS_BackgroundFileDumpRequest(&m));
+    S("\n");
+    m.GetData = &fs_getdata;
+    S("fs_req_noonevent rc=");
+    D(CFE_FS_BackgroundFileDumpRequest(&m));
+    S("\n");
+    m.OnEvent = &fs_onevent;
+    // then a non-empty filename
+    S("fs_req_noname rc=");
+    D(CFE_FS_BackgroundFileDumpRequest(&m));
+    S("\n");
+    StrNCpy(m.FileName, "/ram/dump.bin", CFE_MISSION_MAX_PATH_LEN - 1);
+    StrNCpy(m.Description, "a test dump", CFE_FS_HDR_DESC_MAX_LEN - 1);
+    m.FileSubType = CFE_FS_SubType_ES_QUERYALL;
+    S("fs_req rc=");
+    D(CFE_FS_BackgroundFileDumpRequest(&m));
+    S(" pend=");
+    D(CFE_FS_BackgroundFileDumpIsPending(&m));
+    S(" wake=");
+    D(fs_wakeups);
+    S("\n");
+    // a second request for the SAME object is rejected while it is pending
+    S("fs_req_again rc=");
+    D(CFE_FS_BackgroundFileDumpRequest(&m));
+    S("\n");
+    // run it: open, header, three records with a hole, EOF, complete event
+    fs_open_fail = 0;
+    fs_wr_left = -1;
+    fs_fd = 0;
+    fs_len = 0;
+    fs_pos = 0;
+    fs_events = 0;
+    for (i = 0; i < 4; i++) {
+      // 8 ms of elapsed time is 80 bytes of credit: the 64-byte header plus two 10-byte
+      // records overruns it, so the first call cannot reach EOF and the multi-call path is in
+      // the transcript rather than assumed.
+      Bool more = CFE_FS_RunBackgroundFileDump(8, NULL);
+      S("fs_run");
+      D(i);
+      S(" more=");
+      D(more);
+      S(" fd=");
+      D(CFE_FS_Global.FileDump.Current.Fd);
+      S(" cred=");
+      D(CFE_FS_Global.FileDump.Current.Credit);
+      S(" rec=");
+      D(CFE_FS_Global.FileDump.Current.RecordNum);
+      S(" sz=");
+      D(CFE_FS_Global.FileDump.Current.FileSize);
+      S(" pend=");
+      D(CFE_FS_BackgroundFileDumpIsPending(&m));
+      S(" comp=");
+      D(CFE_FS_Global.FileDump.CompleteCount);
+      S("\n");
+    }
+    fs_dump("fs_filebytes", 32);
+    S("fs_events ");
+    D(fs_events);
+    S("\n");
+    // the CREATE failure path
+    MemSet(&m2, 0, sizeof(CFE_FS_FileWriteMetaData_t));
+    m2.GetData = &fs_getdata;
+    m2.OnEvent = &fs_onevent;
+    StrNCpy(m2.FileName, "/ram/nope.bin", CFE_MISSION_MAX_PATH_LEN - 1);
+    StrNCpy(m2.Description, "create fails", CFE_FS_HDR_DESC_MAX_LEN - 1);
+    S("fs_req2 rc=");
+    D(CFE_FS_BackgroundFileDumpRequest(&m2));
+    S("\n");
+    fs_open_fail = 1;
+    CFE_FS_Global.FileDump.Current.Credit = 0;
+    more1 = CFE_FS_RunBackgroundFileDump(1000, NULL);
+    // emits an event; hoisted
+    S("fs_run_createfail more=");
+    D(more1);
+    S(" pend=");
+    D(CFE_FS_BackgroundFileDumpIsPending(&m2));
+    S(" comp=");
+    D(CFE_FS_Global.FileDump.CompleteCount);
+    S("\n");
+    fs_open_fail = 0;
+    // the HEADER WRITE failure path: a 4-byte budget makes WriteHeader return 4, not 64
+    S("fs_req3 rc=");
+    D(CFE_FS_BackgroundFileDumpRequest(&m2));
+    S("\n");
+    fs_wr_left = 4;
+    CFE_FS_Global.FileDump.Current.Credit = 0;
+    more1 = CFE_FS_RunBackgroundFileDump(1000, NULL);
+    // emits an event; hoisted
+    S("fs_run_hdrfail more=");
+    D(more1);
+    S(" pend=");
+    D(CFE_FS_BackgroundFileDumpIsPending(&m2));
+    S("\n");
+    // the RECORD WRITE failure path: the header fits, a record does not
+    S("fs_req4 rc=");
+    D(CFE_FS_BackgroundFileDumpRequest(&m2));
+    S("\n");
+    fs_wr_left = 64;
+    CFE_FS_Global.FileDump.Current.Credit = 0;
+    more1 = CFE_FS_RunBackgroundFileDump(1000, NULL);
+    // emits an event; hoisted
+    S("fs_run_recfail more=");
+    D(more1);
+    S(" pend=");
+    D(CFE_FS_BackgroundFileDumpIsPending(&m2));
+    S("\n");
+    fs_wr_left = -1;
+    // nothing queued: the lock is taken, Curr stays NULL, and it returns false
+    more1 = CFE_FS_RunBackgroundFileDump(1000, NULL);
+    S("fs_run_idle more=");
+    D(more1);
+    S("\n");
+    // the credit CAP: a huge elapsed time must not bank more than MAX_CREDIT
+    CFE_FS_Global.FileDump.Current.Credit = 0;
+    CFE_FS_RunBackgroundFileDump(100000, NULL);
+    S("fs_credit_cap ");
+    D(CFE_FS_Global.FileDump.Current.Credit);
+    S("\n");
+    // the queue FULL path. The check is RequestCount + 1 == CompleteCount + 4, so three
+    // objects can be queued and the fourth is refused.
+    for (k = 0; k < 5; k++) {
+      MemSet(&fs_q[k], 0, sizeof(CFE_FS_FileWriteMetaData_t));
+      fs_q[k].GetData = &fs_getdata;
+      fs_q[k].OnEvent = &fs_onevent;
+      fs_q[k].FileName[0] = 'q';
+      fs_q[k].FileName[1] = '0' + k;
+      S("fs_qfill");
+      D(k);
+      S(" rc=");
+      D(CFE_FS_BackgroundFileDumpRequest(&fs_q[k]));
+      S("\n");
+    }
+    S("fs_lockcount take=");
+    D(fs_mut_take);
+    S(" give=");
+    D(fs_mut_give);
+    S("\n");
+  }
+  // --- cfe_fs_objtab.c ---------------------------------------------------------------
+  // The first registration entry here with a non-NULL hook: FS has no task but does have global
+  // data, so EarlyInit is set and TaskMain is not.
+  S("fs_objtab ");
+  S(CFE_FS_ModuleEntry.Name);
+  S(" ");
+  D(CFE_FS_ModuleEntry.EarlyInit == NULL);
+  S(" ");
+  D(CFE_FS_ModuleEntry.TaskMain == NULL);
+  S(" ");
+  D(CFE_FS_ModuleEntry.AppCleanupCb == NULL);
+  S(" ");
+  D(CFE_FS_ModuleEntry.Priority);
+  S(" ");
+  D(CFE_FS_ModuleEntry.StackSize);
   S("\n");
   return 0;
 }

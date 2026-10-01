@@ -51,7 +51,10 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/config/fsw/src/cfe_config_lookup.c
        $CFE/modules/config/fsw/src/cfe_config_get.c
        $CFE/modules/config/fsw/src/cfe_config_set.c
-       $CFE/modules/config/fsw/src/cfe_config_eds_disabled.c"
+       $CFE/modules/config/fsw/src/cfe_config_eds_disabled.c
+       $CFE/modules/fs/fsw/src/cfe_fs_api.c
+       $CFE/modules/fs/fsw/src/cfe_fs_priv.c
+       $CFE/modules/fs/fsw/src/cfe_fs_objtab.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -79,7 +82,7 @@ INC="-I$CFE/modules/core_api/fsw/inc -I$CFE/modules/core_api/config
      -I$CFE/modules/evs/config -I$CFE/modules/evs/fsw/inc
      -I$CFE/modules/tbl/config -I$CFE/modules/tbl/fsw/inc
      -I$CFE/modules/time/config -I$CFE/modules/time/fsw/inc
-     -I$CFE/modules/fs/config -I$CFE/modules/fs/fsw/inc
+     -I$CFE/modules/fs/config -I$CFE/modules/fs/fsw/inc -I$CFE/modules/fs/fsw/src
      -I$CFE/modules/ta/config -I$CFE/modules/ta/fsw/inc
      -I$CFE/modules/resourceid/fsw/inc -I$CFE/modules/resourceid/config
      -I$CFE/modules/resourceid/option_inc
@@ -143,7 +146,7 @@ python3 "$ROOT/tools/cfs/check_manifest.py" --cfe || exit 1
 
 # --- reference: NASA's C, unmodified -------------------------------------------------------
 # shellcheck disable=SC2086
-if ! "$HOSTCC" -O0 -w $INC -I"$ROOT/tests/cfs" -o "$T/ref" "$ROOT/tests/cfs/oracle_ccsdspri.c" $SRC_C "$GENDIR/cfe_configid_nametable.c" 2>"$T/cc.log"; then
+if ! "$HOSTCC" -O0 -w $INC -I"$ROOT/tests/cfs" -o "$T/ref" "$ROOT/tests/cfs/oracle_ccsdspri.c" $SRC_C "$GENDIR/cfe_configid_nametable.c" "$GENDIR/cfe_target_config.c" 2>"$T/cc.log"; then
   echo "FAIL cfs-xlat — the C reference did not build" >&2
   tail -12 "$T/cc.log" | sed 's/^/  /' >&2
   exit 1

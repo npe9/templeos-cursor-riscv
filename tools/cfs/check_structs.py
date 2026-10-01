@@ -78,8 +78,13 @@ def nasa_structs():
     for d in NASA_DIRS:
         if not os.path.isdir(d):
             continue
+        # .c as well as .h: NASA declares a module's private context and state structs INSIDE
+        # the implementation file -- cfe_fs_api.c defines CFE_FS_ParseContext_t, thirteen fields
+        # with three separate pieces of C padding in it -- and scanning headers only left those
+        # out of every gate. Headers are scanned first and setdefault keeps them, so a name that
+        # appears in both is still taken from the header.
         for fn in sorted(os.listdir(d)):
-            if not fn.endswith(".h"):
+            if not (fn.endswith(".h") or fn.endswith(".c")):
                 continue
             txt = strip_comments(open(os.path.join(d, fn), errors="replace").read())
             # `typedef struct { ... } Name;` and `struct Name { ... };`

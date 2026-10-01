@@ -147,3 +147,61 @@ A read/write lock is harder to justify: it is the same kind of object as a mutex
 it was simply not extended with it.
 
 Reproduced, not fixed. If upstream adds the cases, `c_left` changes and the gate says so.
+
+## 5. CFE_FS_ExtractFilenameFromPath rejects a path whose only separator is the first byte
+
+`modules/fs/fsw/src/cfe_fs_api.c` finds the last `/` and then tests
+
+```c
+if (DirMarkIdx > 0)
+```
+
+not `>= 0`. So `"/name"` — a file at the root of a virtual mount, whose only separator is at
+index 0 — returns `CFE_FS_INVALID_PATH` and leaves the output buffer untouched, where
+`"/a/name"` returns `"name"`. Every other shape works: no separator at all is also
+`INVALID_PATH`, and a trailing separator gives an empty filename and `CFE_SUCCESS`.
+
+The gated transcript has all four:
+
+    fs_xf       rc=0          [ci_lab.so]     /cf/apps/ci_lab.so
+    fs_xf_bare  rc=-973078526 []              bare.txt, no separator
+    fs_xf_root  rc=-973078526 []              /name, separator at index 0
+    fs_xf_trail rc=0          []              /a/b/, empty filename
+
+Whether this is intent is unclear. The function's doxygen says only "Extracts the filename from
+a given path", and a cFS deployment puts files under `/cf` or `/ram`, so a root-level file may
+simply never occur. Reproduced, not fixed: a translation that wrote `>= 0` would be more useful
+and would no longer be NASA's.
+
+## 6. The separator component reads one byte before checking that any input is left
+
+Also in `cfe_fs_api.c`, `CFE_FS_ParseInputFileName_SeparatorComponent`:
+
+```c
+while (*Ctxt->InputPtr == Ctxt->ComponentTerm && Ctxt->InputLen > 0)
+```
+
+The dereference is evaluated first and the length check second. It cannot underflow —
+`InputLen > 0` is still in the condition, so the decrement never runs at zero — but with the
+`CFE_FS_ParseInputFileNameEx` form that takes an `InputBuffer` and an `InputBufSize` rather
+than a NUL-terminated string, it can read one byte past the caller's buffer. With a terminated
+string the byte it reads is the NUL, which is why this is invisible in normal use.
+
+Reproduced in the order NASA wrote it, with a comment at the site. Swapping the two halves
+would be the fix and would also be a behaviour change this port is not entitled to make.
+
+## 7. fs/CMakeLists.txt lists two of its three sources twice
+
+```cmake
+set(fs_SOURCES
+    fsw/src/cfe_fs_api.c
+    fsw/src/cfe_fs_priv.c
+    fsw/src/cfe_fs_api.c      # again
+    fsw/src/cfe_fs_priv.c     # again
+    fsw/src/cfe_fs_objtab.c
+)
+```
+
+Harmless — CMake compiles each source once per target regardless — and noted only because it is
+exactly the shape that would fool a manifest parser into reporting five sources where there are
+three. `tools/cfs/check_manifest.py` deduplicates, and it reports `fs 3 uncond 1249 lines`.

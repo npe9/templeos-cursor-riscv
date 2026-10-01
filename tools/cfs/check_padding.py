@@ -90,6 +90,18 @@ HDRS = [
     "target_config.h", "target_objtab.h",
 ]
 
+# NASA .c files whose FILE-SCOPE typedefs have to be lifted into the probe. A module's private
+# context and state structs are declared in the implementation file, not in a header, so there is
+# nothing to #include: cfe_fs_api.c defines CFE_FS_ParseComponent_Enum_t and
+# CFE_FS_ParseContext_t, and that context carries three separate pieces of C padding. The probe
+# copies those declarations in verbatim. A struct this list misses is REPORTED as unmeasured, so
+# forgetting an entry is visible rather than silent.
+CSRC = [
+    os.path.join(CFE, "modules", "fs", "fsw", "src", "cfe_fs_api.c"),
+    os.path.join(CFE, "modules", "resourceid", "fsw", "src", "cfe_resourceid_api.c"),
+    os.path.join(CFE, "modules", "sbr", "fsw", "src", "cfe_sbr_route_unsorted.c"),
+]
+
 # HolyC primitive sizes. U0/I0 is the zero-size position marker (CDirEntry.start), which the
 # compiler gives size 0 -- see docs/HOLYC_STRUCT_LIMITS.md limit #4.
 PRIM = {"U0": 0, "I0": 0, "Bool": 1, "I8": 1, "U8": 1, "I16": 2, "U16": 2,
@@ -115,6 +127,28 @@ def eval_int(expr, vals):
         return int(eval("".join(str(vals[tk]) if tk in vals else tk for tk in toks)))
     except Exception:
         return None
+
+
+def lifted_typedefs():
+    """The file-scope `typedef enum {...} N;` / `typedef struct {...} N;` text from CSRC, in
+    declaration order, so the probe can measure a struct that lives in a .c."""
+    out = []
+    for path in CSRC:
+        if not os.path.exists(path):
+            continue
+        txt = check_structs.strip_comments(open(path, errors="replace").read())
+        for m in re.finditer(r'typedef\s+(?:enum|struct)\s*(?:\w+\s*)?\{', txt):
+            i, depth = m.end(), 1
+            while i < len(txt) and depth:
+                if txt[i] == '{':
+                    depth += 1
+                elif txt[i] == '}':
+                    depth -= 1
+                i += 1
+            end = txt.find(';', i)
+            if end > 0:
+                out.append(txt[m.start():end + 1])
+    return out
 
 
 def hc_defines():
@@ -241,6 +275,7 @@ def c_layouts(wanted, verbose=False):
         live = [(s, f) for s, f in sorted(wanted.items()) if s not in dropped]
         body = ["#include <stdio.h>", "#include <stddef.h>"]
         body += ['#include "%s"' % h for h in HDRS]
+        body += lifted_typedefs()
         body.append("int main(void){")
         for s, fields in live:
             ty = ("struct " + s) if s in use_struct else s

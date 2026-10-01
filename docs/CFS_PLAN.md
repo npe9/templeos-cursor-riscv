@@ -296,7 +296,7 @@ rather than counted as always-built:
 | `sbr` | 1 | 33 | **100%** (its map and route sources are conditional; the HASH default is gated) |
 | `config` | 5 | 697 | 61% |
 | `sb` | 7 | 5,278 | 4% |
-| `fs` | 3 | 1,249 | 0% |
+| `fs` | 3 | 1,249 | **100%** |
 | `ta` | 2 | 892 | 0% |
 | `evs` | 5 | 2,787 | 0% |
 | `time` | 5 | 4,383 | 0% |
@@ -319,14 +319,15 @@ generates (`tools/cfs/gen_osconfig.py`, `tools/cfs/gen_configid_table.py`), so t
 known. It is build-system emulation rather than translation, and it is worth doing when the
 startup path needs it rather than for the percentage.
 
-Six properties are gated independently, because each is blind to what the others catch:
+Seven properties are gated independently, because each is blind to what the others catch:
 
 | check | what it proves | what it cannot see |
 |---|---|---|
 | `check_coverage.py` | every function in a gated NASA source exists in the translation | its arity, its types, its body |
 | `check_signatures.py` | arity and pointer-ness match NASA's, per parameter | return types; anything named `*_Impl` |
 | `check_seam.py` | the `OS_*_Impl` declarations match NASA's headers, **return type included** | whether a backend obeys them |
-| `check_structs.py` | a translated `class` has NASA's fields, in NASA's order | field TYPES, and whether anything reads them |
+| `check_structs.py` | a translated `class` has NASA's fields, in NASA's order | field TYPES, and where the fields actually sit |
+| `check_padding.py` | a translated `class` has NASA's BYTE LAYOUT — every offset and the size | whether anything reads those fields correctly |
 | `check_manifest.py` | everything gated is in NASA's build; reports the covered fraction | nothing about the code itself |
 | the transcript | behaviour, byte for byte against NASA's own C | anything nothing calls |
 
@@ -335,6 +336,23 @@ Each of these was added because something got through the ones that already exis
 `OS_MutSemCreate` lost a parameter with coverage green; `OS_TaskDetach_Impl` was declared
 returning `U0` where NASA's header says `int32`, which only the host C compiler noticed, and
 only because the oracle happens to include that header.
+
+`check_padding.py` is the newest and had the largest first harvest: **17 of 53** translated
+classes did not have NASA's layout, and all six gates above were green. HolyC classes are fully
+packed — no inter-member padding, no alignment, no tail padding — which is authentic TempleOS
+and is not what a C compiler does, so a class can have NASA's fields in NASA's order and still
+not be NASA's struct. Four of the seventeen were not padding at all but members at the wrong
+WIDTH, which padding over would have buried: `OS_lock_mode_t`, `OS_module_type_t` and
+`CFE_ConfigType_t` are C **enums**, four bytes, and had been translated as `I64`. The token one
+cascaded into every struct that embeds an `OS_object_token_t`.
+
+The C side of that gate is the real host compiler's `offsetof` and `sizeof` from NASA's own
+headers. The HolyC side is a model — sum the member sizes — because running the HolyC compiler
+would mean building and booting a blob per struct, so the model's premise is pinned separately
+as `tests/exec/cases/e_class_packing.hc`. A wrong model fails toward approving a mismatch, which
+is why it does not get to be an assumption. The same reasoning put the fs classes' real `sizeof`
+and offsets into the transcript as well: that is the compiled layout under the strongest gate
+here, where `check_padding.py` is a model on one side.
 
 ### The C library is TempleOS's, not a private copy of libc
 

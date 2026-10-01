@@ -98,12 +98,16 @@ class CFE_SBR_RouteEntry
   CFE_SB_DestinationD *ListHeadPtr; // Destination list head
   CFE_SB_MsgId MsgId;               // Message ID associated with route
   U16 SeqCnt;                       // Message sequence counter
+  U8 _pad0[2]; // C rounds the struct up to its alignment; HolyC does not. This one is the
+               // STRIDE of a 256-entry table, so without it the routing table is 3,584 bytes
+               // against NASA's 4,096 -- see tools/cfs/check_padding.py.
 };
 
 class cfe_sbr_route_data
 {
   CFE_SBR_RouteEntry RoutingTbl[CFE_PLATFORM_SB_MAX_MSG_IDS]; // Routing table
   U16 RouteIdxTop;                                            // First unused entry in RoutingTbl
+  U8 _pad0[6]; // C rounds the struct up to its alignment; HolyC does not
 };
 
 cfe_sbr_route_data CFE_SBR_RDATA;

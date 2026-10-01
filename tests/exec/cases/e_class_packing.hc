@@ -23,20 +23,25 @@
 class Narrow
 {
   U8 a;
-  U32 b;      // C: offset 4.  HolyC: offset 1.
+  U32 b;
+  // C: offset 4.  HolyC: offset 1.
 };
 
 class Tail
 {
   U32 a;
-  U8 b;       // C: sizeof 8 (tail padding to align 4). HolyC: sizeof 5.
+  U8 b;
+  // C: sizeof 8 (tail padding to align 4). HolyC: sizeof 5.
 };
 
 class AfterArray
 {
-  Bool flag;      // 1 byte
-  U8 name[64];    // 1..64
-  U32 subtype;    // C: 68.  HolyC: 65.  This is the cFE case above.
+  Bool flag;
+  // 1 byte
+  U8 name[64];
+  // 1..64
+  U32 subtype;
+  // C: 68.  HolyC: 65.  This is the cFE case above.
   U8 desc[32];
   U0 (*on_event)();
 };
@@ -44,7 +49,8 @@ class AfterArray
 class Nest
 {
   U8 lead;
-  Narrow inner;   // a packed class nests packed: no alignment bump at the member either
+  Narrow inner;
+  // a packed class nests packed: no alignment bump at the member either
   U8 trail;
 };
 
@@ -55,22 +61,27 @@ I64 main()
   AfterArray a;
   Nest z;
   I64 r = 0;
-
   // Bool is one byte, which is what makes the cFE case a 3-byte shift and not a 7-byte one.
   r = r * 10 + sizeof(Bool);
-
-  r = r * 10 + sizeof(Narrow);                               // 5
-  r = r * 10 + ((U8 *)&n.b - (U8 *)&n.a);                    // 1
-
-  r = r * 10 + sizeof(Tail);                                 // 5
-  r = r * 10 + ((U8 *)&t.b - (U8 *)&t.a);                    // 4
-
-  r = r * 1000 + sizeof(AfterArray);                         // 1 + 64 + 4 + 32 + 8 = 109
-  r = r * 100 + ((U8 *)&a.subtype - (U8 *)&a.flag);          // 65
-  r = r * 1000 + ((U8 *)&a.on_event - (U8 *)&a.flag);        // 101
-
-  r = r * 10 + sizeof(Nest);                                 // 1 + 5 + 1 = 7
-  r = r * 10 + ((U8 *)&z.inner - (U8 *)&z.lead);             // 1
-  r = r * 10 + ((U8 *)&z.trail - (U8 *)&z.lead);             // 6
+  r = r * 10 + sizeof(Narrow);
+  // 5
+  r = r * 10 + ((U8 *) & n.b - (U8 *) & n.a);
+  // 1
+  r = r * 10 + sizeof(Tail);
+  // 5
+  r = r * 10 + ((U8 *) & t.b - (U8 *) & t.a);
+  // 4
+  r = r * 1000 + sizeof(AfterArray);
+  // 1 + 64 + 4 + 32 + 8 = 109
+  r = r * 100 + ((U8 *) & a.subtype - (U8 *) & a.flag);
+  // 65
+  r = r * 1000 + ((U8 *) & a.on_event - (U8 *) & a.flag);
+  // 101
+  r = r * 10 + sizeof(Nest);
+  // 1 + 5 + 1 = 7
+  r = r * 10 + ((U8 *) & z.inner - (U8 *) & z.lead);
+  // 1
+  r = r * 10 + ((U8 *) & z.trail - (U8 *) & z.lead);
+  // 6
   return r;
 }

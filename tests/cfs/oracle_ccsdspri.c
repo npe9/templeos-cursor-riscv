@@ -5,7 +5,17 @@
  * byte for byte -- which is the only way to tell a translation bug from a compiler bug, since
  * both look identical from the outside. */
 #include <stdio.h>
+#include <stddef.h>
+#include <string.h>
 #include "cfe_msg.h"
+#include "cfe_fs.h"
+/* Module-private: the global, the two lock helpers and the two byte swappers. Not on the public
+ * include path, and included rather than redeclared because the struct's LAYOUT is part of what
+ * this transcript compares. */
+#include "cfe_fs_priv.h"
+/* CFE_FS_EarlyInit and CFE_FS_RunBackgroundFileDump are ES-facing, not app-facing: they live in
+ * core_private/cfe_fs_core_internal.h rather than cfe_fs.h. */
+#include "cfe_fs_core_internal.h"
 #include "cfe_sb.h"
 #include "target_objtab.h"
 #include "cfe_sbr.h"
@@ -20,6 +30,7 @@
  * what normally refers to it, by name, from the build system. */
 extern const Target_ObjectTable_t CFE_MSG_ModuleEntry;
 extern const Target_ObjectTable_t CFE_RESOURCEID_ModuleEntry;
+extern const Target_ObjectTable_t CFE_FS_ModuleEntry;
 
 /* Private to the SB module (declared in modules/sb/fsw/src/cfe_sb_priv.h, which is not on the
  * include path here and would drag in the rest of SB). Declared rather than included, because
@@ -104,6 +115,194 @@ CFE_SB_MsgId_Atom_t CFE_SBR_MsgIdHash(CFE_SB_MsgId_t MsgId);
  * translating (see docs/CFS_UPSTREAM_NOTES.md). Its sibling CFE_Config_GetVersionString, which
  * is its only in-tree caller, is properly declared in cfe_config.h. */
 void CFE_Config_GetMissionRevString(char *Buf, size_t Size, uint8 MissionRev, const char *LastOffcRel);
+
+
+/* =========================== cFE fs module ======================================================
+ * A SIMULATED FILE, identical on both sides of the oracle.
+ *
+ * fs is the first translated module that calls OSAL, and OSAL has a gate of its own (423
+ * transcript lines, its own stub backend). Linking the two together here would make this
+ * transcript depend on both at once and stop telling us which one moved. So both sides get the
+ * same tiny in-memory file instead, and this gate stays about fs.
+ *
+ * The injection flags exist because three of the five Meta->OnEvent call sites are error paths.
+ * A file that always succeeds would leave the function-pointer-member call -- the compiler
+ * feature this module needed -- exercised on two sites out of five by the transcript that is
+ * supposed to validate it. So the driver drives one create failure, one short header write and
+ * one short record write. */
+static unsigned char fs_data[256];
+static long          fs_len;           /* bytes written so far */
+static long          fs_pos;           /* current position */
+static unsigned int  fs_fd;            /* 0 is OS_OBJECT_ID_UNDEFINED */
+static int           fs_open_fail;     /* make OS_OpenCreate fail */
+/* fs_wr_left is the number of bytes the file will still accept, not a per-call cap. A per-call
+ * cap of 64 looked like it would make a record write fail and did not: the header write is 64
+ * and every record is 10, so each individual write still fit and the run reported COMPLETE. */
+static long          fs_wr_left;       /* < 0 = unlimited */
+static int           fs_mut_create, fs_mut_take, fs_mut_give, fs_wakeups;
+
+int32 OS_OpenCreate(osal_id_t *filedes, const char *path, int32 flags, int32 access_mode)
+{
+    (void)path; (void)flags; (void)access_mode;
+    if (fs_open_fail)
+    {
+        return OS_ERROR;
+    }
+    fs_fd    = 7;
+    *filedes = 7;
+    fs_len   = 0;
+    fs_pos   = 0;
+    return OS_SUCCESS;
+}
+
+int32 OS_close(osal_id_t filedes)
+{
+    (void)filedes;
+    fs_fd = 0;
+    return OS_SUCCESS;
+}
+
+int32 OS_read(osal_id_t filedes, void *buffer, size_t nbytes)
+{
+    long n = (long)nbytes;
+    (void)filedes;
+    if (n > fs_len - fs_pos)
+    {
+        n = fs_len - fs_pos;
+    }
+    if (n < 0)
+    {
+        n = 0;
+    }
+    memcpy(buffer, &fs_data[fs_pos], (size_t)n);
+    fs_pos += n;
+    return (int32)n;
+}
+
+int32 OS_write(osal_id_t filedes, const void *buffer, size_t nbytes)
+{
+    long n = (long)nbytes;
+    (void)filedes;
+    if (fs_wr_left >= 0)
+    {
+        if (n > fs_wr_left)
+        {
+            n = fs_wr_left;
+        }
+        fs_wr_left -= n;
+    }
+    if (fs_pos + n > (long)sizeof(fs_data))
+    {
+        n = (long)sizeof(fs_data) - fs_pos;
+    }
+    memcpy(&fs_data[fs_pos], buffer, (size_t)n);
+    fs_pos += n;
+    if (fs_pos > fs_len)
+    {
+        fs_len = fs_pos;
+    }
+    return (int32)n;
+}
+
+int32 OS_lseek(osal_id_t filedes, osal_offset_t offset, uint32 whence)
+{
+    (void)filedes; (void)whence;
+    fs_pos = offset;
+    return (int32)offset;
+}
+
+int32 OS_MutSemCreate(osal_id_t *sem_id, const char *sem_name, uint32 options)
+{
+    (void)sem_name; (void)options;
+    ++fs_mut_create;
+    *sem_id = 3;
+    return OS_SUCCESS;
+}
+
+int32 OS_MutSemTake(osal_id_t sem_id)
+{
+    (void)sem_id;
+    ++fs_mut_take;
+    return OS_SUCCESS;
+}
+
+int32 OS_MutSemGive(osal_id_t sem_id)
+{
+    (void)sem_id;
+    ++fs_mut_give;
+    return OS_SUCCESS;
+}
+
+int32 CFE_ES_GetAppID(CFE_ES_AppId_t *AppIdPtr)
+{
+    *AppIdPtr = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x4321));
+    return CFE_SUCCESS;
+}
+
+void CFE_ES_BackgroundWakeup(void)
+{
+    ++fs_wakeups;
+}
+
+uint32 CFE_PSP_GetSpacecraftId(void)
+{
+    return 0x5A5A;
+}
+
+/* The requester's two callbacks. Three records of ten bytes, with record 1 deliberately EMPTY --
+ * NASA's loop keeps going on a zero-size record, for holes in a table, and a getter that never
+ * returns 0 would not exercise that. */
+static unsigned char fs_rec[16];
+static int           fs_events;
+
+static bool fs_getdata(void *Meta, uint32 RecordNum, void **Buffer, size_t *BufSize)
+{
+    int i;
+    (void)Meta;
+    for (i = 0; i < 10; i++)
+    {
+        fs_rec[i] = (unsigned char)(0xA0 + RecordNum * 16 + i);
+    }
+    *Buffer  = fs_rec;
+    *BufSize = (RecordNum == 1) ? 0 : 10;
+    return RecordNum >= 3;
+}
+
+static void fs_onevent(void *Meta, CFE_FS_FileWriteEvent_t Event, int32 Status, uint32 RecordNum,
+                       size_t BlockSize, size_t Position)
+{
+    (void)Meta;
+    ++fs_events;
+    printf("fs_event ev=%d st=%ld rec=%lu blk=%lu pos=%lu\n", (int)Event, (long)Status,
+           (unsigned long)RecordNum, (unsigned long)BlockSize, (unsigned long)Position);
+}
+
+/* The file's bytes, so the big-endian conversion in WriteHeader is in the transcript rather than
+ * merely implied by a return value. */
+static void fs_dump(const char *tag, long n)
+{
+    long i;
+    printf("%s", tag);
+    for (i = 0; i < n; i++)
+    {
+        printf(" %02x", fs_data[i]);
+    }
+    printf("\n");
+}
+
+static void fs_hdr(const char *tag, const CFE_FS_Header_t *h)
+{
+    printf("%s ct=%08lx sub=%lu len=%lu sc=%lu pr=%lu app=%lu ts=%08lx tss=%08lx d=[%s]\n", tag,
+           (unsigned long)h->ContentType, (unsigned long)h->SubType, (unsigned long)h->Length,
+           (unsigned long)h->SpacecraftID, (unsigned long)h->ProcessorID,
+           (unsigned long)h->ApplicationID, (unsigned long)h->TimeSeconds,
+           (unsigned long)h->TimeSubSeconds, h->Description);
+}
+
+static void fs_parse(const char *tag, char *out, int32 rc)
+{
+    printf("%s rc=%ld [%s]\n", tag, (long)rc, out);
+}
 
 static void dump(const char *tag, CFE_MSG_Message_t *m)
 {
@@ -634,5 +833,329 @@ int main(void)
            (int)(CFE_MSG_ModuleEntry.EarlyInit == NULL), (int)(CFE_MSG_ModuleEntry.TaskMain == NULL),
            (int)(CFE_MSG_ModuleEntry.AppCleanupCb == NULL),
            (unsigned long)CFE_MSG_ModuleEntry.Priority, (unsigned long)CFE_MSG_ModuleEntry.StackSize);
+
+    /* --- cfe_fs: layout ---------------------------------------------------------------- */
+    /* sizeof and the offsets of every translated class, on both sides. check_padding.py already
+     * compares these against the host C compiler, but that is a model on the HolyC side; this
+     * puts the real compiled layout under the byte-identical transcript, which is stronger. */
+    /* CFE_FS_ParseContext_t is deliberately absent: it lives inside cfe_fs_api.c, so this
+     * driver cannot see it and a hand-written literal here would compare nothing. Its layout is
+     * under tools/cfs/check_padding.py, which lifts the typedef out of the .c and measures it. */
+    printf("fs_lay hdr=%zu meta=%zu ent=%zu cur=%zu dump=%zu glob=%zu\n",
+           sizeof(CFE_FS_Header_t), sizeof(CFE_FS_FileWriteMetaData_t),
+           sizeof(CFE_FS_BackgroundFileDumpEntry_t), sizeof(CFE_FS_CurrentFileState_t),
+           sizeof(CFE_FS_BackgroundFileDumpState_t), sizeof(CFE_FS_Global_t));
+    printf("fs_off pend=%zu name=%zu sub=%zu desc=%zu get=%zu ev=%zu\n",
+           offsetof(CFE_FS_FileWriteMetaData_t, IsPending),
+           offsetof(CFE_FS_FileWriteMetaData_t, FileName),
+           offsetof(CFE_FS_FileWriteMetaData_t, FileSubType),
+           offsetof(CFE_FS_FileWriteMetaData_t, Description),
+           offsetof(CFE_FS_FileWriteMetaData_t, GetData),
+           offsetof(CFE_FS_FileWriteMetaData_t, OnEvent));
+    printf("fs_off2 mut=%zu fdump=%zu req=%zu comp=%zu entries=%zu curr=%zu fd=%zu cred=%zu "
+           "recn=%zu fsz=%zu\n",
+           offsetof(CFE_FS_Global_t, SharedDataMutexId), offsetof(CFE_FS_Global_t, FileDump),
+           offsetof(CFE_FS_BackgroundFileDumpState_t, RequestCount),
+           offsetof(CFE_FS_BackgroundFileDumpState_t, CompleteCount),
+           offsetof(CFE_FS_BackgroundFileDumpState_t, Entries),
+           offsetof(CFE_FS_BackgroundFileDumpState_t, Current),
+           offsetof(CFE_FS_CurrentFileState_t, Fd), offsetof(CFE_FS_CurrentFileState_t, Credit),
+           offsetof(CFE_FS_CurrentFileState_t, RecordNum),
+           offsetof(CFE_FS_CurrentFileState_t, FileSize));
+
+    /* --- cfe_fs_priv.c ----------------------------------------------------------------- */
+    printf("fs_init rc=%ld create=%d mut=%lu\n", (long)CFE_FS_EarlyInit(), fs_mut_create,
+           (unsigned long)OS_ObjectIdToInteger(CFE_FS_Global.SharedDataMutexId));
+    CFE_FS_LockSharedData("drv");
+    CFE_FS_UnlockSharedData("drv");
+    printf("fs_lock take=%d give=%d\n", fs_mut_take, fs_mut_give);
+
+    /* --- cfe_fs_api.c: the default locations ------------------------------------------- */
+    /* Every category, including the two that have no mount point and the three that have no
+     * extension -- those return NULL, and a translation that returned "" instead would pass a
+     * test that only looked at the five real ones. */
+    {
+        int cat;
+        for (cat = 0; cat <= CFE_FS_FileCategory_MAX; cat++)
+        {
+            const char *mp = CFE_FS_GetDefaultMountPoint((CFE_FS_FileCategory_t)cat);
+            const char *ex = CFE_FS_GetDefaultExtension((CFE_FS_FileCategory_t)cat);
+            printf("fs_cat %d mp=[%s] ex=[%s]\n", cat, mp ? mp : "(null)", ex ? ex : "(null)");
+        }
+    }
+
+    /* --- the byte swappers ------------------------------------------------------------- */
+    {
+        uint32          u = 0x11223344;
+        CFE_FS_Header_t h;
+        CFE_FS_ByteSwapUint32(&u);
+        printf("fs_swap32 %08lx\n", (unsigned long)u);
+        memset(&h, 0, sizeof(h));
+        h.ContentType    = 0x01020304;
+        h.SubType        = 0x05060708;
+        h.Length         = 0x090a0b0c;
+        h.SpacecraftID   = 0x0d0e0f10;
+        h.ProcessorID    = 0x11121314;
+        h.ApplicationID  = 0x15161718;
+        h.TimeSeconds    = 0x191a1b1c;
+        h.TimeSubSeconds = 0x1d1e1f20;
+        CFE_FS_ByteSwapCFEHeader(&h);
+        fs_hdr("fs_swaphdr", &h);
+        CFE_FS_ByteSwapCFEHeader(&h);
+        fs_hdr("fs_swapback", &h);
+    }
+
+    /* --- InitHeader / WriteHeader / ReadHeader / SetTimestamp -------------------------- */
+    {
+        CFE_FS_Header_t h;
+        CFE_FS_Header_t rb;
+        int32           rc;
+
+        CFE_FS_InitHeader(NULL, "x", 1);          /* both NULL paths log and return */
+        CFE_FS_InitHeader(&h, NULL, 1);
+        /* A description LONGER than the field, so strncpy's no-terminator edge is in the
+         * transcript: 31 chars plus the NUL the prior memset left. */
+        CFE_FS_InitHeader(&h, "0123456789abcdefghijklmnopqrstuvwxyz", CFE_FS_SubType_ES_SYSLOG);
+        fs_hdr("fs_inithdr", &h);
+
+        printf("fs_wrhdr_null rc=%ld\n", (long)CFE_FS_WriteHeader(7, NULL));
+        printf("fs_rdhdr_null rc=%ld\n", (long)CFE_FS_ReadHeader(NULL, 7));
+
+        fs_wr_left = -1;
+        fs_fd        = 7;
+        fs_len       = 0;
+        fs_pos       = 0;
+        rc           = CFE_FS_WriteHeader(7, &h);
+        printf("fs_wrhdr rc=%ld len=%ld\n", (long)rc, fs_len);
+        /* The header on DISK is big endian; the caller's copy is restored to native. */
+        fs_dump("fs_bytes", 32);
+        fs_hdr("fs_after", &h);
+
+        rc = CFE_FS_ReadHeader(&rb, 7);
+        printf("fs_rdhdr rc=%ld\n", (long)rc);
+        fs_hdr("fs_readback", &rb);
+
+        /* A short read: truncate the file so OS_read cannot deliver 64 bytes. */
+        fs_len = 20;
+        printf("fs_rdhdr_short rc=%ld\n", (long)CFE_FS_ReadHeader(&rb, 7));
+
+        /* SetTimestamp seeks to the byte offset of TimeSeconds, which NASA computes from the
+         * struct with two char * casts -- without them C scales by sizeof(uint32) and gets 6. */
+        fs_len = 64;
+        fs_pos = 0;
+        {
+            CFE_TIME_SysTime_t ts;
+            ts.Seconds    = 0x01234567;
+            ts.Subseconds = 0x89abcdef;
+            printf("fs_setts rc=%ld pos=%ld\n", (long)CFE_FS_SetTimestamp(7, ts), fs_pos);
+            fs_dump("fs_tsbytes", 32);
+            /* And the failure path: a write budget of 4 makes it a short write. */
+            fs_wr_left = 4;
+            printf("fs_setts_short rc=%ld\n", (long)CFE_FS_SetTimestamp(7, ts));
+            fs_wr_left = -1;
+        }
+    }
+
+    /* --- ParseInputFileNameEx --------------------------------------------------------- */
+    {
+        char o[32];
+        printf("fs_parse_nullbuf rc=%ld\n",
+               (long)CFE_FS_ParseInputFileNameEx(NULL, NULL, 32, 0, "x", "/cf", ".bin"));
+        printf("fs_parse_zerosz rc=%ld\n",
+               (long)CFE_FS_ParseInputFileNameEx(o, NULL, 0, 0, "x", "/cf", ".bin"));
+        /* no input at all: NULL buffer AND NULL default, so the loop never runs */
+        fs_parse("fs_parse_noinput", o,
+                 CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, NULL, "/cf", ".bin"));
+        /* bare name: default path and default extension both supplied */
+        fs_parse("fs_parse_bare", o,
+                 CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "log", "/cf", ".bin"));
+        /* name with its own extension: the default extension is not used */
+        fs_parse("fs_parse_ext", o,
+                 CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "log.txt", "/cf", ".bin"));
+        /* name with its own path: the default path is not used */
+        fs_parse("fs_parse_path", o,
+                 CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "/ram/log", "/cf", ".bin"));
+        /* duplicate separators, which the separator component collapses from both sides */
+        fs_parse("fs_parse_dup", o,
+                 CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "/ram//sub///log..txt", "/cf",
+                                             ".bin"));
+        /* a multi-level path: the pathname component repeats until the LAST separator */
+        fs_parse("fs_parse_deep", o,
+                 CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "/a/b/c/log.txt", "/cf",
+                                             ".bin"));
+        /* no default extension and none in the input: the parse ends early */
+        fs_parse("fs_parse_noext", o,
+                 CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "log", "/cf", NULL));
+        /* no default path and none in the input */
+        fs_parse("fs_parse_nopath", o,
+                 CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "log", NULL, ".bin"));
+        /* an EMPTY filename: the status stays INVALID_PATH even though a path was produced */
+        fs_parse("fs_parse_empty", o,
+                 CFE_FS_ParseInputFileNameEx(o, NULL, sizeof(o), 0, "/ram/", "/cf", ".bin"));
+        /* too long for the output buffer: FNAME_TOO_LONG, and the result is still terminated */
+        fs_parse("fs_parse_long", o,
+                 CFE_FS_ParseInputFileNameEx(o, NULL, 12, 0, "/ram/averylongfilename.txt", "/cf",
+                                             ".bin"));
+        /* the InputBuffer form, which is NOT null terminated: 8 bytes of a longer buffer */
+        fs_parse("fs_parse_buf", o,
+                 CFE_FS_ParseInputFileNameEx(o, "/ram/ab.cdEXTRA", sizeof(o), 10, "unused", "/cf",
+                                             ".bin"));
+        /* an empty InputBuffer falls back to DefaultInput */
+        fs_parse("fs_parse_bufempty", o,
+                 CFE_FS_ParseInputFileNameEx(o, "", sizeof(o), 4, "fallback", "/cf", ".bin"));
+
+        /* the category wrapper, for every category */
+        {
+            int cat;
+            for (cat = 0; cat <= CFE_FS_FileCategory_MAX; cat++)
+            {
+                int32 rc = CFE_FS_ParseInputFileName(o, "nm", sizeof(o),
+                                                     (CFE_FS_FileCategory_t)cat);
+                printf("fs_parsecat %d rc=%ld [%s]\n", cat, (long)rc, o);
+            }
+        }
+    }
+
+    /* --- ExtractFilenameFromPath ------------------------------------------------------ */
+    {
+        char o[80];
+        int32 rc;
+        printf("fs_xf_null rc=%ld\n", (long)CFE_FS_ExtractFilenameFromPath(NULL, o));
+        printf("fs_xf_null2 rc=%ld\n", (long)CFE_FS_ExtractFilenameFromPath("/a/b", NULL));
+        o[0] = 0;
+        rc   = CFE_FS_ExtractFilenameFromPath("/cf/apps/ci_lab.so", o);
+        printf("fs_xf rc=%ld [%s]\n", (long)rc, o);
+        /* no separator at all */
+        o[0] = 0;
+        rc   = CFE_FS_ExtractFilenameFromPath("bare.txt", o);
+        printf("fs_xf_bare rc=%ld [%s]\n", (long)rc, o);
+        /* the ONLY separator is at index 0, so DirMarkIdx == 0 and NASA's test is > 0:
+         * "/name" is rejected as INVALID_PATH rather than yielding "name" */
+        o[0] = 0;
+        rc   = CFE_FS_ExtractFilenameFromPath("/name", o);
+        printf("fs_xf_root rc=%ld [%s]\n", (long)rc, o);
+        /* a trailing separator: an empty filename, which is still CFE_SUCCESS */
+        o[0] = 0;
+        rc   = CFE_FS_ExtractFilenameFromPath("/a/b/", o);
+        printf("fs_xf_trail rc=%ld [%s]\n", (long)rc, o);
+        /* the tail is OS_MAX_PATH_LEN or longer: FNAME_TOO_LONG */
+        o[0] = 0;
+        rc   = CFE_FS_ExtractFilenameFromPath(
+            "/x/0123456789012345678901234567890123456789012345678901234567890123", o);
+        printf("fs_xf_long rc=%ld [%s]\n", (long)rc, o);
+    }
+
+    /* --- the background file dump queue ----------------------------------------------- */
+    {
+        CFE_FS_FileWriteMetaData_t m;
+        CFE_FS_FileWriteMetaData_t m2;
+        int                        i;
+
+        memset(&m, 0, sizeof(m));
+        printf("fs_req_null rc=%ld\n", (long)CFE_FS_BackgroundFileDumpRequest(NULL));
+        printf("fs_pend_null %d\n", (int)CFE_FS_BackgroundFileDumpIsPending(NULL));
+        /* GetData and OnEvent must both be set, and they are checked together */
+        printf("fs_req_nogetdata rc=%ld\n", (long)CFE_FS_BackgroundFileDumpRequest(&m));
+        m.GetData = fs_getdata;
+        printf("fs_req_noonevent rc=%ld\n", (long)CFE_FS_BackgroundFileDumpRequest(&m));
+        m.OnEvent = fs_onevent;
+        /* then a non-empty filename */
+        printf("fs_req_noname rc=%ld\n", (long)CFE_FS_BackgroundFileDumpRequest(&m));
+        strncpy(m.FileName, "/ram/dump.bin", sizeof(m.FileName) - 1);
+        strncpy(m.Description, "a test dump", sizeof(m.Description) - 1);
+        m.FileSubType = CFE_FS_SubType_ES_QUERYALL;
+        printf("fs_req rc=%ld pend=%d wake=%d\n", (long)CFE_FS_BackgroundFileDumpRequest(&m),
+               (int)CFE_FS_BackgroundFileDumpIsPending(&m), fs_wakeups);
+        /* a second request for the SAME object is rejected while it is pending */
+        printf("fs_req_again rc=%ld\n", (long)CFE_FS_BackgroundFileDumpRequest(&m));
+
+        /* run it: open, header, three records with a hole, EOF, complete event */
+        fs_open_fail = 0;
+        fs_wr_left = -1;
+        fs_fd        = 0;
+        fs_len       = 0;
+        fs_pos       = 0;
+        fs_events    = 0;
+        for (i = 0; i < 4; i++)
+        {
+            /* 8 ms of elapsed time is 80 bytes of credit: the 64-byte header plus two
+             * 10-byte records overruns it, so the first call cannot reach EOF and the
+             * multi-call path is in the transcript rather than assumed. */
+            bool more = CFE_FS_RunBackgroundFileDump(8, NULL);
+            printf("fs_run%d more=%d fd=%lu cred=%ld rec=%lu sz=%lu pend=%d comp=%lu\n", i,
+                   (int)more, (unsigned long)OS_ObjectIdToInteger(CFE_FS_Global.FileDump.Current.Fd),
+                   (long)CFE_FS_Global.FileDump.Current.Credit,
+                   (unsigned long)CFE_FS_Global.FileDump.Current.RecordNum,
+                   (unsigned long)CFE_FS_Global.FileDump.Current.FileSize,
+                   (int)CFE_FS_BackgroundFileDumpIsPending(&m),
+                   (unsigned long)CFE_FS_Global.FileDump.CompleteCount);
+        }
+        fs_dump("fs_filebytes", 32);
+        printf("fs_events %d\n", fs_events);
+
+        /* the CREATE failure path */
+        memset(&m2, 0, sizeof(m2));
+        m2.GetData = fs_getdata;
+        m2.OnEvent = fs_onevent;
+        strncpy(m2.FileName, "/ram/nope.bin", sizeof(m2.FileName) - 1);
+        strncpy(m2.Description, "create fails", sizeof(m2.Description) - 1);
+        printf("fs_req2 rc=%ld\n", (long)CFE_FS_BackgroundFileDumpRequest(&m2));
+        fs_open_fail                           = 1;
+        CFE_FS_Global.FileDump.Current.Credit   = 0;
+        printf("fs_run_createfail more=%d pend=%d comp=%lu\n",
+               (int)CFE_FS_RunBackgroundFileDump(1000, NULL),
+               (int)CFE_FS_BackgroundFileDumpIsPending(&m2),
+               (unsigned long)CFE_FS_Global.FileDump.CompleteCount);
+        fs_open_fail = 0;
+
+        /* the HEADER WRITE failure path: a 4-byte budget makes WriteHeader return 4, not 64 */
+        printf("fs_req3 rc=%ld\n", (long)CFE_FS_BackgroundFileDumpRequest(&m2));
+        fs_wr_left                            = 4;
+        CFE_FS_Global.FileDump.Current.Credit = 0;
+        printf("fs_run_hdrfail more=%d pend=%d\n", (int)CFE_FS_RunBackgroundFileDump(1000, NULL),
+               (int)CFE_FS_BackgroundFileDumpIsPending(&m2));
+
+        /* the RECORD WRITE failure path: the header fits, a record does not */
+        printf("fs_req4 rc=%ld\n", (long)CFE_FS_BackgroundFileDumpRequest(&m2));
+        fs_wr_left                            = 64;
+        CFE_FS_Global.FileDump.Current.Credit = 0;
+        printf("fs_run_recfail more=%d pend=%d\n", (int)CFE_FS_RunBackgroundFileDump(1000, NULL),
+               (int)CFE_FS_BackgroundFileDumpIsPending(&m2));
+        fs_wr_left = -1;
+
+        /* nothing queued: the lock is taken, Curr stays NULL, and it returns false */
+        printf("fs_run_idle more=%d\n", (int)CFE_FS_RunBackgroundFileDump(1000, NULL));
+
+        /* the credit CAP: a huge elapsed time must not bank more than MAX_CREDIT */
+        CFE_FS_Global.FileDump.Current.Credit = 0;
+        CFE_FS_RunBackgroundFileDump(100000, NULL);
+        printf("fs_credit_cap %ld\n", (long)CFE_FS_Global.FileDump.Current.Credit);
+
+        /* the queue FULL path. The check is RequestCount + 1 == CompleteCount + 4, so three
+         * objects can be queued and the fourth is refused. */
+        {
+            static CFE_FS_FileWriteMetaData_t q[5];
+            int k;
+            for (k = 0; k < 5; k++)
+            {
+                memset(&q[k], 0, sizeof(q[k]));
+                q[k].GetData = fs_getdata;
+                q[k].OnEvent = fs_onevent;
+                q[k].FileName[0] = 'q';
+                q[k].FileName[1] = (char)('0' + k);
+                printf("fs_qfill%d rc=%ld\n", k, (long)CFE_FS_BackgroundFileDumpRequest(&q[k]));
+            }
+        }
+        printf("fs_lockcount take=%d give=%d\n", fs_mut_take, fs_mut_give);
+    }
+
+    /* --- cfe_fs_objtab.c -------------------------------------------------------------- */
+    /* The first registration entry here with a non-NULL hook: FS has no task but does have
+     * global data, so EarlyInit is set and TaskMain is not. */
+    printf("fs_objtab %s %d %d %d %lu %lu\n", CFE_FS_ModuleEntry.Name,
+           (int)(CFE_FS_ModuleEntry.EarlyInit == NULL), (int)(CFE_FS_ModuleEntry.TaskMain == NULL),
+           (int)(CFE_FS_ModuleEntry.AppCleanupCb == NULL),
+           (unsigned long)CFE_FS_ModuleEntry.Priority, (unsigned long)CFE_FS_ModuleEntry.StackSize);
     return 0;
 }
+
