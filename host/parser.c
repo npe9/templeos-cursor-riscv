@@ -955,6 +955,7 @@ static void ApplyCast(Compiler *cc, U8 cast_type, bool cast_ptr, CHashClass *cls
   // Multi-star casts keep their depth: `*(U8 **)` loads an 8-byte U8*, not a U8. Collapsing to
   // depth 1 made host-slot / nested-pointer loads look like they needed an asm trampoline.
   cc->expr_ptr_depth = cast_ptr ? (cc->last_ptr_depth ? cc->last_ptr_depth : 1) : 0;
+  cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
   cc->expr_pointee = cast_ptr ? cast_type : 0;
   if (cast_ptr && cls && (cls->type & HTT_CLASS) && !(cls->type & HTT_INTERNAL_TYPE)) cc->last_expr_class = cls;
 }
@@ -1074,10 +1075,12 @@ static bool EmitDefaultArg(Compiler *cc, CHashFun *fn, I64 i) {
 static void SetCallResultPtr(Compiler *cc, CHashFun *func) {
   if (func && func->ptr_stars_cnt > 0 && func->ret_pointed_to) {
     cc->expr_ptr_depth = (U8)func->ptr_stars_cnt;
+    cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
     cc->expr_pointee = func->ret_pointed_to;
     cc->call_ptr_just_loaded = true;
   } else {
     cc->expr_ptr_depth = 0;
+    cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
   }
 }
 
@@ -1270,6 +1273,7 @@ static bool ParsePrimary(Compiler *cc) {
     // ...but a value of type U8 *: `"abc"[i]` and `*("abc"+2)` index bytes. Without this the
     // subscript fell to its I64/8 default and read 8 bytes at 8*i (a hex-digit table printed 't').
     cc->expr_ptr_depth = 1;
+    cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
     cc->expr_pointee = RT_U8;
     cc->str_lit_just_loaded = true;
     cc->last_global_var = NULL;
@@ -1845,7 +1849,22 @@ static bool ParsePrimary(Compiler *cc) {
     }
     LexNext(cc);  // Skip '('
     if (!ParseExpression(cc)) return false;
+    // A parenthesised expression is a VALUE, so the container symbol must not survive it --
+    // but its ELEMENT TYPE has to, or a following subscript has nothing to scale by and falls
+    // back to 8 bytes. Measured before this: `(m)[1]` on a `U8 m[16]` read EIGHT bytes from
+    // m+8, and `(m)[1] = x` stored one byte AT m+8 -- a silent out-of-bounds write on any U8
+    // array shorter than 16. Same mechanism as HOLYC_STRUCT_LIMITS.md #4, where
+    // `(&tbl[4])[2]` on a 16-byte record scaled by 8 and landed one slot low; that one took
+    // out every OS_global_*_table macro in the OSAL port.
+    { U8 pe = 0; I64 pd = 0; I64 esz = PtrElemInfo(cc, &pe, &pd);
+      if (esz > 0 && pd > 0) {
+        cc->expr_pointee = pe;
+        cc->expr_ptr_depth = (U8)pd;
+        cc->expr_elem_size = esz;
+      } }
     cc->last_var_symbol = NULL;
+    cc->last_global_var = NULL;
+    cc->last_member = NULL;
     return LexExpect(cc, ')');
   }
   
@@ -1936,6 +1955,15 @@ static bool ParseUnary(Compiler *cc) {
     else if (cc->last_member) addr_pointee = cc->last_member->pointed_to_type ? RT_I64 : cc->last_member->raw_type;
     cc->last_expr_type = RT_I64;   // `&x` is a pointer (address), never F64 — else `I64 a=&x` converts it
     cc->expr_ptr_depth = 1;
+    // NOT set from last_expr_class here, though it is tempting: HOLYC_STRUCT_LIMITS.md #4
+    // wants `(&tbl[4])[2]` to step by the record size, and last_expr_class does name the
+    // element after the subscript. But it names the POINTEE just as readily -- after
+    // `h.arr[1]` where arr is `CBig *arr[4]`, last_expr_class is CBig while the address
+    // points at a POINTER -- and using it made `&h.arr[1] - &h.arr[0]` scale by 64 and
+    // answer 0. Measured: tests/exec/cases/e_member_ptr_array.hc returned 4 instead of 0x3c.
+    // The `&` site cannot tell the two apart; whatever closes #4 has to carry the size down
+    // from the subscript, not reconstruct it here.
+    cc->expr_elem_size = 0;
     cc->expr_pointee = addr_pointee;
     cc->last_var_symbol = NULL;
     cc->last_global_var = NULL;
@@ -2005,6 +2033,7 @@ static bool ParseUnary(Compiler *cc) {
     cc->last_var_symbol = NULL;
     if (depth > 1) { cc->last_global_var = NULL; cc->last_member = NULL; }
     cc->expr_ptr_depth = (U8)(depth - 1);
+    cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
     cc->expr_pointee = pointee;
     return true;
   }
@@ -2137,6 +2166,7 @@ static bool ParsePostfix(Compiler *cc) {
   // `(**ppb)[i]` keeps the depth the parens computed; a pointer-returning call keeps
   // its pointee so `*Fn()` can size the deref.
   if (!is_paren_expr && !cc->call_ptr_just_loaded && !cc->str_lit_just_loaded) cc->expr_ptr_depth = 0;   // a literal is a U8 * value too
+  cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
   while (true) {
     if (cc->lex.token == '(') {
       // HolyC postfix cast: expr(type) / expr(type *), e.g. "0123456789ABCDEF"(U8 *)[i].
@@ -2183,6 +2213,9 @@ static bool ParsePostfix(Compiler *cc) {
       // ...and the expression's own pointer typing, for a base with no name behind it (a string
       // literal, a cast, a call): the index expression overwrites these too.
       U8 saved_ptr_depth = cc->expr_ptr_depth, saved_pointee = cc->expr_pointee;
+      // …and the element SIZE, which the pointee TYPE alone cannot give for a class. Only the
+      // parenthesised-base and address-of paths set it; see the comments there.
+      I64 saved_elem_size = cc->expr_elem_size;
       // Element type/size: through a pointer it is the pointee (class or primitive); for an
       // array it is the declared element. The final DEREF is typed accordingly.
       U8 elem_type = RT_I64;
@@ -2214,11 +2247,12 @@ static bool ParsePostfix(Compiler *cc) {
         if (elem_size <= 0) elem_size = 8;
         if (mb->ndims > 1 && cc->subscript_level < mb->ndims - 1)
           elem_size = mb->dim_stride[cc->subscript_level];
-      } else if (!saved_symbol && !saved_global && !saved_member && saved_ptr_depth == 1 && saved_pointee) {
+      } else if (!saved_symbol && !saved_global && !saved_member && saved_ptr_depth == 1 &&
+                 (saved_pointee || saved_elem_size > 0)) {
         // no name behind the base -- a string literal, a cast, a call result typed as a pointer:
         // the element is the expression's pointee
         elem_type = saved_pointee;
-        elem_size = PrimitiveTypeSize(elem_type);
+        elem_size = saved_elem_size > 0 ? saved_elem_size : PrimitiveTypeSize(elem_type);
         if (elem_size <= 0) elem_size = 8;
         elem_type = ScalarTypeForSize(elem_type, elem_size);
       } else if (saved_global) {
@@ -2313,11 +2347,13 @@ static bool ParsePostfix(Compiler *cc) {
         if (sdepth > 1) {
           cc->last_var_symbol = NULL; cc->last_global_var = NULL; cc->last_member = NULL;
           cc->expr_ptr_depth = (U8)(sdepth - 1); cc->expr_pointee = spointee;
+          cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
         } else {
           // A subscript yielded a scalar value: it is no longer the container variable, so pointer
           // arithmetic and member-container logic must not see the array/pointer symbol.
           cc->last_var_symbol = NULL; cc->last_global_var = NULL; cc->last_member = NULL;
           cc->expr_ptr_depth = 0;
+          cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
         }
       }
       
@@ -2643,6 +2679,9 @@ static I64 PtrElemInfo(Compiler *cc, U8 *pointee, I64 *depth) {
   if (cc->expr_ptr_depth) {
     *pointee = cc->expr_pointee; *depth = cc->expr_ptr_depth;
     if (cc->expr_ptr_depth > 1) return 8;
+    // An explicit element size wins: a pointer to a CLASS has no primitive size to look up,
+    // and PrimitiveTypeSize would answer 8 for a 16-byte record.
+    if (cc->expr_elem_size > 0) return cc->expr_elem_size;
     return PrimitiveTypeSize(cc->expr_pointee ? cc->expr_pointee : RT_I64);
   }
   return 0;
@@ -2658,6 +2697,7 @@ static bool ParseAdd(Compiler *cc) {
     // Clear stale pointer-tracking so PtrElemInfo(right) reflects only the right operand
     // (an integer literal sets none of these, so it must not inherit the left's pointer state).
     cc->last_var_symbol = NULL; cc->last_global_var = NULL; cc->last_member = NULL; cc->expr_ptr_depth = 0;
+    cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
     LexNext(cc);
     if (!ParseBitwiseOr(cc)) return false;
     U8 rt = cc->last_expr_type;
@@ -2668,15 +2708,18 @@ static bool ParseAdd(Compiler *cc) {
       ICAdd(cc, op == '+' ? IC_ADD : IC_SUB, 0, RT_I64);
       cc->last_var_symbol = NULL; cc->last_global_var = NULL; cc->last_member = NULL;
       cc->expr_ptr_depth = (U8)ldepth; cc->expr_pointee = lpointee;
+      cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
       cc->last_expr_type = RT_I64;
     } else if (lsz > 0 && rsz > 0 && op == '-' && lt != RT_F64 && rt != RT_F64) {
       ICAdd(cc, IC_SUB, 0, RT_I64);
       if (lsz > 1) { ICAdd(cc, IC_IMM_I64, lsz, RT_I64); ICAdd(cc, IC_DIV, 0, RT_I64); }
       cc->last_var_symbol = NULL; cc->last_global_var = NULL; cc->last_member = NULL;
       cc->expr_ptr_depth = 0; cc->last_expr_type = RT_I64;
+      cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
     } else {
       EmitBinaryOp(cc, op == '+' ? IC_ADD : IC_SUB, op == '+' ? IC_FADD : IC_FSUB, lt, rt, false);
       if (lsz == 0 && rsz > 0 && op == '+') { cc->expr_ptr_depth = (U8)rdepth; cc->expr_pointee = rpointee; }
+      cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
     }
   }
   return true;
@@ -3025,6 +3068,7 @@ static bool ParseAssignment(Compiler *cc) {
     cc->last_global_var = NULL;
     cc->last_member = NULL;
     cc->expr_ptr_depth = 0;
+    cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
     if (!ParseAssignment(cc)) return false;
     if (store_type == RT_F64 && cc->last_expr_type != RT_F64) ICAdd(cc, IC_TO_F64, 0, RT_F64);
     else if (store_type != RT_F64 && cc->last_expr_type == RT_F64) ICAdd(cc, IC_TO_I64, 0, RT_I64);

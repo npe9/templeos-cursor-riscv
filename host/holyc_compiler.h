@@ -549,6 +549,11 @@ typedef struct {
   U8 last_ptr_depth;        // stars seen by the last ParseType / declarator
   U8 expr_ptr_depth;        // after a deref: remaining pointer levels of the value (0 = none known)
   U8 expr_pointee;          // …and its base type
+  // …and its ELEMENT SIZE in bytes, when the base type alone cannot give it (a pointer to a
+  // class). PtrElemInfo prefers this over PrimitiveTypeSize(expr_pointee). 0 = not known.
+  // Needed because parenthesising a base throws the container symbol away, and without the
+  // size a following subscript falls back to 8 — see HOLYC_STRUCT_LIMITS.md #4.
+  I64 expr_elem_size;
   
   // Compiler flags (match original CCF_* flags)
   I64 flags;  // CCF_RAX, CCF_ARRAY, CCF_PAREN, etc.

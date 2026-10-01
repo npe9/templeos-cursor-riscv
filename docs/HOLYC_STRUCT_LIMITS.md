@@ -79,8 +79,36 @@ file-scope array and that is what the transcript uses.
     SLICE[2].a   -> 5      WRONG, and silently so
 
 Taking the base into a local variable first is correct; indexing the parenthesised expression
-directly is not. The mechanism is not characterised here — only the measurement, which is
-reproducible with the snippet above.
+directly is not.
+
+**The mechanism is now known, and half of it is fixed.** Parenthesising a base threw away the
+container symbol, and with it the ELEMENT SIZE, so `PtrElemInfo` fell back to 8 bytes. On a
+16-byte record that is half a step, which is exactly the "one slot low" above. The same fallback
+made a much simpler case silently wrong:
+
+    U8 m[16];
+    (m)[1]        read EIGHT bytes from m+8, not one byte from m+1
+    (m)[1] = x    stored one byte AT m+8 — out of bounds on any U8 array shorter than 16
+
+That half is FIXED: `cc->expr_elem_size` carries the element size across the parentheses, and
+`tests/exec/cases/e_paren_base_subscript.hc` pins it for `U8`, `U16`, a local pointer, and both
+the read and the write. It matters beyond the snippet, because a function-like macro that
+indexes its argument produces exactly that shape — OSAL's
+
+    #define OS_CPUSET_SET(cpu, cpusetptr) ... (cpusetptr)->affinity_mask[(cpu) / 8] |= ...
+
+is one `->member` away from it, and a hand-written `(p)[(cpu)/8]` form is not. (NASA's own macro
+goes through `->affinity_mask`, which was never affected; this was found by probing it, not by
+it failing.)
+
+The CLASS half — `(&tbl[4])[2]` where the element is a 16-byte record — is still wrong, still
+one slot low, and the obvious fix is not the fix. Setting the element size at the `&` site from
+`cc->last_expr_class` looks right and is not: after `h.arr[1]` where `arr` is `CBig *arr[4]`,
+`last_expr_class` is `CBig` while the address points at a POINTER, and taking the class size
+there made `&h.arr[1] - &h.arr[0]` scale by 64 and answer 0.
+`tests/exec/cases/e_member_ptr_array.hc` returned 4 instead of 0x3c and said so. The `&` site
+cannot tell the two cases apart; whatever closes this has to carry the size down from the
+subscript rather than reconstruct it afterwards. The workaround below stands until then.
 
 This is how OSAL's `OS_OBJECT_TABLE_GET(OS_global_count_sem_table, token)` went wrong. That macro
 expands to `&tbl[OS_ObjectIndexFromToken(&tok)]` where the table itself is
@@ -218,3 +246,26 @@ The failure was loud but only at the gate, not at the compiler: the first attemp
 `U8 _pad0[4]` and left the 42 rows alone, so the string pointer landed in the padding and
 `OS_StatusToString` returned `OS_UNKNOWN(-15)` for every code in the table. Four transcript
 lines, and the parse of the initializer had silently taken the second element as `_pad0`.
+
+## 9. `sizeof` of a dereference or a member reached through a pointer — OPEN
+
+```
+sizeof(*p)                  parse error
+sizeof(Hdr->Description)    parse error
+sizeof(h.Description)       works
+sizeof(CFE_FS_Header_t)     works
+```
+
+So it is the `*` and the `->`, not `sizeof` itself. The dot form on a value is fine.
+
+This one is loud when it is at the top level of a file and silent-ish when it is inside an
+include: the error reported is the generic `parse error` at `0:1` of the OUTERMOST file, with no
+line number anywhere near the construct. It cost a bisect twice — once on
+`StrNCpy(Hdr->Description, ..., sizeof(Hdr->Description) - 1)` in `cfe_fs_api.HC`, and again on
+`MemSet(cpusetptr->affinity_mask, 0, sizeof(cpusetptr->affinity_mask))` in OSAL's cpu-set
+helpers, where the whole of `cfe_ta_task.HC` appeared to be unparseable because one line four
+includes deeper was.
+
+cFS writes both forms constantly, so the translation names the type or the constant instead and
+says so at each site. `check_padding.py` is what keeps the named constant and the real size the
+same thing.
