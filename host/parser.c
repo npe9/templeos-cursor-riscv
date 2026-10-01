@@ -716,6 +716,95 @@ static bool ParsePostfix(Compiler *cc);
 static I64 CEOr(Compiler *cc, I64 dollar, bool *ok);
 static bool ParseUnary(Compiler *cc);
 static bool ParseGlobalVariable(Compiler *cc, U8 var_type, char *var_name);
+// A `static` LOCAL becomes a global, because HolyC has no function-scoped storage. The global
+// hash table is keyed by the bare name, so when a SECOND function declares a static of the same
+// name, ParseGlobalVariable finds the first one's entry, REUSES it, and re-callocs its storage.
+// The first function's code has already been emitted with the old host address, and
+// AOTGlobalByAddr (compiler.c) resolves a global-address immediate by walking the table and
+// asking which entry's [data_addr, data_addr+size) contains it -- so that address now belongs to
+// nothing and the immediate is emitted as literally 0. Measured:
+//
+//     U0 A() { static I64 n; n++;     }
+//     U0 B() { static I64 n; n += 10; }
+//       -> li a0,0 ; ld a0,0(a0)  -> load-fault at address 0
+//
+// It is not hypothetical and not rare: every cFS module's dispatcher caches its message ids in
+// `static CFE_SB_MsgId_t CMD_MID, SEND_HK_MID`, so the second translated dispatcher broke the
+// first. A FILE-SCOPE global of the same name was hijacked the same way, which is the same bug
+// one step further out. docs/HOLYC_STRUCT_LIMITS.md #12.
+//
+// SO THE SCOPING IS MADE REAL, in two halves. At the declaration, whatever the bare name means
+// is UNLINKED and remembered, so ParseGlobalVariable always builds a FRESH object -- it never
+// re-aims an existing one. When the next function definition starts, the statics of the previous
+// one are RETIRED: each is re-added under a unique key (so it stays in the table, and therefore
+// stays resolvable by address, laid out and initialised) and whatever it displaced is put back
+// under the bare name. HolyC has no nested functions, so "the next function definition" is the
+// one place this has to happen, rather than the thirteen exits ParseFunction has.
+//
+// What this does NOT do: retire the last function's statics, because nothing follows them. Their
+// bare names stay visible to file-scope code after that function, which is wrong but harmless --
+// the object is in the table and resolves.
+typedef struct {
+  CHashGlblVar *g;          // the static's own entry, currently under the bare name
+  CHashEntry *displaced;    // what the bare name meant before, to be put back
+  char *name;
+} CFnStatic;
+static CFnStatic *fn_statics = NULL;
+static int fn_statics_n = 0, fn_statics_cap = 0;
+
+// Take the bare name out of the table so the declaration cannot reuse what is there.
+static CHashEntry *StashForFunctionStatic(Compiler *cc, const char *var_name) {
+  if (!cc->hash_table || !var_name) return NULL;
+  return HashRemove(cc->hash_table, var_name, HTT_GLBL_VAR);
+}
+
+// Remember the entry the declaration just created, and what it displaced.
+static void RecordFunctionStatic(Compiler *cc, const char *var_name, CHashEntry *displaced) {
+  if (!cc->hash_table || !var_name) return;
+  CHashGlblVar *g = (CHashGlblVar *)HashFind(var_name, cc->hash_table, HTT_GLBL_VAR);
+  if (!g) {   // the declaration failed; put back what was there and stop
+    if (displaced) { displaced->next = NULL; HashAdd(displaced, cc->hash_table); }
+    return;
+  }
+  g->flags |= GVF_FN_STATIC;
+  if (fn_statics_n == fn_statics_cap) {
+    int ncap = fn_statics_cap ? fn_statics_cap * 2 : 16;
+    CFnStatic *nv = (CFnStatic *)realloc(fn_statics, (size_t)ncap * sizeof(CFnStatic));
+    if (!nv) {   // cannot track it: leave the name as it is rather than lose the displaced entry
+      if (displaced) { displaced->next = NULL; HashAdd(displaced, cc->hash_table); }
+      return;
+    }
+    fn_statics = nv;
+    fn_statics_cap = ncap;
+  }
+  fn_statics[fn_statics_n].g = g;
+  fn_statics[fn_statics_n].displaced = displaced;
+  fn_statics[fn_statics_n].name = strdup(var_name);
+  fn_statics_n++;
+}
+
+// Called when the next function definition begins: give each of the previous function's statics
+// a unique key and restore whatever its bare name was hiding.
+static void RetireFunctionStatics(Compiler *cc) {
+  static int seq = 0;
+  if (!cc->hash_table) { fn_statics_n = 0; return; }
+  for (int i = fn_statics_n - 1; i >= 0; i--) {
+    CFnStatic *r = &fn_statics[i];
+    if (HashRemove(cc->hash_table, r->name, HTT_GLBL_VAR) == (CHashEntry *)r->g) {
+      char *nn = (char *)malloc(strlen(r->name) + 24);
+      if (nn) {
+        sprintf(nn, "%s$fnstatic%d", r->name, ++seq);
+        free(r->g->str);
+        r->g->str = nn;
+      }
+      r->g->next = NULL;
+      HashAdd((CHashEntry *)r->g, cc->hash_table);   // still in the table: still resolvable
+    }
+    if (r->displaced) { r->displaced->next = NULL; HashAdd(r->displaced, cc->hash_table); }
+    free(r->name);
+  }
+  fn_statics_n = 0;
+}
 static bool ParseEnumDefinitionBody(Compiler *cc, const char *enum_name, bool register_type);
 bool ParseEnum(Compiler *cc);
 // A parameter default, at the '=' token. Either a constant (`=0x80`, `=1<<JOBf_X`) or source text
@@ -5293,9 +5382,12 @@ bool ParseStatement(Compiler *cc) {
         return false;
       }
       
-      // For static variables, treat as globals scoped to function
+      // For static variables, treat as globals scoped to function -- see
+      // RenamePriorFunctionStatic above for what makes that scoping real rather than nominal.
       if (is_static) {
+        CHashEntry *disp = StashForFunctionStatic(cc, var_name);
         bool result = ParseGlobalVariable(cc, type, var_name);
+        RecordFunctionStatic(cc, var_name, disp);
         free(var_name);
         if (!result) return false;
         while (cc->lex.token == ',') {   // `static I64 a=0,b=0;`
@@ -5304,7 +5396,9 @@ bool ParseStatement(Compiler *cc) {
           if (cc->lex.token != TK_IDENT) { Error(cc, "Expected variable name"); return false; }
           char *nm2 = strdup(cc->lex.token_str);
           LexNext(cc);
+          CHashEntry *d2 = StashForFunctionStatic(cc, nm2);
           bool r2 = ParseGlobalVariable(cc, type, nm2);
+          RecordFunctionStatic(cc, nm2, d2);
           free(nm2);
           if (!r2) return false;
         }
@@ -6535,6 +6629,10 @@ bool ParseFunction(Compiler *cc) {
   // Define function symbol
   Symbol *sym = SymbolDefine(cc, name, SYM_FUNCTION);
   sym->data_type = return_type;
+  // The previous function's `static` locals stop being visible here -- see
+  // RetireFunctionStatics above. HolyC has no nested functions, so this is the only place it has
+  // to happen.
+  RetireFunctionStatics(cc);
   // Parameters get their own scope; every exit below restores the enclosing one.
   SymTable *fn_scope = cc->symtab;
   SymTablePush(cc);

@@ -42,37 +42,34 @@ Bool CFE_EVS_VerifyCmdLength(CFE_MSG_Message *MsgPtr, I64 ExpectedLength);
 
 U0 CFE_EVS_ProcessCommandPacket(CFE_SB_Buffer *SBBufPtr)
 {
-  // Static cache for dynamic Message IDs.
+  // Static cache for dynamic Message IDs. NASA initialises both to CFE_SB_MSGID_RESERVED, which
+  // is 0, and a HolyC static local is zero-initialised -- the same arrangement
+  // cfe_ta_dispatch.HC records.
   //
-  // ONE NAMING DEVIATION, AND IT IS A COMPILER LIMIT, NOT A CHOICE. NASA calls these CMD_MID and
-  // SEND_HK_MID, function-local statics, and so does cfe_ta_dispatch.c -- every cFE dispatcher
-  // uses the same pair of names. A HolyC `static` local is NOT function-scoped: it becomes a
-  // global under the bare name, so the second declaration collides with the first and ONE OF THE
-  // TWO RESOLVES TO ADDRESS 0. Measured here: with both dispatchers using NASA's names,
-  // CFE_TA_TaskPipe faulted on `ld a0,0(a0)` after `li a0,0` -- the ta copy, clobbered by this
-  // file's. docs/HOLYC_STRUCT_LIMITS.md #12 has the two-function repro.
-  //
-  // So this file's pair carries the module prefix. The CACHING -- resolve once, never again --
-  // is the behaviour, and it is unchanged. The deviation is withdrawn when the compiler scopes
-  // static locals per function.
-  static CFE_SB_MsgId EVS_CMD_MID;
-  static CFE_SB_MsgId EVS_SEND_HK_MID;
+  // THESE ARE NASA'S NAMES, and for one commit they were not. cfe_ta_dispatch.c uses the same
+  // pair -- every cFE dispatcher does -- and a HolyC `static` local used to become a global
+  // under the bare name, so this file's declarations clobbered ta's and CFE_TA_TaskPipe faulted
+  // on `ld a0,0(a0)`. The compiler scopes static locals properly now
+  // (tests/exec/cases/e_static_local_scope.hc), so the prefix is gone and the translation says
+  // what NASA says. docs/HOLYC_STRUCT_LIMITS.md #12.
+  static CFE_SB_MsgId CMD_MID;
+  static CFE_SB_MsgId SEND_HK_MID;
 
   CFE_SB_MsgId MessageID = CFE_SB_InvalidMsgId;
 
   // cache the local MID Values here, this avoids repeat lookups
-  if (!CFE_SB_IsValidMsgId(EVS_CMD_MID)) {
-    EVS_CMD_MID = CFE_SB_ValueToMsgId(CFE_EVS_CMD_MID);
-    EVS_SEND_HK_MID = CFE_SB_ValueToMsgId(CFE_EVS_SEND_HK_MID);
+  if (!CFE_SB_IsValidMsgId(CMD_MID)) {
+    CMD_MID = CFE_SB_ValueToMsgId(CFE_EVS_CMD_MID);
+    SEND_HK_MID = CFE_SB_ValueToMsgId(CFE_EVS_SEND_HK_MID);
   }
 
   CFE_MSG_GetMsgId(&SBBufPtr->Msg, &MessageID);
 
   // Process all SB messages
-  if (CFE_SB_MsgId_Equal(MessageID, EVS_SEND_HK_MID)) {
+  if (CFE_SB_MsgId_Equal(MessageID, SEND_HK_MID)) {
     // Housekeeping request
     CFE_EVS_SendHkCmd(SBBufPtr);
-  } else if (CFE_SB_MsgId_Equal(MessageID, EVS_CMD_MID)) {
+  } else if (CFE_SB_MsgId_Equal(MessageID, CMD_MID)) {
     // EVS task specific command
     CFE_EVS_ProcessGroundCommand(SBBufPtr, MessageID);
   } else {

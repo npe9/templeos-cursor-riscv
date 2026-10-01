@@ -190,6 +190,12 @@ typedef struct CHashGlblVar {
 #define GVF_FUN        0x08
 #define GVF_ARRAY      0x10
 #define GVF_DATA_HEAP  0x20
+// This global came from a `static` LOCAL. HolyC has no function-scoped storage, so parser.c makes
+// one -- and the hash table is keyed by the bare name, so two functions declaring the same static
+// name would collide. This flag is what lets the second declaration tell "a previous function's
+// static of this name" (rename it out of the way) from "a real file-scope global of this name"
+// (leave it alone, and let the existing redefinition warning speak).
+#define GVF_FN_STATIC  0x40
 
 // Hash table functions
 CHashTable *HashTableNew(I64 size);

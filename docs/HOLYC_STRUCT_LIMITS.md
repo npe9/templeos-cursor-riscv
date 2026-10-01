@@ -324,7 +324,7 @@ effect and would not have had one for a long time.
 Worked around by writing `uv = uv / base`. `tests/exec/cases/e_strprint_hex.hc` pins the output,
 and its `%llu` line is the case that fails if the compound form comes back.
 
-## 12. A `static` local is a GLOBAL under the bare name, so two functions collide — OPEN
+## 12. A `static` local is a GLOBAL under the bare name, so two functions collide — FIXED
 
 ```
 U0 A() { static I64 n; n++;     ... }
@@ -359,8 +359,25 @@ their message ids in function-local statics, and **both call them `CMD_MID` and
 `SEND_HK_MID`** — every cFE module's dispatcher does. With both translated, `CFE_TA_TaskPipe`
 faulted; the ta copy had been clobbered by the evs one four files later.
 
-Worked around in `cfe_evs_dispatch.HC` by prefixing that file's pair, recorded as a deviation at
-the site. The fix is to mangle a static local's global name with the enclosing function and alias
-the bare name for the body's lifetime — `GVF_ALIAS` and `HashRemove` already exist — and it is a
-`parser.c` change, so it lands on its own with the kernel gates behind it rather than inside a
-cFS commit.
+**FIXED**, and the EVS dispatcher now carries NASA's own names again.
+
+The scoping is made real in two halves, because `ParseFunction` has thirteen exits and HolyC has
+no nested functions:
+
+- **At the declaration**, whatever the bare name means is UNLINKED from the table and remembered,
+  so `ParseGlobalVariable` always builds a FRESH object and never re-aims an existing one. That
+  is also what stopped a static local hijacking a real file-scope global of the same name — the
+  further-out half of the same bug, which used to orphan the *global's* address.
+- **When the next function definition starts**, the previous function's statics are RETIRED: each
+  is re-added under a unique key, so it stays in the table and therefore stays resolvable by
+  address, laid out and initialised, while the bare name goes back to whatever it displaced.
+
+`tests/exec/cases/e_static_local_scope.hc` pins it: the same static name in three functions, two
+statics each, one of them through the `static I64 a, b;` comma path, one with an initialiser that
+must run once, and a file-scope `n`/`m` pair that must still read 500/600 afterwards. Its expected
+value is computed from the arithmetic, not read off a run. Commenting out the retire call makes
+the case crash.
+
+One thing it does NOT do: retire the LAST function's statics, because nothing follows them. Their
+bare names stay visible to file-scope code after that function — wrong, harmless, and written
+down here rather than left to be rediscovered.
