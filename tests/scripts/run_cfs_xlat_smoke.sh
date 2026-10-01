@@ -65,7 +65,10 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/config/fsw/src/cfe_config_objtab.c
        $CFE/modules/ta/fsw/src/cfe_ta_task.c
        $CFE/modules/ta/fsw/src/cfe_ta_dispatch.c
-       $CFE/modules/ta/fsw/src/cfe_ta_objtab.c"
+       $CFE/modules/ta/fsw/src/cfe_ta_objtab.c
+       $CFE/modules/evs/fsw/src/cfe_evs_utils.c
+       $CFE/modules/evs/fsw/src/cfe_evs_log.c
+       $CFE/modules/evs/fsw/src/cfe_evs.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -90,7 +93,7 @@ INC="-I$CFE/modules/core_api/fsw/inc -I$CFE/modules/core_api/config
      -I$CFE/modules/msg/fsw/inc -I$CFE/modules/msg/fsw/src -I$CFE/modules/msg/option_inc
      -I$CFE/modules/es/config -I$CFE/modules/es/fsw/inc
      -I$CFE/modules/sb/config -I$CFE/modules/sb/fsw/inc
-     -I$CFE/modules/evs/config -I$CFE/modules/evs/fsw/inc
+     -I$CFE/modules/evs/config -I$CFE/modules/evs/fsw/inc -I$CFE/modules/evs/fsw/src
      -I$CFE/modules/tbl/config -I$CFE/modules/tbl/fsw/inc
      -I$CFE/modules/time/config -I$CFE/modules/time/fsw/inc
      -I$CFE/modules/fs/config -I$CFE/modules/fs/fsw/inc -I$CFE/modules/fs/fsw/src
@@ -163,6 +166,17 @@ python3 "$ROOT/tools/cfs/check_constants.py" || exit 1
 # module's CMakeLists by if()-DEPTH, so a source inside a branch is reported with its guard
 # rather than counted as if it were always built. The denominator here has been wrong before.
 python3 "$ROOT/tools/cfs/check_manifest.py" --cfe || exit 1
+
+# --- the variadic seam -------------------------------------------------------------------------
+# A HolyC variadic function receives an implicit (argc, argv) pair and THE CALL SITE builds it,
+# so a call compiled before the compiler has seen a `...` declaration packs nothing and the
+# callee reads whatever the ABI left behind -- with no diagnostic at either end. Its first run
+# found both shapes live at once: EVS_SendEvent called from four places above its own definition
+# (which reached StrPrintNV as nargs=1, args=NULL and faulted on a load from address 0), and
+# CFE_EVS_SendEvent declared NON-VARIADIC in cfe_ta_task.HC while cfe_evs.HC defines the variadic
+# one. The second is invisible to check_signatures, which compares DEFINITIONS, and both
+# definitions were right.
+python3 "$ROOT/tools/cfs/check_variadic.py" || exit 1
 
 # --- reference: NASA's C, unmodified -------------------------------------------------------
 # shellcheck disable=SC2086

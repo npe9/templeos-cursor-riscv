@@ -31,7 +31,8 @@
 //
 // Everything this file calls is already translated: the MSG accessors (cfe_msg_ccsdspri.HC and
 // friends), the message-id helpers (cfe_sb_msgid.HC) and the five command handlers in
-// cfe_ta_task.HC. Only CFE_EVS_SendEvent is a stub, for the reason recorded there.
+// cfe_ta_task.HC, including the CFE_EVS_SendEvent prototype -- which must be the variadic one,
+// or the three calls below pack no arguments. See the note there.
 #ifndef CFE_TA_DISPATCH_HC
 #define CFE_TA_DISPATCH_HC
 // cfe_sb_api_typedefs.h. CFE_SB_MSGID_RESERVED is the "not yet looked up" marker the static
@@ -57,7 +58,8 @@ Bool CFE_TA_VerifyCmdLength(CFE_MSG_Message *MsgPtr, I64 ExpectedLength)
     CFE_MSG_GetFcnCode(MsgPtr, &FcnCode);
 
     CFE_EVS_SendEvent(CFE_TA_LEN_ERR_EID, CFE_EVS_EventType_ERROR,
-                      "Invalid msg length: ID = 0x%X,  CC = %u, Len = %u, Expected = %u");
+                      "Invalid msg length: ID = 0x%X,  CC = %u, Len = %u, Expected = %u",
+                      CFE_SB_MsgIdToValue(MsgId), FcnCode, ActualLength, ExpectedLength);
 
     result = FALSE;
     CFE_TA_Global.CommandErrorCounter++; // Routing Error
@@ -105,7 +107,8 @@ U0 CFE_TA_ProcessGroundCommand(CFE_SB_Buffer *SBBufPtr, CFE_SB_MsgId MsgId)
     default:
       // Unknown command code
       CFE_EVS_SendEvent(CFE_TA_ERR_CC_EID, CFE_EVS_EventType_ERROR,
-                        "Invalid command code -- ID = 0x%08x, CC = %u");
+                        "Invalid command code -- ID = 0x%08x, CC = %u",
+                        CFE_SB_MsgIdToValue(MsgId), FcnCode);
 
       CFE_TA_Global.CommandErrorCounter++; // Routing Error
       break;
@@ -138,7 +141,8 @@ U0 CFE_TA_TaskPipe(CFE_SB_Buffer *SBBufPtr)
   } else {
     // Unknown command -- should never occur
     CFE_EVS_SendEvent(CFE_TA_ERR_MSGID_EID, CFE_EVS_EventType_ERROR,
-                      "Invalid command packet, Message ID = 0x%08X");
+                      "Invalid command packet, Message ID = 0x%08X",
+                      CFE_SB_MsgIdToValue(MessageID));
 
     CFE_TA_Global.CommandErrorCounter++; // Routing Error
   }

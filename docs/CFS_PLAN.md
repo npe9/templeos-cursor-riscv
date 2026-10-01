@@ -298,39 +298,84 @@ rather than counted as always-built:
 | `sb` | 7 | 5,278 | 4% |
 | `fs` | 3 | 1,249 | **100%** |
 | `ta` | 2 | 892 | **100%** (plus `cfe_ta_dispatch.c`, 159, which is conditional — see below) |
-| `evs` | 5 | 2,787 | 0% (three of six sources translated; see below) |
+| `evs` | 5 | 2,787 | **45%** (three of six sources; see below) |
 | `time` | 5 | 4,383 | 0% |
 | `tbl` | 15 | 7,780 | 0% |
 | `es` | 17 | 12,734 | 0% |
 
-#### `evs`: translated but not yet gated, and why that is said out loud
+#### `evs`: the first module whose TEXT is the comparison
 
-Three of EVS's six sources are translated — `cfe_evs_utils.c` (650), `cfe_evs_log.c` (277) and
-`cfe_evs.c` (336), 1,263 lines — and the manifest above still reports **0%**, because the
-manifest counts what the TRANSCRIPT covers and no EVS source is in the gate's source list yet.
-That is the honest number and it stays there until the driver integration lands.
+Three of EVS's six sources are gated — `cfe_evs_utils.c` (650), `cfe_evs_log.c` (277) and
+`cfe_evs.c` (336), 1,263 of 2,787 lines, **45%**. The remaining three are `cfe_evs_task.c`
+(1,485), `cfe_evs_dispatch.c` (326, the conditional one) and `cfe_evs_objtab.c` (39). When
+`cfe_evs_task.c` arrives, `CFE_EVS_Global`'s DEFINITION moves out of `cfe_evs_global.HC` into
+it; the note is on both files.
 
-What *is* verified: coverage (21 of 21 functions), signatures (23, with one recorded
-deviation), `check_structs` and `check_padding` (71 classes) and `check_constants` (267 values).
-Five of the eight properties. The missing three are the transcript, and they are missing for a
-specific reason rather than for lack of effort: wiring EVS in **removes the `CFE_EVS_SendEvent`
-stub**, so every `evs eid=N type=N` line the `ta` module currently emits becomes a real event —
-filtered, squelched, logged and formatted — and both sides of the oracle change together. That
-is the point of translating EVS, and it is a change to be made deliberately rather than at the
-end of a long session.
+Wiring it in removed the `CFE_EVS_SendEvent` stub, so the transcript went 363 → 466 lines, and
+what those lines carry is different in kind from everything before them. `EVS_SendViaPorts`
+formats the packet payload and prints it, so the comparison now includes
 
-The variadic seam is what makes it possible at all. `EVS_GenerateEventTelemetry` formats the
-event text with `vsnprintf` into the 122-byte packet payload — the text *is* the message — so
-for the first time a formatted string is inside the byte-identical comparison instead of beside
-it. HolyC has no `va_list`, but a variadic function there receives an implicit `(argc, argv)`
-pair, which is exactly the triple `StrPrintNV` takes. One extra parameter, recorded in
-`check_signatures.py`'s `DEVIATIONS`.
+```
+EVS Port1 1980-001-00:00:44.52768 23130/1/CFE_EVS 2: s=name u=7 d=-3 x=0000beef
+EVS Port1 1980-001-00:00:44.52768 23130/1/CFE_EVS 18: Set Task Affinity for CFE_ES: Type = 1, mask = 0x0000000000000001, from O/S = 0x0000000000000001
+EVS Port1 1980-001-00:00:44.52768 23130/1/CFE_EVS 11: Task Info file written to /ram/tasks.dat, Entries=64, FileSize=2116
+```
 
-`StrPrintNV` grew `%x`, `%X` and field widths for it, and writing the oracle for those found a
-real bug: `%06d` of -42 produced `000-42` where C writes `-00042`. C puts the sign before zero
-padding and after space padding, and the first version padded first in both cases.
-`tests/exec/cases/e_strprint_hex.hc` pins the whole set, and its expected value is not a hash of
-the HolyC formatter — it is the number the same fold computes over C's `snprintf` output.
+— the first formatted strings in this port that are INSIDE the byte-identical comparison rather
+than beside it. Every one of `ta`'s twenty event strings is now compared against NASA's own
+output, which also closed a deviation: `cfe_ta_task.HC` used to take the id, the type and a
+plain string, leaving the wording outside. It now passes NASA's arguments.
+
+The variadic seam is what makes that possible. `EVS_GenerateEventTelemetry` formats with
+`vsnprintf` into the 122-byte payload; HolyC has no `va_list`, but a variadic function there
+receives an implicit `(argc, argv)` pair, which is exactly the triple `StrPrintNV` takes. One
+extra parameter, recorded in `check_signatures.py`'s `DEVIATIONS`.
+
+Four things came out of that seam, and three of them were silent:
+
+- **`StrPrintN` took five arguments and `EVS_SendViaPorts` formats six.** A HolyC default
+  argument is a call-site expression, so the sixth was simply not passed and `nargs = 5` made
+  `StrPrintNV` stop short: every port line read `(null)` where NASA's read the event. The arity
+  is now eight and written down as a ceiling.
+- **`EVS_SendEvent` was called from four places above its own definition.** A HolyC call site
+  builds `(argc, argv)` only if it already knows the callee is variadic, and a forward call does
+  not. It reached `StrPrintNV` as `nargs=1, args=NULL` and faulted on a load from address 0.
+- **`CFE_EVS_SendEvent` was declared NON-variadic in `cfe_ta_task.HC`** and defined variadic in
+  `cfe_evs.HC`. No gate could see it: `check_signatures` compares definitions and both
+  definitions were right. This is what `check_variadic.py` exists for.
+- **`%016llX` was masked to 32 bits.** `tests/exec/cases/e_strprint_hex.hc` catches it; the
+  transcript does not, and that was measured rather than assumed — see the controls below.
+
+`StrPrintNV` grew `%x`, `%X`, `ll` and field widths for EVS, and writing the oracle for those
+found two more real bugs: `%06d` of -42 produced `000-42` where C writes `-00042` (C puts the
+sign before zero padding and after space padding, and the first version padded first in both
+cases), and `%llu` above 2^63 printed 17 digits instead of 20, because `uv /= base` emits a
+SIGNED divide for a `U64` while the `uv % base` on the line above it does not
+(`docs/HOLYC_STRUCT_LIMITS.md` #11). `tests/exec/cases/e_strprint_hex.hc` pins the whole set, and
+its expected value is not a hash of the HolyC formatter — it is the number the same fold computes
+over C's `snprintf` output, line by line.
+
+#### What the negative controls on these lines actually found
+
+Four mutations, each aimed at one of the new assertions:
+
+| mutation | gate | fired |
+|---|---|---|
+| `EVS_SendEvent`'s prototype loses its `...` | `check_variadic` | yes, on 23 call sites |
+| a non-variadic NASA function given a `...` | `check_variadic` | yes |
+| the log ring wraps one entry late (`>=` → `>`) | transcript | yes, on `next` and `first` |
+| the squelch floor doubled | transcript | **NO**, first time |
+| `%llX` masked back to 32 bits | transcript | **NO** — `e_strprint_hex` caught it |
+
+The squelch control is the one worth keeping. The driver sent five events into a budget of
+three, so the token count walked 2000, 1000, 0, -1000, -2000 and **never reached
+`LOWER_THRESHOLD`**: the clamp was translated, looked exercised, and was not. Eight events reach
+-3000 and stay there, and the control then fires on exactly those two lines. A control that
+passes is a finding about the driver, not a pass.
+
+The `%llX` control is the division between the two gates working as intended: this configuration
+has one core, so the affinity mask fits in 32 bits and the truncation agrees with C — right up
+to the first machine with more than four of them.
 
 #### A conditional source can hide behind a 100%
 
@@ -384,7 +429,7 @@ as 2,156,050,768). Three lines away in NASA's own code, `CFE_Config_SetupBasicBu
 a **local** `VersionString` into `CFE_CONFIGID_CORE_VERSION_DESCRIPTION` and has the same defect
 — see `docs/CFS_UPSTREAM_NOTES.md` #8, where it is measured.
 
-Eight properties are gated independently, because each is blind to what the others catch:
+Nine properties are gated independently, because each is blind to what the others catch:
 
 | check | what it proves | what it cannot see |
 |---|---|---|
@@ -394,6 +439,7 @@ Eight properties are gated independently, because each is blind to what the othe
 | `check_structs.py` | a translated `class` has NASA's fields, in NASA's order | field TYPES, and where the fields actually sit |
 | `check_padding.py` | a translated `class` has NASA's BYTE LAYOUT — every offset and the size | whether anything reads those fields correctly |
 | `check_constants.py` | every number the translation spells out has NASA's value | whether anything uses it, or uses it correctly |
+| `check_variadic.py` | a variadic function's declarations agree with NASA's and with each other, and none is called before one is seen | whether the ARGUMENTS at a call site are the right ones |
 | `check_manifest.py` | everything gated is in NASA's build; reports the covered fraction | nothing about the code itself |
 | the transcript | behaviour, byte for byte against NASA's own C | anything nothing calls |
 

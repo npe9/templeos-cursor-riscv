@@ -54,7 +54,7 @@ I32 CFE_ES_GetAppName(U8 *AppName, U32 AppId, I64 BufferLength);
 U32 CFE_PSP_GetSpacecraftId();
 U32 CFE_PSP_GetProcessorId();
 U0 CFE_PSP_GetTime(OS_time_t *LocalTime);
-U0 CFE_TIME_Print(U8 *PrintBuffer, CFE_TIME_SysTime TimeToPrint);
+I32 CFE_TIME_Print(U8 *PrintBuffer, CFE_TIME_SysTime TimeToPrint);
 I32 CFE_SB_TransmitMsg(CFE_MSG_Message *MsgPtr, Bool IsOrigination);
 // OSAL. OS_TimeSubtract and OS_TimeGetTotalMilliseconds are translated in osapi_clock.HC; the
 // mutex and OS_printf likewise. Declared rather than included, for the reason fs records: this
@@ -73,6 +73,15 @@ U0 EVS_AddLog(CFE_EVS_LongEventTlm_t *EVS_PktPtr);
 // Local Function Prototypes -- NASA's own, in NASA's place.
 U0 EVS_SendViaPorts(CFE_EVS_LongEventTlm_t *EVS_PktPtr);
 U0 EVS_OutputPort(U8 PortNum, U8 *Message);
+// THIS PROTOTYPE IS LOAD-BEARING, and not for the usual reason. EVS_SendEvent is defined at the
+// bottom of this file and called from four places above it, and a HolyC call to a function the
+// compiler has not seen yet CANNOT KNOW IT IS VARIADIC: the call site packs no (argc, argv), and
+// the callee then reads whatever the ABI left in those registers. Measured, with the prototype
+// removed, in a four-argument call: argc came out as the last ARGUMENT's value and argv as a
+// stale pointer, which here reached StrPrintNV as nargs=1 with args=NULL and faulted on a load
+// from address 0. NASA declares it in cfe_evs_utils.h, so this is 1:1 either way -- but it is
+// the declaration whose absence is silent. docs/HOLYC_STRUCT_LIMITS.md #10.
+I32 EVS_SendEvent(U16 EventID, U16 EventType, U8 *Spec, ...);
 // --- cfe_evs_utils.h: the five static inline accessors -----------------------------------------
 // A slot is in use when its AppID is not the undefined resource id. CFE_RESOURCEID_* are macros
 // over the SIMPLE resourceid variant, where the id is a bare U32 -- see cfe_resourceid.HC.

@@ -36,10 +36,10 @@
 //
 // WHAT THE DRIVER SUPPLIES, and why that is the same decision as everywhere else here: SB, EVS
 // and ES are not translated, so the oracle gives both sides the same recording stubs.
-// CFE_EVS_SendEvent is variadic in the C; this translation takes the event id, the type and a
-// plain string, and the transcript compares the ID AND TYPE while leaving the WORDING outside
-// -- the same split cfe_sb_util.HC records for CFE_ES_WriteToSysLog. The id is what a ground
-// system acts on; the text is what a human reads.
+// CFE_EVS_SendEvent USED to be the one place this file deviated: it took the event id, the type
+// and a plain string, and the transcript compared the id and the type while leaving the wording
+// outside. EVS is translated now, so the deviation is gone -- every call below passes NASA's own
+// arguments, and the text they format is inside the byte-identical comparison.
 #ifndef CFE_TA_TASK_HC
 #define CFE_TA_TASK_HC
 #include "../osal/os_shared_task_affinity.HC"
@@ -243,7 +243,12 @@ union CFE_SB_Buffer
 #define CFE_ES_SystemState_CORE_READY           2
 #define CFE_PLATFORM_CORE_MAX_STARTUP_MSEC      30000
 I32 CFE_EVS_Register(U8 *Filters, U16 NumFilteredEvents, U16 FilterScheme);
-I32 CFE_EVS_SendEvent(U16 EventID, U16 EventType, U8 *Spec);
+// VARIADIC, and it has to say so here: a HolyC call site builds the implicit (argc, argv) pair
+// only if it already knows the callee is variadic, and this declaration is the only thing above
+// TA's twenty event calls that can tell it. It was a three-parameter stub while EVS was not
+// translated; cfe_evs.HC now defines the real one, included after this file, and the two
+// disagreeing is invisible to every gate that compares definitions. tools/cfs/check_variadic.py.
+I32 CFE_EVS_SendEvent(U16 EventID, U16 EventType, U8 *Spec, ...);
 U0 CFE_ES_PerfLogEntry(U32 Marker);
 U0 CFE_ES_PerfLogExit(U32 Marker);
 U0 CFE_ES_ExitApp(U32 ExitStatus);
@@ -409,9 +414,11 @@ I32 CFE_TA_TaskInit()
                               CFE_BUILD_CODENAME, CFE_LAST_OFFICIAL);
 
   CFE_EVS_SendEvent(CFE_TA_CORE_INF_EID, CFE_EVS_EventType_INFORMATION,
-                    "Configured cores = %u, TA support max limit = %u");
+                    "Configured cores = %u, TA support max limit = %u",
+                    OS_TaskAffinityCoresConfigured(), CFE_MISSION_TA_MAX_NUM_CPUS);
 
-  CFE_EVS_SendEvent(CFE_TA_INIT_INF_EID, CFE_EVS_EventType_INFORMATION, "cFE TA Initialized: %s");
+  CFE_EVS_SendEvent(CFE_TA_INIT_INF_EID, CFE_EVS_EventType_INFORMATION, "cFE TA Initialized: %s",
+                    VersionString);
 
   return CFE_SUCCESS;
 }
@@ -429,7 +436,8 @@ I32 CFE_TA_NoopCmd(CFE_TA_NoopCmd_t *data)
   CFE_Config_GetVersionString(VersionString, CFE_CFG_MAX_VERSION_STR_LEN, "cFE", CFE_SRC_VERSION,
                               CFE_BUILD_CODENAME, CFE_LAST_OFFICIAL);
 
-  CFE_EVS_SendEvent(CFE_TA_NOOP_INF_EID, CFE_EVS_EventType_INFORMATION, "No-op Cmd Rcvd: %s");
+  CFE_EVS_SendEvent(CFE_TA_NOOP_INF_EID, CFE_EVS_EventType_INFORMATION, "No-op Cmd Rcvd: %s",
+                    VersionString);
 
   // This one DOES increment, unlike the reset command two functions down. An earlier version
   // of this translation left the increment out, and the transcript read cc=0 against NASA's
@@ -511,12 +519,13 @@ I32 CFE_TA_QueryAllTasksCmd(CFE_TA_QueryAllTasksCmd_t *data)
 
     if (OsStatus != OS_SUCCESS) {
       CFE_EVS_SendEvent(CFE_TA_TASKINFO_OSCREATE_ERR_EID, CFE_EVS_EventType_ERROR,
-                        "Failed to write Task Info file, OS_OpenCreate RC = %ld");
+                        "Failed to write Task Info file, OS_OpenCreate RC = %ld", OsStatus);
       Result = CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
     }
   } else {
     CFE_EVS_SendEvent(CFE_TA_TASKINFO_FILENAME_ERR_EID, CFE_EVS_EventType_ERROR,
-                      "Failed to write Task Info file, CFE_FS_ParseInputFileNameEx RC = %08x");
+                      "Failed to write Task Info file, CFE_FS_ParseInputFileNameEx RC = %08x",
+                      Result);
   }
 
   if (Result >= 0) {
@@ -530,7 +539,7 @@ I32 CFE_TA_QueryAllTasksCmd(CFE_TA_QueryAllTasksCmd_t *data)
       OS_close(FileDescriptor);
       CFE_TA_Global.CommandErrorCounter++;
       CFE_EVS_SendEvent(CFE_TA_TASKINFO_WRHDR_ERR_EID, CFE_EVS_EventType_ERROR,
-                        "Failed to write Task Info file, WriteHdr RC = 0x%08X");
+                        "Failed to write Task Info file, WriteHdr RC = 0x%08X", Result);
       return CFE_SUCCESS;
     }
 
@@ -545,7 +554,7 @@ I32 CFE_TA_QueryAllTasksCmd(CFE_TA_QueryAllTasksCmd_t *data)
       OS_close(FileDescriptor);
       CFE_TA_Global.CommandErrorCounter++;
       CFE_EVS_SendEvent(CFE_TA_TASKINFO_WR_ERR_EID, CFE_EVS_EventType_ERROR,
-                        "Failed to write Task Info file, Task write RC = %ld");
+                        "Failed to write Task Info file, Task write RC = %ld", OsStatus);
       return CFE_SUCCESS;
     }
 
@@ -558,7 +567,8 @@ I32 CFE_TA_QueryAllTasksCmd(CFE_TA_QueryAllTasksCmd_t *data)
     CFE_TA_Global.CommandCounter++;
 
     CFE_EVS_SendEvent(CFE_TA_TASKINFO_EID, CFE_EVS_EventType_INFORMATION,
-                      "Task Info file written to %s, Entries=%d, FileSize=%d");
+                      "Task Info file written to %s, Entries=%d, FileSize=%d", QueryAllFilename,
+                      EntryCount, FileSize);
   } else {
     CFE_TA_Global.CommandErrorCounter++;
   }
@@ -599,7 +609,7 @@ I32 CFE_TA_SetTaskAffinityCmd(CFE_TA_SetTaskAffinityCmd_t *data)
       Status = CFE_TA_APP_TASK_NOT_FOUND;
 
       CFE_EVS_SendEvent(CFE_TA_SET_AFFINITY_CMD_NOTFOUND_ERR_EID, CFE_EVS_EventType_ERROR,
-                        "Set Task Affinity Failed, task (%s) not found");
+                        "Set Task Affinity Failed, task (%s) not found", CmdPtr->TaskName);
 
       CFE_TA_Global.CommandErrorCounter++;
       break;
@@ -638,7 +648,9 @@ I32 CFE_TA_SetTaskAffinityCmd(CFE_TA_SetTaskAffinityCmd_t *data)
 
           CFE_EVS_SendEvent(CFE_TA_SET_TASK_AFFINITY_CMD_INF_EID, CFE_EVS_EventType_INFORMATION,
                             "Set Task Affinity for %s: Type = %d, mask = 0x%016llX, from O/S = "
-                            "0x%016llX");
+                            "0x%016llX",
+                            CFE_TA_CpuTaskAffinity[i].TaskName, CFE_TA_CpuTaskAffinity[i].Type,
+                            PrintableMask, PrintableOsMask);
 
           CFE_TA_Global.CommandCounter++;
         } else {
@@ -648,7 +660,8 @@ I32 CFE_TA_SetTaskAffinityCmd(CFE_TA_SetTaskAffinityCmd_t *data)
 
           CFE_EVS_SendEvent(CFE_TA_SET_AFFINITY_CMD_GET_ERR_EID, CFE_EVS_EventType_ERROR,
                             "Set Task Affinity Failed for task (%s), could not Get Task "
-                            "Affinity, Status = %d");
+                            "Affinity, Status = %d",
+                            CmdPtr->TaskName, Status);
 
           CFE_TA_Global.CommandErrorCounter++;
         }
@@ -659,7 +672,8 @@ I32 CFE_TA_SetTaskAffinityCmd(CFE_TA_SetTaskAffinityCmd_t *data)
 
         CFE_EVS_SendEvent(CFE_TA_SET_AFFINITY_CMD_SET_ERR_EID, CFE_EVS_EventType_ERROR,
                           "Set Task Affinity Failed for task (%s), could not Set Task Affinity, "
-                          "Status = %d");
+                          "Status = %d",
+                          CmdPtr->TaskName, Status);
 
         CFE_TA_Global.CommandErrorCounter++;
       }
@@ -687,7 +701,7 @@ I32 CFE_TA_GetTaskAffinityCmd(CFE_TA_GetTaskAffinityCmd_t *data)
 
       // Reached the end of the entries, task not found
       CFE_EVS_SendEvent(CFE_TA_GET_AFFINITY_CMD_NOTFOUND_ERR_EID, CFE_EVS_EventType_ERROR,
-                        "Get Task Affinity Failed, task (%s) not found");
+                        "Get Task Affinity Failed, task (%s) not found", CmdPtr->TaskName);
 
       CFE_TA_Global.CommandErrorCounter++;
       break;
@@ -719,7 +733,9 @@ I32 CFE_TA_GetTaskAffinityCmd(CFE_TA_GetTaskAffinityCmd_t *data)
         MemCpy(&PrintableOsMask, &cpuset, sizeof(OS_cpuset_t));
 
         CFE_EVS_SendEvent(CFE_TA_GET_TASK_AFFINITY_CMD_INF_EID, CFE_EVS_EventType_INFORMATION,
-                          "Get Task Affinity for %s: Type = %d, O/S Mask = 0x%016llX");
+                          "Get Task Affinity for %s: Type = %d, O/S Mask = 0x%016llX",
+                          CFE_TA_CpuTaskAffinity[i].TaskName, CFE_TA_CpuTaskAffinity[i].Type,
+                          PrintableOsMask);
 
         CFE_TA_Global.CommandCounter++;
       } else {
@@ -728,7 +744,8 @@ I32 CFE_TA_GetTaskAffinityCmd(CFE_TA_GetTaskAffinityCmd_t *data)
         CFE_TA_CpuTaskAffinity[i].Status = CFE_TA_Status_Error;
 
         CFE_EVS_SendEvent(CFE_TA_GET_AFFINITY_CMD_GET_ERR_EID, CFE_EVS_EventType_ERROR,
-                          "Get Task Affinity Failed for task (%s), Status = %d");
+                          "Get Task Affinity Failed for task (%s), Status = %d",
+                          CmdPtr->TaskName, Status);
 
         CFE_TA_Global.CommandErrorCounter++;
       }

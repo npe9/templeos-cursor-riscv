@@ -119,4 +119,4 @@ tests/exec/cases/e_compound_assign_width.hc	00000000013241f7
 tests/exec/cases/e_fnptr_member_call.hc	00d91797cb139d0e
 tests/exec/cases/e_class_packing.hc	000562421c437c94
 tests/exec/cases/e_paren_base_subscript.hc	00006352be825711
-tests/exec/cases/e_strprint_hex.hc	00000000df5ab937
+tests/exec/cases/e_strprint_hex.hc	00000000faf9f20a

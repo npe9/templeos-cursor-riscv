@@ -269,3 +269,57 @@ includes deeper was.
 cFS writes both forms constantly, so the translation names the type or the constant instead and
 says so at each site. `check_padding.py` is what keeps the named constant and the real size the
 same thing.
+
+## 10. A call to a variadic function the compiler has not seen yet — OPEN, and SILENT
+
+A HolyC variadic function receives an implicit `(argc, argv)` pair, and the CALL SITE is what
+builds it. So the call site has to know the callee is variadic — and a call to a function that is
+defined further down the file, with no prototype above, does not.
+
+```
+U0 Later(U16 a, U8 *f, ...);          // with this line:    argc=1, argv valid
+U0 Caller()  { Later(1, "f %s", x); }
+U0 Later(U16 a, U8 *f, ...) { ... }   // without it:         argc=9, argv stale
+```
+
+Measured, with the prototype removed from a four-argument call: `argc` came out as the last
+ARGUMENT's value and `argv` as a pointer left over from an earlier frame. Nothing is reported at
+compile time, and nothing is reported at run time either unless the callee actually reads `argv`
+— so a format string with no conversions passes, and the same call with a `%d` in it reads an
+arbitrary address. In `cfe_evs_utils.HC` it reached `StrPrintNV` as `nargs=1, args=NULL` and
+faulted on a load from address 0, which is the lucky outcome.
+
+C has the same requirement, so a prototype is 1:1 with NASA's header either way. What is
+different is that C's compiler says `implicit declaration of function`. Two distinct shapes to
+watch for, and both were present in this tree:
+
+- `EVS_SendEvent`, defined at the bottom of `cfe_evs_utils.HC` and called from four places above
+  it. Fixed by adding NASA's own prototype.
+- `CFE_EVS_SendEvent`, declared NON-VARIADIC in `cfe_ta_task.HC` (a three-parameter stub
+  declaration, from when EVS was not translated) and defined VARIADIC in `cfe_evs.HC`, which is
+  included later. Every TA event call went through the non-variadic declaration. This one no
+  checker could see: `check_signatures.py` compares the DEFINITION's arity against NASA's, and
+  the definition was right.
+
+## 11. `uv /= base` emits a SIGNED divide for an unsigned left operand — OPEN
+
+```
+U64 uv = 0xFEDCBA9876543210;
+U64 base = 10;
+uv % base      ->  unsigned, correct
+uv / base      ->  unsigned, correct
+uv /= base     ->  SIGNED
+```
+
+The binary form and the compound form of the same operation on the same two variables disagree:
+the compound assignment does not consult the left operand's type for signedness. `%` is
+unaffected, in either form.
+
+Found in `StrPrintNV`'s digit loop, where `dig[ndig++] = hexd[uv % base]` was unsigned and
+`uv /= base` on the next line was not. `%llu` of a value above 2^63 printed 17 digits where C
+printed 20 — and the first digit was right, because the first `%` happens before the first
+divide. Nothing below 2^63 is affected, which is every value cFS prints, so this had no visible
+effect and would not have had one for a long time.
+
+Worked around by writing `uv = uv / base`. `tests/exec/cases/e_strprint_hex.hc` pins the output,
+and its `%llu` line is the case that fails if the compound form comes back.

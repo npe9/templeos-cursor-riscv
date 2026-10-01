@@ -25,7 +25,11 @@
 #include "cfe_config_eds.h" /* module-private; declares CFE_Config_EdsState */
 #include "cfe_config_init.h"      /* module-private; the init helpers */
 #include "cfe_config_core_internal.h"
+#include <stdarg.h>
 #include "cfe_ta_task.h"
+#include "cfe_evs_task.h"
+#include "cfe_evs_utils.h"
+#include "cfe_evs_log.h"
 #include "cfe_ta_msgids.h"
 #include "cfe_ta_fcncodes.h"
 #include "cfe_perfids.h"
@@ -154,7 +158,13 @@ void CFE_Config_GetMissionRevString(char *Buf, size_t Size, uint8 MissionRev, co
  * feature this module needed -- exercised on two sites out of five by the transcript that is
  * supposed to validate it. So the driver drives one create failure, one short header write and
  * one short record write. */
-static unsigned char fs_data[256];
+/* 4096, not 256. At 256 the simulated file could not hold even one CFE_TA_DiagInfo_t (2052
+ * bytes), so QueryAllTasksCmd's SUCCESS branch -- and with it the one event that formats a
+ * filename, an entry count and a file size together -- was unreachable, and the only thing the
+ * transcript ever saw from that command was its short-write error. Same for the EVS log dump,
+ * twenty event packets. The size is part of the comparison: the HolyC half declares the same
+ * number, and fs_len appears in the transcript. */
+static unsigned char fs_data[4096];
 static long          fs_len;           /* bytes written so far */
 static long          fs_pos;           /* current position */
 static unsigned int  fs_fd;            /* 0 is OS_OBJECT_ID_UNDEFINED */
@@ -257,9 +267,15 @@ int32 OS_MutSemGive(osal_id_t sem_id)
     return OS_SUCCESS;
 }
 
+/* Who the caller is. fs and ta only needed a fixed value; EVS branches on it -- an app that
+ * has registered, one that has not, and one whose id is out of range are three different
+ * paths through CFE_EVS_SendEvent -- so the driver steers it. 0x4321 keeps the fs and ta
+ * lines above exactly as they were. */
+static unsigned ta_getappid = 0x4321;
+
 int32 CFE_ES_GetAppID(CFE_ES_AppId_t *AppIdPtr)
 {
-    *AppIdPtr = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x4321));
+    *AppIdPtr = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(ta_getappid));
     return CFE_SUCCESS;
 }
 
@@ -321,20 +337,12 @@ static int      ta_cores;            /* what OS_TaskAffinityCoresConfigured repo
 static int      ta_getid_rc, ta_setaff_rc, ta_getaff_rc;
 static unsigned char ta_os_mask;     /* the one byte the simulated OS stores per task */
 
-CFE_Status_t CFE_EVS_Register(const void *Filters, uint16 NumFilteredEvents,
-                              CFE_EVS_EventFilter_Enum_t FilterScheme)
-{
-    (void)Filters; (void)NumFilteredEvents; (void)FilterScheme;
-    return ta_evs_register_rc;
-}
-
-int32 CFE_EVS_SendEvent(uint16 EventID, uint16 EventType, const char *Spec, ...)
-{
-    (void)Spec;
-    ++ta_evs_count;
-    printf("evs eid=%u type=%u\n", (unsigned)EventID, (unsigned)EventType);
-    return CFE_SUCCESS;
-}
+/* CFE_EVS_Register and CFE_EVS_SendEvent are NOT stubbed any more: cfe_evs.c is in the gate's
+ * source list, so ta's events go through the real thing -- registration, filtering, the squelch
+ * token bucket, the local log, the formatter and the two output ports. The `evs eid=N type=N`
+ * lines this driver used to print are gone, and what replaces them is EVS_OutputPort's real
+ * text through OS_printf. ta_evs_register_rc kept its meaning by moving: it is now what the
+ * EVS app data says, not what a stub returns. */
 
 void  CFE_ES_PerfLogAdd(uint32 Marker, uint32 EntryExit) { (void)Marker; (void)EntryExit; }
 void  CFE_ES_ExitApp(uint32 ExitStatus) { printf("es_exitapp %lu\n", (unsigned long)ExitStatus); }
@@ -433,6 +441,97 @@ static void ta_counters(const char *tag)
     printf("%s cc=%u cec=%u sc=%u sec=%u evs=%d\n", tag, CFE_TA_Global.CommandCounter,
            CFE_TA_Global.CommandErrorCounter, CFE_TA_Global.StartupCounter,
            CFE_TA_Global.StartupErrorCounter, ta_evs_count);
+}
+
+/* ---- what EVS needs from the layers it sits on ------------------------------------------- */
+/* CFE_EVS_Global lives in cfe_evs_task.c, the one EVS source not translated yet, so the C side
+ * defines it here. The HolyC side has it in cfe_evs_global.HC with the other declarations --
+ * and when cfe_evs_task.c IS translated, that definition has to move there rather than be
+ * duplicated. The log storage is ES's reset area in flight; EVS only holds a pointer. */
+CFE_EVS_Global_t     CFE_EVS_Global;
+static CFE_EVS_Log_t evs_log_storage;
+
+/* Every one of these is deterministic on purpose: EVS times its squelch bucket off
+ * CFE_PSP_GetTime, so a real clock would make the transcript depend on how fast the host is. */
+static long long evs_psp_ns;      /* what CFE_PSP_GetTime reports, in ticks (= ns here) */
+static int       evs_type_enable; /* what CFE_EVS_GetTypeEnable answers */
+static int       evs_printf_lines;
+
+int32 CFE_ES_AppID_ToIndex(CFE_ES_AppId_t AppID, uint32 *Idx)
+{
+    uint32 v = CFE_RESOURCEID_TO_ULONG(AppID);
+    /* The real one strips the resource-type bits; with the SIMPLE variant the id IS the index
+     * for the small values this driver uses, and anything at or past the table size is
+     * rejected so EVS_GetAppDataByID's NULL branch stays reachable. */
+    if (v >= CFE_PLATFORM_ES_MAX_APPLICATIONS)
+    {
+        return CFE_ES_ERR_RESOURCEID_NOT_VALID;
+    }
+    *Idx = v;
+    return CFE_SUCCESS;
+}
+
+int32 CFE_ES_GetAppIDByName(CFE_ES_AppId_t *AppIdPtr, const char *AppName)
+{
+    if (strcmp(AppName, "CFE_EVS") == 0)
+    {
+        *AppIdPtr = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(1));
+        return CFE_SUCCESS;
+    }
+    if (strcmp(AppName, "OTHER_APP") == 0)
+    {
+        *AppIdPtr = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(2));
+        return CFE_SUCCESS;
+    }
+    return CFE_ES_ERR_NAME_NOT_FOUND;
+}
+
+int32 CFE_ES_GetAppName(char *AppName, CFE_ES_AppId_t AppId, size_t BufferLength)
+{
+    unsigned v = (unsigned)CFE_RESOURCEID_TO_ULONG(AppId);
+    if (v == 1)
+    {
+        strncpy(AppName, "CFE_EVS", BufferLength - 1);
+    }
+    else if (v == 2)
+    {
+        strncpy(AppName, "OTHER_APP", BufferLength - 1);
+    }
+    else
+    {
+        snprintf(AppName, BufferLength, "APP%u", v);
+    }
+    return CFE_SUCCESS;
+}
+
+/* Lives in cfe_evs_task.c, the last of EVS's six sources and not translated yet. */
+bool CFE_EVS_GetTypeEnable(CFE_EVS_EventType_Enum_t EventType)
+{
+    (void)EventType;
+    return evs_type_enable != 0;
+}
+
+void CFE_PSP_GetTime(OS_time_t *LocalTime)
+{
+    LocalTime->ticks = evs_psp_ns;
+}
+
+CFE_Status_t CFE_TIME_Print(char *PrintBuffer, CFE_TIME_SysTime_t TimeToPrint)
+{
+    /* TIME is not translated. A fixed rendering keeps the port message comparable while
+     * leaving what a real CFE_TIME_Print would produce out of this gate's business. */
+    snprintf(PrintBuffer, CFE_TIME_PRINTED_STRING_SIZE, "1980-001-00:00:%02u.%05u",
+             (unsigned)(TimeToPrint.Seconds % 60), (unsigned)(TimeToPrint.Subseconds % 100000));
+    return CFE_SUCCESS;
+}
+
+void OS_printf(const char *String, ...)
+{
+    va_list ap;
+    ++evs_printf_lines;
+    va_start(ap, String);
+    vprintf(String, ap);
+    va_end(ap);
 }
 
 /* ---- cfe_config_init.c helpers ------------------------------------------------------------- */
@@ -1747,8 +1846,395 @@ int main(void)
            (unsigned long)CFE_TA_ModuleEntry.Priority,
            (unsigned long)CFE_TA_ModuleEntry.StackSize);
     printf("ta_cleanup rc=%ld\n", (long)CFE_TA_CleanUpApp(1));
+
+    /* --- cfe_evs: the real event service ------------------------------------------------ */
+    /* Three of EVS's six sources, and with them the CFE_EVS_SendEvent stub is gone: the ta
+     * events above now go through registration, filtering, the squelch bucket, the local log
+     * and the formatter, and come out of EVS_OutputPort as real text. That text is the
+     * strongest thing in this transcript, because it is the packet payload: the first
+     * formatted string in this translation that is INSIDE the byte-identical comparison. */
+    {
+        CFE_EVS_BinFilter_t  filters[3];
+        EVS_AppData_t       *adp;
+        CFE_ES_AppId_t       evsid  = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(1));
+        CFE_ES_AppId_t       othrid = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(2));
+        int                  k;
+
+        /* Stand EVS up the way cfe_evs_task.c would: the log in the reset area, the format
+         * and port defaults, an unlimited squelch bucket, and EVS registered as app 1. */
+        memset(&CFE_EVS_Global, 0, sizeof(CFE_EVS_Global));
+        memset(&evs_log_storage, 0, sizeof(evs_log_storage));
+        CFE_EVS_Global.EVS_LogPtr                            = &evs_log_storage;
+        CFE_EVS_Global.EVS_AppID                             = evsid;
+        CFE_EVS_Global.EVS_TlmPkt.Payload.MessageFormatMode  = CFE_EVS_MsgFormat_LONG;
+        CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort         = CFE_EVS_PORT1_BIT;
+        CFE_EVS_Global.EVS_EventBurstMax                     = 0; /* squelch off for now */
+        CFE_EVS_Global.EVS_LogPtr->LogMode                   = CFE_EVS_LogMode_OVERWRITE;
+        evs_type_enable                                      = 1;
+        evs_psp_ns                                           = 0;
+        ta_transmits                                         = 0;
+        evs_printf_lines                                     = 0;
+
+        /* --- CFE_EVS_Register ----------------------------------------------------------- */
+        /* The caller is whatever CFE_ES_GetAppID says, which this driver points at app 1. */
+        ta_getappid = 1;
+        printf("evs_reg_badscheme rc=%ld\n", (long)CFE_EVS_Register(NULL, 0, 99));
+        printf("evs_reg_nullfilters rc=%ld\n", (long)CFE_EVS_Register(NULL, 2, CFE_EVS_EventFilter_BINARY));
+
+        filters[0].EventID = 10;
+        filters[0].Mask    = 0x0001;
+        filters[1].EventID = 20;
+        filters[1].Mask    = 0x0000;
+        filters[2].EventID = 30;
+        filters[2].Mask    = 0xFFFF;
+        printf("evs_reg rc=%ld\n", (long)CFE_EVS_Register(filters, 3, CFE_EVS_EventFilter_BINARY));
+        adp = EVS_GetAppDataByID(evsid);
+        printf("evs_reg_state used=%d active=%d tokens=%ld mask=%u\n", (int)EVS_AppDataIsUsed(adp),
+               adp->ActiveFlag, (long)adp->SquelchTokens, EVS_EventArrayToBitMask(adp));
+        /* The three supplied filters, then the first unused slot: NASA marks those FREE_SLOT
+         * (-1), which in a uint16 EventID is 0xFFFF. */
+        for (k = 0; k < 4; k++)
+        {
+            printf("evs_reg_filter[%d] id=%u mask=%04x count=%u\n", k, adp->BinFilters[k].EventID,
+                   adp->BinFilters[k].Mask, adp->BinFilters[k].Count);
+        }
+
+        /* more filters than the table holds: truncated, with a syslog line */
+        printf("evs_reg_trunc rc=%ld\n",
+               (long)CFE_EVS_Register(filters, 99, CFE_EVS_EventFilter_BINARY));
+
+        /* --- CFE_EVS_SendEvent, through the whole pipeline ------------------------------ */
+        /* Re-register with the three filters, then send. Every successful send prints the
+         * port line, which carries the formatted text, the app name, the ids and the time. */
+        CFE_EVS_Register(filters, 3, CFE_EVS_EventFilter_BINARY);
+        printf("evs_send_nullspec rc=%ld\n",
+               (long)CFE_EVS_SendEvent(1, CFE_EVS_EventType_INFORMATION, NULL));
+
+        printf("evs_send_plain rc=%ld\n",
+               (long)CFE_EVS_SendEvent(1, CFE_EVS_EventType_INFORMATION, "plain text"));
+        /* the conversions EVS's own call sites use */
+        printf("evs_send_fmt rc=%ld\n",
+               (long)CFE_EVS_SendEvent(2, CFE_EVS_EventType_ERROR, "s=%s u=%u d=%d x=%08x",
+                                       "name", 7u, -3, 0xbeefu));
+
+        /* a message LONGER than the 122-byte payload: truncated, and marked with '$' */
+        printf("evs_send_long rc=%ld\n",
+               (long)CFE_EVS_SendEvent(3, CFE_EVS_EventType_INFORMATION,
+                                       "%s%s%s%s%s%s%s%s%s%s%s%s%s",
+                                       "0123456789", "0123456789", "0123456789", "0123456789",
+                                       "0123456789", "0123456789", "0123456789", "0123456789",
+                                       "0123456789", "0123456789", "0123456789", "0123456789",
+                                       "0123456789"));
+        printf("evs_trunc_count %u\n", CFE_EVS_Global.EVS_TlmPkt.Payload.MessageTruncCounter);
+
+        /* event 10 has mask 0x0001: the FIRST send gets through (count 0), the second is
+         * filtered because Mask & Count is nonzero */
+        printf("evs_filt_first rc=%ld\n",
+               (long)CFE_EVS_SendEvent(10, CFE_EVS_EventType_INFORMATION, "filtered id pass 1"));
+        printf("evs_filt_second rc=%ld\n",
+               (long)CFE_EVS_SendEvent(10, CFE_EVS_EventType_INFORMATION, "filtered id pass 2"));
+        /* mask 0 never filters; mask 0xFFFF filters everything after the first */
+        printf("evs_filt_mask0 rc=%ld\n",
+               (long)CFE_EVS_SendEvent(20, CFE_EVS_EventType_INFORMATION, "mask zero"));
+        printf("evs_filt_maskall rc=%ld\n",
+               (long)CFE_EVS_SendEvent(30, CFE_EVS_EventType_INFORMATION, "mask all"));
+        printf("evs_filt_maskall2 rc=%ld\n",
+               (long)CFE_EVS_SendEvent(30, CFE_EVS_EventType_INFORMATION, "mask all again"));
+
+        /* the type switch: CFE_EVS_GetTypeEnable off filters everything */
+        evs_type_enable = 0;
+        printf("evs_typeoff rc=%ld\n",
+               (long)CFE_EVS_SendEvent(4, CFE_EVS_EventType_INFORMATION, "type disabled"));
+        evs_type_enable = 1;
+
+        /* the per-app active flag does the same, one level earlier */
+        adp             = EVS_GetAppDataByID(evsid);
+        adp->ActiveFlag = false;
+        printf("evs_inactive rc=%ld\n",
+               (long)CFE_EVS_SendEvent(5, CFE_EVS_EventType_INFORMATION, "app inactive"));
+        adp->ActiveFlag = true;
+
+        printf("evs_counters sent=%u app=%u\n",
+               CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter, adp->EventCount);
+
+        /* --- the "not registered" path -------------------------------------------------- */
+        /* App 2 has never registered, so its first event logs and counts, and its second is
+         * silent -- EVS remembers it has already complained about that app. */
+        ta_getappid = 2;
+        printf("evs_unreg1 rc=%ld\n",
+               (long)CFE_EVS_SendEvent(6, CFE_EVS_EventType_ERROR, "from an unregistered app"));
+        printf("evs_unreg2 rc=%ld\n",
+               (long)CFE_EVS_SendEvent(7, CFE_EVS_EventType_ERROR, "again"));
+        printf("evs_unreg_count %u\n", CFE_EVS_Global.EVS_TlmPkt.Payload.UnregisteredAppCounter);
+        ta_getappid = 1;
+
+        /* --- SendEventWithAppID and SendTimedEvent -------------------------------------- */
+        printf("evs_withid_bad rc=%ld\n",
+               (long)CFE_EVS_SendEventWithAppID(8, CFE_EVS_EventType_INFORMATION,
+                                                CFE_ES_APPID_C(CFE_ResourceId_FromInteger(99)),
+                                                "bad id"));
+        printf("evs_withid rc=%ld\n",
+               (long)CFE_EVS_SendEventWithAppID(9, CFE_EVS_EventType_INFORMATION, evsid,
+                                                "by app id"));
+        {
+            CFE_TIME_SysTime_t ts;
+            ts.Seconds    = 123;
+            ts.Subseconds = 456;
+            printf("evs_timed rc=%ld\n",
+                   (long)CFE_EVS_SendTimedEvent(ts, 11, CFE_EVS_EventType_INFORMATION, "timed"));
+        }
+
+        /* --- the squelch bucket --------------------------------------------------------- */
+        /* With a burst budget the token count is what decides. Each event costs 1000 and the
+         * clock does not move, so a burst of 3 drains to the floor and the next send is
+         * refused with CFE_EVS_APP_SQUELCHED.
+         *
+         * EIGHT iterations, not five. At five the token count walked 2000, 1000, 0, -1000,
+         * -2000 and never reached LOWER_THRESHOLD, so a negative control that DOUBLED the floor
+         * left this transcript byte-identical -- the clamp was translated and never exercised.
+         * Eight reaches -3000 and then stays there, which is the clamp itself. */
+        CFE_EVS_Global.EVS_EventBurstMax = 3;
+        adp                              = EVS_GetAppDataByID(evsid);
+        adp->SquelchTokens               = 3000;
+        adp->SquelchedCount              = 0;
+        adp->LastSquelchCreditableTime.ticks = 0;
+        evs_psp_ns                       = 0;
+        for (k = 0; k < 8; k++)
+        {
+            printf("evs_squelch%d rc=%ld tok=%ld cnt=%u\n", k,
+                   (long)CFE_EVS_SendEvent(40 + k, CFE_EVS_EventType_INFORMATION, "burst"),
+                   (long)adp->SquelchTokens, adp->SquelchedCount);
+        }
+        /* move the clock forward a second: 15 events/sec * 1000 ms = 15000 credits, capped at
+         * EventBurstMax * 1000 */
+        evs_psp_ns = 1000000000LL;
+        printf("evs_squelch_credit rc=%ld tok=%ld\n",
+               (long)CFE_EVS_SendEvent(50, CFE_EVS_EventType_INFORMATION, "after a second"),
+               (long)adp->SquelchTokens);
+        CFE_EVS_Global.EVS_EventBurstMax = 0;
+
+        /* --- ResetFilter / ResetAllFilters ---------------------------------------------- */
+        adp = EVS_GetAppDataByID(evsid);
+        printf("evs_resetf_known rc=%ld count=%u\n", (long)CFE_EVS_ResetFilter(10),
+               adp->BinFilters[0].Count);
+        printf("evs_resetf_unknown rc=%ld\n", (long)CFE_EVS_ResetFilter(999));
+        adp->BinFilters[1].Count = 5;
+        adp->BinFilters[2].Count = 6;
+        printf("evs_resetall rc=%ld c1=%u c2=%u\n", (long)CFE_EVS_ResetAllFilters(),
+               adp->BinFilters[1].Count, adp->BinFilters[2].Count);
+        /* both reject an unregistered caller */
+        ta_getappid = 2;
+        printf("evs_resetf_unreg rc=%ld\n", (long)CFE_EVS_ResetFilter(10));
+        printf("evs_resetall_unreg rc=%ld\n", (long)CFE_EVS_ResetAllFilters());
+        ta_getappid = 1;
+
+        /* --- the helpers nothing else reaches ------------------------------------------- */
+        printf("evs_bitmask bad0=%d badbig=%d ok=%d\n", (int)EVS_IsInvalidBitMask(0, 1),
+               (int)EVS_IsInvalidBitMask(0x10, 2), (int)EVS_IsInvalidBitMask(0x5, 3));
+        EVS_SetTypes(adp, 0x0, true);
+        printf("evs_settypes none=%u\n", EVS_EventArrayToBitMask(adp));
+        EVS_SetTypes(adp, CFE_EVS_ALL_EVENT_TYPES_MASK, true);
+        printf("evs_settypes all=%u\n", EVS_EventArrayToBitMask(adp));
+        EVS_SetTypes(adp, CFE_EVS_DEBUG_BIT | CFE_EVS_ERROR_BIT, false);
+        printf("evs_settypes cleared=%u\n", EVS_EventArrayToBitMask(adp));
+        EVS_SetTypes(NULL, 0xFF, true); /* the NULL guard */
+        printf("evs_settypes nullsafe=%u\n", EVS_EventArrayToBitMask(NULL));
+
+        printf("evs_findid known=%d unknown=%d\n",
+               (int)(EVS_FindEventID(20, adp->BinFilters) == &adp->BinFilters[1]),
+               (int)(EVS_FindEventID(999, adp->BinFilters) == NULL));
+
+        /* EVS_GetApplicationInfo by name, which is how the ground addresses an app */
+        {
+            EVS_AppData_t *byname = NULL;
+            printf("evs_byname_ok rc=%ld match=%d\n", (long)EVS_GetApplicationInfo(&byname, "CFE_EVS"),
+                   (int)(byname == EVS_GetAppDataByID(evsid)));
+            printf("evs_byname_unreg rc=%ld null=%d\n",
+                   (long)EVS_GetApplicationInfo(&byname, "OTHER_APP"), (int)(byname == NULL));
+            printf("evs_byname_nosuch rc=%ld\n", (long)EVS_GetApplicationInfo(&byname, "NOPE"));
+        }
+    }
+
+    /* --- cfe_evs_log.c -------------------------------------------------------------------- */
+    {
+        CFE_EVS_LongEventTlm_t   entry;
+        CFE_EVS_SetLogModeCmd_t  modecmd;
+        CFE_EVS_WriteLogDataFileCmd_t wrcmd;
+        int                      k;
+
+        EVS_ClearLog();
+        printf("evs_log_clear next=%u count=%u full=%u ovf=%u\n", CFE_EVS_Global.EVS_LogPtr->Next,
+               CFE_EVS_Global.EVS_LogPtr->LogCount, CFE_EVS_Global.EVS_LogPtr->LogFullFlag,
+               CFE_EVS_Global.EVS_LogPtr->LogOverflowCounter);
+
+        /* fill past the end: 20 entries fill it, the 21st wraps in OVERWRITE mode */
+        memset(&entry, 0, sizeof(entry));
+        for (k = 0; k < 22; k++)
+        {
+            entry.Payload.PacketID.EventID = (uint16)(100 + k);
+            EVS_AddLog(&entry);
+        }
+        printf("evs_log_wrap next=%u count=%u full=%u ovf=%u first=%u\n",
+               CFE_EVS_Global.EVS_LogPtr->Next, CFE_EVS_Global.EVS_LogPtr->LogCount,
+               CFE_EVS_Global.EVS_LogPtr->LogFullFlag,
+               CFE_EVS_Global.EVS_LogPtr->LogOverflowCounter,
+               CFE_EVS_Global.EVS_LogPtr->LogEntry[0].Payload.PacketID.EventID);
+
+        /* DISCARD mode: the overflow counter still climbs but nothing is written */
+        CFE_EVS_Global.EVS_LogPtr->LogMode = CFE_EVS_LogMode_DISCARD;
+        entry.Payload.PacketID.EventID     = 777;
+        EVS_AddLog(&entry);
+        printf("evs_log_discard next=%u ovf=%u at2=%u\n", CFE_EVS_Global.EVS_LogPtr->Next,
+               CFE_EVS_Global.EVS_LogPtr->LogOverflowCounter,
+               CFE_EVS_Global.EVS_LogPtr->LogEntry[2].Payload.PacketID.EventID);
+
+        /* SetLogModeCmd, both valid modes and one that is not */
+        memset(&modecmd, 0, sizeof(modecmd));
+        modecmd.Payload.LogMode = CFE_EVS_LogMode_OVERWRITE;
+        printf("evs_setmode_ovr rc=%ld mode=%u\n", (long)CFE_EVS_SetLogModeCmd(&modecmd),
+               CFE_EVS_Global.EVS_LogPtr->LogMode);
+        modecmd.Payload.LogMode = CFE_EVS_LogMode_DISCARD;
+        printf("evs_setmode_dis rc=%ld mode=%u\n", (long)CFE_EVS_SetLogModeCmd(&modecmd),
+               CFE_EVS_Global.EVS_LogPtr->LogMode);
+        modecmd.Payload.LogMode = 7;
+        printf("evs_setmode_bad rc=%ld mode=%u\n", (long)CFE_EVS_SetLogModeCmd(&modecmd),
+               CFE_EVS_Global.EVS_LogPtr->LogMode);
+        modecmd.Payload.LogMode = CFE_EVS_LogMode_OVERWRITE;
+        CFE_EVS_SetLogModeCmd(&modecmd);
+
+        /* WriteLogDataFileCmd, through the translated fs module and the simulated file */
+        memset(&wrcmd, 0, sizeof(wrcmd));
+        strncpy(wrcmd.Payload.LogFilename, "/ram/evs.log", sizeof(wrcmd.Payload.LogFilename) - 1);
+        fs_open_fail = 0;
+        fs_wr_left   = -1;
+        fs_fd        = 0;
+        fs_len       = 0;
+        fs_pos       = 0;
+        printf("evs_wrlog rc=%ld len=%ld\n", (long)CFE_EVS_WriteLogDataFileCmd(&wrcmd), fs_len);
+        fs_dump("evs_wrlog_bytes", 16);
+
+        fs_open_fail = 1;
+        printf("evs_wrlog_nocreate rc=%ld\n", (long)CFE_EVS_WriteLogDataFileCmd(&wrcmd));
+        fs_open_fail = 0;
+
+        fs_wr_left = 4;
+        printf("evs_wrlog_hdrfail rc=%ld\n", (long)CFE_EVS_WriteLogDataFileCmd(&wrcmd));
+
+        fs_wr_left = 64;
+        printf("evs_wrlog_datafail rc=%ld\n", (long)CFE_EVS_WriteLogDataFileCmd(&wrcmd));
+        fs_wr_left = -1;
+
+        printf("evs_printf_lines %d\n", evs_printf_lines);
+    }
+
+    /* --- TA's events, through the real EVS -------------------------------------------------
+     * The TA block above ran with CFE_EVS_Global zeroed, so every event it sent was dropped
+     * before it reached the formatter: the ids and the branch taken were compared, the WORDING
+     * was not. Now EVS is standing and app 1 is registered, so running the same commands again
+     * puts TA's twenty event strings -- the affinity masks, the file sizes, the status codes,
+     * the message ids -- inside the byte-identical comparison. That is the half of the TA
+     * translation nothing has checked until now, and the half where the arguments live. */
+    {
+        CFE_TA_SetTaskAffinityCmd_t setcmd;
+        CFE_TA_GetTaskAffinityCmd_t getcmd;
+        CFE_TA_QueryAllTasksCmd_t   wrcmd;
+        union
+        {
+            CFE_SB_Buffer_t             Buf;
+            CFE_TA_SetTaskAffinityCmd_t Set;
+            unsigned char               Bytes[128];
+        } sb;
+
+        /* EVS is still registered as app 1 from the block above; make TA the caller of record
+         * and clear the filters so nothing is suppressed. */
+        ta_getappid = 1;
+        CFE_EVS_ResetAllFilters();
+        evs_type_enable = 1;
+        CFE_EVS_Global.EVS_EventBurstMax = 0;
+        CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort = CFE_EVS_PORT1_BIT;
+
+        ta_cores           = 1;
+        ta_evs_register_rc = CFE_SUCCESS;
+        ta_pipe_rc         = CFE_SUCCESS;
+        ta_subscribe_rc    = CFE_SUCCESS;
+        printf("tae_init rc=%ld\n", (long)CFE_TA_TaskInit());
+        printf("tae_noop rc=%ld\n", (long)CFE_TA_NoopCmd(NULL));
+        printf("tae_reset rc=%ld\n", (long)CFE_TA_ResetCountersCmd(NULL));
+
+        /* QueryAllTasks: the success line carries the filename, the entry count and the file
+         * size, and each failure line carries a status code in a different conversion. */
+        memset(&wrcmd, 0, sizeof(wrcmd));
+        strncpy(wrcmd.Payload.FileName, "/ram/tasks.dat", sizeof(wrcmd.Payload.FileName) - 1);
+        fs_open_fail = 0;
+        fs_wr_left   = -1;
+        fs_fd        = 0;
+        fs_len       = 0;
+        fs_pos       = 0;
+        printf("tae_qall rc=%ld\n", (long)CFE_TA_QueryAllTasksCmd(&wrcmd));
+        fs_open_fail = 1;
+        printf("tae_qall_nocreate rc=%ld\n", (long)CFE_TA_QueryAllTasksCmd(&wrcmd));
+        fs_open_fail = 0;
+        fs_wr_left = 4;
+        printf("tae_qall_hdrfail rc=%ld\n", (long)CFE_TA_QueryAllTasksCmd(&wrcmd));
+        fs_wr_left = 64;
+        printf("tae_qall_wrfail rc=%ld\n", (long)CFE_TA_QueryAllTasksCmd(&wrcmd));
+        fs_wr_left = -1;
+
+        /* SetTaskAffinity: the success event prints the mask twice with "0x%016llX", which is
+         * the only 64-bit conversion in the whole translation. */
+        memset(&setcmd, 0, sizeof(setcmd));
+        strncpy(setcmd.Payload.TaskName, "CFE_ES", sizeof(setcmd.Payload.TaskName) - 1);
+        setcmd.Payload.AffinityMask[0] = 0x01;
+        ta_getid_rc  = OS_SUCCESS;
+        ta_setaff_rc = OS_SUCCESS;
+        ta_getaff_rc = OS_SUCCESS;
+        ta_os_mask   = 0;
+        printf("tae_set rc=%ld\n", (long)CFE_TA_SetTaskAffinityCmd(&setcmd));
+        ta_setaff_rc = -5;
+        printf("tae_set_setfail rc=%ld\n", (long)CFE_TA_SetTaskAffinityCmd(&setcmd));
+        ta_setaff_rc = OS_SUCCESS;
+        ta_getaff_rc = -6;
+        printf("tae_set_getfail rc=%ld\n", (long)CFE_TA_SetTaskAffinityCmd(&setcmd));
+        ta_getaff_rc = OS_SUCCESS;
+        strncpy(setcmd.Payload.TaskName, "NO_SUCH", sizeof(setcmd.Payload.TaskName) - 1);
+        printf("tae_set_notfound rc=%ld\n", (long)CFE_TA_SetTaskAffinityCmd(&setcmd));
+
+        /* GetTaskAffinity: the discrepancy event takes no arguments, the success one takes
+         * three. */
+        memset(&getcmd, 0, sizeof(getcmd));
+        strncpy(getcmd.Payload.TaskName, "CFE_ES", sizeof(getcmd.Payload.TaskName) - 1);
+        printf("tae_get rc=%ld\n", (long)CFE_TA_GetTaskAffinityCmd(&getcmd));
+        ta_os_mask = 0x02;
+        printf("tae_get_diff rc=%ld\n", (long)CFE_TA_GetTaskAffinityCmd(&getcmd));
+        ta_getaff_rc = -6;
+        printf("tae_get_fail rc=%ld\n", (long)CFE_TA_GetTaskAffinityCmd(&getcmd));
+        ta_getaff_rc = OS_SUCCESS;
+        strncpy(getcmd.Payload.TaskName, "NO_SUCH", sizeof(getcmd.Payload.TaskName) - 1);
+        printf("tae_get_notfound rc=%ld\n", (long)CFE_TA_GetTaskAffinityCmd(&getcmd));
+
+        /* The dispatcher's three events: a bad length, a bad command code and a bad message id.
+         * Each prints a message id with a different hex conversion -- %X, %08x and %08X -- and
+         * those three spellings are exactly what the formatter had to learn. */
+        memset(&sb, 0, sizeof(sb));
+        CFE_MSG_Init(CFE_MSG_PTR(sb.Set.CommandHeader), CFE_SB_ValueToMsgId(CFE_TA_CMD_MID),
+                     sizeof(CFE_TA_SetTaskAffinityCmd_t));
+        CFE_MSG_SetFcnCode(&sb.Buf.Msg, CFE_TA_NOOP_CC);
+        printf("tae_len_bad %d\n", (int)CFE_TA_VerifyCmdLength(&sb.Buf.Msg, 9999));
+        CFE_MSG_SetFcnCode(&sb.Buf.Msg, 0x7E);
+        CFE_TA_ProcessGroundCommand(&sb.Buf, CFE_SB_ValueToMsgId(CFE_TA_CMD_MID));
+        printf("tae_badcc done\n");
+        CFE_MSG_Init(CFE_MSG_PTR(sb.Set.CommandHeader), CFE_SB_ValueToMsgId(0x1FFF),
+                     sizeof(CFE_TA_SetTaskAffinityCmd_t));
+        CFE_TA_TaskPipe(&sb.Buf);
+        printf("tae_badmid done\n");
+
+        printf("tae_counters cc=%u cec=%u evs=%u printed=%d\n", CFE_TA_Global.CommandCounter,
+               CFE_TA_Global.CommandErrorCounter,
+               CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter, evs_printf_lines);
+    }
     return 0;
 }
+
 
 
 

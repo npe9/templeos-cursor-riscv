@@ -83,8 +83,9 @@ U8 *StrNCpy(U8 *dst, U8 *src, I64 n)
 // nothing at all when Size is 0, and the return is the length that WOULD have been written, so
 // it can exceed Size. No cFS call site uses the return today; it is faithful anyway.
 //
-// HolyC has variadics, but a fixed arity with defaults is enough and reads better: the widest
-// translated call passes five arguments.
+// HolyC has variadics, and the core below takes the (fmt, argc, argv) triple one receives; the
+// fixed-arity wrapper is for the translated call sites that pass a known list. The widest of
+// those is EVS_SendViaPorts, with six.
 // The core, taking the (fmt, argc, argv) triple that a HolyC variadic function receives -- the
 // same shape TempleOS's own StrPrintJoin takes, so OS_printf can hand its varargs straight
 // through. StrPrintN below is the fixed-arity convenience that packs into the same call.
@@ -99,8 +100,9 @@ I64 StrPrintNV(U8 *Buf, I64 Size, U8 *Fmt, I64 nargs, I64 *args)
   I64 neg;
   I64 width;
   I64 zeropad;
-  I64 base;
+  U64 base;
   I64 upper;
+  I64 islong;
   U8 *hexd;
   while (*Fmt) {
     if (*Fmt != '%') {
@@ -142,12 +144,15 @@ I64 StrPrintNV(U8 *Buf, I64 Size, U8 *Fmt, I64 nargs, I64 *args)
       // %d %u %x %X and the 'l' length modifier. OSAL and cFE print status codes with %d and
       // %ld and they are NEGATIVE -- treating those as unsigned would print
       // 18446744073709551615 where NASA prints -1.
+      islong = 0;
       if (*Fmt == 'l') {
-        Fmt++;              // consume the length modifier; 'l' is 64-bit here either way
+        Fmt++;              // consume the length modifier
         if (*Fmt == 'l')
           Fmt++;            // %lld
         if (*Fmt != 'd' && *Fmt != 'u' && *Fmt != 'x' && *Fmt != 'X')
           Fmt--;            // not a conversion after all: let the default branch see it
+        else
+          islong = 1;
       }
       base = 10;
       upper = 0;
@@ -169,7 +174,11 @@ I64 StrPrintNV(U8 *Buf, I64 Size, U8 *Fmt, I64 nargs, I64 *args)
       uv = sv;
       // A %x or %u of a value that arrived as a negative I64 prints the 32-bit pattern, which
       // is what C does for the (unsigned int) casts every cFS call site puts on these.
-      if (*Fmt != 'd' && base == 16)
+      // THE LENGTH MODIFIER DECIDES THE WIDTH. Masking unconditionally was wrong for %016llX,
+      // which TA uses to print a 64-bit affinity mask: in a one-core configuration the mask fits
+      // in 32 bits and the truncation is invisible, so this is the kind of thing a transcript
+      // agrees with right up to the first machine that has more than four cores.
+      if (*Fmt != 'd' && base == 16 && !islong)
         uv = uv & 0xFFFFFFFF;
       hexd = "0123456789abcdef";
       if (upper)
@@ -177,9 +186,13 @@ I64 StrPrintNV(U8 *Buf, I64 Size, U8 *Fmt, I64 nargs, I64 *args)
       ndig = 0;
       if (!uv)
         dig[ndig++] = '0';
+      // `uv = uv / base`, NOT `uv /= base`, and the two are not the same here: measured, the
+      // compound form emits a SIGNED divide for a U64, so %llu of a value above 2^63 printed 17
+      // digits instead of 20 while the sibling `uv % base` on the same line was unsigned.
+      // docs/HOLYC_STRUCT_LIMITS.md #11.
       while (uv > 0) {
         dig[ndig++] = hexd[uv % base];
-        uv /= base;
+        uv = uv / base;
       }
       // Zero- or space-padding to the field width, the minus sign counted inside it as C does.
       // THE SIGN'S POSITION DEPENDS ON THE FLAG, and getting that wrong is invisible until a
@@ -235,17 +248,26 @@ I64 StrPrintNV(U8 *Buf, I64 Size, U8 *Fmt, I64 nargs, I64 *args)
   return n;
 }
 
-// Fixed arity with defaults, for the translated call sites that pass a known argument list. It
-// packs five slots and passes nargs=5 exactly as the previous single-function version did, so
-// its output is unchanged -- the cFE gate's 135 identical lines are the check on that.
-I64 StrPrintN(U8 *Buf, I64 Size, U8 *Fmt, I64 a0=0, I64 a1=0, I64 a2=0, I64 a3=0, I64 a4=0)
+// Fixed arity with defaults, for the translated call sites that pass a known argument list --
+// EIGHT slots, not five. The first version took five, and EVS_SendViaPorts formats SIX
+// conversions -- "%s %u/%u/%s %u: %s" -- so the message text, the last one, was dropped and
+// every port line in the differential transcript read "(null)" where NASA's read the event.
+// Nothing warns: a HolyC default argument is a call-site expression, so a sixth argument to a
+// five-parameter function is simply not passed, and `nargs = 5` then makes StrPrintNV stop
+// short rather than read off the end. The arity here is a HARD CEILING on every format string
+// in the port, so it is written down: raise it when a call site needs more.
+I64 StrPrintN(U8 *Buf, I64 Size, U8 *Fmt, I64 a0=0, I64 a1=0, I64 a2=0, I64 a3=0, I64 a4=0,
+              I64 a5=0, I64 a6=0, I64 a7=0)
 {
-  I64 args[5];
+  I64 args[8];
   args[0] = a0;
   args[1] = a1;
   args[2] = a2;
   args[3] = a3;
   args[4] = a4;
-  return StrPrintNV(Buf, Size, Fmt, 5, args);
+  args[5] = a5;
+  args[6] = a6;
+  args[7] = a7;
+  return StrPrintNV(Buf, Size, Fmt, 8, args);
 }
 #endif

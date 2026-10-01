@@ -128,6 +128,17 @@ python3 "$ROOT/tools/cfs/check_constants.py" || exit 1
 # the configuration excludes.
 python3 "$ROOT/tools/cfs/check_manifest.py" || exit 1
 
+# --- the variadic seam -------------------------------------------------------------------------
+# A HolyC variadic function receives an implicit (argc, argv) pair and THE CALL SITE builds it,
+# so a call compiled before the compiler has seen a `...` declaration packs nothing and the
+# callee reads whatever the ABI left behind -- with no diagnostic at either end. Its first run
+# found both shapes live at once: EVS_SendEvent called from four places above its own definition
+# (which reached StrPrintNV as nargs=1, args=NULL and faulted on a load from address 0), and
+# CFE_EVS_SendEvent declared NON-VARIADIC in cfe_ta_task.HC while cfe_evs.HC defines the variadic
+# one. The second is invisible to check_signatures, which compares DEFINITIONS, and both
+# definitions were right.
+python3 "$ROOT/tools/cfs/check_variadic.py" || exit 1
+
 # --- reference: NASA's C, unmodified ----------------------------------------------------------
 # shellcheck disable=SC2086
 if ! "$HOSTCC" -O0 -w $INC -o "$T/ref" "$ROOT/tests/osal/oracle_osal.c" $SRC_C 2>"$T/cc.log"; then

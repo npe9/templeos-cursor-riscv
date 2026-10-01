@@ -80,6 +80,18 @@ I64 main()
   // 4
   r = r * 10 + (b[0] == 'Z');
   // 1 -- untouched
+  // THE 'll' LENGTH MODIFIER IS 64-BIT. A %x or %u is masked to 32 bits, because every cFS
+  // call site that uses one puts an (unsigned int) cast on the argument -- but %llX must not
+  // be, and TA prints a 64-bit affinity mask with exactly "0x%016llX". In a one-core
+  // configuration that mask fits in 32 bits, so the truncation agreed with C's output and was
+  // invisible until a value above 2^32 went through it.
+  StrPrintN(b, sizeof(b), "[%016llX][%llx][%llu]", 0x123456789ABCDEF0, 0x100000000, 0xFEDCBA9876543210);
+  r = Fold(r, b);
+  // C: [123456789ABCDEF0][100000000][18364758544493064720]
+  // and the 32-bit forms still mask, which is the behaviour the cFS call sites rely on
+  StrPrintN(b, sizeof(b), "[%x][%08X]", 0x123456789A, 0x123456789A);
+  r = Fold(r, b);
+  // C (with the (unsigned int) cast cFS puts there): [3456789a][3456789A]
   // an unhandled conversion is emitted literally rather than dropped, so it shows up in a
   // transcript. It consumes no argument, which is why nothing follows it here: a %s after a
   // %q would take the %q's argument and dereference an integer as a pointer.
