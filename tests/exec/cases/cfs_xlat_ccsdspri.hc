@@ -125,6 +125,17 @@ I64 StrCmp(U8 *st1, U8 *st2)
 #include "/Kernel/Cfs/cfe/cfe_ta_task.HC"
 #include "/Kernel/Cfs/cfe/cfe_ta_dispatch.HC"
 #include "/Kernel/Cfs/cfe/cfe_ta_objtab.HC"
+// EVS IS TRANSLATED BUT NOT YET INCLUDED HERE, deliberately. Wiring it in removes this
+// driver's CFE_EVS_SendEvent stub, so every `evs eid=N type=N` line the ta section emits
+// becomes a real event -- filtered, squelched, logged and formatted -- and both sides of the
+// oracle change together. That is the point of translating EVS and it is the next step, not a
+// loose end to tie at the end of a session. Until then check_manifest reports evs 0%, which is
+// the honest number: cfe_evs_utils.HC, cfe_evs_log.HC and cfe_evs.HC are under coverage,
+// signatures, structs, padding and constants, and under nothing that runs them.
+//   #include "/Kernel/Cfs/cfe/cfe_evs_global.HC"
+//   #include "/Kernel/Cfs/cfe/cfe_evs_utils.HC"
+//   #include "/Kernel/Cfs/cfe/cfe_evs_log.HC"
+//   #include "/Kernel/Cfs/cfe/cfe_evs.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {

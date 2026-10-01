@@ -71,8 +71,13 @@ U8 *StrNCpy(U8 *dst, U8 *src, I64 n)
 // property every gate here rests on. So the SPELLING is TempleOS and the CONVERSIONS are C, and
 // the reason is that the input is C.
 //
-// Covers exactly the conversions the translated call sites use: %s, %u, %d and %ld. Anything
-// else is emitted literally so an unhandled case appears in a transcript instead of vanishing.
+// Covers exactly the conversions the translated call sites use: %s, %u, %d, %x, %X, the 'l'
+// and 'll' length modifiers, and a leading zero-or-space field width as in %08x. Anything else
+// is emitted literally so an unhandled case appears in a transcript instead of vanishing.
+//
+// The hex and width forms were added when EVS arrived: it is the first translated module whose
+// FORMATTED OUTPUT is the payload (the event text is the packet), so for the first time the
+// formatter's agreement with C is inside the byte-identical comparison rather than beside it.
 //
 // Truncation and the return value are C's snprintf: at most Size-1 characters plus a NUL,
 // nothing at all when Size is 0, and the return is the length that WOULD have been written, so
@@ -90,6 +95,13 @@ I64 StrPrintNV(U8 *Buf, I64 Size, U8 *Fmt, I64 nargs, I64 *args)
   U8 *sp;
   U64 uv;
   I64 sv;
+  I64 ndig;
+  I64 neg;
+  I64 width;
+  I64 zeropad;
+  I64 base;
+  I64 upper;
+  U8 *hexd;
   while (*Fmt) {
     if (*Fmt != '%') {
       if (Size > 0 && n < Size - 1)
@@ -99,6 +111,20 @@ I64 StrPrintNV(U8 *Buf, I64 Size, U8 *Fmt, I64 nargs, I64 *args)
       continue;
     }
     Fmt++;
+    // C's flags and field width, in the one combination cFS uses: an optional '0' and an
+    // optional decimal width, as in "%08x". Parsed before the conversion so that a width on a
+    // conversion this does not handle still comes out as the literal text, rather than being
+    // half-consumed.
+    zeropad = 0;
+    width = 0;
+    if (*Fmt == '0') {
+      zeropad = 1;
+      Fmt++;
+    }
+    while (*Fmt >= '0' && *Fmt <= '9') {
+      width = width * 10 + (*Fmt - '0');
+      Fmt++;
+    }
     if (*Fmt == 's') {
       sp = NULL;
       if (ai < nargs)
@@ -112,54 +138,79 @@ I64 StrPrintNV(U8 *Buf, I64 Size, U8 *Fmt, I64 nargs, I64 *args)
         n++;
         sp++;
       }
-    } else if (*Fmt == 'd' || *Fmt == 'l') {
-      // %d and %ld. OSAL prints status codes with both, and they are NEGATIVE -- treating them
-      // as unsigned would print 18446744073709551615 where NASA prints -1.
+    } else if (*Fmt == 'd' || *Fmt == 'u' || *Fmt == 'x' || *Fmt == 'X' || *Fmt == 'l') {
+      // %d %u %x %X and the 'l' length modifier. OSAL and cFE print status codes with %d and
+      // %ld and they are NEGATIVE -- treating those as unsigned would print
+      // 18446744073709551615 where NASA prints -1.
       if (*Fmt == 'l') {
         Fmt++;              // consume the length modifier; 'l' is 64-bit here either way
-        if (*Fmt != 'd' && *Fmt != 'u')
-          Fmt--;            // not %ld/%lu after all: let the default branch see it
+        if (*Fmt == 'l')
+          Fmt++;            // %lld
+        if (*Fmt != 'd' && *Fmt != 'u' && *Fmt != 'x' && *Fmt != 'X')
+          Fmt--;            // not a conversion after all: let the default branch see it
+      }
+      base = 10;
+      upper = 0;
+      if (*Fmt == 'x')
+        base = 16;
+      if (*Fmt == 'X') {
+        base = 16;
+        upper = 1;
       }
       sv = 0;
       if (ai < nargs)
         sv = args[ai];
       ai++;
-      if (sv < 0) {
-        if (Size > 0 && n < Size - 1)
-          Buf[n] = '-';
-        n++;
+      neg = 0;
+      if (*Fmt == 'd' && sv < 0) {
+        neg = 1;
         sv = -sv;
       }
       uv = sv;
-      i = 0;
+      // A %x or %u of a value that arrived as a negative I64 prints the 32-bit pattern, which
+      // is what C does for the (unsigned int) casts every cFS call site puts on these.
+      if (*Fmt != 'd' && base == 16)
+        uv = uv & 0xFFFFFFFF;
+      hexd = "0123456789abcdef";
+      if (upper)
+        hexd = "0123456789ABCDEF";
+      ndig = 0;
       if (!uv)
-        dig[i++] = '0';
+        dig[ndig++] = '0';
       while (uv > 0) {
-        dig[i++] = '0' + uv % 10;
-        uv /= 10;
+        dig[ndig++] = hexd[uv % base];
+        uv /= base;
       }
-      while (i > 0) {
-        i--;
+      // Zero- or space-padding to the field width, the minus sign counted inside it as C does.
+      // THE SIGN'S POSITION DEPENDS ON THE FLAG, and getting that wrong is invisible until a
+      // negative number meets a zero-padded width: C writes %06d of -42 as "-00042", with the
+      // sign first and the zeros after it, while spaces go BEFORE the sign ("   -42"). An
+      // earlier version here padded first in both cases and produced "000-42".
+      if (neg && zeropad) {
         if (Size > 0 && n < Size - 1)
-          Buf[n] = dig[i];
+          Buf[n] = '-';
         n++;
       }
-    } else if (*Fmt == 'u') {
-      uv = 0;
-      if (ai < nargs)
-        uv = args[ai];
-      ai++;
-      i = 0;
-      if (!uv)
-        dig[i++] = '0';
-      while (uv > 0) {
-        dig[i++] = '0' + uv % 10;
-        uv /= 10;
+      i = ndig + neg;
+      while (i < width) {
+        if (Size > 0 && n < Size - 1) {
+          if (zeropad)
+            Buf[n] = '0';
+          else
+            Buf[n] = ' ';
+        }
+        n++;
+        i++;
       }
-      while (i > 0) {
-        i--;
+      if (neg && !zeropad) {
         if (Size > 0 && n < Size - 1)
-          Buf[n] = dig[i];
+          Buf[n] = '-';
+        n++;
+      }
+      while (ndig > 0) {
+        ndig--;
+        if (Size > 0 && n < Size - 1)
+          Buf[n] = dig[ndig];
         n++;
       }
     } else {

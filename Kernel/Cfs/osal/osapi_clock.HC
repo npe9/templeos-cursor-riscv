@@ -39,10 +39,9 @@
 #define INT32_MAX 0x7FFFFFFF
 #define INT64_MAX 0x7FFFFFFFFFFFFFFF
 
-class OS_time_t
-{
-  I64 ticks; // Ticks elapsed since reference point
-};
+// The type and the tick scale live beside this file so cFE can have OS_time_t without this
+// implementation -- see os_shared_clock.HC.
+#include "os_shared_clock.HC"
 // OS_TIME_ZERO and OS_TIME_MAX are compound literals in the C; HolyC has none, so they are
 // functions, as CFE_SB_INVALID_MSG_ID and CFE_SBR_INVALID_ROUTE_ID became.
 OS_time_t OS_TimeZero()

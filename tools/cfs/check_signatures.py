@@ -119,6 +119,13 @@ DEVIATIONS = {
         "returns CFE_ConfigObj_ArrayValue_t (16 bytes) BY VALUE; HolyC has no struct-return "
         "ABI, so the translation takes a destination pointer. Documented at the call site and "
         "in docs/HOLYC_STRUCT_LIMITS.md."),
+    'EVS_GenerateEventTelemetry': (
+        ',NUM,NUM,PTRNUM,PTRB,', ',NUM,NUM,PTRNUM,PTRB,SZ,PTRSZ',
+        "takes a `va_list` as its last parameter. HolyC has no va_list type; a variadic "
+        "function there receives an implicit (argc, argv) pair instead, which is the same "
+        "triple StrPrintNV takes, so the one parameter becomes two. This is the seam that lets "
+        "the event text -- which IS the packet payload -- be formatted by the translation and "
+        "compared byte for byte. See the note at the top of cfe_evs_utils.HC."),
 }
 
 KEYWORDS = {'if', 'for', 'while', 'switch', 'return', 'else', 'do', 'sizeof'}

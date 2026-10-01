@@ -49,7 +49,9 @@
 // Both are CFE_MISSION_*_CFGVAL indirections in the C, resolving to the DEFAULT_* values below
 // in a configuration that does not use EDS. Measured with the host preprocessor rather than
 // read off, because the indirection goes through a token paste.
+#ifndef CFE_MISSION_MAX_PATH_LEN
 #define CFE_MISSION_MAX_PATH_LEN 64
+#endif
 #define CFE_FS_HDR_DESC_MAX_LEN  32
 #define CFE_FS_FILE_CONTENT_ID   0x63464531 // 'cFE1'
 // --- osconfig.h -------------------------------------------------------------------------------

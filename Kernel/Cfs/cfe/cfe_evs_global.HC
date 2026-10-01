@@ -33,6 +33,17 @@
 // pretending cfe_evs_task.HC comes first.
 #ifndef CFE_EVS_GLOBAL_HC
 #define CFE_EVS_GLOBAL_HC
+// What these declarations are built from. All three are guarded, so including them here costs
+// nothing where a driver has them already, and it means this file can be included first.
+#include "../osal/osconfig.HC"        // OS_MAX_API_NAME
+#include "../osal/os_shared_clock.HC" // OS_time_t, which every app's record holds one of
+#include "cfe_resourceid.HC"          // CFE_RESOURCEID_UNDEFINED and the id helpers
+#ifndef CFE_MISSION_MAX_API_LEN
+#define CFE_MISSION_MAX_API_LEN 20
+#endif
+#ifndef CFE_MISSION_MAX_PATH_LEN
+#define CFE_MISSION_MAX_PATH_LEN 64
+#endif
 // --- cfe_error.h: the codes EVS returns -------------------------------------------------------
 #define CFE_EVS_UNKNOWN_FILTER        0xC2000001
 #define CFE_EVS_APP_NOT_REGISTERED    0xC2000002
@@ -43,6 +54,17 @@
 #define CFE_EVS_FILE_WRITE_ERROR      0xC2000007
 #define CFE_EVS_INVALID_PARAMETER     0xC2000008
 #define CFE_EVS_NOT_IMPLEMENTED       0xC200FFFF
+#define CFE_EVS_APP_SQUELCHED         0xC2000009
+#ifndef CFE_ES_BAD_ARGUMENT
+#define CFE_ES_BAD_ARGUMENT           0xC400000A
+#endif
+// cfe_evs_task.h
+#define CFE_EVS_FREE_SLOT (-1)
+// cfe_evs_internal_cfg.h: which event types an app has enabled when it registers. 14 is
+// INFORMATION | ERROR | CRITICAL -- DEBUG is off by default.
+#define CFE_PLATFORM_EVS_DEFAULT_TYPE_FLAG        14
+#define CFE_PLATFORM_EVS_DEFAULT_LOG_MODE         1
+#define CFE_PLATFORM_EVS_DEFAULT_MSG_FORMAT_MODE  1
 // --- cfe_evs_extern_typedefs.h ----------------------------------------------------------------
 // CFE_EVS_EventType_Enum_t. The numbering matters twice over: the bit masks below are
 // 1 << (type - 1), and EventTypesActive is indexed by (type - 1).

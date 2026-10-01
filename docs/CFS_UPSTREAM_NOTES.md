@@ -255,3 +255,23 @@ cFE's own generated platform table shows the right pattern three lines away —
 Reproduced, not fixed. (The translation hit the same hazard independently: the first version of
 `tools/cfs/gen_platform_config.py` reused one local descriptor for all three arrays, and the
 transcript read `NumElements` as 2156050768.)
+
+## 9. CFE_EVS_WriteLogDataFileCmd guards a cFE status with OS_SUCCESS
+
+`modules/evs/fsw/src/cfe_evs_log.c` builds `Result` from `CFE_FS_ParseInputFileNameEx` (a cFE
+status) and from `CFE_STATUS_EXTERNAL_RESOURCE_FAIL`, and then tests it against OSAL's success
+code:
+
+```c
+Result = CFE_FS_ParseInputFileNameEx(...);
+...
+    Result = CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
+...
+if (Result == OS_SUCCESS)      /* <- OS_SUCCESS, not CFE_SUCCESS */
+```
+
+Both are 0, so the guard is correct — by coincidence of value rather than by type. It is the
+only place in EVS that mixes the two namespaces, and every other comparison on the same
+variable in the same function uses `CFE_SUCCESS`. Reproduced as written, with a comment at the
+site: changing it would be a readability fix this port is not entitled to make, and if upstream
+ever gave the two codes different values the transcript would be the thing that noticed.

@@ -298,10 +298,39 @@ rather than counted as always-built:
 | `sb` | 7 | 5,278 | 4% |
 | `fs` | 3 | 1,249 | **100%** |
 | `ta` | 2 | 892 | **100%** (plus `cfe_ta_dispatch.c`, 159, which is conditional — see below) |
-| `evs` | 5 | 2,787 | 0% |
+| `evs` | 5 | 2,787 | 0% (three of six sources translated; see below) |
 | `time` | 5 | 4,383 | 0% |
 | `tbl` | 15 | 7,780 | 0% |
 | `es` | 17 | 12,734 | 0% |
+
+#### `evs`: translated but not yet gated, and why that is said out loud
+
+Three of EVS's six sources are translated — `cfe_evs_utils.c` (650), `cfe_evs_log.c` (277) and
+`cfe_evs.c` (336), 1,263 lines — and the manifest above still reports **0%**, because the
+manifest counts what the TRANSCRIPT covers and no EVS source is in the gate's source list yet.
+That is the honest number and it stays there until the driver integration lands.
+
+What *is* verified: coverage (21 of 21 functions), signatures (23, with one recorded
+deviation), `check_structs` and `check_padding` (71 classes) and `check_constants` (267 values).
+Five of the eight properties. The missing three are the transcript, and they are missing for a
+specific reason rather than for lack of effort: wiring EVS in **removes the `CFE_EVS_SendEvent`
+stub**, so every `evs eid=N type=N` line the `ta` module currently emits becomes a real event —
+filtered, squelched, logged and formatted — and both sides of the oracle change together. That
+is the point of translating EVS, and it is a change to be made deliberately rather than at the
+end of a long session.
+
+The variadic seam is what makes it possible at all. `EVS_GenerateEventTelemetry` formats the
+event text with `vsnprintf` into the 122-byte packet payload — the text *is* the message — so
+for the first time a formatted string is inside the byte-identical comparison instead of beside
+it. HolyC has no `va_list`, but a variadic function there receives an implicit `(argc, argv)`
+pair, which is exactly the triple `StrPrintNV` takes. One extra parameter, recorded in
+`check_signatures.py`'s `DEVIATIONS`.
+
+`StrPrintNV` grew `%x`, `%X` and field widths for it, and writing the oracle for those found a
+real bug: `%06d` of -42 produced `000-42` where C writes `-00042`. C puts the sign before zero
+padding and after space padding, and the first version padded first in both cases.
+`tests/exec/cases/e_strprint_hex.hc` pins the whole set, and its expected value is not a hash of
+the HolyC formatter — it is the number the same fold computes over C's `snprintf` output.
 
 #### A conditional source can hide behind a 100%
 

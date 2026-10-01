@@ -1,0 +1,90 @@
+// StrPrintNV's hex and field-width conversions must match C's snprintf exactly.
+//
+// Why this is pinned rather than left to the cFS gate. Until EVS, every formatted string in the
+// translation was deliberately OUTSIDE the differential comparison: CFE_ES_WriteToSysLog takes a
+// plain string here, and the event wording was a stub's business. EVS ends that. Its event text
+// is built with vsnprintf into the 122-byte packet payload and the packet IS the message, so
+// either the formatter agrees with C character for character or the transcript fails for a
+// reason that has nothing to do with the translation.
+//
+// The conversions cFS actually uses, counted across EVS's three sources: %s (14), %d (6),
+// %u (5), %ld (2), %08x (2), %08X (1). The hex and width forms were added to CfsStr.HC for
+// those, and this case is the check on them. The expected value is not a hash of a formatter:
+// every line here was run through C's snprintf and compared character by character first.
+#include "/Kernel/Cfs/CfsStr.HC"
+I64 StrLenX(U8 *s)
+{
+  I64 n = 0;
+  while (s[n])
+    n++;
+  return n;
+}
+// Fold a string into the accumulator so a wrong character anywhere changes the answer: a sum
+// alone would miss a transposition, so each byte is also weighted by its position.
+I64 Fold(I64 acc, U8 *s)
+{
+  I64 i = 0;
+  while (s[i]) {
+    acc = acc * 33 + s[i] * (i + 1);
+    acc = acc & 0xFFFFFFFF;
+    // masked EVERY step, so neither side can rely on wraparound
+    i++;
+  }
+  acc = acc * 31 + StrLenX(s);
+  return acc & 0xFFFFFFFF;
+}
+
+I64 main()
+{
+  U8 b[160];
+  I64 r = 0;
+  I64 n;
+  // the four conversions that existed before EVS, unchanged
+  StrPrintN(b, sizeof(b), "a=%s u=%u d=%d ld=%ld", "str", 42, -7, -1);
+  r = Fold(r, b);
+  // C: a=str u=42 d=-7 ld=-1
+  // lowercase and uppercase hex, bare
+  StrPrintN(b, sizeof(b), "[%x][%X]", 255, 255);
+  r = Fold(r, b);
+  // C: [ff][FF]
+  // zero-padded hex, which is the form every cFS status and id is printed with
+  StrPrintN(b, sizeof(b), "[%08x][%08X]", 0xabc, 0xdeadbeef);
+  r = Fold(r, b);
+  // C: [00000abc][DEADBEEF]
+  // space-padded and zero-padded decimal: the width applies to %d and %u too
+  StrPrintN(b, sizeof(b), "[%5d][%05d][%5u]", 42, 42, 42);
+  r = Fold(r, b);
+  // C: [   42][00042][   42]
+  // a negative number inside a field width: C counts the sign INSIDE the width
+  StrPrintN(b, sizeof(b), "[%6d][%06d]", -42, -42);
+  r = Fold(r, b);
+  // C: [   -42][-00042]
+  // the extremes: zero, and the most negative 32-bit value
+  StrPrintN(b, sizeof(b), "[%u][%d][%x]", 0, -2147483648, 0);
+  r = Fold(r, b);
+  // C: [0][-2147483648][0]
+  // a width SHORTER than the number does not truncate it
+  StrPrintN(b, sizeof(b), "[%2d][%02x]", 123456, 0xabcdef);
+  r = Fold(r, b);
+  // C: [123456][abcdef]
+  // the return value is C's: the length that WOULD have been written, even past the buffer
+  n = StrPrintN(b, 8, "0123456789abcdef");
+  r = r * 1000 + n;
+  // 16
+  r = r * 100 + StrLenX(b);
+  // 7 -- Size-1 characters plus the NUL
+  // Size == 0 writes nothing at all and still reports the full length
+  b[0] = 'Z';
+  n = StrPrintN(b, 0, "abcd");
+  r = r * 100 + n;
+  // 4
+  r = r * 10 + (b[0] == 'Z');
+  // 1 -- untouched
+  // an unhandled conversion is emitted literally rather than dropped, so it shows up in a
+  // transcript. It consumes no argument, which is why nothing follows it here: a %s after a
+  // %q would take the %q's argument and dereference an integer as a pointer.
+  StrPrintN(b, sizeof(b), "[%q]");
+  r = Fold(r, b);
+  // [%q]
+  return r & 0xFFFFFFFFFFFF;
+}
