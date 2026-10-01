@@ -845,8 +845,10 @@ branches and the three external-source branches included — and the blob refere
 `OS_SelectTone`, none of which this port builds. **The blob's import trailer caught it and nothing
 else would have**, because each of those is a name a C runtime could plausibly bind. The same
 directive makes `#define _CFG_HEAP_DBG FALSE` a no-op in `Kernel/KernelA.HH`, so this kernel runs
-with 48-byte heap headers where its configuration asks for 16. `docs/HOLYC_STRUCT_LIMITS.md` #15
-has the mechanism, the gate and what to expect when it is implemented.
+with 48-byte `CMemUsed` headers where its configuration asks for 16 — **measured both ways**, not
+inferred, because the thing in question is how this compiler reads text.
+`docs/HOLYC_STRUCT_LIMITS.md` #15 has the mechanism, the gate, the two measured layouts and what
+to establish a baseline for before implementing it.
 
 **Three defects the gates found on the way in, each in a different gate's blind spot:**
 

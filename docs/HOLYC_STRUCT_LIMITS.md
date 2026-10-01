@@ -612,11 +612,28 @@ class CMemUsed { CHeapCtrl *hc; U0 caller1,caller2;   U0 next,last;         I64 
 #endif
 ```
 
-The `FALSE` is ignored, so this kernel uses the DEBUG layout — a 48-byte heap header where the
-configuration asks for 16 — and the three matching `#if _CFG_HEAP_DBG` blocks in
-`Kernel/Mem/MAllocFree.HC` maintain the debug queue that goes with it. It is self-consistent and
-it boots, which is exactly why nobody noticed. `Adam/AMem.HC` and `tos/Misc/OSInstall.HC` have one
-site each.
+The `FALSE` is ignored, so this kernel uses the DEBUG layout. **Measured both ways** with the
+declarations copied verbatim into an exec case, rather than inferred from reading them — which
+matters here more than usual, because the thing in question is how this compiler reads text:
+
+| layout | `CMemUsed` | `CMemUnused` |
+|---|---|---|
+| what `#if _CFG_HEAP_DBG` compiles today | **48** | **40** |
+| what `#if 0` compiles, i.e. NASA's `#else` | **16** | **16** |
+
+So it is 32 and 24 bytes of header per allocation that the configuration does not ask for. The
+`#else` branch also COMPILES and gives 16, which was worth checking separately: it has never been
+compiled in this port's life, and it leans on four `U0` zero-size members in non-trailing
+positions — the shape limit #7's fix was about. It works.
+
+**A correction to the first version of this entry, and it is the same error twice in one day.**
+It said the three matching `#if _CFG_HEAP_DBG` blocks in `Kernel/Mem/MAllocFree.HC` maintain the
+debug queue that goes with the layout. **`Kernel/Mem/MAllocFree.HC` is not in the RISC-V build** —
+`Kernel/Kernel_RV.PRJ` includes `Mem/MakeMem` and not it, because that file is x86 assembly. The
+claim came from grepping for the directive and reasoning about what the grep found, which is
+exactly how the `vim.hc` paragraph under #14 went wrong. What IS built is `KernelA.HH`, so the
+class DEFINITIONS are the real consequence and the queue maintenance is not. `Adam/AMem.HC` and
+`tos/Misc/OSInstall.HC` have one site each and are likewise not in this kernel's project file.
 
 **What it cost in cFS, and how it surfaced.** `cfe_time_tone.c`, `cfe_time_task.c` and
 `cfe_time_dispatch.c` between them carry 35 configuration directives, and the first version of the
@@ -638,7 +655,11 @@ case starts failing, `#if` has been implemented and the pin should become `0x4c6
 reproduce `0x457`. The manifest says so on the line above it. The case also includes a genuinely
 true `#if 1`, so a "fix" that made every `#if` false would be caught too.
 
-**When it is fixed, expect the kernel's heap layout to change** — `CMemUsed` goes from 48 bytes to
-16 and the debug queue stops being maintained. That is the correct behaviour and it is still a
-behavioural change to a running allocator, so it wants its own commit and its own measurement
-rather than being folded into whatever implements the directive.
+**When it is fixed, expect the kernel's heap layout to change** — `CMemUsed` 48 → 16 and
+`CMemUnused` 40 → 16, measured above rather than predicted. That is the correct behaviour and it is
+still a behavioural change to a running allocator, so it wants its own commit and its own
+measurement rather than being folded into whatever implements the directive. Establish a GREEN
+BASELINE for the targets that would witness it first — `make tos`, `kernel-fs-smoke`,
+`kernel-load-smoke`, `kernel-heap-smoke` — because none of those is in the gate set this limit was
+found by, and a red baseline makes the change unmeasurable in the way
+`kernel-repl-exepubs-smoke` already is.
