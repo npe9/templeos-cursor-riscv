@@ -118,3 +118,103 @@ times where NASA's own C fired it once.
 
 Pinned by `tests/exec/cases/e_compound_assign_width.hc`, which returns 20070903 with the fix
 and 40060803 without it.
+
+## 6. Calling a function pointer held in a class member — FIXED
+
+`x.fn(a)` and `p->fn(a)` did not work, and the two halves of the failure were not equally
+visible:
+
+| written | before |
+|---|---|
+| `m.fn(5);` | `error: Expected ';' or ','` |
+| `r = m.fn(5);` | `error: Expected ';' or ','` |
+| `if (m.fn(5)) ...` | `error: parse error` |
+| `return m.fn(5);` | **compiled, and yielded the POINTER VALUE** |
+
+Three parse errors cannot ship. The fourth can: measured at `0x8080007c`, the callee's address
+inside the blob, where `6` was correct, with no diagnostic at all.
+
+The cause was that a function-pointer member is indistinguishable from a plain `I64` member once
+it is parsed — `raw_type` is `RT_I64` and `pointed_to_type` is 0 for both — so the postfix parser
+took the load. `CMemberLst` now carries `is_func_ptr`, and the `.`/`->` cases call
+`ParseFnPtrMemberCall` when the member holds a code address and a `(` follows.
+
+The emitted shape is the one the `(*p)(args)` path already used, one IC shorter at the front.
+`IC_CALL_INDIRECT` wants the code address on TOP of the eval stack, above the pushed arguments,
+but the member access has already produced the pointer by the time the `(` is seen — it is
+UNDER arguments that have not been parsed yet. So the pointer is parked in a frame slot, the
+arguments are evaluated on top of it, and the pointer is reloaded last.
+
+The frame slot cost a second fix. A local's offset is a `HOLY_LOCAL_MARKER` until the function's
+frame size is known, and the two passes that resolve markers keyed on `IC_LEA`. An
+`ICF_FRAME_SLOT` `IC_ASSIGN` is the other carrier, so the store landed at `s0 - 2^40` and the
+first probe trapped on an illegal instruction after jumping to whatever the wild slot held.
+`IcHoldsLocalMarker()` now names both.
+
+Not supported, deliberately: `T (**fn)(...)` (a pointer to a function-pointer member) and arrays
+of function-pointer members. Neither parses as a member declarator in the first place, so there
+is no half-support to remove — an array of callbacks is written as an array of a one-member
+wrapper class, which is what OSAL's event-handler table does.
+
+Why it was worth a compiler change rather than a workaround: `Kernel/Cfs/osal` had been copying
+the member to a local typed variable at four sites and saying so in a comment, and cFE's `fs`
+module alone calls `Meta->OnEvent` in four places and `Meta->GetData` in one, with `es`, `tbl`
+and `evs` using the same callback-table shape. A workaround repeated across every remaining
+module is a deviation from NASA's source multiplied out.
+
+Pinned by `tests/exec/cases/e_fnptr_member_call.hc`, which packs nine forms into one value.
+
+## 7. Classes are fully packed — BY DESIGN, and it matters
+
+There is no inter-member padding, no alignment and no tail padding:
+
+```
+class X { U8 a; U32 b; };     // sizeof 5, b at offset 1   (C: sizeof 8, b at 4)
+class Y { U32 a; U8 b; };     // sizeof 5                  (C: sizeof 8)
+```
+
+This is authentic TempleOS and the kernel depends on it; it is not a defect. It becomes a
+problem only when a class is supposed to mirror a C struct, which is the whole of the NASA cFS
+translation. `tools/cfs/check_padding.py` is the gate: the C side is the real host compiler's
+`offsetof`/`sizeof` from NASA's own headers, the HolyC side is a model that sums member sizes,
+and the model's premise is itself pinned as `tests/exec/cases/e_class_packing.hc`.
+
+Its first run found **17 of 53** translated classes wrong. Four were not padding at all but
+members at the wrong WIDTH, which padding over would have buried:
+
+| member | NASA | was |
+|---|---|---|
+| `OS_object_token_t.lock_mode` | `OS_lock_mode_t`, a C enum — 4 | `I64` — 8 |
+| `OS_module_internal_record_t.module_type` | `OS_module_type_t`, a C enum — 4 | `I64` |
+| `CFE_Config_ValueEntry.ActualType` | `CFE_ConfigType_t`, a C enum — 4 | `I64` |
+| `OS_SockAddrData_t` (a union) | 32, rounded up from a 28-byte buffer | 28 |
+
+A C enum whose enumerators fit in `int` is four bytes, so an enum-typed member is `I32`. The
+token one cascaded: it made every `OS_object_token_t` 24 bytes against NASA's 20 and shifted
+`OS_object_iter_t` and `OS_timecb_internal_record_t` with it.
+
+The remaining thirteen are padding, written as `U8 _pad0[4];` members. `check_structs.py` skips
+a member matching `_pad\d*` so the two gates do not fight: one owns field membership and order,
+the other owns the bytes.
+
+## 8. An array member cannot appear in an aggregate initializer — OPEN
+
+```
+class E { I32 Number; U8 _pad0[4]; U8 *Name; };
+E T[1] = {{-15, 0, "abc"}};        // parse error
+```
+
+With `U32 _pad0;` instead of the array, the same initializer compiles and the values land
+correctly. So it is the array MEMBER in the initializer that does not parse, not the count of
+elements or the zero.
+
+Found while padding `OS_ErrorTable_Entry` for limit #7: OSAL's error-name table is 42 rows of
+positional initializers, and NASA's C skips the padding silently because it uses the field
+order, not designated initializers. The translation has to write the `0`. The padding member is
+therefore a scalar at that one site, with a comment saying why it differs from the `U8 _pad0[N]`
+used everywhere else.
+
+The failure was loud but only at the gate, not at the compiler: the first attempt kept
+`U8 _pad0[4]` and left the 42 rows alone, so the string pointer landed in the padding and
+`OS_StatusToString` returned `OS_UNKNOWN(-15)` for every code in the table. Four transcript
+lines, and the parse of the initializer had silently taken the second element as `_pad0`.

@@ -34,13 +34,16 @@ class OS_task_prop_t
   U32 creator;
   I64 stack_size; // size_t
   U8 priority;    // osal_priority_t
+  U8 _pad0[7]; // C rounds the struct up to its alignment; HolyC does not
 };
 // --- os-shared-task.h --------------------------------------------------------------------------
 class OS_task_internal_record_t
 {
   U8 task_name[OS_MAX_API_NAME];
+  U8 _pad0[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
   I64 stack_size; // size_t
   U8 priority;    // osal_priority_t
+  U8 _pad1[7]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
   U0 (*entry_function_pointer)();
   U0 (*delete_hook_pointer)();
   U8 *entry_arg;      // void *

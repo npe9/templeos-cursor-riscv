@@ -66,11 +66,13 @@ class OS_file_prop_t
   U8 Path[OS_MAX_PATH_LEN];
   U32 User;
   U8 IsValid; // for backward compatibility; always true if OS_FDGetInfo succeeded
+  U8 _pad0[3]; // C rounds the struct up to its alignment; HolyC does not
 };
 
 class os_fstat_t
 {
   U32 FileModeBits;
+  U8 _pad0[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
   OS_time_t FileTime;
   I64 FileSize; // size_t
 };

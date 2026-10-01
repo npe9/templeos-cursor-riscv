@@ -36,6 +36,12 @@
 class OS_ErrorTable_Entry
 {
   I32 Number;
+  // C pads here; HolyC packs. See tools/cfs/check_padding.py. A SCALAR rather than the usual
+  // `U8 _pad0[4]` because this is the one padded struct with positional INITIALIZERS -- and an
+  // array member in an aggregate initializer does not parse (HOLYC_STRUCT_LIMITS.md #8). The
+  // tables below therefore carry an explicit 0 where NASA's C, with designated initializers,
+  // skips the padding silently.
+  U32 _pad0;
   U8 *Name;
 };
 #endif

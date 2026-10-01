@@ -165,7 +165,7 @@ U0 D(I64 v)
 // The backend's error-name table, empty as a bare-metal target's is. It must be defined BEFORE
 // the portable layer that walks it -- see os_shared_errors.HC for why include order does a
 // linker's job here.
-OS_ErrorTable_Entry OS_IMPL_ERROR_NAME_TABLE[1] = {{0, NULL}};
+OS_ErrorTable_Entry OS_IMPL_ERROR_NAME_TABLE[1] = {{0, 0, NULL}};
 // Stands in for osapi-printf.c, which is part of the shared layer and not translated yet. The C
 // oracle's stub prints the same fixed marker: what the transcript pins is which checks fire.
 U0 OS_printf(U8 *fmt)

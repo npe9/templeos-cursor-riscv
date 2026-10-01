@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""A translated `class` must have NASA's struct's LAYOUT, not just its fields.
+
+WHY THIS EXISTS. HolyC classes are fully packed -- no inter-member padding, no alignment, no
+tail padding. That is authentic TempleOS and the kernel depends on it, and it is NOT what a C
+compiler does. So every byte the C compiler inserts is a layout the translation has to
+reproduce explicitly, and nothing else here can see it:
+
+  - check_structs.py compares field NAMES and ORDER. Both sides can agree perfectly and still
+    disagree about where the fields are.
+  - the transcript sees a field's VALUE, which is the same on both sides as long as each side
+    reads the field it wrote. A struct is only written as bytes when something writes it to a
+    file or a wire, and cFE does that for file headers, not for its state records.
+
+Measured, on cFE's CFE_FS_FileWriteMetaData_t -- the first struct in this translation where C
+pads at all:
+
+    volatile bool IsPending;                     1 byte  at 0       HolyC: 0
+    char FileName[CFE_MISSION_MAX_PATH_LEN];     64      at 1       HolyC: 1
+    CFE_FS_SubType_Enum_t FileSubType;           uint32  at 68      HolyC: 65
+    char Description[CFE_FS_HDR_DESC_MAX_LEN];   32      at 72      HolyC: 69
+    CFE_FS_FileWriteGetData_t GetData;           ptr     at 104     HolyC: 101
+    CFE_FS_FileWriteOnEvent_t OnEvent;           ptr     at 112     HolyC: 109
+    sizeof                                               120        HolyC: 117
+
+An application instantiates that object in its own memory and hands cFE a pointer to it, so a
+three-byte disagreement is not cosmetic: the two sides are not describing the same object.
+
+HOW. The C side is the real host C compiler -- offsetof and sizeof out of NASA's own headers,
+never a model. The HolyC side IS a model (sum the member sizes), because running the HolyC
+compiler would mean building and booting a blob for every struct. The model's premise is
+therefore pinned as an execution oracle of its own, tests/exec/cases/e_class_packing.hc, which
+asserts the packing rule for the exact shapes this file relies on. A model that is wrong fails
+in the direction of approving a mismatch, which is why it does not get to be an assumption.
+
+    tools/cfs/check_padding.py            # check
+    tools/cfs/check_padding.py -v         # and print every struct's layout
+"""
+import glob
+import importlib.util
+import os
+import re
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CFE = os.path.join(ROOT, "vendor", "cFE")
+OSAL = os.path.join(ROOT, "vendor", "osal")
+
+# The name mapping and the field lists are check_structs.py's job and are not duplicated here:
+# if the two tools ever disagreed about which class mirrors which struct, one of them would be
+# checking something else entirely.
+_spec = importlib.util.spec_from_file_location(
+    "check_structs", os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_structs.py"))
+check_structs = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(check_structs)
+
+# The include set it takes to compile a probe that mentions every struct under test. This is the
+# union of what the two gate scripts use. build/cfs comes BEFORE vendor/shim: both hold an
+# osconfig.h, and the shim's is the hand-written stand-in while build/cfs/osconfig.h is
+# generated from NASA's own template -- taking the shim's left OS_MAX_RWLOCKS undefined.
+INC = ["-I" + p for p in [
+    os.path.join(ROOT, "build", "cfs"),
+    os.path.join(ROOT, "vendor", "shim"),
+    os.path.join(OSAL, "src", "os", "inc"),
+    os.path.join(OSAL, "src", "os", "shared", "inc"),
+    os.path.join(OSAL, "src", "bsp", "shared", "inc"),
+    os.path.join(ROOT, "vendor", "PSP", "fsw", "inc"),
+    os.path.join(CFE, "cmake", "sample_defs"),
+    os.path.join(CFE, "cmake", "target", "inc"),
+] + sorted(glob.glob(os.path.join(CFE, "modules", "*", "fsw", "inc")))
+  + sorted(glob.glob(os.path.join(CFE, "modules", "*", "fsw", "src")))
+  + sorted(glob.glob(os.path.join(CFE, "modules", "*", "config")))
+  + sorted(glob.glob(os.path.join(CFE, "modules", "*", "option_inc")))
+  + sorted(glob.glob(os.path.join(CFE, "modules", "*", "private_inc")))]
+
+# Headers the probe includes. A struct no header here declares cannot be measured and is
+# REPORTED as unmeasured rather than skipped silently -- an unmeasured struct is the same blind
+# spot this file exists to close.
+HDRS = [
+    "osapi.h", "os-shared-globaldefs.h", "os-shared-idmap.h", "os-shared-file.h",
+    "os-shared-filesys.h", "os-shared-dir.h", "os-shared-task.h", "os-shared-queue.h",
+    "os-shared-sockets.h", "os-shared-module.h", "os-shared-time.h", "os-shared-timebase.h",
+    "os-shared-common.h", "os-shared-printf.h", "os-shared-select.h", "os-shared-shell.h",
+    "os-shared-network.h", "os-shared-condvar.h", "os-shared-binsem.h", "os-shared-countsem.h",
+    "os-shared-mutex.h", "os-shared-clock.h", "os-shared-errors.h", "os-shared-heap.h",
+    "os-shared-rwlock.h",
+    "cfe_fs_module_all.h", "cfe_fs_priv.h", "cfe_msg.h", "cfe_sb.h", "cfe_sbr.h",
+    "cfe_config.h", "cfe_config_priv.h", "cfe_resourceid.h", "cfe_time.h",
+    "target_config.h", "target_objtab.h",
+]
+
+# HolyC primitive sizes. U0/I0 is the zero-size position marker (CDirEntry.start), which the
+# compiler gives size 0 -- see docs/HOLYC_STRUCT_LIMITS.md limit #4.
+PRIM = {"U0": 0, "I0": 0, "Bool": 1, "I8": 1, "U8": 1, "I16": 2, "U16": 2,
+        "I32": 4, "U32": 4, "I64": 8, "U64": 8, "F64": 8}
+
+# A HolyC member: `U32 name;`, `U8 *p;`, `U8 name[64][4];`, `I32 (*fn)(args);`, `Cls inner;`
+HC_FN = re.compile(r'^\s*([A-Za-z_]\w*)[\w \t\*]*\(\s*\*+\s*([A-Za-z_]\w*)\s*\)\s*\([^;]*\)\s*;')
+HC_MEM = re.compile(r'^\s*([A-Za-z_]\w*)\s*((?:\*\s*)*)([A-Za-z_]\w*)\s*((?:\[[^\]]*\])*)\s*;')
+
+
+def eval_int(expr, vals):
+    """An integer constant expression, or None. `(OS_MAX_NUM_OPEN_FILES + 7) / 8` is a real
+    array bound in osapi-select.h, so a bare isdigit() check is not enough."""
+    e = expr.strip()
+    if re.fullmatch(r'-?\d+', e):
+        return int(e)
+    if re.fullmatch(r'0[xX][0-9a-fA-F]+', e):
+        return int(e, 16)
+    toks = re.findall(r'[A-Za-z_]\w*|\d+|\S', e)
+    if not toks or not all(tk in "()+*/- " or tk.isdigit() or tk in vals for tk in toks):
+        return None
+    try:
+        return int(eval("".join(str(vals[tk]) if tk in vals else tk for tk in toks)))
+    except Exception:
+        return None
+
+
+def hc_defines():
+    """Integer `#define NAME value` from the translation, for array bounds like
+
+        U8 name[OS_MAX_API_NAME];
+
+    The model cannot guess these and must not: an unevaluated bound would make the class look
+    one element long. Only plain integers and simple sums of already-known names are resolved;
+    anything else stays unknown and reaches the caller as a failure.
+    """
+    vals = {}
+    pend = []
+
+    for d in (os.path.join(ROOT, "Kernel", "Cfs", "osal"), os.path.join(ROOT, "Kernel", "Cfs", "cfe")):
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".HC"):
+                continue
+            for line in open(os.path.join(d, fn), errors="replace"):
+                m = re.match(r'\s*#define\s+([A-Za-z_]\w*)\s+(.+?)\s*$', line)
+                if m:
+                    # `#define OS_FS_DEV_NAME_LEN 32 /**< Device name length */` -- the trailing
+                    # doc comment is part of the line and has to come off the VALUE, or the
+                    # expression never evaluates and the bound silently stays unknown.
+                    v = re.sub(r'/\*.*', '', m.group(2))
+                    v = re.sub(r'//.*', '', v).strip()
+                    if v:
+                        pend.append((m.group(1), v))
+    for _ in range(8):
+        again = []
+        for name, expr in pend:
+            v = eval_int(expr, vals)
+            if v is None:
+                again.append((name, expr))
+            else:
+                vals[name] = v
+        if len(again) == len(pend):
+            break
+        pend = again
+    return vals
+
+
+def hc_class_bodies():
+    """Every `class Name { ... };` body in the translation, by name."""
+    out = {}
+    for d in (os.path.join(ROOT, "Kernel", "Cfs", "osal"), os.path.join(ROOT, "Kernel", "Cfs", "cfe")):
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".HC"):
+                continue
+            txt = check_structs.strip_comments(open(os.path.join(d, fn), errors="replace").read())
+            for m in re.finditer(r'\b(class|union)\s+(\w+)\s*\{(.*?)\}\s*;', txt, re.S):
+                out[m.group(2)] = (m.group(3), fn, m.group(1))
+    return out
+
+
+def hc_layout(name, bodies, defines, seen=None):
+    """(members, size) for a HolyC class under the packing rule, or (None, reason).
+
+    members is a list of (field_name, offset, size). A type this does not know is an error, not
+    a guess: guessing 8 is exactly how a model quietly approves a layout it never understood.
+    """
+    seen = seen or set()
+    if name in seen:
+        return None, "recursive class %s" % name
+    if name not in bodies:
+        return None, "no class %s in the translation" % name
+    body, _, kind = bodies[name]
+    off, members = 0, []
+    widest = 0
+    for stmt in body.split(";"):
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        stmt += ";"
+        m = HC_FN.match(stmt)
+        if m:
+            members.append((m.group(2), off if kind == "class" else 0, 8))  # a code address
+            widest = max(widest, 8)
+            if kind == "class":
+                off += 8
+            continue
+        m = HC_MEM.match(stmt)
+        if not m:
+            return None, "cannot parse member %r in class %s" % (stmt.strip(), name)
+        ty, stars, fname, dims = m.group(1), m.group(2), m.group(3), m.group(4)
+        if stars.strip():
+            esz = 8
+        elif ty in PRIM:
+            esz = PRIM[ty]
+        else:
+            sub, why = hc_layout(ty, bodies, defines, seen | {name})
+            if sub is None:
+                return None, "member %s.%s has type %s: %s" % (name, fname, ty, why)
+            esz = why                                 # hc_layout returns (members, size)
+        n = 1
+        for d in re.findall(r'\[([^\]]*)\]', dims):
+            d = d.strip()
+            if not d:
+                continue
+            dv = eval_int(d, defines)
+            if dv is not None:
+                n *= dv
+            else:
+                return None, "member %s.%s has an array bound %r the model could not resolve " \
+                             "to an integer" % (name, fname, d)
+        members.append((fname, off if kind == "class" else 0, esz * n))
+        widest = max(widest, esz * n)
+        if kind == "class":
+            off += esz * n
+    # A union's members all start at 0 and its size is the widest of them. HolyC has no
+    # alignment, so there is no rounding up either.
+    return members, (off if kind == "class" else widest)
+
+
+def c_layouts(wanted, verbose=False):
+    """{struct: (sizeof, [(field, offset)])} from the host C compiler, plus the unmeasured."""
+    use_struct, dropped, dropped_fields = set(), set(), []
+    wanted = {k: list(v) for k, v in wanted.items()}
+    for _ in range(16):
+        live = [(s, f) for s, f in sorted(wanted.items()) if s not in dropped]
+        body = ["#include <stdio.h>", "#include <stddef.h>"]
+        body += ['#include "%s"' % h for h in HDRS]
+        body.append("int main(void){")
+        for s, fields in live:
+            ty = ("struct " + s) if s in use_struct else s
+            body.append('  printf("%%s SIZE %%zu\\n", "%s", sizeof(%s));' % (s, ty))
+            for f in fields:
+                body.append('  printf("%%s OFF %%s %%zu %%zu\\n", "%s", "%s", offsetof(%s, %s), '
+                            'sizeof(((%s *)0)->%s));' % (s, f, ty, f, ty, f))
+        body.append("  return 0; }")
+        src = os.path.join(ROOT, "build", "cfs", "check_padding_probe.c")
+        os.makedirs(os.path.dirname(src), exist_ok=True)
+        open(src, "w").write("\n".join(body) + "\n")
+        exe = src[:-2]
+        cc = os.environ.get("HOSTCC", "cc")
+        r = subprocess.run([cc, "-O0", "-w"] + INC + ["-o", exe, src],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            break
+        progress = False
+        # A struct named by its tag rather than its typedef: retry as `struct Name`.
+        for m in re.finditer(r"(?:undeclared identifier|unknown type name) '(\w+)'", r.stderr):
+            if m.group(1) in wanted and m.group(1) not in use_struct:
+                use_struct.add(m.group(1)); progress = True
+        # Declared but not defined by any header on the list: unmeasurable here.
+        for m in re.finditer(r"incomplete type '(?:struct )?(\w+)'", r.stderr):
+            if m.group(1) in wanted and m.group(1) not in dropped:
+                dropped.add(m.group(1)); progress = True
+        # A field this configuration's #ifdefs exclude (OS_shared_global_vars.DebugLevel).
+        for m in re.finditer(r"no member named '(\w+)' in '(?:struct )?(\w+)'", r.stderr):
+            fld, s = m.group(1), m.group(2)
+            if s in wanted and fld in wanted[s]:
+                wanted[s].remove(fld); dropped_fields.append((s, fld)); progress = True
+        if not progress:
+            return None, r.stderr, dropped, dropped_fields
+    else:
+        return None, "the probe would not compile after 16 rounds", dropped, dropped_fields
+    out = {}
+    for line in subprocess.run([exe], capture_output=True, text=True).stdout.split("\n"):
+        p = line.split()
+        if len(p) == 3 and p[1] == "SIZE":
+            out.setdefault(p[0], [0, []])[0] = int(p[2])
+        elif len(p) == 5 and p[1] == "OFF":
+            out.setdefault(p[0], [0, []])[1].append((p[2], int(p[3]), int(p[4])))
+    return out, None, dropped, dropped_fields
+
+
+def main(argv):
+    verbose = "-v" in argv
+    nasa = check_structs.nasa_structs()
+    bodies = hc_class_bodies()
+    defines = hc_defines()
+    pairs = []
+    for name in sorted(bodies):
+        cand = name if name in nasa else (name + "_t" if name + "_t" in nasa else None)
+        if cand:
+            pairs.append((name, cand))
+    if not pairs:
+        print("FAIL cfs-padding — no translated class maps to a NASA struct", file=sys.stderr)
+        return 1
+
+    wanted = {cand: nasa[cand][0] for _, cand in pairs}
+    clay, err, unmeasured, absent_fields = c_layouts(wanted, verbose)
+    if clay is None:
+        print("FAIL cfs-padding — could not measure NASA's layouts with the host C compiler.",
+              file=sys.stderr)
+        print("\n".join(str(err).split("\n")[:20]), file=sys.stderr)
+        return 1
+
+    bad, checked, padded = [], 0, []
+    for name, cand in pairs:
+        if cand in unmeasured:
+            continue
+        csize, coffs = clay[cand]
+        hmem, hsize = hc_layout(name, bodies, defines)
+        if hmem is None:
+            bad.append("    class %s: %s" % (name, hsize))
+            continue
+        # Compare only the fields the C probe could measure, in NASA's order.
+        hoff = {f: (o, s) for f, o, s in hmem}
+        diffs = [(f, o, s, hoff.get(f)) for f, o, s in coffs if not hoff.get(f) or hoff[f][0] != o]
+        wide = [(f, o, s, hoff[f]) for f, o, s in coffs if f in hoff and hoff[f][1] != s]
+        checked += 1
+        if csize != hsize or diffs or wide:
+            lines = ["    class %s (vs %s)" % (name, cand),
+                     "        %-24s %18s   %s" % ("", "NASA (off/size)", "translation")]
+            # A member at the WRONG WIDTH is a different mistake from missing padding, and
+            # padding it over would bury the real one. Report the widths first.
+            for f, o, s, h in wide:
+                lines.append("        %-24s %8d /%4d   %8d /%4d   WIDTH" % (f, o, s, h[0], h[1]))
+            for f, o, s, h in diffs:
+                lines.append("        %-24s %8d /%4d   %8s /%4s   OFFSET" %
+                             (f, o, s, h[0] if h else "-", h[1] if h else "-"))
+            if csize != hsize:
+                lines.append("        %-24s %8d        %8d        SIZEOF" % ("(whole struct)", csize, hsize))
+            bad.append("\n".join(lines))
+        elif any(o != sum(sz for _, _, sz in hmem[:i]) for i, (_, o, _) in enumerate(hmem)):
+            padded.append(name)
+        if verbose:
+            print("  %-44s sizeof %d" % (cand, csize))
+            for f, o, s in coffs:
+                print("      %-28s %4d /%4d" % (f, o, s))
+
+    if bad:
+        print("FAIL cfs-padding — a translated class does not have NASA's LAYOUT.", file=sys.stderr)
+        print("  HolyC classes are packed; where the C compiler aligns a member, the", file=sys.stderr)
+        print("  translation has to carry the padding explicitly. Field names and order can", file=sys.stderr)
+        print("  match perfectly while the two sides describe different objects.", file=sys.stderr)
+        print("\n".join(bad), file=sys.stderr)
+        return 1
+    for s in sorted(unmeasured):
+        print("  UNMEASURED: %s — no header in check_padding.py's list defines it, so its "
+              "layout is not under this gate" % s)
+    for s, f in absent_fields:
+        print("  not in this configuration: %s.%s (an #ifdef excludes it)" % (s, f))
+    print("cfs-padding: %d translated classes have NASA's byte layout%s" %
+          (checked, (" (%d carry explicit padding: %s)" % (len(padded), ", ".join(sorted(padded))))
+           if padded else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

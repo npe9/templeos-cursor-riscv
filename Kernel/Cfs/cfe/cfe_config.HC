@@ -67,7 +67,8 @@ union CFE_Config_ValueBuffer
 
 class CFE_Config_ValueEntry
 {
-  I64 ActualType;
+  I32 ActualType; // CFE_ConfigType_t, a C ENUM -- 4 bytes
+  U8 _pad0[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
   CFE_Config_ValueBuffer Datum;
 };
 // --- cfe_config_api_typedefs.h ----------------------------------------------------------------

@@ -68,13 +68,16 @@ class OS_shared_global_vars
   U32 GlobalState; // volatile in the C; HolyC has no volatile, and nothing here caches it
   U32 PrintfConsoleId;
   Bool PrintfEnabled;
+  U8 _pad0[3]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
   U32 MicroSecPerTick;
   U32 TicksPerSecond;
+  U8 _pad1[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
   OS_EventHandlerSlot EventHandler[OS_MAX_EVENT_HANDLER];
   // uint8 DebugLevel sits here in the C, under #ifdef OSAL_CONFIG_DEBUG_PRINTF, which this
   // configuration does not set -- the same switch that keeps osapi-debug.c out of OSAL_SRCLIST.
   // Omitted rather than translated, because including it would change the layout.
   U32 CoresConfigured;
+  U8 _pad2[4]; // C rounds the struct up to its alignment; HolyC does not
 };
 
 OS_shared_global_vars OS_SharedGlobalVars;

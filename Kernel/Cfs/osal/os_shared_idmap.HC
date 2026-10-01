@@ -120,7 +120,9 @@ class osal_key_t
 
 class OS_object_token_t
 {
-  I64 lock_mode;
+  I32 lock_mode; // OS_lock_mode_t, a C ENUM -- 4 bytes, not 8. Translating it as I64 made
+                 // the whole token 24 bytes against NASA's 20 and shifted every struct that
+                 // embeds one (OS_object_iter_t, OS_timecb_internal_record_t).
   osal_key_t lock_key;
   U32 obj_type;
   U32 obj_idx;

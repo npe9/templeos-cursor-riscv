@@ -32,8 +32,9 @@ class OS_module_internal_record_t
 {
   U8 module_name[OS_MAX_API_NAME];
   U8 file_name[OS_MAX_PATH_LEN];
-  I64 module_type; // OS_module_type_t, an enum
+  I32 module_type; // OS_module_type_t, a C ENUM -- 4 bytes
   U32 flags;
+  U8 _pad0[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
   U64 entry_point; // cpuaddr
 };
 
@@ -55,6 +56,7 @@ class OS_module_prop_t
   U64 host_module_id; // cpuaddr
   U8 filename[OS_MAX_PATH_LEN];
   U8 name[OS_MAX_API_NAME];
+  U8 _pad0[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
   OS_module_address_t addr;
 };
 

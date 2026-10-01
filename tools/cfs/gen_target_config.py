@@ -188,6 +188,9 @@ def emit_hc():
     L.append("  U32 UserReservedSize;")
     L.append("  U32 RamDiskSectorSize;")
     L.append("  U32 RamDiskTotalSectors;")
+    # Five uint32 after three function pointers land on offset 44, and the C compiler aligns the
+    # pointer that follows to 48. HolyC classes are packed, so the four bytes have to be written.
+    L.append("  U8 _pad0[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py")
     L.append("  U8 *NonvolMountPoint;")
     L.append("  U8 *RamdiskMountPoint;")
     L.append("  U8 *NonvolStartupFile;")
@@ -205,6 +208,8 @@ def emit_hc():
     L.append("  U8 *Default_CpuName;")
     L.append("  U16 Default_CpuId;")
     L.append("  U16 Default_SpacecraftId;")
+    # Two uint16 end at 68; the next pointer is aligned to 72 in C.
+    L.append("  U8 _pad0[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py")
     L.append("  U8 *Default_ModuleExtension;")
     L.append("  U8 *Default_CoreFilename;")
     L.append("  Target_CfeConfigData *CfeConfig;")

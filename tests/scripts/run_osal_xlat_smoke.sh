@@ -102,6 +102,16 @@ python3 "$ROOT/tools/cfs/check_seam.py" || exit 1
 # last_writer -- and with them the whole of the ownership tracking in Give/Take.
 python3 "$ROOT/tools/cfs/check_structs.py" || exit 1
 
+# --- struct LAYOUT -----------------------------------------------------------------------------
+# check_structs above compares field names and order; this compares BYTES. HolyC classes are
+# fully packed -- no inter-member padding, no alignment, no tail padding -- so wherever the C
+# compiler aligns a member, the translation has to write the gap by hand. Nothing else could see
+# it: both sides read the field they wrote, so the transcript agrees while the two structs
+# describe different objects. Its first run found 17 of 53 classes wrong, including four at the
+# wrong WIDTH -- OS_lock_mode_t is a C enum (4 bytes) that had been translated as I64, which made
+# every token 24 bytes against NASA's 20.
+python3 "$ROOT/tools/cfs/check_padding.py" || exit 1
+
 # --- the manifest ------------------------------------------------------------------------------
 # What NASA's build actually contains, and how much of it is gated -- computed from
 # OSAL_SRCLIST rather than counted by hand, because the denominator has been wrong twice by

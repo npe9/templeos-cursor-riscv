@@ -25,11 +25,13 @@
 class OS_console_internal_record_t
 {
   U8 device_name[OS_MAX_API_NAME];
+  U8 _pad0[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
   U8 *BufBase;  // start of the buffer memory
   I64 BufSize;  // total size of the buffer (size_t)
   I64 ReadPos;  // offset of next byte to read; `volatile` in the C, and HolyC has no volatile
   I64 WritePos; // offset of next byte to write; likewise
   U32 OverflowEvents; // number of lines dropped due to overflow
   Bool IsAsync; // whether to write data via a deferred utility task
+  U8 _pad1[3]; // C rounds the struct up to its alignment; HolyC does not
 };
 #endif

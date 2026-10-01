@@ -98,7 +98,7 @@ U0 D(I64 v)
 // The backend's error-name table, empty as a bare-metal target's is. It must be defined BEFORE
 // the portable layer that walks it -- see os_shared_errors.HC for why include order does a
 // linker's job here.
-OS_ErrorTable_Entry OS_IMPL_ERROR_NAME_TABLE[1] = {{0, NULL}};
+OS_ErrorTable_Entry OS_IMPL_ERROR_NAME_TABLE[1] = {{0, 0, NULL}};
 // OS_SharedGlobalVars, OS_NotifyEvent, OS_strnlen, OS_MAX_EVENT_HANDLER and
 // OS_INIT_MAGIC_NUMBER all come from osapi_common.HC, which osapi_idmap.HC includes. An earlier
 // draft of this file declared its own stand-ins for them, as the C oracle must, and they

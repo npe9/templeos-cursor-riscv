@@ -34,6 +34,7 @@ class Target_CfeConfigData
   U32 UserReservedSize;
   U32 RamDiskSectorSize;
   U32 RamDiskTotalSectors;
+  U8 _pad0[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
   U8 *NonvolMountPoint;
   U8 *RamdiskMountPoint;
   U8 *NonvolStartupFile;
@@ -51,6 +52,7 @@ class Target_ConfigData
   U8 *Default_CpuName;
   U16 Default_CpuId;
   U16 Default_SpacecraftId;
+  U8 _pad0[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
   U8 *Default_ModuleExtension;
   U8 *Default_CoreFilename;
   Target_CfeConfigData *CfeConfig;

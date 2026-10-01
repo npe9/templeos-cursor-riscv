@@ -27,6 +27,7 @@
 class OS_queue_internal_record_t
 {
   U8 queue_name[OS_MAX_API_NAME];
+  U8 _pad0[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
   I64 max_size;  // size_t
   I64 max_depth; // osal_blockcount_t, itself a size_t
 };

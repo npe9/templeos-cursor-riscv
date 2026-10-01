@@ -57,6 +57,11 @@ union OS_SockAddrData_t
   U8 Buffer[OS_SOCKADDR_MAX_LEN];
   U32 AlignU32;
   U8 *AlignPtr;
+  // The point of this union is stated in NASA's comment: it exists to give the storage a
+  // minimum ALIGNMENT, so that a system address can be cast into it. A C compiler therefore
+  // rounds its 28-byte Buffer up to the pointer alignment and the union is 32 bytes. HolyC
+  // takes the widest member and stops, so the size has to be stated.
+  U8 _pad0[32]; // C rounds the struct up to its alignment; HolyC does not
 };
 
 class OS_SockAddr_t

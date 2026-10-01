@@ -93,6 +93,14 @@ def nasa_structs():
     return out
 
 
+# `U8 _pad0[4];`: a member the C compiler inserts as ALIGNMENT and HolyC therefore has to write
+# by hand. It is not one of NASA's fields and must not be compared as one -- but it is not free
+# to invent either, so tools/cfs/check_padding.py measures NASA's real offsets with the host C
+# compiler and fails if a pad is missing, wrong, or there when C does not pad. One gate owns
+# membership and order; the other owns the bytes.
+PAD = re.compile(r'^_pad\d*$')
+
+
 def hc_classes():
     out = {}
     for d in HCDIRS:
@@ -103,7 +111,7 @@ def hc_classes():
                 continue
             txt = strip_comments(open(os.path.join(d, fn), errors="replace").read())
             for m in re.finditer(r'\bclass\s+(\w+)\s*\{(.*?)\}\s*;', txt, re.S):
-                out[m.group(1)] = (fields_of(m.group(2)), fn)
+                out[m.group(1)] = ([f for f in fields_of(m.group(2)) if not PAD.match(f)], fn)
     return out
 
 

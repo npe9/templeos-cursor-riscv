@@ -58,6 +58,7 @@ class OS_filesys_internal_record_t
   I64 numblocks;  // osal_blockcount_t, itself a size_t
   U8 flags;
   U8 fstype;
+  U8 _pad0[6]; // C rounds the struct up to its alignment; HolyC does not
 };
 
 // --- osapi-filesys.h public types --------------------------------------------------------------

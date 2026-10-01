@@ -36,12 +36,14 @@
 class OS_timebase_internal_record_t
 {
   U8 timebase_name[OS_MAX_API_NAME];
+  U8 _pad0[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
   U32 (*external_sync)(U32); // OS_TimerSync_t
   U32 accuracy_usec;
   U32 first_cb;
   U32 freerun_time;
   U32 nominal_start_time;
   U32 nominal_interval_time;
+  U8 _pad1[4]; // C rounds the struct up to its alignment; HolyC does not
 };
 
 class OS_timecb_internal_record_t
