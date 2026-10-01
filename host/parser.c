@@ -2013,6 +2013,80 @@ static bool ParseUnary(Compiler *cc) {
 }
 
 // Handle postfix operators: [], ., ->
+// A frame-slot marker lives in ic_data until the function's frame size is known. IC_LEA is the
+// usual carrier; an ICF_FRAME_SLOT IC_ASSIGN is the other one (ParseFnPtrMemberCall), and it has
+// to be resolved by the same passes. It was not, at first: the store went to s0-2^40 and the
+// probe trapped on an illegal instruction after jumping to whatever the wild slot held.
+static bool IcHoldsLocalMarker(CIntermediateCode *ic) {
+  if (!ic || !HOLY_IS_LOCAL_MARKER(ic->ic_data)) return false;
+  return ic->ic_code == IC_LEA ||
+         (ic->ic_code == IC_ASSIGN && (ic->ic_flags & ICF_FRAME_SLOT));
+}
+
+// `x.fn(a, b)` / `p->fn(a, b)`: CALL through a function-pointer MEMBER.
+//
+// WHY A FRAME TEMP. IC_CALL_INDIRECT takes the code address from the TOP of the eval stack,
+// above the pushed arguments, but the member access has already evaluated the pointer by the
+// time the '(' is seen -- it sits UNDER the arguments that have not been parsed yet. So the
+// pointer is parked in a frame slot (an ICF_FRAME_SLOT IC_ASSIGN needs no address on the eval
+// stack, which is the whole reason this works where the `(*p)(...)` path has to pre-push one),
+// the arguments are evaluated on top, and the pointer is reloaded last. Same shape as the
+// `(*p)(args)` path above, one IC shorter at the front.
+//
+// WHAT THIS REPLACES. Before this, a fnptr member could not be called in place at all:
+//   - `m.fn(5);`, `r = m.fn(5);`, `if (m.fn(5))`  -> "Expected ';' or ','" / parse error
+//   - `return m.fn(5);`                           -> compiled, and yielded the POINTER VALUE
+// The last one is the dangerous half: a silent wrong answer with no diagnostic. Measured at
+// 0x8080007c (the callee's address in the blob) where 6 was correct.
+//
+// NOT SUPPORTED, on purpose: `T (**fn)(...)` (a pointer TO a fnptr member) and arrays of fnptr
+// members. Neither parses as a member declarator in the first place, so there is nothing here
+// to half-support; this path only ever sees the single-level form.
+//
+// On entry the pointer VALUE is on the eval stack and cc->lex.token is '('.
+static bool ParseFnPtrMemberCall(Compiler *cc) {
+  I64 marker = HOLY_LOCAL_MARKER(cc->locals_size);   // the pointer, kept in a frame temp
+  cc->locals_size += 8;
+  CIntermediateCode *aic = ICNew(cc, IC_ASSIGN);
+  if (!aic) return false;
+  aic->ic_data = marker;
+  aic->ic_flags |= ICF_FRAME_SLOT;
+  aic->arg1_type_pointed_to = RT_I64;
+  aic->res.type.raw_type = RT_I64;
+  if (cc->ic_tail) cc->ic_tail->next = aic; else cc->ic_head = aic;
+  cc->ic_tail = aic;
+  ICAdd(cc, IC_EVAL_DROP, 8, RT_I64);   // the assign is an expression: drop its value
+  LexNext(cc);  // '('
+  ICAdd(cc, IC_CALL_START, 0, RT_I64);
+  int argc = 0;
+  if (cc->lex.token != ')') {
+    do {
+      if (argc > 0) LexNext(cc);   // ','
+      if (!ParseExpression(cc)) return false;
+      ICAdd(cc, IC_PUSH_RES, 0, RT_I64);
+      argc++;
+    } while (cc->lex.token == ',');
+  }
+  if (!LexExpect(cc, ')')) return false;
+  ICAdd(cc, IC_LEA, marker, RT_I64);
+  ICAdd(cc, IC_DEREF, 0, RT_I64);
+  cc->last_call_arg_cnt = argc;
+  SetCallArgCnt(cc, argc);
+  ICAdd(cc, IC_CALL_INDIRECT, 0, RT_I64);
+  SetCallArgCnt(cc, argc);   // the count must land on this IC, not an earlier call
+  // A call result is a value, not the member it came from: clear the container tracking or an
+  // outer `.`/`[`/auto-deref would treat the returned word as an address.
+  cc->last_var_symbol = NULL;
+  cc->last_global_var = NULL;
+  cc->last_member = NULL;
+  cc->last_expr_class = NULL;
+  cc->last_expr_type = RT_I64;
+  cc->flags &= ~CCF_ARRAY;
+  cc->flags |= CCF_RAX;
+  ICAdd(cc, IC_CALL_END, 0, RT_I64);
+  return true;
+}
+
 static bool ParsePostfix(Compiler *cc) {
   // Parse primary expression first
   bool is_paren_expr = (cc->lex.token == '(');  // Track parenthesized expressions
@@ -2336,6 +2410,10 @@ static bool ParsePostfix(Compiler *cc) {
       cc->last_expr_class = member_class;
       
       free(member_name);
+      // `x.fn(args)`: the member holds a code address, so this is a call through it.
+      if (found && found->is_func_ptr && cc->lex.token == '(') {
+        if (!ParseFnPtrMemberCall(cc)) return false;
+      }
       continue;
     }
     
@@ -2421,6 +2499,10 @@ static bool ParsePostfix(Compiler *cc) {
       cc->last_expr_class = member_class;
       
       free(member_name);
+      // `p->fn(args)`: see the '.' case.
+      if (found && found->is_func_ptr && cc->lex.token == '(') {
+        if (!ParseFnPtrMemberCall(cc)) return false;
+      }
       continue;
     }
     
@@ -5792,6 +5874,7 @@ static bool ParseClassMembers(Compiler *cc, CHashClass *tmpc, bool is_union, I64
       m->pointed_to_type = ptr;
       m->ptr_depth = ptr ? (mdepth ? mdepth : 1) : 0;
       m->is_array = is_array;
+  m->is_func_ptr = is_fnptr;
       // Pointer member stride/width: prefer the pointee class size (e.g. `U32i union U32` is
       // 4 bytes even when raw_type stayed RT_I64). Matches local `U32 *p` / PtrElemInfo.
       // Without this, `rv_fb.pixels[i]` stepped 8 bytes and left every other FB pixel black.
@@ -6780,7 +6863,7 @@ bool ParseFunction(Compiler *cc) {
   // sees function-level symbols and every other local would keep its -(10000+pos) marker and
   // be addressed 10KB below the frame.
   for (CIntermediateCode *ic_scan = cc->ic_head; ic_scan; ic_scan = ic_scan->next) {
-    if (ic_scan->ic_code == IC_LEA && HOLY_IS_LOCAL_MARKER(ic_scan->ic_data)) {
+    if (IcHoldsLocalMarker(ic_scan)) {
       I64 position_in_locals = HOLY_LOCAL_MARKER_POS(ic_scan->ic_data);
       ic_scan->ic_data = -(frame_size - 16 - reg_param_cnt * 8 - position_in_locals);
     }
@@ -6930,7 +7013,7 @@ void WrapStatementsAsFrame(Compiler *cc) {
   ICAdd(cc, IC_RETURN_VAL2, 0, RT_I64);
   ICAdd(cc, IC_LEAVE, (locals << 32), RT_I64);
   for (CIntermediateCode *ic = cc->ic_head; ic; ic = ic->next) {
-    if (ic->ic_code == IC_LEA && HOLY_IS_LOCAL_MARKER(ic->ic_data)) {
+    if (IcHoldsLocalMarker(ic)) {
       I64 pos = HOLY_LOCAL_MARKER_POS(ic->ic_data);
       ic->ic_data = -(frame_size - 16 - pos);
     }

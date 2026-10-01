@@ -58,6 +58,12 @@ typedef struct CMemberLst {
   U8 pointed_to_type;       // pointee type for pointer members (0 = not a pointer)
   U8 ptr_depth;             // pointer levels
   bool is_array;            // `U8 name[8]`: the member is its address
+  // `I32 (*fn)(I64)`: the member holds a code address, so `x.fn(a)` / `p->fn(a)` is a CALL
+  // through it, not a load of it. Without this flag the two are indistinguishable (a fnptr
+  // member records raw_type=RT_I64 and pointed_to_type=0, exactly like a plain I64 member),
+  // and the postfix parser took the load: `return m.fn(5)` compiled to the POINTER VALUE
+  // with no diagnostic, while the statement and assignment forms were parse errors.
+  bool is_func_ptr;
   I64 elem_size;            // element size for array/pointer members
   // `U8 name[4][96]`: flat storage, subscript k advances dim_stride[k] bytes. Mirrors the
   // ndims/dim_stride a local Symbol and a CHashGlblVar already carry; without it a partial
