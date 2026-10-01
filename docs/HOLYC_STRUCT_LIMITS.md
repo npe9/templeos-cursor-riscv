@@ -643,6 +643,43 @@ external-source branches this port does not build, so the blob referenced `CFE_T
 exist here. **The blob's import trailer is what caught it** ([[blob-import-trailer-witness]]);
 nothing else would have, because each of those names is one a C runtime could plausibly bind.
 
+**WHAT THE FIX CANNOT BE, and this is the part that took reading `tos/Doc/Directives.DD` to
+learn.** HolyC's `#if` is not a preprocessor conditional. It is evaluated by a compiler that
+EXECUTES CODE at compile time and can read the live kernel's globals, and two of the five distinct
+`#if` expressions in this tree depend on exactly that:
+
+```
+Demo/Lectures/PCIInterrupts.HC:3   #if mp_cnt>1        mp_cnt is a RUNTIME KERNEL GLOBAL
+tos/Misc/OSInstall.HC:217          #if __CMD_LINE__
+Demo/WebLogDemo/WebLogRep.HC:525   #if __CMD_LINE__
+```
+
+and `__CMD_LINE__` is not a number. `tos/Doc/Directives.DD` defines it, with `__DATE__`,
+`__TIME__`, `__LINE__`, `__FILE__` and `__DIR__`, as
+
+```c
+#define __CMD_LINE__ #exe{StreamPrint("%d",Fs->last_cc->flags&CCF_CMD_LINE && ...);}
+```
+
+— a `#exe` block that runs at compile time and PRINTS A DIGIT INTO THE TOKEN STREAM. This
+compiler skips `#exe` blocks (`host/lexer.c`: "nothing to run here"), so `__CMD_LINE__` expands
+to nothing at all.
+
+So a constant-expression evaluator is the right fix for the four sites that are constants and
+cannot be the fix for the other three. The shape that works:
+
+- expand the `#define`s on the line; if what remains is a constant integer expression, EVALUATE it
+  with HolyC's precedence — which covers `_CFG_HEAP_DBG`, `MAKE_LITE`, `MAKE_DBG` and `MAKE_STAFF`
+- if it is not constant-foldable — empty after a skipped `#exe`, or naming a declared global like
+  `mp_cnt` — keep today's behaviour of taking the branch, and emit a NOTE naming the expression.
+  Today's behaviour becomes a recorded decision instead of a silent one, which is the whole
+  complaint about the current state.
+
+**TWO MORE LIVE WRONG BRANCHES, from the same grep.** `Demo/AcctExample/TOS/TOSDistro.HC` has
+`#define MAKE_DBG 0` on line 6 and `#if MAKE_DBG` on line 332, so the debug branch of the distro
+builder is compiled; `MAKE_LITE` is 1 and happens to be right by accident. Those are the only
+`#if` sites in this tree whose values are plain numbers in the same file.
+
 **Until it is implemented**, the translation resolves NASA's configuration directives BY HAND and
 each one leaves a bracketed comment naming the guard, its value and which branch survived — so the
 HolyC can still be read against the C line for line. `cfe_time_utils.HC` and every earlier TIME
@@ -658,8 +695,23 @@ true `#if 1`, so a "fix" that made every `#if` false would be caught too.
 **When it is fixed, expect the kernel's heap layout to change** — `CMemUsed` 48 → 16 and
 `CMemUnused` 40 → 16, measured above rather than predicted. That is the correct behaviour and it is
 still a behavioural change to a running allocator, so it wants its own commit and its own
-measurement rather than being folded into whatever implements the directive. Establish a GREEN
-BASELINE for the targets that would witness it first — `make tos`, `kernel-fs-smoke`,
-`kernel-load-smoke`, `kernel-heap-smoke` — because none of those is in the gate set this limit was
-found by, and a red baseline makes the change unmeasurable in the way
-`kernel-repl-exepubs-smoke` already is.
+measurement rather than being folded into whatever implements the directive.
+
+**THE BASELINE IS MEASURED AND GREEN**, which is the thing to have before touching the allocator —
+a red baseline would make the change unmeasurable in the way `kernel-repl-exepubs-smoke` already
+is. None of these is in the cFS gate set that found this limit:
+
+```
+make kernel-heap-smoke     OK
+make kernel-fs-smoke       OK
+make kernel-load-smoke     OK
+make kernel-boot-smoke     OK
+make kernel-strprint-smoke OK
+```
+
+**`make tos` is NOT a baseline target and cannot be one: it is INTERACTIVE.**
+`tests/scripts/run_kernel_tos.sh` boots the image and waits at a HolyC prompt ("Quit: q"), so it
+never exits and a script that waits on it hangs — which is what happened the first time this
+baseline was taken. Its startup does print `RVWinMgr interactive FAIL (ExePutS)`, in the same
+family as the nine pre-existing `kernel-repl-exepubs-smoke` failures, and that is worth a look on
+its own account rather than as part of this.
