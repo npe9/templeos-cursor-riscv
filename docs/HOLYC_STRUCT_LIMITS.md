@@ -476,3 +476,44 @@ the file is not relying on that alone.
 shape a compiler bug can take. What caught it was an invariant, not a test: the import trailer
 must not list a name the unit defines. That check already existed for a different reason --
 `docs/CFS_PLAN.md` has the measurement where it caught a silent bind to the host C runtime.
+
+## 14. `x++` and `x += n` on a local can be silently dropped — OPEN, trigger not isolated
+
+```
+I64 Y = 10;
+I64 q = 10;
+Y++;
+q++;        //  Y stays 10.  q becomes 11.
+Y += 5;     //  Y stays 10.
+Y = Y + 1;  //  Y becomes 11.
+```
+
+Measured, in that order, in one function with no loop and no calls between the statements. A
+plain `=` always works; `++` and `+=` on the same variable in the same function do not.
+
+**It is not the name.** Renaming `Y` to `Yr` in a failing case makes it work, which looked
+conclusive — and then a case with ten locals named `A B X Y Z N M L J K`, all incremented, lost
+ALL TEN. So the name is a symptom of position or frame layout, not a reserved word.
+
+**It is not the loop, the initial value, the number of locals, or pre- versus post-increment.**
+Each of those was varied on its own and a passing case exists for every value of each. Two cases
+differing only in a variable's name and its initialiser disagree, and a near-identical pair
+(`x++; y++;` in a `while` with two locals) PASSES where (`n++; Y++;` in a `while` with two
+locals) FAILS. The trigger is something the bisects above did not reach.
+
+**How it was found, which is the part worth keeping.** Not by a unit test -- by the differential
+transcript. `CFE_TIME_Print` rendered `1970-003` where glibc's `gmtime_r` renders `1980-001`, on
+the first run with the TIME module gated. Working back: `CFE_TIME_UnixToCalendar`'s year loop
+does `Days = Days - YearLen; Y++;` and the `Y++` never took effect, so every year was treated as
+365 days and the ten-year walk from the UNIX epoch ended where it started. The symptom was a
+plausible date, not a crash.
+
+**Workaround in use:** the two statements in that loop are written `Y = Y + 1` and
+`Days = Days - YearLen`, with a comment at the site. No other translated line relies on `++` or
+`+=` of a local in a way the transcript does not already cover -- which is worth saying plainly:
+this limit is only tolerable because the transcript is wide enough to have caught it once.
+
+**For whoever fixes it:** start from `tests/exec/cases/` plus the real
+`CFE_TIME_UnixToCalendar`, not from a small case. The small cases are what made this take an hour
+and still not converge -- the same mistake #13 records. The two reproductions that do fail
+reliably are the four-statement one at the top of this entry and the ten-letter one.

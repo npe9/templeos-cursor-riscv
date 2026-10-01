@@ -132,6 +132,13 @@ I64 StrCmp(U8 *st1, U8 *st2)
 #include "/Kernel/Cfs/cfe/cfe_evs_task.HC"
 #include "/Kernel/Cfs/cfe/cfe_evs_dispatch.HC"
 #include "/Kernel/Cfs/cfe/cfe_evs_objtab.HC"
+// The time module. cfe_time_global.HC carries the types AND the object, cfe_time_utils.HC the
+// reference ring, cfe_time_api.HC the public calls -- in that order, because api states that
+// as its requirement rather than including its siblings (docs/HOLYC_STRUCT_LIMITS.md #13).
+#include "/Kernel/Cfs/cfe/cfe_time_global.HC"
+#include "/Kernel/Cfs/cfe/cfe_es_resetdata.HC"
+#include "/Kernel/Cfs/cfe/cfe_time_utils.HC"
+#include "/Kernel/Cfs/cfe/cfe_time_api.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -247,16 +254,11 @@ Bool rid_all_in_use(U32 id)
 {
   return TRUE;
 }
-// cfe_msg_integrity.HC declares this and the harness supplies it -- the TIME module is not
-// translated yet, and nothing under test depends on what the clock says. Same fixed values as
-// the C oracle's stub.
-CFE_TIME_SysTime CFE_TIME_GetTime()
-{
-  CFE_TIME_SysTime t;
-  t.Seconds = 0x20304050;
-  t.Subseconds = 0x60708090;
-  return t;
-}
+// CFE_TIME_GetTime and CFE_TIME_Print are no longer stubbed: cfe_time_utils.c and
+// cfe_time_api.c are gated, so the real ones run. Both were ALREADY inside the byte-identical
+// comparison -- every "1980-001-00:00:44.52768" in the transcript is a timestamp CFE_TIME_Print
+// rendered -- the stub just happened to agree with itself on both sides. Now the C half calls
+// glibc's gmtime_r and strftime and this half calls the calendar conversion in cfe_time_api.HC.
 // Six lowercase hex digits, to match the C oracle's %06lx.
 U0 Hx6(I64 v)
 {
@@ -600,13 +602,6 @@ U0 CFE_PSP_GetTime(OS_time_t *LocalTime)
   LocalTime->ticks = evs_psp_ns;
 }
 
-I32 CFE_TIME_Print(U8 *PrintBuffer, CFE_TIME_SysTime TimeToPrint)
-{
-  // TIME is not translated. A fixed rendering keeps the port message comparable while leaving
-  // what a real CFE_TIME_Print would produce out of this gate's business.
-  StrPrintN(PrintBuffer, CFE_TIME_PRINTED_STRING_SIZE, "1980-001-00:00:%02u.%05u", TimeToPrint.Seconds % 60, TimeToPrint.Subseconds % 100000);
-  return CFE_SUCCESS;
-}
 // OSAL's time arithmetic. Reproduced rather than included, for the reason cfe_evs_utils.HC
 // records: osapi_clock.HC reaches OS_GetLocalTime_Impl and the error-name tables. These two
 // are the whole of what EVS uses, and they are exact -- a tick is a nanosecond here.
@@ -730,6 +725,13 @@ I32 OS_TaskDelay(U32 millisecond)
 {
   evs_delay_ms += millisecond;
   return OS_SUCCESS;
+}
+// cfe_time_tone.c is not gated, and CFE_TIME_ExternalTone's whole body is a call to this.
+I64 evs_tone_isrs;
+
+U0 CFE_TIME_Tone1HzISR()
+{
+  ++evs_tone_isrs;
 }
 
 U0 CFE_ES_IncrementTaskCounter()

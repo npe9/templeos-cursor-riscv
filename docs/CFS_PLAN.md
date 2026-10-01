@@ -299,7 +299,7 @@ rather than counted as always-built:
 | `fs` | 3 | 1,249 | **100%** |
 | `ta` | 2 | 892 | **100%** (plus `cfe_ta_dispatch.c`, 159, which is conditional — see below) |
 | `evs` | 5 | 2,787 | **100%** (six of six; the `_dispatch` one is conditional — see below) |
-| `time` | 5 | 4,383 | 0% |
+| `time` | 5 | 4,383 | **41%** (api and utils; task, tone and objtab remain) |
 | `tbl` | 15 | 7,780 | 0% |
 | `es` | 17 | 12,734 | 0% |
 
@@ -527,12 +527,12 @@ Nine properties are gated independently, because each is blind to what the other
 
 | check | what it proves | what it cannot see |
 |---|---|---|
-| `check_coverage.py` | every function in a gated NASA source exists in the translation | its arity, its types, its body |
+| `check_coverage.py` | every function in a gated NASA source exists in the translation, less the ones a VERIFIED `#if` excludes | its arity, its types, its body |
 | `check_signatures.py` | arity and pointer-ness match NASA's, per parameter | return types; anything named `*_Impl` |
 | `check_seam.py` | the `OS_*_Impl` declarations match NASA's headers, **return type included** | whether a backend obeys them |
 | `check_structs.py` | a translated `class` has NASA's fields, in NASA's order | field TYPES, and where the fields actually sit |
 | `check_padding.py` | a translated `class` has NASA's BYTE LAYOUT — every offset and the size | whether anything reads those fields correctly |
-| `check_constants.py` | every number the translation spells out has NASA's value | whether anything uses it, or uses it correctly |
+| `check_constants.py` | every number the translation spells out has NASA's value, INCLUDING the ones NASA spells as enumerators | whether anything uses it, or uses it correctly |
 | `check_variadic.py` | a variadic function's declarations agree with NASA's and with each other, and none is called before one is seen | whether the ARGUMENTS at a call site are the right ones |
 | `check_manifest.py` | everything gated is in NASA's build; reports the covered fraction | nothing about the code itself |
 | the transcript | behaviour, byte for byte against NASA's own C | anything nothing calls |
@@ -816,3 +816,67 @@ translated CCSDS header unit with a byte-exact differential oracle.
 P0, then stop and decide. One hand-translated CCSDS header unit with a byte-exact differential
 oracle answers the only question that matters — whether translated cFS behaves identically — before
 a transpiler or a line of OSAL exists.
+
+#### `time`: 41%, and the two gates that had to grow to take it
+
+`cfe_time_api.c` (737) and `cfe_time_utils.c` (1,041) are gated — 1,778 of 4,383 lines. The
+remaining three are `cfe_time_task.c` (1,234), `cfe_time_tone.c` (1,333) and `cfe_time_objtab.c`
+(38). `api` and `utils` are translatable without the other two because all three
+`CFE_PLATFORM_TIME_CFG_SRC_*` switches are 0 in this configuration, so `api`'s calls into `tone`
+are compiled out and `utils` has no dependency on either.
+
+Wiring it in removed the last two stubs that were already INSIDE the comparison:
+`CFE_TIME_GetTime` and `CFE_TIME_Print`. Every `1980-001-00:00:00.00000` in the transcript is now
+rendered by translated code — and `CFE_TIME_Print` is the module's one real deviation, because
+NASA's calls `gmtime_r` and `strftime` and this port has no libc. The calendar conversion is
+written out: a proleptic-Gregorian leap rule, a year-at-a-time walk from the UNIX epoch, and a
+fixed-width decimal writer. `%j` is a day of YEAR, so no month table is needed. What makes that
+safe to claim is that the C half of the oracle still calls glibc's, on every timestamp in 657
+lines.
+
+**Two gates had to grow, and both growths immediately found something.**
+
+`check_coverage.py` reported six functions absent that are absent on BOTH sides — whole-function
+`#if` bodies this configuration does not build. It now has a `CONFIG_EXCLUDED` list, and the
+guard of every entry is EVALUATED with the host C preprocessor: an entry whose macro is true is a
+FAILURE, so the list cannot become a place to hide a function that really is missing. Pinning one
+entry to `CFE_PLATFORM_TIME_CFG_SERVER` (which is 1) makes the gate red, as it should.
+
+`check_constants.py` could not see an ENUMERATOR. Its probe wrapped every name in `#ifdef`, which
+is false for an enum member, so every constant NASA spells as an enumerator came back undefined,
+was classified as "a name this port invented", and was never compared. That is **160 of 601
+names**, and the bug it hid is the sharpest in this file:
+
+```
+OS_TIME_TICK_RESOLUTION_NS   translation 1            NASA 100
+OS_TIME_TICKS_PER_SECOND     translation 1000000000   NASA 10000000
+```
+
+A tick is 100 nanoseconds, not one. `os_shared_clock.HC` said one for several commits and it cost
+nothing, because nothing divided by it — until `CFE_TIME_LatchClock` did, and the transcript
+printed `00:00:01` against `00:01:40`. The tool now retries the undefined set as EXPRESSIONS, and
+the retry is a BISECT rather than a parse of clang's diagnostics: parsing was the first attempt
+and it silently did nothing, because clang stops after nineteen errors and not every failure is
+an "undeclared identifier". The compared count went 373 → **552** over four steps -- the enum pass, then evaluating the
+parenthesised `#define`s with the TRANSLATION's own numbers (compiling them as C would prove
+nothing: C's headers would supply NASA's value for every name inside, so the answer would come
+back NASA's by construction), then making that expansion recursive for the fifteen-deep
+`OS_*_BASE` chain. Three expressions still resist and are printed on every run. Three more wrong
+numbers fell out immediately:
+
+```
+CFE_ES_RunStatus_CORE_APP_INIT_ERROR      5  NASA: 8
+CFE_ES_RunStatus_CORE_APP_RUNTIME_ERROR   6  NASA: 9
+CFE_ES_SystemState_CORE_READY             2  NASA: 3
+```
+
+All three are passed to `CFE_ES_ExitApp` and `CFE_ES_WaitForSystemState`, which the driver stubs,
+so the transcript was never going to see them.
+
+**And one compiler bug the transcript caught that nothing else could.** `CFE_TIME_UnixToCalendar`
+incremented its year with `Y++`, and the increment was silently dropped — every year treated as
+365 days, so the walk from 1970 ended where it started and `CFE_TIME_Print` returned `1970-003`.
+`docs/HOLYC_STRUCT_LIMITS.md` #14 has what is known, which is less than a mechanism: the trigger
+survived bisecting the loop form, the initial value, the local count, the variable name and pre-
+versus post-increment. Written as `Y = Y + 1` it works, and that is what the translation does,
+with the reason at the site.

@@ -60,6 +60,16 @@ C_TYPES = [(r'\bconst\b', ' '),
            # the same token -- a representation choice, like OS_lock_mode_t above, not a defect.
            (r'\bCFE_MSG_(?:Size|Type|SegmentationFlag)_t\s*\*', ' PTRSZ '),
            (r'\bCFE_MSG_(?:Size|Type|SegmentationFlag)_t\b', ' SZ '),
+           # TIME's SIGNED enum typedefs, ahead of the catch-all below. Four of the module's
+           # seven are int16 and three are uint8, and the catch-all cannot tell: it maps every
+           # CFE_*_t to NUM, which made CFE_TIME_SetState look like a mismatch when the
+           # translation correctly used I32. The signedness is not cosmetic --
+           # CFE_TIME_ClockState_INVALID is -1, which is WHY NASA's typedef is signed -- so the
+           # rule is added rather than the function exempted.
+           (r'\bCFE_TIME_(?:ClockState|ToneSignalSelect|FlywheelState|SetState)_Enum_t\s*\*',
+            ' PTRSNUM '),
+           (r'\bCFE_TIME_(?:ClockState|ToneSignalSelect|FlywheelState|SetState)_Enum_t\b',
+            ' SNUM '),
            (r'\bCFE_\w+_t\s*\*', ' PTRNUM '),
            (r'\bCFE_\w+_t\b', ' NUM '),
            (r'\bosal_id_t\s*\*', ' PTRNUM '), (r'\bchar\s*\*', ' PTRB '),

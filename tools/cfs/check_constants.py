@@ -133,6 +133,58 @@ def probe(names):
         if len(p) != 2:
             continue
         out[p[0]] = None if p[1] == "UNDEF" else int(p[1])
+
+    # SECOND PASS, for the ENUMERATORS. `#ifdef NAME` is false for an enum member, so every
+    # constant NASA spells as an enumerator came back UNDEF above, was classified as "a name this
+    # port invented", and was NEVER COMPARED. That is not a small set and it cost a real bug:
+    # OSAL declares OS_TIME_TICK_RESOLUTION_NS = 100 and OS_TIME_TICKS_PER_SECOND =
+    # 1000000000 / OS_TIME_TICK_RESOLUTION_NS as enum members, the translation had 1 and
+    # 1000000000, and this tool said nothing for several commits -- until the TIME module divided
+    # by one of them and the differential transcript printed 00:00:01 against 00:01:40.
+    #
+    # So the undefined set is retried as EXPRESSIONS, with no #ifdef around them. A name that
+    # does not exist is then a COMPILE ERROR, which poisons the whole probe -- so the set is
+    # BISECTED rather than filtered by parsing diagnostics. Parsing was the first attempt and it
+    # silently did nothing: clang stops after nineteen errors, and some failures are not
+    # "undeclared identifier" at all, so one unparsed message ended the retry with every real
+    # enumerator still unresolved. A bisect needs no diagnostics to be right.
+    def try_set(group):
+        """{name: value} for a group that compiles, or None if it does not."""
+        if not group:
+            return {}
+        body2 = ["#include <stdio.h>"] + ['#include "%s"' % h for h in hdrs]
+        body2.append("int main(void){")
+        for nm in group:
+            body2.append('  printf("%%s %%lld\\n", "%s", (long long)(%s));' % (nm, nm))
+        body2.append("  return 0; }")
+        s2 = src[:-2] + "_enum.c"
+        open(s2, "w").write("\n".join(body2) + "\n")
+        e2 = s2[:-2]
+        if subprocess.run([cc, "-O0", "-w", "-o", e2, s2] + check_padding.INC,
+                          capture_output=True, text=True).returncode:
+            return None
+        got = {}
+        for line in subprocess.run([e2], capture_output=True, text=True).stdout.split("\n"):
+            p = line.split()
+            if len(p) == 2:
+                got[p[0]] = int(p[1])
+        return got
+
+    def resolve(group):
+        """Values for every name in `group` that names something, by halving."""
+        got = try_set(group)
+        if got is not None:
+            return got
+        if len(group) == 1:
+            return {}          # this one name is what does not exist
+        mid = len(group) // 2
+        found = resolve(group[:mid])
+        found.update(resolve(group[mid:]))
+        return found
+
+    unknown = [n for n in names if out.get(n) is None]
+    for nm, v in resolve(unknown).items():
+        out[nm] = v
     return out, None
 
 
@@ -155,6 +207,49 @@ def literal(lit):
     try:
         return int(lit, 0)
     except ValueError:
+        return None
+
+
+# An expression's value, computed with THE TRANSLATION'S OWN numbers.
+#
+# A parenthesised `#define` used to be reported and skipped -- OS_TIME_TICKS_PER_MSEC is
+# `(1000000 / OS_TIME_TICK_RESOLUTION_NS)`, and that is exactly the family where a wrong tick
+# resolution hid for several commits. Compiling the expression as C would prove nothing: C's
+# headers would supply NASA's value for every name inside it, so the answer would come back
+# NASA's by construction. The expression has to be evaluated with the TRANSLATION's values,
+# which is what makes it a check on the translation.
+#
+# So names are expanded from hc_defines() first, recursively, and only then is the arithmetic
+# done -- in Python, over a restricted grammar, because these are shifts, sums and divisions and
+# nothing else. A name the translation does not define falls back to the probe's value, which is
+# right: OS_MAX_QUEUES comes from osconfig.h and is not the translation's to state.
+EXPR_OK = re.compile(r'^[0-9xXa-fA-F\s()+\-*/<>|&~%]*$')
+
+
+def expr_value(lit, mine, probe_vals, depth=0):
+    # The expression's value using the translation's constants, or None.
+    if depth > 12:
+        return None
+    s = lit.strip()
+    for name in sorted(set(re.findall(r'[A-Za-z_]\w*', s)), key=len, reverse=True):
+        if name in mine:
+            sub = mine[name][0].strip()
+        elif probe_vals.get(name) is not None:
+            sub = str(probe_vals[name])
+        else:
+            return None
+        s = re.sub(r'(?<![A-Za-z0-9_])' + re.escape(name) + r'(?![A-Za-z0-9_])',
+                   "(" + sub + ")", s)
+    # A substituted value can itself be an expression -- the OS_*_BASE chain in
+    # os_shared_idmap.HC is fifteen deep, each entry the previous one plus a limit -- so keep
+    # expanding until only arithmetic is left.
+    if re.search(r'[A-Za-z_]', re.sub(r'0[xX]', '', s)):
+        return expr_value(s, mine, probe_vals, depth + 1)
+    if not EXPR_OK.match(s):
+        return None
+    try:
+        return int(eval(s, {"__builtins__": {}}, {}))
+    except Exception:
         return None
 
 
@@ -215,10 +310,12 @@ def main(argv):
             continue
         v = literal(lit)
         if v is None:
-            # A parenthesised expression. Its VALUE still has to be right, but this tool does
-            # not evaluate HolyC; it is reported rather than silently passed.
-            skipped.append((name, lit, fn))
-            continue
+            # A parenthesised expression: evaluated with the translation's own constants, so the
+            # answer is a check on the translation and not a restatement of NASA's headers.
+            v = expr_value(lit, mine, real)
+            if v is None:
+                skipped.append((name, lit, fn))
+                continue
         checked += 1
         if (v & 0xFFFFFFFF) != (nasa & 0xFFFFFFFF):
             bad.append("    %-44s %s: %s   NASA: %d" % (name, fn, lit, nasa))

@@ -31,6 +31,7 @@
 #include "cfe_es_resetdata_typedef.h" /* CFE_ES_ResetData_t, for the simulated reset area */
 #include "cfe_evs_dispatch.h"
 #include "cfe_evs_core_internal.h" /* CFE_EVS_SetTypeEnable, CFE_EVS_EarlyInit, CFE_EVS_CleanUpApp */
+#include "cfe_time_utils.h"     /* CFE_TIME_Global_t and the module's internal declarations */
 #include "cfe_evs_msgids.h"   /* CFE_EVS_CMD_MID, CFE_EVS_SEND_HK_MID */
 /* cfe_evs_dispatch.c's two local functions: NASA declares them at the top of that .c, not in a
  * header, so the driver repeats the declarations to reach them. */
@@ -117,13 +118,6 @@ uint32 CFE_PSP_GetProcessorId(void)
 /* cfe_msg_integrity.c calls into the TIME module, which is not translated yet. Both sides get
  * the same fixed clock, so the comparison stays about the message code. Nothing under test
  * depends on what the clock says -- only on the call happening at all. */
-CFE_TIME_SysTime_t CFE_TIME_GetTime(void)
-{
-    CFE_TIME_SysTime_t t;
-    t.Seconds    = 0x20304050;
-    t.Subseconds = 0x60708090;
-    return t;
-}
 
 /* Counts entries CFE_Config_IterateAll visits. */
 static int cfg_visits;
@@ -414,6 +408,20 @@ int32 OS_TaskDelay(uint32 millisecond)
     evs_delay_ms += millisecond;
     return OS_SUCCESS;
 }
+
+/* cfe_time_tone.c is not gated, and CFE_TIME_ExternalTone's whole body is a call to this. */
+static long evs_tone_isrs;
+void CFE_TIME_Tone1HzISR(void)
+{
+    ++evs_tone_isrs;
+}
+
+/* NASA defines CFE_TIME_Global in cfe_time_task.c, which is not gated, so the driver supplies it
+ * -- the same arrangement this file had for CFE_EVS_Global until cfe_evs_task.c landed. The
+ * HolyC half does NOT need this: it defines the object in cfe_time_global.HC beside its type,
+ * because HolyC has no usable forward declaration for a variable and three files use it before
+ * cfe_time_task.HC would appear. One definition on each side either way. */
+CFE_TIME_Global_t CFE_TIME_Global;
 void CFE_ES_IncrementTaskCounter(void) {}
 
 int32 CFE_SB_CreatePipe(CFE_SB_PipeId_t *PipeIdPtr, uint16 Depth, const char *PipeName)
@@ -573,14 +581,12 @@ void CFE_PSP_GetTime(OS_time_t *LocalTime)
     LocalTime->ticks = evs_psp_ns;
 }
 
-CFE_Status_t CFE_TIME_Print(char *PrintBuffer, CFE_TIME_SysTime_t TimeToPrint)
-{
-    /* TIME is not translated. A fixed rendering keeps the port message comparable while
-     * leaving what a real CFE_TIME_Print would produce out of this gate's business. */
-    snprintf(PrintBuffer, CFE_TIME_PRINTED_STRING_SIZE, "1980-001-00:00:%02u.%05u",
-             (unsigned)(TimeToPrint.Seconds % 60), (unsigned)(TimeToPrint.Subseconds % 100000));
-    return CFE_SUCCESS;
-}
+/* CFE_TIME_GetTime and CFE_TIME_Print are no longer stubbed: cfe_time_api.c is in SRC_C, so the
+ * real ones run. Both were ALREADY inside the byte-identical comparison -- every
+ * "1980-001-00:00:44.52768" in the transcript is a timestamp CFE_TIME_Print rendered -- the stub
+ * just happened to agree with itself on both sides. Now the C half calls glibc's gmtime_r and
+ * strftime and the HolyC half calls the calendar conversion written in cfe_time_api.HC, and the
+ * transcript is what says whether they agree. */
 
 void OS_printf(const char *String, ...)
 {

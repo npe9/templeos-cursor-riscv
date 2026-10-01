@@ -14,7 +14,62 @@ transcript touches. A name here with a wrong body is caught by the transcript or
 
     tools/cfs/check_coverage.py <nasa.c> [nasa.c ...]     # HolyC side is Kernel/Cfs/cfe/*.HC
 """
-import re, sys, os, glob
+import re, sys, os, glob, subprocess, importlib.util
+
+# CONFIGURATION-EXCLUDED FUNCTIONS, each pinned to the macro whose #if keeps it out of the build.
+#
+# NASA guards whole function bodies on platform switches, so a .c file contains functions this
+# configuration does NOT compile -- and the C the oracle links does not contain them either. The
+# transcript cannot tell that from a missing translation, and neither could this tool: its first
+# run against the time module reported six absent functions that are absent on BOTH sides.
+#
+# THE GUARD IS VERIFIED, not trusted. Every macro named here is evaluated with the host C
+# preprocessor against the real headers, and an entry whose macro is TRUE is a FAILURE -- so this
+# list cannot become a place to hide a function that really is missing. Flip
+# CFE_PLATFORM_TIME_CFG_SERVER in the platform config and this gate goes red, which is the
+# behaviour you want: a port that changes configuration has to re-translate what the change
+# brings in.
+CONFIG_EXCLUDED = {
+    ("cfe_time_utils.c", "CFE_TIME_SetSource"):  "CFE_PLATFORM_TIME_CFG_SOURCE",
+    ("cfe_time_utils.c", "CFE_TIME_SetSignal"):  "CFE_PLATFORM_TIME_CFG_SIGNAL",
+    ("cfe_time_utils.c", "CFE_TIME_SetDelay"):   "CFE_PLATFORM_TIME_CFG_CLIENT",
+    ("cfe_time_api.c",   "CFE_TIME_ExternalMET"):  "CFE_PLATFORM_TIME_CFG_SRC_MET",
+    ("cfe_time_api.c",   "CFE_TIME_ExternalGPS"):  "CFE_PLATFORM_TIME_CFG_SRC_GPS",
+    ("cfe_time_api.c",   "CFE_TIME_ExternalTime"): "CFE_PLATFORM_TIME_CFG_SRC_TIME",
+}
+
+
+def guard_values(names):
+    """{macro: int} as the host C preprocessor sees it, or (None, error)."""
+    _spec = importlib.util.spec_from_file_location(
+        "check_padding", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "check_padding.py"))
+    cp = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(cp)
+    src = os.path.join(ROOT, "build", "cfs", "check_coverage_guards.c")
+    os.makedirs(os.path.dirname(src), exist_ok=True)
+    hdrs = list(cp.HDRS) + ["cfe_platform_cfg.h", "cfe_mission_cfg.h"]
+    body = ["#include <stdio.h>"] + ['#include "%s"' % h for h in hdrs] + ["int main(void){"]
+    for n in sorted(names):
+        body += ["#ifdef %s" % n,
+                 '  printf("%%s %%d\\n", "%s", (int)(%s));' % (n, n),
+                 "#else",
+                 '  printf("%%s UNDEF\\n", "%s");' % n,
+                 "#endif"]
+    body.append("  return 0; }")
+    open(src, "w").write("\n".join(body) + "\n")
+    exe = src[:-2]
+    cc = os.environ.get("HOSTCC", "cc")
+    r = subprocess.run([cc, "-O0", "-w"] + cp.INC + ["-o", exe, src],
+                       capture_output=True, text=True)
+    if r.returncode:
+        return None, r.stderr
+    out = {}
+    for line in subprocess.run([exe], capture_output=True, text=True).stdout.split("\n"):
+        p = line.split()
+        if len(p) == 2:
+            out[p[0]] = None if p[1] == "UNDEF" else int(p[1])
+    return out, None
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Every translated unit, cFE and OSAL alike. Scanning both rather than one directory per gate
@@ -67,14 +122,42 @@ def main(argv):
         print(__doc__)
         return 2
     have = hc_defined()
-    missing = []
+    # Resolve every guard FIRST, so an entry that no longer excludes anything is a failure rather
+    # than a silent exemption.
+    gv, err = guard_values(set(CONFIG_EXCLUDED.values()))
+    if gv is None:
+        print("FAIL cfs-coverage — could not evaluate the CONFIG_EXCLUDED guards with the host C",
+              file=sys.stderr)
+        print("  preprocessor, so an excluded function cannot be told from a missing one.",
+              file=sys.stderr)
+        print("\n".join(str(err).split("\n")[:12]), file=sys.stderr)
+        return 1
+    live = sorted({m for m in CONFIG_EXCLUDED.values() if gv.get(m)})
+    if live:
+        print("FAIL cfs-coverage — these guards are TRUE in this configuration, so the functions",
+              file=sys.stderr)
+        print("  they exclude ARE built and have to be translated. CONFIG_EXCLUDED is verified",
+              file=sys.stderr)
+        print("  against the real headers for exactly this reason:", file=sys.stderr)
+        for m in live:
+            for (f, fn), mm in sorted(CONFIG_EXCLUDED.items()):
+                if mm == m:
+                    print("    %-34s %s: %s" % (m + " = %d" % gv[m], f, fn), file=sys.stderr)
+        return 1
+
+    missing, excluded = [], []
     for c in argv:
         if not os.path.exists(c):
             print(f"FAIL cfs-coverage — no such file: {c}", file=sys.stderr)
             return 1
+        base = os.path.basename(c)
         for fn in sorted(c_functions(c)):
-            if fn not in have:
-                missing.append((os.path.basename(c), fn))
+            if fn in have:
+                continue
+            if (base, fn) in CONFIG_EXCLUDED:
+                excluded.append((base, fn, CONFIG_EXCLUDED[(base, fn)]))
+                continue
+            missing.append((base, fn))
     if missing:
         print("FAIL cfs-coverage — defined in NASA's C, absent from the HolyC translation.", file=sys.stderr)
         print("  The transcript cannot see these: nothing calls them, so it stays green.", file=sys.stderr)
@@ -82,7 +165,10 @@ def main(argv):
             print(f"    {f}: {fn}", file=sys.stderr)
         return 1
     n = sum(len(c_functions(c)) for c in argv)
-    print(f"cfs-coverage: {n} functions across {len(argv)} NASA sources, all present in the translation")
+    for f, fn, m in excluded:
+        print("  not in this configuration: %s: %s (%s is 0)" % (f, fn, m))
+    print(f"cfs-coverage: {n - len(excluded)} functions across {len(argv)} NASA sources, all "
+          f"present in the translation ({len(excluded)} excluded by a verified #if)")
     return 0
 
 if __name__ == '__main__':

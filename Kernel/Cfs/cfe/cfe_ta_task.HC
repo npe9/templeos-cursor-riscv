@@ -238,9 +238,14 @@ union CFE_SB_Buffer
 };
 
 #define CFE_SB_PEND_FOREVER (-1)
-#define CFE_ES_RunStatus_CORE_APP_INIT_ERROR    5
-#define CFE_ES_RunStatus_CORE_APP_RUNTIME_ERROR 6
-#define CFE_ES_SystemState_CORE_READY           2
+// THREE ENUM MEMBERS, and all three were WRONG -- 5/6/2 where NASA has 8/9/3. They are passed
+// to CFE_ES_ExitApp and CFE_ES_WaitForSystemState, which the driver stubs, so the transcript
+// never looked at them; and check_constants.py could not look either, because its `#ifdef` test
+// cannot see an ENUMERATOR, so all three were classified as names this port invented. The tool
+// now retries the undefined set as expressions and these were the first thing it caught.
+#define CFE_ES_RunStatus_CORE_APP_INIT_ERROR    8
+#define CFE_ES_RunStatus_CORE_APP_RUNTIME_ERROR 9
+#define CFE_ES_SystemState_CORE_READY           3
 #define CFE_PLATFORM_CORE_MAX_STARTUP_MSEC      30000
 I32 CFE_EVS_Register(U8 *Filters, U16 NumFilteredEvents, U16 FilterScheme);
 // VARIADIC, and it has to say so here: a HolyC call site builds the implicit (argc, argv) pair

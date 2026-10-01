@@ -71,7 +71,9 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/evs/fsw/src/cfe_evs.c
        $CFE/modules/evs/fsw/src/cfe_evs_task.c
        $CFE/modules/evs/fsw/src/cfe_evs_dispatch.c
-       $CFE/modules/evs/fsw/src/cfe_evs_objtab.c"
+       $CFE/modules/evs/fsw/src/cfe_evs_objtab.c
+       $CFE/modules/time/fsw/src/cfe_time_utils.c
+       $CFE/modules/time/fsw/src/cfe_time_api.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -107,6 +109,7 @@ INC="-I$CFE/modules/core_api/fsw/inc -I$CFE/modules/core_api/config
      -I$CFE/modules/core_private/fsw/inc -I$CFE/modules/core_private/config
      -I$CFE/modules/sbr/fsw/src -I$CFE/modules/sbr/private_inc
      -I$CFE/modules/config/fsw/src -I$GENDIR
+     -I$CFE/modules/time/fsw/src -I$CFE/modules/time/fsw/inc -I$CFE/modules/time/config
      -I$OSAL/src/os/inc -I$PSP/fsw/inc -I$CFE/cmake/sample_defs -I$CFE/cmake/target/inc -I$SHIM"
 
 T="$(mktemp -d)"
