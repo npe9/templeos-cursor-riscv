@@ -38,7 +38,7 @@ class CFE_EVS_LogFileCmd_Payload_t
 
 class CFE_EVS_SetLogMode_Payload_t
 {
-  U16 LogMode; // CFE_EVS_LogMode_Enum_t -- a uint16 typedef, not a C enum
+  U8 LogMode;  // CFE_EVS_LogMode_Enum_t -- a uint8 typedef, not a C enum
   U8 Spare;    // Pad to even byte
 };
 

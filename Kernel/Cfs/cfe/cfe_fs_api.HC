@@ -318,11 +318,13 @@ I32 CFE_FS_SetTimestamp(U32 FileDes, CFE_TIME_SysTime NewTimestamp)
     if (OsStatus == sizeof(OutTimestamp)) {
       Result = CFE_SUCCESS;
     } else {
-      CFE_ES_WriteToSysLog("CFE_FS_SetTimestamp: Failed to write timestamp\n");
+      CFE_ES_WriteToSysLog("CFE_FS_SetTimestamp: Failed to write timestamp (Status=%ld)\n",
+                         OsStatus);
       Result = CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
     }
   } else {
-    CFE_ES_WriteToSysLog("CFE_FS_SetTimestamp: Failed to lseek time fields\n");
+    CFE_ES_WriteToSysLog("CFE_FS_SetTimestamp: Failed to lseek time fields (Status=%ld)\n",
+                         OsStatus);
     Result = CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
   }
 

@@ -206,7 +206,8 @@ I32 EVS_NotRegistered(EVS_AppData_t *AppDataPtr, U32 CallerID)
 
     // Write the "not registered" info to the system log
     CFE_ES_WriteToSysLog(
-        "EVS_NotRegistered: App not registered with Event Services. Unable to send event.\n");
+        "EVS_NotRegistered: App %s not registered with Event Services. Unable to send event.\n",
+        AppName);
   }
 
   return CFE_EVS_APP_NOT_REGISTERED;

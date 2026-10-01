@@ -68,7 +68,10 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/ta/fsw/src/cfe_ta_objtab.c
        $CFE/modules/evs/fsw/src/cfe_evs_utils.c
        $CFE/modules/evs/fsw/src/cfe_evs_log.c
-       $CFE/modules/evs/fsw/src/cfe_evs.c"
+       $CFE/modules/evs/fsw/src/cfe_evs.c
+       $CFE/modules/evs/fsw/src/cfe_evs_task.c
+       $CFE/modules/evs/fsw/src/cfe_evs_dispatch.c
+       $CFE/modules/evs/fsw/src/cfe_evs_objtab.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"

@@ -275,3 +275,47 @@ only place in EVS that mixes the two namespaces, and every other comparison on t
 variable in the same function uses `CFE_SUCCESS`. Reproduced as written, with a comment at the
 site: changing it would be a readability fix this port is not entitled to make, and if upstream
 ever gave the two codes different values the transcript would be the thing that noticed.
+
+## 10. CFE_EVS_SendHkCmd's "clear unused" loop never advances the pointer
+
+`modules/evs/fsw/src/cfe_evs_task.c` fills the housekeeping packet's per-app array by walking
+`AppTlmDataPtr` forward over the registered apps, and then clears the rest of the array:
+
+```c
+    for (i = 0, j = 0; j < CFE_MISSION_ES_MAX_APPLICATIONS && i < CFE_PLATFORM_ES_MAX_APPLICATIONS; i++)
+    {
+        if (EVS_AppDataIsUsed(AppDataPtr))
+        {
+            ...
+            ++j;
+            ++AppTlmDataPtr;        /* <- advances here */
+        }
+        ++AppDataPtr;
+    }
+
+    /* Clear unused portion of event state data in telemetry packet */
+    for (i = j; i < CFE_MISSION_ES_MAX_APPLICATIONS; i++)
+    {
+        AppTlmDataPtr->AppID                      = CFE_ES_APPID_UNDEFINED;
+        AppTlmDataPtr->AppEnableStatus            = false;
+        AppTlmDataPtr->AppMessageSentCounter      = 0;
+        AppTlmDataPtr->AppMessageSquelchedCounter = 0;
+                                    /* <- and NOT here */
+    }
+```
+
+The second loop writes the same entry `CFE_MISSION_ES_MAX_APPLICATIONS - j` times. Every slot
+after the first unused one keeps whatever the previous housekeeping cycle left in it, so once an
+app unregisters its `AppID`, enable status and counters stay in the downlinked packet
+indefinitely — a ground display reading the array sees apps that are gone.
+
+It is not caught by the first loop's bound, because the two loops share `i` but only the first
+one uses it as the AppData index; `j` is the count of entries actually written.
+
+**Live, not latent.** The command is the periodic housekeeping request, so this runs every cycle
+in a stock build. It is invisible as long as no app ever unregisters, which is the normal case
+and is presumably why it has survived.
+
+Translated as written, with a comment at the site. The differential transcript is what makes
+that safe to say: both sides reproduce the stale entries identically, and a port that "fixed" it
+would differ from the flight software it claims to be.

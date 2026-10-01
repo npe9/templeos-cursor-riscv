@@ -323,3 +323,44 @@ effect and would not have had one for a long time.
 
 Worked around by writing `uv = uv / base`. `tests/exec/cases/e_strprint_hex.hc` pins the output,
 and its `%llu` line is the case that fails if the compound form comes back.
+
+## 12. A `static` local is a GLOBAL under the bare name, so two functions collide — OPEN
+
+```
+U0 A() { static I64 n; n++;     ... }
+U0 B() { static I64 n; n += 10; ... }
+```
+
+Two functions, each with its own `static I64 n`. Running this faults:
+
+```
+TRAP mcause=0x5 (load-fault) mepc=blob+0x7bc mtval=0x0
+...
+    li   a0,0
+    ld   a0,0(a0)
+```
+
+One of the two resolves to **address 0**. `parser.c` says what it does at the site —
+
+```c
+// For static variables, treat as globals scoped to function
+if (is_static) {
+  bool result = ParseGlobalVariable(cc, type, var_name);
+```
+
+— and the comment claims the scoping that the call does not do: the name goes into the global
+hash table bare, so the second declaration lands on the first's entry and re-aims it. The same
+file already warns about exactly this hazard for ordinary globals ("A global redefined with a
+different type is almost always a COLLISION"); a function-static is that collision with the same
+type, which is the case that stays silent.
+
+Found translating cFS's dispatchers. `cfe_ta_dispatch.c` and `cfe_evs_dispatch.c` both cache
+their message ids in function-local statics, and **both call them `CMD_MID` and
+`SEND_HK_MID`** — every cFE module's dispatcher does. With both translated, `CFE_TA_TaskPipe`
+faulted; the ta copy had been clobbered by the evs one four files later.
+
+Worked around in `cfe_evs_dispatch.HC` by prefixing that file's pair, recorded as a deviation at
+the site. The fix is to mangle a static local's global name with the enclosing function and alias
+the bare name for the body's lifetime — `GVF_ALIAS` and `HashRemove` already exist — and it is a
+`parser.c` change, so it lands on its own with the kernel gates behind it rather than inside a
+cFS commit.

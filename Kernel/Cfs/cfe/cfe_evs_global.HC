@@ -27,10 +27,19 @@
 //   modules/core_api/fsw/inc/cfe_error.h            the CFE_EVS_* status codes
 //
 // SPLIT OUT, unlike fs and ta, where the declarations sit in the file named after the .c they
-// came from. EVS's types live in cfe_evs_task.h, and cfe_evs_task.c is the LAST of its six
-// sources to be translated: utils, log and the public API all need the global before the file
-// that declares it exists. Putting them here keeps the include order honest instead of
-// pretending cfe_evs_task.HC comes first.
+// came from. EVS's types live in cfe_evs_task.h, and utils, log and the public API all need them
+// before cfe_evs_task.HC appears in the include order. Putting them here keeps that order honest
+// instead of pretending cfe_evs_task.HC comes first.
+//
+// AND THE OBJECT STAYS HERE TOO, WHICH IS A DEVIATION. NASA DEFINES CFE_EVS_Global in
+// cfe_evs_task.c -- last of the six sources -- and the three files above it reach it through
+// `extern CFE_EVS_Global_t CFE_EVS_Global;` in cfe_evs_task.h. HolyC has no usable forward
+// declaration for a variable: an `extern` outside the compiler's externs-to-imports window is a
+// module-local dummy, not a reference to the real object, so the DEFINITION has to precede its
+// first use. Measured: moving it to cfe_evs_task.HC leaves ten "Undefined variable
+// 'CFE_EVS_Global'" errors in cfe_evs_utils.HC and cfe_evs_log.HC. So it is defined here, next
+// to its type, and cfe_evs_task.HC says so at the point NASA defines it. Nothing about the
+// object differs -- one definition, same type, same layout; only the file it sits in.
 #ifndef CFE_EVS_GLOBAL_HC
 #define CFE_EVS_GLOBAL_HC
 // What these declarations are built from. All three are guarded, so including them here costs
@@ -45,18 +54,27 @@
 #define CFE_MISSION_MAX_PATH_LEN 64
 #endif
 // --- cfe_error.h: the codes EVS returns -------------------------------------------------------
-#define CFE_EVS_UNKNOWN_FILTER        0xC2000001
-#define CFE_EVS_APP_NOT_REGISTERED    0xC2000002
-#define CFE_EVS_APP_ILLEGAL_APP_ID    0xC2000003
-#define CFE_EVS_APP_FILTER_OVERLOAD   0xC2000004
-#define CFE_EVS_RESET_AREA_POINTER    0xC2000005
-#define CFE_EVS_EVT_NOT_REGISTERED    0xC2000006
-#define CFE_EVS_FILE_WRITE_ERROR      0xC2000007
-#define CFE_EVS_INVALID_PARAMETER     0xC2000008
-#define CFE_EVS_NOT_IMPLEMENTED       0xC200FFFF
-#define CFE_EVS_APP_SQUELCHED         0xC2000009
+// THE (I32) IS NASA'S OWN CAST, not decoration. Every one of these is
+// `((CFE_Status_t)0xc20000NN)` upstream, and CFE_Status_t is int32. Without the cast the macro is
+// a POSITIVE 64-bit literal here, so `Status == CFE_EVS_APP_NOT_REGISTERED` compares
+// -1040187390 against 3254779906 and is false -- which sent six per-app commands down their
+// final `else` and reported "Unable to retrieve application ID" where NASA reports "not
+// registered with EVS". The cast goes on a status code and NOT on an unsigned constant:
+// OS_OBJECT_ID_RESERVED and the two OSAL magic numbers are uint32 upstream, and casting those
+// broke the OSAL transcript's whole id-allocation block. tools/cfs/check_constants.py compares
+// the cast value.
+#define CFE_EVS_UNKNOWN_FILTER        0xC2000001(I32)
+#define CFE_EVS_APP_NOT_REGISTERED    0xC2000002(I32)
+#define CFE_EVS_APP_ILLEGAL_APP_ID    0xC2000003(I32)
+#define CFE_EVS_APP_FILTER_OVERLOAD   0xC2000004(I32)
+#define CFE_EVS_RESET_AREA_POINTER    0xC2000005(I32)
+#define CFE_EVS_EVT_NOT_REGISTERED    0xC2000006(I32)
+#define CFE_EVS_FILE_WRITE_ERROR      0xC2000007(I32)
+#define CFE_EVS_INVALID_PARAMETER     0xC2000008(I32)
+#define CFE_EVS_NOT_IMPLEMENTED       0xC200FFFF(I32)
+#define CFE_EVS_APP_SQUELCHED         0xC2000009(I32)
 #ifndef CFE_ES_BAD_ARGUMENT
-#define CFE_ES_BAD_ARGUMENT           0xC400000A
+#define CFE_ES_BAD_ARGUMENT           0xC400000A(I32)
 #endif
 // cfe_evs_task.h
 #define CFE_EVS_FREE_SLOT (-1)
@@ -292,5 +310,7 @@ class CFE_EVS_Global_t
   U32 EVS_EventBurstMax;
 };
 
+// NASA's definition is in cfe_evs_task.c; see the note at the top of this file for why the
+// translation's has to come before its first use instead.
 CFE_EVS_Global_t CFE_EVS_Global;
 #endif

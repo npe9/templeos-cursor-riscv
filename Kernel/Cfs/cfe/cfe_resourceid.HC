@@ -50,8 +50,8 @@
 #include "cfe_msg_objtab.HC"
 #include "../CfsStr.HC"
 // --- cfe_error.h ----------------------------------------------------------------------------
-#define CFE_ES_ERR_RESOURCEID_NOT_VALID 0xC4000001
-#define CFE_ES_BAD_ARGUMENT             0xC400000A
+#define CFE_ES_ERR_RESOURCEID_NOT_VALID 0xC4000001(I32)
+#define CFE_ES_BAD_ARGUMENT             0xC400000A(I32)
 // --- cfe_resourceid_simple.h ----------------------------------------------------------------
 // CFE_ResourceId_t is a plain uint32 in this variant, and CFE_RESOURCEID_WRAP/UNWRAP are the
 // identity, so they leave no trace in the translation -- every place the C writes WRAP(x) or

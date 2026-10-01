@@ -89,6 +89,18 @@ HDRS = [
     "cfe_config.h", "cfe_config_priv.h", "cfe_config_nametable.h", "cfe_resourceid.h",
     "cfe_time.h", "cfe_ta_task.h", "cfe_ta_tasklist.h", "cfe_evs_task.h", "cfe_evs_log_typedef.h",
     "target_config.h", "target_objtab.h",
+    # The reset area. CFE_EVS_EarlyInit sizes the WHOLE of CFE_ES_ResetData_t and takes the event
+    # log out of it, so the translation declares that type and the eight ES/TIME types under it.
+    # They are types, not code -- no ES function is translated -- and this is what measures them.
+    "cfe_es_resetdata_typedef.h", "cfe_es_perfdata_typedef.h", "cfe_es_erlog_typedef.h",
+    "cfe_time_resetvars_typedef.h",
+    # EVS's twenty-two COMMAND MESSAGES and their payloads. They live in the module's config
+    # headers, which cfe_evs_task.h does not pull in, so none of them was measured -- and one of
+    # them was wrong: CFE_EVS_SetLogMode_Payload_t had LogMode as a U16 because the comment said
+    # "a uint16 typedef", and CFE_EVS_LogMode_Enum_t is a uint8. That made the command one byte
+    # long and the dispatcher rejected it on length, which the transcript DID catch, three
+    # modules later. This is what catches it at the declaration.
+    "cfe_evs_module_all.h",
 ]
 
 # NASA .c files whose FILE-SCOPE typedefs have to be lifted into the probe. A module's private

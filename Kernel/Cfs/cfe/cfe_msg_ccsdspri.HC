@@ -36,7 +36,7 @@
 #include "cfe_msg_defaults.HC"
 // --- from cfe_error.h / cfe_msg_api_typedefs.h --------------------------------------------
 #define CFE_SUCCESS               0
-#define CFE_MSG_BAD_ARGUMENT      0xCA000003
+#define CFE_MSG_BAD_ARGUMENT      0xCA000003(I32)
 #define CFE_MSG_Type_Invalid      0
 #define CFE_MSG_Type_Cmd          1
 #define CFE_MSG_Type_Tlm          2

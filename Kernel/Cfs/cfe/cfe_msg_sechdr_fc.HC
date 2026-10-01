@@ -30,7 +30,7 @@
 #define CFE_MSG_SECHDR_FC_HC
 #include "cfe_msg_ccsdspri.HC"
 // From cfe_msg_api_typedefs.h -> cfe_error.h: CFE_MSG_WRONG_MSG_TYPE is CFE_SB_WRONG_MSG_TYPE.
-#define CFE_MSG_WRONG_MSG_TYPE 0xCA00000D
+#define CFE_MSG_WRONG_MSG_TYPE 0xCA00000D(I32)
 #define CFE_MSG_FC_MASK 0x7F
 // --- default_cfe_msg_sechdr.h ---------------------------------------------------------------
 class CFE_MSG_CommandSecondaryHeader

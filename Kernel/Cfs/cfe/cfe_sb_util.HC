@@ -27,22 +27,25 @@
 //   CFE_TIME_GetTime        declared in cfe_time_api.HC, supplied by whoever links this
 //   CFE_ES_WriteToSysLog    a printf-style log sink, declared here and stubbed by the harness
 //
-// ONE KNOWING DEVIATION. CFE_ES_WriteToSysLog is variadic and every call site passes __func__
-// plus a format string. HolyC has variadics but no __func__, and reproducing C's printf here
-// would be translating the C LIBRARY rather than cFE. So the translation keeps the CALL and
-// drops the formatting: the parameter is a plain string. What the differential oracle then
-// pins is WHICH PATHS LOG, which is the behaviour, and not the wording, which is not.
+// CFE_ES_WriteToSysLog IS VARIADIC HERE, and every call site passes NASA's own arguments. It
+// used to take a plain string, with the wording left outside the comparison -- that was
+// defensible while there was no formatter, and StrPrintNV is the formatter now. HolyC has no
+// __func__, so each site writes the enclosing function's NAME into the literal where NASA
+// writes "%s" and passes `__func__`. That is not an approximation: __func__ expands to exactly
+// that name, so the two produce the same characters, and the transcript compares them.
 #ifndef CFE_SB_UTIL_HC
 #define CFE_SB_UTIL_HC
 #include "cfe_time_api.HC"
 #include "cfe_sb_msgid.HC"
 // From cfe_error.h.
-#define CFE_SB_BAD_ARGUMENT 0xCA000003
+#define CFE_SB_BAD_ARGUMENT 0xCA000003(I32)
 // From cmake/sample_defs/example_mission_cfg.h, reaching this file as
 // CFE_MISSION_SB_CFGVAL(MAX_SB_MSG_SIZE).
 #define CFE_MISSION_SB_MAX_SB_MSG_SIZE 32768
 // Declared, not defined: see the note above. Returns a status in the C; nothing checks it here.
-I32 CFE_ES_WriteToSysLog(U8 *Msg);
+// The `...` is load-bearing -- a HolyC call site builds (argc, argv) only if it already knows
+// the callee is variadic. tools/cfs/check_variadic.py.
+I32 CFE_ES_WriteToSysLog(U8 *Msg, ...);
 // CFE_SB_MsgHdrSize comes from cfe_sb_msg_id_util.c, translated in cfe_sb_msgid.HC, which this
 // file includes above. NOT re-declared here: a prototype for a function that is ALREADY DEFINED
 // turns the rest of this file's definitions into imports, silently -- measured, see below.

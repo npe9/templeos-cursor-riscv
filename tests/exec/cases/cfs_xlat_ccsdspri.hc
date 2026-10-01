@@ -129,6 +129,9 @@ I64 StrCmp(U8 *st1, U8 *st2)
 #include "/Kernel/Cfs/cfe/cfe_evs_utils.HC"
 #include "/Kernel/Cfs/cfe/cfe_evs_log.HC"
 #include "/Kernel/Cfs/cfe/cfe_evs.HC"
+#include "/Kernel/Cfs/cfe/cfe_evs_task.HC"
+#include "/Kernel/Cfs/cfe/cfe_evs_dispatch.HC"
+#include "/Kernel/Cfs/cfe/cfe_evs_objtab.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -205,10 +208,15 @@ U32 CFE_PSP_GetProcessorId()
 {
   return 1;
 }
-
-I32 CFE_ES_WriteToSysLog(U8 *Msg)
+// Formats, as NASA's does. It printed a bare "syslog" while the translation's call sites took a
+// plain string; now that they pass NASA's arguments, the text is the thing worth comparing --
+// a status code in a log line is the same kind of evidence as one in an event.
+I32 CFE_ES_WriteToSysLog(U8 *Msg,...)
 {
-  S("syslog\n");
+  U8 buf[200];
+  StrPrintNV(buf, 200, Msg, argc, argv);
+  S("syslog ");
+  S(buf);
   return 0;
 }
 // The C declares this `static const uint32 ARR[3] = {11, 22, 33}` inside its block -- static,
@@ -330,6 +338,9 @@ I64 fs_open_fail;
 I64 fs_wr_left;
 // < 0 = unlimited
 I64 fs_mut_create, fs_mut_take, fs_mut_give, fs_wakeups;
+// Steer the three mutex calls; see the note in the C half. Without these, cfe_fs_priv.c's
+// three syslog lines are unreachable -- including the only one that formats three arguments.
+I64 fs_mut_create_rc, fs_mut_take_rc, fs_mut_give_rc;
 I32 OS_OpenCreate(U32 *filedes, U8 *path, I32 flags, I32 access_mode)
 {
   if (fs_open_fail)
@@ -392,19 +403,19 @@ I32 OS_MutSemCreate(U32 *sem_id, U8 *sem_name, U32 options)
 {
   ++fs_mut_create;
   *sem_id = 3;
-  return OS_SUCCESS;
+  return fs_mut_create_rc;
 }
 
 I32 OS_MutSemTake(U32 sem_id)
 {
   ++fs_mut_take;
-  return OS_SUCCESS;
+  return fs_mut_take_rc;
 }
 
 I32 OS_MutSemGive(U32 sem_id)
 {
   ++fs_mut_give;
-  return OS_SUCCESS;
+  return fs_mut_give_rc;
 }
 // Who the caller is. fs and ta only needed a fixed value; EVS branches on it -- an app that
 // has registered, one that has not, and one whose id is out of range are three different paths
@@ -545,11 +556,10 @@ U0 fs_parse_out(U8 *tag, U8 *out, I32 rc)
 // translated yet. The C side of this oracle defines it in the driver for the same reason, and
 // when that source is translated the definition moves there on both sides.
 CFE_EVS_Log_t evs_log_storage;
-// what CFE_PSP_GetTime reports, in ticks (= ns here), and what CFE_EVS_GetTypeEnable answers
+// what CFE_PSP_GetTime reports, in ticks (= ns here)
 I64 evs_psp_ns;
-I64 evs_type_enable;
 I64 evs_printf_lines;
-#define CFE_ES_ERR_NAME_NOT_FOUND 0xC4000002
+#define CFE_ES_ERR_NAME_NOT_FOUND 0xC4000002(I32)
 I32 CFE_ES_AppID_ToIndex(U32 AppID, U32 *Idx)
 {
   // The real one strips the resource-type bits; with the SIMPLE variant the id IS the index
@@ -585,11 +595,6 @@ I32 CFE_ES_GetAppName(U8 *AppName, U32 AppId, I64 BufferLength)
   return CFE_SUCCESS;
 }
 // Lives in cfe_evs_task.c, the last of EVS's six sources and not translated yet.
-Bool CFE_EVS_GetTypeEnable(U16 EventType)
-{
-  return evs_type_enable != 0;
-}
-
 U0 CFE_PSP_GetTime(OS_time_t *LocalTime)
 {
   LocalTime->ticks = evs_psp_ns;
@@ -647,9 +652,10 @@ U0 ci_str(U8 *tag, U8 *s)
 // recording stubs; the affinity side is a small table this driver controls, so the three-way
 // loop bound in CFE_TA_Cpu_Set and every branch of the two affinity commands can be driven.
 //
-// CFE_EVS_SendEvent is variadic in the C and takes a plain string in the translation. The
-// transcript therefore compares the event ID and the TYPE and leaves the WORDING out -- the same
-// split CFE_ES_WriteToSysLog has, for the same reason: the id is what a ground system acts on.
+// BOTH SPLITS ARE GONE. CFE_EVS_SendEvent and CFE_ES_WriteToSysLog each used to take a plain
+// string here, with the event id and the branch compared and the wording left out. EVS is
+// translated now and StrPrintNV formats, so both pass NASA's own arguments and the text they
+// produce is inside the byte-identical comparison.
 I64 ta_evs_count;
 I64 ta_pipe_created, ta_subscribes, ta_transmits;
 I64 ta_evs_register_rc, ta_pipe_rc, ta_subscribe_rc;
@@ -681,6 +687,49 @@ U0 CFE_ES_ExitApp(U32 ExitStatus)
 I32 CFE_ES_WaitForSystemState(U32 MinSystemState, U32 TimeOutMilliseconds)
 {
   return CFE_SUCCESS;
+}
+// --- the reset area, for CFE_EVS_EarlyInit ----------------------------------------------------
+// EVS's early init asks the PSP for the reset area, checks its SIZE against the whole of
+// CFE_ES_ResetData_t and panics if it is short, then takes the event log out of it. So the driver
+// supplies a real one, and the three things EarlyInit can be told are all steerable: the PSP
+// call's status, the size it reports, and the reset type.
+CFE_ES_ResetData_t evs_reset_area;
+I64 evs_resetarea_rc;
+// what CFE_PSP_GetResetArea returns
+I64 evs_resetarea_size;
+// what it reports, 0 = the real sizeof
+I64 evs_reset_type;
+// what CFE_ES_GetResetType answers
+I64 evs_panics, evs_delay_ms;
+// what the panic and delay stubs recorded
+I32 CFE_PSP_GetResetArea(U64 *PtrToResetArea, U32 *SizeOfResetArea)
+{
+  *PtrToResetArea = &evs_reset_area;
+  if (evs_resetarea_size)
+    *SizeOfResetArea = evs_resetarea_size;
+  else
+    *SizeOfResetArea = sizeof(CFE_ES_ResetData_t);
+  return evs_resetarea_rc;
+}
+
+I32 CFE_ES_GetResetType(U32 *ResetSubtypePtr)
+{
+  return evs_reset_type;
+}
+// NASA's CFE_PSP_Panic does not return; this one does, because EarlyInit's code AFTER the panic
+// is part of what the transcript compares -- it falls through to `return Status`.
+U0 CFE_PSP_Panic(I32 ErrorCode)
+{
+  ++evs_panics;
+  S("psp_panic ");
+  D(ErrorCode);
+  S("\n");
+}
+
+I32 OS_TaskDelay(U32 millisecond)
+{
+  evs_delay_ms += millisecond;
+  return OS_SUCCESS;
 }
 
 U0 CFE_ES_IncrementTaskCounter()
@@ -797,6 +846,23 @@ union ta_sb_u
   U8 Bytes[128];
 };
 ta_sb_u ta_sb;
+// The command buffer the EVS task block needs. A HolyC union is declared at file scope, as
+// ta_sb_u above is.
+union evt_c_u
+{
+  CFE_SB_Buffer Buf;
+  CFE_EVS_EnablePortsCmd_t Ports;
+  CFE_EVS_EnableAppEventTypeCmd_t AppType;
+  CFE_EVS_SetFilterCmd_t Filter;
+  CFE_EVS_ResetFilterCmd_t RstFilter;
+  CFE_EVS_EnableAppEventsCmd_t AppEvt;
+  CFE_EVS_SetEventFormatModeCmd_t Fmt;
+  CFE_EVS_SetLogModeCmd_t LogMode;
+  CFE_EVS_WriteAppDataFileCmd_t AppData;
+  CFE_EVS_WriteLogDataFileCmd_t LogData;
+  U8 Bytes[256];
+};
+evt_c_u evt_c;
 // The five objects the queue-full case needs at file scope, as the C's `static` ones are.
 CFE_FS_FileWriteMetaData_t fs_q[5];
 I64 main()
@@ -1603,6 +1669,29 @@ I64 main()
   S(" give=");
   D(fs_mut_give);
   S("\n");
+  // the three failure paths, each of which logs: the creation, the take and the give
+  
+  {
+    I32 nrc;
+    fs_mut_create_rc = -11;
+    nrc = CFE_FS_EarlyInit();
+    S("fs_init_nomutex rc=");
+    D(nrc);
+    S("\n");
+    fs_mut_create_rc = OS_SUCCESS;
+    nrc = CFE_FS_EarlyInit();
+    S("fs_init_again rc=");
+    D(nrc);
+    S("\n");
+    fs_mut_take_rc = -12;
+    CFE_FS_LockSharedData("take_fails");
+    S("fs_lock_takefail done\n");
+    fs_mut_take_rc = OS_SUCCESS;
+    fs_mut_give_rc = -13;
+    CFE_FS_UnlockSharedData("give_fails");
+    S("fs_lock_givefail done\n");
+    fs_mut_give_rc = OS_SUCCESS;
+  }
   // --- cfe_fs_api.c: the default locations -------------------------------------------
   // Every category, including the two that have no mount point and the three that have no
   // extension -- those return NULL, and a translation that returned "" instead would pass a
@@ -2384,6 +2473,21 @@ I64 main()
     D(src);
     S("\n");
     ta_getid_rc = OS_SUCCESS;
+    // The two OS failures inside the loop. Each logs a line carrying the TASK NAME and the
+    // STATUS, and neither was reachable before: the block above only ever had the OS succeed,
+    // so the arguments in those two syslog calls were translated and never read.
+    ta_getaff_rc = -21;
+    src = CFE_TA_SetStartupAffinity("CFE_ES");
+    S("ta_startup_getfail rc=");
+    D(src);
+    S("\n");
+    ta_getaff_rc = OS_SUCCESS;
+    ta_setaff_rc = -22;
+    src = CFE_TA_SetStartupAffinity("CFE_ES");
+    S("ta_startup_setfail rc=");
+    D(src);
+    S("\n");
+    ta_setaff_rc = OS_SUCCESS;
     ta_counters("ta_startup_after");
     // and the OS event handler, which is the only caller of SetStartupAffinity in flight
     src = CFE_TA_OS_EventHandler(OS_EVENT_RESOURCE_ALLOCATED, 1, NULL);
@@ -2557,7 +2661,6 @@ I64 main()
     // squelch off for now; the burst budget gets its own block below
     CFE_EVS_Global.EVS_EventBurstMax = 0;
     CFE_EVS_Global.EVS_LogPtr->LogMode = CFE_EVS_LogMode_OVERWRITE;
-    evs_type_enable = 1;
     evs_psp_ns = 0;
     ta_transmits = 0;
     evs_printf_lines = 0;
@@ -2658,13 +2761,15 @@ I64 main()
     S("evs_filt_maskall2 rc=");
     D(rc);
     S("\n");
-    // the type switch: CFE_EVS_GetTypeEnable off filters everything
-    evs_type_enable = 0;
+    // The type switch. This used to be a driver stub answering CFE_EVS_GetTypeEnable;
+    // cfe_evs_task.c is translated now, so the real one runs and the switch is the app's own
+    // EventTypesActive array -- reached through CFE_EVS_SetTypeEnable, which is also translated.
+    CFE_EVS_SetTypeEnable(CFE_EVS_EventType_INFORMATION, FALSE);
     rc = CFE_EVS_SendEvent(4, CFE_EVS_EventType_INFORMATION, "type disabled");
     S("evs_typeoff rc=");
     D(rc);
     S("\n");
-    evs_type_enable = 1;
+    CFE_EVS_SetTypeEnable(CFE_EVS_EventType_INFORMATION, TRUE);
     // the per-app active flag does the same, one level earlier
     adp = EVS_GetAppDataByID(evsid);
     adp->ActiveFlag = FALSE;
@@ -2965,7 +3070,6 @@ I64 main()
     // clear the filters so nothing is suppressed.
     ta_getappid = 1;
     CFE_EVS_ResetAllFilters();
-    evs_type_enable = 1;
     CFE_EVS_Global.EVS_EventBurstMax = 0;
     CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort = CFE_EVS_PORT1_BIT;
     ta_cores = 1;
@@ -3091,6 +3195,488 @@ I64 main()
     D(CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter);
     S(" printed=");
     D(evs_printf_lines);
+    S("\n");
+  }
+  // --- cfe_evs_task.c and cfe_evs_dispatch.c: EVS AS A TASK -------------------------------
+  // The other three sources, and with them the module is complete. EarlyInit takes the event log
+  // out of the PSP reset area; TaskInit registers EVS and subscribes; twenty ground commands and
+  // a dispatcher route them. Every one of those commands ends in an event, and most of them are
+  // CFE_EVS_EventType_DEBUG -- which the DEFAULT type mask has OFF, so the first thing this
+  // block does is what a ground operator does: enable DEBUG. That is also why the transcript
+  // lost nine lines when cfe_evs_task.c arrived: the driver's old CFE_EVS_GetTypeEnable stub
+  // answered "enabled" for every type, and the real one reads the app's own EventTypesActive.
+  
+  {
+    CFE_EVS_BitMaskCmd_Payload_t *bm;
+    CFE_EVS_AppNameCmd_Payload_t *an;
+    CFE_EVS_AppNameBitMaskCmd_Payload_t *anbm;
+    CFE_EVS_AppNameEventIDCmd_Payload_t *aneid;
+    CFE_EVS_AppNameEventIDMaskCmd_Payload_t *aneidm;
+    EVS_AppData_t *ap;
+    I32 rc;
+    Bool vok;
+    I64 cc;
+    // --- CFE_EVS_EarlyInit ------------------------------------------------------------
+    // the PSP refuses
+    evs_resetarea_rc = -31;
+    rc = CFE_EVS_EarlyInit();
+    S("evt_early_nopsp rc=");
+    D(rc);
+    S(" panics=");
+    D(evs_panics);
+    S(" delay=");
+    D(evs_delay_ms);
+    S("\n");
+    evs_resetarea_rc = CFE_PSP_SUCCESS;
+    // the area is there and is too small for CFE_ES_ResetData_t
+    evs_resetarea_size = 64;
+    rc = CFE_EVS_EarlyInit();
+    S("evt_early_short rc=");
+    D(rc);
+    S(" panics=");
+    D(evs_panics);
+    S("\n");
+    evs_resetarea_size = 0;
+    // a power-on reset clears the log
+    evs_reset_type = CFE_PSP_RST_TYPE_POWERON;
+    MemSet(&evs_reset_area, 0, sizeof(CFE_ES_ResetData_t));
+    rc = CFE_EVS_EarlyInit();
+    S("evt_early_poweron rc=");
+    D(rc);
+    S("\n");
+    S("evt_early_state fmt=");
+    D(CFE_EVS_Global.EVS_TlmPkt.Payload.MessageFormatMode);
+    S(" port=");
+    D(CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort);
+    S(" logmode=");
+    D(CFE_EVS_Global.EVS_TlmPkt.Payload.LogMode);
+    S(" logen=");
+    D(CFE_EVS_Global.EVS_TlmPkt.Payload.LogEnabled);
+    S(" burst=");
+    D(CFE_EVS_Global.EVS_EventBurstMax);
+    S(" next=");
+    D(CFE_EVS_Global.EVS_LogPtr->Next);
+    S(" count=");
+    D(CFE_EVS_Global.EVS_LogPtr->LogCount);
+    S("\n");
+    // a processor reset with a GOOD log restores it; with a bad one clears it
+    evs_reset_type = 1;
+    CFE_EVS_Global.EVS_LogPtr->LogMode = CFE_EVS_LogMode_OVERWRITE;
+    CFE_EVS_Global.EVS_LogPtr->LogFullFlag = FALSE;
+    CFE_EVS_Global.EVS_LogPtr->Next = 3;
+    CFE_EVS_Global.EVS_LogPtr->LogCount = 3;
+    rc = CFE_EVS_EarlyInit();
+    S("evt_early_restore rc=");
+    D(rc);
+    S(" next=");
+    D(CFE_EVS_Global.EVS_LogPtr->Next);
+    S("\n");
+    CFE_EVS_Global.EVS_LogPtr->LogMode = 99;
+    // neither OVERWRITE nor DISCARD
+    rc = CFE_EVS_EarlyInit();
+    S("evt_early_badlog rc=");
+    D(rc);
+    S(" next=");
+    D(CFE_EVS_Global.EVS_LogPtr->Next);
+    S(" mode=");
+    D(CFE_EVS_Global.EVS_LogPtr->LogMode);
+    S("\n");
+    // --- CFE_EVS_TaskInit -------------------------------------------------------------
+    ta_getappid = 1;
+    ta_pipe_rc = CFE_SUCCESS;
+    ta_subscribe_rc = CFE_SUCCESS;
+    rc = CFE_EVS_TaskInit();
+    S("evt_init rc=");
+    D(rc);
+    S(" appid=");
+    D(CFE_ResourceId_ToInteger(CFE_EVS_Global.EVS_AppID));
+    S("\n");
+    ta_pipe_rc = -41;
+    rc = CFE_EVS_TaskInit();
+    S("evt_init_pipefail rc=");
+    D(rc);
+    S("\n");
+    ta_pipe_rc = CFE_SUCCESS;
+    ta_subscribe_rc = -42;
+    rc = CFE_EVS_TaskInit();
+    S("evt_init_subfail rc=");
+    D(rc);
+    S("\n");
+    ta_subscribe_rc = CFE_SUCCESS;
+    rc = CFE_EVS_TaskInit();
+    S("evt_init_again rc=");
+    D(rc);
+    S("\n");
+    // --- enable DEBUG, so the twenty commands' events are visible --------------------
+    MemSet(&evt_c, 0, sizeof(evt_c_u));
+    bm = &evt_c.Ports.Payload;
+    bm->BitMask = CFE_EVS_ALL_EVENT_TYPES_MASK;
+    rc = CFE_EVS_EnableEventTypeCmd(&evt_c.Ports);
+    S("evt_enatype rc=");
+    D(rc);
+    S("\n");
+    bm->BitMask = 0x80;
+    // out of range: only four bits are defined
+    rc = CFE_EVS_EnableEventTypeCmd(&evt_c.Ports);
+    S("evt_enatype_badmask rc=");
+    D(rc);
+    S("\n");
+    // --- the simple commands ---------------------------------------------------------
+    rc = CFE_EVS_NoopCmd(&evt_c.Buf);
+    S("evt_noop rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_ResetCountersCmd(&evt_c.Buf);
+    S("evt_rstcnt rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_ClearLogCmd(&evt_c.Buf);
+    S("evt_clearlog rc=");
+    D(rc);
+    S(" next=");
+    D(CFE_EVS_Global.EVS_LogPtr->Next);
+    S("\n");
+    // --- the ports and the format mode -----------------------------------------------
+    bm->BitMask = CFE_EVS_PORT2_BIT;
+    rc = CFE_EVS_EnablePortsCmd(&evt_c.Ports);
+    S("evt_enaport rc=");
+    D(rc);
+    S(" port=");
+    D(CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort);
+    S("\n");
+    rc = CFE_EVS_DisablePortsCmd(&evt_c.Ports);
+    S("evt_disport rc=");
+    D(rc);
+    S(" port=");
+    D(CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort);
+    S("\n");
+    bm->BitMask = 0x80;
+    rc = CFE_EVS_EnablePortsCmd(&evt_c.Ports);
+    S("evt_enaport_badmask rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_DisablePortsCmd(&evt_c.Ports);
+    S("evt_disport_badmask rc=");
+    D(rc);
+    S("\n");
+    bm->BitMask = CFE_EVS_DEBUG_BIT;
+    rc = CFE_EVS_DisableEventTypeCmd(&evt_c.Ports);
+    S("evt_distype rc=");
+    D(rc);
+    S("\n");
+    bm->BitMask = 0x80;
+    rc = CFE_EVS_DisableEventTypeCmd(&evt_c.Ports);
+    S("evt_distype_badmask rc=");
+    D(rc);
+    S("\n");
+    bm->BitMask = CFE_EVS_ALL_EVENT_TYPES_MASK;
+    CFE_EVS_EnableEventTypeCmd(&evt_c.Ports);
+    MemSet(&evt_c, 0, sizeof(evt_c_u));
+    evt_c.Fmt.Payload.MsgFormat = CFE_EVS_MsgFormat_SHORT;
+    rc = CFE_EVS_SetEventFormatModeCmd(&evt_c.Fmt);
+    S("evt_fmt_short rc=");
+    D(rc);
+    S(" mode=");
+    D(CFE_EVS_Global.EVS_TlmPkt.Payload.MessageFormatMode);
+    S("\n");
+    evt_c.Fmt.Payload.MsgFormat = CFE_EVS_MsgFormat_LONG;
+    rc = CFE_EVS_SetEventFormatModeCmd(&evt_c.Fmt);
+    S("evt_fmt_long rc=");
+    D(rc);
+    S(" mode=");
+    D(CFE_EVS_Global.EVS_TlmPkt.Payload.MessageFormatMode);
+    S("\n");
+    evt_c.Fmt.Payload.MsgFormat = 9;
+    rc = CFE_EVS_SetEventFormatModeCmd(&evt_c.Fmt);
+    S("evt_fmt_bad rc=");
+    D(rc);
+    S("\n");
+    // --- the per-app commands --------------------------------------------------------
+    // Each of the eight takes an app NAME and runs the same four-way branch on what
+    // EVS_GetApplicationInfo says: found, not registered, illegal id, no such app. The driver's
+    // CFE_ES_GetAppIDByName answers for "CFE_EVS" and refuses everything else, so three of the
+    // four are reachable by name alone.
+    MemSet(&evt_c, 0, sizeof(evt_c_u));
+    anbm = &evt_c.AppType.Payload;
+    StrNCpy(anbm->AppName, "CFE_EVS", CFE_MISSION_MAX_API_LEN - 1);
+    anbm->BitMask = CFE_EVS_ALL_EVENT_TYPES_MASK;
+    rc = CFE_EVS_EnableAppEventTypeCmd(&evt_c.AppType);
+    S("evt_enaapptype rc=");
+    D(rc);
+    S("\n");
+    anbm->BitMask = CFE_EVS_DEBUG_BIT;
+    rc = CFE_EVS_DisableAppEventTypeCmd(&evt_c.AppType);
+    S("evt_disapptype rc=");
+    D(rc);
+    S("\n");
+    anbm->BitMask = CFE_EVS_ALL_EVENT_TYPES_MASK;
+    CFE_EVS_EnableAppEventTypeCmd(&evt_c.AppType);
+    anbm->BitMask = 0x80;
+    rc = CFE_EVS_EnableAppEventTypeCmd(&evt_c.AppType);
+    S("evt_enaapptype_badmask rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_DisableAppEventTypeCmd(&evt_c.AppType);
+    S("evt_disapptype_badmask rc=");
+    D(rc);
+    S("\n");
+    anbm->BitMask = CFE_EVS_ALL_EVENT_TYPES_MASK;
+    StrNCpy(anbm->AppName, "OTHER_APP", CFE_MISSION_MAX_API_LEN - 1);
+    rc = CFE_EVS_EnableAppEventTypeCmd(&evt_c.AppType);
+    S("evt_enaapptype_unreg rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_DisableAppEventTypeCmd(&evt_c.AppType);
+    S("evt_disapptype_unreg rc=");
+    D(rc);
+    S("\n");
+    StrNCpy(anbm->AppName, "NOPE", CFE_MISSION_MAX_API_LEN - 1);
+    rc = CFE_EVS_EnableAppEventTypeCmd(&evt_c.AppType);
+    S("evt_enaapptype_nosuch rc=");
+    D(rc);
+    S("\n");
+    MemSet(&evt_c, 0, sizeof(evt_c_u));
+    an = &evt_c.AppEvt.Payload;
+    StrNCpy(an->AppName, "CFE_EVS", CFE_MISSION_MAX_API_LEN - 1);
+    rc = CFE_EVS_DisableAppEventsCmd(&evt_c.AppEvt);
+    ap = EVS_GetAppDataByID(CFE_EVS_Global.EVS_AppID);
+    S("evt_disappevt rc=");
+    D(rc);
+    S(" active=");
+    D(ap->ActiveFlag);
+    S("\n");
+    rc = CFE_EVS_EnableAppEventsCmd(&evt_c.AppEvt);
+    ap = EVS_GetAppDataByID(CFE_EVS_Global.EVS_AppID);
+    S("evt_enaappevt rc=");
+    D(rc);
+    S(" active=");
+    D(ap->ActiveFlag);
+    S("\n");
+    rc = CFE_EVS_ResetAppCounterCmd(&evt_c.AppEvt);
+    S("evt_rstappcnt rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_ResetAllFiltersCmd(&evt_c.AppEvt);
+    S("evt_rstallfilt rc=");
+    D(rc);
+    S("\n");
+    StrNCpy(an->AppName, "OTHER_APP", CFE_MISSION_MAX_API_LEN - 1);
+    rc = CFE_EVS_DisableAppEventsCmd(&evt_c.AppEvt);
+    S("evt_disappevt_unreg rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_EnableAppEventsCmd(&evt_c.AppEvt);
+    S("evt_enaappevt_unreg rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_ResetAppCounterCmd(&evt_c.AppEvt);
+    S("evt_rstappcnt_unreg rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_ResetAllFiltersCmd(&evt_c.AppEvt);
+    S("evt_rstallfilt_unreg rc=");
+    D(rc);
+    S("\n");
+    // --- the filter commands ----------------------------------------------------------
+    MemSet(&evt_c, 0, sizeof(evt_c_u));
+    aneidm = &evt_c.Filter.Payload;
+    StrNCpy(aneidm->AppName, "CFE_EVS", CFE_MISSION_MAX_API_LEN - 1);
+    aneidm->EventID = 77;
+    aneidm->Mask = 0x00ff;
+    rc = CFE_EVS_AddEventFilterCmd(&evt_c.Filter);
+    S("evt_addfilt rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_AddEventFilterCmd(&evt_c.Filter);
+    S("evt_addfilt_dup rc=");
+    D(rc);
+    S("\n");
+    aneidm->Mask = 0x000f;
+    rc = CFE_EVS_SetFilterCmd(&evt_c.Filter);
+    S("evt_setfilt rc=");
+    D(rc);
+    S("\n");
+    aneidm->EventID = 999;
+    rc = CFE_EVS_SetFilterCmd(&evt_c.Filter);
+    S("evt_setfilt_noevt rc=");
+    D(rc);
+    S("\n");
+    StrNCpy(aneidm->AppName, "OTHER_APP", CFE_MISSION_MAX_API_LEN - 1);
+    rc = CFE_EVS_SetFilterCmd(&evt_c.Filter);
+    S("evt_setfilt_unreg rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_AddEventFilterCmd(&evt_c.Filter);
+    S("evt_addfilt_unreg rc=");
+    D(rc);
+    S("\n");
+    MemSet(&evt_c, 0, sizeof(evt_c_u));
+    aneid = &evt_c.RstFilter.Payload;
+    StrNCpy(aneid->AppName, "CFE_EVS", CFE_MISSION_MAX_API_LEN - 1);
+    aneid->EventID = 77;
+    rc = CFE_EVS_ResetFilterCmd(&evt_c.RstFilter);
+    S("evt_rstfilt rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_DeleteEventFilterCmd(&evt_c.RstFilter);
+    S("evt_delfilt rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_DeleteEventFilterCmd(&evt_c.RstFilter);
+    S("evt_delfilt_again rc=");
+    D(rc);
+    S("\n");
+    aneid->EventID = 999;
+    rc = CFE_EVS_ResetFilterCmd(&evt_c.RstFilter);
+    S("evt_rstfilt_noevt rc=");
+    D(rc);
+    S("\n");
+    StrNCpy(aneid->AppName, "OTHER_APP", CFE_MISSION_MAX_API_LEN - 1);
+    rc = CFE_EVS_ResetFilterCmd(&evt_c.RstFilter);
+    S("evt_rstfilt_unreg rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_DeleteEventFilterCmd(&evt_c.RstFilter);
+    S("evt_delfilt_unreg rc=");
+    D(rc);
+    S("\n");
+    // fill every slot, then ask for one more
+    MemSet(&evt_c, 0, sizeof(evt_c_u));
+    aneidm = &evt_c.Filter.Payload;
+    StrNCpy(aneidm->AppName, "CFE_EVS", CFE_MISSION_MAX_API_LEN - 1);
+    for (cc = 0; cc < CFE_PLATFORM_EVS_MAX_EVENT_FILTERS + 1; cc++) {
+      aneidm->EventID = 200 + cc;
+      rc = CFE_EVS_AddEventFilterCmd(&evt_c.Filter);
+      S("evt_addfilt[");
+      D(cc);
+      S("] rc=");
+      D(rc);
+      S("\n");
+    }
+    // --- the two file commands, through the translated fs module ---------------------
+    MemSet(&evt_c, 0, sizeof(evt_c_u));
+    StrNCpy(evt_c.AppData.Payload.AppDataFilename, "/ram/evs_app.dat", CFE_MISSION_MAX_PATH_LEN - 1);
+    fs_open_fail = 0;
+    fs_wr_left = -1;
+    fs_fd = 0;
+    fs_len = 0;
+    fs_pos = 0;
+    rc = CFE_EVS_WriteAppDataFileCmd(&evt_c.AppData);
+    S("evt_wrapp rc=");
+    D(rc);
+    S(" len=");
+    D(fs_len);
+    S("\n");
+    fs_dump("evt_wrapp_bytes", 16);
+    fs_open_fail = 1;
+    rc = CFE_EVS_WriteAppDataFileCmd(&evt_c.AppData);
+    S("evt_wrapp_nocreate rc=");
+    D(rc);
+    S("\n");
+    fs_open_fail = 0;
+    fs_wr_left = 4;
+    rc = CFE_EVS_WriteAppDataFileCmd(&evt_c.AppData);
+    S("evt_wrapp_hdrfail rc=");
+    D(rc);
+    S("\n");
+    fs_wr_left = 80;
+    rc = CFE_EVS_WriteAppDataFileCmd(&evt_c.AppData);
+    S("evt_wrapp_wrfail rc=");
+    D(rc);
+    S("\n");
+    fs_wr_left = -1;
+    // --- housekeeping: the packet EVS downlinks ------------------------------------
+    ta_transmits = 0;
+    rc = CFE_EVS_SendHkCmd(&evt_c.Buf);
+    S("evt_hk rc=");
+    D(rc);
+    S(" tx=");
+    D(ta_transmits);
+    S("\n");
+    S("evt_hk_app0 id=");
+    D(CFE_ResourceId_ToInteger(CFE_EVS_Global.EVS_TlmPkt.Payload.AppData[0].AppID));
+    S(" en=");
+    D(CFE_EVS_Global.EVS_TlmPkt.Payload.AppData[0].AppEnableStatus);
+    S(" sent=");
+    D(CFE_EVS_Global.EVS_TlmPkt.Payload.AppData[0].AppMessageSentCounter);
+    S(" sq=");
+    D(CFE_EVS_Global.EVS_TlmPkt.Payload.AppData[0].AppMessageSquelchedCounter);
+    S("\n");
+    // entry 1 is the first UNUSED slot, and entries 2.. are what upstream note #10 is about:
+    // the clear loop never advances, so they keep the previous cycle's contents.
+    S("evt_hk_app1 id=");
+    D(CFE_ResourceId_ToInteger(CFE_EVS_Global.EVS_TlmPkt.Payload.AppData[1].AppID));
+    S("  app2 id=");
+    D(CFE_ResourceId_ToInteger(CFE_EVS_Global.EVS_TlmPkt.Payload.AppData[2].AppID));
+    S("\n");
+    // --- cfe_evs_dispatch.c ----------------------------------------------------------
+    MemSet(&evt_c, 0, sizeof(evt_c_u));
+    CFE_MSG_Init(&evt_c.Ports.CommandHeader.Msg, CFE_SB_ValueToMsgId(CFE_EVS_CMD_MID), sizeof(CFE_EVS_EnablePortsCmd_t));
+    vok = CFE_EVS_VerifyCmdLength(&evt_c.Buf.Msg, sizeof(CFE_EVS_EnablePortsCmd_t));
+    S("evt_len_ok ");
+    D(vok);
+    S("\n");
+    vok = CFE_EVS_VerifyCmdLength(&evt_c.Buf.Msg, 4242);
+    S("evt_len_bad ");
+    D(vok);
+    S("\n");
+    for (cc = 0; cc <= 21; cc++) {
+      CFE_MSG_SetFcnCode(&evt_c.Buf.Msg, cc);
+      S("evt_cc ");
+      D(cc);
+      S(":\n");
+      CFE_EVS_ProcessGroundCommand(&evt_c.Buf, CFE_SB_ValueToMsgId(CFE_EVS_CMD_MID));
+    }
+    S("evt_cc_after cc=");
+    D(CFE_EVS_Global.EVS_TlmPkt.Payload.CommandCounter);
+    S(" cec=");
+    D(CFE_EVS_Global.EVS_TlmPkt.Payload.CommandErrorCounter);
+    S("\n");
+    // and the packet router: the housekeeping id, the command id, and one that is neither
+    CFE_MSG_SetFcnCode(&evt_c.Buf.Msg, CFE_EVS_NOOP_CC);
+    CFE_MSG_SetMsgId(&evt_c.Buf.Msg, CFE_SB_ValueToMsgId(CFE_EVS_SEND_HK_MID));
+    S("evt_pipe_hk:\n");
+    CFE_EVS_ProcessCommandPacket(&evt_c.Buf);
+    CFE_MSG_SetMsgId(&evt_c.Buf.Msg, CFE_SB_ValueToMsgId(CFE_EVS_CMD_MID));
+    CFE_MSG_SetSize(&evt_c.Buf.Msg, sizeof(CFE_EVS_NoopCmd_t));
+    S("evt_pipe_cmd:\n");
+    CFE_EVS_ProcessCommandPacket(&evt_c.Buf);
+    CFE_MSG_SetMsgId(&evt_c.Buf.Msg, CFE_SB_ValueToMsgId(0x1EEE));
+    S("evt_pipe_unknown:\n");
+    CFE_EVS_ProcessCommandPacket(&evt_c.Buf);
+    // --- the log commands and CleanUpApp -------------------------------------------
+    MemSet(&evt_c, 0, sizeof(evt_c_u));
+    evt_c.LogMode.Payload.LogMode = CFE_EVS_LogMode_DISCARD;
+    rc = CFE_EVS_SetLogModeCmd(&evt_c.LogMode);
+    S("evt_setlogmode rc=");
+    D(rc);
+    S(" mode=");
+    D(CFE_EVS_Global.EVS_LogPtr->LogMode);
+    S("\n");
+    rc = CFE_EVS_CleanUpApp(99);
+    S("evt_cleanup_bad rc=");
+    D(rc);
+    S("\n");
+    rc = CFE_EVS_CleanUpApp(1);
+    ap = EVS_GetAppDataByID(CFE_EVS_Global.EVS_AppID);
+    S("evt_cleanup rc=");
+    D(rc);
+    S(" used=");
+    D(EVS_AppDataIsUsed(ap));
+    S("\n");
+    // --- cfe_evs_objtab.c ----------------------------------------------------------
+    S("evt_objtab ");
+    S(CFE_EVS_ModuleEntry.Name);
+    S(" ");
+    D(CFE_EVS_ModuleEntry.EarlyInit == NULL);
+    S(" ");
+    D(CFE_EVS_ModuleEntry.TaskMain == NULL);
+    S(" ");
+    D(CFE_EVS_ModuleEntry.AppCleanupCb == NULL);
+    S(" ");
+    D(CFE_EVS_ModuleEntry.Priority);
+    S(" ");
+    D(CFE_EVS_ModuleEntry.StackSize);
     S("\n");
   }
   return 0;

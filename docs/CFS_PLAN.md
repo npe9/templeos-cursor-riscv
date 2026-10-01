@@ -298,18 +298,17 @@ rather than counted as always-built:
 | `sb` | 7 | 5,278 | 4% |
 | `fs` | 3 | 1,249 | **100%** |
 | `ta` | 2 | 892 | **100%** (plus `cfe_ta_dispatch.c`, 159, which is conditional — see below) |
-| `evs` | 5 | 2,787 | **45%** (three of six sources; see below) |
+| `evs` | 5 | 2,787 | **100%** (six of six; the `_dispatch` one is conditional — see below) |
 | `time` | 5 | 4,383 | 0% |
 | `tbl` | 15 | 7,780 | 0% |
 | `es` | 17 | 12,734 | 0% |
 
 #### `evs`: the first module whose TEXT is the comparison
 
-Three of EVS's six sources are gated — `cfe_evs_utils.c` (650), `cfe_evs_log.c` (277) and
-`cfe_evs.c` (336), 1,263 of 2,787 lines, **45%**. The remaining three are `cfe_evs_task.c`
-(1,485), `cfe_evs_dispatch.c` (326, the conditional one) and `cfe_evs_objtab.c` (39). When
-`cfe_evs_task.c` arrives, `CFE_EVS_Global`'s DEFINITION moves out of `cfe_evs_global.HC` into
-it; the note is on both files.
+All six of EVS's sources are gated, **2,787 lines, 100%**: `cfe_evs_utils.c` (650),
+`cfe_evs_log.c` (277), `cfe_evs.c` (336), `cfe_evs_task.c` (1,485), `cfe_evs_dispatch.c` (326,
+the conditional one — `CMakeLists.txt` picks it when EDS is off, which is this configuration) and
+`cfe_evs_objtab.c` (39). That makes EVS the seventh module at 100% and the largest so far.
 
 Wiring it in removed the `CFE_EVS_SendEvent` stub, so the transcript went 363 → 466 lines, and
 what those lines carry is different in kind from everything before them. `EVS_SendViaPorts`
@@ -355,6 +354,97 @@ SIGNED divide for a `U64` while the `uv % base` on the line above it does not
 its expected value is not a hash of the HolyC formatter — it is the number the same fold computes
 over C's `snprintf` output, line by line.
 
+#### And the other deviation of the same shape: CFE_ES_WriteToSysLog
+
+`CFE_ES_WriteToSysLog` is variadic in NASA's C and every call site passes `__func__` plus a
+format string. The translation took a plain string, with the enclosing function's name written
+into the literal and the VALUES dropped, so the transcript printed a bare `syslog` and pinned
+only *which paths log*. That was defensible while there was no formatter. There is one now.
+
+All 25 call sites in the gated sources pass NASA's arguments, both oracle halves format, and the
+transcript is 477 lines. Writing the function's name into the literal is not an approximation:
+`__func__` expands to exactly that name, so the characters are the same and the comparison covers
+them. Fifteen distinct log lines are now compared, including the only one in the translation
+that formats three arguments:
+
+```
+syslog CFE_FS_LockSharedData: SharedData Mutex Take Err Stat=-12,App=17185,Function=take_fails
+syslog CFE_TA_SetStartupAffinity: Set Startup Affinity for task (CFE_ES) could not Get Task Affinity, Status = -2
+syslog CFE_EVS_Register: Filter limit truncated to 8
+```
+
+Restoring the arguments also exposed how little of this the driver reached. Seven of the
+twenty-five sites had no path to them at all, so the arguments would have been translated and
+never read — the same finding as the squelch clamp, three more times:
+
+| site | what was missing | now |
+|---|---|---|
+| `CFE_FS_EarlyInit`, `LockSharedData`, `UnlockSharedData` | `OS_MutSemCreate/Take/Give` always succeeded | `fs_mut_*_rc` steer all three |
+| `CFE_TA_SetStartupAffinity` ×2 | the OS never failed inside the loop | `ta_getaff_rc` / `ta_setaff_rc` during a startup call |
+
+What is still unreached, and stays that way because contorting the driver would be worse than
+saying so: `CFE_TA_TaskMain`'s two lines (it is a message loop), and four in `CFE_TA_TaskInit`
+that sit behind `CFE_TA_Register`, which fails first in this driver because EVS is not registered
+when `ta` runs. Those four are reachable only by standing EVS up before the `ta` block, which
+would change what the `ta` block is testing.
+
+#### Finishing EVS: three more things no gate could see
+
+The last three sources took the transcript to **657 lines** and found three defects, each in a
+different gate's blind spot.
+
+**1. A `static` local is a global under the bare name.** `cfe_ta_dispatch.c` and
+`cfe_evs_dispatch.c` both cache their message ids in function-local statics, and both call them
+`CMD_MID` and `SEND_HK_MID` — every cFE dispatcher does. HolyC's `static` becomes a global under
+the bare name, so the second declaration landed on the first's entry and `CFE_TA_TaskPipe`
+faulted on `ld a0,0(a0)` after `li a0,0`. `parser.c`'s own comment at the site says *"treat as
+globals scoped to function"* and the call it makes does not scope anything.
+`docs/HOLYC_STRUCT_LIMITS.md` #12; worked around by prefixing EVS's pair, and the compiler fix
+lands separately because it is a `parser.c` change.
+
+**2. A status code compared as a positive 64-bit literal.** NASA writes
+`#define CFE_EVS_APP_NOT_REGISTERED ((CFE_Status_t)0xc2000002)`. The translation dropped the
+cast, so the macro was `3254779906` while the `I32` holding the status was `-1040187390`, and
+`Status == CFE_EVS_APP_NOT_REGISTERED` was simply false. Six per-app commands took their final
+`else` and reported "Unable to retrieve application ID" where NASA reports "not registered with
+EVS" — the right status returned, the wrong event sent. Twenty-nine status defines now carry
+`(I32)`, which is NASA's own spelling.
+
+That fix then broke `check_constants.py` SILENTLY: `0xC2000002(I32)` does not match its
+`#define` pattern, so the 26 casts stopped being compared and the count fell 310 → 284 with no
+complaint. A `#define` the tool cannot parse is one it never sees, and an unseen constant passes.
+The pattern now includes the cast suffix and `literal()` applies it.
+
+And the sweep itself was wrong the first time, which is the part worth keeping. The rule applied
+was "every `#define` whose value has the high bit set", and that is not the rule: four of the
+twenty-nine are UNSIGNED upstream — `OS_OBJECT_ID_RESERVED` is `((osal_id_t){0xFFFFFFFF})`,
+`CFE_RESOURCEID_RESERVED` wraps a `uint32`, and the two OSAL magic numbers are plain hex. Casting
+those made `OS_OBJECT_ID_RESERVED` equal to `-1`, and the OSAL transcript's entire id-allocation
+block went from `alloc1 rc=0 id=0x10001` to `alloc1 rc=-1 id=0x0`. The real rule is NASA's own:
+cast exactly what NASA casts to `CFE_Status_t` or `int32`, which is 23 of the 29, checked by
+reading each upstream `#define` rather than by looking at the value. **The cFS gate was green
+while OSAL's was red** — the two transcripts cover different trees, and only running both caught
+it.
+
+**3. `modules/*/config` was missing from the NASA struct scan — and that is where every message
+struct lives.** A translated class whose NASA counterpart is not found has no pair, so
+`check_structs` and `check_padding` skip it *in silence*. Every command and telemetry payload in
+the port was in that hole. One of them was wrong: `CFE_EVS_SetLogMode_Payload_t` carried
+`LogMode` as a `U16` because the comment said "a uint16 typedef", and `CFE_EVS_LogMode_Enum_t` is
+a `uint8` — which made the command one byte too long and the dispatcher rejected it on length.
+Adding the directory took both gates from **81 classes to 134**.
+
+The control is the clearest one in this file:
+
+| state | `check_padding` says |
+|---|---|
+| wrong `LogMode`, old scan | `134`→ no: **81 classes have NASA's byte layout** — PASS |
+| wrong `LogMode`, `config` added | FAIL, `CFE_EVS_SetLogModeCmd_t` 10 vs 11 |
+| right `LogMode`, `config` added | 134 classes — PASS |
+
+A gate that reports a number and a pass, on a struct it never looked at, is the failure mode
+every tool in `tools/cfs` is written against; this one had it for fifty-three classes.
+
 #### What the negative controls on these lines actually found
 
 Four mutations, each aimed at one of the new assertions:
@@ -365,6 +455,10 @@ Four mutations, each aimed at one of the new assertions:
 | a non-variadic NASA function given a `...` | `check_variadic` | yes |
 | the log ring wraps one entry late (`>=` → `>`) | transcript | yes, on `next` and `first` |
 | the squelch floor doubled | transcript | **NO**, first time |
+| one restored syslog argument set to 0 | transcript | yes, on that argument |
+| `EVS_CMD_MID` renamed back to `CMD_MID` | — | **crash**, not a gate: it is a compiler limit |
+| the `(I32)` cast dropped from one status | transcript | yes |
+| `LogMode` back to `U16` | `check_padding` | yes — and **NO** before `config` was in the scan |
 | `%llX` masked back to 32 bits | transcript | **NO** — `e_strprint_hex` caught it |
 
 The squelch control is the one worth keeping. The driver sent five events into a budget of

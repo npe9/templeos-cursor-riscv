@@ -68,7 +68,7 @@ I32 CFE_EVS_Register(U8 *Filters, U16 NumEventFilters, U16 FilterScheme)
         FilterLimit = NumEventFilters;
       } else {
         FilterLimit = CFE_PLATFORM_EVS_MAX_EVENT_FILTERS;
-        CFE_ES_WriteToSysLog("CFE_EVS_Register: Filter limit truncated\n");
+        CFE_ES_WriteToSysLog("CFE_EVS_Register: Filter limit truncated to %d\n", FilterLimit);
       }
 
       if (Filters != NULL) {

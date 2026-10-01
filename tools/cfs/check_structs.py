@@ -33,7 +33,16 @@ NASA_DIRS = [
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "inc"),
 ] + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "fsw", "inc"))) \
   + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "fsw", "src"))) \
+  + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "config"))) \
   + [os.path.join(ROOT, "vendor", "cFE", "cmake", "target", "inc")]
+# modules/*/config IS WHERE EVERY MESSAGE STRUCT LIVES -- default_cfe_<mod>_msgdefs.h and
+# _msgstruct.h -- and it was missing from this list. A translated class whose NASA counterpart is
+# not found here is not reported: it has no pair, so both this gate and check_padding.py skip it
+# in SILENCE, which is the one outcome every other tool in tools/cfs is written to avoid. Every
+# command and telemetry payload in the port was in that hole, and one of them was wrong:
+# CFE_EVS_SetLogMode_Payload_t carried LogMode as a U16 where CFE_EVS_LogMode_Enum_t is a uint8,
+# which made the command one byte too long and the dispatcher rejected it on length. The
+# transcript caught that, three modules after the declaration was written.
 
 # A field the translation deliberately does NOT carry, with the reason. Pinned to the struct it
 # belongs to, printed on every run, and a FAILURE if it stops applying -- the same discipline as

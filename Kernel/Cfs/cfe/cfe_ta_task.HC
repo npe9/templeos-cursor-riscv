@@ -320,7 +320,7 @@ U0 CFE_TA_TaskMain()
   Status = CFE_TA_TaskInit();
 
   if (Status != CFE_SUCCESS) {
-    CFE_ES_WriteToSysLog("CFE_TA_TaskMain: Application Init Failed\n");
+    CFE_ES_WriteToSysLog("CFE_TA_TaskMain: Application Init Failed,RC=0x%08X\n", Status);
     CFE_ES_PerfLogExit(CFE_MISSION_TA_MAIN_PERF_ID);
     // Note: CFE_ES_ExitApp will not return
     CFE_ES_ExitApp(CFE_ES_RunStatus_CORE_APP_INIT_ERROR);
@@ -348,7 +348,7 @@ U0 CFE_TA_TaskMain()
       // Process cmd pipe msg
       CFE_TA_TaskPipe(SBBufPtr);
     } else {
-      CFE_ES_WriteToSysLog("CFE_TA_TaskMain: Error reading cmd pipe\n");
+      CFE_ES_WriteToSysLog("CFE_TA_TaskMain: Error reading cmd pipe,RC=0x%08X\n", Status);
     }
   } // end while
 
@@ -376,34 +376,34 @@ I32 CFE_TA_TaskInit()
   // Query and verify the AppID
   Status = CFE_ES_GetAppID(&AppID);
   if (Status != CFE_SUCCESS) {
-    CFE_ES_WriteToSysLog("CFE_TA_TaskInit: Call to CFE_ES_GetAppID Failed\n");
+    CFE_ES_WriteToSysLog("CFE_TA_TaskInit: Call to CFE_ES_GetAppID Failed:RC=0x%08X\n", Status);
     return Status;
   }
 
   // Register EVS task for event services
   Status = CFE_EVS_Register(NULL, 0, CFE_EVS_EventFilter_BINARY);
   if (Status != CFE_SUCCESS) {
-    CFE_ES_WriteToSysLog("CFE_TA_TaskInit: Call to CFE_TA_Register Failed\n");
+    CFE_ES_WriteToSysLog("CFE_TA_TaskInit: Call to CFE_TA_Register Failed:RC=0x%08X\n", Status);
     return Status;
   }
 
   // Create software bus command pipe
   Status = CFE_SB_CreatePipe(&CFE_TA_Global.TA_CommandPipe, CFE_TA_PIPE_DEPTH, CFE_TA_PIPE_NAME);
   if (Status != CFE_SUCCESS) {
-    CFE_ES_WriteToSysLog("CFE_TA_TaskInit: Call to CFE_SB_CreatePipe Failed\n");
+    CFE_ES_WriteToSysLog("CFE_TA_TaskInit: Call to CFE_SB_CreatePipe Failed:RC=0x%08X\n", Status);
     return Status;
   }
 
   // Subscribe to command and telemetry requests coming in on the command pipe
   Status = CFE_SB_Subscribe(CFE_SB_ValueToMsgId(CFE_TA_CMD_MID), CFE_TA_Global.TA_CommandPipe);
   if (Status != CFE_SUCCESS) {
-    CFE_ES_WriteToSysLog("CFE_TA_TaskInit: Subscribing to Cmds Failed\n");
+    CFE_ES_WriteToSysLog("CFE_TA_TaskInit: Subscribing to Cmds Failed:RC=0x%08X\n", Status);
     return Status;
   }
 
   Status = CFE_SB_Subscribe(CFE_SB_ValueToMsgId(CFE_TA_SEND_HK_MID), CFE_TA_Global.TA_CommandPipe);
   if (Status != CFE_SUCCESS) {
-    CFE_ES_WriteToSysLog("CFE_TA_TaskInit: Subscribing to HK Request Failed\n");
+    CFE_ES_WriteToSysLog("CFE_TA_TaskInit: Subscribing to HK Request Failed:RC=0x%08X\n", Status);
     return Status;
   }
 
@@ -771,7 +771,10 @@ I32 CFE_TA_SetStartupAffinity(U8 *taskname)
     for (i = 0; i < OS_MAX_TASKS; i++) {
       if (StrLen(CFE_TA_CpuTaskAffinity[i].TaskName) == 0) {
         // Couldn't find the task in the task affinity table
-        CFE_ES_WriteToSysLog("CFE_TA_SetStartupAffinity: task not found in TA list, adding\n");
+        CFE_ES_WriteToSysLog(
+            "CFE_TA_SetStartupAffinity: Set Startup Affinity - task (%s) not found in TA list, "
+            "adding\n",
+            taskname);
 
         // Add the task to the affinity table
         StrNCpy(CFE_TA_CpuTaskAffinity[i].TaskName, taskname, CFE_MISSION_MAX_API_LEN);
@@ -792,7 +795,9 @@ I32 CFE_TA_SetStartupAffinity(U8 *taskname)
           Status = CFE_TA_APP_GET_TASK_AFFINITY_FAILED;
           CFE_TA_CpuTaskAffinity[i].Status = CFE_TA_Status_Error;
 
-          CFE_ES_WriteToSysLog("CFE_TA_SetStartupAffinity: could not Get Task Affinity\n");
+          CFE_ES_WriteToSysLog("CFE_TA_SetStartupAffinity: Set Startup Affinity for task (%s) could "
+                                 "not Get Task Affinity, Status = %d\n",
+                                 taskname, Status);
         }
         break;
       } else if (StrCmp(taskname, CFE_TA_CpuTaskAffinity[i].TaskName) == 0) {
@@ -809,7 +814,9 @@ I32 CFE_TA_SetStartupAffinity(U8 *taskname)
             Status = CFE_TA_APP_GET_TASK_AFFINITY_FAILED;
             CFE_TA_CpuTaskAffinity[i].Status = CFE_TA_Status_Error;
 
-            CFE_ES_WriteToSysLog("CFE_TA_SetStartupAffinity: could not Get Task Affinity\n");
+            CFE_ES_WriteToSysLog("CFE_TA_SetStartupAffinity: Set Startup Affinity for task (%s) could "
+                                 "not Get Task Affinity, Status = %d\n",
+                                 taskname, Status);
           }
         } else if (CFE_TA_CpuTaskAffinity[i].Type == CFE_TA_Mask) {
           // Use the User defined affinity mask (directly passing OS_cpuset_t!)
@@ -824,19 +831,24 @@ I32 CFE_TA_SetStartupAffinity(U8 *taskname)
               Status = CFE_TA_APP_GET_TASK_AFFINITY_FAILED;
               CFE_TA_CpuTaskAffinity[i].Status = CFE_TA_Status_Error;
 
-              CFE_ES_WriteToSysLog("CFE_TA_SetStartupAffinity: could not Get Task Affinity\n");
+              CFE_ES_WriteToSysLog("CFE_TA_SetStartupAffinity: Set Startup Affinity for task (%s) could "
+                                 "not Get Task Affinity, Status = %d\n",
+                                 taskname, Status);
             }
           } else {
             Status = CFE_TA_APP_SET_TASK_AFFINITY_FAILED;
             CFE_TA_CpuTaskAffinity[i].Status = CFE_TA_Status_Error;
 
-            CFE_ES_WriteToSysLog("CFE_TA_SetStartupAffinity: could not Set Task Affinity\n");
+            CFE_ES_WriteToSysLog("CFE_TA_SetStartupAffinity: Set Startup Affinity for task (%s) could "
+                                 "not Set Task Affinity, Status = %d\n",
+                                 taskname, Status);
           }
         } else {
           Status = CFE_TA_APP_INVALID_TASK_AFFINITY_TYPE;
           CFE_TA_CpuTaskAffinity[i].Status = CFE_TA_Status_Error;
 
-          CFE_ES_WriteToSysLog("CFE_TA_SetStartupAffinity: Invalid affinity type\n");
+          CFE_ES_WriteToSysLog("CFE_TA_SetStartupAffinity: Invalid affinity type (%d) for task (%s)\n",
+                               CFE_TA_CpuTaskAffinity[i].Type, taskname);
         }
         break;
       }

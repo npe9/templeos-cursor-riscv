@@ -40,11 +40,11 @@
 #define OS_SUCCESS 0
 #endif
 // --- cfe_error.h: the codes this module returns -----------------------------------------------
-#define CFE_FS_BAD_ARGUMENT                0xC6000001
-#define CFE_FS_INVALID_PATH                0xC6000002
-#define CFE_FS_FNAME_TOO_LONG              0xC6000003
-#define CFE_STATUS_EXTERNAL_RESOURCE_FAIL  0xC8000005
-#define CFE_STATUS_REQUEST_ALREADY_PENDING 0xC8000006
+#define CFE_FS_BAD_ARGUMENT                0xC6000001(I32)
+#define CFE_FS_INVALID_PATH                0xC6000002(I32)
+#define CFE_FS_FNAME_TOO_LONG              0xC6000003(I32)
+#define CFE_STATUS_EXTERNAL_RESOURCE_FAIL  0xC8000005(I32)
+#define CFE_STATUS_REQUEST_ALREADY_PENDING 0xC8000006(I32)
 // --- cfe_core_api_interface_cfg.h / cfe_fs_interface_cfg.h ------------------------------------
 // Both are CFE_MISSION_*_CFGVAL indirections in the C, resolving to the DEFAULT_* values below
 // in a configuration that does not use EDS. Measured with the host preprocessor rather than
@@ -198,7 +198,8 @@ I32 CFE_FS_EarlyInit()
     // NASA logs `"%s: Shared Data Mutex creation failed! RC=%ld\n", __func__, (long)OsStatus`.
     // HolyC has no __func__ and this translation's CFE_ES_WriteToSysLog takes a plain string --
     // see cfe_sb_util.HC for why the format arguments are deliberately outside the comparison.
-    CFE_ES_WriteToSysLog("CFE_FS_EarlyInit: Shared Data Mutex creation failed!\n");
+    CFE_ES_WriteToSysLog("CFE_FS_EarlyInit: Shared Data Mutex creation failed! RC=%ld\n",
+                         OsStatus);
     return CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
   }
 
@@ -213,7 +214,9 @@ U0 CFE_FS_LockSharedData(U8 *FunctionName)
   OsStatus = OS_MutSemTake(CFE_FS_Global.SharedDataMutexId);
   if (OsStatus != OS_SUCCESS) {
     CFE_ES_GetAppID(&AppId);
-    CFE_ES_WriteToSysLog("CFE_FS_LockSharedData: SharedData Mutex Take Err\n");
+    CFE_ES_WriteToSysLog(
+        "CFE_FS_LockSharedData: SharedData Mutex Take Err Stat=%ld,App=%lu,Function=%s\n",
+        OsStatus, CFE_ResourceId_ToInteger(AppId), FunctionName);
   }
 }
 
@@ -225,7 +228,9 @@ U0 CFE_FS_UnlockSharedData(U8 *FunctionName)
   OsStatus = OS_MutSemGive(CFE_FS_Global.SharedDataMutexId);
   if (OsStatus != OS_SUCCESS) {
     CFE_ES_GetAppID(&AppId);
-    CFE_ES_WriteToSysLog("CFE_FS_UnlockSharedData: SharedData Mutex Give Err\n");
+    CFE_ES_WriteToSysLog(
+        "CFE_FS_UnlockSharedData: SharedData Mutex Give Err Stat=%ld,App=%lu,Function=%s\n",
+        OsStatus, CFE_ResourceId_ToInteger(AppId), FunctionName);
   }
 }
 #endif

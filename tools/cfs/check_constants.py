@@ -59,9 +59,18 @@ _spec.loader.exec_module(check_padding)
 # Only names that could plausibly be NASA's. A port-local constant (RV_*, HOLYC_*) is not under
 # test, and neither is an include guard.
 NAME = re.compile(r'^(CFE_|OS_|OSAL_)\w+$')
-# `#define NAME 123`, `0x7F`, `-1`, `'$'`, or a parenthesised expression of those.
+# `#define NAME 123`, `0x7F`, `-1`, `'$'`, a parenthesised expression of those, or a literal
+# with a HolyC POSTFIX CAST -- `0xC2000002(I32)`, which is how NASA's own
+# `((CFE_Status_t)0xc2000002)` has to be written here so the value compares equal to an I32.
+# THAT SUFFIX WAS WHAT THIS REGEX MISSED. Adding the casts to 29 status codes dropped the
+# compared count from 310 to 284 and the tool said nothing: a `#define` it cannot parse is a
+# `#define` it never sees, and an unseen constant passes. The suffix is now part of the pattern
+# and `literal()` applies the cast, so a cast value is compared like any other.
 DEFINE = re.compile(r"^[ \t]*#define[ \t]+([A-Za-z_]\w*)[ \t]+"
-                    r"(0[xX][0-9A-Fa-f]+|-?\d+|'.'|\([^)]*\))[ \t]*(?://.*)?$", re.M)
+                    r"(0[xX][0-9A-Fa-f]+(?:\((?:I|U)(?:8|16|32|64)\))?|-?\d+|'.'|\([^)]*\))"
+                    r"[ \t]*(?://.*)?$", re.M)
+# The postfix cast, split off by literal() below.
+CASTED = re.compile(r"^(0[xX][0-9A-Fa-f]+)\((I|U)(8|16|32|64)\)$")
 
 
 def hc_defines():
@@ -132,6 +141,17 @@ def literal(lit):
     lit = lit.strip()
     if lit.startswith("'") and lit.endswith("'") and len(lit) == 3:
         return ord(lit[1])
+    m = CASTED.match(lit)
+    if m:
+        # `0xC2000002(I32)` is NASA's `((CFE_Status_t)0xc2000002)`: the bits, narrowed to the
+        # cast's width and sign-extended if it is signed. The comparison below masks to 32 bits
+        # either way, so this only has to get the low word right.
+        v = int(m.group(1), 16)
+        bits = int(m.group(3))
+        v &= (1 << bits) - 1
+        if m.group(2) == "I" and v >> (bits - 1):
+            v -= 1 << bits
+        return v
     try:
         return int(lit, 0)
     except ValueError:
