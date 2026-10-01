@@ -3104,16 +3104,53 @@ static bool ParseAssignment(Compiler *cc) {
   
   // Check for assignment operators (right-associative)
   if (cc->lex.token == '=') {
-    // Whole-struct assignment `b = a`: a class INSTANCE (not a pointer/array) larger than one word
-    // copies all its bytes, not just the first. Detect it from the LHS before the address is pushed.
+    // Whole-struct assignment `b = a`: a class larger than one word copies ALL its bytes, not
+    // just the first. Detected from the LHS before the address is pushed, in two shapes.
+    //
+    // 1. The LHS is a class INSTANCE -- a bare variable that is neither a pointer nor an array.
+    //
+    // 2. The LHS is a MEMBER whose own type is a class, as in `area.vars = local`. This one used
+    //    to fall through to the single-store path and copy eight bytes, silently: measured on a
+    //    28-byte member, the first two fields arrived and the rest stayed zero, with the bytes
+    //    AFTER the member untouched -- a short copy, not an overrun, which is why it reads as a
+    //    plausible value instead of a crash. And the two directions were not alike:
+    //    `local = area.vars` took shape 1 and was correct, while `area.vars = local` was not.
+    //
+    //    A FIX FOR THIS WAS TRIED BEFORE AND REVERTED, because the condition used was "the LHS
+    //    ends in an IC_DEREF", which also caught `Entry->Datum.AsPointer = Ptr` -- a POINTER
+    //    member store, which must stay a single store -- and block-copied the enclosing class
+    //    over it. `cc->last_member` is what discriminates them, and it was already there:
+    //    CMemberLst carries the member's OWN type, and for a scalar or pointer member
+    //    `member_class` is NULL. Measured across the five shapes that reach this point:
+    //
+    //      area.vars = local            member=vars/28  member_class=RV  ptr=0   -> copy 28
+    //      area.vars.sig = 5            member=sig/4    member_class=-   ptr=0   -> store
+    //      ent.Datum.AsPointer = &t     member=AsPointer member_class=-  ptr=4   -> store
+    //      ent.Datum.AsInt = 7          member=AsInt/8  member_class=-   ptr=0   -> store
+    //      plain = 3                    member=-                                 -> store
+    //
+    //    So `member_class != NULL` is the whole discrimination, and the size, pointer, array and
+    //    function-pointer checks below are belt and braces. Requiring it to EQUAL the LHS
+    //    expression's class is what makes a stale `last_member` from an earlier statement
+    //    harmless. docs/HOLYC_STRUCT_LIMITS.md #2.
+    //
+    // Still not handled: a bare `*dst = *src` on a pointer-to-class, where there is no member and
+    // the pointee's class is not in hand at this point. cFS does not write that; TIME, EVS, fs,
+    // ta and msg assign whole structs only through an instance or a member.
     {
       CHashClass *lc = cc->last_expr_class;
       bool lhs_struct_inst =
         lc && (lc->type & HTT_CLASS) && !(lc->type & HTT_INTERNAL_TYPE) && lc->size > 8 && lc->size <= 2040 &&
         ((cc->last_var_symbol && !cc->last_var_symbol->pointed_to_type && !cc->last_var_symbol->is_array) ||
          (cc->last_global_var && !cc->last_global_var->pointed_to_type && !(cc->last_global_var->flags & GVF_ARRAY)));
-      if (lhs_struct_inst) {
-        I64 nbytes = lc->size;
+      CMemberLst *lm = cc->last_member;
+      bool lhs_struct_member =
+        !lhs_struct_inst && lm && lm->member_class && lc == lm->member_class &&
+        (lc->type & HTT_CLASS) && !(lc->type & HTT_INTERNAL_TYPE) &&
+        lm->size > 8 && lm->size <= 2040 &&
+        !lm->pointed_to_type && !lm->is_array && !lm->is_func_ptr;
+      if (lhs_struct_inst || lhs_struct_member) {
+        I64 nbytes = lhs_struct_inst ? lc->size : lm->size;
         EnsureLvalueAddressPushed(cc);         // dst address on the eval stack
         LexNext(cc);                            // '='
         if (!ParseTernary(cc)) return false;    // RHS: the source struct instance

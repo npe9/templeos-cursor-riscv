@@ -35,24 +35,67 @@ file is in no host build (`MakeUtils.HC` includes it, and nothing in any `.PRJ` 
 `CFE_Config_GetArrayValue` in `Kernel/Cfs/cfe/cfe_config.HC` is the one signature in the cFS
 translation that deviates from NASA's for this reason, and it says so at the call site.
 
-## 2. `*dst = *src` on a class larger than 8 bytes copies only 8 — OPEN
+## 2. Assigning a class larger than 8 bytes copies only 8 when the LEFT side is not an instance — FIXED for a member LHS
 
     class S16 { I64 a; I64 b; };
     U0 CopyDeref(S16 *dst, S16 *src) { *dst = *src; }   // copies a, leaves b untouched
 
-Local-to-local `y = x` is fine: `ParseAssignment` emits `IC_BLOCK_COPY` for it. The test that
-selects that path (`host/parser.c`, "Whole-struct assignment") requires the left side to be a
-class INSTANCE -- `!pointed_to_type && !is_array` -- so a dereferenced pointer falls through to
-the ordinary single-store path.
+WHICH SIDE IS BROKEN, measured rather than inferred. With a 28-byte class and the same two
+objects, the two directions are not alike:
 
-**A fix was attempted and reverted.** Extending the condition to "LHS ends in an `IC_DEREF`" also
-caught `Entry->Datum.AsPointer = Ptr`, because a member store through a pointer also ends in a
-deref and also leaves the ENCLOSING 16-byte class in `last_expr_class`. That block-copied sixteen
-bytes where a single pointer store belonged and broke `CFE_Config_SetString`. Adding
-`!cc->last_member` did not discriminate the two. The real fix needs the type of the LHS
-EXPRESSION, not of whatever class was last seen; `last_expr_class` is not that.
+    class RV   { U32 sig; I16 leap; U16 sel; U32 a; U32 b; U32 c; U32 d; U32 e; };
+    class Area { U32 head; RV vars; U32 tail; };
 
-**Workaround in use:** copy field by field. `CFE_Config_GetArrayValue` does, with a comment.
+    local = area.vars;      // LHS is a class INSTANCE -- all 28 bytes copied, correct
+    area.vars = local;      // LHS is a MEMBER designator -- sig and leap arrive, `e` is 0
+
+So it is not "a deref on the right" and not the class size on its own: it is whether the LEFT
+side is a class instance. `tail` is untouched either way, so the bad case is a SHORT copy and not
+an overrun -- which is why it reads as a plausible value rather than as a crash.
+
+`ParseAssignment` emits `IC_BLOCK_COPY` only when the test at "Whole-struct assignment"
+(`host/parser.c`) holds, and that test requires the left side to be a class INSTANCE --
+`!pointed_to_type && !is_array` -- so a member or a dereferenced pointer falls through to the
+ordinary single-store path and stores eight bytes.
+
+**A fix was attempted and reverted** before this one. Extending the condition to "LHS ends in an
+`IC_DEREF`" also caught `Entry->Datum.AsPointer = Ptr`, because a member store through a pointer
+also ends in a deref and also leaves the ENCLOSING 16-byte class in `last_expr_class`. That
+block-copied sixteen bytes where a single pointer store belonged and broke
+`CFE_Config_SetString`.
+
+**FIXED for a member LHS**, and the discriminator was already in the tree: `CMemberLst` carries
+the member's OWN type, and for a scalar or a pointer member `member_class` is NULL. Instrumenting
+the decision point across the five shapes that reach it settles it without guesswork —
+
+| statement | `last_member` | `member_class` | `pointed_to_type` | wanted |
+|---|---|---|---|---|
+| `area.vars = local` | `vars`/28 | **`RV`** | 0 | copy 28 |
+| `area.vars.sig = 5` | `sig`/4 | — | 0 | one store |
+| `ent.Datum.AsPointer = &t` | `AsPointer`/8 | — | **4** | one store |
+| `ent.Datum.AsInt = 7` | `AsInt`/8 | — | 0 | one store |
+| `plain = 3` | — | — | — | one store |
+
+`member_class != NULL` is the whole discrimination; the size, pointer, array and function-pointer
+checks are belt and braces, and requiring it to EQUAL the LHS expression's class is what makes a
+stale `last_member` from an earlier statement harmless.
+
+`tests/exec/cases/e_struct_assign_member.hc` pins all five shapes, with the neighbours on both
+sides of the copied member read back so a block copy of the wrong SIZE is caught too. Two
+controls: removing the member branch reproduces the short copy, and dropping the `member_class`
+guard fails both the case and the cfs gate -- the latter being exactly what the reverted attempt
+broke.
+
+**STILL OPEN: a bare `*dst = *src`** on a pointer-to-class. There is no member there, and the
+pointee's class is not in hand at the decision point. No cFS source written so far does it:
+across TIME, EVS, fs, ta, msg and config, every whole-struct assignment goes through an instance
+or a member.
+
+**No workaround needed any more** for the member form. `CFE_Config_GetArrayValue` still copies
+field by field with a comment, which is harmless. The site that prompted this --
+`CFE_TIME_ResetDataPtr->TimeResetVars = LocalResetVars` in `CFE_TIME_UpdateResetVars`, a 32-byte
+assignment whose sibling four functions earlier goes the other way and always worked -- now
+compiles to a 32-byte copy.
 
 ## 3. Indexed access to a local array reading zero in some frames — OPEN, not characterised
 
@@ -381,3 +424,4 @@ the case crash.
 One thing it does NOT do: retire the LAST function's statics, because nothing follows them. Their
 bare names stay visible to file-scope code after that function — wrong, harmless, and written
 down here rather than left to be rediscovered.
+
