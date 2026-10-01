@@ -32,7 +32,8 @@ NASA_DIRS = [
     os.path.join(ROOT, "vendor", "osal", "src", "os", "inc"),
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "inc"),
 ] + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "fsw", "inc"))) \
-  + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "fsw", "src")))
+  + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "fsw", "src"))) \
+  + [os.path.join(ROOT, "vendor", "cFE", "cmake", "target", "inc")]
 
 # A field the translation deliberately does NOT carry, with the reason. Pinned to the struct it
 # belongs to, printed on every run, and a FAILURE if it stops applying -- the same discipline as
@@ -45,8 +46,13 @@ OMITTED = {
         "change the layout.",
 }
 
+# A member declaration. The run between the type and the name can interleave stars and
+# qualifiers -- cFE declares `const Target_ObjectTable_t *const *CoreObjectTable;` -- and an
+# earlier version stopped at the first `*`, silently dropping that field from NASA's side and
+# then reporting the TRANSLATION as having an extra one.
 FIELD = re.compile(r'^\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+)*'
-                   r'[A-Za-z_]\w*(?:\s*\*+)?\s+\**([A-Za-z_]\w*)\s*(?:\[[^\]]*\])*\s*;', re.M)
+                   r'[A-Za-z_]\w*(?:\s*\*+|\s*const\b|\s*volatile\b)*'
+                   r'\s*\**\s*([A-Za-z_]\w*)\s*(?:\[[^\]]*\])*\s*;', re.M)
 # a function-pointer member: `void (*name)(args);`
 FIELD_FN = re.compile(r'^\s*[A-Za-z_][\w \t\*]*\(\s*\*+\s*([A-Za-z_]\w*)\s*\)\s*\([^;]*\)\s*;', re.M)
 
@@ -77,7 +83,10 @@ def nasa_structs():
                 continue
             txt = strip_comments(open(os.path.join(d, fn), errors="replace").read())
             # `typedef struct { ... } Name;` and `struct Name { ... };`
-            for m in re.finditer(r'typedef\s+struct\s*(?:\w+\s*)?\{(.*?)\}\s*(\w+)\s*;', txt, re.S):
+            # `typedef const struct { ... } Name;` is how cFE declares its target-config
+            # types, and without the optional `const` none of them were being compared at all.
+            for m in re.finditer(r'typedef\s+(?:const\s+)?struct\s*(?:\w+\s*)?\{(.*?)\}\s*(\w+)\s*;',
+                                 txt, re.S):
                 out.setdefault(m.group(2), (fields_of(m.group(1)), fn))
             for m in re.finditer(r'\bstruct\s+(\w+)\s*\{(.*?)\}\s*;', txt, re.S):
                 out.setdefault(m.group(1), (fields_of(m.group(2)), fn))

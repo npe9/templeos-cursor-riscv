@@ -23,6 +23,12 @@ PSP="$ROOT/vendor/PSP"
 GENDIR="$ROOT/build/cfs"
 python3 "$ROOT/tools/cfs/gen_configid_table.py" "$GENDIR" || {
   echo "FAIL cfs-xlat — could not generate the config id table" >&2; exit 1; }
+# cFE's target configuration -- GLOBAL_CONFIGDATA and GLOBAL_CFE_CONFIGDATA -- is emitted per
+# target by CMake in a real build and is not in the source tree at all. Do that job from one set
+# of recorded port decisions, which produces BOTH the C the oracle links and the HolyC the
+# translation uses, so the two cannot disagree about a mount point.
+python3 "$ROOT/tools/cfs/gen_target_config.py" "$GENDIR" >/dev/null || {
+  echo "FAIL cfs-xlat — could not generate the target config" >&2; exit 1; }
 # Every cFE source under test. Growing this list and the transcript together is how a translation
 # advances: one file, one set of transcript lines, one diff.
 SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
