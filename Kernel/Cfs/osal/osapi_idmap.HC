@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  ************************************************************************/
-
 // 1:1 HolyC translation of OSAL src/os/shared/src/osapi-idmap.c -- the object-table and
 // id-mapping core that every OSAL resource module stands on. 38 functions, 1,501 lines of C.
 //
@@ -44,24 +43,32 @@
 #include "../CfsStr.HC"
 // --- osapi-idmap.c ----------------------------------------------------------------------------
 #define OS_LOCK_KEY_FIXED_VALUE 0x4D000000
-
+// NASA declares this in osapi-idmap.c, not in a header, which is why neither layout gate saw it
+// until osal/src/os/shared/src joined check_structs.py's NASA_DIRS -- and the FIRST measurement
+// found the padding below missing. creator_id is a 4-byte osal_id_t and user_callback is a
+// function pointer, so C aligns it to 8; without the gap the struct was 20 bytes against NASA's
+// 24 and every field after the first was at the wrong offset. Nothing read it wrongly because
+// both sides of this port write and read the same struct -- which is the whole argument for
+// measuring layout rather than trusting it.
 class OS_creator_filter_t
 {
   U32 creator_id;
+  U8 _pad0[4];
+  // C aligns user_callback to 8
   U0 (*user_callback)(U32, U8 *);
   U8 *user_arg;
 };
-
 // Tables where the OS object information is stored
 OS_common_record_t OS_common_table[OS_MAX_TOTAL_RECORDS];
-
 class OS_objtype_state_t
 {
-  U32 last_id_issued;    // last successfully-issued object ID of each type
-  U32 transaction_count; // individual lock/unlock cycles on this type
-  osal_key_t owner_key;  // the key required to unlock this table
+  U32 last_id_issued;
+  // last successfully-issued object ID of each type
+  U32 transaction_count;
+  // individual lock/unlock cycles on this type
+  osal_key_t owner_key;
+  // the key required to unlock this table
 };
-
 OS_objtype_state_t OS_objtype_state[OS_OBJECT_TYPE_USER];
 // The C has `OS_common_record_t *const OS_global_task_table = &OS_common_table[OS_TASK_BASE];`
 // and thirteen more. HolyC cannot initialise a global pointer from the address of another
@@ -96,7 +103,6 @@ U0 OS_ObjectIdRelease(OS_object_token_t *token);
 U32 OS_GetBaseForObjectType(U32 idtype);
 U32 OS_GetMaxForObjectType(U32 idtype);
 I32 OS_ObjectIdToArrayIndex(U32 idtype, U32 object_id, U32 *ArrayIndex);
-
 I32 OS_ObjectIdInit()
 {
   MemSet(OS_common_table, 0, sizeof(OS_common_table));
@@ -107,72 +113,72 @@ I32 OS_ObjectIdInit()
 U32 OS_GetMaxForObjectType(U32 idtype)
 {
   switch (idtype) {
-    case OS_OBJECT_TYPE_OS_TASK:
-      return OS_MAX_TASKS;
-    case OS_OBJECT_TYPE_OS_QUEUE:
-      return OS_MAX_QUEUES;
-    case OS_OBJECT_TYPE_OS_BINSEM:
-      return OS_MAX_BIN_SEMAPHORES;
-    case OS_OBJECT_TYPE_OS_COUNTSEM:
-      return OS_MAX_COUNT_SEMAPHORES;
-    case OS_OBJECT_TYPE_OS_MUTEX:
-      return OS_MAX_MUTEXES;
-    case OS_OBJECT_TYPE_OS_RWLOCK:
-      return OS_MAX_RWLOCKS;
-    case OS_OBJECT_TYPE_OS_STREAM:
-      return OS_MAX_NUM_OPEN_FILES;
-    case OS_OBJECT_TYPE_OS_DIR:
-      return OS_MAX_NUM_OPEN_DIRS;
-    case OS_OBJECT_TYPE_OS_TIMEBASE:
-      return OS_MAX_TIMEBASES;
-    case OS_OBJECT_TYPE_OS_TIMECB:
-      return OS_MAX_TIMERS;
-    case OS_OBJECT_TYPE_OS_MODULE:
-      return OS_MAX_MODULES;
-    case OS_OBJECT_TYPE_OS_FILESYS:
-      return OS_MAX_FILE_SYSTEMS;
-    case OS_OBJECT_TYPE_OS_CONSOLE:
-      return OS_MAX_CONSOLES;
-    case OS_OBJECT_TYPE_OS_CONDVAR:
-      return OS_MAX_CONDVARS;
+    case OS_OBJECT_TYPE_OS_TASK :
+    return OS_MAX_TASKS;
+    case OS_OBJECT_TYPE_OS_QUEUE :
+    return OS_MAX_QUEUES;
+    case OS_OBJECT_TYPE_OS_BINSEM :
+    return OS_MAX_BIN_SEMAPHORES;
+    case OS_OBJECT_TYPE_OS_COUNTSEM :
+    return OS_MAX_COUNT_SEMAPHORES;
+    case OS_OBJECT_TYPE_OS_MUTEX :
+    return OS_MAX_MUTEXES;
+    case OS_OBJECT_TYPE_OS_RWLOCK :
+    return OS_MAX_RWLOCKS;
+    case OS_OBJECT_TYPE_OS_STREAM :
+    return OS_MAX_NUM_OPEN_FILES;
+    case OS_OBJECT_TYPE_OS_DIR :
+    return OS_MAX_NUM_OPEN_DIRS;
+    case OS_OBJECT_TYPE_OS_TIMEBASE :
+    return OS_MAX_TIMEBASES;
+    case OS_OBJECT_TYPE_OS_TIMECB :
+    return OS_MAX_TIMERS;
+    case OS_OBJECT_TYPE_OS_MODULE :
+    return OS_MAX_MODULES;
+    case OS_OBJECT_TYPE_OS_FILESYS :
+    return OS_MAX_FILE_SYSTEMS;
+    case OS_OBJECT_TYPE_OS_CONSOLE :
+    return OS_MAX_CONSOLES;
+    case OS_OBJECT_TYPE_OS_CONDVAR :
+    return OS_MAX_CONDVARS;
     default:
-      return 0;
+    return 0;
   }
 }
 
 U32 OS_GetBaseForObjectType(U32 idtype)
 {
   switch (idtype) {
-    case OS_OBJECT_TYPE_OS_TASK:
-      return OS_TASK_BASE;
-    case OS_OBJECT_TYPE_OS_QUEUE:
-      return OS_QUEUE_BASE;
-    case OS_OBJECT_TYPE_OS_BINSEM:
-      return OS_BINSEM_BASE;
-    case OS_OBJECT_TYPE_OS_COUNTSEM:
-      return OS_COUNTSEM_BASE;
-    case OS_OBJECT_TYPE_OS_MUTEX:
-      return OS_MUTEX_BASE;
-    case OS_OBJECT_TYPE_OS_RWLOCK:
-      return OS_RWLOCK_BASE;
-    case OS_OBJECT_TYPE_OS_STREAM:
-      return OS_STREAM_BASE;
-    case OS_OBJECT_TYPE_OS_DIR:
-      return OS_DIR_BASE;
-    case OS_OBJECT_TYPE_OS_TIMEBASE:
-      return OS_TIMEBASE_BASE;
-    case OS_OBJECT_TYPE_OS_TIMECB:
-      return OS_TIMECB_BASE;
-    case OS_OBJECT_TYPE_OS_MODULE:
-      return OS_MODULE_BASE;
-    case OS_OBJECT_TYPE_OS_FILESYS:
-      return OS_FILESYS_BASE;
-    case OS_OBJECT_TYPE_OS_CONSOLE:
-      return OS_CONSOLE_BASE;
-    case OS_OBJECT_TYPE_OS_CONDVAR:
-      return OS_CONDVAR_BASE;
+    case OS_OBJECT_TYPE_OS_TASK :
+    return OS_TASK_BASE;
+    case OS_OBJECT_TYPE_OS_QUEUE :
+    return OS_QUEUE_BASE;
+    case OS_OBJECT_TYPE_OS_BINSEM :
+    return OS_BINSEM_BASE;
+    case OS_OBJECT_TYPE_OS_COUNTSEM :
+    return OS_COUNTSEM_BASE;
+    case OS_OBJECT_TYPE_OS_MUTEX :
+    return OS_MUTEX_BASE;
+    case OS_OBJECT_TYPE_OS_RWLOCK :
+    return OS_RWLOCK_BASE;
+    case OS_OBJECT_TYPE_OS_STREAM :
+    return OS_STREAM_BASE;
+    case OS_OBJECT_TYPE_OS_DIR :
+    return OS_DIR_BASE;
+    case OS_OBJECT_TYPE_OS_TIMEBASE :
+    return OS_TIMEBASE_BASE;
+    case OS_OBJECT_TYPE_OS_TIMECB :
+    return OS_TIMECB_BASE;
+    case OS_OBJECT_TYPE_OS_MODULE :
+    return OS_MODULE_BASE;
+    case OS_OBJECT_TYPE_OS_FILESYS :
+    return OS_FILESYS_BASE;
+    case OS_OBJECT_TYPE_OS_CONSOLE :
+    return OS_CONSOLE_BASE;
+    case OS_OBJECT_TYPE_OS_CONDVAR :
+    return OS_CONDVAR_BASE;
     default:
-      return 0;
+    return 0;
   }
 }
 
@@ -180,9 +186,7 @@ Bool OS_ForEachFilterCreator(U8 *ref, OS_object_token_t *token, OS_common_record
 {
   OS_creator_filter_t *filter = ref(OS_creator_filter_t *);
   // Check if the obj is a match for the creator
-  return OS_ObjectIdIsValid(obj->active_id) &&
-         (OS_ObjectIdEqual(filter->creator_id, OS_OBJECT_CREATOR_ANY) ||
-          OS_ObjectIdEqual(obj->creator, filter->creator_id));
+  return OS_ObjectIdIsValid(obj->active_id) && (OS_ObjectIdEqual(filter->creator_id, OS_OBJECT_CREATOR_ANY) || OS_ObjectIdEqual(obj->creator, filter->creator_id));
 }
 
 I32 OS_ForEachDoCallback(U32 obj_id, U8 *ref)
@@ -212,11 +216,9 @@ I32 OS_ObjectIdTransactionInit(I64 lock_mode, U32 idtype, OS_object_token_t *tok
   MemSet(token, 0, sizeof(OS_object_token_t));
   // Transactions are only allowed once the API is initialised, and only an EXCLUSIVE one
   // (i.e. a delete) is allowed while shutting down.
-  if (OS_SharedGlobalVars.GlobalState != OS_INIT_MAGIC_NUMBER &&
-      OS_SharedGlobalVars.GlobalState != OS_SHUTDOWN_MAGIC_NUMBER)
+  if (OS_SharedGlobalVars.GlobalState != OS_INIT_MAGIC_NUMBER && OS_SharedGlobalVars.GlobalState != OS_SHUTDOWN_MAGIC_NUMBER)
     return OS_ERROR;
-  if (OS_SharedGlobalVars.GlobalState == OS_SHUTDOWN_MAGIC_NUMBER &&
-      lock_mode != OS_LOCK_MODE_EXCLUSIVE)
+  if (OS_SharedGlobalVars.GlobalState == OS_SHUTDOWN_MAGIC_NUMBER && lock_mode != OS_LOCK_MODE_EXCLUSIVE)
     return OS_ERR_INCORRECT_OBJ_STATE;
   if (OS_GetMaxForObjectType(idtype) == 0)
     return OS_ERR_INVALID_ID;
@@ -266,8 +268,7 @@ I32 OS_ObjectIdConvertToken(OS_object_token_t *token)
         return_code = OS_SUCCESS;
         break;
       }
-    } else if (token->lock_mode == OS_LOCK_MODE_NONE ||
-               !OS_ObjectIdEqual(obj->active_id, OS_OBJECT_ID_RESERVED)) {
+    } else if (token->lock_mode == OS_LOCK_MODE_NONE || !OS_ObjectIdEqual(obj->active_id, OS_OBJECT_ID_RESERVED)) {
       // Not an ID match and not RESERVED - fail out
       return_code = OS_ERR_INVALID_ID;
       break;
@@ -284,11 +285,9 @@ I32 OS_ObjectIdConvertToken(OS_object_token_t *token)
     if (return_code == OS_SUCCESS) {
       // always increment the refcount, which means a task is actively using the record
       ++obj->refcount;
-      if (token->lock_mode == OS_LOCK_MODE_REFCOUNT ||
-          token->lock_mode == OS_LOCK_MODE_EXCLUSIVE)
+      if (token->lock_mode == OS_LOCK_MODE_REFCOUNT || token->lock_mode == OS_LOCK_MODE_EXCLUSIVE)
         OS_Unlock_Global(token);
-    } else if (token->lock_mode == OS_LOCK_MODE_EXCLUSIVE &&
-               OS_ObjectIdEqual(expected_id, OS_OBJECT_ID_RESERVED)) {
+    } else if (token->lock_mode == OS_LOCK_MODE_EXCLUSIVE && OS_ObjectIdEqual(expected_id, OS_OBJECT_ID_RESERVED)) {
       // Put the ID back the way it was: this attempt reserved it and then failed
       obj->active_id = OS_ObjectIdFromToken(token);
     }
@@ -296,8 +295,7 @@ I32 OS_ObjectIdConvertToken(OS_object_token_t *token)
   return return_code;
 }
 
-I32 OS_ObjectIdFindNextMatch(Bool (*MatchFunc)(U8 *, OS_object_token_t *, OS_common_record_t *),
-                             U8 *arg, OS_object_token_t *token)
+I32 OS_ObjectIdFindNextMatch(Bool (*MatchFunc)(U8 *, OS_object_token_t *, OS_common_record_t *), U8 *arg, OS_object_token_t *token)
 {
   I32 return_code;
   U32 obj_count;
@@ -372,7 +370,6 @@ I32 OS_ObjectIdFindNextFree(OS_object_token_t *token)
   }
   return return_code;
 }
-
 // Locks the global table identified by "idtype"
 U0 OS_Lock_Global(OS_object_token_t *token)
 {
@@ -388,9 +385,7 @@ U0 OS_Lock_Global(OS_object_token_t *token)
     }
     // The key is the task id mixed with a per-type counter, so a mismatched unlock is
     // detectable rather than silently succeeding.
-    token->lock_key.key_value =
-        OS_LOCK_KEY_FIXED_VALUE |
-        ((OS_ObjectIdToInteger(self_task_id) ^ objtype->transaction_count) & 0xFFFFFF);
+    token->lock_key.key_value = OS_LOCK_KEY_FIXED_VALUE | ((OS_ObjectIdToInteger(self_task_id) ^ objtype->transaction_count) & 0xFFFFFF);
     ++objtype->transaction_count;
     if (objtype->owner_key.key_value != 0) {
       // this is almost certainly a bug -- OS_DEBUG, which is empty in this configuration
@@ -401,18 +396,17 @@ U0 OS_Lock_Global(OS_object_token_t *token)
     // OS_DEBUG("ERROR: cannot lock global %u for mode %u") -- empty in this configuration
   }
 }
-
 // Unlocks the global table identified by "idtype"
 U0 OS_Unlock_Global(OS_object_token_t *token)
 {
   OS_objtype_state_t *objtype;
   if (token->obj_type < OS_OBJECT_TYPE_USER && token->lock_mode != OS_LOCK_MODE_NONE) {
     objtype = &OS_objtype_state[token->obj_type];
-    if ((objtype->owner_key.key_value & 0xFF000000) != OS_LOCK_KEY_FIXED_VALUE ||
-        objtype->owner_key.key_value != token->lock_key.key_value) {
+    if ((objtype->owner_key.key_value & 0xFF000000) != OS_LOCK_KEY_FIXED_VALUE || objtype->owner_key.key_value != token->lock_key.key_value) {
       // this is almost certainly a bug -- OS_DEBUG, empty in this configuration
     }
-    objtype->owner_key.key_value = 0; // OS_LOCK_KEY_INVALID
+    objtype->owner_key.key_value = 0;
+    // OS_LOCK_KEY_INVALID
     token->lock_key.key_value = 0;
     OS_Unlock_Global_Impl(token->obj_type);
   } else {
@@ -460,16 +454,15 @@ I32 OS_ObjectIdFinalizeDelete(I32 operation_status, OS_object_token_t *token)
   if (operation_status == OS_SUCCESS)
     final_id = OS_OBJECT_ID_UNDEFINED;
   else
-    final_id = token->obj_id; // this restores the original ID
+    final_id = token->obj_id;
+  // this restores the original ID
   OS_ObjectIdTransactionFinish(token, &final_id);
   if (operation_status == OS_SUCCESS)
     OS_NotifyEvent(OS_EVENT_RESOURCE_DELETED, token->obj_id, NULL);
   return operation_status;
 }
 
-I32 OS_ObjectIdGetBySearch(I64 lock_mode, U32 idtype,
-                           Bool (*MatchFunc)(U8 *, OS_object_token_t *, OS_common_record_t *),
-                           U8 *arg, OS_object_token_t *token)
+I32 OS_ObjectIdGetBySearch(I64 lock_mode, U32 idtype, Bool (*MatchFunc)(U8 *, OS_object_token_t *, OS_common_record_t *), U8 *arg, OS_object_token_t *token)
 {
   I32 return_code;
   OS_ObjectIdTransactionInit(lock_mode, idtype, token);
@@ -589,7 +582,6 @@ I32 OS_ObjectIdAllocateNew(U32 idtype, U8 *name, OS_object_token_t *token)
     return_code = OS_ObjectIdFinalizeNew(return_code, token, NULL);
   return return_code;
 }
-
 // Transfer ownership of a token to another buffer
 U0 OS_ObjectIdTransferToken(OS_object_token_t *token_from, OS_object_token_t *token_to)
 {
@@ -605,10 +597,8 @@ U0 OS_ObjectIdTransferToken(OS_object_token_t *token_from, OS_object_token_t *to
   // ensure the old token no longer holds the lock
   token_from->lock_mode = OS_LOCK_MODE_NONE;
 }
-
 // Start the process of iterating through OSAL objects
-I32 OS_ObjectIdIteratorInit(Bool (*matchfunc)(U8 *, OS_object_token_t *, OS_common_record_t *),
-                            U8 *matcharg, U32 objtype, OS_object_iter_t *iter)
+I32 OS_ObjectIdIteratorInit(Bool (*matchfunc)(U8 *, OS_object_token_t *, OS_common_record_t *), U8 *matcharg, U32 objtype, OS_object_iter_t *iter)
 {
   iter->match = matchfunc;
   iter->arg = matcharg;
@@ -616,7 +606,6 @@ I32 OS_ObjectIdIteratorInit(Bool (*matchfunc)(U8 *, OS_object_token_t *, OS_comm
   iter->base = &OS_common_table[OS_GetBaseForObjectType(objtype)];
   return OS_ObjectIdTransactionInit(OS_LOCK_MODE_GLOBAL, objtype, &iter->token);
 }
-
 // Match function to iterate only active objects
 Bool OS_ObjectFilterActive(U8 *ref, OS_object_token_t *token, OS_common_record_t *obj)
 {
@@ -627,7 +616,6 @@ I32 OS_ObjectIdIterateActive(U32 objtype, OS_object_iter_t *iter)
 {
   return OS_ObjectIdIteratorInit(&OS_ObjectFilterActive, NULL, objtype, iter);
 }
-
 // Move iterator to the next entry
 Bool OS_ObjectIdIteratorGetNext(OS_object_iter_t *iter)
 {
@@ -650,13 +638,11 @@ Bool OS_ObjectIdIteratorGetNext(OS_object_iter_t *iter)
   } while (!got_next);
   return got_next;
 }
-
 // Release iterator resources
 U0 OS_ObjectIdIteratorDestroy(OS_object_iter_t *iter)
 {
   OS_ObjectIdTransactionCancel(&iter->token);
 }
-
 // Call a handler function on an iterator object ID. The global is released around the call so
 // the handler may itself take locks.
 I32 OS_ObjectIdIteratorProcessEntry(OS_object_iter_t *iter, I32 (*func)(U32, U8 *))
@@ -674,8 +660,7 @@ I32 OS_ConvertToArrayIndex(U32 object_id, U32 *ArrayIndex)
   return OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_UNDEFINED, object_id, ArrayIndex);
 }
 
-U0 OS_ForEachObjectOfType(U32 objtype, U32 creator_id, U0 (*callback_ptr)(U32, U8 *),
-                          U8 *callback_arg)
+U0 OS_ForEachObjectOfType(U32 objtype, U32 creator_id, U0 (*callback_ptr)(U32, U8 *), U8 *callback_arg)
 {
   OS_object_iter_t iter;
   OS_creator_filter_t filter;
@@ -719,8 +704,7 @@ I32 OS_GetResourceName(U32 object_id, U8 *buffer, I64 buffer_size)
     return OS_ERR_INVALID_SIZE;
   // Initialise to an empty string, so a failure leaves a usable buffer
   buffer[0] = 0;
-  return_code =
-      OS_ObjectIdGetById(OS_LOCK_MODE_GLOBAL, OS_ObjectIdToType_Impl(object_id), object_id, &token);
+  return_code = OS_ObjectIdGetById(OS_LOCK_MODE_GLOBAL, OS_ObjectIdToType_Impl(object_id), object_id, &token);
   if (return_code == OS_SUCCESS) {
     record = OS_ObjectIdGlobalFromToken(&token);
     if (record->name_entry != NULL) {

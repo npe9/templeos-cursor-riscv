@@ -104,6 +104,12 @@ HDRS = [
     # TIME's own, for the same reason: its twenty-three messages, the seven enum typedefs their
     # fields are spelled with, and CFE_TIME_Global's internal types.
     "cfe_time_module_all.h", "cfe_time_utils.h",
+    # SB's, and the same story a third time: its sixteen command and telemetry formats live in
+    # the module's config headers and its internal types -- the buffer descriptor, the pipe, the
+    # 512 KiB partition and CFE_SB_Global_t itself -- are declared in the implementation-private
+    # cfe_sb_priv.h. Neither is reachable from cfe_sb.h, which is the PUBLIC header and the only
+    # SB one that was on this list, so none of them was measured.
+    "cfe_sb_module_all.h", "cfe_sb_priv.h",
 ]
 
 # NASA .c files whose FILE-SCOPE typedefs have to be lifted into the probe. A module's private
@@ -113,6 +119,12 @@ HDRS = [
 # copies those declarations in verbatim. A struct this list misses is REPORTED as unmeasured, so
 # forgetting an entry is visible rather than silent.
 CSRC = [
+    # OSAL's, for the same reason and newly reachable: osapi-idmap.c declares OS_creator_filter_t
+    # and OS_objtype_state_t at file scope, and OS_objtype_state is a live global of the second.
+    # check_structs.py began comparing them when osal/src/os/shared/src joined its NASA_DIRS, and
+    # this gate then refused to call them measured -- which is the behaviour that makes the pair
+    # of gates work: one notices the type exists, the other refuses to pretend it checked it.
+    os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-idmap.c"),
     os.path.join(CFE, "modules", "fs", "fsw", "src", "cfe_fs_api.c"),
     os.path.join(CFE, "modules", "resourceid", "fsw", "src", "cfe_resourceid_api.c"),
     os.path.join(CFE, "modules", "sbr", "fsw", "src", "cfe_sbr_route_unsorted.c"),
@@ -344,7 +356,7 @@ def main(argv):
     defines = hc_defines()
     pairs = []
     for name in sorted(bodies):
-        cand = name if name in nasa else (name + "_t" if name + "_t" in nasa else None)
+        cand = check_structs.pair_name(name, nasa)
         if cand:
             pairs.append((name, cand))
     if not pairs:

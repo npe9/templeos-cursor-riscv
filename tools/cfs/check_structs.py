@@ -31,10 +31,26 @@ import glob as _glob
 NASA_DIRS = [
     os.path.join(ROOT, "vendor", "osal", "src", "os", "inc"),
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "inc"),
+    # osal/src/os/shared/SRC, not just its inc. OSAL declares a module's private state structs
+    # in the implementation file the same way cFE does -- osapi-idmap.c defines
+    # OS_creator_filter_t and OS_objtype_state_t, and OS_objtype_state is a live global of the
+    # second one -- and this directory was not on the list, so neither was ever compared. The .c
+    # files are already scanned for exactly this reason on the cFE side.
+    os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src"),
 ] + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "fsw", "inc"))) \
   + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "fsw", "src"))) \
   + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "config"))) \
+  + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "option_inc"))) \
   + [os.path.join(ROOT, "vendor", "cFE", "cmake", "target", "inc")]
+# modules/*/option_inc IS WHERE THE MESSAGE HEADERS LIVE -- `struct CFE_MSG_Message`,
+# CFE_MSG_CommandHeader, CFE_MSG_TelemetryHeader and CCSDS_SpacePacket, in
+# default_cfe_msg_hdr_pri.h. cFE keeps them there because the choice between a plain primary
+# header and one with the APID extension is a build option, which is exactly why they are not in
+# fsw/inc. The directory was missing from this list, so the BASE TYPE OF EVERY PACKET IN cFS had
+# never been compared field for field or byte for byte by either layout gate -- the same hole,
+# and the same directory-shaped cause, as modules/*/config below. Found while tracking down why
+# eleven translated classes reported no NASA counterpart; seven of the eleven were these.
+#
 # modules/*/config IS WHERE EVERY MESSAGE STRUCT LIVES -- default_cfe_<mod>_msgdefs.h and
 # _msgstruct.h -- and it was missing from this list. A translated class whose NASA counterpart is
 # not found here is not reported: it has no pair, so both this gate and check_padding.py skip it
@@ -59,8 +75,20 @@ OMITTED = {
 # qualifiers -- cFE declares `const Target_ObjectTable_t *const *CoreObjectTable;` -- and an
 # earlier version stopped at the first `*`, silently dropping that field from NASA's side and
 # then reporting the TRANSLATION as having an extra one.
+# A `struct X *` / `union X *` / `enum X` member needs the TAG KEYWORD allowed before the type
+# name, and a member whose type is a MACRO CALL needs the parenthesised argument allowed after it.
+# Without the first, NASA's self-referential list node
+#     typedef struct CFE_SB_BufferLink { struct CFE_SB_BufferLink *Next, *Prev; } ...
+# parsed as having NO fields; without the second, SB's
+#     CFE_ES_STATIC_POOL_TYPE(CFE_PLATFORM_SB_BUF_MEMORY_BYTES) Partition;
+# did too. Both then reported the TRANSLATION as having EXTRA fields -- the tool blaming the
+# translation for its own blind spot, which is the one failure mode worse than not checking,
+# because it costs a real investigation. Same shape as the `modules/*/config` glob that was
+# missing from NASA_DIRS and as check_fnptr_members.py's first regex.
 FIELD = re.compile(r'^\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+)*'
-                   r'[A-Za-z_]\w*(?:\s*\*+|\s*const\b|\s*volatile\b)*'
+                   r'(?:struct\s+|union\s+|enum\s+)?'
+                   r'[A-Za-z_]\w*(?:\s*\([^;()]*\))?'
+                   r'(?:\s*\*+|\s*const\b|\s*volatile\b)*'
                    r'\s*\**\s*([A-Za-z_]\w*)\s*(?:\[[^\]]*\])*\s*;', re.M)
 # a function-pointer member: `void (*name)(args);`
 FIELD_FN = re.compile(r'^\s*[A-Za-z_][\w \t\*]*\(\s*\*+\s*([A-Za-z_]\w*)\s*\)\s*\([^;]*\)\s*;', re.M)
@@ -80,6 +108,23 @@ def fields_of(body):
         if m:
             out.append(m.group(1))
     return out
+
+
+def pair_name(name, nasa):
+    """NASA's name for a translated class, or None.
+
+    THE ONE PAIRING RULE, and it lives here because check_padding.py needs the same one. It did
+    not have the same one: this function's third candidate -- STRIPPING a `_t` the translation
+    carries and NASA's struct TAG does not, as in
+        typedef struct OS_object_token OS_object_token_t;
+    -- was added here first, and check_padding went on silently skipping the two types it
+    resolves. Two gates with two copies of a join rule drift, and the drift is invisible because
+    both still print a reassuring count. One function, imported.
+    """
+    for c in (name, name + "_t", name[:-2] if name.endswith("_t") else None):
+        if c and c in nasa:
+            return c
+    return None
 
 
 def nasa_structs():
@@ -112,6 +157,26 @@ def nasa_structs():
 # to invent either, so tools/cfs/check_padding.py measures NASA's real offsets with the host C
 # compiler and fails if a pad is missing, wrong, or there when C does not pad. One gate owns
 # membership and order; the other owns the bytes.
+# A translated class with NO NASA counterpart, and why. Every entry is a class this port
+# INVENTED -- not one whose upstream the tool failed to find -- and anything not on the list is a
+# failure, so the list cannot become a hiding place. Same discipline as OMITTED above and as
+# CONFIG_EXCLUDED in check_coverage.py.
+UNPAIRED_OK = {
+    "CFE_SB_MemPartition_t":
+        "NASA writes this member's type inline as CFE_ES_STATIC_POOL_TYPE(...), an ANONYMOUS "
+        "union. HolyC has no anonymous member type, so the union is named here; there is no "
+        "upstream struct of any name to pair with. cfe_sb_global.HC records the argument.",
+    "CFE_SB_Buffer":
+        "NASA's CFE_SB_Buffer_t is a typedef of an ANONYMOUS union, so again there is no tagged "
+        "upstream type. Its SIZE is checked by check_padding through the classes that contain "
+        "it -- CFE_SB_BufferD_t.Content.",
+    "OS_EventHandlerSlot":
+        "NASA's OS_SharedGlobalVars.EventHandler is an array of the function-pointer typedef "
+        "OS_EventHandler_t; the translation wraps one pointer in a class so the member can be an "
+        "array of a named type. Eight bytes per slot either way, which check_padding verifies "
+        "through OS_shared_global_vars.EventHandler.",
+}
+
 PAD = re.compile(r'^_pad\d*$')
 
 
@@ -136,12 +201,17 @@ def main(argv):
         print("FAIL cfs-structs — no NASA headers found; is vendor/osal present?", file=sys.stderr)
         return 1
 
-    bad, notes, checked = [], [], 0
+    bad, notes, checked, unpaired = [], [], 0, []
     for name, (hfields, hfile) in sorted(mine.items()):
-        # The translation names a class after NASA's typedef, sometimes without the _t.
-        cand = name if name in nasa else (name + "_t" if name + "_t" in nasa else None)
+        cand = pair_name(name, nasa)
         if cand is None:
-            continue          # a class of this port's own; not NASA's to compare against
+            # NOT SILENT. A translated class named after cFS or OSAL that pairs with nothing
+            # upstream is either this port's own invention or a name this tool cannot resolve --
+            # and the second case is the one that looks like success. Both land in UNPAIRED_OK or
+            # they are reported. Every entry there carries the reason it has no counterpart.
+            if name not in UNPAIRED_OK:
+                unpaired.append(name + "  (" + hfile + ")")
+            continue
         nfields, nfile = nasa[cand]
         checked += 1
         expect = []
@@ -170,6 +240,20 @@ def main(argv):
         if sname in nasa and fname not in nasa[sname][0]:
             bad.append(f"    {sname}.{fname}: recorded as omitted, but NASA's struct no longer "
                        f"has that field — delete the entry in check_structs.py")
+
+    if unpaired:
+        print("FAIL cfs-structs — a translated class has no NASA struct to compare against.",
+              file=sys.stderr)
+        print("  Not finding the other side is not a pass. If the class really is this port's",
+              file=sys.stderr)
+        print("  own, add it to UNPAIRED_OK with the reason; if it is not, the NAME or the",
+              file=sys.stderr)
+        print("  search path is wrong -- modules/*/option_inc was missing from NASA_DIRS and",
+              file=sys.stderr)
+        print("  that hid the base type of every cFS packet.", file=sys.stderr)
+        for u in unpaired:
+            print("    " + u, file=sys.stderr)
+        return 1
 
     if bad:
         print("FAIL cfs-structs — a translated class does not match NASA's struct.", file=sys.stderr)

@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  ************************************************************************/
-
 // 1:1 HolyC translation of the types, constants and inline helpers in OSAL
 // src/os/shared/inc/os-shared-idmap.h, plus the id helpers from src/os/inc/osapi-idmap.h.
 //
@@ -60,7 +59,6 @@
 // 0xFFFFFFFF and is used as "no index yet" -- it must stay unsigned or the >= comparisons that
 // bound the tables stop working.
 #define OSAL_INDEX_C(X) ((X) & 0xFFFFFFFF)
-
 U64 OS_ObjectIdToInteger(U32 object_id)
 {
   return object_id;
@@ -81,12 +79,24 @@ Bool OS_ObjectIdDefined(U32 object_id)
   return OS_ObjectIdToInteger(object_id) != 0;
 }
 // --- os-shared-idmap.h -------------------------------------------------------------------------
+// NASA's tag is `struct OS_common_record`, with no _t -- the typedef adds it. Neither layout
+// gate could pair the two until check_structs.py learned to STRIP a `_t` as well as append one,
+// and the first measurement found the tail padding below missing: the fields are 18 bytes, and C
+// rounds to 24 because name_entry is a pointer and the struct is therefore 8-aligned.
+//
+// IT MATTERS BECAUSE OF THE ARRAY. OS_common_table is OS_MAX_TOTAL_RECORDS of these, so the
+// stride was 18 against NASA's 24 and every record after the first sat at a different offset
+// than the C side's. The OSAL transcript was byte-identical throughout, because each side writes
+// and reads its own layout consistently -- which is the exact situation check_padding.py's
+// header comment describes and the reason it exists.
 class OS_common_record_t
 {
   U8 *name_entry;
   U32 active_id;
   U32 creator;
   U16 refcount;
+  U8 _pad0[6];
+  // TAIL padding: name_entry is a pointer, so C rounds 18 up to 24
 };
 // The base of each type's slice of the one flat table. Cumulative, exactly as the C's enum is,
 // so each depends on the previous -- which is why they are written in this order and why
@@ -112,7 +122,6 @@ class OS_common_record_t
 #define OS_LOCK_MODE_REFCOUNT  2
 #define OS_LOCK_MODE_EXCLUSIVE 3
 #define OS_LOCK_MODE_RESERVED  4
-
 class osal_key_t
 {
   U32 key_value;
@@ -120,9 +129,10 @@ class osal_key_t
 
 class OS_object_token_t
 {
-  I32 lock_mode; // OS_lock_mode_t, a C ENUM -- 4 bytes, not 8. Translating it as I64 made
-                 // the whole token 24 bytes against NASA's 20 and shifted every struct that
-                 // embeds one (OS_object_iter_t, OS_timecb_internal_record_t).
+  I32 lock_mode;
+  // OS_lock_mode_t, a C ENUM -- 4 bytes, not 8. Translating it as I64 made
+  // the whole token 24 bytes against NASA's 20 and shifted every struct that
+  // embeds one (OS_object_iter_t, OS_timecb_internal_record_t).
   osal_key_t lock_key;
   U32 obj_type;
   U32 obj_idx;
@@ -162,7 +172,7 @@ U32 OS_ObjectIdToType_Impl(U32 id)
 
 U0 OS_ObjectIdCompose_Impl(U32 idtype, U32 idserial, U32 *result)
 {
-  *result = OS_ObjectIdFromInteger((idtype << OS_OBJECT_TYPE_SHIFT) | idserial);
+  *result = OS_ObjectIdFromInteger ((idtype << OS_OBJECT_TYPE_SHIFT) | idserial);
 }
 
 Bool OS_ObjectIdIsValid(U32 object_id)
