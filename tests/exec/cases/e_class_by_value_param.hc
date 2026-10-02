@@ -23,9 +23,7 @@ class Eight
   I32 lo;
   I32 hi;
 };
-
 I64 main();
-
 I64 TakeSmall(Small s)
 {
   s.a = 99;

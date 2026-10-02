@@ -102,9 +102,9 @@ lines, one diff, one negative control.
 |---|---|---|---|
 | `msg` | 1,491 | **1,065** | all 8 unconditional sources plus the two v1/pri variants — complete for this configuration |
 | `resourceid` | 228 | **228** | complete, SIMPLE variant |
-| `sb` | 6,086 | **2,587** | `msg_id_util`, `util`, `buf`, `init` and `priv` complete; api/task/dispatch/objtab are the other 3,499 |
+| `sb` | 6,086 | **6,086** | complete — all seven unconditional sources plus `msg_id_util`; the EDS dispatcher is the alternative |
 | `config` | 782 | **489** | get/set/lookup/eds complete; `init.c` (241) and its objtab wait for the build-generated GLOBAL_CONFIGDATA |
-| `es` `tbl` `time` `evs` `fs` `ta` | 32,643 | 0 | blocked on OSAL |
+| `es` `tbl` | 20,514 | 0 | `es` is the next large one; `tbl` after it |
 | `sbr` | 535 | **434** | complete for the default HASH map; `map_direct` is the alternative |
 
 Translated units live in `Kernel/Cfs/cfe/`, one HolyC file per C file, NASA's copyright retained,
@@ -295,7 +295,7 @@ rather than counted as always-built:
 | `resourceid` | 2 | 228 | **100%** |
 | `sbr` | 1 | 33 | **100%** (its map and route sources are conditional; the HASH default is gated) |
 | `config` | 5 | 697 | **100%** |
-| `sb` | 7 | 5,278 | **76%** (`util`, `msg_id_util`, `buf`, `init`, `priv`, `api`; task/dispatch/objtab remain) |
+| `sb` | 7 | 5,278 | **100%** — all seven sources |
 | `fs` | 3 | 1,249 | **100%** |
 | `ta` | 2 | 892 | **100%** (plus `cfe_ta_dispatch.c`, 159, which is conditional — see below) |
 | `evs` | 5 | 2,787 | **100%** (six of six; the `_dispatch` one is conditional — see below) |
