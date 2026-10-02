@@ -66,9 +66,24 @@ NAME = re.compile(r'^(CFE_|OS_|OSAL_)\w+$')
 # compared count from 310 to 284 and the tool said nothing: a `#define` it cannot parse is a
 # `#define` it never sees, and an unseen constant passes. The suffix is now part of the pattern
 # and `literal()` applies the cast, so a cast value is compared like any other.
+# THE TRAILING COMMENT CAN BE `/* */` TOO, and until it could, three constants were silently
+# uncompared: OS_FS_DEV_NAME_LEN, OS_FS_PHYS_NAME_LEN and OS_FS_VOL_NAME_LEN are copied from
+# osconfig.h WITH NASA's own `/**< ... */` doc comment on the line, and a #define this regex
+# cannot parse is a #define it never sees. Same shape as the postfix cast above, found the same
+# way -- by counting what the pattern DROPS rather than by trusting what it keeps.
 DEFINE = re.compile(r"^[ \t]*#define[ \t]+([A-Za-z_]\w*)[ \t]+"
                     r"(0[xX][0-9A-Fa-f]+(?:\((?:I|U)(?:8|16|32|64)\))?|-?\d+|'.'|\([^)]*\))"
-                    r"[ \t]*(?://.*)?$", re.M)
+                    r"[ \t]*(?://.*|/\*.*\*/)?$", re.M)
+# Every OTHER object-like #define with a NASA-shaped name: a string, an identifier, a macro
+# call. They are NOT compared, and the count is printed so the size of that hole is a number
+# rather than a silence. The three groups it holds, as of this commit:
+#   - STRING constants NASA also defines -- pipe names, default file paths. These DO reach the
+#     transcript (an event prints the pipe name), but only where something drives them.
+#   - a #define whose value is another macro (CFE_ES_APPID_BASE, CFE_SB_PIPEID_BASE): comparing
+#     one would mean expanding the TRANSLATION's macros, which expr_value does for
+#     parenthesised expressions and not yet for macro calls.
+#   - CFE_CONFIGID_*, which are runtime calls, not constants at all.
+ANY_DEFINE = re.compile(r"^[ \t]*#define[ \t]+([A-Za-z_]\w*)[ \t]+(\S.*?)[ \t]*$", re.M)
 # The postfix cast, split off by literal() below.
 CASTED = re.compile(r"^(0[xX][0-9A-Fa-f]+)\((I|U)(8|16|32|64)\)$")
 
@@ -88,6 +103,25 @@ def hc_defines():
                 if not NAME.match(name) or name.endswith("_HC"):
                     continue
                 out.setdefault(name, (lit, fn))
+    return out
+
+
+def unparsed_defines():
+    """[(name, value, file)] for NASA-shaped #defines whose value DEFINE cannot read."""
+    seen = set(hc_defines())
+    out = []
+    for d in (os.path.join(ROOT, "Kernel", "Cfs", "osal"), os.path.join(ROOT, "Kernel", "Cfs", "cfe")):
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".HC"):
+                continue
+            txt = open(os.path.join(d, fn), errors="replace").read()
+            for m in ANY_DEFINE.finditer(txt):
+                name, val = m.group(1), m.group(2)
+                if not NAME.match(name) or name.endswith("_HC") or name in seen:
+                    continue
+                out.append((name, val, fn))
     return out
 
 
@@ -386,8 +420,14 @@ def main(argv):
             print("  not a plain literal, so the value is not compared here:")
             for n, lit, fn in skipped:
                 print("    %-44s %s: %s" % (n, fn, lit))
+    unparsed = unparsed_defines()
+    if verbose:
+        print("  not a literal this tool reads, so NOT compared (strings, macro calls, ids):")
+        for n, v, fn in unparsed:
+            print("    %-44s %-44s %s" % (n, v[:44], fn))
     print("cfs-constants: %d constants match NASA's values (%d names NASA does not define, "
-          "%d expressions not compared)" % (checked, len(local), len(skipped)))
+          "%d expressions not compared, %d #defines not a literal and so NOT compared -- "
+          "run with -v)" % (checked, len(local), len(skipped), len(unparsed)))
     return 0
 
 

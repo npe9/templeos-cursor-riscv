@@ -295,7 +295,7 @@ rather than counted as always-built:
 | `resourceid` | 2 | 228 | **100%** |
 | `sbr` | 1 | 33 | **100%** (its map and route sources are conditional; the HASH default is gated) |
 | `config` | 5 | 697 | **100%** |
-| `sb` | 7 | 5,278 | **45%** (`util`, `msg_id_util`, `buf`, `init`, `priv`; api/task/dispatch/objtab remain) |
+| `sb` | 7 | 5,278 | **76%** (`util`, `msg_id_util`, `buf`, `init`, `priv`, `api`; task/dispatch/objtab remain) |
 | `fs` | 3 | 1,249 | **100%** |
 | `ta` | 2 | 892 | **100%** (plus `cfe_ta_dispatch.c`, 159, which is conditional — see below) |
 | `evs` | 5 | 2,787 | **100%** (six of six; the `_dispatch` one is conditional — see below) |
@@ -540,7 +540,7 @@ requires its shape. The mutex-failure path beside it IS driven, because its diag
 only an integer. Any future path whose log prints an address or a `__func__`-derived pointer has
 the same limit.
 
-Ten properties are gated independently, because each is blind to what the others catch:
+Eleven properties are gated independently, because each is blind to what the others catch:
 
 | check | what it proves | what it cannot see |
 |---|---|---|
@@ -552,10 +552,21 @@ Ten properties are gated independently, because each is blind to what the others
 | `check_fnptr_members.py` | a function-pointer MEMBER has NASA's return kind and parameter count | the parameter TYPES, and the type of any other member |
 | `check_constants.py` | every number the translation spells out has NASA's value, INCLUDING the ones NASA spells as enumerators | whether anything uses it, or uses it correctly |
 | `check_variadic.py` | a variadic function's declarations agree with NASA's and with each other, and none is called before one is seen | whether the ARGUMENTS at a call site are the right ones |
+| `check_wired.py` | every translated file is REACHABLE from a driver, or listed with a reason | whether anything in it is actually called |
 | `check_manifest.py` | everything gated is in NASA's build; reports the covered fraction | nothing about the code itself |
 | the transcript | behaviour, byte for byte against NASA's own C | anything nothing calls |
 
-`check_constants.py` is the newest and exists because HolyC has neither `enum` nor CMake: the
+`check_wired.py` is the newest, and it closes a hole the other ten share by construction: all of
+them are driven from `SRC_C`, the list of NASA sources the smoke script compiles, so they
+measure the translation only where the C half names a counterpart. A `.HC` file that is
+complete, parses, and is included by NOBODY is invisible to every one of them except
+`check_padding`, which scans the tree. `cfe_sb_api.HC` spent one commit in exactly that state.
+A file is now either in a driver's include closure or in `UNWIRED_OK` with a reason, and both
+directions fail: a stale entry for a file that IS wired now is as much a failure as an unlisted
+one. Its own first run found the hole one level up — the driver roots were hardcoded, two of
+them, and there are three.
+
+`check_constants.py` exists because HolyC has neither `enum` nor CMake: the
 translation re-states hundreds of numbers by hand — event ids, message ids, bit masks, array
 bounds, error codes — and nothing above looked at one. A wrong array *bound* surfaces in
 `check_padding` because it sizes a struct; a wrong *message id* that nothing routes, or an event

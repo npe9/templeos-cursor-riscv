@@ -129,3 +129,4 @@ tests/exec/cases/e_static_local_class_zero.hc	000000000207fd31
 tests/exec/cases/e_pp_if_known_wrong.hc	0000000000000457
 tests/exec/cases/e_sizeof_member.hc	000000005fd9f874
 tests/exec/cases/e_class_by_value_param.hc	00000000000112b9
+tests/exec/cases/e_ptr_minus_int_scales.hc	000221b274fc2c02

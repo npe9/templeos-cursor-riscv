@@ -57,12 +57,6 @@ UNWIRED_OK = {
     "Kernel/Cfs/CfsSb.HC":
         "the hand-written software bus the demo apps run on, predating the 1:1 translation; "
         "it goes away when the translated SB can host them.",
-    "Kernel/Cfs/cfe/cfe_sb_api.HC":
-        "translated, NOT yet driven. Wiring it means replacing four injectable stubs in "
-        "tests/cfs/oracle_ccsdspri.c (CFE_SB_CreatePipe, CFE_SB_Subscribe, "
-        "CFE_SB_ReceiveBuffer, CFE_SB_TransmitMsg) that every other module's exercise is "
-        "driven against -- the fault injection has to move down to the simulated OSAL queue "
-        "and memory pool first. Until then no gate but check_padding reads this file.",
 }
 
 

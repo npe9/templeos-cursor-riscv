@@ -347,8 +347,7 @@ static void fs_onevent(void *Meta, CFE_FS_FileWriteEvent_t Event, int32 Status, 
  * produce is inside the byte-identical comparison. */
 static int      ta_evs_count;
 static int      ta_perf_depth;
-static int      ta_pipe_created, ta_subscribes, ta_transmits;
-static int      ta_evs_register_rc, ta_pipe_rc, ta_subscribe_rc, ta_getappid_rc, ta_msginit_rc;
+static int      ta_evs_register_rc, ta_getappid_rc, ta_msginit_rc;
 static int      ta_cores;            /* what OS_TaskAffinityCoresConfigured reports */
 static int      ta_getid_rc, ta_setaff_rc, ta_getaff_rc;
 static unsigned char ta_os_mask;     /* the one byte the simulated OS stores per task */
@@ -434,13 +433,13 @@ void CFE_ES_IncrementTaskCounter(void) {}
  * child tasks are drivable at all: CFE_TIME_Tone1HzTask and CFE_TIME_Local1HzTask are
  * `while (true)` loops that exit only when OS_BinSemTake fails, so NASA's own loop termination
  * is what ends them. A stub that always succeeded would hang the oracle. */
-static long  time_sems_created, time_sem_gives, time_sem_takes, time_childtasks, time_sub_local;
+static long  time_sems_created, time_sem_gives, time_sem_takes, time_childtasks;
 static long  time_tb_lookups, time_timer_adds, time_timer_sets, time_synch_calls;
 /* NOT initialised here, on purpose. OS_SUCCESS and CFE_SUCCESS are 0 so zero-initialisation
  * would do for five of these, but time_tb_rc has to start at OS_ERROR -- and the HolyC half's
  * globals are zero and nothing else. Both halves assign all six at the top of the block below,
  * so the two agree by construction instead of by a reader noticing the asymmetry. */
-static int32 time_binsem_rc, time_childtask_rc, time_sublocal_rc;
+static int32 time_binsem_rc, time_childtask_rc;
 static int32 time_tb_rc, time_timeradd_rc, time_timerset_rc;
 static int   time_sem_take_budget;
 
@@ -484,12 +483,11 @@ CFE_Status_t CFE_ES_CreateChildTask(CFE_ES_TaskId_t *TaskIdPtr, const char *Task
     return time_childtask_rc;
 }
 
-CFE_Status_t CFE_SB_SubscribeLocal(CFE_SB_MsgId_t MsgId, CFE_SB_PipeId_t PipeId, uint16 MsgLim)
-{
-    (void)MsgId; (void)PipeId; (void)MsgLim;
-    ++time_sub_local;
-    return time_sublocal_rc;
-}
+/* CFE_SB_SubscribeLocal was stubbed here. It is real now (cfe_sb_api.c), and TIME is the only
+ * caller -- CFE_TIME_SubscribeLocal wraps it for the four non-ground message ids. time_sub_local
+ * counted the calls; SB counts the successful ones in StatTlmMsg.Payload.SubscriptionsInUse,
+ * which is what the transcript reports instead. A LOCAL subscribe raises no subscription report,
+ * so sb_subreports deliberately does not see these. */
 
 /* Defaults to FAILING, which is NASA's documented expectation and not a shortcut: the comment on
  * CFE_TIME_TaskInit_Setup1HzTimer says a PSP that did not set up a timebase returns
@@ -528,16 +526,91 @@ CFE_SB_Global_t CFE_SB_Global;
  * machinery: what cfe_sb_priv.c does is decide WHICH pipes to write to and how to undo the
  * accounting when a write fails, so the queue only has to be able to succeed, be full, and be
  * empty on demand. */
-#define SBQ_MAX 8
+#define SBQ_MAX 32
 static struct
 {
     unsigned char Data[64];
     size_t        Size;
     bool          Full;
+    bool          Created;
+    char          Name[32];
 } sbq[SBQ_MAX];
 static long  sb_qputs, sb_qgets;
 static int32 sb_queueput_rc = OS_SUCCESS; /* set to OS_QUEUE_FULL to force the undo path */
 static int32 sb_queueget_rc = OS_SUCCESS;
+
+/* CREATE, DELETE AND LOOKUP, and these three are why CFE_SB_CreatePipe no longer needs a stub.
+ * The pipe table, the name check and the "reserved" slot in cfe_sb_api.c are all real now; what
+ * is simulated is only the OS queue underneath them.
+ *
+ * sb_queuecreate_rc IS THE FAULT INJECTOR THAT ta_pipe_rc USED TO BE, and it is a better one.
+ * The stub returned whatever number the test asked for; this returns an OSAL error and lets
+ * CFE_SB_CreatePipe decide, so the transcript now shows CFE_SB_PIPE_CR_ERR (0xca000005) coming
+ * out of NASA's own translation of OS_ERROR -- and the three DIFFERENT events it raises for
+ * OS_ERR_NAME_TAKEN, OS_ERR_NO_FREE_IDS and everything else became reachable at the same time. */
+static long  sb_qcreates, sb_qdeletes;
+static int32 sb_queuecreate_rc = OS_SUCCESS;
+static int   sb_next_qid       = 1; /* 0 is OS_OBJECT_ID_UNDEFINED, so ids start at 1 */
+
+int32 OS_QueueCreate(osal_id_t *queue_id, const char *queue_name, size_t queue_depth,
+                     size_t data_size, uint32 flags)
+{
+    int i;
+    (void)queue_depth; (void)data_size; (void)flags;
+    ++sb_qcreates;
+    if (sb_queuecreate_rc != OS_SUCCESS)
+    {
+        return sb_queuecreate_rc;
+    }
+    /* the name check NASA's OSAL does, because CFE_SB_CreatePipe has a distinct event for it */
+    for (i = 1; i < sb_next_qid && i < SBQ_MAX; i++)
+    {
+        if (sbq[i].Created && strcmp(sbq[i].Name, queue_name) == 0)
+        {
+            return OS_ERR_NAME_TAKEN;
+        }
+    }
+    if (sb_next_qid >= SBQ_MAX)
+    {
+        return OS_ERR_NO_FREE_IDS;
+    }
+    i = sb_next_qid++;
+    sbq[i].Created = true;
+    sbq[i].Full    = false;
+    snprintf(sbq[i].Name, sizeof(sbq[i].Name), "%s", queue_name);
+    *queue_id = (osal_id_t)i;
+    return OS_SUCCESS;
+}
+
+int32 OS_QueueDelete(osal_id_t queue_id)
+{
+    unsigned long i = (unsigned long)queue_id;
+    ++sb_qdeletes;
+    if (i >= SBQ_MAX || !sbq[i].Created)
+    {
+        return OS_ERR_INVALID_ID;
+    }
+    /* The id is NOT returned to the pool: a reused id would make a stale pipe descriptor look
+     * valid, which is the one thing a queue simulation must not do to a lifetime test. */
+    sbq[i].Created = false;
+    sbq[i].Full    = false;
+    sbq[i].Name[0] = 0;
+    return OS_SUCCESS;
+}
+
+int32 OS_QueueGetIdByName(osal_id_t *queue_id, const char *queue_name)
+{
+    int i;
+    for (i = 1; i < sb_next_qid && i < SBQ_MAX; i++)
+    {
+        if (sbq[i].Created && strcmp(sbq[i].Name, queue_name) == 0)
+        {
+            *queue_id = (osal_id_t)i;
+            return OS_SUCCESS;
+        }
+    }
+    return OS_ERR_NAME_NOT_FOUND;
+}
 
 int32 OS_QueuePut(osal_id_t queue_id, const void *data, size_t size, uint32 timeout)
 {
@@ -611,32 +684,31 @@ int32 CFE_ES_GetTaskInfo(CFE_ES_TaskInfo_t *TaskInfo, CFE_ES_TaskId_t TaskId)
     return CFE_SUCCESS;
 }
 
-int32 CFE_SB_PipeId_ToIndex(CFE_SB_PipeId_t PipeID, uint32 *Idx)
-{
-    *Idx = CFE_ResourceId_ToInteger(CFE_RESOURCEID_UNWRAP(PipeID)) & 0xFF;
-    if (*Idx >= CFE_PLATFORM_SB_MAX_PIPES)
-    {
-        return CFE_SB_BAD_ARGUMENT;
-    }
-    return CFE_SUCCESS;
-}
+/* CFE_SB_PipeId_ToIndex, CFE_SB_DeletePipeWithAppId and CFE_SB_GetPipeName were stubbed here
+ * while cfe_sb_api.c was untranslated. All three are real now. Removing the PipeId_ToIndex stub
+ * is a change of behaviour on BOTH sides at once -- it was
+ * `CFE_ResourceId_ToInteger(...) & 0xFF` and the real one goes through CFE_ResourceId_ToIndex
+ * against CFE_SB_PIPEID_BASE -- and nothing here computes a pipe index by hand, so the two
+ * halves move together.
+ *
+ * CFE_SB_SendSubscriptionReport is a NEW stub, not a leftover: it lives in cfe_sb_task.c, which
+ * is not gated yet, and CFE_SB_SubscribeFull calls it on every successful GLOBAL subscribe. It
+ * also does the counting ta_subscribes used to do, which is why the counter below is not a
+ * second variable. */
+/*
+ * NOT CHECKED BY check_signatures, and worth saying so: it only compares against sources in
+ * SRC_C, and cfe_sb_task.c is not there. This stub's third parameter is a CFE_SB_Qos_t BY
+ * VALUE -- the thing tests/exec/cases/e_class_by_value_param.hc exists to pin -- so a drift
+ * between these two halves and NASA's real declaration would be invisible until task.c lands.
+ */
+static long   sb_subreports;
+static uint32 sb_api_idx;
 
-/* cfe_sb_api.c is NOT yet translated, so these two are stubbed on BOTH sides -- the same
- * temporary arrangement CFE_TIME_Tone1HzISR had until cfe_time_tone.c landed. They go away when
- * api.c does, and the stub is deliberately dumb: what is under test here is cfe_sb_priv.c. */
-static long sb_deletepipe_calls;
-
-int32 CFE_SB_DeletePipeWithAppId(CFE_SB_PipeId_t PipeId, CFE_ES_AppId_t AppId)
+int32 CFE_SB_SendSubscriptionReport(CFE_SB_MsgId_t MsgId, CFE_SB_PipeId_t PipeId,
+                                    CFE_SB_Qos_t Quality)
 {
-    (void)PipeId; (void)AppId;
-    ++sb_deletepipe_calls;
-    return CFE_SUCCESS;
-}
-
-CFE_Status_t CFE_SB_GetPipeName(char *PipeNameBuf, size_t PipeNameSize, CFE_SB_PipeId_t PipeId)
-{
-    (void)PipeId;
-    snprintf(PipeNameBuf, PipeNameSize, "TESTPIPE");
+    (void)MsgId; (void)PipeId; (void)Quality;
+    ++sb_subreports;
     return CFE_SUCCESS;
 }
 
@@ -720,39 +792,30 @@ int32 TimeSynchProbe(void)
     return CFE_SUCCESS;
 }
 
-int32 CFE_SB_CreatePipe(CFE_SB_PipeId_t *PipeIdPtr, uint16 Depth, const char *PipeName)
-{
-    (void)Depth; (void)PipeName;
-    ++ta_pipe_created;
-    *PipeIdPtr = CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(0x1111));
-    return ta_pipe_rc;
-}
+/* CFE_SB_CreatePipe, CFE_SB_Subscribe, CFE_SB_ReceiveBuffer and CFE_SB_TransmitMsg were the four
+ * stubs every other module in this file was driven through: config, fs, ta, evs and time all
+ * reach the bus by one of them. They are gone. Those paths now run SB's real argument checking,
+ * real pipe table, real route lookup and real transaction machinery, on both sides.
+ *
+ * WHAT THE THREE COUNTERS BECAME, because each had to move to something the real code does:
+ *   ta_pipe_created -> sb_qcreates, counted in the simulated OS_QueueCreate.
+ *   ta_subscribes   -> sb_subreports, counted in CFE_SB_SendSubscriptionReport, which
+ *                      CFE_SB_SubscribeFull calls once per successful GLOBAL subscribe. A
+ *                      SubscribeLocal is deliberately not counted -- NASA does not report one.
+ *   ta_transmits    -> the delta in CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter, which
+ *                      is SB's own count of a message sent to a message id nobody subscribed
+ *                      to. Every housekeeping packet in this driver is exactly that, so the
+ *                      number is the same one the stub reported -- but it is now SB's. */
+/* sb_tx_reset() BEFORE EVERY sb_tx_since() IS MANDATORY. The difference is unsigned, so a
+ * sb_tx_since() with no preceding reset reports a large positive number rather than an
+ * obviously-wrong zero. */
+static uint32 sb_tx_mark;
 
-int32 CFE_SB_Subscribe(CFE_SB_MsgId_t MsgId, CFE_SB_PipeId_t PipeId)
-{
-    (void)MsgId; (void)PipeId;
-    ++ta_subscribes;
-    return ta_subscribe_rc;
-}
+static void sb_tx_reset(void) { sb_tx_mark = CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter; }
 
-/* Never reached by the transcript -- CFE_TA_TaskMain is the only caller and it is not driven
- * (it pends forever and ends in CFE_ES_ExitApp). It has to EXIST because the C side links
- * cfe_ta_task.c, which is the same reason the HolyC side declares it. */
-CFE_Status_t CFE_SB_ReceiveBuffer(CFE_SB_Buffer_t **BufPtr, CFE_SB_PipeId_t PipeId,
-                                  int32 TimeOut)
+static int sb_tx_since(void)
 {
-    (void)BufPtr; (void)PipeId; (void)TimeOut;
-    return CFE_SUCCESS;
-}
-
-/* NOT stubbed: CFE_SB_TimeStampMsg is in cfe_sb_util.c, which this gate already translates, so
- * the housekeeping path runs the real one -- through CFE_TIME_GetTime and CFE_MSG_SetMsgTime,
- * both translated as well. Three translated modules composing, which is new here. */
-CFE_Status_t CFE_SB_TransmitMsg(const CFE_MSG_Message_t *MsgPtr, bool IsOrigination)
-{
-    (void)MsgPtr; (void)IsOrigination;
-    ++ta_transmits;
-    return CFE_SUCCESS;
+    return (int)(CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter - sb_tx_mark);
 }
 
 /* The simulated OS's task table: one name, one id, one stored affinity byte. Everything the two
@@ -954,6 +1017,16 @@ int main(void)
     CFE_MSG_Size_t size;
     bool hassec;
     int i;
+
+    /* THE BUS HAS TO EXIST BEFORE ANYTHING SUBSCRIBES TO IT, and before cfe_sb_api.c was gated
+     * it did not have to: CFE_SB_CreatePipe and CFE_SB_Subscribe were stubs that answered
+     * without reading CFE_SB_Global. They are real now, and CFE_SB_Global is a zeroed global --
+     * LastPipeId of 0 is not a valid resource id, so CFE_ResourceId_FindNext walks off the
+     * table and the very first CFE_TA_TaskInit came back CFE_SB_MAX_PIPES_MET with 64 pipes
+     * free. CFE_SB_EarlyInit is what sets LastPipeId to CFE_SB_PIPEID_BASE - 1 and stands up
+     * the memory pool the destination blocks come from. cFE's own startup calls it first too;
+     * the SB section below calls it again, deliberately, to exercise it. */
+    CFE_SB_EarlyInit();
 
     for (i = 0; i < (int)sizeof(msg); i++)
         ((unsigned char *)&msg)[i] = 0;
@@ -1361,10 +1434,16 @@ int main(void)
         printf("sbr_addbad v=%d coll=%lu\n", (int)CFE_SBR_IsValidRouteId(rid),
                (unsigned long)coll);
 
-        /* The destination list head is stored and returned, never inspected. */
+        /* The destination list head is stored and returned, never inspected -- BY cfe_sbr. It
+         * is very much inspected by cfe_sb_priv.c, and this probe used to leave the sentinel in
+         * place: harmless while CFE_SB_TransmitMsg was a stub, and a segfault the moment
+         * cfe_sb_api.c was gated and the real one walked the route. The crash was in
+         * CFE_SB_TransmitTxn_FindDestinations reading Active at 0x1234+4, three thousand lines
+         * away from the line that planted it. Put it back. */
         CFE_SBR_SetDestListHeadPtr(rid2, (CFE_SB_DestinationD_t *)0x1234);
         printf("sbr_dest %d %d\n", (int)(CFE_SBR_GetDestListHeadPtr(rid2) == (void *)0x1234),
                (int)(CFE_SBR_GetDestListHeadPtr(CFE_SBR_INVALID_ROUTE_ID) == NULL));
+        CFE_SBR_SetDestListHeadPtr(rid2, NULL);
 
         /* The sequence counter wraps at the 14-bit CCSDS field, not at the width of the type. */
         for (k = 0; k < 3; k++)
@@ -1976,11 +2055,11 @@ int main(void)
 
     /* --- CFE_TA_TaskInit: the success path and all five failures ------------------------- */
     ta_evs_register_rc = CFE_SUCCESS;
-    ta_pipe_rc         = CFE_SUCCESS;
-    ta_subscribe_rc    = CFE_SUCCESS;
+    sb_queuecreate_rc  = OS_SUCCESS;
+    sb_getpool_rc      = CFE_SUCCESS;
     ta_cores           = 1;
-    printf("ta_init rc=%ld pipes=%d subs=%d\n", (long)CFE_TA_TaskInit(), ta_pipe_created,
-           ta_subscribes);
+    printf("ta_init rc=%ld pipes=%ld subs=%ld\n", (long)CFE_TA_TaskInit(), sb_qcreates,
+           sb_subreports);
     printf("ta_init_diag cores=%u max=%u app=%lu\n", CFE_TA_Global.CFE_TA_DiagInfo.CoresConfigured,
            CFE_TA_Global.CFE_TA_DiagInfo.TACoresMax,
            (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_TA_Global.TA_AppID));
@@ -1988,12 +2067,17 @@ int main(void)
     ta_evs_register_rc = -77;
     printf("ta_init_evsfail rc=%ld\n", (long)CFE_TA_TaskInit());
     ta_evs_register_rc = CFE_SUCCESS;
-    ta_pipe_rc = -78;
+    /* The create failure is now an OSAL error, and CFE_SB_CreatePipe turns it into
+     * CFE_SB_PIPE_CR_ERR -- NASA's code deciding, where a stub used to return -78. */
+    sb_queuecreate_rc = OS_ERROR;
     printf("ta_init_pipefail rc=%ld\n", (long)CFE_TA_TaskInit());
-    ta_pipe_rc = CFE_SUCCESS;
-    ta_subscribe_rc = -79;
+    sb_queuecreate_rc = OS_SUCCESS;
+    /* And the subscribe failure is the destination block allocation failing, which is the one
+     * real way CFE_SB_SubscribeFull fails for a caller who owns a valid pipe:
+     * CFE_SB_DEST_BLK_ERR_EID and CFE_SB_BUF_ALOC_ERR. */
+    sb_getpool_rc = CFE_ES_ERR_MEM_BLOCK_SIZE;
     printf("ta_init_subfail rc=%ld\n", (long)CFE_TA_TaskInit());
-    ta_subscribe_rc = CFE_SUCCESS;
+    sb_getpool_rc = CFE_SUCCESS;
 
     /* --- the simple commands -------------------------------------------------------------- */
     printf("ta_noop rc=%ld\n", (long)CFE_TA_NoopCmd(NULL));
@@ -2001,8 +2085,9 @@ int main(void)
     CFE_TA_Global.CommandErrorCounter = 8;
     CFE_TA_Global.StartupCounter      = 9;
     CFE_TA_Global.StartupErrorCounter = 10;
+    sb_tx_reset();
     printf("ta_hk rc=%ld tx=%d pay=%u/%u/%u/%u\n", (long)CFE_TA_ReportHousekeepingCmd(NULL),
-           ta_transmits, CFE_TA_Global.TA_TlmPkt.Payload.CommandCounter,
+           sb_tx_since(), CFE_TA_Global.TA_TlmPkt.Payload.CommandCounter,
            CFE_TA_Global.TA_TlmPkt.Payload.CommandErrorCounter,
            CFE_TA_Global.TA_TlmPkt.Payload.StartupCounter,
            CFE_TA_Global.TA_TlmPkt.Payload.StartupErrorCounter);
@@ -2253,7 +2338,7 @@ int main(void)
         CFE_EVS_Global.EVS_EventBurstMax                     = 0; /* squelch off for now */
         CFE_EVS_Global.EVS_LogPtr->LogMode                   = CFE_EVS_LogMode_OVERWRITE;
         evs_psp_ns                                           = 0;
-        ta_transmits                                         = 0;
+        sb_tx_reset();
         evs_printf_lines                                     = 0;
 
         /* --- CFE_EVS_Register ----------------------------------------------------------- */
@@ -2538,8 +2623,8 @@ int main(void)
 
         ta_cores           = 1;
         ta_evs_register_rc = CFE_SUCCESS;
-        ta_pipe_rc         = CFE_SUCCESS;
-        ta_subscribe_rc    = CFE_SUCCESS;
+        sb_queuecreate_rc  = OS_SUCCESS;
+        sb_getpool_rc      = CFE_SUCCESS;
         printf("tae_init rc=%ld\n", (long)CFE_TA_TaskInit());
         printf("tae_noop rc=%ld\n", (long)CFE_TA_NoopCmd(NULL));
         printf("tae_reset rc=%ld\n", (long)CFE_TA_ResetCountersCmd(NULL));
@@ -2681,17 +2766,17 @@ int main(void)
                CFE_EVS_Global.EVS_LogPtr->Next, CFE_EVS_Global.EVS_LogPtr->LogMode);
 
         /* --- CFE_EVS_TaskInit ------------------------------------------------------------- */
-        ta_getappid     = 1;
-        ta_pipe_rc      = CFE_SUCCESS;
-        ta_subscribe_rc = CFE_SUCCESS;
+        ta_getappid       = 1;
+        sb_queuecreate_rc = OS_SUCCESS;
+        sb_getpool_rc     = CFE_SUCCESS;
         printf("evt_init rc=%ld appid=%lu\n", (long)CFE_EVS_TaskInit(),
                (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_EVS_Global.EVS_AppID));
-        ta_pipe_rc = -41;
+        sb_queuecreate_rc = OS_ERROR;
         printf("evt_init_pipefail rc=%ld\n", (long)CFE_EVS_TaskInit());
-        ta_pipe_rc      = CFE_SUCCESS;
-        ta_subscribe_rc = -42;
+        sb_queuecreate_rc = OS_SUCCESS;
+        sb_getpool_rc     = CFE_ES_ERR_MEM_BLOCK_SIZE;
         printf("evt_init_subfail rc=%ld\n", (long)CFE_EVS_TaskInit());
-        ta_subscribe_rc = CFE_SUCCESS;
+        sb_getpool_rc = CFE_SUCCESS;
         printf("evt_init_again rc=%ld\n", (long)CFE_EVS_TaskInit());
 
         /* --- enable DEBUG, so the twenty commands' events are visible -------------------- */
@@ -2835,8 +2920,8 @@ int main(void)
         fs_wr_left = -1;
 
         /* --- housekeeping: the packet EVS downlinks ------------------------------------- */
-        ta_transmits = 0;
-        printf("evt_hk rc=%ld tx=%d\n", (long)CFE_EVS_SendHkCmd(&c.Buf), ta_transmits);
+        sb_tx_reset();
+        printf("evt_hk rc=%ld tx=%d\n", (long)CFE_EVS_SendHkCmd(&c.Buf), sb_tx_since());
         printf("evt_hk_app0 id=%lu en=%u sent=%u sq=%u\n",
                (unsigned long)CFE_RESOURCEID_TO_ULONG(
                    CFE_EVS_Global.EVS_TlmPkt.Payload.AppData[0].AppID),
@@ -2938,7 +3023,6 @@ int main(void)
 
         time_binsem_rc    = OS_SUCCESS;
         time_childtask_rc = CFE_SUCCESS;
-        time_sublocal_rc  = CFE_SUCCESS;
         time_tb_rc        = OS_ERROR;
         time_timeradd_rc  = OS_SUCCESS;
         time_timerset_rc  = OS_SUCCESS;
@@ -2973,14 +3057,16 @@ int main(void)
         time_childtask_rc = CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
         printf("tim_init_taskfail rc=%ld tasks=%ld\n", (long)CFE_TIME_TaskInit(), time_childtasks);
         time_childtask_rc = CFE_SUCCESS;
-        ta_pipe_rc        = CFE_SB_BAD_ARGUMENT;
+        sb_queuecreate_rc = OS_ERROR;
         printf("tim_init_pipefail rc=%ld\n", (long)CFE_TIME_TaskInit());
-        ta_pipe_rc       = CFE_SUCCESS;
-        time_sublocal_rc = CFE_SB_BAD_ARGUMENT;
-        printf("tim_init_subfail rc=%ld sublocal=%ld\n", (long)CFE_TIME_TaskInit(), time_sub_local);
-        time_sublocal_rc = CFE_SUCCESS;
-        printf("tim_init rc=%ld sems=%ld tasks=%ld sublocal=%ld tb=%ld timers=%ld\n",
-               (long)CFE_TIME_TaskInit(), time_sems_created, time_childtasks, time_sub_local,
+        sb_queuecreate_rc = OS_SUCCESS;
+        sb_getpool_rc = CFE_ES_ERR_MEM_BLOCK_SIZE;
+        printf("tim_init_subfail rc=%ld subs=%u\n", (long)CFE_TIME_TaskInit(),
+               CFE_SB_Global.StatTlmMsg.Payload.SubscriptionsInUse);
+        sb_getpool_rc = CFE_SUCCESS;
+        printf("tim_init rc=%ld sems=%ld tasks=%ld subs=%u tb=%ld timers=%ld\n",
+               (long)CFE_TIME_TaskInit(), time_sems_created, time_childtasks,
+               CFE_SB_Global.StatTlmMsg.Payload.SubscriptionsInUse,
                time_tb_lookups, time_timer_adds);
         /* ...and again with a timebase present, which is the only way OS_TimerAdd/OS_TimerSet
          * are reached at all. */
@@ -3136,8 +3222,8 @@ int main(void)
         CFE_MSG_Init(&tc.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TIME_SEND_HK_MID),
                      sizeof(CFE_TIME_SendHkCmd_t));
         CFE_TIME_TaskPipe(&tc.Buf);
-        printf("tim_cmd_hk ok=%u err=%u transmits=%ld\n", CFE_TIME_Global.CommandCounter,
-               CFE_TIME_Global.CommandErrorCounter, ta_transmits);
+        printf("tim_cmd_hk ok=%u err=%u transmits=%d\n", CFE_TIME_Global.CommandCounter,
+               CFE_TIME_Global.CommandErrorCounter, sb_tx_since());
         CFE_MSG_Init(&tc.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TIME_TONE_CMD_MID),
                      sizeof(CFE_TIME_ToneSignalCmd_t));
         CFE_TIME_TaskPipe(&tc.Buf);
@@ -3434,16 +3520,27 @@ int main(void)
                    (long)CFE_SB_ValidateMsgId(CFE_SB_ValueToMsgId(CFE_SB_CMD_MID)),
                    (long)CFE_SB_ValidateMsgId(CFE_SB_INVALID_MSG_ID));
 
-            /* The pipe table: locate in range, locate out of range, and the used/free flag. */
-            pd = CFE_SB_LocatePipeDescByID(CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(3)));
-            printf("sbp_locate inrange=%d used=%d\n", (int)(pd != NULL),
-                   (int)(pd != NULL && CFE_SB_PipeDescIsUsed(pd)));
+            /* The pipe table: locate in range, locate out of range, and the used/free flag.
+             *
+             * THE ID HAS TO CARRY THE BASE NOW. This probe used to pass a bare 3, which worked
+             * because CFE_SB_PipeId_ToIndex was stubbed here as `id & 0xFF`. The real one
+             * (cfe_sb_api.c) subtracts CFE_SB_PIPEID_BASE and range-checks, so a bare 3 is not
+             * a pipe id at all: Locate returned NULL and the next line wrote through it. A
+             * stub that is more permissive than the thing it stands in for does not fail when
+             * it is replaced -- it moves the failure to the caller. */
+            pd = CFE_SB_LocatePipeDescByID(
+                CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(CFE_SB_PIPEID_BASE + 3)));
+            printf("sbp_locate inrange=%d used=%d outofrange=%d\n", (int)(pd != NULL),
+                   (int)(pd != NULL && CFE_SB_PipeDescIsUsed(pd)),
+                   (int)(CFE_SB_LocatePipeDescByID(
+                             CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(3))) == NULL));
             CFE_SB_PipeDescSetUsed(pd, CFE_ResourceId_FromInteger(0x1234));
             printf("sbp_setused used=%d id=0x%08lx match=%d\n", (int)CFE_SB_PipeDescIsUsed(pd),
                    (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_SB_PipeDescGetID(pd)),
                    (int)CFE_SB_PipeDescIsMatch(pd, CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(0x1234))));
             printf("sbp_slotused=%d\n",
-                   (int)CFE_SB_CheckPipeDescSlotUsed(CFE_ResourceId_FromInteger(3)));
+                   (int)CFE_SB_CheckPipeDescSlotUsed(
+                       CFE_ResourceId_FromInteger(CFE_SB_PIPEID_BASE + 3)));
             CFE_SB_PipeDescSetFree(pd);
             printf("sbp_setfree used=%d nullmatch=%d\n", (int)CFE_SB_PipeDescIsUsed(pd),
                    (int)CFE_SB_PipeDescIsMatch(NULL, CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(3))));
@@ -3559,6 +3656,140 @@ int main(void)
                    (unsigned int)CFE_SB_Global.HKTlmMsg.Payload.SubscribeErrorCounter,
                    (unsigned int)CFE_SB_Global.HKTlmMsg.Payload.DuplicateSubscriptionsCounter);
         }
+
+        /* --- cfe_sb_api.c: the PUBLIC bus ------------------------------------------------
+         *
+         * Everything above drove SB through another module. This drives it directly, and it
+         * starts from a clean bus because the sections above left pipes, routes and
+         * subscriptions behind -- CFE_SB_EarlyInit is the reset, and running it here means the
+         * numbers below are about these calls and not about how many times EVS was initialised.
+         *
+         * WHAT IS NOT DRIVEN, and why: every path through CFE_SB_CreatePipe's argument check
+         * raises an event that prints `ptr=0x%lx`, the address of the caller's own variable.
+         * A host process and a QEMU guest put that variable in different places, so NONE of
+         * the four bad-argument cases can be compared -- not just the NULL one. */
+        {
+            CFE_SB_PipeId_t  pipe1;
+            CFE_SB_PipeId_t  pipe2;
+            CFE_SB_PipeId_t  found;
+            CFE_SB_Buffer_t *zbuf;
+            CFE_SB_Buffer_t *rcvd;
+            CFE_SB_Qos_t     qos;
+            char             pname[OS_MAX_API_NAME];
+            uint8            opts;
+            CFE_MSG_Message_t tmsg;
+
+            CFE_SB_EarlyInit();
+            sb_queuecreate_rc = OS_SUCCESS;
+            sb_getpool_rc     = CFE_SUCCESS;
+            memset(&qos, 0, sizeof(qos));
+
+            printf("api_create1 rc=%ld pipes=%u\n",
+                   (long)CFE_SB_CreatePipe(&pipe1, 4, "APIPIPE1"),
+                   CFE_SB_Global.StatTlmMsg.Payload.PipesInUse);
+            printf("api_create2 rc=%ld pipes=%u peak=%u\n",
+                   (long)CFE_SB_CreatePipe(&pipe2, 4, "APIPIPE2"),
+                   CFE_SB_Global.StatTlmMsg.Payload.PipesInUse,
+                   CFE_SB_Global.StatTlmMsg.Payload.PeakPipesInUse);
+            /* the same name twice: OS_ERR_NAME_TAKEN, which has its own event */
+            printf("api_create_taken rc=%ld err=%u\n",
+                   (long)CFE_SB_CreatePipe(&found, 4, "APIPIPE1"),
+                   CFE_SB_Global.HKTlmMsg.Payload.CreatePipeErrorCounter);
+
+            /* the name comes back, and the id can be found from it */
+            printf("api_name rc=%ld name=%s\n",
+                   (long)CFE_SB_GetPipeName(pname, sizeof(pname), pipe1), pname);
+            printf("api_byname rc=%ld same=%d\n",
+                   (long)CFE_SB_GetPipeIdByName(&found, "APIPIPE2"),
+                   (int)CFE_RESOURCEID_TEST_EQUAL(found, pipe2));
+            printf("api_byname_bad rc=%ld err=%u\n",
+                   (long)CFE_SB_GetPipeIdByName(&found, "NOSUCHPIPE"),
+                   CFE_SB_Global.HKTlmMsg.Payload.GetPipeIdByNameErrorCounter);
+
+            /* options round-trip, then the two refusals */
+            printf("api_setopts rc=%ld\n", (long)CFE_SB_SetPipeOpts(pipe1, CFE_SB_PIPEOPTS_IGNOREMINE));
+            printf("api_getopts rc=%ld opts=0x%02x\n", (long)CFE_SB_GetPipeOpts(pipe1, &opts),
+                   (unsigned int)opts);
+            printf("api_getopts_null rc=%ld\n", (long)CFE_SB_GetPipeOpts(pipe1, NULL));
+            printf("api_setopts_bad rc=%ld errs=%u\n",
+                   (long)CFE_SB_SetPipeOpts(CFE_SB_INVALID_PIPE, 0),
+                   CFE_SB_Global.HKTlmMsg.Payload.PipeOptsErrorCounter);
+            CFE_SB_SetPipeOpts(pipe1, 0);
+
+            /* subscriptions: the three public forms, then a duplicate */
+            printf("api_sub rc=%ld subs=%u\n",
+                   (long)CFE_SB_Subscribe(CFE_SB_ValueToMsgId(0x0931), pipe1),
+                   CFE_SB_Global.StatTlmMsg.Payload.SubscriptionsInUse);
+            printf("api_subex rc=%ld subs=%u\n",
+                   (long)CFE_SB_SubscribeEx(CFE_SB_ValueToMsgId(0x0931), pipe2, qos, 4),
+                   CFE_SB_Global.StatTlmMsg.Payload.SubscriptionsInUse);
+            printf("api_sublocal rc=%ld subs=%u reports=%ld\n",
+                   (long)CFE_SB_SubscribeLocal(CFE_SB_ValueToMsgId(0x0932), pipe1, 4),
+                   CFE_SB_Global.StatTlmMsg.Payload.SubscriptionsInUse, sb_subreports);
+            printf("api_sub_dup rc=%ld dup=%u\n",
+                   (long)CFE_SB_Subscribe(CFE_SB_ValueToMsgId(0x0931), pipe1),
+                   CFE_SB_Global.HKTlmMsg.Payload.DuplicateSubscriptionsCounter);
+            printf("api_sub_badpipe rc=%ld\n",
+                   (long)CFE_SB_Subscribe(CFE_SB_ValueToMsgId(0x0931), CFE_SB_INVALID_PIPE));
+            printf("api_sub_badmid rc=%ld\n",
+                   (long)CFE_SB_Subscribe(CFE_SB_INVALID_MSG_ID, pipe1));
+
+            /* a zero-copy buffer: take one, release it, and ask for an impossible one */
+            zbuf = CFE_SB_AllocateMessageBuffer(64);
+            printf("api_alloc got=%d inuse=%u\n", (int)(zbuf != NULL),
+                   CFE_SB_Global.StatTlmMsg.Payload.SBBuffersInUse);
+            printf("api_release rc=%ld inuse=%u\n", (long)CFE_SB_ReleaseMessageBuffer(zbuf),
+                   CFE_SB_Global.StatTlmMsg.Payload.SBBuffersInUse);
+            printf("api_release_null rc=%ld\n", (long)CFE_SB_ReleaseMessageBuffer(NULL));
+            printf("api_alloc_huge got=%d\n",
+                   (int)(CFE_SB_AllocateMessageBuffer(CFE_MISSION_SB_MAX_SB_MSG_SIZE + 1) != NULL));
+
+            /* THE ROUND TRIP, and this is the one the four stubs made impossible: transmit a
+             * message to a message id two pipes subscribed to, then receive it on each. */
+            memset(&tmsg, 0, sizeof(tmsg));
+            CFE_MSG_Init(&tmsg, CFE_SB_ValueToMsgId(0x0931), sizeof(tmsg));
+            printf("api_tx rc=%ld nosubs=%u\n", (long)CFE_SB_TransmitMsg(&tmsg, true),
+                   CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter);
+            rcvd = NULL;
+            printf("api_rx1 rc=%ld got=%d\n", (long)CFE_SB_ReceiveBuffer(&rcvd, pipe1, OS_CHECK),
+                   (int)(rcvd != NULL));
+            rcvd = NULL;
+            printf("api_rx2 rc=%ld got=%d\n", (long)CFE_SB_ReceiveBuffer(&rcvd, pipe2, OS_CHECK),
+                   (int)(rcvd != NULL));
+            rcvd = NULL;
+            printf("api_rx_empty rc=%ld\n", (long)CFE_SB_ReceiveBuffer(&rcvd, pipe1, OS_CHECK));
+            printf("api_rx_badpipe rc=%ld\n",
+                   (long)CFE_SB_ReceiveBuffer(&rcvd, CFE_SB_INVALID_PIPE, OS_CHECK));
+            printf("api_rx_nullptr rc=%ld\n", (long)CFE_SB_ReceiveBuffer(NULL, pipe1, OS_CHECK));
+
+            /* unsubscribe: the real one, one with no subscription, and the two refusals */
+            printf("api_unsub rc=%ld subs=%u\n",
+                   (long)CFE_SB_Unsubscribe(CFE_SB_ValueToMsgId(0x0931), pipe1),
+                   CFE_SB_Global.StatTlmMsg.Payload.SubscriptionsInUse);
+            printf("api_unsub_none rc=%ld\n",
+                   (long)CFE_SB_Unsubscribe(CFE_SB_ValueToMsgId(0x0931), pipe1));
+            printf("api_unsub_badpipe rc=%ld\n",
+                   (long)CFE_SB_Unsubscribe(CFE_SB_ValueToMsgId(0x0931), CFE_SB_INVALID_PIPE));
+            printf("api_unsub_badmid rc=%ld\n",
+                   (long)CFE_SB_Unsubscribe(CFE_SB_INVALID_MSG_ID, pipe1));
+            printf("api_unsublocal rc=%ld\n",
+                   (long)CFE_SB_UnsubscribeLocal(CFE_SB_ValueToMsgId(0x0932), pipe1));
+
+            /* delete: the owner can, a different app cannot, and a bad id cannot */
+            printf("api_del_notowner rc=%ld\n",
+                   (long)CFE_SB_DeletePipeWithAppId(pipe1,
+                                                    CFE_ES_APPID_C(CFE_ResourceId_FromInteger(
+                                                        CFE_ES_APPID_BASE + 42))));
+            printf("api_del rc=%ld pipes=%u queues_deleted=%ld\n", (long)CFE_SB_DeletePipe(pipe1),
+                   CFE_SB_Global.StatTlmMsg.Payload.PipesInUse, sb_qdeletes);
+            printf("api_del_again rc=%ld errs=%u\n", (long)CFE_SB_DeletePipe(pipe1),
+                   CFE_SB_Global.HKTlmMsg.Payload.DeletePipeErrorCounter);
+            printf("api_del2 rc=%ld pipes=%u\n", (long)CFE_SB_DeletePipe(pipe2),
+                   CFE_SB_Global.StatTlmMsg.Payload.PipesInUse);
+            printf("api_toindex rc=%ld\n",
+                   (long)CFE_SB_PipeId_ToIndex(CFE_SB_INVALID_PIPE, &sb_api_idx));
+        }
+
 
         /* --- cfe_time_objtab.c ------------------------------------------------------------ */
         printf("tim_objtab %s %d %d %d %lu %lu\n", CFE_TIME_ModuleEntry.Name,

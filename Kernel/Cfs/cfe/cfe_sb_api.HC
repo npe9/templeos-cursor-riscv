@@ -66,6 +66,19 @@
 #define CFE_SB_GETPIPEIDBYNAME_NAME_ERR_EID 67
 #define CFE_SB_CR_PIPE_NAME_TAKEN_EID       69
 #define CFE_SB_CR_PIPE_NO_FREE_EID          70
+// --- cfe_sb_api_typedefs.h: the "no pipe" id ------------------------------------------------
+// NASA writes CFE_SB_PIPEID_C(CFE_RESOURCEID_UNDEFINED); the wrapper is the identity for the
+// SIMPLE resourceid variant this port builds, so the value is the undefined id itself. Every
+// function in this file that takes a pipe id rejects it, which is what makes it worth naming.
+#define CFE_SB_INVALID_PIPE CFE_RESOURCEID_UNDEFINED
+// --- cfe_core_resourceid_basevalues.h: where an APP id starts --------------------------------
+// CFE_SB_DeletePipeFull compares the caller's app id against the pipe's owner, so an exercise
+// of that refusal needs a second app id -- and an app id is not an integer, it is a value in
+// this space. NASA's is an ENUMERATOR rather than a #define, which is a shape this project has
+// been bitten by before (a gate looking for a #define passes by not finding one), so it is
+// written here the same way cfe_sb_global.HC writes the pipe-id base.
+#define CFE_RESOURCEID_ES_APPID_BASE_OFFSET (OS_OBJECT_TYPE_USER + 1)
+#define CFE_ES_APPID_BASE CFE_RESOURCEID_MAKE_BASE(CFE_RESOURCEID_ES_APPID_BASE_OFFSET)
 // --- cfe_error.h ------------------------------------------------------------------------------
 #define CFE_SB_MAX_PIPES_MET 0xCA000004(I32)
 #define CFE_SB_PIPE_CR_ERR   0xCA000005(I32)
@@ -73,6 +86,14 @@
 #define CFE_SB_MAX_MSGS_MET  0xCA000009(I32)
 #define CFE_SB_MAX_DESTS_MET 0xCA00000A(I32)
 // --- osconfig.h / cfe_resourceid.h ------------------------------------------------------------
+// osapi-error.h: the three OSAL codes CFE_SB_CreatePipe branches on, each with its own event.
+// cfe_sb_priv.HC already carries the queue-state codes; these are the IDENTITY ones.
+#ifndef OS_ERR_NO_FREE_IDS
+#define OS_ERR_NO_FREE_IDS    -14
+#define OS_ERR_NAME_TAKEN     -15
+#define OS_ERR_INVALID_ID     -16
+#define OS_ERR_NAME_NOT_FOUND -17
+#endif
 #ifndef CFE_PLATFORM_SB_DEFAULT_MSG_LIMIT
 #define CFE_PLATFORM_SB_DEFAULT_MSG_LIMIT 4
 #endif

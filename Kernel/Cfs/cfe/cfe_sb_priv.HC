@@ -528,7 +528,12 @@ I32 CFE_SB_ZeroCopyBufferValidate(CFE_SB_Buffer *BufPtr, CFE_SB_BufferD_t **BufD
    * Calculate descriptor pointer from buffer pointer -
    * The buffer is just a member (offset) in the descriptor
    */
-  BufDscAddr = BufPtr - CFE_SB_BUFFERD_CONTENT_OFFSET;
+  // THE CAST IS NASA'S AND IT IS LOAD-BEARING. NASA writes `(cpuaddr)BufPtr - offsetof(...)`,
+  // an INTEGER subtraction. Without the cast this is pointer arithmetic and HolyC scales the 56
+  // by sizeof(CFE_SB_Buffer), exactly as C would -- the first draft of this line dropped it and
+  // the descriptor came back inside another buffer's payload. It surfaced as a store fault in
+  // CFE_SB_TrackingListRemove, one module away. tests/exec/cases/e_ptr_minus_int_scales.hc.
+  BufDscAddr = BufPtr(U8 *) - CFE_SB_BUFFERD_CONTENT_OFFSET;
   *BufDscPtr = BufDscAddr;
   /*
    * Check that the descriptor is actually a "zero copy" type,
