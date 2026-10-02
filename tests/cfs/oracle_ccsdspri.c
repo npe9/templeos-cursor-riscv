@@ -32,6 +32,8 @@
 #include "cfe_evs_dispatch.h"
 #include "cfe_evs_core_internal.h" /* CFE_EVS_SetTypeEnable, CFE_EVS_EarlyInit, CFE_EVS_CleanUpApp */
 #include "cfe_time_utils.h"     /* CFE_TIME_Global_t and the module's internal declarations */
+#include "cfe_sb_priv.h"       /* CFE_SB_Global_t, the buffer descriptor and the pipe */
+#include "cfe_sb_core_internal.h" /* CFE_SB_EarlyInit, which core_private declares */
 #include "cfe_evs_msgids.h"   /* CFE_EVS_CMD_MID, CFE_EVS_SEND_HK_MID */
 /* cfe_evs_dispatch.c's two local functions: NASA declares them at the top of that .c, not in a
  * header, so the driver repeats the declarations to reach them. */
@@ -514,6 +516,82 @@ int32 OS_TimerSet(osal_id_t timer_id, uint32 start_time, uint32 interval_time)
     (void)timer_id; (void)start_time; (void)interval_time;
     ++time_timer_sets;
     return time_timerset_rc;
+}
+
+/* NASA defines CFE_SB_Global in cfe_sb_task.c, which is not gated, so the driver supplies it --
+ * the same arrangement this file has for CFE_TIME_Global and had for CFE_EVS_Global. The HolyC
+ * half defines it in cfe_sb_global.HC beside its type, for the reason recorded there. */
+CFE_SB_Global_t CFE_SB_Global;
+
+/* A SIMULATED MEMORY POOL, and it is a real bump allocator rather than a success stub, because
+ * what cfe_sb_buf.c is for is BUFFER LIFETIME: a message sent to three pipes is one buffer with
+ * UseCount 3, and the third release is what frees it. A stub that handed back the same address
+ * every time would make the accounting in StatTlmMsg.Payload agree with itself and prove
+ * nothing.
+ *
+ * Each block carries an 8-byte SIZE HEADER before the address handed out, because NASA's
+ * contract is that both CFE_ES_GetPoolBuf and CFE_ES_PutPoolBuf RETURN THE BLOCK SIZE -- and
+ * CFE_SB_GetDestinationBlk adds that return value to MemInUse rather than the size it asked
+ * for, since a real pool rounds up to a block size. Keeping the header means the free path can
+ * answer honestly. */
+static unsigned char *sb_pool_base;
+static size_t         sb_pool_size;
+static size_t         sb_pool_next;
+static long           sb_pool_creates, sb_pool_gets, sb_pool_puts;
+static int32          sb_poolcreate_rc = CFE_SUCCESS;
+static int32          sb_getpool_rc    = CFE_SUCCESS; /* <0 forces the allocation failure path */
+/* OS_MutSemCreate is ALREADY stubbed above, for FS, and SB's EarlyInit uses that one: it counts
+ * into fs_mut_create and its result is fs_mut_create_rc. One stub per OSAL call in this file, so
+ * a second definition would be a link error rather than a second opinion -- which is how this
+ * was found. */
+
+int32 CFE_ES_PoolCreateEx(CFE_ES_MemHandle_t *PoolID, void *MemPtr, size_t Size,
+                          uint16 NumBlockSizes, const size_t *BlockSizes, bool UseMutex)
+{
+    (void)NumBlockSizes; (void)BlockSizes; (void)UseMutex;
+    ++sb_pool_creates;
+    sb_pool_base = MemPtr;
+    sb_pool_size = Size;
+    sb_pool_next = 0;
+    *PoolID      = CFE_ES_MEMHANDLE_C(CFE_ResourceId_FromInteger(0x7771));
+    return sb_poolcreate_rc;
+}
+
+int32 CFE_ES_GetPoolBuf(CFE_ES_MemPoolBuf_t *BufPtr, CFE_ES_MemHandle_t Handle, size_t Size)
+{
+    size_t need;
+    (void)Handle;
+    if (sb_getpool_rc < 0)
+    {
+        return sb_getpool_rc;
+    }
+    /* 8 bytes of header, then the block, then round the cursor to 8 */
+    need = (Size + 8 + 7) & ~(size_t)7;
+    if (sb_pool_base == NULL || sb_pool_next + need > sb_pool_size)
+    {
+        return CFE_ES_ERR_MEM_BLOCK_SIZE;
+    }
+    ++sb_pool_gets;
+    memcpy(sb_pool_base + sb_pool_next, &Size, sizeof(Size));
+    *BufPtr = CFE_ES_MEMPOOLBUF_C((cpuaddr)(sb_pool_base + sb_pool_next + 8));
+    sb_pool_next += need;
+    return (int32)Size;
+}
+
+int32 CFE_ES_PutPoolBuf(CFE_ES_MemHandle_t Handle, CFE_ES_MemPoolBuf_t BufPtr)
+{
+    size_t         sz;
+    unsigned char *p = (unsigned char *)BufPtr;
+    (void)Handle;
+    if (p == NULL)
+    {
+        return CFE_ES_ERR_RESOURCEID_NOT_VALID;
+    }
+    ++sb_pool_puts;
+    /* The cursor is NOT rewound: this pool never reuses, so a double free is visible as a
+     * second decrement of the counters rather than as two buffers at one address. */
+    memcpy(&sz, p - 8, sizeof(sz));
+    return (int32)sz;
 }
 
 /* A registered 1Hz synchronisation callback. CFE_TIME_NotifyTimeSynchApps walks the registry and
@@ -3079,6 +3157,145 @@ int main(void)
                (unsigned long)CFE_TIME_Global.ToneMatchErrorCounter,
                (unsigned long)CFE_TIME_Global.ToneIntCounter,
                (unsigned long)CFE_TIME_Global.InternalCount);
+
+        /* --- cfe_sb_init.c and cfe_sb_buf.c: SB's BUFFER LIFETIME --------------------------
+         *
+         * The whole of cfe_sb_buf.c is one invariant: a buffer is freed when the LAST reference
+         * to it goes away. A message transmitted to three subscribed pipes is ONE buffer with
+         * UseCount 3, and the third release is what returns it to the pool. The pool on this
+         * side is a real bump allocator for that reason -- a stub handing back one address would
+         * make the accounting agree with itself and prove nothing.
+         *
+         * The tracking list is a circular doubly-linked list whose EMPTY state points at itself,
+         * which is what removes every null check from Add and Remove. The identity comparisons
+         * below are how that is observable: "is this node its own next" is the empty test. */
+        {
+            CFE_SB_BufferD_t      *b1;
+            CFE_SB_BufferD_t      *b2;
+            CFE_SB_DestinationD_t *d1;
+            CFE_SB_MsgId_t         sbmid = CFE_SB_INVALID_MSG_ID;
+            size_t                 sbsz  = 0;
+
+            printf("sb_earlyinit rc=%ld pools=%ld gets=%ld subrep=%u\n", (long)CFE_SB_EarlyInit(),
+                   sb_pool_creates, sb_pool_gets, (unsigned int)CFE_SB_Global.SubscriptionReporting);
+            printf("sb_init_lists intransit_self=%d zerocopy_self=%d\n",
+                   (int)(CFE_SB_Global.InTransitList.Next == &CFE_SB_Global.InTransitList &&
+                         CFE_SB_Global.InTransitList.Prev == &CFE_SB_Global.InTransitList),
+                   (int)(CFE_SB_Global.ZeroCopyList.Next == &CFE_SB_Global.ZeroCopyList &&
+                         CFE_SB_Global.ZeroCopyList.Prev == &CFE_SB_Global.ZeroCopyList));
+            /* %08lx, not %lX: the HolyC half prints through Hx8, which is eight LOWERCASE
+             * digits with no width choice. The format is this driver's own, so it moves to meet
+             * the helper rather than the helper growing a width argument it has no other use
+             * for. */
+            printf("sb_init_pipe lastpipe=0x%08lx\n",
+                   (unsigned long)CFE_ResourceId_ToInteger(CFE_SB_Global.LastPipeId));
+            CFE_MSG_GetMsgId(CFE_MSG_PTR(CFE_SB_Global.StatTlmMsg.TelemetryHeader), &sbmid);
+            CFE_MSG_GetSize(CFE_MSG_PTR(CFE_SB_Global.StatTlmMsg.TelemetryHeader), &sbsz);
+            printf("sb_init_stats mid=0x%08x size=%u\n",
+                   (unsigned int)CFE_SB_MsgIdToValue(sbmid), (unsigned int)sbsz);
+
+            /* The two failure paths, each by failing exactly one call. The mutex one returns
+             * CFE_STATUS_EXTERNAL_RESOURCE_FAIL rather than OSAL's own code, which is the thing
+             * worth pinning: EarlyInit translates OSAL failures into cFE ones. */
+            fs_mut_create_rc = OS_ERROR;
+            printf("sb_earlyinit_mutexfail rc=%ld\n", (long)CFE_SB_EarlyInit());
+            fs_mut_create_rc = OS_SUCCESS;
+            /* THE POOL-CREATE FAILURE PATH IS NOT DRIVEN, and the reason is a real limit on
+             * this whole method rather than a gap in the driver. NASA's own diagnostic is
+             *   CFE_ES_WriteToSysLog("%s: PoolCreate failed for SB Buffers, gave adr 0x%lx,..."
+             * and that %lx is the PARTITION'S ADDRESS. This gate compares a transcript from
+             * NASA's C on the host against the translation running under QEMU, in a different
+             * address space, so a line carrying a pointer value cannot agree no matter how
+             * correct both sides are -- and NASA's C is compiled UNMODIFIED here, so the format
+             * is not ours to change. The mutex path above is driven because its diagnostic
+             * carries only an integer. docs/CFS_PLAN.md records the constraint. */
+
+            /* AND THIS CALL IS LOAD-BEARING. The mutex-failure run above returns EARLY, before
+             * CFE_SB_InitBuffers -- so it leaves the global MEMSET AND ABANDONED, with both
+             * tracking-list heads NULL rather than pointing at themselves. The next
+             * CFE_SB_TrackingListAdd then dereferences NULL. It segfaulted exactly that way once:
+             * the first version of this block had the restore here as an afterthought to the
+             * pool-failure step, and removing that step took the restore with it. */
+            CFE_SB_EarlyInit();
+
+            /* A buffer. AllocatedSize is the request PLUS the descriptor header, which is what
+             * CFE_SB_BUFFERD_CONTENT_OFFSET is for, and the HolyC side spells that number out
+             * because it has no offsetof -- so these two numbers agreeing is the check that the
+             * spelled-out 48 is right. */
+            b1 = CFE_SB_GetBufferFromPool(100);
+            printf("sb_getbuf nonnull=%d use=%u alloc=%lu inuse=%u peak=%u mem=%u\n",
+                   (int)(b1 != NULL), (unsigned int)b1->UseCount, (unsigned long)b1->AllocatedSize,
+                   (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.SBBuffersInUse,
+                   (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.PeakSBBuffersInUse,
+                   (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.MemInUse);
+            printf("sb_getbuf_link singleton=%d\n",
+                   (int)(b1->Link.Next == &b1->Link && b1->Link.Prev == &b1->Link));
+
+            /* The tracking list, observed by identity rather than by a count. */
+            CFE_SB_TrackingListAdd(&CFE_SB_Global.InTransitList, &b1->Link);
+            printf("sb_listadd head_next_b1=%d b1_next_head=%d b1_prev_head=%d\n",
+                   (int)(CFE_SB_Global.InTransitList.Next == &b1->Link),
+                   (int)(b1->Link.Next == &CFE_SB_Global.InTransitList),
+                   (int)(b1->Link.Prev == &CFE_SB_Global.InTransitList));
+            b2 = CFE_SB_GetBufferFromPool(200);
+            CFE_SB_TrackingListAdd(&CFE_SB_Global.InTransitList, &b2->Link);
+            printf("sb_listadd2 head_prev_b2=%d b1_next_b2=%d inuse=%u mem=%u\n",
+                   (int)(CFE_SB_Global.InTransitList.Prev == &b2->Link),
+                   (int)(b1->Link.Next == &b2->Link),
+                   (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.SBBuffersInUse,
+                   (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.MemInUse);
+            CFE_SB_TrackingListRemove(&b1->Link);
+            printf("sb_listremove head_next_b2=%d b1_singleton=%d\n",
+                   (int)(CFE_SB_Global.InTransitList.Next == &b2->Link),
+                   (int)(b1->Link.Next == &b1->Link && b1->Link.Prev == &b1->Link));
+
+            /* THREE REFERENCES, THREE RELEASES, and the pool sees exactly one free -- on the
+             * third. b2 is still on the in-transit list, so the free path also has to take it
+             * off, which is why ReturnBufferToPool calls TrackingListRemove unconditionally. */
+            CFE_SB_IncrBufUseCnt(b2);
+            CFE_SB_IncrBufUseCnt(b2);
+            printf("sb_use3 use=%u puts=%ld\n", (unsigned int)b2->UseCount, sb_pool_puts);
+            CFE_SB_DecrBufUseCnt(b2);
+            printf("sb_use2 use=%u puts=%ld inuse=%u\n", (unsigned int)b2->UseCount, sb_pool_puts,
+                   (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.SBBuffersInUse);
+            CFE_SB_DecrBufUseCnt(b2);
+            printf("sb_use1 use=%u puts=%ld inuse=%u\n", (unsigned int)b2->UseCount, sb_pool_puts,
+                   (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.SBBuffersInUse);
+            CFE_SB_DecrBufUseCnt(b2);
+            printf("sb_use0 puts=%ld inuse=%u mem=%u head_self=%d\n", sb_pool_puts,
+                   (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.SBBuffersInUse,
+                   (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.MemInUse,
+                   (int)(CFE_SB_Global.InTransitList.Next == &CFE_SB_Global.InTransitList));
+
+            /* The 0x7FFF ceiling: NASA leaves the top bit of a uint16 alone, so a count that has
+             * run away stops climbing instead of wrapping to zero and freeing a live buffer. */
+            b1->UseCount = 0x7FFE;
+            CFE_SB_IncrBufUseCnt(b1);
+            printf("sb_use_below use=%u\n", (unsigned int)b1->UseCount);
+            CFE_SB_IncrBufUseCnt(b1);
+            printf("sb_use_ceiling use=%u\n", (unsigned int)b1->UseCount);
+            /* ...and a decrement at zero does nothing, rather than wrapping to 0xFFFF */
+            b1->UseCount = 0;
+            CFE_SB_DecrBufUseCnt(b1);
+            printf("sb_use_floor use=%u puts=%ld\n", (unsigned int)b1->UseCount, sb_pool_puts);
+
+            /* Destination blocks. MemInUse follows the POOL's returned size, not the requested
+             * one, because a real pool rounds up to a block size. */
+            d1 = CFE_SB_GetDestinationBlk();
+            printf("sb_getdest nonnull=%d mem=%u\n", (int)(d1 != NULL),
+                   (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.MemInUse);
+            printf("sb_putdest rc=%ld mem=%u\n", (long)CFE_SB_PutDestinationBlk(d1),
+                   (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.MemInUse);
+            printf("sb_putdest_null rc=%ld\n", (long)CFE_SB_PutDestinationBlk(NULL));
+
+            /* And the allocation failure path: a null back, and NO counter moved. */
+            sb_getpool_rc = CFE_ES_ERR_MEM_BLOCK_SIZE;
+            printf("sb_getbuf_fail null=%d inuse=%u\n",
+                   (int)(CFE_SB_GetBufferFromPool(100) == NULL),
+                   (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.SBBuffersInUse);
+            printf("sb_getdest_fail null=%d\n", (int)(CFE_SB_GetDestinationBlk() == NULL));
+            sb_getpool_rc = CFE_SUCCESS;
+        }
 
         /* --- cfe_time_objtab.c ------------------------------------------------------------ */
         printf("tim_objtab %s %d %d %d %lu %lu\n", CFE_TIME_ModuleEntry.Name,

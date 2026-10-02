@@ -91,6 +91,21 @@ def hc_defines():
     return out
 
 
+# NASA .c files whose file-scope `#define`s the probe lifts. Every entry is a file the
+# translation restates a constant from; a file missing here shows up as "NASA defines these and
+# the probe cannot SEE them", which is this gate's loud path rather than a silent pass.
+CSRC_DEFS = [
+    os.path.join(ROOT, "vendor", "cFE", "modules", "sb", "fsw", "src", "cfe_sb_buf.c"),
+    os.path.join(ROOT, "vendor", "cFE", "modules", "msg", "fsw", "src", "cfe_msg_ccsdspri.c"),
+    os.path.join(ROOT, "vendor", "cFE", "modules", "msg", "fsw", "src", "cfe_msg_sechdr_fc.c"),
+    os.path.join(ROOT, "vendor", "cFE", "modules", "sbr", "fsw", "src", "cfe_sbr_map_hash.c"),
+    os.path.join(ROOT, "vendor", "cFE", "modules", "evs", "fsw", "src", "cfe_evs_task.c"),
+    os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-file.c"),
+    os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-idmap.c"),
+    os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-timebase.c"),
+]
+
+
 def probe(names):
     """{name: value or None} as the host C preprocessor sees it. None = NASA does not define it."""
     src = os.path.join(ROOT, "build", "cfs", "check_constants_probe.c")
@@ -109,7 +124,22 @@ def probe(names):
         # found by the unseen-but-defined check rather than by anyone noticing.
         "cfe_msg_defaults.h", "cfe_ta_platform_cfg.h",
     ]
-    body = ["#include <stdio.h>"] + ['#include "%s"' % h for h in hdrs]
+    body = ["#include <stdio.h>", "#include <stddef.h>"] + ['#include "%s"' % h for h in hdrs]
+    # THE `#define`s NASA PUTS IN A .c FILE, lifted in textually. A constant the translation
+    # restates from an implementation file was invisible to this probe -- `#ifdef` is false for
+    # a name no header declares -- so it was filed as "a name this port invented" and never
+    # compared, with a count that looked like a pass. That is the seventh instance of this
+    # project's recurring shape, and the one that found it cost 8 bytes per allocation:
+    # cfe_sb_buf.c's CFE_SB_BUFFERD_CONTENT_OFFSET is offsetof(CFE_SB_BufferD_t, Content), the
+    # translation spelled it 48, and the real value is 56. Only the differential transcript
+    # noticed. CSRC_DEFS is why the probe can now see them; check_structs.py scans .c files for
+    # typedefs and check_padding.py lifts them for the same reason.
+    for cf in CSRC_DEFS:
+        if not os.path.isfile(cf):
+            continue
+        for line in open(cf, errors="replace").read().split("\n"):
+            if re.match(r'^[ \t]*#[ \t]*define[ \t]+[A-Za-z_]\w*', line):
+                body.append(line)
     body.append("int main(void){")
     for n in names:
         body.append("#ifdef %s" % n)
@@ -272,7 +302,14 @@ def vendor_defines(name):
                      os.path.join(ROOT, "build", "cfs")):
             for dirpath, _dirs, files in os.walk(root):
                 for f in files:
-                    if not (f.endswith(".h") or f.endswith(".h.in")):
+                    # .c AS WELL AS .h. A NASA `#define` in an implementation file was invisible
+                    # here, so any translated constant that restates one came back as "a name
+                    # this port invented" and went UNCOMPARED -- with a count that looked like a
+                    # pass. cfe_sb_buf.c's CFE_SB_BUFFERD_CONTENT_OFFSET is the one that found
+                    # it: the translation said 48 where the real offset is 56, and only the
+                    # differential transcript noticed, on a 100-byte allocation coming back 148
+                    # against 156. The same reasoning put .c files in check_structs.py's scan.
+                    if not (f.endswith(".h") or f.endswith(".h.in") or f.endswith(".c")):
                         continue
                     try:
                         txt = open(os.path.join(dirpath, f), errors="replace").read()

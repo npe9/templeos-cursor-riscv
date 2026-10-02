@@ -40,6 +40,16 @@
 #include "cfe_evs.HC"                 // CFE_EVS_BinFilter_t, which EventFilters is an array of
 #include "cfe_sbr_route_unsorted.HC"  // CFE_SBR_RouteId
 #include "cfe_fs_api.HC"              // CFE_FS_FileWriteMetaData_t, the background file state
+// OS_OBJECT_TYPE_USER, which CFE_SB_PIPEID_BASE's offset is measured from. NASA reaches it by
+// including osapi.h through cfe_sb_module_all.h; this port does NOT, because pulling
+// os_shared_idmap.HC into the cFE side drags osapi_errors.HC and its backend error-name table
+// with it -- the boundary cfe_ta_task.HC states as "the cFE side must not pull in OSAL's
+// implementation". Guarded, so when OSAL IS in the include graph its own value wins and this one
+// is never used; check_constants.py compares the number against NASA's header either way. Same
+// arrangement cfe_ta_task.HC uses for the OS_EVENT_* codes.
+#ifndef OS_OBJECT_TYPE_USER
+#define OS_OBJECT_TYPE_USER 0x10
+#endif
 // --- cfe_sb_internal_cfg.h / cfe_sb_interface_cfg.h: what dimensions SB -----------------------
 // CFE_PLATFORM_SB_MAX_PIPES is 64 and CFE_MISSION_SB_MAX_PIPES is 32, and they are NOT the same
 // number by accident: the platform one sizes SB's own pipe table, the mission one sizes the

@@ -102,7 +102,7 @@ lines, one diff, one negative control.
 |---|---|---|---|
 | `msg` | 1,491 | **1,065** | all 8 unconditional sources plus the two v1/pri variants — complete for this configuration |
 | `resourceid` | 228 | **228** | complete, SIMPLE variant |
-| `sb` | 6,086 | **432** | `cfe_sb_msg_id_util.c` and `cfe_sb_util.c` complete; api/priv/task are the other 5,650 |
+| `sb` | 6,086 | **809** | `msg_id_util`, `util`, `buf` and `init` complete; api/priv/task/dispatch/objtab are the other 5,277 |
 | `config` | 782 | **489** | get/set/lookup/eds complete; `init.c` (241) and its objtab wait for the build-generated GLOBAL_CONFIGDATA |
 | `es` `tbl` `time` `evs` `fs` `ta` | 32,643 | 0 | blocked on OSAL |
 | `sbr` | 535 | **434** | complete for the default HASH map; `map_direct` is the alternative |
@@ -295,7 +295,7 @@ rather than counted as always-built:
 | `resourceid` | 2 | 228 | **100%** |
 | `sbr` | 1 | 33 | **100%** (its map and route sources are conditional; the HASH default is gated) |
 | `config` | 5 | 697 | **100%** |
-| `sb` | 7 | 5,278 | 4% |
+| `sb` | 7 | 5,278 | **11%** (`util`, `msg_id_util`, `buf`, `init`; api/priv/task/dispatch/objtab remain) |
 | `fs` | 3 | 1,249 | **100%** |
 | `ta` | 2 | 892 | **100%** (plus `cfe_ta_dispatch.c`, 159, which is conditional — see below) |
 | `evs` | 5 | 2,787 | **100%** (six of six; the `_dispatch` one is conditional — see below) |
@@ -522,6 +522,23 @@ reused one local and all three ids pointed at the same dead stack slot (`NumElem
 as 2,156,050,768). Three lines away in NASA's own code, `CFE_Config_SetupBasicBuildInfo` stores
 a **local** `VersionString` into `CFE_CONFIGID_CORE_VERSION_DESCRIPTION` and has the same defect
 — see `docs/CFS_UPSTREAM_NOTES.md` #8, where it is measured.
+
+**ONE THING THIS GATE CANNOT COMPARE, AND IT IS STRUCTURAL.** A NASA diagnostic that prints a
+POINTER is outside the method. `cfe_sb_init.c`'s pool-create failure logs
+
+```c
+CFE_ES_WriteToSysLog("%s: PoolCreate failed for SB Buffers, gave adr 0x%lx,size %d,stat=0x%x\n",
+                     __func__, (unsigned long)CFE_SB_Global.Mem.Partition.Data, ...);
+```
+
+and that `%lx` is the partition's ADDRESS. This gate runs NASA's C on the host and the
+translation under QEMU, in different address spaces, so the two transcripts cannot agree however
+correct both sides are — and NASA's C is compiled UNMODIFIED here, so the format is not ours to
+change. The consequence is narrow and worth stating plainly: **that one failure path is not
+driven**, and `check_coverage` still requires the function to exist and `check_signatures` still
+requires its shape. The mutex-failure path beside it IS driven, because its diagnostic carries
+only an integer. Any future path whose log prints an address or a `__func__`-derived pointer has
+the same limit.
 
 Ten properties are gated independently, because each is blind to what the others catch:
 

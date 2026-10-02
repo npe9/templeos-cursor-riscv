@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  ************************************************************************/
-
 // 1:1 HolyC translation of the cFE software-bus ROUTING module: the types from
 // modules/core_private/fsw/inc/cfe_sbr_api_typedefs.h and cfe_sbr.h, and the route table from
 // modules/sbr/fsw/src/cfe_sbr_route_unsorted.c. The message-id-to-route map that goes with it
@@ -45,23 +44,28 @@
 // index+1, so a zeroed structure is the invalid id rather than route 0.
 class CFE_SBR_RouteId
 {
-  U16 RouteId; // Holding value, do not use directly in code
+  U16 RouteId;
+  // Holding value, do not use directly in code
 };
-
 // Callback throttling structure
 class CFE_SBR_Throttle
 {
-  U32 StartIndex; // 0 based index to start at
-  U32 MaxLoop;    // Max number to process
-  U32 NextIndex;  // Next start index (output), 0 if completed
+  U32 StartIndex;
+  // 0 based index to start at
+  U32 MaxLoop;
+  // Max number to process
+  U32 NextIndex;
+  // Next start index (output), 0 if completed
 };
 // For each id callback function prototype:
 //   typedef void (*CFE_SBR_CallbackPtr_t)(CFE_SBR_RouteId_t RouteId, void *ArgPtr);
 // HolyC has no typedef, so it is spelled out at the one parameter that takes it.
-
-// CFE_SB_DestinationD_t is SB's destination descriptor. This module only ever stores and returns
-// the POINTER, never looks inside, so it stays opaque here rather than dragging in cfe_sb_priv.h.
-#define CFE_SB_DestinationD U8
+// CFE_SB_DestinationD_t is SB's destination descriptor, and this was `#define CFE_SB_DestinationD
+// U8` while SB was not translated: this module only ever stores and returns the POINTER and never
+// looks inside, so an opaque byte was enough. cfe_sb_buf.c ALLOCATES them and sizes the
+// allocation with sizeof(), so the real type now lives in cfe_sb_decl.HC with the other public SB
+// declarations, and this file includes it.
+#include "cfe_sb_decl.HC"
 // --- cfe_sbr.h, the inline helpers -----------------------------------------------------------
 // CFE_SBR_INVALID_ROUTE_ID is a compound literal in the C; HolyC has none, so it is a function,
 // exactly as CFE_SB_INVALID_MSG_ID became CFE_SB_InvalidMsgId.
@@ -95,23 +99,28 @@ U32 CFE_SBR_SetRouteId(CFE_SB_MsgId MsgId, CFE_SBR_RouteId RouteId);
 // --- cfe_sbr_route_unsorted.c ----------------------------------------------------------------
 class CFE_SBR_RouteEntry
 {
-  CFE_SB_DestinationD *ListHeadPtr; // Destination list head
-  CFE_SB_MsgId MsgId;               // Message ID associated with route
-  U16 SeqCnt;                       // Message sequence counter
-  U8 _pad0[2]; // C rounds the struct up to its alignment; HolyC does not. This one is the
-               // STRIDE of a 256-entry table, so without it the routing table is 3,584 bytes
-               // against NASA's 4,096 -- see tools/cfs/check_padding.py.
+  CFE_SB_DestinationD_t *ListHeadPtr;
+  // Destination list head
+  CFE_SB_MsgId MsgId;
+  // Message ID associated with route
+  U16 SeqCnt;
+  // Message sequence counter
+  U8 _pad0[2];
+  // C rounds the struct up to its alignment; HolyC does not. This one is the
+  // STRIDE of a 256-entry table, so without it the routing table is 3,584 bytes
+  // against NASA's 4,096 -- see tools/cfs/check_padding.py.
 };
 
 class cfe_sbr_route_data
 {
-  CFE_SBR_RouteEntry RoutingTbl[CFE_PLATFORM_SB_MAX_MSG_IDS]; // Routing table
-  U16 RouteIdxTop;                                            // First unused entry in RoutingTbl
-  U8 _pad0[6]; // C rounds the struct up to its alignment; HolyC does not
+  CFE_SBR_RouteEntry RoutingTbl[CFE_PLATFORM_SB_MAX_MSG_IDS];
+  // Routing table
+  U16 RouteIdxTop;
+  // First unused entry in RoutingTbl
+  U8 _pad0[6];
+  // C rounds the struct up to its alignment; HolyC does not
 };
-
 cfe_sbr_route_data CFE_SBR_RDATA;
-
 U0 CFE_SBR_Init()
 {
   U16 routeidx;
@@ -147,15 +156,15 @@ CFE_SB_MsgId CFE_SBR_GetMsgId(CFE_SBR_RouteId RouteId)
   return msgid;
 }
 
-CFE_SB_DestinationD *CFE_SBR_GetDestListHeadPtr(CFE_SBR_RouteId RouteId)
+CFE_SB_DestinationD_t *CFE_SBR_GetDestListHeadPtr(CFE_SBR_RouteId RouteId)
 {
-  CFE_SB_DestinationD *destptr = NULL;
+  CFE_SB_DestinationD_t *destptr = NULL;
   if (CFE_SBR_IsValidRouteId(RouteId))
     destptr = CFE_SBR_RDATA.RoutingTbl[CFE_SBR_RouteIdToValue(RouteId)].ListHeadPtr;
   return destptr;
 }
 
-U0 CFE_SBR_SetDestListHeadPtr(CFE_SBR_RouteId RouteId, CFE_SB_DestinationD *DestPtr)
+U0 CFE_SBR_SetDestListHeadPtr(CFE_SBR_RouteId RouteId, CFE_SB_DestinationD_t *DestPtr)
 {
   if (CFE_SBR_IsValidRouteId(RouteId))
     CFE_SBR_RDATA.RoutingTbl[CFE_SBR_RouteIdToValue(RouteId)].ListHeadPtr = DestPtr;
@@ -166,7 +175,7 @@ U0 CFE_SBR_IncrementSequenceCounter(CFE_SBR_RouteId RouteId)
   U16 *cnt;
   if (CFE_SBR_IsValidRouteId(RouteId)) {
     cnt = &CFE_SBR_RDATA.RoutingTbl[CFE_SBR_RouteIdToValue(RouteId)].SeqCnt;
-    *cnt = CFE_MSG_GetNextSequenceCount(*cnt);
+    *cnt = CFE_MSG_GetNextSequenceCount (*cnt);
   }
 }
 
@@ -178,8 +187,7 @@ U16 CFE_SBR_GetSequenceCounter(CFE_SBR_RouteId RouteId)
   return seqcnt;
 }
 
-U0 CFE_SBR_ForEachRouteId(U0 (*CallbackPtr)(CFE_SBR_RouteId, U8 *), U8 *ArgPtr,
-                          CFE_SBR_Throttle *ThrottlePtr)
+U0 CFE_SBR_ForEachRouteId(U0 (*CallbackPtr)(CFE_SBR_RouteId, U8 *), U8 *ArgPtr, CFE_SBR_Throttle *ThrottlePtr)
 {
   U16 routeidx;
   U16 startidx = 0;

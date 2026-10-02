@@ -77,7 +77,9 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/time/fsw/src/cfe_time_tone.c
        $CFE/modules/time/fsw/src/cfe_time_task.c
        $CFE/modules/time/fsw/src/cfe_time_dispatch.c
-       $CFE/modules/time/fsw/src/cfe_time_objtab.c"
+       $CFE/modules/time/fsw/src/cfe_time_objtab.c
+       $CFE/modules/sb/fsw/src/cfe_sb_buf.c
+       $CFE/modules/sb/fsw/src/cfe_sb_init.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -101,7 +103,7 @@ done
 INC="-I$CFE/modules/core_api/fsw/inc -I$CFE/modules/core_api/config
      -I$CFE/modules/msg/fsw/inc -I$CFE/modules/msg/fsw/src -I$CFE/modules/msg/option_inc
      -I$CFE/modules/es/config -I$CFE/modules/es/fsw/inc
-     -I$CFE/modules/sb/config -I$CFE/modules/sb/fsw/inc
+     -I$CFE/modules/sb/config -I$CFE/modules/sb/fsw/inc -I$CFE/modules/sb/fsw/src
      -I$CFE/modules/evs/config -I$CFE/modules/evs/fsw/inc -I$CFE/modules/evs/fsw/src
      -I$CFE/modules/tbl/config -I$CFE/modules/tbl/fsw/inc
      -I$CFE/modules/time/config -I$CFE/modules/time/fsw/inc

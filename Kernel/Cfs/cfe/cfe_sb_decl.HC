@@ -55,6 +55,33 @@ class CFE_SB_Qos_t
   U8 Reliability;
   // CFE_SB_QosReliability_Enum_t
 };
+// SB's DESTINATION DESCRIPTOR, from core_private/fsw/inc/cfe_sb_destination_typedef.h, and NASA's
+// warning on it is the same one the buffer descriptor carries: "Changing the size of this
+// structure may require the memory pool block sizes to change." One of these exists per
+// (message id, pipe) route, they are allocated from the same 512 KiB pool as the buffers, and
+// cfe_sb_buf.c's CFE_SB_GetDestinationBlk sizes the allocation with sizeof() -- so the layout is
+// load-bearing rather than descriptive.
+//
+// IT WAS `#define CFE_SB_DestinationD U8` IN THIS PORT until SB's buffer layer needed it.
+// cfe_sbr_route_unsorted.HC only ever stores and returns the POINTER and never looks inside, so
+// an opaque byte was enough there and the comment said so. It is not enough for the module that
+// allocates them.
+class CFE_SB_DestinationD_t
+{
+  U32 PipeId;
+  // CFE_SB_PipeId_t
+  U8 Active;
+  U8 _pad0[1];
+  // C aligns MsgId2PipeLim to 2
+  U16 MsgId2PipeLim;
+  U16 BuffCount;
+  U16 DestCnt;
+  U8 Scope;
+  U8 Spare[3];
+  // NASA's own, and they are what makes the pointers land on 16 with no padding of mine
+  CFE_SB_DestinationD_t *Prev;
+  CFE_SB_DestinationD_t *Next;
+};
 // CFE_SB_ReceiveBuffer's timeout: block until a message arrives.
 #ifndef CFE_SB_PEND_FOREVER
 #define CFE_SB_PEND_FOREVER -1
