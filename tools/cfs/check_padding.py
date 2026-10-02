@@ -106,6 +106,10 @@ HDRS = [
     # allocate (DCR6772). ES is not translated, but that ONE type's size is load-bearing in SB,
     # so SB's translation declares it and this is what keeps the declaration honest.
     "cfe_es_msg.h",
+    # ES's own, as the module arrives: the generic pool's descriptor, bucket and record, and
+    # the CRC parameter block. The pool record carries two FUNCTION POINTERS, so
+    # check_fnptr_members.py reads it too.
+    "cfe_es_generic_pool.h", "cfe_es_crc.h", "cfe_es_extern_typedefs.h",
     # TIME's own, for the same reason: its twenty-three messages, the seven enum typedefs their
     # fields are spelled with, and CFE_TIME_Global's internal types.
     "cfe_time_module_all.h", "cfe_time_utils.h",
@@ -365,10 +369,23 @@ def main(argv):
     bodies = hc_class_bodies()
     defines = hc_defines()
     pairs = []
+    unpaired = []
     for name in sorted(bodies):
         cand = check_structs.pair_name(name, nasa)
         if cand:
             pairs.append((name, cand))
+        else:
+            unpaired.append(name)
+    # AN UNPAIRED CLASS IS DROPPED HERE, AND check_structs.py IS WHAT FAILS ON IT. The two gates
+    # share pair_name() and nasa_structs(), and the smoke script runs structs first, so a class
+    # with no counterpart stops the build there with the reason -- making it a failure here too
+    # would be the same diagnostic twice.
+    #
+    # It is still printed, because a silent skip is how this project's recurring failure works:
+    # a count of 229 "match" says nothing about how many were never looked at. The number went
+    # from 4 to 3 when the bare-struct regex in check_structs stopped running away across
+    # declarations and CFE_ES_GenPoolRecord -- the pool record, the largest struct in ES -- was
+    # found for the first time.
     if not pairs:
         print("FAIL cfs-padding — no translated class maps to a NASA struct", file=sys.stderr)
         return 1
@@ -448,9 +465,13 @@ def main(argv):
         return 1
     for s, f in absent_fields:
         print("  not in this configuration: %s.%s (an #ifdef excludes it)" % (s, f))
-    print("cfs-padding: %d translated classes have NASA's byte layout%s" %
+    if unpaired:
+        print("  not compared here, no NASA counterpart (check_structs.py owns this): %s"
+              % ", ".join(unpaired))
+    print("cfs-padding: %d translated classes have NASA's byte layout%s%s" %
           (checked, (" (%d carry explicit padding: %s)" % (len(padded), ", ".join(sorted(padded))))
-           if padded else ""))
+           if padded else "",
+           (", %d unpaired and so NOT measured" % len(unpaired)) if unpaired else ""))
     return 0
 
 

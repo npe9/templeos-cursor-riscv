@@ -35,6 +35,8 @@
 #include "cfe_sb_priv.h"       /* CFE_SB_Global_t, the buffer descriptor and the pipe */
 #include "cfe_sb_core_internal.h" /* CFE_SB_EarlyInit, which core_private declares */
 #include "cfe_sb_dispatch.h"  /* CFE_SB_ProcessCmdPipePkt; the module's own private header */
+#include "cfe_es_generic_pool.h" /* the pool record, descriptor and bucket; ES module-private */
+#include "cfe_es_crc.h"          /* CFE_ES_ComputeCRC_GetParams and the algorithm typedef */
 #include "cfe_sb_eventids.h"   /* the event ids the subscribe counters switch on */
 #include "cfe_evs_msgids.h"   /* CFE_EVS_CMD_MID, CFE_EVS_SEND_HK_MID */
 /* cfe_evs_dispatch.c's two local functions: NASA declares them at the top of that .c, not in a
@@ -145,6 +147,54 @@ static void sbr_count_cb(CFE_SBR_RouteId_t RouteId, void *ArgPtr)
 
 extern const Target_ObjectTable_t CFE_SBR_ModuleEntry;
 extern const Target_ObjectTable_t CFE_SB_ModuleEntry;
+
+/* THE GENERIC POOL'S STORAGE AND ITS ACCESSORS. cfe_es_generic_pool.c never dereferences the
+ * pool -- it addresses everything by OFFSET and goes through these two function pointers, so
+ * that a pool can live somewhere that is not memory-mapped (a CDS in battery-backed RAM is the
+ * case NASA has in mind). For an ordinary memory-mapped pool Retrieve just adds the offset to a
+ * base and Commit does nothing, which is what cfe_es_mempool.c's Direct pair does and what
+ * these reproduce. They live in the DRIVER rather than the translation because mempool.c is not
+ * gated yet.
+ *
+ * 2048 bytes is chosen to make the pool-full path reachable: the largest bucket below is 256,
+ * so a handful of allocations exhausts it. */
+static unsigned char es_pool_mem[2048];
+
+static int32 es_pool_retrieve(CFE_ES_GenPoolRecord_t *PoolRecPtr, size_t Offset,
+                              CFE_ES_GenPoolBD_t **BdPtr)
+{
+    (void)PoolRecPtr;
+    *BdPtr = (CFE_ES_GenPoolBD_t *)&es_pool_mem[Offset];
+    return CFE_SUCCESS;
+}
+
+static int32 es_pool_commit(CFE_ES_GenPoolRecord_t *PoolRecPtr, size_t Offset,
+                            const CFE_ES_GenPoolBD_t *BdPtr)
+{
+    (void)PoolRecPtr; (void)Offset; (void)BdPtr;
+    return CFE_SUCCESS;
+}
+
+/* "123456789" -- the CRC-16/ARC check value for this exact input is 0xBB3D, stated in NASA's
+ * comment on the CFE_ES_CrcType_16_ARC enumerator. Using the documented vector means the
+ * transcript agreeing is evidence about the ALGORITHM and not just about two copies of a
+ * table. */
+static const unsigned char CRC_PROBE[] = "123456789";
+
+/* Non-static in cfe_es_generic_pool.c and declared in no header -- the same arrangement as
+ * CFE_SBR_MsgIdHash above. They are declared here because the INVERTED BUCKET ID is the part of
+ * this module most worth pinning: FindBucket returns NumBuckets - Index so that a valid bucket
+ * is nonzero, every other function undoes it with the same subtraction, and an off-by-one there
+ * would hand out blocks from the wrong bucket while every counter still agreed with itself. */
+uint16                  CFE_ES_GenPoolFindBucket(CFE_ES_GenPoolRecord_t *PoolRecPtr, size_t ReqSize);
+CFE_ES_GenPoolBucket_t *CFE_ES_GenPoolGetBucketState(CFE_ES_GenPoolRecord_t *PoolRecPtr,
+                                                     uint16 BucketId);
+/* ...and the two CRC algorithms, for the same reason: cfe_es_crc.h declares only GetParams, so
+ * the algorithms can be reached only THROUGH the table unless they are declared. Both are
+ * called directly below, so that the 0xBB3D check value is compared against the algorithm
+ * itself and not only against whatever the table happens to point at. */
+uint32 CFE_ES_ComputeCRC_Algo_NONE(const void *DataPtr, size_t DataLength, uint32 InputCRC);
+uint32 CFE_ES_ComputeCRC_Algo_16_ARC(const void *DataPtr, size_t DataLength, uint32 InputCRC);
 
 /* Non-static in cfe_sbr_map_hash.c but declared in no header at all -- not even the module's own
  * cfe_sbr_priv.h, which declares only Init_Map and SetRouteId. Declared here because the hash is
@@ -4054,6 +4104,157 @@ int main(void)
                    (int)(CFE_SB_ModuleEntry.AppCleanupCb == NULL),
                    (unsigned long)CFE_SB_ModuleEntry.Priority,
                    (unsigned long)CFE_SB_ModuleEntry.StackSize);
+        }
+
+        /* --- cfe_es_generic_pool.c and cfe_es_crc.c: THE REAL ALLOCATOR -----------------
+         *
+         * Every CFE_ES_GetPoolBuf in the transcript above goes to a hand-written bump
+         * allocator further up this file, because NASA's real pool lives in ES and ES was not
+         * translated. This drives the real one directly -- the generic layer, which holds all
+         * of the allocation logic; cfe_es_mempool.c is the thin wrapper that adds a resource
+         * id and a mutex, and it needs CFE_ES_Global, which is the next commit.
+         *
+         * The pool is addressed by OFFSET and reached through a Retrieve/Commit pair, so the
+         * driver supplies the memory-mapped pair -- which is exactly what
+         * CFE_ES_MemPoolDirectRetrieve will do once mempool.c lands. */
+        {
+            CFE_ES_GenPoolRecord_t pool;
+            size_t                 blocksizes[4];
+            size_t                 off1, off2, off3, off4, sz;
+            CFE_ES_BlockStats_t    bstat;
+            CFE_ES_MemOffset_t     freesz, totalsz;
+            uint16                 nbuckets;
+            uint32                 alloccnt, errcnt;
+            int32                  st;
+            int                    k;
+
+            memset(es_pool_mem, 0, sizeof(es_pool_mem));
+
+            /* UNSORTED ON PURPOSE: GenPoolInitialize bubble-sorts them, and the order it ends
+             * up with is what decides every bucket id. */
+            blocksizes[0] = 128;
+            blocksizes[1] = 32;
+            blocksizes[2] = 256;
+            blocksizes[3] = 64;
+            st = CFE_ES_GenPoolInitialize(&pool, 0, sizeof(es_pool_mem), 8, 4, blocksizes,
+                                          es_pool_retrieve, es_pool_commit);
+            printf("gp_init rc=%ld buckets=%u sorted=%lu/%lu/%lu/%lu align=%lu\n", (long)st,
+                   pool.NumBuckets, (unsigned long)pool.Buckets[0].BlockSize,
+                   (unsigned long)pool.Buckets[1].BlockSize,
+                   (unsigned long)pool.Buckets[2].BlockSize,
+                   (unsigned long)pool.Buckets[3].BlockSize, (unsigned long)pool.AlignMask);
+            printf("gp_valid=%d\n", (int)CFE_ES_GenPoolValidateState(&pool));
+
+            /* THE BUCKET ID IS INVERTED: the LARGEST bucket is 1 and "nothing fits" is 0. */
+            printf("gp_bucket 1=%u 32=%u 33=%u 256=%u 257=%u\n",
+                   CFE_ES_GenPoolFindBucket(&pool, 1), CFE_ES_GenPoolFindBucket(&pool, 32),
+                   CFE_ES_GenPoolFindBucket(&pool, 33), CFE_ES_GenPoolFindBucket(&pool, 256),
+                   CFE_ES_GenPoolFindBucket(&pool, 257));
+            printf("gp_state 0=%d 1=%lu 4=%lu 5=%d\n",
+                   (int)(CFE_ES_GenPoolGetBucketState(&pool, 0) == NULL),
+                   (unsigned long)CFE_ES_GenPoolGetBucketState(&pool, 1)->BlockSize,
+                   (unsigned long)CFE_ES_GenPoolGetBucketState(&pool, 4)->BlockSize,
+                   (int)(CFE_ES_GenPoolGetBucketState(&pool, 5) == NULL));
+
+            /* three allocations, two of them from the same bucket */
+            st = CFE_ES_GenPoolGetBlock(&pool, &off1, 20);
+            printf("gp_get20 rc=%ld off=%lu tail=%lu\n", (long)st, (unsigned long)off1,
+                   (unsigned long)pool.TailPosition);
+            st = CFE_ES_GenPoolGetBlock(&pool, &off2, 30);
+            printf("gp_get30 rc=%ld off=%lu tail=%lu\n", (long)st, (unsigned long)off2,
+                   (unsigned long)pool.TailPosition);
+            st = CFE_ES_GenPoolGetBlock(&pool, &off3, 200);
+            printf("gp_get200 rc=%ld off=%lu tail=%lu\n", (long)st, (unsigned long)off3,
+                   (unsigned long)pool.TailPosition);
+            printf("gp_size1 rc=%ld sz=%lu\n", (long)CFE_ES_GenPoolGetBlockSize(&pool, &sz, off1),
+                   (unsigned long)sz);
+            printf("gp_size3 rc=%ld sz=%lu\n", (long)CFE_ES_GenPoolGetBlockSize(&pool, &sz, off3),
+                   (unsigned long)sz);
+            /* too big for any bucket, and a size query outside the pool */
+            printf("gp_get_huge rc=%ld\n", (long)CFE_ES_GenPoolGetBlock(&pool, &off4, 1000));
+            printf("gp_size_oob rc=%ld\n", (long)CFE_ES_GenPoolGetBlockSize(&pool, &sz, 0));
+            printf("gp_size_past rc=%ld\n",
+                   (long)CFE_ES_GenPoolGetBlockSize(&pool, &sz, pool.TailPosition + 8));
+
+            /* RECYCLING: free the 20-byte block and ask for another that fits the same bucket.
+             * The offset must come back IDENTICAL -- that is the whole point of the free stack,
+             * and a pool that created a new block instead would still "work". */
+            printf("gp_put1 rc=%ld sz=%lu\n", (long)CFE_ES_GenPoolPutBlock(&pool, &sz, off1),
+                   (unsigned long)sz);
+            st = CFE_ES_GenPoolGetBlock(&pool, &off4, 25);
+            printf("gp_recycle rc=%ld same=%d tail_unchanged=%d\n", (long)st,
+                   (int)(off4 == off1), (int)(pool.TailPosition == off3 + 256));
+            /* The block is LIVE again after the recycle, so freeing it once more is legitimate
+             * -- the first version of this probe called that a double free and reported errs=0
+             * as if the counter were broken. The free AFTER it is the real double free: the
+             * descriptor already says DEALLOCATED, so the bucket id derived from it is out of
+             * range, GetBucketState returns NULL, and the pool counts a validation error. */
+            printf("gp_put_recycled rc=%ld errs=%u\n",
+                   (long)CFE_ES_GenPoolPutBlock(&pool, &sz, off1), pool.ValidationErrorCount);
+            printf("gp_double_free rc=%ld errs=%u\n",
+                   (long)CFE_ES_GenPoolPutBlock(&pool, &sz, off1), pool.ValidationErrorCount);
+
+            CFE_ES_GenPoolGetUsage(&pool, &freesz, &totalsz);
+            printf("gp_usage free=%lu total=%lu\n", (unsigned long)freesz,
+                   (unsigned long)totalsz);
+            CFE_ES_GenPoolGetCounts(&pool, &nbuckets, &alloccnt, &errcnt);
+            printf("gp_counts buckets=%u alloc=%u errs=%u\n", nbuckets, alloccnt, errcnt);
+            for (k = 0; k <= 5; k++)
+            {
+                memset(&bstat, 0, sizeof(bstat));
+                CFE_ES_GenPoolGetBucketUsage(&pool, (uint16)k, &bstat);
+                printf("gp_bucketuse[%d] size=%lu created=%u free=%u\n", k,
+                       (unsigned long)bstat.BlockSize, bstat.NumCreated, bstat.NumFree);
+            }
+
+            /* MinSize is pure arithmetic over the list: smallest block plus a descriptor */
+            printf("gp_minsize n4=%lu n0=%lu\n",
+                   (unsigned long)CFE_ES_GenPoolCalcMinSize(4, blocksizes, 10),
+                   (unsigned long)CFE_ES_GenPoolCalcMinSize(0, blocksizes, 10));
+
+            /* REBUILD: the descriptors are still in the storage, the record is not. A FRESH
+             * record over the same memory with the same block sizes recovers the state from
+             * the check patterns alone -- which is what a CDS does after a reboot. Done before
+             * the argument-check failures below, because those overwrite the record. */
+            CFE_ES_GenPoolInitialize(&pool, 0, sizeof(es_pool_mem), 8, 4, blocksizes,
+                                     es_pool_retrieve, es_pool_commit);
+            printf("gp_rebuild rc=%ld tail=%lu alloc=%u\n", (long)CFE_ES_GenPoolRebuild(&pool),
+                   (unsigned long)pool.TailPosition, pool.AllocationCount);
+            CFE_ES_GenPoolGetBucketUsage(&pool, 4, &bstat);
+            printf("gp_rebuild_b4 created=%u free=%u\n", bstat.NumCreated, bstat.NumFree);
+
+            /* the three failure returns in Initialize */
+            printf("gp_init_nobuckets rc=%ld\n",
+                   (long)CFE_ES_GenPoolInitialize(&pool, 0, sizeof(es_pool_mem), 8, 0,
+                                                  blocksizes, es_pool_retrieve, es_pool_commit));
+            printf("gp_init_badalign rc=%ld\n",
+                   (long)CFE_ES_GenPoolInitialize(&pool, 0, sizeof(es_pool_mem), 6, 4,
+                                                  blocksizes, es_pool_retrieve, es_pool_commit));
+            blocksizes[1] = 0;
+            printf("gp_init_zerosize rc=%ld\n",
+                   (long)CFE_ES_GenPoolInitialize(&pool, 0, sizeof(es_pool_mem), 8, 4,
+                                                  blocksizes, es_pool_retrieve, es_pool_commit));
+            blocksizes[1] = 32;
+
+            /* --- cfe_es_crc.c ----------------------------------------------------------- */
+            printf("crc_none rc=%u\n", CFE_ES_ComputeCRC_Algo_NONE(CRC_PROBE, 9, 0));
+            /* CRC-16/ARC of "123456789" is 0xBB3D -- the check value in NASA's own comment on
+             * the enumerator, which is why this input and not another. */
+            printf("crc_arc rc=0x%04x\n", CFE_ES_ComputeCRC_Algo_16_ARC(CRC_PROBE, 9, 0));
+            printf("crc_arc_seeded rc=0x%04x\n", CFE_ES_ComputeCRC_Algo_16_ARC(CRC_PROBE, 9, 1));
+            printf("crc_arc_empty rc=0x%04x\n", CFE_ES_ComputeCRC_Algo_16_ARC(CRC_PROBE, 0, 7));
+            /* GetParams: NONE has a NULL algorithm in the table ON PURPOSE, so it falls through
+             * to the catch-all; an out-of-range type does too. Both come back non-NULL with a
+             * usable algorithm, which is the contract. */
+            for (k = 0; k <= 2; k++)
+            {
+                printf("crc_params[%d] null=%d algo_none=%d\n", k,
+                       (int)(CFE_ES_ComputeCRC_GetParams(k) == NULL),
+                       (int)(CFE_ES_ComputeCRC_GetParams(k)->Algorithm ==
+                             CFE_ES_ComputeCRC_Algo_NONE));
+            }
+            printf("crc_params_arc result=0x%04x\n",
+                   CFE_ES_ComputeCRC_GetParams(CFE_ES_CrcType_16_ARC)->Algorithm(CRC_PROBE, 9, 0));
         }
 
 

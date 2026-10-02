@@ -104,7 +104,8 @@ lines, one diff, one negative control.
 | `resourceid` | 228 | **228** | complete, SIMPLE variant |
 | `sb` | 6,086 | **6,086** | complete — all seven unconditional sources plus `msg_id_util`; the EDS dispatcher is the alternative |
 | `config` | 782 | **489** | get/set/lookup/eds complete; `init.c` (241) and its objtab wait for the build-generated GLOBAL_CONFIGDATA |
-| `es` `tbl` | 20,514 | 0 | `es` is the next large one; `tbl` after it |
+| `es` | 12,734 | **820** | `crc` and `generic_pool` -- the allocator every other pool wraps; `mempool` next, which needs CFE_ES_Global |
+| `tbl` | 7,780 | 0 | after `es` |
 | `sbr` | 535 | **434** | complete for the default HASH map; `map_direct` is the alternative |
 
 Translated units live in `Kernel/Cfs/cfe/`, one HolyC file per C file, NASA's copyright retained,

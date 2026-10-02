@@ -50,5 +50,16 @@ if "$COMPILER" "$D/sizeof_arrow.hc" -o /dev/null >/dev/null 2>&1; then
   rc=1
 fi
 
-[ "$rc" = 0 ] && echo "struct-refusals: >8-byte class return refused, <=8-byte and pointer returns accepted, undeclared ALL-CAPS statement refused, sizeof-through-arrow refused"
+# `fn(args)->member` resolves the arrow against the type of the call's FIRST ARGUMENT, not its
+# return type, and refuses with a diagnostic naming the wrong class. Refusing is correct -- the
+# alternative is a silent wrong load mid-expression -- and the workaround is a hoisted local.
+# docs/HOLYC_STRUCT_LIMITS.md #17.
+if "$COMPILER" "$D/call_arrow_member.hc" -o /dev/null >/dev/null 2>&1; then
+  echo "FAIL struct-refusals — fn(args)->member was ACCEPTED. If that is deliberate, this file" >&2
+  echo "  moves to tests/exec/cases with its value asserted, and the hoisted locals in the cFS" >&2
+  echo "  driver can be inlined -- see docs/HOLYC_STRUCT_LIMITS.md #17." >&2
+  rc=1
+fi
+
+[ "$rc" = 0 ] && echo "struct-refusals: >8-byte class return refused, <=8-byte and pointer returns accepted, undeclared ALL-CAPS statement refused, sizeof-through-arrow refused, call-arrow-member refused"
 exit $rc

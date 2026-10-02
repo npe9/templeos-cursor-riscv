@@ -43,9 +43,18 @@ MEMBER_FN = re.compile(r'^\s*((?:const\s+|volatile\s+|unsigned\s+|signed\s+)*'
 # `<type> Name;` where <type> is a typedef that is itself a function pointer.
 MEMBER_PLAIN = re.compile(r'^\s*(?:const\s+|volatile\s+)*([A-Za-z_]\w*)\s+\**\s*'
                           r'([A-Za-z_]\w*)\s*;', re.M)
-# `typedef <ret> (*Name)(<params>);`
+# `typedef <ret> (*Name)(<params>);` -- AND A QUALIFIER MAY SIT BETWEEN THE STAR AND THE NAME.
+# cfe_es_crc.h writes
+#     typedef uint32 (*const CFE_ES_ComputeCRC_Algo_t)(const void *, size_t, uint32);
+# a CONST function pointer, and without `(?:const\s+|volatile\s+)*` after the stars this regex
+# captured `const` as the typedef's NAME -- so CFE_ES_ComputeCRC_Params_t.Algorithm came back
+# with no NASA counterpart, and it registered a bogus typedef called "const" on the way past.
+# That is the THIRD time this one file has had a regex that could not read a spelling NASA
+# actually uses, which is why unpaired is a failure here: each gap was found by the gate
+# refusing rather than by anyone noticing.
 TYPEDEF_FN = re.compile(r'typedef\s+((?:const\s+|unsigned\s+|signed\s+)*[A-Za-z_]\w*'
-                        r'(?:\s*\*+)?)\s*\(\s*\*+\s*([A-Za-z_]\w*)\s*\)\s*\(([^;]*)\)\s*;')
+                        r'(?:\s*\*+)?)\s*\(\s*\*+\s*(?:const\s+|volatile\s+)*'
+                        r'([A-Za-z_]\w*)\s*\)\s*\(([^;]*)\)\s*;')
 # ...and `typedef <ret>((*Name)(<params>));`, which is how OSAL writes two of them:
 #     typedef osal_task((*osal_task_entry)(void));
 # The first version of this file matched only the form above, so the two members of
@@ -54,7 +63,8 @@ TYPEDEF_FN = re.compile(r'typedef\s+((?:const\s+|unsigned\s+|signed\s+)*[A-Za-z_
 # outcome besides match and mismatch, and it is the one that looks like success. Unpaired members
 # are a FAILURE now, which is what turned this regex gap into something visible.
 TYPEDEF_FN2 = re.compile(r'typedef\s+((?:const\s+|unsigned\s+|signed\s+)*[A-Za-z_]\w*'
-                         r'(?:\s*\*+)?)\s*\(\s*\(\s*\*+\s*([A-Za-z_]\w*)\s*\)'
+                         r'(?:\s*\*+)?)\s*\(\s*\(\s*\*+\s*(?:const\s+|volatile\s+)*'
+                         r'([A-Za-z_]\w*)\s*\)'
                          r'\s*\(([^;]*)\)\s*\)\s*;')
 
 

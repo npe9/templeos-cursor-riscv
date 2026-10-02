@@ -127,6 +127,23 @@ def pair_name(name, nasa):
     return None
 
 
+# A STRUCT BODY, AND IT HAD TO STOP BEING `(.*?)`. The lazy form looks safe and is not: it
+# scans to the first `}` followed by `;`, so for
+#     typedef struct A { ... } A_t;        <- `}` followed by a NAME, not `;`
+#     typedef struct B { ... } B_t;
+#     struct C { ... };                    <- the first `}` + `;` in the file
+# the bare-struct pattern matched ONE region, called it `A`, and gave it a body containing all
+# three structs' fields -- 1,280 characters in cfe_es_generic_pool.h -- and then, because the
+# scan had consumed everything up to C's closing brace, `struct C` was NEVER FOUND. C was
+# cfe_es_generic_pool.h's CFE_ES_GenPoolRecord: the pool record itself, the biggest struct in
+# the module, and no gate was reading it. The wrong `A` body did no visible damage only because
+# the typedef pattern runs first and setdefault keeps its correct version.
+#
+# This allows one level of nesting (an anonymous inner struct or union member) and nothing more,
+# so a match cannot cross a closing brace that ends a declaration.
+BODY = r'((?:[^{}]|\{[^{}]*\})*)'
+
+
 def nasa_structs():
     out = {}
     for d in NASA_DIRS:
@@ -144,10 +161,10 @@ def nasa_structs():
             # `typedef struct { ... } Name;` and `struct Name { ... };`
             # `typedef const struct { ... } Name;` is how cFE declares its target-config
             # types, and without the optional `const` none of them were being compared at all.
-            for m in re.finditer(r'typedef\s+(?:const\s+)?struct\s*(?:\w+\s*)?\{(.*?)\}\s*(\w+)\s*;',
-                                 txt, re.S):
+            for m in re.finditer(r'typedef\s+(?:const\s+)?struct\s*(?:\w+\s*)?\{' + BODY +
+                                 r'\}\s*(\w+)\s*;', txt, re.S):
                 out.setdefault(m.group(2), (fields_of(m.group(1)), fn))
-            for m in re.finditer(r'\bstruct\s+(\w+)\s*\{(.*?)\}\s*;', txt, re.S):
+            for m in re.finditer(r'\bstruct\s+(\w+)\s*\{' + BODY + r'\}\s*;', txt, re.S):
                 out.setdefault(m.group(1), (fields_of(m.group(2)), fn))
     return out
 

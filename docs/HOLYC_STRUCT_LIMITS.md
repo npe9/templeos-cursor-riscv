@@ -764,3 +764,39 @@ miscompiled would be worse, and that is the direction a careless fix would take 
 **When it is implemented**, the refusal case starts passing and should become an exec case
 asserting the value. The arrow form is valid C, NASA uses it, and the substitution above is a
 deviation that only exists because of this.
+
+## 17. `fn(args)->member` resolves the arrow against the FIRST ARGUMENT's type — OPEN
+
+```c
+class A { U32 x; U32 y; };
+class B { U32 p; };
+A *GetA(B *b, U16 k);
+...
+return GetA(&b, 1)->y;      // error: No member 'y' in class 'B' (->)
+```
+
+`GetA` returns `A *`. The compiler reports class **`B`** — the type of the call's first
+argument. So a member-access through a function's return value is refused, and the diagnostic
+names a class that has nothing to do with the expression, which makes the first reading of it
+"the wrong function is being called" rather than "this form is not supported".
+
+**It refuses rather than miscompiling**, and that is the whole reason this is a limit and not a
+defect report. Reading `y` at `B`'s offset for `y`, or at any offset of its own, would be a
+silent wrong load in the middle of an expression. `tests/holyc/refused/call_arrow_member.hc`
+pins the refusal.
+
+**The workaround is a local**, and it compiles:
+
+```c
+A *p = GetA(&b, 1);
+... p->y
+```
+
+Found translating `cfe_es_generic_pool.c`, whose exercise wants
+`CFE_ES_GenPoolGetBucketState(&pool, 1)->BlockSize`. NASA writes this shape routinely —
+`CFE_ES_ComputeCRC_GetParams(CrcType)->Algorithm` is in `cfe_es_crc.c`'s own caller — so the
+translation will meet it again and the hoisted local is the standing answer.
+
+**When it is fixed**, the refusal case starts passing and should become an exec case asserting
+the member's value, and the hoisted locals in `tests/exec/cases/cfs_xlat_ccsdspri.hc` can be
+inlined back.

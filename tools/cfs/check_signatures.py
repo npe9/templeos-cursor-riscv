@@ -77,6 +77,14 @@ C_TYPES = [(r'\bconst\b', ' '),
            # tool was wrong, which is the failure mode worth not having.
            (r'\bCFE_Status_t\s*\*', ' PTRSNUM '),
            (r'\bCFE_Status_t\b', ' SNUM '),
+           # ES's memory sizes and addresses, ahead of the catch-all for the same reason
+           # CFE_MSG_Size_t is: both are `uint64` in this configuration, the translation spells
+           # them I64, and the catch-all below maps every CFE_*_t to NUM -- a FOUR-byte id. It
+           # made CFE_ES_GenPoolGetUsage look like a mismatch when the translation was right,
+           # which is this tool's one unacceptable failure: blaming the translation for a rule
+           # it does not have.
+           (r'\bCFE_ES_Mem(?:Offset|Address)_t\s*\*', ' PTRSZ '),
+           (r'\bCFE_ES_Mem(?:Offset|Address)_t\b', ' SZ '),
            (r'\bCFE_\w+_t\s*\*', ' PTRNUM '),
            (r'\bCFE_\w+_t\b', ' NUM '),
            (r'\bosal_id_t\s*\*', ' PTRNUM '), (r'\bchar\s*\*', ' PTRB '),
