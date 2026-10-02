@@ -34,6 +34,7 @@
 #include "cfe_time_utils.h"     /* CFE_TIME_Global_t and the module's internal declarations */
 #include "cfe_sb_priv.h"       /* CFE_SB_Global_t, the buffer descriptor and the pipe */
 #include "cfe_sb_core_internal.h" /* CFE_SB_EarlyInit, which core_private declares */
+#include "cfe_sb_eventids.h"   /* the event ids the subscribe counters switch on */
 #include "cfe_evs_msgids.h"   /* CFE_EVS_CMD_MID, CFE_EVS_SEND_HK_MID */
 /* cfe_evs_dispatch.c's two local functions: NASA declares them at the top of that .c, not in a
  * header, so the driver repeats the declarations to reach them. */
@@ -522,6 +523,122 @@ int32 OS_TimerSet(osal_id_t timer_id, uint32 start_time, uint32 interval_time)
  * the same arrangement this file has for CFE_TIME_Global and had for CFE_EVS_Global. The HolyC
  * half defines it in cfe_sb_global.HC beside its type, for the reason recorded there. */
 CFE_SB_Global_t CFE_SB_Global;
+
+/* SB's PIPE QUEUES, simulated. One queue of one entry per pipe is enough for the transaction
+ * machinery: what cfe_sb_priv.c does is decide WHICH pipes to write to and how to undo the
+ * accounting when a write fails, so the queue only has to be able to succeed, be full, and be
+ * empty on demand. */
+#define SBQ_MAX 8
+static struct
+{
+    unsigned char Data[64];
+    size_t        Size;
+    bool          Full;
+} sbq[SBQ_MAX];
+static long  sb_qputs, sb_qgets;
+static int32 sb_queueput_rc = OS_SUCCESS; /* set to OS_QUEUE_FULL to force the undo path */
+static int32 sb_queueget_rc = OS_SUCCESS;
+
+int32 OS_QueuePut(osal_id_t queue_id, const void *data, size_t size, uint32 timeout)
+{
+    unsigned long i = (unsigned long)queue_id;
+    (void)timeout;
+    ++sb_qputs;
+    if (sb_queueput_rc != OS_SUCCESS)
+    {
+        return sb_queueput_rc;
+    }
+    if (i >= SBQ_MAX || size > sizeof(sbq[0].Data))
+    {
+        return OS_ERROR;
+    }
+    memcpy(sbq[i].Data, data, size);
+    sbq[i].Size = size;
+    sbq[i].Full = true;
+    return OS_SUCCESS;
+}
+
+int32 OS_QueueGet(osal_id_t queue_id, void *data, size_t size, size_t *size_copied, int32 timeout)
+{
+    unsigned long i = (unsigned long)queue_id;
+    (void)timeout;
+    ++sb_qgets;
+    if (sb_queueget_rc != OS_SUCCESS)
+    {
+        *size_copied = 0;
+        return sb_queueget_rc;
+    }
+    if (i >= SBQ_MAX || !sbq[i].Full)
+    {
+        *size_copied = 0;
+        return OS_QUEUE_EMPTY;
+    }
+    memcpy(data, sbq[i].Data, sbq[i].Size);
+    *size_copied = sbq[i].Size;
+    sbq[i].Full  = false;
+    return OS_SUCCESS;
+}
+
+/* ES's task identity. One task, one app, and the names differ so CFE_SB_GetAppTskName takes its
+ * "app.task" branch rather than the "they are the same" one. */
+static long  sb_taskinfo_calls;
+static int32 sb_taskinfo_rc = CFE_SUCCESS;
+
+int32 CFE_ES_GetTaskID(CFE_ES_TaskId_t *TaskIdPtr)
+{
+    *TaskIdPtr = CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(0x9991));
+    return CFE_SUCCESS;
+}
+
+int32 CFE_ES_TaskID_ToIndex(CFE_ES_TaskId_t TaskID, uint32 *Idx)
+{
+    (void)TaskID;
+    *Idx = 0;
+    return CFE_SUCCESS;
+}
+
+int32 CFE_ES_GetTaskInfo(CFE_ES_TaskInfo_t *TaskInfo, CFE_ES_TaskId_t TaskId)
+{
+    (void)TaskId;
+    ++sb_taskinfo_calls;
+    if (sb_taskinfo_rc != CFE_SUCCESS)
+    {
+        return sb_taskinfo_rc;
+    }
+    memset(TaskInfo, 0, sizeof(*TaskInfo));
+    strncpy((char *)TaskInfo->AppName, "SBTESTAPP", sizeof(TaskInfo->AppName) - 1);
+    strncpy((char *)TaskInfo->TaskName, "SBTESTTSK", sizeof(TaskInfo->TaskName) - 1);
+    return CFE_SUCCESS;
+}
+
+int32 CFE_SB_PipeId_ToIndex(CFE_SB_PipeId_t PipeID, uint32 *Idx)
+{
+    *Idx = CFE_ResourceId_ToInteger(CFE_RESOURCEID_UNWRAP(PipeID)) & 0xFF;
+    if (*Idx >= CFE_PLATFORM_SB_MAX_PIPES)
+    {
+        return CFE_SB_BAD_ARGUMENT;
+    }
+    return CFE_SUCCESS;
+}
+
+/* cfe_sb_api.c is NOT yet translated, so these two are stubbed on BOTH sides -- the same
+ * temporary arrangement CFE_TIME_Tone1HzISR had until cfe_time_tone.c landed. They go away when
+ * api.c does, and the stub is deliberately dumb: what is under test here is cfe_sb_priv.c. */
+static long sb_deletepipe_calls;
+
+int32 CFE_SB_DeletePipeWithAppId(CFE_SB_PipeId_t PipeId, CFE_ES_AppId_t AppId)
+{
+    (void)PipeId; (void)AppId;
+    ++sb_deletepipe_calls;
+    return CFE_SUCCESS;
+}
+
+CFE_Status_t CFE_SB_GetPipeName(char *PipeNameBuf, size_t PipeNameSize, CFE_SB_PipeId_t PipeId)
+{
+    (void)PipeId;
+    snprintf(PipeNameBuf, PipeNameSize, "TESTPIPE");
+    return CFE_SUCCESS;
+}
 
 /* A SIMULATED MEMORY POOL, and it is a real bump allocator rather than a success stub, because
  * what cfe_sb_buf.c is for is BUFFER LIFETIME: a message sent to three pipes is one buffer with
@@ -3295,6 +3412,152 @@ int main(void)
                    (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.SBBuffersInUse);
             printf("sb_getdest_fail null=%d\n", (int)(CFE_SB_GetDestinationBlk() == NULL));
             sb_getpool_rc = CFE_SUCCESS;
+        }
+
+        /* --- cfe_sb_priv.c: the pipe table, the destination list, the recursion guard ------
+         *
+         * Everything here is reachable WITHOUT a pipe existing, which is the half of
+         * cfe_sb_priv.c that does not depend on cfe_sb_api.c. The transaction EXECUTION paths
+         * need real pipes and queues and come with api.c. */
+        {
+            CFE_SB_PipeD_t           *pd;
+            CFE_SB_DestinationD_t     d1;
+            CFE_SB_DestinationD_t     d2;
+            CFE_SB_DestinationD_t     d3;
+            CFE_SBR_RouteId_t         rid;
+            CFE_SB_TransmitTxn_State_t ttxn;
+            CFE_SB_ReceiveTxn_State_t  rtxn;
+            CFE_SB_MessageTxn_State_t *txn;
+            char                       tskname[OS_MAX_API_NAME * 2];
+
+            printf("sbp_validmsgid ok=%ld bad=%ld\n",
+                   (long)CFE_SB_ValidateMsgId(CFE_SB_ValueToMsgId(CFE_SB_CMD_MID)),
+                   (long)CFE_SB_ValidateMsgId(CFE_SB_INVALID_MSG_ID));
+
+            /* The pipe table: locate in range, locate out of range, and the used/free flag. */
+            pd = CFE_SB_LocatePipeDescByID(CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(3)));
+            printf("sbp_locate inrange=%d used=%d\n", (int)(pd != NULL),
+                   (int)(pd != NULL && CFE_SB_PipeDescIsUsed(pd)));
+            CFE_SB_PipeDescSetUsed(pd, CFE_ResourceId_FromInteger(0x1234));
+            printf("sbp_setused used=%d id=0x%08lx match=%d\n", (int)CFE_SB_PipeDescIsUsed(pd),
+                   (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_SB_PipeDescGetID(pd)),
+                   (int)CFE_SB_PipeDescIsMatch(pd, CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(0x1234))));
+            printf("sbp_slotused=%d\n",
+                   (int)CFE_SB_CheckPipeDescSlotUsed(CFE_ResourceId_FromInteger(3)));
+            CFE_SB_PipeDescSetFree(pd);
+            printf("sbp_setfree used=%d nullmatch=%d\n", (int)CFE_SB_PipeDescIsUsed(pd),
+                   (int)CFE_SB_PipeDescIsMatch(NULL, CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(3))));
+
+            /* THE RECURSION GUARD: granted once, denied while held, granted again after finish.
+             * A negative bit is always granted -- that is how the receive-side events opt out. */
+            printf("sbp_guard a=%lu b=%lu", (unsigned long)CFE_SB_RequestToSendEvent(
+                                                CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(1)), 3),
+                   (unsigned long)CFE_SB_RequestToSendEvent(
+                       CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(1)), 3));
+            CFE_SB_FinishSendEvent(CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(1)), 3);
+            printf(" c=%lu neg=%lu\n",
+                   (unsigned long)CFE_SB_RequestToSendEvent(
+                       CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(1)), 3),
+                   (unsigned long)CFE_SB_RequestToSendEvent(
+                       CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(1)), -1));
+            CFE_SB_FinishSendEvent(CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(1)), 3);
+
+            /* The app.task name, both branches. */
+            printf("sbp_tskname %s\n",
+                   CFE_SB_GetAppTskName(CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(1)), tskname));
+            sb_taskinfo_rc = CFE_ES_ERR_RESOURCEID_NOT_VALID;
+            printf("sbp_tskname_bad %s\n",
+                   CFE_SB_GetAppTskName(CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(1)), tskname));
+            sb_taskinfo_rc = CFE_SUCCESS;
+
+            /* THE DESTINATION LIST. Three nodes, inserted at the FRONT each time, then removed
+             * from the middle, the end and finally as the only one -- the four branches of
+             * CFE_SB_RemoveDestNode, which is the function whose pointer surgery a count cannot
+             * check. Identity comparisons, like the buffer tracking list. */
+            rid = CFE_SBR_AddRoute(CFE_SB_ValueToMsgId(CFE_SB_CMD_MID), NULL);
+            memset(&d1, 0, sizeof(d1));
+            memset(&d2, 0, sizeof(d2));
+            memset(&d3, 0, sizeof(d3));
+            d1.PipeId = CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(11));
+            d2.PipeId = CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(12));
+            d3.PipeId = CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(13));
+            CFE_SB_AddDestNode(rid, &d1);
+            CFE_SB_AddDestNode(rid, &d2);
+            CFE_SB_AddDestNode(rid, &d3);
+            printf("sbp_destadd head_d3=%d d3_next_d2=%d d1_next_null=%d\n",
+                   (int)(CFE_SBR_GetDestListHeadPtr(rid) == &d3), (int)(d3.Next == &d2),
+                   (int)(d1.Next == NULL));
+            printf("sbp_destfind d2=%d miss=%d\n",
+                   (int)(CFE_SB_GetDestPtr(rid, d2.PipeId) == &d2),
+                   (int)(CFE_SB_GetDestPtr(rid, CFE_SB_PIPEID_C(CFE_ResourceId_FromInteger(99)))
+                         == NULL));
+            CFE_SB_RemoveDestNode(rid, &d2); /* middle */
+            printf("sbp_destrm_mid d3_next_d1=%d d1_prev_d3=%d d2_clear=%d\n",
+                   (int)(d3.Next == &d1), (int)(d1.Prev == &d3),
+                   (int)(d2.Next == NULL && d2.Prev == NULL));
+            CFE_SB_RemoveDestNode(rid, &d1); /* last */
+            printf("sbp_destrm_last d3_next_null=%d head_d3=%d\n", (int)(d3.Next == NULL),
+                   (int)(CFE_SBR_GetDestListHeadPtr(rid) == &d3));
+            CFE_SB_RemoveDestNode(rid, &d3); /* only */
+            printf("sbp_destrm_only head_null=%d\n",
+                   (int)(CFE_SBR_GetDestListHeadPtr(rid) == NULL));
+
+            /* THE TRANSACTION SETTERS. First writer wins, independently, for the event and the
+             * status -- which is what lets the setup sequence run without each step checking the
+             * one before. */
+            txn = CFE_SB_TransmitTxn_Init(&ttxn, &ttxn);
+            printf("sbp_txn_init ok=%d transmit=%d maxpipes=%u status=%ld\n",
+                   (int)CFE_SB_MessageTxn_IsOK(txn), (int)txn->IsTransmit,
+                   (unsigned int)txn->MaxPipes, (long)CFE_SB_MessageTxn_GetStatus(txn));
+            CFE_SB_MessageTxn_SetContentSize(txn, 100);
+            printf("sbp_txn_size ok=%d size=%u\n", (int)CFE_SB_MessageTxn_IsOK(txn),
+                   (unsigned int)CFE_SB_MessageTxn_GetContentSize(txn));
+            CFE_SB_MessageTxn_SetRoutingMsgId(txn, CFE_SB_ValueToMsgId(CFE_SB_CMD_MID));
+            printf("sbp_txn_mid ok=%d mid=0x%08x\n", (int)CFE_SB_MessageTxn_IsOK(txn),
+                   (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_MessageTxn_GetRoutingMsgId(txn)));
+            /* too big, then an invalid id: the FIRST failure keeps both fields */
+            CFE_SB_MessageTxn_SetContentSize(txn, CFE_MISSION_SB_MAX_SB_MSG_SIZE + 1);
+            printf("sbp_txn_toobig ok=%d evt=%u status=%ld size=%u\n",
+                   (int)CFE_SB_MessageTxn_IsOK(txn), (unsigned int)txn->TransactionEventId,
+                   (long)CFE_SB_MessageTxn_GetStatus(txn),
+                   (unsigned int)CFE_SB_MessageTxn_GetContentSize(txn));
+            CFE_SB_MessageTxn_SetRoutingMsgId(txn, CFE_SB_INVALID_MSG_ID);
+            printf("sbp_txn_firstwins evt=%u status=%ld\n", (unsigned int)txn->TransactionEventId,
+                   (long)CFE_SB_MessageTxn_GetStatus(txn));
+
+            /* The timeout modes, including the rejected one. */
+            txn = CFE_SB_ReceiveTxn_Init(&rtxn, &rtxn);
+            CFE_SB_MessageTxn_SetTimeout(txn, CFE_SB_POLL);
+            printf("sbp_timeout poll=%d os=%ld", (int)txn->TimeoutMode,
+                   (long)CFE_SB_MessageTxn_GetOsTimeout(txn));
+            CFE_SB_MessageTxn_SetTimeout(txn, CFE_SB_PEND_FOREVER);
+            printf(" pend=%d os=%ld", (int)txn->TimeoutMode,
+                   (long)CFE_SB_MessageTxn_GetOsTimeout(txn));
+            CFE_SB_MessageTxn_SetTimeout(txn, -99);
+            printf(" bad_evt=%u status=%ld\n", (unsigned int)txn->TransactionEventId,
+                   (long)CFE_SB_MessageTxn_GetStatus(txn));
+
+            /* A NULL reference pointer is rejected, with a DIFFERENT event per direction. */
+            txn = CFE_SB_TransmitTxn_Init(&ttxn, NULL);
+            printf("sbp_null_tx evt=%u status=%ld\n", (unsigned int)txn->TransactionEventId,
+                   (long)CFE_SB_MessageTxn_GetStatus(txn));
+            txn = CFE_SB_ReceiveTxn_Init(&rtxn, NULL);
+            printf("sbp_null_rx evt=%u status=%ld endpoint=%d\n",
+                   (unsigned int)txn->TransactionEventId, (long)CFE_SB_MessageTxn_GetStatus(txn),
+                   (int)txn->IsEndpoint);
+            CFE_SB_MessageTxn_SetEndpoint(txn, true);
+            printf("sbp_endpoint=%d\n", (int)txn->IsEndpoint);
+
+            /* The subscribe counters: six event ids mean "failed", one means "duplicate". */
+            CFE_SB_Global.HKTlmMsg.Payload.SubscribeErrorCounter          = 0;
+            CFE_SB_Global.HKTlmMsg.Payload.DuplicateSubscriptionsCounter  = 0;
+            CFE_SB_IncrementSubscribeCounters(CFE_SB_SUB_INV_PIPE_EID);
+            CFE_SB_IncrementSubscribeCounters(CFE_SB_MAX_DESTS_MET_EID);
+            CFE_SB_IncrementSubscribeCounters(CFE_SB_DUP_SUBSCRIP_EID);
+            CFE_SB_IncrementSubscribeCounters(CFE_SB_INIT_EID); /* not an error */
+            printf("sbp_subcnt err=%u dup=%u\n",
+                   (unsigned int)CFE_SB_Global.HKTlmMsg.Payload.SubscribeErrorCounter,
+                   (unsigned int)CFE_SB_Global.HKTlmMsg.Payload.DuplicateSubscriptionsCounter);
         }
 
         /* --- cfe_time_objtab.c ------------------------------------------------------------ */

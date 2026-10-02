@@ -39,5 +39,16 @@ if "$COMPILER" "$D/upper_name_undeclared.hc" -o /dev/null >/dev/null 2>&1; then
   rc=1
 fi
 
-[ "$rc" = 0 ] && echo "struct-refusals: >8-byte class return refused, <=8-byte and pointer returns accepted, undeclared ALL-CAPS statement refused"
+# `sizeof` through `->` does not parse, and until it does, being REFUSED is the correct outcome:
+# quietly accepting it and returning some other size would make every substituted array bound in
+# the cFS translation wrong at once. docs/HOLYC_STRUCT_LIMITS.md #16. The dot form is pinned
+# working by tests/exec/cases/e_sizeof_member.hc, so this pair brackets the behaviour.
+if "$COMPILER" "$D/sizeof_arrow.hc" -o /dev/null >/dev/null 2>&1; then
+  echo "FAIL struct-refusals — sizeof(p->member) was ACCEPTED. If that is deliberate, this file" >&2
+  echo "  moves to tests/exec/cases with its value asserted and the cFS bound substitutions are" >&2
+  echo "  withdrawn -- see docs/HOLYC_STRUCT_LIMITS.md #16." >&2
+  rc=1
+fi
+
+[ "$rc" = 0 ] && echo "struct-refusals: >8-byte class return refused, <=8-byte and pointer returns accepted, undeclared ALL-CAPS statement refused, sizeof-through-arrow refused"
 exit $rc

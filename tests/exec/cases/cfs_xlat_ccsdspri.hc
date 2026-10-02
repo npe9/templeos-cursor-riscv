@@ -146,6 +146,7 @@ I64 StrCmp(U8 *st1, U8 *st2)
 #include "/Kernel/Cfs/cfe/cfe_sb_global.HC"
 #include "/Kernel/Cfs/cfe/cfe_sb_buf.HC"
 #include "/Kernel/Cfs/cfe/cfe_sb_init.HC"
+#include "/Kernel/Cfs/cfe/cfe_sb_priv.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -826,6 +827,117 @@ I32 OS_TimerSet(U32 timer_id, U32 start_time, U32 interval_time)
 {
   ++time_timer_sets;
   return time_timerset_rc;
+}
+// SB's PIPE QUEUES, simulated. One queue of one entry per pipe is enough for the transaction
+// machinery: what cfe_sb_priv.c does is decide WHICH pipes to write to and how to undo the
+// accounting when a write fails, so the queue only has to be able to succeed, be full, and be
+// empty on demand.
+#define SBQ_MAX 8
+class SbQueue
+{
+  U8 Data[64];
+  I64 Size;
+  Bool Full;
+};
+SbQueue sbq[SBQ_MAX];
+I64 sb_qputs, sb_qgets;
+I32 sb_queueput_rc;
+// set to OS_QUEUE_FULL to force the undo path
+I32 sb_queueget_rc;
+I32 OS_QueuePut(U32 queue_id, U8 *data, I64 size, I32 timeout)
+{
+  I64 i = queue_id;
+  ++sb_qputs;
+  if (sb_queueput_rc != OS_SUCCESS)
+    return sb_queueput_rc;
+  if (i >= SBQ_MAX || size > 64)
+    return OS_ERROR;
+  MemCpy(sbq[i].Data, data, size);
+  sbq[i].Size = size;
+  sbq[i].Full = TRUE;
+  return OS_SUCCESS;
+}
+
+I32 OS_QueueGet(U32 queue_id, U8 *data, I64 size, I64 *size_copied, I32 timeout)
+{
+  I64 i = queue_id;
+  ++sb_qgets;
+  if (sb_queueget_rc != OS_SUCCESS) {
+    *size_copied = 0;
+    return sb_queueget_rc;
+  }
+  if (i >= SBQ_MAX || !sbq[i].Full) {
+    *size_copied = 0;
+    return OS_QUEUE_EMPTY;
+  }
+  MemCpy(data, sbq[i].Data, sbq[i].Size);
+  *size_copied = sbq[i].Size;
+  sbq[i].Full = FALSE;
+  return OS_SUCCESS;
+}
+// ES's task identity. One task, one app, and the names differ so CFE_SB_GetAppTskName takes its
+// "app.task" branch rather than the "they are the same" one.
+I64 sb_taskinfo_calls;
+I32 sb_taskinfo_rc;
+I32 CFE_ES_GetTaskID(U32 *TaskIdPtr)
+{
+  *TaskIdPtr = 0x9991;
+  return CFE_SUCCESS;
+}
+
+I32 CFE_ES_TaskID_ToIndex(U32 TaskID, U32 *Idx)
+{
+  *Idx = 0;
+  return CFE_SUCCESS;
+}
+
+I32 CFE_ES_GetTaskInfo(CFE_ES_TaskInfo_t *TaskInfo, U32 TaskId)
+{
+  ++sb_taskinfo_calls;
+  if (sb_taskinfo_rc != CFE_SUCCESS)
+    return sb_taskinfo_rc;
+  MemSet(TaskInfo, 0, sizeof(CFE_ES_TaskInfo_t));
+  StrNCpy(TaskInfo->AppName, "SBTESTAPP", CFE_MISSION_MAX_API_LEN - 1);
+  StrNCpy(TaskInfo->TaskName, "SBTESTTSK", CFE_MISSION_MAX_API_LEN - 1);
+  return CFE_SUCCESS;
+}
+
+I32 CFE_SB_PipeId_ToIndex(U32 PipeID, U32 *Idx)
+{
+  *Idx = PipeID & 0xFF;
+  if (*Idx >= CFE_PLATFORM_SB_MAX_PIPES)
+    return CFE_SB_BAD_ARGUMENT;
+  return CFE_SUCCESS;
+}
+// cfe_sb_api.c is NOT yet translated, so these two are stubbed on BOTH sides -- the same
+// temporary arrangement CFE_TIME_Tone1HzISR had until cfe_time_tone.c landed.
+I64 sb_deletepipe_calls;
+I32 CFE_SB_DeletePipeWithAppId(U32 PipeId, U32 AppId)
+{
+  ++sb_deletepipe_calls;
+  return CFE_SUCCESS;
+}
+
+I32 CFE_SB_GetPipeName(U8 *PipeNameBuf, I64 PipeNameSize, U32 PipeId)
+{
+  StrPrintN(PipeNameBuf, PipeNameSize, "TESTPIPE");
+  return CFE_SUCCESS;
+}
+// OSAL's time arithmetic that the TIMED timeout mode uses. OS_TimeAdd and
+// OS_TimeFromTotalMilliseconds are in osapi-clock; reproduced here for the reason the other
+// OSAL reproductions in this file record -- a tick is 100 ns.
+OS_time_t OS_TimeFromTotalMilliseconds(I64 ms)
+{
+  OS_time_t t;
+  t.ticks = ms * (OS_TIME_TICKS_PER_SECOND / 1000);
+  return t;
+}
+
+OS_time_t OS_TimeAdd(OS_time_t t1, OS_time_t t2)
+{
+  OS_time_t t;
+  t.ticks = t1.ticks + t2.ticks;
+  return t;
 }
 // A SIMULATED MEMORY POOL, and it is a real bump allocator rather than a success stub, because
 // what cfe_sb_buf.c is for is BUFFER LIFETIME: a message sent to three pipes is one buffer with
@@ -4552,6 +4664,219 @@ I64 main()
       D(d1 == NULL);
       S("\n");
       sb_getpool_rc = CFE_SUCCESS;
+    }
+    // --- cfe_sb_priv.c: the pipe table, the destination list, the recursion guard ------
+    //
+    // Everything here is reachable WITHOUT a pipe existing, which is the half of cfe_sb_priv.c
+    // that does not depend on cfe_sb_api.c. The transaction EXECUTION paths need real pipes and
+    // queues and come with api.c.
+    
+    {
+      CFE_SB_PipeD_t *pd;
+      CFE_SB_DestinationD_t d1;
+      CFE_SB_DestinationD_t d2;
+      CFE_SB_DestinationD_t d3;
+      CFE_SBR_RouteId rid;
+      CFE_SB_TransmitTxn_State_t ttxn;
+      CFE_SB_ReceiveTxn_State_t rtxn;
+      CFE_SB_MessageTxn_State_t *txn;
+      U8 tskname[OS_MAX_API_NAME * 2];
+      I64 v1, v2;
+      v1 = CFE_SB_ValidateMsgId(CFE_SB_ValueToMsgId(CFE_SB_CMD_MID));
+      v2 = CFE_SB_ValidateMsgId(CFE_SB_InvalidMsgId);
+      S("sbp_validmsgid ok=");
+      D(v1);
+      S(" bad=");
+      D(v2);
+      S("\n");
+      // The pipe table: locate in range, locate out of range, and the used/free flag.
+      pd = CFE_SB_LocatePipeDescByID(3);
+      S("sbp_locate inrange=");
+      D(pd != NULL);
+      S(" used=");
+      D(pd != NULL && CFE_SB_PipeDescIsUsed(pd));
+      S("\n");
+      CFE_SB_PipeDescSetUsed(pd, 0x1234);
+      S("sbp_setused used=");
+      D(CFE_SB_PipeDescIsUsed(pd));
+      S(" id=0x");
+      Hx8(CFE_SB_PipeDescGetID(pd));
+      S(" match=");
+      D(CFE_SB_PipeDescIsMatch(pd, 0x1234));
+      S("\n");
+      S("sbp_slotused=");
+      D(CFE_SB_CheckPipeDescSlotUsed(3));
+      S("\n");
+      CFE_SB_PipeDescSetFree(pd);
+      S("sbp_setfree used=");
+      D(CFE_SB_PipeDescIsUsed(pd));
+      S(" nullmatch=");
+      D(CFE_SB_PipeDescIsMatch(NULL, 3));
+      S("\n");
+      // THE RECURSION GUARD: granted once, denied while held, granted again after finish. A
+      // negative bit is always granted -- that is how the receive-side events opt out.
+      v1 = CFE_SB_RequestToSendEvent(1, 3);
+      v2 = CFE_SB_RequestToSendEvent(1, 3);
+      S("sbp_guard a=");
+      D(v1);
+      S(" b=");
+      D(v2);
+      CFE_SB_FinishSendEvent(1, 3);
+      v1 = CFE_SB_RequestToSendEvent(1, 3);
+      v2 = CFE_SB_RequestToSendEvent(1, -1);
+      S(" c=");
+      D(v1);
+      S(" neg=");
+      D(v2);
+      S("\n");
+      CFE_SB_FinishSendEvent(1, 3);
+      // The app.task name, both branches.
+      S("sbp_tskname ");
+      S(CFE_SB_GetAppTskName(1, tskname));
+      S("\n");
+      sb_taskinfo_rc = CFE_ES_ERR_RESOURCEID_NOT_VALID;
+      S("sbp_tskname_bad ");
+      S(CFE_SB_GetAppTskName(1, tskname));
+      S("\n");
+      sb_taskinfo_rc = CFE_SUCCESS;
+      // THE DESTINATION LIST. Three nodes, inserted at the FRONT each time, then removed from
+      // the middle, the end and finally as the only one -- the four branches of
+      // CFE_SB_RemoveDestNode, which is the function whose pointer surgery a count cannot check.
+      rid = CFE_SBR_AddRoute(CFE_SB_ValueToMsgId(CFE_SB_CMD_MID), NULL);
+      MemSet(&d1, 0, sizeof(CFE_SB_DestinationD_t));
+      MemSet(&d2, 0, sizeof(CFE_SB_DestinationD_t));
+      MemSet(&d3, 0, sizeof(CFE_SB_DestinationD_t));
+      d1.PipeId = 11;
+      d2.PipeId = 12;
+      d3.PipeId = 13;
+      CFE_SB_AddDestNode(rid, &d1);
+      CFE_SB_AddDestNode(rid, &d2);
+      CFE_SB_AddDestNode(rid, &d3);
+      S("sbp_destadd head_d3=");
+      D(CFE_SBR_GetDestListHeadPtr(rid) == &d3);
+      S(" d3_next_d2=");
+      D(d3.Next == &d2);
+      S(" d1_next_null=");
+      D(d1.Next == NULL);
+      S("\n");
+      S("sbp_destfind d2=");
+      D(CFE_SB_GetDestPtr(rid, d2.PipeId) == &d2);
+      S(" miss=");
+      D(CFE_SB_GetDestPtr(rid, 99) == NULL);
+      S("\n");
+      CFE_SB_RemoveDestNode(rid, &d2);
+      // middle
+      S("sbp_destrm_mid d3_next_d1=");
+      D(d3.Next == &d1);
+      S(" d1_prev_d3=");
+      D(d1.Prev == &d3);
+      S(" d2_clear=");
+      D(d2.Next == NULL && d2.Prev == NULL);
+      S("\n");
+      CFE_SB_RemoveDestNode(rid, &d1);
+      // last
+      S("sbp_destrm_last d3_next_null=");
+      D(d3.Next == NULL);
+      S(" head_d3=");
+      D(CFE_SBR_GetDestListHeadPtr(rid) == &d3);
+      S("\n");
+      CFE_SB_RemoveDestNode(rid, &d3);
+      // only
+      S("sbp_destrm_only head_null=");
+      D(CFE_SBR_GetDestListHeadPtr(rid) == NULL);
+      S("\n");
+      // THE TRANSACTION SETTERS. First writer wins, independently, for the event and the status.
+      txn = CFE_SB_TransmitTxn_Init(&ttxn, &ttxn);
+      S("sbp_txn_init ok=");
+      D(CFE_SB_MessageTxn_IsOK(txn));
+      S(" transmit=");
+      D(txn->IsTransmit);
+      S(" maxpipes=");
+      D(txn->MaxPipes);
+      S(" status=");
+      D(CFE_SB_MessageTxn_GetStatus(txn));
+      S("\n");
+      CFE_SB_MessageTxn_SetContentSize(txn, 100);
+      S("sbp_txn_size ok=");
+      D(CFE_SB_MessageTxn_IsOK(txn));
+      S(" size=");
+      D(CFE_SB_MessageTxn_GetContentSize(txn));
+      S("\n");
+      CFE_SB_MessageTxn_SetRoutingMsgId(txn, CFE_SB_ValueToMsgId(CFE_SB_CMD_MID));
+      S("sbp_txn_mid ok=");
+      D(CFE_SB_MessageTxn_IsOK(txn));
+      S(" mid=0x");
+      Hx8(CFE_SB_MsgIdToValue(CFE_SB_MessageTxn_GetRoutingMsgId(txn)));
+      S("\n");
+      // too big, then an invalid id: the FIRST failure keeps both fields
+      CFE_SB_MessageTxn_SetContentSize(txn, CFE_MISSION_SB_MAX_SB_MSG_SIZE + 1);
+      S("sbp_txn_toobig ok=");
+      D(CFE_SB_MessageTxn_IsOK(txn));
+      S(" evt=");
+      D(txn->TransactionEventId);
+      S(" status=");
+      D(CFE_SB_MessageTxn_GetStatus(txn));
+      S(" size=");
+      D(CFE_SB_MessageTxn_GetContentSize(txn));
+      S("\n");
+      CFE_SB_MessageTxn_SetRoutingMsgId(txn, CFE_SB_InvalidMsgId);
+      S("sbp_txn_firstwins evt=");
+      D(txn->TransactionEventId);
+      S(" status=");
+      D(CFE_SB_MessageTxn_GetStatus(txn));
+      S("\n");
+      // The timeout modes, including the rejected one.
+      txn = CFE_SB_ReceiveTxn_Init(&rtxn, &rtxn);
+      CFE_SB_MessageTxn_SetTimeout(txn, CFE_SB_POLL);
+      v1 = CFE_SB_MessageTxn_GetOsTimeout(txn);
+      S("sbp_timeout poll=");
+      D(txn->TimeoutMode);
+      S(" os=");
+      D(v1);
+      CFE_SB_MessageTxn_SetTimeout(txn, CFE_SB_PEND_FOREVER);
+      v1 = CFE_SB_MessageTxn_GetOsTimeout(txn);
+      S(" pend=");
+      D(txn->TimeoutMode);
+      S(" os=");
+      D(v1);
+      CFE_SB_MessageTxn_SetTimeout(txn, -99);
+      S(" bad_evt=");
+      D(txn->TransactionEventId);
+      S(" status=");
+      D(CFE_SB_MessageTxn_GetStatus(txn));
+      S("\n");
+      // A NULL reference pointer is rejected, with a DIFFERENT event per direction.
+      txn = CFE_SB_TransmitTxn_Init(&ttxn, NULL);
+      S("sbp_null_tx evt=");
+      D(txn->TransactionEventId);
+      S(" status=");
+      D(CFE_SB_MessageTxn_GetStatus(txn));
+      S("\n");
+      txn = CFE_SB_ReceiveTxn_Init(&rtxn, NULL);
+      S("sbp_null_rx evt=");
+      D(txn->TransactionEventId);
+      S(" status=");
+      D(CFE_SB_MessageTxn_GetStatus(txn));
+      S(" endpoint=");
+      D(txn->IsEndpoint);
+      S("\n");
+      CFE_SB_MessageTxn_SetEndpoint(txn, TRUE);
+      S("sbp_endpoint=");
+      D(txn->IsEndpoint);
+      S("\n");
+      // The subscribe counters: six event ids mean "failed", one means "duplicate".
+      CFE_SB_Global.HKTlmMsg.Payload.SubscribeErrorCounter = 0;
+      CFE_SB_Global.HKTlmMsg.Payload.DuplicateSubscriptionsCounter = 0;
+      CFE_SB_IncrementSubscribeCounters(CFE_SB_SUB_INV_PIPE_EID);
+      CFE_SB_IncrementSubscribeCounters(CFE_SB_MAX_DESTS_MET_EID);
+      CFE_SB_IncrementSubscribeCounters(CFE_SB_DUP_SUBSCRIP_EID);
+      CFE_SB_IncrementSubscribeCounters(CFE_SB_INIT_EID);
+      // not an error
+      S("sbp_subcnt err=");
+      D(CFE_SB_Global.HKTlmMsg.Payload.SubscribeErrorCounter);
+      S(" dup=");
+      D(CFE_SB_Global.HKTlmMsg.Payload.DuplicateSubscriptionsCounter);
+      S("\n");
     }
     // --- cfe_time_objtab.c ------------------------------------------------------------
     S("tim_objtab ");

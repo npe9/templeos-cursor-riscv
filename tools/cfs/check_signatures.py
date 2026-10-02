@@ -70,6 +70,13 @@ C_TYPES = [(r'\bconst\b', ' '),
             ' PTRSNUM '),
            (r'\bCFE_TIME_(?:ClockState|ToneSignalSelect|FlywheelState|SetState)_Enum_t\b',
             ' SNUM '),
+           # CFE_Status_t is `int32`, and every cFE error code is NEGATIVE -- so the catch-all
+           # below, which maps every CFE_*_t to NUM, had it as unsigned. Caught when
+           # CFE_SB_MessageTxn_SetEventAndStatus became the first translated function to take
+           # one as a PARAMETER rather than return it; the translation's I32 was right and the
+           # tool was wrong, which is the failure mode worth not having.
+           (r'\bCFE_Status_t\s*\*', ' PTRSNUM '),
+           (r'\bCFE_Status_t\b', ' SNUM '),
            (r'\bCFE_\w+_t\s*\*', ' PTRNUM '),
            (r'\bCFE_\w+_t\b', ' NUM '),
            (r'\bosal_id_t\s*\*', ' PTRNUM '), (r'\bchar\s*\*', ' PTRB '),
@@ -149,7 +156,11 @@ DEVIATIONS = {
 KEYWORDS = {'if', 'for', 'while', 'switch', 'return', 'else', 'do', 'sizeof'}
 
 FN_TYPEDEF = re.compile(r'\b(?:(?:OS|CFE)_\w*(?:Callback|MatchFunc|CheckFunc|IncrementFunc|Func)\w*_t'
-                        r'|osal_task_entry|OS_TimerSync_t|OS_EventHandler_t)\b')
+                        # CFE_SB_MessageTxn_PipeHandler_t is SB's per-pipe handler: the two
+                        # directions pass different functions through ProcessPipes, which is the
+                        # whole reason it is a pointer rather than a branch.
+                        r'|osal_task_entry|OS_TimerSync_t|OS_EventHandler_t'
+                        r'|CFE_SB_MessageTxn_PipeHandler_t)\b')
 FN_SPELLED = re.compile(r'\(\s*\*+\s*\w*\s*\)\s*\([^)]*\)')
 
 # Any type spelling, C or HolyC. The old version listed the return types one at a time and

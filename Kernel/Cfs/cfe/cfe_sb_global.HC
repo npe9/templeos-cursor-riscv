@@ -37,7 +37,11 @@
 #include "cfe_sb_decl.HC"             // CFE_SB_Buffer and CFE_SB_Qos_t, the public SB types
 #include "cfe_sb_msgid.HC"            // CFE_SB_MsgId and its constructors
 #include "cfe_msg_sechdr_fc.HC"       // CFE_MSG_CommandHeader / CFE_MSG_TelemetryHeader
-#include "cfe_evs.HC"                 // CFE_EVS_BinFilter_t, which EventFilters is an array of
+// CFE_EVS_BinFilter_t, which EventFilters is an array of, comes from cfe_evs.HC -- and that file
+// is NOT INCLUDED HERE. cfe_evs.HC states its own prerequisites rather than including them
+// (EVS_AppData_t, CFE_TIME_SysTime), so including it from here makes this file compile only in
+// an order it does not control. INCLUDE cfe_evs.HC BEFORE THIS FILE; the differential driver
+// does, and so does every unit that needs SB.
 #include "cfe_sbr_route_unsorted.HC"  // CFE_SBR_RouteId
 #include "cfe_fs_api.HC"              // CFE_FS_FileWriteMetaData_t, the background file state
 // OS_OBJECT_TYPE_USER, which CFE_SB_PIPEID_BASE's offset is measured from. NASA reaches it by
@@ -104,6 +108,11 @@
 // so this number is the pipe-id space. cfe_resourceid.HC owns MAKE_BASE; the offset is NASA's.
 #define CFE_RESOURCEID_SB_PIPEID_RESOURCE_BASE_OFFSET (OS_OBJECT_TYPE_USER + 6)
 #define CFE_SB_PIPEID_BASE CFE_RESOURCEID_MAKE_BASE(CFE_RESOURCEID_SB_PIPEID_RESOURCE_BASE_OFFSET)
+// --- default_cfe_sb_msgids.h ------------------------------------------------------------------
+// SB's own command and housekeeping message ids. NASA spells them CFE_PLATFORM_SB_CMD_MIDVAL(CMD)
+// and so on, with the defaults in the comment; check_constants.py compares the numbers.
+#define CFE_SB_CMD_MID     0x1803
+#define CFE_SB_SEND_HK_MID 0x180B
 // --- default_cfe_sb_msgdefs.h: the command payloads -------------------------------------------
 class CFE_SB_WriteFileInfoCmd_Payload_t
 {

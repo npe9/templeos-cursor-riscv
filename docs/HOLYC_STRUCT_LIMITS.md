@@ -715,3 +715,52 @@ never exits and a script that waits on it hangs — which is what happened the f
 baseline was taken. Its startup does print `RVWinMgr interactive FAIL (ExePutS)`, in the same
 family as the nine pre-existing `kernel-repl-exepubs-smoke` failures, and that is worth a look on
 its own account rather than as part of this.
+
+## 16. `sizeof` through `->` does not parse, and it swallows the rest of the unit — OPEN
+
+```c
+P  s;
+P *p = &s;
+
+sizeof(s.arr)    // works
+sizeof(s.one)    // works
+sizeof(p->arr)   // PARSE ERROR
+sizeof(p->one)   // PARSE ERROR
+```
+
+It is the ARROW specifically. `sizeof` of a member reached with `.` is fine for both an array and
+a scalar; reached with `->` it is not, and the failure mode is the problem rather than the
+refusal:
+
+```
+tests/exec/cases/driver.hc:0:1: error: parse error
+(1 error(s))
+```
+
+**It names the TOP-LEVEL file, at line 0, column 1** — not the file the construct is in, not the
+line, and with every other error in the unit suppressed. The construct consumes to end of input,
+so a 1,477-line translation reported one error pointing at line 0 of the 4,300-line driver that
+included it. Finding it took a bisect that recompiled the driver against progressively truncated
+copies of the new file; the formatter accepted the file in isolation the whole time, because
+`--fmt` parses with a different path.
+
+**Where it came from.** `cfe_sb_priv.c`'s `CFE_SB_GetAppTskName` writes
+
+```c
+strncmp((char *)ptr->AppName, (char *)ptr->TaskName, sizeof(ptr->AppName))
+```
+
+which is ordinary C and appears throughout cFS. The translation substitutes the array's bound —
+`CFE_MISSION_MAX_API_LEN` — which `check_padding.py` verifies on `CFE_ES_TaskInfo_t`, so the
+number is measured rather than copied. That is the same substitution limit #9 records for
+`sizeof(arr)/sizeof(arr[0])`, and the two are probably the same underlying gap.
+
+**GATES.** `tests/exec/cases/e_sizeof_member.hc` pins that the DOT form works for an array, a
+scalar and a nested member — the workaround's premise, so a change that broke it would be caught
+rather than silently making every substituted bound wrong. `tests/holyc/refused/sizeof_arrow.hc`
+pins that the arrow form is still REFUSED: it is wrong today, but being quietly ACCEPTED and
+miscompiled would be worse, and that is the direction a careless fix would take it.
+
+**When it is implemented**, the refusal case starts passing and should become an exec case
+asserting the value. The arrow form is valid C, NASA uses it, and the substitution above is a
+deviation that only exists because of this.
