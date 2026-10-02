@@ -8,7 +8,8 @@
 // reason that has nothing to do with the translation.
 //
 // The conversions cFS actually uses, counted across EVS's three sources: %s (14), %d (6),
-// %u (5), %ld (2), %08x (2), %08X (1). The hex and width forms were added to CfsStr.HC for
+// %u (5), %ld (2), %08x (2), %08X (1), and SB adds %zu. The hex, width and 'z' forms were
+// added to CfsStr.HC for
 // those, and this case is the check on them. The expected value is not a hash of a formatter:
 // every line here was run through C's snprintf and compared character by character first.
 #include "/Kernel/Cfs/CfsStr.HC"
@@ -92,6 +93,13 @@ I64 main()
   StrPrintN(b, sizeof(b), "[%x][%08X]", 0x123456789A, 0x123456789A);
   r = Fold(r, b);
   // C (with the (unsigned int) cast cFS puts there): [3456789a][3456789A]
+  // THE 'z' LENGTH MODIFIER IS size_t, AND THE REASON IT IS HERE IS THE ARGUMENT SHIFT. An
+  // unhandled conversion comes out literally AND CONSUMES NOTHING, so when cfe_sb_api.c logs
+  // "requested size %zu larger than allowed %d" the %d would have taken the size and the line
+  // would be wrong in two places at once rather than one. On LP64, %zu is %lu.
+  StrPrintN(b, sizeof(b), "[%zu][%zx][%08zu]", 1234567890123, 0xabcdef, 42);
+  r = Fold(r, b);
+  // C (measured with snprintf): [1234567890123][abcdef][00000042]
   // an unhandled conversion is emitted literally rather than dropped, so it shows up in a
   // transcript. It consumes no argument, which is why nothing follows it here: a %s after a
   // %q would take the %q's argument and dereference an integer as a pointer.

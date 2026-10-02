@@ -186,6 +186,16 @@ python3 "$ROOT/tools/cfs/check_fnptr_members.py" || exit 1
 # ids, a buffer length, and CFE_MISSION_ES_MAX_APPLICATIONS confused with the PLATFORM one.
 python3 "$ROOT/tools/cfs/check_constants.py" || exit 1
 
+# --- is it even compiled? -----------------------------------------------------------------------
+# Every gate above this line is driven from SRC_C, so each one measures the translation only
+# where the C half names a counterpart. A .HC file that is complete, parses, and is included by
+# NOBODY is invisible to all of them -- it cannot fail a gate, so the tree stays green while the
+# thing it claims to translate is never run. cfe_sb_api.HC landed in exactly that state. This
+# names the condition: reachable from a driver, or listed with a reason. Its own first run found
+# two files I did not know were unwired, because the roots were hardcoded and there are three
+# drivers, not two -- so it reads the roots out of the scripts now.
+python3 "$ROOT/tools/cfs/check_wired.py" || exit 1
+
 # --- the manifest ------------------------------------------------------------------------------
 # What NASA's build contains per cFE module, and how much of it is gated -- parsed from each
 # module's CMakeLists by if()-DEPTH, so a source inside a branch is reported with its guard

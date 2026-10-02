@@ -128,6 +128,11 @@ CSRC = [
     os.path.join(CFE, "modules", "fs", "fsw", "src", "cfe_fs_api.c"),
     os.path.join(CFE, "modules", "resourceid", "fsw", "src", "cfe_resourceid_api.c"),
     os.path.join(CFE, "modules", "sbr", "fsw", "src", "cfe_sbr_route_unsorted.c"),
+    # CFE_SB_RemovePipeCallback_t is declared INSIDE cfe_sb_api.c -- an implementation-file
+    # typedef, which is the shape neither gate reaches by default. The translation writes four
+    # bytes of padding into it by hand (a CFE_SB_PipeId_t followed by a char *), and until this
+    # line the only thing standing behind that number was my arithmetic.
+    os.path.join(CFE, "modules", "sb", "fsw", "src", "cfe_sb_api.c"),
 ]
 
 # HolyC primitive sizes. U0/I0 is the zero-size position marker (CDirEntry.start), which the

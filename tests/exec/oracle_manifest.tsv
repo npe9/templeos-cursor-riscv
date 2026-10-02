@@ -119,7 +119,7 @@ tests/exec/cases/e_compound_assign_width.hc	00000000013241f7
 tests/exec/cases/e_fnptr_member_call.hc	00d91797cb139d0e
 tests/exec/cases/e_class_packing.hc	000562421c437c94
 tests/exec/cases/e_paren_base_subscript.hc	00006352be825711
-tests/exec/cases/e_strprint_hex.hc	00000000faf9f20a
+tests/exec/cases/e_strprint_hex.hc	00000000bb679224
 tests/exec/cases/e_static_local_scope.hc	000053d3d67b7578
 tests/exec/cases/e_struct_assign_member.hc	00003f9cc92801c9
 tests/exec/cases/e_upper_name_stmt.hc	0000d05f000bccd3
@@ -128,3 +128,4 @@ tests/exec/cases/e_static_local_class_zero.hc	000000000207fd31
 # When #if is implemented this must become 00000000000004c6; read the case before re-pinning.
 tests/exec/cases/e_pp_if_known_wrong.hc	0000000000000457
 tests/exec/cases/e_sizeof_member.hc	000000005fd9f874
+tests/exec/cases/e_class_by_value_param.hc	00000000000112b9

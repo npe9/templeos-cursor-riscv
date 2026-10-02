@@ -55,6 +55,13 @@ class CFE_SB_Qos_t
   U8 Reliability;
   // CFE_SB_QosReliability_Enum_t
 };
+// CFE_SB_DEFAULT_QOS IS A COMPOUND LITERAL IN C -- `((CFE_SB_Qos_t){0})` -- and HolyC has no
+// such expression, so it is a ZEROED GLOBAL here instead. The three callers (CFE_SB_Subscribe,
+// CFE_SB_SubscribeLocal and every app that passes the default) only ever READ it, and HolyC
+// zeroes globals, so the value they see is the same two zero bytes C would have built on the
+// stack. The one behavioural difference is that a caller could now WRITE to it; nothing does,
+// and the translation gate compares the transcript, which would show it if anything did.
+CFE_SB_Qos_t CFE_SB_DEFAULT_QOS;
 // SB's DESTINATION DESCRIPTOR, from core_private/fsw/inc/cfe_sb_destination_typedef.h, and NASA's
 // warning on it is the same one the buffer descriptor carries: "Changing the size of this
 // structure may require the memory pool block sizes to change." One of these exists per

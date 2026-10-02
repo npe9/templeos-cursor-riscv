@@ -71,8 +71,8 @@ U8 *StrNCpy(U8 *dst, U8 *src, I64 n)
 // property every gate here rests on. So the SPELLING is TempleOS and the CONVERSIONS are C, and
 // the reason is that the input is C.
 //
-// Covers exactly the conversions the translated call sites use: %s, %u, %d, %x, %X, the 'l'
-// and 'll' length modifiers, and a leading zero-or-space field width as in %08x. Anything else
+// Covers exactly the conversions the translated call sites use: %s, %u, %d, %x, %X, the 'l',
+// 'll' and 'z' length modifiers, and a leading zero-or-space field width as in %08x. Anything else
 // is emitted literally so an unhandled case appears in a transcript instead of vanishing.
 //
 // The hex and width forms were added when EVS arrived: it is the first translated module whose
@@ -140,12 +140,19 @@ I64 StrPrintNV(U8 *Buf, I64 Size, U8 *Fmt, I64 nargs, I64 *args)
         n++;
         sp++;
       }
-    } else if (*Fmt == 'd' || *Fmt == 'u' || *Fmt == 'x' || *Fmt == 'X' || *Fmt == 'l') {
-      // %d %u %x %X and the 'l' length modifier. OSAL and cFE print status codes with %d and
-      // %ld and they are NEGATIVE -- treating those as unsigned would print
+    } else if (*Fmt == 'd' || *Fmt == 'u' || *Fmt == 'x' || *Fmt == 'X' || *Fmt == 'l' ||
+               *Fmt == 'z') {
+      // %d %u %x %X and the 'l' and 'z' length modifiers. OSAL and cFE print status codes with
+      // %d and %ld and they are NEGATIVE -- treating those as unsigned would print
       // 18446744073709551615 where NASA prints -1.
+      //
+      // 'z' IS size_t, AND IT HAD TO BE ADDED FOR A REASON WORTH WRITING DOWN. cfe_sb_api.c's
+      // CFE_SB_AllocateMessageBuffer logs an oversize request with "%zu", and an unhandled
+      // conversion here does not just misprint its own field -- it DOES NOT CONSUME ITS
+      // ARGUMENT, so the "%d" after it would have taken MsgSize and every argument on the line
+      // would be off by one. On LP64 size_t is 64-bit unsigned, so 'z' is exactly 'l'.
       islong = 0;
-      if (*Fmt == 'l') {
+      if (*Fmt == 'l' || *Fmt == 'z') {
         Fmt++;              // consume the length modifier
         if (*Fmt == 'l')
           Fmt++;            // %lld
