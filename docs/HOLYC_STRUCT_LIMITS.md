@@ -801,33 +801,54 @@ translation will meet it again and the hoisted local is the standing answer.
 the member's value, and the hoisted locals in `tests/exec/cases/cfs_xlat_ccsdspri.hc` can be
 inlined back.
 
-## 18. There is no `volatile` qualifier, and one cFS field needs one — OPEN
+## 18. There is no `volatile` qualifier, and it does not matter — MEASURED, NOT A LIMIT
 
-`CFE_ES_Global.SystemState` is declared
+**This entry was wrong when first written.** It said the missing `volatile` on
+`CFE_ES_Global.SystemState` was an open deviation needing a workaround. It is not, and the
+question that corrected it was "isn't all HolyC code volatile?" — which is very nearly the case
+and is now a gate.
+
+`CFE_ES_Global.SystemState` is `volatile sig_atomic_t` in cFE. `cfe_es_start.c` writes it as the
+core comes up while `CFE_ES_WaitForSystemState` **spins reading it** from another task, so a
+compiler that hoisted the load out of that loop would never see the write.
+
+**This compiler does not hoist it.** The loop
 
 ```c
-volatile sig_atomic_t SystemState;     /* cfe_es_global.h */
+I32 SystemState;
+while (SystemState != 7) n++;
 ```
 
-and the `volatile` is load-bearing: `cfe_es_start.c` writes it as the core comes up while
-`CFE_ES_WaitForSystemState` in `cfe_es_api.c` **spins reading it** from another task. A compiler
-free to hoist that load out of the loop never sees the write and the wait never ends.
+compiles to a back edge targeting the `auipc`/`addi`/`lw` that materialises the global's address
+and loads it — so the address is recomputed and the value re-read on **every iteration**:
 
-HolyC has no `volatile`, so `Kernel/Cfs/cfe/cfe_es_global.HC` declares it `I32 SystemState`.
-The width is right and `check_padding` verifies it — **and `check_padding` can never see the
-qualifier**, which is why this is written down rather than left as a comment in the
-declaration. Nothing any gate in `tools/cfs/` measures can distinguish the two.
+```
+  28: auipc a0,0x0          <- the back edge targets HERE
+  2c: addi  a0,a0,1508      # SystemState
+  30: lw    a0,0(a0)        <- the load, inside the loop
+  ...
+  6c: jalr  zero,-64(t0)    # 0x28
+```
 
-**It is latent, not yet live.** No translated code polls `SystemState` today; the driver stubs
-`CFE_ES_WaitForSystemState`. The first ES source that translates either side of that spin makes
-it real, and at that point the choice is one of:
+**Why it is true, from the source rather than from one loop.** `IcOptimize` runs constant
+folding, cmp-to-branch, logical-bool elide, const-branch, if/else and call tail merge,
+dead-after-jmp, and a frame-access peephole. There is no common-subexpression elimination, no
+loop-invariant code motion and no load elimination. Every constant pass tests
+`!(ic->ic_flags & ICF_GLBL_ADDR)` and therefore skips globals **by construction**. The register
+slot cache (`O1Slot*`) is keyed by **frame offset** — a global does not have one. The local `n`
+in the loop above is also re-loaded and re-stored through memory each iteration.
 
-- have the spin re-read through a function the compiler cannot inline away, which is what the
-  rest of this port does for device registers;
-- add a `volatile`-equivalent to the compiler;
-- or keep the spin out of the translated set and leave `WaitForSystemState` a stub, which is
-  honest only for as long as `check_coverage` is not gating `cfe_es_api.c`.
+**It is a gate, not a belief**: `tests/scripts/check_global_reload.sh` compiles that probe,
+disassembles it, and asserts that the global's load sits at or after the back edge's target. A
+control that reads a local copy taken before the loop — exactly the code a hoisting compiler
+would emit — was shown to fail it.
 
-Recorded here because "what does this port not do" is the question this file answers, and
-because a reader standing at the declaration will find the comment but a reader asking the
-general question would not.
+So no `volatile` is needed today, and the risk is not in the translation but in the compiler: a
+future loop-invariant-motion pass would make the missing qualifier a real defect, and nothing
+else in the gate set could see it (`check_padding` compares the field's *width*). That gate is
+what turns a silent future regression into a failure.
+
+Two things it does **not** claim. It says nothing about multi-word atomicity — `SystemState` is a
+4-byte aligned `I32`, so a RISC-V `lw`/`sw` is atomic and the question does not arise. And it
+says nothing about ordering across cores; the port is single-core today, and an SMP `cFE` would
+need fences that no C `volatile` provides either.

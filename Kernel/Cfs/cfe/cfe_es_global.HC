@@ -456,13 +456,18 @@ class CFE_ES_TaskData_t
 // which cfe_es_resetdata.HC already declares and which this reaches through a POINTER on the
 // last line.
 //
-// SystemState is `volatile sig_atomic_t` in the C -- a plain int, 4 bytes, and the volatile is
-// load-bearing: cfe_es_start.c writes it as the core comes up while CFE_ES_WaitForSystemState
-// SPINS READING IT from another task, so a compiler free to hoist the load never sees the write.
-// HolyC has no volatile qualifier. check_padding verifies the WIDTH and can never see the
-// qualifier, so this is docs/HOLYC_STRUCT_LIMITS.md #18 as well as a comment here -- a reader
-// standing at the declaration finds this, and a reader asking "what does this port not do"
-// finds the other.
+// SystemState is `volatile sig_atomic_t` in the C -- a plain int, 4 bytes -- and HolyC has no
+// volatile qualifier. THAT IS FINE HERE, AND IT WAS MEASURED RATHER THAN HOPED: this compiler
+// re-loads a global on every reference, so every access is already what volatile asks for. The
+// IC optimizer has no common-subexpression elimination and no loop-invariant code motion, and
+// every constant pass it does have skips globals by construction (ICF_GLBL_ADDR); its register
+// cache is keyed by frame offset, which a global has none of.
+//
+// tests/scripts/check_global_reload.sh pins it: it disassembles a spin-on-global loop and
+// asserts the load sits inside the loop body, with a control that fails when the value is read
+// into a local first. docs/HOLYC_STRUCT_LIMITS.md #18 has the evidence. The risk is not in this
+// declaration but in the compiler -- a future hoisting pass would make the missing qualifier a
+// real defect, and check_padding compares this field's WIDTH and could never see it.
 class CFE_ES_Global_t
 {
   CFE_ES_DebugVariables_t DebugVars;
