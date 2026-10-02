@@ -110,6 +110,17 @@ HDRS = [
     # the CRC parameter block. The pool record carries two FUNCTION POINTERS, so
     # check_fnptr_members.py reads it too.
     "cfe_es_generic_pool.h", "cfe_es_crc.h", "cfe_es_extern_typedefs.h",
+    # ES's STATE: cfe_es_global.h and the four module-private headers whose types it embeds.
+    # 57,400 bytes, most of it the 512-entry CDS registry, and every class in it is declared
+    # before a line of ES code is written -- which is the whole reason a file of declarations
+    # is worth gating on its own.
+    # ORDER MATTERS HERE: the probe emits #includes in this list's order, and
+    # cfe_es_global.h does not include the headers whose types it embeds -- cFE relies on
+    # cfe_es_module_all.h having pulled them in first. So the five module-private headers come
+    # BEFORE it, and putting global first produced five "unknown type name" errors rather than
+    # a silent skip, which is the right way for that to fail.
+    "cfe_es_erlog_typedef.h", "cfe_es_apps.h", "cfe_es_appctrl.h", "cfe_es_mempool.h",
+    "cfe_es_cds.h", "cfe_es_perf.h", "cfe_es_global.h",
     # TIME's own, for the same reason: its twenty-three messages, the seven enum typedefs their
     # fields are spelled with, and CFE_TIME_Global's internal types.
     "cfe_time_module_all.h", "cfe_time_utils.h",
@@ -134,6 +145,10 @@ CSRC = [
     # this gate then refused to call them measured -- which is the behaviour that makes the pair
     # of gates work: one notices the type exists, the other refuses to pretend it checked it.
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-idmap.c"),
+    # OS_Timer_ArgWrapper_t is a UNION declared inside osapi-time.c -- the shape that needs both
+    # of this file's extensions at once: unions had to start being scanned before it could pair,
+    # and an implementation-file declaration needs its source lifted here.
+    os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-time.c"),
     os.path.join(CFE, "modules", "fs", "fsw", "src", "cfe_fs_api.c"),
     os.path.join(CFE, "modules", "resourceid", "fsw", "src", "cfe_resourceid_api.c"),
     os.path.join(CFE, "modules", "sbr", "fsw", "src", "cfe_sbr_route_unsorted.c"),
@@ -179,7 +194,11 @@ def lifted_typedefs():
         if not os.path.exists(path):
             continue
         txt = check_structs.strip_comments(open(path, errors="replace").read())
-        for m in re.finditer(r'typedef\s+(?:enum|struct)\s*(?:\w+\s*)?\{', txt):
+        # enum, struct OR UNION. `union` was missing, so OS_Timer_ArgWrapper_t -- a union
+        # declared inside osapi-time.c -- could not be lifted and the gate refused to call it
+        # measured, correctly. Three separate places had to learn about unions for one type to
+        # be checked: check_structs' HolyC scan, its NASA scan, and this lifter.
+        for m in re.finditer(r'typedef\s+(?:enum|struct|union)\s*(?:\w+\s*)?\{', txt):
             i, depth = m.end(), 1
             while i < len(txt) and depth:
                 if txt[i] == '{':
@@ -425,7 +444,16 @@ def main(argv):
             if csize != hsize:
                 lines.append("        %-24s %8d        %8d        SIZEOF" % ("(whole struct)", csize, hsize))
             bad.append("\n".join(lines))
-        elif any(o != sum(sz for _, _, sz in hmem[:i]) for i, (_, o, _) in enumerate(hmem)):
+        # "CARRIES EXPLICIT PADDING" MEANS THE CLASS HAS A HAND-WRITTEN `_padN` MEMBER, and it
+        # is counted by looking for one. The previous test asked whether any member's offset
+        # differed from the running sum of the sizes before it -- which can never be true for a
+        # class, because a pad IS a member and the sum includes it, and is ALWAYS true from the
+        # second member of a union, because every union member is at offset 0. So the number
+        # reported nothing at all until unions started being compared, and then reported
+        # exactly the unions: six classes said to carry padding, none of which had a pad. A
+        # count in a gate's own summary that cannot be reproduced from the source is the shape
+        # this whole session has been about.
+        elif any(check_structs.PAD.match(f) for f, _, _ in hmem):
             padded.append(name)
         if verbose:
             print("  %-44s sizeof %d" % (cand, csize))

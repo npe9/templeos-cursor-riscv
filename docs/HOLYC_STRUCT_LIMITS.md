@@ -800,3 +800,34 @@ translation will meet it again and the hoisted local is the standing answer.
 **When it is fixed**, the refusal case starts passing and should become an exec case asserting
 the member's value, and the hoisted locals in `tests/exec/cases/cfs_xlat_ccsdspri.hc` can be
 inlined back.
+
+## 18. There is no `volatile` qualifier, and one cFS field needs one — OPEN
+
+`CFE_ES_Global.SystemState` is declared
+
+```c
+volatile sig_atomic_t SystemState;     /* cfe_es_global.h */
+```
+
+and the `volatile` is load-bearing: `cfe_es_start.c` writes it as the core comes up while
+`CFE_ES_WaitForSystemState` in `cfe_es_api.c` **spins reading it** from another task. A compiler
+free to hoist that load out of the loop never sees the write and the wait never ends.
+
+HolyC has no `volatile`, so `Kernel/Cfs/cfe/cfe_es_global.HC` declares it `I32 SystemState`.
+The width is right and `check_padding` verifies it — **and `check_padding` can never see the
+qualifier**, which is why this is written down rather than left as a comment in the
+declaration. Nothing any gate in `tools/cfs/` measures can distinguish the two.
+
+**It is latent, not yet live.** No translated code polls `SystemState` today; the driver stubs
+`CFE_ES_WaitForSystemState`. The first ES source that translates either side of that spin makes
+it real, and at that point the choice is one of:
+
+- have the spin re-read through a function the compiler cannot inline away, which is what the
+  rest of this port does for device registers;
+- add a `volatile`-equivalent to the compiler;
+- or keep the spin out of the translated set and leave `WaitForSystemState` a stub, which is
+  honest only for as long as `check_coverage` is not gating `cfe_es_api.c`.
+
+Recorded here because "what does this port not do" is the question this file answers, and
+because a reader standing at the declaration will find the comment but a reader asking the
+general question would not.

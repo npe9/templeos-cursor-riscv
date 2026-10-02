@@ -104,7 +104,7 @@ lines, one diff, one negative control.
 | `resourceid` | 228 | **228** | complete, SIMPLE variant |
 | `sb` | 6,086 | **6,086** | complete — all seven unconditional sources plus `msg_id_util`; the EDS dispatcher is the alternative |
 | `config` | 782 | **489** | get/set/lookup/eds complete; `init.c` (241) and its objtab wait for the build-generated GLOBAL_CONFIGDATA |
-| `es` | 12,734 | **820** | `crc` and `generic_pool` -- the allocator every other pool wraps; `mempool` next, which needs CFE_ES_Global |
+| `es` | 12,734 | **820** | `crc` and `generic_pool` done, plus the module's STATE (`cfe_es_global.HC`, 29 classes, 57,400 bytes). `mempool` needs `syslog` + `api` first, because `check_coverage` is all-or-nothing per source |
 | `tbl` | 7,780 | 0 | after `es` |
 | `sbr` | 535 | **434** | complete for the default HASH map; `map_direct` is the alternative |
 

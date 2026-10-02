@@ -85,7 +85,16 @@ OMITTED = {
 # translation for its own blind spot, which is the one failure mode worse than not checking,
 # because it costs a real investigation. Same shape as the `modules/*/config` glob that was
 # missing from NASA_DIRS and as check_fnptr_members.py's first regex.
-FIELD = re.compile(r'^\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+)*'
+# A MULTI-WORD PRIMITIVE TYPE needs `long` and `short` in the leading run. cFE's own
+# CFE_SB_Buffer_t union is
+#     long long int LongInt;
+#     long double   LongDouble;
+# and with only the four qualifiers below, neither line parsed -- so NASA's side came back with
+# two fields instead of four and the tool reported the TRANSLATION as having two EXTRA members
+# that it correctly has. That is the third time this regex has blamed the translation for a
+# spelling it could not read (see the two notes above), and it surfaced only when unions started
+# being scanned at all.
+FIELD = re.compile(r'^\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|long\s+|short\s+)*'
                    r'(?:struct\s+|union\s+|enum\s+)?'
                    r'[A-Za-z_]\w*(?:\s*\([^;()]*\))?'
                    r'(?:\s*\*+|\s*const\b|\s*volatile\b)*'
@@ -161,10 +170,14 @@ def nasa_structs():
             # `typedef struct { ... } Name;` and `struct Name { ... };`
             # `typedef const struct { ... } Name;` is how cFE declares its target-config
             # types, and without the optional `const` none of them were being compared at all.
-            for m in re.finditer(r'typedef\s+(?:const\s+)?struct\s*(?:\w+\s*)?\{' + BODY +
+            # struct OR union, in both forms. Scanning only `struct` is what made every
+            # translated union unpairable; a cFS union is an ordinary tagged or typedef'd type
+            # (CFE_ES_CDS_AccessCacheData, OS_SockAddrData_t, CFE_Config_ValueBuffer) and there
+            # was nothing to find it with.
+            for m in re.finditer(r'typedef\s+(?:const\s+)?(?:struct|union)\s*(?:\w+\s*)?\{' + BODY +
                                  r'\}\s*(\w+)\s*;', txt, re.S):
                 out.setdefault(m.group(2), (fields_of(m.group(1)), fn))
-            for m in re.finditer(r'\bstruct\s+(\w+)\s*\{' + BODY + r'\}\s*;', txt, re.S):
+            for m in re.finditer(r'\b(?:struct|union)\s+(\w+)\s*\{' + BODY + r'\}\s*;', txt, re.S):
                 out.setdefault(m.group(1), (fields_of(m.group(2)), fn))
     return out
 
@@ -183,10 +196,11 @@ UNPAIRED_OK = {
         "NASA writes this member's type inline as CFE_ES_STATIC_POOL_TYPE(...), an ANONYMOUS "
         "union. HolyC has no anonymous member type, so the union is named here; there is no "
         "upstream struct of any name to pair with. cfe_sb_global.HC records the argument.",
-    "CFE_SB_Buffer":
-        "NASA's CFE_SB_Buffer_t is a typedef of an ANONYMOUS union, so again there is no tagged "
-        "upstream type. Its SIZE is checked by check_padding through the classes that contain "
-        "it -- CFE_SB_BufferD_t.Content.",
+    # CFE_SB_Buffer WAS HERE, and its reason was WRONG: it said NASA's CFE_SB_Buffer_t is a
+    # typedef of an anonymous union with no tagged upstream type. It is `typedef union CFE_SB_Msg
+    # {...} CFE_SB_Buffer_t;` -- tagged, and perfectly pairable. The entry was written when this
+    # gate did not scan unions at all, so "no counterpart" was the tool's own blind spot being
+    # recorded as a fact about NASA's source. It pairs now and is compared like anything else.
     "OS_EventHandlerSlot":
         "NASA's OS_SharedGlobalVars.EventHandler is an array of the function-pointer typedef "
         "OS_EventHandler_t; the translation wraps one pointer in a class so the member can be an "
@@ -206,7 +220,16 @@ def hc_classes():
             if not fn.endswith(".HC"):
                 continue
             txt = strip_comments(open(os.path.join(d, fn), errors="replace").read())
-            for m in re.finditer(r'\bclass\s+(\w+)\s*\{(.*?)\}\s*;', txt, re.S):
+            # `class` OR `union`. This said `class` only, and a HolyC `union` was therefore
+            # invisible to this gate -- never paired, so never reported as unpaired, so it
+            # PASSED. check_padding captures unions but could not pair them because
+            # nasa_structs below did not scan them either, so it dropped them. The result: EVERY
+            # TRANSLATED UNION IN THE PORT had never had its fields or its layout compared with
+            # NASA's by anything -- six real ones, including CFE_SB_BackgroundFileBuffer_t,
+            # which is the buffer SB's three file writers fill. Found when a newly translated
+            # union appeared in check_padding's unpaired list, a list that exists only because
+            # the silent skip was made visible one commit earlier.
+            for m in re.finditer(r'\b(?:class|union)\s+(\w+)\s*\{' + BODY + r'\}\s*;', txt, re.S):
                 out[m.group(1)] = ([f for f in fields_of(m.group(2)) if not PAD.match(f)], fn)
     return out
 
@@ -219,6 +242,24 @@ def main(argv):
         return 1
 
     bad, notes, checked, unpaired = [], [], 0, []
+    # A STALE UNPAIRED_OK ENTRY IS A FAILURE, and this check exists because one rotted into a
+    # false statement about NASA's source. CFE_SB_Buffer's entry said "CFE_SB_Buffer_t is a
+    # typedef of an ANONYMOUS union, so there is no tagged upstream type". It is
+    # `typedef union CFE_SB_Msg {...} CFE_SB_Buffer_t;` -- tagged all along. The entry was
+    # written when this gate did not scan unions, so the TOOL'S BLIND SPOT had been recorded as
+    # a fact about the upstream, and it sat there being quoted. Same discipline as
+    # check_wired.py's: both directions fail.
+    stale = sorted(k for k in UNPAIRED_OK if pair_name(k, nasa) is not None)
+    if stale:
+        print("FAIL cfs-structs — these are in UNPAIRED_OK but DO pair with NASA now.",
+              file=sys.stderr)
+        print("  Remove the entry and let them be compared. An exception that no longer applies",
+              file=sys.stderr)
+        print("  is worse than none: its stated reason is being trusted and is wrong.",
+              file=sys.stderr)
+        for k in stale:
+            print("    %-30s pairs with %s" % (k, pair_name(k, nasa)), file=sys.stderr)
+        return 1
     for name, (hfields, hfile) in sorted(mine.items()):
         cand = pair_name(name, nasa)
         if cand is None:

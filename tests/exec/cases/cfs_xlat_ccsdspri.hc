@@ -153,6 +153,7 @@ I64 StrCmp(U8 *st1, U8 *st2)
 #include "/Kernel/Cfs/cfe/cfe_sb_objtab.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_crc.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_generic_pool.HC"
+#include "/Kernel/Cfs/cfe/cfe_es_global.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
