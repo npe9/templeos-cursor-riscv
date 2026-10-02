@@ -421,6 +421,88 @@ class CFE_SB_MemParams_t
   // C aligns the 16-byte-aligned partition
   CFE_SB_MemPartition_t Partition;
 };
+// --- cfe_sb_priv.h: the MESSAGE TRANSACTION ---------------------------------------------------
+// WHAT A TRANSACTION IS. Sending a message is not one operation: SB has to find every pipe
+// subscribed to the message id, try each one, and then report -- and a failure on the fourth
+// pipe must not undo the first three or stop the fifth. CFE_SB_MessageTxn_State_t is the record
+// of one such fan-out: the set of pipes, how many of them failed, the FIRST event id worth
+// reporting, and one status for the whole thing. Receiving uses the same type with a single
+// pipe in the set, which is why the type is "MessageTxn" and not "TransmitTxn".
+//
+// THE TWO WRAPPER TYPES ARE WHERE THE PIPE SET LIVES. CFE_SB_MessageTxn_State_t holds a POINTER
+// to the set; CFE_SB_TransmitTxn_State_t supplies storage for up to
+// CFE_PLATFORM_SB_MAX_DEST_PER_PKT of them and CFE_SB_ReceiveTxn_State_t for exactly one. That
+// is how one state machine serves both directions without allocating, and it is also why
+// CFE_SB_MessageTxn_Init clears `offsetof(CFE_SB_TransmitTxn_State_t, DestSet)` rather than
+// sizeof(*TxnPtr) -- it zeroes the common header and deliberately leaves the destination array
+// alone.
+#define CFE_SB_MessageTxn_TimeoutMode_POLL  0
+// do not block
+#define CFE_SB_MessageTxn_TimeoutMode_PEND  1
+// block indefinitely
+#define CFE_SB_MessageTxn_TimeoutMode_TIMED 2
+// block for a limited time
+// CFE_SB_ReceiveBuffer's immediate-status option, beside CFE_SB_PEND_FOREVER in cfe_sb_decl.HC.
+#define CFE_SB_POLL 0
+// One pipe within a transaction, and its own outcome. PendingEventId and OsStatus are PER PIPE
+// because the fan-out's whole point is that one destination failing says nothing about another.
+class CFE_SB_PipeSetEntry_t
+{
+  U32 PipeId;
+  // CFE_SB_PipeId_t
+  U32 SysQueueId;
+  // osal_id_t
+  U16 PendingEventId;
+  U8 _pad0[2];
+  // C aligns OsStatus to 4
+  I32 OsStatus;
+};
+
+class CFE_SB_MessageTxn_State_t
+{
+  Bool IsTransmit;
+  Bool IsEndpoint;
+  U16 NumPipes;
+  U16 MaxPipes;
+  U16 NumPipeErrs;
+  U16 TransactionEventId;
+  U8 _pad0[2];
+  // C aligns TimeoutMode, a 4-byte enum, to 4
+  I32 TimeoutMode;
+  // CFE_SB_MessageTxn_TimeoutMode_t, a C enum
+  I32 UserTimeoutParam;
+  U8 _pad1[4];
+  // C aligns AbsTimeout to 8
+  OS_time_t AbsTimeout;
+  I32 Status;
+  // CFE_Status_t
+  U8 _pad2[4];
+  // C aligns ContentSize to 8
+  I64 ContentSize;
+  // size_t
+  CFE_SB_MsgId RoutingMsgId;
+  U8 _pad3[4];
+  // C aligns the two pointers to 8
+  U8 *RefMemPtr;
+  // kept for reporting only; never dereferenced
+  CFE_SB_PipeSetEntry_t *PipeSet;
+};
+
+class CFE_SB_TransmitTxn_State_t
+{
+  CFE_SB_MessageTxn_State_t MessageTxn_State;
+  CFE_SB_PipeSetEntry_t DestSet[CFE_PLATFORM_SB_MAX_DEST_PER_PKT];
+};
+
+class CFE_SB_ReceiveTxn_State_t
+{
+  CFE_SB_MessageTxn_State_t MessageTxn_State;
+  CFE_SB_PipeSetEntry_t Source;
+};
+// typedef bool (*CFE_SB_MessageTxn_PipeHandler_t)(CFE_SB_MessageTxn_State_t *,
+//                                                 CFE_SB_PipeSetEntry_t *, void *);
+// HolyC has no typedef, so it is spelled out at the one parameter that takes it --
+// CFE_SB_MessageTxn_ProcessPipes.
 // --- cfe_sb_priv.h: the background file writer -----------------------------------------------
 // One route's worth of destinations, held while the route-info file is written a record at a
 // time. The background writer runs outside SB's task, so this has to live in the global.
