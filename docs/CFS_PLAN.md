@@ -104,7 +104,7 @@ lines, one diff, one negative control.
 | `resourceid` | 228 | **228** | complete, SIMPLE variant |
 | `sb` | 6,086 | **6,086** | complete — all seven unconditional sources plus `msg_id_util`; the EDS dispatcher is the alternative |
 | `config` | 782 | **489** | get/set/lookup/eds complete; `init.c` (241) and its objtab wait for the build-generated GLOBAL_CONFIGDATA |
-| `es` | 12,734 | **8,421** | `crc`, `generic_pool`, `syslog`, `mempool`, `resource`, `api`, `task`, `erlog`, `backgroundtask`, `objtab`, `perf`, `dispatch`, plus the module's STATE (`cfe_es_global.HC`) and its twenty-two ground message formats (`cfe_es_msg.HC`). The driver's simulated bump allocator is GONE -- every allocation in the transcript runs NASA's real pool, and with `api.c` gated "who is calling" comes out of ES's own app and task tables rather than out of a stub |
+| `es` | 12,734 | **8,920** | `crc`, `generic_pool`, `syslog`, `mempool`, `resource`, `api`, `task`, `erlog`, `backgroundtask`, `objtab`, `perf`, `dispatch`, `appctrl`, plus the module's STATE (`cfe_es_global.HC`) and its twenty-two ground message formats (`cfe_es_msg.HC`). The driver's simulated bump allocator is GONE -- every allocation in the transcript runs NASA's real pool, and with `api.c` gated "who is calling" comes out of ES's own app and task tables rather than out of a stub |
 | `tbl` | 7,780 | 0 | after `es` |
 | `sbr` | 535 | **434** | complete for the default HASH map; `map_direct` is the alternative |
 
@@ -302,7 +302,7 @@ rather than counted as always-built:
 | `evs` | 5 | 2,787 | **100%** (six of six; the `_dispatch` one is conditional — see below) |
 | `time` | 5 | 4,383 | **100%** (plus `cfe_time_dispatch.c`, 294, which is conditional — see below) |
 | `tbl` | 15 | 7,780 | 0% |
-| `es` | 17 | 12,734 | **66%** (8,421 lines; `dispatch` is the conditional one -- CMake picks it when EDS is off, which is this configuration) |
+| `es` | 17 | 12,734 | **70%** (8,920 lines; `dispatch` is the conditional one -- CMake picks it when EDS is off, which is this configuration) |
 
 #### `evs`: the first module whose TEXT is the comparison
 
@@ -545,7 +545,7 @@ Fourteen properties are gated independently, because each is blind to what the o
 
 | check | what it proves | what it cannot see |
 |---|---|---|
-| `check_coverage.py` | every function in a gated NASA source exists in the translation, less the ones a VERIFIED `#if` excludes | its arity, its types, its body |
+| `check_coverage.py` | every function in a gated NASA source exists in the translation, less the ones a VERIFIED `#if` excludes -- **including the ones whose parameter list wraps**, which for a long time it did not | its arity, its types, its body |
 | `check_signatures.py` | arity and pointer-ness match NASA's, per parameter | return types; anything named `*_Impl` |
 | `check_seam.py` | the `OS_*_Impl` declarations match NASA's headers, **return type included** | whether a backend obeys them |
 | `check_structs.py` | a translated `class` has NASA's fields, in NASA's order | field TYPES, and where the fields actually sit |
@@ -557,7 +557,7 @@ Fourteen properties are gated independently, because each is blind to what the o
 | `check_lock_sites.py` | every `CFE_*_{Lock,Unlock}SharedData` call carries NASA's own `__func__` and `__LINE__`, grouped by enclosing function | any other literal at any other call site |
 | `check_manifest.py` | everything gated is in NASA's build; reports the covered fraction | nothing about the code itself |
 | `check_in_blob.py` | every translated function has an ADDRESS in a driver's binary | whether it is correct, or ever called |
-| `check_struct_copy.py` | NO FILE IN `Kernel` copies a class into an array slot or through a bare pointer | a class MEMBER on the right, which it counts and does not resolve |
+| `check_struct_copy.py` | NO FILE IN `Kernel` copies a class into an array slot or through a bare pointer, with **every right-hand side resolved to a declared type** and an unresolved one a FAILURE | whether the copy is reached, and the two destination forms it has MEASURED to be safe |
 | the transcript | behaviour, byte for byte against NASA's own C | anything nothing calls |
 
 `check_struct_copy.py` is the newest, and it exists because the compiler loses twelve bytes of
@@ -571,6 +571,38 @@ the STORE, not in any declaration, so only the transcript noticed. The gate read
 list out of the tree rather than carrying one, and was shown against NASA's own line -- and
 against the same line WRAPPED, because it matches statements rather than lines and the
 formatter wraps at about 96 characters.
+
+**And then it missed the second instance, which is the more useful story.** `cfe_es_appctrl.c`
+copies a departing app's 344-byte start parameters through a bare pointer so they can be used
+to start it again; the gate reported `none of them a class copy` with a reassuring count while
+that line was present. Three holes, all the same hole: a pointer declaration (`CFE_ES_AppRecord_t
+*AppRecPtr`) was not recognised as a declaration at all, an unresolvable base name was skipped
+*without being counted*, and resolution stopped at the base rather than following `x->member`
+through the class body it had already parsed. There was a fourth: the failure path printed an
+undefined variable, so the gate would have raised `NameError` instead of reporting a finding --
+it had been driven to failure once, before its matcher moved from lines to statements, and never
+again. It now parses declarations with pointer depth (locals, parameters, comma-separated
+declarator lists, function-pointer declarators), follows member accesses through the class
+bodies including the `.HH` headers where the kernel declares most of its classes, and treats an
+unresolved right-hand side as a failure with the name printed. All four failure modes are
+driven on purpose.
+
+Two of its rules are now MEASUREMENTS rather than arithmetic, because
+`tests/exec/cases/e_struct_copy_into_slot.hc` runs them: `arr[i].member = s` is a whole copy
+although its address is computed, and a class *narrower* than the store is written at its own
+width without touching the neighbouring slots. The second is why the one exemption is allowed --
+`CFE_SBR_MSGMAP[hash] = RouteId`, a 2-byte class in an array of them, which an 8-byte store
+would have corrupted three slots at a time.
+
+**`check_coverage.py` had the same shape of hole, found while this one was being fixed.** Its C
+pattern was applied one line at a time, and NASA's style aligns parameter names in a column, so
+any definition spread over several lines was outside the set it compared. Thirty-nine of them:
+four in `cfe_es_appctrl.c`, plus `CFE_EVS_SendEventWithAppID`, `CFE_SB_SubscribeFull`,
+`EVS_GenerateEventTelemetry`, `CFE_ES_CreateChildTask` and thirty-one more. Every one was
+already translated -- the gate was not wrong about what it compared, it was quiet about what it
+could not see -- and the count went from 494 to **533** the moment it could. The HolyC side
+needed no change: its pattern runs over the whole file with `re.M`, and `[^;]` matches a
+newline where `.` would not.
 
 **It is the one gate that is not about the translation.** This is a compiler defect, and
 `arr[i] = someStruct` is an ordinary idiom, so it scans all of `Kernel` -- 249 indexed or

@@ -964,11 +964,21 @@ is the destination form that decides**, and only two of six are broken:
 | `ptr->member = s` | whole |
 | `var = arr[i]` (array on the **source** side) | whole |
 | `arr[i] = s` | **first 8 bytes only** |
+| `arr[i].member = s` | whole |
 | `*ptr = s` | **first 8 bytes only** |
 
 The size does not matter beyond being over eight. A 12-, 16-, 20- and 24-byte class all copy
 exactly their first two words — so a six-word struct loses four words, not a tail. A 4- or
 8-byte class is correct by accident.
+
+**A class narrower than the store is still correct, and its neighbours are not touched.** This
+is the measurement that could have gone the other way: an 8-byte store into one slot of an
+array of 2-byte classes would overwrite the three slots after it, which is the recorded
+array-deref store bug exactly — and cFE has such an array, `CFE_SBR_MSGMAP`, the message-id to
+route hash map, written one slot at a time with NASA's own `CFE_SBR_MSGMAP[hash] = RouteId;`.
+It does not happen; the store is at the type's width. Both this and `arr[i].member = s` are in
+the case because `tools/cfs/check_struct_copy.py` depends on them: one is why its destination
+pattern stops at the subscript, the other is why its one exemption is allowed.
 
 **It is the silent counterpart of the one case the compiler does refuse.** A class *return* by
 value over 8 bytes is a diagnostic, pinned by `tests/holyc/refused/struct_return_too_big.hc`,
@@ -992,8 +1002,39 @@ gate set could see it** — the layout matches, the signatures match, the functi
 the blob — because the defect is in the store and not in any declaration. Only a differential
 comparison of behaviour notices.
 
-`tests/exec/cases/e_struct_copy_into_slot.hc` pins all six forms side by side, so the day it is
+`tests/exec/cases/e_struct_copy_into_slot.hc` pins every form side by side, so the day it is
 fixed the case fails and says which form changed. **The workaround is `MemCpy`**, and
-`tools/cfs/check_struct_copy.py` refuses the bare form across the translated tree: it reads the
-class list out of the tree rather than carrying one, flags only a whole-struct copy whose
-destination has one of the two broken shapes, and was shown against NASA's own line.
+`tools/cfs/check_struct_copy.py` refuses the bare form across the translated tree.
+
+**And the second live site is the one that showed the gate was blind.** `cfe_es_appctrl.c`
+snapshots a departing app's start parameters so they can be re-used to start it again:
+
+```c
+*RestartParamPtr = AppRecPtr->StartParams;        /* 344 bytes */
+```
+
+Eight bytes of 344 — the file name, the entry symbol, the stack size, the priority and the
+exception action are all past them, so a restarting app would have come back with no entry
+point and a zero stack. The gate reported `none of them a class copy` with a reassuring count
+while that line was present, for three reasons that are one reason:
+
+1. `CFE_ES_AppRecord_t *AppRecPtr;` was **not recognised as a declaration**, because the
+   pattern had no room for the `*`. Pointer-to-record is how every function in cFS reaches a
+   record, so this was the common case and not an edge one.
+2. A base name it could not resolve was skipped **without being counted**. The printed line
+   gave a number for one kind of hole and said nothing about this one.
+3. Resolution **stopped at the base**: `x->member` was declared an unreadable hole, although
+   the member's type is written down in the class declaration the gate had already parsed.
+
+It now parses declarations with pointer depth — locals, parameters, comma-separated declarator
+lists and function-pointer declarators — follows member accesses through the class bodies
+(including `.HH` headers, where the kernel declares most of its classes), and treats an
+unresolved right-hand side as a **failure with the name printed**. 254 assignments across 323
+files, every right-hand side resolved, one exemption with its size stated. All four of its
+failure modes were driven on purpose: the appctrl copy, the perf copy, a stale exemption, and
+an unresolvable name.
+
+A fourth defect in the same file is worth recording separately, because it is the shape the
+project keeps finding: the failure path printed `line.strip()`, and `line` did not exist in
+that scope. The gate would have raised `NameError` instead of reporting a finding. It had been
+driven to failure once, before the matcher moved from lines to statements, and never again.

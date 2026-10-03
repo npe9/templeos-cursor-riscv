@@ -132,4 +132,4 @@ tests/exec/cases/e_class_by_value_param.hc	00000000000112b9
 tests/exec/cases/e_ptr_minus_int_scales.hc	000221b274fc2c02
 tests/exec/cases/e_char_array_string_init.hc	00554e4b4e4f574e
 tests/exec/cases/e_call_arg_const_scaled.hc	0000000000141111
-tests/exec/cases/e_struct_copy_into_slot.hc	0000002002003339
+tests/exec/cases/e_struct_copy_into_slot.hc	020033391238f456

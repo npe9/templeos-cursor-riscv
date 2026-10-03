@@ -61,6 +61,17 @@
  * ground-command switch can be reached without a full message round trip. */
 void CFE_ES_ProcessGroundCmd(const CFE_SB_Buffer_t *SBBufPtr);
 
+/* cfe_es_appctrl.c's two staging functions. NASA puts only CFE_ES_ProcessControlRequest and
+ * CFE_ES_RunAppTableScan in cfe_es_appctrl.h; these two are non-static but unheadered, and the
+ * exercise calls _Finish directly because that is the only way to reach every row of the
+ * control-request event table -- seven of the ten cannot be produced by a live request. */
+uint32 CFE_ES_ProcessControlRequest_Start(CFE_ES_AppId_t AppId, char *OrigAppNameBuf,
+                                          size_t                   OrigAppNameSz,
+                                          CFE_ES_AppStartParams_t *RestartParamPtr);
+void   CFE_ES_ProcessControlRequest_Finish(uint32 ControlReq, const char *AppName,
+                                           CFE_Status_t StartupStatus, CFE_Status_t CleanupStatus,
+                                           CFE_ES_AppId_t NewAppId);
+
 /* cfe_evs_dispatch.c's two local functions: NASA declares them at the top of that .c, not in a
  * header, so the driver repeats the declarations to reach them. */
 void CFE_EVS_ProcessGroundCommand(const CFE_SB_Buffer_t *SBBufPtr, CFE_SB_MsgId_t MsgId);
@@ -873,6 +884,18 @@ int32 CFE_ES_AppCreate(CFE_ES_AppId_t *ApplicationIdPtr, const char *AppName,
     return es_appcreate_rc;
 }
 
+/* CFE_ES_CleanUpApp lives in cfe_es_apps.c too, and cfe_es_appctrl.c -- which IS gated now --
+ * calls it for every control request. Steerable, because "cleanup failed" is a branch of the
+ * event table that no other path can reach. */
+static int32 es_cleanup_rc;
+
+int32 CFE_ES_CleanUpApp(CFE_ES_AppId_t AppId)
+{
+    printf("es_cleanupapp id=%lu rc=%ld\n", CFE_RESOURCEID_TO_ULONG(AppId),
+           (long)es_cleanup_rc);
+    return es_cleanup_rc;
+}
+
 /* CFE_ES_BackgroundInit: STUB REMOVED -- its source is gated, the real one runs. */
 int32 CFE_ES_DeleteCDS(const char *CDSName, bool CalledByTblServices)
 {
@@ -941,18 +964,14 @@ int32 OS_HeapGetInfo(OS_heap_prop_t *heap_prop)
 /* ---- what cfe_es_erlog.c, cfe_es_backgroundtask.c and cfe_es_objtab.c call -----------------
  * The last three ES stubs from the apps/CDS/perf set, plus the PSP's exception interface --
  * which is the BOARD, and will still be a stub when every line of cFE is translated. */
-static long  es_appscans, es_perfdumps, es_cdsearly;
+static long  es_perfdumps, es_cdsearly;
 static int32 es_cdsearly_rc;
 static long  es_exc_count;                 /* what CFE_PSP_Exception_GetCount reports */
 static int32 es_exc_summary_rc = CFE_PSP_SUCCESS;
 static uint32 es_exc_taskid;               /* 0 = "a system exception, not a task's" */
 static int32 es_exc_ctxsize = 4;           /* <0 means "no context available" */
 
-bool CFE_ES_RunAppTableScan(uint32 ElapsedTime, void *Arg)
-{
-    ++es_appscans;
-    return false;
-}
+/* CFE_ES_RunAppTableScan: STUB REMOVED -- its source is gated, the real one runs. */
 
 /* CFE_ES_RunPerfLogDump: STUB REMOVED -- its source is gated, the real one runs. */
 int32 CFE_ES_CDS_EarlyInit(void)
@@ -5862,6 +5881,258 @@ int main(void)
             /* Leave the perf log idle, or the next probe's PerfLogAdd calls start recording. */
             CFE_ES_SetupPerfVariables(CFE_PSP_RST_TYPE_POWERON);
             memset(PDump, 0, sizeof(*PDump));
+        }
+
+        /* --- cfe_es_appctrl.c: CARRYING OUT A CONTROL REQUEST -----------------------------
+         *
+         * cfe_es_api.c's RestartApp, ReloadApp and DeleteApp only STORE a request in the app
+         * record -- the block above already asserted that, and that the app keeps running.
+         * This is the other half: the four functions the background task runs later to
+         * actually delete the app, maybe start it again, and say what happened.
+         *
+         * THE EVENT IS THE ASSERTION. One event comes out of each request, chosen from a
+         * ten-row table indexed by RUN STATUS, and NASA writes that table with DESIGNATED
+         * initialisers -- most rows set two of five fields and leave the rest zero, and every
+         * branch in _Finish tests one of those fields against zero. HolyC has no designated
+         * initialisers, so the translation writes all five fields of all ten rows positionally.
+         * A row written one field off still compiles, still passes every structural gate, and
+         * sends the wrong event. Nothing but this comparison would notice.
+         *
+         * So every row is driven, including the two reserved ones and an out-of-range request,
+         * and the three branches inside a row -- cleanup failed, startup failed, nominal --
+         * are driven separately on the rows that have them. */
+        {
+            CFE_ES_AppRecord_t *        arp = &CFE_ES_Global.AppTable[2];
+            CFE_ES_AppTableScanState_t *sst = &CFE_ES_Global.BackgroundAppScanState;
+            CFE_ES_AppId_t              a2  = CFE_ES_APPID_C(ES_CTX_APPID(2));
+            CFE_ES_AppStartParams_t     sp;
+            char                        nm[OS_MAX_API_NAME];
+            uint32                      req;
+            uint32                      burst;
+            bool                        r;
+
+            es_ctx_init();
+            es_cleanup_rc   = CFE_SUCCESS;
+            es_appcreate_rc = CFE_SUCCESS;
+
+            /* THE SQUELCH HAS TO COME OFF OR THIS BLOCK ASSERTS NOTHING. EVS's per-app token
+             * bucket ran dry during the ES task block above -- "44: Events squelched, AppName
+             * = CFE_EVS" is in the transcript -- and every event after that is dropped
+             * silently. This block's entire assertion is WHICH EVENT came out, so it was
+             * written, run, and produced thirty lines of path markers with no events at all.
+             * Zeroing EVS_EventBurstMax is what the EVS block does for the same reason and
+             * short-circuits EVS_CheckAndIncrementSquelchTokens. Restored at the end. */
+            burst = CFE_EVS_Global.EVS_EventBurstMax;
+            CFE_EVS_Global.EVS_EventBurstMax = 0;
+
+            /* --- _Start: THE SNAPSHOT TAKEN UNDER THE LOCK --------------------------------
+             *
+             * NASA's reason for the copy is that the caller is about to delete the record it
+             * just read: "This way it becomes private and can be accessed without concerns
+             * about other threads/tasks, even after the global data records are eventually
+             * cleared."
+             *
+             * AND THE COPY IS THE SECOND LIVE SITE OF docs/HOLYC_STRUCT_LIMITS.md #21.
+             * NASA writes `*RestartParamPtr = AppRecPtr->StartParams;` -- a 344-byte struct
+             * copy through a bare pointer, which in HolyC moves eight bytes and leaves the
+             * rest at whatever the destination held. The entry point, stack size, priority
+             * and exception action below are all past that eighth byte, so a translation that
+             * wrote the assignment would restart the app with a zero stack and no entry
+             * symbol. Each is printed. */
+            strncpy(arp->StartParams.BasicInfo.InitSymbolName, "OTHER_AppMain",
+                    sizeof(arp->StartParams.BasicInfo.InitSymbolName) - 1);
+            arp->StartParams.MainTaskInfo.StackSize = 8192;
+            arp->StartParams.MainTaskInfo.Priority  = 77;
+            arp->StartParams.ExceptionAction        = CFE_ES_ExceptionAction_PROC_RESTART;
+
+            arp->ControlReq.AppControlRequest = CFE_ES_RunStatus_SYS_RESTART;
+            memset(&sp, 0, sizeof(sp));
+            memset(nm, 0, sizeof(nm));
+            req = CFE_ES_ProcessControlRequest_Start(a2, nm, sizeof(nm), &sp);
+            printf("esc_start req=%u name=%s file=%s entry=%s stack=%lu prio=%u exc=%u\n", req,
+                   nm, sp.BasicInfo.FileName, sp.BasicInfo.InitSymbolName,
+                   (unsigned long)sp.MainTaskInfo.StackSize,
+                   (unsigned)sp.MainTaskInfo.Priority, (unsigned)sp.ExceptionAction);
+
+            /* A request that is not a restart or a reload does NOT copy the parameters. The
+             * buffer is zeroed first, so an unconditional copy would show up here. */
+            arp->ControlReq.AppControlRequest = CFE_ES_RunStatus_SYS_DELETE;
+            memset(&sp, 0, sizeof(sp));
+            memset(nm, 0, sizeof(nm));
+            req = CFE_ES_ProcessControlRequest_Start(a2, nm, sizeof(nm), &sp);
+            printf("esc_start_nocopy req=%u name=%s file=[%s] stack=%lu\n", req, nm,
+                   sp.BasicInfo.FileName, (unsigned long)sp.MainTaskInfo.StackSize);
+
+            /* No record matches, so the snapshot is never taken and the request stays 0 --
+             * which is CFE_ES_RunStatus_UNDEFINED, the table row with no name. That is how a
+             * stale app id turns into the "[Req0]" event below rather than a wild read. */
+            memset(nm, 0, sizeof(nm));
+            req = CFE_ES_ProcessControlRequest_Start(CFE_ES_APPID_C(ES_CTX_APPID(9)), nm,
+                                                     sizeof(nm), &sp);
+            printf("esc_start_nomatch req=%u name=[%s]\n", req, nm);
+
+            /* --- _Finish: ALL TEN ROWS, PLUS ONE PAST THE END ----------------------------
+             *
+             * The nominal case for each row: no cleanup error, no startup error, no new app
+             * id. Rows 0, 8 and 9 have an ErrorEventID set and so send that instead; row 1
+             * ("Run") has NOTHING set, which is NASA's //jphfix, and sends no event at all. */
+            for (req = 0; req <= CFE_ES_RunStatus_MAX; ++req)
+            {
+                printf("esc_fin req=%u\n", req);
+                CFE_ES_ProcessControlRequest_Finish(req, "OTHER_APP", CFE_SUCCESS, CFE_SUCCESS,
+                                                    CFE_ES_APPID_UNDEFINED);
+            }
+
+            /* A new app id is appended to the nominal text, and only when it is defined. */
+            printf("esc_fin_newid\n");
+            CFE_ES_ProcessControlRequest_Finish(CFE_ES_RunStatus_SYS_RELOAD, "OTHER_APP",
+                                                CFE_SUCCESS, CFE_SUCCESS,
+                                                CFE_ES_APPID_C(ES_CTX_APPID(4)));
+
+            /* Cleanup failed, on a row that HAS a CleanupErrEventID. */
+            printf("esc_fin_cleanuperr\n");
+            CFE_ES_ProcessControlRequest_Finish(CFE_ES_RunStatus_SYS_DELETE, "OTHER_APP",
+                                                CFE_SUCCESS, CFE_ES_ERR_RESOURCEID_NOT_VALID,
+                                                CFE_ES_APPID_UNDEFINED);
+
+            /* Cleanup failed on a row that has NO CleanupErrEventID -- "Exception" -- so the
+             * failure is swallowed and the nominal event goes out. NASA's note: "The
+             * CleanupStatus is a dont-care when CleanupErrEventID is not set." */
+            printf("esc_fin_cleanuperr_dontcare\n");
+            CFE_ES_ProcessControlRequest_Finish(CFE_ES_RunStatus_SYS_EXCEPTION, "OTHER_APP",
+                                                CFE_SUCCESS, CFE_ES_ERR_RESOURCEID_NOT_VALID,
+                                                CFE_ES_APPID_UNDEFINED);
+
+            /* Startup failed, on a row that has a StartupErrEventID. */
+            printf("esc_fin_startuperr\n");
+            CFE_ES_ProcessControlRequest_Finish(CFE_ES_RunStatus_SYS_RESTART, "OTHER_APP",
+                                                CFE_ES_ERR_RESOURCEID_NOT_VALID, CFE_SUCCESS,
+                                                CFE_ES_APPID_UNDEFINED);
+
+            /* BOTH failed. Cleanup wins, because its branch is tested first. */
+            printf("esc_fin_botherr\n");
+            CFE_ES_ProcessControlRequest_Finish(CFE_ES_RunStatus_SYS_RELOAD, "OTHER_APP",
+                                                CFE_ES_ERR_RESOURCEID_NOT_VALID,
+                                                CFE_ES_ERR_RESOURCEID_NOT_VALID,
+                                                CFE_ES_APPID_UNDEFINED);
+
+            /* A startup failure on a row with no StartupErrEventID -- "Exit" -- is a
+             * dont-care the same way, and the nominal event goes out. */
+            printf("esc_fin_startuperr_dontcare\n");
+            CFE_ES_ProcessControlRequest_Finish(CFE_ES_RunStatus_APP_EXIT, "OTHER_APP",
+                                                CFE_ES_ERR_RESOURCEID_NOT_VALID, CFE_SUCCESS,
+                                                CFE_ES_APPID_UNDEFINED);
+
+            /* --- ProcessControlRequest: END TO END ---------------------------------------
+             *
+             * Snapshot, CleanUpApp, maybe AppCreate, event. Each of the seven live requests,
+             * and the app record is re-planted each time because the real CleanUpApp would
+             * have cleared it -- the stub does not, which is exactly why the loop has to. */
+            for (req = CFE_ES_RunStatus_APP_RUN; req <= CFE_ES_RunStatus_SYS_DELETE; ++req)
+            {
+                es_app_slot(2, "OTHER_APP", CFE_ES_AppType_EXTERNAL, CFE_ES_AppState_RUNNING);
+                strncpy(arp->StartParams.BasicInfo.InitSymbolName, "OTHER_AppMain",
+                        sizeof(arp->StartParams.BasicInfo.InitSymbolName) - 1);
+                arp->StartParams.MainTaskInfo.StackSize = 8192;
+                arp->StartParams.MainTaskInfo.Priority  = 77;
+                arp->ControlReq.AppControlRequest       = req;
+                printf("esc_pcr req=%u\n", req);
+                CFE_ES_ProcessControlRequest(a2);
+            }
+
+            /* Cleanup failing does NOT stop the restart, which is the behaviour NASA argues
+             * for at length: a stale task id is a minor inconsistency in the old record and
+             * should not cost the operator the new app. So AppCreate still runs. */
+            es_cleanup_rc = CFE_ES_ERR_RESOURCEID_NOT_VALID;
+            es_app_slot(2, "OTHER_APP", CFE_ES_AppType_EXTERNAL, CFE_ES_AppState_RUNNING);
+            arp->ControlReq.AppControlRequest = CFE_ES_RunStatus_SYS_RESTART;
+            printf("esc_pcr_cleanupfail\n");
+            CFE_ES_ProcessControlRequest(a2);
+
+            /* And AppCreate failing. */
+            es_cleanup_rc   = CFE_SUCCESS;
+            es_appcreate_rc = CFE_ES_ERR_RESOURCEID_NOT_VALID;
+            es_app_slot(2, "OTHER_APP", CFE_ES_AppType_EXTERNAL, CFE_ES_AppState_RUNNING);
+            arp->ControlReq.AppControlRequest = CFE_ES_RunStatus_SYS_RELOAD;
+            printf("esc_pcr_createfail\n");
+            CFE_ES_ProcessControlRequest(a2);
+            es_appcreate_rc = CFE_SUCCESS;
+
+            /* A stale app id: no snapshot, request 0, the unnamed row, "[Req0]". */
+            printf("esc_pcr_stale\n");
+            CFE_ES_ProcessControlRequest(CFE_ES_APPID_C(ES_CTX_APPID(9)));
+
+            /* --- RunAppTableScan: WHAT MAKES A STORED REQUEST HAPPEN ---------------------
+             *
+             * A RUNNING app is not killed, it is ASKED. An app with a pending request moves
+             * to WAITING and is given APP_KILL_TIMEOUT scan periods; only when that runs out
+             * does the request get carried out. That window is the app's chance to exit
+             * cleanly through CFE_ES_ExitApp. */
+            es_ctx_init();
+            es_cleanup_rc = CFE_SUCCESS;
+            memset(sst, 0, sizeof(*sst));
+
+            /* Not due: no pending changes, the command counter has not moved, and the timer
+             * has time left. The timer is decremented and nothing is scanned. */
+            sst->LastScanCommandCount = CFE_ES_Global.TaskData.CommandCounter;
+            sst->BackgroundScanTimer  = 1000;
+            r                         = CFE_ES_RunAppTableScan(10, sst);
+            printf("esc_scan_notdue r=%d timer=%u pend=%u\n", (int)r,
+                   (unsigned)sst->BackgroundScanTimer, (unsigned)sst->PendingAppStateChanges);
+
+            /* The command counter moving makes a scan due IMMEDIATELY, which is how a ground
+             * command that stores a request is acted on at once rather than up to a second
+             * later. Nothing is pending, so the scan finds nothing and the timer is reloaded. */
+            ++CFE_ES_Global.TaskData.CommandCounter;
+            r = CFE_ES_RunAppTableScan(10, sst);
+            printf("esc_scan_cmdcount r=%d timer=%u pend=%u last=%u\n", (int)r,
+                   (unsigned)sst->BackgroundScanTimer, (unsigned)sst->PendingAppStateChanges,
+                   (unsigned)sst->LastScanCommandCount);
+
+            /* A pending request on a RUNNING app: it moves to WAITING and gets the timeout.
+             * Note it is NOT counted as a pending state change on this pass -- the branch
+             * that counts runs only for apps already past RUNNING -- so the scan still
+             * returns false and the next pass is a normal timed one. */
+            arp->ControlReq.AppControlRequest = CFE_ES_RunStatus_SYS_DELETE;
+            sst->BackgroundScanTimer          = 0;
+            r                                 = CFE_ES_RunAppTableScan(0, sst);
+            printf("esc_scan_ask r=%d state=%u timer=%u pend=%u\n", (int)r,
+                   (unsigned)arp->AppState, (unsigned)arp->ControlReq.AppTimerMsec,
+                   (unsigned)sst->PendingAppStateChanges);
+
+            /* Now it is WAITING, so each scan counts it and winds its timer down. One tick
+             * short of the end, nothing happens except the countdown -- and the scan returns
+             * TRUE, which is what makes the background task come back sooner. */
+            sst->BackgroundScanTimer = 0;
+            r                        = CFE_ES_RunAppTableScan(4000, sst);
+            printf("esc_scan_wait r=%d state=%u timer=%u pend=%u\n", (int)r,
+                   (unsigned)arp->AppState, (unsigned)arp->ControlReq.AppTimerMsec,
+                   (unsigned)sst->PendingAppStateChanges);
+
+            /* The timer reaches zero, the app id goes on the timeout list, and the request is
+             * carried out AFTER the lock is released -- NASA: "This avoids needing to access
+             * the global records outside of the lock." The es_cleanupapp line and the Stop
+             * event below are that deletion. */
+            sst->BackgroundScanTimer = 0;
+            printf("esc_scan_fire\n");
+            r = CFE_ES_RunAppTableScan(4000, sst);
+            printf("esc_scan_fired r=%d used=%d pend=%u\n", (int)r,
+                   (int)CFE_ES_AppRecordIsUsed(arp), (unsigned)sst->PendingAppStateChanges);
+
+            /* A CORE app is skipped entirely, however it is set up: NASA's loop tests
+             * Type == EXTERNAL. So a pending request on a core app is never carried out. */
+            es_app_slot(2, "CORE_APP", CFE_ES_AppType_CORE, CFE_ES_AppState_WAITING);
+            arp->ControlReq.AppControlRequest = CFE_ES_RunStatus_SYS_DELETE;
+            arp->ControlReq.AppTimerMsec      = 0;
+            sst->BackgroundScanTimer          = 0;
+            r                                 = CFE_ES_RunAppTableScan(0, sst);
+            printf("esc_scan_core r=%d state=%u pend=%u\n", (int)r, (unsigned)arp->AppState,
+                   (unsigned)sst->PendingAppStateChanges);
+
+            /* Leave ES, and EVS's squelch, as the rest of the file expects to find them. */
+            CFE_EVS_Global.EVS_EventBurstMax = burst;
+            es_ctx_init();
+            memset(sst, 0, sizeof(*sst));
         }
 
         /* --- cfe_es_syslog.c: THE SYSTEM LOG ---------------------------------------------

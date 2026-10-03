@@ -52,7 +52,9 @@
 #define CFE_ES_BACKGROUND_CHILD_FLAGS      0
 #define CFE_ES_BACKGROUND_MAX_IDLE_DELAY   30000 /* 30 seconds */
 // --- cfe_es_internal_cfg.h -------------------------------------------------------------------
+#ifndef CFE_PLATFORM_ES_APP_SCAN_RATE
 #define CFE_PLATFORM_ES_APP_SCAN_RATE          1000
+#endif
 #define CFE_PLATFORM_ES_PERF_CHILD_PRIORITY    200
 #define CFE_PLATFORM_ES_PERF_CHILD_STACK_SIZE  4096
 #define CFE_PLATFORM_ES_PERF_CHILD_MS_DELAY    20
@@ -63,8 +65,9 @@
 #define OS_SEM_TIMEOUT -7
 #endif
 // --- what this file needs from elsewhere -----------------------------------------------------
-// cfe_es_apps.c and cfe_es_perf.c are not gated, so jobs one and two are stubs on both halves
-// of the differential oracle.
+// Jobs one and two are REAL now -- cfe_es_appctrl.c and cfe_es_perf.c are both gated, and both
+// are included before this file so that the table below can take their addresses. The two
+// declarations stay because this file must still parse on its own.
 Bool CFE_ES_RunAppTableScan(U32 ElapsedTime, U8 *Arg);
 Bool CFE_ES_RunPerfLogDump(U32 ElapsedTime, U8 *Arg);
 class CFE_ES_BackgroundJobEntry_t

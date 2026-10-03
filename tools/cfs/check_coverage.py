@@ -80,37 +80,78 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 HCDIRS = [os.path.join(ROOT, "Kernel", "Cfs", "cfe"),
           os.path.join(ROOT, "Kernel", "Cfs", "osal")]
 
-# A C function DEFINITION at file scope: a line starting in column 1 with a type, a name, an
-# argument list, and an opening brace on that line or the next. `static inline` in a header is
-# not our business; these are .c files.
+# A C function DEFINITION at file scope: a type, a name, an argument list, and an opening brace
+# after it. `static inline` in a header is not our business; these are .c files.
+#
+# AND THE PARAMETER LIST MAY WRAP, which it did for 39 of NASA's definitions while this pattern
+# was anchored to a single line. NASA's style aligns parameter names in a column, so any
+# function with more than two or three parameters is spread over several lines:
+#
+#     static void CFE_ES_ProcessControlRequest_ErrorEvent(const CFE_ES_ControlReqMapEntry_t *I,
+#                                                         const char                        *A,
+#                                                         uint32                             R)
+#
+# Four of cfe_es_appctrl.c's six functions are that shape, and so are CFE_EVS_SendEventWithAppID,
+# CFE_SB_SubscribeFull, EVS_GenerateEventTelemetry and CFE_ES_CreateChildTask. This gate said
+# "all present in the translation" about a set that never contained them. It was not wrong about
+# what it compared; it was quiet about what it could not see, which is the failure mode
+# docs/ records against three other gates in this directory. Lines are now joined until the
+# parentheses balance.
 C_DEF = re.compile(
     r'^[A-Za-z_][A-Za-z0-9_ \t\*]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*?\)\s*$', re.M)
+MAX_JOIN = 12
+
+
+def joined_defs(src):
+    """Every name C_DEF matches as a definition, joining a wrapped parameter list.
+
+    A candidate starts at a line beginning with an identifier character in column 1; lines are
+    appended while the parentheses are unbalanced; and the first non-blank line after the
+    candidate must open a body.
+    """
+    out = set()
+    lines = src.split('\n')
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line[:1].isalpha() or line[:1] == '_':
+            j = i
+            buf = line
+            while (buf.count('(') > buf.count(')') and j + 1 < len(lines)
+                   and j - i < MAX_JOIN):
+                j += 1
+                buf += ' ' + lines[j].strip()
+            m = C_DEF.match(" ".join(buf.split()) + '\n')
+            if m:
+                for nxt in lines[j + 1:]:
+                    if nxt.strip() == '':
+                        continue
+                    if nxt.lstrip().startswith('{'):
+                        out.add(m.group(1))
+                    break
+                i = j + 1
+                continue
+        i += 1
+    return out
 
 def c_functions(path):
     src = open(path, errors='replace').read()
     # strip comments so a prototype inside one cannot count
     src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
     src = re.sub(r'//[^\n]*', '', src)
-    out = set()
-    lines = src.split('\n')
-    for i, line in enumerate(lines):
-        m = C_DEF.match(line + '\n')
-        if not m:
-            continue
-        # the next non-blank line must open a body
-        for nxt in lines[i+1:]:
-            if nxt.strip() == '':
-                continue
-            if nxt.lstrip().startswith('{'):
-                out.add(m.group(1))
-            break
-    return out
+    return joined_defs(src)
 
 def hc_defined():
     names = set()
     files = []
     for d in HCDIRS:
         files += glob.glob(os.path.join(d, "*.HC"))
+    # THE HOLYC SIDE NEEDED NO JOINER, which is worth stating so nobody "fixes" it twice. This
+    # pattern is applied to the whole file with re.M, and `[^;]` matches a newline -- a negated
+    # character class does, where `.` would not -- so a wrapped parameter list was always
+    # covered here. The C side's restriction was in its LOOP, which matched one line at a time.
+    # tools/cfs/check_in_blob.py reads HolyC definitions the same way and is sound for the same
+    # reason.
     for f in files:
         src = open(f, errors='replace').read()
         src = re.sub(r'//[^\n]*', '', src)

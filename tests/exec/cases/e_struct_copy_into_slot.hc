@@ -13,6 +13,20 @@
 // and the size does not matter beyond being over eight: a 12-, 16-, 20- and 24-byte class all
 // copy exactly their first two words. A 4- or 8-byte class is correct by accident.
 //
+// TWO MEASUREMENTS BELOW ARE HERE BECAUSE A GATE DEPENDS ON THEM, not because they are
+// interesting. tools/cfs/check_struct_copy.py treats `arr[i].member = s` as safe and lets a
+// class of 8 bytes or less through with its size stated, and both of those were my arithmetic
+// until this case ran them:
+//
+//   arr[i].member = s     WHOLE, although the destination address is computed
+//   narrow[i] = s         WHOLE, and the NEIGHBOURS ARE NOT TOUCHED
+//
+// The second is the one that could have gone either way. An 8-byte store into a 2-byte array
+// slot would overwrite the three entries after it, which is the recorded array-deref store bug
+// exactly; and cFE has such an array -- CFE_SBR_MSGMAP, a message-id-to-route hash map of
+// 2-byte CFE_SBR_RouteId, written one slot at a time. It does not happen: a narrow class is
+// stored at its own width.
+//
 // This is the same family as the recorded array-deref store bug -- a store through a computed
 // address using a fixed 8-byte width instead of the type's size -- and it is the SILENT
 // counterpart of the one the compiler does refuse: a class return by value over 8 bytes is a
@@ -53,6 +67,20 @@ class Outer
   Ent inner;
   U32 tail;
 };
+
+class Narrow
+{
+  U16 v;
+};
+
+class Holder
+{
+  Ent inner;
+  U32 tail;
+};
+Narrow NarrowSlots[8];
+Narrow NarrowSrc;
+Holder HeldSlots[4];
 Ent Slots[4];
 Wide WideSlots[4];
 Outer Nest;
@@ -111,5 +139,39 @@ I64 main()
   plain = Slots[0];
   r = (r << 4) | plain.Lo;
   // 9
+  // --- `arr[i].member = s`: AN INDEXED BASE WITH A MEMBER SELECTOR, which is a seventh form
+  // and not the sixth. The destination address is computed, like `arr[i] = s`, but the copy is
+  // whole -- all three words -- and the neighbouring member is untouched.
+  HeldSlots[1].inner.Data = 7;
+  HeldSlots[1].inner.Up = 7;
+  HeldSlots[1].inner.Lo = 7;
+  HeldSlots[1].tail = 8;
+  HeldSlots[1].inner = Src;
+  r = (r << 4) | HeldSlots[1].inner.Data;
+  // 1
+  r = (r << 4) | HeldSlots[1].inner.Up;
+  // 2
+  r = (r << 4) | HeldSlots[1].inner.Lo;
+  // 3, and 7 if only the first eight bytes moved
+  r = (r << 4) | HeldSlots[1].tail;
+  // 8, and anything else means the store ran past the member
+  // --- A CLASS NARROWER THAN THE STORE, in an array of its own. If the store width were a
+  // fixed eight bytes, NarrowSlots[2] = NarrowSrc would also write slots 3, 4 and 5.
+  NarrowSlots[0].v = 1;
+  NarrowSlots[1].v = 2;
+  NarrowSlots[2].v = 3;
+  NarrowSlots[3].v = 4;
+  NarrowSlots[4].v = 5;
+  NarrowSlots[5].v = 6;
+  NarrowSrc.v = 15;
+  NarrowSlots[2] = NarrowSrc;
+  r = (r << 4) | NarrowSlots[2].v;
+  // F
+  r = (r << 4) | NarrowSlots[3].v;
+  // 4, and 0 if the store was eight bytes wide
+  r = (r << 4) | NarrowSlots[4].v;
+  // 5
+  r = (r << 4) | NarrowSlots[5].v;
+  // 6
   return r;
 }

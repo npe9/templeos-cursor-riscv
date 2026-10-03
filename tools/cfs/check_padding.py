@@ -156,6 +156,11 @@ CSRC = [
     # "scheduler" is a file-scope table of them and nothing else needs the type, so NASA never
     # put it in a header. It carries a FUNCTION POINTER, so check_fnptr_members reads it too.
     os.path.join(CFE, "modules", "es", "fsw", "src", "cfe_es_backgroundtask.c"),
+    # CFE_ES_ControlReqMapEntry_t is declared inside cfe_es_appctrl.c, for the same reason: the
+    # control-request event table is the only thing that uses it. Its layout is load-bearing in
+    # an unusual way -- the table is read with DESIGNATED initialisers upstream and POSITIONAL
+    # ones in the translation, so a member order that drifted would move every event id.
+    os.path.join(CFE, "modules", "es", "fsw", "src", "cfe_es_appctrl.c"),
     os.path.join(CFE, "modules", "resourceid", "fsw", "src", "cfe_resourceid_api.c"),
     os.path.join(CFE, "modules", "sbr", "fsw", "src", "cfe_sbr_route_unsorted.c"),
     # CFE_SB_RemovePipeCallback_t is declared INSIDE cfe_sb_api.c -- an implementation-file
