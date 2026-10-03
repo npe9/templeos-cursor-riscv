@@ -101,10 +101,12 @@ HDRS = [
     # long and the dispatcher rejected it on length, which the transcript DID catch, three
     # modules later. This is what catches it at the declaration.
     "cfe_evs_module_all.h",
-    # ES's command messages, and only one of them matters: cfe_sb_task.c sizes a memory-pool
-    # block with sizeof(CFE_ES_RestartCmd_t) so that a ground-commanded reset can always
-    # allocate (DCR6772). ES is not translated, but that ONE type's size is load-bearing in SB,
-    # so SB's translation declares it and this is what keeps the declaration honest.
+    # ES's twenty-two command messages and their payloads. It went on this list when only ONE
+    # of them mattered -- cfe_sb_task.c sizes a memory-pool block with
+    # sizeof(CFE_ES_RestartCmd_t) so a ground-commanded reset can always allocate (DCR6772) --
+    # and it is what made the other thirty-six free when cfe_es_msg.HC arrived with the rest of
+    # them: 266 measured classes became 303 with the unpaired count unmoved. A header wired
+    # before it was needed is the only reason that was a non-event.
     "cfe_es_msg.h",
     # ES's own, as the module arrives: the generic pool's descriptor, bucket and record, and
     # the CRC parameter block. The pool record carries two FUNCTION POINTERS, so

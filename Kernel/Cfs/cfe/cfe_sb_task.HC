@@ -107,23 +107,19 @@
 #define CFE_SB_ENABLE  1
 #define CFE_SB_DISABLE 0
 #endif
-// --- default_cfe_es_msgstruct.h: the ONE ES TYPE this file needs ----------------------------
+// --- cfe_es_msg.h: the ONE ES TYPE this file needs ------------------------------------------
 // CFE_SB_AppInit does `CFE_ES_GetPoolBuf(..., sizeof(CFE_ES_RestartCmd_t))` purely so that the
 // pool has a block of that size configured -- the memory is freed on the next line. So the
 // only thing that matters about this type is its SIZE, and getting it wrong would configure
 // the wrong block size and let a ground-commanded reset fail to allocate (DCR6772, which is
 // what the allocation exists to prevent). check_padding.py measures it against NASA's.
-class CFE_ES_RestartCmd_Payload_t
-{
-  U16 RestartType;
-  // CFE_PSP_RST_TYPE_PROCESSOR or CFE_PSP_RST_TYPE_POWERON
-};
-
-class CFE_ES_RestartCmd_t
-{
-  CFE_MSG_CommandHeader CommandHeader;
-  CFE_ES_RestartCmd_Payload_t Payload;
-};
+//
+// NASA'S OWN LINE IS `#include "cfe_es_msg.h" /* needed for local use of CFE_ES_RestartCmd_t */`
+// and this is its counterpart. The two classes used to be re-declared here, which worked right
+// up until cfe_es_task.HC needed the same ones: the compiler accepts a DUPLICATE CLASS SILENTLY
+// -- two bodies under one name, no diagnostic -- so the layout rule would have been in two
+// places, free to drift, with check_padding measuring whichever one it found first.
+#include "cfe_es_msg.HC" // CFE_ES_RestartCmd_t, and the rest of ES's ground formats with it
 // --- what this file needs from elsewhere ------------------------------------------------------
 // ES's task lifecycle, the config service's version string, and the FS background file writer.
 // None of ES is translated; FS is, and CFE_FS_BackgroundFileDumpRequest lives there.
