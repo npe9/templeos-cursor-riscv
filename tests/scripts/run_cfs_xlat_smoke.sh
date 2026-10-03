@@ -233,6 +233,14 @@ python3 "$ROOT/tools/cfs/check_variadic.py" || exit 1
 # type nor a #define.
 python3 "$ROOT/tools/cfs/check_lock_sites.py" || exit 1
 
+# --- is the code actually THERE? --------------------------------------------------------------
+# Every gate above this line reads SOURCE TEXT. A translated file can be included, parse
+# cleanly, pass all of them, and contribute NOTHING to the binary -- which is
+# docs/HOLYC_STRUCT_LIMITS.md #13, and it has now happened twice: cfe_time_api.HC lost all
+# forty-six of its functions and cfe_es_task.HC lost all twenty-eight. Both times what noticed
+# was luck. This opens the binary and asks for an address.
+python3 "$ROOT/tools/cfs/check_in_blob.py" || exit 1
+
 # --- reference: NASA's C, unmodified -------------------------------------------------------
 # shellcheck disable=SC2086
 if ! "$HOSTCC" -O0 -w $INC -I"$ROOT/tests/cfs" -o "$T/ref" "$ROOT/tests/cfs/oracle_ccsdspri.c" $SRC_C "$GENDIR/cfe_configid_nametable.c" "$GENDIR/cfe_target_config.c" \

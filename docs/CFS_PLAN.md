@@ -541,7 +541,7 @@ requires its shape. The mutex-failure path beside it IS driven, because its diag
 only an integer. Any future path whose log prints an address or a `__func__`-derived pointer has
 the same limit.
 
-Twelve properties are gated independently, because each is blind to what the others catch:
+Thirteen properties are gated independently, because each is blind to what the others catch:
 
 | check | what it proves | what it cannot see |
 |---|---|---|
@@ -556,9 +556,23 @@ Twelve properties are gated independently, because each is blind to what the oth
 | `check_wired.py` | every translated file is REACHABLE from a driver, or listed with a reason | whether anything in it is actually called |
 | `check_lock_sites.py` | every `CFE_*_{Lock,Unlock}SharedData` call carries NASA's own `__func__` and `__LINE__`, grouped by enclosing function | any other literal at any other call site |
 | `check_manifest.py` | everything gated is in NASA's build; reports the covered fraction | nothing about the code itself |
+| `check_in_blob.py` | every translated function has an ADDRESS in a driver's binary | whether it is correct, or ever called |
 | the transcript | behaviour, byte for byte against NASA's own C | anything nothing calls |
 
-`check_lock_sites.py` is the newest, and it exists because HolyC has no `__func__` and no
+`check_in_blob.py` is the newest, and it is the first gate that opens the BINARY. Every other
+one on the list reads source text -- `check_coverage` counts definitions, `check_signatures`
+compares parameter lists, `check_constants` reads `#define`s, `check_lock_sites` reads literals
+at call sites -- so a file can be included, parse cleanly, pass all of them and contribute
+NOTHING. That is limit #13 in `docs/HOLYC_STRUCT_LIMITS.md`, and it has happened twice:
+`cfe_time_api.HC` lost all forty-six of its functions to a re-included sibling, and
+`cfe_es_task.HC` lost all twenty-eight the same way. **Both times what noticed was luck** --
+once the import trailer, because something happened to CALL a missing function; once a
+compiler error five hundred lines away, because the file happened to owe the driver a type. A
+file of ground-command handlers offers neither tell: nothing calls them and nothing needs a
+type from them. Planting the re-include back makes this gate name the file, the count and the
+first and last function missing, while every other gate still passes.
+
+`check_lock_sites.py` exists because HolyC has no `__func__` and no
 `__LINE__`. NASA writes `CFE_ES_LockSharedData(__func__, __LINE__)`, and BOTH arguments reach
 the transcript when the mutex take fails. The translation writes them out as literals -- which
 turns them into ordinary constants, and a constant nobody compares drifts. All 117 of them were
