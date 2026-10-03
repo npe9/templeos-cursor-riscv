@@ -104,7 +104,7 @@ lines, one diff, one negative control.
 | `resourceid` | 228 | **228** | complete, SIMPLE variant |
 | `sb` | 6,086 | **6,086** | complete — all seven unconditional sources plus `msg_id_util`; the EDS dispatcher is the alternative |
 | `config` | 782 | **489** | get/set/lookup/eds complete; `init.c` (241) and its objtab wait for the build-generated GLOBAL_CONFIGDATA |
-| `es` | 12,734 | **2,517** | `crc`, `generic_pool`, `syslog`, `mempool`, `resource`, plus the module's STATE (`cfe_es_global.HC`). The driver's simulated bump allocator is GONE -- every allocation in the transcript runs NASA's real pool |
+| `es` | 12,734 | **4,664** | `crc`, `generic_pool`, `syslog`, `mempool`, `resource`, `api`, plus the module's STATE (`cfe_es_global.HC`). The driver's simulated bump allocator is GONE -- every allocation in the transcript runs NASA's real pool, and with `api.c` gated "who is calling" comes out of ES's own app and task tables rather than out of a stub |
 | `tbl` | 7,780 | 0 | after `es` |
 | `sbr` | 535 | **434** | complete for the default HASH map; `map_direct` is the alternative |
 
@@ -302,7 +302,7 @@ rather than counted as always-built:
 | `evs` | 5 | 2,787 | **100%** (six of six; the `_dispatch` one is conditional — see below) |
 | `time` | 5 | 4,383 | **100%** (plus `cfe_time_dispatch.c`, 294, which is conditional — see below) |
 | `tbl` | 15 | 7,780 | 0% |
-| `es` | 17 | 12,734 | **20%** (`crc`, `generic_pool`, `syslog`, `mempool`, `resource`) |
+| `es` | 17 | 12,734 | **37%** (4,664 lines: `crc`, `generic_pool`, `syslog`, `mempool`, `resource`, `api`) |
 
 #### `evs`: the first module whose TEXT is the comparison
 
@@ -541,7 +541,7 @@ requires its shape. The mutex-failure path beside it IS driven, because its diag
 only an integer. Any future path whose log prints an address or a `__func__`-derived pointer has
 the same limit.
 
-Eleven properties are gated independently, because each is blind to what the others catch:
+Twelve properties are gated independently, because each is blind to what the others catch:
 
 | check | what it proves | what it cannot see |
 |---|---|---|
@@ -554,10 +554,20 @@ Eleven properties are gated independently, because each is blind to what the oth
 | `check_constants.py` | every number the translation spells out has NASA's value, INCLUDING the ones NASA spells as enumerators | whether anything uses it, or uses it correctly |
 | `check_variadic.py` | a variadic function's declarations agree with NASA's and with each other, and none is called before one is seen | whether the ARGUMENTS at a call site are the right ones |
 | `check_wired.py` | every translated file is REACHABLE from a driver, or listed with a reason | whether anything in it is actually called |
+| `check_lock_sites.py` | every `CFE_*_{Lock,Unlock}SharedData` call carries NASA's own `__func__` and `__LINE__`, grouped by enclosing function | any other literal at any other call site |
 | `check_manifest.py` | everything gated is in NASA's build; reports the covered fraction | nothing about the code itself |
 | the transcript | behaviour, byte for byte against NASA's own C | anything nothing calls |
 
-`check_wired.py` is the newest, and it closes a hole the other ten share by construction: all of
+`check_lock_sites.py` is the newest, and it exists because HolyC has no `__func__` and no
+`__LINE__`. NASA writes `CFE_ES_LockSharedData(__func__, __LINE__)`, and BOTH arguments reach
+the transcript when the mutex take fails. The translation writes them out as literals -- which
+turns them into ordinary constants, and a constant nobody compares drifts. All 117 of them were
+written as 0, and nothing in the list above could see it: `check_signatures` compares types,
+`check_constants` reads `#define`s, and a literal argument at a call site is neither. It took a
+probe that forced the mutex to fail -- `Line=748` on NASA's side against `Line=0` on the
+translation's -- for it to show at all.
+
+`check_wired.py` closes a hole the other ten share by construction: all of
 them are driven from `SRC_C`, the list of NASA sources the smoke script compiles, so they
 measure the translation only where the C half names a counterpart. A `.HC` file that is
 complete, parses, and is included by NOBODY is invisible to every one of them except

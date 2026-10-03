@@ -42,17 +42,28 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 CFE = os.path.join(ROOT, 'vendor', 'cFE')
 HC = os.path.join(ROOT, 'Kernel', 'Cfs', 'cfe')
 
-# NASA source -> its translation. A file is listed here when it uses __LINE__ at all; the
-# "every __LINE__ is accounted for" check below is what stops a NEW use being missed inside a
-# file already in the list, and check_coverage is what stops a whole file being missed.
-PAIRS = [
-    ('modules/sb/fsw/src/cfe_sb_priv.c', 'cfe_sb_priv.HC'),
-    ('modules/sb/fsw/src/cfe_sb_api.c', 'cfe_sb_api.HC'),
-    ('modules/sb/fsw/src/cfe_sb_task.c', 'cfe_sb_task.HC'),
-    ('modules/es/fsw/src/cfe_es_syslog.c', 'cfe_es_syslog.HC'),
-    ('modules/es/fsw/src/cfe_es_mempool.c', 'cfe_es_mempool.HC'),
-    ('modules/es/fsw/src/cfe_es_api.c', 'cfe_es_api.HC'),
-]
+# THE LIST IS DERIVED, NOT WRITTEN DOWN, because a hardcoded one has a third outcome besides
+# match and mismatch: NOT FOUND, which passes with a reassuring count. A newly gated source
+# that uses __LINE__ would simply not be in it, and the gate would print "117 across 6 sources"
+# and mean nothing by it. check_wired.py already solved this shape by reading its roots out of
+# tests/scripts/*.sh rather than listing them; this reads SRC_C the same way.
+SCRIPTS = os.path.join(ROOT, 'tests', 'scripts')
+
+
+def gated_sources():
+    """Every NASA .c any differential smoke script compiles, read FROM the scripts."""
+    out = []
+    for name in sorted(os.listdir(SCRIPTS)):
+        if not name.endswith('.sh'):
+            continue
+        text = open(os.path.join(SCRIPTS, name), errors='replace').read()
+        for m in re.finditer(r'^SRC_C="(.*?)"$', text, re.S | re.M):
+            for tok in m.group(1).split():
+                if tok.endswith('.c') and tok.startswith('$CFE/'):
+                    rel = tok[len('$CFE/'):]
+                    if rel not in out:
+                        out.append(rel)
+    return out
 
 C_CALL = re.compile(r'(CFE_(?:SB|ES)_(?:Unlock|Lock)SharedData)\s*\(\s*(__func__|__FILE__)\s*,\s*__LINE__\s*\)')
 H_CALL = re.compile(r'(CFE_(?:SB|ES)_(?:Unlock|Lock)SharedData)\s*\(\s*"([^"]*)"\s*,\s*(-?\d+)\s*\)')
@@ -101,7 +112,30 @@ def h_sites(path):
 def main():
     rc = 0
     total = 0
-    for cpath, hname in PAIRS:
+    pairs = []
+    missing = []
+    for rel in gated_sources():
+        full = os.path.join(CFE, rel)
+        if not os.path.exists(full):
+            continue
+        if '__LINE__' not in open(full, errors='replace').read():
+            continue
+        hname = os.path.basename(rel)[:-2] + '.HC'
+        if os.path.exists(os.path.join(HC, hname)):
+            pairs.append((rel, hname))
+        else:
+            missing.append((rel, hname))
+    if missing:
+        for rel, hname in missing:
+            print('FAIL cfs-locksites — %s uses __LINE__ and is gated, but %s does not exist;'
+                  ' its lock sites would NOT be compared' % (rel, hname), file=sys.stderr)
+        rc = 1
+    if not pairs:
+        print('FAIL cfs-locksites — no gated source uses __LINE__; either SRC_C could not be'
+              ' parsed out of tests/scripts/*.sh or this gate is asserting nothing',
+              file=sys.stderr)
+        return 1
+    for cpath, hname in pairs:
         c_full = os.path.join(CFE, cpath)
         h_full = os.path.join(HC, hname)
         if not os.path.exists(c_full):
@@ -143,7 +177,7 @@ def main():
             total += len(cl)
     if rc == 0:
         print('cfs-locksites: %d shared-data lock calls carry NASA\'s own __func__ and __LINE__'
-              ' across %d sources' % (total, len(PAIRS)))
+              ' across %d sources' % (total, len(pairs)))
     return rc
 
 
