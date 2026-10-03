@@ -456,11 +456,7 @@ I32 OS_MutSemGive(U32 sem_id)
 // the three paths through CFE_EVS_SendEvent (a registered app, an unregistered one, an id out
 // of range) are selected now.
 // CFE_ES_GetAppID: STUB REMOVED -- cfe_es_api.c is gated, the real one runs.
-U0 CFE_ES_BackgroundWakeup()
-{
-  ++fs_wakeups;
-}
-
+// CFE_ES_BackgroundWakeup: STUB REMOVED -- its source is gated, the real one runs.
 U32 CFE_PSP_GetSpacecraftId()
 {
   return 0x5A5A;
@@ -573,20 +569,7 @@ I32 es_stat_rc;
 I32 es_starttask_rc;
 I64 es_taskdeletes, es_taskexits;
 I32 es_taskdelete_rc;
-I32 CFE_ES_WriteToERLog(U32 EntryType, U32 ResetType, U32 ResetSubtype, U8 *Description)
-{
-  ++es_erlog_writes;
-  S("es_erlog type=");
-  D(EntryType);
-  S(" rt=");
-  D(ResetType);
-  S(" rst=");
-  D(ResetSubtype);
-  S(" ");
-  S(Description);
-  S("\n");
-  return CFE_SUCCESS;
-}
+// CFE_ES_WriteToERLog: STUB REMOVED -- its source is gated, the real one runs.
 // NASA's CFE_PSP_Restart does not return. This one does, because the code AFTER it in
 // CFE_ES_ResetCFE is part of what the transcript compares -- the "CFE_PSP_Restart returned"
 // syslog line and the CFE_ES_NOT_IMPLEMENTED that follows exist for exactly this case.
@@ -813,13 +796,7 @@ I32 CFE_ES_AppCreate(U32 *ApplicationIdPtr, U8 *AppName, CFE_ES_AppStartParams_t
   *ApplicationIdPtr = ES_CTX_APPID(4);
   return es_appcreate_rc;
 }
-
-I32 CFE_ES_BackgroundInit()
-{
-  ++es_bkginits;
-  return es_bkginit_rc;
-}
-
+// CFE_ES_BackgroundInit: STUB REMOVED -- its source is gated, the real one runs.
 I32 CFE_ES_DeleteCDS(U8 *CDSName, Bool CalledByTblServices)
 {
   ++es_cdsdeletes;
@@ -846,15 +823,8 @@ U0 CFE_ES_TaskPipe(CFE_SB_Buffer *SBBufPtr)
 // The ER log's two background-writer callbacks. They are never CALLED here -- the FS
 // background writer is what calls them -- but their ADDRESSES go into the state object, and
 // the transcript prints whether each is NULL.
-Bool CFE_ES_BackgroundERLogFileDataGetter(U8 *Meta, U32 RecordNum, U8 **Buffer, I64 *BufSize)
-{
-  return FALSE;
-}
-
-U0 CFE_ES_BackgroundERLogFileEventHandler(U8 *Meta, I32 Event, I32 Status, U32 RecordNum, I64 BlockSize, I64 Position)
-{
-}
-
+// CFE_ES_BackgroundERLogFileDataGetter: STUB REMOVED -- its source is gated, the real one runs.
+// CFE_ES_BackgroundERLogFileEventHandler: STUB REMOVED -- its source is gated, the real one runs.
 I32 CFE_PSP_GetCFETextSegmentInfo(U64 *PtrToCFESegment, U32 *SizeOfCFESegment)
 {
   ++es_textseg;
@@ -900,12 +870,70 @@ I32 OS_HeapGetInfo(OS_heap_prop_t *heap_prop)
   heap_prop->largest_free_block = 40000;
   return es_heap_rc;
 }
+// ---- what cfe_es_erlog.c, cfe_es_backgroundtask.c and cfe_es_objtab.c call -----------------
+// The last three ES stubs from the apps/CDS/perf set, plus the PSP's exception interface --
+// which is the BOARD, and will still be a stub when every line of cFE is translated.
+I64 es_appscans, es_perfdumps, es_cdsearly;
+I32 es_cdsearly_rc;
+I64 es_exc_count;
+// what CFE_PSP_Exception_GetCount reports
+I32 es_exc_summary_rc;
+U32 es_exc_taskid;
+// 0 = "a system exception, not a task's"
+I32 es_exc_ctxsize;
+// <0 means "no context available"
+Bool CFE_ES_RunAppTableScan(U32 ElapsedTime, U8 *Arg)
+{
+  ++es_appscans;
+  return FALSE;
+}
+
+Bool CFE_ES_RunPerfLogDump(U32 ElapsedTime, U8 *Arg)
+{
+  ++es_perfdumps;
+  return FALSE;
+}
+
+I32 CFE_ES_CDS_EarlyInit()
+{
+  ++es_cdsearly;
+  return es_cdsearly_rc;
+}
+
+U32 CFE_PSP_Exception_GetCount()
+{
+  return es_exc_count;
+}
+
+I32 CFE_PSP_Exception_GetSummary(U32 *ContextLogId, U32 *TaskId, U8 *ReasonBuf, U32 ReasonSize)
+{
+  *ContextLogId = 77;
+  *TaskId = es_exc_taskid;
+  StrNCpy(ReasonBuf, "simulated exception", ReasonSize - 1);
+  ReasonBuf[ReasonSize - 1] = 0;
+  return es_exc_summary_rc;
+}
+
+I32 CFE_PSP_Exception_CopyContext(U32 ContextLogId, U8 *ContextBuf, U32 ContextSize)
+{
+  if (es_exc_ctxsize > 0) {
+    MemSet(ContextBuf, 0xC7, es_exc_ctxsize);
+  }
+  return es_exc_ctxsize;
+}
 // cfe_es_task.HC GOES HERE, NOT WITH THE OTHER INCLUDES AT THE TOP, and the reason is a HolyC
 // rule rather than a preference: CFE_ES_WriteERLogCmd takes the ADDRESS of
 // CFE_ES_BackgroundERLogFileDataGetter and CFE_ES_BackgroundERLogFileEventHandler, and a
 // forward DECLARATION is not enough for that -- the definitions have to have been seen. Both
 // are stubs in this file (cfe_es_erlog.c is not gated), so the include follows them.
+// ERLOG BEFORE TASK: cfe_es_task.c's CFE_ES_WriteERLogCmd takes the ADDRESS of two functions
+// cfe_es_erlog.c defines, and in HolyC an address-of needs the definition to have been seen --
+// a forward declaration is not enough. A plain CALL is fine either way, which is why
+// CFE_ES_TaskInit can call CFE_ES_BackgroundInit from the file before it.
+#include "/Kernel/Cfs/cfe/cfe_es_erlog.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_task.HC"
+#include "/Kernel/Cfs/cfe/cfe_es_backgroundtask.HC"
+#include "/Kernel/Cfs/cfe/cfe_es_objtab.HC"
 // THE SIMULATED MEMORY POOL IS GONE from both halves of this driver. CFE_ES_PoolCreateEx,
 // CFE_ES_GetPoolBuf and CFE_ES_PutPoolBuf were a hand-written bump allocator here;
 // cfe_es_mempool.HC and cfe_es_generic_pool.HC are gated now, so every allocation in the
@@ -1332,6 +1360,27 @@ I32 OS_BinSemTake(U32 sem_id)
   if (time_sem_take_budget <= 0)
     return OS_ERROR;
   --time_sem_take_budget;
+  return OS_SUCCESS;
+}
+// THE BACKGROUND TASK'S DELAY, and its only way out. CFE_ES_BackgroundTask loops forever on
+// OS_BinSemTimedWait and breaks only on a status that is neither OS_SUCCESS nor OS_SEM_TIMEOUT
+// -- so a budget, exactly like time_sem_take_budget above, is what makes the task drivable at
+// all. es_bg_waits counts the passes; es_bg_wait_budget bounds them.
+I64 es_bg_waits, es_bg_deletes;
+I64 es_bg_wait_budget;
+I32 OS_BinSemTimedWait(U32 sem_id, U32 msecs)
+{
+  ++es_bg_waits;
+  if (es_bg_wait_budget <= 0) {
+    return OS_ERROR;
+  }
+  --es_bg_wait_budget;
+  return OS_SEM_TIMEOUT;
+}
+
+I32 OS_BinSemDelete(U32 sem_id)
+{
+  ++es_bg_deletes;
   return OS_SUCCESS;
 }
 // CFE_ES_CreateChildTask: STUB REMOVED -- cfe_es_api.c is gated, the real one runs.

@@ -138,6 +138,9 @@ CSRC_DEFS = [
     # comment "This define should be put in the OS API headers". A constant a .c file invents
     # is exactly what this list exists for.
     os.path.join(ROOT, "vendor", "cFE", "modules", "es", "fsw", "src", "cfe_es_task.c"),
+    # cfe_es_backgroundtask.c invents its own sem name, child-task parameters, idle delay and
+    # the job count (sizeof(table)/sizeof(table[0])). None of them is in a header.
+    os.path.join(ROOT, "vendor", "cFE", "modules", "es", "fsw", "src", "cfe_es_backgroundtask.c"),
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-file.c"),
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-idmap.c"),
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-timebase.c"),
@@ -187,14 +190,31 @@ def probe(names):
     for cf in CSRC_DEFS:
         if not os.path.isfile(cf):
             continue
-        lines = open(cf, errors="replace").read().split("\n")
+        text = open(cf, errors="replace").read()
+        # A #define that mentions one of the file's own OBJECTS cannot be lifted: the probe has
+        # the macro but not the thing it names, and the probe then fails to COMPILE, which takes
+        # every other constant down with it. cfe_es_backgroundtask.c's
+        #   #define CFE_ES_BACKGROUND_NUM_JOBS (sizeof(TABLE) / sizeof(TABLE[0]))
+        # is the case: the table is a file-scope array of function pointers that cannot be
+        # lifted with it. Such a name is left to the "not a literal and so NOT compared" bucket,
+        # which this tool reports as a NUMBER rather than a silence -- and the translation
+        # spells it the same way NASA does, as a sizeof over its own copy of the table, so the
+        # two derive it from the same place rather than both writing a number down.
+        objects = set(re.findall(r'^[A-Za-z_][\w \t*]*?\b([A-Za-z_]\w*)\s*\[[^\]]*\]\s*=',
+                                 text, re.M))
+        objects |= set(re.findall(r'^[A-Za-z_][\w \t*]*?\b([A-Za-z_]\w*)\s*=\s*\{',
+                                  text, re.M))
+        lines = text.split("\n")
         i = 0
         while i < len(lines):
             if re.match(r'^[ \t]*#[ \t]*define[ \t]+[A-Za-z_]\w*', lines[i]):
-                body.append(lines[i])
+                chunk = [lines[i]]
                 while lines[i].rstrip().endswith("\\") and i + 1 < len(lines):
                     i += 1
-                    body.append(lines[i])
+                    chunk.append(lines[i])
+                joined = " ".join(chunk)
+                if not any(re.search(r'\b%s\b' % re.escape(o), joined) for o in objects):
+                    body.extend(chunk)
             i += 1
     body.append("int main(void){")
     for n in names:

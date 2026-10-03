@@ -374,11 +374,7 @@ int32 OS_MutSemGive(osal_id_t sem_id)
  * of range) are selected now. */
 
 /* CFE_ES_GetAppID: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
-void CFE_ES_BackgroundWakeup(void)
-{
-    ++fs_wakeups;
-}
-
+/* CFE_ES_BackgroundWakeup: STUB REMOVED -- its source is gated, the real one runs. */
 uint32 CFE_PSP_GetSpacecraftId(void)
 {
     return 0x5A5A;
@@ -540,6 +536,30 @@ int32 OS_BinSemTake(osal_id_t sem_id)
     return OS_SUCCESS;
 }
 
+/* THE BACKGROUND TASK'S DELAY, and its only way out. CFE_ES_BackgroundTask loops forever on
+ * OS_BinSemTimedWait and breaks only on a status that is neither OS_SUCCESS nor
+ * OS_SEM_TIMEOUT -- so a budget, exactly like time_sem_take_budget above, is what makes the
+ * task drivable at all. es_bg_waits counts the passes; es_bg_wait_budget bounds them. */
+static long es_bg_waits, es_bg_deletes;
+static int  es_bg_wait_budget;
+
+int32 OS_BinSemTimedWait(osal_id_t sem_id, uint32 msecs)
+{
+    ++es_bg_waits;
+    if (es_bg_wait_budget <= 0)
+    {
+        return OS_ERROR;
+    }
+    --es_bg_wait_budget;
+    return OS_SEM_TIMEOUT;
+}
+
+int32 OS_BinSemDelete(osal_id_t sem_id)
+{
+    ++es_bg_deletes;
+    return OS_SUCCESS;
+}
+
 /* CFE_ES_CreateChildTask: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* CFE_SB_SubscribeLocal was stubbed here. It is real now (cfe_sb_api.c), and TIME is the only
  * caller -- CFE_TIME_SubscribeLocal wraps it for the four non-ground message ids. time_sub_local
@@ -623,15 +643,7 @@ static int32 es_starttask_rc  = CFE_SUCCESS;
 static long  es_taskdeletes, es_taskexits;
 static int32 es_taskdelete_rc = OS_SUCCESS;
 
-int32 CFE_ES_WriteToERLog(CFE_ES_LogEntryType_Enum_t EntryType, uint32 ResetType,
-                          uint32 ResetSubtype, const char *Description)
-{
-    ++es_erlog_writes;
-    printf("es_erlog type=%u rt=%lu rst=%lu %s\n", (unsigned)EntryType, (unsigned long)ResetType,
-           (unsigned long)ResetSubtype, Description);
-    return CFE_SUCCESS;
-}
-
+/* CFE_ES_WriteToERLog: STUB REMOVED -- its source is gated, the real one runs. */
 /* NASA's CFE_PSP_Restart does not return. This one does, because the code AFTER it in
  * CFE_ES_ResetCFE is part of what the transcript compares -- the "CFE_PSP_Restart returned"
  * syslog line and the CFE_ES_NOT_IMPLEMENTED that follows exist for exactly this case. */
@@ -853,12 +865,7 @@ int32 CFE_ES_AppCreate(CFE_ES_AppId_t *ApplicationIdPtr, const char *AppName,
     return es_appcreate_rc;
 }
 
-int32 CFE_ES_BackgroundInit(void)
-{
-    ++es_bkginits;
-    return es_bkginit_rc;
-}
-
+/* CFE_ES_BackgroundInit: STUB REMOVED -- its source is gated, the real one runs. */
 int32 CFE_ES_DeleteCDS(const char *CDSName, bool CalledByTblServices)
 {
     ++es_cdsdeletes;
@@ -881,18 +888,8 @@ void CFE_ES_TaskPipe(const CFE_SB_Buffer_t *SBBufPtr)
 /* The ER log's two background-writer callbacks. They are never CALLED here -- the FS
  * background writer is what calls them -- but their ADDRESSES go into the state object, and
  * the transcript prints whether each is NULL. */
-bool CFE_ES_BackgroundERLogFileDataGetter(void *Meta, uint32 RecordNum, void **Buffer,
-                                          size_t *BufSize)
-{
-    return false;
-}
-
-void CFE_ES_BackgroundERLogFileEventHandler(void *Meta, CFE_FS_FileWriteEvent_t Event,
-                                            int32 Status, uint32 RecordNum, size_t BlockSize,
-                                            size_t Position)
-{
-}
-
+/* CFE_ES_BackgroundERLogFileDataGetter: STUB REMOVED -- its source is gated, the real one runs. */
+/* CFE_ES_BackgroundERLogFileEventHandler: STUB REMOVED -- its source is gated, the real one runs. */
 int32 CFE_PSP_GetCFETextSegmentInfo(cpuaddr *PtrToCFESegment, uint32 *SizeOfCFESegment)
 {
     ++es_textseg;
@@ -940,6 +937,58 @@ int32 OS_HeapGetInfo(OS_heap_prop_t *heap_prop)
     heap_prop->free_blocks        = 25;
     heap_prop->largest_free_block = 40000;
     return es_heap_rc;
+}
+
+/* ---- what cfe_es_erlog.c, cfe_es_backgroundtask.c and cfe_es_objtab.c call -----------------
+ * The last three ES stubs from the apps/CDS/perf set, plus the PSP's exception interface --
+ * which is the BOARD, and will still be a stub when every line of cFE is translated. */
+static long  es_appscans, es_perfdumps, es_cdsearly;
+static int32 es_cdsearly_rc;
+static long  es_exc_count;                 /* what CFE_PSP_Exception_GetCount reports */
+static int32 es_exc_summary_rc = CFE_PSP_SUCCESS;
+static uint32 es_exc_taskid;               /* 0 = "a system exception, not a task's" */
+static int32 es_exc_ctxsize = 4;           /* <0 means "no context available" */
+
+bool CFE_ES_RunAppTableScan(uint32 ElapsedTime, void *Arg)
+{
+    ++es_appscans;
+    return false;
+}
+
+bool CFE_ES_RunPerfLogDump(uint32 ElapsedTime, void *Arg)
+{
+    ++es_perfdumps;
+    return false;
+}
+
+int32 CFE_ES_CDS_EarlyInit(void)
+{
+    ++es_cdsearly;
+    return es_cdsearly_rc;
+}
+
+uint32 CFE_PSP_Exception_GetCount(void)
+{
+    return (uint32)es_exc_count;
+}
+
+int32 CFE_PSP_Exception_GetSummary(uint32 *ContextLogId, osal_id_t *TaskId, char *ReasonBuf,
+                                   uint32 ReasonSize)
+{
+    *ContextLogId = 77;
+    *TaskId       = OS_ObjectIdFromInteger(es_exc_taskid);
+    strncpy(ReasonBuf, "simulated exception", ReasonSize - 1);
+    ReasonBuf[ReasonSize - 1] = 0;
+    return es_exc_summary_rc;
+}
+
+int32 CFE_PSP_Exception_CopyContext(uint32 ContextLogId, void *ContextBuf, uint32 ContextSize)
+{
+    if (es_exc_ctxsize > 0)
+    {
+        memset(ContextBuf, 0xC7, es_exc_ctxsize);
+    }
+    return es_exc_ctxsize;
 }
 
 /* NASA defines CFE_SB_Global in cfe_sb_task.c, which is not gated, so the driver supplies it --

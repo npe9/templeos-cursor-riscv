@@ -131,7 +131,7 @@ class CFE_FS_FileWriteMetaData_t
   U32 FileSubType; // CFE_FS_SubType_Enum_t
   U8 Description[CFE_FS_HDR_DESC_MAX_LEN];
   Bool (*GetData)(U8 *Meta, U32 RecordNum, U8 **Buffer, I64 *BufSize);
-  U0 (*OnEvent)(U8 *Meta, I32 Event, I32 Status, U32 RecordNum, I64 BlockSize, I64 Position);
+  U0 (*OnEvent)(U8 *Meta, U32 Event, I32 Status, U32 RecordNum, I64 BlockSize, I64 Position);
 };
 // --- cfe_fs_priv.h ----------------------------------------------------------------------------
 // A power of two, so the queue wraps with a bitwise AND rather than a modulo.

@@ -91,7 +91,10 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/es/fsw/src/cfe_es_mempool.c
        $CFE/modules/es/fsw/src/cfe_es_resource.c
        $CFE/modules/es/fsw/src/cfe_es_api.c
-       $CFE/modules/es/fsw/src/cfe_es_task.c"
+       $CFE/modules/es/fsw/src/cfe_es_task.c
+       $CFE/modules/es/fsw/src/cfe_es_erlog.c
+       $CFE/modules/es/fsw/src/cfe_es_backgroundtask.c
+       $CFE/modules/es/fsw/src/cfe_es_objtab.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
