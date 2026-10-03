@@ -104,7 +104,7 @@ lines, one diff, one negative control.
 | `resourceid` | 228 | **228** | complete, SIMPLE variant |
 | `sb` | 6,086 | **6,086** | complete — all seven unconditional sources plus `msg_id_util`; the EDS dispatcher is the alternative |
 | `config` | 782 | **489** | get/set/lookup/eds complete; `init.c` (241) and its objtab wait for the build-generated GLOBAL_CONFIGDATA |
-| `es` | 12,734 | **2,122** | `crc`, `generic_pool`, `syslog`, `mempool`, plus the module's STATE (`cfe_es_global.HC`). The driver's simulated bump allocator is GONE -- every allocation in the transcript runs NASA's real pool |
+| `es` | 12,734 | **2,517** | `crc`, `generic_pool`, `syslog`, `mempool`, `resource`, plus the module's STATE (`cfe_es_global.HC`). The driver's simulated bump allocator is GONE -- every allocation in the transcript runs NASA's real pool |
 | `tbl` | 7,780 | 0 | after `es` |
 | `sbr` | 535 | **434** | complete for the default HASH map; `map_direct` is the alternative |
 
@@ -302,7 +302,7 @@ rather than counted as always-built:
 | `evs` | 5 | 2,787 | **100%** (six of six; the `_dispatch` one is conditional — see below) |
 | `time` | 5 | 4,383 | **100%** (plus `cfe_time_dispatch.c`, 294, which is conditional — see below) |
 | `tbl` | 15 | 7,780 | 0% |
-| `es` | 17 | 12,734 | **17%** (`crc`, `generic_pool`, `syslog`, `mempool`) |
+| `es` | 17 | 12,734 | **20%** (`crc`, `generic_pool`, `syslog`, `mempool`, `resource`) |
 
 #### `evs`: the first module whose TEXT is the comparison
 

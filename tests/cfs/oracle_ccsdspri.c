@@ -48,6 +48,7 @@
 #include "cfe_es_perf.h"
 #include "cfe_es_log.h"
 #include "cfe_es_global.h"
+#include "cfe_es_resource.h"  /* the four record tables' accessors and locators */
 #include "cfe_sb_eventids.h"   /* the event ids the subscribe counters switch on */
 #include "cfe_evs_msgids.h"   /* CFE_EVS_CMD_MID, CFE_EVS_SEND_HK_MID */
 /* cfe_evs_dispatch.c's two local functions: NASA declares them at the top of that .c, not in a
@@ -790,6 +791,49 @@ int32 CFE_ES_TaskID_ToIndex(CFE_ES_TaskId_t TaskID, uint32 *Idx)
     (void)TaskID;
     *Idx = 0;
     return CFE_SUCCESS;
+}
+
+/* THE OTHER TWO INDEX CONVERSIONS, and all four of them are STUBS MORE PERMISSIVE THAN THE REAL
+ * THING -- which is a debt this file has paid before. The real CFE_ES_LibID_ToIndex and
+ * CFE_ES_CounterID_ToIndex (cfe_es_api.c, not gated yet) subtract CFE_ES_LIBID_BASE and
+ * CFE_ES_COUNTID_BASE; these take a small id AS the index, exactly the way the AppID stub
+ * above does. When api.c lands, every site here that passes a bare 1 or 2 stops resolving --
+ * the same break CFE_SB_PipeId_ToIndex caused when IT stopped being `id & 0xFF`, and the
+ * reason the probes below use properly based ids where they can.
+ *
+ * CFE_ES_TaskID_ToIndex above is the most permissive of the four: it returns index 0 for ANY
+ * id. The real one goes through OS_ObjectIdToArrayIndex. */
+int32 CFE_ES_LibID_ToIndex(CFE_ES_LibId_t LibId, uint32 *Idx)
+{
+    uint32 v = CFE_RESOURCEID_TO_ULONG(LibId);
+    if (v >= CFE_PLATFORM_ES_MAX_LIBRARIES)
+    {
+        return CFE_ES_ERR_RESOURCEID_NOT_VALID;
+    }
+    *Idx = v;
+    return CFE_SUCCESS;
+}
+
+int32 CFE_ES_CounterID_ToIndex(CFE_ES_CounterId_t CounterId, uint32 *Idx)
+{
+    uint32 v = CFE_RESOURCEID_TO_ULONG(CounterId);
+    if (v >= CFE_PLATFORM_ES_MAX_GEN_COUNTERS)
+    {
+        return CFE_ES_ERR_RESOURCEID_NOT_VALID;
+    }
+    *Idx = v;
+    return CFE_SUCCESS;
+}
+
+/* The running task's OSAL id. CFE_ES_GetTaskRecordByContext XORs it into an ES task id, so the
+ * value here decides which ES task record "the calling task" resolves to. A fixed 1 means the
+ * context lookups land on table slot... whatever CFE_ES_TaskID_ToIndex says, which today is 0
+ * for everything. */
+static uint32 es_os_taskid = 1;
+
+osal_id_t OS_TaskGetId(void)
+{
+    return es_os_taskid;
 }
 
 int32 CFE_ES_GetTaskInfo(CFE_ES_TaskInfo_t *TaskInfo, CFE_ES_TaskId_t TaskId)
@@ -4386,6 +4430,155 @@ int main(void)
             }
             printf("crc_params_arc result=0x%04x\n",
                    CFE_ES_ComputeCRC_GetParams(CFE_ES_CrcType_16_ARC)->Algorithm(CRC_PROBE, 9, 0));
+        }
+
+        /* --- cfe_es_resource.c: HOW ES FINDS A RECORD ------------------------------------
+         *
+         * Four tables -- apps, libraries, tasks, counters -- and three ways into each: by ID,
+         * by NAME, and BY CALLING CONTEXT. The third is what every cFS call that says "the
+         * calling application" is built on, and it is the one that cannot be checked by
+         * reading a counter: it asks OSAL which task is running, maps that to an ES task
+         * record, and reads the app id out of it.
+         *
+         * THE TABLES ARE POPULATED BY HAND HERE because cfe_es_apps.c is not gated -- there is
+         * no CFE_ES_AppCreate to call. Writing the records directly is what lets the lookups
+         * be exercised at all, and the accessors used to write them are the same ones the
+         * lookups use to read, which is a weakness worth naming: a SetUsed/IsUsed pair that
+         * agreed on the wrong field would pass. check_padding is what rules that out -- it
+         * measures AppId at offset 0 against NASA's compiler. */
+        {
+            CFE_ES_AppRecord_t        *arp;
+            CFE_ES_LibRecord_t        *lrp;
+            CFE_ES_TaskRecord_t       *trp;
+            CFE_ES_GenCounterRecord_t *crp;
+
+            memset(CFE_ES_Global.AppTable, 0, sizeof(CFE_ES_Global.AppTable));
+            memset(CFE_ES_Global.LibTable, 0, sizeof(CFE_ES_Global.LibTable));
+            memset(CFE_ES_Global.TaskTable, 0, sizeof(CFE_ES_Global.TaskTable));
+            memset(CFE_ES_Global.CounterTable, 0, sizeof(CFE_ES_Global.CounterTable));
+
+            /* App 2 named "ESPROBE", library 1 named "ESLIB", counter 3 named "ESCTR".
+             * The ids are small because the four *_ToIndex stubs take them as indices -- see
+             * the note on those stubs; the real ones subtract a base. */
+            arp = &CFE_ES_Global.AppTable[2];
+            CFE_ES_AppRecordSetUsed(arp, CFE_ResourceId_FromInteger(2));
+            strncpy((char *)arp->AppName, "ESPROBE", sizeof(arp->AppName) - 1);
+            lrp = &CFE_ES_Global.LibTable[1];
+            CFE_ES_LibRecordSetUsed(lrp, CFE_ResourceId_FromInteger(1));
+            strncpy((char *)lrp->LibName, "ESLIB", sizeof(lrp->LibName) - 1);
+            crp = &CFE_ES_Global.CounterTable[3];
+            CFE_ES_CounterRecordSetUsed(crp, CFE_ResourceId_FromInteger(3));
+            strncpy((char *)crp->CounterName, "ESCTR", sizeof(crp->CounterName) - 1);
+
+            /* BY NAME: a hit, a miss, and the record's own id read back. */
+            printf("rs_appbyname found=%d id=%lu name=%s\n",
+                   (int)(CFE_ES_LocateAppRecordByName("ESPROBE") != NULL),
+                   (unsigned long)CFE_RESOURCEID_TO_ULONG(
+                       CFE_ES_AppRecordGetID(CFE_ES_LocateAppRecordByName("ESPROBE"))),
+                   CFE_ES_AppRecordGetName(CFE_ES_LocateAppRecordByName("ESPROBE")));
+            printf("rs_appbyname_miss null=%d\n",
+                   (int)(CFE_ES_LocateAppRecordByName("NOSUCHAPP") == NULL));
+            printf("rs_libbyname found=%d name=%s\n",
+                   (int)(CFE_ES_LocateLibRecordByName("ESLIB") != NULL),
+                   CFE_ES_LibRecordGetName(CFE_ES_LocateLibRecordByName("ESLIB")));
+            printf("rs_libbyname_miss null=%d\n",
+                   (int)(CFE_ES_LocateLibRecordByName("NOSUCHLIB") == NULL));
+            printf("rs_ctrbyname found=%d name=%s\n",
+                   (int)(CFE_ES_LocateCounterRecordByName("ESCTR") != NULL),
+                   CFE_ES_CounterRecordGetName(CFE_ES_LocateCounterRecordByName("ESCTR")));
+            printf("rs_ctrbyname_miss null=%d\n",
+                   (int)(CFE_ES_LocateCounterRecordByName("NOSUCHCTR") == NULL));
+
+            /* AN UNUSED SLOT IS NOT A NAME MATCH even when the bytes happen to be right. Slot
+             * 4 gets the name without the id, so IsUsed is false and the scan must skip it. */
+            strncpy((char *)CFE_ES_Global.AppTable[4].AppName, "ESGHOST",
+                    sizeof(CFE_ES_Global.AppTable[4].AppName) - 1);
+            printf("rs_ghost null=%d\n", (int)(CFE_ES_LocateAppRecordByName("ESGHOST") == NULL));
+
+            /* BY ID: in range, out of range, and the match test that confirms it. */
+            arp = CFE_ES_LocateAppRecordByID(CFE_ES_APPID_C(CFE_ResourceId_FromInteger(2)));
+            printf("rs_appbyid nonnull=%d match=%d used=%d\n", (int)(arp != NULL),
+                   (int)CFE_ES_AppRecordIsMatch(arp, CFE_ES_APPID_C(CFE_ResourceId_FromInteger(2))),
+                   (int)CFE_ES_AppRecordIsUsed(arp));
+            printf("rs_appbyid_oor null=%d\n",
+                   (int)(CFE_ES_LocateAppRecordByID(
+                             CFE_ES_APPID_C(CFE_ResourceId_FromInteger(999))) == NULL));
+            printf("rs_match_null=%d\n",
+                   (int)CFE_ES_AppRecordIsMatch(NULL,
+                                                CFE_ES_APPID_C(CFE_ResourceId_FromInteger(2))));
+            lrp = CFE_ES_LocateLibRecordByID(CFE_ES_LIBID_C(CFE_ResourceId_FromInteger(1)));
+            printf("rs_libbyid nonnull=%d match=%d\n", (int)(lrp != NULL),
+                   (int)CFE_ES_LibRecordIsMatch(lrp, CFE_ES_LIBID_C(CFE_ResourceId_FromInteger(1))));
+            crp = CFE_ES_LocateCounterRecordByID(
+                CFE_ES_COUNTERID_C(CFE_ResourceId_FromInteger(3)));
+            printf("rs_ctrbyid nonnull=%d match=%d\n", (int)(crp != NULL),
+                   (int)CFE_ES_CounterRecordIsMatch(
+                       crp, CFE_ES_COUNTERID_C(CFE_ResourceId_FromInteger(3))));
+
+            /* WHAT THIS DOES AND DOES NOT CHECK, because the first version of this comment
+             * claimed more than the numbers support. CFE_RESOURCEID_MARK is 0 in the SIMPLE
+             * resourceid variant this port builds -- it is 0x02000000 only under EDS -- so the
+             * XOR is a NO-OP here and a round trip cannot distinguish "XOR with 0" from "no
+             * XOR at all".
+             *
+             * It is still not vacuous: `id7=7` pins the round trip's PLUMBING -- that both
+             * conversions exist and are inverses. The CONSTANT itself is owned by
+             * check_constants.py, which was shown to fail on a MARK of 0x02000000 before the
+             * transcript even runs, and that is the stronger guard of the two. Under EDS both
+             * numbers here change, which is the configuration-dependence the resourceid
+             * translation already records. */
+            printf("rs_osal_rt id7=%lu back=%lu\n",
+                   (unsigned long)CFE_ES_TaskId_ToOSAL(
+                       CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(7))),
+                   (unsigned long)CFE_RESOURCEID_TO_ULONG(
+                       CFE_ES_TaskId_FromOSAL(CFE_ES_TaskId_ToOSAL(
+                           CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(7))))));
+
+            /* BY CONTEXT. es_os_taskid is what OS_TaskGetId reports, and the task record it
+             * lands on has to be marked used AND carry the app id, or the two-hop lookup
+             * returns NULL at the first or the second step. Both failures are driven. */
+            trp = &CFE_ES_Global.TaskTable[0];
+            CFE_ES_TaskRecordSetUsed(trp, CFE_ResourceId_FromInteger(
+                                              CFE_RESOURCEID_TO_ULONG(CFE_ES_TaskId_FromOSAL(1))));
+            strncpy((char *)trp->TaskName, "ESTASK", sizeof(trp->TaskName) - 1);
+            trp->AppId = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(2));
+            printf("rs_ctx_task nonnull=%d name=%s\n",
+                   (int)(CFE_ES_GetTaskRecordByContext() != NULL),
+                   CFE_ES_TaskRecordGetName(&CFE_ES_Global.TaskTable[0]));
+            printf("rs_ctx_app nonnull=%d name=%s\n",
+                   (int)(CFE_ES_GetAppRecordByContext() != NULL),
+                   CFE_ES_AppRecordGetName(&CFE_ES_Global.AppTable[2]));
+            /* step 2 fails: the task's app id points at a free slot */
+            trp->AppId = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(5));
+            printf("rs_ctx_app_noapp null=%d\n", (int)(CFE_ES_GetAppRecordByContext() == NULL));
+            /* step 1 fails: the task record is free */
+            CFE_ES_TaskRecordSetFree(trp);
+            printf("rs_ctx_task_free null=%d app_null=%d\n",
+                   (int)(CFE_ES_GetTaskRecordByContext() == NULL),
+                   (int)(CFE_ES_GetAppRecordByContext() == NULL));
+
+            /* THE FOUR SLOT-USED PREDICATES FAIL SAFE BY SAYING "TAKEN". An out-of-range id
+             * gives NULL, and claiming the slot is in use is what makes
+             * CFE_ResourceId_FindNext move on rather than hand it out -- so the answer for a
+             * bad id is TRUE, which reads backwards until you know why. */
+            printf("rs_slot app2=%d app5=%d appoor=%d\n",
+                   (int)CFE_ES_CheckAppIdSlotUsed(CFE_ResourceId_FromInteger(2)),
+                   (int)CFE_ES_CheckAppIdSlotUsed(CFE_ResourceId_FromInteger(5)),
+                   (int)CFE_ES_CheckAppIdSlotUsed(CFE_ResourceId_FromInteger(999)));
+            printf("rs_slot lib1=%d lib5=%d ctr3=%d ctr0=%d\n",
+                   (int)CFE_ES_CheckLibIdSlotUsed(CFE_ResourceId_FromInteger(1)),
+                   (int)CFE_ES_CheckLibIdSlotUsed(CFE_ResourceId_FromInteger(5)),
+                   (int)CFE_ES_CheckCounterIdSlotUsed(CFE_ResourceId_FromInteger(3)),
+                   (int)CFE_ES_CheckCounterIdSlotUsed(CFE_ResourceId_FromInteger(0)));
+
+            /* SetFree really frees: the same lookups that found these must stop finding them. */
+            CFE_ES_AppRecordSetFree(&CFE_ES_Global.AppTable[2]);
+            CFE_ES_LibRecordSetFree(&CFE_ES_Global.LibTable[1]);
+            CFE_ES_CounterRecordSetFree(&CFE_ES_Global.CounterTable[3]);
+            printf("rs_freed app=%d lib=%d ctr=%d\n",
+                   (int)(CFE_ES_LocateAppRecordByName("ESPROBE") == NULL),
+                   (int)(CFE_ES_LocateLibRecordByName("ESLIB") == NULL),
+                   (int)(CFE_ES_LocateCounterRecordByName("ESCTR") == NULL));
         }
 
         /* --- cfe_es_syslog.c: THE SYSTEM LOG ---------------------------------------------
