@@ -966,10 +966,22 @@ is the destination form that decides**, and only two of six are broken:
 | `arr[i] = s` | **first 8 bytes only** |
 | `arr[i].member = s` | whole |
 | `*ptr = s` | **first 8 bytes only** |
+| `ptr->member = *p` (dereference on the **source** side) | whole |
+| `arr[i] = *p` | **first 8 bytes only** |
+| `arr[i] = arr[j]` | **first 8 bytes only** |
 
 The size does not matter beyond being over eight. A 12-, 16-, 20- and 24-byte class all copy
 exactly their first two words — so a six-word struct loses four words, not a tail. A 4- or
 8-byte class is correct by accident.
+
+**The destination decides, and nothing about the source changes it.** A dereference or a
+subscript on the right is irrelevant: `ptr->member = *p` is whole and `arr[i] = *p` is not,
+`var = arr[i]` is whole and `arr[i] = arr[j]` is not. These three were measured because
+`tools/cfs/check_struct_copy.py` could not see any of them — its right-hand-side pattern matched
+neither a leading `*` nor a subscript, so such a statement was not flagged, not exempted, and
+not even counted. `AppRecPtr->StartParams = *Params;` in `cfe_es_apps.c` is the first form on a
+344-byte block and `TaskList[NumTasks] = TaskList[0];` in the same file is the third, so both
+were about to enter the tree unexamined.
 
 **A class narrower than the store is still correct, and its neighbours are not touched.** This
 is the measurement that could have gone the other way: an 8-byte store into one slot of an

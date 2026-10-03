@@ -70,7 +70,23 @@ HCROOT = os.path.join(ROOT, "Kernel")
 # `arr[i].member = s` is a WHOLE copy. tests/exec/cases/e_struct_copy_into_slot.hc pins it with
 # the rest. Allowing a trailing member selector here raised a false positive against
 # cfe_ta_task.HC's `CFE_TA_CpuTaskAffinity[i].CpuFromOS = cpuget`, which is correct code.
-LV = r'[A-Za-z_]\w*(?:(?:\.|->)[A-Za-z_]\w*)*'
+# AND A DEREFERENCE IS ALLOWED ON THE RIGHT, which it was not, and that was a silent skip of
+# the exact shape cFS uses most. `AppRecPtr->StartParams = *Params;` is how cfe_es_apps.c copies
+# a 344-byte parameter block, and `*Params` did not match the right-hand side pattern at all --
+# so a statement of that shape was not flagged, not exempted, and not even COUNTED. Measured, in
+# tests/exec/cases/e_struct_copy_into_slot.hc: `ptr->member = *p` is a whole copy and
+# `arr[i] = *p` is the first eight bytes, so the source form changes nothing and the destination
+# still decides. The leading `*` is stripped before resolution.
+#
+# AND A SUBSCRIPT IS ALLOWED ON THE RIGHT TOO. `TaskList[NumTasks] = TaskList[0];` is NASA's own
+# line in cfe_es_apps.c -- moving the main task to index 0 of a list it is building -- and a
+# right-hand side with brackets did not match, so that statement was skipped in silence like the
+# dereference was. The measured table says the DESTINATION decides and a source array element is
+# fine, so `arr[i] = arr[j]` of a class is broken exactly as `arr[i] = s` is, and this is how the
+# gate gets to say so. Subscripts are stripped before resolution: an element of `Class arr[]` has
+# the element's type.
+LV = (r'\*?[A-Za-z_]\w*(?:\[[^\]]*\])*'
+      r'(?:(?:\.|->)[A-Za-z_]\w*(?:\[[^\]]*\])*)*')
 ASSIGN = re.compile(r'^(\*[A-Za-z_]\w*|[A-Za-z_][\w.\[\]>-]*\[[^\]]*\])\s*=\s*('
                     + LV + r')$')
 # `public class CHash` is how the kernel's own headers write one, so the modifier has to be
@@ -91,7 +107,14 @@ CLASS_OPEN = re.compile(r'^[ \t]*(?:(?:public|extern|_extern|import|_import)\s+)
 DECL = re.compile(r'(?<![\w.>-])([A-Z][A-Za-z0-9_]*)\s+(\**)\s*([A-Za-z_]\w*)\s*(?=[;,)\[=(])')
 # `I64 op, rd, immI;` -- the second and later declarators have no type in front of them, so the
 # pattern above sees only the first. Two of the names it could not resolve were this shape.
-DECL_MORE = re.compile(r',\s*(\**)\s*([A-Za-z_]\w*)\s*(?=[;,)\[=])')
+#
+# AND A SUBSCRIPT CAN SIT BETWEEN THEM: `U8 line[160], *p;` declares an array and a pointer, and
+# a version of this that matched the comma immediately after the first NAME stopped at the `[`
+# and never collected `p` at all. `p` then resolved through the whole-tree fallback to an
+# unrelated `p` of a class type, and the gate reported a correct `line[i++] = *p` byte copy as a
+# class copy -- a checker blaming the translation for its own blind spot, which docs/ records as
+# worse than no checker. Subscripts are skipped, with their brackets balanced.
+DECL_MORE = re.compile(r'\s*,\s*(\**)\s*([A-Za-z_]\w*)')
 # `U0 (*fp_hndlr)(I64 sc)` -- a function-pointer declarator. Its depth is 1 whatever it points
 # at, which is all this gate needs: a pointer is never a class by value.
 DECL_FNPTR = re.compile(r'\(\s*\*+\s*([A-Za-z_]\w*)\s*\)\s*\(')
@@ -103,6 +126,12 @@ DECL_FNPTR = re.compile(r'\(\s*\*+\s*([A-Za-z_]\w*)\s*\)\s*\(')
 DEFINE = re.compile(r'^[ \t]*#define[ \t]+([A-Za-z_]\w*)(?![\w(])', re.M)
 # The compiler's own names, which are declared nowhere in the tree.
 BUILTIN = {"TRUE", "FALSE", "NULL", "ON", "OFF"}
+# HolyC's SUB-REGISTER SELECTORS, which look exactly like a member access and are not one:
+# `res.u8[1] = d.u8[0]` byte-swaps an I64, and `u8` is a language feature, not a field. There
+# are fourteen of them in Kernel/KMisc.HC's endian helpers alone, and every one came out as a
+# right-hand side with no type until this set existed. A slice of an integer is an integer, so
+# none of them can ever be a class by value.
+SUBREG = {"u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"}
 
 # Sites verified SAFE, each with the reason. A struct of 8 bytes or less copies whole, so a
 # small class is allowed here -- with its size stated, because the entry is a claim about it.
@@ -202,6 +231,26 @@ def class_members(src, classes):
     return out
 
 
+def skip_subscripts(src, pos):
+    """Past any `[...]` after a declarator's name, brackets balanced, and any space after it."""
+    while pos < len(src):
+        while pos < len(src) and src[pos] in " \t\n":
+            pos += 1
+        if pos >= len(src) or src[pos] != '[':
+            break
+        depth = 0
+        while pos < len(src):
+            if src[pos] == '[':
+                depth += 1
+            elif src[pos] == ']':
+                depth -= 1
+                if depth == 0:
+                    pos += 1
+                    break
+            pos += 1
+    return pos
+
+
 def declarators(src):
     """(name, type, pointer depth) for every declaration or parameter in `src`.
 
@@ -212,13 +261,15 @@ def declarators(src):
     """
     for m in DECL.finditer(src):
         yield m.group(3), m.group(1), len(m.group(2))
-        pos = m.end()
+        pos = skip_subscripts(src, m.end())
         while True:
             mm = DECL_MORE.match(src, pos)
             if not mm:
                 break
             yield mm.group(2), m.group(1), len(mm.group(1))
-            pos = mm.end()
+            pos = skip_subscripts(src, mm.end())
+            if pos >= len(src) or src[pos] not in ",":
+                break
     for m in DECL_FNPTR.finditer(src):
         yield m.group(1), "<function pointer>", 1
 
@@ -239,6 +290,12 @@ def collect(src, into):
 
 def resolve(expr, declared, members):
     """The set of (type, pointer depth) `expr` can have, or None if nothing resolved."""
+    # A LEADING `*` IS A DEREFERENCE AND MUST REDUCE THE DEPTH, not just be dropped. `arr[i] =
+    # *p` where p points at a class IS the defect -- that is the measured broken form -- so
+    # stripping the star and then reading p's own depth would have declared every such site a
+    # pointer and safe. `*p` where p is `U8 *` is a byte and still correct.
+    derefs = len(expr) - len(expr.lstrip("*"))
+    expr = re.sub(r'\[[^\]]*\]', '', expr.lstrip("*"))
     parts = re.split(r'\.|->', expr)
     cands = declared.get(parts[0])
     if not cands:
@@ -248,9 +305,17 @@ def resolve(expr, declared, members):
         for ty, _ in cands:
             if ty in members and p in members[ty]:
                 nxt.add(members[ty][p])
+        # A real class member wins; a sub-register selector is only consulted when none of the
+        # candidate types declares a field by that name.
+        if not nxt and p in SUBREG:
+            nxt.add(("<sub-register>", 0))
         if not nxt:
             return None
         cands = nxt
+    if derefs:
+        cands = {(ty, depth - derefs) for ty, depth in cands if depth >= derefs}
+        if not cands:
+            return None
     return cands
 
 

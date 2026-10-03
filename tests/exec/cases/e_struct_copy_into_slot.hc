@@ -21,7 +21,17 @@
 //   arr[i].member = s     WHOLE, although the destination address is computed
 //   narrow[i] = s         WHOLE, and the NEIGHBOURS ARE NOT TOUCHED
 //
-// The second is the one that could have gone either way. An 8-byte store into a 2-byte array
+//   ptr->member = *p      WHOLE -- a dereference on the SOURCE side changes nothing
+//   arr[i] = *p           FIRST 8 BYTES ONLY -- the destination still decides
+//   arr[i] = arr[j]       FIRST 8 BYTES ONLY -- a source element is fine, the slot is not
+//
+// The source-side pair is here because `AppRecPtr->StartParams = *Params;` is how cfe_es_apps.c
+// copies a 344-byte parameter block, and the gate's right-hand-side pattern did not match a
+// leading `*` at all -- so a statement of that shape was not flagged, not exempted, and not
+// even counted. Knowing which of the two is broken is also what lets `arr[i] = *p` be reported
+// correctly: the star has to REDUCE the pointer depth, not be dropped.
+//
+// The narrow-class case is the one that could have gone either way. An 8-byte store into a 2-byte array
 // slot would overwrite the three entries after it, which is the recorded array-deref store bug
 // exactly; and cFE has such an array -- CFE_SBR_MSGMAP, a message-id-to-route hash map of
 // 2-byte CFE_SBR_RouteId, written one slot at a time. It does not happen: a narrow class is
@@ -81,6 +91,12 @@ class Holder
 Narrow NarrowSlots[8];
 Narrow NarrowSrc;
 Holder HeldSlots[4];
+class WideHolder
+{
+  Wide w;
+  U32 tail;
+};
+WideHolder WideHeld;
 Ent Slots[4];
 Wide WideSlots[4];
 Outer Nest;
@@ -89,6 +105,7 @@ Wide WideSrc;
 I64 main()
 {
   Ent *p;
+  Wide *wp;
   Outer *np;
   Ent plain;
   I64 r = 0;
@@ -173,5 +190,44 @@ I64 main()
   // 5
   r = (r << 4) | NarrowSlots[5].v;
   // 6
+  // --- A DEREFERENCE ON THE SOURCE SIDE. The destination still decides: through a member
+  // selector the copy is whole, into an array slot it is the first eight bytes.
+  WideSrc.a = 1;
+  WideSrc.b = 2;
+  WideSrc.c = 3;
+  wp = &WideSrc;
+  WideHeld.w.a = 9;
+  WideHeld.w.b = 9;
+  WideHeld.w.c = 9;
+  WideHeld.tail = 8;
+  WideHeld.w = *wp;
+  r = (r << 4) | WideHeld.w.a;
+  // 1
+  r = (r << 4) | WideHeld.w.c;
+  // 3, and 9 if only the first eight bytes moved
+  r = (r << 4) | WideHeld.tail;
+  // 8
+  WideSlots[2].a = 0;
+  WideSlots[2].b = 0;
+  WideSlots[2].c = 0;
+  WideSlots[2] = *wp;
+  r = (r << 4) | WideSlots[2].a;
+  // 1
+  r = (r << 4) | WideSlots[2].c;
+  // 0 today, 3 when fixed
+  // --- SLOT TO SLOT, which NASA's cfe_es_apps.c does when it moves an app's main task to
+  // index 0 of the list it is building. `var = arr[i]` is whole, so it is worth knowing that
+  // this is not: the destination decides, both sides being elements changes nothing.
+  WideSlots[3].a = 4;
+  WideSlots[3].b = 5;
+  WideSlots[3].c = 6;
+  WideSlots[0].a = 9;
+  WideSlots[0].b = 9;
+  WideSlots[0].c = 9;
+  WideSlots[0] = WideSlots[3];
+  r = (r << 4) | WideSlots[0].a;
+  // 4
+  r = (r << 4) | WideSlots[0].c;
+  // 9 today, 6 when fixed
   return r;
 }
