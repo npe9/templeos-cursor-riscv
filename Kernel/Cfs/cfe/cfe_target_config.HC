@@ -60,7 +60,7 @@ class Target_ConfigData
   CFE_ConfigKeyValue_t *BuildEnvironment;
   CFE_ConfigKeyValue_t *ModuleVersionList;
   CFE_ConfigName_t *CoreModuleList;
-  U8 **CoreObjectTable;
+  Target_ObjectTable **CoreObjectTable;
   CFE_ConfigName_t *StaticAppList;
   U8 *EdsDb;
   U8 *DynamicEdsDb;
@@ -72,6 +72,7 @@ class Target_ConfigData
 // so the tables are filled by a function the harness calls once. Same values, same
 // order, same NULL terminators as the C.
 CFE_ConfigName_t CFE_CORE_MODULE_LIST[6];
+Target_ObjectTable *CFE_CORE_MODULE_OBJTAB[1];
 CFE_ConfigName_t CFE_STATIC_APP_LIST[1];
 CFE_StaticModuleLoadEntry_t CFE_PSP_MODULE_LIST[1];
 CFE_ConfigKeyValue_t CFE_BUILD_ENV_TABLE[4];
@@ -131,7 +132,8 @@ U0 CFE_TargetConfigInit()
   GLOBAL_CONFIGDATA.BuildEnvironment = CFE_BUILD_ENV_TABLE;
   GLOBAL_CONFIGDATA.ModuleVersionList = CFE_MODULE_VERSION_TABLE;
   GLOBAL_CONFIGDATA.CoreModuleList = CFE_CORE_MODULE_LIST;
-  GLOBAL_CONFIGDATA.CoreObjectTable = NULL;
+  CFE_CORE_MODULE_OBJTAB[0] = NULL;
+  GLOBAL_CONFIGDATA.CoreObjectTable = CFE_CORE_MODULE_OBJTAB;
   GLOBAL_CONFIGDATA.StaticAppList = CFE_STATIC_APP_LIST;
   // No EDS in this configuration (CFE_EDS_ENABLED off), so these stay NULL.
   GLOBAL_CONFIGDATA.EdsDb = NULL;

@@ -38,27 +38,11 @@ class OS_module_internal_record_t
   U64 entry_point; // cpuaddr
 };
 
-class OS_module_address_t
-{
-  U32 valid;
-  U32 flags;
-  U64 code_address;
-  U64 code_size;
-  U64 data_address;
-  U64 data_size;
-  U64 bss_address;
-  U64 bss_size;
-};
-
-class OS_module_prop_t
-{
-  U64 entry_point;    // cpuaddr
-  U64 host_module_id; // cpuaddr
-  U8 filename[OS_MAX_PATH_LEN];
-  U8 name[OS_MAX_API_NAME];
-  U8 _pad0[4]; // C pads here; HolyC packs. See tools/cfs/check_padding.py
-  OS_module_address_t addr;
-};
+// OS_module_address_t and OS_module_prop_t moved to osapi_module_decl.HC, because cFE needs
+// them on their own: cfe_es_apps.c fills an OS_module_prop_t from OS_ModuleInfo and must not
+// drag this file's implementation across the seam. Same split, same reason, as
+// osapi_heap_decl.HC.
+#include "osapi_module_decl.HC"
 
 // The static symbol table entry. `Address` is a function pointer in the C.
 class OS_static_symbol_record_t

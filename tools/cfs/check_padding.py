@@ -161,6 +161,10 @@ CSRC = [
     # an unusual way -- the table is read with DESIGNATED initialisers upstream and POSITIONAL
     # ones in the translation, so a member order that drifted would move every event id.
     os.path.join(CFE, "modules", "es", "fsw", "src", "cfe_es_appctrl.c"),
+    # CFE_ES_CleanupState_t is declared inside cfe_es_apps.c -- the little state object
+    # OS_ForEachObject's callback accumulates into. Five 4-byte fields and NO trailing padding,
+    # which is the shape I have now got wrong twice by writing a _pad0 out of habit.
+    os.path.join(CFE, "modules", "es", "fsw", "src", "cfe_es_apps.c"),
     os.path.join(CFE, "modules", "resourceid", "fsw", "src", "cfe_resourceid_api.c"),
     os.path.join(CFE, "modules", "sbr", "fsw", "src", "cfe_sbr_route_unsorted.c"),
     # CFE_SB_RemovePipeCallback_t is declared INSIDE cfe_sb_api.c -- an implementation-file

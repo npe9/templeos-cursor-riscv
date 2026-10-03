@@ -239,7 +239,11 @@ def emit_hc():
     L.append("  CFE_ConfigKeyValue_t *BuildEnvironment;")
     L.append("  CFE_ConfigKeyValue_t *ModuleVersionList;")
     L.append("  CFE_ConfigName_t *CoreModuleList;")
-    L.append("  U8 **CoreObjectTable;")
+    # NASA: `const Target_ObjectTable_t *const *CoreObjectTable;`. This emitted U8 ** until
+    # cfe_es_apps.c became the first thing to WALK the table; Target_ObjectTable is declared in
+    # cfe_msg_objtab.HC, which every driver includes before this file, so the real type is free.
+    # A pointer is eight bytes either way, so no gate could have objected to the stand-in.
+    L.append("  Target_ObjectTable **CoreObjectTable;")
     L.append("  CFE_ConfigName_t *StaticAppList;")
     L.append("  U8 *EdsDb;")
     L.append("  U8 *DynamicEdsDb;")
@@ -256,6 +260,15 @@ def emit_hc():
     n_env = len(BUILD_ENVIRONMENT) + 1
     n_ver = len(MODULE_VERSION_LIST) + 1
     L.append("CFE_ConfigName_t CFE_CORE_MODULE_LIST[%d];" % n_core)
+    # `const Target_ObjectTable_t *const CFE_CORE_MODULE_OBJTAB[] = {NULL};` -- ONE element, and
+    # that element is the NULL terminator. No core module registers an object-table entry in this
+    # configuration, so the table is empty and says so by being its own terminator.
+    #
+    # THE ENTRY HAS TO EXIST. Emitting `CoreObjectTable = NULL` instead read identically to the C
+    # for as long as nothing walked the table; cfe_es_apps.c's CFE_ES_CleanUpApp_FreeCoreResources
+    # reads element 0 to find the end, and a NULL base made that a load from address 0. The fault
+    # was in CFE_ES_CleanUpApp_FreeCoreResources with mtval=0, named from HOLYC_MAP.
+    L.append("Target_ObjectTable *CFE_CORE_MODULE_OBJTAB[1];")
     L.append("CFE_ConfigName_t CFE_STATIC_APP_LIST[%d];" % n_app)
     L.append("CFE_StaticModuleLoadEntry_t CFE_PSP_MODULE_LIST[%d];" % n_psp)
     L.append("CFE_ConfigKeyValue_t CFE_BUILD_ENV_TABLE[%d];" % n_env)
@@ -304,7 +317,8 @@ def emit_hc():
     L.append("  GLOBAL_CONFIGDATA.BuildEnvironment = CFE_BUILD_ENV_TABLE;")
     L.append("  GLOBAL_CONFIGDATA.ModuleVersionList = CFE_MODULE_VERSION_TABLE;")
     L.append("  GLOBAL_CONFIGDATA.CoreModuleList = CFE_CORE_MODULE_LIST;")
-    L.append("  GLOBAL_CONFIGDATA.CoreObjectTable = NULL;")
+    L.append("  CFE_CORE_MODULE_OBJTAB[0] = NULL;")
+    L.append("  GLOBAL_CONFIGDATA.CoreObjectTable = CFE_CORE_MODULE_OBJTAB;")
     L.append("  GLOBAL_CONFIGDATA.StaticAppList = CFE_STATIC_APP_LIST;")
     L.append("  // No EDS in this configuration (CFE_EDS_ENABLED off), so these stay NULL.")
     L.append("  GLOBAL_CONFIGDATA.EdsDb = NULL;")

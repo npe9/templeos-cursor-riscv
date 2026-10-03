@@ -162,6 +162,7 @@ I64 StrCmp(U8 *st1, U8 *st2)
 #include "/Kernel/Cfs/cfe/cfe_es_resource.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_api.HC"
 #include "/Kernel/Cfs/osal/osapi_heap_decl.HC"
+#include "/Kernel/Cfs/osal/osapi_module_decl.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -370,10 +371,14 @@ I32 OS_OpenCreate(U32 *filedes, U8 *path, I32 flags, I32 access_mode)
   fs_pos = 0;
   return OS_SUCCESS;
 }
-
+// Declared early because three of the OSAL delete stubs that call it are defined above it --
+// they belong with the subsystems whose witnesses they carry, not with the object table.
+U0 es_obj_mark(U32 object_id);
 I32 OS_close(U32 filedes)
 {
   fs_fd = 0;
+  es_obj_mark(filedes);
+  // also an OSAL object a dying task may own -- see es_obj_mark
   return OS_SUCCESS;
 }
 
@@ -622,60 +627,270 @@ I32 OS_ObjectIdToArrayIndex(U32 idtype, U32 object_id, U32 *ArrayIndex)
   *ArrayIndex = object_id - 1;
   return OS_SUCCESS;
 }
-// THIS ONE IS NOT A THIN STUB AND COULD NOT BE. CFE_ES_RestartApp, ReloadApp and DeleteApp do
-// nothing except set a control request, and all three reach it through this function, which
-// decides whether the id is usable AND writes the "not valid" log line itself. A stub that
-// always succeeded would be more permissive than the real thing in the way this driver has been
-// bitten by twice (the SBR sentinel, the bare pipe id), and a stub that always failed would
-// make the three success paths unreachable.
+// ---- WHAT cfe_es_apps.c NEEDS FROM OSAL, which this driver does not compile -----------------
+// OSAL has its own differential driver (run_osal_xlat_smoke.sh) and its own transcript; here its
+// public API is stubbed, the same way CFE_PSP_* is. Every one of these stands in for a real OS
+// service and will still be a stub when every line of cFE is translated.
 //
-// So NASA's own body from cfe_es_apps.c is reproduced here, on both halves, byte for byte in
-// behaviour. It is NOT the gate's translation of it -- when cfe_es_apps.c is gated this goes
-// away from both halves and the real one takes over, and the transcript must not move.
-CFE_ES_AppRecord_t *CFE_ES_LockUserAppRecord(U32 AppID, U8 *LogMsgAction)
+// THE OBJECT TABLE IS THE INTERESTING ONE. CFE_ES_CleanupTaskResources cannot be reached at all
+// without it: the real OS_ForEachObject walks the OS's own records and hands every object whose
+// creator is a given task to a callback, which is how a dead task's queues, semaphores, timers
+// and open files get released when nothing recorded that it made them. There is no OS here, so
+// the objects are a table of (id, type, deleted) and OS_ForEachObject walks that. It is enough
+// to drive all eight arms of the callback's switch, the per-type error codes, and -- by
+// refusing a delete -- the "number of found objects is not trending downward" guard.
+#ifndef OS_OBJECT_TYPE_UNDEFINED
+#define OS_OBJECT_TYPE_UNDEFINED 0x00
+#endif
+// OS_OBJECT_TYPE_OS_DIR is a kind cfe_es_apps.c's cleanup callback does NOT handle, which is the
+// point: its default arm must count the object neither as found nor as a failure. The
+// translation names the eight it does handle; this is the ninth, named here only to drive that
+// arm, and tools/cfs/check_constants.py compares it against NASA's enumerator either way.
+#ifndef OS_OBJECT_TYPE_OS_DIR
+#define OS_OBJECT_TYPE_OS_DIR 0x07
+#endif
+#define ES_OBJS_MAX 8
+U32 es_obj_id[ES_OBJS_MAX];
+U32 es_obj_type[ES_OBJS_MAX];
+I64 es_obj_gone[ES_OBJS_MAX];
+I64 es_objs_n;
+I32 es_objdel_rc;
+I64 es_foreach_calls;
+U0 es_obj_add(U32 id, U32 type)
 {
-  CFE_ES_AppRecord_t *AppRecPtr;
-  Bool IsValid;
-  IsValid = FALSE;
-  AppRecPtr = CFE_ES_LocateAppRecordByID(AppID);
-  CFE_ES_LockSharedData("CFE_ES_LockUserAppRecord", 0);
-  if (!CFE_ES_AppRecordIsMatch(AppRecPtr, AppID)) {
-    CFE_ES_WriteToSysLog("%s: Invalid Application ID received for %s, AppID = %lu\n", "CFE_ES_LockUserAppRecord", LogMsgAction, AppID);
-  } else if (AppRecPtr->Type == CFE_ES_AppType_CORE) {
-    CFE_ES_SysLogWrite_Unsync("%s: Cannot %s a CORE Application: %s.\n", "CFE_ES_LockUserAppRecord", LogMsgAction, CFE_ES_AppRecordGetName(AppRecPtr));
-  } else if (AppRecPtr->AppState != CFE_ES_AppState_RUNNING) {
-    CFE_ES_SysLogWrite_Unsync("%s: Cannot %s Application %s, It is not running.\n", "CFE_ES_LockUserAppRecord", LogMsgAction, CFE_ES_AppRecordGetName(AppRecPtr));
-  } else {
-    IsValid = TRUE;
-  }
-  if (!IsValid) {
-    CFE_ES_UnlockSharedData("CFE_ES_LockUserAppRecord", 0);
-    AppRecPtr = NULL;
-  }
-  return AppRecPtr;
+  es_obj_id[es_objs_n] = id;
+  es_obj_type[es_objs_n] = type;
+  es_obj_gone[es_objs_n] = 0;
+  ++es_objs_n;
 }
-// MORE PERMISSIVE THAN THE REAL THING, AND SAID SO HERE. NASA's CFE_ES_StartAppTask allocates a
-// task RECORD, fills in its start params and registers it; this hands back an id and nothing
-// else. So CFE_ES_CreateChildTask's success path is reachable, but the id it returns does not
-// resolve: CFE_ES_DeleteChildTask on it takes the "Task ID is not active" branch. The exercise
-// drives that deliberately rather than pretending otherwise.
-I32 CFE_ES_StartAppTask(U32 *TaskIdPtr, U8 *TaskName, U0 (*EntryFunc)(), CFE_ES_TaskStartParams_t *Params, U32 ParentAppId)
+
+U0 es_objs_clear()
 {
-  ++es_starttasks;
-  S("es_starttask ");
-  S(TaskName);
-  S(" prio=");
-  D(Params->Priority);
-  S(" stack=");
-  D(Params->StackSize);
-  S(" app=");
-  D(ParentAppId);
-  S(" rc=");
-  D(es_starttask_rc);
+  es_objs_n = 0;
+  es_objdel_rc = OS_SUCCESS;
+}
+// Marks the object gone. FOUR OF THE SIX DELETE ENTRY POINTS ALREADY EXISTED in this driver --
+// OS_close for the file simulation, OS_BinSemDelete for the background task, OS_QueueDelete for
+// SB's pipe queues and OS_MutSemDelete for ES's mempool -- each with witnesses an existing probe
+// reads. So they are not replaced; they call this, and keep their own return value. Only the two
+// that did not exist carry the refusal knob.
+//
+// OS_QueueDelete DELIBERATELY DOES NOT MARK. Its own body returns OS_ERR_INVALID_ID for an id
+// that is not one of SB's created queues, which an object-table id never is -- and that is the
+// CFE_ES_QUEUE_DELETE_ERR arm of the cleanup callback, reached for free and honestly.
+U0 es_obj_mark(U32 object_id)
+{
+  I64 i;
+  for (i = 0; i < es_objs_n; ++i) {
+    if (es_obj_id[i] == object_id) {
+      es_obj_gone[i] = 1;
+    }
+  }
+}
+
+U0 OS_ForEachObject(U32 creator_id, U0 (*callback_ptr)(U32, U8 *), U8 *callback_arg)
+{
+  I64 i;
+  ++es_foreach_calls;
+  S("os_foreach creator=");
+  D(creator_id);
+  S(" n=");
+  D(es_objs_n);
   S("\n");
-  *TaskIdPtr = 0x7770 + es_starttasks;
-  return es_starttask_rc;
+  for (i = 0; i < es_objs_n; ++i) {
+    if (!es_obj_gone[i]) {
+      (*callback_ptr)(es_obj_id[i], callback_arg);
+    }
+  }
 }
+
+U32 OS_IdentifyObject(U32 object_id)
+{
+  I64 i;
+  for (i = 0; i < es_objs_n; ++i) {
+    if (es_obj_id[i] == object_id) {
+      return es_obj_type[i];
+    }
+  }
+  return OS_OBJECT_TYPE_UNDEFINED;
+}
+
+I32 OS_CountSemDelete(U32 sem_id)
+{
+  I32 rc = es_objdel_rc;
+  S("os_countsemdelete ");
+  D(sem_id);
+  S(" rc=");
+  D(rc);
+  S("\n");
+  if (rc != OS_SUCCESS) {
+    return rc;
+  }
+  es_obj_mark(sem_id);
+  return OS_SUCCESS;
+}
+
+I32 OS_TimerDelete(U32 timer_id)
+{
+  I32 rc = es_objdel_rc;
+  S("os_timerdelete ");
+  D(timer_id);
+  S(" rc=");
+  D(rc);
+  S("\n");
+  if (rc != OS_SUCCESS) {
+    return rc;
+  }
+  es_obj_mark(timer_id);
+  return OS_SUCCESS;
+}
+// THE LOADER, which is the one real piece of hardware-adjacent machinery cFE cannot do without
+// and which this port has no equivalent of yet: there is no dlopen here and no ELF loader in the
+// guest. So a load succeeds or fails on command and hands back a made-up module id, and a symbol
+// lookup hands back a made-up address. Both are steerable because CFE_ES_LoadModule's three
+// failure paths -- load failed, symbol missing, unload-after-failure failed -- are the bulk of
+// what it does.
+I64 es_modloads, es_modunloads, es_modlookups, es_modinfos;
+I32 es_modload_rc;
+I32 es_modunload_rc;
+I32 es_modlookup_rc;
+I32 es_modinfo_rc;
+U32 es_modinfo_valid;
+I32 OS_ModuleLoad(U32 *module_id, U8 *module_name, U8 *filename, U32 flags)
+{
+  ++es_modloads;
+  S("os_moduleload ");
+  S(module_name);
+  S(" ");
+  S(filename);
+  S(" flags=");
+  D(flags);
+  S(" rc=");
+  D(es_modload_rc);
+  S("\n");
+  if (es_modload_rc == OS_SUCCESS) {
+    *module_id = 0x6660 + es_modloads;
+  }
+  return es_modload_rc;
+}
+
+I32 OS_ModuleUnload(U32 module_id)
+{
+  ++es_modunloads;
+  S("os_moduleunload ");
+  D(module_id);
+  S(" rc=");
+  D(es_modunload_rc);
+  S("\n");
+  return es_modunload_rc;
+}
+// THE LIBRARY ENTRY POINT IS ACTUALLY CALLED, unlike an app's, so it has to be a real function.
+// CFE_ES_LoadLibrary invokes the init symbol inline with the library's own id -- that is what
+// makes a library a library -- while an app's entry point goes into a task record whose task
+// this driver never runs. So the lookup hands back es_lib_init when a test asks for it and an
+// uncallable constant otherwise.
+I64 es_lib_inits;
+I32 es_lib_init_rc;
+U32 es_lib_init_id;
+I32 es_lib_init(U32 LibId)
+{
+  ++es_lib_inits;
+  es_lib_init_id = LibId;
+  S("es_lib_init id=");
+  D(es_lib_init_id);
+  S(" rc=");
+  D(es_lib_init_rc);
+  S("\n");
+  return es_lib_init_rc;
+}
+U64 es_modlookup_addr;
+I32 OS_ModuleSymbolLookup(U32 module_id, U64 *symbol_address, U8 *symbol_name)
+{
+  ++es_modlookups;
+  S("os_modulesymlookup ");
+  S(symbol_name);
+  S(" rc=");
+  D(es_modlookup_rc);
+  S("\n");
+  if (es_modlookup_rc == OS_SUCCESS) {
+    // A FIXED, FAKE ENTRY POINT by default. It must never be CALLED -- and it is not: the main
+    // task entry goes into a task record this driver's OS_TaskCreate never runs. The library
+    // entry point IS called, so the library test points this at es_lib_init.
+    *symbol_address = es_modlookup_addr;
+  }
+  return es_modlookup_rc;
+}
+
+I32 OS_ModuleInfo(U32 module_id, OS_module_prop_t *module_prop)
+{
+  ++es_modinfos;
+  S("os_moduleinfo ");
+  D(module_id);
+  S(" rc=");
+  D(es_modinfo_rc);
+  S("\n");
+  if (es_modinfo_rc == OS_SUCCESS) {
+    module_prop->addr.valid = es_modinfo_valid;
+    module_prop->addr.code_address = 0x11110000;
+    module_prop->addr.code_size = 0x1000;
+    module_prop->addr.data_address = 0x22220000;
+    module_prop->addr.data_size = 0x2000;
+    module_prop->addr.bss_address = 0x33330000;
+    module_prop->addr.bss_size = 0x3000;
+  }
+  return es_modinfo_rc;
+}
+// OS_TaskCreate: the entry function is NEVER CALLED, which is the whole reason this driver can
+// run ES's app lifecycle in one thread. CFE_ES_StartAppTask passes CFE_ES_TaskEntryPoint, and
+// that function polls for a task record under the lock -- running it here would deadlock on the
+// shared-data mutex this same thread already holds. The task id it hands back is real enough for
+// the record ES then writes.
+I64 es_taskcreates;
+I32 es_taskcreate_rc;
+// THE ID HAS TO RESOLVE, which it did not have to before. The old CFE_ES_StartAppTask stub
+// handed back 0x7770+n on purpose -- documented as "the id it returns does not resolve" -- and
+// the real one LOCATES the task record for the id OSAL gives it and writes to it without a NULL
+// check, because NASA's comment there is "As this is a newly-created task, this shouldn't fail."
+// An id of 0, or one past OS_MAX_TASKS, makes CFE_ES_LocateTaskRecordByID return NULL and the
+// MemSet that follows is a wild store. So this allocates real ids: 1-based, index = id - 1, with
+// 1 reserved for the calling task (es_os_taskid).
+U32 es_taskcreate_next;
+I32 OS_TaskCreate(U32 *task_id, U8 *task_name, U0 (*function_pointer)(), U32 *stack_pointer, I64 stack_size, U32 priority, U32 flags)
+{
+  ++es_taskcreates;
+  S("os_taskcreate ");
+  S(task_name);
+  S(" stack=");
+  D(stack_size);
+  S(" prio=");
+  D(priority);
+  S(" flags=");
+  D(flags);
+  S(" rc=");
+  D(es_taskcreate_rc);
+  S("\n");
+  if (es_taskcreate_rc == OS_SUCCESS) {
+    if (es_taskcreate_next > OS_MAX_TASKS) {
+      es_taskcreate_next = 2;
+    }
+    *task_id = es_taskcreate_next;
+    ++es_taskcreate_next;
+  }
+  return es_taskcreate_rc;
+}
+// CFE_PSP_SetDefaultExceptionEnvironment installs the trap handlers a new task runs under. It is
+// the BOARD, like the rest of the PSP exception interface.
+I64 es_setexcenv;
+U0 CFE_PSP_SetDefaultExceptionEnvironment()
+{
+  ++es_setexcenv;
+}
+// CFE_ES_LockUserAppRecord: STUB REMOVED -- its source is gated, the real one runs. The copy
+// that lived here was NASA's own body, kept byte for byte in behaviour precisely so that this
+// swap would not move the transcript. It did not.
+// CFE_ES_StartAppTask: STUB REMOVED -- its source is gated, the real one runs. It now makes a
+// real task RECORD, so CFE_ES_DeleteChildTask on the id it returns no longer takes the "Task ID
+// is not active" branch -- which is a transcript change the exercise had to account for.
 // THE CDS GROUP. CDSIsAvailable is 0, so the three public entry points never reach these --
 // which is itself worth asserting, and the exercise does. They record, so a path that DID reach
 // one would show up in the transcript rather than passing silently.
@@ -741,74 +956,23 @@ I32 CFE_ES_CDSBlockRead(U8 *DataRead, U32 Handle)
   S("\n");
   return CFE_ES_NOT_IMPLEMENTED;
 }
-// THE THREE MODULE-INFO COPIERS. CFE_ES_GetAppInfo and CFE_ES_GetLibInfo call them to fill the
-// parts of CFE_ES_AppInfo_t that describe the loaded object file -- name, entry point, address
-// ranges. These record and fill nothing, so the exercise asserts on the fields ES itself writes
-// (type, name, task counts, stack, priority) and NOT on the module fields, which stay zero from
-// the MemSet at the top of both callers. When cfe_es_apps.c is gated the fields start arriving
-// and the exercise grows to cover them.
-U0 CFE_ES_CopyModuleBasicInfo(CFE_ES_ModuleLoadParams_t *ParamsPtr, CFE_ES_AppInfo_t *AppInfoPtr)
-{
-  S("es_copybasic ");
-  S(ParamsPtr->FileName);
-  S("\n");
-}
-
-U0 CFE_ES_CopyModuleStatusInfo(CFE_ES_ModuleLoadStatus_t *StatusPtr, CFE_ES_AppInfo_t *AppInfoPtr)
-{
-  S("es_copystatus mod=");
-  D(StatusPtr->ModuleId);
-  S("\n");
-}
-
-U0 CFE_ES_CopyModuleAddressInfo(U32 ModuleId, CFE_ES_AppInfo_t *AppInfoPtr)
-{
-  S("es_copyaddr mod=");
-  D(ModuleId);
-  S("\n");
-}
+// CFE_ES_CopyModuleBasicInfo / CopyModuleStatusInfo / CopyModuleAddressInfo: STUBS REMOVED --
+// their source is gated, the real ones run. These three printed a line each and filled in NO
+// fields, so AppInfo's EntryPoint, FileName, StartAddress and the six module addresses were
+// whatever the callers' MemSet left. Three transcript lines go; the fields they were standing in
+// for arrive, and the exercise reads them.
 // ---- what cfe_es_task.c calls and nothing gated defines -------------------------------------
 // The apps/CDS/perf/background/dispatch set again, plus the PSP and OSAL version calls. Each
 // goes away from BOTH halves on the commit that gates its source.
-I64 es_appcreates, es_cdsdeletes, es_taskpipes, es_textseg;
-I32 es_appcreate_rc, es_bkginit_rc, es_cdsdelete_rc;
+I64 es_cdsdeletes, es_taskpipes, es_textseg;
+I32 es_bkginit_rc, es_cdsdelete_rc;
 I32 es_textseg_rc;
 I64 es_perf_remaining;
 I32 es_heap_rc;
-I32 CFE_ES_AppCreate(U32 *ApplicationIdPtr, U8 *AppName, CFE_ES_AppStartParams_t *Params)
-{
-  ++es_appcreates;
-  S("es_appcreate ");
-  S(AppName);
-  S(" file=");
-  S(Params->BasicInfo.FileName);
-  S(" entry=");
-  S(Params->BasicInfo.InitSymbolName);
-  S(" stack=");
-  D(Params->MainTaskInfo.StackSize);
-  S(" prio=");
-  D(Params->MainTaskInfo.Priority);
-  S(" exc=");
-  D(Params->ExceptionAction);
-  S(" rc=");
-  D(es_appcreate_rc);
-  S("\n");
-  *ApplicationIdPtr = ES_CTX_APPID(4);
-  return es_appcreate_rc;
-}
-// CFE_ES_CleanUpApp lives in cfe_es_apps.c too, and cfe_es_appctrl.c -- which IS gated now --
-// calls it for every control request. Steerable, because "cleanup failed" is a branch of the
-// event table that no other path can reach.
-I32 es_cleanup_rc;
-I32 CFE_ES_CleanUpApp(U32 AppId)
-{
-  S("es_cleanupapp id=");
-  D(AppId);
-  S(" rc=");
-  D(es_cleanup_rc);
-  S("\n");
-  return es_cleanup_rc;
-}
+// CFE_ES_AppCreate: STUB REMOVED -- its source is gated, the real one runs.
+// CFE_ES_CleanUpApp: STUB REMOVED -- its source is gated, the real one runs. It lasted exactly
+// one commit: cfe_es_appctrl.c was gated before cfe_es_apps.c, so this stub existed only to let
+// the control-request path reach an end.
 // CFE_ES_BackgroundInit: STUB REMOVED -- its source is gated, the real one runs.
 I32 CFE_ES_DeleteCDS(U8 *CDSName, Bool CalledByTblServices)
 {
@@ -949,6 +1113,7 @@ U0 CFE_PSP_Get_Timebase(U32 *Tbu, U32 *Tbl)
 #include "/Kernel/Cfs/cfe/cfe_es_task.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_perf.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_dispatch.HC"
+#include "/Kernel/Cfs/cfe/cfe_es_apps.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_appctrl.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_backgroundtask.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_objtab.HC"
@@ -966,6 +1131,7 @@ I32 es_psp_validate_rc;
 I32 OS_MutSemDelete(U32 sem_id)
 {
   ++es_mutsem_deletes;
+  es_obj_mark(sem_id);
   return OS_SUCCESS;
 }
 
@@ -1423,6 +1589,7 @@ I32 OS_BinSemTimedWait(U32 sem_id, U32 msecs)
 I32 OS_BinSemDelete(U32 sem_id)
 {
   ++es_bg_deletes;
+  es_obj_mark(sem_id);
   return OS_SUCCESS;
 }
 // CFE_ES_CreateChildTask: STUB REMOVED -- cfe_es_api.c is gated, the real one runs.
@@ -1853,6 +2020,13 @@ I64 main()
   // would have meant only that nothing reads it yet. The ES record-by-context probe below does.
   sb_next_qid = 1;
   es_os_taskid = 1;
+  // Two more of the same case, both new with cfe_es_apps.c. es_taskcreate_next is 2 because 1 is
+  // the calling task's osal id, and an id that does not resolve is now a wild store rather than
+  // a harmless number -- see OS_TaskCreate above. es_modinfo_valid is 1 so
+  // CFE_ES_CopyModuleAddressInfo's nominal arm is the default and the exercise steers the other.
+  es_taskcreate_next = 2;
+  es_modinfo_valid = 1;
+  es_modlookup_addr = 0xE0000000;
   // THE BUS HAS TO EXIST BEFORE ANYTHING SUBSCRIBES TO IT, and before cfe_sb_api was gated it
   // did not have to: CFE_SB_CreatePipe and CFE_SB_Subscribe were stubs that answered without
   // reading CFE_SB_Global. They are real now, and CFE_SB_Global starts zeroed -- LastPipeId of
@@ -6827,8 +7001,12 @@ I64 main()
       D(rc);
       S("\n");
       // --- the info packets --------------------------------------------------------
-      // The module fields stay zero: CFE_ES_CopyModule*Info are stubs until cfe_es_apps.c is
-      // gated, so what is asserted is what ES itself writes.
+      // THE MODULE FIELDS ARRIVE NOW. CFE_ES_CopyModuleBasicInfo, CopyModuleStatusInfo and
+      // CopyModuleAddressInfo were stubs that printed a line and filled in nothing, so this
+      // probe asserted only what ES itself writes. cfe_es_apps.c is gated, so the entry point,
+      // the file name, the init symbol's address and the six module address ranges are real --
+      // the three lines those stubs printed are replaced by the fields they were standing in
+      // for, which is strictly more than they were worth.
       rc = CFE_ES_GetAppInfo(&ainfo, aid);
       S("esa_appinfo rc=");
       D(rc);
@@ -6845,6 +7023,48 @@ I64 main()
       S(" prio=");
       D(ainfo.Priority);
       S("\n");
+      S("esa_appinfo_mod entry=");
+      S(ainfo.EntryPoint);
+      S(" file=");
+      S(ainfo.FileName);
+      S(" start=");
+      Hx8(ainfo.StartAddress);
+      S(" valid=");
+      D(ainfo.AddressesAreValid);
+      S("\n");
+      S("esa_appinfo_addr code=");
+      Hx8(ainfo.CodeAddress);
+      S("/");
+      Hx8(ainfo.CodeSize);
+      S(" data=");
+      Hx8(ainfo.DataAddress);
+      S("/");
+      Hx8(ainfo.DataSize);
+      S(" bss=");
+      Hx8(ainfo.BSSAddress);
+      S("/");
+      Hx8(ainfo.BSSSize);
+      S("\n");
+      // OS_ModuleInfo failing, and succeeding with its own `valid` flag clear: the only two ways
+      // AddressesAreValid comes back false. The six addresses are written either way, from a
+      // ModuleInfo this driver zeroed first -- so a failure yields zeroes rather than stale
+      // values, which is the property worth asserting.
+      es_modinfo_rc = OS_ERROR;
+      CFE_ES_GetAppInfo(&ainfo, aid);
+      S("esa_appinfo_infofail valid=");
+      D(ainfo.AddressesAreValid);
+      S(" code=");
+      Hx8(ainfo.CodeAddress);
+      S("\n");
+      es_modinfo_rc = OS_SUCCESS;
+      es_modinfo_valid = 0;
+      CFE_ES_GetAppInfo(&ainfo, aid);
+      S("esa_appinfo_notvalid valid=");
+      D(ainfo.AddressesAreValid);
+      S(" code=");
+      Hx8(ainfo.CodeAddress);
+      S("\n");
+      es_modinfo_valid = 1;
       rc = CFE_ES_GetAppInfo(NULL, aid);
       S("esa_appinfo_null rc=");
       D(rc);
@@ -7382,17 +7602,21 @@ I64 main()
       // means "use the default"
       escmd.StartApp.Payload.Priority = 80;
       escmd.StartApp.Payload.ExceptionAction = CFE_ES_ExceptionAction_RESTART_APP;
-      es_appcreate_rc = CFE_SUCCESS;
+      // CFE_ES_AppCreate IS REAL NOW, so a creation failure has to be made to happen rather than
+      // returned: the module load is what fails. That also means the success path below now
+      // runs the whole lifecycle -- OS_ModuleLoad, a symbol lookup, a task record -- and the
+      // app really does end up in the app table, which is why the counters at the end of this
+      // block moved.
       rc = CFE_ES_StartAppCmd(&escmd.StartApp);
       S("est_startapp rc=");
       D(rc);
       S("\n");
-      es_appcreate_rc = -42;
+      es_modload_rc = OS_ERROR;
       rc = CFE_ES_StartAppCmd(&escmd.StartApp);
       S("est_startapp_createfail rc=");
       D(rc);
       S("\n");
-      es_appcreate_rc = CFE_SUCCESS;
+      es_modload_rc = OS_SUCCESS;
       escmd.StartApp.Payload.Priority = 255 + 1;
       // > OS_MAX_PRIORITY, but the field is u16
       rc = CFE_ES_StartAppCmd(&escmd.StartApp);
@@ -7421,8 +7645,8 @@ I64 main()
       D(CFE_ES_Global.TaskData.CommandCounter);
       S(" ec=");
       D(CFE_ES_Global.TaskData.CommandErrorCounter);
-      S(" creates=");
-      D(es_appcreates);
+      S(" loads=");
+      D(es_modloads);
       S("\n");
       // --- stop, restart and reload, by NAME this time ----------------------------
       CFE_ES_Global.TaskData.CommandCounter = 0;
@@ -8037,6 +8261,267 @@ I64 main()
       CFE_ES_SetupPerfVariables(CFE_PSP_RST_TYPE_POWERON);
       MemSet(PDump, 0, sizeof(CFE_ES_PerfDumpGlobal_t));
     }
+    // --- cfe_es_apps.c: THE APP LIFECYCLE ---------------------------------------------
+    //
+    // Loading a module, looking up its entry symbol, starting its task, and taking all of that
+    // apart again. Six stubs went away from both halves of this driver on the commit that gated
+    // this source -- CFE_ES_LockUserAppRecord, StartAppTask, AppCreate, CleanUpApp and the three
+    // CopyModule*Info -- and every probe above that steered one of them now steers an OSAL call
+    // instead, which is the honest place for the knob.
+    //
+    // WHAT IS WORTH DRIVING DIRECTLY is what the paths above cannot reach: LoadModule's four
+    // outcomes, the whole of LoadLibrary (nothing else in cFE loads a library), and
+    // CleanupTaskResources against the object table -- eight object kinds, an unknown kind, a
+    // delete that refuses, and the trend guard that stops the sweep looping forever.
+    
+    {
+      CFE_ES_ModuleLoadParams_t mlp;
+      CFE_ES_ModuleLoadStatus_t mls;
+      CFE_ES_AppStartParams_t sparams;
+      U32 lid;
+      U32 aid2;
+      U8 nbuf[OS_MAX_API_NAME];
+      U32 k;
+      I32 rc;
+      // EVERY ID GOES THROUGH A LOCAL, and docs/HOLYC_STRUCT_LIMITS.md #20 is why: a constant
+      // `A + B` written straight into a call whose parameter is a pointer gets the addition
+      // scaled by the pointee's size, silently. es_app_slot carries the same note.
+      U32 a2 = ES_CTX_APPID(2);
+      U32 l2 = ES_LIBID(2);
+      U32 tbase = CFE_ES_TASKID_BASE;
+      U32 lbase = CFE_ES_LIBID_BASE;
+      U32 tmpid;
+      es_objs_clear();
+      MemSet(&mlp, 0, sizeof(CFE_ES_ModuleLoadParams_t));
+      MemSet(&mls, 0, sizeof(CFE_ES_ModuleLoadStatus_t));
+      MemSet(&sparams, 0, sizeof(CFE_ES_AppStartParams_t));
+      // --- CFE_ES_LoadModule -----------------------------------------------------
+      //
+      // AN EMPTY FILE NAME IS NOT AN ERROR: a core app, or a library already linked in, has
+      // nothing to load, so the module id stays undefined and the call succeeds.
+      rc = CFE_ES_LoadModule(a2, "NOFILE", &mlp, &mls);
+      S("esm_load_nofile rc=");
+      D(rc);
+      S(" mod=");
+      D(mls.ModuleId);
+      S("\n");
+      // The flags differ by resource kind, and that is the whole switch: an APP keeps its
+      // symbols LOCAL so the module stays unloadable, a LIBRARY exposes them GLOBALLY -- which
+      // is zero, OSAL's default, so the library arm's OR is a no-op.
+      StrNCpy(mlp.FileName, "/cf/thing.so", OS_MAX_PATH_LEN - 1);
+      rc = CFE_ES_LoadModule(a2, "THING", &mlp, &mls);
+      S("esm_load_app rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_LoadModule(l2, "THING", &mlp, &mls);
+      S("esm_load_lib rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_LoadModule(0x990000, "THING", &mlp, &mls);
+      S("esm_load_other rc=");
+      D(rc);
+      S("\n");
+      // The load itself failing.
+      es_modload_rc = OS_ERROR;
+      rc = CFE_ES_LoadModule(a2, "THING", &mlp, &mls);
+      S("esm_load_fail rc=");
+      D(rc);
+      S("\n");
+      es_modload_rc = OS_SUCCESS;
+      // An entry symbol, found and not found. THE UNLOAD AFTER A FAILED LOOKUP is the part
+      // worth seeing: a bad entry symbol must not leak the module it loaded.
+      StrNCpy(mlp.InitSymbolName, "THING_Main", OS_MAX_API_NAME - 1);
+      rc = CFE_ES_LoadModule(a2, "THING", &mlp, &mls);
+      S("esm_load_sym rc=");
+      D(rc);
+      S(" addr=");
+      Hx8(mls.InitSymbolAddress);
+      S("\n");
+      es_modlookup_rc = OS_ERROR;
+      rc = CFE_ES_LoadModule(a2, "THING", &mlp, &mls);
+      S("esm_load_symfail rc=");
+      D(rc);
+      S(" unloads=");
+      D(es_modunloads);
+      S("\n");
+      // And the unload after that failure ALSO failing, which NASA can only report: "There's
+      // not much we can do except notify."
+      es_modunload_rc = OS_ERROR;
+      rc = CFE_ES_LoadModule(a2, "THING", &mlp, &mls);
+      S("esm_load_symfail_unloadfail rc=");
+      D(rc);
+      S("\n");
+      es_modunload_rc = OS_SUCCESS;
+      es_modlookup_rc = OS_SUCCESS;
+      // The literal string "NULL" means "no entry symbol", which is how a startup-script line
+      // says so -- no lookup happens at all.
+      StrNCpy(mlp.InitSymbolName, "NULL", OS_MAX_API_NAME - 1);
+      rc = CFE_ES_LoadModule(a2, "THING", &mlp, &mls);
+      S("esm_load_nullsym rc=");
+      D(rc);
+      S(" lookups=");
+      D(es_modlookups);
+      S("\n");
+      // --- CFE_ES_LoadLibrary ----------------------------------------------------
+      //
+      // The same reserved-slot protocol as AppCreate, and three real differences: no task, the
+      // entry symbol is called ONCE inline with the library's own id, and a duplicate name
+      // reports the EXISTING library's id rather than UNDEFINED.
+      MemSet(&mlp, 0, sizeof(CFE_ES_ModuleLoadParams_t));
+      StrNCpy(mlp.FileName, "/cf/libthing.so", OS_MAX_PATH_LEN - 1);
+      StrNCpy(mlp.InitSymbolName, "LIBTHING_Init", OS_MAX_API_NAME - 1);
+      CFE_ES_Global.LastLibId = lbase;
+      es_modlookup_addr = &es_lib_init;
+      rc = CFE_ES_LoadLibrary(&lid, "LIBTHING", &mlp);
+      S("esl_lib rc=");
+      D(rc);
+      S(" id=");
+      D(lid);
+      S(" libs=");
+      D(CFE_ES_Global.RegisteredLibs);
+      S("\n");
+      // A duplicate library name hands back the id of the one already loaded -- the only path
+      // in either loader where a failure returns a usable id.
+      rc = CFE_ES_LoadLibrary(&lid, "LIBTHING", &mlp);
+      S("esl_lib_dup rc=");
+      D(rc);
+      S(" id=");
+      D(lid);
+      S("\n");
+      // And one namespace with apps: a library may not take an app's name.
+      rc = CFE_ES_LoadLibrary(&lid, "CFE_EVS", &mlp);
+      S("esl_lib_appname rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_LoadLibrary(&lid, NULL, &mlp);
+      S("esl_lib_nullname rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_LoadLibrary(&lid, "X", NULL);
+      S("esl_lib_nullparams rc=");
+      D(rc);
+      S("\n");
+      // A name with no terminator inside the record's width, checked with MemChr rather than a
+      // length -- StrLen on a caller's buffer is what runs off the end.
+      MemSet(nbuf, 'L', OS_MAX_API_NAME);
+      rc = CFE_ES_LoadLibrary(&lid, nbuf, &mlp);
+      S("esl_lib_longname rc=");
+      D(rc);
+      S("\n");
+      // The load failing, and the init function returning an error. Both leave the slot free
+      // again, and the id comes back UNDEFINED.
+      es_modload_rc = OS_ERROR;
+      rc = CFE_ES_LoadLibrary(&lid, "LIBTWO", &mlp);
+      S("esl_lib_loadfail rc=");
+      D(rc);
+      S(" id=");
+      D(lid);
+      S("\n");
+      es_modload_rc = OS_SUCCESS;
+      es_lib_init_rc = -77;
+      rc = CFE_ES_LoadLibrary(&lid, "LIBTWO", &mlp);
+      S("esl_lib_initfail rc=");
+      D(rc);
+      S(" id=");
+      D(lid);
+      S(" libs=");
+      D(CFE_ES_Global.RegisteredLibs);
+      S("\n");
+      es_lib_init_rc = CFE_SUCCESS;
+      // Every slot taken.
+      for (k = 0; k < CFE_PLATFORM_ES_MAX_LIBRARIES; ++k) {
+        tmpid = lbase + k;
+        CFE_ES_LibRecordSetUsed(&CFE_ES_Global.LibTable[k], tmpid);
+      }
+      rc = CFE_ES_LoadLibrary(&lid, "LIBFULL", &mlp);
+      S("esl_lib_nofree rc=");
+      D(rc);
+      S("\n");
+      MemSet(CFE_ES_Global.LibTable, 0, CFE_PLATFORM_ES_MAX_LIBRARIES *sizeof(CFE_ES_LibRecord_t));
+      CFE_ES_Global.RegisteredLibs = 0;
+      es_modlookup_addr = 0xE0000000;
+      // --- CFE_ES_CleanupTaskResources, against the object table -------------------
+      //
+      // This is the only place a dead task's resources can be reclaimed from, because nothing
+      // recorded that it made them: OS_ForEachObject hands over every object whose creator it
+      // was, and the callback asks OS_IdentifyObject what each one is. All eight kinds, in one
+      // sweep.
+      es_objs_clear();
+      es_obj_add(0x7001, OS_OBJECT_TYPE_OS_BINSEM);
+      es_obj_add(0x7002, OS_OBJECT_TYPE_OS_COUNTSEM);
+      es_obj_add(0x7003, OS_OBJECT_TYPE_OS_MUTEX);
+      es_obj_add(0x7004, OS_OBJECT_TYPE_OS_TIMECB);
+      es_obj_add(0x7005, OS_OBJECT_TYPE_OS_STREAM);
+      tmpid = tbase + 5;
+      rc = CFE_ES_CleanupTaskResources(tmpid);
+      S("esm_cleanup_sweep rc=");
+      D(rc);
+      S(" foreach=");
+      D(es_foreach_calls);
+      S("\n");
+      // AN UNKNOWN KIND IS NOT COUNTED AT ALL -- not as found, not as a failure -- which is
+      // what keeps the trend guard from being confused by a type OSAL grows later.
+      es_objs_clear();
+      es_obj_add(0x7010, OS_OBJECT_TYPE_OS_DIR);
+      tmpid = tbase + 6;
+      rc = CFE_ES_CleanupTaskResources(tmpid);
+      S("esm_cleanup_unknown rc=");
+      D(rc);
+      S("\n");
+      // A QUEUE object: OS_QueueDelete's own body refuses an id that is not one of SB's created
+      // queues, so this is the CFE_ES_QUEUE_DELETE_ERR arm -- and the object is never marked
+      // gone, so it is also the "found objects are not trending downward" guard that stops the
+      // sweep.
+      es_objs_clear();
+      es_obj_add(0x7020, OS_OBJECT_TYPE_OS_QUEUE);
+      tmpid = tbase + 7;
+      rc = CFE_ES_CleanupTaskResources(tmpid);
+      S("esm_cleanup_stuck rc=");
+      D(rc);
+      S("\n");
+      // A delete that refuses outright, on a type whose error code is its own.
+      es_objs_clear();
+      es_obj_add(0x7030, OS_OBJECT_TYPE_OS_TIMECB);
+      es_objdel_rc = OS_ERROR;
+      tmpid = tbase + 8;
+      rc = CFE_ES_CleanupTaskResources(tmpid);
+      S("esm_cleanup_refused rc=");
+      D(rc);
+      S("\n");
+      es_objdel_rc = OS_SUCCESS;
+      // NO OBJECTS AT ALL, and the task delete failing -- which is the one way
+      // CFE_ES_TASK_DELETE_ERR comes out. A self-exited task reports OS_ERR_INVALID_ID instead
+      // and that is NOT an error: NASA's comment is "there is nothing else needed to do".
+      es_objs_clear();
+      es_taskdelete_rc = OS_ERROR;
+      tmpid = tbase + 9;
+      rc = CFE_ES_CleanupTaskResources(tmpid);
+      S("esm_cleanup_taskfail rc=");
+      D(rc);
+      S("\n");
+      es_taskdelete_rc = OS_ERR_INVALID_ID;
+      rc = CFE_ES_CleanupTaskResources(tmpid);
+      S("esm_cleanup_selfexited rc=");
+      D(rc);
+      S("\n");
+      es_taskdelete_rc = OS_SUCCESS;
+      // --- CFE_ES_AppCreate's refusals, which the ground command cannot reach ------
+      rc = CFE_ES_AppCreate(&aid2, NULL, &sparams);
+      S("esm_create_nullname rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_AppCreate(&aid2, "X", NULL);
+      S("esm_create_nullparams rc=");
+      D(rc);
+      S("\n");
+      MemSet(nbuf, 'A', OS_MAX_API_NAME);
+      rc = CFE_ES_AppCreate(&aid2, nbuf, &sparams);
+      S("esm_create_longname rc=");
+      D(rc);
+      S("\n");
+      es_ctx_init();
+      es_objs_clear();
+    }
     // --- cfe_es_appctrl.c: CARRYING OUT A CONTROL REQUEST -----------------------------
     //
     // cfe_es_api.c's RestartApp, ReloadApp and DeleteApp only STORE a request in the app
@@ -8068,8 +8553,7 @@ I64 main()
       U32 burst;
       Bool r;
       es_ctx_init();
-      es_cleanup_rc = CFE_SUCCESS;
-      es_appcreate_rc = CFE_SUCCESS;
+      es_objs_clear();
       // THE SQUELCH HAS TO COME OFF OR THIS BLOCK ASSERTS NOTHING. EVS's per-app token bucket
       // ran dry during the ES task block above -- "44: Events squelched, AppName = CFE_EVS" is
       // in the transcript -- and every event after that is dropped silently. This block's
@@ -8177,6 +8661,13 @@ I64 main()
       // app record is re-planted each time because the real CleanUpApp would have cleared it --
       // the stub does not, which is exactly why the loop has to.
       for (req = CFE_ES_RunStatus_APP_RUN; req <= CFE_ES_RunStatus_SYS_DELETE; ++req) {
+        // THE WHOLE TABLE IS CLEARED, not just slot 2, and the reason is a residue the stub
+        // never produced: a successful restart really does create a NEW app record now, named
+        // OTHER_APP, in whatever slot was free. Re-planting slot 2 on the next pass then left
+        // TWO records with that name, so the following AppCreate reported a duplicate and the
+        // reload success path stopped being exercised.
+        MemSet(CFE_ES_Global.AppTable, 0, CFE_PLATFORM_ES_MAX_APPLICATIONS *sizeof(CFE_ES_AppRecord_t));
+        es_app_slot(1, "CFE_EVS", CFE_ES_AppType_EXTERNAL, CFE_ES_AppState_RUNNING);
         es_app_slot(2, "OTHER_APP", CFE_ES_AppType_EXTERNAL, CFE_ES_AppState_RUNNING);
         StrNCpy(arp->StartParams.BasicInfo.InitSymbolName, "OTHER_AppMain", OS_MAX_API_NAME - 1);
         arp->StartParams.MainTaskInfo.StackSize = 8192;
@@ -8190,19 +8681,27 @@ I64 main()
       // Cleanup failing does NOT stop the restart, which is the behaviour NASA argues for at
       // length: a stale task id is a minor inconsistency in the old record and should not cost
       // the operator the new app. So AppCreate still runs.
-      es_cleanup_rc = CFE_ES_ERR_RESOURCEID_NOT_VALID;
+      // THE FAILURE IS REAL NOW RATHER THAN A RETURN CODE. Until cfe_es_apps.c was gated this
+      // was `es_cleanup_rc = ...` on a stub; the real CFE_ES_CleanUpApp returns
+      // CFE_ES_APP_CLEANUP_ERR only when its FailCount is non-zero, so something has to
+      // actually fail to be reclaimed. An OSAL object of QUEUE type owned by the app's main
+      // task does it: the cleanup callback calls OS_QueueDelete, whose own body refuses an id
+      // that is not one of SB's created queues, and the error propagates
+      // CFE_ES_QUEUE_DELETE_ERR out through CleanupTaskResources and FreeTasks.
+      es_objs_clear();
+      es_obj_add(es_os_taskid, OS_OBJECT_TYPE_OS_QUEUE);
       es_app_slot(2, "OTHER_APP", CFE_ES_AppType_EXTERNAL, CFE_ES_AppState_RUNNING);
       arp->ControlReq.AppControlRequest = CFE_ES_RunStatus_SYS_RESTART;
       S("esc_pcr_cleanupfail\n");
       CFE_ES_ProcessControlRequest(a2);
       // And AppCreate failing.
-      es_cleanup_rc = CFE_SUCCESS;
-      es_appcreate_rc = CFE_ES_ERR_RESOURCEID_NOT_VALID;
+      es_objs_clear();
+      es_modload_rc = CFE_ES_ERR_RESOURCEID_NOT_VALID;
       es_app_slot(2, "OTHER_APP", CFE_ES_AppType_EXTERNAL, CFE_ES_AppState_RUNNING);
       arp->ControlReq.AppControlRequest = CFE_ES_RunStatus_SYS_RELOAD;
       S("esc_pcr_createfail\n");
       CFE_ES_ProcessControlRequest(a2);
-      es_appcreate_rc = CFE_SUCCESS;
+      es_modload_rc = OS_SUCCESS;
       // A stale app id: no snapshot, request 0, the unnamed row, "[Req0]".
       S("esc_pcr_stale\n");
       CFE_ES_ProcessControlRequest(a9);
@@ -8213,7 +8712,7 @@ I64 main()
       // request get carried out. That window is the app's chance to exit cleanly through
       // CFE_ES_ExitApp.
       es_ctx_init();
-      es_cleanup_rc = CFE_SUCCESS;
+      es_objs_clear();
       MemSet(sst, 0, sizeof(CFE_ES_AppTableScanState_t));
       // Not due: no pending changes, the command counter has not moved, and the timer has time
       // left. The timer is decremented and nothing is scanned.
