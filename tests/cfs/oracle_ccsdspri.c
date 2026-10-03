@@ -251,7 +251,7 @@ static int           fs_open_fail;     /* make OS_OpenCreate fail */
  * cap of 64 looked like it would make a record write fail and did not: the header write is 64
  * and every record is 10, so each individual write still fit and the run reported COMPLETE. */
 static long          fs_wr_left;       /* < 0 = unlimited */
-static int           fs_mut_create, fs_mut_take, fs_mut_give, fs_wakeups;
+static int           fs_mut_create, fs_mut_take, fs_mut_give;
 /* Steer the three mutex calls. Without these, cfe_fs_priv.c's three syslog lines are
  * unreachable -- including the only one in the whole translation that formats three
  * arguments (a status, an app id and a function name), which is exactly the kind of line a
@@ -636,7 +636,7 @@ static CFE_ES_ResetData_t es_reset_area;
  * stubs can be this thin: CFE_ES_RegisterCDS, CFE_ES_GetCDSBlockIDByName and
  * CFE_ES_GetCDSBlockName all return CFE_ES_NOT_IMPLEMENTED before they reach the registry, and
  * the exercise checks that they do. */
-static long  es_erlog_writes, es_cds_locks, es_cds_unlocks, es_starttasks, es_restarts;
+static long  es_cds_locks, es_cds_unlocks, es_starttasks, es_restarts;
 static long  es_stats;
 static int32 es_stat_rc       = OS_SUCCESS; /* what OS_stat says: Restart/Reload branch on it */
 static int32 es_starttask_rc  = CFE_SUCCESS;
@@ -848,7 +848,7 @@ void CFE_ES_CopyModuleAddressInfo(osal_id_t ModuleId, CFE_ES_AppInfo_t *AppInfoP
 /* ---- what cfe_es_task.c calls and nothing gated defines -------------------------------------
  * The apps/CDS/perf/background/dispatch set again, plus the PSP and OSAL version calls. Each
  * goes away from BOTH halves on the commit that gates its source. */
-static long  es_appcreates, es_bkginits, es_cdsdeletes, es_taskpipes, es_textseg;
+static long  es_appcreates, es_cdsdeletes, es_taskpipes, es_textseg;
 static int32 es_appcreate_rc, es_bkginit_rc, es_cdsdelete_rc;
 static int32 es_textseg_rc = CFE_PSP_SUCCESS;
 static long  es_perf_remaining;
@@ -2362,8 +2362,11 @@ int main(void)
         strncpy(m.FileName, "/ram/dump.bin", sizeof(m.FileName) - 1);
         strncpy(m.Description, "a test dump", sizeof(m.Description) - 1);
         m.FileSubType = CFE_FS_SubType_ES_QUERYALL;
-        printf("fs_req rc=%ld pend=%d wake=%d\n", (long)CFE_FS_BackgroundFileDumpRequest(&m),
-               (int)CFE_FS_BackgroundFileDumpIsPending(&m), fs_wakeups);
+        /* THE WAKEUP WITNESS IS THE SEMAPHORE NOW. CFE_ES_BackgroundWakeup was a stub that
+         * bumped fs_wakeups; cfe_es_backgroundtask.c is gated, so the real one gives
+         * CFE_ES_Global.BackgroundTask.WorkSem and time_sem_gives is what counts that. */
+        printf("fs_req rc=%ld pend=%d wake=%ld\n", (long)CFE_FS_BackgroundFileDumpRequest(&m),
+               (int)CFE_FS_BackgroundFileDumpIsPending(&m), time_sem_gives);
         /* a second request for the SAME object is rejected while it is pending */
         printf("fs_req_again rc=%ld\n", (long)CFE_FS_BackgroundFileDumpRequest(&m));
 
@@ -5209,19 +5212,24 @@ int main(void)
             printf("esa_status_null isnull=%d\n", (int)(CFE_ES_StatusToString(0, NULL) == NULL));
 
             /* --- ProcessAsyncEvent is one line: wake the background task ----------------- */
-            fs_wakeups = 0;
+            /* Same move: the real CFE_ES_BackgroundWakeup gives the background semaphore. */
+            time_sem_gives = 0;
             CFE_ES_ProcessAsyncEvent();
-            printf("esa_async wakeups=%d\n", fs_wakeups);
+            printf("esa_async gives=%ld\n", time_sem_gives);
 
             /* --- ResetCFE, which does not return on real hardware ----------------------- */
             /* CFE_PSP_Restart is a stub that returns, so the code AFTER it runs -- the
              * "returned" syslog line and CFE_ES_NOT_IMPLEMENTED -- which is the only way this
              * function's tail is reachable at all. */
-            es_restarts     = 0;
-            es_erlog_writes = 0;
-            printf("esa_reset_proc rc=%ld restarts=%ld erlog=%ld\n",
+            /* AND THE ER LOG WITNESS IS THE LOG. es_erlog_writes counted a stub;
+             * cfe_es_erlog.c is gated, so what says an entry was made is ERLogEntries, which
+             * CFE_ES_WriteToERLogWithContext increments -- a stronger statement, because it
+             * says the entry LANDED rather than that a function was called. */
+            es_restarts                              = 0;
+            CFE_ES_Global.ResetDataPtr->ERLogEntries = 0;
+            printf("esa_reset_proc rc=%ld restarts=%ld erlog=%u\n",
                    (long)CFE_ES_ResetCFE(CFE_PSP_RST_TYPE_PROCESSOR), (long)es_restarts,
-                   (long)es_erlog_writes);
+                   CFE_ES_Global.ResetDataPtr->ERLogEntries);
             printf("esa_reset_power rc=%ld restarts=%ld\n",
                    (long)CFE_ES_ResetCFE(CFE_PSP_RST_TYPE_POWERON), (long)es_restarts);
             printf("esa_reset_bad rc=%ld restarts=%ld\n", (long)CFE_ES_ResetCFE(99),
@@ -5580,14 +5588,16 @@ int main(void)
             CFE_ES_Global.SystemState      = CFE_ES_SystemState_CORE_READY;
             CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_CORE;
             es_taskpipes                   = 0;
-            es_bkginits                    = 0;
+            /* CFE_ES_BackgroundInit is real now, so what says it ran is the semaphore it
+             * creates -- time_sems_created -- not a counter in a stub that no longer exists. */
+            time_sems_created              = 0;
             es_taskexits                   = 0;
             evs_delay_ms                   = 0;
             sb_queuecreate_rc              = OS_SUCCESS;
             es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
             CFE_ES_TaskMain();
-            printf("est_taskmain pipes=%ld bkginit=%ld exits=%ld delay=%ld req=%u\n",
-                   es_taskpipes, es_bkginits, (long)es_taskexits, (long)evs_delay_ms,
+            printf("est_taskmain pipes=%ld bgsem=%ld exits=%ld delay=%ld req=%u\n",
+                   es_taskpipes, time_sems_created, (long)es_taskexits, (long)evs_delay_ms,
                    CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
             CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_EXTERNAL;
 

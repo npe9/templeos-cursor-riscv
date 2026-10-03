@@ -305,4 +305,29 @@ if ! diff -u "$T/ref.txt" "$T/hc.txt" > "$T/diff.txt"; then
 fi
 n=$(grep -c '' "$T/ref.txt")
 echo "cfs-xlat: $n transcript lines identical between NASA's C and the HolyC translation"
+
+# --- and it must not be SMALLER than it was -----------------------------------------------
+# The diff above asserts that the two halves agree. It cannot notice that they agree about
+# LESS than they used to: both sides change together, the diff stays empty, and the only
+# evidence is this count. Removing a stub took it from 1,226 to 1,224 and left three committed
+# probes asserting a zero against a zero -- see tests/cfs/transcript_floor.txt.
+FLOOR_FILE="$ROOT/tests/cfs/transcript_floor.txt"
+floor=$(head -1 "$FLOOR_FILE" 2>/dev/null)
+case "$floor" in
+  ''|*[!0-9]*)
+    echo "FAIL cfs-xlat — $FLOOR_FILE does not start with a number, so the floor is not being" >&2
+    echo "  applied at all, which is the shape it exists to refuse." >&2
+    exit 1 ;;
+esac
+if [ "$n" -lt "$floor" ]; then
+  echo "FAIL cfs-xlat — the transcript SHRANK: $n lines against a floor of $floor." >&2
+  echo "  The two halves still agree, so the diff is empty; they agree about less. Something" >&2
+  echo "  stopped printing. Find out what, and if it was deliberate -- a stub whose source is" >&2
+  echo "  now gated usually is -- check what was WITNESSING it and move the witness before" >&2
+  echo "  lowering the number. Three probes went dead that way once already." >&2
+  exit 1
+fi
+if [ "$n" -gt "$floor" ]; then
+  echo "cfs-xlat: the floor is $floor and can be raised to $n in the commit that earned it"
+fi
 echo "cfs-xlat smoke: OK"

@@ -355,7 +355,7 @@ I64 fs_open_fail;
 // and every record is 10, so each individual write still fit and the run reported COMPLETE.
 I64 fs_wr_left;
 // < 0 = unlimited
-I64 fs_mut_create, fs_mut_take, fs_mut_give, fs_wakeups;
+I64 fs_mut_create, fs_mut_take, fs_mut_give;
 // Steer the three mutex calls; see the note in the C half. Without these, cfe_fs_priv.c's
 // three syslog lines are unreachable -- including the only one that formats three arguments.
 I64 fs_mut_create_rc, fs_mut_take_rc, fs_mut_give_rc;
@@ -562,7 +562,7 @@ CFE_ES_ResetData_t es_reset_area;
 // stubs can be this thin: CFE_ES_RegisterCDS, CFE_ES_GetCDSBlockIDByName and
 // CFE_ES_GetCDSBlockName all return CFE_ES_NOT_IMPLEMENTED before they reach the registry, and
 // the exercise checks that they do.
-I64 es_erlog_writes, es_cds_locks, es_cds_unlocks, es_starttasks, es_restarts;
+I64 es_cds_locks, es_cds_unlocks, es_starttasks, es_restarts;
 I64 es_stats;
 I32 es_stat_rc;
 // what OS_stat says: Restart/Reload branch on it
@@ -770,7 +770,7 @@ U0 CFE_ES_CopyModuleAddressInfo(U32 ModuleId, CFE_ES_AppInfo_t *AppInfoPtr)
 // ---- what cfe_es_task.c calls and nothing gated defines -------------------------------------
 // The apps/CDS/perf/background/dispatch set again, plus the PSP and OSAL version calls. Each
 // goes away from BOTH halves on the commit that gates its source.
-I64 es_appcreates, es_bkginits, es_cdsdeletes, es_taskpipes, es_textseg;
+I64 es_appcreates, es_cdsdeletes, es_taskpipes, es_textseg;
 I32 es_appcreate_rc, es_bkginit_rc, es_cdsdelete_rc;
 I32 es_textseg_rc;
 I64 es_perf_remaining;
@@ -2929,7 +2929,10 @@ I64 main()
     S(" pend=");
     D(CFE_FS_BackgroundFileDumpIsPending(&m));
     S(" wake=");
-    D(fs_wakeups);
+    // THE WAKEUP WITNESS IS THE SEMAPHORE NOW. CFE_ES_BackgroundWakeup was a stub that bumped
+    // fs_wakeups; cfe_es_backgroundtask.c is gated, so the real one gives
+    // CFE_ES_Global.BackgroundTask.WorkSem and time_sem_gives is what counts that.
+    D(time_sem_gives);
     S("\n");
     // a second request for the SAME object is rejected while it is pending
     S("fs_req_again rc=");
@@ -7130,24 +7133,29 @@ I64 main()
       D(rc);
       S("\n");
       // --- ProcessAsyncEvent is one line: wake the background task ---------------------
-      fs_wakeups = 0;
+      // Same move: the real CFE_ES_BackgroundWakeup gives the background semaphore.
+      time_sem_gives = 0;
       CFE_ES_ProcessAsyncEvent();
-      S("esa_async wakeups=");
-      D(fs_wakeups);
+      S("esa_async gives=");
+      D(time_sem_gives);
       S("\n");
       // --- ResetCFE, which does not return on real hardware ---------------------------
       // CFE_PSP_Restart is a stub that returns, so the code AFTER it runs -- the "returned"
       // syslog line and CFE_ES_NOT_IMPLEMENTED -- which is the only way this function's tail
       // is reachable at all.
+      // AND THE ER LOG WITNESS IS THE LOG. es_erlog_writes counted a stub; cfe_es_erlog.c is
+      // gated, so what says an entry was made is ERLogEntries, which
+      // CFE_ES_WriteToERLogWithContext increments -- a stronger statement, because it says the
+      // entry LANDED rather than that a function was called.
       es_restarts = 0;
-      es_erlog_writes = 0;
+      CFE_ES_Global.ResetDataPtr->ERLogEntries = 0;
       rc = CFE_ES_ResetCFE(CFE_PSP_RST_TYPE_PROCESSOR);
       S("esa_reset_proc rc=");
       D(rc);
       S(" restarts=");
       D(es_restarts);
       S(" erlog=");
-      D(es_erlog_writes);
+      D(CFE_ES_Global.ResetDataPtr->ERLogEntries);
       S("\n");
       rc = CFE_ES_ResetCFE(CFE_PSP_RST_TYPE_POWERON);
       S("esa_reset_power rc=");
@@ -7644,7 +7652,9 @@ I64 main()
       CFE_ES_Global.SystemState = CFE_ES_SystemState_CORE_READY;
       CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_CORE;
       es_taskpipes = 0;
-      es_bkginits = 0;
+      // CFE_ES_BackgroundInit is real now, so what says it ran is the semaphore it creates --
+      // time_sems_created -- not a counter in a stub that no longer exists.
+      time_sems_created = 0;
       es_taskexits = 0;
       evs_delay_ms = 0;
       sb_queuecreate_rc = OS_SUCCESS;
@@ -7652,8 +7662,8 @@ I64 main()
       CFE_ES_TaskMain();
       S("est_taskmain pipes=");
       D(es_taskpipes);
-      S(" bkginit=");
-      D(es_bkginits);
+      S(" bgsem=");
+      D(time_sems_created);
       S(" exits=");
       D(es_taskexits);
       S(" delay=");

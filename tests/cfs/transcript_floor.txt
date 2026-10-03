@@ -1,0 +1,18 @@
+1224
+# THE TRANSCRIPT MUST NOT SHRINK WITHOUT SOMEONE SAYING WHY.
+#
+# The differential gate asserts that the two halves AGREE. It cannot notice that they agree
+# about LESS than they used to -- both sides change together, the diff stays empty, and the
+# only evidence is a number nobody reads.
+#
+# That is not hypothetical. Gating cfe_es_erlog.c removed the CFE_ES_WriteToERLog stub from
+# both drivers, and with it the two `es_erlog type=...` lines it printed, taking the count from
+# 1,226 to 1,224. Three committed probes went dead in the same edit -- esa_async, est_taskmain
+# and esa_reset_proc were reading counters that no stub incremented any more, so each was
+# asserting a zero against a zero. The witnesses moved to things the REAL code touches (the
+# background semaphore, the semaphore count, ERLogEntries), which is strictly better, and the
+# only reason any of it was found is that someone read the line count change.
+#
+# So: the number above is a FLOOR. A run below it fails. A run above it says so and asks for
+# the floor to be raised in the same commit that earned it -- deliberately, with the reason in
+# the commit message, which is the whole point.
