@@ -89,7 +89,8 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/es/fsw/src/cfe_es_generic_pool.c
        $CFE/modules/es/fsw/src/cfe_es_syslog.c
        $CFE/modules/es/fsw/src/cfe_es_mempool.c
-       $CFE/modules/es/fsw/src/cfe_es_resource.c"
+       $CFE/modules/es/fsw/src/cfe_es_resource.c
+       $CFE/modules/es/fsw/src/cfe_es_api.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -221,6 +222,15 @@ python3 "$ROOT/tools/cfs/check_manifest.py" --cfe || exit 1
 # one. The second is invisible to check_signatures, which compares DEFINITIONS, and both
 # definitions were right.
 python3 "$ROOT/tools/cfs/check_variadic.py" || exit 1
+
+# --- the shared-data lock sites ----------------------------------------------------------------
+# NASA writes CFE_ES_LockSharedData(__func__, __LINE__) and BOTH arguments reach the transcript
+# when the mutex take fails. HolyC has neither, so the translation writes them out as literals
+# -- which makes them constants, and a constant nobody compares drifts. With every ES line
+# number written as 0, the FS mutex-failure probe printed Line=748 on NASA's side and Line=0 on
+# the translation's; no other gate could see it, because a literal at a call site is neither a
+# type nor a #define.
+python3 "$ROOT/tools/cfs/check_lock_sites.py" || exit 1
 
 # --- reference: NASA's C, unmodified -------------------------------------------------------
 # shellcheck disable=SC2086

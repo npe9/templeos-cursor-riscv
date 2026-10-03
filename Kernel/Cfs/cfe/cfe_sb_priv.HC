@@ -493,7 +493,7 @@ I32 CFE_SB_ZeroCopyReleaseAppId(U32 AppId)
    * prevent other tasks from changing the list at the same time.
    */
   if (CFE_ResourceId_IsDefined(AppId)) {
-    CFE_SB_LockSharedData("CFE_SB_ZeroCopyReleaseAppId", 0);
+    CFE_SB_LockSharedData("CFE_SB_ZeroCopyReleaseAppId", 467);
     /* Get start of list */
     NextLink = CFE_SB_TrackingListGetNext(&CFE_SB_Global.ZeroCopyList);
     while (!CFE_SB_TrackingListIsEnd(&CFE_SB_Global.ZeroCopyList, NextLink)) {
@@ -508,7 +508,7 @@ I32 CFE_SB_ZeroCopyReleaseAppId(U32 AppId)
         CFE_SB_DecrBufUseCnt(DscPtr);
       }
     }
-    CFE_SB_UnlockSharedData("CFE_SB_ZeroCopyReleaseAppId", 0);
+    CFE_SB_UnlockSharedData("CFE_SB_ZeroCopyReleaseAppId", 489);
   }
   return CFE_SUCCESS;
 }
@@ -563,7 +563,7 @@ I32 CFE_SB_CleanUpApp(U32 Id)
   AppId = Id;
   PipeDscPtr = CFE_SB_Global.PipeTbl;
   DelCount = 0;
-  CFE_SB_LockSharedData("CFE_SB_CleanUpApp", 0);
+  CFE_SB_LockSharedData("CFE_SB_CleanUpApp", 100);
   /* loop through the pipe table looking for pipes owned by AppId */
   for (i = 0; i < CFE_PLATFORM_SB_MAX_PIPES; ++i) {
     if (CFE_SB_PipeDescIsUsed(PipeDscPtr) && PipeDscPtr->AppId == AppId) {
@@ -572,7 +572,7 @@ I32 CFE_SB_CleanUpApp(U32 Id)
     }
     ++PipeDscPtr;
   }
-  CFE_SB_UnlockSharedData("CFE_SB_CleanUpApp", 0);
+  CFE_SB_UnlockSharedData("CFE_SB_CleanUpApp", 113);
   for (i = 0; i < DelCount; ++i) {
     CFE_SB_DeletePipeWithAppId(DelList[i], AppId);
   }
@@ -774,7 +774,7 @@ U0 CFE_SB_MessageTxn_ReportEvents(CFE_SB_MessageTxn_State_t *TxnPtr)
      * Increment the error only if there was a real error,
      * such as a validation issue or failure to allocate a buffer.
      */
-    CFE_SB_LockSharedData("CFE_SB_MessageTxn_ReportEvents", 0);
+    CFE_SB_LockSharedData("CFE_SB_MessageTxn_ReportEvents", 842);
     if (TxnPtr->IsTransmit) {
       CFE_SB_Global.HKTlmMsg.Payload.MsgSendErrorCounter++;
     } else if (TxnPtr->Status == CFE_SB_BAD_ARGUMENT) {
@@ -783,7 +783,7 @@ U0 CFE_SB_MessageTxn_ReportEvents(CFE_SB_MessageTxn_State_t *TxnPtr)
       /* For any other unexpected error (e.g. CFE_SB_Q_RD_ERR_EID) */
       ++CFE_SB_Global.HKTlmMsg.Payload.InternalErrorCounter;
     }
-    CFE_SB_UnlockSharedData("CFE_SB_MessageTxn_ReportEvents", 0);
+    CFE_SB_UnlockSharedData("CFE_SB_MessageTxn_ReportEvents", 858);
   }
 }
 /*----------------------------------------------------------------
@@ -938,7 +938,7 @@ U0 CFE_SB_TransmitTxn_FindDestinations(CFE_SB_MessageTxn_State_t *TxnPtr, CFE_SB
    */
   CFE_ES_GetAppID(&AppId);
   /* take semaphore to prevent a task switch during processing */
-  CFE_SB_LockSharedData("CFE_SB_TransmitTxn_FindDestinations", 0);
+  CFE_SB_LockSharedData("CFE_SB_TransmitTxn_FindDestinations", 1049);
   /* Get the routing id */
   BufDscPtr->DestRouteId = CFE_SBR_GetRouteId(TxnPtr->RoutingMsgId);
   /* For an invalid route / no subscribers this whole logic can be skipped */
@@ -985,7 +985,7 @@ U0 CFE_SB_TransmitTxn_FindDestinations(CFE_SB_MessageTxn_State_t *TxnPtr, CFE_SB
   BufDscPtr->AppId = CFE_RESOURCEID_UNDEFINED;
   /* track the buffer as an in-transit message */
   CFE_SB_TrackingListAdd(&CFE_SB_Global.InTransitList, &BufDscPtr->Link);
-  CFE_SB_UnlockSharedData("CFE_SB_TransmitTxn_FindDestinations", 0);
+  CFE_SB_UnlockSharedData("CFE_SB_TransmitTxn_FindDestinations", 1114);
   /*
    * Lastly, if this is the origination point, now that all headers should
    * have known values (including sequence) - invoke the mission-specific
@@ -1057,7 +1057,7 @@ Bool CFE_SB_TransmitTxn_PipeHandler(CFE_SB_MessageTxn_State_t *TxnPtr, CFE_SB_Pi
    */
   if (ContextPtr->OsStatus != OS_SUCCESS) {
     ++TxnPtr->NumPipeErrs;
-    CFE_SB_LockSharedData("CFE_SB_TransmitTxn_PipeHandler", 0);
+    CFE_SB_LockSharedData("CFE_SB_TransmitTxn_PipeHandler", 1198);
     if (ContextPtr->OsStatus == OS_QUEUE_FULL) {
       ContextPtr->PendingEventId = CFE_SB_Q_FULL_ERR_EID;
       CFE_SB_Global.HKTlmMsg.Payload.PipeOverflowErrorCounter++;
@@ -1075,7 +1075,7 @@ Bool CFE_SB_TransmitTxn_PipeHandler(CFE_SB_MessageTxn_State_t *TxnPtr, CFE_SB_Pi
       DestPtr->BuffCount--;
     }
     CFE_SB_DecrBufUseCnt(BufDscPtr);
-    CFE_SB_UnlockSharedData("CFE_SB_TransmitTxn_PipeHandler", 0);
+    CFE_SB_UnlockSharedData("CFE_SB_TransmitTxn_PipeHandler", 1226);
   }
   /* always keep going when sending (broadcast) */
   return TRUE;
@@ -1133,9 +1133,9 @@ U0 CFE_SB_TransmitTxn_Execute(CFE_SB_MessageTxn_State_t *TxnPtr, CFE_SB_Buffer *
    * Decrement the buffer UseCount - This means that the caller
    * should not use the buffer anymore after this call.
    */
-  CFE_SB_LockSharedData("CFE_SB_TransmitTxn_Execute", 0);
+  CFE_SB_LockSharedData("CFE_SB_TransmitTxn_Execute", 1294);
   CFE_SB_DecrBufUseCnt(BufDscPtr);
-  CFE_SB_UnlockSharedData("CFE_SB_TransmitTxn_Execute", 0);
+  CFE_SB_UnlockSharedData("CFE_SB_TransmitTxn_Execute", 1296);
 }
 /******************************************************************
  *
@@ -1189,7 +1189,7 @@ U0 CFE_SB_ReceiveTxn_SetPipeId(CFE_SB_MessageTxn_State_t *TxnPtr, U32 PipeId)
   ContextPtr->PipeId = PipeId;
   TxnPtr->NumPipes = 1;
   PipeDscPtr = CFE_SB_LocatePipeDescByID(PipeId);
-  CFE_SB_LockSharedData("CFE_SB_ReceiveTxn_SetPipeId", 0);
+  CFE_SB_LockSharedData("CFE_SB_ReceiveTxn_SetPipeId", 1356);
   /* If the pipe does not exist or PipeId is out of range... */
   if (!CFE_SB_PipeDescIsMatch(PipeDscPtr, PipeId)) {
     ContextPtr->PendingEventId = CFE_SB_BAD_PIPEID_EID;
@@ -1206,7 +1206,7 @@ U0 CFE_SB_ReceiveTxn_SetPipeId(CFE_SB_MessageTxn_State_t *TxnPtr, U32 PipeId)
       PipeDscPtr->LastBuffer = NULL;
     }
   }
-  CFE_SB_UnlockSharedData("CFE_SB_ReceiveTxn_SetPipeId", 0);
+  CFE_SB_UnlockSharedData("CFE_SB_ReceiveTxn_SetPipeId", 1392);
 }
 /*----------------------------------------------------------------
  *
@@ -1225,7 +1225,7 @@ U0 CFE_SB_ReceiveTxn_ExportReference(CFE_SB_MessageTxn_State_t *TxnPtr, CFE_SB_P
   CFE_SB_DestinationD_t *DestPtr;
   PipeDscPtr = CFE_SB_LocatePipeDescByID(ContextPtr->PipeId);
   /* Now re-lock to store the buffer in the pipe descriptor */
-  CFE_SB_LockSharedData("CFE_SB_ReceiveTxn_ExportReference", 0);
+  CFE_SB_LockSharedData("CFE_SB_ReceiveTxn_ExportReference", 1412);
   /*
    * NOTE: This uses the same PipeDscPtr that was found earlier.
    * But it has to be revalidated because its theoretically possible
@@ -1263,7 +1263,7 @@ U0 CFE_SB_ReceiveTxn_ExportReference(CFE_SB_MessageTxn_State_t *TxnPtr, CFE_SB_P
   }
   /* Always decrement the use count, for the ref that was in the queue */
   CFE_SB_DecrBufUseCnt(BufDscPtr);
-  CFE_SB_UnlockSharedData("CFE_SB_ReceiveTxn_ExportReference", 0);
+  CFE_SB_UnlockSharedData("CFE_SB_ReceiveTxn_ExportReference", 1467);
 }
 /*----------------------------------------------------------------
  *
@@ -1386,7 +1386,7 @@ I32 CFE_SB_GetPipeNamePriv(U32 PipeId, U8 *PipeNameBuf, I64 PipeNameSize)
   Status = CFE_SUCCESS;
   SysQueueId = OS_OBJECT_ID_UNDEFINED;
   /* take semaphore to prevent a task switch during this call */
-  CFE_SB_LockSharedData("CFE_SB_GetPipeNamePriv", 0);
+  CFE_SB_LockSharedData("CFE_SB_GetPipeNamePriv", 1625);
   /* check input parameter */
   PipeDscPtr = CFE_SB_LocatePipeDescByID(PipeId);
   if (!CFE_SB_PipeDescIsMatch(PipeDscPtr, PipeId)) {
@@ -1394,7 +1394,7 @@ I32 CFE_SB_GetPipeNamePriv(U32 PipeId, U8 *PipeNameBuf, I64 PipeNameSize)
   } else {
     SysQueueId = PipeDscPtr->SysQueueId;
   }
-  CFE_SB_UnlockSharedData("CFE_SB_GetPipeNamePriv", 0);
+  CFE_SB_UnlockSharedData("CFE_SB_GetPipeNamePriv", 1638);
   if (Status == CFE_SUCCESS) {
     OsStatus = OS_GetResourceName(SysQueueId, PipeNameBuf, PipeNameSize);
     if (OsStatus != OS_SUCCESS) {

@@ -890,3 +890,54 @@ Why this is OPEN rather than a deviation: the local form is enough for every sit
 translation so far, so nothing is blocked, but a compiler that accepts four spellings of one
 construct and miscompiles three of them is a defect in the compiler, not a property of the
 language.
+
+---
+
+## 20. A constant `A + B` in a call argument is scaled by another argument's pointee size — OPEN, and SILENT
+
+This is limit 17's leak again, one stage further on. There, the arrow in `fn(args)->member`
+resolved against the **first argument's** class and the compiler *refused*. Here the first
+argument's **pointee size** reaches a constant fold in a later argument, and the compiler
+*emits a wrong number*:
+
+```c
+U0 Two(U32 *p, U32 v);
+...
+U32 *r = Table;
+Two(r, (0 | ((0x10 + 1) << 16)) + slot);
+```
+
+`0x10 + 1` is 17. The emitted instruction is `li a0,20` — that is `16 + 1*4`, and 4 is
+`sizeof(U32)`, the pointee size of `r`. Change only `r`'s type and only the constant moves:
+
+| `r`'s type | scale | emitted | correct |
+|---|---|---|---|
+| `U8 *`  | 1 | 17 | 17 |
+| `U16 *` | 2 | 18 | 17 |
+| `U32 *` | 4 | 20 | 17 |
+| `U64 *` | 8 | 24 | 17 |
+
+The rule is exactly `A + B*sizeof(*r)`, confirmed across five constant pairs: `0x10+1`→20,
+`0x20+1`→36, `3+4`→19, `100+7`→128, `1+1`→5.
+
+**The same expression is correct everywhere else**: assigned to a variable, passed to a
+function with no pointer argument, or passed as the argument *before* the pointer. It needs a
+pointer argument in the same call, and the pointer argument is what supplies the scale.
+
+**It is a family, not a one-off.** The already-recorded `ptr = <const> + off` case scales `off`
+by `sizeof(*ptr)` for the same reason, and limit 17 is the type of the first argument leaking
+into the parse of what follows it. Three symptoms, one leak.
+
+**How it was found, which is the part worth keeping.** `cfe_es_api.c`'s differential driver
+plants ES's app table with `CFE_ES_AppRecordSetUsed(arp, CFE_ES_APPID_BASE + slot)`, and
+`CFE_ES_APPID_BASE` expands to
+`(CFE_RESOURCEID_MARK | ((OS_OBJECT_TYPE_USER + 1) << CFE_RESOURCEID_SHIFT))`. The
+`OS_OBJECT_TYPE_USER + 1` became `OS_OBJECT_TYPE_USER + 4`, so every app id was planted at base
+`0xC80000` instead of `0x110000`. `CFE_ES_GetAppID` then returned
+`CFE_ES_ERR_RESOURCEID_NOT_VALID` for a record sitting right there, and what the transcript
+showed was `CFE_TA_TaskInit: Call to CFE_ES_GetAppID Failed` — two modules away from the
+arithmetic, the same distance as the dropped `(cpuaddr)` cast in `cfe_sb_priv.c`.
+
+**The workaround is a local**, the same one limit 17 takes: compute the value into a variable
+and pass the variable. `tests/exec/cases/e_call_arg_const_scaled.hc` pins the broken form and
+both correct ones side by side, so the day it is fixed the case fails and says so.

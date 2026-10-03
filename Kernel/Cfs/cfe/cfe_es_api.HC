@@ -117,17 +117,29 @@
 // cfe_es_cds.c, cfe_es_cds_mempool.c, cfe_es_apps.c and cfe_es_erlog.c, none gated yet --
 // fifteen functions, so fifteen stubs on both halves of the differential oracle. The same
 // temporary arrangement CFE_SB_SendSubscriptionReport had until cfe_sb_task.c landed.
-U0 CFE_ES_WriteToERLog(U32 EntryType, U32 ResetType, U32 ResetSubtype, U8 *Description);
-I32 CFE_ES_FormCDSName(U8 *FullCDSName, U8 *CDSName, U32 ThisAppId);
+I32 CFE_ES_WriteToERLog(U32 EntryType, U32 ResetType, U32 ResetSubtype, U8 *Description);
+U0 CFE_ES_FormCDSName(U8 *FullCDSName, U8 *CDSName, U32 ThisAppId);
 CFE_ES_CDS_RegRec_t *CFE_ES_LocateCDSBlockRecordByID(U32 BlockID);
 CFE_ES_CDS_RegRec_t *CFE_ES_LocateCDSBlockRecordByName(U8 *CDSName);
-Bool CFE_ES_CDSBlockRecordIsMatch(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr, U32 BlockID);
-U32 CFE_ES_CDSBlockRecordGetID(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr);
 I32 CFE_ES_CDSBlockWrite(U32 Handle, U8 *DataToCopy);
+// THESE TWO ARE `static inline` IN cfe_es_cds.h, not functions in a .c file, which is why they
+// are DEFINED here rather than declared: the C half gets the real bodies from NASA's header, so
+// a recording stub on this side would be the one place the two halves could disagree about what
+// a CDS handle means. They belong in cfe_es_cds.HC and move there when cfe_es_cds.c is gated,
+// the same way cfe_es_resource.HC took cfe_es_resource.h's twenty-four accessors.
+U32 CFE_ES_CDSBlockRecordGetID(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr)
+{
+  return CDSBlockRecPtr->BlockID;
+}
+
+Bool CFE_ES_CDSBlockRecordIsMatch(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr, U32 BlockID)
+{
+  return (CDSBlockRecPtr != NULL && CFE_ResourceId_Equal(CDSBlockRecPtr->BlockID, BlockID));
+}
 I32 CFE_ES_CDSBlockRead(U8 *DataToCopy, U32 Handle);
 I32 CFE_ES_RegisterCDSEx(U32 *HandlePtr, I64 UserBlockSize, U8 *Name, Bool CriticalTbl);
-U0 CFE_ES_LockCDS();
-U0 CFE_ES_UnlockCDS();
+I32 CFE_ES_LockCDS();
+I32 CFE_ES_UnlockCDS();
 U0 CFE_ES_CopyModuleBasicInfo(CFE_ES_ModuleLoadParams_t *ParamsPtr, CFE_ES_AppInfo_t *ModuleInfo);
 U0 CFE_ES_CopyModuleStatusInfo(CFE_ES_ModuleLoadStatus_t *StatusPtr, CFE_ES_AppInfo_t *ModuleInfo);
 U0 CFE_ES_CopyModuleAddressInfo(U32 ModuleId, CFE_ES_AppInfo_t *ModuleInfo);
@@ -137,15 +149,30 @@ I32 CFE_ES_StartAppTask(U32 *TaskIdPtr, U8 *TaskName, U0 (*EntryPoint)(), CFE_ES
 CFE_ES_AppRecord_t *CFE_ES_LockUserAppRecord(U32 AppID, U8 *LogMsgAction);
 // The PSP. CFE_PSP_Restart does not return when it works.
 U0 CFE_PSP_Restart(U32 ResetType);
-// OSAL.
-I32 OS_TaskCreate(U32 *task_id, U8 *task_name, U0 (*function_pointer)(), U8 *stack_pointer, I64 stack_size, U32 priority, U32 flags);
+// OSAL. Only what cfe_es_api.c actually calls -- an earlier draft of this block declared
+// OS_TaskCreate, OS_TaskGetInfo and OS_ModuleUnload too, and this file calls none of the three.
+//
+// os_fstat_t comes from the OSAL translation rather than being re-declared here -- one
+// definition, measured by check_padding in one place. cfe_evs_global.HC already reaches across
+// for os_shared_clock.HC's OS_time_t the same way. cfe_es_api.c only ever takes its address:
+// CFE_ES_RestartApp and CFE_ES_ReloadApp pass &FileStatus to OS_stat to ask whether the file
+// exists, and never read a field of it.
+#include "../osal/os_shared_file.HC" // os_fstat_t, for OS_stat
+#ifndef OS_ERROR
+#define OS_ERROR -1
+#endif
+#ifndef OS_ERR_NAME_TOO_LONG
+#define OS_ERR_NAME_TOO_LONG -13
+#endif
+#ifndef OS_OBJECT_TYPE_OS_TASK
+#define OS_OBJECT_TYPE_OS_TASK 0x01
+#endif
 I32 OS_TaskDelete(U32 task_id);
 U0 OS_TaskExit();
-I32 OS_TaskGetInfo(U32 task_id, OS_task_prop_t *task_prop);
 I32 OS_TaskGetIdByName(U32 *task_id, U8 *task_name);
 I32 OS_TaskDelay(U32 millisecond);
 I32 OS_stat(U8 *path, os_fstat_t *filestats);
-I32 OS_ModuleUnload(U32 module_id);
+I32 OS_ObjectIdToArrayIndex(U32 idtype, U32 object_id, U32 *ArrayIndex);
 // Declared here, defined below -- the C's own order has each used above its definition.
 I32 CFE_ES_WriteToSysLog(U8 *SpecStringPtr,...);
 U0 CFE_ES_LockSharedData(U8 *FunctionName, I32 LineNumber);
@@ -285,7 +312,7 @@ I32 CFE_ES_RestartApp(U32 AppID)
       CFE_ES_SysLogWrite_Unsync("%s: Cannot Restart Application %s, File %s does not exist.\n", "CFE_ES_RestartApp", CFE_ES_AppRecordGetName(AppRecPtr), AppRecPtr->StartParams.BasicInfo.FileName);
       ReturnCode = CFE_ES_FILE_IO_ERR;
     }
-    CFE_ES_UnlockSharedData("CFE_ES_RestartApp", 0);
+    CFE_ES_UnlockSharedData("CFE_ES_RestartApp", 195);
   }
   return ReturnCode;
 }
@@ -320,7 +347,7 @@ I32 CFE_ES_ReloadApp(U32 AppID, U8 *AppFileName)
       CFE_ES_SysLogWrite_Unsync("%s: Cannot Reload Application %s, File %s does not exist.\n", "CFE_ES_ReloadApp", CFE_ES_AppRecordGetName(AppRecPtr), AppFileName);
       ReturnCode = CFE_ES_FILE_IO_ERR;
     }
-    CFE_ES_UnlockSharedData("CFE_ES_ReloadApp", 0);
+    CFE_ES_UnlockSharedData("CFE_ES_ReloadApp", 250);
   }
   return ReturnCode;
 }
@@ -341,7 +368,7 @@ I32 CFE_ES_DeleteApp(U32 AppID)
   } else {
     CFE_ES_SysLogWrite_Unsync("%s: Delete Application %s Initiated\n", "CFE_ES_DeleteApp", CFE_ES_AppRecordGetName(AppRecPtr));
     AppRecPtr->ControlReq.AppControlRequest = CFE_ES_RunStatus_SYS_DELETE;
-    CFE_ES_UnlockSharedData("CFE_ES_DeleteApp", 0);
+    CFE_ES_UnlockSharedData("CFE_ES_DeleteApp", 280);
   }
   return ReturnCode;
 }
@@ -368,7 +395,7 @@ U0 CFE_ES_ExitApp(U32 ExitStatus)
 {
   I32 ReturnCode;
   CFE_ES_AppRecord_t *AppRecPtr;
-  CFE_ES_LockSharedData("CFE_ES_ExitApp", 0);
+  CFE_ES_LockSharedData("CFE_ES_ExitApp", 297);
   /*
    * This should only be called with a valid ExitStatus, anything else is invalid
    * and indicates a bug in the caller.
@@ -405,7 +432,7 @@ U0 CFE_ES_ExitApp(U32 ExitStatus)
         /*
         ** Unlock the ES Shared data before calling ResetCFE
         */
-        CFE_ES_UnlockSharedData("CFE_ES_ExitApp", 0);
+        CFE_ES_UnlockSharedData("CFE_ES_ExitApp", 347);
         /*
         ** Do a Processor Reset the cFE
         */
@@ -422,7 +449,7 @@ U0 CFE_ES_ExitApp(U32 ExitStatus)
         /*
         ** Unlock the ES Shared data before killing the main task
         */
-        CFE_ES_UnlockSharedData("CFE_ES_ExitApp", 0);
+        CFE_ES_UnlockSharedData("CFE_ES_ExitApp", 374);
         /*
         ** Exit this task
         */
@@ -442,7 +469,7 @@ U0 CFE_ES_ExitApp(U32 ExitStatus)
         /*
       ** Unlock the ES Shared data before suspending the app
       */
-        CFE_ES_UnlockSharedData("CFE_ES_ExitApp", 0);
+        CFE_ES_UnlockSharedData("CFE_ES_ExitApp", 404);
         /*
       ** Suspend the Application until ES kills it.
       ** It might be better to have a way of suspending the app in the OS
@@ -452,7 +479,7 @@ U0 CFE_ES_ExitApp(U32 ExitStatus)
         }
       }
   }
-  CFE_ES_UnlockSharedData("CFE_ES_ExitApp", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_ExitApp", 417);
 }
 /*----------------------------------------------------------------
  *
@@ -494,7 +521,7 @@ Bool CFE_ES_RunLoop(U32 *RunStatus)
   if (RunStatus != NULL && *RunStatus != CFE_ES_RunStatus_APP_RUN) {
     return FALSE;
   }
-  CFE_ES_LockSharedData("CFE_ES_RunLoop", 0);
+  CFE_ES_LockSharedData("CFE_ES_RunLoop", 458);
   /*
   ** Get App Record
   */
@@ -528,7 +555,7 @@ Bool CFE_ES_RunLoop(U32 *RunStatus)
     CFE_ES_SysLogWrite_Unsync("%s: Error getting AppID for the caller\n", "CFE_ES_RunLoop");
     ReturnCode = FALSE;
   }
-  CFE_ES_UnlockSharedData("CFE_ES_RunLoop", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_RunLoop", 503);
   return ReturnCode;
 }
 /*----------------------------------------------------------------
@@ -563,7 +590,7 @@ I32 CFE_ES_WaitForSystemState(U32 MinSystemState, U32 TimeOutMilliseconds)
    *
    * Determine the implicit app state based on the system state it is indicating
    */
-  CFE_ES_LockSharedData("CFE_ES_WaitForSystemState", 0);
+  CFE_ES_LockSharedData("CFE_ES_WaitForSystemState", 528);
   /*
   ** Get App Record
   */
@@ -599,7 +626,7 @@ I32 CFE_ES_WaitForSystemState(U32 MinSystemState, U32 TimeOutMilliseconds)
       AppRecPtr->AppState = RequiredAppState;
     }
   }
-  CFE_ES_UnlockSharedData("CFE_ES_WaitForSystemState", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_WaitForSystemState", 576);
   /*
    * Do the actual delay loop.
    *
@@ -650,7 +677,7 @@ I32 CFE_ES_GetAppIDByName(U32 *AppIdPtr, U8 *AppName)
   if (AppName == NULL || AppIdPtr == NULL) {
     return CFE_ES_BAD_ARGUMENT;
   }
-  CFE_ES_LockSharedData("CFE_ES_GetAppIDByName", 0);
+  CFE_ES_LockSharedData("CFE_ES_GetAppIDByName", 637);
   AppRecPtr = CFE_ES_LocateAppRecordByName(AppName);
   if (AppRecPtr == NULL) {
     /*
@@ -663,7 +690,7 @@ I32 CFE_ES_GetAppIDByName(U32 *AppIdPtr, U8 *AppName)
     Result = CFE_SUCCESS;
     *AppIdPtr = CFE_ES_AppRecordGetID(AppRecPtr);
   }
-  CFE_ES_UnlockSharedData("CFE_ES_GetAppIDByName", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_GetAppIDByName", 655);
   return Result;
 }
 /*----------------------------------------------------------------
@@ -679,7 +706,7 @@ I32 CFE_ES_GetLibIDByName(U32 *LibIdPtr, U8 *LibName)
   if (LibName == NULL || LibIdPtr == NULL) {
     return CFE_ES_BAD_ARGUMENT;
   }
-  CFE_ES_LockSharedData("CFE_ES_GetLibIDByName", 0);
+  CFE_ES_LockSharedData("CFE_ES_GetLibIDByName", 676);
   LibRecPtr = CFE_ES_LocateLibRecordByName(LibName);
   if (LibRecPtr == NULL) {
     /*
@@ -692,7 +719,7 @@ I32 CFE_ES_GetLibIDByName(U32 *LibIdPtr, U8 *LibName)
     Result = CFE_SUCCESS;
     *LibIdPtr = CFE_ES_LibRecordGetID(LibRecPtr);
   }
-  CFE_ES_UnlockSharedData("CFE_ES_GetLibIDByName", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_GetLibIDByName", 694);
   return Result;
 }
 /*----------------------------------------------------------------
@@ -736,7 +763,7 @@ I32 CFE_ES_GetAppID(U32 *AppIdPtr)
   if (AppIdPtr == NULL) {
     return CFE_ES_BAD_ARGUMENT;
   }
-  CFE_ES_LockSharedData("CFE_ES_GetAppID", 0);
+  CFE_ES_LockSharedData("CFE_ES_GetAppID", 748);
   AppRecPtr = CFE_ES_GetAppRecordByContext();
   if (AppRecPtr != NULL) {
     *AppIdPtr = CFE_ES_AppRecordGetID(AppRecPtr);
@@ -745,7 +772,7 @@ I32 CFE_ES_GetAppID(U32 *AppIdPtr)
     *AppIdPtr = CFE_ES_APPID_UNDEFINED;
     Result = CFE_ES_ERR_RESOURCEID_NOT_VALID;
   }
-  CFE_ES_UnlockSharedData("CFE_ES_GetAppID", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_GetAppID", 763);
   return Result;
 }
 /*----------------------------------------------------------------
@@ -761,7 +788,7 @@ I32 CFE_ES_GetTaskID(U32 *TaskIdPtr)
   if (TaskIdPtr == NULL) {
     return CFE_ES_BAD_ARGUMENT;
   }
-  CFE_ES_LockSharedData("CFE_ES_GetTaskID", 0);
+  CFE_ES_LockSharedData("CFE_ES_GetTaskID", 784);
   TaskRecPtr = CFE_ES_GetTaskRecordByContext();
   if (TaskRecPtr == NULL) {
     *TaskIdPtr = CFE_ES_TASKID_UNDEFINED;
@@ -770,7 +797,7 @@ I32 CFE_ES_GetTaskID(U32 *TaskIdPtr)
     *TaskIdPtr = CFE_ES_TaskRecordGetID(TaskRecPtr);
     Result = CFE_SUCCESS;
   }
-  CFE_ES_UnlockSharedData("CFE_ES_GetTaskID", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_GetTaskID", 796);
   return Result;
 }
 /*----------------------------------------------------------------
@@ -794,7 +821,7 @@ I32 CFE_ES_GetAppName(U8 *AppName, U32 AppId, I64 BufferLength)
   ** Get App Record
   */
   AppRecPtr = CFE_ES_LocateAppRecordByID(AppId);
-  CFE_ES_LockSharedData("CFE_ES_GetAppName", 0);
+  CFE_ES_LockSharedData("CFE_ES_GetAppName", 821);
   /*
    * confirm that the app record is a match,
    * which must be done while locked.
@@ -807,7 +834,7 @@ I32 CFE_ES_GetAppName(U8 *AppName, U32 AppId, I64 BufferLength)
     AppName[0] = 0;
     Result = CFE_ES_ERR_RESOURCEID_NOT_VALID;
   }
-  CFE_ES_UnlockSharedData("CFE_ES_GetAppName", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_GetAppName", 839);
   return Result;
 }
 /*----------------------------------------------------------------
@@ -827,7 +854,7 @@ I32 CFE_ES_GetLibName(U8 *LibName, U32 LibId, I64 BufferLength)
   ** Get Lib Record
   */
   LibRecPtr = CFE_ES_LocateLibRecordByID(LibId);
-  CFE_ES_LockSharedData("CFE_ES_GetLibName", 0);
+  CFE_ES_LockSharedData("CFE_ES_GetLibName", 865);
   /*
    * confirm that the Lib record is a match,
    * which must be done while locked.
@@ -840,7 +867,7 @@ I32 CFE_ES_GetLibName(U8 *LibName, U32 LibId, I64 BufferLength)
     LibName[0] = 0;
     Result = CFE_ES_ERR_RESOURCEID_NOT_VALID;
   }
-  CFE_ES_UnlockSharedData("CFE_ES_GetLibName", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_GetLibName", 883);
   return Result;
 }
 /*----------------------------------------------------------------
@@ -913,7 +940,7 @@ I32 CFE_ES_GetAppInfo(CFE_ES_AppInfo_t *AppInfo, U32 AppId)
   MemSet(AppInfo, 0, sizeof(CFE_ES_AppInfo_t));
   ModuleId = OS_OBJECT_ID_UNDEFINED;
   AppRecPtr = CFE_ES_LocateAppRecordByID(AppId);
-  CFE_ES_LockSharedData("CFE_ES_GetAppInfo", 0);
+  CFE_ES_LockSharedData("CFE_ES_GetAppInfo", 960);
   if (!CFE_ES_AppRecordIsMatch(AppRecPtr, AppId)) {
     /*
      * Log a message if called with an invalid ID.
@@ -942,7 +969,9 @@ I32 CFE_ES_GetAppInfo(CFE_ES_AppInfo_t *AppInfo, U32 AppId)
           AppInfo->ExecutionCounter = TaskRecPtr->ExecutionCounter;
           StrNCpy(AppInfo->MainTaskName, TaskRecPtr->TaskName, CFE_MISSION_MAX_API_LEN - 1);
           AppInfo->MainTaskName[CFE_MISSION_MAX_API_LEN - 1] = 0;
-          AppInfo->StackSize = CFE_ES_MEMOFFSET_C(TaskRecPtr->StartParams.StackSize);
+          // CFE_ES_MEMOFFSET_C, a cast to CFE_ES_MemOffset_t -- size_t, which is I64 here, and
+          // StartParams.StackSize is already I64, so the cast has nothing to do.
+          AppInfo->StackSize = TaskRecPtr->StartParams.StackSize;
           AppInfo->Priority = TaskRecPtr->StartParams.Priority;
         } else {
           /* This is a child task, no extra info, just increment count */
@@ -953,7 +982,7 @@ I32 CFE_ES_GetAppInfo(CFE_ES_AppInfo_t *AppInfo, U32 AppId)
     }
     Status = CFE_SUCCESS;
   }
-  CFE_ES_UnlockSharedData("CFE_ES_GetAppInfo", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_GetAppInfo", 1017);
   /*
   ** Get the address information from the OSAL
   */
@@ -987,7 +1016,7 @@ I32 CFE_ES_GetLibInfo(CFE_ES_AppInfo_t *LibInfo, U32 LibId)
   MemSet(LibInfo, 0, sizeof(CFE_ES_AppInfo_t));
   ModuleId = OS_OBJECT_ID_UNDEFINED;
   LibRecPtr = CFE_ES_LocateLibRecordByID(LibId);
-  CFE_ES_LockSharedData("CFE_ES_GetLibInfo", 0);
+  CFE_ES_LockSharedData("CFE_ES_GetLibInfo", 1053);
   if (!CFE_ES_LibRecordIsMatch(LibRecPtr, LibId)) {
     /*
      * Log a message if called with an invalid ID.
@@ -1004,7 +1033,7 @@ I32 CFE_ES_GetLibInfo(CFE_ES_AppInfo_t *LibInfo, U32 LibId)
     ModuleId = LibRecPtr->LoadStatus.ModuleId;
     Status = CFE_SUCCESS;
   }
-  CFE_ES_UnlockSharedData("CFE_ES_GetLibInfo", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_GetLibInfo", 1079);
   /*
    ** Get the address information from the OSAL
    */
@@ -1067,7 +1096,7 @@ I32 CFE_ES_GetTaskInfo(CFE_ES_TaskInfo_t *TaskInfo, U32 TaskId)
   }
   MemSet(TaskInfo, 0, sizeof(CFE_ES_TaskInfo_t));
   TaskRecPtr = CFE_ES_LocateTaskRecordByID(TaskId);
-  CFE_ES_LockSharedData("CFE_ES_GetTaskInfo", 0);
+  CFE_ES_LockSharedData("CFE_ES_GetTaskInfo", 1145);
   if (!CFE_ES_TaskRecordIsMatch(TaskRecPtr, TaskId)) {
     /* task ID is bad */
     Status = CFE_ES_ERR_RESOURCEID_NOT_VALID;
@@ -1087,7 +1116,8 @@ I32 CFE_ES_GetTaskInfo(CFE_ES_TaskInfo_t *TaskInfo, U32 TaskId)
     ** Get the other stats for the task
     */
     TaskInfo->ExecutionCounter = TaskRecPtr->ExecutionCounter;
-    TaskInfo->StackSize = CFE_ES_MEMOFFSET_C(TaskRecPtr->StartParams.StackSize);
+    // CFE_ES_MEMOFFSET_C, the same no-op cast as in CFE_ES_GetAppInfo above
+    TaskInfo->StackSize = TaskRecPtr->StartParams.StackSize;
     TaskInfo->Priority = TaskRecPtr->StartParams.Priority;
     /*
     ** Get the Application Details
@@ -1102,7 +1132,7 @@ I32 CFE_ES_GetTaskInfo(CFE_ES_TaskInfo_t *TaskInfo, U32 TaskId)
       Status = CFE_ES_ERR_RESOURCEID_NOT_VALID;
     }
   }
-  CFE_ES_UnlockSharedData("CFE_ES_GetTaskInfo", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_GetTaskInfo", 1191);
   return Status;
 }
 /*----------------------------------------------------------------
@@ -1154,7 +1184,7 @@ I32 CFE_ES_CreateChildTask(U32 *TaskIdPtr, U8 *TaskName, U0 (*FunctionPtr)(), U8
     ** TaskID must be the same as the Parent Task ID.
     */
     SelfTaskId = CFE_ES_TaskId_FromOSAL(OS_TaskGetId());
-    CFE_ES_LockSharedData("CFE_ES_CreateChildTask", 0);
+    CFE_ES_LockSharedData("CFE_ES_CreateChildTask", 1257);
     /*
     ** Get the App Record of the calling Application
     */
@@ -1170,7 +1200,7 @@ I32 CFE_ES_CreateChildTask(U32 *TaskIdPtr, U8 *TaskName, U0 (*FunctionPtr)(), U8
       ReturnCode = CFE_SUCCESS;
     }
     /* end If AppID is valid */
-    CFE_ES_UnlockSharedData("CFE_ES_CreateChildTask", 0);
+    CFE_ES_UnlockSharedData("CFE_ES_CreateChildTask", 1281);
   }
   /* end if parameter checking */
   /*
@@ -1242,7 +1272,7 @@ I32 CFE_ES_DeleteChildTask(U32 TaskId)
   */
   TaskRecPtr = CFE_ES_LocateTaskRecordByID(TaskId);
   if (TaskRecPtr != NULL) {
-    CFE_ES_LockSharedData("CFE_ES_DeleteChildTask", 0);
+    CFE_ES_LockSharedData("CFE_ES_DeleteChildTask", 1348);
     /*
     ** Make sure the task is active/valid
     */
@@ -1301,7 +1331,7 @@ I32 CFE_ES_DeleteChildTask(U32 TaskId)
       CFE_ES_SysLogWrite_Unsync("%s: Error: Task ID is not active: %lu\n", "CFE_ES_DeleteChildTask", TaskId);
       ReturnCode = CFE_ES_ERR_RESOURCEID_NOT_VALID;
     }
-    CFE_ES_UnlockSharedData("CFE_ES_DeleteChildTask", 0);
+    CFE_ES_UnlockSharedData("CFE_ES_DeleteChildTask", 1429);
   } else {
     /*
     ** Task ID is invalid ( too large )
@@ -1324,7 +1354,7 @@ U0 CFE_ES_ExitChildTask()
 {
   CFE_ES_AppRecord_t *AppRecPtr;
   CFE_ES_TaskRecord_t *TaskRecPtr;
-  CFE_ES_LockSharedData("CFE_ES_ExitChildTask", 0);
+  CFE_ES_LockSharedData("CFE_ES_ExitChildTask", 1453);
   /*
   ** Check to see if this is being called from a cFE Application's
   ** main task.
@@ -1338,7 +1368,7 @@ U0 CFE_ES_ExitChildTask()
       */
       CFE_ES_TaskRecordSetFree(TaskRecPtr);
       CFE_ES_Global.RegisteredTasks--;
-      CFE_ES_UnlockSharedData("CFE_ES_ExitChildTask", 0);
+      CFE_ES_UnlockSharedData("CFE_ES_ExitChildTask", 1473);
       /*
       ** Call the OS AL routine
       */
@@ -1354,7 +1384,7 @@ U0 CFE_ES_ExitChildTask()
     CFE_ES_SysLogWrite_Unsync("%s: Called from invalid task context\n", "CFE_ES_ExitChildTask");
   }
   /* end if GetAppId */
-  CFE_ES_UnlockSharedData("CFE_ES_ExitChildTask", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_ExitChildTask", 1496);
 }
 /*----------------------------------------------------------------
  *
@@ -1382,9 +1412,9 @@ I32 CFE_ES_WriteToSysLog(U8 *SpecStringPtr,...)
    * Append to the syslog buffer, which must be done while locked.
    * Only one thread can actively write into the buffer at time.
    */
-  CFE_ES_LockSharedData("CFE_ES_WriteToSysLog", 0);
+  CFE_ES_LockSharedData("CFE_ES_WriteToSysLog", 1524);
   ReturnCode = CFE_ES_SysLogAppend_Unsync(TmpString);
-  CFE_ES_UnlockSharedData("CFE_ES_WriteToSysLog", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_WriteToSysLog", 1526);
   /* Output the entry to the console */
   OS_printf("%s", TmpString);
   return ReturnCode;
@@ -1600,7 +1630,7 @@ I32 CFE_ES_RegisterGenCounter(U32 *CounterIdPtr, U8 *CounterName)
   if (StrLen(CounterName) >= OS_MAX_API_NAME) {
     return CFE_ES_BAD_ARGUMENT;
   }
-  CFE_ES_LockSharedData("CFE_ES_RegisterGenCounter", 0);
+  CFE_ES_LockSharedData("CFE_ES_RegisterGenCounter", 1780);
   /*
    * Check for an existing entry with the same name.
    */
@@ -1625,7 +1655,7 @@ I32 CFE_ES_RegisterGenCounter(U32 *CounterIdPtr, U8 *CounterName)
       Status = CFE_SUCCESS;
     }
   }
-  CFE_ES_UnlockSharedData("CFE_ES_RegisterGenCounter", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_RegisterGenCounter", 1816);
   *CounterIdPtr = PendingResourceId;
   return Status;
 }
@@ -1645,13 +1675,13 @@ I32 CFE_ES_DeleteGenCounter(U32 CounterId)
   I32 Status = CFE_ES_BAD_ARGUMENT;
   CountRecPtr = CFE_ES_LocateCounterRecordByID(CounterId);
   if (CountRecPtr != NULL) {
-    CFE_ES_LockSharedData("CFE_ES_DeleteGenCounter", 0);
+    CFE_ES_LockSharedData("CFE_ES_DeleteGenCounter", 1836);
     if (CFE_ES_CounterRecordIsMatch(CountRecPtr, CounterId)) {
       CountRecPtr->Counter = 0;
       CFE_ES_CounterRecordSetFree(CountRecPtr);
       Status = CFE_SUCCESS;
     }
-    CFE_ES_UnlockSharedData("CFE_ES_DeleteGenCounter", 0);
+    CFE_ES_UnlockSharedData("CFE_ES_DeleteGenCounter", 1843);
   }
   return Status;
 }
@@ -1666,12 +1696,12 @@ I32 CFE_ES_IncrementGenCounter(U32 CounterId)
   I32 Status = CFE_ES_BAD_ARGUMENT;
   CFE_ES_GenCounterRecord_t *CountRecPtr;
   CountRecPtr = CFE_ES_LocateCounterRecordByID(CounterId);
-  CFE_ES_LockSharedData("CFE_ES_IncrementGenCounter", 0);
+  CFE_ES_LockSharedData("CFE_ES_IncrementGenCounter", 1861);
   if (CFE_ES_CounterRecordIsMatch(CountRecPtr, CounterId)) {
     ++CountRecPtr->Counter;
     Status = CFE_SUCCESS;
   }
-  CFE_ES_UnlockSharedData("CFE_ES_IncrementGenCounter", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_IncrementGenCounter", 1867);
   return Status;
 }
 /*----------------------------------------------------------------
@@ -1685,12 +1715,12 @@ I32 CFE_ES_SetGenCount(U32 CounterId, U32 Count)
   I32 Status = CFE_ES_BAD_ARGUMENT;
   CFE_ES_GenCounterRecord_t *CountRecPtr;
   CountRecPtr = CFE_ES_LocateCounterRecordByID(CounterId);
-  CFE_ES_LockSharedData("CFE_ES_SetGenCount", 0);
+  CFE_ES_LockSharedData("CFE_ES_SetGenCount", 1883);
   if (CFE_ES_CounterRecordIsMatch(CountRecPtr, CounterId)) {
     CountRecPtr->Counter = Count;
     Status = CFE_SUCCESS;
   }
-  CFE_ES_UnlockSharedData("CFE_ES_SetGenCount", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_SetGenCount", 1889);
   return Status;
 }
 /*----------------------------------------------------------------
@@ -1733,7 +1763,7 @@ I32 CFE_ES_GetGenCounterIDByName(U32 *CounterIdPtr, U8 *CounterName)
   /*
   ** Search the ES Generic Counter table for a counter with a matching name.
   */
-  CFE_ES_LockSharedData("CFE_ES_GetGenCounterIDByName", 0);
+  CFE_ES_LockSharedData("CFE_ES_GetGenCounterIDByName", 1932);
   CounterRecPtr = CFE_ES_LocateCounterRecordByName(CounterName);
   if (CounterRecPtr == NULL) {
     /*
@@ -1746,7 +1776,7 @@ I32 CFE_ES_GetGenCounterIDByName(U32 *CounterIdPtr, U8 *CounterName)
     Result = CFE_SUCCESS;
     *CounterIdPtr = CFE_ES_CounterRecordGetID(CounterRecPtr);
   }
-  CFE_ES_UnlockSharedData("CFE_ES_GetGenCounterIDByName", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_GetGenCounterIDByName", 1950);
   return Result;
 }
 /*----------------------------------------------------------------
@@ -1763,7 +1793,7 @@ I32 CFE_ES_GetGenCounterName(U8 *CounterName, U32 CounterId, I64 BufferLength)
     return CFE_ES_BAD_ARGUMENT;
   }
   CountRecPtr = CFE_ES_LocateCounterRecordByID(CounterId);
-  CFE_ES_LockSharedData("CFE_ES_GetGenCounterName", 0);
+  CFE_ES_LockSharedData("CFE_ES_GetGenCounterName", 1973);
   if (CFE_ES_CounterRecordIsMatch(CountRecPtr, CounterId)) {
     StrNCpy(CounterName, CFE_ES_CounterRecordGetName(CountRecPtr), BufferLength - 1);
     CounterName[BufferLength - 1] = 0;
@@ -1772,7 +1802,7 @@ I32 CFE_ES_GetGenCounterName(U8 *CounterName, U32 CounterId, I64 BufferLength)
     CounterName[0] = 0;
     Status = CFE_ES_ERR_RESOURCEID_NOT_VALID;
   }
-  CFE_ES_UnlockSharedData("CFE_ES_GetGenCounterName", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_GetGenCounterName", 1987);
   return Status;
 }
 /*----------------------------------------------------------------

@@ -93,6 +93,11 @@ C_TYPES = [(r'\bconst\b', ' '),
            # function exempted, because an exemption would stop comparing the arity too.
            (r'\bCFE_ES_MemPoolBuf_t\s*\*', ' PTRB '),
            (r'\bCFE_ES_MemPoolBuf_t\b', ' PTRB '),
+           # CFE_ES_StackPointer_t is `typedef void *` -- a POINTER, exactly like
+           # osal_stackptr_t below ("aka osal_stackptr_t in proposed OSAL change", says the
+           # header). Without this rule the generic CFE_*_t scalar handling called it NUM and
+           # the gate reported NASA as NUM against CFE_ES_CreateChildTask's translated PTRB.
+           (r'\bCFE_ES_StackPointer_t\b', ' PTRB '),
            (r'\bCFE_\w+_t\s*\*', ' PTRNUM '),
            (r'\bCFE_\w+_t\b', ' NUM '),
            (r'\bosal_id_t\s*\*', ' PTRNUM '), (r'\bchar\s*\*', ' PTRB '),
@@ -167,6 +172,14 @@ DEVIATIONS = {
         "callee an implicit (argc, argv) pair, so one parameter becomes two. It matters here "
         "because the formatted text IS the log entry -- CFE_ES_WriteToSysLog's output is "
         "compared character for character by the differential transcript."),
+    'CFE_ES_StatusToString': (
+        'SNUM,PTRNUM', 'SNUM,PTRB',
+        "takes `CFE_StatusString_t *`, a POINTER TO AN ARRAY of CFE_STATUS_STRING_LENGTH "
+        "chars -- so NASA's `*status_string` is the array and `sizeof(*status_string)` is 11. "
+        "HolyC has no pointer-to-array type, so the parameter is a plain byte pointer to the "
+        "caller's buffer and the size is written out as the constant NASA's sizeof resolves "
+        "to. The returned pointer is the caller's own buffer either way, which is the part "
+        "that has to stay true."),
     'EVS_GenerateEventTelemetry': (
         ',NUM,NUM,PTRNUM,PTRB,', ',NUM,NUM,PTRNUM,PTRB,SZ,PTRSZ',
         "takes a `va_list` as its last parameter. HolyC has no va_list type; a variadic "

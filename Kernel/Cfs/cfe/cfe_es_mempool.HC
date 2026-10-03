@@ -280,7 +280,7 @@ I32 CFE_ES_PoolCreateEx_WithAlignment(U32 *PoolID, U8 *MemPtr, I64 Size, U16 Num
     CFE_ES_WriteToSysLog("%s: Pool size(%lu) too small, need >=%lu bytes\n", "CFE_ES_PoolCreateEx_WithAlignment", Size, MinimumSize);
     return CFE_ES_BAD_ARGUMENT;
   }
-  CFE_ES_LockSharedData("CFE_ES_PoolCreateEx_WithAlignment", 0);
+  CFE_ES_LockSharedData("CFE_ES_PoolCreateEx_WithAlignment", 276);
   /* scan for a free slot */
   PendingID = CFE_ResourceId_FindNext(CFE_ES_Global.LastMemPoolId, CFE_PLATFORM_ES_MAX_MEMORY_POOLS, &CFE_ES_CheckMemPoolSlotUsed);
   PoolRecPtr = CFE_ES_LocateMemPoolRecordByID(PendingID);
@@ -294,7 +294,7 @@ I32 CFE_ES_PoolCreateEx_WithAlignment(U32 *PoolID, U8 *MemPtr, I64 Size, U16 Num
     CFE_ES_Global.LastMemPoolId = PendingID;
     Status = CFE_SUCCESS;
   }
-  CFE_ES_UnlockSharedData("CFE_ES_PoolCreateEx_WithAlignment", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_PoolCreateEx_WithAlignment", 298);
   /*
    * If no open resource ID was found, return now.
    *
@@ -382,7 +382,7 @@ I32 CFE_ES_PoolDelete(U32 PoolID)
   I32 Status;
   I32 OsStatus;
   PoolRecPtr = CFE_ES_LocateMemPoolRecordByID(PoolID);
-  CFE_ES_LockSharedData("CFE_ES_PoolDelete", 0);
+  CFE_ES_LockSharedData("CFE_ES_PoolDelete", 411);
   /* basic sanity check */
   if (CFE_ES_MemPoolRecordIsMatch(PoolRecPtr, PoolID)) {
     MutexId = PoolRecPtr->MutexId;
@@ -393,7 +393,7 @@ I32 CFE_ES_PoolDelete(U32 PoolID)
     MutexId = OS_OBJECT_ID_UNDEFINED;
     Status = CFE_ES_ERR_RESOURCEID_NOT_VALID;
   }
-  CFE_ES_UnlockSharedData("CFE_ES_PoolDelete", 0);
+  CFE_ES_UnlockSharedData("CFE_ES_PoolDelete", 426);
   /* Release the mutex if it was configured.
    * This is done after releasing the ES lock, to avoid
    * potential conflict with holding two locks. */

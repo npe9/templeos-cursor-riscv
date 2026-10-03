@@ -474,10 +474,10 @@ I32 CFE_ES_SysLogDump(U8 *Filename)
      * data while locked - ensuring that nothing additional can be written
      * into the syslog buffer while getting the first block of log data.
      */
-    CFE_ES_LockSharedData("CFE_ES_SysLogDump", 0);
+    CFE_ES_LockSharedData("CFE_ES_SysLogDump", 472);
     CFE_ES_SysLogReadStart_Unsync(&Buffer.LogData);
     CFE_ES_SysLogReadData(&Buffer.LogData);
-    CFE_ES_UnlockSharedData("CFE_ES_SysLogDump", 0);
+    CFE_ES_UnlockSharedData("CFE_ES_SysLogDump", 475);
     while (Buffer.LogData.BlockSize > 0) {
       WritePos = 0;
       while (WritePos < Buffer.LogData.BlockSize) {

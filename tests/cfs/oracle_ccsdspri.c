@@ -98,16 +98,7 @@ size_t CFE_SB_MsgHdrSize(const CFE_MSG_Message_t *MsgPtr);
  * the same stub: it records THAT a path logged, not what it said. The HolyC translation takes a
  * plain string rather than a format -- see Kernel/Cfs/cfe/cfe_sb_util.HC for why -- so the
  * wording is deliberately outside the comparison. */
-int32 CFE_ES_WriteToSysLog(const char *SpecStringPtr, ...)
-{
-    va_list ap;
-    printf("syslog ");
-    va_start(ap, SpecStringPtr);
-    vprintf(SpecStringPtr, ap);
-    va_end(ap);
-    return 0;
-}
-
+/* CFE_ES_WriteToSysLog: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* Check functions for CFE_ResourceId_FindNext. "In use" is serial 6 or 7, chosen so the search
  * has to step over two occupied slots and land on the third -- a single occupied slot would
  * pass even if the do-while ran once instead of looping. */
@@ -335,6 +326,13 @@ int32 OS_lseek(osal_id_t filedes, osal_offset_t offset, uint32 whence)
     return (int32)offset;
 }
 
+/* ES's shared-data lock, counted. See the note beside the removed stub pair further down: the
+ * real CFE_ES_LockSharedData takes CFE_ES_Global.SharedDataMutex, so the witness for "how many
+ * times did ES lock" has to live here, in the mutex stub, and has to tell ES's mutex apart from
+ * the FS and pool mutexes that come through the same stub. */
+#define ES_SHARED_MUTEX_ID 0x1E5
+static long es_lock_takes, es_lock_gives;
+
 int32 OS_MutSemCreate(osal_id_t *sem_id, const char *sem_name, uint32 options)
 {
     (void)sem_name; (void)options;
@@ -345,30 +343,30 @@ int32 OS_MutSemCreate(osal_id_t *sem_id, const char *sem_name, uint32 options)
 
 int32 OS_MutSemTake(osal_id_t sem_id)
 {
-    (void)sem_id;
+    if (sem_id == ES_SHARED_MUTEX_ID)
+    {
+        ++es_lock_takes;
+    }
     ++fs_mut_take;
     return fs_mut_take_rc;
 }
 
 int32 OS_MutSemGive(osal_id_t sem_id)
 {
-    (void)sem_id;
+    if (sem_id == ES_SHARED_MUTEX_ID)
+    {
+        ++es_lock_gives;
+    }
     ++fs_mut_give;
     return fs_mut_give_rc;
 }
 
-/* Who the caller is. fs and ta only needed a fixed value; EVS branches on it -- an app that
- * has registered, one that has not, and one whose id is out of range are three different
- * paths through CFE_EVS_SendEvent -- so the driver steers it. 0x4321 keeps the fs and ta
- * lines above exactly as they were. */
-static unsigned ta_getappid = 0x4321;
+/* Who the caller is USED TO BE THIS VARIABLE. cfe_es_api.c is gated, so CFE_ES_GetAppID is
+ * real and answers from the ES tables -- see es_set_ctx and es_ctx_init below, which is where
+ * the three paths through CFE_EVS_SendEvent (a registered app, an unregistered one, an id out
+ * of range) are selected now. */
 
-int32 CFE_ES_GetAppID(CFE_ES_AppId_t *AppIdPtr)
-{
-    *AppIdPtr = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(ta_getappid));
-    return CFE_SUCCESS;
-}
-
+/* CFE_ES_GetAppID: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 void CFE_ES_BackgroundWakeup(void)
 {
     ++fs_wakeups;
@@ -422,7 +420,7 @@ static void fs_onevent(void *Meta, CFE_FS_FileWriteEvent_t Event, int32 Status, 
  * produce is inside the byte-identical comparison. */
 static int      ta_evs_count;
 static int      ta_perf_depth;
-static int      ta_evs_register_rc, ta_getappid_rc, ta_msginit_rc;
+static int      ta_evs_register_rc, ta_msginit_rc;
 static int      ta_cores;            /* what OS_TaskAffinityCoresConfigured reports */
 static int      ta_getid_rc, ta_setaff_rc, ta_getaff_rc;
 static unsigned char ta_os_mask;     /* the one byte the simulated OS stores per task */
@@ -435,13 +433,8 @@ static unsigned char ta_os_mask;     /* the one byte the simulated OS stores per
  * EVS app data says, not what a stub returns. */
 
 void  CFE_ES_PerfLogAdd(uint32 Marker, uint32 EntryExit) { (void)Marker; (void)EntryExit; }
-void  CFE_ES_ExitApp(uint32 ExitStatus) { printf("es_exitapp %lu\n", (unsigned long)ExitStatus); }
-int32 CFE_ES_WaitForSystemState(uint32 MinSystemState, uint32 TimeOutMilliseconds)
-{
-    (void)MinSystemState; (void)TimeOutMilliseconds;
-    return CFE_SUCCESS;
-}
-
+/* CFE_ES_ExitApp: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
+/* CFE_ES_WaitForSystemState: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* --- the reset area, for CFE_EVS_EarlyInit ---------------------------------------------------
  * EVS's early init asks the PSP for the reset area, checks its SIZE against the whole of
  * CFE_ES_ResetData_t and panics if it is short, then takes the event log out of it. So the driver
@@ -467,12 +460,7 @@ int32 CFE_PSP_GetResetArea(cpuaddr *PtrToResetArea, uint32 *SizeOfResetArea)
     return (int32)evs_resetarea_rc;
 }
 
-int32 CFE_ES_GetResetType(uint32 *ResetSubtypePtr)
-{
-    (void)ResetSubtypePtr;
-    return (int32)evs_reset_type;
-}
-
+/* CFE_ES_GetResetType: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* NASA's CFE_PSP_Panic does not return; this one does, because EarlyInit's code AFTER the panic
  * is part of what the transcript compares -- it falls through to `return Status`. */
 void CFE_PSP_Panic(int32 ErrorCode)
@@ -498,8 +486,7 @@ int32 OS_TaskDelay(uint32 millisecond)
  * because HolyC has no usable forward declaration for a variable and three files use it before
  * cfe_time_task.HC would appear. One definition on each side either way. */
 CFE_TIME_Global_t CFE_TIME_Global;
-void CFE_ES_IncrementTaskCounter(void) {}
-
+/* CFE_ES_IncrementTaskCounter: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* The simulated OS's semaphores, child tasks and timebase, for CFE_TIME_TaskInit. Every value
  * TaskInit branches on is a variable here, so the gate can walk the failure paths as well as the
  * happy one -- TaskInit has five of them and each returns a different status.
@@ -546,18 +533,7 @@ int32 OS_BinSemTake(osal_id_t sem_id)
     return OS_SUCCESS;
 }
 
-CFE_Status_t CFE_ES_CreateChildTask(CFE_ES_TaskId_t *TaskIdPtr, const char *TaskName,
-                                    CFE_ES_ChildTaskMainFuncPtr_t FunctionPtr,
-                                    CFE_ES_StackPointer_t StackPtr, size_t StackSize,
-                                    CFE_ES_TaskPriority_Atom_t Priority, uint32 Flags)
-{
-    (void)TaskName; (void)FunctionPtr; (void)StackPtr; (void)StackSize; (void)Priority;
-    (void)Flags;
-    ++time_childtasks;
-    *TaskIdPtr = CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(0x4440 + time_childtasks));
-    return time_childtask_rc;
-}
-
+/* CFE_ES_CreateChildTask: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* CFE_SB_SubscribeLocal was stubbed here. It is real now (cfe_sb_api.c), and TIME is the only
  * caller -- CFE_TIME_SubscribeLocal wraps it for the four non-ground message ids. time_sub_local
  * counted the calls; SB counts the successful ones in StatTlmMsg.Payload.SubscriptionsInUse,
@@ -608,25 +584,249 @@ static CFE_ES_ResetData_t es_reset_area;
  * which reads happen inside it (the first block) and which deliberately do not (every block
  * after), and a transcript that cannot see the difference could not tell a correct dump from
  * one that held the lock for the entire file. */
-static long es_lock_takes, es_lock_gives;
 static long es_bytecnt_errs;
 
-void CFE_ES_LockSharedData(const char *FunctionName, int32 LineNumber)
-{
-    (void)FunctionName; (void)LineNumber;
-    ++es_lock_takes;
-}
-
-void CFE_ES_UnlockSharedData(const char *FunctionName, int32 LineNumber)
-{
-    (void)FunctionName; (void)LineNumber;
-    ++es_lock_gives;
-}
-
+/* THE LOCK PAIR IS REAL NOW: cfe_es_api.c is gated, and CFE_ES_LockSharedData takes
+ * OS_MutSemTake(CFE_ES_Global.SharedDataMutex) for real. The counters above did not go away
+ * with the stub -- they MOVED into the mutex stub, which bumps them only for ES's own mutex id.
+ * That keeps the syslog-dump probe measuring the thing it was written to measure (exactly one
+ * take/give pair however many blocks get written) and now measures it through NASA's code
+ * instead of through a stub that could not get it wrong.
+ *
+ * ES_SHARED_MUTEX_ID is the id the startup sequence plants in CFE_ES_Global.SharedDataMutex. It
+ * has to be distinct from the FS and pool mutexes, which share the same stub, or the counters
+ * would pick up their traffic too. */
 void CFE_ES_FileWriteByteCntErr(const char *Filename, size_t Requested, int32 Status)
 {
     ++es_bytecnt_errs;
     printf("es_bytecnterr %s req=%lu stat=%ld\n", Filename, (unsigned long)Requested, (long)Status);
+}
+
+/* ---- what cfe_es_api.c calls and nothing gated defines ---------------------------------------
+ * cfe_es_cds.c, cfe_es_cds_mempool.c, cfe_es_apps.c and cfe_es_erlog.c are all untranslated, so
+ * fourteen of their functions are stubs here and in the HolyC half, written to match. This is
+ * the arrangement CFE_SB_SendSubscriptionReport had until cfe_sb_task.c landed, and it comes
+ * apart the same way: each stub disappears from BOTH halves on the commit that gates its source.
+ *
+ * CFE_ES_Global.CDSIsAvailable IS ZERO in this driver and stays that way, which is why the CDS
+ * stubs can be this thin: CFE_ES_RegisterCDS, CFE_ES_GetCDSBlockIDByName and
+ * CFE_ES_GetCDSBlockName all return CFE_ES_NOT_IMPLEMENTED before they reach the registry, and
+ * the exercise checks that they do. */
+static long  es_erlog_writes, es_cds_locks, es_cds_unlocks, es_starttasks, es_restarts;
+static long  es_stats;
+static int32 es_stat_rc       = OS_SUCCESS; /* what OS_stat says: Restart/Reload branch on it */
+static int32 es_starttask_rc  = CFE_SUCCESS;
+static long  es_taskdeletes, es_taskexits;
+static int32 es_taskdelete_rc = OS_SUCCESS;
+
+int32 CFE_ES_WriteToERLog(CFE_ES_LogEntryType_Enum_t EntryType, uint32 ResetType,
+                          uint32 ResetSubtype, const char *Description)
+{
+    ++es_erlog_writes;
+    printf("es_erlog type=%u rt=%lu rst=%lu %s\n", (unsigned)EntryType, (unsigned long)ResetType,
+           (unsigned long)ResetSubtype, Description);
+    return CFE_SUCCESS;
+}
+
+/* NASA's CFE_PSP_Restart does not return. This one does, because the code AFTER it in
+ * CFE_ES_ResetCFE is part of what the transcript compares -- the "CFE_PSP_Restart returned"
+ * syslog line and the CFE_ES_NOT_IMPLEMENTED that follows exist for exactly this case. */
+void CFE_PSP_Restart(uint32 ResetType)
+{
+    ++es_restarts;
+    printf("psp_restart %lu\n", (unsigned long)ResetType);
+}
+
+int32 OS_stat(const char *path, os_fstat_t *filestats)
+{
+    (void)filestats;
+    ++es_stats;
+    printf("os_stat %s rc=%ld\n", path, (long)es_stat_rc);
+    return es_stat_rc;
+}
+
+int32 OS_TaskDelete(osal_id_t task_id)
+{
+    ++es_taskdeletes;
+    printf("os_taskdelete %lu rc=%ld\n", (unsigned long)OS_ObjectIdToInteger(task_id),
+           (long)es_taskdelete_rc);
+    return es_taskdelete_rc;
+}
+
+/* NASA's OS_TaskExit does not return either, and the same reasoning applies: CFE_ES_ExitApp and
+ * CFE_ES_ExitChildTask both have a `return` after it with NASA's own comment saying the code is
+ * reached "except under unit test". This driver IS that case. */
+void OS_TaskExit(void)
+{
+    ++es_taskexits;
+    printf("os_taskexit\n");
+}
+
+/* THE DRIVER'S OSAL IDS ARE BARE 1-BASED INTEGERS, so index = id - 1 and osal id 1 lands on
+ * table slot 0 -- which is the convention the resource-table probe already assumed when it
+ * marked TaskTable[0] used for CFE_ES_TaskId_FromOSAL(1). The real OSAL strips type bits and
+ * takes a modulus; that belongs to the OSAL translation and its own gate, not to this one. */
+int32 OS_ObjectIdToArrayIndex(osal_objtype_t idtype, osal_id_t object_id, osal_index_t *ArrayIndex)
+{
+    unsigned long id = OS_ObjectIdToInteger(object_id);
+    (void)idtype;
+    if (id == 0 || id > OS_MAX_TASKS)
+    {
+        return OS_ERROR;
+    }
+    *ArrayIndex = (osal_index_t)(id - 1);
+    return OS_SUCCESS;
+}
+
+/* THIS ONE IS NOT A THIN STUB AND COULD NOT BE. CFE_ES_RestartApp, ReloadApp and DeleteApp do
+ * nothing except set a control request, and all three reach it through this function, which
+ * decides whether the id is usable AND writes the "not valid" log line itself. A stub that
+ * always succeeded would be more permissive than the real thing in the way this driver has been
+ * bitten by twice (the SBR sentinel, the bare pipe id), and a stub that always failed would
+ * make the three success paths unreachable.
+ *
+ * So NASA's own body from cfe_es_apps.c is reproduced here, on both halves, byte for byte in
+ * behaviour. It is NOT the gate's translation of it -- when cfe_es_apps.c is gated this goes
+ * away from both halves and the real one takes over, and the transcript must not move. */
+CFE_ES_AppRecord_t *CFE_ES_LockUserAppRecord(CFE_ES_AppId_t AppID, const char *LogMsgAction)
+{
+    CFE_ES_AppRecord_t *AppRecPtr;
+    bool                IsValid;
+
+    IsValid   = false;
+    AppRecPtr = CFE_ES_LocateAppRecordByID(AppID);
+    CFE_ES_LockSharedData(__func__, __LINE__);
+    if (!CFE_ES_AppRecordIsMatch(AppRecPtr, AppID))
+    {
+        CFE_ES_WriteToSysLog("%s: Invalid Application ID received for %s, AppID = %lu\n", __func__,
+                             LogMsgAction, CFE_RESOURCEID_TO_ULONG(AppID));
+    }
+    else if (AppRecPtr->Type == CFE_ES_AppType_CORE)
+    {
+        CFE_ES_SysLogWrite_Unsync("%s: Cannot %s a CORE Application: %s.\n", __func__, LogMsgAction,
+                                  CFE_ES_AppRecordGetName(AppRecPtr));
+    }
+    else if (AppRecPtr->AppState != CFE_ES_AppState_RUNNING)
+    {
+        CFE_ES_SysLogWrite_Unsync("%s: Cannot %s Application %s, It is not running.\n", __func__,
+                                  LogMsgAction, CFE_ES_AppRecordGetName(AppRecPtr));
+    }
+    else
+    {
+        IsValid = true;
+    }
+
+    if (!IsValid)
+    {
+        CFE_ES_UnlockSharedData(__func__, __LINE__);
+        AppRecPtr = NULL;
+    }
+
+    return AppRecPtr;
+}
+
+/* MORE PERMISSIVE THAN THE REAL THING, AND SAID SO HERE. NASA's CFE_ES_StartAppTask allocates a
+ * task RECORD, fills in its start params and registers it; this hands back an id and nothing
+ * else. So CFE_ES_CreateChildTask's success path is reachable, but the id it returns does not
+ * resolve: CFE_ES_DeleteChildTask on it takes the "Task ID is not active" branch. The exercise
+ * drives that deliberately rather than pretending otherwise. */
+int32 CFE_ES_StartAppTask(CFE_ES_TaskId_t *TaskIdPtr, const char *TaskName,
+                          CFE_ES_TaskEntryFuncPtr_t EntryFunc,
+                          const CFE_ES_TaskStartParams_t *Params,
+                          CFE_ES_AppId_t ParentAppId)
+{
+    (void)EntryFunc;
+    ++es_starttasks;
+    printf("es_starttask %s prio=%u stack=%lu app=%lu rc=%ld\n", TaskName,
+           (unsigned)Params->Priority, (unsigned long)Params->StackSize,
+           CFE_RESOURCEID_TO_ULONG(ParentAppId), (long)es_starttask_rc);
+    *TaskIdPtr = CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(0x7770 + es_starttasks));
+    return es_starttask_rc;
+}
+
+/* THE CDS GROUP. CDSIsAvailable is 0, so the three public entry points never reach these --
+ * which is itself worth asserting, and the exercise does. They record, so a path that DID reach
+ * one would show up in the transcript rather than passing silently. */
+void CFE_ES_FormCDSName(char *FullCDSName, const char *CDSName, CFE_ES_AppId_t ThisAppId)
+{
+    (void)ThisAppId;
+    printf("es_formcdsname %s\n", CDSName);
+    strncpy(FullCDSName, CDSName, CFE_MISSION_ES_CDS_MAX_FULL_NAME_LEN - 1);
+    FullCDSName[CFE_MISSION_ES_CDS_MAX_FULL_NAME_LEN - 1] = 0;
+}
+
+CFE_ES_CDS_RegRec_t *CFE_ES_LocateCDSBlockRecordByID(CFE_ES_CDSHandle_t BlockID)
+{
+    (void)BlockID;
+    printf("es_locatecds_byid\n");
+    return NULL;
+}
+
+CFE_ES_CDS_RegRec_t *CFE_ES_LocateCDSBlockRecordByName(const char *CDSName)
+{
+    printf("es_locatecds_byname %s\n", CDSName);
+    return NULL;
+}
+
+int32 CFE_ES_RegisterCDSEx(CFE_ES_CDSHandle_t *HandlePtr, size_t UserBlockSize, const char *Name,
+                           bool CriticalTbl)
+{
+    (void)HandlePtr;
+    printf("es_registercdsex %s size=%lu crit=%d\n", Name, (unsigned long)UserBlockSize,
+           (int)CriticalTbl);
+    return CFE_ES_NOT_IMPLEMENTED;
+}
+
+int32 CFE_ES_LockCDS(void)
+{
+    ++es_cds_locks;
+    return CFE_SUCCESS;
+}
+
+int32 CFE_ES_UnlockCDS(void)
+{
+    ++es_cds_unlocks;
+    return CFE_SUCCESS;
+}
+
+int32 CFE_ES_CDSBlockWrite(CFE_ES_CDSHandle_t Handle, const void *DataToWrite)
+{
+    (void)DataToWrite;
+    printf("es_cdswrite h=%lu\n", CFE_RESOURCEID_TO_ULONG(Handle));
+    return CFE_ES_NOT_IMPLEMENTED;
+}
+
+int32 CFE_ES_CDSBlockRead(void *DataRead, CFE_ES_CDSHandle_t Handle)
+{
+    (void)DataRead;
+    printf("es_cdsread h=%lu\n", CFE_RESOURCEID_TO_ULONG(Handle));
+    return CFE_ES_NOT_IMPLEMENTED;
+}
+
+/* THE THREE MODULE-INFO COPIERS. CFE_ES_GetAppInfo and CFE_ES_GetLibInfo call them to fill the
+ * parts of CFE_ES_AppInfo_t that describe the loaded object file -- name, entry point, address
+ * ranges. These record and fill nothing, so the exercise asserts on the fields ES itself writes
+ * (type, name, task counts, stack, priority) and NOT on the module fields, which stay zero from
+ * the memset at the top of both callers. When cfe_es_apps.c is gated the fields start arriving
+ * and the exercise grows to cover them. */
+void CFE_ES_CopyModuleBasicInfo(const CFE_ES_ModuleLoadParams_t *ParamsPtr,
+                                CFE_ES_AppInfo_t *AppInfoPtr)
+{
+    (void)AppInfoPtr;
+    printf("es_copybasic %s\n", ParamsPtr->FileName);
+}
+
+void CFE_ES_CopyModuleStatusInfo(const CFE_ES_ModuleLoadStatus_t *StatusPtr,
+                                 CFE_ES_AppInfo_t *AppInfoPtr)
+{
+    (void)AppInfoPtr;
+    printf("es_copystatus mod=%lu\n", (unsigned long)OS_ObjectIdToInteger(StatusPtr->ModuleId));
+}
+
+void CFE_ES_CopyModuleAddressInfo(osal_id_t ModuleId, CFE_ES_AppInfo_t *AppInfoPtr)
+{
+    (void)AppInfoPtr;
+    printf("es_copyaddr mod=%lu\n", (unsigned long)OS_ObjectIdToInteger(ModuleId));
 }
 
 /* NASA defines CFE_SB_Global in cfe_sb_task.c, which is not gated, so the driver supplies it --
@@ -780,19 +980,8 @@ int32 OS_QueueGet(osal_id_t queue_id, void *data, size_t size, size_t *size_copi
 static long  sb_taskinfo_calls;
 static int32 sb_taskinfo_rc = CFE_SUCCESS;
 
-int32 CFE_ES_GetTaskID(CFE_ES_TaskId_t *TaskIdPtr)
-{
-    *TaskIdPtr = CFE_ES_TASKID_C(CFE_ResourceId_FromInteger(0x9991));
-    return CFE_SUCCESS;
-}
-
-int32 CFE_ES_TaskID_ToIndex(CFE_ES_TaskId_t TaskID, uint32 *Idx)
-{
-    (void)TaskID;
-    *Idx = 0;
-    return CFE_SUCCESS;
-}
-
+/* CFE_ES_GetTaskID: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
+/* CFE_ES_TaskID_ToIndex: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* THE OTHER TWO INDEX CONVERSIONS, and all four of them are STUBS MORE PERMISSIVE THAN THE REAL
  * THING -- which is a debt this file has paid before. The real CFE_ES_LibID_ToIndex and
  * CFE_ES_CounterID_ToIndex (cfe_es_api.c, not gated yet) subtract CFE_ES_LIBID_BASE and
@@ -803,28 +992,8 @@ int32 CFE_ES_TaskID_ToIndex(CFE_ES_TaskId_t TaskID, uint32 *Idx)
  *
  * CFE_ES_TaskID_ToIndex above is the most permissive of the four: it returns index 0 for ANY
  * id. The real one goes through OS_ObjectIdToArrayIndex. */
-int32 CFE_ES_LibID_ToIndex(CFE_ES_LibId_t LibId, uint32 *Idx)
-{
-    uint32 v = CFE_RESOURCEID_TO_ULONG(LibId);
-    if (v >= CFE_PLATFORM_ES_MAX_LIBRARIES)
-    {
-        return CFE_ES_ERR_RESOURCEID_NOT_VALID;
-    }
-    *Idx = v;
-    return CFE_SUCCESS;
-}
-
-int32 CFE_ES_CounterID_ToIndex(CFE_ES_CounterId_t CounterId, uint32 *Idx)
-{
-    uint32 v = CFE_RESOURCEID_TO_ULONG(CounterId);
-    if (v >= CFE_PLATFORM_ES_MAX_GEN_COUNTERS)
-    {
-        return CFE_ES_ERR_RESOURCEID_NOT_VALID;
-    }
-    *Idx = v;
-    return CFE_SUCCESS;
-}
-
+/* CFE_ES_LibID_ToIndex: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
+/* CFE_ES_CounterID_ToIndex: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* The running task's OSAL id. CFE_ES_GetTaskRecordByContext XORs it into an ES task id, so the
  * value here decides which ES task record "the calling task" resolves to. A fixed 1 means the
  * context lookups land on table slot... whatever CFE_ES_TaskID_ToIndex says, which today is 0
@@ -836,20 +1005,69 @@ osal_id_t OS_TaskGetId(void)
     return es_os_taskid;
 }
 
-int32 CFE_ES_GetTaskInfo(CFE_ES_TaskInfo_t *TaskInfo, CFE_ES_TaskId_t TaskId)
+/* ---- THE DRIVER'S ES CONTEXT -----------------------------------------------------------------
+ * "Who is calling" USED TO BE A VARIABLE and is now two table entries. While cfe_es_api.c was
+ * stubbed, CFE_ES_GetAppID returned `ta_getappid` and a test changed the caller by assigning to
+ * it. The real one walks OS_TaskGetId -> task record -> its AppId -> app record, so the caller
+ * is whatever the ES tables say, and es_set_ctx is what moves it.
+ *
+ * THE IDS ARE PROPERLY BASED, which is the break this file predicted twice in writing. The old
+ * *_ToIndex stubs took a bare 1 or 2 AS the index; the real CFE_ES_AppID_ToIndex subtracts
+ * CFE_ES_APPID_BASE first, so every id here is BASE + slot and `1` is simply out of range.
+ * Exactly what CFE_SB_PipeId_ToIndex did when it stopped being `id & 0xFF`.
+ *
+ * App slot 1 is "CFE_EVS" and slot 2 is "OTHER_APP" -- the same two names the removed
+ * CFE_ES_GetAppIDByName stub answered for, so the EVS probes keep asking what they asked
+ * before and now get the answer out of NASA's own name lookup. */
+#define ES_CTX_APPID(slot) CFE_ResourceId_FromInteger(CFE_ES_APPID_BASE + (slot))
+#define ES_LIBID(slot)     CFE_ResourceId_FromInteger(CFE_ES_LIBID_BASE + (slot))
+#define ES_CTRID(slot)     CFE_ResourceId_FromInteger(CFE_ES_COUNTID_BASE + (slot))
+#define ES_CTX_TASK_SLOT   0 /* osal id es_os_taskid == 1 maps to task table index 0 */
+
+static void es_app_slot(uint32 slot, const char *name, CFE_ES_AppType_Enum_t type,
+                        CFE_ES_AppState_Enum_t state)
 {
-    (void)TaskId;
-    ++sb_taskinfo_calls;
-    if (sb_taskinfo_rc != CFE_SUCCESS)
-    {
-        return sb_taskinfo_rc;
-    }
-    memset(TaskInfo, 0, sizeof(*TaskInfo));
-    strncpy((char *)TaskInfo->AppName, "SBTESTAPP", sizeof(TaskInfo->AppName) - 1);
-    strncpy((char *)TaskInfo->TaskName, "SBTESTTSK", sizeof(TaskInfo->TaskName) - 1);
-    return CFE_SUCCESS;
+    CFE_ES_AppRecord_t *arp = &CFE_ES_Global.AppTable[slot];
+
+    memset(arp, 0, sizeof(*arp));
+    CFE_ES_AppRecordSetUsed(arp, ES_CTX_APPID(slot));
+    strncpy(arp->AppName, name, sizeof(arp->AppName) - 1);
+    arp->Type       = type;
+    arp->AppState   = state;
+    arp->MainTaskId = CFE_ES_TaskId_FromOSAL(OS_ObjectIdFromInteger(es_os_taskid));
+    arp->ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+    strncpy(arp->StartParams.BasicInfo.FileName, "/cf/es_app.so",
+            sizeof(arp->StartParams.BasicInfo.FileName) - 1);
 }
 
+/* The CALLING app. Only the task record's AppId moves, so the app records themselves stay
+ * exactly as the startup sequence left them -- a test that changes the caller is not also
+ * silently changing that app's name, type or state. */
+static void es_set_ctx(uint32 slot)
+{
+    CFE_ES_TaskRecord_t *trp = &CFE_ES_Global.TaskTable[ES_CTX_TASK_SLOT];
+
+    trp->AppId = CFE_ES_APPID_C(ES_CTX_APPID(slot));
+}
+
+static void es_ctx_init(void)
+{
+    CFE_ES_TaskRecord_t *trp = &CFE_ES_Global.TaskTable[ES_CTX_TASK_SLOT];
+
+    es_app_slot(1, "CFE_EVS", CFE_ES_AppType_EXTERNAL, CFE_ES_AppState_RUNNING);
+    es_app_slot(2, "OTHER_APP", CFE_ES_AppType_EXTERNAL, CFE_ES_AppState_RUNNING);
+
+    memset(trp, 0, sizeof(*trp));
+    CFE_ES_TaskRecordSetUsed(trp, CFE_ES_TaskId_FromOSAL(OS_ObjectIdFromInteger(es_os_taskid)));
+    strncpy(trp->TaskName, "SBTESTTASK", sizeof(trp->TaskName) - 1);
+    trp->StartParams.StackSize = 4096;
+    trp->StartParams.Priority  = 55;
+    CFE_ES_Global.RegisteredTasks = 1;
+    CFE_ES_Global.RegisteredExternalApps = 2;
+    es_set_ctx(1);
+}
+
+/* CFE_ES_GetTaskInfo: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* CFE_SB_PipeId_ToIndex, CFE_SB_DeletePipeWithAppId and CFE_SB_GetPipeName were stubbed here
  * while cfe_sb_api.c was untranslated. All three are real now. Removing the PipeId_ToIndex stub
  * is a change of behaviour on BOTH sides at once -- it was
@@ -1077,53 +1295,9 @@ static CFE_EVS_Log_t evs_log_storage;
 static long long evs_psp_ns;      /* what CFE_PSP_GetTime reports, in ticks (= ns here) */
 static int       evs_printf_lines;
 
-int32 CFE_ES_AppID_ToIndex(CFE_ES_AppId_t AppID, uint32 *Idx)
-{
-    uint32 v = CFE_RESOURCEID_TO_ULONG(AppID);
-    /* The real one strips the resource-type bits; with the SIMPLE variant the id IS the index
-     * for the small values this driver uses, and anything at or past the table size is
-     * rejected so EVS_GetAppDataByID's NULL branch stays reachable. */
-    if (v >= CFE_PLATFORM_ES_MAX_APPLICATIONS)
-    {
-        return CFE_ES_ERR_RESOURCEID_NOT_VALID;
-    }
-    *Idx = v;
-    return CFE_SUCCESS;
-}
-
-int32 CFE_ES_GetAppIDByName(CFE_ES_AppId_t *AppIdPtr, const char *AppName)
-{
-    if (strcmp(AppName, "CFE_EVS") == 0)
-    {
-        *AppIdPtr = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(1));
-        return CFE_SUCCESS;
-    }
-    if (strcmp(AppName, "OTHER_APP") == 0)
-    {
-        *AppIdPtr = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(2));
-        return CFE_SUCCESS;
-    }
-    return CFE_ES_ERR_NAME_NOT_FOUND;
-}
-
-int32 CFE_ES_GetAppName(char *AppName, CFE_ES_AppId_t AppId, size_t BufferLength)
-{
-    unsigned v = (unsigned)CFE_RESOURCEID_TO_ULONG(AppId);
-    if (v == 1)
-    {
-        strncpy(AppName, "CFE_EVS", BufferLength - 1);
-    }
-    else if (v == 2)
-    {
-        strncpy(AppName, "OTHER_APP", BufferLength - 1);
-    }
-    else
-    {
-        snprintf(AppName, BufferLength, "APP%u", v);
-    }
-    return CFE_SUCCESS;
-}
-
+/* CFE_ES_AppID_ToIndex: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
+/* CFE_ES_GetAppIDByName: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
+/* CFE_ES_GetAppName: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* Lives in cfe_evs_task.c, the last of EVS's six sources and not translated yet. */
 
 void CFE_PSP_GetTime(OS_time_t *LocalTime)
@@ -1233,6 +1407,23 @@ int main(void)
      * was CFE_SB_GetBufferFromPool returning NULL and the driver dereferencing it -- a hundred
      * lines after SB's EarlyInit had quietly failed. */
     CFE_ES_Global.LastMemPoolId = CFE_ResourceId_FromInteger(CFE_ES_POOLID_BASE);
+
+    /* AND ES'S OWN TABLES, because cfe_es_api.c is gated and "who is calling" now comes out of
+     * them rather than out of a stub. The mutex id goes in first: the real
+     * CFE_ES_LockSharedData takes CFE_ES_Global.SharedDataMutex, and the id is what lets the
+     * OS_MutSemTake stub count ES's locks apart from the FS and pool ones. */
+    CFE_ES_Global.SharedDataMutex = OS_ObjectIdFromInteger(ES_SHARED_MUTEX_ID);
+    es_ctx_init();
+
+    /* AND EVS'S LOG POINTER, for the same reason the reset area had to be aimed above: with a
+     * real CFE_ES_GetAppID the caller is now a REGISTERED app, so events raised by the fs, ta
+     * and sb sections actually reach EVS_AddLog instead of being refused for an out-of-range
+     * app id -- and EVS_AddLog dereferences CFE_EVS_Global.EVS_LogPtr with no NULL check.
+     * CFE_EVS_EarlyInit is what does this in cFE; the EVS section below calls it again and
+     * re-points it at the same storage. */
+    memset(&evs_log_storage, 0, sizeof(evs_log_storage));
+    CFE_EVS_Global.EVS_LogPtr = &evs_log_storage;
+    CFE_EVS_Global.EVS_LogPtr->LogMode = CFE_EVS_LogMode_OVERWRITE;
 
     /* AND THE CONFIG SERVICE BEFORE THE BUS, which is cFE's own startup order -- ES, then
      * config, then everything else. It did not matter while CFE_ES_PoolCreateEx was a stub that
@@ -2539,8 +2730,12 @@ int main(void)
     {
         CFE_EVS_BinFilter_t  filters[3];
         EVS_AppData_t       *adp;
-        CFE_ES_AppId_t       evsid  = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(1));
-        CFE_ES_AppId_t       othrid = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(2));
+        /* PROPERLY BASED IDS. These were a bare 1 and 2 while the *_ToIndex functions were
+         * stubs that took a small id AS the index. The real CFE_ES_AppID_ToIndex subtracts
+         * CFE_ES_APPID_BASE, so a bare 1 is out of range and EVS_GetAppDataByID returns NULL --
+         * which this probe then dereferenced. The ids now match what es_ctx_init planted. */
+        CFE_ES_AppId_t       evsid  = CFE_ES_APPID_C(ES_CTX_APPID(1));
+        CFE_ES_AppId_t       othrid = CFE_ES_APPID_C(ES_CTX_APPID(2));
         int                  k;
 
         /* Stand EVS up the way cfe_evs_task.c would: the log in the reset area, the format
@@ -2559,7 +2754,7 @@ int main(void)
 
         /* --- CFE_EVS_Register ----------------------------------------------------------- */
         /* The caller is whatever CFE_ES_GetAppID says, which this driver points at app 1. */
-        ta_getappid = 1;
+        es_set_ctx(1);
         printf("evs_reg_badscheme rc=%ld\n", (long)CFE_EVS_Register(NULL, 0, 99));
         printf("evs_reg_nullfilters rc=%ld\n", (long)CFE_EVS_Register(NULL, 2, CFE_EVS_EventFilter_BINARY));
 
@@ -2645,13 +2840,13 @@ int main(void)
         /* --- the "not registered" path -------------------------------------------------- */
         /* App 2 has never registered, so its first event logs and counts, and its second is
          * silent -- EVS remembers it has already complained about that app. */
-        ta_getappid = 2;
+        es_set_ctx(2);
         printf("evs_unreg1 rc=%ld\n",
                (long)CFE_EVS_SendEvent(6, CFE_EVS_EventType_ERROR, "from an unregistered app"));
         printf("evs_unreg2 rc=%ld\n",
                (long)CFE_EVS_SendEvent(7, CFE_EVS_EventType_ERROR, "again"));
         printf("evs_unreg_count %u\n", CFE_EVS_Global.EVS_TlmPkt.Payload.UnregisteredAppCounter);
-        ta_getappid = 1;
+        es_set_ctx(1);
 
         /* --- SendEventWithAppID and SendTimedEvent -------------------------------------- */
         printf("evs_withid_bad rc=%ld\n",
@@ -2708,10 +2903,10 @@ int main(void)
         printf("evs_resetall rc=%ld c1=%u c2=%u\n", (long)CFE_EVS_ResetAllFilters(),
                adp->BinFilters[1].Count, adp->BinFilters[2].Count);
         /* both reject an unregistered caller */
-        ta_getappid = 2;
+        es_set_ctx(2);
         printf("evs_resetf_unreg rc=%ld\n", (long)CFE_EVS_ResetFilter(10));
         printf("evs_resetall_unreg rc=%ld\n", (long)CFE_EVS_ResetAllFilters());
-        ta_getappid = 1;
+        es_set_ctx(1);
 
         /* --- the helpers nothing else reaches ------------------------------------------- */
         printf("evs_bitmask bad0=%d badbig=%d ok=%d\n", (int)EVS_IsInvalidBitMask(0, 1),
@@ -2832,7 +3027,7 @@ int main(void)
 
         /* EVS is still registered as app 1 from the block above; make TA the caller of record
          * and clear the filters so nothing is suppressed. */
-        ta_getappid = 1;
+        es_set_ctx(1);
         CFE_EVS_ResetAllFilters();
         CFE_EVS_Global.EVS_EventBurstMax = 0;
         CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort = CFE_EVS_PORT1_BIT;
@@ -2982,7 +3177,7 @@ int main(void)
                CFE_EVS_Global.EVS_LogPtr->Next, CFE_EVS_Global.EVS_LogPtr->LogMode);
 
         /* --- CFE_EVS_TaskInit ------------------------------------------------------------- */
-        ta_getappid       = 1;
+        es_set_ctx(1);
         sb_queuecreate_rc = OS_SUCCESS;
         es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
         printf("evt_init rc=%ld appid=%lu\n", (long)CFE_EVS_TaskInit(),
@@ -4050,7 +4245,7 @@ int main(void)
             CFE_SB_EarlyInit();
             sb_queuecreate_rc = OS_SUCCESS;
             es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
-            ta_getappid       = 1;
+            es_set_ctx(1);
 
             /* --- CFE_SB_AppInit: the success path and three of its eight failure returns -
              *
@@ -4458,16 +4653,21 @@ int main(void)
             memset(CFE_ES_Global.CounterTable, 0, sizeof(CFE_ES_Global.CounterTable));
 
             /* App 2 named "ESPROBE", library 1 named "ESLIB", counter 3 named "ESCTR".
-             * The ids are small because the four *_ToIndex stubs take them as indices -- see
-             * the note on those stubs; the real ones subtract a base. */
+             * THE IDS ARE PROPERLY BASED NOW. They were bare small integers while the four
+             * *_ToIndex functions were stubs that took them AS the index; cfe_es_api.c is
+             * gated, so the real ones subtract CFE_ES_APPID_BASE, CFE_ES_LIBID_BASE and
+             * CFE_ES_COUNTID_BASE and a bare 2 does not resolve. That break was recorded in
+             * advance beside the stubs, and it arrived: this probe handed NULL to
+             * CFE_ES_AppRecordIsUsed and faulted. "slot 5" and "slot 999" keep their meaning
+             * -- a free slot and one past the table -- because the base is added to both. */
             arp = &CFE_ES_Global.AppTable[2];
-            CFE_ES_AppRecordSetUsed(arp, CFE_ResourceId_FromInteger(2));
+            CFE_ES_AppRecordSetUsed(arp, ES_CTX_APPID(2));
             strncpy((char *)arp->AppName, "ESPROBE", sizeof(arp->AppName) - 1);
             lrp = &CFE_ES_Global.LibTable[1];
-            CFE_ES_LibRecordSetUsed(lrp, CFE_ResourceId_FromInteger(1));
+            CFE_ES_LibRecordSetUsed(lrp, ES_LIBID(1));
             strncpy((char *)lrp->LibName, "ESLIB", sizeof(lrp->LibName) - 1);
             crp = &CFE_ES_Global.CounterTable[3];
-            CFE_ES_CounterRecordSetUsed(crp, CFE_ResourceId_FromInteger(3));
+            CFE_ES_CounterRecordSetUsed(crp, ES_CTRID(3));
             strncpy((char *)crp->CounterName, "ESCTR", sizeof(crp->CounterName) - 1);
 
             /* BY NAME: a hit, a miss, and the record's own id read back. */
@@ -4496,24 +4696,24 @@ int main(void)
             printf("rs_ghost null=%d\n", (int)(CFE_ES_LocateAppRecordByName("ESGHOST") == NULL));
 
             /* BY ID: in range, out of range, and the match test that confirms it. */
-            arp = CFE_ES_LocateAppRecordByID(CFE_ES_APPID_C(CFE_ResourceId_FromInteger(2)));
+            arp = CFE_ES_LocateAppRecordByID(CFE_ES_APPID_C(ES_CTX_APPID(2)));
             printf("rs_appbyid nonnull=%d match=%d used=%d\n", (int)(arp != NULL),
-                   (int)CFE_ES_AppRecordIsMatch(arp, CFE_ES_APPID_C(CFE_ResourceId_FromInteger(2))),
+                   (int)CFE_ES_AppRecordIsMatch(arp, CFE_ES_APPID_C(ES_CTX_APPID(2))),
                    (int)CFE_ES_AppRecordIsUsed(arp));
             printf("rs_appbyid_oor null=%d\n",
                    (int)(CFE_ES_LocateAppRecordByID(
-                             CFE_ES_APPID_C(CFE_ResourceId_FromInteger(999))) == NULL));
+                             CFE_ES_APPID_C(ES_CTX_APPID(999))) == NULL));
             printf("rs_match_null=%d\n",
                    (int)CFE_ES_AppRecordIsMatch(NULL,
-                                                CFE_ES_APPID_C(CFE_ResourceId_FromInteger(2))));
-            lrp = CFE_ES_LocateLibRecordByID(CFE_ES_LIBID_C(CFE_ResourceId_FromInteger(1)));
+                                                CFE_ES_APPID_C(ES_CTX_APPID(2))));
+            lrp = CFE_ES_LocateLibRecordByID(CFE_ES_LIBID_C(ES_LIBID(1)));
             printf("rs_libbyid nonnull=%d match=%d\n", (int)(lrp != NULL),
-                   (int)CFE_ES_LibRecordIsMatch(lrp, CFE_ES_LIBID_C(CFE_ResourceId_FromInteger(1))));
+                   (int)CFE_ES_LibRecordIsMatch(lrp, CFE_ES_LIBID_C(ES_LIBID(1))));
             crp = CFE_ES_LocateCounterRecordByID(
-                CFE_ES_COUNTERID_C(CFE_ResourceId_FromInteger(3)));
+                CFE_ES_COUNTERID_C(ES_CTRID(3)));
             printf("rs_ctrbyid nonnull=%d match=%d\n", (int)(crp != NULL),
                    (int)CFE_ES_CounterRecordIsMatch(
-                       crp, CFE_ES_COUNTERID_C(CFE_ResourceId_FromInteger(3))));
+                       crp, CFE_ES_COUNTERID_C(ES_CTRID(3))));
 
             /* WHAT THIS DOES AND DOES NOT CHECK, because the first version of this comment
              * claimed more than the numbers support. CFE_RESOURCEID_MARK is 0 in the SIMPLE
@@ -4541,7 +4741,7 @@ int main(void)
             CFE_ES_TaskRecordSetUsed(trp, CFE_ResourceId_FromInteger(
                                               CFE_RESOURCEID_TO_ULONG(CFE_ES_TaskId_FromOSAL(1))));
             strncpy((char *)trp->TaskName, "ESTASK", sizeof(trp->TaskName) - 1);
-            trp->AppId = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(2));
+            trp->AppId = CFE_ES_APPID_C(ES_CTX_APPID(2));
             printf("rs_ctx_task nonnull=%d name=%s\n",
                    (int)(CFE_ES_GetTaskRecordByContext() != NULL),
                    CFE_ES_TaskRecordGetName(&CFE_ES_Global.TaskTable[0]));
@@ -4549,7 +4749,7 @@ int main(void)
                    (int)(CFE_ES_GetAppRecordByContext() != NULL),
                    CFE_ES_AppRecordGetName(&CFE_ES_Global.AppTable[2]));
             /* step 2 fails: the task's app id points at a free slot */
-            trp->AppId = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(5));
+            trp->AppId = CFE_ES_APPID_C(ES_CTX_APPID(5));
             printf("rs_ctx_app_noapp null=%d\n", (int)(CFE_ES_GetAppRecordByContext() == NULL));
             /* step 1 fails: the task record is free */
             CFE_ES_TaskRecordSetFree(trp);
@@ -4562,14 +4762,14 @@ int main(void)
              * CFE_ResourceId_FindNext move on rather than hand it out -- so the answer for a
              * bad id is TRUE, which reads backwards until you know why. */
             printf("rs_slot app2=%d app5=%d appoor=%d\n",
-                   (int)CFE_ES_CheckAppIdSlotUsed(CFE_ResourceId_FromInteger(2)),
-                   (int)CFE_ES_CheckAppIdSlotUsed(CFE_ResourceId_FromInteger(5)),
-                   (int)CFE_ES_CheckAppIdSlotUsed(CFE_ResourceId_FromInteger(999)));
+                   (int)CFE_ES_CheckAppIdSlotUsed(ES_CTX_APPID(2)),
+                   (int)CFE_ES_CheckAppIdSlotUsed(ES_CTX_APPID(5)),
+                   (int)CFE_ES_CheckAppIdSlotUsed(ES_CTX_APPID(999)));
             printf("rs_slot lib1=%d lib5=%d ctr3=%d ctr0=%d\n",
-                   (int)CFE_ES_CheckLibIdSlotUsed(CFE_ResourceId_FromInteger(1)),
-                   (int)CFE_ES_CheckLibIdSlotUsed(CFE_ResourceId_FromInteger(5)),
-                   (int)CFE_ES_CheckCounterIdSlotUsed(CFE_ResourceId_FromInteger(3)),
-                   (int)CFE_ES_CheckCounterIdSlotUsed(CFE_ResourceId_FromInteger(0)));
+                   (int)CFE_ES_CheckLibIdSlotUsed(ES_LIBID(1)),
+                   (int)CFE_ES_CheckLibIdSlotUsed(ES_LIBID(5)),
+                   (int)CFE_ES_CheckCounterIdSlotUsed(ES_CTRID(3)),
+                   (int)CFE_ES_CheckCounterIdSlotUsed(ES_CTRID(0)));
 
             /* SetFree really frees: the same lookups that found these must stop finding them. */
             CFE_ES_AppRecordSetFree(&CFE_ES_Global.AppTable[2]);
@@ -4579,6 +4779,13 @@ int main(void)
                    (int)(CFE_ES_LocateAppRecordByName("ESPROBE") == NULL),
                    (int)(CFE_ES_LocateLibRecordByName("ESLIB") == NULL),
                    (int)(CFE_ES_LocateCounterRecordByName("ESCTR") == NULL));
+
+            /* AND PUT THE DRIVER'S CONTEXT BACK. This block memset all four ES tables and then
+             * freed the records it made, including TaskTable[0] -- which is the task record
+             * CFE_ES_GetAppID walks to answer "who is calling". Everything after this point
+             * that asks ES who it is would get CFE_ES_ERR_RESOURCEID_NOT_VALID, silently, and
+             * the transcript would still match because both halves would be equally wrong. */
+            es_ctx_init();
         }
 
         /* --- cfe_es_syslog.c: THE SYSTEM LOG ---------------------------------------------
