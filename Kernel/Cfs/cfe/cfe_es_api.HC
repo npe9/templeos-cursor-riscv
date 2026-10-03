@@ -104,6 +104,7 @@
 #define CFE_ES_AppState_RUNNING    3
 #define CFE_ES_AppState_WAITING    4
 #define CFE_ES_AppState_STOPPED    5
+#define CFE_ES_SystemState_UNDEFINED 0
 #define CFE_ES_SystemState_CORE_READY 3
 #define CFE_ES_SystemState_APPS_INIT  4
 #define CFE_ES_SystemState_OPERATIONAL 5
@@ -1641,7 +1642,11 @@ I32 CFE_ES_RegisterGenCounter(U32 *CounterIdPtr, U8 *CounterName)
     PendingResourceId = CFE_RESOURCEID_UNDEFINED;
   } else {
     /* scan for a free slot */
-    PendingResourceId = CFE_ResourceId_FindNext(CFE_ES_Global.LastCounterId, CFE_PLATFORM_ES_MAX_GEN_COUNTERS, CFE_ES_CheckCounterIdSlotUsed);
+    // THE `&` IS LOAD-BEARING. A bare function name in an argument is a CALL in HolyC, not
+    // its address: without it this passed CFE_ES_CheckCounterIdSlotUsed's RETURN VALUE as the
+    // predicate and FindNext jumped to it -- TRAP insn-fault, mepc=0. cfe_es_mempool.HC and
+    // cfe_sb_api.HC take the address the same way at their own FindNext calls.
+    PendingResourceId = CFE_ResourceId_FindNext(CFE_ES_Global.LastCounterId, CFE_PLATFORM_ES_MAX_GEN_COUNTERS, &CFE_ES_CheckCounterIdSlotUsed);
     CountRecPtr = CFE_ES_LocateCounterRecordByID(PendingResourceId);
     if (CountRecPtr == NULL) {
       CFE_ES_SysLogWrite_Unsync("%s: No free Counter slots available\n", "CFE_ES_RegisterGenCounter");

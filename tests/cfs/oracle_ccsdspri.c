@@ -1408,6 +1408,14 @@ int main(void)
      * lines after SB's EarlyInit had quietly failed. */
     CFE_ES_Global.LastMemPoolId = CFE_ResourceId_FromInteger(CFE_ES_POOLID_BASE);
 
+    /* AND THE OTHER THREE ID SPACES, for exactly the same reason and with the same symptom:
+     * CFE_ES_RegisterGenCounter came back CFE_ES_NO_RESOURCE_IDS_AVAILABLE with every slot
+     * free, because CFE_ResourceId_FindNext starting from 0 walks off the table. These are
+     * cfe_es_start.c:175-177, the three lines next to the pool one already here. */
+    CFE_ES_Global.LastAppId     = CFE_ResourceId_FromInteger(CFE_ES_APPID_BASE);
+    CFE_ES_Global.LastLibId     = CFE_ResourceId_FromInteger(CFE_ES_LIBID_BASE);
+    CFE_ES_Global.LastCounterId = CFE_ResourceId_FromInteger(CFE_ES_COUNTID_BASE);
+
     /* AND ES'S OWN TABLES, because cfe_es_api.c is gated and "who is calling" now comes out of
      * them rather than out of a stub. The mutex id goes in first: the real
      * CFE_ES_LockSharedData takes CFE_ES_Global.SharedDataMutex, and the id is what lets the
@@ -4786,6 +4794,298 @@ int main(void)
              * that asks ES who it is would get CFE_ES_ERR_RESOURCEID_NOT_VALID, silently, and
              * the transcript would still match because both halves would be equally wrong. */
             es_ctx_init();
+        }
+
+        /* --- cfe_es_api.c: ES'S PUBLIC API ------------------------------------------------
+         *
+         * Forty-six functions, and what they have in common is that almost none of them DO
+         * anything: Restart, Reload and Delete set a control request and return, because an app
+         * cannot be torn down from inside the caller's context -- the caller might BE the app.
+         * So what this block checks is the DECISIONS: which id is accepted, which lock is held
+         * while the decision is made, and what the syslog says when it is refused.
+         *
+         * Every id here is properly based. While the four *_ToIndex functions were stubs that
+         * took a small integer AS the index, a bare 1 worked; the real ones subtract a base. */
+        {
+            CFE_ES_AppId_t     aid;
+            CFE_ES_LibId_t     lid;
+            CFE_ES_TaskId_t    tid;
+            CFE_ES_CounterId_t cid;
+            CFE_ES_AppInfo_t   ainfo;
+            CFE_ES_TaskInfo_t  tinfo;
+            CFE_StatusString_t sstr;
+            char               nbuf[OS_MAX_API_NAME];
+            uint32             idx;
+            uint32             cnt;
+            uint32             runstatus;
+            int32              rc;
+
+            /* --- the reset type, straight out of the reset area ------------------------- */
+            CFE_ES_Global.ResetDataPtr->ResetVars.ResetType    = CFE_PSP_RST_TYPE_PROCESSOR;
+            CFE_ES_Global.ResetDataPtr->ResetVars.ResetSubtype = 7;
+            idx = 0;
+            printf("esa_resettype type=%ld sub=%lu\n", (long)CFE_ES_GetResetType(&idx),
+                   (unsigned long)idx);
+            printf("esa_resettype_null type=%ld\n", (long)CFE_ES_GetResetType(NULL));
+
+            /* --- identity, by name and by context --------------------------------------- */
+            printf("esa_appidbyname rc=%ld id=%lu\n",
+                   (long)CFE_ES_GetAppIDByName(&aid, "CFE_EVS"),
+                   CFE_RESOURCEID_TO_ULONG(aid));
+            printf("esa_appidbyname_miss rc=%ld id=%lu\n",
+                   (long)CFE_ES_GetAppIDByName(&aid, "NOSUCHAPP"),
+                   CFE_RESOURCEID_TO_ULONG(aid));
+            printf("esa_appidbyname_null rc=%ld\n", (long)CFE_ES_GetAppIDByName(NULL, "CFE_EVS"));
+            printf("esa_libidbyname_miss rc=%ld id=%lu\n",
+                   (long)CFE_ES_GetLibIDByName(&lid, "NOSUCHLIB"),
+                   CFE_RESOURCEID_TO_ULONG(lid));
+            printf("esa_appid rc=%ld id=%lu\n", (long)CFE_ES_GetAppID(&aid),
+                   CFE_RESOURCEID_TO_ULONG(aid));
+            printf("esa_taskid rc=%ld id=%lu\n", (long)CFE_ES_GetTaskID(&tid),
+                   CFE_RESOURCEID_TO_ULONG(tid));
+
+            /* --- names, and the buffer-length edge -------------------------------------- */
+            printf("esa_appname rc=%ld name=%s\n",
+                   (long)CFE_ES_GetAppName(nbuf, aid, sizeof(nbuf)), nbuf);
+            printf("esa_appname_zero rc=%ld\n", (long)CFE_ES_GetAppName(nbuf, aid, 0));
+            /* A SHORT BUFFER TRUNCATES AND DOES NOT FAIL: strncpy of BufferLength-1 then a
+             * terminator, so four bytes of "CFE_EVS" come back as "CFE". */
+            nbuf[4] = 'Z';
+            printf("esa_appname_short rc=%ld name=%s tail=%d\n",
+                   (long)CFE_ES_GetAppName(nbuf, aid, 4), nbuf, (int)nbuf[4]);
+            printf("esa_appname_badid rc=%ld first=%d\n",
+                   (long)CFE_ES_GetAppName(nbuf, CFE_ES_APPID_C(ES_CTX_APPID(9)), sizeof(nbuf)),
+                   (int)nbuf[0]);
+            printf("esa_libname_badid rc=%ld\n",
+                   (long)CFE_ES_GetLibName(nbuf, CFE_ES_LIBID_C(ES_LIBID(9)), sizeof(nbuf)));
+
+            /* --- the info packets ------------------------------------------------------- */
+            /* The module fields stay zero: CFE_ES_CopyModule*Info are stubs until
+             * cfe_es_apps.c is gated, so what is asserted is what ES itself writes. */
+            rc = CFE_ES_GetAppInfo(&ainfo, aid);
+            printf("esa_appinfo rc=%ld type=%u name=%s main=%lu kids=%lu stack=%lu prio=%u\n",
+                   (long)rc, (unsigned)ainfo.Type, ainfo.Name,
+                   CFE_RESOURCEID_TO_ULONG(ainfo.MainTaskId),
+                   (unsigned long)ainfo.NumOfChildTasks, (unsigned long)ainfo.StackSize,
+                   (unsigned)ainfo.Priority);
+            printf("esa_appinfo_null rc=%ld\n", (long)CFE_ES_GetAppInfo(NULL, aid));
+            printf("esa_appinfo_badid rc=%ld\n",
+                   (long)CFE_ES_GetAppInfo(&ainfo, CFE_ES_APPID_C(ES_CTX_APPID(9))));
+            printf("esa_moduleinfo_app rc=%ld\n",
+                   (long)CFE_ES_GetModuleInfo(&ainfo, CFE_RESOURCEID_UNWRAP(aid)));
+            printf("esa_moduleinfo_bad rc=%ld\n",
+                   (long)CFE_ES_GetModuleInfo(&ainfo, CFE_ResourceId_FromInteger(0x990000)));
+            rc = CFE_ES_GetTaskInfo(&tinfo, tid);
+            printf("esa_taskinfo rc=%ld task=%s app=%s exec=%lu stack=%lu prio=%u\n", (long)rc,
+                   tinfo.TaskName, tinfo.AppName, (unsigned long)tinfo.ExecutionCounter,
+                   (unsigned long)tinfo.StackSize, (unsigned)tinfo.Priority);
+
+            /* --- the four index conversions, and the base that makes them refuse -------- */
+            idx = 0xFFFF;
+            printf("esa_toidx app rc=%ld idx=%lu\n", (long)CFE_ES_AppID_ToIndex(aid, &idx),
+                   (unsigned long)idx);
+            printf("esa_toidx app_bare rc=%ld\n",
+                   (long)CFE_ES_AppID_ToIndex(CFE_ES_APPID_C(CFE_ResourceId_FromInteger(1)),
+                                              &idx));
+            idx = 0xFFFF;
+            printf("esa_toidx lib rc=%ld idx=%lu\n",
+                   (long)CFE_ES_LibID_ToIndex(CFE_ES_LIBID_C(ES_LIBID(2)), &idx),
+                   (unsigned long)idx);
+            idx = 0xFFFF;
+            printf("esa_toidx task rc=%ld idx=%lu\n", (long)CFE_ES_TaskID_ToIndex(tid, &idx),
+                   (unsigned long)idx);
+            printf("esa_toidx task_undef rc=%ld\n",
+                   (long)CFE_ES_TaskID_ToIndex(CFE_ES_TASKID_UNDEFINED, &idx));
+            printf("esa_toidx task_nullidx rc=%ld\n", (long)CFE_ES_TaskID_ToIndex(tid, NULL));
+            idx = 0xFFFF;
+            printf("esa_toidx ctr rc=%ld idx=%lu\n",
+                   (long)CFE_ES_CounterID_ToIndex(CFE_ES_COUNTERID_C(ES_CTRID(2)), &idx),
+                   (unsigned long)idx);
+
+            /* --- the run loop and the execution counter --------------------------------- */
+            /* RunLoop bumps the CALLING TASK's counter outside the lock, sets the app state to
+             * RUNNING if it is below it, and returns false the moment the control request is
+             * anything but APP_RUN. */
+            CFE_ES_Global.AppTable[1].AppState = CFE_ES_AppState_EARLY_INIT;
+            runstatus = CFE_ES_RunStatus_APP_RUN;
+            printf("esa_runloop first=%d state=%u exec=%lu\n",
+                   (int)CFE_ES_RunLoop(&runstatus),
+                   (unsigned)CFE_ES_Global.AppTable[1].AppState,
+                   (unsigned long)CFE_ES_Global.TaskTable[ES_CTX_TASK_SLOT].ExecutionCounter);
+            printf("esa_runloop null=%d\n", (int)CFE_ES_RunLoop(NULL));
+            runstatus = CFE_ES_RunStatus_APP_EXIT;
+            printf("esa_runloop_exitreq=%d\n", (int)CFE_ES_RunLoop(&runstatus));
+            /* The control request wins over the caller's status, and is handed back through it */
+            CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_SYS_DELETE;
+            runstatus = CFE_ES_RunStatus_APP_RUN;
+            printf("esa_runloop_ctlreq=%d out=%u\n", (int)CFE_ES_RunLoop(&runstatus),
+                   (unsigned)runstatus);
+            CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+            CFE_ES_IncrementTaskCounter();
+            printf("esa_exec exec=%lu\n",
+                   (unsigned long)CFE_ES_Global.TaskTable[ES_CTX_TASK_SLOT].ExecutionCounter);
+
+            /* --- waiting for a system state --------------------------------------------- */
+            /* Already satisfied: returns at once and still moves the caller's app state. */
+            CFE_ES_Global.SystemState          = CFE_ES_SystemState_OPERATIONAL;
+            CFE_ES_Global.AppTable[1].AppState = CFE_ES_AppState_EARLY_INIT;
+            printf("esa_wait_met rc=%ld state=%u\n",
+                   (long)CFE_ES_WaitForSystemState(CFE_ES_SystemState_APPS_INIT, 0),
+                   (unsigned)CFE_ES_Global.AppTable[1].AppState);
+            /* Not satisfied, and the timeout is the only thing that ends it. */
+            evs_delay_ms = 0;
+            printf("esa_wait_timeout rc=%ld delay=%ld\n",
+                   (long)CFE_ES_WaitForSystemState(CFE_ES_SystemState_SHUTDOWN, 120),
+                   (long)evs_delay_ms);
+
+            /* --- restart, reload and delete: a control request, nothing more ------------- */
+            /* BACK TO RUNNING FIRST. CFE_ES_WaitForSystemState above left the app at
+             * LATE_INIT, and CFE_ES_LockUserAppRecord refuses anything that is not RUNNING --
+             * which is a real refusal, driven deliberately a few lines further down, so it
+             * must not be the accidental state here. */
+            CFE_ES_Global.AppTable[1].AppState = CFE_ES_AppState_RUNNING;
+            es_stat_rc = OS_SUCCESS;
+            printf("esa_restart rc=%ld req=%u\n", (long)CFE_ES_RestartApp(aid),
+                   (unsigned)CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+            CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+            es_stat_rc = OS_ERROR;
+            printf("esa_restart_nofile rc=%ld req=%u\n", (long)CFE_ES_RestartApp(aid),
+                   (unsigned)CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+            es_stat_rc = OS_SUCCESS;
+            printf("esa_reload rc=%ld req=%u file=%s\n",
+                   (long)CFE_ES_ReloadApp(aid, "/cf/new_app.so"),
+                   (unsigned)CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest,
+                   CFE_ES_Global.AppTable[1].StartParams.BasicInfo.FileName);
+            CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+            printf("esa_reload_nullname rc=%ld\n", (long)CFE_ES_ReloadApp(aid, NULL));
+            printf("esa_delete rc=%ld req=%u\n", (long)CFE_ES_DeleteApp(aid),
+                   (unsigned)CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+            CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+            /* THE THREE REFUSALS, each from CFE_ES_LockUserAppRecord and each with its own log
+             * line: a bad id, a CORE app, and an app that is not running. */
+            printf("esa_restart_badid rc=%ld\n",
+                   (long)CFE_ES_RestartApp(CFE_ES_APPID_C(ES_CTX_APPID(9))));
+            CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_CORE;
+            printf("esa_restart_core rc=%ld\n", (long)CFE_ES_RestartApp(aid));
+            CFE_ES_Global.AppTable[1].Type     = CFE_ES_AppType_EXTERNAL;
+            CFE_ES_Global.AppTable[1].AppState = CFE_ES_AppState_EARLY_INIT;
+            printf("esa_restart_notrunning rc=%ld\n", (long)CFE_ES_RestartApp(aid));
+            CFE_ES_Global.AppTable[1].AppState = CFE_ES_AppState_RUNNING;
+
+            /* --- child tasks ------------------------------------------------------------ */
+            /* CFE_ES_StartAppTask is a stub that hands back an id without making a RECORD, so
+             * the delete below takes the "Task ID is not active" branch -- driven on purpose
+             * rather than pretended away. */
+            es_starttask_rc = CFE_SUCCESS;
+            printf("esa_child rc=%ld id=%lu\n",
+                   (long)CFE_ES_CreateChildTask(&tid, "KID", (CFE_ES_ChildTaskMainFuncPtr_t)
+                                                CFE_ES_ProcessAsyncEvent, NULL, 2048, 70, 0),
+                   CFE_RESOURCEID_TO_ULONG(tid));
+            printf("esa_child_nullid rc=%ld\n",
+                   (long)CFE_ES_CreateChildTask(NULL, "KID", (CFE_ES_ChildTaskMainFuncPtr_t)
+                                                CFE_ES_ProcessAsyncEvent, NULL, 2048, 70, 0));
+            printf("esa_child_nullboth rc=%ld\n",
+                   (long)CFE_ES_CreateChildTask(NULL, NULL, (CFE_ES_ChildTaskMainFuncPtr_t)
+                                                CFE_ES_ProcessAsyncEvent, NULL, 2048, 70, 0));
+            printf("esa_child_nullname rc=%ld\n",
+                   (long)CFE_ES_CreateChildTask(&tid, NULL, (CFE_ES_ChildTaskMainFuncPtr_t)
+                                                CFE_ES_ProcessAsyncEvent, NULL, 2048, 70, 0));
+            printf("esa_child_nullfn rc=%ld\n",
+                   (long)CFE_ES_CreateChildTask(&tid, "KID", NULL, NULL, 2048, 70, 0));
+            printf("esa_child_del_inactive rc=%ld\n", (long)CFE_ES_DeleteChildTask(tid));
+            /* The main task cannot be deleted as a child: the scan finds it in the app table. */
+            printf("esa_child_del_main rc=%ld\n",
+                   (long)CFE_ES_DeleteChildTask(
+                       CFE_ES_TaskId_FromOSAL(OS_ObjectIdFromInteger(es_os_taskid))));
+            /* And ExitChildTask from the MAIN task is refused for the same reason. */
+            es_taskexits = 0;
+            CFE_ES_ExitChildTask();
+            printf("esa_child_exit_main exits=%ld\n", (long)es_taskexits);
+
+            /* --- the generic counters --------------------------------------------------- */
+            printf("esa_ctr_reg rc=%ld id=%lu\n",
+                   (long)CFE_ES_RegisterGenCounter(&cid, "ESAPICTR"),
+                   CFE_RESOURCEID_TO_ULONG(cid));
+            printf("esa_ctr_dup rc=%ld\n", (long)CFE_ES_RegisterGenCounter(&cid, "ESAPICTR"));
+            printf("esa_ctr_longname rc=%ld\n",
+                   (long)CFE_ES_RegisterGenCounter(&cid, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+            CFE_ES_GetGenCounterIDByName(&cid, "ESAPICTR");
+            CFE_ES_IncrementGenCounter(cid);
+            CFE_ES_IncrementGenCounter(cid);
+            cnt = 0;
+            printf("esa_ctr_get rc=%ld n=%lu\n", (long)CFE_ES_GetGenCount(cid, &cnt),
+                   (unsigned long)cnt);
+            printf("esa_ctr_set rc=%ld\n", (long)CFE_ES_SetGenCount(cid, 41));
+            CFE_ES_GetGenCount(cid, &cnt);
+            printf("esa_ctr_after n=%lu\n", (unsigned long)cnt);
+            printf("esa_ctr_name rc=%ld name=%s\n",
+                   (long)CFE_ES_GetGenCounterName(nbuf, cid, sizeof(nbuf)), nbuf);
+            printf("esa_ctr_byname_miss rc=%ld\n",
+                   (long)CFE_ES_GetGenCounterIDByName(&cid, "NOSUCHCTR"));
+            CFE_ES_GetGenCounterIDByName(&cid, "ESAPICTR");
+            printf("esa_ctr_del rc=%ld\n", (long)CFE_ES_DeleteGenCounter(cid));
+            printf("esa_ctr_del_again rc=%ld\n", (long)CFE_ES_DeleteGenCounter(cid));
+            printf("esa_ctr_incr_gone rc=%ld\n", (long)CFE_ES_IncrementGenCounter(cid));
+
+            /* --- the CDS group, all of it refused because CDSIsAvailable is 0 ------------ */
+            printf("esa_cds_reg rc=%ld\n", (long)CFE_ES_RegisterCDS(&idx, 64, "CDSNAME"));
+            printf("esa_cds_reg_null rc=%ld\n", (long)CFE_ES_RegisterCDS(NULL, 64, "CDSNAME"));
+            printf("esa_cds_byname rc=%ld\n", (long)CFE_ES_GetCDSBlockIDByName(&idx, "CDSNAME"));
+            printf("esa_cds_name rc=%ld\n",
+                   (long)CFE_ES_GetCDSBlockName(nbuf, CFE_ES_CDS_BAD_HANDLE, sizeof(nbuf)));
+            printf("esa_cds_copy_null rc=%ld\n",
+                   (long)CFE_ES_CopyToCDS(CFE_ES_CDS_BAD_HANDLE, NULL));
+            printf("esa_cds_restore_null rc=%ld\n",
+                   (long)CFE_ES_RestoreFromCDS(NULL, CFE_ES_CDS_BAD_HANDLE));
+
+            /* --- the CRC, and the status string ----------------------------------------- */
+            printf("esa_crc rc=%lu\n",
+                   (unsigned long)CFE_ES_CalculateCRC("123456789", 9, 0, CFE_ES_CrcType_16_ARC));
+            printf("esa_crc_null rc=%lu\n",
+                   (unsigned long)CFE_ES_CalculateCRC(NULL, 9, 0x1234, CFE_ES_CrcType_16_ARC));
+            printf("esa_crc_zerolen rc=%lu\n",
+                   (unsigned long)CFE_ES_CalculateCRC("123456789", 0, 0x1234,
+                                                      CFE_ES_CrcType_16_ARC));
+            printf("esa_status str=%s\n", CFE_ES_StatusToString(CFE_ES_FILE_IO_ERR, &sstr));
+            printf("esa_status_null isnull=%d\n", (int)(CFE_ES_StatusToString(0, NULL) == NULL));
+
+            /* --- ProcessAsyncEvent is one line: wake the background task ----------------- */
+            fs_wakeups = 0;
+            CFE_ES_ProcessAsyncEvent();
+            printf("esa_async wakeups=%d\n", fs_wakeups);
+
+            /* --- ResetCFE, which does not return on real hardware ----------------------- */
+            /* CFE_PSP_Restart is a stub that returns, so the code AFTER it runs -- the
+             * "returned" syslog line and CFE_ES_NOT_IMPLEMENTED -- which is the only way this
+             * function's tail is reachable at all. */
+            es_restarts     = 0;
+            es_erlog_writes = 0;
+            printf("esa_reset_proc rc=%ld restarts=%ld erlog=%ld\n",
+                   (long)CFE_ES_ResetCFE(CFE_PSP_RST_TYPE_PROCESSOR), (long)es_restarts,
+                   (long)es_erlog_writes);
+            printf("esa_reset_power rc=%ld restarts=%ld\n",
+                   (long)CFE_ES_ResetCFE(CFE_PSP_RST_TYPE_POWERON), (long)es_restarts);
+            printf("esa_reset_bad rc=%ld restarts=%ld\n", (long)CFE_ES_ResetCFE(99),
+                   (long)es_restarts);
+
+            /* --- ExitApp, on the one path that comes back -------------------------------- */
+            /* An EXTERNAL app spins forever and a CORE app with an init or runtime error does
+             * not return either, so the only reachable path is a CORE app with some other
+             * status: it logs "Cannot Exit CORE Application" and falls through to the unlock. */
+            CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_CORE;
+            CFE_ES_ExitApp(CFE_ES_RunStatus_APP_EXIT);
+            printf("esa_exitapp_core req=%u\n",
+                   (unsigned)CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+            CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+            /* An out-of-range status is DOWNGRADED to APP_ERROR with a log line, not refused */
+            CFE_ES_ExitApp(CFE_ES_RunStatus_MAX + 5);
+            printf("esa_exitapp_badstatus req=%u\n",
+                   (unsigned)CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+            CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_EXTERNAL;
+
+            /* Leave ES exactly as it was found, or every probe after this inherits it. */
+            es_ctx_init();
+            CFE_ES_Global.SystemState = CFE_ES_SystemState_UNDEFINED;
         }
 
         /* --- cfe_es_syslog.c: THE SYSTEM LOG ---------------------------------------------

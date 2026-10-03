@@ -1638,6 +1638,13 @@ I64 main()
   // CFE_SB_GetBufferFromPool returning NULL and the driver dereferencing it -- a hundred lines
   // after SB's EarlyInit had quietly failed.
   CFE_ES_Global.LastMemPoolId = CFE_ES_POOLID_BASE;
+  // AND THE OTHER THREE ID SPACES, for exactly the same reason and with the same symptom:
+  // CFE_ES_RegisterGenCounter came back CFE_ES_NO_RESOURCE_IDS_AVAILABLE with every slot free,
+  // because CFE_ResourceId_FindNext starting from 0 walks off the table. These are
+  // cfe_es_start.c:175-177, the three lines next to the pool one already here.
+  CFE_ES_Global.LastAppId = CFE_ES_APPID_BASE;
+  CFE_ES_Global.LastLibId = CFE_ES_LIBID_BASE;
+  CFE_ES_Global.LastCounterId = CFE_ES_COUNTID_BASE;
   // AND ES'S OWN TABLES, because cfe_es_api.c is gated and "who is calling" now comes out of
   // them rather than out of a stub. The mutex id goes in first: the real CFE_ES_LockSharedData
   // takes CFE_ES_Global.SharedDataMutex, and the id is what lets the OS_MutSemTake stub count
@@ -6468,6 +6475,515 @@ I64 main()
       // asks ES who it is would get CFE_ES_ERR_RESOURCEID_NOT_VALID, silently, and the
       // transcript would still match because both halves would be equally wrong.
       es_ctx_init();
+    }
+    // --- cfe_es_api.c: ES'S PUBLIC API ------------------------------------------------
+    //
+    // Forty-six functions, and what they have in common is that almost none of them DO
+    // anything: Restart, Reload and Delete set a control request and return, because an app
+    // cannot be torn down from inside the caller's context -- the caller might BE the app. So
+    // what this block checks is the DECISIONS: which id is accepted, which lock is held while
+    // the decision is made, and what the syslog says when it is refused.
+    //
+    // Every id here is properly based. While the four *_ToIndex functions were stubs that took
+    // a small integer AS the index, a bare 1 worked; the real ones subtract a base.
+    
+    {
+      U32 aid;
+      U32 lid;
+      U32 tid;
+      U32 cid;
+      CFE_ES_AppInfo_t ainfo;
+      CFE_ES_TaskInfo_t tinfo;
+      U8 sstr[CFE_STATUS_STRING_LENGTH];
+      U8 nbuf[OS_MAX_API_NAME];
+      U32 idx;
+      U32 cnt;
+      U32 runstatus;
+      I32 rc;
+      U32 aid9 = ES_CTX_APPID(9);
+      U32 lid9 = ES_LIBID(9);
+      U32 lid2 = ES_LIBID(2);
+      U32 cid2 = ES_CTRID(2);
+      // --- the reset type, straight out of the reset area -------------------------
+      CFE_ES_Global.ResetDataPtr->ResetVars.ResetType = CFE_PSP_RST_TYPE_PROCESSOR;
+      CFE_ES_Global.ResetDataPtr->ResetVars.ResetSubtype = 7;
+      idx = 0;
+      rc = CFE_ES_GetResetType(&idx);
+      S("esa_resettype type=");
+      D(rc);
+      S(" sub=");
+      D(idx);
+      S("\n");
+      rc = CFE_ES_GetResetType(NULL);
+      S("esa_resettype_null type=");
+      D(rc);
+      S("\n");
+      // --- identity, by name and by context ---------------------------------------
+      rc = CFE_ES_GetAppIDByName(&aid, "CFE_EVS");
+      S("esa_appidbyname rc=");
+      D(rc);
+      S(" id=");
+      D(aid);
+      S("\n");
+      rc = CFE_ES_GetAppIDByName(&aid, "NOSUCHAPP");
+      S("esa_appidbyname_miss rc=");
+      D(rc);
+      S(" id=");
+      D(aid);
+      S("\n");
+      rc = CFE_ES_GetAppIDByName(NULL, "CFE_EVS");
+      S("esa_appidbyname_null rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_GetLibIDByName(&lid, "NOSUCHLIB");
+      S("esa_libidbyname_miss rc=");
+      D(rc);
+      S(" id=");
+      D(lid);
+      S("\n");
+      rc = CFE_ES_GetAppID(&aid);
+      S("esa_appid rc=");
+      D(rc);
+      S(" id=");
+      D(aid);
+      S("\n");
+      rc = CFE_ES_GetTaskID(&tid);
+      S("esa_taskid rc=");
+      D(rc);
+      S(" id=");
+      D(tid);
+      S("\n");
+      // --- names, and the buffer-length edge --------------------------------------
+      rc = CFE_ES_GetAppName(nbuf, aid, OS_MAX_API_NAME);
+      S("esa_appname rc=");
+      D(rc);
+      S(" name=");
+      S(nbuf);
+      S("\n");
+      rc = CFE_ES_GetAppName(nbuf, aid, 0);
+      S("esa_appname_zero rc=");
+      D(rc);
+      S("\n");
+      // A SHORT BUFFER TRUNCATES AND DOES NOT FAIL: StrNCpy of BufferLength-1 then a
+      // terminator, so four bytes of "CFE_EVS" come back as "CFE".
+      nbuf[4] = 'Z';
+      rc = CFE_ES_GetAppName(nbuf, aid, 4);
+      S("esa_appname_short rc=");
+      D(rc);
+      S(" name=");
+      S(nbuf);
+      S(" tail=");
+      D(nbuf[4]);
+      S("\n");
+      rc = CFE_ES_GetAppName(nbuf, aid9, OS_MAX_API_NAME);
+      S("esa_appname_badid rc=");
+      D(rc);
+      S(" first=");
+      D(nbuf[0]);
+      S("\n");
+      rc = CFE_ES_GetLibName(nbuf, lid9, OS_MAX_API_NAME);
+      S("esa_libname_badid rc=");
+      D(rc);
+      S("\n");
+      // --- the info packets --------------------------------------------------------
+      // The module fields stay zero: CFE_ES_CopyModule*Info are stubs until cfe_es_apps.c is
+      // gated, so what is asserted is what ES itself writes.
+      rc = CFE_ES_GetAppInfo(&ainfo, aid);
+      S("esa_appinfo rc=");
+      D(rc);
+      S(" type=");
+      D(ainfo.Type);
+      S(" name=");
+      S(ainfo.Name);
+      S(" main=");
+      D(ainfo.MainTaskId);
+      S(" kids=");
+      D(ainfo.NumOfChildTasks);
+      S(" stack=");
+      D(ainfo.StackSize);
+      S(" prio=");
+      D(ainfo.Priority);
+      S("\n");
+      rc = CFE_ES_GetAppInfo(NULL, aid);
+      S("esa_appinfo_null rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_GetAppInfo(&ainfo, aid9);
+      S("esa_appinfo_badid rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_GetModuleInfo(&ainfo, aid);
+      S("esa_moduleinfo_app rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_GetModuleInfo(&ainfo, 0x990000);
+      S("esa_moduleinfo_bad rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_GetTaskInfo(&tinfo, tid);
+      S("esa_taskinfo rc=");
+      D(rc);
+      S(" task=");
+      S(tinfo.TaskName);
+      S(" app=");
+      S(tinfo.AppName);
+      S(" exec=");
+      D(tinfo.ExecutionCounter);
+      S(" stack=");
+      D(tinfo.StackSize);
+      S(" prio=");
+      D(tinfo.Priority);
+      S("\n");
+      // --- the four index conversions, and the base that makes them refuse ---------
+      idx = 0xFFFF;
+      rc = CFE_ES_AppID_ToIndex(aid, &idx);
+      S("esa_toidx app rc=");
+      D(rc);
+      S(" idx=");
+      D(idx);
+      S("\n");
+      rc = CFE_ES_AppID_ToIndex(1, &idx);
+      S("esa_toidx app_bare rc=");
+      D(rc);
+      S("\n");
+      idx = 0xFFFF;
+      rc = CFE_ES_LibID_ToIndex(lid2, &idx);
+      S("esa_toidx lib rc=");
+      D(rc);
+      S(" idx=");
+      D(idx);
+      S("\n");
+      idx = 0xFFFF;
+      rc = CFE_ES_TaskID_ToIndex(tid, &idx);
+      S("esa_toidx task rc=");
+      D(rc);
+      S(" idx=");
+      D(idx);
+      S("\n");
+      rc = CFE_ES_TaskID_ToIndex(CFE_ES_TASKID_UNDEFINED, &idx);
+      S("esa_toidx task_undef rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_TaskID_ToIndex(tid, NULL);
+      S("esa_toidx task_nullidx rc=");
+      D(rc);
+      S("\n");
+      idx = 0xFFFF;
+      rc = CFE_ES_CounterID_ToIndex(cid2, &idx);
+      S("esa_toidx ctr rc=");
+      D(rc);
+      S(" idx=");
+      D(idx);
+      S("\n");
+      // --- the run loop and the execution counter ----------------------------------
+      // RunLoop bumps the CALLING TASK's counter outside the lock, sets the app state to
+      // RUNNING if it is below it, and returns false the moment the control request is
+      // anything but APP_RUN.
+      CFE_ES_Global.AppTable[1].AppState = CFE_ES_AppState_EARLY_INIT;
+      runstatus = CFE_ES_RunStatus_APP_RUN;
+      rc = CFE_ES_RunLoop(&runstatus);
+      S("esa_runloop first=");
+      D(rc);
+      S(" state=");
+      D(CFE_ES_Global.AppTable[1].AppState);
+      S(" exec=");
+      D(CFE_ES_Global.TaskTable[ES_CTX_TASK_SLOT].ExecutionCounter);
+      S("\n");
+      rc = CFE_ES_RunLoop(NULL);
+      S("esa_runloop null=");
+      D(rc);
+      S("\n");
+      runstatus = CFE_ES_RunStatus_APP_EXIT;
+      rc = CFE_ES_RunLoop(&runstatus);
+      S("esa_runloop_exitreq=");
+      D(rc);
+      S("\n");
+      // The control request wins over the caller's status, and is handed back through it
+      CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_SYS_DELETE;
+      runstatus = CFE_ES_RunStatus_APP_RUN;
+      rc = CFE_ES_RunLoop(&runstatus);
+      S("esa_runloop_ctlreq=");
+      D(rc);
+      S(" out=");
+      D(runstatus);
+      S("\n");
+      CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+      CFE_ES_IncrementTaskCounter();
+      S("esa_exec exec=");
+      D(CFE_ES_Global.TaskTable[ES_CTX_TASK_SLOT].ExecutionCounter);
+      S("\n");
+      // --- waiting for a system state -----------------------------------------------
+      // Already satisfied: returns at once and still moves the caller's app state.
+      CFE_ES_Global.SystemState = CFE_ES_SystemState_OPERATIONAL;
+      CFE_ES_Global.AppTable[1].AppState = CFE_ES_AppState_EARLY_INIT;
+      rc = CFE_ES_WaitForSystemState(CFE_ES_SystemState_APPS_INIT, 0);
+      S("esa_wait_met rc=");
+      D(rc);
+      S(" state=");
+      D(CFE_ES_Global.AppTable[1].AppState);
+      S("\n");
+      // Not satisfied, and the timeout is the only thing that ends it.
+      evs_delay_ms = 0;
+      rc = CFE_ES_WaitForSystemState(CFE_ES_SystemState_SHUTDOWN, 120);
+      S("esa_wait_timeout rc=");
+      D(rc);
+      S(" delay=");
+      D(evs_delay_ms);
+      S("\n");
+      // --- restart, reload and delete: a control request, nothing more --------------
+      // BACK TO RUNNING FIRST. CFE_ES_WaitForSystemState above left the app at LATE_INIT, and
+      // CFE_ES_LockUserAppRecord refuses anything that is not RUNNING -- which is a real
+      // refusal, driven deliberately a few lines further down, so it must not be the
+      // accidental state here.
+      CFE_ES_Global.AppTable[1].AppState = CFE_ES_AppState_RUNNING;
+      es_stat_rc = OS_SUCCESS;
+      rc = CFE_ES_RestartApp(aid);
+      S("esa_restart rc=");
+      D(rc);
+      S(" req=");
+      D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+      S("\n");
+      CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+      es_stat_rc = OS_ERROR;
+      rc = CFE_ES_RestartApp(aid);
+      S("esa_restart_nofile rc=");
+      D(rc);
+      S(" req=");
+      D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+      S("\n");
+      es_stat_rc = OS_SUCCESS;
+      rc = CFE_ES_ReloadApp(aid, "/cf/new_app.so");
+      S("esa_reload rc=");
+      D(rc);
+      S(" req=");
+      D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+      S(" file=");
+      S(CFE_ES_Global.AppTable[1].StartParams.BasicInfo.FileName);
+      S("\n");
+      CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+      rc = CFE_ES_ReloadApp(aid, NULL);
+      S("esa_reload_nullname rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_DeleteApp(aid);
+      S("esa_delete rc=");
+      D(rc);
+      S(" req=");
+      D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+      S("\n");
+      CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+      // THE THREE REFUSALS, each from CFE_ES_LockUserAppRecord and each with its own log line:
+      // a bad id, a CORE app, and an app that is not running.
+      rc = CFE_ES_RestartApp(aid9);
+      S("esa_restart_badid rc=");
+      D(rc);
+      S("\n");
+      CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_CORE;
+      rc = CFE_ES_RestartApp(aid);
+      S("esa_restart_core rc=");
+      D(rc);
+      S("\n");
+      CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_EXTERNAL;
+      CFE_ES_Global.AppTable[1].AppState = CFE_ES_AppState_EARLY_INIT;
+      rc = CFE_ES_RestartApp(aid);
+      S("esa_restart_notrunning rc=");
+      D(rc);
+      S("\n");
+      CFE_ES_Global.AppTable[1].AppState = CFE_ES_AppState_RUNNING;
+      // --- child tasks ---------------------------------------------------------------
+      // CFE_ES_StartAppTask is a stub that hands back an id without making a RECORD, so the
+      // delete below takes the "Task ID is not active" branch -- driven on purpose rather than
+      // pretended away.
+      es_starttask_rc = CFE_SUCCESS;
+      rc = CFE_ES_CreateChildTask(&tid, "KID", &CFE_ES_ProcessAsyncEvent, NULL, 2048, 70, 0);
+      S("esa_child rc=");
+      D(rc);
+      S(" id=");
+      D(tid);
+      S("\n");
+      rc = CFE_ES_CreateChildTask(NULL, "KID", &CFE_ES_ProcessAsyncEvent, NULL, 2048, 70, 0);
+      S("esa_child_nullid rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_CreateChildTask(NULL, NULL, &CFE_ES_ProcessAsyncEvent, NULL, 2048, 70, 0);
+      S("esa_child_nullboth rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_CreateChildTask(&tid, NULL, &CFE_ES_ProcessAsyncEvent, NULL, 2048, 70, 0);
+      S("esa_child_nullname rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_CreateChildTask(&tid, "KID", NULL, NULL, 2048, 70, 0);
+      S("esa_child_nullfn rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_DeleteChildTask(tid);
+      S("esa_child_del_inactive rc=");
+      D(rc);
+      S("\n");
+      // The main task cannot be deleted as a child: the scan finds it in the app table.
+      rc = CFE_ES_DeleteChildTask(CFE_ES_TaskId_FromOSAL(es_os_taskid));
+      S("esa_child_del_main rc=");
+      D(rc);
+      S("\n");
+      // And ExitChildTask from the MAIN task is refused for the same reason.
+      es_taskexits = 0;
+      CFE_ES_ExitChildTask();
+      S("esa_child_exit_main exits=");
+      D(es_taskexits);
+      S("\n");
+      // --- the generic counters --------------------------------------------------------
+      rc = CFE_ES_RegisterGenCounter(&cid, "ESAPICTR");
+      S("esa_ctr_reg rc=");
+      D(rc);
+      S(" id=");
+      D(cid);
+      S("\n");
+      rc = CFE_ES_RegisterGenCounter(&cid, "ESAPICTR");
+      S("esa_ctr_dup rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_RegisterGenCounter(&cid, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+      S("esa_ctr_longname rc=");
+      D(rc);
+      S("\n");
+      CFE_ES_GetGenCounterIDByName(&cid, "ESAPICTR");
+      CFE_ES_IncrementGenCounter(cid);
+      CFE_ES_IncrementGenCounter(cid);
+      cnt = 0;
+      rc = CFE_ES_GetGenCount(cid, &cnt);
+      S("esa_ctr_get rc=");
+      D(rc);
+      S(" n=");
+      D(cnt);
+      S("\n");
+      rc = CFE_ES_SetGenCount(cid, 41);
+      S("esa_ctr_set rc=");
+      D(rc);
+      S("\n");
+      CFE_ES_GetGenCount(cid, &cnt);
+      S("esa_ctr_after n=");
+      D(cnt);
+      S("\n");
+      rc = CFE_ES_GetGenCounterName(nbuf, cid, OS_MAX_API_NAME);
+      S("esa_ctr_name rc=");
+      D(rc);
+      S(" name=");
+      S(nbuf);
+      S("\n");
+      rc = CFE_ES_GetGenCounterIDByName(&cid, "NOSUCHCTR");
+      S("esa_ctr_byname_miss rc=");
+      D(rc);
+      S("\n");
+      CFE_ES_GetGenCounterIDByName(&cid, "ESAPICTR");
+      rc = CFE_ES_DeleteGenCounter(cid);
+      S("esa_ctr_del rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_DeleteGenCounter(cid);
+      S("esa_ctr_del_again rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_IncrementGenCounter(cid);
+      S("esa_ctr_incr_gone rc=");
+      D(rc);
+      S("\n");
+      // --- the CDS group, all of it refused because CDSIsAvailable is 0 ----------------
+      rc = CFE_ES_RegisterCDS(&idx, 64, "CDSNAME");
+      S("esa_cds_reg rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_RegisterCDS(NULL, 64, "CDSNAME");
+      S("esa_cds_reg_null rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_GetCDSBlockIDByName(&idx, "CDSNAME");
+      S("esa_cds_byname rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_GetCDSBlockName(nbuf, CFE_ES_CDS_BAD_HANDLE, OS_MAX_API_NAME);
+      S("esa_cds_name rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_CopyToCDS(CFE_ES_CDS_BAD_HANDLE, NULL);
+      S("esa_cds_copy_null rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_RestoreFromCDS(NULL, CFE_ES_CDS_BAD_HANDLE);
+      S("esa_cds_restore_null rc=");
+      D(rc);
+      S("\n");
+      // --- the CRC, and the status string ----------------------------------------------
+      rc = CFE_ES_CalculateCRC("123456789", 9, 0, CFE_ES_CrcType_16_ARC);
+      S("esa_crc rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_CalculateCRC(NULL, 9, 0x1234, CFE_ES_CrcType_16_ARC);
+      S("esa_crc_null rc=");
+      D(rc);
+      S("\n");
+      rc = CFE_ES_CalculateCRC("123456789", 0, 0x1234, CFE_ES_CrcType_16_ARC);
+      S("esa_crc_zerolen rc=");
+      D(rc);
+      S("\n");
+      S("esa_status str=");
+      S(CFE_ES_StatusToString(CFE_ES_FILE_IO_ERR, sstr));
+      S("\n");
+      rc = CFE_ES_StatusToString(0, NULL) == NULL;
+      S("esa_status_null isnull=");
+      D(rc);
+      S("\n");
+      // --- ProcessAsyncEvent is one line: wake the background task ---------------------
+      fs_wakeups = 0;
+      CFE_ES_ProcessAsyncEvent();
+      S("esa_async wakeups=");
+      D(fs_wakeups);
+      S("\n");
+      // --- ResetCFE, which does not return on real hardware ---------------------------
+      // CFE_PSP_Restart is a stub that returns, so the code AFTER it runs -- the "returned"
+      // syslog line and CFE_ES_NOT_IMPLEMENTED -- which is the only way this function's tail
+      // is reachable at all.
+      es_restarts = 0;
+      es_erlog_writes = 0;
+      rc = CFE_ES_ResetCFE(CFE_PSP_RST_TYPE_PROCESSOR);
+      S("esa_reset_proc rc=");
+      D(rc);
+      S(" restarts=");
+      D(es_restarts);
+      S(" erlog=");
+      D(es_erlog_writes);
+      S("\n");
+      rc = CFE_ES_ResetCFE(CFE_PSP_RST_TYPE_POWERON);
+      S("esa_reset_power rc=");
+      D(rc);
+      S(" restarts=");
+      D(es_restarts);
+      S("\n");
+      rc = CFE_ES_ResetCFE(99);
+      S("esa_reset_bad rc=");
+      D(rc);
+      S(" restarts=");
+      D(es_restarts);
+      S("\n");
+      // --- ExitApp, on the one path that comes back ------------------------------------
+      // An EXTERNAL app spins forever and a CORE app with an init or runtime error does not
+      // return either, so the only reachable path is a CORE app with some other status: it
+      // logs "Cannot Exit CORE Application" and falls through to the unlock.
+      CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_CORE;
+      CFE_ES_ExitApp(CFE_ES_RunStatus_APP_EXIT);
+      S("esa_exitapp_core req=");
+      D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+      S("\n");
+      CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+      // An out-of-range status is DOWNGRADED to APP_ERROR with a log line, not refused
+      CFE_ES_ExitApp(CFE_ES_RunStatus_MAX + 5);
+      S("esa_exitapp_badstatus req=");
+      D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+      S("\n");
+      CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_EXTERNAL;
+      // Leave ES exactly as it was found, or every probe after this inherits it.
+      es_ctx_init();
+      CFE_ES_Global.SystemState = CFE_ES_SystemState_UNDEFINED;
     }
     // --- cfe_es_syslog.c: THE SYSTEM LOG ---------------------------------------------
     //
