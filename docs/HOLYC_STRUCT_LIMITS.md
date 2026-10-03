@@ -941,3 +941,59 @@ arithmetic, the same distance as the dropped `(cpuaddr)` cast in `cfe_sb_priv.c`
 **The workaround is a local**, the same one limit 17 takes: compute the value into a variable
 and pass the variable. `tests/exec/cases/e_call_arg_const_scaled.hc` pins the broken form and
 both correct ones side by side, so the day it is fixed the case fails and says so.
+
+---
+
+## 21. A struct copy into an array slot or through a bare pointer copies 8 bytes — OPEN, and SILENT
+
+```c
+class Ent { U32 Data; U32 Up; U32 Lo; };   /* 12 bytes */
+Ent Slots[4];
+Ent Src;
+...
+Slots[1] = Src;        /* Data and Up arrive. Lo does not. */
+```
+
+No diagnostic, no refusal: the bytes past the first eight are left exactly as they were. **It
+is the destination form that decides**, and only two of six are broken:
+
+| form | 12-byte class |
+|---|---|
+| `var = s` | whole |
+| `var.member = s` | whole |
+| `ptr->member = s` | whole |
+| `var = arr[i]` (array on the **source** side) | whole |
+| `arr[i] = s` | **first 8 bytes only** |
+| `*ptr = s` | **first 8 bytes only** |
+
+The size does not matter beyond being over eight. A 12-, 16-, 20- and 24-byte class all copy
+exactly their first two words — so a six-word struct loses four words, not a tail. A 4- or
+8-byte class is correct by accident.
+
+**It is the silent counterpart of the one case the compiler does refuse.** A class *return* by
+value over 8 bytes is a diagnostic, pinned by `tests/holyc/refused/struct_return_too_big.hc`,
+and the boundary sits at the same 8 bytes for the same reason. A reader who knows that refusal
+exists has every reason to assume the assignment is checked too. This is the same family as the
+recorded array-deref store bug: a store through a computed address using a fixed 8-byte width
+instead of the type's size.
+
+**How it was found, which is the part worth keeping.** `cfe_es_perf.c`'s capture path builds a
+performance log entry in a local — a marker word and a 64-bit hardware timestamp, twelve bytes —
+and stores it with
+
+```c
+Perf->DataBuffer[DataEnd] = EntryData;
+```
+
+The marker arrived and **the timestamp never did**, in every entry of every capture. The
+translation's transcript read `t0=0 t1=0` where NASA's read `t0=1 t1=2`: a performance log whose
+timestamps are all zero, which is the one thing a performance log is for. **Nothing else in the
+gate set could see it** — the layout matches, the signatures match, the function is present in
+the blob — because the defect is in the store and not in any declaration. Only a differential
+comparison of behaviour notices.
+
+`tests/exec/cases/e_struct_copy_into_slot.hc` pins all six forms side by side, so the day it is
+fixed the case fails and says which form changed. **The workaround is `MemCpy`**, and
+`tools/cfs/check_struct_copy.py` refuses the bare form across the translated tree: it reads the
+class list out of the tree rather than carrying one, flags only a whole-struct copy whose
+destination has one of the two broken shapes, and was shown against NASA's own line.

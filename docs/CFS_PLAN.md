@@ -541,7 +541,7 @@ requires its shape. The mutex-failure path beside it IS driven, because its diag
 only an integer. Any future path whose log prints an address or a `__func__`-derived pointer has
 the same limit.
 
-Thirteen properties are gated independently, because each is blind to what the others catch:
+Fourteen properties are gated independently, because each is blind to what the others catch:
 
 | check | what it proves | what it cannot see |
 |---|---|---|
@@ -557,9 +557,20 @@ Thirteen properties are gated independently, because each is blind to what the o
 | `check_lock_sites.py` | every `CFE_*_{Lock,Unlock}SharedData` call carries NASA's own `__func__` and `__LINE__`, grouped by enclosing function | any other literal at any other call site |
 | `check_manifest.py` | everything gated is in NASA's build; reports the covered fraction | nothing about the code itself |
 | `check_in_blob.py` | every translated function has an ADDRESS in a driver's binary | whether it is correct, or ever called |
+| `check_struct_copy.py` | no translated file copies a class into an array slot or through a bare pointer | any other place the 8-byte store width bites |
 | the transcript | behaviour, byte for byte against NASA's own C | anything nothing calls |
 
-`check_in_blob.py` is the newest, and it is the first gate that opens the BINARY. Every other
+`check_struct_copy.py` is the newest, and it exists because the compiler loses twelve bytes of
+a twelve-byte struct without saying so. `arr[i] = s` and `*p = s` copy only the first EIGHT
+BYTES of a class; `var = s`, `var.member = s` and `ptr->member = s` are whole
+(docs/HOLYC_STRUCT_LIMITS.md #21). `cfe_es_perf.c`'s capture path stored a performance log
+entry that way and **the hardware timestamp never arrived** -- every entry of every capture had
+a zero timestamp, which is the one thing a performance log is for. Nothing else here could see
+it: the layout matched, the signatures matched, the function was in the blob. The defect is in
+the STORE, not in any declaration, so only the transcript noticed. The gate reads the class
+list out of the tree rather than carrying one, and was shown against NASA's own line.
+
+`check_in_blob.py` is the first gate that opens the BINARY. Every other
 one on the list reads source text -- `check_coverage` counts definitions, `check_signatures`
 compares parameter lists, `check_constants` reads `#define`s, `check_lock_sites` reads literals
 at call sites -- so a file can be included, parse cleanly, pass all of them and contribute

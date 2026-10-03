@@ -51,8 +51,16 @@
 #include "cfe_es_resource.h"  /* the four record tables' accessors and locators */
 #include "cfe_es_task.h"      /* ES's task and its twenty-two ground command handlers */
 #include "cfe_es_msg.h"       /* and the message formats they take */
+#include "cfe_es_perf.h"      /* the perf log, its dump state machine and its masks */
+#include "cfe_es_dispatch.h"  /* CFE_ES_TaskPipe and the ground-command switch */
+#include "cfe_es_start.h"     /* CFE_ES_SetupPerfVariables, which lives with ES's startup */
 #include "cfe_sb_eventids.h"   /* the event ids the subscribe counters switch on */
 #include "cfe_evs_msgids.h"   /* CFE_EVS_CMD_MID, CFE_EVS_SEND_HK_MID */
+/* cfe_es_dispatch.c's local helper, declared the same way and for the same reason as the EVS
+ * pair below: NASA puts it at the top of that .c and this exercise drives it directly, so the
+ * ground-command switch can be reached without a full message round trip. */
+void CFE_ES_ProcessGroundCmd(const CFE_SB_Buffer_t *SBBufPtr);
+
 /* cfe_evs_dispatch.c's two local functions: NASA declares them at the top of that .c, not in a
  * header, so the driver repeats the declarations to reach them. */
 void CFE_EVS_ProcessGroundCommand(const CFE_SB_Buffer_t *SBBufPtr, CFE_SB_MsgId_t MsgId);
@@ -5614,6 +5622,246 @@ int main(void)
             /* Leave ES as it was found. */
             es_ctx_init();
             CFE_ES_Global.SystemState = CFE_ES_SystemState_UNDEFINED;
+        }
+
+        /* --- cfe_es_perf.c and cfe_es_dispatch.c -----------------------------------------
+         *
+         * The performance log is the only part of ES that writes a file through a STATE
+         * MACHINE rather than in one call, so the interesting thing to drive is the machine:
+         * eleven states, a work credit that bounds how many run per pass, and a mutex held
+         * from LOCK_DATA to UNLOCK_DATA.
+         *
+         * AND THE DISPATCHER IS THE FIRST TIME ES'S COMMANDS ARRIVE AS MESSAGES. Everything in
+         * the est_ block above called a handler directly; these go in through CFE_ES_TaskPipe
+         * with a message id, a function code and a length, which is the only path a real
+         * ground command takes. */
+        {
+            union
+            {
+                CFE_SB_Buffer_t              Buf;
+                CFE_ES_NoopCmd_t             Noop;
+                CFE_ES_StartPerfDataCmd_t    StartPerf;
+                CFE_ES_StopPerfDataCmd_t     StopPerf;
+                CFE_ES_SetPerfFilterMaskCmd_t  FiltMask;
+                CFE_ES_SetPerfTriggerMaskCmd_t TrigMask;
+            } pc;
+            CFE_ES_PerfData_t       *Perf  = &CFE_ES_Global.ResetDataPtr->Perf;
+            CFE_ES_PerfDumpGlobal_t *PDump = &CFE_ES_Global.BackgroundPerfDumpState;
+            int k;
+
+            memset(&pc, 0, sizeof(pc));
+            memset(PDump, 0, sizeof(*PDump));
+
+            /* --- SetupPerfVariables: a POWER-ON reset initialises, a processor reset does not */
+            memset(Perf, 0, sizeof(*Perf));
+            CFE_ES_SetupPerfVariables(CFE_PSP_RST_TYPE_POWERON);
+            printf("esp_setup_por ver=%u endian=%u ticks=%lu roll=%lu state=%u mode=%u masksz=%u\n",
+                   Perf->MetaData.Version, Perf->MetaData.Endian,
+                   (unsigned long)Perf->MetaData.TimerTicksPerSecond,
+                   (unsigned long)Perf->MetaData.TimerLow32Rollover, Perf->MetaData.State,
+                   Perf->MetaData.Mode, Perf->MetaData.FilterTriggerMaskSize);
+            printf("esp_setup_por_masks filt0=%02x filt15=%02x trig0=%02x\n",
+                   Perf->MetaData.FilterMask[0], Perf->MetaData.FilterMask[15],
+                   Perf->MetaData.TriggerMask[0]);
+            /* A processor reset touches ONE field -- the log survives, which is the point. */
+            Perf->MetaData.Version     = 7;
+            Perf->MetaData.TriggerCount = 99;
+            CFE_ES_SetupPerfVariables(CFE_PSP_RST_TYPE_PROCESSOR);
+            printf("esp_setup_pr ver=%u trig=%lu state=%u\n", Perf->MetaData.Version,
+                   (unsigned long)Perf->MetaData.TriggerCount, Perf->MetaData.State);
+            CFE_ES_SetupPerfVariables(CFE_PSP_RST_TYPE_POWERON);
+
+            /* --- the capture path, through CFE_ES_PerfLogAdd ---------------------------- */
+            /* Idle: the first check in PerfLogAdd, which does not even take the lock. */
+            /* THE PERF LOG'S LOCK IS A MUTEX, not a binary semaphore, so the witness for
+              * "did it take the lock" is fs_mut_take -- what OS_MutSemTake counts. Reading
+              * time_sem_takes here would have been a zero against a zero. */
+            fs_mut_take = 0;
+            CFE_ES_PerfLogAdd(3, 0);
+            printf("esp_add_idle count=%lu takes=%d\n", (unsigned long)Perf->MetaData.DataCount,
+                   fs_mut_take);
+            /* Armed, with an all-ones filter mask and an all-zero trigger mask: entries are
+             * recorded and nothing triggers, so DataCount climbs and State stays WAITING. */
+            pc.StartPerf.Payload.TriggerMode = CFE_ES_PerfTrigger_START;
+            CFE_ES_StartPerfDataCmd(&pc.StartPerf);
+            es_perf_tb = 0;
+            CFE_ES_PerfLogAdd(3, 0);
+            CFE_ES_PerfLogAdd(3, 1);
+            CFE_ES_PerfLogAdd(4, 0);
+            printf("esp_add_armed count=%lu end=%lu start=%lu state=%u\n",
+                   (unsigned long)Perf->MetaData.DataCount, (unsigned long)Perf->MetaData.DataEnd,
+                   (unsigned long)Perf->MetaData.DataStart, Perf->MetaData.State);
+            /* THE ENTRY WORD CARRIES THE MARKER AND THE EXIT BIT, which is the one piece of
+             * bit-packing in the module: marker | (EntryExit << 31). */
+            printf("esp_entries e0=%08lx t0=%lu e1=%08lx t1=%lu\n",
+                   (unsigned long)Perf->DataBuffer[0].Data,
+                   (unsigned long)Perf->DataBuffer[0].TimerLower32,
+                   (unsigned long)Perf->DataBuffer[1].Data,
+                   (unsigned long)Perf->DataBuffer[1].TimerLower32);
+            /* A FILTERED marker is dropped before the lock. */
+            CFE_ES_Global.ResetDataPtr->Perf.MetaData.FilterMask[0] = 0x00;
+            fs_mut_take                                             = 0;
+            CFE_ES_PerfLogAdd(3, 0);
+            printf("esp_add_filtered count=%lu takes=%d\n",
+                   (unsigned long)Perf->MetaData.DataCount, fs_mut_take);
+            CFE_ES_Global.ResetDataPtr->Perf.MetaData.FilterMask[0] = 0xFF;
+            /* AN OUT-OF-RANGE MARKER COMPLAINS ONCE, then is latched silent -- the second call
+             * produces no syslog line at all, which is the behaviour worth pinning. */
+            CFE_ES_PerfLogAdd(CFE_MISSION_ES_PERF_MAX_IDS, 0);
+            CFE_ES_PerfLogAdd(CFE_MISSION_ES_PERF_MAX_IDS + 5, 0);
+            printf("esp_add_badmarker reported=%d count=%lu\n",
+                   (int)Perf->MetaData.InvalidMarkerReported,
+                   (unsigned long)Perf->MetaData.DataCount);
+            Perf->MetaData.InvalidMarkerReported = false;
+            /* THE TRIGGER, in END mode: the first triggering marker stops the capture. */
+            CFE_ES_SetupPerfVariables(CFE_PSP_RST_TYPE_POWERON);
+            pc.StartPerf.Payload.TriggerMode = CFE_ES_PerfTrigger_END;
+            CFE_ES_StartPerfDataCmd(&pc.StartPerf);
+            Perf->MetaData.TriggerMask[0] = 0x10; /* marker 4 triggers */
+            CFE_ES_PerfLogAdd(3, 0);
+            printf("esp_trig_pre state=%u trigs=%lu\n", Perf->MetaData.State,
+                   (unsigned long)Perf->MetaData.TriggerCount);
+            CFE_ES_PerfLogAdd(4, 0);
+            printf("esp_trig_end state=%u trigs=%lu count=%lu\n", Perf->MetaData.State,
+                   (unsigned long)Perf->MetaData.TriggerCount,
+                   (unsigned long)Perf->MetaData.DataCount);
+
+            /* --- the two mask commands, in range and out ------------------------------- */
+            CFE_ES_Global.TaskData.CommandCounter      = 0;
+            CFE_ES_Global.TaskData.CommandErrorCounter = 0;
+            pc.FiltMask.Payload.FilterMaskNum = 2;
+            pc.FiltMask.Payload.FilterMask    = 0x5A;
+            CFE_ES_SetPerfFilterMaskCmd(&pc.FiltMask);
+            pc.FiltMask.Payload.FilterMaskNum = CFE_ES_PERF_8BIT_WORDS_IN_MASK;
+            CFE_ES_SetPerfFilterMaskCmd(&pc.FiltMask);
+            pc.TrigMask.Payload.TriggerMaskNum = 3;
+            pc.TrigMask.Payload.TriggerMask    = 0xA5;
+            CFE_ES_SetPerfTriggerMaskCmd(&pc.TrigMask);
+            pc.TrigMask.Payload.TriggerMaskNum = 99;
+            CFE_ES_SetPerfTriggerMaskCmd(&pc.TrigMask);
+            printf("esp_masks filt2=%02x trig3=%02x cc=%u ec=%u\n", Perf->MetaData.FilterMask[2],
+                   Perf->MetaData.TriggerMask[3], CFE_ES_Global.TaskData.CommandCounter,
+                   CFE_ES_Global.TaskData.CommandErrorCounter);
+
+            /* --- Start and Stop, and the "write in progress" refusal ------------------- */
+            CFE_ES_Global.TaskData.CommandCounter      = 0;
+            CFE_ES_Global.TaskData.CommandErrorCounter = 0;
+            pc.StartPerf.Payload.TriggerMode = 99; /* > END */
+            CFE_ES_StartPerfDataCmd(&pc.StartPerf);
+            pc.StartPerf.Payload.TriggerMode = CFE_ES_PerfTrigger_CENTER;
+            CFE_ES_StartPerfDataCmd(&pc.StartPerf);
+            printf("esp_start mode=%u state=%u cc=%u ec=%u\n", Perf->MetaData.Mode,
+                   Perf->MetaData.State, CFE_ES_Global.TaskData.CommandCounter,
+                   CFE_ES_Global.TaskData.CommandErrorCounter);
+            /* PendingState non-IDLE is what "a write is in progress" means to both commands. */
+            PDump->PendingState = CFE_ES_PerfDumpState_INIT;
+            CFE_ES_StartPerfDataCmd(&pc.StartPerf);
+            CFE_ES_StopPerfDataCmd(&pc.StopPerf);
+            printf("esp_busy cc=%u ec=%u\n", CFE_ES_Global.TaskData.CommandCounter,
+                   CFE_ES_Global.TaskData.CommandErrorCounter);
+            PDump->PendingState = CFE_ES_PerfDumpState_IDLE;
+
+            /* --- THE DUMP, one state at a time -------------------------------------------
+             * Stop queues it; then each RunPerfLogDump call is given exactly enough credit to
+             * advance, and the state is printed after each so the machine's path is in the
+             * transcript rather than only its result. */
+            memset(PDump, 0, sizeof(*PDump));
+            Perf->MetaData.DataCount = 3;
+            Perf->MetaData.DataStart = 0;
+            fs_len                   = 0;
+            fs_pos                   = 0;
+            fs_mut_take              = 0;
+            fs_mut_give              = 0;
+            /* THE UNION BITES HERE and it is worth the comment: StartPerfCmd's TriggerMode is a
+             * uint32 at payload offset 0 and StopPerfCmd's DataFileName is a char[64] at the
+             * same offset, so setting the trigger mode above left a one-byte control character
+             * as the filename -- and the dump went to "/ram/\001" rather than to the default.
+             * Both halves agreed, because both had the same garbage. */
+            memset(&pc, 0, sizeof(pc));
+            CFE_ES_StopPerfDataCmd(&pc.StopPerf);
+            printf("esp_stop pending=%u file=%s cc=%u\n", PDump->PendingState,
+                   PDump->DataFileName, CFE_ES_Global.TaskData.CommandCounter);
+            /* ElapsedTime 0 earns no credit, so the machine does not move at all. */
+            printf("esp_dump_nocredit active=%d cur=%u\n", (int)CFE_ES_RunPerfLogDump(0, PDump),
+                   PDump->CurrentState);
+            for (k = 0; k < 8; k++)
+            {
+                printf("esp_dump[%d] active=%d cur=%u pend=%u ctr=%lu pos=%lu size=%lu\n", k,
+                       (int)CFE_ES_RunPerfLogDump(1, PDump), PDump->CurrentState,
+                       PDump->PendingState, (unsigned long)PDump->StateCounter,
+                       (unsigned long)PDump->DataPos, (unsigned long)PDump->FileSize);
+            }
+            /* takes/gives are the PERF mutex, held from LOCK_DATA to UNLOCK_DATA -- several
+              * states apart, which is the thing NASA flags at CFE_ES_PerfLogAdd. */
+            printf("esp_dump_done len=%ld takes=%d gives=%d remaining=%lu\n", (long)fs_len,
+                   fs_mut_take, fs_mut_give,
+                   (unsigned long)CFE_ES_GetPerfLogDumpRemaining());
+            /* And a dump whose file will not open goes straight back to IDLE. */
+            memset(PDump, 0, sizeof(*PDump));
+            fs_open_fail = 1;
+            CFE_ES_StopPerfDataCmd(&pc.StopPerf);
+            CFE_ES_RunPerfLogDump(1000, PDump);
+            printf("esp_dump_nocreate cur=%u\n", PDump->CurrentState);
+            fs_open_fail = 0;
+            memset(PDump, 0, sizeof(*PDump));
+
+            /* --- the dispatcher: a length check, twenty-four codes and three message ids -- */
+            CFE_ES_Global.TaskData.CommandCounter      = 0;
+            CFE_ES_Global.TaskData.CommandErrorCounter = 0;
+            memset(&pc, 0, sizeof(pc));
+            CFE_MSG_Init(&pc.Buf.Msg, CFE_SB_ValueToMsgId(CFE_ES_CMD_MID),
+                         sizeof(CFE_ES_NoopCmd_t));
+            /* A GOOD length, then a bad one: the bad one never reaches a handler. */
+            CFE_MSG_SetFcnCode(&pc.Buf.Msg, CFE_ES_NOOP_CC);
+            CFE_MSG_SetSize(&pc.Buf.Msg, sizeof(CFE_ES_NoopCmd_t));
+            CFE_ES_ProcessGroundCmd(&pc.Buf);
+            CFE_MSG_SetSize(&pc.Buf.Msg, sizeof(CFE_ES_NoopCmd_t) + 4);
+            CFE_ES_ProcessGroundCmd(&pc.Buf);
+            printf("esp_len cc=%u ec=%u\n", CFE_ES_Global.TaskData.CommandCounter,
+                   CFE_ES_Global.TaskData.CommandErrorCounter);
+            /* An unknown code, which is the dispatcher's own event. */
+            CFE_MSG_SetFcnCode(&pc.Buf.Msg, 99);
+            CFE_MSG_SetSize(&pc.Buf.Msg, sizeof(CFE_ES_NoopCmd_t));
+            CFE_ES_ProcessGroundCmd(&pc.Buf);
+            printf("esp_badcc ec=%u\n", CFE_ES_Global.TaskData.CommandErrorCounter);
+            /* EVERY CODE WITH A DELIBERATELY WRONG LENGTH. What this pins is the TABLE -- that
+             * each code maps to the type the handler expects -- and it does it without running
+             * twenty-four handlers, because the length check fires first and names the
+             * expected size in its event. A code mapped to the wrong type shows up as a
+             * different "Expected =" number. */
+            /* NINE BYTES, NOT ONE. A size of 1 is below the CCSDS header minimum and
+              * CFE_MSG_SetSize refuses it, leaving the previous size in place -- which was
+              * sizeof(CFE_ES_NoopCmd_t), so the six no-argument commands PASSED the length
+              * check and ran, and the error count came out 20 instead of 25. Nine is a legal
+              * size that no ES command has: the smallest payload is two bytes, so the
+              * smallest command with one is ten. */
+            CFE_ES_Global.TaskData.CommandErrorCounter = 0;
+            CFE_MSG_SetSize(&pc.Buf.Msg, sizeof(CFE_ES_NoopCmd_t) + 1);
+            for (k = 0; k <= 24; k++)
+            {
+                CFE_MSG_SetFcnCode(&pc.Buf.Msg, k);
+                CFE_ES_ProcessGroundCmd(&pc.Buf);
+            }
+            printf("esp_alllen ec=%u\n", CFE_ES_Global.TaskData.CommandErrorCounter);
+            /* TaskPipe: the housekeeping id, the command id, and one that is neither. */
+            CFE_ES_Global.TaskData.CommandCounter      = 0;
+            CFE_ES_Global.TaskData.CommandErrorCounter = 0;
+            CFE_MSG_SetFcnCode(&pc.Buf.Msg, CFE_ES_NOOP_CC);
+            CFE_MSG_SetSize(&pc.Buf.Msg, sizeof(CFE_ES_NoopCmd_t));
+            CFE_MSG_SetMsgId(&pc.Buf.Msg, CFE_SB_ValueToMsgId(CFE_ES_SEND_HK_MID));
+            sb_tx_reset();
+            CFE_ES_TaskPipe(&pc.Buf);
+            printf("esp_pipe_hk tx=%d\n", sb_tx_since());
+            CFE_MSG_SetMsgId(&pc.Buf.Msg, CFE_SB_ValueToMsgId(CFE_ES_CMD_MID));
+            CFE_ES_TaskPipe(&pc.Buf);
+            CFE_MSG_SetMsgId(&pc.Buf.Msg, CFE_SB_ValueToMsgId(0x1FFF));
+            CFE_ES_TaskPipe(&pc.Buf);
+            printf("esp_pipe cc=%u ec=%u\n", CFE_ES_Global.TaskData.CommandCounter,
+                   CFE_ES_Global.TaskData.CommandErrorCounter);
+
+            /* Leave the perf log idle, or the next probe's PerfLogAdd calls start recording. */
+            CFE_ES_SetupPerfVariables(CFE_PSP_RST_TYPE_POWERON);
+            memset(PDump, 0, sizeof(*PDump));
         }
 
         /* --- cfe_es_syslog.c: THE SYSTEM LOG ---------------------------------------------

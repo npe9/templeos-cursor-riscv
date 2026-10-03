@@ -723,7 +723,16 @@ U0 CFE_ES_PerfLogAdd(U32 Marker, U32 EntryExit)
   if (Perf->MetaData.State != CFE_ES_PERF_IDLE) {
     /* copy data to next perflog slot */
     DataEnd = Perf->MetaData.DataEnd;
-    Perf->DataBuffer[DataEnd] = EntryData;
+    // NASA WRITES `Perf->DataBuffer[DataEnd] = EntryData;` AND THAT LOSES THE TIMESTAMP. A
+    // struct copy whose destination is an ARRAY SLOT copies only the first eight bytes,
+    // silently -- so the marker word arrived and the 64-bit hardware timestamp did not, in
+    // every entry of every capture. docs/HOLYC_STRUCT_LIMITS.md #21, measured and pinned by
+    // tests/exec/cases/e_struct_copy_into_slot.hc; the differential transcript is what caught
+    // it, reading t0=0 t1=0 against NASA's t0=1 t1=2.
+    //
+    // MemCpy is the workaround and the one deviation in this file. It goes away when the
+    // compiler is fixed, at which point the exec case fails and says so.
+    MemCpy(&Perf->DataBuffer[DataEnd], &EntryData, sizeof(CFE_ES_PerfDataEntry_t));
     ++DataEnd;
     if (DataEnd >= CFE_PLATFORM_ES_PERF_DATA_BUFFER_SIZE) {
       DataEnd = 0;

@@ -246,6 +246,13 @@ python3 "$ROOT/tools/cfs/check_lock_sites.py" || exit 1
 # was luck. This opens the binary and asks for an address.
 python3 "$ROOT/tools/cfs/check_in_blob.py" || exit 1
 
+# --- a struct copy that loses twelve bytes of a twelve-byte struct ----------------------------
+# docs/HOLYC_STRUCT_LIMITS.md #21: `arr[i] = s` and `*p = s` copy only the first EIGHT BYTES of
+# a class, silently, where `var = s` and `ptr->member = s` are whole. cfe_es_perf.c's capture
+# path lost the hardware timestamp from every performance log entry that way, and only the
+# transcript saw it -- the layout, the signatures and the blob were all correct.
+python3 "$ROOT/tools/cfs/check_struct_copy.py" || exit 1
+
 # --- reference: NASA's C, unmodified -------------------------------------------------------
 # shellcheck disable=SC2086
 if ! "$HOSTCC" -O0 -w $INC -I"$ROOT/tests/cfs" -o "$T/ref" "$ROOT/tests/cfs/oracle_ccsdspri.c" $SRC_C "$GENDIR/cfe_configid_nametable.c" "$GENDIR/cfe_target_config.c" \
