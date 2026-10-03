@@ -1022,6 +1022,34 @@ U8 *CRC_PROBE = "123456789";
 // exercises the cap rather than merely approaching it. At file scope because the guest's stack
 // is not the place for it.
 U8 es_big_msg[4101];
+// ES'S COMMAND BUFFER, for the same reason CFE_SB_AnyCmd_t below exists: a buffer the size of
+// the command being BUILT is not the size a handler READS. The C half writes this as an
+// anonymous union local; HolyC needs it named.
+union CFE_ES_AnyCmd_t
+{
+  CFE_ES_NoopCmd_t Noop;
+  CFE_ES_ResetCountersCmd_t ResetCtrs;
+  CFE_ES_RestartCmd_t Restart;
+  CFE_ES_SendHkCmd_t Hk;
+  CFE_ES_StartAppCmd_t StartApp;
+  CFE_ES_StopAppCmd_t StopApp;
+  CFE_ES_RestartAppCmd_t RestartApp;
+  CFE_ES_ReloadAppCmd_t ReloadApp;
+  CFE_ES_QueryOneCmd_t QueryOne;
+  CFE_ES_QueryAllCmd_t QueryAll;
+  CFE_ES_QueryAllTasksCmd_t QueryAllTasks;
+  CFE_ES_ClearSysLogCmd_t ClearSysLog;
+  CFE_ES_OverWriteSysLogCmd_t OverWriteSysLog;
+  CFE_ES_WriteSysLogCmd_t WriteSysLog;
+  CFE_ES_ClearERLogCmd_t ClearERLog;
+  CFE_ES_WriteERLogCmd_t WriteERLog;
+  CFE_ES_ResetPRCountCmd_t ResetPRCount;
+  CFE_ES_SetMaxPRCountCmd_t SetMaxPRCount;
+  CFE_ES_DeleteCDSCmd_t DeleteCDS;
+  CFE_ES_SendMemPoolStatsCmd_t MemPoolStats;
+  CFE_ES_DumpCDSRegistryCmd_t DumpCDSReg;
+};
+
 union CFE_SB_AnyCmd_t
 {
   CFE_SB_Buffer Buf;
@@ -7101,6 +7129,491 @@ I64 main()
       S("\n");
       CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_EXTERNAL;
       // Leave ES exactly as it was found, or every probe after this inherits it.
+      es_ctx_init();
+      CFE_ES_Global.SystemState = CFE_ES_SystemState_UNDEFINED;
+    }
+    // --- cfe_es_task.c: ES'S TASK AND ITS GROUND COMMANDS ---------------------------
+    //
+    // Twenty-eight functions, and almost all of them end the same way: a counter moves and an
+    // event goes out. So what this block compares is mostly EVENT TEXT, which is the strongest
+    // thing in this transcript -- it is the packet payload, formatted by the translation and
+    // compared character for character.
+    //
+    // EVERY HANDLER RETURNS CFE_SUCCESS. What distinguishes a command that worked from one
+    // that was refused is which of the two counters moved, so the counters are printed around
+    // each group rather than the return value being trusted.
+    
+    {
+      // THE BUFFER IS A UNION OF EVERY COMMAND, not of the one being built, which is the
+      // lesson cfe_sb_task.c's exercise paid for: a 20-byte buffer where a handler read 72
+      // agreed with the C anyway, because the garbage happened to start with a zero.
+      CFE_ES_AnyCmd_t escmd;
+      I32 rc;
+      MemSet(&escmd, 0, sizeof(CFE_ES_AnyCmd_t));
+      // --- the two trivial ones, and what they do to the counters -----------------
+      CFE_ES_Global.TaskData.CommandCounter = 0;
+      CFE_ES_Global.TaskData.CommandErrorCounter = 0;
+      rc = CFE_ES_NoopCmd(&escmd.Noop);
+      S("est_noop rc=");
+      D(rc);
+      S(" cc=");
+      D(CFE_ES_Global.TaskData.CommandCounter);
+      S(" ec=");
+      D(CFE_ES_Global.TaskData.CommandErrorCounter);
+      S("\n");
+      // ResetCounters does NOT count itself -- zeroing and then incrementing would report 1,
+      // which is not what "reset" means.
+      rc = CFE_ES_ResetCountersCmd(&escmd.ResetCtrs);
+      S("est_resetctrs rc=");
+      D(rc);
+      S(" cc=");
+      D(CFE_ES_Global.TaskData.CommandCounter);
+      S(" ec=");
+      D(CFE_ES_Global.TaskData.CommandErrorCounter);
+      S("\n");
+      // --- restart: the refusal, then the one that does not come back -------------
+      escmd.Restart.Payload.RestartType = 99;
+      rc = CFE_ES_RestartCmd(&escmd.Restart);
+      S("est_restart_bad rc=");
+      D(rc);
+      S(" ec=");
+      D(CFE_ES_Global.TaskData.CommandErrorCounter);
+      S("\n");
+      es_restarts = 0;
+      escmd.Restart.Payload.RestartType = CFE_PSP_RST_TYPE_PROCESSOR;
+      rc = CFE_ES_RestartCmd(&escmd.Restart);
+      S("est_restart_ok rc=");
+      D(rc);
+      S(" restarts=");
+      D(es_restarts);
+      S(" cc=");
+      D(CFE_ES_Global.TaskData.CommandCounter);
+      S("\n");
+      // --- housekeeping, the widest packet in the module --------------------------
+      CFE_ES_Global.ResetDataPtr->ResetVars.ProcessorResetCount = 3;
+      CFE_ES_Global.ResetDataPtr->ResetVars.MaxProcessorResetCount = 7;
+      CFE_ES_Global.ResetDataPtr->ResetVars.BootSource = 2;
+      CFE_ES_Global.ResetDataPtr->Perf.MetaData.State = 1;
+      CFE_ES_Global.ResetDataPtr->Perf.MetaData.Mode = 1;
+      CFE_ES_Global.ResetDataPtr->Perf.MetaData.TriggerCount = 11;
+      CFE_ES_Global.ResetDataPtr->Perf.MetaData.TriggerMask[0] = 0x81;
+      CFE_ES_Global.ResetDataPtr->Perf.MetaData.FilterMask[1] = 0x42;
+      es_perf_remaining = 9;
+      es_heap_rc = OS_SUCCESS;
+      sb_tx_reset();
+      rc = CFE_ES_SendHkCmd(&escmd.Hk);
+      S("est_hk rc=");
+      D(rc);
+      S(" tx=");
+      D(sb_tx_since());
+      S("\n");
+      S("est_hk_p1 cc=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.CommandCounter);
+      S(" ec=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.CommandErrorCounter);
+      S(" logbytes=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.SysLogBytesUsed);
+      S(" logsize=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.SysLogSize);
+      S(" entries=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.SysLogEntries);
+      S(" mode=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.SysLogMode);
+      S("\n");
+      S("est_hk_p2 apps=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.RegisteredCoreApps);
+      S("/");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.RegisteredExternalApps);
+      S(" tasks=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.RegisteredTasks);
+      S(" libs=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.RegisteredLibs);
+      S(" rst=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.ResetType);
+      S("/");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.ResetSubtype);
+      S(" pr=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.ProcessorResets);
+      S("/");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.MaxProcessorResets);
+      S(" boot=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.BootSource);
+      S("\n");
+      S("est_hk_p3 perf=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.PerfState);
+      S("/");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.PerfMode);
+      S(" trig=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.PerfTriggerCount);
+      S(" towrite=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.PerfDataToWrite);
+      S(" tmask0=");
+      Hx2b(CFE_ES_Global.TaskData.HkPacket.Payload.PerfTriggerMask[0]);
+      S(" fmask1=");
+      Hx2b(CFE_ES_Global.TaskData.HkPacket.Payload.PerfFilterMask[1]);
+      S("\n");
+      S("est_hk_p4 heapfree=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.HeapBytesFree);
+      S(" blocks=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.HeapBlocksFree);
+      S(" largest=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.HeapMaxBlockSize);
+      S("\n");
+      // A heap the OSAL cannot report gives three zeroes, not a missing packet.
+      es_heap_rc = OS_ERROR;
+      CFE_ES_SendHkCmd(&escmd.Hk);
+      S("est_hk_noheap free=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.HeapBytesFree);
+      S(" blocks=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.HeapBlocksFree);
+      S(" largest=");
+      D(CFE_ES_Global.TaskData.HkPacket.Payload.HeapMaxBlockSize);
+      S("\n");
+      es_heap_rc = OS_SUCCESS;
+      // --- StartApp: five refusals and the success --------------------------------
+      // THE EVENT TEXT IS THE COMPARISON for each of the six, and the counters below are the
+      // second witness: a change that moved a branch without changing its wording would show
+      // up there and nowhere else.
+      CFE_ES_Global.TaskData.CommandCounter = 0;
+      CFE_ES_Global.TaskData.CommandErrorCounter = 0;
+      StrNCpy(escmd.StartApp.Payload.Application, "NEWAPP", CFE_MISSION_MAX_API_LEN - 1);
+      StrNCpy(escmd.StartApp.Payload.AppEntryPoint, "NEWAPP_Main", CFE_MISSION_MAX_API_LEN - 1);
+      StrNCpy(escmd.StartApp.Payload.AppFileName, "newapp", CFE_MISSION_MAX_PATH_LEN - 1);
+      escmd.StartApp.Payload.StackSize = 0;
+      // means "use the default"
+      escmd.StartApp.Payload.Priority = 80;
+      escmd.StartApp.Payload.ExceptionAction = CFE_ES_ExceptionAction_RESTART_APP;
+      es_appcreate_rc = CFE_SUCCESS;
+      rc = CFE_ES_StartAppCmd(&escmd.StartApp);
+      S("est_startapp rc=");
+      D(rc);
+      S("\n");
+      es_appcreate_rc = -42;
+      rc = CFE_ES_StartAppCmd(&escmd.StartApp);
+      S("est_startapp_createfail rc=");
+      D(rc);
+      S("\n");
+      es_appcreate_rc = CFE_SUCCESS;
+      escmd.StartApp.Payload.Priority = 255 + 1;
+      // > OS_MAX_PRIORITY, but the field is u16
+      rc = CFE_ES_StartAppCmd(&escmd.StartApp);
+      S("est_startapp_prio rc=");
+      D(rc);
+      S("\n");
+      escmd.StartApp.Payload.Priority = 80;
+      escmd.StartApp.Payload.ExceptionAction = 9;
+      rc = CFE_ES_StartAppCmd(&escmd.StartApp);
+      S("est_startapp_exc rc=");
+      D(rc);
+      S("\n");
+      escmd.StartApp.Payload.ExceptionAction = CFE_ES_ExceptionAction_RESTART_APP;
+      escmd.StartApp.Payload.AppEntryPoint[0] = 0;
+      rc = CFE_ES_StartAppCmd(&escmd.StartApp);
+      S("est_startapp_noentry rc=");
+      D(rc);
+      S("\n");
+      StrNCpy(escmd.StartApp.Payload.AppEntryPoint, "NEWAPP_Main", CFE_MISSION_MAX_API_LEN - 1);
+      escmd.StartApp.Payload.Application[0] = 0;
+      rc = CFE_ES_StartAppCmd(&escmd.StartApp);
+      S("est_startapp_noname rc=");
+      D(rc);
+      S("\n");
+      S("est_startapp_ctrs cc=");
+      D(CFE_ES_Global.TaskData.CommandCounter);
+      S(" ec=");
+      D(CFE_ES_Global.TaskData.CommandErrorCounter);
+      S(" creates=");
+      D(es_appcreates);
+      S("\n");
+      // --- stop, restart and reload, by NAME this time ----------------------------
+      CFE_ES_Global.TaskData.CommandCounter = 0;
+      CFE_ES_Global.TaskData.CommandErrorCounter = 0;
+      MemSet(&escmd, 0, sizeof(CFE_ES_AnyCmd_t));
+      StrNCpy(escmd.StopApp.Payload.Application, "OTHER_APP", CFE_MISSION_MAX_API_LEN - 1);
+      rc = CFE_ES_StopAppCmd(&escmd.StopApp);
+      S("est_stopapp rc=");
+      D(rc);
+      S("\n");
+      CFE_ES_Global.AppTable[2].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+      StrNCpy(escmd.StopApp.Payload.Application, "NOSUCHAPP", CFE_MISSION_MAX_API_LEN - 1);
+      rc = CFE_ES_StopAppCmd(&escmd.StopApp);
+      S("est_stopapp_miss rc=");
+      D(rc);
+      S("\n");
+      StrNCpy(escmd.RestartApp.Payload.Application, "OTHER_APP", CFE_MISSION_MAX_API_LEN - 1);
+      es_stat_rc = OS_SUCCESS;
+      rc = CFE_ES_RestartAppCmd(&escmd.RestartApp);
+      S("est_restartapp rc=");
+      D(rc);
+      S("\n");
+      CFE_ES_Global.AppTable[2].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+      es_stat_rc = OS_ERROR;
+      rc = CFE_ES_RestartAppCmd(&escmd.RestartApp);
+      S("est_restartapp_nofile rc=");
+      D(rc);
+      S("\n");
+      es_stat_rc = OS_SUCCESS;
+      StrNCpy(escmd.RestartApp.Payload.Application, "NOSUCHAPP", CFE_MISSION_MAX_API_LEN - 1);
+      rc = CFE_ES_RestartAppCmd(&escmd.RestartApp);
+      S("est_restartapp_miss rc=");
+      D(rc);
+      S("\n");
+      MemSet(&escmd, 0, sizeof(CFE_ES_AnyCmd_t));
+      StrNCpy(escmd.ReloadApp.Payload.Application, "OTHER_APP", CFE_MISSION_MAX_API_LEN - 1);
+      StrNCpy(escmd.ReloadApp.Payload.AppFileName, "other_v2", CFE_MISSION_MAX_PATH_LEN - 1);
+      rc = CFE_ES_ReloadAppCmd(&escmd.ReloadApp);
+      S("est_reloadapp rc=");
+      D(rc);
+      S(" file=");
+      S(CFE_ES_Global.AppTable[2].StartParams.BasicInfo.FileName);
+      S("\n");
+      CFE_ES_Global.AppTable[2].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+      StrNCpy(escmd.ReloadApp.Payload.Application, "NOSUCHAPP", CFE_MISSION_MAX_API_LEN - 1);
+      rc = CFE_ES_ReloadAppCmd(&escmd.ReloadApp);
+      S("est_reloadapp_miss rc=");
+      D(rc);
+      S("\n");
+      S("est_appctl_ctrs cc=");
+      D(CFE_ES_Global.TaskData.CommandCounter);
+      S(" ec=");
+      D(CFE_ES_Global.TaskData.CommandErrorCounter);
+      S("\n");
+      // --- the three queries ------------------------------------------------------
+      MemSet(&escmd, 0, sizeof(CFE_ES_AnyCmd_t));
+      StrNCpy(escmd.QueryOne.Payload.Application, "CFE_EVS", CFE_MISSION_MAX_API_LEN - 1);
+      sb_tx_reset();
+      rc = CFE_ES_QueryOneCmd(&escmd.QueryOne);
+      S("est_queryone rc=");
+      D(rc);
+      S(" tx=");
+      D(sb_tx_since());
+      S(" name=");
+      S(CFE_ES_Global.TaskData.OneAppPacket.Payload.AppInfo.Name);
+      S("\n");
+      StrNCpy(escmd.QueryOne.Payload.Application, "NOSUCHAPP", CFE_MISSION_MAX_API_LEN - 1);
+      rc = CFE_ES_QueryOneCmd(&escmd.QueryOne);
+      S("est_queryone_miss rc=");
+      D(rc);
+      S("\n");
+      MemSet(&escmd, 0, sizeof(CFE_ES_AnyCmd_t));
+      fs_len = 0;
+      fs_pos = 0;
+      rc = CFE_ES_QueryAllCmd(&escmd.QueryAll);
+      S("est_queryall rc=");
+      D(rc);
+      S(" len=");
+      D(fs_len);
+      S("\n");
+      fs_open_fail = 1;
+      rc = CFE_ES_QueryAllCmd(&escmd.QueryAll);
+      S("est_queryall_nocreate rc=");
+      D(rc);
+      S("\n");
+      fs_open_fail = 0;
+      fs_len = 0;
+      fs_pos = 0;
+      rc = CFE_ES_QueryAllTasksCmd(&escmd.QueryAllTasks);
+      S("est_queryalltasks rc=");
+      D(rc);
+      S(" len=");
+      D(fs_len);
+      S("\n");
+      fs_open_fail = 1;
+      rc = CFE_ES_QueryAllTasksCmd(&escmd.QueryAllTasks);
+      S("est_queryalltasks_nocreate rc=");
+      D(rc);
+      S("\n");
+      fs_open_fail = 0;
+      // --- the system log and the ER log ------------------------------------------
+      CFE_ES_WriteToSysLog("a line to clear\n");
+      rc = CFE_ES_ClearSysLogCmd(&escmd.ClearSysLog);
+      S("est_clearsyslog rc=");
+      D(rc);
+      S(" entries=");
+      D(CFE_ES_Global.ResetDataPtr->SystemLogEntryNum);
+      S("\n");
+      escmd.OverWriteSysLog.Payload.Mode = CFE_ES_LogMode_DISCARD;
+      rc = CFE_ES_OverWriteSysLogCmd(&escmd.OverWriteSysLog);
+      S("est_overwrite rc=");
+      D(rc);
+      S(" mode=");
+      D(CFE_ES_Global.ResetDataPtr->SystemLogMode);
+      S("\n");
+      escmd.OverWriteSysLog.Payload.Mode = 99;
+      rc = CFE_ES_OverWriteSysLogCmd(&escmd.OverWriteSysLog);
+      S("est_overwrite_bad rc=");
+      D(rc);
+      S(" mode=");
+      D(CFE_ES_Global.ResetDataPtr->SystemLogMode);
+      S("\n");
+      MemSet(&escmd, 0, sizeof(CFE_ES_AnyCmd_t));
+      fs_len = 0;
+      fs_pos = 0;
+      rc = CFE_ES_WriteSysLogCmd(&escmd.WriteSysLog);
+      S("est_writesyslog rc=");
+      D(rc);
+      S(" len=");
+      D(fs_len);
+      S("\n");
+      CFE_ES_Global.ResetDataPtr->ERLogIndex = 5;
+      CFE_ES_Global.ResetDataPtr->ERLogEntries = 5;
+      rc = CFE_ES_ClearERLogCmd(&escmd.ClearERLog);
+      S("est_clearerlog rc=");
+      D(rc);
+      S(" idx=");
+      D(CFE_ES_Global.ResetDataPtr->ERLogIndex);
+      S(" entries=");
+      D(CFE_ES_Global.ResetDataPtr->ERLogEntries);
+      S("\n");
+      // THE RETURN VALUE SAYS NOTHING HERE and that is worth stating once: every handler in
+      // this file returns CFE_SUCCESS whatever happens, because the return goes to the
+      // dispatcher, which only cares that the handler ran. The witnesses are the two counters
+      // and the event. The FS background queue is four deep and the FS section above has
+      // already used it, so whether the request is ACCEPTED depends on what that left behind
+      // -- which is why the queue is drained first.
+      MemSet(&CFE_ES_Global.BackgroundERLogDumpState, 0, sizeof(CFE_ES_BackgroundLogDumpGlobal_t));
+      MemSet(&CFE_FS_Global.FileDump, 0, sizeof(CFE_FS_BackgroundFileDumpState_t));
+      CFE_ES_Global.TaskData.CommandCounter = 0;
+      CFE_ES_Global.TaskData.CommandErrorCounter = 0;
+      CFE_ES_WriteERLogCmd(&escmd.WriteERLog);
+      S("est_writeerlog cc=");
+      D(CFE_ES_Global.TaskData.CommandCounter);
+      S(" ec=");
+      D(CFE_ES_Global.TaskData.CommandErrorCounter);
+      S(" pending=");
+      D(CFE_ES_Global.BackgroundERLogDumpState.FileWrite.IsPending);
+      S(" sub=");
+      D(CFE_ES_Global.BackgroundERLogDumpState.FileWrite.FileSubType);
+      S(" getdata=");
+      D(CFE_ES_Global.BackgroundERLogDumpState.FileWrite.GetData != NULL);
+      S(" onevent=");
+      D(CFE_ES_Global.BackgroundERLogDumpState.FileWrite.OnEvent != NULL);
+      S(" file=");
+      S(CFE_ES_Global.BackgroundERLogDumpState.FileWrite.FileName);
+      S("\n");
+      // And asking again while it is pending is a DISTINCT error with its own event.
+      CFE_ES_WriteERLogCmd(&escmd.WriteERLog);
+      S("est_writeerlog_again cc=");
+      D(CFE_ES_Global.TaskData.CommandCounter);
+      S(" ec=");
+      D(CFE_ES_Global.TaskData.CommandErrorCounter);
+      S("\n");
+      // --- the processor reset counts ---------------------------------------------
+      rc = CFE_ES_ResetPRCountCmd(&escmd.ResetPRCount);
+      S("est_resetpr rc=");
+      D(rc);
+      S(" count=");
+      D(CFE_ES_Global.ResetDataPtr->ResetVars.ProcessorResetCount);
+      S("\n");
+      escmd.SetMaxPRCount.Payload.MaxPRCount = 12;
+      rc = CFE_ES_SetMaxPRCountCmd(&escmd.SetMaxPRCount);
+      S("est_setmaxpr rc=");
+      D(rc);
+      S(" max=");
+      D(CFE_ES_Global.ResetDataPtr->ResetVars.MaxProcessorResetCount);
+      S("\n");
+      // --- the CDS, whose four refusals each have their own event ------------------
+      CFE_ES_Global.TaskData.CommandCounter = 0;
+      CFE_ES_Global.TaskData.CommandErrorCounter = 0;
+      MemSet(&escmd, 0, sizeof(CFE_ES_AnyCmd_t));
+      StrNCpy(escmd.DeleteCDS.Payload.CdsName, "APP.TBL", CFE_MISSION_ES_CDS_MAX_FULL_NAME_LEN - 1);
+      es_cdsdelete_rc = CFE_SUCCESS;
+      rc = CFE_ES_DeleteCDSCmd(&escmd.DeleteCDS);
+      S("est_deletecds rc=");
+      D(rc);
+      S("\n");
+      es_cdsdelete_rc = CFE_ES_CDS_WRONG_TYPE_ERR;
+      rc = CFE_ES_DeleteCDSCmd(&escmd.DeleteCDS);
+      S("est_deletecds_tbl rc=");
+      D(rc);
+      S("\n");
+      es_cdsdelete_rc = CFE_ES_CDS_OWNER_ACTIVE_ERR;
+      rc = CFE_ES_DeleteCDSCmd(&escmd.DeleteCDS);
+      S("est_deletecds_active rc=");
+      D(rc);
+      S("\n");
+      es_cdsdelete_rc = CFE_ES_ERR_NAME_NOT_FOUND;
+      rc = CFE_ES_DeleteCDSCmd(&escmd.DeleteCDS);
+      S("est_deletecds_miss rc=");
+      D(rc);
+      S("\n");
+      es_cdsdelete_rc = -99;
+      rc = CFE_ES_DeleteCDSCmd(&escmd.DeleteCDS);
+      S("est_deletecds_err rc=");
+      D(rc);
+      S("\n");
+      es_cdsdelete_rc = CFE_SUCCESS;
+      S("est_deletecds_ctrs cc=");
+      D(CFE_ES_Global.TaskData.CommandCounter);
+      S(" ec=");
+      D(CFE_ES_Global.TaskData.CommandErrorCounter);
+      S("\n");
+      // The registry dump walks a registry that is empty here, which is the case the
+      // pre-loaded OsStatus makes report SUCCESS.
+      MemSet(&escmd, 0, sizeof(CFE_ES_AnyCmd_t));
+      fs_len = 0;
+      fs_pos = 0;
+      rc = CFE_ES_DumpCDSRegistryCmd(&escmd.DumpCDSReg);
+      S("est_dumpcdsreg rc=");
+      D(rc);
+      S(" len=");
+      D(fs_len);
+      S("\n");
+      fs_open_fail = 1;
+      rc = CFE_ES_DumpCDSRegistryCmd(&escmd.DumpCDSReg);
+      S("est_dumpcdsreg_nocreate rc=");
+      D(rc);
+      S("\n");
+      fs_open_fail = 0;
+      // --- the memory pool statistics ---------------------------------------------
+      MemSet(&escmd, 0, sizeof(CFE_ES_AnyCmd_t));
+      escmd.MemPoolStats.Payload.PoolHandle = CFE_SB_Global.Mem.PoolHdl;
+      sb_tx_reset();
+      rc = CFE_ES_SendMemPoolStatsCmd(&escmd.MemPoolStats);
+      S("est_mempoolstats rc=");
+      D(rc);
+      S(" tx=");
+      D(sb_tx_since());
+      S(" handle=");
+      D(CFE_ES_Global.TaskData.MemStatsPacket.Payload.PoolHandle);
+      S(" size=");
+      D(CFE_ES_Global.TaskData.MemStatsPacket.Payload.PoolStats.PoolSize);
+      S("\n");
+      escmd.MemPoolStats.Payload.PoolHandle = ES_CTX_APPID(9);
+      rc = CFE_ES_SendMemPoolStatsCmd(&escmd.MemPoolStats);
+      S("est_mempoolstats_bad rc=");
+      D(rc);
+      S("\n");
+      // --- the short-write reporter, now a real event -----------------------------
+      CFE_ES_FileWriteByteCntErr("/ram/x.log", 64, -7);
+      // --- CFE_ES_TaskMain, which DOES come back ----------------------------------
+      // The loop exits when CFE_SB_ReceiveBuffer fails, and OS_QueueGet returns OS_QUEUE_EMPTY
+      // on an empty pipe -- so one pass, then CFE_ES_ExitApp. The caller must be a CORE app
+      // for that to return: an EXTERNAL one spins forever in `while (1) OS_TaskDelay(500)`.
+      // SystemState is set to CORE_READY first so the WaitForSystemState before the loop does
+      // not spend 30,000 ms of simulated delay.
+      CFE_ES_Global.SystemState = CFE_ES_SystemState_CORE_READY;
+      CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_CORE;
+      es_taskpipes = 0;
+      es_bkginits = 0;
+      es_taskexits = 0;
+      evs_delay_ms = 0;
+      sb_queuecreate_rc = OS_SUCCESS;
+      es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
+      CFE_ES_TaskMain();
+      S("est_taskmain pipes=");
+      D(es_taskpipes);
+      S(" bkginit=");
+      D(es_bkginits);
+      S(" exits=");
+      D(es_taskexits);
+      S(" delay=");
+      D(evs_delay_ms);
+      S(" req=");
+      D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+      S("\n");
+      CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_EXTERNAL;
+      // Leave ES as it was found.
       es_ctx_init();
       CFE_ES_Global.SystemState = CFE_ES_SystemState_UNDEFINED;
     }
