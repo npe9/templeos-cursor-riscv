@@ -166,9 +166,15 @@ U0 D(I64 v)
 // the portable layer that walks it -- see os_shared_errors.HC for why include order does a
 // linker's job here.
 OS_ErrorTable_Entry OS_IMPL_ERROR_NAME_TABLE[1] = {{0, 0, NULL}};
-// Stands in for osapi-printf.c, which is part of the shared layer and not translated yet. The C
-// oracle's stub prints the same fixed marker: what the transcript pins is which checks fire.
-U0 OS_printf(U8 *fmt)
+// Stands in for osapi-printf.c, whose real OS_printf would displace the fixed "bugcheck"
+// marker this transcript pins -- what it asserts is which checks fire, not what they say. The
+// C oracle's stub prints the same marker.
+//
+// IT IS DECLARED VARIADIC even though it ignores the arguments, because OS_printf IS variadic
+// and a HolyC call site builds its (argc, argv) pair from the declaration in scope. A
+// non-variadic stub here made the whole include graph disagree with itself, which is exactly
+// what check_variadic reports.
+U0 OS_printf(U8 *fmt,...)
 {
   S("bugcheck\n");
 }
@@ -579,7 +585,6 @@ I32 OS_TaskAffinityGetAffinity_Impl(OS_object_token_t *token, OS_cpuset_t *cpuse
 #include "/Kernel/Cfs/osal/os_shared_time.HC"
 #include "/Kernel/Cfs/osal/os_shared_sockets.HC"
 #include "/Kernel/Cfs/osal/osapi_sockets.HC"
-
 // --- osapi-common.c backend ---------------------------------------------------------------
 // OS_API_Init calls OS_ConsoleAPI_Init, which lives in osapi-printf.c -- the ONE module this
 // gate cannot include, because the real OS_printf would displace the fixed "bugcheck" marker
@@ -590,7 +595,6 @@ I32 stub_impl_init_rc;
 I64 stub_ev_calls;
 I32 stub_ev_rc;
 U32 stub_left[OS_OBJECT_TYPE_USER];
-
 I32 OS_API_Impl_Init(U32 idtype)
 {
   ++stub_impl_inits;
@@ -599,15 +603,29 @@ I32 OS_API_Impl_Init(U32 idtype)
   OS_SharedGlobalVars.TicksPerSecond = 100;
   return stub_impl_init_rc;
 }
-I32 OS_ConsoleAPI_Init() { ++stub_console_inits; return OS_SUCCESS; }
-U0 OS_IdleLoop_Impl() { ++stub_idle_spins; }
-U0 OS_ApplicationShutdown_Impl() { ++stub_shutdown_hooks; }
+
+I32 OS_ConsoleAPI_Init()
+{
+  ++stub_console_inits;
+  return OS_SUCCESS;
+}
+
+U0 OS_IdleLoop_Impl()
+{
+  ++stub_idle_spins;
+}
+
+U0 OS_ApplicationShutdown_Impl()
+{
+  ++stub_shutdown_hooks;
+}
 
 I32 ev_handler(I64 event, U32 object_id, U8 *data)
 {
   ++stub_ev_calls;
   return stub_ev_rc;
 }
+
 U0 count_obj(U32 object_id, U8 *arg)
 {
   U32 *n = arg;
@@ -622,50 +640,60 @@ U0 tally_obj(U32 object_id, U8 *arg)
   if (t < OS_OBJECT_TYPE_USER)
     ++stub_left[t];
 }
-
-
 // --- osapi-sockets.c backend --------------------------------------------------------------
 I64 stub_s_opens, stub_s_binds, stub_s_listens, stub_s_accepts, stub_s_connects;
 I64 stub_s_shuts, stub_s_recvs, stub_s_sends, stub_s_infos, stub_s_getopt, stub_s_setopt;
 I64 stub_s_lastmode;
 I32 stub_s_accept_rc;
+I32 OS_SocketOpen_Impl(OS_object_token_t *token)
+{
+  ++stub_s_opens;
+  return OS_SUCCESS;
+}
 
-I32 OS_SocketOpen_Impl(OS_object_token_t *token) { ++stub_s_opens; return OS_SUCCESS; }
 I32 OS_SocketBindAddress_Impl(OS_object_token_t *token, OS_SockAddr_t *Addr)
 {
   ++stub_s_binds;
   return OS_SUCCESS;
 }
-I32 OS_SocketListen_Impl(OS_object_token_t *token) { ++stub_s_listens; return OS_SUCCESS; }
-I32 OS_SocketAccept_Impl(OS_object_token_t *sock_token, OS_object_token_t *conn_token,
-                         OS_SockAddr_t *Addr, OS_time_t abs_timeout)
+
+I32 OS_SocketListen_Impl(OS_object_token_t *token)
+{
+  ++stub_s_listens;
+  return OS_SUCCESS;
+}
+
+I32 OS_SocketAccept_Impl(OS_object_token_t *sock_token, OS_object_token_t *conn_token, OS_SockAddr_t *Addr, OS_time_t abs_timeout)
 {
   ++stub_s_accepts;
   return stub_s_accept_rc;
 }
+
 I32 OS_SocketConnect_Impl(OS_object_token_t *token, OS_SockAddr_t *Addr, OS_time_t abs_timeout)
 {
   ++stub_s_connects;
   return OS_SUCCESS;
 }
+
 I32 OS_SocketShutdown_Impl(OS_object_token_t *token, I64 Mode)
 {
   ++stub_s_shuts;
   stub_s_lastmode = Mode;
   return OS_SUCCESS;
 }
-I32 OS_SocketRecvFrom_Impl(OS_object_token_t *token, U8 *buffer, I64 buflen,
-                           OS_SockAddr_t *RemoteAddr, OS_time_t abs_timeout)
+
+I32 OS_SocketRecvFrom_Impl(OS_object_token_t *token, U8 *buffer, I64 buflen, OS_SockAddr_t *RemoteAddr, OS_time_t abs_timeout)
 {
   ++stub_s_recvs;
   return buflen;
 }
-I32 OS_SocketSendTo_Impl(OS_object_token_t *token, U8 *buffer, I64 buflen,
-                         OS_SockAddr_t *RemoteAddr)
+
+I32 OS_SocketSendTo_Impl(OS_object_token_t *token, U8 *buffer, I64 buflen, OS_SockAddr_t *RemoteAddr)
 {
   ++stub_s_sends;
   return buflen;
 }
+
 I32 OS_SocketGetInfo_Impl(OS_object_token_t *token, OS_socket_prop_t *sock_prop)
 {
   ++stub_s_infos;
@@ -679,11 +707,13 @@ I32 OS_SocketAddrInit_Impl(OS_SockAddr_t *Addr, I64 Domain)
   Addr->AddrData.Buffer[0] = Domain;
   return OS_SUCCESS;
 }
+
 I32 OS_SocketAddrToString_Impl(U8 *buffer, I64 buflen, OS_SockAddr_t *Addr)
 {
   StrPrintN(buffer, buflen, "A%u", Addr->AddrData.Buffer[1]);
   return OS_SUCCESS;
 }
+
 I32 OS_SocketAddrFromString_Impl(OS_SockAddr_t *Addr, U8 *string)
 {
   MemSet(Addr, 0, sizeof(OS_SockAddr_t));
@@ -691,28 +721,31 @@ I32 OS_SocketAddrFromString_Impl(OS_SockAddr_t *Addr, U8 *string)
   Addr->AddrData.Buffer[1] = string[0] - '0';
   return OS_SUCCESS;
 }
+
 I32 OS_SocketAddrGetPort_Impl(U16 *PortNum, OS_SockAddr_t *Addr)
 {
   *PortNum = Addr->AddrData.Buffer[2];
   return OS_SUCCESS;
 }
+
 I32 OS_SocketAddrSetPort_Impl(OS_SockAddr_t *Addr, U16 PortNum)
 {
   Addr->AddrData.Buffer[2] = PortNum;
   return OS_SUCCESS;
 }
+
 I32 OS_SocketGetOption_Impl(OS_object_token_t *token, I64 opt_id, OS_socket_optval_t *optval)
 {
   ++stub_s_getopt;
   optval->IntVal = 46;
   return OS_SUCCESS;
 }
+
 I32 OS_SocketSetOption_Impl(OS_object_token_t *token, I64 opt_id, OS_socket_optval_t *optval)
 {
   ++stub_s_setopt;
   return OS_SUCCESS;
 }
-
 // stream_state as separate bits, because the whole module is about which are set.
 U0 sock_state(U8 *tag, U32 sid)
 {
@@ -726,25 +759,23 @@ U0 sock_state(U8 *tag, U32 sid)
   st = OS_stream_table[idx].stream_state;
   S(tag);
   S(" bound=");
-  D((st & OS_STREAM_STATE_BOUND) != 0);
+  D ((st & OS_STREAM_STATE_BOUND) != 0);
   S(" listen=");
-  D((st & OS_STREAM_STATE_LISTENING) != 0);
+  D ((st & OS_STREAM_STATE_LISTENING) != 0);
   S(" conn=");
-  D((st & OS_STREAM_STATE_CONNECTED) != 0);
+  D ((st & OS_STREAM_STATE_CONNECTED) != 0);
   S(" rd=");
-  D((st & OS_STREAM_STATE_READABLE) != 0);
+  D ((st & OS_STREAM_STATE_READABLE) != 0);
   S(" wr=");
-  D((st & OS_STREAM_STATE_WRITABLE) != 0);
+  D ((st & OS_STREAM_STATE_WRITABLE) != 0);
   S(" dom=");
   D(OS_stream_table[idx].socket_domain);
   S(" typ=");
   D(OS_stream_table[idx].socket_type);
   S("\n");
 }
-
 #include "/Kernel/Cfs/osal/osapi_timebase.HC"
 #include "/Kernel/Cfs/osal/osapi_time.HC"
-
 // --- osapi-timebase.c / osapi-time.c backend ---------------------------------------------
 // OS_TaskRegister_Impl is given real meaning here (see the task backend above): the callback
 // thread registers itself with the timebase id, and a real OS then makes OS_TaskGetId_Impl
@@ -759,9 +790,18 @@ I32 stub_tb_from_cb_rc;
 I64 stub_sync_script[12];
 I64 stub_sync_n, stub_sync_len;
 I64 stub_noarg_fired;
+I32 OS_TimeBaseCreate_Impl(OS_object_token_t *token)
+{
+  ++stub_tb_creates;
+  return OS_SUCCESS;
+}
 
-I32 OS_TimeBaseCreate_Impl(OS_object_token_t *token) { ++stub_tb_creates; return OS_SUCCESS; }
-I32 OS_TimeBaseDelete_Impl(OS_object_token_t *token) { ++stub_tb_deletes; return OS_SUCCESS; }
+I32 OS_TimeBaseDelete_Impl(OS_object_token_t *token)
+{
+  ++stub_tb_deletes;
+  return OS_SUCCESS;
+}
+
 I32 OS_TimeBaseSet_Impl(OS_object_token_t *token, U32 start_time, U32 interval_time)
 {
   ++stub_tb_sets;
@@ -769,14 +809,22 @@ I32 OS_TimeBaseSet_Impl(OS_object_token_t *token, U32 start_time, U32 interval_t
   stub_tb_last_interval = interval_time;
   return OS_SUCCESS;
 }
+
 I32 OS_TimeBaseGetInfo_Impl(OS_object_token_t *token, OS_timebase_prop_t *p)
 {
   ++stub_tb_infos;
   return OS_SUCCESS;
 }
-U0 OS_TimeBaseLock_Impl(OS_object_token_t *token) { ++stub_tb_locks; }
-U0 OS_TimeBaseUnlock_Impl(OS_object_token_t *token) { ++stub_tb_unlocks; }
 
+U0 OS_TimeBaseLock_Impl(OS_object_token_t *token)
+{
+  ++stub_tb_locks;
+}
+
+U0 OS_TimeBaseUnlock_Impl(OS_object_token_t *token)
+{
+  ++stub_tb_unlocks;
+}
 // The scripted tick source. It also ENDS the callback thread, by clearing the global record's
 // active_id -- precisely the condition the thread checks to notice it was deleted.
 U32 stub_sync_fn(U32 tbid)
@@ -803,10 +851,12 @@ U32 stub_sync_fn(U32 tbid)
     stub_tb_from_cb_rc = OS_TimerGetIdByName(&dummy, "t1");
   return ticks;
 }
-
 // A no-argument OS_TimerCallback_t, for OS_TimerCreate. NASA's OS_Timer_NoArgCallback is
 // static to osapi-time.c, so a caller supplies its own.
-U0 tcb_noarg(U32 objid) { ++stub_noarg_fired; }
+U0 tcb_noarg(U32 objid)
+{
+  ++stub_noarg_fired;
+}
 
 U0 cb_mark(U32 objid, U8 *arg)
 {
@@ -815,7 +865,6 @@ U0 cb_mark(U32 objid, U8 *arg)
   if (OS_ObjectIdToArrayIndex(OS_OBJECT_TYPE_OS_TIMECB, objid, &idx) == OS_SUCCESS && idx < 8)
     ++stub_cb_fired[idx];
 }
-
 // Walks the callback ring from first_cb and prints the indices in order, stopping if it does
 // not come back round -- a broken splice shows up as a short walk or a wrong order rather than
 // as a hang.
@@ -853,7 +902,6 @@ U0 ring_dump(U8 *tag, U32 tb_id)
   D(steps + 1);
   S(")\n");
 }
-
 #include "/Kernel/Cfs/osal/osapi_module.HC"
 // --- osapi-module.c backend ---------------------------------------------------------------
 // OS_SymbolLookup_Impl returns a DISTINCT error so the transcript can show which of the two
@@ -1454,23 +1502,23 @@ I64 main()
     D(r);
     S("\n");
     // The REAL init now, not a hand-set flag: OS_API_Init wipes the globals, calls
-  // OS_ObjectIdInit, then every per-type initialiser in turn.
-  stub_impl_init_rc = OS_SUCCESS;
-  stub_ev_rc = OS_SUCCESS;
-  rc = OS_API_Init;
-  S("c_apiinit rc=");
-  D(rc);
-  S(" impl=");
-  D(stub_impl_inits);
-  S(" console=");
-  D(stub_console_inits);
-  S("\n");
-  rc = OS_API_Init;
-  S("c_again   rc=");
-  D(rc);
-  S(" impl=");
-  D(stub_impl_inits);
-  S("\n");
+    // OS_ObjectIdInit, then every per-type initialiser in turn.
+    stub_impl_init_rc = OS_SUCCESS;
+    stub_ev_rc = OS_SUCCESS;
+    rc = OS_API_Init;
+    S("c_apiinit rc=");
+    D(rc);
+    S(" impl=");
+    D(stub_impl_inits);
+    S(" console=");
+    D(stub_console_inits);
+    S("\n");
+    rc = OS_API_Init;
+    S("c_again   rc=");
+    D(rc);
+    S(" impl=");
+    D(stub_impl_inits);
+    S("\n");
     S("id_bases ");
     D(OS_GetBaseForObjectType(OS_OBJECT_TYPE_OS_QUEUE));
     S(" ");
@@ -3094,7 +3142,6 @@ I64 main()
     D(OS_ModuleUnload(mid));
     S("\n");
   }
-
   // --- osapi-timebase.c and osapi-time.c -------------------------------------------------------
   // These two are one subject: osapi-time.c builds a CIRCULAR DOUBLY LINKED RING of timers per
   // time base, and osapi-timebase.c's callback thread walks it. The ring is dumped after each
@@ -3103,6 +3150,7 @@ I64 main()
   // The callback thread is a `while (1)`. It is drivable because the SYNC FUNCTION is ours: it
   // hands back a scripted tick count and, when the script runs out, clears the global record's
   // active_id -- exactly the condition the thread checks to notice it was deleted.
+  
   {
     U32 tb, t1, t2, t3, dedicated, tb2unused;
     OS_timebase_prop_t tbprop;
@@ -3110,12 +3158,10 @@ I64 main()
     U32 accuracy, freerun, i1, i2, i3;
     I32 m2t;
     I32 rG;
-
     OS_TimeBaseAPI_Init;
     OS_TimerCbAPI_Init;
     OS_SharedGlobalVars.MicroSecPerTick = 10000;
     OS_SharedGlobalVars.TicksPerSecond = 100;
-
     // accuracy depends on whether a sync function was supplied.
     S("tb_ext    rc=");
     D(OS_TimeBaseCreate(&tb, "tbExt", &stub_sync_fn));
@@ -3149,7 +3195,6 @@ I64 main()
     S(" int=");
     D(tbprop.nominal_interval_time);
     S("\n");
-
     // Three timers on one time base: the ring order is the observable.
     S("t_add1    rc=");
     D(OS_TimerAdd(&t1, "t1", tb, &cb_mark, NULL));
@@ -3173,7 +3218,6 @@ I64 main()
     S(" ");
     D(i3);
     S("\n");
-
     // t1 repeats every 4 ticks; t2 is ONE-SHOT at 5 (interval 0); t3 repeats every 2.
     S("t_set1    rc=");
     D(OS_TimerSet(t1, 4, 4));
@@ -3190,7 +3234,6 @@ I64 main()
     S("t_setbig  rc=");
     D(OS_TimerSet(t1, 0x80000000, 0));
     S("\n");
-
     // Run the thread: four ticks of 3, then the script ends and it exits.
     stub_sync_script[0] = 3;
     stub_sync_script[1] = 3;
@@ -3252,7 +3295,6 @@ I64 main()
     D(freerun);
     S("\n");
     stub_t_current = 0x10001;
-
     // Deleting the MIDDLE of the ring must re-link the two either side.
     S("t_del2    rc=");
     D(OS_TimerDelete(t2));
@@ -3266,7 +3308,6 @@ I64 main()
     D(OS_TimerDelete(t3));
     S("\n");
     ring_dump("ring_d3 ", tb);
-
     // OS_TimerCreate makes its OWN time base and deleting the timer deletes it too.
     rG = OS_TimerCreate(&dedicated, "tDed", &accuracy, &tcb_noarg);
     S("t_create  rc=");
@@ -3299,7 +3340,6 @@ I64 main()
     S(" tbd=");
     D(stub_tb_deletes);
     S("\n");
-
     rG = OS_Milli2Ticks(1000, &m2t);
     S("m2t_ok    rc=");
     D(rG);
@@ -3324,7 +3364,6 @@ I64 main()
     S("\n");
     OS_SharedGlobalVars.TicksPerSecond = 100;
   }
-
   // --- osapi-sockets.c ------------------------------------------------------------------------
   // A STATE MACHINE over stream_state. Almost every function's real content is which
   // combination of BOUND / LISTENING / CONNECTED it demands and which it sets, and NASA
@@ -3332,6 +3371,7 @@ I64 main()
   // kind, wrong state" (OS_ERR_INCORRECT_OBJ_STATE, -35). A driver that only checked for
   // failure would not tell those apart, so every line prints the code and the state bits are
   // dumped after each transition.
+  
   {
     U32 dsock, ssock, conn;
     OS_SockAddr_t addr;
@@ -3340,7 +3380,6 @@ I64 main()
     U8 abuf[32];
     U16 port;
     I32 rH;
-
     stub_s_accept_rc = OS_SUCCESS;
     OS_SocketAPI_Init;
     S("k_init    rc=");
@@ -3363,7 +3402,6 @@ I64 main()
     D(stub_s_opens);
     S("\n");
     sock_state("k_st_new ", ssock);
-
     // Address helpers first, since bind needs one.
     rH = OS_SocketAddrInit(&addr, OS_SocketDomain_INET);
     S("k_ainit   rc=");
@@ -3393,7 +3431,6 @@ I64 main()
     S("k_anull   rc=");
     D(rH);
     S("\n");
-
     // listen before bind: right kind, wrong state.
     rH = OS_SocketListen(ssock);
     S("k_l_early rc=");
@@ -3425,7 +3462,6 @@ I64 main()
     S("k_l_dgram rc=");
     D(OS_SocketListen(dsock));
     S("\n");
-
     // The compatibility wrapper swallows exactly that type error, so binding a datagram socket
     // reports success even though listen refused it.
     rH = OS_SocketBind(dsock, &addr);
@@ -3435,7 +3471,6 @@ I64 main()
     D(stub_s_listens);
     S("\n");
     sock_state("k_st_dgm ", dsock);
-
     // accept requires BOUND and not CONNECTED, tested as an exact match.
     rH = OS_SocketAccept(ssock, &conn, &addr, 10);
     S("k_accept  rc=");
@@ -3453,7 +3488,6 @@ I64 main()
     S("k_acc_dg  rc=");
     D(OS_SocketAccept(dsock, &conn, &addr, 10));
     S("\n");
-
     // connect sets THREE bits at once.
     rH = OS_SocketConnect(dsock, &addr, 10);
     S("k_conn    rc=");
@@ -3478,7 +3512,6 @@ I64 main()
     S("k_shut_bad rc=");
     D(rH);
     S("\n");
-
     // recvfrom needs DATAGRAM and BOUND; sendto needs DATAGRAM but NOT bound.
     rH = OS_SocketRecvFrom(dsock, abuf, 8, &addr, 5);
     S("k_recv    rc=");
@@ -3502,7 +3535,6 @@ I64 main()
     S("k_send_na rc=");
     D(rH);
     S("\n");
-
     S("k_byname  rc=");
     D(OS_SocketGetIdByName(&conn, "A7:99"));
     S("\n");
@@ -3537,18 +3569,17 @@ I64 main()
     D(stub_s_setopt);
     S("\n");
   }
-
   // --- osapi-common.c -------------------------------------------------------------------------
   // The integration point, and the reason it was translated LAST: OS_API_Init calls every
   // other module's initialiser, so each module done before it removed a stub.
   //
   // This section runs at the END because OS_DeleteAllObjects really does delete everything,
   // which would pull the ground out from under every section above it.
+  
   {
     U32 before, after;
     U32 tmp;
     I32 rI;
-
     // Hoisted: this one LOGS, and the C evaluates printf's argument before printf emits, so
     // the marker must land before the line rather than inside it.
     rI = OS_RegisterEventHandler(NULL);
@@ -3590,7 +3621,6 @@ I64 main()
     D(stub_ev_calls);
     S("\n");
     stub_ev_rc = OS_SUCCESS;
-
     S("c_strnlen ");
     D(OS_strnlen("abc", 10));
     S(" ");
@@ -3598,7 +3628,6 @@ I64 main()
     S(" ");
     D(OS_strnlen("", 4));
     S("\n");
-
     // THE TEARDOWN, in the order OS_API_Teardown itself uses: delete everything FIRST, then
     // set the shutdown flag. The order is not cosmetic -- OS_ObjectIdTransactionInit refuses
     // every non-EXCLUSIVE operation once the flag is set, and that includes the ITERATION
@@ -3634,7 +3663,6 @@ I64 main()
     S(" queue=");
     D(stub_left[OS_OBJECT_TYPE_OS_QUEUE]);
     S("\n");
-
     // Now the shutdown flag, and what it blocks.
     stub_shutdown_hooks = 0;
     OS_ApplicationShutdown(TRUE);

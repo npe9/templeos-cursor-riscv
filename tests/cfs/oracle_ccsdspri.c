@@ -331,6 +331,11 @@ int32 OS_lseek(osal_id_t filedes, osal_offset_t offset, uint32 whence)
  * times did ES lock" has to live here, in the mutex stub, and has to tell ES's mutex apart from
  * the FS and pool mutexes that come through the same stub. */
 #define ES_SHARED_MUTEX_ID 0x1E5
+/* ES's three BASED id spaces. Up here with the mutex id rather than beside es_ctx_init below,
+ * because the ES stubs that hand back ids are declared before it. */
+#define ES_CTX_APPID(slot) CFE_ResourceId_FromInteger(CFE_ES_APPID_BASE + (slot))
+#define ES_LIBID(slot)     CFE_ResourceId_FromInteger(CFE_ES_LIBID_BASE + (slot))
+#define ES_CTRID(slot)     CFE_ResourceId_FromInteger(CFE_ES_COUNTID_BASE + (slot))
 static long es_lock_takes, es_lock_gives;
 
 int32 OS_MutSemCreate(osal_id_t *sem_id, const char *sem_name, uint32 options)
@@ -584,7 +589,6 @@ static CFE_ES_ResetData_t es_reset_area;
  * which reads happen inside it (the first block) and which deliberately do not (every block
  * after), and a transcript that cannot see the difference could not tell a correct dump from
  * one that held the lock for the entire file. */
-static long es_bytecnt_errs;
 
 /* THE LOCK PAIR IS REAL NOW: cfe_es_api.c is gated, and CFE_ES_LockSharedData takes
  * OS_MutSemTake(CFE_ES_Global.SharedDataMutex) for real. The counters above did not go away
@@ -596,11 +600,9 @@ static long es_bytecnt_errs;
  * ES_SHARED_MUTEX_ID is the id the startup sequence plants in CFE_ES_Global.SharedDataMutex. It
  * has to be distinct from the FS and pool mutexes, which share the same stub, or the counters
  * would pick up their traffic too. */
-void CFE_ES_FileWriteByteCntErr(const char *Filename, size_t Requested, int32 Status)
-{
-    ++es_bytecnt_errs;
-    printf("es_bytecnterr %s req=%lu stat=%ld\n", Filename, (unsigned long)Requested, (long)Status);
-}
+/* CFE_ES_FileWriteByteCntErr: STUB REMOVED -- cfe_es_task.c is gated, the real one runs and
+ * raises CFE_ES_FILEWRITE_ERR_EID instead of printing. es_bytecnt_errs went with it; what
+ * counts a short write now is the event in the transcript. */
 
 /* ---- what cfe_es_api.c calls and nothing gated defines ---------------------------------------
  * cfe_es_cds.c, cfe_es_cds_mempool.c, cfe_es_apps.c and cfe_es_erlog.c are all untranslated, so
@@ -829,6 +831,115 @@ void CFE_ES_CopyModuleAddressInfo(osal_id_t ModuleId, CFE_ES_AppInfo_t *AppInfoP
     printf("es_copyaddr mod=%lu\n", (unsigned long)OS_ObjectIdToInteger(ModuleId));
 }
 
+/* ---- what cfe_es_task.c calls and nothing gated defines -------------------------------------
+ * The apps/CDS/perf/background/dispatch set again, plus the PSP and OSAL version calls. Each
+ * goes away from BOTH halves on the commit that gates its source. */
+static long  es_appcreates, es_bkginits, es_cdsdeletes, es_taskpipes, es_textseg;
+static int32 es_appcreate_rc, es_bkginit_rc, es_cdsdelete_rc;
+static int32 es_textseg_rc = CFE_PSP_SUCCESS;
+static long  es_perf_remaining;
+
+int32 CFE_ES_AppCreate(CFE_ES_AppId_t *ApplicationIdPtr, const char *AppName,
+                       const CFE_ES_AppStartParams_t *Params)
+{
+    ++es_appcreates;
+    printf("es_appcreate %s file=%s entry=%s stack=%lu prio=%u exc=%u rc=%ld\n", AppName,
+           Params->BasicInfo.FileName, Params->BasicInfo.InitSymbolName,
+           (unsigned long)Params->MainTaskInfo.StackSize, (unsigned)Params->MainTaskInfo.Priority,
+           (unsigned)Params->ExceptionAction, (long)es_appcreate_rc);
+    *ApplicationIdPtr = CFE_ES_APPID_C(ES_CTX_APPID(4));
+    return es_appcreate_rc;
+}
+
+int32 CFE_ES_BackgroundInit(void)
+{
+    ++es_bkginits;
+    return es_bkginit_rc;
+}
+
+int32 CFE_ES_DeleteCDS(const char *CDSName, bool CalledByTblServices)
+{
+    ++es_cdsdeletes;
+    printf("es_deletecds %s tbl=%d rc=%ld\n", CDSName, (int)CalledByTblServices,
+           (long)es_cdsdelete_rc);
+    return es_cdsdelete_rc;
+}
+
+uint32 CFE_ES_GetPerfLogDumpRemaining(void)
+{
+    return (uint32)es_perf_remaining;
+}
+
+void CFE_ES_TaskPipe(const CFE_SB_Buffer_t *SBBufPtr)
+{
+    ++es_taskpipes;
+    printf("es_taskpipe\n");
+}
+
+/* The ER log's two background-writer callbacks. They are never CALLED here -- the FS
+ * background writer is what calls them -- but their ADDRESSES go into the state object, and
+ * the transcript prints whether each is NULL. */
+bool CFE_ES_BackgroundERLogFileDataGetter(void *Meta, uint32 RecordNum, void **Buffer,
+                                          size_t *BufSize)
+{
+    return false;
+}
+
+void CFE_ES_BackgroundERLogFileEventHandler(void *Meta, CFE_FS_FileWriteEvent_t Event,
+                                            int32 Status, uint32 RecordNum, size_t BlockSize,
+                                            size_t Position)
+{
+}
+
+int32 CFE_PSP_GetCFETextSegmentInfo(cpuaddr *PtrToCFESegment, uint32 *SizeOfCFESegment)
+{
+    ++es_textseg;
+    /* A FIXED, SMALL SEGMENT, so the CRC in housekeeping is a number both halves compute from
+     * the same bytes. Pointing it at real code would make the checksum depend on the
+     * COMPILER, which is the one thing this comparison must not do. */
+    *PtrToCFESegment  = (cpuaddr)"cFEtext";
+    *SizeOfCFESegment = 7;
+    return es_textseg_rc;
+}
+
+void CFE_PSP_GetVersionNumber(uint8 VersionNumbers[4])
+{
+    VersionNumbers[0] = 1;
+    VersionNumbers[1] = 6;
+    VersionNumbers[2] = 0;
+    VersionNumbers[3] = 0;
+}
+
+const char *CFE_PSP_GetVersionString(void)
+{
+    return "1.6.0-psp";
+}
+
+void OS_GetVersionNumber(uint8 VersionNumbers[4])
+{
+    VersionNumbers[0] = 6;
+    VersionNumbers[1] = 1;
+    VersionNumbers[2] = 0;
+    VersionNumbers[3] = 0;
+}
+
+const char *OS_GetVersionString(void)
+{
+    return "6.1.0-osal";
+}
+
+/* The heap, which only CFE_ES_SendHkCmd asks about. Steerable so the else branch -- three
+ * zeroes in housekeeping rather than a missing packet -- is reachable. */
+static int32 es_heap_rc = OS_SUCCESS;
+
+int32 OS_HeapGetInfo(OS_heap_prop_t *heap_prop)
+{
+    heap_prop->free_bytes         = 100000;
+    heap_prop->free_blocks        = 25;
+    heap_prop->largest_free_block = 40000;
+    return es_heap_rc;
+}
+
 /* NASA defines CFE_SB_Global in cfe_sb_task.c, which is not gated, so the driver supplies it --
  * the same arrangement this file has for CFE_TIME_Global and had for CFE_EVS_Global. The HolyC
  * half defines it in cfe_sb_global.HC beside its type, for the reason recorded there. */
@@ -1019,9 +1130,6 @@ osal_id_t OS_TaskGetId(void)
  * App slot 1 is "CFE_EVS" and slot 2 is "OTHER_APP" -- the same two names the removed
  * CFE_ES_GetAppIDByName stub answered for, so the EVS probes keep asking what they asked
  * before and now get the answer out of NASA's own name lookup. */
-#define ES_CTX_APPID(slot) CFE_ResourceId_FromInteger(CFE_ES_APPID_BASE + (slot))
-#define ES_LIBID(slot)     CFE_ResourceId_FromInteger(CFE_ES_LIBID_BASE + (slot))
-#define ES_CTRID(slot)     CFE_ResourceId_FromInteger(CFE_ES_COUNTID_BASE + (slot))
 #define ES_CTX_TASK_SLOT   0 /* osal id es_os_taskid == 1 maps to task table index 0 */
 
 static void es_app_slot(uint32 slot, const char *name, CFE_ES_AppType_Enum_t type,
@@ -5220,8 +5328,13 @@ int main(void)
             fs_len = 0;
             fs_pos = 0;
             fs_wr_left = 8;
-            printf("sl_dump_wrfail rc=%ld errs=%ld\n", (long)CFE_ES_SysLogDump("/ram/syslog.dat"),
-                   es_bytecnt_errs);
+            /* THE WITNESS MOVED. es_bytecnt_errs counted a stub; CFE_ES_FileWriteByteCntErr is
+             * real now (cfe_es_task.c) and raises CFE_ES_FILEWRITE_ERR_EID instead, so what
+             * says the short-write path fired is the event -- which is in the transcript
+             * above this line -- and the count of EVS output lines it produced. */
+            evs_printf_lines = 0;
+            printf("sl_dump_wrfail rc=%ld evs=%ld\n", (long)CFE_ES_SysLogDump("/ram/syslog.dat"),
+                   evs_printf_lines);
             fs_wr_left = -1;
         }
 

@@ -423,6 +423,28 @@ class CFE_ES_OneAppTlm_t
   CFE_ES_OneAppTlm_Payload_t Payload;
 };
 // NASA's own Padding[4] again, in the packet rather than from the compiler.
+// CDS REGISTRY DUMP RECORD, the on-disk format of CFE_ES_DumpCDSRegistryCmd's output. It is
+// NOT the registry entry: CFE_ES_CDS_RegRec_t is ES's own and carries offsets and a mutex
+// handle; this is the four fields the ground is given. ByteAlignSpare is NASA's own field, not
+// this port's padding, and keeps its name.
+class CFE_ES_CDSRegDumpRec_t
+{
+  U32 Handle;
+  // CFE_ES_CDSHandle_t
+  U8 _pad0[4];
+  // C aligns the size_t that follows to 8
+  I64 Size;
+  // CFE_ES_MemOffset_t -- size, in bytes, of the CDS memory block
+  Bool Table;
+  // whether the CDS contains a Critical Table
+  U8 Name[CFE_MISSION_ES_CDS_MAX_FULL_NAME_LEN];
+  U8 ByteAlignSpare[3];
+  // NASA's: "ensure structure size is multiple of 4 bytes"
+  U8 _pad1[4];
+  // C rounds the struct up to its 8 alignment; HolyC does not. NASA's own
+  // ByteAlignSpare gets it to a multiple of FOUR; the size_t member makes the alignment EIGHT.
+};
+
 class CFE_ES_PoolStatsTlm_Payload_t
 {
   U32 PoolHandle;

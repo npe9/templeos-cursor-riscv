@@ -34,7 +34,8 @@
 // have them to size its own state and they live there, with their payloads.
 #ifndef CFE_ES_MSG_HC
 #define CFE_ES_MSG_HC
-#include "cfe_es_global.HC" // the three telemetry structs and their payloads, and the enums
+// REQUIRED INCLUDE ORDER: cfe_es_global.HC first, for the three telemetry structs and their
+// payloads. It is NOT included from here -- see docs/HOLYC_STRUCT_LIMITS.md #13.
 // --- default_cfe_es_msgdefs.h: the command PAYLOADS -------------------------------------------
 class CFE_ES_RestartCmd_Payload_t
 {

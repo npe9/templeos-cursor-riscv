@@ -31,9 +31,16 @@
 #define OSAPI_ERRORS_HC
 #include "../CfsStr.HC"
 #include "os_shared_errors.HC"
-// From osapi-printf.h. That module is part of the shared layer and not translated yet; whoever
-// links this supplies it, and the gate asserts an empty import trailer so it cannot go missing.
-U0 OS_printf(U8 *fmt);
+// From osapi-printf.h. IT IS VARIADIC, and the declaration said otherwise until cfe_es_task.c
+// needed OS_heap_prop_t and pulled this file into the cFE include graph, where check_variadic
+// found OS_printf declared both ways in one graph. A HolyC variadic call is built BY THE CALL
+// SITE from the declaration in scope, so every OS_printf call compiled under the old
+// non-variadic one packed nothing and the callee read whatever the ABI left behind -- the same
+// shape that made EVS_SendEvent fault on a load from address 0.
+//
+// The stale half of the old comment was "that module is not translated yet": osapi_printf.HC
+// defines the real one.
+U0 OS_printf(U8 *fmt, ...);
 // --- osapi-error.h ---------------------------------------------------------------------------
 #define OS_ERROR_NAME_LENGTH    35
 #define OS_STATUS_STRING_LENGTH 12

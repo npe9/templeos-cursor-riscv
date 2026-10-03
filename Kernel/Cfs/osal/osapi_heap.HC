@@ -22,13 +22,7 @@
 #ifndef OSAPI_HEAP_HC
 #define OSAPI_HEAP_HC
 #include "osapi_errors.HC"
-// --- osapi-heap.h ----------------------------------------------------------------------------
-class OS_heap_prop_t
-{
-  I64 free_bytes;         // size_t
-  I64 free_blocks;        // osal_blockcount_t, itself a size_t
-  I64 largest_free_block; // size_t
-};
+#include "osapi_heap_decl.HC" // OS_heap_prop_t -- the header half, which cFE needs on its own
 // --- the backend seam --------------------------------------------------------------------------
 I32 OS_HeapGetInfo_Impl(OS_heap_prop_t *heap_prop);
 // --- osapi-heap.c ------------------------------------------------------------------------------

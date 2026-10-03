@@ -119,7 +119,9 @@
 // up until cfe_es_task.HC needed the same ones: the compiler accepts a DUPLICATE CLASS SILENTLY
 // -- two bodies under one name, no diagnostic -- so the layout rule would have been in two
 // places, free to drift, with check_padding measuring whichever one it found first.
-#include "cfe_es_msg.HC" // CFE_ES_RestartCmd_t, and the rest of ES's ground formats with it
+// The driver includes cfe_es_msg.HC before this file. It is NOT included from here: a unit
+// that re-includes a sibling the driver already read loses everything after that line, with no
+// diagnostic (docs/HOLYC_STRUCT_LIMITS.md #13).
 // --- what this file needs from elsewhere ------------------------------------------------------
 // ES's task lifecycle, the config service's version string, and the FS background file writer.
 // None of ES is translated; FS is, and CFE_FS_BackgroundFileDumpRequest lives there.

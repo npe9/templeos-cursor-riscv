@@ -143,6 +143,10 @@ I64 StrCmp(U8 *st1, U8 *st2)
 #include "/Kernel/Cfs/cfe/cfe_time_task.HC"
 #include "/Kernel/Cfs/cfe/cfe_time_dispatch.HC"
 #include "/Kernel/Cfs/cfe/cfe_time_objtab.HC"
+// cfe_es_msg.HC before SB, because cfe_sb_task.c sizes a pool block with
+// sizeof(CFE_ES_RestartCmd_t) -- NASA's own `#include "cfe_es_msg.h"` in that file.
+#include "/Kernel/Cfs/cfe/cfe_es_global.HC"
+#include "/Kernel/Cfs/cfe/cfe_es_msg.HC"
 #include "/Kernel/Cfs/cfe/cfe_sb_global.HC"
 #include "/Kernel/Cfs/cfe/cfe_sb_buf.HC"
 #include "/Kernel/Cfs/cfe/cfe_sb_init.HC"
@@ -153,11 +157,11 @@ I64 StrCmp(U8 *st1, U8 *st2)
 #include "/Kernel/Cfs/cfe/cfe_sb_objtab.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_crc.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_generic_pool.HC"
-#include "/Kernel/Cfs/cfe/cfe_es_global.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_syslog.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_mempool.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_resource.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_api.HC"
+#include "/Kernel/Cfs/osal/osapi_heap_decl.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -417,6 +421,11 @@ Bool OS_ObjectIdDefined(U32 object_id)
 // times did ES lock" has to live here, in the mutex stub, and has to tell ES's mutex apart from
 // the FS and pool mutexes that come through the same stub.
 #define ES_SHARED_MUTEX_ID 0x1E5
+// ES's three BASED id spaces. Up here with the mutex id rather than beside es_ctx_init below,
+// because the ES stubs that hand back ids are defined before it.
+#define ES_CTX_APPID(slot) (CFE_ES_APPID_BASE + (slot))
+#define ES_LIBID(slot)     (CFE_ES_LIBID_BASE + (slot))
+#define ES_CTRID(slot)     (CFE_ES_COUNTID_BASE + (slot))
 I64 es_lock_takes, es_lock_gives;
 I32 OS_MutSemCreate(U32 *sem_id, U8 *sem_name, U32 options)
 {
@@ -534,7 +543,6 @@ CFE_ES_ResetData_t es_reset_area;
 // which reads happen inside it (the first block) and which deliberately do not (every block
 // after), and a transcript that cannot see the difference could not tell a correct dump from
 // one that held the lock for the entire file.
-I64 es_bytecnt_errs;
 // THE LOCK PAIR IS REAL NOW: cfe_es_api.c is gated, and CFE_ES_LockSharedData takes
 // OS_MutSemTake(CFE_ES_Global.SharedDataMutex) for real. The counters above did not go away
 // with the stub -- they MOVED into the mutex stub, which bumps them only for ES's own mutex id.
@@ -545,17 +553,9 @@ I64 es_bytecnt_errs;
 // ES_SHARED_MUTEX_ID is the id the startup sequence plants in CFE_ES_Global.SharedDataMutex. It
 // has to be distinct from the FS and pool mutexes, which share the same stub, or the counters
 // would pick up their traffic too.
-U0 CFE_ES_FileWriteByteCntErr(U8 *Filename, I64 Requested, I32 Status)
-{
-  ++es_bytecnt_errs;
-  S("es_bytecnterr ");
-  S(Filename);
-  S(" req=");
-  D(Requested);
-  S(" stat=");
-  D(Status);
-  S("\n");
-}
+// CFE_ES_FileWriteByteCntErr: STUB REMOVED -- cfe_es_task.c is gated, the real one runs and
+// raises CFE_ES_FILEWRITE_ERR_EID instead of printing. es_bytecnt_errs went with it; what
+// counts a short write now is the event in the transcript.
 // ---- what cfe_es_api.c calls and nothing gated defines ---------------------------------------
 // cfe_es_cds.c, cfe_es_cds_mempool.c, cfe_es_apps.c and cfe_es_erlog.c are all untranslated, so
 // nineteen of their functions are stubs here and in the C half, written to match. This is the
@@ -784,6 +784,128 @@ U0 CFE_ES_CopyModuleAddressInfo(U32 ModuleId, CFE_ES_AppInfo_t *AppInfoPtr)
   D(ModuleId);
   S("\n");
 }
+// ---- what cfe_es_task.c calls and nothing gated defines -------------------------------------
+// The apps/CDS/perf/background/dispatch set again, plus the PSP and OSAL version calls. Each
+// goes away from BOTH halves on the commit that gates its source.
+I64 es_appcreates, es_bkginits, es_cdsdeletes, es_taskpipes, es_textseg;
+I32 es_appcreate_rc, es_bkginit_rc, es_cdsdelete_rc;
+I32 es_textseg_rc;
+I64 es_perf_remaining;
+I32 es_heap_rc;
+I32 CFE_ES_AppCreate(U32 *ApplicationIdPtr, U8 *AppName, CFE_ES_AppStartParams_t *Params)
+{
+  ++es_appcreates;
+  S("es_appcreate ");
+  S(AppName);
+  S(" file=");
+  S(Params->BasicInfo.FileName);
+  S(" entry=");
+  S(Params->BasicInfo.InitSymbolName);
+  S(" stack=");
+  D(Params->MainTaskInfo.StackSize);
+  S(" prio=");
+  D(Params->MainTaskInfo.Priority);
+  S(" exc=");
+  D(Params->ExceptionAction);
+  S(" rc=");
+  D(es_appcreate_rc);
+  S("\n");
+  *ApplicationIdPtr = ES_CTX_APPID(4);
+  return es_appcreate_rc;
+}
+
+I32 CFE_ES_BackgroundInit()
+{
+  ++es_bkginits;
+  return es_bkginit_rc;
+}
+
+I32 CFE_ES_DeleteCDS(U8 *CDSName, Bool CalledByTblServices)
+{
+  ++es_cdsdeletes;
+  S("es_deletecds ");
+  S(CDSName);
+  S(" tbl=");
+  D(CalledByTblServices);
+  S(" rc=");
+  D(es_cdsdelete_rc);
+  S("\n");
+  return es_cdsdelete_rc;
+}
+
+U32 CFE_ES_GetPerfLogDumpRemaining()
+{
+  return es_perf_remaining;
+}
+
+U0 CFE_ES_TaskPipe(CFE_SB_Buffer *SBBufPtr)
+{
+  ++es_taskpipes;
+  S("es_taskpipe\n");
+}
+// The ER log's two background-writer callbacks. They are never CALLED here -- the FS
+// background writer is what calls them -- but their ADDRESSES go into the state object, and
+// the transcript prints whether each is NULL.
+Bool CFE_ES_BackgroundERLogFileDataGetter(U8 *Meta, U32 RecordNum, U8 **Buffer, I64 *BufSize)
+{
+  return FALSE;
+}
+
+U0 CFE_ES_BackgroundERLogFileEventHandler(U8 *Meta, I32 Event, I32 Status, U32 RecordNum, I64 BlockSize, I64 Position)
+{
+}
+
+I32 CFE_PSP_GetCFETextSegmentInfo(U64 *PtrToCFESegment, U32 *SizeOfCFESegment)
+{
+  ++es_textseg;
+  // A FIXED, SMALL SEGMENT, so the CRC in housekeeping is a number both halves compute from
+  // the same bytes. Pointing it at real code would make the checksum depend on the COMPILER,
+  // which is the one thing this comparison must not do.
+  *PtrToCFESegment = "cFEtext";
+  *SizeOfCFESegment = 7;
+  return es_textseg_rc;
+}
+
+U0 CFE_PSP_GetVersionNumber(U8 *VersionNumbers)
+{
+  VersionNumbers[0] = 1;
+  VersionNumbers[1] = 6;
+  VersionNumbers[2] = 0;
+  VersionNumbers[3] = 0;
+}
+
+U8 *CFE_PSP_GetVersionString()
+{
+  return "1.6.0-psp";
+}
+
+U0 OS_GetVersionNumber(U8 *VersionNumbers)
+{
+  VersionNumbers[0] = 6;
+  VersionNumbers[1] = 1;
+  VersionNumbers[2] = 0;
+  VersionNumbers[3] = 0;
+}
+
+U8 *OS_GetVersionString()
+{
+  return "6.1.0-osal";
+}
+// The heap, which only CFE_ES_SendHkCmd asks about. Steerable so the else branch -- three
+// zeroes in housekeeping rather than a missing packet -- is reachable.
+I32 OS_HeapGetInfo(OS_heap_prop_t *heap_prop)
+{
+  heap_prop->free_bytes = 100000;
+  heap_prop->free_blocks = 25;
+  heap_prop->largest_free_block = 40000;
+  return es_heap_rc;
+}
+// cfe_es_task.HC GOES HERE, NOT WITH THE OTHER INCLUDES AT THE TOP, and the reason is a HolyC
+// rule rather than a preference: CFE_ES_WriteERLogCmd takes the ADDRESS of
+// CFE_ES_BackgroundERLogFileDataGetter and CFE_ES_BackgroundERLogFileEventHandler, and a
+// forward DECLARATION is not enough for that -- the definitions have to have been seen. Both
+// are stubs in this file (cfe_es_erlog.c is not gated), so the include follows them.
+#include "/Kernel/Cfs/cfe/cfe_es_task.HC"
 // THE SIMULATED MEMORY POOL IS GONE from both halves of this driver. CFE_ES_PoolCreateEx,
 // CFE_ES_GetPoolBuf and CFE_ES_PutPoolBuf were a hand-written bump allocator here;
 // cfe_es_mempool.HC and cfe_es_generic_pool.HC are gated now, so every allocation in the
@@ -1377,9 +1499,6 @@ U32 OS_TaskGetId()
 // App slot 1 is "CFE_EVS" and slot 2 is "OTHER_APP" -- the same two names the removed
 // CFE_ES_GetAppIDByName stub answered for, so the EVS probes keep asking what they asked
 // before and now get the answer out of NASA's own name lookup.
-#define ES_CTX_APPID(slot) (CFE_ES_APPID_BASE + (slot))
-#define ES_LIBID(slot)     (CFE_ES_LIBID_BASE + (slot))
-#define ES_CTRID(slot)     (CFE_ES_COUNTID_BASE + (slot))
 #define ES_CTX_TASK_SLOT   0
 // osal id es_os_taskid == 1 maps to task table index 0
 U0 es_app_slot(U32 slot, U8 *name, U32 type, U32 state)
@@ -7199,11 +7318,16 @@ I64 main()
       fs_len = 0;
       fs_pos = 0;
       fs_wr_left = 8;
+      // THE WITNESS MOVED. es_bytecnt_errs counted a stub; CFE_ES_FileWriteByteCntErr is real
+      // now (cfe_es_task.c) and raises CFE_ES_FILEWRITE_ERR_EID instead, so what says the
+      // short-write path fired is the event -- which is in the transcript above this line --
+      // and the count of EVS output lines it produced.
+      evs_printf_lines = 0;
       src = CFE_ES_SysLogDump("/ram/syslog.dat");
       S("sl_dump_wrfail rc=");
       D(src);
-      S(" errs=");
-      D(es_bytecnt_errs);
+      S(" evs=");
+      D(evs_printf_lines);
       S("\n");
       fs_wr_left = -1;
     }

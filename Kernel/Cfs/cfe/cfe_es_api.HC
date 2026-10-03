@@ -137,6 +137,18 @@ Bool CFE_ES_CDSBlockRecordIsMatch(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr, U32 Block
 {
   return (CDSBlockRecPtr != NULL && CFE_ResourceId_Equal(CDSBlockRecPtr->BlockID, BlockID));
 }
+
+Bool CFE_ES_CDSBlockRecordIsUsed(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr)
+{
+  return CFE_ResourceId_IsDefined(CDSBlockRecPtr->BlockID);
+}
+// THE USER SIZE IS NOT THE BLOCK SIZE: every CDS block carries a CFE_ES_CDS_BlockHeader_t of
+// its own -- a size and a CRC, so a block that survived a reset can be checked -- and what the
+// owning app asked for is what is left.
+I64 CFE_ES_CDSBlockRecordGetUserSize(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr)
+{
+  return (CDSBlockRecPtr->BlockSize - sizeof(CFE_ES_CDS_BlockHeader_t));
+}
 I32 CFE_ES_CDSBlockRead(U8 *DataToCopy, U32 Handle);
 I32 CFE_ES_RegisterCDSEx(U32 *HandlePtr, I64 UserBlockSize, U8 *Name, Bool CriticalTbl);
 I32 CFE_ES_LockCDS();

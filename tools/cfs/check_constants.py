@@ -134,6 +134,10 @@ CSRC_DEFS = [
     os.path.join(ROOT, "vendor", "cFE", "modules", "msg", "fsw", "src", "cfe_msg_sechdr_fc.c"),
     os.path.join(ROOT, "vendor", "cFE", "modules", "sbr", "fsw", "src", "cfe_sbr_map_hash.c"),
     os.path.join(ROOT, "vendor", "cFE", "modules", "evs", "fsw", "src", "cfe_evs_task.c"),
+    # OS_MAX_PRIORITY is NOT an OSAL symbol -- cfe_es_task.c defines it itself, with NASA's own
+    # comment "This define should be put in the OS API headers". A constant a .c file invents
+    # is exactly what this list exists for.
+    os.path.join(ROOT, "vendor", "cFE", "modules", "es", "fsw", "src", "cfe_es_task.c"),
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-file.c"),
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-idmap.c"),
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-timebase.c"),
@@ -161,6 +165,9 @@ def probe(names):
         # to pass on CFE_ES_SYSLOG2_EID rather than file it as "a name this port invented",
         # which is the behaviour that distinguishes a missing header from a local constant.
         "cfe_es_eventids.h", "cfe_es_platform_cfg.h", "cfe_es_msgids.h",
+        # ES's task header: the command pipe's name and depth, and the 42-entry cap on what one
+        # QueryAll dump can hold. None of the three is reachable from any header already here.
+        "cfe_es_task.h",
     ]
     body = ["#include <stdio.h>", "#include <stddef.h>"] + ['#include "%s"' % h for h in hdrs]
     # THE `#define`s NASA PUTS IN A .c FILE, lifted in textually. A constant the translation
@@ -172,12 +179,23 @@ def probe(names):
     # translation spelled it 48, and the real value is 56. Only the differential transcript
     # noticed. CSRC_DEFS is why the probe can now see them; check_structs.py scans .c files for
     # typedefs and check_padding.py lifts them for the same reason.
+    # A MULTI-LINE #define HAS TO BE TAKEN WHOLE. Lifting only its first line leaves a dangling
+    # backslash, and the continuation then swallows whatever is appended next -- so adding
+    # cfe_es_task.c (whose CFE_ES_PERF_TRIGGERMASK_INT_SIZE is two lines) silently ate the
+    # OS_MAX_PRIORITY define that came after it, and the gate reported OS_MAX_PRIORITY as
+    # "NASA defines this and the probe cannot see it". The lifter now consumes continuations.
     for cf in CSRC_DEFS:
         if not os.path.isfile(cf):
             continue
-        for line in open(cf, errors="replace").read().split("\n"):
-            if re.match(r'^[ \t]*#[ \t]*define[ \t]+[A-Za-z_]\w*', line):
-                body.append(line)
+        lines = open(cf, errors="replace").read().split("\n")
+        i = 0
+        while i < len(lines):
+            if re.match(r'^[ \t]*#[ \t]*define[ \t]+[A-Za-z_]\w*', lines[i]):
+                body.append(lines[i])
+                while lines[i].rstrip().endswith("\\") and i + 1 < len(lines):
+                    i += 1
+                    body.append(lines[i])
+            i += 1
     body.append("int main(void){")
     for n in names:
         body.append("#ifdef %s" % n)
