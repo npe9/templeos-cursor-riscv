@@ -852,3 +852,41 @@ Two things it does **not** claim. It says nothing about multi-word atomicity —
 4-byte aligned `I32`, so a RISC-V `lw`/`sw` is atomic and the question does not arise. And it
 says nothing about ordering across cores; the port is single-core today, and an SMP `cFE` would
 need fences that no C `volatile` provides either.
+
+---
+
+## 19. A char array initialised from a string literal: three of four spellings are wrong — OPEN
+
+`cfe_es_api.c` opens `CFE_ES_RegisterCDS` with two of these:
+
+```c
+char AppName[OS_MAX_API_NAME]                      = { "UNKNOWN" };
+char CDSName[CFE_MISSION_ES_CDS_MAX_FULL_NAME_LEN] = { "" };
+```
+
+Four spellings were measured under QEMU. **Three produce different bytes than C does, with no
+diagnostic at all** — the compiler accepts every one of them:
+
+| Spelling | Scope | What lands in the array |
+|---|---|---|
+| `U8 A[20] = "UNKNOWN";` | local | the seven characters, terminator, tail zeroed — **correct** |
+| `U8 A[20] = {"UNKNOWN"};` | local | `0x18`, then zeros |
+| `U8 G[20] = "UNKNOWN";` | file | the string literal's **address**, as bytes (`30 02 80 80 …`) |
+| `U8 G[20] = {"UNKNOWN"};` | file | all zeros |
+
+The local unbraced form is correct in both respects that matter: the characters are copied, and
+the thirteen bytes after the terminator are zero even when the stack underneath was deliberately
+dirtied first. That is the form the translation uses, and `tests/exec/cases/
+e_char_array_string_init.hc` pins it.
+
+**The file-scope rows are the dangerous ones**, because the natural translation of NASA's
+`static const char TAG[] = "<<FRAGMENT>> ";` is a file-scope array, and what it would compare
+against NASA's characters is a pointer value or a run of zeros. The workaround is already in use
+in `cfe_es_syslog.HC`: declare it as a `U8 *` to the literal instead of an array. The cost is
+that `sizeof(TAG) - 1` no longer works, so the length has to be written out as a constant by
+hand — which that file does, with the reason stated next to it.
+
+Why this is OPEN rather than a deviation: the local form is enough for every site in the
+translation so far, so nothing is blocked, but a compiler that accepts four spellings of one
+construct and miscompiles three of them is a defect in the compiler, not a property of the
+language.
