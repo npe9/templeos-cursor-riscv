@@ -120,7 +120,7 @@ HDRS = [
     # BEFORE it, and putting global first produced five "unknown type name" errors rather than
     # a silent skip, which is the right way for that to fail.
     "cfe_es_erlog_typedef.h", "cfe_es_apps.h", "cfe_es_appctrl.h", "cfe_es_mempool.h",
-    "cfe_es_cds.h", "cfe_es_perf.h", "cfe_es_global.h",
+    "cfe_es_cds.h", "cfe_es_perf.h", "cfe_es_log.h", "cfe_es_global.h",
     # TIME's own, for the same reason: its twenty-three messages, the seven enum typedefs their
     # fields are spelled with, and CFE_TIME_Global's internal types.
     "cfe_time_module_all.h", "cfe_time_utils.h",
@@ -496,9 +496,13 @@ def main(argv):
     if unpaired:
         print("  not compared here, no NASA counterpart (check_structs.py owns this): %s"
               % ", ".join(unpaired))
+    # The padded LIST is printed under -v only. It was worth reading inline at six entries and
+    # is a wall at sixty-two, and a summary line nobody reads is a summary line that can carry a
+    # wrong number unnoticed -- which is exactly what it did before the count was fixed.
+    if verbose and padded:
+        print("  carry explicit padding (%d): %s" % (len(padded), ", ".join(sorted(padded))))
     print("cfs-padding: %d translated classes have NASA's byte layout%s%s" %
-          (checked, (" (%d carry explicit padding: %s)" % (len(padded), ", ".join(sorted(padded))))
-           if padded else "",
+          (checked, (", %d carry explicit padding" % len(padded)) if padded else "",
            (", %d unpaired and so NOT measured" % len(unpaired)) if unpaired else ""))
     return 0
 

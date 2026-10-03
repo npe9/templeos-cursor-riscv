@@ -157,6 +157,10 @@ def probe(names):
         # module-private header, and ta's task priority/stack in its platform config. Both were
         # found by the unseen-but-defined check rather than by anyone noticing.
         "cfe_msg_defaults.h", "cfe_ta_platform_cfg.h",
+        # ES's event ids and its own platform config, as the module arrives. The gate refused
+        # to pass on CFE_ES_SYSLOG2_EID rather than file it as "a name this port invented",
+        # which is the behaviour that distinguishes a missing header from a local constant.
+        "cfe_es_eventids.h", "cfe_es_platform_cfg.h", "cfe_es_msgids.h",
     ]
     body = ["#include <stdio.h>", "#include <stddef.h>"] + ['#include "%s"' % h for h in hdrs]
     # THE `#define`s NASA PUTS IN A .c FILE, lifted in textually. A constant the translation

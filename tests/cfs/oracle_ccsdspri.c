@@ -37,6 +37,17 @@
 #include "cfe_sb_dispatch.h"  /* CFE_SB_ProcessCmdPipePkt; the module's own private header */
 #include "cfe_es_generic_pool.h" /* the pool record, descriptor and bucket; ES module-private */
 #include "cfe_es_crc.h"          /* CFE_ES_ComputeCRC_GetParams and the algorithm typedef */
+/* ES's module-private headers, in dependency order -- cfe_es_global.h does not include the
+ * types it embeds, because cFE relies on cfe_es_module_all.h having pulled them in first. The
+ * same ordering constraint check_padding.py's HDRS list records. */
+#include "cfe_es_erlog_typedef.h"
+#include "cfe_es_apps.h"
+#include "cfe_es_appctrl.h"
+#include "cfe_es_mempool.h"
+#include "cfe_es_cds.h"
+#include "cfe_es_perf.h"
+#include "cfe_es_log.h"
+#include "cfe_es_global.h"
 #include "cfe_sb_eventids.h"   /* the event ids the subscribe counters switch on */
 #include "cfe_evs_msgids.h"   /* CFE_EVS_CMD_MID, CFE_EVS_SEND_HK_MID */
 /* cfe_evs_dispatch.c's two local functions: NASA declares them at the top of that .c, not in a
@@ -181,6 +192,12 @@ static int32 es_pool_commit(CFE_ES_GenPoolRecord_t *PoolRecPtr, size_t Offset,
  * table. */
 static const unsigned char CRC_PROBE[] = "123456789";
 
+/* A message LONGER THAN HALF THE LOG, for the truncation and wrap paths. 4100 bytes: the
+ * per-message cap is CFE_PLATFORM_ES_SYSTEM_LOG_SIZE/2 = 4096, so this is just over it and
+ * exercises the cap rather than merely approaching it. At file scope because the guest's stack
+ * is not the place for it. */
+static char es_big_msg[4101];
+
 /* Non-static in cfe_es_generic_pool.c and declared in no header -- the same arrangement as
  * CFE_SBR_MsgIdHash above. They are declared here because the INVERTED BUCKET ID is the part of
  * this module most worth pinning: FindBucket returns NumBuckets - Index so that a valid bucket
@@ -195,6 +212,11 @@ CFE_ES_GenPoolBucket_t *CFE_ES_GenPoolGetBucketState(CFE_ES_GenPoolRecord_t *Poo
  * itself and not only against whatever the table happens to point at. */
 uint32 CFE_ES_ComputeCRC_Algo_NONE(const void *DataPtr, size_t DataLength, uint32 InputCRC);
 uint32 CFE_ES_ComputeCRC_Algo_16_ARC(const void *DataPtr, size_t DataLength, uint32 InputCRC);
+/* Non-static in cfe_es_mempool.c and declared in no header -- the third such case in this file,
+ * after CFE_SBR_MsgIdHash and the generic pool's bucket helpers. It is wanted here because the
+ * three tests it makes are the only check that a pool's BASE ADDRESS is real memory, which is
+ * the one thing the pool cannot verify for itself. */
+bool CFE_ES_ValidateHandle(CFE_ES_MemHandle_t Handle);
 
 /* Non-static in cfe_sbr_map_hash.c but declared in no header at all -- not even the module's own
  * cfe_sbr_priv.h, which declares only Init_Map and SetRouteId. Declared here because the hash is
@@ -569,6 +591,43 @@ int32 OS_TimerSet(osal_id_t timer_id, uint32 start_time, uint32 interval_time)
     return time_timerset_rc;
 }
 
+/* ES's STATE, 57,400 bytes. NASA defines CFE_ES_Global in cfe_es_api.c, which is not gated
+ * yet, so the driver supplies it; the HolyC half defines it in cfe_es_global.HC beside its
+ * type, for the reason recorded there. It is zero-initialised and ResetDataPtr is aimed at the
+ * reset area below, which is what makes the system log writable: the log buffer and its three
+ * indices live in memory that survives a processor reset, not in CFE_ES_Global itself. */
+CFE_ES_Global_t CFE_ES_Global;
+static CFE_ES_ResetData_t es_reset_area;
+
+/* cfe_es_api.c and cfe_es_task.c are not gated, so three of their functions are stubs on BOTH
+ * halves -- the same temporary arrangement CFE_SB_SendSubscriptionReport had until
+ * cfe_sb_task.c landed, and it goes away the same way.
+ *
+ * The lock pair is a COUNTER rather than a no-op on purpose: the syslog's whole design is about
+ * which reads happen inside it (the first block) and which deliberately do not (every block
+ * after), and a transcript that cannot see the difference could not tell a correct dump from
+ * one that held the lock for the entire file. */
+static long es_lock_takes, es_lock_gives;
+static long es_bytecnt_errs;
+
+void CFE_ES_LockSharedData(const char *FunctionName, int32 LineNumber)
+{
+    (void)FunctionName; (void)LineNumber;
+    ++es_lock_takes;
+}
+
+void CFE_ES_UnlockSharedData(const char *FunctionName, int32 LineNumber)
+{
+    (void)FunctionName; (void)LineNumber;
+    ++es_lock_gives;
+}
+
+void CFE_ES_FileWriteByteCntErr(const char *Filename, size_t Requested, int32 Status)
+{
+    ++es_bytecnt_errs;
+    printf("es_bytecnterr %s req=%lu stat=%ld\n", Filename, (unsigned long)Requested, (long)Status);
+}
+
 /* NASA defines CFE_SB_Global in cfe_sb_task.c, which is not gated, so the driver supplies it --
  * the same arrangement this file has for CFE_TIME_Global and had for CFE_EVS_Global. The HolyC
  * half defines it in cfe_sb_global.HC beside its type, for the reason recorded there. */
@@ -765,75 +824,112 @@ int32 CFE_ES_GetTaskInfo(CFE_ES_TaskInfo_t *TaskInfo, CFE_ES_TaskId_t TaskId)
  * enable/disable pair is exercised directly in the task section. */
 static uint32 sb_api_idx;
 
-/* A SIMULATED MEMORY POOL, and it is a real bump allocator rather than a success stub, because
- * what cfe_sb_buf.c is for is BUFFER LIFETIME: a message sent to three pipes is one buffer with
- * UseCount 3, and the third release is what frees it. A stub that handed back the same address
- * every time would make the accounting in StatTlmMsg.Payload agree with itself and prove
- * nothing.
+/* THE SIMULATED MEMORY POOL IS GONE. CFE_ES_PoolCreateEx, CFE_ES_GetPoolBuf and
+ * CFE_ES_PutPoolBuf were a hand-written bump allocator here -- an 8-byte size header per block,
+ * a cursor that never rewound, and a comment explaining why a success stub would have proved
+ * nothing. cfe_es_mempool.c and cfe_es_generic_pool.c are gated now, so every allocation in the
+ * transcript goes through NASA's real pool: real buckets, a real free stack that recycles, real
+ * check patterns, and the resource-id table in CFE_ES_Global.
  *
- * Each block carries an 8-byte SIZE HEADER before the address handed out, because NASA's
- * contract is that both CFE_ES_GetPoolBuf and CFE_ES_PutPoolBuf RETURN THE BLOCK SIZE -- and
- * CFE_SB_GetDestinationBlk adds that return value to MemInUse rather than the size it asked
- * for, since a real pool rounds up to a block size. Keeping the header means the free path can
- * answer honestly. */
-static unsigned char *sb_pool_base;
-static size_t         sb_pool_size;
-static size_t         sb_pool_next;
-static long           sb_pool_creates, sb_pool_gets, sb_pool_puts;
-static int32          sb_poolcreate_rc = CFE_SUCCESS;
-static int32          sb_getpool_rc    = CFE_SUCCESS; /* <0 forces the allocation failure path */
-/* OS_MutSemCreate is ALREADY stubbed above, for FS, and SB's EarlyInit uses that one: it counts
- * into fs_mut_create and its result is fs_mut_create_rc. One stub per OSAL call in this file, so
- * a second definition would be a link error rather than a second opinion -- which is how this
- * was found. */
+ * sb_getpool_rc WENT WITH IT, and that needed a replacement rather than a deletion: it was the
+ * fault injector for every "allocation failed" path in TA, EVS, TIME and SB. es_pool_exhaust()
+ * below is the real thing -- it moves the pool's TailPosition to its end, so the next
+ * CFE_ES_GenPoolCreatePoolBlock finds no room and returns CFE_ES_ERR_MEM_BLOCK_SIZE from NASA's
+ * own code. A pool with no free stack and no room is exactly what a full pool is.
+ *
+ * Two OSAL/PSP calls are still stubs. OS_MutSemCreate is ALREADY stubbed above, for FS, and the
+ * pool's mutex uses that one -- one stub per OSAL call in this file, so a second definition
+ * would be a link error rather than a second opinion, which is how that was found. */
+static long es_mutsem_deletes;
+static long es_psp_validates;
+static int32 es_psp_validate_rc = CFE_PSP_SUCCESS;
 
-int32 CFE_ES_PoolCreateEx(CFE_ES_MemHandle_t *PoolID, void *MemPtr, size_t Size,
-                          uint16 NumBlockSizes, const size_t *BlockSizes, bool UseMutex)
+int32 OS_MutSemDelete(osal_id_t sem_id)
 {
-    (void)NumBlockSizes; (void)BlockSizes; (void)UseMutex;
-    ++sb_pool_creates;
-    sb_pool_base = MemPtr;
-    sb_pool_size = Size;
-    sb_pool_next = 0;
-    *PoolID      = CFE_ES_MEMHANDLE_C(CFE_ResourceId_FromInteger(0x7771));
-    return sb_poolcreate_rc;
+    (void)sem_id;
+    ++es_mutsem_deletes;
+    return OS_SUCCESS;
 }
 
-int32 CFE_ES_GetPoolBuf(CFE_ES_MemPoolBuf_t *BufPtr, CFE_ES_MemHandle_t Handle, size_t Size)
+int32 CFE_PSP_MemValidateRange(cpuaddr Address, size_t Size, uint32 MemoryType)
 {
-    size_t need;
-    (void)Handle;
-    if (sb_getpool_rc < 0)
-    {
-        return sb_getpool_rc;
-    }
-    /* 8 bytes of header, then the block, then round the cursor to 8 */
-    need = (Size + 8 + 7) & ~(size_t)7;
-    if (sb_pool_base == NULL || sb_pool_next + need > sb_pool_size)
-    {
-        return CFE_ES_ERR_MEM_BLOCK_SIZE;
-    }
-    ++sb_pool_gets;
-    memcpy(sb_pool_base + sb_pool_next, &Size, sizeof(Size));
-    *BufPtr = CFE_ES_MEMPOOLBUF_C((cpuaddr)(sb_pool_base + sb_pool_next + 8));
-    sb_pool_next += need;
-    return (int32)Size;
+    (void)Address; (void)Size; (void)MemoryType;
+    ++es_psp_validates;
+    return es_psp_validate_rc;
 }
 
-int32 CFE_ES_PutPoolBuf(CFE_ES_MemHandle_t Handle, CFE_ES_MemPoolBuf_t BufPtr)
+/* AND DO NOT USE IT TO FAIL SB'S POOL CREATE. CFE_SB_InitBuffers' failure message prints
+ * `gave adr 0x%lx` -- the partition's address -- so that line cannot be compared across a host
+ * process and a QEMU guest. It is out of the transcript because the pool SUCCEEDS, not because
+ * it is unreachable: exhausting SB's pool before EarlyInit is the obvious next use of this
+ * helper, and it would resurrect a diff of 0x102e21bd8 against 0x808BB948. Same rule as
+ * CFE_SB_CreatePipe's argument-check branch.
+ *
+ * Fill a pool so the next allocation cannot fit, and put it back. White-box on purpose: there
+ * is no API for "make the next GetPoolBuf fail", and a 512 KiB pool cannot be exhausted a
+ * block at a time inside a transcript. */
+static size_t es_pool_saved_tail;
+
+/* BOTH ARE NULL-SAFE, and that is not defensive padding: several of the sites that used to set
+ * sb_getpool_rc back to CFE_SUCCESS run BEFORE SB's EarlyInit, where there is no pool and the
+ * handle resolves to nothing. The old stub ignored its handle entirely so those lines were
+ * no-ops; with the real pool they are lookups that can fail, and doing nothing is the correct
+ * answer rather than a crash. */
+static void es_pool_exhaust(CFE_ES_MemHandle_t Handle)
 {
-    size_t         sz;
-    unsigned char *p = (unsigned char *)BufPtr;
-    (void)Handle;
-    if (p == NULL)
+    CFE_ES_MemPoolRecord_t *r = CFE_ES_LocateMemPoolRecordByID(Handle);
+    if (r != NULL && r->Pool.TailPosition != r->Pool.PoolMaxOffset)
     {
-        return CFE_ES_ERR_RESOURCEID_NOT_VALID;
+        /* The TailPosition test makes a second exhaust a no-op. There are ten call sites and
+         * es_pool_saved_tail is ONE variable: without it, exhaust-exhaust-restore saves
+         * PoolMaxOffset as the "real" tail and leaves the pool permanently full. Proving the
+         * crash earlier in this session had a different cause did not make this safe. */
+        es_pool_saved_tail   = r->Pool.TailPosition;
+        r->Pool.TailPosition = r->Pool.PoolMaxOffset;
     }
-    ++sb_pool_puts;
-    /* The cursor is NOT rewound: this pool never reuses, so a double free is visible as a
-     * second decrement of the counters rather than as two buffers at one address. */
-    memcpy(&sz, p - 8, sizeof(sz));
-    return (int32)sz;
+}
+
+static void es_pool_restore(CFE_ES_MemHandle_t Handle)
+{
+    CFE_ES_MemPoolRecord_t *r = CFE_ES_LocateMemPoolRecordByID(Handle);
+    if (r != NULL)
+    {
+        r->Pool.TailPosition = es_pool_saved_tail;
+    }
+}
+
+/* THE THREE COUNTERS THE TRANSCRIPT USED TO PRINT, now read out of NASA'S OWN POOL instead of
+ * out of my stub's locals. That is the point of this change: AllocationCount is the pool's
+ * record of every block it has ever handed out, and the per-bucket ReleaseCount is its record
+ * of every one given back -- the same numbers CFE_ES_GetMemPoolStats reports to the ground.
+ *
+ * es_pool_puts sums ReleaseCount across the buckets because there is no aggregate: a free is
+ * recorded against the bucket the block came from, which is also how NumFree is derived
+ * (ReleaseCount - RecycleCount). */
+static long es_pool_creates(void)
+{
+    return CFE_ES_ValidateHandle(CFE_SB_Global.Mem.PoolHdl) ? 1 : 0;
+}
+
+static long es_pool_gets(void)
+{
+    CFE_ES_MemPoolRecord_t *r = CFE_ES_LocateMemPoolRecordByID(CFE_SB_Global.Mem.PoolHdl);
+    return (r == NULL) ? 0 : (long)r->Pool.AllocationCount;
+}
+
+static long es_pool_puts(void)
+{
+    CFE_ES_MemPoolRecord_t *r = CFE_ES_LocateMemPoolRecordByID(CFE_SB_Global.Mem.PoolHdl);
+    long                    n = 0;
+    uint16                  i;
+    if (r != NULL)
+    {
+        for (i = 0; i < r->Pool.NumBuckets; ++i)
+        {
+            n += r->Pool.Buckets[i].ReleaseCount;
+        }
+    }
+    return n;
 }
 
 /* A registered 1Hz synchronisation callback. CFE_TIME_NotifyTimeSynchApps walks the registry and
@@ -1077,6 +1173,31 @@ int main(void)
      * free. CFE_SB_EarlyInit is what sets LastPipeId to CFE_SB_PIPEID_BASE - 1 and stands up
      * the memory pool the destination blocks come from. cFE's own startup calls it first too;
      * the SB section below calls it again, deliberately, to exercise it. */
+    /* ES'S RESET AREA HAS TO BE AIMED BEFORE ANYTHING CAN LOG, and that became load-bearing
+     * the moment cfe_es_mempool.c was gated: the real pool calls CFE_ES_WriteToSysLog on every
+     * failure path, the syslog writes into CFE_ES_Global.ResetDataPtr->SystemLog, and a NULL
+     * there is a dereference of 0 rather than a dropped message. cFE does this in
+     * CFE_ES_SetupResetVariables during startup; the syslog section below re-clears it. */
+    memset(&es_reset_area, 0, sizeof(es_reset_area));
+    CFE_ES_Global.ResetDataPtr                = &es_reset_area;
+    CFE_ES_Global.ResetDataPtr->SystemLogMode = CFE_ES_LogMode_DISCARD;
+
+    /* AND THE POOL-ID SPACE HAS TO BE OPENED, for the same reason and with the same symptom as
+     * SB's LastPipeId: CFE_ES_Global is zeroed, 0 is not a valid resource id, so
+     * CFE_ResourceId_FindNext walks off the table and CFE_ES_PoolCreateEx reports "no free
+     * MemPool slots" with all ten free. cfe_es_start.c:178 does exactly this line. The symptom
+     * was CFE_SB_GetBufferFromPool returning NULL and the driver dereferencing it -- a hundred
+     * lines after SB's EarlyInit had quietly failed. */
+    CFE_ES_Global.LastMemPoolId = CFE_ResourceId_FromInteger(CFE_ES_POOLID_BASE);
+
+    /* AND THE CONFIG SERVICE BEFORE THE BUS, which is cFE's own startup order -- ES, then
+     * config, then everything else. It did not matter while CFE_ES_PoolCreateEx was a stub that
+     * ignored its block-size arguments; with the real pool, CFE_SB_InitBuffers reads SB's block
+     * sizes out of the config registry (CFE_CONFIGID_PLATFORM_SB_MEM_BLOCK_SIZE) and an empty
+     * registry means ZERO block sizes, which CFE_ES_GenPoolInitialize correctly refuses. The
+     * config section below calls it again and checks what it returns. */
+    CFE_Config_Init();
+
     CFE_SB_EarlyInit();
 
     for (i = 0; i < (int)sizeof(msg); i++)
@@ -2107,7 +2228,7 @@ int main(void)
     /* --- CFE_TA_TaskInit: the success path and all five failures ------------------------- */
     ta_evs_register_rc = CFE_SUCCESS;
     sb_queuecreate_rc  = OS_SUCCESS;
-    sb_getpool_rc      = CFE_SUCCESS;
+    es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
     ta_cores           = 1;
     printf("ta_init rc=%ld pipes=%ld subs=%u\n", (long)CFE_TA_TaskInit(), sb_qcreates,
            CFE_SB_Global.StatTlmMsg.Payload.SubscriptionsInUse);
@@ -2126,9 +2247,9 @@ int main(void)
     /* And the subscribe failure is the destination block allocation failing, which is the one
      * real way CFE_SB_SubscribeFull fails for a caller who owns a valid pipe:
      * CFE_SB_DEST_BLK_ERR_EID and CFE_SB_BUF_ALOC_ERR. */
-    sb_getpool_rc = CFE_ES_ERR_MEM_BLOCK_SIZE;
+    es_pool_exhaust(CFE_SB_Global.Mem.PoolHdl);
     printf("ta_init_subfail rc=%ld\n", (long)CFE_TA_TaskInit());
-    sb_getpool_rc = CFE_SUCCESS;
+    es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
 
     /* --- the simple commands -------------------------------------------------------------- */
     printf("ta_noop rc=%ld\n", (long)CFE_TA_NoopCmd(NULL));
@@ -2675,7 +2796,7 @@ int main(void)
         ta_cores           = 1;
         ta_evs_register_rc = CFE_SUCCESS;
         sb_queuecreate_rc  = OS_SUCCESS;
-        sb_getpool_rc      = CFE_SUCCESS;
+        es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
         printf("tae_init rc=%ld\n", (long)CFE_TA_TaskInit());
         printf("tae_noop rc=%ld\n", (long)CFE_TA_NoopCmd(NULL));
         printf("tae_reset rc=%ld\n", (long)CFE_TA_ResetCountersCmd(NULL));
@@ -2819,15 +2940,15 @@ int main(void)
         /* --- CFE_EVS_TaskInit ------------------------------------------------------------- */
         ta_getappid       = 1;
         sb_queuecreate_rc = OS_SUCCESS;
-        sb_getpool_rc     = CFE_SUCCESS;
+        es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
         printf("evt_init rc=%ld appid=%lu\n", (long)CFE_EVS_TaskInit(),
                (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_EVS_Global.EVS_AppID));
         sb_queuecreate_rc = OS_ERROR;
         printf("evt_init_pipefail rc=%ld\n", (long)CFE_EVS_TaskInit());
         sb_queuecreate_rc = OS_SUCCESS;
-        sb_getpool_rc     = CFE_ES_ERR_MEM_BLOCK_SIZE;
+        es_pool_exhaust(CFE_SB_Global.Mem.PoolHdl);
         printf("evt_init_subfail rc=%ld\n", (long)CFE_EVS_TaskInit());
-        sb_getpool_rc = CFE_SUCCESS;
+        es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
         printf("evt_init_again rc=%ld\n", (long)CFE_EVS_TaskInit());
 
         /* --- enable DEBUG, so the twenty commands' events are visible -------------------- */
@@ -3111,10 +3232,10 @@ int main(void)
         sb_queuecreate_rc = OS_ERROR;
         printf("tim_init_pipefail rc=%ld\n", (long)CFE_TIME_TaskInit());
         sb_queuecreate_rc = OS_SUCCESS;
-        sb_getpool_rc = CFE_ES_ERR_MEM_BLOCK_SIZE;
+        es_pool_exhaust(CFE_SB_Global.Mem.PoolHdl);
         printf("tim_init_subfail rc=%ld subs=%u\n", (long)CFE_TIME_TaskInit(),
                CFE_SB_Global.StatTlmMsg.Payload.SubscriptionsInUse);
-        sb_getpool_rc = CFE_SUCCESS;
+        es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
         printf("tim_init rc=%ld sems=%ld tasks=%ld subs=%u tb=%ld timers=%ld\n",
                (long)CFE_TIME_TaskInit(), time_sems_created, time_childtasks,
                CFE_SB_Global.StatTlmMsg.Payload.SubscriptionsInUse,
@@ -3431,7 +3552,7 @@ int main(void)
             size_t                 sbsz  = 0;
 
             printf("sb_earlyinit rc=%ld pools=%ld gets=%ld subrep=%u\n", (long)CFE_SB_EarlyInit(),
-                   sb_pool_creates, sb_pool_gets, (unsigned int)CFE_SB_Global.SubscriptionReporting);
+                   es_pool_creates(), es_pool_gets(), (unsigned int)CFE_SB_Global.SubscriptionReporting);
             printf("sb_init_lists intransit_self=%d zerocopy_self=%d\n",
                    (int)(CFE_SB_Global.InTransitList.Next == &CFE_SB_Global.InTransitList &&
                          CFE_SB_Global.InTransitList.Prev == &CFE_SB_Global.InTransitList),
@@ -3508,15 +3629,15 @@ int main(void)
              * off, which is why ReturnBufferToPool calls TrackingListRemove unconditionally. */
             CFE_SB_IncrBufUseCnt(b2);
             CFE_SB_IncrBufUseCnt(b2);
-            printf("sb_use3 use=%u puts=%ld\n", (unsigned int)b2->UseCount, sb_pool_puts);
+            printf("sb_use3 use=%u puts=%ld\n", (unsigned int)b2->UseCount, es_pool_puts());
             CFE_SB_DecrBufUseCnt(b2);
-            printf("sb_use2 use=%u puts=%ld inuse=%u\n", (unsigned int)b2->UseCount, sb_pool_puts,
+            printf("sb_use2 use=%u puts=%ld inuse=%u\n", (unsigned int)b2->UseCount, es_pool_puts(),
                    (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.SBBuffersInUse);
             CFE_SB_DecrBufUseCnt(b2);
-            printf("sb_use1 use=%u puts=%ld inuse=%u\n", (unsigned int)b2->UseCount, sb_pool_puts,
+            printf("sb_use1 use=%u puts=%ld inuse=%u\n", (unsigned int)b2->UseCount, es_pool_puts(),
                    (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.SBBuffersInUse);
             CFE_SB_DecrBufUseCnt(b2);
-            printf("sb_use0 puts=%ld inuse=%u mem=%u head_self=%d\n", sb_pool_puts,
+            printf("sb_use0 puts=%ld inuse=%u mem=%u head_self=%d\n", es_pool_puts(),
                    (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.SBBuffersInUse,
                    (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.MemInUse,
                    (int)(CFE_SB_Global.InTransitList.Next == &CFE_SB_Global.InTransitList));
@@ -3531,7 +3652,7 @@ int main(void)
             /* ...and a decrement at zero does nothing, rather than wrapping to 0xFFFF */
             b1->UseCount = 0;
             CFE_SB_DecrBufUseCnt(b1);
-            printf("sb_use_floor use=%u puts=%ld\n", (unsigned int)b1->UseCount, sb_pool_puts);
+            printf("sb_use_floor use=%u puts=%ld\n", (unsigned int)b1->UseCount, es_pool_puts());
 
             /* Destination blocks. MemInUse follows the POOL's returned size, not the requested
              * one, because a real pool rounds up to a block size. */
@@ -3542,13 +3663,23 @@ int main(void)
                    (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.MemInUse);
             printf("sb_putdest_null rc=%ld\n", (long)CFE_SB_PutDestinationBlk(NULL));
 
-            /* And the allocation failure path: a null back, and NO counter moved. */
-            sb_getpool_rc = CFE_ES_ERR_MEM_BLOCK_SIZE;
+            /* And the allocation failure path: a null back, and NO counter moved.
+             *
+             * EXHAUSTING THE TAIL IS NOT THE SAME AS AN EMPTY POOL, and the two lines below are
+             * the difference. A 156-byte buffer request fails: no 156-byte block is on the free
+             * stack and there is no room to create one. A 32-byte DESTINATION request SUCCEEDS,
+             * because sb_putdest above returned a 32-byte block and the real pool RECYCLES it.
+             *
+             * The simulated bump allocator would have returned NULL for both -- it never
+             * reused anything. The second line was called sb_getdest_fail and asserted a
+             * failure that stopped happening the moment NASA's pool was gated; it reports what
+             * it observes now, which is a better fact than the one it used to assert. */
+            es_pool_exhaust(CFE_SB_Global.Mem.PoolHdl);
             printf("sb_getbuf_fail null=%d inuse=%u\n",
                    (int)(CFE_SB_GetBufferFromPool(100) == NULL),
                    (unsigned int)CFE_SB_Global.StatTlmMsg.Payload.SBBuffersInUse);
-            printf("sb_getdest_fail null=%d\n", (int)(CFE_SB_GetDestinationBlk() == NULL));
-            sb_getpool_rc = CFE_SUCCESS;
+            printf("sb_getdest_recycled null=%d\n", (int)(CFE_SB_GetDestinationBlk() == NULL));
+            es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
         }
 
         /* --- cfe_sb_priv.c: the pipe table, the destination list, the recursion guard ------
@@ -3732,7 +3863,7 @@ int main(void)
 
             CFE_SB_EarlyInit();
             sb_queuecreate_rc = OS_SUCCESS;
-            sb_getpool_rc     = CFE_SUCCESS;
+            es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
             memset(&qos, 0, sizeof(qos));
 
             printf("api_create1 rc=%ld pipes=%u\n",
@@ -3874,7 +4005,7 @@ int main(void)
             sbq_reset();
             CFE_SB_EarlyInit();
             sb_queuecreate_rc = OS_SUCCESS;
-            sb_getpool_rc     = CFE_SUCCESS;
+            es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
             ta_getappid       = 1;
 
             /* --- CFE_SB_AppInit: the success path and three of its eight failure returns -
@@ -3913,9 +4044,9 @@ int main(void)
             sb_queuecreate_rc = OS_SUCCESS;
             sbq_reset();
             CFE_SB_EarlyInit();
-            sb_getpool_rc = CFE_ES_ERR_MEM_BLOCK_SIZE;
+            es_pool_exhaust(CFE_SB_Global.Mem.PoolHdl);
             printf("sbt_init_poolfail rc=%ld\n", (long)CFE_SB_AppInit());
-            sb_getpool_rc = CFE_SUCCESS;
+            es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
 
             /* A clean bus with one real pipe and one subscription, for the commands below. */
             sbq_reset();
@@ -4255,6 +4386,143 @@ int main(void)
             }
             printf("crc_params_arc result=0x%04x\n",
                    CFE_ES_ComputeCRC_GetParams(CFE_ES_CrcType_16_ARC)->Algorithm(CRC_PROBE, 9, 0));
+        }
+
+        /* --- cfe_es_syslog.c: THE SYSTEM LOG ---------------------------------------------
+         *
+         * CFE_ES_WriteToSysLog appears in every module's error path and has been a six-line
+         * recording stub in this file since EVS. The real thing is an 8 KiB RING BUFFER IN THE
+         * RESET AREA, and its output IS the comparison: every "syslog ..." line already in the
+         * transcript above goes through a stub, and these go through NASA's formatter, its
+         * timestamp, its whitespace strip and its wrap logic.
+         *
+         * The reset area has to be aimed first -- the log lives there, not in CFE_ES_Global --
+         * which is the one thing a caller must do before any of this works. */
+        {
+            CFE_ES_SysLogReadBuffer_t rdbuf;
+            int                       k;
+
+            memset(&es_reset_area, 0, sizeof(es_reset_area));
+            CFE_ES_Global.ResetDataPtr = &es_reset_area;
+            CFE_ES_Global.ResetDataPtr->SystemLogMode = CFE_ES_LogMode_DISCARD;
+            CFE_ES_SysLogClear_Unsync();
+            printf("sl_clear w=%lu e=%lu n=%u\n",
+                   (unsigned long)CFE_ES_Global.ResetDataPtr->SystemLogWriteIdx,
+                   (unsigned long)CFE_ES_Global.ResetDataPtr->SystemLogEndIdx,
+                   CFE_ES_Global.ResetDataPtr->SystemLogEntryNum);
+
+            /* THE APPEND PATH, directly -- no timestamp, no formatting, just the ring. The
+             * copy is MessageLen-1 bytes and the last byte is forced to a newline, so a string
+             * that ends in one is unchanged and one that does not gets its last character
+             * REPLACED. Both are below, and the second is the surprising one. */
+            printf("sl_app1 rc=%ld w=%lu n=%u\n", (long)CFE_ES_SysLogAppend_Unsync("first\n"),
+                   (unsigned long)CFE_ES_Global.ResetDataPtr->SystemLogWriteIdx,
+                   CFE_ES_Global.ResetDataPtr->SystemLogEntryNum);
+            printf("sl_app2 rc=%ld w=%lu\n", (long)CFE_ES_SysLogAppend_Unsync("no-newline"),
+                   (unsigned long)CFE_ES_Global.ResetDataPtr->SystemLogWriteIdx);
+            printf("sl_bytes");
+            for (k = 0; k < 17; k++)
+                printf(" %02x", (unsigned int)(unsigned char)CFE_ES_Global.ResetDataPtr->SystemLog[k]);
+            printf("\n");
+            /* an empty message is not logged at all, and does not count */
+            printf("sl_empty rc=%ld w=%lu n=%u\n", (long)CFE_ES_SysLogAppend_Unsync(""),
+                   (unsigned long)CFE_ES_Global.ResetDataPtr->SystemLogWriteIdx,
+                   CFE_ES_Global.ResetDataPtr->SystemLogEntryNum);
+
+            /* THE FORMATTER. This is the one whose output the transcript is really comparing:
+             * NASA's timestamp, then the format, then ALL trailing whitespace stripped and
+             * exactly one newline added -- whether or not the caller supplied one. */
+            printf("sl_write rc=%ld\n", (long)CFE_ES_SysLogWrite_Unsync("plain %d %s\n", 42, "txt"));
+            printf("sl_write_nonl rc=%ld\n", (long)CFE_ES_SysLogWrite_Unsync("no newline %u", 7u));
+            printf("sl_write_ws rc=%ld\n", (long)CFE_ES_SysLogWrite_Unsync("trailing   \t\n\n"));
+
+            /* MODE: the two valid values and one that is not. DISCARD is the default, which is
+             * the opposite of what a ring buffer usually does -- the FIRST messages after a
+             * fault are the ones that explain it. */
+            printf("sl_mode_ov rc=%ld m=%u\n", (long)CFE_ES_SysLogSetMode(CFE_ES_LogMode_OVERWRITE),
+                   CFE_ES_Global.ResetDataPtr->SystemLogMode);
+            printf("sl_mode_di rc=%ld m=%u\n", (long)CFE_ES_SysLogSetMode(CFE_ES_LogMode_DISCARD),
+                   CFE_ES_Global.ResetDataPtr->SystemLogMode);
+            printf("sl_mode_bad rc=%ld m=%u\n", (long)CFE_ES_SysLogSetMode(99),
+                   CFE_ES_Global.ResetDataPtr->SystemLogMode);
+
+            /* A SINGLE MESSAGE MAY NOT EXCEED HALF THE LOG, and that check comes before any
+             * wrap logic -- so it reports TRUNCATED and still logs 4096 bytes. */
+            memset(es_big_msg, 'A', sizeof(es_big_msg) - 1);
+            es_big_msg[sizeof(es_big_msg) - 1] = 0;
+            CFE_ES_SysLogClear_Unsync();
+            printf("sl_huge rc=%ld w=%lu\n", (long)CFE_ES_SysLogAppend_Unsync(es_big_msg),
+                   (unsigned long)CFE_ES_Global.ResetDataPtr->SystemLogWriteIdx);
+
+            /* READ BACK: start a read, then pull blocks. The log has not wrapped, so this is
+             * NOT a fragment and no tag is prepended. */
+            CFE_ES_SysLogReadStart_Unsync(&rdbuf);
+            printf("sl_rdstart frag=%d left=%lu last=%lu end=%lu\n", (int)rdbuf.IsFragment,
+                   (unsigned long)rdbuf.SizeLeft, (unsigned long)rdbuf.LastOffset,
+                   (unsigned long)rdbuf.EndIdx);
+            CFE_ES_SysLogReadData(&rdbuf);
+            printf("sl_rd1 block=%lu left=%lu first=%c\n", (unsigned long)rdbuf.BlockSize,
+                   (unsigned long)rdbuf.SizeLeft, rdbuf.Data[0]);
+            CFE_ES_SysLogReadData(&rdbuf);
+            printf("sl_rd2 block=%lu left=%lu\n", (unsigned long)rdbuf.BlockSize,
+                   (unsigned long)rdbuf.SizeLeft);
+
+            /* THE WRAP, and the FRAGMENT TAG it produces. In OVERWRITE mode a message that will
+             * not fit resets WriteIdx to 0 and records the old tail in EndIdx -- so a reader
+             * starting at WriteIdx is now mid-message, IsFragment is true, and
+             * CFE_ES_SysLogReadData prepends the literal "<<FRAGMENT>> ". That string is in
+             * the dump file, which is why it is checked here character for character. */
+            CFE_ES_SysLogClear_Unsync();
+            CFE_ES_SysLogSetMode(CFE_ES_LogMode_OVERWRITE);
+            for (k = 0; k < 3; k++)
+                CFE_ES_SysLogAppend_Unsync(es_big_msg);
+            printf("sl_wrapped w=%lu e=%lu n=%u\n",
+                   (unsigned long)CFE_ES_Global.ResetDataPtr->SystemLogWriteIdx,
+                   (unsigned long)CFE_ES_Global.ResetDataPtr->SystemLogEndIdx,
+                   CFE_ES_Global.ResetDataPtr->SystemLogEntryNum);
+            CFE_ES_SysLogReadStart_Unsync(&rdbuf);
+            printf("sl_frag_start frag=%d left=%lu last=%lu end=%lu\n", (int)rdbuf.IsFragment,
+                   (unsigned long)rdbuf.SizeLeft, (unsigned long)rdbuf.LastOffset,
+                   (unsigned long)rdbuf.EndIdx);
+            CFE_ES_SysLogReadData(&rdbuf);
+            printf("sl_frag_tag %.13s| block=%lu frag=%d\n", rdbuf.Data,
+                   (unsigned long)rdbuf.BlockSize, (int)rdbuf.IsFragment);
+
+            /* DISCARD at the very end of the buffer: too little room even for a timestamp, so
+             * the whole message goes and the return is FULL rather than TRUNCATED. */
+            CFE_ES_SysLogClear_Unsync();
+            CFE_ES_SysLogSetMode(CFE_ES_LogMode_DISCARD);
+            CFE_ES_Global.ResetDataPtr->SystemLogWriteIdx = CFE_PLATFORM_ES_SYSTEM_LOG_SIZE - 4;
+            printf("sl_full rc=%ld\n", (long)CFE_ES_SysLogAppend_Unsync("too late\n"));
+            CFE_ES_Global.ResetDataPtr->SystemLogWriteIdx = CFE_PLATFORM_ES_SYSTEM_LOG_SIZE - 64;
+            printf("sl_trunc rc=%ld w=%lu\n", (long)CFE_ES_SysLogAppend_Unsync(es_big_msg),
+                   (unsigned long)CFE_ES_Global.ResetDataPtr->SystemLogWriteIdx);
+
+            /* THE DUMP, to the simulated filesystem, and the lock counters with it: exactly
+             * ONE take/give pair however many blocks get written, because NASA locks only for
+             * the first read and says at length why. */
+            CFE_ES_SysLogClear_Unsync();
+            CFE_ES_SysLogSetMode(CFE_ES_LogMode_DISCARD);
+            CFE_ES_SysLogWrite_Unsync("dumped entry %d\n", 1);
+            CFE_ES_Global.TaskData.HkPacket.Payload.SysLogEntries =
+                CFE_ES_Global.ResetDataPtr->SystemLogEntryNum;
+            es_lock_takes = 0;
+            es_lock_gives = 0;
+            fs_len = 0;
+            fs_pos = 0;
+            printf("sl_dump rc=%ld takes=%ld gives=%ld len=%ld\n",
+                   (long)CFE_ES_SysLogDump("/ram/syslog.dat"), es_lock_takes, es_lock_gives,
+                   (long)fs_len);
+            /* and the two failure paths: a create that fails, and a write that fails */
+            fs_open_fail = 1;
+            printf("sl_dump_nocreate rc=%ld\n", (long)CFE_ES_SysLogDump("/ram/syslog.dat"));
+            fs_open_fail = 0;
+            fs_len = 0;
+            fs_pos = 0;
+            fs_wr_left = 8;
+            printf("sl_dump_wrfail rc=%ld errs=%ld\n", (long)CFE_ES_SysLogDump("/ram/syslog.dat"),
+                   es_bytecnt_errs);
+            fs_wr_left = -1;
         }
 
 

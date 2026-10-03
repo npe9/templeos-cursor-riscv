@@ -85,6 +85,14 @@ C_TYPES = [(r'\bconst\b', ' '),
            # it does not have.
            (r'\bCFE_ES_Mem(?:Offset|Address)_t\s*\*', ' PTRSZ '),
            (r'\bCFE_ES_Mem(?:Offset|Address)_t\b', ' SZ '),
+           # CFE_ES_MemPoolBuf_t IS `typedef void *` -- a POINTER, not an id. The catch-all
+           # below maps every CFE_*_t to NUM, so a pool buffer looked like a 4-byte handle and
+           # all three of mempool.c's get/put/info signatures came back as mismatches when the
+           # translation's U8 * was right. Third time the catch-all has been too eager (see
+           # CFE_Status_t and CFE_ES_MemOffset_t above); each one is a rule added rather than a
+           # function exempted, because an exemption would stop comparing the arity too.
+           (r'\bCFE_ES_MemPoolBuf_t\s*\*', ' PTRB '),
+           (r'\bCFE_ES_MemPoolBuf_t\b', ' PTRB '),
            (r'\bCFE_\w+_t\s*\*', ' PTRNUM '),
            (r'\bCFE_\w+_t\b', ' NUM '),
            (r'\bosal_id_t\s*\*', ' PTRNUM '), (r'\bchar\s*\*', ' PTRB '),
@@ -152,6 +160,13 @@ DEVIATIONS = {
         "returns CFE_ConfigObj_ArrayValue_t (16 bytes) BY VALUE; HolyC has no struct-return "
         "ABI, so the translation takes a destination pointer. Documented at the call site and "
         "in docs/HOLYC_STRUCT_LIMITS.md."),
+    'CFE_ES_SysLog_vsnprintf': (
+        'PTRB,SZ,PTRB,', 'PTRB,SZ,PTRB,SZ,PTRSZ',
+        "takes a `va_list` as its last parameter, for the same reason and with the same "
+        "consequence as EVS_GenerateEventTelemetry below: HolyC's variadic convention hands the "
+        "callee an implicit (argc, argv) pair, so one parameter becomes two. It matters here "
+        "because the formatted text IS the log entry -- CFE_ES_WriteToSysLog's output is "
+        "compared character for character by the differential transcript."),
     'EVS_GenerateEventTelemetry': (
         ',NUM,NUM,PTRNUM,PTRB,', ',NUM,NUM,PTRNUM,PTRB,SZ,PTRSZ',
         "takes a `va_list` as its last parameter. HolyC has no va_list type; a variadic "

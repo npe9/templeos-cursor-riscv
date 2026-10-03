@@ -201,6 +201,13 @@ UNPAIRED_OK = {
     # {...} CFE_SB_Buffer_t;` -- tagged, and perfectly pairable. The entry was written when this
     # gate did not scan unions at all, so "no counterpart" was the tool's own blind spot being
     # recorded as a fact about NASA's source. It pairs now and is compared like anything else.
+    "CFE_ES_SysLogDumpBuffer_t":
+        "NASA declares this as an ANONYMOUS union LOCAL inside CFE_ES_SysLogDump -- `union "
+        "{ CFE_ES_SysLogReadBuffer_t LogData; CFE_FS_Header_t FileHdr; } Buffer;` -- so there "
+        "is no upstream type of any name to pair with. HolyC needs the type named to declare a "
+        "local of it. Its SIZE is still covered: a union is as large as its largest member, and "
+        "BOTH members pair and are measured (CFE_ES_SysLogReadBuffer_t and CFE_FS_Header_t), so "
+        "there is no way for this to be the wrong size while they are right.",
     "OS_EventHandlerSlot":
         "NASA's OS_SharedGlobalVars.EventHandler is an array of the function-pointer typedef "
         "OS_EventHandler_t; the translation wraps one pointer in a class so the member can be an "
