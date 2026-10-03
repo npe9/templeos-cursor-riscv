@@ -435,7 +435,7 @@ static unsigned char ta_os_mask;     /* the one byte the simulated OS stores per
  * text through OS_printf. ta_evs_register_rc kept its meaning by moving: it is now what the
  * EVS app data says, not what a stub returns. */
 
-void  CFE_ES_PerfLogAdd(uint32 Marker, uint32 EntryExit) { (void)Marker; (void)EntryExit; }
+/* CFE_ES_PerfLogAdd: STUB REMOVED -- its source is gated, the real one runs. */
 /* CFE_ES_ExitApp: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* CFE_ES_WaitForSystemState: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* --- the reset area, for CFE_EVS_EarlyInit ---------------------------------------------------
@@ -874,17 +874,8 @@ int32 CFE_ES_DeleteCDS(const char *CDSName, bool CalledByTblServices)
     return es_cdsdelete_rc;
 }
 
-uint32 CFE_ES_GetPerfLogDumpRemaining(void)
-{
-    return (uint32)es_perf_remaining;
-}
-
-void CFE_ES_TaskPipe(const CFE_SB_Buffer_t *SBBufPtr)
-{
-    ++es_taskpipes;
-    printf("es_taskpipe\n");
-}
-
+/* CFE_ES_GetPerfLogDumpRemaining: STUB REMOVED -- its source is gated, the real one runs. */
+/* CFE_ES_TaskPipe: STUB REMOVED -- its source is gated, the real one runs. */
 /* The ER log's two background-writer callbacks. They are never CALLED here -- the FS
  * background writer is what calls them -- but their ADDRESSES go into the state object, and
  * the transcript prints whether each is NULL. */
@@ -955,12 +946,7 @@ bool CFE_ES_RunAppTableScan(uint32 ElapsedTime, void *Arg)
     return false;
 }
 
-bool CFE_ES_RunPerfLogDump(uint32 ElapsedTime, void *Arg)
-{
-    ++es_perfdumps;
-    return false;
-}
-
+/* CFE_ES_RunPerfLogDump: STUB REMOVED -- its source is gated, the real one runs. */
 int32 CFE_ES_CDS_EarlyInit(void)
 {
     ++es_cdsearly;
@@ -989,6 +975,30 @@ int32 CFE_PSP_Exception_CopyContext(uint32 ContextLogId, void *ContextBuf, uint3
         memset(ContextBuf, 0xC7, es_exc_ctxsize);
     }
     return es_exc_ctxsize;
+}
+
+/* ---- the PSP's TIMEBASE, which cfe_es_perf.c is built around -------------------------------
+ * A performance log entry IS a hardware timestamp, so these will still be stubs when every
+ * line of cFE is translated. es_perf_tb advances by one per read, which makes the timestamps
+ * in a dumped log a predictable sequence rather than a wall clock -- the transcript compares
+ * them. */
+static uint32 es_perf_tb;
+
+uint32 CFE_PSP_GetTimerTicksPerSecond(void)
+{
+    return 1000000;
+}
+
+uint32 CFE_PSP_GetTimerLow32Rollover(void)
+{
+    return 1000000;
+}
+
+void CFE_PSP_Get_Timebase(uint32 *Tbu, uint32 *Tbl)
+{
+    ++es_perf_tb;
+    *Tbu = 0;
+    *Tbl = es_perf_tb;
 }
 
 /* NASA defines CFE_SB_Global in cfe_sb_task.c, which is not gated, so the driver supplies it --

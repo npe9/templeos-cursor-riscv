@@ -809,17 +809,8 @@ I32 CFE_ES_DeleteCDS(U8 *CDSName, Bool CalledByTblServices)
   S("\n");
   return es_cdsdelete_rc;
 }
-
-U32 CFE_ES_GetPerfLogDumpRemaining()
-{
-  return es_perf_remaining;
-}
-
-U0 CFE_ES_TaskPipe(CFE_SB_Buffer *SBBufPtr)
-{
-  ++es_taskpipes;
-  S("es_taskpipe\n");
-}
+// CFE_ES_GetPerfLogDumpRemaining: STUB REMOVED -- its source is gated, the real one runs.
+// CFE_ES_TaskPipe: STUB REMOVED -- its source is gated, the real one runs.
 // The ER log's two background-writer callbacks. They are never CALLED here -- the FS
 // background writer is what calls them -- but their ADDRESSES go into the state object, and
 // the transcript prints whether each is NULL.
@@ -887,13 +878,7 @@ Bool CFE_ES_RunAppTableScan(U32 ElapsedTime, U8 *Arg)
   ++es_appscans;
   return FALSE;
 }
-
-Bool CFE_ES_RunPerfLogDump(U32 ElapsedTime, U8 *Arg)
-{
-  ++es_perfdumps;
-  return FALSE;
-}
-
+// CFE_ES_RunPerfLogDump: STUB REMOVED -- its source is gated, the real one runs.
 I32 CFE_ES_CDS_EarlyInit()
 {
   ++es_cdsearly;
@@ -921,6 +906,27 @@ I32 CFE_PSP_Exception_CopyContext(U32 ContextLogId, U8 *ContextBuf, U32 ContextS
   }
   return es_exc_ctxsize;
 }
+// ---- the PSP's TIMEBASE, which cfe_es_perf.c is built around -------------------------------
+// A performance log entry IS a hardware timestamp, so these will still be stubs when every
+// line of cFE is translated. es_perf_tb advances by one per read, which makes the timestamps in
+// a dumped log a predictable sequence rather than a wall clock -- the transcript compares them.
+U32 es_perf_tb;
+U32 CFE_PSP_GetTimerTicksPerSecond()
+{
+  return 1000000;
+}
+
+U32 CFE_PSP_GetTimerLow32Rollover()
+{
+  return 1000000;
+}
+
+U0 CFE_PSP_Get_Timebase(U32 *Tbu, U32 *Tbl)
+{
+  ++es_perf_tb;
+  *Tbu = 0;
+  *Tbl = es_perf_tb;
+}
 // cfe_es_task.HC GOES HERE, NOT WITH THE OTHER INCLUDES AT THE TOP, and the reason is a HolyC
 // rule rather than a preference: CFE_ES_WriteERLogCmd takes the ADDRESS of
 // CFE_ES_BackgroundERLogFileDataGetter and CFE_ES_BackgroundERLogFileEventHandler, and a
@@ -932,6 +938,8 @@ I32 CFE_PSP_Exception_CopyContext(U32 ContextLogId, U8 *ContextBuf, U32 ContextS
 // CFE_ES_TaskInit can call CFE_ES_BackgroundInit from the file before it.
 #include "/Kernel/Cfs/cfe/cfe_es_erlog.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_task.HC"
+#include "/Kernel/Cfs/cfe/cfe_es_perf.HC"
+#include "/Kernel/Cfs/cfe/cfe_es_dispatch.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_backgroundtask.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_objtab.HC"
 // THE SIMULATED MEMORY POOL IS GONE from both halves of this driver. CFE_ES_PoolCreateEx,
@@ -1259,12 +1267,23 @@ U8 ta_os_mask;
 // token bucket, the local log, the formatter and the two output ports. The `evs eid=N type=N`
 // lines this driver used to print are gone, and what replaces them is EVS_OutputPort's real
 // text through OS_printf.
+// THESE TWO ARE MACROS IN NASA'S cfe_es.h, not functions:
+//     #define CFE_ES_PerfLogEntry(id) (CFE_ES_PerfLogAdd(id, 0))
+//     #define CFE_ES_PerfLogExit(id)  (CFE_ES_PerfLogAdd(id, 1))
+// and CFE_ES_PerfLogAdd is real now (cfe_es_perf.c is gated), so they are FORWARDERS rather
+// than stubs -- the C half's macros reach the same function.
+//
+// THEY ARE FUNCTIONS HERE AND NOT MACROS, and the reason is include order: SB, EVS, TIME and
+// TA all call them, and all four are included BEFORE cfe_es_perf.HC, so a macro defined there
+// would not be in scope at their call sites. A function resolves at link time either way.
 U0 CFE_ES_PerfLogEntry(U32 Marker)
 {
+  CFE_ES_PerfLogAdd(Marker, 0);
 }
 
 U0 CFE_ES_PerfLogExit(U32 Marker)
 {
+  CFE_ES_PerfLogAdd(Marker, 1);
 }
 // CFE_ES_ExitApp: STUB REMOVED -- cfe_es_api.c is gated, the real one runs.
 // CFE_ES_WaitForSystemState: STUB REMOVED -- cfe_es_api.c is gated, the real one runs.
