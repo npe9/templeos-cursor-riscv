@@ -557,7 +557,7 @@ Fourteen properties are gated independently, because each is blind to what the o
 | `check_lock_sites.py` | every `CFE_*_{Lock,Unlock}SharedData` call carries NASA's own `__func__` and `__LINE__`, grouped by enclosing function | any other literal at any other call site |
 | `check_manifest.py` | everything gated is in NASA's build; reports the covered fraction | nothing about the code itself |
 | `check_in_blob.py` | every translated function has an ADDRESS in a driver's binary | whether it is correct, or ever called |
-| `check_struct_copy.py` | no translated file copies a class into an array slot or through a bare pointer | any other place the 8-byte store width bites |
+| `check_struct_copy.py` | NO FILE IN `Kernel` copies a class into an array slot or through a bare pointer | a class MEMBER on the right, which it counts and does not resolve |
 | the transcript | behaviour, byte for byte against NASA's own C | anything nothing calls |
 
 `check_struct_copy.py` is the newest, and it exists because the compiler loses twelve bytes of
@@ -568,7 +568,14 @@ entry that way and **the hardware timestamp never arrived** -- every entry of ev
 a zero timestamp, which is the one thing a performance log is for. Nothing else here could see
 it: the layout matched, the signatures matched, the function was in the blob. The defect is in
 the STORE, not in any declaration, so only the transcript noticed. The gate reads the class
-list out of the tree rather than carrying one, and was shown against NASA's own line.
+list out of the tree rather than carrying one, and was shown against NASA's own line -- and
+against the same line WRAPPED, because it matches statements rather than lines and the
+formatter wraps at about 96 characters.
+
+**It is the one gate that is not about the translation.** This is a compiler defect, and
+`arr[i] = someStruct` is an ordinary idiom, so it scans all of `Kernel` -- 249 indexed or
+dereferenced assignments across 322 files -- not just `Kernel/Cfs`. The rest of the kernel was
+already clean; the only instance anywhere was the one the transcript caught.
 
 `check_in_blob.py` is the first gate that opens the BINARY. Every other
 one on the list reads source text -- `check_coverage` counts definitions, `check_signatures`

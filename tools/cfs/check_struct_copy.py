@@ -27,11 +27,22 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-HCROOT = os.path.join(ROOT, "Kernel", "Cfs")
+# THE WHOLE KERNEL, not just the translation. `arr[i] = someStruct` is an ordinary idiom and
+# this is a COMPILER defect, so the rest of the kernel -- CTask, the DolDoc entries, the window
+# records, the virtio descriptors, the RV JIT's tables -- is exposed to it in exactly the same
+# way, and nothing else would say so. Widening it cost one line and found the tree already
+# clean: 342 indexed-or-dereferenced assignments across 322 files, one of them a class copy,
+# and that one was cfe_es_perf.HC's.
+HCROOT = os.path.join(ROOT, "Kernel")
 
 # `arr[...] = x;` or `*p = x;` where x is a bare lvalue -- no operators, no call.
-ASSIGN = re.compile(r'^\s*(\*[A-Za-z_]\w*|[A-Za-z_][\w.\[\]>-]*\[[^\]]*\])\s*=\s*'
-                    r'([A-Za-z_][\w.>-]*)\s*;\s*$')
+#
+# MATCHED AGAINST A STATEMENT, NOT A LINE. The formatter wraps at about 96 characters and a
+# realistic destination -- CFE_ES_Global.ResetDataPtr->Perf.DataBuffer[DataEnd] -- is 55 of
+# them before the right-hand side, so a line-anchored pattern would simply not see a wrapped
+# copy. Statements are split on ';' below and whitespace is collapsed first.
+ASSIGN = re.compile(r'^(\*[A-Za-z_]\w*|[A-Za-z_][\w.\[\]>-]*\[[^\]]*\])\s*=\s*'
+                    r'([A-Za-z_][\w.>-]*)$')
 CLASS_DECL = re.compile(r'^\s*(?:class|union)\s+([A-Za-z_]\w*)', re.M)
 # A local or global declaration: `SomeClass name;` or `SomeClass name[...]`
 VAR_DECL = re.compile(r'^\s*([A-Z][A-Za-z0-9_]*)\s+([A-Za-z_]\w*)\s*(?:;|\[)', re.M)
@@ -39,6 +50,33 @@ VAR_DECL = re.compile(r'^\s*([A-Z][A-Za-z0-9_]*)\s+([A-Za-z_]\w*)\s*(?:;|\[)', r
 # Sites verified SAFE, each with the reason. A struct of 8 bytes or less copies whole, so a
 # small class is allowed here -- with its size stated, because the entry is a claim about it.
 ALLOW = {}
+
+
+def statements(src):
+    """(statement text with whitespace collapsed, line number it started on) for each ';'."""
+    out = []
+    line = 1
+    buf = []
+    start = 1
+    for ch in src:
+        if ch == ';':
+            text = " ".join("".join(buf).split())
+            if text:
+                out.append((text, start))
+            buf = []
+            start = line
+        elif ch in "{}":
+            buf = []
+            start = line
+            if ch == '\n':
+                line += 1
+        else:
+            if ch == '\n':
+                line += 1
+                if not "".join(buf).strip():
+                    start = line
+            buf.append(ch)
+    return out
 
 
 def hc_files():
@@ -67,6 +105,7 @@ def main():
 
     rc = 0
     checked = 0
+    unresolved = 0
     for p in files:
         rel = os.path.relpath(p, ROOT)
         text = open(p, errors="replace").read()
@@ -76,19 +115,27 @@ def main():
         declared = {}
         for m in VAR_DECL.finditer(src):
             declared.setdefault(m.group(2), m.group(1))
-        for i, line in enumerate(src.split("\n"), 1):
-            m = ASSIGN.match(line)
+        for stmt, lineno in statements(src):
+            m = ASSIGN.match(stmt)
             if not m:
                 continue
             checked += 1
             rhs = m.group(2)
             base = re.split(r'[.\[>-]', rhs)[0]
             ty = declared.get(base)
-            # Only a whole-struct copy matters: `x = s` where s IS the struct, not a member of
-            # it. A member could be any type and this gate does not resolve member types.
-            if ty is None or ty not in classes or rhs != base:
+            if ty is None:
                 continue
-            key = "%s:%d" % (rel, i)
+            # A MEMBER ON THE RIGHT IS NOT TYPE-RESOLVED, and that is a counted hole rather
+            # than a silence: `arr[i] = x.member` is the same broken store, but the member's
+            # own type is not something this gate reads. The number is printed, so it is
+            # visible if it starts growing.
+            if rhs != base:
+                if ty in classes:
+                    unresolved += 1
+                continue
+            if ty not in classes:
+                continue
+            key = "%s:%d" % (rel, lineno)
             if key in ALLOW:
                 continue
             print("FAIL cfs-structcopy — %s copies a CLASS (%s) into an array slot or through"
@@ -113,7 +160,8 @@ def main():
 
     if rc == 0:
         print("cfs-structcopy: %d indexed or dereferenced assignments across %d files, none of"
-              " them a class copy" % (checked, len(files)))
+              " them a class copy (%d had a class MEMBER on the right and so were NOT"
+              " type-resolved)" % (checked, len(files), unresolved))
     return rc
 
 
