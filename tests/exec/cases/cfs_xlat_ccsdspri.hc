@@ -1331,6 +1331,7 @@ U0 CFE_PSP_Get_Timebase(U32 *Tbu, U32 *Tbl)
 #include "/Kernel/Cfs/cfe/cfe_tbl_regrec.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_valresult.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_passthru_codec.HC"
+#include "/Kernel/Cfs/cfe/cfe_tbl_transaction.HC"
 // Backing memory for the load buffers the tbl exercise hands out, plus the four event ids it
 // walks. File scope because of limit 22 and because HolyC has no file-scope aggregate
 // initialiser; the C half keeps them at file scope too so the two read the same.
@@ -1338,6 +1339,7 @@ U8 tbl_probe_mem[64];
 U8 tbl_probe_mem2[64];
 U16 tbl_actv_ids[4];
 U16 tbl_val_ids[5];
+CFE_TBL_TxnEventContext_t tbl_txctx;
 // a validation callback that exists only to be non-NULL: what SetupValidationRequest branches
 // on is whether the pointer is set, never what it does.
 I32 TblValStub(U8 *TblPtr)
@@ -1388,30 +1390,28 @@ CFE_TBL_LoadBuff_t *CFE_TBL_AcquireGlobalLoadBuff(U32 PendingOwnerId)
   OS_MutSemGive(CFE_TBL_Global.WorkBufMutex);
   return LoadBuffPtr;
 }
-// The event pair. AddEvent is NASA's ten lines verbatim -- including that NumPendingEvents
-// counts PAST the eight-event limit, so a caller can tell "eight" from "eight and some
-// dropped". SendTransactionEvents is the EVS seam and only counts here; the real one needs
-// cfe_tbl_transaction.c's context assembly.
-I64 tbl_sendevents_calls;
-U0 CFE_TBL_TxnAddEvent(CFE_TBL_TxnState_t *Txn, U16 EventId, I32 EventData1, I32 EventData2)
+// CFE_TBL_TxnAddEvent and CFE_TBL_SendTransactionEvents WERE STAND-INS HERE and are real now
+// -- they live in cfe_tbl_transaction.c, gated above. Their deletion is the whole reason the
+// `tbl_actvsend`/`tbl_vrsend` assertions changed shape: they counted a stub, and what arrives
+// instead is the event text itself, which is strictly better. Recorded trap: the witness moves
+// when the stub goes.
+//
+// ONE NEW STAND-IN, from cfe_tbl_registry.c, still inside the cycle. Faithful: its twenty
+// lines call only gated code.
+I32 CFE_TBL_TxnFindRegByName(CFE_TBL_TxnState_t *Txn, U8 *TblName)
 {
-  CFE_TBL_TxnEvent_t *EvPtr;
-  if (Txn->NumPendingEvents < CFE_TBL_MAX_EVENTS_PER_TXN) {
-    EvPtr = &Txn->PendingEvents[Txn->NumPendingEvents];
-    EvPtr->EventId = EventId;
-    EvPtr->EventData1 = EventData1;
-    EvPtr->EventData2 = EventData2;
+  I32 Status;
+  CFE_TBL_RegistryRec_t *RegRecPtr;
+  RegRecPtr = CFE_TBL_LocateRegRecByName(TblName);
+  if (RegRecPtr == NULL) {
+    Status = CFE_TBL_ERR_INVALID_NAME;
+    CFE_TBL_TxnAddEvent(Txn, CFE_TBL_NO_SUCH_TABLE_ERR_EID, Status, 0);
+  } else {
+    Txn->RegId = CFE_TBL_RegRecGetID(RegRecPtr);
+    Txn->RegRecPtr = RegRecPtr;
+    Status = CFE_SUCCESS;
   }
-  ++Txn->NumPendingEvents;
-}
-
-U0 CFE_TBL_SendTransactionEvents(CFE_TBL_TxnState_t *Txn, U8 *Operation, Bool (*EventProc)(CFE_TBL_TxnEvent_t *, CFE_TBL_TxnEventContext_t *), U8 *OperationData)
-{
-  no_warn Txn;
-  no_warn Operation;
-  no_warn EventProc;
-  no_warn OperationData;
-  ++tbl_sendevents_calls;
+  return Status;
 }
 // THREE STAND-INS FROM cfe_tbl_registry.c, which is inside tbl's eight-source call cycle.
 // tools/cfs/module_deps.py --cuts prices cfe_tbl_accdesc.c at exactly these three. The lock
@@ -1508,6 +1508,220 @@ I32 CFE_TBL_CleanUpApp(U32 AppId)
 // the table's memory, so encode and decode are a copy. What it really does is BYTE ORDER -- a
 // cFE table file header is big endian on the wire so a file written on one processor loads on
 // another -- plus one overflow check that is easy to read as a duplicate.
+// --- cfe_tbl_transaction.c -----------------------------------------------------------
+// WHO IS ALLOWED TO DO THIS. Every public CFE_TBL_* call runs inside a transaction that
+// resolves the caller and the table, takes the registry lock, and collects events to send
+// after releasing it. The access model is four bits and one comparison, and that comparison is
+// the most important line in the module:
+//
+//     if ((AccessAllowed & AllowedContext) != AllowedContext)
+//
+// -- EVERY required bit must be present, not any. Table Services sets all of them.
+U0 TblTransactionExercise()
+{
+  CFE_TBL_RegistryRec_t *rr;
+  CFE_TBL_AccessDescriptor_t *ad;
+  CFE_TBL_TxnState_t txn;
+  U32 self;
+  I64 rc;
+  MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+  CFE_TBL_Global.RegistryMutex = 0x7B30;
+  CFE_ES_GetAppID(&self);
+  // TxnInit: with a context check it resolves the caller; without, it does not look.
+  MemSet(&txn, 0xA5, sizeof(CFE_TBL_TxnState_t));
+  S("tbl_txinit ctx rc=");
+  D(CFE_TBL_TxnInit(&txn, TRUE));
+  S(" app=");
+  D(CFE_ResourceId_ToInteger(CFE_TBL_TxnAppId(&txn)));
+  MemSet(&txn, 0xA5, sizeof(CFE_TBL_TxnState_t));
+  S(" noctx rc=");
+  D(CFE_TBL_TxnInit(&txn, FALSE));
+  S(" app=");
+  D(CFE_ResourceId_ToInteger(CFE_TBL_TxnAppId(&txn)));
+  S(" lock=");
+  D(txn.RegLockCount);
+  S("\n");
+  // THE NAME IS REFUSED WHILE THE REGISTRY IS LOCKED, and the refusal is a literal that NASA
+  // intends to appear in logs as a bug report: "if this is seen in a log, it is a bug in the
+  // caller that should be fixed".
+  CFE_TBL_TxnInit(&txn, TRUE);
+  txn.RegLockCount = 1;
+  S("tbl_txname locked=");
+  S(CFE_TBL_TxnAppNameCaller(&txn));
+  txn.RegLockCount = 0;
+  S(" unlocked=");
+  S(CFE_TBL_TxnAppNameCaller(&txn));
+  S(" cached=");
+  S(CFE_TBL_TxnAppNameCaller(&txn));
+  S("\n");
+  // START FROM NAME: found, and not found (which reports and unlocks).
+  rr = &CFE_TBL_Global.Registry[2];
+  CFE_TBL_InitRegistryRecord(rr);
+  CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 2));
+  StrNCpy(rr->Config.Name, "CFE_TBL.Txn", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  rr->OwnerAppId = self;
+  rc = CFE_TBL_TxnStartFromName(&txn, "CFE_TBL.Txn", CFE_TBL_TxnContext_UNDEFINED);
+  S("tbl_txname_ok rc=");
+  D(rc);
+  S(" regid=");
+  D(CFE_ResourceId_ToInteger(CFE_TBL_TxnRegId(&txn)));
+  S(" lock=");
+  D(txn.RegLockCount);
+  S("\n");
+  CFE_TBL_TxnFinish(&txn);
+  S("tbl_txfinish lock=");
+  D(txn.RegLockCount);
+  S("\n");
+  rc = CFE_TBL_TxnStartFromName(&txn, "CFE_TBL.Nope", CFE_TBL_TxnContext_UNDEFINED);
+  S("tbl_txname_miss rc=0x");
+  Hx8(rc);
+  S(" lock=");
+  D(txn.RegLockCount);
+  S(" events=");
+  D(CFE_TBL_TxnGetEventCount(&txn));
+  S(" id=");
+  D(txn.PendingEvents[0].EventId);
+  S("\n");
+  // START FROM HANDLE. An undefined handle is refused BEFORE the registry is locked -- the
+  // comment says why: "this avoids locking the registry for lookups that will certainly fail".
+  rc = CFE_TBL_TxnStartFromHandle(&txn, CFE_TBL_HANDLEID_UNDEFINED, CFE_TBL_TxnContext_UNDEFINED);
+  S("tbl_txh_undef rc=0x");
+  Hx8(rc);
+  S(" lock=");
+  D(txn.RegLockCount);
+  S("\n");
+  // a good descriptor owned by us, pointing at a good record owned by us
+  ad = &CFE_TBL_Global.Handles[9];
+  CFE_TBL_InitAccessDescriptor(ad);
+  CFE_TBL_AccDescSetUsed(ad, CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 9));
+  ad->AppId = self;
+  ad->RegIndex = CFE_TBL_RegRecGetID(rr);
+  // ASKING FOR A CONTEXT IS WHAT MAKES THE CALLER BE RESOLVED AT ALL, and that is worth
+  // pinning because it surprised me. TxnInit only calls CFE_ES_GetAppID when AllowedContext
+  // != UNDEFINED, so a transaction started with UNDEFINED keeps AppId zero -- and a zero
+  // AppId then compares EQUAL to an unset CFE_TBL_Global.TableTaskAppId, which grants
+  // TABLE_SERVICES. So UNDEFINED means "no context required" and incidentally yields ctx=1
+  // rather than the ctx=0 one might expect. Both cases are below.
+  rc = CFE_TBL_TxnStartFromHandle(&txn, CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 9), CFE_TBL_TxnContext_UNDEFINED);
+  S("tbl_txh_nocheck rc=");
+  D(rc);
+  S(" ctx=");
+  D(txn.CallContext);
+  S(" app=");
+  D(CFE_ResourceId_ToInteger(CFE_TBL_TxnAppId(&txn)));
+  S("\n");
+  CFE_TBL_TxnFinish(&txn);
+  // ...and with a real requirement, the caller IS resolved, and because we are both the
+  // descriptor's owner and the table's owner we get OWNER_APP|ACCESSOR_APP = 6.
+  rc = CFE_TBL_TxnStartFromHandle(&txn, CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 9), CFE_TBL_TxnContext_ACCESSOR_APP);
+  S("tbl_txh_ok rc=");
+  D(rc);
+  S(" ctx=");
+  D(txn.CallContext);
+  S(" lock=");
+  D(txn.RegLockCount);
+  S(" regid=");
+  D(CFE_ResourceId_ToInteger(CFE_TBL_TxnRegId(&txn)));
+  S("\n");
+  // FindAccessDescriptorForSelf walks the table's list looking for OUR descriptor.
+  rr->AccessList.Next = CFE_TBL_AccDescGetHandle(ad);
+  txn.AccDescPtr = NULL;
+  S("tbl_txself rc=");
+  D(CFE_TBL_FindAccessDescriptorForSelf(&txn));
+  S(" found=");
+  D(txn.AccDescPtr == ad);
+  S(" handle=");
+  D(CFE_TBL_TxnHandleAsULong(&txn));
+  S("\n");
+  // and with the descriptor owned by somebody else, it finds nothing
+  ad->AppId = CFE_ResourceId_FromInteger(0xBEEF);
+  txn.AccDescPtr = NULL;
+  rc = CFE_TBL_FindAccessDescriptorForSelf(&txn);
+  S("tbl_txself_other rc=0x");
+  Hx8(rc);
+  S(" found=");
+  D(txn.AccDescPtr != NULL);
+  S("\n");
+  ad->AppId = self;
+  CFE_TBL_TxnFinish(&txn);
+  // ACCESS DENIED: require a context bit the caller does not have. We own the table, so demand
+  // TABLE_SERVICES, which only tbl itself gets.
+  rc = CFE_TBL_TxnStartFromHandle(&txn, CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 9), CFE_TBL_TxnContext_TABLE_SERVICES);
+  S("tbl_txh_denied rc=0x");
+  Hx8(rc);
+  S(" events=");
+  D(CFE_TBL_TxnGetEventCount(&txn));
+  S(" id=");
+  D(txn.PendingEvents[0].EventId);
+  S(" data2=");
+  D(txn.PendingEvents[0].EventData2);
+  S(" lock=");
+  D(txn.RegLockCount);
+  S("\n");
+  // AND AS TABLE SERVICES ITSELF every requirement passes, because AccessAllowed gets every
+  // bit set.
+  CFE_TBL_Global.TableTaskAppId = self;
+  rc = CFE_TBL_TxnStartFromHandle(&txn, CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 9), CFE_TBL_TxnContext_ALL);
+  S("tbl_txh_root rc=");
+  D(rc);
+  S(" ctx=");
+  D(txn.CallContext);
+  S("\n");
+  CFE_TBL_TxnFinish(&txn);
+  CFE_TBL_Global.TableTaskAppId = CFE_ES_APPID_UNDEFINED;
+  // A STALE DESCRIPTOR: the handle is good but the record it names is free.
+  ad->RegIndex = CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 77);
+  rc = CFE_TBL_TxnStartFromHandle(&txn, CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 9), CFE_TBL_TxnContext_UNDEFINED);
+  S("tbl_txh_stale rc=0x");
+  Hx8(rc);
+  S(" lock=");
+  D(txn.RegLockCount);
+  S("\n");
+  ad->RegIndex = CFE_TBL_RegRecGetID(rr);
+  // THE NOTIFICATION LADDER: never loaded, then updated, then plain success.
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  txn.RegRecPtr = rr;
+  txn.AccDescPtr = ad;
+  CFE_TBL_RegRecClearLoadInProgress(rr);
+  rr->Status.ActiveBufferId = CFE_TBL_LOADBUFFID_UNDEFINED;
+  S("tbl_txnotify never=0x");
+  Hx8(CFE_TBL_TxnGetNextNotification(&txn));
+  CFE_TBL_LoadBuffSetUsed(&rr->Buffers[0], CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 8), CFE_TBL_RegRecGetID(rr));
+  CFE_TBL_SetActiveBuffer(rr, &rr->Buffers[0]);
+  ad->Updated = TRUE;
+  S(" updated=0x");
+  Hx8(CFE_TBL_TxnGetNextNotification(&txn));
+  ad->Updated = FALSE;
+  S(" plain=");
+  D(CFE_TBL_TxnGetNextNotification(&txn));
+  S("\n");
+  // EVENT OVERFLOW: NumPendingEvents counts PAST the limit so the overrun is evident, and
+  // ProcessEvents clamps back before walking.
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  txn.RegRecPtr = rr;
+  for (rc = 0; rc < CFE_TBL_MAX_EVENTS_PER_TXN + 3; rc++)
+    CFE_TBL_TxnAddEvent(&txn, CFE_TBL_ACTIVATE_ERR_EID, 0, rc);
+  S("tbl_txoverflow count=");
+  D(CFE_TBL_TxnGetEventCount(&txn));
+  S(" limit=");
+  D(CFE_TBL_MAX_EVENTS_PER_TXN);
+  S("\n");
+  CFE_EVS_Global.EVS_EventBurstMax = 0;
+  // the context must be filled: the helper renders it with %s and a NULL there is undefined
+  // behaviour, not a blank.
+  tbl_txctx.Operation = "Overflow";
+  tbl_txctx.CallerName = "TXN_APP";
+  tbl_txctx.TableName = CFE_TBL_RegRecGetName(rr);
+  rc = CFE_TBL_TxnProcessEvents(&txn, &CFE_TBL_SendActivationEventHelper, &tbl_txctx);
+  S("tbl_txclear processed=");
+  D(rc);
+  CFE_TBL_TxnClearEvents(&txn);
+  S(" after=");
+  D(CFE_TBL_TxnGetEventCount(&txn));
+  S("\n");
+  MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+}
+
 U0 TblCodecExercise()
 {
   CFE_TBL_File_Hdr_t hdr;
@@ -1632,6 +1846,7 @@ U0 TblValResultExercise()
   CFE_TBL_TxnEventContext_t evctx;
   U32 nid, idx;
   I64 k, sent;
+  I64 before;
   MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
   CFE_ES_GetAppID(&CFE_TBL_Global.TableTaskAppId);
   CFE_EVS_Global.EVS_EventBurstMax = 0;
@@ -1810,10 +2025,21 @@ U0 TblValResultExercise()
     D(sent);
     S("\n");
   }
-  tbl_sendevents_calls = 0;
+  // THE WITNESS MOVED when CFE_TBL_SendTransactionEvents stopped being a stand-in. It used to
+  // be a counter; the real one assembles the context, walks the pending events in the order
+  // they were added, renders each through the helper, and CLEARS the list. So what says it ran
+  // is the event text plus NumPendingEvents going to zero -- and the caller name comes from
+  // the transaction, which is what proves the context assembly.
+  CFE_TBL_TxnAddEvent(&txn, CFE_TBL_TOO_MANY_VALIDATIONS_ERR_EID, 0, 0);
+  CFE_TBL_TxnAddEvent(&txn, CFE_TBL_ASSUMED_VALID_INF_EID, 0, 0);
+  txn.RegRecPtr = rr;
+  StrNCpy(txn.AppNameBuffer, "TXN_APP", CFE_MISSION_MAX_API_LEN - 1);
+  before = CFE_TBL_TxnGetEventCount(&txn);
   CFE_TBL_SendValidationEvents(&txn);
-  S("tbl_vrsend calls=");
-  D(tbl_sendevents_calls);
+  S("tbl_vrsend before=");
+  D(before);
+  S(" after=");
+  D(CFE_TBL_TxnGetEventCount(&txn));
   S("\n");
   MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
 }
@@ -1826,6 +2052,7 @@ U0 TblLoadBuffRegRecExercise()
   U32 nid, cat, idx, serial;
   I64 k;
   I64 stale_before, stale_got, stale_after;
+  I64 before;
   CFE_TBL_TxnState_t txn2;
   CFE_TBL_TxnEventContext_t evctx;
   MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
@@ -2207,10 +2434,18 @@ U0 TblLoadBuffRegRecExercise()
     S("\n");
   }
   // and the wrapper, which only counts here because SendTransactionEvents is a stand-in
-  tbl_sendevents_calls = 0;
+  // same, for the activation helper -- and with NO registry record on the transaction, so the
+  // context's TableName falls back to the literal "[unknown]" rather than being left blank.
+  // That fallback is one line in SendTransactionEvents and is visible in the text.
+  MemSet(&txn2, 0, sizeof(CFE_TBL_TxnState_t));
+  CFE_TBL_TxnAddEvent(&txn2, CFE_TBL_ACTIVATE_ERR_EID, 0, 0);
+  StrNCpy(txn2.AppNameBuffer, "TXN_APP", CFE_MISSION_MAX_API_LEN - 1);
+  before = CFE_TBL_TxnGetEventCount(&txn2);
   CFE_TBL_SendActivationEvents(&txn2);
-  S("tbl_actvsend calls=");
-  D(tbl_sendevents_calls);
+  S("tbl_actvsend before=");
+  D(before);
+  S(" after=");
+  D(CFE_TBL_TxnGetEventCount(&txn2));
   S("\n");
   MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
 }
@@ -11106,6 +11341,7 @@ I64 main()
     TblLoadBuffRegRecExercise();
     TblValResultExercise();
     TblCodecExercise();
+    TblTransactionExercise();
     // --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
     // ------------------------------------------------------------------------------------
     // This is not a translation of anything. It is the test that has to pass BEFORE the 7,780
