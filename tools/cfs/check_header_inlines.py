@@ -151,13 +151,31 @@ def called_names(text, universe):
 def main(argv):
     verbose = '-v' in argv
     inlines = header_inlines()
-    if len(inlines) < 100:
-        print('FAIL cfs-hdrinline — found only %d static inlines in NASA\'s headers.'
-              % len(inlines), file=sys.stderr)
-        print('  There are over 160. A scan that finds nothing passes by default, which is the',
+
+    # THE SCAN IS CHECKED AGAINST AN EXACT NUMBER, not a floor. This started as
+    # `if len(inlines) < 100` -- a magic threshold that would have passed happily while the
+    # pattern silently missed a few. It nearly did: a throwaway regex written the same day
+    # missed `CFE_TBL_LoadBuffSetUsed`, whose `static inline void` sits on the line ABOVE its
+    # declarator, and nothing would have said so. The number of inlines PARSED must equal the
+    # number of times `static inline` appears in the same files. Any gap is a parse failure
+    # and names itself.
+    raw = 0
+    for d in NASA_DIRS:
+        for f in glob.glob(os.path.join(ROOT, d, '*.h')):
+            raw += len(re.findall(r'static\s+inline',
+                                  strip_comments(open(f, errors='replace').read())))
+    if len(inlines) != raw:
+        print('FAIL cfs-hdrinline — parsed %d inlines but `static inline` appears %d times.'
+              % (len(inlines), raw), file=sys.stderr)
+        print('  The difference is declarations the INLINE pattern could not read, and a gate',
               file=sys.stderr)
-        print('  failure this gate exists to refuse: check NASA_DIRS and the INLINE pattern.',
+        print('  is only as good as its scan. A wrapped return type is the known shape:',
               file=sys.stderr)
+        print('  `static inline void` on one line and the name on the next.', file=sys.stderr)
+        return 1
+    if raw < 100:
+        print('FAIL cfs-hdrinline — only %d `static inline` in NASA\'s headers; there are over'
+              ' 160, so NASA_DIRS is wrong.' % raw, file=sys.stderr)
         return 1
 
     srcs = gated_sources()

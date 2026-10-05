@@ -1326,6 +1326,7 @@ U0 CFE_PSP_Get_Timebase(U32 *Tbu, U32 *Tbl)
 #include "/Kernel/Cfs/cfe/cfe_tbl_handlelink.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_dumpctl.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_transaction_decl.HC"
+#include "/Kernel/Cfs/cfe/cfe_tbl_loadbuff_decl.HC"
 // THREE STAND-INS FROM cfe_tbl_registry.c, which is inside tbl's eight-source call cycle.
 // tools/cfs/module_deps.py --cuts prices cfe_tbl_accdesc.c at exactly these three. The lock
 // pair is a COUNTED lock -- the count is what makes it re-entrant within one transaction --
