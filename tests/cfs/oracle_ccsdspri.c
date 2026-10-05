@@ -1908,6 +1908,88 @@ static void dump(const char *tag, CFE_MSG_Message_t *m)
            m->CCSDS.Pri.Length[1]);
 }
 
+/* --- cfe_tbl_dumpctl.c --------------------------------------------------------------
+ * The dump-only rendezvous: four blocks, a resource-id allocator over them, and the five
+ * header accessors that are the allocator's primitives. The whole id scheme is exercised
+ * here once, because tbl repeats it in five id spaces and the other four are the same code
+ * with a different base.
+ *
+ * ITS OWN FUNCTION, to stay structurally parallel with the HolyC half, where it has to be one:
+ * limit 22 there means every local in main() spends from a single frame budget. Nothing forces
+ * it on this side; the two halves being the same shape is worth more than the two lines saved.
+ */
+static void TblDumpCtlExercise(void)
+{
+    CFE_TBL_DumpControl_t *bp;
+    CFE_ResourceId_t       nid;
+    uint32                 idx;
+    int                    k;
+
+        memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+        CFE_TBL_Global.LastDumpCtrlBlockId =
+            CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE +
+                                       CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS - 1);
+
+        /* ToIndex: the first slot, the last slot, one past the end, and an undefined id */
+        printf("tbl_dcidx first=%ld/%u last=%ld/%u past=%ld undef=%ld\n",
+               (long)CFE_TBL_DumpCtrlId_ToIndex(
+                   CFE_TBL_DUMPCTRLID_C(CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE)),
+                   &idx), (unsigned)idx,
+               (long)CFE_TBL_DumpCtrlId_ToIndex(
+                   CFE_TBL_DUMPCTRLID_C(CFE_ResourceId_FromInteger(
+                       CFE_TBL_DUMPCTRLID_BASE + CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS - 1)),
+                   &idx), (unsigned)idx,
+               (long)CFE_TBL_DumpCtrlId_ToIndex(
+                   CFE_TBL_DUMPCTRLID_C(CFE_ResourceId_FromInteger(
+                       CFE_TBL_DUMPCTRLID_BASE + CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS)),
+                   &idx),
+               (long)CFE_TBL_DumpCtrlId_ToIndex(CFE_TBL_DUMPCTRLID_UNDEFINED, &idx));
+
+        /* Locate: every slot resolves to its own address, and a bad id gives NULL */
+        for (k = 0; k < CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS; k++)
+        {
+            bp = CFE_TBL_LocateDumpCtrlByID(
+                CFE_TBL_DUMPCTRLID_C(CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE + k)));
+            printf("tbl_dcloc k=%d self=%d used=%d\n", k,
+                   (int)(bp == &CFE_TBL_Global.DumpControlBlocks[k]),
+                   (int)(bp != NULL && CFE_TBL_DumpCtrlBlockIsUsed(bp)));
+        }
+        printf("tbl_dcloc_bad null=%d slotused=%d\n",
+               (int)(CFE_TBL_LocateDumpCtrlByID(CFE_TBL_DUMPCTRLID_UNDEFINED) == NULL),
+               (int)CFE_TBL_CheckDumpCtrlSlotUsed(CFE_ResourceId_FromInteger(0)));
+
+        /* THE ALLOCATOR. Four blocks, so the fifth request must come back UNDEFINED --
+         * exhaustion is the path that matters, because a dump request that silently
+         * reused a block would overwrite another table's pending snapshot. */
+        for (k = 0; k < CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS + 1; k++)
+        {
+            nid = CFE_TBL_GetNextDumpCtrlBlock();
+            bp  = CFE_TBL_LocateDumpCtrlByID(CFE_TBL_DUMPCTRLID_C(nid));
+            printf("tbl_dcnext k=%d id=%lu got=%d", k,
+                   (unsigned long)CFE_ResourceId_ToInteger(nid), (int)(bp != NULL));
+            if (bp != NULL)
+            {
+                CFE_TBL_DumpCtrlBlockSetUsed(bp, nid);
+                CFE_TBL_Global.LastDumpCtrlBlockId = nid;
+                printf(" used=%d id_back=%lu match=%d",
+                       (int)CFE_TBL_DumpCtrlBlockIsUsed(bp),
+                       (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_TBL_DumpCtrlBlockGetId(bp)),
+                       (int)CFE_TBL_DumpCtrlBlockIsMatch(bp, CFE_TBL_DUMPCTRLID_C(nid)));
+            }
+            printf("\n");
+        }
+
+        /* and freeing one puts BOTH fields back, which is what lets it be reallocated */
+        bp = &CFE_TBL_Global.DumpControlBlocks[2];
+        bp->State = CFE_TBL_DUMP_PERFORMED;
+        CFE_TBL_DumpCtrlBlockSetFree(bp);
+        printf("tbl_dcfree used=%d state=%d match=%d next=%lu\n",
+               (int)CFE_TBL_DumpCtrlBlockIsUsed(bp), (int)bp->State,
+               (int)CFE_TBL_DumpCtrlBlockIsMatch(bp, CFE_TBL_DUMPCTRLID_UNDEFINED),
+               (unsigned long)CFE_ResourceId_ToInteger(CFE_TBL_GetNextDumpCtrlBlock()));
+        memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+}
+
 int main(void)
 {
     CFE_MSG_Message_t msg;
@@ -7446,82 +7528,7 @@ int main(void)
                    (long)((char *)&deep->AccessList - (char *)&CFE_TBL_Global));
         }
 
-        /* --- cfe_tbl_dumpctl.c ----------------------------------------------------------
-         * The dump-only rendezvous: four blocks, a resource-id allocator over them, and the
-         * five header accessors that are the allocator's primitives. The whole id scheme is
-         * exercised here once, because tbl repeats it in five id spaces and the other four
-         * are the same code with a different base. */
-        {
-            CFE_TBL_DumpControl_t *bp;
-            CFE_ResourceId_t       nid;
-            uint32                 idx;
-            int                    k;
-
-            memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
-            CFE_TBL_Global.LastDumpCtrlBlockId =
-                CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE +
-                                           CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS - 1);
-
-            /* ToIndex: the first slot, the last slot, one past the end, and an undefined id */
-            printf("tbl_dcidx first=%ld/%u last=%ld/%u past=%ld undef=%ld\n",
-                   (long)CFE_TBL_DumpCtrlId_ToIndex(
-                       CFE_TBL_DUMPCTRLID_C(CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE)),
-                       &idx), (unsigned)idx,
-                   (long)CFE_TBL_DumpCtrlId_ToIndex(
-                       CFE_TBL_DUMPCTRLID_C(CFE_ResourceId_FromInteger(
-                           CFE_TBL_DUMPCTRLID_BASE + CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS - 1)),
-                       &idx), (unsigned)idx,
-                   (long)CFE_TBL_DumpCtrlId_ToIndex(
-                       CFE_TBL_DUMPCTRLID_C(CFE_ResourceId_FromInteger(
-                           CFE_TBL_DUMPCTRLID_BASE + CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS)),
-                       &idx),
-                   (long)CFE_TBL_DumpCtrlId_ToIndex(CFE_TBL_DUMPCTRLID_UNDEFINED, &idx));
-
-            /* Locate: every slot resolves to its own address, and a bad id gives NULL */
-            for (k = 0; k < CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS; k++)
-            {
-                bp = CFE_TBL_LocateDumpCtrlByID(
-                    CFE_TBL_DUMPCTRLID_C(CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE + k)));
-                printf("tbl_dcloc k=%d self=%d used=%d\n", k,
-                       (int)(bp == &CFE_TBL_Global.DumpControlBlocks[k]),
-                       (int)(bp != NULL && CFE_TBL_DumpCtrlBlockIsUsed(bp)));
-            }
-            printf("tbl_dcloc_bad null=%d slotused=%d\n",
-                   (int)(CFE_TBL_LocateDumpCtrlByID(CFE_TBL_DUMPCTRLID_UNDEFINED) == NULL),
-                   (int)CFE_TBL_CheckDumpCtrlSlotUsed(CFE_ResourceId_FromInteger(0)));
-
-            /* THE ALLOCATOR. Four blocks, so the fifth request must come back UNDEFINED --
-             * exhaustion is the path that matters, because a dump request that silently
-             * reused a block would overwrite another table's pending snapshot. */
-            for (k = 0; k < CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS + 1; k++)
-            {
-                nid = CFE_TBL_GetNextDumpCtrlBlock();
-                bp  = CFE_TBL_LocateDumpCtrlByID(CFE_TBL_DUMPCTRLID_C(nid));
-                printf("tbl_dcnext k=%d id=%lu got=%d", k,
-                       (unsigned long)CFE_ResourceId_ToInteger(nid), (int)(bp != NULL));
-                if (bp != NULL)
-                {
-                    CFE_TBL_DumpCtrlBlockSetUsed(bp, nid);
-                    CFE_TBL_Global.LastDumpCtrlBlockId = nid;
-                    printf(" used=%d id_back=%lu match=%d",
-                           (int)CFE_TBL_DumpCtrlBlockIsUsed(bp),
-                           (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_TBL_DumpCtrlBlockGetId(bp)),
-                           (int)CFE_TBL_DumpCtrlBlockIsMatch(bp, CFE_TBL_DUMPCTRLID_C(nid)));
-                }
-                printf("\n");
-            }
-
-            /* and freeing one puts BOTH fields back, which is what lets it be reallocated */
-            bp = &CFE_TBL_Global.DumpControlBlocks[2];
-            bp->State = CFE_TBL_DUMP_PERFORMED;
-            CFE_TBL_DumpCtrlBlockSetFree(bp);
-            printf("tbl_dcfree used=%d state=%d match=%d next=%lu\n",
-                   (int)CFE_TBL_DumpCtrlBlockIsUsed(bp), (int)bp->State,
-                   (int)CFE_TBL_DumpCtrlBlockIsMatch(bp, CFE_TBL_DUMPCTRLID_UNDEFINED),
-                   (unsigned long)CFE_ResourceId_ToInteger(CFE_TBL_GetNextDumpCtrlBlock()));
-            memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
-        }
-
+        TblDumpCtlExercise();
         /* --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
          * ------------------------------------------------------------------------------------
          * This is not a translation of anything. It is the test that has to pass BEFORE the
