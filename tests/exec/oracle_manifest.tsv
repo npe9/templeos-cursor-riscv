@@ -92,6 +92,7 @@ tests/exec/cases/e_start_glbl_strinit.hc	00000000000000c4
 tests/exec/cases/e_start_no_toplevel.hc	0000000000000002
 tests/exec/cases/e_call_ptr_deref.hc	00000000000000ff
 tests/exec/cases/e_arr2d_member_row.hc	000000000000003f
+tests/exec/cases/e_arr_index_const_minus.hc	0000000000000fff
 tests/exec/cases/e_subswitch_break.hc	000000000000007f
 tests/exec/cases/e_member_ptr_array.hc	000000000000003c
 tests/exec/cases/e_addr_of_extern_fn.hc	000000000000002b

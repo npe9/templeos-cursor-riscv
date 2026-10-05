@@ -2377,7 +2377,29 @@ static bool ParsePostfix(Compiler *cc) {
       else if (saved_global && (saved_global->flags & GVF_ARRAY)) EnsureLvalueAddressPushed(cc);
       // Push element size
       ICAdd(cc, IC_IMM_I64, elem_size, RT_I64);
-      
+
+      // AN INDEX IS AN INTEGER, NOT A POINTER, and the pointer-tracking state the BASE left
+      // behind must not reach it. ParseAdd asks PtrElemInfo about its left operand, and an
+      // integer literal sets none of that state -- so `g.inner[8 - 1]` saw cc->last_member
+      // still pointing at `inner`, decided `8` was a pointer to a 12-byte element, and scaled
+      // the `1` by 12. The subscript then scaled the whole thing by 12 again: the address came
+      // out at base + N*size - size*size instead of base + (N-1)*size.
+      //
+      // MEASURED, on CFE_TBL_Global: `Registry[CFE_PLATFORM_TBL_MAX_NUM_TABLES - 1]` resolved
+      // to 117,320 bytes BEFORE the object instead of 62,032 bytes into it -- a wild store into
+      // whichever global happened to precede it, which is how it was found. A bare literal
+      // index (`inner[7]`) and a variable index (`inner[n - 1]`) were both always right; only a
+      // CONSTANT EXPRESSION was wrong, which is why it survived this long.
+      //
+      // The same clearing ParseAdd already does between its own operands, for the same reason:
+      // everything cleared here was snapshotted above and is restored after the index parses.
+      cc->last_var_symbol = NULL;
+      cc->last_global_var = NULL;
+      cc->last_member = NULL;
+      cc->expr_ptr_depth = 0;
+      cc->expr_pointee = 0;
+      cc->expr_elem_size = 0;
+
       int saved_level = cc->subscript_level;  // the index expression may reference variables
       CHashClass *saved_class = cc->last_expr_class;  // …and would clobber the element's class
       // Parse index expression (will clobber last_var_symbol, save it)
@@ -2388,6 +2410,10 @@ static bool ParsePostfix(Compiler *cc) {
       cc->subscript_level = saved_level;
       cc->last_expr_class = saved_class;
       cc->last_global_var = saved_global;
+      cc->last_member = saved_member;
+      cc->expr_ptr_depth = saved_ptr_depth;
+      cc->expr_pointee = saved_pointee;
+      cc->expr_elem_size = saved_elem_size;
       
       if (!LexExpect(cc, ']')) return false;
       

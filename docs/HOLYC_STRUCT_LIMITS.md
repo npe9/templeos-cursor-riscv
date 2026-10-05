@@ -1111,3 +1111,59 @@ It was found only because the differential transcript stopped 500 lines early, a
 that made it diagnosable was `HOLYC_MAP` plus the trap's `mepc=0`: a call to address zero is a
 function pointer that was never filled in. If a translated file ever needs a large local buffer
 in a driver this size, expect this and move it out.
+
+---
+
+## 23. A class-member array indexed by a CONSTANT EXPRESSION addressed the wrong element — FIXED
+
+`g.inner[8 - 1]` did not mean `g.inner[7]`. It resolved to
+
+```
+    &g.inner  +  8*sizeof(element)  -  sizeof(element)*sizeof(element)
+```
+
+For `CFE_TBL_Global.Registry[CFE_PLATFORM_TBL_MAX_NUM_TABLES - 1]`, a 424-byte element at
+offset 8,184 in a 592,056-byte global, that is **117,320 bytes *before* the object** instead of
+62,032 bytes into it. The store went into whichever global happened to precede it.
+
+**Three forms, and only one was wrong**, which is why it survived:
+
+| form | address |
+|---|---|
+| `g.inner[7]` — a bare literal | correct |
+| `g.inner[n]`, `g.inner[n - 1]` — a variable | correct |
+| `g.inner[8 - 1]` — a **constant expression** | **wrong** |
+| `g.flat[8 - 1]` — one-byte elements | correct (the scale is 1, so `1*1 == 1`) |
+
+**The cause is limit 20's leak, one place further on.** `ParseAdd` asks `PtrElemInfo` about its
+left operand to decide whether the addition is pointer arithmetic. An integer literal sets none
+of the pointer-tracking state — unlike a *string* literal, whose primary clears it explicitly
+with the comment "a literal is a value: no auto-deref from a stale operand" — so `PtrElemInfo`
+fell through to `cc->last_member`, which was **still the array being subscripted**. It decided
+`8` was a pointer to a 12-byte element, scaled the `1` by 12, and then the subscript scaled the
+whole index by 12 again.
+
+**The fix** is to clear the pointer-tracking state at the subscript boundary, before the index
+expression is parsed, and restore it after — the same clearing `ParseAdd` already does between
+its own two operands, for the same reason. An index is an integer; what the base left behind
+must not reach it. `host/parser.c`, in the `'['` case of the postfix loop.
+
+**It had a second live instance, in the disk driver.** `DrvSerialNum` and `DrvModelNum` read the
+ATA identify-device record with `bd->dev_id_record[10 + i]`, where the member is a `U16 *`. The
+constant left operand took the pointee size 2 from the stale member state, so `i` was scaled by
+2 and then by 2 again: the loop read words `10, 12, 14, …` instead of `10, 11, 12, …`. Both
+functions returned a serial and model string interleaved with the wrong half of the record.
+Nothing pinned that output — they are only called from `DrvRep`, a human-readable report — which
+is exactly why it went unnoticed.
+
+**Pinned by** `tests/exec/cases/e_arr_index_const_minus.hc`, which measures the bare-literal,
+constant-expression and variable forms side by side on both a member array and a pointer
+member, so the three cannot drift apart again.
+
+**What found it, which is the part worth keeping.** Not a unit test. The cFS differential
+driver prints the offset of every deep member of `CFE_TBL_Global` as a **pointer difference** —
+the compiler's own arithmetic — and compares it against the same difference computed by NASA's
+C from the same header. `check_padding` had already agreed about all 347 class layouts, which
+proves the two sides *describe* the same object; it says nothing about whether the compiler can
+*reach* the offsets it agreed on. Those are two different properties and only the second one
+was broken.
