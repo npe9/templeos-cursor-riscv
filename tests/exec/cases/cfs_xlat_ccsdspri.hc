@@ -1325,6 +1325,26 @@ U0 CFE_PSP_Get_Timebase(U32 *Tbu, U32 *Tbl)
 #include "/Kernel/Cfs/cfe/cfe_tbl_global.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_handlelink.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_dumpctl.HC"
+// cfe_tbl_internal.c, cfe_tbl_task.c and cfe_tbl_api.c are three of the EIGHT sources that
+// tools/cfs/module_deps.py shows must be gated together, so these three are stubs on both
+// halves -- exactly the arrangement the other six objtabs have had. They exist so that
+// CFE_TBL_ModuleEntry has three distinct non-NULL addresses to hold, which is the only
+// property the object table exercise asserts about them.
+I32 CFE_TBL_EarlyInit()
+{
+  return CFE_SUCCESS;
+}
+
+U0 CFE_TBL_TaskMain()
+{
+}
+
+I32 CFE_TBL_CleanUpApp(U32 AppId)
+{
+  no_warn AppId;
+  return CFE_SUCCESS;
+}
+#include "/Kernel/Cfs/cfe/cfe_tbl_objtab.HC"
 // --- cfe_tbl_dumpctl.c ----------------------------------------------------------
 // The dump-only rendezvous: four blocks, a resource-id allocator over them, and the five
 // header accessors that are the allocator's primitives. The whole id scheme is exercised
@@ -10183,6 +10203,29 @@ I64 main()
     S("\n");
     MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
     // --- cfe_time_objtab.c ------------------------------------------------------------
+    // --- cfe_tbl_objtab.c ----------------------------------------------------------
+    // tbl's entry in the core module object table: the whole contract between a core service
+    // and cFE's startup, which walks the table twice -- EarlyInit for every module, then
+    // TaskMain for every module. TBL is the ORDINARY shape, with all three hooks present; ES
+    // is the one that is odd, having no Cleanup.
+    S("tbl_objtab ");
+    S(CFE_TBL_ModuleEntry.Name);
+    S(" ");
+    D(CFE_TBL_ModuleEntry.EarlyInit == NULL);
+    S(" ");
+    D(CFE_TBL_ModuleEntry.TaskMain == NULL);
+    S(" ");
+    D(CFE_TBL_ModuleEntry.AppCleanupCb == NULL);
+    S(" ");
+    D(CFE_TBL_ModuleEntry.Priority);
+    S(" ");
+    D(CFE_TBL_ModuleEntry.StackSize);
+    S("\n");
+    // and the three are DISTINCT addresses, which is what a positional initialiser can
+    // silently get wrong where a designated one cannot
+    S("tbl_objtab_distinct ");
+    D(CFE_TBL_ModuleEntry.EarlyInit != CFE_TBL_ModuleEntry.TaskMain && CFE_TBL_ModuleEntry.TaskMain != CFE_TBL_ModuleEntry.AppCleanupCb);
+    S("\n");
     S("tim_objtab ");
     S(CFE_TIME_ModuleEntry.Name);
     S(" ");

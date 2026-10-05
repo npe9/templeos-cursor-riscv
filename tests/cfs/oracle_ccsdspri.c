@@ -112,6 +112,7 @@ extern const Target_ObjectTable_t CFE_EVS_ModuleEntry;
 extern const Target_ObjectTable_t CFE_CONFIG_ModuleEntry;
 extern const Target_ObjectTable_t CFE_TA_ModuleEntry;
 extern const Target_ObjectTable_t CFE_TIME_ModuleEntry;
+extern const Target_ObjectTable_t CFE_TBL_ModuleEntry;
 /* module-private, declared in no header on the include path */
 extern CFE_TA_CpuTaskAffinity_t CFE_TA_CpuTaskAffinity[OS_MAX_TASKS];
 int32 CFE_TA_TaskInit(void);
@@ -654,6 +655,23 @@ static CFE_ES_ResetData_t es_reset_area;
  * goes away the moment cfe_tbl_task.c is gated, and until then this is the single largest
  * object either half allocates -- which is itself the thing the tbl section below tests. */
 CFE_TBL_Global_t CFE_TBL_Global;
+
+/* cfe_tbl_internal.c, cfe_tbl_task.c and cfe_tbl_api.c are three of the EIGHT sources that
+ * tools/cfs/module_deps.py shows must be gated together, so these three are stubs on both
+ * halves -- exactly the arrangement the other six objtabs have had. They exist so that
+ * CFE_TBL_ModuleEntry has three distinct non-NULL addresses to hold, which is the only
+ * property the object table exercise asserts about them. */
+int32 CFE_TBL_EarlyInit(void)
+{
+    return CFE_SUCCESS;
+}
+void CFE_TBL_TaskMain(void)
+{
+}
+int32 CFE_TBL_CleanUpApp(CFE_ES_AppId_t AppId)
+{
+    return CFE_SUCCESS;
+}
 
 /* cfe_es_api.c and cfe_es_task.c are not gated, so three of their functions are stubs on BOTH
  * halves -- the same temporary arrangement CFE_SB_SendSubscriptionReport had until
@@ -7616,6 +7634,23 @@ int main(void)
         memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
 
         /* --- cfe_time_objtab.c ------------------------------------------------------------ */
+        /* --- cfe_tbl_objtab.c ----------------------------------------------------------
+         * tbl's entry in the core module object table: the whole contract between a core
+         * service and cFE's startup, which walks the table twice -- EarlyInit for every
+         * module, then TaskMain for every module. TBL is the ORDINARY shape, with all three
+         * hooks present; ES is the one that is odd, having no Cleanup. */
+        printf("tbl_objtab %s %d %d %d %lu %lu\n", CFE_TBL_ModuleEntry.Name,
+               (int)(CFE_TBL_ModuleEntry.EarlyInit == NULL),
+               (int)(CFE_TBL_ModuleEntry.TaskMain == NULL),
+               (int)(CFE_TBL_ModuleEntry.AppCleanupCb == NULL),
+               (unsigned long)CFE_TBL_ModuleEntry.Priority,
+               (unsigned long)CFE_TBL_ModuleEntry.StackSize);
+        /* and the three are DISTINCT addresses, which is what a positional initialiser can
+         * silently get wrong where a designated one cannot */
+        printf("tbl_objtab_distinct %d\n",
+               (int)(CFE_TBL_ModuleEntry.EarlyInit != (void *)CFE_TBL_ModuleEntry.TaskMain &&
+                     (void *)CFE_TBL_ModuleEntry.TaskMain != (void *)CFE_TBL_ModuleEntry.AppCleanupCb));
+
         printf("tim_objtab %s %d %d %d %lu %lu\n", CFE_TIME_ModuleEntry.Name,
                (int)(CFE_TIME_ModuleEntry.EarlyInit == NULL),
                (int)(CFE_TIME_ModuleEntry.TaskMain == NULL),

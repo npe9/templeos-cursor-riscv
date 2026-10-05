@@ -906,6 +906,46 @@ last**, because it is the only one that needs no new driver at all:
 The EPS node in the sketch has no direct path on this board: the FU740 has no CAN, so it would be
 an external controller over I²C, SPI or UART, or another cFS node behind SBN.
 
+## TBL'S CORE IS ONE CALL CYCLE, and the stand-ins to break it cost more than they save
+
+`tools/cfs/module_deps.py` builds a module's cross-source call graph and reduces it to
+strongly connected components. tbl's answer:
+
+```
+=== tbl: 19 sources, 3 gated, 16 to go
+      3900 lines  accdesc.c internal.c loadbuff.c passthru_codec.c registry.c
+                  regrec.c transaction.c valresult.c
+                  <-- CALL CYCLE of 8 sources: gating any one alone needs stand-ins
+```
+
+**A cycle is not a wall, and the calibration run is what proved it.** Run with `--fresh`
+(pretend nothing is gated), **ES comes back as a TWELVE-source cycle** — and ES was gated one
+source at a time, with stubs later deleted in batches. EVS, by contrast, is genuinely acyclic:
+seven singletons in dependency order. So the tool discriminates, and what it reports is the
+SHAPE; the cost of an incremental path through a cycle is the stand-ins it forces.
+
+**The judgement is per edge: is the stand-in a SEAM, or upstream LOGIC?**
+
+| gating this first | needs stand-ins for | verdict |
+|---|---|---|
+| `cfe_es_apps.c` | `StartAppTask`, `AppCreate`, `CleanUpApp` — things the driver supplies anyway | stubs were right |
+| `cfe_tbl_regrec.c` | `CFE_TBL_LocateLoadBufferByID`, `CFE_TBL_GetNextLocalBufferId` | stubs are wrong |
+
+Those two are not a seam. Both implement a buffer-id **serial encoding** — a category field
+separating the shared load buffers from a table's own dedicated one, packed into the resource
+id. That is loadbuff's logic. A faithful copy of it in the differential driver puts upstream
+logic where no gate compares it against NASA, which is worse than a stub because it *looks like
+a translation*. The recorded trap is "a stand-in no gate can object to", three instances deep.
+
+So tbl's eight-source component is gated as one piece — not because the graph forbids
+otherwise, but because the cheapest break in it costs more than it saves. Its three large
+consumers (`api.c`, `task_cmds.c`, `load.c`) come after. Everything outside the cycle is
+already done: `handlelink.c`, `dumpctl.c`, `objtab.c`, and the whole type foundation.
+
+**Run the tool before planning any module's order**, including the apps — and run it `--fresh`
+against a finished module first, because a result you cannot calibrate is a number you should
+not plan on. That calibration is what corrected the first conclusion drawn from this one.
+
 ## An honest note on scale
 
 Sensing → navigation → payload → storage → autonomy → telemetry, translated into HolyC, on a port
