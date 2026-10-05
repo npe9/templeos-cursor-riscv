@@ -893,7 +893,7 @@ language.
 
 ---
 
-## 20. A constant `A + B` in a call argument is scaled by another argument's pointee size — OPEN, and SILENT
+## 20. A constant `A + B` in a call argument is scaled by another argument's pointee size — FIXED
 
 This is limit 17's leak again, one stage further on. There, the arrow in `fn(args)->member`
 resolved against the **first argument's** class and the compiler *refused*. Here the first
@@ -938,9 +938,35 @@ plants ES's app table with `CFE_ES_AppRecordSetUsed(arp, CFE_ES_APPID_BASE + slo
 showed was `CFE_TA_TaskInit: Call to CFE_ES_GetAppID Failed` — two modules away from the
 arithmetic, the same distance as the dropped `(cpuaddr)` cast in `cfe_sb_priv.c`.
 
-**The workaround is a local**, the same one limit 17 takes: compute the value into a variable
-and pass the variable. `tests/exec/cases/e_call_arg_const_scaled.hc` pins the broken form and
-both correct ones side by side, so the day it is fixed the case fails and says so.
+**The workaround was a local**, the same one limit 17 takes: compute the value into a variable
+and pass the variable. `tests/exec/cases/e_call_arg_const_scaled.hc` pinned the broken form and
+both correct ones side by side, so the day it was fixed the case would fail and say so. It did,
+flipping from `0x141111` to `0x111111` — and that flip was the control for the fix.
+
+### THE CAUSE, FOUND ONLY AFTER THREE OF ITS ARMS HAD BEEN FIXED SEPARATELY
+
+There was never a missing boundary. **An integer literal was the only primary in `ParsePrimary`
+that did not clear the pointer-tracking state** — the *string* literal three lines below it
+always did, with the comment "a literal is a value: no auto-deref from a stale operand".
+`ParseAdd` asks `PtrElemInfo` about its LEFT operand to decide whether an addition is pointer
+arithmetic, and a literal left operand answered with whatever pointer happened to be current:
+the assignment's target, the subscript's base, or the call's earlier argument.
+
+Three arms were each fixed at their own boundary before anyone looked at the literal:
+
+| arm | boundary that was patched | what it cost |
+|---|---|---|
+| `ptr = CONST + off` | `ParseAssignment`, after `=` | the HiFive PRCI reporting 52 MHz for all four PLLs; a PLIC cleanup zeroing 0x0C008200 |
+| `member_array[CONST - 1]` (limit 23) | the subscript, before the index | a store 117 KB outside a 592 KB global; the ATA identify record read at every other word |
+| `fn(ptr, CONST + x)` | **none existed** | every cFS app id planted at base 0xC80000 instead of 0x110000 |
+
+Each patch was correct and none was the cause. Clearing the six fields at the literal closes all
+three and needs no boundary at all.
+
+**The lesson is the shape.** When the same arithmetic is wrong in three unrelated *syntactic*
+positions, the bug is in something all three share, not in three places. The tell was in the
+source the whole time: two adjacent primaries, one clearing the state and one not, and the one
+that cleared it explaining why.
 
 ---
 
@@ -1147,6 +1173,12 @@ whole index by 12 again.
 expression is parsed, and restore it after — the same clearing `ParseAdd` already does between
 its own two operands, for the same reason. An index is an integer; what the base left behind
 must not reach it. `host/parser.c`, in the `'['` case of the postfix loop.
+
+**And then the real cause turned up one layer down.** The integer-literal primary did not clear
+that state at all, where the string-literal primary beside it always had. Limit 20 records it,
+along with the three boundaries that were each patched before anyone looked at the literal. The
+subscript clearing stays — an index genuinely is an integer and saying so at the boundary is
+right — but it is no longer what makes this case pass.
 
 **It had a second live instance, in the disk driver.** `DrvSerialNum` and `DrvModelNum` read the
 ATA identify-device record with `bd->dev_id_record[10 + i]`, where the member is a `U16 *`. The

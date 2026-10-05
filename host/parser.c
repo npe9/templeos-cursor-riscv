@@ -1327,6 +1327,28 @@ static bool ParsePrimary(Compiler *cc) {
     cc->last_expr_type = RT_I64;
     // Integer literal
     ICAdd(cc, IC_IMM_I64, cc->lex.token_i64, RT_I64);
+    // AN INTEGER LITERAL IS A VALUE, exactly as the string literal below says of itself: "a
+    // literal is a value: no auto-deref from a stale operand". It was the only primary that
+    // left the pointer-tracking state alone, and that asymmetry is the ROOT of a family of
+    // silent wrong constants, because `ParseAdd` asks `PtrElemInfo` about its LEFT operand to
+    // decide whether an addition is pointer arithmetic -- and a literal left operand answered
+    // with whatever pointer happened to be current.
+    //
+    // Three arms of it were each fixed at their own boundary before this: ParseAssignment
+    // clears after `=` (a constant MMIO base scaled by the pointee -- the HiFive PRCI reading
+    // 52 MHz for all four PLLs), the subscript clears before an index (a class-member array at
+    // `[CONST - 1]` addressing 117 KB outside the object), and ParseAdd clears between its own
+    // two operands. Each was real; none was the cause. The cause is here, and the arm nobody
+    // had a boundary for is a CALL ARGUMENT: `Two(r, (0x10 + 1) << 16)` emitted 20 for the 17,
+    // because `r` is a `U32 *` and 1*4 is 4.
+    //
+    // docs/HOLYC_STRUCT_LIMITS.md limits 20 and 23 and the three exec cases named in them.
+    cc->last_var_symbol = NULL;
+    cc->last_global_var = NULL;
+    cc->last_member = NULL;
+    cc->expr_ptr_depth = 0;
+    cc->expr_pointee = 0;
+    cc->expr_elem_size = 0;
     LexNext(cc);
     return true;
   }

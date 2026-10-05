@@ -1,6 +1,9 @@
-// A CONSTANT `A + B` IN A CALL ARGUMENT IS SCALED BY ANOTHER ARGUMENT'S POINTEE SIZE.
+// A CONSTANT `A + B` IN A CALL ARGUMENT WAS SCALED BY ANOTHER ARGUMENT'S POINTEE SIZE. FIXED.
 //
-// This is a SILENT WRONG CONSTANT, with no diagnostic, and it is the same leak as limit 17 in
+// The three forms below still have to agree, which is why this case stays. What follows is the
+// history, kept because the SHAPE is what makes the next instance recognisable.
+//
+// It was a SILENT WRONG CONSTANT, with no diagnostic, and it is the same leak as limit 17 in
 // docs/HOLYC_STRUCT_LIMITS.md -- there the arrow in `fn(args)->member` resolved against the
 // FIRST ARGUMENT's class; here the pointer argument's POINTEE SIZE reaches a constant fold in
 // a later argument and multiplies its right operand.
@@ -29,8 +32,17 @@
 // -- two modules away from the arithmetic, exactly like the dropped (cpuaddr) cast in
 // cfe_sb_priv.c that e_ptr_minus_int_scales.hc pins.
 //
-// THE WORKAROUND IS A LOCAL, the same one limit 17 takes: compute the value into a variable and
-// pass the variable. That form is measured here too and is correct.
+// THE WORKAROUND WAS A LOCAL, the same one limit 17 takes: compute the value into a variable
+// and pass the variable. That form is measured here too and was always correct.
+//
+// THE FIX, AND WHY IT IS NOT HERE. There was no boundary to clear for a call argument, because
+// the boundary was never the problem. An INTEGER LITERAL was the only primary that did not
+// clear the pointer-tracking state -- the string literal three lines below it in ParsePrimary
+// always did, with the comment "a literal is a value: no auto-deref from a stale operand" --
+// so a literal left operand of `+` answered PtrElemInfo with whatever pointer was current.
+// Three arms of this had already been fixed at three different boundaries (ParseAssignment
+// after `=`, the subscript before an index, ParseAdd between its own operands) and none of
+// them was the cause. Clearing the state at the literal closes all of them.
 U32 Table8[64];
 U32 Got;
 U0 TakesPtrAndValue(U32 *p, U32 v)
@@ -70,8 +82,9 @@ I64 main()
   bad = Bad(1);
   loc = ViaLocal(1);
   nop = NoPointerArg(1);
-  // Bits 16-23 of each, most significant first: the broken one, then the two correct forms.
-  // 0x11 is right; the first is 0x14 today and becomes 0x11 when the leak is fixed, at which
-  // point this case's pinned value changes to 0x111111 and the comment above becomes history.
+  // Bits 16-23 of each, most significant first: the form that was broken, then the two that
+  // never were. 0x11 is right. The first read 0x14 while the leak was live and the pinned value
+  // was 0x141111; the fix flipped it to 0x111111, and THAT FLIP WAS THE CONTROL -- this case
+  // was written to fail the day it was fixed, and it did.
   return (((bad >> 16) & 0xFF) << 16) | (((loc >> 16) & 0xFF) << 8) | ((nop >> 16) & 0xFF);
 }
