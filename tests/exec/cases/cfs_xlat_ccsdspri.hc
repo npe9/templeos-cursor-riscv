@@ -1330,6 +1330,7 @@ U0 CFE_PSP_Get_Timebase(U32 *Tbu, U32 *Tbl)
 #include "/Kernel/Cfs/cfe/cfe_tbl_loadbuff.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_regrec.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_valresult.HC"
+#include "/Kernel/Cfs/cfe/cfe_tbl_passthru_codec.HC"
 // Backing memory for the load buffers the tbl exercise hands out, plus the four event ids it
 // walks. File scope because of limit 22 and because HolyC has no file-scope aggregate
 // initialiser; the C half keeps them at file scope too so the two read the same.
@@ -1502,6 +1503,127 @@ I32 CFE_TBL_CleanUpApp(U32 AppId)
 // app will answer) and the one where there is not -- where the block is still allocated, goes
 // straight to PERFORMED, the buffer is marked valid on the spot, and the only thing
 // distinguishing "checked" from "nobody checked" is an INFORMATION event.
+// --- cfe_tbl_passthru_codec.c --------------------------------------------------------
+// The codec that does nothing, which is the point: without EDS a table file is a raw image of
+// the table's memory, so encode and decode are a copy. What it really does is BYTE ORDER -- a
+// cFE table file header is big endian on the wire so a file written on one processor loads on
+// another -- plus one overflow check that is easy to read as a duplicate.
+U0 TblCodecExercise()
+{
+  CFE_TBL_File_Hdr_t hdr;
+  CFE_TBL_RegistryRec_t *rr;
+  CFE_TBL_TxnState_t txn;
+  U32 w;
+  MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+  // the swap itself, and that it is its own inverse
+  w = 0x01020304;
+  CFE_TBL_ByteSwapUint32(&w);
+  S("tbl_cdswap once=");
+  Hx8(w);
+  CFE_TBL_ByteSwapUint32(&w);
+  S(" twice=");
+  Hx8(w);
+  S("\n");
+  // THREE FIELDS SWAP, THE NAME DOES NOT -- which is why the header can be read as a struct
+  // at all.
+  MemSet(&hdr, 0, sizeof(CFE_TBL_File_Hdr_t));
+  hdr.Reserved = 0x11223344;
+  hdr.Offset = 0x0000002A;
+  hdr.NumBytes = 0x000000FF;
+  StrNCpy(hdr.TableName, "CFE_TBL.Cdc", CFE_MISSION_TBL_MAX_FULL_NAME_LEN - 1);
+  CFE_TBL_ByteSwapTblHeader(&hdr);
+  S("tbl_cdhdr res=");
+  Hx8(hdr.Reserved);
+  S(" off=");
+  Hx8(hdr.Offset);
+  S(" num=");
+  Hx8(hdr.NumBytes);
+  S(" name=");
+  S(hdr.TableName);
+  S("\n");
+  CFE_TBL_ByteSwapTblHeader(&hdr);
+  S("tbl_cdhdr_back res=");
+  Hx8(hdr.Reserved);
+  S(" off=");
+  Hx8(hdr.Offset);
+  S(" num=");
+  Hx8(hdr.NumBytes);
+  S("\n");
+  // THE SIZE CHECK, and the overflow case the first test exists for: Offset and NumBytes are
+  // both 32-bit and come from a file, so their sum can WRAP -- a wrapped sum is smaller than
+  // Offset and would otherwise pass the size test and then be used as a length.
+  rr = &CFE_TBL_Global.Registry[3];
+  CFE_TBL_InitRegistryRecord(rr);
+  CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 3));
+  rr->Config.Size = 256;
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  txn.RegRecPtr = rr;
+  MemSet(&hdr, 0, sizeof(CFE_TBL_File_Hdr_t));
+  hdr.Offset = 0;
+  hdr.NumBytes = 256;
+  S("tbl_cdsize exact=");
+  D(CFE_TBL_ValidateCodecLoadSize(&txn, &hdr));
+  hdr.NumBytes = 257;
+  S(" over=0x");
+  Hx8(CFE_TBL_ValidateCodecLoadSize(&txn, &hdr));
+  hdr.Offset = 0xFFFFFFF0;
+  hdr.NumBytes = 0x20;
+  // sum wraps to 0x10, which is < Offset and < Size
+  S(" wrap=0x");
+  Hx8(CFE_TBL_ValidateCodecLoadSize(&txn, &hdr));
+  S(" events=");
+  D(txn.NumPendingEvents);
+  S("\n");
+  // PARTIAL versus SHORT, which are different warnings for different reasons
+  MemSet(&hdr, 0, sizeof(CFE_TBL_File_Hdr_t));
+  hdr.Offset = 0;
+  hdr.NumBytes = 256;
+  S("tbl_cdfinal full=");
+  D(CFE_TBL_CodecGetFinalStatus(&txn, &hdr));
+  hdr.NumBytes = 128;
+  S(" short=0x");
+  Hx8(CFE_TBL_CodecGetFinalStatus(&txn, &hdr));
+  hdr.Offset = 16;
+  hdr.NumBytes = 256;
+  S(" partial=0x");
+  Hx8(CFE_TBL_CodecGetFinalStatus(&txn, &hdr));
+  S("\n");
+  // the empty seam members, which still have to return the right thing
+  S("tbl_cdseam cfg=");
+  D(CFE_TBL_ValidateCodecConfig(&rr->Config));
+  S(" acquire_null=");
+  D(CFE_TBL_AcquireCodecBuffer(rr) == NULL);
+  S("\n");
+  CFE_TBL_ReleaseCodecBuffer(&rr->Buffers[0]);
+  // ENCODE AND DECODE ARE A COPY, and both skip it when source and destination are the same
+  // buffer -- the case a dump of an already-resident table hits.
+  rr->Buffers[0].BufferPtr = tbl_probe_mem;
+  rr->Buffers[0].AllocationSize = 64;
+  rr->Buffers[1].BufferPtr = tbl_probe_mem2;
+  rr->Buffers[1].AllocationSize = 64;
+  MemSet(tbl_probe_mem, 0x5E, 64);
+  MemSet(tbl_probe_mem2, 0, 64);
+  CFE_TBL_LoadBuffSetContentSize(&rr->Buffers[0], 12);
+  S("tbl_cdcopy enc=");
+  D(CFE_TBL_EncodeOutputData(&txn, &rr->Buffers[0], &rr->Buffers[1]));
+  S(" dst=");
+  Hx2b(tbl_probe_mem2[0]);
+  S(" len=");
+  D(CFE_TBL_LoadBuffGetContentSize(&rr->Buffers[1]));
+  MemSet(tbl_probe_mem2, 0, 64);
+  CFE_TBL_LoadBuffSetContentSize(&rr->Buffers[1], 0);
+  S(" dec=");
+  D(CFE_TBL_DecodeInputData(&txn, &rr->Buffers[0], &rr->Buffers[1]));
+  S(" dst=");
+  Hx2b(tbl_probe_mem2[0]);
+  S(" len=");
+  D(CFE_TBL_LoadBuffGetContentSize(&rr->Buffers[1]));
+  S(" same=");
+  D(CFE_TBL_EncodeOutputData(&txn, &rr->Buffers[0], &rr->Buffers[0]));
+  S("\n");
+  MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+}
+
 U0 TblValResultExercise()
 {
   CFE_TBL_ValidationResult_t *vr;
@@ -10983,6 +11105,7 @@ I64 main()
     TblAccDescExercise();
     TblLoadBuffRegRecExercise();
     TblValResultExercise();
+    TblCodecExercise();
     // --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
     // ------------------------------------------------------------------------------------
     // This is not a translation of anything. It is the test that has to pass BEFORE the 7,780

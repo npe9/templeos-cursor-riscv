@@ -104,6 +104,7 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "cfe_tbl_loadbuff.h"  /* the load buffers and their thirteen accessors */
 #include "cfe_tbl_regrec.h"    /* the registry record and its twenty */
 #include "cfe_tbl_valresult.h" /* the ten validation result blocks and their five */
+#include "cfe_tbl_codec.h"     /* the codec seam; passthru is the non-EDS branch */
 
 /* cfe_msg_objtab.c defines this and no header declares it -- the generated cfe_es_objtab.c is
  * what normally refers to it, by name, from the build system. */
@@ -2112,6 +2113,102 @@ static void dump(const char *tag, CFE_MSG_Message_t *m)
  * still allocated, goes straight to PERFORMED, the buffer is marked valid on the spot, and
  * the only thing distinguishing "checked" from "nobody checked" is an INFORMATION event.
  */
+/* --- cfe_tbl_passthru_codec.c --------------------------------------------------------
+ * The codec that does nothing, which is the point: without EDS a table file is a raw image
+ * of the table's memory, so encode and decode are a copy. What it really does is BYTE ORDER
+ * -- a cFE table file header is big endian on the wire so a file written on one processor
+ * loads on another -- plus one overflow check that is easy to read as a duplicate.
+ */
+static void TblCodecExercise(void)
+{
+    CFE_TBL_File_Hdr_t    hdr;
+    CFE_TBL_RegistryRec_t *rr;
+    CFE_TBL_TxnState_t     txn;
+    uint32                 w;
+
+    memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+
+    /* the swap itself, and that it is its own inverse */
+    w = 0x01020304;
+    CFE_TBL_ByteSwapUint32(&w);
+    printf("tbl_cdswap once=%08lx", (unsigned long)w);
+    CFE_TBL_ByteSwapUint32(&w);
+    printf(" twice=%08lx\n", (unsigned long)w);
+
+    /* THREE FIELDS SWAP, THE NAME DOES NOT -- which is why the header can be read as a
+     * struct at all. */
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.Reserved = 0x11223344;
+    hdr.Offset   = 0x0000002A;
+    hdr.NumBytes = 0x000000FF;
+    strncpy(hdr.TableName, "CFE_TBL.Cdc", sizeof(hdr.TableName) - 1);
+    CFE_TBL_ByteSwapTblHeader(&hdr);
+    printf("tbl_cdhdr res=%08lx off=%08lx num=%08lx name=%s\n", (unsigned long)hdr.Reserved,
+           (unsigned long)hdr.Offset, (unsigned long)hdr.NumBytes, hdr.TableName);
+    CFE_TBL_ByteSwapTblHeader(&hdr);
+    printf("tbl_cdhdr_back res=%08lx off=%08lx num=%08lx\n", (unsigned long)hdr.Reserved,
+           (unsigned long)hdr.Offset, (unsigned long)hdr.NumBytes);
+
+    /* THE SIZE CHECK, and the overflow case the first test exists for: Offset and NumBytes are
+     * both 32-bit and come from a file, so their sum can WRAP -- a wrapped sum is smaller than
+     * Offset and would otherwise pass the size test and then be used as a length. */
+    rr = &CFE_TBL_Global.Registry[3];
+    CFE_TBL_InitRegistryRecord(rr);
+    CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 3));
+    rr->Config.Size = 256;
+    memset(&txn, 0, sizeof(txn));
+    txn.RegRecPtr = rr;
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.Offset   = 0;
+    hdr.NumBytes = 256;
+    printf("tbl_cdsize exact=%ld", (long)CFE_TBL_ValidateCodecLoadSize(&txn, &hdr));
+    hdr.NumBytes = 257;
+    printf(" over=0x%lx", (unsigned long)(uint32)CFE_TBL_ValidateCodecLoadSize(&txn, &hdr));
+    hdr.Offset   = 0xFFFFFFF0;
+    hdr.NumBytes = 0x20; /* sum wraps to 0x10, which is < Offset and < Size */
+    printf(" wrap=0x%lx events=%u\n",
+           (unsigned long)(uint32)CFE_TBL_ValidateCodecLoadSize(&txn, &hdr),
+           (unsigned)txn.NumPendingEvents);
+
+    /* PARTIAL versus SHORT, which are different warnings for different reasons */
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.Offset   = 0;
+    hdr.NumBytes = 256;
+    printf("tbl_cdfinal full=%ld", (long)CFE_TBL_CodecGetFinalStatus(&txn, &hdr));
+    hdr.NumBytes = 128;
+    printf(" short=0x%lx", (unsigned long)(uint32)CFE_TBL_CodecGetFinalStatus(&txn, &hdr));
+    hdr.Offset   = 16;
+    hdr.NumBytes = 256;
+    printf(" partial=0x%lx\n", (unsigned long)(uint32)CFE_TBL_CodecGetFinalStatus(&txn, &hdr));
+
+    /* the empty seam members, which still have to return the right thing */
+    printf("tbl_cdseam cfg=%ld acquire_null=%d\n", (long)CFE_TBL_ValidateCodecConfig(&rr->Config),
+           (int)(CFE_TBL_AcquireCodecBuffer(rr) == NULL));
+    CFE_TBL_ReleaseCodecBuffer(&rr->Buffers[0]);
+
+    /* ENCODE AND DECODE ARE A COPY, and both skip it when source and destination are the
+     * same buffer -- the case a dump of an already-resident table hits. */
+    rr->Buffers[0].BufferPtr      = tbl_probe_mem;
+    rr->Buffers[0].AllocationSize = sizeof(tbl_probe_mem);
+    rr->Buffers[1].BufferPtr      = tbl_probe_mem2;
+    rr->Buffers[1].AllocationSize = sizeof(tbl_probe_mem2);
+    memset(tbl_probe_mem, 0x5E, sizeof(tbl_probe_mem));
+    memset(tbl_probe_mem2, 0, sizeof(tbl_probe_mem2));
+    CFE_TBL_LoadBuffSetContentSize(&rr->Buffers[0], 12);
+    printf("tbl_cdcopy enc=%ld dst=%02x len=%d",
+           (long)CFE_TBL_EncodeOutputData(&txn, &rr->Buffers[0], &rr->Buffers[1]),
+           (unsigned)tbl_probe_mem2[0], (int)CFE_TBL_LoadBuffGetContentSize(&rr->Buffers[1]));
+    memset(tbl_probe_mem2, 0, sizeof(tbl_probe_mem2));
+    CFE_TBL_LoadBuffSetContentSize(&rr->Buffers[1], 0);
+    printf(" dec=%ld dst=%02x len=%d",
+           (long)CFE_TBL_DecodeInputData(&txn, &rr->Buffers[0], &rr->Buffers[1]),
+           (unsigned)tbl_probe_mem2[0], (int)CFE_TBL_LoadBuffGetContentSize(&rr->Buffers[1]));
+    printf(" same=%ld\n",
+           (long)CFE_TBL_EncodeOutputData(&txn, &rr->Buffers[0], &rr->Buffers[0]));
+
+    memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+}
+
 static void TblValResultExercise(void)
 {
     CFE_TBL_ValidationResult_t *vr;
@@ -8312,6 +8409,7 @@ int main(void)
         TblAccDescExercise();
         TblLoadBuffRegRecExercise();
         TblValResultExercise();
+        TblCodecExercise();
         /* --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
          * ------------------------------------------------------------------------------------
          * This is not a translation of anything. It is the test that has to pass BEFORE the

@@ -109,7 +109,8 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/tbl/fsw/src/cfe_tbl_accdesc.c
        $CFE/modules/tbl/fsw/src/cfe_tbl_loadbuff.c
        $CFE/modules/tbl/fsw/src/cfe_tbl_regrec.c
-       $CFE/modules/tbl/fsw/src/cfe_tbl_valresult.c"
+       $CFE/modules/tbl/fsw/src/cfe_tbl_valresult.c
+       $CFE/modules/tbl/fsw/src/cfe_tbl_passthru_codec.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
