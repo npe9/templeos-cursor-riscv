@@ -85,7 +85,7 @@ U0 CFE_TBL_LoadBuffSetFree(CFE_TBL_LoadBuff_t *BuffPtr)
 
 // ALLOCATED: memory Table Services owns. ContentSize starts at 0 because nothing is in it yet,
 // and the CRC with it.
-U0 CFE_TBL_LoadBuffSetAllocatedBlock(CFE_TBL_LoadBuff_t *BuffPtr, U8 *MemPtr, U64 MemSize)
+U0 CFE_TBL_LoadBuffSetAllocatedBlock(CFE_TBL_LoadBuff_t *BuffPtr, U8 *MemPtr, I64 MemSize)
 {
   BuffPtr->BufferPtr = MemPtr;
   BuffPtr->AllocationSize = MemSize;
@@ -96,7 +96,7 @@ U0 CFE_TBL_LoadBuffSetAllocatedBlock(CFE_TBL_LoadBuff_t *BuffPtr, U8 *MemPtr, U6
 // EXTERNAL: memory the APPLICATION owns. AllocationSize is 0 -- which is what makes
 // CFE_TBL_LoadBuffIsAllocated false and CFE_TBL_LoadBuffGetWritePointer return NULL -- and
 // ContentSize is the full size, because an app-owned buffer is full by definition.
-U0 CFE_TBL_LoadBuffSetExternalBlock(CFE_TBL_LoadBuff_t *BuffPtr, U8 *MemPtr, U64 MemSize)
+U0 CFE_TBL_LoadBuffSetExternalBlock(CFE_TBL_LoadBuff_t *BuffPtr, U8 *MemPtr, I64 MemSize)
 {
   BuffPtr->BufferPtr = MemPtr;
   BuffPtr->ContentSize = MemSize;
@@ -123,17 +123,17 @@ U8 *CFE_TBL_LoadBuffGetWritePointer(CFE_TBL_LoadBuff_t *BuffPtr)
   return BuffPtr->BufferPtr;
 }
 
-U64 CFE_TBL_LoadBuffGetAllocSize(CFE_TBL_LoadBuff_t *BuffPtr)
+I64 CFE_TBL_LoadBuffGetAllocSize(CFE_TBL_LoadBuff_t *BuffPtr)
 {
   return BuffPtr->AllocationSize;
 }
 
-U64 CFE_TBL_LoadBuffGetContentSize(CFE_TBL_LoadBuff_t *BuffPtr)
+I64 CFE_TBL_LoadBuffGetContentSize(CFE_TBL_LoadBuff_t *BuffPtr)
 {
   return BuffPtr->ContentSize;
 }
 
-U0 CFE_TBL_LoadBuffSetContentSize(CFE_TBL_LoadBuff_t *BuffPtr, U64 ContentSize)
+U0 CFE_TBL_LoadBuffSetContentSize(CFE_TBL_LoadBuff_t *BuffPtr, I64 ContentSize)
 {
   BuffPtr->ContentSize = ContentSize;
 }

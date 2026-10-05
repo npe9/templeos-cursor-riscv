@@ -98,6 +98,14 @@
 #define CFE_TBL_LOADBUFFID_UNDEFINED    CFE_RESOURCEID_UNDEFINED
 #define CFE_TBL_VALRESULTID_UNDEFINED   CFE_RESOURCEID_UNDEFINED
 #define CFE_TBL_DUMPCTRLID_UNDEFINED    CFE_RESOURCEID_UNDEFINED
+// cfe_tbl_resource.h's id predicates. Every one is a CFE_RESOURCEID_* wrapper, and they
+// collapse onto the CFE_ResourceId_* functions here for the reason cfe_tbl_handlelink.HC
+// records in full: HolyC has one id type, so the wrappers that exist in C purely to make a
+// compiler refuse a mix-up relabel nothing.
+#define CFE_TBL_LOADBUFFID_IS_VALID(x) CFE_ResourceId_IsDefined(x)
+#define CFE_TBL_LOADBUFFID_EQ(x, y)    CFE_ResourceId_Equal(x, y)
+#define CFE_TBL_REGID_IS_VALID(x)      CFE_ResourceId_IsDefined(x)
+#define CFE_TBL_REGID_EQ(x, y)         CFE_ResourceId_Equal(x, y)
 // NASA's own alias, used where a registry record says "no dump is pending on this table".
 #define CFE_TBL_NO_DUMP_PENDING CFE_TBL_DUMPCTRLID_UNDEFINED
 // --- cfe_tbl_dumpctl.h / cfe_tbl_valresult.h: the two three-state enums ---------------------

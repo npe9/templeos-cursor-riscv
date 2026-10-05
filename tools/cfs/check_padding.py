@@ -159,6 +159,10 @@ CSRC = [
     # and an implementation-file declaration needs its source lifted here.
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-time.c"),
     os.path.join(CFE, "modules", "fs", "fsw", "src", "cfe_fs_api.c"),
+    # CFE_TBL_CheckInactiveBuffer_t is declared inside cfe_tbl_regrec.c -- NASA's own comment
+    # calls it "local/private", and it is the state carried through
+    # CFE_TBL_ForeachAccessDescriptor while asking whether anyone still holds a buffer.
+    os.path.join(CFE, "modules", "tbl", "fsw", "src", "cfe_tbl_regrec.c"),
     # CFE_ES_BackgroundJobEntry_t is declared inside cfe_es_backgroundtask.c -- ES's background
     # "scheduler" is a file-scope table of them and nothing else needs the type, so NASA never
     # put it in a header. It carries a FUNCTION POINTER, so check_fnptr_members reads it too.

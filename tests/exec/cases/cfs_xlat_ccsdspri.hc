@@ -1327,6 +1327,76 @@ U0 CFE_PSP_Get_Timebase(U32 *Tbu, U32 *Tbl)
 #include "/Kernel/Cfs/cfe/cfe_tbl_dumpctl.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_transaction_decl.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_loadbuff_decl.HC"
+#include "/Kernel/Cfs/cfe/cfe_tbl_loadbuff.HC"
+#include "/Kernel/Cfs/cfe/cfe_tbl_regrec.HC"
+// --- FOUR STAND-INS FOR THE loadbuff+regrec PAIR -------------------------------------------
+// Named by tools/cfs/module_deps.py --cuts: two from cfe_tbl_internal.c and two from
+// cfe_tbl_transaction.c, both still inside tbl's call cycle.
+//
+// THE FIRST IS FAITHFUL ON PURPOSE. CFE_TBL_ForeachAccessDescriptor walks the table's
+// access-descriptor list, and with cfe_tbl_accdesc.c gated its one helper --
+// CFE_TBL_LocateAccDescByHandle -- is REAL, so the walk is eight lines that call only gated
+// code. Written as a counter instead, CFE_TBL_GetInactiveBufferExclusive's locked-buffer
+// branch would never be entered and the exercise would assert nothing about the one case
+// that matters: a load refused because another app still holds the buffer.
+I64 tbl_foreach_visits;
+U0 CFE_TBL_ForeachAccessDescriptor(CFE_TBL_RegistryRec_t *RegRecPtr, U0 (*Func)(CFE_TBL_AccessDescriptor_t *, U8 *), U8 *Arg)
+{
+  CFE_TBL_AccessDescriptor_t *AccDescPtr;
+  CFE_TBL_HandleLink_t *LinkPtr;
+  LinkPtr = &RegRecPtr->AccessList;
+  while (TRUE) {
+    AccDescPtr = CFE_TBL_LocateAccDescByHandle(LinkPtr->Next);
+    if (AccDescPtr == NULL)
+      break;
+    ++tbl_foreach_visits;
+    Func(AccDescPtr, Arg);
+    LinkPtr = &AccDescPtr->Link;
+  }
+}
+// ALSO FAITHFUL, and nearly free: with cfe_tbl_loadbuff.c gated, every call in its body is
+// real except the mutex, which the driver counts.
+CFE_TBL_LoadBuff_t *CFE_TBL_AcquireGlobalLoadBuff(U32 PendingOwnerId)
+{
+  U32 PendingId;
+  CFE_TBL_LoadBuff_t *LoadBuffPtr;
+  LoadBuffPtr = NULL;
+  if (OS_MutSemTake(CFE_TBL_Global.WorkBufMutex) != OS_SUCCESS)
+    CFE_ES_WriteToSysLog("%s: Internal error taking WorkBuf Mutex (Status=%ld)\n", "CFE_TBL_AcquireGlobalLoadBuff", -1);
+  PendingId = CFE_TBL_FindNextSharedBufferId();
+  LoadBuffPtr = CFE_TBL_LocateLoadBufferByID(PendingId);
+  if (LoadBuffPtr != NULL) {
+    CFE_TBL_LoadBuffSetUsed(LoadBuffPtr, PendingId, PendingOwnerId);
+    CFE_TBL_Global.LastLoadBuffId = PendingId;
+  }
+  OS_MutSemGive(CFE_TBL_Global.WorkBufMutex);
+  return LoadBuffPtr;
+}
+// The event pair. AddEvent is NASA's ten lines verbatim -- including that NumPendingEvents
+// counts PAST the eight-event limit, so a caller can tell "eight" from "eight and some
+// dropped". SendTransactionEvents is the EVS seam and only counts here; the real one needs
+// cfe_tbl_transaction.c's context assembly.
+I64 tbl_sendevents_calls;
+U0 CFE_TBL_TxnAddEvent(CFE_TBL_TxnState_t *Txn, U16 EventId, I32 EventData1, I32 EventData2)
+{
+  CFE_TBL_TxnEvent_t *EvPtr;
+  if (Txn->NumPendingEvents < CFE_TBL_MAX_EVENTS_PER_TXN) {
+    EvPtr = &Txn->PendingEvents[Txn->NumPendingEvents];
+    EvPtr->EventId = EventId;
+    EvPtr->EventData1 = EventData1;
+    EvPtr->EventData2 = EventData2;
+  }
+  ++Txn->NumPendingEvents;
+}
+
+U0 CFE_TBL_SendTransactionEvents(CFE_TBL_TxnState_t *Txn, U8 *Operation, Bool (*EventProc)(CFE_TBL_TxnEvent_t *, CFE_TBL_TxnEventContext_t *), U8 *OperationData)
+{
+  no_warn Txn;
+  no_warn Operation;
+  no_warn EventProc;
+  no_warn OperationData;
+  ++tbl_sendevents_calls;
+}
 // THREE STAND-INS FROM cfe_tbl_registry.c, which is inside tbl's eight-source call cycle.
 // tools/cfs/module_deps.py --cuts prices cfe_tbl_accdesc.c at exactly these three. The lock
 // pair is a COUNTED lock -- the count is what makes it re-entrant within one transaction --
@@ -1400,6 +1470,249 @@ I32 CFE_TBL_CleanUpApp(U32 AppId)
 // the driver's counting mutex witnesses. Second, releasing a descriptor only clears the
 // table's OwnerAppId IF THE CALLER OWNS IT -- a non-owner may hold a handle to a shared table
 // and releasing theirs must not un-own it for everyone.
+// --- cfe_tbl_loadbuff.c + cfe_tbl_regrec.c -------------------------------------------
+// The pair, gated together because they are mutually recursive: regrec asks "which buffer is
+// this id" on every load and only loadbuff knows, while loadbuff asks regrec for the record
+// that owns a buffer.
+//
+// THE SERIAL ENCODING FIRST. One flat numbering over every buffer in the system -- four
+// shared, then two per table -- recovered with a modulo and a comparison. Then the three
+// buffer questions a registry record can answer, and finally the one branch that is the
+// reason ForeachAccessDescriptor had to be written faithfully rather than as a counter: a
+// load REFUSED because another application still holds the buffer it wants.
+U0 TblLoadBuffRegRecExercise()
+{
+  CFE_TBL_RegistryRec_t *rr;
+  CFE_TBL_AccessDescriptor_t *ad;
+  CFE_TBL_LoadBuff_t *lb;
+  U32 nid, cat, idx, serial;
+  I64 k;
+  I64 stale_before, stale_got, stale_after;
+  MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+  CFE_TBL_Global.WorkBufMutex = 0x7B20;
+  // DECOMPOSE over the category boundary: 0..3 are shared, 4 onward are table 0's pair.
+  for (k = 0; k < 8; k++) {
+    CFE_TBL_LoadBuffSerialDecompose(k, &cat, &idx);
+    S("tbl_lbdec s=");
+    D(k);
+    S(" cat=");
+    D(cat);
+    S(" idx=");
+    D(idx);
+    S("\n");
+  }
+  // COMPOSE IS NOT THE INVERSE: it rounds UP to the next serial in the asked-for category.
+  for (k = 0; k < 3; k++) {
+    serial = k;
+    CFE_TBL_LoadBuffSerialCompose(&serial, 0, 1);
+    S("tbl_lbcomp in=");
+    D(k);
+    S(" cat=0 idx=1 out=");
+    D(serial);
+    S("\n");
+    serial = k;
+    CFE_TBL_LoadBuffSerialCompose(&serial, 2, 0);
+    S("tbl_lbcomp in=");
+    D(k);
+    S(" cat=2 idx=0 out=");
+    D(serial);
+    S("\n");
+  }
+  // LOCATE: a shared id lands in CFE_TBL_Global.LoadBuffs, a local id in the table's own
+  // pair -- and a SINGLE-buffered table always uses local index 0 whichever is asked for.
+  rr = &CFE_TBL_Global.Registry[1];
+  rr->Config.DoubleBuffered = TRUE;
+  S("tbl_lbloc shared0=");
+  D(CFE_TBL_LocateLoadBufferByID(CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE)) == &CFE_TBL_Global.LoadBuffs[0]);
+  S(" shared3=");
+  D(CFE_TBL_LocateLoadBufferByID(CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 3)) == &CFE_TBL_Global.LoadBuffs[3]);
+  S("\n");
+  // table 1's pair is category 2, i.e. serial 4 + 1*2 = 6 and 7
+  S("tbl_lbloc dbl0=");
+  D(CFE_TBL_LocateLoadBufferByID(CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 6)) == &rr->Buffers[0]);
+  S(" dbl1=");
+  D(CFE_TBL_LocateLoadBufferByID(CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 7)) == &rr->Buffers[1]);
+  S("\n");
+  rr->Config.DoubleBuffered = FALSE;
+  S("tbl_lbloc sgl_collapses=");
+  D(CFE_TBL_LocateLoadBufferByID(CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 7)) == &rr->Buffers[0]);
+  S("\n");
+  // THE HISTORICAL TELEMETRY INDEX: shared buffers report 0..3, a double-buffered table's own
+  // pair reports -3 and -2, and anything unrecognised is -1.
+  S("tbl_lbtlm sh0=");
+  D(CFE_TBL_LoadBuffIdToTlmIndex(CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE)));
+  S(" sh3=");
+  D(CFE_TBL_LoadBuffIdToTlmIndex(CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 3)));
+  S(" loc0=");
+  D(CFE_TBL_LoadBuffIdToTlmIndex(CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 6)));
+  S(" loc1=");
+  D(CFE_TBL_LoadBuffIdToTlmIndex(CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 7)));
+  S("\n");
+  S("tbl_lbkind sh_isshared=");
+  D(CFE_TBL_LoadBuffIsShared(CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE)));
+  S(" loc_isshared=");
+  D(CFE_TBL_LoadBuffIsShared(CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 6)));
+  S(" loc_isprivate1=");
+  D(CFE_TBL_LoadBuffIsPrivate(CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 6), CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 1)));
+  S(" loc_isprivate0=");
+  D(CFE_TBL_LoadBuffIsPrivate(CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 6), CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE)));
+  S("\n");
+  // INIT SETS FOUR FIELDS EXPLICITLY, and in THIS configuration all four are zero anyway
+  // (CFE_RESOURCEID_UNDEFINED is 0 and the SIMPLE resourceid mode makes every wrapper the
+  // identity). The record is filled with 0x5A first, so what this asserts is that Init ran at
+  // all -- and `lip` and `attached` are the two that would differ regardless.
+  rr = &CFE_TBL_Global.Registry[2];
+  MemSet(rr, 0x5A, sizeof(CFE_TBL_RegistryRec_t));
+  CFE_TBL_InitRegistryRecord(rr);
+  S("tbl_rrinit owner=");
+  D(CFE_ResourceId_ToInteger(rr->OwnerAppId));
+  S(" val=");
+  D(CFE_ResourceId_ToInteger(rr->PendingValId));
+  S(" cds=");
+  D(CFE_ResourceId_ToInteger(rr->CDSHandle));
+  S(" dump=");
+  D(CFE_ResourceId_ToInteger(rr->DumpControlId));
+  S(" lip=");
+  D(CFE_TBL_RegRecIsLoadInProgress(rr) != 0);
+  S(" attached=");
+  D(CFE_TBL_HandleLinkIsAttached(&rr->AccessList));
+  S("\n");
+  // name and id lookup
+  CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 2));
+  StrNCpy(rr->Config.Name, "CFE_TBL.Probe", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  S("tbl_rrfind byname=");
+  D(CFE_TBL_LocateRegRecByName("CFE_TBL.Probe") == rr);
+  S(" bymiss=");
+  D(CFE_TBL_LocateRegRecByName("CFE_TBL.Nope") == NULL);
+  S(" byid=");
+  D(CFE_TBL_LocateRegRecByID(CFE_TBL_RegRecGetID(rr)) == rr);
+  S(" used=");
+  D(CFE_TBL_RegRecIsUsed(rr));
+  S(" name=");
+  S(CFE_TBL_RegRecGetName(rr));
+  S("\n");
+  // THE BRANCH THIS WHOLE PAIR WAS SEQUENCED FOR. A double-buffered table wants its other
+  // buffer for a new load. If another application still holds that buffer -- it called
+  // CFE_TBL_GetAddress and has not released it, so LockFlag is set -- the load must be
+  // REFUSED and the holder named. Reaching this needs a real walk of the access-descriptor
+  // list, which is why CFE_TBL_ForeachAccessDescriptor is faithful in the driver and not a
+  // counter: a walk of zero descriptors makes the refusal unreachable and the assertion
+  // below would pass while testing nothing.
+  rr = &CFE_TBL_Global.Registry[0];
+  CFE_TBL_InitRegistryRecord(rr);
+  CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE));
+  rr->Config.DoubleBuffered = TRUE;
+  // active is local idx 0 (serial 4), so the next local buffer is idx 1 (serial 5)
+  rr->Status.ActiveBufferId = CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 4);
+  nid = CFE_TBL_GetNextLocalBufferId(rr);
+  lb = CFE_TBL_LocateLoadBufferByID(nid);
+  S("tbl_nextlocal id=");
+  D(CFE_ResourceId_ToInteger(nid));
+  S(" isbuf1=");
+  D(lb == &rr->Buffers[1]);
+  S("\n");
+  // mark it used by someone else so the exclusive check has to run
+  // A DIFFERENT ID THAT NAMES THE SAME BLOB. 260 serials cover every buffer once, so
+  // serial+260 decomposes to the same place -- which is precisely the case NASA's helper
+  // comment calls out: "check if it refers to this memory blob (even if the ID is different)".
+  // Using an unrelated id instead would land on another table's buffer and the locked-buffer
+  // branch would never fire, which is how the first draft of this exercise passed while
+  // testing nothing.
+  CFE_TBL_LoadBuffSetUsed(lb, CFE_ResourceId_FromInteger(CFE_ResourceId_ToInteger(nid) + 260), CFE_TBL_RegRecGetID(rr));
+  // attach ONE access descriptor holding that buffer, locked
+  ad = &CFE_TBL_Global.Handles[7];
+  CFE_TBL_InitAccessDescriptor(ad);
+  CFE_TBL_AccDescSetUsed(ad, CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 7));
+  ad->AppId = CFE_ResourceId_FromInteger(0xABCD);
+  ad->BufferIndex = CFE_TBL_LoadBufferGetID(lb);
+  ad->LockFlag = TRUE;
+  rr->AccessList.Next = CFE_TBL_AccDescGetHandle(ad);
+  // into a local first, to match the C half: this call emits the syslog line naming the
+  // holder -- see the note at tbl_stalelip.
+  tbl_foreach_visits = 0;
+  stale_got = CFE_TBL_GetInactiveBufferExclusive(rr) == NULL;
+  S("tbl_lockedrefuse null=");
+  D(stale_got);
+  S(" visits=");
+  D(tbl_foreach_visits);
+  S("\n");
+  // release the lock and the SAME call now claims the buffer for this table
+  ad->LockFlag = FALSE;
+  tbl_foreach_visits = 0;
+  lb = CFE_TBL_GetInactiveBufferExclusive(rr);
+  S("tbl_lockedclaim nonnull=");
+  D(lb != NULL);
+  S(" visits=");
+  D(tbl_foreach_visits);
+  S(" owner=");
+  if (lb == NULL)
+    D(0);
+  else
+    D(CFE_ResourceId_ToInteger(lb->OwnerRegId));
+  S("\n");
+  // THE STALE LOAD-IN-PROGRESS RECOVERY. A NextBufferId that no longer matches its buffer is
+  // cleared rather than trusted, and the table is reported.
+  // EACH VALUE INTO A LOCAL FIRST, to match the C half: the middle call emits a syslog line,
+  // and C evaluates printf's arguments before printing any of them while this side prints
+  // incrementally, so an inline call puts that line on opposite sides of this one.
+  CFE_TBL_RegRecSetLoadInProgress(rr, CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 2));
+  stale_before = CFE_TBL_RegRecIsLoadInProgress(rr) != 0;
+  stale_got = CFE_TBL_GetLoadInProgressBuffer(rr) != NULL;
+  stale_after = CFE_TBL_RegRecIsLoadInProgress(rr) != 0;
+  S("tbl_stalelip before=");
+  D(stale_before);
+  S(" got=");
+  D(stale_got);
+  S(" after=");
+  D(stale_after);
+  S("\n");
+  // the three buffer questions, now that one is active
+  S("tbl_buf3 active=");
+  D(CFE_TBL_GetActiveBuffer(rr) == &rr->Buffers[0]);
+  S(" lip=");
+  D(CFE_TBL_GetLoadInProgressBuffer(rr) == NULL);
+  S(" inactive=");
+  D(CFE_TBL_GetInactiveBuffer(rr) != NULL);
+  S(" loaded=");
+  D(CFE_TBL_RegRecIsTableLoaded(rr));
+  S("\n");
+  // selected-buffer dispatch, including the default that returns NULL
+  S("tbl_bufsel act=");
+  D(CFE_TBL_GetSelectedBuffer(rr, CFE_TBL_BufferSelect_ACTIVE) == CFE_TBL_GetActiveBuffer(rr));
+  S(" inact=");
+  D(CFE_TBL_GetSelectedBuffer(rr, CFE_TBL_BufferSelect_INACTIVE) == CFE_TBL_GetInactiveBuffer(rr));
+  S(" bogus=");
+  D(CFE_TBL_GetSelectedBuffer(rr, 99) == NULL);
+  S("\n");
+  // modified flag and load info
+  CFE_TBL_RegRecResetLoadInfo(rr, "/cf/probe.tbl", CFE_TIME_GetTime());
+  S("tbl_loadinfo file=");
+  S(CFE_TBL_RegRecGetLastFileLoaded(rr));
+  S(" modified=");
+  D(CFE_TBL_RegRecIsModified(rr));
+  S("\n");
+  CFE_TBL_RegRecSetModifiedFlag(rr);
+  S("tbl_modified ");
+  D(CFE_TBL_RegRecIsModified(rr));
+  S("\n");
+  // pending activation needs BOTH validated and requested
+  lb = CFE_TBL_LocateLoadBufferByID(CFE_TBL_RegRecGetLoadInProgress(rr));
+  CFE_TBL_RegRecSetLoadInProgress(rr, CFE_TBL_LoadBufferGetID(&rr->Buffers[1]));
+  lb = &rr->Buffers[1];
+  lb->IsValid = FALSE;
+  lb->ActivateReq = TRUE;
+  S("tbl_pending novalid=");
+  D(CFE_TBL_RegRecIsPendingActivation(rr));
+  lb->IsValid = TRUE;
+  S(" both=");
+  D(CFE_TBL_RegRecIsPendingActivation(rr));
+  lb->ActivateReq = FALSE;
+  S(" noreq=");
+  D(CFE_TBL_RegRecIsPendingActivation(rr));
+  S("\n");
+  MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+}
+
 U0 TblAccDescExercise()
 {
   CFE_TBL_AccessDescriptor_t *ad;
@@ -10288,6 +10601,7 @@ I64 main()
     }
     TblDumpCtlExercise();
     TblAccDescExercise();
+    TblLoadBuffRegRecExercise();
     // --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
     // ------------------------------------------------------------------------------------
     // This is not a translation of anything. It is the test that has to pass BEFORE the 7,780

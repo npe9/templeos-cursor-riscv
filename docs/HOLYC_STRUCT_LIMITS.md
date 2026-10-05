@@ -1216,3 +1216,31 @@ C from the same header. `check_padding` had already agreed about all 347 class l
 proves the two sides *describe* the same object; it says nothing about whether the compiler can
 *reach* the offsets it agreed on. Those are two different properties and only the second one
 was broken.
+
+---
+
+## 24. A function cannot RETURN a function pointer — OPEN, and a parse error
+
+```c
+class R { I32 (*Fn)(U8 *); };
+I32 (*GetFn(R *r))(U8 *)      /* error: parse error, at 0:1 */
+{
+    return r->Fn;
+}
+```
+
+A function pointer is fine as a **class member** (`I32 (*Fn)(U8 *);` parses, and
+`tools/cfs/check_fnptr_members.py` compares seventeen of them against NASA's) and fine as a
+**parameter**. It is only the RETURN position that the declarator parser cannot read.
+
+**The workaround is to return a plain pointer** and let the caller cast. The pointer VALUE is
+identical, which is the part that has to stay true; what is lost is the compiler checking the
+call through it.
+
+Hit by `CFE_TBL_RegRecGetValidationFunc`, whose NASA return type is `CFE_TBL_CallbackFuncPtr_t`
+= `int32 (*)(void *)` — the accessor for a table's validation callback. Recorded at the site.
+
+**There is no typedef in HolyC**, so the usual C escape — name the function-pointer type and
+return the name — is not available either. Note also the error position: `0:1`, not the line of
+the declarator. A parse error reported at the top of the file means the declarator parser gave
+up before it had a position; do not go looking at line 1.

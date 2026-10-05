@@ -130,6 +130,11 @@ def unparsed_defines():
 # the probe cannot SEE them", which is this gate's loud path rather than a silent pass.
 CSRC_DEFS = [
     os.path.join(ROOT, "vendor", "cFE", "modules", "sb", "fsw", "src", "cfe_sb_buf.c"),
+    # The five constants of tbl's load-buffer serial encoding are file-scope #defines in
+    # cfe_tbl_loadbuff.c: the two category values, the buffers-per-registry-entry limit, and
+    # the two totals derived from them. TOTAL_LOAD_BUFFS in particular is the modulus the
+    # whole encoding turns on, so a drift there would silently re-point every buffer id.
+    os.path.join(ROOT, "vendor", "cFE", "modules", "tbl", "fsw", "src", "cfe_tbl_loadbuff.c"),
     os.path.join(ROOT, "vendor", "cFE", "modules", "msg", "fsw", "src", "cfe_msg_ccsdspri.c"),
     os.path.join(ROOT, "vendor", "cFE", "modules", "msg", "fsw", "src", "cfe_msg_sechdr_fc.c"),
     os.path.join(ROOT, "vendor", "cFE", "modules", "sbr", "fsw", "src", "cfe_sbr_map_hash.c"),
