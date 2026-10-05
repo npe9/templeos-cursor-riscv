@@ -99,6 +99,8 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "cfe_resourceid_basevalue.h"
 #include "cfe_tbl_task.h"       /* CFE_TBL_Global_t, and the types it is built from */
 #include "cfe_tbl_handlelink.h" /* the handle-link list node and its two methods */
+#include "cfe_tbl_accdesc.h"    /* the per-app handle and its five accessors */
+#include "cfe_tbl_transaction.h" /* CFE_TBL_TxnState_t and its eight accessors */
 
 /* cfe_msg_objtab.c defines this and no header declares it -- the generated cfe_es_objtab.c is
  * what normally refers to it, by name, from the build system. */
@@ -661,6 +663,43 @@ CFE_TBL_Global_t CFE_TBL_Global;
  * halves -- exactly the arrangement the other six objtabs have had. They exist so that
  * CFE_TBL_ModuleEntry has three distinct non-NULL addresses to hold, which is the only
  * property the object table exercise asserts about them. */
+/* THREE STAND-INS FROM cfe_tbl_registry.c, which is inside tbl's eight-source call cycle.
+ * tools/cfs/module_deps.py --cuts prices cfe_tbl_accdesc.c at exactly these three. The lock
+ * pair is a COUNTED lock -- the count is what makes it re-entrant within one transaction --
+ * and it delegates to this driver's OS_MutSemTake/Give, which count, so the transcript
+ * witnesses every take and give the real code performs. */
+void CFE_TBL_TxnLockRegistry(CFE_TBL_TxnState_t *Txn)
+{
+    if (Txn->RegLockCount == 0)
+    {
+        OS_MutSemTake(CFE_TBL_Global.RegistryMutex);
+    }
+    ++Txn->RegLockCount;
+}
+
+void CFE_TBL_TxnUnlockRegistry(CFE_TBL_TxnState_t *Txn)
+{
+    if (Txn->RegLockCount > 0)
+    {
+        --Txn->RegLockCount;
+        if (Txn->RegLockCount == 0)
+        {
+            OS_MutSemGive(CFE_TBL_Global.RegistryMutex);
+        }
+    }
+}
+
+/* The real one unlinks the descriptor from its table's list. Standing in for it as a no-op
+ * that COUNTS is deliberate: the list surgery belongs to cfe_tbl_registry.c and writing it
+ * here would be upstream logic where no gate compares it against NASA. What the exercise can
+ * still assert is that ReleaseAccDesc CALLS it exactly once, which the counter shows. */
+long tbl_removelink_calls;
+int32 CFE_TBL_TxnRemoveAccessLink(CFE_TBL_TxnState_t *Txn)
+{
+    ++tbl_removelink_calls;
+    return CFE_SUCCESS;
+}
+
 int32 CFE_TBL_EarlyInit(void)
 {
     return CFE_SUCCESS;
@@ -1936,6 +1975,130 @@ static void dump(const char *tag, CFE_MSG_Message_t *m)
  * limit 22 there means every local in main() spends from a single frame budget. Nothing forces
  * it on this side; the two halves being the same shape is worth more than the two lines saved.
  */
+/* --- cfe_tbl_accdesc.c ---------------------------------------------------------------
+ * The per-app handle: 256 access descriptors, a resource-id allocator over them, and the two
+ * transaction entry points that hand one out and give it back.
+ *
+ * The interesting assertions are the two that are not about the allocator at all. First, a
+ * transaction TAKES AND RELEASES the registry lock exactly once around the allocation, which
+ * the driver's counting mutex witnesses. Second, releasing a descriptor only clears the
+ * table's OwnerAppId IF THE CALLER OWNS IT -- a non-owner may hold a handle to a shared table
+ * and releasing theirs must not un-own it for everyone.
+ */
+static void TblAccDescExercise(void)
+{
+    CFE_TBL_AccessDescriptor_t *ad;
+    CFE_TBL_RegistryRec_t      *rr;
+    CFE_TBL_TxnState_t          txn;
+    CFE_ResourceId_t            nid;
+    uint32                      idx;
+    int                         k, t0, g0;
+
+    memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+    CFE_TBL_Global.RegistryMutex = OS_ObjectIdFromInteger(0x7B10);
+    CFE_TBL_Global.LastHandle =
+        CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + CFE_PLATFORM_TBL_MAX_NUM_HANDLES - 1);
+
+    /* ToIndex DOES NOT BOUNDS CHECK, and that is the thing to know about every resource id
+     * in cFS. Its last line is `*Idx = Serial % TableSize` -- a MODULO. The only rejection is
+     * a serial above CFE_RESOURCEID_MAX. So one past the last handle WRAPS to index 0 and
+     * reports success, and what actually establishes that a record is the one you asked for
+     * is CFE_TBL_AccDescIsMatch comparing the id STORED IN the record. An id check that only
+     * called ToIndex would read a live neighbour and believe it. */
+    printf("tbl_adidx first=%ld/%u last=%ld/%u past=%ld/%u undef=%ld\n",
+           (long)CFE_TBL_Handle_ToIndex(
+               CFE_TBL_HANDLEID_C(CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE)), &idx),
+           (unsigned)idx,
+           (long)CFE_TBL_Handle_ToIndex(
+               CFE_TBL_HANDLEID_C(CFE_ResourceId_FromInteger(
+                   CFE_TBL_HANDLE_BASE + CFE_PLATFORM_TBL_MAX_NUM_HANDLES - 1)), &idx),
+           (unsigned)idx,
+           (long)CFE_TBL_Handle_ToIndex(
+               CFE_TBL_HANDLEID_C(CFE_ResourceId_FromInteger(
+                   CFE_TBL_HANDLE_BASE + CFE_PLATFORM_TBL_MAX_NUM_HANDLES)), &idx),
+           (unsigned)idx,
+           (long)CFE_TBL_Handle_ToIndex(CFE_TBL_HANDLEID_UNDEFINED, &idx));
+
+    ad = CFE_TBL_LocateAccDescByHandle(
+        CFE_TBL_HANDLEID_C(CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 5)));
+    printf("tbl_adloc self=%d used=%d null=%d slotused=%d\n",
+           (int)(ad == &CFE_TBL_Global.Handles[5]), (int)CFE_TBL_AccDescIsUsed(ad),
+           (int)(CFE_TBL_LocateAccDescByHandle(CFE_TBL_HANDLEID_UNDEFINED) == NULL),
+           (int)CFE_TBL_CheckAccessDescriptorSlotUsed(CFE_ResourceId_FromInteger(0)));
+
+    /* init, mark used, read back, match, free -- the allocator primitives */
+    nid = CFE_TBL_GetNextTableHandle();
+    ad  = CFE_TBL_LocateAccDescByHandle(CFE_TBL_HANDLEID_C(nid));
+    memset(ad, 0xEE, sizeof(*ad));
+    CFE_TBL_InitAccessDescriptor(ad);
+    printf("tbl_adinit id=%lu zeroed=%d linkdetached=%d\n",
+           (unsigned long)CFE_ResourceId_ToInteger(nid),
+           (int)(ad->LockFlag == false && ad->AppId == 0),
+           (int)!CFE_TBL_HandleLinkIsAttached(&ad->Link));
+    CFE_TBL_AccDescSetUsed(ad, nid);
+    printf("tbl_adused used=%d back=%lu match=%d\n", (int)CFE_TBL_AccDescIsUsed(ad),
+           (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_TBL_AccDescGetHandle(ad)),
+           (int)CFE_TBL_AccDescIsMatch(ad, CFE_TBL_HANDLEID_C(nid)));
+    ad->AppId = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x4321));
+    CFE_TBL_AccDescSetFree(ad);
+    printf("tbl_adfree used=%d appid=%lu\n", (int)CFE_TBL_AccDescIsUsed(ad),
+           (unsigned long)CFE_RESOURCEID_TO_ULONG(ad->AppId));
+
+    /* A WHOLE TRANSACTION, and the lock is the thing being watched. */
+    memset(&txn, 0, sizeof(txn));
+    t0 = fs_mut_take;
+    g0 = fs_mut_give;
+    printf("tbl_adtxn rc=%ld handle=%lu nonnull=%d used=%d takes=%d gives=%d lockcnt=%u\n",
+           (long)CFE_TBL_TxnAllocateAccDesc(&txn),
+           (unsigned long)CFE_TBL_TxnHandleAsULong(&txn), (int)(txn.AccDescPtr != NULL),
+           (int)(txn.AccDescPtr != NULL && CFE_TBL_AccDescIsUsed(txn.AccDescPtr)),
+           fs_mut_take - t0, fs_mut_give - g0, (unsigned)txn.RegLockCount);
+
+    /* RELEASE BY THE OWNER clears the table's owner; RemoveAccessLink is called once. */
+    /* cfe_tbl_regrec.c is not gated, so the record is zeroed directly rather than through
+     * CFE_TBL_InitRegistryRecord -- the only field this exercise reads is OwnerAppId. */
+    rr = &CFE_TBL_Global.Registry[3];
+    memset(rr, 0, sizeof(*rr));
+    rr->OwnerAppId        = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x1111));
+    txn.AppId             = rr->OwnerAppId;
+    txn.RegRecPtr         = rr;
+    tbl_removelink_calls  = 0;
+    CFE_TBL_TxnReleaseAccDesc(&txn);
+    printf("tbl_adrel_owner owner=%lu freed=%d unlinks=%ld\n",
+           (unsigned long)CFE_RESOURCEID_TO_ULONG(rr->OwnerAppId),
+           (int)!CFE_TBL_AccDescIsUsed(txn.AccDescPtr), tbl_removelink_calls);
+
+    /* RELEASE BY A NON-OWNER must leave the table owned. */
+    memset(&txn, 0, sizeof(txn));
+    CFE_TBL_TxnAllocateAccDesc(&txn);
+    rr->OwnerAppId       = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x1111));
+    txn.AppId            = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x2222));
+    txn.RegRecPtr        = rr;
+    tbl_removelink_calls = 0;
+    CFE_TBL_TxnReleaseAccDesc(&txn);
+    printf("tbl_adrel_other owner=%lu freed=%d unlinks=%ld\n",
+           (unsigned long)CFE_RESOURCEID_TO_ULONG(rr->OwnerAppId),
+           (int)!CFE_TBL_AccDescIsUsed(txn.AccDescPtr), tbl_removelink_calls);
+
+    /* EXHAUSTION. All 256 marked used, so the next transaction must refuse and must leave
+     * the transaction's own fields cleared rather than half-filled. */
+    for (k = 0; k < CFE_PLATFORM_TBL_MAX_NUM_HANDLES; k++)
+    {
+        CFE_TBL_AccDescSetUsed(&CFE_TBL_Global.Handles[k],
+                               CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + k));
+    }
+    memset(&txn, 0, sizeof(txn));
+    t0 = fs_mut_take;
+    g0 = fs_mut_give;
+    printf("tbl_adfull rc=0x%lx null=%d handle=%lu takes=%d gives=%d\n",
+           /* uint32 FIRST: CFE_TBL_ERR_HANDLES_FULL is 0xCC00000B, which as a signed
+            * int32 is negative, and casting straight to unsigned long sign-extends it to
+            * sixteen hex digits where the HolyC half's Hx8 prints eight. */
+           (unsigned long)(uint32)CFE_TBL_TxnAllocateAccDesc(&txn), (int)(txn.AccDescPtr == NULL),
+           (unsigned long)CFE_TBL_TxnHandleAsULong(&txn), fs_mut_take - t0, fs_mut_give - g0);
+    memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+}
+
 static void TblDumpCtlExercise(void)
 {
     CFE_TBL_DumpControl_t *bp;
@@ -7547,6 +7710,7 @@ int main(void)
         }
 
         TblDumpCtlExercise();
+        TblAccDescExercise();
         /* --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
          * ------------------------------------------------------------------------------------
          * This is not a translation of anything. It is the test that has to pass BEFORE the

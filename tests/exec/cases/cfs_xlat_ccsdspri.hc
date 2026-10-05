@@ -1325,6 +1325,39 @@ U0 CFE_PSP_Get_Timebase(U32 *Tbu, U32 *Tbl)
 #include "/Kernel/Cfs/cfe/cfe_tbl_global.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_handlelink.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_dumpctl.HC"
+#include "/Kernel/Cfs/cfe/cfe_tbl_transaction_decl.HC"
+// THREE STAND-INS FROM cfe_tbl_registry.c, which is inside tbl's eight-source call cycle.
+// tools/cfs/module_deps.py --cuts prices cfe_tbl_accdesc.c at exactly these three. The lock
+// pair is a COUNTED lock -- the count is what makes it re-entrant within one transaction --
+// and it delegates to the driver's OS_MutSemTake/Give, which count, so the transcript
+// witnesses every take and give the real code performs.
+U0 CFE_TBL_TxnLockRegistry(CFE_TBL_TxnState_t *Txn)
+{
+  if (Txn->RegLockCount == 0)
+    OS_MutSemTake(CFE_TBL_Global.RegistryMutex);
+  ++Txn->RegLockCount;
+}
+
+U0 CFE_TBL_TxnUnlockRegistry(CFE_TBL_TxnState_t *Txn)
+{
+  if (Txn->RegLockCount > 0) {
+    --Txn->RegLockCount;
+    if (Txn->RegLockCount == 0)
+      OS_MutSemGive(CFE_TBL_Global.RegistryMutex);
+  }
+}
+// The real one unlinks the descriptor from its table's list. Standing in for it as a no-op
+// that COUNTS is deliberate: the list surgery belongs to cfe_tbl_registry.c and writing it
+// here would be upstream logic where no gate compares it against NASA. What the exercise can
+// still assert is that ReleaseAccDesc CALLS it exactly once, which the counter shows.
+I64 tbl_removelink_calls;
+I32 CFE_TBL_TxnRemoveAccessLink(CFE_TBL_TxnState_t *Txn)
+{
+  no_warn Txn;
+  ++tbl_removelink_calls;
+  return CFE_SUCCESS;
+}
+#include "/Kernel/Cfs/cfe/cfe_tbl_accdesc.HC"
 // cfe_tbl_internal.c, cfe_tbl_task.c and cfe_tbl_api.c are three of the EIGHT sources that
 // tools/cfs/module_deps.py shows must be gated together, so these three are stubs on both
 // halves -- exactly the arrangement the other six objtabs have had. They exist so that
@@ -1357,6 +1390,155 @@ I32 CFE_TBL_CleanUpApp(U32 AppId)
 // `cp->Algorithm(...)`, 775 lines away, on the commit that added these very locals. A called
 // function gets its OWN frame, so a section written this way costs main() nothing and needs no
 // file-scope globals standing in for its locals. Every tbl section from here is written so.
+// --- cfe_tbl_accdesc.c ---------------------------------------------------------------
+// The per-app handle: 256 access descriptors, a resource-id allocator over them, and the two
+// transaction entry points that hand one out and give it back.
+//
+// The interesting assertions are the two that are not about the allocator at all. First, a
+// transaction TAKES AND RELEASES the registry lock exactly once around the allocation, which
+// the driver's counting mutex witnesses. Second, releasing a descriptor only clears the
+// table's OwnerAppId IF THE CALLER OWNS IT -- a non-owner may hold a handle to a shared table
+// and releasing theirs must not un-own it for everyone.
+U0 TblAccDescExercise()
+{
+  CFE_TBL_AccessDescriptor_t *ad;
+  CFE_TBL_RegistryRec_t *rr;
+  CFE_TBL_TxnState_t txn;
+  U32 nid, idx;
+  I64 k, t0, g0;
+  MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+  CFE_TBL_Global.RegistryMutex = 0x7B10;
+  CFE_TBL_Global.LastHandle = CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + CFE_PLATFORM_TBL_MAX_NUM_HANDLES - 1);
+  // ToIndex DOES NOT BOUNDS CHECK, and that is the thing to know about every resource id in
+  // cFS. Its last line is `*Idx = Serial % TableSize` -- a MODULO. The only rejection is a
+  // serial above CFE_RESOURCEID_MAX. So one past the last handle WRAPS to index 0 and reports
+  // success, and what actually establishes that a record is the one you asked for is
+  // CFE_TBL_AccDescIsMatch comparing the id STORED IN the record. An id check that only called
+  // ToIndex would read a live neighbour and believe it.
+  S("tbl_adidx first=");
+  D(CFE_TBL_Handle_ToIndex(CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE), &idx));
+  S("/");
+  D(idx);
+  S(" last=");
+  D(CFE_TBL_Handle_ToIndex(CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + CFE_PLATFORM_TBL_MAX_NUM_HANDLES - 1), &idx));
+  S("/");
+  D(idx);
+  S(" past=");
+  D(CFE_TBL_Handle_ToIndex(CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + CFE_PLATFORM_TBL_MAX_NUM_HANDLES), &idx));
+  S("/");
+  D(idx);
+  S(" undef=");
+  D(CFE_TBL_Handle_ToIndex(CFE_TBL_HANDLEID_UNDEFINED, &idx));
+  S("\n");
+  ad = CFE_TBL_LocateAccDescByHandle(CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 5));
+  S("tbl_adloc self=");
+  D(ad == &CFE_TBL_Global.Handles[5]);
+  S(" used=");
+  D(CFE_TBL_AccDescIsUsed(ad));
+  S(" null=");
+  D(CFE_TBL_LocateAccDescByHandle(CFE_TBL_HANDLEID_UNDEFINED) == NULL);
+  S(" slotused=");
+  D(CFE_TBL_CheckAccessDescriptorSlotUsed(CFE_ResourceId_FromInteger(0)));
+  S("\n");
+  // init, mark used, read back, match, free -- the allocator primitives
+  nid = CFE_TBL_GetNextTableHandle();
+  ad = CFE_TBL_LocateAccDescByHandle(nid);
+  MemSet(ad, 0xEE, sizeof(CFE_TBL_AccessDescriptor_t));
+  CFE_TBL_InitAccessDescriptor(ad);
+  S("tbl_adinit id=");
+  D(CFE_ResourceId_ToInteger(nid));
+  S(" zeroed=");
+  D(ad->LockFlag == FALSE && ad->AppId == 0);
+  S(" linkdetached=");
+  D(!CFE_TBL_HandleLinkIsAttached(&ad->Link));
+  S("\n");
+  CFE_TBL_AccDescSetUsed(ad, nid);
+  S("tbl_adused used=");
+  D(CFE_TBL_AccDescIsUsed(ad));
+  S(" back=");
+  D(CFE_ResourceId_ToInteger(CFE_TBL_AccDescGetHandle(ad)));
+  S(" match=");
+  D(CFE_TBL_AccDescIsMatch(ad, nid));
+  S("\n");
+  ad->AppId = CFE_ResourceId_FromInteger(0x4321);
+  CFE_TBL_AccDescSetFree(ad);
+  S("tbl_adfree used=");
+  D(CFE_TBL_AccDescIsUsed(ad));
+  S(" appid=");
+  D(CFE_ResourceId_ToInteger(ad->AppId));
+  S("\n");
+  // A WHOLE TRANSACTION, and the lock is the thing being watched.
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  t0 = fs_mut_take;
+  g0 = fs_mut_give;
+  S("tbl_adtxn rc=");
+  D(CFE_TBL_TxnAllocateAccDesc(&txn));
+  S(" handle=");
+  D(CFE_TBL_TxnHandleAsULong(&txn));
+  S(" nonnull=");
+  D(txn.AccDescPtr != NULL);
+  S(" used=");
+  D(txn.AccDescPtr != NULL && CFE_TBL_AccDescIsUsed(txn.AccDescPtr));
+  S(" takes=");
+  D(fs_mut_take - t0);
+  S(" gives=");
+  D(fs_mut_give - g0);
+  S(" lockcnt=");
+  D(txn.RegLockCount);
+  S("\n");
+  // RELEASE BY THE OWNER clears the table's owner; RemoveAccessLink is called once.
+  // cfe_tbl_regrec.c is not gated, so the record is zeroed directly rather than through
+  // CFE_TBL_InitRegistryRecord -- the only field this exercise reads is OwnerAppId.
+  rr = &CFE_TBL_Global.Registry[3];
+  MemSet(rr, 0, sizeof(CFE_TBL_RegistryRec_t));
+  rr->OwnerAppId = CFE_ResourceId_FromInteger(0x1111);
+  txn.AppId = rr->OwnerAppId;
+  txn.RegRecPtr = rr;
+  tbl_removelink_calls = 0;
+  CFE_TBL_TxnReleaseAccDesc(&txn);
+  S("tbl_adrel_owner owner=");
+  D(CFE_ResourceId_ToInteger(rr->OwnerAppId));
+  S(" freed=");
+  D(!CFE_TBL_AccDescIsUsed(txn.AccDescPtr));
+  S(" unlinks=");
+  D(tbl_removelink_calls);
+  S("\n");
+  // RELEASE BY A NON-OWNER must leave the table owned.
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  CFE_TBL_TxnAllocateAccDesc(&txn);
+  rr->OwnerAppId = CFE_ResourceId_FromInteger(0x1111);
+  txn.AppId = CFE_ResourceId_FromInteger(0x2222);
+  txn.RegRecPtr = rr;
+  tbl_removelink_calls = 0;
+  CFE_TBL_TxnReleaseAccDesc(&txn);
+  S("tbl_adrel_other owner=");
+  D(CFE_ResourceId_ToInteger(rr->OwnerAppId));
+  S(" freed=");
+  D(!CFE_TBL_AccDescIsUsed(txn.AccDescPtr));
+  S(" unlinks=");
+  D(tbl_removelink_calls);
+  S("\n");
+  // EXHAUSTION. All 256 marked used, so the next transaction must refuse and must leave the
+  // transaction's own fields cleared rather than half-filled.
+  for (k = 0; k < CFE_PLATFORM_TBL_MAX_NUM_HANDLES; k++)
+    CFE_TBL_AccDescSetUsed(&CFE_TBL_Global.Handles[k], CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + k));
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  t0 = fs_mut_take;
+  g0 = fs_mut_give;
+  S("tbl_adfull rc=0x");
+  Hx8(CFE_TBL_TxnAllocateAccDesc(&txn));
+  S(" null=");
+  D(txn.AccDescPtr == NULL);
+  S(" handle=");
+  D(CFE_TBL_TxnHandleAsULong(&txn));
+  S(" takes=");
+  D(fs_mut_take - t0);
+  S(" gives=");
+  D(fs_mut_give - g0);
+  S("\n");
+  MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+}
+
 U0 TblDumpCtlExercise()
 {
   CFE_TBL_DumpControl_t *bp;
@@ -10100,6 +10282,7 @@ I64 main()
       S("\n");
     }
     TblDumpCtlExercise();
+    TblAccDescExercise();
     // --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
     // ------------------------------------------------------------------------------------
     // This is not a translation of anything. It is the test that has to pass BEFORE the 7,780

@@ -138,7 +138,7 @@ HDRS = [
     # it is the one that defines CFE_TBL_Global_t out of all the others.
     "cfe_tbl_module_all.h", "cfe_tbl_handlelink.h", "cfe_tbl_loadbuff.h", "cfe_tbl_accdesc.h",
     "cfe_tbl_valresult.h", "cfe_tbl_dumpctl.h", "cfe_tbl_regrec.h", "cfe_tbl_resource.h",
-    "cfe_tbl_task.h", "cfe_tbl_msg.h",
+    "cfe_tbl_task.h", "cfe_tbl_msg.h", "cfe_tbl_transaction.h",
 ]
 
 # NASA .c files whose FILE-SCOPE typedefs have to be lifted into the probe. A module's private
