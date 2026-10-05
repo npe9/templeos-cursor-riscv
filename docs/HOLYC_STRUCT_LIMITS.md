@@ -1244,3 +1244,61 @@ Hit by `CFE_TBL_RegRecGetValidationFunc`, whose NASA return type is `CFE_TBL_Cal
 return the name — is not available either. Note also the error position: `0:1`, not the line of
 the declarator. A parse error reported at the top of the file means the declarator parser gave
 up before it had a position; do not go looking at line 1.
+
+---
+
+## 25. A `#if` written inside a `//` COMMENT is executed — OPEN, and the error lands in another file
+
+Two innocuous-looking lines of prose in `Kernel/Cfs/CfsStr.HC`:
+
+```c
+// duplicate definition, and HolyC has no working `#if` to guard it with (see
+// docs/HOLYC_STRUCT_LIMITS.md on `#if` being a no-op). Rename it there, do not guard it.
+```
+
+broke the cFS differential driver with **thirty errors, none of them in that file**:
+
+```
+Kernel/Cfs/cfe/cfe_es_resource.HC:218:65: error: Undefined variable 'CFE_SBR_RouteId'
+Kernel/Cfs/cfe/cfe_sbr_map_hash.HC:44:31:  error: Undefined variable 'CFE_SBR_RouteId'
+<macro expansion>:1:34:                    error: Undefined variable 'CFE_PLATFORM_SB_MAX_MSG_IDS'
+   ... and twenty-seven more, in four files, none of them CfsStr.HC
+```
+
+The minimal reproducer is one line. In `CfsStr.HC`, in the middle of a comment block:
+
+```c
+// `#if`
+```
+
+**Measured, each one a separate compile of the whole driver:**
+
+| the comment | result |
+|---|---|
+| `// ` + backtick-`#if`-backtick, mid-comment-block | **fails** |
+| the identical line, immediately above the function definition | passes |
+| `// ` + backtick-`#if`-backtick followed by backtick-`#endif`-backtick | **fails** |
+| `// ` + backtick-`#endif`-backtick alone | passes |
+| two innocuous comment lines of the same count | passes |
+| the same `#if` further inside a longer sentence | passes |
+
+So: `#if` in a comment is honoured, `#endif` in a comment is not, and whether it fires depends
+on **where in the file the comment sits** — a comment attached directly to a definition is
+safe, a free-floating one is not. A commented `#endif` on the next line does not cancel it,
+which rules out the obvious story (an unbalanced conditional) and points instead at `#if`'s
+expression parse consuming the lines that follow it.
+
+**This is not the same bug as #19.** There, `#if <expr>` is a no-op because only a literal `0`
+is false, so a guard never excludes anything. Here the directive is being seen at all, from
+inside a comment, where it should be invisible.
+
+**How to apply:** never write `#if`, and by assumption no other `#`-directive, inside a HolyC
+comment — spell it "the conditional-compilation directive" or "hash-if". And when a build
+reports undefined names in files you did not touch, the include tree has been cut somewhere
+upstream: check what you last edited for a `#` in prose before reading any of the errors. The
+prose in this very document is why the sentence in `CfsStr.HC` now says
+"conditional-compilation directive".
+
+**Not pinned by a test yet** and it does not reproduce in a four-line program — the same
+"needs a real translation unit" property as #22. Worth a dedicated look at the lexer's comment
+path, because a comment that can silently cut an include tree is a trap no gate here can see.

@@ -1351,45 +1351,11 @@ I32 TblValStub(U8 *TblPtr)
 // Named by tools/cfs/module_deps.py --cuts: two from cfe_tbl_internal.c and two from
 // cfe_tbl_transaction.c, both still inside tbl's call cycle.
 //
-// THE FIRST IS FAITHFUL ON PURPOSE. CFE_TBL_ForeachAccessDescriptor walks the table's
-// access-descriptor list, and with cfe_tbl_accdesc.c gated its one helper --
-// CFE_TBL_LocateAccDescByHandle -- is REAL, so the walk is eight lines that call only gated
-// code. Written as a counter instead, CFE_TBL_GetInactiveBufferExclusive's locked-buffer
-// branch would never be entered and the exercise would assert nothing about the one case
-// that matters: a load refused because another app still holds the buffer.
-I64 tbl_foreach_visits;
-U0 CFE_TBL_ForeachAccessDescriptor(CFE_TBL_RegistryRec_t *RegRecPtr, U0 (*Func)(CFE_TBL_AccessDescriptor_t *, U8 *), U8 *Arg)
-{
-  CFE_TBL_AccessDescriptor_t *AccDescPtr;
-  CFE_TBL_HandleLink_t *LinkPtr;
-  LinkPtr = &RegRecPtr->AccessList;
-  while (TRUE) {
-    AccDescPtr = CFE_TBL_LocateAccDescByHandle(LinkPtr->Next);
-    if (AccDescPtr == NULL)
-      break;
-    ++tbl_foreach_visits;
-    Func(AccDescPtr, Arg);
-    LinkPtr = &AccDescPtr->Link;
-  }
-}
-// ALSO FAITHFUL, and nearly free: with cfe_tbl_loadbuff.c gated, every call in its body is
-// real except the mutex, which the driver counts.
-CFE_TBL_LoadBuff_t *CFE_TBL_AcquireGlobalLoadBuff(U32 PendingOwnerId)
-{
-  U32 PendingId;
-  CFE_TBL_LoadBuff_t *LoadBuffPtr;
-  LoadBuffPtr = NULL;
-  if (OS_MutSemTake(CFE_TBL_Global.WorkBufMutex) != OS_SUCCESS)
-    CFE_ES_WriteToSysLog("%s: Internal error taking WorkBuf Mutex (Status=%ld)\n", "CFE_TBL_AcquireGlobalLoadBuff", -1);
-  PendingId = CFE_TBL_FindNextSharedBufferId();
-  LoadBuffPtr = CFE_TBL_LocateLoadBufferByID(PendingId);
-  if (LoadBuffPtr != NULL) {
-    CFE_TBL_LoadBuffSetUsed(LoadBuffPtr, PendingId, PendingOwnerId);
-    CFE_TBL_Global.LastLoadBuffId = PendingId;
-  }
-  OS_MutSemGive(CFE_TBL_Global.WorkBufMutex);
-  return LoadBuffPtr;
-}
+// THE FIRST TWO STAND-INS ARE GONE: CFE_TBL_ForeachAccessDescriptor and
+// CFE_TBL_AcquireGlobalLoadBuff both live in cfe_tbl_internal.c, gated below, so the real
+// ones are compiled in now. The `tbl_foreach_visits` counter went with them -- a witness that
+// only a stub could keep -- and what replaces it is in the exercise: the list walk is now
+// observed through NASA's own CFE_TBL_CountAccessDescHelper.
 // CFE_TBL_TxnAddEvent and CFE_TBL_SendTransactionEvents WERE STAND-INS HERE and are real now
 // -- they live in cfe_tbl_transaction.c, gated above. Their deletion is the whole reason the
 // `tbl_actvsend`/`tbl_vrsend` assertions changed shape: they counted a stub, and what arrives
@@ -1445,24 +1411,18 @@ I32 CFE_TBL_TxnRemoveAccessLink(CFE_TBL_TxnState_t *Txn)
   return CFE_SUCCESS;
 }
 #include "/Kernel/Cfs/cfe/cfe_tbl_accdesc.HC"
-// cfe_tbl_internal.c, cfe_tbl_task.c and cfe_tbl_api.c are three of the EIGHT sources that
-// tools/cfs/module_deps.py shows must be gated together, so these three are stubs on both
-// halves -- exactly the arrangement the other six objtabs have had. They exist so that
-// CFE_TBL_ModuleEntry has three distinct non-NULL addresses to hold, which is the only
-// property the object table exercise asserts about them.
-I32 CFE_TBL_EarlyInit()
-{
-  return CFE_SUCCESS;
-}
-
+// --- cfe_tbl_internal.c ---------------------------------------------------------
+// Four unrelated concerns in one file: startup, the shared memory pool, the access-descriptor
+// list, and the critical-table CDS. It goes HERE, after cfe_tbl_accdesc.HC, because that is
+// the point at which all but one of its seventy-two external calls are already defined.
+#include "/Kernel/Cfs/cfe/cfe_tbl_internal.HC"
+// CFE_TBL_EarlyInit and CFE_TBL_CleanUpApp WERE STUBS HERE. Both are real now -- they are the
+// first and last functions of the source just included -- so the object table's first hook
+// calls the function that actually builds tbl's two mutexes, its memory pool and its four
+// shared load buffers. CFE_TBL_TaskMain is still a stub: cfe_tbl_task.c is the one source of
+// the three the object table names that is still ungated.
 U0 CFE_TBL_TaskMain()
 {
-}
-
-I32 CFE_TBL_CleanUpApp(U32 AppId)
-{
-  no_warn AppId;
-  return CFE_SUCCESS;
 }
 #include "/Kernel/Cfs/cfe/cfe_tbl_objtab.HC"
 // --- cfe_tbl_dumpctl.c ----------------------------------------------------------
@@ -1720,6 +1680,343 @@ U0 TblTransactionExercise()
   D(CFE_TBL_TxnGetEventCount(&txn));
   S("\n");
   MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+}
+// --- cfe_tbl_internal.c ---------------------------------------------------------
+// FOUR UNRELATED CONCERNS, and this exercise takes them in the order they are cheapest to
+// observe: the three validators that decide whether a registration is legal at all, the name
+// marker, the doubly-linked access list, and the validation-request handoff.
+//
+// CFE_TBL_HandleListGetSafeLink, GetNext and GetPrev CANNOT BE CALLED FROM THE C HALF. The
+// last two are `static inline` INSIDE cfe_tbl_internal.c and the first has no declaration in
+// any header -- so the oracle reaches the safe-link trick only through InsertLink, RemoveLink
+// and ForeachAccessDescriptor, and this half does the same even though its own translation
+// has them at file scope. Both ends of the list are still covered, because removing the FRONT
+// element and removing the LAST one are exactly the two cases the head-node pointer exists to
+// erase.
+//
+// (Note for the gates: those three are source-file static inlines, not header inlines, so
+// check_header_inlines does not look at them. check_coverage always did -- and
+// check_signatures did NOT, until this commit: its return-type pattern allowed two words
+// before the name, and `static inline CFE_TBL_AccessDescriptor_t *` is three, so GetNext and
+// GetPrev were never compared to NASA's. 30 of 32 was the number, and it printed as a pass.)
+// The chain printer. It follows Next from the head using the gated
+// CFE_TBL_LocateAccDescByHandle, which answers NULL for the undefined id and so terminates the
+// walk; the bound of 8 is there so a mistake in the list surgery prints a wrong answer instead
+// of hanging. The count beside it comes from NASA's own
+// ForeachAccessDescriptor/CountAccessDescHelper pair, so the two walks check each other.
+U0 tbl_chain(CFE_TBL_RegistryRec_t *rr, U8 *tag)
+{
+  CFE_TBL_AccessDescriptor_t *p;
+  CFE_TBL_HandleLink_t *lnk;
+  U32 descs;
+  I64 guard;
+  S(tag);
+  S(" head=");
+  D(CFE_ResourceId_ToInteger(rr->AccessList.Next));
+  S(" chain=");
+  lnk = &rr->AccessList;
+  for (guard = 0; guard < 8; guard++) {
+    p = CFE_TBL_LocateAccDescByHandle(lnk->Next);
+    if (p == NULL)
+      break;
+    D(CFE_ResourceId_ToInteger(CFE_TBL_AccDescGetHandle(p)));
+    S(",");
+    lnk = &p->Link;
+  }
+  descs = 0;
+  CFE_TBL_ForeachAccessDescriptor(rr, &CFE_TBL_CountAccessDescHelper, &descs);
+  S(" n=");
+  D(descs);
+  S("\n");
+}
+
+U0 TblInternalExercise()
+{
+  CFE_TBL_TableConfig_t cfg;
+  CFE_TBL_RegistryRec_t *rr;
+  CFE_TBL_AccessDescriptor_t *adp[3];
+  CFE_TBL_CritRegRec_t *crp;
+  CFE_TBL_ValidationResult_t *vrp;
+  U32 vid;
+  U32 found;
+  U16 opts[9];
+  U8 nbuf[20];
+  U8 longname[CFE_MISSION_TBL_MAX_NAME_LENGTH + 4];
+  I64 k;
+  I32 st;
+  MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+  CFE_TBL_Global.RegistryMutex = 0x7B30;
+  // THE NINE OPTION WORDS THAT COVER EVERY BRANCH. Filled one at a time rather than with an
+  // initialiser list because HolyC has no aggregate initialiser and the two halves are kept
+  // reading the same. 0x6 is the interesting one: USR_DEF_ADDR INCLUDES the dump-only bit, so
+  // asking for a user-defined address implies dump-only -- which means the
+  // `else if (UserDefAddr)` arm can only be reached by 0x4, a caller who set the user-defined
+  // mask bit WITHOUT the dump-only bit. That word is in the table for exactly that reason.
+  //   0x0  single, load/dump, not user-def, not critical    accepted
+  //   0x1  double-buffered                                   accepted
+  //   0x2  dump-only                                         accepted
+  //   0x3  dump-only AND double                              REFUSED
+  //   0x4  user-def mask without dump-only                    REFUSED, and only reachable so
+  //   0x6  USR_DEF_ADDR proper: user-def and dump-only        accepted
+  //   0x8  critical                                          accepted
+  //   0x9  critical and double                               accepted
+  //   0xA  critical and dump-only                            REFUSED
+  opts[0] = 0x0000;
+  opts[1] = 0x0001;
+  opts[2] = 0x0002;
+  opts[3] = 0x0003;
+  opts[4] = 0x0004;
+  opts[5] = 0x0006;
+  opts[6] = 0x0008;
+  opts[7] = 0x0009;
+  opts[8] = 0x000A;
+  for (k = 0; k < 9; k++) {
+    MemSet(&cfg, 0, sizeof(cfg));
+    st = CFE_TBL_ValidateTableOptions(&cfg, opts[k]);
+    S("tbl_opt ");
+    Hx4(opts[k]);
+    S(" dbl=");
+    D(cfg.DoubleBuffered);
+    S(" dmp=");
+    D(cfg.DumpOnly);
+    S(" usr=");
+    D(cfg.UserDefAddr);
+    S(" crit=");
+    D(cfg.Critical);
+    S(" st=");
+    D(st);
+    S("\n");
+  }
+  // SIZE, and the limit that depends on a flag the caller set in the SAME config object. Both
+  // platform limits are 16384 in this configuration, so the single/double distinction cannot
+  // be seen in the numbers -- what is still worth asserting is that Size is written on success
+  // and left alone on failure.
+  MemSet(&cfg, 0, sizeof(cfg));
+  st = CFE_TBL_ValidateTableSize(&cfg, 0);
+  S("tbl_size zero=");
+  D(st);
+  S(" sz=");
+  D(cfg.Size);
+  S("\n");
+  st = CFE_TBL_ValidateTableSize(&cfg, CFE_PLATFORM_TBL_MAX_SNGL_TABLE_SIZE);
+  S("tbl_size limit=");
+  D(st);
+  S(" sz=");
+  D(cfg.Size);
+  S("\n");
+  st = CFE_TBL_ValidateTableSize(&cfg, CFE_PLATFORM_TBL_MAX_SNGL_TABLE_SIZE + 1);
+  S("tbl_size over=");
+  D(st);
+  S(" sz=");
+  D(cfg.Size);
+  S("\n");
+  cfg.DoubleBuffered = TRUE;
+  st = CFE_TBL_ValidateTableSize(&cfg, CFE_PLATFORM_TBL_MAX_DBL_TABLE_SIZE);
+  S("tbl_size dbllimit=");
+  D(st);
+  S(" sz=");
+  D(cfg.Size);
+  S("\n");
+  // THE NAME, which is both too-long and empty in one test: MemChr over MAX_NAME_LENGTH
+  // finding no NUL means the name does not terminate within the limit. A name of exactly 16
+  // characters is already too long for that reason -- the NUL sits at index 16.
+  MemSet(&cfg, 0, sizeof(cfg));
+  st = CFE_TBL_ValidateTableName(&cfg, "", "APP");
+  S("tbl_name empty=");
+  D(st);
+  S("\n");
+  MemSet(longname, 'X', sizeof(longname));
+  longname[CFE_MISSION_TBL_MAX_NAME_LENGTH] = '\0';
+  st = CFE_TBL_ValidateTableName(&cfg, longname, "APP");
+  S("tbl_name exactly16=");
+  D(st);
+  S("\n");
+  longname[CFE_MISSION_TBL_MAX_NAME_LENGTH - 1] = '\0';
+  st = CFE_TBL_ValidateTableName(&cfg, longname, "APP");
+  S("tbl_name fifteen=");
+  D(st);
+  S(" full=");
+  S(cfg.Name);
+  S("\n");
+  st = CFE_TBL_ValidateTableName(&cfg, "Tbl", "APP");
+  S("tbl_name good=");
+  D(st);
+  S(" full=");
+  S(cfg.Name);
+  S("\n");
+  // and the truncation arm: 15 + 1 + 15 + 1 fits 40, so the app name has to be long enough to
+  // push the joined name past CFE_TBL_MAX_FULL_NAME_LEN by itself
+  st = CFE_TBL_ValidateTableName(&cfg, longname, "AN_APPLICATION_WITH_A_VERY_LONG_NAME");
+  S("tbl_name trunc=");
+  D(st);
+  S(" full=");
+  S(cfg.Name);
+  S("\n");
+  // THE MODIFIED MARKER, both arms. The second name leaves no room for three more characters,
+  // so the marker overwrites the tail rather than being dropped.
+  MemSet(nbuf, 0, sizeof(nbuf));
+  StrCpy(nbuf, "APP.Tbl");
+  CFE_TBL_MarkNameAsModified(nbuf, sizeof(nbuf));
+  S("tbl_mark short=");
+  S(nbuf);
+  S("\n");
+  MemSet(nbuf, 'Y', sizeof(nbuf));
+  nbuf[sizeof(nbuf) - 1] = '\0';
+  CFE_TBL_MarkNameAsModified(nbuf, sizeof(nbuf));
+  S("tbl_mark maximal=");
+  S(nbuf);
+  S(" len=");
+  D(StrLen(nbuf));
+  S("\n");
+  // THE ACCESS LIST. Three descriptors, each inserted at the front, so the chain comes out
+  // reversed -- and then the three removals take the MIDDLE, the FRONT and the LAST element,
+  // which is every case the head-node trick exists to flatten.
+  rr = &CFE_TBL_Global.Registry[3];
+  CFE_TBL_HandleLinkInit(&rr->AccessList);
+  for (k = 0; k < 3; k++) {
+    adp[k] = &CFE_TBL_Global.Handles[10 + k];
+    CFE_TBL_InitAccessDescriptor(adp[k]);
+    CFE_TBL_AccDescSetUsed(adp[k], CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 10 + k));
+  }
+  tbl_chain(rr, "tbl_list empty");
+  for (k = 0; k < 3; k++)
+    CFE_TBL_HandleListInsertLink(rr, adp[k]);
+  tbl_chain(rr, "tbl_list three");
+  // READ `attached=0 1 1` CAREFULLY -- it is not a mistake and not a bug to fix. The first
+  // descriptor inserted is the LAST in the chain, so its Next is undefined, and
+  // CFE_TBL_HandleLinkIsAttached tests Next ALONE. So the tail of a non-empty list reports
+  // itself detached, which is narrower than what cfe_tbl_handlelink.h promises of it ("true if
+  // the passed-in link is attached to another list node, indicating it is part of a list").
+  // The translation keeps NASA's one-line body; this transcript line is what pins the
+  // behaviour so a later "tidy-up" of either half shows up as a diff.
+  S("tbl_list attached=");
+  D(CFE_TBL_HandleLinkIsAttached(&adp[0]->Link));
+  S(" ");
+  D(CFE_TBL_HandleLinkIsAttached(&adp[1]->Link));
+  S(" ");
+  D(CFE_TBL_HandleLinkIsAttached(&adp[2]->Link));
+  S("\n");
+  CFE_TBL_HandleListRemoveLink(rr, adp[1]);
+  tbl_chain(rr, "tbl_list -middle");
+  S("tbl_list midattached=");
+  D(CFE_TBL_HandleLinkIsAttached(&adp[1]->Link));
+  S("\n");
+  CFE_TBL_HandleListRemoveLink(rr, adp[2]);
+  tbl_chain(rr, "tbl_list -front");
+  CFE_TBL_HandleListRemoveLink(rr, adp[0]);
+  tbl_chain(rr, "tbl_list -last");
+  // AND THE WALK THAT MARKS, which is the only reason the list exists: one table updated,
+  // every app holding a handle to it told so. Two descriptors are back on the list and a third
+  // is deliberately left OFF it, so the count is a claim about the list and not about the
+  // handle array.
+  CFE_TBL_HandleListInsertLink(rr, adp[0]);
+  CFE_TBL_HandleListInsertLink(rr, adp[1]);
+  adp[0]->Updated = FALSE;
+  adp[1]->Updated = FALSE;
+  adp[2]->Updated = FALSE;
+  CFE_TBL_NotifyTblUsersOfUpdate(rr);
+  S("tbl_notify upd=");
+  D(adp[0]->Updated);
+  S(" ");
+  D(adp[1]->Updated);
+  S(" off=");
+  D(adp[2]->Updated);
+  S("\n");
+  // THE VALIDATION-REQUEST HANDOFF, which is a flag and an id in one word. Three cases: an
+  // undefined id is left ALONE (NASA's comment: "only write to the global if it was set to a
+  // value"), a live id is consumed and returns its block, and a stale id -- one whose block is
+  // no longer used -- is consumed and returns NULL.
+  vid = CFE_TBL_VALRESULTID_UNDEFINED;
+  vrp = CFE_TBL_CheckValidationRequest(&vid);
+  S("tbl_valreq undef null=");
+  D(vrp == NULL);
+  S(" left=");
+  D(!CFE_TBL_VALRESULTID_IS_VALID(vid));
+  S("\n");
+  CFE_TBL_ValidationResultSetUsed(&CFE_TBL_Global.ValidationResults[2], CFE_ResourceId_FromInteger(CFE_TBL_VALRESULTID_BASE + 2));
+  vid = CFE_ResourceId_FromInteger(CFE_TBL_VALRESULTID_BASE + 2);
+  vrp = CFE_TBL_CheckValidationRequest(&vid);
+  S("tbl_valreq live isblk2=");
+  D(vrp == &CFE_TBL_Global.ValidationResults[2]);
+  S(" cleared=");
+  D(!CFE_TBL_VALRESULTID_IS_VALID(vid));
+  S("\n");
+  vid = CFE_ResourceId_FromInteger(CFE_TBL_VALRESULTID_BASE + 3);
+  vrp = CFE_TBL_CheckValidationRequest(&vid);
+  S("tbl_valreq stale null=");
+  D(vrp == NULL);
+  S(" cleared=");
+  D(!CFE_TBL_VALRESULTID_IS_VALID(vid));
+  S("\n");
+  // THE CRITICAL-TABLE REGISTRY LOOKUP, and the second call is the one the code actually leans
+  // on: searching for CFE_ES_CDS_BAD_HANDLE is how a FREE entry is found, because a free entry
+  // is one whose handle is the bad one.
+  //
+  // THE INDEX THE LONG WAY ROUND. `crp - CFE_TBL_Global.CritReg` is the idiomatic C, but HolyC
+  // scales pointer arithmetic by the pointee and the two halves are kept reading the same, so
+  // both divide an explicit byte difference.
+  CFE_TBL_Global.CritReg[5].CDSHandle = CFE_ResourceId_FromInteger(0x5151);
+  CFE_TBL_FindCriticalTblInfo(&crp, CFE_ResourceId_FromInteger(0x5151));
+  S("tbl_crit found=");
+  D(crp != NULL);
+  S(" idx=");
+  if (crp == NULL)
+    D(-1);
+  else
+    D (((U8 *)crp - (U8 *)CFE_TBL_Global.CritReg) / sizeof(CFE_TBL_CritRegRec_t));
+  S("\n");
+  CFE_TBL_FindCriticalTblInfo(&crp, CFE_ES_CDS_BAD_HANDLE);
+  S("tbl_crit free=");
+  D(crp != NULL);
+  S(" idx=");
+  if (crp == NULL)
+    D(-1);
+  else
+    D (((U8 *)crp - (U8 *)CFE_TBL_Global.CritReg) / sizeof(CFE_TBL_CritRegRec_t));
+  S("\n");
+  CFE_TBL_Global.CritReg[0].CDSHandle = CFE_ResourceId_FromInteger(0x1111);
+  CFE_TBL_FindCriticalTblInfo(&crp, CFE_ResourceId_FromInteger(0x9999));
+  S("tbl_crit absent=");
+  D(crp == NULL);
+  S("\n");
+  // THE REGISTRY LOCK PAIR, which is NOT the counted one the transaction uses -- it is the
+  // bare take/give, and its whole content is turning an OSAL status into a cFE one. The
+  // driver's mutex returns what fs_mut_take_rc says, which is how the failure arm is reached
+  // without a real mutex.
+  //
+  // EACH CALL INTO A LOCAL FIRST, because the two halves print incrementally and C does not
+  // even specify the order among printf arguments.
+  st = CFE_TBL_LockRegistry();
+  S("tbl_reglock ok=");
+  D(st);
+  st = CFE_TBL_UnlockRegistry();
+  S(" unlock=");
+  D(st);
+  S("\n");
+  fs_mut_take_rc = -1;
+  fs_mut_give_rc = -1;
+  st = CFE_TBL_LockRegistry();
+  S("tbl_reglock failtake=");
+  D(st);
+  st = CFE_TBL_UnlockRegistry();
+  S(" failgive=");
+  D(st);
+  S("\n");
+  fs_mut_take_rc = OS_SUCCESS;
+  fs_mut_give_rc = OS_SUCCESS;
+  // THE NAME LOOKUP, through a whole transaction. Into a local first: the miss emits an event.
+  found = CFE_TBL_FindTableInRegistry("NO.SUCH");
+  S("tbl_findreg miss=");
+  D(!CFE_TBL_REGID_IS_VALID(found));
+  S("\n");
+  StrNCpy(rr->Config.Name, "APP.Found", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 3));
+  found = CFE_TBL_FindTableInRegistry("APP.Found");
+  S("tbl_findreg hit=");
+  D(CFE_TBL_REGID_IS_VALID(found));
+  S(" id=");
+  D(CFE_ResourceId_ToInteger(found));
+  S("\n");
 }
 
 U0 TblCodecExercise()
@@ -2050,6 +2347,7 @@ U0 TblLoadBuffRegRecExercise()
   CFE_TBL_AccessDescriptor_t *ad;
   CFE_TBL_LoadBuff_t *lb;
   U32 nid, cat, idx, serial;
+  U32 descs;
   I64 k;
   I64 stale_before, stale_got, stale_after;
   I64 before;
@@ -2196,21 +2494,34 @@ U0 TblLoadBuffRegRecExercise()
   rr->AccessList.Next = CFE_TBL_AccDescGetHandle(ad);
   // into a local first, to match the C half: this call emits the syslog line naming the
   // holder -- see the note at tbl_stalelip.
-  tbl_foreach_visits = 0;
+  // WHAT `descs` REPLACED, AND WHAT IT DOES NOT. This line used to report a counter the
+  // DRIVER kept inside its own copy of CFE_TBL_ForeachAccessDescriptor, and `visits=1` here
+  // against `visits=0` at tbl_lockedclaim below was an assertion about CONTROL FLOW INSIDE
+  // CFE_TBL_GetInactiveBufferExclusive -- one path walked the list, the other returned before
+  // it. `descs` cannot tell those apart: it counts the list AFTER the call and reads 1 at both
+  // sites. So this is a trade, not an upgrade. What is gained is real -- ForeachAccessDescriptor
+  // and CountAccessDescHelper had never been called by anything -- and what is lost went with
+  // the stub, because a counter inside gated code is not something a driver may add.
+  //
+  // Third occurrence of the recorded trap: the witness moves when the stub goes, and the
+  // replacement is rarely the same shape.
+  descs = 0;
   stale_got = CFE_TBL_GetInactiveBufferExclusive(rr) == NULL;
+  CFE_TBL_ForeachAccessDescriptor(rr, &CFE_TBL_CountAccessDescHelper, &descs);
   S("tbl_lockedrefuse null=");
   D(stale_got);
-  S(" visits=");
-  D(tbl_foreach_visits);
+  S(" descs=");
+  D(descs);
   S("\n");
   // release the lock and the SAME call now claims the buffer for this table
   ad->LockFlag = FALSE;
-  tbl_foreach_visits = 0;
+  descs = 0;
   lb = CFE_TBL_GetInactiveBufferExclusive(rr);
+  CFE_TBL_ForeachAccessDescriptor(rr, &CFE_TBL_CountAccessDescHelper, &descs);
   S("tbl_lockedclaim nonnull=");
   D(lb != NULL);
-  S(" visits=");
-  D(tbl_foreach_visits);
+  S(" descs=");
+  D(descs);
   S(" owner=");
   if (lb == NULL)
     D(0);
@@ -11342,6 +11653,7 @@ I64 main()
     TblValResultExercise();
     TblCodecExercise();
     TblTransactionExercise();
+    TblInternalExercise();
     // --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
     // ------------------------------------------------------------------------------------
     // This is not a translation of anything. It is the test that has to pass BEFORE the 7,780

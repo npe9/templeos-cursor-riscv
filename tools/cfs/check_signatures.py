@@ -201,7 +201,15 @@ FN_SPELLED = re.compile(r'\(\s*\*+\s*\w*\s*\)\s*\([^)]*\)')
 
 # Any type spelling, C or HolyC. The old version listed the return types one at a time and
 # quietly skipped every function returning something not on the list.
-C_RET = r'[A-Za-z_][A-Za-z0-9_]*(?:\s+[A-Za-z_][A-Za-z0-9_]*)?'
+#
+# AND THE STORAGE CLASS IS PART OF THE SPELLING. Two identifiers were enough until
+# cfe_tbl_internal.c, which defines CFE_TBL_HandleListGetNext and GetPrev as
+# `static inline CFE_TBL_AccessDescriptor_t *` -- THREE words before the name, so neither
+# matched and neither was compared. The hole was shaped exactly like the gate: it had always
+# read `static void Foo(` fine (two words, with `static` standing in for the return type) and
+# so looked like it handled storage classes. A SOURCE-FILE static inline is the only kind that
+# reaches here -- a header one is check_header_inlines.py's business -- and there are two.
+C_RET = r'(?:static[ \t]+)?(?:inline[ \t]+)?[A-Za-z_][A-Za-z0-9_]*(?:\s+[A-Za-z_][A-Za-z0-9_]*)?'
 H_RET = r'[A-Za-z_][A-Za-z0-9_]*'
 
 def sigs(path, ret_pat, prefix, types):
@@ -215,7 +223,8 @@ def sigs(path, ret_pat, prefix, types):
     for m in re.finditer(r'^(?:' + ret_pat + r')[ \t]+\**([A-Za-z_]\w*)[ \t]*\(([^;{]*?)\)\s*\{',
                          src, re.M | re.S):
         name, args = m.group(1), m.group(2)
-        if name in KEYWORDS or m.group(0).split()[0] in KEYWORDS:
+        head = [w for w in m.group(0).split() if w not in ('static', 'inline')]
+        if name in KEYWORDS or (head and head[0] in KEYWORDS):
             continue
         if name.endswith('_Impl'):
             continue          # the backend seam, declared not defined

@@ -124,6 +124,30 @@ U8 *StrNCpy(U8 *dst, U8 *src, I64 n)
 }
 
 
+// C's strcpy. UNBOUNDED, exactly as C's is -- cfe_tbl_internal.c's one call site appends a
+// three-character literal to a buffer whose room it has already measured, which is the only
+// reason that is safe there. (Delete the pull-back in CFE_TBL_MarkNameAsModified and the
+// transcript prints `len=22` out of a 20-byte buffer; that is a measured control, not a guess.)
+//
+// AND IT IS THE ONE NAME IN THIS FILE THAT THE TEMPLEOS KERNEL ALSO SPELLS. MemChr, StrNCpy,
+// IsGraph and StrToUL have no kernel counterpart, so they could never collide; StrCpy does.
+// It is safe today because nothing in the kernel proper includes Kernel/Cfs -- every includer
+// of this file is itself under Kernel/Cfs/, plus two standalone exec cases -- so no
+// translation unit sees both definitions. That is a fact about today's include graph, not a
+// property of the code: the first unit that pulls CfsStr.HC into a kernel build gets a
+// duplicate definition, and HolyC has no working conditional-compilation directive to guard
+// it with (see docs/HOLYC_STRUCT_LIMITS.md #25). Rename it there, do not guard it.
+U8 *StrCpy(U8 *dst, U8 *src)
+{
+  I64 i = 0;
+  while (src[i]) {
+    dst[i] = src[i];
+    i++;
+  }
+  dst[i] = 0;
+  return dst;
+}
+
 // A SIZE-BOUNDED formatter, in TempleOS naming (the N is the bound, as in StrNCmp).
 //
 // TempleOS has StrPrint and StrPrintJoin, and they are the right thing in the kernel -- but
