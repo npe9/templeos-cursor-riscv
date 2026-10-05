@@ -34,9 +34,9 @@ WHAT IS AND IS NOT AN EDGE. A call to a function defined in another .c is one. A
 check_header_inlines.py requires exactly the ones a gated source reaches. Without that
 distinction every module looks like one big cycle and the tool says nothing.
 
-Usage: module_deps.py <module> [...]   e.g. module_deps.py tbl
+Usage: module_deps.py [--fresh] [--cuts] <module> [...]   e.g. module_deps.py --cuts tbl
 """
-import re, sys, os, glob
+import re, sys, os, glob, itertools
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPTS = os.path.join(ROOT, 'tests', 'scripts')
@@ -103,7 +103,8 @@ def main(argv):
     # regex is over-reporting edges, and tbl's 8-source result could not be trusted either --
     # which matters, because the next increment is planned on that number's authority.
     fresh = '--fresh' in argv
-    argv = [a for a in argv if a != '--fresh']
+    cuts = '--cuts' in argv
+    argv = [a for a in argv if a not in ('--fresh', '--cuts')]
     g = set() if fresh else gated()
     for mod in argv:
         d = os.path.join(ROOT, 'vendor', 'cFE', 'modules', mod, 'fsw', 'src')
@@ -116,16 +117,18 @@ def main(argv):
             lines[b] = body[b].count('\n') + 1
             for n in defines(p):
                 owner[n] = b
-        # edges: file -> files whose .c defines something it calls
-        edge = {}
+        # edges: file -> files whose .c defines something it calls, and WHICH functions
+        edge, edge_fns = {}, {}
         for b, src in body.items():
             mine = {n for n, o in owner.items() if o == b}
             need = set()
-            for n in set(re.findall(r'\b(CFE_\w+)\s*\(', src)):
+            for n in sorted(set(re.findall(r'\b(CFE_\w+)\s*\(', src))):
                 if n in mine or n in inl:
                     continue
                 if n in owner:
                     need.add(owner[n])
+                    if owner[n] != b:
+                        edge_fns.setdefault((b, owner[n]), []).append(n)
             edge[b] = need
 
         # Tarjan SCC over the ungated subgraph
@@ -180,6 +183,47 @@ def main(argv):
         # CFE_EDS_ENABLED is 0 in this configuration, so they are listed above and correctly
         # absent from the translation. tools/cfs/check_manifest.py is the one that decides
         # which branch a configuration takes; this tool must not be read as disagreeing.
+        # --cuts: for every CYCLE, the cheapest subsets to gate first.
+        #
+        # "Gate the whole component" is the lazy reading of an SCC and it was wrong here. The
+        # question is not whether the graph has a cycle, it is HOW MANY FUNCTIONS you must
+        # stand in for to gate a subset of it -- and that number varies enormously with the
+        # subset. For tbl, gating `regrec` alone needs stand-ins for loadbuff's buffer-id
+        # SERIAL ENCODING (bad); gating `loadbuff + regrec` TOGETHER makes those real and
+        # needs four stand-ins that are all thin seams (fine). Same cycle, 1,027 lines instead
+        # of 3,900, and the difference is invisible unless you enumerate.
+        if cuts:
+            for comp in [c for c in order if len(c) > 1]:
+                print("    --- cheapest first groups inside the %d-source cycle" % len(comp))
+                if len(comp) > 16:
+                    print("        (component too large to enumerate)")
+                    continue
+                rank = []
+                for r in range(1, len(comp)):
+                    for sub in itertools.combinations(comp, r):
+                        S = set(sub)
+                        # An ALREADY GATED source is available, not a stand-in. Counting
+                        # one (cfe_tbl_handlelink.c, gated two commits ago) inflated every
+                        # row by 1 and made two groups look equally priced when they are not.
+                        need = [(y, n) for (x, y), ns in edge_fns.items()
+                                if x in S and y not in S and y not in g for n in ns]
+                        rank.append((len(need), sum(lines[v] for v in sub), sub, need))
+                # THE TRADE-OFF CURVE, not a single winner. Sorting by stand-in count
+                # alone crowns a 3,619-line group because it happens to need one stub, which
+                # is useless advice. What a reader needs is: for each price in stand-ins,
+                # what is the SMALLEST group it buys -- then they judge whether those
+                # particular stand-ins are seams or logic, which no tool can decide.
+                byc = {}
+                for cnt, ln, sub, need in rank:
+                    if cnt not in byc or ln < byc[cnt][0]:
+                        byc[cnt] = (ln, sub, need)
+                for cnt in sorted(byc)[:6]:
+                    ln, sub, need = byc[cnt]
+                    print("        %2d stand-in(s), %5d lines : %s" %
+                          (cnt, ln, ", ".join(v.replace('cfe_', '').replace('.c', '') for v in sub)))
+                    for y, n in sorted(need):
+                        print("              %-38s from %s" % (n, y))
+
         cond = sorted(v for c in order for v in c if '_eds_' in v)
         if cond:
             print("    of those, CMake-conditional (EDS variants, not in this configuration --"
