@@ -45,6 +45,8 @@
 #include "cfe_es_appctrl.h"
 #include "cfe_es_mempool.h"
 #include "cfe_es_cds.h"
+#include "cfe_es_cds_mempool.h" /* CDSBlockWrite/Read and CDSReqdMinSize */
+#include "cfe_es_core_internal.h" /* CFE_ES_RegisterCDSEx, which core_private declares */
 #include "cfe_es_perf.h"
 #include "cfe_es_log.h"
 #include "cfe_es_global.h"
@@ -961,63 +963,96 @@ void CFE_PSP_SetDefaultExceptionEnvironment(void)
 /* CFE_ES_StartAppTask: STUB REMOVED -- its source is gated, the real one runs. It now makes a
  * real task RECORD, so CFE_ES_DeleteChildTask on the id it returns no longer takes the "Task ID
  * is not active" branch -- which is a transcript change the exercise had to account for. */
-/* THE CDS GROUP. CDSIsAvailable is 0, so the three public entry points never reach these --
- * which is itself worth asserting, and the exercise does. They record, so a path that DID reach
- * one would show up in the transcript rather than passing silently. */
-void CFE_ES_FormCDSName(char *FullCDSName, const char *CDSName, CFE_ES_AppId_t ThisAppId)
+/* THE CDS GROUP: STUBS REMOVED -- cfe_es_cds.c and cfe_es_cds_mempool.c are gated, the real
+ * ones run. All nine of them went at once: FormCDSName, LocateCDSBlockRecordByID and ByName,
+ * RegisterCDSEx, LockCDS, UnlockCDS, CDSBlockWrite, CDSBlockRead and DeleteCDS. They recorded
+ * and refused, so the three public CDS entry points returned CFE_ES_NOT_IMPLEMENTED and the
+ * exercise asserted that CDSIsAvailable was 0. It is 1 now.
+ *
+ * ---- THE SIMULATED CRITICAL DATA STORE -------------------------------------------------------
+ *
+ * A CDS is non-volatile memory the processor CANNOT LOAD FROM: on a real spacecraft it is
+ * battery-backed RAM or an EEPROM region, reached only through CFE_PSP_ReadFromCDS and
+ * WriteToCDS, and its whole purpose is to still be there after a processor reset. There is no
+ * such device here, so it is a byte array -- and that is better than a recording stub in a way
+ * worth stating: THE REBUILD PATH BECOMES TESTABLE. Clearing CFE_ES_Global.CDSVars while leaving
+ * es_cds_store alone is exactly what a processor reset looks like to cFE, so the exercise can
+ * boot the CDS, write blocks, "reset", and watch CFE_ES_RebuildCDS find the registry and the
+ * allocator recover the blocks from the descriptors that survived. Against a stub none of that
+ * code could run at all.
+ *
+ * The size is small on purpose: 64 KiB is over the 36,884-byte minimum (a 36,876-byte header
+ * holding 512 registry entries, plus an 8-byte trailer) with room for a handful of blocks, so
+ * the "too small" refusal is one knob away and a full pool is reachable. */
+#define ES_CDS_STORE_SIZE 65536
+static unsigned char es_cds_store[ES_CDS_STORE_SIZE];
+static uint32 es_cds_size = ES_CDS_STORE_SIZE;
+static long   es_cds_reads, es_cds_writes;
+/* Steerable, because every CDS function has a PSP-failure arm and nothing else can reach it. */
+static int32  es_cds_getsize_rc = CFE_PSP_SUCCESS;
+static int32  es_cds_read_rc    = CFE_PSP_SUCCESS;
+static int32  es_cds_write_rc   = CFE_PSP_SUCCESS;
+/* An offset past which writes fail, so a failure can be aimed at one step of a multi-step
+ * operation -- clearing the store, or writing the end signature -- rather than all of them. */
+static uint32 es_cds_write_fail_at = 0xFFFFFFFF;
+
+int32 CFE_PSP_GetCDSSize(uint32 *SizeOfCDS)
 {
-    (void)ThisAppId;
-    printf("es_formcdsname %s\n", CDSName);
-    strncpy(FullCDSName, CDSName, CFE_MISSION_ES_CDS_MAX_FULL_NAME_LEN - 1);
-    FullCDSName[CFE_MISSION_ES_CDS_MAX_FULL_NAME_LEN - 1] = 0;
+    *SizeOfCDS = es_cds_size;
+    return es_cds_getsize_rc;
 }
 
-CFE_ES_CDS_RegRec_t *CFE_ES_LocateCDSBlockRecordByID(CFE_ES_CDSHandle_t BlockID)
+int32 CFE_PSP_WriteToCDS(const void *PtrToDataToWrite, uint32 CDSOffset, uint32 NumBytes)
 {
-    (void)BlockID;
-    printf("es_locatecds_byid\n");
-    return NULL;
+    ++es_cds_writes;
+    if (es_cds_write_rc != CFE_PSP_SUCCESS || CDSOffset >= es_cds_write_fail_at)
+    {
+        return es_cds_write_rc != CFE_PSP_SUCCESS ? es_cds_write_rc : CFE_PSP_ERROR;
+    }
+    /* A real PSP bounds-checks against the device; so does this, and a refusal here is the
+     * same CFE_PSP_ERROR an out-of-range offset would get on hardware. */
+    if (CDSOffset + NumBytes > ES_CDS_STORE_SIZE)
+    {
+        return CFE_PSP_ERROR;
+    }
+    memcpy(&es_cds_store[CDSOffset], PtrToDataToWrite, NumBytes);
+    return CFE_PSP_SUCCESS;
 }
 
-CFE_ES_CDS_RegRec_t *CFE_ES_LocateCDSBlockRecordByName(const char *CDSName)
+int32 CFE_PSP_ReadFromCDS(void *PtrToDataFromRead, uint32 CDSOffset, uint32 NumBytes)
 {
-    printf("es_locatecds_byname %s\n", CDSName);
-    return NULL;
+    ++es_cds_reads;
+    if (es_cds_read_rc != CFE_PSP_SUCCESS)
+    {
+        return es_cds_read_rc;
+    }
+    if (CDSOffset + NumBytes > ES_CDS_STORE_SIZE)
+    {
+        return CFE_PSP_ERROR;
+    }
+    memcpy(PtrToDataFromRead, &es_cds_store[CDSOffset], NumBytes);
+    return CFE_PSP_SUCCESS;
 }
 
-int32 CFE_ES_RegisterCDSEx(CFE_ES_CDSHandle_t *HandlePtr, size_t UserBlockSize, const char *Name,
-                           bool CriticalTbl)
+/* A PROCESSOR RESET, as cFE experiences one: the RAM copy of the CDS state is gone and the store
+ * is not. Everything CFE_ES_CDS_EarlyInit rebuilds comes back out of es_cds_store. */
+/* EXACTLY EIGHT BYTES, because a CDS signature is not NUL terminated: `_CDSEnd_` occupies the
+ * last eight bytes of the store with nothing after it, so printing it as a string would run off
+ * the end of the array. The HolyC half has no %.8s either, which is the other reason this is a
+ * helper on both sides rather than a format. */
+static void es_sig8(const unsigned char *p)
 {
-    (void)HandlePtr;
-    printf("es_registercdsex %s size=%lu crit=%d\n", Name, (unsigned long)UserBlockSize,
-           (int)CriticalTbl);
-    return CFE_ES_NOT_IMPLEMENTED;
+    int i;
+    for (i = 0; i < 8; ++i)
+    {
+        putchar(p[i]);
+    }
 }
 
-int32 CFE_ES_LockCDS(void)
+static void es_cds_reset(void)
 {
-    ++es_cds_locks;
-    return CFE_SUCCESS;
-}
-
-int32 CFE_ES_UnlockCDS(void)
-{
-    ++es_cds_unlocks;
-    return CFE_SUCCESS;
-}
-
-int32 CFE_ES_CDSBlockWrite(CFE_ES_CDSHandle_t Handle, const void *DataToWrite)
-{
-    (void)DataToWrite;
-    printf("es_cdswrite h=%lu\n", CFE_RESOURCEID_TO_ULONG(Handle));
-    return CFE_ES_NOT_IMPLEMENTED;
-}
-
-int32 CFE_ES_CDSBlockRead(void *DataRead, CFE_ES_CDSHandle_t Handle)
-{
-    (void)DataRead;
-    printf("es_cdsread h=%lu\n", CFE_RESOURCEID_TO_ULONG(Handle));
-    return CFE_ES_NOT_IMPLEMENTED;
+    memset(&CFE_ES_Global.CDSVars, 0, sizeof(CFE_ES_Global.CDSVars));
+    CFE_ES_Global.CDSIsAvailable = false;
 }
 
 /* CFE_ES_CopyModuleBasicInfo / CopyModuleStatusInfo / CopyModuleAddressInfo: STUBS REMOVED --
@@ -1040,13 +1075,7 @@ static long  es_perf_remaining;
  * the control-request path reach an end. */
 
 /* CFE_ES_BackgroundInit: STUB REMOVED -- its source is gated, the real one runs. */
-int32 CFE_ES_DeleteCDS(const char *CDSName, bool CalledByTblServices)
-{
-    ++es_cdsdeletes;
-    printf("es_deletecds %s tbl=%d rc=%ld\n", CDSName, (int)CalledByTblServices,
-           (long)es_cdsdelete_rc);
-    return es_cdsdelete_rc;
-}
+/* CFE_ES_DeleteCDS: STUB REMOVED -- cfe_es_cds.c is gated, the real one runs. */
 
 /* CFE_ES_GetPerfLogDumpRemaining: STUB REMOVED -- its source is gated, the real one runs. */
 /* CFE_ES_TaskPipe: STUB REMOVED -- its source is gated, the real one runs. */
@@ -1117,11 +1146,9 @@ static int32 es_exc_ctxsize = 4;           /* <0 means "no context available" */
 /* CFE_ES_RunAppTableScan: STUB REMOVED -- its source is gated, the real one runs. */
 
 /* CFE_ES_RunPerfLogDump: STUB REMOVED -- its source is gated, the real one runs. */
-int32 CFE_ES_CDS_EarlyInit(void)
-{
-    ++es_cdsearly;
-    return es_cdsearly_rc;
-}
+/* CFE_ES_CDS_EarlyInit: STUB REMOVED -- cfe_es_cds.c is gated, the real one runs. It is the
+ * EarlyInit slot of ES's own module-table entry, which NASA spends on the CDS because the store
+ * has to exist before any app can register with it. */
 
 uint32 CFE_PSP_Exception_GetCount(void)
 {
@@ -5495,6 +5522,7 @@ int main(void)
                 CFE_ES_SendMemPoolStatsCmd_t  MemPoolStats;
                 CFE_ES_DumpCDSRegistryCmd_t   DumpCDSReg;
             } escmd;
+            CFE_ES_CDSHandle_t cdsh; /* for the CDS probes, which register real blocks now */
 
             /* THE BUFFER IS A UNION OF EVERY COMMAND, not of the one being built, which is the
              * lesson cfe_sb_task.c's exercise paid for: a 20-byte buffer where a handler read
@@ -5745,19 +5773,52 @@ int main(void)
             CFE_ES_Global.TaskData.CommandCounter      = 0;
             CFE_ES_Global.TaskData.CommandErrorCounter = 0;
             memset(&escmd, 0, sizeof(escmd));
+            /* THE FOUR REFUSALS ARE REAL NOW. Until cfe_es_cds.c was gated these five probes
+             * steered es_cdsdelete_rc on a stub, so all five asserted the same thing: that the
+             * command handler turns whatever CFE_ES_DeleteCDS returns into the right event and
+             * counter. That is worth one probe, not five. Each refusal below is now produced by
+             * setting up the CDS so the real function has to reach it.
+             *
+             * The CDS has to exist first, which also means these probes run against the real
+             * store: CFE_ES_CDS_EarlyInit wipes it, writes the signatures, creates the pool and
+             * writes an empty registry. */
+            printf("est_cds_init rc=%ld avail=%d\n", (long)CFE_ES_CDS_EarlyInit(),
+                   (int)CFE_ES_Global.CDSIsAvailable);
+            /* A block owned by an app that is not registered -- "APP" is not in the app table,
+             * which is the condition CFE_ES_DeleteCDS inverts: a FAILED lookup means the owner
+             * is gone and the block may go. */
+            printf("est_cds_reg rc=%ld\n",
+                   (long)CFE_ES_RegisterCDSEx(&cdsh, 64, "APP.TBL", false));
             strncpy(escmd.DeleteCDS.Payload.CdsName, "APP.TBL",
                     sizeof(escmd.DeleteCDS.Payload.CdsName) - 1);
-            es_cdsdelete_rc = CFE_SUCCESS;
             printf("est_deletecds rc=%ld\n", (long)CFE_ES_DeleteCDSCmd(&escmd.DeleteCDS));
-            es_cdsdelete_rc = CFE_ES_CDS_WRONG_TYPE_ERR;
+            /* Registered as a CRITICAL TABLE, so an ES command may not delete it: the Table flag
+             * and the caller's claim about who it is have to agree. */
+            printf("est_cds_reg_tbl rc=%ld\n",
+                   (long)CFE_ES_RegisterCDSEx(&cdsh, 64, "APP.TBL", true));
             printf("est_deletecds_tbl rc=%ld\n", (long)CFE_ES_DeleteCDSCmd(&escmd.DeleteCDS));
-            es_cdsdelete_rc = CFE_ES_CDS_OWNER_ACTIVE_ERR;
+            /* Owned by an app that IS registered. "CFE_EVS" is app slot 1, and the owner name is
+             * whatever precedes the dot. */
+            printf("est_cds_reg_active rc=%ld\n",
+                   (long)CFE_ES_RegisterCDSEx(&cdsh, 64, "CFE_EVS.TBL", false));
+            strncpy(escmd.DeleteCDS.Payload.CdsName, "CFE_EVS.TBL",
+                    sizeof(escmd.DeleteCDS.Payload.CdsName) - 1);
             printf("est_deletecds_active rc=%ld\n", (long)CFE_ES_DeleteCDSCmd(&escmd.DeleteCDS));
-            es_cdsdelete_rc = CFE_ES_ERR_NAME_NOT_FOUND;
+            /* No such name in the registry. */
+            strncpy(escmd.DeleteCDS.Payload.CdsName, "NO.SUCH",
+                    sizeof(escmd.DeleteCDS.Payload.CdsName) - 1);
             printf("est_deletecds_miss rc=%ld\n", (long)CFE_ES_DeleteCDSCmd(&escmd.DeleteCDS));
-            es_cdsdelete_rc = -99;
+            /* A store that refuses the registry write-back, which is the last step of a delete
+             * that otherwise succeeded -- the block is freed and the registry is not updated, so
+             * the error comes out of CFE_ES_UpdateCDSRegistry and the log line is written after
+             * the CDS lock is released. */
+            printf("est_cds_reg_err rc=%ld\n",
+                   (long)CFE_ES_RegisterCDSEx(&cdsh, 64, "OTHER.TBL", false));
+            strncpy(escmd.DeleteCDS.Payload.CdsName, "OTHER.TBL",
+                    sizeof(escmd.DeleteCDS.Payload.CdsName) - 1);
+            es_cds_write_rc = CFE_PSP_ERROR;
             printf("est_deletecds_err rc=%ld\n", (long)CFE_ES_DeleteCDSCmd(&escmd.DeleteCDS));
-            es_cdsdelete_rc = CFE_SUCCESS;
+            es_cds_write_rc = CFE_PSP_SUCCESS;
             printf("est_deletecds_ctrs cc=%u ec=%u\n", CFE_ES_Global.TaskData.CommandCounter,
                    CFE_ES_Global.TaskData.CommandErrorCounter);
             /* The registry dump walks a registry that is empty here, which is the case the
@@ -6053,6 +6114,232 @@ int main(void)
             /* Leave the perf log idle, or the next probe's PerfLogAdd calls start recording. */
             CFE_ES_SetupPerfVariables(CFE_PSP_RST_TYPE_POWERON);
             memset(PDump, 0, sizeof(*PDump));
+        }
+
+        /* --- cfe_es_cds.c and cfe_es_cds_mempool.c: THE CRITICAL DATA STORE --------------
+         *
+         * The one piece of memory on a spacecraft that is expected to still be there after the
+         * processor resets. It is not memory mapped -- NASA's comment at the cache is "Because
+         * CDS memory is not memory mapped, this serves as temporary holding location for data
+         * being actively accessed" -- so every byte in or out is a PSP call and everything
+         * funnels through one 72-byte staging buffer.
+         *
+         * THE RESET IS WHY THE STORE IS SIMULATED RATHER THAN STUBBED. es_cds_reset wipes
+         * CFE_ES_Global.CDSVars and leaves es_cds_store alone, which is exactly what cFE
+         * experiences across a processor reset -- so the recovery path can actually run: the
+         * signatures are found, the registry is read back, and CFE_ES_GenPoolRebuild recovers
+         * the allocator from the block descriptors that survived in the store. A recording stub
+         * cannot reach any of that code.
+         *
+         * The ES task block above already initialised the CDS and used it for the four delete
+         * refusals. This drives what a command cannot reach. */
+        {
+            CFE_ES_CDSHandle_t   h1;
+            CFE_ES_CDSHandle_t   h2;
+            CFE_ES_CDS_RegRec_t *rr;
+            unsigned char        cdsbuf[64];
+            unsigned char        cdsback[64];
+            uint32               idx;
+            int32                rc;
+            size_t               reqd;
+            int                  k;
+
+            /* --- the sizes, before anything is written --------------------------------- */
+            reqd = CFE_ES_CDSReqdMinSize(1);
+            printf("esd_minsize one=%lu entries=%lu\n", (unsigned long)reqd,
+                   (unsigned long)CFE_ES_CDSReqdMinSize(CFE_PLATFORM_ES_CDS_MAX_NUM_ENTRIES));
+
+            /* --- EarlyInit's refusals -------------------------------------------------- */
+            /* The mutex failing is the first thing that can go wrong, and the only one that
+             * stops it before the store is even sized. */
+            fs_mut_create_rc = OS_ERROR;
+            es_cds_reset();
+            printf("esd_init_mutexfail rc=%ld avail=%d\n", (long)CFE_ES_CDS_EarlyInit(),
+                   (int)CFE_ES_Global.CDSIsAvailable);
+            fs_mut_create_rc = OS_SUCCESS;
+            /* The PSP refusing to say how big it is. */
+            es_cds_getsize_rc = CFE_PSP_ERROR;
+            es_cds_reset();
+            printf("esd_init_sizefail rc=%ld avail=%d\n", (long)CFE_ES_CDS_EarlyInit(),
+                   (int)CFE_ES_Global.CDSIsAvailable);
+            es_cds_getsize_rc = CFE_PSP_SUCCESS;
+            /* A STORE TOO SMALL IS REPORTED AND THEN IGNORED: Status stays CFE_SUCCESS and the
+             * CDS is simply unavailable, so a spacecraft with a broken CDS still boots. The
+             * minimum is 36,884 bytes of layout plus a pool big enough for 512 blocks. */
+            es_cds_size = 1024;
+            es_cds_reset();
+            printf("esd_init_toosmall rc=%ld avail=%d\n", (long)CFE_ES_CDS_EarlyInit(),
+                   (int)CFE_ES_Global.CDSIsAvailable);
+            es_cds_size = ES_CDS_STORE_SIZE;
+
+            /* --- a first boot: no signatures, so wipe and build ------------------------ */
+            memset(es_cds_store, 0xAA, sizeof(es_cds_store));
+            es_cds_reset();
+            es_cds_reads  = 0;
+            es_cds_writes = 0;
+            rc            = CFE_ES_CDS_EarlyInit();
+            printf("esd_firstboot rc=%ld avail=%d total=%lu data=%lu\n", (long)rc,
+                   (int)CFE_ES_Global.CDSIsAvailable,
+                   (unsigned long)CFE_ES_Global.CDSVars.TotalSize,
+                   (unsigned long)CFE_ES_Global.CDSVars.DataSize);
+            /* The signatures are in the store now, at each end, and the entry count is at
+             * offset 8 -- which is what makes the next boot a recovery rather than a wipe. */
+            printf("esd_sig begin=[");
+            es_sig8(&es_cds_store[0]);
+            printf("] end=[");
+            es_sig8(&es_cds_store[ES_CDS_STORE_SIZE - 8]);
+            printf("] regsize=%u\n", *(uint32 *)&es_cds_store[CDS_REG_SIZE_OFFSET]);
+
+            /* --- register, write, read back -------------------------------------------- */
+            printf("esd_reg rc=%ld\n", (long)CFE_ES_RegisterCDSEx(&h1, 64, "CDSAPP.ONE", false));
+            printf("esd_reg_idx rc=%ld idx=%u\n", (long)CFE_ES_CDSHandle_ToIndex(h1, &idx), idx);
+            rr = CFE_ES_LocateCDSBlockRecordByID(h1);
+            printf("esd_reg_rec name=%s size=%lu usersize=%lu tbl=%d used=%d\n", rr->Name,
+                   (unsigned long)rr->BlockSize,
+                   (unsigned long)CFE_ES_CDSBlockRecordGetUserSize(rr), (int)rr->Table,
+                   (int)CFE_ES_CDSBlockRecordIsUsed(rr));
+            for (k = 0; k < 64; ++k)
+            {
+                cdsbuf[k] = (unsigned char)(0x40 + k);
+            }
+            printf("esd_write rc=%ld\n", (long)CFE_ES_CDSBlockWrite(h1, cdsbuf));
+            memset(cdsback, 0, sizeof(cdsback));
+            rc = CFE_ES_CDSBlockRead(cdsback, h1);
+            printf("esd_read rc=%ld match=%d first=%02x last=%02x\n", (long)rc,
+                   (int)(memcmp(cdsbuf, cdsback, 64) == 0), cdsback[0], cdsback[63]);
+
+            /* --- THE RESET, and the recovery ------------------------------------------- */
+            /* Everything in RAM is gone; the store is not. The signatures validate, the
+             * registry is read back, and the pool is rebuilt from the descriptors in the store
+             * -- so the handle from before the reset still reads its data. */
+            es_cds_reset();
+            rc = CFE_ES_CDS_EarlyInit();
+            printf("esd_reboot rc=%ld avail=%d\n", (long)rc,
+                   (int)CFE_ES_Global.CDSIsAvailable);
+            rr = CFE_ES_LocateCDSBlockRecordByID(h1);
+            printf("esd_reboot_rec name=%s used=%d size=%lu\n", rr->Name,
+                   (int)CFE_ES_CDSBlockRecordIsUsed(rr), (unsigned long)rr->BlockSize);
+            memset(cdsback, 0, sizeof(cdsback));
+            rc = CFE_ES_CDSBlockRead(cdsback, h1);
+            printf("esd_reboot_read rc=%ld match=%d\n", (long)rc,
+                   (int)(memcmp(cdsbuf, cdsback, 64) == 0));
+            /* AND THE NAME STILL FINDS IT, which is how an app that restarts gets its own store
+             * back: re-registering the same name at the same size returns the alt-success code
+             * CFE_ES_CDS_ALREADY_EXISTS -- not an error, high bit clear -- and the same handle. */
+            rc = CFE_ES_RegisterCDSEx(&h2, 64, "CDSAPP.ONE", false);
+            printf("esd_rereg rc=%ld same=%d\n", (long)rc,
+                   (int)CFE_RESOURCEID_TEST_EQUAL(h1, h2));
+            /* A DIFFERENT SIZE IS A REALLOCATION, and NASA says the alt-success code is
+             * deliberately NOT returned for it: the old block is freed and a new one taken, so
+             * the data is gone even though the name and the handle are the same. */
+            rc = CFE_ES_RegisterCDSEx(&h2, 128, "CDSAPP.ONE", false);
+            printf("esd_rereg_resize rc=%ld same=%d size=%lu\n", (long)rc,
+                   (int)CFE_RESOURCEID_TEST_EQUAL(h1, h2),
+                   (unsigned long)CFE_ES_LocateCDSBlockRecordByID(h2)->BlockSize);
+
+            /* --- THE CRC IS THE ANSWER TO "DID THIS SURVIVE INTACT" -------------------- */
+            /* Corrupt one byte of the user data in the store, behind the CDS's back, and the
+             * read refuses. Nothing repairs it, because nothing can. */
+            printf("esd_write2 rc=%ld\n", (long)CFE_ES_CDSBlockWrite(h2, cdsbuf));
+            es_cds_store[CFE_ES_LocateCDSBlockRecordByID(h2)->BlockOffset + 4] ^= 0xFF;
+            printf("esd_read_corrupt rc=%ld\n", (long)CFE_ES_CDSBlockRead(cdsback, h2));
+            printf("esd_write3 rc=%ld\n", (long)CFE_ES_CDSBlockWrite(h2, cdsbuf));
+            printf("esd_read_ok rc=%ld\n", (long)CFE_ES_CDSBlockRead(cdsback, h2));
+
+            /* --- the refusals a caller can provoke ------------------------------------- */
+            printf("esd_reg_zero rc=%ld\n", (long)CFE_ES_RegisterCDSEx(&h2, 0, "X.Y", false));
+            printf("esd_reg_huge rc=%ld\n",
+                   (long)CFE_ES_RegisterCDSEx(&h2, (size_t)1 << 30, "X.Y", false));
+            printf("esd_write_badh rc=%ld\n",
+                   (long)CFE_ES_CDSBlockWrite(CFE_ES_CDSHANDLE_C(
+                                                  CFE_ResourceId_FromInteger(0x990000)),
+                                              cdsbuf));
+            printf("esd_read_badh rc=%ld\n",
+                   (long)CFE_ES_CDSBlockRead(cdsback, CFE_ES_CDSHANDLE_C(
+                                                          CFE_ResourceId_FromInteger(0x990000))));
+            printf("esd_toidx_bad rc=%ld\n",
+                   (long)CFE_ES_CDSHandle_ToIndex(CFE_ES_CDSHANDLE_C(
+                                                      CFE_ResourceId_FromInteger(1)),
+                                                  &idx));
+            printf("esd_locate_bad null=%d\n",
+                   (int)(CFE_ES_LocateCDSBlockRecordByID(CFE_ES_CDSHANDLE_C(
+                             CFE_ResourceId_FromInteger(1))) == NULL));
+            printf("esd_byname_miss null=%d\n",
+                   (int)(CFE_ES_LocateCDSBlockRecordByName("NOPE.NOPE") == NULL));
+
+            /* --- the cache's own bounds ------------------------------------------------- */
+            /* Every fetch, flush and preload refuses zero and anything over the union's 72
+             * bytes. It is the only bound checking the CDS has, because the store is reached by
+             * call and not by pointer -- there is no fault to catch. */
+            printf("esd_cache_zero rc=%ld\n",
+                   (long)CFE_ES_CDS_CacheFetch(&CFE_ES_Global.CDSVars.Cache, 0, 0));
+            printf("esd_cache_big rc=%ld\n",
+                   (long)CFE_ES_CDS_CacheFetch(&CFE_ES_Global.CDSVars.Cache, 0, 1024));
+            printf("esd_cache_preload_big rc=%ld\n",
+                   (long)CFE_ES_CDS_CachePreload(&CFE_ES_Global.CDSVars.Cache, cdsbuf, 0, 1024));
+            CFE_ES_Global.CDSVars.Cache.Size = 0;
+            printf("esd_cache_flush_zero rc=%ld\n",
+                   (long)CFE_ES_CDS_CacheFlush(&CFE_ES_Global.CDSVars.Cache));
+
+            /* --- a store that reads back wrong ----------------------------------------- */
+            /* An unreadable store: the first signature fetch fails, which is not "invalid" but
+             * a PSP error, and it is reported as itself. */
+            es_cds_read_rc = CFE_PSP_ERROR;
+            printf("esd_validate_readfail rc=%ld\n", (long)CFE_ES_ValidateCDS());
+            es_cds_read_rc = CFE_PSP_SUCCESS;
+            /* A wrong END signature, with the beginning intact -- the case a store that was
+             * grown or truncated would hit. */
+            es_cds_store[ES_CDS_STORE_SIZE - 1] = 'X';
+            printf("esd_validate_endbad rc=%ld\n", (long)CFE_ES_ValidateCDS());
+            /* An entry count from a differently-configured build. The registry that follows
+             * would be the wrong size, so this is CFE_ES_CDS_INVALID -- wipe and start again,
+             * not an attempt to convert. */
+            *(uint32 *)&es_cds_store[CDS_REG_SIZE_OFFSET] = 7;
+            printf("esd_rebuild_wrongcount rc=%ld\n", (long)CFE_ES_RebuildCDS());
+            /* And a store whose registry cannot be read at all. */
+            *(uint32 *)&es_cds_store[CDS_REG_SIZE_OFFSET] = CFE_PLATFORM_ES_CDS_MAX_NUM_ENTRIES;
+            es_cds_read_rc                                = CFE_PSP_ERROR;
+            printf("esd_rebuild_readfail rc=%ld\n", (long)CFE_ES_RebuildCDS());
+            es_cds_read_rc = CFE_PSP_SUCCESS;
+
+            /* --- a store that will not take a write ------------------------------------ */
+            /* The wipe fails on its first flush. */
+            es_cds_write_rc = CFE_PSP_ERROR;
+            printf("esd_clear_fail rc=%ld\n", (long)CFE_ES_ClearCDS());
+            printf("esd_sig_fail rc=%ld\n", (long)CFE_ES_InitCDSSignatures());
+            printf("esd_initreg_fail rc=%ld\n", (long)CFE_ES_InitCDSRegistry());
+            printf("esd_updatereg_fail rc=%ld\n", (long)CFE_ES_UpdateCDSRegistry());
+            es_cds_write_rc = CFE_PSP_SUCCESS;
+            /* THE END SIGNATURE FAILING WITH THE BEGINNING WRITTEN, which is the one partial
+             * state the store can be left in -- and it is safe, because the next boot
+             * validates the beginning, fails on the end, and wipes. */
+            es_cds_write_fail_at = ES_CDS_STORE_SIZE - 8;
+            printf("esd_sig_endfail rc=%ld\n", (long)CFE_ES_InitCDSSignatures());
+            es_cds_write_fail_at = 0xFFFFFFFF;
+
+            /* --- the pool, filled until it refuses -------------------------------------- */
+            /* A 64 KiB store leaves about 28 KiB of pool after the 36,884-byte layout, so a
+             * few hundred small blocks exhaust it -- and CFE_ES_RegisterCDS_AllocateBlock's
+             * refusal is the allocator's, not the registry's. */
+            memset(es_cds_store, 0, sizeof(es_cds_store));
+            es_cds_reset();
+            printf("esd_pool_init rc=%ld\n", (long)CFE_ES_CDS_EarlyInit());
+            rc = CFE_SUCCESS;
+            k  = 0;
+            while (rc == CFE_SUCCESS && k < 600)
+            {
+                char nm[CFE_MISSION_ES_CDS_MAX_FULL_NAME_LEN];
+                snprintf(nm, sizeof(nm), "FILL.%03d", k);
+                rc = CFE_ES_RegisterCDSEx(&h2, 64, nm, false);
+                ++k;
+            }
+            printf("esd_pool_full after=%d rc=%ld\n", k, (long)rc);
+
+            /* Leave the CDS in a clean, available state for anything after this. */
+            memset(es_cds_store, 0, sizeof(es_cds_store));
+            es_cds_reset();
+            printf("esd_final rc=%ld avail=%d\n", (long)CFE_ES_CDS_EarlyInit(),
+                   (int)CFE_ES_Global.CDSIsAvailable);
         }
 
         /* --- cfe_es_apps.c: THE APP LIFECYCLE ---------------------------------------------

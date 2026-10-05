@@ -1050,3 +1050,64 @@ A fourth defect in the same file is worth recording separately, because it is th
 project keeps finding: the failure path printed `line.strip()`, and `line` did not exist in
 that scope. The gate would have raised `NameError` instead of reporting a finding. It had been
 driven to failure once, before the matcher moved from lines to statements, and never again.
+
+## 22. A stack array in a huge function makes a file-scope `&function` read as 0 — OPEN, and SILENT
+
+Adding three local arrays — 64 + 64 + 40 = 168 bytes — to a nested block of an already very
+large function made a **function address in a file-scope initialiser, read 500 lines earlier in
+the same run, come back as 0**. The call through it trapped:
+
+```
+TRAP mcause=0x0000000000000001 (insn-fault) mepc=0x0000000000000000 mtval=0x0000000000000000
+```
+
+The initialiser is `cfe_es_crc.HC`'s CRC parameter table:
+
+```c
+CFE_ES_ComputeCRC_Params_t CFE_ES_ComputeCRC_GetParams_CRC_PARAM_TABLE[CFE_ES_CrcType_MAX] =
+    {{0, 0, NULL}, {0, 0, &CFE_ES_ComputeCRC_Algo_16_ARC}};
+```
+
+and the probe that reads it is in `tests/exec/cases/cfs_xlat_ccsdspri.hc`, in the same function
+the arrays were added to but hundreds of lines before them. Removing the three arrays and
+changing nothing else made it correct again. **The arrays are never read before the failing
+call, and the failing call is not near them**, so this is a codegen effect, not a wild store
+from the arrays themselves.
+
+**What was measured, which matters more than the theory:**
+
+| change | result |
+|---|---|
+| three arrays, 168 bytes total, in a nested block | `&Algo` reads **0** |
+| three **scalar** locals (`I64` × 3) in the same place | correct |
+| one array of **8** bytes | correct |
+| one array of **64** bytes | correct |
+| one array of **128** bytes | **0** |
+| a minimal program: a file-scope `&fn` table and a `main` with a 32 KiB local array | correct |
+
+So it is the **total stack arrays**, with a threshold between 64 and 128 bytes *added to this
+function*, and it does **not** reproduce at small scale — a 32 KiB frame in a four-function
+program is fine. It needs the driver's size: ~9,000 lines in one translation unit and a frame
+that is already very large. That is the same precondition as the recorded deep-offset bugs
+(limit on a variable-indexed store into a big local array, fixed 2026-09-16), and the symptom —
+**a global's address emitted as zero** — is the tell recorded for the `static` local collision
+(limit 13's neighbour, fixed 2026-10-01): an address that resolves to 0 means the name lost its
+entry, not that the arithmetic was wrong.
+
+**The workaround is to not grow the frame**: move the buffers to file scope.
+
+```c
+U8 es_cdsbuf[64];                              /* was a local */
+U8 es_cdsback[64];
+U8 es_cdsnm[CFE_MISSION_ES_CDS_MAX_FULL_NAME_LEN];
+...
+U8 *cdsbuf = es_cdsbuf;                        /* in the block that used them */
+```
+
+**Why it is worth a numbered limit rather than a note.** Nothing in the gate set can see it.
+The layout gates pass, the signatures pass, the function is in the blob, and the *source* is
+correct — the defect is in the address of a symbol, produced at a scale no unit test reaches.
+It was found only because the differential transcript stopped 500 lines early, and the thing
+that made it diagnosable was `HOLYC_MAP` plus the trap's `mepc=0`: a call to address zero is a
+function pointer that was never filled in. If a translated file ever needs a large local buffer
+in a driver this size, expect this and move it out.

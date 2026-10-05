@@ -123,32 +123,14 @@ U0 CFE_ES_FormCDSName(U8 *FullCDSName, U8 *CDSName, U32 ThisAppId);
 CFE_ES_CDS_RegRec_t *CFE_ES_LocateCDSBlockRecordByID(U32 BlockID);
 CFE_ES_CDS_RegRec_t *CFE_ES_LocateCDSBlockRecordByName(U8 *CDSName);
 I32 CFE_ES_CDSBlockWrite(U32 Handle, U8 *DataToCopy);
-// THESE TWO ARE `static inline` IN cfe_es_cds.h, not functions in a .c file, which is why they
-// are DEFINED here rather than declared: the C half gets the real bodies from NASA's header, so
-// a recording stub on this side would be the one place the two halves could disagree about what
-// a CDS handle means. They belong in cfe_es_cds.HC and move there when cfe_es_cds.c is gated,
-// the same way cfe_es_resource.HC took cfe_es_resource.h's twenty-four accessors.
-U32 CFE_ES_CDSBlockRecordGetID(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr)
-{
-  return CDSBlockRecPtr->BlockID;
-}
-
-Bool CFE_ES_CDSBlockRecordIsMatch(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr, U32 BlockID)
-{
-  return (CDSBlockRecPtr != NULL && CFE_ResourceId_Equal(CDSBlockRecPtr->BlockID, BlockID));
-}
-
-Bool CFE_ES_CDSBlockRecordIsUsed(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr)
-{
-  return CFE_ResourceId_IsDefined(CDSBlockRecPtr->BlockID);
-}
-// THE USER SIZE IS NOT THE BLOCK SIZE: every CDS block carries a CFE_ES_CDS_BlockHeader_t of
-// its own -- a size and a CRC, so a block that survived a reset can be checked -- and what the
-// owning app asked for is what is left.
-I64 CFE_ES_CDSBlockRecordGetUserSize(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr)
-{
-  return (CDSBlockRecPtr->BlockSize - sizeof(CFE_ES_CDS_BlockHeader_t));
-}
+// The six `static inline` CDS record accessors from cfe_es_cds.h USED TO BE DEFINED HERE, with
+// a note saying they belonged in cfe_es_cds.HC and would move there when cfe_es_cds.c was
+// gated. It is, and they did -- the same way cfe_es_resource.HC took cfe_es_resource.h's
+// twenty-four. They are declared below with everything else this file calls.
+Bool CFE_ES_CDSBlockRecordIsUsed(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr);
+U32 CFE_ES_CDSBlockRecordGetID(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr);
+Bool CFE_ES_CDSBlockRecordIsMatch(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr, U32 BlockID);
+I64 CFE_ES_CDSBlockRecordGetUserSize(CFE_ES_CDS_RegRec_t *CDSBlockRecPtr);
 I32 CFE_ES_CDSBlockRead(U8 *DataToCopy, U32 Handle);
 I32 CFE_ES_RegisterCDSEx(U32 *HandlePtr, I64 UserBlockSize, U8 *Name, Bool CriticalTbl);
 I32 CFE_ES_LockCDS();

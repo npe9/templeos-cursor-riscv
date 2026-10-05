@@ -98,7 +98,9 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/es/fsw/src/cfe_es_perf.c
        $CFE/modules/es/fsw/src/cfe_es_dispatch.c
        $CFE/modules/es/fsw/src/cfe_es_appctrl.c
-       $CFE/modules/es/fsw/src/cfe_es_apps.c"
+       $CFE/modules/es/fsw/src/cfe_es_apps.c
+       $CFE/modules/es/fsw/src/cfe_es_cds.c
+       $CFE/modules/es/fsw/src/cfe_es_cds_mempool.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
