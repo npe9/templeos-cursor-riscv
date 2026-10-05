@@ -1324,6 +1324,11 @@ U0 CFE_PSP_Get_Timebase(U32 *Tbu, U32 *Tbl)
 #include "/Kernel/Cfs/cfe/cfe_tbl_msg.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_global.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_handlelink.HC"
+#include "/Kernel/Cfs/cfe/cfe_tbl_dumpctl.HC"
+// See the note in the cfe_tbl_dumpctl.c section: limit 22 forces these out of main's frame.
+CFE_TBL_DumpControl_t *tdc_bp;
+U32 tdc_nid, tdc_idx;
+I64 tdc_k;
 // THE SIMULATED MEMORY POOL IS GONE from both halves of this driver. CFE_ES_PoolCreateEx,
 // CFE_ES_GetPoolBuf and CFE_ES_PutPoolBuf were a hand-written bump allocator here;
 // cfe_es_mempool.HC and cfe_es_generic_pool.HC are gated now, so every allocation in the
@@ -9989,6 +9994,90 @@ I64 main()
       S(" off=");
       D ((U8 *) & deep->AccessList - (U8 *) & CFE_TBL_Global);
       S("\n");
+    }
+    // --- cfe_tbl_dumpctl.c ----------------------------------------------------------
+    // The dump-only rendezvous: four blocks, a resource-id allocator over them, and the five
+    // header accessors that are the allocator's primitives. The whole id scheme is exercised
+    // here once, because tbl repeats it in five id spaces and the other four are the same code
+    // with a different base.
+    
+    {
+      // THE LOCALS ARE AT FILE SCOPE, and that is not style. docs/HOLYC_STRUCT_LIMITS.md
+      // limit 22: past a threshold of added stack in THIS already-enormous function, a
+      // file-scope `&function` initialiser elsewhere in the unit reads as 0. Declaring these
+      // four here cost `cp->Algorithm` in the crc section -- 775 lines earlier -- a jump to
+      // address 0, `TRAP mcause=1 (insn-fault) mepc=0`. Moving them out is the recorded
+      // workaround. The C half keeps them in the block, where they belong.
+      MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+      CFE_TBL_Global.LastDumpCtrlBlockId = CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE + CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS - 1);
+      // ToIndex: the first slot, the last slot, one past the end, and an undefined id
+      S("tbl_dcidx first=");
+      D(CFE_TBL_DumpCtrlId_ToIndex(CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE), &tdc_idx));
+      S("/");
+      D(tdc_idx);
+      S(" last=");
+      D(CFE_TBL_DumpCtrlId_ToIndex(CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE + CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS - 1), &tdc_idx));
+      S("/");
+      D(tdc_idx);
+      S(" past=");
+      D(CFE_TBL_DumpCtrlId_ToIndex(CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE + CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS), &tdc_idx));
+      S(" undef=");
+      D(CFE_TBL_DumpCtrlId_ToIndex(CFE_TBL_DUMPCTRLID_UNDEFINED, &tdc_idx));
+      S("\n");
+      // Locate: every slot resolves to its own address, and a bad id gives NULL
+      for (tdc_k = 0; tdc_k < CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS; tdc_k++) {
+        tdc_bp = CFE_TBL_LocateDumpCtrlByID(CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE + tdc_k));
+        S("tbl_dcloc k=");
+        D(tdc_k);
+        S(" self=");
+        D(tdc_bp == &CFE_TBL_Global.DumpControlBlocks[tdc_k]);
+        S(" used=");
+        D(tdc_bp != NULL && CFE_TBL_DumpCtrlBlockIsUsed(tdc_bp));
+        S("\n");
+      }
+      S("tbl_dcloc_bad null=");
+      D(CFE_TBL_LocateDumpCtrlByID(CFE_TBL_DUMPCTRLID_UNDEFINED) == NULL);
+      S(" slotused=");
+      D(CFE_TBL_CheckDumpCtrlSlotUsed(CFE_ResourceId_FromInteger(0)));
+      S("\n");
+      // THE ALLOCATOR. Four blocks, so the fifth request must come back UNDEFINED --
+      // exhaustion is the path that matters, because a dump request that silently reused a
+      // block would overwrite another table's pending snapshot.
+      for (tdc_k = 0; tdc_k < CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS + 1; tdc_k++) {
+        tdc_nid = CFE_TBL_GetNextDumpCtrlBlock();
+        tdc_bp = CFE_TBL_LocateDumpCtrlByID(tdc_nid);
+        S("tbl_dcnext k=");
+        D(tdc_k);
+        S(" id=");
+        D(CFE_ResourceId_ToInteger(tdc_nid));
+        S(" got=");
+        D(tdc_bp != NULL);
+        if (tdc_bp != NULL) {
+          CFE_TBL_DumpCtrlBlockSetUsed(tdc_bp, tdc_nid);
+          CFE_TBL_Global.LastDumpCtrlBlockId = tdc_nid;
+          S(" used=");
+          D(CFE_TBL_DumpCtrlBlockIsUsed(tdc_bp));
+          S(" id_back=");
+          D(CFE_ResourceId_ToInteger(CFE_TBL_DumpCtrlBlockGetId(tdc_bp)));
+          S(" match=");
+          D(CFE_TBL_DumpCtrlBlockIsMatch(tdc_bp, tdc_nid));
+        }
+        S("\n");
+      }
+      // and freeing one puts BOTH fields back, which is what lets it be reallocated
+      tdc_bp = &CFE_TBL_Global.DumpControlBlocks[2];
+      tdc_bp->State = CFE_TBL_DUMP_PERFORMED;
+      CFE_TBL_DumpCtrlBlockSetFree(tdc_bp);
+      S("tbl_dcfree used=");
+      D(CFE_TBL_DumpCtrlBlockIsUsed(tdc_bp));
+      S(" state=");
+      D(tdc_bp->State);
+      S(" match=");
+      D(CFE_TBL_DumpCtrlBlockIsMatch(tdc_bp, CFE_TBL_DUMPCTRLID_UNDEFINED));
+      S(" next=");
+      D(CFE_ResourceId_ToInteger(CFE_TBL_GetNextDumpCtrlBlock()));
+      S("\n");
+      MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
     }
     // --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
     // ------------------------------------------------------------------------------------

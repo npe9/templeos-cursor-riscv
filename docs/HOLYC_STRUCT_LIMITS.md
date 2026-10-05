@@ -1122,6 +1122,23 @@ entry, not that the arithmetic was wrong.
 
 **The workaround is to not grow the frame**: move the buffers to file scope.
 
+### IT FIRED AGAIN, AND IT IS NOT ABOUT ARRAYS (2026-10-05)
+
+Adding the `cfe_tbl_dumpctl.c` section to the same driver tripped it with **four scalar locals**
+— a pointer, two `U32` and an `I64`, about 32 bytes, declared in a nested block. No array at
+all. So the first write-up's "stack arrays" was incidental: what matters is the TOTAL frame of
+this one enormous function, and anything that grows it counts.
+
+The symptom was identical and still 775 lines away from the cause: `cp->Algorithm(...)` in the
+**crc** section jumped to zero, `TRAP mcause=0x1 (insn-fault) mepc=0x0`, and the transcript
+stopped there. The four locals are now file-scope `tdc_*` with a comment at the block saying
+why; the C half keeps them in the block, where they belong.
+
+**The diagnosis is cheap once the shape is known**: a translated section you just added, a trap
+at `mepc=0` somewhere else entirely, and a function POINTER at the fault site. Hoist the new
+locals first and only then look for a real bug — it cost one full run to confirm here, against
+a whole afternoon the first time.
+
 ```c
 U8 es_cdsbuf[64];                              /* was a local */
 U8 es_cdsback[64];
