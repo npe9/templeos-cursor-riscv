@@ -963,6 +963,46 @@ cheapest to avoid by deciding now. `CFE_TBL_AcquireGlobalLoadBuff` is the same s
 loadbuff lands: `FindNextSharedBufferId` and `LocateLoadBufferByID` both become real. Everything outside the cycle is
 already done: `handlelink.c`, `dumpctl.c`, `objtab.c`, and the whole type foundation.
 
+### THE LAST TWO SOURCES, SURVEYED AND PRICED
+
+`internal.c` and `registry.c` are all that remain of the cycle, and the order is not close:
+
+| gate first | stand-ins | lines | of those, NEW |
+|---|---|---|---|
+| **`internal.c`** | 2 | 1,256 | **0** — both already in the driver |
+| `registry.c` | 9 | 431 | 9, and several are LOGIC not seams |
+
+`registry.c` would need stand-ins for `ValidateTableName`, `ValidateTableOptions`,
+`ValidateTableSize` and the handle-list surgery (`HandleListInsertLink`/`RemoveLink`) — all
+upstream logic, the trap this plan already records twice. `internal.c` needs only
+`CFE_TBL_TxnFindRegByName` and `CFE_TBL_TxnLockRegistry`, both already written faithfully.
+
+**`internal.c` has ZERO missing dependencies.** Of its 72 external calls, 71 are already
+translated; the one gap is `CFE_TBL_HandleID_AsInt`, a typed-id wrapper that collapses onto
+`CFE_ResourceId_ToInteger` under `check_header_inlines`'s existing rule.
+
+**Gating it DELETES two stand-ins** — `CFE_TBL_ForeachAccessDescriptor` and
+`CFE_TBL_AcquireGlobalLoadBuff` both live there — so expect the witness-moves-with-the-stub
+dance a third time. `tbl_foreach_visits` disappears; what replaces it is whatever the real
+`CFE_TBL_UpdateInternal` and `CFE_TBL_CleanUpApp` paths produce.
+
+Constants resolved while surveying, so nobody repeats it:
+
+```
+CFE_TBL_ERR_NO_BUFFER_AVAIL    0xCC00000F   CFE_TBL_INFO_NO_UPDATE_PENDING 0x4C000017
+CFE_TBL_INFO_TABLE_LOCKED      0x4C000018   CFE_TBL_ERR_INVALID_SIZE       0xCC000003
+CFE_TBL_ERR_INVALID_OPTIONS    0xCC000025   CFE_TBL_INFO_RECOVERED_TBL     0x4C000027
+CFE_STATUS_INCORRECT_STATE     0xC8000009   CFE_ES_CDS_ALREADY_EXISTS      0x4400000D
+CFE_TBL_FAIL_NOTIFY_SEND_ERR_EID  89        CFE_MISSION_TBL_MAX_NAME_LENGTH  16
+CFE_TBL_OPT_BUFFER_MSK 0x1  DBL_BUFFER 0x1  LD_DMP_MSK 0x2  DUMP_ONLY 0x2
+CFE_TBL_OPT_USR_DEF_MSK 0x4 USR_DEF_ADDR 0x6  CRITICAL_MSK 0x8  CRITICAL 0x8
+```
+
+Two translation notes found in the reading. `CFE_TIME_ZERO_VALUE` is a C compound literal
+(`(CFE_TIME_SysTime_t){0, 0}`) and becomes two field assignments. And `CFE_TBL_EarlyInit` is
+the function `cfe_tbl_objtab.HC` currently stubs — gating this source makes the object table's
+first hook real, which is the point of the whole module.
+
 **Run the tool before planning any module's order**, including the apps — and run it `--fresh`
 against a finished module first, because a result you cannot calibrate is a number you should
 not plan on. One caveat it does not model: a stand-in is functions, but a subset may also need
