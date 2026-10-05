@@ -103,6 +103,7 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "cfe_tbl_transaction.h" /* CFE_TBL_TxnState_t and its eight accessors */
 #include "cfe_tbl_loadbuff.h"  /* the load buffers and their thirteen accessors */
 #include "cfe_tbl_regrec.h"    /* the registry record and its twenty */
+#include "cfe_tbl_valresult.h" /* the ten validation result blocks and their five */
 
 /* cfe_msg_objtab.c defines this and no header declares it -- the generated cfe_es_objtab.c is
  * what normally refers to it, by name, from the build system. */
@@ -665,6 +666,13 @@ CFE_TBL_Global_t CFE_TBL_Global;
 static unsigned char tbl_probe_mem[64];
 static unsigned char tbl_probe_mem2[64];
 static uint16        tbl_actv_ids[4];
+static uint16        tbl_val_ids[5];
+/* a validation callback that exists only to be non-NULL: what SetupValidationRequest branches
+ * on is whether the pointer is set, never what it does. */
+static int32 tbl_val_stub(void *TblPtr)
+{
+    return CFE_SUCCESS;
+}
 
 /* NASA declares this one in no header: it is a non-static "local helper function" in
  * cfe_tbl_loadbuff.c, reachable only through the event dispatcher in cfe_tbl_transaction.c,
@@ -673,6 +681,9 @@ static uint16        tbl_actv_ids[4];
  * cfe_tbl_loadbuff.c produces, which makes them the only part of it the byte-identical
  * transcript can check at all. */
 bool CFE_TBL_SendActivationEventHelper(const CFE_TBL_TxnEvent_t *Event,
+                                       CFE_TBL_TxnEventContext_t *Ctxt);
+/* and its twin in cfe_tbl_valresult.c, declared in no header for the same reason. */
+bool CFE_TBL_SendValidationEventHelper(const CFE_TBL_TxnEvent_t *Event,
                                        CFE_TBL_TxnEventContext_t *Ctxt);
 
 /* cfe_tbl_internal.c, cfe_tbl_task.c and cfe_tbl_api.c are three of the EIGHT sources that
@@ -2093,6 +2104,159 @@ static void dump(const char *tag, CFE_MSG_Message_t *m)
  * reason ForeachAccessDescriptor had to be written faithfully rather than as a counter: a
  * load REFUSED because another application still holds the buffer it wants.
  */
+/* --- cfe_tbl_valresult.c -------------------------------------------------------------
+ * Validation is a REQUEST, not a call: the app owns the validation function, so Table
+ * Services records the ask in one of ten blocks and the app answers it later from its own
+ * task. The two paths that matter are the one where there IS a validation function (block
+ * goes PENDING, the app will answer) and the one where there is not -- where the block is
+ * still allocated, goes straight to PERFORMED, the buffer is marked valid on the spot, and
+ * the only thing distinguishing "checked" from "nobody checked" is an INFORMATION event.
+ */
+static void TblValResultExercise(void)
+{
+    CFE_TBL_ValidationResult_t *vr;
+    CFE_TBL_RegistryRec_t      *rr;
+    CFE_TBL_TxnState_t          txn;
+    CFE_TBL_TxnEventContext_t   evctx;
+    CFE_ResourceId_t            nid;
+    uint32                      idx;
+    int                         k, sent;
+
+    memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+    CFE_ES_GetAppID(&CFE_TBL_Global.TableTaskAppId);
+    CFE_EVS_Global.EVS_EventBurstMax = 0;
+    /* THE ID SPACE HAS TO BE OPENED FIRST, the same line CFE_TBL_EarlyInit runs and the same
+     * trap ES's exercises hit four times: CFE_TBL_Global is zeroed, 0 is not a valid resource
+     * id, so CFE_ResourceId_FindNext starting there walks off the table and returns UNDEFINED
+     * with all ten blocks free. The first draft of this exercise then dereferenced the NULL
+     * that LocateValidationResultByID correctly returned -- a segfault on the C half, which is
+     * the better place to find it. */
+    CFE_TBL_Global.LastValidationResultId = CFE_ResourceId_FromInteger(
+        CFE_TBL_VALRESULTID_BASE + CFE_PLATFORM_TBL_MAX_NUM_VALIDATIONS - 1);
+
+    /* the id space: first, last, one past (which WRAPS -- ToIndex is a modulo), undefined */
+    printf("tbl_vridx first=%ld/%u last=%ld/%u past=%ld/%u undef=%ld\n",
+           (long)CFE_TBL_ValidationResultId_ToIndex(
+               CFE_TBL_VALRESULTID_C(CFE_ResourceId_FromInteger(CFE_TBL_VALRESULTID_BASE)), &idx),
+           (unsigned)idx,
+           (long)CFE_TBL_ValidationResultId_ToIndex(
+               CFE_TBL_VALRESULTID_C(CFE_ResourceId_FromInteger(
+                   CFE_TBL_VALRESULTID_BASE + CFE_PLATFORM_TBL_MAX_NUM_VALIDATIONS - 1)), &idx),
+           (unsigned)idx,
+           (long)CFE_TBL_ValidationResultId_ToIndex(
+               CFE_TBL_VALRESULTID_C(CFE_ResourceId_FromInteger(
+                   CFE_TBL_VALRESULTID_BASE + CFE_PLATFORM_TBL_MAX_NUM_VALIDATIONS)), &idx),
+           (unsigned)idx,
+           (long)CFE_TBL_ValidationResultId_ToIndex(CFE_TBL_VALRESULTID_UNDEFINED, &idx));
+
+    /* the allocator primitives */
+    nid = CFE_TBL_GetNextValResultBlock();
+    vr  = CFE_TBL_LocateValidationResultByID(CFE_TBL_VALRESULTID_C(nid));
+    /* vr is guarded the way NASA's own CheckValidationResultSlotUsed guards it: a NULL here
+     * means the id was out of range, and IsUsed would dereference it. */
+    printf("tbl_vralloc self=%d used=%d slotused=%d\n", (int)(vr == &CFE_TBL_Global.ValidationResults[0]),
+           (int)(vr != NULL && CFE_TBL_ValidationResultIsUsed(vr)),
+           (int)CFE_TBL_CheckValidationResultSlotUsed(CFE_ResourceId_FromInteger(0)));
+    CFE_TBL_ValidationResultSetUsed(vr, nid);
+    vr->State = CFE_TBL_VALIDATION_PERFORMED;
+    printf("tbl_vrused used=%d id=%lu match=%d\n", (int)CFE_TBL_ValidationResultIsUsed(vr),
+           (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_TBL_ValidationResultGetId(vr)),
+           (int)CFE_TBL_ValidationResultIsMatch(vr, CFE_TBL_VALRESULTID_C(nid)));
+    CFE_TBL_ValidationResultSetFree(vr);
+    printf("tbl_vrfree used=%d state=%d\n", (int)CFE_TBL_ValidationResultIsUsed(vr),
+           (int)vr->State);
+
+    /* A TABLE WITH A VALIDATION FUNCTION: the block goes PENDING and the app owes an answer. */
+    rr = &CFE_TBL_Global.Registry[4];
+    CFE_TBL_InitRegistryRecord(rr);
+    CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 4));
+    strncpy(rr->Config.Name, "CFE_TBL.Val", sizeof(rr->Config.Name) - 1);
+    rr->Config.ValidationFuncPtr = tbl_val_stub;
+    rr->Buffers[0].BufferPtr      = tbl_probe_mem;
+    rr->Buffers[0].AllocationSize = sizeof(tbl_probe_mem);
+    rr->Buffers[0].Crc            = 0xFEEDFACE;
+    CFE_TBL_LoadBuffSetUsed(&rr->Buffers[0],
+                            CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 12),
+                            CFE_TBL_RegRecGetID(rr));
+    CFE_TBL_SetActiveBuffer(rr, &rr->Buffers[0]);
+    memset(&txn, 0, sizeof(txn));
+    txn.RegRecPtr = rr;
+    vr            = CFE_TBL_TxnSetupValidationRequest(&txn, CFE_TBL_BufferSelect_ACTIVE);
+    printf("tbl_vrpending nonnull=%d state=%d crc=%08lx name=%s sel=%u events=%u reqs=%u\n",
+           (int)(vr != NULL), (int)(vr == NULL ? -1 : vr->State),
+           (unsigned long)(vr == NULL ? 0 : vr->CrcOfTable), vr == NULL ? "" : vr->TableName,
+           (unsigned)(vr == NULL ? 0 : vr->BufferSelect), (unsigned)txn.NumPendingEvents,
+           (unsigned)CFE_TBL_Global.NumValRequests);
+
+    /* ASKING AGAIN WHILE ONE IS PENDING is refused, and the event carries the pending id. */
+    memset(&txn, 0, sizeof(txn));
+    txn.RegRecPtr = rr;
+    vr            = CFE_TBL_TxnCheckValidationRequest(&txn);
+    printf("tbl_vrinprog nonnull=%d events=%u id=%u data2=%ld\n", (int)(vr != NULL),
+           (unsigned)txn.NumPendingEvents, (unsigned)txn.PendingEvents[0].EventId,
+           (long)txn.PendingEvents[0].EventData2);
+
+    /* NO VALIDATION FUNCTION: allocated anyway, straight to PERFORMED, buffer marked valid. */
+    rr->Config.ValidationFuncPtr = NULL;
+    rr->PendingValId             = CFE_TBL_VALRESULTID_UNDEFINED;
+    rr->Buffers[0].IsValid       = false;
+    memset(&txn, 0, sizeof(txn));
+    txn.RegRecPtr = rr;
+    vr            = CFE_TBL_TxnSetupValidationRequest(&txn, CFE_TBL_BufferSelect_ACTIVE);
+    printf("tbl_vrassumed nonnull=%d state=%d bufvalid=%d events=%u id=%u reqs=%u\n",
+           (int)(vr != NULL), (int)(vr == NULL ? -1 : vr->State), (int)rr->Buffers[0].IsValid,
+           (unsigned)txn.NumPendingEvents, (unsigned)txn.PendingEvents[0].EventId,
+           (unsigned)CFE_TBL_Global.NumValRequests);
+
+    /* AN ILLEGAL BUFFER SELECTOR never reaches a block at all. */
+    memset(&txn, 0, sizeof(txn));
+    txn.RegRecPtr = rr;
+    vr            = CFE_TBL_TxnSetupValidationRequest(&txn, (CFE_TBL_BufferSelect_Enum_t)99);
+    printf("tbl_vrbadsel null=%d events=%u id=%u data2=%ld\n", (int)(vr == NULL),
+           (unsigned)txn.NumPendingEvents, (unsigned)txn.PendingEvents[0].EventId,
+           (long)txn.PendingEvents[0].EventData2);
+
+    /* ALL TEN TAKEN, so the eleventh request has nowhere to put the answer. */
+    for (k = 0; k < CFE_PLATFORM_TBL_MAX_NUM_VALIDATIONS; k++)
+    {
+        CFE_TBL_ValidationResultSetUsed(&CFE_TBL_Global.ValidationResults[k],
+                                        CFE_ResourceId_FromInteger(CFE_TBL_VALRESULTID_BASE + k));
+    }
+    rr->Config.ValidationFuncPtr = tbl_val_stub;
+    memset(&txn, 0, sizeof(txn));
+    txn.RegRecPtr = rr;
+    vr            = CFE_TBL_TxnSetupValidationRequest(&txn, CFE_TBL_BufferSelect_ACTIVE);
+    printf("tbl_vrfull null=%d events=%u id=%u\n", (int)(vr == NULL),
+           (unsigned)txn.NumPendingEvents, (unsigned)txn.PendingEvents[0].EventId);
+
+    /* AND THE FOUR EVENT STRINGS, which are the only output this file produces. Two of them
+     * carry a formatted number, and CFE_TBL_ASSUMED_VALID_INF_EID is the one that is
+     * INFORMATION rather than ERROR -- visible in the EVS line's type field. */
+    tbl_val_ids[0] = CFE_TBL_TOO_MANY_VALIDATIONS_ERR_EID;
+    tbl_val_ids[1] = CFE_TBL_ILLEGAL_BUFF_PARAM_ERR_EID;
+    tbl_val_ids[2] = CFE_TBL_ASSUMED_VALID_INF_EID;
+    tbl_val_ids[3] = CFE_TBL_VALIDATION_IN_PROGRESS_ERR_EID;
+    tbl_val_ids[4] = 998;
+    memset(&evctx, 0, sizeof(evctx));
+    evctx.Operation  = "Validate";
+    evctx.CallerName = "PROBE_APP";
+    evctx.TableName  = "CFE_TBL.Val";
+    for (k = 0; k < 5; k++)
+    {
+        CFE_TBL_TxnEvent_t ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.EventId    = tbl_val_ids[k];
+        ev.EventData2 = 0x1234ABCD;
+        sent          = (int)CFE_TBL_SendValidationEventHelper(&ev, &evctx);
+        printf("tbl_vrevt id=%u sent=%d\n", (unsigned)tbl_val_ids[k], sent);
+    }
+    tbl_sendevents_calls = 0;
+    CFE_TBL_SendValidationEvents(&txn);
+    printf("tbl_vrsend calls=%ld\n", tbl_sendevents_calls);
+
+    memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+}
+
 static void TblLoadBuffRegRecExercise(void)
 {
     CFE_TBL_RegistryRec_t      *rr;
@@ -8147,6 +8311,7 @@ int main(void)
         TblDumpCtlExercise();
         TblAccDescExercise();
         TblLoadBuffRegRecExercise();
+        TblValResultExercise();
         /* --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
          * ------------------------------------------------------------------------------------
          * This is not a translation of anything. It is the test that has to pass BEFORE the
