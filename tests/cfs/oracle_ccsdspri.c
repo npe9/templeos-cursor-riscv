@@ -659,6 +659,21 @@ static CFE_ES_ResetData_t es_reset_area;
  * goes away the moment cfe_tbl_task.c is gated, and until then this is the single largest
  * object either half allocates -- which is itself the thing the tbl section below tests. */
 CFE_TBL_Global_t CFE_TBL_Global;
+/* Backing memory for the load buffers the tbl exercise hands out, plus the four event ids it
+ * walks. File scope because the HolyC half needs them there (limit 22, and HolyC has no
+ * file-scope aggregate initialiser inside a function), and the two halves stay one shape. */
+static unsigned char tbl_probe_mem[64];
+static unsigned char tbl_probe_mem2[64];
+static uint16        tbl_actv_ids[4];
+
+/* NASA declares this one in no header: it is a non-static "local helper function" in
+ * cfe_tbl_loadbuff.c, reachable only through the event dispatcher in cfe_tbl_transaction.c,
+ * which is still inside tbl's call cycle. So the exercise calls it directly -- as NASA's own
+ * unit tests do -- and needs the prototype here. Its three format strings are the only output
+ * cfe_tbl_loadbuff.c produces, which makes them the only part of it the byte-identical
+ * transcript can check at all. */
+bool CFE_TBL_SendActivationEventHelper(const CFE_TBL_TxnEvent_t *Event,
+                                       CFE_TBL_TxnEventContext_t *Ctxt);
 
 /* cfe_tbl_internal.c, cfe_tbl_task.c and cfe_tbl_api.c are three of the EIGHT sources that
  * tools/cfs/module_deps.py shows must be gated together, so these three are stubs on both
@@ -2087,6 +2102,8 @@ static void TblLoadBuffRegRecExercise(void)
     uint32                      cat, idx, serial;
     int                         k;
     int                         stale_before, stale_got, stale_after;
+    CFE_TBL_TxnState_t          txn2;
+    CFE_TBL_TxnEventContext_t   evctx;
 
     memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
     CFE_TBL_Global.WorkBufMutex = OS_ObjectIdFromInteger(0x7B20);
@@ -2279,6 +2296,122 @@ static void TblLoadBuffRegRecExercise(void)
     printf(" both=%d", (int)CFE_TBL_RegRecIsPendingActivation(rr));
     lb->ActivateReq = false;
     printf(" noreq=%d\n", (int)CFE_TBL_RegRecIsPendingActivation(rr));
+
+    /* THE TWO FUNCTIONS THAT COMPOSE ALL OF THE ABOVE, which nothing had reached yet.
+     *
+     * PrepareNewLoadBuff picks the buffer for a new load: a double-buffered table gets its
+     * own other buffer (exclusively, so the walk above runs), a single-buffered one borrows
+     * from the shared pool. Either way the ACTIVE contents are copied forward first, because
+     * a file may contain only part of a table, and the result is marked unvalidated. */
+    rr = &CFE_TBL_Global.Registry[5];
+    CFE_TBL_InitRegistryRecord(rr);
+    CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 5));
+    rr->Config.DoubleBuffered     = true;
+    rr->Buffers[0].BufferPtr      = tbl_probe_mem;
+    rr->Buffers[0].AllocationSize = sizeof(tbl_probe_mem);
+    rr->Buffers[1].BufferPtr      = tbl_probe_mem2;
+    rr->Buffers[1].AllocationSize = sizeof(tbl_probe_mem2);
+    memset(tbl_probe_mem, 0xC3, sizeof(tbl_probe_mem));
+    CFE_TBL_LoadBuffSetContentSize(&rr->Buffers[0], 8);
+    rr->Buffers[0].IsValid = true;
+    /* A TABLE'S OWN BUFFERS NEED THEIR OWN IDS, or SetActiveBuffer stores a zero and
+     * GetActiveBuffer resolves it to NULL -- which is faithful (an unset id IS undefined) but
+     * means nothing is copied forward and the assertion below reads `copied=0`, passing while
+     * testing the wrong path. Registry[5] is category 6, so its pair is serial 4+5*2 = 14
+     * and 15. */
+    CFE_TBL_LoadBuffSetUsed(&rr->Buffers[0],
+                            CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 14),
+                            CFE_TBL_RegRecGetID(rr));
+    CFE_TBL_LoadBuffSetUsed(&rr->Buffers[1],
+                            CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 15),
+                            CFE_TBL_RegRecGetID(rr));
+    CFE_TBL_SetActiveBuffer(rr, &rr->Buffers[0]);
+    lb = CFE_TBL_PrepareNewLoadBuff(rr);
+    printf("tbl_prepdbl isbuf1=%d copied=%d first=%02x valid=%d actreq=%d\n",
+           (int)(lb == &rr->Buffers[1]),
+           (int)(lb == NULL ? -1 : (int)CFE_TBL_LoadBuffGetContentSize(lb)),
+           (unsigned)(lb == NULL ? 0 : ((unsigned char *)CFE_TBL_LoadBuffGetReadPointer(lb))[0]),
+           (int)(lb == NULL ? -1 : lb->IsValid), (int)(lb == NULL ? -1 : lb->ActivateReq));
+
+    /* the single-buffered path, which goes through the shared pool via AcquireGlobalLoadBuff */
+    rr = &CFE_TBL_Global.Registry[6];
+    CFE_TBL_InitRegistryRecord(rr);
+    CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 6));
+    rr->Config.DoubleBuffered                  = false;
+    CFE_TBL_Global.LoadBuffs[0].BufferPtr      = tbl_probe_mem2;
+    CFE_TBL_Global.LoadBuffs[0].AllocationSize = sizeof(tbl_probe_mem2);
+    CFE_TBL_Global.LastLoadBuffId = CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 3);
+    lb                            = CFE_TBL_PrepareNewLoadBuff(rr);
+    printf("tbl_prepsgl shared=%d isbuf0=%d owner=%lu valid=%d\n",
+           (int)(lb == NULL ? -1 : (int)CFE_TBL_LoadBuffIsShared(CFE_TBL_LoadBufferGetID(lb))),
+           (int)(lb == &CFE_TBL_Global.LoadBuffs[0]),
+           (unsigned long)(lb == NULL ? 0 : CFE_RESOURCEID_TO_ULONG(lb->OwnerRegId)),
+           (int)(lb == NULL ? -1 : lb->IsValid));
+
+    /* TxnSetupActivationRequest: three refusals and one success, each with its own event. */
+    memset(&txn2, 0, sizeof(txn2));
+    txn2.RegRecPtr      = &CFE_TBL_Global.Registry[5];
+    rr                  = txn2.RegRecPtr;
+    rr->Config.DumpOnly = true;
+    printf("tbl_actv dumponly null=%d events=%u id=%u\n",
+           (int)(CFE_TBL_TxnSetupActivationRequest(&txn2) == NULL),
+           (unsigned)txn2.NumPendingEvents, (unsigned)txn2.PendingEvents[0].EventId);
+    rr->Config.DumpOnly = false;
+    memset(&txn2, 0, sizeof(txn2));
+    txn2.RegRecPtr = rr;
+    CFE_TBL_RegRecClearLoadInProgress(rr);
+    printf("tbl_actv nobuf null=%d events=%u id=%u\n",
+           (int)(CFE_TBL_TxnSetupActivationRequest(&txn2) == NULL),
+           (unsigned)txn2.NumPendingEvents, (unsigned)txn2.PendingEvents[0].EventId);
+    memset(&txn2, 0, sizeof(txn2));
+    txn2.RegRecPtr = rr;
+    CFE_TBL_RegRecSetLoadInProgress(rr, CFE_TBL_LoadBufferGetID(&rr->Buffers[1]));
+    rr->Buffers[1].IsValid = false;
+    printf("tbl_actv unvalidated null=%d events=%u id=%u\n",
+           (int)(CFE_TBL_TxnSetupActivationRequest(&txn2) == NULL),
+           (unsigned)txn2.NumPendingEvents, (unsigned)txn2.PendingEvents[0].EventId);
+    memset(&txn2, 0, sizeof(txn2));
+    txn2.RegRecPtr         = rr;
+    rr->Buffers[1].IsValid = true;
+    lb                     = CFE_TBL_TxnSetupActivationRequest(&txn2);
+    printf("tbl_actv ok nonnull=%d events=%u actreq=%d\n", (int)(lb != NULL),
+           (unsigned)txn2.NumPendingEvents, (int)(lb == NULL ? -1 : lb->ActivateReq));
+
+    /* AND THE EVENT TEXT, which IS the comparison surface -- the only thing that compares the
+     * three strings this file formats. The helper is called directly, as NASA's own unit tests
+     * do: it is not static, and the dispatcher that would reach it lives in
+     * cfe_tbl_transaction.c, which is still inside the cycle. An event id it does not know
+     * returns false, which is how the dispatcher passes an event to the next helper. */
+    /* AND THE EVENT NEEDS A REGISTERED APP, or EVS refuses it and the three strings this
+     * file formats are never emitted -- `sent=1` would still be printed, because that is the
+     * HELPER's return value, not EVS's. The first version of this exercise asserted exactly
+     * that and compared nothing. */
+    CFE_ES_GetAppID(&CFE_TBL_Global.TableTaskAppId);
+    CFE_EVS_Global.EVS_EventBurstMax = 0;
+    /* filled at run time, not in the declaration: HolyC has no file-scope aggregate
+     * initialiser, and the two halves are kept the same shape (recorded driver trap). */
+    tbl_actv_ids[0] = CFE_TBL_ACTIVATE_DUMP_ONLY_ERR_EID;
+    tbl_actv_ids[1] = CFE_TBL_ACTIVATE_ERR_EID;
+    tbl_actv_ids[2] = CFE_TBL_UNVALIDATED_ERR_EID;
+    tbl_actv_ids[3] = 999;
+    memset(&evctx, 0, sizeof(evctx));
+    evctx.Operation  = "Activate";
+    evctx.CallerName = "PROBE_APP";
+    evctx.TableName  = "CFE_TBL.Probe";
+    for (k = 0; k < 4; k++)
+    {
+        CFE_TBL_TxnEvent_t ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.EventId = tbl_actv_ids[k];
+        /* into a local first -- this call EMITS the event, and the two halves print in
+         * different orders otherwise. Third time; see the note at tbl_stalelip. */
+        stale_got = (int)CFE_TBL_SendActivationEventHelper(&ev, &evctx);
+        printf("tbl_actvevt id=%u sent=%d\n", (unsigned)tbl_actv_ids[k], stale_got);
+    }
+    /* and the wrapper, which only counts here because SendTransactionEvents is a stand-in */
+    tbl_sendevents_calls = 0;
+    CFE_TBL_SendActivationEvents(&txn2);
+    printf("tbl_actvsend calls=%ld\n", tbl_sendevents_calls);
 
     memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
 }

@@ -198,6 +198,9 @@ CFE_TBL_LoadBuff_t *CFE_TBL_LocateLoadBufferByID(U32 BufferId)
   } else {
     BuffPtr = NULL;
   }
+  // ParentRegRecPtr IS ASSIGNED AND NEVER READ -- in NASA's source too. It is set on both
+  // branches and then unused; kept because this is a 1:1 translation and removing it would be
+  // a change. `no_warn` is how HolyC says so out loud.
   no_warn ParentRegRecPtr;
   return BuffPtr;
 }

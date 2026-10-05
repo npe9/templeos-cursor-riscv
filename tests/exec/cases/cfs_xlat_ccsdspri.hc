@@ -1329,6 +1329,12 @@ U0 CFE_PSP_Get_Timebase(U32 *Tbu, U32 *Tbl)
 #include "/Kernel/Cfs/cfe/cfe_tbl_loadbuff_decl.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_loadbuff.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_regrec.HC"
+// Backing memory for the load buffers the tbl exercise hands out, plus the four event ids it
+// walks. File scope because of limit 22 and because HolyC has no file-scope aggregate
+// initialiser; the C half keeps them at file scope too so the two read the same.
+U8 tbl_probe_mem[64];
+U8 tbl_probe_mem2[64];
+U16 tbl_actv_ids[4];
 // --- FOUR STAND-INS FOR THE loadbuff+regrec PAIR -------------------------------------------
 // Named by tools/cfs/module_deps.py --cuts: two from cfe_tbl_internal.c and two from
 // cfe_tbl_transaction.c, both still inside tbl's call cycle.
@@ -1488,6 +1494,8 @@ U0 TblLoadBuffRegRecExercise()
   U32 nid, cat, idx, serial;
   I64 k;
   I64 stale_before, stale_got, stale_after;
+  CFE_TBL_TxnState_t txn2;
+  CFE_TBL_TxnEventContext_t evctx;
   MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
   CFE_TBL_Global.WorkBufMutex = 0x7B20;
   // DECOMPOSE over the category boundary: 0..3 are shared, 4 onward are table 0's pair.
@@ -1709,6 +1717,168 @@ U0 TblLoadBuffRegRecExercise()
   lb->ActivateReq = FALSE;
   S(" noreq=");
   D(CFE_TBL_RegRecIsPendingActivation(rr));
+  S("\n");
+  // THE TWO FUNCTIONS THAT COMPOSE ALL OF THE ABOVE, which nothing had reached yet.
+  //
+  // PrepareNewLoadBuff picks the buffer for a new load: a double-buffered table gets its own
+  // other buffer (exclusively, so the walk above runs), a single-buffered one borrows from the
+  // shared pool. Either way the ACTIVE contents are copied forward first, because a file may
+  // contain only part of a table, and the result is marked unvalidated.
+  rr = &CFE_TBL_Global.Registry[5];
+  CFE_TBL_InitRegistryRecord(rr);
+  CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 5));
+  rr->Config.DoubleBuffered = TRUE;
+  rr->Buffers[0].BufferPtr = tbl_probe_mem;
+  rr->Buffers[0].AllocationSize = 64;
+  rr->Buffers[1].BufferPtr = tbl_probe_mem2;
+  rr->Buffers[1].AllocationSize = 64;
+  MemSet(tbl_probe_mem, 0xC3, 64);
+  CFE_TBL_LoadBuffSetContentSize(&rr->Buffers[0], 8);
+  rr->Buffers[0].IsValid = TRUE;
+  // A TABLE'S OWN BUFFERS NEED THEIR OWN IDS, or SetActiveBuffer stores a zero and
+  // GetActiveBuffer resolves it to NULL -- faithful (an unset id IS undefined) but it means
+  // nothing is copied forward and the assertion below reads `copied=0`, passing while testing
+  // the wrong path. Registry[5] is category 6, so its pair is serial 4+5*2 = 14 and 15.
+  CFE_TBL_LoadBuffSetUsed(&rr->Buffers[0], CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 14), CFE_TBL_RegRecGetID(rr));
+  CFE_TBL_LoadBuffSetUsed(&rr->Buffers[1], CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 15), CFE_TBL_RegRecGetID(rr));
+  CFE_TBL_SetActiveBuffer(rr, &rr->Buffers[0]);
+  lb = CFE_TBL_PrepareNewLoadBuff(rr);
+  S("tbl_prepdbl isbuf1=");
+  D(lb == &rr->Buffers[1]);
+  S(" copied=");
+  if (lb == NULL)
+    D(-1);
+  else
+    D(CFE_TBL_LoadBuffGetContentSize(lb));
+  S(" first=");
+  if (lb == NULL)
+    Hx2b(0);
+  else
+    Hx2b(CFE_TBL_LoadBuffGetReadPointer(lb)[0]);
+  S(" valid=");
+  if (lb == NULL)
+    D(-1);
+  else
+    D(lb->IsValid);
+  S(" actreq=");
+  if (lb == NULL)
+    D(-1);
+  else
+    D(lb->ActivateReq);
+  S("\n");
+  // the single-buffered path, which goes through the shared pool via AcquireGlobalLoadBuff
+  rr = &CFE_TBL_Global.Registry[6];
+  CFE_TBL_InitRegistryRecord(rr);
+  CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 6));
+  rr->Config.DoubleBuffered = FALSE;
+  CFE_TBL_Global.LoadBuffs[0].BufferPtr = tbl_probe_mem2;
+  CFE_TBL_Global.LoadBuffs[0].AllocationSize = 64;
+  CFE_TBL_Global.LastLoadBuffId = CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 3);
+  lb = CFE_TBL_PrepareNewLoadBuff(rr);
+  S("tbl_prepsgl shared=");
+  if (lb == NULL)
+    D(-1);
+  else
+    D(CFE_TBL_LoadBuffIsShared(CFE_TBL_LoadBufferGetID(lb)));
+  S(" isbuf0=");
+  D(lb == &CFE_TBL_Global.LoadBuffs[0]);
+  S(" owner=");
+  if (lb == NULL)
+    D(0);
+  else
+    D(CFE_ResourceId_ToInteger(lb->OwnerRegId));
+  S(" valid=");
+  if (lb == NULL)
+    D(-1);
+  else
+    D(lb->IsValid);
+  S("\n");
+  // TxnSetupActivationRequest: three refusals and one success, each with its own event.
+  MemSet(&txn2, 0, sizeof(CFE_TBL_TxnState_t));
+  txn2.RegRecPtr = &CFE_TBL_Global.Registry[5];
+  rr = txn2.RegRecPtr;
+  rr->Config.DumpOnly = TRUE;
+  S("tbl_actv dumponly null=");
+  D(CFE_TBL_TxnSetupActivationRequest(&txn2) == NULL);
+  S(" events=");
+  D(txn2.NumPendingEvents);
+  S(" id=");
+  D(txn2.PendingEvents[0].EventId);
+  S("\n");
+  rr->Config.DumpOnly = FALSE;
+  MemSet(&txn2, 0, sizeof(CFE_TBL_TxnState_t));
+  txn2.RegRecPtr = rr;
+  CFE_TBL_RegRecClearLoadInProgress(rr);
+  S("tbl_actv nobuf null=");
+  D(CFE_TBL_TxnSetupActivationRequest(&txn2) == NULL);
+  S(" events=");
+  D(txn2.NumPendingEvents);
+  S(" id=");
+  D(txn2.PendingEvents[0].EventId);
+  S("\n");
+  MemSet(&txn2, 0, sizeof(CFE_TBL_TxnState_t));
+  txn2.RegRecPtr = rr;
+  CFE_TBL_RegRecSetLoadInProgress(rr, CFE_TBL_LoadBufferGetID(&rr->Buffers[1]));
+  rr->Buffers[1].IsValid = FALSE;
+  S("tbl_actv unvalidated null=");
+  D(CFE_TBL_TxnSetupActivationRequest(&txn2) == NULL);
+  S(" events=");
+  D(txn2.NumPendingEvents);
+  S(" id=");
+  D(txn2.PendingEvents[0].EventId);
+  S("\n");
+  MemSet(&txn2, 0, sizeof(CFE_TBL_TxnState_t));
+  txn2.RegRecPtr = rr;
+  rr->Buffers[1].IsValid = TRUE;
+  lb = CFE_TBL_TxnSetupActivationRequest(&txn2);
+  S("tbl_actv ok nonnull=");
+  D(lb != NULL);
+  S(" events=");
+  D(txn2.NumPendingEvents);
+  S(" actreq=");
+  if (lb == NULL)
+    D(-1);
+  else
+    D(lb->ActivateReq);
+  S("\n");
+  // AND THE EVENT TEXT, which IS the comparison surface -- the only thing that compares the
+  // three strings this file formats. The helper is called directly, as NASA's own unit tests
+  // do: it is not static, and the dispatcher that would reach it lives in
+  // cfe_tbl_transaction.c, which is still inside the cycle. An event id it does not know
+  // returns false, which is how the dispatcher passes an event to the next helper.
+  // AND THE EVENT NEEDS A REGISTERED APP, or EVS refuses it and the three strings this file
+  // formats are never emitted -- `sent=1` would still be printed, because that is the
+  // HELPER's return value, not EVS's. The first version of this exercise asserted exactly
+  // that and compared nothing.
+  CFE_ES_GetAppID(&CFE_TBL_Global.TableTaskAppId);
+  CFE_EVS_Global.EVS_EventBurstMax = 0;
+  // filled at run time, not in the declaration: HolyC has no file-scope aggregate initialiser.
+  tbl_actv_ids[0] = CFE_TBL_ACTIVATE_DUMP_ONLY_ERR_EID;
+  tbl_actv_ids[1] = CFE_TBL_ACTIVATE_ERR_EID;
+  tbl_actv_ids[2] = CFE_TBL_UNVALIDATED_ERR_EID;
+  tbl_actv_ids[3] = 999;
+  MemSet(&evctx, 0, sizeof(CFE_TBL_TxnEventContext_t));
+  evctx.Operation = "Activate";
+  evctx.CallerName = "PROBE_APP";
+  evctx.TableName = "CFE_TBL.Probe";
+  for (k = 0; k < 4; k++) {
+    CFE_TBL_TxnEvent_t ev;
+    MemSet(&ev, 0, sizeof(CFE_TBL_TxnEvent_t));
+    ev.EventId = tbl_actv_ids[k];
+    // into a local first, to match the C half -- this call EMITS the event. Third time; see
+    // the note at tbl_stalelip.
+    stale_got = CFE_TBL_SendActivationEventHelper(&ev, &evctx);
+    S("tbl_actvevt id=");
+    D(tbl_actv_ids[k]);
+    S(" sent=");
+    D(stale_got);
+    S("\n");
+  }
+  // and the wrapper, which only counts here because SendTransactionEvents is a stand-in
+  tbl_sendevents_calls = 0;
+  CFE_TBL_SendActivationEvents(&txn2);
+  S("tbl_actvsend calls=");
+  D(tbl_sendevents_calls);
   S("\n");
   MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
 }
