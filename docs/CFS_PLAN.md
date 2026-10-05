@@ -947,9 +947,20 @@ compares it against NASA, which is worse than a stub because it *looks like a tr
 remain are all thin: a mutex-and-delegate wrapper, a list walk, a record-append, and the EVS
 seam. Same cycle, 1,027 lines instead of 3,900 — a difference invisible without enumerating.
 
-So the order is `accdesc` (194 lines, 3 stand-ins, and it supplies `LocateAccDescByHandle`
-which the later `ForeachAccessDescriptor` wants), then `loadbuff + regrec`, then the rest, then
-the three large consumers `api.c`, `task_cmds.c`, `load.c`. Everything outside the cycle is
+So the order is `accdesc` (**done**), then `loadbuff + regrec`, then the rest, then the three
+large consumers `api.c`, `task_cmds.c`, `load.c`.
+
+**One decision to make BEFORE writing `loadbuff + regrec`, not during it.** Of its four
+stand-ins, `CFE_TBL_ForeachAccessDescriptor` must be written FAITHFULLY — an eight-line walk
+of the handle list — and not as a call counter. With `accdesc` gated,
+`CFE_TBL_LocateAccDescByHandle` is real, so that walk calls only gated code and costs nothing;
+it was not available two commits ago. If it is stubbed as a counter instead, the
+`CheckInactiveBufferHelper` path is never entered, and with it
+`CFE_TBL_GetInactiveBufferExclusive`'s locked-buffer branch — the one that refuses to reuse a
+buffer another app still holds — becomes unreachable and the exercise asserts nothing about
+it. That is the recorded trap of a fault-injection knob vanishing with the stub, and it is
+cheapest to avoid by deciding now. `CFE_TBL_AcquireGlobalLoadBuff` is the same story once
+loadbuff lands: `FindNextSharedBufferId` and `LocateLoadBufferByID` both become real. Everything outside the cycle is
 already done: `handlelink.c`, `dumpctl.c`, `objtab.c`, and the whole type foundation.
 
 **Run the tool before planning any module's order**, including the apps — and run it `--fresh`

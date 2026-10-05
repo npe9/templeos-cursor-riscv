@@ -1504,7 +1504,11 @@ U0 TblAccDescExercise()
   S(" unlinks=");
   D(tbl_removelink_calls);
   S("\n");
-  // RELEASE BY A NON-OWNER must leave the table owned.
+  // RELEASE BY A NON-OWNER must leave the table owned -- but it still FREES the descriptor,
+  // and `freed=1` below is correct, not a bug. CFE_TBL_AccDescSetFree is outside the
+  // ownership `if`: giving back your own handle always gives it back, and only the un-owning
+  // of the TABLE is conditional. A reader checking "a non-owner should change nothing" would
+  // misread that line.
   MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
   CFE_TBL_TxnAllocateAccDesc(&txn);
   rr->OwnerAppId = CFE_ResourceId_FromInteger(0x1111);

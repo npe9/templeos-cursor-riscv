@@ -237,11 +237,24 @@ def main(argv):
             print('  collapsed: %-40s -> %s' % (n, fn))
         for n in translated:
             print('  translated: %s' % n)
+    # TRANSLATED BUT NOT REQUIRED IS A NUMBER, not a silence. A `_decl.HC` file carries a
+    # header's inlines before its .c is gated -- cfe_tbl_loadbuff_decl.HC ships thirteen that
+    # nothing yet calls -- and for those, NOTHING checks the bodies: this gate does not
+    # require them, check_in_blob cannot see functions no driver references, and the
+    # transcript never reaches them. They are translated because somebody was careful, which
+    # is exactly the condition this gate was written to stop relying on. So the count is
+    # printed on every run: it should FALL as the matching .c sources are gated, and a number
+    # that sits still is a set of functions nobody is checking.
+    spare = sorted(n for n in have if n in inlines and n not in required)
     print('cfs-hdrinline: %d of %d NASA header inlines are reached by a gated source; %d are '
           'translated by name, %d collapse onto a CFE_ResourceId_* function that is'
           % (len(required), len(inlines), len(translated), len(collapsed)))
-    print('               (%d header inlines no gated source calls, so not required yet)'
-          % (len(inlines) - len(required)))
+    print('               (%d header inlines no gated source calls, so not required yet; of '
+          'those %d ARE translated and so have no gate on their bodies until their .c lands)'
+          % (len(inlines) - len(required), len(spare)))
+    if verbose:
+        for n in spare:
+            print('  translated but unrequired: %s' % n)
     return 0
 
 
