@@ -39,6 +39,72 @@ U8 *MemChr(U8 *s, I64 c, I64 n)
   return NULL;
 }
 
+// C's strtoul with a NULL end pointer and base 0, which is the only form cFS uses: every call
+// is `strtoul(TokenList[n], NULL, 0)` in cfe_es_startupscript.c, converting a priority, a stack
+// size or an exception action out of a startup-script field.
+//
+// BASE 0 MEANS THE PREFIX DECIDES, and the real startup scripts in tos/ use all three forms --
+// "0x40" for a priority, "16384" for a stack size, "0" for an exception action -- so the
+// detection is not optional: "0x"/"0X" is hex, a leading "0" is OCTAL, anything else decimal.
+// Getting octal wrong would silently read 0755 as 755.
+//
+// IT STOPS AT THE FIRST CHARACTER THAT IS NOT A DIGIT IN THE BASE and returns what it has, with
+// no error report -- which is C's behaviour and is what the startup-script parser relies on: a
+// malformed field yields a number rather than a refusal, and the range checks above the call are
+// what catch it. Leading whitespace is skipped and an optional '+'/'-' is accepted, both for the
+// same reason: a reader comparing this against the C must not find a shortcut.
+U64 StrToUL(U8 *s)
+{
+  U64 val = 0;
+  I64 base = 10;
+  I64 neg = 0;
+  I64 d;
+  if (s == NULL)
+    return 0;
+  while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')
+    s++;
+  if (*s == '+')
+    s++;
+  else if (*s == '-') {
+    neg = 1;
+    s++;
+  }
+  if (*s == '0') {
+    if (s[1] == 'x' || s[1] == 'X') {
+      base = 16;
+      s += 2;
+    } else {
+      base = 8;
+      s++;
+    }
+  }
+  while (*s) {
+    if (*s >= '0' && *s <= '9')
+      d = *s - '0';
+    else if (*s >= 'a' && *s <= 'f')
+      d = *s - 'a' + 10;
+    else if (*s >= 'A' && *s <= 'F')
+      d = *s - 'A' + 10;
+    else
+      break;
+    if (d >= base)
+      break;
+    val = val * base + d;
+    s++;
+  }
+  if (neg)
+    return -val;
+  return val;
+}
+
+// C's isgraph: a printable character that is not a space. cfe_es_startupscript.c uses it to
+// decide which bytes of a startup-script line are part of a token, which is what makes the
+// parser tolerant of the whitespace real scripts are written with.
+Bool IsGraph(I64 c)
+{
+  return (c > 0x20 && c < 0x7F);
+}
+
 // C's strncpy, INCLUDING the sharp edges, because the translation's correctness rests on them:
 // at most n bytes are copied; if src is shorter the remainder of n is filled with NULs; and if
 // src is n or longer the result is NOT terminated. Every cFS call site passes n = SIZE - 1 into

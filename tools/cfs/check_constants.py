@@ -141,6 +141,10 @@ CSRC_DEFS = [
     # cfe_es_backgroundtask.c invents its own sem name, child-task parameters, idle delay and
     # the job count (sizeof(table)/sizeof(table[0])). None of them is in a header.
     os.path.join(ROOT, "vendor", "cFE", "modules", "es", "fsw", "src", "cfe_es_backgroundtask.c"),
+    # CFE_ES_PANIC_DELAY is cfe_es_start.c's own: half a second, and it is always followed by
+    # CFE_PSP_Panic -- "Delay to allow the message to be read". Five functions in that file use
+    # it and no header names it.
+    os.path.join(ROOT, "vendor", "cFE", "modules", "es", "fsw", "src", "cfe_es_start.c"),
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-file.c"),
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-idmap.c"),
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-timebase.c"),
@@ -171,6 +175,10 @@ def probe(names):
         # ES's task header: the command pipe's name and depth, and the 42-entry cap on what one
         # QueryAll dump can hold. None of the three is reachable from any header already here.
         "cfe_es_task.h",
+        # The startup script's two sizes -- the 128-byte line buffer and the 8-token cap -- which
+        # are the whole malformed-line detector: both buffers are declared ONE larger than these,
+        # so filling one IS overrunning it. Nothing else in the module names them.
+        "cfe_es_startupscript.h",
     ]
     body = ["#include <stdio.h>", "#include <stddef.h>"] + ['#include "%s"' % h for h in hdrs]
     # THE `#define`s NASA PUTS IN A .c FILE, lifted in textually. A constant the translation

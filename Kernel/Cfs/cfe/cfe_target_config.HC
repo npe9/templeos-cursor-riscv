@@ -72,7 +72,7 @@ class Target_ConfigData
 // so the tables are filled by a function the harness calls once. Same values, same
 // order, same NULL terminators as the C.
 CFE_ConfigName_t CFE_CORE_MODULE_LIST[6];
-Target_ObjectTable *CFE_CORE_MODULE_OBJTAB[1];
+Target_ObjectTable *CFE_CORE_MODULE_OBJTAB[4];
 CFE_ConfigName_t CFE_STATIC_APP_LIST[1];
 CFE_StaticModuleLoadEntry_t CFE_PSP_MODULE_LIST[1];
 CFE_ConfigKeyValue_t CFE_BUILD_ENV_TABLE[4];

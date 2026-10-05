@@ -70,10 +70,8 @@ class os_fsinfo_t
   U32 FreeVolumes; // total number of volumes free
 };
 
-class OS_statvfs_t
-{
-  I64 block_size;   // size_t
-  I64 total_blocks; // osal_blockcount_t
-  I64 blocks_free;  // osal_blockcount_t
-};
+// OS_statvfs_t moved to osapi_filesys_decl.HC, because cFE needs it on its own:
+// cfe_es_start.c asks the RAM disk how full it is and must not drag this file's implementation
+// across the seam. Same split, same reason, as osapi_heap_decl.HC and osapi_module_decl.HC.
+#include "osapi_filesys_decl.HC"
 #endif

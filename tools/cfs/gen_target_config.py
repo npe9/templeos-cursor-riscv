@@ -124,7 +124,20 @@ def emit_c():
         L.append("    {%s, %s}," % (c_str(k), c_str(v)))
     L.append("    {NULL, NULL}")
     L.append("};")
-    L.append("const Target_ObjectTable_t *const CFE_CORE_MODULE_OBJTAB[] = {NULL};")
+    # NASA's CMake emits this as `const Target_ObjectTable_t *const ... = {NULL}` -- doubly
+    # const, in .rodata. THIS PORT EMITS IT WRITABLE, with room for entries, and that is a
+    # deliberate deviation rather than an oversight:
+    #
+    # CFE_ES_CreateObjects walks this table twice -- every module's EarlyInit, then every
+    # module's task -- and it is the most important function in cfe_es_start.c. In this
+    # configuration the table is EMPTY (no core module registers an entry), so both loops would
+    # walk nothing and neither phase would ever be exercised. The differential driver plants two
+    # entries to fix that, and with NASA's shape it cannot: writing through a cast to a const
+    # object in .rodata is a SIGBUS on arm64, which is exactly how this was found.
+    #
+    # Four slots: the driver's two entries and a terminator, with one spare. The HolyC side is
+    # writable anyway, so this also makes the two halves agree about what the table IS.
+    L.append("Target_ObjectTable_t *CFE_CORE_MODULE_OBJTAB[4] = {NULL, NULL, NULL, NULL};")
     L.append("")
     L.append("Target_CfeConfigData GLOBAL_CFE_CONFIGDATA = {")
     L.append("    .CdsSize = %d," % CDS_SIZE)
@@ -260,15 +273,15 @@ def emit_hc():
     n_env = len(BUILD_ENVIRONMENT) + 1
     n_ver = len(MODULE_VERSION_LIST) + 1
     L.append("CFE_ConfigName_t CFE_CORE_MODULE_LIST[%d];" % n_core)
-    # `const Target_ObjectTable_t *const CFE_CORE_MODULE_OBJTAB[] = {NULL};` -- ONE element, and
-    # that element is the NULL terminator. No core module registers an object-table entry in this
-    # configuration, so the table is empty and says so by being its own terminator.
+    # `Target_ObjectTable_t *CFE_CORE_MODULE_OBJTAB[4]` -- element 0 is the NULL terminator, so
+    # the table is empty, and the three spare slots are there for the differential driver to
+    # plant entries into. See the note on the C emission above for why it is writable.
     #
     # THE ENTRY HAS TO EXIST. Emitting `CoreObjectTable = NULL` instead read identically to the C
     # for as long as nothing walked the table; cfe_es_apps.c's CFE_ES_CleanUpApp_FreeCoreResources
     # reads element 0 to find the end, and a NULL base made that a load from address 0. The fault
     # was in CFE_ES_CleanUpApp_FreeCoreResources with mtval=0, named from HOLYC_MAP.
-    L.append("Target_ObjectTable *CFE_CORE_MODULE_OBJTAB[1];")
+    L.append("Target_ObjectTable *CFE_CORE_MODULE_OBJTAB[4];")
     L.append("CFE_ConfigName_t CFE_STATIC_APP_LIST[%d];" % n_app)
     L.append("CFE_StaticModuleLoadEntry_t CFE_PSP_MODULE_LIST[%d];" % n_psp)
     L.append("CFE_ConfigKeyValue_t CFE_BUILD_ENV_TABLE[%d];" % n_env)

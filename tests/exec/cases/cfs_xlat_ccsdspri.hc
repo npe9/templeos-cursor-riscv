@@ -163,6 +163,7 @@ I64 StrCmp(U8 *st1, U8 *st2)
 #include "/Kernel/Cfs/cfe/cfe_es_api.HC"
 #include "/Kernel/Cfs/osal/osapi_heap_decl.HC"
 #include "/Kernel/Cfs/osal/osapi_module_decl.HC"
+#include "/Kernel/Cfs/osal/osapi_filesys_decl.HC"
 #define XUART 0x10000000
 U0 S(U8 *s)
 {
@@ -367,7 +368,13 @@ I32 OS_OpenCreate(U32 *filedes, U8 *path, I32 flags, I32 access_mode)
   // OS_ERROR
   fs_fd = 7;
   *filedes = 7;
-  fs_len = 0;
+  // A READ-ONLY OPEN MUST NOT TRUNCATE, which this stub used to do unconditionally -- it never
+  // mattered until cfe_es_startupscript.c became the first thing in the port to OPEN A FILE AND
+  // READ IT. Every other caller writes, so resetting the length was indistinguishable from
+  // correct. The startup script is staged into fs_data before the call and would have been
+  // erased by it.
+  if (access_mode != OS_READ_ONLY)
+    fs_len = 0;
   fs_pos = 0;
   return OS_SUCCESS;
 }
@@ -626,6 +633,176 @@ I32 OS_ObjectIdToArrayIndex(U32 idtype, U32 object_id, U32 *ArrayIndex)
   }
   *ArrayIndex = object_id - 1;
   return OS_SUCCESS;
+}
+// ---- WHAT cfe_es_start.c NEEDS: THE VOLATILE DISK AND TWO MORE PIECES OF BOARD --------------
+//
+// THE RAM DISK IS SIMULATED, not recorded, for the same reason the CDS is: the interesting code
+// is the part that decides whether to format it. A power-on reset calls OS_mkfs, a processor
+// reset calls OS_initfs and falls back to OS_mkfs, and a processor reset whose disk is over
+// CFE_PLATFORM_ES_RAM_DISK_PERCENT_RESERVED full unmounts, removes, re-makes and re-mounts it.
+// Tracking "does a volume exist" and "is it mounted" in two flags is enough to drive all of
+// that, and the block counts are steerable so the percentage is a knob.
+//
+// It is NOT a file system. Nothing is stored; OS_mkfs says a volume now exists and OS_mount says
+// it is reachable. cFE never writes to the RAM disk through these -- it writes through
+// OS_OpenCreate, which this driver simulates separately.
+// This block sits ABOVE the include of cfe_es_start.HC, which is where the constant is named,
+// so it is guarded here too -- one definition per name, whichever comes first.
+#ifndef CFE_PLATFORM_ES_RAM_DISK_SECTOR_SIZE
+#define CFE_PLATFORM_ES_RAM_DISK_SECTOR_SIZE 512
+#endif
+I64 es_vol_exists;
+// a volume has been made (mkfs or initfs succeeded)
+I64 es_vol_mounted;
+I64 es_mkfs_calls, es_initfs_calls, es_mount_calls, es_unmount_calls, es_rmfs_calls;
+I32 es_mkfs_rc;
+I32 es_initfs_rc;
+I32 es_mount_rc;
+I32 es_unmount_rc;
+I32 es_rmfs_rc;
+I32 es_statvol_rc;
+// The free-space check is `(blocks_free * 100) / total_blocks`, so these two ARE the percentage.
+// total_blocks of 0 takes the error arm, because the division would be by zero.
+I64 es_vol_total_blocks;
+I64 es_vol_blocks_free;
+I32 OS_mkfs(U8 *address, U8 *devname, U8 *volname, I64 blocksize, I64 numblocks)
+{
+  ++es_mkfs_calls;
+  S("os_mkfs ");
+  S(devname);
+  S(" ");
+  S(volname);
+  S(" bs=");
+  D(blocksize);
+  S(" n=");
+  D(numblocks);
+  S(" rc=");
+  D(es_mkfs_rc);
+  S("\n");
+  if (es_mkfs_rc == OS_SUCCESS) {
+    es_vol_exists = 1;
+  }
+  return es_mkfs_rc;
+}
+
+I32 OS_initfs(U8 *address, U8 *devname, U8 *volname, I64 blocksize, I64 numblocks)
+{
+  ++es_initfs_calls;
+  S("os_initfs ");
+  S(devname);
+  S(" ");
+  S(volname);
+  S(" rc=");
+  D(es_initfs_rc);
+  S("\n");
+  if (es_initfs_rc == OS_SUCCESS) {
+    es_vol_exists = 1;
+  }
+  return es_initfs_rc;
+}
+
+I32 OS_mount(U8 *devname, U8 *mountpoint)
+{
+  ++es_mount_calls;
+  S("os_mount ");
+  S(devname);
+  S(" -> ");
+  S(mountpoint);
+  S(" rc=");
+  D(es_mount_rc);
+  S("\n");
+  if (es_mount_rc == OS_SUCCESS) {
+    es_vol_mounted = 1;
+  }
+  return es_mount_rc;
+}
+
+I32 OS_unmount(U8 *mountpoint)
+{
+  ++es_unmount_calls;
+  S("os_unmount ");
+  S(mountpoint);
+  S(" rc=");
+  D(es_unmount_rc);
+  S("\n");
+  if (es_unmount_rc == OS_SUCCESS) {
+    es_vol_mounted = 0;
+  }
+  return es_unmount_rc;
+}
+
+I32 OS_rmfs(U8 *devname)
+{
+  ++es_rmfs_calls;
+  S("os_rmfs ");
+  S(devname);
+  S(" rc=");
+  D(es_rmfs_rc);
+  S("\n");
+  if (es_rmfs_rc == OS_SUCCESS) {
+    es_vol_exists = 0;
+  }
+  return es_rmfs_rc;
+}
+
+I32 OS_FileSysStatVolume(U8 *name, OS_statvfs_t *statbuf)
+{
+  S("os_statvol ");
+  S(name);
+  S(" rc=");
+  D(es_statvol_rc);
+  S("\n");
+  statbuf->block_size = CFE_PLATFORM_ES_RAM_DISK_SECTOR_SIZE;
+  statbuf->total_blocks = es_vol_total_blocks;
+  statbuf->blocks_free = es_vol_blocks_free;
+  return es_statvol_rc;
+}
+// CFE_PSP_AttachExceptions installs the trap vectors -- NASA's own comment at the call site is
+// "Install exception Handlers ( Placeholder )", so it is a placeholder upstream too. And
+// CFE_PSP_GetVolatileDiskMem hands back the RAM the volatile file system is built in: this
+// returns a real buffer, because OS_mkfs is handed the address and a NULL would be a different
+// test than the one intended.
+// ---- A REAL CORE OBJECT TABLE, for CFE_ES_CreateObjects --------------------------------------
+// CFE_CORE_MODULE_OBJTAB is empty in this configuration -- element 0 is its own NULL terminator
+// -- so both phases of CreateObjects would walk nothing. These two entries are what make them
+// run: one library-only module (an EarlyInit and no TaskMain, so phase 2 skips it) and one with
+// a TaskMain, which takes a real app-table slot as a CORE app.
+//
+// The TaskMain is never CALLED -- this driver's OS_TaskCreate does not run entry points, for the
+// reason recorded there -- so it only has to be a valid address.
+I64 es_core_early_calls, es_core_taskmain_calls;
+I32 es_core_early_rc;
+I32 es_core_early_init()
+{
+  ++es_core_early_calls;
+  S("es_core_earlyinit rc=");
+  D(es_core_early_rc);
+  S("\n");
+  return es_core_early_rc;
+}
+
+U0 es_core_taskmain()
+{
+  ++es_core_taskmain_calls;
+}
+Target_ObjectTable es_core_entry_lib = {"COREL", &es_core_early_init, NULL, NULL, 0, 0};
+Target_ObjectTable es_core_entry_task = {"CORET", &es_core_early_init, &es_core_taskmain, NULL, 70, 4096};
+// CFE_ES_Main memsets the whole global, so the driver's planted state is saved around it.
+CFE_ES_Global_t es_global_save;
+I64 es_attachexc;
+U8 es_ramdisk_mem[4096];
+I32 es_voldiskmem_rc;
+U0 CFE_PSP_AttachExceptions()
+{
+  ++es_attachexc;
+  S("psp_attachexc\n");
+}
+
+I32 CFE_PSP_GetVolatileDiskMem(U64 *PtrToVolDisk, U32 *SizeOfVolDisk)
+{
+  *PtrToVolDisk = es_ramdisk_mem;
+  *SizeOfVolDisk = 4096;
+  return es_voldiskmem_rc;
 }
 // ---- WHAT cfe_es_apps.c NEEDS FROM OSAL, which this driver does not compile -----------------
 // OSAL has its own differential driver (run_osal_xlat_smoke.sh) and its own transcript; here its
@@ -1139,6 +1316,8 @@ U0 CFE_PSP_Get_Timebase(U32 *Tbu, U32 *Tbl)
 #include "/Kernel/Cfs/cfe/cfe_es_apps.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_cds.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_cds_mempool.HC"
+#include "/Kernel/Cfs/cfe/cfe_es_startupscript.HC"
+#include "/Kernel/Cfs/cfe/cfe_es_start.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_appctrl.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_backgroundtask.HC"
 #include "/Kernel/Cfs/cfe/cfe_es_objtab.HC"
@@ -2056,6 +2235,11 @@ I64 main()
   // and CFE_PSP_SUCCESS is 0, so the three PSP statuses need no explicit default.
   es_cds_size = ES_CDS_STORE_SIZE;
   es_cds_write_fail_at = 0xFFFFFFFF;
+  // The simulated volatile disk: 90 of 100 blocks free, so the free-space check passes by
+  // default and the reformat path is one knob away. The six OS_* statuses default to
+  // OS_SUCCESS, which is 0, so HolyC's zeroed globals already say that.
+  es_vol_total_blocks = 100;
+  es_vol_blocks_free = 90;
   // THE BUS HAS TO EXIST BEFORE ANYTHING SUBSCRIBES TO IT, and before cfe_sb_api was gated it
   // did not have to: CFE_SB_CreatePipe and CFE_SB_Subscribe were stubs that answered without
   // reading CFE_SB_Global. They are real now, and CFE_SB_Global starts zeroed -- LastPipeId of
@@ -8333,6 +8517,309 @@ I64 main()
       // Leave the perf log idle, or the next probe's PerfLogAdd calls start recording.
       CFE_ES_SetupPerfVariables(CFE_PSP_RST_TYPE_POWERON);
       MemSet(PDump, 0, sizeof(CFE_ES_PerfDumpGlobal_t));
+    }
+    // --- cfe_es_startupscript.c: HOW A SPACECRAFT DECIDES WHAT TO RUN ---------------
+    //
+    // Eight comma-separated fields terminated by a semicolon, and this is the only thing between
+    // a text file and the set of applications a flight computer boots with. The parser is
+    // deliberately forgiving and every allowance is a decision about what a half-written script
+    // does to a vehicle, so each one is driven here.
+    //
+    // The script is staged into the simulated file system and read back through
+    // OS_OpenCreate/OS_read -- which is what made the read-only open stop truncating.
+    
+    {
+      U8 *tok[CFE_ES_STARTSCRIPT_MAX_TOKENS_PER_LINE + 1];
+      I32 rc;
+      es_objs_clear();
+      es_modload_rc = OS_SUCCESS;
+      // --- CFE_ES_ParseFileEntry: the two entry types and every refusal ----------
+      // A CFE_APP line. The priority, stack size and exception action come out of the text
+      // through StrToUL, which is why "0x40" and "16384" both work.
+      tok[0] = "CFE_APP";
+      tok[1] = "/cf/sch.so";
+      tok[2] = "SCH_AppMain";
+      tok[3] = "SCH";
+      tok[4] = "0x40";
+      tok[5] = "16384";
+      tok[6] = "0x0";
+      tok[7] = "0";
+      rc = CFE_ES_ParseFileEntry(tok, 8);
+      S("ess_app rc=");
+      D(rc);
+      S("\n");
+      // A priority over OS_MAX_TASK_PRIORITY is CLAMPED, not refused -- and an exception action
+      // over RESTART_APP becomes PROC_RESTART, so a typo makes the spacecraft MORE willing to
+      // reset itself. Both show up in the os_moduleload/os_taskcreate lines.
+      tok[3] = "SCH2";
+      tok[4] = "999";
+      tok[7] = "7";
+      rc = CFE_ES_ParseFileEntry(tok, 8);
+      S("ess_app_clamped rc=");
+      D(rc);
+      S("\n");
+      // A CFE_LIB line reads only four of the eight fields, and the entry symbol is CALLED --
+      // which is what makes it a library.
+      tok[0] = "CFE_LIB";
+      tok[1] = "/cf/cfs_lib.so";
+      tok[2] = "CFS_LibInit";
+      tok[3] = "CFS_LIB";
+      es_modlookup_addr = &es_lib_init;
+      rc = CFE_ES_ParseFileEntry(tok, 8);
+      S("ess_lib rc=");
+      D(rc);
+      S("\n");
+      es_modlookup_addr = 0xE0000000;
+      // An unknown entry type is CFE_ES_ERR_APP_CREATE, not a parse error.
+      tok[0] = "CFE_WAT";
+      rc = CFE_ES_ParseFileEntry(tok, 8);
+      S("ess_badtype rc=");
+      D(rc);
+      S("\n");
+      // Too few fields.
+      tok[0] = "CFE_APP";
+      rc = CFE_ES_ParseFileEntry(tok, 7);
+      S("ess_short rc=");
+      D(rc);
+      S("\n");
+      // A file name the FS layer refuses.
+      tok[1] = "";
+      rc = CFE_ES_ParseFileEntry(tok, 8);
+      S("ess_badname rc=");
+      D(rc);
+      S("\n");
+      // CFE_ES_ReadStartupLine and CFE_ES_OpenStartupScript are `static` in NASA's .c, so
+      // neither half can call them directly -- they are driven through CFE_ES_StartApplications
+      // below, where the scripts are written with the whitespace and the token shapes that prove
+      // the tokenisation: isgraph decides what is part of a token, so the spaces and the newline
+      // are dropped and the ',' and ';' are the only delimiters. The ParseFileEntry log lines
+      // show what came out.
+      // --- CFE_ES_StartApplications, end to end ---------------------------------
+      // A power-on reset reads the nonvolatile script only; a processor reset tries the volatile
+      // copy first. Both go through the same simulated file.
+      fs_open_fail = 0;
+      MemCpy(fs_data, "CFE_LIB, /cf/a.so, A_Init, A, 0, 0, 0x0, 0;\n!", 45);
+      fs_len = 45;
+      es_modlookup_addr = &es_lib_init;
+      S("ess_start_poweron\n");
+      CFE_ES_StartApplications(CFE_PSP_RST_TYPE_POWERON, "/cf/cfe_es_startup.scr");
+      MemCpy(fs_data, "CFE_LIB, /cf/c.so, C_Init, C, 0, 0, 0x0, 0;\n!", 45);
+      fs_len = 45;
+      S("ess_start_proc\n");
+      CFE_ES_StartApplications(CFE_PSP_RST_TYPE_PROCESSOR, "/cf/cfe_es_startup.scr");
+      es_modlookup_addr = 0xE0000000;
+      // A MALFORMED LINE IS LOGGED AND SKIPPED, never fatal, and the detector is that both
+      // buffers are one larger than the maximum: filling one IS overrunning it. This line has
+      // nine fields.
+      MemCpy(fs_data, "A,B,C,D,E,F,G,H,I;\n!", 21);
+      fs_len = 21;
+      S("ess_start_toomany\n");
+      CFE_ES_StartApplications(CFE_PSP_RST_TYPE_POWERON, "/cf/cfe_es_startup.scr");
+      // A script that will not open at all: two log lines and no parsing.
+      fs_open_fail = 1;
+      S("ess_start_noopen\n");
+      CFE_ES_StartApplications(CFE_PSP_RST_TYPE_PROCESSOR, "/cf/cfe_es_startup.scr");
+      fs_open_fail = 0;
+      fs_len = 0;
+      fs_pos = 0;
+    }
+    // --- cfe_es_start.c: THE BOOT SEQUENCE ------------------------------------------
+    //
+    // cFE's main(). Five states in order, and the only failure mode in the whole file is a panic
+    // -- five of its eight functions call CFE_PSP_Panic after a half-second delay "to allow the
+    // message to be read".
+    //
+    // EVERYTHING HERE RUNS AGAINST A SAVED AND RESTORED GLOBAL. CFE_ES_Main's first act is to
+    // MemSet CFE_ES_Global, which would destroy every record this driver planted, so the boot is
+    // driven last and the state is put back afterwards.
+    
+    {
+      I32 rc;
+      // --- CFE_ES_SetupResetVariables: how a reset loop is detected --------------
+      // A power-on reset records the subtype and zeroes the counters. Three subtypes get three
+      // different log lines and ER log entries.
+      S("esb_reset_cycle\n");
+      CFE_ES_SetupResetVariables(CFE_PSP_RST_TYPE_POWERON, CFE_PSP_RST_SUBTYPE_POWER_CYCLE, 1);
+      S("esb_reset_cycle_v count=");
+      D(CFE_ES_Global.ResetDataPtr->ResetVars.ProcessorResetCount);
+      S(" max=");
+      D(CFE_ES_Global.ResetDataPtr->ResetVars.MaxProcessorResetCount);
+      S(" type=");
+      D(CFE_ES_Global.ResetDataPtr->ResetVars.ResetType);
+      S(" sub=");
+      D(CFE_ES_Global.ResetDataPtr->ResetVars.ResetSubtype);
+      S(" boot=");
+      D(CFE_ES_Global.ResetDataPtr->ResetVars.BootSource);
+      S("\n");
+      S("esb_reset_hwcmd\n");
+      CFE_ES_SetupResetVariables(CFE_PSP_RST_TYPE_POWERON, CFE_PSP_RST_SUBTYPE_HW_SPECIAL_COMMAND, 2);
+      S("esb_reset_other\n");
+      CFE_ES_SetupResetVariables(CFE_PSP_RST_TYPE_POWERON, 99, 3);
+      // A PROCESSOR RESET THAT ES DID NOT CAUSE increments the counter. Under the maximum it is
+      // logged as a processor reset; the watchdog and hw-command subtypes get different text.
+      CFE_ES_Global.ResetDataPtr->ResetVars.ES_CausedReset = FALSE;
+      S("esb_reset_proc_wd\n");
+      CFE_ES_SetupResetVariables(CFE_PSP_RST_TYPE_PROCESSOR, CFE_PSP_RST_SUBTYPE_HW_WATCHDOG, 1);
+      S("esb_reset_proc_wd_v count=");
+      D(CFE_ES_Global.ResetDataPtr->ResetVars.ProcessorResetCount);
+      S(" sub=");
+      D(CFE_ES_Global.ResetDataPtr->ResetVars.ResetSubtype);
+      S("\n");
+      CFE_ES_Global.ResetDataPtr->ResetVars.ES_CausedReset = FALSE;
+      S("esb_reset_proc_hw\n");
+      CFE_ES_SetupResetVariables(CFE_PSP_RST_TYPE_PROCESSOR, CFE_PSP_RST_SUBTYPE_HW_SPECIAL_COMMAND, 1);
+      // OVER THE MAXIMUM, THE NEXT ONE IS ESCALATED TO A POWER-ON RESET -- which wipes the reset
+      // area, so the loop is broken by losing state deliberately. The ER log entry is written
+      // first, knowing it will not survive: "it's good to have the entry just in case something
+      // fails".
+      CFE_ES_Global.ResetDataPtr->ResetVars.ES_CausedReset = FALSE;
+      CFE_ES_Global.ResetDataPtr->ResetVars.MaxProcessorResetCount = 1;
+      S("esb_reset_max_wd\n");
+      CFE_ES_SetupResetVariables(CFE_PSP_RST_TYPE_PROCESSOR, CFE_PSP_RST_SUBTYPE_HW_WATCHDOG, 1);
+      CFE_ES_Global.ResetDataPtr->ResetVars.ES_CausedReset = FALSE;
+      CFE_ES_Global.ResetDataPtr->ResetVars.MaxProcessorResetCount = 1;
+      CFE_ES_Global.ResetDataPtr->ResetVars.ProcessorResetCount = 5;
+      S("esb_reset_max_hw\n");
+      CFE_ES_SetupResetVariables(CFE_PSP_RST_TYPE_PROCESSOR, CFE_PSP_RST_SUBTYPE_HW_SPECIAL_COMMAND, 1);
+      // A reset ES DID cause was already logged on the way down, so this only updates the
+      // variables -- no ER log entry, no counter change.
+      CFE_ES_Global.ResetDataPtr->ResetVars.ES_CausedReset = TRUE;
+      S("esb_reset_commanded\n");
+      CFE_ES_SetupResetVariables(CFE_PSP_RST_TYPE_PROCESSOR, 42, 1);
+      S("esb_reset_commanded_v sub=");
+      D(CFE_ES_Global.ResetDataPtr->ResetVars.ResetSubtype);
+      S(" caused=");
+      D(CFE_ES_Global.ResetDataPtr->ResetVars.ES_CausedReset);
+      S("\n");
+      // The reset area being unavailable or too small: both panic, and both return here because
+      // CFE_PSP_Panic is a stub that does.
+      evs_resetarea_rc = CFE_PSP_ERROR;
+      S("esb_reset_noarea\n");
+      CFE_ES_SetupResetVariables(CFE_PSP_RST_TYPE_POWERON, 1, 1);
+      evs_resetarea_rc = CFE_PSP_SUCCESS;
+      evs_resetarea_size = 16;
+      S("esb_reset_small\n");
+      CFE_ES_SetupResetVariables(CFE_PSP_RST_TYPE_POWERON, 1, 1);
+      evs_resetarea_size = sizeof(CFE_ES_ResetData_t);
+      // --- CFE_ES_InitializeFileSystems: format or re-attach ---------------------
+      // A power-on reset FORMATS; a processor reset RE-ATTACHES and falls back to formatting.
+      // That difference is the volatile disk's whole purpose.
+      S("esb_fs_poweron\n");
+      CFE_ES_InitializeFileSystems(CFE_PSP_RST_TYPE_POWERON);
+      S("esb_fs_poweron_v exists=");
+      D(es_vol_exists);
+      S(" mounted=");
+      D(es_vol_mounted);
+      S("\n");
+      S("esb_fs_proc\n");
+      CFE_ES_InitializeFileSystems(CFE_PSP_RST_TYPE_PROCESSOR);
+      // A failed re-attach falls back to a format, with its own log line.
+      es_initfs_rc = OS_ERROR;
+      S("esb_fs_initfail\n");
+      CFE_ES_InitializeFileSystems(CFE_PSP_RST_TYPE_PROCESSOR);
+      es_initfs_rc = OS_SUCCESS;
+      // THE DISK TOO FULL: unmount, remove, re-make, re-mount. 10 of 100 blocks free is under
+      // the 30 percent reserve.
+      es_vol_blocks_free = 10;
+      S("esb_fs_full\n");
+      CFE_ES_InitializeFileSystems(CFE_PSP_RST_TYPE_PROCESSOR);
+      es_vol_blocks_free = 90;
+      // And every failure arm: the memory, the format, the mount, the stat, and each step of the
+      // reformat.
+      es_voldiskmem_rc = CFE_PSP_ERROR;
+      S("esb_fs_nomem\n");
+      CFE_ES_InitializeFileSystems(CFE_PSP_RST_TYPE_POWERON);
+      es_voldiskmem_rc = CFE_PSP_SUCCESS;
+      es_mkfs_rc = OS_ERROR;
+      S("esb_fs_mkfsfail\n");
+      CFE_ES_InitializeFileSystems(CFE_PSP_RST_TYPE_POWERON);
+      es_mkfs_rc = OS_SUCCESS;
+      es_mount_rc = OS_ERROR;
+      S("esb_fs_mountfail\n");
+      CFE_ES_InitializeFileSystems(CFE_PSP_RST_TYPE_POWERON);
+      es_mount_rc = OS_SUCCESS;
+      es_statvol_rc = OS_ERROR;
+      S("esb_fs_statfail\n");
+      CFE_ES_InitializeFileSystems(CFE_PSP_RST_TYPE_PROCESSOR);
+      es_statvol_rc = OS_SUCCESS;
+      // total_blocks of zero takes the same arm, because the division would be by zero.
+      es_vol_total_blocks = 0;
+      S("esb_fs_zeroblocks\n");
+      CFE_ES_InitializeFileSystems(CFE_PSP_RST_TYPE_PROCESSOR);
+      es_vol_total_blocks = 100;
+      // The reformat's four steps, each refused in turn.
+      es_vol_blocks_free = 10;
+      es_unmount_rc = OS_ERROR;
+      S("esb_fs_unmountfail\n");
+      CFE_ES_InitializeFileSystems(CFE_PSP_RST_TYPE_PROCESSOR);
+      es_unmount_rc = OS_SUCCESS;
+      es_rmfs_rc = OS_ERROR;
+      S("esb_fs_rmfsfail\n");
+      CFE_ES_InitializeFileSystems(CFE_PSP_RST_TYPE_PROCESSOR);
+      es_rmfs_rc = OS_SUCCESS;
+      es_vol_blocks_free = 90;
+      // CFE_ES_MainTaskSyncDelay is effectively static -- its definition has no `static` but a
+      // prior forward declaration does, and in C the first declaration's linkage wins -- so its
+      // two arms are driven through CFE_ES_CreateObjects and CFE_ES_Main below. The timeout arm
+      // is the one that matters, and CreateObjects reaches it whenever a core app's task does not
+      // come up RUNNING, which in this driver is always: OS_TaskCreate does not run entry points.
+      // --- CFE_ES_CreateObjects, with a REAL core object table -------------------
+      // THE ENTRIES GO INTO THE TABLE, NOT OVER THE POINTER. GLOBAL_CONFIGDATA is `const` in the
+      // C half and lives in .rodata, so writing its CoreObjectTable field through a cast is a
+      // SIGBUS -- which is how this was found. CFE_CORE_MODULE_OBJTAB is a separate object,
+      // emitted writable with spare slots by tools/cfs/gen_target_config.py precisely so the
+      // driver can do this, and GLOBAL_CONFIGDATA already points at it.
+      CFE_CORE_MODULE_OBJTAB[0] = &es_core_entry_lib;
+      CFE_CORE_MODULE_OBJTAB[1] = &es_core_entry_task;
+      CFE_CORE_MODULE_OBJTAB[2] = NULL;
+      S("esb_createobj\n");
+      CFE_ES_CreateObjects();
+      S("esb_createobj_v coreapps=");
+      D(CFE_ES_Global.RegisteredCoreApps);
+      S(" early=");
+      D(es_core_early_calls);
+      S(" tasks=");
+      D(es_taskcreates);
+      S("\n");
+      // An EarlyInit that fails panics -- and returns, because the panic is a stub.
+      es_core_early_rc = -5;
+      S("esb_createobj_earlyfail\n");
+      CFE_ES_CreateObjects();
+      es_core_early_rc = CFE_SUCCESS;
+      // And a task that cannot be created: the reserved slot is wiped rather than left claimed.
+      es_taskcreate_rc = OS_ERROR;
+      S("esb_createobj_taskfail\n");
+      CFE_ES_CreateObjects();
+      es_taskcreate_rc = OS_SUCCESS;
+      CFE_CORE_MODULE_OBJTAB[0] = NULL;
+      // --- CFE_ES_Main: THE WHOLE BOOT -------------------------------------------
+      // Last, because its first act is to MemSet CFE_ES_Global. Everything above is saved and
+      // restored around it. The five state transitions are in the log, in order, and the startup
+      // script runs for real.
+      MemCpy(&es_global_save, &CFE_ES_Global, sizeof(CFE_ES_Global_t));
+      MemCpy(fs_data, "CFE_LIB, /cf/a.so, A_Init, A, 0, 0, 0x0, 0;\n!", 45);
+      fs_len = 45;
+      es_modlookup_addr = &es_lib_init;
+      S("esb_main\n");
+      CFE_ES_Main(CFE_PSP_RST_TYPE_POWERON, CFE_PSP_RST_SUBTYPE_POWER_CYCLE, 1, "/cf/cfe_es_startup.scr");
+      S("esb_main_v state=");
+      D(CFE_ES_Global.SystemState);
+      S(" coreapps=");
+      D(CFE_ES_Global.RegisteredCoreApps);
+      S(" lastapp=");
+      D(CFE_ES_Global.LastAppId);
+      S("\n");
+      // The shared-data mutex failing is the one failure that stops the boot before anything can
+      // be logged -- so it reports through OS_printf and panics.
+      fs_mut_create_rc = OS_ERROR;
+      S("esb_main_nomutex\n");
+      CFE_ES_Main(CFE_PSP_RST_TYPE_POWERON, CFE_PSP_RST_SUBTYPE_POWER_CYCLE, 1, "/cf/cfe_es_startup.scr");
+      fs_mut_create_rc = OS_SUCCESS;
+      MemCpy(&CFE_ES_Global, &es_global_save, sizeof(CFE_ES_Global_t));
+      es_modlookup_addr = 0xE0000000;
+      fs_len = 0;
+      fs_pos = 0;
+      es_ctx_init();
     }
     // --- cfe_es_cds.c and cfe_es_cds_mempool.c: THE CRITICAL DATA STORE --------------
     //
