@@ -97,6 +97,8 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 
 #include "cfe_resourceid.h"
 #include "cfe_resourceid_basevalue.h"
+#include "cfe_tbl_task.h"       /* CFE_TBL_Global_t, and the types it is built from */
+#include "cfe_tbl_handlelink.h" /* the handle-link list node and its two methods */
 
 /* cfe_msg_objtab.c defines this and no header declares it -- the generated cfe_es_objtab.c is
  * what normally refers to it, by name, from the build system. */
@@ -645,6 +647,13 @@ int32 OS_TimerSet(osal_id_t timer_id, uint32 start_time, uint32 interval_time)
  * indices live in memory that survives a processor reset, not in CFE_ES_Global itself. */
 CFE_ES_Global_t CFE_ES_Global;
 static CFE_ES_ResetData_t es_reset_area;
+
+/* AND TABLE SERVICES' STATE, 592,056 bytes of it, for the same reason and with the same future.
+ * NASA defines the instance in cfe_tbl_task.c; that source is not gated, so the definition sits
+ * here on this half, exactly as the translation's sits beside its type in cfe_tbl_global.HC. It
+ * goes away the moment cfe_tbl_task.c is gated, and until then this is the single largest
+ * object either half allocates -- which is itself the thing the tbl section below tests. */
+CFE_TBL_Global_t CFE_TBL_Global;
 
 /* cfe_es_api.c and cfe_es_task.c are not gated, so three of their functions are stubs on BOTH
  * halves -- the same temporary arrangement CFE_SB_SendSubscriptionReport had until
@@ -7395,6 +7404,133 @@ int main(void)
             fs_wr_left = -1;
         }
 
+
+        /* --- cfe_tbl_handlelink.c -------------------------------------------------------
+         * The first of table services' fifteen sources to be gated, and the only one that
+         * never touches CFE_TBL_Global: two functions over a two-field list node. The node is
+         * filled with 0xAB first, because CFE_TBL_HandleLinkInit's whole job is to write BOTH
+         * fields and a zeroed node would not tell them apart from an untouched one. */
+        {
+            CFE_TBL_HandleLink_t   link;
+            CFE_TBL_RegistryRec_t *deep;
+
+            memset(&link, 0xAB, sizeof(link));
+            CFE_TBL_HandleLinkInit(&link);
+            printf("tbl_linkinit prev=%lu next=%lu attached=%d\n",
+                   (unsigned long)CFE_TBL_HandleID_AsInt(link.Prev),
+                   (unsigned long)CFE_TBL_HandleID_AsInt(link.Next),
+                   (int)CFE_TBL_HandleLinkIsAttached(&link));
+
+            link.Next = CFE_TBL_HANDLEID_C(CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 3));
+            printf("tbl_linkattach next=%lu attached=%d\n",
+                   (unsigned long)CFE_TBL_HandleID_AsInt(link.Next),
+                   (int)CFE_TBL_HandleLinkIsAttached(&link));
+
+            /* PREV ALONE IS NOT ATTACHMENT. CFE_TBL_HandleLinkIsAttached reads only Next, which
+             * is the asymmetry that makes the list walkable in one direction from any node and
+             * is easy to get wrong by symmetry when translating. */
+            CFE_TBL_HandleLinkInit(&link);
+            link.Prev = CFE_TBL_HANDLEID_C(CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 4));
+            printf("tbl_linkprevonly prev=%lu attached=%d\n",
+                   (unsigned long)CFE_TBL_HandleID_AsInt(link.Prev),
+                   (int)CFE_TBL_HandleLinkIsAttached(&link));
+
+            /* AND THROUGH THE DEEPEST REGISTRY RECORD, 61 KB into the global: this is where a
+             * table's access list actually lives, and `Registry[MAX - 1]` is the address form
+             * that resolved 117 KB before the object until the subscript fix. */
+            deep = &CFE_TBL_Global.Registry[CFE_PLATFORM_TBL_MAX_NUM_TABLES - 1];
+            memset(&deep->AccessList, 0xCD, sizeof(deep->AccessList));
+            CFE_TBL_HandleLinkInit(&deep->AccessList);
+            printf("tbl_linkdeep attached=%d off=%ld\n",
+                   (int)CFE_TBL_HandleLinkIsAttached(&deep->AccessList),
+                   (long)((char *)&deep->AccessList - (char *)&CFE_TBL_Global));
+        }
+
+        /* --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
+         * ------------------------------------------------------------------------------------
+         * This is not a translation of anything. It is the test that has to pass BEFORE the
+         * 7,780 lines of table services are worth translating, because all of them reach
+         * through this one object and the deepest member sits at offset 591,736.
+         *
+         * A RISC-V load or store carries a 12-bit signed immediate, so anything past 2,047
+         * bytes from the base register needs the address built up first -- and this port has a
+         * recorded codegen bug of exactly that shape (docs/, "indexed store into a large local
+         * array" emitted a wild store at deep offsets). It was fixed for LOCALS and has never
+         * been exercised at 590 KB on a global. If it is wrong here, every table function
+         * built on top writes to the wrong place and the transcript blames the function.
+         *
+         * So: the offsets are printed as pointer differences, which is the compiler's own
+         * arithmetic, and then a sentinel is written and read back through each one. The C
+         * half computes the same differences from the same header, so a mismatch is a codegen
+         * failure and not a layout disagreement -- check_padding already settled layout. */
+        printf("tbl_off reg=%ld crit=%ld buf=%ld val=%ld dmp=%ld rds=%ld last=%ld whole=%ld\n",
+               (long)((char *)&CFE_TBL_Global.Registry[0] - (char *)&CFE_TBL_Global),
+               (long)((char *)&CFE_TBL_Global.CritReg[0] - (char *)&CFE_TBL_Global),
+               (long)((char *)&CFE_TBL_Global.Buf - (char *)&CFE_TBL_Global),
+               (long)((char *)&CFE_TBL_Global.ValidationResults[0] - (char *)&CFE_TBL_Global),
+               (long)((char *)&CFE_TBL_Global.DumpControlBlocks[0] - (char *)&CFE_TBL_Global),
+               (long)((char *)&CFE_TBL_Global.RegDumpState - (char *)&CFE_TBL_Global),
+               (long)((char *)&CFE_TBL_Global.LastDumpCtrlBlockId - (char *)&CFE_TBL_Global),
+               (long)sizeof(CFE_TBL_Global));
+
+        /* the LAST element of every array, which is the deepest reach in each case */
+        printf("tbl_off_end reg=%ld crit=%ld val=%ld dmp=%ld pool=%ld\n",
+               (long)((char *)&CFE_TBL_Global.Registry[CFE_PLATFORM_TBL_MAX_NUM_TABLES - 1] -
+                      (char *)&CFE_TBL_Global),
+               (long)((char *)&CFE_TBL_Global.CritReg[CFE_PLATFORM_TBL_MAX_CRITICAL_TABLES - 1] -
+                      (char *)&CFE_TBL_Global),
+               (long)((char *)&CFE_TBL_Global.ValidationResults[CFE_PLATFORM_TBL_MAX_NUM_VALIDATIONS - 1] -
+                      (char *)&CFE_TBL_Global),
+               (long)((char *)&CFE_TBL_Global.DumpControlBlocks[CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS - 1] -
+                      (char *)&CFE_TBL_Global),
+               (long)((char *)&CFE_TBL_Global.Buf.Partition.Data[CFE_PLATFORM_TBL_BUF_MEMORY_BYTES - 1] -
+                      (char *)&CFE_TBL_Global));
+
+        /* AND NOW WRITE THROUGH EVERY ONE OF THEM AND READ IT BACK. A store that lands at the
+         * wrong offset shows up two ways: the value read back is wrong, or a NEIGHBOUR changed.
+         * Both are checked -- the neighbour sum is over the five members that follow the ones
+         * written, and it has to stay zero. */
+        memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+        CFE_TBL_Global.Registry[0].RegId                                      = 0x11111111;
+        CFE_TBL_Global.Registry[CFE_PLATFORM_TBL_MAX_NUM_TABLES - 1].RegId    = 0x22222222;
+        CFE_TBL_Global.CritReg[0].CDSHandle                                   = 0x33333333;
+        CFE_TBL_Global.CritReg[CFE_PLATFORM_TBL_MAX_CRITICAL_TABLES - 1].CDSHandle = 0x44444444;
+        CFE_TBL_Global.Buf.Partition.Data[0]                                  = 0x55;
+        CFE_TBL_Global.Buf.Partition.Data[CFE_PLATFORM_TBL_BUF_MEMORY_BYTES - 1] = 0x66;
+        CFE_TBL_Global.ValidationResults[0].CrcOfTable                        = 0x77777777;
+        CFE_TBL_Global.ValidationResults[CFE_PLATFORM_TBL_MAX_NUM_VALIDATIONS - 1].CrcOfTable = 0x88888888;
+        CFE_TBL_Global.DumpControlBlocks[CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS - 1].TableName[0] = 'Z';
+        CFE_TBL_Global.RegDumpState.FileExisted                               = true;
+        CFE_TBL_Global.LastHandle               = CFE_ResourceId_FromInteger(0x99999999);
+        CFE_TBL_Global.LastDumpCtrlBlockId      = CFE_ResourceId_FromInteger(0xAAAAAAAA);
+
+        printf("tbl_deep %08lx %08lx %08lx %08lx %02x %02x %08lx %08lx %c %d %08lx %08lx\n",
+               (unsigned long)CFE_TBL_Global.Registry[0].RegId,
+               (unsigned long)CFE_TBL_Global.Registry[CFE_PLATFORM_TBL_MAX_NUM_TABLES - 1].RegId,
+               (unsigned long)CFE_TBL_Global.CritReg[0].CDSHandle,
+               (unsigned long)CFE_TBL_Global.CritReg[CFE_PLATFORM_TBL_MAX_CRITICAL_TABLES - 1].CDSHandle,
+               (unsigned)CFE_TBL_Global.Buf.Partition.Data[0],
+               (unsigned)CFE_TBL_Global.Buf.Partition.Data[CFE_PLATFORM_TBL_BUF_MEMORY_BYTES - 1],
+               (unsigned long)CFE_TBL_Global.ValidationResults[0].CrcOfTable,
+               (unsigned long)CFE_TBL_Global.ValidationResults[CFE_PLATFORM_TBL_MAX_NUM_VALIDATIONS - 1].CrcOfTable,
+               CFE_TBL_Global.DumpControlBlocks[CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS - 1].TableName[0],
+               (int)CFE_TBL_Global.RegDumpState.FileExisted,
+               (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_TBL_Global.LastHandle),
+               (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_TBL_Global.LastDumpCtrlBlockId));
+
+        /* the neighbours: every one of these is adjacent to something written above and must
+         * still be zero. Registry[1] follows Registry[0], CritReg[1] follows CritReg[0],
+         * ValidationResults[1] follows ValidationResults[0], and LastRegId, LastLoadBuffId and
+         * LastValidationResultId sit between LastHandle and LastDumpCtrlBlockId. */
+        printf("tbl_neigh %lu\n",
+               (unsigned long)(CFE_TBL_Global.Registry[1].RegId + CFE_TBL_Global.CritReg[1].CDSHandle +
+                               CFE_TBL_Global.ValidationResults[1].CrcOfTable +
+                               CFE_RESOURCEID_TO_ULONG(CFE_TBL_Global.LastRegId) +
+                               CFE_RESOURCEID_TO_ULONG(CFE_TBL_Global.LastLoadBuffId) +
+                               CFE_RESOURCEID_TO_ULONG(CFE_TBL_Global.LastValidationResultId) +
+                               CFE_TBL_Global.Buf.Partition.Data[1] +
+                               CFE_TBL_Global.Buf.Partition.Data[CFE_PLATFORM_TBL_BUF_MEMORY_BYTES - 2]));
+        memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
 
         /* --- cfe_time_objtab.c ------------------------------------------------------------ */
         printf("tim_objtab %s %d %d %d %lu %lu\n", CFE_TIME_ModuleEntry.Name,

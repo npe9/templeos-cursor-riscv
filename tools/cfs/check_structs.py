@@ -196,6 +196,12 @@ UNPAIRED_OK = {
         "NASA writes this member's type inline as CFE_ES_STATIC_POOL_TYPE(...), an ANONYMOUS "
         "union. HolyC has no anonymous member type, so the union is named here; there is no "
         "upstream struct of any name to pair with. cfe_sb_global.HC records the argument.",
+    "CFE_TBL_MemPartition_t":
+        "The same thing in cfe_tbl_task.h: CFE_TBL_BufParams_t's Partition member is an inline "
+        "CFE_ES_STATIC_POOL_TYPE(CFE_PLATFORM_TBL_BUF_MEMORY_BYTES), an anonymous union, so "
+        "again there is no upstream type of any name. This is the 512 KiB table buffer pool, "
+        "the single largest object in the port; its SIZE is checked by check_padding through "
+        "CFE_TBL_Global_t's member offsets, which is the property that matters.",
     # CFE_SB_Buffer WAS HERE, and its reason was WRONG: it said NASA's CFE_SB_Buffer_t is a
     # typedef of an anonymous union with no tagged upstream type. It is `typedef union CFE_SB_Msg
     # {...} CFE_SB_Buffer_t;` -- tagged, and perfectly pairable. The entry was written when this

@@ -102,7 +102,8 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CFE/modules/es/fsw/src/cfe_es_cds.c
        $CFE/modules/es/fsw/src/cfe_es_cds_mempool.c
        $CFE/modules/es/fsw/src/cfe_es_startupscript.c
-       $CFE/modules/es/fsw/src/cfe_es_start.c"
+       $CFE/modules/es/fsw/src/cfe_es_start.c
+       $CFE/modules/tbl/fsw/src/cfe_tbl_handlelink.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -128,7 +129,7 @@ INC="-I$CFE/modules/core_api/fsw/inc -I$CFE/modules/core_api/config
      -I$CFE/modules/es/config -I$CFE/modules/es/fsw/inc -I$CFE/modules/es/fsw/src
      -I$CFE/modules/sb/config -I$CFE/modules/sb/fsw/inc -I$CFE/modules/sb/fsw/src
      -I$CFE/modules/evs/config -I$CFE/modules/evs/fsw/inc -I$CFE/modules/evs/fsw/src
-     -I$CFE/modules/tbl/config -I$CFE/modules/tbl/fsw/inc
+     -I$CFE/modules/tbl/config -I$CFE/modules/tbl/fsw/inc -I$CFE/modules/tbl/fsw/src
      -I$CFE/modules/time/config -I$CFE/modules/time/fsw/inc
      -I$CFE/modules/fs/config -I$CFE/modules/fs/fsw/inc -I$CFE/modules/fs/fsw/src
      -I$CFE/modules/ta/config -I$CFE/modules/ta/fsw/inc -I$CFE/modules/ta/fsw/src
@@ -198,6 +199,16 @@ python3 "$ROOT/tools/cfs/check_padding.py" || exit 1
 # COUNT, and treats a member it cannot pair with NASA's as a FAILURE -- not finding the upstream
 # declaration is the outcome that looks like success.
 python3 "$ROOT/tools/cfs/check_fnptr_members.py" || exit 1
+
+# --- the header inlines -------------------------------------------------------------------------
+# check_coverage above compares NASA's .c files, and says so in its own comment: "`static inline`
+# in a header is not our business". cFS puts real logic in header inlines -- cfe_tbl_regrec.h has
+# twenty, cfe_es_resource.h twenty-four, 163 across the headers this port reads -- and until this
+# gate existed every one of them was outside every gate. 92 were translated anyway, by whoever
+# went and found them; the question a gate has to answer is what happens to the rest. What is
+# REQUIRED is computed (the transitive closure of "a gated source calls it"), so gating a new .c
+# makes its inlines required the same moment, with no list to remember to update.
+python3 "$ROOT/tools/cfs/check_header_inlines.py" || exit 1
 
 # --- the constants ------------------------------------------------------------------------------
 # HolyC has no enum and no CMake, so the translation re-states hundreds of numbers by hand:

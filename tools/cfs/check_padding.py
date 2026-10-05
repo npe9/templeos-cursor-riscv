@@ -132,6 +132,13 @@ HDRS = [
     # cfe_sb_priv.h. Neither is reachable from cfe_sb.h, which is the PUBLIC header and the only
     # SB one that was on this list, so none of them was measured.
     "cfe_sb_module_all.h", "cfe_sb_priv.h",
+    # TABLE SERVICES' STATE. Like ES's, the global header does not include the headers whose
+    # types it embeds -- cFE relies on cfe_tbl_module_all.h having pulled them in -- so the
+    # module-private headers come first and in dependency order. cfe_tbl_task.h is last because
+    # it is the one that defines CFE_TBL_Global_t out of all the others.
+    "cfe_tbl_module_all.h", "cfe_tbl_handlelink.h", "cfe_tbl_loadbuff.h", "cfe_tbl_accdesc.h",
+    "cfe_tbl_valresult.h", "cfe_tbl_dumpctl.h", "cfe_tbl_regrec.h", "cfe_tbl_resource.h",
+    "cfe_tbl_task.h", "cfe_tbl_msg.h",
 ]
 
 # NASA .c files whose FILE-SCOPE typedefs have to be lifted into the probe. A module's private
