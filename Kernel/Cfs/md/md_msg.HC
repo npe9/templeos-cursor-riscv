@@ -62,6 +62,11 @@
 /*******************************************************************************/
 // md_internal_cfg.h -- the private side of the configuration, reaching NASA's code through
 // MD_INTERNAL_CFGVAL(x) the same way.
+// md_msgids.h. Both resolve through CFE_PLATFORM_MD_TLM_MIDVAL and a topic id, so the values
+// are written out and check_constants compares them against NASA's own expansion.
+#define MD_HK_TLM_MID         0x890
+#define MD_DWELL_PKT_MID_BASE 0x891
+
 #define MD_INTERNAL_PIPE_DEPTH  50
 #define MD_INTERNAL_MISSION_REV 0xFF
 

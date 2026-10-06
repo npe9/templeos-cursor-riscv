@@ -196,6 +196,19 @@ U0 D(I64 v)
   }
 }
 
+// Exactly two upper-case hex digits, matching the oracle's "%02X". Used to dump dwell bytes,
+// where the POINT is to see the bytes that were NOT written: a store that is too wide shows up
+// as a missing poison byte, and only a fixed-width unsigned rendering makes that readable.
+U0 H2(I64 v)
+{
+  U8 two[3];
+  U8 *hx = "0123456789ABCDEF";
+  two[0] = hx[(v >> 4) & 15];
+  two[1] = hx[v & 15];
+  two[2] = 0;
+  S(two);
+}
+
 U0 Dump(U8 *tag, CFE_MSG_Message *m)
 {
   S(tag);
@@ -1466,6 +1479,65 @@ I32 TblValStub(U8 *TblPtr)
 // It is used only by the exercise below -- no translated function mentions it -- so it is a
 // driver constant, defined where the driver's other PSP stubs are.
 #define CFE_PSP_INVALID_MEM_ADDR -21
+// THE SIMULATED DWELL WINDOW. The hardware MD needs and this port does not have, supplied
+// through the PSP exactly as the other 22 CFE_PSP_* functions are, and mirroring the oracle's
+// copy line for line. See the long note on the C side for why it is a WINDOW of literal
+// addresses rather than a real buffer's address: NASA's own event text prints a resolved
+// cpuaddr with %08X, and a host pointer can never match a guest one.
+//
+// ADDITIVE: CFE_PSP_MemValidateRange keeps its settable return code untouched, because ES's and
+// TBL's pool paths already drive it and the existing transcript lines are the control.
+//
+// The bytes are assembled explicitly, little end first, rather than by casting the buffer --
+// MD_GetDwellData copies the low NumBytes of the value into the dwell packet, so the packet's
+// contents depend on that choice.
+#define MD_SIM_WINDOW_BASE 0x00100000
+#define MD_SIM_WINDOW_SIZE 256
+U8 md_sim_mem[MD_SIM_WINDOW_SIZE];
+I64 md_sim_reads;
+I64 md_sim_i;
+
+U0 md_sim_fill()
+{
+  for (md_sim_i = 0; md_sim_i < MD_SIM_WINDOW_SIZE; md_sim_i++) {
+    md_sim_mem[md_sim_i] = 0x40 + md_sim_i; // ascending and distinguishable
+  }
+}
+
+Bool md_sim_in(U64 a, I64 width)
+{
+  return a >= MD_SIM_WINDOW_BASE && (a - MD_SIM_WINDOW_BASE) + width <= MD_SIM_WINDOW_SIZE;
+}
+
+I32 CFE_PSP_MemRead8(U64 MemoryAddress, U8 *ByteValue)
+{
+  ++md_sim_reads;
+  if (!md_sim_in(MemoryAddress, 1))
+    return CFE_PSP_INVALID_MEM_ADDR;
+  *ByteValue = md_sim_mem[MemoryAddress - MD_SIM_WINDOW_BASE];
+  return CFE_PSP_SUCCESS;
+}
+
+I32 CFE_PSP_MemRead16(U64 MemoryAddress, U16 *uint16Value)
+{
+  I64 o = MemoryAddress - MD_SIM_WINDOW_BASE;
+  ++md_sim_reads;
+  if (!md_sim_in(MemoryAddress, 2))
+    return CFE_PSP_INVALID_MEM_ADDR;
+  *uint16Value = md_sim_mem[o] | (md_sim_mem[o + 1] << 8);
+  return CFE_PSP_SUCCESS;
+}
+
+I32 CFE_PSP_MemRead32(U64 MemoryAddress, U32 *uint32Value)
+{
+  I64 o = MemoryAddress - MD_SIM_WINDOW_BASE;
+  ++md_sim_reads;
+  if (!md_sim_in(MemoryAddress, 4))
+    return CFE_PSP_INVALID_MEM_ADDR;
+  *uint32Value = md_sim_mem[o] | (md_sim_mem[o + 1] << 8) | (md_sim_mem[o + 2] << 16) |
+                 (md_sim_mem[o + 3] << 24);
+  return CFE_PSP_SUCCESS;
+}
 I32 md_sym_rc;
 U64 md_sym_addr;
 I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
@@ -1475,6 +1547,7 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
   return md_sym_rc;
 }
 #include "/Kernel/Cfs/md/md_utils.HC"
+#include "/Kernel/Cfs/md/md_dwell_pkt.HC"
 // File scope, not locals: docs/HOLYC_STRUCT_LIMITS.md #22 -- growing a big function's TOTAL
 // frame makes an unrelated file-scope read return zero -- and HolyC has no aggregate
 // initialiser, so the mask list is filled at use.
@@ -1484,6 +1557,18 @@ MD_SymAddr_t md_sa;
 // FOUR added scalars in a big function's frame were enough to make a file-scope read return 0.
 I64 md_mi;
 I64 md_k;
+// md_dwell_pkt's exercise. File scope for the reason above, and the two width lists because
+// HolyC has no aggregate initialiser.
+U16 md_widths[3];
+U16 md_badw[4];
+MD_DwellPacketControl_t *md_T;
+MD_DwellPkt_t *md_P;
+I64 md_n;
+I64 md_i;
+I64 md_r0;
+I64 md_st;
+I64 md_msz;
+I64 md_sends0;
 I64 md_k2;
 I64 md_before;
 U64 md_ra;
@@ -14181,6 +14266,232 @@ I64 main()
     S("md_dwell_neigh ");
     D(MD_AppData.MD_DwellTables[3].AddrCount + MD_AppData.MD_DwellTables[3].DataSize +
       MD_AppData.MD_DwellTables[3].Rate);
+    S("\n");
+    // --- md_dwell_pkt.c -------------------------------------------------------------
+    // The part of MD that actually reads memory. Four functions: the loop, the one read, the
+    // send, and a three-line reset.
+    //
+    // THE DWELL BYTES ARE READ BACK WITH THEIR NEIGHBOURS. MD_GetDwellData's write is a 1-, 2-
+    // or 4-byte store at a VARIABLE OFFSET, which is the exact shape of the two codegen bugs
+    // in docs -- an 8-byte store emitted for a narrow one, and a wild store for a deep
+    // variable index. Data[] is poisoned with 0xEE before each write and the bytes on BOTH
+    // SIDES of the written region are printed, so a store that is too wide shows up as a
+    // missing 0xEE rather than as a value that happens to look right.
+    md_T = &MD_AppData.MD_DwellTables[0];
+    md_P = &MD_AppData.MD_DwellPkt[0];
+    md_widths[0] = 1;
+    md_widths[1] = 2;
+    md_widths[2] = 4;
+    md_badw[0] = 1;
+    md_badw[1] = 2;
+    md_badw[2] = 4;
+    md_badw[3] = 3;
+    md_sim_fill();
+    MemSet(MD_AppData.MD_DwellTables, 0,
+           sizeof(MD_DwellPacketControl_t) * MD_INTERFACE_NUM_DWELL_TABLES);
+    MemSet(MD_AppData.MD_DwellPkt, 0, sizeof(MD_DwellPkt_t) * MD_INTERFACE_NUM_DWELL_TABLES);
+    // INITIALISE THE PACKET HEADER, because without it MD_SendDwellPkt's transmit is REJECTED
+    // and the send path is not exercised at all. The first version of this block MemSet the
+    // packet and never called CFE_MSG_Init, so every CFE_SB_TransmitMsg produced
+    // `Send Err:Invalid MsgId(0x0)in msg` -- identical on both halves, so the transcript was
+    // satisfied while the function under test did nothing. This is what md_app.c does.
+    CFE_MSG_Init(&md_P->TelemetryHeader.Msg, CFE_SB_ValueToMsgId(MD_DWELL_PKT_MID_BASE),
+                 sizeof(MD_DwellPkt_t));
+    // (a) one write per width, each into a poisoned packet, neighbours printed
+    for (md_n = 0; md_n < 3; md_n++) {
+      MemSet(md_P->Payload.Data, 0xEE, MD_INTERFACE_DWELL_TABLE_SIZE * 4);
+      md_T->Entry[0].Length = md_widths[md_n];
+      md_T->Entry[0].ResolvedAddress = MD_SIM_WINDOW_BASE + 0x10;
+      md_T->PktOffset = 4;
+      md_r0 = md_sim_reads;
+      md_st = MD_GetDwellData(0, 0);
+      S("md_get w=");
+      D(md_widths[md_n]);
+      S(" st=");
+      D(md_st);
+      S(" off=");
+      D(md_T->PktOffset);
+      S(" reads=");
+      D(md_sim_reads - md_r0);
+      S(" data=");
+      for (md_i = 0; md_i < 10; md_i++) {
+        H2(md_P->Payload.Data[md_i]);
+      }
+      S("\n");
+    }
+    // (b) the four error returns, and the fact that PktOffset advances ANYWAY -- NASA's
+    // `TblPtr->PktOffset += NumBytes` sits OUTSIDE the success branch, so a failed read still
+    // moves the write cursor. That is behaviour, not a bug, and it is invisible to a test that
+    // only looks at the status.
+    for (md_n = 0; md_n < 4; md_n++) {
+      MemSet(md_P->Payload.Data, 0xEE, MD_INTERFACE_DWELL_TABLE_SIZE * 4);
+      md_T->Entry[0].Length = md_badw[md_n];
+      // widths 1,2,4 get an address OUTSIDE the window; width 3 is invalid itself
+      if (md_badw[md_n] == 3)
+        md_T->Entry[0].ResolvedAddress = MD_SIM_WINDOW_BASE + 0x10;
+      else
+        md_T->Entry[0].ResolvedAddress = 0x900;
+      md_T->PktOffset = 4;
+      md_st = MD_GetDwellData(0, 0);
+      S("md_get_err w=");
+      D(md_badw[md_n]);
+      S(" st=");
+      D(md_st);
+      S(" off=");
+      D(md_T->PktOffset);
+      S(" untouched=");
+      D(md_P->Payload.Data[4] == 0xEE);
+      S("\n");
+    }
+    // (c) MD_StartDwellStream, three lines and all three asserted
+    md_T->Countdown = 99;
+    md_T->CurrentEntry = 7;
+    md_T->PktOffset = 33;
+    MD_StartDwellStream(0);
+    S("md_start ");
+    D(md_T->Countdown);
+    S(" ");
+    D(md_T->CurrentEntry);
+    S(" ");
+    D(md_T->PktOffset);
+    S("\n");
+    // (d) THE LOOP. Three entries of two bytes each, one delay apiece, so Rate is 3 and each
+    // wakeup collects exactly one entry; the third fills the packet and sends it. Printed
+    // after every call, because the interesting part is the STATE MACHINE and not the packet.
+    MemSet(MD_AppData.MD_DwellTables, 0,
+           sizeof(MD_DwellPacketControl_t) * MD_INTERFACE_NUM_DWELL_TABLES);
+    MemSet(md_P->Payload.Data, 0xEE, MD_INTERFACE_DWELL_TABLE_SIZE * 4);
+    for (md_i = 0; md_i < 3; md_i++) {
+      md_T->Entry[md_i].Length = 2;
+      md_T->Entry[md_i].Delay = 1;
+      md_T->Entry[md_i].ResolvedAddress = MD_SIM_WINDOW_BASE + 0x20 + 2 * md_i;
+    }
+    MD_UpdateDwellControlInfo(0);
+    md_T->Enabled = MD_Dwell_States_ENABLED;
+    StrCpy(md_T->Signature, "DW0");
+    // AND A BYTE AFTER THE TERMINATOR, because without it this test asserts nothing. Measured:
+    // replacing NASA's strncpy with a plain MemCpy of the same length left the transcript
+    // BYTE-IDENTICAL, because the source field had been MemSet to zero and a verbatim copy of
+    // zeros is indistinguishable from a zero-fill. The control PASSED, which means the setup --
+    // not the code -- was doing the work. With 0x7A sitting past the NUL, StrNCpy still
+    // zero-fills the destination and a MemCpy carries the 0x7A across.
+    md_T->Signature[5] = 0x7A;
+    MD_StartDwellStream(0);
+    // AND A WITNESS THAT THE PACKET WAS REALLY TRANSMITTED. MD_SendDwellPkt returns U0, so
+    // nothing it does is observable from its own result; SB's NoSubscribersCounter is
+    // incremented by CFE_SB_TransmitMsg on a VALID MsgId with no subscribers, which is exactly
+    // this case -- and a send rejected for a bad MsgId does NOT increment it.
+    md_sends0 = CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter;
+    for (md_n = 0; md_n < 3; md_n++) {
+      md_st = MD_DwellLoop(NULL);
+      S("md_loop ");
+      D(md_n);
+      S(" st=");
+      D(md_st);
+      S(" cur=");
+      D(md_T->CurrentEntry);
+      S(" off=");
+      D(md_T->PktOffset);
+      S(" cd=");
+      D(md_T->Countdown);
+      S("\n");
+    }
+    // the packet, read out of MD_AppData rather than off the bus: CFE_SB_TimeStampMsg puts a
+    // TIME in the header, which cannot be compared, and the payload is what MD is responsible
+    // for. CFE_MSG_PTR(x) is NASA's &x.Msg.
+    // MASKED TO EIGHT BITS, because NoSubscribersCounter is a U8 and it stood at 254 when this
+    // block was reached -- the unmasked difference printed 4294967042. A witness that wraps is
+    // not a witness.
+    S("md_sent ");
+    D((CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter - md_sends0) & 0xFF);
+    S("\n");
+    CFE_MSG_GetSize(&md_P->TelemetryHeader.Msg, &md_msz);
+    S("md_pkt id=");
+    D(md_P->Payload.TableId);
+    S(" n=");
+    D(md_P->Payload.AddrCount);
+    S(" rate=");
+    D(md_P->Payload.Rate);
+    S(" bytes=");
+    D(md_P->Payload.ByteCount);
+    S(" size=");
+    D(md_msz);
+    S(" data=");
+    for (md_i = 0; md_i < 10; md_i++) {
+      H2(md_P->Payload.Data[md_i]);
+    }
+    // AND THE SIGNATURE PAST ITS TERMINATOR. NASA copies it with strncpy, which ZERO-FILLS the
+    // rest of the field; a MemCpy would carry whatever followed the source string instead, and
+    // only the bytes AFTER the NUL would show it.
+    S(" sig=");
+    for (md_i = 0; md_i < 6; md_i++) {
+      H2(md_P->Payload.Signature[md_i]);
+    }
+    S(" last=");
+    D(md_P->Payload.Signature[MD_INTERFACE_SIGNATURE_FIELD_LENGTH - 1]);
+    S("\n");
+    // (e) A ZERO-RATE TABLE IS NEVER PROCESSED, and that guard is load-bearing rather than
+    // defensive: with every Delay zero, MD_DwellLoop's `while (Countdown == 0)` would reload
+    // Countdown with a zero delay after sending and spin forever. The Rate > 0 test is the
+    // only thing standing between this app and a hang.
+    MemSet(MD_AppData.MD_DwellTables, 0,
+           sizeof(MD_DwellPacketControl_t) * MD_INTERFACE_NUM_DWELL_TABLES);
+    for (md_i = 0; md_i < 3; md_i++) {
+      md_T->Entry[md_i].Length = 1;
+      md_T->Entry[md_i].Delay = 0;
+      md_T->Entry[md_i].ResolvedAddress = MD_SIM_WINDOW_BASE;
+    }
+    MD_UpdateDwellControlInfo(0);
+    md_T->Enabled = MD_Dwell_States_ENABLED;
+    MD_StartDwellStream(0);
+    md_r0 = md_sim_reads;
+    md_st = MD_DwellLoop(NULL);
+    S("md_zerorate st=");
+    D(md_st);
+    S(" rate=");
+    D(md_T->Rate);
+    S(" cd=");
+    D(md_T->Countdown);
+    S(" reads=");
+    D(md_sim_reads - md_r0);
+    S("\n");
+    // (f) THE ALREADY-FULL BRANCH: CurrentEntry >= AddrCount on entry, which NASA reaches when
+    // a table is shortened after data was written. It sends immediately and reloads Countdown
+    // from the LAST entry's delay.
+    MemSet(MD_AppData.MD_DwellTables, 0,
+           sizeof(MD_DwellPacketControl_t) * MD_INTERFACE_NUM_DWELL_TABLES);
+    for (md_i = 0; md_i < 3; md_i++) {
+      md_T->Entry[md_i].Length = 1;
+      md_T->Entry[md_i].Delay = 5 + md_i;
+      md_T->Entry[md_i].ResolvedAddress = MD_SIM_WINDOW_BASE;
+    }
+    MD_UpdateDwellControlInfo(0);
+    md_T->Enabled = MD_Dwell_States_ENABLED;
+    md_T->CurrentEntry = md_T->AddrCount;
+    md_T->Countdown = 42;
+    md_r0 = md_sim_reads;
+    md_sends0 = CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter;
+    md_st = MD_DwellLoop(NULL);
+    // THE WITNESS READS 2 PER DWELL PACKET, AND THAT IS THE POINT OF PRINTING IT. The dwell
+    // send finds no subscribers, which increments this counter and makes SB raise
+    // CFE_SB_SEND_NO_SUBS_EID; EVS then TRANSMITS that event packet over SB
+    // (cfe_evs_utils.c:498) on MsgId 0x809, which also has no subscribers, and the counter
+    // moves again. Verified rather than assumed: 0x809 accounts for 113 of the 119
+    // no-subscriber lines in this transcript. I first predicted 1 here, on the theory that
+    // cfe_sb_priv.c's SEND_NO_SUBS REQUEST BIT made the event a per-route one-shot. It is not,
+    // and the second witness is what said so.
+    S("md_full st=");
+    D(md_st);
+    S(" cur=");
+    D(md_T->CurrentEntry);
+    S(" off=");
+    D(md_T->PktOffset);
+    S(" cd=");
+    D(md_T->Countdown);
+    S(" reads=");
+    D(md_sim_reads - md_r0);
+    S(" sent=");
+    D((CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter - md_sends0) & 0xFF);
     S("\n");
     S("tim_objtab ");
     S(CFE_TIME_ModuleEntry.Name);

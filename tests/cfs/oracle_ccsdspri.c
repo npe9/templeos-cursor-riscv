@@ -114,6 +114,7 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 /* MD -- the first cFS APP. md_app.h reaches MD_AppData_t and the message types;
  * md_tblstruct.h is not reachable from it and holds MD_DwellTableLoad_t. */
 #include "md_app.h"
+#include "md_dwell_pkt.h"
 #include "md_utils.h"
 #include "md_tbldefs.h"
 #include "md_tblstruct.h"
@@ -1764,6 +1765,75 @@ static long es_mutsem_deletes;
  * So both halves supply the same stub, and MD_ResolveSymAddr's symbol branch is reachable on
  * purpose: md_sym_rc picks success or failure and md_sym_addr is the address a success yields.
  * Without this the branch is simply never taken and half of MD_ResolveSymAddr is untested. */
+/* THE SIMULATED DWELL WINDOW -- the hardware MD needs and this port does not have, supplied
+ * through the PSP the same way the other 22 CFE_PSP_* functions are.
+ *
+ * WHY A WINDOW AND NOT A REAL BUFFER'S ADDRESS. MD reads whatever address the ground gives it,
+ * and NASA's own event text prints a resolved cpuaddr with %08X. A real buffer's address is a
+ * host pointer on this half and a guest pointer on the other, so it can never appear in a
+ * transcript that compares the two character for character. MD_ResolveSymAddr returns Offset
+ * VERBATIM when SymName is empty, so the exercise hands MD literal addresses inside a FIXED
+ * window -- the same constant in both halves -- and these three functions map the window onto
+ * a buffer with a known pattern. The address in the transcript is then a number written in the
+ * source, not a pointer.
+ *
+ * ADDITIVE, NOT A REPLACEMENT. CFE_PSP_MemValidateRange below is deliberately left alone: it is
+ * the settable stub that ES's and TBL's pool paths already drive, and making it window-aware
+ * would change behaviour for every existing caller. The bounds check lives here instead.
+ *
+ * THE BYTES ARE ASSEMBLED EXPLICITLY, little end first, rather than by casting the buffer to a
+ * uint16/uint32. Both halves happen to be little-endian, but MD_GetDwellData memcpy's the low
+ * NumBytes of the value straight into the dwell packet, so the packet's CONTENTS depend on that
+ * choice and an assumption there would be an assumption about the transcript. */
+#define MD_SIM_WINDOW_BASE 0x00100000
+#define MD_SIM_WINDOW_SIZE 256
+static uint8 md_sim_mem[MD_SIM_WINDOW_SIZE];
+static long  md_sim_reads;
+
+static void md_sim_fill(void)
+{
+    int i;
+    for (i = 0; i < MD_SIM_WINDOW_SIZE; i++)
+    {
+        md_sim_mem[i] = (uint8)(0x40 + i); /* ascending and distinguishable */
+    }
+}
+
+static int md_sim_in(cpuaddr a, int width)
+{
+    return a >= MD_SIM_WINDOW_BASE && (a - MD_SIM_WINDOW_BASE) + width <= MD_SIM_WINDOW_SIZE;
+}
+
+int32 CFE_PSP_MemRead8(cpuaddr MemoryAddress, uint8 *ByteValue)
+{
+    ++md_sim_reads;
+    if (!md_sim_in(MemoryAddress, 1))
+        return CFE_PSP_INVALID_MEM_ADDR;
+    *ByteValue = md_sim_mem[MemoryAddress - MD_SIM_WINDOW_BASE];
+    return CFE_PSP_SUCCESS;
+}
+
+int32 CFE_PSP_MemRead16(cpuaddr MemoryAddress, uint16 *uint16Value)
+{
+    size_t o = (size_t)(MemoryAddress - MD_SIM_WINDOW_BASE);
+    ++md_sim_reads;
+    if (!md_sim_in(MemoryAddress, 2))
+        return CFE_PSP_INVALID_MEM_ADDR;
+    *uint16Value = (uint16)md_sim_mem[o] | ((uint16)md_sim_mem[o + 1] << 8);
+    return CFE_PSP_SUCCESS;
+}
+
+int32 CFE_PSP_MemRead32(cpuaddr MemoryAddress, uint32 *uint32Value)
+{
+    size_t o = (size_t)(MemoryAddress - MD_SIM_WINDOW_BASE);
+    ++md_sim_reads;
+    if (!md_sim_in(MemoryAddress, 4))
+        return CFE_PSP_INVALID_MEM_ADDR;
+    *uint32Value = (uint32)md_sim_mem[o] | ((uint32)md_sim_mem[o + 1] << 8) |
+                   ((uint32)md_sim_mem[o + 2] << 16) | ((uint32)md_sim_mem[o + 3] << 24);
+    return CFE_PSP_SUCCESS;
+}
+
 int32  md_sym_rc;
 cpuaddr md_sym_addr;
 int32 OS_SymbolLookup(cpuaddr *SymbolAddress, const char *SymbolName)
@@ -10845,6 +10915,200 @@ int main(void)
                    (unsigned)(MD_AppData.MD_DwellTables[3].AddrCount +
                               MD_AppData.MD_DwellTables[3].DataSize +
                               MD_AppData.MD_DwellTables[3].Rate));
+        }
+
+        /* --- md_dwell_pkt.c -------------------------------------------------------------
+         * The part of MD that actually reads memory. Four functions: the loop, the one read,
+         * the send, and a three-line reset.
+         *
+         * THE DWELL BYTES ARE READ BACK WITH THEIR NEIGHBOURS. MD_GetDwellData's write is
+         * `memcpy(&Data[TblPtr->PktOffset], &MemReadVal, NumBytes)` -- a 1-, 2- or 4-byte
+         * store at a variable offset, which is the exact shape of the two codegen bugs in
+         * docs (an 8-byte store emitted for a narrow one, and a wild store for a deep
+         * variable index). Data[] is poisoned with 0xEE before each write and the bytes on
+         * BOTH SIDES of the written region are printed, so a store that is too wide shows up
+         * as a missing 0xEE rather than as a value that happens to look right. */
+        {
+            MD_DwellPacketControl_t *T = &MD_AppData.MD_DwellTables[0];
+            MD_DwellPkt_t           *P = &MD_AppData.MD_DwellPkt[0];
+            int                      i, n;
+            CFE_MSG_Size_t           msz;
+            uint32                   md_sends0;
+            long                     r0;
+
+            md_sim_fill();
+            memset(MD_AppData.MD_DwellTables, 0, sizeof(MD_AppData.MD_DwellTables));
+            memset(MD_AppData.MD_DwellPkt, 0, sizeof(MD_AppData.MD_DwellPkt));
+            /* INITIALISE THE PACKET HEADER, because without it MD_SendDwellPkt's transmit is
+             * REJECTED and the send path is not exercised at all. The first version of this
+             * block memset the packet and never called CFE_MSG_Init, so every
+             * CFE_SB_TransmitMsg produced `Send Err:Invalid MsgId(0x0)in msg` -- identical on
+             * both halves, so the transcript was satisfied while the function under test did
+             * nothing. Found by reading the EVS text a mutation happened to print. This is
+             * what md_app.c does at startup. */
+            CFE_MSG_Init(CFE_MSG_PTR(P->TelemetryHeader),
+                         CFE_SB_ValueToMsgId(MD_DWELL_PKT_MID_BASE), sizeof(MD_DwellPkt_t));
+
+            /* (a) one write per width, each into a poisoned packet, neighbours printed */
+            for (n = 0; n < 3; n++)
+            {
+                static const uint16 widths[3] = {1, 2, 4};
+                memset(P->Payload.Data, 0xEE, sizeof(P->Payload.Data));
+                T->Entry[0].Length          = widths[n];
+                T->Entry[0].ResolvedAddress = MD_SIM_WINDOW_BASE + 0x10;
+                T->PktOffset                = 4;
+                r0                          = md_sim_reads;
+                i                           = (int)MD_GetDwellData(0, 0);
+                printf("md_get w=%u st=%d off=%u reads=%ld data=", (unsigned)widths[n], i,
+                       (unsigned)T->PktOffset, md_sim_reads - r0);
+                for (i = 0; i < 10; i++)
+                {
+                    printf("%02X", P->Payload.Data[i]);
+                }
+                printf("\n");
+            }
+
+            /* (b) the four error returns, and the fact that PktOffset advances ANYWAY --
+             * NASA's `TblPtr->PktOffset += NumBytes` sits OUTSIDE the success branch, so a
+             * failed read still moves the write cursor. That is behaviour, not a bug, and it
+             * is invisible to a test that only looks at the status. */
+            for (n = 0; n < 4; n++)
+            {
+                static const uint16 badw[4] = {1, 2, 4, 3};
+                memset(P->Payload.Data, 0xEE, sizeof(P->Payload.Data));
+                T->Entry[0].Length = badw[n];
+                /* widths 1,2,4 get an address OUTSIDE the window; width 3 is invalid itself */
+                T->Entry[0].ResolvedAddress = (badw[n] == 3) ? (MD_SIM_WINDOW_BASE + 0x10) : 0x900;
+                T->PktOffset                = 4;
+                i                           = (int)MD_GetDwellData(0, 0);
+                printf("md_get_err w=%u st=%d off=%u untouched=%d\n", (unsigned)badw[n], i,
+                       (unsigned)T->PktOffset, (int)(P->Payload.Data[4] == 0xEE));
+            }
+
+            /* (c) MD_StartDwellStream, three lines and all three asserted */
+            T->Countdown = 99;
+            T->CurrentEntry = 7;
+            T->PktOffset = 33;
+            MD_StartDwellStream(0);
+            printf("md_start %u %u %u\n", (unsigned)T->Countdown, (unsigned)T->CurrentEntry,
+                   (unsigned)T->PktOffset);
+
+            /* (d) THE LOOP. Three entries of two bytes each, one delay apiece, so Rate is 3
+             * and each wakeup collects exactly one entry; the third fills the packet and sends
+             * it. Printed after every call, because the interesting part is the STATE MACHINE
+             * and not the final packet. */
+            memset(MD_AppData.MD_DwellTables, 0, sizeof(MD_AppData.MD_DwellTables));
+            memset(P->Payload.Data, 0xEE, sizeof(P->Payload.Data));
+            for (i = 0; i < 3; i++)
+            {
+                T->Entry[i].Length          = 2;
+                T->Entry[i].Delay           = 1;
+                T->Entry[i].ResolvedAddress = MD_SIM_WINDOW_BASE + 0x20 + 2 * i;
+            }
+            MD_UpdateDwellControlInfo(0);
+            T->Enabled = MD_Dwell_States_ENABLED;
+            strcpy(T->Signature, "DW0");
+            /* AND A BYTE AFTER THE TERMINATOR, because without it this test asserts nothing.
+             * Measured: replacing NASA's strncpy with a plain memcpy of the same length left
+             * the transcript BYTE-IDENTICAL, because the source field had been memset to zero
+             * and a verbatim copy of zeros is indistinguishable from a zero-fill. The control
+             * passed, which means the setup -- not the code -- was doing the work. With 0x7A
+             * sitting past the NUL, strncpy still zero-fills the destination and a memcpy
+             * carries the 0x7A across, and only the bytes AFTER the terminator show it. */
+            T->Signature[5] = 0x7A;
+            MD_StartDwellStream(0);
+            /* AND A WITNESS THAT THE PACKET WAS REALLY TRANSMITTED. MD_SendDwellPkt returns
+             * void, so nothing it does is observable from its own result; SB's own
+             * NoSubscribersCounter is incremented by CFE_SB_TransmitMsg on a valid MsgId with
+             * no subscribers, which is exactly this case. A send that is rejected for a bad
+             * MsgId does NOT increment it, which is what makes it the right witness. */
+            md_sends0 = CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter;
+            for (n = 0; n < 3; n++)
+            {
+                int st = (int)MD_DwellLoop(NULL);
+                printf("md_loop %d st=%d cur=%u off=%u cd=%lu\n", n, st,
+                       (unsigned)T->CurrentEntry, (unsigned)T->PktOffset,
+                       (unsigned long)T->Countdown);
+            }
+            /* the packet, read out of MD_AppData rather than off the bus: CFE_SB_TimeStampMsg
+             * puts a TIME in the header, which cannot be compared, and the payload is what MD
+             * is actually responsible for */
+            /* MASKED TO EIGHT BITS, because NoSubscribersCounter is a uint8 and it stood at
+             * 254 when this block was reached -- the unmasked difference printed
+             * 4294967042. A witness that wraps is not a witness. */
+            printf("md_sent %lu\n",
+                   (unsigned long)((CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter -
+                                    md_sends0) & 0xFF));
+            CFE_MSG_GetSize(CFE_MSG_PTR(P->TelemetryHeader), &msz);
+            printf("md_pkt id=%u n=%u rate=%u bytes=%u size=%lu data=", (unsigned)P->Payload.TableId,
+                   (unsigned)P->Payload.AddrCount, (unsigned)P->Payload.Rate,
+                   (unsigned)P->Payload.ByteCount, (unsigned long)msz);
+            for (i = 0; i < 10; i++)
+            {
+                printf("%02X", P->Payload.Data[i]);
+            }
+            /* AND THE SIGNATURE PAST ITS TERMINATOR. NASA copies it with strncpy, which
+             * ZERO-FILLS the rest of the field; a MemCpy would carry whatever followed the
+             * source string instead, and only the bytes AFTER the NUL would show it. */
+            printf(" sig=");
+            for (i = 0; i < 6; i++)
+            {
+                printf("%02X", (unsigned char)P->Payload.Signature[i]);
+            }
+            printf(" last=%d\n", (int)P->Payload.Signature[MD_INTERFACE_SIGNATURE_FIELD_LENGTH - 1]);
+
+            /* (e) A ZERO-RATE TABLE IS NEVER PROCESSED, and that guard is load-bearing rather
+             * than defensive: with every Delay zero, MD_DwellLoop's `while (Countdown == 0)`
+             * would reload Countdown with a zero delay after sending and spin forever. The
+             * Rate > 0 test is the only thing standing between this app and a hang. */
+            memset(MD_AppData.MD_DwellTables, 0, sizeof(MD_AppData.MD_DwellTables));
+            for (i = 0; i < 3; i++)
+            {
+                T->Entry[i].Length          = 1;
+                T->Entry[i].Delay           = 0;
+                T->Entry[i].ResolvedAddress = MD_SIM_WINDOW_BASE;
+            }
+            MD_UpdateDwellControlInfo(0);
+            T->Enabled = MD_Dwell_States_ENABLED;
+            MD_StartDwellStream(0);
+            r0 = md_sim_reads;
+            n  = (int)MD_DwellLoop(NULL);
+            printf("md_zerorate st=%d rate=%lu cd=%lu reads=%ld\n", n, (unsigned long)T->Rate,
+                   (unsigned long)T->Countdown, md_sim_reads - r0);
+
+            /* (f) THE ALREADY-FULL BRANCH: CurrentEntry >= AddrCount on entry, which NASA
+             * reaches when a table is shortened after data was written. It sends immediately
+             * and reloads Countdown from the LAST entry's delay. */
+            memset(MD_AppData.MD_DwellTables, 0, sizeof(MD_AppData.MD_DwellTables));
+            for (i = 0; i < 3; i++)
+            {
+                T->Entry[i].Length          = 1;
+                T->Entry[i].Delay           = 5 + i;
+                T->Entry[i].ResolvedAddress = MD_SIM_WINDOW_BASE;
+            }
+            MD_UpdateDwellControlInfo(0);
+            T->Enabled      = MD_Dwell_States_ENABLED;
+            T->CurrentEntry = T->AddrCount;
+            T->Countdown    = 42;
+            r0              = md_sim_reads;
+            md_sends0       = CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter;
+            n               = (int)MD_DwellLoop(NULL);
+            /* THE WITNESS READS 2 PER DWELL PACKET, AND THAT IS THE POINT OF PRINTING IT.
+             * The dwell send finds no subscribers, which increments this counter and makes SB
+             * raise CFE_SB_SEND_NO_SUBS_EID; EVS then TRANSMITS that event packet over SB
+             * (cfe_evs_utils.c:498) on MsgId 0x809, which also has no subscribers, and the
+             * counter moves again. Verified rather than assumed: 0x809 accounts for 113 of the
+             * 119 no-subscriber lines in this transcript.
+             *
+             * I first predicted 1 here, on the theory that cfe_sb_priv.c's SEND_NO_SUBS
+             * REQUEST BIT made the event a per-route one-shot. It is not: both sends to 0x891
+             * raise an event and both move the counter by 2. The prediction was wrong and the
+             * second witness is what said so, which is why there are two of them. */
+            printf("md_full st=%d cur=%u off=%u cd=%lu reads=%ld sent=%lu\n", n,
+                   (unsigned)T->CurrentEntry, (unsigned)T->PktOffset,
+                   (unsigned long)T->Countdown, md_sim_reads - r0,
+                   (unsigned long)((CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter -
+                                    md_sends0) & 0xFF));
         }
 
         printf("tim_objtab %s %d %d %d %lu %lu\n", CFE_TIME_ModuleEntry.Name,

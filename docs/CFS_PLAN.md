@@ -1652,3 +1652,140 @@ it the moment `md_app.c` is gated, four sources away.
 call its stub while the HolyC half called the real translation, and the transcript would compare
 two different functions. Measured: **zero** such stubs, static or otherwise. The stubs were
 genuinely deleted when the sources landed; only the prose rotted.
+
+### md_dwell_pkt.c, and the simulated memory MD reads
+
+**2,185 transcript lines**, up from 2,167 — eighteen more, byte-identical on the first run. Four
+functions: `MD_DwellLoop`, `MD_GetDwellData`, `MD_SendDwellPkt`, `MD_StartDwellStream`.
+
+This is the file that needed the hardware, and the three missing symbols are now supplied the way
+the driver already supplies twenty-two other `CFE_PSP_*` functions:
+
+- `MD_SIM_WINDOW_BASE` is `0x00100000`, the **same literal in both halves**, naming a 256-byte
+  window that is not a real address on either. `md_sim_mem[i] = 0x40 + i`, so a read at offset
+  `0x10` is `0x50` and a 4-byte read there is `50 51 52 53` — ascending and impossible to confuse.
+- `CFE_PSP_MemRead8/16/32` map an address in that window onto the buffer, and **assemble the
+  bytes explicitly, little end first**, rather than casting the buffer to a `uint16`/`uint32`.
+  `MD_GetDwellData` copies the low `NumBytes` of the value straight into the dwell packet, so the
+  packet's contents depend on that choice and an assumption there would be an assumption about
+  the transcript.
+- An address outside the window returns `CFE_PSP_INVALID_MEM_ADDR`, which is how the three
+  per-width error returns are reached on purpose.
+- **`CFE_PSP_MemValidateRange` is deliberately left alone.** It is the settable stub that ES's and
+  TBL's pool paths already drive, and making it window-aware would change behaviour for every
+  existing caller — with the existing transcript lines as the only thing that would notice. The
+  bounds check lives in the read functions instead, so the seam is additive.
+
+NASA writes `(uint8 *)&MemReadVal` and `(uint16 *)&MemReadVal` at the call sites, and the casts
+need no spelling in HolyC — not through laxness but because the **callee's** declared parameter
+type decides the width. Measured with a four-line probe: preset `MemReadVal` to `0xFFFFFFFF`,
+call the `U8 *` form, read back `0xFFFFFFAB`. One byte written, three untouched, which is exactly
+what NASA's cast buys.
+
+#### The dwell bytes are read back with their neighbours
+
+`MD_GetDwellData`'s write is `memcpy(&Data[TblPtr->PktOffset], &MemReadVal, NumBytes)` — a 1-, 2-
+or 4-byte store at a **variable offset**. That is the shape of both codegen bugs this project has
+recorded: an 8-byte store emitted for a narrow one, and a wild store for a deep variable index. So
+`Data[]` is poisoned with `0xEE` before each write and the bytes on *both sides* of the written
+region are printed:
+
+```
+md_get w=1 st=0 off=5 reads=1 data=EEEEEEEE50EEEEEEEEEE
+md_get w=2 st=0 off=6 reads=1 data=EEEEEEEE5051EEEEEEEE
+md_get w=4 st=0 off=8 reads=1 data=EEEEEEEE50515253EEEE
+```
+
+A store that is too wide shows up as a *missing* `0xEE`, not as a value that happens to look
+right. Same move as `tbl_neigh` in the tbl work.
+
+#### Three behaviours the exercise pins that a status check would miss
+
+**The write cursor advances even when the read fails.** `TblPtr->PktOffset += NumBytes` sits
+*outside* the success branch, so a rejected address still moves it — and for the invalid width 3,
+by three bytes that were never read:
+
+```
+md_get_err w=1 st=-1 off=5 untouched=1
+md_get_err w=3 st=-4 off=7 untouched=1
+```
+
+**The signature is copied with `strncpy`, padding and all — and the first version of this test
+asserted nothing.** `CfsStr.HC`'s `StrNCpy` reproduces `strncpy` exactly: zero-fill to the end of
+the field, no terminator when the source is longer than `n`. The transcript prints the Signature
+bytes *past* the NUL, on the theory that a `MemCpy` would carry whatever followed the source
+string and only those bytes would show it.
+
+Driven as a mutation, **that passed.** `StrNCpy` → `MemCpy` left the transcript byte-identical,
+because the source field had been `memset` to zero by the setup and a verbatim copy of zeros is
+indistinguishable from a zero-fill. The control passing is what said so: the *setup* was doing
+the work, not the code. One byte of poison past the terminator in the source
+(`T->Signature[5] = 0x7A`) makes the difference observable — `strncpy` still zero-fills the
+destination, a `memcpy` carries the `0x7A` across — and the baseline transcript does not move,
+because `strncpy` was always zero-filling. This is the sixth instance in this project of a
+green assertion that a real mutation walked straight through.
+
+**A zero-rate table is never processed, and that guard is load-bearing rather than defensive.**
+With every `Delay` zero, `MD_DwellLoop`'s `while (Countdown == 0)` reloads `Countdown` from the
+last entry's delay after sending — zero again — and spins forever. `Rate > 0` is the only thing
+between this app and a hang, which is why `md_zerorate st=0 rate=0 cd=1 reads=0` asserts the table
+was skipped *and* that no read happened.
+
+The packet is read out of `MD_AppData` rather than off the bus: `CFE_SB_TimeStampMsg` puts a time
+in the header, which cannot be compared across a host process and a QEMU guest, and the payload is
+what MD is responsible for. `size=62` is `sizeof(MD_DwellPkt_t) - 25*4 + 6` — the packet shrinking
+to the bytes actually dwelled.
+
+#### And MD's read errors are an anonymous enum with no module prefix
+
+`md_dwell_pkt.h` spells them `ONE_BYTE_MEM_ADDR_READ_ERR`, `TWO_BYTE_MEM_ADDR_READ_ERR`,
+`FOUR_BYTE_MEM_ADDR_READ_ERR` and `INVALID_DWELL_ADDR_LEN` — NASA's own naming, matching none of
+`check_constants`' `^(CFE_|OS_|OSAL_|MD_)\w+$`. All four are values `MD_GetDwellData` returns and
+the transcript compares, and all four would have been non-candidates: 1,272 compared now, up from
+1,267. They are listed by name rather than by loosening the pattern, because the pattern is what
+keeps port-local constants out of a gate with no business judging them.
+
+#### Six mutations, and the two that taught something
+
+| mutation | transcript |
+|---|---|
+| the narrow store becomes a 4-byte one | `data=EEEEEEEE50EEEEEEEEEE` → `...50000000EEEE` |
+| `PktOffset` advances only on success | `md_get_err w=1 st=-1 off=5` → `off=4` |
+| `strncpy` → `MemCpy` (after fixing the test) | `sig=445730000000` → `44573000007A` |
+| the packet size loses NASA's subtraction | `size=62` → `size=162` |
+| the already-full branch reloads from entry 0 | `md_full cd=7` → `cd=5` |
+| the `Rate > 0` guard removed | **526,875 lines of diff** — it spins, as predicted |
+
+The first is the one the neighbour read-back was built for. `st`, `off` and `reads` are
+**identical** across a store that wrote four bytes where one was asked for; only the poison
+turning `EE`→`00` saw it.
+
+The third is the one that found a defect in my own test — see above. It passed on the first
+attempt because the source field was zero-filled.
+
+#### And the send path was never running
+
+The `Rate > 0` mutation printed half a million lines, and buried in them was EVS text from the
+*unmutated* reference: `Send Err:Invalid MsgId(0x0)in msg`. The exercise had `memset` the dwell
+packet and never called `CFE_MSG_Init`, so **every `CFE_SB_TransmitMsg` was rejected for an
+invalid MsgId** — identically on both halves, so the transcript was satisfied while
+`MD_SendDwellPkt`'s send did nothing. `MD_SendDwellPkt` returns `void`, so there was no status
+to notice it by. Found by reading output a mutation happened to produce, which is not a method.
+
+Fixed the way `md_app.c` does it — `CFE_MSG_Init` with `MD_DWELL_PKT_MID_BASE` (0x891, now a
+constant `check_constants` compares against NASA's expansion) — and witnessed with SB's own
+`NoSubscribersCounter`, which `CFE_SB_TransmitMsg` increments on a **valid** MsgId with no
+subscribers and leaves alone on a rejected one. The event text changed from `Invalid MsgId(0x0)`
+to `No subscribers for MsgId 0x891`, which is the send actually happening.
+
+Two things about that witness are worth keeping:
+
+- **It wrapped.** `NoSubscribersCounter` is a `uint8` and stood at 254, so the unmasked delta
+  printed `4294967042`. A witness that wraps is not a witness; it is masked to 8 bits.
+- **It reads 2 per dwell packet, and I predicted 1.** My reasoning was that
+  `cfe_sb_priv.c`'s `CFE_SB_SEND_NO_SUBS_EID` request bit made the event a per-route one-shot.
+  It is not: both sends to 0x891 raise an event and both move the counter by 2 — once for the
+  dwell packet, once because EVS *transmits the event packet itself* over SB
+  (`cfe_evs_utils.c:498`) on MsgId 0x809, which also has no subscribers. Verified rather than
+  assumed: 0x809 accounts for 113 of the 119 no-subscriber lines in the transcript. A second
+  witness at the already-full send is what falsified the prediction, so both stay.

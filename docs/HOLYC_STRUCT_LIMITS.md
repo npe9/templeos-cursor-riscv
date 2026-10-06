@@ -1338,3 +1338,63 @@ prose in this very document is why the sentence in `CfsStr.HC` now says
 **Not pinned by a test yet** and it does not reproduce in a four-line program — the same
 "needs a real translation unit" property as #22. Worth a dedicated look at the lexer's comment
 path, because a comment that can silently cut an include tree is a trap no gate here can see.
+
+## 26. A class PARAMETER passed by value carries only its first 8 bytes — OPEN, and SILENT
+
+Limit 21's sibling, in the other syntactic position. A class passed by value as a function
+parameter arrives truncated to one register, and the bytes past the first eight are **whatever
+the next argument is**.
+
+```c
+class Big { U64 Offset; U8 Name[64]; };   /* 72 bytes */
+
+I64 TakeByValue(Big b, I64 tag)
+{
+  /* b.Offset is the caller's value. b.Name[0] is TAG. */
+}
+
+Big g;
+g.Offset = 4242;
+g.Name[0] = 7;
+TakeByValue(g, 55);
+```
+
+Measured, on the harness:
+
+```
+sizeof(Big)=72
+  inside: Offset=4242 Name0=55 tag=55
+  returned=999  caller Offset still=4242
+```
+
+`b.Offset` is right. `b.Name[0]` reads **55**, which is `tag` — the second argument register read
+as if it were the ninth byte of the struct. And the by-value *semantics* are otherwise correct:
+writing `b.Offset` inside does not reach the caller, so the first eight bytes really are a copy.
+
+**Why this is the dangerous shape.** It compiles clean, and the FIRST FIELD IS ALWAYS RIGHT. A
+one-field check passes. A class whose interesting member happens to be first passes. The failure
+only appears when something past offset 8 is read, and then it reads as another argument's value
+rather than as zero or garbage — a plausible number.
+
+**Nothing in the port was broken by it, and that is luck, not design.** Eighty-six translated
+functions take a class by value, and every one of the six types involved fits in a register:
+
+| type | bytes |
+|---|---|
+| `CFE_SB_MsgId_t` | 4 |
+| `CFE_SBR_RouteId_t` | 2 |
+| `CFE_SB_Qos_t` | 2 |
+| `CFE_TIME_SysTime_t` | 8 |
+| `OS_time_t` | 8 |
+| `OS_cpuset_t` | 1 |
+
+cFS passes small opaque wrappers by value constantly and large structures by pointer, which is
+why the cliff was never reached. The first thing to walk off it is MD's
+`MD_UpdateTableDwellEntry(..., MD_SymAddr_t NewDwellAddress)` — 72 bytes, and NASA passes it by
+value. The translation takes a pointer there, with the deviation recorded.
+
+**So it is gated** rather than left to the next reader: `tools/cfs/check_struct_copy.py` already
+refuses limit 21's assignment form, and it now also refuses a class-by-value parameter whose
+MEASURED size exceeds 8 bytes. Measured, not listed — the size comes from the same layout model
+`check_padding.py` compares against NASA, so a class that grows past the limit fails the gate
+without anyone remembering to look.

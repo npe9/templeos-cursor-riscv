@@ -66,6 +66,21 @@ _spec.loader.exec_module(check_padding)
 # would not have moved by one, with no diagnostic anywhere. A gate's own name filter is the
 # quietest place a whole module can hide.
 NAME = re.compile(r'^(CFE_|OS_|OSAL_|MD_)\w+$')
+
+# FOUR NASA NAMES WITH NO MODULE PREFIX AT ALL, so the filter above cannot reach them.
+# md_dwell_pkt.h declares an ANONYMOUS enum whose members are spelled
+# ONE_BYTE_MEM_ADDR_READ_ERR, TWO_BYTE_MEM_ADDR_READ_ERR, FOUR_BYTE_MEM_ADDR_READ_ERR and
+# INVALID_DWELL_ADDR_LEN -- NASA's own spelling, not a transcription slip. They are the four
+# values MD_GetDwellData returns, every one of which the transcript compares, and without this
+# list they would be non-candidates and silently uncompared. Listed by name rather than by
+# loosening the prefix pattern, because the pattern is what keeps port-local constants
+# (RV_*, HOLYC_*) out of a gate that has no business judging them.
+NAME_EXTRA = {"ONE_BYTE_MEM_ADDR_READ_ERR", "TWO_BYTE_MEM_ADDR_READ_ERR",
+              "FOUR_BYTE_MEM_ADDR_READ_ERR", "INVALID_DWELL_ADDR_LEN"}
+
+
+def is_candidate(name):
+    return bool(NAME.match(name)) or name in NAME_EXTRA
 # `#define NAME 123`, `0x7F`, `-1`, `'$'`, a parenthesised expression of those, or a literal
 # with a HolyC POSTFIX CAST -- `0xC2000002(I32)`, which is how NASA's own
 # `((CFE_Status_t)0xc2000002)` has to be written here so the value compares equal to an I32.
@@ -107,7 +122,7 @@ def hc_defines():
             txt = open(os.path.join(d, fn), errors="replace").read()
             for m in DEFINE.finditer(txt):
                 name, lit = m.group(1), m.group(2)
-                if not NAME.match(name) or name.endswith("_HC"):
+                if not is_candidate(name) or name.endswith("_HC"):
                     continue
                 out.setdefault(name, (lit, fn))
     return out
@@ -126,7 +141,7 @@ def unparsed_defines():
             txt = open(os.path.join(d, fn), errors="replace").read()
             for m in ANY_DEFINE.finditer(txt):
                 name, val = m.group(1), m.group(2)
-                if not NAME.match(name) or name.endswith("_HC") or name in seen:
+                if not is_candidate(name) or name.endswith("_HC") or name in seen:
                     continue
                 out.append((name, val, fn))
     return out
@@ -184,6 +199,7 @@ def probe(names):
         # values that MD_INTERFACE_CFGVAL/MD_INTERNAL_CFGVAL paste a name onto; md_app.h holds
         # the table-validation error codes.
         "md_interface_cfg.h", "md_internal_cfg.h", "md_eventids.h", "md_fcncodes.h",
+        "md_msgids.h", "md_dwell_pkt.h",
         # ES's event ids and its own platform config, as the module arrives. The gate refused
         # to pass on CFE_ES_SYSLOG2_EID rather than file it as "a name this port invented",
         # which is the behaviour that distinguishes a missing header from a local constant.
@@ -313,6 +329,29 @@ def probe(names):
         return found
 
     unknown = [n for n in names if out.get(n) is None]
+
+    # A PROBE THAT CANNOT BUILD AT ALL MUST NOT LOOK LIKE A SET OF UNDEFINED NAMES. resolve()
+    # bisects on compile failure and gives up at one name, classifying it "NASA does not
+    # define" -- which PASSES. That is right for a name NASA really lacks and catastrophic for
+    # a probe broken by something else: every enumerator in cFS would stop being compared and
+    # the only visible change would be a number nobody watches going up.
+    #
+    # Seen for real: two invocations of this gate running at once -- a standalone run while the
+    # driver's run was in progress -- clobber each other's probe in build/cfs, and the loser
+    # reported 1,267 compared with 39 "not defined" instead of 1,272 with 34. Five constants
+    # stopped being compared and the run still exited 0.
+    #
+    # So the headers are built ONCE with no names in the body. If that fails, the gate fails.
+    # `try_set([])` would be VACUOUS here -- it returns {} for an empty group without compiling
+    # anything. The baseline has to be a group that does compile a body, so it is the literal
+    # expression `0`: the headers are all included, one printf is emitted, and nothing depends
+    # on a name existing.
+    if unknown and try_set(["0"]) is None:
+        return None, ("the enumerator probe cannot be built AT ALL, so no enumerator can be "
+                      "resolved and every one of them would be filed as a name NASA does not "
+                      "define -- which passes. Fix the probe; do not trust the count. "
+                      "(A concurrent run of this gate clobbering build/cfs does this too: the "
+                      "probe path is fixed, so two at once is one too many.)")
     for nm, v in resolve(unknown).items():
         out[nm] = v
     return out, None
