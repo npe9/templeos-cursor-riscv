@@ -34,12 +34,37 @@ WHAT IS AND IS NOT AN EDGE. A call to a function defined in another .c is one. A
 check_header_inlines.py requires exactly the ones a gated source reaches. Without that
 distinction every module looks like one big cycle and the tool says nothing.
 
+CALIBRATED AGAIN WHEN IT LEARNED ABOUT APPS, and the second calibration was the one that
+mattered. An app's own functions are MD_*, not CFE_*, and the edge patterns were CFE-only. Run
+against MD that way -- path widened, pattern not -- it reports SEVEN INDEPENDENT SINGLETONS in
+pure size order: no edges at all, and a licence to gate md_dispatch.c second when every handler
+it names lives in md_cmds.c. The most confident possible wrong answer, and nothing in the output
+hints that a prefix went unmatched. The widening is driven by that control, and the eleven cFE
+modules are byte-identical across it (376 lines of --cuts output) because a name is only an edge
+when one of THIS module's sources defines it.
+
+MD's answer, once it can see it: fully ACYCLIC in this configuration. The one cycle is
+md_app.c <-> md_eds_dispatch.c, and md_eds_dispatch.c is the EDS variant CMake does not select
+here, so all six gated sources are singletons and the order costs no stand-ins at all:
+
+  md_utils.c -> md_dwell_pkt.c -> md_dwell_tbl.c -> md_cmds.c -> md_app.c -> md_dispatch.c
+
+Which is NOT CMake's APP_SRC_FILES order (dwell_tbl, utils, dwell_pkt, cmds, app). Build order
+is not dependency order; that is the whole reason this tool exists.
+
 Usage: module_deps.py [--fresh] [--cuts] <module> [...]   e.g. module_deps.py --cuts tbl
+                      a module is a cFE one (vendor/cFE/modules/<mod>) or an APP (vendor/<MOD>)
 """
 import re, sys, os, glob, itertools
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPTS = os.path.join(ROOT, 'tests', 'scripts')
+
+# An app's own functions carry the app's prefix, so a CFE_-only pattern finds no edges at all
+# inside MD and reports five independent singletons -- the most confident possible wrong answer.
+# Widening is safe for the modules too: a name is only an edge if one of THIS module's sources
+# defines it, so a prefix that matches nothing here costs nothing.
+SYM = r'\b((?:CFE|MD)_\w+)'
 
 
 def strip(src):
@@ -85,9 +110,9 @@ def defines(path):
     return names
 
 
-def header_inlines(d):
+def header_inlines(*dirs):
     out = set()
-    for f in glob.glob(os.path.join(d, '*.h')):
+    for f in [f for d in dirs for f in glob.glob(os.path.join(d, '*.h'))]:
         out |= set(re.findall(r'static\s+inline\s+[\w\s\*]+?(\w+)\s*\(',
                               strip(open(f, errors='replace').read())))
     return out
@@ -108,8 +133,18 @@ def main(argv):
     g = set() if fresh else gated()
     for mod in argv:
         d = os.path.join(ROOT, 'vendor', 'cFE', 'modules', mod, 'fsw', 'src')
+        # An APP is a repository of its own, not a module directory under cFE. Same shape
+        # otherwise -- sources in fsw/src -- so only the path and the public header dir differ.
+        hdr = [d]
+        if not os.path.isdir(d):
+            d = os.path.join(ROOT, 'vendor', mod.upper(), 'fsw', 'src')
+            hdr = [d, os.path.join(ROOT, 'vendor', mod.upper(), 'fsw', 'inc')]
+            if not os.path.isdir(d):
+                print('%s: no sources at vendor/cFE/modules/%s/fsw/src or vendor/%s/fsw/src'
+                      % (mod, mod, mod.upper()))
+                continue
         srcs = sorted(glob.glob(os.path.join(d, '*.c')))
-        inl = header_inlines(d)
+        inl = header_inlines(*hdr)
         owner, body, lines = {}, {}, {}
         for p in srcs:
             b = os.path.basename(p)
@@ -134,8 +169,8 @@ def main(argv):
         for b, src in body.items():
             mine = {n for n, o in owner.items() if o == b}
             need = set()
-            calls = set(re.findall(r'\b(CFE_\w+)\s*\(', src))
-            refs = set(re.findall(r'\b(CFE_\w+)\b(?!\s*\()', src))
+            calls = set(re.findall(SYM + r'\s*\(', src))
+            refs = set(re.findall(SYM + r'\b(?!\s*\()', src))
             for n in sorted(calls | refs):
                 if n in mine or n in inl:
                     continue
