@@ -1012,7 +1012,7 @@ in whatever order suits — the tool's own topological listing is:
 
 | next | lines | note |
 |---|---|---|
-| `cfe_tbl_dump.c` | 589 | |
+| ~~`cfe_tbl_dump.c`~~ | ~~589~~ | **GATED** — zero stand-ins; it also found the `size_t` signedness defect below |
 | ~~`cfe_tbl_task.c`~~ | ~~218~~ | **GATED** — `CFE_TBL_TaskMain` is real, so tbl is the first module whose object table names three real functions |
 | `cfe_tbl_dispatch.c` | 276 | the non-EDS branch, and LAST: it is blocked behind `task_cmds.c`. One thin stand-in (`CFE_TBL_TaskPipe`) covers it meanwhile |
 | `cfe_tbl_load.c` | 953 | |
@@ -1022,7 +1022,7 @@ in whatever order suits — the tool's own topological listing is:
 (`cfe_tbl_eds_codec.c` and `cfe_tbl_eds_dispatch.c` are listed too and are correctly absent —
 `CFE_EDS_ENABLED` is 0 in this configuration and `check_manifest.py` owns that call.)
 
-tbl is at **4,020 of 7,780 lines, 52%**. `registry.c` cost **zero** new stand-ins in the end
+tbl is at **4,608 of 7,780 lines, 59%**. `registry.c` cost **zero** new stand-ins in the end
 and DELETED four: of its 43 external calls 37 were already translated and the other six are id
 macros that collapse onto `CFE_ResourceId_IsDefined` / `_Equal` / the identity. The nine-stand-in
 price in the table above was real when it was measured and is the clearest demonstration of the
@@ -1078,6 +1078,35 @@ what actually happened.
 The caveat this section already records — a stand-in is functions, but a subset may also need
 a TYPE it does not define — is the same shape as this bug: a dependency the graph does not
 model. Assume there are more.
+
+### A SIGNEDNESS DEFECT THE GATES COULD NOT SEE: `size_t` IS UNSIGNED
+
+`CFE_SB_MessageStringSet`'s two size parameters are `size_t` in NASA's source and were `I64` in
+the translation. **Three tbl call sites pass `-1` for SourceMaxSize, meaning "no limit"** --
+as a `size_t` that is SIZE_MAX, so the copy runs to the NUL. Signed, `SourceMaxSize > 0` is
+false on the first test and **nothing is copied at all**.
+
+Latent for the whole port, because no gated caller had passed a negative until
+`cfe_tbl_dump.c`. A full scan of cFS finds exactly three such call sites and all three are this
+function: dump.c, task_cmds.c and api.c.
+
+`check_signatures` could not see it and still cannot: it maps `size_t`, `CFE_MSG_Size_t` and
+`I64` to one `SZ` token, so **the signedness of a size has never been compared**. What found it
+was the differential transcript -- `last=/ram/dump.tbl` on the C side against `last=` on the
+HolyC side.
+
+Fixed by declaring the two parameters `U64`, which needed a `U64` rule in the gate. **Adding
+that rule immediately broke two pairs of signatures that had been AGREEING AS TWO BLANKS**:
+
+| pair | NASA | translation | why it "matched" |
+|---|---|---|---|
+| `CFE_ES_InitializeFileSystems_{CheckFreeSpace,ReformatVolume}` | `cpuaddr` | `U64` | neither had a rule |
+| `OS_{Symbol,ModuleSymbol}Lookup_Impl` | `cpuaddr *` | `U64 *` | neither had a rule |
+
+Both are correct translations; the gate had simply never looked at them. `cpuaddr` and
+`cpusize` now have rules, in both the value and pointer forms. **An unrecognised type on both
+sides is not a match, it is two gaps of the same shape** -- the same lesson as the
+function-pointer edge above, found the same way, within the hour.
 
 ### AN OPEN CRASH IN THE C REFERENCE: CFE_SB_DeletePipe
 

@@ -70,6 +70,15 @@ C_TYPES = [(r'\bconst\b', ' '),
             ' PTRSNUM '),
            (r'\bCFE_TIME_(?:ClockState|ToneSignalSelect|FlywheelState|SetState)_Enum_t\b',
             ' SNUM '),
+           # `cpuaddr` IS AN UNSIGNED INTEGER WIDE ENOUGH FOR A POINTER, which on this target
+           # is 64 bits, and the translation writes it U64. NEITHER had a rule, so both
+           # normalised to the EMPTY STRING and CFE_ES_InitializeFileSystems_CheckFreeSpace
+           # and _ReformatVolume "matched" as two blanks -- found only because adding the U64
+           # rule below broke the accidental agreement. An unrecognised type on both sides is
+           # not a match; it is two gaps of the same shape. (`cpusize` is the sibling and gets
+           # the rule too, pre-emptively, so it cannot repeat the trick.)
+           (r'\bcpuaddr\s*\*', ' PTRSZ '), (r'\bcpuaddr\b', ' SZ '),
+           (r'\bcpusize\s*\*', ' PTRSZ '), (r'\bcpusize\b', ' SZ '),
            # CFE_Status_t is `int32`, and every cFE error code is NEGATIVE -- so the catch-all
            # below, which maps every CFE_*_t to NUM, had it as unsigned. Caught when
            # CFE_SB_MessageTxn_SetEventAndStatus became the first translated function to take
@@ -151,6 +160,21 @@ H_TYPES = [(r'\bCFE_MSG_Message\s*\*', ' PTRB '), (r'\bCFE_\w+\s*\*', ' PTRNUM '
            # A lowercase os_*_t POINTER, mirroring the same rule on the C side: these are
            # os_fsinfo_t, os_err_name_t and friends, and the C normalises them to PTRB.
            (r'\bos_\w+_t\s*\*', ' PTRB '),
+           # U64 NORMALISES LIKE I64, and the honest reading of that is that this gate does
+           # not compare the SIGNEDNESS OF A SIZE at all: the C side maps `size_t` and
+           # `CFE_MSG_Size_t` to the same SZ token, so it never could. The mapping is here
+           # because a translation needs to be ABLE to say `size_t` is unsigned --
+           # CFE_SB_MessageStringSet's two sizes were I64, three tbl callers pass -1 meaning
+           # "no limit", and as a signed value that copied NOTHING. Found by the differential
+           # transcript, not by this gate; recorded so nobody reads a pass here as a claim
+           # about size signedness.
+           # THE POINTER FORM FIRST, which is the order every other pair in this table uses
+           # and which I got wrong: adding the bare rule alone turned `U64 *SymbolAddress` into
+           # `SZ *` and the name-strip left `SZ`, so OSAL's two symbol-lookup seam functions
+           # reported a pointer parameter as a value. They had been AGREEING AS TWO BLANKS
+           # before, `cpuaddr *` and `U64 *` both unrecognised -- the same accidental match as
+           # the ES pair above, found the same way.
+           (r'\bU64\s*\*', ' PTRSZ '), (r'\bU64\b', ' SZ '),
            (r'\bI64\b', ' SZ '), (r'\bU32\b', ' NUM '),
            (r'\bU16\b', ' NUM '), (r'\bU8\b', ' NUM '), (r'\bI32\b', ' SNUM '),
            (r'\bI16\b', ' SNUM ')]

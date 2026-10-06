@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  ************************************************************************/
-
 // 1:1 HolyC translation of cFE modules/sb/fsw/src/cfe_sb_util.c -- the software bus's own
 // accessors for reading and writing message header fields, sitting directly on the message
 // module translated in this directory.
@@ -46,11 +45,10 @@
 // Declared, not defined: see the note above. Returns a status in the C; nothing checks it here.
 // The `...` is load-bearing -- a HolyC call site builds (argc, argv) only if it already knows
 // the callee is variadic. tools/cfs/check_variadic.py.
-I32 CFE_ES_WriteToSysLog(U8 *Msg, ...);
+I32 CFE_ES_WriteToSysLog(U8 *Msg,...);
 // CFE_SB_MsgHdrSize comes from cfe_sb_msg_id_util.c, translated in cfe_sb_msgid.HC, which this
 // file includes above. NOT re-declared here: a prototype for a function that is ALREADY DEFINED
 // turns the rest of this file's definitions into imports, silently -- measured, see below.
-
 U8 *CFE_SB_GetUserData(CFE_MSG_Message *MsgPtr)
 {
   U8 *BytePtr;
@@ -95,14 +93,23 @@ U0 CFE_SB_TimeStampMsg(CFE_MSG_Message *MsgPtr)
 {
   CFE_MSG_SetMsgTime(MsgPtr, CFE_TIME_GetTime);
 }
-
 // NOTE, carried across from the original rather than fixed: there is NO null check on
 // SourceStringPtr here, and the DefaultString test dereferences it. A caller passing NULL with a
 // nonzero SourceMaxSize faults. The sibling CFE_SB_MessageStringSet below does check it. This is
 // a 1:1 translation, so the asymmetry is preserved; the oracle exercises the paths that are safe
 // to exercise in both languages.
-I32 CFE_SB_MessageStringGet(U8 *DestStringPtr, U8 *SourceStringPtr, U8 *DefaultString,
-                            I64 DestMaxSize, I64 SourceMaxSize)
+// U64, NOT I64, FOR THE TWO SIZES -- AND THAT IS A FIX, NOT A STYLE CHOICE. NASA declares both
+// as `size_t`, which is UNSIGNED, and three call sites in tbl pass **-1** for SourceMaxSize
+// meaning "no limit": as a size_t that is SIZE_MAX, so the loop runs to the NUL. Translated as
+// a SIGNED I64, `SourceMaxSize > 0` is false on the first test and NOTHING IS COPIED.
+//
+// It was latent for the whole port because no gated caller had passed a negative value yet.
+// cfe_tbl_dump.c is the first, and the differential transcript is what caught it:
+// `last=/ram/dump.tbl` on the C side against `last=` on the HolyC side. check_signatures could
+// not see it -- it maps both `size_t` and I64 to one SZ token, so signedness of a size has
+// never been compared. cfe_tbl_task_cmds.c and cfe_tbl_api.c each have one of the other two
+// call sites and would have hit the same thing.
+I32 CFE_SB_MessageStringGet(U8 *DestStringPtr, U8 *SourceStringPtr, U8 *DefaultString, U64 DestMaxSize, U64 SourceMaxSize)
 {
   I32 Result;
   // Error/default response
@@ -131,8 +138,7 @@ I32 CFE_SB_MessageStringGet(U8 *DestStringPtr, U8 *SourceStringPtr, U8 *DefaultS
   return Result;
 }
 
-I32 CFE_SB_MessageStringSet(U8 *DestStringPtr, U8 *SourceStringPtr, I64 DestMaxSize,
-                            I64 SourceMaxSize)
+I32 CFE_SB_MessageStringSet(U8 *DestStringPtr, U8 *SourceStringPtr, U64 DestMaxSize, U64 SourceMaxSize)
 {
   I32 Result;
   if (SourceStringPtr == NULL || DestStringPtr == NULL) {

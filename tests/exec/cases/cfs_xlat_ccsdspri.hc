@@ -352,6 +352,8 @@ U32 fs_fd;
 // 0 is OS_OBJECT_ID_UNDEFINED
 I64 fs_open_fail;
 // make OS_OpenCreate fail
+I64 fs_noexist;
+// make a READ-ONLY open fail: the file is not there
 // fs_wr_left is the number of bytes the file will still accept, not a per-call cap. A per-call
 // cap of 64 looked like it would make a record write fail and did not: the header write is 64
 // and every record is 10, so each individual write still fit and the run reported COMPLETE.
@@ -361,11 +363,20 @@ I64 fs_mut_create, fs_mut_take, fs_mut_give;
 // Steer the three mutex calls; see the note in the C half. Without these, cfe_fs_priv.c's
 // three syslog lines are unreachable -- including the only one that formats three arguments.
 I64 fs_mut_create_rc, fs_mut_take_rc, fs_mut_give_rc;
+// `fs_noexist` SAYS "THE FILE IS NOT THERE", WHICH `fs_open_fail` COULD NOT. This stub had one
+// knob for both ideas, and cfe_tbl_dump.c is the first code in the port whose behaviour turns on
+// the difference: CFE_TBL_WriteSnapshotToFile opens the dump file READ-ONLY purely to decide
+// between CFE_TBL_OVERWRITE_DUMP_INF_EID and CFE_TBL_WRITE_DUMP_INF_EID, and then opens it for
+// WRITING. With one knob the read-only open always succeeded, so the file always "existed" and
+// the first-write event id was UNREACHABLE -- a branch no transcript could enter. Keyed on
+// access_mode so it cannot affect any existing line: every other caller of this stub writes.
 I32 OS_OpenCreate(U32 *filedes, U8 *path, I32 flags, I32 access_mode)
 {
   if (fs_open_fail)
     return -1;
   // OS_ERROR
+  if (fs_noexist && access_mode == OS_READ_ONLY)
+    return -1;
   fs_fd = 7;
   *filedes = 7;
   // A READ-ONLY OPEN MUST NOT TRUNCATE, which this stub used to do unconditionally -- it never
@@ -1395,6 +1406,12 @@ I32 TblValStub(U8 *TblPtr)
 // rest of tbl's allocators depend on, and because CFE_TBL_TaskMain is the last of the three
 // object-table hooks.
 #include "/Kernel/Cfs/cfe/cfe_tbl_task.HC"
+// --- cfe_tbl_dump.c -------------------------------------------------------------
+// The three-phase dump: allocate a control block, snapshot the buffer, and write the file from
+// the background task. It goes last of the tbl sources gated so far because it calls into
+// internal.c (AcquireGlobalLoadBuff, SendNotificationMsg), the codec, dumpctl, regrec,
+// loadbuff and the transaction -- all of which are above it. Zero stand-ins.
+#include "/Kernel/Cfs/cfe/cfe_tbl_dump.HC"
 // CFE_TBL_EarlyInit, CFE_TBL_CleanUpApp AND CFE_TBL_TaskMain WERE STUBS HERE. All three are
 // real now, so every hook cfe_tbl_objtab.c names is the function it claims to be -- the first
 // module whose object table is complete.
@@ -1666,6 +1683,297 @@ U0 TblTransactionExercise()
   D(CFE_TBL_TxnGetEventCount(&txn));
   S("\n");
   MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+}
+// --- cfe_tbl_dump.c -------------------------------------------------------------
+// A DUMP IS THREE PHASES SEPARATED IN TIME, and the exercise follows them in order because
+// each one's output is the next one's input:
+//
+//   1. ALLOCATE   a dump control block, recording WHICH buffer is to be dumped
+//   2. SNAPSHOT   copy that buffer into a shared load buffer and stamp the time
+//   3. WRITE      the background task writes the snapshot to a file and frees both
+//
+// The split exists so a dump never blocks the caller on file I/O, and so a DUMP-ONLY table's
+// snapshot happens when its OWNER says so rather than when the command arrives. Phase 2
+// therefore has two shapes, and both are driven below.
+U0 TblDumpExercise()
+{
+  CFE_TBL_TxnState_t txn;
+  CFE_TBL_RegistryRec_t *rr;
+  CFE_TBL_DumpControl_t *dc;
+  U32 dcid;
+  I32 st;
+  I64 k;
+  MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+  CFE_TBL_Global.RegistryMutex = 0x7B50;
+  CFE_TBL_Global.WorkBufMutex = 0x7B51;
+  CFE_TBL_Global.LastDumpCtrlBlockId = CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE + CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS - 1);
+  CFE_TBL_Global.LastLoadBuffId = CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + CFE_TBL_TOTAL_LOAD_BUFFS - 1);
+  CFE_TBL_Global.TableTaskAppId = ES_CTX_APPID(1);
+  // Registry[9]'s own buffer pair is serial 4 + 2*9 = 22 and 23.
+  rr = &CFE_TBL_Global.Registry[9];
+  CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 9));
+  StrNCpy(rr->Config.Name, "DMP_APP.Tbl", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  rr->Config.Size = 32;
+  rr->OwnerAppId = CFE_ResourceId_FromInteger(0x1111);
+  CFE_TBL_HandleLinkInit(&rr->AccessList);
+  CFE_TBL_LoadBuffSetUsed(&rr->Buffers[0], CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 22), CFE_TBL_RegRecGetID(rr));
+  MemSet(tbl_probe_mem, 0xC3, sizeof(tbl_probe_mem));
+  CFE_TBL_LoadBuffSetAllocatedBlock(&rr->Buffers[0], tbl_probe_mem, sizeof(tbl_probe_mem));
+  rr->Buffers[0].ContentSize = 32;
+  CFE_TBL_SetActiveBuffer(rr, &rr->Buffers[0]);
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  txn.RegRecPtr = rr;
+  txn.RegId = CFE_TBL_RegRecGetID(rr);
+  // --- PHASE 1: ALLOCATE, and the four ways it answers -------------------------------
+  // Into locals first: three of the four arms add a deferred event, and the events are sent at
+  // the end of this block rather than per call -- which is the whole point of the transaction's
+  // event list.
+  txn.RegRecPtr = NULL;
+  st = CFE_TBL_AllocateDumpCtrlBlock(&txn, &dcid, CFE_TBL_BufferSelect_ACTIVE);
+  S("tbl_dmpalloc notbl=");
+  D(st);
+  S(" undef=");
+  D(!CFE_TBL_DUMPCTRLID_IS_VALID(dcid));
+  S("\n");
+  txn.RegRecPtr = rr;
+  st = CFE_TBL_AllocateDumpCtrlBlock(&txn, &dcid, 99);
+  S("tbl_dmpalloc badsel=");
+  D(st);
+  S(" undef=");
+  D(!CFE_TBL_DUMPCTRLID_IS_VALID(dcid));
+  S("\n");
+  st = CFE_TBL_AllocateDumpCtrlBlock(&txn, &dcid, CFE_TBL_BufferSelect_ACTIVE);
+  dc = CFE_TBL_LocateDumpCtrlByID(dcid);
+  S("tbl_dmpalloc ok=");
+  D(st);
+  S(" valid=");
+  D(CFE_TBL_DUMPCTRLID_IS_VALID(dcid));
+  S(" used=");
+  D(dc != NULL && CFE_TBL_DumpCtrlBlockIsUsed(dc));
+  S(" src=");
+  D(dc != NULL && CFE_ResourceId_Equal(dc->SourceBuffId, CFE_TBL_LoadBufferGetID(&rr->Buffers[0])));
+  S(" name=");
+  if (dc == NULL)
+    S("?");
+  else
+    S(dc->TableName);
+  S("\n");
+  // a dump is pending on this table now, so the next request on it is refused
+  rr->DumpControlId = dcid;
+  st = CFE_TBL_AllocateDumpCtrlBlock(&txn, &dcid, CFE_TBL_BufferSelect_ACTIVE);
+  S("tbl_dmpalloc pending=");
+  D(st);
+  S("\n");
+  rr->DumpControlId = CFE_TBL_DUMPCTRLID_UNDEFINED;
+  // EXHAUSTION: every block used, so the allocator has nowhere to put the next one
+  for (k = 0; k < CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS; k++)
+    CFE_TBL_DumpCtrlBlockSetUsed(&CFE_TBL_Global.DumpControlBlocks[k], CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE + k));
+  st = CFE_TBL_AllocateDumpCtrlBlock(&txn, &dcid, CFE_TBL_BufferSelect_ACTIVE);
+  S("tbl_dmpalloc toomany=");
+  D(st);
+  S(" undef=");
+  D(!CFE_TBL_DUMPCTRLID_IS_VALID(dcid));
+  S("\n");
+  // SEND WHAT THE FOUR CALLS QUEUED. Three events come out of five queued, and the two that do
+  // not are the point: CFE_TBL_SendDumpEventHelper's switch has no case for
+  // CFE_TBL_NO_SUCH_TABLE_ERR_EID, so it leaves EventString empty, returns FALSE, and declines
+  // to own that event. That is the mechanism which lets each operation register its own helper.
+  CFE_TBL_SendTableDumpEvents(&txn, "/ram/dump.tbl", CFE_TBL_RegRecGetName(rr));
+  // AND THE TWO DEFAULTS, which only show with a fresh transaction carrying one event. NASA
+  // refuses to leave either field blank: NULL becomes "[none]" and "[unknown]".
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  txn.RegRecPtr = rr;
+  CFE_TBL_TxnAddEvent(&txn, CFE_TBL_DUMP_PENDING_ERR_EID, CFE_TBL_INFO_DUMP_PENDING, 0);
+  CFE_TBL_SendTableDumpEvents(&txn, NULL, NULL);
+  // --- PHASE 2: SNAPSHOT, both shapes --------------------------------------------------
+  // Reset the blocks the exhaustion test above filled, and give the shared load buffers real
+  // memory so AcquireGlobalLoadBuff has something to hand out.
+  for (k = 0; k < CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS; k++) {
+    CFE_TBL_DumpCtrlBlockSetFree(&CFE_TBL_Global.DumpControlBlocks[k]);
+    CFE_TBL_LoadBuffSetAllocatedBlock(&CFE_TBL_Global.LoadBuffs[k], tbl_probe_mem2, sizeof(tbl_probe_mem2));
+  }
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  txn.RegRecPtr = rr;
+  txn.RegId = CFE_TBL_RegRecGetID(rr);
+  st = CFE_TBL_AllocateDumpCtrlBlock(&txn, &dcid, CFE_TBL_BufferSelect_ACTIVE);
+  // A NORMAL TABLE SNAPSHOTS IMMEDIATELY: Prepare calls ExecuteDumpSnapshot itself, so the
+  // state comes back PERFORMED and the source id is CLEARED -- the dump no longer refers to the
+  // table's buffer, it owns a copy. `first=c3` is the proof the DATA moved, not just the state.
+  st = CFE_TBL_PrepareDumpSnapshotBuffer(&txn, dcid, "/ram/dump.tbl");
+  dc = CFE_TBL_LocateDumpCtrlByID(dcid);
+  S("tbl_dmpprep normal=");
+  D(st);
+  S(" state=");
+  D(dc->State);
+  S(" srccleared=");
+  D(!CFE_TBL_LOADBUFFID_IS_VALID(dc->SourceBuffId));
+  S(" buf=");
+  D(dc->DumpBufferPtr != NULL);
+  S(" enc=");
+  D(dc->EncodeStatus);
+  S(" first=");
+  if (dc->DumpBufferPtr == NULL)
+    Hx2b(0);
+  else
+    Hx2b(CFE_TBL_LoadBuffGetReadPointer(dc->DumpBufferPtr)[0]);
+  S("\n");
+  // A DUMP-ONLY TABLE DOES NOT: the state is PENDING and the REGISTRY RECORD remembers the
+  // block, because the snapshot has to wait for the owner to call CFE_TBL_Modified.
+  CFE_TBL_DumpCtrlBlockSetFree(dc);
+  rr->Config.DumpOnly = TRUE;
+  st = CFE_TBL_AllocateDumpCtrlBlock(&txn, &dcid, CFE_TBL_BufferSelect_ACTIVE);
+  st = CFE_TBL_PrepareDumpSnapshotBuffer(&txn, dcid, "/ram/dump.tbl");
+  dc = CFE_TBL_LocateDumpCtrlByID(dcid);
+  S("tbl_dmpprep dumponly=");
+  D(st);
+  S(" state=");
+  D(dc->State);
+  S(" remembered=");
+  D(CFE_ResourceId_Equal(rr->DumpControlId, dcid));
+  S("\n");
+  rr->Config.DumpOnly = FALSE;
+  rr->DumpControlId = CFE_TBL_DUMPCTRLID_UNDEFINED;
+  // AND THE NO-BUFFER ARM, which is why AcquireGlobalLoadBuff's NULL return matters: mark every
+  // shared buffer used and there is nothing to snapshot into.
+  for (k = 0; k < CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS; k++)
+    CFE_TBL_LoadBuffSetUsed(&CFE_TBL_Global.LoadBuffs[k], CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + k), CFE_TBL_RegRecGetID(rr));
+  st = CFE_TBL_PrepareDumpSnapshotBuffer(&txn, dcid, "/ram/dump.tbl");
+  S("tbl_dmpprep nobuf=");
+  D(st);
+  S("\n");
+  for (k = 0; k < CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS; k++)
+    CFE_TBL_LoadBuffSetFree(&CFE_TBL_Global.LoadBuffs[k]);
+  // AND THE SNAPSHOT ON ITS OWN, with a source id that does not match anything.
+  dc = &CFE_TBL_Global.DumpControlBlocks[0];
+  dc->SourceBuffId = CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + CFE_TBL_TOTAL_LOAD_BUFFS);
+  st = CFE_TBL_ExecuteDumpSnapshot(dc);
+  S("tbl_dmpsnap badsrc=");
+  D(st);
+  S("\n");
+  // --- PHASE 3: WRITE, five outcomes --------------------------------------------------
+  // Set the block up as the background task expects to find it: used, PERFORMED, with a dump
+  // buffer holding the snapshot.
+  MemSet(dc, 0, sizeof(CFE_TBL_DumpControl_t));
+  CFE_TBL_DumpCtrlBlockSetUsed(dc, CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE));
+  dc->State = CFE_TBL_DUMP_PERFORMED;
+  dc->EncodeStatus = CFE_SUCCESS;
+  dc->DumpBufferPtr = &CFE_TBL_Global.LoadBuffs[0];
+  CFE_TBL_LoadBuffSetAllocatedBlock(dc->DumpBufferPtr, tbl_probe_mem2, sizeof(tbl_probe_mem2));
+  dc->DumpBufferPtr->ContentSize = 32;
+  StrNCpy(dc->DumpBufferPtr->DataSource, "/ram/dump.tbl", OS_MAX_PATH_LEN - 1);
+  StrNCpy(dc->TableName, "DMP_APP.Tbl", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  // THE FILE ALREADY EXISTS, which is the only thing the read-only open at the top of
+  // WriteSnapshotToFile is for: it picks OVERWRITE_DUMP over WRITE_DUMP.
+  fs_len = 0;
+  fs_pos = 0;
+  fs_wr_left = -1;
+  st = CFE_TBL_WriteSnapshotToFile(dc);
+  S("tbl_dmpwrite overwrite=");
+  D(st);
+  S(" bytes=");
+  D(fs_len);
+  S(" last=");
+  S(CFE_TBL_Global.HkPacket.Payload.LastFileDumped);
+  S("\n");
+  // THE FILE DOES NOT EXIST YET -- and this branch was unreachable until the stub learned to
+  // say so; see the note on fs_noexist at OS_OpenCreate.
+  fs_noexist = 1;
+  fs_len = 0;
+  fs_pos = 0;
+  st = CFE_TBL_WriteSnapshotToFile(dc);
+  S("tbl_dmpwrite first=");
+  D(st);
+  S(" bytes=");
+  D(fs_len);
+  S("\n");
+  fs_noexist = 0;
+  // THE CREATE FAILS
+  fs_open_fail = 1;
+  st = CFE_TBL_WriteSnapshotToFile(dc);
+  S("tbl_dmpwrite nocreate=");
+  D(st);
+  S("\n");
+  fs_open_fail = 0;
+  // THE THREE WRITES ARE 64 + 52 + 32 BYTES, and each budget below stops one of them. The
+  // numbers are not guessed: a full successful dump reports bytes=148 above, and the image is
+  // 32, so the two headers are 116 and CFE_FS_Header_t is 64.
+  //
+  // A FIRST DRAFT USED 150 FOR THE IMAGE CASE and the write SUCCEEDED -- the line read
+  // `shortimg=0 bytes=148`, byte-identical to the overwrite line above it, which is the
+  // two-assertions-agreeing tell. The middle case, a cFE header that goes out and a TABLE
+  // header that does not, was not in that draft at all, so CFE_TBL_WRITE_TBL_HDR_ERR_EID had no
+  // way to appear.
+  fs_wr_left = 130;
+  // both headers out (116), image truncated to 14
+  fs_len = 0;
+  fs_pos = 0;
+  st = CFE_TBL_WriteSnapshotToFile(dc);
+  S("tbl_dmpwrite shortimg=");
+  D(st);
+  S(" bytes=");
+  D(fs_len);
+  S("\n");
+  fs_wr_left = 80;
+  // cFE header out (64), table header truncated to 16
+  fs_len = 0;
+  fs_pos = 0;
+  st = CFE_TBL_WriteSnapshotToFile(dc);
+  S("tbl_dmpwrite shorttblhdr=");
+  D(st);
+  S(" bytes=");
+  D(fs_len);
+  S("\n");
+  fs_wr_left = 10;
+  // not even the cFE header
+  fs_len = 0;
+  fs_pos = 0;
+  st = CFE_TBL_WriteSnapshotToFile(dc);
+  S("tbl_dmpwrite shorthdr=");
+  D(st);
+  S(" bytes=");
+  D(fs_len);
+  S("\n");
+  fs_wr_left = -1;
+  // --- AND THE BACKGROUND SWEEP, which is phase 3's only real caller ------------------
+  // Two blocks: one with a good snapshot, which gets written, and one whose encode FAILED, which
+  // gets an event instead. Both must be freed either way -- that is the whole reason NASA's
+  // comment says to "just accept the error and move on to eventually free the dump ctrl buffer".
+  MemSet(&CFE_TBL_Global.DumpControlBlocks, 0, sizeof(CFE_TBL_DumpControl_t) * CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS);
+  for (k = 0; k < 2; k++) {
+    dc = &CFE_TBL_Global.DumpControlBlocks[k];
+    CFE_TBL_DumpCtrlBlockSetUsed(dc, CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE + k));
+    dc->State = CFE_TBL_DUMP_PERFORMED;
+    if (k == 0)
+      dc->EncodeStatus = CFE_SUCCESS;
+    else
+      dc->EncodeStatus = CFE_TBL_ERR_ACCESS;
+    dc->DumpBufferPtr = &CFE_TBL_Global.LoadBuffs[k];
+    CFE_TBL_LoadBuffSetUsed(dc->DumpBufferPtr, CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + k), CFE_TBL_RegRecGetID(rr));
+    CFE_TBL_LoadBuffSetAllocatedBlock(dc->DumpBufferPtr, tbl_probe_mem2, sizeof(tbl_probe_mem2));
+    dc->DumpBufferPtr->ContentSize = 32;
+    StrNCpy(dc->DumpBufferPtr->DataSource, "/ram/bg.tbl", OS_MAX_PATH_LEN - 1);
+    StrNCpy(dc->TableName, "DMP_APP.Tbl", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  }
+  // a third block is PENDING, not PERFORMED, and must be left completely alone
+  dc = &CFE_TBL_Global.DumpControlBlocks[2];
+  CFE_TBL_DumpCtrlBlockSetUsed(dc, CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE + 2));
+  dc->State = CFE_TBL_DUMP_PENDING;
+  fs_len = 0;
+  fs_pos = 0;
+  CFE_TBL_TableDumpExecuteBackground();
+  S("tbl_dmpbg free0=");
+  D(!CFE_TBL_DumpCtrlBlockIsUsed(&CFE_TBL_Global.DumpControlBlocks[0]));
+  S(" free1=");
+  D(!CFE_TBL_DumpCtrlBlockIsUsed(&CFE_TBL_Global.DumpControlBlocks[1]));
+  S(" pendingkept=");
+  D(CFE_TBL_DumpCtrlBlockIsUsed(&CFE_TBL_Global.DumpControlBlocks[2]));
+  S(" buf0free=");
+  D(!CFE_TBL_LoadBuffIsUsed(&CFE_TBL_Global.LoadBuffs[0]));
+  S(" buf1free=");
+  D(!CFE_TBL_LoadBuffIsUsed(&CFE_TBL_Global.LoadBuffs[1]));
+  S(" bytes=");
+  D(fs_len);
+  S("\n");
 }
 // --- cfe_tbl_task.c -------------------------------------------------------------
 // THREE FUNCTIONS, AND THE OBJECT TABLE IS FINALLY HONEST. cfe_tbl_objtab.c names
@@ -12168,6 +12476,7 @@ I64 main()
     TblInternalExercise();
     TblRegistryExercise();
     TblEarlyInitExercise();
+    TblDumpExercise();
     TblTaskExercise();
     // --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
     // ------------------------------------------------------------------------------------

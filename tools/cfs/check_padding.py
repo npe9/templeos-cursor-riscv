@@ -168,6 +168,10 @@ CSRC = [
     # "scheduler" is a file-scope table of them and nothing else needs the type, so NASA never
     # put it in a header. It carries a FUNCTION POINTER, so check_fnptr_members reads it too.
     os.path.join(CFE, "modules", "es", "fsw", "src", "cfe_es_backgroundtask.c"),
+    # CFE_TBL_DumpContext_t is declared inside cfe_tbl_dump.c -- two const char pointers, the
+    # context CFE_TBL_SendDumpEventHelper needs that the transaction object does not carry.
+    # Nothing outside that source refers to it, so NASA never put it in a header.
+    os.path.join(CFE, "modules", "tbl", "fsw", "src", "cfe_tbl_dump.c"),
     # CFE_ES_ControlReqMapEntry_t is declared inside cfe_es_appctrl.c, for the same reason: the
     # control-request event table is the only thing that uses it. Its layout is load-bearing in
     # an unusual way -- the table is read with DESIGNATED initialisers upstream and POSITIONAL

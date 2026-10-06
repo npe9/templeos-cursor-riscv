@@ -214,6 +214,16 @@ UNPAIRED_OK = {
         "local of it. Its SIZE is still covered: a union is as large as its largest member, and "
         "BOTH members pair and are measured (CFE_ES_SysLogReadBuffer_t and CFE_FS_Header_t), so "
         "there is no way for this to be the wrong size while they are right.",
+    "CFE_TBL_DumpHdrBuffer_t":
+        "The same shape as CFE_ES_SysLogDumpBuffer_t: NASA declares this as an ANONYMOUS union "
+        "LOCAL inside CFE_TBL_WriteHeaders -- `union { CFE_FS_Header_t Std; CFE_TBL_File_Hdr_t "
+        "Tbl; } Buffer;` -- so there is no upstream type of any name to pair with, and HolyC "
+        "needs the type named to declare a local of it. Its SIZE is still covered: a union is "
+        "as large as its largest member and BOTH members pair and are measured "
+        "(CFE_FS_Header_t and CFE_TBL_File_Hdr_t), so it cannot be the wrong size while they "
+        "are right. What NASA uses it for is in the comment at the declaration: the FS API may "
+        "modify the buffer it is handed during write, so the caller's header is copied into a "
+        "scratch big enough for either header first.",
     "OS_EventHandlerSlot":
         "NASA's OS_SharedGlobalVars.EventHandler is an array of the function-pointer typedef "
         "OS_EventHandler_t; the translation wraps one pointer in a class so the member can be an "
