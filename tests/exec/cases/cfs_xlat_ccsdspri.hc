@@ -1359,10 +1359,17 @@ U16 tbl_val_ids[5];
 CFE_TBL_TxnEventContext_t tbl_txctx;
 // a validation callback that exists only to be non-NULL: what SetupValidationRequest branches
 // on is whether the pointer is set, never what it does.
+// A STEERABLE VALIDATION CALLBACK. It began as a pointer that exists only to be non-NULL --
+// CFE_TBL_SetupValidationRequest branches on whether it is set, never on what it does -- and
+// `tbl_val_rc` was added for cfe_tbl_load.c, where WHAT IT RETURNS decides between three
+// outcomes: zero is a pass, a NEGATIVE value raises CFE_TBL_VALIDATION_ERR_EID and zeroes the
+// buffer, and a POSITIVE value raises a DIFFERENT event (CFE_TBL_LOAD_VAL_ERR_EID) and becomes
+// CFE_STATUS_VALIDATION_FAILURE. Without the knob, two of those three are unreachable.
+I32 tbl_val_rc;
 I32 TblValStub(U8 *TblPtr)
 {
   no_warn TblPtr;
-  return CFE_SUCCESS;
+  return tbl_val_rc;
 }
 // --- FOUR STAND-INS FOR THE loadbuff+regrec PAIR -------------------------------------------
 // Named by tools/cfs/module_deps.py --cuts: two from cfe_tbl_internal.c and two from
@@ -1412,6 +1419,12 @@ I32 TblValStub(U8 *TblPtr)
 // internal.c (AcquireGlobalLoadBuff, SendNotificationMsg), the codec, dumpctl, regrec,
 // loadbuff and the transaction -- all of which are above it. Zero stand-ins.
 #include "/Kernel/Cfs/cfe/cfe_tbl_dump.HC"
+// --- cfe_tbl_load.c -------------------------------------------------------------
+// The most guarded operation in Table Services: open, std header, table header, loadability,
+// content, metadata -- and every step can refuse. It goes after dump.c because both share the
+// CombinedFileHdr_t type and the codec, and because CFE_TBL_LoadFinish calls
+// CFE_TBL_UpdateInternal from internal.c. Zero stand-ins.
+#include "/Kernel/Cfs/cfe/cfe_tbl_load.HC"
 // CFE_TBL_EarlyInit, CFE_TBL_CleanUpApp AND CFE_TBL_TaskMain WERE STUBS HERE. All three are
 // real now, so every hook cfe_tbl_objtab.c names is the function it claims to be -- the first
 // module whose object table is complete.
@@ -1683,6 +1696,548 @@ U0 TblTransactionExercise()
   D(CFE_TBL_TxnGetEventCount(&txn));
   S("\n");
   MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+}
+// --- cfe_tbl_load.c -------------------------------------------------------------
+// SIXTEEN FUNCTIONS, AND A LOAD IS THE MOST GUARDED OPERATION IN TABLE SERVICES. The exercise
+// follows the file path in order, because every step can refuse and the interesting thing about
+// each one is WHICH refusal it produces.
+//
+// THE FILE IS BUILT EXPLICITLY, NOT ROUND-TRIPPED THROUGH A DUMP, and that is not a style
+// choice. CFE_TBL_WriteSnapshotToFile leaves Tbl.Reserved and Tbl.Offset as uninitialised stack
+// -- see the note at tbl_dmphdr and in docs/CFS_PLAN.md -- and CFE_TBL_ReadHeaders reads Offset
+// to decide where the data lands. A dump-then-load exercise would therefore be NONDETERMINISTIC
+// between the two halves and would present as a load.c translation bug. So tbl_mkfile below
+// sets all four table-header fields itself.
+U0 tbl_mkfile(U8 *tblname, U32 offset, U32 numbytes, I64 datasize, U32 contenttype, U16 subtype, U8 fill)
+{
+  CFE_TBL_CombinedFileHdr_t hdr;
+  CFE_TBL_TxnState_t txn;
+  U32 fd;
+  I64 k;
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  // THE WHOLE header, unlike NASA's partial memset -- this is driver code and may be
+  // deterministic where the code under test is not.
+  MemSet(&hdr, 0, sizeof(CFE_TBL_CombinedFileHdr_t));
+  CFE_FS_InitHeader(&hdr.Std, "Table Load Image", subtype);
+  hdr.Std.ContentType = contenttype;
+  hdr.Std.TimeSeconds = 0x11223344;
+  hdr.Std.TimeSubSeconds = 0x55667788;
+  hdr.Tbl.Reserved = 0;
+  hdr.Tbl.Offset = offset;
+  hdr.Tbl.NumBytes = numbytes;
+  StrNCpy(hdr.Tbl.TableName, tblname, CFE_MISSION_TBL_MAX_FULL_NAME_LEN - 1);
+  fs_len = 0;
+  fs_pos = 0;
+  fs_wr_left = -1;
+  OS_OpenCreate(&fd, "/ram/load.tbl", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE, OS_WRITE_ONLY);
+  CFE_TBL_WriteHeaders(&txn, fd, &hdr);
+  for (k = 0; k < datasize; k++)
+    tbl_probe_mem2[k] = fill + k;
+  OS_write(fd, tbl_probe_mem2, datasize);
+  OS_close(fd);
+  // THE CONTENT TYPE HAS TO BE POKED INTO THE FILE, not set in the struct. CFE_FS_WriteHeader
+  // writes CFE_FS_FILE_CONTENT_ID itself, overwriting whatever the caller put there -- the
+  // first draft set hdr.Std.ContentType and the badcontent case came back SUCCESS with
+  // ct=63464531, which is "cFE1" in ASCII. It is the first four bytes of the file, big-endian.
+  // (SubType survives, which is why that case needs no poke; and TimeSeconds does NOT survive
+  // either -- WriteHeader stamps the current time -- which is why tbl_rdhdr reports the clock's
+  // value and not the one tbl_mkfile asked for.)
+  if (contenttype != CFE_FS_FILE_CONTENT_ID) {
+    fs_data[0] = (contenttype >> 24) & 0xFF;
+    fs_data[1] = (contenttype >> 16) & 0xFF;
+    fs_data[2] = (contenttype >> 8) & 0xFF;
+    fs_data[3] = contenttype & 0xFF;
+  }
+  fs_pos = 0;
+}
+
+U0 TblLoadExercise()
+{
+  CFE_TBL_TxnState_t txn;
+  CFE_TBL_RegistryRec_t *rr;
+  CFE_TBL_CombinedFileHdr_t hdr;
+  CFE_TBL_LoadBuff_t *lb;
+  U32 fd;
+  I32 st;
+  I64 k;
+  MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+  CFE_TBL_Global.RegistryMutex = 0x7B60;
+  CFE_TBL_Global.WorkBufMutex = 0x7B61;
+  CFE_TBL_Global.TableTaskAppId = ES_CTX_APPID(1);
+  CFE_TBL_Global.LastLoadBuffId = CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + CFE_TBL_TOTAL_LOAD_BUFFS - 1);
+  // --- WHAT THIS EXERCISE CANNOT REACH, AND WHY, said before the parts it can -----------
+  //
+  // CFE_TBL_ValidateTableHeaderId CANNOT BE CALLED FROM THE C HALF. Like
+  // CFE_TBL_HandleListGetSafeLink in cfe_tbl_internal.c, it is a non-static definition with NO
+  // DECLARATION IN ANY HEADER, so the oracle cannot name it. (check_coverage and
+  // check_signatures both compare it; only the body is unexercised.)
+  //
+  // And it would not help much if it could: both accept lists are EMPTY in this configuration
+  // -- cfe_platformcfg_tables.HC says so at its top, CFE_PLATFORM_TBL_VALID_SCID and _PRID have
+  // a count of zero -- so the function always returns true and CFE_TBL_ReadHeaders'
+  // CFE_TBL_ERR_BAD_SPACECRAFT_ID and CFE_TBL_ERR_BAD_PROCESSOR_ID arms are UNREACHABLE. That is
+  // a configuration fact, the same kind the coverage gate already records for the nine functions
+  // a verified #if excludes, not a gap someone forgot to fill. A mission that configures a list
+  // is the thing that would reach them.
+  //
+  // --- THE REGISTRY RECORD every step below works against -----------------------------
+  // Registry[11]'s own buffer pair is serial 4 + 2*11 = 26 and 27.
+  rr = &CFE_TBL_Global.Registry[11];
+  CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 11));
+  StrNCpy(rr->Config.Name, "LD_APP.Tbl", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  rr->Config.Size = 32;
+  rr->OwnerAppId = CFE_ResourceId_FromInteger(0x1111);
+  CFE_TBL_HandleLinkInit(&rr->AccessList);
+  CFE_TBL_LoadBuffSetUsed(&rr->Buffers[0], CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 26), CFE_TBL_RegRecGetID(rr));
+  CFE_TBL_LoadBuffSetAllocatedBlock(&rr->Buffers[0], tbl_probe_mem, sizeof(tbl_probe_mem));
+  for (k = 0; k < CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS; k++)
+    CFE_TBL_LoadBuffSetAllocatedBlock(&CFE_TBL_Global.LoadBuffs[k], tbl_probe_mem, sizeof(tbl_probe_mem));
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  txn.RegRecPtr = rr;
+  txn.RegId = CFE_TBL_RegRecGetID(rr);
+  // --- CFE_TBL_ReadHeaders, four answers ----------------------------------------------
+  // A SHORT FILE first: no std header at all.
+  fs_len = 0;
+  fs_pos = 0;
+  OS_OpenCreate(&fd, "/ram/load.tbl", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+  MemSet(&hdr, 0, sizeof(CFE_TBL_CombinedFileHdr_t));
+  st = CFE_TBL_ReadHeaders(&txn, fd, &hdr);
+  S("tbl_rdhdr nostd=");
+  D(st);
+  S("\n");
+  OS_close(fd);
+  // WRONG CONTENT ID
+  tbl_mkfile("LD_APP.Tbl", 0, 32, 32, 0xBADF00D, CFE_FS_SubType_TBL_IMG, 0x40);
+  OS_OpenCreate(&fd, "/ram/load.tbl", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+  MemSet(&hdr, 0, sizeof(CFE_TBL_CombinedFileHdr_t));
+  st = CFE_TBL_ReadHeaders(&txn, fd, &hdr);
+  S("tbl_rdhdr badcontent=");
+  D(st);
+  S(" ct=");
+  Hx4(hdr.Std.ContentType >> 16);
+  Hx4(hdr.Std.ContentType);
+  S("\n");
+  OS_close(fd);
+  // WRONG SUBTYPE
+  tbl_mkfile("LD_APP.Tbl", 0, 32, 32, CFE_FS_FILE_CONTENT_ID, 99, 0x40);
+  OS_OpenCreate(&fd, "/ram/load.tbl", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+  MemSet(&hdr, 0, sizeof(CFE_TBL_CombinedFileHdr_t));
+  st = CFE_TBL_ReadHeaders(&txn, fd, &hdr);
+  S("tbl_rdhdr badsubtype=");
+  D(st);
+  S(" sub=");
+  D(hdr.Std.SubType);
+  S("\n");
+  OS_close(fd);
+  // AND A GOOD ONE: the whole header comes back, and the four table fields are exactly what
+  // tbl_mkfile wrote -- which is the point of building it explicitly.
+  tbl_mkfile("LD_APP.Tbl", 0, 32, 32, CFE_FS_FILE_CONTENT_ID, CFE_FS_SubType_TBL_IMG, 0x40);
+  OS_OpenCreate(&fd, "/ram/load.tbl", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+  MemSet(&hdr, 0, sizeof(CFE_TBL_CombinedFileHdr_t));
+  st = CFE_TBL_ReadHeaders(&txn, fd, &hdr);
+  S("tbl_rdhdr ok=");
+  D(st);
+  S(" name=");
+  S(hdr.Tbl.TableName);
+  S(" n=");
+  D(hdr.Tbl.NumBytes);
+  S(" off=");
+  D(hdr.Tbl.Offset);
+  S(" resv=");
+  D(hdr.Tbl.Reserved);
+  S(" secs=");
+  Hx4(hdr.Std.TimeSeconds >> 16);
+  Hx4(hdr.Std.TimeSeconds);
+  S("\n");
+  // --- CFE_TBL_ValidateFileIsLoadable, five answers -----------------------------------
+  txn.RegRecPtr = NULL;
+  st = CFE_TBL_ValidateFileIsLoadable(&txn, &hdr.Tbl);
+  S("tbl_loadable notbl=");
+  D(st);
+  S("\n");
+  txn.RegRecPtr = rr;
+  StrNCpy(hdr.Tbl.TableName, "OTHER.Tbl", CFE_MISSION_TBL_MAX_FULL_NAME_LEN - 1);
+  st = CFE_TBL_ValidateFileIsLoadable(&txn, &hdr.Tbl);
+  S("tbl_loadable wrongname=");
+  D(st);
+  S("\n");
+  StrNCpy(hdr.Tbl.TableName, "LD_APP.Tbl", CFE_MISSION_TBL_MAX_FULL_NAME_LEN - 1);
+  hdr.Tbl.NumBytes = 0;
+  st = CFE_TBL_ValidateFileIsLoadable(&txn, &hdr.Tbl);
+  S("tbl_loadable zerolen=");
+  D(st);
+  S("\n");
+  hdr.Tbl.NumBytes = 16;
+  hdr.Tbl.Offset = 8;
+  st = CFE_TBL_ValidateFileIsLoadable(&txn, &hdr.Tbl);
+  S("tbl_loadable partial=");
+  D(st);
+  S("\n");
+  // a partial load IS allowed once the table has been loaded before
+  CFE_TBL_SetActiveBuffer(rr, &rr->Buffers[0]);
+  st = CFE_TBL_ValidateFileIsLoadable(&txn, &hdr.Tbl);
+  S("tbl_loadable partialok=");
+  D(st);
+  S("\n");
+  rr->Status.ActiveBufferId = CFE_TBL_LOADBUFFID_UNDEFINED;
+  hdr.Tbl.Offset = 0;
+  hdr.Tbl.NumBytes = 32;
+  st = CFE_TBL_ValidateFileIsLoadable(&txn, &hdr.Tbl);
+  S("tbl_loadable ok=");
+  D(st);
+  S("\n");
+  // --- CFE_TBL_ValidateLoadRequest, the five arms -------------------------------------
+  // Into locals: each refusal queues an event, and they are all sent at the end.
+  txn.RegRecPtr = NULL;
+  st = CFE_TBL_ValidateLoadRequest(&txn, CFE_TBL_SRC_FILE);
+  S("tbl_ldreq notbl=");
+  D(st);
+  S("\n");
+  txn.RegRecPtr = rr;
+  CFE_TBL_RegRecSetLoadInProgress(rr, CFE_TBL_LoadBufferGetID(&rr->Buffers[0]));
+  st = CFE_TBL_ValidateLoadRequest(&txn, CFE_TBL_SRC_FILE);
+  S("tbl_ldreq inprogress=");
+  D(st);
+  S("\n");
+  CFE_TBL_RegRecClearLoadInProgress(rr);
+  st = CFE_TBL_ValidateLoadRequest(&txn, 99);
+  S("tbl_ldreq badsrc=");
+  D(st);
+  S("\n");
+  // A DUMP-ONLY TABLE CAN BE LOADED EXACTLY ONCE AND ONLY FROM AN ADDRESS. Not user-defined is
+  // refused; user-defined but already loaded is refused; user-defined, unloaded, from a FILE is
+  // refused; user-defined, unloaded, from an ADDRESS is allowed. The first two report the SAME
+  // status from two different preconditions, which is NASA's code and not a duplicate assertion.
+  rr->Config.DumpOnly = TRUE;
+  CFE_TBL_RegRecClearLoadInProgress(rr);
+  st = CFE_TBL_ValidateLoadRequest(&txn, CFE_TBL_SRC_ADDRESS);
+  S("tbl_ldreq dmp_notuser=");
+  D(st);
+  S("\n");
+  rr->Config.UserDefAddr = TRUE;
+  CFE_TBL_SetActiveBuffer(rr, &rr->Buffers[0]);
+  CFE_TBL_RegRecClearLoadInProgress(rr);
+  st = CFE_TBL_ValidateLoadRequest(&txn, CFE_TBL_SRC_ADDRESS);
+  S("tbl_ldreq dmp_loaded=");
+  D(st);
+  S("\n");
+  rr->Status.ActiveBufferId = CFE_TBL_LOADBUFFID_UNDEFINED;
+  CFE_TBL_RegRecClearLoadInProgress(rr);
+  st = CFE_TBL_ValidateLoadRequest(&txn, CFE_TBL_SRC_FILE);
+  S("tbl_ldreq dmp_fromfile=");
+  D(st);
+  S("\n");
+  CFE_TBL_RegRecClearLoadInProgress(rr);
+  st = CFE_TBL_ValidateLoadRequest(&txn, CFE_TBL_SRC_ADDRESS);
+  S("tbl_ldreq dmp_fromaddr=");
+  D(st);
+  S(" lip=");
+  D(CFE_TBL_RegRecIsLoadInProgress(rr));
+  S("\n");
+  rr->Config.DumpOnly = FALSE;
+  rr->Config.UserDefAddr = FALSE;
+  // and the ordinary success, which RESERVES a working buffer as its whole side effect
+  CFE_TBL_RegRecClearLoadInProgress(rr);
+  st = CFE_TBL_ValidateLoadRequest(&txn, CFE_TBL_SRC_FILE);
+  S("tbl_ldreq ok=");
+  D(st);
+  S(" lip=");
+  D(CFE_TBL_RegRecIsLoadInProgress(rr));
+  S("\n");
+  // THE EVENT LIST HOLDS EIGHT AND THIS GROUP QUEUED MORE, which is why it is flushed here
+  // instead of at the end of the block. A negative control found this: changing the event id in
+  // CFE_TBL_ValidateLoadInProgress's positive arm left the transcript IDENTICAL, because by the
+  // time that code ran the transaction had long overflowed and CFE_TBL_TxnAddEvent was dropping
+  // everything. A real mutation that still passes means the driver never reaches it.
+  //
+  // `queued=` is NASA's own overflow witness: the counter "always increments ... to make it
+  // evident if there was an overflow", and until now nothing read it. Above 8 means events were
+  // lost.
+  S("tbl_ldreq queued=");
+  D(txn.NumPendingEvents);
+  S(" overflow=");
+  D(txn.NumPendingEvents > CFE_TBL_MAX_EVENTS_PER_TXN);
+  S("\n");
+  StrNCpy(txn.AppNameBuffer, "LD_APP", CFE_MISSION_MAX_API_LEN - 1);
+  CFE_TBL_SendTableLoadEvents(&txn);
+  txn.NumPendingEvents = 0;
+  // --- CFE_TBL_LoadContentFromFile, four answers --------------------------------------
+  // TOO LARGE: a 32-byte buffer cannot take 32 bytes at offset 40.
+  tbl_mkfile("LD_APP.Tbl", 0, 32, 32, CFE_FS_FILE_CONTENT_ID, CFE_FS_SubType_TBL_IMG, 0x40);
+  OS_OpenCreate(&fd, "/ram/load.tbl", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+  OS_lseek(fd, 116, 0);
+  st = CFE_TBL_LoadContentFromFile(&txn, fd, 40, 32);
+  S("tbl_ldcontent toobig=");
+  D(st);
+  S("\n");
+  OS_close(fd);
+  // SHORT: the header claims 32 bytes but only 8 follow.
+  tbl_mkfile("LD_APP.Tbl", 0, 32, 8, CFE_FS_FILE_CONTENT_ID, CFE_FS_SubType_TBL_IMG, 0x40);
+  OS_OpenCreate(&fd, "/ram/load.tbl", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+  OS_lseek(fd, 116, 0);
+  st = CFE_TBL_LoadContentFromFile(&txn, fd, 0, 32);
+  S("tbl_ldcontent short=");
+  D(st);
+  S("\n");
+  OS_close(fd);
+  // TOO MUCH DATA: the header claims 32 and 40 follow. This is the one-byte read past the end,
+  // and nothing else in the function would catch it.
+  tbl_mkfile("LD_APP.Tbl", 0, 32, 40, CFE_FS_FILE_CONTENT_ID, CFE_FS_SubType_TBL_IMG, 0x40);
+  OS_OpenCreate(&fd, "/ram/load.tbl", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+  OS_lseek(fd, 116, 0);
+  st = CFE_TBL_LoadContentFromFile(&txn, fd, 0, 32);
+  S("tbl_ldcontent extradata=");
+  D(st);
+  S("\n");
+  OS_close(fd);
+  // AND EXACTLY RIGHT. first/last are the proof the DATA arrived, not just the status.
+  tbl_mkfile("LD_APP.Tbl", 0, 32, 32, CFE_FS_FILE_CONTENT_ID, CFE_FS_SubType_TBL_IMG, 0x40);
+  OS_OpenCreate(&fd, "/ram/load.tbl", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+  OS_lseek(fd, 116, 0);
+  st = CFE_TBL_LoadContentFromFile(&txn, fd, 0, 32);
+  OS_close(fd);
+  lb = CFE_TBL_GetLoadInProgressBuffer(rr);
+  S("tbl_ldcontent ok=");
+  D(st);
+  S(" size=");
+  if (lb == NULL)
+    D(0);
+  else
+    D(CFE_TBL_LoadBuffGetContentSize(lb));
+  S(" first=");
+  if (lb == NULL)
+    Hx2b(0);
+  else
+    Hx2b(CFE_TBL_LoadBuffGetReadPointer(lb)[0]);
+  S(" last=");
+  if (lb == NULL)
+    Hx2b(0);
+  else
+    Hx2b(CFE_TBL_LoadBuffGetReadPointer(lb)[31]);
+  S("\n");
+  // flush again before the validation group, same reason
+  S("tbl_ldcontent queued=");
+  D(txn.NumPendingEvents);
+  S("\n");
+  CFE_TBL_SendTableLoadFileEvents(&txn, "/ram/load.tbl", &hdr);
+  txn.NumPendingEvents = 0;
+  // --- CFE_TBL_SetMetaDataFromFileHeader ----------------------------------------------
+  // The file time comes from the STD header, the CRC is recomputed, and IsValid is seeded from
+  // whether a validation function exists -- a table with no validator is valid on arrival, one
+  // with a validator is not until the validator says so.
+  hdr.Std.TimeSeconds = 0x11223344;
+  hdr.Std.TimeSubSeconds = 0x55667788;
+  rr->Config.ValidationFuncPtr = NULL;
+  CFE_TBL_SetMetaDataFromFileHeader(&txn, "/ram/load.tbl", &hdr.Std);
+  S("tbl_ldmeta src=");
+  S(lb->DataSource);
+  S(" secs=");
+  Hx4(lb->FileTime.Seconds >> 16);
+  Hx4(lb->FileTime.Seconds);
+  S(" subs=");
+  Hx4(lb->FileTime.Subseconds >> 16);
+  Hx4(lb->FileTime.Subseconds);
+  S(" valid=");
+  D(lb->IsValid);
+  S(" actreq=");
+  D(lb->ActivateReq);
+  S(" crc=");
+  D(lb->Crc != 0);
+  S("\n");
+  rr->Config.ValidationFuncPtr = &TblValStub;
+  CFE_TBL_SetMetaDataFromFileHeader(&txn, "/ram/load.tbl", &hdr.Std);
+  S("tbl_ldmeta withfunc valid=");
+  D(lb->IsValid);
+  S("\n");
+  // --- CFE_TBL_ValidateLoadInProgress, four answers -----------------------------------
+  // No validator is assumed success; a validator returning 0 succeeds; a POSITIVE return and a
+  // NEGATIVE one raise DIFFERENT event ids, which NASA's own comment calls historical and
+  // unexplained.
+  rr->Config.ValidationFuncPtr = NULL;
+  st = CFE_TBL_ValidateLoadInProgress(&txn, CFE_SUCCESS);
+  S("tbl_ldval nofunc=");
+  D(st);
+  S(" valid=");
+  D(lb->IsValid);
+  S(" actreq=");
+  D(lb->ActivateReq);
+  S("\n");
+  rr->Config.ValidationFuncPtr = &TblValStub;
+  tbl_val_rc = CFE_SUCCESS;
+  st = CFE_TBL_ValidateLoadInProgress(&txn, CFE_SUCCESS);
+  S("tbl_ldval pass=");
+  D(st);
+  S(" valid=");
+  D(lb->IsValid);
+  S("\n");
+  tbl_val_rc = 7;
+  st = CFE_TBL_ValidateLoadInProgress(&txn, CFE_SUCCESS);
+  S("tbl_ldval positive=");
+  D(st);
+  S(" valid=");
+  D(lb->IsValid);
+  S("\n");
+  tbl_val_rc = -9;
+  st = CFE_TBL_ValidateLoadInProgress(&txn, CFE_SUCCESS);
+  S("tbl_ldval negative=");
+  D(st);
+  S(" valid=");
+  D(lb->IsValid);
+  S(" cleared=");
+  D(CFE_TBL_LoadBuffGetReadPointer(lb)[0] == 0);
+  S("\n");
+  tbl_val_rc = CFE_SUCCESS;
+  rr->Config.ValidationFuncPtr = NULL;
+  // and the no-buffer arm
+  CFE_TBL_RegRecClearLoadInProgress(rr);
+  st = CFE_TBL_ValidateLoadInProgress(&txn, CFE_SUCCESS);
+  S("tbl_ldval nobuf=");
+  D(st);
+  S("\n");
+  // --- SEND WHAT THE VALIDATION GROUP QUEUED ------------------------------------------
+  // Only that group is pending now, so these lines are the two validation event ids --
+  // CFE_TBL_LOAD_VAL_ERR_EID for a POSITIVE return and CFE_TBL_VALIDATION_ERR_EID for a negative
+  // one -- plus the second of each pair, because the positive arm sets Status to
+  // CFE_STATUS_VALIDATION_FAILURE, which is NEGATIVE, so it falls into the negative arm too and
+  // queues BOTH. That cascade is NASA's and is the reason a single-id mutation is only visible
+  // once the list is not overflowing.
+  //
+  // The FILE helper handles what needs the header in its text and FALLS THROUGH to the basic one
+  // for the rest, so this one call renders events from both switches. The asymmetry is the
+  // design -- a non-file load can never raise a file event.
+  S("tbl_ldval queued=");
+  D(txn.NumPendingEvents);
+  S("\n");
+  StrNCpy(txn.AppNameBuffer, "LD_APP", CFE_MISSION_MAX_API_LEN - 1);
+  CFE_TBL_SendTableLoadFileEvents(&txn, "/ram/load.tbl", &hdr);
+  // AND THE BASIC-ONLY PATH, which cannot render a file event at all.
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  txn.RegRecPtr = rr;
+  StrNCpy(txn.AppNameBuffer, "LD_APP", CFE_MISSION_MAX_API_LEN - 1);
+  CFE_TBL_TxnAddEvent(&txn, CFE_TBL_LOAD_IN_PROGRESS_ERR_EID, CFE_TBL_ERR_LOAD_IN_PROGRESS, 0);
+  CFE_TBL_TxnAddEvent(&txn, CFE_TBL_FILE_LOADED_INF_EID, 0, 0);
+  CFE_TBL_SendTableLoadEvents(&txn);
+  // --- CFE_TBL_TxnLoadFromFile, the whole path ----------------------------------------
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  txn.RegRecPtr = rr;
+  txn.RegId = CFE_TBL_RegRecGetID(rr);
+  StrNCpy(txn.AppNameBuffer, "LD_APP", CFE_MISSION_MAX_API_LEN - 1);
+  fs_open_fail = 1;
+  st = CFE_TBL_TxnLoadFromFile(&txn, "/ram/load.tbl");
+  S("tbl_ldfile noopen=");
+  D(st);
+  S("\n");
+  fs_open_fail = 0;
+  tbl_mkfile("LD_APP.Tbl", 0, 32, 32, CFE_FS_FILE_CONTENT_ID, CFE_FS_SubType_TBL_IMG, 0x90);
+  MemSet(&txn, 0, sizeof(CFE_TBL_TxnState_t));
+  txn.RegRecPtr = rr;
+  txn.RegId = CFE_TBL_RegRecGetID(rr);
+  StrNCpy(txn.AppNameBuffer, "LD_APP", CFE_MISSION_MAX_API_LEN - 1);
+  CFE_TBL_RegRecClearLoadInProgress(rr);
+  CFE_TBL_ValidateLoadRequest(&txn, CFE_TBL_SRC_FILE);
+  st = CFE_TBL_TxnLoadFromFile(&txn, "/ram/load.tbl");
+  lb = CFE_TBL_GetLoadInProgressBuffer(rr);
+  S("tbl_ldfile ok=");
+  D(st);
+  S(" first=");
+  if (lb == NULL)
+    Hx2b(0);
+  else
+    Hx2b(CFE_TBL_LoadBuffGetReadPointer(lb)[0]);
+  S(" src=");
+  if (lb == NULL)
+    S("?");
+  else
+    S(lb->DataSource);
+  S(" secs=");
+  if (lb == NULL) {
+    Hx4(0);
+    Hx4(0);
+  } else {
+    Hx4(lb->FileTime.Seconds >> 16);
+    Hx4(lb->FileTime.Seconds);
+  }
+  S("\n");
+  // --- CFE_TBL_TxnLoadFromSourceAddr, both shapes -------------------------------------
+  // A NORMAL table COPIES the caller's memory; a DUMP-ONLY table keeps the caller's POINTER,
+  // which is what makes a user-defined-address dump-only table possible at all. `alloc=0` below
+  // is how CFE_TBL_LoadBuffIsAllocated tells the two apart.
+  MemSet(tbl_probe_mem2, 0xE1, sizeof(tbl_probe_mem2));
+  rr->Config.DumpOnly = FALSE;
+  st = CFE_TBL_TxnLoadFromSourceAddr(&txn, tbl_probe_mem2);
+  // `addrpfx` rather than the string: CFE_TBL_TxnLoadFromSourceAddr formats the caller's
+  // POINTER into DataSource, so only the fixed prefix can be compared between the halves.
+  S("tbl_ldaddr copy=");
+  D(st);
+  S(" first=");
+  Hx2b(CFE_TBL_LoadBuffGetReadPointer(lb)[0]);
+  S(" isext=");
+  D(CFE_TBL_LoadBuffGetReadPointer(lb) == tbl_probe_mem2);
+  S(" addrpfx=");
+  D(StrNCmp(lb->DataSource, "Addr 0x", 7) == 0);
+  S("\n");
+  rr->Config.DumpOnly = TRUE;
+  st = CFE_TBL_TxnLoadFromSourceAddr(&txn, tbl_probe_mem2);
+  S("tbl_ldaddr external=");
+  D(st);
+  S(" isext=");
+  D(CFE_TBL_LoadBuffGetReadPointer(lb) == tbl_probe_mem2);
+  S(" alloc=");
+  D(CFE_TBL_LoadBuffIsAllocated(lb));
+  S("\n");
+  rr->Config.DumpOnly = FALSE;
+  CFE_TBL_LoadBuffSetAllocatedBlock(lb, tbl_probe_mem, sizeof(tbl_probe_mem));
+  // AND THE DataSource MUST BE PUT BACK TO A FIXED STRING. CFE_TBL_TxnLoadFromSourceAddr wrote
+  // "Addr 0x%08lX" of the caller's POINTER into it, and CFE_TBL_LoadFinish's success event
+  // prints the last file loaded -- so the transcript grew a line reading
+  // `Successfully loaded 'LD_APP.Tbl' from 'Addr 0x10458D610'`, an arm64 address that the RISC-V
+  // half has no way to match. The `addrpfx` field above exists for the same reason. A pointer
+  // value in a differential transcript is always a defect in the exercise.
+  StrNCpy(lb->DataSource, "/ram/load.tbl", OS_MAX_PATH_LEN - 1);
+  // --- CFE_TBL_LoadFinish, three answers, and CFE_TBL_AbortLoad -----------------------
+  // A FAILING status DISCARDS the working buffer and nothing else happens.
+  CFE_TBL_RegRecSetLoadInProgress(rr, CFE_TBL_LoadBufferGetID(&rr->Buffers[0]));
+  st = CFE_TBL_LoadFinish(&txn, CFE_TBL_ERR_ACCESS);
+  S("tbl_ldfinish failed=");
+  D(st);
+  S(" lip=");
+  D(CFE_TBL_RegRecIsLoadInProgress(rr));
+  S("\n");
+  // THE FIRST SUCCESS IS A **DEBUG** EVENT, every later one INFORMATION -- NASA's reason is that
+  // every table in the system loads once at startup and INFORMATION would flood the log at the
+  // worst possible moment.
+  //
+  // AND THE WAY THAT SHOWS IN THE TRANSCRIPT IS AN ABSENCE: this driver's EVS filters DEBUG, so
+  // the FIRST load produces NO event line and the second produces
+  // `35: Successfully loaded ...`. One line for two calls is the assertion. The status is 0 both
+  // times and cannot tell them apart.
+  rr->Status.ActiveBufferId = CFE_TBL_LOADBUFFID_UNDEFINED;
+  CFE_TBL_RegRecSetLoadInProgress(rr, CFE_TBL_LoadBufferGetID(&rr->Buffers[0]));
+  rr->Buffers[0].IsValid = TRUE;
+  rr->Buffers[0].ActivateReq = TRUE;
+  st = CFE_TBL_LoadFinish(&txn, CFE_SUCCESS);
+  S("tbl_ldfinish first=");
+  D(st);
+  S(" loaded=");
+  D(CFE_TBL_RegRecIsTableLoaded(rr));
+  S(" last=");
+  D(CFE_ResourceId_Equal(CFE_TBL_Global.LastTblUpdated, CFE_TBL_RegRecGetID(rr)));
+  S("\n");
+  // and again, now that the table HAS been loaded once
+  CFE_TBL_RegRecSetLoadInProgress(rr, CFE_TBL_LoadBufferGetID(&rr->Buffers[0]));
+  rr->Buffers[0].IsValid = TRUE;
+  rr->Buffers[0].ActivateReq = TRUE;
+  st = CFE_TBL_LoadFinish(&txn, CFE_SUCCESS);
+  S("tbl_ldfinish again=");
+  D(st);
+  S("\n");
+  // AND THE ABORT, which is the only function here that sends its event directly rather than
+  // queueing it on the transaction.
+  CFE_TBL_RegRecSetLoadInProgress(rr, CFE_TBL_LoadBufferGetID(&rr->Buffers[0]));
+  CFE_TBL_AbortLoad(rr);
+  S("tbl_ldabort lip=");
+  D(CFE_TBL_RegRecIsLoadInProgress(rr));
+  S("\n");
 }
 // --- cfe_tbl_dump.c -------------------------------------------------------------
 // A DUMP IS THREE PHASES SEPARATED IN TIME, and the exercise follows them in order because
@@ -12505,6 +13060,7 @@ I64 main()
     TblRegistryExercise();
     TblEarlyInitExercise();
     TblDumpExercise();
+    TblLoadExercise();
     TblTaskExercise();
     // --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
     // ------------------------------------------------------------------------------------

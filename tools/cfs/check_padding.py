@@ -168,6 +168,10 @@ CSRC = [
     # "scheduler" is a file-scope table of them and nothing else needs the type, so NASA never
     # put it in a header. It carries a FUNCTION POINTER, so check_fnptr_members reads it too.
     os.path.join(CFE, "modules", "es", "fsw", "src", "cfe_es_backgroundtask.c"),
+    # CFE_TBL_LoadFileContext_t is declared inside cfe_tbl_load.c -- a filename and a pointer to
+    # the combined file header, which is what the FILE event helper needs and the transaction
+    # object does not carry. Its sibling in cfe_tbl_dump.c is below.
+    os.path.join(CFE, "modules", "tbl", "fsw", "src", "cfe_tbl_load.c"),
     # CFE_TBL_DumpContext_t is declared inside cfe_tbl_dump.c -- two const char pointers, the
     # context CFE_TBL_SendDumpEventHelper needs that the transaction object does not carry.
     # Nothing outside that source refers to it, so NASA never put it in a header.
