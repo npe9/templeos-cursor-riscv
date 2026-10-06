@@ -1431,21 +1431,25 @@ I32 TblValStub(U8 *TblPtr)
 // it calls into all of them -- internal, registry, accdesc, loadbuff, regrec, dump and load.
 // Zero stand-ins.
 #include "/Kernel/Cfs/cfe/cfe_tbl_api.HC"
+// --- cfe_tbl_task_cmds.c --------------------------------------------------------
+// THE GROUND COMMANDS: ten handlers plus the housekeeping packer, the registry packer and the
+// two background-dump callbacks. Last of tbl's sources because it calls into every other one,
+// including the public API's own helpers. Zero stand-ins.
+#include "/Kernel/Cfs/cfe/cfe_tbl_task_cmds.HC"
 // CFE_TBL_EarlyInit, CFE_TBL_CleanUpApp AND CFE_TBL_TaskMain WERE STUBS HERE. All three are
 // real now, so every hook cfe_tbl_objtab.c names is the function it claims to be -- the first
 // module whose object table is complete.
 //
-// ONE STAND-IN TAKES THEIR PLACE, and it is a thin seam rather than logic:
-// CFE_TBL_TaskPipe lives in cfe_tbl_dispatch.c, which cannot be gated until
-// cfe_tbl_task_cmds.c is -- the dispatcher is a switch over fourteen command handlers. What
-// CFE_TBL_TaskMain does with it is call it once per received message, so a counter is exactly
-// the right witness.
-I64 tbl_taskpipe_calls;
-U0 CFE_TBL_TaskPipe(CFE_SB_Buffer *SBBufPtr)
-{
-  no_warn SBBufPtr;
-  ++tbl_taskpipe_calls;
-}
+// AND THE LAST STAND-IN IS GONE TOO: CFE_TBL_TaskPipe lives in cfe_tbl_dispatch.c, gated
+// below, so tbl has NO stand-ins left anywhere in this driver. `tbl_taskpipe_calls` went with
+// it -- a counter is all a stub can witness -- and what replaces it is the dispatcher's own
+// three-way error plus the handlers it actually calls.
+//
+// --- cfe_tbl_dispatch.c ---------------------------------------------------------
+// The command dispatcher: a twelve-row table of function pointers, a three-way error, and the
+// length check that means no handler ever sees a message of the wrong size. It goes here, after
+// cfe_tbl_task_cmds.HC, because its table names all ten handlers.
+#include "/Kernel/Cfs/cfe/cfe_tbl_dispatch.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_objtab.HC"
 // --- cfe_tbl_dumpctl.c ----------------------------------------------------------
 // The dump-only rendezvous: four blocks, a resource-id allocator over them, and the five
@@ -2933,6 +2937,402 @@ U0 TblDumpExercise()
   D(fs_len);
   S("\n");
 }
+// --- cfe_tbl_task_cmds.c and cfe_tbl_dispatch.c ---------------------------------
+// THE GROUND COMMANDS, DRIVEN AS MESSAGES. Everything above this point called tbl's functions
+// directly; these go in through CFE_TBL_TaskPipe the way an uplinked packet does, so the
+// dispatcher's table, its length check and its three-way error are all under test at once.
+//
+// THE LENGTH SWEEP IS THE STRONGEST ASSERTION ABOUT THE TABLE. Sending every command code at a
+// size no command has makes each row report its own ExpectedLength in the event text -- so one
+// loop pins all ten rows' sizeof, and a handler wired to the wrong payload type shows up as a
+// different number rather than as silence.
+//
+// AND EVERY HANDLER RETURNS CFE_SUCCESS, so the only observable is the COUNTERS and the events.
+// CFE_TBL_TranslateCmdProcRet is the convention: a failed command is an incremented error
+// counter, not a failed return.
+//
+// NASA'S ANONYMOUS LOCAL UNION IS NAMED HERE, as every other one in this port has had to be.
+union TblCmdUnion
+{
+  CFE_SB_Buffer Buf;
+  CFE_TBL_NoopCmd_t Noop;
+  CFE_TBL_LoadCmd_t Load;
+  CFE_TBL_DumpCmd_t Dump;
+  CFE_TBL_ValidateCmd_t Validate;
+  CFE_TBL_ActivateCmd_t Activate;
+  CFE_TBL_DumpRegistryCmd_t DumpReg;
+  CFE_TBL_SendRegistryCmd_t SendReg;
+  CFE_TBL_DeleteCDSCmd_t DelCDS;
+  CFE_TBL_AbortLoadCmd_t Abort;
+};
+
+U0 TblCmdExercise()
+{
+  TblCmdUnion cmd;
+  CFE_TBL_RegistryRec_t *rr;
+  I16 h1;
+  U8 *buf;
+  I64 bufsz;
+  Bool eof;
+  I64 k;
+  I64 regidx;
+  I64 txmark;
+  // The real startup sequence again, then one registered table to command at.
+  es_set_ctx(1);
+  CFE_TBL_EarlyInit();
+  CFE_TBL_InitData();
+  CFE_TBL_Global.TableTaskAppId = ES_CTX_APPID(1);
+  tbl_val_rc = CFE_SUCCESS;
+  CFE_TBL_Register(&h1, "Cmd", 32, CFE_TBL_OPT_DEFAULT, &TblValStub);
+  rr = CFE_TBL_LocateRegRecByName("CFE_EVS.Cmd");
+  // The INDEX the long way round -- HolyC scales pointer arithmetic by the pointee, so both
+  // halves divide an explicit byte difference. Printed because three assertions below depend on
+  // it and it is NOT zero: CFE_TBL_InitData seeds LastRegId to the BASE.
+  regidx = ((U8 *)rr - (U8 *)CFE_TBL_Global.Registry) / sizeof(CFE_TBL_RegistryRec_t);
+  S("tbl_cmdsetup reg=");
+  D(h1);
+  S(" rr=");
+  D(rr != NULL);
+  S(" idx=");
+  D(regidx);
+  S("\n");
+  // --- THE THREE-WAY ERROR ------------------------------------------------------------
+  MemSet(&cmd, 0, sizeof(TblCmdUnion));
+  CFE_MSG_Init(&cmd.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TBL_CMD_MID), sizeof(CFE_TBL_NoopCmd_t));
+  // UNKNOWN MESSAGE ID: the event fires and the error counter does NOT move, which is the
+  // asymmetry worth pinning -- a message that was never ours should not count against us.
+  CFE_TBL_Global.CommandCounter = 0;
+  CFE_TBL_Global.CommandErrorCounter = 0;
+  CFE_MSG_SetMsgId(&cmd.Buf.Msg, CFE_SB_ValueToMsgId(0x1FFF));
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_pipe badmid cc=");
+  D(CFE_TBL_Global.CommandCounter);
+  S(" ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S("\n");
+  // BAD COMMAND CODE on the right id: this one DOES count.
+  CFE_MSG_SetMsgId(&cmd.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TBL_CMD_MID));
+  CFE_MSG_SetFcnCode(&cmd.Buf.Msg, 99);
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_pipe badcc cc=");
+  D(CFE_TBL_Global.CommandCounter);
+  S(" ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S("\n");
+  // --- THE LENGTH SWEEP, which pins every row's ExpectedLength ------------------------
+  // A size no tbl command has. The smallest payload here is the 40-byte table name, so a bare
+  // header plus one byte cannot collide -- and if it ever did, the command would RUN instead of
+  // erroring and the count below would drop.
+  CFE_TBL_Global.CommandCounter = 0;
+  CFE_TBL_Global.CommandErrorCounter = 0;
+  CFE_MSG_SetSize(&cmd.Buf.Msg, sizeof(CFE_TBL_NoopCmd_t) + 1);
+  for (k = 0; k <= 9; k++) {
+    CFE_MSG_SetFcnCode(&cmd.Buf.Msg, k);
+    CFE_TBL_TaskPipe(&cmd.Buf);
+  }
+  // BOTH COUNTERS STAY AT ZERO AND THAT IS CORRECT: the wrong-length arm raises its event and
+  // deliberately does NOT count, because a handler that never ran cannot have counted anything.
+  // So this line asserts almost nothing on its own -- THE ASSERTION IS THE TEN `EVS 52` LINES
+  // ABOVE IT, each naming a different `Expected =`, which is what pins all ten rows' sizeof. A
+  // handler wired to the wrong payload type changes a number there.
+  S("tbl_pipe alllen cc=");
+  D(CFE_TBL_Global.CommandCounter);
+  S(" ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S("\n");
+  // --- NOOP AND RESET, the two counter conventions ------------------------------------
+  CFE_TBL_Global.CommandCounter = 0;
+  CFE_TBL_Global.CommandErrorCounter = 0;
+  CFE_MSG_SetSize(&cmd.Buf.Msg, sizeof(CFE_TBL_NoopCmd_t));
+  CFE_MSG_SetFcnCode(&cmd.Buf.Msg, CFE_TBL_NOOP_CC);
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd noop cc=");
+  D(CFE_TBL_Global.CommandCounter);
+  S(" ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S("\n");
+  // RESET IS THE ONLY DONT_INC_CTR HANDLER: it zeroes the counters and must not then leave one
+  // at 1. Both come back 0, which is the whole assertion.
+  CFE_TBL_Global.CommandCounter = 7;
+  CFE_TBL_Global.CommandErrorCounter = 3;
+  CFE_TBL_Global.ValidationCounter = 5;
+  CFE_MSG_SetSize(&cmd.Buf.Msg, sizeof(CFE_TBL_ResetCountersCmd_t));
+  CFE_MSG_SetFcnCode(&cmd.Buf.Msg, CFE_TBL_RESET_COUNTERS_CC);
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd reset cc=");
+  D(CFE_TBL_Global.CommandCounter);
+  S(" ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S(" val=");
+  D(CFE_TBL_Global.ValidationCounter);
+  S("\n");
+  // --- THE HOUSEKEEPING REQUEST, which is a MSG_MSGTYPE row (no command code) ---------
+  // It packs the HK payload, transmits it, and -- the part worth knowing -- is the only caller
+  // of CFE_TBL_TableDumpExecuteBackground in flight code.
+  CFE_MSG_SetMsgId(&cmd.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TBL_SEND_HK_MID));
+  CFE_MSG_SetSize(&cmd.Buf.Msg, sizeof(CFE_TBL_SendHkCmd_t));
+  CFE_MSG_SetFcnCode(&cmd.Buf.Msg, 0);
+  // sb_tx_reset/sb_tx_since are helpers the C half has and this one does not, so the mark is
+  // taken inline from the same counter: a transmit with no subscribers bumps it, which is what
+  // makes it a transmit witness in this driver.
+  txmark = CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter;
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd hk tx=");
+  D(CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter - txmark);
+  S(" tables=");
+  D(CFE_TBL_Global.HkPacket.Payload.NumTables);
+  S(" pending=");
+  D(CFE_TBL_Global.HkPacket.Payload.NumLoadPending);
+  S(" freebufs=");
+  D(CFE_TBL_Global.HkPacket.Payload.NumFreeSharedBufs);
+  S("\n");
+  // --- CFE_TBL_GetHkData's VALIDATION HARVEST -----------------------------------------
+  // A completed validation result is reported ONCE and then freed, so the counters move and the
+  // block is released. A failing result bumps FailedValCounter instead.
+  CFE_TBL_ValidationResultSetUsed(&CFE_TBL_Global.ValidationResults[0], CFE_ResourceId_FromInteger(CFE_TBL_VALRESULTID_BASE));
+  CFE_TBL_Global.ValidationResults[0].State = CFE_TBL_VALIDATION_PERFORMED;
+  CFE_TBL_Global.ValidationResults[0].Result = 0;
+  CFE_TBL_Global.ValidationResults[0].CrcOfTable = 0xABCD;
+  CFE_TBL_Global.ValidationResults[0].BufferSelect = CFE_TBL_BufferSelect_ACTIVE;
+  StrNCpy(CFE_TBL_Global.ValidationResults[0].TableName, "CFE_EVS.Cmd", CFE_MISSION_TBL_MAX_FULL_NAME_LEN - 1);
+  CFE_TBL_Global.SuccessValCounter = 0;
+  CFE_TBL_Global.FailedValCounter = 0;
+  CFE_TBL_Global.ValidationCounter = 0;
+  CFE_TBL_GetHkData();
+  S("tbl_hk valpass crc=");
+  Hx4(CFE_TBL_Global.HkPacket.Payload.LastValCrc);
+  S(" succ=");
+  D(CFE_TBL_Global.SuccessValCounter);
+  S(" fail=");
+  D(CFE_TBL_Global.FailedValCounter);
+  S(" valcnt=");
+  D(CFE_TBL_Global.ValidationCounter);
+  S(" active=");
+  D(CFE_TBL_Global.HkPacket.Payload.ActiveBuffer);
+  S(" name=");
+  S(CFE_TBL_Global.HkPacket.Payload.LastValTableName);
+  S(" freed=");
+  D(!CFE_TBL_ValidationResultIsUsed(&CFE_TBL_Global.ValidationResults[0]));
+  S("\n");
+  // and a FAILING one takes the other counter
+  CFE_TBL_ValidationResultSetUsed(&CFE_TBL_Global.ValidationResults[0], CFE_ResourceId_FromInteger(CFE_TBL_VALRESULTID_BASE));
+  CFE_TBL_Global.ValidationResults[0].State = CFE_TBL_VALIDATION_PERFORMED;
+  CFE_TBL_Global.ValidationResults[0].Result = -5;
+  CFE_TBL_GetHkData();
+  S("tbl_hk valfail succ=");
+  D(CFE_TBL_Global.SuccessValCounter);
+  S(" fail=");
+  D(CFE_TBL_Global.FailedValCounter);
+  S(" status=");
+  D(CFE_TBL_Global.HkPacket.Payload.LastValStatus);
+  S("\n");
+  // --- SEND REGISTRY: the command only sets a flag; HK does the packing ----------------
+  MemSet(&cmd, 0, sizeof(TblCmdUnion));
+  CFE_MSG_Init(&cmd.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TBL_CMD_MID), sizeof(CFE_TBL_SendRegistryCmd_t));
+  CFE_MSG_SetFcnCode(&cmd.Buf.Msg, CFE_TBL_SEND_REGISTRY_CC);
+  StrNCpy(cmd.SendReg.Payload.TableName, "CFE_EVS.Cmd", CFE_MISSION_TBL_MAX_FULL_NAME_LEN - 1);
+  CFE_TBL_Global.CommandCounter = 0;
+  CFE_TBL_Global.CommandErrorCounter = 0;
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd sendreg cc=");
+  D(CFE_TBL_Global.CommandCounter);
+  S(" ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S(" armed=");
+  D(CFE_TBL_REGID_IS_VALID(CFE_TBL_Global.HkTlmTblRegId));
+  S("\n");
+  // the NEXT housekeeping request packs it, sends it and CLEARS the id so it goes once
+  CFE_MSG_SetMsgId(&cmd.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TBL_SEND_HK_MID));
+  CFE_MSG_SetSize(&cmd.Buf.Msg, sizeof(CFE_TBL_SendHkCmd_t));
+  CFE_MSG_SetFcnCode(&cmd.Buf.Msg, 0);
+  txmark = CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter;
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd regtlm tx=");
+  D(CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter - txmark);
+  S(" cleared=");
+  D(!CFE_TBL_REGID_IS_VALID(CFE_TBL_Global.HkTlmTblRegId));
+  S(" size=");
+  D(CFE_TBL_Global.TblRegPacket.Payload.Size);
+  S(" name=");
+  S(CFE_TBL_Global.TblRegPacket.Payload.Name);
+  S(" owner=");
+  S(CFE_TBL_Global.TblRegPacket.Payload.OwnerAppName);
+  S("\n");
+  // and a name that is not there is refused
+  MemSet(&cmd, 0, sizeof(TblCmdUnion));
+  CFE_MSG_Init(&cmd.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TBL_CMD_MID), sizeof(CFE_TBL_SendRegistryCmd_t));
+  CFE_MSG_SetFcnCode(&cmd.Buf.Msg, CFE_TBL_SEND_REGISTRY_CC);
+  StrNCpy(cmd.SendReg.Payload.TableName, "NO.SUCH", CFE_MISSION_TBL_MAX_FULL_NAME_LEN - 1);
+  CFE_TBL_Global.CommandErrorCounter = 0;
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd sendreg_missing ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S("\n");
+  // --- ABORT LOAD, and the DUMP-ONLY exclusion that is NOT defensive ------------------
+  MemSet(&cmd, 0, sizeof(TblCmdUnion));
+  CFE_MSG_Init(&cmd.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TBL_CMD_MID), sizeof(CFE_TBL_AbortLoadCmd_t));
+  CFE_MSG_SetFcnCode(&cmd.Buf.Msg, CFE_TBL_ABORT_LOAD_CC);
+  StrNCpy(cmd.Abort.Payload.TableName, "CFE_EVS.Cmd", CFE_MISSION_TBL_MAX_FULL_NAME_LEN - 1);
+  // no load in progress: refused
+  CFE_TBL_Global.CommandCounter = 0;
+  CFE_TBL_Global.CommandErrorCounter = 0;
+  CFE_TBL_RegRecClearLoadInProgress(rr);
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd abort_noload cc=");
+  D(CFE_TBL_Global.CommandCounter);
+  S(" ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S("\n");
+  // a load in progress on a DUMP-ONLY table is also refused -- NextBufferId holds the DUMP
+  // buffer there, so aborting would abort a dump.
+  //
+  // A REAL BUFFER ID, resolved from the record's own index. The first draft passed
+  // CFE_TBL_LoadBufferGetID(&rr->Buffers[0]) straight back, and after EarlyInit that buffer has
+  // no id -- so IsLoadInProgress stayed FALSE, the dump-only arm was never entered, and
+  // `abort_dumponly` reported the "No load started" refusal while `lip=0` quietly agreed with
+  // it. Registry[k]'s own pair is serial 4 + 2k.
+  CFE_TBL_LoadBuffSetUsed(&rr->Buffers[0], CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 4 + 2 * regidx), CFE_TBL_RegRecGetID(rr));
+  CFE_TBL_RegRecSetLoadInProgress(rr, CFE_TBL_LoadBufferGetID(&rr->Buffers[0]));
+  rr->Config.DumpOnly = TRUE;
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd abort_dumponly cc=");
+  D(CFE_TBL_Global.CommandCounter);
+  S(" ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S(" lip=");
+  D(CFE_TBL_RegRecIsLoadInProgress(rr));
+  S("\n");
+  // and a real load IS aborted
+  rr->Config.DumpOnly = FALSE;
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd abort_ok cc=");
+  D(CFE_TBL_Global.CommandCounter);
+  S(" lip=");
+  D(CFE_TBL_RegRecIsLoadInProgress(rr));
+  S("\n");
+  // a name that is not there
+  StrNCpy(cmd.Abort.Payload.TableName, "NO.SUCH", CFE_MISSION_TBL_MAX_FULL_NAME_LEN - 1);
+  CFE_TBL_Global.CommandErrorCounter = 0;
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd abort_missing ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S("\n");
+  // --- DELETE CDS: three arms, and the first is the interlock -------------------------
+  // All three report ec=1 -- one error each -- and what distinguishes them is the EVENT, not
+  // the counter. The three EVS lines above each of these are the assertion.
+  MemSet(&cmd, 0, sizeof(TblCmdUnion));
+  CFE_MSG_Init(&cmd.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TBL_CMD_MID), sizeof(CFE_TBL_DeleteCDSCmd_t));
+  CFE_MSG_SetFcnCode(&cmd.Buf.Msg, CFE_TBL_DELETE_CDS_CC);
+  // STILL REGISTERED: refused, because a registered table means its owner is still running and
+  // the CDS is the only copy of a critical table's contents.
+  StrNCpy(cmd.DelCDS.Payload.TableName, "CFE_EVS.Cmd", CFE_MISSION_TBL_MAX_FULL_NAME_LEN - 1);
+  CFE_TBL_Global.CommandErrorCounter = 0;
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd delcds_registered ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S("\n");
+  // NOT IN THE CRITICAL REGISTRY either: a different refusal
+  StrNCpy(cmd.DelCDS.Payload.TableName, "GONE.Tbl", CFE_MISSION_TBL_MAX_FULL_NAME_LEN - 1);
+  CFE_TBL_Global.CommandErrorCounter = 0;
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd delcds_notcrit ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S("\n");
+  // IN the critical registry but with no CDS of that name
+  StrNCpy(CFE_TBL_Global.CritReg[3].Name, "GONE.Tbl", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  CFE_TBL_Global.CommandErrorCounter = 0;
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd delcds_nocds ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S("\n");
+  // --- THE REGISTRY DUMP: a background job, and its getter ----------------------------
+  // The COMMAND only queues a request.
+  MemSet(&cmd, 0, sizeof(TblCmdUnion));
+  CFE_MSG_Init(&cmd.Buf.Msg, CFE_SB_ValueToMsgId(CFE_TBL_CMD_MID), sizeof(CFE_TBL_DumpRegistryCmd_t));
+  CFE_MSG_SetFcnCode(&cmd.Buf.Msg, CFE_TBL_DUMP_REGISTRY_CC);
+  StrNCpy(cmd.DumpReg.Payload.DumpFilename, "/ram/reg.log", CFE_MISSION_MAX_PATH_LEN - 1);
+  CFE_TBL_Global.CommandCounter = 0;
+  CFE_TBL_Global.CommandErrorCounter = 0;
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd dumpreg cc=");
+  D(CFE_TBL_Global.CommandCounter);
+  S(" ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S(" pending=");
+  D(CFE_FS_BackgroundFileDumpIsPending(&CFE_TBL_Global.RegDumpState.FileWrite));
+  S(" existed=");
+  D(CFE_TBL_Global.RegDumpState.FileExisted);
+  S(" file=");
+  S(CFE_TBL_Global.RegDumpState.FileWrite.FileName);
+  S("\n");
+  // A SECOND REQUEST WHILE ONE IS PENDING IS SILENTLY DROPPED -- no event, and the error
+  // counter still moves because CmdProcRet was never changed from its pessimistic default.
+  CFE_TBL_Global.CommandCounter = 0;
+  CFE_TBL_Global.CommandErrorCounter = 0;
+  CFE_TBL_TaskPipe(&cmd.Buf);
+  S("tbl_cmd dumpreg_again cc=");
+  D(CFE_TBL_Global.CommandCounter);
+  S(" ec=");
+  D(CFE_TBL_Global.CommandErrorCounter);
+  S("\n");
+  // THE GETTER, called the way the background writer calls it, ON THE RECORD THAT EXISTS --
+  // resolved rather than assumed. The first draft asked for record 0 and got an EMPTY slot --
+  // CFE_TBL_InitData seeds LastRegId to the BASE, so the allocator does not start at index 0 --
+  // which printed `sz=0 name=` and then made the unowned case below read a name left over from
+  // a different record.
+  buf = NULL;
+  bufsz = 0;
+  eof = CFE_TBL_DumpRegistryGetter(&CFE_TBL_Global.RegDumpState, regidx, &buf, &bufsz);
+  S("tbl_reggetter used eof=");
+  D(eof);
+  S(" sz=");
+  D(bufsz);
+  S(" name=");
+  S(CFE_TBL_Global.RegDumpState.DumpRecord.Name);
+  S(" owner=");
+  S(CFE_TBL_Global.RegDumpState.DumpRecord.OwnerAppName);
+  S(" users=");
+  D(CFE_TBL_Global.RegDumpState.DumpRecord.NumUsers);
+  S("\n");
+  // AN EMPTY SLOT writes nothing and does NOT end the job -- the return value means "last
+  // record", never "wrote something", which is how a sparse registry dumps without holes.
+  buf = NULL;
+  bufsz = 1;
+  eof = CFE_TBL_DumpRegistryGetter(&CFE_TBL_Global.RegDumpState, regidx + 1, &buf, &bufsz);
+  S("tbl_reggetter empty eof=");
+  D(eof);
+  S(" sz=");
+  D(bufsz);
+  S(" null=");
+  D(buf == NULL);
+  S("\n");
+  eof = CFE_TBL_DumpRegistryGetter(&CFE_TBL_Global.RegDumpState, CFE_PLATFORM_TBL_MAX_NUM_TABLES - 1, &buf, &bufsz);
+  S("tbl_reggetter last eof=");
+  D(eof);
+  S("\n");
+  // AN UNOWNED entry reports "--UNOWNED--" rather than asking ES for a name it has not got
+  rr->OwnerAppId = CFE_TBL_NOT_OWNED;
+  CFE_TBL_DumpRegistryGetter(&CFE_TBL_Global.RegDumpState, regidx, &buf, &bufsz);
+  S("tbl_reggetter unowned owner=");
+  S(CFE_TBL_Global.RegDumpState.DumpRecord.OwnerAppName);
+  S("\n");
+  // THE EVENT HANDLER's four cases plus the default it ignores. It runs in the ES background
+  // task, which is why it uses SendEventWithAppID -- in that context the "current app" is ES and
+  // the event would otherwise be misattributed.
+  StrNCpy(CFE_TBL_Global.RegDumpState.FileWrite.FileName, "/ram/reg.log", OS_MAX_PATH_LEN - 1);
+  CFE_TBL_Global.RegDumpState.FileExisted = FALSE;
+  CFE_TBL_DumpRegistryEventHandler(&CFE_TBL_Global.RegDumpState, CFE_FS_FileWriteEvent_COMPLETE, CFE_SUCCESS, 7, 0, 128);
+  CFE_TBL_Global.RegDumpState.FileExisted = TRUE;
+  CFE_TBL_DumpRegistryEventHandler(&CFE_TBL_Global.RegDumpState, CFE_FS_FileWriteEvent_COMPLETE, CFE_SUCCESS, 7, 0, 128);
+  CFE_TBL_DumpRegistryEventHandler(&CFE_TBL_Global.RegDumpState, CFE_FS_FileWriteEvent_RECORD_WRITE_ERROR, -1, 3, 0, 0);
+  CFE_TBL_DumpRegistryEventHandler(&CFE_TBL_Global.RegDumpState, CFE_FS_FileWriteEvent_HEADER_WRITE_ERROR, -2, 0, 0, 0);
+  CFE_TBL_DumpRegistryEventHandler(&CFE_TBL_Global.RegDumpState, CFE_FS_FileWriteEvent_CREATE_ERROR, -3, 0, 0, 0);
+  // the default arm: an event the switch does not name produces NOTHING, which is the absence
+  // the next line asserts by being the only output
+  CFE_TBL_DumpRegistryEventHandler(&CFE_TBL_Global.RegDumpState, CFE_FS_FileWriteEvent_MAX, 0, 0, 0, 0);
+  S("tbl_regevents done\n");
+  es_ctx_init();
+}
 // --- cfe_tbl_task.c -------------------------------------------------------------
 // THREE FUNCTIONS, AND THE OBJECT TABLE IS FINALLY HONEST. cfe_tbl_objtab.c names
 // CFE_TBL_EarlyInit, CFE_TBL_TaskMain and CFE_TBL_CleanUpApp; two of the three now run in this
@@ -3009,14 +3409,21 @@ U0 TblTaskExercise()
   // CFE_SB_ReceiveBuffer fails, because OS_QueueGet returns OS_QUEUE_EMPTY on an empty pipe:
   // one pass, `Error reading cmd pipe`, one CFE_ES_ExitApp(CORE_APP_RUNTIME_ERROR).
   // taskpipe=0 because there was no message to dispatch.
+  // `cmds=` REPLACED `taskpipe=`, and it is weaker. The old field counted calls inside the
+  // DRIVER's own CFE_TBL_TaskPipe; the real dispatcher is gated now, so what can be observed is
+  // its EFFECT -- the two command counters it moves. Neither run dispatches anything, so both
+  // read 0, which is the same thing the old field said and no more. Kept because it is the real
+  // state rather than a stub's, and because the SYSLOG lines are what actually separate the two
+  // paths; see the note below.
   CFE_TBL_Global.CmdPipe = CFE_SB_INVALID_PIPE;
-  tbl_taskpipe_calls = 0;
+  CFE_TBL_Global.CommandCounter = 0;
+  CFE_TBL_Global.CommandErrorCounter = 0;
   x0 = es_taskexits;
   CFE_TBL_TaskMain();
   S("tbl_taskmain_loop exits=");
   D(es_taskexits - x0);
-  S(" taskpipe=");
-  D(tbl_taskpipe_calls);
+  S(" cmds=");
+  D(CFE_TBL_Global.CommandCounter + CFE_TBL_Global.CommandErrorCounter);
   S(" pipe=");
   D(CFE_ResourceId_IsDefined(CFE_TBL_Global.CmdPipe));
   S(" req=");
@@ -3042,13 +3449,14 @@ U0 TblTaskExercise()
   // Failed`, a POWER ON RESET and three ExitApp lines here. The printf fields are the weaker
   // half of this assertion and are kept only because they say both runs TERMINATED and neither
   // dispatched a message.
-  tbl_taskpipe_calls = 0;
+  CFE_TBL_Global.CommandCounter = 0;
+  CFE_TBL_Global.CommandErrorCounter = 0;
   x0 = es_taskexits;
   CFE_TBL_TaskMain();
   S("tbl_taskmain_initfail exits=");
   D(es_taskexits - x0);
-  S(" taskpipe=");
-  D(tbl_taskpipe_calls);
+  S(" cmds=");
+  D(CFE_TBL_Global.CommandCounter + CFE_TBL_Global.CommandErrorCounter);
   S(" req=");
   D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
   S("\n");
@@ -5768,6 +6176,13 @@ I64 main()
   // hundreds of lines later.
   CFE_TargetConfigInit();
   CFE_PlatformConfigTablesInit();
+  // AND THE COMMAND HANDLER TABLE, for the same reason and with the same hazard: NASA's
+  // CFE_TBL_CmdHandlerTbl is a `const` file-scope array with initialisers, HolyC has no
+  // file-scope aggregate initialiser, so it is filled at runtime and the fill MUST RUN BEFORE
+  // ANY DISPATCH. A reader that runs first sees a table of zeroes, whose first row has a NULL
+  // MsgId, so the search loop terminates immediately and EVERY command is reported as an
+  // unknown message id -- silently, with no gate able to tell.
+  CFE_TBL_CmdHandlerTblInit();
   CFE_Config_Init();
   CFE_SB_EarlyInit();
   for (i = 0; i < sizeof(CFE_MSG_Message); i++)
@@ -13457,6 +13872,7 @@ I64 main()
     TblDumpExercise();
     TblLoadExercise();
     TblApiExercise();
+    TblCmdExercise();
     TblTaskExercise();
     // --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
     // ------------------------------------------------------------------------------------

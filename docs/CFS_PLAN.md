@@ -1015,6 +1015,8 @@ in whatever order suits — the tool's own topological listing is:
 | ~~`cfe_tbl_dump.c`~~ | ~~589~~ | **GATED** — zero stand-ins; it also found the `size_t` signedness defect below |
 | ~~`cfe_tbl_load.c`~~ | ~~952~~ | **GATED** — zero stand-ins. Its exercise builds the table file byte by byte, for the reason in the uninitialised-header section |
 | ~~`cfe_tbl_api.c`~~ | ~~1,107~~ | **GATED** — zero stand-ins. Exercised as a LIFECYCLE from the real startup path, and it found the `(I32)` sweep below |
+| ~~`cfe_tbl_task_cmds.c`~~ | ~~1,115~~ | **GATED** — zero stand-ins |
+| ~~`cfe_tbl_dispatch.c`~~ | ~~275~~ | **GATED** — `CFE_TBL_TaskPipe` is real, so tbl has NO stand-ins left anywhere |
 | ~~`cfe_tbl_task.c`~~ | ~~218~~ | **GATED** — `CFE_TBL_TaskMain` is real, so tbl is the first module whose object table names three real functions |
 | `cfe_tbl_dispatch.c` | 276 | the non-EDS branch, and LAST: it is blocked behind `task_cmds.c`. One thin stand-in (`CFE_TBL_TaskPipe`) covers it meanwhile |
 | `cfe_tbl_load.c` | 953 | |
@@ -1024,7 +1026,14 @@ in whatever order suits — the tool's own topological listing is:
 (`cfe_tbl_eds_codec.c` and `cfe_tbl_eds_dispatch.c` are listed too and are correctly absent —
 `CFE_EDS_ENABLED` is 0 in this configuration and `check_manifest.py` owns that call.)
 
-tbl is at **6,666 of 7,780 lines, 86%**. Only `cfe_tbl_task_cmds.c` (1,115) and `cfe_tbl_dispatch.c` (276) remain, in that order. `registry.c` cost **zero** new stand-ins in the end
+**tbl IS DONE: 7,780 of 7,780 lines, 100%** of its fifteen unconditional sources, plus both
+non-EDS conditionals (`passthru_codec.c` and `dispatch.c`). The two remaining files are the EDS
+variants, which `CFE_EDS_ENABLED` excludes in this configuration and `check_manifest.py` reports
+as correctly absent. **No stand-ins remain anywhere in tbl.**
+
+And the whole module is exercised rather than merely compiled: the commands go in through the
+real `CFE_TBL_TaskPipe` as messages, so the dispatcher's twelve-row table, its length check and
+its three-way error are under test along with the ten handlers beneath them. `registry.c` cost **zero** new stand-ins in the end
 and DELETED four: of its 43 external calls 37 were already translated and the other six are id
 macros that collapse onto `CFE_ResourceId_IsDefined` / `_Equal` / the identity. The nine-stand-in
 price in the table above was real when it was measured and is the clearest demonstration of the

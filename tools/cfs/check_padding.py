@@ -168,6 +168,11 @@ CSRC = [
     # "scheduler" is a file-scope table of them and nothing else needs the type, so NASA never
     # put it in a header. It carries a FUNCTION POINTER, so check_fnptr_members reads it too.
     os.path.join(CFE, "modules", "es", "fsw", "src", "cfe_es_backgroundtask.c"),
+    # CFE_TBL_CmdHandlerTblRec_t is declared inside cfe_tbl_dispatch.c -- one row of the command
+    # handler table, carrying a FUNCTION POINTER, so check_fnptr_members reads it too. Its
+    # ExpectedLength field is what makes the dispatcher's length check mean anything, which is
+    # why the layout matters rather than just the names.
+    os.path.join(CFE, "modules", "tbl", "fsw", "src", "cfe_tbl_dispatch.c"),
     # CFE_TBL_LoadFileContext_t is declared inside cfe_tbl_load.c -- a filename and a pointer to
     # the combined file header, which is what the FILE event helper needs and the transaction
     # object does not carry. Its sibling in cfe_tbl_dump.c is below.
@@ -237,6 +242,15 @@ def lifted_typedefs():
         # declared inside osapi-time.c -- could not be lifted and the gate refused to call it
         # measured, correctly. Three separate places had to learn about unions for one type to
         # be checked: check_structs' HolyC scan, its NASA scan, and this lifter.
+        # A FUNCTION-POINTER TYPEDEF IN THE SAME FILE HAS TO COME ALONG, and it has to come
+        # FIRST, because a struct below it uses the name. cfe_tbl_dispatch.c declares
+        # `typedef CFE_Status_t (*CFE_TBL_MsgProcFuncPtr_t)(const void *MsgPtr);` and then a
+        # struct with a member of that type, so lifting only the struct gave the probe
+        # "unknown type name 'CFE_TBL_MsgProcFuncPtr_t'". Third kind of file-scope typedef this
+        # lifter has had to learn, after struct and union.
+        for m in re.finditer(r'^typedef\s+[\w ]+\(\s*\*\s*(\w+)\s*\)\s*\([^;]*\);',
+                             txt, re.M):
+            out.append(m.group(0))
         for m in re.finditer(r'typedef\s+(?:enum|struct|union)\s*(?:\w+\s*)?\{', txt):
             i, depth = m.end(), 1
             while i < len(txt) and depth:

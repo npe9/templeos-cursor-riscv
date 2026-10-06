@@ -79,6 +79,13 @@ C_TYPES = [(r'\bconst\b', ' '),
            # the rule too, pre-emptively, so it cannot repeat the trick.)
            (r'\bcpuaddr\s*\*', ' PTRSZ '), (r'\bcpuaddr\b', ' SZ '),
            (r'\bcpusize\s*\*', ' PTRSZ '), (r'\bcpusize\b', ' SZ '),
+           # CFE_TBL_CmdProcRet_t IS A SIGNED ENUM: its enumerators are -1, 0 and 1, so the
+           # compiler makes it signed, and the catch-all's NUM is wrong for the same reason it
+           # was wrong for CFE_Status_t and the TIME enums. Third signed-type rule in two days;
+           # the catch-all is right about MOST CFE_*_t and will keep being wrong about the ones
+           # that carry a negative value.
+           (r'\bCFE_TBL_CmdProcRet_t\s*\*', ' PTRSNUM '),
+           (r'\bCFE_TBL_CmdProcRet_t\b', ' SNUM '),
            # CFE_TBL_Handle_t IS `int16` IN THIS CONFIGURATION, i.e. SIGNED, and the catch-all
            # below maps every CFE_*_t to NUM. Same shape as CFE_Status_t directly below and the
            # TIME enums above: the catch-all cannot see signedness, so the rule is added rather
