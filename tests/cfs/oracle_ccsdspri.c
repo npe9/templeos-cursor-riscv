@@ -2405,6 +2405,28 @@ static void TblDumpExercise(void)
     st       = CFE_TBL_WriteSnapshotToFile(dc);
     printf("tbl_dmpwrite overwrite=%ld bytes=%ld last=%s\n", (long)st, fs_len,
            CFE_TBL_Global.HkPacket.Payload.LastFileDumped);
+    /* WHAT THE TABLE HEADER ACTUALLY CONTAINS, and the two fields deliberately NOT printed.
+     *
+     * The table header starts at byte 64, after CFE_FS_Header_t, and is
+     * Reserved/Offset/NumBytes/TableName -- big-endian, because
+     * CFE_TBL_EncodeHeadersToFile byte-swaps it on a little-endian host to keep the cFE file
+     * standard. So NumBytes is at 72 and reads 00000020 for this 32-byte table.
+     *
+     * Reserved (64..67) AND Offset (68..71) ARE NOT ASSERTED, BECAUSE THEY ARE GARBAGE.
+     * NASA's `memset(&FileHeader, 0, sizeof(CFE_TBL_File_Hdr_t))` clears 52 bytes from the
+     * FRONT of a CombinedFileHdr_t, which is entirely inside Std -- none of it reaches Tbl --
+     * and nothing assigns those two fields afterwards. They go into the file as whatever was
+     * on the stack. A probe printed them and the two halves disagreed on the first run:
+     *
+     *     C   tbl_dmphdr resv=00000001 off=8d30a184
+     *     HC  tbl_dmphdr resv=00000000 off=00000000
+     *
+     * That is upstream behaviour, not a translation defect, and it matters for what comes
+     * next: CFE_TBL_ReadHeaders reads Offset and CFE_TBL_LoadFromFile decides where the data
+     * lands from it. So a load.c exercise must build its header EXPLICITLY rather than
+     * round-tripping one through a dump, or it will diff for a reason two sources away. */
+    printf("tbl_dmphdr numbytes=%02x%02x%02x%02x name=%s\n", fs_data[72], fs_data[73],
+           fs_data[74], fs_data[75], (const char *)&fs_data[76]);
     /* THE FILE DOES NOT EXIST YET -- and this branch was unreachable until the stub learned to
      * say so; see the note on fs_noexist at OS_OpenCreate. */
     fs_noexist = 1;

@@ -1108,6 +1108,44 @@ Both are correct translations; the gate had simply never looked at them. `cpuadd
 sides is not a match, it is two gaps of the same shape** -- the same lesson as the
 function-pointer edge above, found the same way, within the hour.
 
+### NASA WRITES TWO WORDS OF UNINITIALISED STACK INTO EVERY TABLE DUMP FILE
+
+`CFE_TBL_WriteSnapshotToFile` does
+
+```c
+CFE_TBL_CombinedFileHdr_t FileHeader;
+memset(&FileHeader, 0, sizeof(CFE_TBL_File_Hdr_t));   /* NOT sizeof(FileHeader) */
+```
+
+A `CombinedFileHdr_t` is `CFE_FS_Header_t Std` (64 bytes) followed by `CFE_TBL_File_Hdr_t Tbl`
+(52). Clearing 52 bytes **from the front** clears part of `Std` and **none of `Tbl`**. Then
+`CFE_FS_InitHeader` overwrites all of `Std`, and the code assigns `Tbl.NumBytes` and
+`Tbl.TableName` — but **nothing ever assigns `Tbl.Reserved` or `Tbl.Offset`**.
+`CFE_TBL_EncodeHeadersToFile` writes `sizeof(CFE_TBL_File_Hdr_t)` bytes, so both go into the
+file.
+
+Measured, by printing the written bytes:
+
+```
+C   tbl_dmphdr resv=00000001 off=8d30a184      <- 0x8d30a184 looks like a pointer fragment
+HC  tbl_dmphdr resv=00000000 off=00000000
+```
+
+The transcript asserted `bytes=148` and nothing about the file's CONTENT, so this was invisible
+until the bytes were printed. **It is upstream behaviour, faithfully translated**, and the
+translation happening to write zeros is luck, not correctness.
+
+**WHY IT MATTERS FOR `cfe_tbl_load.c`, WHICH IS NEXT.** `CFE_TBL_ReadHeaders` reads `Offset`
+and `CFE_TBL_LoadFromFile` decides where the data lands from it. So the obvious exercise --
+dump a table, load it back -- is **nondeterministic across the two halves**, and it would
+present as a translation bug in load.c's offset handling with the cause two sources away.
+**Build the load exercise from a header constructed explicitly**, byte by byte, not from one
+round-tripped through a dump.
+
+The transcript now asserts `NumBytes` and `TableName` instead -- the fields that ARE
+initialised, which also pin the big-endian byte swap -- with the two garbage fields named in
+the comment and deliberately not compared.
+
 ### AN OPEN CRASH IN THE C REFERENCE: CFE_SB_DeletePipe
 
 `CFE_SB_DeletePipe` on the pipe `CFE_TBL_TaskInit` creates **segfaults the C oracle**, in
