@@ -40,7 +40,7 @@
 #ifndef CFE_TBL_ACCDESC_HC
 #define CFE_TBL_ACCDESC_HC
 #ifndef CFE_TBL_ERR_HANDLES_FULL
-#define CFE_TBL_ERR_HANDLES_FULL 0xCC00000B
+#define CFE_TBL_ERR_HANDLES_FULL 0xCC00000B(I32)
 #endif
 
 // --- cfe_tbl_accdesc.h: the five accessors --------------------------------------------------

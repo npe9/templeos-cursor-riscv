@@ -2241,6 +2241,270 @@ static void TblTransactionExercise(void)
     memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
 }
 
+/* tbl_mkfile lives with the cfe_tbl_load.c block below, which is where it belongs; this
+ * exercise needs it to build the table file its Load call reads. `static` on both the
+ * declaration and the definition, deliberately -- a static forward declaration in front of a
+ * NON-static definition makes the definition internal, which this project has been caught by
+ * before. */
+static void tbl_mkfile(const char *tblname, uint32 offset, uint32 numbytes, size_t datasize,
+                       uint32 contenttype, uint16 subtype, uint8 fill);
+
+/* --- cfe_tbl_api.c -------------------------------------------------------------
+ * THE PUBLIC API, AND THE RIGHT WAY TO EXERCISE IT IS A LIFECYCLE. Nineteen functions, and
+ * what matters is not each one alone but that an application can register a table, share it,
+ * load it, validate it, manage it, read it and give it back -- with every step going through
+ * the real transaction machinery, the real registry, the real buffers and the real events.
+ *
+ * So the order below is an app's order, not the file's: Register, Share, GetAddress(es), Load,
+ * Validate, GetStatus/Manage, Update, GetInfo, Modified, NotifyByMessage, DumpToBuffer,
+ * Unregister -- with the argument-check refusals folded in where they belong.
+ *
+ * TWO APP IDS ARE IN PLAY. es_set_ctx(1) is "CFE_EVS" and es_set_ctx(2) is "OTHER_APP"; the
+ * transaction's access check is the whole point of this file, so the OWNER and the NON-OWNER
+ * are both driven. */
+static void TblApiExercise(void)
+{
+    CFE_TBL_Handle_t h1, h2, hbad;
+    CFE_TBL_Handle_t handles[2];
+    CFE_TBL_Info_t   info;
+    CFE_TBL_RegistryRec_t      *rr;
+    CFE_TBL_AccessDescriptor_t *ad1;
+    CFE_TBL_AccessDescriptor_t *ad2;
+    void            *addr;
+    void           **addrs[2];
+    void            *a0;
+    void            *a1;
+    int32            st;
+
+    /* THE SETUP IS THE REAL STARTUP SEQUENCE, which is both more faithful and less work than
+     * hand-building CFE_TBL_Global. CFE_TBL_EarlyInit creates the two mutexes, the 512 KiB
+     * pool and the four shared load buffers; CFE_TBL_InitData seeds all five resource-id
+     * spaces and the three packet headers. Between them that is exactly what the object table
+     * and CFE_TBL_TaskInit do at boot, and both are gated code.
+     *
+     * THE FIRST DRAFT HAND-BUILT IT AND EVERY ASSERTION BELOW CASCADED INTO A FAILURE. It
+     * memset the global and called CFE_ES_PoolCreate directly, which returned without a usable
+     * handle -- `CFE_ES_GetPoolBuf: Err:Bad handle(0x00000000)` -- so CFE_TBL_SetupTableBuffers
+     * failed, so Register failed, so all nineteen functions answered
+     * CFE_TBL_ERR_INVALID_HANDLE and the whole block was one repeated number. The tell was
+     * `tbl_apireg rc=-1006632959 handle=-1`: a handle of -1 is CFE_TBL_BAD_TABLE_HANDLE, so
+     * nothing had been registered at all. */
+    es_set_ctx(1);
+    CFE_TBL_EarlyInit();
+    CFE_TBL_InitData();
+    CFE_TBL_Global.TableTaskAppId = CFE_ES_APPID_C(ES_CTX_APPID(1));
+
+    /* --- THE HANDLE/ID CONVERSION, FIRST, BECAUSE I GOT IT WRONG --------------------------
+     *
+     * CFE_TBL_Handle_t is an int16 in this configuration and CFE_TBL_BAD_TABLE_HANDLE is **-1**,
+     * not zero -- so handle 0 is a PERFECTLY GOOD handle and -1 is the only invalid one. The
+     * first draft of the translation wrote CFE_TBL_HANDLE_IS_VALID as a test against zero
+     * (CFE_TBL_HandleID_IsDefined), which would have made CFE_TBL_HandleToID(0) answer
+     * UNDEFINED. check_constants caught the constant; nothing could catch the macro body,
+     * because a macro body is neither a value nor a signature. These three lines are what now
+     * catch it. */
+    printf("tbl_handleid zero=%lu base=%lu bad=%d\n",
+           (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_TBL_HandleToID(0)),
+           (unsigned long)CFE_TBL_HANDLE_BASE,
+           (int)!CFE_TBL_HandleID_IsDefined(CFE_TBL_HandleToID(CFE_TBL_BAD_TABLE_HANDLE)));
+    printf("tbl_handleid roundtrip=%d fromundef=%d\n",
+           (int)(CFE_TBL_HandleFromID(CFE_TBL_HandleToID(7)) == 7),
+           (int)(CFE_TBL_HandleFromID(CFE_TBL_HANDLEID_UNDEFINED) == CFE_TBL_BAD_TABLE_HANDLE));
+
+    /* --- THE NULL-ARGUMENT REFUSALS, which return before any transaction starts ---------- */
+    printf("tbl_apinull reg1=%ld reg2=%ld share1=%ld share2=%ld\n",
+           (long)CFE_TBL_Register(NULL, "X", 32, 0, NULL),
+           (long)CFE_TBL_Register(&h1, NULL, 32, 0, NULL),
+           (long)CFE_TBL_Share(NULL, "X"), (long)CFE_TBL_Share(&h1, NULL));
+    printf("tbl_apinull load=%ld getaddr=%ld getaddrs1=%ld getaddrs2=%ld reladdrs=%ld info1=%ld\n",
+           (long)CFE_TBL_Load(0, CFE_TBL_SRC_ADDRESS, NULL),
+           (long)CFE_TBL_GetAddress(NULL, 0), (long)CFE_TBL_GetAddresses(NULL, 1, handles),
+           (long)CFE_TBL_GetAddresses(addrs, 1, NULL), (long)CFE_TBL_ReleaseAddresses(1, NULL),
+           (long)CFE_TBL_GetInfo(NULL, "X"));
+
+    /* --- REGISTER, as CFE_EVS ------------------------------------------------------------ */
+    es_set_ctx(1);
+    tbl_val_rc = CFE_SUCCESS;
+    st         = CFE_TBL_Register(&h1, "Api", 32, CFE_TBL_OPT_DEFAULT, tbl_val_stub);
+    printf("tbl_apireg rc=%ld handle=%d id=%lu\n", (long)st, (int)h1,
+           (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_TBL_HandleToID(h1)));
+    /* AND THE DUPLICATE, which is a WARNING and hands back the SAME handle -- the one path in
+     * the registry that is a supported no-op rather than an error. */
+    st = CFE_TBL_Register(&h2, "Api", 32, CFE_TBL_OPT_DEFAULT, tbl_val_stub);
+    printf("tbl_apireg dup=%ld same=%d\n", (long)st, (int)(h2 == h1));
+
+    /* --- SHARE, as OTHER_APP, which is what CFE_TBL_TxnContext_OTHER_APP is for ---------- */
+    es_set_ctx(2);
+    st = CFE_TBL_Share(&h2, "CFE_EVS.Api");
+    printf("tbl_apishare rc=%ld different=%d users=%d\n", (long)st, (int)(h2 != h1),
+           (int)(CFE_TBL_GetInfo(&info, "CFE_EVS.Api") == CFE_SUCCESS ? info.NumUsers : 0));
+    st = CFE_TBL_Share(&hbad, "NO.SUCH");
+    printf("tbl_apishare missing=%ld bad=%d\n", (long)st,
+           (int)(hbad == CFE_TBL_BAD_TABLE_HANDLE));
+
+    /* RESOLVE THE RECORD AND THE TWO DESCRIPTORS, rather than assuming where they landed.
+     * THE FIRST DRAFT HARD-CODED Registry[0], Handles[0] and Handles[1] and SEVEN assertions
+     * below read the wrong objects: `tbl_apival status=0` where a pending validation was
+     * planted, `tbl_apimanage updated=0`, `tbl_apinotify enabled=0` right after a call that
+     * returned CFE_SUCCESS, `tbl_apimod own=0 other=0`. Each was a plausible-looking zero.
+     * CFE_TBL_InitData seeds LastRegId to the BASE, so the allocator does not start at index 0
+     * -- which is exactly the kind of thing a hand-built global hides and the real startup
+     * path does not. */
+    rr  = CFE_TBL_LocateRegRecByName("CFE_EVS.Api");
+    ad1 = CFE_TBL_LocateAccDescByHandle(CFE_TBL_HandleToID(h1));
+    ad2 = CFE_TBL_LocateAccDescByHandle(CFE_TBL_HandleToID(h2));
+    printf("tbl_apiresolve rr=%d ad1=%d ad2=%d distinct=%d\n", (int)(rr != NULL),
+           (int)(ad1 != NULL), (int)(ad2 != NULL), (int)(ad1 != ad2));
+
+    /* --- LOAD, FROM A FILE, as the OWNER ------------------------------------------------
+     * FROM A FILE AND NOT FROM AN ADDRESS, deliberately: CFE_TBL_TxnLoadFromSourceAddr writes
+     * "Addr 0x%08lX" of the caller's pointer into DataSource, and CFE_TBL_GetInfo reports
+     * DataSource as LastFileLoaded -- so an address load put `last=Addr 0x102F99610` into the
+     * transcript, an arm64 value the RISC-V half cannot match. A file load makes the same
+     * field a filename, which also leaves the modified marker below readable.
+     *
+     * A non-owner is refused first: CFE_TBL_TxnContext_OWNER_APP is what Load requires, and
+     * OTHER_APP holds only an accessor descriptor. */
+    tbl_mkfile("CFE_EVS.Api", 0, 32, 32, CFE_FS_FILE_CONTENT_ID, CFE_FS_SubType_TBL_IMG, 0x7E);
+    printf("tbl_apiload notowner=%ld\n",
+           (long)CFE_TBL_Load(h2, CFE_TBL_SRC_FILE, "/ram/load.tbl"));
+    es_set_ctx(1);
+    st = CFE_TBL_Load(h1, CFE_TBL_SRC_FILE, "/ram/load.tbl");
+    printf("tbl_apiload rc=%ld\n", (long)st);
+
+    /* --- GetAddress / ReleaseAddress ---------------------------------------------------- */
+    addr = NULL;
+    st   = CFE_TBL_GetAddress(&addr, h1);
+    printf("tbl_apiaddr rc=%ld nonnull=%d first=%02x\n", (long)st, (int)(addr != NULL),
+           addr == NULL ? 0 : (unsigned)((const uint8 *)addr)[0]);
+    printf("tbl_apiaddr release=%ld\n", (long)CFE_TBL_ReleaseAddress(h1));
+    /* AND THE PLURAL FORMS. Two handles, one good and one that was never registered: the
+     * first non-success is KEPT and the loop keeps going, so `rc` is the bad one's status
+     * while the good one's address still comes back. */
+    handles[0] = h1;
+    handles[1] = 0x7FFF;
+    a0         = NULL;
+    a1         = NULL;
+    addrs[0]   = &a0;
+    addrs[1]   = &a1;
+    st         = CFE_TBL_GetAddresses(addrs, 2, handles);
+    printf("tbl_apiaddrs rc=%ld good=%d bad=%d\n", (long)st, (int)(a0 != NULL),
+           (int)(a1 == NULL));
+    printf("tbl_apiaddrs release=%ld\n", (long)CFE_TBL_ReleaseAddresses(2, handles));
+
+    /* --- VALIDATE, GetStatus, Manage ---------------------------------------------------- */
+    /* With nothing pending, Validate says so and GetStatus says CFE_SUCCESS. */
+    st = CFE_TBL_Validate(h1);
+    printf("tbl_apival nopending=%ld", (long)st);
+    st = CFE_TBL_GetStatus(h1);
+    printf(" status=%ld\n", (long)st);
+    /* Now plant a validation request and run it twice, on the two buffer selections -- and
+     * WHAT THEY REACH IS DIFFERENT, which is not what the first draft's comment claimed.
+     *
+     * INACTIVE means the load-in-progress buffer, and there is no load in progress, so
+     * CFE_TBL_GetLoadInProgressBuffer answers NULL and CFE_TBL_Validate takes its "no buffer,
+     * it cannot be valid" arm: `result=-1` WITHOUT the validation function ever being called.
+     * ACTIVE finds the real buffer and does call it, which is why `failed` reports the -3 the
+     * stub was told to return. Two distinct arms, one of which never reaches the callback.
+     *
+     * In both cases the result goes into the validation-result BLOCK, not the return value --
+     * `performed=0` means "the validation was carried out", not "the table is valid", which is
+     * NASA's own distinction and the reason CFE_TBL_Manage loops on it. */
+    CFE_TBL_ValidationResultSetUsed(&CFE_TBL_Global.ValidationResults[0],
+                                    CFE_ResourceId_FromInteger(CFE_TBL_VALRESULTID_BASE));
+    CFE_TBL_Global.ValidationResults[0].BufferSelect = CFE_TBL_BufferSelect_INACTIVE;
+    rr->PendingValId =
+        CFE_TBL_VALRESULTID_C(CFE_ResourceId_FromInteger(CFE_TBL_VALRESULTID_BASE));
+    printf("tbl_apival status=%ld\n", (long)CFE_TBL_GetStatus(h1));
+    tbl_val_rc = CFE_SUCCESS;
+    st         = CFE_TBL_Validate(h1);
+    printf("tbl_apival performed=%ld result=%ld state=%u\n", (long)st,
+           (long)CFE_TBL_Global.ValidationResults[0].Result,
+           (unsigned)CFE_TBL_Global.ValidationResults[0].State);
+    /* a FAILING validator takes the other event and leaves a non-zero result */
+    CFE_TBL_ValidationResultSetUsed(&CFE_TBL_Global.ValidationResults[0],
+                                    CFE_ResourceId_FromInteger(CFE_TBL_VALRESULTID_BASE));
+    CFE_TBL_Global.ValidationResults[0].BufferSelect = CFE_TBL_BufferSelect_ACTIVE;
+    rr->PendingValId =
+        CFE_TBL_VALRESULTID_C(CFE_ResourceId_FromInteger(CFE_TBL_VALRESULTID_BASE));
+    tbl_val_rc = -3;
+    st         = CFE_TBL_Validate(h1);
+    printf("tbl_apival failed=%ld result=%ld\n", (long)st,
+           (long)CFE_TBL_Global.ValidationResults[0].Result);
+    tbl_val_rc = CFE_SUCCESS;
+
+    /* --- MANAGE, which is the loop over GetStatus --------------------------------------- */
+    /* Nothing pending: one pass, CFE_SUCCESS. */
+    printf("tbl_apimanage idle=%ld\n", (long)CFE_TBL_Manage(h1));
+    /* An UPDATE pending: Manage updates and reports CFE_TBL_INFO_UPDATED, which is the code a
+     * caller watches for to know its table changed underneath it. */
+    rr->Buffers[0].IsValid     = true;
+    rr->Buffers[0].ActivateReq = true;
+    CFE_TBL_RegRecSetLoadInProgress(rr, CFE_TBL_LoadBufferGetID(&rr->Buffers[0]));
+    printf("tbl_apimanage updated=%ld\n", (long)CFE_TBL_Manage(h1));
+
+    /* --- UPDATE on its own, and the no-op case ------------------------------------------ */
+    printf("tbl_apiupdate nothing=%ld\n", (long)CFE_TBL_Update(h1));
+
+    /* --- GetInfo, which is the one function that fills a struct for the caller ----------- */
+    memset(&info, 0xA5, sizeof(info));
+    st = CFE_TBL_GetInfo(&info, "CFE_EVS.Api");
+    printf("tbl_apiinfo rc=%ld size=%lu users=%u loaded=%d dbl=%d dmp=%d usr=%d crit=%d "
+           "crc=%d last=%s\n",
+           (long)st, (unsigned long)info.Size, (unsigned)info.NumUsers,
+           (int)info.TableLoadedOnce, (int)info.DoubleBuffered, (int)info.DumpOnly,
+           (int)info.UserDefAddr, (int)info.Critical, (int)(info.Crc != 0),
+           info.LastFileLoaded);
+    printf("tbl_apiinfo missing=%ld\n", (long)CFE_TBL_GetInfo(&info, "NO.SUCH"));
+
+    /* --- MODIFIED, which marks the table and notifies the OTHER holders ----------------- */
+    /* h2 belongs to OTHER_APP, so calling Modified as CFE_EVS must set OTHER_APP's Updated
+     * flag and NOT its own -- that is what CFE_TBL_NotifyOtherAppHelper is for. */
+    ad1->Updated = false;
+    ad2->Updated = false;
+    st           = CFE_TBL_Modified(h1);
+    printf("tbl_apimod rc=%ld own=%d other=%d\n", (long)st, (int)ad1->Updated,
+           (int)ad2->Updated);
+    /* and the name now carries the modified marker */
+    CFE_TBL_GetInfo(&info, "CFE_EVS.Api");
+    printf("tbl_apimod marked=%s\n", info.LastFileLoaded);
+
+    /* --- NOTIFY BY MESSAGE: owner only -------------------------------------------------- */
+    st = CFE_TBL_NotifyByMessage(h1, CFE_SB_ValueToMsgId(0x1888), 3, 0x1234);
+    printf("tbl_apinotify owner=%ld enabled=%d mid=%04lx fcn=%u param=%lx\n", (long)st,
+           (int)rr->Notify.Enabled, (unsigned long)CFE_SB_MsgIdToValue(rr->Notify.MsgId),
+           (unsigned)rr->Notify.FcnCode, (unsigned long)rr->Notify.Param);
+    es_set_ctx(2);
+    printf("tbl_apinotify notowner=%ld\n",
+           (long)CFE_TBL_NotifyByMessage(h2, CFE_SB_ValueToMsgId(0x1888), 3, 0x1234));
+    es_set_ctx(1);
+
+    /* --- DUMP TO BUFFER, both answers --------------------------------------------------- */
+    /* With no dump pending at all, NO_DUMP_PENDING and nothing is logged. With a STALE id --
+     * one that is valid but matches no block -- the same status comes back, the id is CLEARED,
+     * and a syslog line says it was dropped. The `cleared` field is the difference. */
+    printf("tbl_apidump none=%ld\n", (long)CFE_TBL_DumpToBuffer(h1));
+    rr->DumpControlId =
+        CFE_TBL_DUMPCTRLID_C(CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE + 1));
+    st = CFE_TBL_DumpToBuffer(h1);
+    printf("tbl_apidump stale=%ld cleared=%d\n", (long)st,
+           (int)!CFE_TBL_DUMPCTRLID_IS_VALID(rr->DumpControlId));
+
+    /* --- UNREGISTER, and the handle is dead afterwards ---------------------------------- */
+    st = CFE_TBL_Unregister(h1);
+    printf("tbl_apiunreg rc=%ld\n", (long)st);
+    /* EACH CALL INTO A LOCAL FIRST. Both of these emit a syslog line, and C evaluates every
+     * printf argument before printing any of them while the HolyC half prints incrementally --
+     * so as arguments they put their log lines on opposite sides of the label. Fourth and fifth
+     * instance of this trap in the project; it is always worth writing out. */
+    st = CFE_TBL_Unregister(h1);
+    printf("tbl_apiunreg again=%ld", (long)st);
+    st = CFE_TBL_GetStatus(h1);
+    printf(" status=%ld\n", (long)st);
+
+    es_ctx_init();
+}
+
 /* --- cfe_tbl_load.c -------------------------------------------------------------
  * SIXTEEN FUNCTIONS, AND A LOAD IS THE MOST GUARDED OPERATION IN TABLE SERVICES. The exercise
  * follows the file path in order, because every step can refuse and the interesting thing
@@ -3047,6 +3311,9 @@ static void TblTaskExercise(void)
  * up". Every CDS branch ends with Status = CFE_SUCCESS, so the RETURN VALUE cannot tell them
  * apart -- the syslog lines and the CDS handle are what distinguish them, and that is why the
  * transcript is the right instrument for this function. */
+static CFE_ES_MemHandle_t tbl_early_pool1;
+static CFE_ES_MemHandle_t tbl_early_pool2;
+
 static void TblEarlyInitExercise(void)
 {
     int32 st;
@@ -3089,6 +3356,7 @@ static void TblEarlyInitExercise(void)
      * own mutex. The third one is the witness that the pool was really created rather than its
      * handle merely being set. And reg/wrk differ, which is what the per-create id above is
      * for -- see the note on OS_MutSemCreate. */
+    tbl_early_pool1 = CFE_TBL_Global.Buf.PoolHdl;
     printf("tbl_early rc=%ld creates=%d reg=%lu wrk=%lu pool=%d bufs=%d distinct=%d\n", (long)st,
            fs_mut_create - c0, (unsigned long)OS_ObjectIdToInteger(CFE_TBL_Global.RegistryMutex),
            (unsigned long)OS_ObjectIdToInteger(CFE_TBL_Global.WorkBufMutex),
@@ -3117,6 +3385,7 @@ static void TblEarlyInitExercise(void)
             ++allocated;
         }
     }
+    tbl_early_pool2 = CFE_TBL_Global.Buf.PoolHdl;
     printf("tbl_early recovered rc=%ld creates=%d crit5=0x%lx critbad=%d\n", (long)st,
            fs_mut_create - c0,
            (unsigned long)CFE_RESOURCEID_TO_ULONG(CFE_TBL_Global.CritReg[5].CDSHandle), allocated);
@@ -3131,6 +3400,20 @@ static void TblEarlyInitExercise(void)
     printf("tbl_early nomutex rc=%ld creates=%d pool=%d\n", (long)st, fs_mut_create - c0,
            (int)CFE_RESOURCEID_TEST_DEFINED(CFE_TBL_Global.Buf.PoolHdl));
     fs_mut_create_rc = OS_SUCCESS;
+
+    /* AND HAND THE POOL RECORDS BACK, which this block has to do because
+     * CFE_PLATFORM_ES_MAX_MEMORY_POOLS IS **TEN** and the two successful EarlyInits above each
+     * took one. Without this, the next exercise to call CFE_ES_PoolCreate gets nothing:
+     * TblApiExercise did, and every one of its nineteen assertions came back
+     * CFE_TBL_ERR_INVALID_HANDLE because SetupTableBuffers could not allocate -- one repeated
+     * number for a whole block, with `CFE_ES_GetPoolBuf: Err:Bad handle(0x00000000)` the only
+     * clue. A FIXED-SIZE RESOURCE TABLE SHARED BETWEEN EXERCISES has to be given back.
+     *
+     * The deletes come last so they cannot disturb the measurements above, and the status is
+     * printed rather than discarded -- `del1`/`del2` being 0 is what says the records are
+     * actually free again. */
+    printf("tbl_early pooldel=%ld %ld\n", (long)CFE_ES_PoolDelete(tbl_early_pool1),
+           (long)CFE_ES_PoolDelete(tbl_early_pool2));
 }
 
 /* --- cfe_tbl_registry.c ---------------------------------------------------------
@@ -9967,6 +10250,7 @@ int main(void)
         TblEarlyInitExercise();
         TblDumpExercise();
         TblLoadExercise();
+        TblApiExercise();
         TblTaskExercise();
         /* --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
          * ------------------------------------------------------------------------------------

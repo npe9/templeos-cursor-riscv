@@ -64,13 +64,26 @@
 #endif
 // cfe_error.h
 #ifndef CFE_TBL_ERR_UNREGISTERED
-#define CFE_TBL_ERR_UNREGISTERED 0xCC000009
-#define CFE_TBL_ERR_NO_ACCESS    0xCC000008
-#define CFE_TBL_ERR_NEVER_LOADED 0xCC000005
-#define CFE_TBL_ERR_INVALID_NAME 0xCC000002
+#define CFE_TBL_ERR_UNREGISTERED 0xCC000009(I32)
+#define CFE_TBL_ERR_NO_ACCESS 0xCC000008(I32)
+#define CFE_TBL_ERR_NEVER_LOADED 0xCC000005(I32)
+// THE `(I32)` ON EVERY HIGH-BIT STATUS IS LOAD-BEARING, NOT DECORATION. A cFE error code has
+// the top bit set, and `0xCC000002` as a bare HolyC literal is a POSITIVE 64-bit value --
+// 3,422,552,066. Compared against an I32 status variable, which the compiler sign-extends to
+// -872,415,230, it is simply NOT EQUAL, so `if (Status == CFE_TBL_ERR_INVALID_NAME)` is dead
+// code. The postfix cast makes the literal a signed 32-bit value and the comparison works.
+//
+// Found by the differential transcript: CFE_TBL_Share's "Table '%s' not found in Registry"
+// syslog line appeared on the C side and NOT on the HolyC side, with both halves agreeing on
+// the returned STATUS. One missing line out of two thousand.
+//
+// THIRTY CONSTANTS ACROSS TEN tbl FILES were written without it and were swept together. The
+// convention was already established -- cfe_evs_task.HC and cfe_es_resource.HC spell theirs
+// `0xC2000002(I32)` and have eleven live comparisons each -- so this was a local lapse, not a
+// new idea. Only ONE of the thirty had a comparison that exercised it; the rest were latent.
+#define CFE_TBL_ERR_INVALID_NAME 0xCC000002(I32)
 #define CFE_TBL_INFO_UPDATED     0x4C00000E
 #endif
-
 // --- FORWARD DECLARATIONS ------------------------------------------------------------------
 // CFE_TBL_TxnFinish is called by both Start functions and defined after them, as in NASA's
 // source where cfe_tbl_transaction.h supplies the declaration. And CFE_TBL_TxnFindRegByName
@@ -87,9 +100,7 @@ U32 CFE_TBL_AccDescGetHandle(CFE_TBL_AccessDescriptor_t *AccDescPtr);
 // ...and the two still-stubbed registry lock calls, plus the list walk.
 U0 CFE_TBL_TxnLockRegistry(CFE_TBL_TxnState_t *Txn);
 U0 CFE_TBL_TxnUnlockRegistry(CFE_TBL_TxnState_t *Txn);
-U0 CFE_TBL_ForeachAccessDescriptor(CFE_TBL_RegistryRec_t *RegRecPtr,
-                                   U0 (*Func)(CFE_TBL_AccessDescriptor_t *, U8 *), U8 *Arg);
-
+U0 CFE_TBL_ForeachAccessDescriptor(CFE_TBL_RegistryRec_t *RegRecPtr, U0 (*Func)(CFE_TBL_AccessDescriptor_t *, U8 *), U8 *Arg);
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -108,7 +119,6 @@ I32 CFE_TBL_TxnInit(CFE_TBL_TxnState_t *Txn, Bool CheckContext)
     Status = CFE_SUCCESS;
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -134,7 +144,6 @@ U8 *CFE_TBL_TxnAppNameCaller(CFE_TBL_TxnState_t *Txn)
   }
   return Result;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -155,7 +164,6 @@ I32 CFE_TBL_TxnStartFromName(CFE_TBL_TxnState_t *Txn, U8 *TblName, U32 AllowedCo
   }
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -184,7 +192,8 @@ I32 CFE_TBL_TxnStartFromHandle(CFE_TBL_TxnState_t *Txn, U32 TblHandle, U32 Allow
     */
     if (CFE_ResourceId_Equal(Txn->AppId, CFE_TBL_Global.TableTaskAppId)) {
       Txn->CallContext |= CFE_TBL_TxnContext_TABLE_SERVICES;
-      AccessAllowed |= ~AccessAllowed; /* Set all bits */
+      AccessAllowed |= ~AccessAllowed;
+      /* Set all bits */
     }
     /* Need to lock before actually looking at the descriptor */
     CFE_TBL_TxnLockRegistry(Txn);
@@ -232,7 +241,6 @@ I32 CFE_TBL_TxnStartFromHandle(CFE_TBL_TxnState_t *Txn, U32 TblHandle, U32 Allow
   }
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -247,7 +255,6 @@ U0 CFE_TBL_TxnFinish(CFE_TBL_TxnState_t *Txn)
     Txn->RegLockCount = 0;
   }
 }
-
 /*----------------------------------------------------------------
  *
  * Local helper function, not invoked outside this unit
@@ -261,13 +268,11 @@ U0 CFE_TBL_FindAccessDescHelper(CFE_TBL_AccessDescriptor_t *AccDescPtr, U8 *Arg)
    * point at this regrec entry.  So checking that AccDescPtr->RegIndex matches the transaction
    * subject RegId would result in an uncovered branch, it cannot be false unless the list gets
    * corrupted somehow. */
-  if (CFE_TBL_AccDescIsUsed(AccDescPtr) &&
-      CFE_ResourceId_Equal(AccDescPtr->AppId, CFE_TBL_TxnAppId(Txn))) {
+  if (CFE_TBL_AccDescIsUsed(AccDescPtr) && CFE_ResourceId_Equal(AccDescPtr->AppId, CFE_TBL_TxnAppId(Txn))) {
     Txn->Handle = CFE_TBL_AccDescGetHandle(AccDescPtr);
     Txn->AccDescPtr = AccDescPtr;
   }
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -287,7 +292,6 @@ I32 CFE_TBL_FindAccessDescriptorForSelf(CFE_TBL_TxnState_t *Txn)
     Status = CFE_SUCCESS;
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -308,7 +312,6 @@ I32 CFE_TBL_TxnGetNextNotification(CFE_TBL_TxnState_t *Txn)
   }
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -328,7 +331,6 @@ U0 CFE_TBL_TxnAddEvent(CFE_TBL_TxnState_t *Txn, U16 EventId, I32 EventData1, I32
   ** overflow */
   ++Txn->NumPendingEvents;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -339,16 +341,13 @@ U32 CFE_TBL_TxnGetEventCount(CFE_TBL_TxnState_t *Txn)
 {
   return Txn->NumPendingEvents;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
  * See description in header file for argument/return detail
  *
  *-----------------------------------------------------------------*/
-U32 CFE_TBL_TxnProcessEvents(CFE_TBL_TxnState_t *Txn,
-                             Bool (*EventProc)(CFE_TBL_TxnEvent_t *, CFE_TBL_TxnEventContext_t *),
-                             CFE_TBL_TxnEventContext_t *Ctxt)
+U32 CFE_TBL_TxnProcessEvents(CFE_TBL_TxnState_t *Txn, Bool (*EventProc)(CFE_TBL_TxnEvent_t *, CFE_TBL_TxnEventContext_t *), CFE_TBL_TxnEventContext_t *Ctxt)
 {
   U32 i;
   U32 NumPending;
@@ -366,7 +365,6 @@ U32 CFE_TBL_TxnProcessEvents(CFE_TBL_TxnState_t *Txn,
   }
   return NumProc;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -377,17 +375,13 @@ U0 CFE_TBL_TxnClearEvents(CFE_TBL_TxnState_t *Txn)
 {
   Txn->NumPendingEvents = 0;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
  * See description in header file for argument/return detail
  *
  *-----------------------------------------------------------------*/
-U0 CFE_TBL_SendTransactionEvents(CFE_TBL_TxnState_t *Txn, U8 *Operation,
-                                 Bool (*EventProc)(CFE_TBL_TxnEvent_t *,
-                                                   CFE_TBL_TxnEventContext_t *),
-                                 U8 *OperationData)
+U0 CFE_TBL_SendTransactionEvents(CFE_TBL_TxnState_t *Txn, U8 *Operation, Bool (*EventProc)(CFE_TBL_TxnEvent_t *, CFE_TBL_TxnEventContext_t *), U8 *OperationData)
 {
   CFE_TBL_TxnEventContext_t Ctxt;
   MemSet(&Ctxt, 0, sizeof(CFE_TBL_TxnEventContext_t));

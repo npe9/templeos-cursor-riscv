@@ -79,6 +79,14 @@ C_TYPES = [(r'\bconst\b', ' '),
            # the rule too, pre-emptively, so it cannot repeat the trick.)
            (r'\bcpuaddr\s*\*', ' PTRSZ '), (r'\bcpuaddr\b', ' SZ '),
            (r'\bcpusize\s*\*', ' PTRSZ '), (r'\bcpusize\b', ' SZ '),
+           # CFE_TBL_Handle_t IS `int16` IN THIS CONFIGURATION, i.e. SIGNED, and the catch-all
+           # below maps every CFE_*_t to NUM. Same shape as CFE_Status_t directly below and the
+           # TIME enums above: the catch-all cannot see signedness, so the rule is added rather
+           # than the sixteen api.c functions exempted. cfe_tbl_api_typedefs.h offers two
+           # typedefs chosen by CFE_OMIT_DEPRECATED_6_8 -- `CFE_TBL_HandleId_t` (a resource id)
+           # and `int16` -- and the symbol is not defined here, so the int16 one applies. A port
+           # that flipped that switch would need this rule changed with it.
+           (r'\bCFE_TBL_Handle_t\s*\*', ' PTRSNUM '), (r'\bCFE_TBL_Handle_t\b', ' SNUM '),
            # CFE_Status_t is `int32`, and every cFE error code is NEGATIVE -- so the catch-all
            # below, which maps every CFE_*_t to NUM, had it as unsigned. Caught when
            # CFE_SB_MessageTxn_SetEventAndStatus became the first translated function to take
@@ -177,7 +185,11 @@ H_TYPES = [(r'\bCFE_MSG_Message\s*\*', ' PTRB '), (r'\bCFE_\w+\s*\*', ' PTRNUM '
            (r'\bU64\s*\*', ' PTRSZ '), (r'\bU64\b', ' SZ '),
            (r'\bI64\b', ' SZ '), (r'\bU32\b', ' NUM '),
            (r'\bU16\b', ' NUM '), (r'\bU8\b', ' NUM '), (r'\bI32\b', ' SNUM '),
-           (r'\bI16\b', ' SNUM ')]
+           # THE POINTER FORM FIRST, AGAIN -- third time this ordering has mattered in two
+           # days (U64, cpuaddr, now I16). `I16 *TblHandlePtr` without this rule became `SNUM *`
+           # and the name-strip left SNUM, reporting four of api.c's pointer parameters as
+           # values.
+           (r'\bI16\s*\*', ' PTRSNUM '), (r'\bI16\b', ' SNUM ')]
 
 # A function-pointer parameter, however it is spelled. The C uses typedefs (OS_ArgCallback_t,
 # OS_ObjectMatchFunc_t, OS_Config_Callback_t); HolyC has no typedef so the translation writes
@@ -291,8 +303,15 @@ def sigs(path, ret_pat, prefix, types):
             # version stripped both, which made `U8 *x` normalise to the empty string while an
             # array parameter (handled by the branch above) kept its PTRB, and the two then
             # compared unequal for no real reason.
-            a = re.sub(r'\b(?!PTRNUM|PTRSZ|PTRB|TIME|PROP|TOK|NUM|SZ|SNUM|FN\b)[A-Za-z_]\w*\b',
-                       ' ', a)
+            # PTRSNUM WAS MISSING FROM THIS KEEP-LIST and so was stripped like a parameter
+            # name -- which means every `CFE_Status_t *` and every TIME-enum pointer parameter
+            # has been normalising to the EMPTY STRING on BOTH sides and "matching" as two
+            # blanks. The rules that produce PTRSNUM were added deliberately, each with a
+            # comment about why signedness matters, and then thrown away one line later. Found
+            # when CFE_TBL_Handle_t's pointer form became the first case where the two sides
+            # were spelled differently enough to notice.
+            a = re.sub(r'\b(?!PTRSNUM|PTRNUM|PTRSZ|PTRB|TIME|PROP|TOK|NUM|SZ|SNUM|FN\b)'
+                       r'[A-Za-z_]\w*\b', ' ', a)
             a = re.sub(r'[\s\*]+', '', a)
             norm.append(a)
         out[name] = ','.join(norm)

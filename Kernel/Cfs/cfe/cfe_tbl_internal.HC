@@ -46,15 +46,15 @@
 #define CFE_TBL_INTERNAL_HC
 // cfe_error.h
 #ifndef CFE_TBL_ERR_NO_BUFFER_AVAIL
-#define CFE_TBL_ERR_NO_BUFFER_AVAIL    0xCC00000F
+#define CFE_TBL_ERR_NO_BUFFER_AVAIL 0xCC00000F(I32)
 #define CFE_TBL_INFO_NO_UPDATE_PENDING 0x4C000017
 #define CFE_TBL_INFO_TABLE_LOCKED      0x4C000018
-#define CFE_TBL_ERR_INVALID_SIZE       0xCC000003
-#define CFE_TBL_ERR_INVALID_OPTIONS    0xCC000025
+#define CFE_TBL_ERR_INVALID_SIZE 0xCC000003(I32)
+#define CFE_TBL_ERR_INVALID_OPTIONS 0xCC000025(I32)
 #define CFE_TBL_INFO_RECOVERED_TBL     0x4C000027
 #endif
 #ifndef CFE_STATUS_INCORRECT_STATE
-#define CFE_STATUS_INCORRECT_STATE 0xC8000009
+#define CFE_STATUS_INCORRECT_STATE 0xC8000009(I32)
 #endif
 #ifndef CFE_ES_CDS_ALREADY_EXISTS
 #define CFE_ES_CDS_ALREADY_EXISTS 0x4400000D
@@ -74,13 +74,17 @@
 #define CFE_TBL_OPT_NOT_USR_DEF  0x0000
 #define CFE_TBL_OPT_USR_DEF_ADDR 0x0006
 #define CFE_TBL_OPT_CRITICAL_MSK 0x0008
+// CFE_TBL_OPT_DEFAULT is (SNGL_BUFFER | LOAD_DUMP), both of which are ZERO -- so the default
+// options word is 0 and every flag is opt-in. check_constants compares the value.
+#ifndef CFE_TBL_OPT_DEFAULT
+#define CFE_TBL_OPT_DEFAULT 0x0000
+#endif
 #define CFE_TBL_OPT_NOT_CRITICAL 0x0000
 #define CFE_TBL_OPT_CRITICAL     0x0008
 #endif
 #ifndef CFE_MISSION_TBL_MAX_NAME_LENGTH
 #define CFE_MISSION_TBL_MAX_NAME_LENGTH 16
 #endif
-
 // --- FORWARD DECLARATIONS ------------------------------------------------------------------
 // All defined later in this same file; NASA's cfe_tbl_internal.h supplies the declarations
 // there. Kept in NASA's definition order rather than reordered, because unlike the `&function`
@@ -88,7 +92,39 @@
 I32 CFE_TBL_AllocateTableLoadBuffer(CFE_TBL_LoadBuff_t *LoadBuffPtr, I64 Size);
 U0 CFE_TBL_NotifyTblUsersOfUpdate(CFE_TBL_RegistryRec_t *RegRecPtr);
 U0 CFE_TBL_UpdateCriticalTblCDS(CFE_TBL_RegistryRec_t *RegRecPtr);
-
+// cfe_tbl_internal.h offers TWO definitions of each of these, chosen by
+// CFE_OMIT_DEPRECATED_6_8: a pass-through pair and the subtract/add pair below. The symbol is
+// NOT defined in this configuration -- measured with a probe, not assumed -- so an app's
+// CFE_TBL_Handle_t really is an int16 holding the low bits, and the macros really do
+// arithmetic against CFE_TBL_HANDLE_BASE. A port that flipped that switch would change every
+// handle an application sees. CFE_TBL_HandleID_AsInt collapses onto CFE_ResourceId_ToInteger,
+// the same rule check_header_inlines already applies to the typed-id family.
+#ifndef CFE_TBL_HANDLE_EXPORT
+#define CFE_TBL_HANDLE_EXPORT(x) (CFE_ResourceId_ToInteger(x) - CFE_TBL_HANDLE_BASE)
+#endif
+#ifndef CFE_TBL_HANDLE_IMPORT
+#define CFE_TBL_HANDLE_IMPORT(x) CFE_ResourceId_FromInteger((x) + CFE_TBL_HANDLE_BASE)
+#endif
+// cfe_tbl_api_typedefs.h, and BOTH OF THESE WERE WRONG IN THE FIRST DRAFT.
+//
+// CFE_TBL_BAD_TABLE_HANDLE IS -1, NOT ZERO. In the OMIT_DEPRECATED branch it is
+// CFE_TBL_HANDLEID_UNDEFINED (zero); in the branch this configuration takes it is
+// `((CFE_TBL_Handle_t)(-1))`. check_constants.py caught that one -- `cfe_tbl_api.HC: 0
+// NASA: -1`.
+//
+// AND IS_VALID FOLLOWS FROM IT: `((x) != CFE_TBL_BAD_TABLE_HANDLE)`, NOT
+// CFE_TBL_HandleID_IsDefined. The first draft wrote the latter, which tests against ZERO -- so
+// handle 0, a perfectly good handle in this branch, would have been reported invalid and
+// CFE_TBL_HandleToID(0) would have answered UNDEFINED instead of the base id. **No gate could
+// see this**: it is a macro BODY, not a constant value and not a signature, so nothing compares
+// it to NASA's. It was fixed by reading the header after the constant check pointed at the line
+// above.
+#ifndef CFE_TBL_BAD_TABLE_HANDLE
+#define CFE_TBL_BAD_TABLE_HANDLE -1
+#endif
+#ifndef CFE_TBL_HANDLE_IS_VALID
+#define CFE_TBL_HANDLE_IS_VALID(x) ((x) != CFE_TBL_BAD_TABLE_HANDLE)
+#endif
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -122,20 +158,17 @@ I32 CFE_TBL_EarlyInit()
   /*
   ** Create table registry access mutex
   */
-  OsStatus = OS_MutSemCreate(&CFE_TBL_Global.RegistryMutex, CFE_TBL_MUT_REG_NAME,
-                             CFE_TBL_MUT_REG_VALUE);
+  OsStatus = OS_MutSemCreate(&CFE_TBL_Global.RegistryMutex, CFE_TBL_MUT_REG_NAME, CFE_TBL_MUT_REG_VALUE);
   if (OsStatus != OS_SUCCESS)
     return CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
   /*
   ** Create working buffer access mutex
   */
-  OsStatus = OS_MutSemCreate(&CFE_TBL_Global.WorkBufMutex, CFE_TBL_MUT_WORK_NAME,
-                             CFE_TBL_MUT_WORK_VALUE);
+  OsStatus = OS_MutSemCreate(&CFE_TBL_Global.WorkBufMutex, CFE_TBL_MUT_WORK_NAME, CFE_TBL_MUT_WORK_VALUE);
   if (OsStatus != OS_SUCCESS)
     return CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
   /* Initialize memory partition and allocate shared table buffers. */
-  Status = CFE_ES_PoolCreate(&CFE_TBL_Global.Buf.PoolHdl, CFE_TBL_Global.Buf.Partition.Data,
-                             sizeof(CFE_TBL_MemPartition_t));
+  Status = CFE_ES_PoolCreate(&CFE_TBL_Global.Buf.PoolHdl, CFE_TBL_Global.Buf.Partition.Data, sizeof(CFE_TBL_MemPartition_t));
   if (Status < 0) {
     return Status;
   } else {
@@ -143,18 +176,14 @@ I32 CFE_TBL_EarlyInit()
     for (j = 0; j < CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS; j++) {
       LoadBuffPtr = &CFE_TBL_Global.LoadBuffs[j];
       /* Allocate memory for shared load buffers */
-      Status = CFE_TBL_AllocateTableLoadBuffer(LoadBuffPtr,
-                                               CFE_PLATFORM_TBL_MAX_SNGL_TABLE_SIZE);
+      Status = CFE_TBL_AllocateTableLoadBuffer(LoadBuffPtr, CFE_PLATFORM_TBL_MAX_SNGL_TABLE_SIZE);
       if (Status != CFE_SUCCESS)
         return Status;
     }
   }
   /* Try to obtain a previous image of the Critical Table Registry from the Critical Data
   ** Store */
-  Status = CFE_ES_RegisterCDSEx(&CFE_TBL_Global.CritRegHandle,
-                                sizeof(CFE_TBL_CritRegRec_t) *
-                                    CFE_PLATFORM_TBL_MAX_CRITICAL_TABLES,
-                                "CFE_TBL.CritReg", TRUE);
+  Status = CFE_ES_RegisterCDSEx(&CFE_TBL_Global.CritRegHandle, sizeof(CFE_TBL_CritRegRec_t) * CFE_PLATFORM_TBL_MAX_CRITICAL_TABLES, "CFE_TBL.CritReg", TRUE);
   /* Assume for the moment that nothing is already in the CDS and zero out the Critical Table
   ** Registry */
   for (i = 0; i < CFE_PLATFORM_TBL_MAX_CRITICAL_TABLES; i++) {
@@ -170,8 +199,7 @@ I32 CFE_TBL_EarlyInit()
     Status = CFE_ES_RestoreFromCDS(CFE_TBL_Global.CritReg, CFE_TBL_Global.CritRegHandle);
     if (Status != CFE_SUCCESS) {
       /* Note if we were unable to recover error free Critical Table Registry from the CDS */
-      CFE_ES_WriteToSysLog("%s: Failed to recover Critical Table Registry (Err=0x%08X)\n",
-                           "CFE_TBL_EarlyInit", Status);
+      CFE_ES_WriteToSysLog("%s: Failed to recover Critical Table Registry (Err=0x%08X)\n", "CFE_TBL_EarlyInit", Status);
     }
     /* Whether we recovered the Critical Table Registry or not, we are successful with
     ** initialization */
@@ -179,8 +207,7 @@ I32 CFE_TBL_EarlyInit()
   } else if (Status != CFE_SUCCESS) {
     /* Not being able to support Critical Tables is not the end of the world */
     /* Note the problem and move on */
-    CFE_ES_WriteToSysLog("%s: Failed to create Critical Table Registry (Err=0x%08X)\n",
-                         "CFE_TBL_EarlyInit", Status);
+    CFE_ES_WriteToSysLog("%s: Failed to create Critical Table Registry (Err=0x%08X)\n", "CFE_TBL_EarlyInit", Status);
     /* Failure to support critical tables is not a good enough reason to exit the cFE on start
     ** up */
     Status = CFE_SUCCESS;
@@ -190,8 +217,7 @@ I32 CFE_TBL_EarlyInit()
     if (Status != CFE_SUCCESS) {
       /* Not being able to support Critical Tables is not the end of the world */
       /* Note the problem and move on */
-      CFE_ES_WriteToSysLog("%s: Failed to save Critical Table Registry (Err=0x%08X)\n",
-                           "CFE_TBL_EarlyInit", Status);
+      CFE_ES_WriteToSysLog("%s: Failed to save Critical Table Registry (Err=0x%08X)\n", "CFE_TBL_EarlyInit", Status);
       /* Failure to support critical tables is not a good enough reason to exit the cFE on
       ** start up */
       Status = CFE_SUCCESS;
@@ -199,7 +225,6 @@ I32 CFE_TBL_EarlyInit()
   }
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -226,7 +251,6 @@ I32 CFE_TBL_ValidateTableName(CFE_TBL_TableConfig_t *ReqCfg, U8 *TblName, U8 *Ap
   }
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -247,7 +271,6 @@ U0 CFE_TBL_DiscardWorkingBuffer(CFE_TBL_RegistryRec_t *RegRecPtr)
       CFE_TBL_LoadBuffSetFree(LoadBuffPtr);
   }
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -261,13 +284,10 @@ U0 CFE_TBL_DeallocateBuffer(CFE_TBL_LoadBuff_t *BuffPtr)
   MemPtr = CFE_TBL_LoadBuffGetWritePointer(BuffPtr);
   Status = CFE_ES_PutPoolBuf(CFE_TBL_Global.Buf.PoolHdl, MemPtr);
   if (Status < 0) {
-    CFE_ES_WriteToSysLog("%s: PutPoolBuf() Fail Stat=0x%08X, Hndl=0x%08lX, Buf=0x%08lX\n",
-                         "CFE_TBL_DeallocateBuffer", Status,
-                         CFE_ResourceId_ToInteger(CFE_TBL_Global.Buf.PoolHdl), MemPtr);
+    CFE_ES_WriteToSysLog("%s: PutPoolBuf() Fail Stat=0x%08X, Hndl=0x%08lX, Buf=0x%08lX\n", "CFE_TBL_DeallocateBuffer", Status, CFE_ResourceId_ToInteger(CFE_TBL_Global.Buf.PoolHdl), MemPtr);
   }
   CFE_TBL_LoadBuffSetAllocatedBlock(BuffPtr, NULL, 0);
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -289,7 +309,6 @@ U0 CFE_TBL_DeallocateAllBuffers(CFE_TBL_RegistryRec_t *RegRecPtr)
   /* If a shared buffer has been allocated to the table, then release it as well */
   CFE_TBL_DiscardWorkingBuffer(RegRecPtr);
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -306,7 +325,6 @@ U32 CFE_TBL_FindTableInRegistry(U8 *TblName)
   /* The transaction mechanism will set this to CFE_TBL_NOT_FOUND if anything failed */
   return CFE_TBL_TxnRegId(&Txn);
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -324,7 +342,6 @@ I32 CFE_TBL_LockRegistry()
     Status = CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -342,7 +359,6 @@ I32 CFE_TBL_UnlockRegistry()
     Status = CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -360,8 +376,7 @@ CFE_TBL_LoadBuff_t *CFE_TBL_AcquireGlobalLoadBuff(U32 PendingOwnerId)
   OsStatus = OS_MutSemTake(CFE_TBL_Global.WorkBufMutex);
   /* Make note of any errors but continue and hope for the best */
   if (OsStatus != OS_SUCCESS) {
-    CFE_ES_WriteToSysLog("%s: Internal error taking WorkBuf Mutex (Status=%ld)\n",
-                         "CFE_TBL_AcquireGlobalLoadBuff", OsStatus);
+    CFE_ES_WriteToSysLog("%s: Internal error taking WorkBuf Mutex (Status=%ld)\n", "CFE_TBL_AcquireGlobalLoadBuff", OsStatus);
   }
   /* Determine if there are any common buffers available */
   PendingId = CFE_TBL_FindNextSharedBufferId();
@@ -375,15 +390,13 @@ CFE_TBL_LoadBuff_t *CFE_TBL_AcquireGlobalLoadBuff(U32 PendingOwnerId)
   OS_MutSemGive(CFE_TBL_Global.WorkBufMutex);
   return LoadBuffPtr;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
  * See description in header file for argument/return detail
  *
  *-----------------------------------------------------------------*/
-I32 CFE_TBL_GetWorkingBuffer(CFE_TBL_LoadBuff_t **WorkingBufferPtr,
-                             CFE_TBL_RegistryRec_t *RegRecPtr)
+I32 CFE_TBL_GetWorkingBuffer(CFE_TBL_LoadBuff_t **WorkingBufferPtr, CFE_TBL_RegistryRec_t *RegRecPtr)
 {
   CFE_TBL_LoadBuff_t *LoadBuffPtr;
   /* If a load is already in progress, return the previously allocated working buffer */
@@ -413,15 +426,13 @@ I32 CFE_TBL_GetWorkingBuffer(CFE_TBL_LoadBuff_t **WorkingBufferPtr,
     return CFE_TBL_ERR_NO_BUFFER_AVAIL;
   return CFE_SUCCESS;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
  * See description in header file for argument/return detail
  *
  *-----------------------------------------------------------------*/
-I32 CFE_TBL_UpdateInternal(U32 TblHandle, CFE_TBL_RegistryRec_t *RegRecPtr,
-                           CFE_TBL_AccessDescriptor_t *AccessDescPtr)
+I32 CFE_TBL_UpdateInternal(U32 TblHandle, CFE_TBL_RegistryRec_t *RegRecPtr, CFE_TBL_AccessDescriptor_t *AccessDescPtr)
 {
   I32 Status = CFE_SUCCESS;
   CFE_TBL_LoadBuff_t *NextBuffPtr;
@@ -443,8 +454,7 @@ I32 CFE_TBL_UpdateInternal(U32 TblHandle, CFE_TBL_RegistryRec_t *RegRecPtr,
     ** buffered tables this is also true during the first initial load, where a temp buffer
     ** is not necessary
     */
-    if (CFE_TBL_LoadBuffIsPrivate(CFE_TBL_LoadBufferGetID(LoadBuffPtr),
-                                  CFE_TBL_RegRecGetID(RegRecPtr))) {
+    if (CFE_TBL_LoadBuffIsPrivate(CFE_TBL_LoadBufferGetID(LoadBuffPtr), CFE_TBL_RegRecGetID(RegRecPtr))) {
       NextBuffPtr = LoadBuffPtr;
     } else {
       /*
@@ -456,10 +466,7 @@ I32 CFE_TBL_UpdateInternal(U32 TblHandle, CFE_TBL_RegistryRec_t *RegRecPtr,
       if (NextBuffPtr == NULL) {
         Status = CFE_TBL_INFO_TABLE_LOCKED;
         CFE_ES_WriteToSysLog("%s: Unable to update locked table Handle=%lu
-",
-                             "CFE_TBL_UpdateInternal",
-                             CFE_ResourceId_ToInteger(
-                                 CFE_TBL_AccDescGetHandle(AccessDescPtr)));
+", "CFE_TBL_UpdateInternal", CFE_ResourceId_ToInteger(CFE_TBL_AccDescGetHandle(AccessDescPtr)));
       }
     }
   }
@@ -470,8 +477,7 @@ I32 CFE_TBL_UpdateInternal(U32 TblHandle, CFE_TBL_RegistryRec_t *RegRecPtr,
     ** all the copies can be skipped (this is the advantage of double-buffering)
     */
     if (NextBuffPtr != LoadBuffPtr) {
-      CFE_TBL_LoadBuffCopyData(NextBuffPtr, CFE_TBL_LoadBuffGetReadPointer(LoadBuffPtr),
-                               CFE_TBL_LoadBuffGetContentSize(LoadBuffPtr));
+      CFE_TBL_LoadBuffCopyData(NextBuffPtr, CFE_TBL_LoadBuffGetReadPointer(LoadBuffPtr), CFE_TBL_LoadBuffGetContentSize(LoadBuffPtr));
       /* Save source description with active buffer (Note - structs are same type, length
       ** already checked) */
       StrNCpy(NextBuffPtr->DataSource, LoadBuffPtr->DataSource, OS_MAX_PATH_LEN);
@@ -484,14 +490,14 @@ I32 CFE_TBL_UpdateInternal(U32 TblHandle, CFE_TBL_RegistryRec_t *RegRecPtr,
     CFE_TBL_RegRecResetLoadInfo(RegRecPtr, NextBuffPtr->DataSource, CFE_TIME_GetTime());
     CFE_TBL_NotifyTblUsersOfUpdate(RegRecPtr);
     /* If the table is a critical table, update the appropriate CDS with the new data */
-    CfgPtr = CFE_TBL_RegRecGetConfig(RegRecPtr); // limit 17
+    CfgPtr = CFE_TBL_RegRecGetConfig(RegRecPtr);
+    // limit 17
     if (CfgPtr->Critical)
       CFE_TBL_UpdateCriticalTblCDS(RegRecPtr);
     CFE_TBL_DiscardWorkingBuffer(RegRecPtr);
   }
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Local helper function, not invoked outside this unit
@@ -503,7 +509,6 @@ U0 CFE_TBL_SetUpdatedHelper(CFE_TBL_AccessDescriptor_t *AccDescPtr, U8 *Arg)
   no_warn Arg;
   AccDescPtr->Updated = TRUE;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -514,7 +519,6 @@ U0 CFE_TBL_NotifyTblUsersOfUpdate(CFE_TBL_RegistryRec_t *RegRecPtr)
 {
   CFE_TBL_ForeachAccessDescriptor(RegRecPtr, &CFE_TBL_SetUpdatedHelper, NULL);
 }
-
 /*----------------------------------------------------------------
  *
  * Implemented per public API
@@ -550,8 +554,7 @@ I32 CFE_TBL_CleanUpApp(U32 Id)
   /* Scan Access Descriptors to determine if the Application had access to any tables */
   for (i = 0; i < CFE_PLATFORM_TBL_MAX_NUM_HANDLES; i++) {
     AccessDescPtr = &CFE_TBL_Global.Handles[i];
-    Status = CFE_TBL_TxnStartFromHandle(&Txn, CFE_TBL_AccDescGetHandle(AccessDescPtr),
-                                        CFE_TBL_TxnContext_UNDEFINED);
+    Status = CFE_TBL_TxnStartFromHandle(&Txn, CFE_TBL_AccDescGetHandle(AccessDescPtr), CFE_TBL_TxnContext_UNDEFINED);
     if (Status == CFE_SUCCESS) {
       /* This transaction is being performed on behalf of the appid that is now gone away */
       Txn.AppId = AppId;
@@ -565,7 +568,6 @@ I32 CFE_TBL_CleanUpApp(U32 Id)
   }
   return CFE_SUCCESS;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -586,7 +588,6 @@ U0 CFE_TBL_FindCriticalTblInfo(CFE_TBL_CritRegRec_t **CritRegRecPtr, U32 CDSHand
     }
   }
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -604,14 +605,11 @@ U0 CFE_TBL_UpdateCriticalTblCDS(CFE_TBL_RegistryRec_t *RegRecPtr)
     /* cannot write a table to CDS if it was never loaded in the first place */
     Status = CFE_TBL_ERR_NEVER_LOADED;
   } else {
-    Status = CFE_ES_CopyToCDS(RegRecPtr->CDSHandle,
-                              CFE_TBL_LoadBuffGetReadPointer(ActiveBufPtr));
+    Status = CFE_ES_CopyToCDS(RegRecPtr->CDSHandle, CFE_TBL_LoadBuffGetReadPointer(ActiveBufPtr));
   }
   if (Status != CFE_SUCCESS) {
     CFE_ES_WriteToSysLog("%s: Unable to update Critical Table '%s' in CDS (Err=0x%08X)
-",
-                         "CFE_TBL_UpdateCriticalTblCDS", CFE_TBL_RegRecGetName(RegRecPtr),
-                         Status);
+", "CFE_TBL_UpdateCriticalTblCDS", CFE_TBL_RegRecGetName(RegRecPtr), Status);
   } else {
     /* Locate entry in Critical Table Registry */
     CFE_TBL_FindCriticalTblInfo(&CritRegRecPtr, RegRecPtr->CDSHandle);
@@ -619,29 +617,24 @@ U0 CFE_TBL_UpdateCriticalTblCDS(CFE_TBL_RegistryRec_t *RegRecPtr)
       /* Save information related to the source of the data stored in the table in Critical
       ** Table Registry */
       CritRegRecPtr->FileTime = ActiveBufPtr->FileTime;
-      StrNCpy(CritRegRecPtr->LastFileLoaded, CFE_TBL_RegRecGetLastFileLoaded(RegRecPtr),
-              OS_MAX_PATH_LEN - 1);
+      StrNCpy(CritRegRecPtr->LastFileLoaded, CFE_TBL_RegRecGetLastFileLoaded(RegRecPtr), OS_MAX_PATH_LEN - 1);
       CritRegRecPtr->LastFileLoaded[OS_MAX_PATH_LEN - 1] = '\0';
       CritRegRecPtr->TimeOfLastUpdate = CFE_TBL_RegRecGetLastUpdateTime(RegRecPtr);
       CritRegRecPtr->TableLoadedOnce = CFE_TBL_RegRecIsTableLoaded(RegRecPtr);
       /* Update copy of Critical Table Registry in the CDS */
       Status = CFE_ES_CopyToCDS(CFE_TBL_Global.CritRegHandle, CFE_TBL_Global.CritReg);
       if (Status != CFE_SUCCESS) {
-        CFE_ES_WriteToSysLog(
-            "%s: Unable to update Critical Table Registry in CDS (Err=0x%08X)
-",
-            "CFE_TBL_UpdateCriticalTblCDS", Status);
+        CFE_ES_WriteToSysLog("%s: Unable to update Critical Table Registry in CDS (Err=0x%08X)
+", "CFE_TBL_UpdateCriticalTblCDS", Status);
       }
     } else {
       CFE_ES_WriteToSysLog("%s: Error finding '%s' in Critical Table Registry
-",
-                           "CFE_TBL_UpdateCriticalTblCDS", CFE_TBL_RegRecGetName(RegRecPtr));
+", "CFE_TBL_UpdateCriticalTblCDS", CFE_TBL_RegRecGetName(RegRecPtr));
     }
   }
   /* Don't bother notifying the caller of the problem since the active table is still
   ** legitimate */
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -662,8 +655,7 @@ I32 CFE_TBL_SendNotificationMsg(CFE_TBL_RegistryRec_t *RegRecPtr)
     CFE_SB_TimeStampMsg(&CFE_TBL_Global.NotifyMsg.CommandHeader.Msg);
     Status = CFE_SB_TransmitMsg(&CFE_TBL_Global.NotifyMsg.CommandHeader.Msg, TRUE);
     if (Status != CFE_SUCCESS) {
-      CFE_EVS_SendEvent(CFE_TBL_FAIL_NOTIFY_SEND_ERR_EID, CFE_EVS_EventType_ERROR,
-                        "Manage Notification Pkt Error(Status=0x%08X)", Status);
+      CFE_EVS_SendEvent(CFE_TBL_FAIL_NOTIFY_SEND_ERR_EID, CFE_EVS_EventType_ERROR, "Manage Notification Pkt Error(Status=0x%08X)", Status);
     }
   } else {
     /* This is not really an "error" - it just means that notifications are not enabled */
@@ -671,7 +663,6 @@ I32 CFE_TBL_SendNotificationMsg(CFE_TBL_RegistryRec_t *RegRecPtr)
   }
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -697,7 +688,6 @@ I32 CFE_TBL_ValidateTableSize(CFE_TBL_TableConfig_t *TableCfg, I64 Size)
   }
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -709,10 +699,8 @@ I32 CFE_TBL_ValidateTableOptions(CFE_TBL_TableConfig_t *TableCfg, U16 TblOptionF
   I32 Status;
   /* This will be changed if validation fails */
   Status = CFE_SUCCESS;
-  TableCfg->DoubleBuffered =
-      (TblOptionFlags & CFE_TBL_OPT_BUFFER_MSK) == CFE_TBL_OPT_DBL_BUFFER;
-  TableCfg->UserDefAddr = (TblOptionFlags & CFE_TBL_OPT_USR_DEF_MSK) ==
-                          (CFE_TBL_OPT_USR_DEF_ADDR & CFE_TBL_OPT_USR_DEF_MSK);
+  TableCfg->DoubleBuffered = (TblOptionFlags & CFE_TBL_OPT_BUFFER_MSK) == CFE_TBL_OPT_DBL_BUFFER;
+  TableCfg->UserDefAddr = (TblOptionFlags & CFE_TBL_OPT_USR_DEF_MSK) == (CFE_TBL_OPT_USR_DEF_ADDR & CFE_TBL_OPT_USR_DEF_MSK);
   TableCfg->DumpOnly = (TblOptionFlags & CFE_TBL_OPT_LD_DMP_MSK) == CFE_TBL_OPT_DUMP_ONLY;
   TableCfg->Critical = (TblOptionFlags & CFE_TBL_OPT_CRITICAL_MSK) == CFE_TBL_OPT_CRITICAL;
   // THE TWO COMBINATIONS THAT ARE REFUSED, and USR_DEF_ADDR is 0x6 -- it INCLUDES the
@@ -730,7 +718,6 @@ I32 CFE_TBL_ValidateTableOptions(CFE_TBL_TableConfig_t *TableCfg, U16 TblOptionF
   }
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -745,9 +732,7 @@ I32 CFE_TBL_AllocateTableLoadBuffer(CFE_TBL_LoadBuff_t *LoadBuffPtr, I64 Size)
   Status = CFE_ES_GetPoolBuf(&MemPtr, CFE_TBL_Global.Buf.PoolHdl, Size);
   if (Status < 0) {
     CFE_ES_WriteToSysLog("%s: Buf Alloc GetPool fail Stat=0x%08X MemPoolHndl=0x%08lX
-",
-                         "CFE_TBL_AllocateTableLoadBuffer", Status,
-                         CFE_ResourceId_ToInteger(CFE_TBL_Global.Buf.PoolHdl));
+", "CFE_TBL_AllocateTableLoadBuffer", Status, CFE_ResourceId_ToInteger(CFE_TBL_Global.Buf.PoolHdl));
   } else {
     Status = CFE_SUCCESS;
     CFE_TBL_LoadBuffSetAllocatedBlock(LoadBuffPtr, MemPtr, Size);
@@ -755,7 +740,6 @@ I32 CFE_TBL_AllocateTableLoadBuffer(CFE_TBL_LoadBuff_t *LoadBuffPtr, I64 Size)
   }
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -774,7 +758,6 @@ U0 CFE_TBL_MarkNameAsModified(U8 *NameBufPtr, I64 NameBufSize)
     EndPtr = &NameBufPtr[NameBufSize - 4];
   StrCpy(EndPtr, "(*)");
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -810,7 +793,6 @@ I32 CFE_TBL_SetupTableBuffers(CFE_TBL_RegistryRec_t *RegRecPtr, CFE_TBL_TableCon
   }
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -828,17 +810,12 @@ I32 CFE_TBL_RestoreTableDataFromCDS(CFE_TBL_RegistryRec_t *RegRecPtr)
     /* possible at this point during table registration.  But we */
     /* do need to handle the error case because if the function */
     /* call did fail, WorkingBufferPtr would be a NULL pointer. */
-    CFE_ES_WriteToSysLog("%s: Failed to get work buffer for '%s' (ErrCode=0x%08X)\n",
-                         "CFE_TBL_RestoreTableDataFromCDS",
-                         CFE_TBL_RegRecGetName(RegRecPtr), Status);
+    CFE_ES_WriteToSysLog("%s: Failed to get work buffer for '%s' (ErrCode=0x%08X)\n", "CFE_TBL_RestoreTableDataFromCDS", CFE_TBL_RegRecGetName(RegRecPtr), Status);
   } else {
     /* CDS exists for this table - try to restore the data */
-    Status = CFE_ES_RestoreFromCDS(CFE_TBL_LoadBuffGetWritePointer(WorkingBufferPtr),
-                                   RegRecPtr->CDSHandle);
+    Status = CFE_ES_RestoreFromCDS(CFE_TBL_LoadBuffGetWritePointer(WorkingBufferPtr), RegRecPtr->CDSHandle);
     if (Status != CFE_SUCCESS) {
-      CFE_ES_WriteToSysLog("%s: Failed to recover '%s' from CDS (ErrCode=0x%08X)\n",
-                           "CFE_TBL_RestoreTableDataFromCDS",
-                           CFE_TBL_RegRecGetName(RegRecPtr), Status);
+      CFE_ES_WriteToSysLog("%s: Failed to recover '%s' from CDS (ErrCode=0x%08X)\n", "CFE_TBL_RestoreTableDataFromCDS", CFE_TBL_RegRecGetName(RegRecPtr), Status);
       /*
       ** Treat a restore from existing CDS error the same as
       ** after a power-on reset (CDS was created but is empty)
@@ -849,14 +826,12 @@ I32 CFE_TBL_RestoreTableDataFromCDS(CFE_TBL_RegistryRec_t *RegRecPtr)
       /* Try to locate the associated information in the Critical Table Registry */
       CFE_TBL_FindCriticalTblInfo(&CritRegRecPtr, RegRecPtr->CDSHandle);
       if (CritRegRecPtr != NULL && CritRegRecPtr->TableLoadedOnce) {
-        StrNCpy(WorkingBufferPtr->DataSource, CritRegRecPtr->LastFileLoaded,
-                OS_MAX_PATH_LEN - 1);
+        StrNCpy(WorkingBufferPtr->DataSource, CritRegRecPtr->LastFileLoaded, OS_MAX_PATH_LEN - 1);
         WorkingBufferPtr->DataSource[OS_MAX_PATH_LEN - 1] = '\0';
         WorkingBufferPtr->FileTime = CritRegRecPtr->FileTime;
         CFE_TBL_SetActiveBuffer(RegRecPtr, WorkingBufferPtr);
         CFE_TBL_RegRecClearLoadInProgress(RegRecPtr);
-        CFE_TBL_RegRecResetLoadInfo(RegRecPtr, CritRegRecPtr->LastFileLoaded,
-                                    CritRegRecPtr->TimeOfLastUpdate);
+        CFE_TBL_RegRecResetLoadInfo(RegRecPtr, CritRegRecPtr->LastFileLoaded, CritRegRecPtr->TimeOfLastUpdate);
         /* Compute the CRC on the specified table buffer */
         CFE_TBL_LoadBuffRecomputeCRC(WorkingBufferPtr);
         /* Make sure everyone who sees the table knows that it has been updated */
@@ -866,9 +841,7 @@ I32 CFE_TBL_RestoreTableDataFromCDS(CFE_TBL_RegistryRec_t *RegRecPtr)
       } else {
         /* If an error occurred while trying to get the previous contents registry info, */
         /* Log the error in the System Log and pretend like we created a new CDS */
-        CFE_ES_WriteToSysLog("%s: Failed to recover '%s' info from CDS TblReg\n",
-                             "CFE_TBL_RestoreTableDataFromCDS",
-                             CFE_TBL_RegRecGetName(RegRecPtr));
+        CFE_ES_WriteToSysLog("%s: Failed to recover '%s' info from CDS TblReg\n", "CFE_TBL_RestoreTableDataFromCDS", CFE_TBL_RegRecGetName(RegRecPtr));
         Status = CFE_SUCCESS;
       }
     }
@@ -877,15 +850,13 @@ I32 CFE_TBL_RestoreTableDataFromCDS(CFE_TBL_RegistryRec_t *RegRecPtr)
   RegRecPtr->Config.Critical = TRUE;
   return Status;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
  * See description in header file for argument/return detail
  *
  *-----------------------------------------------------------------*/
-U0 CFE_TBL_RegisterWithCriticalTableRegistry(CFE_TBL_CritRegRec_t *CritRegRecPtr,
-                                             CFE_TBL_RegistryRec_t *RegRecPtr, U8 *TblName)
+U0 CFE_TBL_RegisterWithCriticalTableRegistry(CFE_TBL_CritRegRec_t *CritRegRecPtr, CFE_TBL_RegistryRec_t *RegRecPtr, U8 *TblName)
 {
   /* Find and initialize a free entry in the Critical Table Registry */
   // THE PARAMETER IS OVERWRITTEN IMMEDIATELY, which is NASA's code and not a slip here:
@@ -906,14 +877,11 @@ U0 CFE_TBL_RegisterWithCriticalTableRegistry(CFE_TBL_CritRegRec_t *CritRegRecPtr
     CritRegRecPtr->TimeOfLastUpdate.Subseconds = 0;
     CFE_ES_CopyToCDS(CFE_TBL_Global.CritRegHandle, CFE_TBL_Global.CritReg);
   } else {
-    CFE_ES_WriteToSysLog("%s: Failed to find a free Crit Tbl Reg Rec for '%s'\n",
-                         "CFE_TBL_RegisterWithCriticalTableRegistry",
-                         CFE_TBL_RegRecGetName(RegRecPtr));
+    CFE_ES_WriteToSysLog("%s: Failed to find a free Crit Tbl Reg Rec for '%s'\n", "CFE_TBL_RegisterWithCriticalTableRegistry", CFE_TBL_RegRecGetName(RegRecPtr));
   }
   /* Mark the table as critical for future reference */
   RegRecPtr->Config.Critical = TRUE;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -924,7 +892,6 @@ CFE_TBL_AccessDescriptor_t *CFE_TBL_HandleListGetNext(CFE_TBL_HandleLink_t *Link
 {
   return CFE_TBL_LocateAccDescByHandle(Link->Next);
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -935,16 +902,13 @@ CFE_TBL_AccessDescriptor_t *CFE_TBL_HandleListGetPrev(CFE_TBL_HandleLink_t *Link
 {
   return CFE_TBL_LocateAccDescByHandle(Link->Prev);
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
  * See description in header file for argument/return detail
  *
  *-----------------------------------------------------------------*/
-U0 CFE_TBL_HandleListGetSafeLink(CFE_TBL_RegistryRec_t *RegRecPtr,
-                                 CFE_TBL_AccessDescriptor_t *AccDescPtr,
-                                 CFE_TBL_HandleLink_t **PtrOut, U32 *HandleOut)
+U0 CFE_TBL_HandleListGetSafeLink(CFE_TBL_RegistryRec_t *RegRecPtr, CFE_TBL_AccessDescriptor_t *AccDescPtr, CFE_TBL_HandleLink_t **PtrOut, U32 *HandleOut)
 {
   // THE WHOLE TRICK OF THE LIST. A NULL descriptor -- meaning "off the end" -- is turned into
   // a pointer to the registry record's OWN AccessList head rather than being reported as
@@ -960,15 +924,13 @@ U0 CFE_TBL_HandleListGetSafeLink(CFE_TBL_RegistryRec_t *RegRecPtr,
     *HandleOut = CFE_TBL_AccDescGetHandle(AccDescPtr);
   }
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
  * See description in header file for argument/return detail
  *
  *-----------------------------------------------------------------*/
-U0 CFE_TBL_HandleListRemoveLink(CFE_TBL_RegistryRec_t *RegRecPtr,
-                                CFE_TBL_AccessDescriptor_t *AccessDescPtr)
+U0 CFE_TBL_HandleListRemoveLink(CFE_TBL_RegistryRec_t *RegRecPtr, CFE_TBL_AccessDescriptor_t *AccessDescPtr)
 {
   CFE_TBL_HandleLink_t *LocalLink;
   CFE_TBL_HandleLink_t *LocalPrevPtr;
@@ -977,25 +939,21 @@ U0 CFE_TBL_HandleListRemoveLink(CFE_TBL_RegistryRec_t *RegRecPtr,
   U32 PrevHandle;
   U32 NextHandle;
   CFE_TBL_HandleListGetSafeLink(RegRecPtr, AccessDescPtr, &LocalLink, &LocalHandle);
-  CFE_TBL_HandleListGetSafeLink(RegRecPtr, CFE_TBL_HandleListGetNext(LocalLink), &LocalNextPtr,
-                                &NextHandle);
-  CFE_TBL_HandleListGetSafeLink(RegRecPtr, CFE_TBL_HandleListGetPrev(LocalLink), &LocalPrevPtr,
-                                &PrevHandle);
+  CFE_TBL_HandleListGetSafeLink(RegRecPtr, CFE_TBL_HandleListGetNext(LocalLink), &LocalNextPtr, &NextHandle);
+  CFE_TBL_HandleListGetSafeLink(RegRecPtr, CFE_TBL_HandleListGetPrev(LocalLink), &LocalPrevPtr, &PrevHandle);
   LocalPrevPtr->Next = NextHandle;
   LocalNextPtr->Prev = PrevHandle;
   no_warn LocalHandle;
   /* now that it is removed, reset the link */
   CFE_TBL_HandleLinkInit(LocalLink);
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
  * See description in header file for argument/return detail
  *
  *-----------------------------------------------------------------*/
-U0 CFE_TBL_HandleListInsertLink(CFE_TBL_RegistryRec_t *RegRecPtr,
-                                CFE_TBL_AccessDescriptor_t *AccessDescPtr)
+U0 CFE_TBL_HandleListInsertLink(CFE_TBL_RegistryRec_t *RegRecPtr, CFE_TBL_AccessDescriptor_t *AccessDescPtr)
 {
   CFE_TBL_HandleLink_t *LocalLink;
   CFE_TBL_HandleLink_t *LocalPrevPtr;
@@ -1006,22 +964,19 @@ U0 CFE_TBL_HandleListInsertLink(CFE_TBL_RegistryRec_t *RegRecPtr,
   /* inserting at the front, so the "previous" will always be the head node (NULL) */
   CFE_TBL_HandleListGetSafeLink(RegRecPtr, AccessDescPtr, &LocalLink, &LocalHandle);
   CFE_TBL_HandleListGetSafeLink(RegRecPtr, NULL, &LocalPrevPtr, &PrevHandle);
-  CFE_TBL_HandleListGetSafeLink(RegRecPtr, CFE_TBL_HandleListGetNext(LocalPrevPtr),
-                                &LocalNextPtr, &NextHandle);
+  CFE_TBL_HandleListGetSafeLink(RegRecPtr, CFE_TBL_HandleListGetNext(LocalPrevPtr), &LocalNextPtr, &NextHandle);
   LocalLink->Next = NextHandle;
   LocalLink->Prev = PrevHandle;
   LocalPrevPtr->Next = LocalHandle;
   LocalNextPtr->Prev = LocalHandle;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
  * See description in header file for argument/return detail
  *
  *-----------------------------------------------------------------*/
-U0 CFE_TBL_ForeachAccessDescriptor(CFE_TBL_RegistryRec_t *RegRecPtr,
-                                   U0 (*Func)(CFE_TBL_AccessDescriptor_t *, U8 *), U8 *Arg)
+U0 CFE_TBL_ForeachAccessDescriptor(CFE_TBL_RegistryRec_t *RegRecPtr, U0 (*Func)(CFE_TBL_AccessDescriptor_t *, U8 *), U8 *Arg)
 {
   CFE_TBL_AccessDescriptor_t *AccDescPtr;
   CFE_TBL_HandleLink_t *LinkPtr;
@@ -1034,7 +989,6 @@ U0 CFE_TBL_ForeachAccessDescriptor(CFE_TBL_RegistryRec_t *RegRecPtr,
     LinkPtr = &AccDescPtr->Link;
   }
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function
@@ -1045,9 +999,8 @@ U0 CFE_TBL_CountAccessDescHelper(CFE_TBL_AccessDescriptor_t *AccDescPtr, U8 *Arg
 {
   U32 *Count = Arg;
   no_warn AccDescPtr;
-  ++*Count;
+  ++* Count;
 }
-
 /*----------------------------------------------------------------
  *
  * Application-scope internal function

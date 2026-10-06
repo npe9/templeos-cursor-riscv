@@ -65,7 +65,7 @@
 #define CFE_TBL_DUMP_ENCODE_FAIL_EID 105
 #endif
 #ifndef CFE_TBL_BAD_ARGUMENT
-#define CFE_TBL_BAD_ARGUMENT 0xCC00002D
+#define CFE_TBL_BAD_ARGUMENT 0xCC00002D(I32)
 #endif
 // cfe_tbl_extern_typedefs.h: the two headers a table file always carries together. NASA's own
 // comment -- "This struct just combines the two and makes for an easier item to pass around,
