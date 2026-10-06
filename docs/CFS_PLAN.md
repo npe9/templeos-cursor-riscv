@@ -1350,3 +1350,121 @@ What is worth carrying forward is that **the transcript was the only thing that 
 it.** Six of the nine properties look at shape — a name exists, an arity matches, an offset is
 right — and all six were green, because the declaration and the layout were never wrong. The
 seventh ran the code and compared a string against glibc's, and the string was a plausible date.
+
+---
+
+## The apps layer, and why MD goes first
+
+The eleven cFE core modules and OSAL are at 100%. The next layer up is the cFS *apps* — the
+mission software that sits on top of cFE. They are separate NASA repositories, so the first
+question was which one, and the survey rejected one outright.
+
+**SCH is not translatable against this cFE.** It makes 17 calls into the cFE **6.x** API that
+Draco removed: `CFE_SB_SendMsg`, `CFE_SB_RcvMsg`, `CFE_SB_InitMsg`, `CFE_SB_GetMsgId`,
+`CFE_SB_GetCmdCode`, `CFE_SB_GetTotalMsgLength`, `CFE_ES_RegisterApp`. The app was abandoned at
+tag 2.2.2 with no Draco-era branch. A 1:1 translation would not compile, and supplying the old
+API would be hand-written compatibility code rather than a translation of anything — the one
+thing this project does not do. CS, LC, MM and MD all have **zero** old-API hits.
+
+**MD (Memory Dwell) is the first app.** 2,401 lines across seven sources, API-current, and it
+leans hard on the `tbl` module that just reached 100% — four dwell tables registered, validated,
+loaded and updated through `CFE_TBL_*`. It has the same `md_dispatch.c` / `md_eds_dispatch.c`
+EDS-conditional pair `check_manifest` already understands. Pinned in `tools/cfs/fetch.sh` at
+`65eb7b3b` on the dev branch, for the same reason cFE is pinned there: cFE here is 7.0.1+dev,
+dated one day *after* this MD commit, and MD's v7.0.1 tag predates both.
+
+Of MD's 36 distinct cFE/OSAL calls, **exactly three** have no counterpart in the tree:
+`CFE_PSP_MemRead8`, `CFE_PSP_MemRead16` and `CFE_PSP_MemRead32`. Everything else — including
+`CFE_TBL_GetAddress`, `CFE_TBL_GetStatus`, `CFE_TBL_ReleaseAddress`, `CFE_PSP_MemValidateRange`,
+`OS_SymbolLookup` and the `CFE_MSG_PTR` macro — is already present.
+
+### The blocking design decision: dwell addresses in the transcript
+
+MD's whole job is to read arbitrary memory addresses and telemeter the contents, so the question
+of whether an address can reach the transcript had to be answered before writing a line. Two
+answers, and they differ:
+
+- **The dwell packet does not carry addresses.** `MD_DwellPkt_Payload_t` is `TableId`,
+  `AddrCount`, `ByteCount`, `Rate`, `Signature` and `Data[]` — the dwelled *bytes*. The resolved
+  addresses live only in `MD_DwellControlEntry_t.ResolvedAddress`, which is internal state.
+- **NASA's own event text does.** `md_cmds.c` prints `"Jam Cmd rejected because address 0x%08X
+  is not in a valid range"` and two alignment variants, straight from `ResolvedAddr`. A `cpuaddr`
+  formatted into an event string is compared character for character by the transcript, and a
+  host process and a QEMU guest will never agree on a real one. This is the third time an address
+  has threatened the transcript (`Addr 0x10458D610`, `last=Addr 0x102F99610` were the first two).
+
+The fix is not to normalise the transcript — it is to choose addresses the two halves agree on.
+`MD_ResolveSymAddr` returns `SymAddr->Offset` **verbatim** as the address when `SymName` is the
+empty string, with no symbol lookup at all. So a dwell entry written with an empty `SymName` and
+`Offset = 0x00010000` resolves to exactly `0x00010000` on both halves, and NASA's `0x%08X` prints
+the same eight characters on both.
+
+That makes the dwell window **simulated hardware**, which is the pattern the driver already uses
+for the other 22 `CFE_PSP_*` functions:
+
+- A fixed literal base, the same constant in both halves, naming a window that is not a real
+  address on either.
+- `CFE_PSP_MemRead8/16/32` resolve an address inside that window to an index into a
+  driver-owned buffer with a known fill pattern, so the dwell `Data[]` bytes are deterministic
+  and identical. An address outside the window is an error, which is a path worth exercising.
+- `CFE_PSP_MemValidateRange` accepts exactly that window — it is already a driver stub with a
+  settable return code and a call counter, so the invalid-range event is reachable on purpose.
+- `OS_SymbolLookup` is translated and its `_Impl` is a driver seam, so the non-empty-`SymName`
+  branch is reachable both ways: resolving to the window, and failing deterministically to
+  produce `"symbolic address '%s' couldn't be resolved"`.
+
+### MD_INTERFACE_SIGNATURE_OPTION is a trap, not a switch
+
+`MD_INTERFACE_SIGNATURE_OPTION` guards a conditional **member** — `char Signature[...]` — in
+three structures (`MD_DwellTableLoad_t`, `MD_DwellPkt_Payload_t`, `MD_DwellPacketControl_t`), a
+whole command payload type (`MD_CmdSetSignature_Payload_t`), and a command code. It resolves
+through `MD_INTERFACE_CFGVAL(SIGNATURE_OPTION)` to `DEFAULT_MD_INTERFACE_SIGNATURE_OPTION`,
+which is **1**, so the member is present in this configuration.
+
+Which is the dangerous case. `docs/HOLYC_STRUCT_LIMITS.md` #19 records that `#if <expr>` is
+unconditionally true in HolyC unless the operand is a literal `0` — so the HolyC half would take
+the `== 1` branch *whatever the value was*. Here it happens to be the right branch, and the two
+sides would agree **by accident**: nothing would fail, and the agreement would not mean the
+configuration had been read. Every one of these `#if`s is therefore hand-resolved to the branch
+this configuration takes, with the value stated at the site, the same way the other config
+exclusions are recorded. `MD_INTERFACE_ENFORCE_DWORD_ALIGN` is 1 and gets the same treatment —
+note that its `#if ... == 0` branch in `md_cmds.c` is the one with NASA's own stale `Jam->` typo
+where the live branch says `Msg->`, which is itself evidence that branch is never compiled.
+
+### config/ ships two layouts for the same type names
+
+`vendor/MD/config/` holds both `default_md_*.h` and `eds_md_*.h`. They define the *same* type
+names with *different* layouts — `default_md_tblstruct.h` is 58 lines, `eds_md_tblstruct.h` is
+26. Any gate that scans `config/` as a bare directory can pair an MD class against the EDS header
+and report a match for the wrong layout. `config/` is added to the gates with an explicit
+`eds_*` exclusion, never as a plain directory.
+
+### The manifest has three groups, not one
+
+MD's `CMakeLists.txt` builds two different products. `add_cfe_app` takes five unconditional
+sources plus the EDS pair; `add_cfe_tables` takes `md_dw01.c` .. `md_dw04.c`, 280 lines that are
+compiled and then run through `elf2cfetbl` to emit `.tbl` load files. Those four are not app
+code — they contain no functions, just a file-scope aggregate initialiser and a
+`CFE_TBL_FILEDEF` macro — so they are a separate manifest group that does **not** count toward
+app coverage, with the reason stated. (A file-scope aggregate initialiser is also something
+HolyC does not have; if they are ever translated they become runtime fill functions, the shape
+`cfe_platformcfg_tables.HC` already uses for `CFE_PlatformConfigTablesInit`.)
+
+### Widening the gates is where the blind spot gets made
+
+Eight gates are hard-wired to `Kernel/Cfs/{cfe,osal}` and `vendor/{cFE,osal}`. Widening all of
+them before any MD exists in the tree would report exactly what they reported yesterday — a
+vacuous green, of which `gate-blindspot-unpaired-types.md` already has fourteen. So MD is
+translated **leaf first** (`md_utils.c`, 224 lines) and each gate is widened with that file as
+its subject and a real mutation driven through it.
+
+Three widenings fail completely silently if done wrong:
+
+| gate | what "widened but blind" looks like |
+|---|---|
+| `check_constants` | `NAME` is `^(CFE_\|OS_\|OSAL_)\w+$`. Without `MD_`, no MD constant is even a candidate and the count does not move. |
+| `check_padding` | `CSRC`/`HDRS` are explicit lists. Not added is not measured, and nothing complains. |
+| `check_structs` | MD classes land in the unpaired bucket, which prints as a number in a line that is easy to skim. |
+
+`module_deps.py --fresh` is run on MD before picking the source order: CMake's `APP_SRC_FILES`
+order is a build-order hint, not the dependency graph.
