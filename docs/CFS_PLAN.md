@@ -1003,6 +1003,40 @@ Two translation notes found in the reading. `CFE_TIME_ZERO_VALUE` is a C compoun
 the function `cfe_tbl_objtab.HC` currently stubs — gating this source makes the object table's
 first hook real, which is the point of the whole module.
 
+### THE CYCLE IS GONE (2026-10-05)
+
+Both are gated, and `module_deps.py tbl` now prints **nine sources, every one a singleton with
+no CALL CYCLE tag**. The eight-source component that shaped this whole section dissolved the
+moment `internal.c` and `registry.c` landed, so what is left can be gated one source at a time
+in whatever order suits — the tool's own topological listing is:
+
+| next | lines | note |
+|---|---|---|
+| `cfe_tbl_dump.c` | 589 | |
+| `cfe_tbl_task.c` | 218 | makes `CFE_TBL_TaskMain` real, the last objtab stub |
+| `cfe_tbl_dispatch.c` | 276 | the non-EDS branch |
+| `cfe_tbl_load.c` | 953 | |
+| `cfe_tbl_api.c` | 1,107 | the public API, 24 functions |
+| `cfe_tbl_task_cmds.c` | 1,115 | |
+
+(`cfe_tbl_eds_codec.c` and `cfe_tbl_eds_dispatch.c` are listed too and are correctly absent —
+`CFE_EDS_ENABLED` is 0 in this configuration and `check_manifest.py` owns that call.)
+
+tbl is at **3,803 of 7,780 lines, 49%**. `registry.c` cost **zero** new stand-ins in the end
+and DELETED four: of its 43 external calls 37 were already translated and the other six are id
+macros that collapse onto `CFE_ResourceId_IsDefined` / `_Equal` / the identity. The nine-stand-in
+price in the table above was real when it was measured and is the clearest demonstration of the
+point this section opens with — **a cycle's cost is a function of what is already gated, not a
+property of the graph.**
+
+STILL GATED BUT NOT YET EXERCISED, so nobody mistakes 49% for 49% tested:
+`CFE_TBL_EarlyInit`, `CFE_TBL_CleanUpApp`, `CFE_TBL_RestoreTableDataFromCDS`,
+`CFE_TBL_UpdateCriticalTblCDS`, `CFE_TBL_RegisterWithCriticalTableRegistry`,
+`CFE_TBL_GetWorkingBuffer`, `CFE_TBL_UpdateInternal`, `CFE_TBL_SendNotificationMsg`,
+`CFE_TBL_SetupTableBuffers`, `CFE_TBL_AllocateTableLoadBuffer`. `check_in_blob` proves they
+have addresses; nothing proves they run. EarlyInit is the one worth doing next and is now
+cheap: ES is 100% gated, so `CFE_ES_PoolCreate` and `CFE_ES_RegisterCDSEx` are real.
+
 **Run the tool before planning any module's order**, including the apps — and run it `--fresh`
 against a finished module first, because a result you cannot calibrate is a number you should
 not plan on. One caveat it does not model: a stand-in is functions, but a subset may also need

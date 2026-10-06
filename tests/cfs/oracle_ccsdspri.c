@@ -105,7 +105,7 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "cfe_tbl_regrec.h"    /* the registry record and its twenty */
 #include "cfe_tbl_valresult.h" /* the ten validation result blocks and their five */
 #include "cfe_tbl_codec.h"     /* the codec seam; passthru is the non-EDS branch */
-#include "cfe_tbl_registry.h"  /* CFE_TBL_TxnFindRegByName, the one remaining stand-in */
+#include "cfe_tbl_registry.h"  /* the eleven transaction steps that touch the registry */
 #include "cfe_tbl_internal.h" /* the four concerns of internal.c, gated below */
 
 /* cfe_msg_objtab.c defines this and no header declares it -- the generated cfe_es_objtab.c is
@@ -695,43 +695,6 @@ bool CFE_TBL_SendValidationEventHelper(const CFE_TBL_TxnEvent_t *Event,
  * halves -- exactly the arrangement the other six objtabs have had. They exist so that
  * CFE_TBL_ModuleEntry has three distinct non-NULL addresses to hold, which is the only
  * property the object table exercise asserts about them. */
-/* THREE STAND-INS FROM cfe_tbl_registry.c, which is inside tbl's eight-source call cycle.
- * tools/cfs/module_deps.py --cuts prices cfe_tbl_accdesc.c at exactly these three. The lock
- * pair is a COUNTED lock -- the count is what makes it re-entrant within one transaction --
- * and it delegates to this driver's OS_MutSemTake/Give, which count, so the transcript
- * witnesses every take and give the real code performs. */
-void CFE_TBL_TxnLockRegistry(CFE_TBL_TxnState_t *Txn)
-{
-    if (Txn->RegLockCount == 0)
-    {
-        OS_MutSemTake(CFE_TBL_Global.RegistryMutex);
-    }
-    ++Txn->RegLockCount;
-}
-
-void CFE_TBL_TxnUnlockRegistry(CFE_TBL_TxnState_t *Txn)
-{
-    if (Txn->RegLockCount > 0)
-    {
-        --Txn->RegLockCount;
-        if (Txn->RegLockCount == 0)
-        {
-            OS_MutSemGive(CFE_TBL_Global.RegistryMutex);
-        }
-    }
-}
-
-/* The real one unlinks the descriptor from its table's list. Standing in for it as a no-op
- * that COUNTS is deliberate: the list surgery belongs to cfe_tbl_registry.c and writing it
- * here would be upstream logic where no gate compares it against NASA. What the exercise can
- * still assert is that ReleaseAccDesc CALLS it exactly once, which the counter shows. */
-long tbl_removelink_calls;
-int32 CFE_TBL_TxnRemoveAccessLink(CFE_TBL_TxnState_t *Txn)
-{
-    ++tbl_removelink_calls;
-    return CFE_SUCCESS;
-}
-
 /* --- FOUR STAND-INS FOR THE loadbuff+regrec PAIR ------------------------------------------
  * Named by tools/cfs/module_deps.py --cuts: two from cfe_tbl_internal.c and two from
  * cfe_tbl_transaction.c, both still inside tbl's call cycle.
@@ -743,32 +706,15 @@ int32 CFE_TBL_TxnRemoveAccessLink(CFE_TBL_TxnState_t *Txn)
  * observed through its EFFECT, the number of descriptors SetUpdated marks. */
 
 /* CFE_TBL_TxnAddEvent and CFE_TBL_SendTransactionEvents WERE STAND-INS HERE and are real now
- * -- they live in cfe_tbl_transaction.c, gated above. Their deletion is the whole reason the
- * `tbl_actvsend`/`tbl_vrsend` assertions changed shape: they counted a stub, and what arrives
- * instead is the event text itself, which is strictly better.
+ * -- they live in cfe_tbl_transaction.c, gated below.
  *
- * ONE NEW STAND-IN, from cfe_tbl_registry.c, still inside the cycle. Faithful: its twenty
- * lines call only gated code. */
-CFE_Status_t CFE_TBL_TxnFindRegByName(CFE_TBL_TxnState_t *Txn, const char *TblName)
-{
-    CFE_Status_t           Status;
-    CFE_TBL_RegistryRec_t *RegRecPtr;
-
-    RegRecPtr = CFE_TBL_LocateRegRecByName(TblName);
-    if (RegRecPtr == NULL)
-    {
-        Status = CFE_TBL_ERR_INVALID_NAME;
-        CFE_TBL_TxnAddEvent(Txn, CFE_TBL_NO_SUCH_TABLE_ERR_EID, Status, 0);
-    }
-    else
-    {
-        Txn->RegId     = CFE_TBL_RegRecGetID(RegRecPtr);
-        Txn->RegRecPtr = RegRecPtr;
-        Status         = CFE_SUCCESS;
-    }
-
-    return Status;
-}
+ * AND SO ARE ALL FOUR cfe_tbl_registry.c STAND-INS: CFE_TBL_TxnFindRegByName, the counted
+ * lock pair, and CFE_TBL_TxnRemoveAccessLink. The source is gated below, so the counted lock
+ * now delegates to the REAL CFE_TBL_LockRegistry (which this driver's mutex still counts, so
+ * the transcript witnesses every take and give), and RemoveAccessLink does the list surgery
+ * it only pretended to do. `tbl_removelink_calls` went with it -- a counter is all a stub can
+ * witness -- and what replaces it is the effect: a table whose last accessor leaves is
+ * returned to the pool, which the exercise reads from the registry record itself. */
 
 /* CFE_TBL_EarlyInit and CFE_TBL_CleanUpApp WERE STUBS HERE. Both are real now -- they are
  * the first and last functions of cfe_tbl_internal.c, gated below -- so the object table's
@@ -2261,6 +2207,235 @@ static void TblTransactionExercise(void)
     memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
 }
 
+/* --- cfe_tbl_registry.c ---------------------------------------------------------
+ * SIX OF THE ELEVEN STEPS, the ones nothing else reaches. TxnLockRegistry, TxnUnlockRegistry,
+ * TxnRemoveAccessLink and TxnFindRegByName are already driven -- by tbl_adtxn's take/give
+ * counts, by tbl_adrel_owner/other, and by tbl_findreg through CFE_TBL_FindTableInRegistry.
+ *
+ * Each step is given its own setup rather than being chained, because a chain would make one
+ * wrong answer cascade into five unreadable ones. */
+static void TblRegistryExercise(void)
+{
+    CFE_TBL_TxnState_t          txn;
+    CFE_TBL_TableConfig_t       cfg;
+    CFE_TBL_RegistryRec_t      *rr;
+    CFE_TBL_AccessDescriptor_t *ad;
+    CFE_TBL_LoadBuff_t         *lb;
+    void                       *tp;
+    int32                       st;
+    int                         k;
+
+    memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+    CFE_TBL_Global.RegistryMutex = OS_ObjectIdFromInteger(0x7B40);
+
+    /* THE FOUR VALIDATORS IN ORDER, and the order is load-bearing: options are decoded before
+     * the size is checked, because the size limit depends on the double-buffered flag that
+     * ValidateTableOptions writes into this same config object.
+     *
+     * Each call into a local first -- three of the four arms emit a syslog line. */
+    memset(&txn, 0, sizeof(txn));
+    strncpy(txn.AppNameBuffer, "REG_APP", CFE_MISSION_MAX_API_LEN - 1);
+    memset(&cfg, 0, sizeof(cfg));
+    st = CFE_TBL_TxnCheckConfig(&txn, &cfg, "", 0, 64, NULL);
+    printf("tbl_cfg badname=%ld\n", (long)st);
+    memset(&cfg, 0, sizeof(cfg));
+    st = CFE_TBL_TxnCheckConfig(&txn, &cfg, "Tbl", 0x0003, 64, NULL);
+    printf("tbl_cfg badopt=%ld\n", (long)st);
+    memset(&cfg, 0, sizeof(cfg));
+    st = CFE_TBL_TxnCheckConfig(&txn, &cfg, "Tbl", 0x0000, 0, NULL);
+    printf("tbl_cfg badsize=%ld\n", (long)st);
+    memset(&cfg, 0, sizeof(cfg));
+    st = CFE_TBL_TxnCheckConfig(&txn, &cfg, "Tbl", 0x0001, 2048, tbl_val_stub);
+    printf("tbl_cfg good=%ld name=%s size=%lu dbl=%d fn=%d\n", (long)st, cfg.Name,
+           (unsigned long)cfg.Size, (int)cfg.DoubleBuffered, (int)(cfg.ValidationFuncPtr != NULL));
+
+    /* FOUR PENDING STATES, AND ONLY ONE IS EVER REPORTED. The tests run validation, then
+     * update, then dump -- so a table with a pending validation AND a pending dump answers
+     * VALIDATION_PENDING and the caller hears about the dump next time round. The last line
+     * sets BOTH to prove the priority rather than assuming it. */
+    /* THE BUFFER IDS HAVE TO BE REAL, and the serials are not free to choose. Four shared
+     * buffers come first, so Registry[k]'s own pair is serial 4 + 2k -- Registry[4] is 12 and
+     * 13. A zeroed buffer has an UNDEFINED id, CFE_TBL_LoadBufferGetID hands that straight
+     * back, and the first draft of this block set LoadInProgress to UNDEFINED: the update arm
+     * was never entered and `tbl_status update` printed the DUMP value, identical to the line
+     * above it. Two assertions reading the same number is the tell. */
+    rr = &CFE_TBL_Global.Registry[4];
+    memset(rr, 0, sizeof(*rr));
+    CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 4));
+    memset(&txn, 0, sizeof(txn));
+    txn.RegRecPtr = rr;
+    printf("tbl_status clean=%ld\n", (long)CFE_TBL_TxnGetTableStatus(&txn));
+    rr->DumpControlId = CFE_TBL_DUMPCTRLID_C(CFE_ResourceId_FromInteger(CFE_TBL_DUMPCTRLID_BASE + 1));
+    printf("tbl_status dump=%ld\n", (long)CFE_TBL_TxnGetTableStatus(&txn));
+    /* AND IT HAS TO BE Buffers[0], SERIAL 12, FOR A SINGLE-BUFFERED TABLE. The first fix put
+     * serial 13 into Buffers[1] -- the right serial for that slot -- and the arm STILL was not
+     * entered, because CFE_TBL_LocateLoadBufferByID forces `Idx = 0` when the parent table is
+     * not double-buffered. So serial 13 resolves to Buffers[0], whose id is undefined, IsMatch
+     * fails, and nothing is pending. A buffer id must agree with the table's SHAPE, not just
+     * with the slot it was written into. */
+    lb = &rr->Buffers[0];
+    CFE_TBL_LoadBuffSetUsed(lb, CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 12),
+                            CFE_TBL_RegRecGetID(rr));
+    CFE_TBL_RegRecSetLoadInProgress(rr, CFE_TBL_LoadBufferGetID(lb));
+    lb->IsValid     = true;
+    lb->ActivateReq = true;
+    printf("tbl_status update=%ld\n", (long)CFE_TBL_TxnGetTableStatus(&txn));
+    rr->PendingValId = CFE_TBL_VALRESULTID_C(CFE_ResourceId_FromInteger(CFE_TBL_VALRESULTID_BASE + 1));
+    printf("tbl_status valfirst=%ld\n", (long)CFE_TBL_TxnGetTableStatus(&txn));
+
+    /* ALLOCATION, and the lock count is the thing worth watching: Allocate takes the registry
+     * itself, so lockcnt must be back to zero on return and the mutex take/give must have
+     * been counted once each. */
+    memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+    CFE_TBL_Global.RegistryMutex = OS_ObjectIdFromInteger(0x7B40);
+    /* LastRegId HAS TO NAME A REAL ID FIRST. CFE_TBL_GetNextRegId searches forward from it,
+     * and a zeroed global means it searches forward from the undefined id and finds nothing --
+     * so the FIRST allocation came back ERR_REGISTRY_FULL, the same value as the exhaustion
+     * case below, and the pair asserted nothing. Seeding it with the LAST id wraps the search
+     * to index 0. */
+    CFE_TBL_Global.LastRegId = CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE +
+                                                          CFE_PLATFORM_TBL_MAX_NUM_TABLES - 1);
+    memset(&txn, 0, sizeof(txn));
+    st = CFE_TBL_TxnAllocateRegistryEntry(&txn);
+    printf("tbl_alloc rc=%ld id=%lu nonnull=%d used=%d lockcnt=%u\n", (long)st,
+           (unsigned long)CFE_TBL_TxnRegIdAsULong(&txn), (int)(txn.RegRecPtr != NULL),
+           (int)(txn.RegRecPtr != NULL && CFE_TBL_RegRecIsUsed(txn.RegRecPtr)),
+           (unsigned)txn.RegLockCount);
+    /* EXHAUSTION. Every slot marked used, so the next allocation must refuse AND must leave
+     * the transaction's own fields cleared rather than half-filled. */
+    for (k = 0; k < CFE_PLATFORM_TBL_MAX_NUM_TABLES; k++)
+    {
+        CFE_TBL_RegRecSetUsed(&CFE_TBL_Global.Registry[k],
+                              CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + k));
+    }
+    memset(&txn, 0, sizeof(txn));
+    st = CFE_TBL_TxnAllocateRegistryEntry(&txn);
+    printf("tbl_alloc full=%ld null=%d undef=%d\n", (long)st, (int)(txn.RegRecPtr == NULL),
+           (int)!CFE_TBL_REGID_IS_VALID(txn.RegId));
+
+    /* THE THREE WAYS A DUPLICATE REGISTRATION ENDS, plus the not-a-duplicate path that falls
+     * through to allocation. Re-registering YOUR OWN table at the SAME size is a supported
+     * no-op that returns a WARNING, which is the only path here that is not an error. */
+    memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+    CFE_TBL_Global.RegistryMutex = OS_ObjectIdFromInteger(0x7B40);
+    CFE_TBL_Global.LastRegId = CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE +
+                                                          CFE_PLATFORM_TBL_MAX_NUM_TABLES - 1);
+    CFE_TBL_Global.LastHandle = CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE +
+                                                           CFE_PLATFORM_TBL_MAX_NUM_HANDLES - 1);
+    rr = &CFE_TBL_Global.Registry[6];
+    CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 6));
+    strncpy(rr->Config.Name, "REG_APP.Dup", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+    rr->Config.Size = 512;
+    rr->OwnerAppId  = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x1111));
+    memset(&txn, 0, sizeof(txn));
+    txn.AppId = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x1111));
+    st        = CFE_TBL_TxnCheckDuplicateRegistration(&txn, "REG_APP.Dup", 1024);
+    printf("tbl_dup diffsize=%ld\n", (long)st);
+    memset(&txn, 0, sizeof(txn));
+    txn.AppId = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x2222));
+    st        = CFE_TBL_TxnCheckDuplicateRegistration(&txn, "REG_APP.Dup", 512);
+    printf("tbl_dup notowned=%ld\n", (long)st);
+    /* the accepted path needs an access descriptor this app already holds, because
+     * CFE_TBL_FindAccessDescriptorForSelf is what turns "same table, same size" into a
+     * warning rather than an error */
+    ad = &CFE_TBL_Global.Handles[9];
+    CFE_TBL_InitAccessDescriptor(ad);
+    CFE_TBL_AccDescSetUsed(ad, CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 9));
+    ad->AppId    = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x1111));
+    ad->RegIndex = CFE_TBL_RegRecGetID(rr);
+    CFE_TBL_HandleListInsertLink(rr, ad);
+    memset(&txn, 0, sizeof(txn));
+    txn.AppId = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x1111));
+    st        = CFE_TBL_TxnCheckDuplicateRegistration(&txn, "REG_APP.Dup", 512);
+    printf("tbl_dup warn=%ld handle=%lu\n", (long)st,
+           (unsigned long)CFE_TBL_TxnHandleAsULong(&txn));
+    memset(&txn, 0, sizeof(txn));
+    txn.AppId = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x1111));
+    st        = CFE_TBL_TxnCheckDuplicateRegistration(&txn, "REG_APP.New", 512);
+    printf("tbl_dup fresh=%ld allocated=%d\n", (long)st, (int)(txn.RegRecPtr != NULL));
+
+    /* CONNECTING A DESCRIPTOR, and the three answers for Updated. A loaded load/dump table
+     * says updated; a loaded DUMP-ONLY table does not (there is nothing for an accessor to be
+     * notified about); and a record whose id no longer matches the transaction is not linked
+     * at all -- that arm is not dead code, it is the re-allocated-under-us case. */
+    memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+    CFE_TBL_Global.RegistryMutex = OS_ObjectIdFromInteger(0x7B40);
+    rr = &CFE_TBL_Global.Registry[7];
+    CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 7));
+    CFE_TBL_HandleLinkInit(&rr->AccessList);
+    /* "loaded" means ActiveBufferId IS DEFINED, so the buffer needs its id before it can be
+     * made active -- Registry[7]'s pair is serial 4 + 2*7 = 18 and 19. Without this the table
+     * reads never-loaded and `upd=0` below passes while testing the wrong branch. */
+    CFE_TBL_LoadBuffSetUsed(&rr->Buffers[0],
+                            CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 18),
+                            CFE_TBL_RegRecGetID(rr));
+    CFE_TBL_SetActiveBuffer(rr, &rr->Buffers[0]);
+    ad = &CFE_TBL_Global.Handles[11];
+    CFE_TBL_InitAccessDescriptor(ad);
+    CFE_TBL_AccDescSetUsed(ad, CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 11));
+    memset(&txn, 0, sizeof(txn));
+    txn.AccDescPtr = ad;
+    txn.RegRecPtr  = rr;
+    txn.RegId      = CFE_TBL_RegRecGetID(rr);
+    txn.AppId      = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x3333));
+    CFE_TBL_TxnConnectAccessDescriptor(&txn);
+    printf("tbl_connect upd=%d linked=%d app=%lu lockcnt=%u\n", (int)ad->Updated,
+           (int)(CFE_TBL_LocateAccDescByHandle(rr->AccessList.Next) == ad),
+           (unsigned long)CFE_RESOURCEID_TO_ULONG(ad->AppId), (unsigned)txn.RegLockCount);
+    rr->Config.DumpOnly = true;
+    CFE_TBL_HandleLinkInit(&rr->AccessList);
+    CFE_TBL_InitAccessDescriptor(ad);
+    CFE_TBL_AccDescSetUsed(ad, CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 11));
+    CFE_TBL_TxnConnectAccessDescriptor(&txn);
+    printf("tbl_connect dumponly upd=%d linked=%d\n", (int)ad->Updated,
+           (int)(CFE_TBL_LocateAccDescByHandle(rr->AccessList.Next) == ad));
+    rr->Config.DumpOnly = false;
+    CFE_TBL_HandleLinkInit(&rr->AccessList);
+    CFE_TBL_InitAccessDescriptor(ad);
+    CFE_TBL_AccDescSetUsed(ad, CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 11));
+    txn.RegId = CFE_TBL_REGID_C(CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 99));
+    CFE_TBL_TxnConnectAccessDescriptor(&txn);
+    printf("tbl_connect mismatch upd=%d linked=%d\n", (int)ad->Updated,
+           (int)(CFE_TBL_LocateAccDescByHandle(rr->AccessList.Next) == ad));
+
+    /* AND THE POINTER ITSELF. Three answers, and the third is the one the whole lock scheme
+     * exists for: handing the caller the ACTIVE buffer's address while recording in the
+     * descriptor WHICH blob is being read, so nothing overwrites it until the address is
+     * released. Into locals first -- the unowned arm emits a syslog line. */
+    memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+    CFE_TBL_Global.RegistryMutex = OS_ObjectIdFromInteger(0x7B40);
+    rr = &CFE_TBL_Global.Registry[8];
+    CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 8));
+    ad = &CFE_TBL_Global.Handles[12];
+    CFE_TBL_InitAccessDescriptor(ad);
+    CFE_TBL_AccDescSetUsed(ad, CFE_ResourceId_FromInteger(CFE_TBL_HANDLE_BASE + 12));
+    memset(&txn, 0, sizeof(txn));
+    txn.AccDescPtr = ad;
+    txn.RegRecPtr  = rr;
+    txn.RegId      = CFE_TBL_RegRecGetID(rr);
+    txn.Handle     = CFE_TBL_AccDescGetHandle(ad);
+    tp             = (void *)1;
+    st             = CFE_TBL_TxnGetTableAddress(&txn, &tp);
+    printf("tbl_addr unowned=%ld null=%d\n", (long)st, (int)(tp == NULL));
+    rr->OwnerAppId = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x4444));
+    tp             = (void *)1;
+    st             = CFE_TBL_TxnGetTableAddress(&txn, &tp);
+    printf("tbl_addr neverloaded=%ld null=%d\n", (long)st, (int)(tp == NULL));
+    CFE_TBL_LoadBuffSetUsed(&rr->Buffers[0],
+                            CFE_ResourceId_FromInteger(CFE_TBL_LOADBUFFID_BASE + 20),
+                            CFE_TBL_RegRecGetID(rr));
+    CFE_TBL_LoadBuffSetAllocatedBlock(&rr->Buffers[0], tbl_probe_mem, sizeof(tbl_probe_mem));
+    CFE_TBL_SetActiveBuffer(rr, &rr->Buffers[0]);
+    ad->Updated = true;
+    tp          = NULL;
+    st          = CFE_TBL_TxnGetTableAddress(&txn, &tp);
+    printf("tbl_addr loaded=%ld isbuf0=%d locked=%d bufmatch=%d updcleared=%d\n", (long)st,
+           (int)(tp == (void *)tbl_probe_mem), (int)ad->LockFlag,
+           (int)CFE_RESOURCEID_TEST_EQUAL(ad->BufferIndex,
+                                          CFE_TBL_LoadBufferGetID(&rr->Buffers[0])),
+           (int)!ad->Updated);
+}
+
 /* --- cfe_tbl_internal.c ---------------------------------------------------------
  * FOUR UNRELATED CONCERNS, and this exercise takes them in the order they are cheapest to
  * observe: the three validators that decide whether a registration is legal at all, the name
@@ -3121,6 +3296,7 @@ static void TblAccDescExercise(void)
     CFE_ResourceId_t            nid;
     uint32                      idx;
     int                         k, t0, g0;
+    int                         before;
 
     memset(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
     CFE_TBL_Global.RegistryMutex = OS_ObjectIdFromInteger(0x7B10);
@@ -3183,18 +3359,29 @@ static void TblAccDescExercise(void)
            fs_mut_take - t0, fs_mut_give - g0, (unsigned)txn.RegLockCount);
 
     /* RELEASE BY THE OWNER clears the table's owner; RemoveAccessLink is called once. */
-    /* cfe_tbl_regrec.c is not gated, so the record is zeroed directly rather than through
-     * CFE_TBL_InitRegistryRecord -- the only field this exercise reads is OwnerAppId. */
+    /* cfe_tbl_regrec.c IS gated now, so CFE_TBL_InitRegistryRecord is available -- the memset
+     * stays because this exercise wants a record with NO buffers and NO access links, which
+     * is what a zeroed one is; InitRegistryRecord would fill in defaults this test then has
+     * to undo. */
     rr = &CFE_TBL_Global.Registry[3];
     memset(rr, 0, sizeof(*rr));
-    rr->OwnerAppId        = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x1111));
-    txn.AppId             = rr->OwnerAppId;
-    txn.RegRecPtr         = rr;
-    tbl_removelink_calls  = 0;
+    rr->OwnerAppId = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x1111));
+    /* WHAT `regused` REPLACED, AND WHY IT IS SET FIRST. This line used to report a counter
+     * inside the driver's own CFE_TBL_TxnRemoveAccessLink. That stand-in is gone, so what is
+     * witnessed now is the real function's EFFECT: an unowned table with no remaining access
+     * links is returned to the pool by CFE_TBL_RegRecSetFree. The record is marked USED here
+     * on purpose -- a zeroed record already reads free, so asserting `regused=0` against a
+     * record that was never used is the vacuous-zero shape this transcript has been caught by
+     * before. `before=1` is in the line so the reader can see it was not. */
+    CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 3));
+    before        = (int)CFE_TBL_RegRecIsUsed(rr);
+    txn.AppId     = rr->OwnerAppId;
+    txn.RegRecPtr = rr;
     CFE_TBL_TxnReleaseAccDesc(&txn);
-    printf("tbl_adrel_owner owner=%lu freed=%d unlinks=%ld\n",
+    printf("tbl_adrel_owner owner=%lu freed=%d before=%d regused=%d\n",
            (unsigned long)CFE_RESOURCEID_TO_ULONG(rr->OwnerAppId),
-           (int)!CFE_TBL_AccDescIsUsed(txn.AccDescPtr), tbl_removelink_calls);
+           (int)!CFE_TBL_AccDescIsUsed(txn.AccDescPtr), before,
+           (int)CFE_TBL_RegRecIsUsed(rr));
 
     /* RELEASE BY A NON-OWNER must leave the table owned -- but it still FREES the
      * descriptor, and `freed=1` below is correct, not a bug. CFE_TBL_AccDescSetFree is
@@ -3203,14 +3390,16 @@ static void TblAccDescExercise(void)
      * change nothing" would misread that line. */
     memset(&txn, 0, sizeof(txn));
     CFE_TBL_TxnAllocateAccDesc(&txn);
-    rr->OwnerAppId       = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x1111));
-    txn.AppId            = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x2222));
-    txn.RegRecPtr        = rr;
-    tbl_removelink_calls = 0;
+    CFE_TBL_RegRecSetUsed(rr, CFE_ResourceId_FromInteger(CFE_TBL_REGID_BASE + 3));
+    rr->OwnerAppId = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x1111));
+    txn.AppId      = CFE_ES_APPID_C(CFE_ResourceId_FromInteger(0x2222));
+    txn.RegRecPtr  = rr;
     CFE_TBL_TxnReleaseAccDesc(&txn);
-    printf("tbl_adrel_other owner=%lu freed=%d unlinks=%ld\n",
+    /* and `regused=1` here is the other half of the same claim: the table is still OWNED, so
+     * RemoveAccessLink's two-part test fails on the first part and the record stays. */
+    printf("tbl_adrel_other owner=%lu freed=%d regused=%d\n",
            (unsigned long)CFE_RESOURCEID_TO_ULONG(rr->OwnerAppId),
-           (int)!CFE_TBL_AccDescIsUsed(txn.AccDescPtr), tbl_removelink_calls);
+           (int)!CFE_TBL_AccDescIsUsed(txn.AccDescPtr), (int)CFE_TBL_RegRecIsUsed(rr));
 
     /* EXHAUSTION. All 256 marked used, so the next transaction must refuse and must leave
      * the transaction's own fields cleared rather than half-filled. */
@@ -8848,6 +9037,7 @@ int main(void)
         TblCodecExercise();
         TblTransactionExercise();
         TblInternalExercise();
+        TblRegistryExercise();
         /* --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
          * ------------------------------------------------------------------------------------
          * This is not a translation of anything. It is the test that has to pass BEFORE the
