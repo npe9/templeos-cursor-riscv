@@ -117,18 +117,33 @@ def main(argv):
             lines[b] = body[b].count('\n') + 1
             for n in defines(p):
                 owner[n] = b
-        # edges: file -> files whose .c defines something it calls, and WHICH functions
+        # edges: file -> files whose .c defines something it NEEDS, and WHICH functions
+        #
+        # TWO KINDS OF NEED, AND THE SECOND ONE WAS MISSING. A CALL is `name(`; a REFERENCE is
+        # the bare name, which is how a function reaches a table of function pointers. That is
+        # not a corner case here: cfe_tbl_dispatch.c's whole content is
+        # CFE_TBL_CmdHandlerTbl[], fourteen `CFE_TBL_ENTRY(..., CFE_TBL_LoadCmd, ...)` rows
+        # naming handlers that live in cfe_tbl_task_cmds.c -- and because none of them is
+        # SPELLED with a following paren, this tool reported dispatch.c as ready to gate before
+        # task_cmds.c and listed it third in a nine-source ordering. Wrong, and wrong in the
+        # direction that costs: a confident order you then plan against.
+        #
+        # The reference pattern deliberately excludes a following `(` so the two are counted
+        # separately and a caller can see which kind an edge is.
         edge, edge_fns = {}, {}
         for b, src in body.items():
             mine = {n for n, o in owner.items() if o == b}
             need = set()
-            for n in sorted(set(re.findall(r'\b(CFE_\w+)\s*\(', src))):
+            calls = set(re.findall(r'\b(CFE_\w+)\s*\(', src))
+            refs = set(re.findall(r'\b(CFE_\w+)\b(?!\s*\()', src))
+            for n in sorted(calls | refs):
                 if n in mine or n in inl:
                     continue
                 if n in owner:
                     need.add(owner[n])
                     if owner[n] != b:
-                        edge_fns.setdefault((b, owner[n]), []).append(n)
+                        tag = n if n in calls else n + ' [&ref]'
+                        edge_fns.setdefault((b, owner[n]), []).append(tag)
             edge[b] = need
 
         # Tarjan SCC over the ungated subgraph

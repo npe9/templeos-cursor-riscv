@@ -1014,7 +1014,7 @@ in whatever order suits — the tool's own topological listing is:
 |---|---|---|
 | `cfe_tbl_dump.c` | 589 | |
 | ~~`cfe_tbl_task.c`~~ | ~~218~~ | **GATED** — `CFE_TBL_TaskMain` is real, so tbl is the first module whose object table names three real functions |
-| `cfe_tbl_dispatch.c` | 276 | the non-EDS branch; blocked behind `task_cmds.c`, whose fourteen handlers it switches over. One thin stand-in (`CFE_TBL_TaskPipe`) stands in for it meanwhile |
+| `cfe_tbl_dispatch.c` | 276 | the non-EDS branch, and LAST: it is blocked behind `task_cmds.c`. One thin stand-in (`CFE_TBL_TaskPipe`) covers it meanwhile |
 | `cfe_tbl_load.c` | 953 | |
 | `cfe_tbl_api.c` | 1,107 | the public API, 24 functions |
 | `cfe_tbl_task_cmds.c` | 1,115 | |
@@ -1053,6 +1053,47 @@ A stand-in was improved for it: `OS_MutSemCreate` handed back the SAME id for ev
 EarlyInit's two mutexes were indistinguishable and a translation that stored one into the
 other's field produced a correct-looking transcript. It now returns `0x3000 + n`. Driven as a
 control: the swap now fails with `reg=12316 wrk=0`.
+
+### THE TOOL WAS MISSING AN EDGE KIND, AND THE ORDERING ABOVE IS THE SECOND VERSION
+
+`module_deps.py` built its graph from CALLS — `name(`. A function reached as a **reference**,
+its bare name taken as an address, was invisible. That is not a corner case: the whole content
+of `cfe_tbl_dispatch.c` is `CFE_TBL_CmdHandlerTbl[]`, fourteen
+`CFE_TBL_ENTRY(..., CFE_TBL_LoadCmd, ...)` rows naming handlers that live in
+`cfe_tbl_task_cmds.c`, and not one of them is spelled with a following paren. So the tool
+reported dispatch.c as ready and listed it THIRD in a seven-source ordering, ahead of the
+source it cannot be gated without.
+
+Fixed: a bare `CFE_\w+` not followed by `(` is now an edge too, tagged `[&ref]` in the
+per-edge listing so a reader can see which kind it is. dispatch.c moves to last, where it
+belongs.
+
+**Recalibrated against the finished modules, which is the only way to trust it.** `es --fresh`
+now reports a **14**-source cycle where it reported 12 before — so the reference edges found
+two more real dependencies in a module that is 100% gated, and the point this section opens
+with holds twice over: ES was gated one source at a time out of a cycle the tool calls
+inseparable. `tbl --fresh` still reports the same 8-source cycle it always did, which matches
+what actually happened.
+
+The caveat this section already records — a stand-in is functions, but a subset may also need
+a TYPE it does not define — is the same shape as this bug: a dependency the graph does not
+model. Assume there are more.
+
+### AN OPEN CRASH IN THE C REFERENCE: CFE_SB_DeletePipe
+
+`CFE_SB_DeletePipe` on the pipe `CFE_TBL_TaskInit` creates **segfaults the C oracle**, in
+`CFE_SB_GetDestPtr` reading address `0x809` — a MsgId being walked as a pointer. This is
+NASA's code compiled natively, not the translation.
+
+The same `CFE_SB_DeletePipe` works earlier in the same transcript (`api_del`), so something
+about the route state TaskInit's two `CFE_SB_Subscribe` calls leave behind differs. **Not
+diagnosed.** It is recorded here because `dump.c`, `load.c` and `api.c` all create and delete
+pipes, and the next exercise that reaches for it would rediscover this from scratch.
+
+It also cost a wrong diagnosis worth remembering: the crash was first blamed on the POWER ON
+RESET that `CFE_TBL_TaskMain`'s init-failure path drives, and moving the reset to the end of
+the block did not help. An lldb backtrace put the fault before the reset, in DeletePipe itself.
+Block-buffered stdout is why the log looked like it stopped 500 lines earlier.
 
 **Run the tool before planning any module's order**, including the apps — and run it `--fresh`
 against a finished module first, because a result you cannot calibrate is a number you should

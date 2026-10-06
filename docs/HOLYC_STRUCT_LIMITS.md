@@ -1273,24 +1273,60 @@ The minimal reproducer is one line. In `CfsStr.HC`, in the middle of a comment b
 
 **Measured, each one a separate compile of the whole driver:**
 
-| the comment | result |
-|---|---|
-| `// ` + backtick-`#if`-backtick, mid-comment-block | **fails** |
-| the identical line, immediately above the function definition | passes |
-| `// ` + backtick-`#if`-backtick followed by backtick-`#endif`-backtick | **fails** |
-| `// ` + backtick-`#endif`-backtick alone | passes |
-| two innocuous comment lines of the same count | passes |
-| the same `#if` further inside a longer sentence | passes |
+| the comment | position | result |
+|---|---|---|
+| backtick-`#if`-backtick | mid-comment-block | **fails** |
+| **bare `#if`, no backticks** | **mid-comment-block** | **fails** |
+| backtick-`#if`-backtick | immediately above the definition | passes |
+| bare `#if`, mid-sentence | immediately above the definition | passes |
+| backtick-`#if`-backtick then backtick-`#endif`-backtick | mid-comment-block | **fails** |
+| backtick-`#endif`-backtick alone | mid-comment-block | passes |
+| two innocuous comment lines of the same count | mid-comment-block | passes |
+
+**THE FIRST DRAFT OF THIS TABLE WAS CONFOUNDED and said so by accident.** Every mid-block run
+used backticks and every bare run was in the passing position, so "position" and "spelling"
+were perfectly correlated and the missing cell — bare `#if` mid-block — had never been run.
+It was run, and it FAILS. So **position is the variable and the backtick is not**, and the
+prohibition below is about `#if` in a comment, not about any quoted form of it.
 
 So: `#if` in a comment is honoured, `#endif` in a comment is not, and whether it fires depends
 on **where in the file the comment sits** — a comment attached directly to a definition is
-safe, a free-floating one is not. A commented `#endif` on the next line does not cancel it,
-which rules out the obvious story (an unbalanced conditional) and points instead at `#if`'s
-expression parse consuming the lines that follow it.
+safe, a free-floating one is not.
 
-**This is not the same bug as #19.** There, `#if <expr>` is a no-op because only a literal `0`
-is false, so a guard never excludes anything. Here the directive is being seen at all, from
-inside a comment, where it should be invisible.
+### WHERE THE CODE IS, which is as far as this got
+
+`host/lexer.c:1661`, in `LexNext`:
+
+```c
+// If preprocessor says skip, consume tokens until #else or #endif
+if (cc->preprocessor_skip && *lex->ptr != '#') {
+    while (*lex->ptr && *lex->ptr != '#') { ... advance ... }   // RAW TEXT
+    if (*lex->ptr == '#') { HandlePreprocessor(cc); return LexNext(cc); }
+}
+```
+
+**The skip loop scans RAW TEXT for the next `#`. It does not skip comments** — the
+`SkipComment` call is in the loop above it, which this path has already left. So inside a
+region the preprocessor is skipping, a `#` in a `//` comment reaches `HandlePreprocessor` like
+any directive.
+
+And `Kernel/Cfs/CfsStr.HC` **is** such a region: it is included by 21 files behind
+`#ifndef CFS_STR_HC`, so from the second include onward its whole body is skipped. A commented
+`#if` there opens a nested conditional while skipping, the file's real `#endif` closes THAT
+instead of the guard, and the skip state leaks past EOF into the including file — which is
+exactly the shape of the symptom, undefined names in files further down the include tree.
+
+**That is a located mechanism, not a proven one.** A two-file minimal case — an include guard
+re-entered with a commented `#if` in its body — does NOT reproduce, so something about scale
+or about `HandlePreprocessor`'s depth bookkeeping is still missing, and the position dependence
+is unexplained by this alone. The honest state: the trigger is pinned, the prohibition is
+correct, the exact bookkeeping is not. Making the skip loop skip comments is the obvious fix
+and is a lexer change, so it needs the byte-diff gate rather than a quick edit.
+
+**This is not the same bug as #19, but it is the same code.** There, `#if <expr>` is a no-op
+because only a literal `0` is false, so a guard never excludes anything. Here the directive is
+being seen at all, from inside a comment, where it should be invisible. Both live in the
+preprocessor path that `host/lexer.c` reaches from `LexNext`.
 
 **How to apply:** never write `#if`, and by assumption no other `#`-directive, inside a HolyC
 comment — spell it "the conditional-compilation directive" or "hash-if". And when a build
