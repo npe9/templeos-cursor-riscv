@@ -1581,3 +1581,74 @@ MD's sources include `md_msgids.h`, `md_msgstruct.h`, `md_tbldefs.h` and twelve 
 nowhere: CMake generates a one-line forwarder per header choosing between the `default_` and
 `eds_` set. Fifteen of them are now in `vendor/shim` beside the 73 cFE ones, each a single
 `#include "default_md_*.h"`, which *is* the configuration decision — `CFE_EDS_ENABLED` is off.
+
+---
+
+## Two gate holes the first app exposed, neither of them about MD
+
+### Every struct-pointer parameter in cFS was interchangeable
+
+`check_signatures` normalised `CFE_\w+_t *` to `PTRNUM` on NASA's side and `CFE_\w+ *` to
+`PTRNUM` on the translation's. Both rules throw the **struct's identity** away, and they do it on
+both sides at once, so the two always agreed. Three mutations, all of which the gate passed
+while reporting "783 signatures match":
+
+| mutation | gate said |
+|---|---|
+| `CFE_TBL_ValidateTableName`'s `CFE_TBL_TableConfig_t *` → a different struct pointer | 783 match |
+| `MD_ResolveSymAddr`'s `MD_SymAddr_t *` → `MD_DwellControlEntry_t *` | 783 match |
+| `MD_ResolveSymAddr`'s `MD_SymAddr_t *` → the struct **by value** | 783 match |
+
+The third is the worst and names the mechanism: there was no `MD_` rule in *either* type list, so
+an MD pointer normalised to the **empty string** on both sides and even pointer-ness was gone —
+a struct passed by value matching NASA's `const T *`. Two unrecognised types agreeing as two
+blanks, the same shape as the `cpuaddr` gap this gate was patched for before, and the fifteenth
+instance of it in `gate-blindspot-unpaired-types`.
+
+The fix generates one rule per NASA struct or union — 738 of them, from
+`check_structs.nasa_structs()` — mapping `T *` to a token that **keeps T's name**, dropping a
+trailing `_t` so NASA's `CFE_MSG_TelemetryHeader_t` and the translation's class
+`CFE_MSG_TelemetryHeader` still agree (HolyC has no typedef, so that suffix carries no
+information). All three mutations now fail. Six names already had a dedicated pointer rule
+because the two sides legitimately differ — `CFE_MSG_Message_t`, `OS_time_t`,
+`OS_object_token_t`, `CFE_ES_MemPoolBuf_t`, `CFE_ES_StackPointer_t` and `osal_id_t`, which is a
+struct in NASA's headers but an opaque id the translation spells `U32` — and those are exempt.
+
+Two recorded deviations had to be rewritten, which is the DEVIATIONS mechanism doing its job:
+it refuses a deviation string that no longer describes the code. `EVS_GenerateEventTelemetry`'s
+recorded signature *began with a comma* — `,NUM,NUM,PTRNUM,PTRB,` — because its first two
+parameters, `EVS_AppData_t *` and `CFE_TIME_SysTime_t *`, were two of those blanks.
+
+And the residual blindness, measured rather than assumed: 446 of the translation's pointer
+parameters now carry a struct name; 631 keep a generic token and are byte, void or scalar
+pointers with no struct identity to carry. Of the 386 classes the translation declares, exactly
+**six** cannot be named — and five are the five `check_structs` already reports as having no NASA
+counterpart at all. The sixth was a type name inside a *comment* that my survey regex picked up.
+So what is still blind is what another gate is already shouting about.
+
+### The oracle was defining five globals that gated NASA sources also define
+
+`CFE_ES_Global`, `CFE_SB_Global`, `CFE_EVS_Global`, `CFE_TBL_Global` and `CFE_TIME_Global` were
+each defined **twice** — once in `tests/cfs/oracle_ccsdspri.c` and once in NASA's own
+implementation file. `CFE_TBL_Global_t CFE_TBL_Global;` with no initialiser is a *tentative
+definition* in C, and two of them in two translation units **merge silently**: the link succeeds
+and nothing says which object the exercise is reading.
+
+Each one carried a comment promising it would go away when its source was gated. All five
+sources are gated. The comments were the only enforcement, and a comment is not a gate, so
+`tools/cfs/check_oracle_globals.py` now is one — it derives each driver's oracle from the host
+compile line rather than taking a list, so a new driver cannot be added without it being
+checked. Removing all five left the transcript at exactly 2,167 lines, which *confirms* they
+were merging rather than diverging; had the oracle's copy been a distinct object, the number
+would have moved.
+
+It also has a deadline built in: `MD_AppData` sits in the oracle now, and the gate will refuse
+it the moment `md_app.c` is gated, four sources away.
+
+**Four more stale claims fell out of the same look.** The oracle still said `cfe_es_api.c`,
+`cfe_es_task.c`, `cfe_sb_task.c` and `cfe_es_apps.c` were "not gated yet"; all four are in
+`SRC_C`. Worth checking rather than assuming, because the dangerous version of that rot is a
+`static` stub in the oracle shadowing a function a gated source now defines — the C half would
+call its stub while the HolyC half called the real translation, and the transcript would compare
+two different functions. Measured: **zero** such stubs, static or otherwise. The stubs were
+genuinely deleted when the sources landed; only the prose rotted.

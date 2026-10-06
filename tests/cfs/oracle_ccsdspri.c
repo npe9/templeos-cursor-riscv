@@ -565,12 +565,10 @@ int32 OS_TaskDelay(uint32 millisecond)
  * and the stub had to go on both sides at once, which is the shape every one of these removals
  * has had: the stub is what the gate was measuring until the translation arrived. */
 
-/* NASA defines CFE_TIME_Global in cfe_time_task.c, which is not gated, so the driver supplies it
- * -- the same arrangement this file had for CFE_EVS_Global until cfe_evs_task.c landed. The
- * HolyC half does NOT need this: it defines the object in cfe_time_global.HC beside its type,
- * because HolyC has no usable forward declaration for a variable and three files use it before
- * cfe_time_task.HC would appear. One definition on each side either way. */
-CFE_TIME_Global_t CFE_TIME_Global;
+/* CFE_TIME_Global IS NASA'S, defined in cfe_time_task.c, which is gated. It was ALSO defined here, and
+ * two tentative definitions merge SILENTLY in C -- the link succeeded and nothing
+ * said which object the exercise was reading. tools/cfs/check_oracle_globals.py
+ * found all five of these at once and now forbids them. */
 /* CFE_ES_IncrementTaskCounter: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* The simulated OS's semaphores, child tasks and timebase, for CFE_TIME_TaskInit. Every value
  * TaskInit branches on is a variable here, so the gate can walk the failure paths as well as the
@@ -678,20 +676,16 @@ int32 OS_TimerSet(osal_id_t timer_id, uint32 start_time, uint32 interval_time)
     return time_timerset_rc;
 }
 
-/* ES's STATE, 57,400 bytes. NASA defines CFE_ES_Global in cfe_es_api.c, which is not gated
- * yet, so the driver supplies it; the HolyC half defines it in cfe_es_global.HC beside its
- * type, for the reason recorded there. It is zero-initialised and ResetDataPtr is aimed at the
- * reset area below, which is what makes the system log writable: the log buffer and its three
- * indices live in memory that survives a processor reset, not in CFE_ES_Global itself. */
-CFE_ES_Global_t CFE_ES_Global;
+/* CFE_ES_Global IS NASA'S, defined in cfe_es_start.c, which is gated. It was ALSO defined here, and
+ * two tentative definitions merge SILENTLY in C -- the link succeeded and nothing
+ * said which object the exercise was reading. tools/cfs/check_oracle_globals.py
+ * found all five of these at once and now forbids them. */
 static CFE_ES_ResetData_t es_reset_area;
 
-/* AND TABLE SERVICES' STATE, 592,056 bytes of it, for the same reason and with the same future.
- * NASA defines the instance in cfe_tbl_task.c; that source is not gated, so the definition sits
- * here on this half, exactly as the translation's sits beside its type in cfe_tbl_global.HC. It
- * goes away the moment cfe_tbl_task.c is gated, and until then this is the single largest
- * object either half allocates -- which is itself the thing the tbl section below tests. */
-CFE_TBL_Global_t CFE_TBL_Global;
+/* CFE_TBL_Global IS NASA'S, defined in cfe_tbl_task.c, which is gated. It was ALSO defined here, and
+ * two tentative definitions merge SILENTLY in C -- the link succeeded and nothing
+ * said which object the exercise was reading. tools/cfs/check_oracle_globals.py
+ * found all five of these at once and now forbids them. */
 
 /* AND MEMORY DWELL'S STATE, for the same reason: NASA defines the instance in md_app.c, which
  * is not gated, so it sits here on this half exactly as the translation's sits beside its type
@@ -774,9 +768,11 @@ bool CFE_TBL_SendValidationEventHelper(const CFE_TBL_TxnEvent_t *Event,
  * does, beside CFE_PlatformConfigTablesInit. The asymmetry is the whole reason that function
  * exists; it has no counterpart here. */
 
-/* cfe_es_api.c and cfe_es_task.c are not gated, so three of their functions are stubs on BOTH
- * halves -- the same temporary arrangement CFE_SB_SendSubscriptionReport had until
- * cfe_sb_task.c landed, and it goes away the same way.
+/* cfe_es_api.c and cfe_es_task.c ARE gated now, and the three stubs this note described are
+ * gone from both halves. The note is kept because it describes the arrangement a not-yet-gated
+ * source still gets -- and because the claim in it rotted SILENTLY when those sources landed,
+ * which is the same failure tools/cfs/check_oracle_globals.py found in the five duplicate
+ * state globals above. A comment is not a gate.
  *
  * The lock pair is a COUNTER rather than a no-op on purpose: the syslog's whole design is about
  * which reads happen inside it (the first block) and which deliberately do not (every block
@@ -1488,10 +1484,10 @@ void CFE_PSP_Get_Timebase(uint32 *Tbu, uint32 *Tbl)
     *Tbl = es_perf_tb;
 }
 
-/* NASA defines CFE_SB_Global in cfe_sb_task.c, which is not gated, so the driver supplies it --
- * the same arrangement this file has for CFE_TIME_Global and had for CFE_EVS_Global. The HolyC
- * half defines it in cfe_sb_global.HC beside its type, for the reason recorded there. */
-CFE_SB_Global_t CFE_SB_Global;
+/* CFE_SB_Global IS NASA'S, defined in cfe_sb_task.c, which is gated. It was ALSO defined here, and
+ * two tentative definitions merge SILENTLY in C -- the link succeeded and nothing
+ * said which object the exercise was reading. tools/cfs/check_oracle_globals.py
+ * found all five of these at once and now forbids them. */
 
 /* SB's PIPE QUEUES, simulated. One queue of one entry per pipe is enough for the transaction
  * machinery: what cfe_sb_priv.c does is decide WHICH pipes to write to and how to undo the
@@ -1643,7 +1639,7 @@ static int32 sb_taskinfo_rc = CFE_SUCCESS;
 /* CFE_ES_TaskID_ToIndex: STUB REMOVED -- cfe_es_api.c is gated, the real one runs. */
 /* THE OTHER TWO INDEX CONVERSIONS, and all four of them are STUBS MORE PERMISSIVE THAN THE REAL
  * THING -- which is a debt this file has paid before. The real CFE_ES_LibID_ToIndex and
- * CFE_ES_CounterID_ToIndex (cfe_es_api.c, not gated yet) subtract CFE_ES_LIBID_BASE and
+ * CFE_ES_CounterID_ToIndex (cfe_es_api.c, gated since this note was written) subtract CFE_ES_LIBID_BASE and
  * CFE_ES_COUNTID_BASE; these take a small id AS the index, exactly the way the AppID stub
  * above does. When api.c lands, every site here that passes a bare 1 or 2 stops resolving --
  * the same break CFE_SB_PipeId_ToIndex caused when IT stopped being `id & 0xFF`, and the
@@ -1731,8 +1727,9 @@ static void es_ctx_init(void)
  * against CFE_SB_PIPEID_BASE -- and nothing here computes a pipe index by hand, so the two
  * halves move together.
  *
- * CFE_SB_SendSubscriptionReport is a NEW stub, not a leftover: it lives in cfe_sb_task.c, which
- * is not gated yet, and CFE_SB_SubscribeFull calls it on every successful GLOBAL subscribe. It
+ * CFE_SB_SendSubscriptionReport was a NEW stub when this paragraph was written: it lives in
+ * cfe_sb_task.c, which IS gated now -- see the note just below, which already records that the
+ * stub is gone. CFE_SB_SubscribeFull calls it on every successful GLOBAL subscribe. It
  * also does the counting ta_subscribes used to do, which is why the counter below is not a
  * second variable. */
 /* CFE_SB_SendSubscriptionReport WAS stubbed here, and the previous commit's note said it would
@@ -1961,7 +1958,10 @@ static void ta_counters(const char *tag)
  * defines it here. The HolyC side has it in cfe_evs_global.HC with the other declarations --
  * and when cfe_evs_task.c IS translated, that definition has to move there rather than be
  * duplicated. The log storage is ES's reset area in flight; EVS only holds a pointer. */
-CFE_EVS_Global_t     CFE_EVS_Global;
+/* CFE_EVS_Global IS NASA'S, defined in cfe_evs_task.c, which is gated. It was ALSO defined here, and
+ * two tentative definitions merge SILENTLY in C -- the link succeeded and nothing
+ * said which object the exercise was reading. tools/cfs/check_oracle_globals.py
+ * found all five of these at once and now forbids them. */
 static CFE_EVS_Log_t evs_log_storage;
 
 /* Every one of these is deterministic on purpose: EVS times its squelch bucket off
@@ -8347,8 +8347,9 @@ int main(void)
          * reading a counter: it asks OSAL which task is running, maps that to an ES task
          * record, and reads the app id out of it.
          *
-         * THE TABLES ARE POPULATED BY HAND HERE because cfe_es_apps.c is not gated -- there is
-         * no CFE_ES_AppCreate to call. Writing the records directly is what lets the lookups
+         * THE TABLES ARE POPULATED BY HAND HERE. When this was written cfe_es_apps.c was not
+         * gated and there was no CFE_ES_AppCreate to call; it is gated now, and the hand-written
+         * records stay because they let the exercise pick the ids. Writing the records directly is what lets the lookups
          * be exercised at all, and the accessors used to write them are the same ones the
          * lookups use to read, which is a weakness worth naming: a SetUsed/IsUsed pair that
          * agreed on the wrong field would pass. check_padding is what rules that out -- it

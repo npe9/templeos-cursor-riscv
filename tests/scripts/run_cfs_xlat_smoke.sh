@@ -249,6 +249,13 @@ python3 "$ROOT/tools/cfs/check_constants.py" || exit 1
 # two files I did not know were unwired, because the roots were hardcoded and there are three
 # drivers, not two -- so it reads the roots out of the scripts now.
 python3 "$ROOT/tools/cfs/check_wired.py" || exit 1
+# --- the oracle must not define a global a GATED NASA source also defines ---------------
+# A tentative definition in two translation units MERGES silently in C, so the link succeeds
+# and nothing says which object the exercise is reading. Five of cFE's module state globals
+# were in exactly that state -- CFE_ES_Global, CFE_SB_Global, CFE_EVS_Global, CFE_TBL_Global
+# and CFE_TIME_Global, each with a comment promising it would go away when its source was
+# gated. Every one of those sources is gated. A comment is not a gate; this is.
+python3 "$ROOT/tools/cfs/check_oracle_globals.py" || exit 1
 
 # --- the manifest ------------------------------------------------------------------------------
 # What NASA's build contains per cFE module, and how much of it is gated -- parsed from each

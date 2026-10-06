@@ -205,7 +205,7 @@ H_TYPES = [(r'\bCFE_MSG_Message\s*\*', ' PTRB '), (r'\bCFE_\w+\s*\*', ' PTRNUM '
 # name -> (NASA's normalised signature, the translation's, why they differ).
 DEVIATIONS = {
     'CFE_Config_GetArrayValue': (
-        'NUM', 'NUM,PTRNUM',
+        'NUM', 'NUM,PTR_CFE_Config_ArrayValue',
         "returns CFE_ConfigObj_ArrayValue_t (16 bytes) BY VALUE; HolyC has no struct-return "
         "ABI, so the translation takes a destination pointer. Documented at the call site and "
         "in docs/HOLYC_STRUCT_LIMITS.md."),
@@ -224,8 +224,12 @@ DEVIATIONS = {
         "caller's buffer and the size is written out as the constant NASA's sizeof resolves "
         "to. The returned pointer is the caller's own buffer either way, which is the part "
         "that has to stay true."),
+    # The two leading blanks here were EVS_AppData_t * and CFE_TIME_SysTime_t * -- two
+    # unrecognised struct pointers normalising to the EMPTY STRING on both sides. The
+    # struct-pointer rules below name them, so this deviation now describes only the va_list.
     'EVS_GenerateEventTelemetry': (
-        ',NUM,NUM,PTRNUM,PTRB,', ',NUM,NUM,PTRNUM,PTRB,SZ,PTRSZ',
+        'PTR_EVS_AppData,NUM,NUM,PTR_CFE_TIME_SysTime,PTRB,',
+        'PTR_EVS_AppData,NUM,NUM,PTR_CFE_TIME_SysTime,PTRB,SZ,PTRSZ',
         "takes a `va_list` as its last parameter. HolyC has no va_list type; a variadic "
         "function there receives an implicit (argc, argv) pair instead, which is the same "
         "triple StrPrintNV takes, so the one parameter becomes two. This is the seam that lets "
@@ -255,6 +259,73 @@ FN_SPELLED = re.compile(r'\(\s*\*+\s*\w*\s*\)\s*\([^)]*\)')
 # reaches here -- a header one is check_header_inlines.py's business -- and there are two.
 C_RET = r'(?:static[ \t]+)?(?:inline[ \t]+)?[A-Za-z_][A-Za-z0-9_]*(?:\s+[A-Za-z_][A-Za-z0-9_]*)?'
 H_RET = r'[A-Za-z_][A-Za-z0-9_]*'
+
+# Names that already have a dedicated pointer rule in the lists above, because the two sides
+# spell them differently or NASA's typedef is not really a struct. Left alone.
+_PTR_SPECIAL = {"CFE_MSG_Message_t", "CFE_MSG_Message", "OS_time_t", "OS_object_token_t",
+                "CFE_ES_MemPoolBuf_t", "CFE_ES_StackPointer_t",
+                # osal_id_t IS a struct in NASA's headers but it is an OPAQUE ID: the
+                # translation spells it U32 and the list already maps `osal_id_t *` to PTRNUM
+                # on both sides. Keeping the name here would report that representation
+                # choice as a mismatch -- this tool's one unacceptable failure.
+                "osal_id_t"}
+_PTR_SPECIAL_PAT = re.compile(r'^(?:OS_\w+_prop_t|os_\w+_t)$')
+
+
+def _struct_ptr_rules():
+    """`T *` -> ` PTR_T ` for every T that NASA declares as a struct or union.
+
+    WHY. The generic rules mapped every struct pointer to one token -- `CFE_\\w+_t *` to PTRNUM
+    on the C side and `CFE_\\w+ *` to PTRNUM on the HolyC side -- which threw the struct's
+    IDENTITY away on both sides at once, so ANY TWO STRUCT-POINTER PARAMETERS IN cFS WERE
+    INTERCHANGEABLE. Measured three ways, all of which the gate passed:
+
+      - CFE_TBL_ValidateTableName's CFE_TBL_TableConfig_t * swapped for CFE_TBL_RegistryRec *
+      - MD_ResolveSymAddr's MD_SymAddr_t * swapped for MD_DwellControlEntry_t *
+      - MD_ResolveSymAddr's MD_SymAddr_t * replaced by the struct BY VALUE
+
+    The third is the worst and shows the shape: there was no MD_ rule in EITHER list, so an MD
+    pointer normalised to the EMPTY STRING on both sides and even pointer-ness was gone. Two
+    unrecognised types agreeing as two blanks -- the failure mode this suite has recorded
+    fourteen times in other tools, and the same one the `cpuaddr` rule was added for.
+
+    All three now fail. The token drops a trailing `_t` so NASA's `CFE_MSG_TelemetryHeader_t`
+    and the translation's class `CFE_MSG_TelemetryHeader` agree: HolyC has no typedef, so the
+    two sides legitimately differ by that suffix and it carries no information.
+
+    WHAT IS STILL GENERIC, measured rather than assumed. 446 of the translation's pointer
+    parameters now carry a struct name; 631 keep a generic token, and those are byte, void and
+    scalar pointers that have no struct identity to carry (365 PTRB, 226 PTRNUM, 36 PTRSZ). Of
+    the 386 classes the translation declares, exactly SIX cannot be named by any rule here --
+    and five of them are the five check_structs.py already reports as having no NASA
+    counterpart at all (CFE_ES_SysLogDumpBuffer_t, CFE_SB_MemPartition_t,
+    CFE_TBL_DumpHdrBuffer_t, CFE_TBL_MemPartition_t, OS_EventHandlerSlot). The sixth was a
+    type name inside a COMMENT in the survey that produced this count, not a class. So the
+    residual blind set is the set another gate is already shouting about, which is the only
+    acceptable place for one.
+    """
+    import importlib.util as _iu
+    _s = _iu.spec_from_file_location(
+        "check_structs", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "check_structs.py"))
+    _m = _iu.module_from_spec(_s)
+    _s.loader.exec_module(_m)
+    rules = []
+    for n in sorted(set(_m.nasa_structs()), key=len, reverse=True):
+        if n in _PTR_SPECIAL or _PTR_SPECIAL_PAT.match(n):
+            continue
+        base = n[:-2] if n.endswith("_t") else n
+        tok = " PTR_%s " % base
+        # Both spellings, same token, longest first so `X_t *` is not eaten by `X *`.
+        rules.append((r'\b' + re.escape(n) + r'\s*\*', tok))
+        if base != n:
+            rules.append((r'\b' + re.escape(base) + r'\s*\*', tok))
+    rules.sort(key=lambda r: -len(r[0]))
+    return rules
+
+
+STRUCT_PTR = None
+
 
 def sigs(path, ret_pat, prefix, types):
     src = open(path, errors='replace').read()
@@ -305,6 +376,8 @@ def sigs(path, ret_pat, prefix, types):
             # gate reported NASA as NUM against the translation's PTRB.
             if re.search(r'\[\s*\w*\s*\]', a):
                 a = re.sub(r'([A-Za-z_]\w*)\s*\[\s*\w*\s*\]', r'* \1', a)
+            for pat, rep in STRUCT_PTR:
+                a = re.sub(pat, rep, a)
             for pat, rep in types:
                 a = re.sub(pat, rep, a)
             # Drop the parameter NAME but not the tokens substituted above -- an earlier
@@ -318,7 +391,7 @@ def sigs(path, ret_pat, prefix, types):
             # comment about why signedness matters, and then thrown away one line later. Found
             # when CFE_TBL_Handle_t's pointer form became the first case where the two sides
             # were spelled differently enough to notice.
-            a = re.sub(r'\b(?!PTRSNUM|PTRNUM|PTRSZ|PTRB|TIME|PROP|TOK|NUM|SZ|SNUM|FN\b)'
+            a = re.sub(r'\b(?!PTR\w*|TIME|PROP|TOK|NUM|SZ|SNUM|FN\b)'
                        r'[A-Za-z_]\w*\b', ' ', a)
             a = re.sub(r'[\s\*]+', '', a)
             norm.append(a)
@@ -326,6 +399,8 @@ def sigs(path, ret_pat, prefix, types):
     return out
 
 def main(argv):
+    global STRUCT_PTR
+    STRUCT_PTR = _struct_ptr_rules()
     if not argv:
         print(__doc__)
         return 2
