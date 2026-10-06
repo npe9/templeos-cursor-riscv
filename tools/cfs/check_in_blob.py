@@ -30,9 +30,11 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cfs_dirs import HCDIRS  # ONE copy of this list -- see cfs_dirs.py
 SCRIPTS = os.path.join(ROOT, "tests", "scripts")
 COMPILER = os.path.join(ROOT, "holyc-riscv")
-HCDIRS = [os.path.join(ROOT, "Kernel", "Cfs", "cfe"), os.path.join(ROOT, "Kernel", "Cfs", "osal")]
 
 # A definition at column 1: a return type, a name, a parameter list, and NO trailing semicolon.
 HC_DEF = re.compile(

@@ -47,6 +47,9 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cfs_dirs import HCDIRS  # ONE copy of this list -- see cfs_dirs.py
 
 # The include path and the header list are check_padding.py's, for the same reason it does not
 # duplicate check_structs.py's name mapping: two tools disagreeing about which headers are in
@@ -58,7 +61,11 @@ _spec.loader.exec_module(check_padding)
 
 # Only names that could plausibly be NASA's. A port-local constant (RV_*, HOLYC_*) is not under
 # test, and neither is an include guard.
-NAME = re.compile(r'^(CFE_|OS_|OSAL_)\w+$')
+# MD_ joined for the first cFS app. Without it NOT ONE of MD's constants was a candidate --
+# the dwell table size, the four error codes, the signature length -- and the compared count
+# would not have moved by one, with no diagnostic anywhere. A gate's own name filter is the
+# quietest place a whole module can hide.
+NAME = re.compile(r'^(CFE_|OS_|OSAL_|MD_)\w+$')
 # `#define NAME 123`, `0x7F`, `-1`, `'$'`, a parenthesised expression of those, or a literal
 # with a HolyC POSTFIX CAST -- `0xC2000002(I32)`, which is how NASA's own
 # `((CFE_Status_t)0xc2000002)` has to be written here so the value compares equal to an I32.
@@ -91,7 +98,7 @@ CASTED = re.compile(r"^(0[xX][0-9A-Fa-f]+)\((I|U)(8|16|32|64)\)$")
 def hc_defines():
     """{name: (literal text, file)} for every numeric #define in the translation."""
     out = {}
-    for d in (os.path.join(ROOT, "Kernel", "Cfs", "osal"), os.path.join(ROOT, "Kernel", "Cfs", "cfe")):
+    for d in HCDIRS:
         if not os.path.isdir(d):
             continue
         for fn in sorted(os.listdir(d)):
@@ -110,7 +117,7 @@ def unparsed_defines():
     """[(name, value, file)] for NASA-shaped #defines whose value DEFINE cannot read."""
     seen = set(hc_defines())
     out = []
-    for d in (os.path.join(ROOT, "Kernel", "Cfs", "osal"), os.path.join(ROOT, "Kernel", "Cfs", "cfe")):
+    for d in HCDIRS:
         if not os.path.isdir(d):
             continue
         for fn in sorted(os.listdir(d)):
@@ -173,6 +180,10 @@ def probe(names):
         # module-private header, and ta's task priority/stack in its platform config. Both were
         # found by the unseen-but-defined check rather than by anyone noticing.
         "cfe_msg_defaults.h", "cfe_ta_platform_cfg.h",
+        # MD's own headers. md_interface_cfg.h and md_internal_cfg.h hold the DEFAULT_MD_*
+        # values that MD_INTERFACE_CFGVAL/MD_INTERNAL_CFGVAL paste a name onto; md_app.h holds
+        # the table-validation error codes.
+        "md_interface_cfg.h", "md_internal_cfg.h", "md_eventids.h", "md_fcncodes.h",
         # ES's event ids and its own platform config, as the module arrives. The gate refused
         # to pass on CFE_ES_SYSLOG2_EID rather than file it as "a name this port invented",
         # which is the behaviour that distinguishes a missing header from a local constant.

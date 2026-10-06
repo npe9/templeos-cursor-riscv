@@ -75,10 +75,11 @@ def guard_values(names):
     return out, None
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cfs_dirs import HCDIRS  # ONE copy of this list -- see cfs_dirs.py
 # Every translated unit, cFE and OSAL alike. Scanning both rather than one directory per gate
 # means a function can move between them without the check losing sight of it.
-HCDIRS = [os.path.join(ROOT, "Kernel", "Cfs", "cfe"),
-          os.path.join(ROOT, "Kernel", "Cfs", "osal")]
 
 # A C function DEFINITION at file scope: a type, a name, an argument list, and an opening brace
 # after it. `static inline` in a header is not our business; these are .c files.

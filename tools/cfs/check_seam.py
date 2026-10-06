@@ -30,7 +30,9 @@ they return.
 import re, sys, os, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-HCDIRS = [os.path.join(ROOT, "Kernel", "Cfs", "osal"), os.path.join(ROOT, "Kernel", "Cfs", "cfe")]
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cfs_dirs import HCDIRS  # ONE copy of this list -- see cfs_dirs.py
 NASA_INC = os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "inc")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

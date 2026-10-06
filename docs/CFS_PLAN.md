@@ -1431,13 +1431,22 @@ exclusions are recorded. `MD_INTERFACE_ENFORCE_DWORD_ALIGN` is 1 and gets the sa
 note that its `#if ... == 0` branch in `md_cmds.c` is the one with NASA's own stale `Jam->` typo
 where the live branch says `Msg->`, which is itself evidence that branch is never compiled.
 
-### config/ ships two layouts for the same type names
+### config/ ships two header sets — and the obvious worry about that is wrong
 
-`vendor/MD/config/` holds both `default_md_*.h` and `eds_md_*.h`. They define the *same* type
-names with *different* layouts — `default_md_tblstruct.h` is 58 lines, `eds_md_tblstruct.h` is
-26. Any gate that scans `config/` as a bare directory can pair an MD class against the EDS header
-and report a match for the wrong layout. `config/` is added to the gates with an explicit
-`eds_*` exclusion, never as a plain directory.
+`vendor/MD/config/` holds both `default_md_*.h` and `eds_md_*.h`, and the first thing written
+here was that they declare the same type names with different layouts, so a gate scanning
+`config/` as a bare directory could pair an MD class against the EDS header and report a match
+for the wrong struct. **Measured, that is false.** All 52 `eds_*.h` across `vendor/cFE` and
+`vendor/MD` declare *zero* structs: each is a one-line forwarder to a generated header
+(`md_eds_typedefs.h` and its kin) that CMake emits only under `CFE_EDS_ENABLED`, and which is
+in no source tree here. `default_md_tblstruct.h` is 58 lines and `eds_md_tblstruct.h` is 26, but
+the 26 are a licence header and an `#include`.
+
+So the collision was never possible, and the reason is that the EDS headers have no types — not
+that anything filters them. `check_structs.py` skips them anyway, labelled in the file as a
+no-op guard against a configuration this port does not build, precisely so nobody later reads
+that filter as evidence a wrong pairing was prevented. A guard believed to protect something it
+cannot is the same vacuous shape as a gate that passes on what it cannot find.
 
 ### The manifest has three groups, not one
 
@@ -1468,3 +1477,107 @@ Three widenings fail completely silently if done wrong:
 
 `module_deps.py --fresh` is run on MD before picking the source order: CMake's `APP_SRC_FILES`
 order is a build-order hint, not the dependency graph.
+
+### md_utils.c is gated, and five mutations say the transcript sees it
+
+**2,167 transcript lines identical**, up from 2,149 — eighteen new lines, byte-identical on the
+first run. Nine functions: `MD_TableIsInMask`, `MD_UpdateDwellControlInfo`, `MD_ValidEntryId`,
+`MD_ValidAddrRange`, `MD_ValidTableId`, `MD_ValidFieldLength`, `MD_Verify32Aligned`,
+`MD_Verify16Aligned`, `MD_ResolveSymAddr`.
+
+Every address in the exercise is a literal constant, which is what makes the block possible at
+all: `MD_ResolveSymAddr` returns `Offset` verbatim for an empty `SymName`, so `md_resolve_off 1
+1048640` is `0x00100040` on both halves rather than a host pointer against a guest one.
+
+Five mutations driven through `md_utils.HC`, each reverted:
+
+| mutation | what the transcript said |
+|---|---|
+| shift unconditionally (drop the `TableId == 1` guard) | `md_mask 1 1000` → `0000`, and two more lines |
+| `MD_Verify32Aligned` drops the **size** branch | `md_a32 1001` → `1011` — only the `(8, 6)` case |
+| sum `Length` as 1 per entry instead of its width | `md_dwell_sum 0 3 7 60` → `3 3 60` |
+| failure branch of `MD_ResolveSymAddr` writes the caller's variable | `md_resolve_fail 0 57005` → `0 0` |
+| drop `FieldLength == 4` | `md_fieldlen 111010` → `111000` |
+
+The fourth is the one worth keeping. **Its return value did not change** — `0` before and after,
+because the function did still report failure. What caught it was the second field: the
+caller's `ResolvedAddr` still holding `0xDEAD`. A control that had only compared the boolean
+would have passed on a function that silently clobbers its output parameter.
+
+The size branch is the second: NASA checks the address *and then the size*, so `(8, 6)` must be
+rejected on the size alone. An exercise that only ever moved the address would never have
+distinguished the two arms.
+
+### Three gate defects this one 224-line file found
+
+**1. `check_padding` measured 358 classes while `check_structs` compared 380, and said OK.** The
+HC directory list was spelled out in seven gates; `Kernel/Cfs/md` joined one of them.
+`check_padding` holds a guard for exactly this — *"the two struct gates must cover the SAME
+set"* — and it could not fire, because `pairs` is built by pairing `check_structs`' NASA structs
+against `check_padding`'s **own** class list, so both sides of the comparison were the same 358
+and the 22 unmeasured MD classes were invisible to it. **A cross-check between two tools is
+worth only the inputs they do not share.** The list now lives once, in `tools/cfs/cfs_dirs.py`,
+imported by all eight. `check_wired.py` stays as it is on purpose: it *walks* `Kernel/Cfs`, which
+is why it was the gate that caught `md_*.HC` being unreachable from any driver — it had no list
+to forget to update.
+
+**2. `check_structs`' field regex could not read a subscript on the next line.** NASA writes
+
+```c
+    char MD_TableName[MD_INTERFACE_NUM_DWELL_TABLES]
+                     [CFE_MISSION_TBL_MAX_NAME_LENGTH + 1];
+```
+
+and the subscript group allowed no whitespace between the brackets, so NASA's side came back one
+field short and the gate reported **the translation** as carrying an extra member it correctly
+has. Fourth time that regex has blamed the translation for a spelling it could not read, and the
+first found by an app: nothing in cFE or OSAL wraps a declaration that way, which is why the fix
+is byte-for-byte invisible across the 358 classes already being compared.
+
+**3. `check_constants`' name filter made every MD constant a non-candidate.** `NAME` was
+`^(CFE_|OS_|OSAL_)\w+$`. Without `MD_`, the compared count would not have moved by one and
+nothing would have said so. Now 1,267 compared, up from 1,248 — nineteen MD constants — with no
+MD name in the "NASA does not define" bucket, which is the bucket that *passes*.
+
+That third one closes limit #19 for MD, which matters more than the count. `#if <expr>` is
+unconditionally true in HolyC, so the hand-resolved `MD_INTERFACE_SIGNATURE_OPTION == 1` and
+`MD_INTERFACE_ENFORCE_DWORD_ALIGN == 1` branches would stay silently correct even if NASA
+changed the value. They are now *anchored*: both names exist as constants this gate compares
+against NASA's header, and driving each to the wrong value fails the gate —
+
+```
+MD_INTERFACE_SIGNATURE_FIELD_LENGTH          md_msg.HC: 31   NASA: 32
+MD_INTERFACE_ENFORCE_DWORD_ALIGN             md_msg.HC: 0    NASA: 1
+```
+
+### Two seams, both supplied rather than translated
+
+`OS_SymbolLookup` is a stub in both halves of this driver. The cFE translation sees OSAL only
+through its API — the case includes OSAL's module *types* (`osapi_module_decl.HC`) and none of
+its code, which is what `check_seam` exists to keep true — and `osapi-module.c` *is* translated
+and *is* gated, by `run_osal_xlat_smoke.sh`. Supplying it here is what makes
+`MD_ResolveSymAddr`'s symbol branch reachable at all; `md_sym_rc` picks success or failure.
+
+`CFE_PSP_MemValidateRange` was already a driver stub with a settable return code **and a call
+counter**, and the counter is the part that earns its place: `MD_ValidAddrRange` is a one-line
+wrapper, so a stub returning a constant would satisfy both booleans on its own. `calls=2` is
+what says the call was really made.
+
+### MD's manifest, and what the percentage does not include
+
+```
+    MD            5 uncond   2115 lines     224 gated ( 11%)
+        add_cfe_tables: 4 file(s), 280 lines -- a .tbl build product,
+        not app code (no functions; a file-scope initialiser and CFE_TBL_FILEDEF).
+```
+
+`md_dw01.c` .. `md_dw04.c` are compiled and then run through `elf2cfetbl` to emit `.tbl` load
+files. Folding them into the denominator would make one percentage mean two things, and dropping
+them silently would be the usual mistake, so they are a separate reported group.
+
+### And `config/` needed the same shim treatment cFE got
+
+MD's sources include `md_msgids.h`, `md_msgstruct.h`, `md_tbldefs.h` and twelve more that exist
+nowhere: CMake generates a one-line forwarder per header choosing between the `default_` and
+`eds_` set. Fifteen of them are now in `vendor/shim` beside the 73 cFE ones, each a single
+`#include "default_md_*.h"`, which *is* the configuration decision — `CFE_EDS_ENABLED` is off.

@@ -25,7 +25,9 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-HCDIRS = [os.path.join(ROOT, "Kernel", "Cfs", "osal"), os.path.join(ROOT, "Kernel", "Cfs", "cfe")]
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cfs_dirs import HCDIRS  # ONE copy of this list -- see cfs_dirs.py
 import glob as _glob
 
 NASA_DIRS = [
@@ -37,11 +39,30 @@ NASA_DIRS = [
     # second one -- and this directory was not on the list, so neither was ever compared. The .c
     # files are already scanned for exactly this reason on the cFE side.
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src"),
+    # AN APP IS A REPOSITORY, laid out like a module but one level up: fsw/src, fsw/inc and
+    # config. config/ is the one that needs care -- see the eds_* note below.
+    os.path.join(ROOT, "vendor", "MD", "fsw", "src"),
+    os.path.join(ROOT, "vendor", "MD", "fsw", "inc"),
+    os.path.join(ROOT, "vendor", "MD", "config"),
 ] + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "fsw", "inc"))) \
   + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "fsw", "src"))) \
   + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "config"))) \
   + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "option_inc"))) \
   + [os.path.join(ROOT, "vendor", "cFE", "cmake", "target", "inc")]
+
+# eds_*.h IS SKIPPED, AND THE HONEST VERSION OF WHY. Every cFS config directory ships both a
+# default_ and an eds_ set, and the first thing written here was that they declare the same type
+# names with different layouts, so whichever this scan reached first is what a translated class
+# would be compared against. MEASURED, THAT IS FALSE: all 52 eds_*.h across vendor/cFE and
+# vendor/MD declare ZERO structs. They are one-line forwarders to generated EDS headers
+# (md_eds_typedefs.h and friends) that CMake emits only when CFE_EDS_ENABLED is set, and which
+# are not in any source tree here. So this filter excludes nothing today and is a NO-OP.
+#
+# It stays, labelled as what it is: a guard against a configuration this port does not build,
+# which would become load-bearing the moment those generated headers existed. What it must not
+# be is a line anyone reads as evidence that a wrong pairing was prevented -- it was never
+# possible, and the reason is that eds_ headers have no types, not that they are filtered.
+EDS_EXCLUDE = re.compile(r'(^|/)eds_\w+\.h$')
 # modules/*/option_inc IS WHERE THE MESSAGE HEADERS LIVE -- `struct CFE_MSG_Message`,
 # CFE_MSG_CommandHeader, CFE_MSG_TelemetryHeader and CCSDS_SpacePacket, in
 # default_cfe_msg_hdr_pri.h. cFE keeps them there because the choice between a plain primary
@@ -98,7 +119,16 @@ FIELD = re.compile(r'^\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|long\s+|s
                    r'(?:struct\s+|union\s+|enum\s+)?'
                    r'[A-Za-z_]\w*(?:\s*\([^;()]*\))?'
                    r'(?:\s*\*+|\s*const\b|\s*volatile\b)*'
-                   r'\s*\**\s*([A-Za-z_]\w*)\s*(?:\[[^\]]*\])*\s*;', re.M)
+                   r'\s*\**\s*([A-Za-z_]\w*)\s*(?:\s*\[[^\]]*\])*\s*;', re.M)
+# A SECOND SUBSCRIPT ON THE NEXT LINE. The subscript group had no whitespace allowance between
+# the brackets, so NASA's
+#     char MD_TableName[MD_INTERFACE_NUM_DWELL_TABLES]
+#                      [CFE_MISSION_TBL_MAX_NAME_LENGTH + 1];
+# did not parse and MD_AppData_t came back from NASA's side one field short -- with this gate
+# again reporting the TRANSLATION as carrying an EXTRA member that it correctly has. Fourth time
+# this regex has blamed the translation for a spelling it could not read, and the first that a
+# cFS APP found: nothing in cFE or OSAL wraps an array declaration this way, which is why the
+# fix is byte-for-byte invisible across all 358 classes that were already being compared.
 # a function-pointer member: `void (*name)(args);`
 FIELD_FN = re.compile(r'^\s*[A-Za-z_][\w \t\*]*\(\s*\*+\s*([A-Za-z_]\w*)\s*\)\s*\([^;]*\)\s*;', re.M)
 
@@ -166,6 +196,8 @@ def nasa_structs():
         for fn in sorted(os.listdir(d)):
             if not (fn.endswith(".h") or fn.endswith(".c")):
                 continue
+            if EDS_EXCLUDE.search(fn):
+                continue  # a different layout for the same name -- see EDS_EXCLUDE
             txt = strip_comments(open(os.path.join(d, fn), errors="replace").read())
             # `typedef struct { ... } Name;` and `struct Name { ... };`
             # `typedef const struct { ... } Name;` is how cFE declares its target-config

@@ -1451,6 +1451,42 @@ I32 TblValStub(U8 *TblPtr)
 // cfe_tbl_task_cmds.HC, because its table names all ten handlers.
 #include "/Kernel/Cfs/cfe/cfe_tbl_dispatch.HC"
 #include "/Kernel/Cfs/cfe/cfe_tbl_objtab.HC"
+
+// --- MD, THE FIRST cFS APP ------------------------------------------------------------------
+// An app sees cFE only through the public API, so MD comes last: everything it calls is
+// already above it. module_deps.py --fresh says MD is fully acyclic in this configuration and
+// names md_utils.c as the leaf, so it is gated first and needs no stand-ins.
+//
+// OS_SymbolLookup IS A SEAM HERE, not a translation -- see the stub below and the matching one
+// in the oracle. This driver's scope is cFE, and the cFE translation sees OSAL only through
+// its API; osapi-module.c is translated and gated by run_osal_xlat_smoke.sh.
+#include "/Kernel/Cfs/md/md_msg.HC"
+#include "/Kernel/Cfs/md/md_global.HC"
+// CFE_PSP_INVALID_MEM_ADDR is NASA's CFE_PSP_STATUS_C(-21), from vendor/PSP's cfe_psp_error.h.
+// It is used only by the exercise below -- no translated function mentions it -- so it is a
+// driver constant, defined where the driver's other PSP stubs are.
+#define CFE_PSP_INVALID_MEM_ADDR -21
+I32 md_sym_rc;
+U64 md_sym_addr;
+I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
+{
+  if (md_sym_rc == OS_SUCCESS)
+    *SymbolAddress = md_sym_addr;
+  return md_sym_rc;
+}
+#include "/Kernel/Cfs/md/md_utils.HC"
+// File scope, not locals: docs/HOLYC_STRUCT_LIMITS.md #22 -- growing a big function's TOTAL
+// frame makes an unrelated file-scope read return zero -- and HolyC has no aggregate
+// initialiser, so the mask list is filled at use.
+U16 md_masks[5];
+MD_SymAddr_t md_sa;
+// The exercise's own scalars, also at file scope and for the same reason: #22 measured that
+// FOUR added scalars in a big function's frame were enough to make a file-scope read return 0.
+I64 md_mi;
+I64 md_k;
+I64 md_k2;
+I64 md_before;
+U64 md_ra;
 // --- cfe_tbl_dumpctl.c ----------------------------------------------------------
 // The dump-only rendezvous: four blocks, a resource-id allocator over them, and the five
 // header accessors that are the allocator's primitives. The whole id scheme is exercised
@@ -13999,6 +14035,152 @@ I64 main()
     // silently get wrong where a designated one cannot
     S("tbl_objtab_distinct ");
     D(CFE_TBL_ModuleEntry.EarlyInit != CFE_TBL_ModuleEntry.TaskMain && CFE_TBL_ModuleEntry.TaskMain != CFE_TBL_ModuleEntry.AppCleanupCb);
+    S("\n");
+    // --- md_utils.c (MD -- THE FIRST cFS APP) ------------------------------------
+    // Nine functions. The bitmask reader, five validators, the two alignment checks and the
+    // address resolver, plus the summariser that walks a dwell table.
+    //
+    // EVERY ADDRESS BELOW IS A LITERAL CONSTANT, and that is the whole reason this block can
+    // exist. MD_ResolveSymAddr returns Offset verbatim when SymName is empty, so the numbers
+    // the two halves print are the numbers written here -- not a host pointer on one side and
+    // a guest pointer on the other. See docs/CFS_PLAN.md.
+    md_masks[0] = 0x0001;
+    md_masks[1] = 0x0002;
+    md_masks[2] = 0x000A;
+    md_masks[3] = 0xFFFF;
+    md_masks[4] = 0x0000;
+    // MD_TableIsInMask. TableId 1 is the branch that does NOT shift -- `if (TableId - 1)` is
+    // false -- and it is the one an off-by-one would get wrong.
+    for (md_mi = 0; md_mi < 5; md_mi++) {
+      S("md_mask ");
+      D(md_masks[md_mi]);
+      S(" ");
+      D(MD_TableIsInMask(1, md_masks[md_mi]));
+      D(MD_TableIsInMask(2, md_masks[md_mi]));
+      D(MD_TableIsInMask(3, md_masks[md_mi]));
+      D(MD_TableIsInMask(4, md_masks[md_mi]));
+      S("\n");
+    }
+    // the three range validators, each at both edges and one past each
+    S("md_entryid ");
+    D(MD_ValidEntryId(0));
+    D(MD_ValidEntryId(1));
+    D(MD_ValidEntryId(MD_INTERFACE_DWELL_TABLE_SIZE));
+    D(MD_ValidEntryId(MD_INTERFACE_DWELL_TABLE_SIZE + 1));
+    S("\nmd_tableid ");
+    D(MD_ValidTableId(0));
+    D(MD_ValidTableId(1));
+    D(MD_ValidTableId(MD_INTERFACE_NUM_DWELL_TABLES));
+    D(MD_ValidTableId(MD_INTERFACE_NUM_DWELL_TABLES + 1));
+    S("\nmd_fieldlen ");
+    D(MD_ValidFieldLength(0));
+    D(MD_ValidFieldLength(1));
+    D(MD_ValidFieldLength(2));
+    D(MD_ValidFieldLength(3));
+    D(MD_ValidFieldLength(4));
+    D(MD_ValidFieldLength(5));
+    // The alignment pair. BOTH ARMS MATTER: NASA checks the address and then the SIZE, so
+    // (8,6) must be rejected on the size alone -- a translation that dropped the second branch
+    // would still pass a test that only ever moved the address.
+    S("\nmd_a32 ");
+    D(MD_Verify32Aligned(8, 4));
+    D(MD_Verify32Aligned(9, 4));
+    D(MD_Verify32Aligned(8, 6));
+    D(MD_Verify32Aligned(0, 0));
+    S("\nmd_a16 ");
+    D(MD_Verify16Aligned(8, 2));
+    D(MD_Verify16Aligned(7, 2));
+    D(MD_Verify16Aligned(8, 3));
+    D(MD_Verify16Aligned(0, 0));
+    S("\n");
+    // MD_ValidAddrRange is a one-line wrapper over the PSP, so the only thing worth asserting
+    // is that it passes the call through and reports both answers. The call COUNTER is the
+    // part that says it was really called: a stub returning a constant would satisfy the two
+    // booleans on its own.
+    md_before = es_psp_validates;
+    es_psp_validate_rc = CFE_PSP_SUCCESS;
+    md_k = MD_ValidAddrRange(0x00100000, 4);
+    es_psp_validate_rc = CFE_PSP_INVALID_MEM_ADDR;
+    // The second call has to be made BEFORE the line is printed: docs record four separate
+    // bugs from printf evaluating an argument that itself emits or mutates.
+    md_k2 = MD_ValidAddrRange(0x00100000, 4);
+    S("md_addrrange ");
+    D(md_k);
+    D(md_k2);
+    S(" calls=");
+    D(es_psp_validates - md_before);
+    S("\n");
+    es_psp_validate_rc = CFE_PSP_SUCCESS;
+    // MD_ResolveSymAddr, all three outcomes. The empty-SymName branch is the one the rest of
+    // this port's MD exercises stand on.
+    MemSet(&md_sa, 0, sizeof(MD_SymAddr_t));
+    md_sa.Offset = 0x00100040;
+    md_ra = 0xDEAD;
+    md_k = MD_ResolveSymAddr(&md_sa, &md_ra);
+    S("md_resolve_off ");
+    D(md_k);
+    S(" ");
+    D(md_ra);
+    S("\n");
+    StrCpy(md_sa.SymName, "MD_SIM_WINDOW");
+    md_sa.Offset = 0x20;
+    md_sym_rc = OS_SUCCESS;
+    md_sym_addr = 0x00100000;
+    md_ra = 0xDEAD;
+    md_k = MD_ResolveSymAddr(&md_sa, &md_ra);
+    S("md_resolve_sym ");
+    D(md_k);
+    S(" ");
+    D(md_ra);
+    S("\n");
+    // a lookup FAILURE must leave the caller's variable alone, which is a property of the
+    // branch and not of the return value
+    md_sym_rc = OS_ERROR;
+    md_ra = 0xDEAD;
+    md_k = MD_ResolveSymAddr(&md_sa, &md_ra);
+    S("md_resolve_fail ");
+    D(md_k);
+    S(" ");
+    D(md_ra);
+    S("\n");
+    md_sym_rc = OS_SUCCESS;
+    // MD_UpdateDwellControlInfo, three shapes of table.
+    //   0: three entries, then a TERMINATOR, then a non-null entry after it. NASA's own
+    //      comment says entries may follow a terminator and will not be processed, so the 99
+    //      below must not reach Rate.
+    //   1: all 25 entries full -- the EntryIndex < MD_INTERFACE_DWELL_TABLE_SIZE bound, which
+    //      is the other way out of the loop.
+    //   2: terminator first, so all three totals are zero.
+    MemSet(MD_AppData.MD_DwellTables, 0,
+           sizeof(MD_DwellPacketControl_t) * MD_INTERFACE_NUM_DWELL_TABLES);
+    MD_AppData.MD_DwellTables[0].Entry[0].Length = 1;
+    MD_AppData.MD_DwellTables[0].Entry[0].Delay = 10;
+    MD_AppData.MD_DwellTables[0].Entry[1].Length = 2;
+    MD_AppData.MD_DwellTables[0].Entry[1].Delay = 20;
+    MD_AppData.MD_DwellTables[0].Entry[2].Length = 4;
+    MD_AppData.MD_DwellTables[0].Entry[2].Delay = 30;
+    MD_AppData.MD_DwellTables[0].Entry[4].Length = 2;
+    MD_AppData.MD_DwellTables[0].Entry[4].Delay = 99;
+    for (md_k = 0; md_k < MD_INTERFACE_DWELL_TABLE_SIZE; md_k++) {
+      MD_AppData.MD_DwellTables[1].Entry[md_k].Length = 4;
+      MD_AppData.MD_DwellTables[1].Entry[md_k].Delay = 1;
+    }
+    for (md_k = 0; md_k < 3; md_k++) {
+      MD_UpdateDwellControlInfo(md_k);
+      S("md_dwell_sum ");
+      D(md_k);
+      S(" ");
+      D(MD_AppData.MD_DwellTables[md_k].AddrCount);
+      S(" ");
+      D(MD_AppData.MD_DwellTables[md_k].DataSize);
+      S(" ");
+      D(MD_AppData.MD_DwellTables[md_k].Rate);
+      S("\n");
+    }
+    // and the neighbour: table 3 was never touched and must still be zero
+    S("md_dwell_neigh ");
+    D(MD_AppData.MD_DwellTables[3].AddrCount + MD_AppData.MD_DwellTables[3].DataSize +
+      MD_AppData.MD_DwellTables[3].Rate);
     S("\n");
     S("tim_objtab ");
     S(CFE_TIME_ModuleEntry.Name);

@@ -40,6 +40,9 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cfs_dirs import HCDIRS  # ONE copy of this list -- see cfs_dirs.py
 
 # The drivers whose include order is the compiler's order. Both halves of the port are reached
 # from one of these two.
@@ -145,8 +148,7 @@ def main(argv):
     nasa_va, nasa_all = nasa_variadics()
 
     hc_files = []
-    for d in ("osal", "cfe"):
-        p = os.path.join(ROOT, "Kernel", "Cfs", d)
+    for p in HCDIRS:
         if os.path.isdir(p):
             hc_files += [os.path.join(p, f) for f in sorted(os.listdir(p)) if f.endswith(".HC")]
     hc_files += [os.path.join(ROOT, "Kernel", "Cfs", "CfsStr.HC")]

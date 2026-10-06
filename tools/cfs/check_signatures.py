@@ -43,8 +43,9 @@ and a function can move between files without the check losing sight of it.
 import re, sys, os, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-HCDIRS = [os.path.join(ROOT, "Kernel", "Cfs", "cfe"),
-          os.path.join(ROOT, "Kernel", "Cfs", "osal")]
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cfs_dirs import HCDIRS  # ONE copy of this list -- see cfs_dirs.py
 
 C_TYPES = [(r'\bconst\b', ' '),
            # A plain `uint32 *` -- an obvious gap that was missing until the checker was first

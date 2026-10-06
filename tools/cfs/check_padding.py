@@ -44,6 +44,9 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cfs_dirs import HCDIRS  # ONE copy of this list -- see cfs_dirs.py
 CFE = os.path.join(ROOT, "vendor", "cFE")
 OSAL = os.path.join(ROOT, "vendor", "osal")
 
@@ -68,6 +71,12 @@ INC = ["-I" + p for p in [
     os.path.join(ROOT, "vendor", "PSP", "fsw", "inc"),
     os.path.join(CFE, "cmake", "sample_defs"),
     os.path.join(CFE, "cmake", "target", "inc"),
+    # AN APP'S three include directories. config/ holds both default_*.h and eds_*.h, but the
+    # probe reaches a struct only through the headers named in HDRS, and those come from
+    # vendor/shim -- which forwards to the default_ set, because CFE_EDS_ENABLED is off here.
+    os.path.join(ROOT, "vendor", "MD", "fsw", "src"),
+    os.path.join(ROOT, "vendor", "MD", "fsw", "inc"),
+    os.path.join(ROOT, "vendor", "MD", "config"),
 ] + sorted(glob.glob(os.path.join(CFE, "modules", "*", "fsw", "inc")))
   + sorted(glob.glob(os.path.join(CFE, "modules", "*", "fsw", "src")))
   + sorted(glob.glob(os.path.join(CFE, "modules", "*", "config")))
@@ -89,6 +98,12 @@ HDRS = [
     "cfe_config.h", "cfe_config_priv.h", "cfe_config_nametable.h", "cfe_resourceid.h",
     "cfe_time.h", "cfe_ta_task.h", "cfe_ta_tasklist.h", "cfe_evs_task.h", "cfe_evs_log_typedef.h",
     "target_config.h", "target_objtab.h",
+    # MEMORY DWELL -- the first cFS app. md_app.h reaches the control structures, the message
+    # types and MD_AppData_t; md_tblstruct.h is NOT reachable from it and holds
+    # MD_DwellTableLoad_t, the dwell table as the ground loads it, so it is named separately.
+    # Without it that 2,040-byte class simply would not be measured.
+    "md_app.h", "md_utils.h", "md_tbldefs.h", "md_tblstruct.h", "md_dwell_tbl.h",
+    "md_dwell_pkt.h", "md_cmds.h", "md_dispatch.h",
     # The reset area. CFE_EVS_EarlyInit sizes the WHOLE of CFE_ES_ResetData_t and takes the event
     # log out of it, so the translation declares that type and the eight ES/TIME types under it.
     # They are types, not code -- no ES function is translated -- and this is what measures them.
@@ -277,7 +292,7 @@ def hc_defines():
     vals = {}
     pend = []
 
-    for d in (os.path.join(ROOT, "Kernel", "Cfs", "osal"), os.path.join(ROOT, "Kernel", "Cfs", "cfe")):
+    for d in HCDIRS:
         if not os.path.isdir(d):
             continue
         for fn in sorted(os.listdir(d)):
@@ -310,7 +325,14 @@ def hc_defines():
 def hc_class_bodies():
     """Every `class Name { ... };` body in the translation, by name."""
     out = {}
-    for d in (os.path.join(ROOT, "Kernel", "Cfs", "osal"), os.path.join(ROOT, "Kernel", "Cfs", "cfe")):
+    # cfs_dirs.HCDIRS, NOT A COPY OF IT. This list was spelled out twice in this
+    # file, and when Kernel/Cfs/md arrived it joined neither: check_structs
+    # compared 380 classes while this gate measured 358 and still reported OK. The guard at the
+    # end -- "the two struct gates must cover the SAME set" -- did NOT fire, because `pairs` is
+    # built by pairing check_structs' NASA structs against THIS file's class list, so both sides
+    # of that comparison were the same 358 and the 22 unmeasured MD classes could not appear in
+    # either. A cross-check between two tools is worth only the inputs they do not share.
+    for d in HCDIRS:
         if not os.path.isdir(d):
             continue
         for fn in sorted(os.listdir(d)):

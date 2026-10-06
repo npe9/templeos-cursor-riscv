@@ -35,6 +35,10 @@ GATES = [
 ]
 CFE_GATE = os.path.join(ROOT, "tests", "scripts", "run_cfs_xlat_smoke.sh")
 CFE_MODULES = os.path.join(ROOT, "vendor", "cFE", "modules")
+# The cFS APPS, each its own repository under vendor/. Same CMakeLists shape as a cFE module
+# -- an unconditional source list plus an EDS branch -- which is why the depth parser below
+# needs no change to read one.
+APPS = ["MD"]
 
 
 def osal_build_sources():
@@ -102,6 +106,81 @@ def cfe_module_sources(mod_dir):
             else:
                 cond.append((f, guards[-1] if guards else "?"))
     return base, cond
+
+
+def app_table_sources(app_dir):
+    """The sources under add_cfe_tables -- fsw/tables/*.c -- which are NOT app code.
+
+    THEY ARE A DIFFERENT BUILD PRODUCT. add_cfe_app compiles the five app sources into the app;
+    add_cfe_tables compiles each of these and runs it through elf2cfetbl to emit a .tbl load
+    file. They contain no functions at all: one file-scope aggregate initialiser and a
+    CFE_TBL_FILEDEF macro each.
+
+    They are reported SEPARATELY and do not count toward app coverage, because folding 280
+    lines of default table data into the denominator would make the percentage mean two
+    different things at once. Reported rather than dropped, because a group this tool knows
+    about and does not print is a group nobody knows about.
+    """
+    cm = os.path.join(app_dir, "CMakeLists.txt")
+    if not os.path.exists(cm):
+        return []
+    txt = re.sub(r"#[^\n]*", "", open(cm, errors="replace").read())
+    out = []
+    for f in re.findall(r"fsw/tables/([A-Za-z0-9_.-]+\.c)", txt):
+        if f not in out:
+            out.append(f)
+    return out
+
+
+def app_report():
+    gated = set()
+    if os.path.exists(CFE_GATE):
+        txt = open(CFE_GATE, errors="replace").read()
+        for m in re.finditer(r'SRC_C="(.*?)"', txt, re.S):
+            gated.update(re.findall(r"([A-Za-z0-9_-]+\.c)", m.group(1)))
+    rows = []
+    for app in APPS:
+        d = os.path.join(ROOT, "vendor", app)
+        if not os.path.isdir(d):
+            continue
+        base, cond = cfe_module_sources(d)
+        tbls = app_table_sources(d)
+        if not base and not cond:
+            continue
+        src = os.path.join(d, "fsw", "src")
+        tsrc = os.path.join(d, "fsw", "tables")
+
+        def nl(base_dir, f):
+            try:
+                with open(os.path.join(base_dir, f), errors="replace") as fh:
+                    return sum(1 for _ in fh)
+            except OSError:
+                return 0
+
+        sizes = {f: nl(src, f) for f in base}
+        sizes.update({f: nl(src, f) for f, _ in cond})
+        tsizes = {f: nl(tsrc, f) for f in tbls}
+        tot = sum(sizes[f] for f in base)
+        done = sum(sizes[f] for f in base if f in gated)
+        rows.append((app, base, cond, tbls, tot, done, sizes, tsizes))
+    if not rows:
+        return
+    print("app-manifest: per cFS APP. Same shape as a cFE module -- unconditional sources, then")
+    print("              the ones CMake selects with a condition -- plus add_cfe_tables, which is")
+    print("              a different build product and is NOT in the percentage.")
+    for app, base, cond, tbls, tot, done, sizes, tsizes in rows:
+        pct = (100.0 * done / tot) if tot else 0.0
+        print(f"    {app:<12} {len(base):>2} uncond {tot:>6} lines  {done:>6} gated ({pct:>3.0f}%)")
+        for f in base:
+            if f not in gated:
+                print(f"        -      {f:<34} {sizes[f]:>5}")
+        for f, g in cond:
+            mark = "GATED " if f in gated else "  -   "
+            print(f"        {mark} {f:<34} {sizes[f]:>5}  [{g}]")
+        if tbls:
+            n = sum(tsizes.values())
+            print(f"        add_cfe_tables: {len(tbls)} file(s), {n} lines -- a .tbl build product,")
+            print(f"        not app code (no functions; a file-scope initialiser and CFE_TBL_FILEDEF).")
 
 
 def cfe_report():
@@ -190,6 +269,7 @@ def main(argv):
           f"{len(gated)} gated, {done:,} lines ({100.0 * done / total:.0f}%)")
     if "--cfe" in argv:
         cfe_report()
+        app_report()
         return 0
     if remaining:
         print("  remaining, largest first:")
