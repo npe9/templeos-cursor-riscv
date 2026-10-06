@@ -1030,12 +1030,29 @@ point this section opens with — **a cycle's cost is a function of what is alre
 property of the graph.**
 
 STILL GATED BUT NOT YET EXERCISED, so nobody mistakes 49% for 49% tested:
-`CFE_TBL_EarlyInit`, `CFE_TBL_CleanUpApp`, `CFE_TBL_RestoreTableDataFromCDS`,
+`CFE_TBL_CleanUpApp`, `CFE_TBL_RestoreTableDataFromCDS`,
 `CFE_TBL_UpdateCriticalTblCDS`, `CFE_TBL_RegisterWithCriticalTableRegistry`,
 `CFE_TBL_GetWorkingBuffer`, `CFE_TBL_UpdateInternal`, `CFE_TBL_SendNotificationMsg`,
 `CFE_TBL_SetupTableBuffers`, `CFE_TBL_AllocateTableLoadBuffer`. `check_in_blob` proves they
-have addresses; nothing proves they run. EarlyInit is the one worth doing next and is now
-cheap: ES is 100% gated, so `CFE_ES_PoolCreate` and `CFE_ES_RegisterCDSEx` are real.
+have addresses; nothing proves they run.
+
+`CFE_TBL_EarlyInit` is OFF that list as of the same day: it runs three times in the transcript
+now (fresh CDS, already-existing CDS, and a mutex that refuses), and ES being 100% gated meant
+the 512 KiB partition really is carved up and the critical registry really does round-trip
+through the CDS. **Six of the eleven fields the first draft printed were VACUOUS** --
+`CFE_RESOURCEID_UNDEFINED` is 0 in this configuration, so "every registry record is free" and
+"every critical slot holds the BAD handle" read the same whether the code ran or not, and the
+poison-first trick is unavailable because EarlyInit's first act is to zero the whole global.
+They were cut. What is left is only what EarlyInit makes NON-zero, plus one content witness:
+seed `CritReg[5]` with 0x5151, push it to the CDS, and the next EarlyInit brings it back
+AFTER the loop that set every slot to BAD -- so `crit5=0x5151 critbad=31` is the proof the
+recovery arm ran, which the return value cannot give because all three CDS outcomes return
+CFE_SUCCESS.
+
+A stand-in was improved for it: `OS_MutSemCreate` handed back the SAME id for every call, so
+EarlyInit's two mutexes were indistinguishable and a translation that stored one into the
+other's field produced a correct-looking transcript. It now returns `0x3000 + n`. Driven as a
+control: the swap now fails with `reg=12316 wrk=0`.
 
 **Run the tool before planning any module's order**, including the apps — and run it `--fresh`
 against a finished module first, because a result you cannot calibrate is a number you should

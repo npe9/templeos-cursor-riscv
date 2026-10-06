@@ -439,10 +439,16 @@ Bool OS_ObjectIdDefined(U32 object_id)
 #define ES_LIBID(slot)     (CFE_ES_LIBID_BASE + (slot))
 #define ES_CTRID(slot)     (CFE_ES_COUNTID_BASE + (slot))
 I64 es_lock_takes, es_lock_gives;
+// A DISTINCT ID PER CREATE, and the reason is CFE_TBL_EarlyInit. It creates TWO mutexes and
+// stores them in two different fields of CFE_TBL_Global; while this stub handed back the same
+// id for both, a translation that wrote the registry mutex into WorkBufMutex -- or stored one
+// twice -- produced exactly the transcript a correct one does. The ids start well above
+// ES_SHARED_MUTEX_ID (0x1E5), which the startup sequence plants directly rather than creating,
+// so nothing that keys on that constant is affected.
 I32 OS_MutSemCreate(U32 *sem_id, U8 *sem_name, U32 options)
 {
   ++fs_mut_create;
-  *sem_id = 3;
+  *sem_id = 0x3000 + fs_mut_create;
   return fs_mut_create_rc;
 }
 
@@ -1647,6 +1653,110 @@ U0 TblTransactionExercise()
   D(CFE_TBL_TxnGetEventCount(&txn));
   S("\n");
   MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+}
+// --- cfe_tbl_internal.c: CFE_TBL_EarlyInit -------------------------------------
+// THE OBJECT TABLE'S FIRST HOOK, and until this block it was only an ADDRESS. cfe_tbl_objtab.c
+// has held &CFE_TBL_EarlyInit since it was gated, and all the objtab exercise asserts is that
+// the three function pointers are distinct and non-NULL -- which passed just as well when
+// EarlyInit was a two-line stub. check_in_blob says it has an address; nothing said it runs.
+//
+// IT IS CHEAP NOW BECAUSE ES IS 100% GATED. CFE_ES_PoolCreate, CFE_ES_RegisterCDSEx,
+// CFE_ES_RestoreFromCDS and CFE_ES_CopyToCDS are all real code in this driver, so the 512 KiB
+// partition really is carved up and the critical-table registry really does go into the CDS.
+// The only thing standing in is OS_MutSemCreate, which the driver counts -- and counting is
+// exactly the right stand-in for it, because what EarlyInit does with a mutex is create it and
+// store the id.
+U0 TblEarlyInitExercise()
+{
+  I32 st;
+  I64 c0;
+  I64 k, allocated, distinct;
+  // WHAT THIS BLOCK CANNOT ASSERT, said first because the first draft asserted it anyway.
+  // CFE_RESOURCEID_UNDEFINED is 0 in this configuration and the SIMPLE resourceid mode makes
+  // every wrapper the identity -- so `HkTlmTblRegId is undefined`, `all 128 registry records
+  // are free`, `all 32 critical slots hold the BAD handle` and `the deepest access list is
+  // detached` ALL READ THE SAME whether EarlyInit ran or not, because its own memset produces
+  // them. The usual fix -- poison the memory first, as cfe_tbl_regrec.c's own comment
+  // describes -- is unavailable here precisely because EarlyInit begins by zeroing the whole
+  // 592 KiB global itself. Six fields were cut from this exercise for that reason.
+  //
+  // So what is left is everything NON-zero that EarlyInit produces: two mutex ids, a pool
+  // handle, four shared load buffers of the right size at four DIFFERENT addresses, a CDS
+  // handle -- and the one thing that genuinely distinguishes the recovery branch, below.
+  //
+  // FIRST RUN: nothing in the CDS under this name yet, so RegisterCDSEx succeeds and the
+  // else-branch saves the initial registry with CopyToCDS.
+  c0 = fs_mut_create;
+  st = CFE_TBL_EarlyInit();
+  allocated = 0;
+  distinct = 1;
+  for (k = 0; k < CFE_PLATFORM_TBL_MAX_SIMULTANEOUS_LOADS; k++) {
+    if (CFE_TBL_LoadBuffIsAllocated(&CFE_TBL_Global.LoadBuffs[k]) && CFE_TBL_Global.LoadBuffs[k].AllocationSize == CFE_PLATFORM_TBL_MAX_SNGL_TABLE_SIZE)
+      ++allocated;
+    if (k > 0 && CFE_TBL_LoadBuffGetReadPointer(&CFE_TBL_Global.LoadBuffs[k]) == CFE_TBL_LoadBuffGetReadPointer(&CFE_TBL_Global.LoadBuffs[k - 1]))
+      distinct = 0;
+  }
+  // creates=3 is NOT a mistake: EarlyInit makes two, and CFE_ES_PoolCreate makes the pool's own
+  // mutex. The third one is the witness that the pool was really created rather than its handle
+  // merely being set. And reg/wrk differ, which is what the per-create id above is for -- see
+  // the note on OS_MutSemCreate.
+  S("tbl_early rc=");
+  D(st);
+  S(" creates=");
+  D(fs_mut_create - c0);
+  S(" reg=");
+  D(CFE_TBL_Global.RegistryMutex);
+  S(" wrk=");
+  D(CFE_TBL_Global.WorkBufMutex);
+  S(" pool=");
+  D(CFE_ResourceId_IsDefined(CFE_TBL_Global.Buf.PoolHdl));
+  S(" bufs=");
+  D(allocated);
+  S(" distinct=");
+  D(distinct);
+  S("\n");
+  // THE RECOVERY BRANCH, WITNESSED. Both CDS paths return CFE_SUCCESS -- NASA's words,
+  // "failure to support critical tables is not a good enough reason to exit the cFE on start
+  // up" -- so the return value cannot tell them apart and the first draft printed two nearly
+  // identical lines while claiming they took different paths.
+  //
+  // What distinguishes them is CONTENT. Write a recognisable handle into the critical registry
+  // and push it to the CDS; the next EarlyInit finds the entry already there, takes the
+  // CFE_ES_CDS_ALREADY_EXISTS arm, and RestoreFromCDS brings that handle back AFTER the loop
+  // that set every slot to the BAD handle. So `crit5=0x5151` is proof the restore happened, and
+  // `critbad=31` is proof it overwrote the loop's work rather than being merged with it.
+  CFE_TBL_Global.CritReg[5].CDSHandle = CFE_ResourceId_FromInteger(0x5151);
+  CFE_ES_CopyToCDS(CFE_TBL_Global.CritRegHandle, CFE_TBL_Global.CritReg);
+  c0 = fs_mut_create;
+  st = CFE_TBL_EarlyInit();
+  allocated = 0;
+  for (k = 0; k < CFE_PLATFORM_TBL_MAX_CRITICAL_TABLES; k++)
+    if (CFE_ResourceId_Equal(CFE_TBL_Global.CritReg[k].CDSHandle, CFE_ES_CDS_BAD_HANDLE))
+      ++allocated;
+  S("tbl_early recovered rc=");
+  D(st);
+  S(" creates=");
+  D(fs_mut_create - c0);
+  S(" crit5=0x");
+  Hx4(CFE_ResourceId_ToInteger(CFE_TBL_Global.CritReg[5].CDSHandle));
+  S(" critbad=");
+  D(allocated);
+  S("\n");
+  // THIRD RUN: the mutex refuses, which is the ONE failure EarlyInit does not survive -- it
+  // returns before the pool is ever created. Both mutex calls are on that path, so a count of
+  // ONE create is the witness that it stopped at the first, and pool=0 that it never got as far
+  // as CFE_ES_PoolCreate.
+  fs_mut_create_rc = -1;
+  c0 = fs_mut_create;
+  st = CFE_TBL_EarlyInit();
+  S("tbl_early nomutex rc=");
+  D(st);
+  S(" creates=");
+  D(fs_mut_create - c0);
+  S(" pool=");
+  D(CFE_ResourceId_IsDefined(CFE_TBL_Global.Buf.PoolHdl));
+  S("\n");
+  fs_mut_create_rc = OS_SUCCESS;
 }
 // --- cfe_tbl_registry.c ---------------------------------------------------------
 // SIX OF THE ELEVEN STEPS, the ones nothing else reaches. TxnLockRegistry, TxnUnlockRegistry,
@@ -11922,6 +12032,7 @@ I64 main()
     TblTransactionExercise();
     TblInternalExercise();
     TblRegistryExercise();
+    TblEarlyInitExercise();
     // --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
     // ------------------------------------------------------------------------------------
     // This is not a translation of anything. It is the test that has to pass BEFORE the 7,780
