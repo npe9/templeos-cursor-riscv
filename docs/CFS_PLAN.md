@@ -1013,8 +1013,8 @@ in whatever order suits — the tool's own topological listing is:
 | next | lines | note |
 |---|---|---|
 | `cfe_tbl_dump.c` | 589 | |
-| `cfe_tbl_task.c` | 218 | makes `CFE_TBL_TaskMain` real, the last objtab stub |
-| `cfe_tbl_dispatch.c` | 276 | the non-EDS branch |
+| ~~`cfe_tbl_task.c`~~ | ~~218~~ | **GATED** — `CFE_TBL_TaskMain` is real, so tbl is the first module whose object table names three real functions |
+| `cfe_tbl_dispatch.c` | 276 | the non-EDS branch; blocked behind `task_cmds.c`, whose fourteen handlers it switches over. One thin stand-in (`CFE_TBL_TaskPipe`) stands in for it meanwhile |
 | `cfe_tbl_load.c` | 953 | |
 | `cfe_tbl_api.c` | 1,107 | the public API, 24 functions |
 | `cfe_tbl_task_cmds.c` | 1,115 | |
@@ -1022,7 +1022,7 @@ in whatever order suits — the tool's own topological listing is:
 (`cfe_tbl_eds_codec.c` and `cfe_tbl_eds_dispatch.c` are listed too and are correctly absent —
 `CFE_EDS_ENABLED` is 0 in this configuration and `check_manifest.py` owns that call.)
 
-tbl is at **3,803 of 7,780 lines, 49%**. `registry.c` cost **zero** new stand-ins in the end
+tbl is at **4,020 of 7,780 lines, 52%**. `registry.c` cost **zero** new stand-ins in the end
 and DELETED four: of its 43 external calls 37 were already translated and the other six are id
 macros that collapse onto `CFE_ResourceId_IsDefined` / `_Equal` / the identity. The nine-stand-in
 price in the table above was real when it was measured and is the clearest demonstration of the

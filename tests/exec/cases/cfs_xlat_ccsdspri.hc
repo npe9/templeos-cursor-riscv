@@ -1389,13 +1389,26 @@ I32 TblValStub(U8 *TblPtr)
 // stand-ins at all: of its 43 external calls, 37 were already translated and the other 6 are
 // id macros that collapse onto CFE_ResourceId_IsDefined / _Equal / the identity.
 #include "/Kernel/Cfs/cfe/cfe_tbl_registry.HC"
-// CFE_TBL_EarlyInit and CFE_TBL_CleanUpApp WERE STUBS HERE. Both are real now -- they are the
-// first and last functions of the source just included -- so the object table's first hook
-// calls the function that actually builds tbl's two mutexes, its memory pool and its four
-// shared load buffers. CFE_TBL_TaskMain is still a stub: cfe_tbl_task.c is the one source of
-// the three the object table names that is still ungated.
-U0 CFE_TBL_TaskMain()
+// --- cfe_tbl_task.c -------------------------------------------------------------
+// The app entry point, its five-step initialisation, and the data init that seeds all five
+// resource-id spaces. It goes after registry.c because CFE_TBL_InitData is the function the
+// rest of tbl's allocators depend on, and because CFE_TBL_TaskMain is the last of the three
+// object-table hooks.
+#include "/Kernel/Cfs/cfe/cfe_tbl_task.HC"
+// CFE_TBL_EarlyInit, CFE_TBL_CleanUpApp AND CFE_TBL_TaskMain WERE STUBS HERE. All three are
+// real now, so every hook cfe_tbl_objtab.c names is the function it claims to be -- the first
+// module whose object table is complete.
+//
+// ONE STAND-IN TAKES THEIR PLACE, and it is a thin seam rather than logic:
+// CFE_TBL_TaskPipe lives in cfe_tbl_dispatch.c, which cannot be gated until
+// cfe_tbl_task_cmds.c is -- the dispatcher is a switch over fourteen command handlers. What
+// CFE_TBL_TaskMain does with it is call it once per received message, so a counter is exactly
+// the right witness.
+I64 tbl_taskpipe_calls;
+U0 CFE_TBL_TaskPipe(CFE_SB_Buffer *SBBufPtr)
 {
+  no_warn SBBufPtr;
+  ++tbl_taskpipe_calls;
 }
 #include "/Kernel/Cfs/cfe/cfe_tbl_objtab.HC"
 // --- cfe_tbl_dumpctl.c ----------------------------------------------------------
@@ -1653,6 +1666,128 @@ U0 TblTransactionExercise()
   D(CFE_TBL_TxnGetEventCount(&txn));
   S("\n");
   MemSet(&CFE_TBL_Global, 0, sizeof(CFE_TBL_Global));
+}
+// --- cfe_tbl_task.c -------------------------------------------------------------
+// THREE FUNCTIONS, AND THE OBJECT TABLE IS FINALLY HONEST. cfe_tbl_objtab.c names
+// CFE_TBL_EarlyInit, CFE_TBL_TaskMain and CFE_TBL_CleanUpApp; two of the three now run in this
+// transcript and the third has a real body. The objtab exercise's claim -- three distinct
+// non-NULL addresses -- was true of three stubs too.
+//
+// POISON-FIRST WORKS HERE, unlike CFE_TBL_EarlyInit. CFE_TBL_InitData does NOT zero the global;
+// it writes eight specific places in it. So filling those places with a recognisable value
+// first turns every assertion below from "it is zero" (which a memset would also give) into
+// "it CHANGED to the right thing".
+U0 TblTaskExercise()
+{
+  CFE_SB_MsgId mid_hk, mid_reg, mid_notify;
+  I64 x0;
+  // --- CFE_TBL_InitData, with the five id spaces poisoned first ------------------------
+  CFE_TBL_Global.LastLoadBuffId = CFE_ResourceId_FromInteger(0xBAD01);
+  CFE_TBL_Global.LastValidationResultId = CFE_ResourceId_FromInteger(0xBAD02);
+  CFE_TBL_Global.LastDumpCtrlBlockId = CFE_ResourceId_FromInteger(0xBAD03);
+  CFE_TBL_Global.LastRegId = CFE_ResourceId_FromInteger(0xBAD04);
+  CFE_TBL_Global.LastHandle = CFE_ResourceId_FromInteger(0xBAD05);
+  CFE_TBL_Global.TableTaskAppId = CFE_ResourceId_FromInteger(0xBAD06);
+  MemSet(&CFE_TBL_Global.HkPacket, 0x5A, sizeof(CFE_TBL_HousekeepingTlm_t));
+  MemSet(&CFE_TBL_Global.TblRegPacket, 0x5A, sizeof(CFE_TBL_TableRegistryTlm_t));
+  MemSet(&CFE_TBL_Global.NotifyMsg, 0x5A, sizeof(CFE_TBL_NotifyCmd_t));
+  CFE_TBL_InitData();
+  S("tbl_initdata lb=");
+  D(CFE_ResourceId_ToInteger(CFE_TBL_Global.LastLoadBuffId) == CFE_TBL_LOADBUFFID_BASE);
+  S(" vr=");
+  D(CFE_ResourceId_ToInteger(CFE_TBL_Global.LastValidationResultId) == CFE_TBL_VALRESULTID_BASE);
+  S(" dc=");
+  D(CFE_ResourceId_ToInteger(CFE_TBL_Global.LastDumpCtrlBlockId) == CFE_TBL_DUMPCTRLID_BASE);
+  S(" reg=");
+  D(CFE_ResourceId_ToInteger(CFE_TBL_Global.LastRegId) == CFE_TBL_REGID_BASE);
+  S(" hnd=");
+  D(CFE_ResourceId_ToInteger(CFE_TBL_Global.LastHandle) == CFE_TBL_HANDLE_BASE);
+  S(" app=");
+  D(CFE_ResourceId_ToInteger(CFE_TBL_Global.TableTaskAppId));
+  S("\n");
+  // THE THIRD HEADER IS INITIALISED TO AN INVALID MSG ID ON PURPOSE -- NASA's comment says
+  // "Message ID is set when sent, so OK as 0 here". So `notify=0` is the right answer and is
+  // not a failure to initialise: the 0x5A poison above is what makes that readable.
+  CFE_MSG_GetMsgId(&CFE_TBL_Global.HkPacket.TelemetryHeader.Msg, &mid_hk);
+  CFE_MSG_GetMsgId(&CFE_TBL_Global.TblRegPacket.TelemetryHeader.Msg, &mid_reg);
+  CFE_MSG_GetMsgId(&CFE_TBL_Global.NotifyMsg.CommandHeader.Msg, &mid_notify);
+  S("tbl_initdata hk=0x");
+  Hx4(CFE_SB_MsgIdToValue(mid_hk));
+  S(" reg=0x");
+  Hx4(CFE_SB_MsgIdToValue(mid_reg));
+  S(" notify=0x");
+  Hx4(CFE_SB_MsgIdToValue(mid_notify));
+  S("\n");
+  // --- CFE_TBL_TaskInit AND CFE_TBL_TaskMain, both paths ------------------------------
+  // TaskInit IS NOT CALLED DIRECTLY, and that is a deliberate retreat. SB and EVS are both
+  // 100% gated, so CFE_EVS_Register, CFE_SB_CreatePipe and the two CFE_SB_Subscribe calls are
+  // real code -- a pipe really is created and two real subscriptions are made. But the pipe
+  // NAME is a process-wide resource, so a direct call leaves TBL_CMD_PIPE taken and every
+  // later TaskMain fails at CreatePipe.
+  //
+  // THE OBVIOUS FIX DOES NOT WORK AND THE REASON IS WORTH RECORDING. Calling
+  // CFE_SB_DeletePipe on the pipe TaskInit made SEGFAULTS the C reference, in
+  // CFE_SB_GetDestPtr reading address 0x809 -- which is a MsgId being walked as a pointer.
+  // The same CFE_SB_DeletePipe works earlier in this transcript (see api_del), so something
+  // about the route state TaskInit's two subscriptions leave behind is different. Not chased
+  // here, and NOT diagnosed: recorded as an observation so the next person does not spend the
+  // afternoon this cost. It also means the first draft's claim -- that the crash came from the
+  // POWER ON RESET below -- was wrong; moving the reset last did not help, and the lldb
+  // backtrace is what settled it.
+  //
+  // So TaskMain creates the pipe itself, both times, and the two runs take the two paths.
+  CFE_ES_Global.SystemState = CFE_ES_SystemState_CORE_READY;
+  CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_CORE;
+  // FIRST RUN: TBL_CMD_PIPE is free, so TaskMain's TaskInit runs all five steps -- the
+  // "cFE TBL Initialized" event above this line is the fifth. Then the loop exits when
+  // CFE_SB_ReceiveBuffer fails, because OS_QueueGet returns OS_QUEUE_EMPTY on an empty pipe:
+  // one pass, `Error reading cmd pipe`, one CFE_ES_ExitApp(CORE_APP_RUNTIME_ERROR).
+  // taskpipe=0 because there was no message to dispatch.
+  CFE_TBL_Global.CmdPipe = CFE_SB_INVALID_PIPE;
+  tbl_taskpipe_calls = 0;
+  x0 = es_taskexits;
+  CFE_TBL_TaskMain();
+  S("tbl_taskmain_loop exits=");
+  D(es_taskexits - x0);
+  S(" taskpipe=");
+  D(tbl_taskpipe_calls);
+  S(" pipe=");
+  D(CFE_ResourceId_IsDefined(CFE_TBL_Global.CmdPipe));
+  S(" req=");
+  D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+  S("\n");
+  // SECOND RUN: the name is taken now, so TaskInit fails at CreatePipe, TaskMain takes the
+  // `Application Init Failed` branch and calls CFE_ES_ExitApp(CORE_APP_INIT_ERROR) -- which
+  // drives the real CFE_ES_ResetCFE and a POWER ON RESET, `psp_restart 2` in the transcript.
+  // It goes LAST in the block for that reason.
+  //
+  // TWO ExitApp CALLS COME OUT OF ONE TaskMain here, and that is NASA's code behaving exactly
+  // as written. CFE_ES_ExitApp "will not return" in flight; in this driver it does, so control
+  // falls past the `if`, the loop is never entered because Status is already an error, and the
+  // bottom CFE_ES_ExitApp(CORE_APP_RUNTIME_ERROR) runs too. The driver IS the "except under
+  // unit test" case NASA's own comment names.
+  //
+  // AND THE TWO PRINTF LINES ARE IDENTICAL, which is worth stating rather than leaving for
+  // someone to notice. `exits=1 taskpipe=0 req=9` both times: es_taskexits counts OS_TaskExit,
+  // and the extra ExitApp in this run does a PROCESSOR RESET instead of reaching OS_TaskExit,
+  // so the count does not move. (A third draft claimed `exits=2` here; the transcript says
+  // otherwise.) What separates the two paths is the SYSLOG, which is compared just as
+  // strictly: `Error reading cmd pipe` and one ExitApp line above against `Application Init
+  // Failed`, a POWER ON RESET and three ExitApp lines here. The printf fields are the weaker
+  // half of this assertion and are kept only because they say both runs TERMINATED and neither
+  // dispatched a message.
+  tbl_taskpipe_calls = 0;
+  x0 = es_taskexits;
+  CFE_TBL_TaskMain();
+  S("tbl_taskmain_initfail exits=");
+  D(es_taskexits - x0);
+  S(" taskpipe=");
+  D(tbl_taskpipe_calls);
+  S(" req=");
+  D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+  S("\n");
+  CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_EXTERNAL;
+  CFE_ES_Global.SystemState = CFE_ES_SystemState_UNDEFINED;
 }
 // --- cfe_tbl_internal.c: CFE_TBL_EarlyInit -------------------------------------
 // THE OBJECT TABLE'S FIRST HOOK, and until this block it was only an ADDRESS. cfe_tbl_objtab.c
@@ -12033,6 +12168,7 @@ I64 main()
     TblInternalExercise();
     TblRegistryExercise();
     TblEarlyInitExercise();
+    TblTaskExercise();
     // --- tbl: CFE_TBL_Global IS 592,056 BYTES AND EVERY OFFSET IN IT HAS TO BE REACHABLE
     // ------------------------------------------------------------------------------------
     // This is not a translation of anything. It is the test that has to pass BEFORE the 7,780
