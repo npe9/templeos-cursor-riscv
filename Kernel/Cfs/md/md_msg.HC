@@ -66,6 +66,9 @@
 // are written out and check_constants compares them against NASA's own expansion.
 #define MD_HK_TLM_MID         0x890
 #define MD_DWELL_PKT_MID_BASE 0x891
+#define MD_CMD_MID            0x1890
+#define MD_SEND_HK_MID        0x1891
+#define MD_WAKEUP_MID         0x1892
 
 #define MD_INTERNAL_PIPE_DEPTH  50
 #define MD_INTERNAL_MISSION_REV 0xFF

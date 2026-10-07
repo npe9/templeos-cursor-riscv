@@ -117,6 +117,7 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "md_dwell_pkt.h"
 #include "md_dwell_tbl.h"
 #include "md_cmds.h"
+#include "md_dispatch.h"
 #include "md_utils.h"
 #include "md_tbldefs.h"
 #include "md_tblstruct.h"
@@ -690,16 +691,19 @@ static CFE_ES_ResetData_t es_reset_area;
  * said which object the exercise was reading. tools/cfs/check_oracle_globals.py
  * found all five of these at once and now forbids them. */
 
-/* AND MEMORY DWELL'S STATE, for the same reason: NASA defines the instance in md_app.c, which
- * is not gated, so it sits here on this half exactly as the translation's sits beside its type
- * in md_global.HC. 2,608 bytes. It must be DELETED when md_app.c is gated -- note that a C
- * tentative definition in two translation units merges SILENTLY rather than failing to link,
- * so nothing would tell us. */
-MD_AppData_t MD_AppData;
+/* MD_AppData IS NASA'S, defined in md_app.c, which is gated as of this commit. It sat HERE
+ * until then, with the note that a C tentative definition in two translation units merges
+ * SILENTLY -- and tools/cfs/check_oracle_globals.py, written four commits ago for exactly this
+ * deadline, is what would have refused to let the overlap survive. */
 /* The ground's view of a dwell table, 2,040 bytes. File scope because the HolyC half needs it
  * there -- limit 22, a big frame makes an unrelated file-scope read return zero -- and the two
  * halves stay one shape. */
 static MD_DwellTableLoad_t md_load;
+/* The dispatcher's command buffer. A CFE_SB_Buffer_t is only an 8-byte alignment union, so a
+ * command is built in the LARGEST of the six command types -- MD_JamDwellCmd_t, 88 bytes --
+ * and its address passed as the buffer; `&BufPtr->Msg` is at offset 0 either way. File scope
+ * because the HolyC half needs it there (limit 22) and the two halves stay one shape. */
+static MD_JamDwellCmd_t md_dcmd;
 /* Backing memory for the load buffers the tbl exercise hands out, plus the four event ids it
  * walks. File scope because the HolyC half needs them there (limit 22, and HolyC has no
  * file-scope aggregate initialiser inside a function), and the two halves stay one shape. */
@@ -11733,6 +11737,274 @@ int main(void)
                    (unsigned long)T->Countdown, md_sim_reads - r0,
                    (unsigned long)((CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter -
                                     md_sends0) & 0xFF));
+        }
+
+        /* --- md_app.c and md_dispatch.c -- MD's startup, loop and front door ------------
+         * The last two sources, and a CYCLE: MD_AppMain calls MD_TaskPipe from the dispatcher
+         * and the dispatcher's switch calls MD_SendHkCmd from the app. module_deps.py reports
+         * them as 775 lines that have to go in together -- and it only said so once its owner
+         * map stopped attributing MD_TaskPipe to the EDS variant.
+         *
+         * THIS BLOCK IS LAST AMONG THE MD BLOCKS ON PURPOSE. It re-runs CFE_TBL_EarlyInit to
+         * clear the registry so MD can register its OWN four tables -- and the md_cmds block
+         * depends on the table the md_dwell_tbl block registered. Placed earlier, it pulled
+         * that table out from under md_cmds and every editor there answered
+         * CFE_TBL_ERR_NEVER_LOADED: a 54-line diff that was entirely self-inflicted.
+         *
+         * MD_AppMain IS CALLED AFTER THE PIPE IT NEEDS IS ALREADY TAKEN, and that is a hang I
+         * measured rather than reasoned about. Its loop treats CFE_SB_TIME_OUT as "no action",
+         * so on a real pipe with MD_SB_TIMEOUT of 1000 ms nothing ends it. An AppInit that
+         * FAILS sets APP_ERROR, and RunLoop's FIRST test -- on the caller's own RunStatus,
+         * before any record lookup -- skips the loop. Calling MD_InitSoftwareBusServices first
+         * takes MD_CMD_PIPE, so AppInit's CreatePipe refuses the duplicate. Each init function
+         * is then exercised on its SUCCESS path directly and its FAILURE path through AppMain.
+         *
+         * Pre-setting the app's ControlReq did NOT work, and a direct MD_AppInit() call showed
+         * why the loop was not the problem at all: it already returned 0xCA000005. `sample` on
+         * the live process named the real culprit in one line -- CFE_ES_ExitApp waiting in
+         * OS_TaskDelay, because this app is EXTERNAL and only a CORE app's ExitApp returns.
+         * Reasoning got it wrong twice; the stack got it immediately. */
+        {
+            MD_SendHkCmd_t   hk;
+            int32            st;
+            int              k, used;
+            long             x0;
+            MD_HkTlm_t      *hp;
+
+            for (used = 0, k = 0; k < CFE_PLATFORM_ES_MAX_MEMORY_POOLS; k++)
+            {
+                CFE_ES_MemPoolRecord_t *pr = &CFE_ES_Global.MemPoolTable[k];
+                if (CFE_ES_MemPoolRecordIsUsed(pr) &&
+                    pr->BaseAddr == (cpuaddr)&CFE_TBL_Global.Buf.Partition)
+                {
+                    if (CFE_ES_PoolDelete(pr->PoolID) == CFE_SUCCESS)
+                    {
+                        used++;
+                    }
+                }
+            }
+            printf("mda_poolgc freed=%d\n", used);
+            es_set_ctx(1);
+            CFE_TBL_EarlyInit();
+            CFE_TBL_InitData();
+            CFE_TBL_Global.TableTaskAppId = CFE_ES_APPID_C(ES_CTX_APPID(1));
+            for (used = 0, k = 0; k < CFE_PLATFORM_ES_MAX_MEMORY_POOLS; k++)
+            {
+                if (CFE_ES_MemPoolRecordIsUsed(&CFE_ES_Global.MemPoolTable[k]))
+                {
+                    used++;
+                }
+            }
+            printf("mda_pools %d/%d\n", used, CFE_PLATFORM_ES_MAX_MEMORY_POOLS);
+
+            /* (a) MD_InitControlStructures: four zeroed blocks with Countdown 1, which is what
+             * makes the first wakeup collect rather than wait. The Signature is strncpy'd from
+             * "" over the whole field, so a byte DEEP in it must be zero too -- the field is
+             * poisoned with 0xCC first so that says something. */
+            memset(MD_AppData.MD_DwellTables, 0xCC, sizeof(MD_AppData.MD_DwellTables));
+            MD_InitControlStructures();
+            printf("mda_ctrl cd=%lu,%lu,%lu,%lu ena=%u sig0=%u sig20=%u n=%u\n",
+                   (unsigned long)MD_AppData.MD_DwellTables[0].Countdown,
+                   (unsigned long)MD_AppData.MD_DwellTables[1].Countdown,
+                   (unsigned long)MD_AppData.MD_DwellTables[2].Countdown,
+                   (unsigned long)MD_AppData.MD_DwellTables[3].Countdown,
+                   (unsigned)MD_AppData.MD_DwellTables[0].Enabled,
+                   (unsigned char)MD_AppData.MD_DwellTables[0].Signature[0],
+                   (unsigned char)MD_AppData.MD_DwellTables[0].Signature[20],
+                   (unsigned)MD_AppData.MD_DwellTables[0].AddrCount);
+
+            /* (b) MD_InitSoftwareBusServices, the success path: the HK packet gets its MsgId,
+             * four dwell packets get theirs, MD_CMD_PIPE is created and three subscriptions
+             * made. The HK id is read back OUT of the header, because CFE_MSG_Init is the only
+             * thing that puts it there. */
+            MD_AppData.CmdPipe = CFE_SB_INVALID_PIPE;
+            st                 = MD_InitSoftwareBusServices();
+            {
+                CFE_SB_MsgId_t mid = CFE_SB_INVALID_MSG_ID;
+                CFE_MSG_GetMsgId(CFE_MSG_PTR(MD_AppData.HkPkt.TelemetryHeader), &mid);
+                printf("mda_sbs st=%ld pipe=%d hkmid=0x%04x\n", (long)st,
+                       (int)CFE_RESOURCEID_TEST_DEFINED(MD_AppData.CmdPipe),
+                       (unsigned)CFE_SB_MsgIdToValue(mid));
+            }
+
+            /* (c) MD_InitTableServices, four CRITICAL tables. The names are built by snprintf
+             * from MD_DWELL_TABLE_BASENAME, so printing two of them asserts that loop. The
+             * file /cf/md_dw01.tbl EXISTS on this driver's RAM disk but is a dump of ANOTHER
+             * table left by an earlier section, so CFE_TBL_Load answers
+             * CFE_TBL_ERR_FILE_FOR_WRONG_TABLE and NASA's loop stops at the FIRST table --
+             * which is why one handle is set and the fourth name is empty. NASA's event 102
+             * names the offending file and table in the transcript. */
+            memset(MD_AppData.MD_TableHandle, 0, sizeof(MD_AppData.MD_TableHandle));
+            st = MD_InitTableServices();
+            printf("mda_tbl st=%ld h=%d,%d,%d,%d names=%s,%s\n", (long)st,
+                   (int)MD_AppData.MD_TableHandle[0], (int)MD_AppData.MD_TableHandle[1],
+                   (int)MD_AppData.MD_TableHandle[2], (int)MD_AppData.MD_TableHandle[3],
+                   MD_AppData.MD_TableName[0], MD_AppData.MD_TableName[3]);
+
+            /* (d) MD_ManageDwellTable with nothing pending: GetStatus answers CFE_SUCCESS,
+             * which matches none of the three cases, so the final else sets the flag and the
+             * function returns that status. The point is that it TERMINATES -- the body is a
+             * `while (!FinishedManaging)` whose only exit is one of four branches setting the
+             * flag, and a translation that missed one would HANG rather than differ. */
+            printf("mda_manage %ld\n", (long)MD_ManageDwellTable(0));
+
+            /* (e) MD_SendHkCmd: the control state projected into the packet. The enable MASK is
+             * the field worth checking -- each flag is shifted into its own bit, so tables 1
+             * and 3 enabled must give 0x0005 and not 0x0003. */
+            MD_AppData.CommandCounter                 = 11;
+            MD_AppData.CommandErrorCounter            = 22;
+            MD_AppData.MD_DwellTables[0].Enabled      = MD_Dwell_States_ENABLED;
+            MD_AppData.MD_DwellTables[2].Enabled      = MD_Dwell_States_ENABLED;
+            MD_AppData.MD_DwellTables[0].AddrCount    = 3;
+            MD_AppData.MD_DwellTables[0].Rate         = 9;
+            MD_AppData.MD_DwellTables[0].DataSize     = 6;
+            MD_AppData.MD_DwellTables[0].PktOffset    = 4;
+            MD_AppData.MD_DwellTables[0].CurrentEntry = 2;
+            MD_AppData.MD_DwellTables[0].Countdown    = 5;
+            memset(&hk, 0, sizeof(hk));
+            st = MD_SendHkCmd(&hk);
+            hp = &MD_AppData.HkPkt;
+            printf("mda_hk st=%ld valid=%u invalid=%u mask=0x%04x n0=%u rate0=%u off0=%u"
+                   " bytes0=%u ent0=%u cd0=%u\n",
+                   (long)st, (unsigned)hp->Payload.ValidCmdCntr,
+                   (unsigned)hp->Payload.InvalidCmdCntr, (unsigned)hp->Payload.DwellEnabledMask,
+                   (unsigned)hp->Payload.DwellTblAddrCount[0],
+                   (unsigned)hp->Payload.NumWaitsPerPkt[0],
+                   (unsigned)hp->Payload.DwellPktOffset[0], (unsigned)hp->Payload.ByteCount[0],
+                   (unsigned)hp->Payload.DwellTblEntry[0], (unsigned)hp->Payload.Countdown[0]);
+
+            /* (f) MD_AppMain. THE APP MUST BE A **CORE** APP FOR ExitApp TO RETURN -- see the
+             * note at the top of this block. And exits=0 IS NOT THE WITNESS: for a CORE app
+             * with APP_ERROR, rather than one of the CORE_APP_*_ERROR statuses, ExitApp
+             * REFUSES and logs `Cannot Exit CORE Application`. That syslog line is what proves
+             * ExitApp was reached; a zero count is also what "never called" looks like. */
+            CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_CORE;
+            x0                             = es_taskexits;
+            MD_AppMain();
+            CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_EXTERNAL;
+            printf("mda_appmain exits=%ld run=%lu cc=%u ec=%u\n", es_taskexits - x0,
+                   (unsigned long)MD_AppData.RunStatus, (unsigned)MD_AppData.CommandCounter,
+                   (unsigned)MD_AppData.CommandErrorCounter);
+        
+            /* --- md_dispatch.c: the length check, the switch, and the pipe router ---------
+             * A CFE_SB_Buffer_t is only an 8-byte ALIGNMENT UNION, so a command is built in an
+             * MD_JamDwellCmd_t -- the largest of the six at 88 bytes -- and its address passed
+             * as the buffer. `&BufPtr->Msg` is at offset 0 either way, which is what makes
+             * that substitution exact rather than convenient.
+             *
+             * THE COUNTERS ARE THE WITNESS, not the return values: MD_ProcessGroundCommand and
+             * MD_TaskPipe both return void, and MD_VerifyCmdLength's bool says only whether
+             * the length matched. What proves a command was ROUTED is which counter moved. */
+            {
+                MD_JamDwellCmd_t *cb = &md_dcmd;
+                uint8             ccs[6];
+                size_t            szs[6];
+                int               i2;
+
+                ccs[0] = MD_NOOP_CC;          szs[0] = sizeof(MD_NoopCmd_t);
+                ccs[1] = MD_RESET_CNTRS_CC;   szs[1] = sizeof(MD_ResetCountersCmd_t);
+                ccs[2] = MD_START_DWELL_CC;   szs[2] = sizeof(MD_StartDwellCmd_t);
+                ccs[3] = MD_STOP_DWELL_CC;    szs[3] = sizeof(MD_StopDwellCmd_t);
+                ccs[4] = MD_JAM_DWELL_CC;     szs[4] = sizeof(MD_JamDwellCmd_t);
+                ccs[5] = MD_SET_SIGNATURE_CC; szs[5] = sizeof(MD_SetSignatureCmd_t);
+
+                /* (g) MD_VerifyCmdLength both ways. The mismatch arm raises an event AND
+                 * increments the error counter, so the counter is what separates them. */
+                memset(cb, 0, sizeof(*cb));
+                CFE_MSG_Init(CFE_MSG_PTR(cb->Header), CFE_SB_ValueToMsgId(MD_CMD_MID),
+                             sizeof(MD_NoopCmd_t));
+                MD_AppData.CommandErrorCounter = 0;
+                i2 = (int)MD_VerifyCmdLength(CFE_MSG_PTR(cb->Header), sizeof(MD_NoopCmd_t));
+                printf("mdd_len ok=%d ec=%u\n", i2, (unsigned)MD_AppData.CommandErrorCounter);
+                i2 = (int)MD_VerifyCmdLength(CFE_MSG_PTR(cb->Header), sizeof(MD_NoopCmd_t) + 1);
+                printf("mdd_len bad=%d ec=%u\n", i2, (unsigned)MD_AppData.CommandErrorCounter);
+
+                /* (h) every command code through the switch, each with ITS OWN correct length
+                 * so VerifyCmdLength passes and the handler actually runs. The counters after
+                 * each dispatch are what say which arm was taken: a routing error would move
+                 * the wrong one or neither. */
+                for (i2 = 0; i2 < 6; i2++)
+                {
+                    memset(cb, 0, sizeof(*cb));
+                    CFE_MSG_Init(CFE_MSG_PTR(cb->Header), CFE_SB_ValueToMsgId(MD_CMD_MID),
+                                 szs[i2]);
+                    CFE_MSG_SetFcnCode(CFE_MSG_PTR(cb->Header), ccs[i2]);
+                    /* give Jam and SetSignature arguments that reach their success arm */
+                    cb->Payload.TableId    = 1;
+                    cb->Payload.EntryId    = 1;
+                    cb->Payload.FieldLength = 0;
+                    MD_AppData.CommandCounter      = 0;
+                    MD_AppData.CommandErrorCounter = 0;
+                    MD_ProcessGroundCommand((CFE_SB_Buffer_t *)cb);
+                    printf("mdd_cc%d cc=%u ec=%u\n", (int)ccs[i2],
+                           (unsigned)MD_AppData.CommandCounter,
+                           (unsigned)MD_AppData.CommandErrorCounter);
+                }
+
+                /* (i) a command code nothing claims: the default arm */
+                memset(cb, 0, sizeof(*cb));
+                CFE_MSG_Init(CFE_MSG_PTR(cb->Header), CFE_SB_ValueToMsgId(MD_CMD_MID),
+                             sizeof(MD_NoopCmd_t));
+                CFE_MSG_SetFcnCode(CFE_MSG_PTR(cb->Header), 99);
+                MD_AppData.CommandErrorCounter = 0;
+                MD_ProcessGroundCommand((CFE_SB_Buffer_t *)cb);
+                printf("mdd_badcc ec=%u\n", (unsigned)MD_AppData.CommandErrorCounter);
+
+                /* (j) THE PIPE ROUTER, all four branches. MD_TaskPipe caches the three message
+                 * ids in STATIC LOCALS on its first call -- named CMD_MID, SEND_HK_MID and
+                 * WAKE_UP_MID, the same names cfe_es_dispatch, cfe_evs_dispatch and
+                 * cfe_ta_dispatch already use. Those three collided once when a HolyC static
+                 * local became a global under its bare name, and MD is the FOURTH user in one
+                 * translation unit; if the scoping regressed, MD's cache would hold a cFE
+                 * module's id and these four lines would route to the wrong handler. That is
+                 * the check, not an aside.
+                 *
+                 * A WAKEUP runs the dwell loop, so md_sim_reads is its witness. A HK request
+                 * runs MD_SendHkCmd, so the packet's ValidCmdCntr is its witness. A ground
+                 * command with NOOP moves CommandCounter. An unknown id moves the error
+                 * counter and nothing else. */
+                md_sim_fill();
+                memset(MD_AppData.MD_DwellTables, 0, sizeof(MD_AppData.MD_DwellTables));
+                MD_AppData.MD_DwellTables[0].Enabled  = MD_Dwell_States_ENABLED;
+                MD_AppData.MD_DwellTables[0].Entry[0].Length          = 2;
+                MD_AppData.MD_DwellTables[0].Entry[0].Delay           = 1;
+                MD_AppData.MD_DwellTables[0].Entry[0].ResolvedAddress = MD_SIM_WINDOW_BASE;
+                MD_UpdateDwellControlInfo(0);
+                MD_AppData.MD_DwellTables[0].Countdown = 1;
+                memset(cb, 0, sizeof(*cb));
+                CFE_MSG_Init(CFE_MSG_PTR(cb->Header), CFE_SB_ValueToMsgId(MD_WAKEUP_MID),
+                             sizeof(MD_Wakeup_t));
+                x0 = md_sim_reads;
+                MD_TaskPipe((CFE_SB_Buffer_t *)cb);
+                printf("mdd_pipe_wakeup reads=%ld\n", md_sim_reads - x0);
+
+                MD_AppData.CommandCounter = 77;
+                memset(cb, 0, sizeof(*cb));
+                CFE_MSG_Init(CFE_MSG_PTR(cb->Header), CFE_SB_ValueToMsgId(MD_SEND_HK_MID),
+                             sizeof(MD_SendHkCmd_t));
+                MD_TaskPipe((CFE_SB_Buffer_t *)cb);
+                printf("mdd_pipe_hk valid=%u\n",
+                       (unsigned)MD_AppData.HkPkt.Payload.ValidCmdCntr);
+
+                memset(cb, 0, sizeof(*cb));
+                CFE_MSG_Init(CFE_MSG_PTR(cb->Header), CFE_SB_ValueToMsgId(MD_CMD_MID),
+                             sizeof(MD_NoopCmd_t));
+                CFE_MSG_SetFcnCode(CFE_MSG_PTR(cb->Header), MD_NOOP_CC);
+                MD_AppData.CommandCounter      = 0;
+                MD_AppData.CommandErrorCounter = 0;
+                MD_TaskPipe((CFE_SB_Buffer_t *)cb);
+                printf("mdd_pipe_cmd cc=%u ec=%u\n", (unsigned)MD_AppData.CommandCounter,
+                       (unsigned)MD_AppData.CommandErrorCounter);
+
+                memset(cb, 0, sizeof(*cb));
+                CFE_MSG_Init(CFE_MSG_PTR(cb->Header), CFE_SB_ValueToMsgId(0x1899),
+                             sizeof(MD_NoopCmd_t));
+                MD_AppData.CommandCounter      = 0;
+                MD_AppData.CommandErrorCounter = 0;
+                MD_TaskPipe((CFE_SB_Buffer_t *)cb);
+                printf("mdd_pipe_badmid cc=%u ec=%u\n", (unsigned)MD_AppData.CommandCounter,
+                       (unsigned)MD_AppData.CommandErrorCounter);
+            }
         }
 
         printf("tim_objtab %s %d %d %d %lu %lu\n", CFE_TIME_ModuleEntry.Name,

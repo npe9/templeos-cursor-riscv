@@ -126,7 +126,9 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $MD/fsw/src/md_utils.c
        $MD/fsw/src/md_dwell_pkt.c
        $MD/fsw/src/md_dwell_tbl.c
-       $MD/fsw/src/md_cmds.c"
+       $MD/fsw/src/md_cmds.c
+       $MD/fsw/src/md_app.c
+       $MD/fsw/src/md_dispatch.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"

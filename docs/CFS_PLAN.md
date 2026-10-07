@@ -2085,3 +2085,117 @@ on it, not a property.
 The corrected order for MD's remaining work: **`md_app.c` and `md_dispatch.c` are a genuine
 2-source cycle of 775 lines**, and are gated together, the same shape as every cFE module's
 task/dispatch pair and the same decision tbl's 8-source cycle got.
+
+### md_app.c and md_dispatch.c — the last two, gated together, and MD is complete
+
+A **cycle**: `MD_AppMain` calls `MD_TaskPipe` from the dispatcher, and the dispatcher's switch
+calls `MD_SendHkCmd` from the app. 775 lines that go in together, the same shape as every cFE
+module's task/dispatch pair — and `module_deps.py` only said so once its owner map stopped
+attributing `MD_TaskPipe` to the EDS variant.
+
+With these, **MD is 100%: six sources, 2,288 lines, no stand-ins**, and the first cFS app in the
+port is complete.
+
+#### `check_oracle_globals` collected on a deadline it was given four commits early
+
+`MD_AppData` is defined in `md_app.c`. Until this commit the oracle supplied it, because NASA's
+source was not gated — and the note said a C tentative definition in two translation units
+*merges silently*. The gate written for that moment did exactly what it was for:
+
+```
+FAIL check-oracle-globals — the oracle defines a global that a GATED NASA source also defines.
+    tests/cfs/oracle_ccsdspri.c defines MD_AppData, and so does md_app.c
+```
+
+#### The hang, and why reasoning lost twice to one stack trace
+
+`MD_AppMain` hung. Three attempts to explain it:
+
+1. **The transcript blamed the wrong block.** Output is block-buffered, so the last visible line
+   was `mdt_reg` — three sections earlier — making it look as though `CFE_TBL_Load` had started
+   hanging in a block that had worked minutes before. A flushed `fprintf(stderr, …)` before each
+   call named `MD_AppMain`. That is the recorded "read a block-buffered log" lesson, paid again.
+2. **I assumed the loop was spinning.** `MD_AppMain` treats `CFE_SB_TIME_OUT` as "no action", so
+   on a real pipe with a 1000 ms timeout nothing ends it — a plausible story. Pre-setting the
+   app's `ControlReq` didn't help, because `CFE_ES_RunLoop` reaches its control check only after
+   a record lookup. A direct `MD_AppInit()` call then showed it was **already failing as
+   intended** (`0xCA000005`, the duplicate pipe), so the loop was being skipped correctly and my
+   model was simply wrong.
+3. **`sample` on the live process named it in one line:** `CFE_ES_ExitApp → OS_TaskDelay`.
+
+`CFE_ES_ExitApp` calls `OS_TaskExit` for a **CORE** app and otherwise waits to be deleted by ES,
+which never happens in a single-process driver. Three other sections of the oracle already set
+`AppTable[1].Type = CFE_ES_AppType_CORE` for precisely this reason — the answer was in the file
+the whole time, and two rounds of inference did not find it.
+
+**The ordering that makes the loop skip is kept, because it is better than a shortcut.** Calling
+`MD_InitSoftwareBusServices` first takes `MD_CMD_PIPE`, so `AppInit`'s `CreatePipe` refuses the
+duplicate, `AppInit` fails, and `RunLoop`'s *first* test — on the caller's own `RunStatus`,
+before any lock or lookup — ends the loop before it runs once. Each init function is then
+exercised on its success path directly and its failure path through `AppMain`.
+
+#### `exits=0` is not a witness, and the block says so
+
+For a CORE app with `APP_ERROR` — rather than one of the `CORE_APP_*_ERROR` statuses —
+`CFE_ES_ExitApp` **refuses** and logs `Cannot Exit CORE Application`. So the exit counter reads
+zero, which is also exactly what "never called" looks like. The syslog line is what proves
+`ExitApp` was reached, and that is written at the site rather than left for a reader to assume
+the zero meant something.
+
+#### Two honest results the run produced by itself
+
+**`/cf/md_dw01.tbl` exists on the driver's RAM disk and is a dump of a different table.** An
+earlier section wrote it. So `CFE_TBL_Load` answers `CFE_TBL_ERR_FILE_FOR_WRONG_TABLE` and NASA's
+init loop stops at the *first* table — one handle set, the fourth name empty. NASA's event 102
+names the offending file and the table it actually belongs to. Deterministic on both halves,
+because the same code produces the file on both.
+
+**And my own block broke the one before it.** Placed before `md_cmds`, this block's
+`CFE_TBL_EarlyInit` cleared the registry that `md_cmds`' editors depend on, and every one of them
+answered `CFE_TBL_ERR_NEVER_LOADED` — a 54-line diff that was entirely self-inflicted. It belongs
+last among the MD blocks. The fix then went wrong twice more: the move anchored on
+`cfe_time_objtab.c ---`, which occurs more than once, so the block landed *before*
+`md_dwell_tbl`; moving it again from there left the order fully scrambled. Restored both halves
+from backups, verified line counts and block order, and re-inserted once against an anchor that
+occurs exactly once. **Anchor uniqueness is the requirement — `s.index` on a repeated marker
+picks the wrong one silently**, which is the `parser-edit-safety` lesson in a new guise.
+
+#### The four routing branches each have a witness that only moves if that branch ran
+
+```
+mdd_pipe_wakeup reads=1      the dwell loop read one address through the simulated window
+mdd_pipe_hk     valid=77     MD_SendHkCmd copied the command counter into the packet
+mdd_pipe_cmd    cc=1 ec=0    the ground command reached the switch
+mdd_pipe_badmid cc=0 ec=1    an unknown id moves the error counter and nothing else
+```
+
+That group is also the **static-local collision check**. `MD_TaskPipe` caches its three MsgIds in
+statics named `CMD_MID`, `SEND_HK_MID` and `WAKE_UP_MID` — the same names `cfe_es_dispatch`,
+`cfe_evs_dispatch` and `cfe_ta_dispatch` already use, and those three collided once when a HolyC
+static local became a global under its bare name (limit #12). MD is the **fourth** user of those
+names in one translation unit. If that scoping had regressed, MD's cache would hold a cFE
+module's id and these four lines would route to the wrong handler. The routing *is* the check.
+
+One line reads oddly and is correct: `mdd_cc1 cc=0`. `MD_ResetCountersCmd` zeroes **both**
+counters, so the one command whose success looks like nothing happened is the reset.
+
+#### Six mutations, all caught
+
+| mutation | transcript |
+|---|---|
+| `InitControlStructures` leaves `Countdown` at 0 | `cd=1,1,1,1` → `cd=0,0,0,0` |
+| the HK enable mask drops the per-table shift | `mask=0x0005` → `0x0001` |
+| the HK packet's MsgId is never initialised | `hkmid=0x0890` → `0x0000`, and the send becomes `Invalid MsgId(0x0)` |
+| `VerifyCmdLength` does not count the bad command | `ec=1` → `ec=0` |
+| the dispatcher's NOOP case falls through to RESET | `cc=1` → `cc=0`, with `Reset Counters Cmd Received` appearing twice |
+| the pipe router never fills its MsgId cache | all four branches become `Invalid command pipe message ID: 0x00001892` |
+
+The last is the static-local check resolving. With the cache unfilled every route falls through
+to the unknown-id arm, which is what shows the cache fill is load-bearing — and so, from the
+clean run, that MD's three statics are correctly scoped despite being the fourth user of those
+names in one translation unit.
+
+The third is worth noting for the shape rather than the value: an uninitialised MsgId does not
+merely change a printed field, it turns the HK transmit into `Send Err:Invalid MsgId(0x0)` — the
+same silent-rejection failure that `md_dwell_pkt`'s exercise had for real before `CFE_MSG_Init`
+was added there. Twice in one app, the thing that makes a send observable is the MsgId.
