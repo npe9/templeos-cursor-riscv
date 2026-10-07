@@ -11,6 +11,9 @@ OSAL_SHA="dad0ee99c121f2ecc11f8c0798c1e836e41d8ab1"
 # The first cFS APP. Pinned on the dev branch for the same reason cFE is: cFE here is
 # 7.0.1+dev, a day later than this commit, and MD's v7.0.1 tag predates both.
 MD_SHA="65eb7b3b0aa8acd05076128a623cd696582b6d7c"
+# The second cFS APP, and the OTHER memory app: MM pokes and dumps arbitrary memory where MD
+# only reads it, so it needs the WRITE half of the simulated window MD established.
+MM_SHA="0a767de5bbb6da05d7b5705e75221495aca444f9"
 mkdir -p "$V"
 fetch() {
   name="$1"; url="$2"; sha="$3"
@@ -28,4 +31,5 @@ fetch cFE  https://github.com/nasa/cFE.git  "$CFE_SHA"
 fetch osal https://github.com/nasa/osal.git "$OSAL_SHA"
 fetch PSP  https://github.com/nasa/PSP.git  "$PSP_SHA"
 fetch MD   https://github.com/nasa/MD.git   "$MD_SHA"
+fetch MM   https://github.com/nasa/MM.git   "$MM_SHA"
 echo "vendor/shim is committed in this repo: it stands in for the headers CMake would generate."

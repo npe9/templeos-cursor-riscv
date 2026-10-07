@@ -2199,3 +2199,58 @@ The third is worth noting for the shape rather than the value: an uninitialised 
 merely change a printed field, it turns the HK transmit into `Send Err:Invalid MsgId(0x0)` — the
 same silent-rejection failure that `md_dwell_pkt`'s exercise had for real before `CFE_MSG_Init`
 was added there. Twice in one app, the thing that makes a send observable is the MsgId.
+
+---
+
+## MM (Memory Manager) is the second app, and the prefix list that was wrong four times
+
+MD is done, so the next app. Of the three API-current candidates, **MM at 4,085 lines is the
+smallest and the best fit**: it is the *other* memory app. MD only ever reads memory; MM pokes,
+fills, loads from a file and dumps to one — so the simulated memory window MD established
+already answers its hardest design question, and MM needs the **write** half of it.
+
+Pinned at `0a767de5` and vendored, with 14 shim headers. Its missing symbols are all the
+established patterns:
+
+| missing | pattern |
+|---|---|
+| `CFE_PSP_MemWrite8/16/32` | the write counterparts of MD's reads, same window |
+| `CFE_PSP_EepromWrite8/16/32`, `WriteEnable/Disable` | a second simulated region |
+| `CFE_ES_MEMADDRESS_C`, `_TO_PTR` | macros written out |
+| `OS_FILESTAT_SIZE` | an OSAL accessor macro |
+
+Nine gated sources, 3,739 unconditional lines plus `mm_dispatch.c`.
+
+### The prefix list in module_deps was wrong four times, so there is no longer one
+
+`module_deps.py` matched call and reference edges with a hard-coded prefix alternation. It had
+already been `CFE_\w+` (which found **nothing** inside MD — five independent singletons in pure
+size order) and then `(?:CFE|MD)_\w+`. MM arrived and reported **ten clean singletons with no
+edges at all**, for exactly the same reason, in exactly the same confident shape.
+
+A hard-coded alternation is a list someone has to remember to extend, and the failure is silent.
+So the pattern is now simply `[A-Za-z_]\w*` — any identifier. That is safe and strictly better,
+because **a name only becomes an edge when one of this module's own sources defines it**:
+`owner` is built from `defines()` over those sources and nothing else, so every libc call, every
+local, and every cFE API the module merely consumes falls out at that lookup.
+
+**Removing it corrected a cFE module too.** EVS's private helpers are named `EVS_SendEvent`,
+`EVS_AddLog` and `EVS_GenerateEventTelemetry` — **no `CFE_` prefix** — so those edges were never
+counted. EVS reported a 2-source cycle; its real cycle is **five**: `cfe_evs.c`,
+`cfe_evs_dispatch.c`, `cfe_evs_log.c`, `cfe_evs_task.c` and `cfe_evs_utils.c`.
+
+Measured across all twelve modules, EVS is the **only** answer that changed. es's 14, sb's 4,
+tbl's 8, time's 3 and 2, sbr's 2, ta's 2 and md's 2 are byte-identical — which is what makes the
+EVS correction trustworthy rather than alarming, and tbl's 8 remains the number this plan was
+written against.
+
+### MM's order, and why it has no app/dispatch cycle
+
+```
+mm_utils → mm_mem8 → mm_mem16 → mm_mem32 → mm_dump → mm_load → mm_cmds → mm_dispatch → mm_app
+```
+
+Fully acyclic, no stand-ins at any step. `mm_app` comes **last**, after `mm_dispatch` —
+`mm_app.c` calls `MM_TaskPipe`, and `mm_dispatch.c` calls only `mm_cmds.c` and `mm_utils.c`.
+That is the difference from MD: `MM_SendHkCmd` lives in `mm_cmds.c` rather than in the app, so
+there is nothing for the dispatcher to call back into.

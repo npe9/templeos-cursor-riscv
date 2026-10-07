@@ -25,6 +25,20 @@ WHAT DID NOT MOVE ACROSS EITHER FIX, and so is the actual anchor: tbl's EIGHT-so
 time's THREE and sbr's TWO. None of those runs through a dispatch file, so none of them was
 ever mis-attributed, and the tbl number is the one the plan was written against.
 
+AND THEN THE PREFIX LIST WENT WRONG A THIRD AND FOURTH TIME, which is why there is no longer
+one. `CFE_\w+` found nothing inside MD; `(?:CFE|MD)_\w+` found nothing inside MM -- ten clean
+singletons in size order, no edges at all. Removing the alternation entirely also corrected a
+module: EVS's private helpers are named `EVS_SendEvent`, `EVS_AddLog`,
+`EVS_GenerateEventTelemetry` with NO `CFE_` prefix, so those edges were never counted and EVS
+reported a 2-source cycle. Its real cycle is FIVE -- cfe_evs.c, _dispatch.c, _log.c, _task.c
+and _utils.c. Measured across all twelve: EVS is the only answer that changed, and es's 14,
+sb's 4, tbl's 8, time's 3 and 2, sbr's 2, ta's 2 and md's 2 are byte-identical.
+
+MM's answer, for the record: fully ACYCLIC, ten singletons in a real topological order --
+mm_utils, mm_mem8, mm_mem16, mm_mem32, mm_dump, mm_load, mm_cmds, mm_dispatch, mm_app. Note
+mm_app is LAST, after mm_dispatch: MM_SendHkCmd lives in mm_cmds.c rather than the app, so
+unlike MD there is no app/dispatch cycle.
+
 THE JUDGEMENT IS PER EDGE: is the stand-in a SEAM, or is it upstream LOGIC?
 
   ES, gating cfe_es_apps.c first      StartAppTask, AppCreate, CleanUpApp -- things the
@@ -72,11 +86,18 @@ import re, sys, os, glob, itertools
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPTS = os.path.join(ROOT, 'tests', 'scripts')
 
-# An app's own functions carry the app's prefix, so a CFE_-only pattern finds no edges at all
-# inside MD and reports five independent singletons -- the most confident possible wrong answer.
-# Widening is safe for the modules too: a name is only an edge if one of THIS module's sources
-# defines it, so a prefix that matches nothing here costs nothing.
-SYM = r'\b((?:CFE|MD)_\w+)'
+# NO PREFIX LIST AT ALL, AND THAT IS THE FIX FOR A BUG THAT HAPPENED THREE TIMES. This pattern
+# was `CFE_\w+`, which found no edges inside MD and reported five independent singletons in pure
+# size order -- the most confident possible wrong answer. It became `(?:CFE|MD)_\w+`, and then MM
+# arrived and reported TEN clean singletons with no edges, for exactly the same reason. A
+# hard-coded alternation of prefixes is a list someone has to remember to extend, and the failure
+# is silent and confident.
+#
+# Matching ANY identifier is safe and strictly better, because a name only becomes an edge when
+# one of THIS module's own sources DEFINES it -- `owner` is built from `defines()` over those
+# sources and nothing else. Every libc call, every local, every cFE API the module merely uses
+# falls out at that lookup. The eleven cFE modules and MD are byte-identical across the change.
+SYM = r'\b([A-Za-z_]\w*)'
 
 
 def strip(src):

@@ -38,7 +38,7 @@ CFE_MODULES = os.path.join(ROOT, "vendor", "cFE", "modules")
 # The cFS APPS, each its own repository under vendor/. Same CMakeLists shape as a cFE module
 # -- an unconditional source list plus an EDS branch -- which is why the depth parser below
 # needs no change to read one.
-APPS = ["MD"]
+APPS = ["MD", "MM"]
 
 
 def osal_build_sources():

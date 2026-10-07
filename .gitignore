@@ -139,6 +139,7 @@ vendor/osal/
 vendor/PSP/
 # MD, the first cFS APP. Same rule, same reason: fetched at a pinned commit.
 vendor/MD/
+vendor/MM/
 
 # Claude Code agent worktrees: throwaway checkouts of THIS repo that subagents run in. They
 # contain full copies of the tree, so leaving them untracked but visible makes `git status` and
