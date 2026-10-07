@@ -1376,6 +1376,29 @@ one-field check passes. A class whose interesting member happens to be first pas
 only appears when something past offset 8 is read, and then it reads as another argument's value
 rather than as zero or garbage — a plausible number.
 
+**The threshold is exactly 8, and that was worth measuring rather than assuming.** The RISC-V
+LP64D ABI passes a 16-byte struct in a *register pair*, so a 16-byte class is the case where a
+reader would expect it to work — and where a gate set at 8 would be rejecting correct code,
+which is the one failure this project treats as unacceptable. Measured with two classes in one
+probe:
+
+```
+want Two: A=111 B=222 tag=77
+  Two(16): A=111 B=77 tag=77      <-- 16 bytes: B reads the TAG. No register pair.
+want Half: A=333 B=444 tag=88
+  Half(8): A=333 B=444 tag=88     <-- 8 bytes: whole, and the tag is intact
+```
+
+So one register, never two, and 8 bytes is genuinely safe. `CFE_TIME_SysTime_t` and `OS_time_t`
+are both exactly 8 and both work.
+
+Pinned by `tests/exec/cases/e_class_byval_param.hc`, which packs ten observations into one
+`I64` — `0x1552554654` — each nibble commented "N today, M when fixed". Three are the ones to
+check: the 72-byte class's ninth byte reads `5` (the tag) where `7` was written; the 16-byte
+class's second word does the same; the 8-byte class reads `6`, whole. The last nibble is a
+`Clobber` call whose write to the parameter does **not** reach the caller, which rules out "it
+is silently passed by reference" — the first eight bytes really are a copy.
+
 **Nothing in the port was broken by it, and that is luck, not design.** Eighty-six translated
 functions take a class by value, and every one of the six types involved fits in a register:
 

@@ -319,6 +319,112 @@ def resolve(expr, declared, members):
     return cands
 
 
+# --- LIMIT 26: a class PARAMETER passed by value carries only its first 8 bytes -------------
+# The sibling of limit 21, which the rest of this file refuses, in the other syntactic
+# position. Measured on the harness with a 72-byte class: the first field arrives correctly and
+# `b.Name[0]` -- the ninth byte -- reads back as the value of the NEXT ARGUMENT. No diagnostic.
+# Pinned by tests/exec/cases/e_class_byval_param.hc, which also shows the 8-byte case arriving
+# WHOLE and the callee's write NOT reaching the caller -- so the first eight bytes really are a
+# copy, which rules out "it is silently passed by reference" as the explanation.
+#
+# WHY IT NEEDS A GATE AND NOT A NOTE. It compiles clean and the FIRST FIELD IS ALWAYS RIGHT, so
+# a one-field check passes and so does any class whose interesting member happens to be first.
+# Eighty-six translated functions take a class by value today and NONE of them is broken,
+# because every type involved fits in a register -- CFE_SB_MsgId 4 bytes, CFE_SBR_RouteId 2,
+# CFE_SB_Qos_t 2, CFE_TIME_SysTime 8, OS_time_t 8, OS_cpuset_t 1. cFS passes small opaque
+# wrappers by value and large structures by pointer, so the cliff was never reached. That is
+# luck, not design: MD's MD_UpdateTableDwellEntry takes a 72-byte MD_SymAddr_t by value.
+#
+# THE SIZE IS MEASURED, NOT LISTED. It comes from check_padding's layout model -- the same one
+# compared field for field and byte for byte against NASA -- so a class that GROWS past eight
+# bytes fails this gate without anyone remembering to look at it again.
+# EIGHT, MEASURED, NOT ASSUMED. The RISC-V LP64D ABI passes a 16-byte struct in a REGISTER
+# PAIR, so 16 is exactly where a reader would expect this to work and where a threshold of 8
+# would be rejecting correct code -- the one failure mode the other gates in this directory are
+# written to avoid. Probed with both sizes at once: a 16-byte class reads its second word as the
+# NEXT ARGUMENT (`B=77` where 77 was the tag), and an 8-byte class arrives whole with the tag
+# intact. One register, never two. CFE_TIME_SysTime and OS_time_t are both exactly 8 and both
+# work, which is why the limit is 8 and not 4.
+BYVAL_LIMIT = 8
+
+# A function DEFINITION's parameter list: a name at column 1 followed by (...) and a brace.
+FNDEF = re.compile(r'^([A-Za-z_]\w*)[\w \t\*]*?\b(\w+)\s*\(([^;{)]*)\)\s*\{', re.M)
+# `Type name` with no star -- a by-value parameter.
+BYVAL_PARAM = re.compile(r'^\s*(?:const\s+)?([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*$')
+
+# Parameters verified safe although this gate cannot size them, each with the reason. A stale
+# entry fails, on the same rule as ALLOW and UNRESOLVED_OK above.
+BYVAL_UNSIZED_OK = {}
+
+
+def check_byval_params(classes):
+    """0 if every by-value class parameter in the TRANSLATION is 8 bytes or less."""
+    import importlib.util as _iu
+    here = os.path.dirname(os.path.abspath(__file__))
+    _s = _iu.spec_from_file_location("check_padding", os.path.join(here, "check_padding.py"))
+    cp = _iu.module_from_spec(_s)
+    _s.loader.exec_module(cp)
+    bodies = cp.hc_class_bodies()
+    defines = cp.hc_defines()
+
+    sizes, unsized = {}, []
+    rc, n = 0, 0
+    hits = []
+    for d in cp.HCDIRS:
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".HC"):
+                continue
+            path = os.path.join(d, fn)
+            src = strip_comments(open(path, errors="replace").read())
+            for m in FNDEF.finditer(src):
+                line = src[:m.start()].count("\n") + 1
+                for prm in m.group(3).split(","):
+                    pm = BYVAL_PARAM.match(prm)
+                    if not pm or pm.group(1) not in classes:
+                        continue
+                    ty = pm.group(1)
+                    n += 1
+                    if ty not in sizes:
+                        _mem, sz = cp.hc_layout(ty, bodies, defines)
+                        sizes[ty] = sz if _mem is not None else None
+                    sz = sizes[ty]
+                    key = "%s:%d" % (os.path.relpath(path, ROOT), line)
+                    if sz is None:
+                        if key not in BYVAL_UNSIZED_OK:
+                            unsized.append((key, m.group(2), ty))
+                    elif sz > BYVAL_LIMIT:
+                        hits.append((key, m.group(2), ty, sz))
+    if hits:
+        print("FAIL cfs-structcopy — a function takes a CLASS BY VALUE that is larger than"
+              " %d bytes." % BYVAL_LIMIT, file=sys.stderr)
+        print("  Only the first %d bytes arrive; the rest reads as the NEXT ARGUMENT's value,"
+              " silently:" % BYVAL_LIMIT, file=sys.stderr)
+        print("  docs/HOLYC_STRUCT_LIMITS.md #26. Take a pointer and record the deviation, as"
+              " the", file=sys.stderr)
+        print("  md_dwell_tbl.HC note does.", file=sys.stderr)
+        for key, fname, ty, sz in hits:
+            print("    %s  %s(%s) -- %s is %d bytes" % (key, fname, ty, ty, sz),
+                  file=sys.stderr)
+        rc = 1
+    if unsized:
+        print("FAIL cfs-structcopy — a by-value class parameter could not be SIZED, so this"
+              " gate cannot", file=sys.stderr)
+        print("  say whether it is within the %d-byte limit. Not-found is not clean:"
+              % BYVAL_LIMIT, file=sys.stderr)
+        for key, fname, ty in unsized:
+            print("    %s  %s(%s)" % (key, fname, ty), file=sys.stderr)
+        rc = 1
+    for key in sorted(BYVAL_UNSIZED_OK):
+        print("  by-value parameter allowed unsized: %s -- %s" % (key, BYVAL_UNSIZED_OK[key]))
+    if rc == 0:
+        big = max((s for s in sizes.values() if s is not None), default=0)
+        print("cfs-byval: %d by-value class parameter(s) across %d type(s), largest %d bytes"
+              " (limit %d, HolyC limit #26)" % (n, len(sizes), big, BYVAL_LIMIT))
+    return rc
+
+
 def main():
     files = hc_files()
     if not files:
@@ -361,7 +467,7 @@ def main():
     for name in set(DEFINE.findall(whole)) | BUILTIN:
         constants.setdefault(name, set()).add(("<not a variable>", 0))
 
-    rc = 0
+    rc = check_byval_params(classes)
     checked = 0
     unresolved = []
     for p in files:

@@ -1548,6 +1548,7 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 }
 #include "/Kernel/Cfs/md/md_utils.HC"
 #include "/Kernel/Cfs/md/md_dwell_pkt.HC"
+#include "/Kernel/Cfs/md/md_dwell_tbl.HC"
 // File scope, not locals: docs/HOLYC_STRUCT_LIMITS.md #22 -- growing a big function's TOTAL
 // frame makes an unrelated file-scope read return zero -- and HolyC has no aggregate
 // initialiser, so the mask list is filled at use.
@@ -1569,6 +1570,20 @@ I64 md_r0;
 I64 md_st;
 I64 md_msz;
 I64 md_sends0;
+// md_dwell_tbl's exercise. md_load is 2,040 bytes and md_e 80; both at file scope for the
+// reason above (limit #22), and because HolyC has no aggregate initialiser.
+MD_DwellTableLoad_t md_load;
+MD_TableLoadEntry_t md_e;
+U16 md_ac;
+U16 md_sz;
+U32 md_rate;
+U16 md_bad;
+MD_SymAddr_t md_na;
+MD_DwellTableLoad_t *md_rb;
+CFE_TBL_RegistryRec_t *md_rr;
+CFE_ES_MemPoolRecord_t *md_pr;
+I64 md_freed;
+I64 md_get;
 I64 md_k2;
 I64 md_before;
 U64 md_ra;
@@ -14267,6 +14282,391 @@ I64 main()
     D(MD_AppData.MD_DwellTables[3].AddrCount + MD_AppData.MD_DwellTables[3].DataSize +
       MD_AppData.MD_DwellTables[3].Rate);
     S("\n");
+    // --- md_dwell_tbl.c -- WHERE MD MEETS TABLE SERVICES ----------------------------
+    // The validation callback the ground's table load is checked by, the three functions under
+    // it, and the copy into working state. (The three CFE_TBL_GetAddress editors come in the
+    // next block.)
+    //
+    // ADDRESS VALIDITY HERE IS THE PSP STUB, NOT THE DWELL WINDOW. MD_ValidAddrRange calls
+    // CFE_PSP_MemValidateRange, whose return code this driver owns, so "out of range" is set
+    // rather than arranged -- the only way to reach MD_INVALID_ADDR_ERROR without also
+    // changing the address NASA's event text prints.
+    md_sim_fill();
+    // EVERY CALL BELOW IS HOISTED INTO md_st FIRST, and that is not style. All five of these
+    // functions EMIT EVS EVENTS; the C half's printf evaluates its arguments before printing
+    // any of the format string while this half prints incrementally with S()/D(), so an inline
+    // call puts the event text on opposite sides of its own status line and the two transcripts
+    // differ in ORDER while agreeing in content. Measured as a 26-line diff.
+    // (a) the NULL table. First branch, and the only one that returns early.
+    md_st = MD_TableValidationFunc(NULL);
+    S("mdt_null ");
+    D(md_st);
+    S("\n");
+    // (b) an invalid Enabled flag. The flag is checked FIRST in the chain, so this holds even
+    // with a bad signature underneath it -- which is what the second line asserts, and it is
+    // the kind of ordering a reordered translation would lose.
+    MemSet(&md_load, 0, sizeof(MD_DwellTableLoad_t));
+    md_load.Enabled = 7;
+    md_st = MD_TableValidationFunc(&md_load);
+    S("mdt_enaflag ");
+    D(md_st);
+    S("\n");
+    MemSet(md_load.Signature, 'x', MD_INTERFACE_SIGNATURE_FIELD_LENGTH); // no NUL anywhere
+    md_st = MD_TableValidationFunc(&md_load);
+    S("mdt_ena_beats_sig ");
+    D(md_st);
+    S("\n");
+    // (c) a signature with no terminator in 32 bytes, with a VALID enable flag
+    md_load.Enabled = MD_Dwell_States_DISABLED;
+    md_st = MD_TableValidationFunc(&md_load);
+    S("mdt_siglen ");
+    D(md_st);
+    S("\n");
+    // (d) a valid table: three entries of 2 bytes in the simulated window, delays 1.
+    // MD_ReadDwellTable's three outputs are asserted separately from the validation, because
+    // NASA DISCARDS its return value at the call site -- the only thing that proves it ran is
+    // the numbers it wrote.
+    MemSet(&md_load, 0, sizeof(MD_DwellTableLoad_t));
+    StrCpy(md_load.Signature, "SIG1");
+    md_load.Enabled = MD_Dwell_States_ENABLED;
+    for (md_i = 0; md_i < 3; md_i++) {
+      md_load.Entry[md_i].Length = 2;
+      md_load.Entry[md_i].Delay = 1;
+      md_load.Entry[md_i].DwellAddress.Offset = MD_SIM_WINDOW_BASE + 0x20 + 2 * md_i;
+    }
+    md_ac = 0xFFFF;
+    md_sz = 0xFFFF;
+    md_rate = 0xFFFFFFFF;
+    md_st = MD_ReadDwellTable(&md_load, &md_ac, &md_sz, &md_rate);
+    S("mdt_read st=");
+    D(md_st);
+    S(" n=");
+    D(md_ac);
+    S(" size=");
+    D(md_sz);
+    S(" rate=");
+    D(md_rate);
+    // THE NEWLINE BELONGS TO THE PREVIOUS LINE, so it goes BEFORE the hoisted call. Written as
+    // one S("\nmdt_valid ") it was a single call carrying mdt_read's terminator AND this line's
+    // prefix, and hoisting the validation above it moved the terminator with it -- the event
+    // then landed between `rate=3` and its own newline. A 4-line diff reading
+    // `rate=3EVS Port1 ...` followed by a blank. Splitting the two is the whole fix.
+    S("\n");
+    md_st = MD_TableValidationFunc(&md_load);
+    S("mdt_valid ");
+    D(md_st);
+    S("\n");
+    // (e) ENABLED WITH A ZERO TOTAL RATE is the informational case NASA calls out: the load is
+    // ACCEPTED and an event says it will never be processed. Status is success, so only the
+    // event distinguishes it -- and md_dwell_pkt's md_zerorate line is the other half.
+    for (md_i = 0; md_i < 3; md_i++) {
+      md_load.Entry[md_i].Delay = 0;
+    }
+    md_st = MD_TableValidationFunc(&md_load);
+    S("mdt_zerorate ");
+    D(md_st);
+    S("\n");
+    for (md_i = 0; md_i < 3; md_i++) {
+      md_load.Entry[md_i].Delay = 1;
+    }
+    // (f) MD_ValidTableEntry, one line per error class. The ORDER of NASA's checks is the thing
+    // worth pinning: resolve, then range, then length, then alignment -- so a length of 3 at a
+    // BAD address is INVALID_ADDR and the same length at a good one is INVALID_LEN. A
+    // translation that reordered the chain would still return "an error" for both.
+    MemSet(&md_e, 0, sizeof(MD_TableLoadEntry_t));
+    md_st = MD_ValidTableEntry(&md_e);
+    S("mdt_entry_len0 ");
+    D(md_st);
+    S("\n");
+    md_e.Length = 2;
+    StrCpy(md_e.DwellAddress.SymName, "NO_SUCH_SYMBOL");
+    md_sym_rc = OS_ERROR;
+    md_st = MD_ValidTableEntry(&md_e);
+    S("mdt_entry_resolve ");
+    D(md_st);
+    S("\n");
+    md_sym_rc = OS_SUCCESS;
+    MemSet(&md_e, 0, sizeof(MD_TableLoadEntry_t));
+    md_e.Length = 3;
+    md_e.DwellAddress.Offset = MD_SIM_WINDOW_BASE;
+    es_psp_validate_rc = CFE_PSP_INVALID_MEM_ADDR;
+    md_st = MD_ValidTableEntry(&md_e);
+    S("mdt_entry_range ");
+    D(md_st);
+    S("\n");
+    es_psp_validate_rc = CFE_PSP_SUCCESS;
+    md_st = MD_ValidTableEntry(&md_e);
+    S("mdt_entry_len3 ");
+    D(md_st);
+    S("\n");
+    md_e.Length = 4;
+    md_e.DwellAddress.Offset = MD_SIM_WINDOW_BASE + 2; // 4-aligned? no
+    md_st = MD_ValidTableEntry(&md_e);
+    S("mdt_entry_align4 ");
+    D(md_st);
+    S("\n");
+    md_e.Length = 2;
+    md_e.DwellAddress.Offset = MD_SIM_WINDOW_BASE + 1; // 2-aligned? no
+    md_st = MD_ValidTableEntry(&md_e);
+    S("mdt_entry_align2 ");
+    D(md_st);
+    S("\n");
+    md_e.DwellAddress.Offset = MD_SIM_WINDOW_BASE + 2;
+    md_st = MD_ValidTableEntry(&md_e);
+    S("mdt_entry_ok ");
+    D(md_st);
+    S("\n");
+    // (g) MD_CheckTableEntries KEEPS COUNTING PAST THE FIRST ERROR, which is NASA's own comment
+    // and the reason the informational event carries three totals. Entry 1 is given an
+    // unresolvable symbol, so good=1 bad=1 and the walk still runs to the terminator at entry
+    // 3. ErrorEntryArg must be the FIRST bad index, not the last.
+    MemSet(&md_load, 0, sizeof(MD_DwellTableLoad_t));
+    for (md_i = 0; md_i < 3; md_i++) {
+      md_load.Entry[md_i].Length = 2;
+      md_load.Entry[md_i].Delay = 1;
+      md_load.Entry[md_i].DwellAddress.Offset = MD_SIM_WINDOW_BASE + 0x20 + 2 * md_i;
+    }
+    StrCpy(md_load.Entry[1].DwellAddress.SymName, "NO_SUCH_SYMBOL");
+    StrCpy(md_load.Entry[2].DwellAddress.SymName, "ALSO_MISSING");
+    md_sym_rc = OS_ERROR;
+    md_bad = 0xFFFF;
+    md_st = MD_CheckTableEntries(&md_load, &md_bad);
+    S("mdt_check st=");
+    D(md_st);
+    S(" firstbad=");
+    D(md_bad);
+    S("\n");
+    md_sym_rc = OS_SUCCESS;
+    // (h) MD_CopyUpdatedTbl: the load structure into working state, with the addresses
+    // RESOLVED. The entry past the terminator is copied too -- NASA's loop runs all 25 rows
+    // regardless -- and the derived totals come from MD_UpdateDwellControlInfo at the end of
+    // it, so this one line also asserts that call happened.
+    MemSet(&md_load, 0, sizeof(MD_DwellTableLoad_t));
+    MemSet(MD_AppData.MD_DwellTables, 0,
+           sizeof(MD_DwellPacketControl_t) * MD_INTERFACE_NUM_DWELL_TABLES);
+    StrCpy(md_load.Signature, "COPY");
+    md_load.Signature[6] = 0x7A; // past the NUL, so strncpy's zero-fill is visible
+    md_load.Enabled = MD_Dwell_States_ENABLED;
+    for (md_i = 0; md_i < 2; md_i++) {
+      md_load.Entry[md_i].Length = 4;
+      md_load.Entry[md_i].Delay = 3;
+      md_load.Entry[md_i].DwellAddress.Offset = MD_SIM_WINDOW_BASE + 4 * md_i;
+    }
+    md_load.Entry[4].Length = 1; // past the terminator
+    md_load.Entry[4].DwellAddress.Offset = MD_SIM_WINDOW_BASE + 0x40;
+    MD_CopyUpdatedTbl(&md_load, 1);
+    S("mdt_copy ena=");
+    D(MD_AppData.MD_DwellTables[1].Enabled);
+    S(" n=");
+    D(MD_AppData.MD_DwellTables[1].AddrCount);
+    S(" size=");
+    D(MD_AppData.MD_DwellTables[1].DataSize);
+    S(" rate=");
+    D(MD_AppData.MD_DwellTables[1].Rate);
+    S(" a0=");
+    D(MD_AppData.MD_DwellTables[1].Entry[0].ResolvedAddress);
+    S(" a1=");
+    D(MD_AppData.MD_DwellTables[1].Entry[1].ResolvedAddress);
+    S(" a4=");
+    D(MD_AppData.MD_DwellTables[1].Entry[4].ResolvedAddress);
+    S(" sig=");
+    for (md_i = 0; md_i < 8; md_i++) {
+      H2(MD_AppData.MD_DwellTables[1].Signature[md_i]);
+    }
+    // and table 0 is untouched, which is what says TblIndex was honoured
+    S(" neigh=");
+    D(MD_AppData.MD_DwellTables[0].AddrCount + MD_AppData.MD_DwellTables[0].Rate);
+    S("\n");
+
+    // --- md_dwell_tbl.c, the three CFE_TBL_GetAddress editors -----------------------
+    // These are what make MD an APP rather than a library: each asks Table Services for the
+    // ground's buffer, edits it in place, tells tbl the buffer was modified, and releases it.
+    // Nothing above this point has used tbl from the OUTSIDE -- every tbl assertion so far was
+    // tbl's own code driven from inside its module -- so this is the first time the finished
+    // tbl module is a dependency rather than a subject.
+    //
+    // GIVE BACK THE SLOTS THIS TRANSCRIPT LEAKED. The MemPool table is a FIXED-SIZE RESOURCE
+    // SHARED BETWEEN EXERCISES and it is at TEN OF TEN here: CFE_TBL_EarlyInit runs six times
+    // above and only one section returns its pool, so the rest are stale handles to one buffer.
+    // Without this, EarlyInit fails with "No free MemPool slots available", every handle comes
+    // back as CFE_TBL_BAD_TABLE_HANDLE and all six assertions collapse to one error code.
+    //
+    // DISCRIMINATED BY BASE ADDRESS, NOT BY SIZE: SB's buffer pool is ALSO 524,288 bytes, so a
+    // size test would delete it and break the dwell transmit in the next block -- md_sent would
+    // read 0 instead of 2. The COUNT is printed, not the addresses, because a cpuaddr cannot be
+    // compared across a host process and a QEMU guest.
+    md_freed = 0;
+    for (md_i = 0; md_i < CFE_PLATFORM_ES_MAX_MEMORY_POOLS; md_i++) {
+      md_pr = &CFE_ES_Global.MemPoolTable[md_i];
+      if (CFE_ES_MemPoolRecordIsUsed(md_pr) &&
+          md_pr->BaseAddr == &CFE_TBL_Global.Buf.Partition) {
+        if (CFE_ES_PoolDelete(md_pr->PoolID) == CFE_SUCCESS) {
+          md_freed++;
+        }
+      }
+    }
+    S("mdt_poolgc freed=");
+    D(md_freed);
+    S("\n");
+    // THE SETUP IS THE REAL STARTUP SEQUENCE, the same one the tbl section uses. The
+    // registration status is PRINTED rather than assumed: a handle of -1 is
+    // CFE_TBL_BAD_TABLE_HANDLE, i.e. nothing registered at all.
+    //
+    // ONE DELIBERATE DIFFERENCE FROM md_app.c: NASA registers with OPT_DEFAULT | OPT_CRITICAL,
+    // a table backed by the Critical Data Store. This registers plain OPT_DEFAULT, because the
+    // three functions under test only take a handle and call GetAddress, and standing up the
+    // CDS belongs to md_app.c's own exercise where CRITICAL is the thing being translated.
+    es_set_ctx(1);
+    CFE_TBL_EarlyInit();
+    CFE_TBL_InitData();
+    CFE_TBL_Global.TableTaskAppId = ES_CTX_APPID(1);
+    MemSet(MD_AppData.MD_TableHandle, 0, 2 * MD_INTERFACE_NUM_DWELL_TABLES);
+    md_st = CFE_TBL_Register(&MD_AppData.MD_TableHandle[0], "DWELL_TABLE1",
+                             sizeof(MD_DwellTableLoad_t), CFE_TBL_OPT_DEFAULT,
+                             &MD_TableValidationFunc);
+    S("mdt_reg st=");
+    D(md_st);
+    S(" h=");
+    D(MD_AppData.MD_TableHandle[0]);
+    S("\n");
+    // AND THE TABLE HAS TO BE LOADED BEFORE IT CAN BE EDITED. A freshly registered table has no
+    // data, so CFE_TBL_GetAddress answers CFE_TBL_ERR_NEVER_LOADED (0xCC000005) and all three
+    // editors take their error arm -- correct cFE behaviour, and the first thing this block
+    // measured. The ground loads and then edits, so the exercise does too.
+    MemSet(&md_load, 0, sizeof(MD_DwellTableLoad_t));
+    StrCpy(md_load.Signature, "LOADED");
+    md_load.Enabled = MD_Dwell_States_DISABLED;
+    for (md_i = 0; md_i < 3; md_i++) {
+      md_load.Entry[md_i].Length = 2;
+      md_load.Entry[md_i].Delay = 1;
+      md_load.Entry[md_i].DwellAddress.Offset = MD_SIM_WINDOW_BASE + 0x20 + 2 * md_i;
+    }
+    md_st = CFE_TBL_Load(MD_AppData.MD_TableHandle[0], CFE_TBL_SRC_ADDRESS, &md_load);
+    S("mdt_load ");
+    D(md_st);
+    S("\n");
+    // THE REGISTRY RECORD, BY NAME. CFE_TBL_Modified's only comparable effect is
+    // RegRecPtr->Status.IsModified -- TimeOfLastUpdate is a time -- and without reading it the
+    // Modified call in all three editors is UNEXERCISED. Measured: deleting it from
+    // MD_UpdateTableEnabledField left the transcript BYTE-IDENTICAL, because the readback reads
+    // the same buffer the editor wrote and does not care whether tbl was told.
+    //
+    // By NAME, not by index: CFE_TBL_FindTableInRegistry returns a RESOURCE ID (it came back as
+    // 0x1c0001, which indexes nothing), and the tbl section records hard-coded registry indices
+    // as a mistake it already made seven times.
+    md_rr = CFE_TBL_LocateRegRecByName("CFE_EVS.DWELL_TABLE1");
+    S("mdt_regrec found=");
+    D(md_rr != NULL);
+    S(" name=");
+    if (md_rr != NULL)
+      S(CFE_TBL_RegRecGetName(md_rr));
+    else
+      S("?");
+    S("\n");
+    // (i) the ENABLED field. Written through the handle, then read back through a SECOND
+    // GetAddress -- not from the pointer the editor used, which it released. IsModified is
+    // CLEARED first, so reading it back asserts THIS call and not whatever ran before.
+    if (md_rr != NULL)
+      md_rr->Status.IsModified = FALSE;
+    md_st = MD_UpdateTableEnabledField(0, MD_Dwell_States_ENABLED);
+    md_rb = NULL;
+    md_get = CFE_TBL_GetAddress(&md_rb, MD_AppData.MD_TableHandle[0]);
+    S("mdt_upd_ena st=");
+    D(md_st);
+    S(" get=");
+    D(md_get);
+    S(" ena=");
+    if (md_rb != NULL)
+      D(md_rb->Enabled);
+    else
+      D(65535);
+    S(" mod=");
+    if (md_rr != NULL)
+      D(md_rr->Status.IsModified);
+    else
+      D(-1);
+    S("\n");
+    CFE_TBL_ReleaseAddress(MD_AppData.MD_TableHandle[0]);
+    // (j) one dwell entry. NASA takes MD_SymAddr_t BY VALUE and this half takes a POINTER --
+    // docs/HOLYC_STRUCT_LIMITS.md #26, 72 bytes against an 8-byte limit. THE READBACK IS WHAT
+    // MAKES THAT DEVIATION SAFE TO ASSERT: the whole 72 bytes have to arrive, and the symbol
+    // name lives at offset 8 and beyond -- precisely what a by-value call here would lose.
+    MemSet(&md_na, 0, sizeof(MD_SymAddr_t));
+    md_na.Offset = MD_SIM_WINDOW_BASE + 0x30;
+    StrCpy(md_na.SymName, "SYM_IN_ENTRY");
+    if (md_rr != NULL)
+      md_rr->Status.IsModified = FALSE;
+    md_st = MD_UpdateTableDwellEntry(0, 2, 4, 9, &md_na);
+    md_rb = NULL;
+    md_get = CFE_TBL_GetAddress(&md_rb, MD_AppData.MD_TableHandle[0]);
+    S("mdt_upd_dwell mod=");
+    if (md_rr != NULL)
+      D(md_rr->Status.IsModified);
+    else
+      D(-1);
+    S(" st=");
+    D(md_st);
+    S(" get=");
+    D(md_get);
+    S(" len=");
+    D(md_rb->Entry[2].Length);
+    S(" dly=");
+    D(md_rb->Entry[2].Delay);
+    S(" off=");
+    D(md_rb->Entry[2].DwellAddress.Offset);
+    S(" sym=");
+    S(md_rb->Entry[2].DwellAddress.SymName);
+    S("\n");
+    CFE_TBL_ReleaseAddress(MD_AppData.MD_TableHandle[0]);
+    // (k) the signature, and the bytes PAST its terminator, for the same reason as
+    // md_dwell_pkt's: strncpy zero-fills and a MemCpy would not. The buffer is poisoned first
+    // so the zero-fill is observable -- the measured lesson from that block.
+    md_rb = NULL;
+    CFE_TBL_GetAddress(&md_rb, MD_AppData.MD_TableHandle[0]);
+    if (md_rb != NULL)
+      MemSet(md_rb->Signature, 0x5A, MD_INTERFACE_SIGNATURE_FIELD_LENGTH);
+    CFE_TBL_ReleaseAddress(MD_AppData.MD_TableHandle[0]);
+    if (md_rr != NULL)
+      md_rr->Status.IsModified = FALSE;
+    md_st = MD_UpdateTableSignature(0, "NEWSIG");
+    md_rb = NULL;
+    md_get = CFE_TBL_GetAddress(&md_rb, MD_AppData.MD_TableHandle[0]);
+    S("mdt_upd_sig mod=");
+    if (md_rr != NULL)
+      D(md_rr->Status.IsModified);
+    else
+      D(-1);
+    S(" st=");
+    D(md_st);
+    S(" get=");
+    D(md_get);
+    S(" sig=");
+    for (md_i = 0; md_i < 10; md_i++) {
+      H2(md_rb->Signature[md_i]);
+    }
+    S(" last=");
+    D(md_rb->Signature[MD_INTERFACE_SIGNATURE_FIELD_LENGTH - 1]);
+    S("\n");
+    CFE_TBL_ReleaseAddress(MD_AppData.MD_TableHandle[0]);
+    // (l) AND ALL THREE ON A BAD HANDLE, which is the error arm each of them has. -1 is
+    // CFE_TBL_BAD_TABLE_HANDLE; GetAddress refuses it and each editor raises its OWN event id
+    // and returns what GetAddress returned -- NOT CFE_SUCCESS, which the success arm sets
+    // explicitly. Three different event ids for one shape of failure.
+    MD_AppData.MD_TableHandle[3] = -1;
+    md_st = MD_UpdateTableEnabledField(3, MD_Dwell_States_ENABLED);
+    S("mdt_bad_ena ");
+    D(md_st);
+    S("\n");
+    MemSet(&md_na, 0, sizeof(MD_SymAddr_t));
+    md_st = MD_UpdateTableDwellEntry(3, 0, 1, 1, &md_na);
+    S("mdt_bad_dwell ");
+    D(md_st);
+    S("\n");
+    md_st = MD_UpdateTableSignature(3, "X");
+    S("mdt_bad_sig ");
+    D(md_st);
+    S("\n");
+
     // --- md_dwell_pkt.c -------------------------------------------------------------
     // The part of MD that actually reads memory. Four functions: the loop, the one read, the
     // send, and a three-line reset.

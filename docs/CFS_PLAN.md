@@ -1789,3 +1789,137 @@ Two things about that witness are worth keeping:
   (`cfe_evs_utils.c:498`) on MsgId 0x809, which also has no subscribers. Verified rather than
   assumed: 0x809 accounts for 113 of the 119 no-subscriber lines in the transcript. A second
   witness at the already-full send is what falsified the prediction, so both stay.
+
+### md_dwell_tbl.c — where MD meets Table Services, and the resource table that was full
+
+Eight functions: the validation callback the ground's table load is checked by, the three
+functions under it, the copy into working state, and three ground-commanded editors that go
+through `CFE_TBL_GetAddress` / `CFE_TBL_Modified` / `CFE_TBL_ReleaseAddress`.
+
+This is **the first thing in the port to use tbl from the outside.** Everything tbl-related up to
+now was tbl's own code exercised from inside its module; here an app registers a table, the
+ground loads it, tbl calls back into `MD_TableValidationFunc`, and MD edits the buffer in place
+through a handle. That was the stated reason for choosing MD first, and this is the file that
+cashes it.
+
+#### Four `#if`s hand-resolved, and one is a shape HolyC cannot express at all
+
+Limit #19 — `#if <expr>` is unconditionally true — means every one of these would take its first
+branch whatever the value was. Both switches are 1 here and both values are **anchored** by
+`check_constants` comparing them against NASA's header, which is what makes hand-resolving a
+measurement rather than a guess.
+
+The one worth naming: `MD_INTERFACE_SIGNATURE_OPTION` wraps an `else if` **clause in the middle
+of an if/else chain**. A preprocessor conditional around one arm of a chain has no HolyC spelling
+even if `#if` worked, so the arm is simply written out. The same switch also wraps a mid-function
+*declaration* (`uint16 StringLength;`), hoisted to the top.
+
+`MD_INTERFACE_ENFORCE_DWORD_ALIGN` selects 32-bit alignment checking over 16-bit for a 4-byte
+dwell. Its dead `== 0` arm still says `Jam->Payload` where the live code says `Msg->` — evidence
+in NASA's own tree that the branch is never compiled.
+
+#### The check order is the thing worth pinning
+
+`MD_ValidTableEntry` validates resolve → range → length → alignment, and the exercise pins the
+order with two lines that differ only in the PSP's answer:
+
+```
+mdt_entry_range -1073741820     (0xC0000004 MD_INVALID_ADDR_ERROR)
+mdt_entry_len3  -1073741819     (0xC0000005 MD_INVALID_LEN_ERROR)
+```
+
+Both are a dwell of length 3 — an invalid width. At a *bad* address the range check fires first;
+at a good one the length check does. A translation that reordered the chain would still return
+"an error" for both, and only the pair together can tell.
+
+Also pinned: the enable-flag check beating the signature check when both are wrong
+(`mdt_ena_beats_sig`); `MD_CheckTableEntries` reporting the **first** bad index while continuing
+to count past it, which is NASA's own "Keep counting good,bad,unused, don't exit immediately";
+and `MD_CopyUpdatedTbl` copying entry 4 — *past* the terminator — because NASA's loop runs all 25
+rows regardless.
+
+#### The MemPool table was at ten of ten
+
+`CFE_TBL_EarlyInit` here failed with **"No free MemPool slots available"**, every handle came back
+as `CFE_TBL_BAD_TABLE_HANDLE`, and all six assertions collapsed into one repeated error code —
+the exact failure the tbl section already recorded, from the same cause. The table is a
+**fixed-size resource shared between exercises**: `EarlyInit` is called six times in this oracle
+and only one section gives its pool back.
+
+**The discrimination is the interesting part.** All ten slots held a 524,288-byte pool, and
+`CFE_PLATFORM_SB_BUF_MEMORY_BYTES` and `CFE_PLATFORM_TBL_BUF_MEMORY_BYTES` are *both* 512 KiB — so
+a size test would have deleted SB's buffer pool and silently broken the dwell packet's transmit
+in the next block. Reclaiming by `BaseAddr` against `CFE_TBL_Global.Buf.Partition` frees exactly
+two, and `md_sent` still reads 2, which is the check that the reclaim was surgical. The count is
+printed and the addresses are not, because a `cpuaddr` cannot be compared across a host process
+and a QEMU guest.
+
+**This fixes the symptom, and the cause is still there.** Five of the six `EarlyInit` calls
+above still leak their pool; MD's block reclaims what it needs and gives its own back. Fixing the
+five properly means capturing each pool id and deleting it at the end of its own section, the way
+`tbl_early pooldel=0 0` already does — five sections of code this work did not write, each
+gaining a transcript line. Worth doing; not worth bundling into an app translation. Until then,
+`md_sent 2` is the guard that this reclaim took nothing that mattered, and the count
+`mdt_poolgc freed=2` is the guard that it took something.
+
+Three wrong turns on the way there, each corrected by measuring rather than reasoning:
+
+- An unguarded `rb->Signature` dereference segfaulted when `GetAddress` returned no pointer —
+  and the segfault **truncated stdout mid-line**, so the diagnostic read `"No"` instead of
+  `"No free MemPool slots available"`. The block-buffering lesson, again: fix the crash first,
+  then read the message.
+- I theorised the platform block-size config array had been wiped, since `PoolCreateEx`'s other
+  failure path prints a message starting the same way. Measured: `n=17`, intact.
+- I expected the three editors to work on a freshly registered table. cFE correctly answers
+  `CFE_TBL_ERR_NEVER_LOADED` until the ground loads it, so the exercise loads first — which is
+  also what the ground actually does.
+
+#### The readback is what makes the #26 deviation an assertion
+
+`MD_UpdateTableDwellEntry` takes `MD_SymAddr_t` **by value** in NASA's declaration — 72 bytes
+against HolyC's 8-byte limit — so the translation takes a pointer. The deviation is recorded, and
+`check_struct_copy` refuses the by-value form outright, but neither of those proves the data
+arrives. The readback does:
+
+```
+mdt_upd_dwell st=0 get=0 len=4 dly=9 off=1048624 sym=SYM_IN_ENTRY
+```
+
+`SymName` lives at offset 8 and beyond. A by-value call in HolyC would have delivered `Offset`
+and garbage for the name, so `sym=SYM_IN_ENTRY` is the whole 72 bytes arriving — read back
+through a *second* `GetAddress`, not from the pointer the editor already released.
+
+#### Six mutations, and the one that was invisible until the exercise grew
+
+| mutation | transcript |
+|---|---|
+| the validation chain reordered: length before range | `mdt_entry_range -1073741820` → `-1073741819` |
+| `MD_CheckTableEntries` records the **last** bad index | `firstbad=1` → `firstbad=2`, plus a second entry-error event |
+| `MD_ReadDwellTable` sums `Delay` into the size output | `size=6` → `size=3` |
+| `MD_CopyUpdatedTbl` stops at the terminator | `a4=1048640` → `a4=0` |
+| the dwell entry copies only the `Offset` | `sym=SYM_IN_ENTRY` → `sym=` |
+| `CFE_TBL_Modified` deleted | **nothing** — see below |
+
+The first is the pair the exercise was designed around: the reordered chain changes `INVALID_ADDR`
+to `INVALID_LEN` for the *bad-address* case while the good-address case is unchanged, so only the
+two lines together localise it.
+
+The fifth is worth keeping as a demonstration rather than a test: copying only the `Offset` is
+**exactly what HolyC's by-value truncation would have done** to this function, and `sym=` is what
+the transcript would have shown. Limit #26 is not hypothetical here.
+
+**And the sixth passed.** Deleting `CFE_TBL_Modified` from `MD_UpdateTableEnabledField` left the
+transcript byte-identical — because the readback reads the same buffer the editor wrote and does
+not care whether Table Services was *told* about it. All three editors call `Modified`, so the
+call was unexercised in all three.
+
+`CFE_TBL_Modified`'s only comparable effect is `RegRecPtr->Status.IsModified` (its other effect,
+`TimeOfLastUpdate`, is a time and cannot cross the two halves). So the exercise now resolves the
+registry record and reads that flag, clearing it first so the readback asserts *this* call rather
+than whatever ran before — `mod=1` on all three lines.
+
+Getting there corrected one more assumption: `CFE_TBL_FindTableInRegistry` returns a **resource
+id**, not an array index. It came back as `0x1c0001`, which indexes nothing, and
+`CFE_TBL_Global.Registry[0x1c0001]` is far out of bounds. `CFE_TBL_LocateRegRecByName` is the
+right accessor and needs no index arithmetic at all — which also satisfies the tbl section's own
+rule against hard-coded registry indices, recorded there as a mistake it made seven times.

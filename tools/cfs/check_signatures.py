@@ -227,6 +227,21 @@ DEVIATIONS = {
     # The two leading blanks here were EVS_AppData_t * and CFE_TIME_SysTime_t * -- two
     # unrecognised struct pointers normalising to the EMPTY STRING on both sides. The
     # struct-pointer rules below name them, so this deviation now describes only the va_list.
+    'MD_UpdateTableDwellEntry': (
+        'NUM,NUM,NUM,NUM,', 'NUM,NUM,NUM,NUM,PTR_MD_SymAddr',
+        "takes MD_SymAddr_t BY VALUE -- 72 bytes. docs/HOLYC_STRUCT_LIMITS.md #26 measures that "
+        "a class parameter passed by value carries only its FIRST EIGHT BYTES in this compiler, "
+        "and the rest arrives as the next argument's value with no diagnostic, so the "
+        "translation takes a pointer. This is the first place in the port to reach that cliff; "
+        "tools/cfs/check_struct_copy.py refuses the by-value form outright, so the deviation is "
+        "enforced rather than remembered. NOTE THAT NASA'S SIDE HERE IS A BLANK: the "
+        "struct-pointer rules below name a class POINTER on both sides, but a class passed BY "
+        "VALUE still normalises to nothing, so this entry pins the arity and the pointer-ness "
+        "and not the type. Naming by-value classes too was measured and left for its own "
+        "change: it moves 21 signatures against 2 for the pointer rules, and at least ten of "
+        "them are ONE TYPE -- CFE_ResourceId_t, which NASA passes by value and the translation "
+        "spells U32 because HolyC has no typedef. So that change is a per-type exemption list, "
+        "the same shape osal_id_t needed on the pointer side, and not 21 investigations."),
     'EVS_GenerateEventTelemetry': (
         'PTR_EVS_AppData,NUM,NUM,PTR_CFE_TIME_SysTime,PTRB,',
         'PTR_EVS_AppData,NUM,NUM,PTR_CFE_TIME_SysTime,PTRB,SZ,PTRSZ',
