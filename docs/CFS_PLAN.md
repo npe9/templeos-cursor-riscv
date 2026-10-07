@@ -2979,3 +2979,76 @@ really does fall through, measured twice now by two different routes.
 | gate defects found | **3** (`check_constants`' prefix list, the `check_structs`/`check_padding` app-directory duplication, the comment stripper) |
 | simulated hardware added | the RAM window's **write** half, a second **EEPROM** region, the EEPROM bank lock, `OS_SymbolTableDump`, a size from `OS_stat`, a failing `OS_read` |
 | branches outside the differential, stated | **4** (`MM_PSP_READ_ERR_EID` ×2 files, `MM_LoadMemWIDCmd`'s success path, `MM_FillDumpInEventBuffer`'s three read errors) |
+
+---
+
+## CS (Checksum) is the third app, and the first with a shape that cannot go in one source at a time
+
+Every cFE module is 100% and both apps are 100%, so `check_manifest --cfe` says the next target is
+a third app — not a module. Of the four the survey found API-current (CS, LC, MM, MD), two are
+done. Both remaining ones were measured rather than recalled:
+
+| | sources | lines | distinct cFE/OSAL calls | **missing from the tree** |
+|---|---|---|---|---|
+| **CS** (Checksum) | 10 + the EDS pair | 5,765 | 55 | **2** |
+| **LC** (Limit Checker) | 7 + the EDS pair | ~4,200 | 34 | **0** |
+
+LC needs *nothing* new, which makes it the easier one. **CS is the right one anyway**, for a
+reason that is about what the port can then demonstrate rather than about cost:
+
+**CS completes the memory trio.** MD reads memory, MM writes it, and **CS is the app that notices
+when the writing was not intended.** `docs/BENCHTOP_SAT_BOM.md` already says the radiation
+experiment should stay in software — "deliberately flip bytes in a checksummed region and watch
+the checksum app detect it" — and the simulated window MM built is exactly the place to flip them.
+Translating CS gives the port its first pair of apps that work *against* each other, which is
+worth more than two independent apps.
+
+Its two missing symbols are both small: `CFE_ES_MEMADDRESS_TO_PTR` is a macro already written out
+for MM, and `CFE_PSP_GetKernelTextSegmentInfo` is one new simulated PSP function — the sibling of
+`CFE_PSP_GetCFETextSegmentInfo`, which the driver already supplies. Pinned at `795e387f` on the
+dev branch, dated **one day before** the cFE pin, exactly the relationship MD's and MM's have.
+
+### The shape, and why it is harder than either previous app
+
+`module_deps.py CS --fresh` reports **two call cycles**, which neither MD (one 2-source cycle at
+the end) nor MM (fully acyclic) had:
+
+```
+ 2980 lines  cs_compute.c, cs_table_processing.c, cs_utils.c   <-- CYCLE of 3
+  307 lines  cs_init.c
+ 2931 lines  cs_app.c, cs_app_cmds.c, cs_cmds.c, cs_dispatch.c,
+             cs_eeprom_cmds.c, cs_memory_cmds.c, cs_table_cmds.c  <-- CYCLE of 7
+```
+
+**But the edges say the cycles are thin, and that is the useful part.** Listing them one by one
+(the question the `module-deps-before-ordering` note says to ask per edge — is the stand-in a
+*seam* or *upstream logic*?):
+
+- **the 3-cycle is closed by three calls out of `cs_utils.c`**: `CS_ComputeApp` and
+  `CS_ComputeTables` in `cs_compute.c`, and `CS_HandleTableUpdate` in `cs_table_processing.c`.
+  Everything else in the group points *into* `cs_utils`. All three are real logic, not seams.
+- **the 7-cycle is closed by exactly TWO functions**: `CS_UpdateCDS` (in `cs_app.c`, called by all
+  five command files) and `CS_AppPipe` (in `cs_dispatch.c`, called by `cs_app.c`). The other forty
+  edges are a dispatcher calling its own handlers — a tree, not a cycle.
+
+So **no step needs a stand-in**, which keeps the apps' record intact:
+
+```
+   1.  cs_utils + cs_compute + cs_table_processing     2,980 lines, together
+   2.  cs_init                                           307 lines
+   3.  cs_app + cs_dispatch + cs_app_cmds + cs_cmds
+       + cs_eeprom_cmds + cs_memory_cmds + cs_table_cmds 2,931 lines, together
+```
+
+Three steps instead of nine, and two of them are larger than anything in MD or MM. That is a
+consequence of CS's design rather than of the plan: `cs_utils.c` is a 1,168-line pile of helpers
+that both of its neighbours need *and* that calls back into both of them, and `cs_dispatch.c` and
+`cs_app.c` are joined by a single CDS write.
+
+`cs_init.c` is third in the topological order and second here because it depends on the 3-cycle
+(seven table-processing functions and one `cs_utils` helper) and the 7-cycle depends on **it** —
+`cs_app.c` needs `CS_InitAllTables`, `CS_InitSegments` and `CS_SbInit`.
+
+**And the ambiguity the tool flagged is the one it has flagged twice before**: `CS_AppPipe` is
+defined in both `cs_dispatch.c` and `cs_eds_dispatch.c`, and the edge goes to the one this
+configuration builds. `check_manifest.py` already understands that pair for MD and MM.

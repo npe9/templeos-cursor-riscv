@@ -14,6 +14,11 @@ MD_SHA="65eb7b3b0aa8acd05076128a623cd696582b6d7c"
 # The second cFS APP, and the OTHER memory app: MM pokes and dumps arbitrary memory where MD
 # only reads it, so it needs the WRITE half of the simulated window MD established.
 MM_SHA="0a767de5bbb6da05d7b5705e75221495aca444f9"
+# The THIRD cFS APP, and the one that COMPLETES THE MEMORY TRIO: MD reads memory, MM writes it,
+# CS checksums it -- so CS is the app that notices when MM's damage was not intended. Pinned on
+# the dev branch for the same reason as the other two: this commit is dated one day before the
+# cFE pin, exactly as MD's is.
+CS_SHA="795e387fce497c698c87a5a68f2a9014f13c3ce8"
 mkdir -p "$V"
 fetch() {
   name="$1"; url="$2"; sha="$3"
@@ -32,4 +37,5 @@ fetch osal https://github.com/nasa/osal.git "$OSAL_SHA"
 fetch PSP  https://github.com/nasa/PSP.git  "$PSP_SHA"
 fetch MD   https://github.com/nasa/MD.git   "$MD_SHA"
 fetch MM   https://github.com/nasa/MM.git   "$MM_SHA"
+fetch CS   https://github.com/nasa/CS.git   "$CS_SHA"
 echo "vendor/shim is committed in this repo: it stands in for the headers CMake would generate."

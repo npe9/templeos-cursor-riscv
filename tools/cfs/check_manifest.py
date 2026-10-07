@@ -38,7 +38,9 @@ CFE_MODULES = os.path.join(ROOT, "vendor", "cFE", "modules")
 # The cFS APPS, each its own repository under vendor/. Same CMakeLists shape as a cFE module
 # -- an unconditional source list plus an EDS branch -- which is why the depth parser below
 # needs no change to read one.
-APPS = ["MD", "MM"]
+# THE APP LIST LIVES IN cfs_dirs.py NOW, which is where check_structs and check_padding get the
+# app DIRECTORIES from -- three lists for one fact was how MM's directories ended up duplicated.
+from cfs_dirs import APPS  # noqa: F401
 
 
 def osal_build_sources():
