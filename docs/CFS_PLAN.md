@@ -2648,3 +2648,84 @@ means *no branch ran*. NASA's comment says `MM_VerifyPeekPokeParams` makes that 
 calling `MM_PeekMem` directly is the only way a translation of it gets checked at all.
 
 Fifteen mutations, fifteen caught.
+
+### `mm_load.c` — a second simulated device, and an UPSTREAM DEFECT kept verbatim
+
+492 lines, six functions, no stand-ins. Transcript **2,574 → 2,634**. MM is 7 of 9 sources,
+2,388 of 3,739 lines (64%).
+
+#### MM_FillMem does not fill with the pattern, and the translation keeps it that way
+
+```c
+uint8 *FillBuffer = (uint8 *)&MM_AppData.FillBuffer[0];
+for (i = 0; i < (MM_INTERNAL_MAX_FILL_DATA_SEG / sizeof(uint32)); i++)
+    FillBuffer[i] = CmdPtr->Payload.FillPattern;
+```
+
+`FillBuffer` is a **byte** pointer; the loop runs `200 / 4 = 50` times. So a 200-byte fill segment
+gets the pattern's low byte in its first **fifty** bytes and keeps whatever
+`MM_AppData.FillBuffer` held in the other 150. The intent was plainly
+`((uint32 *)FillBuffer)[i] = FillPattern` — 50 words, 200 bytes, pattern throughout.
+
+**It is translated verbatim.** The port's whole claim is to be NASA's software; a translation that
+quietly behaved better would be a different program wearing the same name. So the exercise prints
+the boundary instead, into an array poisoned with `0xBB`:
+
+```
+mml_fill      perf=0 s0=DD s49=DD s50=00 s199=00 s200=BB
+mml_fill_2seg perf=2 bp=250 s200=DD s249=DD
+```
+
+Bytes 0–49 carry `0xDD`; bytes 50–199 are **zero** — `MM_AppData.FillBuffer`'s untouched BSS — and
+byte 200 is still the poison because the fill stopped there. The second line is the specific
+signature of the defect across two segments: `DD` in 0–49, `00` in 50–199, `DD` again in 200–249,
+because the 50-byte last segment copies `FillBuffer[0..49]`, which *are* the pattern.
+
+Two mutations cover it, and the first is the one that matters: **"fix it the natural way"** —
+writing through a `U32 *` — gives `s49=CC s50=BB s199=AA`, the pattern cycling as words. That is
+what NASA meant, and the transcript refuses it. Recorded as an upstream finding, not a port
+decision; it belongs upstream as a bug report.
+
+#### EEPROM is a second device, so it gets a second window
+
+A RAM poke goes through `CFE_PSP_MemWrite*`; an EEPROM poke goes through `CFE_PSP_EepromWrite*`,
+which on real hardware unlocks the part, programs it and waits. So the driver supplies
+`MM_EEP_WINDOW_BASE = 0x00200000`, deliberately far from the RAM window — **an address meant for
+one and sent to the other must be refused, not quietly work.** A shared array would have made
+`mml_poke_eep_wrongregion` succeed and nothing in the port would have noticed.
+
+Three things follow from EEPROM being a different device, and the exercise pins all three:
+
+- **performance-log stamps**: `MM_PokeEeprom` has them, `MM_PokeMem` does not — `perf=6` for three
+  EEPROM pokes against `perf=0` for three RAM ones. In `MM_LoadMemFromFile` and `MM_FillMem` they
+  are **conditional on the memory type**, the only markers in MM taken only sometimes: the same
+  call gives `perf=4` for EEPROM and `perf=2` for RAM.
+- **one error event per width** (`MM_OS_EEPROMWRITE8/16/32_ERR_EID`) where RAM has one for all.
+- **the success event prints the data at the commanded width**: the same `0xAABBCCDD` reads
+  `0xDD`, `0xCCDD` and `0xAABBCCDD` from EEPROM, and always `0x%08X` from RAM.
+
+`MM_ReadFileHeaders` is exercised as a **round trip through `MM_WriteFileHeaders`** — write the
+pair, read it back, compare the fields. Either alone would pass against a wrong offset.
+
+#### Three invisible mutations, three different causes
+
+Fifteen mutations. Three came back unchanged, and the three reasons are all different:
+
+1. **the 16-bit poke reporting one byte** — a real gap: the exercise printed housekeeping once
+   after all three pokes, which reads only the 32-bit arm's byte count. Fixed by capturing the
+   count after **each** call (`mml_poke_bp 1,2,4`).
+2. **`MM_PokeEeprom` updating housekeeping on failure** — a real gap: nothing read housekeeping
+   after a *failed* poke. Fixed with `mml_poke_eep_failhk`, which must still show the previous
+   successful poke's address.
+3. **moving `DataSize = 32` after the write** — *a no-op by construction*. The assignment is
+   inside the case arm either way, and the event is after the switch. **And the mutation was
+   written because of a false claim in my own comment**, which said `MM_PokeMem` sets
+   `BytesProcessed` and `DataSize` before the write "so they are correct in the ERROR event too --
+   the peek sets them only on success". Measured: the peek sets `DataSize` unconditionally too,
+   and `BytesProcessed` is a local that reaches housekeeping only on success in **both**. Neither
+   placement is observable. The comment is corrected in place and says how it was found; the
+   mutation was replaced with one that *deletes* `DataSize = 32`, which turns the error event into
+   `MemType=MEM0`.
+
+A mutation that cannot change behaviour is not evidence of a missing assertion — but a mutation
+written to prove a claim, that turns out to be a no-op, **is** evidence the claim was wrong.

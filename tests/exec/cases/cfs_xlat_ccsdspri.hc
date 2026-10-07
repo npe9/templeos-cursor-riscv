@@ -631,9 +631,17 @@ U0 CFE_PSP_Restart(U32 ResetType)
   S("\n");
 }
 
+// THE SIZE OS_stat REPORTS, which arrived with MM: mm_load.c's MM_VerifyLoadFileSize is the
+// first thing in the port to READ the stat buffer rather than only the return code, and it
+// compares the size against the file header's claim plus both headers. The stub ignored
+// `filestats` entirely before, which would have made every size check pass on a zero.
+I64 es_stat_size;
+
 I32 OS_stat(U8 *path, os_fstat_t *filestats)
 {
   ++es_stats;
+  if (filestats != NULL)
+    filestats->FileSize = es_stat_size;
   S("os_stat ");
   S(path);
   S(" rc=");
@@ -1603,6 +1611,65 @@ I32 CFE_PSP_MemWrite32(U64 MemoryAddress, U32 uint32Value)
   return CFE_PSP_SUCCESS;
 }
 
+
+// --- A SECOND SIMULATED REGION: EEPROM -------------------------------------------------------
+// MM pokes EEPROM through CFE_PSP_EepromWrite*, not CFE_PSP_MemWrite*, because on real hardware
+// the two are different devices: EEPROM has to be unlocked, programmed and waited on, which is
+// why MM wraps only the EEPROM paths in performance-log stamps. So it gets its own window rather
+// than sharing the RAM one -- a shared array would let a poke to EEPROM be satisfied by the RAM
+// path and nothing would notice.
+//
+// Its base is deliberately FAR from MD_SIM_WINDOW_BASE so that an address meant for one and sent
+// to the other falls outside and is refused rather than quietly working.
+#define MM_EEP_WINDOW_BASE 0x00200000
+#define MM_EEP_WINDOW_SIZE 256
+U8 mm_eep_mem[MM_EEP_WINDOW_SIZE];
+I64 mm_eep_writes;
+I64 mm_eep_wfail_at = -1;
+
+Bool mm_eep_in(U64 a, I64 width)
+{
+  return a >= MM_EEP_WINDOW_BASE && (a - MM_EEP_WINDOW_BASE)(I64) + width <= MM_EEP_WINDOW_SIZE;
+}
+
+Bool mm_eep_wfail(U64 a)
+{
+  return mm_eep_wfail_at >= 0 && (a - MM_EEP_WINDOW_BASE)(I64) == mm_eep_wfail_at;
+}
+
+I32 CFE_PSP_EepromWrite8(U64 MemoryAddress, U8 ByteValue)
+{
+  ++mm_eep_writes;
+  if (!mm_eep_in(MemoryAddress, 1) || mm_eep_wfail(MemoryAddress))
+    return CFE_PSP_INVALID_MEM_ADDR;
+  mm_eep_mem[MemoryAddress - MM_EEP_WINDOW_BASE] = ByteValue;
+  return CFE_PSP_SUCCESS;
+}
+
+I32 CFE_PSP_EepromWrite16(U64 MemoryAddress, U16 uint16Value)
+{
+  I64 o = MemoryAddress - MM_EEP_WINDOW_BASE;
+  ++mm_eep_writes;
+  if (!mm_eep_in(MemoryAddress, 2) || mm_eep_wfail(MemoryAddress))
+    return CFE_PSP_INVALID_MEM_ADDR;
+  mm_eep_mem[o] = uint16Value & 0xFF;
+  mm_eep_mem[o + 1] = (uint16Value >> 8) & 0xFF;
+  return CFE_PSP_SUCCESS;
+}
+
+I32 CFE_PSP_EepromWrite32(U64 MemoryAddress, U32 uint32Value)
+{
+  I64 o = MemoryAddress - MM_EEP_WINDOW_BASE;
+  ++mm_eep_writes;
+  if (!mm_eep_in(MemoryAddress, 4) || mm_eep_wfail(MemoryAddress))
+    return CFE_PSP_INVALID_MEM_ADDR;
+  mm_eep_mem[o] = uint32Value & 0xFF;
+  mm_eep_mem[o + 1] = (uint32Value >> 8) & 0xFF;
+  mm_eep_mem[o + 2] = (uint32Value >> 16) & 0xFF;
+  mm_eep_mem[o + 3] = (uint32Value >> 24) & 0xFF;
+  return CFE_PSP_SUCCESS;
+}
+
 I32 md_sym_rc;
 U64 md_sym_addr;
 I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
@@ -1632,6 +1699,16 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/mm/mm_mem16.HC"
 #include "/Kernel/Cfs/mm/mm_mem32.HC"
 #include "/Kernel/Cfs/mm/mm_dump.HC"
+#include "/Kernel/Cfs/mm/mm_load.HC"
+// mm_load's exercise state.
+I64 mml_k, mml_w, mml_p0;
+I32 mml_st;
+U32 mml_fd;
+MM_PokeCmd_t mml_pk;
+MM_FillMemCmd_t mml_fc;
+MM_LoadDumpFileHeader_t mml_fh;
+CFE_FS_Header_t mml_cf;
+CFE_ES_PerfData_t *mml_perf;
 // THE TWO BUFFERS MM'S GENERIC PATHS ACTUALLY DEREFERENCE. mm_dump.c's MM_DumpMemToFile and
 // MM_FillDumpInEventBuffer's RAM/EEPROM arm MemCpy from the address they are given rather than
 // going through CFE_PSP_MemRead*, so the simulated window of literal addresses does not work for
@@ -1644,6 +1721,9 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 U8 mmd_src[250];
 U8 mmd_evbuf[16];
 U8 mmd_mts[4];
+// Per-width captures for mm_load's poke exercises -- see the note at their use.
+I64 mml_bp[3];
+I64 mml_dv[3];
 I64 mmd_k, mmd_r;
 I32 mmd_st;
 U32 mmd_fd;
@@ -16879,6 +16959,392 @@ I64 main()
     H2(mmd_evbuf[14]);
     S(" b15=");
     H2(mmd_evbuf[15]);
+    S("\n");
+
+    // --- mm_load.c -- the six ways MM gets data IN ------------------------------------------
+    // EEPROM IS A SEPARATE DEVICE AND SO A SECOND SIMULATED REGION. A RAM poke goes through
+    // CFE_PSP_MemWrite* into MD_SIM_WINDOW; an EEPROM poke goes through CFE_PSP_EepromWrite*
+    // into MM_EEP_WINDOW, 0x00200000 and far away on purpose -- an address meant for one and
+    // sent to the other must be REFUSED, not quietly work, and the line below that pokes EEPROM
+    // at the RAM window's base is what says so.
+    //
+    // AND MM_FillMem HAS AN UPSTREAM DEFECT THAT THIS BLOCK PRINTS. NASA's scratch-segment loop
+    // runs MM_INTERNAL_MAX_FILL_DATA_SEG / sizeof(uint32) = 50 times through a BYTE pointer, so
+    // a 200-byte segment gets the pattern in its first fifty bytes and keeps whatever
+    // MM_AppData.FillBuffer held in the other 150. Kept verbatim -- see the long note at the top
+    // of Kernel/Cfs/mm/mm_load.HC -- and the four bytes printed below are the boundary: 0 and 49
+    // carry the pattern, 50 and 199 do not.
+    mml_perf = &CFE_ES_Global.ResetDataPtr->Perf;
+    MemSet(&mml_pk, 0, sizeof(MM_PokeCmd_t));
+    mml_pk.Payload.MemType = MM_MemType_RAM;
+    mml_pk.Payload.Data = 0xAABBCCDD;
+
+    // --- MM_PokeMem, the three widths into the RAM window. The window's own bytes say which end
+    // went first, and the event prints 0x%08X at every width -- which is the asymmetry with the
+    // EEPROM path below.
+    md_sim_fill();
+    mml_pk.Payload.DataSize = MM_INTERNAL_BYTE_BIT_WIDTH;
+    mml_st = MM_PokeMem(&mml_pk, MD_SIM_WINDOW_BASE + 8);
+    // PER-WIDTH, NOT JUST THE LAST ONE. The three byte counts were printed once after all three
+    // pokes, which reads only the 32-bit arm's -- so a mutation that made the 16-bit arm report
+    // ONE byte was INVISIBLE. Captured per call now.
+    mml_bp[0] = MM_AppData.HkTlm.Payload.BytesProcessed;
+    mml_dv[0] = MM_AppData.HkTlm.Payload.DataValue;
+    mml_pk.Payload.DataSize = MM_INTERNAL_WORD_BIT_WIDTH;
+    mml_st += MM_PokeMem(&mml_pk, MD_SIM_WINDOW_BASE + 16);
+    mml_bp[1] = MM_AppData.HkTlm.Payload.BytesProcessed;
+    mml_dv[1] = MM_AppData.HkTlm.Payload.DataValue;
+    mml_pk.Payload.DataSize = MM_INTERNAL_DWORD_BIT_WIDTH;
+    mml_st += MM_PokeMem(&mml_pk, MD_SIM_WINDOW_BASE + 24);
+    mml_bp[2] = MM_AppData.HkTlm.Payload.BytesProcessed;
+    mml_dv[2] = MM_AppData.HkTlm.Payload.DataValue;
+    S("mml_poke_bp ");
+    D(mml_bp[0]);
+    S(",");
+    D(mml_bp[1]);
+    S(",");
+    D(mml_bp[2]);
+    S(" dv ");
+    D(mml_dv[0]);
+    S(",");
+    D(mml_dv[1]);
+    S(",");
+    D(mml_dv[2]);
+    S("\n");
+    S("mml_poke st=");
+    D(mml_st);
+    S(" m8=");
+    H2(md_sim_mem[8]);
+    S(" m16=");
+    H2(md_sim_mem[17]);
+    H2(md_sim_mem[16]);
+    S(" m32=");
+    H2(md_sim_mem[27]);
+    H2(md_sim_mem[26]);
+    H2(md_sim_mem[25]);
+    H2(md_sim_mem[24]);
+    S("\n");
+    S("mml_poke_hk la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" mt=");
+    D(MM_AppData.HkTlm.Payload.MemType);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S(" dv=0x");
+    Hx8(MM_AppData.HkTlm.Payload.DataValue);
+    S(" addr=");
+    D(MM_AppData.HkTlm.Payload.Address);
+    S("\n");
+    // OUTSIDE THE WINDOW, and a width no arm recognises. The second returns -27 with
+    // `MemType=MEM0` -- BytesProcessed and DataSize are set BEFORE the write in this function,
+    // which is why the first one's event can print `MemType=MEM32` where MM_PeekMem's failure
+    // prints the size it never got to use.
+    mml_st = MM_PokeMem(&mml_pk, MD_SIM_WINDOW_BASE + 300);
+    S("mml_poke_bad st=");
+    D(mml_st);
+    S("\n");
+    mml_pk.Payload.DataSize = 7;
+    mml_st = MM_PokeMem(&mml_pk, MD_SIM_WINDOW_BASE);
+    S("mml_poke_nowidth st=");
+    D(mml_st);
+    S("\n");
+
+    // --- MM_PokeEeprom, the three widths into the OTHER region. Two performance-log entries per
+    // call -- the RAM poke has none -- and the success event prints the data AT THE COMMANDED
+    // WIDTH, so the same 0xAABBCCDD reads 0xDD, 0xCCDD and 0xAABBCCDD across the three.
+    MemSet(mm_eep_mem, 0, MM_EEP_WINDOW_SIZE);
+    mml_pk.Payload.MemType = MM_MemType_EEPROM;
+    mml_pk.Payload.DataSize = MM_INTERNAL_BYTE_BIT_WIDTH;
+    mml_w = mm_eep_writes;
+    mml_p0 = mml_perf->MetaData.DataCount;
+    mml_st = MM_PokeEeprom(&mml_pk, MM_EEP_WINDOW_BASE + 8);
+    mml_bp[0] = MM_AppData.HkTlm.Payload.BytesProcessed;
+    mml_pk.Payload.DataSize = MM_INTERNAL_WORD_BIT_WIDTH;
+    mml_st += MM_PokeEeprom(&mml_pk, MM_EEP_WINDOW_BASE + 16);
+    mml_bp[1] = MM_AppData.HkTlm.Payload.BytesProcessed;
+    mml_pk.Payload.DataSize = MM_INTERNAL_DWORD_BIT_WIDTH;
+    mml_st += MM_PokeEeprom(&mml_pk, MM_EEP_WINDOW_BASE + 24);
+    mml_bp[2] = MM_AppData.HkTlm.Payload.BytesProcessed;
+    S("mml_poke_eep_bp ");
+    D(mml_bp[0]);
+    S(",");
+    D(mml_bp[1]);
+    S(",");
+    D(mml_bp[2]);
+    S("\n");
+    S("mml_poke_eep st=");
+    D(mml_st);
+    S(" writes=");
+    D(mm_eep_writes - mml_w);
+    S(" perf=");
+    D(mml_perf->MetaData.DataCount - mml_p0);
+    S(" e8=");
+    H2(mm_eep_mem[8]);
+    S(" e16=");
+    H2(mm_eep_mem[17]);
+    H2(mm_eep_mem[16]);
+    S(" e32=");
+    H2(mm_eep_mem[27]);
+    H2(mm_eep_mem[26]);
+    H2(mm_eep_mem[25]);
+    H2(mm_eep_mem[24]);
+    S("\n");
+    S("mml_poke_eep_hk la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" mt=");
+    D(MM_AppData.HkTlm.Payload.MemType);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S(" dv=0x");
+    Hx8(MM_AppData.HkTlm.Payload.DataValue);
+    S("\n");
+    // THE TWO REGIONS ARE SEPARATE, which is the whole reason EEPROM got its own window: an
+    // EEPROM poke aimed at the RAM window's base must be REFUSED, and the RAM window's byte
+    // there must be untouched. A shared array would have made this succeed and nothing else in
+    // the port would have noticed.
+    md_sim_fill();
+    mml_w = mm_eep_writes;
+    mml_pk.Payload.DataSize = MM_INTERNAL_BYTE_BIT_WIDTH;
+    mml_st = MM_PokeEeprom(&mml_pk, MD_SIM_WINDOW_BASE + 8);
+    S("mml_poke_eep_wrongregion st=");
+    D(mml_st);
+    S(" writes=");
+    D(mm_eep_writes - mml_w);
+    S(" ram8=");
+    H2(md_sim_mem[8]);
+    S("\n");
+    // AND HOUSEKEEPING AFTER A FAILED POKE, which nothing read before -- so a mutation that
+    // updated it on the error path was INVISIBLE. The address must still be the 32-bit EEPROM
+    // poke's, 0x200018, and the byte count still 4.
+    S("mml_poke_eep_failhk la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" mt=");
+    D(MM_AppData.HkTlm.Payload.MemType);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S(" dv=0x");
+    Hx8(MM_AppData.HkTlm.Payload.DataValue);
+    S(" addr=");
+    D(MM_AppData.HkTlm.Payload.Address);
+    S("\n");
+    // And the other two widths' error ids, which are three DIFFERENT events for one failure --
+    // the RAM poke has one.
+    mml_pk.Payload.DataSize = MM_INTERNAL_WORD_BIT_WIDTH;
+    mml_st = MM_PokeEeprom(&mml_pk, MD_SIM_WINDOW_BASE + 8);
+    mml_pk.Payload.DataSize = MM_INTERNAL_DWORD_BIT_WIDTH;
+    mml_st += MM_PokeEeprom(&mml_pk, MD_SIM_WINDOW_BASE + 8);
+    S("mml_poke_eep_err st=");
+    D(mml_st);
+    S("\n");
+
+    // --- MM_LoadMemFromFile, generic, into the real array. THE PERFORMANCE STAMPS ARE
+    // CONDITIONAL ON THE FILE HEADER'S MEMORY TYPE -- the only marker in MM taken only sometimes
+    // -- so the same call gives perf=2 for EEPROM and perf=0 for RAM, with the segment break's
+    // own pair on top of both.
+    for (mml_k = 0; mml_k < 250; mml_k++) {
+      fs_data[mml_k] = (0x80 + mml_k) & 0xFF;
+    }
+    MemSet(mmd_src, 0xBB, 250);
+    fs_len = 250;
+    fs_noexist = 0;
+    fs_wr_left = -1;
+    OS_OpenCreate(&mml_fd, "/ram/mml.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+    MemSet(&mml_fh, 0, sizeof(MM_LoadDumpFileHeader_t));
+    mml_fh.NumOfBytes = 250;
+    mml_fh.MemType = MM_MemType_EEPROM;
+    mml_fh.SymAddress.Offset = mmd_src(U64);
+    MemSet(MM_AppData.HkTlm.Payload.FileName, 'Z', CFE_MISSION_MAX_PATH_LEN);
+    mml_p0 = mml_perf->MetaData.DataCount;
+    mml_st = MM_LoadMemFromFile(mml_fd, "/ram/mml.ld", &mml_fh, mmd_src(U64));
+    S("mml_load_eep st=");
+    D(mml_st);
+    S(" perf=");
+    D(mml_perf->MetaData.DataCount - mml_p0);
+    S(" s0=");
+    H2(mmd_src[0]);
+    S(" s199=");
+    H2(mmd_src[199]);
+    S(" s200=");
+    H2(mmd_src[200]);
+    S(" s249=");
+    H2(mmd_src[249]);
+    S("\n");
+    S("mml_load_hk la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" mt=");
+    D(MM_AppData.HkTlm.Payload.MemType);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S(" addr_ok=");
+    D(MM_AppData.HkTlm.Payload.Address == mmd_src(U64));
+    S(" fn=[");
+    S(MM_AppData.HkTlm.Payload.FileName);
+    S("] fn20=");
+    D(MM_AppData.HkTlm.Payload.FileName[20]);
+    S("\n");
+    MemSet(mmd_src, 0xBB, 250);
+    fs_len = 250;
+    mml_fh.MemType = MM_MemType_RAM;
+    OS_OpenCreate(&mml_fd, "/ram/mml.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+    mml_p0 = mml_perf->MetaData.DataCount;
+    mml_st = MM_LoadMemFromFile(mml_fd, "/ram/mml.ld", &mml_fh, mmd_src(U64));
+    S("mml_load_ram st=");
+    D(mml_st);
+    S(" perf=");
+    D(mml_perf->MetaData.DataCount - mml_p0);
+    S(" mt=");
+    D(MM_AppData.HkTlm.Payload.MemType);
+    S(" s0=");
+    H2(mmd_src[0]);
+    S("\n");
+    // A SHORT FILE. Note this function's event prints `RC = 0x%08X` where MM_DumpMemToFile's
+    // prints `RC = %d` -- two sources, two renderings, again.
+    MemSet(mmd_src, 0xBB, 250);
+    fs_len = 100;
+    OS_OpenCreate(&mml_fd, "/ram/mml.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+    mml_st = MM_LoadMemFromFile(mml_fd, "/ram/mml.ld", &mml_fh, mmd_src(U64));
+    S("mml_load_short st=");
+    D(mml_st);
+    S(" s0=");
+    H2(mmd_src[0]);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S("\n");
+
+    // --- MM_VerifyLoadFileSize. The expected size is the header's claim PLUS BOTH HEADERS:
+    // 250 + 64 + 88 = 402. This is the first thing in the port to READ the stat buffer rather
+    // than only OS_stat's return code.
+    mml_fh.NumOfBytes = 250;
+    es_stat_rc = OS_SUCCESS;
+    es_stat_size = 402;
+    mml_st = MM_VerifyLoadFileSize("/ram/mml.ld", &mml_fh);
+    S("mml_vsize_ok st=");
+    D(mml_st);
+    S("\n");
+    es_stat_size = 401;
+    mml_st = MM_VerifyLoadFileSize("/ram/mml.ld", &mml_fh);
+    S("mml_vsize_wrong st=");
+    D(mml_st);
+    S("\n");
+    es_stat_rc = OS_ERROR;
+    mml_st = MM_VerifyLoadFileSize("/ram/mml.ld", &mml_fh);
+    S("mml_vsize_statfail st=");
+    D(mml_st);
+    S("\n");
+    es_stat_rc = OS_SUCCESS;
+    es_stat_size = 0;
+
+    // --- MM_ReadFileHeaders, AS A ROUND TRIP THROUGH MM_WriteFileHeaders. Writing the pair and
+    // reading it back is the only test that says the two agree about the layout -- each on its
+    // own would pass against a wrong offset.
+    fs_len = 0;
+    fs_pos = 0;
+    fs_wr_left = -1;
+    OS_OpenCreate(&mml_fd, "/ram/mml.hd", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE,
+                  OS_WRITE_ONLY);
+    MemSet(&mml_cf, 0, sizeof(CFE_FS_Header_t));
+    mml_cf.SubType = 0x4D4D5354;
+    MemSet(&mml_fh, 0, sizeof(MM_LoadDumpFileHeader_t));
+    mml_fh.NumOfBytes = 1234;
+    mml_fh.Crc = 0x55AA;
+    mml_fh.MemType = MM_MemType_MEM8;
+    mml_fh.SymAddress.Offset = 0x00100040;
+    StrNCpy(mml_fh.SymAddress.SymName, "RT", CFE_MISSION_MAX_PATH_LEN);
+    mml_st = MM_WriteFileHeaders("/ram/mml.hd", mml_fd, &mml_cf, &mml_fh);
+    MemSet(&mml_cf, 0, sizeof(CFE_FS_Header_t));
+    MemSet(&mml_fh, 0, sizeof(MM_LoadDumpFileHeader_t));
+    OS_OpenCreate(&mml_fd, "/ram/mml.hd", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+    mml_st = MM_ReadFileHeaders("/ram/mml.hd", mml_fd, &mml_cf, &mml_fh);
+    S("mml_rt st=");
+    D(mml_st);
+    S(" sub=0x");
+    Hx8(mml_cf.SubType);
+    S(" nbytes=");
+    D(mml_fh.NumOfBytes);
+    S(" crc=0x");
+    Hx4(mml_fh.Crc);
+    S(" mt=");
+    D(mml_fh.MemType);
+    S(" off=");
+    D(mml_fh.SymAddress.Offset);
+    S(" sym=[");
+    S(mml_fh.SymAddress.SymName);
+    S("]\n");
+    // THE TWO SHORT ARMS. Unlike the writer, this one sends the event BEFORE replacing the
+    // status, so the ground sees what CFE_FS_ReadHeader really returned.
+    fs_len = 10;
+    OS_OpenCreate(&mml_fd, "/ram/mml.hd", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+    mml_st = MM_ReadFileHeaders("/ram/mml.hd", mml_fd, &mml_cf, &mml_fh);
+    S("mml_rt_short1 st=");
+    D(mml_st);
+    S("\n");
+    fs_len = 64 + 10;
+    OS_OpenCreate(&mml_fd, "/ram/mml.hd", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+    mml_st = MM_ReadFileHeaders("/ram/mml.hd", mml_fd, &mml_cf, &mml_fh);
+    S("mml_rt_short2 st=");
+    D(mml_st);
+    S("\n");
+
+    // --- MM_FillMem, AND THE UPSTREAM DEFECT. 200 bytes into an array poisoned with 0xBB.
+    // Bytes 0 and 49 must carry the pattern's LOW BYTE; bytes 50 and 199 must carry whatever
+    // MM_AppData.FillBuffer held -- which is zero the first time, since it is in BSS and nothing
+    // has touched it. The 0xBB is gone either way, because the MemCpy covers the whole segment;
+    // it is the CONTENTS that say only a quarter of the segment was ever filled.
+    MemSet(mmd_src, 0xBB, 250);
+    MemSet(&mml_fc, 0, sizeof(MM_FillMemCmd_t));
+    mml_fc.Payload.NumOfBytes = 200;
+    mml_fc.Payload.FillPattern = 0xAABBCCDD;
+    mml_fc.Payload.MemType = MM_MemType_RAM;
+    mml_p0 = mml_perf->MetaData.DataCount;
+    MM_FillMem(mmd_src(U64), &mml_fc);
+    S("mml_fill perf=");
+    D(mml_perf->MetaData.DataCount - mml_p0);
+    S(" s0=");
+    H2(mmd_src[0]);
+    S(" s49=");
+    H2(mmd_src[49]);
+    S(" s50=");
+    H2(mmd_src[50]);
+    S(" s199=");
+    H2(mmd_src[199]);
+    S(" s200=");
+    H2(mmd_src[200]);
+    S("\n");
+    S("mml_fill_hk la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" mt=");
+    D(MM_AppData.HkTlm.Payload.MemType);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S(" dv=0x");
+    Hx8(MM_AppData.HkTlm.Payload.DataValue);
+    S(" addr_ok=");
+    D(MM_AppData.HkTlm.Payload.Address == mmd_src(U64));
+    S("\n");
+    // 250 BYTES IS TWO SEGMENTS, so the segment break fires once -- perf goes to 2 for a RAM
+    // fill, and to 4 for an EEPROM one because this function's own stamps are conditional on the
+    // memory type the same way the load's are.
+    MemSet(mmd_src, 0xBB, 250);
+    mml_fc.Payload.NumOfBytes = 250;
+    mml_p0 = mml_perf->MetaData.DataCount;
+    MM_FillMem(mmd_src(U64), &mml_fc);
+    S("mml_fill_2seg perf=");
+    D(mml_perf->MetaData.DataCount - mml_p0);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S(" s200=");
+    H2(mmd_src[200]);
+    S(" s249=");
+    H2(mmd_src[249]);
+    S("\n");
+    MemSet(mmd_src, 0xBB, 250);
+    mml_fc.Payload.MemType = MM_MemType_EEPROM;
+    mml_p0 = mml_perf->MetaData.DataCount;
+    MM_FillMem(mmd_src(U64), &mml_fc);
+    S("mml_fill_eep perf=");
+    D(mml_perf->MetaData.DataCount - mml_p0);
+    S(" mt=");
+    D(MM_AppData.HkTlm.Payload.MemType);
     S("\n");
 
     S("tim_objtab ");
