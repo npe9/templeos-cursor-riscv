@@ -13958,6 +13958,15 @@ int main(void)
             MM_TaskPipe((CFE_SB_Buffer_t *)&b);
             printf("mma_pipe_badmid err=%u\n",
                    (unsigned)MM_AppData.HkTlm.Payload.CommandErrorCounter);
+
+            /* PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after
+             * it today but tim_objtab, so both halves agreed and the transcript was green --
+             * but the NEXT app's exercise goes in this same place and would inherit a CORE app
+             * and a CORE_READY system state. "An EXTERNAL app's ExitApp does not return" is the
+             * hang that cost MD three steps to find; leaving the flag set is how the next
+             * person finds it again. Changes no output, which is the point. */
+            CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_EXTERNAL;
+            CFE_ES_Global.SystemState      = CFE_ES_SystemState_OPERATIONAL;
         }
 
         printf("tim_objtab %s %d %d %d %lu %lu\n", CFE_TIME_ModuleEntry.Name,

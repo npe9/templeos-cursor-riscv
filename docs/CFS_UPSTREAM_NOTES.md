@@ -319,3 +319,98 @@ and is presumably why it has survived.
 Translated as written, with a comment at the site. The differential transcript is what makes
 that safe to say: both sides reproduce the stale entries identically, and a port that "fixed" it
 would differ from the flight software it claims to be.
+
+## 11. MM_FillMem does not fill with the commanded pattern past 50 bytes
+
+MM pinned at `0a767de5` (vendor/MM), file `fsw/src/mm_load.c`.
+
+```c
+uint8 *FillBuffer = (uint8 *)&MM_AppData.FillBuffer[0];
+
+/* Create a scratch buffer with one fill segment */
+for (i = 0; i < (MM_INTERNAL_MAX_FILL_DATA_SEG / sizeof(uint32)); i++)
+{
+    FillBuffer[i] = CmdPtr->Payload.FillPattern;      /* <-- a BYTE pointer, 50 iterations */
+}
+```
+
+`FillBuffer` is a **byte** pointer and the loop runs `200 / 4 = 50` times. So the scratch segment
+gets the pattern's low byte in its first **fifty** bytes and keeps whatever
+`MM_AppData.FillBuffer` held in the other **150**. The intent is plainly
+`((uint32 *)FillBuffer)[i] = FillPattern` — 50 words, 200 bytes, pattern throughout — and the
+`sizeof(uint32)` in the bound is what says so.
+
+**This is the generic fill**, taken for `MM_MemType_RAM` and `MM_MemType_EEPROM`; the three
+width-specific fills (`MM_FillMem8/16/32`) write the pattern correctly through the PSP and are
+unaffected.
+
+### Reachability: LIVE, on the default configuration
+
+`MM_FillMemCmd` dispatches RAM and EEPROM fills straight to it. A ground `MM_FILL_MEM_CC` of more
+than 50 bytes to a RAM address leaves the tail holding stale buffer contents — on the first fill
+after boot that is BSS zero, and afterwards it is **the previous fill's pattern**, because the
+scratch buffer is in `MM_AppData` and is never cleared.
+
+### What the differential pins
+
+Into an array poisoned with `0xBB`, a 200-byte fill of `0xAABBCCDD`:
+
+```
+mml_fill      perf=0 s0=DD s49=DD s50=00 s199=00 s200=BB
+mml_fill_2seg perf=2 bp=250 s200=DD s249=DD
+```
+
+The second line is the signature across two segments: `DD` in 0–49, `00` in 50–199, and `DD`
+again in 200–249 — because the 50-byte last segment copies `FillBuffer[0..49]`, which *are* the
+pattern. The mutation that **fixes it the natural way**, writing through a `uint32 *`, gives
+`s49=CC s50=BB s199=AA` and the transcript refuses it.
+
+Translated verbatim. `MM_AppData.HkTlm.Payload.BytesProcessed` reports the full commanded length
+either way, so telemetry does not show it.
+
+## 12. MM_FillMemCmd counts a failed fill as a successful command
+
+Same pin, file `fsw/src/mm_cmds.c`.
+
+```c
+if (Status == CFE_PSP_SUCCESS) {
+    if (MM_AppData.HkTlm.Payload.LastAction == MM_LastAction_FILL) {
+        MM_AppData.HkTlm.Payload.CommandCounter++;
+        CFE_EVS_SendEvent(MM_FILL_INF_EID, ...);
+    } else {
+        MM_AppData.HkTlm.Payload.CommandErrorCounter++;
+    }
+} else {
+    MM_AppData.HkTlm.Payload.CommandCounter++;        /* <-- the SUCCESS counter */
+}
+```
+
+The `else` is the **failure** arm of the status check and it moves `CommandCounter`, not
+`CommandErrorCounter`, and sends **no event at all**. Every sibling handler in the file
+(`MM_PokeCmd`, `MM_PeekCmd`, `MM_LoadMemFromFileCmd`, …) increments the error counter there.
+
+### Reachability: LIVE, and the route is not the obvious one
+
+`MM_FillMem8/16/32` return `CFE_PSP_ERROR` when a `CFE_PSP_MemWrite*` is refused — on hardware, a
+fill that ran off the end of a valid region. So a fill that wrote **part** of its range and then
+failed reports a command that worked.
+
+It is **not** reached by an unaligned length, which is the first guess: `MM_VerifyLoadDumpParams`
+checks the alignment of the **size** as well as the address for MEM16 and MEM32, so an unaligned
+fill is refused one level earlier and lands in the outer `else`, which counts correctly. A
+consequence worth stating on its own: **the rounding warning in `mm_mem16.c` and `mm_mem32.c`
+(`MM_FILL_MEM16/32_ALIGN_WARN_INF_EID`) is unreachable through the command path** and only fires
+if those functions are called directly.
+
+### What the differential pins
+
+A MEM8 fill of 16 bytes with the simulated PSP refusing the store at offset 70:
+
+```
+mmc_fill_wfail cc=1 ec=0 m69=5A m70=86
+```
+
+Six bytes written, the seventh refused, the success counter moved and no event sent. The mutation
+that changes it to `CommandErrorCounter++` gives `cc=0 ec=1`.
+
+Translated verbatim.

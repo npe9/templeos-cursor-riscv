@@ -61,6 +61,14 @@ def config_ids():
     return ids
 
 def main(argv):
+    # `--help` IS NOT AN OUTPUT DIRECTORY, and this check exists because it was treated as one:
+    # a stray `--help/cfe_target_config.c` sat in the tree for two days, created by one run of
+    # `gen_*.py --help` that took the flag as argv[0] and called os.makedirs on it. Four
+    # generators had the same shape. A tool that silently does the wrong thing when ASKED FOR
+    # HELP is the most reliable way to leave litter in someone's checkout.
+    if len(argv) == 1 and argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
     if len(argv) != 1:
         print(__doc__)
         return 2
