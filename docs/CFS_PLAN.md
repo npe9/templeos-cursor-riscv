@@ -1923,3 +1923,119 @@ id**, not an array index. It came back as `0x1c0001`, which indexes nothing, and
 `CFE_TBL_Global.Registry[0x1c0001]` is far out of bounds. `CFE_TBL_LocateRegRecByName` is the
 right accessor and needs no index arithmetic at all — which also satisfies the tbl section's own
 rule against hard-coded registry indices, recorded there as a mistake it made seven times.
+
+### md_cmds.c — the six ground commands, and nine assertions that said nothing
+
+Noop, ResetCounters, StartDwell, StopDwell, JamDwell, SetSignature. Twenty-three event ids,
+which is most of what an operator ever sees from this app.
+
+**Every command writes two places**, and that is the shape of the file: MD keeps working state in
+`MD_AppData.MD_DwellTables` and the ground's copy in a Table Services buffer, so each handler
+updates the control structure *and* calls one of `md_dwell_tbl.c`'s three editors. The editors can
+fail independently, so a command can **partly succeed** — which is why `Status` and the two
+counters move separately, and why the exercise prints all three on most lines.
+
+#### The partial failure is reachable because three handles are deliberately unregistered
+
+`md_cmds`' block **reuses** the table the `md_dwell_tbl` block registered rather than calling
+`CFE_TBL_EarlyInit` again — nothing between them memsets `CFE_TBL_Global`, and another `EarlyInit`
+would take a MemPool slot from a table that was at 10/10 before this transcript reclaimed two.
+Occupancy is printed once as a tripwire (`mdc_pools 9/10`), so if it ever fills again that line
+says so immediately instead of six assertions cascading into `-1` handles.
+
+Handles 1..3 are left unregistered, and that is what reaches the interesting arm:
+
+```
+mdc_start1  st=0            cc=1 ec=0 ena=1 cd=1 cur=0 off=0
+mdc_start12 st=-872415231   cc=1 ec=1 ena2=1
+```
+
+A mask of `0x0003` succeeds for table 1 and fails for table 2 — *"failed for 1 of 2 tables"* —
+and `ena2=1` is the asymmetry worth pinning: **the control structure is updated for table 2
+anyway**, because NASA writes it before calling the editor. Only the Table Services copy is
+missed. `cc` does not advance and `ec` does.
+
+#### `FieldLength 0` is a command, not an error, and its consequence is silent
+
+`MD_ValidFieldLength` accepts **0**, so a Jam with `FieldLength 0` is the "null out this entry"
+command. Status is success either way, and nulling an entry *terminates the table there*:
+
+```
+mdc_jam_ok   ... n=3 size=8 rate=11
+mdc_jam_null ... n=1 size=2 rate=2  e2len=0 e3len=4
+```
+
+`MD_UpdateDwellControlInfo` stops at the first zero `Length`, so all three derived totals collapse
+while entry 3 still holds a live 4-byte dwell. Nothing but the totals shows it.
+
+#### Nine of my assertions printed what a no-op would print
+
+`MD_JamDwellCmd` sets `Status = CFE_SUCCESS` at the top, and an argument rejection only clears
+`AllInputsValid` — the bookkeeping at the end increments `CommandErrorCounter` and leaves `Status`
+untouched. So **every rejection returns 0**, and the first version of this block printed the
+status alone for four argument checks and five validity rejections: nine lines that a function
+which did nothing would have satisfied exactly.
+
+Each now carries the error counter, and the values are monotonic and distinct —
+`ec=4,5,6,7,8,9,10,11,12` — so each line asserts *that* rejection rather than the pair. **The
+counter is the signal; the status is not.**
+
+#### Two NASA details the translation has to carry
+
+`sizeof` through `->`. `md_cmds.c` writes `sizeof(Msg->Payload.DwellAddress.SymName)`, and
+`docs/HOLYC_STRUCT_LIMITS.md` #16 records that `sizeof` through an arrow **does not parse** — it
+fails as a bare `0:1: error: parse error` with no line number, which took a six-way bisect to
+localise. The dot form on the adjacent line parses and is left alone. Both sizes resolve to
+`CFE_MISSION_MAX_PATH_LEN`, which is written out, the same way the port handles NASA's other
+unreachable `sizeof`s.
+
+**And NASA passes a partially-initialised struct by value.** `NewDwellAddress` is a local
+`MD_SymAddr_t`, and the `FieldLength == 0` branch sets only `.Offset` and `.SymName[0]` before
+handing all 72 bytes to `MD_UpdateTableDwellEntry` — the rest is uninitialised stack, copied into
+the Table Services buffer. Same family as the uninitialised dump header recorded above. It is
+harmless to the app, which only reads `SymName` as a string, and it means **the exercise must read
+it as a string too**: a byte dump past the NUL cannot be compared across a host process and a
+QEMU guest.
+
+#### And the call-site hole in the #26 gate, measured rather than assumed
+
+`check_struct_copy` refuses a by-value class parameter in a **definition**, which is where
+`MD_UpdateTableDwellEntry` declares one. `md_cmds.c` has two **call sites** passing that 72-byte
+struct, and a missing `&` there is invisible to the gate: dropping it left the gate reporting 89
+parameters and OK.
+
+The transcript catches it loudly, not quietly — a 35-line diff including `CFE_TBL_GetAddress: Bad
+AppId=1114113`, because the struct's bytes bleed into the next argument register. So the call-site
+risk is left to the transcript, with that measurement written into the gate's own header so the
+next reader knows which half of the problem it covers.
+
+#### Six mutations, and the second vacuity in the same block
+
+| mutation | transcript |
+|---|---|
+| `StartDwell` leaves `Countdown` at 0 | `cd=1` → `cd=0` |
+| `StartDwell` counts a partly-failed command as good | `cc=1 ec=1` → `cc=2 ec=0`, and event 56 becomes event 12 — 38 lines |
+| `StopDwell` forgets to disable the control structure | `ena=0` → `ena=1` |
+| the null jam leaves `Delay` alone | **nothing** — see below |
+| `SetSignature` checks the table id before the length | event 49 becomes event 47, nothing else moves |
+| the Jam bookkeeping counts a rejected command as good | `ec=4,5,6…` → `ec=3,3,3…` — 28 lines |
+
+Two of these only move an **event id**: reordering `SetSignature`'s checks leaves the status and
+both counters untouched, so the event text is the only witness. That is the second time in this
+app a check-ordering bug is visible in nothing else.
+
+**And the fourth passed.** The null-out command zeroes `Length`, `Delay` and `ResolvedAddress`,
+and the block asserted the three totals `MD_UpdateDwellControlInfo` derives from the table.
+Deleting `DwellEntryPtr->Delay = 0;` left the transcript byte-identical — because the summariser
+**stops at the first entry whose `Length` is zero**, so the instant the null write lands, that
+entry's `Delay` is never read again by anything. `Rate` was 2 either way.
+
+A total is a projection, and a projection discards. Asserting the output of a function that reads
+a *subset* of the state says nothing about the rest — and "the totals changed correctly" reads
+like strong evidence, which is what makes it dangerous. The block now reads `e2len`, `e2dly` and
+`e2addr`, the fields the code actually writes. The giveaway question, worth asking of any
+assertion built on a computed value: **does the function producing it read the field my code just
+wrote?** Here it provably stopped before reaching it.
+
+That is the second vacuous assertion this one file produced — the nine `st=0` rejection lines
+were the first — and both were found by a control passing rather than by review.

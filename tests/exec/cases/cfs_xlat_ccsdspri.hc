@@ -1549,6 +1549,7 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/md/md_utils.HC"
 #include "/Kernel/Cfs/md/md_dwell_pkt.HC"
 #include "/Kernel/Cfs/md/md_dwell_tbl.HC"
+#include "/Kernel/Cfs/md/md_cmds.HC"
 // File scope, not locals: docs/HOLYC_STRUCT_LIMITS.md #22 -- growing a big function's TOTAL
 // frame makes an unrelated file-scope read return zero -- and HolyC has no aggregate
 // initialiser, so the mask list is filled at use.
@@ -1581,6 +1582,15 @@ U16 md_bad;
 MD_SymAddr_t md_na;
 MD_DwellTableLoad_t *md_rb;
 CFE_TBL_RegistryRec_t *md_rr;
+// md_cmds' command messages, at FILE SCOPE for the reason the rest of this block is (limit
+// #22): MD_JamDwellCmd_t is 88 bytes and MD_SetSignatureCmd_t 44.
+MD_NoopCmd_t md_np;
+MD_ResetCountersCmd_t md_rc;
+MD_StartDwellCmd_t md_sd;
+MD_StopDwellCmd_t md_pd;
+MD_JamDwellCmd_t md_jd;
+MD_SetSignatureCmd_t md_sg;
+I64 md_used;
 CFE_ES_MemPoolRecord_t *md_pr;
 I64 md_freed;
 I64 md_get;
@@ -14666,6 +14676,319 @@ I64 main()
     S("mdt_bad_sig ");
     D(md_st);
     S("\n");
+
+    // --- md_cmds.c -- the six ground commands ---------------------------------------
+    // THE TABLE FROM THE BLOCK ABOVE IS REUSED RATHER THAN RE-REGISTERED. Nothing between here
+    // and there memsets CFE_TBL_Global, so MD_AppData.MD_TableHandle[0] is still a registered
+    // and loaded CFE_EVS.DWELL_TABLE1 -- and re-running CFE_TBL_EarlyInit would take another
+    // MemPool slot from a table that was at 10/10 before this transcript reclaimed two. The
+    // occupancy is printed once as a TRIPWIRE.
+    //
+    // HANDLES 1..3 ARE DELIBERATELY NOT REGISTERED, which is what makes the partial failure
+    // reachable: a mask of 0x0003 succeeds for table 1 and fails for table 2.
+    //
+    // EVERY CALL IS HOISTED. All six handlers emit EVS events.
+    md_used = 0;
+    for (md_i = 0; md_i < CFE_PLATFORM_ES_MAX_MEMORY_POOLS; md_i++) {
+      if (CFE_ES_MemPoolRecordIsUsed(&CFE_ES_Global.MemPoolTable[md_i]))
+        md_used++;
+    }
+    S("mdc_pools ");
+    D(md_used);
+    S("/");
+    D(CFE_PLATFORM_ES_MAX_MEMORY_POOLS);
+    S("\n");
+    MemSet(&md_np, 0, sizeof(MD_NoopCmd_t));
+    MemSet(&md_rc, 0, sizeof(MD_ResetCountersCmd_t));
+    MemSet(&md_sd, 0, sizeof(MD_StartDwellCmd_t));
+    MemSet(&md_pd, 0, sizeof(MD_StopDwellCmd_t));
+    MemSet(&md_jd, 0, sizeof(MD_JamDwellCmd_t));
+    MemSet(&md_sg, 0, sizeof(MD_SetSignatureCmd_t));
+    MD_AppData.CommandCounter = 0;
+    MD_AppData.CommandErrorCounter = 0;
+    // (a) Noop and ResetCounters. The Noop event carries the VERSION, which is the only place
+    // those four constants reach the transcript.
+    md_st = MD_NoopCmd(&md_np);
+    S("mdc_noop st=");
+    D(md_st);
+    S(" cc=");
+    D(MD_AppData.CommandCounter);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    MD_AppData.CommandErrorCounter = 9;
+    md_st = MD_ResetCountersCmd(&md_rc);
+    S("mdc_reset st=");
+    D(md_st);
+    S(" cc=");
+    D(MD_AppData.CommandCounter);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    // (b) START on the registered table alone: the nominal arm. Countdown of 1 is what makes
+    // the next wakeup issue a packet, so all four control fields are asserted.
+    md_sd.Payload.TableMask = 0x0001;
+    md_st = MD_StartDwellCmd(&md_sd);
+    S("mdc_start1 st=");
+    D(md_st);
+    S(" cc=");
+    D(MD_AppData.CommandCounter);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S(" ena=");
+    D(MD_AppData.MD_DwellTables[0].Enabled);
+    S(" cd=");
+    D(MD_AppData.MD_DwellTables[0].Countdown);
+    S(" cur=");
+    D(MD_AppData.MD_DwellTables[0].CurrentEntry);
+    S(" off=");
+    D(MD_AppData.MD_DwellTables[0].PktOffset);
+    S("\n");
+    // (c) START on tables 1 AND 2: table 2 has no registered table, so the editor fails for it
+    // and succeeds for table 1 -- "failed for 1 of 2 tables". The CONTROL STRUCTURE is still
+    // updated for both, because NASA writes it before calling the editor; only the Table
+    // Services copy is missed. That asymmetry is the point.
+    md_sd.Payload.TableMask = 0x0003;
+    md_st = MD_StartDwellCmd(&md_sd);
+    S("mdc_start12 st=");
+    D(md_st);
+    S(" cc=");
+    D(MD_AppData.CommandCounter);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S(" ena2=");
+    D(MD_AppData.MD_DwellTables[1].Enabled);
+    S("\n");
+    // (d) an EMPTY mask: no table in it at all
+    md_sd.Payload.TableMask = 0x0000;
+    md_st = MD_StartDwellCmd(&md_sd);
+    S("mdc_startnone st=");
+    D(md_st);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    // (e) STOP, both arms. Note Countdown goes to ZERO here where Start set it to 1.
+    md_pd.Payload.TableMask = 0x0001;
+    md_st = MD_StopDwellCmd(&md_pd);
+    S("mdc_stop1 st=");
+    D(md_st);
+    S(" cc=");
+    D(MD_AppData.CommandCounter);
+    S(" ena=");
+    D(MD_AppData.MD_DwellTables[0].Enabled);
+    S(" cd=");
+    D(MD_AppData.MD_DwellTables[0].Countdown);
+    S("\n");
+    md_pd.Payload.TableMask = 0x0000;
+    md_st = MD_StopDwellCmd(&md_pd);
+    S("mdc_stopnone st=");
+    D(md_st);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    // (f) JAM argument checks, which are index bounds and so are checked FIRST.
+    //
+    // EACH LINE CARRIES THE ERROR COUNTER, AND IT HAS TO. MD_JamDwellCmd sets Status to
+    // CFE_SUCCESS at the top and an argument rejection only clears AllInputsValid, so EVERY
+    // line below returns st=0 -- exactly what a function that did nothing would return. The
+    // counter is the signal; the status is not.
+    md_jd.Payload.TableId = 0;
+    md_jd.Payload.EntryId = 1;
+    md_st = MD_JamDwellCmd(&md_jd);
+    S("mdc_jam_tbl0 st=");
+    D(md_st);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    md_jd.Payload.TableId = MD_INTERFACE_NUM_DWELL_TABLES + 1;
+    md_st = MD_JamDwellCmd(&md_jd);
+    S("mdc_jam_tblhi st=");
+    D(md_st);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    md_jd.Payload.TableId = 1;
+    md_jd.Payload.EntryId = 0;
+    md_st = MD_JamDwellCmd(&md_jd);
+    S("mdc_jam_ent0 st=");
+    D(md_st);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    md_jd.Payload.EntryId = MD_INTERFACE_DWELL_TABLE_SIZE + 1;
+    md_st = MD_JamDwellCmd(&md_jd);
+    S("mdc_jam_enthi st=");
+    D(md_st);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    // (g) A VALID JAM, then the derived totals.
+    for (md_i = 0; md_i < 3; md_i++) {
+      MD_AppData.MD_DwellTables[0].Entry[md_i].Length = 2;
+      MD_AppData.MD_DwellTables[0].Entry[md_i].Delay = 2;
+      MD_AppData.MD_DwellTables[0].Entry[md_i].ResolvedAddress = MD_SIM_WINDOW_BASE + 0x20;
+    }
+    MD_UpdateDwellControlInfo(0);
+    S("mdc_before n=");
+    D(MD_AppData.MD_DwellTables[0].AddrCount);
+    S(" size=");
+    D(MD_AppData.MD_DwellTables[0].DataSize);
+    S(" rate=");
+    D(MD_AppData.MD_DwellTables[0].Rate);
+    S("\n");
+    md_jd.Payload.TableId = 1;
+    md_jd.Payload.EntryId = 3;
+    md_jd.Payload.FieldLength = 4;
+    md_jd.Payload.DwellDelay = 7;
+    md_jd.Payload.DwellAddress.Offset = MD_SIM_WINDOW_BASE + 0x40; // 4-aligned
+    md_jd.Payload.DwellAddress.SymName[0] = '\0';
+    md_st = MD_JamDwellCmd(&md_jd);
+    S("mdc_jam_ok st=");
+    D(md_st);
+    S(" cc=");
+    D(MD_AppData.CommandCounter);
+    S(" len=");
+    D(MD_AppData.MD_DwellTables[0].Entry[2].Length);
+    S(" dly=");
+    D(MD_AppData.MD_DwellTables[0].Entry[2].Delay);
+    S(" addr=");
+    D(MD_AppData.MD_DwellTables[0].Entry[2].ResolvedAddress);
+    S(" n=");
+    D(MD_AppData.MD_DwellTables[0].AddrCount);
+    S(" size=");
+    D(MD_AppData.MD_DwellTables[0].DataSize);
+    S(" rate=");
+    D(MD_AppData.MD_DwellTables[0].Rate);
+    S("\n");
+    // and the Table Services copy got it too -- read back through the handle, as a STRING,
+    // because the null-jam path hands MD_UpdateTableDwellEntry a partially initialised 72-byte
+    // struct and the bytes past the NUL are stack garbage
+    md_rb = NULL;
+    md_get = CFE_TBL_GetAddress(&md_rb, MD_AppData.MD_TableHandle[0]);
+    S("mdc_jam_tbl get=");
+    D(md_get);
+    S(" len=");
+    D(md_rb->Entry[2].Length);
+    S(" dly=");
+    D(md_rb->Entry[2].Delay);
+    S(" off=");
+    D(md_rb->Entry[2].DwellAddress.Offset);
+    S("\n");
+    CFE_TBL_ReleaseAddress(MD_AppData.MD_TableHandle[0]);
+    // (h) A NULL JAM, AND THE SILENT CONSEQUENCE. MD_ValidFieldLength ACCEPTS 0, so a Jam with
+    // FieldLength 0 is the "null out this entry" command -- the status is success either way.
+    // Nulling entry 2 TERMINATES the table there, and MD_UpdateDwellControlInfo stops at the
+    // first zero Length, so AddrCount, DataSize and Rate all drop even though two live entries
+    // still follow it. Only the derived totals show that.
+    md_jd.Payload.EntryId = 2;
+    md_jd.Payload.FieldLength = 0;
+    md_st = MD_JamDwellCmd(&md_jd);
+    S("mdc_jam_null st=");
+    D(md_st);
+    S(" cc=");
+    D(MD_AppData.CommandCounter);
+    S(" n=");
+    D(MD_AppData.MD_DwellTables[0].AddrCount);
+    S(" size=");
+    D(MD_AppData.MD_DwellTables[0].DataSize);
+    S(" rate=");
+    D(MD_AppData.MD_DwellTables[0].Rate);
+    // e2dly AND e2addr ARE NOT DECORATION. The null path zeroes Length, Delay and
+    // ResolvedAddress, and the three derived totals can only see the Length: once an entry is
+    // terminated, MD_UpdateDwellControlInfo stops there and NEVER READS its Delay. Measured --
+    // deleting `DwellEntryPtr->Delay = 0;` left the transcript byte-identical.
+    S(" e2len=");
+    D(MD_AppData.MD_DwellTables[0].Entry[1].Length);
+    S(" e2dly=");
+    D(MD_AppData.MD_DwellTables[0].Entry[1].Delay);
+    S(" e2addr=");
+    D(MD_AppData.MD_DwellTables[0].Entry[1].ResolvedAddress);
+    S(" e3len=");
+    D(MD_AppData.MD_DwellTables[0].Entry[2].Length);
+    S("\n");
+    // (i) the JAM rejection paths, one per event. The address ones are why the dwell window is
+    // a literal: NASA prints "address 0x%08X" from the resolved cpuaddr.
+    md_jd.Payload.EntryId = 4;
+    md_jd.Payload.FieldLength = 2;
+    StrCpy(md_jd.Payload.DwellAddress.SymName, "NO_SUCH_SYMBOL");
+    md_sym_rc = OS_ERROR;
+    md_st = MD_JamDwellCmd(&md_jd);
+    S("mdc_jam_resolve st=");
+    D(md_st);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    md_sym_rc = OS_SUCCESS;
+    md_jd.Payload.DwellAddress.SymName[0] = '\0';
+    md_jd.Payload.FieldLength = 3;
+    md_st = MD_JamDwellCmd(&md_jd);
+    S("mdc_jam_len3 st=");
+    D(md_st);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    md_jd.Payload.FieldLength = 2;
+    es_psp_validate_rc = CFE_PSP_INVALID_MEM_ADDR;
+    md_st = MD_JamDwellCmd(&md_jd);
+    S("mdc_jam_range st=");
+    D(md_st);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    es_psp_validate_rc = CFE_PSP_SUCCESS;
+    md_jd.Payload.FieldLength = 4;
+    md_jd.Payload.DwellAddress.Offset = MD_SIM_WINDOW_BASE + 0x42; // not 4-aligned
+    md_st = MD_JamDwellCmd(&md_jd);
+    S("mdc_jam_al4 st=");
+    D(md_st);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    md_jd.Payload.FieldLength = 2;
+    md_jd.Payload.DwellAddress.Offset = MD_SIM_WINDOW_BASE + 0x41; // not 2-aligned
+    md_st = MD_JamDwellCmd(&md_jd);
+    S("mdc_jam_al2 ");
+    D(md_st);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    // (j) SET SIGNATURE: the length check comes FIRST, before the table id, so an unterminated
+    // signature is rejected even with a bad table id underneath it.
+    MemSet(md_sg.Payload.Signature, 'z', MD_INTERFACE_SIGNATURE_FIELD_LENGTH); // no NUL
+    md_sg.Payload.TableId = 99;
+    md_st = MD_SetSignatureCmd(&md_sg);
+    S("mdc_sig_len st=");
+    D(md_st);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    MemSet(md_sg.Payload.Signature, 0, MD_INTERFACE_SIGNATURE_FIELD_LENGTH);
+    StrCpy(md_sg.Payload.Signature, "CMDSIG");
+    md_sg.Payload.TableId = 99;
+    md_st = MD_SetSignatureCmd(&md_sg);
+    S("mdc_sig_tbl st=");
+    D(md_st);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+    md_sg.Payload.TableId = 1;
+    md_st = MD_SetSignatureCmd(&md_sg);
+    S("mdc_sig_ok st=");
+    D(md_st);
+    S(" cc=");
+    D(MD_AppData.CommandCounter);
+    S(" sig=");
+    S(MD_AppData.MD_DwellTables[0].Signature);
+    S("\n");
+    // and the Table Services copy, which MD_UpdateTableSignature wrote
+    md_rb = NULL;
+    md_get = CFE_TBL_GetAddress(&md_rb, MD_AppData.MD_TableHandle[0]);
+    S("mdc_sig_tblcopy get=");
+    D(md_get);
+    S(" sig=");
+    S(md_rb->Signature);
+    S("\n");
+    CFE_TBL_ReleaseAddress(MD_AppData.MD_TableHandle[0]);
 
     // --- md_dwell_pkt.c -------------------------------------------------------------
     // The part of MD that actually reads memory. Four functions: the loop, the one read, the

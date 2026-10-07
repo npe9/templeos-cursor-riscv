@@ -199,7 +199,7 @@ def probe(names):
         # values that MD_INTERFACE_CFGVAL/MD_INTERNAL_CFGVAL paste a name onto; md_app.h holds
         # the table-validation error codes.
         "md_interface_cfg.h", "md_internal_cfg.h", "md_eventids.h", "md_fcncodes.h",
-        "md_msgids.h", "md_dwell_pkt.h",
+        "md_msgids.h", "md_dwell_pkt.h", "md_version.h",
         # ES's event ids and its own platform config, as the module arrives. The gate refused
         # to pass on CFE_ES_SYSLOG2_EID rather than file it as "a name this port invented",
         # which is the behaviour that distinguishes a missing header from a local constant.

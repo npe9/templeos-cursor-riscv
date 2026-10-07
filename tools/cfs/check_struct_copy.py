@@ -323,6 +323,12 @@ def resolve(expr, declared, members):
 # The sibling of limit 21, which the rest of this file refuses, in the other syntactic
 # position. Measured on the harness with a 72-byte class: the first field arrives correctly and
 # `b.Name[0]` -- the ninth byte -- reads back as the value of the NEXT ARGUMENT. No diagnostic.
+# WHAT THIS DOES NOT CHECK, measured: it scans DEFINITIONS, so a missing `&` at a CALL SITE is
+# invisible to it -- and md_cmds.c has two such call sites, where NASA passes a 72-byte
+# MD_SymAddr_t by value. Dropping the `&` in the exercise left this gate reporting 89 parameters
+# and OK. The TRANSCRIPT catches it loudly rather than quietly: a 35-line diff including
+# `CFE_TBL_GetAddress: Bad AppId=1114113`, because the struct's bytes bleed into the next
+# argument register. So the call-site risk is self-revealing and is left to the transcript.
 # Pinned by tests/exec/cases/e_class_byval_param.hc, which also shows the 8-byte case arriving
 # WHOLE and the callee's write NOT reaching the caller -- so the first eight bytes really are a
 # copy, which rules out "it is silently passed by reference" as the explanation.
