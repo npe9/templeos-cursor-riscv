@@ -2514,3 +2514,61 @@ NASA spells the same condition two ways in two adjacent functions, which looks l
 inconsistency and is not an observable one. Recorded rather than driven, because a mutation that
 cannot change behaviour is not evidence of a missing assertion — and calling it one would be the
 [vacuous-assertion] mistake in reverse.
+
+### `mm_mem16.c` and `mm_mem32.c` — the width twins, and what three near-identical files buy
+
+320 lines each, three functions each, no stand-ins. Transcript **2,521 → 2,541**. MM is 5 of 9
+sources, 1,528 of 3,739 lines (41%).
+
+NASA writes the byte, word and dword paths as three near-copies rather than one parameterised
+loop, and the usual reaction to that is to factor it. **The exercise is built to show why not.**
+It does not repeat `mem8`'s cases; it drives the four things that differ, every one of which is
+behaviour a merge would destroy:
+
+| | mem8 | mem16 | mem32 |
+|---|---|---|---|
+| the loop counts | **bytes** (200/segment) | **elements** (100) | **elements** (50) |
+| fill rounds the length to | nothing to round | a multiple of **2**, with its own event | a multiple of **4**, with its own event |
+| fill pattern | truncated to `0xDD` | truncated to `0xCCDD` | **not truncated** — `0xAABBCCDD` |
+| the load's write-error event says | `RC=0xFFFFFFEB` | `RC=0xFFFFFFFF` | `RC=-21` |
+
+The last row is the sharpest. All three print the same PSP failure, and all three print it
+differently: `mem8` renders the real code as unsigned hex, `mem16` **overwrites `PSP_Status` with
+`CFE_PSP_ERROR` before reporting it** so the ground never sees what the PSP actually said, and
+`mem32` prints the real code with `"RC=%d"` and a signed cast. Three files, three renderings, one
+error. Four mutations cover it — and each one turns one rendering into another, which is exactly
+what "harmonising the three files" would do.
+
+`md_sim_writes` is what makes the first row assertable. Every byte count MM reports comes from its
+own segment arithmetic, never from the stores, so `writes=125` for a 250-byte `mem16` load and
+`writes=62` for a 248-byte `mem32` load are the only evidence the loops divide by the width at
+all. The byte-counting mutation on each runs off the 256-byte window and is caught twice over.
+
+#### The rounding is also what makes mem8's two no-op mutations real
+
+`mm_mem8`'s commit recorded a proof that swapping the housekeeping guard from
+`BytesProcessed == NumOfBytes` to `PSP_Status == CFE_PSP_SUCCESS` cannot change behaviour there.
+**In mem16 and mem32 it can, and the odd-length fill is the input that does it**: the rounding
+reduces `BytesRemaining`, the fill completes successfully, and `BytesProcessed` can then never
+equal the *commanded* `NumOfBytes` — so NASA's guard fails while the status says success. An
+odd-length fill therefore warns, writes the aligned part, **leaves housekeeping alone and returns
+an error**, all four at once. Both mutations now fail where their mem8 twins were no-ops, which is
+the confirmation that the mem8 proof was about mem8 and not about the guard.
+
+#### The translation was generated, and then checked by diffing itself
+
+`mm_mem16.HC` and `mm_mem32.HC` were produced from `mm_mem8.HC` by substitution and then edited
+for the four differences — which is how NASA's own three files read, and is the only honest way to
+keep 960 lines of near-copies consistent. **The check is a diff of the diffs**: the structural
+difference between the port's three HolyC files has to be the same shape as the structural
+difference between NASA's three C files. It caught one leftover in `mm_mem32.HC` — a
+`CFE_PSP_MemWrite32` still declared taking a `U16` — which no gate here looks at, because the PSP
+is not a translated module and its declaration is local to the file.
+
+#### A witness of mine that two values could both satisfy
+
+The first version put the `fs_data` fill once at the top of the block. But the **dumps write into
+`fs_data`**, and what they write is `md_sim_fill`'s own pattern — so the `mem32` load read a stale
+file whose bytes were `0x40 + i`, which is exactly what the window already contained. `m0=40`
+would have been satisfied equally by the load working and by it never running. The file is
+refilled with a `0x80 + i` pattern before every load now, and the lines read `m0=80`.

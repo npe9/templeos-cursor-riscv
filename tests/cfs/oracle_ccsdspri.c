@@ -129,6 +129,8 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "mm_utils.h"
 #include "mm_filedefs.h"
 #include "mm_mem8.h"
+#include "mm_mem16.h"
+#include "mm_mem32.h"
 #include "mm_internal_cfg.h"
 #include "mm_interface_cfg.h"
 #include "cfe_tbl_task_cmds.h" /* the ten ground-command handlers and the HK packers */
@@ -12628,6 +12630,196 @@ int main(void)
             fs_wr_left = -1;
             printf("mm8_dump_unsigned st=%ld len=%ld\n", (long)st8, fs_len);
 
+        }
+
+        /* --- mm_mem16.c and mm_mem32.c -- THE WIDTH TWINS --------------------------------
+         * These two are near-copies of mm_mem8.c, so this block does NOT repeat mem8's cases.
+         * It drives the FOUR THINGS THAT DIFFER, because that is the entire argument for NASA
+         * keeping three files instead of one parameterised loop:
+         *
+         *   1. THE LOOPS COUNT ELEMENTS, NOT BYTES. A 200-byte segment is 200 stores in mem8,
+         *      100 in mem16 and 50 in mem32 -- and md_sim_writes is the only thing that can say
+         *      so, because every byte count MM reports comes from its own segment arithmetic.
+         *   2. THE FILL ROUNDS THE LENGTH DOWN, with a per-width event id and a per-width
+         *      modulus, and then REPORTS AN ERROR ANYWAY -- the housekeeping guard compares
+         *      BytesProcessed against the COMMANDED NumOfBytes, which the rounding has just
+         *      made unreachable. This is also the input that makes mem8's two "swap the guard"
+         *      no-op mutations into real ones here.
+         *   3. THE PATTERN IS TRUNCATED TO THE WIDTH, and housekeeping reports the TRUNCATED
+         *      value -- 0xCCDD from mem16, the whole 0xAABBCCDD from mem32, which needs no
+         *      truncation at all. The window's bytes say which end went first.
+         *   4. ONE ERROR, THREE RENDERINGS. The load's write-error event prints the PSP's status
+         *      as `0x%08X` in mem8 and mem16 and as `%d` in mem32 -- and mem16 OVERWRITES the
+         *      status with CFE_PSP_ERROR before printing it, so the three print 0xFFFFFFEB,
+         *      0xFFFFFFFF and -21 for the same failure. A translator who harmonised the three
+         *      files would lose all of it, and nothing but these three events would notice. */
+        {
+            cpuaddr                 AW = MD_SIM_WINDOW_BASE;
+            MM_FillMemCmd_t         fcw;
+            MM_LoadDumpFileHeader_t fhw;
+            osal_id_t               fdw;
+            long                    ww, rr;
+            int                     kw;
+            int32                   stw;
+
+            memset(&fcw, 0, sizeof(fcw));
+            fcw.Payload.FillPattern = 0xAABBCCDD;
+
+            /* ===== MEM16 ===== */
+            md_sim_fill();
+            fcw.Payload.NumOfBytes = 250;
+            ww                     = md_sim_writes;
+            stw                    = MM_FillMem16(AW, &fcw);
+            printf("mm16_fill st=%ld writes=%ld m0=%02X m1=%02X m248=%02X m249=%02X m250=%02X\n",
+                   (long)stw, md_sim_writes - ww, md_sim_mem[0], md_sim_mem[1], md_sim_mem[248],
+                   md_sim_mem[249], md_sim_mem[250]);
+            printf("mm16_fill_hk la=%u mt=%u dv=0x%08x bp=%u\n",
+                   (unsigned)MM_AppData.HkTlm.Payload.LastAction,
+                   (unsigned)MM_AppData.HkTlm.Payload.MemType,
+                   (unsigned)MM_AppData.HkTlm.Payload.DataValue,
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed);
+            /* AN ODD LENGTH: warns, rounds 251 down to 250, fills it, and STILL FAILS. The two
+             * HK fields below must therefore still read the 250-byte fill above's. */
+            md_sim_fill();
+            fcw.Payload.NumOfBytes = 251;
+            ww                     = md_sim_writes;
+            stw                    = MM_FillMem16(AW, &fcw);
+            printf("mm16_fill_odd st=%ld writes=%ld bp=%u dv=0x%08x\n", (long)stw,
+                   md_sim_writes - ww, (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed,
+                   (unsigned)MM_AppData.HkTlm.Payload.DataValue);
+
+            /* REFILL THE FILE BEFORE EVERY LOAD. The dumps above write INTO fs_data, and
+             * what they write is md_sim_fill's own pattern -- so a load that read the stale
+             * file would place bytes INDISTINGUISHABLE from the window's existing contents, and
+             * "m0=40" would be satisfied equally by the load working and by it not running at
+             * all. It was written that way first and the mem32 lines said 0x40 where they
+             * should have said 0x80. */
+            for (kw = 0; kw < 250; kw++)
+            {
+                fs_data[kw] = (unsigned char)(0x80 + kw);
+            }
+            md_sim_fill();
+            fs_len     = 250;
+            fs_noexist = 0;
+            fs_wr_left = -1;
+            OS_OpenCreate(&fdw, "/ram/mmw.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            memset(&fhw, 0, sizeof(fhw));
+            fhw.NumOfBytes        = 250;
+            fhw.SymAddress.Offset = CFE_ES_MEMADDRESS_C(AW);
+            ww                    = md_sim_writes;
+            stw                   = MM_LoadMem16FromFile(fdw, "/ram/mmw.ld", &fhw, AW);
+            printf("mm16_load st=%ld writes=%ld m0=%02X m1=%02X m248=%02X m249=%02X\n",
+                   (long)stw, md_sim_writes - ww, md_sim_mem[0], md_sim_mem[1], md_sim_mem[248],
+                   md_sim_mem[249]);
+            /* THE FIRST OF THE THREE RENDERINGS. Offset 20 is 2-aligned, so the eleventh store
+             * is the one that fails; the event prints 0xFFFFFFFF rather than the PSP's own
+             * 0xFFFFFFEB, because mem16 overwrites the status before reporting it. */
+            /* REFILL THE FILE BEFORE EVERY LOAD. The dumps above write INTO fs_data, and
+             * what they write is md_sim_fill's own pattern -- so a load that read the stale
+             * file would place bytes INDISTINGUISHABLE from the window's existing contents, and
+             * "m0=40" would be satisfied equally by the load working and by it not running at
+             * all. It was written that way first and the mem32 lines said 0x40 where they
+             * should have said 0x80. */
+            for (kw = 0; kw < 250; kw++)
+            {
+                fs_data[kw] = (unsigned char)(0x80 + kw);
+            }
+            md_sim_fill();
+            fs_len = 250;
+            OS_OpenCreate(&fdw, "/ram/mmw.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            md_sim_wfail_at = 20;
+            ww              = md_sim_writes;
+            stw             = MM_LoadMem16FromFile(fdw, "/ram/mmw.ld", &fhw, AW);
+            md_sim_wfail_at = -1;
+            printf("mm16_load_wfail st=%ld writes=%ld m18=%02X m20=%02X\n", (long)stw,
+                   md_sim_writes - ww, md_sim_mem[18], md_sim_mem[20]);
+
+            md_sim_fill();
+            fs_len     = 0;
+            fs_pos     = 0;
+            fs_wr_left = -1;
+            OS_OpenCreate(&fdw, "/ram/mmw.dp", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE,
+                          OS_WRITE_ONLY);
+            rr  = md_sim_reads;
+            stw = MM_DumpMem16ToFile(fdw, "/ram/mmw.dp", &fhw);
+            printf("mm16_dump st=%ld reads=%ld len=%ld d0=%02X d1=%02X d249=%02X\n", (long)stw,
+                   md_sim_reads - rr, fs_len, fs_data[0], fs_data[1], fs_data[249]);
+
+            /* ===== MEM32. 248 is the aligned length; 250 is not. ===== */
+            md_sim_fill();
+            fcw.Payload.NumOfBytes = 248;
+            ww                     = md_sim_writes;
+            stw                    = MM_FillMem32(AW, &fcw);
+            printf("mm32_fill st=%ld writes=%ld m0=%02X m1=%02X m2=%02X m3=%02X m247=%02X "
+                   "m248=%02X\n",
+                   (long)stw, md_sim_writes - ww, md_sim_mem[0], md_sim_mem[1], md_sim_mem[2],
+                   md_sim_mem[3], md_sim_mem[247], md_sim_mem[248]);
+            /* AND THE PATTERN IS NOT TRUNCATED AT ALL HERE, which is the one of the three
+             * widths where the commanded value and the reported value agree. */
+            printf("mm32_fill_hk la=%u mt=%u dv=0x%08x bp=%u\n",
+                   (unsigned)MM_AppData.HkTlm.Payload.LastAction,
+                   (unsigned)MM_AppData.HkTlm.Payload.MemType,
+                   (unsigned)MM_AppData.HkTlm.Payload.DataValue,
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed);
+            md_sim_fill();
+            fcw.Payload.NumOfBytes = 250;
+            ww                     = md_sim_writes;
+            stw                    = MM_FillMem32(AW, &fcw);
+            printf("mm32_fill_unaligned st=%ld writes=%ld bp=%u\n", (long)stw,
+                   md_sim_writes - ww, (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed);
+
+            /* REFILL THE FILE BEFORE EVERY LOAD. The dumps above write INTO fs_data, and
+             * what they write is md_sim_fill's own pattern -- so a load that read the stale
+             * file would place bytes INDISTINGUISHABLE from the window's existing contents, and
+             * "m0=40" would be satisfied equally by the load working and by it not running at
+             * all. It was written that way first and the mem32 lines said 0x40 where they
+             * should have said 0x80. */
+            for (kw = 0; kw < 250; kw++)
+            {
+                fs_data[kw] = (unsigned char)(0x80 + kw);
+            }
+            md_sim_fill();
+            fs_len                = 248;
+            fhw.NumOfBytes        = 248;
+            fhw.SymAddress.Offset = CFE_ES_MEMADDRESS_C(AW);
+            OS_OpenCreate(&fdw, "/ram/mmw.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            ww  = md_sim_writes;
+            stw = MM_LoadMem32FromFile(fdw, "/ram/mmw.ld", &fhw, AW);
+            printf("mm32_load st=%ld writes=%ld m0=%02X m3=%02X m244=%02X m247=%02X\n",
+                   (long)stw, md_sim_writes - ww, md_sim_mem[0], md_sim_mem[3], md_sim_mem[244],
+                   md_sim_mem[247]);
+            /* THE THIRD RENDERING: "RC=%d" with no overwrite, so the PSP's -21 reaches the
+             * ground as a negative decimal. Offset 20 is 4-aligned, so the sixth store fails. */
+            /* REFILL THE FILE BEFORE EVERY LOAD. The dumps above write INTO fs_data, and
+             * what they write is md_sim_fill's own pattern -- so a load that read the stale
+             * file would place bytes INDISTINGUISHABLE from the window's existing contents, and
+             * "m0=40" would be satisfied equally by the load working and by it not running at
+             * all. It was written that way first and the mem32 lines said 0x40 where they
+             * should have said 0x80. */
+            for (kw = 0; kw < 250; kw++)
+            {
+                fs_data[kw] = (unsigned char)(0x80 + kw);
+            }
+            md_sim_fill();
+            fs_len = 248;
+            OS_OpenCreate(&fdw, "/ram/mmw.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            md_sim_wfail_at = 20;
+            ww              = md_sim_writes;
+            stw             = MM_LoadMem32FromFile(fdw, "/ram/mmw.ld", &fhw, AW);
+            md_sim_wfail_at = -1;
+            printf("mm32_load_wfail st=%ld writes=%ld m16=%02X m20=%02X\n", (long)stw,
+                   md_sim_writes - ww, md_sim_mem[16], md_sim_mem[20]);
+
+            md_sim_fill();
+            fs_len     = 0;
+            fs_pos     = 0;
+            fs_wr_left = -1;
+            OS_OpenCreate(&fdw, "/ram/mmw.dp", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE,
+                          OS_WRITE_ONLY);
+            rr  = md_sim_reads;
+            stw = MM_DumpMem32ToFile(fdw, "/ram/mmw.dp", &fhw);
+            printf("mm32_dump st=%ld reads=%ld len=%ld d0=%02X d3=%02X d247=%02X\n", (long)stw,
+                   md_sim_reads - rr, fs_len, fs_data[0], fs_data[3], fs_data[247]);
         }
 
         printf("tim_objtab %s %d %d %d %lu %lu\n", CFE_TIME_ModuleEntry.Name,

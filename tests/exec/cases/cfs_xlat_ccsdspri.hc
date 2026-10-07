@@ -1629,6 +1629,15 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/mm/mm_global.HC"
 #include "/Kernel/Cfs/mm/mm_utils.HC"
 #include "/Kernel/Cfs/mm/mm_mem8.HC"
+#include "/Kernel/Cfs/mm/mm_mem16.HC"
+#include "/Kernel/Cfs/mm/mm_mem32.HC"
+// mm_mem16 and mm_mem32's exercise state.
+U64 mmw_A;
+I64 mmw_k, mmw_w, mmw_r;
+I32 mmw_st;
+U32 mmw_fd;
+MM_FillMemCmd_t mmw_fc;
+MM_LoadDumpFileHeader_t mmw_fh;
 // mm_mem8's exercise state, at file scope for the same reason as MM's above.
 U64 mm8_A;
 I64 mm8_k;
@@ -16301,6 +16310,264 @@ I64 main()
     D(fs_len);
     S("\n");
 
+
+    // --- mm_mem16.c and mm_mem32.c -- THE WIDTH TWINS --------------------------------------
+    // These two are near-copies of mm_mem8.c, so this block does NOT repeat mem8's cases. It
+    // drives the FOUR THINGS THAT DIFFER, because that is the entire argument for NASA keeping
+    // three files instead of one parameterised loop:
+    //
+    //   1. THE LOOPS COUNT ELEMENTS, NOT BYTES. A 200-byte segment is 200 stores in mem8, 100 in
+    //      mem16 and 50 in mem32 -- and md_sim_writes is the only thing that can say so, because
+    //      every byte count MM reports comes from its own segment arithmetic.
+    //   2. THE FILL ROUNDS THE LENGTH DOWN, with a per-width event id and a per-width modulus,
+    //      and then REPORTS AN ERROR ANYWAY -- the housekeeping guard compares BytesProcessed
+    //      against the COMMANDED NumOfBytes, which the rounding has just made unreachable. This
+    //      is also the input that makes mem8's two "swap the guard" no-op mutations into real
+    //      ones here.
+    //   3. THE PATTERN IS TRUNCATED TO THE WIDTH, and housekeeping reports the TRUNCATED value --
+    //      0xCCDD from mem16, the whole 0xAABBCCDD from mem32, which needs no truncation at all.
+    //      The window's bytes say which end went first.
+    //   4. ONE ERROR, THREE RENDERINGS. The load's write-error event prints the PSP's status as
+    //      `0x%08X` in mem8 and mem16 and as `%d` in mem32 -- and mem16 OVERWRITES the status
+    //      with CFE_PSP_ERROR before printing it, so the three print 0xFFFFFFEB, 0xFFFFFFFF and
+    //      -21 for the same failure. A translator who harmonised the three files would lose all
+    //      of it, and nothing but these three events would notice.
+    mmw_A = MD_SIM_WINDOW_BASE;
+    MemSet(&mmw_fc, 0, sizeof(MM_FillMemCmd_t));
+    mmw_fc.Payload.FillPattern = 0xAABBCCDD;
+
+    // ===== MEM16 =====
+    md_sim_fill();
+    mmw_fc.Payload.NumOfBytes = 250;
+    mmw_w = md_sim_writes;
+    mmw_st = MM_FillMem16(mmw_A, &mmw_fc);
+    S("mm16_fill st=");
+    D(mmw_st);
+    S(" writes=");
+    D(md_sim_writes - mmw_w);
+    S(" m0=");
+    H2(md_sim_mem[0]);
+    S(" m1=");
+    H2(md_sim_mem[1]);
+    S(" m248=");
+    H2(md_sim_mem[248]);
+    S(" m249=");
+    H2(md_sim_mem[249]);
+    S(" m250=");
+    H2(md_sim_mem[250]);
+    S("\n");
+    S("mm16_fill_hk la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" mt=");
+    D(MM_AppData.HkTlm.Payload.MemType);
+    S(" dv=0x");
+    Hx8(MM_AppData.HkTlm.Payload.DataValue);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S("\n");
+    // AN ODD LENGTH: warns, rounds 251 down to 250, fills it, and STILL FAILS. The two HK fields
+    // below must therefore still read the 250-byte fill above's.
+    md_sim_fill();
+    mmw_fc.Payload.NumOfBytes = 251;
+    mmw_w = md_sim_writes;
+    mmw_st = MM_FillMem16(mmw_A, &mmw_fc);
+    S("mm16_fill_odd st=");
+    D(mmw_st);
+    S(" writes=");
+    D(md_sim_writes - mmw_w);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S(" dv=0x");
+    Hx8(MM_AppData.HkTlm.Payload.DataValue);
+    S("\n");
+
+    // REFILL THE FILE BEFORE EVERY LOAD. The dumps below write INTO fs_data, and what they write
+    // is md_sim_fill's own pattern -- so a load that read the stale file would place bytes
+    // INDISTINGUISHABLE from the window's existing contents, and "m0=40" would be satisfied
+    // equally by the load working and by it not running at all. It was written that way first
+    // and the mem32 lines said 0x40 where they should have said 0x80.
+    for (mmw_k = 0; mmw_k < 250; mmw_k++) {
+      fs_data[mmw_k] = (0x80 + mmw_k) & 0xFF;
+    }
+    md_sim_fill();
+    fs_len = 250;
+    fs_noexist = 0;
+    fs_wr_left = -1;
+    OS_OpenCreate(&mmw_fd, "/ram/mmw.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+    MemSet(&mmw_fh, 0, sizeof(MM_LoadDumpFileHeader_t));
+    mmw_fh.NumOfBytes = 250;
+    mmw_fh.SymAddress.Offset = mmw_A;
+    mmw_w = md_sim_writes;
+    mmw_st = MM_LoadMem16FromFile(mmw_fd, "/ram/mmw.ld", &mmw_fh, mmw_A);
+    S("mm16_load st=");
+    D(mmw_st);
+    S(" writes=");
+    D(md_sim_writes - mmw_w);
+    S(" m0=");
+    H2(md_sim_mem[0]);
+    S(" m1=");
+    H2(md_sim_mem[1]);
+    S(" m248=");
+    H2(md_sim_mem[248]);
+    S(" m249=");
+    H2(md_sim_mem[249]);
+    S("\n");
+    // THE FIRST OF THE THREE RENDERINGS. Offset 20 is 2-aligned, so the eleventh store is the
+    // one that fails; the event prints 0xFFFFFFFF rather than the PSP's own 0xFFFFFFEB, because
+    // mem16 overwrites the status before reporting it.
+    for (mmw_k = 0; mmw_k < 250; mmw_k++) {
+      fs_data[mmw_k] = (0x80 + mmw_k) & 0xFF;
+    }
+    md_sim_fill();
+    fs_len = 250;
+    OS_OpenCreate(&mmw_fd, "/ram/mmw.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+    md_sim_wfail_at = 20;
+    mmw_w = md_sim_writes;
+    mmw_st = MM_LoadMem16FromFile(mmw_fd, "/ram/mmw.ld", &mmw_fh, mmw_A);
+    md_sim_wfail_at = -1;
+    S("mm16_load_wfail st=");
+    D(mmw_st);
+    S(" writes=");
+    D(md_sim_writes - mmw_w);
+    S(" m18=");
+    H2(md_sim_mem[18]);
+    S(" m20=");
+    H2(md_sim_mem[20]);
+    S("\n");
+
+    md_sim_fill();
+    fs_len = 0;
+    fs_pos = 0;
+    fs_wr_left = -1;
+    OS_OpenCreate(&mmw_fd, "/ram/mmw.dp", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE,
+                  OS_WRITE_ONLY);
+    mmw_r = md_sim_reads;
+    mmw_st = MM_DumpMem16ToFile(mmw_fd, "/ram/mmw.dp", &mmw_fh);
+    S("mm16_dump st=");
+    D(mmw_st);
+    S(" reads=");
+    D(md_sim_reads - mmw_r);
+    S(" len=");
+    D(fs_len);
+    S(" d0=");
+    H2(fs_data[0]);
+    S(" d1=");
+    H2(fs_data[1]);
+    S(" d249=");
+    H2(fs_data[249]);
+    S("\n");
+
+    // ===== MEM32. 248 is the aligned length; 250 is not. =====
+    md_sim_fill();
+    mmw_fc.Payload.NumOfBytes = 248;
+    mmw_w = md_sim_writes;
+    mmw_st = MM_FillMem32(mmw_A, &mmw_fc);
+    S("mm32_fill st=");
+    D(mmw_st);
+    S(" writes=");
+    D(md_sim_writes - mmw_w);
+    S(" m0=");
+    H2(md_sim_mem[0]);
+    S(" m1=");
+    H2(md_sim_mem[1]);
+    S(" m2=");
+    H2(md_sim_mem[2]);
+    S(" m3=");
+    H2(md_sim_mem[3]);
+    S(" m247=");
+    H2(md_sim_mem[247]);
+    S(" m248=");
+    H2(md_sim_mem[248]);
+    S("\n");
+    // AND THE PATTERN IS NOT TRUNCATED AT ALL HERE, which is the one of the three widths where
+    // the commanded value and the reported value agree.
+    S("mm32_fill_hk la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" mt=");
+    D(MM_AppData.HkTlm.Payload.MemType);
+    S(" dv=0x");
+    Hx8(MM_AppData.HkTlm.Payload.DataValue);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S("\n");
+    md_sim_fill();
+    mmw_fc.Payload.NumOfBytes = 250;
+    mmw_w = md_sim_writes;
+    mmw_st = MM_FillMem32(mmw_A, &mmw_fc);
+    S("mm32_fill_unaligned st=");
+    D(mmw_st);
+    S(" writes=");
+    D(md_sim_writes - mmw_w);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S("\n");
+
+    for (mmw_k = 0; mmw_k < 250; mmw_k++) {
+      fs_data[mmw_k] = (0x80 + mmw_k) & 0xFF;
+    }
+    md_sim_fill();
+    fs_len = 248;
+    mmw_fh.NumOfBytes = 248;
+    mmw_fh.SymAddress.Offset = mmw_A;
+    OS_OpenCreate(&mmw_fd, "/ram/mmw.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+    mmw_w = md_sim_writes;
+    mmw_st = MM_LoadMem32FromFile(mmw_fd, "/ram/mmw.ld", &mmw_fh, mmw_A);
+    S("mm32_load st=");
+    D(mmw_st);
+    S(" writes=");
+    D(md_sim_writes - mmw_w);
+    S(" m0=");
+    H2(md_sim_mem[0]);
+    S(" m3=");
+    H2(md_sim_mem[3]);
+    S(" m244=");
+    H2(md_sim_mem[244]);
+    S(" m247=");
+    H2(md_sim_mem[247]);
+    S("\n");
+    // THE THIRD RENDERING: "RC=%d" with no overwrite, so the PSP's -21 reaches the ground as a
+    // negative decimal. Offset 20 is 4-aligned, so the sixth store fails.
+    for (mmw_k = 0; mmw_k < 250; mmw_k++) {
+      fs_data[mmw_k] = (0x80 + mmw_k) & 0xFF;
+    }
+    md_sim_fill();
+    fs_len = 248;
+    OS_OpenCreate(&mmw_fd, "/ram/mmw.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+    md_sim_wfail_at = 20;
+    mmw_w = md_sim_writes;
+    mmw_st = MM_LoadMem32FromFile(mmw_fd, "/ram/mmw.ld", &mmw_fh, mmw_A);
+    md_sim_wfail_at = -1;
+    S("mm32_load_wfail st=");
+    D(mmw_st);
+    S(" writes=");
+    D(md_sim_writes - mmw_w);
+    S(" m16=");
+    H2(md_sim_mem[16]);
+    S(" m20=");
+    H2(md_sim_mem[20]);
+    S("\n");
+
+    md_sim_fill();
+    fs_len = 0;
+    fs_pos = 0;
+    fs_wr_left = -1;
+    OS_OpenCreate(&mmw_fd, "/ram/mmw.dp", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE,
+                  OS_WRITE_ONLY);
+    mmw_r = md_sim_reads;
+    mmw_st = MM_DumpMem32ToFile(mmw_fd, "/ram/mmw.dp", &mmw_fh);
+    S("mm32_dump st=");
+    D(mmw_st);
+    S(" reads=");
+    D(md_sim_reads - mmw_r);
+    S(" len=");
+    D(fs_len);
+    S(" d0=");
+    H2(fs_data[0]);
+    S(" d3=");
+    H2(fs_data[3]);
+    S(" d247=");
+    H2(fs_data[247]);
+    S("\n");
 
     S("tim_objtab ");
     S(CFE_TIME_ModuleEntry.Name);
