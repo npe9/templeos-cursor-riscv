@@ -198,6 +198,26 @@ like it returned 8, and the next two probes went looking for compile-time pointe
 across function boundaries. A third probe showed there is none: a `&garr[1]` in an earlier
 function leaves nothing behind. **Check the width of the witness before believing what it says.**
 
+### Calling through an element of a function-pointer ARRAY is a parse error
+
+    I32 (*map[4])(U8 *);
+
+    I32 (*fn)(U8 *); fn = map[0]; fn(&one);   OK
+    call(map[3], &one);                       OK   (passed as an argument)
+    map[0](&one);                             error: Expected ';' or ','
+
+LOUD, not silent, so it is a boundary rather than a hazard — but it is the spelling a C reader
+writes first. `tests/exec/cases/e_fnptr_array_call.hc` pins it along with the three that work
+(0b15630b), including a NULL hole, because a table of handlers with gaps is the whole reason such
+a table exists.
+
+Measured BEFORE translating `cs_init.c`, not after it failed to compile: NASA's `CS_InitAllTables`
+keeps four `static const` arrays indexed by checksum type, one of them
+`CFE_TBL_CallbackFuncPtr_t`, and the question was whether that shape could be translated at all.
+It can — NASA assigns the element to a local and passes the local on, which is the first working
+spelling. cFE's own command-handler tables were checked and do not use the failing form either.
+The workaround, if a later source does, is one assignment.
+
 ## 5. Compound assignment to a narrow struct field — FIXED
 
 `x op= y` used to be emitted as a 64-bit read-modify-write whatever the destination's width.
