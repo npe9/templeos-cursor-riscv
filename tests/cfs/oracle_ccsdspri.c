@@ -135,6 +135,8 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "mm_load.h"
 #include "mm_cmds.h"
 #include "mm_msgids.h"
+#include "mm_dispatch.h"
+#include "mm_fcncodes.h"
 #include "mm_internal_cfg.h"
 #include "mm_interface_cfg.h"
 #include "cfe_tbl_task_cmds.h" /* the ten ground-command handlers and the HK packers */
@@ -749,14 +751,10 @@ static CFE_ES_ResetData_t es_reset_area;
 /* The ground's view of a dwell table, 2,040 bytes. File scope because the HolyC half needs it
  * there -- limit 22, a big frame makes an unrelated file-scope read return zero -- and the two
  * halves stay one shape. */
-/* MM_AppData IS NASA'S TOO, defined in mm_app.c, which is NOT gated yet -- so it sits here on
- * this half exactly as the translation's sits beside its type in mm_global.HC. 1,312 bytes.
- * DELETE IT WHEN mm_app.c IS GATED: a C tentative definition in two translation units merges
- * SILENTLY rather than failing to link, so nothing would tell us, and
- * tools/cfs/check_oracle_globals.py is the gate that will refuse the overlap. This is the same
- * deadline MD_AppData had three commits ago, and the note above is what it looked like when it
- * came due. */
-MM_AppData_t MM_AppData;
+/* MM_AppData IS NASA'S, defined in mm_app.c, which is gated as of this commit. It sat HERE
+ * until then, with the note that a C tentative definition in two translation units merges
+ * SILENTLY -- and tools/cfs/check_oracle_globals.py is what would have refused the overlap.
+ * The same deadline MD_AppData had, met the same way. */
 
 /* THE TWO BUFFERS MM'S GENERIC PATHS ACTUALLY DEREFERENCE. mm_dump.c's MM_DumpMemToFile and
  * MM_FillDumpInEventBuffer's RAM/EEPROM arm `memcpy` from the address they are given rather
@@ -773,6 +771,10 @@ unsigned char mmd_mts[4];
 /* Per-width captures for mm_load's poke exercises -- see the note at their use. */
 unsigned mml_bp[3];
 unsigned mml_dv[3];
+/* The thirteen command codes and their expected lengths, filled at use because the HolyC half
+ * has no aggregate initialiser. */
+unsigned mma_cc[13];
+unsigned mma_sz[13];
 static MD_DwellTableLoad_t md_load;
 /* The dispatcher's command buffer. A CFE_SB_Buffer_t is only an 8-byte alignment union, so a
  * command is built in the LARGEST of the six command types -- MD_JamDwellCmd_t, 88 bytes --
@@ -13783,6 +13785,178 @@ int main(void)
             MM_AppData.HkTlm.Payload.CommandErrorCounter = 0;
             MM_DumpInEventCmd(&c.DmpEv);
             printf("mmc_dmpev_lim ec=%u\n",
+                   (unsigned)MM_AppData.HkTlm.Payload.CommandErrorCounter);
+        }
+
+        /* --- mm_dispatch.c and mm_app.c -- MM'S FRONT DOOR AND ITS RUN LOOP ----------------
+         * The last two sources. ACYCLIC, unlike MD's pair: mm_app.c calls MM_TaskPipe and
+         * mm_dispatch.c calls only mm_cmds.c and mm_utils.c, because MM_SendHkCmd lives in
+         * mm_cmds.c rather than in the app. So the include order alone resolves them.
+         *
+         * MM_AppMain IS CALLED AFTER THE PIPE IT NEEDS IS ALREADY TAKEN, which is MD's lesson
+         * applied rather than re-derived: the loop treats CFE_SB_TIME_OUT as "no action", so on
+         * a real pipe with MM_INTERNAL_SB_TIMEOUT of 1000 ms nothing would ever end it. An
+         * AppInit that FAILS sets APP_ERROR, and CFE_ES_RunLoop's first test -- on the caller's
+         * own RunStatus, before any record lookup -- skips the loop entirely. Calling
+         * MM_AppInit directly first takes MM_CMD_PIPE, so AppMain's CreatePipe refuses the
+         * duplicate.
+         *
+         * AND THE APP MUST BE A **CORE** APP FOR ExitApp TO RETURN. For a CORE app with
+         * APP_ERROR, ExitApp REFUSES and logs `Cannot Exit CORE Application` -- that syslog
+         * line is the witness that ExitApp was reached, because a zero exit count is also what
+         * "never called" looks like. */
+        {
+            MM_LoadMemWIDCmd_t b; /* the largest MM command, 288 bytes: the buffer */
+            CFE_SB_MsgId_t     mid;
+            int32              sta;
+            int                ka;
+            long               xa;
+            bool               oka;
+
+            /* --- MM_AppInit, the success path. Five cFE calls and nothing else: MM registers
+             * no tables and uses no CDS, which NASA says in four comments of its own. The HK
+             * MsgId is read back OUT of the header, because CFE_MSG_Init is the only thing
+             * that puts it there. */
+            memset(&MM_AppData, 0xCC, sizeof(MM_AppData));
+            MM_AppData.HkTlm.Payload.CommandCounter      = 99;
+            MM_AppData.HkTlm.Payload.CommandErrorCounter = 99;
+            CFE_ES_Global.SystemState      = CFE_ES_SystemState_CORE_READY;
+            CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_CORE;
+            es_set_ctx(1);
+            sta = MM_AppInit();
+            mid = CFE_SB_INVALID_MSG_ID;
+            CFE_MSG_GetMsgId(CFE_MSG_PTR(MM_AppData.HkTlm.TelemetryHeader), &mid);
+            printf("mma_init st=%ld run=%lu pipe=%d hkmid=0x%04x cc=%u ec=%u la=%u mt=%u\n",
+                   (long)sta, (unsigned long)MM_AppData.RunStatus,
+                   (int)CFE_RESOURCEID_TEST_DEFINED(MM_AppData.CmdPipe),
+                   (unsigned)CFE_SB_MsgIdToValue(mid),
+                   (unsigned)MM_AppData.HkTlm.Payload.CommandCounter,
+                   (unsigned)MM_AppData.HkTlm.Payload.CommandErrorCounter,
+                   (unsigned)MM_AppData.HkTlm.Payload.LastAction,
+                   (unsigned)MM_AppData.HkTlm.Payload.MemType);
+
+            /* --- MM_AppMain. The pipe name is taken, so AppInit's CreatePipe refuses and the
+             * loop never runs. Three things to read: the pipe event, APP_ERROR in RunStatus,
+             * and ExitApp's refusal in the syslog. */
+            xa = es_taskexits;
+            MM_AppMain();
+            printf("mma_appmain exits=%ld run=%lu\n", es_taskexits - xa,
+                   (unsigned long)MM_AppData.RunStatus);
+
+            /* --- MM_VerifyCmdLength, both ways. It counts the bad command ITSELF, which is why
+             * no handler does -- a length failure never reaches one. */
+            memset(&b, 0, sizeof(b));
+            CFE_MSG_Init(CFE_MSG_PTR(b.CommandHeader), CFE_SB_ValueToMsgId(MM_CMD_MID),
+                         sizeof(MM_NoopCmd_t));
+            MM_AppData.HkTlm.Payload.CommandErrorCounter = 0;
+            /* THE CALL IS HOISTED OUT OF THE PRINT, and it has to be: the bad-length call EMITS
+             * AN EVENT, and C evaluates every printf argument before printing anything -- so on
+             * this half the event lands BEFORE the line, while a HolyC S()/D() chain prints as
+             * it goes and would put the event in the MIDDLE of it. Third time this has bitten
+             * this driver. */
+            oka = MM_VerifyCmdLength(CFE_MSG_PTR(b.CommandHeader), sizeof(MM_NoopCmd_t));
+            printf("mma_len ok=%d ec=%u\n", (int)oka,
+                   (unsigned)MM_AppData.HkTlm.Payload.CommandErrorCounter);
+            oka = MM_VerifyCmdLength(CFE_MSG_PTR(b.CommandHeader), 999);
+            printf("mma_len_bad ok=%d ec=%u\n", (int)oka,
+                   (unsigned)MM_AppData.HkTlm.Payload.CommandErrorCounter);
+
+            /* --- MM_ProcessGroundCommand, ALL THIRTEEN CODES plus one that is not a code. The
+             * sizes come from `sizeof` rather than being written out, because the switch's
+             * expected length IS a sizeof and a hand-copied number would be a second opinion
+             * about the layout.
+             *
+             * Each command is sent with ZERO payload, so the ones that act on memory are
+             * refused by their own validator -- and none of those refusals prints an address,
+             * which is what makes thirteen commands in one loop comparable at all. The counters
+             * are the witness: MM_ProcessGroundCommand returns void. */
+            mma_cc[0]  = MM_NOOP_CC;               mma_sz[0]  = sizeof(MM_NoopCmd_t);
+            mma_cc[1]  = MM_RESET_COUNTERS_CC;     mma_sz[1]  = sizeof(MM_ResetCountersCmd_t);
+            mma_cc[2]  = MM_PEEK_CC;               mma_sz[2]  = sizeof(MM_PeekCmd_t);
+            mma_cc[3]  = MM_POKE_CC;               mma_sz[3]  = sizeof(MM_PokeCmd_t);
+            mma_cc[4]  = MM_LOAD_MEM_WID_CC;       mma_sz[4]  = sizeof(MM_LoadMemWIDCmd_t);
+            mma_cc[5]  = MM_LOAD_MEM_FROM_FILE_CC; mma_sz[5]  = sizeof(MM_LoadMemFromFileCmd_t);
+            mma_cc[6]  = MM_DUMP_MEM_TO_FILE_CC;   mma_sz[6]  = sizeof(MM_DumpMemToFileCmd_t);
+            mma_cc[7]  = MM_DUMP_IN_EVENT_CC;      mma_sz[7]  = sizeof(MM_DumpInEventCmd_t);
+            mma_cc[8]  = MM_FILL_MEM_CC;           mma_sz[8]  = sizeof(MM_FillMemCmd_t);
+            mma_cc[9]  = MM_LOOKUP_SYM_CC;         mma_sz[9]  = sizeof(MM_LookupSymCmd_t);
+            mma_cc[10] = MM_SYM_TBL_TO_FILE_CC;    mma_sz[10] = sizeof(MM_SymTblToFileCmd_t);
+            mma_cc[11] = MM_EEPROM_WRITE_ENA_CC;   mma_sz[11] = sizeof(MM_EepromWriteEnaCmd_t);
+            mma_cc[12] = MM_EEPROM_WRITE_DIS_CC;   mma_sz[12] = sizeof(MM_EepromWriteDisCmd_t);
+            /* The load-from-file command opens a file; make the open FAIL so the branch it takes
+             * is the one event rather than whatever fs_data happens to hold. */
+            fs_noexist     = 1;
+            mm_eep_lock_rc = CFE_PSP_SUCCESS;
+            for (ka = 0; ka < 13; ka++)
+            {
+                memset(&b, 0, sizeof(b));
+                CFE_MSG_Init(CFE_MSG_PTR(b.CommandHeader), CFE_SB_ValueToMsgId(MM_CMD_MID),
+                             mma_sz[ka]);
+                CFE_MSG_SetFcnCode(CFE_MSG_PTR(b.CommandHeader), mma_cc[ka]);
+                MM_AppData.HkTlm.Payload.CommandCounter      = 0;
+                MM_AppData.HkTlm.Payload.CommandErrorCounter = 0;
+                MM_ProcessGroundCommand((CFE_SB_Buffer_t *)&b);
+                printf("mma_cmd cc=%d len=%u ok=%u err=%u la=%u\n", (int)mma_cc[ka],
+                       (unsigned)mma_sz[ka],
+                       (unsigned)MM_AppData.HkTlm.Payload.CommandCounter,
+                       (unsigned)MM_AppData.HkTlm.Payload.CommandErrorCounter,
+                       (unsigned)MM_AppData.HkTlm.Payload.LastAction);
+            }
+            fs_noexist = 0;
+            /* A CODE THAT IS NOT A CODE. */
+            memset(&b, 0, sizeof(b));
+            CFE_MSG_Init(CFE_MSG_PTR(b.CommandHeader), CFE_SB_ValueToMsgId(MM_CMD_MID),
+                         sizeof(MM_NoopCmd_t));
+            CFE_MSG_SetFcnCode(CFE_MSG_PTR(b.CommandHeader), 99);
+            MM_AppData.HkTlm.Payload.CommandErrorCounter = 0;
+            MM_ProcessGroundCommand((CFE_SB_Buffer_t *)&b);
+            printf("mma_cmd_badcc err=%u\n",
+                   (unsigned)MM_AppData.HkTlm.Payload.CommandErrorCounter);
+
+            /* MM_ResetHk RUNS BEFORE THE CODE IS EVEN LOOKED AT, so a command whose LENGTH is
+             * wrong -- which no handler ever sees -- still clears the last action. The 7 below
+             * must be gone and the counter must have moved. */
+            MM_AppData.HkTlm.Payload.LastAction          = MM_LastAction_FILL;
+            MM_AppData.HkTlm.Payload.MemType             = MM_MemType_MEM32;
+            MM_AppData.HkTlm.Payload.CommandErrorCounter = 0;
+            memset(&b, 0, sizeof(b));
+            CFE_MSG_Init(CFE_MSG_PTR(b.CommandHeader), CFE_SB_ValueToMsgId(MM_CMD_MID), 7);
+            CFE_MSG_SetFcnCode(CFE_MSG_PTR(b.CommandHeader), MM_NOOP_CC);
+            MM_ProcessGroundCommand((CFE_SB_Buffer_t *)&b);
+            printf("mma_resethk_first la=%u mt=%u err=%u\n",
+                   (unsigned)MM_AppData.HkTlm.Payload.LastAction,
+                   (unsigned)MM_AppData.HkTlm.Payload.MemType,
+                   (unsigned)MM_AppData.HkTlm.Payload.CommandErrorCounter);
+
+            /* --- MM_TaskPipe, all three routes. The MsgId cache is filled by the FIRST call;
+             * with it unfilled every route falls through to the unknown-id arm, which is what
+             * makes the cache load-bearing rather than an optimisation. */
+            memset(&b, 0, sizeof(b));
+            CFE_MSG_Init(CFE_MSG_PTR(b.CommandHeader), CFE_SB_ValueToMsgId(MM_CMD_MID),
+                         sizeof(MM_NoopCmd_t));
+            CFE_MSG_SetFcnCode(CFE_MSG_PTR(b.CommandHeader), MM_NOOP_CC);
+            MM_AppData.HkTlm.Payload.CommandCounter      = 0;
+            MM_AppData.HkTlm.Payload.CommandErrorCounter = 0;
+            MM_TaskPipe((CFE_SB_Buffer_t *)&b);
+            printf("mma_pipe_cmd ok=%u err=%u\n",
+                   (unsigned)MM_AppData.HkTlm.Payload.CommandCounter,
+                   (unsigned)MM_AppData.HkTlm.Payload.CommandErrorCounter);
+            /* THE HK ROUTE. MM_SendHkCmd does not move the counter, so the witness is the
+             * transmit -- the "No subscribers for MsgId 0x887" line below this one. */
+            memset(&b, 0, sizeof(b));
+            CFE_MSG_Init(CFE_MSG_PTR(b.CommandHeader), CFE_SB_ValueToMsgId(MM_SEND_HK_MID),
+                         sizeof(MM_SendHkCmd_t));
+            MM_AppData.HkTlm.Payload.CommandCounter = 44;
+            MM_TaskPipe((CFE_SB_Buffer_t *)&b);
+            printf("mma_pipe_hk ok=%u err=%u\n",
+                   (unsigned)MM_AppData.HkTlm.Payload.CommandCounter,
+                   (unsigned)MM_AppData.HkTlm.Payload.CommandErrorCounter);
+            memset(&b, 0, sizeof(b));
+            CFE_MSG_Init(CFE_MSG_PTR(b.CommandHeader), CFE_SB_ValueToMsgId(0x1899),
+                         sizeof(MM_NoopCmd_t));
+            MM_AppData.HkTlm.Payload.CommandErrorCounter = 0;
+            MM_TaskPipe((CFE_SB_Buffer_t *)&b);
+            printf("mma_pipe_badmid err=%u\n",
                    (unsigned)MM_AppData.HkTlm.Payload.CommandErrorCounter);
         }
 

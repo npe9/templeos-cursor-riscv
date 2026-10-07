@@ -2915,3 +2915,67 @@ distinction is the useful part:
 
 Each needs the same before-and-after measurement that `check_formats` got, which is its own
 piece of work rather than a line to add on trust.
+
+### `mm_dispatch.c` and `mm_app.c` — **MM is 100%**
+
+472 lines, five functions, no stand-ins. Transcript **2,737 → 2,803**. MM is **9 of 9 sources,
+3,976 of 3,976 gated lines (100%)** — the port's **second complete cFS application**.
+
+The two go in together but they are **acyclic**, unlike MD's pair: `mm_app.c` calls `MM_TaskPipe`
+and `mm_dispatch.c` calls only `mm_cmds.c` and `mm_utils.c`, because `MM_SendHkCmd` lives in
+`mm_cmds.c` rather than in the app. So the include order alone resolves them, and
+`module_deps.py` said so before a line was written.
+
+**MD's `AppMain` lesson applied rather than re-derived.** The loop treats `CFE_SB_TIME_OUT` as "no
+action", so on a real pipe with a 1000 ms timeout nothing ends it. Calling `MM_AppInit` directly
+first takes `MM_CMD_PIPE`, so `AppMain`'s `CreatePipe` refuses the duplicate, `RunStatus` becomes
+`APP_ERROR`, and `CFE_ES_RunLoop`'s first test — on the caller's own status, before any record
+lookup — skips the loop. And the app must be a **CORE** app for `ExitApp` to return: for a CORE
+app with `APP_ERROR` it *refuses* and logs `Cannot Exit CORE Application`, which is the witness,
+because a zero exit count is also what "never called" looks like.
+
+All thirteen command codes are driven in one loop, **with the expected length taken from `sizeof`
+rather than written out** — the switch's expected length *is* a `sizeof`, and a hand-copied number
+would be a second opinion about the layout. Each is sent with a zero payload, so the ones that
+act on memory are refused by their own validator — and **none of those refusals prints an
+address**, which is the only reason thirteen commands fit in one comparable loop.
+
+#### MM_AppInit clears the housekeeping payload three times, and two of them are dead
+
+Two mutations came back invisible — "do not zero the command counters" and "do not call
+`MM_ResetHk`" — and rather than assume redundancy, it was **demonstrated in two more runs**:
+
+| mutation | result |
+|---|---|
+| 9. drop the explicit counter zeroing | invisible |
+| 11. drop the `MM_ResetHk()` call | invisible |
+| **15. drop BOTH, keep `CFE_MSG_Init`** | **invisible** |
+| **16. also drop `CFE_MSG_Init`'s own `MemSet`** | **the transcript breaks** |
+
+`CFE_MSG_Init(ptr, msgid, sizeof(MM_HkTlm_t))` does `memset(MsgPtr, 0, Size)` over the **whole
+packet, header and payload** — which NASA's own comment at the call site says ("clear user data
+area"). The explicit zeroing is two statements *before* it and is overwritten; `MM_ResetHk` is
+after it and writes the same zeros. Both are dead. **Translated verbatim**, as always, and
+recorded here rather than tidied.
+
+That is the fourth provable no-op in MM, and the shape is now familiar enough to name: **NASA's
+defensive writes**. Three of the four are a field cleared twice or a guard that cannot be false.
+They are not bugs and they are not assertions this exercise is missing; the useful output is
+knowing which is which.
+
+Mutation 5 is worth one more line because it is an independent confirmation: deleting the `NOOP`
+case's `break` makes a NOOP command **also run RESET**, exactly as it would in C. HolyC's `switch`
+really does fall through, measured twice now by two different routes.
+
+#### Score, MM end to end
+
+| | |
+|---|---|
+| sources | 9 of 9, **100%** (3,739 unconditional lines) |
+| transcript | 2,378 → **2,803** byte-identical lines |
+| mutations driven | **102**, of which **95 caught**, 4 provable no-ops, 3 real exercise gaps (all closed) |
+| upstream defects found and kept verbatim | **2** (`MM_FillMem`'s byte-pointer fill loop; `MM_FillMemCmd` counting a failed fill as a success) |
+| HolyC limits found | **1** (#27, a class declaration initialiser) |
+| gate defects found | **3** (`check_constants`' prefix list, the `check_structs`/`check_padding` app-directory duplication, the comment stripper) |
+| simulated hardware added | the RAM window's **write** half, a second **EEPROM** region, the EEPROM bank lock, `OS_SymbolTableDump`, a size from `OS_stat`, a failing `OS_read` |
+| branches outside the differential, stated | **4** (`MM_PSP_READ_ERR_EID` ×2 files, `MM_LoadMemWIDCmd`'s success path, `MM_FillDumpInEventBuffer`'s three read errors) |
