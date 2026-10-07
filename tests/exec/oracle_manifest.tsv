@@ -137,3 +137,4 @@ tests/exec/cases/e_struct_copy_into_slot.hc	91238f4561381049
 tests/exec/cases/e_cfs_strtoul.hc	1111111111111111
 tests/exec/cases/e_class_byval_param.hc	0000001552554654
 tests/exec/cases/e_class_decl_init.hc	0000000000007429
+tests/exec/cases/e_tbl_wrapper_idiom.hc	00503a0b30012327

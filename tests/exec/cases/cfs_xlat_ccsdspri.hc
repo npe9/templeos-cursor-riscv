@@ -1749,6 +1749,20 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/mm/mm_cmds.HC"
 #include "/Kernel/Cfs/mm/mm_dispatch.HC"
 #include "/Kernel/Cfs/mm/mm_app.HC"
+// CHECKSUM, the third app. Its vocabulary first: the event ids, the one performance id, the
+// message/config/table-entry types, then the global -- which here also carries
+// CS_TableWrapper_t, because CS_AppData_t embeds an array of six of them.
+#include "/Kernel/Cfs/cs/cs_eventids.HC"
+#include "/Kernel/Cfs/cs/cs_perfids.HC"
+#include "/Kernel/Cfs/cs/cs_msg.HC"
+#include "/Kernel/Cfs/cs/cs_global.HC"
+// CS's three middle sources, which are a CYCLE and go in together -- cs_utils calls
+// CS_ComputeEepromMemory, CS_ComputeTables and CS_ComputeApp in the second and
+// CS_HandleTableUpdate in the third, and all three call back into the first. cs_utils.HC
+// forward-declares those four, which is four declarations instead of a stand-in.
+#include "/Kernel/Cfs/cs/cs_utils.HC"
+#include "/Kernel/Cfs/cs/cs_compute.HC"
+#include "/Kernel/Cfs/cs/cs_table_processing.HC"
 // mm_dispatch and mm_app's exercise state. mma_b is the BUFFER: a CFE_SB_Buffer is only an
 // 8-byte alignment union, so a command is built in the LARGEST of the fourteen command types --
 // MM_LoadMemWIDCmd_t, 288 bytes -- and its address passed as the buffer. `&BufPtr->Msg` is at

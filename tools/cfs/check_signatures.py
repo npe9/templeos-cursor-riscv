@@ -178,7 +178,19 @@ C_TYPES = [(r'\bconst\b', ' '),
            # used a name this table does not know, the pair would have matched on nothing.
            (r'\bMM_MemType_Enum_t\s*\*', ' PTRNUM '),
            (r'\bMM_MemType_Enum_t\b', ' NUM '),
-           (r'\bMM_LastAction_Enum_t\b', ' NUM ')]
+           (r'\bMM_LastAction_Enum_t\b', ' NUM '),
+           # CS'S TWO NAMED ENUMS, same reason and the same trap. CS_ChecksumType_Enum_t is a
+           # checksum type -- also an INDEX into CS_AppData.Tbl -- and CS_ChecksumState_Enum_t is
+           # an entry's enabled/disabled/empty/undefined state; both are four bytes as a parameter
+           # and the translation spells both U32. Without these two rules NASA's
+           # CS_SetGenericEntryState reads (PTRB,SZ,) -- a blank third parameter.
+           (r'\bCS_ChecksumType_Enum_t\s*\*', ' PTRNUM '),
+           (r'\bCS_ChecksumType_Enum_t\b', ' NUM '),
+           (r'\bCS_ChecksumState_Enum_t\s*\*', ' PTRNUM '),
+           (r'\bCS_ChecksumState_Enum_t\b', ' NUM '),
+           # CS's own helper structs, declared in a .c rather than a header.
+           (r'\bCS_LocalChecksumState_t\s*\*', ' PTR_CS_LocalChecksumState '),
+           (r'\bCS_ValidationMetrics_t\s*\*', ' PTR_CS_ValidationMetrics ')]
 H_TYPES = [(r'\bCFE_MSG_Message\s*\*', ' PTRB '), (r'\bCFE_\w+\s*\*', ' PTRNUM '),
            # A cFE opaque type passed BY VALUE -- CFE_SB_MsgId, CFE_SBR_RouteId. These are
            # classes wrapping one integer, so they normalise the same as the C's typedefs.

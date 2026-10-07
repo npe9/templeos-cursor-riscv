@@ -139,6 +139,13 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "mm_fcncodes.h"
 #include "mm_internal_cfg.h"
 #include "mm_interface_cfg.h"
+/* CS -- the third cFS APP. cs_app.h reaches CS_AppData_t, the message types, the six table
+ * entry types and (through cs_table_processing.h) CS_TableWrapper_t, so one header is enough.
+ * cs_eventids.h, cs_compute.h and cs_utils.h are reached through CS's own sources. */
+#include "cs_app.h"
+#include "cs_utils.h"
+#include "cs_compute.h"
+#include "cs_table_processing.h"
 #include "cfe_tbl_task_cmds.h" /* the ten ground-command handlers and the HK packers */
 
 /* cfe_msg_objtab.c defines this and no header declares it -- the generated cfe_es_objtab.c is
@@ -755,6 +762,14 @@ static CFE_ES_ResetData_t es_reset_area;
  * until then, with the note that a C tentative definition in two translation units merges
  * SILENTLY -- and tools/cfs/check_oracle_globals.py is what would have refused the overlap.
  * The same deadline MD_AppData had, met the same way. */
+
+/* CS_AppData IS NASA'S, defined in cs_app.c, which is NOT yet gated -- so it lives here, the
+ * way MD_AppData and MM_AppData each did until their app file arrived. It MOVES to
+ * Kernel/Cfs/cs/cs_global.HC's side of the ledger when cs_app.c is gated in step 3, and
+ * tools/cfs/check_oracle_globals.py is what will refuse to let the two definitions coexist --
+ * a C tentative definition in two translation units merges SILENTLY. The HolyC half already
+ * defines it in cs_global.HC, beside its type, for the reason recorded there. */
+CS_AppData_t CS_AppData;
 
 /* THE TWO BUFFERS MM'S GENERIC PATHS ACTUALLY DEREFERENCE. mm_dump.c's MM_DumpMemToFile and
  * MM_FillDumpInEventBuffer's RAM/EEPROM arm `memcpy` from the address they are given rather

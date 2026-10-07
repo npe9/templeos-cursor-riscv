@@ -108,6 +108,10 @@ HDRS = [
     # mm_filedefs.h is NOT reachable from it and holds MM_LoadDumpFileHeader_t, the record MM
     # writes into every dump file.
     "mm_app.h", "mm_utils.h", "mm_filedefs.h",
+    # CHECKSUM -- the third. cs_app.h reaches CS_AppData_t, the message types, the six table
+    # entry types and (through cs_table_processing.h) CS_TableWrapper_t, so one header is enough
+    # -- CS keeps no type outside that include graph.
+    "cs_app.h",
     # The reset area. CFE_EVS_EarlyInit sizes the WHOLE of CFE_ES_ResetData_t and takes the event
     # log out of it, so the translation declares that type and the eight ES/TIME types under it.
     # They are types, not code -- no ES function is translated -- and this is what measures them.
@@ -220,6 +224,13 @@ CSRC = [
     # bytes of padding into it by hand (a CFE_SB_PipeId_t followed by a char *), and until this
     # line the only thing standing behind that number was my arithmetic.
     os.path.join(CFE, "modules", "sb", "fsw", "src", "cfe_sb_api.c"),
+    # CS's two helper structs, both declared inside a .c. CS_LocalChecksumState_t is in
+    # cs_compute.c -- the buffer, size, offset and partial CRC that one chunking engine carries
+    # for all three checksum kinds -- and CS_ValidationMetrics_t is in cs_table_processing.c,
+    # the counting-and-reporting object four table validation callbacks share. Both carry a
+    # trailing pad this gate is the only thing standing behind.
+    os.path.join(ROOT, "vendor", "CS", "fsw", "src", "cs_compute.c"),
+    os.path.join(ROOT, "vendor", "CS", "fsw", "src", "cs_table_processing.c"),
 ]
 
 # HolyC primitive sizes. U0/I0 is the zero-size position marker (CDirEntry.start), which the

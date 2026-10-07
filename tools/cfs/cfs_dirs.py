@@ -31,10 +31,11 @@ HCDIRS = [
     os.path.join(ROOT, "Kernel", "Cfs", "cfe"),
     os.path.join(ROOT, "Kernel", "Cfs", "md"),
     os.path.join(ROOT, "Kernel", "Cfs", "mm"),
+    os.path.join(ROOT, "Kernel", "Cfs", "cs"),
 ]
 
 # The bare names, for the one gate that builds its own paths from them.
-HCNAMES = ["osal", "cfe", "md", "mm"]
+HCNAMES = ["osal", "cfe", "md", "mm", "cs"]
 
 # THE cFS APPS, in the order they were gated, AND FOR THE SAME REASON AS THE LIST ABOVE. An app
 # is a repository of its own -- fsw/src, fsw/inc and config -- and five gates needed those three

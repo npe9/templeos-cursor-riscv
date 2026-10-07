@@ -3052,3 +3052,99 @@ that both of its neighbours need *and* that calls back into both of them, and `c
 **And the ambiguity the tool flagged is the one it has flagged twice before**: `CS_AppPipe` is
 defined in both `cs_dispatch.c` and `cs_eds_dispatch.c`, and the edge goes to the one this
 configuration builds. `check_manifest.py` already understands that pair for MD and MM.
+
+### CS's shared vocabulary — 57 classes, and the two idioms the whole app rests on
+
+Four files, no implementation yet: `Kernel/Cfs/cs/cs_eventids.HC` (155 ids), `cs_perfids.HC` (one),
+`cs_msg.HC` (the two config headers, the two enums, the six table-entry types, the 43 wire
+messages) and `cs_global.HC` (`CS_TableWrapper_t`, `CS_AppData_t`, the global, and `cs_app.h`'s
+eighteen inline accessors). Measured against NASA's own compiler before a line of CS logic
+exists:
+
+```
+cfs-structs   410 → 467   (+57, every CS class)
+cfs-padding   410 → 467   (+57), 88 → 91 carry explicit padding
+cfs-constants 1480 → 1725 (+245), and "NASA does not define" back to 35
+cfs-fnptr      18 → 19
+cfs-inblob   1269 → 1292
+cfs-xlat      2803, unchanged — nothing is exercised yet
+```
+
+**All 57 layouts matched on the first probe**, including the two the advisor flagged as new in
+kind: `CS_Def_Tables_Table_Entry_t` is **42 bytes, align 2** and `CS_Def_App_Table_Entry_t` is
+**22**, the port's first odd-sized classes. A `uint16` followed by a 40-character name packs
+exactly, and `CS_AppData` holds an array of 24 of each — so the stride is 42, not 48. A port that
+rounded the entry up would place `DefaultAppDefTable` 144 bytes later and the CDS image would stop
+matching NASA's, silently.
+
+Three tail/interior pads had to be written out, all three measured rather than reasoned:
+`CS_Res_Tables_Table_Entry_t` needs **6 bytes** after its 40-char name (74 → 80, for the leading
+`uint64`), `CS_TableWrapper_t` needs **4** after its two `CFE_TBL_Handle_t`s, and `CS_AppData_t`
+needs five separate gaps (2, 4, 4, 4, and 4 of tail).
+
+#### The count that rose in the wrong bucket, for the second time
+
+Adding CS to `cfs_dirs.APPS` made `check_constants` compare 1,571 — up from 1,480, which looks
+like progress. The other number went **35 → 189**: 154 names filed as *"NASA does not define
+this"*. Every CS event id, the performance id, the four MsgIds and the forty command codes. The
+cause is the one already written beside MM's five probe headers: `cs_app.h` reaches the
+`CS_INTERNAL_*` and `CS_INTERFACE_*` values, so the *compared* count moved and the gate passed,
+while a name the probe cannot **see** is indistinguishable from a name this port invented. Six
+headers later it is 1,725 and 35 — the baseline exactly.
+
+This is the same shape as `gate-blindspot-unpaired-types` and it has now cost two measurements.
+The rule it earns: **after teaching a gate about a new directory, read every bucket, not the one
+with the pass in it.**
+
+#### The two idioms, measured before 3,000 lines depend on them
+
+`tests/exec/cases/e_tbl_wrapper_idiom.hc` → `0000000503a0b300`. CS works almost entirely through a
+`CS_TableWrapper_t *tw` rather than naming one of its six checksum types, and two compiler
+behaviours carry that design — neither of which would fail loudly:
+
+- **A pointer difference scaled by the pointee.** NASA's `CS_GetTableId` is `return tw -
+  CS_AppData.Tbl;` — the table id recovered by subtracting the array base. HolyC scales it, so
+  `&Tbl[5]` gives **5**. The negative control casts both sides to `U8 *` and gets **200** (byte 3
+  reads `0xC8`), *and* carries into the next field, which is what makes the two answers
+  distinguishable rather than merely different.
+- **An indirect call through an arrow member.** `CS_CallTableUpdateHandler` is
+  `tw->UpdateHandler(tw)`. This is the *neighbour* of the open limit recorded as
+  `holyc-call-arrow-member` — there the arrow is applied to a call's **result**, here a function
+  pointer is read through `->` and called in one expression — so it was worth a measurement rather
+  than an assumption. Each handler writes `0xA0 | id` or `0xB0 | id` into the object it was
+  handed, so the transcript says **which** pointer arrived, not just that something ran.
+
+Three negative controls, three caught: the unscaled difference, the two handlers swapped
+(`a0b3` → `b0a3`), and the `NULL` guard removed — which **hangs**, because four of CS's six
+wrappers have no update handler at all and `CS_CallTableUpdateHandler` is called for every one.
+
+#### What CS reads, and why that is the one new hazard
+
+MD printed addresses and MM wrote through the PSP. **CS calls `CFE_ES_CalculateCRC(addr, size,
+...)` with a raw pointer** — the first app in this port that dereferences memory directly — so the
+bytes at that address have to be identical in the native oracle and in the RISC-V guest or the
+checksum differs and nothing says why. All six checksum types resolve into driver-owned buffers:
+
+| | where the bytes come from | agreed? |
+|---|---|---|
+| EEPROM table | `StartAddress` from the def table, which the driver writes | yes, by construction |
+| Memory table | same | yes |
+| cFE core segment | `CFE_PSP_GetCFETextSegmentInfo` | **already** a fixed 7-byte string, for this reason |
+| OS core segment | `CFE_PSP_GetKernelTextSegmentInfo` — the one new simulated PSP function | will be its sibling |
+| Tables table | `CFE_TBL_GetAddress`, both halves loading identical content | yes, if the def table names no CS results table |
+| App table | `CFE_ES_GetAppInfo`'s `CodeAddress`/`CodeSize` | driver buffer |
+
+The addresses themselves still differ between the halves, and that is fine — a CRC over equal
+bytes is equal wherever the bytes live. What is not fine is **printing** one, so the exercises use
+the technique `mm_utils.c` forced: print a comparison against the pointer the driver handed over,
+never the pointer.
+
+#### One thing read ahead, because it changes `cs_init.c`'s shape
+
+`CS_InitAllTables` fills `CS_AppData.Tbl` from a **`static const` array of designated
+initialisers** holding `&CS_AppData.HkPacket.Payload.<member>` addresses and function pointers,
+then copies one into place per type with `*tw = TABLE_INITIALIZERS[TableId]` — a 112-byte struct
+copy through a bare pointer, which is HolyC limit #21. So step 2 lands squarely on two recorded
+shapes at once: `generated-table-init-order` (a static C table becomes a runtime fill, and a
+reader that runs before the fill sees zeros, silently) and the 8-byte truncation. Both are known;
+noting them here so the file is written for them rather than debugged into them.

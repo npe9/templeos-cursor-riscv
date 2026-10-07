@@ -194,7 +194,33 @@ CSRC_DEFS = [
     # called with the bytes actually READ, not with this size, so the two numbers have to be
     # different for the short-read fold to be exercised at all.
     os.path.join(ROOT, "vendor", "MM", "fsw", "src", "mm_utils.c"),
+    # CS_ValidationError_* are SEVEN ENUMERATORS declared inside cs_table_processing.c -- NASA's
+    # own `typedef enum CS_ValidationError`. They are not #defines, so the first probe pass could
+    # never see them, and they are not in a header, so the enumerator pass could not either: all
+    # seven came back as "a name this port invented" and the gate PASSED with its wrong-bucket
+    # count up by seven. They are load-bearing twice over -- the enum doubles as the index into
+    # four EventMap arrays, and CS_ValidationError_MAX is those arrays' length -- so csrc_enums()
+    # below lifts the declaration into both probes.
+    os.path.join(ROOT, "vendor", "CS", "fsw", "src", "cs_table_processing.c"),
 ]
+
+
+def csrc_enums():
+    """`typedef enum ... } Name;` blocks declared inside the CSRC_DEFS sources, as text lines.
+
+    The two probes below resolve a name either as a #define (`#ifdef`) or as an expression. An
+    enumerator declared in a .c file answers to neither, because neither probe includes that .c
+    -- and the failure is silent in the direction that passes. This lifts the declaration the
+    same way check_padding.py lifts a .c-local typedef'd struct, and for the same reason.
+    """
+    out = []
+    for cf in CSRC_DEFS:
+        if not os.path.isfile(cf):
+            continue
+        text = open(cf, errors="replace").read()
+        for m in re.finditer(r'^typedef[ \t]+enum\b[^{]*\{.*?\}[^;]*;', text, re.S | re.M):
+            out.append(m.group(0))
+    return out
 
 
 def probe(names):
@@ -225,6 +251,14 @@ def probe(names):
         # MM_INTERNAL_* and MM_INTERFACE_* values were already compared, reachable through
         # mm_app.h, which is exactly what made the gap look like a pass.
         "mm_eventids.h", "mm_perfids.h", "mm_msgids.h", "mm_fcncodes.h", "mm_version.h",
+        # CS's. Same shape as MM's five, one app later: cs_app.h already reaches the
+        # CS_INTERNAL_* and CS_INTERFACE_* values and the table names, so adding CS moved the
+        # compared count up AND the "NASA does not define this" count up by more -- 154 names,
+        # which is the event ids, the one performance id, the four MsgIds and the forty command
+        # codes. The lesson is the one already written beside MM: a count that rises in the
+        # wrong bucket is the only symptom this blind spot has.
+        "cs_eventids.h", "cs_perfids.h", "cs_msgids.h", "cs_fcncodes.h", "cs_version.h",
+        "cs_tbl.h",
         # ES's event ids and its own platform config, as the module arrives. The gate refused
         # to pass on CFE_ES_SYSLOG2_EID rather than file it as "a name this port invented",
         # which is the behaviour that distinguishes a missing header from a local constant.
@@ -281,6 +315,7 @@ def probe(names):
                 if not any(re.search(r'\b%s\b' % re.escape(o), joined) for o in objects):
                     body.extend(chunk)
             i += 1
+    body.extend(csrc_enums())
     body.append("int main(void){")
     for n in names:
         body.append("#ifdef %s" % n)
@@ -324,6 +359,7 @@ def probe(names):
         if not group:
             return {}
         body2 = ["#include <stdio.h>"] + ['#include "%s"' % h for h in hdrs]
+        body2.extend(csrc_enums())
         body2.append("int main(void){")
         for nm in group:
             body2.append('  printf("%%s %%lld\\n", "%s", (long long)(%s));' % (nm, nm))
