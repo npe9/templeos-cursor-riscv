@@ -1908,6 +1908,20 @@ U0 cs_setup()
   tw->DefaultDefinitionPtr = CS_AppData.DefaultAppDefTable;
   tw->DefAddr = cs_def_app;
   tw->ResAddr = cs_res_app;
+
+  // AND THE FOUR UpdateHandler MEMBERS ARE REPORTED NON-NULL, which is not padding. Each is a
+  // file-scope reference to a function, and that is exactly what limit #22 turns into ZERO when
+  // some other function's frame grows -- a limit this session has already hit once. Here the
+  // symptom would NOT be mepc=0: CS_CallTableUpdateHandler guards with `if (tw->UpdateHandler)`,
+  // so a zeroed member makes it quietly do nothing, the results tables never fill, and the
+  // transcript differs somewhere downstream with no hint why. One line turns that into a named
+  // failure at the place it happened.
+  S("cs_setup handlers=");
+  D(CS_AppData.Tbl[CS_ChecksumType_EEPROM_TABLE].UpdateHandler != NULL);
+  D(CS_AppData.Tbl[CS_ChecksumType_MEMORY_TABLE].UpdateHandler != NULL);
+  D(CS_AppData.Tbl[CS_ChecksumType_TABLES_TABLE].UpdateHandler != NULL);
+  D(CS_AppData.Tbl[CS_ChecksumType_APP_TABLE].UpdateHandler != NULL);
+  S("\n");
 }
 
 
@@ -7200,9 +7214,10 @@ U0 cs_block_utils()
 
 // ===================== CS, step 1 of three: cs_compute.c =====================
 //
-// The chunking engine, the three typed wrappers over it, and three of the four child tasks.
-// CS_ComputeTables and CS_RecomputeTablesChildTask are in the cs_table_processing block, because
-// they are the two that go through table services.
+// The chunking engine, two of the three typed wrappers over it, and the four background walks
+// that use them. CS_ComputeTables goes in the cs_table_processing block with the rest of the
+// table-services path, and so do ALL FOUR CHILD TASKS -- a first draft of this header claimed
+// three of them were here and none was, which is the kind of comment a reader believes.
 //
 // NOTHING CALLS CS_DoChecksumChunk, CS_IsChecksumComplete OR CS_CheckOrUpdateReference DIRECTLY,
 // and that is deliberate rather than a gap. All three take a CS_LocalChecksumState_t, which NASA
@@ -7592,6 +7607,640 @@ U0 cs_block_compute()
   D(csb);
   S(" tbl=");
   D(CS_AppData.HkPacket.Payload.CurrentCSTable);
+  S("\n");
+}
+
+
+// ================ CS, step 1 of three: cs_table_processing.c ================
+//
+// The four validation callbacks, the three update handlers, the name splitter, the routine-update
+// sweep and the four child tasks. Everything here that needs cFE TABLE SERVICES is driven on its
+// FAILURE path, which is the honest half this block can reach: CS's own tables are not registered
+// until cs_init.c runs, and that is step 2. The failure paths are not filler -- "the table CS was
+// told to watch is not registered any more" is what CS does for a living.
+//
+// THE VALIDATION ACCUMULATOR IS DRIVEN THROUGH ITS COUNTS AND THROUGH THE FIRST-ERROR RULE. A
+// table with several bad entries must produce ONE error event and a summary saying how many --
+// so each callback is run twice, once clean and once with two defects, and the summary line is
+// the witness for both the counting and the suppression.
+U0 cs_block_tblproc()
+{
+  CS_TableWrapper_t *tw;
+  I32 rc;
+  U8 appbuf[OS_MAX_API_NAME];
+  U8 tblbuf[CFE_MISSION_TBL_MAX_NAME_LENGTH];
+  Bool csb;
+  I64 k;
+
+  cs_fill_sources();
+  cs_setup();
+
+  // --- CS_ValidateEepromChecksumDefinitionTable. A clean table first: sixteen EMPTY entries,
+  // so good=0, bad=0, unused=16 and CFE_SUCCESS.
+  rc = CS_ValidateEepromChecksumDefinitionTable(cs_def_eep);
+  S("cst_val_eep_clean rc=");
+  D(rc);
+  S("\n");
+  // THEN TWO DEFECTS AND A GOOD ENTRY. Entry 1 is ENABLED with a valid range; entry 3 has a
+  // state of 7, which is neither EMPTY nor commandable; entry 5 is ENABLED over a range the
+  // simulated PSP refuses. Only the FIRST error gets an event, and the summary says bad=2.
+  cs_def_eep[1].State = CS_ChecksumState_ENABLED;
+  cs_def_eep[1].StartAddress = cs_src_a;
+  cs_def_eep[1].NumBytesToChecksum = 32;
+  cs_def_eep[3].State = 7;
+  cs_def_eep[5].State = CS_ChecksumState_ENABLED;
+  cs_def_eep[5].StartAddress = cs_src_b;
+  cs_def_eep[5].NumBytesToChecksum = 16;
+  rc = CS_ValidateEepromChecksumDefinitionTable(cs_def_eep);
+  S("cst_val_eep_bad rc=");
+  D(rc);
+  S("\n");
+  // AND THE MEM_RANGE ARM, which is the one error kind only the two address tables can produce.
+  // es_psp_validate_rc is the driver's knob on CFE_PSP_MemValidateRange; the event prints the
+  // status through CS's own ErrorMessage buffer, so this also drives StrPrintN into it.
+  cs_def_eep[3].State = CS_ChecksumState_EMPTY;
+  es_psp_validate_rc = -1;
+  rc = CS_ValidateEepromChecksumDefinitionTable(cs_def_eep);
+  S("cst_val_eep_range rc=");
+  D(rc);
+  S("\n");
+  es_psp_validate_rc = CFE_PSP_SUCCESS;
+
+  // --- The memory table: the same code with CFE_PSP_MEM_ANY and its own three event ids.
+  cs_def_mem[2].State = CS_ChecksumState_DISABLED;
+  cs_def_mem[2].StartAddress = cs_src_a;
+  cs_def_mem[2].NumBytesToChecksum = 8;
+  rc = CS_ValidateMemoryChecksumDefinitionTable(cs_def_mem);
+  S("cst_val_mem rc=");
+  D(rc);
+  S("\n");
+
+  // --- The tables table, which validates FIVE of the six error kinds. One good entry, one
+  // UNTERMINATED name, one ENABLED entry with an empty name, one EMPTY entry that still has a
+  // name, and one DUPLICATE of the good one. Five defects, one event, bad=4.
+  StrNCpy(cs_def_tbl[0].Name, "CS.DefEepromTbl", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+  cs_def_tbl[0].State = CS_ChecksumState_ENABLED;
+  rc = CS_ValidateTablesChecksumDefinitionTable(cs_def_tbl);
+  S("cst_val_tbl_clean rc=");
+  D(rc);
+  S("\n");
+  MemSet(cs_def_tbl[1].Name, 'A', CFE_MISSION_TBL_MAX_FULL_NAME_LEN); // no NUL anywhere
+  cs_def_tbl[1].State = CS_ChecksumState_ENABLED;
+  cs_def_tbl[2].State = CS_ChecksumState_ENABLED;
+  cs_def_tbl[2].Name[0]  = '\0';
+  cs_def_tbl[3].State = CS_ChecksumState_EMPTY;
+  StrNCpy(cs_def_tbl[3].Name, "CS.Leftover", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+  StrNCpy(cs_def_tbl[4].Name, "CS.DefEepromTbl", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+  cs_def_tbl[4].State = CS_ChecksumState_ENABLED;
+  rc = CS_ValidateTablesChecksumDefinitionTable(cs_def_tbl);
+  S("cst_val_tbl_bad rc=");
+  D(rc);
+  S("\n");
+  // THE DUPLICATE ON ITS OWN, so its event is the FIRST error and therefore the one sent. The
+  // position in the message comes from CS's ErrorMessage buffer and names the EARLIER entry,
+  // which is the one a ground operator has to go and look at.
+  MemSet(cs_def_tbl, 0, sizeof(CS_Def_Tables_Table_Entry_t) * CS_MAX_NUM_TABLES_TABLE_ENTRIES);
+  StrNCpy(cs_def_tbl[2].Name, "CS.DefAppTbl", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+  cs_def_tbl[2].State = CS_ChecksumState_ENABLED;
+  StrNCpy(cs_def_tbl[9].Name, "CS.DefAppTbl", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+  cs_def_tbl[9].State = CS_ChecksumState_DISABLED;
+  rc = CS_ValidateTablesChecksumDefinitionTable(cs_def_tbl);
+  S("cst_val_tbl_dup rc=");
+  D(rc);
+  S("\n");
+
+  // --- The app table, the same five kinds over a 20-byte name.
+  MemSet(cs_def_app, 0, sizeof(CS_Def_App_Table_Entry_t) * CS_MAX_NUM_APP_TABLE_ENTRIES);
+  StrNCpy(cs_def_app[0].Name, "CFE_EVS", CFE_MISSION_MAX_API_LEN);
+  cs_def_app[0].State = CS_ChecksumState_ENABLED;
+  rc = CS_ValidateAppChecksumDefinitionTable(cs_def_app);
+  S("cst_val_app_clean rc=");
+  D(rc);
+  S("\n");
+  MemSet(cs_def_app[1].Name, 'B', CFE_MISSION_MAX_API_LEN);
+  cs_def_app[1].State = CS_ChecksumState_ENABLED;
+  rc = CS_ValidateAppChecksumDefinitionTable(cs_def_app);
+  S("cst_val_app_longname rc=");
+  D(rc);
+  S("\n");
+  MemSet(cs_def_app[1].Name, '0', CFE_MISSION_MAX_API_LEN);
+  cs_def_app[1].State = CS_ChecksumState_EMPTY;
+
+  // --- CS_ExtractNames, the "Owner.Table" splitter. Four shapes: a normal full name, no
+  // separator at all (the whole string is a table name and the owner is empty), an owner longer
+  // than the buffer, and a table name longer than the buffer. The two truncating cases are why
+  // the function takes sizes at all.
+  MemSet(cs_def_tbl, 0, sizeof(CS_Def_Tables_Table_Entry_t) * CS_MAX_NUM_TABLES_TABLE_ENTRIES);
+  StrNCpy(cs_def_tbl[0].Name, "CS.DefEepromTbl", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+  CS_ExtractNames(&cs_def_tbl[0], appbuf, OS_MAX_API_NAME, tblbuf, CFE_MISSION_TBL_MAX_NAME_LENGTH);
+  S("cst_extract app=[");
+  S(appbuf);
+  S("] tbl=[");
+  S(tblbuf);
+  S("]\n");
+  StrNCpy(cs_def_tbl[0].Name, "NoSeparatorHere", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+  CS_ExtractNames(&cs_def_tbl[0], appbuf, OS_MAX_API_NAME, tblbuf, CFE_MISSION_TBL_MAX_NAME_LENGTH);
+  S("cst_extract_nosep app=[");
+  S(appbuf);
+  S("] tbl=[");
+  S(tblbuf);
+  S("]\n");
+  StrNCpy(cs_def_tbl[0].Name, "AnAppNameLongerThanTwenty.T", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+  CS_ExtractNames(&cs_def_tbl[0], appbuf, OS_MAX_API_NAME, tblbuf, CFE_MISSION_TBL_MAX_NAME_LENGTH);
+  S("cst_extract_longapp app=[");
+  S(appbuf);
+  S("] tbl=[");
+  S(tblbuf);
+  S("]\n");
+  StrNCpy(cs_def_tbl[0].Name, "A.ATableNameLongerThanSixteen", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+  CS_ExtractNames(&cs_def_tbl[0], appbuf, OS_MAX_API_NAME, tblbuf, CFE_MISSION_TBL_MAX_NAME_LENGTH);
+  S("cst_extract_longtbl app=[");
+  S(appbuf);
+  S("] tbl=[");
+  S(tblbuf);
+  S("]\n");
+
+  // --- CS_ProcessNewEepromMemoryDefinitionTable, through CS_CallTableUpdateHandler so the
+  // indirect call is part of the exercise rather than bypassed. The results entries are POISONED
+  // first: the memset inside the handler is the whole safety property -- a ground table load
+  // that REMOVES a region must stop CS checksumming it -- and a handler that copied without
+  // wiping would leave the old address in the slots the new table leaves empty.
+  cs_setup();
+  for (k = 0; k < CS_MAX_NUM_EEPROM_TABLE_ENTRIES; ++k) {
+    cs_res_eep[k].State = CS_ChecksumState_ENABLED;
+    cs_res_eep[k].StartAddress = 0xDEAD0000 + k;
+    cs_res_eep[k].NumBytesToChecksum = 777;
+    cs_res_eep[k].ComparisonValue = 888;
+  }
+  cs_def_eep[1].State = CS_ChecksumState_ENABLED;
+  cs_def_eep[1].StartAddress = cs_src_a;
+  cs_def_eep[1].NumBytesToChecksum = 32;
+  cs_def_eep[7].State = CS_ChecksumState_DISABLED;
+  cs_def_eep[7].StartAddress = cs_src_b;
+  cs_def_eep[7].NumBytesToChecksum = 16;
+  tw = &CS_AppData.Tbl[CS_ChecksumType_EEPROM_TABLE];
+  CS_CallTableUpdateHandler(tw);
+  S("cst_proc_eep kept1=");
+  D(cs_res_eep[1].StartAddress == cs_src_a);
+  S(",");
+  D(cs_res_eep[1].NumBytesToChecksum);
+  S(",");
+  D(cs_res_eep[1].State);
+  S(" wiped0=");
+  D(cs_res_eep[0].StartAddress);
+  S(",");
+  D(cs_res_eep[0].NumBytesToChecksum);
+  S(",");
+  D(cs_res_eep[0].State);
+  S(" wiped15=");
+  D(cs_res_eep[15].ComparisonValue);
+  S(",");
+  D(cs_res_eep[15].State);
+  S(" state=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S("\n");
+  // AND THE GLOBAL STATE IS RESTORED, not left disabled -- the handler turns checksumming off
+  // while it swaps the table out and puts the previous value back. Driven from DISABLED so a
+  // handler that hard-coded ENABLED would be caught.
+  CS_AppData.HkPacket.Payload.EepromCSState = CS_ChecksumState_DISABLED;
+  CS_CallTableUpdateHandler(tw);
+  S("cst_proc_eep_restore state=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S("\n");
+  // THE NO-ENTRIES EVENT: a definition table with nothing commandable in it.
+  MemSet(cs_def_eep, 0, sizeof(CS_Def_EepromMemory_Table_Entry_t) * CS_MAX_NUM_EEPROM_TABLE_ENTRIES);
+  CS_CallTableUpdateHandler(tw);
+  S("cst_proc_eep_empty res0=");
+  D(cs_res_eep[0].State);
+  S("\n");
+
+  // --- CS_ProcessNewAppDefinitionTable. It copies only the state and the NAME -- no address
+  // and no size, because an app's code address is looked up every time -- which is the
+  // asymmetry against the EEPROM handler above, and the reason both are checked for what they
+  // do NOT write.
+  for (k = 0; k < CS_MAX_NUM_APP_TABLE_ENTRIES; ++k) {
+    cs_res_app[k].State = CS_ChecksumState_ENABLED;
+    cs_res_app[k].StartAddress = 0xBEEF0000 + k;
+  }
+  MemSet(cs_def_app, 0, sizeof(CS_Def_App_Table_Entry_t) * CS_MAX_NUM_APP_TABLE_ENTRIES);
+  StrNCpy(cs_def_app[3].Name, "CFE_EVS", CFE_MISSION_MAX_API_LEN);
+  cs_def_app[3].State = CS_ChecksumState_ENABLED;
+  tw = &CS_AppData.Tbl[CS_ChecksumType_APP_TABLE];
+  CS_CallTableUpdateHandler(tw);
+  S("cst_proc_app name3=[");
+  S(cs_res_app[3].Name);
+  S("] state3=");
+  D(cs_res_app[3].State);
+  S(" addr3=");
+  D(cs_res_app[3].StartAddress);
+  S(" state0=");
+  D(cs_res_app[0].State);
+  S(" addr0=");
+  D(cs_res_app[0].StartAddress);
+  S(" app_state=");
+  D(CS_AppData.HkPacket.Payload.AppCSState);
+  S("\n");
+
+  // --- CS_ProcessNewTablesDefinitionTable. The one handler that can aim a WRAPPER at a results
+  // entry: if the new tables table names one of CS's own eight tables, that wrapper's ResTblPtr
+  // points at the matching results entry, so CS_SetDefEntryState can later invalidate the
+  // checksum of the very table it just modified. All six are cleared to NULL first, so a table
+  // dropped from the new definition stops being tracked.
+  //
+  // THE OWNER NAME HAS TO MATCH CS'S APP NAME for that to happen, and this driver's app context
+  // is not called "CS" -- so the match is driven by asking ES for the name it WILL compare
+  // against and building the entry from that. A hard-coded "CS." would make this block assert
+  // that the driver is called CS rather than that the handler compares the right things.
+  {
+    U32 aid = CFE_ES_APPID_UNDEFINED;
+    U8 myname[OS_MAX_API_NAME];
+    U8 full[CFE_MISSION_TBL_MAX_FULL_NAME_LEN];
+
+    CFE_ES_GetAppID(&aid);
+    CFE_ES_GetAppName(myname, aid, OS_MAX_API_NAME);
+    StrPrintN(full, CFE_MISSION_TBL_MAX_FULL_NAME_LEN, "%s.%s", myname, CS_DEF_EEPROM_TABLE_NAME);
+
+    for (k = 0; k < CS_MAX_NUM_TABLES_TABLE_ENTRIES; ++k) {
+      cs_res_tbl[k].State = CS_ChecksumState_ENABLED;
+      cs_res_tbl[k].StartAddress = 0xFEED0000 + k;
+    }
+    MemSet(cs_def_tbl, 0, sizeof(CS_Def_Tables_Table_Entry_t) * CS_MAX_NUM_TABLES_TABLE_ENTRIES);
+    StrNCpy(cs_def_tbl[6].Name, full, CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+    cs_def_tbl[6].State = CS_ChecksumState_ENABLED;
+    StrNCpy(cs_def_tbl[8].Name, "SomeoneElse.TheirTbl", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+    cs_def_tbl[8].State = CS_ChecksumState_DISABLED;
+    tw = &CS_AppData.Tbl[CS_ChecksumType_TABLES_TABLE];
+    CS_CallTableUpdateHandler(tw);
+    S("cst_proc_tbl name6=[");
+    S(cs_res_tbl[6].Name);
+    S("] owner6=");
+    D(cs_res_tbl[6].IsCSOwner);
+    S(" state6=");
+    D(cs_res_tbl[6].State);
+    S(" name8=[");
+    S(cs_res_tbl[8].Name);
+    S("] owner8=");
+    D(cs_res_tbl[8].IsCSOwner);
+    S("\n");
+    // THE WRAPPER THE NAME POINTED AT now has a ResTblPtr, and the other five do not.
+    S("cst_proc_tbl_resptr eep=");
+    D(CS_AppData.Tbl[CS_ChecksumType_EEPROM_TABLE].ResTblPtr == &cs_res_tbl[6]);
+    S(" mem=");
+    D(CS_AppData.Tbl[CS_ChecksumType_MEMORY_TABLE].ResTblPtr == NULL);
+    S(" tbl=");
+    D(CS_AppData.Tbl[CS_ChecksumType_TABLES_TABLE].ResTblPtr == NULL);
+    S(" app=");
+    D(CS_AppData.Tbl[CS_ChecksumType_APP_TABLE].ResTblPtr == NULL);
+    S(" core=");
+    D(CS_AppData.Tbl[CS_ChecksumType_CFECORE].ResTblPtr == NULL);
+    S(" os=");
+    D(CS_AppData.Tbl[CS_ChecksumType_OSCORE].ResTblPtr == NULL);
+    S("\n");
+    // AND A TABLE DROPPED FROM THE NEW DEFINITION STOPS BEING TRACKED: run the handler again
+    // over an empty definition and the pointer goes back to NULL.
+    MemSet(cs_def_tbl, 0, sizeof(CS_Def_Tables_Table_Entry_t) * CS_MAX_NUM_TABLES_TABLE_ENTRIES);
+    CS_CallTableUpdateHandler(tw);
+    S("cst_proc_tbl_dropped eep=");
+    D(CS_AppData.Tbl[CS_ChecksumType_EEPROM_TABLE].ResTblPtr == NULL);
+    S("\n");
+  }
+
+  // --- CS_CallTableUpdateHandler's NULL arm, which four of the six wrappers are in. It must do
+  // nothing and not fault; the witness is that the cFE core wrapper's results entry is
+  // untouched.
+  CS_AppData.CfeCoreCodeSeg.NumBytesToChecksum = 4242;
+  CS_CallTableUpdateHandler(&CS_AppData.Tbl[CS_ChecksumType_CFECORE]);
+  S("cst_nullhandler size=");
+  D(CS_AppData.CfeCoreCodeSeg.NumBytesToChecksum);
+  S("\n");
+
+  // --- CS_ComputeTables AND CS_BackgroundTables on the "not registered" path, which is what CS
+  // does when a table it was told to watch is gone. CFE_TBL_GetInfo cannot find the name, so
+  // CS_RefreshTableSize answers CS_ERR_NOT_FOUND, CS_ComputeTables logs its own event and
+  // returns the generic error, and CS_BackgroundTables turns that into "skipping" and advances.
+  // Note the SECOND memset in CS_ComputeTables is what keeps this from leaking a table address
+  // per failed cycle, so the exported size is asserted back to zero.
+  cs_setup();
+  CS_AppData.HkPacket.Payload.TablesCSState = CS_ChecksumState_ENABLED;
+  cs_res_tbl[0].State = CS_ChecksumState_ENABLED;
+  cs_res_tbl[0].NumBytesToChecksum = 0;
+  cs_res_tbl[0].TblHandleID = CFE_TBL_HANDLEID_UNDEFINED;
+  StrNCpy(cs_res_tbl[0].Name, "GONE.TBL", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+  CS_AppData.HkPacket.Payload.CurrentCSTable = CS_ChecksumType_TABLES_TABLE;
+  CS_AppData.HkPacket.Payload.CurrentEntryInTable = 0;
+  csb = CS_BackgroundTables();
+  S("cst_bg_tbl spent=");
+  D(csb);
+  S(" cur=");
+  D(CS_AppData.HkPacket.Payload.CurrentEntryInTable);
+  S(" size=");
+  D(cs_res_tbl[0].NumBytesToChecksum);
+  S(" err=");
+  D(CS_AppData.HkPacket.Payload.TablesCSErrCounter);
+  S(" tbl=");
+  D(CS_AppData.HkPacket.Payload.CurrentCSTable);
+  S("\n");
+  // AND THE TYPE DISABLED, the arm all four table walks share.
+  CS_AppData.HkPacket.Payload.TablesCSState = CS_ChecksumState_DISABLED;
+  CS_AppData.HkPacket.Payload.CurrentCSTable = CS_ChecksumType_TABLES_TABLE;
+  csb = CS_BackgroundTables();
+  S("cst_bg_tbl_off spent=");
+  D(csb);
+  S(" tbl=");
+  D(CS_AppData.HkPacket.Payload.CurrentCSTable);
+  S("\n");
+
+  // --- CS_BackgroundApp, the sixth walk. Its CS_ERR_NOT_FOUND arm is the app equivalent: a
+  // name that is neither an app nor a library is "skipping", not an error to retry.
+  CS_AppData.HkPacket.Payload.AppCSState = CS_ChecksumState_ENABLED;
+  cs_res_app[0].State = CS_ChecksumState_ENABLED;
+  cs_res_app[0].StartAddress = 0;
+  cs_res_app[0].NumBytesToChecksum = 0;
+  StrNCpy(cs_res_app[0].Name, "NO_SUCH_APP", CFE_MISSION_MAX_API_LEN);
+  CS_AppData.HkPacket.Payload.CurrentCSTable = CS_ChecksumType_APP_TABLE;
+  CS_AppData.HkPacket.Payload.CurrentEntryInTable = 0;
+  csb = CS_BackgroundApp();
+  S("cst_bg_app spent=");
+  D(csb);
+  S(" cur=");
+  D(CS_AppData.HkPacket.Payload.CurrentEntryInTable);
+  S(" err=");
+  D(CS_AppData.HkPacket.Payload.AppCSErrCounter);
+  S("\n");
+
+  // --- CS_HandleRoutineTableUpdates, which sweeps all six wrappers once per cycle. The two code
+  // segments have DefEntrySize zero and are SKIPPED -- that is what keeps them out of the
+  // "table update failed" event, and the zeroes in cs_utils.c's EventIdMap are load-bearing for
+  // the same reason. The other four have invalid handles here, so CS_HandleTableUpdate's error
+  // arm fires: four events and four global states turned off.
+  cs_setup();
+  rc = CS_HandleRoutineTableUpdates();
+  S("cst_routine rc=");
+  D(rc);
+  S(" eep=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S(" mem=");
+  D(CS_AppData.HkPacket.Payload.MemoryCSState);
+  S(" tbl=");
+  D(CS_AppData.HkPacket.Payload.TablesCSState);
+  S(" app=");
+  D(CS_AppData.HkPacket.Payload.AppCSState);
+  S("\n");
+  // AND THE CHILD-TASK EXCLUSION: with a recompute in progress and no one-shot, the table the
+  // child task owns is skipped and the other three are not. The witness is that the owned
+  // table's state is NOT turned off.
+  cs_setup();
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  CS_AppData.HkPacket.Payload.OneShotInProgress = FALSE;
+  CS_AppData.ChildTaskTable = CS_ChecksumType_MEMORY_TABLE;
+  rc = CS_HandleRoutineTableUpdates();
+  S("cst_routine_child rc=");
+  D(rc);
+  S(" eep=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S(" mem=");
+  D(CS_AppData.HkPacket.Payload.MemoryCSState);
+  S(" tbl=");
+  D(CS_AppData.HkPacket.Payload.TablesCSState);
+  S(" app=");
+  D(CS_AppData.HkPacket.Payload.AppCSState);
+  S("\n");
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = FALSE;
+}
+
+
+// =============== CS, step 1 of three: the four child tasks ===============
+//
+// A ground-commanded recompute cannot run inside a cycle -- it has to finish the whole entry --
+// so it runs out of line, looping with OS_TaskDelay between chunks. All four tasks are called
+// HERE from the main task's context, which has two consequences worth naming rather than hiding:
+//
+//   OS_TaskDelay IS SIMULATED. It counts calls and sums milliseconds and does not sleep, so a
+//   four-chunk recompute costs nothing. evs_delays is the witness that the loop iterated.
+//
+//   CFE_ES_ExitChildTask TAKES ITS `else` ARM, because this is a main task. It syslogs "Cannot
+//   Call from a cFE App Main Task" and RETURNS -- which is exactly why the four tasks can be
+//   driven at all, and the four syslog lines in the transcript below are that, not a defect.
+//
+// THE SHAPE ALL THREE RECOMPUTE TASKS SHARE is: disable the results entry so the background walk
+// cannot touch it, clear its partial state so the next pass starts from zero, disable the matching
+// DEFINITION entry too, loop until done, restore both. Each is checked for the RESTORE, because a
+// task that left an entry disabled would silently stop CS watching it.
+U0 cs_block_child()
+{
+  I64 d0;
+  I64 k;
+  U32 cv;
+  Bool done;
+  U8 cs_port_saved;
+  U16 cs_sent_before;
+
+  cs_fill_sources();
+  cs_setup();
+
+  // --- CS_RecomputeEepromMemoryChildTask. The definition entry is matched by ADDRESS, not by
+  // index -- `ResultsEntry->StartAddress == DefEntry->StartAddress` -- because the two tables
+  // can disagree after a ground load, and disabling the wrong definition entry would silently
+  // stop checksumming a region nobody asked about. Driven both ways.
+  CS_AppData.ChildTaskTable = CS_ChecksumType_EEPROM_TABLE;
+  CS_AppData.ChildTaskEntryID = 2;
+  CS_AppData.RecomputeEepromMemoryEntryPtr = &cs_res_eep[2];
+  cs_res_eep[2].State = CS_ChecksumState_ENABLED;
+  cs_res_eep[2].StartAddress = cs_src_a;
+  cs_res_eep[2].NumBytesToChecksum = 200;
+  cs_res_eep[2].ByteOffset = 40;
+  cs_res_eep[2].TempChecksumValue = 0x9999;
+  cs_res_eep[2].ComputedYet = TRUE;
+  cs_res_eep[2].ComparisonValue = 0x1111;
+  cs_def_eep[2].State = CS_ChecksumState_ENABLED;
+  cs_def_eep[2].StartAddress = cs_src_a;
+  cs_def_eep[2].NumBytesToChecksum = 200;
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  d0 = evs_delays;
+  CS_RecomputeEepromMemoryChildTask();
+  S("csh_recomp_eep state=");
+  D(cs_res_eep[2].State);
+  S(" def=");
+  D(cs_def_eep[2].State);
+  S(" off=");
+  D(cs_res_eep[2].ByteOffset);
+  S(" cmp=");
+  D(cs_res_eep[2].ComparisonValue);
+  S(" base=");
+  D(CS_AppData.HkPacket.Payload.EepromBaseline);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S(" cycles=");
+  D(evs_delays - d0);
+  S("\n");
+  // THE ADDRESSES DISAGREE: the definition entry is left ALONE and nothing is restored to it,
+  // which is what the `else { DefEntry = NULL; }` arm is for. Driven from DISABLED so that a
+  // task which touched it anyway would show up as an ENABLED definition entry.
+  cs_setup();
+  CS_AppData.ChildTaskTable = CS_ChecksumType_MEMORY_TABLE;
+  CS_AppData.ChildTaskEntryID = 1;
+  CS_AppData.RecomputeEepromMemoryEntryPtr = &cs_res_mem[1];
+  cs_res_mem[1].State = CS_ChecksumState_DISABLED;
+  cs_res_mem[1].StartAddress = cs_src_a;
+  cs_res_mem[1].NumBytesToChecksum = 64;
+  cs_def_mem[1].State = CS_ChecksumState_DISABLED;
+  cs_def_mem[1].StartAddress = cs_src_b; // a DIFFERENT region
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  d0 = evs_delays;
+  CS_RecomputeEepromMemoryChildTask();
+  S("csh_recomp_mem state=");
+  D(cs_res_mem[1].State);
+  S(" def=");
+  D(cs_def_mem[1].State);
+  S(" base=");
+  D(CS_AppData.HkPacket.Payload.OSBaseline);
+  S(" cycles=");
+  D(evs_delays - d0);
+  S("\n");
+  // AND A WRAPPER WITH NO BaselineValue AT ALL -- the two table types have none, only the three
+  // code-segment-and-EEPROM baselines exist in housekeeping -- so `if (tw->BaselineValue)` is
+  // the guard that makes the memory recompute above write nothing. Asserted by the line before
+  // this one reading OSBaseline, which must still be zero.
+
+  // --- CS_RecomputeAppChildTask. The definition entry is matched BY NAME here, through
+  // CS_GetAppDefTblEntryByName, which is a different mechanism from the address match above.
+  cs_setup();
+  CS_AppData.RecomputeAppEntryPtr = &cs_res_app[4];
+  cs_res_app[4].State = CS_ChecksumState_ENABLED;
+  cs_res_app[4].StartAddress = cs_src_b;
+  cs_res_app[4].NumBytesToChecksum = 120;
+  cs_res_app[4].ByteOffset = 64;
+  cs_res_app[4].ComputedYet = TRUE;
+  cs_res_app[4].ComparisonValue = 0x2222;
+  StrNCpy(cs_res_app[4].Name, "CFE_EVS", CFE_MISSION_MAX_API_LEN);
+  cs_def_app[7].State = CS_ChecksumState_ENABLED;
+  StrNCpy(cs_def_app[7].Name, "CFE_EVS", CFE_MISSION_MAX_API_LEN);
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  d0 = evs_delays;
+  CS_RecomputeAppChildTask();
+  S("csh_recomp_app state=");
+  D(cs_res_app[4].State);
+  S(" def=");
+  D(cs_def_app[7].State);
+  S(" off=");
+  D(cs_res_app[4].ByteOffset);
+  S(" cmp=");
+  D(cs_res_app[4].ComparisonValue);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S(" cycles=");
+  D(evs_delays - d0);
+  S("\n");
+  // THE NOT-FOUND ARM: an entry whose name is no app and no library. CS_ComputeApp answers
+  // CS_ERR_NOT_FOUND, the loop BREAKS rather than spinning, and the task reports a failure
+  // instead of a new baseline. Note the entry's state is still restored.
+  cs_setup();
+  CS_AppData.RecomputeAppEntryPtr = &cs_res_app[5];
+  cs_res_app[5].State = CS_ChecksumState_ENABLED;
+  cs_res_app[5].StartAddress = 0;
+  cs_res_app[5].NumBytesToChecksum = 0;
+  StrNCpy(cs_res_app[5].Name, "NO_SUCH_APP", CFE_MISSION_MAX_API_LEN);
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  d0 = evs_delays;
+  CS_RecomputeAppChildTask();
+  S("csh_recomp_app_missing state=");
+  D(cs_res_app[5].State);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S(" cycles=");
+  D(evs_delays - d0);
+  S("\n");
+
+  // --- CS_RecomputeTablesChildTask, on the only path step 1 can reach: the table is not
+  // registered, so CS_ComputeTables answers CS_ERR_NOT_FOUND and the loop breaks on the first
+  // iteration. The ORDER is what this line is really for -- this task sends its event BEFORE
+  // restoring the entry's state where the app task restores first and then sends, and the two
+  // are otherwise line-for-line twins.
+  cs_setup();
+  CS_AppData.RecomputeTablesEntryPtr = &cs_res_tbl[3];
+  cs_res_tbl[3].State = CS_ChecksumState_ENABLED;
+  cs_res_tbl[3].TblHandleID = CFE_TBL_HANDLEID_UNDEFINED;
+  StrNCpy(cs_res_tbl[3].Name, "GONE.TBL", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+  cs_def_tbl[3].State = CS_ChecksumState_ENABLED;
+  StrNCpy(cs_def_tbl[3].Name, "GONE.TBL", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  d0 = evs_delays;
+  CS_RecomputeTablesChildTask();
+  S("csh_recomp_tbl state=");
+  D(cs_res_tbl[3].State);
+  S(" def=");
+  D(cs_def_tbl[3].State);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S(" cycles=");
+  D(evs_delays - d0);
+  S("\n");
+
+  // --- CS_OneShotChildTask, the only checksum in CS with no table entry at all: the ground
+  // names an address, a size and a budget. 200 bytes at 64 per cycle is four iterations, and the
+  // answer must equal what the background walk computes for the same bytes -- so the same region
+  // is run through CS_ComputeEepromMemory afterwards and the two are COMPARED. That equality is
+  // the real assertion here; a one-shot that disagreed with the table path would be useless.
+  //
+  // ITS FINISH EVENT PRINTS THE ADDRESS -- "OneShot checksum on Address: 0x%08X" -- and a host
+  // process and a QEMU guest never agree about one, so this is the fourth kind of event in this
+  // port that cannot cross the differential. MM's answer was to leave such events undriven. The
+  // better answer, used here, is to CLOSE THE EVS OUTPUT PORT for the duration: the event is
+  // still built, filtered, counted and transmitted -- so every line of EVS_SendEvent runs -- and
+  // only the human-readable copy is not printed. EVS_TlmPkt.Payload.MessageSendCounter is the
+  // witness that it fired, and the "No subscribers for MsgId 0x809" line below each call comes
+  // from SB rather than the port and is still compared.
+  cs_setup();
+  CS_AppData.HkPacket.Payload.LastOneShotAddress = cs_src_a;
+  CS_AppData.HkPacket.Payload.LastOneShotSize = 200;
+  CS_AppData.HkPacket.Payload.LastOneShotMaxBytesPerCycle = 64;
+  CS_AppData.HkPacket.Payload.OneShotInProgress = TRUE;
+  d0 = evs_delays;
+  cs_port_saved = CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort;
+  cs_sent_before = CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter;
+  CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort = 0;
+  CS_OneShotChildTask();
+  CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort = cs_port_saved;
+  S("csh_oneshot_sent ");
+  D(CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter - cs_sent_before);
+  S("\n");
+  S("csh_oneshot cks=");
+  D(CS_AppData.HkPacket.Payload.LastOneShotChecksum);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.OneShotInProgress);
+  S(" task=");
+  D(CS_AppData.ChildTaskID);
+  S(" cycles=");
+  D(evs_delays - d0);
+  S("\n");
+  cs_res_eep[6].State = CS_ChecksumState_ENABLED;
+  cs_res_eep[6].StartAddress = cs_src_a;
+  cs_res_eep[6].NumBytesToChecksum = 200;
+  for (k = 0; k < 4; ++k) {
+    cv = 0;
+    done = FALSE;
+    CS_ComputeEepromMemory(&cs_res_eep[6], &cv, &done);
+  }
+  S("csh_oneshot_agrees ");
+  D(CS_AppData.HkPacket.Payload.LastOneShotChecksum == cs_res_eep[6].ComparisonValue);
+  S("\n");
+  // A ZERO SIZE: the loop body never runs, the checksum stays zero, and the task still finishes.
+  // This is the arm that would hang if MaxBytesPerCycle were the thing left at zero instead --
+  // see the note on CS_EX_BUDGET above.
+  CS_AppData.HkPacket.Payload.LastOneShotSize = 0;
+  CS_AppData.HkPacket.Payload.LastOneShotChecksum = 0x4444;
+  CS_AppData.HkPacket.Payload.OneShotInProgress = TRUE;
+  d0 = evs_delays;
+  cs_port_saved = CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort;
+  CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort = 0;
+  CS_OneShotChildTask();
+  CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort = cs_port_saved;
+  S("csh_oneshot_zero cks=");
+  D(CS_AppData.HkPacket.Payload.LastOneShotChecksum);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.OneShotInProgress);
+  S(" cycles=");
+  D(evs_delays - d0);
   S("\n");
 }
 
@@ -19113,6 +19762,8 @@ I64 main()
 
     cs_block_utils();
     cs_block_compute();
+    cs_block_tblproc();
+    cs_block_child();
 
     // PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after it today
     // but tim_objtab, so both halves agreed and the transcript was green -- but the NEXT app's

@@ -3148,3 +3148,90 @@ copy through a bare pointer, which is HolyC limit #21. So step 2 lands squarely 
 shapes at once: `generated-table-init-order` (a static C table becomes a runtime fill, and a
 reader that runs before the fill sees zeros, silently) and the 8-byte truncation. Both are known;
 noting them here so the file is written for them rather than debugged into them.
+
+### Step 1 exercised — 2803 → 3052, and 62 of 68 functions actually run
+
+Four blocks, each its own function on both halves: `cs_block_utils`, `cs_block_compute`,
+`cs_block_tblproc`, `cs_block_child`. Transcript **2803 → 3052** byte-identical.
+
+**The count `check_coverage` cannot give.** It reports 920/920 present and is blind to whether a
+single line executes, so here is the split by hand:
+
+| | functions | driven | not driven |
+|---|---|---|---|
+| `cs_utils.c` | 29 | 29 | — |
+| `cs_compute.c` | 16 | 13 | `CS_GetTableAddr`, `CS_ReleaseTableAddr`, `CS_RefreshTableHandleAndAddress` |
+| `cs_table_processing.c` | 22 | 19 | `CS_RegisterResultTable`, `CS_RegisterDefinitionTable`, `CS_TableInit` |
+| | **68** | **62** | **6** |
+
+**All six undriven functions are on one path: registering CS's own tables with cFE table
+services.** Nothing reaches them until a table of CS's exists, and creating one is
+`CS_InitAllTables` — `cs_init.c`, step 2. The *failure* half of that path IS driven: with the eight
+wrapper handles set to `CFE_TBL_BAD_TABLE_HANDLE`, `CS_HandleTableUpdate` takes its error arm,
+`CS_RefreshTableData` answers `CS_ERR_NOT_FOUND`, and `CS_ComputeTables` logs and gives up — which
+is not filler, because "the table CS was told to watch is not registered any more" is most of what
+CS has to survive.
+
+#### The wrappers are hand-built, field for field, on both halves
+
+`CS_InitAllTables` is step 2, so `cs_setup()` mirrors NASA's `TABLE_INITIALIZERS` by hand with
+eight driver arrays standing in for the buffers table services will allocate. Two deliberate
+differences from NASA's list, both stated at the site:
+
+- **`MaxBytesPerCycle` is set.** `cs_app.c` sets it, and that is step 3. At zero
+  `CS_DoChecksumChunk` clamps every cycle to zero bytes, `CurrOffset` never advances,
+  `CS_IsChecksumComplete` is never true — and the three recompute child tasks' `while
+  (!DoneWithEntry)` **does not terminate.** A QEMU timeout that looks exactly like a codegen bug.
+  It is set to 64, *below* either source buffer, so chunking and resume-from-`ByteOffset` are what
+  the transcript sees rather than a single-shot CRC.
+- **The eight table handles are explicitly `CFE_TBL_BAD_TABLE_HANDLE`.** NASA leaves them zero and
+  lets registration fill them in. **Zero is a valid cFE table handle**, and MD has registered
+  tables by the time this runs — so a wrapper left at zero would make `CS_SetDefEntryState`'s
+  `CFE_TBL_Modified` mark one of *MD's dwell tables* as changed.
+
+And `cs_setup` prints `handlers=1111`: whether each of the four `UpdateHandler` members is
+non-NULL. Each is a file-scope reference to a function, which is precisely what limit #22 zeroes
+when some other frame grows — and here the symptom would **not** be `mepc=0`.
+`CS_CallTableUpdateHandler` guards with `if (tw->UpdateHandler)`, so a zeroed member makes it
+quietly do nothing, the results tables never fill, and the transcript differs somewhere downstream
+with no hint why. One line converts that into a named failure where it happened.
+
+#### An event that prints an address is still drivable — close the port
+
+`CS_OneShotChildTask`'s finish event renders `Address: 0x%08X`, so it is the fourth kind of event
+in this port that cannot cross the differential. MM's answer was to leave such branches undriven.
+The better answer, used here: save `CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort`, clear it, call,
+restore. The event is still built, filtered, counted and transmitted — every line of
+`EVS_SendEvent` runs — and only the human-readable copy is suppressed. `MessageSendCounter` is the
+witness that it fired (`csh_oneshot_sent 2`), and the `No subscribers for MsgId 0x809` line that
+follows comes from SB rather than the port, so it is still compared.
+
+**And the one-shot's answer is compared against the table path's.** The same 200 bytes are then run
+through `CS_ComputeEepromMemory` and `csh_oneshot_agrees 1` asserts the two agree. A one-shot that
+disagreed with the background walk would be useless, and nothing else in CS says they must match.
+
+#### Three assertions that are about what a function does NOT do
+
+- `CS_ProcessNewEepromMemoryDefinitionTable`'s `memset` is the whole safety property: a ground
+  table load that **removes** a region must stop CS checksumming it. The results entries are
+  poisoned with `0xDEAD0000 + k` first, and the line reads both the slot that was kept and two
+  slots that had to be wiped.
+- `CS_ProcessNewAppDefinitionTable` copies the state and the **name only** — no address, no size,
+  because an app's code address is looked up every cycle. Checked by poisoning `StartAddress` and
+  asserting it is **zero** afterwards, which is the opposite of the EEPROM handler's check.
+- `CS_InitializeDefaultTables` clears only `Name[0]`, not the whole name. Read at `Name[0]` **and**
+  `Name[1]`, so a translation that cleared the whole buffer would pass a weaker check and fail
+  this one.
+
+#### Two traps paid for again
+
+`CS_CheckRecomputeOneshot`'s call is hoisted out of the print on both halves — **fourth** time in
+this port. C evaluates every argument before printing anything, so an argument that sends an event
+emits its line first, while HolyC's `S()`/`D()` pair prints the label and takes the event
+mid-line. Reading `CommandErrorCounter` in the same call would be worse: its order against the
+call that increments it is unspecified in C.
+
+And `cs_block_compute` had to **move**. Defined beside `cs_setup()`, it referenced driver state
+declared 400 lines further down — six undeclared identifiers in C, and worse on the HolyC side,
+where a name the compiler has not seen is not always an error. Both CS blocks now sit immediately
+before `main()`, after all the simulated OSAL and PSP state.
