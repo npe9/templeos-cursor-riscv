@@ -1763,6 +1763,634 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/cs/cs_utils.HC"
 #include "/Kernel/Cfs/cs/cs_compute.HC"
 #include "/Kernel/Cfs/cs/cs_table_processing.HC"
+
+// ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
+//
+// CS reads memory DIRECTLY -- CFE_ES_CalculateCRC takes a raw pointer -- so every address the
+// exercise hands it points into one of the two buffers below, filled by cs_fill_sources() with
+// the same arithmetic on both halves. A CRC over equal bytes is equal wherever the bytes live;
+// what cannot cross is PRINTING an address, so every pointer-valued assertion below is a
+// COMPARISON against the pointer this driver handed over.
+//
+// THE SIX WRAPPERS ARE HAND-BUILT because CS_InitAllTables is cs_init.c -- step 2. cs_setup()
+// mirrors NASA's TABLE_INITIALIZERS field for field, with these eight arrays standing in for the
+// buffers table services will allocate once step 2 arrives. Both halves set the same eleven
+// fields in the same order: a wrapper setup that drifted would produce a transcript diff that
+// has nothing to do with CS.
+//
+// AND MaxBytesPerCycle IS SET HERE, which is not a detail. cs_app.c sets it (step 3); at zero
+// CS_DoChecksumChunk clamps every cycle to zero bytes, CurrOffset never advances,
+// CS_IsChecksumComplete is never true -- and the three recompute child tasks' `while
+// (!DoneWithEntry)` does not terminate. That is a QEMU timeout that looks exactly like a codegen
+// bug. It is deliberately set SMALLER than either buffer, so the chunking and the resume-from-
+// ByteOffset path are what the transcript sees rather than a single-shot CRC.
+#define CS_EX_BUDGET 64
+
+U8 cs_src_a[200];
+U8 cs_src_b[120];
+
+CS_Def_EepromMemory_Table_Entry_t cs_def_eep[CS_MAX_NUM_EEPROM_TABLE_ENTRIES];
+CS_Res_EepromMemory_Table_Entry_t cs_res_eep[CS_MAX_NUM_EEPROM_TABLE_ENTRIES];
+CS_Def_EepromMemory_Table_Entry_t cs_def_mem[CS_MAX_NUM_MEMORY_TABLE_ENTRIES];
+CS_Res_EepromMemory_Table_Entry_t cs_res_mem[CS_MAX_NUM_MEMORY_TABLE_ENTRIES];
+CS_Def_Tables_Table_Entry_t cs_def_tbl[CS_MAX_NUM_TABLES_TABLE_ENTRIES];
+CS_Res_Tables_Table_Entry_t cs_res_tbl[CS_MAX_NUM_TABLES_TABLE_ENTRIES];
+CS_Def_App_Table_Entry_t cs_def_app[CS_MAX_NUM_APP_TABLE_ENTRIES];
+CS_Res_App_Table_Entry_t cs_res_app[CS_MAX_NUM_APP_TABLE_ENTRIES];
+
+U0 cs_fill_sources()
+{
+  I64 i;
+  for (i = 0; i < 200; ++i) {
+    cs_src_a[i] = i * 7 + 3;
+  }
+  for (i = 0; i < 120; ++i) {
+    cs_src_b[i] = i * 11 + 5;
+  }
+}
+
+U0 cs_setup()
+{
+  CS_TableWrapper_t *tw;
+  I64 i;
+
+  MemSet(&CS_AppData, 0, sizeof(CS_AppData_t));
+  MemSet(cs_def_eep, 0, sizeof(CS_Def_EepromMemory_Table_Entry_t) * CS_MAX_NUM_EEPROM_TABLE_ENTRIES);
+  MemSet(cs_res_eep, 0, sizeof(CS_Res_EepromMemory_Table_Entry_t) * CS_MAX_NUM_EEPROM_TABLE_ENTRIES);
+  MemSet(cs_def_mem, 0, sizeof(CS_Def_EepromMemory_Table_Entry_t) * CS_MAX_NUM_MEMORY_TABLE_ENTRIES);
+  MemSet(cs_res_mem, 0, sizeof(CS_Res_EepromMemory_Table_Entry_t) * CS_MAX_NUM_MEMORY_TABLE_ENTRIES);
+  MemSet(cs_def_tbl, 0, sizeof(CS_Def_Tables_Table_Entry_t) * CS_MAX_NUM_TABLES_TABLE_ENTRIES);
+  MemSet(cs_res_tbl, 0, sizeof(CS_Res_Tables_Table_Entry_t) * CS_MAX_NUM_TABLES_TABLE_ENTRIES);
+  MemSet(cs_def_app, 0, sizeof(CS_Def_App_Table_Entry_t) * CS_MAX_NUM_APP_TABLE_ENTRIES);
+  MemSet(cs_res_app, 0, sizeof(CS_Res_App_Table_Entry_t) * CS_MAX_NUM_APP_TABLE_ENTRIES);
+
+  CS_AppData.MaxBytesPerCycle = CS_EX_BUDGET;
+
+  // THE EIGHT TABLE HANDLES ARE EXPLICITLY INVALID, which NASA's initialiser does not do -- it
+  // leaves them zero, and CS_RegisterResultTable/CS_RegisterDefinitionTable fill them in. That
+  // is step 2. Zero IS A VALID cFE TABLE HANDLE (cfe_tbl_internal.HC:110 records why
+  // CFE_TBL_BAD_TABLE_HANDLE is -1 and not 0), and MD has already registered tables by the time
+  // this runs -- so a wrapper left at zero would make CS_SetDefEntryState's CFE_TBL_Modified
+  // mark one of MD's dwell tables as changed. -1 makes it fail predictably instead, and the
+  // failure is the behaviour step 1 can honestly exercise.
+  for (i = 0; i < CS_NUM_TABLES; ++i) {
+    CS_AppData.Tbl[i].DefHandle = CFE_TBL_BAD_TABLE_HANDLE;
+    CS_AppData.Tbl[i].ResHandle = CFE_TBL_BAD_TABLE_HANDLE;
+  }
+
+  tw = &CS_AppData.Tbl[CS_ChecksumType_CFECORE];
+  tw->BaselineValue = &CS_AppData.HkPacket.Payload.CfeCoreBaseline;
+  tw->ResEntrySize = sizeof(CS_Res_EepromMemory_Table_Entry_t);
+  tw->ResAddr = &CS_AppData.CfeCoreCodeSeg;
+  tw->NumEntries = 1;
+
+  tw = &CS_AppData.Tbl[CS_ChecksumType_OSCORE];
+  tw->BaselineValue = &CS_AppData.HkPacket.Payload.OSBaseline;
+  tw->ResEntrySize = sizeof(CS_Res_EepromMemory_Table_Entry_t);
+  tw->ResAddr = &CS_AppData.OSCodeSeg;
+  tw->NumEntries = 1;
+
+  tw = &CS_AppData.Tbl[CS_ChecksumType_EEPROM_TABLE];
+  tw->DefTableName = CS_DEF_EEPROM_TABLE_NAME;
+  tw->ResTableName = CS_RESULTS_EEPROM_TABLE_NAME;
+  tw->GlobalState = &CS_AppData.HkPacket.Payload.EepromCSState;
+  tw->NumEntries = CS_MAX_NUM_EEPROM_TABLE_ENTRIES;
+  tw->DefEntrySize = sizeof(CS_Def_EepromMemory_Table_Entry_t);
+  tw->ResEntrySize = sizeof(CS_Res_EepromMemory_Table_Entry_t);
+  tw->DefStateOffset = 8; // offsetof(CS_Def_EepromMemory_Table_Entry_t, State)
+  tw->UpdateHandler = &CS_ProcessNewEepromMemoryDefinitionTable;
+  tw->DefaultDefinitionPtr = CS_AppData.DefaultEepromDefTable;
+  tw->DefAddr = cs_def_eep;
+  tw->ResAddr = cs_res_eep;
+
+  tw = &CS_AppData.Tbl[CS_ChecksumType_MEMORY_TABLE];
+  tw->DefTableName = CS_DEF_MEMORY_TABLE_NAME;
+  tw->ResTableName = CS_RESULTS_MEMORY_TABLE_NAME;
+  tw->GlobalState = &CS_AppData.HkPacket.Payload.MemoryCSState;
+  tw->NumEntries = CS_MAX_NUM_MEMORY_TABLE_ENTRIES;
+  tw->DefEntrySize = sizeof(CS_Def_EepromMemory_Table_Entry_t);
+  tw->ResEntrySize = sizeof(CS_Res_EepromMemory_Table_Entry_t);
+  tw->DefStateOffset = 8; // offsetof(CS_Def_EepromMemory_Table_Entry_t, State)
+  tw->UpdateHandler = &CS_ProcessNewEepromMemoryDefinitionTable;
+  tw->DefaultDefinitionPtr = CS_AppData.DefaultMemoryDefTable;
+  tw->DefAddr = cs_def_mem;
+  tw->ResAddr = cs_res_mem;
+
+  tw = &CS_AppData.Tbl[CS_ChecksumType_TABLES_TABLE];
+  tw->DefTableName = CS_DEF_TABLES_TABLE_NAME;
+  tw->ResTableName = CS_RESULTS_TABLES_TABLE_NAME;
+  tw->GlobalState = &CS_AppData.HkPacket.Payload.TablesCSState;
+  tw->NumEntries = CS_MAX_NUM_TABLES_TABLE_ENTRIES;
+  tw->DefEntrySize = sizeof(CS_Def_Tables_Table_Entry_t);
+  tw->ResEntrySize = sizeof(CS_Res_Tables_Table_Entry_t);
+  tw->DefStateOffset = 0; // offsetof(CS_Def_Tables_Table_Entry_t, State)
+  tw->UpdateHandler = &CS_ProcessNewTablesDefinitionTable;
+  tw->DefaultDefinitionPtr = CS_AppData.DefaultTablesDefTable;
+  tw->DefAddr = cs_def_tbl;
+  tw->ResAddr = cs_res_tbl;
+
+  tw = &CS_AppData.Tbl[CS_ChecksumType_APP_TABLE];
+  tw->DefTableName = CS_DEF_APP_TABLE_NAME;
+  tw->ResTableName = CS_RESULTS_APP_TABLE_NAME;
+  tw->GlobalState = &CS_AppData.HkPacket.Payload.AppCSState;
+  tw->NumEntries = CS_MAX_NUM_APP_TABLE_ENTRIES;
+  tw->DefEntrySize = sizeof(CS_Def_App_Table_Entry_t);
+  tw->ResEntrySize = sizeof(CS_Res_App_Table_Entry_t);
+  tw->DefStateOffset = 0; // offsetof(CS_Def_App_Table_Entry_t, State)
+  tw->UpdateHandler = &CS_ProcessNewAppDefinitionTable;
+  tw->DefaultDefinitionPtr = CS_AppData.DefaultAppDefTable;
+  tw->DefAddr = cs_def_app;
+  tw->ResAddr = cs_res_app;
+}
+
+// ======================= CS, step 1 of three: cs_utils.c ======================
+//
+// The twenty-six functions of CS's utility layer, in NASA's own order. Nothing here needs table
+// services or a child task; those are the two blocks after it.
+//
+// ITS OWN FUNCTION, ON BOTH HALVES, and only this half needs it to be: written as a block inside
+// main() this section grew that frame enough to make a FILE-SCOPE `&function` initialiser read as
+// zero, and the transcript died 1,900 lines earlier at `cp->Algorithm(...)` in the crc section
+// with `TRAP mcause=0x1 (insn-fault) mepc=0x0`. That is the open limit recorded in
+// docs/HOLYC_STRUCT_LIMITS.md as a stack frame zeroing a global, third sighting, and the measured
+// fix is exactly this: a called function gets its own frame and costs main() nothing. The
+// diagnosis was cheap only because the shape was already written down -- a section JUST added,
+// plus a trap at mepc=0 somewhere else, plus a function POINTER at the fault site.
+U0 cs_block_utils()
+{
+    CS_TableWrapper_t *tw;
+    CS_Res_EepromMemory_Table_Entry_t *re;
+    CS_Def_EepromMemory_Table_Entry_t *de;
+    CS_Res_Tables_Table_Entry_t *rt;
+    CS_Def_Tables_Table_Entry_t *dt;
+    CS_Res_App_Table_Entry_t *ra;
+    CS_Def_App_Table_Entry_t *da;
+    U16 st;
+    Bool csb;
+    I64 k;
+
+    cs_fill_sources();
+    cs_setup();
+
+    // --- CS_CheckGenericNameMatch, and the two wrappers over it. The NULL-safety is the whole
+    // point: four of the six wrappers have no DefTableName at all, so
+    // CS_CheckDefTableNameMatch(name, CS_ChecksumType_CFECORE) asks whether a name matches
+    // NULL. strcmp would fault.
+    S("csu_namematch ");
+    D(CS_CheckGenericNameMatch(NULL, NULL));
+    S(" ");
+    D(CS_CheckGenericNameMatch(NULL, "DefEepromTbl"));
+    S(" ");
+    D(CS_CheckGenericNameMatch("DefEepromTbl", "DefEepromTbl"));
+    S(" ");
+    D(CS_CheckGenericNameMatch("DefEepromTbl", "DefMemoryTbl"));
+    S("\n");
+    S("csu_tblnamematch d=");
+    D(CS_CheckDefTableNameMatch("DefEepromTbl", CS_ChecksumType_EEPROM_TABLE));
+    D(CS_CheckDefTableNameMatch("ResEepromTbl", CS_ChecksumType_EEPROM_TABLE));
+    D(CS_CheckDefTableNameMatch("DefEepromTbl", CS_ChecksumType_CFECORE));
+    S(" r=");
+    D(CS_CheckResTableNameMatch("ResEepromTbl", CS_ChecksumType_EEPROM_TABLE));
+    D(CS_CheckResTableNameMatch("DefEepromTbl", CS_ChecksumType_EEPROM_TABLE));
+    D(CS_CheckResTableNameMatch("ResEepromTbl", CS_ChecksumType_OSCORE));
+    S("\n");
+
+    // --- CS_GetDefEntryAddr and CS_GetResEntryAddr. The answers are POINTERS, so every line is
+    // a comparison against the array this driver handed the wrapper -- see the note on cs_src_a
+    // above. The fourth column is the one that matters: index 16 is one past the end of a
+    // 16-entry table and must be NULL, because that NULL return is the ONLY terminator eleven
+    // `while (true)` loops in cs_utils.c have.
+    tw = &CS_AppData.Tbl[CS_ChecksumType_EEPROM_TABLE];
+    S("csu_entryaddr def=");
+    D(CS_GetDefEntryAddr(tw, 0) == &cs_def_eep[0]);
+    D(CS_GetDefEntryAddr(tw, 1) == &cs_def_eep[1]);
+    D(CS_GetDefEntryAddr(tw, 15) == &cs_def_eep[15]);
+    D(CS_GetDefEntryAddr(tw, 16) == NULL);
+    S(" res=");
+    D(CS_GetResEntryAddr(tw, 0) == &cs_res_eep[0]);
+    D(CS_GetResEntryAddr(tw, 1) == &cs_res_eep[1]);
+    D(CS_GetResEntryAddr(tw, 15) == &cs_res_eep[15]);
+    D(CS_GetResEntryAddr(tw, 16) == NULL);
+    S(" codeseg=");
+    // The cFE core wrapper has NO definition table -- DefAddr is NULL -- and ONE results
+    // entry, which is CS_AppData.CfeCoreCodeSeg itself.
+    D(CS_GetDefEntryAddr(&CS_AppData.Tbl[CS_ChecksumType_CFECORE], 0) == NULL);
+    D(CS_GetResEntryAddr(&CS_AppData.Tbl[CS_ChecksumType_CFECORE], 1) == NULL);
+    S("\n");
+    // AND THE ODD-SIZED TABLES, whose stride is 42 and 22 rather than a multiple of 8 -- the
+    // arithmetic tests/exec/cases/e_tbl_wrapper_idiom.hc measures in isolation, here through
+    // the generic indexer every CS loop goes through.
+    S("csu_oddstride tbl=");
+    D(CS_GetTablesDefEntry(1) == &cs_def_tbl[1]);
+    D(CS_GetTablesDefEntry(23) == &cs_def_tbl[23]);
+    S(" app=");
+    D(CS_GetAppDefEntry(1) == &cs_def_app[1]);
+    D(CS_GetAppDefEntry(23) == &cs_def_app[23]);
+    S("\n");
+
+    // --- CS_StateValid, and the four states. ENABLED and DISABLED are commandable; EMPTY and
+    // UNDEFINED are not, and that distinction is what makes CS_SetGenericEntryState refuse
+    // twice.
+    S("csu_statevalid ");
+    D(CS_StateValid(CS_ChecksumState_EMPTY));
+    D(CS_StateValid(CS_ChecksumState_ENABLED));
+    D(CS_StateValid(CS_ChecksumState_DISABLED));
+    D(CS_StateValid(CS_ChecksumState_UNDEFINED));
+    S("\n");
+
+    // --- CS_SetGenericEntryState, the generic poke. The THREE refusals and the one write, and
+    // each line prints what the entry's State is AFTERWARDS -- a return value saying "I
+    // refused" is not evidence that nothing was written.
+    de = &cs_def_eep[3];
+    de->State = CS_ChecksumState_EMPTY;
+    st = CS_SetGenericEntryState(de, 8, CS_ChecksumState_ENABLED);
+    S("csu_setgeneric from_empty prev=");
+    D(st);
+    S(" now=");
+    D(de->State);
+    S("\n");
+    de->State = CS_ChecksumState_ENABLED;
+    st = CS_SetGenericEntryState(de, 8, CS_ChecksumState_DISABLED);
+    S("csu_setgeneric enabled_to_disabled prev=");
+    D(st);
+    S(" now=");
+    D(de->State);
+    S("\n");
+    st = CS_SetGenericEntryState(de, 8, CS_ChecksumState_EMPTY);
+    S("csu_setgeneric to_empty prev=");
+    D(st);
+    S(" now=");
+    D(de->State);
+    S("\n");
+    // AN OFFSET OTHER THAN ZERO IS THE REASON DefStateOffset EXISTS. The tables and app
+    // entries keep State at offset 0 and the EEPROM/Memory entry keeps it at 8; this is the
+    // same function reaching both.
+    dt = &cs_def_tbl[2];
+    dt->State = CS_ChecksumState_DISABLED;
+    st = CS_SetGenericEntryState(dt, 0, CS_ChecksumState_ENABLED);
+    S("csu_setgeneric tbl_off0 prev=");
+    D(st);
+    S(" now=");
+    D(dt->State);
+    S("\n");
+
+    // --- CS_SetDefEntryState, which is the above PLUS two side effects, and they only happen
+    // when the state actually MOVED. ResTblPtr is aimed at a results entry with work in
+    // progress; a real move clears it, a no-op move leaves it.
+    tw = &CS_AppData.Tbl[CS_ChecksumType_EEPROM_TABLE];
+    tw->ResTblPtr = &cs_res_tbl[5];
+    cs_res_tbl[5].ByteOffset = 40;
+    cs_res_tbl[5].TempChecksumValue = 0x1234;
+    cs_res_tbl[5].ComputedYet = TRUE;
+    de = &cs_def_eep[4];
+    de->State = CS_ChecksumState_ENABLED;
+    st = CS_SetDefEntryState(tw, de, CS_ChecksumState_DISABLED);
+    S("csu_setdef moved prev=");
+    D(st);
+    S(" now=");
+    D(de->State);
+    S(" off=");
+    D(cs_res_tbl[5].ByteOffset);
+    S(" temp=");
+    D(cs_res_tbl[5].TempChecksumValue);
+    S(" yet=");
+    D(cs_res_tbl[5].ComputedYet);
+    S("\n");
+    cs_res_tbl[5].ByteOffset = 40;
+    st = CS_SetDefEntryState(tw, de, CS_ChecksumState_DISABLED);
+    S("csu_setdef same prev=");
+    D(st);
+    S(" now=");
+    D(de->State);
+    S(" off=");
+    D(cs_res_tbl[5].ByteOffset);
+    S("\n");
+    // AND WITH NO ResTblPtr AT ALL, which is the state five of the six wrappers are in until a
+    // tables table names one of CS's own tables. CS_ResetTablesTblResultEntry is NULL-safe for
+    // exactly this.
+    tw->ResTblPtr = NULL;
+    de->State = CS_ChecksumState_DISABLED;
+    st = CS_SetDefEntryState(tw, de, CS_ChecksumState_ENABLED);
+    S("csu_setdef noresptr prev=");
+    D(st);
+    S(" now=");
+    D(de->State);
+    S("\n");
+
+    // --- CS_GetTableTypeAsString, all six plus the default. The default arm is unreachable
+    // through CS's own code because every caller passes &CS_AppData.Tbl[n]; CS_GetTableId is a
+    // pointer SUBTRACTION, so a wrapper one past the end lands there rather than indexing off a
+    // jump table.
+    S("csu_typestr");
+    for (k = 0; k < CS_NUM_TABLES; ++k) {
+      S(" ");
+      S(CS_GetTableTypeAsString(&CS_AppData.Tbl[k]));
+    }
+    S(" ");
+    // `CS_AppData.Tbl + CS_NUM_TABLES`, NOT `&CS_AppData.Tbl[0] + CS_NUM_TABLES`. The second
+    // spelling was the first draft and it produced the only transcript diff this whole block had:
+    // adding an integer to `&array[i]` scales by EIGHT rather than by the element size, so
+    // 6 * 8 = 48 bytes is still inside a 112-byte element 0, CS_GetTableId answered 0, and the
+    // line read "cFE Core" where NASA's C read "Undef". A second surface of the limit
+    // docs/HOLYC_STRUCT_LIMITS.md #4 records, pinned by
+    // tests/exec/cases/e_amp_index_plus_int.hc.
+    S(CS_GetTableTypeAsString(CS_AppData.Tbl + CS_NUM_TABLES));
+    S("\n");
+    // CS_GetTableId and CS_CheckTableId, the two halves of the pointer arithmetic.
+    S("csu_tableid ");
+    D(CS_GetTableId(&CS_AppData.Tbl[0]));
+    S(" ");
+    D(CS_GetTableId(&CS_AppData.Tbl[5]));
+    S(" ");
+    D(CS_CheckTableId(&CS_AppData.Tbl[4], CS_ChecksumType_TABLES_TABLE));
+    S(" ");
+    D(CS_CheckTableId(&CS_AppData.Tbl[4], CS_ChecksumType_APP_TABLE));
+    S("\n");
+
+    // --- THE SIX Zero*TempValues. Poison every entry first, so a function that cleared nothing
+    // and a function that cleared everything are distinguishable -- and print the LAST entry as
+    // well as the first, because a loop that stopped after one would otherwise look right.
+    for (k = 0; k < CS_MAX_NUM_EEPROM_TABLE_ENTRIES; ++k) {
+      cs_res_eep[k].TempChecksumValue = 0xAA00 + k;
+      cs_res_eep[k].ByteOffset = 0xBB00 + k;
+      cs_res_mem[k].TempChecksumValue = 0xCC00 + k;
+      cs_res_mem[k].ByteOffset = 0xDD00 + k;
+    }
+    for (k = 0; k < CS_MAX_NUM_TABLES_TABLE_ENTRIES; ++k) {
+      cs_res_tbl[k].TempChecksumValue = 0xEE00 + k;
+      cs_res_tbl[k].ByteOffset = 0xFF00 + k;
+      cs_res_app[k].TempChecksumValue = 0x1100 + k;
+      cs_res_app[k].ByteOffset = 0x2200 + k;
+    }
+    CS_AppData.CfeCoreCodeSeg.TempChecksumValue = 0x3300;
+    CS_AppData.CfeCoreCodeSeg.ByteOffset = 0x4400;
+    CS_AppData.OSCodeSeg.TempChecksumValue = 0x5500;
+    CS_AppData.OSCodeSeg.ByteOffset = 0x6600;
+    CS_ZeroEepromTempValues();
+    CS_ZeroMemoryTempValues();
+    CS_ZeroTablesTempValues();
+    CS_ZeroAppTempValues();
+    CS_ZeroCfeCoreTempValues();
+    CS_ZeroOSTempValues();
+    S("csu_zerotemp eep=");
+    D(cs_res_eep[0].TempChecksumValue);
+    S(",");
+    D(cs_res_eep[0].ByteOffset);
+    S(",");
+    D(cs_res_eep[15].TempChecksumValue);
+    S(",");
+    D(cs_res_eep[15].ByteOffset);
+    S(" mem=");
+    D(cs_res_mem[15].TempChecksumValue);
+    S(",");
+    D(cs_res_mem[15].ByteOffset);
+    S(" tbl=");
+    D(cs_res_tbl[23].TempChecksumValue);
+    S(",");
+    D(cs_res_tbl[23].ByteOffset);
+    S(" app=");
+    D(cs_res_app[23].TempChecksumValue);
+    S(",");
+    D(cs_res_app[23].ByteOffset);
+    S(" seg=");
+    D(CS_AppData.CfeCoreCodeSeg.TempChecksumValue);
+    S(",");
+    D(CS_AppData.CfeCoreCodeSeg.ByteOffset);
+    S(",");
+    D(CS_AppData.OSCodeSeg.TempChecksumValue);
+    S(",");
+    D(CS_AppData.OSCodeSeg.ByteOffset);
+    S("\n");
+
+    // --- CS_InitializeDefaultTables, the cold-boot fallback. Poisoned first, and the two NAME
+    // tables are checked at Name[0] AND Name[1]: NASA clears only the first byte, so a
+    // translation that cleared the whole name would pass a weaker check and fail this one.
+    for (k = 0; k < CS_MAX_NUM_EEPROM_TABLE_ENTRIES; ++k) {
+      CS_AppData.DefaultEepromDefTable[k].State = CS_ChecksumState_ENABLED;
+      CS_AppData.DefaultEepromDefTable[k].NumBytesToChecksum = 99;
+      CS_AppData.DefaultEepromDefTable[k].StartAddress = 0x1000;
+      CS_AppData.DefaultMemoryDefTable[k].State = CS_ChecksumState_ENABLED;
+      CS_AppData.DefaultMemoryDefTable[k].NumBytesToChecksum = 98;
+      CS_AppData.DefaultMemoryDefTable[k].StartAddress = 0x2000;
+    }
+    for (k = 0; k < CS_MAX_NUM_TABLES_TABLE_ENTRIES; ++k) {
+      CS_AppData.DefaultTablesDefTable[k].State = CS_ChecksumState_ENABLED;
+      CS_AppData.DefaultTablesDefTable[k].Name[0] = 'Z';
+      CS_AppData.DefaultTablesDefTable[k].Name[1] = 'Y';
+      CS_AppData.DefaultAppDefTable[k].State = CS_ChecksumState_ENABLED;
+      CS_AppData.DefaultAppDefTable[k].Name[0] = 'W';
+      CS_AppData.DefaultAppDefTable[k].Name[1] = 'V';
+    }
+    CS_InitializeDefaultTables();
+    S("csu_initdefault eep=");
+    D(CS_AppData.DefaultEepromDefTable[15].State);
+    S(",");
+    D(CS_AppData.DefaultEepromDefTable[15].NumBytesToChecksum);
+    S(",");
+    D(CS_AppData.DefaultEepromDefTable[15].StartAddress);
+    S(" mem=");
+    D(CS_AppData.DefaultMemoryDefTable[15].State);
+    S(",");
+    D(CS_AppData.DefaultMemoryDefTable[15].NumBytesToChecksum);
+    S(",");
+    D(CS_AppData.DefaultMemoryDefTable[15].StartAddress);
+    S(" tbl=");
+    D(CS_AppData.DefaultTablesDefTable[23].State);
+    S(",");
+    D(CS_AppData.DefaultTablesDefTable[23].Name[0]);
+    S(",");
+    D(CS_AppData.DefaultTablesDefTable[23].Name[1]);
+    S(" app=");
+    D(CS_AppData.DefaultAppDefTable[23].State);
+    S(",");
+    D(CS_AppData.DefaultAppDefTable[23].Name[0]);
+    S(",");
+    D(CS_AppData.DefaultAppDefTable[23].Name[1]);
+    S("\n");
+
+    // --- CS_GoToNextTable, seven calls from table 0. The seventh is the wrap, and the
+    // PassCounter increment on it is the ONLY place in CS that counter moves.
+    CS_AppData.HkPacket.Payload.CurrentCSTable = 0;
+    CS_AppData.HkPacket.Payload.CurrentEntryInTable = 9;
+    CS_AppData.HkPacket.Payload.PassCounter = 0;
+    S("csu_gotonext");
+    for (k = 0; k < 7; ++k) {
+      CS_GoToNextTable();
+      S(" ");
+      D(CS_AppData.HkPacket.Payload.CurrentCSTable);
+      S("/");
+      D(CS_AppData.HkPacket.Payload.CurrentEntryInTable);
+      S("/");
+      D(CS_AppData.HkPacket.Payload.PassCounter);
+    }
+    S("\n");
+
+    // --- THE FOUR BY-NAME LOOKUPS, and their asymmetry. The two RESULTS lookups accept
+    // anything that is not EMPTY; the two DEFINITION lookups require CS_StateValid. So an
+    // UNDEFINED entry -- CS looked and could not find what was named -- is findable in the
+    // results table and NOT in the definition table, which is what lets "report its baseline"
+    // answer while "enable it" refuses. Four columns per line: a hit, a miss, the UNDEFINED
+    // case, and an EMPTY entry whose name still matches.
+    StrNCpy(cs_res_tbl[2].Name, "CS.ResTablesTbl", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+    cs_res_tbl[2].State = CS_ChecksumState_ENABLED;
+    StrNCpy(cs_res_tbl[3].Name, "CS.Undef", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+    cs_res_tbl[3].State = CS_ChecksumState_UNDEFINED;
+    StrNCpy(cs_res_tbl[4].Name, "CS.Empty", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+    cs_res_tbl[4].State = CS_ChecksumState_EMPTY;
+    rt = NULL;
+    S("csu_restbl_byname hit=");
+    D(CS_GetTableResTblEntryByName(&rt, "CS.ResTablesTbl"));
+    S("@");
+    D(rt == &cs_res_tbl[2]);
+    rt = NULL;
+    S(" miss=");
+    D(CS_GetTableResTblEntryByName(&rt, "CS.Nope"));
+    S(" undef=");
+    D(CS_GetTableResTblEntryByName(&rt, "CS.Undef"));
+    S(" empty=");
+    D(CS_GetTableResTblEntryByName(&rt, "CS.Empty"));
+    S("\n");
+
+    StrNCpy(cs_def_tbl[6].Name, "CS.DefTablesTbl", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+    cs_def_tbl[6].State = CS_ChecksumState_DISABLED;
+    StrNCpy(cs_def_tbl[7].Name, "CS.Undef", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+    cs_def_tbl[7].State = CS_ChecksumState_UNDEFINED;
+    dt = NULL;
+    S("csu_deftbl_byname hit=");
+    D(CS_GetTableDefTblEntryByName(&dt, "CS.DefTablesTbl"));
+    S("@");
+    D(dt == &cs_def_tbl[6]);
+    dt = NULL;
+    S(" miss=");
+    D(CS_GetTableDefTblEntryByName(&dt, "CS.Nope"));
+    S(" undef=");
+    D(CS_GetTableDefTblEntryByName(&dt, "CS.Undef"));
+    S("\n");
+
+    StrNCpy(cs_res_app[1].Name, "CS", CFE_MISSION_MAX_API_LEN);
+    cs_res_app[1].State = CS_ChecksumState_ENABLED;
+    ra = NULL;
+    S("csu_resapp_byname hit=");
+    D(CS_GetAppResTblEntryByName(&ra, "CS"));
+    S("@");
+    D(ra == &cs_res_app[1]);
+    ra = NULL;
+    S(" miss=");
+    D(CS_GetAppResTblEntryByName(&ra, "NOPE"));
+    S("\n");
+
+    StrNCpy(cs_def_app[8].Name, "TO_LAB_APP", CFE_MISSION_MAX_API_LEN);
+    cs_def_app[8].State = CS_ChecksumState_ENABLED;
+    da = NULL;
+    S("csu_defapp_byname hit=");
+    D(CS_GetAppDefTblEntryByName(&da, "TO_LAB_APP"));
+    S("@");
+    D(da == &cs_def_app[8]);
+    da = NULL;
+    S(" miss=");
+    D(CS_GetAppDefTblEntryByName(&da, "NOPE"));
+    S("\n");
+
+    // --- THE FOUR CS_FindEnabled*. They advance CurrentEntryInTable as a SIDE EFFECT, which is
+    // how a cycle resumes where the last one stopped -- so each line prints the counter as well
+    // as which entry came back. The second call on each is the exhausted case: NULL, with the
+    // counter parked at the table bound.
+    for (k = 0; k < CS_MAX_NUM_EEPROM_TABLE_ENTRIES; ++k) {
+      cs_res_eep[k].State = CS_ChecksumState_DISABLED;
+    }
+    cs_res_eep[5].State = CS_ChecksumState_ENABLED;
+    CS_AppData.HkPacket.Payload.CurrentEntryInTable = 0;
+    re = CS_FindEnabledEepromEntry();
+    S("csu_findeep at=");
+    D(re == &cs_res_eep[5]);
+    S(" cur=");
+    D(CS_AppData.HkPacket.Payload.CurrentEntryInTable);
+    CS_AppData.HkPacket.Payload.CurrentEntryInTable = 6;
+    re = CS_FindEnabledEepromEntry();
+    S(" exhausted=");
+    D(re == NULL);
+    S(" cur=");
+    D(CS_AppData.HkPacket.Payload.CurrentEntryInTable);
+    S("\n");
+
+    cs_res_mem[0].State = CS_ChecksumState_ENABLED;
+    CS_AppData.HkPacket.Payload.CurrentEntryInTable = 0;
+    re = CS_FindEnabledMemoryEntry();
+    S("csu_findmem at=");
+    D(re == &cs_res_mem[0]);
+    S(" cur=");
+    D(CS_AppData.HkPacket.Payload.CurrentEntryInTable);
+    S("\n");
+
+    cs_res_tbl[2].State = CS_ChecksumState_ENABLED;
+    CS_AppData.HkPacket.Payload.CurrentEntryInTable = 0;
+    rt = CS_FindEnabledTablesEntry();
+    S("csu_findtbl at=");
+    D(rt == &cs_res_tbl[2]);
+    S(" cur=");
+    D(CS_AppData.HkPacket.Payload.CurrentEntryInTable);
+    S("\n");
+
+    CS_AppData.HkPacket.Payload.CurrentEntryInTable = 0;
+    ra = CS_FindEnabledAppEntry();
+    S("csu_findapp at=");
+    D(ra == &cs_res_app[1]);
+    S(" cur=");
+    D(CS_AppData.HkPacket.Payload.CurrentEntryInTable);
+    S("\n");
+
+    // --- CS_ResetTablesTblResultEntry, both arms. The NULL one is not decoration: five of the
+    // six wrappers have no ResTblPtr until a tables table names a CS table.
+    cs_res_tbl[9].ByteOffset = 7;
+    cs_res_tbl[9].TempChecksumValue = 8;
+    cs_res_tbl[9].ComputedYet = TRUE;
+    CS_ResetTablesTblResultEntry(&cs_res_tbl[9]);
+    CS_ResetTablesTblResultEntry(NULL);
+    S("csu_resetres off=");
+    D(cs_res_tbl[9].ByteOffset);
+    S(" temp=");
+    D(cs_res_tbl[9].TempChecksumValue);
+    S(" yet=");
+    D(cs_res_tbl[9].ComputedYet);
+    S("\n");
+
+    // --- CS_CheckRecomputeOneshot, the guard every command handler calls first. It increments
+    // the error counter ITSELF, which is why a handler that forgets to return would count one
+    // failure twice -- so the counter is printed, not just the answer.
+    //
+    // THE CALL IS HOISTED OUT OF THE PRINT, both halves, and this is the FOURTH time that trap
+    // has been hit in this port: C evaluates every argument before printing anything, so an
+    // argument that SENDS AN EVENT emits its line first, while HolyC's S()/D() pair prints the
+    // label and then the event lands mid-line. Reading CommandErrorCounter in the same call
+    // would be worse again -- the order of evaluation against the call that increments it is
+    // unspecified in C.
+    CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+    CS_AppData.HkPacket.Payload.RecomputeInProgress = FALSE;
+    CS_AppData.HkPacket.Payload.OneShotInProgress = FALSE;
+    csb = CS_CheckRecomputeOneshot();
+    S("csu_recompguard idle=");
+    D(csb);
+    S(" err=");
+    D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+    S("\n");
+    CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+    csb = CS_CheckRecomputeOneshot();
+    S("csu_recompguard recomp=");
+    D(csb);
+    S(" err=");
+    D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+    S("\n");
+    CS_AppData.HkPacket.Payload.RecomputeInProgress = FALSE;
+    CS_AppData.HkPacket.Payload.OneShotInProgress = TRUE;
+    csb = CS_CheckRecomputeOneshot();
+    S("csu_recompguard oneshot=");
+    D(csb);
+    S(" err=");
+    D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+    S("\n");
+    CS_AppData.HkPacket.Payload.OneShotInProgress = FALSE;
+}
+
 // mm_dispatch and mm_app's exercise state. mma_b is the BUFFER: a CFE_SB_Buffer is only an
 // 8-byte alignment union, so a command is built in the LARGEST of the fourteen command types --
 // MM_LoadMemWIDCmd_t, 288 bytes -- and its address passed as the buffer. `&BufPtr->Msg` is at
@@ -18074,6 +18702,8 @@ I64 main()
     S("mma_pipe_badmid err=");
     D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
     S("\n");
+
+    cs_block_utils();
 
     // PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after it today
     // but tim_objtab, so both halves agreed and the transcript was green -- but the NEXT app's

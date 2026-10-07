@@ -162,6 +162,42 @@ downstream.
 **Every `OS_global_*_table` in this port is such a macro.** They are all used through a local
 base pointer for this reason, and any new one must be too.
 
+### The same fallback applies to ARITHMETIC on `&array[i]`, not only to subscripting it
+
+    W garr[8];              // W is 56 bytes
+    garr + 1            ->  +56 bytes    correct
+    &garr[1]            ->  +56 bytes    correct
+    p = garr; p + 1     ->  +56 bytes    correct
+    &garr[0] + 1        ->   +8 bytes    WRONG, and silently so
+    &garr[0] + 7        ->  +56 bytes    WRONG, and a VALID element address
+
+Measured for four containers -- a file-scope array, a class member array, a local array, and
+through a pointer -- and all four are wrong the same way, which says the fallback is at the `&`
+site and not in any of them. `tests/exec/cases/e_amp_index_plus_int.hc` pins it.
+
+**The fifth line is why this needs its own case.** When `N * 8` happens to be a multiple of the
+element size the wrong answer is a well-formed pointer to the wrong element, so the defect
+produces a plausible address rather than a fault. The first probe written for it used `N = 3`
+against a 56-byte element, where 3 bytes and 24 bytes both land inside element 0 and the two
+explanations are the same number; only an `N` and a size whose product crosses an element
+boundary tell "one byte per unit" from "eight".
+
+**And `p += 1` is a THIRD answer: one byte.** Compound assignment to a pointer does not scale at
+all, where `p = p + 1` and `++p` both do. Same case, last byte.
+
+**Found from a transcript diff of one line.** `CS_GetTableTypeAsString` has a `default:` arm that
+CS's own code cannot reach, because every caller passes `&CS_AppData.Tbl[n]` for n in 0..5; the
+exercise reached it with `&CS_AppData.Tbl[0] + CS_NUM_TABLES`. `CS_TableWrapper_t` is 112 bytes,
+so 6 * 8 = 48 is still inside element 0, `CS_GetTableId` returned 0, and the line read
+`cFE Core` where NASA's C read `Undef`. The workarounds are #4's: name the array without the
+`&`/subscript, or take the base into a local pointer variable first.
+
+**One false lead, recorded because it cost two probes.** Reading a nine-field answer out of a
+value packed with eight shifts -- seventy-two bits into sixty-four -- made a CORRECT spelling look
+like it returned 8, and the next two probes went looking for compile-time pointer state leaking
+across function boundaries. A third probe showed there is none: a `&garr[1]` in an earlier
+function leaves nothing behind. **Check the width of the witness before believing what it says.**
+
 ## 5. Compound assignment to a narrow struct field — FIXED
 
 `x op= y` used to be emitted as a 64-bit read-modify-write whatever the destination's width.
