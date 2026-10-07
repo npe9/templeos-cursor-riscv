@@ -6682,8 +6682,13 @@ static void cs_block_child(void)
      * better answer, used here, is to CLOSE THE EVS OUTPUT PORT for the duration: the event is
      * still built, filtered, counted and transmitted -- so every line of EVS_SendEvent runs -- and
      * only the human-readable copy is not printed. EVS_TlmPkt.Payload.MessageSendCounter is the
-     * witness that it fired, and the "No subscribers for MsgId 0x809" line below each call comes
-     * from SB rather than the port and is still compared. */
+     * witness, and it reads TWO, which is worth accounting for rather than waving at: the counter
+     * increments exactly once per event in EVS_GenerateEventTelemetry, and the second event is the
+     * one the FIRST one provokes -- transmitting it finds no subscriber for the long-event MsgId,
+     * and SB reports that with an event of its own. So closing the port suppresses BOTH port
+     * lines, not just the one with the address in it. A first draft of this comment claimed the
+     * "No subscribers" line still printed because it came from SB; it does not, and the transcript
+     * says so three lines above csh_oneshot_sent. */
     cs_setup();
     CS_AppData.HkPacket.Payload.LastOneShotAddress         = (cpuaddr)cs_src_a;
     CS_AppData.HkPacket.Payload.LastOneShotSize            = 200;
