@@ -85,9 +85,10 @@ def gated_sources():
     return out
 
 
-def strip_comments(src):
-    src = re.sub(r'/\*.*?\*/', lambda m: '\n' * m.group(0).count('\n'), src, flags=re.S)
-    return re.sub(r'//[^\n]*', '', src)
+# strip_comments LIVES IN cfs_text.py, because four gates each had their own and three of them
+# removed BLOCK comments first -- which makes a `/*` inside a `//` comment a real opener. See
+# that file for what it cost and for the one-pass fix; it carries its own driven control.
+from cfs_text import strip_comments  # noqa: F401 -- re-exported for this gate's own callers
 
 
 def brace_body(src, open_paren_end):

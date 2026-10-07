@@ -2729,3 +2729,189 @@ Fifteen mutations. Three came back unchanged, and the three reasons are all diff
 
 A mutation that cannot change behaviour is not evidence of a missing assertion — but a mutation
 written to prove a claim, that turns out to be a no-op, **is** evidence the claim was wrong.
+
+### `mm_cmds.c` — fourteen commands, a second upstream defect, and HolyC limit #27
+
+1,116 lines, fourteen functions, no stand-ins — MM's largest source and the only caller of every
+other MM file. Transcript **2,634 → 2,737**. MM is 8 of 9 sources, 3,504 of 3,739 lines (94%).
+
+#### HolyC limit #27: a class DECLARATION INITIALISER carries only its first 8 bytes
+
+**The same copy is whole as a statement and truncated as an initialiser.** One extra line of
+source changes the semantics:
+
+| | |
+|---|---|
+| `S d; d = p->m;` | **whole** |
+| `S d = p->m;` | **first 8 bytes, silently** |
+
+Found by a transcript divergence. NASA's `MM_FillMemCmd` writes
+`MM_SymAddr_t DestSymAddress = Msg->Payload.DestSymAddress;` where the other four handlers in the
+same file declare and then assign — so **one of five broke**. `MM_SymAddr_t`'s first eight bytes
+are its `Offset`, so the offset survived and the 64-byte `SymName` did not; `MM_ResolveSymAddr`
+then saw a non-empty name in uninitialised stack, took the symbol-lookup branch, and the fill
+went to `md_sym_addr + Offset`. **The command was built correctly and the address was wrong**,
+which is the hardest shape to chase — a probe in the driver printed
+`sz=288 n0=0 off=1048640 mt=3 nb=16`, i.e. *the setup is right*, before the copy came under
+suspicion.
+
+Two wrong guesses on the way, both worth recording because they are the obvious ones:
+
+- that `sizeof` of a **union variable** was short. It *is* — `sizeof(t)` where `t` is a union
+  variable returns the **first member's** size, not the union's — but the driver uses
+  `sizeof(TypeName)`, which is correct. A real compiler defect that was not this one.
+- that a plain class assignment from a pointed-at member was truncated. Probed all four
+  assignment forms: all whole.
+
+Pinned by `tests/exec/cases/e_class_decl_init.hc` → `0x7429`, which calls a `warm()` function
+first to leave `0xAA` in the frame the probes reuse — a declaration has no chance to be zeroed,
+and a run where the uncopied bytes happened to be zero would look like a successful copy.
+**Refused by `check_struct_copy.py`, which exempts by SIZE and not by site**: eight bytes or less
+is copied whole, so the seventeen existing sites (all `CFE_SB_MsgId`, `CFE_SBR_RouteId`,
+`OS_time_t`, `CFE_TIME_SysTime` — 4 or 8 bytes) pass, and a type the gate cannot measure is a
+failure. Driven: putting NASA's form back names the file, the line and `MM_SymAddr_t is 72 bytes`.
+
+#### The memory type decides whether a command is comparable at all
+
+Five handlers print the resolved address in their success event, and that splits them:
+
+- **MEM8/MEM16/MEM32** go through `CFE_PSP_Mem{Read,Write}*`, so the address is a literal window
+  constant and the event is identical on both halves. **Every success path is driven that way.**
+- **RAM/EEPROM** `memcpy` to or from the address, so it must be real memory and the event cannot
+  be compared. Those paths were driven through `mm_dump.c` and `mm_load.c` directly, where the
+  housekeeping address is asserted by comparison.
+
+**One success path is outside the differential entirely**: `MM_LoadMemWIDCmd`. Its memory type is
+hard-coded to RAM — an EEPROM programming cycle cannot be done with interrupts off — and it ends
+in `memcpy((void *)DestAddress, ...)`, so the address is necessarily real and the event prints it.
+Its three error paths are driven; the success path is not, and both halves say so.
+
+`MM_DumpMemToFileCmd` and `MM_LoadMemFromFileCmd` are driven as **one round trip**: the dump
+writes the headers, the data, seeks back, computes the CRC over what it wrote and rewrites the
+headers; the load then verifies that same CRC. Three mutations in that pair — never rewriting the
+headers, seeking past one header instead of two, and not seeking back after the CRC — all turn
+`Loaded 32 bytes` into a CRC failure. Either function alone would have passed against a wrong
+offset.
+
+#### The second upstream defect: a failed fill counts as a success
+
+```c
+if (Status == CFE_PSP_SUCCESS) { ... } else {
+    MM_AppData.HkTlm.Payload.CommandCounter++;      /* the SUCCESS counter */
+}
+```
+
+**And which input reaches it took measuring; the first answer written down was wrong.** The note
+said an unaligned length does it, because `mm_mem16/32` round the length down and then fail their
+own housekeeping guard — but `MM_VerifyLoadDumpParams` checks the alignment of the **size** as
+well as the address for those types, so an unaligned fill is refused one level earlier and lands
+in the *outer* else, which counts correctly. (The rounding warning in `mm_mem16/32` is defensive
+code this command path cannot reach at all — which also retires a claim made two commits ago.)
+
+The route that does reach it is a **PSP write failure**: `MM_FillMem8/16/32` return
+`CFE_PSP_ERROR` when a store is refused, which on hardware is a fill that ran off a region. So a
+fill that wrote part of its range and then failed moves MM's **success** counter and sends **no
+event at all** — the ground sees a command that worked. Driven with the window's store-failure
+knob: `mmc_fill_wfail cc=1 ec=0 m69=5A m70=86`.
+
+#### Twenty-one mutations, twenty caught, and a third provable no-op
+
+Two came back unchanged and both were my fault, not the exercise's:
+
+- `MM_PokeCmd` counting a failed poke as a success — a **real gap**: every poke in the exercise
+  either worked or failed in the *verifier*, so nothing reached the worker and failed there. A
+  poke outside the window (the verifier accepts it, `CFE_PSP_MemWrite32` refuses) closes it.
+- `MemCpy` instead of `snprintf` for the symbol-dump file name — **a no-op by construction**:
+  `snprintf` of a 12-character name writes exactly the 13 bytes `MemCpy` would, and *neither*
+  zero-fills. (`strncpy`/`StrNCpy` does; `snprintf`/`StrPrintN` does not. MM uses both, and the
+  two `fn20=` assertions in this port's exercises are on opposite sides of that.) Replaced with a
+  bound of 5, which truncates the name.
+
+And one that is a **provable no-op**, the third in MM: `MM_FillMemCmd`'s success path tests
+`LastAction == MM_LastAction_FILL` rather than the status, and the two cannot disagree — the
+generic `MM_FillMem` is void and always writes `LastAction`, and each width fill returns success
+**exactly** when it writes it. NASA's defensive guard cannot be false here. Recorded, not driven.
+
+### A gate that had been wrong for months, found because a count went DOWN
+
+Adding `mm_cmds.c`'s exercise moved `check_variadic` from **1,936 declarations to 1,850** — and
+it still **passed**, because its property is "no declaration *disagrees* with NASA" and a
+declaration it cannot see cannot disagree.
+
+Four gates each carried their own `strip_comments`, and three of them removed **block** comments
+first:
+
+```python
+re.sub(r'/\*.*?\*/', ..., flags=re.S)   # first
+re.sub(r'//[^\n]*',  ..., )             # second
+```
+
+That order makes a `/*` **inside a line comment** a real block-comment opener. The cFS driver has
+had
+
+```
+// Kernel/Cfs/**.HC and nothing else, so the four names this exercise needs
+```
+
+at line 562 since the kernel-include note was written — and `Kernel/Cfs/**.HC` contains `/*`. It
+was harmless **for one reason only: there was no `*/` anywhere after it in the file.** Then an
+exercise six thousand lines later added `mmc_c.Wid.Payload.Crc = 0; /* deliberately wrong */`,
+the stale opener paired with that closer, and everything between became whitespace. The driver's
+matched declarations went from 177 to 36.
+
+The fix is one pass with an alternation, so whichever opener comes first in the text wins:
+
+```python
+re.sub(r'//[^\n]*|/\*.*?\*/', blank, txt, flags=re.S)
+```
+
+`re.sub` scans left to right and tries the alternatives in order at each position, so a `//`
+comment is consumed whole — including any `/*` inside it — before a block comment can start.
+It lives in **`tools/cfs/cfs_text.py`**, imported by all four gates, and **carries its own driven
+control** (a `/*` inside a `//` comment must not eat the following code; line numbers must not
+move; a multi-line block comment must keep its newlines) which the smoke script runs. Newlines
+are preserved and every other comment character becomes a space — a superset of what the four
+callers needed, because `check_struct_copy` needs line numbers to survive and `check_variadic`
+counts newlines to turn an offset into a line.
+
+`check_struct_copy`'s copy already had the right order, which is the fourth time in this project
+that two implementations of one rule have disagreed and only one was right. **The counts after
+the fix: 1,936 declarations and 1,613 names consistent, up from 1,850 and 1,591.** The three
+other gates' numbers did not move, which is what says the unification changed only the thing it
+was meant to.
+
+#### And the complement of that grep: ten gates read source and never strip comments
+
+`grep -ln 'def strip_comments'` found the four copies. It cannot find a gate that **should**
+strip and does not — so:
+
+```
+$ grep -L strip_comments tools/cfs/check_*.py
+check_coverage.py  check_formats.py  check_in_blob.py  check_manifest.py  check_lock_sites.py
+check_constants.py  check_seam.py  check_oracle_globals.py  check_signatures.py  check_wired.py
+```
+
+`check_formats.py` is the one that matters most, because it was written this same session and
+scans **every string literal** — a format string in a comment is not a format string, and a NASA
+doc comment containing something like `%q` would have failed the gate on a conversion the
+compiler never sees. **Measured before applying the fix**, because the shared stripper is not
+string-aware and a real format string containing `//` would be blanked by it: across the 96 gated
+sources, 773 literals contain a `%`, **zero** are comment-only and **zero** code strings
+disappear. So the change is a no-op today and closes the exposure; the measurement is in the
+function's docstring.
+
+The other nine are not done and are **not** claimed to be. Their exposure differs by kind and the
+distinction is the useful part:
+
+- `check_coverage`, `check_signatures` scan for function **definitions** in NASA's `.c`. One
+  inside a comment would be reported as *missing from the translation* — a **false failure**,
+  loud, not a silent pass. Lower risk, still wrong.
+- `check_constants` scans `#define`s and `check_lock_sites` scans lock calls with `__func__` and
+  `__LINE__`. Both could count a commented-out line, and both would then compare it — the
+  `check_constants` direction is a false failure, the `check_lock_sites` direction could be
+  either.
+- `check_seam`, `check_wired`, `check_manifest`, `check_in_blob`, `check_oracle_globals` read
+  names, paths and build files rather than code bodies; the exposure is small but not zero.
+
+Each needs the same before-and-after measurement that `check_formats` got, which is its own
+piece of work rather than a line to add on trust.

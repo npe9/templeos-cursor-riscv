@@ -184,16 +184,10 @@ def hc_files(exts=(".HC",)):
     return out
 
 
-def strip_comments(text):
-    """Comments out, LINE NUMBERS INTACT.
-
-    A block comment is replaced by its own newlines rather than by a space. Collapsing one
-    moved every statement after it: the perf capture store, which is at cfe_es_perf.HC:735,
-    was reported at 571 by a version of this that did not do this -- a correct finding with a
-    line number pointing at an unrelated function, which is worse than no line number.
-    """
-    text = re.sub(r'//[^\n]*', '', text)
-    return re.sub(r'/\*.*?\*/', lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
+# strip_comments LIVES IN cfs_text.py, because four gates each had their own and three of them
+# removed BLOCK comments first -- which makes a `/*` inside a `//` comment a real opener. See
+# that file for what it cost and for the one-pass fix; it carries its own driven control.
+from cfs_text import strip_comments  # noqa: F401 -- re-exported for this gate's own callers
 
 
 def class_members(src, classes):
@@ -351,6 +345,111 @@ def resolve(expr, declared, members):
 # NEXT ARGUMENT (`B=77` where 77 was the tag), and an 8-byte class arrives whole with the tag
 # intact. One register, never two. CFE_TIME_SysTime and OS_time_t are both exactly 8 and both
 # work, which is why the limit is 8 and not 4.
+# A CLASS LOCAL DECLARED WITH AN INITIALISER -- `MM_SymAddr_t x = Msg->Payload.y;` -- which
+# carries only its FIRST EIGHT BYTES in this compiler, silently, where the SAME copy written as
+# two statements is whole. docs/HOLYC_STRUCT_LIMITS.md #27, pinned by
+# tests/exec/cases/e_class_decl_init.hc.
+#
+# WHY THIS NEEDED ITS OWN PATTERN. The ASSIGN check above looks at the DESTINATION form -- an
+# array slot or a dereference -- and a declaration's destination is a plain local, so it was
+# outside the scan entirely. The form cost a transcript divergence in mm_cmds.c: NASA writes
+# `MM_SymAddr_t DestSymAddress = Msg->Payload.DestSymAddress;` in MM_FillMemCmd and declares
+# then assigns in the other four handlers, so only one of the five broke -- and it broke by
+# keeping the first eight bytes (the Offset) and losing the next sixty-four (the SymName), which
+# sent a fill to the wrong address with the command built correctly.
+#
+# A SCALAR INITIALISER IS FINE and must not be flagged, so the type has to be a known class and
+# the declarator must not be a pointer.
+DECL_INIT = re.compile(r'^([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*=\s*(.+)$')
+
+# Initialisers that are NOT a class copy: a literal, NULL, or an address-of. Each is 8 bytes or
+# less by construction.
+DECL_INIT_OK = re.compile(r'^\s*(?:NULL|&|-?\d|0[xX][0-9a-fA-F]|\'|")')
+
+
+def check_decl_inits(files, sources, classes, members, tree_names, constants):
+    """Refuse a class-typed local declared with an initialiser -- limit #27.
+
+    EXEMPT BY SIZE, NOT BY SITE. The truncation is to the first eight bytes, so a class of eight
+    bytes or less is copied WHOLE and the form is harmless -- measured in
+    tests/exec/cases/e_class_decl_init.hc, which carries the 8-byte case as its control. The
+    first version of this check flagged all seventeen existing sites, every one of them
+    CFE_SB_MsgId, CFE_SBR_RouteId, OS_time_t or CFE_TIME_SysTime -- the cFE scalar wrappers, all
+    4 or 8 bytes. A per-site allowlist for those would have been seventeen lines that say
+    nothing and rot; the SIZE is the property.
+    """
+    import importlib.util as _iu
+    here = os.path.dirname(os.path.abspath(__file__))
+    _s = _iu.spec_from_file_location("check_padding", os.path.join(here, "check_padding.py"))
+    cp = _iu.module_from_spec(_s)
+    _s.loader.exec_module(cp)
+    bodies = cp.hc_class_bodies()
+    defines = cp.hc_defines()
+    sizes = {}
+    rc = 0
+    checked = 0
+    small = 0
+    unsized = []
+    for p in files:
+        rel = os.path.relpath(p, ROOT)
+        src = sources[p]
+        declared = {}
+        collect(src, declared)
+        for name, cands in constants.items():
+            declared.setdefault(name, cands)
+        for name, cands in tree_names.items():
+            declared.setdefault(name, cands)
+        for stmt, lineno in statements(src):
+            m = DECL_INIT.match(stmt)
+            if not m:
+                continue
+            ty, _name, init = m.group(1), m.group(2), m.group(3)
+            if ty not in classes:
+                continue
+            checked += 1
+            if DECL_INIT_OK.match(init):
+                continue
+            key = "%s:%d" % (rel, lineno)
+            if key in DECL_INIT_ALLOW:
+                continue
+            if ty not in sizes:
+                _mem, _sz = cp.hc_layout(ty, bodies, defines)
+                sizes[ty] = _sz if _mem is not None else None
+            sz = sizes[ty]
+            # AN UNSIZED CLASS IS A FAILURE, not a pass. A type this gate cannot measure is
+            # exactly the case it must not wave through -- that is the not-found shape.
+            if sz is None:
+                unsized.append((key, ty, stmt))
+                continue
+            if sz <= BYVAL_LIMIT:
+                small += 1
+                continue
+            print("FAIL cfs-structcopy — %s declares a CLASS local (%s) WITH AN INITIALISER."
+                  % (key, ty), file=sys.stderr)
+            print("  That copies only the FIRST EIGHT BYTES, silently, where the same copy as"
+                  " two statements", file=sys.stderr)
+            print("  is whole: docs/HOLYC_STRUCT_LIMITS.md #27, pinned by"
+                  " tests/exec/cases/e_class_decl_init.hc.", file=sys.stderr)
+            print("  Split it into a declaration and an assignment, and say why at the site --"
+                  " as", file=sys.stderr)
+            print("  Kernel/Cfs/mm/mm_cmds.HC's MM_FillMemCmd does.", file=sys.stderr)
+            print("    %s;  (%s is %d bytes)" % (stmt, ty, sz), file=sys.stderr)
+            rc = 1
+    if unsized:
+        print("FAIL cfs-structcopy — %d class local(s) declared with an initialiser whose TYPE"
+              % len(unsized), file=sys.stderr)
+        print("  this gate could not size, so it cannot say whether the copy is truncated:",
+              file=sys.stderr)
+        for key, ty, stmt in unsized[:20]:
+            print("    %s  %s  in  %s;" % (key, ty, stmt), file=sys.stderr)
+        rc = 1
+    return rc, checked, small
+
+
+# Class declarations with an initialiser that are known safe (8 bytes or less). Empty today; an
+# entry needs the measured size in its comment.
+DECL_INIT_ALLOW = set()
+
 BYVAL_LIMIT = 8
 
 # A function DEFINITION's parameter list: a name at column 1 followed by (...) and a brace.
@@ -475,6 +574,8 @@ def main():
 
     rc = check_byval_params(classes)
     checked = 0
+    decl_checked = 0
+    decl_small = 0
     unresolved = []
     for p in files:
         rel = os.path.relpath(p, ROOT)
@@ -515,6 +616,11 @@ def main():
             print("    %s;" % stmt, file=sys.stderr)
             rc = 1
 
+    drc, decl_checked, decl_small = check_decl_inits(files, sources, classes, members,
+                                                     tree_names, constants)
+    if drc:
+        rc = drc
+
     # NOT-FOUND IS A FAILURE. The first version of this gate skipped these silently and that is
     # exactly how the appctrl copy survived it.
     if unresolved:
@@ -544,6 +650,9 @@ def main():
               " right-hand side resolved to a type, none of them a class by value (%d class"
               " declarations read, %d exempt)"
               % (checked, len(files), len(members), len(ALLOW) + len(UNRESOLVED_OK)))
+        print("cfs-declinit: %d class local(s) declared with an initialiser; %d are 8 bytes or"
+              " less and so copied WHOLE, none is larger (limit #27, %d exempt by site)"
+              % (decl_checked, decl_small, len(DECL_INIT_ALLOW)))
     return rc
 
 

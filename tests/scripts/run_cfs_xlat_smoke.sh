@@ -138,7 +138,8 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $MM/fsw/src/mm_mem16.c
        $MM/fsw/src/mm_mem32.c
        $MM/fsw/src/mm_dump.c
-       $MM/fsw/src/mm_load.c"
+       $MM/fsw/src/mm_load.c
+       $MM/fsw/src/mm_cmds.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
@@ -182,6 +183,16 @@ INC="-I$CFE/modules/core_api/fsw/inc -I$CFE/modules/core_api/config
 T="${CFS_XLAT_KEEP_DIR:-$(mktemp -d)}"
 mkdir -p "$T"
 [ -n "${CFS_XLAT_KEEP_DIR:-}" ] || trap 'rm -rf "$T"' EXIT
+
+# --- the shared comment stripper's own control ------------------------------------------------
+# Four gates used to carry their own strip_comments and three of them removed BLOCK comments
+# first, which makes a `/*` inside a `//` comment a real opener. This driver has had
+# `// Kernel/Cfs/**.HC` at line 562 for months; it was harmless only because no `*/` followed it,
+# and the first exercise to add one blanked six thousand lines. check_variadic then compared 36
+# declarations instead of 177 AND PASSED, because a declaration it cannot see cannot disagree.
+# The only symptom was a count going down. This runs the three properties of the one surviving
+# implementation.
+python3 "$ROOT/tools/cfs/cfs_text.py" || exit 1
 
 # --- completeness: every NASA function must EXIST in the translation -----------------------
 # The transcript below compares behaviour, so it only sees functions the driver calls. A

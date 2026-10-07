@@ -1421,3 +1421,61 @@ refuses limit 21's assignment form, and it now also refuses a class-by-value par
 MEASURED size exceeds 8 bytes. Measured, not listed — the size comes from the same layout model
 `check_padding.py` compares against NASA, so a class that grows past the limit fails the gate
 without anyone remembering to look.
+
+## 27. A class DECLARATION INITIALISER carries only its first 8 bytes — OPEN, and SILENT
+
+The third member of limit 21's family, and the one that makes the set genuinely surprising: the
+**same copy** is whole as a statement and truncated as an initialiser. One extra line of source
+changes the semantics.
+
+| form | result |
+|---|---|
+| `S d; d = src;` | **whole** |
+| `S d; d = p->m;` | **whole** |
+| `S d; d = v.m;` | **whole** |
+| `s.member = src;` | **whole** |
+| `arr[i] = src;` | first 8 bytes, silently (#21) |
+| `*ptr = src;` | first 8 bytes, silently (#21) |
+| `f(src)` | first 8 bytes, silently (#26) |
+| **`S d = src;`** | **first 8 bytes, silently (this one)** |
+| **`S d = p->m;`** | **first 8 bytes, silently (this one)** |
+
+Measured on the harness with a 72-byte class, `a` at offset 0 and `n[64]` after it:
+
+```
+assign_from_ptr  -> 7   a=5  n[0]=88  n[63]=77     all three, WHOLE
+decl_from_ptr    -> 4   a=5  n[0]=0   n[63]=0      only `a`
+decl_from_var    -> 2   a=5  n[0]=0                only `a`
+sizeof(S) == 72  -> 9                              the compiler KNOWS the size it did not copy
+```
+
+**Found by a transcript divergence, not by reading, and the chase is the lesson.** NASA's
+`MM_FillMemCmd` writes
+
+```c
+MM_SymAddr_t DestSymAddress = Msg->Payload.DestSymAddress;
+```
+
+where the other four handlers in `mm_cmds.c` declare and then assign — so **one of five broke**.
+`MM_SymAddr_t`'s first eight bytes are its `Offset`, so the offset survived and the 64-byte
+`SymName` did not. `MM_ResolveSymAddr` then saw a non-empty name in uninitialised stack, took the
+symbol-lookup branch instead of the offset branch, and the fill went to `md_sym_addr + Offset`.
+The command was built correctly and the address was wrong; the driver's own probe printed
+`sz=288 n0=0 off=1048640 mt=3 nb=16`, which is to say *the setup is right*, three times before
+the copy came under suspicion.
+
+Two wrong guesses on the way, both cheap to rule out and worth recording because they are the
+obvious ones: that `sizeof` of a **union variable** was short (it is — it returns the first
+member's size — but the driver uses `sizeof(TypeName)`, which is correct), and that a plain class
+assignment from a pointed-at member was truncated (it is not).
+
+Pinned by `tests/exec/cases/e_class_decl_init.hc` → `0x7429`. It calls a `warm()` function first
+to leave `0xAA` in the frame these probes reuse, because a declaration has no chance to be zeroed
+and a run where the uncopied bytes happened to be zero would look like a successful copy of a
+zero field.
+
+**Refused by a gate, not remembered.** `tools/cfs/check_struct_copy.py` now flags any class-typed
+local declared with a non-literal initialiser, and **exempts by SIZE rather than by site**: eight
+bytes or less is copied whole, so the cFE scalar wrappers (`CFE_SB_MsgId`, `CFE_SBR_RouteId`,
+`OS_time_t`, `CFE_TIME_SysTime`) are fine — seventeen existing sites, all of them 4 or 8 bytes. A
+type the gate cannot measure is a **failure**, not a pass.

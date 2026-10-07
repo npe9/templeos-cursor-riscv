@@ -26,6 +26,9 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cfs_text import strip_comments
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FORMATTER = os.path.join(ROOT, "Kernel", "Cfs", "CfsStr.HC")
 
@@ -69,8 +72,19 @@ def supported():
 
 
 def literals(path):
-    """Adjacent C string literals, concatenated as the preprocessor would."""
-    src = open(path).read()
+    """Adjacent C string literals, concatenated as the preprocessor would.
+
+    COMMENTS OUT FIRST, and the reason is the bug this project found in three other gates the
+    same day: a string in a comment is not a format string. A NASA doc comment containing, say,
+    `%q` would have failed this gate on a conversion the compiler never sees -- the mirror image
+    of the stripper defect in tools/cfs/cfs_text.py, in the gate written to catch format bugs.
+
+    MEASURED BEFORE APPLYING, because cfs_text.strip_comments is NOT string-aware and a real
+    format string containing `//` would be blanked by it. Across the 96 gated sources: 773
+    literals contain a `%`, ZERO of them are comment-only, and ZERO code strings disappear. So
+    the change is a no-op today and closes the exposure.
+    """
+    src = strip_comments(open(path).read())
     out = []
     i = 0
     while True:

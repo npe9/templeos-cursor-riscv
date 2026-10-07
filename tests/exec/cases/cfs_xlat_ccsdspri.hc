@@ -1670,6 +1670,52 @@ I32 CFE_PSP_EepromWrite32(U64 MemoryAddress, U32 uint32Value)
   return CFE_PSP_SUCCESS;
 }
 
+
+// --- THE EEPROM BANK LOCK ---------------------------------------------------------------------
+// On real hardware CFE_PSP_EepromWriteEnable drives a write-protect line and the bank number
+// selects which part. Nothing in MM reads a bank's state back, so unlike the EepromWrite* trio
+// these need no simulated region -- only a settable return code and a count, which is what makes
+// mm_cmds.c's two commands drivable at all.
+I64 mm_eep_locks;
+I32 mm_eep_lock_rc = CFE_PSP_SUCCESS;
+U32 mm_eep_last_bank;
+
+I32 CFE_PSP_EepromWriteEnable(U32 Bank)
+{
+  ++mm_eep_locks;
+  mm_eep_last_bank = Bank;
+  return mm_eep_lock_rc;
+}
+
+I32 CFE_PSP_EepromWriteDisable(U32 Bank)
+{
+  ++mm_eep_locks;
+  mm_eep_last_bank = Bank;
+  return mm_eep_lock_rc;
+}
+
+// OS_SymbolTableDump writes the loader's whole symbol table to a file. There is no loader and no
+// symbol table in this port -- OS_SymbolLookup is already a driver stub -- so this records the
+// request and returns a settable code. The SIZE LIMIT is part of the record because it is
+// MM_INTERNAL_MAX_DUMP_FILE_DATA_SYMTBL, a constant no other line in MM reads.
+I64 mm_symdumps;
+I32 mm_symdump_rc = OS_SUCCESS;
+I64 mm_symdump_limit;
+
+I32 OS_SymbolTableDump(U8 *filename, I64 size_limit)
+{
+  ++mm_symdumps;
+  mm_symdump_limit = size_limit;
+  S("os_symdump ");
+  S(filename);
+  S(" limit=");
+  D(mm_symdump_limit);
+  S(" rc=");
+  D(mm_symdump_rc);
+  S("\n");
+  return mm_symdump_rc;
+}
+
 I32 md_sym_rc;
 U64 md_sym_addr;
 I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
@@ -1700,6 +1746,30 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/mm/mm_mem32.HC"
 #include "/Kernel/Cfs/mm/mm_dump.HC"
 #include "/Kernel/Cfs/mm/mm_load.HC"
+#include "/Kernel/Cfs/mm/mm_cmds.HC"
+// MM'S COMMAND BUFFER. The C half writes this as an ANONYMOUS UNION LOCAL -- a buffer the size
+// of the command being BUILT is not the size a handler READS -- and HolyC needs it named and at
+// file scope.
+union MM_AnyCmd_t
+{
+  MM_SendHkCmd_t Hk;
+  MM_NoopCmd_t Noop;
+  MM_ResetCountersCmd_t Reset;
+  MM_LookupSymCmd_t Lookup;
+  MM_SymTblToFileCmd_t SymTbl;
+  MM_EepromWriteEnaCmd_t Ena;
+  MM_EepromWriteDisCmd_t Dis;
+  MM_PokeCmd_t Poke;
+  MM_PeekCmd_t Peek;
+  MM_LoadMemWIDCmd_t Wid;
+  MM_LoadMemFromFileCmd_t LdFile;
+  MM_DumpMemToFileCmd_t DmpFile;
+  MM_FillMemCmd_t Fill;
+  MM_DumpInEventCmd_t DmpEv;
+};
+MM_AnyCmd_t mmc_c;
+I64 mmc_k, mmc_cc0;
+I32 mmc_st;
 // mm_load's exercise state.
 I64 mml_k, mml_w, mml_p0;
 I32 mml_st;
@@ -17345,6 +17415,444 @@ I64 main()
     D(mml_perf->MetaData.DataCount - mml_p0);
     S(" mt=");
     D(MM_AppData.HkTlm.Payload.MemType);
+    S("\n");
+
+    // --- mm_cmds.c -- MM'S FOURTEEN GROUND COMMANDS ----------------------------------------
+    // THE MEMORY TYPE DECIDES WHETHER A COMMAND IS COMPARABLE AT ALL, and that is the design of
+    // this whole block. Five of the handlers print the resolved address in their SUCCESS event:
+    //
+    //   with MemType = MEM8/MEM16/MEM32 the work goes through CFE_PSP_Mem{Read,Write}*, so the
+    //   address is a literal window constant and the event is the same text on both halves.
+    //   Every success path below is driven that way.
+    //
+    //   with MemType = RAM or EEPROM the work is a `memcpy` from or to the address, so it has to
+    //   be real memory -- a different number on each half -- and the event cannot be compared.
+    //   Those paths were driven through mm_dump.c and mm_load.c directly, where the housekeeping
+    //   address is asserted by COMPARISON instead.
+    //
+    // ONE SUCCESS PATH IS OUTSIDE THE DIFFERENTIAL ENTIRELY: MM_LoadMemWIDCmd. Its memory type
+    // is HARD-CODED to RAM -- an EEPROM programming cycle cannot be done with interrupts off --
+    // and it ends in `memcpy((void *)DestAddress, ...)`. So the address is necessarily real, and
+    // the event that announces the load prints it. Its three ERROR paths are driven; its success
+    // path is not, and nothing here pretends otherwise.
+    //
+    // THE HK PACKET NEEDS ITS MsgId, which is md_app.c's job and mm_app.c's after it. Without it
+    // CFE_SB_TransmitMsg refuses with `Send Err:Invalid MsgId(0x0)` -- MD hit that for real
+    // twice, and it is the thing that makes a send OBSERVABLE.
+    CFE_MSG_Init(&MM_AppData.HkTlm.TelemetryHeader.Msg, CFE_SB_ValueToMsgId(MM_HK_TLM_MID),
+                 sizeof(MM_HkTlm_t));
+
+    // --- MM_SendHkCmd. It must NOT move the command counter -- housekeeping arrives once a
+    // second and counting it would swamp the number an operator reads.
+    MM_AppData.HkTlm.Payload.CommandCounter = 11;
+    MM_AppData.HkTlm.Payload.CommandErrorCounter = 22;
+    MemSet(&mmc_c, 0, sizeof(MM_AnyCmd_t));
+    mmc_st = MM_SendHkCmd(&mmc_c.Hk);
+    S("mmc_hk st=");
+    D(mmc_st);
+    S(" cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+
+    // --- MM_NoopCmd and MM_ResetCountersCmd.
+    mmc_st = MM_NoopCmd(&mmc_c.Noop);
+    S("mmc_noop st=");
+    D(mmc_st);
+    S(" cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S("\n");
+    mmc_st = MM_ResetCountersCmd(&mmc_c.Reset);
+    S("mmc_reset st=");
+    D(mmc_st);
+    S(" cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S(" la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S("\n");
+
+    // --- MM_LookupSymCmd, all three outcomes. The address in the event is the driver's
+    // md_sym_addr, a constant, so this is the one command whose address is comparable whatever
+    // the memory type -- it never touches memory at all.
+    MemSet(&mmc_c, 0, sizeof(MM_AnyCmd_t));
+    MM_LookupSymCmd(&mmc_c.Lookup);
+    S("mmc_lookup_nul ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+    StrCpy(mmc_c.Lookup.Payload.SymName, "MM_PROBE");
+    md_sym_rc = OS_SUCCESS;
+    md_sym_addr = 0x00100020;
+    MM_LookupSymCmd(&mmc_c.Lookup);
+    S("mmc_lookup_ok cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" addr=");
+    D(MM_AppData.HkTlm.Payload.Address);
+    S("\n");
+    md_sym_rc = OS_ERROR;
+    MM_LookupSymCmd(&mmc_c.Lookup);
+    S("mmc_lookup_fail ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+    md_sym_rc = OS_SUCCESS;
+
+    // --- MM_SymTblToFileCmd, all three outcomes. The size limit the stub records is
+    // MM_INTERNAL_MAX_DUMP_FILE_DATA_SYMTBL, which no other line in MM reads.
+    MemSet(&mmc_c, 0, sizeof(MM_AnyCmd_t));
+    MM_SymTblToFileCmd(&mmc_c.SymTbl);
+    S("mmc_symtbl_nul ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+    StrCpy(mmc_c.SymTbl.Payload.FileName, "/ram/sym.dmp");
+    MemSet(MM_AppData.HkTlm.Payload.FileName, 'Z', CFE_MISSION_MAX_PATH_LEN);
+    mm_symdump_rc = OS_SUCCESS;
+    MM_SymTblToFileCmd(&mmc_c.SymTbl);
+    S("mmc_symtbl_ok cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" limit=");
+    D(mm_symdump_limit);
+    S(" fn=[");
+    S(MM_AppData.HkTlm.Payload.FileName);
+    S("] fn20=");
+    D(MM_AppData.HkTlm.Payload.FileName[20]);
+    S("\n");
+    mm_symdump_rc = OS_ERROR;
+    MM_SymTblToFileCmd(&mmc_c.SymTbl);
+    S("mmc_symtbl_fail ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+    mm_symdump_rc = OS_SUCCESS;
+
+    // --- the two EEPROM bank commands, both outcomes each. The bank number reaches the event,
+    // and mm_eep_last_bank says the PSP was really asked for THAT bank.
+    MemSet(&mmc_c, 0, sizeof(MM_AnyCmd_t));
+    mmc_c.Ena.Payload.Bank = 3;
+    mm_eep_lock_rc = CFE_PSP_SUCCESS;
+    MM_EepromWriteEnaCmd(&mmc_c.Ena);
+    S("mmc_eepena cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" mt=");
+    D(MM_AppData.HkTlm.Payload.MemType);
+    S(" bank=");
+    D(mm_eep_last_bank);
+    S(" locks=");
+    D(mm_eep_locks);
+    S("\n");
+    mmc_c.Dis.Payload.Bank = 4;
+    MM_EepromWriteDisCmd(&mmc_c.Dis);
+    S("mmc_eepdis cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" bank=");
+    D(mm_eep_last_bank);
+    S("\n");
+    mm_eep_lock_rc = CFE_PSP_ERROR;
+    MM_EepromWriteEnaCmd(&mmc_c.Ena);
+    MM_EepromWriteDisCmd(&mmc_c.Dis);
+    S("mmc_eep_fail ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+    mm_eep_lock_rc = CFE_PSP_SUCCESS;
+
+    // --- MM_PokeCmd. The RAM arm and the EEPROM arm are two different workers chosen by the
+    // memory type, which is the one branch in this handler. Both addresses are window constants
+    // because both go through the PSP.
+    md_sim_fill();
+    MemSet(&mmc_c, 0, sizeof(MM_AnyCmd_t));
+    mmc_c.Poke.Payload.MemType = MM_MemType_RAM;
+    mmc_c.Poke.Payload.DataSize = MM_INTERNAL_DWORD_BIT_WIDTH;
+    mmc_c.Poke.Payload.Data = 0x11223344;
+    mmc_c.Poke.Payload.DestSymAddress.Offset = MD_SIM_WINDOW_BASE + 32;
+    MM_PokeCmd(&mmc_c.Poke);
+    S("mmc_poke_ram cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" m32=");
+    H2(md_sim_mem[35]);
+    H2(md_sim_mem[34]);
+    H2(md_sim_mem[33]);
+    H2(md_sim_mem[32]);
+    S("\n");
+    MemSet(mm_eep_mem, 0, MM_EEP_WINDOW_SIZE);
+    mmc_c.Poke.Payload.MemType = MM_MemType_EEPROM;
+    mmc_c.Poke.Payload.DestSymAddress.Offset = MM_EEP_WINDOW_BASE + 32;
+    MM_PokeCmd(&mmc_c.Poke);
+    S("mmc_poke_eep cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" e32=");
+    H2(mm_eep_mem[35]);
+    H2(mm_eep_mem[34]);
+    H2(mm_eep_mem[33]);
+    H2(mm_eep_mem[32]);
+    S("\n");
+    // A POKE THE WORKER REFUSES, which is a THIRD error arm and not the same as the two below:
+    // the verifier passes (this driver's MemValidateRange accepts any address) and
+    // CFE_PSP_MemWrite32 then rejects it, so the failure comes back from MM_PokeMem and lands in
+    // the INNER else. Without this case a mutation that counted a failed poke as a success was
+    // INVISIBLE -- every other poke here either works or never reaches the worker.
+    MM_AppData.HkTlm.Payload.CommandCounter = 0;
+    MM_AppData.HkTlm.Payload.CommandErrorCounter = 0;
+    mmc_c.Poke.Payload.MemType = MM_MemType_RAM;
+    mmc_c.Poke.Payload.DestSymAddress.Offset = MD_SIM_WINDOW_BASE + 300;
+    MM_PokeCmd(&mmc_c.Poke);
+    S("mmc_poke_wfail cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+    mmc_c.Poke.Payload.DestSymAddress.Offset = MM_EEP_WINDOW_BASE + 32;
+    mmc_c.Poke.Payload.MemType = MM_MemType_EEPROM;
+
+    // A WIDTH THE VERIFIER REFUSES, and then an UNRESOLVABLE SYMBOL -- the two error arms. The
+    // second prints the LOCAL COPY of the name, which MM_ResolveSymAddr has NUL-terminated;
+    // MM_PeekCmd's twin prints the message's own field instead.
+    mmc_c.Poke.Payload.DataSize = 7;
+    MM_PokeCmd(&mmc_c.Poke);
+    S("mmc_poke_badsize ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+    mmc_c.Poke.Payload.DataSize = MM_INTERNAL_DWORD_BIT_WIDTH;
+    StrCpy(mmc_c.Poke.Payload.DestSymAddress.SymName, "NOSUCH");
+    md_sym_rc = OS_ERROR;
+    MM_PokeCmd(&mmc_c.Poke);
+    S("mmc_poke_badsym ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+
+    // --- MM_PeekCmd, success and its own symbol error.
+    MemSet(&mmc_c, 0, sizeof(MM_AnyCmd_t));
+    mmc_c.Peek.Payload.MemType = MM_MemType_MEM16;
+    mmc_c.Peek.Payload.DataSize = MM_INTERNAL_WORD_BIT_WIDTH;
+    mmc_c.Peek.Payload.SrcSymAddress.Offset = MD_SIM_WINDOW_BASE + 40;
+    md_sym_rc = OS_SUCCESS;
+    MM_PeekCmd(&mmc_c.Peek);
+    S("mmc_peek cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" dv=0x");
+    Hx8(MM_AppData.HkTlm.Payload.DataValue);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S("\n");
+    StrCpy(mmc_c.Peek.Payload.SrcSymAddress.SymName, "NOSUCH");
+    md_sym_rc = OS_ERROR;
+    MM_PeekCmd(&mmc_c.Peek);
+    S("mmc_peek_badsym ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+    md_sym_rc = OS_SUCCESS;
+
+    // --- MM_LoadMemWIDCmd, THE THREE ERROR ARMS. See the note at the top of this block for why
+    // the success path is not here: it is hard-coded to RAM and ends in a memcpy to the resolved
+    // address, which the event then prints.
+    MemSet(&mmc_c, 0, sizeof(MM_AnyCmd_t));
+    mmc_c.Wid.Payload.NumOfBytes = 8;
+    for (mmc_k = 0; mmc_k < 8; mmc_k++) {
+      mmc_c.Wid.Payload.DataArray[mmc_k] = (0x30 + mmc_k) & 0xFF;
+    }
+    mmc_c.Wid.Payload.DestSymAddress.Offset = MD_SIM_WINDOW_BASE;
+    mmc_c.Wid.Payload.Crc = 0; /* deliberately wrong */
+    MM_LoadMemWIDCmd(&mmc_c.Wid);
+    S("mmc_wid_badcrc ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+    // A LENGTH ABOVE MM_INTERFACE_MAX_UNINTERRUPTIBLE_DATA, which is the WID-specific limit the
+    // verifier applies -- 200.
+    mmc_c.Wid.Payload.NumOfBytes = 201;
+    MM_LoadMemWIDCmd(&mmc_c.Wid);
+    S("mmc_wid_badlen ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+    mmc_c.Wid.Payload.NumOfBytes = 8;
+    StrCpy(mmc_c.Wid.Payload.DestSymAddress.SymName, "NOSUCH");
+    md_sym_rc = OS_ERROR;
+    MM_LoadMemWIDCmd(&mmc_c.Wid);
+    S("mmc_wid_badsym ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+    md_sym_rc = OS_SUCCESS;
+
+    // --- MM_FillMemCmd. MEM8 for the comparable success path, then THE SECOND UPSTREAM DEFECT.
+    md_sim_fill();
+    MemSet(&mmc_c, 0, sizeof(MM_AnyCmd_t));
+    mmc_c.Fill.Payload.MemType = MM_MemType_MEM8;
+    mmc_c.Fill.Payload.NumOfBytes = 16;
+    mmc_c.Fill.Payload.FillPattern = 0x5A5A5A5A;
+    mmc_c.Fill.Payload.DestSymAddress.Offset = MD_SIM_WINDOW_BASE + 64;
+    mmc_cc0 = MM_AppData.HkTlm.Payload.CommandCounter;
+    MM_FillMemCmd(&mmc_c.Fill);
+    S("mmc_fill8 cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter - mmc_cc0);
+    S(" m64=");
+    H2(md_sim_mem[64]);
+    S(" m79=");
+    H2(md_sim_mem[79]);
+    S(" m80=");
+    H2(md_sim_mem[80]);
+    S("\n");
+    md_sim_fill();
+    mmc_c.Fill.Payload.MemType = MM_MemType_MEM16;
+    mmc_c.Fill.Payload.NumOfBytes = 15;
+    MM_AppData.HkTlm.Payload.CommandCounter = 0;
+    MM_AppData.HkTlm.Payload.CommandErrorCounter = 0;
+    MM_FillMemCmd(&mmc_c.Fill);
+    S("mmc_fill16_odd cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S(" m64=");
+    H2(md_sim_mem[64]);
+    S(" m77=");
+    H2(md_sim_mem[77]);
+    S(" m78=");
+    H2(md_sim_mem[78]);
+    S("\n");
+    // And the verifier's own refusal: a length of zero.
+    mmc_c.Fill.Payload.NumOfBytes = 0;
+    MM_FillMemCmd(&mmc_c.Fill);
+    S("mmc_fill_zero cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+    // THE DEFECT, AND THE INPUT THAT ACTUALLY REACHES IT. The first attempt used an ODD MEM16
+    // length, on the theory that mm_mem16's rounding would fail the fill -- but
+    // MM_VerifyLoadDumpParams checks the SIZE's alignment too, so that is refused one level
+    // earlier and counted correctly. What reaches the `else` is a PSP WRITE FAILURE:
+    // MM_FillMem8 returns CFE_PSP_ERROR when a store is refused, and this handler's else then
+    // moves the SUCCESS counter and sends NO EVENT. So the two numbers below are MM reporting a
+    // half-finished fill as a command that worked.
+    md_sim_fill();
+    mmc_c.Fill.Payload.MemType = MM_MemType_MEM8;
+    mmc_c.Fill.Payload.NumOfBytes = 16;
+    md_sim_wfail_at = 70;
+    MM_AppData.HkTlm.Payload.CommandCounter = 0;
+    MM_AppData.HkTlm.Payload.CommandErrorCounter = 0;
+    MM_FillMemCmd(&mmc_c.Fill);
+    md_sim_wfail_at = -1;
+    S("mmc_fill_wfail cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S(" m69=");
+    H2(md_sim_mem[69]);
+    S(" m70=");
+    H2(md_sim_mem[70]);
+    S("\n");
+
+    // --- MM_DumpMemToFileCmd then MM_LoadMemFromFileCmd, AS A ROUND TRIP. MEM8, so every
+    // address is a window constant and both success events are comparable. The dump writes the
+    // headers, the data, SEEKS BACK, computes the CRC over what it wrote and REWRITES the headers
+    // -- and the load then verifies that same CRC. If either side of that disagreed about the
+    // file layout the load would fail, which is why one test covers both.
+    md_sim_fill();
+    fs_len = 0;
+    fs_pos = 0;
+    fs_wr_left = -1;
+    fs_noexist = 0;
+    MemSet(&mmc_c, 0, sizeof(MM_AnyCmd_t));
+    mmc_c.DmpFile.Payload.MemType = MM_MemType_MEM8;
+    mmc_c.DmpFile.Payload.NumOfBytes = 32;
+    mmc_c.DmpFile.Payload.SrcSymAddress.Offset = MD_SIM_WINDOW_BASE;
+    StrCpy(mmc_c.DmpFile.Payload.FileName, "/ram/rt.dmp");
+    MM_AppData.HkTlm.Payload.CommandCounter = 0;
+    MM_AppData.HkTlm.Payload.CommandErrorCounter = 0;
+    MM_DumpMemToFileCmd(&mmc_c.DmpFile);
+    S("mmc_dmpfile cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S(" len=");
+    D(fs_len);
+    S(" la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S(" crc=");
+    H2(fs_data[64 + 77]);
+    H2(fs_data[64 + 76]);
+    S("\n");
+    // NOW LOAD IT BACK. The window is refilled with a different pattern first, so the bytes that
+    // arrive say they came from the file.
+    for (mmc_k = 0; mmc_k < MD_SIM_WINDOW_SIZE; mmc_k++) {
+      md_sim_mem[mmc_k] = 0xE0;
+    }
+    es_stat_rc = OS_SUCCESS;
+    es_stat_size = fs_len;
+    MemSet(&mmc_c, 0, sizeof(MM_AnyCmd_t));
+    StrCpy(mmc_c.LdFile.Payload.FileName, "/ram/rt.dmp");
+    MM_AppData.HkTlm.Payload.CommandCounter = 0;
+    MM_AppData.HkTlm.Payload.CommandErrorCounter = 0;
+    MM_LoadMemFromFileCmd(&mmc_c.LdFile);
+    S("mmc_ldfile cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S(" la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S(" m0=");
+    H2(md_sim_mem[0]);
+    S(" m31=");
+    H2(md_sim_mem[31]);
+    S(" m32=");
+    H2(md_sim_mem[32]);
+    S("\n");
+    // AND THE LOAD'S OWN REFUSALS: a file that will not open, and one whose CRC is wrong. The
+    // second is the deepest error arm in MM -- seven checks in.
+    fs_noexist = 1;
+    MM_LoadMemFromFileCmd(&mmc_c.LdFile);
+    fs_noexist = 0;
+    S("mmc_ldfile_noopen ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+    fs_data[64 + 76] ^= 0xFF; // corrupt the stored CRC
+    MM_LoadMemFromFileCmd(&mmc_c.LdFile);
+    fs_data[64 + 76] ^= 0xFF;
+    S("mmc_ldfile_badcrc ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
+    S("\n");
+
+    // --- MM_DumpInEventCmd. THE EVENT TEXT IS THE PAYLOAD: a 13-character header, five
+    // characters per byte, and a tail with the address -- all built by repeated
+    // CFE_SB_MessageStringGet into one 122-byte buffer. Eight bytes is 13 + 40 + 30 = 83
+    // characters, comfortably inside; it is the one command where the formatter, the string-get
+    // bound and the dump buffer are all in the same line.
+    md_sim_fill();
+    MemSet(&mmc_c, 0, sizeof(MM_AnyCmd_t));
+    mmc_c.DmpEv.Payload.MemType = MM_MemType_MEM8;
+    mmc_c.DmpEv.Payload.NumOfBytes = 8;
+    mmc_c.DmpEv.Payload.SrcSymAddress.Offset = MD_SIM_WINDOW_BASE + 4;
+    MM_AppData.HkTlm.Payload.CommandCounter = 0;
+    MM_DumpInEventCmd(&mmc_c.DmpEv);
+    S("mmc_dmpev cc=");
+    D(MM_AppData.HkTlm.Payload.CommandCounter);
+    S(" la=");
+    D(MM_AppData.HkTlm.Payload.LastAction);
+    S(" mt=");
+    D(MM_AppData.HkTlm.Payload.MemType);
+    S(" bp=");
+    D(MM_AppData.HkTlm.Payload.BytesProcessed);
+    S("\n");
+    // FIFTEEN BYTES IS THE MAXIMUM, and 16 is one past it -- the verifier's EVENT limit, which is
+    // the narrowest in MM and the reason the constant exists.
+    mmc_c.DmpEv.Payload.NumOfBytes = 15;
+    MM_DumpInEventCmd(&mmc_c.DmpEv);
+    mmc_c.DmpEv.Payload.NumOfBytes = 16;
+    MM_AppData.HkTlm.Payload.CommandErrorCounter = 0;
+    MM_DumpInEventCmd(&mmc_c.DmpEv);
+    S("mmc_dmpev_lim ec=");
+    D(MM_AppData.HkTlm.Payload.CommandErrorCounter);
     S("\n");
 
     S("tim_objtab ");

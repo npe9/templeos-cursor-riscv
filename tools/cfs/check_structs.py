@@ -133,9 +133,10 @@ FIELD = re.compile(r'^\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|long\s+|s
 FIELD_FN = re.compile(r'^\s*[A-Za-z_][\w \t\*]*\(\s*\*+\s*([A-Za-z_]\w*)\s*\)\s*\([^;]*\)\s*;', re.M)
 
 
-def strip_comments(t):
-    t = re.sub(r'/\*.*?\*/', ' ', t, flags=re.S)
-    return re.sub(r'//[^\n]*', ' ', t)
+# strip_comments LIVES IN cfs_text.py, because four gates each had their own and three of them
+# removed BLOCK comments first -- which makes a `/*` inside a `//` comment a real opener. See
+# that file for what it cost and for the one-pass fix; it carries its own driven control.
+from cfs_text import strip_comments  # noqa: F401 -- re-exported for this gate's own callers
 
 
 def fields_of(body):
