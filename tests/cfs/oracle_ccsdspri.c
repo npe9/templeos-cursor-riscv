@@ -128,6 +128,7 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "mm_app.h"
 #include "mm_utils.h"
 #include "mm_filedefs.h"
+#include "mm_mem8.h"
 #include "mm_internal_cfg.h"
 #include "mm_interface_cfg.h"
 #include "cfe_tbl_task_cmds.h" /* the ten ground-command handlers and the HK packers */
@@ -1893,6 +1894,63 @@ int32 CFE_PSP_MemRead32(cpuaddr MemoryAddress, uint32 *uint32Value)
         return CFE_PSP_INVALID_MEM_ADDR;
     *uint32Value = (uint32)md_sim_mem[o] | ((uint32)md_sim_mem[o + 1] << 8) |
                    ((uint32)md_sim_mem[o + 2] << 16) | ((uint32)md_sim_mem[o + 3] << 24);
+    return CFE_PSP_SUCCESS;
+}
+
+
+/* --- THE WRITE HALF OF THE SAME WINDOW, which arrived with MM ----------------------------------
+ * MD only ever READ memory. MM pokes it, fills it and loads it from a file, so the simulated
+ * window gains three stores -- same base, same size, same bytes. The name stays MD_SIM_* because
+ * it is literally the same simulated hardware, and renaming it would touch MD's lines for
+ * nothing.
+ *
+ * md_sim_writes COUNTS STORES, and it is the witness that distinguishes "the fill loop ran" from
+ * "the fill loop returned success": MM's fill writes one byte at a time and reports a byte count
+ * it computes from the segment arithmetic, not from the stores, so a loop that never stored
+ * would still report the right number.
+ *
+ * md_sim_wfail_at MAKES ONE STORE FAIL, by offset, which is the only way into MM's
+ * MM_PSP_WRITE_ERR_EID branch -- and that branch stops the segment loop mid-way, which is also
+ * the only way to reach the short-load arm that turns a partial write into CFE_PSP_ERROR. -1
+ * means "never", so no existing line can see it. */
+static long md_sim_writes;
+static long md_sim_wfail_at = -1;
+
+static int md_sim_wfail(cpuaddr a)
+{
+    return md_sim_wfail_at >= 0 && (long)(a - MD_SIM_WINDOW_BASE) == md_sim_wfail_at;
+}
+
+int32 CFE_PSP_MemWrite8(cpuaddr MemoryAddress, uint8 ByteValue)
+{
+    ++md_sim_writes;
+    if (!md_sim_in(MemoryAddress, 1) || md_sim_wfail(MemoryAddress))
+        return CFE_PSP_INVALID_MEM_ADDR;
+    md_sim_mem[MemoryAddress - MD_SIM_WINDOW_BASE] = ByteValue;
+    return CFE_PSP_SUCCESS;
+}
+
+int32 CFE_PSP_MemWrite16(cpuaddr MemoryAddress, uint16 uint16Value)
+{
+    size_t o = (size_t)(MemoryAddress - MD_SIM_WINDOW_BASE);
+    ++md_sim_writes;
+    if (!md_sim_in(MemoryAddress, 2) || md_sim_wfail(MemoryAddress))
+        return CFE_PSP_INVALID_MEM_ADDR;
+    md_sim_mem[o]     = (uint8)(uint16Value & 0xFF);
+    md_sim_mem[o + 1] = (uint8)((uint16Value >> 8) & 0xFF);
+    return CFE_PSP_SUCCESS;
+}
+
+int32 CFE_PSP_MemWrite32(cpuaddr MemoryAddress, uint32 uint32Value)
+{
+    size_t o = (size_t)(MemoryAddress - MD_SIM_WINDOW_BASE);
+    ++md_sim_writes;
+    if (!md_sim_in(MemoryAddress, 4) || md_sim_wfail(MemoryAddress))
+        return CFE_PSP_INVALID_MEM_ADDR;
+    md_sim_mem[o]     = (uint8)(uint32Value & 0xFF);
+    md_sim_mem[o + 1] = (uint8)((uint32Value >> 8) & 0xFF);
+    md_sim_mem[o + 2] = (uint8)((uint32Value >> 16) & 0xFF);
+    md_sim_mem[o + 3] = (uint8)((uint32Value >> 24) & 0xFF);
     return CFE_PSP_SUCCESS;
 }
 
@@ -12368,6 +12426,208 @@ int main(void)
                    (long)MM_ComputeCRCFromFile(fd, &crc, MM_INTERNAL_LOAD_FILE_CRC_TYPE),
                    (unsigned long)crc);
             fs_read_rc = 0;
+        }
+
+        /* --- mm_mem8.c -- THE FIRST SOURCE IN THE PORT THAT WRITES MEMORY -----------------
+         * Three functions, one shape: a segment loop that moves up to 200 bytes, then calls
+         * MM_SegmentBreak so something else can run. The simulated window is 256 bytes, so 250
+         * is TWO segments -- 200 and 50 -- which is the smallest size that exercises both the
+         * short last segment and the break between them.
+         *
+         * MM_PSP_READ_ERR_EID IS NOT DRIVEN HERE AND THAT IS DELIBERATE. Its text prints
+         * `Tgt=%p`, which is `&ioBuffer8[i]` -- a REAL POINTER into MM_AppData.DumpBuffer, not
+         * an address the ground supplied. Every other address in MM's events is a constant that
+         * came from a command and is the same number on both halves; this one is wherever the
+         * linker put MM_AppData. See the note at the top of Kernel/Cfs/mm/mm_mem8.HC. */
+        {
+            cpuaddr                 A8 = MD_SIM_WINDOW_BASE;
+            MM_FillMemCmd_t         fc;
+            MM_LoadDumpFileHeader_t fh;
+            osal_id_t               fd8;
+            CFE_ES_PerfData_t      *P8 = &CFE_ES_Global.ResetDataPtr->Perf;
+            long                    w0, p0;
+            int                     k8;
+            int32                   st8;
+
+            /* --- MM_FillMem8. THE PATTERN IS TRUNCATED TO ONE BYTE and housekeeping reports
+             * the TRUNCATED value, so 0xAABBCCDD must come back as 0xDD -- the app telling the
+             * operator what it actually wrote rather than what they asked for.
+             *
+             * md_sim_writes IS THE WITNESS THAT THE LOOP RAN. MM computes BytesProcessed from
+             * its own segment arithmetic and never from the stores, so a fill that stored
+             * nothing would report 250 anyway. [250] is the neighbour: the fill must stop. */
+            md_sim_fill();
+            memset(&fc, 0, sizeof(fc));
+            fc.Payload.NumOfBytes  = 250;
+            fc.Payload.FillPattern = 0xAABBCCDD;
+            memset(MM_AppData.HkTlm.Payload.FileName, 'Z', CFE_MISSION_MAX_PATH_LEN);
+            w0  = md_sim_writes;
+            p0  = P8->MetaData.DataCount;
+            st8 = MM_FillMem8(A8, &fc);
+            printf("mm8_fill st=%ld writes=%ld perf=%ld m0=%02X m199=%02X m200=%02X m249=%02X "
+                   "m250=%02X\n",
+                   (long)st8, md_sim_writes - w0, (long)(P8->MetaData.DataCount - p0),
+                   md_sim_mem[0], md_sim_mem[199], md_sim_mem[200], md_sim_mem[249],
+                   md_sim_mem[250]);
+            printf("mm8_fill_hk la=%u mt=%u addr=%lu dv=0x%08x bp=%u fnZ=%u\n",
+                   (unsigned)MM_AppData.HkTlm.Payload.LastAction,
+                   (unsigned)MM_AppData.HkTlm.Payload.MemType,
+                   (unsigned long)MM_AppData.HkTlm.Payload.Address,
+                   (unsigned)MM_AppData.HkTlm.Payload.DataValue,
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed,
+                   (unsigned char)MM_AppData.HkTlm.Payload.FileName[0]);
+
+            /* A STORE THAT FAILS PART WAY THROUGH, at offset 100. The event prints the address
+             * it stopped at; the loop breaks; BytesProcessed never reaches 250, so the SHORT
+             * arm turns the status into CFE_PSP_ERROR and HOUSEKEEPING IS LEFT ALONE -- which
+             * is why the two HK fields below must still read the previous fill's values. */
+            md_sim_fill();
+            md_sim_wfail_at = 100;
+            w0              = md_sim_writes;
+            st8             = MM_FillMem8(A8, &fc);
+            md_sim_wfail_at = -1;
+            printf("mm8_fill_err st=%ld writes=%ld m99=%02X m100=%02X bp=%u dv=0x%08x\n",
+                   (long)st8, md_sim_writes - w0, md_sim_mem[99], md_sim_mem[100],
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed,
+                   (unsigned)MM_AppData.HkTlm.Payload.DataValue);
+
+            /* --- MM_LoadMem8FromFile. The file is 250 bytes of a pattern that is NOT what
+             * md_sim_fill leaves behind, so the window's contents after the load say the bytes
+             * came from the file rather than from anywhere else.
+             *
+             * THE FILENAME GOES THROUGH strncpy, WHICH ZERO-FILLS. The destination is poisoned
+             * with 'Z' first and byte 20 is printed: a MemCpy would leave the 'Z' there. */
+            md_sim_fill();
+            for (k8 = 0; k8 < 250; k8++)
+            {
+                fs_data[k8] = (unsigned char)(0x80 + k8);
+            }
+            fs_len     = 250;
+            fs_noexist = 0;
+            fs_wr_left = -1;
+            OS_OpenCreate(&fd8, "/ram/mm8.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            memset(&fh, 0, sizeof(fh));
+            fh.NumOfBytes = 250;
+            memset(MM_AppData.HkTlm.Payload.FileName, 'Z', CFE_MISSION_MAX_PATH_LEN);
+            w0  = md_sim_writes;
+            p0  = P8->MetaData.DataCount;
+            st8 = MM_LoadMem8FromFile(fd8, "/ram/mm8.ld", &fh, A8);
+            printf("mm8_load st=%ld writes=%ld perf=%ld m0=%02X m199=%02X m200=%02X m249=%02X "
+                   "m250=%02X\n",
+                   (long)st8, md_sim_writes - w0, (long)(P8->MetaData.DataCount - p0),
+                   md_sim_mem[0], md_sim_mem[199], md_sim_mem[200], md_sim_mem[249],
+                   md_sim_mem[250]);
+            printf("mm8_load_hk la=%u mt=%u addr=%lu bp=%u fn=[%s] fn20=%u\n",
+                   (unsigned)MM_AppData.HkTlm.Payload.LastAction,
+                   (unsigned)MM_AppData.HkTlm.Payload.MemType,
+                   (unsigned long)MM_AppData.HkTlm.Payload.Address,
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed,
+                   MM_AppData.HkTlm.Payload.FileName,
+                   (unsigned char)MM_AppData.HkTlm.Payload.FileName[20]);
+
+            /* A FILE THAT RUNS OUT. 100 bytes against a header claiming 250: the first read
+             * asks for 200 and gets 100, which is a SHORT READ and not an end of file, so
+             * MM_OS_READ_ERR_EID fires with both the count it got and the count it wanted. */
+            md_sim_fill();
+            fs_len = 100;
+            OS_OpenCreate(&fd8, "/ram/mm8.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            w0  = md_sim_writes;
+            st8 = MM_LoadMem8FromFile(fd8, "/ram/mm8.ld", &fh, A8);
+            printf("mm8_load_short st=%ld writes=%ld m0=%02X bp=%u\n", (long)st8,
+                   md_sim_writes - w0, md_sim_mem[0],
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed);
+
+            /* A STORE THAT FAILS DURING A LOAD -- the same branch as the fill's, reached from
+             * the other caller, and the one that proves the load's error arm is its own code.
+             * It also leaves the window PART written, which the fill's error case cannot show
+             * because a fill writes the same byte everywhere. */
+            md_sim_fill();
+            fs_len = 250;
+            OS_OpenCreate(&fd8, "/ram/mm8.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            md_sim_wfail_at = 10;
+            w0              = md_sim_writes;
+            st8             = MM_LoadMem8FromFile(fd8, "/ram/mm8.ld", &fh, A8);
+            md_sim_wfail_at = -1;
+            printf("mm8_load_wfail st=%ld writes=%ld m9=%02X m10=%02X\n", (long)st8,
+                   md_sim_writes - w0, md_sim_mem[9], md_sim_mem[10]);
+
+            /* --- MM_DumpMem8ToFile. The address comes from the FILE HEADER here, not from a
+             * parameter -- NASA's own asymmetry with the load above, kept. */
+            md_sim_fill();
+            fs_len     = 0;
+            fs_pos     = 0;
+            fs_wr_left = -1;
+            OS_OpenCreate(&fd8, "/ram/mm8.dp", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE,
+                          OS_WRITE_ONLY);
+            memset(&fh, 0, sizeof(fh));
+            fh.NumOfBytes        = 250;
+            fh.SymAddress.Offset = CFE_ES_MEMADDRESS_C(A8);
+            memset(MM_AppData.HkTlm.Payload.FileName, 'Z', CFE_MISSION_MAX_PATH_LEN);
+            p0  = P8->MetaData.DataCount;
+            st8 = MM_DumpMem8ToFile(fd8, "/ram/mm8.dp", &fh);
+            printf("mm8_dump st=%ld perf=%ld len=%ld d0=%02X d199=%02X d200=%02X d249=%02X\n",
+                   (long)st8, (long)(P8->MetaData.DataCount - p0), fs_len, fs_data[0],
+                   fs_data[199], fs_data[200], fs_data[249]);
+            printf("mm8_dump_hk la=%u mt=%u addr=%lu bp=%u fn=[%s] fn20=%u\n",
+                   (unsigned)MM_AppData.HkTlm.Payload.LastAction,
+                   (unsigned)MM_AppData.HkTlm.Payload.MemType,
+                   (unsigned long)MM_AppData.HkTlm.Payload.Address,
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed,
+                   MM_AppData.HkTlm.Payload.FileName,
+                   (unsigned char)MM_AppData.HkTlm.Payload.FileName[20]);
+
+            /* A FILE THAT WILL NOT TAKE IT ALL. 100 bytes of room against 250 to write: the
+             * FIRST write asks for 200 and places 100, so MM_OS_WRITE_EXP_ERR_EID fires and
+             * HOUSEKEEPING IS NOT UPDATED -- this function tests the STATUS rather than the
+             * byte count, the opposite of the load, so the two HK fields below still hold the
+             * dump above's values. */
+            fs_len     = 0;
+            fs_pos     = 0;
+            fs_wr_left = 100;
+            OS_OpenCreate(&fd8, "/ram/mm8.dp", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE,
+                          OS_WRITE_ONLY);
+            st8        = MM_DumpMem8ToFile(fd8, "/ram/mm8.dp", &fh);
+            fs_wr_left = -1;
+            printf("mm8_dump_short st=%ld len=%ld bp=%u\n", (long)st8, fs_len,
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed);
+
+            /* --- THE LOAD'S BytesRemaining IS int32 AND THE DUMP'S IS uint32, which is NASA's
+             * own inconsistency and is NOT an observable one anywhere above -- so here is the
+             * input that makes it observable. A header claiming 0xFFFFFFFF bytes:
+             *
+             *   the LOAD reads it into an int32, so BytesRemaining is -1, `BytesRemaining <
+             *   MM_INTERNAL_MAX_LOAD_DATA_SEG` is TRUE on a signed comparison, and SegmentSize
+             *   becomes (size_t)-1. The event then reports `Expected = 4294967295`.
+             *
+             *   the DUMP reads it into a uint32, 0xFFFFFFFF is NOT less than 200, and the
+             *   segment stays the full 200. Its event reports `Expected = 200`.
+             *
+             * Two numbers in two events, and they are the only thing in the transcript that
+             * says the two declarations differ. Making the load's unsigned -- which is what a
+             * translator "tidying up" would do -- changes the first to 200.
+             *
+             * THE DUMP IS FORCED TO FAIL ON THE **WRITE**, with no room in the file at all,
+             * rather than being allowed to run off the end of the 256-byte window: running off
+             * it reaches MM_PSP_READ_ERR_EID, whose text carries an uncomparable pointer. */
+            md_sim_fill();
+            fs_len     = 250;
+            fs_wr_left = -1;
+            OS_OpenCreate(&fd8, "/ram/mm8.ld", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            memset(&fh, 0, sizeof(fh));
+            fh.NumOfBytes        = 0xFFFFFFFF;
+            fh.SymAddress.Offset = CFE_ES_MEMADDRESS_C(A8);
+            w0                   = md_sim_writes;
+            st8                  = MM_LoadMem8FromFile(fd8, "/ram/mm8.ld", &fh, A8);
+            printf("mm8_load_signed st=%ld writes=%ld\n", (long)st8, md_sim_writes - w0);
+            fs_len     = 0;
+            fs_pos     = 0;
+            fs_wr_left = 0;
+            OS_OpenCreate(&fd8, "/ram/mm8.dp", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE,
+                          OS_WRITE_ONLY);
+            st8        = MM_DumpMem8ToFile(fd8, "/ram/mm8.dp", &fh);
+            fs_wr_left = -1;
+            printf("mm8_dump_unsigned st=%ld len=%ld\n", (long)st8, fs_len);
+
         }
 
         printf("tim_objtab %s %d %d %d %lu %lu\n", CFE_TIME_ModuleEntry.Name,

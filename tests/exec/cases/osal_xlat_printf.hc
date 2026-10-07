@@ -176,6 +176,9 @@ U32 OS_TaskGetId()
 // looks like, and the only way to reach the ring-full path with a 17,300 byte buffer.
 I64 stub_c_creates, stub_c_wakeups, stub_c_outputs, stub_c_drain, stub_c_drained;
 U8 stub_c_last[64];
+// The one value the width test below renders six ways. File scope, like everything else this
+// driver holds (docs/HOLYC_STRUCT_LIMITS.md #22).
+I64 pf_wide;
 I32 OS_ConsoleCreate_Impl(OS_object_token_t *token)
 {
   ++stub_c_creates;
@@ -336,6 +339,22 @@ I64 main()
   S("truncate  drained=");
   D(stub_c_drained);
   S("\n");
+  // --- C'S DEFAULT ARGUMENT WIDTH IS 32 BITS, which is the formatter's contract and had no test
+  // of its own. `%d` reads an int and `%u`/`%x` read an unsigned int, so a 64-bit value handed to
+  // one of them loses its upper half -- and the LENGTH MODIFIER is what asks for the whole thing.
+  // Every value below is the SAME 0x1FFFFFFFF, so the line is six renderings of one number and
+  // the difference between them is the whole assertion.
+  //
+  // Found by a transcript divergence in MM, not here: mm_mem8.c prints `(unsigned int)SegmentSize`
+  // with "%u", a size_t -1 reached it, and C said 4294967295 where StrPrintNV said
+  // 18446744073709551615. The mask had been written for base 16 only. The %d case --
+  // sign-extension from 32 bits -- still had nothing driving it, so it is here.
+  pf_wide = 0x1FFFFFFFF;
+  stub_c_drained = 0;
+  OS_printf("w %d %u %x %ld %lu %lx\n", pf_wide, pf_wide, pf_wide, pf_wide, pf_wide, pf_wide);
+  S("widths    [");
+  S(stub_c_last);
+  S("]\n");
   S("done\n");
   return 0;
 }

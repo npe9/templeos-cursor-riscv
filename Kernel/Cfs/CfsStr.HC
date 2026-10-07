@@ -263,20 +263,32 @@ I64 StrPrintNV(U8 *Buf, I64 Size, U8 *Fmt, I64 nargs, I64 *args)
       if (ai < nargs)
         sv = args[ai];
       ai++;
+      // C'S DEFAULT ARGUMENT WIDTH IS 32 BITS, and this is where that gets applied. `%d` reads
+      // an `int` and `%u`, `%x` and `%X` read an `unsigned int`, so the upper half of the
+      // 64-bit register a HolyC variadic hands over is NOT part of what C prints. THE LENGTH
+      // MODIFIER DECIDES: `%ld`, `%lu`, `%zu` and `%llX` read the whole 64 bits.
+      //
+      // THIS WAS A MASK ON `base == 16` ONLY, and the missing half of it cost a transcript
+      // divergence in MM: mm_mem8.c's OS_read error prints `(unsigned int)SegmentSize` with
+      // "%u", a header claiming 0xFFFFFFFF bytes makes SegmentSize a size_t -1, and C printed
+      // 4294967295 against this formatter's 18446744073709551615. A %u is exactly as narrow as
+      // a %x and for the same reason. Earlier note, still true: masking UNCONDITIONALLY was
+      // wrong for %016llX, which TA uses for a 64-bit affinity mask.
+      //
+      // The narrowing happens BEFORE the sign is taken. The other order would make `%d` of a
+      // value whose low 32 bits are negative come out positive.
+      if (!islong) {
+        if (*Fmt == 'd')
+          sv = (sv << 32) >> 32; // sign-extend from 32 bits, as C's `int` does
+        else
+          sv = sv & 0xFFFFFFFF;
+      }
       neg = 0;
       if (*Fmt == 'd' && sv < 0) {
         neg = 1;
         sv = -sv;
       }
       uv = sv;
-      // A %x or %u of a value that arrived as a negative I64 prints the 32-bit pattern, which
-      // is what C does for the (unsigned int) casts every cFS call site puts on these.
-      // THE LENGTH MODIFIER DECIDES THE WIDTH. Masking unconditionally was wrong for %016llX,
-      // which TA uses to print a 64-bit affinity mask: in a one-core configuration the mask fits
-      // in 32 bits and the truncation is invisible, so this is the kind of thing a transcript
-      // agrees with right up to the first machine that has more than four cores.
-      if (*Fmt != 'd' && base == 16 && !islong)
-        uv = uv & 0xFFFFFFFF;
       hexd = "0123456789abcdef";
       if (upper)
         hexd = "0123456789ABCDEF";

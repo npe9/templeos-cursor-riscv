@@ -2420,3 +2420,97 @@ exclusions in that file are `CFE_TIME_ExternalGPS`, `_MET` and `_Time`), and it 
 with its own recorded deviation. The exemption holds; the reason given for it did not. Corrected
 in place, with the correction kept, because a stale exemption reason that is a false claim about
 NASA is already on this project's list.
+
+### `mm_mem8.c` — the first source in the port that WRITES memory
+
+306 lines, three functions, no stand-ins. Transcript **2,497 → 2,521**. MM is 2 of 9 sources,
+888 of 3,739 lines (24%).
+
+MD only ever read memory, so the simulated window grew a write half:
+`CFE_PSP_MemWrite8/16/32` over the same `MD_SIM_WINDOW_BASE`, plus two knobs. `md_sim_writes`
+counts **stores**, because MM computes `BytesProcessed` from its own segment arithmetic and never
+from the stores — a fill that stored nothing would report 250 anyway. `md_sim_wfail_at` fails one
+store by offset, which is the only way into `MM_PSP_WRITE_ERR_EID` *and* therefore the only way
+to reach the short arm that turns a partial move into `CFE_PSP_ERROR`.
+
+The window is 256 bytes, so **250** is the exercise size: two segments (200 + 50), which is the
+smallest number that drives both the shortened last segment and the `MM_SegmentBreak` between
+them. The break is witnessed by the performance log's entry count, not by the delay.
+
+#### One event in this file cannot be compared at all, and a mutation proved it
+
+`MM_PSP_READ_ERR_EID`'s text is `"PSP read memory error: RC=0x%08X, Src=%p, Tgt=%p, Type=MEM8"`,
+and `Tgt` is `&ioBuffer8[i]` — **a real pointer into `MM_AppData.DumpBuffer`**, not an address the
+ground supplied. Every other address in MM's event text is a constant that came from a command
+and is the same number on both halves; this one is wherever the linker put `MM_AppData`.
+
+That is not a judgement call: two mutations reached the branch by accident and the diff shows
+`Tgt=0x80a39710` on the HolyC side against the oracle's own value. So the exercise drives the
+other three error events in the file and not this one, and both halves say why. It is the first
+place in the port where NASA's own telemetry text is outside what a differential can assert.
+
+#### The formatter was reading 64 bits where C reads 32, and `%u` found it
+
+The halves diverged on one line:
+
+```
+- OS_read error received: RC = 0x00000000 Expected = 4294967295        (NASA's C)
++ OS_read error received: RC = 0x00000000 Expected = 18446744073709551615  (HolyC)
+```
+
+`mm_mem8.c` prints `(unsigned int)SegmentSize` with `"%u"`. **C's `%u` reads an `unsigned int` —
+32 bits** — and `StrPrintNV` masked to 32 bits only for `base == 16`. The note beside that line
+already said the length modifier decides the width; it was implemented for `%x` and not for `%u`,
+which is exactly as narrow and for the same reason.
+
+Fixed properly rather than at the call site: without a length modifier, `%u`/`%x`/`%X` now mask to
+32 bits and **`%d` sign-extends from 32**, which is C's argument-promotion rule. The narrowing has
+to happen *before* the sign is taken, or `%d` of a value whose low 32 bits are negative comes out
+positive. This cannot break an agreeing line — a line that agrees today agrees because C read 32
+bits and the value fit.
+
+`%d`'s half had nothing driving it, so `run_osal_printf_smoke.sh` — the gate that exists to
+compare this formatter — gained one line that renders **one** value six ways:
+
+```
+w -1 4294967295 ffffffff 8589934591 8589934591 1ffffffff
+```
+
+Six distinct renderings of `0x1FFFFFFFF`, which is what makes the line an assertion rather than a
+decoration.
+
+#### NASA declares `BytesRemaining` signed in the load and unsigned in the dump
+
+`int32` in `MM_LoadMem8FromFile`, `uint32` in `MM_DumpMem8ToFile` and `MM_FillMem8`. Nothing in
+the first version of the exercise could see the difference. The input that makes it observable is
+a file header claiming `0xFFFFFFFF` bytes:
+
+| | `BytesRemaining` | `BytesRemaining < 200` | the event says |
+|---|---|---|---|
+| load | `int32` → **-1** | true (signed) | `Expected = 4294967295` |
+| dump | `uint32` → 4294967295 | false | `Expected = 200` |
+
+Two numbers in two events, and they are the only thing in the transcript that says the two
+declarations differ. Both mutations — "tidy the load up to unsigned" and "make the dump signed" —
+now fail. The dump's case is forced to fail on the **write**, with no room in the file, rather
+than being allowed to run off the end of the 256-byte window: running off it reaches the
+uncomparable read event above.
+
+#### Fourteen mutations: twelve caught, and two that are PROVABLE NO-OPS
+
+Twelve failed the transcript. The two that did not are not gaps in the exercise — they are
+semantically equivalent, and the argument is short enough to check:
+
+> Both mutations swap `BytesProcessed == NumOfBytes` for `PSP_Status == CFE_PSP_SUCCESS` as the
+> guard on the housekeeping update. `BytesProcessed` is incremented by `SegmentSize` in exactly
+> the branch that decrements `BytesRemaining` by `SegmentSize`, so
+> `BytesProcessed + BytesRemaining == NumOfBytes` is invariant at the top of every iteration. The
+> loop exits only when `BytesRemaining == 0`. The two error paths force `BytesRemaining = 0`
+> *without* adding to `BytesProcessed`, and **both of them also leave `PSP_Status` non-success**.
+> So a normal exit has `BytesProcessed == NumOfBytes` and success; an error exit has neither. The
+> two guards cannot disagree.
+
+NASA spells the same condition two ways in two adjacent functions, which looks like an
+inconsistency and is not an observable one. Recorded rather than driven, because a mutation that
+cannot change behaviour is not evidence of a missing assertion — and calling it one would be the
+[vacuous-assertion] mistake in reverse.
