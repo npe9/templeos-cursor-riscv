@@ -2039,3 +2039,49 @@ wrote?** Here it provably stopped before reaching it.
 
 That is the second vacuous assertion this one file produced — the nine `st=0` rejection lines
 were the first — and both were found by a control passing rather than by review.
+
+### module_deps reported MD's order backwards, and seven modules with it
+
+`md_app.c` calls `MD_TaskPipe`, which lives in `md_dispatch.c` — so `md_dispatch.c` has to be
+gated *before* `md_app.c`. The tool said the opposite: `md_dispatch.c` last, and the cycle
+reported as `md_app.c ↔ md_eds_dispatch.c`.
+
+The cause is one line. `owner[n] = b` kept whichever source was scanned **last**, and every
+CMake-conditional pair defines the same symbols:
+
+| pair | shared symbol |
+|---|---|
+| `md_dispatch.c` / `md_eds_dispatch.c` | `MD_TaskPipe` |
+| `cfe_X_dispatch.c` / `cfe_X_eds_dispatch.c` | `CFE_X_TaskPipe`, `ProcessCommandPacket` |
+| `cfe_msg_msgid_v1.c` / `_v2.c` | six accessors |
+| `cfe_config_eds_disabled.c` / `_enabled.c` | `CFE_Config_EdsState` |
+
+`_eds_` and `_v2` sort **after** the plain name, so the loser was always the file the
+configuration actually builds. Every edge onto one of those symbols pointed at a source that is
+not in the build. What it cost, besides MD's order:
+
+- **config** came back as a 2-source cycle that **only exists through the EDS variant** — it is
+  acyclic in this configuration.
+- **es** named `cfe_es_eds_dispatch.c` in a 14-source cycle; it is `cfe_es_dispatch.c`.
+- **evs** reported `cfe_evs_eds_dispatch.c + task`; it is `cfe_evs_dispatch.c + task`.
+- **sb** and **ta** likewise named the EDS file.
+
+Ownership now resolves by **what the configuration builds** — the driver's `SRC_C` first, then
+CMake's unconditional list, with a genuine ambiguity printed and marked `AMBIGUOUS`. Not by a
+name pattern, which would not have caught msg's `v1`/`v2` pair. `SRC_C` is consulted even under
+`--fresh`, because `--fresh` pretends nothing has been *translated* yet, which is a different
+question from which branch of the build is under test.
+
+**What did not move is the anchor:** tbl's 8-source cycle, time's 3 and sbr's 2. None of those
+runs through a dispatch file, so none was ever mis-attributed — and tbl's 8 is the number the
+plan above was written against.
+
+**And the docstring that justifies trusting the tool had gone stale twice.** It said ES was a
+*twelve*-source cycle (the `[&ref]` edge fix made it 14) and that *"EVS, by contrast, is fully
+acyclic: seven singletons in dependency order"* — which was never true in the configuration this
+port builds. Both corrected, with the note that a calibration claim is a measurement with a date
+on it, not a property.
+
+The corrected order for MD's remaining work: **`md_app.c` and `md_dispatch.c` are a genuine
+2-source cycle of 775 lines**, and are gated together, the same shape as every cFE module's
+task/dispatch pair and the same decision tbl's 8-source cycle got.

@@ -7,11 +7,23 @@ several cannot, WITHOUT STAND-INS -- and whether that is acceptable is a judgeme
 does not make.
 
 CALIBRATED, and the calibration corrected the first conclusion drawn from it. Run with
-`--fresh` (pretend nothing is gated), ES comes back as a TWELVE-source cycle -- and ES was in
+`--fresh` (pretend nothing is gated), ES comes back as a FOURTEEN-source cycle -- and ES was in
 fact gated one source at a time, with stubs that were later deleted in batches. So a cycle is
-not a wall. EVS, by contrast, is fully acyclic: seven singletons in dependency order. The tool
-discriminates; what it reports is the SHAPE, and the cost of an incremental path through a
-cycle is the stand-ins it forces.
+not a wall. The tool discriminates; what it reports is the SHAPE, and the cost of an incremental
+path through a cycle is the stand-ins it forces.
+
+AND THE CALIBRATION SENTENCE ITSELF WENT STALE TWICE, which is worth leaving on the record in a
+docstring whose job is to say why the numbers can be trusted. It said TWELVE for ES until the
+`[&ref]` edges were added (a reference with no following paren is how a handler reaches a
+function-pointer table, and there were 14 sources once those counted), and it said "EVS, by
+contrast, is fully acyclic: seven singletons" until the owner map stopped attributing
+CFE_EVS_ProcessCommandPacket to the EDS variant -- EVS has a 2-source cycle,
+cfe_evs_dispatch.c with cfe_evs_task.c, and always did in the configuration this port builds.
+A calibration claim is a measurement with a date on it, not a property.
+
+WHAT DID NOT MOVE ACROSS EITHER FIX, and so is the actual anchor: tbl's EIGHT-source cycle,
+time's THREE and sbr's TWO. None of those runs through a dispatch file, so none of them was
+ever mis-attributed, and the tbl number is the one the plan was written against.
 
 THE JUDGEMENT IS PER EDGE: is the stand-in a SEAM, or is it upstream LOGIC?
 
@@ -118,6 +130,28 @@ def header_inlines(*dirs):
     return out
 
 
+def cmake_unconditional(src_dir):
+    """Sources CMakeLists.txt names at if()-depth 0, i.e. in every configuration.
+
+    check_manifest.py owns this parse and is the authority on it; this is the same depth walk,
+    reduced to the one question the owner map needs -- "is this file in the build whatever the
+    configuration" -- so module_deps does not have to decide which branch is taken.
+    """
+    cm = os.path.join(os.path.dirname(os.path.dirname(src_dir)), 'CMakeLists.txt')
+    if not os.path.exists(cm):
+        return []
+    txt = re.sub(r'#[^\n]*', '', open(cm, errors='replace').read())
+    out, depth = [], 0
+    for line in txt.split('\n'):
+        if re.match(r'\s*if\s*\(', line):
+            depth += 1
+        elif re.match(r'\s*endif\s*\(', line):
+            depth = max(0, depth - 1)
+        if depth == 0:
+            out += re.findall(r'fsw/src/([A-Za-z0-9_.-]+\.c)', line)
+    return out
+
+
 def main(argv):
     if not argv:
         print(__doc__)
@@ -145,13 +179,42 @@ def main(argv):
                 continue
         srcs = sorted(glob.glob(os.path.join(d, '*.c')))
         inl = header_inlines(*hdr)
-        owner, body, lines = {}, {}, {}
+        # A NAME CAN BE DEFINED BY MORE THAN ONE SOURCE, and `owner[n] = b` kept whichever
+        # was scanned LAST -- which for every CMake-conditional pair is the wrong one.
+        # cfe_X_dispatch.c and cfe_X_eds_dispatch.c both define CFE_X_TaskPipe;
+        # md_dispatch.c and md_eds_dispatch.c both define MD_TaskPipe; cfe_msg_msgid_v1.c and
+        # _v2.c define the same six accessors. The loser was the file the configuration
+        # ACTUALLY BUILDS, because `_eds_` and `_v2` sort after the plain name, so every edge
+        # onto one of those names pointed at a source that is not in the build.
+        #
+        # What it cost: MD came back with md_app.c <-> md_eds_dispatch.c as its cycle and
+        # md_dispatch.c LAST in the order -- when md_app.c calls MD_TaskPipe from
+        # md_dispatch.c, so that file has to come FIRST. config came back as a 2-source cycle
+        # that only exists through the EDS variant. ES and EVS named the wrong dispatch file
+        # in a 14-source and a 2-source cycle.
+        #
+        # RESOLVED BY WHAT THE CONFIGURATION BUILDS, not by a name pattern. The preference is
+        # (1) a definer the driver's SRC_C actually compiles, (2) a definer CMake lists
+        # unconditionally, (3) alphabetical, printed as an ambiguity. Note that (1) is read
+        # even under --fresh: `--fresh` pretends nothing has been TRANSLATED yet, which is a
+        # different question from which branch of the build is under test.
+        owner, body, lines, multi = {}, {}, {}, {}
         for p in srcs:
             b = os.path.basename(p)
             body[b] = strip(open(p, errors='replace').read())
             lines[b] = body[b].count('\n') + 1
             for n in defines(p):
-                owner[n] = b
+                multi.setdefault(n, []).append(b)
+        built = gated()                      # what the drivers compile, --fresh or not
+        uncond = set(cmake_unconditional(d))
+        ambiguous = []
+        for n, fs in multi.items():
+            pick = [f for f in fs if f in built] or [f for f in fs if f in uncond]
+            if not pick:
+                pick = sorted(fs)
+                if len(fs) > 1:
+                    ambiguous.append(n)
+            owner[n] = pick[0]
         # edges: file -> files whose .c defines something it NEEDS, and WHICH functions
         #
         # TWO KINDS OF NEED, AND THE SECOND ONE WAS MISSING. A CALL is `name(`; a REFERENCE is
@@ -274,6 +337,14 @@ def main(argv):
                     for y, n in sorted(need):
                         print("              %-38s from %s" % (n, y))
 
+        dup = sorted((n, fs) for n, fs in multi.items() if len(fs) > 1)
+        if dup:
+            print("    defined by MORE THAN ONE source. The edge goes to the one this"
+                  " configuration BUILDS:")
+            for n, fs in dup:
+                mark = "  <-- AMBIGUOUS" if n in ambiguous else ""
+                print("        %-32s %s -> %s%s"
+                      % (n, ", ".join(sorted(fs)), owner[n], mark))
         cond = sorted(v for c in order for v in c if '_eds_' in v)
         if cond:
             print("    of those, CMake-conditional (EDS variants, not in this configuration --"
