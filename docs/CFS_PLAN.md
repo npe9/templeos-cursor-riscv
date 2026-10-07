@@ -2254,3 +2254,169 @@ Fully acyclic, no stand-ins at any step. `mm_app` comes **last**, after `mm_disp
 `mm_app.c` calls `MM_TaskPipe`, and `mm_dispatch.c` calls only `mm_cmds.c` and `mm_utils.c`.
 That is the difference from MD: `MM_SendHkCmd` lives in `mm_cmds.c` rather than in the app, so
 there is nothing for the dispatcher to call back into.
+
+### `mm_utils.c` is gated — and `%p` had never been printed before
+
+582 lines, eight functions, no stand-ins. Transcript **2,378 → 2,497**. Four new HolyC files
+(`mm_eventids.HC`, `mm_perfids.HC`, `mm_msg.HC`, `mm_global.HC`, `mm_utils.HC`), 30 new classes,
+33 new constants.
+
+**The finding is a conversion, not a function.** Six of `mm_utils.c`'s events render the address
+with `"Addr = %p"`. `Kernel/Cfs/CfsStr.HC`'s `StrPrintNV` did not implement `%p`, and
+*no previously gated NASA source used it* — 1,384 conversions across 89 sources, 18 distinct
+forms, and not one `%p`. Its unhandled-conversion path emits the two characters literally and
+**does not consume the argument**, so every argument after it on the line shifts by one. That is
+the same hazard the note on `'z'` in `CfsStr.HC` records from `cfe_sb_api.c`'s `"%zu"`, and it
+would have hit six events at once.
+
+So `%p` is implemented, in the host C library's spelling (`0x` then lowercase hex, full 64 bits,
+no width), and **`tools/cfs/check_formats.py`** is the new static gate: it extracts every
+conversion from every string literal in the gated sources and refuses one `StrPrintNV` does not
+implement — reading the supported set **out of the formatter** (`*Fmt == '…'`) rather than
+carrying a second list that could rot away from it. It also refuses the flags and precisions the
+formatter cannot parse (`-`, `+`, `#`, `.`), because those fail the same way. Driven both ways:
+with `%p` removed from the formatter it names all ten call sites; with it present, 1,423
+conversions in 90 sources, 19 forms, clean.
+
+One honest limit: C leaves `%p` of a **null** pointer implementation-defined, and the two
+mainstream libcs disagree (`0x0` against `(nil)`). That is a difference between *hosts*, not
+between halves, so the translation follows this host and **no exercise passes address zero
+through `%p`**. Written at both the formatter and the exercise.
+
+### The app directories were the NASA-side copy of the bug `cfs_dirs.py` fixed
+
+`cfs_dirs.py` exists because eight gates each carried their own spelling of the *translation's*
+directories, and `check_padding` silently measured 358 classes while `check_structs` measured
+380. Adding `Kernel/Cfs/mm` to it moved `check_structs` from 380 to **410**, exactly the 30 MM
+classes — the count is the check that the edit took.
+
+Then the same shape appeared one level over: `check_structs.NASA_DIRS` and
+`check_padding.INC` **each had their own hand-written copy of MD's three app directories**
+(`vendor/MD/fsw/src`, `fsw/inc`, `config`), and `check_manifest` its own `APPS` list. Unify one
+and the other goes on being two. So `cfs_dirs.py` now owns `APPS` and `app_dirs()`, and a third
+app is one edit in one file.
+
+### An empty signature token, caught only because the other side was recognised
+
+`check_signatures` reported:
+
+```
+mm_utils.c: MM_VerifyPeekPokeParams: NASA (SZ,,SZ)  translation (SZ,NUM,SZ)
+```
+
+The blank is `MM_MemType_Enum_t`, which the type table did not know — and *an unrecognised type
+normalises to nothing*. This is the `gate-blindspot` shape again: two unrecognised types **agree
+as two blanks**, and the only reason this one failed is that the translation's side *was*
+recognised (`U32` → `NUM`). Had the translation also used a name the table does not know, the
+pair would have matched on nothing.
+
+The rule added is deliberately *not* the one the six `OS_*` enums use. Those map to `SZ` because
+the translation spells them `I64`; `MM_MemType_Enum_t` is a four-byte unsigned enum **and also a
+struct member** in six of MM's payloads, where four bytes is the layout `check_padding`
+measures — so the translation spells it `U32` everywhere and the C maps to `NUM`.
+
+### The two validators are walked as a grid, because NASA's comment says they have to be
+
+`MM_VerifyLoadDumpParams` takes a memory type *and* which command is asking, and NASA's own
+comment says the `VerifyType` chains have **no `else` on purpose**: an unreached
+(MemType, VerifyType) pair must leave `MaxSize` at 0 and be rejected by the size check at the
+end. A list of hand-picked calls cannot assert that. So the exercise walks **7 memory types × 6
+verification types** and prints one line per row, then pins each limit with a MaxSize /
+MaxSize+1 pair, then the alignment arms — including MEM8's **absence** of one, which is the cell
+that says the three near-identical arms were not written as one.
+
+The size for the grid is **16 bytes**, chosen because it is above
+`MM_INTERNAL_MAX_DUMP_INEVENT_BYTES` (15) and below every other limit: the DumpInEvent column
+rejects while the other four accept, so the grid distinguishes five different `MaxSize` values
+instead of agreeing that everything is small enough.
+
+### A witness of my own that asserted nothing, and the reason it was silent
+
+`MM_SegmentBreak` stamps the performance log, delays, and stamps it again. The first version of
+the witness printed the millisecond total — and `MM_INTERNAL_PROCESSOR_CYCLE` is **0** in this
+configuration, so it was a zero against a zero. `evs_delays` counts *calls* for that reason.
+
+The second version read `Perf->MetaData.DataCount` after `CFE_ES_StartPerfDataCmd`, and printed
+`n=0 e0=0x0 e1=0x0` **with no event to say why**: `StartPerfDataCmd` does not touch the filter
+mask (only a power-on reset initialises it), the es block earlier in the same driver both zeroes
+the whole Perf area and drives `CFE_ES_SetPerfFilterMaskCmd`, and `StartPerfDataCmd`'s own
+acknowledgement is a `DEBUG` event that this configuration filters out. Both halves agreed, and
+they agreed about nothing. The mask is now set explicitly, and the line reads
+`n=2 e0=0x0000001f e1=0x8000001f` — which pins the marker *and* says both stamps ran, where a
+delay count alone would survive dropping `PerfLogExit`.
+
+### Eighteen mutations, and the one that was invisible
+
+| mutation | what the transcript said |
+|---|---|
+| `MM_ResetHk` clears the whole FileName buffer, not just `[0]` | `fn1=89` → `fn1=0` |
+| `MM_ResetHk` also clears the command counter | `cc=11` → `cc=0` |
+| `MM_SegmentBreak` drops its performance-log EXIT stamp | `n=2 e1=0x8000001f` → `n=1 e1=0x0` |
+| it stamps the APPMAIN marker instead of SEGBREAK | `e0=0x1f` → `e0=0x1e` |
+| `MM_Verify32Aligned` checks the address but not the SIZE | `mmu_a32 1001` → `1011`, and MEM32's load accepts a 6-byte region |
+| `MM_Verify16Aligned` the same | `mmu_a16 1001` → `1011`, and MEM16's accepts 3 |
+| the MEM8 peek arm demands two bytes | the whole diagonal shifts: `m8=0` at width 8 becomes `-40`, at 16 becomes `0` |
+| the MEM32 size event prints `SizeInBytes` where NASA prints `SizeInBits` | `Data Size = 8` → `1`, `16` → `2` |
+| the RAM `VerifyType` chain gains an `else` | the DumpInEvent cell ACCEPTS 16, and `wid201` accepts 201 |
+| MEM8 load/dump gains an alignment check | `m8=0` → `-3` |
+| MEM16's memory-type name is written `MEM32` | `MemType = MEM16` → `MEM32` in the event |
+| the zero-length rejection is dropped | `zero=-1` → `zero=0` |
+| `MM_ResolveSymAddr` writes the address even when the lookup FAILED | `mmu_resolve_fail -1 57005` → `57037` |
+| it stops NUL-terminating the end of the name | `len=63 last=0` → `len=64 last=65` |
+| the file CRC folds in the whole BUFFER, not the bytes read | `0x00002439` → `0x0000c14b` |
+| the file CRC is written even on a read error | `0xa5a5a5a5` → `0x00000000` |
+| the formatter drops `%p`'s `0x` prefix | `Addr = 0x100001` → `100001`, in 14 events |
+| **the formatter renders `%p` in UPPER case** | **nothing — INVISIBLE** |
+
+The last one is the point. Every address in the block was `0x001000xx`, whose digits are all
+0–4, so the *case* of `%p`'s hex digits was not asserted anywhere: a formatter that printed
+`0xABCDEF` would have passed, and the first MM address with a letter digit would have broken a
+transcript nobody had touched. One call was added at `0x00ABCDEF` — every letter digit, and odd,
+so the 16-bit alignment check rejects it and the event prints it — and the mutation now shows
+`0xabcdef` → `0xABCDEF`. Transcript 2,494 → **2,497**.
+
+It is the same shape as the three `%08X` cases this port has already found: a conversion agrees
+for as long as the VALUES it is given cannot tell the two renderings apart.
+
+### The gate that looked at none of it: 68 MM constants, and a count that read like a pass
+
+`check_constants` had its prefix filter written out by hand — `^(CFE_|OS_|OSAL_|MD_)\w+$`. MM
+arrived with about 130 constants resolved by hand or by a `cpp` probe (60 event ids, 5
+performance ids, three MsgIds, 40 configuration values, the 14 `MM_LastAction_*`, the six
+`MM_MemType_*`, the five `MM_VERIFY_*`) and **the gate looked at none of them**.
+
+The tell was the count: it moved 1,313 → **1,346**, and six of those 33 were the `CFE_PSP_*` and
+`OS_*` defines `mm_utils.HC` itself added. Everything else was include-graph expansion. A gate
+whose number goes *up* while its coverage of the new work is zero is the hardest shape to see,
+and it is the `module_deps` prefix list over again — four times there, once here. The filter is
+now built from `cfs_dirs.APPS`, so a third app is one edit in one file.
+
+Then a second layer: with `MM_` in scope, 1,346 → 1,407 but the "NASA does not define this"
+bucket went **35 → 104**. Sixty-eight MM names — *every* event id, *every* performance id and all
+three MsgIds — because `mm_eventids.h`, `mm_perfids.h` and `mm_msgids.h` were not in the probe's
+header list, and **a constant the probe cannot SEE is indistinguishable from one this port
+invented**. `MM_INTERNAL_*` and `MM_INTERFACE_*` *were* compared, reachable through `mm_app.h`,
+which is exactly what made the gap look like a pass.
+
+With the five headers added: **1,476 constants compared**, and the not-defined bucket back to its
+pre-MM 35. Driven on purpose — `MM_PSP_WRITE_ERR_EID` typed as 58 and `MM_HK_TLM_MID` as `0x888`
+both fail by name and value. This matters because the transcript reaches exactly six MM event
+ids (19, 21–25) and **zero** MsgIds: a wrong MsgId would have stayed silent until `mm_dispatch`
+lands, which is the failure MD hit twice.
+
+### And `check_formats` was wired into one of the three drivers that share the formatter
+
+It arrived with MM and went into `run_cfs_xlat_smoke.sh`, whose source list contains no OSAL at
+all — while `run_osal_xlat_smoke.sh` and `run_osal_printf_smoke.sh` compile the same
+`StrPrintNV`. Both are now gated too (34 conversions over 24 sources, 11 over the printf
+module's two), and both were clean, which is the point: a gate covering one of three users of
+the thing it checks is the "empty output is the blind spot" shape this project keeps finding.
+
+The single exemption in that gate — `cfe_time_api.c`'s `"%Y-%j-%H:%M:%S"`, which goes to
+`strftime` and not to a printf — was first written with a **false reason**: that the call site
+was inside `CFE_TIME_PrintUtc`, "`#if`'d out of this port, and check_coverage records that
+exclusion". Measured, the function is `CFE_TIME_Print`, it is *not* excluded (the three
+exclusions in that file are `CFE_TIME_ExternalGPS`, `_MET` and `_Time`), and it *is* translated
+with its own recorded deviation. The exemption holds; the reason given for it did not. Corrected
+in place, with the correction kept, because a stale exemption reason that is a false claim about
+NASA is already on this project's list.

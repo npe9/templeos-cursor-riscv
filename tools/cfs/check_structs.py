@@ -27,7 +27,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cfs_dirs import HCDIRS  # ONE copy of this list -- see cfs_dirs.py
+from cfs_dirs import HCDIRS, app_dirs  # ONE copy of these lists -- see cfs_dirs.py
 import glob as _glob
 
 NASA_DIRS = [
@@ -39,12 +39,12 @@ NASA_DIRS = [
     # second one -- and this directory was not on the list, so neither was ever compared. The .c
     # files are already scanned for exactly this reason on the cFE side.
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src"),
-    # AN APP IS A REPOSITORY, laid out like a module but one level up: fsw/src, fsw/inc and
-    # config. config/ is the one that needs care -- see the eds_* note below.
-    os.path.join(ROOT, "vendor", "MD", "fsw", "src"),
-    os.path.join(ROOT, "vendor", "MD", "fsw", "inc"),
-    os.path.join(ROOT, "vendor", "MD", "config"),
-] + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "fsw", "inc"))) \
+]
+# AN APP IS A REPOSITORY, laid out like a module but one level up: fsw/src, fsw/inc and config.
+# config/ is the one that needs care -- see the eds_* note below. The list is cfs_dirs.app_dirs()
+# because this gate and check_padding each used to carry their own copy of it.
+NASA_DIRS += app_dirs()
+NASA_DIRS += sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "fsw", "inc"))) \
   + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "fsw", "src"))) \
   + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "config"))) \
   + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "option_inc"))) \

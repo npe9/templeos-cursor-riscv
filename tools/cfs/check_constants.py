@@ -49,7 +49,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cfs_dirs import HCDIRS  # ONE copy of this list -- see cfs_dirs.py
+from cfs_dirs import HCDIRS, APPS  # ONE copy of these lists -- see cfs_dirs.py
 
 # The include path and the header list are check_padding.py's, for the same reason it does not
 # duplicate check_structs.py's name mapping: two tools disagreeing about which headers are in
@@ -65,7 +65,15 @@ _spec.loader.exec_module(check_padding)
 # the dwell table size, the four error codes, the signature length -- and the compared count
 # would not have moved by one, with no diagnostic anywhere. A gate's own name filter is the
 # quietest place a whole module can hide.
-NAME = re.compile(r'^(CFE_|OS_|OSAL_|MD_)\w+$')
+# THE APP PREFIXES COME FROM cfs_dirs.APPS, not from a hand-written alternation here. This had
+# `MD_` written into it literally, and MM arrived with ~130 hand-resolved constants -- 60 event
+# ids, 5 performance ids, the three MsgIds, 40 configuration values -- NOT ONE OF WHICH THIS
+# GATE LOOKED AT. The tell was the count: it moved 1,313 to 1,346, and six of those 33 were the
+# CFE_PSP_* and OS_* defines mm_utils.HC added. Everything else was include-graph expansion.
+#
+# That is the module_deps prefix list over again -- a hard-coded alternation is a list someone
+# has to remember to extend, and the failure is silent. Four times there, once here.
+NAME = re.compile(r'^(CFE_|OS_|OSAL_|%s)\w+$' % '|'.join(a + '_' for a in APPS))
 
 # FOUR NASA NAMES WITH NO MODULE PREFIX AT ALL, so the filter above cannot reach them.
 # md_dwell_pkt.h declares an ANONYMOUS enum whose members are spelled
@@ -75,8 +83,15 @@ NAME = re.compile(r'^(CFE_|OS_|OSAL_|MD_)\w+$')
 # list they would be non-candidates and silently uncompared. Listed by name rather than by
 # loosening the prefix pattern, because the pattern is what keeps port-local constants
 # (RV_*, HOLYC_*) out of a gate that has no business judging them.
+#
+# FILE_CRC_BUFFER_SIZE is the fifth, and a different kind: it is not an interface value at all
+# but mm_utils.c's own file-local `#define`, the size of the buffer MM_ComputeCRCFromFile reads
+# into. It is here because the number is load-bearing -- CFE_ES_CalculateCRC is called with the
+# bytes actually read, not with the buffer size, and a 450-byte exercise file is three reads of
+# 200 precisely so the short last read is exercised.
 NAME_EXTRA = {"ONE_BYTE_MEM_ADDR_READ_ERR", "TWO_BYTE_MEM_ADDR_READ_ERR",
-              "FOUR_BYTE_MEM_ADDR_READ_ERR", "INVALID_DWELL_ADDR_LEN"}
+              "FOUR_BYTE_MEM_ADDR_READ_ERR", "INVALID_DWELL_ADDR_LEN",
+              "FILE_CRC_BUFFER_SIZE"}
 
 
 def is_candidate(name):
@@ -175,6 +190,10 @@ CSRC_DEFS = [
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-file.c"),
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-idmap.c"),
     os.path.join(ROOT, "vendor", "osal", "src", "os", "shared", "src", "osapi-timebase.c"),
+    # FILE_CRC_BUFFER_SIZE is mm_utils.c's own, and it is load-bearing: CFE_ES_CalculateCRC is
+    # called with the bytes actually READ, not with this size, so the two numbers have to be
+    # different for the short-read fold to be exercised at all.
+    os.path.join(ROOT, "vendor", "MM", "fsw", "src", "mm_utils.c"),
 ]
 
 
@@ -200,6 +219,12 @@ def probe(names):
         # the table-validation error codes.
         "md_interface_cfg.h", "md_internal_cfg.h", "md_eventids.h", "md_fcncodes.h",
         "md_msgids.h", "md_dwell_pkt.h", "md_version.h",
+        # MM's. SIXTY-EIGHT constants were filed as "NASA does not define this" until these five
+        # were added -- every event id, every performance id and all three MsgIds -- because an
+        # id this probe cannot SEE is indistinguishable from an id this port invented. The
+        # MM_INTERNAL_* and MM_INTERFACE_* values were already compared, reachable through
+        # mm_app.h, which is exactly what made the gap look like a pass.
+        "mm_eventids.h", "mm_perfids.h", "mm_msgids.h", "mm_fcncodes.h", "mm_version.h",
         # ES's event ids and its own platform config, as the module arrives. The gate refused
         # to pass on CFE_ES_SYSLOG2_EID rather than file it as "a name this port invented",
         # which is the behaviour that distinguishes a missing header from a local constant.

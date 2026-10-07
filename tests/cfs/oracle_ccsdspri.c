@@ -121,6 +121,15 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "md_utils.h"
 #include "md_tbldefs.h"
 #include "md_tblstruct.h"
+/* MM -- the second cFS APP. mm_app.h reaches MM_AppData_t, the message types and the
+ * MM_VERIFY_* selectors; mm_filedefs.h is not reachable from it and holds
+ * MM_LoadDumpFileHeader_t. mm_eventids.h and mm_perfids.h are reached through mm_utils.c
+ * itself. */
+#include "mm_app.h"
+#include "mm_utils.h"
+#include "mm_filedefs.h"
+#include "mm_internal_cfg.h"
+#include "mm_interface_cfg.h"
 #include "cfe_tbl_task_cmds.h" /* the ten ground-command handlers and the HK packers */
 
 /* cfe_msg_objtab.c defines this and no header declares it -- the generated cfe_es_objtab.c is
@@ -359,10 +368,20 @@ int32 OS_close(osal_id_t filedes)
     return OS_SUCCESS;
 }
 
+/* MAKE OS_read FAIL. mm_utils.c's MM_ComputeCRCFromFile has a branch that runs only on a
+ * NEGATIVE return -- it hands the error back INSTEAD of writing the caller's CRC -- and nothing
+ * in the port had ever made a read fail, so that branch was unreachable. Defaults to 0, which
+ * is "no change", so no existing transcript line can see it. */
+static int32 fs_read_rc;
+
 int32 OS_read(osal_id_t filedes, void *buffer, size_t nbytes)
 {
     long n = (long)nbytes;
     (void)filedes;
+    if (fs_read_rc != 0)
+    {
+        return fs_read_rc;
+    }
     if (n > fs_len - fs_pos)
     {
         n = fs_len - fs_pos;
@@ -558,10 +577,35 @@ void CFE_PSP_Panic(int32 ErrorCode)
     printf("psp_panic %ld\n", (long)ErrorCode);
 }
 
+/* evs_delays COUNTS CALLS, where evs_delay_ms SUMS MILLISECONDS, and MM is why both exist:
+ * MM_SegmentBreak delays for MM_INTERNAL_PROCESSOR_CYCLE, which is 0 in this configuration, so
+ * the millisecond total is a zero against a zero and asserts nothing at all. */
+static long evs_delays;
+
 int32 OS_TaskDelay(uint32 millisecond)
 {
+    ++evs_delays;
     evs_delay_ms += millisecond;
     return OS_SUCCESS;
+}
+
+/* OS_strnlen IS NASA'S OWN BODY, copied from vendor/osal/src/os/shared/src/osapi-common.c, not
+ * a stub standing in for one. OSAL is not gated in THIS driver -- every OS_* here is a
+ * simulation -- but this function touches no operating system at all, and mm_utils.c's
+ * MM_ResolveSymAddr decides between "the offset IS the address" and "look the symbol up" on its
+ * answer. A simulation would be this port inventing that decision. The gated translation lives
+ * in Kernel/Cfs/osal/osapi_common.HC and the OSAL differential gate is what compares it. */
+size_t OS_strnlen(const char *s, size_t maxlen)
+{
+    const char *end = (const char *)memchr(s, 0, maxlen);
+
+    if (end != NULL)
+    {
+        /* actual length of string is difference */
+        maxlen = end - s;
+    }
+
+    return maxlen;
 }
 
 /* CFE_TIME_Tone1HzISR used to be stubbed here, because cfe_time_tone.c was not gated and
@@ -698,6 +742,14 @@ static CFE_ES_ResetData_t es_reset_area;
 /* The ground's view of a dwell table, 2,040 bytes. File scope because the HolyC half needs it
  * there -- limit 22, a big frame makes an unrelated file-scope read return zero -- and the two
  * halves stay one shape. */
+/* MM_AppData IS NASA'S TOO, defined in mm_app.c, which is NOT gated yet -- so it sits here on
+ * this half exactly as the translation's sits beside its type in mm_global.HC. 1,312 bytes.
+ * DELETE IT WHEN mm_app.c IS GATED: a C tentative definition in two translation units merges
+ * SILENTLY rather than failing to link, so nothing would tell us, and
+ * tools/cfs/check_oracle_globals.py is the gate that will refuse the overlap. This is the same
+ * deadline MD_AppData had three commits ago, and the note above is what it looked like when it
+ * came due. */
+MM_AppData_t MM_AppData;
 static MD_DwellTableLoad_t md_load;
 /* The dispatcher's command buffer. A CFE_SB_Buffer_t is only an 8-byte alignment union, so a
  * command is built in the LARGEST of the six command types -- MD_JamDwellCmd_t, 88 bytes --
@@ -12005,6 +12057,317 @@ int main(void)
                 printf("mdd_pipe_badmid cc=%u ec=%u\n", (unsigned)MD_AppData.CommandCounter,
                        (unsigned)MD_AppData.CommandErrorCounter);
             }
+        }
+
+        /* --- mm_utils.c (MM -- THE SECOND cFS APP) -----------------------------------------
+         * Eight functions: the housekeeping reset, the segment break, the two parameter
+         * validators, the two alignment checks, the address resolver and the file CRC.
+         *
+         * THE ADDRESSES ARE LITERAL CONSTANTS, for the reason recorded in docs/CFS_PLAN.md and
+         * at the top of Kernel/Cfs/mm/mm_msg.HC: every event below renders the address, and a
+         * host pointer and a guest pointer never agree. 0x00100000 is the base of the same
+         * simulated window MD uses, and nothing here reads memory through it -- the PSP's
+         * range check is this driver's own stub, so the address only has to be a NUMBER.
+         *
+         * AND THE RENDERING IS "%p", WHICH NO EARLIER GATED SOURCE USED. Six of these events
+         * print "Addr = %p"; StrPrintN did not implement the conversion, and an unhandled one
+         * does not consume its argument, so every argument after it would have shifted.
+         * tools/cfs/check_formats.py is the static gate for that, and these lines are the
+         * dynamic one. NO EXERCISE HERE PASSES ADDRESS ZERO THROUGH %p: C leaves the null
+         * rendering implementation-defined and the two mainstream libcs disagree about it
+         * ("0x0" against "(nil)"), which is a difference between HOSTS and not between halves.
+         *
+         * THE TWO VALIDATORS ARE WALKED AS A GRID, not as a list, because NASA's own comment
+         * says the correctness of the cross product rests on MaxSize STAYING ZERO for the
+         * (MemType, VerifyType) pairs no branch sets -- the zero then fails the size check at
+         * the end. A list of hand-picked calls cannot say that; 42 cells can. */
+        {
+            cpuaddr                   A = 0x00100000; /* 8-aligned, and never zero: see above */
+            int                       mt, vt, k;
+            size_t                    widths[3];
+            int32                     sv[8];
+            uint32                    crc;
+            osal_id_t                 fd;
+            long                      before;
+            CFE_ES_PerfData_t        *Perf = &CFE_ES_Global.ResetDataPtr->Perf;
+            CFE_ES_StartPerfDataCmd_t spc;
+            MM_SymAddr_t              sa;
+
+            /* --- MM_ResetHk. IT CLEARS WHAT THE LAST COMMAND REPORTED AND NOTHING ELSE, which
+             * is two properties and not one: the six payload fields go to their cleared values,
+             * and the two COUNTERS are untouched -- this runs at the start of every command, so
+             * a reset that cleared the counters would erase MM's whole command history.
+             *
+             * FileName[1] IS IN THE LINE DELIBERATELY. NASA writes only FileName[0], making it
+             * an empty C STRING rather than a cleared buffer, so the 'Y' must survive. A
+             * translation that reached for memset would pass a test that only read [0]. */
+            MM_AppData.HkTlm.Payload.CommandCounter      = 11;
+            MM_AppData.HkTlm.Payload.CommandErrorCounter = 22;
+            MM_AppData.HkTlm.Payload.LastAction          = MM_LastAction_FILL;
+            MM_AppData.HkTlm.Payload.MemType             = MM_MemType_MEM16;
+            MM_AppData.HkTlm.Payload.Address             = CFE_ES_MEMADDRESS_C(0x00100040);
+            MM_AppData.HkTlm.Payload.DataValue           = 0xAABBCCDD;
+            MM_AppData.HkTlm.Payload.BytesProcessed      = 77;
+            MM_AppData.HkTlm.Payload.FileName[0]         = 'Z';
+            MM_AppData.HkTlm.Payload.FileName[1]         = 'Y';
+            MM_ResetHk();
+            printf("mmu_resethk la=%u mt=%u addr=%lu dv=%u bp=%u fn0=%u fn1=%u cc=%u ec=%u\n",
+                   (unsigned)MM_AppData.HkTlm.Payload.LastAction,
+                   (unsigned)MM_AppData.HkTlm.Payload.MemType,
+                   (unsigned long)MM_AppData.HkTlm.Payload.Address,
+                   (unsigned)MM_AppData.HkTlm.Payload.DataValue,
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed,
+                   (unsigned)MM_AppData.HkTlm.Payload.FileName[0],
+                   (unsigned)MM_AppData.HkTlm.Payload.FileName[1],
+                   (unsigned)MM_AppData.HkTlm.Payload.CommandCounter,
+                   (unsigned)MM_AppData.HkTlm.Payload.CommandErrorCounter);
+
+            /* --- MM_SegmentBreak. THREE CALLS AND NOT ONE DELAY, and the delay is the weakest
+             * of the three witnesses: MM_INTERNAL_PROCESSOR_CYCLE is 0 in this configuration,
+             * so summing the MILLISECONDS would be a zero against a zero -- evs_delays counts
+             * CALLS for exactly that reason. The two performance-log entries are the real
+             * assertion: 31 and 31 with the exit bit set, which pins the marker AND says both
+             * stamps ran. Dropping PerfLogExit leaves a transcript that still says "it
+             * delayed". The log is started here rather than assumed, because every other block
+             * in this file has had its turn with it. */
+            CFE_ES_Global.BackgroundPerfDumpState.CurrentState = CFE_ES_PerfDumpState_IDLE;
+            CFE_ES_Global.BackgroundPerfDumpState.PendingState  = CFE_ES_PerfDumpState_IDLE;
+            /* THE FILTER MASK IS SET HERE AND NOT LEFT TO StartPerfDataCmd, which does not
+             * touch it: only a POWER-ON reset initialises the mask, and the es block earlier in
+             * this file both zeroes the whole Perf area and then drives
+             * CFE_ES_SetPerfFilterMaskCmd. The first run of this block recorded NOTHING for
+             * exactly that reason -- a zero DataCount against a zero, with no event to say why,
+             * because StartPerfDataCmd's own acknowledgement is a DEBUG event and this
+             * configuration filters those out. */
+            for (k = 0; k < CFE_ES_PERF_8BIT_WORDS_IN_MASK; k++)
+            {
+                Perf->MetaData.FilterMask[k]  = 0xFF;
+                Perf->MetaData.TriggerMask[k] = 0x00;
+            }
+            memset(&spc, 0, sizeof(spc));
+            spc.Payload.TriggerMode = CFE_ES_PerfTrigger_START;
+            CFE_ES_StartPerfDataCmd(&spc);
+            before = evs_delays;
+            MM_SegmentBreak();
+            printf("mmu_segbreak n=%u e0=0x%08lx e1=0x%08lx delays=%ld\n",
+                   (unsigned)Perf->MetaData.DataCount,
+                   (unsigned long)Perf->DataBuffer[0].Data,
+                   (unsigned long)Perf->DataBuffer[1].Data, evs_delays - before);
+
+            /* --- the alignment pair. BOTH ARMS MATTER, the same way MD's do: NASA checks the
+             * address and then the SIZE, so (A, 6) must be rejected on the size alone. */
+            printf("mmu_a32 %d%d%d%d\n", (int)MM_Verify32Aligned(A + 8, 4),
+                   (int)MM_Verify32Aligned(A + 9, 4), (int)MM_Verify32Aligned(A + 8, 6),
+                   (int)MM_Verify32Aligned(A, 0));
+            printf("mmu_a16 %d%d%d%d\n", (int)MM_Verify16Aligned(A + 8, 2),
+                   (int)MM_Verify16Aligned(A + 7, 2), (int)MM_Verify16Aligned(A + 8, 3),
+                   (int)MM_Verify16Aligned(A, 0));
+
+            /* --- MM_VerifyPeekPokeParams, as a grid: three legal widths against the five
+             * memory types and one illegal type. THE STATUSES ARE COLLECTED BEFORE THEY ARE
+             * PRINTED, because the calls EMIT EVENTS -- a printf interleaved with the loop
+             * would be cut in half by the first event and the line would not exist.
+             *
+             * The diagonal is the point: RAM and EEPROM take any legal width, while MEM8,
+             * MEM16 and MEM32 take exactly one each. That is a property of the hardware behind
+             * the memory type and not of the command, and it is six rejections that a
+             * translation dropping the `else if (SizeInBytes != N)` arms would turn into six
+             * acceptances. */
+            widths[0] = MM_INTERNAL_BYTE_BIT_WIDTH;
+            widths[1] = MM_INTERNAL_WORD_BIT_WIDTH;
+            widths[2] = MM_INTERNAL_DWORD_BIT_WIDTH;
+            for (k = 0; k < 3; k++)
+            {
+                for (mt = 0; mt < 6; mt++)
+                {
+                    /* 1..5 are the five real memory types; the sixth column is 9, which is not
+                     * a type at all. Written as an if rather than a ?: so the HolyC half can be
+                     * read line for line against this one. */
+                    int t = mt + 1;
+                    if (mt == 5)
+                    {
+                        t = 9;
+                    }
+                    sv[mt] = MM_VerifyPeekPokeParams(A, (MM_MemType_Enum_t)t, widths[k]);
+                }
+                printf("mmu_pp w=%lu ram=%ld eep=%ld m8=%ld m16=%ld m32=%ld bad=%ld\n",
+                       (unsigned long)widths[k], (long)sv[0], (long)sv[1], (long)sv[2],
+                       (long)sv[3], (long)sv[4], (long)sv[5]);
+            }
+            /* An illegal WIDTH short-circuits before the memory type is looked at, so it is
+             * called once rather than six times -- and 0xFFFFFFFF is the interesting value,
+             * because the event renders it through NASA's (unsigned int) cast. */
+            printf("mmu_pp_badw %ld %ld\n",
+                   (long)MM_VerifyPeekPokeParams(A, MM_MemType_RAM, 7),
+                   (long)MM_VerifyPeekPokeParams(A, MM_MemType_RAM, 0xFFFFFFFF));
+
+            /* The misalignment arms, which the grid above cannot reach: it uses an 8-aligned
+             * address throughout. */
+            printf("mmu_pp_align %ld %ld %ld\n",
+                   (long)MM_VerifyPeekPokeParams(A + 1, MM_MemType_RAM,
+                                                 MM_INTERNAL_WORD_BIT_WIDTH),
+                   (long)MM_VerifyPeekPokeParams(A + 1, MM_MemType_RAM,
+                                                 MM_INTERNAL_DWORD_BIT_WIDTH),
+                   (long)MM_VerifyPeekPokeParams(A + 2, MM_MemType_RAM,
+                                                 MM_INTERNAL_DWORD_BIT_WIDTH));
+
+            /* THE CASE OF %p's HEX DIGITS, WHICH NOTHING ABOVE CAN SEE. Every address in this
+             * block is 0x001000xx, so its digits are all 0-4 and rendering %p in UPPER case
+             * changed the transcript NOT AT ALL -- driven, and the mutation was invisible.
+             * 0x00ABCDEF has every letter digit and is odd, so the 16-bit alignment check
+             * rejects it and the event prints it. */
+            printf("mmu_pp_hexcase %ld\n",
+                   (long)MM_VerifyPeekPokeParams(0x00ABCDEF, MM_MemType_RAM,
+                                                 MM_INTERNAL_WORD_BIT_WIDTH));
+
+            /* And the PSP refusing the range. The CALL COUNTER is what says the PSP was really
+             * asked: both statuses below would be satisfied by a validator that never called
+             * it and returned the stub's code from a local variable. */
+            before             = es_psp_validates;
+            es_psp_validate_rc = CFE_PSP_INVALID_MEM_ADDR;
+            sv[0]              = MM_VerifyPeekPokeParams(A, MM_MemType_RAM,
+                                                         MM_INTERNAL_BYTE_BIT_WIDTH);
+            sv[1]              = MM_VerifyPeekPokeParams(A, MM_MemType_EEPROM,
+                                                         MM_INTERNAL_BYTE_BIT_WIDTH);
+            es_psp_validate_rc = CFE_PSP_SUCCESS;
+            printf("mmu_pp_psp %ld %ld calls=%ld\n", (long)sv[0], (long)sv[1],
+                   es_psp_validates - before);
+
+            /* --- MM_VerifyLoadDumpParams, THE GRID. Seven memory types (0 and 6 are not
+             * types) against six verification types (5 is not one), at a size of 16 bytes.
+             *
+             * WHY 16 AND NOT 4. It is above MM_INTERNAL_MAX_DUMP_INEVENT_BYTES, which is 15,
+             * and below every other limit -- so DumpInEvent's column REJECTS while the other
+             * four accept, and the grid distinguishes five different MaxSize values rather
+             * than agreeing on "small enough for all of them". VerifyType 5 is refused before
+             * the switch runs and emits NOTHING, which is the one cell with no event. */
+            for (mt = 0; mt < 7; mt++)
+            {
+                for (vt = 0; vt < 6; vt++)
+                {
+                    sv[vt] = MM_VerifyLoadDumpParams(A, (MM_MemType_Enum_t)mt, 16, (uint8)vt);
+                }
+                printf("mmu_ldv mt=%d dump=%ld load=%ld evt=%ld fill=%ld wid=%ld bad=%ld\n", mt,
+                       (long)sv[0], (long)sv[1], (long)sv[2], (long)sv[3], (long)sv[4],
+                       (long)sv[5]);
+            }
+
+            /* The size boundaries, one pair per limit the grid above could only prove was
+             * "bigger than 16". Each pair is MaxSize and MaxSize+1, so it pins the number. */
+            sv[0] = MM_VerifyLoadDumpParams(A, MM_MemType_RAM, 1048576, MM_VERIFY_LOAD);
+            sv[1] = MM_VerifyLoadDumpParams(A, MM_MemType_RAM, 1048577, MM_VERIFY_LOAD);
+            sv[2] = MM_VerifyLoadDumpParams(A, MM_MemType_EEPROM, 131072, MM_VERIFY_LOAD);
+            sv[3] = MM_VerifyLoadDumpParams(A, MM_MemType_EEPROM, 131073, MM_VERIFY_LOAD);
+            printf("mmu_ldv_lim ram=%ld,%ld eep=%ld,%ld\n", (long)sv[0], (long)sv[1],
+                   (long)sv[2], (long)sv[3]);
+            sv[0] = MM_VerifyLoadDumpParams(A, MM_MemType_RAM, 15, MM_VERIFY_EVENT);
+            sv[1] = MM_VerifyLoadDumpParams(A, MM_MemType_RAM, 200, MM_VERIFY_WID);
+            sv[2] = MM_VerifyLoadDumpParams(A, MM_MemType_RAM, 201, MM_VERIFY_WID);
+            /* ZERO IS ITS OWN REJECTION, written as `(SizeInBytes == 0) ||` rather than falling
+             * out of the comparison -- an unsigned 0 is not greater than any MaxSize. */
+            sv[3] = MM_VerifyLoadDumpParams(A, MM_MemType_RAM, 0, MM_VERIFY_DUMP);
+            printf("mmu_ldv_edge evt15=%ld wid200=%ld wid201=%ld zero=%ld\n", (long)sv[0],
+                   (long)sv[1], (long)sv[2], (long)sv[3]);
+
+            /* The alignment arms, and MEM8's ABSENCE of one. MEM32 and MEM16 check the address
+             * and the size; MEM8 has no check at all, because every address is byte aligned --
+             * so the last of these four must be ACCEPTED, and it is the cell that says the
+             * three arms were not written as one. */
+            sv[0] = MM_VerifyLoadDumpParams(A + 1, MM_MemType_MEM32, 4, MM_VERIFY_LOAD);
+            sv[1] = MM_VerifyLoadDumpParams(A, MM_MemType_MEM32, 6, MM_VERIFY_LOAD);
+            sv[2] = MM_VerifyLoadDumpParams(A + 1, MM_MemType_MEM16, 2, MM_VERIFY_LOAD);
+            sv[3] = MM_VerifyLoadDumpParams(A, MM_MemType_MEM16, 3, MM_VERIFY_LOAD);
+            sv[4] = MM_VerifyLoadDumpParams(A + 1, MM_MemType_MEM8, 3, MM_VERIFY_LOAD);
+            printf("mmu_ldv_align m32=%ld,%ld m16=%ld,%ld m8=%ld\n", (long)sv[0], (long)sv[1],
+                   (long)sv[2], (long)sv[3], (long)sv[4]);
+
+            /* --- THE MEMORY TYPE'S NAME, which only the last event in the function prints.
+             * Five calls, five strings, and nothing else in MM reads MemTypeStr -- so without
+             * these five the four snprintf call sites could all write "MEM_RAM", or nothing at
+             * all, and every line above would be unchanged. */
+            es_psp_validate_rc = CFE_PSP_INVALID_MEM_ADDR;
+            for (mt = 1; mt <= 5; mt++)
+            {
+                sv[mt - 1] = MM_VerifyLoadDumpParams(A, (MM_MemType_Enum_t)mt, 4, MM_VERIFY_LOAD);
+            }
+            es_psp_validate_rc = CFE_PSP_SUCCESS;
+            printf("mmu_ldv_mtstr %ld %ld %ld %ld %ld\n", (long)sv[0], (long)sv[1], (long)sv[2],
+                   (long)sv[3], (long)sv[4]);
+
+            /* --- MM_ResolveSymAddr, all three outcomes, as MD's sibling does. The empty-name
+             * branch is the one every MM exercise after this one stands on. */
+            memset(&sa, 0, sizeof(sa));
+            sa.Offset = 0x00100040;
+            {
+                cpuaddr ra = 0xDEAD;
+                printf("mmu_resolve_off %ld %lu\n", (long)MM_ResolveSymAddr(&sa, &ra),
+                       (unsigned long)ra);
+                strcpy(sa.SymName, "MM_SIM_WINDOW");
+                sa.Offset   = 0x20;
+                md_sym_rc   = OS_SUCCESS;
+                md_sym_addr = 0x00100000;
+                ra          = 0xDEAD;
+                printf("mmu_resolve_sym %ld %lu\n", (long)MM_ResolveSymAddr(&sa, &ra),
+                       (unsigned long)ra);
+                /* A LOOKUP FAILURE LEAVES THE CALLER'S VARIABLE ALONE, which is a property of
+                 * the branch and not of the return value. */
+                md_sym_rc = OS_ERROR;
+                ra        = 0xDEAD;
+                printf("mmu_resolve_fail %ld %lu\n", (long)MM_ResolveSymAddr(&sa, &ra),
+                       (unsigned long)ra);
+                md_sym_rc = OS_SUCCESS;
+                /* THE NUL AT THE VERY END IS WRITTEN UNCONDITIONALLY, before anything looks at
+                 * the name, and that is a safety measure on a 64-byte array the ground filled.
+                 * Filling all 64 bytes with 'A' makes the last byte the only thing that can
+                 * stop OS_strnlen at 63 -- and because the name is then NOT empty, the lookup
+                 * runs, which is how we know the truncation happened rather than the array
+                 * being read as empty. */
+                memset(sa.SymName, 'A', CFE_MISSION_MAX_PATH_LEN);
+                sa.Offset = 0x10;
+                ra        = 0xDEAD;
+                sv[0]     = MM_ResolveSymAddr(&sa, &ra);
+                printf("mmu_resolve_nul %ld %lu len=%lu last=%u\n", (long)sv[0],
+                       (unsigned long)ra,
+                       (unsigned long)OS_strnlen(sa.SymName, CFE_MISSION_MAX_PATH_LEN),
+                       (unsigned)sa.SymName[CFE_MISSION_MAX_PATH_LEN - 1]);
+            }
+
+            /* --- MM_ComputeCRCFromFile. 450 BYTES, WHICH IS THREE READS of the 200-byte
+             * buffer: 200, 200 and 50. One read would not prove the loop folds the previous CRC
+             * in, and a file that divided evenly would not prove the SHORT last read is handled
+             * -- CFE_ES_CalculateCRC is called with ByteCntr, not with the buffer size. */
+            for (k = 0; k < 450; k++)
+            {
+                fs_data[k] = (unsigned char)((k * 7 + 3) & 0xFF);
+            }
+            fs_len     = 450;
+            fs_noexist = 0;
+            OS_OpenCreate(&fd, "/ram/mm.crc", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            crc = 0xA5A5A5A5;
+            printf("mmu_crc rc=%ld crc=0x%08lx pos=%ld\n",
+                   (long)MM_ComputeCRCFromFile(fd, &crc, MM_INTERNAL_LOAD_FILE_CRC_TYPE),
+                   (unsigned long)crc, fs_pos);
+            /* AN EMPTY FILE IS NOT AN ERROR: the first read returns 0, the loop never folds
+             * anything in, and *CrcPtr is written with the initial 0. The poison is what says
+             * the write happened at all. */
+            fs_len = 0;
+            OS_OpenCreate(&fd, "/ram/mm.crc", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            crc = 0xA5A5A5A5;
+            printf("mmu_crc_empty rc=%ld crc=0x%08lx\n",
+                   (long)MM_ComputeCRCFromFile(fd, &crc, MM_INTERNAL_LOAD_FILE_CRC_TYPE),
+                   (unsigned long)crc);
+            /* AND A READ ERROR MUST NOT TOUCH *CrcPtr, which is the only branch in this
+             * function that does not write it -- so the poison has to still be there. This is
+             * the first exercise in the port to make OS_read FAIL; the knob defaults to zero
+             * and no existing line can see it. */
+            fs_len     = 450;
+            OS_OpenCreate(&fd, "/ram/mm.crc", OS_FILE_FLAG_NONE, OS_READ_ONLY);
+            crc        = 0xA5A5A5A5;
+            fs_read_rc = OS_ERROR;
+            printf("mmu_crc_err rc=%ld crc=0x%08lx\n",
+                   (long)MM_ComputeCRCFromFile(fd, &crc, MM_INTERNAL_LOAD_FILE_CRC_TYPE),
+                   (unsigned long)crc);
+            fs_read_rc = 0;
         }
 
         printf("tim_objtab %s %d %d %d %lu %lu\n", CFE_TIME_ModuleEntry.Name,

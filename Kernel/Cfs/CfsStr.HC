@@ -161,7 +161,7 @@ U8 *StrCpy(U8 *dst, U8 *src)
 // property every gate here rests on. So the SPELLING is TempleOS and the CONVERSIONS are C, and
 // the reason is that the input is C.
 //
-// Covers exactly the conversions the translated call sites use: %s, %u, %d, %x, %X, the 'l',
+// Covers exactly the conversions the translated call sites use: %s, %u, %d, %x, %X, %p, the 'l',
 // 'll' and 'z' length modifiers, and a leading zero-or-space field width as in %08x. Anything else
 // is emitted literally so an unhandled case appears in a transcript instead of vanishing.
 //
@@ -316,6 +316,41 @@ I64 StrPrintNV(U8 *Buf, I64 Size, U8 *Fmt, I64 nargs, I64 *args)
         if (Size > 0 && n < Size - 1)
           Buf[n] = '-';
         n++;
+      }
+      while (ndig > 0) {
+        ndig--;
+        if (Size > 0 && n < Size - 1)
+          Buf[n] = dig[ndig];
+        n++;
+      }
+    } else if (*Fmt == 'p') {
+      // %p, AND IT ARRIVED WITH MM. No format string in any previously gated NASA source used
+      // it, so until now an unhandled %p would have come out as the literal two characters on
+      // the HolyC side while C printed an address -- six of mm_utils.c's events print
+      // "Addr = %p" and all six would have diverged at once.
+      //
+      // THE SPELLING IS THE HOST C LIBRARY'S, because that is the other half of the diff: "0x"
+      // then lowercase hex, no field width, and the full 64 bits. C leaves %p
+      // implementation-defined, and the two mainstream renderings differ in exactly one place --
+      // a NULL pointer, which glibc writes as "(nil)" and this (Apple libc) writes as "0x0". The
+      // zero below follows Apple libc, and no exercise in this port prints a null through %p.
+      uv = 0;
+      if (ai < nargs)
+        uv = args[ai];
+      ai++;
+      if (Size > 0 && n < Size - 1)
+        Buf[n] = '0';
+      n++;
+      if (Size > 0 && n < Size - 1)
+        Buf[n] = 'x';
+      n++;
+      hexd = "0123456789abcdef";
+      ndig = 0;
+      if (!uv)
+        dig[ndig++] = '0';
+      while (uv > 0) {
+        dig[ndig++] = hexd[uv % 16];
+        uv = uv / 16;
       }
       while (ndig > 0) {
         ndig--;

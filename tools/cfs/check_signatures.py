@@ -163,7 +163,22 @@ C_TYPES = [(r'\bconst\b', ' '),
            # The socket enums, by the same rule: HolyC has no enum, the translation
            # spells them I64, and both are passed in one register.
            (r'\bOS_SocketDomain_t\b', ' SZ '), (r'\bOS_SocketType_t\b', ' SZ '),
-           (r'\bOS_SocketShutdownMode_t\b', ' SZ '), (r'\bOS_socket_option_t\b', ' SZ ')]
+           (r'\bOS_SocketShutdownMode_t\b', ' SZ '), (r'\bOS_socket_option_t\b', ' SZ '),
+           # MM's memory-type enum, AND IT IS NOT SPELLED LIKE THE SIX ABOVE. Those map to SZ
+           # because the translation writes them I64; this one is a four-byte unsigned enum (its
+           # enumerators are 0..5, so the compiler picks unsigned int) AND IT IS ALSO A STRUCT
+           # MEMBER in six of MM's payloads, where four bytes is the layout check_padding
+           # measures. So the translation spells it U32 everywhere, member and parameter alike,
+           # and this maps the C to the same NUM.
+           #
+           # IT WAS AN EMPTY TOKEN BEFORE THIS RULE, which is the failure mode this gate is most
+           # dangerous in: an unrecognised type normalises to nothing, and two unrecognised types
+           # AGREE AS TWO BLANKS. It happened to be caught here only because the translation's
+           # side WAS recognised -- U32 -> NUM against NASA's blank. Had the translation also
+           # used a name this table does not know, the pair would have matched on nothing.
+           (r'\bMM_MemType_Enum_t\s*\*', ' PTRNUM '),
+           (r'\bMM_MemType_Enum_t\b', ' NUM '),
+           (r'\bMM_LastAction_Enum_t\b', ' NUM ')]
 H_TYPES = [(r'\bCFE_MSG_Message\s*\*', ' PTRB '), (r'\bCFE_\w+\s*\*', ' PTRNUM '),
            # A cFE opaque type passed BY VALUE -- CFE_SB_MsgId, CFE_SBR_RouteId. These are
            # classes wrapping one integer, so they normalise the same as the C's typedefs.

@@ -76,6 +76,14 @@ python3 "$ROOT/tools/cfs/check_coverage.py" "$OSAL/src/os/shared/src/osapi-print
 # shellcheck disable=SC2086
 python3 "$ROOT/tools/cfs/check_signatures.py" "$OSAL/src/os/shared/src/osapi-printf.c" || exit 1
 
+# --- the printf conversions the formatter implements -------------------------------------------
+# THE SAME StrPrintNV THE cFS GATE CHECKS, and this driver uses it too -- so it needs the same
+# static check over ITS source list. An unhandled conversion comes out as its own two characters
+# AND DOES NOT CONSUME ITS ARGUMENT, so every argument after it on the line shifts by one. The
+# gate arrived with MM's "%p" and was first wired into the cFS script alone, which is a gate
+# covering one of the three drivers that share the formatter.
+python3 "$ROOT/tools/cfs/check_formats.py" "$OSAL/src/os/shared/src/osapi-printf.c" || exit 1
+
 # --- the backend seam ---------------------------------------------------------------------------
 # The OS_*_Impl declarations are what the hand-written TempleOS backend will be built to, and
 # neither check above can see a mistake in them: coverage looks at definitions in a .c, and
