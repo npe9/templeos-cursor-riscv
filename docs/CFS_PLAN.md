@@ -3149,20 +3149,40 @@ shapes at once: `generated-table-init-order` (a static C table becomes a runtime
 reader that runs before the fill sees zeros, silently) and the 8-byte truncation. Both are known;
 noting them here so the file is written for them rather than debugged into them.
 
-### Step 1 exercised — 2803 → 3052, and 62 of 68 functions actually run
+### Step 1 exercised — 2803 → 3052, and 65 of 71 functions actually run
 
 Four blocks, each its own function on both halves: `cs_block_utils`, `cs_block_compute`,
 `cs_block_tblproc`, `cs_block_child`. Transcript **2803 → 3052** byte-identical.
 
-**The count `check_coverage` cannot give.** It reports 920/920 present and is blind to whether a
-single line executes, so here is the split by hand:
+**The count `check_coverage` cannot give.** It reports every function present and is blind to
+whether a single line executes, so here is the split by hand:
 
 | | functions | driven | not driven |
 |---|---|---|---|
-| `cs_utils.c` | 29 | 29 | — |
+| `cs_utils.c` | 33 | 33 | — |
 | `cs_compute.c` | 16 | 13 | `CS_GetTableAddr`, `CS_ReleaseTableAddr`, `CS_RefreshTableHandleAndAddress` |
 | `cs_table_processing.c` | 22 | 19 | `CS_RegisterResultTable`, `CS_RegisterDefinitionTable`, `CS_TableInit` |
-| | **68** | **62** | **6** |
+| | **71** | **65** | **6** |
+
+**The denominator was wrong when this table was first written, and finding out why found a gate
+blind spot.** It said 68, taken from `check_coverage`'s count moving 852 → 920 — and that gate
+MISSES A DEFINITION WHOSE RETURN TYPE IS ON ITS OWN LINE, which is what clang-format does when a
+signature will not fit:
+
+    CFE_Status_t
+    CS_TableInit(CS_TableWrapper_t *tw, const char *F, CFE_TBL_CallbackFuncPtr_t CallBack)
+    {
+
+The name's line then has no type prefix and the pattern requires one. **Fifteen of NASA's
+definitions are in that shape** across cFE, MD and CS — `CS_ComputeEepromMemory`,
+`CS_RefreshTableHandleAndAddress`, `CS_TableInit`, `CFE_TBL_WriteHeaders`, `CFE_ResourceId_FindNext`
+and ten more — so this gate never required any of them to exist. `check_signatures` has the same
+gap from the same cause (`[ \t]+` between the type and the name) and so never compared their
+signatures; `CS_TableInit`'s third parameter is a **function pointer**, which is the kind of
+parameter that gate exists to check. **Neither gate caught the other's gap, because both share the
+assumption** — a cross-check is worth only the inputs the two tools do not share, which is the
+fifth entry under that heading in this project's notes. All fifteen happen to be translated, which
+is luck and not evidence.
 
 **All six undriven functions are on one path: registering CS's own tables with cFE table
 services.** Nothing reaches them until a table of CS's exists, and creating one is
