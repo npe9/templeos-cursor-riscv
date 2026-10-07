@@ -2572,3 +2572,79 @@ The first version put the `fs_data` fill once at the top of the block. But the *
 file whose bytes were `0x40 + i`, which is exactly what the window already contained. `m0=40`
 would have been satisfied equally by the load working and by it never running. The file is
 refilled with a `0x80 + i` pattern before every load now, and the lines read `m0=80`.
+
+### `mm_dump.c` — and the paths where the simulated window stops working
+
+368 lines, four functions, no stand-ins. Transcript **2,541 → 2,574**. MM is 6 of 9 sources,
+1,896 of 3,739 lines (51%).
+
+**The window was never the point; the PSP indirection was.** Every MM path so far reached memory
+through `CFE_PSP_MemRead*`/`MemWrite*`, which is what let the port use a *window of literal
+addresses* — the same constant on a host process and a QEMU guest. `MM_DumpMemToFile` does
+
+```c
+memcpy(ioBuffer, SourcePtr, SegmentSize);
+```
+
+and `MM_FillDumpInEventBuffer`'s RAM/EEPROM arm does the same. A literal `0x00100000` there is a
+wild pointer. Those two paths are therefore exercised against a **real driver-owned array**, and
+the cost lands on one field: `MM_DumpMemToFile` sets
+`HkTlm.Payload.Address = FileHeader->SymAddress.Offset`, which is now wherever the linker put
+that array — a different number on each half.
+
+**The answer is to print a COMPARISON, not the value.** The line says
+`addr_ok=1`, which is `Address == (cpuaddr)mmd_src`: true on both halves, and still false if the
+field is set from the wrong place. The mutation that reports `NumOfBytes` there turns it to 0.
+That is a better tool than omitting the field, and it generalises — any uncomparable value can be
+asserted against something the driver knows.
+
+Which events are drivable is now a list rather than a discovery:
+
+| | drivable | why |
+|---|---|---|
+| `MM_PeekMem`'s two | **yes** | goes through the PSP, so its `Addr = %p` is a window constant |
+| `MM_DumpMemToFile`'s one | **yes** | no `%p` at all |
+| `MM_WriteFileHeaders`' two | **yes** | no `%p` |
+| `MM_FillDumpInEventBuffer`'s three | **no** | each prints `Tgt=%p`, the caller's buffer |
+
+The four success arms of the last one *are* driven, and the read counts separate them: a 8-byte
+request is **2** PSP reads as MEM32, **4** as MEM16 and **8** as MEM8.
+
+#### HolyC's `switch` falls through exactly like C's — measured, not assumed
+
+`MM_FillDumpInEventBuffer` has `case MM_MemType_RAM: case MM_MemType_EEPROM:` sharing one body,
+and the repo already contained a claim that HolyC's switch falls through "like C" — in a comment,
+with nothing driving it. Probed both shapes before translating:
+
+```
+case 1: case 2: r = 99;     →  pick(1)=99  pick(2)=99     (empty label reaches the next)
+case 1: r += 10; case 2: r += 100;  →  fall(1)=110        (non-empty case falls in too)
+```
+
+So the two labels translate verbatim. And it is load-bearing: the mutation that deletes the
+`EEPROM` label makes that command return `CFE_PSP_ERROR` with an all-zero buffer.
+
+#### NASA writes one byte of stack into every dump file
+
+`MM_WriteFileHeaders` writes `sizeof(MM_LoadDumpFileHeader_t)` — **88 bytes**, and the struct's
+last byte is tail padding after `Spare[3]`. So byte 151 of every MM dump file is whatever was on
+the caller's stack. This is the same defect `dumpfile-uninitialised-header` records in cFE's table
+dump, in a second app. **Both halves of the differential zero the header before calling**, which
+is the driver's choice and not NASA's, and the exercise says so where it prints `pad151=0` — a
+zero there is evidence about the driver, not about the translation.
+
+Two more of NASA's own choices the exercise pins, because nothing else would:
+
+- `MM_DumpMemToFile` resets `OS_Status = OS_SUCCESS` **inside** the loop. `OS_write` returns a
+  byte count, so without that line a successful dump returns 50 (the last segment's size) and
+  every caller's `== CFE_SUCCESS` fails. Driven: `st=0` becomes `st=50`.
+- both of `MM_WriteFileHeaders`' error arms replace the status with `OS_ERR_INVALID_SIZE`
+  **before** printing it, so the ground sees `-40` and cannot tell a failed write from a short
+  one. Driven: the event reads `RC = 10` instead.
+
+And `MM_PeekMem` initialises `PSP_Status` to `CFE_PSP_ERROR_NOT_IMPLEMENTED`, not to an error — so
+a width no arm recognises returns **-27** and reports `MemType=MEM0`, the one status in MM that
+means *no branch ran*. NASA's comment says `MM_VerifyPeekPokeParams` makes that unreachable;
+calling `MM_PeekMem` directly is the only way a translation of it gets checked at all.
+
+Fifteen mutations, fifteen caught.

@@ -131,6 +131,7 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "mm_mem8.h"
 #include "mm_mem16.h"
 #include "mm_mem32.h"
+#include "mm_dump.h"
 #include "mm_internal_cfg.h"
 #include "mm_interface_cfg.h"
 #include "cfe_tbl_task_cmds.h" /* the ten ground-command handlers and the HK packers */
@@ -753,6 +754,19 @@ static CFE_ES_ResetData_t es_reset_area;
  * deadline MD_AppData had three commits ago, and the note above is what it looked like when it
  * came due. */
 MM_AppData_t MM_AppData;
+
+/* THE TWO BUFFERS MM'S GENERIC PATHS ACTUALLY DEREFERENCE. mm_dump.c's MM_DumpMemToFile and
+ * MM_FillDumpInEventBuffer's RAM/EEPROM arm `memcpy` from the address they are given rather
+ * than going through CFE_PSP_MemRead*, so the simulated window of literal addresses does not
+ * work for them -- they need real memory. File scope on both halves (limit 22), and the same
+ * shape, so the two can be filled identically.
+ *
+ * mmd_evbuf IS SIXTEEN BYTES AND NASA CLEARS FIFTEEN. The sixteenth is a poison byte: it says
+ * MM_INTERNAL_MAX_DUMP_INEVENT_BYTES is the bound the clear used, which is the kind of constant
+ * a translation can get wrong without any other line noticing. */
+unsigned char mmd_src[250];
+unsigned char mmd_evbuf[16];
+unsigned char mmd_mts[4];
 static MD_DwellTableLoad_t md_load;
 /* The dispatcher's command buffer. A CFE_SB_Buffer_t is only an 8-byte alignment union, so a
  * command is built in the LARGEST of the six command types -- MD_JamDwellCmd_t, 88 bytes --
@@ -12820,6 +12834,215 @@ int main(void)
             stw = MM_DumpMem32ToFile(fdw, "/ram/mmw.dp", &fhw);
             printf("mm32_dump st=%ld reads=%ld len=%ld d0=%02X d3=%02X d247=%02X\n", (long)stw,
                    md_sim_reads - rr, fs_len, fs_data[0], fs_data[3], fs_data[247]);
+        }
+
+        /* --- mm_dump.c -- the four ways MM gets memory OUT -------------------------------
+         * MM_PeekMem reaches memory through the PSP, so it uses the SIMULATED WINDOW and its
+         * two events print only the address the ground supplied -- both fully comparable.
+         *
+         * MM_DumpMemToFile AND MM_FillDumpInEventBuffer'S RAM/EEPROM ARM DO NOT. They
+         * `memcpy` from the address, so a literal window address would be a wild pointer, and
+         * they are exercised against a REAL driver-owned array instead. The consequence is that
+         * MM_DumpMemToFile's housekeeping Address is a real pointer and CANNOT BE PRINTED --
+         * so it is asserted by COMPARISON: `addr_ok` is whether the field equals the array's
+         * own address, which is true on both halves and still fails if the field is set from
+         * the wrong place.
+         *
+         * MM_FillDumpInEventBuffer's THREE ERROR ARMS ARE NOT DRIVEN. Each prints `Tgt=%p`, the
+         * caller's buffer, for the reason mm_mem8's read error is undrivable. Their four
+         * SUCCESS paths are, including the RAM and EEPROM pair that SHARE a case body -- which
+         * is the one thing in this file that depends on HolyC's switch falling through like C's.
+         * Measured before the translation was written, with both an empty label and a
+         * non-empty case without a break. */
+        {
+            MM_PeekCmd_t            pk;
+            MM_DumpInEventCmd_t     de;
+            MM_LoadDumpFileHeader_t fhd;
+            CFE_FS_Header_t         cfh;
+            osal_id_t               fdd;
+            long                    rr;
+            int                     kd;
+            int32                   std_;
+
+            for (kd = 0; kd < 250; kd++)
+            {
+                mmd_src[kd] = (unsigned char)(0x10 + kd);
+            }
+            md_sim_fill();
+
+            /* --- MM_PeekMem, the three widths. The data comes out of the simulated window, so
+             * every byte in the three events is 0x40 + offset and the ENDIANNESS is part of the
+             * comparison: a 32-bit peek at base+4 must read 0x47464544 and not 0x44454647. */
+            memset(&pk, 0, sizeof(pk));
+            pk.Payload.MemType  = MM_MemType_RAM;
+            pk.Payload.DataSize = MM_INTERNAL_BYTE_BIT_WIDTH;
+            std_                = MM_PeekMem(&pk, MD_SIM_WINDOW_BASE);
+            printf("mmd_peek8 st=%ld la=%u mt=%u bp=%u dv=0x%08x\n", (long)std_,
+                   (unsigned)MM_AppData.HkTlm.Payload.LastAction,
+                   (unsigned)MM_AppData.HkTlm.Payload.MemType,
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed,
+                   (unsigned)MM_AppData.HkTlm.Payload.DataValue);
+            pk.Payload.DataSize = MM_INTERNAL_WORD_BIT_WIDTH;
+            std_                = MM_PeekMem(&pk, MD_SIM_WINDOW_BASE + 2);
+            printf("mmd_peek16 st=%ld bp=%u dv=0x%08x addr=%lu\n", (long)std_,
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed,
+                   (unsigned)MM_AppData.HkTlm.Payload.DataValue,
+                   (unsigned long)MM_AppData.HkTlm.Payload.Address);
+            pk.Payload.DataSize = MM_INTERNAL_DWORD_BIT_WIDTH;
+            std_                = MM_PeekMem(&pk, MD_SIM_WINDOW_BASE + 4);
+            printf("mmd_peek32 st=%ld bp=%u dv=0x%08x\n", (long)std_,
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed,
+                   (unsigned)MM_AppData.HkTlm.Payload.DataValue);
+            /* OUTSIDE THE WINDOW. Housekeeping must keep the 32-bit peek's values, because the
+             * failure path writes none of it. */
+            std_ = MM_PeekMem(&pk, MD_SIM_WINDOW_BASE + 300);
+            printf("mmd_peek_bad st=%ld bp=%u dv=0x%08x\n", (long)std_,
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed,
+                   (unsigned)MM_AppData.HkTlm.Payload.DataValue);
+            /* A WIDTH NO ARM RECOGNISES. PSP_Status is still the value it was INITIALISED to --
+             * CFE_PSP_ERROR_NOT_IMPLEMENTED, -27 -- and DataSize is still 0, so the event reads
+             * `MemType=MEM0`. It is the one status in MM that means "no branch ran". NASA's own
+             * comment says a bad DataSize is caught by MM_VerifyPeekPokeParams and this cannot
+             * happen; calling MM_PeekMem directly is how a translation of the arm that NASA
+             * says is unreachable gets checked at all. */
+            pk.Payload.DataSize = 7;
+            std_                = MM_PeekMem(&pk, MD_SIM_WINDOW_BASE);
+            printf("mmd_peek_nowidth st=%ld\n", (long)std_);
+
+            /* --- MM_DumpMemToFile, the GENERIC path: a real array, 250 bytes, two segments. */
+            fs_len     = 0;
+            fs_pos     = 0;
+            fs_wr_left = -1;
+            fs_noexist = 0;
+            OS_OpenCreate(&fdd, "/ram/mmd.dp", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE,
+                          OS_WRITE_ONLY);
+            memset(&fhd, 0, sizeof(fhd));
+            fhd.NumOfBytes        = 250;
+            fhd.MemType           = MM_MemType_EEPROM;
+            fhd.SymAddress.Offset = CFE_ES_MEMADDRESS_C(mmd_src);
+            memset(MM_AppData.HkTlm.Payload.FileName, 'Z', CFE_MISSION_MAX_PATH_LEN);
+            std_ = MM_DumpMemToFile(fdd, "/ram/mmd.dp", &fhd);
+            printf("mmd_dump st=%ld len=%ld d0=%02X d199=%02X d200=%02X d249=%02X\n", (long)std_,
+                   fs_len, fs_data[0], fs_data[199], fs_data[200], fs_data[249]);
+            /* `addr_ok` INSTEAD OF `addr`: the field holds a real pointer, so its VALUE cannot
+             * cross the two halves -- but whether it equals the array's address can. */
+            printf("mmd_dump_hk la=%u mt=%u bp=%u addr_ok=%d fn=[%s] fn20=%u\n",
+                   (unsigned)MM_AppData.HkTlm.Payload.LastAction,
+                   (unsigned)MM_AppData.HkTlm.Payload.MemType,
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed,
+                   (int)(MM_AppData.HkTlm.Payload.Address == CFE_ES_MEMADDRESS_C(mmd_src)),
+                   MM_AppData.HkTlm.Payload.FileName,
+                   (unsigned char)MM_AppData.HkTlm.Payload.FileName[20]);
+            /* A SHORT WRITE. Note the event prints `RC = %d` -- a SIGNED decimal, where
+             * mm_mem8's twin prints `0x%08X` -- so a 100-byte write reads `RC = 100`. */
+            fs_len     = 0;
+            fs_pos     = 0;
+            fs_wr_left = 100;
+            OS_OpenCreate(&fdd, "/ram/mmd.dp", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE,
+                          OS_WRITE_ONLY);
+            std_       = MM_DumpMemToFile(fdd, "/ram/mmd.dp", &fhd);
+            fs_wr_left = -1;
+            printf("mmd_dump_short st=%ld len=%ld bp=%u\n", (long)std_, fs_len,
+                   (unsigned)MM_AppData.HkTlm.Payload.BytesProcessed);
+
+            /* --- MM_WriteFileHeaders. 64 bytes of cFE header then 88 of MM's, and the MM
+             * header is MEMSET HERE BY THE DRIVER: its last byte is tail padding, so NASA
+             * writes one byte of whatever was on the caller's stack into every dump file. The
+             * zero at offset 151 below is therefore evidence about THIS DRIVER and not about
+             * the translation -- stated because a reader would otherwise take it for NASA's. */
+            fs_len     = 0;
+            fs_pos     = 0;
+            fs_wr_left = -1;
+            OS_OpenCreate(&fdd, "/ram/mmd.hd", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE,
+                          OS_WRITE_ONLY);
+            memset(&cfh, 0, sizeof(cfh));
+            cfh.SubType = 0x4D4D5354;
+            strncpy(cfh.Description, "MM dump", sizeof(cfh.Description));
+            memset(&fhd, 0, sizeof(fhd));
+            fhd.NumOfBytes        = 250;
+            fhd.Crc               = 0x1234;
+            fhd.MemType           = MM_MemType_MEM16;
+            fhd.SymAddress.Offset = CFE_ES_MEMADDRESS_C(0x00100000);
+            std_                  = MM_WriteFileHeaders("/ram/mmd.hd", fdd, &cfh, &fhd);
+            printf("mmd_hdrs st=%ld len=%ld mmoff=%02X%02X%02X nbytes=%u crc=%u mt=%u "
+                   "pad151=%u\n",
+                   (long)std_, fs_len, fs_data[64], fs_data[65], fs_data[66],
+                   (unsigned)fs_data[64 + 72], (unsigned)fs_data[64 + 76],
+                   (unsigned)fs_data[64 + 80], (unsigned)fs_data[151]);
+            /* THE cFE HEADER'S WRITE COMES UP SHORT. Both error arms of this function replace
+             * the status with OS_ERR_INVALID_SIZE BEFORE printing it, so the event says -40 and
+             * not what actually happened -- a failed write and a short write are
+             * indistinguishable to the ground. NASA's own choice. */
+            fs_len     = 0;
+            fs_pos     = 0;
+            fs_wr_left = 10;
+            OS_OpenCreate(&fdd, "/ram/mmd.hd", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE,
+                          OS_WRITE_ONLY);
+            std_ = MM_WriteFileHeaders("/ram/mmd.hd", fdd, &cfh, &fhd);
+            printf("mmd_hdrs_short1 st=%ld len=%ld\n", (long)std_, fs_len);
+            /* AND NOW THE cFE HEADER FITS BUT MM'S DOES NOT, which is the other arm -- the one
+             * that only runs because the first one passed. */
+            fs_len     = 0;
+            fs_pos     = 0;
+            fs_wr_left = 64 + 10;
+            OS_OpenCreate(&fdd, "/ram/mmd.hd", OS_FILE_FLAG_CREATE | OS_FILE_FLAG_TRUNCATE,
+                          OS_WRITE_ONLY);
+            std_       = MM_WriteFileHeaders("/ram/mmd.hd", fdd, &cfh, &fhd);
+            fs_wr_left = -1;
+            printf("mmd_hdrs_short2 st=%ld len=%ld\n", (long)std_, fs_len);
+
+            /* --- MM_FillDumpInEventBuffer, all four success arms. The buffer is 16 bytes and
+             * NASA clears only the first MM_INTERNAL_MAX_DUMP_INEVENT_BYTES (15) of it, so
+             * [15] is a poison byte that must survive -- and [8..14] must be ZERO after an
+             * 8-byte request, which is what says the clear happened at all.
+             *
+             * RAM AND EEPROM SHARE ONE CASE BODY. Driving both is the only thing that says
+             * HolyC's switch falls through: if an empty `case` label did not reach the next
+             * one, the RAM arm would do nothing and return CFE_PSP_ERROR. */
+            memset(&de, 0, sizeof(de));
+            de.Payload.NumOfBytes = 8;
+            /* Filled at use rather than initialised, so the HolyC half can be the same shape:
+             * it has no aggregate initialiser. */
+            mmd_mts[0] = MM_MemType_RAM;
+            mmd_mts[1] = MM_MemType_EEPROM;
+            mmd_mts[2] = MM_MemType_MEM32;
+            mmd_mts[3] = MM_MemType_MEM16;
+            for (kd = 0; kd < 4; kd++)
+            {
+                cpuaddr src;
+                memset(mmd_evbuf, 0xEE, sizeof(mmd_evbuf));
+                de.Payload.MemType = (MM_MemType_Enum_t)mmd_mts[kd];
+                /* RAM and EEPROM copy from a real pointer; the two width arms go through the
+                 * PSP and so take a window address. */
+                src = (cpuaddr)MD_SIM_WINDOW_BASE;
+                if (kd < 2)
+                {
+                    src = (cpuaddr)mmd_src;
+                }
+                rr   = md_sim_reads;
+                std_ = MM_FillDumpInEventBuffer(src, &de, mmd_evbuf);
+                printf("mmd_ev mt=%u st=%ld reads=%ld b0=%02X b1=%02X b7=%02X b8=%02X "
+                       "b14=%02X b15=%02X\n",
+                       (unsigned)mmd_mts[kd], (long)std_, md_sim_reads - rr, mmd_evbuf[0],
+                       mmd_evbuf[1], mmd_evbuf[7], mmd_evbuf[8], mmd_evbuf[14], mmd_evbuf[15]);
+            }
+            memset(mmd_evbuf, 0xEE, sizeof(mmd_evbuf));
+            de.Payload.MemType = MM_MemType_MEM8;
+            rr                 = md_sim_reads;
+            std_               = MM_FillDumpInEventBuffer(MD_SIM_WINDOW_BASE, &de, mmd_evbuf);
+            printf("mmd_ev mt=%u st=%ld reads=%ld b0=%02X b1=%02X b7=%02X b8=%02X b14=%02X "
+                   "b15=%02X\n",
+                   (unsigned)MM_MemType_MEM8, (long)std_, md_sim_reads - rr, mmd_evbuf[0],
+                   mmd_evbuf[1], mmd_evbuf[7], mmd_evbuf[8], mmd_evbuf[14], mmd_evbuf[15]);
+            /* AND A MEMORY TYPE NO ARM MATCHES: NASA's default is empty and says it cannot
+             * happen, so PSP_Status is still the CFE_PSP_ERROR it was initialised to -- but the
+             * BUFFER IS STILL CLEARED, because the memset runs before the switch. Both halves
+             * of that. */
+            memset(mmd_evbuf, 0xEE, sizeof(mmd_evbuf));
+            de.Payload.MemType = MM_MemType_NOMEMTYPE;
+            std_               = MM_FillDumpInEventBuffer(MD_SIM_WINDOW_BASE, &de, mmd_evbuf);
+            printf("mmd_ev_nomt st=%ld b0=%02X b14=%02X b15=%02X\n", (long)std_, mmd_evbuf[0],
+                   mmd_evbuf[14], mmd_evbuf[15]);
         }
 
         printf("tim_objtab %s %d %d %d %lu %lu\n", CFE_TIME_ModuleEntry.Name,
