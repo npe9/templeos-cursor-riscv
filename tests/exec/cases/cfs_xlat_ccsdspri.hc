@@ -1827,6 +1827,7 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/lc/lc_watch.HC"
 #include "/Kernel/Cfs/lc/lc_utils.HC"
 #include "/Kernel/Cfs/lc/lc_cmds.HC"
+#include "/Kernel/Cfs/lc/lc_dispatch.HC"
 
 // ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
 //

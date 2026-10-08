@@ -160,6 +160,7 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "lc_watch.h"
 #include "lc_utils.h"
 #include "lc_cmds.h"
+#include "lc_dispatch.h"
 #include "cs_dispatch.h"
 /* THREE OF CS's FUNCTIONS ARE IN NO HEADER. CS_CheckGenericNameMatch and
  * CS_SetGenericEntryState in cs_utils.c, and CS_ExtractNames in cs_table_processing.c, are not
