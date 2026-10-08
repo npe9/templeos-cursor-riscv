@@ -8783,6 +8783,16 @@ U0 cs_block_init()
   S("csi_tables_reinit rc=");
   D(rc);
   S("\n");
+  // THE FOUR STATES ARE FORCED *ENABLED* FIRST, and this line is the whole reason mutation 9 means
+  // anything. Deleting the `*tw->GlobalState = CS_ChecksumState_DISABLED` from CS_InitAllTables'
+  // failure arm was a NO-OP: by this point every state was ALREADY disabled -- the first init loaded
+  // each table from memory, which disables it -- so writing DISABLED again changed nothing. The
+  // assertion was reading a value that was there for another reason. Poison-first, which is the rule
+  // this project keeps relearning.
+  CS_AppData.HkPacket.Payload.EepromCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.MemoryCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.TablesCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.AppCSState = CS_ChecksumState_ENABLED;
   rc = CS_InitAllTables();
   S("csi_tables_fail rc=");
   D(rc);

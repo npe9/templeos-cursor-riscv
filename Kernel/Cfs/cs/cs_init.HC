@@ -227,6 +227,16 @@ I32 CS_InitAllTables()
         *tw->GlobalState = CS_ChecksumState_DISABLED;
       }
 
+      // `ErrorEventID != 0` IS NEVER FALSE WHEN IT IS EVALUATED, and that is provable rather than
+      // observed. CS_TableInit returns CFE_SUCCESS immediately when DefinitionTableFileName is
+      // NULL, and TABLE_FILENAME_MAP is NULL for exactly the two types whose event id is zero -- so
+      // the only types that can reach this block are the four that have an id. A mutation replacing
+      // the guard with `TRUE` is a NO-OP and will stay one.
+      //
+      // IT IS STILL A REAL GUARD, and the mutation that shows what it guards is its neighbour:
+      // giving a code-segment type a filename in TABLE_FILENAME_MAP is CAUGHT, because that type
+      // can then fail -- and would then try to send event id 0. The guard and the NULL filename are
+      // one mechanism stated twice, which is why only one of the two mutations bites.
       if (ErrorEventID != 0) {
         CFE_EVS_SendEvent(ErrorEventID, CFE_EVS_EventType_ERROR,
                           "Table initialization failed for %s: 0x%08X",
