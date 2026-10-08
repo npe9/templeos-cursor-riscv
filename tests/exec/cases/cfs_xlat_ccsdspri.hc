@@ -8378,6 +8378,7 @@ U0 cs_block_init()
   U32 cv;
   Bool done;
   I64 k;
+  U8 *expect;
 
   cs_fill_sources();
   cs_setup();
@@ -8431,6 +8432,21 @@ U0 cs_block_init()
   done = FALSE;
   rc = CS_ComputeEepromMemory(&CS_AppData.CfeCoreCodeSeg, &cv, &done);
   S("csi_seg_crc rc=");
+  D(rc);
+  S(" done=");
+  D(done);
+  S(" cv=");
+  D(cv);
+  S("\n");
+  // AND THE OS SEGMENT'S OWN CRC, which is what makes the two ADDRESSES asserted rather than just
+  // the two sizes. A mutation that pointed the OS segment at the cFE one was a NO-OP while this
+  // line was missing: the sizes differ (7 against 8) so NumBytesToChecksum looked right, and
+  // nothing read the bytes. "cFEtext" read 8 long and "OSkernel" read 8 long are different bytes,
+  // so the two CRCs are different numbers.
+  cv = 0;
+  done = FALSE;
+  rc = CS_ComputeEepromMemory(&CS_AppData.OSCodeSeg, &cv, &done);
+  S("csi_seg_crc_os rc=");
   D(rc);
   S(" done=");
   D(done);
@@ -8505,12 +8521,42 @@ U0 cs_block_init()
   sb_forget_queue_name(CS_CMD_PIPE_NAME);
 
   // THE NOMINAL PATH: a pipe and three subscriptions.
+  //
+  // AND THE THREE SUBSCRIPTIONS ARE READ BACK, which they were not: a mutation that replaced the
+  // background-cycle CFE_SB_Subscribe with `Result = CFE_SUCCESS` was a NO-OP, because nothing here
+  // asked SB what CS was listening to. CFE_SB_GetDestPtr on each MsgId's route answers whether CS's
+  // pipe is a destination -- the question the subscribe exists to settle.
+  //
+  // THE HOUSEKEEPING PACKET'S SIZE IS READ BACK FOR THE SAME REASON. CFE_MSG_Init is told
+  // sizeof(CS_HkPacket_t); replacing that with sizeof(CS_HkPacket_Payload_t) was also a NO-OP.
+  // 80 against 64, and the number on the wire is what a ground system decodes.
   rc = CS_SbInit();
   S("csi_sb rc=");
   D(rc);
   S(" pipe=");
   D(CFE_ResourceId_IsDefined(CS_AppData.CmdPipe));
   S("\n");
+  {
+    I64 hksz = 0;
+
+    CFE_MSG_GetSize(&CS_AppData.HkPacket.TelemetryHeader.Msg, &hksz);
+    S("csi_sb_hksize ");
+    D(hksz);
+    S("\n");
+    S("csi_sb_subs cmd=");
+    D(CFE_SB_GetDestPtr(CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(CS_CMD_MID)),
+                        CS_AppData.CmdPipe) != NULL);
+    S(" hk=");
+    D(CFE_SB_GetDestPtr(CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(CS_SEND_HK_MID)),
+                        CS_AppData.CmdPipe) != NULL);
+    S(" bg=");
+    D(CFE_SB_GetDestPtr(CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(CS_BACKGROUND_CYCLE_MID)),
+                        CS_AppData.CmdPipe) != NULL);
+    S(" other=");
+    D(CFE_SB_GetDestPtr(CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(CS_HK_TLM_MID)),
+                        CS_AppData.CmdPipe) != NULL);
+    S("\n");
+  }
 
   // AND THE DUPLICATE, which needs no fault injector at all -- just the name CS has now used.
   rc = CS_SbInit();
@@ -8545,6 +8591,31 @@ U0 cs_block_init()
     D(tw->ResAddr != NULL);
     S(" n=");
     D(tw->NumEntries);
+    S("\n");
+    // THE FOUR DESCRIPTOR FIELDS, which is what CS_InitAllTables is FOR and which nothing read: two
+    // mutations -- the TABLES type given DefStateOffset 8 instead of 0, and the EEPROM type given
+    // the MEMORY default table -- were both NO-OPS. The sizes and the offset are what the generic
+    // byte arithmetic in cs_utils.c indexes with, and DefaultDefinitionPtr is a POINTER, so it is
+    // asserted as a comparison against the array it must name.
+    expect = NULL;
+    if (k == CS_ChecksumType_EEPROM_TABLE)
+      expect = CS_AppData.DefaultEepromDefTable;
+    else if (k == CS_ChecksumType_MEMORY_TABLE)
+      expect = CS_AppData.DefaultMemoryDefTable;
+    else if (k == CS_ChecksumType_TABLES_TABLE)
+      expect = CS_AppData.DefaultTablesDefTable;
+    else if (k == CS_ChecksumType_APP_TABLE)
+      expect = CS_AppData.DefaultAppDefTable;
+    S("csi_tbl_desc[");
+    D(k);
+    S("] defsz=");
+    D(tw->DefEntrySize);
+    S(" ressz=");
+    D(tw->ResEntrySize);
+    S(" off=");
+    D(tw->DefStateOffset);
+    S(" dflt=");
+    D(tw->DefaultDefinitionPtr == expect);
     S("\n");
   }
   // LOADED FROM MEMORY MEANS DISABLED. The file was missing, so each of the four tables came up
@@ -8687,6 +8758,43 @@ U0 cs_block_init()
     D(rt->TblHandleID != CFE_TBL_HANDLEID_UNDEFINED);
     S("\n");
   }
+
+  // --- A CS_InitAllTables THAT FAILS, LAST, because it leaves every wrapper in a failed state. Two
+  // mutations proved this arm unreached -- "report an error for a type with no event id" and "do not
+  // disable a type whose init failed" were both NO-OPS, because every table init had succeeded.
+  // Running it a second time is what fails, and the reason is NOT a knob of this driver's: the eight
+  // table names are already registered and the fall-back load answers CFE_TBL_ERR_LOAD_IN_PROGRESS,
+  // 0xCC000012. A first draft tried to force it by exhausting TBL's memory pool, printed `rc=0`, and
+  // claimed in a comment that the four types had failed. They had not. The pool-exhaust line is gone
+  // and this says what actually fails and why.
+  //
+  // THE WITNESS IS FOUR EVENTS AND NO MORE: 116, 117, 118, 119 -- one per real type -- and SILENCE
+  // for the cFE core and OS types, which is what the zeroes in cs_init.c's event-id map are for.
+  //
+  // AND IT TAKES TWO CALLS, which is the part that had to be measured rather than reasoned. A draft
+  // put ONE call here, moved it to the end "so it cannot leave the wrappers broken", and it came
+  // back rc=0: the second CS_InitAllTables SUCCEEDS. What fails is the THIRD, because the second
+  // leaves a CFE_TBL_Load pending on each single-buffer table -- CS never calls CFE_TBL_Manage, so
+  // nothing completes it -- and the next load answers CFE_TBL_ERR_LOAD_IN_PROGRESS. So the first of
+  // these two lines is a success and the second is the failure, and both are printed because a
+  // reader cannot otherwise tell which call the events belong to.
+  CS_InitializeDefaultTables();
+  rc = CS_InitAllTables();
+  S("csi_tables_reinit rc=");
+  D(rc);
+  S("\n");
+  rc = CS_InitAllTables();
+  S("csi_tables_fail rc=");
+  D(rc);
+  S(" eep=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S(" mem=");
+  D(CS_AppData.HkPacket.Payload.MemoryCSState);
+  S(" tbl=");
+  D(CS_AppData.HkPacket.Payload.TablesCSState);
+  S(" app=");
+  D(CS_AppData.HkPacket.Payload.AppCSState);
+  S("\n");
 
   // AND THE HEADROOM AFTER, so the cost of this block is a number rather than an assumption.
   {

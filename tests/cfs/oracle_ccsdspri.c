@@ -6892,6 +6892,15 @@ static void cs_block_init(void)
     done = false;
     rc   = CS_ComputeEepromMemory(&CS_AppData.CfeCoreCodeSeg, &cv, &done);
     printf("csi_seg_crc rc=%ld done=%d cv=%u\n", (long)rc, (int)done, (unsigned)cv);
+    /* AND THE OS SEGMENT'S OWN CRC, which is what makes the two ADDRESSES asserted rather than
+     * just the two sizes. A mutation that pointed the OS segment at the cFE one was a NO-OP while
+     * this line was missing: the sizes differ (7 against 8) so NumBytesToChecksum looked right,
+     * and nothing read the bytes. "cFEtext" read 8 long and "OSkernel" read 8 long are different
+     * bytes, so the two CRCs are different numbers. */
+    cv   = 0;
+    done = false;
+    rc   = CS_ComputeEepromMemory(&CS_AppData.OSCodeSeg, &cv, &done);
+    printf("csi_seg_crc_os rc=%ld done=%d cv=%u\n", (long)rc, (int)done, (unsigned)cv);
 
     /* THE PSP REFUSING: NASA's own PSP answers CFE_PSP_ERROR_NOT_IMPLEMENTED on several platforms,
      * which is why each segment has a whole arm for it. All seven fields are written -- a failure
@@ -6949,9 +6958,33 @@ static void cs_block_init(void)
      * is what csi_headroom_after counts. */
     sb_forget_queue_name(CS_CMD_PIPE_NAME);
 
-    /* THE NOMINAL PATH: a pipe and three subscriptions. */
+    /* THE NOMINAL PATH: a pipe and three subscriptions.
+     *
+     * AND THE THREE SUBSCRIPTIONS ARE READ BACK, which they were not: a mutation that replaced the
+     * background-cycle CFE_SB_Subscribe with `Result = CFE_SUCCESS` was a NO-OP, because nothing
+     * here asked SB what CS was listening to. CFE_SB_GetDestPtr on each MsgId's route answers
+     * whether CS's pipe is a destination -- the question the subscribe exists to settle.
+     *
+     * THE HOUSEKEEPING PACKET'S SIZE IS READ BACK FOR THE SAME REASON. CFE_MSG_Init is told
+     * sizeof(CS_HkPacket_t); replacing that with sizeof(CS_HkPacket_Payload_t) was also a NO-OP.
+     * 80 against 64, and the number on the wire is what a ground system decodes. */
     rc = CS_SbInit();
     printf("csi_sb rc=%ld pipe=%d\n", (long)rc, (int)CFE_RESOURCEID_TEST_DEFINED(CS_AppData.CmdPipe));
+    {
+        size_t hksz = 0;
+
+        CFE_MSG_GetSize(CFE_MSG_PTR(CS_AppData.HkPacket.TelemetryHeader), &hksz);
+        printf("csi_sb_hksize %u\n", (unsigned)hksz);
+        printf("csi_sb_subs cmd=%d hk=%d bg=%d other=%d\n",
+               (int)(CFE_SB_GetDestPtr(CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(CS_CMD_MID)),
+                                       CS_AppData.CmdPipe) != NULL),
+               (int)(CFE_SB_GetDestPtr(CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(CS_SEND_HK_MID)),
+                                       CS_AppData.CmdPipe) != NULL),
+               (int)(CFE_SB_GetDestPtr(CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(CS_BACKGROUND_CYCLE_MID)),
+                                       CS_AppData.CmdPipe) != NULL),
+               (int)(CFE_SB_GetDestPtr(CFE_SBR_GetRouteId(CFE_SB_ValueToMsgId(CS_HK_TLM_MID)),
+                                       CS_AppData.CmdPipe) != NULL));
+    }
 
     /* AND THE DUPLICATE, which needs no fault injector at all -- just the name CS has now used. */
     rc = CS_SbInit();
@@ -6973,6 +7006,20 @@ static void cs_block_init(void)
                CS_GetTableTypeAsString(tw), (int)CFE_TBL_HANDLE_IS_VALID(tw->DefHandle),
                (int)CFE_TBL_HANDLE_IS_VALID(tw->ResHandle), (int)(tw->DefAddr != NULL),
                (int)(tw->ResAddr != NULL), (unsigned)tw->NumEntries);
+        /* THE FOUR DESCRIPTOR FIELDS, which is what CS_InitAllTables is FOR and which nothing read:
+         * two mutations -- the TABLES type given DefStateOffset 8 instead of 0, and the EEPROM type
+         * given the MEMORY default table -- were both NO-OPS. The sizes and the offset are what the
+         * generic byte arithmetic in cs_utils.c indexes with, and DefaultDefinitionPtr is a POINTER,
+         * so it is asserted as a comparison against the array it must name. */
+        printf("csi_tbl_desc[%d] defsz=%u ressz=%u off=%u dflt=%d\n", k,
+               (unsigned)tw->DefEntrySize, (unsigned)tw->ResEntrySize,
+               (unsigned)tw->DefStateOffset,
+               (int)(tw->DefaultDefinitionPtr ==
+                     (k == CS_ChecksumType_EEPROM_TABLE ? (const void *)CS_AppData.DefaultEepromDefTable
+                      : k == CS_ChecksumType_MEMORY_TABLE ? (const void *)CS_AppData.DefaultMemoryDefTable
+                      : k == CS_ChecksumType_TABLES_TABLE ? (const void *)CS_AppData.DefaultTablesDefTable
+                      : k == CS_ChecksumType_APP_TABLE    ? (const void *)CS_AppData.DefaultAppDefTable
+                                                          : NULL)));
     }
     /* LOADED FROM MEMORY MEANS DISABLED. The file was missing, so each of the four tables came up
      * from CS's own zeroed default -- and CS_RegisterDefinitionTable turns its global state OFF for
@@ -7077,6 +7124,37 @@ static void cs_block_init(void)
         printf("csi_ctbl_addr nonzero=%d handle=%d\n", (int)(rt->StartAddress != 0),
                (int)(rt->TblHandleID != CFE_TBL_HANDLEID_UNDEFINED));
     }
+
+    /* --- A CS_InitAllTables THAT FAILS, LAST, because it leaves every wrapper in a failed state.
+     * Two mutations proved this arm unreached -- "report an error for a type with no event id" and
+     * "do not disable a type whose init failed" were both NO-OPS, because every table init had
+     * succeeded. Running it a second time is what fails, and the reason is NOT a knob of this
+     * driver's: the eight table names are already registered and the fall-back load answers
+     * CFE_TBL_ERR_LOAD_IN_PROGRESS, 0xCC000012. A first draft tried to force it by exhausting TBL's
+     * memory pool, printed `rc=0`, and claimed in a comment that the four types had failed. They
+     * had not. The pool-exhaust line is gone and this says what actually fails and why.
+     *
+     * THE WITNESS IS FOUR EVENTS AND NO MORE: 116, 117, 118, 119 -- one per real type -- and
+     * SILENCE for the cFE core and OS types, which is what the zeroes in cs_init.c's event-id map
+     * are for.
+     *
+     * AND IT TAKES TWO CALLS, which is the part that had to be measured rather than reasoned. A
+     * draft put ONE call here, moved it to the end "so it cannot leave the wrappers broken", and it
+     * came back rc=0: the second CS_InitAllTables SUCCEEDS. What fails is the THIRD, because the
+     * second leaves a CFE_TBL_Load pending on each single-buffer table -- CS never calls
+     * CFE_TBL_Manage, so nothing completes it -- and the next load answers
+     * CFE_TBL_ERR_LOAD_IN_PROGRESS. So the first of these two lines is a success and the second is
+     * the failure, and both are printed because a reader cannot otherwise tell which call the
+     * events belong to. */
+    CS_InitializeDefaultTables();
+    rc = CS_InitAllTables();
+    printf("csi_tables_reinit rc=%ld\n", (long)rc);
+    rc = CS_InitAllTables();
+    printf("csi_tables_fail rc=%ld eep=%u mem=%u tbl=%u app=%u\n", (long)rc,
+           (unsigned)CS_AppData.HkPacket.Payload.EepromCSState,
+           (unsigned)CS_AppData.HkPacket.Payload.MemoryCSState,
+           (unsigned)CS_AppData.HkPacket.Payload.TablesCSState,
+           (unsigned)CS_AppData.HkPacket.Payload.AppCSState);
 
     /* AND THE HEADROOM AFTER, so the cost of this block is a number rather than an assumption. */
     {
