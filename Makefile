@@ -93,6 +93,20 @@ asm-gnu-diff: $(COMPILER_BIN)
 	@chmod +x tests/scripts/run_asm_gnu_diff.sh
 	@tests/scripts/run_asm_gnu_diff.sh
 
+# RV64 codegen byte-identity gate for the portable-backend refactor (docs/MULTIARCH.md
+# milestones M1-M5): recompiles the pure-codegen exec-oracle corpus across the opt-env
+# matrix and diffs sha256 vs tests/asm/codegen_rv64_golden.txt. `make codegen-bytediff-record`
+# rewrites the golden (only when an rv64 change is intended).
+codegen-bytediff: $(COMPILER_BIN)
+	@chmod +x tests/scripts/run_codegen_bytediff.sh
+	@tests/scripts/run_codegen_bytediff.sh check
+
+codegen-bytediff-record: $(COMPILER_BIN)
+	@chmod +x tests/scripts/run_codegen_bytediff.sh
+	@tests/scripts/run_codegen_bytediff.sh record
+
+.PHONY: codegen-bytediff codegen-bytediff-record
+
 # Host HolyC→RISC-V codegen semantics (curated exec oracles + negatives + soft patterns).
 # Host unit test for the M-mode misaligned load/store emulator (bootstrap/holy_misaligned.h).
 # QEMU never traps a plain misaligned access, so the decoder is proven here and the hook on the board.
