@@ -3372,3 +3372,192 @@ which is why only one of the two mutations bites. Recorded at the site in `cs_in
 it — so writing `DISABLED` again changed nothing. The assertion was reading a value that was there
 for another reason. The four states are now forced **ENABLED** immediately before the failing call.
 Poison-first, which is the rule this project keeps relearning.
+
+### Step 3 — the five command files, the dispatcher and the app: **CS is 100%**
+
+2,924 lines, 49 functions, gated in one commit because `CS_AppPipe` and `CS_UpdateCDS` close a
+seven-source cycle. Transcript **3228 → 3861** byte-identical, and with it **all 150 of CS's
+functions RUN**. Third app, no stand-ins, nothing unexercised.
+
+**SEVEN exercise blocks, one per NASA source.** Limit #22 is the reason — step 1's first draft wrote
+one block inline in `main()` and grew that frame enough to make a file-scope `&function` initialiser
+read as zero 1,900 transcript lines earlier. Seven small frames cost nothing and make a bisect name
+a file.
+
+**They run AFTER `cs_block_init` and none of them may read what it left.** `cs_block_init`
+deliberately ends with a `CS_InitAllTables` that FAILED, which is the only way to reach `cs_init.c`'s
+error arms, so every wrapper it leaves is in a failed state. Each step-3 block starts from
+`cs_setup()`. The rule recorded earlier — *`cs_block_init` must stay last because a later
+`cs_setup()` orphans its eight registered cFE tables* — remains true and is now harmless, because
+nothing after it reads them.
+
+#### The sticky-flag hazard, stated before it could bite
+
+`RecomputeInProgress` and `OneShotInProgress` are what every busy-path arm needs set, and
+`CS_CheckRecomputeOneshot` reads them — so a flag left TRUE makes **dozens** of later handlers take
+their refuse path, both halves agree, and the transcript grows while asserting nothing. This driver's
+`OS_TaskCreate` never calls the entry function, so a **successful** recompute leaves the flag TRUE
+with no child to clear it. Every line that can set a flag PRINTS BOTH, and the blocks reset through
+`cs_setup()` between groups. Two arms are then reached *because* of it: the busy arms need no
+hand-set flag at all.
+
+#### All four upstream defects are WITNESSED, in pairs one number apart
+
+```
+csec_report_nobase cc=1 state_after=1      <- #13 a REPORT command re-enabled a DISABLED entry
+csmc_report_nobase cc=1 state_after=2      <-     the Memory twin, same three lines, no write
+
+... EEPROM Entry ID 0 failed: child task in use   <- #14 commanded id was 7
+... Memory Entry ID 7 failed: child task in use   <-     the twin assigns outside the `if`
+
+... CFE_ES_CreateChildTask returned:  0xC8000005  <- #16 the EEPROM text
+... ES_CreateChildTask returned:  0xC8000005      <-     the Memory text, prefix DROPPED
+... OneShot checkum failed, ...                   <- #16 and a spelling nobody greps for
+```
+
+#15 — the two busy events that print **uninitialised stack** — cannot cross the differential for the
+same reason an event printing a real pointer cannot, so both are driven with the EVS output port
+closed and `MessageSendCounter` as the witness. Leaving them undriven, which is what MM did with its
+uncomparable events, would leave the defect unproven as well as unexercised.
+
+#### The generated twins, and the identifier gate they produced
+
+`cs_memory_cmds.HC` was generated from `cs_eeprom_cmds.HC` and `cs_app_cmds.HC` from
+`cs_table_cmds.HC`, by explicit name maps, because NASA's sources are line-for-line twins. Their
+EXERCISES are generated the same way, and the property that makes it worth doing is that the two must
+differ in **exactly** the places upstream differs and nowhere else — three places for the first pair,
+**none at all** for the second, which was measured: normalising the type words to one token and
+diffing `cs_table_cmds.c` against `cs_app_cmds.c` leaves only whitespace, four banner widths and
+three `/* command verification variables */` comments. Not one statement. Finding nothing is evidence
+only because the same method found five real lines next door.
+
+**And a name map got one word wrong.** `cs_app_cmds.HC:132` assigned
+`CS_AppData.RecomputeTablesEntryPtr` where NASA assigns `RecomputeAppEntryPtr`, so CS's app recompute
+handed its child task a NULL pointer. **Every gate passed** — the function exists, its signature
+matches, both members exist with NASA's layout, every literal is NASA's, the call agrees — and the
+HolyC compiler accepted the pointer type mismatch because a cast there RELABELS rather than converts.
+The C compiler never saw it: the oracle compiles NASA's C, not the translation. One character in the
+transcript caught it, `ptr=1` against `ptr=0`, and only because that line printed the pointer as a
+comparison.
+
+So `tools/cfs/check_members.py` now compares, **per function**, every name after a `.` or `->` with
+the names NASA's own body for that function uses. Members are the one part of this translation that
+is never renamed, which is what makes it possible.
+
+```
+cfs-members: 3932 member references across 1042 functions are all members NASA's own body touches
+             (45 allowed by a named macro expansion; 35 members NASA touches and the translation
+              does not, NOT yet gated)
+```
+
+The 45 are five names, each keyed on its **cause** in NASA's body rather than on the name
+(`CFE_MSG_PTR` → `.Msg`, `OS_FILESTAT_SIZE` → `.FileSize`, `= { 0 }` / `CFE_TIME_ZERO_VALUE` →
+`.Seconds`, `.Subseconds`, `.ticks`), so the same member is still refused where the macro is absent.
+Strings are blanked first — `CFE_SB_LockSharedData("cfe_sb_task.c", 310)` otherwise contributes a
+member named `c`, five times.
+
+The other direction is 35 cases and they are **not** defects: the first examined is
+`CFE_TIME_SetSourceCmd`'s `CommandCounter++` inside `#if (CFE_PLATFORM_TIME_CFG_SOURCE == true)`,
+false in this configuration and correctly omitted. Gating it needs NASA's `#if` blocks evaluated.
+
+#### The sibling gate: NASA's own wording
+
+Writing up #16 is what exposed a second hole of the same shape. `check_formats` reads the
+CONVERSIONS out of a format string and says nothing about the text around them — and the differential
+cannot see that text either, because the two halves are compared to **each other** and both print the
+translation's wording. A dropped word, a changed capital, a singular made plural: all pass.
+
+`tools/cfs/check_strings.py` closes it — every literal in the translation must appear **verbatim** in
+the NASA source it came from.
+
+```
+cfs-strings: 1522 literals verbatim in the NASA source they were translated from
+             (1452 paired, 43 via __func__, 26 elsewhere in NASA, 1 exempt)
+```
+
+Four normalisations with reasons: C adjacent-literal concatenation folded, printf **length
+modifiers** dropped on both sides (`%ld` compares equal to `%d` because StrPrintNV implements none —
+but `%d` against `%u` still FAILS), `\'` equal to `'`, and `__func__` substitution anchored to
+`Name:` or `Name()` so it cannot match any literal starting with any word.
+
+**Its first full run found a 1:1 violation of my own.** `mm_mem32.HC` printed `Reducing from %u to
+%u` where NASA prints `%d to %d` — because the twin `mm_mem16.c` uses `%u` and I had quietly made
+NASA's two inconsistent siblings consistent. It is unreachable through the command path (upstream
+note #12), so no exercise will ever print it: the transcript is UNCHANGED after the fix, which is the
+confirmation that only a static gate could have found it. And a second, `cfe_sb_init.HC` writing
+`0x%X` for NASA's `0x%lx` — upper-case hex for lower, the same invisible class as the `%P` note.
+
+The control is the most sympathetic edit a translator can make: **fixing NASA's `OneShot checkum`
+typo**, which the gate refuses by name and line.
+
+#### The forty command codes go through `CS_AppPipe`
+
+Direct calls are what the five command blocks do, and they leave `CS_ProcessCmd`,
+`CS_VerifyCmdLength` and the forty switch arms UNRUN while `check_coverage` stays green — it is blind
+to execution. So all forty are dispatched, each with **its own** correct length from a table
+generated out of NASA's own switch: 8 bytes for a bare header, 12 for an EntryID command, 48 for a
+name command, and one length for all forty would make thirty-nine take the error arm and look routed.
+
+The **cross-app** assertion a per-app exercise cannot make: MD's dispatcher is driven again *after*
+CS's has warmed its three static MsgId caches. CS is the sixth set in one translation unit to name a
+static local `CMD_MID`; for one commit all six collided, because a HolyC static local became a global
+under its bare name. `csd_md_still_routes cc=1 ec=0` is the only line in the suite that would notice
+a regression there.
+
+#### Upstream note #17, and a class of defect no gate here looks for
+
+`CS_VerifyCmdLength` is defined with external linkage in `cs_dispatch.c` and declared in **no**
+header — `cs_dispatch.h` declares its two neighbours from the same file and not it. Found by the
+oracle failing to compile. Second instance of note #3's shape, in a different repository, and in both
+cases a function a test wants first.
+
+Worth stating as a gap rather than a curiosity: **every gate in `tools/cfs` starts from a DEFINITION
+and asks whether the translation matches. None starts from a definition and asks whether anyone can
+call it.** A header-completeness check would find this class in bulk.
+
+#### Three drafts of the app block, each green and each wrong
+
+1. `csd_bkgnd tbl=0 ent=0` as the background-cycle **route** witness. `CS_DISABLE_ALL_CS_CC` is one
+   of the forty dispatched above it, so `ChecksumState` was DISABLED by the time the route was
+   tested: the cycle skipped its whole body and printed exactly what *the route went nowhere* prints.
+   A route witness that reads the same when the route works and when it does not is not a witness.
+2. `csap_init_tables 11 11 11 11 11 11` from `CFE_TBL_HANDLE_IS_VALID`. `CFE_TBL_BAD_TABLE_HANDLE` is
+   **-1** and zero is a perfectly good handle — the trap `cs_setup`'s own comment warns about — so the
+   two code-segment types, which register nothing, printed `11` like the four real ones. The VALUES
+   distinguish them: `0/0 0/0 2/1 4/3 6/5 8/7`.
+3. A CDS planted with `OSCSState` ENABLED, to witness the warm boot *through* `CS_AppInit`. Every
+   `CS_*_POWERON_STATE` is 1 here, so a planted ENABLED is indistinguishable from the default — and
+   the four TABLE states cannot witness a restore at all, because `CS_InitAllTables` DISABLES each one
+   when its table loads from memory. The two **code-segment** states are the only ones that can:
+   nothing overwrites them. Planted DISABLED, and `csap_init_states ... os=2 cfe=2` is the proof.
+
+#### `CS_AppMain`'s clean-exit event is reachable, and `CFE_TBL_EarlyInit` is not repeatable
+
+The two termination events are a pair: APP_ERROR takes the ERROR arm with RunStatus **and** the last
+Result, anything else takes the INFORMATION arm with RunStatus alone. Every other app block in this
+port drives only the first, and MD's records that pre-setting `ControlReq` *did NOT work*.
+
+It works. MD's note is true **there** for a different reason: MD's AppInit was failing, so APP_ERROR
+was written over the control request's value before `CFE_ES_RunLoop` ever looked. The lever is
+RunLoop's **second** test, on the app RECORD's `ControlReq`, which writes the request into
+`*RunStatus` and returns false. With an AppInit that SUCCEEDS,
+`App terminating, RunStatus:0x00000002` is in the transcript beside `RunStatus:0x00000003,
+RC:0xCA000005`.
+
+That needs **one** AppInit to succeed and there is only one available. A draft called `CS_AppInit()`
+directly for the success path and wanted a second successful one inside `CS_AppMain` — which needs the
+table registry cleared again, and the second `CFE_TBL_EarlyInit` printed `No free MemPool slots
+available`, allocated nothing, and every table registration answered `0xC4000001`. Each EarlyInit
+leaks its two pools and `CFE_PLATFORM_ES_MAX_MEMORY_POOLS` is finite. So AppMain does the only
+successful init and the witnesses are read out of the global it leaves behind.
+
+#### A vacuous POISON, which is a new shape
+
+`sed -i '' '131s/RecomputeAppEntryPtr/.../'` — off by one. Line 131 was a different assignment, **sed
+matched nothing, the file was unchanged**, and the gate under test passed. That reads exactly like
+*the gate is blind to the defect it was written for*, and it nearly sent me back to rewrite the gate.
+The control on line 132 fails and names the function.
+
+The rule: **a control must be shown to have CHANGED something.** Print the poisoned line back before
+believing a passing gate. Every other entry in this document's vacuity list is about an assertion
+that looked at nothing; this is the first where the *poison* was the vacuous half.
