@@ -125,6 +125,16 @@ DEFN = re.compile(r'^[A-Za-z_][A-Za-z0-9_ \t\*]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(
 EXPANSIONS = {
     "Msg": ("CFE_MSG_PTR",),
     "FileSize": ("OS_FILESTAT_SIZE",),
+    # HolyC HAS NO F32, so where NASA memcpys four bytes into a `float` and touches no member at
+    # all, the translation reads the 32-bit BIT PATTERN out of LC_MultiType_t and converts it with
+    # Kernel/Cfs/CfsF32.HC. The member access is therefore extra by construction.
+    #
+    # KEYED ON `float` IN NASA'S BODY, AND THAT IS NARROWER THAN IT LOOKS: exactly FIVE function
+    # bodies in the whole NASA corpus mention the word, and two of those are in utstubs.c, which
+    # is a unit-test stub this port does not gate. The other three are LC_FloatCompare,
+    # LC_WPOffsetValid and LC_ValidateWDT -- the only places in cFS that handle a single-precision
+    # value. Measured, not estimated.
+    "Unsigned32": ("float",),
     # KEYED ON THE INITIALISER FORM, NOT ON THE TYPE NAME, and that distinction was the whole
     # point of a review. A first version keyed these three on `CFE_TIME_SysTime_t` and `OS_time_t`
     # -- so ANY NASA body that merely DECLARED one of those types excused a `.Seconds` reference
