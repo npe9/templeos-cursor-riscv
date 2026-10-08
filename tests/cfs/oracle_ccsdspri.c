@@ -9617,6 +9617,462 @@ static void lc_block_float(void)
     printf("lcw_opcmp_badtype r=%u\n", (unsigned)g);
 }
 
+/* --- THE WATCHPOINT HASH TABLE AND THE PACKET PATH, which is LC's steady-state work and the
+ * only part of the application with no allocator anywhere in it.
+ *
+ * LC subscribes to every MsgId its watchpoint table names, and for each arriving packet it has to
+ * find the watchpoints that read that id. The structure is a 256-entry table indexed by the LOW
+ * BYTE of the MsgId, each entry a linked list of MsgIds that hash there, each of those carrying a
+ * linked list of watchpoint indices. The links come from two FIXED POOLS of
+ * LC_MAX_WATCHPOINTS entries inside LC_OperData -- MessageLinks and WatchPtLinks -- and
+ * LC_AddWatchpoint hands them out by bumping a counter. NOTHING IS EVER FREED AND NOTHING IS EVER
+ * MALLOC'D, which is what makes the packet path bounded.
+ *
+ * THE SIX WATCHPOINTS BELOW ARE LAID OUT TO DRIVE EVERY BRANCH OF THAT CONSTRUCTION:
+ *
+ *   WP 0, 1   SAME MsgId, CONSECUTIVE ENTRIES. This is LC_CreateHashTable's optimised path --
+ *             "if same MessageID as last watchpoint" appends straight to the list WatchPtLink
+ *             already points at and never calls LC_AddWatchpoint. So MessageIDsCount must count
+ *             1 for the pair, not 2, and that is the assertion.
+ *   WP 2      0x0901, WHICH COLLIDES WITH 0x0801. Same low byte, so it hashes to bucket 1 and
+ *             LC_AddWatchpoint has to walk to the end of a non-empty list and append. A hash
+ *             that used more than the low byte would put it in its own bucket and this line
+ *             would still pass -- which is why the collision is also asserted directly in
+ *             lcw_hash above.
+ *   WP 3      0x0802, a DIFFERENT bucket: the empty-entry arm.
+ *   WP 4      0x0801 AGAIN, non-consecutively. LC_AddWatchpoint must FIND the existing link and
+ *             subscribe no second time. Its offset is past the end of the message, so it is also
+ *             the LC_WPOffsetValid failure.
+ *   WP 5      0x0803 with LC_OPER_CUSTOM, which routes LC_ProcessWP to LC_CustomFunction instead
+ *             of LC_OperatorCompare -- the one call in lc_watch.c that leaves the module.
+ *
+ * AND THE PIPE IS REAL. LC_CreateHashTable SUBSCRIBES, so without a pipe every subscription fails
+ * and the transcript fills with LC_SUB_WP_ERR_EID instead of exercising the table. The pipe is
+ * created here rather than in lc_setup because only this block and lc_block_app need one. */
+#define LC_EX_WPS 6
+
+static uint64 lc_mbuf8[8]; /* 64 bytes, 8-byte aligned in both halves -- see the note below */
+
+static void lc_define_wps(void)
+{
+    /* WP 0 and 1: one MsgId, two offsets, consecutive -- the optimised append */
+    lc_wdt[0].DataType           = LC_DATA_WATCH_UBYTE;
+    lc_wdt[0].OperatorID         = LC_OPER_GT;
+    lc_wdt[0].MessageID          = CFE_SB_ValueToMsgId(0x0801);
+    lc_wdt[0].WatchpointOffset   = 16;
+    lc_wdt[0].BitMask            = 0xFF;
+    lc_wdt[0].ComparisonValue.Unsigned32 = 0x10;
+    lc_wdt[0].ResultAgeWhenStale = 3;
+
+    lc_wdt[1].DataType           = LC_DATA_WATCH_UBYTE;
+    lc_wdt[1].OperatorID         = LC_OPER_LT;
+    lc_wdt[1].MessageID          = CFE_SB_ValueToMsgId(0x0801);
+    lc_wdt[1].WatchpointOffset   = 17;
+    lc_wdt[1].BitMask            = 0xFF;
+    lc_wdt[1].ComparisonValue.Unsigned32 = 0x80;
+    lc_wdt[1].ResultAgeWhenStale = 2;
+
+    /* WP 2: 0x0901 collides with 0x0801 in bucket 1 */
+    lc_wdt[2].DataType           = LC_DATA_WATCH_UWORD_BE;
+    lc_wdt[2].OperatorID         = LC_OPER_EQ;
+    lc_wdt[2].MessageID          = CFE_SB_ValueToMsgId(0x0901);
+    lc_wdt[2].WatchpointOffset   = 16;
+    lc_wdt[2].BitMask            = 0xFFFF;
+    lc_wdt[2].ComparisonValue.Unsigned32 = 0x1122;
+    lc_wdt[2].ResultAgeWhenStale = 1;
+
+    /* WP 3: a different bucket */
+    lc_wdt[3].DataType           = LC_DATA_WATCH_UBYTE;
+    lc_wdt[3].OperatorID         = LC_OPER_GT;
+    lc_wdt[3].MessageID          = CFE_SB_ValueToMsgId(0x0802);
+    lc_wdt[3].WatchpointOffset   = 16;
+    lc_wdt[3].BitMask            = 0xFF;
+    lc_wdt[3].ComparisonValue.Unsigned32 = 0x00;
+    lc_wdt[3].ResultAgeWhenStale = 1;
+
+    /* WP 4: 0x0801 again, NON-consecutively, and its offset runs off the end of the message */
+    lc_wdt[4].DataType           = LC_DATA_WATCH_UBYTE;
+    lc_wdt[4].OperatorID         = LC_OPER_GT;
+    lc_wdt[4].MessageID          = CFE_SB_ValueToMsgId(0x0801);
+    lc_wdt[4].WatchpointOffset   = 200;
+    lc_wdt[4].BitMask            = 0xFF;
+    lc_wdt[4].ComparisonValue.Unsigned32 = 0x00;
+    lc_wdt[4].ResultAgeWhenStale = 1;
+
+    /* WP 5: the custom-function route out of the module */
+    lc_wdt[5].DataType           = LC_DATA_WATCH_UBYTE;
+    lc_wdt[5].OperatorID         = LC_OPER_CUSTOM;
+    lc_wdt[5].MessageID          = CFE_SB_ValueToMsgId(0x0803);
+    lc_wdt[5].WatchpointOffset   = 16;
+    lc_wdt[5].BitMask            = 0xFF;
+    lc_wdt[5].CustomFuncArgument = 0x5A;
+    lc_wdt[5].ResultAgeWhenStale = 1;
+}
+
+/* Print one watchpoint's whole result record. SIX COUNTERS AND A RESULT, because the counters are
+ * what separate "evaluated and came out false" from "never evaluated", and CountdownToStale is
+ * what separates either from "evaluated and errored". */
+static void lc_show_wrt(const char *tag, int w)
+{
+    printf("%s w=%d r=%u ev=%u ct=%u cons=%u f2t=%u cds=%u\n", tag, w,
+           (unsigned)lc_wrt[w].WatchResult, (unsigned)lc_wrt[w].EvaluationCount,
+           (unsigned)lc_wrt[w].CumulativeTrueCount, (unsigned)lc_wrt[w].ConsecutiveTrueCount,
+           (unsigned)lc_wrt[w].FalseToTrueCount, (unsigned)lc_wrt[w].CountdownToStale);
+}
+
+static void lc_block_hash(void)
+{
+    LC_MessageList_t *ml;
+    uint8            *raw;
+    CFE_SB_Buffer_t  *buf;
+    int               b;
+    int               w;
+    int               n;
+    int32             rc;
+
+    lc_setup();
+    lc_define_wps();
+
+    /* A REAL PIPE: LC_CreateHashTable subscribes to every MsgId the table names, and a failed
+     * subscription is an event rather than a return value -- so without this the transcript
+     * would be five LC_SUB_WP_ERR_EID lines and the table would still be built, which is a
+     * green comparison of the wrong thing. */
+    rc = CFE_SB_CreatePipe(&LC_OperData.CmdPipe, 12, "LC_EX_PIPE");
+    printf("lcw_pipe rc=%d\n", (int)rc);
+
+    LC_CreateHashTable();
+    printf("lcw_hashtbl mids=%u wps=%u\n", (unsigned)LC_OperData.MessageIDsCount,
+           (unsigned)LC_OperData.WatchpointCount);
+
+    /* WALK THE TABLE AND PRINT ITS SHAPE. Four buckets are interesting: 1 holds 0x0801 and
+     * 0x0901 (the collision), 2 holds 0x0802, 3 holds 0x0803, and 0 is empty. Printing the
+     * MsgIds in list order is what shows the append went to the END of bucket 1's list rather
+     * than the head -- a prepend would reverse these two and nothing else in the exercise
+     * would notice. */
+    for (b = 0; b <= 3; ++b)
+    {
+        printf("lcw_bucket %d:", b);
+        ml = LC_OperData.HashTable[b];
+        while (ml != NULL)
+        {
+            printf(" %04X", (unsigned)CFE_SB_MsgIdToValue(ml->MessageID));
+            /* count the watchpoints hanging off this MsgId */
+            {
+                LC_WatchPtList_t *wl = ml->WatchPtList;
+                n                    = 0;
+                while (wl != NULL)
+                {
+                    printf("/%u", (unsigned)wl->WatchIndex);
+                    ++n;
+                    wl = wl->Next;
+                }
+                printf("(%d)", n);
+            }
+            ml = ml->Next;
+        }
+        printf("\n");
+    }
+
+    /* --- A PACKET ARRIVES. The buffer is 64 bytes with the watchpoint data at offsets 16..23;
+     * WatchpointOffset is measured from the START OF THE BUFFER, headers included, which is why
+     * these offsets are 16 and not 0. A telemetry header is 16 bytes here, so offset 16 is the
+     * first payload byte -- but LC does not know or care: it is a raw byte offset.
+     *
+     * THE FIRST PACKET MAKES WP 0 TRUE AND WP 1 FALSE. Byte 16 is 0x40 and WP 0 asks "> 0x10";
+     * byte 17 is 0x90 and WP 1 asks "< 0x80". So one goes STALE -> TRUE (a FalseToTrue
+     * transition, because STALE counts as the false side) and the other STALE -> FALSE, and
+     * their CountdownToStale values differ because their ResultAgeWhenStale values do. */
+    raw = (uint8 *)lc_mbuf8;
+    buf = (CFE_SB_Buffer_t *)lc_mbuf8;
+    memset(raw, 0, 64);
+    CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(0x0801), 24);
+    raw[16] = 0x40;
+    raw[17] = 0x90;
+    raw[18] = 0x11;
+    raw[19] = 0x22;
+
+    LC_CheckMsgForWPs(CFE_SB_ValueToMsgId(0x0801), buf);
+    printf("lcw_chk1 mon=%u\n", (unsigned)LC_AppData.MonitoredMsgCount);
+    for (w = 0; w < LC_EX_WPS; ++w)
+    {
+        lc_show_wrt("lcw_chk1", w);
+    }
+
+    /* --- THE SAME PACKET AGAIN. Nothing transitions, so FalseToTrueCount must NOT move while
+     * EvaluationCount and the cumulative counts do. A translation that incremented the
+     * transition counter on every TRUE rather than on the edge passes the first packet and
+     * fails here. */
+    LC_CheckMsgForWPs(CFE_SB_ValueToMsgId(0x0801), buf);
+    printf("lcw_chk2 mon=%u\n", (unsigned)LC_AppData.MonitoredMsgCount);
+    for (w = 0; w < LC_EX_WPS; ++w)
+    {
+        lc_show_wrt("lcw_chk2", w);
+    }
+
+    /* --- NOW FLIP BOTH. Byte 16 becomes 0x05 so WP 0 goes TRUE -> FALSE, and byte 17 becomes
+     * 0x10 so WP 1 goes FALSE -> TRUE. The two transition records are written by different arms
+     * of LC_ProcessWP and carry the MASKED value and the data type, so printing the recorded
+     * Value is what shows the right arm ran. */
+    raw[16] = 0x05;
+    raw[17] = 0x10;
+    LC_CheckMsgForWPs(CFE_SB_ValueToMsgId(0x0801), buf);
+    for (w = 0; w < 2; ++w)
+    {
+        lc_show_wrt("lcw_chk3", w);
+        printf("lcw_chk3_tr w=%d f2t_t=%u f2t_v=%08X t2f_t=%u t2f_v=%08X\n", w,
+               (unsigned)lc_wrt[w].LastFalseToTrue.DataType,
+               (unsigned)lc_wrt[w].LastFalseToTrue.Value,
+               (unsigned)lc_wrt[w].LastTrueToFalse.DataType,
+               (unsigned)lc_wrt[w].LastTrueToFalse.Value);
+    }
+
+    /* --- THE COLLIDING MsgId, so bucket 1's SECOND link is the one that must be found. WP 2 is
+     * a big-endian 16-bit watchpoint asking == 0x1122, and bytes 16..17 are 0x05 0x10 now -- so
+     * it is FALSE. Changing them to 0x11 0x22 makes it TRUE, which is the pair of lines that
+     * shows the big-endian read used the right two bytes in the right order. */
+    memset(raw, 0, 64);
+    CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(0x0901), 24);
+    raw[16] = 0x05;
+    raw[17] = 0x10;
+    LC_CheckMsgForWPs(CFE_SB_ValueToMsgId(0x0901), buf);
+    lc_show_wrt("lcw_chk_coll_f", 2);
+    raw[16] = 0x11;
+    raw[17] = 0x22;
+    LC_CheckMsgForWPs(CFE_SB_ValueToMsgId(0x0901), buf);
+    lc_show_wrt("lcw_chk_coll_t", 2);
+
+    /* --- THE CUSTOM FUNCTION. lc_custom.c's LC_CustomFunction is a MISSION STUB: NASA ships it
+     * returning LC_WATCH_FALSE after sending LC_CFCALL_ERR_EID, because a mission that wants a
+     * custom watchpoint operator replaces the file. So this line asserts the ROUTING, not an
+     * algorithm -- WP 5's result must be FALSE and the event must appear, and that is the only
+     * evidence that LC_OPER_CUSTOM did not fall through to LC_OperatorCompare. */
+    memset(raw, 0, 64);
+    CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(0x0803), 24);
+    raw[16] = 0x77;
+    LC_CheckMsgForWPs(CFE_SB_ValueToMsgId(0x0803), buf);
+    lc_show_wrt("lcw_chk_custom", 5);
+
+    /* --- A MsgId WITH NO WATCHPOINTS. 0x08FF hashes to bucket 255, which is empty, so
+     * MessageList is NULL, WatchPtFound stays false and LC sends LC_MID_INF_EID -- an
+     * INFORMATION event, per packet, which is the unbounded-event-stream risk lc_app.HC's
+     * header records. MonitoredMsgCount must NOT move. */
+    memset(raw, 0, 64);
+    CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(0x08FF), 24);
+    n = LC_AppData.MonitoredMsgCount;
+    LC_CheckMsgForWPs(CFE_SB_ValueToMsgId(0x08FF), buf);
+    printf("lcw_chk_nowp moved=%d\n", (int)(LC_AppData.MonitoredMsgCount - n));
+
+    /* --- AND WITH LC DISABLED, NOTHING HAPPENS AT ALL. The whole body of LC_CheckMsgForWPs is
+     * inside `if (CurrentLCState != LC_STATE_DISABLED)`, so a disabled LC does not even send the
+     * unreferenced-id event. Two witnesses: the monitored count does not move AND the evaluation
+     * count of a watchpoint that WOULD have matched does not move either -- the second is the one
+     * that matters, because the first would also hold if the packet simply found no watchpoint. */
+    LC_AppData.CurrentLCState = LC_STATE_DISABLED;
+    memset(raw, 0, 64);
+    CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(0x0801), 24);
+    raw[16] = 0x40;
+    n       = LC_AppData.MonitoredMsgCount;
+    b       = lc_wrt[0].EvaluationCount;
+    LC_CheckMsgForWPs(CFE_SB_ValueToMsgId(0x0801), buf);
+    printf("lcw_chk_disabled mon_moved=%d ev_moved=%d\n",
+           (int)(LC_AppData.MonitoredMsgCount - n), (int)(lc_wrt[0].EvaluationCount - b));
+    LC_AppData.CurrentLCState = LC_STATE_ACTIVE;
+
+    /* --- REBUILDING THE TABLE UNSUBSCRIBES FIRST. LC_CreateHashTable walks
+     * MessageLinks[0..MessageIDsCount) -- the POOL, not the hash table -- and unsubscribes from
+     * each. Calling it a second time with the same definitions must therefore end with the same
+     * counts, not doubled ones, and no subscription error: the unsubscribe has to have matched
+     * what the first call subscribed to. A rebuild that walked the hash table instead would
+     * reach the same set here, so the assertion is the COUNTS staying put. */
+    LC_CreateHashTable();
+    printf("lcw_hashtbl2 mids=%u wps=%u\n", (unsigned)LC_OperData.MessageIDsCount,
+           (unsigned)LC_OperData.WatchpointCount);
+
+    CFE_SB_DeletePipe(LC_OperData.CmdPipe);
+}
+
+/* --- THE TWO TABLE VALIDATORS, which are what cFE Table Services calls before it lets a ground
+ * upload become the live table. LC_ValidateWDT and LC_ValidateADT are registered as the
+ * validation callbacks in lc_app.c, so a bad entry anywhere in a 176-entry upload must be
+ * refused -- and LC's version of "refused" has a shape worth driving carefully:
+ *
+ *   EACH VALIDATOR SENDS A DETAILED EVENT FOR THE **FIRST** BAD ENTRY ONLY, and then an
+ *   INFORMATION event with the three totals. `if ((EntryResult != NONE) && (TableResult ==
+ *   CFE_SUCCESS))` is the guard, and TableResult stops being CFE_SUCCESS the moment the first
+ *   error is recorded. So a table with six different problems produces ONE diagnostic naming
+ *   one of them, plus a count. That is the behaviour, and it is why the loop below poisons
+ *   exactly ONE entry per pass: running six separate validations is the only way to see all six
+ *   events, and a single table with six faults would have shown one.
+ *
+ *   AND THE ERROR CODE IS THE RETURN VALUE. Table services reads it as "not CFE_SUCCESS" and
+ *   rejects the load, so the specific code only ever reaches a human through the event -- which
+ *   makes the event text, and the %d it prints the code with, part of the interface.
+ *
+ * THE WDT'S SIX ARMS ARE AN else-if CHAIN, SO THEIR ORDER IS OBSERVABLE. An entry with BOTH a bad
+ * data type and a bad operator reports DATATYPE, not OPER, and the last pass below is exactly
+ * that: three faults on one entry, and the code that comes back says which arm won. A translation
+ * that turned the chain into independent `if`s would report the LAST fault instead and every
+ * single-fault pass would still agree. */
+#define LC_EX_VALPASSES 7
+
+static void lc_good_wdt(void)
+{
+    int i;
+    for (i = 0; i < LC_MAX_WATCHPOINTS; ++i)
+    {
+        lc_wdt[i].DataType   = LC_DATA_WATCH_NOT_USED;
+        lc_wdt[i].OperatorID = LC_OPER_NONE;
+    }
+    /* Two good entries: one integer, one float. The float one matters because it is the only
+     * path that reaches the NAN/INF checks at all. */
+    lc_wdt[0].DataType                   = LC_DATA_WATCH_UBYTE;
+    lc_wdt[0].OperatorID                 = LC_OPER_GT;
+    lc_wdt[0].MessageID                  = CFE_SB_ValueToMsgId(0x0801);
+    lc_wdt[0].ComparisonValue.Unsigned32 = 0x10;
+    lc_wdt[1].DataType                   = LC_DATA_WATCH_FLOAT_LE;
+    lc_wdt[1].OperatorID                 = LC_OPER_LT;
+    lc_wdt[1].MessageID                  = CFE_SB_ValueToMsgId(0x0802);
+    lc_wdt[1].ComparisonValue.Unsigned32 = 0x3F800000; /* 1.0 -- finite, not NaN */
+    /* The entry each pass poisons. Good to start with. */
+    lc_wdt[5].DataType                   = LC_DATA_WATCH_UWORD_BE;
+    lc_wdt[5].OperatorID                 = LC_OPER_CUSTOM;
+    lc_wdt[5].MessageID                  = CFE_SB_ValueToMsgId(0x0803);
+    lc_wdt[5].ComparisonValue.Unsigned32 = 0x1234;
+}
+
+static void lc_good_adt(void)
+{
+    int i;
+    int j;
+    for (i = 0; i < LC_MAX_ACTIONPOINTS; ++i)
+    {
+        lc_adt[i].DefaultState = LC_APSTATE_NOT_USED;
+    }
+    for (i = 0; i < 2; ++i)
+    {
+        lc_adt[i].DefaultState      = LC_APSTATE_ACTIVE;
+        lc_adt[i].RTSId             = 1;
+        lc_adt[i].MaxFailsBeforeRTS = 2;
+        lc_adt[i].EventType         = CFE_EVS_EventType_ERROR;
+        for (j = 0; j < LC_MAX_RPN_EQU_SIZE; ++j)
+        {
+            lc_adt[i].RPNEquation[j] = 0;
+        }
+        lc_adt[i].RPNEquation[0] = (uint16)i;
+        lc_adt[i].RPNEquation[1] = LC_RPN_EQUAL;
+    }
+    /* The entry each pass poisons. */
+    lc_adt[5].DefaultState      = LC_APSTATE_PASSIVE;
+    lc_adt[5].RTSId             = 7;
+    lc_adt[5].MaxFailsBeforeRTS = 3;
+    lc_adt[5].EventType         = CFE_EVS_EventType_INFORMATION;
+    for (j = 0; j < LC_MAX_RPN_EQU_SIZE; ++j)
+    {
+        lc_adt[5].RPNEquation[j] = 0;
+    }
+    lc_adt[5].RPNEquation[0] = 5;
+    lc_adt[5].RPNEquation[1] = LC_RPN_EQUAL;
+}
+
+static void lc_block_validate(void)
+{
+    int   pass;
+    int32 rc;
+
+    lc_setup();
+
+    for (pass = 0; pass < LC_EX_VALPASSES; ++pass)
+    {
+        lc_good_wdt();
+        switch (pass)
+        {
+            case 0:
+                break; /* nothing wrong */
+            case 1:
+                lc_wdt[5].DataType = 77; /* not one of the twelve */
+                break;
+            case 2:
+                lc_wdt[5].OperatorID = 77;
+                break;
+            case 3:
+                lc_wdt[5].MessageID = CFE_SB_INVALID_MSG_ID;
+                break;
+            case 4:
+                lc_wdt[5].DataType                   = LC_DATA_WATCH_FLOAT_BE;
+                lc_wdt[5].ComparisonValue.Unsigned32 = 0x7FC00000; /* NaN */
+                break;
+            case 5:
+                lc_wdt[5].DataType                   = LC_DATA_WATCH_FLOAT_BE;
+                lc_wdt[5].ComparisonValue.Unsigned32 = 0xFF800000; /* -Inf */
+                break;
+            case 6:
+                /* THREE FAULTS AT ONCE, to read the else-if chain's precedence off the return
+                 * value: a bad data type, a bad operator AND an invalid message id. DATATYPE is
+                 * tested first, so 1 is the answer and the other two are never reached. */
+                lc_wdt[5].DataType   = 77;
+                lc_wdt[5].OperatorID = 77;
+                lc_wdt[5].MessageID  = CFE_SB_INVALID_MSG_ID;
+                break;
+            default:
+                break;
+        }
+        rc = LC_ValidateWDT(lc_wdt);
+        printf("lcw_valwdt pass=%d rc=%d\n", pass, (int)rc);
+    }
+
+    for (pass = 0; pass < LC_EX_VALPASSES; ++pass)
+    {
+        lc_good_adt();
+        switch (pass)
+        {
+            case 0:
+                break;
+            case 1:
+                lc_adt[5].DefaultState = 77;
+                break;
+            case 2:
+                /* LC_MAX_VALID_ADT_RTSID is 0xFFF0, so 0xFFF1 is the first invalid one. Using a
+                 * small wrong-looking number here would have passed: the check is an upper
+                 * bound, not a membership test. */
+                lc_adt[5].RTSId = 0xFFF1;
+                break;
+            case 3:
+                lc_adt[5].MaxFailsBeforeRTS = 0;
+                break;
+            case 4:
+                lc_adt[5].EventType = 77;
+                break;
+            case 5:
+                /* An RPN equation the validator rejects: "=" with nothing pushed. */
+                lc_adt[5].RPNEquation[0] = LC_RPN_EQUAL;
+                lc_adt[5].RPNEquation[1] = 0;
+                break;
+            case 6:
+                /* THE ADT CHAIN'S PRECEDENCE, same idea: a bad state AND a bad RTS id AND a zero
+                 * fail count. DEFSTATE is first. */
+                lc_adt[5].DefaultState      = 77;
+                lc_adt[5].RTSId             = 0xFFF1;
+                lc_adt[5].MaxFailsBeforeRTS = 0;
+                break;
+            default:
+                break;
+        }
+        rc = LC_ValidateADT(lc_adt);
+        printf("lca_valadt pass=%d rc=%d\n", pass, (int)rc);
+    }
+
+    /* --- AN ENTIRELY UNUSED TABLE IS VALID. Every entry at its NOT_USED marker, zero good and
+     * zero bad, and the return is CFE_SUCCESS -- so an empty upload is accepted and LC monitors
+     * nothing. That is the right answer and it is also the one a validator written as "at least
+     * one entry must be good" would get wrong; the INFORMATION event's counts are the witness,
+     * because the return value alone cannot tell this apart from pass 0 above. */
+    lc_setup();
+    rc = LC_ValidateWDT(lc_wdt);
+    printf("lcw_valwdt_empty rc=%d\n", (int)rc);
+    rc = LC_ValidateADT(lc_adt);
+    printf("lca_valadt_empty rc=%d\n", (int)rc);
+}
+
 int main(void)
 {
     CFE_MSG_Message_t msg;
@@ -18198,6 +18654,8 @@ int main(void)
         lc_block_watch_core();
         lc_block_rpn();
         lc_block_float();
+        lc_block_hash();
+        lc_block_validate();
 
             /* PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after
              * it today but tim_objtab, so both halves agreed and the transcript was green --
