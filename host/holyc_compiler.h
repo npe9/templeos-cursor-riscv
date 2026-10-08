@@ -12,7 +12,7 @@
 #include <string.h>
 #include "hash_table.h"
 #include "holy_api.h"
-#include "holyc_target.h"
+#include "backend/target.h"
 
 // ═══════════════════════════════════════════════════════════════
 // BASIC TYPES (TempleOS compatible)

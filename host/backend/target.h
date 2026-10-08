@@ -1,4 +1,7 @@
-/* holyc_target.h — code-generation target descriptor (multi-arch seam).
+/* host/backend/target.h — code-generation target descriptor (portable).
+ *
+ * Lives in host/backend/ — the ARCHITECTURE-NEUTRAL codegen root (see README.md).
+ * Per-ISA backends live in host/backend/<isa>/ and must not leak into neutral files.
  *
  * The HolyC AOT backend emits RISC-V rv64 today. To retarget it (rv32, then
  * AArch64/ARM32 — bare-metal; see docs/MULTIARCH.md and templeos-riscv/RV32.md)

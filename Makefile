@@ -25,6 +25,7 @@ COMPILER_SOURCES = \
 	$(HOST_DIR)/main_stub.c
 COMPILER_HEADERS = \
 	$(HOST_DIR)/holyc_compiler.h \
+	$(HOST_DIR)/backend/target.h \
 	$(HOST_DIR)/holy_api.h \
 	$(HOST_DIR)/holyc_fmt.h \
 	$(HOST_DIR)/rv32_lift.h \
