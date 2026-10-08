@@ -546,3 +546,32 @@ double space and the dropped prefix were found by a one-off check run while gene
 `cs_memory_cmds.HC` from its twin — every quoted string in the generated file had to appear
 verbatim in NASA's own `cs_memory_cmds.c`. That check is worth being a gate rather than a habit,
 and is listed as such in `docs/CFS_PLAN.md`.
+
+## 17. CS_VerifyCmdLength is a public function with no declaration anywhere
+
+The second instance of #3's shape, in a different repository and found the same way -- by a caller
+outside the module failing to compile.
+
+`CS/fsw/src/cs_dispatch.c:43` defines
+
+    bool CS_VerifyCmdLength(const CFE_MSG_Message_t *msg, size_t ExpectedLength)
+
+with external linkage. `cs_dispatch.h` declares its two neighbours from the same file --
+`CS_AppPipe` at :54 and `CS_ProcessCmd` at :66 -- and **not** this one. Nothing else in CS declares
+it either.
+
+So the function is either public and under-declared, or internal and should be `static`. As with
+#3 it is not a latent bug in a stock build: the only callers are in `cs_dispatch.c` itself, below
+the definition. It becomes one the moment a unit test or a second dispatcher wants it, which is
+precisely what happened here -- `tests/cfs/oracle_ccsdspri.c` has to write its own prototype to
+exercise the function, and says so at the declaration.
+
+Reproduced, not fixed: `Kernel/Cfs/cs/cs_dispatch.HC` keeps it non-static so the two sides have
+the same linkage. check_signatures compares the DEFINITION, which exists in both, so no gate had
+anything to object to.
+
+AND THE PATTERN IS WORTH THE SECOND ENTRY RATHER THAN A FOOTNOTE ON THE FIRST. Two of the three
+cFS repositories read so far have a function in this state, in both cases one that a test would
+want first. It is the kind of thing a header-completeness check would find in bulk; nothing in
+`tools/cfs` does that today, because every gate here starts from a DEFINITION and asks whether the
+translation matches, never from a definition and asks whether anyone can call it.

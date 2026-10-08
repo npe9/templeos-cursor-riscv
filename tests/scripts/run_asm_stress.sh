@@ -194,3 +194,7 @@ if fail:
     print(f"asm-stress: FAILED ({fail})", file=sys.stderr)
     sys.exit(1)
 PY
+
+# rv32 li regression: asm{} li expansion must not emit RV64 *W ops (illegal on
+# rv32).  See tests/asm/rv32_li_test.py.
+python3 "$ROOT/tests/asm/rv32_li_test.py"

@@ -10484,6 +10484,589 @@ U0 cs_block_app_cmds()
   S("\n");
 }
 
+// --- cs_dispatch.c: the length check, the forty-case switch, and the pipe router -------------
+//
+// CS HAS MORE COMMANDS THAN MD AND MM PUT TOGETHER -- 40 against 7 and 10 -- and the point of this
+// block is that all forty go through CS_AppPipe rather than being called directly. Direct calls are
+// what the five blocks above do, and they leave CS_ProcessCmd, CS_VerifyCmdLength and the forty
+// switch arms UNRUN while check_coverage stays green, because that gate is blind to execution.
+//
+// A CFE_SB_Buffer IS ONLY AN 8-BYTE ALIGNMENT UNION, so a command is built in a
+// CS_RecomputeBaselineTableCmd_t -- the largest of the forty-three at 48 bytes -- and its address
+// passed as the buffer. `&BufPtr->Msg` is at offset 0 either way, which is what makes that
+// substitution exact rather than convenient. MD's block established it.
+//
+// EACH COMMAND IS SENT WITH **ITS OWN** CORRECT LENGTH, from a table generated out of NASA's own
+// switch rather than written by hand: a bare command header is 8 bytes, an EntryID command is 12
+// and a name command is 48, so the length check is per-case and a single length would make
+// thirty-nine of the forty take the error arm and look routed.
+//
+// AND THE TWO FLAGS ARE CLEARED AFTER EVERY DISPATCH. Four of these forty set RecomputeInProgress
+// or OneShotInProgress and this driver's OS_TaskCreate never runs the child that would clear them
+// -- so without this, every command after the first recompute would take
+// CS_CheckRecomputeOneshot's refuse path, both halves would agree, and thirty-odd lines would
+// assert nothing. The flags are PRINTED before they are cleared, so the four that set one are
+// visible as themselves.
+//
+// CS_VerifyCmdLength IS A PUBLIC FUNCTION WITH NO DECLARATION ANYWHERE in NASA's CS -- upstream
+// note #17, the second instance of the shape #3 records for OS_ConsoleWrite. cs_dispatch.h declares
+// its two neighbours and not it. This half reaches it because cs_dispatch.HC is #included, so no
+// prototype is needed here; the C oracle writes its own and says so.
+U0 cs_block_dispatch()
+{
+  CS_RecomputeBaselineTableCmd_t cb;
+  U16 ccs[40];
+  I64 szs[40];
+  I64 i;
+  I64 ok;
+
+  cs_fill_sources();
+  cs_setup();
+  CS_AppData.HkPacket.Payload.ChecksumState = CS_ChecksumState_ENABLED;
+  CFE_MSG_Init(&CS_AppData.HkPacket.TelemetryHeader.Msg, CFE_SB_ValueToMsgId(CS_HK_TLM_MID),
+               sizeof(CS_HkPacket_t));
+
+  ccs[0] = CS_NOOP_CC;
+  ccs[1] = CS_RESET_COUNTERS_CC;
+  ccs[2] = CS_ONE_SHOT_CC;
+  ccs[3] = CS_CANCEL_ONE_SHOT_CC;
+  ccs[4] = CS_ENABLE_ALL_CS_CC;
+  ccs[5] = CS_DISABLE_ALL_CS_CC;
+  ccs[6] = CS_ENABLE_CFE_CORE_CC;
+  ccs[7] = CS_DISABLE_CFE_CORE_CC;
+  ccs[8] = CS_REPORT_BASELINE_CFE_CORE_CC;
+  ccs[9] = CS_RECOMPUTE_BASELINE_CFE_CORE_CC;
+  ccs[10] = CS_ENABLE_OS_CC;
+  ccs[11] = CS_DISABLE_OS_CC;
+  ccs[12] = CS_REPORT_BASELINE_OS_CC;
+  ccs[13] = CS_RECOMPUTE_BASELINE_OS_CC;
+  ccs[14] = CS_ENABLE_EEPROM_CC;
+  ccs[15] = CS_DISABLE_EEPROM_CC;
+  ccs[16] = CS_REPORT_BASELINE_ENTRY_ID_EEPROM_CC;
+  ccs[17] = CS_RECOMPUTE_BASELINE_EEPROM_CC;
+  ccs[18] = CS_ENABLE_ENTRY_ID_EEPROM_CC;
+  ccs[19] = CS_DISABLE_ENTRY_ID_EEPROM_CC;
+  ccs[20] = CS_GET_ENTRY_ID_EEPROM_CC;
+  ccs[21] = CS_ENABLE_MEMORY_CC;
+  ccs[22] = CS_DISABLE_MEMORY_CC;
+  ccs[23] = CS_REPORT_BASELINE_ENTRY_ID_MEMORY_CC;
+  ccs[24] = CS_RECOMPUTE_BASELINE_MEMORY_CC;
+  ccs[25] = CS_ENABLE_ENTRY_ID_MEMORY_CC;
+  ccs[26] = CS_DISABLE_ENTRY_ID_MEMORY_CC;
+  ccs[27] = CS_GET_ENTRY_ID_MEMORY_CC;
+  ccs[28] = CS_ENABLE_TABLES_CC;
+  ccs[29] = CS_DISABLE_TABLES_CC;
+  ccs[30] = CS_REPORT_BASELINE_TABLE_CC;
+  ccs[31] = CS_RECOMPUTE_BASELINE_TABLE_CC;
+  ccs[32] = CS_ENABLE_NAME_TABLE_CC;
+  ccs[33] = CS_DISABLE_NAME_TABLE_CC;
+  ccs[34] = CS_ENABLE_APPS_CC;
+  ccs[35] = CS_DISABLE_APPS_CC;
+  ccs[36] = CS_REPORT_BASELINE_APP_CC;
+  ccs[37] = CS_RECOMPUTE_BASELINE_APP_CC;
+  ccs[38] = CS_ENABLE_NAME_APP_CC;
+  ccs[39] = CS_DISABLE_NAME_APP_CC;
+  szs[0] = sizeof(CS_NoopCmd_t);
+  szs[1] = sizeof(CS_ResetCountersCmd_t);
+  szs[2] = sizeof(CS_OneShotCmd_t);
+  szs[3] = sizeof(CS_CancelOneShotCmd_t);
+  szs[4] = sizeof(CS_EnableAllCSCmd_t);
+  szs[5] = sizeof(CS_DisableAllCSCmd_t);
+  szs[6] = sizeof(CS_EnableCfeCoreCmd_t);
+  szs[7] = sizeof(CS_DisableCfeCoreCmd_t);
+  szs[8] = sizeof(CS_ReportBaselineCfeCoreCmd_t);
+  szs[9] = sizeof(CS_RecomputeBaselineCfeCoreCmd_t);
+  szs[10] = sizeof(CS_EnableOSCmd_t);
+  szs[11] = sizeof(CS_DisableOSCmd_t);
+  szs[12] = sizeof(CS_ReportBaselineOSCmd_t);
+  szs[13] = sizeof(CS_RecomputeBaselineOSCmd_t);
+  szs[14] = sizeof(CS_EnableEepromCmd_t);
+  szs[15] = sizeof(CS_DisableEepromCmd_t);
+  szs[16] = sizeof(CS_ReportBaselineEntryIDEepromCmd_t);
+  szs[17] = sizeof(CS_RecomputeBaselineEepromCmd_t);
+  szs[18] = sizeof(CS_EnableEntryIDEepromCmd_t);
+  szs[19] = sizeof(CS_DisableEntryIDEepromCmd_t);
+  szs[20] = sizeof(CS_GetEntryIDEepromCmd_t);
+  szs[21] = sizeof(CS_EnableMemoryCmd_t);
+  szs[22] = sizeof(CS_DisableMemoryCmd_t);
+  szs[23] = sizeof(CS_ReportBaselineEntryIDMemoryCmd_t);
+  szs[24] = sizeof(CS_RecomputeBaselineMemoryCmd_t);
+  szs[25] = sizeof(CS_EnableEntryIDMemoryCmd_t);
+  szs[26] = sizeof(CS_DisableEntryIDMemoryCmd_t);
+  szs[27] = sizeof(CS_GetEntryIDMemoryCmd_t);
+  szs[28] = sizeof(CS_EnableTablesCmd_t);
+  szs[29] = sizeof(CS_DisableTablesCmd_t);
+  szs[30] = sizeof(CS_ReportBaselineTableCmd_t);
+  szs[31] = sizeof(CS_RecomputeBaselineTableCmd_t);
+  szs[32] = sizeof(CS_EnableNameTableCmd_t);
+  szs[33] = sizeof(CS_DisableNameTableCmd_t);
+  szs[34] = sizeof(CS_EnableAppsCmd_t);
+  szs[35] = sizeof(CS_DisableAppsCmd_t);
+  szs[36] = sizeof(CS_ReportBaselineAppCmd_t);
+  szs[37] = sizeof(CS_RecomputeBaselineAppCmd_t);
+  szs[38] = sizeof(CS_EnableNameAppCmd_t);
+  szs[39] = sizeof(CS_DisableNameAppCmd_t);
+
+  // --- CS_VerifyCmdLength BOTH WAYS. The mismatch arm raises an event AND increments the error
+  // counter, and the function returns a bool -- so the counter is what separates the two, and the
+  // event text carries the MsgId, the command code, the actual length and the expected one, all
+  // four of which it looks up ONLY when the length is wrong.
+  MemSet(&cb, 0, sizeof(CS_RecomputeBaselineTableCmd_t));
+  CFE_MSG_Init(&cb.CommandHeader.Msg, CFE_SB_ValueToMsgId(CS_CMD_MID), sizeof(CS_NoopCmd_t));
+  CFE_MSG_SetFcnCode(&cb.CommandHeader.Msg, CS_NOOP_CC);
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  ok = CS_VerifyCmdLength(&cb.CommandHeader.Msg, sizeof(CS_NoopCmd_t));
+  S("csd_len ok=");
+  D(ok);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  ok = CS_VerifyCmdLength(&cb.CommandHeader.Msg, sizeof(CS_NoopCmd_t) + 1);
+  S("csd_len bad=");
+  D(ok);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+
+  // --- ALL FORTY COMMAND CODES THROUGH CS_AppPipe, each with its own length. The counters after
+  // each dispatch say which arm was taken: a routing error moves the wrong one or neither.
+  for (i = 0; i < 40; ++i) {
+    MemSet(&cb, 0, sizeof(CS_RecomputeBaselineTableCmd_t));
+    CFE_MSG_Init(&cb.CommandHeader.Msg, CFE_SB_ValueToMsgId(CS_CMD_MID), szs[i]);
+    CFE_MSG_SetFcnCode(&cb.CommandHeader.Msg, ccs[i]);
+    CS_AppData.HkPacket.Payload.CommandCounter = 0;
+    CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+    CS_AppPipe(&cb);
+    S("csd_cc");
+    D(ccs[i]);
+    S(" len=");
+    D(szs[i]);
+    S(" cc=");
+    D(CS_AppData.HkPacket.Payload.CommandCounter);
+    S(" ec=");
+    D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+    S(" prog=");
+    D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+    S(" one=");
+    D(CS_AppData.HkPacket.Payload.OneShotInProgress);
+    S("\n");
+    CS_AppData.HkPacket.Payload.RecomputeInProgress = FALSE;
+    CS_AppData.HkPacket.Payload.OneShotInProgress = FALSE;
+  }
+
+  // --- A WRONG LENGTH ON A COMMAND THAT HAS A PAYLOAD, through the switch. The arm is reached for
+  // every one of the forty; one is enough to show the switch consults the length BEFORE calling the
+  // handler, and the counter is what shows the handler did not run.
+  MemSet(&cb, 0, sizeof(CS_RecomputeBaselineTableCmd_t));
+  CFE_MSG_Init(&cb.CommandHeader.Msg, CFE_SB_ValueToMsgId(CS_CMD_MID), sizeof(CS_NoopCmd_t));
+  CFE_MSG_SetFcnCode(&cb.CommandHeader.Msg, CS_ENABLE_ENTRY_ID_EEPROM_CC);
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppPipe(&cb);
+  S("csd_badlen cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+
+  // --- A COMMAND CODE NOTHING CLAIMS: the switch's `default:` arm.
+  CFE_MSG_SetFcnCode(&cb.CommandHeader.Msg, 123);
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppPipe(&cb);
+  S("csd_badcc ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+
+  // --- THE OTHER THREE ROUTES, which are CS_AppPipe's own if-chain rather than the switch.
+  //
+  // THE THREE MESSAGE IDS ARE CACHED IN STATIC LOCALS named CMD_MID, SEND_HK_MID and
+  // BACKGROUND_CYCLE_MID, and CS IS THE SIXTH SET IN ONE TRANSLATION UNIT to use the first two --
+  // cfe_es_dispatch, cfe_evs_dispatch, cfe_ta_dispatch, md_dispatch and mm_dispatch are the others.
+  // For one commit all of them collided, because a HolyC static local became a global under its
+  // bare name (docs/HOLYC_STRUCT_LIMITS.md #12, fixed). If that regressed, CS's cache would hold a
+  // cFE module's id and these lines would route to the wrong handler. That is the check, not an
+  // aside -- and it is why MD's dispatch is driven again at the END of this block.
+  //
+  // A HOUSEKEEPING REQUEST runs CS_SendHkCmd, so the witness is SB reporting no subscriber for the
+  // packet it transmitted. A BACKGROUND CYCLE runs the walk, so the witness is CurrentCSTable
+  // moving. An unknown id moves the error counter and nothing else.
+  MemSet(&cb, 0, sizeof(CS_RecomputeBaselineTableCmd_t));
+  CFE_MSG_Init(&cb.CommandHeader.Msg, CFE_SB_ValueToMsgId(CS_SEND_HK_MID),
+               sizeof(CS_SendHkCmd_t));
+  CS_AppData.HkPacket.Payload.CommandCounter = 55;
+  i = CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter;
+  CS_AppPipe(&cb);
+  S("csd_hk nosub=");
+  D(CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter - i);
+  S(" cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+
+  MemSet(&cb, 0, sizeof(CS_RecomputeBaselineTableCmd_t));
+  CFE_MSG_Init(&cb.CommandHeader.Msg, CFE_SB_ValueToMsgId(CS_BACKGROUND_CYCLE_MID),
+               sizeof(CS_BackgroundCheckCycleCmd_t));
+  // AND CHECKSUMMING HAS TO BE TURNED BACK **ON** FIRST, which a first draft did not do and it made
+  // this line vacuous: CS_DISABLE_ALL_CS_CC is one of the forty dispatched above, so ChecksumState
+  // was DISABLED by the time the route was tested. The cycle then skipped its whole body, printed
+  // `tbl=0 ent=0` -- which is also what "the route went nowhere" looks like -- and both halves
+  // agreed. A route witness that reads the same when the route works and when it does not is not a
+  // witness.
+  CS_AppData.HkPacket.Payload.ChecksumState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.CfeCoreCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.CfeCoreCodeSeg.State = CS_ChecksumState_ENABLED;
+  CS_AppData.CfeCoreCodeSeg.StartAddress = cs_src_a(U64);
+  CS_AppData.CfeCoreCodeSeg.NumBytesToChecksum = 16;
+  CS_AppData.HkPacket.Payload.CurrentCSTable = 0;
+  CS_AppData.HkPacket.Payload.CurrentEntryInTable = 0;
+  CS_AppPipe(&cb);
+  S("csd_bkgnd tbl=");
+  D(CS_AppData.HkPacket.Payload.CurrentCSTable);
+  S(" ent=");
+  D(CS_AppData.HkPacket.Payload.CurrentEntryInTable);
+  S(" cfe=");
+  D(CS_AppData.CfeCoreCodeSeg.ComparisonValue);
+  S("\n");
+
+  // A HOUSEKEEPING REQUEST WITH THE WRONG LENGTH: the SEND_HK arm's own length check, which is not
+  // the switch's.
+  CFE_MSG_Init(&cb.CommandHeader.Msg, CFE_SB_ValueToMsgId(CS_SEND_HK_MID),
+               sizeof(CS_SendHkCmd_t) + 4);
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppPipe(&cb);
+  S("csd_hk_badlen ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+
+  // AN UNKNOWN MESSAGE ID. 0x1898 is one no app in this tree subscribes to.
+  MemSet(&cb, 0, sizeof(CS_RecomputeBaselineTableCmd_t));
+  CFE_MSG_Init(&cb.CommandHeader.Msg, CFE_SB_ValueToMsgId(0x1898), sizeof(CS_NoopCmd_t));
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppPipe(&cb);
+  S("csd_badmid ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+
+  // --- AND MD'S DISPATCHER AGAIN, AFTER CS'S HAS WARMED ITS CACHE. Three lines, and they are the
+  // cross-app assertion a per-app exercise cannot make: if CMD_MID or SEND_HK_MID were globals
+  // shared between the six dispatchers in this unit, CS's cache would now be sitting in MD's and a
+  // NOOP would not reach MD_NoopCmd. MD's counter is the witness.
+  {
+    MD_NoopCmd_t mb;
+
+    MemSet(&mb, 0, sizeof(MD_NoopCmd_t));
+    CFE_MSG_Init(&mb.CmdHeader.Msg, CFE_SB_ValueToMsgId(MD_CMD_MID), sizeof(MD_NoopCmd_t));
+    CFE_MSG_SetFcnCode(&mb.CmdHeader.Msg, MD_NOOP_CC);
+    MD_AppData.CommandCounter = 0;
+    MD_AppData.CommandErrorCounter = 0;
+    MD_TaskPipe(&mb);
+    S("csd_md_still_routes cc=");
+    D(MD_AppData.CommandCounter);
+    S(" ec=");
+    D(MD_AppData.CommandErrorCounter);
+    S("\n");
+  }
+}
+
+// --- cs_app.c: the startup chain, the CDS, and the main loop ---------------------------------
+//
+// THE LAST BLOCK, AND IT HAS TO BE LAST. It re-runs CFE_TBL_EarlyInit to clear the table registry
+// so CS can register its OWN eight tables for real -- which pulls MD's, MM's and cs_block_init's
+// tables out from under them. That is MD's lesson, paid for there: its app block moved earlier once
+// and every editor in its command block answered CFE_TBL_ERR_NEVER_LOADED, a 54-line diff entirely
+// self-inflicted. It also leaks one more pair of TBL pools, which is the sixth (docs/CFS_PLAN.md's
+// shared-fixture note counts them).
+//
+// THE CDS ARMS COME FIRST AND THE REGISTRATION-FAILED ONE COMES LAST, because the lever for it --
+// es_cds_reset(), which clears CFE_ES_Global.CDSIsAvailable -- turns the store off for good. The
+// four arms before it need a working store.
+//
+// AND THE WARM-BOOT ARM IS THE ONE THAT MATTERS. CFE_ES_CDS_ALREADY_EXISTS is not an error in
+// CS_CreateRestoreStatesFromCDS, it is the INTERESTING case: a fresh store is WRITTEN from the
+// states just set, a surviving store is READ and OVERWRITES them. CS_AppInit sets the six states
+// from the platform configuration and then calls this, so a cold boot follows the config and a warm
+// one follows the ground. Six bytes are planted in the store, the states are poisoned to something
+// else, and the assertion is that all six come back -- which is the ground's last decision
+// outliving a processor reset, and the whole reason the CDS is in this app.
+U0 cs_block_app()
+{
+  I32 rc;
+  I64 x0;
+  U8 back[CS_EX_CDS_STATES];
+  I64 k;
+
+  cs_fill_sources();
+  cs_setup();
+
+  // --- (1) A FRESH STORE. The name is CS's own, CS_CDS_NAME, and nothing has used it, so
+  // RegisterCDS succeeds and the six states just set are written.
+  CS_AppData.HkPacket.Payload.EepromCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.MemoryCSState = CS_ChecksumState_DISABLED;
+  CS_AppData.HkPacket.Payload.AppCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.TablesCSState = CS_ChecksumState_DISABLED;
+  // BOTH CODE-SEGMENT STATES ARE PLANTED **DISABLED**, and that is deliberate rather than
+  // arbitrary. Every CS_*_POWERON_STATE and both CS_*CHECKSUM_STATE constants are 1 (ENABLED) in
+  // this configuration, so a planted ENABLED is indistinguishable from the platform default -- and
+  // the four TABLE states cannot witness a restore at all, because CS_InitAllTables DISABLES each
+  // of them when its table loads from memory rather than from a file. So the two code-segment
+  // states are the only ones that can show, through CS_AppInit, that the CDS was read: they have no
+  // global-state pointer, nothing overwrites them, and DISABLED is not what the configuration would
+  // have left. A first draft planted OSCSState ENABLED and csap_init_states printed `os=1`, which
+  // is also what "the restore did nothing" looks like.
+  CS_AppData.HkPacket.Payload.OSCSState = CS_ChecksumState_DISABLED;
+  CS_AppData.HkPacket.Payload.CfeCoreCSState = CS_ChecksumState_DISABLED;
+  rc = CS_CreateRestoreStatesFromCDS();
+  S("csap_cds_new rc=");
+  D(rc);
+  S(" defined=");
+  D(CFE_ResourceId_IsDefined(CS_AppData.DataStoreHandle));
+  S("\n");
+  MemSet(back, 0xEE, CS_EX_CDS_STATES);
+  CFE_ES_RestoreFromCDS(back, CS_AppData.DataStoreHandle);
+  S("csap_cds_bytes");
+  for (k = 0; k < CS_EX_CDS_STATES; ++k) {
+    S(" ");
+    D(back[k]);
+  }
+  S("\n");
+
+  // --- (2) THE WARM BOOT. Same name, so RegisterCDS answers CFE_ES_CDS_ALREADY_EXISTS and the six
+  // states are READ back over whatever the caller had. POISON FIRST: all six are set to the
+  // OPPOSITE of what is in the store, so a restore that did nothing would be visible.
+  CS_AppData.HkPacket.Payload.EepromCSState = CS_ChecksumState_DISABLED;
+  CS_AppData.HkPacket.Payload.MemoryCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.AppCSState = CS_ChecksumState_DISABLED;
+  CS_AppData.HkPacket.Payload.TablesCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.OSCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.CfeCoreCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
+  rc = CS_CreateRestoreStatesFromCDS();
+  S("csap_cds_warm rc=");
+  D(rc);
+  S(" eep=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S(" mem=");
+  D(CS_AppData.HkPacket.Payload.MemoryCSState);
+  S(" app=");
+  D(CS_AppData.HkPacket.Payload.AppCSState);
+  S(" tbl=");
+  D(CS_AppData.HkPacket.Payload.TablesCSState);
+  S(" os=");
+  D(CS_AppData.HkPacket.Payload.OSCSState);
+  S(" cfe=");
+  D(CS_AppData.HkPacket.Payload.CfeCoreCSState);
+  S("\n");
+
+  // --- (3) THE RESTORE FAILING. A broken CDS is NOT fatal -- the handle is set to
+  // CFE_ES_CDS_BAD_HANDLE so CS_UpdateCDS stops trying, the six states go back to the PLATFORM
+  // CONFIGURATION, an event says so, and the function returns CFE_SUCCESS so CS_AppInit carries on.
+  // All three of those are asserted: the return, the handle and the six states.
+  es_cds_read_rc = CFE_PSP_ERROR;
+  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
+  rc = CS_CreateRestoreStatesFromCDS();
+  es_cds_read_rc = CFE_PSP_SUCCESS;
+  S("csap_cds_resfail rc=");
+  D(rc);
+  S(" defined=");
+  D(CFE_ResourceId_IsDefined(CS_AppData.DataStoreHandle));
+  S(" eep=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S(" mem=");
+  D(CS_AppData.HkPacket.Payload.MemoryCSState);
+  S(" app=");
+  D(CS_AppData.HkPacket.Payload.AppCSState);
+  S(" tbl=");
+  D(CS_AppData.HkPacket.Payload.TablesCSState);
+  S(" os=");
+  D(CS_AppData.HkPacket.Payload.OSCSState);
+  S(" cfe=");
+  D(CS_AppData.HkPacket.Payload.CfeCoreCSState);
+  S("\n");
+
+  // --- (4) THE COPY FAILING ON A **FRESH** STORE, which is the other of the two error event ids.
+  // It needs a name that has never been used, because the copy arm is only reached when RegisterCDS
+  // SUCCEEDS -- so this one cannot use CS_CDS_NAME, and the registration is done by hand with a
+  // different name before the write knob is set. The event id is what distinguishes this from arm
+  // (3), and both are in the transcript.
+  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
+  S("csap_cds_cpy_reg rc=");
+  D(CFE_ES_RegisterCDS(&CS_AppData.DataStoreHandle, CS_EX_CDS_STATES, "CS_CDS2"));
+  S("\n");
+  es_cds_write_rc = CFE_PSP_ERROR;
+  CS_UpdateCDS();
+  es_cds_write_rc = CFE_PSP_SUCCESS;
+  S("csap_cds_updfail defined=");
+  D(CFE_ResourceId_IsDefined(CS_AppData.DataStoreHandle));
+  S("\n");
+
+  // --- (5) CS_AppMain WITH AN AppInit THAT **SUCCEEDS**, which is the only shape that reaches both
+  // of the two termination events AND CS_AppInit's nine-link chain -- and it took three attempts to
+  // find.
+  //
+  // THE CHAIN IS `if (Result == CFE_SUCCESS)` FOUR TIMES, not nesting: register for events, zero
+  // the whole global, stand up the bus, fill the four default tables, take the poweron states from
+  // the platform config, let the CDS OVERRIDE them, register the eight tables, read the two code
+  // segments, set the app enabled. Everything it needs has to be free first: the table registry
+  // (cleared), the pipe name (released), the context (app 1).
+  //
+  // AND IT GETS **ONE** CFE_TBL_EarlyInit, WHICH IS WHY AppInit IS RUN FROM INSIDE AppMain RATHER
+  // THAN BESIDE IT. A draft called CS_AppInit() directly for the success path and then wanted a
+  // second successful one inside CS_AppMain for the clean-exit event -- which needs the registry
+  // cleared again, and the second CFE_TBL_EarlyInit printed `No free MemPool slots available`,
+  // allocated nothing, and every table registration answered 0xC4000001. The app terminated with
+  // APP_ERROR and the "clean exit" line read run=3. Each EarlyInit leaks its two pools
+  // (docs/CFS_PLAN.md's shared-fixture note counts them) and CFE_PLATFORM_ES_MAX_MEMORY_POOLS is
+  // finite. So there is exactly one, and AppMain does the only successful init.
+  //
+  // THE LEVER FOR THE CLEAN EXIT is CFE_ES_RunLoop's SECOND test:
+  // `if (AppRecPtr->ControlReq.AppControlRequest == CFE_ES_RunStatus_APP_RUN)`, and anything else
+  // writes the control request INTO *RunStatus and returns false. AppInit sets RunStatus to APP_RUN
+  // itself so it cannot be pre-set, but the app RECORD can. MD's block records that pre-setting
+  // ControlReq "did NOT work", which is true there for a different reason: MD's AppInit was
+  // failing, so APP_ERROR was written over the control request's value before RunLoop ever looked.
+  //
+  // THE APP MUST ALSO BE A **CORE** APP FOR CFE_ES_ExitApp TO RETURN, and exits=0 IS NOT THE
+  // WITNESS: for a CORE app ExitApp REFUSES and logs `Cannot Exit CORE Application`. That syslog
+  // line is what proves ExitApp was reached; a zero count is also what "never called" looks like.
+  // MD's block paid for that too.
+  es_set_ctx(1);
+  CFE_TBL_EarlyInit();
+  CFE_TBL_InitData();
+  CFE_TBL_Global.TableTaskAppId = ES_CTX_APPID(1);
+  sb_forget_queue_name(CS_CMD_PIPE_NAME);
+  CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_CORE;
+  CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_EXIT;
+  x0 = es_taskexits;
+  CS_AppMain();
+  CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+  S("csap_main_exit exits=");
+  D(es_taskexits - x0);
+  S(" run=");
+  D(CS_AppData.RunStatus);
+  S("\n");
+
+  // AND NOW EVERYTHING CS_AppInit SET, read out of the global AppMain left behind.
+  //
+  // MaxBytesPerCycle IS THE ONE TO WATCH: AppInit sets it to CS_DEFAULT_BYTES_PER_CYCLE, 16384. At
+  // zero every checksum cycle clamps to zero bytes, CurrOffset never advances, and the three
+  // recompute child tasks' `while (!DoneWithEntry)` does not terminate -- a QEMU timeout that reads
+  // as a codegen bug. Nothing else in this port's exercises reaches the line that sets it.
+  S("csap_init pipe=");
+  D(CFE_ResourceId_IsDefined(CS_AppData.CmdPipe));
+  S(" cks=");
+  D(CS_AppData.HkPacket.Payload.ChecksumState);
+  S(" budget=");
+  D(CS_AppData.MaxBytesPerCycle);
+  S(" cur=");
+  D(CS_AppData.HkPacket.Payload.CurrentCSTable);
+  S("/");
+  D(CS_AppData.HkPacket.Payload.CurrentEntryInTable);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S(" one=");
+  D(CS_AppData.HkPacket.Payload.OneShotInProgress);
+  S("\n");
+  // THE SIX STATES, AND WHAT THEY PROVE. The platform config sets all six to 1 and
+  // CS_CreateRestoreStatesFromCDS then overwrites them from the store -- so the ORDER is the
+  // feature, and the two CODE-SEGMENT states are the only ones that can witness it: the four table
+  // states are DISABLED again by CS_InitAllTables when each table loads from memory rather than
+  // from a file. os=2 and cfe=2 are the planted values, not the configured ones.
+  S("csap_init_states eep=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S(" mem=");
+  D(CS_AppData.HkPacket.Payload.MemoryCSState);
+  S(" app=");
+  D(CS_AppData.HkPacket.Payload.AppCSState);
+  S(" tbl=");
+  D(CS_AppData.HkPacket.Payload.TablesCSState);
+  S(" os=");
+  D(CS_AppData.HkPacket.Payload.OSCSState);
+  S(" cfe=");
+  D(CS_AppData.HkPacket.Payload.CfeCoreCSState);
+  S("\n");
+  // THE HANDLE **VALUES**, NOT CFE_TBL_HANDLE_IS_VALID, and this is the trap cs_setup's own comment
+  // warns about: CFE_TBL_BAD_TABLE_HANDLE is -1 and ZERO IS A PERFECTLY GOOD HANDLE. CS_AppInit
+  // memsets the whole global, so the two code-segment types -- which have a NULL definition
+  // filename and register nothing -- come out of CS_TableInit with handles of 0, and a validity test
+  // prints `11` for them exactly as it does for the four real ones. A first draft did precisely
+  // that and read as six registered pairs. The values distinguish them: 0/0 for the two segments,
+  // eight distinct small handles for the four tables.
+  S("csap_init_tables");
+  for (k = 0; k < CS_NUM_TABLES; ++k) {
+    S(" ");
+    D(CS_AppData.Tbl[k].DefHandle);
+    S("/");
+    D(CS_AppData.Tbl[k].ResHandle);
+  }
+  S("\n");
+  S("csap_init_seg cfe=");
+  D(CS_AppData.CfeCoreCodeSeg.State);
+  S("/");
+  D(CS_AppData.CfeCoreCodeSeg.NumBytesToChecksum);
+  S(" os=");
+  D(CS_AppData.OSCodeSeg.State);
+  S("/");
+  D(CS_AppData.OSCodeSeg.NumBytesToChecksum);
+  S("\n");
+
+  // --- (6) CS_AppMain WITH AN AppInit THAT FAILS, which is the ERROR termination event and the
+  // other half of the pair. The pipe name CS just used is taken, so CFE_SB_CreatePipe refuses the
+  // duplicate, AppInit returns that status, AppMain sets APP_ERROR, and CFE_ES_RunLoop's FIRST test
+  // -- on the caller's own RunStatus, before any record lookup -- skips the loop entirely. That is
+  // what makes this callable at all: on a real pipe with CS_WAKEUP_TIMEOUT of 1000 ms the loop's
+  // timeout arm is "no action" and nothing ends it.
+  //
+  // The ERROR event carries RunStatus AND the last Result; the INFORMATION event above carried
+  // RunStatus alone. Both are in the transcript.
+  x0 = es_taskexits;
+  CS_AppMain();
+  S("csap_main_err exits=");
+  D(es_taskexits - x0);
+  S(" run=");
+  D(CS_AppData.RunStatus);
+  S("\n");
+  CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_EXTERNAL;
+
+  // --- (7) CS_AppInit ON ITS OWN, FAILING AT CS_SbInit -- the second link of the chain. The whole
+  // rest of the chain is skipped, which is what the zeroes assert, and RunStatus is APP_RUN rather
+  // than APP_ERROR because setting APP_ERROR is CS_AppMain's job and not AppInit's.
+  rc = CS_AppInit();
+  S("csap_init_sbfail rc=");
+  D(rc);
+  S(" run=");
+  D(CS_AppData.RunStatus);
+  S(" budget=");
+  D(CS_AppData.MaxBytesPerCycle);
+  S(" cks=");
+  D(CS_AppData.HkPacket.Payload.ChecksumState);
+  S("\n");
+
+  // --- (8) THE CDS REGISTRATION FAILING, LAST, because the lever is permanent. es_cds_reset clears
+  // CFE_ES_Global.CDSIsAvailable, so CFE_ES_RegisterCDS answers CFE_ES_NOT_IMPLEMENTED and the
+  // third of the three event ids fires. The six states go back to the platform configuration and
+  // the return is still CFE_SUCCESS.
+  es_cds_reset();
+  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
+  CS_AppData.HkPacket.Payload.EepromCSState = CS_ChecksumState_ENABLED;
+  rc = CS_CreateRestoreStatesFromCDS();
+  S("csap_cds_regfail rc=");
+  D(rc);
+  S(" defined=");
+  D(CFE_ResourceId_IsDefined(CS_AppData.DataStoreHandle));
+  S(" eep=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S(" cfe=");
+  D(CS_AppData.HkPacket.Payload.CfeCoreCSState);
+  S("\n");
+  // AND CS_UpdateCDS IS NOW SILENT, which is the property that makes a broken CDS non-fatal
+  // everywhere and not just in CS_AppInit: every enable/disable command still works and simply does
+  // not persist. The witness is a write count that does not move.
+  x0 = es_cds_writes;
+  CS_UpdateCDS();
+  S("csap_cds_silent writes=");
+  D(es_cds_writes - x0);
+  S("\n");
+}
+
 I64 main()
 {
   CFE_MSG_Message msg;
@@ -22010,6 +22593,8 @@ I64 main()
     cs_block_memory_cmds();
     cs_block_table_cmds();
     cs_block_app_cmds();
+    cs_block_dispatch();
+    cs_block_app();
 
     // PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after it today
     // but tim_objtab, so both halves agreed and the transcript was green -- but the NEXT app's
