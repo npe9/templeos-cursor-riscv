@@ -87,23 +87,59 @@ def main():
         srcs = []
         for m in re.finditer(r'SRC_C="(.*?)"', txt, re.S):
             srcs += [t for t in m.group(1).split() if t.endswith(".c")]
-        # resolve the shell variables the driver uses for its roots
-        sub = {"$CFE": os.path.join(ROOT, "vendor", "cFE"),
-               "$OSAL": os.path.join(ROOT, "vendor", "osal"),
-               "$PSP": os.path.join(ROOT, "vendor", "PSP"),
-               "$MD": os.path.join(ROOT, "vendor", "MD"),
-               "$SHIM": os.path.join(ROOT, "vendor", "shim"),
-               "$ROOT": ROOT}
+        # Resolve the shell variables the driver uses for its roots BY READING THE DRIVER'S OWN
+        # ASSIGNMENTS, not from a list here.
+        #
+        # THIS USED TO BE A HARD-CODED DICT OF SIX AND IT WAS THE GATE'S BLIND SPOT. It held
+        # $CFE, $OSAL, $PSP, $MD, $SHIM and $ROOT. When MM was gated the driver grew $MM, then
+        # $CS, then $LC -- and a token like "$LC/fsw/src/lc_app.c" that no substitution touched
+        # stayed non-absolute, failed the os.path.isabs test below, and was DROPPED. The gate
+        # then reported a cheerful count and a pass. 27 of the cFS driver's 116 sources -- every
+        # MM, CS and LC file, three whole applications -- were never compared against the oracle
+        # at all. Nothing said so, because a gate that cannot FIND its subject passes.
+        #
+        # So the roots come from the script, and any token still carrying a `$` after
+        # substitution is a HARD FAILURE below rather than a silent skip. A new application's
+        # root is now picked up the moment the driver declares it.
+        sub = {"$ROOT": ROOT}
+        for name, val in re.findall(r'^\s*([A-Za-z_][A-Za-z0-9_]*)="([^"\n]*)"', txt, re.M):
+            if "$(" in val or "${" in val:
+                continue              # a command substitution or a default -- not a path root
+            sub["$" + name] = val
+        # The assignments reference each other ($CFE="$ROOT/vendor/cFE"), so expand to a fixed
+        # point. Ten passes is far more than the two levels the drivers actually use.
+        for _ in range(10):
+            for k in list(sub):
+                for k2, v2 in sub.items():
+                    if k2 != k and k2 in sub[k]:
+                        sub[k] = sub[k].replace(k2, v2)
         # Only NASA's own sources. SRC_C does not name the oracle -- the driver passes it to
         # the host compiler separately -- but filter anyway, because intersecting the oracle
         # with ITSELF would report every one of its globals as a conflict and this gate would
         # then be impossible to read.
         nasa, oracle = [], None
         for t in srcs:
-            for k, v in sub.items():
-                t = t.replace(k, v)
-            if os.path.isabs(t) and os.sep + "vendor" + os.sep in t:
+            raw = t
+            # longest variable name first, so $CS cannot be matched inside $CSOMETHING
+            for k in sorted(sub, key=len, reverse=True):
+                t = t.replace(k, sub[k])
+            if "$" in t:
+                print("FAIL check-oracle-globals — %s names a source this gate cannot resolve:"
+                      % d, file=sys.stderr)
+                print("    %s" % raw, file=sys.stderr)
+                print("  The driver uses a shell variable whose assignment this gate could not"
+                      " read, so", file=sys.stderr)
+                print("  the path is not absolute and WOULD HAVE BEEN SILENTLY SKIPPED. That is"
+                      " exactly", file=sys.stderr)
+                print("  how three applications went unchecked. Fix the resolution, not this"
+                      " message.", file=sys.stderr)
+                return 1
+            if os.sep + "vendor" + os.sep in t:
                 nasa.append(t)
+            else:
+                # Not under vendor/ and not a $ left over: a generated or shim source. Those are
+                # not NASA's, so they are not compared -- but say so rather than dropping it.
+                pass
         # the oracle is named separately in the driver
         # The oracle is the one .c the driver compiles from tests/ rather than from vendor/ --
         # it is the argument to the host compile, not a member of SRC_C. Derived rather than

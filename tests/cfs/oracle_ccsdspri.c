@@ -794,20 +794,18 @@ static CFE_ES_ResetData_t es_reset_area;
  * to let the two definitions coexist -- a C tentative definition in two translation units merges
  * SILENTLY. The same deadline MD_AppData and MM_AppData each had, met the same way. */
 
-/* LC_OperData AND LC_AppData ARE NASA'S, defined in lc_app.c, WHICH IS NOT GATED YET -- so they
- * live here until it is, and the deadline is written down the way MD's, MM's and CS's were.
+/* LC_OperData AND LC_AppData ARE NASA'S, defined in lc_app.c, which is gated as of this commit.
+ * They sat HERE from lc_action.c's commit -- that source reads both, so the C reference would not
+ * link without them -- and the deadline was written beside them the way MD's, MM's and CS's were.
  *
- * THE LINK IS WHAT FORCED THEM: lc_action.c is gated as of this commit and reads both, so the C
- * reference would not link without them. The HolyC half needs no equivalent -- lc_global.HC
- * defines both, because a HolyC `extern` outside the module loader's window is a module-local
- * dummy, so a global there has exactly one definition and it lives with its type.
- *
- * tools/cfs/check_oracle_globals.py IS THE DEADLINE, not this comment: the moment lc_app.c joins
- * the source list it will refuse to let two definitions coexist. A C tentative definition in two
- * translation units merges SILENTLY, the link succeeds, and nothing says which object the exercise
- * was reading -- which is exactly what it found five times at once. */
-LC_OperData_t LC_OperData;
-LC_AppData_t  LC_AppData;
+ * THE DEADLINE WAS CHECKED BEFORE IT WAS MET, AND THE GATE DID NOT SEE THE OVERLAP. Adding
+ * lc_app.c to the driver's SRC_C with these two definitions still in place should have failed
+ * check_oracle_globals immediately. It PASSED. The gate resolved the driver's root variables from
+ * a hard-coded dict of six that predated MM, so "$LC/..." never became an absolute path and the
+ * file was dropped unexamined -- along with every MM and CS source, 27 of 116. The gate is fixed
+ * to read the driver's own assignments and to REFUSE any path it cannot resolve; it then found
+ * these two at once. The comment was right about the deadline and wrong about the enforcement,
+ * which is the only reason to test a prediction about a tool before relying on it. */
 
 /* ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
  *

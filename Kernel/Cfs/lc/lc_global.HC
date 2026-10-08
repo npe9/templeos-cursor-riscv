@@ -178,12 +178,23 @@ class LC_OperData_t
 /*******************************************************************************/
 // LC's application data. 24 bytes, and this IS what goes in the CDS.
 //
-// CDSSavedOnExit IS THE ONLY MEMBER THAT IS NOT A COUNTER OR A STATE. It is LC_CDS_SAVED (0xF0F0)
-// or LC_CDS_NOT_SAVED (0x0F0F), written on the way out and read on the way in, and it is how LC
-// tells a clean shutdown from a crash: a restored CDS whose CDSSavedOnExit is not LC_CDS_SAVED
-// means the previous run did not finish, so the restored counters are not trustworthy. Two
-// values whose bit patterns are each other's complement, which is the usual trick for a flag that
-// has to survive a half-written word.
+// CDSSavedOnExit IS THE ONLY MEMBER THAT IS NOT A COUNTER OR A STATE, AND IT DOES NOT MEAN WHAT
+// ITS NAME SAYS. It reads "saved on exit", and it is really "DID THE PREVIOUS SESSION EVER SAVE?"
+//
+// Traced through all six LC sources, because the name invited a guess: the field is assigned in
+// exactly ONE place -- LC_UpdateTaskCDS sets it to LC_CDS_SAVED -- and read in two,
+// LC_CreateTaskCDS's restore arm and LC_AppMain's exit path. **LC_CDS_NOT_SAVED (0x0F0F) IS
+// DEFINED AND NEVER USED ANYWHERE IN LC.** Nothing ever clears the flag.
+//
+// So the semantics are cumulative, not per-exit, and NASA's own comment at the restore site says
+// so: "Success - only if previous session saved CDS data at least once". A restored CDS whose flag
+// is not LC_CDS_SAVED means the previous run never reached a maintenance cycle -- NOT that it
+// crashed. A run that saved once and then crashed leaves the flag set and its last saved counters
+// behind, which is the intended behaviour and is why there is no clean/unclean distinction to
+// make.
+//
+// The two values are still each other's bit complement, which is the usual trick for a flag that
+// must survive a half-written word -- it is just that only one of them is ever written.
 class LC_AppData_t
 {
   U16 CmdCount;    // command counter
@@ -194,7 +205,7 @@ class LC_AppData_t
   U32 RTSExecCount;        // total RTS sequences initiated
   U16 PassiveRTSExecCount; // RTS sequences NOT initiated because LC or the AP was passive
 
-  U16 CDSSavedOnExit; // LC_CDS_SAVED or LC_CDS_NOT_SAVED -- did the last run exit cleanly
+  U16 CDSSavedOnExit; // LC_CDS_SAVED once any run has saved; see the block comment above
   U8 CurrentLCState;  // current LC application operating state
   U8 _pad0[3];        // C pads the tail to the structure's 4-byte alignment
 };

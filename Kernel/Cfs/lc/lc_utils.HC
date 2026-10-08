@@ -112,9 +112,14 @@ I32 LC_ManageTables()
 //
 // THE "SAVED" FLAG IS SET **BEFORE** THE COPY THAT CARRIES IT, which is the only order that works:
 // LC_AppData.CDSSavedOnExit is part of LC_AppData, so it has to hold LC_CDS_SAVED at the moment
-// the structure is copied. The copy is therefore always stamped "this was a deliberate save" --
-// and what makes the flag mean anything is lc_app.c writing LC_CDS_NOT_SAVED into the live
-// structure after each save, so a CDS found saying SAVED can only have come from here.
+// the structure is copied. The copy is therefore always stamped "this was a deliberate save".
+//
+// AN EARLIER VERSION OF THIS COMMENT CLAIMED lc_app.c WRITES LC_CDS_NOT_SAVED BACK AFTER EACH
+// SAVE. IT DOES NOT. Tracing all seven LC sources: this line is the ONLY assignment to
+// CDSSavedOnExit anywhere, LC_CDS_NOT_SAVED (0x0F0F) is defined and never used, and nothing ever
+// clears the flag. So it is cumulative -- "has any run ever saved?" -- not per-exit, which is
+// what NASA's own comment at the restore site says: "only if previous session saved CDS data at
+// least once". See the block comment on LC_AppData_t in lc_global.HC.
 //
 // AND IT RETURNS ON THE FIRST FAILURE, so a WRT copy that fails leaves the ART and the AppData
 // areas holding the PREVIOUS run's bytes while the live tables have moved on. The caller's answer
