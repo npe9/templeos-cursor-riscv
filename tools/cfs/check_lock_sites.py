@@ -68,7 +68,20 @@ def gated_sources():
 C_CALL = re.compile(r'(CFE_(?:SB|ES)_(?:Unlock|Lock)SharedData)\s*\(\s*(__func__|__FILE__)\s*,\s*__LINE__\s*\)')
 H_CALL = re.compile(r'(CFE_(?:SB|ES)_(?:Unlock|Lock)SharedData)\s*\(\s*"([^"]*)"\s*,\s*(-?\d+)\s*\)')
 # A C function definition at column 1: the return type, then the name, then '('.
-C_FUNC = re.compile(r'^[A-Za-z_][A-Za-z0-9_ \t*]*?\b([A-Za-z_]\w*)\s*\([^;]*$', re.M)
+#
+# THE OPTIONAL FIRST LINE IS THE RETURN TYPE SITTING ON ITS OWN, which clang-format does when the
+# signature will not fit. Without it the name's line has no type prefix, this pattern cannot start
+# at the name, and the header is INVISIBLE -- which here does not drop a lock call, it attributes it
+# to the PREVIOUS function, so the expected `__func__` literal would be compared against the wrong
+# name. The same shape made check_coverage.py miss fifteen definitions outright and
+# check_signatures.py never compare their parameters.
+#
+# THE MEASURED EXPOSURE TODAY IS ZERO: 159 lock sites, and not one is re-attributed by this change.
+# None of the functions that take ES's or SB's shared-data lock has a wrapped return type. That is
+# the honest claim -- the hole was real, the damage was none, and the fix is here so the next
+# function that wraps does not quietly move a lock call's owner.
+C_FUNC = re.compile(r'^(?:[A-Za-z_][A-Za-z0-9_ \t*]*\n)?'
+                    r'[A-Za-z_][A-Za-z0-9_ \t*]*?\b([A-Za-z_]\w*)\s*\([^;]*$', re.M)
 # A HolyC definition at column 1: U0/I32/... then the name, then '(', and NOT ending in ';'.
 H_FUNC = re.compile(r'^(?:U0|U8|U16|U32|U64|I8|I16|I32|I64|Bool|F64|[A-Za-z_]\w*)\s*\**\s*'
                     r'([A-Za-z_]\w*)\s*\([^;]*$', re.M)

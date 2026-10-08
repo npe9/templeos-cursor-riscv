@@ -377,7 +377,20 @@ def sigs(path, ret_pat, prefix, types):
     # Anchored to COLUMN 1: a definition at file scope. Indented matches are statements --
     # with a general return-type pattern, `    if (a != b)\n    {` parsed as a function whose
     # return type was `if` and whose name was empty, and the check reported `: NASA (!=)`.
-    for m in re.finditer(r'^(?:' + ret_pat + r')[ \t]+\**([A-Za-z_]\w*)[ \t]*\(([^;{]*?)\)\s*\{',
+    #
+    # AND THE SEPARATOR ADMITS A NEWLINE, because clang-format puts the RETURN TYPE ON ITS OWN
+    # LINE when the signature is too long for one:
+    #
+    #     CFE_Status_t
+    #     CS_TableInit(CS_TableWrapper_t *tw, const char *F, CFE_TBL_CallbackFuncPtr_t CallBack)
+    #
+    # With `[ \t]+` there, fifteen of NASA's definitions were never seen -- so their signatures
+    # were never compared, and the count that said "923 signatures match" was quiet about them.
+    # CS_TableInit is the one that makes the point: its third parameter is a FUNCTION POINTER, the
+    # kind of parameter this gate exists to check. The same fifteen were invisible to
+    # check_coverage.py for the same reason, which is why neither gate caught the other's gap --
+    # a cross-check is worth only the inputs the two tools do not share.
+    for m in re.finditer(r'^(?:' + ret_pat + r')[ \t\n]+\**([A-Za-z_]\w*)[ \t]*\(([^;{]*?)\)\s*\{',
                          src, re.M | re.S):
         name, args = m.group(1), m.group(2)
         head = [w for w in m.group(0).split() if w not in ('static', 'inline')]

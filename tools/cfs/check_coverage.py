@@ -102,6 +102,21 @@ C_DEF = re.compile(
     r'^[A-Za-z_][A-Za-z0-9_ \t\*]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*?\)\s*$', re.M)
 MAX_JOIN = 12
 
+# AND THE RETURN TYPE MAY BE ON ITS OWN LINE, which is what clang-format does when the signature
+# is too long for one:
+#
+#     CFE_Status_t
+#     CS_TableInit(CS_TableWrapper_t *tw, const char *F, CFE_TBL_CallbackFuncPtr_t CallBack)
+#     {
+#
+# The name's line then has NO type prefix, and C_DEF requires one -- `[A-Za-z_]` before the lazy
+# run, so the pattern cannot start at the name. FIFTEEN of NASA's definitions were in that shape
+# and this gate never required any of them to exist. All fifteen happen to be translated, which is
+# luck and not evidence: the gate was quiet about what it could not see, which is the fourth time
+# that has been written in this directory. A line that is nothing but identifier characters and
+# stars is remembered as a candidate prefix for the next line.
+TYPE_ONLY = re.compile(r'^[A-Za-z_][A-Za-z0-9_ \t\*]*$')
+
 
 def joined_defs(src):
     """Every name C_DEF matches as a definition, joining a wrapped parameter list.
@@ -113,6 +128,7 @@ def joined_defs(src):
     out = set()
     lines = src.split('\n')
     i = 0
+    pending = None          # a bare return type seen on the previous line
     while i < len(lines):
         line = lines[i]
         if line[:1].isalpha() or line[:1] == '_':
@@ -123,7 +139,10 @@ def joined_defs(src):
                 j += 1
                 buf += ' ' + lines[j].strip()
             m = C_DEF.match(" ".join(buf.split()) + '\n')
+            if m is None and pending is not None:
+                m = C_DEF.match(pending + ' ' + " ".join(buf.split()) + '\n')
             if m:
+                pending = None
                 for nxt in lines[j + 1:]:
                     if nxt.strip() == '':
                         continue
@@ -132,6 +151,9 @@ def joined_defs(src):
                     break
                 i = j + 1
                 continue
+            pending = line.strip() if (TYPE_ONLY.match(line) and '(' not in line) else None
+        elif line.strip():
+            pending = None
         i += 1
     return out
 

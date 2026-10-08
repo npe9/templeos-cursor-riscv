@@ -6119,8 +6119,42 @@ static void cs_block_compute(void)
            (int)(ra->StartAddress == 0));
     es_modinfo_valid = 1;
 
-    /* AND A NAME THAT IS NEITHER AN APP NOR A LIBRARY. CS tries the app table, then the library
-     * table, then gives up -- which is how a mission checksums a library that has no task. */
+    /* A NAME THAT IS A LIBRARY AND NOT AN APP. CS tries the app table, gets
+     * CFE_ES_ERR_NAME_NOT_FOUND, and tries the LIBRARY table -- which is how a mission checksums
+     * code that has no task of its own.
+     *
+     * THIS LINE EXISTS BECAUSE A MUTATION FOUND IT MISSING. Deleting the library fallback outright
+     * left the transcript unchanged: the two names driven here were a real APP (so the fallback was
+     * never reached) and a name that is neither (so it ran and failed, same answer). The branch the
+     * fallback exists for was asserted only by implication. */
+    /* THE BLOCK REGISTERS ITS OWN LIBRARY RECORD and frees it again, which is the second half of
+     * this finding. The first attempt named "ESLIB" -- the library the ES resource block creates
+     * -- and came back CS_ERR_NOT_FOUND anyway, because that block FREES its three records when it
+     * is done (`rs_freed app=1 lib=1 ctr=1`). Borrowing another block's fixture is the shape
+     * recorded as shared-fixture resource exhaustion, one step along: not "the table is full" but
+     * "the thing I was pointing at is gone". So this owns its fixture. */
+    {
+        CFE_ES_LibRecord_t *lrp = &CFE_ES_Global.LibTable[2];
+
+        CFE_ES_LibRecordSetUsed(lrp, ES_LIBID(2));
+        strncpy((char *)lrp->LibName, "CSLIB", sizeof(lrp->LibName) - 1);
+
+        ra                     = &cs_res_app[6];
+        ra->State              = CS_ChecksumState_ENABLED;
+        ra->StartAddress       = 0;
+        ra->NumBytesToChecksum = 0;
+        strncpy(ra->Name, "CSLIB", sizeof(ra->Name));
+        cv   = 0;
+        done = false;
+        rc   = CS_ComputeApp(ra, &cv, &done);
+        printf("csc_app_library rc=%ld done=%d at=%d size=%u cv=%u\n", (long)rc, (int)done,
+               (int)(ra->StartAddress == (cpuaddr)cs_src_b), (unsigned)ra->NumBytesToChecksum,
+               (unsigned)cv);
+
+        CFE_ES_LibRecordSetFree(lrp);
+    }
+
+    /* AND A NAME THAT IS NEITHER AN APP NOR A LIBRARY: both lookups fail and CS gives up. */
     ra                     = &cs_res_app[4];
     ra->State              = CS_ChecksumState_ENABLED;
     ra->StartAddress       = 0;
