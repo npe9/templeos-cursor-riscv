@@ -1184,21 +1184,68 @@ The transcript now asserts `NumBytes` and `TableName` instead -- the fields that
 initialised, which also pin the big-endian byte swap -- with the two garbage fields named in
 the comment and deliberately not compared.
 
-### AN OPEN CRASH IN THE C REFERENCE: CFE_SB_DeletePipe
+### THE "OPEN CRASH IN THE C REFERENCE" WAS MINE, NOT NASA'S — SOLVED
 
-`CFE_SB_DeletePipe` on the pipe `CFE_TBL_TaskInit` creates **segfaults the C oracle**, in
-`CFE_SB_GetDestPtr` reading address `0x809` — a MsgId being walked as a pointer. This is
-NASA's code compiled natively, not the translation.
+This section used to read *"`CFE_SB_DeletePipe` … segfaults the C oracle, in `CFE_SB_GetDestPtr`
+reading address `0x809` — a MsgId being walked as a pointer. **This is NASA's code compiled
+natively, not the translation.** … Not diagnosed."*
 
-The same `CFE_SB_DeletePipe` works earlier in the same transcript (`api_del`), so something
-about the route state TaskInit's two `CFE_SB_Subscribe` calls leave behind differs. **Not
-diagnosed.** It is recorded here because `dump.c`, `load.c` and `api.c` all create and delete
-pipes, and the next exercise that reaches for it would rediscover this from scratch.
+It was not NASA's code. It was `es_pool_exhaust`/`es_pool_restore`, this driver's own
+allocation-failure injector, and the accusation stood for weeks.
 
-It also cost a wrong diagnosis worth remembering: the crash was first blamed on the POWER ON
-RESET that `CFE_TBL_TaskMain`'s init-failure path drives, and moving the reset to the end of
-the block did not help. An lldb backtrace put the fault before the reset, in DeletePipe itself.
-Block-buffered stdout is why the log looked like it stopped 500 lines earlier.
+**The diagnosis, in three measurements and no guesses.** Reading the code produced two wrong
+theories — a route slot reused without initialising `ListHeadPtr`, then an `#if`-selected branch —
+and NASA's subscribe path turned out to be correct: `cfe_sb_api.c:1057-1058` sets
+`Prev = NULL; Next = NULL` on every new destination. So instead of reading further, three probes:
+
+1. **A non-destructive walk of every route's destination list**, checking each node against the
+   pool's own bounds. It found the damage *without calling `DeletePipe` at all*:
+
+   ```
+   PROBE_BAD route=2 msgid=0x180e depth=1 node=0x809 OUTSIDE pool
+   PROBE_BAD route=3 msgid=0x941 depth=1 node=0x1   OUTSIDE pool
+   ```
+
+   The *first* node of each list is valid; its `Next` holds `0x809` — EVS's long-event MsgId — and
+   `0x1`. So a destination descriptor was sitting under a message header. `CFE_SB_DeletePipe` is
+   simply the only function that walks **every** route, which is why it was the only one to trip.
+
+2. **A probe on `es_pool_restore` that printed any restore moving the tail backwards.** There are
+   ten `exhaust` sites and sixteen `restore` sites, and `restore` wrote `es_pool_saved_tail`
+   **unconditionally** — so six restores ran with no exhaust in effect and rewound a bump allocator
+   that had moved on:
+
+   ```
+   PROBE_REWIND tail  680 ->  280 (LOSES  400 bytes of LIVE pool)
+   PROBE_REWIND tail  560 ->  280 (LOSES  280 bytes of LIVE pool)
+   PROBE_REWIND tail 2152 ->    0 (LOSES 2152 bytes of LIVE pool)
+   ```
+
+   The last rewinds SB's pool to **empty** while twenty-one destination descriptors are linked into
+   live routes. Every one is then handed out a second time.
+
+3. **The fix, then both probes again.** `exhaust` and `restore` are now a pair with a flag, and a
+   `restore` with no `exhaust` in effect does nothing. `bad=0`, and `CFE_SB_DeletePipeFull` returns
+   `CFE_SUCCESS` for **all nine** live pipes.
+
+**AND cFE HAD BEEN SAYING SO ALL ALONG.** Fixing it removed exactly three transcript lines:
+
+```
+CFE_ES_PutPoolBuf: Err:Bad offset(424) outside pool boundary
+CFE_ES_PutPoolBuf: Err:Bad offset(256) outside pool boundary
+CFE_ES_PutPoolBuf: Err:Bad offset(1520) outside pool boundary
+```
+
+cFE diagnosed the corruption three times, in a transcript that had been byte-identical and green
+for weeks, and those lines were read as normal output. That is the lesson worth more than the fix:
+**a differential proves the two halves agree, and two halves can agree about a corrupted heap.**
+The floor file records the shrink and why it was the right direction.
+
+The old wrong diagnosis is still worth keeping: the crash was first blamed on the POWER ON RESET
+that `CFE_TBL_TaskMain`'s init-failure path drives, and moving the reset to the end of the block
+did not help. An lldb backtrace put the fault before the reset, in DeletePipe itself. Block-buffered
+stdout is why the log looked like it stopped 500 lines earlier. Two wrong theories about NASA's
+code, and the thing that settled it was a probe that asked the pool where its own blocks were.
 
 **Run the tool before planning any module's order**, including the apps — and run it `--fresh`
 against a finished module first, because a result you cannot calibrate is a number you should

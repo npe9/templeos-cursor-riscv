@@ -5883,27 +5883,36 @@ I32 CFE_PSP_MemValidateRange(U64 Address, I64 Size, U32 MemoryType)
 // handle resolves to nothing. The old stub ignored its handle entirely so those lines were
 // no-ops; with the real pool they are lookups that can fail.
 I64 es_pool_saved_tail;
+Bool es_pool_exhausted;
 // AND DO NOT USE IT TO FAIL SB'S POOL CREATE. CFE_SB_InitBuffers' failure message prints
 // `gave adr 0x%lx` -- the partition's address -- so that line cannot be compared across a host
 // process and a QEMU guest. It is out of the transcript because the pool SUCCEEDS, not because
 // it is unreachable. Same rule as CFE_SB_CreatePipe's argument-check branch.
+// EXHAUST/RESTORE IS A PAIR, AND A `restore` WITH NO `exhaust` IN EFFECT MUST DO NOTHING.
+//
+// THIS FIXED A CRASH THAT HAD BEEN BLAMED ON NASA -- see the C half's copy of this comment for the
+// measurements. In short: ten exhaust sites, sixteen restore sites, so six restores ran with no
+// exhaust in effect and each wrote a STALE saved tail into a bump allocator that had moved on. One
+// of them rewound SB's pool to EMPTY while twenty-one destination descriptors were linked into
+// live routes, so those blocks were handed out twice and the second owner wrote over the first. A
+// route's destination node ended up with `Next` = 0x809, which is EVS's long-event MsgId.
+// CFE_SB_DeletePipe was blamed because it is the only function that walks every route.
 U0 es_pool_exhaust(U32 Handle)
 {
   CFE_ES_MemPoolRecord_t *r = CFE_ES_LocateMemPoolRecordByID(Handle);
-  // The TailPosition test makes a second exhaust a no-op. There are ten call sites and
-  // es_pool_saved_tail is ONE variable: without it, exhaust-exhaust-restore saves PoolMaxOffset
-  // as the "real" tail and leaves the pool permanently full.
-  if (r != NULL && r->Pool.TailPosition != r->Pool.PoolMaxOffset) {
+  if (r != NULL && !es_pool_exhausted) {
     es_pool_saved_tail = r->Pool.TailPosition;
     r->Pool.TailPosition = r->Pool.PoolMaxOffset;
+    es_pool_exhausted = TRUE;
   }
 }
 
 U0 es_pool_restore(U32 Handle)
 {
   CFE_ES_MemPoolRecord_t *r = CFE_ES_LocateMemPoolRecordByID(Handle);
-  if (r != NULL) {
+  if (r != NULL && es_pool_exhausted) {
     r->Pool.TailPosition = es_pool_saved_tail;
+    es_pool_exhausted = FALSE;
   }
 }
 // THE THREE COUNTERS THE TRANSCRIPT USED TO PRINT, now read out of NASA'S OWN POOL instead of
@@ -8525,11 +8534,18 @@ U0 cs_block_init()
   D(rc);
   S("\n");
 
-  // FREE THE SIMULATED QUEUE NAME so the nominal path can create its pipe. White-box on purpose and
-  // narrower than the alternative: CFE_SB_DeletePipe would be the clean way and it is the one
-  // function in NASA's SB this port has an undiagnosed segfault in, so it is not used here. The
-  // cFE-side pipe record from the call above is left registered, which costs one of 64 slots and is
-  // what csi_headroom_after counts.
+  // FREE THE SIMULATED QUEUE NAME so the nominal path can create its pipe. White-box on purpose,
+  // and THE REASON RECORDED HERE WAS WRONG: it said CFE_SB_DeletePipe "is the one function in
+  // NASA's SB this port has an undiagnosed segfault in". That crash is diagnosed and fixed, and it
+  // was never NASA's -- es_pool_restore was rewinding SB's bump allocator over live memory, so
+  // destination descriptors were handed out twice and a route's `Next` ended up holding a MsgId.
+  // See the comment on es_pool_exhaust. With the allocator fixed, DeletePipe returns CFE_SUCCESS
+  // for every one of the nine live pipes.
+  //
+  // The helper stays for now, and that is a choice rather than a necessity: swapping it for
+  // CFE_SB_DeletePipe would exercise NASA's code instead of poking a driver table, but it also
+  // frees the cFE pipe RECORD and so moves csi_headroom_after. Worth doing on its own, not folded
+  // into the commit that fixed the allocator. The record is corrected; the shortcut is labelled.
   sb_forget_queue_name(CS_CMD_PIPE_NAME);
 
   // THE NOMINAL PATH: a pipe and three subscriptions.

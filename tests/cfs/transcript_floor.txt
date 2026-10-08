@@ -1,4 +1,4 @@
-3861
+3858
 # THE TRANSCRIPT MUST NOT SHRINK WITHOUT SOMEONE SAYING WHY.
 #
 # The differential gate asserts that the two halves AGREE. It cannot notice that they agree
@@ -16,3 +16,21 @@
 # So: the number above is a FLOOR. A run below it fails. A run above it says so and asks for
 # the floor to be raised in the same commit that earned it -- deliberately, with the reason in
 # the commit message, which is the whole point.
+#
+# AND A SHRINK THAT WAS RIGHT: 3861 -> 3858, the three lines being cFE's OWN diagnosis of memory
+# corruption this driver was causing.
+#
+#   CFE_ES_PutPoolBuf: Err:Bad offset(424) outside pool boundary
+#   CFE_ES_PutPoolBuf: Err:Bad offset(256) outside pool boundary
+#   CFE_ES_PutPoolBuf: Err:Bad offset(1520) outside pool boundary
+#
+# es_pool_restore wrote a stale saved tail into SB's bump allocator unconditionally -- ten exhaust
+# sites against sixteen restore sites -- so six restores ran with no exhaust in effect and rewound
+# the allocator over live memory, once all the way to offset 0. Blocks were handed out twice, and a
+# route's destination node ended up with `Next` = 0x809, EVS's long-event MsgId. cFE noticed three
+# times, in a transcript that had been green for weeks, and the lines were read as normal output.
+#
+# Two counters moved with them (a syslog line count 37 -> 36 and a log-entry count 78 -> 77),
+# because they were counting those very lines. Nothing else changed, which is what makes this a
+# shrink worth taking rather than a loss of coverage: the exercise asserts the same things, and
+# three assertions about a healthy pool replaced three symptoms of a sick one.
