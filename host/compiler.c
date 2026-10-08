@@ -584,29 +584,7 @@ static void RVU32(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
   }
 }
 
-/* IC_DEREF / IncDec: load *rs1 into rd; width from arg1_type_pointed_to (U32 → lwu, not ld). */
-static U32 LoadRdFromRs1(U8 pointed_to, U8 rd, U8 rs1) {
-  switch (pointed_to) {
-  case RT_I8:
-    return 0x03 | (rd << 7) | (0 << 12) | (rs1 << 15); /* lb */
-  case RT_U8:
-    return 0x03 | (rd << 7) | (4 << 12) | (rs1 << 15); /* lbu */
-  case RT_I16:
-    return 0x03 | (rd << 7) | (1 << 12) | (rs1 << 15); /* lh */
-  case RT_U16:
-    return 0x03 | (rd << 7) | (5 << 12) | (rs1 << 15); /* lhu */
-  case RT_I32:
-    return 0x03 | (rd << 7) | (2 << 12) | (rs1 << 15); /* lw */
-  case RT_U32:
-    return 0x03 | (rd << 7) | (6 << 12) | (rs1 << 15); /* lwu */
-  default:
-    return 0x03 | (rd << 7) | (g_wd3<<12) | (rs1 << 15); /* ld */
-  }
-}
-static U32 DerefLoadFromRs1(U8 pointed_to, U8 rs1) {
-  return LoadRdFromRs1(pointed_to, RV_A0, rs1);
-}
-static U32 DerefLoadFromRs1Off(U8 p, U8 rs1, I64 off) { return DerefLoadFromRs1(p,rs1)|(((U32)off&0xFFF)<<20); }
+/* Typed load encoders (LoadRdFromRs1 / DerefLoadFromRs1 / …Off) moved to be_riscv.c (M4c). */
 
 // Materialize an arbitrary 64-bit constant in rd. lui/addi alone sign-extends bit 31, which
 // breaks every bare-metal RAM address (0x8000_0000+); zero-extend 32-bit values and build
@@ -646,24 +624,8 @@ static void EmitLoadImm64(U8 *pass_buf, U8 **pass_ptr, I64 *rip, U8 rd, I64 v) {
   }
 }
 
-// Typed store of rs2 through rs1 (mirror of LoadRdFromRs1).
-static U32 StoreRs2ToRs1(U8 pointed_to, U8 rs1, U8 rs2) {
-  U32 f3;
-  switch (pointed_to) {
-  case RT_I8: case RT_U8:   f3 = 0; break; /* sb */
-  case RT_I16: case RT_U16: f3 = 1; break; /* sh */
-  case RT_I32: case RT_U32: f3 = 2; break; /* sw */
-  default:                  f3 = g_wd3; break; /* sd */
-  }
-  return 0x23 | (f3 << 12) | (rs1 << 15) | (rs2 << 20);
-}
-static U32 StoreA0ToRs1(U8 pointed_to, U8 rs1) {
-  return StoreRs2ToRs1(pointed_to, rs1, RV_A0);
-}
-static U32 StoreA0ToRs1Off(U8 p, U8 rs1, I64 off) { return StoreA0ToRs1(p,rs1)|(((U32)off&31)<<7)|(((U32)off&0xFE0)<<20); }
-static U32 StoreZeroToRs1(U8 pointed_to, U8 rs1) {
-  return StoreRs2ToRs1(pointed_to, rs1, RV_ZERO); /* rs2 = x0 */
-}
+/* Typed store encoders (StoreRs2ToRs1 / StoreA0ToRs1 / …Off / StoreZeroToRs1) moved to
+ * be_riscv.c (M4c). */
 
 /* After *p=0 / ASSIGN: is a0 (the stored value) observed? Statement + LEAVE → no;
  * return / outer expr / REPL RETURN_VAL2 → yes (keep li a0,0 after store). */
@@ -1326,11 +1288,7 @@ static void EmitRegsSnapStub(U8 *pass_buf, U8 **pass_ptr, I64 *rip) {
 #endif
 }
 
-/* A-ext AMO word: opcode 0x2F; aqrl is {aq,rl} in bits [26:25]. */
-static U32 RvAmo(U32 f5, U32 aqrl, U32 f3, int rd, int rs1, int rs2) {
-  return 0x2Fu | ((U32)rd << 7) | (f3 << 12) | ((U32)rs1 << 15) | ((U32)rs2 << 20) |
-         (aqrl << 25) | (f5 << 27);
-}
+/* RvAmo (A-ext AMO encoder) moved to be_riscv.c (M4c). */
 
 /* HolyC `lock`: spin acquire matching HolyLock (amoswap.d.aq 1 until old==0). */
 static void EmitLockEnter(U8 *pass_buf, U8 **pass_ptr, I64 *rip) {

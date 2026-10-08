@@ -22,4 +22,14 @@ int RvIsAddi(U32 w, int rd, int rs1, int imm); /* is w exactly `addi rd, rs1, im
 int RvIsSdSp0(U32 w, int *rs2);           /* is w `sd/sw rs2, 0(sp)` (doubleword = g_wd3)?      */
 int RvIsMv(U32 w, int *rd, int *rs);      /* is w `mv rd, rs` (addi rd, rs, 0)?                 */
 
+/* Typed load/store + AMO instruction encoders (doubleword width = g_wd3). */
+U32 LoadRdFromRs1(U8 pointed_to, U8 rd, U8 rs1);
+U32 DerefLoadFromRs1(U8 pointed_to, U8 rs1);
+U32 DerefLoadFromRs1Off(U8 p, U8 rs1, I64 off);
+U32 StoreRs2ToRs1(U8 pointed_to, U8 rs1, U8 rs2);
+U32 StoreA0ToRs1(U8 pointed_to, U8 rs1);
+U32 StoreA0ToRs1Off(U8 p, U8 rs1, I64 off);
+U32 StoreZeroToRs1(U8 pointed_to, U8 rs1);
+U32 RvAmo(U32 f5, U32 aqrl, U32 f3, int rd, int rs1, int rs2);
+
 #endif /* HOST_BACKEND_RISCV_BE_RISCV_H */

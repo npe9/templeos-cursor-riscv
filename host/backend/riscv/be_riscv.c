@@ -32,6 +32,42 @@ int RvIsMv(U32 w, int *rd, int *rs) {
   return 1;
 }
 
+/* --- Typed load/store + AMO encoders (moved from compiler.c, M4c). Width of the doubleword
+ *     case is g_wd3 (ld/sd on rv64, lw/sw on rv32); narrower lb/lh/lw are width-correct both. --- */
+/* IC_DEREF / IncDec: load *rs1 into rd; width from arg1_type_pointed_to (U32 → lwu, not ld). */
+U32 LoadRdFromRs1(U8 pointed_to, U8 rd, U8 rs1) {
+  switch (pointed_to) {
+  case RT_I8:  return 0x03 | (rd << 7) | (0 << 12) | (rs1 << 15); /* lb  */
+  case RT_U8:  return 0x03 | (rd << 7) | (4 << 12) | (rs1 << 15); /* lbu */
+  case RT_I16: return 0x03 | (rd << 7) | (1 << 12) | (rs1 << 15); /* lh  */
+  case RT_U16: return 0x03 | (rd << 7) | (5 << 12) | (rs1 << 15); /* lhu */
+  case RT_I32: return 0x03 | (rd << 7) | (2 << 12) | (rs1 << 15); /* lw  */
+  case RT_U32: return 0x03 | (rd << 7) | (6 << 12) | (rs1 << 15); /* lwu */
+  default:     return 0x03 | (rd << 7) | (g_wd3<<12) | (rs1 << 15); /* ld */
+  }
+}
+U32 DerefLoadFromRs1(U8 pointed_to, U8 rs1) { return LoadRdFromRs1(pointed_to, RV_A0, rs1); }
+U32 DerefLoadFromRs1Off(U8 p, U8 rs1, I64 off) { return DerefLoadFromRs1(p,rs1)|(((U32)off&0xFFF)<<20); }
+/* Typed store of rs2 through rs1 (mirror of LoadRdFromRs1). */
+U32 StoreRs2ToRs1(U8 pointed_to, U8 rs1, U8 rs2) {
+  U32 f3;
+  switch (pointed_to) {
+  case RT_I8: case RT_U8:   f3 = 0; break; /* sb */
+  case RT_I16: case RT_U16: f3 = 1; break; /* sh */
+  case RT_I32: case RT_U32: f3 = 2; break; /* sw */
+  default:                  f3 = g_wd3; break; /* sd */
+  }
+  return 0x23 | (f3 << 12) | (rs1 << 15) | (rs2 << 20);
+}
+U32 StoreA0ToRs1(U8 pointed_to, U8 rs1) { return StoreRs2ToRs1(pointed_to, rs1, RV_A0); }
+U32 StoreA0ToRs1Off(U8 p, U8 rs1, I64 off) { return StoreA0ToRs1(p,rs1)|(((U32)off&31)<<7)|(((U32)off&0xFE0)<<20); }
+U32 StoreZeroToRs1(U8 pointed_to, U8 rs1) { return StoreRs2ToRs1(pointed_to, rs1, RV_ZERO); /* rs2 = x0 */ }
+/* A-ext AMO word: opcode 0x2F; aqrl is {aq,rl} in bits [26:25]. */
+U32 RvAmo(U32 f5, U32 aqrl, U32 f3, int rd, int rs1, int rs2) {
+  return 0x2Fu | ((U32)rd << 7) | (f3 << 12) | ((U32)rs1 << 15) | ((U32)rs2 << 20) |
+         (aqrl << 25) | (f5 << 27);
+}
+
 /* RISC-V (LP64D) role → physical register. Roles with no RISC-V register are -1. */
 const RegFile rv_regfile = {
   .phys = {
