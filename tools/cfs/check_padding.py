@@ -47,6 +47,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cfs_dirs import HCDIRS, app_dirs  # ONE copy of these lists -- see cfs_dirs.py
+import cfs_expr  # ONE C integer-expression evaluator -- see cfs_expr.py
 CFE = os.path.join(ROOT, "vendor", "cFE")
 OSAL = os.path.join(ROOT, "vendor", "osal")
 
@@ -260,10 +261,10 @@ def eval_int(expr, vals):
     toks = re.findall(r'[A-Za-z_]\w*|\d+|\S', e)
     if not toks or not all(tk in "()+*/- " or tk.isdigit() or tk in vals for tk in toks):
         return None
-    try:
-        return int(eval("".join(str(vals[tk]) if tk in vals else tk for tk in toks)))
-    except Exception:
-        return None
+    # cfs_expr.evaluate, not a local int(eval(...)) -- see cfs_expr.py. Python's `/` is TRUE
+    # division, so `((176 + 15) / 16) * 4` read 47 where C reads 44 and LC's housekeeping packet
+    # was reported as a layout mismatch while being correct.
+    return cfs_expr.evaluate("".join(str(vals[tk]) if tk in vals else tk for tk in toks))
 
 
 def lifted_typedefs():

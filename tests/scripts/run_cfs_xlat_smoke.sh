@@ -213,6 +213,15 @@ mkdir -p "$T"
 # implementation.
 python3 "$ROOT/tools/cfs/cfs_text.py" || exit 1
 
+# --- and the ONE C integer-expression evaluator ----------------------------------------------
+# Two gates ended in Python's `int(eval(...))`, where `/` is TRUE division -- so NASA's round-up
+# idiom `((N + 15) / 16) * 4` evaluated to 47 where C gives 44, and LC's bit-packed housekeeping
+# packet was reported as a 162-byte layout mismatch while being exactly right. Nine array bounds
+# in the tree already divide and every one was correct BY LUCK: for a bare `X / N` with
+# non-negative operands, int(x/n) and C agree. The self-test below drives the divide-then-multiply
+# shape and five refusals.
+python3 "$ROOT/tools/cfs/cfs_expr.py" || exit 1
+
 # --- completeness: every NASA function must EXIST in the translation -----------------------
 # The transcript below compares behaviour, so it only sees functions the driver calls. A
 # function nobody calls is invisible to it -- the C side links it from NASA's source, the HolyC

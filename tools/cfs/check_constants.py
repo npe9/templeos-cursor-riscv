@@ -50,6 +50,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cfs_dirs import HCDIRS, APPS  # ONE copy of these lists -- see cfs_dirs.py
+import cfs_expr  # ONE C integer-expression evaluator -- see cfs_expr.py
 
 # The include path and the header list are check_padding.py's, for the same reason it does not
 # duplicate check_structs.py's name mapping: two tools disagreeing about which headers are in
@@ -491,10 +492,11 @@ def expr_value(lit, mine, probe_vals, depth=0):
         return expr_value(s, mine, probe_vals, depth + 1)
     if not EXPR_OK.match(s):
         return None
-    try:
-        return int(eval(s, {"__builtins__": {}}, {}))
-    except Exception:
-        return None
+    # cfs_expr.evaluate, for the reason in cfs_expr.py: Python's `/` is TRUE division, so any
+    # NASA constant that divides and then does anything else -- LC_HKWR_NUM_BYTES is
+    # `((LC_MAX_WATCHPOINTS + 15) / 16) * 4` -- evaluated 47 where C says 44. This gate compares
+    # VALUES, so that is a wrong answer about NASA rather than a refusal.
+    return cfs_expr.evaluate(s)
 
 
 _VENDOR_DEFS = None
