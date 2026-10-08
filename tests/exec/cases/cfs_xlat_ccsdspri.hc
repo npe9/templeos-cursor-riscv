@@ -1793,6 +1793,18 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 // And cs_init.HC, step 2: it depends on the three above (seven functions out of
 // cs_table_processing and one out of cs_utils) and the seven-source group depends on IT.
 #include "/Kernel/Cfs/cs/cs_init.HC"
+// CS's seven-source group, step 3. The order is: the five command files (which call into
+// cs_utils, cs_compute, cs_table_processing and cs_app), then cs_app.HC, then cs_dispatch.HC.
+// cs_app.HC forward-declares CS_AppPipe and cs_dispatch.HC forward-declares all 42 handlers, which
+// is the two edges that close the cycle -- docs/CFS_PLAN.md measured that the other forty are a
+// dispatcher calling its own handlers, a tree.
+#include "/Kernel/Cfs/cs/cs_cmds.HC"
+#include "/Kernel/Cfs/cs/cs_eeprom_cmds.HC"
+#include "/Kernel/Cfs/cs/cs_memory_cmds.HC"
+#include "/Kernel/Cfs/cs/cs_table_cmds.HC"
+#include "/Kernel/Cfs/cs/cs_app_cmds.HC"
+#include "/Kernel/Cfs/cs/cs_app.HC"
+#include "/Kernel/Cfs/cs/cs_dispatch.HC"
 
 // ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
 //

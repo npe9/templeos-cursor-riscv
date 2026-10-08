@@ -98,6 +98,13 @@
 #define CS_CDS_NAME                           "CS_CDS"
 #define CS_MISSION_REV                        0xFF
 
+// cs_version.h. Three numbers plus CS_MISSION_REV above, and all four are printed by exactly two
+// events -- CS_INIT_INF_EID at startup and CS_NOOP_INF_EID when the ground asks. They are the only
+// thing in CS that identifies the BUILD, which is why a no-op is a useful command.
+#define CS_MAJOR_VERSION 7
+#define CS_MINOR_VERSION 0
+#define CS_REVISION      1
+
 /*******************************************************************************/
 // default_cs_tbl.h -- the eight cFE table names. Four definition tables the ground may replace
 // and four results tables CS owns and dumps.

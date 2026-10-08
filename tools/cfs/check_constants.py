@@ -202,6 +202,11 @@ CSRC_DEFS = [
     # four EventMap arrays, and CS_ValidationError_MAX is those arrays' length -- so csrc_enums()
     # below lifts the declaration into both probes.
     os.path.join(ROOT, "vendor", "CS", "fsw", "src", "cs_table_processing.c"),
+    # CS_NUM_DATA_STORE_STATES is cs_app.c's own -- six, "4 tables + OS CS + cFE core" in NASA's
+    # comment -- and it is the SIZE OF THE CDS. A translation that drifted would register a CDS of a
+    # different length than it reads back, which CFE_ES_RestoreFromCDS answers with an error rather
+    # than a short read, so the symptom would be "the CDS is broken" on every boot.
+    os.path.join(ROOT, "vendor", "CS", "fsw", "src", "cs_app.c"),
 ]
 
 

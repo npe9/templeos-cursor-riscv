@@ -150,7 +150,14 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $CS/fsw/src/cs_utils.c
        $CS/fsw/src/cs_compute.c
        $CS/fsw/src/cs_table_processing.c
-       $CS/fsw/src/cs_init.c"
+       $CS/fsw/src/cs_init.c
+       $CS/fsw/src/cs_cmds.c
+       $CS/fsw/src/cs_eeprom_cmds.c
+       $CS/fsw/src/cs_memory_cmds.c
+       $CS/fsw/src/cs_table_cmds.c
+       $CS/fsw/src/cs_app_cmds.c
+       $CS/fsw/src/cs_app.c
+       $CS/fsw/src/cs_dispatch.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"

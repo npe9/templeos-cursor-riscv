@@ -147,6 +147,12 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "cs_compute.h"
 #include "cs_table_processing.h"
 #include "cs_init.h"
+#include "cs_cmds.h"
+#include "cs_eeprom_cmds.h"
+#include "cs_memory_cmds.h"
+#include "cs_table_cmds.h"
+#include "cs_app_cmds.h"
+#include "cs_dispatch.h"
 /* THREE OF CS's FUNCTIONS ARE IN NO HEADER. CS_CheckGenericNameMatch and
  * CS_SetGenericEntryState in cs_utils.c, and CS_ExtractNames in cs_table_processing.c, are not
  * `static` -- they have external linkage and the exercises below call them -- but NASA declares
@@ -774,13 +780,10 @@ static CFE_ES_ResetData_t es_reset_area;
  * SILENTLY -- and tools/cfs/check_oracle_globals.py is what would have refused the overlap.
  * The same deadline MD_AppData had, met the same way. */
 
-/* CS_AppData IS NASA'S, defined in cs_app.c, which is NOT yet gated -- so it lives here, the
- * way MD_AppData and MM_AppData each did until their app file arrived. It MOVES to
- * Kernel/Cfs/cs/cs_global.HC's side of the ledger when cs_app.c is gated in step 3, and
- * tools/cfs/check_oracle_globals.py is what will refuse to let the two definitions coexist --
- * a C tentative definition in two translation units merges SILENTLY. The HolyC half already
- * defines it in cs_global.HC, beside its type, for the reason recorded there. */
-CS_AppData_t CS_AppData;
+/* CS_AppData IS NASA'S, defined in cs_app.c, which is gated as of this commit. It sat HERE until
+ * then, with the deadline written beside it, and tools/cfs/check_oracle_globals.py is what refuses
+ * to let the two definitions coexist -- a C tentative definition in two translation units merges
+ * SILENTLY. The same deadline MD_AppData and MM_AppData each had, met the same way. */
 
 /* ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
  *
