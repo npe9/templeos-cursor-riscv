@@ -209,6 +209,27 @@ U0 H2(I64 v)
   S(two);
 }
 
+// Fixed-width upper-case hex, matching the oracle's "%04X" and "%08X". LC's exercise needs both:
+// a watchpoint's extracted value and a float BIT PATTERN are only readable in hex, and
+// fixed-width is what makes a missing or extra nibble visible rather than a shorter number.
+U0 H4(I64 v)
+{
+  U8 four[5];
+  U8 *hx = "0123456789ABCDEF";
+  four[0] = hx[(v >> 12) & 15];
+  four[1] = hx[(v >> 8) & 15];
+  four[2] = hx[(v >> 4) & 15];
+  four[3] = hx[v & 15];
+  four[4] = 0;
+  S(four);
+}
+
+U0 H8(I64 v)
+{
+  H4(v >> 16);
+  H4(v);
+}
+
 U0 Dump(U8 *tag, CFE_MSG_Message *m)
 {
   S(tag);
@@ -11131,6 +11152,637 @@ U0 cs_block_app()
   CS_UpdateCDS();
   S("csap_cds_silent writes=");
   D(es_cds_writes - x0);
+  S("\n");
+}
+
+// ===================== LC, THE FOURTH cFS APP -- THE EXERCISE =====================
+//
+// LC is 3,882 lines across seven sources and 56 functions, and what makes its exercise different
+// from CS's is that LC's core is ARITHMETIC rather than bookkeeping. A watchpoint is a byte
+// offset into a packet, a data type, an operator and a comparison value; an actionpoint is a
+// reverse-Polish expression over watchpoint results in a four-valued logic. So the lines below
+// are mostly VALUES, and a translation that got an endian swap, a sign extension or a float
+// rounding wrong shows up as a different number rather than a different code path.
+//
+// THE FOUR TABLES ARE AT FILE SCOPE, not locals, and that is not a style choice. LC_MAX_WATCHPOINTS
+// is 176, so lc_adt alone is 14,784 bytes -- and docs/HOLYC_STRUCT_LIMITS.md #22 records that
+// growing one function's TOTAL frame made a file-scope `&fn` initialiser read zero hundreds of
+// lines away. Four arrays totalling 35 KB on the stack of a block in a 22,000-line translation
+// unit is the exact shape of that bug. The C oracle declares them `static` for the same reason,
+// so neither half puts them on a stack.
+LC_WDTEntry_t lc_wdt[LC_MAX_WATCHPOINTS];
+LC_ADTEntry_t lc_adt[LC_MAX_ACTIONPOINTS];
+LC_WRTEntry_t lc_wrt[LC_MAX_WATCHPOINTS];
+LC_ARTEntry_t lc_art[LC_MAX_ACTIONPOINTS];
+
+// The four bytes every sized-data and endian line reads. CHOSEN SO THAT EVERY ONE OF THE TWELVE
+// DATA TYPES GIVES A DIFFERENT ANSWER: 0x80 has its top bit set so a signed byte is negative and
+// an unsigned one is not, 0x8001 big-endian is negative while 0x0180 little-endian is positive,
+// and all four bytes differ so a swap that moves the wrong pair is visible. A buffer of zeroes
+// or of one repeated byte would make a byte-reversing copy and an identity copy agree.
+U8 lc_src[8];
+
+U0 lc_fill_src()
+{
+  lc_src[0] = 0x80;
+  lc_src[1] = 0x01;
+  lc_src[2] = 0x02;
+  lc_src[3] = 0x83;
+  lc_src[4] = 0x44;
+  lc_src[5] = 0x55;
+  lc_src[6] = 0x66;
+  lc_src[7] = 0x77;
+}
+
+U0 lc_setup()
+{
+  I64 i;
+
+  MemSet(&LC_OperData, 0, sizeof(LC_OperData_t));
+  MemSet(&LC_AppData, 0, sizeof(LC_AppData_t));
+  MemSet(lc_wdt, 0, sizeof(LC_WDTEntry_t) * LC_MAX_WATCHPOINTS);
+  MemSet(lc_adt, 0, sizeof(LC_ADTEntry_t) * LC_MAX_ACTIONPOINTS);
+  MemSet(lc_wrt, 0, sizeof(LC_WRTEntry_t) * LC_MAX_WATCHPOINTS);
+  MemSet(lc_art, 0, sizeof(LC_ARTEntry_t) * LC_MAX_ACTIONPOINTS);
+
+  LC_OperData.WDTPtr = lc_wdt;
+  LC_OperData.ADTPtr = lc_adt;
+  LC_OperData.WRTPtr = lc_wrt;
+  LC_OperData.ARTPtr = lc_art;
+
+  // THE FOUR HANDLES ARE EXPLICITLY INVALID, for the reason CS's setup records at length: zero
+  // IS a valid cFE table handle, and MD, MM and CS have all registered tables by the time this
+  // runs -- so a handle left at zero would make LC_ManageTables operate on one of MD's dwell
+  // tables. -1 fails predictably instead.
+  LC_OperData.WDTHandle = CFE_TBL_BAD_TABLE_HANDLE;
+  LC_OperData.ADTHandle = CFE_TBL_BAD_TABLE_HANDLE;
+  LC_OperData.WRTHandle = CFE_TBL_BAD_TABLE_HANDLE;
+  LC_OperData.ARTHandle = CFE_TBL_BAD_TABLE_HANDLE;
+
+  // EVERY WATCHPOINT AND ACTIONPOINT STARTS UNUSED, which is NOT what MemSet gives: the unused
+  // markers are 0xFF, not 0. LC_CreateHashTable skips an entry whose DataType is
+  // LC_DATA_WATCH_NOT_USED and LC_SampleAPs skips a state of LC_ACTION_NOT_USED, so a table
+  // left at zero would read as 176 live watchpoints of data type 0 -- which is not a valid
+  // type either, and the first sample would send 176 undefined-data-type events.
+  for (i = 0; i < LC_MAX_WATCHPOINTS; ++i) {
+    lc_wdt[i].DataType = LC_DATA_WATCH_NOT_USED;
+    lc_wdt[i].OperatorID = LC_OPER_NONE;
+    lc_wrt[i].WatchResult = LC_WATCH_STALE;
+  }
+  for (i = 0; i < LC_MAX_ACTIONPOINTS; ++i) {
+    lc_adt[i].DefaultState = LC_ACTION_NOT_USED;
+    lc_art[i].ActionResult = LC_ACTION_STALE;
+    lc_art[i].CurrentState = LC_ACTION_NOT_USED;
+  }
+
+  LC_AppData.CurrentLCState = LC_STATE_ACTIVE;
+}
+
+U0 lc_block_watch_core()
+{
+  LC_MultiType_t dest;
+  LC_MultiType_t map;
+  U32 sized;
+  Bool ok;
+  I64 i;
+  I64 t;
+  U8 r0;
+  U8 r1;
+  U8 r2;
+  U8 ops[7];
+  U32 mids[6];
+
+  ops[0] = LC_OPER_LT;
+  ops[1] = LC_OPER_LE;
+  ops[2] = LC_OPER_NE;
+  ops[3] = LC_OPER_EQ;
+  ops[4] = LC_OPER_GE;
+  ops[5] = LC_OPER_GT;
+  ops[6] = 99;
+
+  lc_fill_src();
+  lc_setup();
+
+  // --- LC_GetHashTableIndex. The hash is the LOW BYTE of the message id and nothing else, so
+  // the assertion that matters is that two ids 256 apart COLLIDE -- 0x0801 and 0x0901 both
+  // land in bucket 1. NASA's comment claims "no single hash table entry will have more than 8
+  // elements", which rests on the id space being 11 bits wide; these six lines are what shows
+  // the function is the mask and not something cleverer.
+  mids[0] = 0x0801;
+  mids[1] = 0x0901;
+  mids[2] = 0x18FF;
+  mids[3] = 0x1900;
+  mids[4] = 0x0000;
+  mids[5] = 0x07FF;
+  S("lcw_hash");
+  for (i = 0; i < 6; ++i) {
+    S(" ");
+    H4(mids[i]);
+    S("=");
+    D(LC_GetHashTableIndex(CFE_SB_ValueToMsgId(mids[i])));
+  }
+  S("\n");
+
+  // --- LC_CopyBytesWithSwap, called DIRECTLY rather than through LC_GetSizedWPData, because
+  // the swap map is the whole mechanism and it is invisible from outside. The map is a
+  // LC_MultiType_t holding 0x00010203 or 0x03020100, and the copy reads
+  // SrcPtr[SwapMapPtr[n] & 3] -- so the map's BYTES are a permutation and the `& 3` is what
+  // makes a 2-byte map safe to index with a 4-byte constant.
+  //
+  // NOTE THAT THE RESULT DEPENDS ON THE HOST'S ENDIANNESS AND BOTH HALVES ARE LITTLE-ENDIAN.
+  // x86-64 and RISC-V agree here, which is why these lines can be compared at all; the map
+  // constants are stored as integers, so their byte order IS the platform's.
+  dest.Unsigned32 = 0;
+  map.Unsigned32 = 0;
+  map.Unsigned16 = LC_16BIT_BE_VAL;
+  LC_CopyBytesWithSwap(&dest, lc_src, &map, sizeof(U16));
+  S("lcw_swap be2=");
+  H4(dest.Unsigned16);
+  dest.Unsigned32 = 0;
+  map.Unsigned32 = 0;
+  map.Unsigned16 = LC_16BIT_LE_VAL;
+  LC_CopyBytesWithSwap(&dest, lc_src, &map, sizeof(U16));
+  S(" le2=");
+  H4(dest.Unsigned16);
+  dest.Unsigned32 = 0;
+  map.Unsigned32 = LC_32BIT_BE_VAL;
+  LC_CopyBytesWithSwap(&dest, lc_src, &map, sizeof(U32));
+  S(" be4=");
+  H8(dest.Unsigned32);
+  dest.Unsigned32 = 0;
+  map.Unsigned32 = LC_32BIT_LE_VAL;
+  LC_CopyBytesWithSwap(&dest, lc_src, &map, sizeof(U32));
+  S(" le4=");
+  H8(dest.Unsigned32);
+  // A ZERO-LENGTH COPY. The loop is `while (NumBytes > 0) { --NumBytes; ... }`, so zero must
+  // write nothing -- and the only way to see "wrote nothing" is to pre-poison the destination.
+  dest.Unsigned32 = 0xDEADBEEF;
+  LC_CopyBytesWithSwap(&dest, lc_src, &map, 0);
+  S(" zero=");
+  H8(dest.Unsigned32);
+  S("\n");
+
+  // --- LC_GetSizedWPData over ALL TWELVE DATA TYPES plus one that does not exist. This is the
+  // sign-extension and endian table, and the answers are deliberately all different: type 1
+  // (signed byte) reads 0x80 as -128 and so prints 4294967168 once widened to U32, type 2
+  // reads the same byte as 128. The `*SizedDataPtr` out-parameter is a U32, so a sign
+  // extension that did not happen is a small positive number and one that happened is near
+  // 2^32 -- the two are not confusable.
+  for (t = 1; t <= 13; ++t) {
+    if (t == 13) {
+      lc_wdt[0].DataType = 77;
+    } else {
+      lc_wdt[0].DataType = t;
+    }
+    sized = 0xA5A5A5A5;
+    ok = LC_GetSizedWPData(0, lc_src, &sized);
+    S("lcw_sized t=");
+    D(lc_wdt[0].DataType);
+    S(" ok=");
+    D(ok);
+    S(" v=");
+    D(sized);
+    S("\n");
+  }
+
+  // --- LC_SignedCompare and LC_UnsignedCompare over all six operators and one invalid one,
+  // on the SAME BIT PATTERN read two ways. -1 and 1 as signed are less-than; 0xFFFFFFFF and 1
+  // as unsigned are greater-than -- so the two functions must disagree on every ordering
+  // operator and agree on EQ and NE. A translation that lost the signedness of either
+  // parameter collapses the two blocks into one.
+  //
+  // THE RESULT VALUES ARE LC_WATCH_FALSE=0, LC_WATCH_TRUE=1, LC_WATCH_ERROR=2, and those
+  // numbers are load-bearing rather than cosmetic: an actionpoint is a reverse-Polish
+  // expression over them, so lc_action.c does arithmetic on exactly these.
+  // EVERY RESULT IS HOISTED INTO A LOCAL BEFORE IT IS PRINTED, and that is not tidiness. The C
+  // half's printf EVALUATES ALL ITS ARGUMENTS BEFORE IT PRINTS ANY OF THEM, so a call that sends
+  // an event -- which the op=99 row does, three times -- puts the event text in the transcript
+  // BEFORE the "lcw_scmp op=99" prefix. This half prints incrementally with S() and D(), so
+  // unhoisted it would interleave the event INSIDE the line instead. Both halves would be telling
+  // the truth about their own language and the transcripts would disagree; it is the sixth
+  // instance of this shape in this suite. Anything that can emit is called before the print
+  // begins, on BOTH sides, which also pins the order the three calls run in -- C leaves the
+  // evaluation order of printf's arguments unspecified.
+  for (i = 0; i < 7; ++i) {
+    lc_wdt[0].OperatorID = ops[i];
+    r0 = LC_SignedCompare(0, -1, 1);
+    r1 = LC_SignedCompare(0, 1, -1);
+    r2 = LC_SignedCompare(0, 7, 7);
+    S("lcw_scmp op=");
+    D(ops[i]);
+    S(" m1v1=");
+    D(r0);
+    S(" v1m1=");
+    D(r1);
+    S(" eq=");
+    D(r2);
+    S("\n");
+  }
+  for (i = 0; i < 7; ++i) {
+    lc_wdt[0].OperatorID = ops[i];
+    r0 = LC_UnsignedCompare(0, 0xFFFFFFFF, 1);
+    r1 = LC_UnsignedCompare(0, 1, 0xFFFFFFFF);
+    r2 = LC_UnsignedCompare(0, 7, 7);
+    S("lcw_ucmp op=");
+    D(ops[i]);
+    S(" m1v1=");
+    D(r0);
+    S(" v1m1=");
+    D(r1);
+    S(" eq=");
+    D(r2);
+    S("\n");
+  }
+}
+
+// --- LC'S ACTIONPOINT LOGIC IS A REVERSE-POLISH EXPRESSION IN A FOUR-VALUED LOGIC, and that is
+// the single most interesting thing in the application. An actionpoint's RPNEquation is up to 20
+// U16 words; a word below LC_MAX_WATCHPOINTS pushes that watchpoint's RESULT, and 0xFFF1..5 are
+// AND, OR, XOR, NOT and "=". The operands are LC_WATCH_FALSE=0, TRUE=1, ERROR=2 and STALE=0xFF,
+// so the logic has four values and the operators are not the boolean ones.
+//
+// THE PRECEDENCE AMONG THE FOUR VALUES IS THE PART A TRANSLATION CAN SILENTLY GET WRONG, because
+// each operator tests them in its own order:
+//
+//   AND  FALSE first, then ERROR, then STALE, else TRUE   -- FALSE beats ERROR
+//   OR   TRUE  first, then ERROR, then STALE, else FALSE  -- TRUE  beats ERROR
+//   XOR  ERROR first, then STALE, else (op1 != op2)       -- no short circuit at all
+//   NOT  ERROR first, then STALE, else (op1 == FALSE)
+//
+// So `FALSE AND ERROR` is FALSE and `FALSE OR ERROR` is ERROR, and the asymmetry is deliberate:
+// a watchpoint that could not be read does not make a definitely-false conjunction uncertain.
+// Cases 6, 10 and 11 below are exactly that pair, and a translation that reordered the arms would
+// pass every other case here.
+//
+// AND POP_RPN_DATA IS A TERNARY THAT ASSIGNS. NASA writes
+//
+//     #define POP_RPN_DATA ((StackPtr <= 0) ? (IllegalRPN = true) : (RPNStack[--StackPtr]))
+//
+// so popping an empty stack yields the VALUE OF THE ASSIGNMENT -- 1, which is LC_WATCH_TRUE --
+// and sets the error flag. The operator arm then runs to completion on fabricated TRUE operands
+// before the loop notices. Case 18 drives it, and the validator's printed depth of -1 is the
+// matching evidence on the other side: an implementation that returned 0 from an empty pop, or
+// that bailed out immediately, would print a different number here and nowhere else.
+#define LC_EX_CASES 21
+
+U16 lc_rpn_cases[LC_EX_CASES * 10];
+
+U0 lc_eq6(I64 c, I64 a, I64 b, I64 d, I64 e, I64 f, I64 g)
+{
+  lc_rpn_cases[c * 10 + 0] = a;
+  lc_rpn_cases[c * 10 + 1] = b;
+  lc_rpn_cases[c * 10 + 2] = d;
+  lc_rpn_cases[c * 10 + 3] = e;
+  lc_rpn_cases[c * 10 + 4] = f;
+  lc_rpn_cases[c * 10 + 5] = g;
+}
+
+U0 lc_wr4(I64 c, I64 a, I64 b, I64 d, I64 e)
+{
+  lc_rpn_cases[c * 10 + 6] = a;
+  lc_rpn_cases[c * 10 + 7] = b;
+  lc_rpn_cases[c * 10 + 8] = d;
+  lc_rpn_cases[c * 10 + 9] = e;
+}
+
+// THE TABLE IS FILLED BY CODE, NOT BY AN INITIALISER, and the C half does it that way too on
+// purpose. HolyC has no file-scope aggregate initialiser -- a static C table becomes a runtime
+// fill -- so writing the C half as an initialiser and the HolyC half as a fill would put the two
+// tables in a different ORDER relative to their reader, which is the failure mode
+// docs/CFS_PORT.md records as "generated table init order": the reader ran before the fill and
+// five config entries were silently zero. Same shape, same order, both halves.
+U0 lc_fill_cases()
+{
+  I64 i;
+  for (i = 0; i < LC_EX_CASES * 10; ++i) {
+    lc_rpn_cases[i] = 0;
+  }
+  // a single watchpoint: the four result values straight through
+  lc_eq6(0, 0, LC_RPN_EQUAL, 0, 0, 0, 0);
+  lc_wr4(0, LC_WATCH_TRUE, 0, 0, 0);
+  lc_eq6(1, 0, LC_RPN_EQUAL, 0, 0, 0, 0);
+  lc_wr4(1, LC_WATCH_FALSE, 0, 0, 0);
+  lc_eq6(2, 0, LC_RPN_EQUAL, 0, 0, 0, 0);
+  lc_wr4(2, LC_WATCH_ERROR, 0, 0, 0);
+  lc_eq6(3, 0, LC_RPN_EQUAL, 0, 0, 0, 0);
+  lc_wr4(3, LC_WATCH_STALE, 0, 0, 0);
+  // AND: FALSE is tested before ERROR, so case 6 is PASS and case 7 is ERROR
+  lc_eq6(4, 0, 1, LC_RPN_AND, LC_RPN_EQUAL, 0, 0);
+  lc_wr4(4, LC_WATCH_TRUE, LC_WATCH_TRUE, 0, 0);
+  lc_eq6(5, 0, 1, LC_RPN_AND, LC_RPN_EQUAL, 0, 0);
+  lc_wr4(5, LC_WATCH_TRUE, LC_WATCH_FALSE, 0, 0);
+  lc_eq6(6, 0, 1, LC_RPN_AND, LC_RPN_EQUAL, 0, 0);
+  lc_wr4(6, LC_WATCH_FALSE, LC_WATCH_ERROR, 0, 0);
+  lc_eq6(7, 0, 1, LC_RPN_AND, LC_RPN_EQUAL, 0, 0);
+  lc_wr4(7, LC_WATCH_TRUE, LC_WATCH_ERROR, 0, 0);
+  lc_eq6(8, 0, 1, LC_RPN_AND, LC_RPN_EQUAL, 0, 0);
+  lc_wr4(8, LC_WATCH_TRUE, LC_WATCH_STALE, 0, 0);
+  // OR: TRUE is tested before ERROR, which is the mirror image
+  lc_eq6(9, 0, 1, LC_RPN_OR, LC_RPN_EQUAL, 0, 0);
+  lc_wr4(9, LC_WATCH_FALSE, LC_WATCH_FALSE, 0, 0);
+  lc_eq6(10, 0, 1, LC_RPN_OR, LC_RPN_EQUAL, 0, 0);
+  lc_wr4(10, LC_WATCH_TRUE, LC_WATCH_ERROR, 0, 0);
+  lc_eq6(11, 0, 1, LC_RPN_OR, LC_RPN_EQUAL, 0, 0);
+  lc_wr4(11, LC_WATCH_FALSE, LC_WATCH_ERROR, 0, 0);
+  // XOR: no value short-circuits, and the result is a comparison rather than a constant
+  lc_eq6(12, 0, 1, LC_RPN_XOR, LC_RPN_EQUAL, 0, 0);
+  lc_wr4(12, LC_WATCH_TRUE, LC_WATCH_FALSE, 0, 0);
+  lc_eq6(13, 0, 1, LC_RPN_XOR, LC_RPN_EQUAL, 0, 0);
+  lc_wr4(13, LC_WATCH_TRUE, LC_WATCH_TRUE, 0, 0);
+  lc_eq6(14, 0, 1, LC_RPN_XOR, LC_RPN_EQUAL, 0, 0);
+  lc_wr4(14, LC_WATCH_ERROR, LC_WATCH_TRUE, 0, 0);
+  // NOT is the one operator that pops once
+  lc_eq6(15, 0, LC_RPN_NOT, LC_RPN_EQUAL, 0, 0, 0);
+  lc_wr4(15, LC_WATCH_FALSE, 0, 0, 0);
+  lc_eq6(16, 0, LC_RPN_NOT, LC_RPN_EQUAL, 0, 0, 0);
+  lc_wr4(16, LC_WATCH_TRUE, 0, 0, 0);
+  lc_eq6(17, 0, LC_RPN_NOT, LC_RPN_EQUAL, 0, 0, 0);
+  lc_wr4(17, LC_WATCH_ERROR, 0, 0, 0);
+  // THE THREE MALFORMED EQUATIONS. Each reaches IllegalRPN by a different route, and each prints
+  // its own LastOperand and StackPtr in the event -- an underflow at word 0, a watchpoint number
+  // past the end of the table, and a well-formed expression with one operand too many left on
+  // the stack when "=" arrives.
+  lc_eq6(18, LC_RPN_AND, LC_RPN_EQUAL, 0, 0, 0, 0);
+  lc_wr4(18, 0, 0, 0, 0);
+  lc_eq6(19, 200, LC_RPN_EQUAL, 0, 0, 0, 0);
+  lc_wr4(19, 0, 0, 0, 0);
+  lc_eq6(20, 0, 1, LC_RPN_EQUAL, 0, 0, 0);
+  lc_wr4(20, LC_WATCH_TRUE, LC_WATCH_TRUE, 0, 0);
+}
+
+U0 lc_block_rpn()
+{
+  I64 c;
+  I64 i;
+  U8 ev;
+  I32 idx;
+  I32 depth;
+  I32 rc;
+
+  lc_setup();
+  lc_fill_cases();
+
+  for (c = 0; c < LC_EX_CASES; ++c) {
+    for (i = 0; i < LC_MAX_RPN_EQU_SIZE; ++i) {
+      lc_adt[0].RPNEquation[i] = 0;
+    }
+    for (i = 0; i < 6; ++i) {
+      lc_adt[0].RPNEquation[i] = lc_rpn_cases[c * 10 + i];
+    }
+    for (i = 0; i < 4; ++i) {
+      lc_wrt[i].WatchResult = lc_rpn_cases[c * 10 + 6 + i];
+    }
+
+    // HOISTED: the three malformed cases send LC_INVALID_RPN_ERR_EID, and the C half's printf
+    // would evaluate the call -- and emit the event -- before writing the prefix.
+    ev = LC_EvaluateRPN(0);
+    S("lca_rpn c=");
+    D(c);
+    S(" eval=");
+    D(ev);
+    S("\n");
+
+    // --- LC_ValidateRPN OVER THE SAME EQUATION. It is a SEPARATE walk with its own rules: it
+    // counts stack DEPTH rather than evaluating, treats NOT as depth-neutral, and stops at the
+    // first "=" -- so it accepts and rejects a different set from the evaluator. Running both
+    // over one table is what shows where they disagree: case 20 is a well-formed-looking
+    // equation the validator rejects for leftover depth, and the three out-parameters are only
+    // written on failure, which is why they are pre-poisoned.
+    idx = -7;
+    depth = -7;
+    rc = LC_ValidateRPN(lc_adt[0].RPNEquation, &idx, &depth);
+    S("lca_rpnval c=");
+    D(c);
+    S(" rc=");
+    D(rc);
+    S(" idx=");
+    D(idx);
+    S(" depth=");
+    D(depth);
+    S("\n");
+  }
+
+  // --- AN EQUATION WITH NO "=" AT ALL: twenty valid watchpoint numbers and nothing else. The
+  // evaluator runs off the end of the buffer (RPNEquationPtr >= LC_MAX_RPN_EQU_SIZE) and the
+  // validator falls out of its `for` with BufferItem still a watchpoint id. Both reject it, by
+  // their own route, and this is the only case where RPNEquationPtr reaches the bound.
+  for (i = 0; i < LC_MAX_RPN_EQU_SIZE; ++i) {
+    lc_adt[0].RPNEquation[i] = 3;
+  }
+  lc_wrt[3].WatchResult = LC_WATCH_TRUE;
+  ev = LC_EvaluateRPN(0);
+  S("lca_rpn_noeq eval=");
+  D(ev);
+  S("\n");
+  idx = -7;
+  depth = -7;
+  rc = LC_ValidateRPN(lc_adt[0].RPNEquation, &idx, &depth);
+  S("lca_rpnval_noeq rc=");
+  D(rc);
+  S(" idx=");
+  D(idx);
+  S(" depth=");
+  D(depth);
+  S("\n");
+}
+
+// --- THE FLOATING-POINT COMPARISON, WHICH IS WHY Kernel/Cfs/CfsF32.HC EXISTS.
+//
+// NASA's LC_MultiType_t has `float Float32` and HolyC has no F32 at all -- only F64. So the
+// translation stores the 32-bit BIT PATTERN and converts: F32BitsIsNaN, F32BitsToF64 and
+// F64ToF32Bits stand in for the hardware's single-precision operations. Those three functions
+// have their own driven exec oracle (tests/exec/cases/e_f32_bits.hc), but that case compares them
+// against hand-computed constants. THESE LINES COMPARE THEM AGAINST A REAL `float` -- the C half
+// declares `float WPFloat` and lets clang emit single-precision instructions, so every line below
+// is the simulation answering to the hardware.
+//
+// THE TEN PAIRS ARE CHOSEN SO THAT A SHORTCUT WOULD SHOW. Comparing two float32s by widening both
+// to F64 and comparing there is EXACT -- the embedding is monotonic -- so ordering alone would not
+// catch a lazy implementation. The cases that do are:
+//
+//   pair 4   +0.0 vs -0.0 are DIFFERENT BIT PATTERNS AND EQUAL NUMBERS. A comparison done on the
+//            patterns instead of the values gets this wrong, and it is the only pair where that
+//            is true.
+//   pair 5   the smallest SUBNORMAL (0x00000001, about 1.4e-45) against zero. F32BitsToF64 has to
+//            normalise a subnormal by hand -- there is no implicit leading 1 -- and the difference
+//            is far below LC_FLOAT_TOLERANCE, so EQ must say TRUE for two unequal numbers.
+//   pair 6   the TOLERANCE ITSELF (1e-25 rounded to float32 is 0x15F79688) against zero. The
+//            difference is EXACTLY the tolerance, and NASA's test is `<=`, so EQ is TRUE by one
+//            ulp. An implementation that compared in double precision without rounding the
+//            difference back to single would be comparing a slightly different number against a
+//            slightly different tolerance and could land either side of this.
+//   pair 8   a NaN WATCHPOINT value, which is the one case NASA guards: LC_FloatCompare checks
+//            isnan(WPFloat) and sends LC_WP_NAN_ERR_EID. Six operators, six events.
+//   pair 9   a NaN COMPARISON value, WHICH NASA DOES NOT GUARD. Its comment says the threshold
+//            "comes from the Watchpoint Definition Table and any weird values should get nailed
+//            during table validation" -- so if one gets through, every comparison against it is
+//            FALSE, INCLUDING BOTH EQ AND NE. That is the only line in this exercise where a
+//            value and its negation are both false, and it is NASA's behaviour, not a defect:
+//            LC_ValidateWDT does reject it, and pair 9 is what the code does when something
+//            bypasses the validator.
+//
+//            IT IS ALSO THE ONE PAIR THE TRANSLATION COULD HAVE GOT RIGHT BY ACCIDENT. Every
+//            comparison against a NaN is false in IEEE-754, and that falls out of the F64
+//            comparison for free -- but ONLY because F32BitsToF64 maps a NaN pattern to an F64
+//            NaN rather than to some large finite number. The EQ and NE columns both reading 0
+//            is what says it does.
+//
+// AND THE RESULTS ARE PRINTED AS SIX DIGITS, one per operator in LC_OPER_LT..GT order, because
+// each is 0, 1 or 2 -- so a whole row of a 10x6 truth table is one token and a single wrong cell
+// is a one-character diff.
+#define LC_EX_FPAIRS 10
+
+U32 lc_fpairs[LC_EX_FPAIRS * 2];
+
+U0 lc_fill_fpairs()
+{
+  lc_fpairs[0] = 0x3F800000;
+  lc_fpairs[1] = 0x3F800000; //  1.0 vs  1.0
+  lc_fpairs[2] = 0x3F800000;
+  lc_fpairs[3] = 0x40000000; //  1.0 vs  2.0
+  lc_fpairs[4] = 0x40000000;
+  lc_fpairs[5] = 0x3F800000; //  2.0 vs  1.0
+  lc_fpairs[6] = 0xBF800000;
+  lc_fpairs[7] = 0x3F800000; // -1.0 vs  1.0
+  lc_fpairs[8] = 0x00000000;
+  lc_fpairs[9] = 0x80000000; // +0.0 vs -0.0
+  lc_fpairs[10] = 0x00000001;
+  lc_fpairs[11] = 0x00000000; // subnormal vs 0
+  lc_fpairs[12] = 0x15F79688;
+  lc_fpairs[13] = 0x00000000; // tolerance vs 0
+  lc_fpairs[14] = 0x7F800000;
+  lc_fpairs[15] = 0x3F800000; // +Inf vs  1.0
+  lc_fpairs[16] = 0x7FC00000;
+  lc_fpairs[17] = 0x3F800000; // NaN  vs  1.0
+  lc_fpairs[18] = 0x3F800000;
+  lc_fpairs[19] = 0x7FC00000; //  1.0 vs NaN
+}
+
+U0 lc_block_float()
+{
+  LC_MultiType_t wp;
+  LC_MultiType_t cv;
+  I64 p;
+  I64 i;
+  U8 fr[6];
+  U8 g;
+  U8 l;
+  U8 fops[6];
+
+  fops[0] = LC_OPER_LT;
+  fops[1] = LC_OPER_LE;
+  fops[2] = LC_OPER_NE;
+  fops[3] = LC_OPER_EQ;
+  fops[4] = LC_OPER_GE;
+  fops[5] = LC_OPER_GT;
+
+  lc_setup();
+  lc_fill_fpairs();
+  lc_wdt[0].DataType = LC_DATA_WATCH_FLOAT_LE;
+
+  for (p = 0; p < LC_EX_FPAIRS; ++p) {
+    wp.Unsigned32 = lc_fpairs[p * 2 + 0];
+    cv.Unsigned32 = lc_fpairs[p * 2 + 1];
+    // ALL SIX RESULTS ARE COMPUTED BEFORE THE ROW IS PRINTED. Pair 8 sends six events -- one
+    // per operator -- and printing a digit at a time would interleave them with the digits.
+    // Computing first puts all six events ahead of the row in both halves, which is the same
+    // hoist the integer comparisons above needed and for the same reason.
+    for (i = 0; i < 6; ++i) {
+      lc_wdt[0].OperatorID = fops[i];
+      fr[i] = LC_FloatCompare(0, &wp, &cv);
+    }
+    S("lcw_fcmp p=");
+    D(p);
+    S(" wp=");
+    H8(wp.Unsigned32);
+    S(" cv=");
+    H8(cv.Unsigned32);
+    S(" r=");
+    for (i = 0; i < 6; ++i) {
+      D(fr[i]);
+    }
+    S("\n");
+  }
+
+  // THE INVALID OPERATOR, ONCE. It is the same `default:` arm the integer comparisons have, but
+  // reached through the float path -- so it is the one line that shows the NaN check happens
+  // BEFORE the operator switch: a valid number with a nonsense operator gets
+  // LC_WP_OPERID_ERR_EID, not LC_WP_NAN_ERR_EID.
+  wp.Unsigned32 = 0x3F800000;
+  cv.Unsigned32 = 0x3F800000;
+  lc_wdt[0].OperatorID = 99;
+  g = LC_FloatCompare(0, &wp, &cv);
+  S("lcw_fcmp_badop r=");
+  D(g);
+  S("\n");
+
+  // --- LC_OperatorCompare IS THE DISPATCHER, and its first switch is a TRUNCATION the second
+  // switch then re-reads. The incoming ProcessedWPData is always 32 bits wide and in native
+  // order; the first switch narrows it into the union by data type, and the second picks the
+  // comparison function. So the SAME 32-bit input must give DIFFERENT answers for different data
+  // types, and the two input pairs below are chosen to make that visible -- a first attempt used
+  // 0x000000FF against 0x00000080 and every one of the twelve types answered gt=1, which
+  // asserted nothing at all.
+  //
+  // PAIR A IS 0x0000FF80 AGAINST 0x00000001 and splits signed from unsigned at two widths:
+  //
+  //   t=1  BYTE     0x80 is -128, threshold 0x01 is 1     -128 >    1   FALSE
+  //   t=2  UBYTE    0x80 is  128                            128 >    1   TRUE
+  //   t=3,4 WORD    0xFF80 is -128                         -128 >    1   FALSE
+  //   t=5,6 UWORD   0xFF80 is 65408                        65408 >    1   TRUE
+  //   t=7..10       65408 either way                       65408 >    1   TRUE
+  //   t=11,12 FLOAT 9.2e-41 vs 1.4e-45, both SUBNORMAL                   TRUE
+  //
+  // so the byte and word rows disagree with their unsigned twins, which is the whole point of
+  // having twelve types. The float row is TRUE only if subnormals decode at all: a F32BitsToF64
+  // that read an exponent field of zero as the number zero would make it FALSE.
+  //
+  // PAIR B IS 0x80000000 AGAINST 0x00000001 and is the one that separates FLOAT from EVERYTHING
+  // ELSE:
+  //
+  //   t=1..6        truncates to 0                             0 >    1   FALSE
+  //   t=7,8  DWORD  -2147483648                       -2147483648 >    1   FALSE
+  //   t=9,10 UDWORD  2147483648                        2147483648 >    1   TRUE
+  //   t=11,12 FLOAT  0x80000000 is NEGATIVE ZERO             -0.0 > 1.4e-45  FALSE
+  //
+  // The float types and the unsigned 32-bit types read the same four bytes and disagree, and
+  // negative zero is the value that does it. Without pair B, types 9 and 11 would have agreed on
+  // every line in this exercise -- and types 9 and 11 are exactly the pair where this half runs
+  // F32BitsToF64 and NASA's half runs a hardware single-precision compare.
+  for (i = 1; i <= 12; ++i) {
+    lc_wdt[0].DataType = i;
+    lc_wdt[0].ComparisonValue.Unsigned32 = 0x00000001;
+    lc_wdt[0].OperatorID = LC_OPER_GT;
+    g = LC_OperatorCompare(0, 0x0000FF80);
+    lc_wdt[0].OperatorID = LC_OPER_LT;
+    l = LC_OperatorCompare(0, 0x0000FF80);
+    S("lcw_opcmp_a t=");
+    D(i);
+    S(" gt=");
+    D(g);
+    S(" lt=");
+    D(l);
+    S("\n");
+  }
+  for (i = 1; i <= 12; ++i) {
+    lc_wdt[0].DataType = i;
+    lc_wdt[0].ComparisonValue.Unsigned32 = 0x00000001;
+    lc_wdt[0].OperatorID = LC_OPER_GT;
+    g = LC_OperatorCompare(0, 0x80000000);
+    lc_wdt[0].OperatorID = LC_OPER_LT;
+    l = LC_OperatorCompare(0, 0x80000000);
+    S("lcw_opcmp_b t=");
+    D(i);
+    S(" gt=");
+    D(g);
+    S(" lt=");
+    D(l);
+    S("\n");
+  }
+  lc_wdt[0].DataType = 77;
+  g = LC_OperatorCompare(0, 0x0000FF80);
+  S("lcw_opcmp_badtype r=");
+  D(g);
   S("\n");
 }
 
@@ -22662,6 +23314,10 @@ I64 main()
     cs_block_app_cmds();
     cs_block_dispatch();
     cs_block_app();
+
+    lc_block_watch_core();
+    lc_block_rpn();
+    lc_block_float();
 
     // PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after it today
     // but tim_objtab, so both halves agreed and the transcript was green -- but the NEXT app's
