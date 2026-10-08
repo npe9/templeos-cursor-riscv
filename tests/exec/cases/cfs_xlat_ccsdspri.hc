@@ -8843,6 +8843,1130 @@ U0 cs_block_init()
   }
 }
 
+// ===================== CS, step 3 of three: five command files, the dispatcher, the app ========
+//
+// 2,924 lines and 49 functions, gated in one commit because CS_AppPipe and CS_UpdateCDS close a
+// seven-source cycle. This is their exercise, and it is SEVEN BLOCKS rather than one for a reason
+// that is now measured rather than feared: docs/HOLYC_STRUCT_LIMITS.md #22 says a function whose
+// TOTAL frame grows past some threshold makes a file-scope `&function` initialiser read as ZERO
+// hundreds of lines away, and step 1's first draft hit it by writing one block inline in main().
+// One block per NASA source keeps every frame small, and makes a bisect name a file.
+//
+// THE SEVEN BLOCKS RUN **AFTER** cs_block_init, AND NONE OF THEM MAY DEPEND ON WHAT IT LEFT.
+// cs_block_init deliberately ENDS with a CS_InitAllTables that FAILED -- that is the only way to
+// reach cs_init.c's error arms -- so every wrapper it leaves behind is in a failed state. Each
+// block below therefore starts from cs_setup(), the hand-built wrappers over driver arrays, which
+// is what step 1's four blocks used and is deterministic. The rule recorded for step 2 said
+// cs_block_init must stay LAST because a later cs_setup() orphans its eight registered cFE
+// tables; that remains true and is now harmless, because nothing after it reads them. The eight
+// registrations still cost eight of 64 table slots, which csi_headroom_after counts.
+//
+// AND THE STICKY FLAGS ARE THE VACUITY HAZARD IN THIS WHOLE STEP. RecomputeInProgress and
+// OneShotInProgress are what every busy-path arm needs set -- and CS_CheckRecomputeOneshot reads
+// them, so a flag left TRUE makes DOZENS of later handlers take their refuse path, BOTH HALVES
+// AGREE, and the transcript grows while asserting nothing. Worse, this driver's OS_TaskCreate
+// never calls the entry function, so a SUCCESSFUL recompute command leaves RecomputeInProgress
+// TRUE with no child to clear it. So every line below that can set a flag PRINTS BOTH FLAGS, and
+// the blocks reset through cs_setup() between groups rather than trusting them to be clear.
+//
+// CS_NUM_DATA_STORE_STATES IS A `#define` INSIDE cs_app.c, not a header, so neither oracle can
+// include it -- the same reason it briefly appeared in check_constants' "names NASA does not
+// define" bucket until cs_app.c joined CSRC_DEFS. Written out here with its own name, and the
+// VALUE is gated: check_constants compares the translation's CS_NUM_DATA_STORE_STATES against
+// NASA's cs_app.c, so a drift fails there rather than silently resizing this buffer.
+#define CS_EX_CDS_STATES 6
+
+U0 cs_block_cmds()
+{
+  CS_RecomputeBaselineTableCmd_t cb; // the largest CS command, used as the buffer -- see csd
+  CS_OneShotCmd_t osc;
+  CS_Res_EepromMemory_Table_Entry_t *seg;
+  I64 d0;
+  I64 k;
+
+  cs_fill_sources();
+  cs_setup();
+
+  // --- CS_NoopCmd. The version is four #defines from cs_version.h, which was the one CS header
+  // nothing had needed until this file asked for CS_MAJOR_VERSION and the compile failed.
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_NoopCmd(&cb);
+  S("cscm_noop cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+
+  // --- CS_ResetCountersCmd. ALL NINE COUNTERS ARE POISONED FIRST and the two baselines are
+  // poisoned with them: the assertion is not only that nine counters are zero, it is that the
+  // reset did NOT touch what CS has MEASURED. A reset that cleared the baselines would lose the
+  // reference every future comparison is against, and with the baselines left at zero both
+  // halves would agree about nothing.
+  //
+  // AND CommandCounter IS ZERO AFTERWARDS, NOT ONE. Every other CS command increments it; this
+  // one has just zeroed it and does not. NASA's, deliberate, and the kind of asymmetry a
+  // transcript is the only honest record of.
+  CS_AppData.HkPacket.Payload.CommandCounter = 11;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 12;
+  CS_AppData.HkPacket.Payload.EepromCSErrCounter = 13;
+  CS_AppData.HkPacket.Payload.MemoryCSErrCounter = 14;
+  CS_AppData.HkPacket.Payload.TablesCSErrCounter = 15;
+  CS_AppData.HkPacket.Payload.AppCSErrCounter = 16;
+  CS_AppData.HkPacket.Payload.CfeCoreCSErrCounter = 17;
+  CS_AppData.HkPacket.Payload.OSCSErrCounter = 18;
+  CS_AppData.HkPacket.Payload.PassCounter = 19;
+  CS_AppData.HkPacket.Payload.CfeCoreBaseline = 0xAAAA;
+  CS_AppData.HkPacket.Payload.OSBaseline = 0xBBBB;
+  CS_ResetCountersCmd(&cb);
+  S("cscm_reset cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" eep=");
+  D(CS_AppData.HkPacket.Payload.EepromCSErrCounter);
+  S(" mem=");
+  D(CS_AppData.HkPacket.Payload.MemoryCSErrCounter);
+  S(" tbl=");
+  D(CS_AppData.HkPacket.Payload.TablesCSErrCounter);
+  S(" app=");
+  D(CS_AppData.HkPacket.Payload.AppCSErrCounter);
+  S(" cfe=");
+  D(CS_AppData.HkPacket.Payload.CfeCoreCSErrCounter);
+  S(" os=");
+  D(CS_AppData.HkPacket.Payload.OSCSErrCounter);
+  S(" pass=");
+  D(CS_AppData.HkPacket.Payload.PassCounter);
+  S(" base_cfe=");
+  D(CS_AppData.HkPacket.Payload.CfeCoreBaseline);
+  S(" base_os=");
+  D(CS_AppData.HkPacket.Payload.OSBaseline);
+  S("\n");
+
+  // --- CS_EnableAllCSCmd and CS_DisableAllCSCmd, and THE SIX Zero*TempValues CALLS ARE THE POINT
+  // OF THE DISABLE. A partial checksum left behind would be RESUMED when the ground re-enabled,
+  // giving a baseline computed half before and half after whatever the ground was doing in
+  // between. So six partial states are poisoned first -- a temp value and a non-zero byte offset
+  // in each of the four tables and both code segments -- and all twelve numbers are read back.
+  // The ENABLE twin zeroes NOTHING, which is the asymmetry, and it is asserted by poisoning again
+  // and showing the twelve survive.
+  CS_AppData.CfeCoreCodeSeg.TempChecksumValue = 0x1111;
+  CS_AppData.CfeCoreCodeSeg.ByteOffset = 8;
+  CS_AppData.OSCodeSeg.TempChecksumValue = 0x2222;
+  CS_AppData.OSCodeSeg.ByteOffset = 16;
+  cs_res_eep[0].TempChecksumValue = 0x3333;
+  cs_res_eep[0].ByteOffset = 24;
+  cs_res_mem[0].TempChecksumValue = 0x4444;
+  cs_res_mem[0].ByteOffset = 32;
+  cs_res_tbl[0].TempChecksumValue = 0x5555;
+  cs_res_tbl[0].ByteOffset = 40;
+  cs_res_app[0].TempChecksumValue = 0x6666;
+  cs_res_app[0].ByteOffset = 48;
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_DisableAllCSCmd(&cb);
+  S("cscm_disall st=");
+  D(CS_AppData.HkPacket.Payload.ChecksumState);
+  S(" cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" cfe=");
+  D(CS_AppData.CfeCoreCodeSeg.TempChecksumValue);
+  S("/");
+  D(CS_AppData.CfeCoreCodeSeg.ByteOffset);
+  S(" os=");
+  D(CS_AppData.OSCodeSeg.TempChecksumValue);
+  S("/");
+  D(CS_AppData.OSCodeSeg.ByteOffset);
+  S(" eep=");
+  D(cs_res_eep[0].TempChecksumValue);
+  S("/");
+  D(cs_res_eep[0].ByteOffset);
+  S(" mem=");
+  D(cs_res_mem[0].TempChecksumValue);
+  S("/");
+  D(cs_res_mem[0].ByteOffset);
+  S(" tbl=");
+  D(cs_res_tbl[0].TempChecksumValue);
+  S("/");
+  D(cs_res_tbl[0].ByteOffset);
+  S(" app=");
+  D(cs_res_app[0].TempChecksumValue);
+  S("/");
+  D(cs_res_app[0].ByteOffset);
+  S("\n");
+  CS_AppData.CfeCoreCodeSeg.TempChecksumValue = 0x1111;
+  CS_AppData.CfeCoreCodeSeg.ByteOffset = 8;
+  cs_res_app[0].TempChecksumValue = 0x6666;
+  cs_res_app[0].ByteOffset = 48;
+  CS_EnableAllCSCmd(&cb);
+  S("cscm_enall st=");
+  D(CS_AppData.HkPacket.Payload.ChecksumState);
+  S(" cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" cfe=");
+  D(CS_AppData.CfeCoreCodeSeg.TempChecksumValue);
+  S("/");
+  D(CS_AppData.CfeCoreCodeSeg.ByteOffset);
+  S(" app=");
+  D(cs_res_app[0].TempChecksumValue);
+  S("/");
+  D(cs_res_app[0].ByteOffset);
+  S("\n");
+
+  // --- THE FOUR PER-TYPE ENABLE/DISABLE COMMANDS, AND THEIR CDS WRITES.
+  //
+  // These four are the first commands in CS that PERSIST. CS_UpdateCDS is one of the two
+  // functions closing the seven-source cycle, and it is SILENT when there is no store -- so a
+  // draft that ran these with CS_AppData.DataStoreHandle at zero would exercise the enable/
+  // disable and not one line of the CDS, and nothing in the output would say so. A real CDS is
+  // registered here first, and es_cds_writes is the witness that each command wrote one.
+  //
+  // AND THE CDS IS SIX BYTES IN NASA'S OWN ORDER -- eeprom, memory, APP, TABLES, os, cfecore --
+  // which is NOT the order of the checksum-type enum. The buffer is read back raw after the four
+  // commands so the ORDER is asserted and not just the count: a swap of slots 2 and 3 would
+  // restore the app state into the tables state on the next power-on and no counter would move.
+  //
+  // AND es_cds_reset() IS *NOT* CALLED HERE, which a first draft did and it made this whole group
+  // vacuous: that helper clears CFE_ES_Global.CDSIsAvailable, so CFE_ES_RegisterCDS answered
+  // CFE_ES_NOT_IMPLEMENTED (0xC400FFFF), the handle stayed undefined, every CS_UpdateCDS below was
+  // SILENT -- which is its documented behaviour with no store -- and the transcript read
+  // `writes=0`, `rc=0xC4000001` and six bytes of 0xEE poison. Green, and about nothing. The ES
+  // block has already brought the CDS up; this registers inside it.
+  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
+  S("cscm_cds_reg rc=");
+  D(CFE_ES_RegisterCDS(&CS_AppData.DataStoreHandle, CS_EX_CDS_STATES, "CSCMDS"));
+  S("\n");
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  d0 = es_cds_writes;
+  CS_EnableCfeCoreCmd(&cb);
+  CS_EnableOSCmd(&cb);
+  CS_AppData.HkPacket.Payload.EepromCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.MemoryCSState = CS_ChecksumState_DISABLED;
+  CS_AppData.HkPacket.Payload.TablesCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.AppCSState = CS_ChecksumState_DISABLED;
+  CS_UpdateCDS();
+  S("cscm_cds_write cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" writes=");
+  D(es_cds_writes - d0);
+  S(" cfe=");
+  D(CS_AppData.HkPacket.Payload.CfeCoreCSState);
+  S(" os=");
+  D(CS_AppData.HkPacket.Payload.OSCSState);
+  S("\n");
+  {
+    U8 back[CS_EX_CDS_STATES];
+    MemSet(back, 0xEE, CS_EX_CDS_STATES);
+    S("cscm_cds_read rc=");
+    D(CFE_ES_RestoreFromCDS(back, CS_AppData.DataStoreHandle));
+    for (k = 0; k < CS_EX_CDS_STATES; ++k) {
+      S(" ");
+      D(back[k]);
+    }
+    S("\n");
+  }
+  // THE DISABLE TWINS, which also zero that type's partial state where the enable does not.
+  CS_AppData.CfeCoreCodeSeg.TempChecksumValue = 0x7777;
+  CS_AppData.OSCodeSeg.TempChecksumValue = 0x8888;
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_DisableCfeCoreCmd(&cb);
+  CS_DisableOSCmd(&cb);
+  S("cscm_dis_seg cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" cfe=");
+  D(CS_AppData.HkPacket.Payload.CfeCoreCSState);
+  S("/");
+  D(CS_AppData.CfeCoreCodeSeg.TempChecksumValue);
+  S(" os=");
+  D(CS_AppData.HkPacket.Payload.OSCSState);
+  S("/");
+  D(CS_AppData.OSCodeSeg.TempChecksumValue);
+  S("\n");
+  // AND A CDS WRITE THAT FAILS, which is the arm that gives up on the store for good: the handle
+  // is set to CFE_ES_CDS_BAD_HANDLE so every later command is silent. The witness is that the NEXT
+  // command writes NOTHING, which no counter would show without the second call.
+  es_cds_write_rc = CFE_PSP_ERROR;
+  CS_EnableCfeCoreCmd(&cb);
+  es_cds_write_rc = CFE_PSP_SUCCESS;
+  d0 = es_cds_writes;
+  CS_EnableOSCmd(&cb);
+  S("cscm_cds_broken defined=");
+  D(CFE_ResourceId_IsDefined(CS_AppData.DataStoreHandle));
+  S(" writes_after=");
+  D(es_cds_writes - d0);
+  S("\n");
+
+  // --- CS_ReportBaselineCfeCoreCmd and the OS twin, BOTH ARMS EACH. `ComputedYet` is the whole
+  // command: a baseline that has not been measured is not zero, it is ABSENT, and the two are
+  // different events. A ground display reading the number alone could not tell them apart.
+  seg = CS_GetCfeCoreCodeSegResTable();
+  seg->ComputedYet = FALSE;
+  seg->ComparisonValue = 0x1234;
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_ReportBaselineCfeCoreCmd(&cb);
+  seg->ComputedYet = TRUE;
+  CS_ReportBaselineCfeCoreCmd(&cb);
+  seg = CS_GetOSCodeSegResTable();
+  seg->ComputedYet = FALSE;
+  seg->ComparisonValue = 0x5678;
+  CS_ReportBaselineOSCmd(&cb);
+  seg->ComputedYet = TRUE;
+  CS_ReportBaselineOSCmd(&cb);
+  S("cscm_report cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+
+  // --- CS_RecomputeBaselineCfeCoreCmd and the OS twin, ALL THREE ARMS EACH.
+  //
+  // THE FLAG IS SET BEFORE THE TASK IS CREATED and cleared again if the create fails, which is the
+  // only safe order and is therefore the thing to assert: after a FAILED create the flag must be
+  // FALSE, or a recompute that never started would lock out every later one. Both flags are
+  // printed on every line for the reason in this block's header.
+  cs_setup();
+  es_taskcreate_rc = OS_SUCCESS;
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_RecomputeBaselineCfeCoreCmd(&cb);
+  S("cscm_recomp_cfe cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S(" one=");
+  D(CS_AppData.HkPacket.Payload.OneShotInProgress);
+  S(" type=");
+  D(CS_AppData.ChildTaskTable);
+  S(" ent=");
+  D(CS_AppData.ChildTaskEntryID);
+  S(" ptr=");
+  D(CS_AppData.RecomputeEepromMemoryEntryPtr == &CS_AppData.CfeCoreCodeSeg);
+  S("\n");
+  // THE BUSY ARM, which is now reachable without touching a flag by hand: the call above left
+  // RecomputeInProgress TRUE because this driver's OS_TaskCreate never runs the child.
+  CS_RecomputeBaselineCfeCoreCmd(&cb);
+  S("cscm_recomp_cfe_busy cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S("\n");
+  // THE CREATE-FAILED ARM, and THE KNOB IS es_taskcreate_rc. A first draft used es_starttask_rc,
+  // which is a leftover from when CFE_ES_StartAppTask was a stub -- its source is gated now and
+  // the real one runs, so that variable is read by nothing and the command SUCCEEDED: cc moved to
+  // 2 and the comment claiming a failed create was false. The real failure point is OS_TaskCreate,
+  // whose return this driver owns; the status CS prints is then whatever CFE_ES_StartAppTask maps
+  // it to, which is the same number on both halves.
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = FALSE;
+  es_taskcreate_rc = OS_ERROR;
+  CS_RecomputeBaselineCfeCoreCmd(&cb);
+  S("cscm_recomp_cfe_fail cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S("\n");
+  es_taskcreate_rc = OS_SUCCESS;
+  // AND THE OS TWIN, line for line with a different type, task name and three event ids. The
+  // ONE-SHOT flag is what blocks it here rather than the recompute flag, which is the half of the
+  // guard the cFE-core lines above did not reach.
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_RecomputeBaselineOSCmd(&cb);
+  S("cscm_recomp_os cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S(" type=");
+  D(CS_AppData.ChildTaskTable);
+  S(" ptr=");
+  D(CS_AppData.RecomputeEepromMemoryEntryPtr == &CS_AppData.OSCodeSeg);
+  S("\n");
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = FALSE;
+  CS_AppData.HkPacket.Payload.OneShotInProgress = TRUE;
+  CS_RecomputeBaselineOSCmd(&cb);
+  S("cscm_recomp_os_busy ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S(" one=");
+  D(CS_AppData.HkPacket.Payload.OneShotInProgress);
+  S("\n");
+  CS_AppData.HkPacket.Payload.OneShotInProgress = FALSE;
+  es_taskcreate_rc = OS_ERROR;
+  CS_RecomputeBaselineOSCmd(&cb);
+  S("cscm_recomp_os_fail ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S("\n");
+  es_taskcreate_rc = OS_SUCCESS;
+
+  // --- CS_OneShotCmd, ALL FOUR ARMS, and the ADDRESS IS A FIXED CONSTANT rather than a real
+  // pointer. The started event prints "address: 0x%08X" -- so a cs_src_a(U64) would put a host
+  // pointer in the transcript and nothing would ever match. MD_SIM_WINDOW_BASE is a compile-time
+  // number both halves agree about, and CFE_PSP_MemValidateRange in this driver answers
+  // es_psp_validate_rc regardless of the address, so the number does not have to be backed by
+  // anything: the child task that would read it is never run here.
+  //
+  // AND A ZERO MaxBytesPerCycle MEANS "USE THE PLATFORM DEFAULT", which is the substitution that
+  // keeps CS_OneShotChildTask's loop bounded at all -- a zero reaching it would never terminate.
+  // Driven both ways, and the stored value is read back, because the substitution is invisible in
+  // a counter.
+  cs_setup();
+  MemSet(&osc, 0, sizeof(CS_OneShotCmd_t));
+  osc.Payload.Address = MD_SIM_WINDOW_BASE;
+  osc.Payload.Size = 32;
+  osc.Payload.MaxBytesPerCycle = 0;
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  es_psp_validate_rc = -17;
+  CS_OneShotCmd(&osc);
+  S("cscm_oneshot_badrange cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" one=");
+  D(CS_AppData.HkPacket.Payload.OneShotInProgress);
+  S("\n");
+  es_psp_validate_rc = CFE_PSP_SUCCESS;
+  es_taskcreate_rc = OS_ERROR;
+  CS_OneShotCmd(&osc);
+  S("cscm_oneshot_createfail ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" one=");
+  D(CS_AppData.HkPacket.Payload.OneShotInProgress);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S("\n");
+  es_taskcreate_rc = OS_SUCCESS;
+  CS_OneShotCmd(&osc);
+  S("cscm_oneshot cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" one=");
+  D(CS_AppData.HkPacket.Payload.OneShotInProgress);
+  S(" addr=");
+  D(CS_AppData.HkPacket.Payload.LastOneShotAddress == MD_SIM_WINDOW_BASE);
+  S(" size=");
+  D(CS_AppData.HkPacket.Payload.LastOneShotSize);
+  S(" budget=");
+  D(CS_AppData.HkPacket.Payload.LastOneShotMaxBytesPerCycle);
+  S(" cks=");
+  D(CS_AppData.HkPacket.Payload.LastOneShotChecksum);
+  S(" task=");
+  D(CFE_ResourceId_IsDefined(CS_AppData.ChildTaskID));
+  S("\n");
+  // THE BUSY ARM, left set by the successful call above.
+  CS_OneShotCmd(&osc);
+  S("cscm_oneshot_busy ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+
+  // --- CS_CancelOneShotCmd, ALL THREE ARMS, in the order that needs no hand-set flag for the
+  // first two: a one-shot is in progress right now from the lines above, so the SUCCESS arm goes
+  // first, and the second call finds nothing active.
+  //
+  // THE GUARD IS `Recompute == FALSE && OneShot == TRUE`, so it REFUSES while a RECOMPUTE owns the
+  // child task even though that is also a child task -- there is one ChildTaskID and deleting it
+  // from here would kill a recompute nobody asked to cancel. That third arm is the last two lines,
+  // and it is the one a reader would assume is the same as "no one-shot".
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  d0 = es_taskdeletes;
+  CS_CancelOneShotCmd(&cb);
+  S("cscm_cancel cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" one=");
+  D(CS_AppData.HkPacket.Payload.OneShotInProgress);
+  S(" dels=");
+  D(es_taskdeletes - d0);
+  S(" task=");
+  D(CFE_ResourceId_IsDefined(CS_AppData.ChildTaskID));
+  S("\n");
+  CS_CancelOneShotCmd(&cb);
+  S("cscm_cancel_none ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  CS_AppData.HkPacket.Payload.OneShotInProgress = TRUE;
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  CS_CancelOneShotCmd(&cb);
+  S("cscm_cancel_recomp ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" one=");
+  D(CS_AppData.HkPacket.Payload.OneShotInProgress);
+  S("\n");
+
+  // --- CS_BackgroundCheckCycleCmd, FOUR ARMS.
+  //
+  // (a) checksumming DISABLED app-wide: the whole body is skipped and nothing moves.
+  // (b) ENABLED with a recompute in progress: one event and no walk.
+  // (c) the real walk, from CurrentCSTable 0, over a table set with one enabled entry each.
+  // (d) the `default:` RECOVERY arm -- a CurrentCSTable outside 0..5, which only a corrupted
+  //     housekeeping packet produces. It rewinds to zero and counts a pass, and is one of only two
+  //     places in CS that touch PassCounter.
+  //
+  // THE `EndOfList` TEST LOOKS WRONG AND IS NOT: it is set when CurrentCSTable reaches
+  // CS_NUM_TABLES - 1 and tested at the TOP of the next iteration, so the last type still runs
+  // once. CurrentCSTable and CurrentEntryInTable after each call are what say which types the walk
+  // actually visited.
+  cs_setup();
+  CS_AppData.HkPacket.Payload.ChecksumState = CS_ChecksumState_DISABLED;
+  CS_AppData.HkPacket.Payload.CurrentCSTable = 3;
+  CS_AppData.HkPacket.Payload.PassCounter = 5;
+  CS_BackgroundCheckCycleCmd(&cb);
+  S("cscm_bkgnd_off tbl=");
+  D(CS_AppData.HkPacket.Payload.CurrentCSTable);
+  S(" pass=");
+  D(CS_AppData.HkPacket.Payload.PassCounter);
+  S("\n");
+  CS_AppData.HkPacket.Payload.ChecksumState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  CS_BackgroundCheckCycleCmd(&cb);
+  S("cscm_bkgnd_busy tbl=");
+  D(CS_AppData.HkPacket.Payload.CurrentCSTable);
+  S(" pass=");
+  D(CS_AppData.HkPacket.Payload.PassCounter);
+  S("\n");
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = FALSE;
+  // (c) THE WALK. Every type is ENABLED and given something to checksum, so each background
+  // function does work rather than falling straight through -- a cycle over six empty tables would
+  // return after six no-ops and look identical to a cycle that worked.
+  CS_AppData.CfeCoreCodeSeg.State = CS_ChecksumState_ENABLED;
+  CS_AppData.CfeCoreCodeSeg.StartAddress = cs_src_a(U64);
+  CS_AppData.CfeCoreCodeSeg.NumBytesToChecksum = 32;
+  CS_AppData.OSCodeSeg.State = CS_ChecksumState_ENABLED;
+  CS_AppData.OSCodeSeg.StartAddress = cs_src_b(U64);
+  CS_AppData.OSCodeSeg.NumBytesToChecksum = 24;
+  cs_res_eep[0].State = CS_ChecksumState_ENABLED;
+  cs_res_eep[0].StartAddress = cs_src_a(U64);
+  cs_res_eep[0].NumBytesToChecksum = 16;
+  cs_res_mem[0].State = CS_ChecksumState_ENABLED;
+  cs_res_mem[0].StartAddress = cs_src_b(U64);
+  cs_res_mem[0].NumBytesToChecksum = 16;
+  CS_AppData.HkPacket.Payload.CfeCoreCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.OSCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.EepromCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.MemoryCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.TablesCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.AppCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.CurrentCSTable = 0;
+  CS_AppData.HkPacket.Payload.CurrentEntryInTable = 0;
+  CS_AppData.HkPacket.Payload.PassCounter = 0;
+  for (k = 0; k < 8; ++k) {
+    CS_BackgroundCheckCycleCmd(&cb);
+    S("cscm_bkgnd[");
+    D(k);
+    S("] tbl=");
+    D(CS_AppData.HkPacket.Payload.CurrentCSTable);
+    S(" ent=");
+    D(CS_AppData.HkPacket.Payload.CurrentEntryInTable);
+    S(" pass=");
+    D(CS_AppData.HkPacket.Payload.PassCounter);
+    S(" cfe=");
+    D(CS_AppData.CfeCoreCodeSeg.ByteOffset);
+    S("/");
+    D(CS_AppData.CfeCoreCodeSeg.ComparisonValue);
+    S(" os=");
+    D(CS_AppData.OSCodeSeg.ByteOffset);
+    S("/");
+    D(CS_AppData.OSCodeSeg.ComparisonValue);
+    S(" eep=");
+    D(cs_res_eep[0].ComparisonValue);
+    S("\n");
+  }
+  // (d) THE RECOVERY ARM.
+  CS_AppData.HkPacket.Payload.CurrentCSTable = 99;
+  CS_AppData.HkPacket.Payload.CurrentEntryInTable = 77;
+  CS_AppData.HkPacket.Payload.PassCounter = 0;
+  CS_BackgroundCheckCycleCmd(&cb);
+  S("cscm_bkgnd_bad tbl=");
+  D(CS_AppData.HkPacket.Payload.CurrentCSTable);
+  S(" ent=");
+  D(CS_AppData.HkPacket.Payload.CurrentEntryInTable);
+  S(" pass=");
+  D(CS_AppData.HkPacket.Payload.PassCounter);
+  S("\n");
+
+  // --- CS_SendHkCmd, which does TWO things: transmits the packet and SWEEPS the six wrappers for
+  // ground table loads. The sweep is here as well as in CS_AppMain's timeout arm, so a busy pipe
+  // that never times out still picks up a new table.
+  //
+  // THE PACKET HAS TO BE INITIALISED FIRST or CFE_SB_TransmitMsg refuses a zero MsgId and the
+  // sweep is all that runs -- which would pass, and would be half an exercise. CFE_MSG_Init is
+  // what CS_SbInit does; doing it here keeps this block independent of that one.
+  //
+  // NoSubscribersCounter IS THE WITNESS. Nothing subscribes to CS_HK_TLM_MID in this driver, so a
+  // successful transmit shows up as SB reporting no subscriber -- which is a real send that went
+  // nowhere, not a refused one. A refused send does not move it.
+  cs_setup();
+  CFE_MSG_Init(&CS_AppData.HkPacket.TelemetryHeader.Msg, CFE_SB_ValueToMsgId(CS_HK_TLM_MID),
+               sizeof(CS_HkPacket_t));
+  CS_AppData.HkPacket.Payload.CommandCounter = 42;
+  d0 = CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter;
+  CS_SendHkCmd(&cb);
+  S("cscm_hk nosub=");
+  D(CFE_SB_Global.HKTlmMsg.Payload.NoSubscribersCounter - d0);
+  S(" cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+}
+
+// --- cs_eeprom_cmds.c, seven commands, and the file that carries two of CS's four upstream
+// defects. The address in every event here is a FIXED NUMBER rather than a pointer into cs_src_a:
+// CS_GetEntryIDEepromCmd prints "Found Address 0x%08X", and no host process and QEMU guest ever
+// agree about a real one. Nothing in this block reads the bytes at those addresses, so they do not
+// have to be backed by anything.
+#define CS_EX_EEP_ADDR 0x00300000
+
+U0 cs_block_eeprom_cmds()
+{
+  CS_RecomputeBaselineTableCmd_t cb;
+  CS_ReportBaselineEntryIDEepromCmd_t ec;
+  CS_GetEntryIDEepromCmd_t gc;
+  I64 d0;
+
+  cs_fill_sources();
+  cs_setup();
+  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
+  CFE_ES_RegisterCDS(&CS_AppData.DataStoreHandle, CS_EX_CDS_STATES, "CSEEP");
+
+  // --- CS_DisableEepromCmd and CS_EnableEepromCmd. THE GUARD IS THE FIRST THING EACH DOES, and a
+  // refused command moves the ERROR counter from inside CS_CheckRecomputeOneshot rather than from
+  // the handler -- so the handler's own counter must NOT move, which is what makes cc=0 on the
+  // refused line an assertion rather than an absence.
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppData.HkPacket.Payload.EepromCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.OneShotInProgress = TRUE;
+  CS_DisableEepromCmd(&cb);
+  S("csec_dis_refused cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" state=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S("\n");
+  CS_AppData.HkPacket.Payload.OneShotInProgress = FALSE;
+  cs_res_eep[2].TempChecksumValue = 0x9999;
+  cs_res_eep[2].ByteOffset = 12;
+  d0 = es_cds_writes;
+  CS_DisableEepromCmd(&cb);
+  S("csec_dis cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" state=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S(" temp=");
+  D(cs_res_eep[2].TempChecksumValue);
+  S(" off=");
+  D(cs_res_eep[2].ByteOffset);
+  S(" writes=");
+  D(es_cds_writes - d0);
+  S("\n");
+  cs_res_eep[2].TempChecksumValue = 0x9999;
+  cs_res_eep[2].ByteOffset = 12;
+  CS_EnableEepromCmd(&cb);
+  S("csec_en cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" state=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S(" temp=");
+  D(cs_res_eep[2].TempChecksumValue);
+  S(" off=");
+  D(cs_res_eep[2].ByteOffset);
+  S("\n");
+
+  // --- CS_ReportBaselineEntryIDEepromCmd, AND THIS IS WHERE UPSTREAM DEFECT #13 IS WITNESSED.
+  //
+  // The command writes `ResultsEntry->State = CS_ChecksumState_ENABLED` inside the valid arm. So
+  // the state is printed BEFORE and AFTER: a DISABLED entry asked for its baseline comes back
+  // ENABLED, and the background walk resumes over a region the ground switched off. The Memory
+  // twin does not have the line and csmc_report below prints the same pair unchanged, which is
+  // what makes this a DIFFERENCE and not a convention.
+  //
+  // Three arms: an id past the end of the table (NULL, so State becomes UNDEFINED and
+  // CS_StateValid refuses it), a DISABLED entry with no baseline yet, and an ENABLED entry with
+  // one.
+  MemSet(&ec, 0, sizeof(CS_ReportBaselineEntryIDEepromCmd_t));
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  ec.Payload.EntryID = CS_MAX_NUM_EEPROM_TABLE_ENTRIES;
+  CS_ReportBaselineEntryIDEepromCmd(&ec);
+  S("csec_report_badid cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  cs_res_eep[4].State = CS_ChecksumState_DISABLED;
+  cs_res_eep[4].ComputedYet = FALSE;
+  cs_res_eep[4].ComparisonValue = 0x1357;
+  ec.Payload.EntryID = 4;
+  S("csec_report_before state=");
+  D(cs_res_eep[4].State);
+  S("\n");
+  CS_ReportBaselineEntryIDEepromCmd(&ec);
+  S("csec_report_nobase cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" state_after=");
+  D(cs_res_eep[4].State);
+  S("\n");
+  cs_res_eep[4].ComputedYet = TRUE;
+  CS_ReportBaselineEntryIDEepromCmd(&ec);
+  S("csec_report cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+
+  // --- CS_RecomputeBaselineEepromCmd, AND THE BUSY ARM IS UPSTREAM DEFECT #14.
+  //
+  // `EntryID = CmdPtr->Payload.EntryID` is INSIDE the `if`, and the busy event in the `else`
+  // prints EntryID -- so it always says 0 whatever the ground commanded. THE COMMANDED ID HERE IS
+  // 7, AND THE EVENT IN THE TRANSCRIPT SAYS "Entry ID 0". That event text is directly comparable,
+  // because the declaration initialises EntryID to zero: it is a wrong value, not an
+  // uninitialised one, which is exactly what separates this defect from #15 two files later.
+  //
+  // The busy arm goes FIRST so the commanded id is unambiguous, and the flag is set by hand here
+  // rather than inherited -- the success call below is what leaves it set for good.
+  cs_setup();
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  ec.Payload.EntryID = 7;
+  CS_RecomputeBaselineEepromCmd(&ec);
+  S("csec_recomp_busy ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = FALSE;
+  // An id past the end: the inner arm, which reports the real id because it is inside the if.
+  ec.Payload.EntryID = CS_MAX_NUM_EEPROM_TABLE_ENTRIES + 3;
+  CS_RecomputeBaselineEepromCmd(&ec);
+  S("csec_recomp_badid ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S("\n");
+  // The create failing, and then succeeding. ChildTaskEntryID is the witness that the command's id
+  // reached the child-task variables at all -- the event on the busy path cannot show it.
+  cs_res_eep[9].State = CS_ChecksumState_ENABLED;
+  ec.Payload.EntryID = 9;
+  es_taskcreate_rc = OS_ERROR;
+  CS_RecomputeBaselineEepromCmd(&ec);
+  S("csec_recomp_fail ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S("\n");
+  es_taskcreate_rc = OS_SUCCESS;
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_RecomputeBaselineEepromCmd(&ec);
+  S("csec_recomp cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S(" type=");
+  D(CS_AppData.ChildTaskTable);
+  S(" ent=");
+  D(CS_AppData.ChildTaskEntryID);
+  S(" ptr=");
+  D(CS_AppData.RecomputeEepromMemoryEntryPtr == &cs_res_eep[9]);
+  S("\n");
+
+  // --- CS_EnableEntryIDEepromCmd and CS_DisableEntryIDEepromCmd, FOUR ARMS EACH.
+  //
+  // BOTH WRITE **TWO** TABLES, and the definition write can fail quietly: CS_SetDefEntryState
+  // returns the PREVIOUS state, and a previous state that is not commandable means the definition
+  // entry is EMPTY -- so the results entry changes and the definition entry does not, and the
+  // mismatch survives only until the next ground table load. That is the DEBUG event, and it is
+  // driven: entry 5's definition entry is left EMPTY on purpose while entry 3's is DISABLED. Both
+  // definition states are printed, so "wrote the results entry and not the definition entry" is
+  // visible rather than implied.
+  //
+  // AND THE DISABLE CLEARS THE PARTIAL CHECKSUM WHERE THE ENABLE DOES NOT, the same asymmetry as
+  // every other disable in CS. Poisoned before each so the difference is a number.
+  cs_setup();
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  ec.Payload.EntryID = 3;
+  CS_EnableEntryIDEepromCmd(&ec);
+  CS_DisableEntryIDEepromCmd(&ec);
+  S("csec_entry_refused cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = FALSE;
+  ec.Payload.EntryID = CS_MAX_NUM_EEPROM_TABLE_ENTRIES + 1;
+  CS_EnableEntryIDEepromCmd(&ec);
+  CS_DisableEntryIDEepromCmd(&ec);
+  S("csec_entry_badid ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  cs_res_eep[3].State = CS_ChecksumState_DISABLED;
+  cs_res_eep[3].TempChecksumValue = 0x2468;
+  cs_res_eep[3].ByteOffset = 20;
+  cs_def_eep[3].State = CS_ChecksumState_DISABLED;
+  cs_res_eep[5].State = CS_ChecksumState_DISABLED;
+  cs_def_eep[5].State = CS_ChecksumState_EMPTY;
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  ec.Payload.EntryID = 3;
+  CS_EnableEntryIDEepromCmd(&ec);
+  S("csec_en_entry cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_eep[3].State);
+  S(" def=");
+  D(cs_def_eep[3].State);
+  S(" temp=");
+  D(cs_res_eep[3].TempChecksumValue);
+  S(" off=");
+  D(cs_res_eep[3].ByteOffset);
+  S("\n");
+  CS_DisableEntryIDEepromCmd(&ec);
+  S("csec_dis_entry cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_eep[3].State);
+  S(" def=");
+  D(cs_def_eep[3].State);
+  S(" temp=");
+  D(cs_res_eep[3].TempChecksumValue);
+  S(" off=");
+  D(cs_res_eep[3].ByteOffset);
+  S("\n");
+  // THE DEFINITION ENTRY THAT IS EMPTY: the results entry moves, the definition entry does not,
+  // and a DEBUG event says so.
+  ec.Payload.EntryID = 5;
+  CS_EnableEntryIDEepromCmd(&ec);
+  S("csec_en_entry_nodef cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_eep[5].State);
+  S(" def=");
+  D(cs_def_eep[5].State);
+  S("\n");
+  CS_DisableEntryIDEepromCmd(&ec);
+  S("csec_dis_entry_nodef cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_eep[5].State);
+  S(" def=");
+  D(cs_def_eep[5].State);
+  S("\n");
+
+  // --- CS_GetEntryIDEepromCmd. THE LOOP DOES NOT STOP AT THE FIRST MATCH: it walks the whole
+  // table and sends an event for EVERY entry whose range contains the address, so overlapping
+  // definition entries all report. That is NASA's and it is the right answer -- an operator asking
+  // "who is watching this byte" wants all of them -- so the exercise makes entries 1 and 6 OVERLAP
+  // and the transcript carries TWO found events for one command. A version that broke out of the
+  // loop would print one, and the command counter would be identical.
+  cs_setup();
+  cs_res_eep[1].State = CS_ChecksumState_ENABLED;
+  cs_res_eep[1].StartAddress = CS_EX_EEP_ADDR;
+  cs_res_eep[1].NumBytesToChecksum = 0x100;
+  cs_res_eep[6].State = CS_ChecksumState_DISABLED;
+  cs_res_eep[6].StartAddress = CS_EX_EEP_ADDR + 0x40;
+  cs_res_eep[6].NumBytesToChecksum = 0x80;
+  // AND AN **EMPTY** ENTRY WHOSE RANGE ALSO CONTAINS THE ADDRESS, which must NOT report: the
+  // `State != CS_ChecksumState_EMPTY` test is the first of the three conditions and nothing else
+  // in this block would notice if it were dropped.
+  cs_res_eep[8].State = CS_ChecksumState_EMPTY;
+  cs_res_eep[8].StartAddress = CS_EX_EEP_ADDR;
+  cs_res_eep[8].NumBytesToChecksum = 0x100;
+  MemSet(&gc, 0, sizeof(CS_GetEntryIDEepromCmd_t));
+  gc.Payload.Address = CS_EX_EEP_ADDR + 0x50;
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_GetEntryIDEepromCmd(&gc);
+  S("csec_getid cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+  // ONE PAST THE END OF ENTRY 1, which is the half-open test: StartAddress + NumBytes is NOT
+  // inside the entry. An `<=` there would report entry 1 and this line would still say cc=2.
+  gc.Payload.Address = CS_EX_EEP_ADDR + 0x100;
+  CS_GetEntryIDEepromCmd(&gc);
+  S("csec_getid_notfound cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+}
+
+// --- cs_memory_cmds.c, seven commands, AND THIS BLOCK IS GENERATED FROM THE EEPROM ONE ABOVE BY
+// THE SAME NAME MAP THAT GENERATED cs_memory_cmds.HC FROM cs_eeprom_cmds.HC. That is the point
+// rather than a shortcut: the two NASA sources are line-for-line twins, so their two exercises must
+// differ in EXACTLY the places upstream differs and nowhere else. Three places, each marked:
+//
+//   #13  the report command does NOT re-enable the entry here -- csmc_report_nobase prints
+//        state_after=2 where csec_report_nobase printed 1.
+//   #14  EntryID is assigned OUTSIDE the `if`, so the child-task-busy event reports the REAL
+//        commanded id (7) where the EEPROM twin's said 0.
+//   #16  the create-failed event says "ES_CreateChildTask returned:" with the CFE_ prefix DROPPED,
+//        and with two spaces before the status. Both are in the transcript verbatim.
+//
+// Everything else about this block -- the fixed addresses, the half-open range test, the empty
+// definition entry -- is explained once, at the EEPROM block above.
+#define CS_EX_MEM_ADDR 0x00400000
+
+U0 cs_block_memory_cmds()
+{
+  CS_RecomputeBaselineTableCmd_t cb;
+  CS_ReportBaselineEntryIDMemoryCmd_t ec;
+  CS_GetEntryIDMemoryCmd_t gc;
+  I64 d0;
+
+  cs_fill_sources();
+  cs_setup();
+  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
+  CFE_ES_RegisterCDS(&CS_AppData.DataStoreHandle, CS_EX_CDS_STATES, "CSMEM");
+
+  // --- CS_DisableMemoryCmd and CS_EnableMemoryCmd. THE GUARD IS THE FIRST THING EACH DOES, and a
+  // refused command moves the ERROR counter from inside CS_CheckRecomputeOneshot rather than from
+  // the handler -- so the handler's own counter must NOT move, which is what makes cc=0 on the
+  // refused line an assertion rather than an absence.
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppData.HkPacket.Payload.MemoryCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.OneShotInProgress = TRUE;
+  CS_DisableMemoryCmd(&cb);
+  S("csmc_dis_refused cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" state=");
+  D(CS_AppData.HkPacket.Payload.MemoryCSState);
+  S("\n");
+  CS_AppData.HkPacket.Payload.OneShotInProgress = FALSE;
+  cs_res_mem[2].TempChecksumValue = 0x9999;
+  cs_res_mem[2].ByteOffset = 12;
+  d0 = es_cds_writes;
+  CS_DisableMemoryCmd(&cb);
+  S("csmc_dis cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" state=");
+  D(CS_AppData.HkPacket.Payload.MemoryCSState);
+  S(" temp=");
+  D(cs_res_mem[2].TempChecksumValue);
+  S(" off=");
+  D(cs_res_mem[2].ByteOffset);
+  S(" writes=");
+  D(es_cds_writes - d0);
+  S("\n");
+  cs_res_mem[2].TempChecksumValue = 0x9999;
+  cs_res_mem[2].ByteOffset = 12;
+  CS_EnableMemoryCmd(&cb);
+  S("csmc_en cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" state=");
+  D(CS_AppData.HkPacket.Payload.MemoryCSState);
+  S(" temp=");
+  D(cs_res_mem[2].TempChecksumValue);
+  S(" off=");
+  D(cs_res_mem[2].ByteOffset);
+  S("\n");
+
+  // --- CS_ReportBaselineEntryIDMemoryCmd. UPSTREAM DIFFERENCE #13, AND THIS IS THE HALF THAT
+  // MAKES IT A DEFECT RATHER THAN A CONVENTION: the same three lines as the EEPROM twin, and NO
+  // `ResultsEntry->State = CS_ChecksumState_ENABLED`. So csmc_report_nobase prints state_after=2
+  // -- the entry is still DISABLED -- where csec_report_nobase printed 1.
+  //
+  // Two lines of transcript, one number apart, in two functions that are otherwise identical. That
+  // pair is the evidence; a note in a document asserting it would not be.
+  MemSet(&ec, 0, sizeof(CS_ReportBaselineEntryIDMemoryCmd_t));
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  ec.Payload.EntryID = CS_MAX_NUM_MEMORY_TABLE_ENTRIES;
+  CS_ReportBaselineEntryIDMemoryCmd(&ec);
+  S("csmc_report_badid cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  cs_res_mem[4].State = CS_ChecksumState_DISABLED;
+  cs_res_mem[4].ComputedYet = FALSE;
+  cs_res_mem[4].ComparisonValue = 0x1357;
+  ec.Payload.EntryID = 4;
+  S("csmc_report_before state=");
+  D(cs_res_mem[4].State);
+  S("\n");
+  CS_ReportBaselineEntryIDMemoryCmd(&ec);
+  S("csmc_report_nobase cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" state_after=");
+  D(cs_res_mem[4].State);
+  S("\n");
+  cs_res_mem[4].ComputedYet = TRUE;
+  CS_ReportBaselineEntryIDMemoryCmd(&ec);
+  S("csmc_report cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+
+  // --- CS_RecomputeBaselineMemoryCmd. UPSTREAM DIFFERENCE #14, the other half of the same pair:
+  // `EntryID = CmdPtr->Payload.EntryID` is OUTSIDE the `if` here, so the busy event reports the id
+  // the ground actually sent. SAME COMMANDED ID AS THE EEPROM BLOCK -- 7 -- and the transcript says
+  // "Memory Entry ID 7 failed: child task in use" where the EEPROM one said "EEPROM Entry ID 0".
+  //
+  // AND UPSTREAM DIFFERENCE #16 IS IN THE create-failed LINE BELOW: this file's event text is
+  // "ES_CreateChildTask returned:  0x%08X" -- no CFE_ prefix, and two spaces. A ground decoder
+  // keyed on the other six child-task failure texts misses this one. Kept verbatim, and in the
+  // transcript to be read.
+  cs_setup();
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  ec.Payload.EntryID = 7;
+  CS_RecomputeBaselineMemoryCmd(&ec);
+  S("csmc_recomp_busy ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = FALSE;
+  // An id past the end: the inner arm, which reports the real id because it is inside the if.
+  ec.Payload.EntryID = CS_MAX_NUM_MEMORY_TABLE_ENTRIES + 3;
+  CS_RecomputeBaselineMemoryCmd(&ec);
+  S("csmc_recomp_badid ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S("\n");
+  // The create failing, and then succeeding. ChildTaskEntryID is the witness that the command's id
+  // reached the child-task variables at all -- the event on the busy path cannot show it.
+  cs_res_mem[9].State = CS_ChecksumState_ENABLED;
+  ec.Payload.EntryID = 9;
+  es_taskcreate_rc = OS_ERROR;
+  CS_RecomputeBaselineMemoryCmd(&ec);
+  S("csmc_recomp_fail ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S("\n");
+  es_taskcreate_rc = OS_SUCCESS;
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_RecomputeBaselineMemoryCmd(&ec);
+  S("csmc_recomp cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S(" type=");
+  D(CS_AppData.ChildTaskTable);
+  S(" ent=");
+  D(CS_AppData.ChildTaskEntryID);
+  S(" ptr=");
+  D(CS_AppData.RecomputeEepromMemoryEntryPtr == &cs_res_mem[9]);
+  S("\n");
+
+  // --- CS_EnableEntryIDMemoryCmd and CS_DisableEntryIDMemoryCmd, FOUR ARMS EACH.
+  //
+  // BOTH WRITE **TWO** TABLES, and the definition write can fail quietly: CS_SetDefEntryState
+  // returns the PREVIOUS state, and a previous state that is not commandable means the definition
+  // entry is EMPTY -- so the results entry changes and the definition entry does not, and the
+  // mismatch survives only until the next ground table load. That is the DEBUG event, and it is
+  // driven: entry 5's definition entry is left EMPTY on purpose while entry 3's is DISABLED. Both
+  // definition states are printed, so "wrote the results entry and not the definition entry" is
+  // visible rather than implied.
+  //
+  // AND THE DISABLE CLEARS THE PARTIAL CHECKSUM WHERE THE ENABLE DOES NOT, the same asymmetry as
+  // every other disable in CS. Poisoned before each so the difference is a number.
+  cs_setup();
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  ec.Payload.EntryID = 3;
+  CS_EnableEntryIDMemoryCmd(&ec);
+  CS_DisableEntryIDMemoryCmd(&ec);
+  S("csmc_entry_refused cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = FALSE;
+  ec.Payload.EntryID = CS_MAX_NUM_MEMORY_TABLE_ENTRIES + 1;
+  CS_EnableEntryIDMemoryCmd(&ec);
+  CS_DisableEntryIDMemoryCmd(&ec);
+  S("csmc_entry_badid ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  cs_res_mem[3].State = CS_ChecksumState_DISABLED;
+  cs_res_mem[3].TempChecksumValue = 0x2468;
+  cs_res_mem[3].ByteOffset = 20;
+  cs_def_mem[3].State = CS_ChecksumState_DISABLED;
+  cs_res_mem[5].State = CS_ChecksumState_DISABLED;
+  cs_def_mem[5].State = CS_ChecksumState_EMPTY;
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  ec.Payload.EntryID = 3;
+  CS_EnableEntryIDMemoryCmd(&ec);
+  S("csmc_en_entry cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_mem[3].State);
+  S(" def=");
+  D(cs_def_mem[3].State);
+  S(" temp=");
+  D(cs_res_mem[3].TempChecksumValue);
+  S(" off=");
+  D(cs_res_mem[3].ByteOffset);
+  S("\n");
+  CS_DisableEntryIDMemoryCmd(&ec);
+  S("csmc_dis_entry cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_mem[3].State);
+  S(" def=");
+  D(cs_def_mem[3].State);
+  S(" temp=");
+  D(cs_res_mem[3].TempChecksumValue);
+  S(" off=");
+  D(cs_res_mem[3].ByteOffset);
+  S("\n");
+  // THE DEFINITION ENTRY THAT IS EMPTY: the results entry moves, the definition entry does not,
+  // and a DEBUG event says so.
+  ec.Payload.EntryID = 5;
+  CS_EnableEntryIDMemoryCmd(&ec);
+  S("csmc_en_entry_nodef cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_mem[5].State);
+  S(" def=");
+  D(cs_def_mem[5].State);
+  S("\n");
+  CS_DisableEntryIDMemoryCmd(&ec);
+  S("csmc_dis_entry_nodef cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_mem[5].State);
+  S(" def=");
+  D(cs_def_mem[5].State);
+  S("\n");
+
+  // --- CS_GetEntryIDMemoryCmd. THE LOOP DOES NOT STOP AT THE FIRST MATCH: it walks the whole
+  // table and sends an event for EVERY entry whose range contains the address, so overlapping
+  // definition entries all report. That is NASA's and it is the right answer -- an operator asking
+  // "who is watching this byte" wants all of them -- so the exercise makes entries 1 and 6 OVERLAP
+  // and the transcript carries TWO found events for one command. A version that broke out of the
+  // loop would print one, and the command counter would be identical.
+  cs_setup();
+  cs_res_mem[1].State = CS_ChecksumState_ENABLED;
+  cs_res_mem[1].StartAddress = CS_EX_MEM_ADDR;
+  cs_res_mem[1].NumBytesToChecksum = 0x100;
+  cs_res_mem[6].State = CS_ChecksumState_DISABLED;
+  cs_res_mem[6].StartAddress = CS_EX_MEM_ADDR + 0x40;
+  cs_res_mem[6].NumBytesToChecksum = 0x80;
+  // AND AN **EMPTY** ENTRY WHOSE RANGE ALSO CONTAINS THE ADDRESS, which must NOT report: the
+  // `State != CS_ChecksumState_EMPTY` test is the first of the three conditions and nothing else
+  // in this block would notice if it were dropped.
+  cs_res_mem[8].State = CS_ChecksumState_EMPTY;
+  cs_res_mem[8].StartAddress = CS_EX_MEM_ADDR;
+  cs_res_mem[8].NumBytesToChecksum = 0x100;
+  MemSet(&gc, 0, sizeof(CS_GetEntryIDMemoryCmd_t));
+  gc.Payload.Address = CS_EX_MEM_ADDR + 0x50;
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_GetEntryIDMemoryCmd(&gc);
+  S("csmc_getid cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+  // ONE PAST THE END OF ENTRY 1, which is the half-open test: StartAddress + NumBytes is NOT
+  // inside the entry. An `<=` there would report entry 1 and this line would still say cc=2.
+  gc.Payload.Address = CS_EX_MEM_ADDR + 0x100;
+  CS_GetEntryIDMemoryCmd(&gc);
+  S("csmc_getid_notfound cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+}
+
 I64 main()
 {
   CFE_MSG_Message msg;
@@ -20364,6 +21488,9 @@ I64 main()
     cs_block_tblproc();
     cs_block_child();
     cs_block_init();
+    cs_block_cmds();
+    cs_block_eeprom_cmds();
+    cs_block_memory_cmds();
 
     // PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after it today
     // but tim_objtab, so both halves agreed and the transcript was green -- but the NEXT app's
