@@ -10776,17 +10776,27 @@ U0 cs_block_dispatch()
 // self-inflicted. It also leaks one more pair of TBL pools, which is the sixth (docs/CFS_PLAN.md's
 // shared-fixture note counts them).
 //
-// THE CDS ARMS COME FIRST AND THE REGISTRATION-FAILED ONE COMES LAST, because the lever for it --
-// es_cds_reset(), which clears CFE_ES_Global.CDSIsAvailable -- turns the store off for good. The
-// four arms before it need a working store.
+// THE ORDER INSIDE THE BLOCK WAS WRONG, AND A MUTATION IS WHAT SAID SO. The first version ran the
+// four hand-driven CDS arms FIRST and CS_AppInit afterwards -- so by the time AppInit ran a store
+// existed under CS_CDS_NAME, CS_CreateRestoreStatesFromCDS took the ALREADY_EXISTS branch, and all
+// six states came from the store. **Deleting CS_AppInit's six platform-configuration assignments
+// was then a NO-OP.** The comment claimed "the config first and the CDS overrides it -- the ORDER
+// is the whole feature" and the transcript could not tell that order from "the CDS only".
 //
-// AND THE WARM-BOOT ARM IS THE ONE THAT MATTERS. CFE_ES_CDS_ALREADY_EXISTS is not an error in
-// CS_CreateRestoreStatesFromCDS, it is the INTERESTING case: a fresh store is WRITTEN from the
-// states just set, a surviving store is READ and OVERWRITES them. CS_AppInit sets the six states
-// from the platform configuration and then calls this, so a cold boot follows the config and a warm
-// one follows the ground. Six bytes are planted in the store, the states are poisoned to something
-// else, and the assertion is that all six come back -- which is the ground's last decision
-// outliving a processor reset, and the whole reason the CDS is in this app.
+// So CS_AppInit now runs FIRST, on a COLD boot. The two directions of the feature are then two
+// lines that differ:
+//
+//   csap_init_states  ... os=1 cfe=1   <- a cold boot: the PLATFORM CONFIGURATION, and the only
+//                                         thing that writes it is CS_AppInit's own assignment
+//   csap_cds_warm     ... os=2 cfe=2   <- a warm boot: the STORE, over a caller that had the
+//                                         opposite in all six
+//
+// AND THE PATTERN THE WARM BOOT RESTORES IS WRITTEN THROUGH CS'S OWN WRITER, CS_UpdateCDS, onto the
+// store CS_AppInit created -- not planted by hand. A cold boot writes the configuration, which is
+// all 1s, and restoring all 1s over all 1s would assert nothing.
+//
+// THE REGISTRATION-FAILED ARM COMES LAST, because its lever -- es_cds_reset(), which clears
+// CFE_ES_Global.CDSIsAvailable -- turns the store off for good.
 U0 cs_block_app()
 {
   I32 rc;
@@ -10797,116 +10807,22 @@ U0 cs_block_app()
   cs_fill_sources();
   cs_setup();
 
-  // --- (1) A FRESH STORE. The name is CS's own, CS_CDS_NAME, and nothing has used it, so
-  // RegisterCDS succeeds and the six states just set are written.
-  CS_AppData.HkPacket.Payload.EepromCSState = CS_ChecksumState_ENABLED;
-  CS_AppData.HkPacket.Payload.MemoryCSState = CS_ChecksumState_DISABLED;
-  CS_AppData.HkPacket.Payload.AppCSState = CS_ChecksumState_ENABLED;
-  CS_AppData.HkPacket.Payload.TablesCSState = CS_ChecksumState_DISABLED;
-  // BOTH CODE-SEGMENT STATES ARE PLANTED **DISABLED**, and that is deliberate rather than
-  // arbitrary. Every CS_*_POWERON_STATE and both CS_*CHECKSUM_STATE constants are 1 (ENABLED) in
-  // this configuration, so a planted ENABLED is indistinguishable from the platform default -- and
-  // the four TABLE states cannot witness a restore at all, because CS_InitAllTables DISABLES each
-  // of them when its table loads from memory rather than from a file. So the two code-segment
-  // states are the only ones that can show, through CS_AppInit, that the CDS was read: they have no
-  // global-state pointer, nothing overwrites them, and DISABLED is not what the configuration would
-  // have left. A first draft planted OSCSState ENABLED and csap_init_states printed `os=1`, which
-  // is also what "the restore did nothing" looks like.
-  CS_AppData.HkPacket.Payload.OSCSState = CS_ChecksumState_DISABLED;
-  CS_AppData.HkPacket.Payload.CfeCoreCSState = CS_ChecksumState_DISABLED;
-  rc = CS_CreateRestoreStatesFromCDS();
-  S("csap_cds_new rc=");
-  D(rc);
-  S(" defined=");
-  D(CFE_ResourceId_IsDefined(CS_AppData.DataStoreHandle));
-  S("\n");
-  MemSet(back, 0xEE, CS_EX_CDS_STATES);
-  CFE_ES_RestoreFromCDS(back, CS_AppData.DataStoreHandle);
-  S("csap_cds_bytes");
-  for (k = 0; k < CS_EX_CDS_STATES; ++k) {
-    S(" ");
-    D(back[k]);
-  }
-  S("\n");
-
-  // --- (2) THE WARM BOOT. Same name, so RegisterCDS answers CFE_ES_CDS_ALREADY_EXISTS and the six
-  // states are READ back over whatever the caller had. POISON FIRST: all six are set to the
-  // OPPOSITE of what is in the store, so a restore that did nothing would be visible.
-  CS_AppData.HkPacket.Payload.EepromCSState = CS_ChecksumState_DISABLED;
-  CS_AppData.HkPacket.Payload.MemoryCSState = CS_ChecksumState_ENABLED;
-  CS_AppData.HkPacket.Payload.AppCSState = CS_ChecksumState_DISABLED;
-  CS_AppData.HkPacket.Payload.TablesCSState = CS_ChecksumState_ENABLED;
-  CS_AppData.HkPacket.Payload.OSCSState = CS_ChecksumState_ENABLED;
-  CS_AppData.HkPacket.Payload.CfeCoreCSState = CS_ChecksumState_ENABLED;
-  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
-  rc = CS_CreateRestoreStatesFromCDS();
-  S("csap_cds_warm rc=");
-  D(rc);
-  S(" eep=");
-  D(CS_AppData.HkPacket.Payload.EepromCSState);
-  S(" mem=");
-  D(CS_AppData.HkPacket.Payload.MemoryCSState);
-  S(" app=");
-  D(CS_AppData.HkPacket.Payload.AppCSState);
-  S(" tbl=");
-  D(CS_AppData.HkPacket.Payload.TablesCSState);
-  S(" os=");
-  D(CS_AppData.HkPacket.Payload.OSCSState);
-  S(" cfe=");
-  D(CS_AppData.HkPacket.Payload.CfeCoreCSState);
-  S("\n");
-
-  // --- (3) THE RESTORE FAILING. A broken CDS is NOT fatal -- the handle is set to
-  // CFE_ES_CDS_BAD_HANDLE so CS_UpdateCDS stops trying, the six states go back to the PLATFORM
-  // CONFIGURATION, an event says so, and the function returns CFE_SUCCESS so CS_AppInit carries on.
-  // All three of those are asserted: the return, the handle and the six states.
-  es_cds_read_rc = CFE_PSP_ERROR;
-  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
-  rc = CS_CreateRestoreStatesFromCDS();
-  es_cds_read_rc = CFE_PSP_SUCCESS;
-  S("csap_cds_resfail rc=");
-  D(rc);
-  S(" defined=");
-  D(CFE_ResourceId_IsDefined(CS_AppData.DataStoreHandle));
-  S(" eep=");
-  D(CS_AppData.HkPacket.Payload.EepromCSState);
-  S(" mem=");
-  D(CS_AppData.HkPacket.Payload.MemoryCSState);
-  S(" app=");
-  D(CS_AppData.HkPacket.Payload.AppCSState);
-  S(" tbl=");
-  D(CS_AppData.HkPacket.Payload.TablesCSState);
-  S(" os=");
-  D(CS_AppData.HkPacket.Payload.OSCSState);
-  S(" cfe=");
-  D(CS_AppData.HkPacket.Payload.CfeCoreCSState);
-  S("\n");
-
-  // --- (4) THE COPY FAILING ON A **FRESH** STORE, which is the other of the two error event ids.
-  // It needs a name that has never been used, because the copy arm is only reached when RegisterCDS
-  // SUCCEEDS -- so this one cannot use CS_CDS_NAME, and the registration is done by hand with a
-  // different name before the write knob is set. The event id is what distinguishes this from arm
-  // (3), and both are in the transcript.
-  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
-  S("csap_cds_cpy_reg rc=");
-  D(CFE_ES_RegisterCDS(&CS_AppData.DataStoreHandle, CS_EX_CDS_STATES, "CS_CDS2"));
-  S("\n");
-  es_cds_write_rc = CFE_PSP_ERROR;
-  CS_UpdateCDS();
-  es_cds_write_rc = CFE_PSP_SUCCESS;
-  S("csap_cds_updfail defined=");
-  D(CFE_ResourceId_IsDefined(CS_AppData.DataStoreHandle));
-  S("\n");
-
-  // --- (5) CS_AppMain WITH AN AppInit THAT **SUCCEEDS**, which is the only shape that reaches both
+  // --- (1) CS_AppMain WITH AN AppInit THAT **SUCCEEDS**, which is the only shape that reaches both
   // of the two termination events AND CS_AppInit's nine-link chain -- and it took three attempts to
   // find.
   //
   // THE CHAIN IS `if (Result == CFE_SUCCESS)` FOUR TIMES, not nesting: register for events, zero
   // the whole global, stand up the bus, fill the four default tables, take the poweron states from
-  // the platform config, let the CDS OVERRIDE them, register the eight tables, read the two code
+  // the platform config, let the CDS override them, register the eight tables, read the two code
   // segments, set the app enabled. Everything it needs has to be free first: the table registry
   // (cleared), the pipe name (released), the context (app 1).
+  //
+  // AND THIS IS A **COLD** BOOT, which is the whole reason it comes first. Nothing has used
+  // CS_CDS_NAME yet, so CS_CreateRestoreStatesFromCDS takes the fresh-store branch and COPIES THE
+  // SIX STATES OUT instead of reading any in -- which makes CS_AppInit's own
+  // platform-configuration assignments the ONLY source of those values, and therefore
+  // mutable-and-caught. Run second, after a store exists, deleting all six of them is a NO-OP;
+  // that is what the first version of this block did and what a mutation found.
   //
   // AND IT GETS **ONE** CFE_TBL_EarlyInit, WHICH IS WHY AppInit IS RUN FROM INSIDE AppMain RATHER
   // THAN BESIDE IT. A draft called CS_AppInit() directly for the success path and then wanted a
@@ -10965,11 +10881,13 @@ U0 cs_block_app()
   S(" one=");
   D(CS_AppData.HkPacket.Payload.OneShotInProgress);
   S("\n");
-  // THE SIX STATES, AND WHAT THEY PROVE. The platform config sets all six to 1 and
-  // CS_CreateRestoreStatesFromCDS then overwrites them from the store -- so the ORDER is the
-  // feature, and the two CODE-SEGMENT states are the only ones that can witness it: the four table
-  // states are DISABLED again by CS_InitAllTables when each table loads from memory rather than
-  // from a file. os=2 and cfe=2 are the planted values, not the configured ones.
+  // THE SIX STATES, AND WHAT THEY PROVE ON A COLD BOOT. Every CS_*_POWERON_STATE and both
+  // CS_*CHECKSUM_STATE constants are 1 (ENABLED), so the two CODE-SEGMENT states read 1 -- the
+  // configured value, and the only thing that could have written it is the assignment in
+  // CS_AppInit. The four TABLE states read 2, because CS_InitAllTables DISABLES each of them
+  // afterwards when its table loads from memory rather than from a file; that is a SECOND writer,
+  // and it is why the four cannot witness the configuration or the CDS. The pair `os=1 cfe=1` here
+  // against `os=2 cfe=2` in csap_cds_warm below is the two directions of the same feature.
   S("csap_init_states eep=");
   D(CS_AppData.HkPacket.Payload.EepromCSState);
   S(" mem=");
@@ -11008,7 +10926,116 @@ U0 cs_block_app()
   D(CS_AppData.OSCodeSeg.NumBytesToChecksum);
   S("\n");
 
-  // --- (6) CS_AppMain WITH AN AppInit THAT FAILS, which is the ERROR termination event and the
+
+  // --- (2) THE STORE CS_AppInit JUST CREATED, READ BACK RAW. Six bytes of the platform
+  // configuration, written by CS_CreateRestoreStatesFromCDS's fresh-store branch, in NASA'S OWN
+  // ORDER -- eeprom, memory, APP, TABLES, os, cfecore, which is NOT the order of the checksum-type
+  // enum. Read raw so a swap of slots 2 and 3 is visible; it would restore the app state into the
+  // tables state on the next power-on and no counter would move.
+  //
+  // NOTE THE FOUR TABLE STATES READ 1 HERE AND csap_init_states READS 2 for the same four. That is
+  // not a contradiction: the CDS write happens inside CS_CreateRestoreStatesFromCDS, BEFORE
+  // CS_InitAllTables disables each table that loaded from memory. The store holds what the
+  // configuration said; the live states hold what the table loads did.
+  MemSet(back, 0xEE, CS_EX_CDS_STATES);
+  S("csap_cds_bytes rc=");
+  D(CFE_ES_RestoreFromCDS(back, CS_AppData.DataStoreHandle));
+  for (k = 0; k < CS_EX_CDS_STATES; ++k) {
+    S(" ");
+    D(back[k]);
+  }
+  S("\n");
+
+  // --- (3) A PATTERN THE CONFIGURATION COULD NEVER PRODUCE, WRITTEN THROUGH CS_UpdateCDS. That is
+  // CS's own writer and one of the two functions closing the seven-source cycle, so this both
+  // plants the warm boot's input and exercises the writer on a healthy store.
+  CS_AppData.HkPacket.Payload.EepromCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.MemoryCSState = CS_ChecksumState_DISABLED;
+  CS_AppData.HkPacket.Payload.AppCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.TablesCSState = CS_ChecksumState_DISABLED;
+  CS_AppData.HkPacket.Payload.OSCSState = CS_ChecksumState_DISABLED;
+  CS_AppData.HkPacket.Payload.CfeCoreCSState = CS_ChecksumState_DISABLED;
+  x0 = es_cds_writes;
+  CS_UpdateCDS();
+  MemSet(back, 0xEE, CS_EX_CDS_STATES);
+  CFE_ES_RestoreFromCDS(back, CS_AppData.DataStoreHandle);
+  S("csap_cds_plant writes=");
+  D(es_cds_writes - x0);
+  for (k = 0; k < CS_EX_CDS_STATES; ++k) {
+    S(" ");
+    D(back[k]);
+  }
+  S("\n");
+  // --- (4) THE WARM BOOT. Same name, so RegisterCDS answers CFE_ES_CDS_ALREADY_EXISTS and the six
+  // states are READ back over whatever the caller had. POISON FIRST: all six are set to the
+  // OPPOSITE of what is in the store, so a restore that did nothing would be visible.
+  CS_AppData.HkPacket.Payload.EepromCSState = CS_ChecksumState_DISABLED;
+  CS_AppData.HkPacket.Payload.MemoryCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.AppCSState = CS_ChecksumState_DISABLED;
+  CS_AppData.HkPacket.Payload.TablesCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.OSCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.CfeCoreCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
+  rc = CS_CreateRestoreStatesFromCDS();
+  S("csap_cds_warm rc=");
+  D(rc);
+  S(" eep=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S(" mem=");
+  D(CS_AppData.HkPacket.Payload.MemoryCSState);
+  S(" app=");
+  D(CS_AppData.HkPacket.Payload.AppCSState);
+  S(" tbl=");
+  D(CS_AppData.HkPacket.Payload.TablesCSState);
+  S(" os=");
+  D(CS_AppData.HkPacket.Payload.OSCSState);
+  S(" cfe=");
+  D(CS_AppData.HkPacket.Payload.CfeCoreCSState);
+  S("\n");
+
+  // --- (5) THE RESTORE FAILING. A broken CDS is NOT fatal -- the handle is set to
+  // CFE_ES_CDS_BAD_HANDLE so CS_UpdateCDS stops trying, the six states go back to the PLATFORM
+  // CONFIGURATION, an event says so, and the function returns CFE_SUCCESS so CS_AppInit carries on.
+  // All three of those are asserted: the return, the handle and the six states.
+  es_cds_read_rc = CFE_PSP_ERROR;
+  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
+  rc = CS_CreateRestoreStatesFromCDS();
+  es_cds_read_rc = CFE_PSP_SUCCESS;
+  S("csap_cds_resfail rc=");
+  D(rc);
+  S(" defined=");
+  D(CFE_ResourceId_IsDefined(CS_AppData.DataStoreHandle));
+  S(" eep=");
+  D(CS_AppData.HkPacket.Payload.EepromCSState);
+  S(" mem=");
+  D(CS_AppData.HkPacket.Payload.MemoryCSState);
+  S(" app=");
+  D(CS_AppData.HkPacket.Payload.AppCSState);
+  S(" tbl=");
+  D(CS_AppData.HkPacket.Payload.TablesCSState);
+  S(" os=");
+  D(CS_AppData.HkPacket.Payload.OSCSState);
+  S(" cfe=");
+  D(CS_AppData.HkPacket.Payload.CfeCoreCSState);
+  S("\n");
+
+  // --- (6) THE COPY FAILING ON A **FRESH** STORE, which is the other of the two error event ids.
+  // It needs a name that has never been used, because the copy arm is only reached when RegisterCDS
+  // SUCCEEDS -- so this one cannot use CS_CDS_NAME, and the registration is done by hand with a
+  // different name before the write knob is set. The event id is what distinguishes this from arm
+  // (5), and both are in the transcript.
+  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
+  S("csap_cds_cpy_reg rc=");
+  D(CFE_ES_RegisterCDS(&CS_AppData.DataStoreHandle, CS_EX_CDS_STATES, "CS_CDS2"));
+  S("\n");
+  es_cds_write_rc = CFE_PSP_ERROR;
+  CS_UpdateCDS();
+  es_cds_write_rc = CFE_PSP_SUCCESS;
+  S("csap_cds_updfail defined=");
+  D(CFE_ResourceId_IsDefined(CS_AppData.DataStoreHandle));
+  S("\n");
+
+  // --- (7) CS_AppMain WITH AN AppInit THAT FAILS, which is the ERROR termination event and the
   // other half of the pair. The pipe name CS just used is taken, so CFE_SB_CreatePipe refuses the
   // duplicate, AppInit returns that status, AppMain sets APP_ERROR, and CFE_ES_RunLoop's FIRST test
   // -- on the caller's own RunStatus, before any record lookup -- skips the loop entirely. That is
@@ -11026,7 +11053,7 @@ U0 cs_block_app()
   S("\n");
   CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_EXTERNAL;
 
-  // --- (7) CS_AppInit ON ITS OWN, FAILING AT CS_SbInit -- the second link of the chain. The whole
+  // --- (8) CS_AppInit ON ITS OWN, FAILING AT CS_SbInit -- the second link of the chain. The whole
   // rest of the chain is skipped, which is what the zeroes assert, and RunStatus is APP_RUN rather
   // than APP_ERROR because setting APP_ERROR is CS_AppMain's job and not AppInit's.
   rc = CS_AppInit();
@@ -11040,7 +11067,7 @@ U0 cs_block_app()
   D(CS_AppData.HkPacket.Payload.ChecksumState);
   S("\n");
 
-  // --- (8) THE CDS REGISTRATION FAILING, LAST, because the lever is permanent. es_cds_reset clears
+  // --- (9) THE CDS REGISTRATION FAILING, LAST, because the lever is permanent. es_cds_reset clears
   // CFE_ES_Global.CDSIsAvailable, so CFE_ES_RegisterCDS answers CFE_ES_NOT_IMPLEMENTED and the
   // third of the three event ids fires. The six states go back to the platform configuration and
   // the return is still CFE_SUCCESS.
