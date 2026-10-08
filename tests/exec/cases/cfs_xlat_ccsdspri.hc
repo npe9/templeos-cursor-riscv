@@ -12949,6 +12949,176 @@ U0 lc_block_cmds()
   LC_AppData.CurrentLCState = LC_STATE_ACTIVE;
 }
 
+
+// --- THE DISPATCHER, which is the one LC source whose `else` arm is not an error.
+//
+// MD, MM and CS all end their pipe router with "invalid command pipe message ID" and a counter.
+// LC ends with `LC_CheckMsgForWPs(MessageID, BufPtr)`, because LC subscribes to every MsgId its
+// watchpoint table names -- so anything that is not one of LC's own three ids IS DATA. NASA's
+// comment: "All other message ID's should be monitor packets." That inverts the usual default,
+// and the last two lines of this block are what shows it: a MsgId nothing claims produces an
+// LC_MID_INF_EID from lc_watch.c rather than a command error, and the command error counter does
+// not move.
+//
+// ### AND A BAD LENGTH ON AN INTERNAL MESSAGE IS NOT COUNTED
+//
+// LC_VerifyMsgLength has three arms for one failure. A bad HK request gets LC_HKREQ_LEN_ERR_EID,
+// a bad actionpoint sample gets LC_APSAMPLE_LEN_ERR_EID, and NEITHER increments CmdErrCount;
+// everything else gets the generic event AND the counter. NASA's comment says why: "We only
+// increment the error counter for ground commands and not internal messages."
+//
+// So a scheduler sending a malformed wakeup forever is a stream of events with a clean error
+// count, which is the right choice for a counter a ground operator reads as "how many of MY
+// commands were wrong" -- and it is driven below by sending all three kinds of bad length and
+// printing the counter after each. Two of the three must leave it alone.
+//
+// ### THE SEVEN LENGTHS COME FROM NASA'S OWN sizeof, NOT FROM A GUESS
+//
+// Each command is dispatched with ITS OWN correct length, out of the table below. A single length
+// for all seven would make six of them take the length-error arm and still look routed -- every
+// counter would move, just the wrong one. The same trap CS's dispatch block records.
+#define LC_EX_CCS 7
+
+U16 lc_ccs[LC_EX_CCS];
+I64 lc_lens[LC_EX_CCS];
+
+U0 lc_fill_ccs()
+{
+  lc_ccs[0]  = LC_NOOP_CC;
+  lc_lens[0] = sizeof(LC_NoopCmd_t);
+  lc_ccs[1]  = LC_RESET_CC;
+  lc_lens[1] = sizeof(LC_ResetCountersCmd_t);
+  lc_ccs[2]  = LC_SET_LC_STATE_CC;
+  lc_lens[2] = sizeof(LC_SetLCStateCmd_t);
+  lc_ccs[3]  = LC_SET_AP_STATE_CC;
+  lc_lens[3] = sizeof(LC_SetAPStateCmd_t);
+  lc_ccs[4]  = LC_SET_AP_PERM_OFF_CC;
+  lc_lens[4] = sizeof(LC_SetAPPermOffCmd_t);
+  lc_ccs[5]  = LC_RESET_AP_STATS_CC;
+  lc_lens[5] = sizeof(LC_ResetAPStatsCmd_t);
+  lc_ccs[6]  = LC_RESET_WP_STATS_CC;
+  lc_lens[6] = sizeof(LC_ResetWPStatsCmd_t);
+}
+
+U0 lc_block_dispatch()
+{
+  CFE_SB_Buffer *buf;
+  U8 *raw;
+  I64 i;
+
+  lc_setup();
+  lc_define_aps();
+  lc_fill_ccs();
+  raw = (U8 *)lc_mbuf8;
+  buf = (CFE_SB_Buffer *)lc_mbuf8;
+
+  // --- ALL SEVEN COMMAND CODES THROUGH LC_AppPipe, each with its own correct length. The two
+  // counters after each dispatch say which arm was taken: a routing error moves the wrong one
+  // or neither. The payloads are zero, which is a VALID actionpoint number (0) for the four
+  // commands that take one and an INVALID state (0) for the two that take a state -- so the
+  // counters below are a mix of success and error by design, and the point of the line is the
+  // ROUTE, not the outcome.
+  for (i = 0; i < LC_EX_CCS; ++i) {
+    MemSet(raw, 0, 64);
+    CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(LC_CMD_MID), lc_lens[i]);
+    CFE_MSG_SetFcnCode(&buf->Msg, lc_ccs[i]);
+    LC_AppData.CmdCount    = 0;
+    LC_AppData.CmdErrCount = 0;
+    LC_AppPipe(buf);
+    S("lcd_cc ");
+    D(lc_ccs[i]);
+    S(" len=");
+    D(lc_lens[i]);
+    S(" cc=");
+    D(LC_AppData.CmdCount);
+    S(" ec=");
+    D(LC_AppData.CmdErrCount);
+    S("\n");
+  }
+
+  // --- THE SAME SEVEN WITH A WRONG LENGTH. Every one must take LC_VerifyMsgLength's generic
+  // arm: the event AND CmdErrCount, with CmdCount untouched. Seven lines rather than one,
+  // because the length check lives in a per-command wrapper -- LC_NoopVerifyDispatch and its
+  // six siblings each call it with their own sizeof -- so a wrapper that passed the wrong
+  // constant would be wrong for exactly one command.
+  for (i = 0; i < LC_EX_CCS; ++i) {
+    MemSet(raw, 0, 64);
+    CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(LC_CMD_MID), 7);
+    CFE_MSG_SetFcnCode(&buf->Msg, lc_ccs[i]);
+    LC_AppData.CmdCount    = 0;
+    LC_AppData.CmdErrCount = 0;
+    LC_AppPipe(buf);
+    S("lcd_badlen ");
+    D(lc_ccs[i]);
+    S(" cc=");
+    D(LC_AppData.CmdCount);
+    S(" ec=");
+    D(LC_AppData.CmdErrCount);
+    S("\n");
+  }
+
+  // --- A COMMAND CODE NOTHING CLAIMS: LC_AppProcessCmd's `default:` arm.
+  MemSet(raw, 0, 64);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(LC_CMD_MID), sizeof(LC_NoopCmd_t));
+  CFE_MSG_SetFcnCode(&buf->Msg, 123);
+  LC_AppData.CmdErrCount = 0;
+  LC_AppPipe(buf);
+  S("lcd_badcc ec=");
+  D(LC_AppData.CmdErrCount);
+  S("\n");
+
+  // --- THE HOUSEKEEPING ROUTE, correct length then wrong. The wrong one is the first of the
+  // two arms that do NOT count: its own event id and a counter that stays at zero.
+  MemSet(raw, 0, 64);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(LC_SEND_HK_MID), sizeof(LC_SendHkCmd_t));
+  LC_AppData.CmdErrCount = 0;
+  LC_AppPipe(buf);
+  S("lcd_hk ec=");
+  D(LC_AppData.CmdErrCount);
+  S("\n");
+  MemSet(raw, 0, 64);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(LC_SEND_HK_MID), 7);
+  LC_AppData.CmdErrCount = 0;
+  LC_AppPipe(buf);
+  S("lcd_hk_badlen ec=");
+  D(LC_AppData.CmdErrCount);
+  S("\n");
+
+  // --- THE ACTIONPOINT SAMPLE ROUTE, same pair. This is the second arm that does not count,
+  // and it has its OWN event id -- so the two uncounted failures are distinguishable from each
+  // other as well as from the counted one.
+  MemSet(raw, 0, 64);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(LC_SAMPLE_AP_MID), sizeof(LC_SampleAPCmd_t));
+  LC_AppData.CmdErrCount = 0;
+  LC_AppPipe(buf);
+  S("lcd_smp ec=");
+  D(LC_AppData.CmdErrCount);
+  S(" smp=");
+  D(LC_AppData.APSampleCount);
+  S("\n");
+  MemSet(raw, 0, 64);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(LC_SAMPLE_AP_MID), 7);
+  LC_AppData.CmdErrCount = 0;
+  LC_AppPipe(buf);
+  S("lcd_smp_badlen ec=");
+  D(LC_AppData.CmdErrCount);
+  S("\n");
+
+  // --- AND THE `else` ARM: A MsgId THAT IS NOT ONE OF LC'S THREE. In every other app in this
+  // port this is "invalid command pipe message ID" and an error count. Here it is DATA: the
+  // message goes to LC_CheckMsgForWPs, which finds no watchpoint for it and sends an
+  // INFORMATION event, and CmdErrCount does NOT move. That counter staying at zero is the
+  // whole assertion -- the event alone would not distinguish "routed to the watchpoint path"
+  // from "routed to the error path and also logged".
+  MemSet(raw, 0, 64);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(0x08AB), 24);
+  LC_AppData.CmdErrCount = 0;
+  LC_AppPipe(buf);
+  S("lcd_wp_route ec=");
+  D(LC_AppData.CmdErrCount);
+  S("\n");
+}
+
 I64 main()
 {
   CFE_MSG_Message msg;
@@ -24485,6 +24655,7 @@ I64 main()
     lc_block_validate();
     lc_block_sample();
     lc_block_cmds();
+    lc_block_dispatch();
 
     // PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after it today
     // but tim_objtab, so both halves agreed and the transcript was green -- but the NEXT app's
