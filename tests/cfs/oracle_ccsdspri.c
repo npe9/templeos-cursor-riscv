@@ -10073,6 +10073,218 @@ static void lc_block_validate(void)
     printf("lca_valadt_empty rc=%d\n", (int)rc);
 }
 
+/* --- ACTIONPOINT SAMPLING, which is where LC actually DOES something: it asks Stored Command to
+ * run an RTS. Everything before this block computes; LC_SampleSingleAP is the only path in the
+ * application that sends a command to another app.
+ *
+ * ### THE TWO STATE MACHINES ARE SEPARATE AND BOTH GATE THE RTS
+ *
+ * There is the ACTIONPOINT's state (ACTIVE / PASSIVE / DISABLED / PERMOFF / NOT_USED) and there
+ * is the APPLICATION's state (LC_STATE_ACTIVE / PASSIVE / DISABLED). A failing actionpoint
+ * requests its RTS only when BOTH are active, and the three other combinations each have their
+ * own counter and their own event:
+ *
+ *   AP ACTIVE, LC ACTIVE    -> LC_ExecuteRTS, RTSExecCount++, the table-supplied event
+ *   AP ACTIVE, LC PASSIVE   -> PassiveRTSExecCount++, LC_PASSIVE_FAIL_DBG_EID
+ *   AP PASSIVE              -> PassiveAPCount++ AND PassiveRTSExecCount++,
+ *                              LC_AP_PASSIVE_FAIL_INF_EID
+ *
+ * Note that the middle case bumps PassiveRTSExecCount and the last bumps BOTH -- so the two
+ * counters together distinguish three outcomes that a single "didn't run" counter would merge.
+ * All three are driven below, in that order, and the counters are printed after each.
+ *
+ * ### AND AN ACTIONPOINT DEMOTES ITSELF
+ *
+ * When an ACTIVE actionpoint reaches MaxFailsBeforeRTS it sets its OWN CurrentState to
+ * LC_APSTATE_PASSIVE -- NASA's comment is "Actions go to passive after they've failed". So the
+ * RTS fires at most once per ground re-enable, and the fourth sample below is in a different
+ * state from the third without anything having commanded it. That self-demotion is the single
+ * most surprising thing in lc_action.c and it is invisible from the counters alone, which is why
+ * CurrentState is printed on every line.
+ *
+ * ### THE THREE EVENT FILTERS ARE COUNTER COMPARISONS, NOT EVS FILTERS
+ *
+ * LC registered with no EVS filters at all (see lc_app.HC), so the limiting is done by hand:
+ * each of the pass-to-fail, fail-to-pass and passive-fail events is sent only while its own
+ * cumulative counter is <= the ADT's Max*Events field. Every Max is 1 here, so the SECOND
+ * occurrence of each must be silent while its counter still moves -- and CumulativeEventMsgsSent
+ * is what shows the event was suppressed rather than the transition missed.
+ *
+ * ### AND THIS IS THE BLOCK THAT PINS THE TABLE-SUPPLIED FORMAT STRING
+ *
+ * The failure event's format is the ADT entry's own EventText with
+ * LC_AP_EVENT_TAIL_STR -- ": AP = %d, FailCount = %d, RTS = %d" -- appended by snprintf, and
+ * then THAT is handed to CFE_EVS_SendEvent with three arguments. Kernel/Cfs/lc/lc_action.HC
+ * records why nothing else can check it: the format is not a literal at the call site, so
+ * check_strings has nothing to compare and check_formats has nothing to read. The transcript is
+ * the only thing that pins it, and the EventText below is deliberately free of conversions so
+ * the three in the tail line up with the three arguments. */
+#define LC_EX_APS 4
+
+static void lc_show_art(const char *tag, int a)
+{
+    printf("%s a=%d r=%u st=%u pas=%u f2p=%u p2f=%u cons=%u cum=%u rts=%u ev=%u\n", tag, a,
+           (unsigned)lc_art[a].ActionResult, (unsigned)lc_art[a].CurrentState,
+           (unsigned)lc_art[a].PassiveAPCount, (unsigned)lc_art[a].FailToPassCount,
+           (unsigned)lc_art[a].PassToFailCount, (unsigned)lc_art[a].ConsecutiveFailCount,
+           (unsigned)lc_art[a].CumulativeFailCount, (unsigned)lc_art[a].CumulativeRTSExecCount,
+           (unsigned)lc_art[a].CumulativeEventMsgsSent);
+}
+
+static void lc_show_app(const char *tag)
+{
+    printf("%s smp=%u mon=%u rts=%u prts=%u lcs=%u\n", tag, (unsigned)LC_AppData.APSampleCount,
+           (unsigned)LC_AppData.MonitoredMsgCount, (unsigned)LC_AppData.RTSExecCount,
+           (unsigned)LC_AppData.PassiveRTSExecCount, (unsigned)LC_AppData.CurrentLCState);
+}
+
+static void lc_define_aps(void)
+{
+    int a;
+    int j;
+
+    for (a = 0; a < 2; ++a)
+    {
+        lc_adt[a].DefaultState      = LC_APSTATE_ACTIVE;
+        lc_adt[a].MaxPassiveEvents  = 1;
+        lc_adt[a].MaxPassFailEvents = 1;
+        lc_adt[a].MaxFailPassEvents = 1;
+        lc_adt[a].RTSId             = (uint16)(5 + a);
+        lc_adt[a].MaxFailsBeforeRTS = 2;
+        lc_adt[a].EventType         = CFE_EVS_EventType_INFORMATION;
+        lc_adt[a].EventID           = (uint16)(100 + a);
+        for (j = 0; j < LC_MAX_RPN_EQU_SIZE; ++j)
+        {
+            lc_adt[a].RPNEquation[j] = 0;
+        }
+        lc_adt[a].RPNEquation[0] = (uint16)a; /* AP a watches WP a */
+        lc_adt[a].RPNEquation[1] = LC_RPN_EQUAL;
+        /* NO `%` IN THE EVENT TEXT. The three conversions are LC's, in the tail, and a `%` here
+         * would shift all three arguments -- the upstream hazard lc_action.HC records. */
+        strncpy((char *)lc_adt[a].EventText, "Limit exceeded", LC_MAX_ACTION_TEXT);
+        lc_art[a].CurrentState = LC_APSTATE_ACTIVE;
+        lc_art[a].ActionResult = LC_ACTION_STALE;
+    }
+
+    /* AP 2 is PERMOFF and AP 3 is NOT_USED: the two states LC_SampleAPs refuses to start a
+     * sample on. They are the only two of the five it rejects, so a range starting on a
+     * DISABLED actionpoint is accepted and then skipped per-entry by LC_SampleSingleAP -- a
+     * distinction driven at the end of this block. */
+    lc_art[2].CurrentState = LC_APSTATE_PERMOFF;
+    lc_art[3].CurrentState = LC_ACTION_NOT_USED;
+}
+
+static void lc_block_sample(void)
+{
+    lc_setup();
+    lc_define_aps();
+
+    /* WP 0 FALSE, so AP 0's one-term equation evaluates PASS. First sample of a STALE
+     * actionpoint: PASS with no transition, because FailToPassCount only moves from FAIL. */
+    lc_wrt[0].WatchResult = LC_WATCH_FALSE;
+    LC_SampleSingleAP(0);
+    lc_show_art("lca_s1", 0);
+    lc_show_app("lca_s1");
+
+    /* WP 0 TRUE -> AP 0 FAILS. ConsecutiveFailCount is 1, below MaxFailsBeforeRTS, so NO RTS --
+     * but PASS -> FAIL is a transition and its event fires once. */
+    lc_wrt[0].WatchResult = LC_WATCH_TRUE;
+    LC_SampleSingleAP(0);
+    lc_show_art("lca_s2", 0);
+    lc_show_app("lca_s2");
+
+    /* THE SECOND FAILURE REACHES MaxFailsBeforeRTS. AP ACTIVE and LC ACTIVE, so this is the only
+     * line in the exercise where LC_ExecuteRTS runs: RTSExecCount and CumulativeRTSExecCount
+     * both move, the actionpoint DEMOTES ITSELF to PASSIVE, and the table-supplied event is
+     * sent. PassToFailCount does NOT move again -- it was already FAIL. */
+    LC_SampleSingleAP(0);
+    lc_show_art("lca_s3", 0);
+    lc_show_app("lca_s3");
+
+    /* NOW THE ACTIONPOINT IS PASSIVE AND IT FAILS AGAIN. PassiveAPCount and
+     * PassiveRTSExecCount both move, no RTS, and the passive-fail event fires because
+     * PassiveAPCount (1) is still <= MaxPassiveEvents (1). */
+    LC_SampleSingleAP(0);
+    lc_show_art("lca_s4", 0);
+    lc_show_app("lca_s4");
+
+    /* AND AGAIN: PassiveAPCount becomes 2, which is GREATER than MaxPassiveEvents, so the event
+     * is SUPPRESSED. The witness is CumulativeEventMsgsSent not moving while PassiveAPCount
+     * does -- the counter proves the path ran and the event count proves it stayed quiet. */
+    LC_SampleSingleAP(0);
+    lc_show_art("lca_s5", 0);
+    lc_show_app("lca_s5");
+
+    /* WP 0 FALSE AGAIN -> FAIL to PASS. FailToPassCount moves, its event fires once, and
+     * ConsecutiveFailCount is cleared. */
+    lc_wrt[0].WatchResult = LC_WATCH_FALSE;
+    LC_SampleSingleAP(0);
+    lc_show_art("lca_s6", 0);
+
+    /* --- THE MIDDLE CASE: AP ACTIVE, LC PASSIVE. Put AP 0 back to ACTIVE by hand (the ground
+     * command that does this is in the next block) and set the APPLICATION passive. Two
+     * failures reach MaxFailsBeforeRTS again -- and this time there is no RTS, no
+     * CumulativeRTSExecCount, only PassiveRTSExecCount. The actionpoint still demotes itself,
+     * which is the part that is easy to miss: the demotion is not conditional on the RTS
+     * actually being requested.
+     *
+     * AND THIS CASE HAS NO EVENT IN THE TRANSCRIPT AT ALL. LC_PASSIVE_FAIL_DBG_EID is a
+     * CFE_EVS_EventType_DEBUG event, and EVS filters DEBUG out by default -- so the only
+     * evidence this path ran rather than the AP-passive one is PassiveRTSExecCount moving while
+     * PassiveAPCount does NOT. That is the whole reason both counters are on every lca_s* line:
+     * the two paths bump overlapping sets, and with the event invisible the counters are the
+     * only thing that separates them. */
+    lc_art[0].CurrentState           = LC_APSTATE_ACTIVE;
+    lc_art[0].ConsecutiveFailCount   = 0;
+    lc_art[0].ActionResult           = LC_ACTION_PASS;
+    LC_AppData.CurrentLCState        = LC_STATE_PASSIVE;
+    lc_wrt[0].WatchResult            = LC_WATCH_TRUE;
+    LC_SampleSingleAP(0);
+    LC_SampleSingleAP(0);
+    lc_show_art("lca_s7", 0);
+    lc_show_app("lca_s7");
+    LC_AppData.CurrentLCState = LC_STATE_ACTIVE;
+
+    /* --- AN ACTIONPOINT IN A STATE THAT IS NEITHER ACTIVE NOR PASSIVE IS SKIPPED ENTIRELY.
+     * LC_SampleSingleAP's whole body is inside that test, so a DISABLED actionpoint does not
+     * even bump APSampleCount -- and that is the witness, because its ActionResult staying put
+     * would also hold if it had been sampled and evaluated the same way. */
+    lc_art[1].CurrentState = LC_APSTATE_DISABLED;
+    lc_wrt[1].WatchResult  = LC_WATCH_TRUE;
+    {
+        uint32 before = LC_AppData.APSampleCount;
+        LC_SampleSingleAP(1);
+        printf("lca_s8_disabled smp_moved=%u r=%u\n",
+               (unsigned)(LC_AppData.APSampleCount - before), (unsigned)lc_art[1].ActionResult);
+    }
+
+    /* --- LC_SampleAPs IS A RANGE, AND IT CHECKS ONLY THE **STARTING** ACTIONPOINT'S STATE.
+     * That is the asymmetry worth driving: the guard is on ARTPtr[StartIndex] alone, so a range
+     * that starts on a usable actionpoint sweeps the whole span whatever the rest are in, and a
+     * range that starts on PERMOFF or NOT_USED is refused OUTRIGHT even if everything after it
+     * is fine.
+     *
+     * Three calls: (0,1) starts ACTIVE and sweeps both; (2,3) starts PERMOFF and is refused;
+     * (3,3) starts NOT_USED and is refused with a different State in the event text. */
+    lc_art[1].CurrentState = LC_APSTATE_ACTIVE;
+    lc_art[1].ActionResult = LC_ACTION_STALE;
+    lc_wrt[0].WatchResult  = LC_WATCH_FALSE;
+    lc_wrt[1].WatchResult  = LC_WATCH_FALSE;
+    LC_SampleAPs(0, 1);
+    lc_show_art("lca_rng", 0);
+    lc_show_art("lca_rng", 1);
+    LC_SampleAPs(2, 3);
+    LC_SampleAPs(3, 3);
+    lc_show_app("lca_rng");
+
+    /* --- LC_ExecuteRTS ON ITS OWN. It builds a command message, sets the function code and
+     * transmits -- so with nothing subscribed to LC_RTS_REQ_MID the witness is the "No
+     * subscribers" line SB emits, which is the same evidence every other transmit in this suite
+     * rests on. Called with a distinctive id so the line is traceable to here. */
+    LC_ExecuteRTS(1234);
+    printf("lca_rts_direct done\n");
+}
+
 int main(void)
 {
     CFE_MSG_Message_t msg;
@@ -18656,6 +18868,7 @@ int main(void)
         lc_block_float();
         lc_block_hash();
         lc_block_validate();
+        lc_block_sample();
 
             /* PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after
              * it today but tim_objtab, so both halves agreed and the transcript was green --
