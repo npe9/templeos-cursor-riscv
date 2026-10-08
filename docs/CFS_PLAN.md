@@ -3561,3 +3561,75 @@ The control on line 132 fails and names the function.
 The rule: **a control must be shown to have CHANGED something.** Print the poisoned line back before
 believing a passing gate. Every other entry in this document's vacuity list is about an assertion
 that looked at nothing; this is the first where the *poison* was the vacuous half.
+
+#### Step 3's mutations — 20 driven, 18 caught, one predicted no-op, one real gap
+
+Two batches of ten through the seven gated sources. **Every anchor's occurrence count is asserted
+before the smoke runs**, which is the lesson from the vacuous poison above: a replacement whose
+`old` text is absent changes nothing and the suite passes.
+
+| mutation | diff lines | verdict |
+|---|---|---|
+| the ninth counter left out of `CS_ResetCountersCmd` | 2 | caught |
+| `CS_DisableAllCSCmd` not zeroing the OS temp values | 2 | caught |
+| `CS_EnableAllCSCmd` writing DISABLED | 2 | caught |
+| the cFE-core create-failed arm leaving `RecomputeInProgress` set | **15** | caught |
+| a zero one-shot budget not replaced by the platform default | 2 | caught |
+| the background cycle's `default:` recovery arm not counting a pass | 2 | caught |
+| `CS_CancelOneShotCmd` not clearing `ChildTaskID` | 2 | caught |
+| **upstream defect #13 CORRECTED** | 2 | caught |
+| **upstream defect #14 CORRECTED** | 11 | caught |
+| `CS_DisableEntryIDEepromCmd` leaving `ByteOffset` alone | 2 | caught |
+| `CS_GetEntryIDMemoryCmd` stopping at the FIRST match | 2 | caught |
+| `CS_DisableNameTableCmd` never updating the DEFINITION entry | 3 | caught |
+| `CS_ReportBaselineTableCmd` dropping NASA's hand-written NUL | 0 | **no-op, predicted** |
+| `CS_DisableNameAppCmd` never updating the DEFINITION entry | 3 | caught |
+| `CS_VerifyCmdLength` not counting a length error | 6 | caught |
+| the SEND_HK and BACKGROUND_CYCLE routes SWAPPED | 4 | caught |
+| the static `SEND_HK_MID` cache filled with the COMMAND id | **955** | caught |
+| `CS_UpdateCDS` swapping the APP and TABLES CDS slots | 2 | caught |
+| `CS_AppInit`'s platform-configuration states deleted | 0 | **no-op → A REAL GAP** |
+| `CS_AppMain` reporting an APP_ERROR termination as INFORMATION | 2 | caught |
+
+**The two upstream defects are PINNED, not merely printed.** Their controls are the most
+sympathetic edits a translator can make — *correcting NASA's bugs* — and both are refused. That is
+what turns `state_after=1` and `Entry ID 0` from lines in a transcript into evidence.
+
+**955 lines for one poisoned static local.** Filling `SEND_HK_MID` with the command id routes all
+forty dispatches to the housekeeping arm. That is limit #12's collision class showing what a
+regression would look like.
+
+**The predicted no-op is a fidelity statement.** Dropping NASA's `Name[len - 1] = '\0'` changes
+nothing *on the HolyC side*, because `StrNCpy` zero-fills where C's `strncpy` does not. The line is
+carried anyway. It says nothing about the C half, where it is load-bearing.
+
+##### The real gap: a comment that asserted an ORDER with only one direction driven
+
+Deleting `CS_AppInit`'s six platform-configuration assignments was a no-op — and the reason was
+ordering in the *exercise*, not unreachable code. `cs_block_app` ran the four hand-driven CDS arms
+first, so by the time `CS_AppInit` ran a store existed under `CS_CDS_NAME`,
+`CS_CreateRestoreStatesFromCDS` took the ALREADY_EXISTS branch, and all six states came from the
+store. The comment said *"the config first and the CDS overrides it — the ORDER is the whole
+feature"*, and the transcript could not tell that order from *"the CDS only"*.
+
+**A comment asserting an order needs both directions driven.** `CS_AppInit` now runs first, on a
+COLD boot:
+
+```
+csap_cds_bytes rc=0 1 1 1 1 1 1     the fresh store, written by NASA's own fresh-store branch
+csap_cds_plant writes=2 1 2 1 2 2 2 a pattern the configuration could never produce, written
+                                    through CS_UpdateCDS -- CS's own writer, not a hand plant
+csap_init_states ... os=1 cfe=1      the COLD boot: the PLATFORM CONFIGURATION, whose only writer
+                                     is CS_AppInit's own assignment
+csap_cds_warm    ... os=2 cfe=2      the WARM boot: the STORE, over a caller poisoned to the
+                                     opposite in all six
+```
+
+Mutation 9 is now caught, 4 diff lines. Two other assertions became real on the way: the slot
+order is now read back raw on the path NASA actually takes, and the warm boot's input comes from
+`CS_UpdateCDS` instead of a hand-written plant — a cold boot writes all 1s, and restoring all 1s
+over all 1s would have asserted nothing, which is the same trap one level down.
+
+Only the two **code-segment** states can witness any of it: the four table states have a second
+writer, `CS_InitAllTables`, which disables each one whose table loaded from memory. The store holds
+`1 1 1 1 1 1` and the live states `2 2 2 2 1 1` at the same moment, and both are printed.
