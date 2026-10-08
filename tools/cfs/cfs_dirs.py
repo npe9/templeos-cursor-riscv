@@ -45,7 +45,7 @@ HCNAMES = ["osal", "cfe", "md", "mm", "cs", "lc"]
 # and the smoke script. check_structs and check_padding each had their own hand-written copy of
 # MD's three, which is the NASA-side version of exactly the defect this file was created to fix
 # on the HolyC side -- unify one list and the other goes on being two.
-APPS = ["MD", "MM", "CS", "LC"]
+APPS = ["MD", "MM", "CS", "LC", "HK"]
 
 
 def app_dirs():
