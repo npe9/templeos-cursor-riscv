@@ -414,3 +414,135 @@ Six bytes written, the seventh refused, the success counter moved and no event s
 that changes it to `CommandErrorCounter++` gives `cc=0 ec=1`.
 
 Translated verbatim.
+
+## 13. CS_ReportBaselineEntryIDEepromCmd RE-ENABLES the entry it was asked to report
+
+`vendor/CS/fsw/src/cs_eeprom_cmds.c:119`, inside the `CS_StateValid(State)` arm:
+
+```c
+if (CS_StateValid(State))
+{
+    ResultsEntry->State = CS_ChecksumState_ENABLED;   /* <-- in a REPORT command */
+
+    if (ResultsEntry->ComputedYet == true)
+    { ... "Report baseline of EEPROM Entry %d is 0x%08X" ... }
+```
+
+A report command is a read. This one writes. Ask a **disabled** EEPROM region for its baseline and
+it comes back **enabled**, and the background checksum walk resumes over a region the ground had
+switched off — which is the whole point of the disable command.
+
+### Why it is a slip and not a convention
+
+`CS_ReportBaselineEntryIDMemoryCmd` (`cs_memory_cmds.c:159`) is the same function with "EEPROM"
+replaced by "Memory" throughout — the two files are twins, and this port's `cs_memory_cmds.HC` was
+*generated* from `cs_eeprom_cmds.HC` by a name map precisely because they are. **The Memory twin
+does not have the line.** Normalising the type words to one token and diffing the two NASA sources
+against each other leaves five lines; this is one of them. So the repository itself contains the
+counter-example: either the write belongs in a report command for both memory types or for
+neither.
+
+There is a second assignment of the same shape at `cs_eeprom_cmds.c:278` — but that one is in
+`CS_EnableEntryIDEepromCmd`, where enabling is the command.
+
+### Reachability: LIVE, one command, no preconditions
+
+`CS_ReportBaselineEntryIDEepromCmd` is reachable from the ground with CC
+`CS_REPORT_BASELINE_EEPROM_CC` and an entry id. No child task, no table state, nothing to set up.
+Any entry whose `State` passes `CS_StateValid` — that is, `ENABLED` **or** `DISABLED` — is
+rewritten to `ENABLED`.
+
+### What this port does about it
+
+Nothing. Translated verbatim, with the note at the site.
+
+## 14. CS_RecomputeBaselineEepromCmd's busy event always reports Entry ID 0
+
+`cs_eeprom_cmds.c:164` declares `uint16 EntryID = 0;` and `:171` assigns it **inside** the
+`RecomputeInProgress == false && OneShotInProgress == false` arm. The `else` arm at `:238` prints
+it:
+
+```c
+else
+{
+    /*send event that we can't start another task right now */
+    CFE_EVS_SendEvent(CS_RECOMPUTE_EEPROM_CHDTASK_ERR_EID, ...,
+                      "Recompute baseline of EEPROM Entry ID %d failed: child task in use",
+                      EntryID);          /* <-- never assigned on this path */
+```
+
+So the one event whose job is to tell the operator *which* recompute was rejected always says
+**Entry ID 0**. Command entry 7 while a recompute is running and the log says entry 0 was refused.
+
+Again the Memory twin is the counter-example: `cs_memory_cmds.c:166` assigns `EntryID` **outside**
+the `if`, so its busy event reports the real id. Same five-line diff as #13.
+
+Milder than an uninitialised read only because the declaration initialises to zero — which is also
+why this one is directly witnessable in the differential (see #15 for the ones that are not).
+
+Reachability: LIVE. Two commands, the second during the first.
+
+## 15. Two CS busy events send UNINITIALISED STACK to the ground
+
+`CS_RecomputeBaselineTableCmd` (`cs_table_cmds.c:203`) and `CS_RecomputeBaselineAppCmd`
+(`cs_app_cmds.c:203`) are #14's shape with a **name** instead of an id, and a name has no
+initialiser:
+
+```c
+char Name[CFE_TBL_MAX_FULL_NAME_LEN];           /* uninitialised */
+
+if (RecomputeInProgress == false && OneShotInProgress == false)
+{
+    strncpy(Name, CmdPtr->Payload.Name, ...);   /* the only write, INSIDE the if */
+    ...
+}
+else
+{
+    CFE_EVS_SendEvent(CS_RECOMPUTE_TABLES_CHDTASK_ERR_EID, ...,
+                      "Tables recompute baseline for table %s failed: child task in use", Name);
+```
+
+On the busy path `Name` has never been written, so the event text is `%s` over whatever the frame
+held — up to 40 bytes for the table command (`CFE_TBL_MAX_FULL_NAME_LEN`) and 20 for the app one
+(`OS_MAX_API_NAME`), with no guarantee of a terminator inside the array at all. Same family as #8
+and as the two words of stack cFE writes into the header of every table dump
+(`dumpfile-uninitialised-header`), and the EEPROM/Memory twins are the better-behaved version:
+they print an id, which is at least an initialised zero.
+
+### What the differential can and cannot pin
+
+An event whose text contains uninitialised stack cannot cross a differential for the same reason
+an event containing a real pointer cannot — the host frame and the RISC-V frame hold different
+rubbish. So these two are driven with the EVS output port closed
+(`evs-port-close-for-uncomparable-events`): clear
+`CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort`, send, assert `MessageSendCounter` moved, restore.
+That proves the arm ran and the event was emitted without comparing a byte of the text. #14, by
+contrast, prints an initialised zero and is compared in full — the transcript carries the literal
+`Entry ID 0` that is the defect.
+
+Translated verbatim, both of them, with the note at both sites.
+
+## 16. Four CS event texts the ground parses are wrong in ways only text can be
+
+Collected rather than given a note each, because they share a cause — these strings were written by
+copying a sibling and editing it:
+
+| Site | Text | Should be |
+|---|---|---|
+| `cs_memory_cmds.c:213` | `ES_CreateChildTask returned:` | `CFE_ES_CreateChildTask` — the prefix is dropped, and the EEPROM twin at `:214` has it |
+| `cs_eeprom_cmds.c:214`, `cs_memory_cmds.c:213` | `returned:␣␣0x%08X` | one space; the other five `CreateChildTask returned:` texts in CS have one |
+| `cs_cmds.c:550` | `OneShot checkum failed` | `checksum` |
+
+The fourth is #14's `Entry ID %d`, counted there.
+
+None of this changes a byte of flight behaviour, and all of it changes what a ground display
+greps for. A telemetry decoder keyed on `"CFE_ES_CreateChildTask returned: "` finds six of CS's
+seven child-task failures and silently misses the memory one.
+
+Translated verbatim. **No gate compared these character for character** when they were written:
+`check_formats.py` parses the *conversions* out of a format string and checks that
+`StrPrintNV` implements every form, which says nothing about the literal text around them. The
+double space and the dropped prefix were found by a one-off check run while generating
+`cs_memory_cmds.HC` from its twin — every quoted string in the generated file had to appear
+verbatim in NASA's own `cs_memory_cmds.c`. That check is worth being a gate rather than a habit,
+and is listed as such in `docs/CFS_PLAN.md`.

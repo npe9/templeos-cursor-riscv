@@ -331,6 +331,17 @@ python3 "$ROOT/tools/cfs/check_variadic.py" || exit 1
 # shellcheck disable=SC2086
 python3 "$ROOT/tools/cfs/check_formats.py" $SRC_C || exit 1
 
+# --- the TEXT around those conversions -------------------------------------------------------
+# check_formats above reads the CONVERSIONS out of a format string. It says nothing about the
+# rest of the string, which is most of it and is the part a ground display greps. A retyped event
+# text passes every gate above AND the transcript below, because the oracle and the translation
+# are compared to EACH OTHER and both print the translation's wording -- so NASA's own text is
+# never consulted. This gate consults it: every literal must appear verbatim in the NASA source
+# it was translated from. Its first full run found mm_mem32.HC printing "Reducing from %u to %u"
+# where NASA prints "%d to %d", because the twin mm_mem16.c uses %u and I had quietly made two
+# inconsistent NASA siblings consistent.
+python3 "$ROOT/tools/cfs/check_strings.py" || exit 1
+
 # --- the shared-data lock sites ----------------------------------------------------------------
 # NASA writes CFE_ES_LockSharedData(__func__, __LINE__) and BOTH arguments reach the transcript
 # when the mutex take fails. HolyC has neither, so the translation writes them out as literals

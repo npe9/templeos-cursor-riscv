@@ -245,7 +245,11 @@ I32 MM_FillMem32(U64 DestAddress, MM_FillMemCmd_t *CmdPtr)
   if ((BytesRemaining % 4) != 0) {
     NewBytesRemaining = BytesRemaining - (BytesRemaining % 4);
     CFE_EVS_SendEvent(MM_FILL_MEM32_ALIGN_WARN_INF_EID, CFE_EVS_EventType_INFORMATION,
-                      "MM_FillMem32 NumOfBytes not multiple of 4. Reducing from %u to %u.",
+                      // NASA'S TWO TWINS DISAGREE AND BOTH ARE KEPT: mm_mem16.c prints this with %u and
+                      // (unsigned int) casts, mm_mem32.c with %d and (int). This port first wrote %u
+                      // in both -- quietly making NASA consistent, which is the opposite of a 1:1
+                      // translation and is what tools/cfs/check_strings.py was written and caught.
+                      "MM_FillMem32 NumOfBytes not multiple of 4. Reducing from %d to %d.",
                       BytesRemaining, NewBytesRemaining);
     BytesRemaining = NewBytesRemaining;
   }

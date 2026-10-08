@@ -105,7 +105,7 @@ I32 CFE_SB_InitBuffers()
   CFE_Config_GetArrayValue(CFE_CONFIGID_PLATFORM_SB_MEM_BLOCK_SIZE, &MemPoolDefSize);
   Stat = CFE_ES_PoolCreateEx(&CFE_SB_Global.Mem.PoolHdl, CFE_SB_Global.Mem.Partition.Data, CFE_PLATFORM_SB_BUF_MEMORY_BYTES, MemPoolDefSize.NumElements, MemPoolDefSize.ElementPtr, CFE_ES_NO_MUTEX);
   if (Stat != CFE_SUCCESS) {
-    CFE_ES_WriteToSysLog("CFE_SB_InitBuffers: PoolCreate failed for SB Buffers, gave adr 0x%X,size %d,stat=0x%X\n", CFE_SB_Global.Mem.Partition.Data, CFE_PLATFORM_SB_BUF_MEMORY_BYTES, Stat);
+    CFE_ES_WriteToSysLog("CFE_SB_InitBuffers: PoolCreate failed for SB Buffers, gave adr 0x%x,size %d,stat=0x%x\n", CFE_SB_Global.Mem.Partition.Data, CFE_PLATFORM_SB_BUF_MEMORY_BYTES, Stat);
     return Stat;
   }
   /*
