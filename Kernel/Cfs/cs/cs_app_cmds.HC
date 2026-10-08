@@ -129,7 +129,7 @@ I32 CS_RecomputeBaselineAppCmd(CS_RecomputeBaselineAppCmd_t *CmdPtr)
       CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
 
       CS_AppData.ChildTaskTable = CS_ChecksumType_APP_TABLE;
-      CS_AppData.RecomputeTablesEntryPtr = ResultsEntry;
+      CS_AppData.RecomputeAppEntryPtr = ResultsEntry;
 
       Status = CFE_ES_CreateChildTask(&ChildTaskID, CS_RECOMP_APP_TASK_NAME,
                                       &CS_RecomputeAppChildTask, NULL,

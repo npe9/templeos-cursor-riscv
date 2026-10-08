@@ -9967,6 +9967,523 @@ U0 cs_block_memory_cmds()
   S("\n");
 }
 
+// --- cs_table_cmds.c, six commands, and THE FILE WHERE AN EVENT CANNOT CROSS THE DIFFERENTIAL.
+//
+// CS_RecomputeBaselineTableCmd's child-task-busy event prints `Name`, and the StrNCpy that fills
+// Name is INSIDE the `if` -- so on that path the event carries up to 40 bytes of whatever the frame
+// held, with no guarantee of a terminator inside the array (upstream note #15). A host process's
+// stack and a QEMU guest's hold different rubbish, so that event is the fourth kind in this port
+// that cannot be compared: it joins the one that prints a real pointer.
+//
+// SO IT IS DRIVEN WITH THE EVS OUTPUT PORT CLOSED, which is the technique CS_OneShotChildTask
+// established. The event is still built, filtered, counted and transmitted -- every line of
+// CFE_EVS_SendEvent runs -- and only the human-readable copy is not printed.
+// EVS_TlmPkt.Payload.MessageSendCounter is the witness. Leaving the arm undriven, which is what MM
+// did with its uncomparable events, would leave the defect unproven as well as unexercised.
+U0 cs_block_table_cmds()
+{
+  CS_RecomputeBaselineTableCmd_t tc;
+  CS_Res_Tables_Table_Entry_t *rt;
+  U8 port_saved;
+  U16 sent_before;
+  I64 d0;
+
+  // EVERY LENGTH HERE IS THE CONSTANT, NOT A sizeof. Both are 40 -- CFE_TBL_MAX_FULL_NAME_LEN,
+  // CFE_MISSION_TBL_MAX_FULL_NAME_LEN and CS_Res_Tables_Table_Entry_t.Name all agree -- and the
+  // constant is what this half can spell: docs/HOLYC_STRUCT_LIMITS.md #16 records that `sizeof`
+  // through a `->` fails here, and writing the two halves differently in a place where a length is
+  // the thing under test is how a difference becomes invisible.
+  cs_fill_sources();
+  cs_setup();
+  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
+  CFE_ES_RegisterCDS(&CS_AppData.DataStoreHandle, CS_EX_CDS_STATES, "CSTBL");
+
+  // THREE NAMED RESULTS ENTRIES, and the names are what every command in this file looks up. Entry
+  // 0 has a matching DEFINITION entry; entry 1 does NOT, which is the DEBUG arm; entry 2 is EMPTY
+  // with a name, which must never match -- CS_GetTableResTblEntryByName tests `State != EMPTY`
+  // BEFORE the name compare, and nothing else here reads that test.
+  StrNCpy(cs_res_tbl[0].Name, "CS.EepromTbl", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  cs_res_tbl[0].State = CS_ChecksumState_DISABLED;
+  StrNCpy(cs_def_tbl[0].Name, "CS.EepromTbl", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  cs_def_tbl[0].State = CS_ChecksumState_DISABLED;
+  StrNCpy(cs_res_tbl[1].Name, "CS.Orphan", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  cs_res_tbl[1].State = CS_ChecksumState_DISABLED;
+  StrNCpy(cs_res_tbl[2].Name, "CS.EmptyOne", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  cs_res_tbl[2].State = CS_ChecksumState_EMPTY;
+
+  // --- CS_DisableTablesCmd and CS_EnableTablesCmd, the whole-table pair. Same shape as the EEPROM
+  // pair: a refused command, then the disable zeroing the partial state and writing the CDS, then
+  // the enable zeroing nothing.
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppData.HkPacket.Payload.TablesCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  CS_DisableTablesCmd(&tc);
+  S("cstc_dis_refused cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" state=");
+  D(CS_AppData.HkPacket.Payload.TablesCSState);
+  S("\n");
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = FALSE;
+  cs_res_tbl[0].TempChecksumValue = 0xABCD;
+  cs_res_tbl[0].ByteOffset = 36;
+  d0 = es_cds_writes;
+  CS_DisableTablesCmd(&tc);
+  S("cstc_dis cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" state=");
+  D(CS_AppData.HkPacket.Payload.TablesCSState);
+  S(" temp=");
+  D(cs_res_tbl[0].TempChecksumValue);
+  S(" off=");
+  D(cs_res_tbl[0].ByteOffset);
+  S(" writes=");
+  D(es_cds_writes - d0);
+  S("\n");
+  cs_res_tbl[0].TempChecksumValue = 0xABCD;
+  cs_res_tbl[0].ByteOffset = 36;
+  CS_EnableTablesCmd(&tc);
+  S("cstc_en cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" state=");
+  D(CS_AppData.HkPacket.Payload.TablesCSState);
+  S(" temp=");
+  D(cs_res_tbl[0].TempChecksumValue);
+  S(" off=");
+  D(cs_res_tbl[0].ByteOffset);
+  S("\n");
+
+  // --- CS_ReportBaselineTableCmd, FOUR LOOKUPS.
+  //
+  // AND THE UNTERMINATED NAME IS THE ONE WORTH THE SETUP. The command's Name field may fill all 40
+  // bytes with no NUL, which is why NASA copies with strncpy(..., len - 1) and then writes the
+  // terminator by hand. So one call passes a Name field filled to the brim with 'Z' and no
+  // terminator: a handler that copied the whole 40 bytes, or that trusted the command's own field,
+  // would read past it. The event text is then 39 'Z's, which is comparable and is in the
+  // transcript.
+  //
+  // The other three: the entry with no baseline yet, the same entry with one, and a name that
+  // matches nothing.
+  MemSet(&tc, 0, sizeof(CS_RecomputeBaselineTableCmd_t));
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  StrNCpy(tc.Payload.Name, "CS.EepromTbl", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  cs_res_tbl[0].ComputedYet = FALSE;
+  cs_res_tbl[0].ComparisonValue = 0x2BAD;
+  CS_ReportBaselineTableCmd(&tc);
+  S("cstc_report_nobase cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+  cs_res_tbl[0].ComputedYet = TRUE;
+  CS_ReportBaselineTableCmd(&tc);
+  S("cstc_report cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+  MemSet(tc.Payload.Name, 'Z', CFE_TBL_MAX_FULL_NAME_LEN);
+  CS_ReportBaselineTableCmd(&tc);
+  S("cstc_report_unterm ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  MemSet(&tc, 0, sizeof(CS_RecomputeBaselineTableCmd_t));
+  StrNCpy(tc.Payload.Name, "CS.EmptyOne", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  CS_ReportBaselineTableCmd(&tc);
+  S("cstc_report_empty ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+
+  // --- CS_EnableNameTableCmd and CS_DisableNameTableCmd, FOUR ARMS EACH.
+  //
+  // THE DEFINITION ENTRY IS OPTIONAL HERE, which is the difference from the EEPROM pair: a table CS
+  // is watching need NOT be in the definition table at all -- it can have arrived from a results
+  // table that outlived a definition load -- so a missing definition entry is a DEBUG event and the
+  // command still SUCCEEDS. Entry 0 has one and entry 1 does not, and both definition states are
+  // printed so "wrote the results entry and not the definition entry" is a number rather than a
+  // claim.
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppData.HkPacket.Payload.OneShotInProgress = TRUE;
+  MemSet(&tc, 0, sizeof(CS_RecomputeBaselineTableCmd_t));
+  StrNCpy(tc.Payload.Name, "CS.EepromTbl", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  CS_EnableNameTableCmd(&tc);
+  CS_DisableNameTableCmd(&tc);
+  S("cstc_name_refused cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  CS_AppData.HkPacket.Payload.OneShotInProgress = FALSE;
+  cs_res_tbl[0].TempChecksumValue = 0x1357;
+  cs_res_tbl[0].ByteOffset = 28;
+  CS_EnableNameTableCmd(&tc);
+  S("cstc_en_name cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_tbl[0].State);
+  S(" def=");
+  D(cs_def_tbl[0].State);
+  S(" temp=");
+  D(cs_res_tbl[0].TempChecksumValue);
+  S(" off=");
+  D(cs_res_tbl[0].ByteOffset);
+  S("\n");
+  CS_DisableNameTableCmd(&tc);
+  S("cstc_dis_name cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_tbl[0].State);
+  S(" def=");
+  D(cs_def_tbl[0].State);
+  S(" temp=");
+  D(cs_res_tbl[0].TempChecksumValue);
+  S(" off=");
+  D(cs_res_tbl[0].ByteOffset);
+  S("\n");
+  StrNCpy(tc.Payload.Name, "CS.Orphan", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  CS_EnableNameTableCmd(&tc);
+  S("cstc_en_name_nodef cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_tbl[1].State);
+  S("\n");
+  CS_DisableNameTableCmd(&tc);
+  S("cstc_dis_name_nodef cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_tbl[1].State);
+  S("\n");
+  MemSet(&tc, 0, sizeof(CS_RecomputeBaselineTableCmd_t));
+  StrNCpy(tc.Payload.Name, "CS.NoSuchTbl", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  CS_EnableNameTableCmd(&tc);
+  CS_DisableNameTableCmd(&tc);
+  S("cstc_name_unknown ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+
+  // --- CS_RecomputeBaselineTableCmd. THE NAMED ARMS FIRST, ALL COMPARABLE, AND THE UNCOMPARABLE
+  // ONE LAST BEHIND A CLOSED PORT.
+  //
+  // (a) a name that matches nothing -- Name HAS been copied, so this event is comparable.
+  // (b) the create failing.
+  // (c) the create succeeding; ChildTaskTable and RecomputeTablesEntryPtr are the witnesses that
+  //     the command's own entry reached the child-task variables.
+  // (d) the busy arm, UPSTREAM DEFECT #15: Name is never written on that path. Port closed,
+  //     MessageSendCounter is the witness, restored immediately after.
+  //
+  // THE COUNTER READS TWO, and that is accounted for rather than waved at: it increments once per
+  // event in EVS_GenerateEventTelemetry, and the second event is the one the FIRST provokes --
+  // transmitting it finds no subscriber for the long-event MsgId and SB reports that with an event
+  // of its own. So closing the port suppresses BOTH port lines. The same arithmetic
+  // csh_oneshot_sent records, and the same arithmetic a first draft of that comment got wrong.
+  cs_setup();
+  StrNCpy(cs_res_tbl[0].Name, "CS.EepromTbl", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  cs_res_tbl[0].State = CS_ChecksumState_ENABLED;
+  MemSet(&tc, 0, sizeof(CS_RecomputeBaselineTableCmd_t));
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  StrNCpy(tc.Payload.Name, "CS.NoSuchTbl", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  CS_RecomputeBaselineTableCmd(&tc);
+  S("cstc_recomp_unknown ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S("\n");
+  StrNCpy(tc.Payload.Name, "CS.EepromTbl", CFE_TBL_MAX_FULL_NAME_LEN - 1);
+  es_taskcreate_rc = OS_ERROR;
+  CS_RecomputeBaselineTableCmd(&tc);
+  S("cstc_recomp_fail ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S("\n");
+  es_taskcreate_rc = OS_SUCCESS;
+  CS_RecomputeBaselineTableCmd(&tc);
+  rt = CS_GetTablesResEntry(0);
+  S("cstc_recomp cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S(" type=");
+  D(CS_AppData.ChildTaskTable);
+  S(" ptr=");
+  D(CS_AppData.RecomputeTablesEntryPtr == rt);
+  S("\n");
+  // (d) THE BUSY ARM, behind a closed port.
+  port_saved = CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort;
+  sent_before = CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter;
+  CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort = 0;
+  CS_RecomputeBaselineTableCmd(&tc);
+  CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort = port_saved;
+  S("cstc_recomp_busy ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" sent=");
+  D(CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter - sent_before);
+  S("\n");
+}
+
+// --- cs_app_cmds.c, six commands, GENERATED FROM THE TABLE BLOCK ABOVE -- AND THIS TWIN PAIR HAS
+// NO UPSTREAM DIFFERENCES AT ALL, which was measured rather than assumed.
+//
+// NASA's cs_table_cmds.c and cs_app_cmds.c, diffed against each other with the type words
+// normalised to one token, differ in WHITESPACE AND COMMENTS ONLY: a column of padding, four
+// header-banner widths, and three "command verification variables" comments present in one file
+// and not the other. Not one statement. So this block is a pure name map of the one above, with no
+// markers -- where the eeprom/memory pair needed three.
+//
+// That is worth stating because it cuts the other way too: finding nothing is only evidence if the
+// same method found something elsewhere. The same normalised diff over the eeprom/memory pair
+// returned five lines, and all five are real (notes #13, #14 and #16). Here it returns none.
+//
+// ONE THING DOES DIFFER, and it is not upstream: the names are APP names, so every length is
+// OS_MAX_API_NAME (20) rather than CFE_TBL_MAX_FULL_NAME_LEN (40). The unterminated-name event
+// therefore carries 19 'Z's here and 39 there.
+//
+// CS_RecomputeBaselineAppCmd's child-task-busy event prints `Name` with the StrNCpy that fills it
+// INSIDE the `if` -- upstream note #15, the other half of the pair cs_table_cmds carries -- so it
+// is driven the same way, with the EVS output port closed and MessageSendCounter as the witness.
+U0 cs_block_app_cmds()
+{
+  CS_RecomputeBaselineAppCmd_t tc;
+  CS_Res_App_Table_Entry_t *rt;
+  U8 port_saved;
+  U16 sent_before;
+  I64 d0;
+
+  // EVERY LENGTH HERE IS THE CONSTANT, NOT A sizeof. All three are 20 -- OS_MAX_API_NAME,
+  // CFE_MISSION_MAX_API_LEN and CS_Res_App_Table_Entry_t.Name agree -- and the
+  // constant is what this half can spell: docs/HOLYC_STRUCT_LIMITS.md #16 records that `sizeof`
+  // through a `->` fails here, and writing the two halves differently in a place where a length is
+  // the thing under test is how a difference becomes invisible.
+  cs_fill_sources();
+  cs_setup();
+  CS_AppData.DataStoreHandle = CFE_ES_CDS_BAD_HANDLE;
+  CFE_ES_RegisterCDS(&CS_AppData.DataStoreHandle, CS_EX_CDS_STATES, "CSAPP");
+
+  // THREE NAMED RESULTS ENTRIES, and the names are what every command in this file looks up. Entry
+  // 0 has a matching DEFINITION entry; entry 1 does NOT, which is the DEBUG arm; entry 2 is EMPTY
+  // with a name, which must never match -- CS_GetAppResTblEntryByName tests `State != EMPTY`
+  // BEFORE the name compare, and nothing else here reads that test.
+  StrNCpy(cs_res_app[0].Name, "CS_APP_ONE", OS_MAX_API_NAME - 1);
+  cs_res_app[0].State = CS_ChecksumState_DISABLED;
+  StrNCpy(cs_def_app[0].Name, "CS_APP_ONE", OS_MAX_API_NAME - 1);
+  cs_def_app[0].State = CS_ChecksumState_DISABLED;
+  StrNCpy(cs_res_app[1].Name, "CS_ORPHAN", OS_MAX_API_NAME - 1);
+  cs_res_app[1].State = CS_ChecksumState_DISABLED;
+  StrNCpy(cs_res_app[2].Name, "CS_EMPTY", OS_MAX_API_NAME - 1);
+  cs_res_app[2].State = CS_ChecksumState_EMPTY;
+
+  // --- CS_DisableAppsCmd and CS_EnableAppsCmd, the whole-app pair. Same shape as the EEPROM
+  // pair: a refused command, then the disable zeroing the partial state and writing the CDS, then
+  // the enable zeroing nothing.
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppData.HkPacket.Payload.AppCSState = CS_ChecksumState_ENABLED;
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = TRUE;
+  CS_DisableAppsCmd(&tc);
+  S("csac_dis_refused cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" state=");
+  D(CS_AppData.HkPacket.Payload.AppCSState);
+  S("\n");
+  CS_AppData.HkPacket.Payload.RecomputeInProgress = FALSE;
+  cs_res_app[0].TempChecksumValue = 0xABCD;
+  cs_res_app[0].ByteOffset = 36;
+  d0 = es_cds_writes;
+  CS_DisableAppsCmd(&tc);
+  S("csac_dis cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" state=");
+  D(CS_AppData.HkPacket.Payload.AppCSState);
+  S(" temp=");
+  D(cs_res_app[0].TempChecksumValue);
+  S(" off=");
+  D(cs_res_app[0].ByteOffset);
+  S(" writes=");
+  D(es_cds_writes - d0);
+  S("\n");
+  cs_res_app[0].TempChecksumValue = 0xABCD;
+  cs_res_app[0].ByteOffset = 36;
+  CS_EnableAppsCmd(&tc);
+  S("csac_en cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" state=");
+  D(CS_AppData.HkPacket.Payload.AppCSState);
+  S(" temp=");
+  D(cs_res_app[0].TempChecksumValue);
+  S(" off=");
+  D(cs_res_app[0].ByteOffset);
+  S("\n");
+
+  // --- CS_ReportBaselineAppCmd, FOUR LOOKUPS.
+  //
+  // AND THE UNTERMINATED NAME IS THE ONE WORTH THE SETUP. The command's Name field may fill all 20
+  // bytes with no NUL, which is why NASA copies with strncpy(..., len - 1) and then writes the
+  // terminator by hand. So one call passes a Name field filled to the brim with 'Z' and no
+  // terminator: a handler that copied the whole 20 bytes, or that trusted the command's own field,
+  // would read past it. The event text is then 19 'Z's, which is comparable and is in the
+  // transcript.
+  //
+  // The other three: the entry with no baseline yet, the same entry with one, and a name that
+  // matches nothing.
+  MemSet(&tc, 0, sizeof(CS_RecomputeBaselineAppCmd_t));
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  StrNCpy(tc.Payload.Name, "CS_APP_ONE", OS_MAX_API_NAME - 1);
+  cs_res_app[0].ComputedYet = FALSE;
+  cs_res_app[0].ComparisonValue = 0x2BAD;
+  CS_ReportBaselineAppCmd(&tc);
+  S("csac_report_nobase cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+  cs_res_app[0].ComputedYet = TRUE;
+  CS_ReportBaselineAppCmd(&tc);
+  S("csac_report cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S("\n");
+  MemSet(tc.Payload.Name, 'Z', OS_MAX_API_NAME);
+  CS_ReportBaselineAppCmd(&tc);
+  S("csac_report_unterm ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  MemSet(&tc, 0, sizeof(CS_RecomputeBaselineAppCmd_t));
+  StrNCpy(tc.Payload.Name, "CS_EMPTY", OS_MAX_API_NAME - 1);
+  CS_ReportBaselineAppCmd(&tc);
+  S("csac_report_empty ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+
+  // --- CS_EnableNameAppCmd and CS_DisableNameAppCmd, FOUR ARMS EACH.
+  //
+  // THE DEFINITION ENTRY IS OPTIONAL HERE, which is the difference from the EEPROM pair: a app CS
+  // is watching need NOT be in the definition app at all -- it can have arrived from a results
+  // app that outlived a definition load -- so a missing definition entry is a DEBUG event and the
+  // command still SUCCEEDS. Entry 0 has one and entry 1 does not, and both definition states are
+  // printed so "wrote the results entry and not the definition entry" is a number rather than a
+  // claim.
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  CS_AppData.HkPacket.Payload.OneShotInProgress = TRUE;
+  MemSet(&tc, 0, sizeof(CS_RecomputeBaselineAppCmd_t));
+  StrNCpy(tc.Payload.Name, "CS_APP_ONE", OS_MAX_API_NAME - 1);
+  CS_EnableNameAppCmd(&tc);
+  CS_DisableNameAppCmd(&tc);
+  S("csac_name_refused cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+  CS_AppData.HkPacket.Payload.OneShotInProgress = FALSE;
+  cs_res_app[0].TempChecksumValue = 0x1357;
+  cs_res_app[0].ByteOffset = 28;
+  CS_EnableNameAppCmd(&tc);
+  S("csac_en_name cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_app[0].State);
+  S(" def=");
+  D(cs_def_app[0].State);
+  S(" temp=");
+  D(cs_res_app[0].TempChecksumValue);
+  S(" off=");
+  D(cs_res_app[0].ByteOffset);
+  S("\n");
+  CS_DisableNameAppCmd(&tc);
+  S("csac_dis_name cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_app[0].State);
+  S(" def=");
+  D(cs_def_app[0].State);
+  S(" temp=");
+  D(cs_res_app[0].TempChecksumValue);
+  S(" off=");
+  D(cs_res_app[0].ByteOffset);
+  S("\n");
+  StrNCpy(tc.Payload.Name, "CS_ORPHAN", OS_MAX_API_NAME - 1);
+  CS_EnableNameAppCmd(&tc);
+  S("csac_en_name_nodef cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_app[1].State);
+  S("\n");
+  CS_DisableNameAppCmd(&tc);
+  S("csac_dis_name_nodef cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" res=");
+  D(cs_res_app[1].State);
+  S("\n");
+  MemSet(&tc, 0, sizeof(CS_RecomputeBaselineAppCmd_t));
+  StrNCpy(tc.Payload.Name, "CS_NOSUCH", OS_MAX_API_NAME - 1);
+  CS_EnableNameAppCmd(&tc);
+  CS_DisableNameAppCmd(&tc);
+  S("csac_name_unknown ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S("\n");
+
+  // --- CS_RecomputeBaselineAppCmd. THE NAMED ARMS FIRST, ALL COMPARABLE, AND THE UNCOMPARABLE
+  // ONE LAST BEHIND A CLOSED PORT.
+  //
+  // (a) a name that matches nothing -- Name HAS been copied, so this event is comparable.
+  // (b) the create failing.
+  // (c) the create succeeding; ChildTaskTable and RecomputeAppEntryPtr are the witnesses that
+  //     the command's own entry reached the child-task variables.
+  // (d) the busy arm, UPSTREAM DEFECT #15: Name is never written on that path. Port closed,
+  //     MessageSendCounter is the witness, restored immediately after.
+  //
+  // THE COUNTER READS TWO, and that is accounted for rather than waved at: it increments once per
+  // event in EVS_GenerateEventTelemetry, and the second event is the one the FIRST provokes --
+  // transmitting it finds no subscriber for the long-event MsgId and SB reports that with an event
+  // of its own. So closing the port suppresses BOTH port lines. The same arithmetic
+  // csh_oneshot_sent records, and the same arithmetic a first draft of that comment got wrong.
+  cs_setup();
+  StrNCpy(cs_res_app[0].Name, "CS_APP_ONE", OS_MAX_API_NAME - 1);
+  cs_res_app[0].State = CS_ChecksumState_ENABLED;
+  MemSet(&tc, 0, sizeof(CS_RecomputeBaselineAppCmd_t));
+  CS_AppData.HkPacket.Payload.CommandCounter = 0;
+  CS_AppData.HkPacket.Payload.CommandErrorCounter = 0;
+  StrNCpy(tc.Payload.Name, "CS_NOSUCH", OS_MAX_API_NAME - 1);
+  CS_RecomputeBaselineAppCmd(&tc);
+  S("csac_recomp_unknown ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S("\n");
+  StrNCpy(tc.Payload.Name, "CS_APP_ONE", OS_MAX_API_NAME - 1);
+  es_taskcreate_rc = OS_ERROR;
+  CS_RecomputeBaselineAppCmd(&tc);
+  S("csac_recomp_fail ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S("\n");
+  es_taskcreate_rc = OS_SUCCESS;
+  CS_RecomputeBaselineAppCmd(&tc);
+  rt = CS_GetAppResEntry(0);
+  S("csac_recomp cc=");
+  D(CS_AppData.HkPacket.Payload.CommandCounter);
+  S(" prog=");
+  D(CS_AppData.HkPacket.Payload.RecomputeInProgress);
+  S(" type=");
+  D(CS_AppData.ChildTaskTable);
+  S(" ptr=");
+  D(CS_AppData.RecomputeAppEntryPtr == rt);
+  S("\n");
+  // (d) THE BUSY ARM, behind a closed port.
+  port_saved = CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort;
+  sent_before = CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter;
+  CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort = 0;
+  CS_RecomputeBaselineAppCmd(&tc);
+  CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort = port_saved;
+  S("csac_recomp_busy ec=");
+  D(CS_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" sent=");
+  D(CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter - sent_before);
+  S("\n");
+}
+
 I64 main()
 {
   CFE_MSG_Message msg;
@@ -21491,6 +22008,8 @@ I64 main()
     cs_block_cmds();
     cs_block_eeprom_cmds();
     cs_block_memory_cmds();
+    cs_block_table_cmds();
+    cs_block_app_cmds();
 
     // PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after it today
     // but tim_objtab, so both halves agreed and the transcript was green -- but the NEXT app's

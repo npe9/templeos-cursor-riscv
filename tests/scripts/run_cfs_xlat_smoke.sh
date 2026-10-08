@@ -331,6 +331,17 @@ python3 "$ROOT/tools/cfs/check_variadic.py" || exit 1
 # shellcheck disable=SC2086
 python3 "$ROOT/tools/cfs/check_formats.py" $SRC_C || exit 1
 
+# --- the MEMBERS each function touches -----------------------------------------------------------
+# Members are the one part of this translation that is never renamed, which makes a per-FUNCTION
+# comparison against NASA's own body possible -- and it is the gate that was missing when a
+# one-line defect got through every other one. cs_app_cmds.HC was generated from its twin
+# cs_table_cmds.HC by a name map, the map did not know the word RecomputeTablesEntryPtr, and CS's
+# app recompute command stored its child task's pointer in the WRONG member of CS_AppData. The
+# HolyC compiler accepted it because a cast there relabels rather than converts; the C compiler
+# never saw it, because the oracle compiles NASA's C and not the translation. Only the transcript
+# caught it, and only because that line happened to print the pointer as a comparison.
+python3 "$ROOT/tools/cfs/check_members.py" || exit 1
+
 # --- the TEXT around those conversions -------------------------------------------------------
 # check_formats above reads the CONVERSIONS out of a format string. It says nothing about the
 # rest of the string, which is most of it and is the part a ground display greps. A retyped event
