@@ -7,6 +7,7 @@
  */
 #ifndef HOST_BACKEND_RISCV_REGS_H
 #define HOST_BACKEND_RISCV_REGS_H
+#include "../target_backend.h"   /* RegFile / RegRole */
 
 /* Integer registers (x0..x31 ABI subset the backend uses). */
 #define RV_ZERO 0
@@ -38,4 +39,9 @@
 #define RV_FA0 10
 #define RV_FA1 11
 
+/* The RISC-V ABI expressed as role→physical data (consumed by the neutral walker at M4e).
+ * Defined in host/backend/riscv/be_riscv.c. */
+extern const RegFile rv_regfile;
+
 #endif /* HOST_BACKEND_RISCV_REGS_H */
+
