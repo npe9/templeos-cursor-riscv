@@ -19,6 +19,12 @@ MM_SHA="0a767de5bbb6da05d7b5705e75221495aca444f9"
 # the dev branch for the same reason as the other two: this commit is dated one day before the
 # cFE pin, exactly as MD's is.
 CS_SHA="795e387fce497c698c87a5a68f2a9014f13c3ce8"
+# The FOURTH cFS APP. LC (Limit Checker) watches telemetry against limits and fires actions when
+# one is breached -- so it is the first app whose INPUT is other apps' packets rather than memory,
+# and the first that CAUSES something (it sends a stored command) instead of only reporting. Chosen
+# over HS/SC/DS/FM because module_deps reports 34 cFE+OSAL calls and ZERO missing symbols: nothing
+# new has to be simulated. Pinned one day before the cFE pin, exactly as MD, MM and CS are.
+LC_SHA="32c76661dc339247d1c3b9250ed27dd18c34a344"
 mkdir -p "$V"
 fetch() {
   name="$1"; url="$2"; sha="$3"
@@ -38,4 +44,5 @@ fetch PSP  https://github.com/nasa/PSP.git  "$PSP_SHA"
 fetch MD   https://github.com/nasa/MD.git   "$MD_SHA"
 fetch MM   https://github.com/nasa/MM.git   "$MM_SHA"
 fetch CS   https://github.com/nasa/CS.git   "$CS_SHA"
+fetch LC   https://github.com/nasa/LC.git   "$LC_SHA"
 echo "vendor/shim is committed in this repo: it stands in for the headers CMake would generate."
