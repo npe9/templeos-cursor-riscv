@@ -114,6 +114,14 @@ codegen-bytediff-record: $(COMPILER_BIN)
 misaligned-emu-test:
 	@mkdir -p build && $(CC) -Wall -Wextra -Werror -o build/misaligned_emu_test tests/host/misaligned_emu_test.c && build/misaligned_emu_test
 
+# Host unit test for the portable branch-relaxation engine (host/backend/relax.c) — the
+# monotone-growth fixed point that variable-length backends (x86, Thumb, AArch64 long branches)
+# will use. Arch-neutral, so it proves out on the host with plain cc, no ISA toolchain.
+relax-test:
+	@mkdir -p build && $(CC) $(CFLAGS) -Wall -Wextra -Werror -o build/relax_test tests/host/relax_test.c host/backend/relax.c && build/relax_test
+
+.PHONY: misaligned-emu-test relax-test
+
 compiler-stress: $(COMPILER_BIN)
 	@chmod +x tests/scripts/run_compiler_stress.sh
 	@tests/scripts/run_compiler_stress.sh
