@@ -1814,6 +1814,9 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 //
 // lc_cfg.HC comes AFTER lc_tbl.HC in the dependency order but is included BY it, because the ADT
 // entry's two array bounds live there. The order below is the include GRAPH's, not the file list's.
+// SINGLE-PRECISION SUPPORT, included before LC's own files because lc_watch.HC needs it: HolyC
+// has no F32 and LC compares 32-bit floats. Pinned by tests/exec/cases/e_f32_bits.hc.
+#include "/Kernel/Cfs/CfsF32.HC"
 #include "/Kernel/Cfs/lc/lc_eventids.HC"
 #include "/Kernel/Cfs/lc/lc_perfids.HC"
 #include "/Kernel/Cfs/lc/lc_tbl.HC"
