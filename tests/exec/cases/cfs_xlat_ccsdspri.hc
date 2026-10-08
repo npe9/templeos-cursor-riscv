@@ -7911,6 +7911,16 @@ U0 cs_block_tblproc()
     cs_def_tbl[6].State = CS_ChecksumState_ENABLED;
     StrNCpy(cs_def_tbl[8].Name, "SomeoneElse.TheirTbl", CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
     cs_def_tbl[8].State = CS_ChecksumState_DISABLED;
+    // AND A RESULTS TABLE OF CS'S OWN, which is the OTHER name match in that inner loop and which
+    // a mutation found unasserted: deleting the CS_CheckResTableNameMatch branch outright changed
+    // nothing, because the two names here were a DEFINITION table of CS's and somebody else's
+    // table. The two branches differ in a way worth pinning rather than assuming -- the DEF match
+    // aims the wrapper's ResTblPtr at the entry, the RES match does NOT, it only takes the handle
+    // and claims ownership.
+    StrPrintN(full, CFE_MISSION_TBL_MAX_FULL_NAME_LEN, "%s.%s", myname,
+              CS_RESULTS_EEPROM_TABLE_NAME);
+    StrNCpy(cs_def_tbl[10].Name, full, CFE_MISSION_TBL_MAX_FULL_NAME_LEN);
+    cs_def_tbl[10].State = CS_ChecksumState_ENABLED;
     tw = &CS_AppData.Tbl[CS_ChecksumType_TABLES_TABLE];
     CS_CallTableUpdateHandler(tw);
     S("cst_proc_tbl name6=[");
@@ -7924,7 +7934,15 @@ U0 cs_block_tblproc()
     S("] owner8=");
     D(cs_res_tbl[8].IsCSOwner);
     S("\n");
-    // THE WRAPPER THE NAME POINTED AT now has a ResTblPtr, and the other five do not.
+    S("cst_proc_tbl_res name10=[");
+    S(cs_res_tbl[10].Name);
+    S("] owner10=");
+    D(cs_res_tbl[10].IsCSOwner);
+    S(" state10=");
+    D(cs_res_tbl[10].State);
+    S("\n");
+    // THE WRAPPER THE NAME POINTED AT now has a ResTblPtr, and the other five do not -- and NONE
+    // of them points at entry 10, because a RESULTS-name match does not set it.
     S("cst_proc_tbl_resptr eep=");
     D(CS_AppData.Tbl[CS_ChecksumType_EEPROM_TABLE].ResTblPtr == &cs_res_tbl[6]);
     S(" mem=");
@@ -7938,6 +7956,14 @@ U0 cs_block_tblproc()
     S(" os=");
     D(CS_AppData.Tbl[CS_ChecksumType_OSCORE].ResTblPtr == NULL);
     S("\n");
+    for (k = 0; k < CS_NUM_TABLES; ++k) {
+      if (CS_AppData.Tbl[k].ResTblPtr == &cs_res_tbl[10]) {
+        S("cst_proc_tbl_res_BADPTR ");
+        D(k);
+        S("\n");
+      }
+    }
+    S("cst_proc_tbl_res_noptr 1\n");
     // AND A TABLE DROPPED FROM THE NEW DEFINITION STOPS BEING TRACKED: run the handler again
     // over an empty definition and the pointer goes back to NULL.
     MemSet(cs_def_tbl, 0, sizeof(CS_Def_Tables_Table_Entry_t) * CS_MAX_NUM_TABLES_TABLE_ENTRIES);

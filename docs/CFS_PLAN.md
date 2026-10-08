@@ -3255,3 +3255,66 @@ And `cs_block_compute` had to **move**. Defined beside `cs_setup()`, it referenc
 declared 400 lines further down — six undeclared identifiers in C, and worse on the HolyC side,
 where a name the compiler has not seen is not always an error. Both CS blocks now sit immediately
 before `main()`, after all the simulated OSAL and PSP state.
+
+### The mutations — 53 driven, and every no-op was worth having
+
+Two batches plus three controls. Batch one was written from NASA's sources aiming at the behaviours
+the four blocks assert: a check that the assertions **bite**, biased toward covered code by
+construction. Batch two asked the opposite question.
+
+```
+batch 1   38 applied, 0 anchors lost   35 caught, 3 no-op
+batch 2   15 applied, 0 anchors lost   14 as predicted, 1 not
+control    3 attempts                   1 valid
+```
+
+#### Batch one's three no-ops were three different things
+
+| | |
+|---|---|
+| **25** `CS_RefreshAppSizeAndAddr` does not try the LIBRARY table | **a real exercise gap** |
+| **37** `CS_HandleTableUpdate` treats `INFO_UPDATED` as a failure | **correctly unreachable** in step 1 |
+| **38** "a global rename -- the no-op control" | **a worthless control** |
+
+**25, and the second attempt is the finding.** The block drove a real app (`CFE_EVS`, so the
+fallback is never reached) and a name that is neither (`NO_SUCH_APP`, so it runs and fails — same
+answer). The first fix named `ESLIB`, the library the ES resource block creates, and *still* came
+back `CS_ERR_NOT_FOUND`: that block **frees its three records when it is done** —
+`rs_freed app=1 lib=1 ctr=1`, right there in the transcript. Borrowing another block's fixture is
+`shared-fixture-resource-exhaustion` one step along: not "the table is full" but "the thing I was
+pointing at is gone". The block now registers `CSLIB` itself and frees it.
+
+**37 is not a gap and the no-op is the proof.** With no table loaded, the second
+`CFE_TBL_GetAddress` answers plain `CFE_SUCCESS`, so the one branch in CS that calls an update
+handler outside registration cannot be reached while the eight wrapper handles are invalid. Step 2's
+exercise loads a registered table and reaches it.
+
+#### Batch two measured the driven/undriven split instead of reasoning about it
+
+Seven mutations were placed **inside the six functions this document claims are not driven**. Each
+one *must* be a no-op; if any changed the transcript the claim was reasoning dressed as
+measurement. **All seven came back no-op** — `CS_GetTableAddr`, `CS_ReleaseTableAddr`,
+`CS_RefreshTableHandleAndAddress`, `CS_RegisterResultTable`, `CS_RegisterDefinitionTable`,
+`CS_TableInit`, and `CS_HandleTableUpdate`'s unregister loop.
+
+**And the one wrong prediction was a second gap.** Deleting
+`CS_ProcessNewTablesDefinitionTable`'s `CS_CheckResTableNameMatch` branch changed nothing: the two
+names driven were a *definition* table of CS's and somebody else's table, never a **results** table
+of CS's. The two branches differ in a way worth pinning — the DEF match aims the wrapper's
+`ResTblPtr` at the entry, the RES match does **not**, it only takes the handle and claims
+ownership. Closed, and the assertion is both halves of that:
+
+```
+cst_proc_tbl_res name10=[CFE_EVS.ResEepromTbl] owner10=1 state10=1
+cst_proc_tbl_res_noptr 1
+```
+
+#### The no-op control took three attempts, and the first two are the lesson
+
+- a **comment typo** (what #38 actually was) proves the file recompiled and nothing else;
+- a **symbol rename** of a NASA function — `CS_IsChecksumComplete` across all seven occurrences — is
+  **refused by `check_coverage`**, which exists to notice exactly that. The tell is `catch` with
+  **zero** transcript diff lines: a gate refusal, not a behaviour change. So "a global rename is a
+  no-op control" no longer describes this project; the gates grew and they object on purpose;
+- a **local variable rename** (`Loop` → `Idx` in one function) is the one that works. No gate reads
+  a local, so it measures the harness rather than the gates. NO-OP, as it must be.
