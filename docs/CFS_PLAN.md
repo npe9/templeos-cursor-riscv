@@ -3466,9 +3466,46 @@ The 45 are five names, each keyed on its **cause** in NASA's body rather than on
 Strings are blanked first — `CFE_SB_LockSharedData("cfe_sb_task.c", 310)` otherwise contributes a
 member named `c`, five times.
 
-The other direction is 35 cases and they are **not** defects: the first examined is
-`CFE_TIME_SetSourceCmd`'s `CommandCounter++` inside `#if (CFE_PLATFORM_TIME_CFG_SOURCE == true)`,
-false in this configuration and correctly omitted. Gating it needs NASA's `#if` blocks evaluated.
+**The other direction is gated too**, as of the same day, and getting it right took three
+designs — the two wrong ones are kept in the gate's docstring because each was wrong usefully.
+A member NASA's **live** body touches and the translation's does not is a DROPPED assignment, and
+nothing else here looks for one.
+
+*Try 1, `cc -E` and read the output* (35 → 21): right about `#if` — `CFE_TIME_SetSourceCmd`'s
+`CommandCounter++` is inside `#if (CFE_PLATFORM_TIME_CFG_SOURCE == true)`, false here — but `cc -E`
+also **expands macros**, and that invents members: the preprocessed `CFE_TA_Cpu_Set` touches
+`.affinity_mask` because `OS_CPUSET_ZERO` expands to it, while the translation correctly still
+calls `OS_CPUSET_ZERO`.
+
+*Try 2, intersect the expanded body with NASA's raw body* (21 → 12): still wrong, and the way it
+was wrong is the lesson. `CFE_TIME_ToneData` has **two** bodies behind
+`#ifdef CFE_PLATFORM_TIME_CFG_BIGENDIAN` — one assigning `.Seconds` directly, one calling
+`CFE_TIME_Copy`. BIGENDIAN is undefined here, the translation took the `CFE_TIME_Copy` branch
+**correctly**, and the gate reported `.Seconds` missing anyway: the expanded body has it from
+`CFE_TIME_Copy` and the raw body has it from the **dead branch**. Two unrelated occurrences of one
+name, paired by a set intersection that cannot see where either came from — *"a cross-check is
+worth only the inputs the two tools do not share"*.
+
+*Try 3, what ships — preprocess for **line liveness only***. `live_raw()` replaces every
+non-directive line with a unique marker, keeps the directives verbatim, and preprocesses that: the
+`#if`s still evaluate against the real headers while nothing in the code can expand. The surviving
+markers name the live lines, and NASA's own text for those lines is what the pass reads — per
+**site**, not per name. 10 cases remain, a rule and a list, none of them a defect.
+
+Two things that only showed up because the gate refuses to guess:
+
+- **A directive may continue with a backslash.** `mm_dump.c:263` is `#if defined(A) || defined(B) \`
+  over two lines; replacing the continuation broke it and clang said *"token is not a valid binary
+  operator in a preprocessor subexpression"*. Found because the gate **fails when the preprocessor
+  fails** rather than skipping the file — the not-found guard earning its place on its first run.
+- **The designated-initialiser rule swallowed the defect it was written next to.** NASA writes
+  `{ .InitialValue = 0 }` and HolyC has no such syntax, so the translation writes `{0, 0}`
+  positionally; the rule was first `\.\s*Member\s*=`, which also matches `.PassCounter = 0` in a
+  **plain assignment**. Deleting `CS_AppData.HkPacket.Payload.PassCounter = 0;` from
+  `CS_ResetCountersCmd` came back **green, with the "positional" count up by one**. Anchored to `{`
+  or `,` as C syntax requires, the control fails and names the function — and two of the five
+  "designated" cases turned out never to have been designated at all. A rule that cannot be shown
+  to REFUSE anything is not a rule.
 
 #### The sibling gate: NASA's own wording
 
