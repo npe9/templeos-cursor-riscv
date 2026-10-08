@@ -85,4 +85,13 @@
 #define DEFAULT_LC_MISSION_REV             0xFF
 #define LC_MISSION_REV                     DEFAULT_LC_MISSION_REV
 
+// --- lc_version.h: the three build numbers the no-op command reports ---------------------------
+//
+// LC_MISSION_REV IS NOT HERE, it is above with the internal configuration -- which is where NASA
+// puts it, because a mission sets it and the other three come from the release. The no-op event
+// prints all four as one dotted version, which is the only place they appear.
+#define LC_MAJOR_VERSION 7
+#define LC_MINOR_VERSION 0
+#define LC_REVISION      1
+
 #endif
