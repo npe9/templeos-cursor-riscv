@@ -10285,6 +10285,349 @@ static void lc_block_sample(void)
     printf("lca_rts_direct done\n");
 }
 
+/* --- LC'S TEN GROUND COMMANDS, called DIRECTLY with their own payload types. The dispatcher that
+ * routes them by function code is the next block; this one is about what each handler does once
+ * it has been reached, which is a different question and needs a different setup.
+ *
+ * ### LC_ALL_ACTIONPOINTS IS 0xFFFF AND IT IS NOT UNIFORM ACROSS THE COMMANDS
+ *
+ * Three commands accept the wildcard and one REFUSES it, and the refusal is deliberate:
+ *
+ *   LC_SetAPStateCmd     wildcard -> every AP except NOT_USED and PERMOFF
+ *   LC_ResetAPStatsCmd   wildcard -> every AP's statistics
+ *   LC_ResetWPStatsCmd   wildcard -> every WP's statistics
+ *   LC_SetAPPermOffCmd   wildcard -> **ERROR**, because turning an actionpoint permanently off
+ *                        is irreversible from the ground; NASA's comment is "This command can't
+ *                        be invoked for all actionpoints".
+ *
+ * So the same 0xFFFF is a convenience in three places and a mistake in the fourth, and the
+ * fourth's own range test reads `(APNumber == LC_ALL_ACTIONPOINTS) || (APNumber >=
+ * LC_MAX_ACTIONPOINTS)` -- the wildcard is caught by the FIRST clause even though the second
+ * would also catch it, which is how you can tell it was written on purpose.
+ *
+ * ### AND PERMOFF HAS A PRECONDITION NOTHING ELSE HAS
+ *
+ * An actionpoint can only be turned permanently off while it is DISABLED. So the ground has to
+ * send two commands in order, and the lcc_permoff_* lines below do exactly that: the first
+ * attempt on an ACTIVE actionpoint is refused with its current state in the event, then a
+ * SetAPState to DISABLED, then the same command succeeds. A single success line would not have
+ * shown the precondition exists.
+ *
+ * ### THE HOUSEKEEPING PACKET IS THE REAL TEST IN THIS BLOCK
+ *
+ * LC_SendHkCmd packs 176 watchpoint results at TWO BITS each and 176 actionpoint state/result
+ * pairs at FOUR BITS each, and the packing is REVERSED within every byte:
+ *
+ *     for (i = 0; i < 4; i++) { Shift = 6 - (i * 2); ... WRTPtr[TableIndex + 3 - i] ... }
+ *
+ * so watchpoint TableIndex+3 lands in bits 7:6 and watchpoint TableIndex lands in bits 1:0. The
+ * four watchpoints below are set to four DIFFERENT results -- STALE, FALSE, TRUE, ERROR, whose
+ * codes are 3, 0, 1, 2 -- so the first packed byte is readable as a four-digit base-4 number and
+ * says both the order and the mapping. Equal results in one byte, or a mapping where two codes
+ * coincide, would make a reversed loop and a forward one agree.
+ *
+ * The actionpoint byte does the same with two 4-bit halves, each a 2-bit state and a 2-bit
+ * result, and it carries the one asymmetry worth naming: PERMOFF is reported as NOT_USED, so
+ * two distinct actionpoint states are indistinguishable in telemetry. ActiveAPs is recomputed
+ * from scratch on every packet and counts only LC_APSTATE_ACTIVE, which is why an AP that
+ * demoted itself drops out of the count without any command. */
+#define LC_EX_HKBYTES 4
+
+static void lc_show_hk(const char *tag)
+{
+    LC_HkTlm_Payload_t *p = &LC_OperData.HkPacket.Payload;
+    int                 i;
+
+    printf("%s cc=%u ec=%u smp=%u mon=%u rts=%u prts=%u st=%u wps=%u aps=%u wpr=", tag,
+           (unsigned)p->CmdCount, (unsigned)p->CmdErrCount, (unsigned)p->APSampleCount,
+           (unsigned)p->MonitoredMsgCount, (unsigned)p->RTSExecCount,
+           (unsigned)p->PassiveRTSExecCount, (unsigned)p->CurrentLCState, (unsigned)p->WPsInUse,
+           (unsigned)p->ActiveAPs);
+    for (i = 0; i < LC_EX_HKBYTES; ++i)
+    {
+        printf("%02X", (unsigned)p->WPResults[i]);
+    }
+    printf(" apr=");
+    for (i = 0; i < LC_EX_HKBYTES; ++i)
+    {
+        printf("%02X", (unsigned)p->APResults[i]);
+    }
+    printf("\n");
+}
+
+static void lc_block_cmds(void)
+{
+    LC_NoopCmd_t          noop;
+    LC_ResetCountersCmd_t rst;
+    LC_SetLCStateCmd_t    lcs;
+    LC_SetAPStateCmd_t    aps;
+    LC_SetAPPermOffCmd_t  off;
+    LC_ResetAPStatsCmd_t  ast;
+    LC_ResetWPStatsCmd_t  wst;
+    LC_SendHkCmd_t        hk;
+    LC_SampleAPCmd_t      smp;
+    int32                 rc;
+    int                   i;
+
+    lc_setup();
+    lc_define_aps();
+
+    /* --- LC_NoopCmd. It bumps the counter and sends the version event, and that is all it does.
+     * The version numbers come from lc_cfg.HC's LC_MAJOR/MINOR/REVISION and LC_MISSION_REV,
+     * and LC_MISSION_REV is 0xFF -- so the event reads "255", which is the value NASA ships and
+     * not a placeholder. */
+    memset(&noop, 0, sizeof(noop));
+    rc = LC_NoopCmd(&noop);
+    printf("lcc_noop rc=%d cc=%u ec=%u\n", (int)rc, (unsigned)LC_AppData.CmdCount,
+           (unsigned)LC_AppData.CmdErrCount);
+
+    /* --- LC_SetLCStateCmd over the three valid states and one invalid. The valid ones bump
+     * CmdCount and the invalid one bumps CmdErrCount, and both print the state they were given
+     * -- so the pair of counters after each says which arm of the switch ran. */
+    for (i = 0; i < 4; ++i)
+    {
+        memset(&lcs, 0, sizeof(lcs));
+        if (i == 0)
+            lcs.Payload.NewLCState = LC_STATE_ACTIVE;
+        else if (i == 1)
+            lcs.Payload.NewLCState = LC_STATE_PASSIVE;
+        else if (i == 2)
+            lcs.Payload.NewLCState = LC_STATE_DISABLED;
+        else
+            lcs.Payload.NewLCState = 77;
+        rc = LC_SetLCStateCmd(&lcs);
+        printf("lcc_lcstate i=%d rc=%d cur=%u cc=%u ec=%u\n", i, (int)rc,
+               (unsigned)LC_AppData.CurrentLCState, (unsigned)LC_AppData.CmdCount,
+               (unsigned)LC_AppData.CmdErrCount);
+    }
+    LC_AppData.CurrentLCState = LC_STATE_ACTIVE;
+
+    /* --- LC_SetAPStateCmd. Six cases, three of them errors with three DIFFERENT event ids:
+     * an invalid new state, an actionpoint whose current state cannot be commanded, and an
+     * actionpoint number past the end of the table. Cases 3 and 4 use AP 2 (PERMOFF) and AP 3
+     * (NOT_USED), which lc_define_aps set up -- the two states that "can only be changed by a
+     * table load". */
+    for (i = 0; i < 6; ++i)
+    {
+        memset(&aps, 0, sizeof(aps));
+        if (i == 0)
+        {
+            aps.Payload.APNumber   = 0;
+            aps.Payload.NewAPState = LC_APSTATE_ACTIVE;
+        }
+        else if (i == 1)
+        {
+            aps.Payload.APNumber   = 0;
+            aps.Payload.NewAPState = 77;
+        }
+        else if (i == 2)
+        {
+            aps.Payload.APNumber   = LC_ALL_ACTIONPOINTS;
+            aps.Payload.NewAPState = LC_APSTATE_PASSIVE;
+        }
+        else if (i == 3)
+        {
+            aps.Payload.APNumber   = 2; /* PERMOFF */
+            aps.Payload.NewAPState = LC_APSTATE_ACTIVE;
+        }
+        else if (i == 4)
+        {
+            aps.Payload.APNumber   = 3; /* NOT_USED */
+            aps.Payload.NewAPState = LC_APSTATE_ACTIVE;
+        }
+        else
+        {
+            aps.Payload.APNumber   = 200; /* past LC_MAX_ACTIONPOINTS */
+            aps.Payload.NewAPState = LC_APSTATE_ACTIVE;
+        }
+        rc = LC_SetAPStateCmd(&aps);
+        printf("lcc_apstate i=%d rc=%d a0=%u a1=%u a2=%u a3=%u cc=%u ec=%u\n", i, (int)rc,
+               (unsigned)lc_art[0].CurrentState, (unsigned)lc_art[1].CurrentState,
+               (unsigned)lc_art[2].CurrentState, (unsigned)lc_art[3].CurrentState,
+               (unsigned)LC_AppData.CmdCount, (unsigned)LC_AppData.CmdErrCount);
+    }
+
+    /* --- LC_SetAPPermOffCmd. THE WILDCARD IS AN ERROR HERE and the precondition is DISABLED, so
+     * the order below is: wildcard (refused), out of range (refused), AP 0 while PASSIVE
+     * (refused, with its current state in the event), then DISABLE it, then the same command
+     * succeeds. Five lines for one command because the two refusals and the success are three
+     * different event ids and the middle one is a state machine, not a range check. */
+    memset(&off, 0, sizeof(off));
+    off.Payload.APNumber = LC_ALL_ACTIONPOINTS;
+    rc                   = LC_SetAPPermOffCmd(&off);
+    printf("lcc_permoff_all rc=%d a0=%u ec=%u\n", (int)rc, (unsigned)lc_art[0].CurrentState,
+           (unsigned)LC_AppData.CmdErrCount);
+    off.Payload.APNumber = 200;
+    rc                   = LC_SetAPPermOffCmd(&off);
+    printf("lcc_permoff_range rc=%d a0=%u ec=%u\n", (int)rc, (unsigned)lc_art[0].CurrentState,
+           (unsigned)LC_AppData.CmdErrCount);
+    off.Payload.APNumber = 0;
+    rc                   = LC_SetAPPermOffCmd(&off);
+    printf("lcc_permoff_notdis rc=%d a0=%u ec=%u\n", (int)rc, (unsigned)lc_art[0].CurrentState,
+           (unsigned)LC_AppData.CmdErrCount);
+    memset(&aps, 0, sizeof(aps));
+    aps.Payload.APNumber   = 0;
+    aps.Payload.NewAPState = LC_APSTATE_DISABLED;
+    LC_SetAPStateCmd(&aps);
+    off.Payload.APNumber = 0;
+    rc                   = LC_SetAPPermOffCmd(&off);
+    printf("lcc_permoff_ok rc=%d a0=%u cc=%u ec=%u\n", (int)rc, (unsigned)lc_art[0].CurrentState,
+           (unsigned)LC_AppData.CmdCount, (unsigned)LC_AppData.CmdErrCount);
+
+    /* --- THE TWO STATISTICS RESETS. Both take a single index or the wildcard, and both delegate
+     * to LC_ResetResultsAP / LC_ResetResultsWP with ResetStatsCmd = true -- the SAME functions
+     * LC_LoadDefaultTables calls with false. That boolean is the difference between "a ground
+     * command cleared the counters" and "the tables were just loaded", and the two differ in
+     * exactly one way: the command form does NOT touch CurrentState or the definition-derived
+     * fields. So AP 0 is PERMOFF when the reset runs below, and its state SURVIVING the reset is
+     * the assertion -- a reset that re-initialised everything would put it back to NOT_USED and
+     * silently undo an irreversible ground command. */
+    lc_art[1].ConsecutiveFailCount    = 9;
+    lc_art[1].CumulativeFailCount     = 8;
+    lc_art[1].CumulativeEventMsgsSent = 7;
+    lc_wrt[1].EvaluationCount         = 6;
+    lc_wrt[1].CumulativeTrueCount     = 5;
+    for (i = 0; i < 3; ++i)
+    {
+        memset(&ast, 0, sizeof(ast));
+        if (i == 0)
+            ast.Payload.APNumber = 1;
+        else if (i == 1)
+            ast.Payload.APNumber = LC_ALL_ACTIONPOINTS;
+        else
+            ast.Payload.APNumber = 200;
+        rc = LC_ResetAPStatsCmd(&ast);
+        printf("lcc_apstats i=%d rc=%d a0st=%u a1cons=%u a1cum=%u a1ev=%u cc=%u ec=%u\n", i,
+               (int)rc, (unsigned)lc_art[0].CurrentState,
+               (unsigned)lc_art[1].ConsecutiveFailCount, (unsigned)lc_art[1].CumulativeFailCount,
+               (unsigned)lc_art[1].CumulativeEventMsgsSent, (unsigned)LC_AppData.CmdCount,
+               (unsigned)LC_AppData.CmdErrCount);
+        lc_art[1].ConsecutiveFailCount    = 9;
+        lc_art[1].CumulativeFailCount     = 8;
+        lc_art[1].CumulativeEventMsgsSent = 7;
+    }
+    for (i = 0; i < 3; ++i)
+    {
+        memset(&wst, 0, sizeof(wst));
+        if (i == 0)
+            wst.Payload.WPNumber = 1;
+        else if (i == 1)
+            wst.Payload.WPNumber = LC_ALL_WATCHPOINTS;
+        else
+            wst.Payload.WPNumber = 200;
+        rc = LC_ResetWPStatsCmd(&wst);
+        printf("lcc_wpstats i=%d rc=%d w1ev=%u w1ct=%u cc=%u ec=%u\n", i, (int)rc,
+               (unsigned)lc_wrt[1].EvaluationCount, (unsigned)lc_wrt[1].CumulativeTrueCount,
+               (unsigned)LC_AppData.CmdCount, (unsigned)LC_AppData.CmdErrCount);
+        lc_wrt[1].EvaluationCount     = 6;
+        lc_wrt[1].CumulativeTrueCount = 5;
+    }
+
+    /* --- LC_ResetCountersCmd. It bumps CmdCount and then LC_ResetCounters zeroes everything --
+     * INCLUDING the CmdCount it just bumped. So the correct answer is 0, not 1, and a handler
+     * that reset first and counted after would print 1. The five application counters are all
+     * printed because LC_ResetCounters clears exactly those and nothing else: the watchpoint and
+     * actionpoint statistics are the two commands above, and AP 1's surviving counters are the
+     * witness that this command did not reach them. */
+    LC_AppData.CmdErrCount         = 44;
+    LC_AppData.APSampleCount       = 33;
+    LC_AppData.MonitoredMsgCount   = 22;
+    LC_AppData.RTSExecCount        = 11;
+    LC_AppData.PassiveRTSExecCount = 10;
+    lc_art[1].CumulativeFailCount  = 8;
+    memset(&rst, 0, sizeof(rst));
+    rc = LC_ResetCountersCmd(&rst);
+    printf("lcc_reset rc=%d cc=%u ec=%u smp=%u mon=%u rts=%u prts=%u a1cum=%u\n", (int)rc,
+           (unsigned)LC_AppData.CmdCount, (unsigned)LC_AppData.CmdErrCount,
+           (unsigned)LC_AppData.APSampleCount, (unsigned)LC_AppData.MonitoredMsgCount,
+           (unsigned)LC_AppData.RTSExecCount, (unsigned)LC_AppData.PassiveRTSExecCount,
+           (unsigned)lc_art[1].CumulativeFailCount);
+
+    /* --- AND THE HOUSEKEEPING PACKET. Four watchpoints with four DIFFERENT results and four
+     * actionpoints in four different states, so the first packed byte of each array is a
+     * readable encoding of both the order and the mapping. See the block comment above. */
+    lc_wrt[0].WatchResult  = LC_WATCH_STALE; /* code 3 -> bits 1:0 */
+    lc_wrt[1].WatchResult  = LC_WATCH_FALSE; /* code 0 -> bits 3:2 */
+    lc_wrt[2].WatchResult  = LC_WATCH_TRUE;  /* code 1 -> bits 5:4 */
+    lc_wrt[3].WatchResult  = LC_WATCH_ERROR; /* code 2 -> bits 7:6 */
+    lc_wrt[4].WatchResult  = 99;             /* not a defined result -> the default arm, ERROR */
+    lc_art[0].CurrentState = LC_APSTATE_PERMOFF; /* reported as NOT_USED */
+    lc_art[0].ActionResult = LC_ACTION_FAIL;
+    lc_art[1].CurrentState = LC_APSTATE_ACTIVE;
+    lc_art[1].ActionResult = LC_ACTION_PASS;
+    lc_art[2].CurrentState = LC_APSTATE_PASSIVE;
+    lc_art[2].ActionResult = LC_ACTION_ERROR;
+    lc_art[3].CurrentState = LC_APSTATE_DISABLED;
+    lc_art[3].ActionResult = LC_ACTION_STALE;
+    LC_OperData.WatchpointCount = 5;
+    memset(&hk, 0, sizeof(hk));
+    rc = LC_SendHkCmd(&hk);
+    printf("lcc_hk rc=%d\n", (int)rc);
+    lc_show_hk("lcc_hk");
+
+    /* --- LC_SampleAPReq, which is LC's CLOCK: nothing in LC evaluates an actionpoint on its own.
+     * Four cases -- the heritage "sample all" (both indices 0xFFFF), an in-range span, a span
+     * whose end is past the table, and a span whose start is after its end -- plus the UpdateAge
+     * flag, which is the only thing that ever ages a watchpoint result toward STALE.
+     *
+     * THE AGING IS WHAT MAKES WP 2 GO STALE. Its CountdownToStale is set to 1 below, so one
+     * sample with UpdateAge decrements it to 0 and the result becomes LC_WATCH_STALE -- while
+     * WP 3's countdown of 3 just drops to 2 and its result is untouched. Two watchpoints, one
+     * command, different outcomes: that is what shows the decrement and the zero test are
+     * separate steps. */
+    lc_art[0].CurrentState = LC_APSTATE_ACTIVE;
+    lc_art[0].ActionResult = LC_ACTION_STALE;
+    for (i = 0; i < 4; ++i)
+    {
+        memset(&smp, 0, sizeof(smp));
+        if (i == 0)
+        {
+            smp.Payload.StartIndex = LC_ALL_ACTIONPOINTS;
+            smp.Payload.EndIndex   = LC_ALL_ACTIONPOINTS;
+        }
+        else if (i == 1)
+        {
+            smp.Payload.StartIndex = 0;
+            smp.Payload.EndIndex   = 1;
+        }
+        else if (i == 2)
+        {
+            smp.Payload.StartIndex = 0;
+            smp.Payload.EndIndex   = 200;
+        }
+        else
+        {
+            smp.Payload.StartIndex = 5;
+            smp.Payload.EndIndex   = 1;
+        }
+        smp.Payload.UpdateAge          = 1;
+        lc_wrt[2].CountdownToStale     = 1;
+        lc_wrt[2].WatchResult          = LC_WATCH_TRUE;
+        lc_wrt[3].CountdownToStale     = 3;
+        lc_wrt[3].WatchResult          = LC_WATCH_TRUE;
+        LC_SampleAPReq((CFE_SB_Buffer_t *)&smp);
+        printf("lcc_smpreq i=%d w2r=%u w2c=%u w3r=%u w3c=%u smp=%u\n", i,
+               (unsigned)lc_wrt[2].WatchResult, (unsigned)lc_wrt[2].CountdownToStale,
+               (unsigned)lc_wrt[3].WatchResult, (unsigned)lc_wrt[3].CountdownToStale,
+               (unsigned)LC_AppData.APSampleCount);
+    }
+
+    /* AND WITH LC DISABLED THE WHOLE REQUEST IS IGNORED -- including the aging, which is the part
+     * that is easy to get wrong because the aging is not inside the range check. A disabled LC
+     * does not age its watchpoints, so a result that was about to go stale stays TRUE. */
+    LC_AppData.CurrentLCState  = LC_STATE_DISABLED;
+    lc_wrt[2].CountdownToStale = 1;
+    lc_wrt[2].WatchResult      = LC_WATCH_TRUE;
+    memset(&smp, 0, sizeof(smp));
+    smp.Payload.StartIndex = 0;
+    smp.Payload.EndIndex   = 1;
+    smp.Payload.UpdateAge  = 1;
+    LC_SampleAPReq((CFE_SB_Buffer_t *)&smp);
+    printf("lcc_smpreq_disabled w2r=%u w2c=%u\n", (unsigned)lc_wrt[2].WatchResult,
+           (unsigned)lc_wrt[2].CountdownToStale);
+    LC_AppData.CurrentLCState = LC_STATE_ACTIVE;
+}
+
 int main(void)
 {
     CFE_MSG_Message_t msg;
@@ -18869,6 +19212,7 @@ int main(void)
         lc_block_hash();
         lc_block_validate();
         lc_block_sample();
+        lc_block_cmds();
 
             /* PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after
              * it today but tim_objtab, so both halves agreed and the transcript was green --
