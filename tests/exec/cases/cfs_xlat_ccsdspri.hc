@@ -1820,6 +1820,7 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/lc/lc_msg.HC"
 #include "/Kernel/Cfs/lc/lc_global.HC"
 #include "/Kernel/Cfs/lc/lc_custom.HC"
+#include "/Kernel/Cfs/lc/lc_action.HC"
 
 // ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
 //

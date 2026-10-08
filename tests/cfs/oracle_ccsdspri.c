@@ -156,6 +156,7 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
  * follow in dependency order. */
 #include "lc_app.h"
 #include "lc_custom.h"
+#include "lc_action.h"
 #include "cs_dispatch.h"
 /* THREE OF CS's FUNCTIONS ARE IN NO HEADER. CS_CheckGenericNameMatch and
  * CS_SetGenericEntryState in cs_utils.c, and CS_ExtractNames in cs_table_processing.c, are not
@@ -788,6 +789,21 @@ static CFE_ES_ResetData_t es_reset_area;
  * then, with the deadline written beside it, and tools/cfs/check_oracle_globals.py is what refuses
  * to let the two definitions coexist -- a C tentative definition in two translation units merges
  * SILENTLY. The same deadline MD_AppData and MM_AppData each had, met the same way. */
+
+/* LC_OperData AND LC_AppData ARE NASA'S, defined in lc_app.c, WHICH IS NOT GATED YET -- so they
+ * live here until it is, and the deadline is written down the way MD's, MM's and CS's were.
+ *
+ * THE LINK IS WHAT FORCED THEM: lc_action.c is gated as of this commit and reads both, so the C
+ * reference would not link without them. The HolyC half needs no equivalent -- lc_global.HC
+ * defines both, because a HolyC `extern` outside the module loader's window is a module-local
+ * dummy, so a global there has exactly one definition and it lives with its type.
+ *
+ * tools/cfs/check_oracle_globals.py IS THE DEADLINE, not this comment: the moment lc_app.c joins
+ * the source list it will refuse to let two definitions coexist. A C tentative definition in two
+ * translation units merges SILENTLY, the link succeeds, and nothing says which object the exercise
+ * was reading -- which is exactly what it found five times at once. */
+LC_OperData_t LC_OperData;
+LC_AppData_t  LC_AppData;
 
 /* ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
  *
