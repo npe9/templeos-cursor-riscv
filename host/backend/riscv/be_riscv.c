@@ -68,6 +68,17 @@ U32 RvAmo(U32 f5, U32 aqrl, U32 f3, int rd, int rs1, int rs2) {
          (aqrl << 25) | (f5 << 27);
 }
 
+/* --- O1 BB-local frame-slot forwarding (moved from compiler.c, M4c): tracks which register
+ *     currently holds each s0-relative frame slot, to elide reloads (HOLYC_O1_MODE>=4). RISC-V-
+ *     specific (keys on s0-relative offsets). g_o1_slot_reg is extern (RVU32 reads it directly). --- */
+static I64 g_o1_slot_off[32];
+static int g_o1_slot_n;
+int g_o1_slot_reg[32];
+void O1SlotClear(void) { g_o1_slot_n = 0; }
+int O1SlotFind(I64 off) { for (int i=0;i<g_o1_slot_n;i++) if (g_o1_slot_off[i]==off) return i; return -1; }
+void O1SlotForgetReg(int reg) { for (int i=0;i<g_o1_slot_n;) if (g_o1_slot_reg[i]==reg) { g_o1_slot_off[i]=g_o1_slot_off[--g_o1_slot_n]; g_o1_slot_reg[i]=g_o1_slot_reg[g_o1_slot_n]; } else i++; }
+void O1SlotSet(I64 off, int reg) { int i=O1SlotFind(off); if (i<0 && g_o1_slot_n<32) i=g_o1_slot_n++; if (i>=0) { g_o1_slot_off[i]=off; g_o1_slot_reg[i]=reg; } }
+
 /* RISC-V (LP64D) role → physical register. Roles with no RISC-V register are -1. */
 const RegFile rv_regfile = {
   .phys = {

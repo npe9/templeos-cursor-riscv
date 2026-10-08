@@ -470,8 +470,7 @@ static int g_xlen = 64;
 static int g_rv32_args;   /* RV32_ARG_SPILL / RV32_ARG_LOAD: a0-a7 are call args a_i : s(1+i) */
 static int g_rv32_raw;    /* asm{} words: already target code, emit untouched */
 static I64 g_rv32_divmod; /* blob offset of the rv32_divmod helper (from the previous pass) */
-static I64 g_o1_slot_off[32];
-static int g_o1_slot_reg[32], g_o1_slot_n;
+/* O1 BB-local slot-forwarding state + O1SlotClear/Find/ForgetReg/Set moved to be_riscv.c (M4c). */
 /* HOLYC_O1_MODE (default 3 — Tier-1 + frame folds + I64 local promotion):
  *   0 = no frame opts
  *   1 = LEA+DEREF → IC_MOV
@@ -486,10 +485,6 @@ static int O1Mode(void) {
   while (*m >= '0' && *m <= '9') v = v * 10 + (*m++ - '0');
   return v;
 }
-static void O1SlotClear(void) { g_o1_slot_n = 0; }
-static int O1SlotFind(I64 off) { for (int i=0;i<g_o1_slot_n;i++) if (g_o1_slot_off[i]==off) return i; return -1; }
-static void O1SlotForgetReg(int reg) { for (int i=0;i<g_o1_slot_n;) if (g_o1_slot_reg[i]==reg) { g_o1_slot_off[i]=g_o1_slot_off[--g_o1_slot_n]; g_o1_slot_reg[i]=g_o1_slot_reg[g_o1_slot_n]; } else i++; }
-static void O1SlotSet(I64 off, int reg) { int i=O1SlotFind(off); if (i<0 && g_o1_slot_n<32) i=g_o1_slot_n++; if (i>=0) { g_o1_slot_off[i]=off; g_o1_slot_reg[i]=reg; } }
 /* RISC-V instruction-field decode predicates (RvImmI/S, RvIsAddi/SdSp0/Mv) moved to the
  * RISC-V backend TU (multiarch M4c). */
 #include "backend/riscv/be_riscv.h"

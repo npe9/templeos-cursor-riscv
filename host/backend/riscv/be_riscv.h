@@ -32,4 +32,11 @@ U32 StoreA0ToRs1Off(U8 p, U8 rs1, I64 off);
 U32 StoreZeroToRs1(U8 pointed_to, U8 rs1);
 U32 RvAmo(U32 f5, U32 aqrl, U32 f3, int rd, int rs1, int rs2);
 
+/* O1 BB-local frame-slot forwarding (g_o1_slot_reg[i] holds the reg for slot i; RVU32 reads it). */
+extern int g_o1_slot_reg[32];
+void O1SlotClear(void);
+int  O1SlotFind(I64 off);
+void O1SlotForgetReg(int reg);
+void O1SlotSet(I64 off, int reg);
+
 #endif /* HOST_BACKEND_RISCV_BE_RISCV_H */
