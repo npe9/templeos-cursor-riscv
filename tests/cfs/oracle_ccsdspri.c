@@ -146,6 +146,7 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "cs_utils.h"
 #include "cs_compute.h"
 #include "cs_table_processing.h"
+#include "cs_init.h"
 /* THREE OF CS's FUNCTIONS ARE IN NO HEADER. CS_CheckGenericNameMatch and
  * CS_SetGenericEntryState in cs_utils.c, and CS_ExtractNames in cs_table_processing.c, are not
  * `static` -- they have external linkage and the exercises below call them -- but NASA declares
@@ -1666,6 +1667,26 @@ int32 CFE_PSP_GetCFETextSegmentInfo(cpuaddr *PtrToCFESegment, uint32 *SizeOfCFES
     return es_textseg_rc;
 }
 
+/* THE OS KERNEL'S TEXT SEGMENT -- the sibling of CFE_PSP_GetCFETextSegmentInfo above, and the one
+ * new simulated PSP function CS needs. On flight hardware it reports where the operating system's
+ * code was linked; here it reports a FIXED, SHORT STRING for exactly the reason its sibling does,
+ * written out again because it is the reason that matters: CS CRCs these bytes directly, so
+ * pointing a checksum at real kernel text would make the number depend on the COMPILER -- and a
+ * host process and a QEMU guest do not share one.
+ *
+ * NASA'S OWN PSP RETURNS CFE_PSP_ERROR_NOT_IMPLEMENTED on several platforms, which is why
+ * CS_InitSegments has a whole arm for it, and es_kernelseg_rc is how that arm is driven. */
+static long  es_kernelseg;
+static int32 es_kernelseg_rc;
+
+int32 CFE_PSP_GetKernelTextSegmentInfo(cpuaddr *PtrToKernelSegment, uint32 *SizeOfKernelSegment)
+{
+    ++es_kernelseg;
+    *PtrToKernelSegment  = (cpuaddr) "OSkernel";
+    *SizeOfKernelSegment = 8;
+    return es_kernelseg_rc;
+}
+
 void CFE_PSP_GetVersionNumber(uint8 VersionNumbers[4])
 {
     VersionNumbers[0] = 1;
@@ -1803,6 +1824,22 @@ static int32 sb_queueget_rc = OS_SUCCESS;
 static long  sb_qcreates, sb_qdeletes;
 static int32 sb_queuecreate_rc = OS_SUCCESS;
 static int   sb_next_qid       = 1; /* 0 is OS_OBJECT_ID_UNDEFINED, so ids start at 1 */
+
+/* CS_SbInit hard-codes its pipe name, and the simulated OS_QueueCreate rejects a duplicate the way
+ * NASA's OSAL does -- so an exercise that needs CreatePipe to succeed TWICE has to free the name in
+ * between. This frees only the NAME, leaving the cFE pipe record registered, because the thing under
+ * test is CS_SbInit's arms and not SB's bookkeeping. */
+static void sb_forget_queue_name(const char *name)
+{
+    int i;
+    for (i = 1; i < SBQ_MAX; i++)
+    {
+        if (sbq[i].Created && strcmp(sbq[i].Name, name) == 0)
+        {
+            sbq[i].Name[0] = '\0';
+        }
+    }
+}
 
 int32 OS_QueueCreate(osal_id_t *queue_id, const char *queue_name, size_t queue_depth,
                      size_t data_size, uint32 flags)
@@ -6785,6 +6822,281 @@ static void cs_block_child(void)
     printf("csh_oneshot_zero cks=%u prog=%u cycles=%ld\n",
            (unsigned)CS_AppData.HkPacket.Payload.LastOneShotChecksum,
            (unsigned)CS_AppData.HkPacket.Payload.OneShotInProgress, evs_delays - d0);
+}
+
+
+/* ===================== CS, step 2 of three: cs_init.c =====================
+ *
+ * Three functions, and the one that matters is CS_InitAllTables: it is where the six wrappers come
+ * from. Step 1's exercise had to hand-build all six because nothing else fills one in; this block
+ * builds them NASA'S way, through cFE table services, and then re-reaches the six functions step 1
+ * could not -- CS_RegisterResultTable, CS_RegisterDefinitionTable, CS_TableInit,
+ * CS_GetTableAddr, CS_ReleaseTableAddr and CS_RefreshTableHandleAndAddress -- because all six need
+ * a table of CS's own to exist.
+ *
+ * CS_InitializeDefaultTables RUNS FIRST, and that order is the whole point of the
+ * "generated table init order" shape. The definition table FILES do not exist in this driver, so
+ * CS_RegisterDefinitionTable falls back to CFE_TBL_Load(CFE_TBL_SRC_ADDRESS,
+ * tw->DefaultDefinitionPtr) -- and those four default tables are a RUNTIME FILL here where NASA's
+ * C has them zero-initialised by the loader. A reader that ran before the fill would load whatever
+ * the BSS held, with no diagnostic. cs_app.c is what calls it in NASA's flow; this block does it
+ * explicitly and says so. */
+static void cs_block_init(void)
+{
+    CFE_Status_t       rc;
+    CS_TableWrapper_t *tw;
+    uint32             cv;
+    bool               done;
+    int                k;
+
+    cs_fill_sources();
+    cs_setup();
+
+    /* --- HEADROOM FIRST, and this line exists because of a shape this port has already paid for:
+     * ONE PROCESS runs every exercise, so cFE's fixed-size tables are shared with MD, MM, TA and
+     * everything else that ran before. This block creates FIVE pipes (CS_SbInit is called five
+     * times and two of those succeed) and registers EIGHT tables, and if either pool is full the
+     * failure appears as a registration error inside CS and looks exactly like CS's bug. So the
+     * headroom is printed BEFORE anything is taken, and again after, on both halves. A diff here
+     * names the cause; without it the next person bisects a registration failure. */
+    {
+        int used = 0;
+        int i;
+        for (i = 0; i < CFE_PLATFORM_TBL_MAX_NUM_TABLES; ++i)
+        {
+            /* CFE_TBL_RegRecIsUsed, not a peek at a Name field -- the registry record has no
+             * `Name` member, the name lives in its Config, and NASA's own accessor is what the
+             * rest of tbl asks with. Guessing the field was a compile error on the HolyC half and
+             * would have been a silent wrong answer on this one. */
+            if (CFE_TBL_RegRecIsUsed(&CFE_TBL_Global.Registry[i]))
+            {
+                ++used;
+            }
+        }
+        printf("csi_headroom_before pipes=%u/%d tables=%d/%d\n",
+               (unsigned)CFE_SB_Global.StatTlmMsg.Payload.PipesInUse, CFE_PLATFORM_SB_MAX_PIPES,
+               used, CFE_PLATFORM_TBL_MAX_NUM_TABLES);
+    }
+
+    /* --- CS_InitSegments, both segments and both arms of each. The simulated PSP reports a FIXED
+     * short string for each -- see the note on CFE_PSP_GetKernelTextSegmentInfo -- so the ADDRESS
+     * is asserted as a comparison and the SIZE as a value. */
+    CS_InitSegments();
+    printf("csi_seg cfe=%u/%u os=%u/%u\n", (unsigned)CS_AppData.CfeCoreCodeSeg.State,
+           (unsigned)CS_AppData.CfeCoreCodeSeg.NumBytesToChecksum,
+           (unsigned)CS_AppData.OSCodeSeg.State,
+           (unsigned)CS_AppData.OSCodeSeg.NumBytesToChecksum);
+    /* AND THE TWO SEGMENTS ARE IMMEDIATELY CHECKSUMMABLE, which is the only thing that makes the
+     * addresses worth reporting at all. Four bytes of "cFEtext" is one cycle. */
+    cv   = 0;
+    done = false;
+    rc   = CS_ComputeEepromMemory(&CS_AppData.CfeCoreCodeSeg, &cv, &done);
+    printf("csi_seg_crc rc=%ld done=%d cv=%u\n", (long)rc, (int)done, (unsigned)cv);
+
+    /* THE PSP REFUSING: NASA's own PSP answers CFE_PSP_ERROR_NOT_IMPLEMENTED on several platforms,
+     * which is why each segment has a whole arm for it. All seven fields are written -- a failure
+     * ZEROES the entry rather than leaving it alone, which is what keeps CS from checksumming
+     * whatever the BSS held. Driven from an ENABLED entry with a real address, so an arm that
+     * only set State would be caught. */
+    es_textseg_rc   = CFE_PSP_ERROR_NOT_IMPLEMENTED;
+    es_kernelseg_rc = CFE_PSP_ERROR_NOT_IMPLEMENTED;
+    CS_InitSegments();
+    printf("csi_seg_refused cfe=%u/%u/%u os=%u/%u/%u\n", (unsigned)CS_AppData.CfeCoreCodeSeg.State,
+           (unsigned)CS_AppData.CfeCoreCodeSeg.NumBytesToChecksum,
+           (unsigned)CS_AppData.CfeCoreCodeSeg.StartAddress,
+           (unsigned)CS_AppData.OSCodeSeg.State,
+           (unsigned)CS_AppData.OSCodeSeg.NumBytesToChecksum,
+           (unsigned)CS_AppData.OSCodeSeg.StartAddress);
+    es_textseg_rc   = CFE_PSP_SUCCESS;
+    es_kernelseg_rc = CFE_PSP_SUCCESS;
+
+    /* --- CS_SbInit, and THE ORDER OF THESE FOUR CALLS IS THE WHOLE DESIGN. CS_SbInit hard-codes
+     * CS_CMD_PIPE_NAME, and the simulated OS_QueueCreate rejects a duplicate name the way NASA's
+     * OSAL does -- so the FIRST call that gets as far as creating a pipe consumes the only name CS
+     * has, and every later call fails at CreatePipe before reaching a subscribe.
+     *
+     * A FIRST DRAFT RAN THEM success / taken / qfail / subfail AND THE LAST THREE WERE THE SAME ARM:
+     * all four printed 0xCA000005, CFE_SB_PIPE_CR_ERR, and the comment claimed the fourth "reaches
+     * the SECOND of CS_SbInit's five arms". It did not. Three identical status codes with four
+     * different labels is the shape to distrust.
+     *
+     * So: the injected CreatePipe failure first (no name consumed), then the pool-exhausted
+     * subscribe failure (which DOES create the pipe), then the name freed by hand so the nominal
+     * path can run, then the duplicate. */
+    sb_queuecreate_rc = OS_ERROR;
+    rc                = CS_SbInit();
+    printf("csi_sb_qfail rc=%ld\n", (long)rc);
+    sb_queuecreate_rc = OS_SUCCESS;
+
+    /* THE HOUSEKEEPING SUBSCRIBE FAILING. CFE_SB_Subscribe allocates a destination descriptor from
+     * SB's memory pool, so exhausting the pool is the fault injector, and the pipe is created
+     * before the first subscribe -- which is why this has to come before the nominal call rather
+     * than after it.
+     *
+     * THE OTHER TWO SUBSCRIBE ARMS ARE NOT DRIVEN, and saying so is better than implying it:
+     * reaching "housekeeping succeeded and the background cycle failed" needs the pool to have room
+     * for exactly one descriptor and "both succeeded and commands failed" for exactly two, which is
+     * a white-box count of SB's allocator rather than a property of CS. */
+    es_pool_exhaust(CFE_SB_Global.Mem.PoolHdl);
+    rc = CS_SbInit();
+    es_pool_restore(CFE_SB_Global.Mem.PoolHdl);
+    printf("csi_sb_subfail rc=%ld\n", (long)rc);
+
+    /* FREE THE SIMULATED QUEUE NAME so the nominal path can create its pipe. White-box on purpose
+     * and narrower than the alternative: CFE_SB_DeletePipe would be the clean way and it is the one
+     * function in NASA's SB this port has an undiagnosed segfault in, so it is not used here. The
+     * cFE-side pipe record from the call above is left registered, which costs one of 64 slots and
+     * is what csi_headroom_after counts. */
+    sb_forget_queue_name(CS_CMD_PIPE_NAME);
+
+    /* THE NOMINAL PATH: a pipe and three subscriptions. */
+    rc = CS_SbInit();
+    printf("csi_sb rc=%ld pipe=%d\n", (long)rc, (int)CFE_RESOURCEID_TEST_DEFINED(CS_AppData.CmdPipe));
+
+    /* AND THE DUPLICATE, which needs no fault injector at all -- just the name CS has now used. */
+    rc = CS_SbInit();
+    printf("csi_sb_taken rc=%ld\n", (long)rc);
+
+    /* --- CS_InitAllTables, NASA'S way. The four default tables are filled FIRST (see the header
+     * above), then all six types go through CS_TableInit: the two code segments have a NULL
+     * filename and return success having done nothing, and the four real ones register a results
+     * table, register a definition table, fail to load the file, fall back to the default in
+     * memory, get an address and call their update handler. */
+    cs_setup();
+    CS_InitializeDefaultTables();
+    rc = CS_InitAllTables();
+    printf("csi_tables rc=%ld\n", (long)rc);
+    for (k = 0; k < CS_NUM_TABLES; ++k)
+    {
+        tw = &CS_AppData.Tbl[k];
+        printf("csi_tbl[%d] %s def=%d res=%d defaddr=%d resaddr=%d n=%u\n", k,
+               CS_GetTableTypeAsString(tw), (int)CFE_TBL_HANDLE_IS_VALID(tw->DefHandle),
+               (int)CFE_TBL_HANDLE_IS_VALID(tw->ResHandle), (int)(tw->DefAddr != NULL),
+               (int)(tw->ResAddr != NULL), (unsigned)tw->NumEntries);
+    }
+    /* LOADED FROM MEMORY MEANS DISABLED. The file was missing, so each of the four tables came up
+     * from CS's own zeroed default -- and CS_RegisterDefinitionTable turns its global state OFF for
+     * exactly that case, so CS does not come up claiming to watch things it was never told about.
+     * The two code segments have no global state at all and are untouched. */
+    printf("csi_tbl_states eep=%u mem=%u tbl=%u app=%u\n",
+           (unsigned)CS_AppData.HkPacket.Payload.EepromCSState,
+           (unsigned)CS_AppData.HkPacket.Payload.MemoryCSState,
+           (unsigned)CS_AppData.HkPacket.Payload.TablesCSState,
+           (unsigned)CS_AppData.HkPacket.Payload.AppCSState);
+    /* AND THE RESULTS TABLES ARE REAL cFE BUFFERS NOW, not driver arrays: the update handlers ran
+     * over them during registration, so every entry is EMPTY and zero. Read at both ends.
+     *
+     * EACH POINTER IS HOISTED INTO A LOCAL, both halves, and this cost a trap to learn.
+     * `CS_GetEepromResEntry(0)->State` is the `fn(args)->member` shape that
+     * docs/HOLYC_STRUCT_LIMITS.md #17 records -- and #17 says the compiler RESOLVES THE ARROW
+     * AGAINST THE FIRST ARGUMENT'S CLASS AND REFUSES. With an INTEGER first argument there is no
+     * class to resolve against, and it does not refuse: it compiles and loads through zero.
+     * `load-fault mepc=... mtval=0x0` right after this line printed `csi_tbl_res eep0=`. So the
+     * limit has a SILENT form, which tests/exec/cases/e_call_arrow_int_arg.hc now pins. */
+    {
+        CS_Res_EepromMemory_Table_Entry_t *re0  = CS_GetEepromResEntry(0);
+        CS_Res_EepromMemory_Table_Entry_t *re15 = CS_GetEepromResEntry(15);
+        CS_Res_App_Table_Entry_t          *ra0  = CS_GetAppResEntry(0);
+        CS_Res_App_Table_Entry_t          *ra23 = CS_GetAppResEntry(23);
+
+        printf("csi_tbl_res eep0=%u eep15=%u app0=%u app23=%u\n", (unsigned)re0->State,
+               (unsigned)re15->State, (unsigned)ra0->State, (unsigned)ra23->State);
+    }
+
+    /* --- AND NOW THE SIX FUNCTIONS STEP 1 COULD NOT REACH. CS_HandleTableUpdate on a registered
+     * pair releases both addresses, manages both tables and re-acquires both -- so
+     * CS_GetTableAddr runs for real. Nothing has been loaded since registration, so the second
+     * GetAddress does NOT answer CFE_TBL_INFO_UPDATED and the update handler is not called again,
+     * which is the arm that distinguishes "managed" from "updated". */
+    rc = CS_HandleTableUpdate(&CS_AppData.Tbl[CS_ChecksumType_EEPROM_TABLE]);
+    printf("csi_update rc=%ld defaddr=%d resaddr=%d\n", (long)rc,
+           (int)(CS_AppData.Tbl[CS_ChecksumType_EEPROM_TABLE].DefAddr != NULL),
+           (int)(CS_AppData.Tbl[CS_ChecksumType_EEPROM_TABLE].ResAddr != NULL));
+    /* AND NOW THE ARM A MUTATION PROVED UNREACHABLE IN STEP 1. Batch one deleted
+     * CS_HandleTableUpdate's `if (Result == CFE_TBL_INFO_UPDATED)` and the transcript did not move,
+     * which is correct and was worth knowing: with no table loaded, the second CFE_TBL_GetAddress
+     * answers plain CFE_SUCCESS and the update handler is never called again. Loading the
+     * definition table from memory makes table services report the change, so this reaches the one
+     * branch in CS that calls an update handler OUTSIDE registration -- and, for the tables type,
+     * the loop that hands back every shared handle the old results table held. */
+    rc = CFE_TBL_Load(CS_GetDefHandle(CS_ChecksumType_EEPROM_TABLE), CFE_TBL_SRC_ADDRESS,
+                      CS_AppData.DefaultEepromDefTable);
+    printf("csi_reload rc=%ld\n", (long)rc);
+    rc = CS_HandleTableUpdate(&CS_AppData.Tbl[CS_ChecksumType_EEPROM_TABLE]);
+    printf("csi_update_after_load rc=%ld eep=%u\n", (long)rc,
+           (unsigned)CS_AppData.HkPacket.Payload.EepromCSState);
+    rc = CFE_TBL_Load(CS_GetDefHandle(CS_ChecksumType_TABLES_TABLE), CFE_TBL_SRC_ADDRESS,
+                      CS_AppData.DefaultTablesDefTable);
+    rc = CS_HandleTableUpdate(&CS_AppData.Tbl[CS_ChecksumType_TABLES_TABLE]);
+    {
+        /* Hoisted for the same reason as csi_tbl_res above -- `fn(int)->member` loads through
+         * zero in this compiler rather than refusing. */
+        CS_Res_Tables_Table_Entry_t *rt0 = CS_GetTablesResEntry(0);
+
+        printf("csi_update_tables rc=%ld res0=%u\n", (long)rc, (unsigned)rt0->State);
+    }
+
+    /* CS_ComputeTables ON A REAL TABLE, which is the only path through CS_GetTableAddr,
+     * CS_ReleaseTableAddr and CS_RefreshTableHandleAndAddress. The table named is one of CS's OWN
+     * -- its EEPROM definition table -- so the name resolves, CFE_TBL_Share hands back a handle,
+     * the address is acquired, 256 bytes are CRC'd and the address is released again in the same
+     * cycle. The budget is 64, so it takes four.
+     *
+     * AND THE RULE, BEFORE SOMEONE ADDS THE OBVIOUS NEXT LINE: CS may checksum its own DEFINITION
+     * tables here and must never checksum its own RESULTS tables. A definition table is all zeros
+     * after the fall-back-to-memory load, so the bytes agree between a host process and a QEMU
+     * guest. A results table holds CS_Res_*_Table_Entry_t.StartAddress -- REAL POINTERS -- so the
+     * moment any entry has a live address, a CRC over that buffer diverges and reads as a checksum
+     * bug three steps from its cause. Naming CS_RESULTS_EEPROM_TABLE_NAME here is the shape to
+     * refuse. */
+    {
+        CFE_ES_AppId_t aid = CFE_ES_APPID_UNDEFINED;
+        char           myname[OS_MAX_API_NAME];
+        CS_Res_Tables_Table_Entry_t *rt;
+
+        CFE_ES_GetAppID(&aid);
+        CFE_ES_GetAppName(myname, aid, sizeof(myname));
+
+        rt = CS_GetTablesResEntry(0);
+        memset(rt, 0, sizeof(*rt));
+        rt->State       = CS_ChecksumState_ENABLED;
+        rt->TblHandleID = CFE_TBL_HANDLEID_UNDEFINED;
+        snprintf(rt->Name, sizeof(rt->Name), "%s.%s", myname, CS_DEF_EEPROM_TABLE_NAME);
+        for (k = 0; k < 4; ++k)
+        {
+            cv   = 0;
+            done = false;
+            rc   = CS_ComputeTables(rt, &cv, &done);
+            printf("csi_ctbl[%d] rc=%ld done=%d off=%u size=%u cv=%u cmp=%u\n", k, (long)rc,
+                   (int)done, (unsigned)rt->ByteOffset, (unsigned)rt->NumBytesToChecksum,
+                   (unsigned)cv, (unsigned)rt->ComparisonValue);
+        }
+        /* THE ADDRESS IS RELEASED EVERY CYCLE AND RE-ACQUIRED, so the exported StartAddress is
+         * whatever table services last handed over -- non-zero, and the SAME across cycles, which
+         * is the property that lets the resume test in CS_ComputeTables work at all. */
+        printf("csi_ctbl_addr nonzero=%d handle=%d\n", (int)(rt->StartAddress != 0),
+               (int)(rt->TblHandleID != CFE_TBL_HANDLEID_UNDEFINED));
+    }
+
+    /* AND THE HEADROOM AFTER, so the cost of this block is a number rather than an assumption. */
+    {
+        int used = 0;
+        int i;
+        for (i = 0; i < CFE_PLATFORM_TBL_MAX_NUM_TABLES; ++i)
+        {
+            /* CFE_TBL_RegRecIsUsed, not a peek at a Name field -- the registry record has no
+             * `Name` member, the name lives in its Config, and NASA's own accessor is what the
+             * rest of tbl asks with. Guessing the field was a compile error on the HolyC half and
+             * would have been a silent wrong answer on this one. */
+            if (CFE_TBL_RegRecIsUsed(&CFE_TBL_Global.Registry[i]))
+            {
+                ++used;
+            }
+        }
+        printf("csi_headroom_after pipes=%u/%d tables=%d/%d\n",
+               (unsigned)CFE_SB_Global.StatTlmMsg.Payload.PipesInUse, CFE_PLATFORM_SB_MAX_PIPES,
+               used, CFE_PLATFORM_TBL_MAX_NUM_TABLES);
+    }
 }
 
 int main(void)
@@ -15356,6 +15668,7 @@ int main(void)
         cs_block_compute();
         cs_block_tblproc();
         cs_block_child();
+        cs_block_init();
 
             /* PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after
              * it today but tim_objtab, so both halves agreed and the transcript was green --

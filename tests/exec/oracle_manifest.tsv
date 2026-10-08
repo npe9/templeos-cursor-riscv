@@ -140,3 +140,4 @@ tests/exec/cases/e_class_decl_init.hc	0000000000007429
 tests/exec/cases/e_tbl_wrapper_idiom.hc	00503a0b30012327
 tests/exec/cases/e_amp_index_plus_int.hc	0708080808013801
 tests/exec/cases/e_fnptr_array_call.hc	000000000b15630b
+tests/exec/cases/e_call_arrow_int_arg.hc	0000000033334403

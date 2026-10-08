@@ -821,7 +821,7 @@ miscompiled would be worse, and that is the direction a careless fix would take 
 asserting the value. The arrow form is valid C, NASA uses it, and the substitution above is a
 deviation that only exists because of this.
 
-## 17. `fn(args)->member` resolves the arrow against the FIRST ARGUMENT's type — OPEN
+## 17. `fn(args)->member` resolves the arrow against the FIRST ARGUMENT's type — OPEN, and with a SCALAR argument it is SILENT
 
 ```c
 class A { U32 x; U32 y; };
@@ -856,6 +856,37 @@ translation will meet it again and the hoisted local is the standing answer.
 **When it is fixed**, the refusal case starts passing and should become an exec case asserting
 the member's value, and the hoisted locals in `tests/exec/cases/cfs_xlat_ccsdspri.hc` can be
 inlined back.
+
+
+### With a SCALAR first argument it does not refuse — it loads through zero
+
+Everything above is what happens when the first argument is a class pointer: the arrow is resolved
+against that class, the member is not found, and the compiler **says so**. A reader cannot miss it.
+
+With an INTEGER first argument there is no class to resolve against, and the compiler **does not
+refuse**:
+
+    class R { U16 State; U16 Extra; U32 Tail; };
+    R rtab[4];
+    R *by_index(U16 i) { if (i < 4) return &rtab[i]; return NULL; }
+
+    p = by_index(2); p->State     ->  0x33     correct
+    by_index(2)->State            ->  TRAP mcause=0x5 (load-fault) mtval=0x0
+
+`tests/exec/cases/e_call_arrow_int_arg.hc` pins the working spellings against the direct index
+(0x33334403). The defect is **not** in that case's body, because a case that traps prints nothing
+and asserts nothing — it was demonstrated once in a throwaway probe whose whole body was
+`return by_index(2)->State;`, which produced **no ORACLE line at all**. So the two forms are not
+"one is tidier": one returns `0x33` and the other does not return.
+
+**This is the severity correction.** "Refuses" is a compile error on the offending line. This is a
+null load three steps from its cause, inside a function whose own body is right — and **any
+accessor that takes a scalar and returns a pointer is in this shape**. `cs_utils.h` alone has
+nine of them (`CS_GetEepromResEntry(i)`, `CS_GetAppResEntry(i)`, …), each taking a `uint16` and
+returning a typed pointer, and NASA writes that pattern constantly. Found when CS's step-2 exercise
+died mid-line after printing `csi_tbl_res eep0=`.
+
+**The workaround is unchanged: assign the call to a local, then dereference the local.**
 
 ## 18. There is no `volatile` qualifier, and it does not matter — MEASURED, NOT A LIMIT
 
