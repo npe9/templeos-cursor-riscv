@@ -3318,3 +3318,57 @@ cst_proc_tbl_res_noptr 1
   no-op control" no longer describes this project; the gates grew and they object on purpose;
 - a **local variable rename** (`Loop` → `Idx` in one function) is the one that works. No gate reads
   a local, so it measures the harness rather than the gates. NO-OP, as it must be.
+
+### Step 2's exercise was weak, and 14 mutations said so
+
+`cs_init.HC` got its own batch. The first run was **6 caught, 8 no-op** — one the control, seven the
+same mistake seven times: the block asserted that things **happened** and never **what was written**.
+
+| no-op | why it slipped through |
+|---|---|
+| the background cycle is never subscribed | nothing asked SB what CS listens to |
+| the housekeeping packet is sized wrong | nothing read the packet's size |
+| the EEPROM type gets the MEMORY default table | both defaults are all-zero; only the ADDRESS distinguishes them |
+| the TABLES type gets `DefStateOffset` 8 instead of 0 | nothing read the descriptor fields |
+| an error is reported for a type with no event id | **no table init ever failed** |
+| a failed type is not disabled | its state was **already** DISABLED |
+| the OS segment points at the cFE one | the sizes were read, the BYTES were not |
+
+The fixes assert the written values: `CFE_SB_GetDestPtr` on each of four routes
+(`cmd=1 hk=1 bg=1 other=0`, the fourth being a MsgId CS must **not** be on), `CFE_MSG_GetSize` on
+the housekeeping packet (**80**, not 64), a `csi_tbl_desc` line per type carrying `DefEntrySize`,
+`ResEntrySize`, `DefStateOffset` and a **comparison** that `DefaultDefinitionPtr` names the right
+array, and a CRC of the OS code segment so the two segment **addresses** are pinned and not just
+their sizes.
+
+#### The failing-init arm took three attempts, and I was wrong twice
+
+- **Draft one** exhausted TBL's memory pool. It printed `rc=0` — the knob does not reach that path —
+  and the comment beside it *claimed the four types had failed*. They had not. The transcript said
+  so and I nearly did not read it.
+- **Draft two** moved a single call to the end of the block. Also `rc=0`: the **second**
+  `CS_InitAllTables` succeeds.
+- What fails is the **third**, and not because of any knob here: the second leaves a `CFE_TBL_Load`
+  pending on each single-buffer table — CS never calls `CFE_TBL_Manage`, so nothing completes it —
+  and the next load answers `CFE_TBL_ERR_LOAD_IN_PROGRESS`, `0xCC000012`. Both calls are printed,
+  because otherwise a reader cannot tell which call the four events belong to.
+
+#### One of the seven is a PROVABLE no-op, and its neighbour is what proves it
+
+`if (ErrorEventID != 0)` can never be false when it is evaluated. `CS_TableInit` returns
+`CFE_SUCCESS` immediately for a NULL filename, and `TABLE_FILENAME_MAP` is NULL for exactly the two
+types whose event id is zero — so only the four types that *have* an id can reach that block. A
+mutation replacing the guard with `TRUE` is a no-op and will stay one.
+
+**It is still a real guard**, and the mutation that shows what it guards is its neighbour: giving a
+code-segment type a filename in `TABLE_FILENAME_MAP` **is caught**, because that type can then fail
+and would try to send event id 0. The guard and the NULL filename are one mechanism stated twice,
+which is why only one of the two mutations bites. Recorded at the site in `cs_init.HC`.
+
+#### And one was vacuous for the oldest reason in this project
+
+"A failed type is not disabled" stayed a no-op after the failing init existed, because by that point
+**every state was already DISABLED** — the first init loads each table from memory, which disables
+it — so writing `DISABLED` again changed nothing. The assertion was reading a value that was there
+for another reason. The four states are now forced **ENABLED** immediately before the failing call.
+Poison-first, which is the rule this project keeps relearning.
