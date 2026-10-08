@@ -264,6 +264,15 @@ def probe(names):
         # wrong bucket is the only symptom this blind spot has.
         "cs_eventids.h", "cs_perfids.h", "cs_msgids.h", "cs_fcncodes.h", "cs_version.h",
         "cs_tbl.h",
+        # LC's, added WITH ITS VOCABULARY rather than after it -- the first app whose headers were
+        # listed here before a single source was gated, because the lesson beside MM and CS is
+        # that the blind spot's only symptom is a count rising in the wrong bucket, and this time
+        # it was watched for. Adding lc_tbl.HC alone took "names NASA does not define" from 35 to
+        # 108; with these six it goes back down. lc_interface_cfg.h and lc_internal_cfg.h are
+        # where NASA's DEFAULT_LC_* literals actually live -- the LC_* names beside them are
+        # token-paste macro calls and so are never comparable.
+        "lc_eventids.h", "lc_perfids.h", "lc_msgids.h", "lc_fcncodes.h", "lc_version.h",
+        "lc_tbl.h", "lc_interface_cfg.h", "lc_internal_cfg.h",
         # ES's event ids and its own platform config, as the module arrives. The gate refused
         # to pass on CFE_ES_SYSLOG2_EID rather than file it as "a name this port invented",
         # which is the behaviour that distinguishes a missing header from a local constant.

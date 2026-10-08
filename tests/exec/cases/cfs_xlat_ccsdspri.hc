@@ -1806,6 +1806,18 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/cs/cs_app.HC"
 #include "/Kernel/Cfs/cs/cs_dispatch.HC"
 
+// --- LIMIT CHECKER, the fourth app: ITS VOCABULARY ONLY, no sources yet ------------------------
+// Four files of types and constants and not one function, which is why this block is three lines
+// of includes and nothing else in the driver changes. check_wired is the gate that insisted: a
+// translated file no driver compiles gets no gate but check_padding, and LC's whole point this
+// commit is that check_padding measured its five table types and its union.
+//
+// lc_cfg.HC comes AFTER lc_tbl.HC in the dependency order but is included BY it, because the ADT
+// entry's two array bounds live there. The order below is the include GRAPH's, not the file list's.
+#include "/Kernel/Cfs/lc/lc_eventids.HC"
+#include "/Kernel/Cfs/lc/lc_perfids.HC"
+#include "/Kernel/Cfs/lc/lc_tbl.HC"
+
 // ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
 //
 // CS reads memory DIRECTLY -- CFE_ES_CalculateCRC takes a raw pointer -- so every address the

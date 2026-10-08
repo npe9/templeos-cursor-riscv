@@ -112,6 +112,12 @@ HDRS = [
     # entry types and (through cs_table_processing.h) CS_TableWrapper_t, so one header is enough
     # -- CS keeps no type outside that include graph.
     "cs_app.h",
+    # LIMIT CHECKER -- the fourth. lc_app.h reaches LC_OperData_t, LC_AppData_t, the two linked
+    # list elements and, through lc_tbl.h, all five table types plus LC_MultiType_t. One header,
+    # like CS. The union is the reason this entry matters more than the others: LC_MultiType_t
+    # holds NASA's `float Float32` where the translation holds a U32 bit pattern, and THIS is the
+    # gate that proves the substitution did not move anything -- 4 bytes, 4-aligned, same offset.
+    "lc_app.h",
     # The reset area. CFE_EVS_EarlyInit sizes the WHOLE of CFE_ES_ResetData_t and takes the event
     # log out of it, so the translation declares that type and the eight ES/TIME types under it.
     # They are types, not code -- no ES function is translated -- and this is what measures them.
