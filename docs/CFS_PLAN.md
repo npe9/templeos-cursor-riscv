@@ -3376,8 +3376,18 @@ Poison-first, which is the rule this project keeps relearning.
 ### Step 3 — the five command files, the dispatcher and the app: **CS is 100%**
 
 2,924 lines, 49 functions, gated in one commit because `CS_AppPipe` and `CS_UpdateCDS` close a
-seven-source cycle. Transcript **3228 → 3861** byte-identical, and with it **all 150 of CS's
-functions RUN**. Third app, no stand-ins, nothing unexercised.
+seven-source cycle. Transcript **3228 → 3861** byte-identical, and with it **all 120 functions in
+NASA's eleven CS sources RUN** — 71 from steps 1 and 2, 49 from step 3. Third app, no stand-ins,
+nothing unexercised.
+
+**THE DENOMINATOR IS NASA'S `.c` SOURCES, AND THAT IS WORTH SAYING BECAUSE A FIRST WRITE-UP SAID
+150.** 150 is what a regex body-counter reports over `Kernel/Cfs/cs/*.HC`, and it is a different
+unit: it includes 30 **header** inlines — `cs_global.h`'s eighteen wrapper accessors, which have no
+`.c` file at all, plus `cs_utils.h`'s. Those are real translated code and `check_header_inlines` is
+the gate that tracks them, but counting them as "CS's functions" glues two denominators together.
+It is the same shape `cs-app-plan` already records for step 1, where the denominator was first
+written as 68 and was wrong three ways. 120 is the number `check_coverage` works in and the one
+that can be defended.
 
 **SEVEN exercise blocks, one per NASA source.** Limit #22 is the reason — step 1's first draft wrote
 one block inline in `main()` and grew that frame enough to make a file-scope `&function` initialiser

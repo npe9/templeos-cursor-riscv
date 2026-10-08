@@ -41,10 +41,12 @@ NASA writes and HolyC has no spelling for:
   ticks       (1)  the same thing for OS_time_t
   FileSize    (1)  OS_FILESTAT_SIZE(x) is `((x).FileSize)`, written out
 
-Each is allowed only WHERE ITS CAUSE IS PRESENT: `Msg` needs CFE_MSG_PTR in NASA's own body for
-that function, `FileSize` needs OS_FILESTAT_SIZE, and the three initialiser members need the
-type's name plus `= { 0 }`. A rule keyed on the cause cannot excuse the same name somewhere it
-does not apply.
+Each is allowed only WHERE ITS CAUSE IS PRESENT IN NASA'S OWN BODY for that function: `Msg` needs
+CFE_MSG_PTR, `FileSize` needs OS_FILESTAT_SIZE, and the three initialiser members need the
+AGGREGATE FORM -- `= { 0 }` or CFE_TIME_ZERO_VALUE -- and NOT merely the type's name. Keying those
+three on the type was the first version and it was too weak by exactly the amount that matters:
+any body that declared a CFE_TIME_SysTime_t would have excused a `.Seconds` swap anywhere in it.
+The narrower rule allows the same 45, which is how it was checked rather than argued.
 
 ### THE OTHER DIRECTION IS MEASURED AND NOT YET GATED, AND THE REASON IS PRECISE
 
@@ -82,11 +84,18 @@ DEFN = re.compile(r'^[A-Za-z_][A-Za-z0-9_ \t\*]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(
 EXPANSIONS = {
     "Msg": ("CFE_MSG_PTR",),
     "FileSize": ("OS_FILESTAT_SIZE",),
-    # TWO causes, both aggregate: a `= { 0 }` declaration of the type, and CFE_TIME_ZERO_VALUE,
-    # which is the compound literal `(CFE_TIME_SysTime_t){0, 0}`. HolyC has neither spelling.
-    "Seconds": ("CFE_TIME_SysTime_t", "CFE_TIME_ZERO_VALUE"),
-    "Subseconds": ("CFE_TIME_SysTime_t", "CFE_TIME_ZERO_VALUE"),
-    "ticks": ("OS_time_t",),
+    # KEYED ON THE INITIALISER FORM, NOT ON THE TYPE NAME, and that distinction was the whole
+    # point of a review. A first version keyed these three on `CFE_TIME_SysTime_t` and `OS_time_t`
+    # -- so ANY NASA body that merely DECLARED one of those types excused a `.Seconds` reference
+    # anywhere in the translation of that function, which is most of cfe_time and exactly where
+    # such a swap is most likely. The docstring claimed a cause-keyed rule "cannot excuse the same
+    # name somewhere it does not apply", and for those three it could. Requiring the aggregate
+    # form instead -- `= { 0 }` or CFE_TIME_ZERO_VALUE, the compound literal
+    # `(CFE_TIME_SysTime_t){0, 0}` -- keeps the allowed count at exactly 45, so the narrower rule
+    # costs nothing and the docstring is now true.
+    "Seconds": ("= { 0 }", "CFE_TIME_ZERO_VALUE"),
+    "Subseconds": ("= { 0 }", "CFE_TIME_ZERO_VALUE"),
+    "ticks": ("= { 0 }",),
 }
 
 
