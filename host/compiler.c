@@ -532,18 +532,31 @@ static int RvIsMv(U32 w, int *rd, int *rs) {
   if (rs) *rs = (int)((w >> 15) & 0x1F);
   return 1;
 }
+/* Append n raw bytes to the code stream and advance rip by the ACTUAL length. The
+ * arch-neutral emission primitive (multiarch M1): fixed-width backends (RISC-V, ARM,
+ * AArch64) write constant-size words through it; variable-length backends (x86, Thumb)
+ * write 1..15 bytes. Explicit little-endian append — no host-endian or alignment assumption. */
+static void emit_bytes(U8 *buf, U8 **ptr, I64 *rip, const U8 *p, int n) {
+  if (buf && ptr) { for (int i = 0; i < n; i++) (*ptr)[i] = p[i]; (*ptr) += n; }
+  (*rip) += n;
+}
+/* Undo `bytes` of buffered emission (a peephole cancel). Replaces the ad-hoc
+ * `*ptr -= 12/8` / `*ptr -= 4*n` rewinds so no caller hardcodes a word size. */
+static void StreamRewind(U8 *buf, U8 **ptr, I64 *rip, int bytes) {
+  if (buf && ptr) *ptr -= bytes;
+  (*rip) -= bytes;
+}
 static void PpRewind(U8 *buf, U8 **ptr, I64 *rip, int n) {
   if (n <= 0 || n > g_pp_n) return;
-  if (buf && ptr) *ptr -= 4 * n;
-  *rip -= 4 * n;
+  StreamRewind(buf, ptr, rip, 4 * n);
   g_pp_n -= n;
 }
 /* Raw little-endian 32-bit word emit + rip advance — the arch-neutral half of the
  * word writer (the other half, RVU32, adds the RISC-V push/pop + O1-slot peephole).
  * A non-RV backend reuses this and supplies its own peephole, or none. */
 static void RvEmitWordRaw(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
-  if (buf && ptr) { *(U32 *)(*ptr) = val; (*ptr) += 4; }
-  (*rip) += 4;
+  U8 w[4] = { (U8)val, (U8)(val >> 8), (U8)(val >> 16), (U8)(val >> 24) };
+  emit_bytes(buf, ptr, rip, w, 4);   /* RISC-V's fixed 4-byte word, via the byte stream */
 }
 typedef struct { U8 *buf; U8 **ptr; I64 *rip; } RvEmitCtx;
 static void RvEmitLifted(void *c, uint32_t w) {
@@ -570,8 +583,7 @@ static void RVU32(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
     int isInc = RvIsAddi(val, 2, 2, 8);                                                   // addi sp,sp,+8
     int rX = (w1 >> 20) & 0x1F, rY = (w2 >> 7) & 0x1F;
     if (isDec && isSd && isLd && isInc && rX == rY) {  // push rX; pop rX -> nothing (value already in rX)
-      if (buf && ptr) *ptr -= 12;                      // drop the three buffered words
-      *rip -= 12;
+      StreamRewind(buf, ptr, rip, 12);                 // drop the three buffered words
       g_pp_n = 0;
       return;                                          // the fourth word (addi sp,+8) is cancelled too
     }
@@ -582,8 +594,7 @@ static void RVU32(U8 *buf, U8 **ptr, I64 *rip, U32 val) {
     int rX = 0;
     U32 wDec = g_pp[g_pp_n - 2], wSd = g_pp[g_pp_n - 1];
     if (RvIsAddi(wDec, 2, 2, -8) && RvIsSdSp0(wSd, &rX)) {
-      if (buf && ptr) *ptr -= 8;
-      *rip -= 8;
+      StreamRewind(buf, ptr, rip, 8);
       g_pp_n -= 2;
       return;
     }
