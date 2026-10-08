@@ -433,30 +433,8 @@ void AOTWriteMap(Compiler *cc, const char *map_path) {
 // Minimal RISC-V backend integration
 // (Full backend is in Back*_RV.HC, this is simplified version)
 
-// RISC-V register definitions
-#define RV_ZERO 0
-#define RV_RA   1
-#define RV_SP   2
-#define RV_T0   5
-#define RV_T1   6
-#define RV_T2   7
-#define RV_S0   8
-#define RV_S1   9
-#define RV_A0   10
-#define RV_A1   11
-#define RV_A2   12
-#define RV_A3   13
-#define RV_A4   14
-#define RV_A5   15
-#define RV_A6   16
-#define RV_A7   17
-#define RV_S2   18
-#define RV_S3   19
-#define RV_S4   20
-#define RV_S5   21
-#define RV_S6   22
-#define RV_S7   23
-#define RV_S8   24
+// RISC-V register numbers — ISA-specific, moved to the RISC-V backend dir (multiarch M4a).
+#include "backend/riscv/regs.h"
 
 // ═══════════════════════════════════════════════════════════════
 // UNIFIED EMIT FUNCTIONS (TempleOS ICU8/ICU16/ICU32 pattern)
@@ -913,8 +891,7 @@ static void EmitCompoundAssign(U8 *pass_buf, U8 **pass_ptr, I64 *rip, I64 *stack
 #define RV_R_REM 0x02006033u
 
 // ---- RV64D helpers: F64 values live as raw bits in integer registers / eval-stack slots ----
-#define RV_FA0 10
-#define RV_FA1 11
+// (RV_FA0/RV_FA1 now in backend/riscv/regs.h, included above.)
 #define RV_FMV_D_X(fd, rs)      (0xF2000053u | ((fd) << 7) | ((rs) << 15))
 #define RV_FMV_X_D(rd, fs)      (0xE2000053u | ((rd) << 7) | ((fs) << 15))
 #define RV_FCVT_D_L(fd, rs)     (0xD2000053u | ((fd) << 7) | (7u << 12) | ((rs) << 15) | (2u << 20))
