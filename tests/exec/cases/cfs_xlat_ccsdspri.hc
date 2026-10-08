@@ -13119,6 +13119,346 @@ U0 lc_block_dispatch()
   S("\n");
 }
 
+// --- LC'S STARTUP AND MAINTENANCE: lc_app.c's nine functions and lc_utils.c's three. The last
+// block, and the one whose first draft was full of false claims about its own fixture.
+//
+// ### THERE IS NO SECOND CFE_TBL_EarlyInit HERE, AND THE TABLES REGISTER ANYWAY
+//
+// The oracle already calls CFE_TBL_EarlyInit eight times across the cFE, MD, MM and CS blocks,
+// each leaking its two pools against a CFE_PLATFORM_ES_MAX_MEMORY_POOLS of 10 -- CS's block
+// records what running out looks like, and docs/CFS_PLAN.md's shared-fixture note counts them.
+// So this block adds none.
+//
+// I ASSUMED THAT MEANT LC'S REGISTRATIONS WOULD FAIL AND WROTE THE COMMENTS THAT WAY. They do
+// not: the pool CS's EarlyInit created is still live, so LC_CreateResultTables returns
+// CFE_SUCCESS with both of its bits set (tr=0x880) and LC_CreateDefinitionTables succeeds too
+// (tr=0x880000). The transcript said so on the first run and the prose did not. What follows is
+// what the fixture actually reaches.
+//
+// ### THE CRITICAL-TABLE RETRY IS REACHED BY A **DUPLICATE** REGISTRATION, WHICH IS BETTER
+//
+// LC_CreateDefinitionTables is called twice: once with HaveActiveCDS false, which registers the
+// WDT and ADT non-critically and succeeds, and once with it true -- which asks table services to
+// register the SAME NAMES as critical and gets CFE_TBL_ERR_DUPLICATE_DIFF_SIZE (0x4C000007),
+// because the options no longer match. That is a real cFE refusal rather than an induced one,
+// and it drives the four-way retry's first arm end to end: HaveActiveCDS is cleared, the options
+// drop to CFE_TBL_OPT_DEFAULT, LC_WDT_REGISTER_CRIT_ERR_EID is sent, the WDT is re-registered,
+// that fails the same way, and LC_WDT_REGISTER_ERR_EID follows. TWO events and a flipped flag
+// from ONE registration failure -- which is the assertion, because a translation that returned
+// the first failure directly would send one event and leave the flag alone.
+//
+// ### THE CDS HAS TO BE BROUGHT BACK, AND IT IS STILL TOO SMALL FOR ALL THREE AREAS
+//
+// CS's block ends with es_cds_reset(), whose own note says that lever "turns the store off for
+// good", so LC starts with CFE_ES_Global.CDSIsAvailable false and every CFE_ES_RegisterCDS
+// answering CFE_ES_NOT_IMPLEMENTED. LC_CreateTaskCDS then returns at its FIRST area and all
+// three of its arms collapse into one -- which is how the first version of this block read:
+// three identical lines asserting nothing.
+//
+// CFE_ES_CDS_EarlyInit is exactly a processor reset -- the RAM copy of the state is gone and
+// es_cds_store is not -- so it is the real recovery rather than a poke at the flag, and LC's
+// warm-boot path depends on the REGISTRY inside the store and not just on the flag.
+//
+// WITH IT BACK, LC GETS ITS **FIRST** AREA AND NOT ITS SECOND. The store is 64 KiB with a
+// 36,884-byte minimum header, so about 28 KiB is usable and the cFE and CS blocks have already
+// taken some; the WRT's 9,856 bytes fit and the ART's 5,632 come back
+// CFE_ES_ERR_MEM_BLOCK_SIZE. That is NASA's own documented case -- lc_app.c's header comment
+// says "If LC cannot create all the CDS storage at startup, then LC will disable LC use of CDS
+// and continue" -- and it separates the cold and warm arms properly: the first call creates the
+// WRT area (tr=0x20) and the second finds it ALREADY_EXISTS and RESTORES it (tr=0x60).
+//
+// **WHAT THIS BLOCK DOES NOT REACH: LC_CreateTaskCDS's AppData arm.** The third area is never
+// registered, so the branch that tests `CDSSavedOnExit == LC_CDS_SAVED` after a restore -- the
+// one lc_global.HC's block comment is about -- is NOT exercised here. Naming it is the point;
+// the earlier draft had a third call that looked like it covered that arm and was
+// byte-identical to the second. Reaching it needs a bigger es_cds_store, and growing that array
+// moves the trailer offset the cFE block prints, so it is a change to make deliberately and not
+// as a side effect of this block.
+//
+// ### AND LC_AppMain IS RUN WITH ITS CONTROL REQUEST PRE-SET
+//
+// CFE_ES_RunLoop's second test reads the app record's ControlReq.AppControlRequest and returns
+// false for anything that is not APP_RUN. LC_AppInit does not set RunStatus (it is AppMain's
+// local), so pre-setting the record is what makes the loop exit after zero iterations.
+U0 lc_block_app()
+{
+  I32 rc;
+  I64 before;
+  I64 x0;
+  CFE_SB_MsgId hkmid;
+
+  hkmid = CFE_SB_InvalidMsgId();
+  lc_setup();
+
+  // THE CRITICAL DATA STORE HAS TO BE BROUGHT BACK FIRST, because CS's block ends with
+  // es_cds_reset() -- its own note says that lever "turns the store off for good" -- and LC's
+  // block runs after it. With CFE_ES_Global.CDSIsAvailable false, every CFE_ES_RegisterCDS
+  // answers CFE_ES_NOT_IMPLEMENTED and LC_CreateTaskCDS returns at its FIRST area, so all
+  // three of its arms collapse into one and the two warm-boot calls below would be identical
+  // to the cold one. Three lines asserting nothing, which is how the first version of this
+  // block read.
+  //
+  // CFE_ES_CDS_EarlyInit IS EXACTLY A PROCESSOR RESET: the RAM copy of the CDS state is gone
+  // and es_cds_store is not, so everything comes back out of the store. That is the real
+  // recovery and not a fixture poke at CDSIsAvailable, which matters because LC's warm-boot
+  // path depends on the REGISTRY inside the store, not just on the flag.
+  S("lcap_cdsinit rc=");
+  D(CFE_ES_CDS_EarlyInit());
+  S(" avail=");
+  D(CFE_ES_Global.CDSIsAvailable);
+  S("\n");
+
+  // --- LC_EvsInit AND LC_SbInit ON THEIR OWN, in that order, because LC_AppInit chains them
+  // and a chain hides which link moved. EvsInit registers with NO filters at all (NULL, 0,
+  // BINARY), so its only observable is the return code. SbInit initialises the housekeeping
+  // packet's header, creates the pipe and makes THREE subscriptions -- and the witness that it
+  // got past the header is the MsgId in the packet, which is printed because a CFE_MSG_Init
+  // that did not run leaves it zero.
+  rc = LC_EvsInit();
+  S("lcap_evsinit rc=");
+  D(rc);
+  S("\n");
+
+  sb_forget_queue_name(LC_PIPE_NAME);
+  rc = LC_SbInit();
+  CFE_MSG_GetMsgId(&LC_OperData.HkPacket.TelemetryHeader.Msg, &hkmid);
+  S("lcap_sbinit rc=");
+  D(rc);
+  S(" hkmid=");
+  H4(CFE_SB_MsgIdToValue(hkmid));
+  S(" pipe=");
+  D(LC_OperData.CmdPipe);
+  S("\n");
+
+  // --- LC_CreateResultTables. Both registrations SUCCEED on the pool CS's EarlyInit left
+  // behind, so this is the four-step sequence running to completion: register the WRT, take
+  // its address, register the ART, take its address, with LC_WRT_TBL_CREATED set between steps
+  // two and three and LC_ART_TBL_CREATED at the end. tr=0x880 is both bits, and the point of
+  // printing the whole mask rather than the return code is that a sequence which skipped a
+  // step would still return CFE_SUCCESS.
+  //
+  // AND THE OPTIONS ARE DUMP-ONLY AND SINGLE-BUFFER WITH NO VALIDATION CALLBACK, which is what
+  // makes the later CDS work necessary: NASA's comment is "dump only tables cannot be critical
+  // with CDS use managed by CFE Table Services", so LC registers the WRT and ART CONTENTS as
+  // CDS areas by hand in LC_CreateTaskCDS.
+  LC_OperData.TableResults = 0;
+  rc                       = LC_CreateResultTables();
+  S("lcap_resulttbl rc=");
+  D(rc);
+  S(" tr=");
+  H8(LC_OperData.TableResults);
+  S("\n");
+
+  // --- LC_CreateDefinitionTables, TWICE, and the SECOND call is the interesting one.
+  //
+  // WITH THE CDS OFF both tables register non-critically and the call succeeds: tr=0x880000 is
+  // LC_WDT_NOT_CRITICAL and LC_ADT_NOT_CRITICAL.
+  //
+  // WITH IT ON, LC asks for the SAME TABLE NAMES with CFE_TBL_OPT_CRITICAL added -- and table
+  // services refuses, because a name already registered with different options is
+  // CFE_TBL_ERR_DUPLICATE_DIFF_SIZE. That drives the retry: HaveActiveCDS cleared, options
+  // dropped, LC_WDT_REGISTER_CRIT_ERR_EID sent, re-registered, refused again,
+  // LC_WDT_REGISTER_ERR_EID sent. See the block comment above for why a duplicate is a better
+  // lever here than an exhausted pool.
+  LC_OperData.TableResults  = 0;
+  LC_OperData.HaveActiveCDS = FALSE;
+  rc                        = LC_CreateDefinitionTables();
+  S("lcap_deftbl_nocds rc=");
+  D(rc);
+  S(" tr=");
+  H8(LC_OperData.TableResults);
+  S(" cds=");
+  D(LC_OperData.HaveActiveCDS);
+  S("\n");
+
+  LC_OperData.TableResults  = 0;
+  LC_OperData.HaveActiveCDS = TRUE;
+  rc                        = LC_CreateDefinitionTables();
+  S("lcap_deftbl_cds rc=");
+  D(rc);
+  S(" tr=");
+  H8(LC_OperData.TableResults);
+  S(" cds=");
+  D(LC_OperData.HaveActiveCDS);
+  S("\n");
+
+  // --- LC_CreateTaskCDS, COLD. The WRT area is created fresh, and the ART comes back
+  // CFE_ES_ERR_MEM_BLOCK_SIZE because the store has no room -- so LC returns the ART's error
+  // with only LC_WRT_CDS_CREATED set. tr=0x20 WITHOUT the RESTORED bit is the assertion: a
+  // restore on a fresh store would mean LC believed a previous session's counters that never
+  // existed. The handles are printed because a created area must have a non-zero one and the
+  // un-reached third must still be zero.
+  //
+  // AND THE **ART** HANDLE IS NON-ZERO EVEN THOUGH ITS REGISTRATION FAILED. cFE fills the
+  // out-parameter before it discovers it cannot allocate, so LC is left holding a handle to an
+  // area that does not exist -- which is harmless only because LC_CreateTaskCDS returned an
+  // error and LC_TableInit will clear HaveActiveCDS, so nothing ever uses it. It is printed
+  // because an exercise that asserted "a failed registration leaves the handle alone" would
+  // have been asserting something false about cFE.
+  LC_OperData.TableResults  = 0;
+  LC_OperData.HaveActiveCDS = TRUE;
+  rc                        = LC_CreateTaskCDS();
+  S("lcap_cds1 rc=");
+  D(rc);
+  S(" tr=");
+  H8(LC_OperData.TableResults);
+  S(" wrt=");
+  D(LC_OperData.WRTDataCDSHandle);
+  S(" art=");
+  D(LC_OperData.ARTDataCDSHandle);
+  S(" app=");
+  D(LC_OperData.AppDataCDSHandle);
+  S("\n");
+
+  // --- AND AGAIN, WHICH IS THE WARM-BOOT PATH. The WRT area now exists, so
+  // CFE_ES_RegisterCDS returns CFE_ES_CDS_ALREADY_EXISTS and LC calls CFE_ES_RestoreFromCDS --
+  // giving tr=0x60, both LC_WRT_CDS_CREATED and LC_WRT_CDS_RESTORED. The ART fails exactly as
+  // before, so the ONE bit of difference between this line and the previous one is the whole
+  // cold-versus-warm distinction, and it is the only thing separating them.
+  LC_OperData.TableResults = 0;
+  rc                       = LC_CreateTaskCDS();
+  S("lcap_cds2 rc=");
+  D(rc);
+  S(" tr=");
+  H8(LC_OperData.TableResults);
+  S(" saved=");
+  H4(LC_AppData.CDSSavedOnExit);
+  S("\n");
+
+  // --- LC_UpdateTaskCDS WRITES ALL THREE AND STAMPS THE FLAG. It sets
+  // LC_AppData.CDSSavedOnExit = LC_CDS_SAVED **BEFORE** the AppData copy, which is the only
+  // order that works -- the flag lives inside the structure being copied. So after this call
+  // the live flag is 0xF0F0 AND the CDS holds a copy that says so.
+  rc = LC_UpdateTaskCDS();
+  S("lcap_updcds rc=");
+  D(rc);
+  S(" saved=");
+  H4(LC_AppData.CDSSavedOnExit);
+  S("\n");
+
+  // THERE IS NO THIRD LC_CreateTaskCDS CALL. A draft had one here, meaning to show the
+  // AppData area being RESTORED now that LC_UpdateTaskCDS has stamped CDSSavedOnExit -- but
+  // the AppData area is never registered in this fixture (the store runs out at the ART), so
+  // that call was byte-identical to the one above it. It is deleted rather than kept, and the
+  // unreached arm is named in the block comment instead. A line that repeats its predecessor
+  // is worse than a missing line: it reads as coverage.
+
+  // --- LC_LoadDefaultTables. CFE_TBL_Load on an invalid handle fails, so LC_WDT_LOAD_ERR_EID
+  // fires with the filename -- "/cf/lc_def_wdt.tbl", which is the one line in the exercise that
+  // shows the configured path reaching an event -- and the ADT load is never attempted.
+  // TableResults must stay clear of both DEFAULT_TBL bits.
+  LC_OperData.TableResults = 0;
+  rc                       = LC_LoadDefaultTables();
+  S("lcap_loaddef rc=");
+  D(rc);
+  S(" tr=");
+  H8(LC_OperData.TableResults);
+  S("\n");
+
+  // --- LC_ManageTables AND LC_PerformMaintenance. ManageTables fails on the invalid handles,
+  // and the interesting part is PerformMaintenance's asymmetry: a table error PROPAGATES to the
+  // caller while a CDS error only clears HaveActiveCDS. With the CDS on and the tables broken,
+  // the return is the table error AND HaveActiveCDS is untouched -- because the CDS branch is
+  // inside `if (Result == CFE_SUCCESS)` and never runs.
+  LC_OperData.HaveActiveCDS = TRUE;
+  rc                        = LC_ManageTables();
+  S("lcap_manage rc=");
+  D(rc);
+  S("\n");
+  rc = LC_PerformMaintenance();
+  S("lcap_maint rc=");
+  D(rc);
+  S(" cds=");
+  D(LC_OperData.HaveActiveCDS);
+  S("\n");
+
+  // --- LC_TableInit END TO END, with the CDS flag off (as the configuration leaves it) and
+  // then on. The OFF case is the one NASA actually ships: HaveActiveCDS false means no
+  // LC_CDS_ENABLED bit, so the function ends in LC_CDS_DISABLED_INF_EID -- the event NASA's own
+  // unit test says is "always issued" when LC_SAVE_TO_CDS is undefined. Except that here
+  // LC_CreateResultTables fails first, so the function returns before reaching the event at
+  // all, and that is the assertion: the display block is inside `if (Result == CFE_SUCCESS)`.
+  //
+  // THE ON CASE SETS LC_CDS_ENABLED AND THEN FAILS THE SAME WAY, so its TableResults differs by
+  // exactly that one bit. Two calls, one bit apart, is what shows the flag is read at the top
+  // and not consulted again on the failure path.
+  LC_OperData.TableResults  = 0;
+  LC_OperData.HaveActiveCDS = FALSE;
+  rc                        = LC_TableInit();
+  S("lcap_tableinit_off rc=");
+  D(rc);
+  S(" tr=");
+  H8(LC_OperData.TableResults);
+  S("\n");
+  LC_OperData.TableResults  = 0;
+  LC_OperData.HaveActiveCDS = TRUE;
+  rc                        = LC_TableInit();
+  S("lcap_tableinit_on rc=");
+  D(rc);
+  S(" tr=");
+  H8(LC_OperData.TableResults);
+  S(" cds=");
+  D(LC_OperData.HaveActiveCDS);
+  S("\n");
+
+  // --- LC_AppInit, THE WHOLE CHAIN. It memsets both globals, then EvsInit, SbInit and
+  // TableInit in order, each gated on the previous having returned CFE_SUCCESS. TableInit
+  // fails, so the startup event LC_INIT_INF_EID -- the one carrying the version -- must NOT
+  // appear, and the return is TableInit's code rather than CFE_SUCCESS.
+  //
+  // THE memsets ARE WHY THIS CAN RUN AT ALL AFTER EVERYTHING ABOVE: a file-scope object is
+  // already zero on a cold start, so in NASA's build they are redundant -- but this exercise
+  // has been writing LC_OperData for four blocks, and these two lines are what give AppInit the
+  // clean slate a fresh program image would have.
+  //
+  // THE WITNESS IS A **DIFFERENT** PIPE ID, NOT A ZERO ONE. A draft claimed the pipe would read
+  // zero afterwards; it does not, because AppInit memsets and then calls LC_SbInit, which
+  // creates a fresh pipe. What the id shows is that the OLD one was forgotten: lcap_sbinit
+  // printed 1441810 and this line prints 1441811, so the memset ran and SbInit allocated again
+  // rather than the structure having been carried over.
+  sb_forget_queue_name(LC_PIPE_NAME);
+  rc = LC_AppInit();
+  S("lcap_appinit rc=");
+  D(rc);
+  S(" pipe=");
+  D(LC_OperData.CmdPipe);
+  S(" tr=");
+  H8(LC_OperData.TableResults);
+  S("\n");
+
+  // --- AND LC_AppMain. AppInit fails, so RunStatus becomes APP_ERROR, Initialized stays
+  // false, CFE_ES_RunLoop is entered with APP_ERROR and returns false immediately, and the
+  // termination block fires: LC_TASK_EXIT_EID (CRITICAL) plus the syslog line LC writes "in
+  // case cFE Event Services is not working". Both carry the same status in 0x%08X.
+  //
+  // THE CDS IS **NOT** SAVED ON THE WAY OUT, and the guard is a three-way AND:
+  // `(Initialized == true) && HaveActiveCDS && (CDSSavedOnExit == LC_CDS_SAVED)`. Initialized
+  // is false here, so LC_UpdateTaskCDS is skipped -- and the witness is that it is skipped for
+  // THAT reason rather than for the others, which is why the CDS was deliberately left ACTIVE
+  // and the flag left SAVED by the lcap_updcds call above. All three would have to be true;
+  // exactly one is false, and it is the one AppMain controls.
+  //
+  // CFE_ES_ExitApp on a CORE app REFUSES and logs `Cannot Exit CORE Application`, which is the
+  // evidence it was reached -- CS's block records why a zero exit count is not: that is also
+  // what "never called" looks like.
+  es_set_ctx(1);
+  sb_forget_queue_name(LC_PIPE_NAME);
+  LC_OperData.HaveActiveCDS                              = TRUE;
+  LC_AppData.CDSSavedOnExit                              = LC_CDS_SAVED;
+  CFE_ES_Global.AppTable[1].Type                         = CFE_ES_AppType_CORE;
+  CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_EXIT;
+  x0                                                     = es_taskexits;
+  before                                                 = es_cds_writes;
+  LC_AppMain();
+  CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+  CFE_ES_Global.AppTable[1].Type                         = CFE_ES_AppType_EXTERNAL;
+  S("lcap_main exits=");
+  D(es_taskexits - x0);
+  S(" cdswrites=");
+  D(es_cds_writes - before);
+  S("\n");
+}
+
 I64 main()
 {
   CFE_MSG_Message msg;
@@ -24656,6 +24996,7 @@ I64 main()
     lc_block_sample();
     lc_block_cmds();
     lc_block_dispatch();
+    lc_block_app();
 
     // PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after it today
     // but tim_objtab, so both halves agreed and the transcript was green -- but the NEXT app's
