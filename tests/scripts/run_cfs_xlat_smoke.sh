@@ -340,6 +340,13 @@ python3 "$ROOT/tools/cfs/check_formats.py" $SRC_C || exit 1
 # HolyC compiler accepted it because a cast there relabels rather than converts; the C compiler
 # never saw it, because the oracle compiles NASA's C and not the translation. Only the transcript
 # caught it, and only because that line happened to print the pointer as a comparison.
+# AND THE REVERSE DIRECTION TOO, as of the same day: a member NASA's LIVE body touches and the
+# translation's does not is a DROPPED assignment, and nothing else here looks for one. "Live" means
+# the lines this configuration compiles, decided by preprocessing a copy of NASA's source in which
+# every non-directive line is a marker -- so `#if` evaluates for real while nothing can
+# macro-expand. Two earlier designs read `cc -E`'s output directly and were wrong for the same
+# reason in two different ways; the gate's docstring records both, because the second was a set
+# intersection pairing two unrelated occurrences of one member name.
 python3 "$ROOT/tools/cfs/check_members.py" || exit 1
 
 # --- the TEXT around those conversions -------------------------------------------------------
