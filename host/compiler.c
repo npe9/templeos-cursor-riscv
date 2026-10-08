@@ -464,7 +464,7 @@ static int g_pp_on;
  * 3 (ld/sd) for every target: on rv32 the stream is VIRTUAL rv64 that RvEmitWord hands to
  * host/rv32_lift.c, which turns each ld/sd into a lw/sw pair (lo @+0, hi @+4). Narrower
  * lb/lh/lw/lwu mean the same on both. */
-static int g_wd3 = 3;
+int g_wd3 = 3;   /* non-static: shared with host/backend/riscv/be_riscv.c (M4c) */
 /* Target XLEN (64/32). 32 routes every emitted word through Rv32Lift. */
 static int g_xlen = 64;
 static int g_rv32_args;   /* RV32_ARG_SPILL / RV32_ARG_LOAD: a0-a7 are call args a_i : s(1+i) */
@@ -490,26 +490,9 @@ static void O1SlotClear(void) { g_o1_slot_n = 0; }
 static int O1SlotFind(I64 off) { for (int i=0;i<g_o1_slot_n;i++) if (g_o1_slot_off[i]==off) return i; return -1; }
 static void O1SlotForgetReg(int reg) { for (int i=0;i<g_o1_slot_n;) if (g_o1_slot_reg[i]==reg) { g_o1_slot_off[i]=g_o1_slot_off[--g_o1_slot_n]; g_o1_slot_reg[i]=g_o1_slot_reg[g_o1_slot_n]; } else i++; }
 static void O1SlotSet(I64 off, int reg) { int i=O1SlotFind(off); if (i<0 && g_o1_slot_n<32) i=g_o1_slot_n++; if (i>=0) { g_o1_slot_off[i]=off; g_o1_slot_reg[i]=reg; } }
-static I64 RvImmI(U32 w) { return (I64)(I32)w >> 20; }
-static I64 RvImmS(U32 w) { I64 x=((w>>7)&31)|(((w>>25)&127)<<5); return x&0x800 ? x|~0xFFF : x; }
-static int RvIsAddi(U32 w, int rd, int rs1, int imm) {
-  return (w & 0x7F) == 0x13 && ((w >> 12) & 7) == 0 && (int)((w >> 7) & 0x1F) == rd &&
-         (int)((w >> 15) & 0x1F) == rs1 && (((I32)w) >> 20) == imm;
-}
-/* sd rs2,0(sp) — eval-stack push store (sw on rv32: doubleword = g_wd3). */
-static int RvIsSdSp0(U32 w, int *rs2) {
-  if ((w & 0x7F) != 0x23 || ((w >> 12) & 7) != (U32)g_wd3 || ((w >> 15) & 0x1F) != 2) return 0;
-  if ((int)(((w >> 7) & 0x1F) | (((w >> 25) & 0x7F) << 5)) != 0) return 0;
-  if (rs2) *rs2 = (int)((w >> 20) & 0x1F);
-  return 1;
-}
-/* mv rd,rs ≡ addi rd,rs,0 */
-static int RvIsMv(U32 w, int *rd, int *rs) {
-  if ((w & 0x7F) != 0x13 || ((w >> 12) & 7) != 0 || (((I32)w) >> 20) != 0) return 0;
-  if (rd) *rd = (int)((w >> 7) & 0x1F);
-  if (rs) *rs = (int)((w >> 15) & 0x1F);
-  return 1;
-}
+/* RISC-V instruction-field decode predicates (RvImmI/S, RvIsAddi/SdSp0/Mv) moved to the
+ * RISC-V backend TU (multiarch M4c). */
+#include "backend/riscv/be_riscv.h"
 /* Append n raw bytes to the code stream and advance rip by the ACTUAL length. The
  * arch-neutral emission primitive (multiarch M1): fixed-width backends (RISC-V, ARM,
  * AArch64) write constant-size words through it; variable-length backends (x86, Thumb)

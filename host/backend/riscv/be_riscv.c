@@ -8,7 +8,29 @@
  * piece of the backend. The neutral walker consumes it at M4e; it is unused (and does not affect
  * emitted code) until then. A non-static definition so an unused const doesn't warn.
  */
-#include "regs.h"
+#include "be_riscv.h"   /* brings holyc_compiler.h (types) + regs.h */
+
+/* --- Instruction-field decode predicates/extractors (moved from compiler.c, M4c) --- */
+I64 RvImmI(U32 w) { return (I64)(I32)w >> 20; }
+I64 RvImmS(U32 w) { I64 x=((w>>7)&31)|(((w>>25)&127)<<5); return x&0x800 ? x|~0xFFF : x; }
+int RvIsAddi(U32 w, int rd, int rs1, int imm) {
+  return (w & 0x7F) == 0x13 && ((w >> 12) & 7) == 0 && (int)((w >> 7) & 0x1F) == rd &&
+         (int)((w >> 15) & 0x1F) == rs1 && (((I32)w) >> 20) == imm;
+}
+/* sd rs2,0(sp) — eval-stack push store (sw on rv32: doubleword = g_wd3). */
+int RvIsSdSp0(U32 w, int *rs2) {
+  if ((w & 0x7F) != 0x23 || ((w >> 12) & 7) != (U32)g_wd3 || ((w >> 15) & 0x1F) != 2) return 0;
+  if ((int)(((w >> 7) & 0x1F) | (((w >> 25) & 0x7F) << 5)) != 0) return 0;
+  if (rs2) *rs2 = (int)((w >> 20) & 0x1F);
+  return 1;
+}
+/* mv rd,rs ≡ addi rd,rs,0 */
+int RvIsMv(U32 w, int *rd, int *rs) {
+  if ((w & 0x7F) != 0x13 || ((w >> 12) & 7) != 0 || (((I32)w) >> 20) != 0) return 0;
+  if (rd) *rd = (int)((w >> 7) & 0x1F);
+  if (rs) *rs = (int)((w >> 15) & 0x1F);
+  return 1;
+}
 
 /* RISC-V (LP64D) role → physical register. Roles with no RISC-V register are -1. */
 const RegFile rv_regfile = {

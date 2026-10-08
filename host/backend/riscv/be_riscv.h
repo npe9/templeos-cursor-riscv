@@ -1,0 +1,25 @@
+/* host/backend/riscv/be_riscv.h — RISC-V backend internal interface (ISA-SPECIFIC).
+ *
+ * Declarations shared between the RISC-V backend TU (be_riscv.c) and the parts of the codegen
+ * still in host/compiler.c during the M4 extraction. As the move proceeds this grows to cover
+ * the instruction encoders, branch/call primitives, prologue/epilogue, and immediate
+ * materialization; compiler.c's RISC-V call sites shrink until only the neutral walker remains.
+ *
+ */
+#ifndef HOST_BACKEND_RISCV_BE_RISCV_H
+#define HOST_BACKEND_RISCV_BE_RISCV_H
+#include "holyc_compiler.h"   /* U8/U32/I64 and the RT_* type enum (resolved via -Ihost) */
+#include "regs.h"
+
+/* Per-compile RISC-V doubleword load/store funct3 (3 on rv64 = ld/sd, 2 on rv32 = lw/sw).
+ * Defined in host/compiler.c for now; migrates into the Em context at M4d (reentrancy). */
+extern int g_wd3;
+
+/* Instruction-field decode predicates/extractors (used by the RISC-V peephole + O1 slots). */
+I64 RvImmI(U32 w);                        /* sign-extended I-type immediate                    */
+I64 RvImmS(U32 w);                        /* sign-extended S-type immediate                    */
+int RvIsAddi(U32 w, int rd, int rs1, int imm); /* is w exactly `addi rd, rs1, imm`?            */
+int RvIsSdSp0(U32 w, int *rs2);           /* is w `sd/sw rs2, 0(sp)` (doubleword = g_wd3)?      */
+int RvIsMv(U32 w, int *rd, int *rs);      /* is w `mv rd, rs` (addi rd, rs, 0)?                 */
+
+#endif /* HOST_BACKEND_RISCV_BE_RISCV_H */
