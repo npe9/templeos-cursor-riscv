@@ -152,6 +152,10 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "cs_memory_cmds.h"
 #include "cs_table_cmds.h"
 #include "cs_app_cmds.h"
+/* LIMIT CHECKER, the fourth app. lc_custom.h is all that is gated so far; the other six sources
+ * follow in dependency order. */
+#include "lc_app.h"
+#include "lc_custom.h"
 #include "cs_dispatch.h"
 /* THREE OF CS's FUNCTIONS ARE IN NO HEADER. CS_CheckGenericNameMatch and
  * CS_SetGenericEntryState in cs_utils.c, and CS_ExtractNames in cs_table_processing.c, are not
