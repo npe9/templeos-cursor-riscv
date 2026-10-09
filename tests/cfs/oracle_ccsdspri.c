@@ -11077,18 +11077,10 @@ static void lc_block_app(void)
 }
 
 
-/* HS_AppData IS NASA'S, defined in hs_app.c, WHICH IS NOT GATED YET -- so it lives here until it
- * is, and the deadline is written down the way MD's, MM's, CS's, LC's and HK's were.
- *
- * THE LINK IS WHAT FORCES IT: hs_sysmon.c is gated as of this commit and reads five of its
- * fields, so the C reference would not link without it. The HolyC half needs no equivalent --
- * hs_global.HC defines it, because a HolyC `extern` outside the module loader's window is a
- * module-local dummy.
- *
- * tools/cfs/check_oracle_globals.py is the deadline, and that is a CHECKED claim: the gate was
- * poison-tested when lc_app.c was gated, found to be dropping 27 of 116 sources, and fixed. It
- * was re-verified against HK. */
-HS_AppData_t HS_AppData;
+/* HS_AppData'S STAND-IN IS GONE: hs_app.c is gated as of this commit and NASA's own definition
+ * links. check_oracle_globals.py was the deadline and it is the thing that would have refused
+ * this file if the stand-in had stayed -- the sixth app in a row where that gate, rather than a
+ * memory of having written a comment, is what retired the temporary. */
 
 /* ---- THE SIMULATED WATCHDOG AND I/O DRIVER, for HS -----------------------------------------
  *
