@@ -231,7 +231,18 @@ def csrc_enums():
 
 def probe(names):
     """{name: value or None} as the host C preprocessor sees it. None = NASA does not define it."""
-    src = os.path.join(ROOT, "build", "cfs", "check_constants_probe.c")
+    # THE PROBE PATH CARRIES THE PID, because a FIXED path under build/cfs is shared state and
+    # two concurrent runs of this gate destroy each other. Running check_constants.py by hand
+    # while the smoke was running produced
+    #
+    #     FileNotFoundError: .../build/cfs/check_constants_probe_enum
+    #
+    # inside try_set -- the compile returned 0 and the executable was gone, because the other
+    # process had just rewritten it. That reads as a swallowed compiler failure
+    # (docs/ records one that staged a day-old artefact and faked a relocation bug), and it is
+    # not: it is two writers on one filename. The gate is run both standalone and from the smoke,
+    # so the paths must not collide.
+    src = os.path.join(ROOT, "build", "cfs", "check_constants_probe_%d.c" % os.getpid())
     os.makedirs(os.path.dirname(src), exist_ok=True)
     # check_padding's list PLUS each module's "module_all" header, which is the superset a
     # module's own sources include. Without them a name like CFE_EVS_HK_TLM_MID is simply not
@@ -413,6 +424,18 @@ def probe(names):
         found.update(resolve(group[mid:]))
         return found
 
+    def cleanup():
+        """Remove this process's probe files. Named by pid, so nothing else's are touched."""
+        for ext in (".c", "", "_enum.c", "_enum"):
+            try:
+                os.remove(src[:-2] + ext if ext else src[:-2])
+            except OSError:
+                pass
+        try:
+            os.remove(src)
+        except OSError:
+            pass
+
     unknown = [n for n in names if out.get(n) is None]
 
     # A PROBE THAT CANNOT BUILD AT ALL MUST NOT LOOK LIKE A SET OF UNDEFINED NAMES. resolve()
@@ -432,13 +455,16 @@ def probe(names):
     # expression `0`: the headers are all included, one printf is emitted, and nothing depends
     # on a name existing.
     if unknown and try_set(["0"]) is None:
+        cleanup()
         return None, ("the enumerator probe cannot be built AT ALL, so no enumerator can be "
                       "resolved and every one of them would be filed as a name NASA does not "
                       "define -- which passes. Fix the probe; do not trust the count. "
-                      "(A concurrent run of this gate clobbering build/cfs does this too: the "
-                      "probe path is fixed, so two at once is one too many.)")
+                      "(A concurrent run of this gate used to do this too -- the probe path was "
+                      "fixed, so two at once was one too many. The path now carries the pid, so "
+                      "if you are seeing this it is the probe itself and not a collision.)")
     for nm, v in resolve(unknown).items():
         out[nm] = v
+    cleanup()
     return out, None
 
 

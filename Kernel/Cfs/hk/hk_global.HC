@@ -52,6 +52,28 @@
 #include "hk_msg.HC"
 #include "hk_tbl.HC"
 
+// --- hk_app.h's OWN constants, which are not configuration and not a type -------------------
+//
+// These five live in hk_app.h beside HK_AppData_t, which is why they are here rather than in
+// hk_cfg.HC: they are not token-pasted configuration values, they are HK's return codes and two
+// literals. A first draft of this vocabulary translated the TYPE from hk_app.h and left the
+// #defines behind, and the HolyC half failed to compile with four "Undefined variable
+// 'HK_SUCCESS'" -- which is the good outcome. A missing CONSTANT is a compile error; a missing
+// one that happens to collide with something else is not, and that is why
+// docs/CFS_PORT.md asks for a header to be translated whole rather than for the parts a source
+// happens to use.
+//
+// AND THE THREE RETURN CODES ARE NOT cFE STATUS VALUES. HK_SUCCESS is 0 -- the same as
+// CFE_SUCCESS -- but HK_ERROR is -1 and HK_BAD_MSG_LENGTH_RC is -2, which are not in cFE's
+// 0xCC/0xC4-prefixed space at all. So a function returning HK_ERROR and one returning a cFE
+// status cannot have their results compared against each other, and HK never does: the HK_*
+// codes stay inside hk_utils.c and hk_dispatch.c.
+#define HK_PIPE_NAME "HK_CMD_PIPE"
+#define HK_SUCCESS           0
+#define HK_ERROR             -1
+#define HK_BAD_MSG_LENGTH_RC -2
+#define HK_SB_TIMEOUT        1000
+
 /*******************************************************************************/
 // HK's entire state. 6,216 bytes.
 //

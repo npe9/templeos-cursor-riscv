@@ -575,3 +575,106 @@ cFS repositories read so far have a function in this state, in both cases one th
 want first. It is the kind of thing a header-completeness check would find in bulk; nothing in
 `tools/cfs` does that today, because every gate here starts from a DEFINITION and asks whether the
 translation matches, never from a definition and asks whether anyone can call it.
+
+## 18. LC_CopyBytesWithSwap is a public function with no declaration anywhere
+
+The third instance of note 3's shape, and the second of note 17's. `lc_watch.c` defines
+
+```c
+void LC_CopyBytesWithSwap(LC_MultiType_t *DestBuffer, const uint8 *SrcPtr, LC_MultiType_t *SwapMap,
+                          uint32 NumBytes)
+```
+
+with **external linkage**, and `lc_watch.h` declares its neighbours `LC_GetSizedWPData` and
+`LC_WPOffsetValid` and not this one. Its only caller is in the same file.
+
+### Why it matters here
+
+It is the byte-swapping copy that implements every one of LC's eight big- and little-endian
+watchpoint types, and the swap map is the whole mechanism — a 4-byte `LC_MultiType_t` holding
+`0x00010203` or `0x03020100`, indexed with `& 3`. From `LC_GetSizedWPData`'s output alone you
+cannot tell a byte-reversing copy from an identity one unless the input has four distinct bytes
+AND you know which types are supposed to reverse. So the exercise calls it directly, and
+`tests/cfs/oracle_ccsdspri.c` carries its own prototype with this note beside it.
+
+### The pattern across three repositories
+
+`OS_ConsoleWrite` (osal), `CS_VerifyCmdLength` (CS), `LC_CopyBytesWithSwap` (LC). **Three of the
+four cFS repositories read so far have at least one non-static function that no header declares**,
+and in all three cases it is a function a test wants. The gate that would find these in bulk still
+does not exist: every checker in `tools/cfs` starts from a definition and asks whether the
+translation matches it, never asks whether anything outside the file can call it.
+
+## 19. HK_TableInit reports a copy-table GetAddress failure and then returns success
+
+`hk_app.c`'s `HK_TableInit` ends with eight cFE calls, each with its own event and an early
+return. The seventh is
+
+```c
+Status = CFE_TBL_GetAddress((void *)(&HK_AppData.CopyTablePtr), HK_AppData.CopyTableHandle);
+/* Status should be CFE_TBL_INFO_UPDATED because we loaded it above */
+if (Status != CFE_TBL_INFO_UPDATED)
+{
+    CFE_EVS_SendEvent(HK_CPTBL_GADR_ERR_EID, CFE_EVS_EventType_ERROR,
+                      "Error Getting Adr for Cpy Tbl,RC=0x%08X", (unsigned int)Status);
+    return Status;
+}
+```
+
+The comment is right about the expectation: after a successful `CFE_TBL_Load` the address call
+should answer `CFE_TBL_INFO_UPDATED`. The test is right too. **The `return Status` is the
+problem.** `CFE_TBL_INFO_UPDATED` is a positive informational code, so the one status that is NOT
+`CFE_TBL_INFO_UPDATED` and NOT an error is `CFE_SUCCESS` — zero. On that path `HK_TableInit`
+sends `HK_CPTBL_GADR_ERR_EID` and returns **0**.
+
+Its caller is
+
+```c
+Status = HK_TableInit();
+if (Status != CFE_SUCCESS)
+{
+    /* Specific failure is detailed in function HK_TableInit */
+    return Status;
+}
+```
+
+which does not fire. So `HK_AppInit` continues, sends `HK_INIT_INF_EID` ("HK Initialized."), and
+returns success — with `HK_ProcessNewCopyTable` **never called**. HK then runs with a
+`CopyTablePtr` that was never processed: no output packets built, no input subscriptions made, a
+`RuntimeTablePtr` full of zeroes. Every later walk of the runtime table finds `OutputPktAddr`
+null and skips, so HK reports a clean startup and combines nothing. The only trace is one ERROR
+event followed immediately by an INFORMATION event claiming success.
+
+The two adjacent `GetAddress` calls have **opposite success conditions** — the copy table's tests
+for `CFE_TBL_INFO_UPDATED`, the runtime table's two lines below tests for `CFE_SUCCESS` — which is
+what makes the slip easy to miss on a read.
+
+### Reachability
+
+Driven by the differential: see `hkap_tableinit_getaddr_success` in the exercise. The lever is a
+copy table whose address call answers `CFE_SUCCESS` rather than `CFE_TBL_INFO_UPDATED`, which
+happens whenever the table has already been fetched since its last update.
+
+### What this port does about it
+
+Keeps it. The translation has NASA's test and NASA's `return Status`, with the consequence stated
+at the site in `Kernel/Cfs/hk/hk_app.HC`. A port that returned `HK_ERROR` there would be a
+behaviour change disguised as a translation.
+
+## 20. HK's data-present flag comments are transposed
+
+`hk_utils.h`:
+
+```c
+#define HK_DATA_NOT_PRESENT (0) /**< \brief Input MsgId present in output msg */
+#define HK_DATA_PRESENT     (1) /**< \brief Input MsgId not present */
+```
+
+`NOT_PRESENT` is documented as "present" and `PRESENT` as "not present". The **values are right**
+and every use in `hk_utils.c` is correct — `HK_ProcessIncomingHkData` writes `HK_DATA_PRESENT`
+after a successful copy, `HK_CheckForMissingData` tests for `HK_DATA_NOT_PRESENT`,
+`HK_SetFlagsToNotPresent` clears to `HK_DATA_NOT_PRESENT`. Only the two doc comments are swapped.
+
+Harmless to the code and worth recording because the names and the comments disagree, so a reader
+resolving the ambiguity in favour of the comment gets HK's missing-data logic exactly backwards.
+Noted in `Kernel/Cfs/hk/hk_tbl.HC` beside the definitions, with the names called out as the truth.

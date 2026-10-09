@@ -154,6 +154,11 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "cs_app_cmds.h"
 /* LIMIT CHECKER, the fourth app. lc_custom.h is all that is gated so far; the other six sources
  * follow in dependency order. */
+#include "hk_msgdefs.h"
+#include "hk_msgstruct.h"
+#include "hk_tbldefs.h"
+#include "hk_app.h"
+#include "hk_utils.h"
 #include "lc_msgids.h"
 #include "lc_app.h"
 #include "lc_custom.h"
@@ -794,6 +799,13 @@ static CFE_ES_ResetData_t es_reset_area;
  * then, with the deadline written beside it, and tools/cfs/check_oracle_globals.py is what refuses
  * to let the two definitions coexist -- a C tentative definition in two translation units merges
  * SILENTLY. The same deadline MD_AppData and MM_AppData each had, met the same way. */
+
+/* HK_AppData IS NASA'S, defined in hk_app.c, which is gated as of this commit -- so the
+ * definition that stood here for exactly one commit, while only hk_utils.c was gated, is gone.
+ * tools/cfs/check_oracle_globals.py is what refuses to let two coexist, and unlike LC's identical
+ * comment that is now a CHECKED claim: LC's was tested by adding lc_app.c with the definitions
+ * still in place, the gate passed, and the reason was that it had been dropping 27 of 116 sources
+ * unexamined. Fixed before HK started. */
 
 /* LC_OperData AND LC_AppData ARE NASA'S, defined in lc_app.c, which is gated as of this commit.
  * They sat HERE from lc_action.c's commit -- that source reads both, so the C reference would not

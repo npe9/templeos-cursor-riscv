@@ -133,8 +133,19 @@ BUILTIN = {"TRUE", "FALSE", "NULL", "ON", "OFF"}
 # none of them can ever be a class by value.
 SUBREG = {"u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"}
 
-# Sites verified SAFE, each with the reason. A struct of 8 bytes or less copies whole, so a
-# small class is allowed here -- with its size stated, because the entry is a claim about it.
+# Sites verified SAFE, each with the reason, WITH ITS SIZE STATED because the entry is a claim
+# about the class.
+#
+# **"8 BYTES OR LESS" IS A VALID REASON FOR `arr[i] = s` AND NOT FOR `*ptr = s`.** That asymmetry
+# was measured, not reasoned: tests/exec/cases/e_struct_copy_into_slot.hc had `*ptr = s` for a
+# WIDE class (first eight bytes) and `arr[i] = s` for a NARROW one (whole, neighbours untouched),
+# and nothing for narrow-through-a-pointer. HK's
+# `*MissingInputMid = CpyTblEntry->InputMid` -- a 4-byte CFE_SB_MsgId -- forced the question, the
+# case was extended, and a 2-byte class through a bare pointer ZEROED ITS NEIGHBOUR. An array
+# slot narrows the store; a bare pointer does not.
+#
+# So a `*ptr =` site cannot be exempted on size at all, and the one entry below is an `arr[i] =`.
+# HK uses MemCpy instead, with the measurement cited at the site.
 ALLOW = {
     # CFE_SBR_RouteId is ONE U16 -- two bytes, which the store handles at its own width and
     # without touching the neighbouring slots. That is not arithmetic: the narrow-class case in
@@ -143,6 +154,10 @@ ALLOW = {
     # would be the recorded array-deref store bug and CFE_SBR_MSGMAP is exactly the array it
     # would corrupt. NASA's own line is `CFE_SBR_MSGMAP[hash] = RouteId;` and it stays.
     "Kernel/Cfs/cfe/cfe_sbr_map_hash.HC:82": "CFE_SBR_RouteId is 2 bytes (one U16)",
+    # CFE_SB_MsgId is ONE U32 -- four bytes, copied whole through the output pointer. NASA's own
+    # line (hk_utils.c:721) is `*MissingInputMid = CpyTblEntry->InputMid;`, the single input id of
+    # a combined packet that came up short, written back to the caller's own CFE_SB_MsgId.
+    "Kernel/Cfs/hk/hk_utils.HC:754": "CFE_SB_MsgId is 4 bytes (one U32)",
 }
 
 # Right-hand sides whose base name this gate cannot resolve, each with the reason. An entry is
@@ -610,9 +625,15 @@ def main():
                   " docs/HOLYC_STRUCT_LIMITS.md", file=sys.stderr)
             print("  #21, pinned by tests/exec/cases/e_struct_copy_into_slot.hc. Use MemCpy and"
                   " say why, as", file=sys.stderr)
-            print("  cfe_es_perf.HC and cfe_es_appctrl.HC do -- or, if the class is 8 bytes or"
-                  " less, add the", file=sys.stderr)
-            print("  site to ALLOW with its size.", file=sys.stderr)
+            print("  cfe_es_perf.HC and cfe_es_appctrl.HC do.", file=sys.stderr)
+            print("  A class of 8 bytes or less may go in ALLOW with its size ONLY for an"
+                  " `arr[i] =`", file=sys.stderr)
+            print("  destination. For a `*ptr =` destination, size is NOT a reason: a 2-byte"
+                  " class", file=sys.stderr)
+            print("  through a bare pointer zeroes its neighbour (measured in the exec case"
+                  " above),", file=sys.stderr)
+            print("  because an array slot narrows the store and a bare pointer does not.",
+                  file=sys.stderr)
             print("    %s;" % stmt, file=sys.stderr)
             rc = 1
 

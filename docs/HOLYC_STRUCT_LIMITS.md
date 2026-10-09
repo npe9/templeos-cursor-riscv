@@ -1164,6 +1164,41 @@ project keeps finding: the failure path printed `line.strip()`, and `line` did n
 that scope. The gate would have raised `NameError` instead of reporting a finding. It had been
 driven to failure once, before the matcher moved from lines to statements, and never again.
 
+### REFINEMENT (HK): "8 bytes or less" rescues an array slot and NOT a bare pointer
+
+The table in `tests/exec/cases/e_struct_copy_into_slot.hc` originally had two rows that looked
+like they settled the small-class question between them:
+
+```
+  arr[i] = s        FIRST 8 BYTES ONLY   (wide class)
+  narrow[i] = s     WHOLE, neighbours untouched   (2-byte class)
+  *ptr = s          FIRST 8 BYTES ONLY   (wide class)
+```
+
+so the rule read as "a class of 8 bytes or less is correct by accident" and
+`check_struct_copy.py` exempted small classes on size alone. **The narrow-through-a-bare-pointer
+case was never measured**, and it does not follow:
+
+```
+  *np = narrow      EIGHT BYTES -- the NEIGHBOUR IS ZEROED
+```
+
+Measured by extending that case: slot 6 of a `Narrow[8]` (one `U16` each) takes the value and
+slot 7 goes from 12 to **0**. An array-slot destination narrows the store to the type's width; a
+bare-pointer destination does not.
+
+**What forced the question** was `hk_utils.c`'s `HK_CheckForMissingData`:
+
+```c
+*MissingInputMid = CpyTblEntry->InputMid;     /* CFE_SB_MsgId -- 4 bytes */
+```
+
+-- eight bytes written through a caller-supplied pointer to a four-byte object. In HK's own
+caller the extra four bytes land on padding after an 8-byte-aligned local, so the clobber is
+invisible there, which is precisely why the translation uses `MemCpy` rather than taking the
+exemption. `check_struct_copy.py`'s ALLOW preamble and its failure message now say that size is a
+reason for `arr[i] =` and never for `*ptr =`.
+
 ## 22. A stack array in a huge function makes a file-scope `&function` read as 0 — OPEN, and SILENT
 
 Adding three local arrays — 64 + 64 + 40 = 168 bytes — to a nested block of an already very

@@ -25,6 +25,22 @@
 //   arr[i] = *p           FIRST 8 BYTES ONLY -- the destination still decides
 //   arr[i] = arr[j]       FIRST 8 BYTES ONLY -- a source element is fine, the slot is not
 //
+//   *np = narrow          **EIGHT BYTES**, and the NEIGHBOURS ARE CLOBBERED -- measured below.
+//                         This is the row that does NOT follow from the other two, and it is the
+//                         one that matters: a narrow class into an ARRAY SLOT is stored at its
+//                         own width (above), but the same narrow class through a BARE POINTER is
+//                         not. The destination form decides, and "narrow" does not rescue it.
+//
+// SO THE TWO BROKEN FORMS ARE NOT SYMMETRIC. `arr[i] = s` is safe for a class of 8 bytes or
+// less and `*ptr = s` is NOT, which is what check_struct_copy's ALLOW list has to encode --
+// before this measurement it let both through on size alone. The site that forced the question
+// is hk_utils.c's HK_CheckForMissingData:
+//
+//     *MissingInputMid = CpyTblEntry->InputMid;        // CFE_SB_MsgId, 4 bytes
+//
+// -- eight bytes written through a caller-supplied pointer to a four-byte object. The
+// translation uses MemCpy there and says so at the site.
+//
 // The source-side pair is here because `AppRecPtr->StartParams = *Params;` is how cfe_es_apps.c
 // copies a 344-byte parameter block, and the gate's right-hand-side pattern did not match a
 // leading `*` at all -- so a statement of that shape was not flagged, not exempted, and not
@@ -90,6 +106,7 @@ class Holder
 };
 Narrow NarrowSlots[8];
 Narrow NarrowSrc;
+Narrow *np;
 Holder HeldSlots[4];
 class WideHolder
 {
@@ -229,5 +246,30 @@ I64 main()
   // 4
   r = (r << 4) | WideSlots[0].c;
   // 9 today, 6 when fixed
+  // --- A NARROW CLASS THROUGH A **BARE POINTER**, which the table above did not cover: it has
+  // `*ptr = s` measured for a WIDE class (first 8 bytes) and `narrow[i] = s` measured for an
+  // array slot (whole, neighbours untouched), and nothing for the two together.
+  //
+  // IT IS THE SHAPE HK USES. hk_utils.c's HK_CheckForMissingData writes
+  //
+  //     *MissingInputMid = CpyTblEntry->InputMid;
+  //
+  // where CFE_SB_MsgId is a 4-byte class, and check_struct_copy flagged it. Whether that is safe
+  // turns entirely on this measurement: if the store is 8 bytes wide it writes 4 bytes PAST a
+  // 4-byte object through a caller-supplied pointer, and the caller is
+  // HK_SendCombinedHkPacket's local.
+  //
+  // THE NEIGHBOURS ARE WHAT SAYS SO, so the target is slot 6 of the array and slot 7 is the
+  // witness -- an 8-byte store into slot 6 of a 2-byte class would take 7, 8 and 9 with it.
+  NarrowSlots[6].v = 11;
+  NarrowSlots[7].v = 12;
+  NarrowSrc.v = 13;
+  np = &NarrowSlots[6];
+  *np = NarrowSrc;
+  r = (r << 4) | NarrowSlots[6].v;
+  // D
+  r = (r << 4) | NarrowSlots[7].v;
+  // **0**, because the store through the pointer IS eight bytes wide. C is what it would read
+  // if a bare-pointer destination narrowed the way an array slot does. It does not.
   return r;
 }
