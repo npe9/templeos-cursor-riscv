@@ -1888,6 +1888,7 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 // definition in the driver and not as a weak symbol.
 #include "/Kernel/Cfs/sc/sc_atsrq.HC"
 #include "/Kernel/Cfs/sc/sc_loads.HC"
+#include "/Kernel/Cfs/sc/sc_state.HC"
 
 // ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
 //

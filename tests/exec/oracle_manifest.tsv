@@ -145,3 +145,4 @@ tests/exec/cases/e_const_int_div.hc	000000002c580b03
 tests/exec/cases/e_f32_bits.hc	6c37d87e29927c93
 tests/exec/cases/e_strprint_pad_unsigned.hc	00000000670659be
 tests/exec/cases/e_u16_wrap_insert.hc	0000de9e37155f41
+tests/exec/cases/e_i16_signed_countdown.hc	00009305494f8f79

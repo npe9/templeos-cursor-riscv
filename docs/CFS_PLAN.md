@@ -4065,3 +4065,38 @@ clock SC reads, through cFE's own API, with an event of its own in the transcrip
 poke at `CFE_TIME_Global` and nothing on `check_coverage`'s exclusion list. An earlier draft of
 this plan said the API was compiled out and the global had to be poked; that was wrong, and the
 three file:line references above are what corrected it.
+
+### `sc_state.c` gated: SC at 2,776 of 4,157 lines (67%), five of eight sources
+
+```
+  GATED  sc_utils.c     185     SC's time arithmetic
+  GATED  sc_rtsrq.c     619     the RTS request layer, hoists 1-2
+  GATED  sc_atsrq.c     742     the ATS request layer, hoists 3-6
+  GATED  sc_loads.c     893     the parsers and validators, hoists 7-12
+  GATED  sc_state.c     340     what runs next: RTS priority, RTS stepping, ATS advance
+    -    sc_cmds.c      764
+    -    sc_dispatch.c  275
+    -    sc_app.c       617
+```
+
+**`int16` ARRIVED, AND IT IS THE ONLY "MUST be SIGNED" COMMENT IN ANY VENDOR TREE THIS PORT READS.**
+`SC_GetNextRtsTime`'s loop counter is an `int16` that NASA annotates in capitals, because the walk
+runs downwards and ends by going negative. Every narrow local in the port before this one was a
+`U16`, so `I16` was measured before the file was written:
+`tests/exec/cases/e_i16_signed_countdown.hc` pins the descending loop, the `(U16)` of the exhausted
+counter (which has to equal `SC_INVALID_RTS_INDEX`), sign extension on widening, signed 16-bit
+overflow, and the unsigned twin **as a value rather than as a hang**. Two of its four mutations
+fail; the two that pass are written into the case, one of them because the header's first version
+claimed it failed.
+
+The direction of that loop is load-bearing in a way worth recording: the body's comparison is
+`<=`, so a later candidate at an equal wakeup count displaces an earlier one, and because the walk
+is backwards "later" means a **lower RTS number**. That pairing is the whole of SC's RTS priority
+scheme — there is no priority field. Reverse the loop or tighten the comparison to `<` and ties go
+to the highest-numbered RTS, with nothing to show for it.
+
+Two shapes noted at the site rather than as findings: `SC_AppData.NextCmdTime[2]` is an absolute
+time in slot 0 and a **wakeup count** in slot 1, which NASA's own declaration comment states; and
+`SC_GetNextRtsCommand` adds `SC_RTS_HEADER_SIZE` to each of the two command lengths it reads and
+then subtracts it back off in both validity tests, reusing one variable for two different
+commands' sizes.

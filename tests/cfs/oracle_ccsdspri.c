@@ -189,6 +189,7 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "sc_tbl.h"
 #include "sc_msg.h"
 #include "sc_loads.h"
+#include "sc_state.h"
 #include "iodriver_base.h"
 #include "iodriver_analog_io.h"
 #include "lc_msgids.h"
