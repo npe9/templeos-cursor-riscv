@@ -82,7 +82,14 @@ INC = ["-I" + p for p in INC_PATHS + sorted(glob.glob(os.path.join(CFE, "modules
   + sorted(glob.glob(os.path.join(CFE, "modules", "*", "fsw", "src")))
   + sorted(glob.glob(os.path.join(CFE, "modules", "*", "config")))
   + sorted(glob.glob(os.path.join(CFE, "modules", "*", "option_inc")))
-  + sorted(glob.glob(os.path.join(CFE, "modules", "*", "private_inc")))]
+  + sorted(glob.glob(os.path.join(CFE, "modules", "*", "private_inc")))
+  # THE PSP'S MODULE INCLUDE DIRECTORIES. A PSP module is laid out like a cFE module but under
+  # vendor/PSP, and HS's system monitor is the first thing in this port to reach one: the I/O
+  # driver abstraction's three structs live in PSP/fsw/modules/iodriver/inc. Without this the
+  # probe cannot even #include iodriver_base.h, and the three classes are reported as UNMEASURED
+  # -- which is the right failure and is how this line came to exist.
+  + [os.path.join(ROOT, "vendor", "PSP", "fsw", "modules", "iodriver", "inc")]
+  + sorted(glob.glob(os.path.join(ROOT, "vendor", "PSP", "fsw", "modules", "*", "inc")))]
 
 # Headers the probe includes. A struct no header here declares cannot be measured and is
 # REPORTED as unmeasured rather than skipped silently -- an unmeasured struct is the same blind
@@ -139,6 +146,12 @@ HDRS = [
     # 'HS_HkPacket_t'", and the probe's 16-round bisect then reports only that it would not
     # compile.
     "hs_msg.h", "hs_msgstruct.h", "hs_app.h",
+    # THE PSP'S I/O DRIVER MODULE HEADERS, which HS's system monitor is the first thing in this
+    # port to reach. CFE_PSP_IODriver_Location_t, _Arg_t and _AnalogRdWr_t live in a PSP MODULE
+    # (PSP/fsw/modules/iodriver/inc) rather than in fsw/inc, so neither this list nor
+    # check_structs' NASA_DIRS had them -- and check_structs refused on all three before
+    # check_padding could even try, which is the two gates working as intended.
+    "iodriver_base.h", "iodriver_analog_io.h",
     # The reset area. CFE_EVS_EarlyInit sizes the WHOLE of CFE_ES_ResetData_t and takes the event
     # log out of it, so the translation declares that type and the eight ES/TIME types under it.
     # They are types, not code -- no ES function is translated -- and this is what measures them.

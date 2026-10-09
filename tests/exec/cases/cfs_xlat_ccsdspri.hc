@@ -1854,6 +1854,14 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/hk/hk_cmds.HC"
 #include "/Kernel/Cfs/hk/hk_dispatch.HC"
 #include "/Kernel/Cfs/hk/hk_app.HC"
+#include "/Kernel/Cfs/cfe/cfe_psp_iodriver.HC"
+#include "/Kernel/Cfs/hs/hs_cfg.HC"
+#include "/Kernel/Cfs/hs/hs_msg.HC"
+#include "/Kernel/Cfs/hs/hs_tbl.HC"
+#include "/Kernel/Cfs/hs/hs_global.HC"
+#include "/Kernel/Cfs/hs/hs_eventids.HC"
+#include "/Kernel/Cfs/hs/hs_utils.HC"
+#include "/Kernel/Cfs/hs/hs_sysmon.HC"
 
 // ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
 //
@@ -13461,6 +13469,177 @@ U0 lc_block_app()
   S(" cdswrites=");
   D(es_cds_writes - before);
   S("\n");
+}
+
+
+// ---- THE SIMULATED WATCHDOG AND I/O DRIVER, for HS -----------------------------------------
+//
+// HS is the first app in this port whose missing symbols are DEVICES rather than memory. MD reads
+// memory, MM writes it, CS checksums it, LC compares it and HK copies it -- all served by the
+// simulated window of literal addresses. HS pets a hardware watchdog and reads CPU utilisation
+// through the PSP's I/O driver abstraction, and neither exists here.
+//
+// ### THE WATCHDOG IS A COUNTER AND A FLAG, AND THAT IS ENOUGH TO BE WRONG ABOUT
+//
+// A real watchdog resets the board when it is not serviced within its timeout. Nothing here can
+// reset the board, so what is simulated is the INTERFACE and the BOOKKEEPING: how many times HS
+// petted it, what timeout it asked for, whether it is enabled. That is the whole of what HS can
+// observe about a watchdog through the PSP, so it is the whole of what the differential can pin.
+//
+// **WHAT IS DELIBERATELY NOT SIMULATED is the expiry.** A simulation that counted down and
+// "reset" would be inventing a behaviour HS never sees: HS has no API to ask whether the watchdog
+// fired, because on real hardware the answer is that it is no longer running. So the counters are
+// the assertion and the expiry is named here as absent rather than faked.
+//
+// ### THE I/O DRIVER IS ONE DEVICE WITH ONE ANALOG CHANNEL
+//
+// HS's configured path is HS_SYSTEM_MONITOR_DEVICE / SUBSYSTEM_NAME / SUBCHANNEL_NAME --
+// "linux_sysmon" / "aggregate" / "cpu-load" -- and the simulation answers to EXACTLY those names
+// and refuses anything else. That matters: a driver that answered any name would pass the
+// differential while a mission with a typo in its configuration would not, and the point of
+// driving HS_SysMonInit at all is that the lookup chain works.
+//
+// THE SAMPLE IS DERIVED FROM A UTILISATION THE EXERCISE SETS, not from a raw ADC code, because
+// HS's conversion is `((Sample >> 8) * HS_CPU_UTILIZATION_MAX) / 0xFFFF` and writing the ADC code
+// by hand would mean doing that arithmetic backwards in the test. So hs_sim_set_util(5000) means
+// "50.00% busy" and the driver computes the code HS will decode back to 5000 -- which also makes
+// the ROUNDING visible, since the two directions are not exact inverses.
+//
+// ### BOTH DEVICES ARE WRITTEN TWICE, AND THEY HAVE TO AGREE
+//
+// This is the HolyC half; tests/cfs/oracle_ccsdspri.c has the C half. They are MY code rather
+// than NASA's, so the differential does not prove either one right -- it proves they agree, which
+// is what keeps a divergence in HS's own translation from hiding behind a divergence in the
+// simulation. Every value either one invents is a constant written in both.
+
+// --- the watchdog -----------------------------------------------------------------------------
+U32 psp_wd_timeout;  // the value HS asked for with CFE_PSP_WatchdogSet
+I64 psp_wd_services; // how many times CFE_PSP_WatchdogService was called
+I64 psp_wd_enabled;  // whether CFE_PSP_WatchdogEnable has been called
+I64 psp_wd_inits;    // CFE_PSP_WatchdogInit calls
+
+U0 CFE_PSP_WatchdogInit()
+{
+  ++psp_wd_inits;
+  psp_wd_timeout = 0;
+  psp_wd_enabled = 0;
+}
+
+U0 CFE_PSP_WatchdogEnable()
+{
+  psp_wd_enabled = 1;
+}
+
+U0 CFE_PSP_WatchdogDisable()
+{
+  psp_wd_enabled = 0;
+}
+
+U0 CFE_PSP_WatchdogService()
+{
+  ++psp_wd_services;
+}
+
+U32 CFE_PSP_WatchdogGet()
+{
+  return psp_wd_timeout;
+}
+
+U0 CFE_PSP_WatchdogSet(U32 WatchdogValue)
+{
+  psp_wd_timeout = WatchdogValue;
+}
+
+// --- the I/O driver ---------------------------------------------------------------------------
+
+// THE MODULE ID IS A FIXED NON-ZERO CONSTANT, and non-zero is load-bearing: HS uses
+// `SysMonPspModuleId == 0` as "there is no device", in HS_SysMonCleanup and in
+// HS_SysMonGetCpuUtilization both. A simulation that handed out 0 would make every later call
+// take the no-device path and the transcript would still be green.
+#define PSP_SIM_SYSMON_MODULE_ID 0x5A5A0001
+
+// The subsystem and subchannel the one device has. Non-zero for the same reason, and DIFFERENT
+// from each other so a translation that swapped the two lookups is visible.
+#define PSP_SIM_SUBSYSTEM_ID  3
+#define PSP_SIM_SUBCHANNEL_ID 7
+
+I64 psp_io_running;             // SET_RUNNING state
+I64 psp_io_reads;               // ANALOG_IO_READ_CHANNELS calls
+I32 psp_io_util;                // the utilisation the exercise wants reported, 0..10000
+I32 psp_io_read_rc;             // steerable, so the read-failure arm is reachable
+I64 psp_io_present;             // steerable, so the no-device arm is reachable
+
+// Set the CPU utilisation the simulated device will report, in hundredths of a percent -- the
+// same units HS_CPU_UTILIZATION_MAX uses, so 10000 is fully busy.
+U0 hs_sim_set_util(I32 Hundredths)
+{
+  psp_io_util = Hundredths;
+}
+
+I32 CFE_PSP_IODriver_FindByName(U8 *DriverName, U32 *PspModuleId)
+{
+  // EXACTLY HS'S CONFIGURED NAME AND NOTHING ELSE -- see the block comment.
+  if (psp_io_present && DriverName != NULL && !StrCmp(DriverName, "linux_sysmon")) {
+    *PspModuleId = PSP_SIM_SYSMON_MODULE_ID;
+    return CFE_PSP_SUCCESS;
+  }
+  return CFE_PSP_ERROR;
+}
+
+I32 CFE_PSP_IODriver_Command(CFE_PSP_IODriver_Location *Location, U32 CommandCode,
+                             CFE_PSP_IODriver_Arg Arg)
+{
+  CFE_PSP_IODriver_AnalogRdWr *RdWr;
+  I32 Code;
+
+  if (Location == NULL || Location->PspModuleId != PSP_SIM_SYSMON_MODULE_ID) {
+    return CFE_PSP_ERROR;
+  }
+
+  switch (CommandCode) {
+    case CFE_PSP_IODriver_NOOP:
+      return CFE_PSP_SUCCESS;
+
+    case CFE_PSP_IODriver_SET_RUNNING:
+      psp_io_running = Arg.U32 != 0;
+      return CFE_PSP_SUCCESS;
+
+    case CFE_PSP_IODriver_GET_RUNNING:
+      return psp_io_running;
+
+    case CFE_PSP_IODriver_LOOKUP_SUBSYSTEM:
+      if (Arg.ConstStr != NULL && !StrCmp(Arg.ConstStr, "aggregate")) {
+        return PSP_SIM_SUBSYSTEM_ID;
+      }
+      return CFE_PSP_ERROR;
+
+    case CFE_PSP_IODriver_LOOKUP_SUBCHANNEL:
+      if (Arg.ConstStr != NULL && !StrCmp(Arg.ConstStr, "cpu-load")) {
+        return PSP_SIM_SUBCHANNEL_ID;
+      }
+      return CFE_PSP_ERROR;
+
+    case CFE_PSP_IODriver_ANALOG_IO_READ_CHANNELS:
+      ++psp_io_reads;
+      if (psp_io_read_rc != CFE_PSP_SUCCESS) {
+        return psp_io_read_rc;
+      }
+      RdWr = Arg.Vptr;
+      if (RdWr == NULL || RdWr->Samples == NULL || RdWr->NumChannels == 0) {
+        return CFE_PSP_ERROR;
+      }
+      // HS DECODES WITH `((Sample >> 8) * HS_CPU_UTILIZATION_MAX) / 0xFFFF`, so the code that
+      // decodes back to psp_io_util is `(util * 0xFFFF / MAX) << 8`. The two directions are NOT
+      // exact inverses -- both divisions truncate -- and that is left visible rather than
+      // corrected: the exercise sets 5000 and asserts whatever HS actually computes, which is the
+      // only honest way to pin an ADC conversion.
+      Code = psp_io_util * 0xFFFF / HS_CPU_UTILIZATION_MAX;
+      RdWr->Samples[0] = Code << 8;
+      return CFE_PSP_SUCCESS;
+
+    default:
+      return CFE_PSP_ERROR_NOT_IMPLEMENTED;
+  }
 }
 
 // ===================== HK, THE FIFTH cFS APP -- THE EXERCISE =====================

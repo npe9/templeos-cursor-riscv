@@ -50,6 +50,21 @@ NASA_DIRS += sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*
   + sorted(_glob.glob(os.path.join(ROOT, "vendor", "cFE", "modules", "*", "option_inc"))) \
   + [os.path.join(ROOT, "vendor", "cFE", "cmake", "target", "inc")]
 
+# THE PSP'S fsw/inc, AND ITS MODULES' inc DIRECTORIES.
+#
+# The PSP was not on this list at all, which did not matter while every PSP function this port
+# needed was a scalar call (CFE_PSP_GetProcessorId, MemRead8, WriteToCDS). **HS changed that**:
+# its system monitor reads CPU utilisation through the PSP's I/O DRIVER ABSTRACTION, which
+# declares three structs -- CFE_PSP_IODriver_Location_t, _Arg_t and _AnalogRdWr_t -- and those
+# live in PSP/fsw/modules/iodriver/inc rather than in fsw/inc, because an I/O driver is a PSP
+# MODULE.
+#
+# Without this, the three translated classes came back UNPAIRED and the gate refused, which is
+# the right answer: its own message says "the NAME or the search path is wrong", and the search
+# path was. They are NASA's types and now they are compared against NASA's declarations.
+NASA_DIRS += [os.path.join(ROOT, "vendor", "PSP", "fsw", "inc")] \
+  + sorted(_glob.glob(os.path.join(ROOT, "vendor", "PSP", "fsw", "modules", "*", "inc")))
+
 # eds_*.h IS SKIPPED, AND THE HONEST VERSION OF WHY. Every cFS config directory ships both a
 # default_ and an eds_ set, and the first thing written here was that they declare the same type
 # names with different layouts, so whichever this scan reached first is what a translated class
