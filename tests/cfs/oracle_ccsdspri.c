@@ -182,6 +182,12 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "hs_cmds.h"
 #include "hs_dispatch.h"
 #include "hs_eventids.h"
+#include "sc_app.h"
+#include "sc_utils.h"
+#include "sc_events.h"
+#include "sc_msgids.h"
+#include "sc_tbl.h"
+#include "sc_msg.h"
 #include "iodriver_base.h"
 #include "iodriver_analog_io.h"
 #include "lc_msgids.h"
@@ -11113,6 +11119,23 @@ static void lc_block_app(void)
  * links. check_oracle_globals.py was the deadline and it is the thing that would have refused
  * this file if the stand-in had stayed -- the sixth app in a row where that gate, rather than a
  * memory of having written a comment, is what retired the temporary. */
+
+/* SC_AppData AND SC_OperData ARE NASA'S, defined in sc_app.c, WHICH IS NOT GATED YET -- so they
+ * live here until it is, and the deadline is written down the way the six before them were.
+ *
+ * **SC IS THE FIRST APP TO NEED TWO.** Every app so far has had one global; SC splits its state
+ * into what cFE owns (SC_OperData: the pipe, nine table handles and addresses, the HK packet) and
+ * what SC owns (SC_AppData: two 1,000-entry index buffers, the time reference, the counters). So
+ * there are two stand-ins to retire rather than one, and check_oracle_globals.py will name
+ * whichever is forgotten.
+ *
+ * THE LINK IS WHAT FORCES THEM: sc_utils.c is gated as of this commit and reads
+ * SC_AppData.TimeRef, .CurrentTime, .CurrentWakeupCount and SC_OperData.AtsCtrlBlckAddr, so the C
+ * reference would not link without both. The HolyC half needs no equivalent -- sc_global.HC
+ * defines them, because a HolyC `extern` outside the module loader's window is a module-local
+ * dummy. */
+SC_AppData_t  SC_AppData;
+SC_OperData_t SC_OperData;
 
 /* ---- THE SIMULATED WATCHDOG AND I/O DRIVER, for HS -----------------------------------------
  *

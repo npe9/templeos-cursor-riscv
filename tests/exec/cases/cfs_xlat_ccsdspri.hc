@@ -1866,6 +1866,15 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/hs/hs_cmds.HC"
 #include "/Kernel/Cfs/hs/hs_dispatch.HC"
 #include "/Kernel/Cfs/hs/hs_app.HC"
+// SC, THE SEVENTH cFS APP. The include order is the one every SC source states in its own
+// "REQUIRED INCLUDE ORDER" block: configuration, then the table/index algebra, then the messages,
+// then the global, then the event ids, then the sources in module_deps order.
+#include "/Kernel/Cfs/sc/sc_cfg.HC"
+#include "/Kernel/Cfs/sc/sc_tbl.HC"
+#include "/Kernel/Cfs/sc/sc_msg.HC"
+#include "/Kernel/Cfs/sc/sc_global.HC"
+#include "/Kernel/Cfs/sc/sc_events.HC"
+#include "/Kernel/Cfs/sc/sc_utils.HC"
 
 // ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
 //

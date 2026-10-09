@@ -190,7 +190,34 @@ C_TYPES = [(r'\bconst\b', ' '),
            (r'\bCS_ChecksumState_Enum_t\b', ' NUM '),
            # CS's own helper structs, declared in a .c rather than a header.
            (r'\bCS_LocalChecksumState_t\s*\*', ' PTR_CS_LocalChecksumState '),
-           (r'\bCS_ValidationMetrics_t\s*\*', ' PTR_CS_ValidationMetrics ')]
+           (r'\bCS_ValidationMetrics_t\s*\*', ' PTR_CS_ValidationMetrics '),
+           # SC'S FIFTEEN SCALAR TYPEDEFS, ALL OF THEM, ENUMERATED FROM NASA'S HEADERS RATHER
+           # THAN ADDED ONE GATE-FAILURE AT A TIME.
+           #
+           # SC's struct pointers need nothing here -- _struct_ptr_rules() already derives a
+           # per-type token for every T NASA declares as a struct or union. What it cannot see is
+           # a `typedef uint16 SC_AtsNum_t`, and an unrecognised scalar normalises to the EMPTY
+           # STRING, which is the blind spot this file records fourteen times: **two unrecognised
+           # types agree as two blanks.**
+           #
+           # It was caught here only because the TRANSLATION's side was recognised -- U32 -> NUM
+           # against NASA's blank, on SC_CompareAbsTime and SC_LookupTimeAccessor. Had both sides
+           # been unknown the pair would have matched on nothing, which is why the list below is
+           # the complete set from
+           #   grep -hE '^typedef +(uint8|uint16|uint32) +SC_[A-Za-z0-9_]+;'
+           # over SC's config, fsw/inc and fsw/src, and not just the two the gate named.
+           #
+           # ALL FIFTEEN ARE 32-BIT-OR-LESS UNSIGNED, so all fifteen are NUM -- the widths differ
+           # (uint8, uint16, uint32) but this gate's NUM covers that range by design, and
+           # check_structs is what compares a FIELD's exact width. The number/index distinction
+           # SC draws in its type names is therefore invisible here, which is the same thing
+           # sc_tbl.HC's header says about the C: both are uint16 and only the names carry it.
+           (r'\bSC_(?:AbsTimeTag|RelWakeupCount|SeqIndex|EntryOffset)_t\s*\*', ' PTRNUM '),
+           (r'\bSC_(?:AbsTimeTag|RelWakeupCount|SeqIndex|EntryOffset)_t\b', ' NUM '),
+           (r'\bSC_(?:Ats|Rts|Command)(?:Num|Index)_t\s*\*', ' PTRNUM '),
+           (r'\bSC_(?:Ats|Rts|Command)(?:Num|Index)_t\b', ' NUM '),
+           (r'\bSC_(?:Status|Process|AtsId|AtsCont|TimeRef)_Enum_t\s*\*', ' PTRNUM '),
+           (r'\bSC_(?:Status|Process|AtsId|AtsCont|TimeRef)_Enum_t\b', ' NUM ')]
 H_TYPES = [(r'\bCFE_MSG_Message\s*\*', ' PTRB '), (r'\bCFE_\w+\s*\*', ' PTRNUM '),
            # A cFE opaque type passed BY VALUE -- CFE_SB_MsgId, CFE_SBR_RouteId. These are
            # classes wrapping one integer, so they normalise the same as the C's typedefs.
