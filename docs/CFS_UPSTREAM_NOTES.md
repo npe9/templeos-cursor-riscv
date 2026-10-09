@@ -925,3 +925,102 @@ from the line it broke.
 Keeps it verbatim. The fix is a line of NASA's code that is not there, and adding it would be
 repairing a defect rather than translating one. The translation carries the note number at the
 site, so the sentinel in the transcript is documented rather than surprising.
+
+## 25. SC reports the append table's size in two different units one line apart, and the telemetry point is the wrong one
+
+`sc_loads.c`'s `SC_UpdateAppend` walks the newly loaded append table counting entries, then
+publishes the result three ways:
+
+```c
+SC_OperData.HkPacket.Payload.AppendEntryCount = EntryCount;
+SC_OperData.HkPacket.Payload.AppendByteCount  = EntryIndex * SC_BYTES_IN_ATS_APPEND_ENTRY;
+SC_AppData.AppendWordCount                    = EntryIndex;
+
+CFE_EVS_SendEvent(SC_UPDATE_APPEND_EID, CFE_EVS_EventType_INFORMATION,
+                  "Update Append ATS Table: load count = %d, command count = %d, byte count = %d",
+                  SC_OperData.HkPacket.Payload.AppendLoadCount, (int)EntryCount,
+                  (int)EntryIndex * SC_BYTES_IN_WORD);
+```
+
+`SC_BYTES_IN_ATS_APPEND_ENTRY` is **2** and `SC_BYTES_IN_WORD` is **4**, both from `sc_app.h`. So
+the same `EntryIndex` becomes the "byte count" in the housekeeping packet and twice that in the
+event text, and the two numbers are five lines apart in one function.
+
+### Which one is right, established from the memcpy and not from the names
+
+`EntryIndex` is a count of **32-bit** words. Every step of the walk adds
+`SC_ATS_HDR_NOPKT_WORDS + CommandWords`, where
+
+```c
+#define SC_ATS_HDR_NOPKT_WORDS (SC_ATS_HEADER_SIZE / SC_BYTES_IN_WORD)
+CommandWords = (CommandBytes + SC_ROUND_UP_BYTES) / SC_BYTES_IN_WORD;
+```
+
+-- both divisions by 4 -- and the loop's bound is `SC_APPEND_BUFF_SIZE32`, the buffer's length in
+32-bit words.
+
+The decisive evidence is in the next function. `SC_ProcessAppend` copies the append table with
+
+```c
+memcpy(SC_GetAtsEntryAtOffset(AtsIndex, EntryIndex), SC_OperData.AppendTblAddr,
+       SC_AppData.AppendWordCount * SC_BYTES_IN_WORD);
+```
+
+and `AppendWordCount` is the same `EntryIndex`. **So `EntryIndex * 4` is the number of bytes SC
+itself copies**, which makes the event's number the real byte count and the telemetry point exactly
+half of it. `SC_VerifyAtsTable`'s own information event agrees with the event here -- it prints
+`(int)BufferIndex * SC_BYTES_IN_WORD` for the same kind of quantity -- so two of SC's three
+published byte counts for an ATS buffer use 4 and the one in the packet uses 2.
+
+### Where the 2 comes from
+
+It is not arbitrary, and that is what makes it durable. **SC's configured buffer sizes are counts
+of 16-bit words**:
+
+```c
+#define SC_ATS_BUFF_SIZE32    (SC_ATS_BUFF_SIZE / 2)
+#define SC_APPEND_BUFF_SIZE32 (SC_APPEND_BUFF_SIZE / 2)
+```
+
+`SC_ATS_BUFF_SIZE` is 8000 and the array it bounds is 4000 32-bit words, or 16000 bytes --
+`Kernel/Cfs/sc/sc_cfg.HC` sets out all three numbers because the app states its sizes in three
+units. `SC_BYTES_IN_ATS_APPEND_ENTRY 2`, documented as "Bytes in an ATS append table entry", is
+the bytes per **16-bit** word from that older counting. Multiply a 32-bit word count by it and you
+get half the bytes. The constant has exactly one use in all of SC -- this line -- so nothing else
+in the app can disagree with it, and nothing else has to be changed to fix it.
+
+### The consequence
+
+`AppendByteCount` is a `uint16` and the append buffer is 2000 32-bit words, so the true count
+tops out at 8000 and the published one at 4000: **no overflow, no truncation, no event, no error
+return**. A ground display reading the HK point simply shows half the bytes it says it is showing,
+while the information event logged at the same instant shows all of them. A ground tool that
+checks the two against each other finds a factor of two it cannot explain from the names, because
+both names say "byte".
+
+It is also the second place in SC where a quantity's unit is in its name and the name is not
+enough: `SC_ATS_BUFF_SIZE` is not the size of the ATS buffer in any unit the code uses either.
+
+### Reachability
+
+Every append table load. `SC_UpdateAppend` is the table's post-load callback, so the pair is
+published on any successful `CFE_TBL_Load` of `AppendTbl`, with no command needed beyond the load
+itself.
+
+**NOT YET DRIVEN.** SC's sources are being gated statically as they land -- `check_coverage`,
+`check_members`, `check_strings` and the rest compare them against NASA's C -- and SC has no
+exercise block in the differential drivers yet, so no line of this transcript comes from
+`SC_UpdateAppend`. That is the whole of what is claimed here: the two multiplications are read out
+of NASA's source and out of the translation, not out of a run.
+
+When SC's exercise lands it must load an append table and print, from the one call, both
+`SC_OperData.HkPacket.Payload.AppendByteCount` and the `SC_UPDATE_APPEND_EID` text, so the factor
+of two is a transcript line rather than this note's assertion. Until then the note is an
+unexercised reading of the code, and it says so.
+
+### What this port does about it
+
+Keeps both lines verbatim, with the arithmetic written out at the site. `Kernel/Cfs/sc/sc_loads.HC`
+carries the note number on the assignment and again in its file header. Because both halves
+compute the same wrong number from the same constant, fixing it would be the thing that broke the
+differential -- which is the usual shape in this port and not evidence that the defect is harmless.

@@ -3995,3 +3995,73 @@ disagree with the header the code actually compiles against — a green gate ass
 number. **Only `sc_events.h` goes in the list**, and the translated file is named `sc_events.HC` so
 `check_defines` pairs it with the live header by basename. SC is the second app to use the
 `_events.h` spelling (HK is the first) and the only one carrying both.
+
+### SC's CALL CYCLE IS CLOSED: `sc_loads.c` is gated, and the twelve hoists are done
+
+As of this commit SC stands at **2,436 of 4,157 lines (59%)**, four of eight sources:
+
+```
+  GATED  sc_utils.c     185     SC's time arithmetic
+  GATED  sc_rtsrq.c     619     the RTS request layer, hoists 1-2
+  GATED  sc_atsrq.c     742     the ATS request layer, hoists 3-6
+  GATED  sc_loads.c     893     the parsers and validators, hoists 7-12  <-- cycle closed
+    -    sc_state.c     340
+    -    sc_cmds.c      764
+    -    sc_dispatch.c  275
+    -    sc_app.c       617
+```
+
+**The `SC_ProcessAppend` stand-in is retired.** It stood in both differential drivers for exactly
+one commit, counting calls and doing nothing, because it is the single edge of the
+`sc_atsrq.c`/`sc_loads.c` cycle that `module_deps --cuts SC` reported. `SC_AppendAtsCmd`'s success
+arm was therefore reporting an append that had not happened — documented at the call site and in
+both drivers, and now gone from all three places. The cycle is broken in the translation by
+`sc_atsrq.HC`'s forward declaration of `SC_ProcessAppend`, so the include order is atsrq then
+loads, and `sc_loads.HC`'s only call back into atsrq is `SC_BeginAts`.
+
+**All twelve call-arrow hoists the recon predicted are now written**, and the recon's count was
+right: sc_rtsrq.c 2, sc_atsrq.c 4, sc_loads.c 6. The last pair is the one the recon flagged as
+different in kind —
+
+```c
+SC_GetAtsCommandNumAtSeq(AtsIndex, NextIndex)->CmdNum =
+    SC_GetAtsCommandNumAtSeq(AtsIndex, TimeBufIndex)->CmdNum;
+```
+
+— a **store** through the arrow as well as a load, so the open defect's failure mode there is
+corruption at address zero rather than a trap. Both sides are hoisted to typed locals.
+
+**One new upstream finding, #25**: `SC_UpdateAppend` publishes the append table's size in bytes two
+different ways five lines apart, and the housekeeping telemetry point gets the wrong one — half the
+real count, because `SC_BYTES_IN_ATS_APPEND_ENTRY` is 2 and the quantity is in 32-bit words. The
+note establishes which is right from `SC_ProcessAppend`'s own `memcpy` length rather than from the
+field names, and records that the finding is **not yet driven** because SC has no exercise block.
+
+**One new exec case**: `tests/exec/cases/e_u16_wrap_insert.hc`. `SC_Insert` runs an index off both
+ends of a `uint16` — NASA's comment is "back up to previous list entry (ok if -1)" — so the four
+narrow-lvalue forms were pinned against a C twin before the sort was translated literally. Two of
+its five mutations passed, and that is written into the case: widening the sort's index changes
+nothing because every mask comes from one of SC's casts rather than from the variable's type, which
+makes the isolated forms the half that carries the claim.
+
+### WHAT REMAINS, AND THE ONE THING SC'S EXERCISE NEEDS THAT NO EARLIER APP DID
+
+Four sources, 1,996 lines. `sc_app.c` is last because gating it **deletes the oracle's `SC_AppData`
+and `SC_OperData` definitions** — they are stand-ins for NASA's own, and `check_oracle_globals`
+fails the moment both halves define them.
+
+Then SC's exercise, and it needs **a controllable clock**. Every earlier app's behaviour is a
+function of its commands and tables; SC's is a function of *time* — `SC_GetCurrentTime` reads
+`SC_AppData.TimeRef.GetTime()`, which is `CFE_TIME_GetTime` by default, and an ATS fires the
+entries whose time tag has passed. A wall clock makes that untestable: the same transcript line
+would print a different second on every run.
+
+**There is a supported path, and it was checked rather than assumed.** `CFE_TIME_SetMET` is
+defined in `Kernel/Cfs/cfe/cfe_time_utils.HC:467` and gated; `CFE_TIME_SetMETCmd`
+(`cfe_time_task.HC:778`) reaches it through the `CFE_PLATFORM_TIME_CFG_SERVER == 1` arm, which is
+the arm this configuration builds, and `CFE_TIME_GetTime` is `CFE_TIME_GetTAI` here
+(`CFE_MISSION_TIME_CFG_DEFAULT_TAI` is 1), which is MET plus STCF. So setting the MET moves the
+clock SC reads, through cFE's own API, with an event of its own in the transcript — no white-box
+poke at `CFE_TIME_Global` and nothing on `check_coverage`'s exclusion list. An earlier draft of
+this plan said the API was compiled out and the global had to be poked; that was wrong, and the
+three file:line references above are what corrected it.

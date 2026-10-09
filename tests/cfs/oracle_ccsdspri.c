@@ -188,6 +188,7 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "sc_msgids.h"
 #include "sc_tbl.h"
 #include "sc_msg.h"
+#include "sc_loads.h"
 #include "iodriver_base.h"
 #include "iodriver_analog_io.h"
 #include "lc_msgids.h"
@@ -11137,34 +11138,16 @@ static void lc_block_app(void)
 SC_AppData_t  SC_AppData;
 SC_OperData_t SC_OperData;
 
-/* **SC_ProcessAppend IS A STAND-IN, AND IT IS UPSTREAM LOGIC RATHER THAN A SEAM.**
+/* **THE sc_atsrq/sc_loads CYCLE IS CLOSED AS OF THIS COMMIT.**
  *
- * It lives in sc_loads.c, which is the other half of SC's two-source call cycle.
- * `module_deps --cuts SC` reports this as the cycle's ONE edge: gating sc_atsrq.c alone needs
- * exactly this function and nothing else, which is why sc_atsrq.c (742 lines) could land before
- * sc_loads.c (893) instead of both in one commit.
+ * The SC_ProcessAppend stand-in that stood here for one commit is gone from both halves;
+ * $SC/fsw/src/sc_loads.c is in SRC_C and Kernel/Cfs/sc/sc_loads.HC is in the HolyC driver, so the
+ * real function -- which copies the append buffer into the ATS, recounts its commands and
+ * rebuilds the time-sorted index -- is what SC_AppendAtsCmd now calls on both sides.
  *
- * WHAT IT DOES NOT DO. The real function copies the uploaded append buffer into the target ATS,
- * recomputes the ATS's size and command count, and rebuilds the time-sorted index. This does
- * nothing but count calls. So SC_AppendAtsCmd's success arm reports "N ATS entries appended" for
- * an append that did not occur, and **SC's exercise must not claim to drive the append path until
- * sc_loads.c is gated.** That restriction is written at the call site in sc_atsrq.HC too.
- *
- * THE COUNTER IS THE WITNESS. A stand-in with no observable effect is one docs/ records firing
- * three times -- "a stand-in no gate can object to". This one is counted on both sides, so the
- * exercise can show it was REACHED while asserting nothing about what it did; and when
- * sc_loads.c lands, deleting this and the HolyC twin is a link error rather than a silent
- * substitution.
- *
- * DEADLINE: the next SC commit. check_coverage does not require SC_ProcessAppend today because
- * sc_loads.c is not in SRC_C -- so nothing but this comment and the counter says it is missing. */
-static long sc_append_standin_calls;
-
-void SC_ProcessAppend(SC_AtsIndex_t AtsIndex)
-{
-    (void)AtsIndex;
-    ++sc_append_standin_calls;
-}
+ * Its only call back into sc_atsrq.c is SC_BeginAts, in the restart arm. On the C side the
+ * linker does not care about order; on the HolyC side sc_atsrq.HC's forward declaration of
+ * SC_ProcessAppend is what breaks the cycle, so atsrq is included first and loads second. */
 
 /* ---- THE SIMULATED WATCHDOG AND I/O DRIVER, for HS -----------------------------------------
  *
