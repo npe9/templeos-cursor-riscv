@@ -164,8 +164,11 @@ HDRS = [
     # values for SC_APPMAIN_PERF_ID (35 in config/, 38 in fsw/inc/) behind the SAME include guard,
     # so adding it here would decide a conflict this gate has no business deciding -- and it
     # declares no types, so it buys nothing. docs/CFS_PLAN.md records the finding.
+    #   sc_app.h             SC_OperData_t, SC_AppData_t, SC_TimeAccessor_t and the three
+    #                        one-field record wrappers -- LAST, because like hs_app.h it does not
+    #                        include everything it embeds
     "sc_platform_cfg.h", "sc_extern_typedefs.h", "sc_tbldefs.h", "sc_tblstruct.h",
-    "sc_msgdefs.h", "sc_msgstruct.h",
+    "sc_msgdefs.h", "sc_msgstruct.h", "sc_app.h",
     # THE PSP'S I/O DRIVER MODULE HEADERS, which HS's system monitor is the first thing in this
     # port to reach. CFE_PSP_IODriver_Location_t, _Arg_t and _AnalogRdWr_t live in a PSP MODULE
     # (PSP/fsw/modules/iodriver/inc) rather than in fsw/inc, so neither this list nor
