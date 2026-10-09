@@ -18,6 +18,7 @@ COMPILER_SOURCES = \
 	$(HOST_DIR)/parser.c \
 	$(HOST_DIR)/compiler.c \
 	$(HOST_DIR)/backend/riscv/be_riscv.c \
+	$(HOST_DIR)/backend/emit.c \
 	$(HOST_DIR)/rv32_lift.c \
 	$(HOST_DIR)/hash_table.c \
 	$(HOST_DIR)/compiler_helper.c \
@@ -28,6 +29,7 @@ COMPILER_HEADERS = \
 	$(HOST_DIR)/holyc_compiler.h \
 	$(HOST_DIR)/backend/target.h \
 	$(HOST_DIR)/backend/target_backend.h \
+	$(HOST_DIR)/backend/emit.h \
 	$(HOST_DIR)/backend/riscv/regs.h \
 	$(HOST_DIR)/backend/riscv/be_riscv.h \
 	$(HOST_DIR)/holy_api.h \

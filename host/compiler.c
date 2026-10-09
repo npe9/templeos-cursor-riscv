@@ -488,20 +488,8 @@ static int O1Mode(void) {
 /* RISC-V instruction-field decode predicates (RvImmI/S, RvIsAddi/SdSp0/Mv) moved to the
  * RISC-V backend TU (multiarch M4c). */
 #include "backend/riscv/be_riscv.h"
-/* Append n raw bytes to the code stream and advance rip by the ACTUAL length. The
- * arch-neutral emission primitive (multiarch M1): fixed-width backends (RISC-V, ARM,
- * AArch64) write constant-size words through it; variable-length backends (x86, Thumb)
- * write 1..15 bytes. Explicit little-endian append — no host-endian or alignment assumption. */
-static void emit_bytes(U8 *buf, U8 **ptr, I64 *rip, const U8 *p, int n) {
-  if (buf && ptr) { for (int i = 0; i < n; i++) (*ptr)[i] = p[i]; (*ptr) += n; }
-  (*rip) += n;
-}
-/* Undo `bytes` of buffered emission (a peephole cancel). Replaces the ad-hoc
- * `*ptr -= 12/8` / `*ptr -= 4*n` rewinds so no caller hardcodes a word size. */
-static void StreamRewind(U8 *buf, U8 **ptr, I64 *rip, int bytes) {
-  if (buf && ptr) *ptr -= bytes;
-  (*rip) -= bytes;
-}
+/* Portable code byte-stream (emit_bytes / StreamRewind) moved to host/backend/emit.c (M4c). */
+#include "backend/emit.h"
 static void PpRewind(U8 *buf, U8 **ptr, I64 *rip, int n) {
   if (n <= 0 || n > g_pp_n) return;
   StreamRewind(buf, ptr, rip, 4 * n);
