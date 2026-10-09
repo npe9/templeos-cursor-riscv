@@ -36,6 +36,15 @@ The rule is syntactic and deliberately stricter than necessary: `(a + b) << c` p
 `a + b << c` fails even though a reader could work out which was meant. The point is that NOBODY
 has to work it out, and that the port cannot accumulate a second instance.
 
+WHAT IT DOES NOT COVER. The roots are HCDIRS -- the TRANSLATION under Kernel/Cfs. The two HolyC
+DRIVER files (tests/exec/cases/*.hc) are HolyC too, contain shifts, and are NOT checked. That is a
+real gap rather than a safe exclusion: a shift written the wrong way in a driver would diverge from
+its C twin exactly as one in the translation would. It is left out because the drivers are test
+code whose every line is already compared character for character against the C half by the
+transcript, so the failure mode there is a DIVERGENCE and not a silent wrong answer -- which is the
+opposite of the translation, where both halves can be wrong together only if the C is wrong too.
+Widening the roots is one line if that reasoning ever stops holding.
+
 This does NOT check the C side. NASA's sources are compiled by a C compiler and mean what C
 says; it is only the translation that can be misread. check_strings and check_members compare the
 two sides' text and neither can see an operator precedence.

@@ -828,8 +828,9 @@ claims 32,768 bytes validates cleanly and then reads 32 KiB from a 128-byte tabl
 ### Reachability
 
 The validator is the table's registration callback, so this is reachable by any ground table load.
-Driven in the exercise as a VALIDATION result only -- `hsm_matval_longlen` shows an entry with a
-header length of 1,024 being accepted -- and **not** driven through the transmit, because an
+Driven in the exercise as a VALIDATION result only -- `hsv_mat_over16 rc=0 accepted=1 bufsize=16
+bound=32768` shows an entry claiming 100 bytes out of a 16-byte buffer being accepted -- and
+**not** driven through the transmit, because an
 out-of-bounds read that both halves perform identically would agree with itself and prove nothing
 while reading whatever happens to follow the table in each. That limit is stated at the site.
 
@@ -840,3 +841,87 @@ Keeps it. The translation has NASA's bound and NASA's constant. A port that comp
 obviously a one-liner: the right bound is arguably
 `HS_MAX_MSG_ACT_SIZE` but a mission that configured a larger buffer would then want that, which is
 why the check reads the way it does in the first place.
+
+## 24. HS's invalid-command-code event reports a message id it never read
+
+`hs_dispatch.c`'s `HS_AppProcessGroundCmd` declares
+
+```c
+CFE_SB_MsgId_t    MessageID   = CFE_SB_INVALID_MSG_ID; /* Init to invalid value */
+CFE_MSG_FcnCode_t CommandCode = 0;
+
+CFE_MSG_GetFcnCode(&BufPtr->Msg, &CommandCode);
+```
+
+calls **`CFE_MSG_GetFcnCode` only**, and then in its `default` arm prints
+
+```c
+CFE_EVS_SendEvent(HS_CC_ERR_EID, CFE_EVS_EventType_ERROR,
+                  "Invalid command code: ID = 0x%08lX, CC = %d",
+                  (unsigned long)CFE_SB_MsgIdToValue(MessageID), CommandCode);
+```
+
+`MessageID` is **written exactly once** -- by that initialiser -- and **read exactly once**, by
+this event. So the id in the text is always the sentinel, for every invalid command code, from
+every message id, forever. The command code is correct; the field in front of it is a constant
+dressed as data.
+
+### Why this is upstream and not a translation artefact
+
+HS is the only one of the port's six dispatchers that does this, and the comparison was measured
+across all six rather than assumed:
+
+| app | default arm |
+|---|---|
+| HK | `CFE_MSG_GetMsgId(&BufPtr->Msg, &MessageID);` immediately above its `CFE_EVS_SendEvent` |
+| LC | same |
+| CS | same |
+| MD | prints no id at all -- `"Invalid ground command code %d"` |
+| MM | same as MD |
+| **HS** | **prints an id and does not fetch it** |
+
+So the two shapes that are self-consistent are "fetch it and print it" and "do not print it", and
+HS is in neither.
+
+### The consequence
+
+It is harmless in flight. An invalid command code can only have arrived on `HS_CMD_MID`, because
+`HS_AppPipe` routes by message id before the code is examined at all, so a ground operator can
+infer the id that the event declines to state. What is lost is the ability to tell two
+misconfigured senders apart from telemetry, and the ability to key a ground decoder on the field.
+
+Two smaller observations in the same function:
+
+- **`HS_AppProcessGroundCmd` is declared in no header.** It is
+  `void HS_AppProcessGroundCmd(const CFE_SB_Buffer_t *BufPtr)` with external linkage, absent from
+  `hs_dispatch.h`, `hs_app.h` and every other header under `fsw/`. It is defined above its only
+  caller in the same file, so C never needs the declaration -- and the C half of this port's
+  differential would not compile until the prototype was written into the oracle, which is how the
+  absence was confirmed rather than inferred.
+- `HS_AppPipe` counts the error **before** sending its unrecognised-id event where HK counts
+  after. No consequence; recorded because the two files are otherwise the same shape and a reader
+  comparing them will notice.
+
+### Reachability
+
+Any command code outside 0..11 on `HS_CMD_MID`. Driven in the exercise:
+
+```
+EVS Port1 ... 19: Invalid command code: ID = 0x00000000, CC = 100
+hsd_cc_bad set_cc=100 set_rc=0 count=0 err=1
+```
+
+**The code is 100 and not 200 for a reason worth recording.** The CCSDS command secondary header's
+function code is **seven bits**, so `CFE_MSG_SetFcnCode` refuses anything above
+`CFE_MSG_FC_MASK`: a first version of that pass asked for 200, the set failed, the message carried
+0, and the dispatcher ran **`HS_NoopCmd`** -- printing `count=1 err=0`, a plausible transcript for
+a dispatcher and the exact opposite of what the pass was for. The event never fired and the
+comment above it said it had. The exercise now reads the function code back out of the message, and
+keeps 200 as a pass of its own (`hsd_cc_unencodable set_cc=0 set_rc_bad=1 count=1`) one line away
+from the line it broke.
+
+### What this port does about it
+
+Keeps it verbatim. The fix is a line of NASA's code that is not there, and adding it would be
+repairing a defect rather than translating one. The translation carries the note number at the
+site, so the sentinel in the transcript is documented rather than surprising.

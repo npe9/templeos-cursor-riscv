@@ -347,6 +347,9 @@ python3 "$ROOT/tools/cfs/check_defines.py" || exit 1
 # It surfaced only because HS's exercise drives monitor 31 deliberately, as a ONE-LINE transcript
 # divergence that could as easily have been read as a shift-codegen bug.
 #
+# It covers the TRANSLATION (Kernel/Cfs) and not the two HolyC driver files, which is stated in
+# the gate rather than implied here.
+#
 # No other gate can see an operator precedence: check_strings and check_members compare the two
 # sides' TEXT, and the compiler is entitled to its own table.
 python3 "$ROOT/tools/cfs/check_shift_parens.py" || exit 1

@@ -808,7 +808,8 @@ U0 HS_AppMonStatusRefresh()
       // TableIndex 31 the C reading is 0x80000000 and the HolyC reading is 0x80000000 % 32 = **0**,
       // so the monitor was never enabled. The exercise drives monitor 31 for exactly this reason
       // and the transcript diverged on one line. tools/cfs/check_shift_parens.py now refuses an
-      // unparenthesised shift operand anywhere in the port.
+      // unparenthesised shift operand anywhere in the TRANSLATION (Kernel/Cfs); the two HolyC
+      // driver files are not covered, which the gate states.
       //
       // `1 << 31` IS REACHABLE: HS_MAX_MONITORED_APPS is 32. Kept as NASA writes it, parentheses
       // and all.
