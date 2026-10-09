@@ -176,6 +176,12 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "hs_tblstruct.h"
 #include "hs_platform_cfg.h"
 #include "hs_app.h"
+#include "hs_utils.h"
+#include "hs_monitors.h"
+#include "hs_sysmon.h"
+#include "hs_cmds.h"
+#include "hs_dispatch.h"
+#include "hs_eventids.h"
 #include "iodriver_base.h"
 #include "iodriver_analog_io.h"
 #include "lc_msgids.h"
@@ -11177,7 +11183,28 @@ static int   psp_io_running;     /* SET_RUNNING state */
 static long  psp_io_reads;       /* ANALOG_IO_READ_CHANNELS calls */
 static int32 psp_io_util;        /* the utilisation the exercise wants reported, 0..10000 */
 static int32 psp_io_read_rc = CFE_PSP_SUCCESS; /* steerable, so the read-failure arm is reachable */
-static int   psp_io_present = 1; /* steerable, so the no-device arm is reachable */
+/* NO INITIALISER, AND THAT IS A FIX. This was `= 1` here and a bare declaration in the HolyC
+ * half, so the simulated device was PRESENT on one side of the differential and ABSENT on the
+ * other -- latent only because nothing drove the system monitor until HS's exercise. HolyC
+ * zero-initialises a global, so the two halves agree at zero; hs_setup() turns the device on in
+ * its one-time branch, in one place visible on both sides. */
+static int   psp_io_present; /* steerable, so the no-device arm is reachable */
+/* THREE MORE KNOBS, AND EACH ONE IS THE ONLY WAY INTO AN ARM OF HS_SysMonInit.
+ *
+ * HS passes its CONFIGURED names to the two lookups and a literal 1 to SET_RUNNING, so with a
+ * device present and the names matching, all three calls succeed and three of HS_SysMonInit's
+ * five outcomes are unreachable:
+ *
+ *   psp_io_setrun_rc  != SUCCESS  ->  "Unable to start device" + CFE_STATUS_EXTERNAL_RESOURCE_FAIL
+ *   psp_io_sub_fail               ->  "Unable to find subsystem" + SysMonSubsystemId  = 0
+ *   psp_io_chan_fail              ->  "Unable to find channel"   + SysMonSubchannelId = 0
+ *
+ * The last two are what make the DIFFERENCE between the two failure arms visible: HS zeroes the
+ * id it could not look up and KEEPS GOING, returning CFE_SUCCESS either way, so a translation
+ * that assigned the wrong one of the two fields would pass a test that only checked the return. */
+static int32 psp_io_setrun_rc = CFE_PSP_SUCCESS;
+static int   psp_io_sub_fail;
+static int   psp_io_chan_fail;
 
 /* Set the CPU utilisation the simulated device will report, in hundredths of a percent -- the
  * same units HS_CPU_UTILIZATION_MAX uses, so 10000 is fully busy. */
@@ -11214,6 +11241,10 @@ int32 CFE_PSP_IODriver_Command(const CFE_PSP_IODriver_Location_t *Location, uint
             return CFE_PSP_SUCCESS;
 
         case CFE_PSP_IODriver_SET_RUNNING:
+            if (psp_io_setrun_rc != CFE_PSP_SUCCESS)
+            {
+                return psp_io_setrun_rc;
+            }
             psp_io_running = (Arg.U32 != 0);
             return CFE_PSP_SUCCESS;
 
@@ -11221,14 +11252,14 @@ int32 CFE_PSP_IODriver_Command(const CFE_PSP_IODriver_Location_t *Location, uint
             return psp_io_running;
 
         case CFE_PSP_IODriver_LOOKUP_SUBSYSTEM:
-            if (Arg.ConstStr != NULL && strcmp(Arg.ConstStr, "aggregate") == 0)
+            if (!psp_io_sub_fail && Arg.ConstStr != NULL && strcmp(Arg.ConstStr, "aggregate") == 0)
             {
                 return PSP_SIM_SUBSYSTEM_ID;
             }
             return CFE_PSP_ERROR;
 
         case CFE_PSP_IODriver_LOOKUP_SUBCHANNEL:
-            if (Arg.ConstStr != NULL && strcmp(Arg.ConstStr, "cpu-load") == 0)
+            if (!psp_io_chan_fail && Arg.ConstStr != NULL && strcmp(Arg.ConstStr, "cpu-load") == 0)
             {
                 return PSP_SIM_SUBCHANNEL_ID;
             }
@@ -12460,6 +12491,547 @@ static void hk_block_app(void)
         printf("hkap_upload rc=%d ptr_set=%d\n", (int)rc,
                HK_AppData.CopyTablePtr != NULL ? 1 : 0);
     }
+}
+
+/* ===================== HS, THE SIXTH cFS APP -- THE EXERCISE =====================
+ *
+ * HS watches everything else. Its inputs are other applications' execution counters, the whole
+ * system's event stream and a CPU-load ADC; its outputs are a processor reset, an application
+ * restart, an application delete, a software-bus message and a watchdog it stops petting. So
+ * every block below is about A DECISION TO ACT, and the thing being asserted is almost never a
+ * return code -- it is which of five actions HS took and what state it left behind.
+ *
+ * ### THE ACTIONS ARE DESTRUCTIVE AND THE FIXTURE SURVIVES THEM, WHICH IS WHY THEY CAN BE DRIVEN
+ *
+ * CFE_PSP_Restart is a stub that RETURNS here (the driver's note at its definition says why), so
+ * HS's processor-reset action runs to completion and the code after it is comparable.
+ * CFE_ES_RestartApp and CFE_ES_DeleteApp act on CFE_ES_Global.AppTable, which the exercise puts
+ * back. The watchdog is four counters. Nothing below leaves the process in a state the next block
+ * cannot use -- and that is checked rather than assumed: hs_setup() reasserts every field.
+ *
+ * ### THE WATCHDOG IS COUNTED, NOT TIMED, AND THAT IS THE LIMIT OF WHAT THIS CAN SHOW
+ *
+ * hs_app.HC's header records that the two CFE_PSP_WatchdogService calls before the main loop are
+ * both necessary because the INTERVAL between them matters. A counter cannot see an interval. So
+ * the assertions here are "the count moved by exactly N", which catches a dropped call and would
+ * NOT catch a reordering that kept the count -- named here instead of implied.
+ *
+ * ### EVERY APP NAME HS LOOKS UP IS ONE THIS PROCESS REALLY HAS
+ *
+ * HS_MonitorApplications and HS_MonitorEvent resolve names through CFE_ES_GetAppIDByName against
+ * the live CFE_ES_Global.AppTable, so the exercise uses the name already in slot 1 for the
+ * resolvable cases and a name nothing has for the unresolvable ones. An invented name in the
+ * table would make every monitored app take the not-found path and the transcript would be about
+ * ES's lookup rather than HS's countdown.
+ *
+ * ### AND THE UTILISATION NUMBERS ARE WHAT HS COMPUTES, NOT WHAT THE EXERCISE SET
+ *
+ * The chain is hs_sim_set_util(hundredths) -> an ADC code -> HS's own
+ * `((Sample >> 8) * HS_CPU_UTILIZATION_MAX) / 0xFFFF` -> a tracker slot -> an average that always
+ * divides by four. Both divisions truncate and the two directions are not inverses, so the
+ * printed averages are deliberately NOT round numbers. Asserting the value the exercise set would
+ * be asserting the simulation. */
+
+/* The four tables, in this driver's memory. HS_TblInit registers handles of exactly these sizes,
+ * and the exercise loads these arrays into them with CFE_TBL_SRC_ADDRESS -- see hs_block_app on
+ * why a file load cannot work and why that is not a loss. */
+static HS_AMTEntry_t hs_amt[HS_MAX_MONITORED_APPS];
+static HS_EMTEntry_t hs_emt[HS_MAX_MONITORED_EVENTS];
+static HS_XCTEntry_t hs_xct[HS_MAX_EXEC_CNT_SLOTS];
+static HS_MATEntry_t hs_mat[HS_MAX_MSG_ACT_TYPES];
+
+/* HS's three pipes, created once and carried across every hs_setup() -- the reason HK's block
+ * states for its pool and pipe: CFE_PLATFORM_SB_MAX_PIPES is 64 and five apps plus six cFE
+ * modules have taken theirs, and a pipe per block would also collide on the NAME. */
+static int    hs_pipes_made;
+static uint32 hs_cmd_pipe, hs_event_pipe, hs_wakeup_pipe;
+
+/* The name slot 1 really has, read out of the live table rather than written here, so a fixture
+ * change cannot make the resolvable cases silently unresolvable. */
+static char hs_real_app[OS_MAX_API_NAME];
+
+/* Zero every table. Separate from hs_setup() because three blocks want the tables cleared
+ * WITHOUT resetting HS's state and two want the opposite. */
+static void hs_clear_tables(void)
+{
+    memset(hs_amt, 0, sizeof(hs_amt));
+    memset(hs_emt, 0, sizeof(hs_emt));
+    memset(hs_xct, 0, sizeof(hs_xct));
+    memset(hs_mat, 0, sizeof(hs_mat));
+}
+
+/* HS's own default state, which is HS_AppInit's first twelve lines -- NOT a call to HS_AppInit,
+ * because that registers a CDS and three pipes and four tables. Driving the real HS_AppInit is
+ * hs_block_app's job; every other block needs the state it produces without the resources. */
+static void hs_setup(void)
+{
+    memset(&HS_AppData, 0, sizeof(HS_AppData));
+    hs_clear_tables();
+
+    HS_AppData.ServiceWatchdogFlag = HS_State_ENABLED;
+    HS_AppData.RunStatus           = CFE_ES_RunStatus_APP_RUN;
+
+    HS_AppData.CurrentAppMonState    = HS_APPMON_DEFAULT_STATE;
+    HS_AppData.CurrentEventMonState  = HS_EVENTMON_DEFAULT_STATE;
+    HS_AppData.CurrentAlivenessState = HS_ALIVENESS_DEFAULT_STATE;
+    HS_AppData.CurrentCPUHogState    = HS_CPUHOG_DEFAULT_STATE;
+
+    HS_AppData.ExeCountState  = HS_State_ENABLED;
+    HS_AppData.MsgActsState   = HS_State_ENABLED;
+    HS_AppData.AppMonLoaded   = HS_State_ENABLED;
+    HS_AppData.EventMonLoaded = HS_State_ENABLED;
+    HS_AppData.CDSState       = HS_State_ENABLED;
+
+    HS_AppData.MaxCPUHoggingTime = HS_UTIL_HOGGING_TIMEOUT;
+
+    /* Explicitly invalid, for the reason CS's, LC's and HK's setups all record: ZERO IS A VALID
+     * cFE TABLE HANDLE and other apps have registered tables by now, so a zeroed handle would
+     * aim HS's Release/Manage/GetAddress at somebody else's table. */
+    HS_AppData.AMTableHandle = CFE_TBL_BAD_TABLE_HANDLE;
+    HS_AppData.EMTableHandle = CFE_TBL_BAD_TABLE_HANDLE;
+    HS_AppData.MATableHandle = CFE_TBL_BAD_TABLE_HANDLE;
+    HS_AppData.XCTableHandle = CFE_TBL_BAD_TABLE_HANDLE;
+
+    /* The pointers stay NULL here. A block that wants the monitors to see a table aims them at
+     * the arrays above itself, which is also how the "table pointer is NULL" early returns in
+     * HS_MonitorApplications and HS_MonitorEvent stay reachable. */
+
+    if (!hs_pipes_made)
+    {
+        sb_forget_queue_name(HS_CMD_PIPE_NAME);
+        sb_forget_queue_name(HS_EVENT_PIPE_NAME);
+        sb_forget_queue_name(HS_WAKEUP_PIPE_NAME);
+        printf("hs_pipes cmd=%d evt=%d wake=%d\n",
+               (int)CFE_SB_CreatePipe(&hs_cmd_pipe, HS_CMD_PIPE_DEPTH, HS_CMD_PIPE_NAME),
+               (int)CFE_SB_CreatePipe(&hs_event_pipe, HS_EVENT_PIPE_DEPTH, HS_EVENT_PIPE_NAME),
+               (int)CFE_SB_CreatePipe(&hs_wakeup_pipe, HS_WAKEUP_PIPE_DEPTH, HS_WAKEUP_PIPE_NAME));
+        /* The device is on from here. See psp_io_present's declaration: setting it HERE rather
+         * than in the declaration is what keeps the two halves of the differential equal. */
+        psp_io_present = 1;
+        strncpy(hs_real_app, CFE_ES_Global.AppTable[1].AppName, sizeof(hs_real_app) - 1);
+        hs_real_app[sizeof(hs_real_app) - 1] = '\0';
+        printf("hs_realapp %s\n", hs_real_app);
+        hs_pipes_made = 1;
+    }
+    HS_AppData.CmdPipe    = hs_cmd_pipe;
+    HS_AppData.EventPipe  = hs_event_pipe;
+    HS_AppData.WakeupPipe = hs_wakeup_pipe;
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * BLOCK 1: hs_utils.c -- the two action-type validators.
+ *
+ * TWO FUNCTIONS, ONE BOUNDARY, AND A DEAD BRANCH. hs_utils.HC's header records that
+ * `ActionType < HS_AMTActType_NOACT` cannot fire because ActionType is unsigned and NOACT is 0.
+ * So the only live test is the upper bound, LAST_NONMSG + MAX_MSG_ACT_TYPES = 3 + 8 = 11.
+ *
+ * **ACTION TYPE 0 IS "VALID".** NOACT passes both validators, which is the one answer a reader
+ * would not predict and the reason the dead branch is dead: the lower bound was meant to reject
+ * it and does not. The table validators then treat a 0 action as UNUSED before ever asking, so
+ * nothing is wrong -- but "is this action type valid" answers yes for "take no action", and that
+ * is worth having in a transcript rather than in a comment. */
+static void hs_block_utils(void)
+{
+    static const uint16 probe[] = {0, 1, 2, 3, 4, 10, 11, 12, 13, 255, 65535};
+    unsigned             i;
+    int                  a;
+    int                  e;
+
+    for (i = 0; i < sizeof(probe) / sizeof(probe[0]); i++)
+    {
+        a = HS_AMTActionIsValid(probe[i]) ? 1 : 0;
+        e = HS_EMTActionIsValid(probe[i]) ? 1 : 0;
+        /* BOTH ON ONE LINE ON PURPOSE: the two functions compute the same bound from different
+         * constants (both LAST_NONMSG values are 3), so a translation that collapsed them into
+         * one would be invisible -- but a mission that changed ONE constant would show up here as
+         * the two columns disagreeing. They agree today and the line says so. */
+        printf("hsu_act a=%u amt=%d emt=%d\n", (unsigned)probe[i], a, e);
+    }
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * BLOCK 2: hs_sysmon.c -- the PSP I/O driver chain and the ADC conversion.
+ *
+ * FIVE OUTCOMES FOR HS_SysMonInit AND THREE OF THEM NEED A STEERABLE DEVICE, because HS passes
+ * its own configured names and a literal 1, so nothing HS does can make a present device refuse.
+ * The three knobs are documented where they are declared.
+ *
+ * ### THE NO-DEVICE CASE RETURNS **CFE_SUCCESS**, AND THAT IS THE POINT OF THE FUNCTION
+ *
+ * `CFE_PSP_IODriver_FindByName` failing is not an error to HS: it writes a system log line saying
+ * "CPU usage will not be reported" and returns success, leaving SysMonPspModuleId at 0. So a board
+ * with no load sensor runs HS with every monitor working except utilisation -- and
+ * HS_SysMonGetCpuUtilization's `== 0` test is what keeps it from talking to a device that is not
+ * there. The two tests are in different functions and the zero is the whole contract between
+ * them; the assertion below is on the FIELD, not on the return.
+ *
+ * ### AND THE FAILED-START CASE IS THE ONLY ONE THAT RETURNS A FAILURE
+ *
+ * CFE_STATUS_EXTERNAL_RESOURCE_FAIL, which makes HS_AppInit return early and HS exit. So of the
+ * five outcomes, a device that cannot be STARTED kills HS while a device that cannot be FOUND
+ * does not -- which is the right way round and is not obvious from either function alone.
+ *
+ * ### THE CONVERSION IS ASSERTED AS WHAT HS COMPUTES AND THE TRUNCATION IS LEFT VISIBLE */
+static void hs_block_sysmon(void)
+{
+    int32 rc;
+    int32 util;
+    long  r0;
+    int   i;
+    static const int32 probe[] = {0, 1, 2500, 5000, 7500, 9999, 10000};
+
+    hs_setup();
+
+    /* --- NO DEVICE. CFE_SUCCESS with the module id left at zero -- see the block comment. */
+    psp_io_present = 0;
+    rc             = HS_SysMonInit();
+    printf("hssm_init_nodev rc=%d mod=%u sub=%u chan=%u\n", (int)rc,
+           (unsigned)HS_AppData.SysMonPspModuleId, (unsigned)HS_AppData.SysMonSubsystemId,
+           (unsigned)HS_AppData.SysMonSubchannelId);
+
+    /* --- AND HS_SysMonGetCpuUtilization WITH NO DEVICE: the `== 0` test fires, the driver is
+     * never called, and -1 comes back. `reads=0` is the witness that no I/O happened -- a return
+     * of -1 alone would also be produced by a device that answered an error. */
+    r0   = psp_io_reads;
+    util = HS_SysMonGetCpuUtilization();
+    printf("hssm_get_nodev util=%d reads=%ld\n", (int)util, psp_io_reads - r0);
+
+    /* --- AND HS_SysMonCleanup WITH NO DEVICE does nothing at all, for the same reason. */
+    psp_io_running = 1;
+    HS_SysMonCleanup();
+    printf("hssm_clean_nodev running=%d\n", psp_io_running);
+
+    /* --- THE DEVICE IS THERE BUT WILL NOT START. The one failing outcome. */
+    hs_setup();
+    psp_io_present    = 1;
+    psp_io_setrun_rc  = CFE_PSP_ERROR;
+    rc                = HS_SysMonInit();
+    printf("hssm_init_nostart rc=%d is_extfail=%d mod=%u\n", (int)rc,
+           rc == CFE_STATUS_EXTERNAL_RESOURCE_FAIL ? 1 : 0,
+           (unsigned)HS_AppData.SysMonPspModuleId);
+    psp_io_setrun_rc = CFE_PSP_SUCCESS;
+
+    /* --- THE SUBSYSTEM LOOKUP FAILS. CFE_SUCCESS, SysMonSubsystemId zeroed, and the SUBCHANNEL
+     * still looked up and found -- so the two fields move independently and only one is zero. */
+    hs_setup();
+    psp_io_sub_fail = 1;
+    rc              = HS_SysMonInit();
+    printf("hssm_init_nosub rc=%d mod=%u sub=%u chan=%u\n", (int)rc,
+           (unsigned)HS_AppData.SysMonPspModuleId, (unsigned)HS_AppData.SysMonSubsystemId,
+           (unsigned)HS_AppData.SysMonSubchannelId);
+    psp_io_sub_fail = 0;
+
+    /* --- THE SUBCHANNEL LOOKUP FAILS. The mirror image: the subsystem is found and the channel
+     * is zero. These two lines together are what a swapped pair of assignments would break. */
+    hs_setup();
+    psp_io_chan_fail = 1;
+    rc               = HS_SysMonInit();
+    printf("hssm_init_nochan rc=%d mod=%u sub=%u chan=%u\n", (int)rc,
+           (unsigned)HS_AppData.SysMonPspModuleId, (unsigned)HS_AppData.SysMonSubsystemId,
+           (unsigned)HS_AppData.SysMonSubchannelId);
+    psp_io_chan_fail = 0;
+
+    /* --- THE NOMINAL CHAIN. All three sim constants arrive in the three fields, and they are
+     * DIFFERENT numbers (0x5A5A0001, 3, 7) so a translation that aimed one lookup's result at
+     * another field cannot agree with this line. */
+    hs_setup();
+    rc = HS_SysMonInit();
+    printf("hssm_init_ok rc=%d mod=%u sub=%u chan=%u running=%d\n", (int)rc,
+           (unsigned)HS_AppData.SysMonPspModuleId, (unsigned)HS_AppData.SysMonSubsystemId,
+           (unsigned)HS_AppData.SysMonSubchannelId, psp_io_running);
+
+    /* --- THE READ FAILS. -1, and `reads` moved -- which is what distinguishes this from the
+     * no-device case above, where it did not. */
+    psp_io_read_rc = CFE_PSP_ERROR;
+    r0             = psp_io_reads;
+    util           = HS_SysMonGetCpuUtilization();
+    printf("hssm_get_readfail util=%d reads=%ld\n", (int)util, psp_io_reads - r0);
+    psp_io_read_rc = CFE_PSP_SUCCESS;
+
+    /* --- THE CONVERSION. Seven utilisations in, seven of HS's own numbers out, and the
+     * round-trip is NOT the identity: `set=` is what went into the simulated ADC and `got=` is
+     * what HS decoded, so the two columns differing by one or two is the truncation in both
+     * divisions and is left exactly as it falls. 10000 maps to 10000 and 0 to 0 because the
+     * endpoints are the only exact ones. */
+    for (i = 0; i < (int)(sizeof(probe) / sizeof(probe[0])); i++)
+    {
+        hs_sim_set_util(probe[i]);
+        util = HS_SysMonGetCpuUtilization();
+        printf("hssm_conv set=%d got=%d\n", (int)probe[i], (int)util);
+    }
+
+    /* --- AND CLEANUP WITH A DEVICE stops it. The witness is psp_io_running, not the return --
+     * HS_SysMonCleanup returns nothing at all, so a version that skipped the call would be
+     * indistinguishable without this field. */
+    HS_SysMonCleanup();
+    printf("hssm_clean_dev running=%d\n", psp_io_running);
+
+    /* Leave the device present and idle for every later block. */
+    hs_sim_set_util(0);
+    psp_io_present = 1;
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * BLOCK 3: the four table validators in hs_monitors.c.
+ *
+ * ONE PASS PER POISONED ENTRY, because each validator reports in detail only the FIRST bad entry
+ * and then returns that entry's code. A single table with every error class in it would produce
+ * one detail event and three invisible errors -- the shape LC's and HK's validate blocks both
+ * record. So each case below poisons exactly one entry of an otherwise clean table.
+ *
+ * ### ALL FOUR SEND THEIR TOTALS EVENT UNCONDITIONALLY
+ *
+ * Unlike LC's and HK's validators, which are silent on a clean table, every pass below emits an
+ * INFORMATION event with good/bad/unused counts -- so the counts are in the transcript for free
+ * and the `rc=` is the only thing these lines need to add.
+ *
+ * ### "UNUSED" IS A DIFFERENT TEST IN EACH OF THE FOUR, AND THE AMT'S IS AN **OR**
+ *
+ *   AMT   CycleCount == 0 || ActionType == NOACT      <- either one, and the action is then
+ *                                                        never examined at all
+ *   EMT   ActionType == NOACT
+ *   XCT   ResourceType == NOTYPE
+ *   MAT   EnableState == DISABLED
+ *
+ * The AMT case below drives a CycleCount of 0 WITH AN INVALID ACTION TYPE, which is unused rather
+ * than bad -- a validator that tested the action first would call it an error.
+ *
+ * ### AND THE MAT'S LENGTH BOUND IS UPSTREAM DEFECT #23
+ *
+ * HS_MATMsgBuf_t is 16 bytes and the check is `Length > CFE_MISSION_SB_MAX_SB_MSG_SIZE` (32768),
+ * a factor of 2,048. The pass below sets a length of 100 on a 16-byte buffer and it VALIDATES
+ * CLEANLY -- that line is the defect, and it is the validation that is driven and not the
+ * transmit, for the reason the commit that added #23 states: an out-of-bounds read both halves
+ * perform identically agrees with itself and proves nothing. */
+
+/* Put a length and a message id into one MAT entry's buffer, the way a ground upload would.
+ *
+ * **CFE_MSG_Init IS CALLED WITH THE HEADER'S SIZE AND NEVER WITH `len`**, and that is not a
+ * stylistic choice -- it is a bug this helper had and the transcript caught.
+ *
+ * CFE_MSG_Init ZEROES `Size` BYTES. A first version passed `len` straight through, so the
+ * length=40000 case memset FORTY KILOBYTES over a 16-byte field and through 40 KiB of this
+ * driver's globals. The symptom was not a crash: the next event came back
+ * "App CFE_EVS not registered with Event Services" and the timestamp on the line after it had
+ * jumped from 1980-012-14:03:21 to 1980-001-00:00:14 -- EVS's registration table and the clock
+ * both overwritten, pages away from anything HS touches. It would have read as an HS defect.
+ *
+ * So Init builds a correct, correctly-sized CCSDS primary header and CFE_MSG_SetSize then writes
+ * the length field ALONE, which is what a ground upload with a wrong length actually looks like:
+ * the bytes say 40000 and only 16 are there. That is the condition HS_ValidateMATable is supposed
+ * to catch and upstream #23 says it does not. */
+static void hs_mat_entry(int i, uint16 ena, uint16 cool, uint32 mid, size_t len, int valid_mid)
+{
+    hs_mat[i].EnableState = ena;
+    hs_mat[i].Cooldown    = cool;
+    memset(&hs_mat[i].MsgBuf, 0, sizeof(hs_mat[i].MsgBuf));
+    if (valid_mid)
+    {
+        CFE_MSG_Init(CFE_MSG_PTR(hs_mat[i].MsgBuf.Buffer), CFE_SB_ValueToMsgId(mid),
+                     sizeof(CFE_MSG_CommandHeader_t));
+    }
+    /* The length field on its own -- see the comment above. The invalid-msgid case skips Init
+     * entirely, because an invalid id is the thing it is testing. */
+    CFE_MSG_SetSize(CFE_MSG_PTR(hs_mat[i].MsgBuf.Buffer), len);
+}
+
+static void hs_block_validate(void)
+{
+    int32 rc;
+    int   i;
+
+    /* ---- HS_ValidateAMTable ------------------------------------------------------------------ */
+
+    /* NULL. The one case that returns HS_TBL_VAL_ERR (-1) rather than an entry code, and the one
+     * that sends NO totals event -- it returns before the loop. */
+    rc = HS_ValidateAMTable(NULL);
+    printf("hsv_amt_null rc=%d is_tblval=%d\n", (int)rc, rc == HS_TBL_VAL_ERR ? 1 : 0);
+
+    /* ALL UNUSED: a zeroed table is 32 entries with CycleCount 0 and ActionType NOACT. */
+    hs_clear_tables();
+    rc = HS_ValidateAMTable(hs_amt);
+    printf("hsv_amt_empty rc=%d\n", (int)rc);
+
+    /* ONE GOOD ENTRY and the rest unused. */
+    hs_clear_tables();
+    hs_amt[0].CycleCount = 5;
+    hs_amt[0].ActionType = HS_AMTActType_EVENT;
+    strncpy(hs_amt[0].AppName, hs_real_app, sizeof(hs_amt[0].AppName) - 1);
+    rc = HS_ValidateAMTable(hs_amt);
+    printf("hsv_amt_good rc=%d\n", (int)rc);
+
+    /* A NON-ZERO NullTerm, which is HS_AMTVal_ERR_NUL. NASA calls the field a "null terminator
+     * safety buffer": it is the two bytes after a 20-byte name, so a non-zero value means the
+     * uploaded name ran past its field. The detail event prints the name, truncated to
+     * OS_MAX_API_NAME-1 by StrNCpy -- which is why the name below is set at all. */
+    hs_clear_tables();
+    hs_amt[2].CycleCount = 5;
+    hs_amt[2].ActionType = HS_AMTActType_EVENT;
+    hs_amt[2].NullTerm   = 0x4142;
+    strncpy(hs_amt[2].AppName, hs_real_app, sizeof(hs_amt[2].AppName) - 1);
+    rc = HS_ValidateAMTable(hs_amt);
+    printf("hsv_amt_nul rc=%d is_nul=%d\n", (int)rc, rc == HS_AMTVal_ERR_NUL ? 1 : 0);
+
+    /* AN ACTION TYPE OF 12 -- one past the bound block 1 pinned. */
+    hs_clear_tables();
+    hs_amt[3].CycleCount = 5;
+    hs_amt[3].ActionType = 12;
+    strncpy(hs_amt[3].AppName, hs_real_app, sizeof(hs_amt[3].AppName) - 1);
+    rc = HS_ValidateAMTable(hs_amt);
+    printf("hsv_amt_act rc=%d is_act=%d\n", (int)rc, rc == HS_AMTVal_ERR_ACT ? 1 : 0);
+
+    /* **A CYCLE COUNT OF ZERO WITH AN INVALID ACTION IS UNUSED, NOT BAD.** The AMT's `||` -- see
+     * the block comment. This entry would be an error in any other order of tests. */
+    hs_clear_tables();
+    hs_amt[4].CycleCount = 0;
+    hs_amt[4].ActionType = 99;
+    rc                   = HS_ValidateAMTable(hs_amt);
+    printf("hsv_amt_zerocycle rc=%d is_success=%d\n", (int)rc, rc == CFE_SUCCESS ? 1 : 0);
+
+    /* TWO BAD ENTRIES, and only the FIRST gets a detail event -- the totals event says bad = 2
+     * while exactly one "AppMon verify err" line appears above it. That pairing is the assertion;
+     * `rc=` alone cannot distinguish "stopped at the first" from "found only one". */
+    hs_clear_tables();
+    for (i = 5; i <= 6; i++)
+    {
+        hs_amt[i].CycleCount = 5;
+        hs_amt[i].ActionType = 50 + i;
+    }
+    rc = HS_ValidateAMTable(hs_amt);
+    printf("hsv_amt_two rc=%d\n", (int)rc);
+
+    /* ---- HS_ValidateEMTable ------------------------------------------------------------------ */
+
+    rc = HS_ValidateEMTable(NULL);
+    printf("hsv_emt_null rc=%d\n", (int)rc);
+
+    hs_clear_tables();
+    rc = HS_ValidateEMTable(hs_emt);
+    printf("hsv_emt_empty rc=%d\n", (int)rc);
+
+    /* **THE EMT HAS NO CycleCount**, so its "unused" test is the action type alone and an entry
+     * with an EventID and a name but NOACT is still unused. */
+    hs_clear_tables();
+    hs_emt[1].EventID    = 42;
+    hs_emt[1].ActionType = HS_EMTActType_NOACT;
+    strncpy(hs_emt[1].AppName, hs_real_app, sizeof(hs_emt[1].AppName) - 1);
+    rc = HS_ValidateEMTable(hs_emt);
+    printf("hsv_emt_noact rc=%d\n", (int)rc);
+
+    hs_clear_tables();
+    hs_emt[1].EventID    = 42;
+    hs_emt[1].ActionType = HS_EMTActType_APP_DELETE;
+    strncpy(hs_emt[1].AppName, hs_real_app, sizeof(hs_emt[1].AppName) - 1);
+    rc = HS_ValidateEMTable(hs_emt);
+    printf("hsv_emt_good rc=%d\n", (int)rc);
+
+    hs_clear_tables();
+    hs_emt[2].EventID    = 42;
+    hs_emt[2].ActionType = 12; /* one past LAST_NONMSG + MAX_MSG_ACT_TYPES, as block 1 pinned */
+    rc                   = HS_ValidateEMTable(hs_emt);
+    printf("hsv_emt_act rc=%d is_act=%d\n", (int)rc, rc == HS_EMTVal_ERR_ACT ? 1 : 0);
+
+    hs_clear_tables();
+    hs_emt[3].EventID    = 42;
+    hs_emt[3].ActionType = HS_EMTActType_PROC_RESET;
+    hs_emt[3].NullTerm   = 0x4344;
+    rc                   = HS_ValidateEMTable(hs_emt);
+    printf("hsv_emt_nul rc=%d is_nul=%d\n", (int)rc, rc == HS_EMTVal_ERR_NUL ? 1 : 0);
+
+    /* ---- HS_ValidateXCTable ------------------------------------------------------------------ */
+
+    rc = HS_ValidateXCTable(NULL);
+    printf("hsv_xct_null rc=%d\n", (int)rc);
+
+    hs_clear_tables();
+    rc = HS_ValidateXCTable(hs_xct);
+    printf("hsv_xct_empty rc=%d\n", (int)rc);
+
+    /* ALL FOUR VALID RESOURCE TYPES IN ONE TABLE, so `good = 4` in the totals event is the
+     * assertion that the four-way `&&` chain accepts each of them. A pass per type would give
+     * four identical lines and would not. */
+    hs_clear_tables();
+    hs_xct[0].ResourceType = HS_XCTResType_APP_MAIN;
+    hs_xct[1].ResourceType = HS_XCTResType_APP_CHILD;
+    hs_xct[2].ResourceType = HS_XCTResType_DEVICE;
+    hs_xct[3].ResourceType = HS_XCTResType_ISR;
+    for (i = 0; i <= 3; i++)
+    {
+        strncpy(hs_xct[i].ResourceName, hs_real_app, sizeof(hs_xct[i].ResourceName) - 1);
+    }
+    rc = HS_ValidateXCTable(hs_xct);
+    printf("hsv_xct_good rc=%d\n", (int)rc);
+
+    /* TYPE 5, one past ISR. */
+    hs_clear_tables();
+    hs_xct[4].ResourceType = 5;
+    rc                     = HS_ValidateXCTable(hs_xct);
+    printf("hsv_xct_type rc=%d is_type=%d\n", (int)rc, rc == HS_XCTVal_ERR_TYPE ? 1 : 0);
+
+    /* **THE XCT's NullTerm IS A uint32 WHERE THE OTHER TWO TABLES USE A uint16**, and
+     * hs_monitors.c reads ResourceType -- also a uint32 -- into a uint16 local. So a type of
+     * 0x00010001 would validate AS APP_MAIN. Harmless with types 0..4 and NASA's; driven here
+     * because it is one line and it would otherwise be a claim. */
+    hs_clear_tables();
+    hs_xct[5].ResourceType = 0x00010001;
+    strncpy(hs_xct[5].ResourceName, hs_real_app, sizeof(hs_xct[5].ResourceName) - 1);
+    rc = HS_ValidateXCTable(hs_xct);
+    printf("hsv_xct_hiword rc=%d accepted_as_main=%d\n", (int)rc, rc == CFE_SUCCESS ? 1 : 0);
+
+    hs_clear_tables();
+    hs_xct[6].ResourceType = HS_XCTResType_DEVICE;
+    hs_xct[6].NullTerm     = 0x45464748;
+    rc                     = HS_ValidateXCTable(hs_xct);
+    printf("hsv_xct_nul rc=%d is_nul=%d\n", (int)rc, rc == HS_XCTVal_ERR_NUL ? 1 : 0);
+
+    /* ---- HS_ValidateMATable ------------------------------------------------------------------ */
+
+    rc = HS_ValidateMATable(NULL);
+    printf("hsv_mat_null rc=%d\n", (int)rc);
+
+    hs_clear_tables();
+    rc = HS_ValidateMATable(hs_mat);
+    printf("hsv_mat_empty rc=%d\n", (int)rc);
+
+    /* BOTH ENABLED STATES ACCEPTED: ENABLED and NOEVENT differ only in whether the monitors emit
+     * an event when they send, so both are valid here and `good = 2` says so. */
+    hs_clear_tables();
+    hs_mat_entry(0, HS_MATState_ENABLED, 3, 0x18A0, sizeof(CFE_MSG_CommandHeader_t), 1);
+    hs_mat_entry(1, HS_MATState_NOEVENT, 0, 0x18A1, sizeof(CFE_MSG_CommandHeader_t), 1);
+    rc = HS_ValidateMATable(hs_mat);
+    printf("hsv_mat_good rc=%d\n", (int)rc);
+
+    /* AN ENABLE STATE OF 3. Tested BEFORE the message id, so this entry's id is never looked at
+     * -- which is why it is left invalid: if the order were reversed the error code would change.
+     */
+    hs_clear_tables();
+    hs_mat[2].EnableState = 3;
+    rc                    = HS_ValidateMATable(hs_mat);
+    printf("hsv_mat_ena rc=%d is_ena=%d\n", (int)rc, rc == HS_MATVal_ERR_ENA ? 1 : 0);
+
+    /* AN INVALID MESSAGE ID on an enabled entry. */
+    hs_clear_tables();
+    hs_mat_entry(3, HS_MATState_ENABLED, 0, 0, sizeof(CFE_MSG_CommandHeader_t), 0);
+    rc = HS_ValidateMATable(hs_mat);
+    printf("hsv_mat_id rc=%d is_id=%d\n", (int)rc, rc == HS_MATVal_ERR_ID ? 1 : 0);
+
+    /* A LENGTH OF 40000, past CFE_MISSION_SB_MAX_SB_MSG_SIZE. */
+    hs_clear_tables();
+    hs_mat_entry(4, HS_MATState_ENABLED, 0, 0x18A2, 40000, 1);
+    rc = HS_ValidateMATable(hs_mat);
+    printf("hsv_mat_len rc=%d is_len=%d\n", (int)rc, rc == HS_MATVal_ERR_LEN ? 1 : 0);
+
+    /* **UPSTREAM #23: A LENGTH OF 100 ON A 16-BYTE BUFFER IS ACCEPTED.** 100 is more than six
+     * times what HS_MATMsgBuf_t holds and 328 times less than the bound HS actually tests, so
+     * this validates clean -- and the monitors would then TransmitMsg 100 bytes out of a 16-byte
+     * field. `accepted=1` is the defect. */
+    hs_clear_tables();
+    hs_mat_entry(5, HS_MATState_ENABLED, 0, 0x18A3, 100, 1);
+    rc = HS_ValidateMATable(hs_mat);
+    printf("hsv_mat_over16 rc=%d accepted=%d bufsize=%d bound=%d\n", (int)rc,
+           rc == CFE_SUCCESS ? 1 : 0, (int)sizeof(hs_mat[5].MsgBuf), CFE_MISSION_SB_MAX_SB_MSG_SIZE);
+
+    hs_clear_tables();
 }
 
 int main(void)
@@ -21057,6 +21629,10 @@ int main(void)
         hk_block_cmds();
         hk_block_dispatch();
         hk_block_app();
+
+        hs_block_utils();
+        hs_block_sysmon();
+        hs_block_validate();
 
             /* PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after
              * it today but tim_objtab, so both halves agreed and the transcript was green --
