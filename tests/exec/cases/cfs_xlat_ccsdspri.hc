@@ -15134,6 +15134,8 @@ U0 hs_clear_tables()
 // hs_block_app's job; every other block needs the state it produces without the resources.
 U0 hs_setup()
 {
+  I32 rc_c, rc_e, rc_w;
+
   MemSet(&HS_AppData, 0, sizeof(HS_AppData_t));
   hs_clear_tables();
 
@@ -15169,12 +15171,18 @@ U0 hs_setup()
     sb_forget_queue_name(HS_CMD_PIPE_NAME);
     sb_forget_queue_name(HS_EVENT_PIPE_NAME);
     sb_forget_queue_name(HS_WAKEUP_PIPE_NAME);
+    // HOISTED: CFE_SB_CreatePipe sends an event on failure, and C leaves the evaluation ORDER
+    // of printf's arguments unspecified -- so three of them in one call are not well defined
+    // against themselves even before this half is considered.
+    rc_c = CFE_SB_CreatePipe(&hs_cmd_pipe, HS_CMD_PIPE_DEPTH, HS_CMD_PIPE_NAME);
+    rc_e = CFE_SB_CreatePipe(&hs_event_pipe, HS_EVENT_PIPE_DEPTH, HS_EVENT_PIPE_NAME);
+    rc_w = CFE_SB_CreatePipe(&hs_wakeup_pipe, HS_WAKEUP_PIPE_DEPTH, HS_WAKEUP_PIPE_NAME);
     S("hs_pipes cmd=");
-    D(CFE_SB_CreatePipe(&hs_cmd_pipe, HS_CMD_PIPE_DEPTH, HS_CMD_PIPE_NAME));
+    D(rc_c);
     S(" evt=");
-    D(CFE_SB_CreatePipe(&hs_event_pipe, HS_EVENT_PIPE_DEPTH, HS_EVENT_PIPE_NAME));
+    D(rc_e);
     S(" wake=");
-    D(CFE_SB_CreatePipe(&hs_wakeup_pipe, HS_WAKEUP_PIPE_DEPTH, HS_WAKEUP_PIPE_NAME));
+    D(rc_w);
     S("\n");
     // The device is on from here. See psp_io_present's declaration: setting it HERE rather
     // than in the declaration is what keeps the two halves of the differential equal.
@@ -15187,12 +15195,13 @@ U0 hs_setup()
     // ONE general counter for the whole block, set to a distinctive value. Registered here
     // because CFE_PLATFORM_ES_MAX_GEN_COUNTERS is 8 and a counter per pass would exhaust
     // them -- the shared-fixture exhaustion docs/ records for CS's and HK's pools.
+    rc_c = CFE_ES_RegisterGenCounter(&hs_gen_ctr, "HSEXCTR");
     S("hs_realapp ");
     S(hs_real_app);
     S(" task ");
     S(hs_real_task);
     S(" genctr=");
-    D(CFE_ES_RegisterGenCounter(&hs_gen_ctr, "HSEXCTR"));
+    D(rc_c);
     S("\n");
     CFE_ES_SetGenCount(hs_gen_ctr, 60606);
     hs_pipes_made = 1;
@@ -17318,6 +17327,690 @@ U0 hs_block_dispatch()
   S(" err=");
   D(HS_AppData.CmdErrCount);
   S("\n");
+
+  hs_setup();
+}
+
+/*----------------------------------------------------------------------------------------------
+ * BLOCK 7: hs_app.c -- the entry point, the three initialisers and the two loop levels. HS'S LAST.
+ *
+ * ### THE FOUR TABLES ARE REGISTERED FOR REAL AND THEN LOADED TWO DIFFERENT WAYS
+ *
+ * HS_TblInit hard-codes CFE_TBL_SRC_FILE and "/cf/hs_amt.tbl". The simulated file system holds ONE
+ * file and ignores the path, so all four of HS's loads fail -- which is the interesting half:
+ * four failure arms, two of which send a SECOND event announcing the feature is off, and one of
+ * which fills all 32 ExeCounts with the sentinel against a requirement NASA cites by number.
+ * **And HS_TblInit returns CFE_SUCCESS anyway**, which is the single most important line in the
+ * file and is asserted directly.
+ *
+ * Then the exercise loads the same four tables itself with CFE_TBL_SRC_ADDRESS and calls
+ * HS_AcquirePointers, which is the only way to reach that function's SUCCESS arms -- including
+ * the two CFE_TBL_INFO_UPDATED arms that call the refreshers, which block 5 could not reach at
+ * all because it had no registered tables.
+ *
+ * ### HS_AppInit'S CDS HANDLING IS FIVE PATHS AND FOUR OF THEM END IN THE SAME CALL
+ *
+ * Already-exists-and-valid / already-exists-and-CORRUPT / failed-restore / fresh /
+ * registration-failed. The last one disables saving and initialises the counts ANYWAY -- NASA's
+ * comment says "they will not be saved" -- so HS still enforces its reset limit within one boot
+ * on a board whose CDS is broken.
+ *
+ * **A DISTINCTIVE PAIR IS STORED BEFORE THE FIRST PASS** so that "restored" is distinguishable
+ * from "reinitialised": the four reinitialising arms all land on (0, 3), which is also what HS
+ * writes on a cold start, so without the prime every one of the five labels printed the same
+ * numbers and only the events differed.
+ *
+ * **THE LATER STEPS FAIL ON EVERY PASS AND THAT IS FINE.** HS_SbInit collides on the pipe names
+ * and HS_TblInit on the table names, so HS_AppInit returns early -- but the CDS work happens
+ * BEFORE both of them, so every CDS path is reachable regardless. The `rc=` on those lines is the
+ * later failure and the assertion is the CDS fields.
+ *
+ * ### AND HS_AppMain IS RUN AS A **CORE** APP
+ *
+ * CFE_ES_ExitApp does not return for an EXTERNAL app -- the hang that cost MD three steps to
+ * find, recorded at the end of main(). A CORE app's ExitApp refuses and logs "Cannot Exit CORE
+ * Application", which is also the witness that ExitApp was reached at all: a zero exit count is
+ * what "never called" looks like too. The type is put back immediately.
+ */
+
+// One line of watchdog state. Four counters, because the two services before the main loop are
+// the thing hs_app.HC's header calls the most safety-critical pair in HS -- and a COUNT is the
+// limit of what this can show, since what actually matters is the INTERVAL between them.
+U0 hs_show_wd(U8 *tag, I64 s0)
+{
+  S(tag);
+  S(" services=");
+  D(psp_wd_services - s0);
+  S(" enabled=");
+  D(psp_wd_enabled);
+  S(" timeout=");
+  D(psp_wd_timeout);
+  S(" inits=");
+  D(psp_wd_inits);
+  S("\n");
+}
+
+U8 hs_cds_full[CFE_MISSION_ES_CDS_MAX_FULL_NAME_LEN];
+
+U0 hs_block_app()
+{
+  I32 rc;
+  I64 s0;
+  I64 x0;
+  I64 r0;
+  I64 i;
+  I64 sentinels;
+  U32 save_pipe, save_evt, save_wake;
+  CFE_SB_MsgId hk_mid;
+  I64 hk_len;
+  // THE FOUR TABLE HANDLES, SAVED, and that is not tidiness.
+  //
+  // HS_AppMain calls HS_AppInit, whose first statement is `memset(&HS_AppData, 0, ...)`. So
+  // after it runs, HS_AppData.AMTableHandle is **0** -- which is a perfectly VALID cFE table
+  // handle belonging to somebody else, because other apps registered tables long before HS.
+  // A first version unregistered HS's four tables through HS_AppData after HS_AppMain and got
+  // four `CFE_TBL_Unregister: App does not have access to Tbl Handle=...` lines; the tables
+  // stayed registered, the nominal HS_AppMain then failed at the duplicate AMT registration,
+  // and `hsa_main_ok` printed `services=0` -- IDENTICAL to `hsa_main_initfail`. Two lines
+  // asserting the same thing under different names, which is exactly what the comment above
+  // that pass warned about and did not prevent.
+  I16 h_am, h_em, h_ma, h_xc;
+  CFE_ES_CDS_RegRec_t *hs_cdsrec;
+  // Four scratch status locals, so no call that EMITS is ever printed piecewise around.
+  I32 l_am, l_em, l_ma, l_xc;
+  CFE_SB_Buffer *buf;
+
+  // ---- HS_SbInit ---------------------------------------------------------------------------
+  //
+  // THE PIPE-BUSY FAILURE FIRST, because hs_setup() has held all three of HS's pipe names since
+  // block 2 and the collision is therefore real rather than arranged. The LAST event before the
+  // line is HS_CR_PIPE_ERR_EID with no subscription events after it, which is the early-return
+  // shape.
+  hs_setup();
+  rc = HS_SbInit();
+  S("hsa_sbinit_busy rc=");
+  D(rc);
+  S(" is_success=");
+  D(rc == CFE_SUCCESS ? 1 : 0);
+  S("\n");
+
+  // AND THE NOMINAL CHAIN, with the three names released so the creates succeed. Three pipes
+  // and three subscriptions; the witness is that the three pipe ids in HS_AppData all MOVED and
+  // are distinct, plus the housekeeping packet's header having been initialised -- a field
+  // nothing else in this block writes.
+  hs_setup();
+  save_pipe = HS_AppData.CmdPipe;
+  save_evt = HS_AppData.EventPipe;
+  save_wake = HS_AppData.WakeupPipe;
+  sb_forget_queue_name(HS_CMD_PIPE_NAME);
+  sb_forget_queue_name(HS_EVENT_PIPE_NAME);
+  sb_forget_queue_name(HS_WAKEUP_PIPE_NAME);
+  rc = HS_SbInit();
+  // THE HOUSEKEEPING HEADER IS READ BACK OUT OF THE PACKET, which is the one field in
+  // HS_AppData that only CFE_MSG_Init writes -- so a HS_SbInit that created the pipes and
+  // skipped the Init would pass every other assertion on this line.
+  hk_mid = CFE_SB_InvalidMsgId();
+  hk_len = 0;
+  CFE_MSG_GetMsgId(&HS_AppData.HkPacket.TelemetryHeader.Msg, &hk_mid);
+  CFE_MSG_GetSize(&HS_AppData.HkPacket.TelemetryHeader.Msg, &hk_len);
+  S("hsa_sbinit rc=");
+  D(rc);
+  S(" moved=");
+  D(HS_AppData.CmdPipe != save_pipe && HS_AppData.EventPipe != save_evt &&
+            HS_AppData.WakeupPipe != save_wake
+        ? 1
+        : 0);
+  S(" distinct=");
+  D(HS_AppData.CmdPipe != HS_AppData.EventPipe && HS_AppData.EventPipe != HS_AppData.WakeupPipe
+        ? 1
+        : 0);
+  S(" hkmid=0x");
+  H4(CFE_SB_MsgIdToValue(hk_mid));
+  S(" hklen=");
+  D(hk_len);
+  S("\n");
+
+  // THESE ARE HS'S PIPES FROM NOW ON. hs_setup() carries the ORIGINALS, so every later pass
+  // that wants the subscriptions HS_SbInit just made has to use these -- captured here and
+  // installed by hand where needed.
+  save_pipe = HS_AppData.CmdPipe;
+  save_evt = HS_AppData.EventPipe;
+  save_wake = HS_AppData.WakeupPipe;
+
+  // ---- HS_TblInit --------------------------------------------------------------------------
+
+  // FOUR REGISTRATIONS SUCCEED AND FOUR LOADS FAIL. The handles are the witness for the first
+  // half -- four distinct, non-negative values where hs_setup() left CFE_TBL_BAD_TABLE_HANDLE --
+  // and the four state fields plus the 32 sentinels for the second.
+  rc = HS_TblInit();
+  sentinels = 0;
+  for (i = 0; i < HS_MAX_EXEC_CNT_SLOTS; i++) {
+    if (HS_AppData.HkPacket.Payload.ExeCounts[i] == HS_INVALID_EXECOUNT) {
+      sentinels++;
+    }
+  }
+  S("hsa_tblinit rc=");
+  D(rc);
+  S(" is_success=");
+  D(rc == CFE_SUCCESS ? 1 : 0);
+  S(" am=");
+  D(HS_AppData.AMTableHandle);
+  S(" em=");
+  D(HS_AppData.EMTableHandle);
+  S(" ma=");
+  D(HS_AppData.MATableHandle);
+  S(" xc=");
+  D(HS_AppData.XCTableHandle);
+  S("\n");
+  // **CFE_SUCCESS WITH FOUR FAILED LOADS** -- see the block comment. And every feature whose
+  // table failed is off, with the two monitors having said so twice.
+  S("hsa_tblinit_state appmon=");
+  D(HS_AppData.CurrentAppMonState);
+  S(" amload=");
+  D(HS_AppData.AppMonLoaded);
+  S(" evtmon=");
+  D(HS_AppData.CurrentEventMonState);
+  S(" emload=");
+  D(HS_AppData.EventMonLoaded);
+  S(" mat=");
+  D(HS_AppData.MsgActsState);
+  S(" xct=");
+  D(HS_AppData.ExeCountState);
+  S(" sentinels=");
+  D(sentinels);
+  S("\n");
+
+  h_am = HS_AppData.AMTableHandle;
+  h_em = HS_AppData.EMTableHandle;
+  h_ma = HS_AppData.MATableHandle;
+  h_xc = HS_AppData.XCTableHandle;
+
+  // A SECOND HS_TblInit IS REFUSED AT STEP ONE as a duplicate registration, so the sequence
+  // stops with HS_AMT_REG_ERR_EID and nothing after it. **AND IT RETURNS THE FAILURE**, unlike
+  // the load failures -- which is the registration/load asymmetry stated as two return values
+  // from the same function.
+  rc = HS_TblInit();
+  S("hsa_tblinit_again rc=");
+  D(rc);
+  S(" is_success=");
+  D(rc == CFE_SUCCESS ? 1 : 0);
+  S("\n");
+
+  // ---- HS_AcquirePointers, the SUCCESS arms ------------------------------------------------
+  //
+  // The four tables are registered now, so the exercise can load them from MEMORY -- which
+  // HS_TblInit cannot do, because it hard-codes CFE_TBL_SRC_FILE. Four loads from the arrays
+  // blocks 3-6 have been using, each with one armed entry so the refreshers have something to
+  // see.
+  hs_clear_tables();
+  hs_arm_am(0, hs_real_app, 3, HS_AMTActType_EVENT);
+  hs_arm_am(31, hs_real_app, 7, HS_AMTActType_EVENT);
+  hs_arm_em(0, hs_real_app, 55, HS_EMTActType_APP_RESTART);
+  hs_xct[0].ResourceType = HS_XCTResType_APP_MAIN;
+  StrNCpy(hs_xct[0].ResourceName, hs_real_task, CFE_MISSION_MAX_API_LEN - 1);
+  hs_mat_entry(0, HS_MATState_ENABLED, 6, 0x18A6, sizeof(CFE_MSG_CommandHeader), 1);
+  // **FOUR LOADS HOISTED INTO LOCALS, AND THAT IS NOT STYLE.**
+  //
+  // Each CFE_TBL_Load runs the table's validation function, which SENDS AN EVENT. In C, printf
+  // evaluates every argument before printing anything, so the four events land BEFORE the line;
+  // this half prints piecewise, so they landed INSIDE it --
+  // `hsa_load am=EVS Port1 ... AppMon verify results: ...`. The transcripts diverged on exactly
+  // that. **Seventh instance of this in the port**, and the rule docs/ states is the one applied
+  // here: any argument that EMITS is hoisted, on both sides.
+  l_am = CFE_TBL_Load(HS_AppData.AMTableHandle, CFE_TBL_SRC_ADDRESS, hs_amt);
+  l_em = CFE_TBL_Load(HS_AppData.EMTableHandle, CFE_TBL_SRC_ADDRESS, hs_emt);
+  l_ma = CFE_TBL_Load(HS_AppData.MATableHandle, CFE_TBL_SRC_ADDRESS, hs_mat);
+  l_xc = CFE_TBL_Load(HS_AppData.XCTableHandle, CFE_TBL_SRC_ADDRESS, hs_xct);
+  S("hsa_load am=");
+  D(l_am);
+  S(" em=");
+  D(l_em);
+  S(" ma=");
+  D(l_ma);
+  S(" xc=");
+  D(l_xc);
+  S("\n");
+
+  // AND NOW THE SUCCESS ARMS, INCLUDING THE TWO CFE_TBL_INFO_UPDATED ONES. The AMT's refresh
+  // is visible as the enable bitmap appearing from nothing -- bits 0 and 31, which is also the
+  // `1 << 31` the precedence bug broke -- and the MAT's as the cooldowns being cleared. The
+  // four pointers going non-NULL is the other half.
+  for (i = 0; i < HS_MAX_MSG_ACT_TYPES; i++) {
+    HS_AppData.MsgActCooldown[i] = 7; // must be cleared by the MsgActs refresh
+  }
+  HS_AppData.AppMonEnables[0] = 0;
+  HS_AcquirePointers();
+  S("hsa_acq_ok amptr=");
+  D(HS_AppData.AMTablePtr != NULL ? 1 : 0);
+  S(" emptr=");
+  D(HS_AppData.EMTablePtr != NULL ? 1 : 0);
+  S(" maptr=");
+  D(HS_AppData.MATablePtr != NULL ? 1 : 0);
+  S(" xcptr=");
+  D(HS_AppData.XCTablePtr != NULL ? 1 : 0);
+  S(" enables=");
+  D(HS_AppData.AppMonEnables[0]);
+  S(" cool0=");
+  D(HS_AppData.MsgActCooldown[0]);
+  S("\n");
+  S("hsa_acq_ok_state appmon=");
+  D(HS_AppData.CurrentAppMonState);
+  S(" amload=");
+  D(HS_AppData.AppMonLoaded);
+  S(" evtmon=");
+  D(HS_AppData.CurrentEventMonState);
+  S(" emload=");
+  D(HS_AppData.EventMonLoaded);
+  S(" mat=");
+  D(HS_AppData.MsgActsState);
+  S(" xct=");
+  D(HS_AppData.ExeCountState);
+  S("\n");
+
+  // A SECOND CALL WITH NO NEW TABLE DATA: the pointers are re-acquired and **the refreshers do
+  // NOT run**, because CFE_TBL_GetAddress answers CFE_SUCCESS rather than CFE_TBL_INFO_UPDATED
+  // the second time. The witness is the cooldown STAYING where this pass puts it -- a function
+  // that refreshed unconditionally would clear it.
+  for (i = 0; i < HS_MAX_MSG_ACT_TYPES; i++) {
+    HS_AppData.MsgActCooldown[i] = 4;
+  }
+  HS_AcquirePointers();
+  S("hsa_acq_again enables=");
+  D(HS_AppData.AppMonEnables[0]);
+  S(" cool0=");
+  D(HS_AppData.MsgActCooldown[0]);
+  S("\n");
+
+  // ---- HS_ProcessMain ----------------------------------------------------------------------
+  //
+  // ONE CYCLE DOES SIX THINGS and this drives SIX cycles, because three of them only show up
+  // over several: the aliveness dot appears on the fifth (HS_CPU_ALIVE_PERIOD is 5), the
+  // utilisation counter walks down from 30 to 24, and the cooldowns age by one each time.
+  //
+  // **THE FIRST CYCLE SAMPLES UTILISATION AND THEN DECREMENTS THE COUNTER ANYWAY**, which is
+  // why `uc=` is 29 and not 30 after the first call -- hs_app.HC's header records that the
+  // decrement is outside the `if`.
+  //
+  // AND THE i=4 LINE IS PREFIXED WITH A `.` IN THE TRANSCRIPT. That is HS_CPU_ALIVE_STRING,
+  // written with OS_printf and carrying no newline, so the aliveness indicator LANDS ON THE
+  // NEXT LINE OF OUTPUT. It is left exactly where it falls: the dot appearing on the fifth cycle
+  // and nowhere else is the assertion, and moving it would be the driver editing the thing under
+  // test.
+  HS_AppData.CurrentAlivenessState = HS_State_ENABLED;
+  HS_AppData.AlivenessCounter = 0;
+  HS_AppData.MsgActCooldown[0] = 3;
+  HS_SysMonInit();
+  hs_sim_set_util(2000);
+  for (i = 0; i < 6; i++) {
+    s0 = psp_wd_services;
+    rc = HS_ProcessMain();
+    S("hsa_main i=");
+    D(i);
+    S(" rc=");
+    D(rc);
+    S(" uc=");
+    D(HS_AppData.UtilizationCycleCounter);
+    S(" alive=");
+    D(HS_AppData.AlivenessCounter);
+    S(" cool0=");
+    D(HS_AppData.MsgActCooldown[0]);
+    S(" wd=");
+    D(psp_wd_services - s0);
+    S("\n");
+  }
+
+  // WITH THE WATCHDOG FLAG CLEARED -- which is what both monitors do before a software reset --
+  // HS_ProcessMain stops petting. `wd=0` is the assertion, and it is the other half of the
+  // reset path block 4 drove from the monitor's side.
+  HS_AppData.ServiceWatchdogFlag = HS_State_DISABLED;
+  s0 = psp_wd_services;
+  rc = HS_ProcessMain();
+  S("hsa_main_nowd rc=");
+  D(rc);
+  S(" wd=");
+  D(psp_wd_services - s0);
+  S("\n");
+  HS_AppData.ServiceWatchdogFlag = HS_State_ENABLED;
+
+  // AND WITH THE ALIVENESS INDICATOR OFF, the counter does not move at all -- so the dots are
+  // not merely suppressed, the counting stops.
+  HS_AppData.CurrentAlivenessState = HS_State_DISABLED;
+  HS_AppData.AlivenessCounter = 2;
+  rc = HS_ProcessMain();
+  S("hsa_main_noalive alive=");
+  D(HS_AppData.AlivenessCounter);
+  S("\n");
+
+  // ---- HS_ProcessCommands ------------------------------------------------------------------
+
+  // BOTH PIPES EMPTY: CFE_SUCCESS, which is the `CFE_SB_NO_MESSAGE -> CFE_SUCCESS` conversion
+  // doing its job twice. HS's REAL pipes go in here -- the ones HS_SbInit made and subscribed,
+  // not the ones hs_setup() carries.
+  HS_AppData.CmdPipe = save_pipe;
+  HS_AppData.EventPipe = save_evt;
+  HS_AppData.WakeupPipe = save_wake;
+  HS_AppData.CurrentEventMonState = HS_State_DISABLED;
+  rc = HS_ProcessCommands();
+  S("hsa_cmds_empty rc=");
+  D(rc);
+  S(" evts=");
+  D(HS_AppData.EventsMonitoredCount);
+  S("\n");
+
+  // ONE COMMAND ON THE COMMAND PIPE, put there through the real software bus so the whole path
+  // runs: TransmitMsg -> route -> queue -> ReceiveBuffer -> HS_AppPipe -> the handler. CmdCount
+  // moving is the witness that the message arrived AND was dispatched.
+  /* **`&hs_cmdbuf8(CFE_SB_Buffer *)->Msg` KILLED THE HolyC HALF**, and the fix is the one
+   * docs/HOLYC_STRUCT_LIMITS.md already prescribes for this shape.
+   *
+   * A postfix cast followed by `->` is lexically indistinguishable from a CALL followed by `->`,
+   * and HolyC's call-arrow-member handling resolves the arrow against the first argument's
+   * class. `hs_cmdbuf8` is an array of U64 -- no class -- so the arrow resolved against nothing
+   * and the access went through zero. The transcript did not report an error: it simply STOPPED,
+   * 95 lines short, with the C half carrying on. That is the open limit "a SCALAR arg has no
+   * class to resolve against and SILENTLY LOADS THROUGH ZERO", and the prescription is to hoist
+   * to a typed local -- which hs_mkcmd already returns, so the fix is to USE its return value. */
+  buf = hs_mkcmd(HS_CMD_MID, HS_NOOP_CC, sizeof(HS_NoopCmd_t));
+  l_am = CFE_SB_TransmitMsg(&buf->Msg, TRUE);
+  S("hsa_cmds_send rc=");
+  D(l_am);
+  S("\n");
+  HS_AppData.CmdCount = 0;
+  rc = HS_ProcessCommands();
+  S("hsa_cmds_one rc=");
+  D(rc);
+  S(" count=");
+  D(HS_AppData.CmdCount);
+  S("\n");
+
+  // AND THE EVENT PIPE, WHICH ONLY RUNS WHEN THE EVENT MONITOR IS ENABLED. Enabling it
+  // subscribes; then an event message transmitted onto the bus is dequeued here and
+  // EventsMonitoredCount moves -- BEFORE HS_MonitorEvent is called, so the count is "events
+  // dequeued" and not "events acted on". The EMT is loaded with event 55 against the real app
+  // name, so this also drives the monitor's match from the loop side.
+  rc = HS_EnableEventMonCmd(NULL);
+  S("hsa_cmds_evton rc=");
+  D(rc);
+  S(" state=");
+  D(HS_AppData.CurrentEventMonState);
+  S("\n");
+  hs_make_event(hs_real_app, 55);
+  l_am = CFE_SB_TransmitMsg(&hs_evt.TelemetryHeader.Msg, TRUE);
+  S("hsa_cmds_evtsend rc=");
+  D(l_am);
+  S("\n");
+  HS_AppData.EventsMonitoredCount = 0;
+  r0 = es_restarts;
+  rc = HS_ProcessCommands();
+  S("hsa_cmds_evt rc=");
+  D(rc);
+  S(" evts=");
+  D(HS_AppData.EventsMonitoredCount);
+  S(" ctlreq=");
+  D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+  S(" restarts=");
+  D(es_restarts - r0);
+  S("\n");
+  CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+  HS_DisableEventMonCmd(NULL);
+
+  /* ---- HS_AppMain --------------------------------------------------------------------------
+   *
+   * RUN AS A CORE APP WITH APP_EXIT ALREADY REQUESTED, so CFE_ES_RunLoop returns false on its
+   * first test and the loop body never runs. What that leaves is exactly the prologue and the
+   * epilogue, which is what this pass is for: HS_AppInit, the startup sync, **the four watchdog
+   * calls**, the event subscription, then HS_SysMonCleanup and CFE_ES_ExitApp.
+   *
+   * `services=2` is the assertion hs_app.HC's header argues for -- Set, Service, Enable,
+   * Service, with the two services being the pair that matters. A translation that dropped
+   * either would print 1 here and nothing else in the port would notice.
+   *
+   * HS_AppInit WILL FAIL on the pipe names and the table names, which are all still held, so
+   * the watchdog block is NOT reached on this pass -- the `if (Status == CFE_SUCCESS)` guards
+   * it. That is itself worth having: it is the shape of HS coming up on a board where
+   * initialisation failed, and `services=0` with an exit is what it looks like. The pass after
+   * it releases everything and gets the nominal count. */
+  CFE_ES_Global.SystemState = CFE_ES_SystemState_CORE_READY;
+  CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_CORE;
+  CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_EXIT;
+
+  hs_setup();
+  s0 = psp_wd_services;
+  x0 = es_taskexits;
+  HS_AppMain();
+  // **`exits=0` IS CORRECT AND IS NOT THE WITNESS.** CFE_ES_ExitApp REFUSES for a CORE app and
+  // logs "Cannot Exit CORE Application" without touching the counter -- which is also what
+  // "never called" looks like, the trap CS's block records paying for. The syslog line above
+  // this one is what says ExitApp was reached; the counter is printed because a NON-zero value
+  // here would mean the app type was not what this pass thinks it is.
+  S("hsa_main_initfail exits=");
+  D(es_taskexits - x0);
+  S("\n");
+  hs_show_wd("hsa_main_initfail", s0);
+
+  /* AND THE NOMINAL ENTRY. Everything released: the three pipe names, the four table names, and
+   * the CDS -- so HS_AppInit runs end to end and the watchdog prologue is reached.
+   *
+   * **THE FOUR TABLES ARE UNREGISTERED THROUGH THE SAVED HANDLES**, not through HS_AppData --
+   * see h_am's declaration for what happened when they were not. */
+  // Hoisted for the same reason as hsa_load: CFE_TBL_Unregister sends an event.
+  l_am = CFE_TBL_Unregister(h_am);
+  l_em = CFE_TBL_Unregister(h_em);
+  l_ma = CFE_TBL_Unregister(h_ma);
+  l_xc = CFE_TBL_Unregister(h_xc);
+  S("hsa_unreg am=");
+  D(l_am);
+  S(" em=");
+  D(l_em);
+  S(" ma=");
+  D(l_ma);
+  S(" xc=");
+  D(l_xc);
+  S("\n");
+  sb_forget_queue_name(HS_CMD_PIPE_NAME);
+  sb_forget_queue_name(HS_EVENT_PIPE_NAME);
+  sb_forget_queue_name(HS_WAKEUP_PIPE_NAME);
+  hs_setup();
+  s0 = psp_wd_services;
+  x0 = es_taskexits;
+  HS_AppMain();
+  S("hsa_main_ok exits=");
+  D(es_taskexits - x0);
+  S(" run=");
+  D(HS_AppData.RunStatus);
+  S("\n");
+  hs_show_wd("hsa_main_ok", s0);
+  // AND THE DEVICE IS STOPPED on the way out, on every path -- HS_SysMonCleanup is called
+  // after the loop whatever happened.
+  S("hsa_main_ok_dev running=");
+  D(psp_io_running);
+  S("\n");
+
+  CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+  CFE_ES_Global.AppTable[1].Type = CFE_ES_AppType_EXTERNAL;
+  CFE_ES_Global.SystemState = CFE_ES_SystemState_OPERATIONAL;
+
+  /* ---- HS_AppInit's five CDS paths ----------------------------------------------------------
+   *
+   * The CDS area "HS_CDS" exists by now -- the nominal HS_AppMain above created it -- so every
+   * pass from here takes the ALREADY_EXISTS arm unless something is broken on purpose. All five
+   * are below, and all five assert the CDS FIELDS rather than the return: HS_SbInit and
+   * HS_TblInit fail on every pass, so `rc=` is the later failure and the CDS work happened
+   * before it. See the block comment. */
+
+  /* **A DISTINCTIVE PAIR IS STORED FIRST, AND THAT IS WHAT MAKES "RESTORED" MEAN ANYTHING.**
+   *
+   * HS_AppMain's own HS_SetCDSData wrote (0, HS_MAX_RESTART_ACTIONS) = (0, 3) -- which is also
+   * exactly what the CORRUPT arm, the FAILED-RESTORE arm and the FRESH arm reinitialise to. So
+   * a `valid` pass reading (0, 3) back is indistinguishable from all three of them, and a first
+   * version printed `rp=0 mr=3` under every one of the five labels. The events differ and the
+   * numbers did not.
+   *
+   * (5, 9) goes in instead, through HS_SetCDSData so the complements are consistent, and the
+   * restore then has something to restore. `rp=5 mr=9` on the next line is the ONLY place in
+   * this block where the CDS path is distinguishable from the default path. */
+  hs_setup();
+  HS_AppInit(); // for the handle -- the later steps fail and that does not matter here
+  HS_AppData.CDSState = HS_State_ENABLED;
+  HS_SetCDSData(5, 9);
+  S("hsa_init_cds_prime rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S("\n");
+
+  // ALREADY EXISTS AND VALID: restored, the complements check out, no event.
+  hs_setup();
+  rc = HS_AppInit();
+  S("hsa_init_cds_valid rc_nonzero=");
+  D(rc != CFE_SUCCESS ? 1 : 0);
+  S(" cdsstate=");
+  D(HS_AppData.CDSState);
+  S(" rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S(" ok=");
+  D(HS_AppData.CDSData.ResetsPerformed == (~HS_AppData.CDSData.ResetsPerformedNot)(U16) &&
+            HS_AppData.CDSData.MaxResets == (~HS_AppData.CDSData.MaxResetsNot)(U16)
+        ? 1
+        : 0);
+  S(" restored=");
+  D(HS_AppData.CDSData.ResetsPerformed == 5 && HS_AppData.CDSData.MaxResets == 9 ? 1 : 0);
+  S("\n");
+
+  /* **ALREADY EXISTS AND CORRUPT.** The pair in the CDS is still (5, 9) from the prime, so the
+   * only thing changed here is ONE complement -- the minimum that makes `x == (uint16)~xNot`
+   * fail. HS_CDS_CORRUPT_ERR_EID fires and the counts drop to (0, HS_MAX_RESTART_ACTIONS),
+   * which is the (5, 9) above becoming (0, 3) below: the arm is visible in the NUMBERS and not
+   * only in the event. **This is the only self-validating persistent state in any app in this
+   * port.** */
+  HS_AppData.CDSState = HS_State_ENABLED;
+  HS_AppData.CDSData.ResetsPerformedNot = 0; // 5 != (uint16)~0, so the pair is inconsistent
+  CFE_ES_CopyToCDS(HS_AppData.MyCDSHandle, &HS_AppData.CDSData);
+  hs_setup();
+  rc = HS_AppInit();
+  S("hsa_init_cds_corrupt cdsstate=");
+  D(HS_AppData.CDSState);
+  S(" rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S(" is_default=");
+  D(HS_AppData.CDSData.ResetsPerformed == 0 && HS_AppData.CDSData.MaxResets == HS_MAX_RESTART_ACTIONS
+        ? 1
+        : 0);
+  S("\n");
+
+  // A FAILED RESTORE, which is a different arm from a corrupt one: HS_CDS_RESTORE_ERR_EID and
+  // the same reinitialisation. Steered with the simulated PSP's read failure, which is the only
+  // way in -- a real CFE_ES_RestoreFromCDS failure needs the device to refuse.
+  es_cds_read_rc = CFE_PSP_ERROR;
+  hs_setup();
+  rc = HS_AppInit();
+  es_cds_read_rc = CFE_PSP_SUCCESS;
+  S("hsa_init_cds_norestore cdsstate=");
+  D(HS_AppData.CDSState);
+  S(" rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S("\n");
+
+  /* **A FRESH CDS**, which needed the area removed to reach -- every pass above took the
+   * ALREADY_EXISTS arm because HS_AppMain created "HS_CDS" and nothing removes it.
+   *
+   * **CFE_ES_DeleteCDS REFUSES WHILE THE OWNING APPLICATION IS RUNNING**, with
+   * CFE_ES_CDS_OWNER_ACTIVE_ERR (0xC4000022) -- which is correct in flight and is why this pass
+   * frees the registry record directly instead. The owner is CFE_EVS, this process's app 1,
+   * and it is running by construction.
+   *
+   * WHITE-BOX ON PURPOSE, and it LEAKS the eight-byte pool block, because
+   * CFE_ES_CDSBlockRecordSetFree marks the registry entry free without returning the block to
+   * the allocator. The CDS pool is 64 KiB and this happens twice, so the leak is 16 bytes and
+   * is stated rather than hidden. The alternative -- deregistering app 1 from ES so the owner
+   * check passes -- would break every name lookup in every pass after it.
+   *
+   * The name is the APP-QUALIFIED one, built from the app name read out of the live table
+   * rather than written as a literal: CFE_ES_RegisterCDS prepends it, so "HS_CDS" alone finds
+   * nothing and this would quietly do nothing -- leaving both passes below on the
+   * ALREADY_EXISTS arm and identical to the three above them. `found=1` is what says otherwise.
+   */
+  StrPrintN(hs_cds_full, CFE_MISSION_ES_CDS_MAX_FULL_NAME_LEN, "%s.%s", hs_real_app, HS_CDSNAME);
+  hs_cdsrec = CFE_ES_LocateCDSBlockRecordByName(hs_cds_full);
+  // ONE DeleteCDS CALL, HOISTED. The first version called it TWICE -- once for the value and
+  // once for the comparison -- which is both an emitting call in a print and a duplicated
+  // side effect.
+  l_am = CFE_ES_DeleteCDS(hs_cds_full, FALSE);
+  S("hsa_init_cds_del delrc=");
+  D(l_am);
+  S(" owner_active=");
+  D(l_am == CFE_ES_CDS_OWNER_ACTIVE_ERR ? 1 : 0);
+  S(" found=");
+  D(hs_cdsrec != NULL ? 1 : 0);
+  S(" name=");
+  S(hs_cds_full);
+  S("\n");
+  if (hs_cdsrec != NULL) {
+    CFE_ES_CDSBlockRecordSetFree(hs_cdsrec);
+  }
+  hs_setup();
+  rc = HS_AppInit();
+  S("hsa_init_cds_fresh cdsstate=");
+  D(HS_AppData.CDSState);
+  S(" rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S(" is_default=");
+  D(HS_AppData.CDSData.ResetsPerformed == 0 && HS_AppData.CDSData.MaxResets == HS_MAX_RESTART_ACTIONS
+        ? 1
+        : 0);
+  S("\n");
+
+  /* AND A FAILED REGISTRATION: **CDSState goes DISABLED and the counts are initialised ANYWAY.**
+   * NASA's comment is "Initialize values anyway (they will not be saved)", and that is what
+   * keeps HS enforcing its reset limit within one boot on a board whose CDS is broken.
+   *
+   * TWO LEVERS AT ONCE, AND BOTH ARE NEEDED: the area is removed again so RegisterCDS has to
+   * CREATE rather than find, and the simulated PSP's write is made to fail so the create
+   * cannot finish. A first version set only the write failure, and with "HS_CDS" still present
+   * RegisterCDS took the ALREADY_EXISTS arm and never wrote anything -- `is_disabled=0`, a
+   * green line for an arm that had not run. */
+  hs_cdsrec = CFE_ES_LocateCDSBlockRecordByName(hs_cds_full);
+  if (hs_cdsrec != NULL) {
+    CFE_ES_CDSBlockRecordSetFree(hs_cdsrec);
+  }
+  es_cds_write_rc = CFE_PSP_ERROR;
+  hs_setup();
+  rc = HS_AppInit();
+  es_cds_write_rc = CFE_PSP_SUCCESS;
+  S("hsa_init_cds_noreg cdsstate=");
+  D(HS_AppData.CDSState);
+  S(" is_disabled=");
+  D(HS_AppData.CDSState == HS_State_DISABLED ? 1 : 0);
+  S(" rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S("\n");
+
+  /* **HS_AppInit'S EVS-REGISTRATION FAILURE IS NOT REACHED, AND THAT IS NAMED RATHER THAN
+   * PAPERED OVER.**
+   *
+   * It is the one step in HS_AppInit that cannot report by event -- a failed CFE_EVS_Register
+   * leaves nothing able to send one, so HS writes to the system log instead and returns. The
+   * arm is two lines of HS and would be worth one line of transcript.
+   *
+   * Reaching it needs CFE_EVS_Register to refuse, and cfe_evs.c is GATED here: there is no
+   * stub to steer, and the real one refuses only for an app id EVS does not know. Forcing that
+   * means unregistering app 1 from EVS's own table -- and this transcript has already shown
+   * what that looks like from the other direction, when a 40 KiB memset overwrote EVS's
+   * registration and every later event came back "App CFE_EVS not registered". Doing it
+   * deliberately would make every event AFTER this pass disappear, which is a far larger hole
+   * in the exercise than the one line it buys.
+   *
+   * So it stands as unreached. The other four HS_AppInit outcomes are all driven above. */
 
   hs_setup();
 }
@@ -28875,6 +29568,7 @@ I64 main()
     hs_block_monitors();
     hs_block_cmds();
     hs_block_dispatch();
+    hs_block_app();
 
     // PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after it today
     // but tim_objtab, so both halves agreed and the transcript was green -- but the NEXT app's
