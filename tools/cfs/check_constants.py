@@ -306,6 +306,22 @@ def probe(names):
         # hs_msg.h is where HS_BITS_PER_APPMON_ENABLE lives, which nothing else reaches.
         "hs_eventids.h", "hs_perfids.h", "hs_msgids.h", "hs_fcncodes.h", "hs_version.h",
         "hs_app.h", "hs_msg.h", "hs_tbldefs.h", "hs_interface_cfg.h", "hs_internal_cfg.h",
+        # SC's, the seventh app, and the count was WATCHED rather than assumed. Without these the
+        # gate reported "172 names NASA does not define" where it had reported 35 -- SC's ~180
+        # constants were landing in the NOT-COMPARED bucket, which is the blind spot docs/ records
+        # as a checker passing on what it cannot SEE. With them it is back down.
+        #
+        # sc_events.h is the LIVE event header; **sc_eventids.h is deliberately absent.** SC ships
+        # both, only sc_events.h is included by any source, and the five names they share
+        # DISAGREE (SC_CC_ERR_EID is 21 vs 64). Listing the dead one would make this gate assert
+        # five numbers the compiled code never uses, with no complaint from anything.
+        #
+        # sc_perfids.h is absent for the same class of reason: two files of that name with 35 and
+        # 38 behind one include guard. The value this port takes (38) is pinned by the layout
+        # probe's include order and recorded in docs/CFS_PLAN.md, not by this list.
+        "sc_events.h", "sc_msgids.h", "sc_fcncodes.h", "sc_version.h", "sc_msgdefs.h",
+        "sc_extern_typedefs.h", "sc_tbldefs.h", "sc_tbl.h", "sc_msg.h", "sc_app.h",
+        "sc_interface_cfg.h", "sc_internal_cfg.h", "sc_index_types.h",
         # ES's event ids and its own platform config, as the module arrives. The gate refused
         # to pass on CFE_ES_SYSLOG2_EID rather than file it as "a name this port invented",
         # which is the behaviour that distinguishes a missing header from a local constant.

@@ -258,6 +258,57 @@ U16 SC_EntryOffsetAdvance(U16 Pos, I64 Bytes)
   return SC_IDX_AS_UINT(Pos) + (Bytes + sizeof(U32) - 1) / sizeof(U32);
 }
 
+// --- config/default_sc_tbl.h's constants ------------------------------------------------------
+//
+// ALSO FOUND BY check_defines RATHER THAN BY READING -- default_sc_tbl.h is another thin header
+// that includes the others and adds ten constants, and it was missed. See sc_msg.HC's note.
+//
+// **THE TWO HEADER SIZES ARE `offsetof` IN A MACRO**, which HolyC has no spelling for:
+//
+//     #define SC_ATS_HEADER_SIZE (offsetof(SC_AtsEntry_t, Msg))
+//     #define SC_RTS_HEADER_SIZE (offsetof(SC_RtsEntry_t, Msg))
+//
+// So they are written out as the numbers the C produces -- 8 and 4, read out of a probe and NOT
+// computed from the field list. That makes them the one pair of constants in SC whose correctness
+// depends on check_padding: if SC_AtsEntry_t's layout ever moved, NASA's macro would follow it and
+// this constant would not. The dependency is stated here because nothing else records it.
+#define SC_ATS_HEADER_SIZE 8
+#define SC_RTS_HEADER_SIZE 4
+
+// THE EIGHT TABLE IDS, AND THEY ARE A CHAIN. NASA defines each as the previous one plus a count,
+// so the whole block shifts if SC_NUMBER_OF_ATS or SC_NUMBER_OF_RTS changes:
+//
+//     ATS_0     1                              ATS 1 and ATS 2 take ids 1 and 2
+//     APPEND    ATS_0 + SC_NUMBER_OF_ATS  = 3
+//     RTS_0     APPEND + 1                = 4  RTS 1..4 take ids 4,5,6,7
+//     RTS_INFO  RTS_0 + SC_NUMBER_OF_RTS  = 8
+//     RTP_CTRL  RTS_INFO + 1              = 9
+//     ATS_INFO  RTP_CTRL + 1              = 10
+//     ATP_CTRL  ATS_INFO + 1              = 11
+//     ATS_CMD_0 ATP_CTRL + 1              = 12
+//
+// **THE EXPRESSIONS ARE KEPT, NOT FOLDED.** Folding them to 1,3,4,8,9,10,11,12 would be correct
+// for this configuration and would hide that `SC_TBL_ID_RTS_INFO` is only 8 because there are
+// four RTSs -- which is the kind of configuration-dependent constant docs/ records being wrong
+// four times in MM's prefix list. The values in the table above were measured with a probe, as a
+// cross-check on the arithmetic.
+//
+// **AND KEEPING THEM COSTS A GATE: check_constants reports these seven as "not a plain literal,
+// so the value is not compared here".** It compares literals, and these are expressions -- so
+// seven of SC's constants are verified by the measurement recorded above and by nothing that
+// re-runs. The alternative, folding them to literals, would buy the gate and lose the
+// configuration dependence, which is the worse trade for a chain whose whole point is that it
+// shifts. SC's exercise prints all eight table ids so the differential pins them, and that is
+// where the standing check lives.
+#define SC_TBL_ID_ATS_0     1
+#define SC_TBL_ID_APPEND    (SC_TBL_ID_ATS_0 + SC_NUMBER_OF_ATS)
+#define SC_TBL_ID_RTS_0     (SC_TBL_ID_APPEND + 1)
+#define SC_TBL_ID_RTS_INFO  (SC_TBL_ID_RTS_0 + SC_NUMBER_OF_RTS)
+#define SC_TBL_ID_RTP_CTRL  (SC_TBL_ID_RTS_INFO + 1)
+#define SC_TBL_ID_ATS_INFO  (SC_TBL_ID_RTP_CTRL + 1)
+#define SC_TBL_ID_ATP_CTRL  (SC_TBL_ID_ATS_INFO + 1)
+#define SC_TBL_ID_ATS_CMD_0 (SC_TBL_ID_ATP_CTRL + 1)
+
 /*******************************************************************************/
 // --- config/default_sc_tbldefs.h: the on-the-wire entry shapes -------------------------------
 //

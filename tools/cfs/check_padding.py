@@ -146,6 +146,26 @@ HDRS = [
     # 'HS_HkPacket_t'", and the probe's 16-round bisect then reports only that it would not
     # compile.
     "hs_msg.h", "hs_msgstruct.h", "hs_app.h",
+    # STORED COMMAND -- the seventh, and it needs FIVE headers because SC spreads its types over
+    # five files that do not include each other in the order a probe needs:
+    #
+    #   sc_platform_cfg.h    SC_NUMBER_OF_ATS/RTS and SC_MAX_ATS_CMDS, used in array bounds
+    #   sc_extern_typedefs.h the SC_Status enum and the number/index typedefs
+    #   sc_tbldefs.h         the ATS/RTS entry shapes and the two info tables
+    #   sc_tblstruct.h       the two processor control blocks
+    #   sc_msgdefs.h         the housekeeping payload and the six command payloads
+    #   sc_msgstruct.h       the 21 messages
+    #
+    # sc_msgstruct.h DOES pull in sc_msgdefs.h, but the pair is listed anyway: the order here is
+    # what the probe compiles, and a reader adding the eighth app should see which files carry
+    # which types rather than rediscover it.
+    #
+    # **AND sc_perfids.h IS DELIBERATELY ABSENT.** SC ships two files of that name with DIFFERENT
+    # values for SC_APPMAIN_PERF_ID (35 in config/, 38 in fsw/inc/) behind the SAME include guard,
+    # so adding it here would decide a conflict this gate has no business deciding -- and it
+    # declares no types, so it buys nothing. docs/CFS_PLAN.md records the finding.
+    "sc_platform_cfg.h", "sc_extern_typedefs.h", "sc_tbldefs.h", "sc_tblstruct.h",
+    "sc_msgdefs.h", "sc_msgstruct.h",
     # THE PSP'S I/O DRIVER MODULE HEADERS, which HS's system monitor is the first thing in this
     # port to reach. CFE_PSP_IODriver_Location_t, _Arg_t and _AnalogRdWr_t live in a PSP MODULE
     # (PSP/fsw/modules/iodriver/inc) rather than in fsw/inc, so neither this list nor

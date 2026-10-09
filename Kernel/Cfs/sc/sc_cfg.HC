@@ -157,6 +157,26 @@
 // constants its own NASA counterpart does not define.
 
 // --- fsw/inc/sc_perfids.h ----------------------------------------------------------------------
+//
+// **38, FROM `fsw/inc/sc_perfids.h`, AND NO GATE PINS IT.**
+//
+// SC ships two files named sc_perfids.h -- `config/default_sc_perfids.h` says 35 and
+// `fsw/inc/sc_perfids.h` says 38 -- and both use the include guard `SC_PERFIDS_H`, so whichever
+// is read first silently suppresses the other. Both are on the real build's include path
+// (`sc_perfids.h` is in SC's arch_build.cmake platform-config list, and CMakeLists.txt:23
+// publishes fsw/inc). docs/CFS_PLAN.md has the history: the duplicate was REINTRODUCED by the
+// pinned commit itself, with the value changed.
+//
+// This port takes 38 -- the value the pinned commit deliberately wrote -- and the choice is
+// MEASURED: `vendor/shim/sc_perfids.h` was deleted so it cannot forward to the config copy, and
+// the layout probe prints `SC_APPMAIN_PERF_ID the probe SEES = 38`.
+//
+// **BUT check_constants CANNOT CHECK IT**, and that is stated rather than left to be discovered.
+// Its probe resolves a constant's value from an explicit header list, and sc_perfids.h is kept
+// OUT of that list on purpose: listing either copy would make the gate assert one side of a
+// conflict it has no business deciding. So this constant appears in the gate's "NASA does not
+// define" bucket -- one name, deliberately. The value is pinned instead by the differential
+// transcript, where SC's exercise prints it and the two halves must agree.
 #define SC_APPMAIN_PERF_ID 38
 
 // --- fsw/src/sc_version.h. SC_MISSION_REV is above, with the internal configuration, where NASA

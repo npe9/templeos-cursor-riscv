@@ -31,7 +31,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # check_padding each had their own hand-written copy of MD's three, which is the NASA-side version
 # of exactly the defect this file was created to fix on the HolyC side -- unify one list and the
 # other goes on being two.
-APPS = ["MD", "MM", "CS", "LC", "HK", "HS"]
+APPS = ["MD", "MM", "CS", "LC", "HK", "HS", "SC"]
 
 # OSAL first, then cFE, then the apps -- lowest layer outwards, which is also the order a reader
 # wants them reported in.
