@@ -89,6 +89,33 @@ GUARD = re.compile(r"^[ \t]*#[ \t]*ifndef[ \t]+([A-Za-z_]\w*)")
 # `X MIDVAL(Y)` are the two cFS uses; anything of that form is a call site, not a value.
 PASTE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+[A-Za-z_]\w*[ \t]+[A-Za-z_]\w*\([^)]*\)[ \t]*$")
 
+# TRANSLATED FILES WHOSE NAME DOES NOT MATCH THE NASA HEADER THEY CARRY.
+#
+# The pairing above is by BASENAME, so a translated file called something else is UNPAIRED -- and
+# an unpaired file generates no requirement at all, which means the gate reports green on a header
+# whose constants are nowhere. That is not hypothetical:
+#
+# Every app in this port puts its global's TYPES in `*_global.HC` while NASA declares them in
+# `*_app.h`. For MD, MM, CS, LC, HK and HS that gap is closed BY ACCIDENT -- each has an
+# `*_app.HC` (the translation of *_app.c) which pairs with `*_app.h` by basename and makes its
+# constants required. SC's sc_app.c had not been translated yet, so sc_app.h was unpaired, and
+# sc_global.HC shipped with ELEVEN of its fifteen object-like defines. Deleting SC_BYTES_IN_WORD
+# produced no complaint; the omission surfaced two commits later as a compile failure in
+# sc_loads.c, which needed SC_INVALID_CMD_NUMBER.
+#
+# So the pairing is made EXPLICIT rather than left to depend on which sources happen to be gated.
+# `*_global.HC` is checked against `*_app.h` directly, for every app, which also means the
+# requirement does not silently disappear if an `*_app.HC` is ever renamed or split.
+ALIASES = {
+    "md_global":  "md_app",
+    "mm_global":  "mm_app",
+    "cs_global":  "cs_app",
+    "lc_global":  "lc_app",
+    "hk_global":  "hk_app",
+    "hs_global":  "hs_app",
+    "sc_global":  "sc_app",
+}
+
 # Pairs where a translated file deliberately carries only part of NASA's header, each with the
 # reason. An entry is a CLAIM and a stale one fails, because the names are listed explicitly.
 PARTIAL_OK = {}
@@ -169,7 +196,9 @@ def main(argv):
             hc = os.path.join(d, f)
             # hs_eventids.HC <-> hs_eventids.h, and also the config/default_ spelling.
             stem = f[:-3]
-            cand = index.get(stem + ".h") or index.get("default_" + stem + ".h")
+            cand = (index.get(ALIASES.get(stem, stem) + ".h")
+                    or index.get(stem + ".h")
+                    or index.get("default_" + stem + ".h"))
             if cand is None:
                 unpaired += 1
                 continue

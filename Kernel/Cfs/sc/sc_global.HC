@@ -76,8 +76,19 @@
 
 // --- sc_app.h's own constants ------------------------------------------------------------------
 //
-// ALL ELEVEN, whole, for the reason check_defines usually enforces -- **except that right now it
-// does not, and that was measured rather than assumed.**
+// ALL FOURTEEN, whole, for the reason check_defines usually enforces -- **except that right now it
+// does not, and the first version of this file proved it by shipping ELEVEN.**
+//
+// THE GAP BIT IMMEDIATELY AND EXACTLY AS PREDICTED. The note below was written saying sc_app.h is
+// unpaired and the gate cannot demand its constants; the same commit claimed "ALL ELEVEN" were
+// present. Translating sc_loads.c two commits later needed `SC_INVALID_CMD_NUMBER`, which was not
+// here -- and enumerating sc_app.h properly then showed **three** missing, not one:
+// SC_SB_TIMEOUT, SC_INVALID_CMD_NUMBER and SC_ROUND_UP_BYTES. A hand count of "eleven" against a
+// header with fifteen object-like defines, with no gate able to contradict it.
+//
+// So the list below is now produced by
+//     grep -E "^#define SC_[A-Za-z0-9_]+( |\t)" vendor/SC/fsw/src/sc_app.h
+// minus the include guard, and checked back against that grep -- not counted by eye.
 //
 // check_defines builds its required list by pairing a TRANSLATED file with a NASA header OF THE
 // SAME BASENAME, then checks presence anywhere in the translation. This file is `sc_global.HC`
@@ -91,6 +102,9 @@
 // exists to carry the pairing. So this is a TEMPORARY, SELF-CLOSING gap that shuts the moment
 // sc_app.HC lands -- not a gate defect -- and it means "the gate is green" is not evidence about
 // these eleven constants today. They were taken from a probe over NASA's own header instead.
+// THE SOFTWARE BUS RECEIVE TIMEOUT, in milliseconds. SC's main loop blocks on its command pipe
+// for one second at a time; see sc_app.c. **This was one of the three missing** -- see above.
+#define SC_SB_TIMEOUT 1000
 #define SC_BYTES_IN_WORD 4
 // THE 32-BIT WORD COUNTS, DERIVED BY HALVING THE CONFIGURED 16-BIT COUNTS. See sc_cfg.HC: these
 // are what every comparison in sc_loads.c and sc_atsrq.c uses, and the `/ 2` is kept unfolded
@@ -116,6 +130,17 @@
 // TWO, because an ATS append entry is counted in 16-bit words where everything else in SC is
 // counted in 32-bit ones. The one constant in SC that names the OTHER word size.
 #define SC_BYTES_IN_ATS_APPEND_ENTRY 2
+// ZERO, and NASA spells it `((SC_CommandNum_t){0})` -- a COMPOUND LITERAL ON A SCALAR TYPEDEF,
+// the same unusual form SC_EntryOffsetAdvance's return uses. It is just 0 with a type attached,
+// and HolyC has no spelling for it, so it is the number. **This was one of the three missing**,
+// and it is the one sc_loads.c needs on every line that clears a time-index slot -- so the gap
+// surfaced as a compile failure rather than as a wrong value, which is the lucky direction.
+#define SC_INVALID_CMD_NUMBER 0
+// THREE, which is `sizeof(uint32) - 1` written as a literal. It is the round-up addend in the
+// byte-to-word conversions sc_loads.c does inline, where SC_EntryOffsetAdvance spells the same
+// idea as `(Bytes + sizeof(uint32) - 1) / sizeof(uint32)`. **Also one of the three missing**, and
+// having both spellings of one constant in the app is NASA's, not this translation's.
+#define SC_ROUND_UP_BYTES 3
 
 /*******************************************************************************/
 // THE TIME REFERENCE. One function pointer, chosen once at init -- see the file header.
