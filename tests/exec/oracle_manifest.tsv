@@ -143,3 +143,4 @@ tests/exec/cases/e_fnptr_array_call.hc	000000000b15630b
 tests/exec/cases/e_call_arrow_int_arg.hc	0000000033334403
 tests/exec/cases/e_const_int_div.hc	000000002c580b03
 tests/exec/cases/e_f32_bits.hc	6c37d87e29927c93
+tests/exec/cases/e_strprint_pad_unsigned.hc	00000000221f01a2
