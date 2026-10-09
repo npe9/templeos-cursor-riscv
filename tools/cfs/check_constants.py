@@ -294,6 +294,11 @@ def probe(names):
         # token-paste calls that are never comparable.
         "hk_events.h", "hk_perfids.h", "hk_msgids.h", "hk_fcncodes.h", "hk_version.h",
         "hk_app.h", "hk_tbldefs.h", "hk_interface_cfg.h", "hk_internal_cfg.h", "hk_utils.h",
+        # HS's, added with its vocabulary and the count watched as before. hs_eventids.h is the
+        # 69 ids; hs_app.h holds the three pipe names, the CDS name and the return codes;
+        # hs_msg.h is where HS_BITS_PER_APPMON_ENABLE lives, which nothing else reaches.
+        "hs_eventids.h", "hs_perfids.h", "hs_msgids.h", "hs_fcncodes.h", "hs_version.h",
+        "hs_app.h", "hs_msg.h", "hs_tbldefs.h", "hs_interface_cfg.h", "hs_internal_cfg.h",
         # ES's event ids and its own platform config, as the module arrives. The gate refused
         # to pass on CFE_ES_SYSLOG2_EID rather than file it as "a name this port invented",
         # which is the behaviour that distinguishes a missing header from a local constant.

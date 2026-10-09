@@ -129,6 +129,16 @@ HDRS = [
     # changed nothing in the output, which is the 21st instance of the blind spot
     # docs/ records as a gate passing on what it cannot find.
     "hk_app.h",
+    # HEALTH & SAFETY -- the sixth, and it needs THREE headers in this order.
+    #
+    # hs_app.h DOES NOT INCLUDE THE HEADERS WHOSE TYPES IT EMBEDS, which is the same shape this
+    # list already documents for cfe_es_global.h and cfe_tbl_internal.h: HS_AppData_t uses
+    # HS_BITS_PER_APPMON_ENABLE (hs_msg.h) in an array bound and embeds HS_HkPacket_t
+    # (hs_msgstruct.h), and cFS relies on the .c including them first. Listed alone, hs_app.h
+    # gives "use of undeclared identifier 'HS_BITS_PER_APPMON_ENABLE'" and "unknown type name
+    # 'HS_HkPacket_t'", and the probe's 16-round bisect then reports only that it would not
+    # compile.
+    "hs_msg.h", "hs_msgstruct.h", "hs_app.h",
     # The reset area. CFE_EVS_EarlyInit sizes the WHOLE of CFE_ES_ResetData_t and takes the event
     # log out of it, so the translation declares that type and the eight ES/TIME types under it.
     # They are types, not code -- no ES function is translated -- and this is what measures them.

@@ -43,6 +43,20 @@ LC_SHA="32c76661dc339247d1c3b9250ed27dd18c34a344"
 # the apps have NOT all moved to the current core API. HK and HS both have draco-integration
 # branches and use CFE_MSG_*/CFE_SB_TransmitMsg; SCH, as of this pin, does not.
 HK_SHA="766dab1591b95ff89d99baaab9b43d234de4e699"
+# The SIXTH cFS APP, and the first that needs SIMULATED HARDWARE RATHER THAN SIMULATED MEMORY.
+# HS (Health & Safety) is the watchdog app: it pets the hardware watchdog, watches that the other
+# applications are still checking in, watches the event stream for a configured pattern, and reads
+# CPU utilisation. module_deps reports SEVEN sources with **NO CALL CYCLE AT ALL** -- the cleanest
+# dependency graph of any app in this port -- and eight missing symbols, every one of them PSP:
+#
+#   CFE_PSP_WatchdogEnable / WatchdogService / WatchdogSet      a watchdog timer
+#   CFE_PSP_IODriver_FindByName / IODriver_Command              an I/O driver abstraction
+#   CFE_PSP_IODriver_CONST_STR / U32ARG / VPARG                 header `static inline`s, which
+#                                                               travel with their caller
+#
+# So two devices have to be simulated where MD, MM and CS needed only a memory window. Pinned on
+# the dev-merge commit for the same reason as the five before it.
+HS_SHA="947b903174bca0878210e7fbc53104cff8e7b335"
 mkdir -p "$V"
 fetch() {
   name="$1"; url="$2"; sha="$3"
@@ -64,4 +78,5 @@ fetch MM   https://github.com/nasa/MM.git   "$MM_SHA"
 fetch CS   https://github.com/nasa/CS.git   "$CS_SHA"
 fetch LC   https://github.com/nasa/LC.git   "$LC_SHA"
 fetch HK   https://github.com/nasa/HK.git   "$HK_SHA"
+fetch HS   https://github.com/nasa/HS.git   "$HS_SHA"
 echo "vendor/shim is committed in this repo: it stands in for the headers CMake would generate."

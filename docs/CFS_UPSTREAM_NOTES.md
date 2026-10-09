@@ -722,3 +722,64 @@ one is three lines in `HK_ValidateHkCopyTable` and is not there.
 
 Keeps it, and drives it: `hks_clobber_val` / `hks_clobber` in the exercise are that table and its
 consequence, so the behaviour is pinned rather than described.
+
+## 22. HS's message header carries HK's include guard, so one of the two is silently skipped
+
+`vendor/HS/config/default_hs_msg.h` opens with
+
+```c
+#ifndef DEFAULT_HK_MSG_H
+#define DEFAULT_HK_MSG_H
+```
+
+**HK's guard, not HS's** — copy-pasted from `vendor/HK/config/default_hk_msg.h`, which uses the
+same name. Of every header in the six app repositories read so far, it is the only one whose guard
+names a different component. (Checked, not assumed: a sweep of all of HS's `config/` and `fsw/inc/`
+headers reports exactly this one.)
+
+### The consequence depends on build layout, which is why NASA has not seen it
+
+In NASA's build HK and HS are separate CMake targets. No translation unit includes both, so
+whichever guard is defined first is the only one that was ever going to be defined and nothing is
+lost.
+
+**This port compiles every application into ONE translation unit**, and that is the configuration
+that exposes it. With `hk_msg.h` included first — which happens naturally, HK being the fifth app
+and HS the sixth — `DEFAULT_HK_MSG_H` is already defined when `hs_msg.h` arrives, so
+`default_hs_msg.h` is skipped in its entirety and
+
+```
+error: use of undeclared identifier 'HS_BITS_PER_APPMON_ENABLE'
+```
+
+appears in both `default_hs_msgstruct.h` and `hs_app.h`, where it is an array bound:
+
+```c
+uint32 AppMonEnables[((HS_MAX_MONITORED_APPS - 1) / HS_BITS_PER_APPMON_ENABLE) + 1];
+```
+
+So `HS_AppData_t` and `HS_HkTlm_Payload_t` have a member with no bound and neither structure can be
+declared at all. It is a hard compile error rather than a silent miscompile, which is the one
+piece of luck in it.
+
+### How this port handles it
+
+`vendor/shim/hs_msg.h` clears the guard before including NASA's header:
+
+```c
+#undef DEFAULT_HK_MSG_H
+#include "default_hs_msg.h"
+```
+
+That is exact rather than a compromise, because **the two headers are disjoint**: HK's only
+re-includes three HK headers, HS's defines one constant and includes three HS headers. HK's three
+sub-headers carry their own guards, so a later `hk_msg.h` that gets skipped loses nothing.
+
+`vendor/shim` is the right place — it stands in for the headers CMake would generate, so the
+accommodation sits beside the other build-system substitutions and NASA's source is untouched.
+
+### Why it is worth reporting upstream
+
+Any mission that builds cFS as a unity build, or that includes both apps' public headers from one
+file (a ground-system decoder generated from the message structures, say), hits this. The fix is
+one word.
