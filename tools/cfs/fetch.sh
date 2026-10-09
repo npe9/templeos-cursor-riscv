@@ -57,6 +57,41 @@ HK_SHA="766dab1591b95ff89d99baaab9b43d234de4e699"
 # So two devices have to be simulated where MD, MM and CS needed only a memory window. Pinned on
 # the dev-merge commit for the same reason as the five before it.
 HS_SHA="947b903174bca0878210e7fbc53104cff8e7b335"
+# The SEVENTH cFS APP, and the one chosen because it needs NO new simulated device at all.
+# SC (Stored Command) is the onboard sequencer: it holds Absolute Time Sequences and Relative Time
+# Sequences uploaded from the ground and releases their commands onto the software bus when their
+# time arrives. So it is the app that CLOSES THE LOOP on LC -- LC fires an RTS request when a limit
+# breaks, and SC is what actually runs that RTS.
+#
+# **CHOSEN BY MEASURING NEW SIMULATION SURFACE, which is this project's real selection criterion.**
+# Five apps remained translatable (DS, FM, SC, CI_lab, TO_lab); all five have draco-integration
+# branches and ZERO cFE-6.x legacy calls, so none is blocked the way SCH is. What separates them is
+# what has to be invented before a line can be gated:
+#
+#   SC      ~4545 lines, 20 sources   NOTHING new            34 distinct CFE/OS calls
+#   DS      ~4626 lines, 14 sources   a filesystem           53
+#   FM      ~4256 lines, 19 sources   filesystem + dirs      68
+#   CI_lab  ~1003 lines, 11 sources   sockets / UDP          39
+#   TO_lab  ~1075 lines, 11 sources   sockets / UDP          42
+#
+# SC's 34 matches LC's documented 34 BY THE SAME GREP METHOD -- calibrated against a finished app
+# rather than counted in isolation, which is the mistake that would make the number meaningless.
+# Zero missing symbols against this pin: the only grep hit, CFE_MSG_PTR, is a false positive (it is
+# in cFE/modules/msg/option_inc/default_cfe_msg_hdr_pri.h and is already translated three times).
+#
+# **ITS ONE REAL COST IS A CONTROLLABLE CLOCK.** SC schedules on absolute and relative time and
+# calls CFE_TIME_GetTime/GetUTC/GetTAI/Compare/Add/Print. TIME is already gated, so nothing new is
+# simulated -- but the exercise has to ADVANCE time deterministically to make a stored sequence
+# fire, which is the same shape of cost as HS's simulated watchdog and not a blocker. Like LC, SC
+# is woken by a scheduler message the exercise injects directly; SCH itself stays blocked.
+#
+# **PINNED DIFFERENTLY FROM THE SIX BEFORE IT, and the difference is worth stating.** MD, MM, CS,
+# LC, HK and HS are each pinned one day before the cFE pin, on a dev branch that was moving. SC's
+# draco-integration branch has NOT moved since 2026-01-23 -- eight months before the cFE pin -- so
+# this SHA is that branch's HEAD rather than a date-matched commit. That is a fact about SC's
+# maintenance rather than a choice here, and it means SC is the first app in this port whose
+# sources are materially older than the core it is being compiled against.
+SC_SHA="8d6941096ae21be8f8be7f0977a31a244cadd236"
 mkdir -p "$V"
 fetch() {
   name="$1"; url="$2"; sha="$3"
@@ -79,4 +114,5 @@ fetch CS   https://github.com/nasa/CS.git   "$CS_SHA"
 fetch LC   https://github.com/nasa/LC.git   "$LC_SHA"
 fetch HK   https://github.com/nasa/HK.git   "$HK_SHA"
 fetch HS   https://github.com/nasa/HS.git   "$HS_SHA"
+fetch SC   https://github.com/nasa/SC.git   "$SC_SHA"
 echo "vendor/shim is committed in this repo: it stands in for the headers CMake would generate."

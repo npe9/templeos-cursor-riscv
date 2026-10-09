@@ -3888,3 +3888,110 @@ The watchdog is **counted, not timed**, and that is the limit of what the exerci
 `hsa_main_ok services=2` catches a dropped call and would not catch a reordering that kept the
 count. hs_app.HC's header argues that the INTERVAL between the two services before the main loop is
 what matters, and a counter cannot see an interval. Named rather than implied.
+
+## SC (Stored Command) is the seventh app, and the recon that comes before a line of it
+
+Vendored at `8d6941096ae21be8f8be7f0977a31a244cadd236` (draco-integration HEAD). SC is the onboard
+sequencer: it holds Absolute Time Sequences and Relative Time Sequences uploaded from the ground
+and releases their commands onto the software bus when their time arrives. **It closes the loop on
+LC** — LC fires an RTS request when a limit breaks, and SC is what runs that RTS.
+
+### CHOSEN BY MEASURING NEW SIMULATION SURFACE, AND THE COUNT WAS CALIBRATED
+
+Five apps remained translatable; all five have draco-integration branches and zero cFE-6.x legacy
+calls, so none is blocked the way SCH is. What separates them is what has to be invented first:
+
+| app | fsw/src | new simulation needed | distinct CFE/OS calls |
+|---|---|---|---|
+| **SC** | ~4,545 (20 files) | **nothing** | **34** |
+| DS | ~4,626 (14) | a filesystem | 53 |
+| FM | ~4,256 (19) | filesystem + directories | 68 |
+| CI_lab | ~1,003 (11) | sockets / UDP | 39 |
+| TO_lab | ~1,075 (11) | sockets / UDP | 42 |
+
+SC's 34 is **the same number LC's documented 34 comes out at under the same grep**, re-run here on
+both: calibrating against a finished app is the difference between a number and a coincidence.
+Independently verified that **none** of the 34 is missing from the translation — the one grep hit
+that looked missing, `CFE_MSG_PTR`, is in the cFE pin and already translated three times.
+
+### FOUR THINGS KNOWN BEFORE WRITING A LINE
+
+**1. ZERO `#if` SITES IN SC'S SOURCES.** The first app in this port with nothing to resolve by hand
+against HolyC limit #19. `SC_PLATFORM_ENABLE_HEADER_UPDATE` is `false`, and it is used as a
+RUNTIME assignment (`SC_AppData.EnableHeaderUpdate = SC_PLATFORM_ENABLE_HEADER_UPDATE;`) rather
+than a preprocessor condition. HS had one `#if`, LC two, CS and MM several.
+
+**2. TWELVE CALL-ARROW-MEMBER SITES, WHICH IS THE OPEN HolyC DEFECT.** SC's whole design is
+variable-length command entries overlaid on a flat word buffer, reached through four `static
+inline` accessors in `sc_app.h`:
+
+```c
+static inline SC_AtsEntry_t *SC_GetAtsEntryAtOffset(SC_AtsIndex_t AtsIndex, SC_EntryOffset_t Off)
+{
+    return (SC_AtsEntry_t *)&SC_OperData.AtsTblAddr[SC_IDX_AS_UINT(AtsIndex)][SC_IDX_AS_UINT(Off)];
+}
+```
+
+Every one takes **scalars** and returns a **pointer**, and the sources then write
+`SC_GetAtsEntryAtOffset(i, off)->Header.CmdNumber`. That is exactly the shape
+docs/HOLYC_STRUCT_LIMITS.md records as OPEN: a call followed by `->` resolves the arrow against the
+first argument's class, a scalar has none, and the access **silently loads through zero**. Measured
+before starting: **12 sites — sc_loads.c 6, sc_atsrq.c 4, sc_rtsrq.c 2** — across all four
+accessors. The prescription is a hoist to a typed local, so this is 12 known hoists rather than 12
+mysterious divergences later.
+
+**3. THE OFFSET SCALING IS LOAD-BEARING.** `AtsTblAddr` is `uint32 *`, so `&buf[Off]` scales by
+**four bytes** before the cast to an entry pointer. The translation must keep `U32 *`; a `U8 *`
+would scale by one and land every entry at a quarter of its offset — docs/ records that pointee-size
+trap from LC, and here it is on the single most-used expression in the app.
+
+**4. ITS ONE REAL COST IS A CONTROLLABLE CLOCK, AND IT IS ALREADY POKEABLE.** SC schedules on
+absolute time and calls `CFE_TIME_GetTime/GetUTC/GetTAI/Compare/Add/Print` — all already gated and
+all already in the translation. The exercise has to ADVANCE time deterministically to make a stored
+sequence fire; `CFE_TIME_Global.VirtualMET` is a field the driver can write, so this is the same
+shape of cost as HS's simulated watchdog and needs no new device.
+
+### THE DEPENDENCY GRAPH, FROM `module_deps --fresh`
+
+Nine sources, one of which this configuration excludes:
+
+```
+  185 lines  sc_utils.c
+  619 lines  sc_rtsrq.c
+ 1636 lines  sc_atsrq.c, sc_loads.c   <-- CALL CYCLE of 2 sources
+  341 lines  sc_state.c
+  765 lines  sc_cmds.c
+  276 lines  sc_dispatch.c
+  114 lines  sc_eds_dispatch.c        [CFE_EDS_ENABLED -- not this configuration]
+  618 lines  sc_app.c
+```
+
+`SC_ProcessRequest` is defined in **both** `sc_dispatch.c` and `sc_eds_dispatch.c`; the edge goes to
+the one this configuration builds, which `check_manifest.py` decides. One two-source cycle
+(`sc_atsrq.c` + `sc_loads.c`, 1,636 lines) — smaller than CS's twelve-source cycle and bigger than
+HS's none.
+
+### A GATE HAZARD IN SC'S OWN TREE: TWO EVENT HEADERS THAT DISAGREE
+
+`vendor/SC/fsw/inc/` contains **both** `sc_events.h` (1,358 lines, 118 ids) and `sc_eventids.h`
+(900 lines, 59 ids). All nine sources include `sc_events.h`; **`sc_eventids.h` is included by
+nothing**, and its doxygen header is DS's — `"The CFS Data Storage (DS) Application event id header
+file"`, `\defgroup cfsdsevents`. A copy-paste left in SC's tree.
+
+Only five names appear in both, and **all five disagree**:
+
+| name | `sc_eventids.h` | `sc_events.h` (live) |
+|---|---|---|
+| `SC_CC_ERR_EID` | 21 | 64 |
+| `SC_INIT_INF_EID` | 1 | 9 |
+| `SC_MID_ERR_EID` | 73 | 63 |
+| `SC_NOOP_INF_EID` | 31 | 52 |
+| `SC_RESET_INF_EID` | 33 | 51 |
+
+**Why this is a hazard and not a curiosity:** `check_constants` resolves a constant's value through
+an explicit probe-header list, so whichever of the two files is added to that list decides those
+five values. Adding `sc_eventids.h` would silently move five event ids and the gate would then
+disagree with the header the code actually compiles against — a green gate asserting the wrong
+number. **Only `sc_events.h` goes in the list**, and the translated file is named `sc_events.HC` so
+`check_defines` pairs it with the live header by basename. SC is the second app to use the
+`_events.h` spelling (HK is the first) and the only one carrying both.
