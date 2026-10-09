@@ -65,6 +65,15 @@ typedef struct CMemberLst {
   // with no diagnostic, while the statement and assignment forms were parse errors.
   bool is_func_ptr;
   I64 elem_size;            // element size for array/pointer members
+  // `T *arr[N]` LOSES ITS POINTEE, and these two carry it. The declaration code sets
+  // `pointed_to_type = RT_I64` and `elem_size = 8` for a member array of pointers, deliberately,
+  // so the FIRST subscript strides one pointer -- which is right, and which destroys the only
+  // record of what the pointers point AT. The SECOND subscript then had nothing to scale by and
+  // fell to the I64/8 default: `SC_OperData.AtsTblAddr[a][off]` on a `U32 *AtsTblAddr[2]` read
+  // eight bytes at eight-byte stride, so NASA's ATS walk stepped every other command. See the
+  // comment at the chained-subscript fix in parser.c's postfix loop.
+  U8 arr_ptr_pointee;       // real pointee RT_* for a `T *arr[N]` member (0 = not that shape)
+  I64 arr_ptr_elem_size;    // and its size in bytes, which a class pointee needs
   // `U8 name[4][96]`: flat storage, subscript k advances dim_stride[k] bytes. Mirrors the
   // ndims/dim_stride a local Symbol and a CHashGlblVar already carry; without it a partial
   // subscript of a member (`w.rows[n]`) stepped one ELEMENT and then dereferenced, so it

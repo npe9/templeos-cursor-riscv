@@ -4153,10 +4153,64 @@ in fact never been executed anywhere in the port.
   MISS sc_rtsrq.c    1/10   the nine RTS command handlers
 ```
 
-The two newest sources are fully exercised. The eighteen misses are **two groups, both with a
-named blocker**: the command handlers need a command-message block, which belongs with
-`sc_dispatch.c`; and the two clock functions need the MET moved, through `CFE_TIME_SetMET`.
-Neither is a gap in this block's reach — they are the next two blocks.
+The two newest sources are fully exercised. **AN EARLIER VERSION OF THIS PARAGRAPH SAID THE
+EIGHTEEN MISSES WERE BLOCKED, AND SEVENTEEN OF THEM ARE NOT.** It claimed the command handlers
+"need a command-message block, which belongs with `sc_dispatch.c`" — which is the same deferral
+that had just cost two defects, written down as if it were a constraint.
+
+They need no dispatcher. `SC_StartRtsCmd`, `SC_StopAtsCmd`, `SC_JumpAtsCmd` and the rest take a
+`CFE_SB_Buffer_t *`, and every app before SC drove its handlers by **building a buffer and calling
+the handler directly** — `hs_mkcmd` is the pattern, and this block already builds messages with
+`CFE_MSG_Init`/`CFE_MSG_SetSize` in `sc_ats_put`. A dispatcher adds one further assertion, "was
+the right handler picked", and that one does belong with `sc_dispatch.c`.
+
+Several of the atsrq misses are not command handlers at all: `SC_BeginAts(AtsIndex, TimeOffset)`,
+`SC_ServiceSwitchPend` and `SC_InlineSwitch` are plain functions, and `SC_BeginAts` compares entry
+times against `SC_AppData.CurrentTime` — a **field**, settable directly — so it is clock-free in
+exactly the sense `SC_ComputeAbsWakeup` is.
+
+So the honest statement was: **none** of the eighteen was blocked by anything, and they were
+simply not written yet. `sc_block_cmds()` and `sc_block_ats_cmds()` were written before another
+source was gated, and `run_cfs_exercised.sh SC` now reads
+
+```
+  OK   sc_atsrq.c   10/10
+  OK   sc_loads.c   15/15
+  OK   sc_rtsrq.c   10/10
+  OK   sc_state.c    3/3
+  OK   sc_utils.c    7/7
+  sc-exercised: 45 of 45
+```
+
+at **5,478 byte-identical transcript lines**, up from 5,200 when SC had no exercise at all.
+
+Even `SC_GetCurrentTime` needed no more than one call: `CFE_TIME_SetMET` is gated and reachable,
+and the pass sets the MET twice a hundred seconds apart and asserts the **delta** — the absolute
+seconds depend on the fixture's STCF, so printing them would pin a number with no meaning.
+
+### THREE THINGS THE COMMAND BLOCKS FOUND, NONE OF THEM IN THE TRANSLATION
+
+**A memset does not make the ATP idle.** `SC_Status_IDLE` is 2 and `SC_Status_EMPTY` is 0, and
+`SC_StartAtsCmd` tests `AtpState == SC_Status_IDLE` — so a zeroed control block is in a state that
+is neither running nor idle, and eleven passes printed `state=0` with an error counter, which is a
+plausible-looking transcript for a dispatcher and the exact opposite of what they were for. In the
+real app the ATP control block is a cFE TABLE whose default image has it IDLE.
+
+**`SC_AutoStartRts` does not start an RTS.** The name and the signature both read as "start this
+RTS now"; the body builds an `SC_StartRtsCmd_t`, sets SC_CMD_MID and SC_START_RTS_CC, and
+**transmits it on the software bus back to SC**. The first version of that pass asserted the RTS's
+state, which never moves, and its line read `st=0/0/1/0 ... actctr=0` with a `No subscribers for
+MsgId 0x18a9` event above it — the event being the only thing that said anything had happened.
+The pass now subscribes a pipe, receives the message and reads back the message id, the function
+code and the RTS number, and asserts the RTS is **still only LOADED**.
+
+**A zeroed `SC_AppData.TimeRef` is a jump to address zero.** It is a one-member struct holding a
+function pointer and `SC_GetCurrentTime` calls it, so the first pass to reach that function
+SIGSEGV'd with `frame #0: 0x0000000000000000`. It took a debugger rather than the log, because
+stdout to a file is block buffered: the transcript ended 180 lines early at the last flush, and
+the obvious reading was that the fault lay in the pass whose line was cut in half — the trap
+`docs/` records. `SC_LookupTimeAccessor` exists precisely so that it cannot return null, and
+`sc_wire()` now calls it the way `sc_app.c` does.
 
 `exercised_count.py` itself needed a change to say that honestly. It globbed `fsw/src/*.c` and
 exited on any source without a `.gcov`, which for a partially gated app meant it refused to run at

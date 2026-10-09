@@ -2475,16 +2475,74 @@ static bool ParsePostfix(Compiler *cc) {
       }
       // Through a multi-level pointer the element is itself a pointer: the next `[` or `*`
       // continues one level down (`argv[1][0]`).
+      //
+      // **AN ARRAY OF POINTERS IS ALSO ONE LEVEL DOWN, AND EVERY BRANCH USED TO EXCLUDE IT.**
+      // The three tests below each required `!is_array`, so for `U32 *rows[2]` -- an array whose
+      // ELEMENTS are pointers -- none of them fired, sdepth stayed 0, and the `else` cleared
+      // expr_ptr_depth. A following `[j]` then had no pointee to scale by and fell to the I64/8
+      // default:
+      //
+      //     U32 store[16]; store[k] = 1000 + k;  U32 *p32[2]; p32[0] = store;
+      //     p32[0][1]   read EIGHT bytes at offset 8  ==>  store[2] and store[3] as one word
+      //     q = p32[0]; q[1]                          ==>  store[1]
+      //
+      // So the element was wrong AND the width was wrong, and the two compounded. It cost the
+      // cFS port three one-line accessors in Kernel/Cfs/sc/sc_global.HC: `SC_LoadAts` walked the
+      // ATS command buffer at twice the stride and reported two commands where NASA's C reported
+      // four. A TRUE two-dimensional array was always fine and is spelled identically, which is
+      // what made it hard to see by reading.
+      //
+      // An array of pointers subscripted ONCE yields a pointer of its declared depth, so sdepth
+      // is ptr_depth + 1: the `sdepth > 1` path then leaves expr_ptr_depth at ptr_depth, exactly
+      // as it does for `U8 **argv` after one subscript. The element SIZE has to come along too --
+      // PrimitiveTypeSize cannot size a class pointee -- so the pointee class's size is carried in
+      // expr_elem_size, which the "no name behind the base" branch above already reads.
+      //
+      // An array of NON-pointers is untouched: pointed_to_type is 0 there, so the new clause
+      // cannot fire. A multi-dimensional array is untouched too -- it returns via the `continue`
+      // above this point.
+      //
+      // Pinned by tests/exec/cases/e_ptrarray_chained_subscript.hc, which also pins the two
+      // correct shapes so a regression here cannot hide behind them.
       {
         U8 sdepth = 0, spointee = 0;
+        I64 spointee_size = 0;
         if (saved_symbol && saved_symbol->pointed_to_type && !saved_symbol->is_array) { sdepth = saved_symbol->ptr_depth; spointee = saved_symbol->pointed_to_type; }
         else if (saved_global && saved_global->pointed_to_type && !(saved_global->flags & GVF_ARRAY)) { sdepth = saved_global->ptr_depth; spointee = saved_global->pointed_to_type; }
         else if (!saved_symbol && !saved_global && cc->last_member && cc->last_member->pointed_to_type && !cc->last_member->is_array) { sdepth = cc->last_member->ptr_depth; spointee = cc->last_member->pointed_to_type; }
+        /* the new clauses: an ARRAY whose elements are pointers, named by a member, a symbol or a
+         * global. THE MEMBER CASE COMES FIRST AND DOES NOT REQUIRE `!saved_global`, unlike the
+         * three above it. `h.rows[i][j]` leaves cc->last_global_var pointing at `h` -- member
+         * access does not clear it -- so a clause guarded on `!saved_global` cannot fire for a
+         * member of a named global, which is exactly the shape cFS uses:
+         * `SC_OperData.AtsTblAddr[a][off]`. A first version of this fix had the guard and left
+         * that one form broken while fixing the other five; it looked fixed, because the probe's
+         * class happened to be eight bytes wide and so agreed with the wrong stride. */
+        else if (saved_member && saved_member->arr_ptr_pointee) {
+          /* `T *arr[N]` member: the real pointee was saved at declaration time, because the
+           * declaration overwrites pointed_to_type with RT_I64 so the FIRST subscript strides one
+           * pointer. arr_ptr_elem_size is the pointee's size -- a class size where there is one,
+           * which is what made the class case work by accident while the primitive case did not. */
+          sdepth = (U8)(saved_member->ptr_depth + 1);
+          spointee = saved_member->arr_ptr_pointee;
+          spointee_size = saved_member->arr_ptr_elem_size;
+        }
+        else if (saved_symbol && saved_symbol->pointed_to_type && saved_symbol->is_array && saved_symbol->ptr_depth >= 1) {
+          CHashClass *pc = (CHashClass *)saved_symbol->extra;
+          sdepth = (U8)(saved_symbol->ptr_depth + 1); spointee = saved_symbol->pointed_to_type;
+          if (pc && pc->size > 0) spointee_size = pc->size;
+        }
+        else if (saved_global && saved_global->pointed_to_type && (saved_global->flags & GVF_ARRAY) && saved_global->ptr_depth >= 1) {
+          CHashClass *pc = saved_global->var_class;
+          sdepth = (U8)(saved_global->ptr_depth + 1); spointee = saved_global->pointed_to_type;
+          if (pc && pc->size > 0) spointee_size = pc->size;
+        }
         else if (cc->expr_ptr_depth) { sdepth = cc->expr_ptr_depth; spointee = cc->expr_pointee; }
         if (sdepth > 1) {
           cc->last_var_symbol = NULL; cc->last_global_var = NULL; cc->last_member = NULL;
           cc->expr_ptr_depth = (U8)(sdepth - 1); cc->expr_pointee = spointee;
-          cc->expr_elem_size = 0;   // only the parenthesised-base path knows a size
+          /* a CLASS pointee's size, for the subscript that follows; 0 keeps the old behaviour */
+          cc->expr_elem_size = spointee_size;
         } else {
           // A subscript yielded a scalar value: it is no longer the container variable, so pointer
           // arithmetic and member-container logic must not see the array/pointer symbol.
@@ -6137,7 +6195,15 @@ static bool ParseClassMembers(Compiler *cc, CHashClass *tmpc, bool is_union, I64
       // size above, `cmp.internal_types[raw_type]=tmpc` strode by sizeof(CHashClass) and
       // scattered heap pointers across the compiler unit's globals (char_bmp_hex_numeric
       // lost bits A-E; only `0xF` lexed).
-      if (ptr && is_array) { m->elem_size = 8; m->pointed_to_type = RT_I64; }
+      if (ptr && is_array) {
+        // KEEP THE REAL POINTEE before overwriting it -- see CMemberLst's two arr_ptr_* fields.
+        // Without this the second subscript of `member_ptr_array[i][j]` has no pointee to scale
+        // by; with it, parser.c's postfix loop can hand the next subscript the right element size.
+        m->arr_ptr_pointee = ScalarTypeForSize(ptr, PrimitiveTypeSize(ptr));
+        m->arr_ptr_elem_size = (mcls && mcls->size > 0) ? mcls->size : PrimitiveTypeSize(ptr);
+        if (m->arr_ptr_elem_size <= 0) m->arr_ptr_elem_size = 8;
+        m->elem_size = 8; m->pointed_to_type = RT_I64;
+      }
       m->member_class = (ptr || is_array) ? mcls : mcls;
       m->size = member_size;
       // Multi-dim member: subscript k steps by the product of the dims below it.

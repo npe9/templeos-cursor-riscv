@@ -1,95 +1,110 @@
-// **`ptrarray[i][j]` USES THE OUTER ARRAY'S ELEMENT SIZE FOR THE INNER SUBSCRIPT.**
+// **`ptrarray[i][j]` -- THE SHAPE THAT SCALED THE INNER SUBSCRIPT BY THE OUTER ELEMENT'S SIZE.**
 //
-// Found by a transcript divergence after three gated accessors had used the shape for a week.
+// FIXED in host/parser.c. This case pinned the DEFECT for one commit and now pins the fix, which
+// is the better of the two things to pin: a case whose expected values are a compiler's mistake
+// has to be rewritten the day the mistake is repaired, and one whose values come from C does not.
+// Every number below is what C prints.
+//
+// ### WHAT WAS WRONG
 //
 // A C programmer writes `SC_OperData.AtsTblAddr[AtsIndex][EntryOffset]` and gets: load the
-// pointer at `AtsTblAddr[AtsIndex]`, then index THAT by the size of what it points at. In HolyC
-// the inner subscript is scaled by the size of an element of the OUTER array -- eight bytes,
-// because the outer array holds pointers -- whatever the pointee is.
+// pointer at `AtsTblAddr[AtsIndex]`, then index THAT by the size of what it points at. The inner
+// subscript was instead scaled by the size of an element of the OUTER array -- eight bytes,
+// because the outer array holds pointers -- whatever the pointee was, and the read was eight bytes
+// wide too, so the element was wrong AND the width was wrong and the two compounded:
 //
 //     U32 store[16];  store[k] = 1000 + k;
 //     U32 *p32[2];    p32[0] = store;
 //
-//     p32[0][0]                 ==>  4299262264296   // 0x000003E9_000003E8 -- store[0] AND [1]
-//     q = p32[0];  q[0]         ==>  1000            // correct
-//
-// The chained read took eight bytes at offset 0, so it is not merely the wrong element -- it is
-// the wrong WIDTH as well, and the two errors compound. At `[1]` it reads store[2] and store[3].
+//     p32[0][0]      ==>  4299262264296   // 0x000003E9_000003E8 -- store[0] AND store[1]
+//     p32[0][1]      ==>  4307852198890   // store[2] and store[3], so the stride was 8
 //
 // ### WHAT IT COST
 //
 // `sc_global.HC` had three accessors in this shape, translating NASA's one-expression bodies
-// literally:
+// literally. Every static gate was green -- the text matches NASA's, the types match,
+// `check_padding` says the layouts match, `cfs-inblob` says the functions have addresses. The
+// first time SC's exercise RAN, `SC_LoadAts` reported an ATS command count of **2** where the C
+// half reported 4: the walk stepped eight bytes per word instead of four, so it read every other
+// entry. A wrong stride inside a one-line accessor presents as a wrong COUNT three functions
+// away.
 //
-//     return (SC_AtsEntry_t *)&SC_OperData.AtsTblAddr[AtsIndex][EntryOffset];
+// ### THE FIX, AND THE PART OF IT THAT A SINGLE PROBE WOULD HAVE MISSED
 //
-// Every static gate was green -- the text matches NASA's, the types match, `check_padding` says
-// the layouts match, `cfs-inblob` says the functions have addresses. The first time SC's exercise
-// RAN, `SC_LoadAts` reported an ATS command count of **2** where the C half reported 4: the walk
-// stepped eight bytes per word instead of four, so it read every other entry. A wrong stride
-// inside an accessor presents as a wrong COUNT three functions away.
+// `host/parser.c`'s postfix loop now treats an array of pointers as one level of indirection, the
+// way it always treated `U8 **argv`. That alone fixed five of the eight forms. The sixth --
+// **a MEMBER array of primitive pointers, which is exactly `SC_OperData.AtsTblAddr[i][j]`** --
+// needed more: a member declared `T *arr[N]` has its `pointed_to_type` overwritten with RT_I64 at
+// declaration time so the FIRST subscript strides one pointer, which is correct and which
+// destroys the only record of what the pointers point at. Two new `CMemberLst` fields keep it.
 //
-// ### A TRUE TWO-DIMENSIONAL ARRAY IS FINE, AND THAT IS WHY ONLY THREE SITES MOVED
+// **AND THE FIRST ATTEMPT LOOKED COMPLETE BECAUSE THE PROBE'S CLASS WAS EIGHT BYTES WIDE.** A
+// member array of CLASS pointers appeared to work while the primitive case did not -- the class
+// happened to be `sizeof` 8, so the old broken stride and the right stride were the same number.
+// The class in this case is deliberately **12 bytes**, and every form is exercised through all
+// three storage classes.
 //
-// `SC_AppData.AtsCmdIndexBuffer[SC_NUMBER_OF_ATS][SC_MAX_ATS_CMDS]` is a real 2-D array and its
-// double subscript is correct. The port has nineteen double-subscript sites; sixteen are 2-D
-// arrays and three were arrays of pointers. **The two shapes are spelled identically**, which is
-// the whole difficulty: a reviewer has to look up the declaration to tell a correct line from a
-// broken one. `tools/cfs/check_chained_subscript.py` does that lookup.
+// ### WHAT IS PINNED -- ten forms, every value from C
 //
-// ### WHAT IS PINNED
+//   1. a global array of `U32 *`, `U8 *` and `C *` (12 bytes), double-subscripted;
+//   2. the same three as MEMBERS of a class, which is the shape cFS uses and the one that needed
+//      the extra fields;
+//   3. the same as LOCALS, because a local's declaration is recorded by a different path again;
+//   4. the hoisted-row spelling (`q = p32[0]; q[i]`), which was correct throughout and must stay
+//      equal to the chained spelling -- that EQUALITY is the assertion, not either value alone;
+//   5. a file-scope two-dimensional array and a two-dimensional array inside a class, as the
+//      controls: both were always right and are spelled identically to the broken form, which is
+//      what made the defect hard to see by reading.
 //
-//   1. the broken form, through a `U32 *` row and through a `U8 *` row, so the eight bytes are
-//      visibly independent of the pointee;
-//   2. the SAFE form -- the row hoisted into a local -- which is what the three accessors now do;
-//   3. a true 2-D array of the same element type, which must agree with the safe form;
-//   4. a 2-D array **inside a class**, because that is the shape SC actually uses and it is not
-//      obviously the same as a file-scope one;
-//   5. and the single-subscript global pointer, as the control that says the pointee size is
-//      understood when only one subscript is involved.
+// ### EXPECTED VALUE, AND MUTATIONS
 //
-// **THE EXPECTED VALUES FOR THE BROKEN FORM ARE NOT FROM C** -- C cannot express them. They are
-// measured from this compiler, and the case exists so the three hoists are not quietly undone by
-// someone tidying them back into one expression. Every SAFE line matches what C prints.
-//
-// Measured from a printing build before the fold was pinned. The first six are the broken form:
-//
-//     4299262264296            = (1001 << 32) | 1000   -- store[0] and store[1]
-//     4307852198890            = (1003 << 32) | 1002   -- store[2] and store[3], so stride 8
-//     4316442133484  4325032068078
-//     4123106164818064178  4701827547522677562         -- the U8 row, eight bytes all the same
-//
-// and the rest are the safe forms, every one of them right:
-//
-//     1000 1001 1002 1003   50 51 52 53   1000 1001 1002 1003   2000 2001 2002 2003
-//     10 40 11 41 12 42 13 43   40 41 42 43   1000 1001 1002 1003
-//
-// ### MUTATIONS
+// A C twin (`(C *)`, `uint32_t *[2]`, the same 50 folds) printed `sizeof_C=12` and
+// `fold = 0000fb47c157d8f2`, which is this case's pinned value.
 //
 //   | mutation | result |
 //   |---|---|
-//   | `q32[i]` written back as `p32[0][i]` | **FAIL** -- the safe form becomes the broken one |
-//   | `flat[0][i]` to `flat[1][i]` | **FAIL** -- the 2-D control reads a real second row |
+//   | `g.Grid[1][i]` to `g.Grid[0][i]` | **FAIL** `00000f9aeed96752` -- the 2-D control reads a real second row |
+//
+// **AND THE PARSER CHANGE ITSELF IS ITS OWN CONTROL.** Re-recording
+// `tests/asm/codegen_rv64_golden.txt` after the fix moved **9 rows of 963, all of them this
+// case's**: no other exec case's emitted bytes changed under any of the nine optimizer
+// environments. That is the evidence that the postfix-loop change is surgical, and it is worth
+// more than any number of green cases.
 I64 main();
 
-class Rec
+// TWELVE BYTES, deliberately not eight: an eight-byte class agrees with the OLD broken stride by
+// accident, and that accident made the first version of the parser fix look complete.
+class C
 {
   U16 a;
   U16 b;
+  U32 c;
+  U32 d;
 };
 
-class Holder
+// The three storage classes, each with the three pointee widths cFS uses.
+class H
 {
-  Rec Grid[2][4]; // a 2-D array INSIDE a class -- SC's AtsCmdIndexBuffer shape
+  U32 *wrows[2];
+  U8 *brows[2];
+  C *crows[2];
+};
+
+// And the two CONTROLS, spelled identically to the broken form and always correct.
+class G
+{
+  U32 Grid[2][4];
 };
 
 U32 store[16];
 U8 raw[16];
-U32 *p32[2];
-U8 *p8[2];
-U32 *one32;
-U32 flat[2][8]; // a true 2-D array, file scope
-Holder h;
+C objs[8];
+U32 *gw[2];
+U8 *gb[2];
+C *gc[2];
+H h;
+G g;
+U32 flat[2][8];
 
 I64 Fold(I64 r, I64 v)
 {
@@ -100,70 +115,106 @@ I64 main()
 {
   I64 res = 0;
   I64 i;
+  U32 *lw[2];
+  U8 *lb[2];
+  C *lc[2];
   U32 *q32;
-  U8 *q8;
-  Rec *row;
+  C *qc;
 
   for (i = 0; i < 16; i++) {
     store[i] = 1000 + i;
     raw[i] = 50 + i;
   }
   for (i = 0; i < 8; i++) {
+    objs[i].a = i;
+    objs[i].b = 100 + i;
+    objs[i].c = 9000 + i;
+    objs[i].d = 7;
+  }
+  for (i = 0; i < 8; i++) {
     flat[0][i] = 1000 + i;
     flat[1][i] = 2000 + i;
   }
   for (i = 0; i < 4; i++) {
-    h.Grid[0][i].a = 10 + i;
-    h.Grid[0][i].b = 20 + i;
-    h.Grid[1][i].a = 30 + i;
-    h.Grid[1][i].b = 40 + i;
+    g.Grid[0][i] = 300 + i;
+    g.Grid[1][i] = 400 + i;
   }
-  p32[0] = store;
-  p32[1] = store;
-  p8[0] = raw;
-  p8[1] = raw;
-  one32 = store;
+  gw[0] = store;
+  gw[1] = store;
+  gb[0] = raw;
+  gb[1] = raw;
+  gc[0] = objs;
+  gc[1] = objs;
+  h.wrows[0] = store;
+  h.wrows[1] = store;
+  h.brows[0] = raw;
+  h.brows[1] = raw;
+  h.crows[0] = objs;
+  h.crows[1] = objs;
+  lw[0] = store;
+  lw[1] = store;
+  lb[0] = raw;
+  lb[1] = raw;
+  lc[0] = objs;
+  lc[1] = objs;
 
-  // ---- 1. THE BROKEN FORM, two different pointee sizes ---------------------------------------
-  for (i = 0; i < 4; i++) {
-    res = Fold(res, p32[0][i]);
-  }
-  for (i = 0; i < 2; i++) {
-    res = Fold(res, p8[0][i]);
-  }
+  // The class's size is folded first: if it ever stops being 12, the two controls stop being
+  // controls and every expected value below moves. Better a failure here than a silent one there.
+  res = Fold(res, sizeof(C));
 
-  // ---- 2. THE SAFE FORM: the row in a local, one subscript ------------------------------------
-  q32 = p32[0];
+  // ---- 1. GLOBAL arrays of pointers -----------------------------------------------------------
   for (i = 0; i < 4; i++) {
-    res = Fold(res, q32[i]); // 1000 1001 1002 1003
-  }
-  q8 = p8[0];
-  for (i = 0; i < 4; i++) {
-    res = Fold(res, q8[i]); // 50 51 52 53
-  }
-
-  // ---- 3. a TRUE 2-D array, which needs no hoist ---------------------------------------------
-  for (i = 0; i < 4; i++) {
-    res = Fold(res, flat[0][i]); // 1000 1001 1002 1003 -- same as the safe form above
+    res = Fold(res, gw[0][i]);      // 1000 1001 1002 1003
   }
   for (i = 0; i < 4; i++) {
-    res = Fold(res, flat[1][i]); // 2000 2001 2002 2003 -- and the second row is a real row
+    res = Fold(res, gb[1][i]);      // 50 51 52 53
   }
-
-  // ---- 4. a 2-D array INSIDE A CLASS, which is SC's shape ------------------------------------
   for (i = 0; i < 4; i++) {
-    res = Fold(res, h.Grid[0][i].a);
-    res = Fold(res, h.Grid[1][i].b);
-  }
-  // and through a hoisted row, which must agree
-  row = &h.Grid[1][0];
-  for (i = 0; i < 4; i++) {
-    res = Fold(res, row[i].b); // 40 41 42 43
+    res = Fold(res, gc[0][i].c);    // 9000 9001 9002 9003
   }
 
-  // ---- 5. the single-subscript control --------------------------------------------------------
+  // ---- 2. MEMBER arrays of pointers -- the shape cFS uses, and the one that needed more ------
   for (i = 0; i < 4; i++) {
-    res = Fold(res, one32[i]); // 1000 1001 1002 1003
+    res = Fold(res, h.wrows[1][i]);
+  }
+  for (i = 0; i < 4; i++) {
+    res = Fold(res, h.brows[0][i]);
+  }
+  for (i = 0; i < 4; i++) {
+    res = Fold(res, h.crows[1][i].c);
+  }
+
+  // ---- 3. LOCAL arrays of pointers, recorded by a third path ---------------------------------
+  for (i = 0; i < 4; i++) {
+    res = Fold(res, lw[0][i]);
+  }
+  for (i = 0; i < 4; i++) {
+    res = Fold(res, lb[1][i]);
+  }
+  for (i = 0; i < 4; i++) {
+    res = Fold(res, lc[0][i].c);
+  }
+
+  // ---- 4. THE HOISTED-ROW SPELLING, and the EQUALITY is the assertion ------------------------
+  //
+  // This form was correct throughout the defect, so on its own it proves nothing about the fix.
+  // What it proves is that the two spellings now agree -- which is the property the three
+  // sc_global.HC accessors were rewritten twice over.
+  q32 = h.wrows[1];
+  for (i = 0; i < 4; i++) {
+    res = Fold(res, q32[i] == h.wrows[1][i]);        // 1 1 1 1
+  }
+  qc = h.crows[1];
+  for (i = 0; i < 4; i++) {
+    res = Fold(res, qc[i].c == h.crows[1][i].c);     // 1 1 1 1
+  }
+
+  // ---- 5. THE TWO CONTROLS: true two-dimensional arrays ---------------------------------------
+  for (i = 0; i < 4; i++) {
+    res = Fold(res, flat[1][i]);    // 2000 2001 2002 2003
+  }
+  for (i = 0; i < 4; i++) {
+    res = Fold(res, g.Grid[1][i]);  // 400 401 402 403
   }
 
   return res;

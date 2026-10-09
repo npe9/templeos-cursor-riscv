@@ -148,4 +148,4 @@ tests/exec/cases/e_u16_wrap_insert.hc	0000de9e37155f41
 tests/exec/cases/e_i16_signed_countdown.hc	00009305494f8f79
 tests/exec/cases/e_addr_of_cast_element.hc	000041f6b4733ecb
 tests/exec/cases/e_widening_cast_lvalue.hc	000015b2b4ecc592
-tests/exec/cases/e_ptrarray_chained_subscript.hc	000055c3554d2c40
+tests/exec/cases/e_ptrarray_chained_subscript.hc	0000fb47c157d8f2

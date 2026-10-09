@@ -98,7 +98,16 @@ OS_time_t OS_TimeAssembleFromSubseconds(I64 seconds, U32 subseconds)
 {
   OS_time_t result;
   result.ticks = seconds * OS_TIME_TICKS_PER_SECOND;
-  result.ticks += (subseconds(I64) * (OS_TIME_TICKS_PER_SECOND >> 2)) >> 30;
+  // **`& 0xFFFFFFFF` AND NOT `(I64)`, WHICH IS WHAT NASA WRITES.** HolyC limit #28: a widening
+  // cast is a RELABEL, so `subseconds(I64)` reads EIGHT bytes from a four-byte object. A
+  // parameter happens to sit in an eight-byte slot here, so the upper half is whatever the caller
+  // left -- which is probably zero and is not guaranteed to be. The mask is exactly what C's
+  // `(int64)` of a `uint32` means (zero-extend) and does not depend on the slot.
+  //
+  // This is the one instance of the shape OUTSIDE SC, and it was found by generalising
+  // check_narrow_cast.py from two fixed width sets to a comparison of widths -- the first version
+  // ranked U32 as "wide" and so could not see a U32 operand widened to I64.
+  result.ticks += ((subseconds & 0xFFFFFFFF) * (OS_TIME_TICKS_PER_SECOND >> 2)) >> 30;
   return result;
 }
 #endif

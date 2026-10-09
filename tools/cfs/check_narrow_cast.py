@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""No widening cast may be applied to a narrow LVALUE, and no array of pointers may be
-double-subscripted. Two defects, one gate, because they were found in one hour by the same means:
-running code whose every static gate was green.
+"""No cast may be applied to an LVALUE narrower than the cast's own target.
+
+ONE RULE NOW, AND IT USED TO BE TWO. This gate was written for two defects found in one hour by
+the same means -- running code whose every static gate was green -- and the second of them was
+then fixed in the compiler, so only the first is still refused here. Both halves are described
+below, because the second's history is why the first is not treated the same way.
 
 WHY THIS EXISTS
 
@@ -27,23 +30,24 @@ It is invisible whenever the adjacent bytes are zero, which is most of the time,
 symptom was four consecutive `SC_ENTRY_OFFSET_INVALID` offsets printing 4294967295 against C's
 65535.
 
-### 2. `ptrarray[i][j]` SCALES THE INNER SUBSCRIPT BY THE OUTER ELEMENT'S SIZE
+### 2. `ptrarray[i][j]` SCALED THE INNER SUBSCRIPT BY THE OUTER ELEMENT'S SIZE -- **FIXED**
 
-With `U32 *p32[2]` aimed at a `U32 store[16]`:
+This gate used to refuse that shape too. It no longer does, because the defect was fixed at the
+root in `host/parser.c` rather than worked around: a member declared `T *arr[N]` now keeps its
+real pointee alongside the RT_I64 the declaration overwrites it with, so the second subscript has
+something to scale by. Ten forms were measured -- global, member and local arrays of `U32 *`,
+`U8 *` and a 12-byte class pointer, with a file-scope and a member two-dimensional array as
+controls -- and `tests/exec/cases/e_ptrarray_chained_subscript.hc` now pins the CORRECT values
+instead of the defect's.
 
-    p32[0][1]        ==>  (store[3] << 32) | store[2]    # stride 8, width 8
-    q = p32[0]; q[1] ==>  store[1]                       # correct
+**A PROHIBITION KEPT AFTER ITS DEFECT IS FIXED IS A FALSE CLAIM**, so the check is removed rather
+than left as style enforcement: NASA writes `SC_OperData.AtsTblAddr[AtsIndex][EntryOffset]` and a
+1:1 translation should be allowed to. The double subscripts are still COUNTED here, so the gate
+reports how many sites depend on the parser fix.
 
-Eight bytes, because an element of `p32` is a pointer. **A true two-dimensional array is fine**,
-and the two shapes are spelled identically -- which is the whole difficulty, and the reason this
-check has to resolve the declaration rather than pattern-match the use.
-
-HOW IT BIT. Three `sc_global.HC` accessors wrote NASA's one-expression bodies literally. SC_LoadAts
-then walked the ATS at twice the stride and reported 2 commands where C reported 4 -- a wrong
-count three functions from the wrong stride.
-
-Both are pinned behaviourally: tests/exec/cases/e_widening_cast_lvalue.hc and
-tests/exec/cases/e_ptrarray_chained_subscript.hc.
+Both are pinned behaviourally: tests/exec/cases/e_widening_cast_lvalue.hc (the defect this gate
+refuses) and tests/exec/cases/e_ptrarray_chained_subscript.hc (the behaviour the parser fix
+produces).
 
 WHAT IS CHECKED
 
@@ -53,8 +57,8 @@ U32 U64 I32 I64 and F64. For each translated file:
   * every `(<expr>)(<WIDE>)` whose expression is a bare lvalue -- an identifier, a `.m`/`->m`
     chain, or an `arr[i]` -- is resolved against the declarations in that file plus the files it
     can see, and FAILS if the lvalue's declared type is narrow;
-  * every `name[...][...]` is resolved, and FAILS if `name`'s declaration is a pointer ARRAY
-    (`T *name[N]`) rather than a two-dimensional array (`T name[N][M]`).
+  * every `name[...][...]` is counted, so the summary says how many sites rely on the parser's
+    chained-subscript fix. None of them fails: see 2 above.
 
 WHAT IT CANNOT SEE, SAID PLAINLY
 
@@ -78,8 +82,33 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cfs_dirs import ROOT, HCDIRS
 from cfs_text import strip_comments
 
+# **WIDTHS, NOT TWO FIXED SETS.** The first version had NARROW = {U8 U16 I8 I16 Bool} and
+# WIDE = {U32 U64 I32 I64 F64}, which misses `(u8_member)(U16)` -- limit #28 one size down, a
+# two-byte read of a one-byte object. The rule is now relative: an operand is narrow *for a given
+# cast* when it is STRICTLY narrower than the cast's target. The port has no instance of the
+# one-size-down form today (10 casts to U16/I16 examined, 0 of them on a U8), so closing the class
+# cost nothing -- which is the point of closing it before it costs something.
+RANK = {"I8": 1, "U8": 1, "Bool": 1, "bool": 1,
+        "I16": 2, "U16": 2,
+        "I32": 4, "U32": 4, "F32": 4, "CfsF32": 4,
+        "I64": 8, "U64": 8, "F64": 8}
+
+# The targets this gate looks at: every integer width it can rank. A POINTER cast is excluded by
+# the regexes (`\s*\)` after the type name rejects `(U32 *)`) because relabelling a pointer is
+# the port's normal idiom and has one width.
+TARGETS = ["U64", "U32", "U16", "U8", "I64", "I32", "I16", "I8", "F64"]
+
+# Casting a MACRO PARAMETER to one of these is refused outright: the operand's width is not known
+# at the definition, so it cannot be shown not to widen -- and `#define SC_IDX_AS_UINT(arg)
+# ((arg)(U32))` in sc_tbl.HC is precisely how limit #28 entered the port. A NARROWING target on a
+# macro parameter is allowed and counted: a relabel to a narrower type reads at most the operand's
+# own bytes, and on this little-endian target that is the truncation C performs -- which is what
+# `SC_IDX_FROM_UINT(arg) ((arg)(U16))` relies on and what e_widening_cast_lvalue.hc pins.
+WIDENING_TARGETS = {"U32", "U64", "I32", "I64", "F64"}
+
+# Kept for the messages and for the member-ambiguity report.
 NARROW = {"U8", "U16", "I8", "I16", "Bool", "bool"}
-WIDE = {"U32", "U64", "I32", "I64", "F64"}
+WIDE = WIDENING_TARGETS
 
 # The driver files. They are HolyC, they contain both shapes, and the 2-D arrays that back SC's
 # exercise live there -- so they are in the set.
@@ -143,6 +172,24 @@ def declarations(txt):
     return out
 
 
+MACRO = re.compile(r"^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\(([^)]*)\)")
+
+
+def macro_params(txt):
+    """Every name that is a parameter of a function-like macro in this file. Those names appear in
+    the macro BODY with no declaration anywhere, so they are the one operand kind this gate cannot
+    resolve -- and the defect it exists for lived in exactly that position."""
+    out = set()
+    for line in txt.split("\n"):
+        m = MACRO.match(line)
+        if m:
+            for a in m.group(2).split(","):
+                a = a.strip()
+                if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", a):
+                    out.add(a)
+    return out
+
+
 def member_types(txt):
     """(class name, member name) -> base type, for resolving `x.m` and `p->m`. Flat across all
     classes: a member name is looked up by name alone, and a COLLISION between two classes with
@@ -182,7 +229,7 @@ def member_types(txt):
 # A POINTER cast is deliberately NOT matched: `\s*\)` after the type name excludes `(U32 *)`.
 # Relabelling a pointer is the port's normal idiom and is not this defect -- the defect is reading
 # a narrow OBJECT at a wider width.
-_W = "|".join(sorted(WIDE))
+_W = "|".join(TARGETS)
 CAST = re.compile(r"\(([^()]*)\)\s*\(\s*(" + _W + r")\s*\)")
 CAST_BARE = re.compile(r"(?<![A-Za-z0-9_])((?:[A-Za-z_][A-Za-z0-9_]*)"
                        r"(?:(?:\.|->)[A-Za-z_][A-Za-z0-9_]*|\[[^\[\]]*\])*)"
@@ -223,7 +270,9 @@ def main():
             members.setdefault(k, set()).add(v)
 
     bad_cast = []
-    bad_chain = []
+    ptrarray_chains = 0
+    bad_macro = []
+    macro_narrowing = []
     unresolved = []
     casts = 0
     chains = 0
@@ -233,6 +282,7 @@ def main():
         rel = os.path.relpath(p, ROOT)
         txt = strip_comments(open(p, errors="replace").read())
         decls = declarations(txt)
+        macros = macro_params(txt)
         for ln, line in enumerate(txt.split("\n"), 1):
             seen_spans = []
             for m in list(CAST.finditer(line)) + list(CAST_BARE.finditer(line)):
@@ -267,13 +317,24 @@ def main():
                 # That cannot produce a false failure -- a flagged name is narrow whichever class
                 # it came from -- and it leaves only the genuinely mixed names unchecked, which is
                 # a far smaller set than "every name that appears twice".
+                target = RANK.get(wide)
+                if target is None:
+                    continue
+                if name in macros:
+                    # A MACRO PARAMETER. Unknown width, so a widening target cannot be shown safe
+                    # and is refused; a narrowing one is allowed and counted by name.
+                    if wide in WIDENING_TARGETS:
+                        bad_macro.append((rel, ln, expr, wide))
+                    else:
+                        macro_narrowing.append((rel, ln, expr, wide))
+                    continue
                 if "." in expr or "->" in expr:
                     recs = members.get(name)
                     if not recs:
                         unresolved.append((rel, ln, expr, wide))
                         continue
-                    if any(r[1] or (r[0] not in NARROW) for r in recs):
-                        continue        # at least one declaration is wide or a pointer
+                    if any(r[1] or RANK.get(r[0], 99) >= target for r in recs):
+                        continue        # some declaration is a pointer or not narrower
                     base, ptr, dims = sorted(recs)[0]
                 else:
                     rec = decls.get(name)
@@ -289,27 +350,25 @@ def main():
                     continue
                 if dims and "[" not in expr:
                     continue
-                if base in NARROW and (rel, name) not in EXEMPT:
+                if RANK.get(base, 99) < target and (rel, name) not in EXEMPT:
                     bad_cast.append((rel, ln, expr, wide, base))
 
             for m in CHAIN.finditer(line):
                 head = m.group(1)
                 chains += 1
+                # COUNTED, NOT REFUSED. The defect this used to catch is fixed in host/parser.c
+                # and pinned by e_ptrarray_chained_subscript.hc; the count is here so the summary
+                # says how many sites depend on that fix, and so a reader can see the number move.
                 tail = re.findall(r"(?:\.|->)([A-Za-z_][A-Za-z0-9_]*)", m.group(0))
                 key = tail[-1] if tail else head
                 if key in decls:
                     _, ptr, dims = decls[key]
                     if ptr and dims >= 1:
-                        bad_chain.append((rel, ln, key))
+                        ptrarray_chains += 1
                 elif key in members:
-                    # A MEMBER THAT IS AN ARRAY OF POINTERS, e.g. SC_OperData.AtsTblAddr[i][j].
-                    # Flagged only when EVERY declaration of that member name is a pointer array,
-                    # for the same reason the cast check uses the whole set.
                     recs = members[key]
                     if recs and all(r[1] and r[2] >= 1 for r in recs):
-                        bad_chain.append((rel, ln, key))
-                else:
-                    unresolved.append((rel, ln, m.group(0), "chain"))
+                        ptrarray_chains += 1
 
     rc = 0
     if bad_cast:
@@ -323,16 +382,17 @@ def main():
         for f, ln, e, w, t in bad_cast:
             print("    %s:%d  (%s)(%s) where %s is %s" % (f, ln, e, w, e, t), file=sys.stderr)
         rc = 1
-    if bad_chain:
-        print("FAIL cfs-narrowcast — an ARRAY OF POINTERS is double-subscripted. HolyC scales the"
-              " inner subscript by the size of an element of the OUTER array (8 bytes for a"
-              " pointer), not by the pointee.", file=sys.stderr)
-        print("  Hoist the row into a local: `T *Row = x[i]; ... Row[j]`.", file=sys.stderr)
-        print("  A true two-dimensional array is FINE and is spelled identically, which is why"
-              " this gate resolves the declaration.", file=sys.stderr)
-        print("  Pinned by tests/exec/cases/e_ptrarray_chained_subscript.hc.", file=sys.stderr)
-        for f, ln, n in bad_chain:
-            print("    %s:%d  %s[..][..]" % (f, ln, n), file=sys.stderr)
+    if bad_macro:
+        print("FAIL cfs-narrowcast — a WIDENING cast is applied to a MACRO PARAMETER, whose width"
+              " is not known at the definition, so it cannot be shown not to widen the load"
+              " (HolyC limit #28).", file=sys.stderr)
+        print("  This is the exact position the defect entered the port from:"
+              " `#define SC_IDX_AS_UINT(arg) ((arg)(U32))`, 83 uses, every other gate green.",
+              file=sys.stderr)
+        print("  Mask instead -- `(arg) & 0xFFFF` -- which forces a load of the operand's own"
+              " declared width whatever the caller passes.", file=sys.stderr)
+        for f, ln, e, w in bad_macro:
+            print("    %s:%d  (%s)(%s) in a macro body" % (f, ln, e, w), file=sys.stderr)
         rc = 1
     if unresolved:
         print("FAIL cfs-narrowcast — %d site(s) whose declaration this gate could not find. A gate"
@@ -344,19 +404,38 @@ def main():
     if rc:
         return rc
 
-    if casts == 0 or chains == 0:
-        print("FAIL cfs-narrowcast — found %d cast(s) and %d chained subscript(s); zero of either"
-              " means this compared nothing." % (casts, chains), file=sys.stderr)
+    if casts == 0 or chains == 0 or ptrarray_chains == 0:
+        print("FAIL cfs-narrowcast — found %d cast(s), %d chained subscript(s) and %d of them"
+              " through a pointer array; zero of any of the three means this measured nothing."
+              % (casts, chains, ptrarray_chains), file=sys.stderr)
         return 1
 
-    ambiguous = sum(1 for v in members.values()
-                    if len(v) > 1 and any(r[1] or r[0] not in NARROW for r in v)
-                    and any(not r[1] and r[0] in NARROW for r in v))
-    print("cfs-narrowcast: %d widening cast(s) and %d double subscript(s) across %d HolyC files;"
-          " no widening cast lands on a narrow lvalue and no pointer array is chained"
-          " (%d cast(s) of a call's result not checked, %d member name(s) declared at two"
-          " different types and so NOT checked -- see the header)"
-          % (casts, chains, len(files), calls_skipped, ambiguous))
+    # **THE SKIPPED SETS ARE NAMED, NOT COUNTED.** A first version printed "30 member name(s)
+    # ... NOT checked" and stopped there, which is the shape docs/ records twenty times: a number
+    # is not auditable and a list is. Three of the thirty are `Status`, `Offset` and `CmdNum` --
+    # exactly the members SC's accessors return -- so a reader has to be able to see them.
+    ambiguous = sorted(k for k, v in members.items()
+                       if len(v) > 1 and any(r[1] or r[0] not in NARROW for r in v)
+                       and any(not r[1] and r[0] in NARROW for r in v))
+    print("cfs-narrowcast: %d cast(s) across %d HolyC files, none on an operand narrower than its"
+          " target (%d double subscript(s), %d of them through an array of POINTERS and so relying"
+          " on host/parser.c's chained-subscript fix -- pinned by"
+          " e_ptrarray_chained_subscript.hc)"
+          % (casts, len(files), chains, ptrarray_chains))
+    if calls_skipped:
+        print("  %d cast(s) of a call's result, whose return type is not in the declaration text"
+              " this gate reads, and so NOT checked" % calls_skipped)
+    if macro_narrowing:
+        print("  %d NARROWING cast(s) of a macro parameter, which is the safe direction (a relabel"
+              " to a narrower type reads at most the operand's own bytes):" % len(macro_narrowing))
+        for f, ln, e, w in macro_narrowing:
+            print("      %s:%d  (%s)(%s)" % (f, ln, e, w))
+    if ambiguous:
+        print("  %d member name(s) declared at two or more types where one is narrow and one is"
+              " not, so a `->m` on them is NOT checked -- resolving these needs the declared type"
+              " of the left-hand side, which is real type inference:" % len(ambiguous))
+        for i in range(0, len(ambiguous), 8):
+            print("      " + " ".join(ambiguous[i:i + 8]))
     return 0
 
 

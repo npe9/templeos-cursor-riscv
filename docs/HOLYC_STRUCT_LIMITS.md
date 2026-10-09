@@ -1670,7 +1670,7 @@ three safe spellings. Both halves of the gate were poisoned to prove they fire �
 version of the gate **passed its own poison**, because the test that skips arithmetic expressions
 matched the minus sign in `->`.
 
-## 29. `ptrarray[i][j]` scales the inner subscript by the OUTER element's size — OPEN, and SILENT
+## 29. `ptrarray[i][j]` scaled the inner subscript by the OUTER element's size — FIXED
 
 ```
 U32 store[16];  store[k] = 1000 + k;
@@ -1725,8 +1725,44 @@ SC_AtsEntry_t *SC_GetAtsEntryAtOffset(U16 AtsIndex, U16 EntryOffset)
 }
 ```
 
-### GATED
+### THE FIX, IN TWO PARTS, AND THE SECOND IS WHY A SINGLE PROBE WAS NOT ENOUGH
 
-The same `tools/cfs/check_narrow_cast.py`, which fails on a double subscript whose head resolves
-to a pointer array; `tests/exec/cases/e_ptrarray_chained_subscript.hc` pins the broken form, the
-hoisted form, a file-scope 2-D array and a 2-D array inside a class.
+**Part one, `host/parser.c`'s postfix loop.** The block that decides what a subscript leaves
+behind had three clauses, for a symbol, a global and a member, and **every one of them required
+`!is_array`** — so an array whose ELEMENTS are pointers matched none of them, `sdepth` stayed 0,
+and the following subscript had no pointee to scale by. An array of pointers subscripted once
+yields a pointer of its declared depth, exactly as `U8 **argv` does, so `sdepth` is
+`ptr_depth + 1` and the existing `sdepth > 1` path does the rest. A class pointee's SIZE has to
+come along too, since `PrimitiveTypeSize` cannot give it.
+
+That fixed five of the eight forms. It did not fix a **member** array of primitive pointers —
+which is exactly `SC_OperData.AtsTblAddr[i][j]`, the shape that started this.
+
+**Part two, two new fields on `CMemberLst`.** The class-member declaration code has this, on
+purpose:
+
+```c
+// `T *arr[N]` member: the ELEMENTS are pointers (8 bytes), not T.
+if (ptr && is_array) { m->elem_size = 8; m->pointed_to_type = RT_I64; }
+```
+
+It is right — the FIRST subscript must stride one pointer — and it destroys the only record of
+what the pointers point at. `arr_ptr_pointee` and `arr_ptr_elem_size` now keep it.
+
+**AND THE FIRST ATTEMPT LOOKED COMPLETE.** A member array of CLASS pointers appeared to work
+while the primitive case did not, because the probe's class happened to be `sizeof` 8 — so the old
+broken stride and the right stride were the same number. The class in the exec case is now
+deliberately 12 bytes.
+
+### PINNED
+
+`tests/exec/cases/e_ptrarray_chained_subscript.hc` — ten forms, every expected value from a C
+twin: arrays of `U32 *`, `U8 *` and a 12-byte class pointer as a global, as a class member and as
+a local; the hoisted-row spelling asserted EQUAL to the chained one; and a file-scope and a
+member two-dimensional array as controls, since both were always correct and are spelled
+identically to the form that was not.
+
+`tools/cfs/check_narrow_cast.py` no longer refuses the shape — **a prohibition kept after its
+defect is fixed is a false claim** — but it still COUNTS the sites, so the summary says how many
+depend on this fix (three today, all in `Kernel/Cfs/sc/sc_global.HC`, where NASA's
+one-expression bodies are restored).

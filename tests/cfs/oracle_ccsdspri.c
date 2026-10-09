@@ -190,6 +190,8 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "sc_msg.h"
 #include "sc_loads.h"
 #include "sc_state.h"
+#include "sc_rtsrq.h"
+#include "sc_atsrq.h"
 #include "iodriver_base.h"
 #include "iodriver_analog_io.h"
 #include "lc_msgids.h"
@@ -14961,6 +14963,32 @@ static void sc_wire(void)
 
     /* Wakeups, not seconds. SC_ComputeAbsWakeup adds a relative count to this. */
     SC_AppData.CurrentWakeupCount = 1000;
+
+    /* **THE ATP MUST BE IDLE, AND A MEMSET DOES NOT MAKE IT IDLE.** SC_Status_IDLE is 2 and
+     * SC_Status_EMPTY is 0, so a zeroed control block is in a state that is neither running nor
+     * idle -- and `SC_StartAtsCmd` tests `AtpState == SC_Status_IDLE`, so every ATS command was
+     * refused with "Start ATS Rejected: ATP is not Idle" until this line existed. Eleven passes
+     * printed state=0 and an error counter, which is a plausible-looking transcript for a
+     * dispatcher and the exact opposite of what they were for.
+     *
+     * In the real app this is not a memset either: the ATP control block is a cFE TABLE, and its
+     * default image has AtpState = SC_Status_IDLE. sc_app.c's registration is what loads it. */
+    sc_atp.AtpState = SC_Status_IDLE;
+
+    /* **AND THE TIME ACCESSOR MUST BE SET, FOR THE SAME REASON THE ATP MUST BE IDLE.**
+     * SC_AppData.TimeRef is a one-member struct holding a FUNCTION POINTER, and SC_GetCurrentTime
+     * calls it: `TempTime = SC_AppData.TimeRef.GetTime();`. A memset leaves it NULL, so the first
+     * pass that reached SC_GetCurrentTime jumped to address 0 -- a SIGSEGV with an empty backtrace
+     * (`frame #0: 0x0000000000000000`), which is what a null indirect call looks like.
+     *
+     * It took a debugger rather than the log to find, because stdout to a file is BLOCK buffered:
+     * the transcript ended 180 lines before the crash, at the last flush, and the obvious reading
+     * was that the fault was in the pass whose line was cut in half. docs/ records that trap.
+     *
+     * sc_app.c sets this with `SC_AppData.TimeRef = SC_LookupTimeAccessor(...)`, and that lookup
+     * exists SO THAT IT CANNOT RETURN NULL -- it falls back to CFE_TIME_GetTime for any reference
+     * it does not recognise. The default is what SC uses when the table says nothing. */
+    SC_AppData.TimeRef = SC_LookupTimeAccessor(SC_TimeRef_USE_CFE_TIME);
 }
 
 /* Write one ATS entry at a word offset and return the offset of the next one. The ATS header is
@@ -15517,6 +15545,9 @@ static void sc_block_state(void)
     SC_TimeAccessor_t   acc;
     int                 i;
     uint32              t;
+    uint32              t0;
+    uint32              t1;
+    CFE_TIME_SysTime_t  met;
 
     /* ---- the time tag's two halves ----------------------------------------------------------- */
     hdr.Pad        = 0;
@@ -15539,6 +15570,41 @@ static void sc_block_state(void)
     sc_wire();
     printf("scu_abswake base=%u plus7=%u plus0=%u\n", (unsigned)SC_AppData.CurrentWakeupCount,
            (unsigned)SC_ComputeAbsWakeup(7), (unsigned)SC_ComputeAbsWakeup(0));
+
+    /* ---- SC_GetCurrentTime AND SC_ComputeAbsTime -- THE TWO THAT READ THE CLOCK --------------
+     *
+     * These were the last two functions in SC's five gated sources that nothing ran, and the plan
+     * said they needed "the MET moved, through CFE_TIME_SetMET". They do, and it is one call: the
+     * API is gated (`Kernel/Cfs/cfe/cfe_time_utils.HC`), reachable in this configuration through
+     * the `CFE_PLATFORM_TIME_CFG_SERVER == 1` arm, and `CFE_TIME_GetTime` is `CFE_TIME_GetTAI`
+     * here (`CFE_MISSION_TIME_CFG_DEFAULT_TAI` is 1), which is MET plus STCF.
+     *
+     * **WHAT IS ASSERTED IS THE DIFFERENCE, NOT THE TIME.** The absolute seconds depend on the
+     * STCF the fixture happens to carry, so printing them would pin a number with no meaning. The
+     * MET is set twice, 100 seconds apart, and the DELTA is printed -- which is 100 whatever the
+     * STCF is, and which is the whole of what SC_GetCurrentTime does. SC_ComputeAbsTime adds a
+     * relative time to the same field, so its delta against CurrentTime is the second assertion.
+     *
+     * SC does not read subseconds at all -- `SC_GetCurrentTime` keeps only `.Seconds`, with
+     * NASA's comment "We don't care about subseconds" -- so the MET is moved by whole seconds and
+     * a subsecond is set on the second call to show it is dropped. */
+    sc_wire();
+    met.Seconds    = 1000;
+    met.Subseconds = 0;
+    CFE_TIME_SetMET(met);
+    SC_GetCurrentTime();
+    t0             = SC_AppData.CurrentTime;
+    met.Seconds    = 1100;
+    met.Subseconds = 0x80000000u; /* half a second, which SC must discard */
+    CFE_TIME_SetMET(met);
+    SC_GetCurrentTime();
+    t1 = SC_AppData.CurrentTime;
+    printf("scu_curtime delta=%u subsec_dropped=%d\n", (unsigned)(t1 - t0),
+           (int)(SC_AppData.CurrentTime == t1));
+    /* SC_ComputeAbsTime goes through CFE_TIME_Add, so its delta is the relative time it was given
+     * and the subseconds it carries are zero. */
+    printf("scu_abstime plus0=%d plus10=%d\n", (int)(SC_ComputeAbsTime(0) - t1),
+           (int)(SC_ComputeAbsTime(10) - t1));
 
     /* ---- SC_CompareAbsTime: STRICTLY greater, which is what makes SC_Insert's sort stable ---- */
     printf("scu_cmp gt=%d eq=%d lt=%d\n", SC_CompareAbsTime(200, 100) ? 1 : 0,
@@ -15609,6 +15675,510 @@ static void sc_block_state(void)
     sc_atp.AtpState = SC_Status_IDLE;
     SC_GetNextAtsCommand();
     printf("scs_ats_idle state=%u\n", (unsigned)sc_atp.AtpState);
+}
+
+
+/* ---------------------------------------------------------------------------------------------
+ * SC BLOCK 5: the eighteen command handlers in sc_rtsrq.c and sc_atsrq.c.
+ *
+ * **THIS BLOCK EXISTS BECAUSE THE PLAN CLAIMED IT WAS BLOCKED AND IT WAS NOT.**
+ * `run_cfs_exercised.sh SC` read 1/10 for sc_rtsrq.c and 1/10 for sc_atsrq.c, and the commit that
+ * reported it said the handlers "need a command-message block, which belongs with
+ * sc_dispatch.c". That was the same deferral that had just cost two silent translation defects,
+ * written down as if it were a constraint.
+ *
+ * It is not one. **Every SC handler takes a TYPED command struct, not a generic buffer**:
+ *
+ *     CFE_Status_t SC_StartRtsCmd(const SC_StartRtsCmd_t *Cmd);
+ *     CFE_Status_t SC_JumpAtsCmd(const SC_JumpAtsCmd_t *Cmd);
+ *
+ * and every one reads `Cmd->Payload` and nothing else out of the message. So a handler is driven
+ * by declaring the struct, filling four bytes of payload and calling it -- no pipe, no message id,
+ * no CFE_MSG_Init, and no dispatcher. What a dispatcher would add is one FURTHER assertion ("was
+ * the right handler picked for this command code"), and that one does belong with sc_dispatch.c.
+ *
+ * Three of the eighteen are not command handlers at all. `SC_BeginAts(AtsIndex, TimeOffset)`,
+ * `SC_InlineSwitch()` and `SC_ServiceSwitchPend()` are plain functions, and SC_BeginAts compares
+ * entry times against `SC_AppData.CurrentTime` -- a FIELD, set directly below, so it is clock-free
+ * in exactly the sense SC_ComputeAbsWakeup is.
+ *
+ * ### WHAT EACH PASS ASSERTS
+ *
+ * Not the return value. Every one of these handlers returns CFE_SUCCESS whatever happens --
+ * including the arms that reject the command and bump CmdErrCtr -- so `rc=0` is worth one line
+ * for the whole block and nothing per pass. What each pass prints is the STATE the handler
+ * changed: the RTS or ATS status, the counters SC publishes in housekeeping, and the control
+ * block. An event in the transcript above each line says which arm ran.
+ *
+ * ### THE GROUP COMMANDS ARE A RANGE, INCLUSIVE AT BOTH ENDS
+ *
+ * `SC_RtsGrpCmd_Payload_t` is FirstRtsNum/LastRtsNum and `SC_RtsNumWithinRange` tests both ends
+ * with `<=`, so a group of 2..3 touches exactly two RTSs. Each group pass prints all four RTSs'
+ * status so the ones NOT in the range are visible as unchanged -- which is the half of a range
+ * command that a pass over the range alone cannot assert. */
+static void sc_rts_loaded(int idx, uint32 wakeup)
+{
+    /* One loaded, enabled RTS with a single valid command in it. SC_StartRtsCmd reads the FIRST
+     * entry's length, so a buffer with no command in it fails a length check that has nothing to
+     * do with the RTS's status -- which is one of the four ways a start is refused. */
+    (void)sc_rts_put(idx, SC_ENTRY_OFFSET_FIRST, wakeup, SC_PACKET_MIN_SIZE, 1);
+    sc_rts_info[idx].RtsStatus    = SC_Status_LOADED;
+    sc_rts_info[idx].DisabledFlag = false;
+}
+
+static void sc_show_rts(const char *tag)
+{
+    printf("%s st=%u/%u/%u/%u dis=%d%d%d%d active=%u actctr=%u acterr=%u cmd=%u err=%u\n", tag,
+           (unsigned)sc_rts_info[0].RtsStatus, (unsigned)sc_rts_info[1].RtsStatus,
+           (unsigned)sc_rts_info[2].RtsStatus, (unsigned)sc_rts_info[3].RtsStatus,
+           sc_rts_info[0].DisabledFlag ? 1 : 0, sc_rts_info[1].DisabledFlag ? 1 : 0,
+           sc_rts_info[2].DisabledFlag ? 1 : 0, sc_rts_info[3].DisabledFlag ? 1 : 0,
+           (unsigned)sc_rtp.NumRtsActive, (unsigned)SC_OperData.HkPacket.Payload.RtsActiveCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.RtsActiveErrCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.CmdCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.CmdErrCtr);
+}
+
+/* The pipe SC_AutoStartRts's command is received on, and the buffer it arrives in. File scope
+ * because the pipe outlives the pass that creates it, the way HS's three pipes do. */
+static CFE_SB_PipeId_t  sc_auto_pipe;
+static CFE_SB_Buffer_t *sc_rcvd;
+
+static void sc_block_cmds(void)
+{
+    SC_StartRtsCmd_t    start;
+    SC_StopRtsCmd_t     stop;
+    SC_DisableRtsCmd_t  dis;
+    SC_EnableRtsCmd_t   ena;
+    SC_StartRtsGrpCmd_t gstart;
+    SC_StopRtsGrpCmd_t  gstop;
+    SC_DisableRtsGrpCmd_t gdis;
+    SC_EnableRtsGrpCmd_t  gena;
+    int32 rc;
+
+    memset(&start, 0, sizeof(start));
+    memset(&stop, 0, sizeof(stop));
+    memset(&dis, 0, sizeof(dis));
+    memset(&ena, 0, sizeof(ena));
+    memset(&gstart, 0, sizeof(gstart));
+    memset(&gstop, 0, sizeof(gstop));
+    memset(&gdis, 0, sizeof(gdis));
+    memset(&gena, 0, sizeof(gena));
+
+    /* ---- SC_StartRtsCmd, nominal -------------------------------------------------------------
+     *
+     * CurrentWakeupCount is 1000 from sc_wire() and the entry's relative count is 9, so
+     * NextCommandTgtWakeup must be 1009. UseCtr goes to 1, NumRtsActive to 1, and both
+     * RtsActiveCtr and CmdCtr move -- five separate fields from one call. */
+    sc_wire();
+    sc_rts_loaded(0, 9);
+    start.Payload.RtsNum = SC_RTS_NUM_C(1);
+    rc                   = SC_StartRtsCmd(&start);
+    printf("scc_start rc=%d wake=%u use=%u ptr=%u\n", (int)rc,
+           (unsigned)sc_rts_info[0].NextCommandTgtWakeup, (unsigned)sc_rts_info[0].UseCtr,
+           (unsigned)SC_IDX_AS_UINT(sc_rts_info[0].NextCommandPtr));
+    sc_show_rts("scc_start");
+
+    /* ---- and the four ways it is refused, each a different event ----------------------------- */
+    sc_wire();                                   /* 1. an RTS number out of range */
+    start.Payload.RtsNum = SC_RTS_NUM_C(SC_NUMBER_OF_RTS + 1);
+    SC_StartRtsCmd(&start);
+    sc_show_rts("scc_start_badnum");
+
+    sc_wire();                                   /* 2. DISABLED */
+    sc_rts_loaded(0, 9);
+    sc_rts_info[0].DisabledFlag = true;
+    start.Payload.RtsNum        = SC_RTS_NUM_C(1);
+    SC_StartRtsCmd(&start);
+    sc_show_rts("scc_start_disabled");
+
+    sc_wire();                                   /* 3. not LOADED (idle, i.e. empty) */
+    start.Payload.RtsNum = SC_RTS_NUM_C(1);
+    SC_StartRtsCmd(&start);
+    sc_show_rts("scc_start_empty");
+
+    sc_wire();                                   /* 4. a first command whose length is invalid */
+    (void)sc_rts_put(0, SC_ENTRY_OFFSET_FIRST, 9, SC_PACKET_MAX_SIZE + 1, 1);
+    sc_rts_info[0].RtsStatus    = SC_Status_LOADED;
+    sc_rts_info[0].DisabledFlag = false;
+    start.Payload.RtsNum        = SC_RTS_NUM_C(1);
+    SC_StartRtsCmd(&start);
+    sc_show_rts("scc_start_badlen");
+
+    /* ---- SC_StopRtsCmd ----------------------------------------------------------------------- */
+    sc_wire();
+    sc_rts_loaded(0, 9);
+    start.Payload.RtsNum = SC_RTS_NUM_C(1);
+    SC_StartRtsCmd(&start);
+    stop.Payload.RtsNum = SC_RTS_NUM_C(1);
+    SC_StopRtsCmd(&stop);
+    sc_show_rts("scc_stop");
+    stop.Payload.RtsNum = SC_RTS_NUM_C(SC_NUMBER_OF_RTS + 1);
+    SC_StopRtsCmd(&stop);
+    sc_show_rts("scc_stop_badnum");
+
+    /* ---- SC_DisableRtsCmd and SC_EnableRtsCmd ------------------------------------------------
+     *
+     * Disable sets a FLAG and does not stop a running RTS -- which is the behaviour a reader
+     * would not predict from the name, so the status column is printed beside the flag. */
+    sc_wire();
+    sc_rts_loaded(0, 9);
+    start.Payload.RtsNum = SC_RTS_NUM_C(1);
+    SC_StartRtsCmd(&start);
+    dis.Payload.RtsNum = SC_RTS_NUM_C(1);
+    SC_DisableRtsCmd(&dis);
+    sc_show_rts("scc_disable");
+    ena.Payload.RtsNum = SC_RTS_NUM_C(1);
+    SC_EnableRtsCmd(&ena);
+    sc_show_rts("scc_enable");
+    dis.Payload.RtsNum = SC_RTS_NUM_C(0);
+    SC_DisableRtsCmd(&dis);
+    ena.Payload.RtsNum = SC_RTS_NUM_C(0);
+    SC_EnableRtsCmd(&ena);
+    sc_show_rts("scc_endis_badnum");
+
+    /* ---- the four GROUP commands. INCLUSIVE AT BOTH ENDS -------------------------------------
+     *
+     * A group of 2..3 is RTS numbers 2 and 3, which are indices 1 and 2 -- so columns 0 and 3 of
+     * every line below must NOT move. That is the half a pass over the range cannot assert. */
+    sc_wire();
+    sc_rts_loaded(0, 9);
+    sc_rts_loaded(1, 9);
+    sc_rts_loaded(2, 9);
+    sc_rts_loaded(3, 9);
+    gstart.Payload.FirstRtsNum = SC_RTS_NUM_C(2);
+    gstart.Payload.LastRtsNum  = SC_RTS_NUM_C(3);
+    rc                         = SC_StartRtsGrpCmd(&gstart);
+    printf("scc_grp_start rc=%d\n", (int)rc);
+    sc_show_rts("scc_grp_start");
+
+    gstop.Payload.FirstRtsNum = SC_RTS_NUM_C(2);
+    gstop.Payload.LastRtsNum  = SC_RTS_NUM_C(3);
+    SC_StopRtsGrpCmd(&gstop);
+    sc_show_rts("scc_grp_stop");
+
+    gdis.Payload.FirstRtsNum = SC_RTS_NUM_C(1);
+    gdis.Payload.LastRtsNum  = SC_RTS_NUM_C(2);
+    SC_DisableRtsGrpCmd(&gdis);
+    sc_show_rts("scc_grp_disable");
+
+    gena.Payload.FirstRtsNum = SC_RTS_NUM_C(1);
+    gena.Payload.LastRtsNum  = SC_RTS_NUM_C(2);
+    SC_EnableRtsGrpCmd(&gena);
+    sc_show_rts("scc_grp_enable");
+
+    /* A GROUP WHOSE ENDS ARE REVERSED, and one that runs off the end: both are rejected, and the
+     * reversed one is the pass that shows the test is a RANGE and not a pair of membership
+     * tests. */
+    gstart.Payload.FirstRtsNum = SC_RTS_NUM_C(3);
+    gstart.Payload.LastRtsNum  = SC_RTS_NUM_C(2);
+    SC_StartRtsGrpCmd(&gstart);
+    sc_show_rts("scc_grp_reversed");
+    gstart.Payload.FirstRtsNum = SC_RTS_NUM_C(1);
+    gstart.Payload.LastRtsNum  = SC_RTS_NUM_C(SC_NUMBER_OF_RTS + 1);
+    SC_StartRtsGrpCmd(&gstart);
+    sc_show_rts("scc_grp_overrun");
+
+    /* A GROUP OF ONE: first == last, which the inclusive test must accept. */
+    sc_wire();
+    sc_rts_loaded(1, 9);
+    gstart.Payload.FirstRtsNum = SC_RTS_NUM_C(2);
+    gstart.Payload.LastRtsNum  = SC_RTS_NUM_C(2);
+    SC_StartRtsGrpCmd(&gstart);
+    sc_show_rts("scc_grp_one");
+
+    /* ---- SC_AutoStartRts: IT DOES NOT START AN RTS ------------------------------------------
+     *
+     * **A FIRST VERSION OF THIS PASS ASSERTED THE RTS's STATE AND IT NEVER MOVES.** The name and
+     * the signature (`void SC_AutoStartRts(SC_RtsNum_t)`) both read as "start this RTS now", and
+     * the body does something else entirely: it builds an `SC_StartRtsCmd_t`, sets the message id
+     * to SC_CMD_MID and the function code to SC_START_RTS_CC, and **transmits it on the software
+     * bus back to SC**. The RTS starts later, when SC's own dispatcher receives it.
+     *
+     * So the transcript line was `st=0/0/1/0 ... actctr=0` with a `No subscribers for MsgId
+     * 0x18a9` event above it -- the event being the only thing that said the pass had done
+     * anything at all.
+     *
+     * What this function can be held to is the MESSAGE. A pipe subscribed to SC_CMD_MID receives
+     * it, and the three fields that matter are read back out: the message id, the function code
+     * and the RTS number in the payload. That is the whole of what SC_AutoStartRts decides. */
+    sc_wire();
+    sb_forget_queue_name("SC_AUTO_PIPE");
+    rc = CFE_SB_CreatePipe(&sc_auto_pipe, 4, "SC_AUTO_PIPE");
+    printf("scc_auto_pipe rc=%d\n", (int)rc);
+    rc = CFE_SB_Subscribe(CFE_SB_ValueToMsgId(SC_CMD_MID), sc_auto_pipe);
+    printf("scc_auto_sub rc=%d\n", (int)rc);
+
+    sc_rts_loaded(2, 4);
+    SC_AutoStartRts(SC_RTS_NUM_C(3));
+    sc_rcvd = NULL;
+    rc      = CFE_SB_ReceiveBuffer(&sc_rcvd, sc_auto_pipe, OS_CHECK);
+    if (rc == CFE_SUCCESS && sc_rcvd != NULL)
+    {
+        CFE_SB_MsgId_t      amid = CFE_SB_INVALID_MSG_ID;
+        CFE_MSG_FcnCode_t   acc  = 0;
+        const SC_StartRtsCmd_t *acmd = (const SC_StartRtsCmd_t *)sc_rcvd;
+        CFE_MSG_GetMsgId(&sc_rcvd->Msg, &amid);
+        CFE_MSG_GetFcnCode(&sc_rcvd->Msg, &acc);
+        printf("scc_autostart got=1 mid=0x%04X cc=%d rts=%u\n",
+               (unsigned)CFE_SB_MsgIdToValue(amid), (int)acc,
+               (unsigned)SC_IDNUM_AS_UINT(acmd->Payload.RtsNum));
+    }
+    else
+    {
+        printf("scc_autostart got=0 rc=%d\n", (int)rc);
+    }
+    /* AND THE RTS IS STILL ONLY LOADED, which is the point of the pass. */
+    sc_show_rts("scc_autostart");
+
+    /* The invalid-number arm sends NOTHING and emits an event, so the pipe stays empty -- which
+     * is the assertion that separates the two arms. */
+    SC_AutoStartRts(SC_RTS_NUM_C(0));
+    sc_rcvd = NULL;
+    rc      = CFE_SB_ReceiveBuffer(&sc_rcvd, sc_auto_pipe, OS_CHECK);
+    printf("scc_autostart_badnum sent=%d\n", (int)(rc == CFE_SUCCESS && sc_rcvd != NULL));
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * SC BLOCK 6: sc_atsrq.c's nine.
+ *
+ * `SC_BeginAts(AtsIndex, TimeOffset)` IS THE ONE THAT NEEDS A CLOCK AND DOES NOT NEED THE CLOCK.
+ * It walks the time-sorted list skipping every command whose time tag has already passed, and it
+ * compares against `SC_AppData.CurrentTime` -- a FIELD. `SC_GetCurrentTime` is what fills that
+ * field from cFE, and this block sets it directly, so the skipping behaviour is driven at three
+ * different times over the same loaded ATS without a clock anywhere.
+ *
+ * **THE SKIP COUNT IS THE ASSERTION, AND IT IS WHAT A READER WOULD GET WRONG.** With commands at
+ * times 100, 200 and 300 and CurrentTime at 250, SC_BeginAts starts at the first command whose
+ * time is NOT in the past -- the one at 300 -- and reports two skipped. At CurrentTime 400 every
+ * command is past, nothing is left to run, and it returns false.
+ *
+ * ### THE SWITCH IS THREE FUNCTIONS AND TWO OF THEM ARE NOT COMMANDS
+ *
+ * `SC_SwitchAtsCmd` only sets SwitchPendFlag. `SC_ServiceSwitchPend` is called from the wakeup
+ * path and is what actually performs the switch, through `SC_InlineSwitch`. So a ground operator's
+ * switch command does nothing observable until the next wakeup, and the three are driven in that
+ * order with the flag printed between them. */
+static void sc_ats_three(int ats)
+{
+    /* Three commands at times 100, 200, 300, loaded and indexed. */
+    uint16 off;
+
+    off = sc_ats_put(ats, SC_ENTRY_OFFSET_FIRST, 1, 0, 100, SC_PACKET_MIN_SIZE);
+    off = sc_ats_put(ats, off, 2, 0, 200, SC_PACKET_MIN_SIZE);
+    (void)sc_ats_put(ats, off, 3, 0, 300, SC_PACKET_MIN_SIZE);
+    SC_LoadAts(SC_ATS_IDX_C(ats));
+}
+
+static void sc_show_atp(const char *tag)
+{
+    printf("%s state=%u curr=%u cmd=%u seq=%u pend=%u next=%u cont=%u cmdctr=%u err=%u\n", tag,
+           (unsigned)sc_atp.AtpState, (unsigned)SC_IDNUM_AS_UINT(sc_atp.CurrAtsNum),
+           (unsigned)SC_IDNUM_AS_UINT(sc_atp.CmdNumber),
+           (unsigned)SC_IDX_AS_UINT(sc_atp.TimeIndexPtr), (unsigned)sc_atp.SwitchPendFlag,
+           (unsigned)SC_AppData.NextCmdTime[SC_Process_ATP],
+           (unsigned)SC_OperData.HkPacket.Payload.ContinueAtsOnFailureFlag,
+           (unsigned)SC_OperData.HkPacket.Payload.CmdCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.CmdErrCtr);
+}
+
+static void sc_block_ats_cmds(void)
+{
+    SC_StartAtsCmd_t    sa;
+    SC_StopAtsCmd_t     st;
+    SC_SwitchAtsCmd_t   sw;
+    SC_JumpAtsCmd_t     jp;
+    SC_ContinueAtsOnFailureCmd_t co;
+    SC_AppendAtsCmd_t   ap;
+    bool  ok;
+    int32 rc;
+
+    memset(&sa, 0, sizeof(sa));
+    memset(&st, 0, sizeof(st));
+    memset(&sw, 0, sizeof(sw));
+    memset(&jp, 0, sizeof(jp));
+    memset(&co, 0, sizeof(co));
+    memset(&ap, 0, sizeof(ap));
+
+    /* ---- SC_BeginAts at three different times, over the SAME loaded ATS ---------------------- */
+    sc_wire();
+    sc_ats_three(0);
+    SC_AppData.CurrentTime = 50;
+    ok                     = SC_BeginAts(SC_ATS_IDX_C(0), 0);
+    printf("sca_begin_all ok=%d seq=%u cmd=%u next=%u\n", ok ? 1 : 0,
+           (unsigned)SC_IDX_AS_UINT(sc_atp.TimeIndexPtr),
+           (unsigned)SC_IDNUM_AS_UINT(sc_atp.CmdNumber),
+           (unsigned)SC_AppData.NextCmdTime[SC_Process_ATP]);
+
+    SC_AppData.CurrentTime = 250;
+    ok                     = SC_BeginAts(SC_ATS_IDX_C(0), 0);
+    printf("sca_begin_skip2 ok=%d seq=%u cmd=%u next=%u\n", ok ? 1 : 0,
+           (unsigned)SC_IDX_AS_UINT(sc_atp.TimeIndexPtr),
+           (unsigned)SC_IDNUM_AS_UINT(sc_atp.CmdNumber),
+           (unsigned)SC_AppData.NextCmdTime[SC_Process_ATP]);
+
+    SC_AppData.CurrentTime = 400;
+    ok                     = SC_BeginAts(SC_ATS_IDX_C(0), 0);
+    printf("sca_begin_none ok=%d\n", ok ? 1 : 0);
+
+    /* an invalid index, which is the guard, and an EMPTY ats, which is a different refusal */
+    ok = SC_BeginAts(SC_ATS_IDX_C(SC_NUMBER_OF_ATS), 0);
+    printf("sca_begin_badidx ok=%d\n", ok ? 1 : 0);
+    sc_wire();
+    ok = SC_BeginAts(SC_ATS_IDX_C(0), 0);
+    printf("sca_begin_empty ok=%d\n", ok ? 1 : 0);
+
+    /* ---- SC_StartAtsCmd ---------------------------------------------------------------------- */
+    sc_wire();
+    sc_ats_three(0);
+    SC_AppData.CurrentTime = 50;
+    sa.Payload.AtsNum      = SC_ATS_NUM_C(1);
+    rc                     = SC_StartAtsCmd(&sa);
+    printf("sca_start rc=%d\n", (int)rc);
+    sc_show_atp("sca_start");
+
+    /* ALREADY RUNNING: a second start is refused while the ATP is EXECUTING. */
+    SC_StartAtsCmd(&sa);
+    sc_show_atp("sca_start_busy");
+
+    /* an ATS number out of range, and an ATS with nothing in it */
+    sc_wire();
+    sa.Payload.AtsNum = SC_ATS_NUM_C(SC_NUMBER_OF_ATS + 1);
+    SC_StartAtsCmd(&sa);
+    sc_show_atp("sca_start_badnum");
+    sc_wire();
+    sa.Payload.AtsNum = SC_ATS_NUM_C(1);
+    SC_StartAtsCmd(&sa);
+    sc_show_atp("sca_start_empty");
+
+    /* ---- SC_StopAtsCmd: a BARE COMMAND HEADER, no payload at all ----------------------------- */
+    sc_wire();
+    sc_ats_three(0);
+    SC_AppData.CurrentTime = 50;
+    sa.Payload.AtsNum      = SC_ATS_NUM_C(1);
+    SC_StartAtsCmd(&sa);
+    SC_StopAtsCmd(&st);
+    sc_show_atp("sca_stop");
+    /* and stopping when nothing is running, which is NOT an error */
+    SC_StopAtsCmd(&st);
+    sc_show_atp("sca_stop_idle");
+
+    /* ---- the SWITCH, in the order it really happens ------------------------------------------
+     *
+     * SC_SwitchAtsCmd sets the flag; SC_ServiceSwitchPend performs it on the next wakeup through
+     * SC_InlineSwitch. The flag is printed between the two so the gap is visible. */
+    sc_wire();
+    sc_ats_three(0);
+    sc_ats_three(1);
+    SC_AppData.CurrentTime = 50;
+    sa.Payload.AtsNum      = SC_ATS_NUM_C(1);
+    SC_StartAtsCmd(&sa);
+    SC_SwitchAtsCmd(&sw);
+    sc_show_atp("sca_switch_pend");
+    SC_ServiceSwitchPend();
+    sc_show_atp("sca_switch_done");
+
+    /* SC_InlineSwitch on its own, which is what the ATS command SWITCH uses -- the same switch
+     * from inside the ATS rather than from the ground. */
+    sc_wire();
+    sc_ats_three(0);
+    sc_ats_three(1);
+    SC_AppData.CurrentTime                = 50;
+    sa.Payload.AtsNum                     = SC_ATS_NUM_C(1);
+    SC_StartAtsCmd(&sa);
+    ok = SC_InlineSwitch();
+    printf("sca_inline ok=%d\n", ok ? 1 : 0);
+    sc_show_atp("sca_inline");
+
+    /* A SWITCH WITH NOTHING TO SWITCH TO: ATS B is empty, so the switch is refused and the flag
+     * is cleared rather than left pending. */
+    sc_wire();
+    sc_ats_three(0);
+    SC_AppData.CurrentTime = 50;
+    sa.Payload.AtsNum      = SC_ATS_NUM_C(1);
+    SC_StartAtsCmd(&sa);
+    SC_SwitchAtsCmd(&sw);
+    SC_ServiceSwitchPend();
+    sc_show_atp("sca_switch_empty");
+
+    /* and the SwitchPendFlag path with nothing running at all */
+    sc_wire();
+    SC_ServiceSwitchPend();
+    sc_show_atp("sca_switch_idle");
+    SC_SwitchAtsCmd(&sw);
+    sc_show_atp("sca_switch_notexec");
+
+    /* ---- SC_JumpAtsCmd: the only command that moves the ATS's position by TIME ---------------- */
+    sc_wire();
+    sc_ats_three(0);
+    SC_AppData.CurrentTime = 50;
+    sa.Payload.AtsNum      = SC_ATS_NUM_C(1);
+    SC_StartAtsCmd(&sa);
+    jp.Payload.NewTime = 250;
+    rc                 = SC_JumpAtsCmd(&jp);
+    printf("sca_jump rc=%d\n", (int)rc);
+    sc_show_atp("sca_jump");
+    /* PAST THE END: a jump beyond every command's time stops the ATS. */
+    jp.Payload.NewTime = 9999;
+    SC_JumpAtsCmd(&jp);
+    sc_show_atp("sca_jump_past");
+    /* and a jump with nothing running */
+    sc_wire();
+    jp.Payload.NewTime = 100;
+    SC_JumpAtsCmd(&jp);
+    sc_show_atp("sca_jump_idle");
+
+    /* ---- SC_ContinueAtsOnFailureCmd: a ONE-BYTE payload with a two-byte hole after it --------- */
+    sc_wire();
+    co.Payload.ContinueState = SC_AtsCont_TRUE;
+    rc                       = SC_ContinueAtsOnFailureCmd(&co);
+    printf("sca_cont_true rc=%d flag=%u\n", (int)rc,
+           (unsigned)SC_OperData.HkPacket.Payload.ContinueAtsOnFailureFlag);
+    co.Payload.ContinueState = SC_AtsCont_FALSE;
+    SC_ContinueAtsOnFailureCmd(&co);
+    printf("sca_cont_false flag=%u cmd=%u err=%u\n",
+           (unsigned)SC_OperData.HkPacket.Payload.ContinueAtsOnFailureFlag,
+           (unsigned)SC_OperData.HkPacket.Payload.CmdCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.CmdErrCtr);
+    /* A STATE THAT IS NEITHER: the only validation this command does. */
+    co.Payload.ContinueState = 7;
+    SC_ContinueAtsOnFailureCmd(&co);
+    printf("sca_cont_bad flag=%u cmd=%u err=%u\n",
+           (unsigned)SC_OperData.HkPacket.Payload.ContinueAtsOnFailureFlag,
+           (unsigned)SC_OperData.HkPacket.Payload.CmdCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.CmdErrCtr);
+
+    /* ---- SC_AppendAtsCmd, which now really appends ------------------------------------------- */
+    sc_wire();
+    (void)sc_app_put(SC_ENTRY_OFFSET_FIRST, 9, 0, 900, SC_PACKET_MIN_SIZE);
+    SC_UpdateAppend();
+    sc_ats_three(0);
+    ap.Payload.AtsNum = SC_ATS_NUM_C(1);
+    rc                = SC_AppendAtsCmd(&ap);
+    printf("sca_append rc=%d cmds=%u size=%u arg=%u cmd=%u err=%u\n", (int)rc,
+           (unsigned)sc_ats_info[0].NumberOfCommands, (unsigned)sc_ats_info[0].AtsSize,
+           (unsigned)SC_IDNUM_AS_UINT(SC_OperData.HkPacket.Payload.AppendCmdArg),
+           (unsigned)SC_OperData.HkPacket.Payload.CmdCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.CmdErrCtr);
+
+    /* THE THREE REFUSALS: a bad ATS number, an EMPTY target ATS, and an append table with no
+     * entries in it. The middle one is the arm the stand-in's note said could not be trusted. */
+    ap.Payload.AtsNum = SC_ATS_NUM_C(SC_NUMBER_OF_ATS + 1);
+    SC_AppendAtsCmd(&ap);
+    printf("sca_append_badnum err=%u\n", (unsigned)SC_OperData.HkPacket.Payload.CmdErrCtr);
+    sc_wire();
+    (void)sc_app_put(SC_ENTRY_OFFSET_FIRST, 9, 0, 900, SC_PACKET_MIN_SIZE);
+    SC_UpdateAppend();
+    ap.Payload.AtsNum = SC_ATS_NUM_C(1);
+    SC_AppendAtsCmd(&ap);
+    printf("sca_append_emptyats cmds=%u err=%u\n", (unsigned)sc_ats_info[0].NumberOfCommands,
+           (unsigned)SC_OperData.HkPacket.Payload.CmdErrCtr);
+    sc_wire();
+    sc_ats_three(0);
+    ap.Payload.AtsNum = SC_ATS_NUM_C(1);
+    SC_AppendAtsCmd(&ap);
+    printf("sca_append_emptytbl cmds=%u err=%u\n", (unsigned)sc_ats_info[0].NumberOfCommands,
+           (unsigned)SC_OperData.HkPacket.Payload.CmdErrCtr);
 }
 
 int main(void)
@@ -24219,6 +24789,8 @@ int main(void)
         sc_block_append();
         sc_block_rts();
         sc_block_state();
+        sc_block_cmds();
+        sc_block_ats_cmds();
 
             /* PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after
              * it today but tim_objtab, so both halves agreed and the transcript was green --

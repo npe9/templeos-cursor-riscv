@@ -382,15 +382,18 @@ python3 "$ROOT/tools/cfs/check_shift_parens.py" || exit 1
 #      this, 83 uses between it and its sibling, invisible whenever the adjacent halfword is zero.
 #      The fix is `& 0xFFFF`, which forces a load of the declared width.
 #
-#   2. `ptrarray[i][j]` SCALES THE INNER SUBSCRIPT BY THE OUTER ELEMENT'S SIZE -- eight bytes for
+#   2. `ptrarray[i][j]` SCALED THE INNER SUBSCRIPT BY THE OUTER ELEMENT'S SIZE -- eight bytes for
 #      an array of pointers, whatever the pointee is. Three sc_global.HC accessors had it, and
 #      SC_LoadAts walked the ATS at twice the stride and reported 2 commands where C reported 4.
-#      A TRUE two-dimensional array is fine and is spelled identically, which is why the gate
-#      resolves the declaration instead of matching the text.
+#      **That one is FIXED in host/parser.c**, so the gate counts the sites and refuses nothing;
+#      NASA's one-expression accessors are restored and
+#      tests/exec/cases/e_ptrarray_chained_subscript.hc pins ten forms against a C twin.
 #
-# Behaviourally pinned by tests/exec/cases/e_widening_cast_lvalue.hc and
-# tests/exec/cases/e_ptrarray_chained_subscript.hc. Neither defect is visible to any other gate:
-# the types match, the layouts match, the strings match, and the functions have addresses.
+# Only the first is still a prohibition. Neither was visible to any other gate: the types match,
+# the layouts match, the strings match, and the functions have addresses. The first is pinned by
+# tests/exec/cases/e_widening_cast_lvalue.hc, whose expected values are the DEFECT's and will have
+# to be rewritten the day it is fixed too -- which is the cost of pinning a compiler's mistake and
+# the reason the second one is now pinned the other way round.
 python3 "$ROOT/tools/cfs/check_narrow_cast.py" || exit 1
 
 # --- is it even compiled? -----------------------------------------------------------------------

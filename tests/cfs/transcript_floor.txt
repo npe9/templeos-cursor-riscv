@@ -1,4 +1,4 @@
-5313
+5478
 # THE TRANSCRIPT MUST NOT SHRINK WITHOUT SOMEONE SAYING WHY.
 #
 # The differential gate asserts that the two halves AGREE. It cannot notice that they agree
