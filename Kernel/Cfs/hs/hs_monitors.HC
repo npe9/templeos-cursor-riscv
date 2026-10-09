@@ -163,8 +163,12 @@ U0 HS_MonitorApplications()
           /*
           ** Unset the enabled bit flag
           */
+          // THE PARENTHESES AROUND THE `%` ARE LOAD-BEARING IN HolyC -- see the long note at
+          // the matching line in hs_cmds.HC's HS_AppMonStatusRefresh. `<<` is the tightest
+          // binary level here and the loosest-but-one in C, so dropping NASA's parentheses
+          // silently turns `1 << (i % 32)` into `(1 << i) % 32`.
           HS_AppData.AppMonEnables[TableIndex / HS_BITS_PER_APPMON_ENABLE] &=
-              ~(1 << TableIndex % HS_BITS_PER_APPMON_ENABLE);
+              ~(1 << (TableIndex % HS_BITS_PER_APPMON_ENABLE));
           switch (ActionType) {
             case HS_AMTActType_PROC_RESET:
               CFE_EVS_SendEvent(HS_APPMON_PROC_ERR_EID, CFE_EVS_EventType_ERROR,

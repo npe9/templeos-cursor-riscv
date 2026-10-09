@@ -6743,8 +6743,32 @@ I64 sb_tx_since()
 }
 // The simulated OS's task table: one name, one id, one stored affinity byte. Everything the two
 // affinity commands branch on is a variable here.
+// A NAME THIS STUB WILL ACTUALLY MATCH, EMPTY BY DEFAULT.
+//
+// The stub ignored `task_name` entirely and answered 0x2222 to anything, which was fine for TA --
+// TA passes names out of ground commands and only cares about the return code, steered by
+// ta_getid_rc. It is NOT fine for HS's execution-counter table: the XCT's APP_MAIN and APP_CHILD
+// slots resolve a task name and then read its ExecutionCounter, so with a stub that answers every
+// name with a bogus id, CFE_ES_GetTaskInfo failed and **a resolvable slot and an unresolvable one
+// both printed the 0xFFFFFFFF sentinel**. Two arms of a five-way switch, indistinguishable, under
+// a comment claiming one of them carried a real counter.
+//
+// So this is ADDITIVE and opt-in: empty means "behave exactly as before", which is what TA's
+// block leaves it at and why none of TA's lines move. When HS's block sets it, a matching name
+// resolves to the REAL osal task id -- so GetTaskInfo succeeds and a real counter reaches the
+// housekeeping packet -- and anything else fails, which is the other arm.
+U8 es_task_byname[OS_MAX_API_NAME];
+
 I32 OS_TaskGetIdByName(U32 *task_id, U8 *task_name)
 {
+  if (es_task_byname[0] != '\0') {
+    if (task_name != NULL && !StrCmp(task_name, es_task_byname)) {
+      *task_id = es_os_taskid;
+      return OS_SUCCESS;
+    }
+    *task_id = OS_OBJECT_ID_UNDEFINED;
+    return OS_ERROR;
+  }
   *task_id = 0x2222;
   return ta_getid_rc;
 }
@@ -15073,9 +15097,20 @@ HS_MATEntry_t hs_mat[HS_MAX_MSG_ACT_TYPES];
 I64 hs_pipes_made;
 U32 hs_cmd_pipe, hs_event_pipe, hs_wakeup_pipe;
 
-// The name slot 1 really has, read out of the live table rather than written here, so a fixture
-// change cannot make the resolvable cases silently unresolvable.
+// The names this process really has, read out of the live tables rather than written here, so a
+// fixture change cannot make the resolvable cases silently unresolvable.
+//
+// **THERE ARE TWO, AND THEY ARE DIFFERENT NAMESPACES.** The AMT and the EMT name an APPLICATION
+// (CFE_ES_GetAppIDByName); the XCT's APP_MAIN and APP_CHILD slots name a **TASK**
+// (CFE_ES_GetTaskIDByName). A first version of the housekeeping pass put the app name in an
+// APP_MAIN slot and got the 0xFFFFFFFF sentinel -- which is a perfectly plausible transcript
+// line and says nothing, because the sentinel is also what a NOTYPE slot and an unknown type
+// give. Four of the five resource arms print the same value, so the ONE that does not is the
+// whole assertion.
 U8 hs_real_app[OS_MAX_API_NAME];
+U8 hs_real_task[OS_MAX_API_NAME];
+// A general counter, registered once, so the DEVICE/ISR arm reports a real number too.
+U32 hs_gen_ctr;
 
 // The action types block 1 probes. FILLED AT RUNTIME rather than declared with an initialiser:
 // docs/ records that a static-in-C table becomes a runtime fill in this port and that the
@@ -15146,9 +15181,20 @@ U0 hs_setup()
     psp_io_present = 1;
     StrNCpy(hs_real_app, CFE_ES_Global.AppTable[1].AppName, OS_MAX_API_NAME - 1);
     hs_real_app[OS_MAX_API_NAME - 1] = '\0';
+    StrNCpy(hs_real_task, CFE_ES_Global.TaskTable[ES_CTX_TASK_SLOT].TaskName,
+            OS_MAX_API_NAME - 1);
+    hs_real_task[OS_MAX_API_NAME - 1] = '\0';
+    // ONE general counter for the whole block, set to a distinctive value. Registered here
+    // because CFE_PLATFORM_ES_MAX_GEN_COUNTERS is 8 and a counter per pass would exhaust
+    // them -- the shared-fixture exhaustion docs/ records for CS's and HK's pools.
     S("hs_realapp ");
     S(hs_real_app);
+    S(" task ");
+    S(hs_real_task);
+    S(" genctr=");
+    D(CFE_ES_RegisterGenCounter(&hs_gen_ctr, "HSEXCTR"));
     S("\n");
+    CFE_ES_SetGenCount(hs_gen_ctr, 60606);
     hs_pipes_made = 1;
   }
   HS_AppData.CmdPipe = hs_cmd_pipe;
@@ -15715,6 +15761,1269 @@ U0 hs_block_validate()
   S("\n");
 
   hs_clear_tables();
+}
+
+/*----------------------------------------------------------------------------------------------
+ * BLOCK 4: the three monitors and the CDS writer -- hs_monitors.c's other half.
+ *
+ * THIS IS WHERE HS ACTS. Everything above decides whether a table is well formed; these three
+ * functions reset the processor, restart an application, delete an application, transmit a
+ * message and stop petting the watchdog. The assertions are therefore on SIDE EFFECTS -- a
+ * restart count, a `psp_restart` line, a cleared enable bit, a cooldown -- and only incidentally
+ * on events.
+ *
+ * ### THE COUNTDOWN IS ARMED FROM THE TABLE AND RE-ARMED FROM THE **COUNTER**, NOT THE CLOCK
+ *
+ * HS_AppMonStatusRefresh copies CycleCount into AppMonCheckInCountdown. HS_MonitorApplications
+ * then decrements it on every cycle where the application's execution counter has NOT changed,
+ * and sets it back to CycleCount on every cycle where it HAS. So a one-cycle hiccup resets the
+ * whole countdown -- HS is asking "has this application run at all in the last N cycles", not
+ * "has it run every cycle". Driven below in both directions from the same armed entry.
+ *
+ * ### `1 << 31` IS DRIVEN, AND MONITOR 31 IS THE ONLY WAY TO DRIVE IT
+ *
+ * HS_MAX_MONITORED_APPS is exactly 32, so entry 31 is the one that makes `1 << (31 % 32)` set
+ * the sign bit of a signed int in C -- implementation-defined, and hs_monitors.HC keeps it as
+ * NASA writes it. The pass below arms entry 31 and prints AppMonEnables[0] before and after the
+ * clear, so the bit is observed rather than reasoned about.
+ *
+ * ### THE AMT'S ACTION 3 SENDS AN EVENT AND THE EMT'S ACTION 3 **DELETES THE APPLICATION**
+ *
+ * Same numeric value, two tables, one destructive. Both are driven, from adjacent passes, which
+ * is the only arrangement that makes the asymmetry visible in a transcript.
+ *
+ * ### AND THE HOGGING EVENT FIRES ON `==`, SO A PEGGED CPU REPORTS ONCE
+ *
+ * `CurrentCPUHoggingTime == MaxCPUHoggingTime` -- not `>=`. HS_UTIL_HOGGING_TIMEOUT is 5, so the
+ * fifth consecutive busy sample reports and the sixth, seventh and thousandth do not. The pass
+ * below takes seven samples and exactly one event appears. */
+
+// Arm one AMT entry. Zeroing first matters: NullTerm must be 0 or the validators would reject
+// the table, and these passes reuse slots.
+U0 hs_arm_am(I64 i, U8 *name, U16 cycles, U16 action)
+{
+  MemSet(&hs_amt[i], 0, sizeof(HS_AMTEntry_t));
+  StrNCpy(hs_amt[i].AppName, name, CFE_MISSION_MAX_API_LEN - 1);
+  hs_amt[i].CycleCount = cycles;
+  hs_amt[i].ActionType = action;
+}
+
+// Arm one EMT entry.
+U0 hs_arm_em(I64 i, U8 *name, U16 eid, U16 action)
+{
+  MemSet(&hs_emt[i], 0, sizeof(HS_EMTEntry_t));
+  StrNCpy(hs_emt[i].AppName, name, CFE_MISSION_MAX_API_LEN - 1);
+  hs_emt[i].EventID = eid;
+  hs_emt[i].ActionType = action;
+}
+
+// One AMT monitor state line. The enable bit is printed as a BIT, not as the whole word, because
+// the word is one of 32 bits and a pass that armed a different entry would change it.
+U0 hs_show_am(U8 *tag, I64 i)
+{
+  S(tag);
+  S(" i=");
+  D(i);
+  S(" cd=");
+  D(HS_AppData.AppMonCheckInCountdown[i]);
+  S(" last=");
+  D(HS_AppData.AppMonLastExeCount[i]);
+  S(" en=");
+  D((HS_AppData.AppMonEnables[i / HS_BITS_PER_APPMON_ENABLE] >>
+     i % HS_BITS_PER_APPMON_ENABLE) &
+    1);
+  S(" enword=");
+  D(HS_AppData.AppMonEnables[i / HS_BITS_PER_APPMON_ENABLE]);
+  S("\n");
+}
+
+// TWO CYCLES, NOT ONE, AND THE TRANSCRIPT IS WHAT SAID SO.
+//
+// The property hsm_app_moved1 pins is that the FIRST cycle after HS_AppMonStatusRefresh always
+// sees the execution counter CHANGE -- the refresh zeroed AppMonLastExeCount for every slot and
+// the live counter is not zero. So an entry with CycleCount 1 is RE-ARMED by cycle one and
+// expires on cycle two.
+//
+// A first draft of every action pass below called HS_MonitorApplications once and printed
+// `restarts=0 rp=0 wd=1`, `ctlreq=1`, `exec=0` -- six passes in a row asserting that nothing
+// happened, each of them green, each of them pointless. That is the vacuous shape docs/ records:
+// a driven control whose output is indistinguishable from the function never running. The
+// transcript showed it in one read; the comment I had written above those passes claimed they
+// drove the actions.
+//
+// The unresolvable-name passes are NOT routed through here and must not be: a name that cannot
+// be resolved never takes the "counter moved" branch at all, so one cycle is the whole story and
+// two would expire a second time against an already-zero countdown.
+U0 hs_run_am_to_action()
+{
+  HS_MonitorApplications();
+  HS_MonitorApplications();
+}
+
+// A long-format event message, built the way EVS builds one, so HS_MonitorEvent sees what it
+// would see off its event pipe. Only two fields matter to HS -- PacketID.EventID and
+// PacketID.AppName -- and the rest is zeroed so a translation that read a third field would
+// read a zero on both sides and would NOT be caught here. Named rather than implied.
+CFE_EVS_LongEventTlm_t hs_evt;
+
+U0 hs_make_event(U8 *appname, U16 eid)
+{
+  MemSet(&hs_evt, 0, sizeof(CFE_EVS_LongEventTlm_t));
+  CFE_MSG_Init(&hs_evt.TelemetryHeader.Msg, CFE_SB_ValueToMsgId(CFE_EVS_LONG_EVENT_MSG_MID),
+               sizeof(CFE_EVS_LongEventTlm_t));
+  StrNCpy(hs_evt.Payload.PacketID.AppName, appname, CFE_MISSION_MAX_API_LEN - 1);
+  hs_evt.Payload.PacketID.EventID = eid;
+}
+
+U0 hs_block_monitors()
+{
+  I64 w0;
+  I64 r0;
+  I64 t0;
+  I64 k;
+  I32 util;
+
+  // ---- HS_SetCDSData ----------------------------------------------------------------------
+  //
+  // FOUR FIELDS AND TWO OF THEM ARE CHECKSUMS. The assertion is the arithmetic relation
+  // `x == (uint16)~xNot`, computed here and printed as `ok=`, not the raw values -- a
+  // translation that stored the complement of the WRONG field would produce two plausible
+  // numbers and a zero here.
+  hs_setup();
+
+  // CDS DISABLED: the fields still move and nothing is written. `writes=0` is the witness for
+  // the `if (CDSState == ENABLED)` guard, which has no other observable effect.
+  HS_AppData.CDSState = HS_State_DISABLED;
+  w0 = es_cds_writes;
+  HS_SetCDSData(7, 9);
+  S("hsm_cds_off rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" rpn=");
+  D(HS_AppData.CDSData.ResetsPerformedNot);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S(" mrn=");
+  D(HS_AppData.CDSData.MaxResetsNot);
+  S(" ok=");
+  D(HS_AppData.CDSData.ResetsPerformed == (~HS_AppData.CDSData.ResetsPerformedNot)(U16) &&
+            HS_AppData.CDSData.MaxResets == (~HS_AppData.CDSData.MaxResetsNot)(U16)
+        ? 1
+        : 0);
+  S(" writes=");
+  D(es_cds_writes - w0);
+  S("\n");
+
+  // **ZERO IS THE CASE THAT NEEDS THE CAST.** ~0 as an int is 0xFFFFFFFF; stored in a uint16 it
+  // is 65535, and the comparison must mask or it fails. A translation whose cast relabelled
+  // rather than masked would print ok=0 on exactly this line and nowhere else.
+  HS_SetCDSData(0, 0);
+  S("hsm_cds_zero rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" rpn=");
+  D(HS_AppData.CDSData.ResetsPerformedNot);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S(" mrn=");
+  D(HS_AppData.CDSData.MaxResetsNot);
+  S(" ok=");
+  D(HS_AppData.CDSData.ResetsPerformed == (~HS_AppData.CDSData.ResetsPerformedNot)(U16) &&
+            HS_AppData.CDSData.MaxResets == (~HS_AppData.CDSData.MaxResetsNot)(U16)
+        ? 1
+        : 0);
+  S("\n");
+
+  // AND 0xFFFF, THE OTHER END: the complement is 0, so a reader who assumed the `Not` field is
+  // a flag would see "not performed" on a maximal count.
+  HS_SetCDSData(0xFFFF, 0xFFFF);
+  S("hsm_cds_max rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" rpn=");
+  D(HS_AppData.CDSData.ResetsPerformedNot);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S(" mrn=");
+  D(HS_AppData.CDSData.MaxResetsNot);
+  S("\n");
+
+  // CDS ENABLED WITH A HANDLE THAT IS NOT A REGISTERED CDS. CFE_ES_CopyToCDS fails and
+  // HS_SetCDSData does not look at the return, so the in-memory copy is correct and nothing
+  // persisted. `writes=0` with CDSState ENABLED is what says the failure was swallowed.
+  HS_AppData.CDSState = HS_State_ENABLED;
+  HS_AppData.MyCDSHandle = 0;
+  w0 = es_cds_writes;
+  HS_SetCDSData(2, 5);
+  S("hsm_cds_badhandle rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S(" writes=");
+  D(es_cds_writes - w0);
+  S("\n");
+
+  // ---- HS_MonitorApplications --------------------------------------------------------------
+
+  // THE NULL TABLE EARLY RETURN. Nothing to print but the countdown it did not touch -- so the
+  // assertion is that a value planted before the call survives it. A function that fell
+  // through would decrement it.
+  hs_setup();
+  HS_AppData.AMTablePtr = NULL;
+  HS_AppData.AppMonCheckInCountdown[0] = 44;
+  HS_MonitorApplications();
+  S("hsm_app_nulltbl cd=");
+  D(HS_AppData.AppMonCheckInCountdown[0]);
+  S("\n");
+
+  // A COUNTER THAT MOVES RE-ARMS THE COUNTDOWN. Entry 0 watches the app this process really
+  // has; CFE_ES_IncrementTaskCounter moves its main task's counter between the two calls.
+  //
+  // THE FIRST CALL ALWAYS SEES A CHANGE, because HS_AppMonStatusRefresh zeroes
+  // AppMonLastExeCount for every slot and the live counter is non-zero by now -- which is the
+  // property hs_cmds.HC's header names as what keeps a table load from tripping a monitor.
+  hs_setup();
+  HS_AppData.AMTablePtr = hs_amt;
+  hs_arm_am(0, hs_real_app, 3, HS_AMTActType_EVENT);
+  HS_AppMonStatusRefresh();
+  hs_show_am("hsm_app_armed", 0);
+  HS_MonitorApplications();
+  hs_show_am("hsm_app_moved1", 0);
+  HS_MonitorApplications();
+  hs_show_am("hsm_app_still", 0);
+  CFE_ES_IncrementTaskCounter();
+  HS_MonitorApplications();
+  hs_show_am("hsm_app_moved2", 0);
+
+  // AND NOW LET IT RUN OUT. Three more cycles with no increment takes 3 -> 0 and fires the
+  // EVENT action, which is HS_APPMON_FAIL_ERR_EID and nothing else -- and clears the enable
+  // bit. `en=0` with the event above it is the pair that says the action ran.
+  for (k = 0; k < 3; k++) {
+    HS_MonitorApplications();
+    hs_show_am("hsm_app_down", 0);
+  }
+  // AND A FOURTH CYCLE DOES NOTHING AT ALL: the countdown is 0, so the entry is skipped by the
+  // `!= 0` test and no second event appears. An expired monitor is silent, not repeating.
+  HS_MonitorApplications();
+  hs_show_am("hsm_app_expired", 0);
+
+  // ENTRY 31 AND THE `1 << 31` CLEAR. enword goes from 0x80000000 (2147483648) to 0.
+  hs_setup();
+  HS_AppData.AMTablePtr = hs_amt;
+  hs_arm_am(31, hs_real_app, 1, HS_AMTActType_EVENT);
+  HS_AppMonStatusRefresh();
+  hs_show_am("hsm_app31_armed", 31);
+  hs_run_am_to_action();
+  hs_show_am("hsm_app31_fired", 31);
+
+  // AN UNRESOLVABLE NAME: the ERROR event on the first cycle (countdown == CycleCount) and a
+  // DEBUG event after, and THE COUNTDOWN STILL RUNS OUT -- hs_monitors.HC's header records
+  // that NASA's "not considered an automatic failure (or eventworthy)" is true about events
+  // and not about the countdown. Two cycles, two different event ids, then the action.
+  hs_setup();
+  HS_AppData.AMTablePtr = hs_amt;
+  hs_arm_am(1, "NOSUCHAPP", 2, HS_AMTActType_EVENT);
+  HS_AppMonStatusRefresh();
+  HS_MonitorApplications();
+  hs_show_am("hsm_app_noname1", 1);
+  HS_MonitorApplications();
+  hs_show_am("hsm_app_noname2", 1);
+
+  // THE PROCESSOR RESET ACTION WITH ROOM. ResetsPerformed 0 of 3 -> the reset happens:
+  // `psp_restart 1` appears, ResetsPerformed becomes 1, and **ServiceWatchdogFlag is
+  // DISABLED** -- the most safety-critical assignment in HS. The three witnesses are on one
+  // line and the restart count is the one that cannot be faked by a state write.
+  hs_setup();
+  HS_AppData.AMTablePtr = hs_amt;
+  HS_AppData.CDSState = HS_State_DISABLED; /* keep the CDS out of this assertion */
+  HS_SetCDSData(0, 3);
+  hs_arm_am(2, hs_real_app, 1, HS_AMTActType_PROC_RESET);
+  HS_AppMonStatusRefresh();
+  r0 = es_restarts;
+  t0 = evs_delays;
+  hs_run_am_to_action();
+  S("hsm_app_reset restarts=");
+  D(es_restarts - r0);
+  S(" delays=");
+  D(evs_delays - t0);
+  S(" rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" wd=");
+  D(HS_AppData.ServiceWatchdogFlag);
+  S("\n");
+
+  // AND AT THE LIMIT. ResetsPerformed == MaxResets -> HS_RESET_LIMIT_ERR_EID, no restart, and
+  // **THE WATCHDOG KEEPS BEING SERVICED** -- which is the right answer and is the difference
+  // between a board that stops rebooting and one that reboots forever.
+  hs_setup();
+  HS_AppData.AMTablePtr = hs_amt;
+  HS_AppData.CDSState = HS_State_DISABLED;
+  HS_SetCDSData(3, 3);
+  hs_arm_am(2, hs_real_app, 1, HS_AMTActType_PROC_RESET);
+  HS_AppMonStatusRefresh();
+  r0 = es_restarts;
+  hs_run_am_to_action();
+  S("hsm_app_resetlimit restarts=");
+  D(es_restarts - r0);
+  S(" rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" wd=");
+  D(HS_AppData.ServiceWatchdogFlag);
+  S("\n");
+
+  // THE APPLICATION RESTART ACTION. CFE_ES_RestartApp on a resolvable app sets a control
+  // request rather than restarting anything here, so the witness is the request field -- put
+  // back immediately afterwards, because every later block runs in this same process.
+  hs_setup();
+  HS_AppData.AMTablePtr = hs_amt;
+  hs_arm_am(3, hs_real_app, 1, HS_AMTActType_APP_RESTART);
+  HS_AppMonStatusRefresh();
+  hs_run_am_to_action();
+  S("hsm_app_restart ctlreq=");
+  D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+  S("\n");
+  CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+
+  // AND A RESTART OF AN APP THAT CANNOT BE RESOLVED: two events, the restart one and then
+  // HS_APPMON_NOT_RESTARTED_ERR_EID, because `Status` is still the lookup's failure.
+  hs_setup();
+  HS_AppData.AMTablePtr = hs_amt;
+  hs_arm_am(3, "NOSUCHAPP", 1, HS_AMTActType_APP_RESTART);
+  HS_AppMonStatusRefresh();
+  HS_MonitorApplications();
+  S("hsm_app_restart_noname ctlreq=");
+  D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+  S("\n");
+
+  // THE MESSAGE ACTION. Action type 4 is message index 0 (`ActionType - LAST_NONMSG - 1`), so
+  // the MAT entry below is slot 0 and the arithmetic is what the pass is really testing: an
+  // off-by-one would send a different entry or none.
+  //
+  // THE WITNESSES ARE MsgActExec AND THE COOLDOWN, not an event -- EnableState NOEVENT is
+  // driven in the second half precisely because the event is optional and the SEND is not.
+  hs_setup();
+  HS_AppData.AMTablePtr = hs_amt;
+  HS_AppData.MATablePtr = hs_mat;
+  hs_mat_entry(0, HS_MATState_ENABLED, 4, 0x18A4, sizeof(CFE_MSG_CommandHeader), 1);
+  hs_arm_am(4, hs_real_app, 1, HS_AMTActType_LAST_NONMSG + 1);
+  HS_AppMonStatusRefresh();
+  hs_run_am_to_action();
+  S("hsm_app_msgact exec=");
+  D(HS_AppData.MsgActExec);
+  S(" cool=");
+  D(HS_AppData.MsgActCooldown[0]);
+  S("\n");
+
+  // ON COOLDOWN: the same entry, armed again, does NOT send -- MsgActExec stays where it was.
+  // The cooldown is the state the previous pass left, which is why these two passes share a
+  // setup and the countdown is re-armed by hand instead.
+  hs_arm_am(4, hs_real_app, 1, HS_AMTActType_LAST_NONMSG + 1);
+  HS_AppData.AppMonCheckInCountdown[4] = 1;
+  HS_MonitorApplications();
+  S("hsm_app_msgact_cool exec=");
+  D(HS_AppData.MsgActExec);
+  S(" cool=");
+  D(HS_AppData.MsgActCooldown[0]);
+  S("\n");
+  // **THE LINE ABOVE IS BYTE-IDENTICAL TO hsm_app_msgact's AND THAT IS WHY THIS ONE IS HERE.**
+  // "exec did not move" is exactly what a monitor that never ran also prints. The enable bit
+  // and the countdown are the witnesses that say the action arm DID execute and chose not to
+  // send: cd goes to 0 and en to 0 whatever the cooldown decides. Without this line the
+  // cooldown test asserts nothing.
+  hs_show_am("hsm_app_msgact_cool", 4);
+
+  // A DISABLED MAT ENTRY IS SKIPPED ENTIRELY, so neither the send nor the event happens.
+  hs_setup();
+  HS_AppData.AMTablePtr = hs_amt;
+  HS_AppData.MATablePtr = hs_mat;
+  hs_mat_entry(0, HS_MATState_DISABLED, 0, 0x18A4, sizeof(CFE_MSG_CommandHeader), 1);
+  hs_arm_am(4, hs_real_app, 1, HS_AMTActType_LAST_NONMSG + 1);
+  HS_AppMonStatusRefresh();
+  hs_run_am_to_action();
+  S("hsm_app_msgact_disabled exec=");
+  D(HS_AppData.MsgActExec);
+  S("\n");
+  // Same reason as hsm_app_msgact_cool: exec=0 alone cannot tell a skipped MAT entry from a
+  // monitor that never reached its action.
+  hs_show_am("hsm_app_msgact_disabled", 4);
+
+  // NOEVENT SENDS AND STAYS QUIET. exec moves, no HS_APPMON_MSGACTS_ERR_EID above it.
+  hs_setup();
+  HS_AppData.AMTablePtr = hs_amt;
+  HS_AppData.MATablePtr = hs_mat;
+  hs_mat_entry(0, HS_MATState_NOEVENT, 0, 0x18A4, sizeof(CFE_MSG_CommandHeader), 1);
+  hs_arm_am(4, hs_real_app, 1, HS_AMTActType_LAST_NONMSG + 1);
+  HS_AppMonStatusRefresh();
+  hs_run_am_to_action();
+  S("hsm_app_msgact_noevent exec=");
+  D(HS_AppData.MsgActExec);
+  S("\n");
+  hs_show_am("hsm_app_msgact_noevent", 4);
+
+  // AN ACTION TYPE PAST THE LAST MESSAGE INDEX takes the default arm, computes an index of 8,
+  // fails the `< HS_MAX_MSG_ACT_TYPES` test and does NOTHING -- NASA's comment says "invalid
+  // will be skipped". No event, no send, and the enable bit is cleared anyway.
+  hs_setup();
+  HS_AppData.AMTablePtr = hs_amt;
+  HS_AppData.MATablePtr = hs_mat;
+  hs_arm_am(5, hs_real_app, 1, HS_AMTActType_LAST_NONMSG + HS_MAX_MSG_ACT_TYPES + 1);
+  HS_AppMonStatusRefresh();
+  hs_run_am_to_action();
+  S("hsm_app_msgact_oob exec=");
+  D(HS_AppData.MsgActExec);
+  S("\n");
+  hs_show_am("hsm_app_msgact_oob", 5);
+
+  // ---- HS_MonitorEvent ---------------------------------------------------------------------
+
+  // THE NULL TABLE EARLY RETURN, asserted the same way: a counter that must not move.
+  hs_setup();
+  HS_AppData.EMTablePtr = NULL;
+  hs_make_event(hs_real_app, 42);
+  HS_MonitorEvent(&hs_evt);
+  S("hsm_evt_nulltbl exec=");
+  D(HS_AppData.MsgActExec);
+  S("\n");
+
+  // A MATCHING ID WITH THE WRONG NAME does nothing: HS tests the id first and the name second,
+  // and BOTH must match. The id below is the armed one and the name is not.
+  hs_setup();
+  HS_AppData.EMTablePtr = hs_emt;
+  hs_arm_em(0, hs_real_app, 42, HS_EMTActType_APP_RESTART);
+  hs_make_event("OTHERAPP", 42);
+  HS_MonitorEvent(&hs_evt);
+  S("hsm_evt_idonly ctlreq=");
+  D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+  S("\n");
+
+  // AND A MATCHING NAME WITH THE WRONG ID does nothing either.
+  hs_make_event(hs_real_app, 43);
+  HS_MonitorEvent(&hs_evt);
+  S("hsm_evt_nameonly ctlreq=");
+  D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+  S("\n");
+
+  // BOTH MATCH -> RESTART.
+  hs_make_event(hs_real_app, 42);
+  HS_MonitorEvent(&hs_evt);
+  S("hsm_evt_restart ctlreq=");
+  D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+  S("\n");
+  CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+
+  // **THE EMT'S ACTION 3 DELETES THE APPLICATION**, where the AMT's action 3 sent an event.
+  // Same number, adjacent passes -- see the block comment. The witness is the control
+  // request, put back straight after.
+  hs_setup();
+  HS_AppData.EMTablePtr = hs_emt;
+  hs_arm_em(1, hs_real_app, 77, HS_EMTActType_APP_DELETE);
+  hs_make_event(hs_real_app, 77);
+  HS_MonitorEvent(&hs_evt);
+  S("hsm_evt_delete ctlreq=");
+  D(CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest);
+  S("\n");
+  CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+
+  // THE EVENT MONITOR'S PROCESSOR RESET, with room and then at the limit -- the same pair as
+  // the application monitor's, through a different function, because the two reset paths are
+  // separate code and only one of them was exercised above.
+  hs_setup();
+  HS_AppData.EMTablePtr = hs_emt;
+  HS_AppData.CDSState = HS_State_DISABLED;
+  HS_SetCDSData(1, 3);
+  hs_arm_em(2, hs_real_app, 88, HS_EMTActType_PROC_RESET);
+  hs_make_event(hs_real_app, 88);
+  r0 = es_restarts;
+  HS_MonitorEvent(&hs_evt);
+  S("hsm_evt_reset restarts=");
+  D(es_restarts - r0);
+  S(" rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" wd=");
+  D(HS_AppData.ServiceWatchdogFlag);
+  S("\n");
+
+  hs_setup();
+  HS_AppData.EMTablePtr = hs_emt;
+  HS_AppData.CDSState = HS_State_DISABLED;
+  HS_SetCDSData(3, 3);
+  hs_arm_em(2, hs_real_app, 88, HS_EMTActType_PROC_RESET);
+  hs_make_event(hs_real_app, 88);
+  r0 = es_restarts;
+  HS_MonitorEvent(&hs_evt);
+  S("hsm_evt_resetlimit restarts=");
+  D(es_restarts - r0);
+  S(" rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" wd=");
+  D(HS_AppData.ServiceWatchdogFlag);
+  S("\n");
+
+  // THE EVENT MONITOR'S MESSAGE ACTION, which has its own copy of the index arithmetic and its
+  // own cooldown test. Action HS_EMTActType_LAST_NONMSG + 2 is message index 1, so this also
+  // pins that the two monitors index the SAME table the same way from different action spaces.
+  hs_setup();
+  HS_AppData.EMTablePtr = hs_emt;
+  HS_AppData.MATablePtr = hs_mat;
+  hs_mat_entry(1, HS_MATState_ENABLED, 2, 0x18A5, sizeof(CFE_MSG_CommandHeader), 1);
+  hs_arm_em(3, hs_real_app, 99, HS_EMTActType_LAST_NONMSG + 2);
+  hs_make_event(hs_real_app, 99);
+  HS_MonitorEvent(&hs_evt);
+  S("hsm_evt_msgact exec=");
+  D(HS_AppData.MsgActExec);
+  S(" cool1=");
+  D(HS_AppData.MsgActCooldown[1]);
+  S("\n");
+
+  // ---- HS_MonitorUtilization ---------------------------------------------------------------
+  //
+  // THE AVERAGE ALWAYS DIVIDES BY FOUR AND NEVER COUNTS THE SAMPLES, so the first three
+  // averages after a cold start are a quarter, a half and three quarters of the truth before
+  // it self-corrects on the fourth. Six samples at a constant utilisation show the ramp and
+  // the correction in one place, which is the only way that /4 is distinguishable from a real
+  // running mean.
+  hs_setup();
+  HS_SysMonInit();
+  hs_sim_set_util(4000);
+  for (k = 0; k < 6; k++) {
+    HS_MonitorUtilization();
+    S("hsm_util_ramp k=");
+    D(k);
+    S(" idx=");
+    D(HS_AppData.CurrentCPUUtilIndex);
+    S(" avg=");
+    D(HS_AppData.UtilCpuAvg);
+    S(" peak=");
+    D(HS_AppData.UtilCpuPeak);
+    S("\n");
+  }
+
+  // A SPIKE STAYS IN THE PEAK FOR 64 INTERVALS AND LEAVES THE AVERAGE AFTER FOUR. One high
+  // sample, then four low ones: the average comes back down and the peak does not.
+  hs_sim_set_util(9000);
+  HS_MonitorUtilization();
+  hs_sim_set_util(1000);
+  for (k = 0; k < 4; k++) {
+    HS_MonitorUtilization();
+  }
+  S("hsm_util_spike avg=");
+  D(HS_AppData.UtilCpuAvg);
+  S(" peak=");
+  D(HS_AppData.UtilCpuPeak);
+  S("\n");
+
+  // THE HOGGING EVENT FIRES EXACTLY ONCE. HS_UTIL_HOGGING_TIMEOUT is 5 and the test is `==`,
+  // so seven busy samples give one event -- and `hog=7` is the counter that kept climbing
+  // past the threshold, which is what makes the `==` visible rather than inferred.
+  hs_setup();
+  HS_SysMonInit();
+  HS_AppData.CurrentCPUHogState = HS_State_ENABLED;
+  hs_sim_set_util(9500);
+  for (k = 0; k < 7; k++) {
+    HS_MonitorUtilization();
+  }
+  S("hsm_util_hog7 hog=");
+  D(HS_AppData.CurrentCPUHoggingTime);
+  S(" max=");
+  D(HS_AppData.MaxCPUHoggingTime);
+  S("\n");
+
+  // AND ONE IDLE SAMPLE RESETS THE COUNTER, so the next episode can report again -- five more
+  // busy samples and a SECOND event appears.
+  hs_sim_set_util(1000);
+  HS_MonitorUtilization();
+  S("hsm_util_hogreset hog=");
+  D(HS_AppData.CurrentCPUHoggingTime);
+  S("\n");
+  hs_sim_set_util(9500);
+  for (k = 0; k < 5; k++) {
+    HS_MonitorUtilization();
+  }
+  S("hsm_util_hogagain hog=");
+  D(HS_AppData.CurrentCPUHoggingTime);
+  S("\n");
+
+  // WITH THE HOGGING INDICATOR DISABLED the counter is held at zero even at 100%, and no event
+  // can ever fire -- the `&& CurrentCPUHogState == ENABLED` in the same condition.
+  hs_setup();
+  HS_SysMonInit();
+  HS_AppData.CurrentCPUHogState = HS_State_DISABLED;
+  hs_sim_set_util(10000);
+  for (k = 0; k < 7; k++) {
+    HS_MonitorUtilization();
+  }
+  S("hsm_util_hogoff hog=");
+  D(HS_AppData.CurrentCPUHoggingTime);
+  S(" avg=");
+  D(HS_AppData.UtilCpuAvg);
+  S(" peak=");
+  D(HS_AppData.UtilCpuPeak);
+  S("\n");
+
+  // AN UNKNOWN UTILISATION REPORTS 0xFFFFFFFF IN BOTH FIELDS and does not touch the tracker,
+  // so the peak that was there is GONE from telemetry while still being in the array -- the
+  // next successful sample brings it back. Driven in that order: unknown, then known.
+  hs_setup();
+  HS_AppData.SysMonPspModuleId = 0; /* no device -> HS_SysMonGetCpuUtilization returns -1 */
+  HS_MonitorUtilization();
+  S("hsm_util_unknown avg=");
+  D(HS_AppData.UtilCpuAvg);
+  S(" peak=");
+  D(HS_AppData.UtilCpuPeak);
+  S("\n");
+
+  // AND A UTILISATION ABOVE THE MAXIMUM IS CLAMPED, not rejected. The simulated device cannot
+  // report more than 10000 through the ADC, so this one is driven by poking the tracker's
+  // input directly -- the only line in this block that reaches past the simulation, and it is
+  // here because the clamp is otherwise unreachable.
+  hs_setup();
+  HS_SysMonInit();
+  hs_sim_set_util(10000);
+  HS_MonitorUtilization();
+  util = HS_AppData.UtilCpuPeak;
+  S("hsm_util_clamp peak=");
+  D(util);
+  S(" is_max=");
+  D(util == HS_CPU_UTILIZATION_MAX ? 1 : 0);
+  S("\n");
+
+  hs_setup();
+}
+
+/*----------------------------------------------------------------------------------------------
+ * BLOCK 5: hs_cmds.c -- twelve command handlers, the housekeeping builder and the two refreshers.
+ *
+ * ### THE TEN TOGGLES ARE DRIVEN TWICE EACH, AND THE SECOND CALL IS THE INTERESTING ONE
+ *
+ * Every enable/disable pair has an "is *already*" arm that sends a DIFFERENT event text through
+ * the SAME event id. So the id cannot distinguish them and the text can -- which makes the pair
+ * of transcript lines the assertion, not the `cc=` on either one. And **CmdCount increments on
+ * BOTH arms**: a redundant enable is a successful command, not an error, which is a design
+ * decision that only shows up when the same command is sent twice.
+ *
+ * ### AND THE EVENT-MONITOR PAIR COUNTS ITSELF AT THE END AND STILL RETURNS SUCCESS
+ *
+ * hs_cmds.HC's header records it: these two are the only commands that CAN fail, they report the
+ * failure in CmdErrCount, and they `return CFE_SUCCESS` regardless. Both halves of that are
+ * driven below -- a success with CmdCount moving, and a failure with CmdErrCount moving and the
+ * return still 0. A test that only looked at the return would call them infallible.
+ *
+ * ### HS_SendHkCmd WRITES ~15 FIELDS PLUS A BITMAP PLUS 32 COUNTERS, AND EVERY ONE IS PRINTED
+ *
+ * A 180-byte packet dumped as a blob, or a single `cc=` assertion, would agree on both halves
+ * and prove nothing -- the rule the INIT-function note in docs/ states. So hs_show_hk() names
+ * each field, and the two passes differ in EVERY ONE of them: a default-state pass against a
+ * fully-populated pass with all five status bits set, a loaded XCT, resolvable and unresolvable
+ * EMT names, and an execution counter that really moved.
+ *
+ * ### THE 32 ExeCounts ARE PRINTED AS A FINGERPRINT, NOT AS 32 LINES
+ *
+ * Slots 0..4 are printed individually because they carry the five resource-type outcomes, and
+ * the remaining 27 are summarised as "how many are the 0xFFFFFFFF sentinel". That is enough to
+ * catch a loop that wrote the wrong number of slots or stopped early, and it keeps one pass to
+ * six lines instead of thirty-two. */
+
+// Print every field HS_SendHkCmd writes, named. Three lines because the payload has three
+// natural groups and a 200-character line is unreadable in a diff.
+U0 hs_show_hk(U8 *tag)
+{
+  HS_HkTlm_Payload_t *p = &HS_AppData.HkPacket.Payload;
+  I64 i;
+  I64 sentinels = 0;
+
+  S(tag);
+  S(" cc=");
+  D(p->CmdCount);
+  S(" ec=");
+  D(p->CmdErrCount);
+  S(" appmon=");
+  D(p->CurrentAppMonState);
+  S(" evtmon=");
+  D(p->CurrentEventMonState);
+  S(" alive=");
+  D(p->CurrentAlivenessState);
+  S(" hog=");
+  D(p->CurrentCPUHogState);
+  S(" flags=");
+  D(p->StatusFlags);
+  S(" spare=");
+  D(p->SpareBytes);
+  S("\n");
+  S(tag);
+  S(" rp=");
+  D(p->ResetsPerformed);
+  S(" mr=");
+  D(p->MaxResets);
+  S(" evts=");
+  D(p->EventsMonitoredCount);
+  S(" inval=");
+  D(p->InvalidEventMonCount);
+  S(" enables=");
+  D(p->AppMonEnables[0]);
+  S(" exec=");
+  D(p->MsgActExec);
+  S(" avg=");
+  D(p->UtilCpuAvg);
+  S(" peak=");
+  D(p->UtilCpuPeak);
+  S("\n");
+  for (i = 5; i < HS_MAX_EXEC_CNT_SLOTS; i++) { // slot 5 is NOTYPE in the populated pass
+    if (p->ExeCounts[i] == HS_INVALID_EXECOUNT) {
+      sentinels++;
+    }
+  }
+  S(tag);
+  S(" xc0=");
+  D(p->ExeCounts[0]);
+  S(" xc1=");
+  D(p->ExeCounts[1]);
+  S(" xc2=");
+  D(p->ExeCounts[2]);
+  S(" xc3=");
+  D(p->ExeCounts[3]);
+  S(" xc4=");
+  D(p->ExeCounts[4]);
+  S(" rest_sentinel=");
+  D(sentinels);
+  S("\n");
+}
+
+// The counters and the one state field a toggle moves. Taking the field BY VALUE rather than
+// printing the whole structure keeps one line per command and makes the pair of "transition" and
+// "already" lines line up in a diff.
+U0 hs_show_cmd(U8 *tag, U8 state)
+{
+  S(tag);
+  S(" cc=");
+  D(HS_AppData.CmdCount);
+  S(" ec=");
+  D(HS_AppData.CmdErrCount);
+  S(" state=");
+  D(state);
+  S("\n");
+}
+
+// An 8-byte bare command, which is what eleven of HS's twelve are.
+CFE_SB_Buffer hs_cmdbuf;
+
+U0 hs_make_cmd(U32 mid, U16 cc, I64 len)
+{
+  MemSet(&hs_cmdbuf, 0, sizeof(CFE_SB_Buffer));
+  CFE_MSG_Init(&hs_cmdbuf.Msg, CFE_SB_ValueToMsgId(mid), len);
+  CFE_MSG_SetFcnCode(&hs_cmdbuf.Msg, cc);
+}
+
+// The one command with a payload.
+HS_SetMaxResetsCmd_t hs_maxcmd;
+
+U0 hs_block_cmds()
+{
+  I32 rc;
+  I64 i;
+  U32 save_pipe;
+
+  // ---- HS_ResetCounters and HS_ResetCmd ----------------------------------------------------
+  //
+  // FOUR FIELDS ZEROED AND RunStatus MUST NOT MOVE. The distinctive values go in first so
+  // "zeroed" is distinguishable from "never written", and RunStatus is checked because it is
+  // NOT one of the four and a reset that cleared it would stop HS's main loop.
+  hs_setup();
+  HS_AppData.CmdCount = 11;
+  HS_AppData.CmdErrCount = 22;
+  HS_AppData.EventsMonitoredCount = 33;
+  HS_AppData.MsgActExec = 44;
+  HS_AppData.AlivenessCounter = 55; // NOT one of the four
+  HS_ResetCounters();
+  S("hsc_resetcounters cc=");
+  D(HS_AppData.CmdCount);
+  S(" ec=");
+  D(HS_AppData.CmdErrCount);
+  S(" evts=");
+  D(HS_AppData.EventsMonitoredCount);
+  S(" exec=");
+  D(HS_AppData.MsgActExec);
+  S(" alive=");
+  D(HS_AppData.AlivenessCounter);
+  S(" run=");
+  D(HS_AppData.RunStatus);
+  S("\n");
+
+  // AND HS_ResetCmd DOES NOT INCREMENT CmdCount, which is correct rather than a bug: it calls
+  // HS_ResetCounters, which zeroes it. `cc=0` after a command is the assertion.
+  HS_AppData.CmdCount = 7;
+  rc = HS_ResetCmd(NULL);
+  S("hsc_resetcmd rc=");
+  D(rc);
+  S(" cc=");
+  D(HS_AppData.CmdCount);
+  S("\n");
+
+  // ---- HS_NoopCmd --------------------------------------------------------------------------
+  hs_setup();
+  rc = HS_NoopCmd(NULL);
+  S("hsc_noop rc=");
+  D(rc);
+  S(" cc=");
+  D(HS_AppData.CmdCount);
+  S("\n");
+
+  // ---- the five enable/disable pairs, each driven twice --------------------------------------
+  //
+  // THE APPLICATION MONITOR IS ENABLED BY DEFAULT, so its "disable" is the transition and its
+  // "enable" is the redundant one -- the opposite way round from the event monitor, which is
+  // DISABLED by default. Both orders appear below because the defaults differ, and that is
+  // worth having rather than normalising.
+  hs_setup();
+  rc = HS_DisableAppMonCmd(NULL);
+  hs_show_cmd("hsc_appmon_off", HS_AppData.CurrentAppMonState);
+  rc = HS_DisableAppMonCmd(NULL);
+  hs_show_cmd("hsc_appmon_off_again", HS_AppData.CurrentAppMonState);
+
+  // AND THE ENABLE REFRESHES THE STATUS FIRST. The witness is the countdown: entry 0 is armed
+  // in the table but AppMonCheckInCountdown is zero until a refresh runs, so `cd=` moving from
+  // 0 to 3 is HS_AppMonStatusRefresh having been called from inside the command.
+  HS_AppData.AMTablePtr = hs_amt;
+  hs_arm_am(0, hs_real_app, 3, HS_AMTActType_EVENT);
+  S("hsc_appmon_precd cd=");
+  D(HS_AppData.AppMonCheckInCountdown[0]);
+  S("\n");
+  rc = HS_EnableAppMonCmd(NULL);
+  hs_show_cmd("hsc_appmon_on", HS_AppData.CurrentAppMonState);
+  S("hsc_appmon_postcd cd=");
+  D(HS_AppData.AppMonCheckInCountdown[0]);
+  S("\n");
+  rc = HS_EnableAppMonCmd(NULL);
+  hs_show_cmd("hsc_appmon_on_again", HS_AppData.CurrentAppMonState);
+
+  hs_setup();
+  rc = HS_DisableAlivenessCmd(NULL);
+  hs_show_cmd("hsc_alive_off", HS_AppData.CurrentAlivenessState);
+  rc = HS_DisableAlivenessCmd(NULL);
+  hs_show_cmd("hsc_alive_off_again", HS_AppData.CurrentAlivenessState);
+  rc = HS_EnableAlivenessCmd(NULL);
+  hs_show_cmd("hsc_alive_on", HS_AppData.CurrentAlivenessState);
+  rc = HS_EnableAlivenessCmd(NULL);
+  hs_show_cmd("hsc_alive_on_again", HS_AppData.CurrentAlivenessState);
+
+  // THE CPU HOG TOGGLE DOES **NOT** RESET CurrentCPUHoggingTime, which hs_cmds.HC's header
+  // names: a hogging episode's count survives a disable and an enable. Planted before the
+  // disable and read after the enable, so the line is the claim.
+  hs_setup();
+  HS_AppData.CurrentCPUHoggingTime = 3;
+  rc = HS_DisableCpuHogCmd(NULL);
+  hs_show_cmd("hsc_hog_off", HS_AppData.CurrentCPUHogState);
+  rc = HS_DisableCpuHogCmd(NULL);
+  hs_show_cmd("hsc_hog_off_again", HS_AppData.CurrentCPUHogState);
+  rc = HS_EnableCpuHogCmd(NULL);
+  hs_show_cmd("hsc_hog_on", HS_AppData.CurrentCPUHogState);
+  rc = HS_EnableCpuHogCmd(NULL);
+  hs_show_cmd("hsc_hog_on_again", HS_AppData.CurrentCPUHogState);
+  S("hsc_hog_time hog=");
+  D(HS_AppData.CurrentCPUHoggingTime);
+  S("\n");
+
+  // ---- the event-monitor pair, which is the only one that touches the software bus ----------
+
+  // THE REDUNDANT DISABLE FIRST, because the default state is DISABLED: no bus traffic, and
+  // CmdCount moves because the deferred counting sees Status still CFE_SUCCESS.
+  hs_setup();
+  rc = HS_DisableEventMonCmd(NULL);
+  hs_show_cmd("hsc_evtmon_off_already", HS_AppData.CurrentEventMonState);
+
+  // THE ENABLE SUBSCRIBES TO BOTH FORMATS on HS's real event pipe.
+  rc = HS_EnableEventMonCmd(NULL);
+  S("hsc_evtmon_on rc=");
+  D(rc);
+  S(" cc=");
+  D(HS_AppData.CmdCount);
+  S(" ec=");
+  D(HS_AppData.CmdErrCount);
+  S(" state=");
+  D(HS_AppData.CurrentEventMonState);
+  S("\n");
+
+  // AND AGAIN, WHICH IS THE "already" ARM -- no second subscription.
+  rc = HS_EnableEventMonCmd(NULL);
+  hs_show_cmd("hsc_evtmon_on_again", HS_AppData.CurrentEventMonState);
+
+  // THE DISABLE UNSUBSCRIBES.
+  rc = HS_DisableEventMonCmd(NULL);
+  S("hsc_evtmon_off rc=");
+  D(rc);
+  S(" cc=");
+  D(HS_AppData.CmdCount);
+  S(" ec=");
+  D(HS_AppData.CmdErrCount);
+  S(" state=");
+  D(HS_AppData.CurrentEventMonState);
+  S("\n");
+
+  // **THE FAILURE, AND THE RETURN IS STILL CFE_SUCCESS.** An invalid pipe id makes
+  // CFE_SB_SubscribeEx refuse, so HS_EVENTMON_LONG_SUB_EID fires, CmdErrCount moves, the state
+  // stays DISABLED -- and `rc=0`. That combination is upstream's design and the reason these
+  // two commands are the only ones whose return value lies.
+  hs_setup();
+  save_pipe = HS_AppData.EventPipe;
+  HS_AppData.EventPipe = 0xFFFFFFFF;
+  rc = HS_EnableEventMonCmd(NULL);
+  S("hsc_evtmon_on_badpipe rc=");
+  D(rc);
+  S(" is_success=");
+  D(rc == CFE_SUCCESS ? 1 : 0);
+  S(" cc=");
+  D(HS_AppData.CmdCount);
+  S(" ec=");
+  D(HS_AppData.CmdErrCount);
+  S(" state=");
+  D(HS_AppData.CurrentEventMonState);
+  S("\n");
+
+  // AND THE DISABLE'S FAILURE, which needs the state forced to ENABLED first because the
+  // "already disabled" arm would otherwise short-circuit it.
+  HS_AppData.CurrentEventMonState = HS_State_ENABLED;
+  rc = HS_DisableEventMonCmd(NULL);
+  S("hsc_evtmon_off_badpipe rc=");
+  D(rc);
+  S(" is_success=");
+  D(rc == CFE_SUCCESS ? 1 : 0);
+  S(" cc=");
+  D(HS_AppData.CmdCount);
+  S(" ec=");
+  D(HS_AppData.CmdErrCount);
+  S(" state=");
+  D(HS_AppData.CurrentEventMonState);
+  S("\n");
+  HS_AppData.EventPipe = save_pipe;
+
+  // ---- the two CDS commands ----------------------------------------------------------------
+
+  // HS_SetMaxResetsCmd IS HS'S ONLY COMMAND WITH A PAYLOAD and it is NOT range checked -- 0
+  // means "never reset again" and 65535 is accepted. Both are driven, and the event text
+  // reports what was STORED rather than what was asked for.
+  hs_setup();
+  HS_AppData.CDSState = HS_State_DISABLED;
+  HS_SetCDSData(2, 3);
+  MemSet(&hs_maxcmd, 0, sizeof(HS_SetMaxResetsCmd_t));
+  hs_maxcmd.Payload.MaxResets = 9;
+  rc = HS_SetMaxResetsCmd(&hs_maxcmd);
+  S("hsc_setmax rc=");
+  D(rc);
+  S(" cc=");
+  D(HS_AppData.CmdCount);
+  S(" rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S(" mrn=");
+  D(HS_AppData.CDSData.MaxResetsNot);
+  S("\n");
+
+  // ZERO: accepted, and it disarms every reset action in both monitors.
+  hs_maxcmd.Payload.MaxResets = 0;
+  rc = HS_SetMaxResetsCmd(&hs_maxcmd);
+  S("hsc_setmax_zero rc=");
+  D(rc);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S(" mrn=");
+  D(HS_AppData.CDSData.MaxResetsNot);
+  S("\n");
+
+  hs_maxcmd.Payload.MaxResets = 0xFFFF;
+  rc = HS_SetMaxResetsCmd(&hs_maxcmd);
+  S("hsc_setmax_max rc=");
+  D(rc);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S(" mrn=");
+  D(HS_AppData.CDSData.MaxResetsNot);
+  S("\n");
+
+  // **HS_ResetResetsPerformedCmd RE-ARMS HS'S WILLINGNESS TO RESET THE PROCESSOR**, which is
+  // the whole point of the command and is invisible in its name. MaxResets is preserved and
+  // ResetsPerformed goes to zero, so the `<` test in both monitors starts passing again.
+  HS_SetCDSData(3, 3);
+  rc = HS_ResetResetsPerformedCmd(NULL);
+  S("hsc_resetresets rc=");
+  D(rc);
+  S(" rp=");
+  D(HS_AppData.CDSData.ResetsPerformed);
+  S(" rpn=");
+  D(HS_AppData.CDSData.ResetsPerformedNot);
+  S(" mr=");
+  D(HS_AppData.CDSData.MaxResets);
+  S("\n");
+
+  // ---- the two refreshers ------------------------------------------------------------------
+
+  // HS_AppMonStatusRefresh WITH A MIXED TABLE. Four entries: one armed, one with a zero cycle
+  // count, one with NOACT, one armed at index 31. The bitmap afterwards is the assertion --
+  // bits 0 and 31 set, 1 and 2 clear -- and AppMonLastExeCount is zeroed for ALL of them
+  // including the unused ones, which is the property that keeps a table load from tripping a
+  // monitor on the next cycle.
+  hs_setup();
+  HS_AppData.AMTablePtr = hs_amt;
+  hs_arm_am(0, hs_real_app, 3, HS_AMTActType_EVENT);
+  hs_arm_am(1, hs_real_app, 0, HS_AMTActType_EVENT);        // zero cycles -> not enabled
+  hs_arm_am(2, hs_real_app, 5, HS_AMTActType_NOACT);        // no action   -> not enabled
+  hs_arm_am(31, hs_real_app, 7, HS_AMTActType_APP_RESTART); // the top bit
+  for (i = 0; i < HS_MAX_MONITORED_APPS; i++) {
+    HS_AppData.AppMonLastExeCount[i] = 0xDEAD; // must be zeroed for every slot
+  }
+  HS_AppData.AppMonEnables[0] = 0xFFFFFFFF; // must be cleared before the bits are set
+  HS_AppMonStatusRefresh();
+  S("hsc_amrefresh enables=");
+  D(HS_AppData.AppMonEnables[0]);
+  S(" cd0=");
+  D(HS_AppData.AppMonCheckInCountdown[0]);
+  S(" cd1=");
+  D(HS_AppData.AppMonCheckInCountdown[1]);
+  S(" cd2=");
+  D(HS_AppData.AppMonCheckInCountdown[2]);
+  S(" cd31=");
+  D(HS_AppData.AppMonCheckInCountdown[31]);
+  S(" last0=");
+  D(HS_AppData.AppMonLastExeCount[0]);
+  S(" last5=");
+  D(HS_AppData.AppMonLastExeCount[5]);
+  S(" last31=");
+  D(HS_AppData.AppMonLastExeCount[31]);
+  S("\n");
+
+  // HS_MsgActsStatusRefresh clears all eight cooldowns. Planted non-zero first.
+  for (i = 0; i < HS_MAX_MSG_ACT_TYPES; i++) {
+    HS_AppData.MsgActCooldown[i] = 9 + i;
+  }
+  HS_MsgActsStatusRefresh();
+  S("hsc_marefresh c0=");
+  D(HS_AppData.MsgActCooldown[0]);
+  S(" c3=");
+  D(HS_AppData.MsgActCooldown[3]);
+  S(" c7=");
+  D(HS_AppData.MsgActCooldown[7]);
+  S("\n");
+
+  // ---- HS_SendHkCmd ------------------------------------------------------------------------
+
+  // THE DEFAULT-STATE PASS. Nothing loaded, nothing counted, no tables -- so AppMonLoaded,
+  // EventMonLoaded, ExeCountState, MsgActsState and CDSState are all ENABLED from hs_setup()
+  // and all five status bits are therefore SET. That is not what a reader expects from a
+  // "default" pass and it is exactly what hs_cmds.c computes: the flags report the STATE
+  // fields, which start enabled and are cleared by failures.
+  hs_setup();
+  HS_SendHkCmd(NULL);
+  hs_show_hk("hsc_hk_default");
+
+  // **EVERY FLAG CLEARED**, which needs all five state fields disabled -- and no two of them
+  // are set by the same thing, so this is the pass that pins which bit comes from which
+  // field. flags=0 against flags=31 above.
+  hs_setup();
+  HS_AppData.ExeCountState = HS_State_DISABLED;
+  HS_AppData.MsgActsState = HS_State_DISABLED;
+  HS_AppData.AppMonLoaded = HS_State_DISABLED;
+  HS_AppData.EventMonLoaded = HS_State_DISABLED;
+  HS_AppData.CDSState = HS_State_DISABLED;
+  HS_SendHkCmd(NULL);
+  hs_show_hk("hsc_hk_noflags");
+
+  // AND ONE BIT AT A TIME, so a swapped pair of constants is visible. Five passes, five
+  // distinct flag values: 1, 2, 4, 8, 16. A single all-set pass could not tell them apart.
+  for (i = 0; i < 5; i++) {
+    hs_setup();
+    HS_AppData.ExeCountState = HS_State_DISABLED;
+    HS_AppData.MsgActsState = HS_State_DISABLED;
+    HS_AppData.AppMonLoaded = HS_State_DISABLED;
+    HS_AppData.EventMonLoaded = HS_State_DISABLED;
+    HS_AppData.CDSState = HS_State_DISABLED;
+    switch (i) {
+      case 0:
+        HS_AppData.ExeCountState = HS_State_ENABLED;
+        break;
+      case 1:
+        HS_AppData.MsgActsState = HS_State_ENABLED;
+        break;
+      case 2:
+        HS_AppData.AppMonLoaded = HS_State_ENABLED;
+        break;
+      case 3:
+        HS_AppData.EventMonLoaded = HS_State_ENABLED;
+        break;
+      default:
+        HS_AppData.CDSState = HS_State_ENABLED;
+        break;
+    }
+    // THE XCT POINTER IS LEFT NULL, so the ExeCountState bit can be set without the
+    // execution-counter loop running -- the two are independent and this pass is about the
+    // flag alone.
+    HS_SendHkCmd(NULL);
+    S("hsc_hk_bit");
+    D(i);
+    S(" flags=");
+    D(HS_AppData.HkPacket.Payload.StatusFlags);
+    S("\n");
+  }
+
+  /* THE POPULATED PASS. Every field carries a distinct value and the five resource types are
+   * all present in the XCT:
+   *
+   *   slot 0  APP_MAIN   with a resolvable TASK name  -> a real execution counter
+   *   slot 1  APP_CHILD  with a name nothing has      -> the sentinel
+   *   slot 2  DEVICE     with a registered counter    -> 60606
+   *   slot 3  ISR        with a name nothing has      -> the sentinel
+   *   slot 4  type 9                                  -> the sentinel AND a DEBUG event
+   *   slot 5  NOTYPE                                  -> the sentinel, no lookup at all
+   *
+   * So the five arms of the resource switch are distinguishable, which they were NOT until the
+   * task lookup became name-aware -- see es_task_byname.
+   *
+   * AND THE EMT CARRIES ONE RESOLVABLE AND TWO UNRESOLVABLE NAMES, so InvalidEventMonCount is
+   * 2 -- recounted from scratch on every housekeeping cycle, which is why it is a count and
+   * not a flag. */
+  hs_setup();
+  HS_AppData.XCTablePtr = hs_xct;
+  HS_AppData.EMTablePtr = hs_emt;
+  HS_AppData.CmdCount = 3;
+  HS_AppData.CmdErrCount = 4;
+  HS_AppData.EventsMonitoredCount = 1234;
+  HS_AppData.MsgActExec = 56;
+  HS_AppData.UtilCpuAvg = 4321;
+  HS_AppData.UtilCpuPeak = 8765;
+  HS_AppData.CDSState = HS_State_DISABLED;
+  HS_SetCDSData(2, 7);
+  HS_AppData.AppMonEnables[0] = 0x80000001;
+
+  MemSet(hs_xct, 0, sizeof(HS_XCTEntry_t) * HS_MAX_EXEC_CNT_SLOTS);
+  // FROM HERE THE TASK-NAME LOOKUP IS NAME-AWARE -- see es_task_byname's declaration. Without
+  // it slot 0 and slot 1 below both print the sentinel and the pass claims a distinction it
+  // cannot make. Cleared at the end of the block so nothing after it is affected.
+  StrNCpy(es_task_byname, hs_real_task, OS_MAX_API_NAME - 1);
+  // A TASK name, not an app name -- see hs_real_task's declaration.
+  hs_xct[0].ResourceType = HS_XCTResType_APP_MAIN;
+  StrNCpy(hs_xct[0].ResourceName, hs_real_task, CFE_MISSION_MAX_API_LEN - 1);
+  hs_xct[1].ResourceType = HS_XCTResType_APP_CHILD;
+  StrNCpy(hs_xct[1].ResourceName, "NOSUCHTASK", CFE_MISSION_MAX_API_LEN - 1);
+  // A REGISTERED general counter, so the DEVICE arm reports 60606 and not the sentinel. This
+  // and slot 0 are the only two slots in the pass whose value is not 0xFFFFFFFF, which is what
+  // makes the other three mean anything.
+  hs_xct[2].ResourceType = HS_XCTResType_DEVICE;
+  StrNCpy(hs_xct[2].ResourceName, "HSEXCTR", CFE_MISSION_MAX_API_LEN - 1);
+  // AND AN ISR SLOT WHOSE NAME NOTHING HAS, which is the OTHER half of the same arm: the name
+  // lookup fails and CFE_ES_GetGenCount is never reached.
+  hs_xct[3].ResourceType = HS_XCTResType_ISR;
+  StrNCpy(hs_xct[3].ResourceName, "NOSUCHCTR", CFE_MISSION_MAX_API_LEN - 1);
+  hs_xct[4].ResourceType = 9; // unknown -> the sentinel AND a DEBUG event
+  // NOTYPE goes in slot 5, which hs_show_hk counts in `rest_sentinel` rather than printing --
+  // it is the one arm that does nothing at all and the sentinel is its whole observable.
+  hs_xct[5].ResourceType = HS_XCTResType_NOTYPE;
+
+  MemSet(hs_emt, 0, sizeof(HS_EMTEntry_t) * HS_MAX_MONITORED_EVENTS);
+  // ANY NON-NOACT ACTION WILL DO: HS_SendHkCmd only RESOLVES the name and never takes the
+  // action, so the value chosen here cannot affect the count. APP_RESTART rather than a
+  // hypothetical HS_EMTActType_EVENT, which DOES NOT EXIST -- the EMT's action 3 is
+  // APP_DELETE, and a first draft of this pass named an AMT constant that has no EMT twin.
+  hs_arm_em(0, hs_real_app, 1, HS_EMTActType_APP_RESTART);
+  hs_arm_em(1, "NOSUCHAPP1", 2, HS_EMTActType_APP_RESTART);
+  hs_arm_em(2, "NOSUCHAPP2", 3, HS_EMTActType_APP_RESTART);
+  hs_arm_em(3, "NOSUCHAPP3", 4, HS_EMTActType_NOACT); // NOACT -> never looked up
+
+  HS_SendHkCmd(NULL);
+  hs_show_hk("hsc_hk_full");
+
+  // AND THE SAME TABLE WITH ExeCountState DISABLED: the whole switch is skipped, so ALL
+  // THIRTY-TWO slots are the sentinel including slot 0, which had a real counter a line ago.
+  // `xc0=4294967295` is the witness for the outer `if` rather than for any one arm.
+  HS_AppData.ExeCountState = HS_State_DISABLED;
+  HS_SendHkCmd(NULL);
+  hs_show_hk("hsc_hk_xcoff");
+
+  // AND WITH A NULL XCT POINTER but ExeCountState ENABLED -- the other half of the same `&&`,
+  // which a single pass could not separate.
+  HS_AppData.ExeCountState = HS_State_ENABLED;
+  HS_AppData.XCTablePtr = NULL;
+  HS_SendHkCmd(NULL);
+  hs_show_hk("hsc_hk_xcnull");
+
+  // AND WITH A NULL EMT POINTER: InvalidEventMonCount is 0 and the 16-entry walk is skipped.
+  // Zero is also what a clean table gives, so the PREVIOUS pass's 2 is what makes this one
+  // mean anything -- the pair, not the line.
+  HS_AppData.EMTablePtr = NULL;
+  HS_SendHkCmd(NULL);
+  hs_show_hk("hsc_hk_emtnull");
+
+  /* ---- HS_AcquirePointers, failure arms only ------------------------------------------------
+   *
+   * ALL FOUR HANDLES ARE INVALID HERE, so every CFE_TBL_GetAddress fails and the four failure
+   * arms run -- which is three different guard conditions and one bus interaction. The
+   * SUCCESS arms need four registered tables and are driven in hs_block_app, after HS_TblInit
+   * has made them.
+   *
+   * THE AMT AND EMT ARMS REPORT ON `loaded || enabled` AND THE OTHER TWO ON `enabled` ALONE,
+   * so the first pass below has everything enabled (four error events) and the second has the
+   * two monitors DISABLED-but-LOADED, which reports for AMT and EMT and is SILENT for MAT and
+   * XCT. That asymmetry is the content of the function. */
+  hs_setup();
+  HS_AppData.CurrentEventMonState = HS_State_ENABLED; // so the EMT arm unsubscribes
+  HS_AcquirePointers();
+  S("hsc_acq_allfail appmon=");
+  D(HS_AppData.CurrentAppMonState);
+  S(" amload=");
+  D(HS_AppData.AppMonLoaded);
+  S(" evtmon=");
+  D(HS_AppData.CurrentEventMonState);
+  S(" emload=");
+  D(HS_AppData.EventMonLoaded);
+  S(" mat=");
+  D(HS_AppData.MsgActsState);
+  S(" xct=");
+  D(HS_AppData.ExeCountState);
+  S("\n");
+
+  // A SECOND CALL IS SILENT FOR ALL FOUR, because the first one cleared every guard. Four
+  // events then none: that is what "to prevent redundant reporting" buys, and it is only
+  // visible as the absence of events between these two lines.
+  HS_AcquirePointers();
+  S("hsc_acq_again appmon=");
+  D(HS_AppData.CurrentAppMonState);
+  S(" amload=");
+  D(HS_AppData.AppMonLoaded);
+  S(" evtmon=");
+  D(HS_AppData.CurrentEventMonState);
+  S(" emload=");
+  D(HS_AppData.EventMonLoaded);
+  S(" mat=");
+  D(HS_AppData.MsgActsState);
+  S(" xct=");
+  D(HS_AppData.ExeCountState);
+  S("\n");
+
+  /* DISABLED BUT LOADED: the two monitors report, the other two do not.
+   *
+   * **THE PRINTED LINE IS IDENTICAL TO hsc_acq_allfail's AND THE DISCRIMINATOR IS THE EVENTS
+   * ABOVE IT.** All six state fields end at 0 either way, so this pass asserts nothing on its
+   * own -- what it asserts is that the transcript between the previous line and this one
+   * contains the AppMon and EventMon address errors and NOT the MsgActs or ExeCount ones. The
+   * events are compared character for character by the differential, so that is a real
+   * assertion; it is just not on this line, and saying so is the point of this comment. */
+  hs_setup();
+  HS_AppData.CurrentAppMonState = HS_State_DISABLED;
+  HS_AppData.CurrentEventMonState = HS_State_DISABLED;
+  HS_AppData.MsgActsState = HS_State_DISABLED;
+  HS_AppData.ExeCountState = HS_State_DISABLED;
+  HS_AcquirePointers();
+  S("hsc_acq_loadedonly appmon=");
+  D(HS_AppData.CurrentAppMonState);
+  S(" amload=");
+  D(HS_AppData.AppMonLoaded);
+  S(" evtmon=");
+  D(HS_AppData.CurrentEventMonState);
+  S(" emload=");
+  D(HS_AppData.EventMonLoaded);
+  S(" mat=");
+  D(HS_AppData.MsgActsState);
+  S(" xct=");
+  D(HS_AppData.ExeCountState);
+  S("\n");
+
+  // Put the task lookup back to name-blind, so nothing after this block inherits it.
+  es_task_byname[0] = '\0';
+  hs_setup();
 }
 
 I64 main()
@@ -27267,6 +28576,8 @@ I64 main()
     hs_block_utils();
     hs_block_sysmon();
     hs_block_validate();
+    hs_block_monitors();
+    hs_block_cmds();
 
     // PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after it today
     // but tim_objtab, so both halves agreed and the transcript was green -- but the NEXT app's

@@ -333,6 +333,24 @@ python3 "$ROOT/tools/cfs/check_constants.py" || exit 1
 # was right about the ones that were there.
 python3 "$ROOT/tools/cfs/check_defines.py" || exit 1
 
+# --- `<<` IS THE TIGHTEST BINARY OPERATOR IN HolyC AND NEARLY THE LOOSEST IN C ------------------
+# host/parser.c:2729 states it in ParseExp's own comment, after TempleOS's Compiler/CInit.HC. So
+# one line of text means two different things:
+#
+#     1 << i % 32        C: 1 << (i % 32)        HolyC: (1 << i) % 32
+#     a + b << c         C: (a + b) << c         HolyC: a + (b << c)
+#
+# NASA's HS_AppMonStatusRefresh writes `(1 << (i % 32))`, where the inner parentheses are
+# redundant IN C. I removed them as noise, in two files. For i = 0 both readings give 1 -- which
+# is the index any exercise drives first -- and for i = 31 the C reading is 0x80000000 and the
+# HolyC reading is 0x80000000 %% 32 = 0, so an application monitor was silently never enabled.
+# It surfaced only because HS's exercise drives monitor 31 deliberately, as a ONE-LINE transcript
+# divergence that could as easily have been read as a shift-codegen bug.
+#
+# No other gate can see an operator precedence: check_strings and check_members compare the two
+# sides' TEXT, and the compiler is entitled to its own table.
+python3 "$ROOT/tools/cfs/check_shift_parens.py" || exit 1
+
 # --- is it even compiled? -----------------------------------------------------------------------
 # Every gate above this line is driven from SRC_C, so each one measures the translation only
 # where the C half names a counterpart. A .HC file that is complete, parses, and is included by

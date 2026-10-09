@@ -797,9 +797,23 @@ U0 HS_AppMonStatusRefresh()
       HS_AppData.AppMonCheckInCountdown[TableIndex] = 0;
     } else {
       HS_AppData.AppMonCheckInCountdown[TableIndex] = HS_AppData.AMTablePtr[TableIndex].CycleCount;
-      // `1 << 31` IS REACHABLE: HS_MAX_MONITORED_APPS is 32. Kept as NASA writes it.
+      // **NASA'S PARENTHESES ARE NOT REDUNDANT HERE AND I DROPPED THEM ONCE.**
+      //
+      // In C, `%` binds TIGHTER than `<<`, so `1 << TableIndex % 32` already means
+      // `1 << (TableIndex % 32)` and the parentheses look like noise. **In HolyC `<<` is the
+      // TIGHTEST binary level** -- tighter than `*`, `/` and `%` (host/parser.c:2729, after
+      // TempleOS's Compiler/CInit.HC) -- so the same text means `(1 << TableIndex) % 32`.
+      //
+      // For TableIndex 0 both readings give 1, which is why every earlier assertion agreed. For
+      // TableIndex 31 the C reading is 0x80000000 and the HolyC reading is 0x80000000 % 32 = **0**,
+      // so the monitor was never enabled. The exercise drives monitor 31 for exactly this reason
+      // and the transcript diverged on one line. tools/cfs/check_shift_parens.py now refuses an
+      // unparenthesised shift operand anywhere in the port.
+      //
+      // `1 << 31` IS REACHABLE: HS_MAX_MONITORED_APPS is 32. Kept as NASA writes it, parentheses
+      // and all.
       HS_AppData.AppMonEnables[TableIndex / HS_BITS_PER_APPMON_ENABLE] |=
-          1 << TableIndex % HS_BITS_PER_APPMON_ENABLE;
+          1 << (TableIndex % HS_BITS_PER_APPMON_ENABLE);
     }
   }
 }
