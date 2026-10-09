@@ -678,3 +678,47 @@ after a successful copy, `HK_CheckForMissingData` tests for `HK_DATA_NOT_PRESENT
 Harmless to the code and worth recording because the names and the comments disagree, so a reader
 resolving the ambiguity in favour of the comment gets HK's missing-data logic exactly backwards.
 Noted in `Kernel/Cfs/hk/hk_tbl.HC` beside the definitions, with the names called out as the truth.
+
+## 21. HK accepts a copy table whose output offsets destroy the output packet's own header
+
+`HK_CopyTableEntry_t.OutputOffset` is measured from the **start of the output packet, headers
+included** -- the same convention LC's `WatchpointOffset` uses for its input. So an entry with
+`OutputOffset = 0` writes over the CCSDS header that `HK_ProcessNewCopyTable` put there with
+`CFE_MSG_Init`.
+
+`HK_ValidateHkCopyTable` does not notice. Its four checks are: both message ids set, the input
+tail inside `HK_MAX_COMBINED_PACKET_SIZE`, and the output tail inside the same limit. **Nothing
+compares an output offset against the header size.** So the table loads cleanly.
+
+### What then happens is silent
+
+```
+hks_clobber_val rc=0            the validator accepts it
+hks_clobber pres=1 sent_delta=0 the copy ran; the packet was never sent
+```
+
+`HK_SendCombinedHkPacket` finds the output packet by reading its id back out of its own header
+with `CFE_MSG_GetMsgId` and comparing against the id the ground asked for. Once the header is
+overwritten with telemetry bytes the comparison cannot match, so the walk finds nothing and sends
+`HK_UNKNOWN_COMBINED_PACKET_EID` -- an **INFORMATION** event saying the packet "is not found in
+current HK Copy Table".
+
+From the ground that reads as: a copy table that loaded without complaint, a combined packet that
+never arrives, and one information-level event per request as the only clue. The data is being
+copied the whole time, into a buffer nothing will ever transmit.
+
+### Why this is upstream and not a translation artefact
+
+It was found by writing the exercise's copy table with offsets 0 and 4, which is the natural
+choice if you think of `OutputOffset` as an offset into the payload. Every send line read
+`sent=0`. The translation is faithful; the table was wrong, and HK's own validator is what should
+have said so.
+
+A mission is protected only by its copy table being generated correctly -- NASA's own
+`hk_cpy_tbl.tbl` starts its offsets at the header size. The check that would catch a hand-edited
+one is three lines in `HK_ValidateHkCopyTable` and is not there.
+
+### What this port does about it
+
+Keeps it, and drives it: `hks_clobber_val` / `hks_clobber` in the exercise are that table and its
+consequence, so the behaviour is pinned rather than described.

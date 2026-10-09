@@ -13463,6 +13463,1357 @@ U0 lc_block_app()
   S("\n");
 }
 
+// ===================== HK, THE FIFTH cFS APP -- THE EXERCISE =====================
+//
+// HK copies bytes. A copy table entry says "take NumBytes from offset InputOffset of the packet
+// whose id is InputMid and put them at OutputOffset in the packet whose id is OutputMid", and
+// everything else in the application exists to make that one memcpy safe. So this exercise is
+// mostly about BYTES ARRIVING WHERE THEY SHOULD and about the table lifecycle that builds the
+// buffers they arrive in.
+//
+// ### ONE MEMORY POOL FOR THE WHOLE BLOCK, CREATED ONCE
+//
+// HK's output packets come from CFE_ES_PoolCreate over HK_AppData.MemPoolBuffer, and
+// CFE_PLATFORM_ES_MAX_MEMORY_POOLS is 10 with eight CFE_TBL_EarlyInit calls already having taken
+// their share (CS's block records what running out looks like). So hk_setup() creates the pool
+// the FIRST time only and carries the handle across every later reset -- a pool per block would
+// exhaust ES by the fourth one.
+//
+// THE CONSEQUENCE IS THAT THE POOL IS STATEFUL ACROSS BLOCKS and that is deliberate: HK's
+// tear-down path returns buffers with CFE_ES_PutPoolBuf, so a block that builds a table and tears
+// it down must leave the pool where it found it. The exercise checks that directly -- see
+// hkt_pool_balance.
+//
+// ### EVERY MsgId HERE IS CHOSEN NOT TO COLLIDE WITH A REAL SUBSCRIPTION
+//
+// HK_ProcessNewCopyTable SUBSCRIBES to each distinct InputMid on HK's pipe, and MD, MM, CS, LC
+// and six cFE modules have live subscriptions in this process. The inputs below are 0x0810-0x0812
+// and the outputs 0x0890-0x0891, which nothing else in the suite uses -- a collision would make
+// CFE_SB_Subscribe answer a duplicate and the transcript would be about SB's bookkeeping instead
+// of HK's.
+//
+// ### AND THE RUNTIME TABLE'S OutputPktAddr CAN NEVER BE PRINTED
+//
+// It is a real heap address out of HK's pool, and a host pointer and a QEMU guest pointer are
+// never the same number. Every assertion about it is NULL-versus-not-NULL, or a comparison
+// against an address this driver itself obtained -- the rule CS's results tables established and
+// hk_tbl.HC repeats.
+#define HK_EX_IN1  0x0810
+#define HK_EX_IN2  0x0811
+#define HK_EX_IN3  0x0812
+#define HK_EX_OUT1 0x0890
+#define HK_EX_OUT2 0x0891
+
+HK_CopyTableEntry_t hk_cpy[HK_COPY_TABLE_ENTRIES];
+HK_RuntimeTableEntry_t hk_rt[HK_COPY_TABLE_ENTRIES];
+Bool hk_pool_made;
+U64 hk_inbuf8[16]; /* 128 bytes, 8-byte aligned -- see lc_mbuf8's note */
+
+// Fill one copy table entry. Six fields, so a helper keeps the tables below readable and keeps
+// the two halves' field ORDER identical -- a setup that assigned them in a different order would
+// still produce the same table, but a diff in it would be unreadable.
+U0 hk_entry(I64 i, U32 inmid, U16 inoff, U32 outmid, U16 outoff, U16 n) {
+  hk_cpy[i].InputMid     = CFE_SB_ValueToMsgId(inmid);
+  hk_cpy[i].InputOffset  = inoff;
+  hk_cpy[i].OutputMid    = CFE_SB_ValueToMsgId(outmid);
+  hk_cpy[i].OutputOffset = outoff;
+  hk_cpy[i].NumBytes     = n;
+}
+
+U0 hk_clear_tables() {
+  I64 i;
+  MemSet(hk_cpy, 0, sizeof(HK_CopyTableEntry_t) * HK_COPY_TABLE_ENTRIES);
+  MemSet(hk_rt, 0, sizeof(HK_RuntimeTableEntry_t) * HK_COPY_TABLE_ENTRIES);
+  // AN UNUSED ENTRY HAS **NEITHER** MsgId SET, and memset gives exactly that: zero is not a
+  // valid message id, so CFE_SB_IsValidMsgId is false for both and HK_ValidateHkCopyTable's
+  // outer OR skips the entry. Unlike LC, whose unused markers are 0xFF and whose tables
+  // therefore cannot be set up with a memset at all.
+  for (i = 0; i < HK_COPY_TABLE_ENTRIES; ++i) {
+    hk_rt[i].InputMidSubscribed = HK_INPUTMID_NOT_SUBSCRIBED;
+    hk_rt[i].DataPresent        = HK_DATA_NOT_PRESENT;
+  }
+}
+
+// RECLAIM THE ORPHANED MEMORY POOLS, BY OWNERSHIP -- not by size and not by index.
+//
+// CFE_PLATFORM_ES_MAX_MEMORY_POOLS IS **TEN** AND ALL TEN ARE TAKEN by the time HK runs, so
+// CFE_ES_PoolCreate answers CFE_ES_NO_RESOURCE_IDS_AVAILABLE and HK can build no output packets
+// at all -- which would make the copying engine, the combined-packet send, the missing-data check
+// and the tear-down every one unreachable. Measured: a diagnostic over CFE_ES_Global.MemPoolTable
+// printed `POOLDIAG used=10 of 10`.
+//
+// WHERE THEY WENT: every CFE_TBL_EarlyInit creates one, and the oracle calls it EIGHT times
+// across the cFE, MD, MM, CS and LC blocks. Only the LAST one's pool is reachable --
+// CFE_TBL_Global.Buf.PoolHdl is overwritten each time -- so seven are orphaned: no global refers
+// to them, nothing can free them, and they hold a slot each. CS's block records the symptom from
+// the other side ("No free MemPool slots available", every table registration answering
+// 0xC4000001); this is the same shortage reached from a different direction.
+//
+// **SIZE CANNOT IDENTIFY THEM AND NEITHER CAN POSITION.** All ten records are 524,288 bytes --
+// TBL's partition and SB's are both 512 KiB -- so a reclaim keyed on size would delete SB's
+// buffer pool and every CFE_SB_TransmitMsg in the rest of the transcript with it. That is the
+// exact trap docs/CFS_PLAN.md's shared-fixture note records. Two slots happened to read
+// `start=0`, and reclaiming the unused ones would have been the same mistake wearing a different
+// hat: a pool with no allocations is not a pool with no owner.
+//
+// SO THE RULE IS OWNERSHIP: a pool record survives if and only if a live global names it. There
+// are exactly two such globals -- CFE_SB_Global.Mem.PoolHdl, which every transmit allocates from,
+// and CFE_TBL_Global.Buf.PoolHdl, which table services needs for the rest of the run. Everything
+// else in the table is unreachable by construction and is handed back.
+//
+// It is done ONCE, from HK's first setup, and the count is printed so a future block that leaks
+// more can see it.
+U0 hk_reclaim_orphan_pools() {
+  I64 k;
+  I64 freed = 0;
+  I64 kept  = 0;
+  I32 rc;
+  U32 id;
+
+  for (k = 0; k < CFE_PLATFORM_ES_MAX_MEMORY_POOLS; ++k) {
+    id = CFE_ES_Global.MemPoolTable[k].PoolID;
+
+    if (!CFE_ResourceId_IsDefined(id)) {
+      continue;
+    }
+    if (CFE_ResourceId_Equal(id, CFE_SB_Global.Mem.PoolHdl)
+      || CFE_ResourceId_Equal(id, CFE_TBL_Global.Buf.PoolHdl)) {
+      ++kept;
+      continue;
+    }
+    rc = CFE_ES_PoolDelete(id);
+    if (rc >= CFE_SUCCESS) {
+      ++freed;
+    }
+  }
+  S("hk_reclaim freed=");
+  D(freed);
+  S(" kept=");
+  D(kept);
+  S("\n");
+}
+
+U0 hk_setup() {
+  U32 pool;
+  U32 pipe;
+
+  // Carry the pool and the pipe across the reset -- see the block comment.
+  pool = HK_AppData.MemPoolHandle;
+  pipe = HK_AppData.CmdPipe;
+
+  MemSet(&HK_AppData, 0, sizeof(HK_AppData_t));
+  hk_clear_tables();
+
+  HK_AppData.CopyTablePtr    = hk_cpy;
+  HK_AppData.RuntimeTablePtr = hk_rt;
+  // Explicitly invalid, for the reason CS's and LC's setups both record: zero IS a valid cFE
+  // table handle and other apps have registered tables by now.
+  HK_AppData.CopyTableHandle    = CFE_TBL_BAD_TABLE_HANDLE;
+  HK_AppData.RuntimeTableHandle = CFE_TBL_BAD_TABLE_HANDLE;
+  HK_AppData.RunStatus          = CFE_ES_RunStatus_APP_RUN;
+
+  if (!hk_pool_made) {
+    hk_reclaim_orphan_pools();
+    S("hk_pool rc=");
+    D(CFE_ES_PoolCreate(&pool, HK_AppData.MemPoolBuffer,
+                   HK_NUM_BYTES_IN_MEM_POOL));
+    S("\n");
+    sb_forget_queue_name(HK_PIPE_NAME);
+    S("hk_pipe rc=");
+    D(CFE_SB_CreatePipe(&pipe, HK_PIPE_DEPTH, HK_PIPE_NAME));
+    S("\n");
+    hk_pool_made = TRUE;
+  }
+  HK_AppData.MemPoolHandle = pool;
+  HK_AppData.CmdPipe       = pipe;
+}
+
+// One runtime entry, printed without its address. `pkt=1` means OutputPktAddr is non-NULL;
+// `same=` compares it against entry 0's, which is how packet SHARING is asserted without
+// printing a pointer.
+U0 hk_show_rt(U8 *tag, I64 i) {
+  S(tag);
+  S(" i=");
+  D(i);
+  S(" pkt=");
+  D(hk_rt[i].OutputPktAddr != 0 ? 1 : 0);
+  S(" sub=");
+  D(hk_rt[i].InputMidSubscribed);
+  S(" pres=");
+  D(hk_rt[i].DataPresent);
+  S(" same0=");
+  D((hk_rt[i].OutputPktAddr != 0 && hk_rt[i].OutputPktAddr == hk_rt[0].OutputPktAddr) ? 1
+                                              : 0);
+  S("\n");
+}
+
+U0 hk_block_validate() {
+  I64 pass;
+  I32 rc;
+
+  hk_setup();
+
+  // --- HK_ValidateHkCopyTable's FIVE outcomes, one poisoned entry per pass, because it stops
+  // at the FIRST bad entry and reports one problem with its index. A single table with five
+  // faults would produce one event.
+  //
+  // ENTRY 3 IS THE ONE EACH PASS POISONS and entries 0..2 are good, so the reported index is
+  // always 3 -- which is itself the assertion for pass 0, where nothing is wrong and NO event
+  // is sent at all.
+  //
+  // PASS 4 IS THE INTERESTING ONE: a HALF-FILLED entry. NASA's outer test is an OR, so an
+  // entry with an input id and no output id is examined and REFUSED rather than treated as
+  // empty -- which is the right call for a ground operator who typed one id and forgot the
+  // other, and is the opposite of how LC treats a half-filled watchpoint.
+  for (pass = 0; pass < 6; ++pass) {
+    hk_clear_tables();
+    hk_entry(0, HK_EX_IN1, 16, HK_EX_OUT1, 0, 4);
+    hk_entry(1, HK_EX_IN2, 16, HK_EX_OUT1, 4, 4);
+    hk_entry(2, HK_EX_IN3, 16, HK_EX_OUT2, 0, 8);
+    hk_entry(3, HK_EX_IN1, 20, HK_EX_OUT2, 8, 4);
+    switch (pass) {
+      case 0:
+        break; /* nothing wrong */
+      case 1:
+        // output id invalid, input id set -- the half-filled entry, output missing
+        hk_cpy[3].OutputMid = CFE_SB_InvalidMsgId();
+        break;
+      case 2:
+        // input id invalid, output id set -- half-filled the other way
+        hk_cpy[3].InputMid = CFE_SB_InvalidMsgId();
+        break;
+      case 3:
+        // INPUT tail past HK_MAX_COMBINED_PACKET_SIZE (1500)
+        hk_cpy[3].InputOffset = 1400;
+        hk_cpy[3].NumBytes    = 200;
+        break;
+      case 4:
+        // OUTPUT tail past the limit, with the input tail fine -- so the two bounds
+        // checks are distinguishable, which they would not be if one entry broke both
+        hk_cpy[3].OutputOffset = 1499;
+        hk_cpy[3].NumBytes     = 2;
+        break;
+      default:
+        // THE LIMIT IS INCLUSIVE: a tail of exactly 1500 is accepted, 1501 is not.
+        // `EntryTail > HK_MAX_COMBINED_PACKET_SIZE` is NASA's test, so this pass has to
+        // come back CLEAN -- it is the off-by-one the two passes above cannot show.
+        hk_cpy[3].OutputOffset = 1496;
+        hk_cpy[3].NumBytes     = 4;
+        break;
+    }
+    rc = HK_ValidateHkCopyTable(hk_cpy);
+    S("hkv_pass=");
+    D(pass);
+    S(" rc=");
+    D(rc);
+    S("\n");
+  }
+
+  // --- AN ENTIRELY EMPTY TABLE IS VALID and sends no event, which is the same answer as pass
+  // 0 above -- so the two together say the validator does not require any entry to be used.
+  // The return value alone cannot tell them apart; the absence of an event in both is the
+  // evidence.
+  hk_clear_tables();
+  rc = HK_ValidateHkCopyTable(hk_cpy);
+  S("hkv_empty rc=");
+  D(rc);
+  S("\n");
+}
+
+U0 hk_block_tables() {
+  I32 rc;
+  I64 i;
+  I64 built;
+  CFE_SB_Buffer *p;
+  CFE_SB_MsgId m;
+  I64 sz;
+  U64 before0;
+  CFE_ES_MemPoolStats_t st;
+  I64 free_before;
+  I64 free_after;
+  I64 cycle;
+  I64 built_each;
+  I64 n;
+  U8 hk_port_saved;
+  U16 hk_sent_before;
+
+  hk_setup();
+
+  // --- A NULL ARGUMENT IS THE **ONLY** THING EITHER FUNCTION REPORTS BY RETURN VALUE. Both
+  // HK_ProcessNewCopyTable and HK_TearDownOldCopyTable send an event and carry on for every
+  // other failure -- an exhausted pool, a subscription cFE refused -- so these four lines are
+  // the complete set of non-success returns in HK's table lifecycle. Each of the two functions
+  // has its own event id, and each tests BOTH pointers, so four calls cover it.
+  // **THE FOUR EVENTS PRINT THE POINTERS THEMSELVES** -- "CpyTbl = %p, RtTbl = %p" -- and a host
+  // process and a QEMU guest never agree about an address, so these cannot cross the differential
+  // as text. The first run proved it: eight differing lines, 0x1023946c0 against 0x80b020b8, and
+  // every other one of HK's 83 lines matching.
+  //
+  // SO THE EVS OUTPUT PORT IS CLOSED FOR THE DURATION, which is the remedy CS's one-shot block
+  // established: the event is still built, filtered, counted and transmitted, so every line of
+  // EVS_SendEvent runs -- only the human-readable copy is not printed. MessageSendCounter is the
+  // witness, printed per call so a path that stopped sending shows as a zero rather than as a
+  // missing line. The count is TWO per call: the event increments it once, and transmitting the
+  // long-event packet finds no subscriber, which SB reports with an event of its own.
+  hk_port_saved = CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort;
+  hk_sent_before = CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter;
+  CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort = 0;
+  rc = HK_ProcessNewCopyTable(NULL, hk_rt);
+  S("hkt_new_nullcpy rc=");
+  D(rc);
+  S(" sent=");
+  D(CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter - hk_sent_before);
+  S("\n");
+  hk_sent_before = CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter;
+  rc = HK_ProcessNewCopyTable(hk_cpy, NULL);
+  S("hkt_new_nullrt rc=");
+  D(rc);
+  S(" sent=");
+  D(CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter - hk_sent_before);
+  S("\n");
+  hk_sent_before = CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter;
+  rc = HK_TearDownOldCopyTable(NULL, hk_rt);
+  S("hkt_tear_nullcpy rc=");
+  D(rc);
+  S(" sent=");
+  D(CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter - hk_sent_before);
+  S("\n");
+  hk_sent_before = CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter;
+  rc = HK_TearDownOldCopyTable(hk_cpy, NULL);
+  S("hkt_tear_nullrt rc=");
+  D(rc);
+  S(" sent=");
+  D(CFE_EVS_Global.EVS_TlmPkt.Payload.MessageSendCounter - hk_sent_before);
+  S("\n");
+  CFE_EVS_Global.EVS_TlmPkt.Payload.OutputPort = hk_port_saved;
+
+  // --- THE SHARING CASE, WHICH IS WHY BOTH FUNCTIONS ARE O(n^2).
+  //
+  // Four entries over TWO output packets and THREE input packets:
+  //
+  //   entry 0   in 0x0810 -> out 0x0890 at offset 0, 4 bytes
+  //   entry 1   in 0x0811 -> out 0x0890 at offset 4, 4 bytes     same OUTPUT as 0
+  //   entry 2   in 0x0810 -> out 0x0891 at offset 0, 2 bytes     same INPUT as 0
+  //   entry 3   in 0x0812 -> out 0x0890 at offset 8, 8 bytes     same OUTPUT as 0 and 1
+  //
+  // So 0x0890 is named by THREE entries and must be ONE buffer of 16 bytes -- the furthest
+  // byte any of them writes, which is entry 3's 8+8 and not entry 1's 4+4. And 0x0810 is named
+  // by TWO entries, so HK must subscribe to it ONCE and mark both.
+  //
+  // `same0=` on each line is the assertion: entries 0, 1 and 3 must all report 1 (the same
+  // buffer as entry 0) and entry 2 must report 0 (its own). That is how packet sharing is
+  // checked without printing an address.
+  hk_clear_tables();
+  hk_entry(0, HK_EX_IN1, 16, HK_EX_OUT1, 0, 4);
+  hk_entry(1, HK_EX_IN2, 16, HK_EX_OUT1, 4, 4);
+  hk_entry(2, HK_EX_IN1, 16, HK_EX_OUT2, 0, 2);
+  hk_entry(3, HK_EX_IN3, 16, HK_EX_OUT1, 8, 8);
+  rc = HK_ProcessNewCopyTable(hk_cpy, hk_rt);
+  S("hkt_new rc=");
+  D(rc);
+  S("\n");
+  for (i = 0; i < 4; ++i) {
+    hk_show_rt("hkt_new", i);
+  }
+
+  // AND THE PACKET'S SIZE AND MsgId CAME FROM THE TABLE. CFE_MSG_Init was called once with the
+  // computed size, so reading the header back says whether the three-entry measurement found
+  // entry 3's tail (16) rather than entry 1's (8). Reading it through the pointer the runtime
+  // table holds is safe -- the VALUE is never printed, only what it points at.
+  {
+    p  = (CFE_SB_Buffer *)hk_rt[0].OutputPktAddr;
+    m  = CFE_SB_InvalidMsgId();
+    sz = 0;
+    CFE_MSG_GetMsgId(&p->Msg, &m);
+    CFE_MSG_GetSize(&p->Msg, &sz);
+    S("hkt_new_hdr mid=");
+    H4(CFE_SB_MsgIdToValue(m));
+    S(" size=");
+    D(sz);
+    S("\n");
+    p = (CFE_SB_Buffer *)hk_rt[2].OutputPktAddr;
+    CFE_MSG_GetMsgId(&p->Msg, &m);
+    CFE_MSG_GetSize(&p->Msg, &sz);
+    // SIZE 7 AND NOT 2, which is the CCSDS floor rather than anything HK did. Entry 2 asks
+    // for a 2-byte packet and CFE_MSG_Init cannot express one: the primary header's Length
+    // field is the total minus 7, so the smallest representable packet IS 7 bytes. HK passes
+    // its computed size straight through and does not check it, so a copy table naming a
+    // very small output packet gets a buffer of the size it asked for and a HEADER claiming
+    // 7 -- and HK_ProcessIncomingHkData's bounds check is on the INPUT, so nothing notices.
+    // Worth printing because the number looks like an arithmetic error in the size
+    // measurement and is not.
+    S("hkt_new_hdr2 mid=");
+    H4(CFE_SB_MsgIdToValue(m));
+    S(" size=");
+    D(sz);
+    S("\n");
+  }
+
+  // --- PROCESSING THE SAME TABLE AGAIN **LEAKS EVERY BUFFER**, and I had this backwards.
+  //
+  // The comment here used to claim the function was idempotent, reasoning that OutputPktAddr
+  // being non-NULL is the sentinel for "this entry already has a buffer". The sentinel is real
+  // and the conclusion was wrong: HK_ProcessNewCopyTable's **FIRST LOOP ZEROES THE WHOLE
+  // RUNTIME TABLE** --
+  //
+  //     OuterRtEntry->OutputPktAddr      = CFE_ES_MEMADDRESS_C(0);
+  //     OuterRtEntry->InputMidSubscribed = HK_INPUTMID_NOT_SUBSCRIBED;
+  //     OuterRtEntry->DataPresent        = HK_DATA_NOT_PRESENT;
+  //
+  // -- before the sentinel is ever tested. So the second call forgets the addresses, allocates
+  // a fresh set, and the first set is unreachable: nothing refers to it and nothing can free
+  // it. `same_before=0` is what said so, against a comment that predicted 1.
+  //
+  // IT IS NOT A LIVE DEFECT, because HK never does this: HK_CheckStatusOfCopyTable calls
+  // HK_TearDownOldCopyTable FIRST and HK_TableInit runs on a table that has no buffers yet. But
+  // it is exactly why that ordering is not optional, and the leak is measured here rather than
+  // asserted -- the pool's free bytes before and after say how much went missing.
+  {
+    before0 = hk_rt[0].OutputPktAddr;
+
+    MemSet(&st, 0, sizeof(CFE_ES_MemPoolStats_t));
+    CFE_ES_GetMemPoolStats(&st, HK_AppData.MemPoolHandle);
+    free_before = st.NumFreeBytes;
+    rc          = HK_ProcessNewCopyTable(hk_cpy, hk_rt);
+    MemSet(&st, 0, sizeof(CFE_ES_MemPoolStats_t));
+    CFE_ES_GetMemPoolStats(&st, HK_AppData.MemPoolHandle);
+    free_after = st.NumFreeBytes;
+    S("hkt_new_again rc=");
+    D(rc);
+    S(" same_before=");
+    D(hk_rt[0].OutputPktAddr == before0 ? 1 : 0);
+    S(" leaked=");
+    D(free_before > free_after ? 1 : 0);
+    S("\n");
+  }
+
+  // --- THE TEAR-DOWN. It frees the buffers the SECOND build took; the first build's are
+  // already lost, so the pool does NOT return to where this block found it and saying it would
+  // is the mistake above repeated. The balance is measured on a clean pair further down.
+  rc = HK_TearDownOldCopyTable(hk_cpy, hk_rt);
+  S("hkt_tear rc=");
+  D(rc);
+  S("\n");
+  for (i = 0; i < 4; ++i) {
+    hk_show_rt("hkt_tear", i);
+  }
+
+  // --- AND NOW THE BALANCE, ASSERTED THE ONLY WAY THAT CANNOT PASS VACUOUSLY: **TEN BUILD /
+  // TEAR-DOWN CYCLES IN A ROW**, each taking two 1,500-byte output packets out of a 6 KiB pool.
+  //
+  // A FIRST ATTEMPT COMPARED THE POOL'S FREE BYTES BEFORE AND AFTER ONE PAIR and read
+  // `took=0 restored=1` -- no bytes consumed by the build and none returned by the tear-down.
+  // That is not a leak, it is cFE's generic pool RECYCLING from the free list the previous
+  // tear-down populated, so the tail never moves and NumFreeBytes never changes. Which means
+  // the measurement would have read exactly the same if nothing had been allocated at all: a
+  // green number asserting nothing, the shape docs/ records as a vacuous assertion.
+  //
+  // TEN CYCLES CANNOT DO THAT. Three thousand bytes per cycle against a 6 KiB pool means a
+  // tear-down that failed to return even ONE buffer runs the pool dry by the third pass and
+  // `built` stops reading 2. So the assertion is the COUNT, repeated, and it is the same
+  // evidence HK itself depends on -- a copy table can be reloaded for the life of the mission
+  // and the pool has to survive every reload.
+  {
+    built_each = 1;
+
+    hk_clear_tables();
+    hk_entry(0, HK_EX_IN1, 16, HK_EX_OUT1, 0, 1500);
+    hk_entry(1, HK_EX_IN2, 16, HK_EX_OUT2, 0, 1500);
+    for (cycle = 0; cycle < 10; ++cycle) {
+      n = 0;
+      HK_ProcessNewCopyTable(hk_cpy, hk_rt);
+      if (hk_rt[0].OutputPktAddr != 0) {
+        ++n;
+      }
+      if (hk_rt[1].OutputPktAddr != 0) {
+        ++n;
+      }
+      if (n != 2) {
+        built_each = 0;
+      }
+      HK_TearDownOldCopyTable(hk_cpy, hk_rt);
+    }
+    S("hkt_pool_cycles built2_every_time=");
+    D(built_each);
+    S("\n");
+    // AND THE SAME TEN CYCLES WITHOUT THE TEAR-DOWN MUST FAIL, which is the negative control:
+    // if the pool were somehow infinite, or if the tear-down were irrelevant, this would read
+    // 1 as well. It reads 0, and that is what makes the line above mean something.
+    hk_clear_tables();
+    hk_entry(0, HK_EX_IN1, 16, HK_EX_OUT1, 0, 1500);
+    hk_entry(1, HK_EX_IN2, 16, HK_EX_OUT2, 0, 1500);
+    built_each = 1;
+    for (cycle = 0; cycle < 10; ++cycle) {
+      n = 0;
+      HK_ProcessNewCopyTable(hk_cpy, hk_rt);
+      if (hk_rt[0].OutputPktAddr != 0) {
+        ++n;
+      }
+      if (hk_rt[1].OutputPktAddr != 0) {
+        ++n;
+      }
+      if (n != 2) {
+        built_each = 0;
+      }
+    }
+    S("hkt_pool_noteardown built2_every_time=");
+    D(built_each);
+    S("\n");
+    HK_TearDownOldCopyTable(hk_cpy, hk_rt);
+    // Put the four-entry table back for the rebuild check below.
+    hk_clear_tables();
+    hk_entry(0, HK_EX_IN1, 16, HK_EX_OUT1, 0, 4);
+    hk_entry(1, HK_EX_IN2, 16, HK_EX_OUT1, 4, 4);
+    hk_entry(2, HK_EX_IN1, 16, HK_EX_OUT2, 0, 2);
+    hk_entry(3, HK_EX_IN3, 16, HK_EX_OUT1, 8, 8);
+  }
+
+  rc    = HK_ProcessNewCopyTable(hk_cpy, hk_rt);
+  built = 0;
+  for (i = 0; i < 4; ++i) {
+    if (hk_rt[i].OutputPktAddr != 0) {
+      ++built;
+    }
+  }
+  S("hkt_rebuild rc=");
+  D(rc);
+  S(" built=");
+  D(built);
+  S("\n");
+  HK_TearDownOldCopyTable(hk_cpy, hk_rt);
+
+  // --- AN OUTPUT PACKET OF **ZERO** BYTES IS NOT BUILT AT ALL. `if (SizeOfThisPacket > 0)`
+  // guards the allocation, so an entry naming both ids with NumBytes 0 and OutputOffset 0
+  // leaves OutputPktAddr null -- and then HK still SUBSCRIBES to its input, because the
+  // subscription half of the loop is independent of the buffer half. So the entry is live on
+  // the bus and has nowhere to put what arrives, which HK_ProcessIncomingHkData handles by
+  // copying zero bytes to a null pointer plus zero. Driven because it is the one combination
+  // the two halves of that loop can disagree about.
+  hk_clear_tables();
+  hk_entry(0, HK_EX_IN1, 16, HK_EX_OUT1, 0, 0);
+  rc = HK_ProcessNewCopyTable(hk_cpy, hk_rt);
+  S("hkt_zerobytes rc=");
+  D(rc);
+  S("\n");
+  hk_show_rt("hkt_zerobytes", 0);
+  HK_TearDownOldCopyTable(hk_cpy, hk_rt);
+
+  // --- THE POOL EXHAUSTION ARM. HK's pool is 6 KiB and HK_MAX_COMBINED_PACKET_SIZE is 1,500,
+  // so four entries naming four DIFFERENT output packets of 1,500 bytes each is more than it
+  // can hold. HK reports HK_MEM_POOL_MALLOC_FAILED_EID per packet it could not build and
+  // **CARRIES ON** -- the return is still CFE_SUCCESS. That is NASA's documented behaviour
+  // (hk_cfg.HC records the arithmetic) and it is why `built=` is the assertion rather than the
+  // return code: the caller cannot tell a complete load from a partial one.
+  hk_clear_tables();
+  for (i = 0; i < 4; ++i) {
+    hk_entry(i, HK_EX_IN1 + i, 16, HK_EX_OUT1 + i, 0, 1500);
+  }
+  rc    = HK_ProcessNewCopyTable(hk_cpy, hk_rt);
+  built = 0;
+  for (i = 0; i < 4; ++i) {
+    if (hk_rt[i].OutputPktAddr != 0) {
+      ++built;
+    }
+  }
+  // THE COUNT DEPENDS ON THE POOL'S STATE AT THIS POINT AND THAT IS SAID RATHER THAN ASSUMED.
+  // It read 2 before the ten-cycle control above existed and reads 0 after it, because the
+  // deliberately leaky run left the pool drained. Both halves execute the identical sequence so
+  // the number is deterministic -- but the ASSERTION is `rc=0 with built < 4`, not the
+  // particular count: HK reports one HK_MEM_POOL_MALLOC_FAILED_EID per packet it could not
+  // build and still returns CFE_SUCCESS, so the caller cannot tell a complete load from a
+  // partial one. Anyone reordering the block should expect this number to move and should not
+  // read that as a regression.
+  S("hkt_exhaust rc=");
+  D(rc);
+  S(" built=");
+  D(built);
+  S(" of 4\n");
+  HK_TearDownOldCopyTable(hk_cpy, hk_rt);
+}
+
+U0 hk_block_copy() {
+  CFE_SB_Buffer *in;
+  U8 *raw;
+  U8 *out1;
+  I64 i;
+
+  hk_setup();
+  raw = (U8 *)hk_inbuf8;
+  in  = (CFE_SB_Buffer *)hk_inbuf8;
+
+  // --- THE COPYING ENGINE. Three entries drawing from ONE input packet into ONE output
+  // packet, at three different offsets and widths, so the output buffer's bytes say which
+  // entry wrote which span:
+  //
+  //   entry 0   input offset 16, 4 bytes -> output offset 0
+  //   entry 1   input offset 20, 2 bytes -> output offset 8
+  //   entry 2   input offset 24, 1 byte  -> output offset 12
+  //
+  // The gaps matter as much as the spans: output bytes 4..7 and 10..11 are written by NOBODY
+  // and must stay at whatever the buffer held. So the assertion is the whole 16-byte output,
+  // printed as hex, with the untouched bytes in it. A copy that got an offset wrong would move
+  // a span into a gap and both would be visibly wrong.
+  hk_clear_tables();
+  hk_entry(0, HK_EX_IN1, 16, HK_EX_OUT1, 0, 4);
+  hk_entry(1, HK_EX_IN1, 20, HK_EX_OUT1, 8, 2);
+  hk_entry(2, HK_EX_IN1, 24, HK_EX_OUT1, 12, 1);
+  HK_ProcessNewCopyTable(hk_cpy, hk_rt);
+
+  // Poison the output buffer so the gaps are identifiable. HK does NOT clear it -- the buffer
+  // comes from the pool as whatever was last in it -- so a ground system reading a combined
+  // packet reads stale bytes wherever no entry writes. That is HK's behaviour and the poison is
+  // what makes it visible.
+  out1 = (U8 *)hk_rt[0].OutputPktAddr;
+  MemSet(out1, 0xEE, 16);
+
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&in->Msg, CFE_SB_ValueToMsgId(HK_EX_IN1), 32);
+  for (i = 16; i < 32; ++i) {
+    raw[i] = (0x40 + i - 16); /* 40 41 42 ... */
+  }
+  HK_ProcessIncomingHkData(in);
+  S("hkc_out1 ");
+  for (i = 0; i < 16; ++i) {
+    H2(out1[i]);
+  }
+  S("\n");
+  for (i = 0; i < 3; ++i) {
+    hk_show_rt("hkc_copied", i);
+  }
+
+  // --- A PACKET TOO SHORT FOR THE ENTRY. The bounds check is `MessageLength >=
+  // InputOffset + NumBytes`, so a 20-byte packet satisfies entry 0 (16+4) and fails entries 1
+  // (20+2) and 2 (24+1) -- TWO failures, ONE event carrying the count. That is the shape
+  // hk_utils.HC records: MessageErrors is a counter and the event is sent once per input
+  // packet, so a misconfigured table cannot flood the log.
+  //
+  // AND THE INCLUSIVE BOUNDARY IS DRIVEN: entry 0 needs exactly 20 bytes and gets exactly 20,
+  // so it must SUCCEED. An off-by-one in that comparison would make the count 3 instead of 2
+  // and the first four output bytes stale.
+  MemSet(out1, 0xEE, 16);
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&in->Msg, CFE_SB_ValueToMsgId(HK_EX_IN1), 20);
+  for (i = 16; i < 20; ++i) {
+    raw[i] = (0x90 + i - 16);
+  }
+  HK_ProcessIncomingHkData(in);
+  S("hkc_short ");
+  for (i = 0; i < 16; ++i) {
+    H2(out1[i]);
+  }
+  S("\n");
+
+  // --- A PACKET NO ENTRY NAMES. The walk finds nothing, copies nothing, and sends NO EVENT --
+  // which is the difference from LC that hk_dispatch.HC records: LC reports an unreferenced
+  // message id, HK is silent. The assertion is that the output buffer is untouched AND that
+  // DataPresent did not move; the absence of an event is the third witness and it is only
+  // visible as the absence of a line.
+  MemSet(out1, 0xEE, 16);
+  for (i = 0; i < 3; ++i) {
+    hk_rt[i].DataPresent = HK_DATA_NOT_PRESENT;
+  }
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&in->Msg, CFE_SB_ValueToMsgId(0x08FE), 32);
+  HK_ProcessIncomingHkData(in);
+  S("hkc_nomatch out0=");
+  H2(out1[0]);
+  S(" pres0=");
+  D(hk_rt[0].DataPresent);
+  S("\n");
+
+  // --- AND AN ENTRY WHOSE OUTPUT PACKET WAS NEVER BUILT. hkt_zerobytes showed that an entry
+  // with NumBytes 0 gets a subscription and no buffer; here the entry has a real NumBytes but
+  // its packet could not be allocated, which is the pool-exhaustion case HK carries on from.
+  // HK_ProcessIncomingHkData does NOT check OutputPktAddr -- it computes
+  // `DestPtr = 0 + OutputOffset` and memcpy's to it.
+  //
+  // **SO THIS WOULD WRITE THROUGH A NULL POINTER AND THE DRIVER MUST NOT DO IT.** The entry is
+  // set up and then the input packet is made too SHORT, so the bounds check refuses before the
+  // copy -- which exercises the real guard on that path and leaves the null dereference
+  // unreached. That is a deliberate choice and it is named: the combination "live entry, no
+  // buffer, long enough packet" is a latent null write in NASA's code, and a differential that
+  // crashed both halves identically would prove nothing.
+  hk_clear_tables();
+  hk_entry(0, HK_EX_IN2, 16, HK_EX_OUT2, 0, 4);
+  hk_rt[0].OutputPktAddr      = 0;
+  hk_rt[0].InputMidSubscribed = HK_INPUTMID_SUBSCRIBED;
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&in->Msg, CFE_SB_ValueToMsgId(HK_EX_IN2), 8);
+  HK_ProcessIncomingHkData(in);
+  S("hkc_nobuf pres=");
+  D(hk_rt[0].DataPresent);
+  S("\n");
+
+  hk_clear_tables();
+  hk_entry(0, HK_EX_IN1, 16, HK_EX_OUT1, 0, 4);
+  hk_entry(1, HK_EX_IN1, 20, HK_EX_OUT1, 8, 2);
+  hk_entry(2, HK_EX_IN1, 24, HK_EX_OUT1, 12, 1);
+  HK_ProcessNewCopyTable(hk_cpy, hk_rt);
+  HK_TearDownOldCopyTable(hk_cpy, hk_rt);
+}
+
+U0 hk_block_send() {
+  CFE_SB_Buffer *in;
+  U8 *raw;
+  I32 rc;
+  CFE_SB_MsgId missing;
+  I64 i;
+  I64 before;
+
+  hk_setup();
+  raw = (U8 *)hk_inbuf8;
+  in  = (CFE_SB_Buffer *)hk_inbuf8;
+
+  // --- THREE INPUTS FEEDING ONE OUTPUT, so "missing data" has something to be missing.
+  //
+  //   entry 0   in 0x0810 -> out 0x0890 offset 0, 4 bytes
+  //   entry 1   in 0x0811 -> out 0x0890 offset 4, 4 bytes
+  //   entry 2   in 0x0812 -> out 0x0891 offset 0, 4 bytes     a SECOND output packet
+  //
+  // The second output packet is what makes HK_SetFlagsToNotPresent's scope checkable: sending
+  // 0x0890 must clear the flags of entries 0 and 1 and leave entry 2's alone, because two
+  // combined packets can be requested at different rates.
+  // **THE OUTPUT OFFSETS ARE 16 AND 20, NOT 0 AND 4, AND THAT IS A PROPERTY OF HK WORTH
+  // STATING.** OutputOffset is measured from the START OF THE OUTPUT PACKET, headers included
+  // -- exactly as LC's WatchpointOffset is measured from the start of the input buffer. So an
+  // entry writing at offset 0 OVERWRITES THE CCSDS HEADER that HK_ProcessNewCopyTable's
+  // CFE_MSG_Init just wrote, and HK_SendCombinedHkPacket -- which reads the output id back out
+  // of that header with CFE_MSG_GetMsgId -- then matches nothing.
+  //
+  // A FIRST DRAFT OF THIS BLOCK USED OFFSETS 0 AND 4 and every send line read `sent=0` with the
+  // flags uncleared. That is not a translation defect, it is the table being wrong, and NOTHING
+  // IN HK OBJECTS TO IT: HK_ValidateHkCopyTable checks only that the tail fits inside
+  // HK_MAX_COMBINED_PACKET_SIZE, so a copy table that destroys its own output headers loads
+  // cleanly and then silently produces nothing. The hks_clobber lines below drive it on
+  // purpose.
+  //
+  // A CFE_MSG_TelemetryHeader is 16 bytes here (6 primary + 6 secondary + 4 spare), so 16 is
+  // the first payload byte -- which is what NASA's own hk_cpy_tbl.tbl uses.
+  hk_clear_tables();
+  hk_entry(0, HK_EX_IN1, 16, HK_EX_OUT1, 16, 4);
+  hk_entry(1, HK_EX_IN2, 16, HK_EX_OUT1, 20, 4);
+  hk_entry(2, HK_EX_IN3, 16, HK_EX_OUT2, 16, 4);
+  HK_ProcessNewCopyTable(hk_cpy, hk_rt);
+
+  // --- HK_CheckForMissingData ON ITS OWN, before anything has arrived. All three entries are
+  // DATA_NOT_PRESENT, so 0x0890 is missing data and the input id it names must be the FIRST
+  // such entry in table order -- 0x0810, not 0x0811 -- because the loop stops at the first.
+  // hk_utils.HC records that a packet waiting on four subsystems reports whichever is lowest
+  // in the table; this is that assertion with three.
+  missing = CFE_SB_InvalidMsgId();
+  rc      = HK_CheckForMissingData(CFE_SB_ValueToMsgId(HK_EX_OUT1), &missing);
+  S("hks_miss_none rc=");
+  D(rc);
+  S(" which=");
+  H4(CFE_SB_MsgIdToValue(missing));
+  S("\n");
+
+  // ONE input arrives, so entry 0 has data and entry 1 does not -- the reported id must MOVE
+  // to 0x0811. That is the line that shows the function reads DataPresent rather than
+  // returning the table's first entry regardless.
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&in->Msg, CFE_SB_ValueToMsgId(HK_EX_IN1), 32);
+  for (i = 16; i < 24; ++i) {
+    raw[i] = (0x50 + i - 16);
+  }
+  HK_ProcessIncomingHkData(in);
+  missing = CFE_SB_InvalidMsgId();
+  rc      = HK_CheckForMissingData(CFE_SB_ValueToMsgId(HK_EX_OUT1), &missing);
+  S("hks_miss_one rc=");
+  D(rc);
+  S(" which=");
+  H4(CFE_SB_MsgIdToValue(missing));
+  S("\n");
+
+  // BOTH inputs arrive -> no missing data, and `which` must be UNTOUCHED. NASA only writes the
+  // out-parameter on detection, so it is pre-poisoned with the invalid id and must come back
+  // invalid -- which is the assertion a function that always wrote it would fail.
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&in->Msg, CFE_SB_ValueToMsgId(HK_EX_IN2), 32);
+  for (i = 16; i < 24; ++i) {
+    raw[i] = (0x60 + i - 16);
+  }
+  HK_ProcessIncomingHkData(in);
+  missing = CFE_SB_InvalidMsgId();
+  rc      = HK_CheckForMissingData(CFE_SB_ValueToMsgId(HK_EX_OUT1), &missing);
+  S("hks_miss_both rc=");
+  D(rc);
+  S(" which=");
+  H4(CFE_SB_MsgIdToValue(missing));
+  S("\n");
+
+  // --- THE SEND, WITH EVERY CONTRIBUTION PRESENT. CombinedPacketsSent goes up, MissingDataCtr
+  // does not, the packet is transmitted (the "No subscribers for MsgId 0x890" line is the
+  // witness, as every transmit in this suite rests on), and HK_SetFlagsToNotPresent clears
+  // entries 0 and 1 -- and NOT entry 2, which belongs to the other output packet.
+  hk_rt[2].DataPresent = HK_DATA_PRESENT;
+  HK_SendCombinedHkPacket(CFE_SB_ValueToMsgId(HK_EX_OUT1));
+  S("hks_send1 sent=");
+  D(HK_AppData.CombinedPacketsSent);
+  S(" missing=");
+  D(HK_AppData.MissingDataCtr);
+  S("\n");
+  for (i = 0; i < 3; ++i) {
+    hk_show_rt("hks_send1", i);
+  }
+
+  // --- AND AGAIN WITH DATA MISSING, WHICH **STILL SENDS**. This is the directive hk_cfg.HC and
+  // hk_utils.HC both record: HK_DISCARD_INCOMPLETE_COMBO is 0, so the `#if`-guarded bare `else`
+  // is excluded and the send follows the missing-data branch unconditionally. MissingDataCtr
+  // goes up AND CombinedPacketsSent goes up -- both, from one call.
+  //
+  // **IF THAT DIRECTIVE HAD BEEN TRANSCRIBED VERBATIM INSTEAD OF RESOLVED, THIS LINE WOULD READ
+  // sent=1.** HolyC limit #19 makes `#if <expr>` unconditionally true, so the `else` would have
+  // been included and HK would discard. One number, and it is the only thing in the suite that
+  // can tell the two apart.
+  HK_SendCombinedHkPacket(CFE_SB_ValueToMsgId(HK_EX_OUT1));
+  S("hks_send_incomplete sent=");
+  D(HK_AppData.CombinedPacketsSent);
+  S(" missing=");
+  D(HK_AppData.MissingDataCtr);
+  S("\n");
+
+  // --- AN OUTPUT ID NOTHING IN THE TABLE PRODUCES. HK_UNKNOWN_COMBINED_PACKET_EID, an
+  // INFORMATION event, and neither counter moves -- so an operator asking for a packet the
+  // current copy table does not build gets told, rather than silence or an error count.
+  HK_SendCombinedHkPacket(CFE_SB_ValueToMsgId(0x08FD));
+  S("hks_send_unknown sent=");
+  D(HK_AppData.CombinedPacketsSent);
+  S(" missing=");
+  D(HK_AppData.MissingDataCtr);
+  S("\n");
+
+  // --- AT MOST ONE PACKET PER CALL, EVEN WHEN THREE ENTRIES NAME IT. The loop runs
+  // `while (Loop < HK_COPY_TABLE_ENTRIES && PacketFound == FALSE)`, so the first matching
+  // runtime entry wins and the walk stops. Entries 0 and 1 both point at 0x0890's buffer, so
+  // a loop that did not stop would transmit it twice and CombinedPacketsSent would jump by 2.
+  // It jumps by 1.
+  before = HK_AppData.CombinedPacketsSent;
+  HK_SendCombinedHkPacket(CFE_SB_ValueToMsgId(HK_EX_OUT1));
+  S("hks_send_once delta=");
+  D(HK_AppData.CombinedPacketsSent - before);
+  S("\n");
+
+  // --- HK_SetFlagsToNotPresent ON ITS OWN, scoped to one output id. Set all three present,
+  // clear 0x0891 only, and entry 2 must go while 0 and 1 stay.
+  for (i = 0; i < 3; ++i) {
+    hk_rt[i].DataPresent = HK_DATA_PRESENT;
+  }
+  HK_SetFlagsToNotPresent(CFE_SB_ValueToMsgId(HK_EX_OUT2));
+  S("hks_flags p0=");
+  D(hk_rt[0].DataPresent);
+  S(" p1=");
+  D(hk_rt[1].DataPresent);
+  S(" p2=");
+  D(hk_rt[2].DataPresent);
+  S("\n");
+
+  HK_TearDownOldCopyTable(hk_cpy, hk_rt);
+
+  // --- AND NOW THE HEADER CLOBBER, ON PURPOSE. One entry writing four bytes at OutputOffset
+  // ZERO of a packet HK just initialised. The table is accepted by the validator, the buffer is
+  // built, the subscription is made, the copy succeeds -- and then the packet cannot be sent,
+  // because the id HK reads back out of the header is no longer the id it wrote there.
+  //
+  // The two lines are the whole story: `pres=1` says the copy ran, and
+  // `sent=0 unknown-event` says the send could not find it. A ground operator sees a copy table
+  // that loaded without complaint and a combined packet that never arrives, with one
+  // INFORMATION event per request as the only clue.
+  hk_clear_tables();
+  hk_entry(0, HK_EX_IN1, 16, HK_EX_OUT1, 0, 4);
+  S("hks_clobber_val rc=");
+  D(HK_ValidateHkCopyTable(hk_cpy));
+  S("\n");
+  HK_ProcessNewCopyTable(hk_cpy, hk_rt);
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&in->Msg, CFE_SB_ValueToMsgId(HK_EX_IN1), 32);
+  for (i = 16; i < 24; ++i) {
+    raw[i] = (0x70 + i - 16);
+  }
+  HK_ProcessIncomingHkData(in);
+  before = HK_AppData.CombinedPacketsSent;
+  HK_SendCombinedHkPacket(CFE_SB_ValueToMsgId(HK_EX_OUT1));
+  S("hks_clobber pres=");
+  D(hk_rt[0].DataPresent);
+  S(" sent_delta=");
+  D(HK_AppData.CombinedPacketsSent - before);
+  S("\n");
+  HK_TearDownOldCopyTable(hk_cpy, hk_rt);
+}
+
+U0 hk_block_cmds() {
+  HK_NoopCmd_t noop;
+  HK_ResetCountersCmd_t rst;
+  HK_SendHkCmd_t shk;
+  HK_SendCombinedPktCmd_t scp;
+  I32 rc;
+
+  hk_setup();
+  hk_clear_tables();
+  hk_entry(0, HK_EX_IN1, 16, HK_EX_OUT1, 16, 4);
+  HK_ProcessNewCopyTable(hk_cpy, hk_rt);
+
+  // --- HK_NoopCmd IS THE **ONLY** COMMAND THAT MOVES CommandCounter, which hk_cmds.HC records.
+  // So the four lines below are a complete census of HK's command counters: one increments,
+  // three do not, and the two send commands are internal messages a scheduler issues rather
+  // than ground commands. An operator watching HK's CommandCounter sees only their own no-ops.
+  //
+  // HK_MISSION_REV IS **0** here, not 0xFF like LC's -- so the version event reads
+  // "7.0.1.0". Printed by the event rather than asserted, and it is the value NASA ships.
+  MemSet(&noop, 0, sizeof(HK_NoopCmd_t));
+  rc = HK_NoopCmd(&noop);
+  S("hkm_noop rc=");
+  D(rc);
+  S(" cc=");
+  D(HK_AppData.CommandCounter);
+  S(" ec=");
+  D(HK_AppData.CommandErrorCounter);
+  S("\n");
+
+  // --- HK_ResetCountersCmd DOES NOT INCREMENT FIRST. LC's equivalent increments and then
+  // clears, so the right answer there is zero for a different reason; HK never increments at
+  // all. The four counters are set to distinctive values first so that "zeroed" is
+  // distinguishable from "never written" -- all four must come back 0 from 11, 22, 33, 44.
+  HK_AppData.CommandCounter      = 11;
+  HK_AppData.CommandErrorCounter = 22;
+  HK_AppData.CombinedPacketsSent = 33;
+  HK_AppData.MissingDataCtr      = 44;
+  MemSet(&rst, 0, sizeof(HK_ResetCountersCmd_t));
+  rc = HK_ResetCountersCmd(&rst);
+  S("hkm_reset rc=");
+  D(rc);
+  S(" cc=");
+  D(HK_AppData.CommandCounter);
+  S(" ec=");
+  D(HK_AppData.CommandErrorCounter);
+  S(" sent=");
+  D(HK_AppData.CombinedPacketsSent);
+  S(" miss=");
+  D(HK_AppData.MissingDataCtr);
+  S("\n");
+
+  // AND IT LEAVES THE TABLES AND THE POOL ALONE, which is the half a counter reset could get
+  // wrong: HK_ResetHkData touches exactly four fields, so entry 0's buffer and subscription
+  // must survive it. A reset that re-initialised the runtime table would silently unbuild
+  // every output packet and HK would stop combining with no event at all.
+  hk_show_rt("hkm_reset", 0);
+
+  // --- HK_SendHkCmd: HK'S OWN TELEMETRY, AND THE TABLE MAINTENANCE THAT RIDES ON IT.
+  //
+  // It copies five fields into the packet, transmits, and then calls HK_CheckStatusOfTables --
+  // setting RunStatus to APP_ERROR if that fails. The handles are CFE_TBL_BAD_TABLE_HANDLE
+  // here, so CFE_TBL_GetStatus refuses and the maintenance FAILS: RunStatus must flip to
+  // APP_ERROR, and that is the assertion. It is also why this command is the one that makes a
+  // ground copy-table load take effect -- the load is processed by the housekeeping request,
+  // not by the command that uploaded it.
+  //
+  // THE PAYLOAD IS READ BACK FROM THE PACKET, not from HK_AppData, so the five assignments are
+  // what is checked rather than the fields they came from. MemPoolHandle is a resource id and
+  // so IS comparable across the two halves -- unlike the runtime table's addresses.
+  HK_AppData.CommandCounter      = 5;
+  HK_AppData.CommandErrorCounter = 6;
+  HK_AppData.CombinedPacketsSent = 7;
+  HK_AppData.MissingDataCtr      = 8;
+  HK_AppData.RunStatus           = CFE_ES_RunStatus_APP_RUN;
+  MemSet(&shk, 0, sizeof(HK_SendHkCmd_t));
+  rc = HK_SendHkCmd(&shk);
+  S("hkm_hk rc=");
+  D(rc);
+  S(" run=");
+  D(HK_AppData.RunStatus);
+  S(" cc=");
+  D(HK_AppData.HkPacket.Payload.CommandCounter);
+  S(" ec=");
+  D(HK_AppData.HkPacket.Payload.CommandErrorCounter);
+  S(" sent=");
+  D(HK_AppData.HkPacket.Payload.CombinedPacketsSent);
+  S(" miss=");
+  D(HK_AppData.HkPacket.Payload.MissingDataCtr);
+  S(" pool_eq=");
+  D(CFE_ResourceId_Equal(HK_AppData.HkPacket.Payload.MemPoolHandle,
+                  HK_AppData.MemPoolHandle)
+       ? 1
+       : 0);
+  S("\n");
+
+  // --- HK_SendCombinedPktCmd just unwraps the payload and calls the engine, so the assertion
+  // is that the id in the PAYLOAD is the one acted on. Asking for 0x0890 sends it;
+  // asking for an id nothing produces gets the unknown-packet event. Two calls, and
+  // CombinedPacketsSent moving by exactly one distinguishes them.
+  HK_AppData.CombinedPacketsSent = 0;
+  MemSet(&scp, 0, sizeof(HK_SendCombinedPktCmd_t));
+  scp.Payload.OutMsgToSend = CFE_SB_ValueToMsgId(HK_EX_OUT1);
+  rc                       = HK_SendCombinedPktCmd(&scp);
+  S("hkm_combined rc=");
+  D(rc);
+  S(" sent=");
+  D(HK_AppData.CombinedPacketsSent);
+  S("\n");
+  scp.Payload.OutMsgToSend = CFE_SB_ValueToMsgId(0x08FC);
+  rc                       = HK_SendCombinedPktCmd(&scp);
+  S("hkm_combined_unknown rc=");
+  D(rc);
+  S(" sent=");
+  D(HK_AppData.CombinedPacketsSent);
+  S("\n");
+
+  HK_TearDownOldCopyTable(hk_cpy, hk_rt);
+}
+
+U0 hk_block_dispatch() {
+  CFE_SB_Buffer *buf;
+  U8 *raw;
+
+  hk_setup();
+  raw = (U8 *)hk_inbuf8;
+  buf = (CFE_SB_Buffer *)hk_inbuf8;
+  hk_clear_tables();
+  hk_entry(0, HK_EX_IN1, 16, HK_EX_OUT1, 16, 4);
+  HK_ProcessNewCopyTable(hk_cpy, hk_rt);
+
+  // --- THE TWO GROUND COMMAND CODES, each with its own length, through HK_AppPipe. HK_NOOP_CC
+  // is **ZERO**, so the first of these is also what a zero-filled buffer would route to --
+  // which is why reaching the `default:` arm at all needs the function code set on purpose.
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(HK_CMD_MID), sizeof(HK_NoopCmd_t));
+  CFE_MSG_SetFcnCode(&buf->Msg, HK_NOOP_CC);
+  HK_AppData.CommandCounter      = 0;
+  HK_AppData.CommandErrorCounter = 0;
+  HK_AppPipe(buf);
+  S("hkd_noop cc=");
+  D(HK_AppData.CommandCounter);
+  S(" ec=");
+  D(HK_AppData.CommandErrorCounter);
+  S("\n");
+
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(HK_CMD_MID), sizeof(HK_ResetCountersCmd_t));
+  CFE_MSG_SetFcnCode(&buf->Msg, HK_RESET_COUNTERS_CC);
+  HK_AppData.CommandCounter      = 9;
+  HK_AppData.CommandErrorCounter = 9;
+  HK_AppPipe(buf);
+  S("hkd_reset cc=");
+  D(HK_AppData.CommandCounter);
+  S(" ec=");
+  D(HK_AppData.CommandErrorCounter);
+  S("\n");
+
+  // --- A BAD LENGTH ON EACH GROUND COMMAND. HK_VerifyCmdLength's event prints the command
+  // code, and the WRAPPER counts the error in its `else` -- so CommandErrorCounter moves for
+  // both of these and CommandCounter does not.
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(HK_CMD_MID), 7);
+  CFE_MSG_SetFcnCode(&buf->Msg, HK_NOOP_CC);
+  HK_AppData.CommandCounter      = 0;
+  HK_AppData.CommandErrorCounter = 0;
+  HK_AppPipe(buf);
+  S("hkd_noop_badlen cc=");
+  D(HK_AppData.CommandCounter);
+  S(" ec=");
+  D(HK_AppData.CommandErrorCounter);
+  S("\n");
+
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(HK_CMD_MID), 7);
+  CFE_MSG_SetFcnCode(&buf->Msg, HK_RESET_COUNTERS_CC);
+  HK_AppData.CommandErrorCounter = 0;
+  HK_AppPipe(buf);
+  S("hkd_reset_badlen ec=");
+  D(HK_AppData.CommandErrorCounter);
+  S("\n");
+
+  // --- A COMMAND CODE NOTHING CLAIMS: HK_AppProcessCmd's `default:`.
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(HK_CMD_MID), sizeof(HK_NoopCmd_t));
+  CFE_MSG_SetFcnCode(&buf->Msg, 77);
+  HK_AppData.CommandErrorCounter = 0;
+  HK_AppPipe(buf);
+  S("hkd_badcc ec=");
+  D(HK_AppData.CommandErrorCounter);
+  S("\n");
+
+  // --- THE TWO INTERNAL MESSAGES, CORRECT LENGTH THEN WRONG. Their length failures go through
+  // HK_VerifyMsgLength, whose wrapper has NO `else` -- so the event fires and
+  // CommandErrorCounter STAYS AT ZERO. That is the asymmetry hk_dispatch.HC records, and these
+  // four lines are what separate it from the two ground commands above: same failure, same
+  // check, different blame.
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(HK_SEND_HK_MID), sizeof(HK_SendHkCmd_t));
+  HK_AppData.CommandErrorCounter = 0;
+  HK_AppPipe(buf);
+  S("hkd_sendhk ec=");
+  D(HK_AppData.CommandErrorCounter);
+  S(" run=");
+  D(HK_AppData.RunStatus);
+  S("\n");
+
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(HK_SEND_HK_MID), 7);
+  HK_AppData.CommandErrorCounter = 0;
+  HK_AppPipe(buf);
+  S("hkd_sendhk_badlen ec=");
+  D(HK_AppData.CommandErrorCounter);
+  S("\n");
+
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(HK_SEND_COMBINED_PKT_MID),
+        sizeof(HK_SendCombinedPktCmd_t));
+  HK_AppData.CombinedPacketsSent = 0;
+  HK_AppData.CommandErrorCounter = 0;
+  // The payload is zero, so this asks for message id 0 -- which nothing produces. The
+  // unknown-packet event is the witness that the route was taken at all.
+  HK_AppPipe(buf);
+  S("hkd_combined ec=");
+  D(HK_AppData.CommandErrorCounter);
+  S(" sent=");
+  D(HK_AppData.CombinedPacketsSent);
+  S("\n");
+
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(HK_SEND_COMBINED_PKT_MID), 7);
+  HK_AppData.CommandErrorCounter = 0;
+  HK_AppPipe(buf);
+  S("hkd_combined_badlen ec=");
+  D(HK_AppData.CommandErrorCounter);
+  S("\n");
+
+  // --- AND THE `else` ARM: AN ID THAT IS NONE OF HK'S THREE IS **DATA**. HK is the second app
+  // in this port whose pipe router ends in data rather than in an error -- LC is the other --
+  // and the reasons differ: LC reports an unreferenced id with an INFORMATION event, HK is
+  // SILENT. So the assertion here is a copy having happened (DataPresent moving) with
+  // CommandErrorCounter untouched, and the absence of any event is the third witness.
+  HK_AppData.CommandErrorCounter = 0;
+  hk_rt[0].DataPresent           = HK_DATA_NOT_PRESENT;
+  MemSet(raw, 0, 128);
+  CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(HK_EX_IN1), 32);
+  raw[16] = 0xA1;
+  raw[17] = 0xA2;
+  raw[18] = 0xA3;
+  raw[19] = 0xA4;
+  HK_AppPipe(buf);
+  S("hkd_data_route ec=");
+  D(HK_AppData.CommandErrorCounter);
+  S(" pres=");
+  D(hk_rt[0].DataPresent);
+  S("\n");
+
+  HK_TearDownOldCopyTable(hk_cpy, hk_rt);
+}
+
+U0 hk_block_app() {
+  I32 rc;
+  I64 x0;
+  I32 r1;
+  I32 lrc;
+
+  hk_setup();
+
+  // --- HK_ResetHkData ON ITS OWN. Four fields, set to distinctive values first so "zeroed" is
+  // distinguishable from "never written", and RunStatus must NOT move -- it is not one of the
+  // four, and a reset that cleared it would stop the main loop.
+  HK_AppData.CommandCounter      = 1;
+  HK_AppData.CommandErrorCounter = 2;
+  HK_AppData.CombinedPacketsSent = 3;
+  HK_AppData.MissingDataCtr      = 4;
+  HK_AppData.RunStatus           = CFE_ES_RunStatus_APP_RUN;
+  HK_ResetHkData();
+  S("hkap_resetdata cc=");
+  D(HK_AppData.CommandCounter);
+  S(" ec=");
+  D(HK_AppData.CommandErrorCounter);
+  S(" sent=");
+  D(HK_AppData.CombinedPacketsSent);
+  S(" miss=");
+  D(HK_AppData.MissingDataCtr);
+  S(" run=");
+  D(HK_AppData.RunStatus);
+  S("\n");
+
+  // --- HK_TableInit WITH THE REGISTRY AS IT STANDS. HK asks for a DOUBLE-BUFFERED load/dump
+  // copy table and a single-buffered dump-only runtime table -- the only CFE_TBL_OPT_DBL_BUFFER
+  // registration in this port -- and then loads the copy table from "/cf/hk_cpy_tbl.tbl",
+  // which does not exist here.
+  //
+  // SO THIS WALKS THE NINE-STEP SEQUENCE UNTIL THE LOAD, and the event names which step
+  // stopped it. Nine cFE calls with nine event ids and eight early returns: the one that fires
+  // is the assertion, because hk_app.HC's header records that HK's init is the one in this port
+  // that returns immediately rather than threading a status -- so the failing step's event is
+  // always the LAST event before it gives up, with nothing after it.
+  rc = HK_TableInit();
+  S("hkap_tableinit rc=");
+  D(rc);
+  S(" cpyh=");
+  D(HK_AppData.CopyTableHandle);
+  S(" rth=");
+  D(HK_AppData.RuntimeTableHandle);
+  S("\n");
+
+  // --- A SECOND HK_TableInit IS REFUSED AS A DUPLICATE, and that is NOT upstream defect #19.
+  //
+  // A draft of this block claimed these two lines drove it. They do not: the copy table is
+  // already registered from the call above, so CFE_TBL_Register answers
+  // CFE_TBL_ERR_DUPLICATE_DIFF_SIZE and the sequence stops at step one with
+  // HK_CPTBL_REG_ERR_EID. `is_success=0` is what says so -- #19's signature is a return of
+  // ZERO after an ERROR event, and this returns 0x4C000007.
+  //
+  // **DEFECT #19 IS NOT REACHED BY THIS EXERCISE, AND THAT IS NAMED RATHER THAN PAPERED OVER.**
+  // Reaching it needs the copy table's CFE_TBL_GetAddress to answer CFE_SUCCESS instead of
+  // CFE_TBL_INFO_UPDATED, which happens only when the table has already been fetched since its
+  // last update -- and that fetch is INSIDE HK_TableInit, between a Load this driver cannot
+  // make succeed (HK hard-codes "/cf/hk_cpy_tbl.tbl" and the oracle's table-file helper writes
+  // a fixed "/ram/load.tbl") and the GetAddress itself. There is no point at which the
+  // exercise can intervene. It would take either a table file at HK's own path or a steerable
+  // CFE_TBL_GetAddress, and neither exists today.
+  //
+  // So the defect stands on a reading of the code in docs/CFS_UPSTREAM_NOTES.md #19 -- the
+  // return value's shape, which is not in dispute -- and the note says it is unreached here.
+  r1 = HK_TableInit();
+  S("hkap_tableinit_again rc=");
+  D(r1);
+  S(" is_success=");
+  D(r1 == CFE_SUCCESS ? 1 : 0);
+  S("\n");
+
+  // --- HK_AppInit's CHAIN. Nine steps, and the first one that cannot report by event is the
+  // EVS registration itself: a failed CFE_EVS_Register leaves nothing able to send an event, so
+  // HK writes to the system log instead. Everything after it has an event id.
+  //
+  // HERE IT RUNS WITH A PIPE NAME ALREADY TAKEN, so CFE_SB_CreatePipe fails and
+  // HK_CR_PIPE_ERR_EID is the last event -- with no subscription events after it, which is the
+  // early-return shape. The pipe hk_setup() created is still open under HK_PIPE_NAME, so this
+  // needs no fixture poke at all: the collision is real.
+  rc = HK_AppInit();
+  S("hkap_init_pipebusy rc=");
+  D(rc);
+  S("\n");
+
+  // --- AND HK_AppMain. HK_AppInit fails, so RunStatus becomes APP_ERROR, CFE_ES_RunLoop is
+  // entered with it and returns false immediately, and the app exits -- with NO termination
+  // event, because HK's loop only sends HK_RCV_MSG_ERR_EID from inside the receive arm and the
+  // loop body never ran.
+  //
+  // THAT IS THE DIFFERENCE FROM LC, which sends a CRITICAL task-exit event on any non-success
+  // path. HK is silent on this one, so the witnesses are RunStatus and
+  // `Cannot Exit CORE Application` in the syslog -- CS's block records why a zero exit count is
+  // not a witness: that is also what "never called" looks like.
+  es_set_ctx(1);
+  CFE_ES_Global.AppTable[1].Type                         = CFE_ES_AppType_CORE;
+  CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest  = CFE_ES_RunStatus_APP_EXIT;
+  x0                                                     = es_taskexits;
+  HK_AppMain();
+  CFE_ES_Global.AppTable[1].ControlReq.AppControlRequest = CFE_ES_RunStatus_APP_RUN;
+  CFE_ES_Global.AppTable[1].Type                         = CFE_ES_AppType_EXTERNAL;
+  S("hkap_main exits=");
+  D(es_taskexits - x0);
+  S(" run=");
+  D(HK_AppData.RunStatus);
+  S("\n");
+
+  // --- HK_CheckStatusOfTables AND ITS TWO HALVES, called directly -- AND THEY SUCCEED.
+  //
+  // A draft of this comment said the handles were invalid so CFE_TBL_GetStatus would refuse
+  // both. It is wrong: HK_TableInit above REGISTERED both tables (handles 13 and 14) before
+  // failing at the load, so the handles are live and GetStatus answers CFE_SUCCESS -- which
+  // takes the `else` arm of each function and returns HK_SUCCESS.
+  //
+  // THAT IS THE BETTER OUTCOME. All three functions run their no-work path end to end through
+  // the real table manager, and the combined call returning HK_SUCCESS is what shows it
+  // reached the dump table at all -- hk_utils.HC records that a copy table in trouble MASKS a
+  // pending runtime dump, and the only way to see the mask is to have the copy table be fine.
+  // The masking itself is driven by the update cycle below.
+  rc = HK_CheckStatusOfCopyTable();
+  S("hkap_copystat rc=");
+  D(rc);
+  S("\n");
+  rc = HK_CheckStatusOfDumpTable();
+  S("hkap_dumpstat rc=");
+  D(rc);
+  S("\n");
+  rc = HK_CheckStatusOfTables();
+  S("hkap_bothstat rc=");
+  D(rc);
+  S("\n");
+
+  // --- AND THE GROUND UPLOAD, WHICH IS THE WHOLE POINT OF HK_CheckStatusOfCopyTable.
+  //
+  // This is the path a mission actually uses: the ground sends a table load, cFE marks the
+  // table UPDATE_PENDING, and HK's next housekeeping cycle tears down what the old table built,
+  // releases the address, updates, takes the new address and processes the new table. Six cFE
+  // calls in a forced order -- NASA's comment on the middle one is "release address must be
+  // called for update to take" -- and every one of them has its own CRITICAL event if it
+  // answers something unexpected.
+  //
+  // The copy table is already registered from hkap_tableinit, so loading a file into it is all
+  // it takes. The file is all zeroes, which is a VALID copy table: every entry has neither
+  // message id set, so HK_ValidateHkCopyTable accepts it and HK_ProcessNewCopyTable builds
+  // nothing -- which makes the assertion about the SEQUENCE rather than about the contents.
+  //
+  // `rc=0` means the whole six-call dance completed. A failure at any step returns HK_ERROR and
+  // names itself in an event, so one number plus the absence of events is the evidence.
+  {
+    // **HK'S COPY TABLE NEVER GOES UPDATE_PENDING FROM A FILE LOAD, AND THAT IS WHAT
+    // CFE_TBL_OPT_DBL_BUFFER IS FOR.** Three attempts found it:
+    //
+    //   load with nobody holding the address   -> CFE_SUCCESS, applied immediately
+    //   hold the address before any load       -> CFE_TBL_ERR_NEVER_LOADED, nothing to point at
+    //   load, hold, load again                 -> CFE_SUCCESS again; pending=0
+    //
+    // cFE defers an update only when it cannot apply one, and a double-buffered table can
+    // always apply one: the load goes into the inactive buffer and the pointers swap. HK is
+    // the only app in this port that asks for DBL_BUFFER, and this is the reason -- a copy
+    // table load must not tear while HK is walking it, and the cost of that guarantee is
+    // paid by cFE rather than by HK.
+    //
+    // SO HK_CheckStatusOfCopyTable's BIG BRANCH IS NOT REACHED HERE. The six-call dance --
+    // tear down, release the address, update, take the new address, process -- runs on
+    // CFE_TBL_INFO_UPDATE_PENDING, and reaching that for this table needs CFE_TBL_Modified or
+    // a single-buffered registration, neither of which HK does. **That is said rather than
+    // left as a green `rc=0`**: what the lines below drive is a real file load into a
+    // registered double-buffered table with its address held, and HK_CheckStatusOfCopyTable's
+    // NO-WORK arm returning HK_SUCCESS. The validation arm and the update arm are both
+    // unreached by this exercise.
+    //
+    // The order is still load, hold, load again, because that is what shows the second load
+    // does not defer -- a single load would not distinguish "applied immediately" from
+    // "nobody was holding it".
+    tbl_mkfile("CFE_EVS.CopyTable", 0, sizeof(HK_CopyTableEntry_t) * HK_COPY_TABLE_ENTRIES, sizeof(HK_CopyTableEntry_t) * HK_COPY_TABLE_ENTRIES,
+         CFE_FS_FILE_CONTENT_ID, CFE_FS_SubType_TBL_IMG, 0x00);
+    lrc = CFE_TBL_Load(HK_AppData.CopyTableHandle, CFE_TBL_SRC_FILE, "/ram/load.tbl");
+    S("hkap_upload_load1 rc=");
+    D(lrc);
+    S("\n");
+    lrc = CFE_TBL_GetAddress(&HK_AppData.CopyTablePtr, HK_AppData.CopyTableHandle);
+    S("hkap_upload_hold rc=");
+    D(lrc);
+    S("\n");
+    // AND THE RUNTIME TABLE'S ADDRESS TOO, because HK_CheckStatusOfCopyTable hands both
+    // pointers to HK_TearDownOldCopyTable and then to HK_ProcessNewCopyTable -- a NULL
+    // RuntimeTablePtr would make the second return HK_NULL_POINTER_DETECTED and the dance
+    // would report a failure that is the fixture's, not HK's.
+    lrc = CFE_TBL_GetAddress(&HK_AppData.RuntimeTablePtr,
+                HK_AppData.RuntimeTableHandle);
+    S("hkap_upload_holdrt rc=");
+    D(lrc);
+    S("\n");
+    lrc = CFE_TBL_Load(HK_AppData.CopyTableHandle, CFE_TBL_SRC_FILE, "/ram/load.tbl");
+    S("hkap_upload_load2 rc=");
+    D(lrc);
+    S("\n");
+    S("hkap_upload_status rc=");
+    D(CFE_TBL_GetStatus(HK_AppData.CopyTableHandle));
+    S(" pending=");
+    D(CFE_TBL_GetStatus(HK_AppData.CopyTableHandle) == CFE_TBL_INFO_UPDATE_PENDING ? 1
+                                             : 0);
+    S("\n");
+    rc = HK_CheckStatusOfCopyTable();
+    S("hkap_upload rc=");
+    D(rc);
+    S(" ptr_set=");
+    D(HK_AppData.CopyTablePtr != NULL ? 1 : 0);
+    S("\n");
+  }
+}
+
 I64 main()
 {
   CFE_MSG_Message msg;
@@ -25001,6 +26352,14 @@ I64 main()
     lc_block_cmds();
     lc_block_dispatch();
     lc_block_app();
+
+    hk_block_validate();
+    hk_block_tables();
+    hk_block_copy();
+    hk_block_send();
+    hk_block_cmds();
+    hk_block_dispatch();
+    hk_block_app();
 
     // PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after it today
     // but tim_objtab, so both halves agreed and the transcript was green -- but the NEXT app's
