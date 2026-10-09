@@ -1167,4 +1167,16 @@ I32 LC_ValidateWDT(U8 *TableData)
   return TableResult;
 }
 
+
+// --- CONSTANTS NASA'S HEADER DECLARES AND NO SOURCE USES -------------------------------------
+//
+// Dead upstream: a grep across every .c in the repository finds no use of either IEEE mask -- this port's float handling goes through Kernel/Cfs/CfsF32.HC's bit helpers, and NASA's masks are dead in its own code too. They are translated anyway
+// because they are part of the header's declared interface and cost nothing, which is the answer
+// that needs no judgement -- and because tools/cfs/check_defines.py now refuses a #define that is
+// nowhere in the translation. That gate was written after a case-sensitive grep silently dropped
+// EIGHT of HS's event ids; these nineteen are what it found on its first run, across six years of
+// this port's history.
+#define LC_IEEE_EXPONENT_MASK 0x7F800000
+#define LC_IEEE_FRACTION_MASK 0x007FFFFF
+
 #endif

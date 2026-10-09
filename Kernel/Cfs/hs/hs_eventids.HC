@@ -17,15 +17,33 @@
  ************************************************************************/
 // HEALTH & SAFETY'S EVENT IDS -- the 1:1 translation of NASA's fsw/inc/hs_eventids.h.
 //
-// SIXTY-NINE IDS AND **TEN GAPS**: 50 through 57, plus 62 and 63, are not defined. NASA's header simply
-// skips them, and the numbers are the wire format a ground decoder keys on, so every gap is kept.
-// Renumbering to close them would silently retarget every event filter a mission has written.
+// SEVENTY-SEVEN IDS AND EXACTLY **TWO** GAPS: 62 and 63. The numbers are the wire format a
+// ground decoder keys on, so the two holes are kept -- an id is never reused in cFS, and 62 and
+// 63 sit between HS_CPUMON_HOGGING_ERR_EID and the CPU-hog enable/disable pair, which is where a
+// removed feature would have left them.
 //
-// AND THE GAPS ARE WHERE FEATURES WERE REMOVED, which is worth knowing rather than guessing: 50
-// through 57 sit exactly between the event-monitor errors and HS_DISABLE_APPMON_ERR_EID, and 62
-// and 63 between the CPU-hogging error and the CPU-hog enable/disable pair. An id is never reused
-// in cFS -- a removed feature leaves a hole forever -- so the holes are a record of what HS used
-// to do.
+// ### A FIRST DRAFT OF THIS FILE HAD 69 IDS AND CLAIMED TEN GAPS
+//
+// It was extracted with `grep -E '^#define HS_[A-Z0-9_]+_EID'`, which is CASE-SENSITIVE -- and
+// eight of NASA's ids are the four table validators' pairs:
+//
+//     HS_AMTVal_INF_EID 50   HS_AMTVal_ERR_EID 51
+//     HS_EMTVal_INF_EID 52   HS_EMTVal_ERR_EID 53
+//     HS_XCTVal_INF_EID 54   HS_XCTVal_ERR_EID 55
+//     HS_MATVal_INF_EID 56   HS_MATVal_ERR_EID 57
+//
+// -- every one with a lowercase "Val" in the middle, so the pattern matched none of them. The
+// file was short by eight and the comment asserted that 50 through 57 were gaps where features
+// had been removed. **They are the ids hs_monitors.c uses most.**
+//
+// It is the same shape docs/ records as a checker passing on what it cannot FIND, turned on my
+// own tooling: a pattern that silently matches nothing looks exactly like an absence. What caught
+// it was reading hs_monitors.c and finding HS_AMTVal_ERR_EID in a call -- not any gate, because
+// no gate compares a translated header against NASA's for COMPLETENESS. The ids that are here are
+// checked by check_constants; the ones that were missing were simply not there to check.
+//
+// AND THE NAMING IS NASA'S: every other id in this file is SHOUTING_CASE and these eight are
+// MixedCase, matching the table names (AMT, EMT, XCT, MAT) rather than the convention.
 #ifndef HS_EVENTIDS_HC
 #define HS_EVENTIDS_HC
 
@@ -78,6 +96,14 @@
 #define HS_EVENTMON_NOT_RESTARTED_ERR_EID    47
 #define HS_EVENTMON_DELETE_ERR_EID           48
 #define HS_EVENTMON_NOT_DELETED_ERR_EID      49
+#define HS_AMTVal_INF_EID                    50
+#define HS_AMTVal_ERR_EID                    51
+#define HS_EMTVal_INF_EID                    52
+#define HS_EMTVal_ERR_EID                    53
+#define HS_XCTVal_INF_EID                    54
+#define HS_XCTVal_ERR_EID                    55
+#define HS_MATVal_INF_EID                    56
+#define HS_MATVal_ERR_EID                    57
 #define HS_DISABLE_APPMON_ERR_EID            58
 #define HS_DISABLE_EVENTMON_ERR_EID          59
 #define HS_SUB_WAKEUP_ERR_EID                60

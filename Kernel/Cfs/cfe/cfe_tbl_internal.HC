@@ -1029,4 +1029,15 @@ CFE_TBL_ValidationResult_t *CFE_TBL_CheckValidationRequest(U32 *ValIdPtr)
     ResultPtr = NULL;
   return ResultPtr;
 }
+
+// --- CONSTANTS NASA'S HEADER DECLARES AND NO SOURCE USES -------------------------------------
+//
+// Dead upstream: a grep across every .c in the repository finds CFE_TBL_NOT_FOUND only in comments and a doc \\retval. They are translated anyway
+// because they are part of the header's declared interface and cost nothing, which is the answer
+// that needs no judgement -- and because tools/cfs/check_defines.py now refuses a #define that is
+// nowhere in the translation. That gate was written after a case-sensitive grep silently dropped
+// EIGHT of HS's event ids; these nineteen are what it found on its first run, across six years of
+// this port's history.
+#define CFE_TBL_NOT_FOUND CFE_TBL_REGID_UNDEFINED
+
 #endif

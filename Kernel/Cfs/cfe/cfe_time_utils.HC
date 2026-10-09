@@ -539,4 +539,15 @@ I32 CFE_TIME_CleanUpApp(U32 Id)
   }
   return Status;
 }
+
+// --- CONSTANTS NASA'S HEADER DECLARES AND NO SOURCE USES -------------------------------------
+//
+// Dead upstream: a grep across every .c in the repository finds no use of CFE_TIME_TASK_NAME. They are translated anyway
+// because they are part of the header's declared interface and cost nothing, which is the answer
+// that needs no judgement -- and because tools/cfs/check_defines.py now refuses a #define that is
+// nowhere in the translation. That gate was written after a case-sensitive grep silently dropped
+// EIGHT of HS's event ids; these nineteen are what it found on its first run, across six years of
+// this port's history.
+#define CFE_TIME_TASK_NAME "CFE_TIME"
+
 #endif

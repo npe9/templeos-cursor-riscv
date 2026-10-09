@@ -285,6 +285,13 @@ def probe(names):
         # token-paste macro calls and so are never comparable.
         "lc_eventids.h", "lc_perfids.h", "lc_msgids.h", "lc_fcncodes.h", "lc_version.h",
         "lc_tbl.h", "lc_interface_cfg.h", "lc_internal_cfg.h",
+        # lc_watch.h and lc_action.h, added for the same reason as ES's startup headers above:
+        # check_defines found LC_IEEE_EXPONENT_MASK, LC_IEEE_FRACTION_MASK and
+        # LC_AP_EVENT_TAIL_LEN untranslated, translating them made them visible here, and this
+        # probe could not SEE them. The count in the "names NASA does not define" bucket is what
+        # says so -- it went 39 -> 42 and these two headers take it back. Watching that number is
+        # the discipline the LC note above records.
+        "lc_watch.h", "lc_action.h",
         # HK's, added with its vocabulary for the same reason -- and the count was watched again:
         # HK's six vocabulary files took "names NASA does not define" from 35 to 87, and these
         # eight bring it back. hk_events.h is the odd name in the set (every other app calls it
@@ -303,6 +310,17 @@ def probe(names):
         # to pass on CFE_ES_SYSLOG2_EID rather than file it as "a name this port invented",
         # which is the behaviour that distinguishes a missing header from a local constant.
         "cfe_es_eventids.h", "cfe_es_platform_cfg.h", "cfe_es_msgids.h",
+        # ES's STARTUP and CDS MEMPOOL headers. Added when check_defines.py -- a new gate that
+        # refuses a NASA #define the translation does not carry anywhere -- found nineteen dead
+        # constants across six files. Translating them made them visible to THIS gate, which
+        # then could not SEE them: the six CFE_ES_* object-type codes live in cfe_es_start.h and
+        # CFE_ES_CDS_NUM_BLOCK_SIZES in cfe_es_cds_mempool.h, and neither was on this list.
+        #
+        # That is the two gates composing correctly. check_defines asks "is it there at all" and
+        # check_constants asks "is its value right", and a constant has to pass both -- so making
+        # one happy without the other is not an option, which is the property that keeps a
+        # translated constant from being invented.
+        "cfe_es_start.h", "cfe_es_cds_mempool.h",
         # ES's task header: the command pipe's name and depth, and the 42-entry cap on what one
         # QueryAll dump can hold. None of the three is reachable from any header already here.
         "cfe_es_task.h",

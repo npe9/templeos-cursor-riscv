@@ -1479,4 +1479,19 @@ U0 CFE_SB_IssueSubscribeEvents(U16 PendingEventID, U32 PipeId, CFE_SB_MsgId MsgI
     break;
   }
 }
+
+// --- CONSTANTS NASA'S HEADER DECLARES AND NO SOURCE USES -------------------------------------
+//
+// Dead upstream: a grep across every .c in the repository finds no use of any of these five. They are translated anyway
+// because they are part of the header's declared interface and cost nothing, which is the answer
+// that needs no judgement -- and because tools/cfs/check_defines.py now refuses a #define that is
+// nowhere in the translation. That gate was written after a case-sensitive grep silently dropped
+// EIGHT of HS's event ids; these nineteen are what it found on its first run, across six years of
+// this port's history.
+#define CFE_SB_NO_DUPLICATE    0
+#define CFE_SB_DUPLICATE       1
+#define CFE_SB_NO_DESTINATION  0xFF
+#define CFE_SB_UNUSED_QUEUE    OS_OBJECT_ID_UNDEFINED
+#define SB_DONT_CARE           0
+
 #endif

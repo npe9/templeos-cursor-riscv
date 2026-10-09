@@ -319,6 +319,16 @@ python3 "$ROOT/tools/cfs/check_header_inlines.py" || exit 1
 # ids, a buffer length, and CFE_MISSION_ES_MAX_APPLICATIONS confused with the PLATFORM one.
 python3 "$ROOT/tools/cfs/check_constants.py" || exit 1
 
+# EVERY #define NASA'S HEADER HAS, THE TRANSLATION HAS TOO. check_constants above compares the
+# VALUE of every constant that IS translated; this one asks whether any are MISSING -- a question
+# no other gate asked, and a #define that was never translated is simply not there to compare.
+#
+# Written after a case-sensitive grep silently dropped EIGHT of HS's 77 event ids (the four table
+# validators' pairs, each with a lowercase "Val") and the file shipped with a comment asserting
+# they were gaps where features had been removed. check_constants reported everything matching and
+# was right about the ones that were there.
+python3 "$ROOT/tools/cfs/check_defines.py" || exit 1
+
 # --- is it even compiled? -----------------------------------------------------------------------
 # Every gate above this line is driven from SRC_C, so each one measures the translation only
 # where the C half names a counterpart. A .HC file that is complete, parses, and is included by

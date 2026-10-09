@@ -918,4 +918,20 @@ I32 CFE_ES_MainTaskSyncDelay(U32 AppStateId, U32 TimeOutMilliseconds)
   }
   return Status;
 }
+
+// --- CONSTANTS NASA'S HEADER DECLARES AND NO SOURCE USES -------------------------------------
+//
+// Dead upstream: a grep across every .c in the repository finds no use of any of these six object-type codes. They are translated anyway
+// because they are part of the header's declared interface and cost nothing, which is the answer
+// that needs no judgement -- and because tools/cfs/check_defines.py now refuses a #define that is
+// nowhere in the translation. That gate was written after a case-sensitive grep silently dropped
+// EIGHT of HS's event ids; these nineteen are what it found on its first run, across six years of
+// this port's history.
+#define CFE_ES_NULL_ENTRY    0x00
+#define CFE_ES_CORE_TASK     0x01
+#define CFE_ES_DRIVER_TASK   0x02
+#define CFE_ES_BIN_SEM       0x03
+#define CFE_ES_FUNCTION_CALL 0x04
+#define CFE_ES_MUTEX_SEM     0x05
+
 #endif
