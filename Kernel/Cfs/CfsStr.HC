@@ -335,6 +335,37 @@ I64 StrPrintNV(U8 *Buf, I64 Size, U8 *Fmt, I64 nargs, I64 *args)
           Buf[n] = dig[ndig];
         n++;
       }
+    } else if (*Fmt == 'c') {
+      // %c, AND IT ARRIVED WITH SC, which is the seventh app and the first to use it. Ten event
+      // strings in sc_atsrq.c print an ATS as a LETTER -- "ATS %c Execution Started" with
+      // SC_IDX_AS_CHAR(AtsIndex), which is `'A' + index`, so ATS 1 prints as A and ATS 2 as B.
+      //
+      // check_formats refused the file before any transcript could be produced, and that is the
+      // gate working as intended: **an unhandled conversion does not merely misprint its own
+      // field, it CONSUMES NO ARGUMENT**, so every later argument on the line shifts. Three of
+      // those ten strings have a second %c after the first, so both would have come out as the
+      // literal two characters AND the shift would have fed an index where a letter belonged.
+      // docs/ records that argument-shift mechanism from %zu in cfe_sb_api.c and %p in mm_utils.c;
+      // this is the third conversion added for it.
+      //
+      // C PROMOTES A `char` ARGUMENT TO `int` and printf takes the low byte, so the mask is 0xFF.
+      // A field width applies to %c in C -- "%3c" right-justifies in three columns -- and is
+      // honoured here for completeness; no cFS call site uses one, so that path is unexercised
+      // and is written the same way the numeric branch writes it rather than invented.
+      sv = 0;
+      if (ai < nargs)
+        sv = args[ai];
+      ai++;
+      i = 1;
+      while (i < width) {
+        if (Size > 0 && n < Size - 1)
+          Buf[n] = ' ';
+        n++;
+        i++;
+      }
+      if (Size > 0 && n < Size - 1)
+        Buf[n] = sv & 0xFF;
+      n++;
     } else if (*Fmt == 'p') {
       // %p, AND IT ARRIVED WITH MM. No format string in any previously gated NASA source used
       // it, so until now an unhandled %p would have come out as the literal two characters on

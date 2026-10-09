@@ -1877,6 +1877,31 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/sc/sc_utils.HC"
 #include "/Kernel/Cfs/sc/sc_rtsrq.HC"
 
+// **SC_ProcessAppend IS A STAND-IN, AND IT IS UPSTREAM LOGIC RATHER THAN A SEAM.**
+//
+// It lives in sc_loads.c, which is the other half of SC's two-source call cycle.
+// `module_deps --cuts SC` reports this as the cycle's ONE edge: gating sc_atsrq.c alone needs
+// exactly this function and nothing else, which is why sc_atsrq.c (742 lines) could land before
+// sc_loads.c (893) instead of both in one commit.
+//
+// WHAT IT DOES NOT DO. The real function copies the uploaded append buffer into the target ATS,
+// recomputes the ATS's size and command count, and rebuilds the time-sorted index. This does
+// nothing but count calls. So SC_AppendAtsCmd's success arm reports "N ATS entries appended" for
+// an append that did not occur, and **SC's exercise must not claim to drive the append path until
+// sc_loads.c is gated.**
+//
+// THE COUNTER IS THE WITNESS -- see the C half's copy of this note for why a stand-in with no
+// observable effect is the shape docs/ records firing three times.
+//
+// DEADLINE: the next SC commit.
+I64 sc_append_standin_calls;
+
+U0 SC_ProcessAppend(U16 AtsIndex)
+{
+  ++sc_append_standin_calls;
+}
+#include "/Kernel/Cfs/sc/sc_atsrq.HC"
+
 // ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
 //
 // CS reads memory DIRECTLY -- CFE_ES_CalculateCRC takes a raw pointer -- so every address the
