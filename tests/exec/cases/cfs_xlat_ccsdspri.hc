@@ -1875,6 +1875,7 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/sc/sc_global.HC"
 #include "/Kernel/Cfs/sc/sc_events.HC"
 #include "/Kernel/Cfs/sc/sc_utils.HC"
+#include "/Kernel/Cfs/sc/sc_rtsrq.HC"
 
 // ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
 //
