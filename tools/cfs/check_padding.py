@@ -119,6 +119,16 @@ HDRS = [
     # holds NASA's `float Float32` where the translation holds a U32 bit pattern, and THIS is the
     # gate that proves the substitution did not move anything -- 4 bytes, 4-aligned, same offset.
     "lc_app.h",
+    # HOUSEKEEPING -- the fifth. hk_app.h reaches HK_AppData_t and, through hk_msgstruct.h and
+    # hk_tbldefs.h, the four command types, the HK packet and both table entry types. One header.
+    #
+    # ADDING AN APP TO **THIS LIST** IS WHAT MAKES ITS CLASSES MEASURED. The list is
+    # hand-maintained, so a new app's structures are silently UNPAIRED until its header appears
+    # here -- and an unpaired class is dropped rather than failed (see the note in main()). HK's
+    # layout was poison-tested before this line existed: widening a padding member by two bytes
+    # changed nothing in the output, which is the 21st instance of the blind spot
+    # docs/ records as a gate passing on what it cannot find.
+    "hk_app.h",
     # The reset area. CFE_EVS_EarlyInit sizes the WHOLE of CFE_ES_ResetData_t and takes the event
     # log out of it, so the translation declares that type and the eight ES/TIME types under it.
     # They are types, not code -- no ES function is translated -- and this is what measures them.

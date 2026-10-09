@@ -274,6 +274,15 @@ def probe(names):
         # token-paste macro calls and so are never comparable.
         "lc_eventids.h", "lc_perfids.h", "lc_msgids.h", "lc_fcncodes.h", "lc_version.h",
         "lc_tbl.h", "lc_interface_cfg.h", "lc_internal_cfg.h",
+        # HK's, added with its vocabulary for the same reason -- and the count was watched again:
+        # HK's six vocabulary files took "names NASA does not define" from 35 to 87, and these
+        # eight bring it back. hk_events.h is the odd name in the set (every other app calls it
+        # *_eventids.h) and hk_app.h holds the pipe name and the three return codes, which no
+        # other header reaches. hk_tbldefs.h carries the flag constants; hk_interface_cfg.h and
+        # hk_internal_cfg.h hold NASA's DEFAULT_HK_* literals, the HK_* names beside them being
+        # token-paste calls that are never comparable.
+        "hk_events.h", "hk_perfids.h", "hk_msgids.h", "hk_fcncodes.h", "hk_version.h",
+        "hk_app.h", "hk_tbldefs.h", "hk_interface_cfg.h", "hk_internal_cfg.h", "hk_utils.h",
         # ES's event ids and its own platform config, as the module arrives. The gate refused
         # to pass on CFE_ES_SYSLOG2_EID rather than file it as "a name this port invented",
         # which is the behaviour that distinguishes a missing header from a local constant.

@@ -23,7 +23,14 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 # Reuse the smoke's OWN variable block (its lines 11..214) so the include path and the source list
 # cannot drift from the real gate's. Line 10 sets ROOT from $0 and is skipped for that reason.
-eval "$(sed -n '11,214p' tests/scripts/run_cfs_xlat_smoke.sh | sed '/^for /,/^done$/d')"
+# Reuse the smoke's OWN variable block so the include path and the source list cannot drift from
+# the real gate's. The range ENDS AT THE LINE THAT CLOSES $INC and is found rather than hard-coded:
+# a literal '11,214p' broke the moment HK added a root variable and an include line, and the
+# failure was an unterminated shell string 180 lines into an eval -- which reads as nothing to do
+# with the app that was just added. ROOT is set above because line 10 derives it from $0.
+INC_END=$(awk '/^INC="/{f=1} f && /"$/{print NR; exit}' tests/scripts/run_cfs_xlat_smoke.sh)
+[ -n "$INC_END" ] || { echo "FAIL exercised -- could not find where \$INC ends in the smoke" >&2; exit 1; }
+eval "$(sed -n "11,${INC_END}p" tests/scripts/run_cfs_xlat_smoke.sh | sed '/^for /,/^done$/d')"
 
 APPS=${*:-MD MM CS LC}
 for APP in $APPS; do

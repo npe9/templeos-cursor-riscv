@@ -24,28 +24,27 @@ import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# OSAL first, then cFE, then the apps -- lowest layer outwards, which is also the order a
-# reader wants them reported in.
-HCDIRS = [
-    os.path.join(ROOT, "Kernel", "Cfs", "osal"),
-    os.path.join(ROOT, "Kernel", "Cfs", "cfe"),
-    os.path.join(ROOT, "Kernel", "Cfs", "md"),
-    os.path.join(ROOT, "Kernel", "Cfs", "mm"),
-    os.path.join(ROOT, "Kernel", "Cfs", "cs"),
-    os.path.join(ROOT, "Kernel", "Cfs", "lc"),
-]
-
-# The bare names, for the one gate that builds its own paths from them.
-HCNAMES = ["osal", "cfe", "md", "mm", "cs", "lc"]
-
-# THE cFS APPS, in the order they were gated, AND FOR THE SAME REASON AS THE LIST ABOVE. An app
-# is a repository of its own -- fsw/src, fsw/inc and config -- and five gates needed those three
-# directories: check_structs (which NASA structs exist), check_padding (the probe's include
-# path), check_manifest (what CMake builds), check_oracle_globals (its $MD path substitution)
-# and the smoke script. check_structs and check_padding each had their own hand-written copy of
-# MD's three, which is the NASA-side version of exactly the defect this file was created to fix
-# on the HolyC side -- unify one list and the other goes on being two.
+# THE cFS APPS, in the order they were gated. An app is a repository of its own -- fsw/src,
+# fsw/inc and config -- and five gates needed those three directories: check_structs (which NASA
+# structs exist), check_padding (the probe's include path), check_manifest (what CMake builds),
+# check_oracle_globals (its $MD path substitution) and the smoke script. check_structs and
+# check_padding each had their own hand-written copy of MD's three, which is the NASA-side version
+# of exactly the defect this file was created to fix on the HolyC side -- unify one list and the
+# other goes on being two.
 APPS = ["MD", "MM", "CS", "LC", "HK"]
+
+# OSAL first, then cFE, then the apps -- lowest layer outwards, which is also the order a reader
+# wants them reported in.
+#
+# **DERIVED FROM APPS, NOT LISTED.** These were two hand-written lists that happened to agree with
+# APPS, and adding HK showed what that costs: HK's classes were written, its header was added to
+# check_padding's list, and check_padding STILL reported the same 498 classes -- because the HolyC
+# side came from here and here had not been touched. A poison test (widening a padding member by
+# two bytes) changed nothing in the output, which is how the omission was caught rather than
+# shipped. Three lists for one app, and missing any one of them drops coverage SILENTLY.
+HCNAMES = ["osal", "cfe"] + [a.lower() for a in APPS]
+HCDIRS = [os.path.join(ROOT, "Kernel", "Cfs", n) for n in HCNAMES]
+
 
 
 def app_dirs():
