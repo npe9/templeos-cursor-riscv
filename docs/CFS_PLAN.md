@@ -3727,3 +3727,164 @@ over all 1s would have asserted nothing, which is the same trap one level down.
 Only the two **code-segment** states can witness any of it: the four table states have a second
 writer, `CS_InitAllTables`, which disables each one whose table loaded from memory. The store holds
 `1 1 1 1 1 1` and the live states `2 2 2 2 1 1` at the same moment, and both are printed.
+
+## HS (Health & Safety) is the sixth app, and the one that acts
+
+HS is 2,700 lines across six sources, **52 of 52 functions gated and 52 of 52 exercised**, and the
+transcript went 4,604 -> 5,200. It is the first app in the port whose outputs are a processor
+reset, an application restart, an application delete, a software-bus message and a watchdog it
+stops petting -- so almost nothing in its exercise is a return code. The assertions are side
+effects: a restart count, a `psp_restart` line, a cleared enable bit, a cooldown, a watchdog
+service count.
+
+### THE ONE REAL TRANSLATION DEFECT WAS A PRECEDENCE INVERSION, AND INDEX 0 HID IT
+
+`<<` and `>>` sit on opposite sides of `* / % + -` in the two languages:
+
+```
+C       unary  >  * / %  >  + -  >  << >>  >  rel  >  eq  >  &  >  ^  >  |
+HolyC   unary  >  << >>  >  * /  >  + -  >  ...
+```
+
+`host/parser.c:2729` states it in ParseExp's own comment, after TempleOS's `Compiler/CInit.HC`.
+NASA writes `(1 << (i % HS_BITS_PER_APPMON_ENABLE))` and **the inner parentheses are redundant in
+C**; removing them makes the same text mean `(1 << i) % 32`. For `i = 0` both readings give 1 --
+which is the index any exercise drives first -- and for `i = 31` the C reading is `0x80000000` and
+the HolyC reading is **0**, so application monitor 31 was silently never enabled.
+
+It appeared as ONE line of a 4,870-line transcript, and only because hs_monitors.HC's header had
+already committed the exercise to driving monitor 31 deliberately:
+
+```
+-hsm_app31_armed i=31 cd=1 last=0 en=1 enword=2147483648
++hsm_app31_armed i=31 cd=1 last=0 en=0 enword=0
+```
+
+`tools/cfs/check_shift_parens.py` now refuses an ambiguous shift operand anywhere in the port. The
+whole tree was audited and these two lines were the only ones; ten other shift-plus-`%` sites kept
+NASA's parentheses. The gate's first version also listed `& ^ |`, which are looser than `<<` in
+BOTH languages, and reported correct code in `cfe_msg_ccsdspri.HC` -- the list was narrowed rather
+than the site exempted.
+
+### FOUR MUTATIONS, AND TWO OF THEM FAILED TO APPLY AND LOOKED LIKE PASSES
+
+| mutation | what happened |
+|---|---|
+| hogging `==` -> `>=` in HS_MonitorUtilization | **transcript caught it**: two extra "CPU Hogging Detected" blocks in the 7-sample episode (cycles 6 and 7; cycle 5 fires either way) and none in the 5-sample one. No assertion line moved -- the diff is purely events, which is exactly what that operator controls. |
+| DELETE `ServiceWatchdogFlag = HS_State_DISABLED` (both reset paths) | **`check_members`' reverse pass caught it STATICALLY**, naming both functions and the member. Stronger than the transcript -- and it means the transcript's own ability to see it was still untested. |
+| flip it to `HS_State_ENABLED` instead, which no static gate can see | **transcript caught it on exactly the two predicted lines**: `hsm_app_reset wd=0 -> wd=1` and `hsm_evt_reset wd=0 -> wd=1`, nothing else. |
+| NEGATIVE CONTROL: rename a local in HS_MsgActsStatusRefresh (3 lines) | **passed, 5,200 identical.** |
+
+**TWO ATTEMPTS NEVER REACHED THE FILE.** Both were Python edits whose `assert count == N` was wrong
+about the source (one site's indentation differed; one function had five references, not four), so
+the script raised, the file was untouched, and the smoke ran on clean code and came back GREEN.
+The first of those was read as "the exercise does not catch the most safety-critical line in HS"
+for several minutes.
+
+That is the trap docs/ already records from the other direction -- *a gate refusal shows up as ZERO
+diff lines and reads exactly like a pass* -- arriving as a **mutation** refusal rather than a gate
+refusal. The rule it earns: **print `git diff --numstat` for the mutated file and require a
+non-zero count before the run is trusted.** A mutation harness that cannot fail loudly is a harness
+that reports the code is fine.
+
+### THREE HARNESS BUGS, ONE OF WHICH REWROTE 40 KiB OF GLOBALS
+
+- **`CFE_MSG_Init(ptr, id, len)` ZEROES `len` BYTES.** The MAT validator's length=40000 case passed
+  the ground-claimed length straight through, so it memset forty kilobytes over a 16-byte field.
+  The symptom was not a crash: two lines later the transcript read
+  `EVS_NotRegistered: App CFE_EVS not registered` and the timestamp had jumped from
+  `1980-012-14:03:21` to `1980-001-00:00:14` -- EVS's registration table and the clock both
+  overwritten, pages from anything HS touches. The fix is also more faithful: Init builds a
+  correctly-sized header and `CFE_MSG_SetSize` writes the length field alone, which is what a bad
+  ground upload actually looks like.
+- **Command code 200 does not fit a 7-bit field.** `CFE_MSG_SetFcnCode` refused it, the message
+  carried 0, and the "invalid command code" pass ran **HS_NoopCmd** -- printing `count=1 err=0`,
+  a plausible dispatcher transcript and the exact opposite of the pass's purpose. `hs_mkcmd` now
+  reads the code BACK out of the message, and 200 is kept as a pass of its own.
+- **`&hs_cmdbuf8(CFE_SB_Buffer *)->Msg` ended the HolyC transcript 95 lines early, silently.** A
+  postfix cast followed by `->` is lexically a call followed by `->`, and HolyC resolves the arrow
+  against the first argument's class; an array of `U64` has none, so the access went through zero.
+  The open limit's own prescription -- hoist to a typed local -- is the fix.
+- And the **printf-evaluates-every-argument** trap for the **seventh** time, at five sites: four
+  `CFE_TBL_Load` calls in one `printf` each run a validation function that SENDS AN EVENT, so C put
+  the events before the line and the piecewise HolyC half put them inside it. C also leaves
+  printf's argument evaluation ORDER unspecified, so four emitting calls in one call are not well
+  defined against themselves.
+
+### AND A LATENT DIFFERENTIAL ASYMMETRY NOTHING HAD LOOKED AT
+
+`psp_io_present` was `= 1` in the C half and a bare declaration in the HolyC half, so the simulated
+CPU-load device was PRESENT on one side of the oracle and ABSENT on the other. Harmless until
+something drove the system monitor, which nothing did until HS. Fixed by DELETING the initialiser
+rather than adding one: both halves declare it zero and the shared `hs_setup()` turns the device on
+in one place. **An initialiser in two files is a thing to keep in sync; an assignment in the shared
+setup is not.**
+
+### SIX ASSERTIONS THAT WERE VACUOUS UNTIL THE OUTPUT WAS READ
+
+1. **Six action passes asserted that nothing happened.** Each called `HS_MonitorApplications` once
+   with `CycleCount` 1, and the first cycle after `HS_AppMonStatusRefresh` always sees the
+   execution counter change -- the refresh zeroes `AppMonLastExeCount` and the live counter is not
+   zero. `restarts=0 rp=0 wd=1`, `ctlreq=1`, `exec=0`: six green lines, each indistinguishable from
+   the function never being called, under a comment claiming they drove the actions.
+2. **A resolvable XCT slot and an unresolvable one both printed the sentinel.**
+   `OS_TaskGetIdByName` ignored its name argument and answered `0x2222` to anything, so
+   `CFE_ES_GetTaskInfo` failed on the bogus id. Four of the five resource arms print that sentinel,
+   so the one that does not IS the assertion -- and there wasn't one. Fixed with an opt-in
+   `es_task_byname`: empty behaves exactly as before, so TA's lines do not move.
+3. **`hsm_app_msgact_cool` was byte-identical to `hsm_app_msgact`.** "exec did not move" is also
+   what a monitor that never ran prints.
+4. **`hsa_main_ok` was byte-identical to `hsa_main_initfail`.** The four `CFE_TBL_Unregister` calls
+   meant to clear the way went to **handle 0** -- `HS_AppInit`'s first statement is
+   `memset(&HS_AppData, 0, ...)`, and 0 is a valid cFE table handle belonging to another app.
+5. **All five CDS arms printed `rp=0 mr=3`.** The four reinitialising arms land on
+   `(0, HS_MAX_RESTART_ACTIONS)` and so does a cold start, so "restored" was indistinguishable from
+   "reinitialised". A distinctive `(5, 9)` is now stored first.
+6. **`hsa_init_cds_noreg is_disabled=0`** -- that arm had not run. The PSP write failure alone was
+   not enough: with "HS_CDS" still present, `CFE_ES_RegisterCDS` took the ALREADY_EXISTS arm and
+   never wrote anything. And `CFE_ES_DeleteCDS` **refuses while the owning application is running**
+   (`CFE_ES_CDS_OWNER_ACTIVE_ERR`), which is correct in flight -- so the pass frees the registry
+   record directly, white-box and documented, leaking 16 bytes of a 64 KiB pool.
+
+### TWO UPSTREAM FINDINGS
+
+**#23 -- a message action's length is bounded by the SB, not by its buffer.** `HS_MATMsgBuf_t` is
+`HS_MAX_MSG_ACT_SIZE` = **16** bytes, and `HS_ValidateMATable` checks
+`Length > CFE_MISSION_SB_MAX_SB_MSG_SIZE` (**32768**) -- a factor of 2,048. Driven:
+
+```
+hsv_mat_over16 rc=0 accepted=1 bufsize=16 bound=32768
+```
+
+An entry claiming 100 bytes validates cleanly, and both monitors then `CFE_SB_TransmitMsg` it
+verbatim with the length from that same header. The VALIDATION is driven and the transmit is not:
+an out-of-bounds read both halves perform identically agrees with itself and proves nothing.
+
+**#24 -- the invalid-command-code event reports a message id it never read.**
+`HS_AppProcessGroundCmd` declares `MessageID = CFE_SB_INVALID_MSG_ID`, calls
+`CFE_MSG_GetFcnCode` only, and then prints `"...ID = 0x%08lX, CC = %d"`. The id is written once by
+that initialiser and read once by that event:
+
+```
+EVS Port1 ... 19: Invalid command code: ID = 0x00000000, CC = 100
+```
+
+**HS is alone among the port's six dispatchers.** HK, LC and CS all call `CFE_MSG_GetMsgId` in the
+same arm; MD and MM print no id at all. Measured across all six, not assumed. And NASA declares
+`HS_AppProcessGroundCmd` in **no header at all** -- the C half of the differential would not
+compile until the prototype was written into the oracle, which is that finding demonstrated rather
+than asserted.
+
+### WHAT HS NEEDED THAT THE FIVE APPS BEFORE IT DID NOT
+
+A **simulated watchdog** (`CFE_PSP_Watchdog{Init,Enable,Disable,Service,Get,Set}`, four counters)
+and a **simulated PSP I/O driver** with an ADC (`CFE_PSP_IODriver_FindByName`,
+`CFE_PSP_IODriver_Command`, a device/subsystem/subchannel chain and five steerable knobs), both
+written twice and identical on the two sides. HS is also the only app in the port that subscribes
+to a **cFE core service's telemetry** -- `CFE_EVS_LONG_EVENT_MSG_MID` -- so its input is the whole
+system's event stream, which is why it has three pipes where every other app has one.
+
+The watchdog is **counted, not timed**, and that is the limit of what the exercise can show:
+`hsa_main_ok services=2` catches a dropped call and would not catch a reordering that kept the
+count. hs_app.HC's header argues that the INTERVAL between the two services before the main loop is
+what matters, and a counter cannot see an interval. Named rather than implied.
