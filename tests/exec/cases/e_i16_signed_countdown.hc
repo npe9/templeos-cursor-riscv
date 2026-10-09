@@ -68,7 +68,13 @@ I64 main();
 // SC's index algebra, from Kernel/Cfs/sc/sc_tbl.HC.
 #define IDX_FROM_UINT(a) ((a)(U16))
 #define IDX_AS_UINT(a)   ((a)(U32))
-// sc_cfg.HC's value, so the iteration count is SC's own.
+// **NOT SC's CONFIGURED VALUE.** `SC_NUMBER_OF_RTS` is 4 in this configuration, and four
+// iterations is a thin probe: a loop that happened to run twice, or once, would fold to a
+// different value but would not exercise a counter far from its sentinel. 64 is used here so the
+// descending walk covers a real range before it goes negative. What must match SC exactly is the
+// SHAPE of the loop and the type of its counter, not its bound -- so the bound is the probe's and
+// the rest is NASA's. An earlier version of this comment claimed this was sc_cfg.HC's number; it
+// is not, and the difference is why it now says so.
 #define SC_NUMBER_OF_RTS 64
 
 I64 Fold(I64 r, I64 v)

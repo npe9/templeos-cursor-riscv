@@ -4100,3 +4100,66 @@ time in slot 0 and a **wakeup count** in slot 1, which NASA's own declaration co
 `SC_GetNextRtsCommand` adds `SC_RTS_HEADER_SIZE` to each of the two command lengths it reads and
 then subtracts it back off in both validity tests, reusing one variable for two different
 commands' sizes.
+
+### SC'S FIRST EXERCISE FOUND TWO REAL TRANSLATION DEFECTS THAT EVERY STATIC GATE HAD PASSED
+
+Five SC sources — 2,776 lines — had been gated on static checks alone, and the transcript was
+still exactly where it had been before SC started. That was a change of method from the six apps
+before it, all of which were gated and exercised in the same commits, and it was the wrong one.
+Every gate in `tools/cfs` compares **text, types, layouts or symbol tables**:
+`check_coverage` reads NASA's C against the translation, `check_members` compares member
+references, `check_padding` compares byte offsets, `cfs-inblob` proves a function has an address.
+None of them proves a line ran. `docs/` already names the shape — *layout agreement is not
+reachability*.
+
+The first clock-free exercise block for SC — 113 transcript lines, 5200 → **5313** — diverged
+immediately, and the two causes are now numbered HolyC limits:
+
+**#28, a widening cast of a narrow LVALUE widens the LOAD.** HolyC's cast is a postfix relabel, so
+`(rec->Offset)(U32)` on a `U16` reads four bytes — the record and its neighbour. `sc_tbl.HC` had
+translated NASA's `#define SC_IDX_AS_UINT(arg) ((unsigned int)(arg))` as `((arg)(U32))`, which is
+the obvious reading, with **83 uses between it and its sibling**. It is invisible whenever the
+following halfword is zero. The symptom was four consecutive `SC_ENTRY_OFFSET_INVALID` offsets
+printing 4294967295 against C's 65535. A U16 **local** is worse than a member: its neighbour is
+whatever the frame put there, so the value is unpredictable from the source.
+
+**#29, `ptrarray[i][j]` scales the inner subscript by the OUTER element's size** — eight bytes for
+an array of pointers, whatever the pointee is, and the read is eight bytes wide too. Three
+`sc_global.HC` accessors wrote NASA's one-expression bodies literally. `SC_LoadAts` walked the ATS
+at twice the stride and reported **2** commands where C reported 4. A true two-dimensional array is
+fine and **is spelled identically**: `SC_OperData.AtsTblAddr[i][j]` is broken and
+`SC_AppData.AtsCmdIndexBuffer[i][j]` is correct, and only the declaration tells them apart.
+
+Both are now behaviourally pinned (`e_widening_cast_lvalue.hc`,
+`e_ptrarray_chained_subscript.hc`) and statically refused by `tools/cfs/check_narrow_cast.py`,
+which resolves each operand's declaration rather than matching text. **The gate's first version
+passed its own poison**: the test that skips arithmetic expressions matched the minus sign in
+`->`, so every `p->m(U32)` — the commonest form of the defect, and the one that caused it — was
+invisible. Both halves are now poisoned deliberately in the commit that added them.
+
+A third case went in alongside: `e_addr_of_cast_element.hc` pins `&Buffer32[i](T *)`, the shape
+every ATS and RTS parse uses. It was justified in review as "established in sc_global.HC" and had
+in fact never been executed anywhere in the port.
+
+### WHAT THE SC EXERCISE REACHES, AND WHAT IT DOES NOT
+
+`run_cfs_exercised.sh SC` reports **25 of 45** gated NASA functions run:
+
+```
+  OK   sc_loads.c   15/15
+  OK   sc_state.c    3/3
+  MISS sc_utils.c    5/7    SC_GetCurrentTime SC_ComputeAbsTime
+  MISS sc_atsrq.c    1/10   the nine ATS command handlers
+  MISS sc_rtsrq.c    1/10   the nine RTS command handlers
+```
+
+The two newest sources are fully exercised. The eighteen misses are **two groups, both with a
+named blocker**: the command handlers need a command-message block, which belongs with
+`sc_dispatch.c`; and the two clock functions need the MET moved, through `CFE_TIME_SetMET`.
+Neither is a gap in this block's reach — they are the next two blocks.
+
+`exercised_count.py` itself needed a change to say that honestly. It globbed `fsw/src/*.c` and
+exited on any source without a `.gcov`, which for a partially gated app meant it refused to run at
+all. Deleting that exit would have been the wrong repair — it is the only thing between the tool
+and the "0 of 56 functions" it once printed from no data — so the denominator is now the sources
+the smoke actually compiles, and the ungated ones are listed by name in the output.

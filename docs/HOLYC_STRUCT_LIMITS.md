@@ -1601,3 +1601,132 @@ local declared with a non-literal initialiser, and **exempts by SIZE rather than
 bytes or less is copied whole, so the cFE scalar wrappers (`CFE_SB_MsgId`, `CFE_SBR_RouteId`,
 `OS_time_t`, `CFE_TIME_SysTime`) are fine — seventeen existing sites, all of them 4 or 8 bytes. A
 type the gate cannot measure is a **failure**, not a pass.
+
+## 28. A WIDENING cast of a narrow LVALUE widens the LOAD — OPEN, and SILENT
+
+```
+class R { U16 a; U16 b; };
+R r;  r.a = 0xFFFF;  r.b = 0xFFFF;
+
+(r.a)(U32)      ==>  4294967295       // FOUR bytes: r.a and r.b together
+r.a             ==>  65535            // the plain load is right
+r.a & 0xFFFF    ==>  65535            // and so is the mask
+```
+
+HolyC's cast is a postfix **relabel**, not a conversion — which `docs/` has recorded since the
+first week. What had not been written down is what a relabel does to an **lvalue**: it changes how
+many bytes the compiler reads from that address. So a `(U32)` on a `U16` object reads the object
+*and whatever follows it*.
+
+It is silent whenever the following bytes are zero, which is most of the time.
+
+### THE THREE FORMS, AND A LOCAL IS THE WORST
+
+| form | measured | C |
+|---|---|---|
+| `(r.a)(U32)`, member, neighbour 0xFFFF | 4294967295 | 65535 |
+| `(r.c)(U32)`, member, neighbour 0 | 4660 — **correct** | 4660 |
+| `(arr[0])(U32)`, element, neighbour 0xFFFF | 4294967295 | 65535 |
+| `(loc)(U32)`, a U16 **local** | **2155937791** | 65535 |
+| `(r.e)(U32)`, a U8 member, three neighbours 0xFF | 4294967295 | 255 |
+
+A local's neighbour is whatever the frame put there, so the value is not merely wrong but
+**unpredictable from the source** — it moves when the frame layout moves.
+
+### HOW IT BIT
+
+`Kernel/Cfs/sc/sc_tbl.HC` translated NASA's
+
+```c
+#define SC_IDX_AS_UINT(arg)   ((unsigned int)(arg))
+#define SC_IDNUM_AS_UINT(arg) ((unsigned int)(arg))
+```
+
+as `((arg)(U32))`, which is the obvious reading and is what a postfix-cast language wants you to
+write. **83 uses between the two**, across five gated SC sources, with every static gate green —
+`check_coverage`, `check_signatures`, `check_members`, `check_strings`, `check_structs`,
+`check_padding` and `cfs-inblob` all pass, because the translation's TEXT is faithful and the
+defect is in what the compiler does with it.
+
+The first symptom appeared the first time SC ran: `SC_InitAtsTables` fills every entry-offset
+record with `SC_ENTRY_OFFSET_INVALID` = `(uint16)(-1)`, and the exercise printed four consecutive
+records as **4294967295** where the C half printed 65535 — two adjacent 0xFFFF halfwords read as
+one word.
+
+### THE WORKAROUND
+
+`& 0xFFFF` (or `& 0xFF`), which forces a load of the declared width and is exactly value-equivalent
+for an unsigned source. For a SIGNED narrow source a mask is not equivalent and the value must go
+through a variable of the wider type first.
+
+Pointer casts are unaffected and remain the port's normal idiom: `TableData(U32 *)` relabels a
+pointer, which has one width.
+
+### GATED
+
+`tools/cfs/check_narrow_cast.py` refuses a widening cast whose operand resolves to a narrow
+declaration, and `tests/exec/cases/e_widening_cast_lvalue.hc` pins all five forms above plus the
+three safe spellings. Both halves of the gate were poisoned to prove they fire — and the first
+version of the gate **passed its own poison**, because the test that skips arithmetic expressions
+matched the minus sign in `->`.
+
+## 29. `ptrarray[i][j]` scales the inner subscript by the OUTER element's size — OPEN, and SILENT
+
+```
+U32 store[16];  store[k] = 1000 + k;
+U32 *p32[2];    p32[0] = store;
+
+p32[0][0]            ==>  4299262264296   // 0x000003E9_000003E8 -- store[0] AND store[1]
+p32[0][1]            ==>  4307852198890   // store[2] and store[3] -- so the stride is 8
+q = p32[0];  q[0]    ==>  1000            // correct
+```
+
+An element of `p32` is a pointer, eight bytes, and the inner subscript is scaled by that instead
+of by `sizeof(U32)`. The read is also eight bytes wide, so the element is wrong **and** the width
+is wrong, and the two compound. The pointee's size does not enter into it: a `U8 *` row behaves
+the same.
+
+### A TRUE TWO-DIMENSIONAL ARRAY IS FINE
+
+```
+U32 flat[2][8];     flat[1][i]      ==>  correct
+class H { Rec Grid[2][4]; };  h.Grid[1][i].b  ==>  correct
+```
+
+**The two shapes are spelled identically.** `SC_OperData.AtsTblAddr[i][j]` is broken and
+`SC_AppData.AtsCmdIndexBuffer[i][j]` is correct, and the only way to tell them apart is to read
+the declaration — which is why the gate resolves it rather than matching the text. The port has
+35 double-subscript sites; three were arrays of pointers.
+
+### HOW IT BIT
+
+`Kernel/Cfs/sc/sc_global.HC`'s three buffer accessors translated NASA's one-expression bodies
+literally:
+
+```c
+return (SC_AtsEntry_t *)&SC_OperData.AtsTblAddr[AtsIndex][EntryOffset];
+```
+
+`SC_LoadAts` then walked the ATS at eight bytes per word instead of four and reported **2**
+commands where the C half reported 4 — it read every other entry. A wrong stride inside a
+one-line accessor presents as a wrong COUNT three functions away, which is the distance that makes
+this class expensive.
+
+### THE WORKAROUND
+
+Hoist the row into a local:
+
+```
+SC_AtsEntry_t *SC_GetAtsEntryAtOffset(U16 AtsIndex, U16 EntryOffset)
+{
+  U32 *Row = SC_OperData.AtsTblAddr[SC_IDX_AS_UINT(AtsIndex)];
+
+  return &Row[SC_IDX_AS_UINT(EntryOffset)](SC_AtsEntry_t *);
+}
+```
+
+### GATED
+
+The same `tools/cfs/check_narrow_cast.py`, which fails on a double subscript whose head resolves
+to a pointer array; `tests/exec/cases/e_ptrarray_chained_subscript.hc` pins the broken form, the
+hoisted form, a file-scope 2-D array and a 2-D array inside a class.

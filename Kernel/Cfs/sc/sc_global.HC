@@ -282,14 +282,43 @@ SC_AtsInfoTable_t *SC_GetAtsInfoObject(U16 AtsIndex)
 
 // THE U32 INDEXING IS THE POINT -- see the file header. `RtsTblAddr[i]` is a `U32 *`, so
 // `[EntryOffset]` steps four bytes per unit, and the cast relabels the result as an entry.
+//
+// ### **THE ROW POINTER IS HOISTED, AND IT HAS TO BE: `ptrarray[i][j]` IS BROKEN IN HolyC**
+//
+// NASA's accessor is one expression:
+//
+//     return (SC_RtsEntry_t *)&SC_OperData.RtsTblAddr[RtsIndex][EntryOffset];
+//
+// and the obvious translation chains the two subscripts the same way. **A chained subscript
+// through an ARRAY OF POINTERS uses the OUTER array's element size for the inner subscript.**
+// Measured: with `U32 *p32[2]` aimed at a `U32 store[16]` of 1000..1015,
+//
+//     p32[0][0]            ==>  4299262264296      // 0x3E9_000003E8: store[0] AND store[1]
+//     q = p32[0]; q[0]     ==>  1000               // correct
+//
+// -- the inner read took **eight** bytes, the size of an element of `p32`, instead of the four
+// bytes of its pointee. So the row pointer must be loaded into a local first, and then one
+// subscript is correct. `tests/exec/cases/e_ptrarray_chained_subscript.hc` pins both forms and
+// shows that a TRUE two-dimensional array (`SC_AppData.AtsCmdIndexBuffer[i][j]`, two functions
+// below) is unaffected -- which is why only three of the port's nineteen double-subscript sites
+// needed changing.
+//
+// **THIS WAS FOUND BY RUNNING SC, NOT BY READING IT.** The chained form was in all three
+// accessors through five gated sources and every static gate was green: the text matches NASA's,
+// the types match, the layouts match. The first exercise printed an ATS command count of 2 where
+// C printed 4, because SC_LoadAts walked the buffer at twice the stride.
 SC_RtsEntry_t *SC_GetRtsEntryAtOffset(U16 RtsIndex, U16 EntryOffset)
 {
-  return &SC_OperData.RtsTblAddr[SC_IDX_AS_UINT(RtsIndex)][SC_IDX_AS_UINT(EntryOffset)](SC_RtsEntry_t *);
+  U32 *Row = SC_OperData.RtsTblAddr[SC_IDX_AS_UINT(RtsIndex)];
+
+  return &Row[SC_IDX_AS_UINT(EntryOffset)](SC_RtsEntry_t *);
 }
 
 SC_AtsEntry_t *SC_GetAtsEntryAtOffset(U16 AtsIndex, U16 EntryOffset)
 {
-  return &SC_OperData.AtsTblAddr[SC_IDX_AS_UINT(AtsIndex)][SC_IDX_AS_UINT(EntryOffset)](SC_AtsEntry_t *);
+  U32 *Row = SC_OperData.AtsTblAddr[SC_IDX_AS_UINT(AtsIndex)];
+
+  return &Row[SC_IDX_AS_UINT(EntryOffset)](SC_AtsEntry_t *);
 }
 
 SC_AtsCmdEntryOffsetRecord_t *SC_GetAtsEntryOffsetForCmd(U16 AtsIndex, U16 CommandIndex)
@@ -304,9 +333,14 @@ SC_AtsCmdNumRecord_t *SC_GetAtsCommandNumAtSeq(U16 AtsIndex, U16 SeqIndex)
   return &SC_AppData.AtsTimeIndexBuffer[SC_IDX_AS_UINT(AtsIndex)][SC_IDX_AS_UINT(SeqIndex)];
 }
 
+// THE THIRD HOISTED ROW. AtsCmdStatusTblAddr is an array of pointers like the two buffers above,
+// not a two-dimensional array like the two index buffers between them -- so this one needs the
+// local and they do not.
 SC_AtsCmdStatusEntry_t *SC_GetAtsStatusEntryForCommand(U16 AtsIndex, U16 CommandIndex)
 {
-  return &SC_OperData.AtsCmdStatusTblAddr[SC_IDX_AS_UINT(AtsIndex)][SC_IDX_AS_UINT(CommandIndex)];
+  SC_AtsCmdStatusEntry_t *Row = SC_OperData.AtsCmdStatusTblAddr[SC_IDX_AS_UINT(AtsIndex)];
+
+  return &Row[SC_IDX_AS_UINT(CommandIndex)];
 }
 
 #endif

@@ -112,10 +112,37 @@
 
 // Function-like macros, kept as macros. HolyC HAS them -- lc_cmds.HC carries NASA's
 // LC_GET_CMD_PAYLOAD unchanged, which is the counter-example to the claim that it does not.
-// HolyC's cast is postfix, so `((unsigned int)(arg))` becomes `(arg)(U32)`.
-#define SC_IDNUM_AS_UINT(arg)   ((arg)(U32))
+//
+// ### **THE TWO WIDENING MACROS CANNOT BE WRITTEN AS CASTS, AND THE FIRST VERSION WAS**
+//
+// NASA's are `((unsigned int)(arg))` and `((uint16)(arg))`. HolyC's cast is a postfix RELABEL, so
+// the obvious translation of the first is `(arg)(U32)` -- and **that widens the LOAD instead of
+// converting the value**. For a `U16` lvalue whose neighbouring halfword is non-zero it reads
+// FOUR bytes and returns both:
+//
+//     Offset = 0xFFFF (SC_ENTRY_OFFSET_INVALID), next record's Offset also 0xFFFF
+//     (Offset)(U32)   ==>  4294967295       // two records read as one word
+//     Offset & 0xFFFF ==>  65535            // C's answer
+//
+// That shipped in five gated SC sources -- 36 uses of SC_IDX_AS_UINT and 47 of
+// SC_IDNUM_AS_UINT -- and every static gate was green, because the two macros are TEXTUALLY
+// faithful to NASA's and the defect is in what the compiler does with them. It was found the
+// first time SC ran: the exercise printed four consecutive `SC_ENTRY_OFFSET_INVALID` offsets and
+// the C half said 65535 where the HolyC half said 4294967295.
+//
+// **A LOCAL IS WORSE THAN A MEMBER**: a stack slot's neighbour is whatever the frame put there,
+// so `(loc)(U32)` of a U16 local is not merely wrong but unpredictable from the source --
+// measured at 2155937791 for a 0xFFFF local. tests/exec/cases/e_widening_cast_lvalue.hc pins all
+// three forms, the U8 case, the three SAFE spellings, and the narrowing direction.
+//
+// So the widening macros use `& 0xFFFF`, which forces a load of the declared width and is exactly
+// value-equivalent for a uint16 source -- NASA's argument is always one of the index typedefs,
+// all of which are uint16 (sc_index_types.h, default_sc_extern_typedefs.h). The FROM_UINT
+// direction keeps its cast: relabelling a wider lvalue as U16 reads the LOW halfword, which on
+// this little-endian target is the truncation C performs, and the same exec case pins it.
+#define SC_IDNUM_AS_UINT(arg)   ((arg) & 0xFFFF)
 #define SC_IDNUM_FROM_UINT(arg) ((arg)(U16))
-#define SC_IDX_AS_UINT(arg)     ((arg)(U32))
+#define SC_IDX_AS_UINT(arg)     ((arg) & 0xFFFF)
 #define SC_IDX_FROM_UINT(arg)   ((arg)(U16))
 #define SC_IDX_INCREMENT(arg)   (++(arg))
 #define SC_IDX_DECREMENT(arg)   (--(arg))

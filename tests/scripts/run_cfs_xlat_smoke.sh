@@ -371,6 +371,28 @@ python3 "$ROOT/tools/cfs/check_defines.py" || exit 1
 # sides' TEXT, and the compiler is entitled to its own table.
 python3 "$ROOT/tools/cfs/check_shift_parens.py" || exit 1
 
+# --- two more places the compiler does not do what the C says -----------------------------------
+#
+# Both were found by RUNNING SC, after five of its sources had been gated with every static check
+# green, and both are shapes where the translation's text is faithful to NASA's:
+#
+#   1. A WIDENING CAST OF A NARROW LVALUE WIDENS THE LOAD. HolyC's cast is a postfix relabel, so
+#      `(rec->Offset)(U32)` on a `U16` reads FOUR bytes -- the record and its neighbour. NASA's
+#      `#define SC_IDX_AS_UINT(arg) ((unsigned int)(arg))` translated to `((arg)(U32))` is exactly
+#      this, 83 uses between it and its sibling, invisible whenever the adjacent halfword is zero.
+#      The fix is `& 0xFFFF`, which forces a load of the declared width.
+#
+#   2. `ptrarray[i][j]` SCALES THE INNER SUBSCRIPT BY THE OUTER ELEMENT'S SIZE -- eight bytes for
+#      an array of pointers, whatever the pointee is. Three sc_global.HC accessors had it, and
+#      SC_LoadAts walked the ATS at twice the stride and reported 2 commands where C reported 4.
+#      A TRUE two-dimensional array is fine and is spelled identically, which is why the gate
+#      resolves the declaration instead of matching the text.
+#
+# Behaviourally pinned by tests/exec/cases/e_widening_cast_lvalue.hc and
+# tests/exec/cases/e_ptrarray_chained_subscript.hc. Neither defect is visible to any other gate:
+# the types match, the layouts match, the strings match, and the functions have addresses.
+python3 "$ROOT/tools/cfs/check_narrow_cast.py" || exit 1
+
 # --- is it even compiled? -----------------------------------------------------------------------
 # Every gate above this line is driven from SRC_C, so each one measures the translation only
 # where the C half names a counterpart. A .HC file that is complete, parses, and is included by

@@ -18038,6 +18038,948 @@ U0 hs_block_app()
   hs_setup();
 }
 
+// =====================  SC, THE SEVENTH cFS APP -- THE CLOCK-FREE HALF  =====================
+//
+// **WHY THIS BLOCK EXISTS BEFORE SC IS FINISHED.** The six apps before SC were gated and
+// exercised in the same commits. SC's five gated sources -- sc_utils, sc_rtsrq, sc_atsrq,
+// sc_loads, sc_state, 2,776 lines -- landed on static gates alone, and those gates all compare
+// TEXT: check_coverage, check_members, check_strings and check_signatures read NASA's C and the
+// translation side by side, and cfs-inblob proves a function has an ADDRESS. None of them proves
+// a line RAN. Five sources of suspects is already more than a first divergence should have to
+// choose between, so this block runs what can be run now rather than waiting for sc_app.c.
+//
+// ### WHAT "CLOCK-FREE" MEANS AND WHY MOST OF SC IS
+//
+// SC is the first app in this port whose behaviour is a function of TIME, and a wall clock would
+// make a transcript non-reproducible. But the dependency is narrower than it looks: only
+// SC_GetCurrentTime and SC_ComputeAbsTime read the clock. The verifiers and parsers walk a buffer
+// handed to them; SC_LoadAts, SC_LoadRts, SC_UpdateAppend and SC_ProcessAppend the same;
+// SC_BuildTimeIndexTable and SC_Insert read the time tags of entries written HERE; and
+// SC_GetNextRtsCommand and SC_ComputeAbsWakeup read SC_AppData.CurrentWakeupCount, which is a
+// FIELD set below -- wakeups are not seconds. So the clock-dependent part of SC is two functions.
+//
+// ### THE TABLES ARE WIRED BY POINTER, NOT REGISTERED
+//
+// sc_wire() points SC_OperData's eleven buffer pointers at the globals below instead of calling
+// CFE_TBL_Register and CFE_TBL_GetAddress eleven times. cFE's table registry is a shared fixture
+// that four earlier apps have already filled, and nothing in the five sources under test cares
+// where its buffer came from. **ONE CONSEQUENCE IS LEFT VISIBLE**: SC_ProcessAppend ends with
+// CFE_TBL_Modified on a CFE_TBL_BAD_TABLE_HANDLE, so cFE logs a refusal in both halves. A zeroed
+// handle instead would aim it at ANOTHER APP'S TABLE, which is the mistake HS's block records.
+U32 sc_ats_buf[SC_NUMBER_OF_ATS][SC_ATS_BUFF_SIZE32];
+U32 sc_append_buf[SC_APPEND_BUFF_SIZE32];
+U32 sc_rts_buf[SC_NUMBER_OF_RTS][SC_RTS_BUFF_SIZE32];
+SC_AtsInfoTable_t sc_ats_info[SC_NUMBER_OF_ATS];
+SC_RtsInfoEntry_t sc_rts_info[SC_NUMBER_OF_RTS];
+SC_AtsCmdStatusEntry_t sc_ats_status[SC_NUMBER_OF_ATS][SC_MAX_ATS_CMDS];
+SC_AtpControlBlock_t sc_atp;
+SC_RtpControlBlock_t sc_rtp;
+
+U0 sc_wire()
+{
+  I64 i;
+
+  MemSet(&SC_AppData, 0, sizeof(SC_AppData));
+  MemSet(&SC_OperData, 0, sizeof(SC_OperData));
+  MemSet(sc_ats_buf, 0, sizeof(sc_ats_buf));
+  MemSet(sc_append_buf, 0, sizeof(sc_append_buf));
+  MemSet(sc_rts_buf, 0, sizeof(sc_rts_buf));
+  MemSet(sc_ats_info, 0, sizeof(sc_ats_info));
+  MemSet(sc_rts_info, 0, sizeof(sc_rts_info));
+  MemSet(sc_ats_status, 0, sizeof(sc_ats_status));
+  MemSet(&sc_atp, 0, sizeof(sc_atp));
+  MemSet(&sc_rtp, 0, sizeof(sc_rtp));
+
+  for (i = 0; i < SC_NUMBER_OF_ATS; i++) {
+    SC_OperData.AtsTblHandle[i] = CFE_TBL_BAD_TABLE_HANDLE;
+    SC_OperData.AtsTblAddr[i] = &sc_ats_buf[i][0];
+    SC_OperData.AtsCmdStatusHandle[i] = CFE_TBL_BAD_TABLE_HANDLE;
+    SC_OperData.AtsCmdStatusTblAddr[i] = &sc_ats_status[i][0];
+  }
+  for (i = 0; i < SC_NUMBER_OF_RTS; i++) {
+    SC_OperData.RtsTblHandle[i] = CFE_TBL_BAD_TABLE_HANDLE;
+    SC_OperData.RtsTblAddr[i] = &sc_rts_buf[i][0];
+  }
+  SC_OperData.AppendTblHandle = CFE_TBL_BAD_TABLE_HANDLE;
+  SC_OperData.AppendTblAddr = sc_append_buf;
+  SC_OperData.AtsInfoHandle = CFE_TBL_BAD_TABLE_HANDLE;
+  SC_OperData.AtsInfoTblAddr = sc_ats_info;
+  SC_OperData.RtsInfoHandle = CFE_TBL_BAD_TABLE_HANDLE;
+  SC_OperData.RtsInfoTblAddr = sc_rts_info;
+  SC_OperData.RtsCtrlBlckHandle = CFE_TBL_BAD_TABLE_HANDLE;
+  SC_OperData.RtsCtrlBlckAddr = &sc_rtp;
+  SC_OperData.AtsCtrlBlckHandle = CFE_TBL_BAD_TABLE_HANDLE;
+  SC_OperData.AtsCtrlBlckAddr = &sc_atp;
+
+  // Wakeups, not seconds. SC_ComputeAbsWakeup adds a relative count to this.
+  SC_AppData.CurrentWakeupCount = 1000;
+}
+
+// Write one ATS entry at a word offset and return the offset of the next. `bytes` is the PACKET
+// length, excluding SC's own eight-byte header.
+//
+// CFE_MSG_Init IS CALLED WITH THE HEADER'S SIZE AND NOT WITH `bytes` -- the lesson HS's block
+// paid for: Init ZEROES the length it is given, so a large declared size memsets that much of the
+// caller's buffer. Init small, then SetSize.
+U16 sc_ats_put(I64 ats, U16 off, U16 cmdnum, U16 tms, U16 tls, I64 bytes)
+{
+  SC_AtsEntry_t *e = &sc_ats_buf[ats][off](SC_AtsEntry_t *);
+
+  CFE_MSG_Init(&e->Msg.Msg, CFE_SB_ValueToMsgId(SC_CMD_MID), sizeof(CFE_MSG_CommandHeader));
+  CFE_MSG_SetSize(&e->Msg.Msg, bytes);
+  e->Header.Pad = 0;
+  e->Header.CmdNumber = SC_COMMAND_NUM_C(cmdnum);
+  e->Header.TimeTag_MS = tms;
+  e->Header.TimeTag_LS = tls;
+  return SC_EntryOffsetAdvance(SC_ENTRY_OFFSET_C(off), bytes + SC_ATS_HEADER_SIZE);
+}
+
+U16 sc_app_put(U16 off, U16 cmdnum, U16 tms, U16 tls, I64 bytes)
+{
+  SC_AtsEntry_t *e = &sc_append_buf[off](SC_AtsEntry_t *);
+
+  CFE_MSG_Init(&e->Msg.Msg, CFE_SB_ValueToMsgId(SC_CMD_MID), sizeof(CFE_MSG_CommandHeader));
+  CFE_MSG_SetSize(&e->Msg.Msg, bytes);
+  e->Header.Pad = 0;
+  e->Header.CmdNumber = SC_COMMAND_NUM_C(cmdnum);
+  e->Header.TimeTag_MS = tms;
+  e->Header.TimeTag_LS = tls;
+  return SC_EntryOffsetAdvance(SC_ENTRY_OFFSET_C(off), bytes + SC_ATS_HEADER_SIZE);
+}
+
+// `valid_mid` 0 leaves the message id at zero, which is SC's end-of-buffer marker when the wakeup
+// count is zero too.
+U16 sc_rts_put(I64 rts, U16 off, U32 wakeup, I64 bytes, I64 valid_mid)
+{
+  SC_RtsEntry_t *e = &sc_rts_buf[rts][off](SC_RtsEntry_t *);
+  CFE_SB_MsgId mid;
+
+  // HOISTED: CFE_SB_ValueToMsgId and CFE_SB_InvalidMsgId are calls, and a ternary of two calls in
+  // an argument position is the shape this port keeps out of argument lists.
+  if (valid_mid)
+    mid = CFE_SB_ValueToMsgId(SC_CMD_MID);
+  else
+    mid = CFE_SB_InvalidMsgId();
+  CFE_MSG_Init(&e->Msg.Msg, mid, sizeof(CFE_MSG_CommandHeader));
+  CFE_MSG_SetSize(&e->Msg.Msg, bytes);
+  e->Header.WakeupCount = wakeup;
+  return SC_EntryOffsetAdvance(SC_ENTRY_OFFSET_C(off), bytes + SC_RTS_HEADER_SIZE);
+}
+
+// Print the time-sorted list and the per-command offsets. THE TWO INDEXINGS ARE THE POINT: `seq`
+// is a SEQUENCE index into the time order and `off` is keyed by a COMMAND index, and sc_tbl.HC's
+// header explains why mixing them is silent. Both for the same i makes the sort visible.
+U0 sc_show_ats(U8 *tag, I64 ats, I64 n)
+{
+  I64 i;
+  SC_AtsInfoTable_t *info = SC_GetAtsInfoObject(SC_ATS_IDX_C(ats));
+  SC_AtsCmdNumRecord_t *seqrec;
+  SC_AtsCmdEntryOffsetRecord_t *offrec;
+  SC_AtsCmdStatusEntry_t *strec;
+
+  S(tag);
+  S(" cmds=");
+  D(info->NumberOfCommands);
+  S(" size=");
+  D(info->AtsSize);
+  S("\n");
+  for (i = 0; i < n; i++) {
+    // THE THREE ACCESSORS ARE HOISTED, not because printf evaluates arguments in an unspecified
+    // order here -- S()/D() take one each -- but because each is a `call(scalar)->member`, the
+    // open HolyC defect that loads through zero when the arrow's first argument has no class.
+    seqrec = SC_GetAtsCommandNumAtSeq(SC_ATS_IDX_C(ats), SC_SEQUENCE_IDX_C(i));
+    offrec = SC_GetAtsEntryOffsetForCmd(SC_ATS_IDX_C(ats), SC_COMMAND_IDX_C(i));
+    strec = SC_GetAtsStatusEntryForCommand(SC_ATS_IDX_C(ats), SC_COMMAND_IDX_C(i));
+    S(tag);
+    S(" i=");
+    D(i);
+    S(" seq=");
+    D(SC_IDNUM_AS_UINT(seqrec->CmdNum));
+    S(" off=");
+    D(SC_IDX_AS_UINT(offrec->Offset));
+    S(" status=");
+    D(strec->Status);
+    S("\n");
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// SC BLOCK 1: sc_loads.c -- verify, load, sort.
+//
+// SC_VerifyAtsEntry RETURNS THREE KINDS OF THING IN ONE I32, so every pass below reads its
+// CALLER's verdict rather than the entry's: 0 means "no more entries", -1 means invalid, and
+// anything positive is a WORD COUNT. The empty-table pass is the one that shows 0 is not success.
+//
+// THE SORT IS DRIVEN WITH TIMES OUT OF ORDER AND WITH A TIE. Commands 1, 2, 3 are uploaded with
+// times 300, 100, 200 and command 4 with 100 -- equal to command 2's -- so a working SC_Insert
+// produces 2, 4, 3, 1 and command 4 lands AFTER command 2 because SC_CompareAbsTime is strictly
+// greater. A `>=` there would swap them and the scl_load lines are what would say so.
+U0 sc_block_loads()
+{
+  I32 rc;
+  I64 i;
+  U16 off;
+  U16 last;
+
+  // ---- an EMPTY table is an error, and the return value is the opposite of intuition ---------
+  //
+  // SC_VerifyAtsEntry returns CFE_SUCCESS for the first (zero) command number, SC_VerifyAtsTable
+  // counts zero commands, and the TABLE verdict becomes SC_ERROR. "The entry was fine" and "the
+  // table is bad" come out of the same zero.
+  sc_wire();
+  rc = SC_ValidateAts(&sc_ats_buf[0][0](U8 *));
+  S("scl_ats_empty rc=");
+  D(rc);
+  S(" is_err=");
+  D(rc == SC_ERROR);
+  S("\n");
+
+  // ---- three entries, times descending, then a fourth tying with the second -----------------
+  sc_wire();
+  off = sc_ats_put(0, SC_ENTRY_OFFSET_FIRST, 1, 0, 300, SC_PACKET_MIN_SIZE);
+  off = sc_ats_put(0, off, 2, 0, 100, SC_PACKET_MIN_SIZE);
+  off = sc_ats_put(0, off, 3, 0, 200, SC_PACKET_MIN_SIZE);
+  last = sc_ats_put(0, off, 4, 0, 100, SC_PACKET_MIN_SIZE);
+  S("scl_built off3=");
+  D(off);
+  S(" off4=");
+  D(last);
+  S(" entry_words=");
+  D(last - off);
+  S("\n");
+  rc = SC_ValidateAts(&sc_ats_buf[0][0](U8 *));
+  S("scl_ats_ok rc=");
+  D(rc);
+  S(" is_success=");
+  D(rc == CFE_SUCCESS);
+  S("\n");
+
+  // AND THE LOAD, which walks the same buffer a second time with different code. The two walks
+  // are separate functions by design -- sc_loads.HC's note on SC_UpdateAppend trusting what the
+  // validator checked -- so a divergence between them shows up as these lines disagreeing about
+  // the command count.
+  SC_LoadAts(SC_ATS_IDX_C(0));
+  sc_show_ats("scl_load", 0, 4);
+
+  // ---- a duplicate command number, whose event names WHERE the first one was ----------------
+  //
+  // The dup-test array stores an INDEX, not a flag, which is why SC_DUP_TEST_UNUSED is -1 and not
+  // 0 -- buffer index 0 is a valid place for a command. The `dup index` in the event text is what
+  // that choice buys.
+  sc_wire();
+  off = sc_ats_put(0, SC_ENTRY_OFFSET_FIRST, 7, 0, 10, SC_PACKET_MIN_SIZE);
+  sc_ats_put(0, off, 7, 0, 20, SC_PACKET_MIN_SIZE);
+  rc = SC_ValidateAts(&sc_ats_buf[0][0](U8 *));
+  S("scl_ats_dup rc=");
+  D(rc);
+  S(" is_err=");
+  D(rc == SC_ERROR);
+  S(" first_off=");
+  D(off);
+  S("\n");
+
+  // ---- a command number above SC_MAX_ATS_CMDS ------------------------------------------------
+  sc_wire();
+  sc_ats_put(0, SC_ENTRY_OFFSET_FIRST, SC_MAX_ATS_CMDS + 1, 0, 10, SC_PACKET_MIN_SIZE);
+  rc = SC_ValidateAts(&sc_ats_buf[0][0](U8 *));
+  S("scl_ats_badnum rc=");
+  D(rc);
+  S(" is_err=");
+  D(rc == SC_ERROR);
+  S("\n");
+
+  // ---- a packet shorter than SC_PACKET_MIN_SIZE and one longer than SC_PACKET_MAX_SIZE ------
+  sc_wire();
+  sc_ats_put(0, SC_ENTRY_OFFSET_FIRST, 1, 0, 10, SC_PACKET_MIN_SIZE - 1);
+  rc = SC_ValidateAts(&sc_ats_buf[0][0](U8 *));
+  S("scl_ats_short rc=");
+  D(rc);
+  S(" is_err=");
+  D(rc == SC_ERROR);
+  S("\n");
+
+  sc_wire();
+  sc_ats_put(0, SC_ENTRY_OFFSET_FIRST, 1, 0, 10, SC_PACKET_MAX_SIZE + 1);
+  rc = SC_ValidateAts(&sc_ats_buf[0][0](U8 *));
+  S("scl_ats_long rc=");
+  D(rc);
+  S(" is_err=");
+  D(rc == SC_ERROR);
+  S("\n");
+
+  // ---- THE TWO BUFFER-BOUND ARMS, AND WHY THEY ARE DRIVEN THROUGH SC_VerifyAtsTable ---------
+  //
+  // A FIRST VERSION OF BOTH PASSES ASSERTED NOTHING. It planted one entry near the END of the
+  // 4,000-word buffer and called SC_ValidateAts -- but the walk starts at offset 0, word 0 was
+  // zero, so the verifier saw "end of the in-use portion" on its first entry and reported
+  // `table is empty`. Two passes named `overrun` and `nohdr` printing the SAME event as the
+  // empty-table pass above them, with rc=-1 in all three. Caught by reading the EVENT text
+  // rather than the return value.
+  //
+  // The fix uses the size parameter that is the whole reason SC_VerifyAtsTable takes one:
+  // SC_ValidateAts passes SC_ATS_BUFF_SIZE32 and SC_ValidateAppend passes SC_APPEND_BUFF_SIZE32,
+  // so calling it directly with a small bound puts the END of the buffer next to offset 0.
+  //
+  // BufferWords = 5 and a maximum-length packet: the header fits (4 words) and the packet cannot
+  // (2 + 64 = 66), which is SC_VERIFY_ATS_BUF_ERR_EID.
+  sc_wire();
+  sc_ats_put(0, SC_ENTRY_OFFSET_FIRST, 1, 0, 10, SC_PACKET_MAX_SIZE);
+  rc = SC_VerifyAtsTable(&sc_ats_buf[0][0], 5);
+  S("scl_ats_overrun rc=");
+  D(rc);
+  S(" is_err=");
+  D(rc == SC_ERROR);
+  S(" words=5\n");
+
+  // BufferWords = 3: not even the smallest possible entry fits, a DIFFERENT event
+  // (SC_VERIFY_ATS_END_ERR_EID) and the one that prints `buf words`.
+  sc_wire();
+  sc_ats_put(0, SC_ENTRY_OFFSET_FIRST, 1, 0, 10, SC_PACKET_MIN_SIZE);
+  rc = SC_VerifyAtsTable(&sc_ats_buf[0][0], 3);
+  S("scl_ats_nohdr rc=");
+  D(rc);
+  S(" is_err=");
+  D(rc == SC_ERROR);
+  S(" words=3\n");
+
+  // AND THE `EntryIndex >= BufferWords` ARM, which NASA's own comment says the process logic
+  // cannot reach -- "we must include the greater than to protect against our own potential
+  // coding errors". Calling the entry verifier DIRECTLY reaches it, and it returns CFE_SUCCESS:
+  // running off the end is "no more entries", not an error. The one place in SC where a
+  // deliberately unreachable branch can be shown to do what its author intended.
+  sc_wire();
+  rc = SC_VerifyAtsEntry(&sc_ats_buf[0][0], 8, 4);
+  S("scl_entry_past rc=");
+  D(rc);
+  S(" is_success=");
+  D(rc == CFE_SUCCESS);
+  S("\n");
+
+  // ---- AND A ZEROED DUP-TEST ARRAY MAKES EVERY COMMAND A DUPLICATE --------------------------
+  //
+  // This pass was written to show the THIRD kind of value SC_VerifyAtsEntry returns -- a positive
+  // word count -- and it returned -1 with a `dup cmd number` event instead.
+  //
+  // SC_DUP_TEST_UNUSED is **-1**, not 0, because buffer index 0 is a valid place for the first
+  // command. sc_wire() zeroes SC_OperData, so every slot reads 0 -- "already seen at index 0" --
+  // and the first entry verified is rejected as its own duplicate.
+  //
+  // SC_VerifyAtsTable clears the array to -1 before its walk, so the app is never in this state
+  // and this is not a defect. It IS a hard ordering dependency between a public function and its
+  // only caller: SC_VerifyAtsEntry is exported in sc_loads.h and is wrong on its own. Both states
+  // are printed, one line apart.
+  sc_ats_put(0, SC_ENTRY_OFFSET_FIRST, 1, 0, 10, SC_PACKET_MIN_SIZE);
+  rc = SC_VerifyAtsEntry(&sc_ats_buf[0][0], 0, SC_ATS_BUFF_SIZE32);
+  S("scl_entry_zerodup rc=");
+  D(rc);
+  S(" is_err=");
+  D(rc == SC_ERROR);
+  S(" unused=");
+  D(SC_DUP_TEST_UNUSED);
+  S("\n");
+
+  for (i = 0; i < SC_MAX_ATS_CMDS; i++) {
+    SC_OperData.AtsDupTestArray[i] = SC_DUP_TEST_UNUSED;
+  }
+  rc = SC_VerifyAtsEntry(&sc_ats_buf[0][0], 0, SC_ATS_BUFF_SIZE32);
+  // 2 header words + 2 packet words = 4, and it is neither 0 nor -1 -- the three returns cannot
+  // collide because the smallest valid entry is SC_ATS_HDR_NOPKT_WORDS + 1 = 3 words.
+  S("scl_entry_words rc=");
+  D(rc);
+  S(" hdr_nopkt=");
+  D(SC_ATS_HDR_NOPKT_WORDS);
+  S(" min_possible=");
+  D(SC_ATS_HDR_NOPKT_WORDS + 1);
+  S("\n");
+
+  // ---- the five invalid-ATS-index guards, which are five different event ids ------------------
+  sc_wire();
+  SC_LoadAts(SC_ATS_IDX_C(SC_NUMBER_OF_ATS));
+  SC_InitAtsTables(SC_ATS_IDX_C(SC_NUMBER_OF_ATS));
+  SC_BuildTimeIndexTable(SC_ATS_IDX_C(SC_NUMBER_OF_ATS));
+  SC_Insert(SC_ATS_IDX_C(SC_NUMBER_OF_ATS), SC_COMMAND_IDX_C(0), 0);
+  SC_ProcessAppend(SC_ATS_IDX_C(SC_NUMBER_OF_ATS));
+  S("scl_badidx ats=");
+  D(SC_NUMBER_OF_ATS);
+  S(" cmds=");
+  D(sc_ats_info[0].NumberOfCommands);
+  S("\n");
+
+  // ---- A FAILED LOAD WIPES THE TABLE rather than leaving a partial one -----------------------
+  //
+  // Two good entries then a repeated command number. SC_LoadAts calls SC_InitAtsTables a SECOND
+  // time on the error path, so NumberOfCommands comes back 0 and not 2 -- the line that
+  // distinguishes "stopped at the bad entry" from "discarded the whole load".
+  sc_wire();
+  off = sc_ats_put(0, SC_ENTRY_OFFSET_FIRST, 1, 0, 10, SC_PACKET_MIN_SIZE);
+  off = sc_ats_put(0, off, 2, 0, 20, SC_PACKET_MIN_SIZE);
+  sc_ats_put(0, off, 1, 0, 30, SC_PACKET_MIN_SIZE);
+  SC_LoadAts(SC_ATS_IDX_C(0));
+  S("scl_load_fail cmds=");
+  D(sc_ats_info[0].NumberOfCommands);
+  S(" size=");
+  D(sc_ats_info[0].AtsSize);
+  S("\n");
+}
+
+// ---------------------------------------------------------------------------------------------
+// SC BLOCK 2: the append table -- and UPSTREAM #25 BECOMES A TRANSCRIPT LINE.
+//
+// SC_UpdateAppend publishes the append table's byte count twice, five lines apart:
+//
+//     SC_OperData.HkPacket.Payload.AppendByteCount = EntryIndex * SC_BYTES_IN_ATS_APPEND_ENTRY;
+//     ... "byte count = %d", EntryIndex * SC_BYTES_IN_WORD
+//
+// SC_BYTES_IN_ATS_APPEND_ENTRY is 2 and SC_BYTES_IN_WORD is 4, EntryIndex counts 32-bit words,
+// and SC_ProcessAppend copies AppendWordCount * SC_BYTES_IN_WORD bytes -- so the EVENT is right
+// and the TELEMETRY POINT is half. docs/CFS_UPSTREAM_NOTES.md #25 sets out the evidence; this
+// pass prints the packet field and the word count from one call, so the factor of two is here
+// rather than in the note's reasoning.
+U0 sc_block_append()
+{
+  U16 off;
+  I32 rc;
+  I64 hk_bytes;
+  I64 words;
+  I64 real_bytes;
+  SC_AtsCmdEntryOffsetRecord_t *o5;
+  SC_AtsCmdEntryOffsetRecord_t *o6;
+  SC_AtsCmdEntryOffsetRecord_t *o9;
+
+  sc_wire();
+  off = sc_app_put(SC_ENTRY_OFFSET_FIRST, 5, 0, 500, SC_PACKET_MIN_SIZE);
+  off = sc_app_put(off, 6, 0, 600, SC_PACKET_MIN_SIZE);
+  S("sca_built words=");
+  D(off);
+  S("\n");
+
+  rc = SC_ValidateAppend(sc_append_buf(U8 *));
+  S("sca_validate rc=");
+  D(rc);
+  S(" is_success=");
+  D(rc == CFE_SUCCESS);
+  S("\n");
+
+  SC_UpdateAppend();
+  hk_bytes = SC_OperData.HkPacket.Payload.AppendByteCount;
+  words = SC_AppData.AppendWordCount;
+  real_bytes = words * SC_BYTES_IN_WORD;
+  // THE THREE NUMBERS ON ONE LINE, and `half=1` is the defect.
+  S("sca_update entries=");
+  D(SC_OperData.HkPacket.Payload.AppendEntryCount);
+  S(" hk_bytes=");
+  D(hk_bytes);
+  S(" words=");
+  D(words);
+  S(" real_bytes=");
+  D(real_bytes);
+  S(" half=");
+  D(hk_bytes * 2 == real_bytes);
+  S(" load=");
+  D(SC_OperData.HkPacket.Payload.AppendLoadCount);
+  S("\n");
+
+  // ---- AND THE APPEND ACTUALLY HAPPENS, which the stand-in made impossible to say ------------
+  //
+  // Two commands already in ATS A, then the two above appended. Command 6 is NEW and command 5
+  // REPLACES the existing command 5, so NumberOfCommands goes 2 -> 3 and not 2 -> 4: the
+  // `if (Status == EMPTY)` is the only thing stopping the count double-counting a replaced
+  // command, and this is the line that shows it.
+  off = sc_ats_put(0, SC_ENTRY_OFFSET_FIRST, 5, 0, 50, SC_PACKET_MIN_SIZE);
+  sc_ats_put(0, off, 9, 0, 90, SC_PACKET_MIN_SIZE);
+  SC_LoadAts(SC_ATS_IDX_C(0));
+  S("sca_before cmds=");
+  D(sc_ats_info[0].NumberOfCommands);
+  S(" size=");
+  D(sc_ats_info[0].AtsSize);
+  S("\n");
+  SC_ProcessAppend(SC_ATS_IDX_C(0));
+  S("sca_after cmds=");
+  D(sc_ats_info[0].NumberOfCommands);
+  S(" size=");
+  D(sc_ats_info[0].AtsSize);
+  S("\n");
+  // WHERE the appended entries landed: 5 was replaced so its offset moved to the append's
+  // position, 6 and 9 are where the two loads put them. The three accessors are hoisted.
+  o5 = SC_GetAtsEntryOffsetForCmd(SC_ATS_IDX_C(0), SC_CommandNumToIndex(SC_COMMAND_NUM_C(5)));
+  o6 = SC_GetAtsEntryOffsetForCmd(SC_ATS_IDX_C(0), SC_CommandNumToIndex(SC_COMMAND_NUM_C(6)));
+  o9 = SC_GetAtsEntryOffsetForCmd(SC_ATS_IDX_C(0), SC_CommandNumToIndex(SC_COMMAND_NUM_C(9)));
+  S("sca_off c5=");
+  D(SC_IDX_AS_UINT(o5->Offset));
+  S(" c6=");
+  D(SC_IDX_AS_UINT(o6->Offset));
+  S(" c9=");
+  D(SC_IDX_AS_UINT(o9->Offset));
+  S("\n");
+
+  // ---- an EMPTY append table, rejected for the same reason an empty ATS is -- the bound is the
+  // only difference between the two callers.
+  sc_wire();
+  rc = SC_ValidateAppend(sc_append_buf(U8 *));
+  S("sca_empty rc=");
+  D(rc);
+  S(" is_err=");
+  D(rc == SC_ERROR);
+  S(" bound=");
+  D(SC_APPEND_BUFF_SIZE32);
+  S("\n");
+}
+
+// ---------------------------------------------------------------------------------------------
+// SC BLOCK 3: sc_loads.c's RTS half, and sc_state.c's RTS stepping.
+//
+// SC_ParseRts's TERMINATOR IS A PAIR: an invalid message id AND a zero wakeup count. An invalid
+// id with a NON-zero count is an error, which is how a buffer partly overwritten with garbage is
+// told from a cleanly short one. Both arms are driven.
+U0 sc_block_rts()
+{
+  I64 ok;
+  I64 i;
+  I32 rc;
+  U16 off;
+  SC_RtsEntry_t *e;
+
+  // ---- a good two-command RTS ----------------------------------------------------------------
+  sc_wire();
+  off = sc_rts_put(0, SC_ENTRY_OFFSET_FIRST, 5, SC_PACKET_MIN_SIZE, 1);
+  off = sc_rts_put(0, off, 7, SC_PACKET_MIN_SIZE, 1);
+  ok = SC_ParseRts(&sc_rts_buf[0][0]) != 0;
+  rc = SC_ValidateRts(&sc_rts_buf[0][0](U8 *));
+  S("scr_parse_ok ok=");
+  D(ok);
+  S(" rc=");
+  D(rc);
+  S(" words=");
+  D(off);
+  S(" hdrw=");
+  D(SC_RTS_HDR_WORDS);
+  S("\n");
+
+  // ---- an invalid id with a NON-ZERO wakeup count: an error, not a terminator -----------------
+  sc_wire();
+  sc_rts_put(0, SC_ENTRY_OFFSET_FIRST, 9, SC_PACKET_MIN_SIZE, 0);
+  ok = SC_ParseRts(&sc_rts_buf[0][0]) != 0;
+  S("scr_parse_badmid ok=");
+  D(ok);
+  S("\n");
+
+  // ---- the same id with a ZERO count: the normal end of the buffer ---------------------------
+  sc_wire();
+  sc_rts_put(0, SC_ENTRY_OFFSET_FIRST, 0, SC_PACKET_MIN_SIZE, 0);
+  ok = SC_ParseRts(&sc_rts_buf[0][0]) != 0;
+  S("scr_parse_term ok=");
+  D(ok);
+  S("\n");
+
+  // ---- a length below the minimum -------------------------------------------------------------
+  sc_wire();
+  sc_rts_put(0, SC_ENTRY_OFFSET_FIRST, 1, SC_PACKET_MIN_SIZE - 1, 1);
+  ok = SC_ParseRts(&sc_rts_buf[0][0]) != 0;
+  S("scr_parse_short ok=");
+  D(ok);
+  S("\n");
+
+  // ---- A COMMAND THAT RUNS PAST THE END, reached by WALKING there ----------------------------
+  //
+  // SC_ParseRts has no size parameter -- its bound is SC_RTS_BUFF_SIZE32, 75 words -- so unlike
+  // the ATS verifier it cannot be given a small buffer. **A FIRST VERSION OF THIS PASS PLANTED
+  // THE OVERRUNNING ENTRY NEAR THE END AND PRINTED `ok=1`**: the walk starts at word 0, word 0
+  // was zero with a zero wakeup count, and the parser stopped at the terminator having never
+  // looked at the entry. A pass named `overrun` whose transcript line said the buffer parsed
+  // cleanly. The only way to reach the arm is to walk to it.
+  //
+  // Two maximum-length commands do it: 256 bytes is a delta of (256 + 4 + 3) / 4 = 65 words, so
+  // the first lands i at 65 and the second cannot fit in the remaining 10 --
+  // SC_RTS_LEN_BUFFER_ERR_EID, `runs off end of buffer`, NOT the length error.
+  sc_wire();
+  off = sc_rts_put(0, SC_ENTRY_OFFSET_FIRST, 1, SC_PACKET_MAX_SIZE, 1);
+  sc_rts_put(0, off, 2, SC_PACKET_MAX_SIZE, 1);
+  ok = SC_ParseRts(&sc_rts_buf[0][0]) != 0;
+  S("scr_parse_overrun ok=");
+  D(ok);
+  S(" second_at=");
+  D(off);
+  S(" limit=");
+  D(SC_RTS_BUFF_SIZE32);
+  S("\n");
+
+  // ---- EXACTLY FULL IS SUCCESS, and it is its own arm ----------------------------------------
+  //
+  // `i + IndexDelta == SC_RTS_BUFF_SIZE32` sets Done without an event, one line above the `>`
+  // that is an error. 65 words then a 36-byte command (delta 10) lands on 75 exactly. The
+  // nominal pass above returns ok=1 through the TERMINATOR; this returns ok=1 through the
+  // boundary, and the two are different branches with the same answer.
+  sc_wire();
+  off = sc_rts_put(0, SC_ENTRY_OFFSET_FIRST, 1, SC_PACKET_MAX_SIZE, 1);
+  sc_rts_put(0, off, 2, 36, 1);
+  ok = SC_ParseRts(&sc_rts_buf[0][0]) != 0;
+  S("scr_parse_exact ok=");
+  D(ok);
+  S("\n");
+
+  // ---- AND THE "LOOKS LIKE DATA WHERE A COMMAND CANNOT FIT" ARM ------------------------------
+  //
+  // When `i > SC_RTS_BUFF_SIZE32 - SC_RTS_HDR_WORDS` (72), SC reads the RAW WORD at i: zero means
+  // the load ended tidily, anything else is SC_RTS_LEN_TOO_LONG_ERR_EID. Landing on 73 takes one
+  // delta-4 command (12 bytes) then twenty-three delta-3 ones (8 bytes), because a chain of
+  // delta-3 from zero hits 72 -- where a command still fits -- and never 73.
+  sc_wire();
+  off = sc_rts_put(0, SC_ENTRY_OFFSET_FIRST, 1, 12, 1);
+  for (i = 0; i < 23; i++) {
+    off = sc_rts_put(0, off, 1, SC_PACKET_MIN_SIZE, 1);
+  }
+  sc_rts_buf[0][SC_IDX_AS_UINT(off)] = 0xFFFFFFFF;
+  ok = SC_ParseRts(&sc_rts_buf[0][0]) != 0;
+  S("scr_parse_junk ok=");
+  D(ok);
+  S(" at=");
+  D(off);
+  S(" fits_limit=");
+  D(SC_RTS_BUFF_SIZE32 - SC_RTS_HDR_WORDS);
+  S("\n");
+
+  // and the same walk with that word left ZERO, which is the tidy end
+  sc_wire();
+  off = sc_rts_put(0, SC_ENTRY_OFFSET_FIRST, 1, 12, 1);
+  for (i = 0; i < 23; i++) {
+    off = sc_rts_put(0, off, 1, SC_PACKET_MIN_SIZE, 1);
+  }
+  ok = SC_ParseRts(&sc_rts_buf[0][0]) != 0;
+  S("scr_parse_tidy ok=");
+  D(ok);
+  S(" at=");
+  D(off);
+  S("\n");
+
+  // ---- SC_LoadRts: six assignments, and IT LEAVES THE RTS DISABLED ---------------------------
+  //
+  // The opposite of a freshly loaded ATS. A loaded RTS cannot run until the ground enables it, so
+  // `disabled=1` here is the behaviour and not a leftover.
+  sc_wire();
+  SC_LoadRts(SC_RTS_IDX_C(0));
+  S("scr_loadrts status=");
+  D(sc_rts_info[0].RtsStatus);
+  S(" disabled=");
+  D(sc_rts_info[0].DisabledFlag != 0);
+  S(" use=");
+  D(sc_rts_info[0].UseCtr);
+  S(" cmd=");
+  D(sc_rts_info[0].CmdCtr);
+  S(" err=");
+  D(sc_rts_info[0].CmdErrCtr);
+  S(" wake=");
+  D(sc_rts_info[0].NextCommandTgtWakeup);
+  S(" ptr=");
+  D(SC_IDX_AS_UINT(sc_rts_info[0].NextCommandPtr));
+  S("\n");
+  SC_LoadRts(SC_RTS_IDX_C(SC_NUMBER_OF_RTS));
+  S("scr_loadrts_badidx n=");
+  D(SC_NUMBER_OF_RTS);
+  S("\n");
+
+  // ---- SC_GetNextRtsTime: THE PRIORITY SCHEME, a descending I16 loop plus `<=` ---------------
+  //
+  // RTS index 1 and RTS index 3 both executing with the SAME next wakeup count. The backwards
+  // walk means index 3 is seen first and index 1 displaces it on the `<=`, so CurrRtsNum comes
+  // out 2 (index 1, one-based) and not 4. **That is SC's entire RTS priority mechanism** -- no
+  // priority field, just the direction of the loop and the non-strict comparison. Reverse either
+  // and this line reads 4. The counter is the first I16 local in the port;
+  // tests/exec/cases/e_i16_signed_countdown.hc pins its arithmetic.
+  sc_wire();
+  sc_rts_info[1].RtsStatus = SC_Status_EXECUTING;
+  sc_rts_info[1].NextCommandTgtWakeup = 500;
+  sc_rts_info[3].RtsStatus = SC_Status_EXECUTING;
+  sc_rts_info[3].NextCommandTgtWakeup = 500;
+  SC_GetNextRtsTime();
+  S("scr_next_tie curr=");
+  D(SC_IDNUM_AS_UINT(sc_rtp.CurrRtsNum));
+  S(" next=");
+  D(SC_AppData.NextCmdTime[SC_Process_RTP]);
+  S("\n");
+
+  // and the same two with index 3 EARLIER, where the comparison rather than the direction picks
+  sc_rts_info[3].NextCommandTgtWakeup = 400;
+  SC_GetNextRtsTime();
+  S("scr_next_earlier curr=");
+  D(SC_IDNUM_AS_UINT(sc_rtp.CurrRtsNum));
+  S(" next=");
+  D(SC_AppData.NextCmdTime[SC_Process_RTP]);
+  S("\n");
+
+  // NONE EXECUTING: the sentinel path, where NextRts stays SC_INVALID_RTS_INDEX -- the (U16) of
+  // -1 -- and SC_RtsIndexIsValid rejects it.
+  sc_wire();
+  SC_GetNextRtsTime();
+  S("scr_next_none curr=");
+  D(SC_IDNUM_AS_UINT(sc_rtp.CurrRtsNum));
+  S(" next=");
+  D(SC_AppData.NextCmdTime[SC_Process_RTP]);
+  S(" is_max=");
+  D(SC_AppData.NextCmdTime[SC_Process_RTP] == SC_MAX_WAKEUP_CNT);
+  S("\n");
+
+  // ---- SC_GetNextRtsCommand: the nominal step, then the three ways an RTS ends ---------------
+  //
+  // CurrentWakeupCount is 1000 from sc_wire(), so a relative count of 7 must come out as 1007 --
+  // SC_ComputeAbsWakeup is addition and this is the only place it is asserted.
+  sc_wire();
+  off = sc_rts_put(0, SC_ENTRY_OFFSET_FIRST, 5, SC_PACKET_MIN_SIZE, 1);
+  sc_rts_put(0, off, 7, SC_PACKET_MIN_SIZE, 1);
+  sc_rts_info[0].RtsStatus = SC_Status_EXECUTING;
+  sc_rts_info[0].NextCommandPtr = SC_ENTRY_OFFSET_FIRST;
+  sc_rtp.CurrRtsNum = SC_RTS_NUM_C(1);
+  SC_GetNextRtsCommand();
+  S("scs_next_cmd ptr=");
+  D(SC_IDX_AS_UINT(sc_rts_info[0].NextCommandPtr));
+  S(" wake=");
+  D(sc_rts_info[0].NextCommandTgtWakeup);
+  S(" status=");
+  D(sc_rts_info[0].RtsStatus);
+  S("\n");
+
+  // NO MORE COMMANDS: a zero-length packet where the next one would be. NOT an error -- the
+  // counters stay put and the event is INFORMATION.
+  sc_wire();
+  sc_rts_put(0, SC_ENTRY_OFFSET_FIRST, 5, SC_PACKET_MIN_SIZE, 1);
+  sc_rts_info[0].RtsStatus = SC_Status_EXECUTING;
+  sc_rts_info[0].NextCommandPtr = SC_ENTRY_OFFSET_FIRST;
+  sc_rtp.CurrRtsNum = SC_RTS_NUM_C(1);
+  SC_GetNextRtsCommand();
+  S("scs_next_done status=");
+  D(sc_rts_info[0].RtsStatus);
+  S(" errctr=");
+  D(sc_rts_info[0].CmdErrCtr);
+  S(" hkerr=");
+  D(SC_OperData.HkPacket.Payload.RtsCmdErrCtr);
+  S("\n");
+
+  // A LENGTH ABOVE THE MAXIMUM: an error, and the event prints the length with the RTS header
+  // subtracted back off -- NASA adds it and then removes it, see sc_state.HC's header.
+  sc_wire();
+  off = sc_rts_put(0, SC_ENTRY_OFFSET_FIRST, 5, SC_PACKET_MIN_SIZE, 1);
+  sc_rts_put(0, off, 7, SC_PACKET_MAX_SIZE + 1, 1);
+  sc_rts_info[0].RtsStatus = SC_Status_EXECUTING;
+  sc_rts_info[0].NextCommandPtr = SC_ENTRY_OFFSET_FIRST;
+  sc_rtp.CurrRtsNum = SC_RTS_NUM_C(1);
+  SC_GetNextRtsCommand();
+  S("scs_next_toolong status=");
+  D(sc_rts_info[0].RtsStatus);
+  S(" errctr=");
+  D(sc_rts_info[0].CmdErrCtr);
+  S(" hkerr=");
+  D(SC_OperData.HkPacket.Payload.RtsCmdErrCtr);
+  S(" lastseq=");
+  D(SC_IDNUM_AS_UINT(SC_OperData.HkPacket.Payload.LastRtsErrSeq));
+  S(" lastcmd=");
+  D(SC_IDX_AS_UINT(SC_OperData.HkPacket.Payload.LastRtsErrCmd));
+  S("\n");
+
+  // A LEGAL COMMAND THAT RUNS PAST THE END, a different arm again: the length passes both bounds
+  // and the OFFSET does not.
+  sc_wire();
+  e = &sc_rts_buf[0][SC_RTS_BUFF_SIZE32 - 5](SC_RtsEntry_t *);
+  CFE_MSG_Init(&e->Msg.Msg, CFE_SB_ValueToMsgId(SC_CMD_MID), sizeof(CFE_MSG_CommandHeader));
+  CFE_MSG_SetSize(&e->Msg.Msg, SC_PACKET_MAX_SIZE);
+  e->Header.WakeupCount = 3;
+  sc_rts_info[0].RtsStatus = SC_Status_EXECUTING;
+  sc_rts_info[0].NextCommandPtr = SC_ENTRY_OFFSET_C(SC_RTS_BUFF_SIZE32 - 8);
+  sc_rts_put(0, SC_ENTRY_OFFSET_C(SC_RTS_BUFF_SIZE32 - 8), 1, SC_PACKET_MIN_SIZE, 1);
+  sc_rtp.CurrRtsNum = SC_RTS_NUM_C(1);
+  SC_GetNextRtsCommand();
+  S("scs_next_past status=");
+  D(sc_rts_info[0].RtsStatus);
+  S(" errctr=");
+  D(sc_rts_info[0].CmdErrCtr);
+  S(" hkerr=");
+  D(SC_OperData.HkPacket.Payload.RtsCmdErrCtr);
+  S("\n");
+
+  // AND AN RTS THAT IS NOT EXECUTING: the function returns having done nothing, the guard a
+  // reader would not think to drive.
+  sc_wire();
+  sc_rts_info[0].RtsStatus = SC_Status_LOADED;
+  sc_rts_info[0].NextCommandPtr = SC_ENTRY_OFFSET_C(42);
+  sc_rtp.CurrRtsNum = SC_RTS_NUM_C(1);
+  SC_GetNextRtsCommand();
+  S("scs_next_notexec ptr=");
+  D(SC_IDX_AS_UINT(sc_rts_info[0].NextCommandPtr));
+  S(" status=");
+  D(sc_rts_info[0].RtsStatus);
+  S("\n");
+
+  // and an invalid CurrRtsNum, the other guard
+  sc_wire();
+  sc_rtp.CurrRtsNum = SC_RTS_NUM_C(0);
+  SC_GetNextRtsCommand();
+  S("scs_next_badnum curr=");
+  D(SC_IDNUM_AS_UINT(sc_rtp.CurrRtsNum));
+  S("\n");
+}
+
+// ---------------------------------------------------------------------------------------------
+// SC BLOCK 4: sc_state.c's ATS advance, and sc_utils.c's clock-free arithmetic.
+//
+// SC_GetNextAtsCommand has three arms and the middle one is a single assignment that exists for
+// one wakeup cycle: SC_Status_STARTING becomes SC_Status_EXECUTING. Without it a switched ATS
+// would never run, so it is driven on its own line.
+//
+// AND SC_GetAtsEntryTime IS WHERE THE SHIFT PRECEDENCE MATTERS. It is
+// `(Entry->TimeTag_MS << 16) + Entry->TimeTag_LS` -- NASA's parentheses, kept, because `<<` is
+// the TIGHTEST binary operator in HolyC and nearly the loosest in C. Dropping them would be legal
+// in both languages and mean different things. check_shift_parens refuses the unparenthesised
+// form; this asserts the VALUE: 12345678 if the shift binds first, 000068AC if the addition does.
+U0 sc_block_state()
+{
+  U16 off;
+  SC_AtsEntryHeader_t hdr;
+  SC_TimeAccessor_t acc;
+  I64 i;
+  U32 t;
+  I64 which;
+
+  // ---- the time tag's two halves -------------------------------------------------------------
+  hdr.Pad = 0;
+  hdr.CmdNumber = SC_COMMAND_NUM_C(1);
+  hdr.TimeTag_MS = 0x1234;
+  hdr.TimeTag_LS = 0x5678;
+  t = SC_GetAtsEntryTime(&hdr);
+  S("scu_entrytime t=");
+  D(t);
+  S(" hex=");
+  H8(t);
+  S(" ms=");
+  D(hdr.TimeTag_MS);
+  S(" ls=");
+  D(hdr.TimeTag_LS);
+  S("\n");
+  hdr.TimeTag_MS = 0xFFFF;
+  hdr.TimeTag_LS = 0xFFFF;
+  t = SC_GetAtsEntryTime(&hdr);
+  S("scu_entrytime_max hex=");
+  H8(t);
+  S("\n");
+  hdr.TimeTag_MS = 0;
+  hdr.TimeTag_LS = 0;
+  t = SC_GetAtsEntryTime(&hdr);
+  S("scu_entrytime_zero hex=");
+  H8(t);
+  S("\n");
+
+  // ---- SC_ComputeAbsWakeup: addition against the field sc_wire() set -------------------------
+  sc_wire();
+  S("scu_abswake base=");
+  D(SC_AppData.CurrentWakeupCount);
+  S(" plus7=");
+  D(SC_ComputeAbsWakeup(7));
+  S(" plus0=");
+  D(SC_ComputeAbsWakeup(0));
+  S("\n");
+
+  // ---- SC_CompareAbsTime: STRICTLY greater, which is what makes SC_Insert's sort stable ------
+  S("scu_cmp gt=");
+  D(SC_CompareAbsTime(200, 100) != 0);
+  S(" eq=");
+  D(SC_CompareAbsTime(100, 100) != 0);
+  S(" lt=");
+  D(SC_CompareAbsTime(100, 200) != 0);
+  S("\n");
+
+  // ---- SC_ToggleAtsIndex: 0 -> 1 -> 0, with the wrap through SC_AtsIndexIsValid ---------------
+  sc_wire();
+  sc_atp.CurrAtsNum = SC_ATS_NUM_C(1);
+  S("scu_toggle from1=");
+  D(SC_IDX_AS_UINT(SC_ToggleAtsIndex()));
+  sc_atp.CurrAtsNum = SC_ATS_NUM_C(2);
+  S(" from2=");
+  D(SC_IDX_AS_UINT(SC_ToggleAtsIndex()));
+  S("\n");
+
+  // ---- SC_LookupTimeAccessor: four references, three of them defined -------------------------
+  //
+  // The table is `static const` in NASA's C with DESIGNATED initialisers, which HolyC cannot
+  // spell -- sc_utils.HC fills it at the point of use instead, and docs/ records that a generated
+  // table's readers must run AFTER the fill or the failure is silent. The assertion is which cFE
+  // function each reference resolves to, as a small integer, because printing a function POINTER
+  // cannot cross the two halves.
+  for (i = 0; i < 4; i++) {
+    acc = SC_LookupTimeAccessor(i);
+    if (acc.GetTime == &CFE_TIME_GetTime)
+      which = 1;
+    else if (acc.GetTime == &CFE_TIME_GetTAI)
+      which = 2;
+    else if (acc.GetTime == &CFE_TIME_GetUTC)
+      which = 3;
+    else
+      which = 0;
+    S("scu_timeref i=");
+    D(i);
+    S(" which=");
+    D(which);
+    S("\n");
+  }
+
+  // ---- SC_GetNextAtsCommand, arm by arm ------------------------------------------------------
+  sc_wire();
+  off = sc_ats_put(0, SC_ENTRY_OFFSET_FIRST, 1, 0, 300, SC_PACKET_MIN_SIZE);
+  off = sc_ats_put(0, off, 2, 0, 100, SC_PACKET_MIN_SIZE);
+  sc_ats_put(0, off, 3, 0, 200, SC_PACKET_MIN_SIZE);
+  SC_LoadAts(SC_ATS_IDX_C(0));
+  sc_atp.AtpState = SC_Status_EXECUTING;
+  sc_atp.CurrAtsNum = SC_ATS_NUM_C(1);
+  sc_atp.TimeIndexPtr = SC_SEQUENCE_IDX_C(0);
+  sc_atp.SwitchPendFlag = TRUE;
+  // The sorted order is 2, 3, 1 (times 100, 200, 300), so advancing from sequence 0 lands on
+  // command 3 at time 200 -- NOT on command 2. The sequence index and the command number being
+  // different numbers on this line is the sort being visible.
+  SC_GetNextAtsCommand();
+  S("scs_ats_next seq=");
+  D(SC_IDX_AS_UINT(sc_atp.TimeIndexPtr));
+  S(" cmd=");
+  D(SC_IDNUM_AS_UINT(sc_atp.CmdNumber));
+  S(" time=");
+  D(SC_AppData.NextCmdTime[SC_Process_ATP]);
+  S(" state=");
+  D(sc_atp.AtpState);
+  S("\n");
+  SC_GetNextAtsCommand();
+  S("scs_ats_next2 seq=");
+  D(SC_IDX_AS_UINT(sc_atp.TimeIndexPtr));
+  S(" cmd=");
+  D(SC_IDNUM_AS_UINT(sc_atp.CmdNumber));
+  S(" time=");
+  D(SC_AppData.NextCmdTime[SC_Process_ATP]);
+  S("\n");
+
+  // OUT OF COMMANDS: the ATS stops, the completion event fires with the ATS as a LETTER, and
+  // SwitchPendFlag is cleared -- which NASA's comment calls "a no-no" to leave set.
+  SC_GetNextAtsCommand();
+  S("scs_ats_end state=");
+  D(sc_atp.AtpState);
+  S(" curr=");
+  D(SC_IDNUM_AS_UINT(sc_atp.CurrAtsNum));
+  S(" pend=");
+  D(sc_atp.SwitchPendFlag != 0);
+  S("\n");
+
+  // THE ONE-ASSIGNMENT ARM: STARTING -> EXECUTING.
+  sc_wire();
+  sc_atp.AtpState = SC_Status_STARTING;
+  SC_GetNextAtsCommand();
+  S("scs_ats_starting state=");
+  D(sc_atp.AtpState);
+  S(" is_exec=");
+  D(sc_atp.AtpState == SC_Status_EXECUTING);
+  S("\n");
+
+  // AND IDLE, where the function does nothing at all.
+  sc_wire();
+  sc_atp.AtpState = SC_Status_IDLE;
+  SC_GetNextAtsCommand();
+  S("scs_ats_idle state=");
+  D(sc_atp.AtpState);
+  S("\n");
+}
+
 I64 main()
 {
   CFE_MSG_Message msg;
@@ -29592,6 +30534,11 @@ I64 main()
     hs_block_cmds();
     hs_block_dispatch();
     hs_block_app();
+
+    sc_block_loads();
+    sc_block_append();
+    sc_block_rts();
+    sc_block_state();
 
     // PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after it today
     // but tim_objtab, so both halves agreed and the transcript was green -- but the NEXT app's
