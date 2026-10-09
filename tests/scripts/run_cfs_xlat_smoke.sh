@@ -178,7 +178,8 @@ SRC_C="$CFE/modules/msg/fsw/src/cfe_msg_ccsdspri.c
        $HK/fsw/src/hk_cmds.c
        $HK/fsw/src/hk_dispatch.c
        $HS/fsw/src/hs_utils.c
-       $HS/fsw/src/hs_sysmon.c"
+       $HS/fsw/src/hs_sysmon.c
+       $HS/fsw/src/hs_monitors.c"
 SRC_HC="$ROOT/tests/exec/cases/cfs_xlat_ccsdspri.hc"
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"

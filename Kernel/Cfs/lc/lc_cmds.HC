@@ -54,11 +54,21 @@
 #ifndef LC_CMDS_HC
 #define LC_CMDS_HC
 
-#include "lc_global.HC"
-#include "lc_eventids.HC"
-#include "lc_action.HC"
-#include "lc_watch.HC"
-#include "lc_utils.HC"
+// --- REQUIRED INCLUDE ORDER, PROVIDED BY THE DRIVER -------------------------------------------
+//
+// the above, plus lc_utils.HC
+//
+// **THIS UNIT DOES NOT INCLUDE ITS SIBLINGS** -- docs/HOLYC_STRUCT_LIMITS.md #13. Re-including a
+// guarded file the driver has already read makes the compiler skip EVERYTHING AFTER THAT LINE in
+// the including file, with no diagnostic and exit status 0.
+//
+// LC USED TO INCLUDE THEM AND GOT AWAY WITH IT, which is the part worth recording: these includes
+// were here from LC's first commit and every function was in the binary. Adding two dead
+// constants to lc_watch.HC -- LC_IEEE_EXPONENT_MASK and LC_IEEE_FRACTION_MASK, with a comment
+// block above them -- tipped it over, and check_in_blob reported fifteen functions missing from
+// lc_cmds.HC and lc_utils.HC. The trigger is text, not structure, so "it works today" was never
+// evidence of anything. HK's files were written without sibling includes for this reason; LC's
+// now match.
 
 // NASA's macro. It exists to cast a raw buffer pointer to the right command type and take its
 // payload's address in one step; HolyC's casts relabel, so the same expression works.

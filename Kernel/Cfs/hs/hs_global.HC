@@ -54,10 +54,27 @@
 #include "hs_tbl.HC"
 
 // --- hs_app.h's own constants ---------------------------------------------------------------
+//
+// ALL TEN, not just the ones a source happens to use. HK's vocabulary left hs_app.h's siblings
+// behind and the HolyC half would not compile; tools/cfs/check_defines.py now refuses a NASA
+// #define that is nowhere in the translation, which is what makes "the whole header" the only
+// workable rule.
+//
+// THE FOUR TABLE NAMES ARE WHAT cFE REGISTERS THEM UNDER, and they do NOT match the file names:
+// "AppMon_Tbl" loads from "/cf/hs_amt.tbl". So a ground operator aiming a table load names the
+// FILE and a ground operator aiming a dump names the TABLE, and the two spellings are different.
 #define HS_CMD_PIPE_NAME    "HS_CMD_PIPE"
 #define HS_EVENT_PIPE_NAME  "HS_EVENT_PIPE"
 #define HS_WAKEUP_PIPE_NAME "HS_WAKEUP_PIPE"
 #define HS_CDSNAME          "HS_CDS"
+#define HS_TBL_VAL_ERR      -1
+// 0xFFFFFFFF, the same sentinel HS_MonitorUtilization reports for an unknown CPU load -- here it
+// means "this execution counter could not be read", and it goes straight into the HK packet.
+#define HS_INVALID_EXECOUNT 0xFFFFFFFF
+#define HS_AMT_TABLENAME    "AppMon_Tbl"
+#define HS_EMT_TABLENAME    "EventMon_Tbl"
+#define HS_XCT_TABLENAME    "ExeCount_Tbl"
+#define HS_MAT_TABLENAME    "MsgActs_Tbl"
 
 /*******************************************************************************/
 // The critical data: two counts, each with its complement. 8 bytes. See the header on why.

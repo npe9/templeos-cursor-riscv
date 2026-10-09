@@ -783,3 +783,60 @@ accommodation sits beside the other build-system substitutions and NASA's source
 Any mission that builds cFS as a unity build, or that includes both apps' public headers from one
 file (a ground-system decoder generated from the message structures, say), hits this. The fix is
 one word.
+
+## 23. HS validates a message action's length against the SB maximum, not its own 16-byte buffer
+
+A Message Actions Table entry holds a raw SB message the ground uploaded, in a fixed buffer:
+
+```c
+typedef union
+{
+    uint8           Message[HS_MAX_MSG_ACT_SIZE]; /* 16 */
+    CFE_SB_Buffer_t Buffer;
+} HS_MATMsgBuf_t;
+```
+
+`HS_MAX_MSG_ACT_SIZE` is **16**. `HS_ValidateMATable` reads the length out of the uploaded
+message's own header and checks it like this:
+
+```c
+CFE_MSG_GetSize(&BufPtr->Msg, &Length);
+...
+else if (Length > CFE_MISSION_SB_MAX_SB_MSG_SIZE)
+{
+    EntryResult = HS_MATVal_ERR_LEN;
+```
+
+`CFE_MISSION_SB_MAX_SB_MSG_SIZE` is **32768**. So the bound is the software bus's maximum message
+size and not the size of the buffer the message is sitting in — **a factor of 2,048.**
+
+### What happens to an entry that passes
+
+Both monitors transmit it verbatim. `HS_MonitorApplications`:
+
+```c
+CFE_SB_TransmitMsg((const CFE_MSG_Message_t *)&HS_AppData.MATablePtr[MsgActsIndex].MsgBuf, true);
+```
+
+and `HS_MonitorEvent` does the same through a `SendPtr`. `CFE_SB_TransmitMsg` takes the length
+from the message header, so it copies that many bytes out of a 16-byte union — reading past the
+end of the entry, through the seven entries after it in the table, and then past the table.
+
+The read is bounded only by what the ground put in the length field. A MAT entry whose header
+claims 32,768 bytes validates cleanly and then reads 32 KiB from a 128-byte table.
+
+### Reachability
+
+The validator is the table's registration callback, so this is reachable by any ground table load.
+Driven in the exercise as a VALIDATION result only -- `hsm_matval_longlen` shows an entry with a
+header length of 1,024 being accepted -- and **not** driven through the transmit, because an
+out-of-bounds read that both halves perform identically would agree with itself and prove nothing
+while reading whatever happens to follow the table in each. That limit is stated at the site.
+
+### What this port does about it
+
+Keeps it. The translation has NASA's bound and NASA's constant. A port that compared against
+`HS_MAX_MSG_ACT_SIZE` would be fixing a defect rather than translating, and the fix is not
+obviously a one-liner: the right bound is arguably
+`HS_MAX_MSG_ACT_SIZE` but a mission that configured a larger buffer would then want that, which is
+why the check reads the way it does in the first place.

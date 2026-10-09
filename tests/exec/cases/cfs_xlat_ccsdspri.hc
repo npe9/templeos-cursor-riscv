@@ -1862,6 +1862,7 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/hs/hs_eventids.HC"
 #include "/Kernel/Cfs/hs/hs_utils.HC"
 #include "/Kernel/Cfs/hs/hs_sysmon.HC"
+#include "/Kernel/Cfs/hs/hs_monitors.HC"
 
 // ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
 //
