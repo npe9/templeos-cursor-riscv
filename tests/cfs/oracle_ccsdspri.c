@@ -13672,16 +13672,6 @@ static void hs_show_cmd(const char *tag, uint8 state)
            (unsigned)HS_AppData.CmdErrCount, (unsigned)state);
 }
 
-/* An 8-byte bare command, which is what eleven of HS's twelve are. */
-static CFE_SB_Buffer_t hs_cmdbuf;
-
-static void hs_make_cmd(uint32 mid, uint16 cc, size_t len)
-{
-    memset(&hs_cmdbuf, 0, sizeof(hs_cmdbuf));
-    CFE_MSG_Init(CFE_MSG_PTR(hs_cmdbuf), CFE_SB_ValueToMsgId(mid), len);
-    CFE_MSG_SetFcnCode(CFE_MSG_PTR(hs_cmdbuf), cc);
-}
-
 /* The one command with a payload. */
 static HS_SetMaxResetsCmd_t hs_maxcmd;
 
@@ -14075,6 +14065,249 @@ static void hs_block_cmds(void)
 
     /* Put the task lookup back to name-blind, so nothing after this block inherits it. */
     es_task_byname[0] = '\0';
+    hs_setup();
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * BLOCK 6: hs_dispatch.c -- the length checker, the command-code switch, the id router and the
+ * twelve wrappers.
+ *
+ * ### UPSTREAM #24 IS DRIVEN HERE, AND IT IS A CONSTANT WHERE A READER EXPECTS DATA
+ *
+ * HS_AppProcessGroundCmd's default arm prints "Invalid command code: ID = 0x%08lX, CC = %d" and
+ * **never calls CFE_MSG_GetMsgId**, so the id is whatever CFE_SB_INVALID_MSG_ID is -- for every
+ * invalid command code, from every message id, forever. The pass below sends an unknown code on
+ * HS_CMD_MID; the event text shows the sentinel where every other app in this port shows the
+ * real id. HS is alone among the port's six dispatchers in that.
+ *
+ * ### ONE LENGTH CHECKER, TWO VERDICTS, AND THE MESSAGE ID DECIDES WHO IS BLAMED
+ *
+ * A bad length on HS_SEND_HK_MID gets HS_HKREQ_LEN_ERR_EID and **no counter**; a bad length on
+ * anything else gets HS_CMD_LEN_ERR_EID and CmdErrCount++. NASA's comment says why: "We only
+ * increment the error counter for ground commands and not internal messages." Both are driven
+ * from the same function with the same wrong length, so the only thing that differs is the id.
+ *
+ * ### AND NONE OF THE TWELVE WRAPPERS HAS AN `else`
+ *
+ * Which is correct here and is NOT how HK does it -- HK_VerifyCmdLength does not count for
+ * itself, so HK's wrappers must. HS_VerifyMsgLength counts inside itself, so an `else` here
+ * would DOUBLE count. The pass that sends a bad length through a wrapper and checks
+ * `ec` moved by exactly ONE is what distinguishes the two designs.
+ *
+ * ### THE TWELVE ARE DRIVEN THROUGH THE SWITCH, NOT CALLED DIRECTLY
+ *
+ * Block 5 called each handler directly. Here each is reached by its COMMAND CODE, so the switch's
+ * twelve arms are the thing under test -- a transposed pair of cases would run the wrong handler
+ * and block 5's assertions could not see it. The witness per arm is the handler's own event text
+ * plus the counter, both already in the transcript.
+ */
+
+/* 128 bytes, 8-byte aligned -- the pattern HK's dispatch block established. CFE_SB_Buffer_t is
+ * only as large as a CCSDS primary header, so a 12-byte HS_SetMaxResetsCmd_t will not fit in one
+ * and a plain `CFE_SB_Buffer_t` local would be a buffer overrun waiting for the payload command.
+ */
+static uint64 hs_cmdbuf8[16];
+
+/* **NASA DECLARES HS_AppProcessGroundCmd NOWHERE**, which hs_dispatch.HC's header records: it is
+ * a non-static function with external linkage, defined above its only caller in hs_dispatch.c and
+ * absent from hs_dispatch.h, hs_app.h and every other header under fsw/. So the C half of this
+ * differential cannot call it without writing the declaration out here -- which is the finding
+ * demonstrated rather than asserted. The HolyC half needs no equivalent: hs_dispatch.HC declares
+ * it with the rest, because HolyC needs the name in scope and a forward declaration there cannot
+ * change linkage the way a `static` one would. */
+void HS_AppProcessGroundCmd(const CFE_SB_Buffer_t *BufPtr);
+
+/* **THE FUNCTION CODE IS READ BACK AND THE SET'S RETURN IS CHECKED**, and that is not belt and
+ * braces -- it is a bug this helper had.
+ *
+ * CFE_MSG_SetFcnCode refuses anything above CFE_MSG_FC_MASK, because the CCSDS command secondary
+ * header's function code is SEVEN BITS. A first version of the invalid-command-code pass asked
+ * for code 200: the set failed, the code stayed at 0, and `HS_AppProcessGroundCmd` ran
+ * **HS_NoopCmd**. The line printed `count=1 err=0` -- a perfectly plausible transcript for a
+ * dispatcher, and the exact opposite of what the pass was for. Upstream #24's event never fired
+ * and the comment above it said it had.
+ *
+ * So the helper now returns the code the message actually CARRIES. A caller that asks for
+ * something unencodable gets a visible disagreement instead of a quiet 0. */
+static uint16 hs_cmd_set_cc;
+static int32  hs_cmd_set_rc;
+
+static CFE_SB_Buffer_t *hs_mkcmd(uint32 mid, uint16 cc, size_t len)
+{
+    CFE_SB_Buffer_t *buf = (CFE_SB_Buffer_t *)hs_cmdbuf8;
+
+    memset(hs_cmdbuf8, 0, sizeof(hs_cmdbuf8));
+    CFE_MSG_Init(&buf->Msg, CFE_SB_ValueToMsgId(mid), len);
+    hs_cmd_set_rc = CFE_MSG_SetFcnCode(&buf->Msg, cc);
+    hs_cmd_set_cc = 0;
+    CFE_MSG_GetFcnCode(&buf->Msg, &hs_cmd_set_cc);
+    return buf;
+}
+
+static void hs_block_dispatch(void)
+{
+    CFE_SB_Buffer_t *buf;
+    int              ok;
+    unsigned         e0;
+    int              i;
+    /* The twelve command codes in NASA's switch order, with each one's own sizeof -- eleven are
+     * 8 and HS_SET_MAX_RESETS_CC is 12. The sizes come from the TYPES rather than from a literal,
+     * because the whole point of eleven separate wrappers is that each names its own type. */
+    static const uint16 ccs[] = {
+        HS_NOOP_CC,                   HS_RESET_CC,
+        HS_ENABLE_APP_MON_CC,         HS_DISABLE_APP_MON_CC,
+        HS_ENABLE_EVENT_MON_CC,       HS_DISABLE_EVENT_MON_CC,
+        HS_ENABLE_ALIVENESS_CC,       HS_DISABLE_ALIVENESS_CC,
+        HS_RESET_RESETS_PERFORMED_CC, HS_SET_MAX_RESETS_CC,
+        HS_ENABLE_CPU_HOG_CC,         HS_DISABLE_CPU_HOG_CC};
+    static const size_t lens[] = {
+        sizeof(HS_NoopCmd_t),                   sizeof(HS_ResetCmd_t),
+        sizeof(HS_EnableAppMonCmd_t),           sizeof(HS_DisableAppMonCmd_t),
+        sizeof(HS_EnableEventMonCmd_t),         sizeof(HS_DisableEventMonCmd_t),
+        sizeof(HS_EnableAlivenessCmd_t),        sizeof(HS_DisableAlivenessCmd_t),
+        sizeof(HS_ResetResetsPerformedCmd_t),   sizeof(HS_SetMaxResetsCmd_t),
+        sizeof(HS_EnableCpuHogCmd_t),           sizeof(HS_DisableCpuHogCmd_t)};
+
+    /* ---- HS_VerifyMsgLength -------------------------------------------------------------------
+     *
+     * THE RIGHT LENGTH: true, no event, no counter. */
+    hs_setup();
+    buf = hs_mkcmd(HS_CMD_MID, HS_NOOP_CC, sizeof(HS_NoopCmd_t));
+    ok  = HS_VerifyMsgLength(&buf->Msg, sizeof(HS_NoopCmd_t)) ? 1 : 0;
+    printf("hsd_len_ok ok=%d ec=%u\n", ok, (unsigned)HS_AppData.CmdErrCount);
+
+    /* A WRONG LENGTH ON A GROUND COMMAND: false, HS_CMD_LEN_ERR_EID, and the counter moves. */
+    buf = hs_mkcmd(HS_CMD_MID, HS_NOOP_CC, 7);
+    ok  = HS_VerifyMsgLength(&buf->Msg, sizeof(HS_NoopCmd_t)) ? 1 : 0;
+    printf("hsd_len_cmd ok=%d ec=%u\n", ok, (unsigned)HS_AppData.CmdErrCount);
+
+    /* **THE SAME WRONG LENGTH ON THE HOUSEKEEPING REQUEST**: false, a DIFFERENT event, and the
+     * counter does NOT move. Same function, same numbers, different id -- which is the whole
+     * mechanism. `ec=1` unchanged from the line above is the assertion. */
+    buf = hs_mkcmd(HS_SEND_HK_MID, 0, 7);
+    ok  = HS_VerifyMsgLength(&buf->Msg, sizeof(HS_SendHkCmd_t)) ? 1 : 0;
+    printf("hsd_len_hkreq ok=%d ec=%u\n", ok, (unsigned)HS_AppData.CmdErrCount);
+
+    /* AND AN UNRELATED ID is a ground command as far as the checker is concerned -- the test is
+     * `== HS_SEND_HK_MID`, not "is this one of mine", so HS_WAKEUP_MID is blamed on the operator.
+     */
+    buf = hs_mkcmd(HS_WAKEUP_MID, 0, 7);
+    ok  = HS_VerifyMsgLength(&buf->Msg, sizeof(HS_NoopCmd_t)) ? 1 : 0;
+    printf("hsd_len_wakeup ok=%d ec=%u\n", ok, (unsigned)HS_AppData.CmdErrCount);
+
+    /* ---- the twelve command codes through the switch ------------------------------------------
+     *
+     * ONE hs_setup() PER CODE so the counters start from a known place and the per-arm event is
+     * unambiguous. Each line is `cc=1 ec=0` for a handler that accepted -- which is the same for
+     * all twelve and is NOT the assertion: the assertion is the twelve DIFFERENT event texts
+     * above the twelve lines, which is what a transposed pair of cases would break. */
+    for (i = 0; i < 12; i++)
+    {
+        hs_setup();
+        HS_AppData.AMTablePtr = hs_amt; /* the app-monitor enable needs a table to refresh */
+        hs_arm_am(0, hs_real_app, 3, HS_AMTActType_EVENT);
+        HS_AppData.CDSState = HS_State_DISABLED;
+        buf                 = hs_mkcmd(HS_CMD_MID, ccs[i], lens[i]);
+        HS_AppProcessGroundCmd(buf);
+        printf("hsd_cc i=%d cc=%u count=%u err=%u\n", i, (unsigned)ccs[i],
+               (unsigned)HS_AppData.CmdCount, (unsigned)HS_AppData.CmdErrCount);
+    }
+
+    /* **UPSTREAM #24.** An unknown command code: the event reports a message id it never read.
+     * `0x00000000` in the text above this line is the defect; `err=1` is the counter that does
+     * move.
+     *
+     * 100, NOT 200 -- see hs_mkcmd. The function code field is seven bits, so 200 cannot be
+     * encoded, the set fails, the code stays 0 and the NOOP handler runs. `set_cc=100 set_rc=0`
+     * is what says this pass is testing what it claims to. */
+    hs_setup();
+    buf = hs_mkcmd(HS_CMD_MID, 100, sizeof(HS_NoopCmd_t));
+    HS_AppProcessGroundCmd(buf);
+    printf("hsd_cc_bad set_cc=%u set_rc=%d count=%u err=%u\n", (unsigned)hs_cmd_set_cc,
+           (int)hs_cmd_set_rc, (unsigned)HS_AppData.CmdCount, (unsigned)HS_AppData.CmdErrCount);
+
+    /* AND THE UNENCODABLE CODE ITSELF, kept as a pass of its own now that it is understood: 200
+     * is refused by CFE_MSG_SetFcnCode, the message carries 0, and the dispatcher therefore runs
+     * the NOOP. That is a property of the MESSAGE layer and not of HS, and having it one line
+     * away from the line it broke is how the next person does not spend the same half hour. */
+    hs_setup();
+    buf = hs_mkcmd(HS_CMD_MID, 200, sizeof(HS_NoopCmd_t));
+    HS_AppProcessGroundCmd(buf);
+    printf("hsd_cc_unencodable set_cc=%u set_rc_bad=%d count=%u err=%u\n",
+           (unsigned)hs_cmd_set_cc, hs_cmd_set_rc != CFE_SUCCESS ? 1 : 0,
+           (unsigned)HS_AppData.CmdCount, (unsigned)HS_AppData.CmdErrCount);
+
+    /* ---- a bad length through a wrapper, and the counter moves by EXACTLY ONE -----------------
+     *
+     * HK's wrappers have an `else` that counts; HS's do not, because HS_VerifyMsgLength counts
+     * for itself. So `ec` moving by one rather than two is what says the translation did not
+     * acquire an `else` -- and it is the only observable difference between the two designs. */
+    hs_setup();
+    e0  = HS_AppData.CmdErrCount;
+    buf = hs_mkcmd(HS_CMD_MID, HS_NOOP_CC, 7);
+    HS_AppProcessGroundCmd(buf);
+    printf("hsd_wrap_badlen delta=%u count=%u\n", (unsigned)(HS_AppData.CmdErrCount - e0),
+           (unsigned)HS_AppData.CmdCount);
+
+    /* AND THE ONE WRAPPER WHOSE sizeof IS NOT 8. An 8-byte SET_MAX_RESETS is rejected -- the
+     * only length check in the file that can tell a correct command from an empty one. */
+    hs_setup();
+    buf = hs_mkcmd(HS_CMD_MID, HS_SET_MAX_RESETS_CC, sizeof(HS_NoopCmd_t));
+    HS_AppProcessGroundCmd(buf);
+    printf("hsd_setmax_short count=%u err=%u expect=%d got=%d\n", (unsigned)HS_AppData.CmdCount,
+           (unsigned)HS_AppData.CmdErrCount, (int)sizeof(HS_SetMaxResetsCmd_t),
+           (int)sizeof(HS_NoopCmd_t));
+
+    /* ---- HS_AppPipe --------------------------------------------------------------------------- */
+
+    /* THE HOUSEKEEPING REQUEST ARM. The witness is the packet being rebuilt, so CmdCount in the
+     * PAYLOAD -- not in HS_AppData -- is what says HS_SendHkCmd ran. */
+    hs_setup();
+    HS_AppData.CmdCount = 5;
+    buf                 = hs_mkcmd(HS_SEND_HK_MID, 0, sizeof(HS_SendHkCmd_t));
+    HS_AppPipe(buf);
+    printf("hsd_pipe_hk payload_cc=%u err=%u\n",
+           (unsigned)HS_AppData.HkPacket.Payload.CmdCount, (unsigned)HS_AppData.CmdErrCount);
+
+    /* THE GROUND COMMAND ARM. */
+    hs_setup();
+    buf = hs_mkcmd(HS_CMD_MID, HS_NOOP_CC, sizeof(HS_NoopCmd_t));
+    HS_AppPipe(buf);
+    printf("hsd_pipe_cmd count=%u err=%u\n", (unsigned)HS_AppData.CmdCount,
+           (unsigned)HS_AppData.CmdErrCount);
+
+    /* **THE `else` ARM IS AN ERROR, NOT DATA** -- unlike HK's and LC's routers, which end by
+     * treating an unrecognised id as telemetry to process. HS's command pipe carries exactly two
+     * ids; the event stream arrives on a separate pipe. And the counter moves BEFORE the event
+     * here where HK's moves after, which changes nothing and is noted in hs_dispatch.HC because
+     * the two files are otherwise the same shape. */
+    hs_setup();
+    buf = hs_mkcmd(0x1234, 0, sizeof(HS_NoopCmd_t));
+    HS_AppPipe(buf);
+    printf("hsd_pipe_badmid count=%u err=%u\n", (unsigned)HS_AppData.CmdCount,
+           (unsigned)HS_AppData.CmdErrCount);
+
+    /* AND THE WAKEUP ID ON THE COMMAND PIPE is also unrecognised -- HS subscribes to it on a
+     * DIFFERENT pipe, so arriving here is a configuration error and is reported as one. */
+    hs_setup();
+    buf = hs_mkcmd(HS_WAKEUP_MID, 0, sizeof(HS_NoopCmd_t));
+    HS_AppPipe(buf);
+    printf("hsd_pipe_wakeup count=%u err=%u\n", (unsigned)HS_AppData.CmdCount,
+           (unsigned)HS_AppData.CmdErrCount);
+
+    /* AND A SECOND CALL WITH A VALID ID AFTER THE STATIC CACHE IS WARM. HS_AppPipe caches the two
+     * message ids in `static` locals on its first call and tests `CFE_SB_IsValidMsgId(CMD_MID)`
+     * to decide whether to fill them. Everything above has already warmed it, so this line is
+     * about the cache being warm: the SAME command through the SAME function, with the lookup
+     * skipped, must route identically. A static that was re-zeroed between calls, or one that
+     * collided with another function's (docs/ records that HolyC defect, fixed 2026-10-01),
+     * would show up here and nowhere else. */
+    hs_setup();
+    buf = hs_mkcmd(HS_CMD_MID, HS_NOOP_CC, sizeof(HS_NoopCmd_t));
+    HS_AppPipe(buf);
+    printf("hsd_pipe_warm count=%u err=%u\n", (unsigned)HS_AppData.CmdCount,
+           (unsigned)HS_AppData.CmdErrCount);
+
     hs_setup();
 }
 
@@ -22679,6 +22912,7 @@ int main(void)
         hs_block_validate();
         hs_block_monitors();
         hs_block_cmds();
+        hs_block_dispatch();
 
             /* PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after
              * it today but tim_objtab, so both halves agreed and the transcript was green --
