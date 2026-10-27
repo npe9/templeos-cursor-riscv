@@ -4280,3 +4280,53 @@ almost always a local whose declaration is in the same file, so it is resolved f
 member looked up inside that class. The poison now fails, naming the type. No cast in the port has
 a member operand today, so that path has no live site and the gate says so rather than printing a
 count that reads like 30 skips.
+
+### `sc_dispatch.c` gated: 59/59 exercised, and only `sc_app.c` is left
+
+```
+  GATED  sc_utils.c     185     7/7 exercised
+  GATED  sc_rtsrq.c     619    10/10
+  GATED  sc_atsrq.c     742    10/10
+  GATED  sc_loads.c     893    15/15
+  GATED  sc_state.c     340     3/3
+  GATED  sc_cmds.c      764    11/11
+  GATED  sc_dispatch.c  275     3/3     [else of CFE_EDS_ENABLED]
+    -    sc_app.c       617
+```
+
+**59 of 59** at 5,699 byte-identical transcript lines. `check_manifest`'s 3,540-of-4,157 (85%)
+counts only the seven UNCONDITIONAL sources, with the conditional dispatcher reported beneath --
+so `sc_app.c`'s 617 lines are the entire remainder, and the percentage will go to 100 in one step.
+
+**IT IS NOT HS's NOTE #24, AND THAT WAS CHECKED RATHER THAN ASSUMED.** HS's dispatcher prints a
+message id in its invalid-command-code event that it never fetched, so the id is always the
+sentinel. `SC_ProcessCommand` calls both `CFE_MSG_GetMsgId` and `CFE_MSG_GetFcnCode` before the
+switch, so SC is in the "fetch it and print it" group with HK, LC and CS. The pass asserts it by
+reading the function code back out of the message first — the CCSDS field is seven bits, and
+asking for 200 silently ran HS's no-op once.
+
+**TWO UPSTREAM ASYMMETRIES, EACH DRIVEN AS A PAIR BECAUSE NEITHER IS VISIBLE ALONE:**
+
+- `SC_VerifyCmdLength` bumps `CmdErrCtr` **only when the message id is SC_CMD_MID**. So a
+  wrong-length WAKEUP logs the event and counts nothing (`cmderr_delta=0`) while an unknown
+  message id does count (`cmderr_delta=1`). The telemetry point is "bad GROUND commands", not
+  "bad messages".
+- `SC_START_RTS_CC` is **the only one of seventeen cases with an `else`**, so a malformed START
+  RTS moves two counters — `scd_badlen_start_rts cmderr_delta=1 rtsacterr_delta=1` against
+  `scd_badlen_start_grp cmderr_delta=1 rtsacterr_delta=0` for its own group form.
+
+**THE ASSERTION A DISPATCHER UNIQUELY NEEDS, AND THE WRONG WAY TO MAKE IT.** Every handler SC
+routes to returns `CFE_SUCCESS`, including the arms that reject the command, so seventeen `rc=0`
+lines would be seventeen claims about nothing — the vacuous shape `docs/` names repeatedly. Each
+dispatch is instead followed by one fingerprint line carrying **every field any SC handler could
+have moved**; a correctly routed code moves the field its own handler owns and a mis-routed one
+shows the wrong field moving. Removing the single `else` as a poison was caught by
+`check_members` as a dropped member reference before the differential even ran.
+
+**And the printf-argument lesson ran backwards.** `docs/` records seven places where a call had to
+be lifted OUT of a printf because C evaluates every argument before printing any of it. Here that
+same C rule was the behaviour the HolyC half had to match:
+`printf("... ok=%d\n", SC_VerifyCmdLength(...))` emits the length-error event *first*, while
+`S("... ok="); D(SC_VerifyCmdLength(...))` prints the tag first and then emits — the transcript
+diverged by exactly one line boundary. The rule holds in both directions: a call that EMITS must
+not be an argument to anything that prints.

@@ -1890,6 +1890,7 @@ I32 OS_SymbolLookup(U64 *SymbolAddress, U8 *SymbolName)
 #include "/Kernel/Cfs/sc/sc_loads.HC"
 #include "/Kernel/Cfs/sc/sc_state.HC"
 #include "/Kernel/Cfs/sc/sc_cmds.HC"
+#include "/Kernel/Cfs/sc/sc_dispatch.HC"
 
 // ===================== CS, THE THIRD cFS APP -- STEP 1'S STATE =====================
 //
@@ -20119,6 +20120,349 @@ U0 sc_block_engine()
   S("\n");
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// SC BLOCK 8: sc_dispatch.c -- and the one assertion no other block can make.
+//
+// Every handler this file routes to is already gated and already exercised. What a dispatcher adds
+// is **"the right handler ran for this command code"**, and the cheap wrong way to assert that is
+// to dispatch each code and check the return: every SC handler returns CFE_SUCCESS, including the
+// arms that reject the command, so seventeen `rc=0` lines would be seventeen claims about nothing.
+//
+// So each dispatch is followed by **one fingerprint line covering every field any SC handler could
+// have moved**. A correctly routed code moves the field its own handler owns and leaves the rest;
+// a MIS-routed code shows the wrong field moving, which is the failure this block exists to catch.
+//
+// ### THE TWO ASYMMETRIES ARE DRIVEN SIDE BY SIDE, BECAUSE NEITHER IS VISIBLE ALONE
+//
+// SC_VerifyCmdLength bumps CmdErrCtr only when the message id is SC_CMD_MID, so a wrong-length
+// WAKEUP logs the event and counts nothing. And SC_START_RTS_CC is the only one of seventeen cases
+// with an `else`, so a malformed START_RTS moves TWO counters where its own group form moves one.
+//
+// ### EVERY TYPED COMMAND POINTER IS HOISTED
+//
+// The C half writes `((SC_StartAtsCmd_t *)sc_mkcmd(...))->Payload.AtsNum = ...`. That is an arrow
+// applied to a CALL's result, which is the open HolyC defect recorded as call-arrow-member: the
+// arrow resolves against the first argument's class, and with scalar arguments there is no class,
+// so it loads through zero. Twelve of those were hoisted across SC's own sources; these are the
+// exercise's, and they are hoisted for the same reason.
+CFE_SB_Buffer sc_disp_buf;
+
+// Build a ground command with a function code and a declared size. The SIZE is what
+// SC_VerifyCmdLength compares, so it is the knob that drives every length-failure arm.
+CFE_SB_Buffer *sc_mkcmd(U16 mid, I64 cc, I64 len)
+{
+  MemSet(&sc_disp_buf, 0, sizeof(sc_disp_buf));
+  CFE_MSG_Init(&sc_disp_buf.Msg, CFE_SB_ValueToMsgId(mid), sizeof(CFE_MSG_CommandHeader));
+  CFE_MSG_SetSize(&sc_disp_buf.Msg, len);
+  CFE_MSG_SetFcnCode(&sc_disp_buf.Msg, cc);
+  return &sc_disp_buf;
+}
+
+// Every field any SC handler owns, on one line.
+U0 sc_fp(U8 *tag, I64 cc)
+{
+  S("scd_");
+  S(tag);
+  S(" cc=");
+  D(cc);
+  S(" cmd=");
+  D(SC_OperData.HkPacket.Payload.CmdCtr);
+  S("/");
+  D(SC_OperData.HkPacket.Payload.CmdErrCtr);
+  S(" atp=");
+  D(sc_atp.AtpState);
+  S(" curr=");
+  D(SC_IDNUM_AS_UINT(sc_atp.CurrAtsNum));
+  S(" pend=");
+  D(sc_atp.SwitchPendFlag);
+  S(" cont=");
+  D(SC_OperData.HkPacket.Payload.ContinueAtsOnFailureFlag);
+  S(" rts=");
+  D(sc_rts_info[0].RtsStatus);
+  S("/");
+  D(sc_rts_info[1].RtsStatus);
+  S("/");
+  D(sc_rts_info[2].RtsStatus);
+  S("/");
+  D(sc_rts_info[3].RtsStatus);
+  S(" dis=");
+  D(sc_rts_info[0].DisabledFlag != 0);
+  D(sc_rts_info[1].DisabledFlag != 0);
+  D(sc_rts_info[2].DisabledFlag != 0);
+  D(sc_rts_info[3].DisabledFlag != 0);
+  S(" act=");
+  D(SC_OperData.HkPacket.Payload.RtsActiveCtr);
+  S("/");
+  D(SC_OperData.HkPacket.Payload.RtsActiveErrCtr);
+  S(" ncmds=");
+  D(sc_ats_info[0].NumberOfCommands);
+  S(" append=");
+  D(SC_OperData.HkPacket.Payload.AppendEntryCount);
+  S("\n");
+}
+
+// One loaded ATS, one loaded RTS and a validated append table, so every command code has something
+// to act on and a routed handler can succeed rather than reject.
+U0 sc_disp_ready()
+{
+  sc_eng_setup();
+  sc_eng_ats(0);
+  sc_eng_ats(1);
+  sc_eng_rts(0, 2);
+  sc_app_put(SC_ENTRY_OFFSET_FIRST, 9, 0, 900, SC_PACKET_MIN_SIZE);
+  SC_UpdateAppend();
+  SC_AppData.CurrentTime = 50;
+}
+
+U0 sc_block_dispatch()
+{
+  CFE_SB_Buffer *b;
+  U8 e0;
+  U8 c0;
+  U16 a0;
+  I16 back;
+  I64 ok_eq;
+  I64 ok_ne;
+  SC_StartAtsCmd_t *pa;
+  SC_StartRtsCmd_t *pr;
+  SC_StopRtsCmd_t *psr;
+  SC_DisableRtsCmd_t *pd;
+  SC_EnableRtsCmd_t *pe;
+  SC_JumpAtsCmd_t *pj;
+  SC_ContinueAtsOnFailureCmd_t *pc;
+  SC_AppendAtsCmd_t *pap;
+  SC_ManageTableCmd_t *pm;
+  SC_StartRtsGrpCmd_t *pg;
+  SC_StopRtsGrpCmd_t *pgs;
+  SC_DisableRtsGrpCmd_t *pgd;
+  SC_EnableRtsGrpCmd_t *pge;
+
+  // ---- SC_ProcessRequest's four arms, by MESSAGE ID ------------------------------------------
+  sc_disp_ready();
+  b = sc_mkcmd(SC_WAKEUP_MID, 0, sizeof(SC_WakeupCmd_t));
+  SC_ProcessRequest(b);
+  S("scd_mid_wakeup clock=");
+  D(SC_AppData.CurrentWakeupCount);
+  S(" cmderr=");
+  D(SC_OperData.HkPacket.Payload.CmdErrCtr);
+  S("\n");
+
+  // A WRONG-LENGTH WAKEUP: the event fires and **CmdErrCtr DOES NOT MOVE**, because
+  // SC_VerifyCmdLength only counts for SC_CMD_MID. The clock must not advance either.
+  e0 = SC_OperData.HkPacket.Payload.CmdErrCtr;
+  b = sc_mkcmd(SC_WAKEUP_MID, 0, sizeof(SC_WakeupCmd_t) + 1);
+  SC_ProcessRequest(b);
+  S("scd_mid_wakeup_badlen clock=");
+  D(SC_AppData.CurrentWakeupCount);
+  S(" cmderr_delta=");
+  D(SC_OperData.HkPacket.Payload.CmdErrCtr - e0);
+  S("\n");
+
+  b = sc_mkcmd(SC_SEND_HK_MID, 0, sizeof(SC_SendHkCmd_t));
+  SC_ProcessRequest(b);
+  S("scd_mid_sendhk atpstate_in_pkt=");
+  D(SC_OperData.HkPacket.Payload.AtpState);
+  S(" cmderr=");
+  D(SC_OperData.HkPacket.Payload.CmdErrCtr);
+  S("\n");
+
+  e0 = SC_OperData.HkPacket.Payload.CmdErrCtr;
+  b = sc_mkcmd(SC_SEND_HK_MID, 0, sizeof(SC_SendHkCmd_t) + 1);
+  SC_ProcessRequest(b);
+  S("scd_mid_sendhk_badlen cmderr_delta=");
+  D(SC_OperData.HkPacket.Payload.CmdErrCtr - e0);
+  S("\n");
+
+  // AN UNKNOWN MESSAGE ID: the event prints it and CmdErrCtr DOES move -- the one arm where a
+  // non-ground id counts as a command error.
+  e0 = SC_OperData.HkPacket.Payload.CmdErrCtr;
+  b = sc_mkcmd(0x18C2, 0, sizeof(SC_NoopCmd_t));
+  SC_ProcessRequest(b);
+  S("scd_mid_unknown cmderr_delta=");
+  D(SC_OperData.HkPacket.Payload.CmdErrCtr - e0);
+  S("\n");
+
+  // ---- THE SEVENTEEN COMMAND CODES, each through SC_ProcessRequest on SC_CMD_MID -------------
+  sc_disp_ready();
+  SC_ProcessRequest(sc_mkcmd(SC_CMD_MID, SC_NOOP_CC, sizeof(SC_NoopCmd_t)));
+  sc_fp("noop", SC_NOOP_CC);
+
+  sc_disp_ready();
+  SC_OperData.HkPacket.Payload.CmdCtr = 9;
+  SC_ProcessRequest(sc_mkcmd(SC_CMD_MID, SC_RESET_COUNTERS_CC, sizeof(SC_ResetCountersCmd_t)));
+  sc_fp("reset", SC_RESET_COUNTERS_CC);
+
+  sc_disp_ready();
+  pa = sc_mkcmd(SC_CMD_MID, SC_START_ATS_CC, sizeof(SC_StartAtsCmd_t))(SC_StartAtsCmd_t *);
+  pa->Payload.AtsNum = SC_ATS_NUM_C(1);
+  SC_ProcessRequest(&sc_disp_buf);
+  sc_fp("start_ats", SC_START_ATS_CC);
+
+  // STOP needs something running, so it follows a START in the same prepared state.
+  pa = sc_mkcmd(SC_CMD_MID, SC_START_ATS_CC, sizeof(SC_StartAtsCmd_t))(SC_StartAtsCmd_t *);
+  pa->Payload.AtsNum = SC_ATS_NUM_C(1);
+  SC_ProcessRequest(&sc_disp_buf);
+  SC_ProcessRequest(sc_mkcmd(SC_CMD_MID, SC_STOP_ATS_CC, sizeof(SC_StopAtsCmd_t)));
+  sc_fp("stop_ats", SC_STOP_ATS_CC);
+
+  sc_disp_ready();
+  pr = sc_mkcmd(SC_CMD_MID, SC_START_RTS_CC, sizeof(SC_StartRtsCmd_t))(SC_StartRtsCmd_t *);
+  pr->Payload.RtsNum = SC_RTS_NUM_C(1);
+  SC_ProcessRequest(&sc_disp_buf);
+  sc_fp("start_rts", SC_START_RTS_CC);
+
+  psr = sc_mkcmd(SC_CMD_MID, SC_STOP_RTS_CC, sizeof(SC_StopRtsCmd_t))(SC_StopRtsCmd_t *);
+  psr->Payload.RtsNum = SC_RTS_NUM_C(1);
+  SC_ProcessRequest(&sc_disp_buf);
+  sc_fp("stop_rts", SC_STOP_RTS_CC);
+
+  sc_disp_ready();
+  pd = sc_mkcmd(SC_CMD_MID, SC_DISABLE_RTS_CC, sizeof(SC_DisableRtsCmd_t))(SC_DisableRtsCmd_t *);
+  pd->Payload.RtsNum = SC_RTS_NUM_C(1);
+  SC_ProcessRequest(&sc_disp_buf);
+  sc_fp("disable_rts", SC_DISABLE_RTS_CC);
+
+  pe = sc_mkcmd(SC_CMD_MID, SC_ENABLE_RTS_CC, sizeof(SC_EnableRtsCmd_t))(SC_EnableRtsCmd_t *);
+  pe->Payload.RtsNum = SC_RTS_NUM_C(1);
+  SC_ProcessRequest(&sc_disp_buf);
+  sc_fp("enable_rts", SC_ENABLE_RTS_CC);
+
+  sc_disp_ready();
+  pa = sc_mkcmd(SC_CMD_MID, SC_START_ATS_CC, sizeof(SC_StartAtsCmd_t))(SC_StartAtsCmd_t *);
+  pa->Payload.AtsNum = SC_ATS_NUM_C(1);
+  SC_ProcessRequest(&sc_disp_buf);
+  SC_ProcessRequest(sc_mkcmd(SC_CMD_MID, SC_SWITCH_ATS_CC, sizeof(SC_SwitchAtsCmd_t)));
+  sc_fp("switch_ats", SC_SWITCH_ATS_CC);
+
+  sc_disp_ready();
+  pa = sc_mkcmd(SC_CMD_MID, SC_START_ATS_CC, sizeof(SC_StartAtsCmd_t))(SC_StartAtsCmd_t *);
+  pa->Payload.AtsNum = SC_ATS_NUM_C(1);
+  SC_ProcessRequest(&sc_disp_buf);
+  pj = sc_mkcmd(SC_CMD_MID, SC_JUMP_ATS_CC, sizeof(SC_JumpAtsCmd_t))(SC_JumpAtsCmd_t *);
+  pj->Payload.NewTime = 250;
+  SC_ProcessRequest(&sc_disp_buf);
+  S("scd_jump seq=");
+  D(SC_IDX_AS_UINT(sc_atp.TimeIndexPtr));
+  S(" cmd=");
+  D(SC_IDNUM_AS_UINT(sc_atp.CmdNumber));
+  S(" next=");
+  D(SC_AppData.NextCmdTime[SC_Process_ATP]);
+  S("\n");
+  sc_fp("jump_ats", SC_JUMP_ATS_CC);
+
+  sc_disp_ready();
+  pc = sc_mkcmd(SC_CMD_MID, SC_CONTINUE_ATS_ON_FAILURE_CC,
+                sizeof(SC_ContinueAtsOnFailureCmd_t))(SC_ContinueAtsOnFailureCmd_t *);
+  pc->Payload.ContinueState = SC_AtsCont_TRUE;
+  SC_ProcessRequest(&sc_disp_buf);
+  sc_fp("continue", SC_CONTINUE_ATS_ON_FAILURE_CC);
+
+  sc_disp_ready();
+  pap = sc_mkcmd(SC_CMD_MID, SC_APPEND_ATS_CC, sizeof(SC_AppendAtsCmd_t))(SC_AppendAtsCmd_t *);
+  pap->Payload.AtsNum = SC_ATS_NUM_C(1);
+  SC_ProcessRequest(&sc_disp_buf);
+  sc_fp("append_ats", SC_APPEND_ATS_CC);
+
+  sc_disp_ready();
+  pm = sc_mkcmd(SC_CMD_MID, SC_MANAGE_TABLE_CC, sizeof(SC_ManageTableCmd_t))(SC_ManageTableCmd_t *);
+  pm->Payload.Parameter = 99; // an invalid table id, so the error event is the witness
+  SC_ProcessRequest(&sc_disp_buf);
+  sc_fp("manage_table", SC_MANAGE_TABLE_CC);
+
+  sc_disp_ready();
+  sc_eng_rts(1, 2);
+  sc_eng_rts(2, 2);
+  pg = sc_mkcmd(SC_CMD_MID, SC_START_RTS_GRP_CC, sizeof(SC_StartRtsGrpCmd_t))(SC_StartRtsGrpCmd_t *);
+  pg->Payload.FirstRtsNum = SC_RTS_NUM_C(2);
+  pg->Payload.LastRtsNum = SC_RTS_NUM_C(3);
+  SC_ProcessRequest(&sc_disp_buf);
+  sc_fp("start_grp", SC_START_RTS_GRP_CC);
+
+  pgs = sc_mkcmd(SC_CMD_MID, SC_STOP_RTS_GRP_CC, sizeof(SC_StopRtsGrpCmd_t))(SC_StopRtsGrpCmd_t *);
+  pgs->Payload.FirstRtsNum = SC_RTS_NUM_C(2);
+  pgs->Payload.LastRtsNum = SC_RTS_NUM_C(3);
+  SC_ProcessRequest(&sc_disp_buf);
+  sc_fp("stop_grp", SC_STOP_RTS_GRP_CC);
+
+  pgd = sc_mkcmd(SC_CMD_MID, SC_DISABLE_RTS_GRP_CC,
+                 sizeof(SC_DisableRtsGrpCmd_t))(SC_DisableRtsGrpCmd_t *);
+  pgd->Payload.FirstRtsNum = SC_RTS_NUM_C(1);
+  pgd->Payload.LastRtsNum = SC_RTS_NUM_C(2);
+  SC_ProcessRequest(&sc_disp_buf);
+  sc_fp("disable_grp", SC_DISABLE_RTS_GRP_CC);
+
+  pge = sc_mkcmd(SC_CMD_MID, SC_ENABLE_RTS_GRP_CC,
+                 sizeof(SC_EnableRtsGrpCmd_t))(SC_EnableRtsGrpCmd_t *);
+  pge->Payload.FirstRtsNum = SC_RTS_NUM_C(1);
+  pge->Payload.LastRtsNum = SC_RTS_NUM_C(2);
+  SC_ProcessRequest(&sc_disp_buf);
+  sc_fp("enable_grp", SC_ENABLE_RTS_GRP_CC);
+
+  // ---- THE DEFAULT ARM, and the proof it fetched the message id ------------------------------
+  //
+  // HS's note #24 is a dispatcher printing a sentinel id here because it never called
+  // CFE_MSG_GetMsgId. SC calls it, so the event must name 0x18A9. The command code is read back
+  // out of the message rather than trusted, because the CCSDS function code field is SEVEN BITS --
+  // the trap HS's exercise hit, where asking for 200 silently ran the no-op.
+  sc_disp_ready();
+  b = sc_mkcmd(SC_CMD_MID, 100, sizeof(SC_NoopCmd_t));
+  back = 0;
+  CFE_MSG_GetFcnCode(&b->Msg, &back);
+  e0 = SC_OperData.HkPacket.Payload.CmdErrCtr;
+  SC_ProcessRequest(b);
+  S("scd_cc_bad asked=100 readback=");
+  D(back);
+  S(" cmderr_delta=");
+  D(SC_OperData.HkPacket.Payload.CmdErrCtr - e0);
+  S("\n");
+
+  // ---- THE TWO LENGTH ASYMMETRIES, each as a PAIR --------------------------------------------
+  //
+  // START_RTS is the only one of seventeen cases with an `else`, so a malformed one moves
+  // CmdErrCtr (from the verifier) AND RtsActiveErrCtr (from the case). Its own GROUP form has no
+  // `else`, so the same malformation moves one counter.
+  sc_disp_ready();
+  c0 = SC_OperData.HkPacket.Payload.CmdErrCtr;
+  a0 = SC_OperData.HkPacket.Payload.RtsActiveErrCtr;
+  SC_ProcessRequest(sc_mkcmd(SC_CMD_MID, SC_START_RTS_CC, sizeof(SC_StartRtsCmd_t) + 1));
+  S("scd_badlen_start_rts cmderr_delta=");
+  D(SC_OperData.HkPacket.Payload.CmdErrCtr - c0);
+  S(" rtsacterr_delta=");
+  D(SC_OperData.HkPacket.Payload.RtsActiveErrCtr - a0);
+  S("\n");
+  c0 = SC_OperData.HkPacket.Payload.CmdErrCtr;
+  a0 = SC_OperData.HkPacket.Payload.RtsActiveErrCtr;
+  SC_ProcessRequest(sc_mkcmd(SC_CMD_MID, SC_START_RTS_GRP_CC, sizeof(SC_StartRtsGrpCmd_t) + 1));
+  S("scd_badlen_start_grp cmderr_delta=");
+  D(SC_OperData.HkPacket.Payload.CmdErrCtr - c0);
+  S(" rtsacterr_delta=");
+  D(SC_OperData.HkPacket.Payload.RtsActiveErrCtr - a0);
+  S("\n");
+
+  // ---- SC_VerifyCmdLength called DIRECTLY, for the equal-length path nothing else reaches -----
+  //
+  // **AND BOTH CALLS ARE HOISTED, WHICH IS THE printf LESSON RUNNING THE OTHER WAY.** docs/ records
+  // seven places where a call had to be lifted OUT of a printf because C evaluates every argument
+  // before printing any of it. Here that same C rule is the behaviour the HolyC half has to match:
+  // `printf("... ok=%d\n", SC_VerifyCmdLength(...))` emits the length-error EVENT first and the
+  // tag afterwards, while `S("... ok="); D(SC_VerifyCmdLength(...))` prints the tag first and then
+  // emits. The transcript diverged by exactly one line boundary -- `scd_verify_bad ok=` with the
+  // event spliced into the middle of it.
+  //
+  // So the rule is the same in both directions: **a call that EMITS must not be an argument to
+  // anything that prints.** Hoist it, and the two halves order the same way.
+  b = sc_mkcmd(SC_CMD_MID, SC_NOOP_CC, sizeof(SC_NoopCmd_t));
+  ok_eq = SC_VerifyCmdLength(&b->Msg, sizeof(SC_NoopCmd_t)) != 0;
+  S("scd_verify_ok ok=");
+  D(ok_eq);
+  S("\n");
+  ok_ne = SC_VerifyCmdLength(&b->Msg, sizeof(SC_NoopCmd_t) + 1) != 0;
+  S("scd_verify_bad ok=");
+  D(ok_ne);
+  S("\n");
+}
+
 I64 main()
 {
   CFE_MSG_Message msg;
@@ -31681,6 +32025,7 @@ I64 main()
     sc_block_cmds();
     sc_block_ats_cmds();
     sc_block_engine();
+    sc_block_dispatch();
 
     // PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after it today
     // but tim_objtab, so both halves agreed and the transcript was green -- but the NEXT app's
