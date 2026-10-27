@@ -1666,7 +1666,14 @@ pointer, which has one width.
 
 `tools/cfs/check_narrow_cast.py` refuses a widening cast whose operand resolves to a narrow
 declaration, and `tests/exec/cases/e_widening_cast_lvalue.hc` pins all five forms above plus the
-three safe spellings. Both halves of the gate were poisoned to prove they fire — and the first
+three safe spellings.
+
+**THAT EXEC CASE PINS THE DEFECT, NOT CORRECTNESS.** Its expected values are this compiler's
+mistake — 4294967295 where C gives 65535 — so **whoever fixes the relabel semantics must rewrite
+it the same day**, and the gate's prohibition must be removed with it. #29 below is the worked
+example of that transition: it was pinned the same way for one commit, then fixed at the root, and
+its case now pins the CORRECT values from a C twin. Pinning a defect is the right thing to do
+while it is open and a liability the moment it is not. Both halves of the gate were poisoned to prove they fire — and the first
 version of the gate **passed its own poison**, because the test that skips arithmetic expressions
 matched the minus sign in `->`.
 
@@ -1766,3 +1773,69 @@ identically to the form that was not.
 defect is fixed is a false claim** — but it still COUNTS the sites, so the summary says how many
 depend on this fix (three today, all in `Kernel/Cfs/sc/sc_global.HC`, where NASA's
 one-expression bodies are restored).
+
+## 30. A function-like macro body cannot contain a STATEMENT — OPEN, and a parse error
+
+```
+#define M(f,s,v) f[s] = v;                            OK
+#define M(f,s,v) if (v) f[s] = 1;                      error: Expected ';' or ','
+#define M(f,s,v) if (v) f[s] = 1; else f[s] = 0;       error: Expected ';' or ','
+#define M(f,s,v) { if (v) f[s] = 1; else f[s] = 0; }   error: Expected ';' or ','
+```
+
+A macro body must be an **expression**. There is no `do { ... } while (0)` either — the same parse
+error, from the `do`.
+
+This one is loud, which puts it in a different class from #26 through #29: the compiler refuses the
+file rather than miscompiling it. It is recorded because the *workaround* is a judgement call and
+because C code reaches for exactly this shape.
+
+### WHY C CODE KEEPS HITTING IT
+
+`do { ... } while (0)` is the standard way to make a multi-statement macro behave as one statement,
+so `if (x) MACRO(a,b,c); else ...` binds the way it reads. cFS uses it: `SC_SET_HKTLM_RTS_MASK` in
+`sc_cmds.h` is a `do`/`while` around an `if`/`else` that sets or clears one bit of a telemetry
+mask.
+
+### THE WORKAROUND, AND HOW TO CHECK IT
+
+Re-express the body as a single assignment. For a set/clear pair:
+
+```
+// NASA:  do { if (v) f[w] |= bit; else f[w] &= ~bit; } while (0)
+#define SC_SET_HKTLM_RTS_MASK(f, s, v)                                                            \
+  f[s / SC_BITS_PER_HKTLM_WORD] = (f[s / SC_BITS_PER_HKTLM_WORD] &                                \
+                                   ~(1 << (s % SC_BITS_PER_HKTLM_WORD))) |                        \
+                                  ((v) ? (1 << (s % SC_BITS_PER_HKTLM_WORD)) : 0)
+```
+
+**CHECK IT AGAINST A C TWIN OF NASA'S OWN MACRO, NOT AGAINST YOUR READING OF IT.** Two values over
+a pre-set word are enough: alternating bits into `0xFFFF` gives `mask=65530`, then setting all of
+them gives `allset=65535`, and both halves print the same pair. That check found nothing wrong, and
+it is the only reason the claim is worth making.
+
+Three details the rewrite must keep:
+
+- **the shift parentheses**, which are redundant in C and load-bearing here: `<<` is the TIGHTEST
+  binary operator in HolyC (`host/parser.c:2729`, after TempleOS's `Compiler/CInit.HC`) and looser
+  than `%` in C, so `1 << s % 4` means `(1 << s) % 4` here and `1 << (s % 4)` there.
+  `tools/cfs/check_shift_parens.py` refuses the unparenthesised form, and that gate's own header is
+  where the inversion is written up — **it has no number in this file at all.** An earlier draft of
+  this entry cited it as "limit #15", which is a live section and is `#if <expr>` being
+  unconditionally true: a wrong pointer that resolves is worse than one that dangles, because
+  nothing looks broken when you follow it;
+- **parentheses round the value argument**, because call sites pass an expression
+  (`RtsInfoPtr->RtsStatus == SC_Status_EXECUTING`);
+- and nothing else: the arithmetic is NASA's if/else for every `v`.
+
+### A CONSEQUENCE THAT GOES THE RIGHT WAY
+
+The forced form is **better behaved than the one it replaced**. A single expression is safe as the
+unbraced body of another `if`; the bare `if`/`else` that a `do`/`while`-less translation would have
+produced is not. So the limitation removed the hazard that NASA's wrapper exists to prevent,
+rather than introducing it.
+
+### NOT GATED, AND IT DOES NOT NEED TO BE
+
+A violation does not compile, so the smoke is the gate. What a gate could not have told you is
+which rewrite is correct, and that is what the C twin is for.
