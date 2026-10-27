@@ -190,6 +190,41 @@ def macro_params(txt):
     return out
 
 
+def class_member_types(txt):
+    """(class name, member name) -> (base, ptr depth, array rank), for the files in this unit.
+
+    **THE FLAT TABLE WAS NOT ENOUGH, AND IT WAS HIDING A LIVE SITE.** A member is looked up by
+    name alone unless the thing on its left resolves to a class, and 30 member names in the port
+    are declared at two or more different widths -- `Status`, `Offset`, `CmdNum`, `Length`,
+    `Data`, `State` among them. Those 30 were skipped, which is sound but blind, and
+    `sc_cmds.HC`'s `StatusEntryPtr->Status` is exactly one of them: a deliberate poison restoring
+    NASA's `(unsigned long)` cast on that `U8` field went UNREPORTED.
+
+    It is resolvable without type inference, because the thing on the left is almost always a
+    local or a parameter whose declaration is in the same file:
+    `SC_AtsCmdStatusEntry_t *StatusEntryPtr;`. So the head identifier is resolved first, and when
+    its declared base names a class, the member is looked up inside THAT class.
+    """
+    out = {}
+    cur = None
+    for line in txt.split("\n"):
+        m = re.match(r"^\s*(?:class|union)\s+([A-Za-z_][A-Za-z0-9_]*)", line)
+        if m:
+            cur = m.group(1)
+            continue
+        if cur and line.strip() == "};":
+            cur = None
+            continue
+        if cur:
+            d = DECL.match(line) or SCALAR.match(line)
+            if d:
+                base, star, name = d.groups()[0], d.groups()[1], d.groups()[2]
+                brackets = d.groups()[3] if len(d.groups()) > 3 else ""
+                dims = len(re.findall(r"\[[^\]]*\]", brackets or ""))
+                out[(cur, name)] = (base, 1 if star else 0, dims)
+    return out
+
+
 def member_types(txt):
     """(class name, member name) -> base type, for resolving `x.m` and `p->m`. Flat across all
     classes: a member name is looked up by name alone, and a COLLISION between two classes with
@@ -265,12 +300,17 @@ def main():
     # One flat member table over the whole translation: a member name is declared once at one
     # width in practice, and where it is not, member_types marks it '?' and this gate refuses.
     members = {}
+    cmembers = {}
     for p in files:
-        for k, v in member_types(strip_comments(open(p, errors="replace").read())).items():
+        txt0 = strip_comments(open(p, errors="replace").read())
+        for k, v in member_types(txt0).items():
             members.setdefault(k, set()).add(v)
+        cmembers.update(class_member_types(txt0))
 
     bad_cast = []
     ptrarray_chains = 0
+    by_class = 0
+    by_name = 0
     bad_macro = []
     macro_narrowing = []
     unresolved = []
@@ -329,13 +369,25 @@ def main():
                         macro_narrowing.append((rel, ln, expr, wide))
                     continue
                 if "." in expr or "->" in expr:
-                    recs = members.get(name)
-                    if not recs:
-                        unresolved.append((rel, ln, expr, wide))
-                        continue
-                    if any(r[1] or RANK.get(r[0], 99) >= target for r in recs):
-                        continue        # some declaration is a pointer or not narrower
-                    base, ptr, dims = sorted(recs)[0]
+                    # FIRST try the exact class, via the head identifier's own declaration. This
+                    # is what rescues the 30 ambiguous member names; see class_member_types.
+                    rec = None
+                    head = LVALUE.match(expr).group(1)
+                    hrec = decls.get(head)
+                    if hrec:
+                        rec = cmembers.get((hrec[0], name))
+                    if rec is not None:
+                        by_class += 1
+                        base, ptr, dims = rec
+                    else:
+                        by_name += 1
+                        recs = members.get(name)
+                        if not recs:
+                            unresolved.append((rel, ln, expr, wide))
+                            continue
+                        if any(r[1] or RANK.get(r[0], 99) >= target for r in recs):
+                            continue    # some declaration is a pointer or not narrower
+                        base, ptr, dims = sorted(recs)[0]
                 else:
                     rec = decls.get(name)
                     if rec is None:
@@ -430,12 +482,20 @@ def main():
               " to a narrower type reads at most the operand's own bytes):" % len(macro_narrowing))
         for f, ln, e, w in macro_narrowing:
             print("      %s:%d  (%s)(%s)" % (f, ln, e, w))
-    if ambiguous:
-        print("  %d member name(s) declared at two or more types where one is narrow and one is"
-              " not, so a `->m` on them is NOT checked -- resolving these needs the declared type"
-              " of the left-hand side, which is real type inference:" % len(ambiguous))
-        for i in range(0, len(ambiguous), 8):
-            print("      " + " ".join(ambiguous[i:i + 8]))
+    if by_class or by_name:
+        print("  member operands: %d resolved through the head identifier's own class, %d by name"
+              " alone (%d member name(s) are declared at two or more widths, so the second route"
+              " skips them: %s)"
+              % (by_class, by_name, len(ambiguous), " ".join(ambiguous[:6]) + " ..."))
+    else:
+        # **SAID PLAINLY BECAUSE THE ALTERNATIVE READS AS A SKIP.** An earlier wording printed
+        # "30 member names NOT checked" beside "0 resolved", which sounds like thirty live sites
+        # going unexamined. There are none: every cast in the port today is on a plain identifier
+        # or an array element, so the member path has NO live sites and is exercised only by the
+        # deliberate poison in the commit that added it (NASA's `(unsigned long)` cast restored on
+        # sc_cmds.HC's `StatusEntryPtr->Status`, a U8 -- it fails, naming the type).
+        print("  no cast in the port has a MEMBER operand, so the per-class member resolution"
+              " this gate carries has no live site; it is proven by poison, not by use")
     return 0
 
 

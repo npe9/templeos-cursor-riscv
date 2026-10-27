@@ -212,6 +212,26 @@ C_TYPES = [(r'\bconst\b', ' '),
            # check_structs is what compares a FIELD's exact width. The number/index distinction
            # SC draws in its type names is therefore invisible here, which is the same thing
            # sc_tbl.HC's header says about the C: both are uint16 and only the names carry it.
+           #
+           # **AND THE "COMPLETE SET" ABOVE WAS COMPLETE FOR THE WRONG QUESTION.** That grep asks
+           # for `typedef uintN SC_x`, so it cannot see a typedef'd ENUM -- and SC has exactly one,
+           # `typedef enum { ATS, RTS, APPEND } SC_TableType` in sc_cmds.h, the only SC type whose
+           # name does not end in `_t`. It surfaced when sc_cmds.c was gated: NASA's
+           # `SC_ManageTable(SC_TableType, int32)` normalised to `(,SNUM)` against the
+           # translation's `(SZ,SNUM)`.
+           #
+           # This gate CAUGHT it, for the same reason it caught the first two: one side was
+           # recognised. Had the translation spelled that parameter as something unrecognised too,
+           # the pair would again have matched on two blanks -- the blind spot this file records
+           # fourteen times, found a fifteenth time one layer out, in the SEARCH that was supposed
+           # to have closed it. A completeness claim is only as complete as the pattern behind it.
+           # **SNUM, NOT NUM, AND THE DIFFERENCE IS THE ENUM'S SIGNEDNESS.** The fifteen typedefs
+           # below are `uint8`/`uint16`/`uint32` and so are unsigned; `SC_TableType` is an
+           # unadorned `enum`, whose type in C is `int` -- SIGNED. Mapping it to NUM made the gate
+           # demand an unsigned parameter and the translation's faithful `I32` was reported as the
+           # mismatch, which is the gate arguing for the wrong answer.
+           (r'\bSC_TableType\s*\*', ' PTRSNUM '),
+           (r'\bSC_TableType\b', ' SNUM '),
            (r'\bSC_(?:AbsTimeTag|RelWakeupCount|SeqIndex|EntryOffset)_t\s*\*', ' PTRNUM '),
            (r'\bSC_(?:AbsTimeTag|RelWakeupCount|SeqIndex|EntryOffset)_t\b', ' NUM '),
            (r'\bSC_(?:Ats|Rts|Command)(?:Num|Index)_t\s*\*', ' PTRNUM '),

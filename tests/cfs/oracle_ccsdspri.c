@@ -192,6 +192,7 @@ bool CFE_EVS_VerifyCmdLength(const CFE_MSG_Message_t *MsgPtr, size_t ExpectedLen
 #include "sc_state.h"
 #include "sc_rtsrq.h"
 #include "sc_atsrq.h"
+#include "sc_cmds.h"
 #include "iodriver_base.h"
 #include "iodriver_analog_io.h"
 #include "lc_msgids.h"
@@ -16181,6 +16182,413 @@ static void sc_block_ats_cmds(void)
            (unsigned)SC_OperData.HkPacket.Payload.CmdErrCtr);
 }
 
+
+/* ---------------------------------------------------------------------------------------------
+ * SC BLOCK 7: sc_cmds.c -- the engine. The eleven functions that actually SEND stored commands.
+ *
+ * ### THE PIPE IS THE ASSERTION, BECAUSE THESE FUNCTIONS' OUTPUT IS A MESSAGE
+ *
+ * Everything gated before this block changed SC's own state and could be asserted by reading it
+ * back. `SC_ProcessAtpCmd` and `SC_ProcessRtpCommand` put a message on the software bus, and the
+ * counters they bump say only that they THINK they did. docs/ records that shape twice -- "a
+ * return value saying I handled it is NOT evidence output was emitted". So this block subscribes
+ * a pipe to the message id the stored commands carry and COUNTS WHAT ARRIVES, and every nominal
+ * pass prints the drained count beside the counter.
+ *
+ * ### THE RATE LIMITER IS DRIVEN AT ITS BOUNDARY, NOT NEAR IT
+ *
+ * `SC_WakeupCmd` runs at most SC_MAX_CMDS_PER_WAKEUP (8) commands. An RTS of twelve commands is
+ * loaded and three wakeups are run: 8, then 4, then 0. The first number is the limit, the second
+ * is the remainder, and the third is the empty case -- a pass that only ever asked for three
+ * commands would not distinguish a working limiter from no limiter at all.
+ *
+ * ### AND THE SWITCH-INSIDE-AN-ATS PATH IS THE ONE EXCEPTION TO "STORED COMMANDS ARE SENT"
+ *
+ * An ATS entry whose message id is SC_CMD_MID and whose function code is SC_SWITCH_ATS_CC is
+ * executed IN PLACE by SC_InlineSwitch and never reaches the bus. The pass drives it and asserts
+ * both halves: the ATS switched, and NOTHING arrived on the pipe. */
+/* A message id nothing else in the port uses, so a count drained off the pipe is unambiguous.
+ *
+ * **0x18AF WAS THE FIRST CHOICE AND IT IS HS_SEND_HK_MID.** SC's own four are 0x18A9 (cmd),
+ * 0x18AA (send-hk), 0x18AB (wakeup) and 0x08AA (hk tlm), so a value just past them looked free
+ * and was not -- six other apps are in this driver. The value below came from scanning every
+ * 0x0nnn/0x1nnn literal in Kernel/Cfs and both drivers (158 of them) and taking the first gap.
+ *
+ * It is the EXERCISE's id, not SC's, so it is defined here rather than in the translation:
+ * check_defines pairs sc_msg.HC against NASA's header, and an invented constant there would be a
+ * false claim about what NASA defines. */
+#define SC_ENG_TEST_MID 0x18C1
+
+static CFE_SB_PipeId_t sc_eng_pipe;
+static int             sc_eng_pipe_made;
+
+/* Drain the engine pipe and return how many messages were on it.
+ *
+ * **THIS CAN NEVER RETURN MORE THAN 1, AND THE REASON IS THE FIXTURE.** The simulated OS queue
+ * backing an SB pipe is ONE SLOT -- `unsigned char Data[64]` with a `Full` flag, in `sbq[]` --
+ * so a second delivery overwrites the first and a drain finds whatever arrived last. Raising the
+ * pipe depth and the subscription's message limit does not change that; it only stopped SB
+ * refusing the extra sends.
+ *
+ * So `got` answers "did a message really reach the bus", which is the thing SC's own counters
+ * cannot say and docs/ records as a repeated trap -- "a return value saying I handled it is NOT
+ * evidence output was emitted". It does NOT answer "how many", and the rate-limiter pass asserts
+ * the BURST SIZE with SC's RtsCmdCtr going 8 -> 12 -> 12 instead, which is exact.
+ *
+ * A first version of that pass read `got=1` after sending eight and was written up as a broken
+ * limiter. It was a full mailbox. */
+static int sc_drain(void)
+{
+    CFE_SB_Buffer_t *b;
+    int              n = 0;
+
+    while (CFE_SB_ReceiveBuffer(&b, sc_eng_pipe, OS_CHECK) == CFE_SUCCESS && b != NULL)
+    {
+        n++;
+        b = NULL;
+        if (n > 64)
+        {
+            break; /* a runaway would hang the differential rather than fail it */
+        }
+    }
+    return n;
+}
+
+/* sc_wire() plus a pipe subscribed to the message id stored commands carry. The pipe is made once
+ * and drained per pass, the way HS's three pipes are made once -- cFE's pipe table is a shared
+ * fixture and five apps have already filled it. */
+static void sc_eng_setup(void)
+{
+    int32 rc;
+
+    sc_wire();
+    /* **THE SHIPPED DEFAULT IS FALSE, AND THAT IS WHY THE FIRST VERSION OF THIS BLOCK SENT
+     * NOTHING.** `SC_PLATFORM_ENABLE_HEADER_UPDATE` is FALSE, so SC VALIDATES the checksum already
+     * in each stored entry rather than recomputing it on the way out -- and entries built with
+     * CFE_MSG_Init alone have none. Eleven passes printed `got=0` with `ATS Command Failed
+     * Checksum` above them, which is the shipped configuration behaving correctly and the exact
+     * opposite of what those passes were for.
+     *
+     * The repair is not to flip the flag: it is to build the entries the way a real uploaded ATS
+     * arrives, with a valid checksum (see sc_eng_ats / sc_eng_rts). The flag is set EXPLICITLY
+     * from the configuration constant rather than left to the memset, for the same reason
+     * sc_wire() sets AtpState explicitly -- so it is the configuration and not an accident. */
+    SC_AppData.EnableHeaderUpdate = SC_PLATFORM_ENABLE_HEADER_UPDATE;
+    if (!sc_eng_pipe_made)
+    {
+        sb_forget_queue_name("SC_ENG_PIPE");
+        rc = CFE_SB_CreatePipe(&sc_eng_pipe, 32, "SC_ENG_PIPE");
+        printf("sce_pipe rc=%d\n", (int)rc);
+        /* **SubscribeEx WITH AN EXPLICIT LIMIT, BECAUSE THE DEFAULT ONE SILENTLY DROPS.**
+         * `CFE_SB_Subscribe` takes CFE_PLATFORM_SB_DEFAULT_MSG_LIMIT, and the rate-limiter pass
+         * sends eight commands in one wakeup: seven were discarded with
+         * `Msg Limit Err,MsgId 0x18c1` and the pipe yielded `got=1`, which read as a broken
+         * limiter rather than a full pipe. The drained count is this block's only witness that a
+         * stored command really reached the bus, so the limit has to exceed the largest burst --
+         * eight per wakeup, and 16 leaves room. */
+        rc = CFE_SB_SubscribeEx(CFE_SB_ValueToMsgId(SC_ENG_TEST_MID), sc_eng_pipe,
+                                CFE_SB_DEFAULT_QOS, 16);
+        printf("sce_sub rc=%d limit=%d\n", (int)rc, 16);
+        sc_eng_pipe_made = 1;
+    }
+    (void)sc_drain();
+}
+
+/* An ATS whose commands are addressed to the pipe above, so a transmitted command is observable.
+ * The three times are 100/200/300 as elsewhere in SC's exercise. */
+static void sc_eng_ats(int ats)
+{
+    uint16 off;
+    int    i;
+    SC_AtsEntry_t *e;
+
+    off = SC_ENTRY_OFFSET_FIRST;
+    for (i = 1; i <= 3; i++)
+    {
+        e = (SC_AtsEntry_t *)&sc_ats_buf[ats][off];
+        CFE_MSG_Init(CFE_MSG_PTR(e->Msg), CFE_SB_ValueToMsgId(SC_ENG_TEST_MID),
+                     sizeof(CFE_MSG_CommandHeader_t));
+        CFE_MSG_SetSize(CFE_MSG_PTR(e->Msg), SC_PACKET_MIN_SIZE);
+        /* A STORED ENTRY CARRIES ITS OWN CHECKSUM, because SC validates rather than recomputes
+         * in the shipped configuration. This is what the ground's upload tool does. */
+        CFE_MSG_GenerateChecksum(CFE_MSG_PTR(e->Msg));
+        e->Header.Pad        = 0;
+        e->Header.CmdNumber  = SC_COMMAND_NUM_C(i);
+        e->Header.TimeTag_MS = 0;
+        e->Header.TimeTag_LS = 100 * i;
+        off = SC_EntryOffsetAdvance(SC_ENTRY_OFFSET_C(off), SC_PACKET_MIN_SIZE + SC_ATS_HEADER_SIZE);
+    }
+    SC_LoadAts(SC_ATS_IDX_C(ats));
+}
+
+/* An RTS of `n` commands addressed to the pipe, every one due immediately (relative wakeup 0). */
+static void sc_eng_rts(int rts, int n)
+{
+    uint16 off;
+    int    i;
+    SC_RtsEntry_t *e;
+
+    off = SC_ENTRY_OFFSET_FIRST;
+    for (i = 0; i < n; i++)
+    {
+        e = (SC_RtsEntry_t *)&sc_rts_buf[rts][off];
+        CFE_MSG_Init(CFE_MSG_PTR(e->Msg), CFE_SB_ValueToMsgId(SC_ENG_TEST_MID),
+                     sizeof(CFE_MSG_CommandHeader_t));
+        CFE_MSG_SetSize(CFE_MSG_PTR(e->Msg), SC_PACKET_MIN_SIZE);
+        CFE_MSG_GenerateChecksum(CFE_MSG_PTR(e->Msg));
+        e->Header.WakeupCount = 0;
+        off = SC_EntryOffsetAdvance(SC_ENTRY_OFFSET_C(off), SC_PACKET_MIN_SIZE + SC_RTS_HEADER_SIZE);
+    }
+    SC_LoadRts(SC_RTS_IDX_C(rts));
+    sc_rts_info[rts].DisabledFlag = false;
+}
+
+static void sc_block_engine(void)
+{
+    SC_WakeupCmd_t        wake;
+    SC_NoopCmd_t          noop;
+    SC_ResetCountersCmd_t rst;
+    SC_SendHkCmd_t        hk;
+    SC_StartAtsCmd_t      sa;
+    SC_StartRtsCmd_t      sr;
+    SC_ManageTableCmd_t   mt;
+    int32  rc;
+    int    got;
+    int    i;
+    uint16 before;
+
+    memset(&wake, 0, sizeof(wake));
+    memset(&noop, 0, sizeof(noop));
+    memset(&rst, 0, sizeof(rst));
+    memset(&hk, 0, sizeof(hk));
+    memset(&sa, 0, sizeof(sa));
+    memset(&sr, 0, sizeof(sr));
+    memset(&mt, 0, sizeof(mt));
+
+    /* ---- SC_NoopCmd: the version string, and the only counter it touches ---------------------- */
+    sc_eng_setup();
+    rc = SC_NoopCmd(&noop);
+    printf("sce_noop rc=%d cmd=%u err=%u\n", (int)rc, (unsigned)SC_OperData.HkPacket.Payload.CmdCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.CmdErrCtr);
+
+    /* ---- SC_ResetCountersCmd clears EIGHT counters and NOT the four last-error records -------- */
+    SC_OperData.HkPacket.Payload.CmdCtr        = 11;
+    SC_OperData.HkPacket.Payload.CmdErrCtr     = 22;
+    SC_OperData.HkPacket.Payload.AtsCmdCtr     = 33;
+    SC_OperData.HkPacket.Payload.AtsCmdErrCtr  = 44;
+    SC_OperData.HkPacket.Payload.RtsCmdCtr     = 55;
+    SC_OperData.HkPacket.Payload.RtsCmdErrCtr  = 66;
+    SC_OperData.HkPacket.Payload.RtsActiveCtr  = 77;
+    SC_OperData.HkPacket.Payload.RtsActiveErrCtr = 88;
+    SC_OperData.HkPacket.Payload.LastAtsErrSeq = SC_ATS_NUM_C(2);
+    SC_OperData.HkPacket.Payload.LastAtsErrCmd = SC_COMMAND_NUM_C(9);
+    SC_OperData.HkPacket.Payload.LastRtsErrSeq = SC_RTS_NUM_C(3);
+    SC_OperData.HkPacket.Payload.LastRtsErrCmd = SC_ENTRY_OFFSET_C(7);
+    rc                                         = SC_ResetCountersCmd(&rst);
+    printf("sce_reset rc=%d c=%u/%u ats=%u/%u rts=%u/%u act=%u/%u  survived: aseq=%u acmd=%u rseq=%u rcmd=%u\n",
+           (int)rc, (unsigned)SC_OperData.HkPacket.Payload.CmdCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.CmdErrCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.AtsCmdCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.AtsCmdErrCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.RtsCmdCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.RtsCmdErrCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.RtsActiveCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.RtsActiveErrCtr,
+           (unsigned)SC_IDNUM_AS_UINT(SC_OperData.HkPacket.Payload.LastAtsErrSeq),
+           (unsigned)SC_IDNUM_AS_UINT(SC_OperData.HkPacket.Payload.LastAtsErrCmd),
+           (unsigned)SC_IDNUM_AS_UINT(SC_OperData.HkPacket.Payload.LastRtsErrSeq),
+           (unsigned)SC_IDX_AS_UINT(SC_OperData.HkPacket.Payload.LastRtsErrCmd));
+
+    /* ---- SC_ProcessAtpCmd: the command reaches the BUS, not just the counter ------------------ */
+    sc_eng_setup();
+    sc_eng_ats(0);
+    SC_AppData.CurrentTime = 50;
+    sa.Payload.AtsNum      = SC_ATS_NUM_C(1);
+    SC_StartAtsCmd(&sa);
+    SC_AppData.CurrentTime = 150; /* the first command's time has passed */
+    SC_ProcessAtpCmd();
+    got = sc_drain();
+    printf("sce_atp got=%d atscmd=%u atserr=%u nextcmd=%u wakeupcnt=%u\n", got,
+           (unsigned)SC_OperData.HkPacket.Payload.AtsCmdCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.AtsCmdErrCtr,
+           (unsigned)SC_IDNUM_AS_UINT(sc_atp.CmdNumber), (unsigned)SC_OperData.NumCmdsWakeup);
+
+    /* NOT YET DUE: the time test is the guard, and nothing must move. */
+    SC_AppData.CurrentTime = 150;
+    SC_OperData.NumCmdsWakeup = 0;
+    SC_ProcessAtpCmd();
+    got = sc_drain();
+    printf("sce_atp_early got=%d atscmd=%u wakeupcnt=%u\n", got,
+           (unsigned)SC_OperData.HkPacket.Payload.AtsCmdCtr, (unsigned)SC_OperData.NumCmdsWakeup);
+
+    /* A COMMAND WHOSE STATUS IS NOT LOADED: skipped, counted as an error, and the ATS is NOT
+     * aborted -- NASA's comment says why, and `state` staying EXECUTING is the assertion. */
+    sc_eng_setup();
+    sc_eng_ats(0);
+    SC_AppData.CurrentTime = 50;
+    sa.Payload.AtsNum      = SC_ATS_NUM_C(1);
+    SC_StartAtsCmd(&sa);
+    SC_GetAtsStatusEntryForCommand(SC_ATS_IDX_C(0), SC_COMMAND_IDX_C(0))->Status = SC_Status_EXECUTED;
+    SC_AppData.CurrentTime = 150;
+    SC_ProcessAtpCmd();
+    printf("sce_atp_notloaded got=%d atserr=%u state=%u\n", sc_drain(),
+           (unsigned)SC_OperData.HkPacket.Payload.AtsCmdErrCtr, (unsigned)sc_atp.AtpState);
+
+    /* A COMMAND-NUMBER MISMATCH: aborts the ATS. The entry's own number is corrupted in place,
+     * which is what a bad table load would look like after the index was built. */
+    sc_eng_setup();
+    sc_eng_ats(0);
+    SC_AppData.CurrentTime = 50;
+    sa.Payload.AtsNum      = SC_ATS_NUM_C(1);
+    SC_StartAtsCmd(&sa);
+    SC_GetAtsEntryAtOffset(SC_ATS_IDX_C(0),
+                           SC_GetAtsEntryOffsetForCmd(SC_ATS_IDX_C(0), SC_COMMAND_IDX_C(0))->Offset)
+        ->Header.CmdNumber = SC_COMMAND_NUM_C(99);
+    SC_AppData.CurrentTime = 150;
+    SC_ProcessAtpCmd();
+    printf("sce_atp_mismatch got=%d atserr=%u state=%u pend=%u\n", sc_drain(),
+           (unsigned)SC_OperData.HkPacket.Payload.AtsCmdErrCtr, (unsigned)sc_atp.AtpState,
+           (unsigned)sc_atp.SwitchPendFlag);
+
+    /* ---- SC_ProcessRtpCommand ----------------------------------------------------------------- */
+    sc_eng_setup();
+    sc_eng_rts(0, 3);
+    sr.Payload.RtsNum = SC_RTS_NUM_C(1);
+    SC_StartRtsCmd(&sr);
+    SC_GetNextRtsTime();
+    SC_ProcessRtpCommand();
+    got = sc_drain();
+    printf("sce_rtp got=%d rtscmd=%u rtserr=%u cmdctr=%u wakeupcnt=%u\n", got,
+           (unsigned)SC_OperData.HkPacket.Payload.RtsCmdCtr,
+           (unsigned)SC_OperData.HkPacket.Payload.RtsCmdErrCtr,
+           (unsigned)sc_rts_info[0].CmdCtr, (unsigned)SC_OperData.NumCmdsWakeup);
+
+    /* AN RTS THAT IS NOT EXECUTING, and an invalid CurrRtsNum: the two guards. */
+    sc_eng_setup();
+    sc_rtp.CurrRtsNum = SC_RTS_NUM_C(0);
+    SC_ProcessRtpCommand();
+    printf("sce_rtp_badnum got=%d wakeupcnt=%u\n", sc_drain(), (unsigned)SC_OperData.NumCmdsWakeup);
+    sc_eng_rts(0, 2);
+    sc_rtp.CurrRtsNum = SC_RTS_NUM_C(1);
+    SC_ProcessRtpCommand(); /* LOADED, not EXECUTING */
+    printf("sce_rtp_notexec got=%d wakeupcnt=%u\n", sc_drain(), (unsigned)SC_OperData.NumCmdsWakeup);
+
+    /* ---- SC_WakeupCmd: THE RATE LIMITER, AT ITS BOUNDARY -------------------------------------
+     *
+     * Twelve RTS commands, all due. Three wakeups must drain 8, then 4, then 0. */
+    sc_eng_setup();
+    sc_eng_rts(0, 12);
+    sr.Payload.RtsNum = SC_RTS_NUM_C(1);
+    SC_StartRtsCmd(&sr);
+    (void)sc_drain();
+    for (i = 0; i < 3; i++)
+    {
+        before = SC_OperData.HkPacket.Payload.RtsCmdCtr;
+        rc     = SC_WakeupCmd(&wake);
+        got    = sc_drain();
+        /* `sent` is the number of commands THIS wakeup issued -- 8, then the remaining 4, then 0.
+         * `got` is at most 1 whatever `sent` is; see sc_drain. */
+        printf("sce_wakeup i=%d rc=%d sent=%u got=%d limit=%d rtscmd=%u wakeupcnt=%u\n", i,
+               (int)rc, (unsigned)(SC_OperData.HkPacket.Payload.RtsCmdCtr - before), got,
+               SC_MAX_CMDS_PER_WAKEUP, (unsigned)SC_OperData.HkPacket.Payload.RtsCmdCtr,
+               (unsigned)SC_OperData.NumCmdsWakeup);
+    }
+
+    /* AND THE WAKEUP COUNT ADVANCES EVERY TIME, which is the RTP's clock. */
+    printf("sce_wakeup_clock count=%u\n", (unsigned)SC_AppData.CurrentWakeupCount);
+
+    /* A WAKEUP WITH NOTHING TO DO: the loop breaks on its first pass and the counter is reset. */
+    sc_eng_setup();
+    SC_WakeupCmd(&wake);
+    printf("sce_wakeup_idle got=%d wakeupcnt=%u\n", sc_drain(), (unsigned)SC_OperData.NumCmdsWakeup);
+
+    /* ---- THE SWITCH INSIDE AN ATS: executed in place, and NOTHING reaches the bus ------------- */
+    sc_eng_setup();
+    sc_eng_ats(0);
+    sc_eng_ats(1);
+    /* turn ATS A's first command into a ground SWITCH command addressed to SC itself */
+    {
+        SC_AtsEntry_t *e = SC_GetAtsEntryAtOffset(
+            SC_ATS_IDX_C(0), SC_GetAtsEntryOffsetForCmd(SC_ATS_IDX_C(0), SC_COMMAND_IDX_C(0))->Offset);
+        CFE_MSG_SetMsgId(CFE_MSG_PTR(e->Msg), CFE_SB_ValueToMsgId(SC_CMD_MID));
+        CFE_MSG_SetFcnCode(CFE_MSG_PTR(e->Msg), SC_SWITCH_ATS_CC);
+        /* **AND RE-CHECKSUM IT.** Editing the message id and the function code in place
+         * invalidates the checksum the builder generated, and SC validates before it looks at the
+         * function code -- so the first version of this pass hit `ATS Command Failed Checksum`
+         * and aborted the ATS, printing `state=2 atscmd=0`, which is indistinguishable from the
+         * switch having failed. The pass exists to show the switch SUCCEEDING without a message
+         * reaching the bus; it has to get past the checksum first. */
+        CFE_MSG_GenerateChecksum(CFE_MSG_PTR(e->Msg));
+    }
+    SC_AppData.CurrentTime = 50;
+    sa.Payload.AtsNum      = SC_ATS_NUM_C(1);
+    SC_StartAtsCmd(&sa);
+    (void)sc_drain();
+    SC_AppData.CurrentTime = 150;
+    SC_ProcessAtpCmd();
+    got = sc_drain();
+    printf("sce_atp_inline got=%d curr=%u atscmd=%u state=%u\n", got,
+           (unsigned)SC_IDNUM_AS_UINT(sc_atp.CurrAtsNum),
+           (unsigned)SC_OperData.HkPacket.Payload.AtsCmdCtr, (unsigned)sc_atp.AtpState);
+
+    /* ---- SC_SendHkPacket: the bit masks, the free bytes, and the packet itself ---------------- */
+    sc_eng_setup();
+    sc_eng_rts(0, 2);
+    sc_eng_rts(2, 2);
+    sr.Payload.RtsNum = SC_RTS_NUM_C(1);
+    SC_StartRtsCmd(&sr);
+    sc_rts_info[3].DisabledFlag = true;
+    sc_ats_three(0);
+    SC_SendHkPacket();
+    /* RTS 1 is index 0 and EXECUTING -> bit 0 of the executing mask; RTS 4 is index 3 and
+     * DISABLED -> bit 3 of the disabled mask. With SC_BITS_PER_HKTLM_WORD = 4 both live in
+     * word 0, so the two numbers are 0x1 and 0x8. */
+    /* `%04X` and not `%X`: the HolyC half prints fixed-width hex (its H4 helper), and a bit mask
+     * is more readable padded anyway -- a missing bit shows as a 0 in a known column rather than
+     * as a shorter number. */
+    printf("sce_hk exec=0x%04X dis=0x%04X bits_per_word=%d free0=%u free1=%u\n",
+           (unsigned)SC_OperData.HkPacket.Payload.RtsExecutingStatus[0],
+           (unsigned)SC_OperData.HkPacket.Payload.RtsDisabledStatus[0], SC_BITS_PER_HKTLM_WORD,
+           (unsigned)SC_OperData.HkPacket.Payload.AtpFreeBytes[0],
+           (unsigned)SC_OperData.HkPacket.Payload.AtpFreeBytes[1]);
+    printf("sce_hk2 curr=%u atp=%u active=%u rtsnum=%u nextats=%u nextrts=%u\n",
+           (unsigned)SC_OperData.HkPacket.Payload.CurrAtsId,
+           (unsigned)SC_OperData.HkPacket.Payload.AtpState,
+           (unsigned)SC_OperData.HkPacket.Payload.NumRtsActive,
+           (unsigned)SC_IDNUM_AS_UINT(SC_OperData.HkPacket.Payload.RtsNum),
+           (unsigned)SC_OperData.HkPacket.Payload.NextAtsTime,
+           (unsigned)SC_OperData.HkPacket.Payload.NextRtsWakeupCnt);
+
+    /* ---- SC_SendHkCmd: THE AUTO-START RTS FIRES HERE, AND ONLY ONCE -------------------------- */
+    sc_eng_setup();
+    sc_eng_rts(1, 2);
+    sc_rts_info[1].DisabledFlag = true; /* the auto-start path must ENABLE it */
+    SC_AppData.AutoStartRTS     = SC_RTS_NUM_C(2);
+    rc                          = SC_SendHkCmd(&hk);
+    printf("sce_hkcmd rc=%d autostart_cleared=%d disabled=%d\n", (int)rc,
+           (int)(SC_IDNUM_AS_UINT(SC_AppData.AutoStartRTS) == 0),
+           sc_rts_info[1].DisabledFlag ? 1 : 0);
+    /* the SECOND request must not re-arm it */
+    SC_SendHkCmd(&hk);
+    printf("sce_hkcmd_again autostart=%u\n", (unsigned)SC_IDNUM_AS_UINT(SC_AppData.AutoStartRTS));
+
+    /* ---- SC_ManageTableCmd: every branch, including the adjacent-range boundaries ------------- */
+    sc_eng_setup();
+    for (i = 0; i <= 14; i++)
+    {
+        mt.Payload.Parameter = i;
+        SC_ManageTableCmd(&mt);
+    }
+    printf("sce_manage ids=0..14 ats0=%d append=%d rts0=%d rtsinfo=%d atscmd0=%d\n",
+           SC_TBL_ID_ATS_0, SC_TBL_ID_APPEND, SC_TBL_ID_RTS_0, SC_TBL_ID_RTS_INFO,
+           SC_TBL_ID_ATS_CMD_0);
+
+    /* the two wrappers' own index guards, reached directly */
+    SC_ManageAtsTable(SC_NUMBER_OF_ATS);
+    SC_ManageRtsTable(SC_NUMBER_OF_RTS);
+    printf("sce_manage_badidx ats=%d rts=%d\n", SC_NUMBER_OF_ATS, SC_NUMBER_OF_RTS);
+}
+
 int main(void)
 {
     CFE_MSG_Message_t msg;
@@ -24791,6 +25199,7 @@ int main(void)
         sc_block_state();
         sc_block_cmds();
         sc_block_ats_cmds();
+        sc_block_engine();
 
             /* PUT THE APP TYPE BACK, which MD's block does and this one did not. Nothing after
              * it today but tim_objtab, so both halves agreed and the transcript was green --

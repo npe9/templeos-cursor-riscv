@@ -4217,3 +4217,66 @@ exited on any source without a `.gcov`, which for a partially gated app meant it
 all. Deleting that exit would have been the wrong repair — it is the only thing between the tool
 and the "0 of 56 functions" it once printed from no data — so the denominator is now the sources
 the smoke actually compiles, and the ungated ones are listed by name in the output.
+
+### `sc_cmds.c` gated and exercised: SC at 3,540 of 4,157 lines (85%), six of eight sources
+
+```
+  GATED  sc_utils.c     185     7/7 exercised
+  GATED  sc_rtsrq.c     619    10/10
+  GATED  sc_atsrq.c     742    10/10
+  GATED  sc_loads.c     893    15/15
+  GATED  sc_state.c     340     3/3
+  GATED  sc_cmds.c      764    11/11   <- the engine: where a stored command becomes a message
+    -    sc_dispatch.c  275
+    -    sc_app.c       617
+```
+
+**56 of 56**, at 5,584 byte-identical transcript lines (5,200 when SC had no exercise).
+
+**THE ENGINE'S OUTPUT IS A MESSAGE, SO THE PIPE IS THE WITNESS.** Everything gated before this
+changed SC's own state and could be read back; `SC_ProcessAtpCmd` and `SC_ProcessRtpCommand` put a
+message on the software bus, and the counters they bump are only SC's opinion that they did. The
+block subscribes a pipe to the id the stored commands carry and drains it — `docs/` records the
+shape twice as "a return value saying I handled it is NOT evidence output was emitted".
+
+Three things the engine block got wrong first, all of them the fixture rather than the translation:
+
+- **`SC_PLATFORM_ENABLE_HEADER_UPDATE` is FALSE in the shipped configuration**, so SC *validates*
+  the checksum already in each stored entry instead of recomputing it on the way out. Entries
+  built with `CFE_MSG_Init` alone have none, so eleven passes printed `got=0` under `ATS Command
+  Failed Checksum` — the shipped configuration behaving correctly and the exact opposite of what
+  the passes were for. The repair is to build entries the way a real upload arrives, with
+  `CFE_MSG_GenerateChecksum`; the flag is now set explicitly from the constant rather than left
+  to a memset.
+- **`CFE_SB_Subscribe` takes the default message limit**, which silently dropped seven of the
+  eight commands in the rate-limiter burst (`Msg Limit Err,MsgId 0x18c1`). `SubscribeEx` with an
+  explicit 16 fixed it.
+- **The simulated OS queue behind an SB pipe is ONE SLOT.** So a drain can never return more than
+  1 however many were sent, and `got=1` after a burst of eight read as a broken limiter when it
+  was a full mailbox. The burst size is asserted with SC's own `RtsCmdCtr` delta instead —
+  `sent=8`, `sent=4`, `sent=0` across three wakeups, which is the limiter at its exact boundary.
+
+**Two HolyC limitations measured, one of them new.** A function-like macro **cannot contain a
+statement at all** — bisected over four bodies, `f[s] = v;` compiles and every `if` form is
+`error: Expected ';' or ','`, and there is no `do { } while (0)` either. NASA's
+`SC_SET_HKTLM_RTS_MASK` is both, so the body is written as the single assignment
+`f[w] = (f[w] & ~bit) | (v ? bit : 0)`, checked against a C twin of NASA's own macro rather than
+reasoned about: both print `mask=65530` and `allset=65535`. The forced form is better behaved than
+the one it replaced — it is a single expression, so it is safe as the unbraced body of an `if`,
+which the bare `if`/`else` would not have been.
+
+**A gate blind spot found one layer out.** `check_signatures` carried a comment calling its SC
+typedef list "the complete set from `grep -hE '^typedef +(uint8|uint16|uint32) +SC_'`". That grep
+cannot see a typedef'd **enum**, and SC has exactly one — `SC_TableType`, the only SC type whose
+name does not end in `_t`. It surfaced as `SC_ManageTable: NASA (,SNUM) translation (SZ,SNUM)`.
+Registered as **SNUM**, not NUM: the other fifteen are `uintN` and unsigned, while an unadorned C
+enum is `int` and signed, and mapping it unsigned made the gate argue for the wrong answer.
+
+**And `check_narrow_cast` now resolves a member through its head identifier's class.** The flat
+by-name table skipped 30 member names declared at two or more widths — `Status`, `Offset`,
+`CmdNum` among them — and `sc_cmds.HC`'s `StatusEntryPtr->Status` is one of them, so a deliberate
+poison restoring NASA's `(unsigned long)` cast on that `U8` field went **unreported**. The head is
+almost always a local whose declaration is in the same file, so it is resolved first and the
+member looked up inside that class. The poison now fails, naming the type. No cast in the port has
+a member operand today, so that path has no live site and the gate says so rather than printing a
+count that reads like 30 skips.
