@@ -88,17 +88,24 @@ Interactive FunPick: legacy until parity.
 """
 
 # Default truncate keeps MemfsSeed fast; Man topic pages need full text (G4).
-MAX_EMBED = 12000
+# GEN_MAX_EMBED / GEN_FULL_EMBED let a board build trade fs richness for boot
+# time (ULX3S Bluesim: full seed hashes ~100 KB through the I64-emulated FNV
+# multiply at ~2.7k cycles/B -- tens of minutes of sim per boot).
+MAX_EMBED = int(os.environ.get("GEN_MAX_EMBED", "12000"))
 MEMFS_CAP = 65536
-FULL_EMBED_BASENAMES = frozenset(
-    {
-        "man_topics.hc",
-        "man.hc",
-        "funs.hc",
-        "disasm.hc",
-        "ninep.hc",
-        "gdbstub.hc",
-    }
+FULL_EMBED_BASENAMES = (
+    frozenset(
+        {
+            "man_topics.hc",
+            "man.hc",
+            "funs.hc",
+            "disasm.hc",
+            "ninep.hc",
+            "gdbstub.hc",
+        }
+    )
+    if os.environ.get("GEN_FULL_EMBED", "1") != "0"
+    else frozenset()
 )
 
 

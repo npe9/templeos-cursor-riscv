@@ -1,6 +1,6 @@
 // trap.hc -- HolyC TrapVec + TrapDispatch (G2). Asm = GPR frame + mret only.
 // Policy: HolyC TrapDispatch publishes MEM_TRAP_SNAP, runs SetTrap handler,
-// fault-dumps, Ctrl-C Break. Legacy: if slot 0x87000010 holds C trapvec, defer.
+// fault-dumps, Ctrl-C Break. Legacy: if slot MEM_FIXED+0x10 holds C trapvec, defer.
 // Do NOT call SetTrap/TrapInit at file load time (mtvec swap mid-boot is unsafe).
 //
 // Remaining asm:
@@ -11,18 +11,18 @@
 #ifndef TRAP_VEC_OFF
 #define TRAP_VEC_OFF 0
 #endif
-#define TRAP_DISPATCH_SLOT 0x87000010
+#define TRAP_DISPATCH_SLOT MEM_FIXED+0x10
 // Canonical x0..x31 view of the fault freeze: TRAP_SNAP_X + N*8 == xN, the same convention
 // MEM_REGS_SNAP uses for the live snap. It sits ABOVE the live snap, not at MEM_TRAP_SNAP+0x100:
-// 0x87000200/0x87000208 are the live-Bt ra/s0 scratch in BOTH images (debug.hc BtLive,
+// MEM_FIXED+0x200/MEM_FIXED+0x208 are the live-Bt ra/s0 scratch in BOTH images (debug.hc BtLive,
 // Kernel/RVWinSerial.HC:1023), so an array there would have x0/x1 clobbered by any `bt`.
-// 0x87000400..0x87000500 is unreferenced; MEM_HOST_SLOTS starts at 0x87001000.
-#define TRAP_SNAP_X 0x87000400
-#define TRAP_NAME_BUF_SLOT 0x87001058
-#define TRAP_DISP_FN_SLOT 0x87001060
-#define TRAP_FALLBACK_VEC_SLOT 0x87001068
-#define TRAP_NAME_FIXED 0x87001090
-#define REPL_JB_FIXED 0x87002000
+// MEM_FIXED+0x400..MEM_FIXED+0x500 is unreferenced; MEM_HOST_SLOTS starts at MEM_HOST_SLOTS+0x0.
+#define TRAP_SNAP_X MEM_FIXED+0x400
+#define TRAP_NAME_BUF_SLOT MEM_HOST_SLOTS+0x58
+#define TRAP_DISP_FN_SLOT MEM_HOST_SLOTS+0x60
+#define TRAP_FALLBACK_VEC_SLOT MEM_HOST_SLOTS+0x68
+#define TRAP_NAME_FIXED MEM_HOST_SLOTS+0x90
+#define REPL_JB_FIXED MEM_HOST_SLOTS+0x1000
 #define TRAP_UART_IRQ 10
 #define TRAP_EXCEPT_BREAK 0x6B61657242
 #define TRAP_CH_CTRLC 3
@@ -90,8 +90,8 @@ asm {
 	mv	a0, sp
 	// Do NOT use asm `call` — host expands it to IC_CALL + eval-stack push
 	// (addi sp,-8; sd a0) which corrupts this frame and wedges TrapInit.
-	// Do NOT use lifp for 0x87001060 — values <2^55 mis-materialize (jalr 0).
-	// Build TRAP_DISP_FN_SLOT (0x87001060) like start.hc stack (lui+slli+addi).
+	// Do NOT use lifp for MEM_HOST_SLOTS+0x60 — values <2^55 mis-materialize (jalr 0).
+	// Build TRAP_DISP_FN_SLOT (MEM_HOST_SLOTS+0x60) like start.hc stack (lui+slli+addi).
 	lui	t6, 0x10E00
 	slli	t6, t6, 3
 	lui	t5, 0x1
@@ -247,7 +247,7 @@ asm {
 	ret
 }
 // Soft abort: asm-only so longjmp returns straight to ReplLoop (no HolyC frame).
-// JB at REPL_JB_FIXED (outside SoftDbg 4KiB wipe @ 0x87001000).
+// JB at REPL_JB_FIXED (outside SoftDbg 4KiB wipe @ MEM_HOST_SLOTS+0x0).
 asm {
 	ReplDoSetJmpHc::
 	lui	t6, 0x10E00
@@ -388,7 +388,7 @@ U0 TrapNameStore(U8 *name)
 //   legacy slots 0..21  — ra,t0..t6,a0..a7,sp,fp,mcause,mepc,mtval,mstatus (existing readers)
 //   canonical x array   — MEM_TRAP_SNAP+0x100 + N*8 = xN, matching MEM_REGS_SNAP's convention
 //                         so one formatter serves the fault freeze and the live snap.
-// The array ends exactly at MEM_REGS_SNAP (0x87000300): 32 slots, no room for a 33rd.
+// The array ends exactly at MEM_REGS_SNAP (MEM_FIXED+0x300): 32 slots, no room for a 33rd.
 // mstatus is the value AFTER the trap (MIE cleared, MPP/MPIE hold the trapped state).
 I64 g_trap_snap_live;
 U0 TrapSnapPublish(I64 *frame, I64 cause, I64 epc, I64 tval)
@@ -439,7 +439,7 @@ U0 TrapSnapPublish(I64 *frame, I64 cause, I64 epc, I64 tval)
   // there — an empty stub in the same place is fine, so it is the store, not the call. Whatever
   // this image does with the FPU at trap time needs understanding before trying again; until
   // then a reader sees flag=0 and knows these floats belong to nobody.
-  *(I64 *)(0x87000F00) = 0;
+  *(I64 *)(MEM_FIXED + 0xF00) = 0;
   g_trap_snap_live = 1;
   pc = epc;
 }
@@ -466,10 +466,10 @@ U0 TrapUartHwDrain()
   I64 ch, n, rx, rhp, rtp, cap, rh, rt, skip;
   PUSHFD;
   CLI;
-  rx = *(I64 *)0x87001020;
-  rhp = *(I64 *)0x87001028;
-  rtp = *(I64 *)0x87001030;
-  cap = *(I64 *)0x87001038;
+  rx = *(I64 *)MEM_HOST_SLOTS + 0x20;
+  rhp = *(I64 *)MEM_HOST_SLOTS + 0x28;
+  rtp = *(I64 *)MEM_HOST_SLOTS + 0x30;
+  cap = *(I64 *)MEM_HOST_SLOTS + 0x38;
   if (rx && rhp && rtp && cap >= 2) {
     while (*(U8 *)(MEM_UART + 5) & 1) {
       ch = *(U8 *)MEM_UART;
@@ -752,7 +752,7 @@ U0 Reset()
     UartStr("Reset: no Boot()\n");
     return;
   }
-  *(I64 *)0x87000000 = *(I64 *)0x87001080;
+  *(I64 *)MEM_FIXED + 0x0 = *(I64 *)MEM_HOST_SLOTS + 0x80;
   TrapCall0(boot);
 }
 // SiFive test finisher @ MEM_TEST (QEMU virt sifive_test @ 0x100000).

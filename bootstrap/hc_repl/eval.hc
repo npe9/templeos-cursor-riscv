@@ -194,73 +194,88 @@ I64 StrEq(U8 *a, U8 *b)
   }
   return !*a && !*b;
 }
+// Skip leading spaces/tabs. Single-loop helper: the rv32 codegen pathologizes
+// (hangs) when a dispatch function owns multiple loops itself, so every loop in
+// the command matcher lives in its own tiny leaf helper.
+U8 *EvalSkipWs(U8 *l)
+{
+  while (*l == ' ' || *l == '\t')
+    l++;
+  return l;
+}
+// Skip trailing spaces/tabs/;/cr/lf.
+U8 *EvalSkipTail(U8 *l)
+{
+  while (*l == ' ' || *l == '\t' || *l == ';' || *l == '\r' || *l == '\n')
+    l++;
+  return l;
+}
 // Match "Name" or "Name;" or "Name();" (optional spaces).
+// No loops here — all iteration is delegated to EvalSkipWs/EvalSkipTail/StrLen/StrNCmp.
 I64 CmdIs(U8 *line, U8 *name)
 {
-  I64 i = 0, j = 0;
-  while (line[i] == ' ' || line[i] == '\t')
-    i++;
-  while (name[j] && line[i] == name[j]) {
-    i++;
-    j++;
-  }
-  if (name[j])
+  U8 *l = line;
+  I64 len = StrLen(name);
+  l = EvalSkipWs(l);
+  if (StrNCmp(l, name, len) != 0)
     return 0;
-  while (line[i] == ' ' || line[i] == '\t')
-    i++;
-  if (line[i] == '(') {
-    i++;
-    while (line[i] == ' ' || line[i] == '\t')
-      i++;
-    if (line[i] != ')')
+  l += len;
+  l = EvalSkipWs(l);
+  if (*l == '(') {
+    l++;
+    l = EvalSkipWs(l);
+    if (*l != ')')
       return 0;
-    i++;
+    l++;
   }
-  while (line[i] == ' ' || line[i] == '\t' || line[i] == ';' || line[i] == '\r' || line[i] == '\n')
-    i++;
-  return !line[i];
+  l = EvalSkipTail(l);
+  return !*l;
 }
 // Extract Src("name") / Cat("name") argument into FsTmp.
+// Pointer-walking only, like CmdIs.
+// Copy quoted body at l (opening quote already consumed) into out, NUL-terminate,
+// return the number of bytes copied. Single loop lives here, not in the caller.
+I64 EvalCopyQuoted(U8 *l, I64 q, U8 *out, I64 max)
+{
+  I64 j = 0;
+  while (*l && *l != q && j < max) {
+    out[j] = *l;
+    j++;
+    l++;
+  }
+  out[j] = 0;
+  return j;
+}
+// Extract Src("name") / Cat("name") argument into FsTmp. No loops of its own.
 I64 CmdStrArg(U8 *line, U8 *verb)
 {
-  I64 i = 0, j = 0, q;
-  while (line[i] == ' ' || line[i] == '\t')
-    i++;
-  while (verb[j] && line[i] == verb[j]) {
-    i++;
-    j++;
-  }
-  if (verb[j])
+  U8 *l = line;
+  I64 len, q, j;
+  len = StrLen(verb);
+  l = EvalSkipWs(l);
+  if (StrNCmp(l, verb, len) != 0)
     return 0;
-  while (line[i] == ' ' || line[i] == '\t')
-    i++;
-  if (line[i] != '(')
+  l += len;
+  l = EvalSkipWs(l);
+  if (*l != '(')
     return 0;
-  i++;
-  while (line[i] == ' ' || line[i] == '\t')
-    i++;
-  q = line[i];
+  l++;
+  l = EvalSkipWs(l);
+  q = *l;
   if (q != '"' && q != '\'')
     return 0;
-  i++;
-  j = 0;
-  while (line[i] && line[i] != q && j < 150) {
-    FsTmp[j] = line[i];
-    j++;
-    i++;
-  }
-  FsTmp[j] = 0;
-  if (line[i] != q)
+  l++;
+  j = EvalCopyQuoted(l, q, FsTmp, 150);
+  l += j;
+  if (*l != q)
     return 0;
-  i++;
-  while (line[i] == ' ' || line[i] == '\t')
-    i++;
-  if (line[i] != ')')
+  l++;
+  l = EvalSkipWs(l);
+  if (*l != ')')
     return 0;
-  i++;
-  while (line[i] == ' ' || line[i] == '\t' || line[i] == ';')
-    i++;
-  return !line[i];
+  l++;
+  l = EvalSkipTail(l);
+  return !*l;
 }
 
 I64 CmdParseI64(U8 *line, I64 *io, I64 *out)

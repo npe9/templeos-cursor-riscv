@@ -4476,8 +4476,9 @@ static bool RvPushR(RvI2 *ins, int *nins, const char *mn, int rd, int rs1, int r
   I->rd=rd; I->rs1=rs1; I->rs2=rs2;
   (*nins)++; return true;
 }
-// Expand li rd,imm outside ±2047. 32-bit values follow GNU as (lui+addiw / specials); wider
-// constants use EmitLoadImm64-style lui+addi (+ slli/srli zext when U32 bit31 set).
+// Wider (>32-bit) constants use EmitLoadImm64-style lui+addi (+ slli/srli
+// zext when U32 bit31 set) — rv64 only; rv32 asm li is the P0 32-bit subset
+// (see host/holyc_target.h).
 static bool RvExpandLi64(RvI2 *ins, int *nins, int rd, I64 v) {
   I64 lo32 = (I64)(I32)(U32)(v & 0xFFFFFFFF);
   I64 hi32 = (v - lo32) >> 32;
@@ -4512,31 +4513,48 @@ static bool RvExpandLi64(RvI2 *ins, int *nins, int rd, I64 v) {
   }
   return true;
 }
-static bool RvExpandLiGas32(RvI2 *ins, int *nins, int rd, I64 v) {
+// Expand li rd,imm outside ±2047. 32-bit values follow GNU as (lui+addiw /
+// specials) on rv64; rv32 has no *W ops, so the same constant is built with
+// lui+addi (identical 32-bit result — addiw's 64-bit sign-extension is a
+// no-op difference only for values the rv32 general path handles anyway).
+// Wider constants use EmitLoadImm64-style lui+addi (+ slli/srli zext when U32
+// bit31 set) — rv64 only; rv32 asm li is the P0 32-bit subset (see
+// host/holyc_target.h).
+static bool RvExpandLiGas32(Compiler *cc, RvI2 *ins, int *nins, int rd, I64 v) {
+  const Bool rv32 = cc->tgt && cc->tgt->xlen == 32;
   I64 hi, lo;
   if (v == (1LL << 31)) {
-    if (!RvPushI(ins, nins, "addiw", rd, 0, 1)) return false;
+    if (!RvPushI(ins, nins, rv32 ? "addi" : "addiw", rd, 0, 1)) return false;
     return RvPushI(ins, nins, "slli", rd, rd, 31);
   }
   if (v == (I64)(I32)0x80000000)
     return RvPushI(ins, nins, "lui", rd, 0, 0x80000);
-  if (v == 4294967295LL || v == (I64)(U32)0xFFFFFFFF) {
+  if (!rv32 && (v == 4294967295LL || v == (I64)(U32)0xFFFFFFFF)) {
     if (!RvPushI(ins, nins, "addiw", rd, 0, 1)) return false;
     if (!RvPushI(ins, nins, "slli", rd, rd, 32)) return false;
     return RvPushI(ins, nins, "addiw", rd, rd, -1);
   }
-  if (v < -2147483648LL || v > 2147483647LL)
+  // rv32 covers the full 32-bit pattern range (lui+addi wraps mod 2^32);
+  // rv64 stops at s32 because lui+addiw would sign-extend bit31.
+  if (rv32) {
+    if (v < -2147483648LL || v > 4294967295LL)
+      return false;
+  } else if (v < -2147483648LL || v > 2147483647LL)
     return false;
   hi = (v + 0x800) >> 12;
   lo = v - (hi << 12);
   if (lo == 0)
     return RvPushI(ins, nins, "lui", rd, 0, (int)(hi & 0xFFFFF));
   if (!RvPushI(ins, nins, "lui", rd, 0, (int)(hi & 0xFFFFF))) return false;
-  return RvPushI(ins, nins, "addiw", rd, rd, (int)lo);
+  return RvPushI(ins, nins, rv32 ? "addi" : "addiw", rd, rd, (int)lo);
 }
-static bool RvExpandLi(RvI2 *ins, int *nins, int rd, I64 v) {
-  if (RvExpandLiGas32(ins, nins, rd, v))
+static bool RvExpandLi(Compiler *cc, RvI2 *ins, int *nins, int rd, I64 v) {
+  if (RvExpandLiGas32(cc, ins, nins, rd, v))
     return true;
+  if (cc->tgt && cc->tgt->xlen == 32) {
+    Error(cc, "asm li on rv32 supports 32-bit constants only");
+    return false;
+  }
   return RvExpandLi64(ins, nins, rd, v);
 }
 static int RvCsrNum(const char *n) {
@@ -4698,7 +4716,7 @@ static bool TryAssembleRiscV(Compiler *cc) {
         I64 v=neg ? -cc->lex.token_i64 : cc->lex.token_i64; LexNext(cc);
         if (rd<0) return false;
         if (v >= -2048 && v <= 2047) { I->rd=rd; I->imm=(int)v; nins++; continue; }
-        if (!RvExpandLi(ins,&nins,rd,v)) return false;
+        if (!RvExpandLi(cc, ins,&nins,rd,v)) return false;
       }
       continue;
     }

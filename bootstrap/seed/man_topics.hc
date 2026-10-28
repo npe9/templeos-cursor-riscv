@@ -520,9 +520,9 @@
 // DESCRIPTION
 //   TempleOS-shaped multicore: hart 0 is master (UART REPL / OS). Secondaries park
 //   on per-hart stacks (crt0_smp / startup.s) then run one mailbox job — not N REPLs.
-//   QEMU virt: -smp N -bios none. Mailbox @ 0x87001E00. CLINT MSIP wakes WFI when
+//   QEMU virt: -smp N -bios none. Mailbox @ MEM_HOST_SLOTS+0xE00. CLINT MSIP wakes WFI when
 //   mie.MSIE is set (crt0_smp enables it on secondaries).
-//   Atomics: LXchgI64=amoswap.d, LBts/LBtr/LBtc=LR/SC, lock=amoswap spin @ 0x87001F00.
+//   Atomics: LXchgI64=amoswap.d, LBts/LBtr/LBtc=LR/SC, lock=amoswap spin @ MEM_HOST_SLOTS+0xF00.
 //   Optional smoke: make kernel-smp-smoke. OpenSBI HSM is for firmware-hosted boards.
 // EXAMPLES
 //   Man("SMP");
@@ -572,7 +572,7 @@
 //   lock { shared+=n; }
 // DESCRIPTION
 //   Emits IC_LOCK_ENTER/LEAVE around the next statement or block: spin with
-//   amoswap.d on 0x87001F00. Prefer LXchgI64 / LBts / RVAmoAddI64 for single-var RMW.
+//   amoswap.d on MEM_HOST_SLOTS+0xF00. Prefer LXchgI64 / LBts / RVAmoAddI64 for single-var RMW.
 // SEE ALSO
 //   LXchgI64  LBts  SMP  RVCritEnter
 // ErrGo -- ErrGo()

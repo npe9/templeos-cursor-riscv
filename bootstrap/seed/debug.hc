@@ -10,7 +10,7 @@
 //     DBG_I_RA=0  DBG_I_T0..T6=1..7  DBG_I_A0..A7=8..15  DBG_I_SP=16  DBG_I_FP=17
 //     DBG_I_CAUSE=18  DBG_I_EPC=19  DBG_I_TVAL=20  DBG_I_MSTATUS=21
 //     (mstatus is the POST-trap value: MIE is clear, MPP/MPIE hold the trapped state.)
-//  2. Canonical x0..x31 at TRAP_SNAP_X (0x87000400, above MEM_REGS_SNAP) — DbgX(n). This is
+//  2. Canonical x0..x31 at TRAP_SNAP_X (MEM_FIXED+0x400, above MEM_REGS_SNAP) — DbgX(n). This is
 //     every GPR including s1-s11/gp/tp, which view 1 has no slots for, and it matches
 //     MEM_REGS_SNAP's layout so one formatter serves both freeze and live snap.
 #define DBG_I_RA 0
@@ -24,7 +24,7 @@
 #define DBG_I_MSTATUS 21
 // 22..31: the rest of the stopped machine, frozen rather than read live (a live mip answers
 // about now, not about the fault). The block ends at 31 because the live-Bt scratch owns
-// 0x87000200, which is slot 32.
+// MEM_FIXED+0x200, which is slot 32.
 #define DBG_I_MTVEC 22
 #define DBG_I_MIE 23
 #define DBG_I_MIP 24
@@ -116,7 +116,7 @@ I64 DbgReg(I64 n)
 {
   return *(I64 *)(MEM_TRAP_SNAP + n * 8);
 }
-#define TRAP_POST_S1 0x87000500
+#define TRAP_POST_S1 MEM_FIXED+0x500
 // scratch: s1 after resume (above the x array, below MEM_HOST_SLOTS)
 // TrapFrameEdit -- SetTrap("TrapFrameEdit")
 // NAME
@@ -203,7 +203,7 @@ U0 TrapFrameProbe()
 // SYNOPSIS
 //   U0 TrapFrameCheck();
 // DESCRIPTION
-//   Runs Bt (whose live path writes ra/s0 to the 0x87000200 scratch) and then prints whether
+//   Runs Bt (whose live path writes ra/s0 to the MEM_FIXED+0x200 scratch) and then prints whether
 //   x0 is still 0 and x1 still equals the legacy ra slot. Both fail if the canonical array is
 //   ever moved back on top of that scratch.
 // SEE ALSO
@@ -373,8 +373,8 @@ U0 Bt()
 	sd	ra, 0x200(t6)
 	sd	s0, 0x208(t6)
   }
-  ra = *(I64 *)0x87000200;
-  fp = *(I64 *)0x87000208;
+  ra = *(I64 *)MEM_FIXED + 0x200;
+  fp = *(I64 *)MEM_FIXED + 0x208;
   UartStr("Bt (live):\n");
   // Match C StkRep: start at caller using saved s0 chain when present.
   if (DbgInRam(fp - 16))
@@ -803,7 +803,7 @@ U0 DbgHelp()
 U0 StkRep()
 {
   I64 (*sr)();
-  sr = *(I64 *)0x87001138;
+  sr = *(I64 *)MEM_HOST_SLOTS + 0x138;
   if (SoftDbgSlotFnOk(sr)) {
     sr();
     return;

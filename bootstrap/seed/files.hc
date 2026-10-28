@@ -432,7 +432,7 @@ U0 DumpB64(U8 *d, I64 n)
 //   Host: tools/uart_recv_dump.py decodes to a file.
 // EXAMPLES
 //   DumpMem(MEM_FB, 640*480*4, "fb.raw");
-//   DumpMem(0x87000100, 136, "trap_snap");
+//   DumpMem(MEM_FIXED+0x100, 136, "trap_snap");
 // SEE ALSO
 //   DumpFile  Cat  Dm  ZmodemSend
 // BUGS

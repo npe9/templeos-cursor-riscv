@@ -69,10 +69,10 @@ I64 ZmTryGet()
 {
   I64 ch, rx, rhp, rtp, cap, rh, rt;
   UartRxDrain();
-  rx = *(I64 *)0x87001020;
-  rhp = *(I64 *)0x87001028;
-  rtp = *(I64 *)0x87001030;
-  cap = *(I64 *)0x87001038;
+  rx = *(I64 *)MEM_HOST_SLOTS + 0x20;
+  rhp = *(I64 *)MEM_HOST_SLOTS + 0x28;
+  rtp = *(I64 *)MEM_HOST_SLOTS + 0x30;
+  cap = *(I64 *)MEM_HOST_SLOTS + 0x38;
   if (!rx || !rhp || !rtp || cap < 2)
     return -1;
   rh = *(I64 *)rhp;

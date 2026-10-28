@@ -261,7 +261,7 @@ I64 EdParseAddr(U8 *s, I64 *pp, I64 *have)
 // SEE ALSO
 //   EdC  EdHoly  Vi  Edit  Src  Cat
 // BUGS
-//   repl-holyc: always EdHoly (soft RX). Legacy host slot 0x870010B8 is cleared.
+//   repl-holyc: always EdHoly (soft RX). Legacy host slot MEM_HOST_SLOTS+0xB8 is cleared.
 U0 Ed(U8 *name)
 {
   EdHoly(name);
@@ -440,7 +440,7 @@ U0 EdHoly(U8 *name)
 U0 EdC(U8 *name)
 {
   I64 (*ed)(U8 *name);
-  ed = *(I64 *)0x870010B8;
+  ed = *(I64 *)MEM_HOST_SLOTS + 0xB8;
   if (ed)
     ed(name);
 }

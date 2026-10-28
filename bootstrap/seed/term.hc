@@ -156,7 +156,7 @@ U0 TermSetSize(I64 rows, I64 cols)
   if (cols >= 2 && cols <= 512)
     g_term_cols = cols;
   g_term_flags &= ~TF_CPR;
-  csetz = *(I64 *)0x87001110;
+  csetz = *(I64 *)MEM_HOST_SLOTS + 0x110;
   /* intentional bridge: HolyC → C repair hatch only */
   if (csetz)
     csetz(g_term_rows, g_term_cols);
@@ -475,10 +475,10 @@ U0 UartUnget(I64 ch)
 U0 UartRxUnget(I64 ch)
 {
   I64 rx, rhp, rtp, cap, rh, rt, prev;
-  rx = *(I64 *)0x87001020;
-  rhp = *(I64 *)0x87001028;
-  rtp = *(I64 *)0x87001030;
-  cap = *(I64 *)0x87001038;
+  rx = *(I64 *)MEM_HOST_SLOTS + 0x20;
+  rhp = *(I64 *)MEM_HOST_SLOTS + 0x28;
+  rtp = *(I64 *)MEM_HOST_SLOTS + 0x30;
+  cap = *(I64 *)MEM_HOST_SLOTS + 0x38;
   if (!rx || !rhp || !rtp || cap < 2) {
     /* Product HolyC soft RX (hc_repl/uart.hc). Host slots are absent on
      * repl-holyc — previously this returned without pushback and Esc ate the
@@ -504,10 +504,10 @@ I64 UartTryGetByte()
    * / TermProbe); otherwise piped smoke desyncs when GetCh/TermPoll steal bytes. */
   if (!g_term_rx_own)
     return -1;
-  rx = *(I64 *)0x87001020;
-  rhp = *(I64 *)0x87001028;
-  rtp = *(I64 *)0x87001030;
-  cap = *(I64 *)0x87001038;
+  rx = *(I64 *)MEM_HOST_SLOTS + 0x20;
+  rhp = *(I64 *)MEM_HOST_SLOTS + 0x28;
+  rtp = *(I64 *)MEM_HOST_SLOTS + 0x30;
+  cap = *(I64 *)MEM_HOST_SLOTS + 0x38;
   if (!rx || !rhp || !rtp || cap < 2) {
     /* Product HolyC path: soft ring in hc_repl/uart.hc (HcUartTry). */
     return HcUartTry();
@@ -905,8 +905,8 @@ I64 TermProbe()
   /* Bytes waiting in RX mean a pipe/script is feeding us — DSR will not get a
    * reply and the timeout only burns time while more input piles up. Match
    * former worry_dream TermProbe: C host-slot ring OR HolyC soft ring. */
-  rhp = *(I64 *)0x87001028;
-  rtp = *(I64 *)0x87001030;
+  rhp = *(I64 *)MEM_HOST_SLOTS + 0x28;
+  rtp = *(I64 *)MEM_HOST_SLOTS + 0x30;
   if (rhp && rtp) {
     rh = *(I64 *)rhp;
     rt = *(I64 *)rtp;
@@ -916,7 +916,7 @@ I64 TermProbe()
       return 0;
     }
   } else {
-    /* Product HolyC path (hc_repl/uart.hc): no 0x87001xxx slots. Soft ring
+    /* Product HolyC path (hc_repl/uart.hc): no host-slot slots. Soft ring
      * emptiness via UartRxReady — do NOT permanently skip CPR (that left Vi
      * stuck at 80x24 after worry_dream delete). */
     if (UartRxReady()) {
@@ -957,7 +957,7 @@ I64 TermProbe()
         PutCh(27);
         PutCh('8');
         g_term_rx_own = 0;
-        csetz = *(I64 *)0x87001110;
+        csetz = *(I64 *)MEM_HOST_SLOTS + 0x110;
         if (csetz)
           csetz(g_term_rows, g_term_cols);
         return (g_term_flags & TF_CPR) ? 1 : 0;

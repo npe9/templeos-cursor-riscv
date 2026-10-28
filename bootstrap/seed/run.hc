@@ -1,5 +1,5 @@
 // run.hc -- Run / Exec: A2 prefers guest ExePutS when Compiler_RV is live;
-// fall back to host compile slot 0x87001000 for the Mac-AOT REPL bridge.
+// fall back to host compile slot MEM_HOST_SLOTS+0x0 for the Mac-AOT REPL bridge.
 // Destination remains Compiler_RV + ExePutS. Do not grow jit.hc.
 Bool g_exepubs_prefer;
 // set TRUE after CInit / when ExePutS is the live JIT
@@ -13,7 +13,7 @@ U0 HcCompile(U8 *src)
     ExePutS(src);
     return;
   }
-  host = *(I64 *)0x87001000;
+  host = *(I64 *)MEM_HOST_SLOTS + 0x0;
   if (host)
     host(src);
   // REPL bridge (C JIT behind the slot)
@@ -25,7 +25,7 @@ U0 RunSetFile(U8 *name)
 {
   U8 *p;
   I64 i;
-  p = *(I64 *)0x87001008;
+  p = *(I64 *)MEM_HOST_SLOTS + 0x8;
   if (!p)
     return;
   i = 0;
@@ -75,7 +75,7 @@ U0 Run(U8 *name)
     RunSetFile("");
     return;
   }
-  host = *(I64 *)0x87001000;
+  host = *(I64 *)MEM_HOST_SLOTS + 0x0;
   if (host)
     host(src);
   else

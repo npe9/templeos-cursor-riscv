@@ -13,7 +13,7 @@ U8 JumpIdent[64];
 U8 JumpFile[64];
 I64 SymHash()
 {
-  return *(I64 *)0x87001070;
+  return *(I64 *)MEM_HOST_SLOTS + 0x70;
 }
 
 I64 SymHashMask()
@@ -133,12 +133,12 @@ U8 *FunSegFind(I64 addr, I64 *off_p)
 
 U8 *SrcMapBase()
 {
-  return *(I64 *)0x87001048;
+  return *(I64 *)MEM_HOST_SLOTS + 0x48;
 }
 
 I64 SrcMapMax()
 {
-  return *(I64 *)0x87001050;
+  return *(I64 *)MEM_HOST_SLOTS + 0x50;
 }
 
 U8 *SrcmapGet(U8 *name)
@@ -312,11 +312,11 @@ U8 *SymFile(U8 *name)
   }
   return 0;
 }
-// Prefer host call_editor (slot 0x87001078): uses HolyC `editor` global, falls back to C Edit.
+// Prefer host call_editor (slot MEM_HOST_SLOTS+0x78): uses HolyC `editor` global, falls back to C Edit.
 U0 HcCallEditor(U8 *name)
 {
   U0 (*ed)(U8 *name);
-  ed = *(I64 *)0x87001078;
+  ed = *(I64 *)MEM_HOST_SLOTS + 0x78;
   if (ed)
     ed(name);
 }

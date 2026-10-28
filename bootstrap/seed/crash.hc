@@ -247,7 +247,7 @@ U0 CrashDump()
 // EXAMPLES
 //   Fault;                 // auto: dump → crash> …
 //   // crash> regs
-//   // crash> md 0x87000100 64
+//   // crash> md MEM_FIXED+0x100 64
 //   // crash> go
 //   CrashMon;              // re-enter on last freeze
 // SEE ALSO

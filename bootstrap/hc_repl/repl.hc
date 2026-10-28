@@ -560,9 +560,15 @@ U0 ReplLoop()
     g_rl_accum_len = repl_accum_len;
     if (!ReplShouldParse(repl_buf, n, repl_brace, repl_paren))
       continue;
-    // Fault / Break / Ctrl-C longjmp back here (TrapFaultRecover / TrapBreakRaise).
+    // Fault / Break / Ctrl-C longjmp back here (TrapFaultRecover / TrapBreakRaise):
+    // a faulting eval prints its dump, then ReplDoSetJmpHc returns nonzero and
+    // the line is dropped back at the prompt.  g_repl_jb_ok also lets the trap
+    // layer recover faults OUTSIDE eval (e.g. a fault inside the crash
+    // monitor's own backtrace) back to this loop instead of wedging.
     g_repl_jb_ok = 1;
     if (ReplDoSetJmpHc()) {
+      UartStr("[RL] eval aborted\n");
+      g_repl_eval_err = 1;
       ReplAccumReset();
       continue;
     }
@@ -582,8 +588,10 @@ U0 ReplLoop()
 
 I64 ReplMain()
 {
+  // NOTE: SoftDbgHostSlotsClear moved to main() in start.hc -- it must run
+  // BEFORE TrapInit installs the trap slots and UartRxInit publishes the
+  // RX-ring pointers (all inside the 4 KiB it zeroes).
   UartRxInit();
-  SoftDbgHostSlotsClear();
   FsInit();
   // G28: plant A: soft letter so Let2Drv matches Kernel RVSoftLetPlant (no cur_dv).
   RVSoftLetPlant('A');
@@ -846,7 +854,13 @@ I64 ReplMain()
   TrapUartSoftDrain = &HcTrapUartSoftDrain;
   // G2: TrapInitOnce on Fault/Break/SetTrap/BreakArm — not at boot (mtvec wedge).
   // CONSOLE #9: bind CrashOnTrap by fn ptr (no mtvec); TrapInit keeps it if g_trap_fn set.
+#ifdef ULX3S_CRASH_AUTO_RECOVER
+  // ULX3S console: dump then straight back to the REPL; the interactive
+  // monitor stays available via the CrashMon; command.
+  SetTrapFn(&CrashAutoRecover);
+#else
   SetTrapFn(&CrashOnTrap);
+#endif
   TrapVecAddrFix();
   // This is an interactive session, so say so: ExePutS gates BreakArm on this
   // flag, and only TrapInit used to set it — which boot never reaches. Without

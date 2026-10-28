@@ -1,5 +1,5 @@
 // fmt.hc -- HolyC source formatter (gofmt-like). Host HolyFmtSrc (AST/CST emit in
-// holyc_fmt.c) formats into slot 0x870010C8; HcFmtFile (0x870010D8) rewrites a
+// holyc_fmt.c) formats into slot MEM_HOST_SLOTS+0xC8; HcFmtFile (MEM_HOST_SLOTS+0xD8) rewrites a
 // memfs .hc/.HH in place. Same engine as `holyc-riscv --fmt`.
 // Rules: 2-space indent; tabs only inside asm{}; # at column 0; spaces around
 // binary ops / after `,`; dense unary and `->`; space after if/for/while/switch;
@@ -10,7 +10,7 @@
 I64 HcFmt(U8 *src)
 {
   I64 (*fmt)(U8 *src);
-  fmt = *(I64 *)0x870010C0;
+  fmt = *(I64 *)MEM_HOST_SLOTS + 0xC0;
   if (!fmt)
     return -1;
   return fmt(src);
@@ -19,7 +19,7 @@ I64 HcFmt(U8 *src)
 I64 HcFmtFile(U8 *name)
 {
   I64 (*ff)(U8 *name);
-  ff = *(I64 *)0x870010D8;
+  ff = *(I64 *)MEM_HOST_SLOTS + 0xD8;
   if (!ff)
     return -1;
   return ff(name);
@@ -27,7 +27,7 @@ I64 HcFmtFile(U8 *name)
 
 U8 *FmtHostBuf()
 {
-  return *(I64 *)0x870010C8;
+  return *(I64 *)MEM_HOST_SLOTS + 0xC8;
 }
 
 I64 IsHcName(U8 *name)

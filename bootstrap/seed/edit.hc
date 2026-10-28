@@ -511,7 +511,7 @@ U0 EvMan()
 U0 Edit(U8 *name)
 {
   I64 (*ed)(U8 *);
-  ed = *(I64 *)0x870010E0;
+  ed = *(I64 *)MEM_HOST_SLOTS + 0xE0;
   if (ed)
     ed(name);
   else
@@ -692,7 +692,7 @@ U0 EditHoly(U8 *name)
 U0 EditC(U8 *name)
 {
   I64 (*ed)(U8 *);
-  ed = *(I64 *)0x870010E0;
+  ed = *(I64 *)MEM_HOST_SLOTS + 0xE0;
   if (ed)
     ed(name);
 }

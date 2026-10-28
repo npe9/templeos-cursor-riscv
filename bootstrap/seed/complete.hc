@@ -6,7 +6,7 @@
 // #define names (DefRegister / DefTryRegister via ExePutS) or memfs (CI).
 // Inside asm{} (see asm_complete.hc): opcodes / GPRs / CSR names instead of HolyC syms.
 // Returns 1 if Tab was handled; 0 if caller should insert 2-space indent.
-// Thin-path define Tab covers MEM_*/UART_*/VIRTIO_*/REG_*/CSR_* without 0x87001xxx.
+// Thin-path define Tab covers MEM_*/UART_*/VIRTIO_*/REG_*/CSR_* without host-slot addresses.
 #define COMP_MAX 64
 #define COMP_NAME 48
 U8 CompNames[COMP_MAX][COMP_NAME];

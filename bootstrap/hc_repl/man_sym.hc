@@ -1,6 +1,6 @@
 // man_sym.hc -- thin Fn*/Fun*/Sym* for repl-holyc Man/Funs (G4).
 // dbg owns seed/sym.hc (host-slot hash/srcmap). This file is man-lane only:
-// JitFind-backed FnAddr/FnSize + memfs-oriented Fun* listing. No 0x87001xxx.
+// JitFind-backed FnAddr/FnSize + memfs-oriented Fun* listing. No host-slot addresses.
 // Include after jit.hc; man.hc redefines DocFileFor and adds SrcText/SrcFile.
 #define HTT_FUN 0x100
 #define SRCMAP_STRIDE 112

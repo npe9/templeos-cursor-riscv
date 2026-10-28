@@ -275,6 +275,91 @@ asm {
 U0 RegsSnapOnly()
 {
   // Inline asm — must match RegSnapAsm (also used from Reg:: / JIT g_reg_snap_asm).
+#ifdef ULX3S_RV32_SNAP
+  // RV32 port: registers are 32-bit; each I64 slot gets {lo = reg, hi = 0},
+  // which is exactly the port's "plain register" pair convention.  t6 (x31)
+  // and t5 (x30) are used as scratch/address; t5 is the hi half of the live
+  // t2:t5 pair, so both scratch regs are stack-saved first and the t5/t6
+  // slots are patched from the stack copies (t2/x7 is never clobbered).
+  // No sd/ld: they are reserved on rv32 (trap illegal instruction).
+  // Base: MEM_REGS_SNAP's SDRAM page (0x81800000 = MEM_REGS_SNAP & ~0xFFF);
+  // the legacy 0x87000000 target is above the 32 MB SDRAM — a fabric void.
+  asm {
+	addi	sp, sp, -16
+	sw	t6, 0(sp)
+	sw	t5, 4(sp)
+	li	t6, 0x81800000
+	sw	x1, 0x308(t6)
+	sw	x0, 0x30C(t6)
+	addi	t5, sp, 16
+	sw	t5, 0x310(t6)
+	sw	x0, 0x314(t6)
+	sw	x3, 0x318(t6)
+	sw	x0, 0x31C(t6)
+	sw	x4, 0x320(t6)
+	sw	x0, 0x324(t6)
+	sw	x5, 0x328(t6)
+	sw	x0, 0x32C(t6)
+	sw	x6, 0x330(t6)
+	sw	x0, 0x334(t6)
+	sw	x7, 0x338(t6)
+	sw	x0, 0x33C(t6)
+	sw	x8, 0x340(t6)
+	sw	x0, 0x344(t6)
+	sw	x9, 0x348(t6)
+	sw	x0, 0x34C(t6)
+	sw	x10, 0x350(t6)
+	sw	x0, 0x354(t6)
+	sw	x11, 0x358(t6)
+	sw	x0, 0x35C(t6)
+	sw	x12, 0x360(t6)
+	sw	x0, 0x364(t6)
+	sw	x13, 0x368(t6)
+	sw	x0, 0x36C(t6)
+	sw	x14, 0x370(t6)
+	sw	x0, 0x374(t6)
+	sw	x15, 0x378(t6)
+	sw	x0, 0x37C(t6)
+	sw	x16, 0x380(t6)
+	sw	x0, 0x384(t6)
+	sw	x17, 0x388(t6)
+	sw	x0, 0x38C(t6)
+	sw	x18, 0x390(t6)
+	sw	x0, 0x394(t6)
+	sw	x19, 0x398(t6)
+	sw	x0, 0x39C(t6)
+	sw	x20, 0x3A0(t6)
+	sw	x0, 0x3A4(t6)
+	sw	x21, 0x3A8(t6)
+	sw	x0, 0x3AC(t6)
+	sw	x22, 0x3B0(t6)
+	sw	x0, 0x3B4(t6)
+	sw	x23, 0x3B8(t6)
+	sw	x0, 0x3BC(t6)
+	sw	x24, 0x3C0(t6)
+	sw	x0, 0x3C4(t6)
+	sw	x25, 0x3C8(t6)
+	sw	x0, 0x3CC(t6)
+	sw	x26, 0x3D0(t6)
+	sw	x0, 0x3D4(t6)
+	sw	x27, 0x3D8(t6)
+	sw	x0, 0x3DC(t6)
+	sw	x28, 0x3E0(t6)
+	sw	x0, 0x3E4(t6)
+	sw	x29, 0x3E8(t6)
+	sw	x0, 0x3EC(t6)
+	lw	t5, 4(sp)
+	sw	t5, 0x3F0(t6)
+	sw	x0, 0x3F4(t6)
+	lw	t5, 0(sp)
+	sw	t5, 0x3F8(t6)
+	sw	x0, 0x3FC(t6)
+	lw	t5, 4(sp)
+	lw	t6, 0(sp)
+	addi	sp, sp, 16
+  }
+}
+#else
   asm {
 	addi	sp, sp, -16
 	sd	t6, 0(sp)
@@ -320,10 +405,33 @@ U0 RegsSnapOnly()
 	addi	sp, sp, 16
   }
 }
+#endif
 
 U0 RegsRestoreOnly()
 {
   // Do not reload ra/sp/fp/s* — HolyC frames use them. Only temps/args Print may smash.
+#ifdef ULX3S_RV32_SNAP
+  // RV32 port: 32-bit restores from the lo halves RegsSnapOnly stored.
+  asm {
+	li	t6, 0x81800000
+	lw	x5, 0x328(t6)
+	lw	x6, 0x330(t6)
+	lw	x7, 0x338(t6)
+	lw	x10, 0x350(t6)
+	lw	x11, 0x358(t6)
+	lw	x12, 0x360(t6)
+	lw	x13, 0x368(t6)
+	lw	x14, 0x370(t6)
+	lw	x15, 0x378(t6)
+	lw	x16, 0x380(t6)
+	lw	x17, 0x388(t6)
+	lw	x28, 0x3E0(t6)
+	lw	x29, 0x3E8(t6)
+	lw	x30, 0x3F0(t6)
+	lw	t6, 0x3F8(t6)
+  }
+}
+#else
   asm {
 	lui	t6, 0x10E00
 	slli	t6, t6, 3
@@ -344,22 +452,23 @@ U0 RegsRestoreOnly()
 	ld	t6, 0x3F8(t6)
   }
 }
+#endif
 // GetMStatus -- GetMStatus()
-// NAME
-//   GetMStatus - read mstatus (machine status CSR)
-// SYNOPSIS
-//   I64 GetMStatus();
-// DESCRIPTION
-//   Reads the machine status register (interrupt enable, FPU dirty bits, …).
-//   Pair with SetMStatus / CSRGet(CSR_MSTATUS) / Reg("mstatus").
-// EXAMPLES
-//   Print("%X\n", GetMStatus());
-//   Reg("mstatus");
-//   Print("%X\n", CSRGet(CSR_MSTATUS));
-// SEE ALSO
-//   SetMStatus  CSRGet  Reg  Regs  MIE  TrapInit
-// BUGS
-//   M-mode only on this port (bare-metal seed profile).
+ // NAME
+ //   GetMStatus - read mstatus (machine status CSR)
+ // SYNOPSIS
+ //   I64 GetMStatus();
+ // DESCRIPTION
+ //   Reads the machine status register (interrupt enable, FPU dirty bits, …).
+ //   Pair with SetMStatus / CSRGet(CSR_MSTATUS) / Reg("mstatus").
+ // EXAMPLES
+ //   Print("%X\n", GetMStatus());
+ //   Reg("mstatus");
+ //   Print("%X\n", CSRGet(CSR_MSTATUS));
+ // SEE ALSO
+ //   SetMStatus  CSRGet  Reg  Regs  MIE  TrapInit
+ // BUGS
+ //   M-mode only on this port (bare-metal seed profile).
 I64 GetMStatus()
 {
   return HcGetMStatus();
@@ -861,11 +970,11 @@ I64 MemMapFind(U8 *name)
   if (!StrICmp(name, "compiler") || !StrICmp(name, "mem_compiler"))
     return MEM_COMPILER;
   if (!StrICmp(name, "code") || !StrICmp(name, "mem_code") || !StrICmp(name, "code_mem")) {
-    p = *(I64 *)0x87001140;
+    p = *(I64 *)(MEM_HOST_SLOTS + 0x140);
     return p;
   }
   if (!StrICmp(name, "jit_heap") || !StrICmp(name, "heap_mem") || !StrICmp(name, "mem_jit_heap")) {
-    p = *(I64 *)0x87001148;
+    p = *(I64 *)(MEM_HOST_SLOTS + 0x148);
     return p;
   }
   return 0;
@@ -1228,6 +1337,43 @@ U0 RegsDumpHc()
   // which is 0x87000400 — the canonical fault freeze (TRAP_SNAP_X, trap.hc). Typing `Regs;`
   // after a fault overwrote the frozen x0..x9 that _X0.._X9 and DbgX read back, so the
   // debugger's own registers were corrupted by the command you would type to look at them.
+#ifdef ULX3S_RV32_SNAP
+  // RV32: same real page (base 0x81800000); sw pairs, hi word zero (CSRs are
+  // 32-bit on rv32).
+  asm {
+	li	t6, 0x81800000
+	csrr	t5, 0x300
+	sw	t5, 0x700(t6)
+	sw	x0, 0x704(t6)
+	csrr	t5, 0x301
+	sw	t5, 0x708(t6)
+	sw	x0, 0x70C(t6)
+	csrr	t5, 0x304
+	sw	t5, 0x710(t6)
+	sw	x0, 0x714(t6)
+	csrr	t5, 0x305
+	sw	t5, 0x718(t6)
+	sw	x0, 0x71C(t6)
+	csrr	t5, 0x341
+	sw	t5, 0x720(t6)
+	sw	x0, 0x724(t6)
+	csrr	t5, 0x342
+	sw	t5, 0x728(t6)
+	sw	x0, 0x72C(t6)
+	csrr	t5, 0x343
+	sw	t5, 0x730(t6)
+	sw	x0, 0x734(t6)
+	csrr	t5, 0x340
+	sw	t5, 0x738(t6)
+	sw	x0, 0x73C(t6)
+	csrr	t5, 0x344
+	sw	t5, 0x740(t6)
+	sw	x0, 0x744(t6)
+	csrr	t5, 0xF14
+	sw	t5, 0x748(t6)
+	sw	x0, 0x74C(t6)
+  }
+#else
   asm {
 	lui	t6, 0x10E00
 	slli	t6, t6, 3
@@ -1252,6 +1398,7 @@ U0 RegsDumpHc()
 	csrr	t5, 0xF14
 	sd	t5, 0x748(t6)
   }
+#endif
   UartStr("CSRs (CSR_* / GetMStatus… ; Reg(\"mstatus\"); Man(\"Regs\")):\n");
   v = *(I64 *)(MEM_REGS_SNAP + 0x400);
   RegLineDesc("mstatus ", v, "machine status (MIE/FS/...)");
@@ -1377,17 +1524,17 @@ I64 RegOneHc(U8 *name)
   UartStr("\" — try RegHelp; or Regs;\n");
   return -1;
 }
-// Legacy worry_dream publishes C fns at 0x87001xxx. On repl-holyc that page is
+// Legacy worry_dream publishes C fns at host-slot addresses. On repl-holyc that page is
 // bare DRAM — non-zero garbage must not be jal'd (Regs hung after soft banner).
 // Define before MemMap/Regs (no &OnTrap-style forward-ref on the checker).
 I64 SoftDbgSlotFnOk(I64 p)
 {
-  /* Legacy only: HostSlotsInstall publishes SOFTDBG_SLOT_MAGIC at 0x87001FF8. */
-  if (*(I64 *)0x87001FF8 != 0x534C4F54)
+  /* Legacy only: HostSlotsInstall publishes SOFTDBG_SLOT_MAGIC at MEM_HOST_SLOTS+0xFF8. */
+  if (*(I64 *)(MEM_HOST_SLOTS + 0xFF8) != 0x534C4F54)
     return 0;
   if (!p)
     return 0;
-  if (p < 0x80000000 || p >= 0x87000000)
+  if (p < 0x80000000 || p >= MEM_FIXED + 0x0)
     return 0;
   return 1;
 }
@@ -1397,7 +1544,7 @@ I64 RegStubPtrOk(I64 p)
   // HostSlotsInstall C stubs (reg_one_stub/regs_snap_stub) — no magic required.
   if (!p)
     return 0;
-  if (p >= 0x80000000 && p < 0x87000000)
+  if (p >= 0x80000000 && p < MEM_FIXED + 0x0)
     return 1;
   return 0;
 }
@@ -1405,7 +1552,7 @@ I64 RegStubPtrOk(I64 p)
 U0 SoftDbgHostSlotsClear()
 {
   I64 i, base;
-  base = 0x87001000;
+  base = MEM_HOST_SLOTS;
   i = 0;
   while (i < 512) {
     *(I64 *)(base + i * 8) = 0;
@@ -1429,15 +1576,15 @@ U0 MemMap()
 {
   I64 (*mm)();
   I64 code_base, heap_base;
-  mm = *(I64 *)0x87001128;
+  mm = *(I64 *)(MEM_HOST_SLOTS + 0x128);
   if (SoftDbgSlotFnOk(mm)) {
     mm();
     return;
   }
   UartStr("Memory map (RISC-V; MEM_* in csr.hc; last col = HolyC driver):\n");
   "  MEM_RAM        0x%X  DRAM                          %s\n", MEM_RAM, MEMMAP_DRV_RAM;
-  code_base = *(I64 *)0x87001140;
-  heap_base = *(I64 *)0x87001148;
+  code_base = *(I64 *)(MEM_HOST_SLOTS + 0x140);
+  heap_base = *(I64 *)(MEM_HOST_SLOTS + 0x148);
   if (code_base)
     "  MEM_CODE     @ %p  [live JIT code_mem]\n", code_base;
   if (heap_base)
@@ -1469,13 +1616,13 @@ U0 MemMap()
 //   Hw*/Sdtrig. Dig-down: Reg("sp"); RegHelp; Man("Regs"); docs/DEBUGGER.md.
 // BUGS
 //   Stub-entry freeze (not mid-expr). Same-line asm{…}; Regs / Reg("a7").
-#define HC_SLOT_REGS     0x87001130
-#define HC_SLOT_REG_ONE  0x87001150
+#define HC_SLOT_REGS     (MEM_HOST_SLOTS+0x130)
+#define HC_SLOT_REG_ONE  (MEM_HOST_SLOTS+0x150)
 U0 Regs()
 {
   I64 (*regs_stub)();
   // Host slots only on legacy repl.elf (HC_SLOT_COMPILE); hc-repl leaves page zero/garbage.
-  if (*(I64 *)0x87001000) {
+  if (*(I64 *)(MEM_HOST_SLOTS + 0x0)) {
     regs_stub = *(I64 *)HC_SLOT_REGS;
     if (RegStubPtrOk ((I64)regs_stub)) {
       regs_stub();
@@ -1501,7 +1648,7 @@ I64 Reg(U8 *name)
   I64 (*reg_one)(U8 *);
   if (!name)
     return -1;
-  if (*(I64 *)0x87001000) {
+  if (*(I64 *)(MEM_HOST_SLOTS + 0x0)) {
     reg_one = *(I64 *)HC_SLOT_REG_ONE;
     if (RegStubPtrOk ((I64)reg_one))
       return reg_one(name);

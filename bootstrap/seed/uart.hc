@@ -1,8 +1,8 @@
 // UART 16550 -- HolyC driver (@ MEM_UART from MemMapSelected.hc / Kconfig).
 // RX ring is still shared with the C IRQ/readline bootstrap (pointers published
-// at 0x87001020..038) until the ring moves fully into HolyC BSS. Drain/get are
-// HolyC MMIO — no C funptr slots (was 0x87001088 / 0x870010B0).
-// Software XON/XOFF (Ctrl-Q/Ctrl-S): state at 0x870010F0 (fc) / 0x870010F8
+// at MEM_HOST_SLOTS+0x20..038) until the ring moves fully into HolyC BSS. Drain/get are
+// HolyC MMIO — no C funptr slots (was MEM_HOST_SLOTS+0x88 / MEM_HOST_SLOTS+0xB0).
+// Software XON/XOFF (Ctrl-Q/Ctrl-S): state at MEM_HOST_SLOTS+0xF0 (fc) / MEM_HOST_SLOTS+0xF8
 // (tx paused), shared with C uart_hw_drain so IRQ and Put stay in sync.
 // Layout: keep LSR wait ending on a lone `;` so smoke `Na` inserts before THR
 // store (see run_repl_smoke.sh livedrv — currently line 150 after --fmt).
@@ -13,8 +13,8 @@
 #define UART_CH_CTRLC 3
 #define UART_XON 0x11
 #define UART_XOFF 0x13
-#define UART_FC_ADDR 0x870010F0
-#define UART_TX_PAUSED_ADDR 0x870010F8
+#define UART_FC_ADDR MEM_HOST_SLOTS+0xF0
+#define UART_TX_PAUSED_ADDR MEM_HOST_SLOTS+0xF8
 // Default on at load (C HostSlotsInstall seeds 0 until this Run; then on).
 // CI PTY smokes must clear host IXON or boot floods freeze Put — see FLOW_CONTROL.md.
 *(I64 *)UART_FC_ADDR = 1;
@@ -113,10 +113,10 @@ U0 UartRxDrain()
   I64 ch, n, rx, rhp, rtp, cap, rh, rt;
   PUSHFD;
   CLI;
-  rx = *(I64 *)0x87001020;
-  rhp = *(I64 *)0x87001028;
-  rtp = *(I64 *)0x87001030;
-  cap = *(I64 *)0x87001038;
+  rx = *(I64 *)MEM_HOST_SLOTS + 0x20;
+  rhp = *(I64 *)MEM_HOST_SLOTS + 0x28;
+  rtp = *(I64 *)MEM_HOST_SLOTS + 0x30;
+  cap = *(I64 *)MEM_HOST_SLOTS + 0x38;
   if (rx && rhp && rtp && cap >= 2) {
     while (*(U8 *)(MEM_UART + UART_LSR_OFF) & UART_LSR_DR) {
       ch = *(U8 *)MEM_UART;
@@ -178,10 +178,10 @@ I64 HcUartGet()
   I64 ch, rx, rhp, rtp, cap, rh, rt;
   while (1) {
     UartRxDrain();
-    rx = *(I64 *)0x87001020;
-    rhp = *(I64 *)0x87001028;
-    rtp = *(I64 *)0x87001030;
-    cap = *(I64 *)0x87001038;
+    rx = *(I64 *)MEM_HOST_SLOTS + 0x20;
+    rhp = *(I64 *)MEM_HOST_SLOTS + 0x28;
+    rtp = *(I64 *)MEM_HOST_SLOTS + 0x30;
+    cap = *(I64 *)MEM_HOST_SLOTS + 0x38;
     if (!rx || !rhp || !rtp || cap < 2) {
       while (!(*(U8 *)(MEM_UART + UART_LSR_OFF) & UART_LSR_DR))
         ;
@@ -210,7 +210,7 @@ I64 HcUartGet()
 I64 HcTermKeyGet()
 {
   I64 (*get)();
-  get = *(I64 *)0x870010D0;
+  get = *(I64 *)MEM_HOST_SLOTS + 0xD0;
   if (!get)
     return 0;
   return get();

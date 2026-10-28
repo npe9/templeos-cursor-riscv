@@ -1,4 +1,4 @@
-// fs.hc -- HolyC-owned memfs at a fixed physical arena (no 0x87001xxx base/cwd slots).
+// fs.hc -- HolyC-owned memfs at a fixed physical arena (no host-slot base/cwd slots).
 // Layout matches C MemFile / EdC bridge: used I32 @0, name[64] @4, data[65536] @68,
 // len I32 @65604, stride 65608. C seed boot + EdC write the same arena at MEMFS_BASE.
 // Below QEMU virt's default 128MiB (ends 0x88000000): after host slots, before MEM_STACK.

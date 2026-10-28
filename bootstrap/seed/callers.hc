@@ -114,7 +114,7 @@ I64 CallersScanHc(U8 *name)
 I64 CallersScan(U8 *name)
 {
   I64 (*scan)(U8 *name);
-  scan = *(I64 *)0x870010E8;
+  scan = *(I64 *)MEM_HOST_SLOTS + 0xE8;
   if (SoftDbgSlotFnOk(scan)) {
     g_caller_n = scan(name);
     return g_caller_n;
@@ -125,7 +125,7 @@ I64 CallersScan(U8 *name)
 I64 CallerCnt()
 {
   I64 (*cnt)();
-  cnt = *(I64 *)0x87001120;
+  cnt = *(I64 *)MEM_HOST_SLOTS + 0x120;
   if (SoftDbgSlotFnOk(cnt))
     return cnt();
   return g_caller_n;
@@ -134,7 +134,7 @@ I64 CallerCnt()
 U8 *CallerName(I64 idx)
 {
   U8 * (*nm)(I64 idx);
-  nm = *(I64 *)0x87001118;
+  nm = *(I64 *)MEM_HOST_SLOTS + 0x118;
   if (SoftDbgSlotFnOk(nm))
     return nm(idx);
   if (idx < 0 || idx >= g_caller_n)
